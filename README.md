@@ -83,27 +83,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 首页分区开关独立显示在右侧，至少保留一个分区。
 
-## 构建与安装
 
-常用 release 构建命令：
-
-```powershell
-$env:ANDROID_HOME="$env:LOCALAPPDATA\Android\Sdk"
-$env:ANDROID_SDK_ROOT=$env:ANDROID_HOME
-.\gradlew.bat :app:assembleRelease -PtargetAbi=armeabi-v7a
-```
-
-生成 APK：
-
-```text
-C:\Users\Kirin\.gradle\bilitv-native-build\app\outputs\apk\release\app-release.apk
-```
-
-安装到指定电视：
-
-```powershell
-adb -s 192.168.1.131:5555 install -r -d "$env:USERPROFILE\.gradle\bilitv-native-build\app\outputs\apk\release\app-release.apk"
-```
 
 ## 技术栈
 
@@ -128,7 +108,7 @@ adb -s 192.168.1.131:5555 install -r -d "$env:USERPROFILE\.gradle\bilitv-native-
 
 ## 开发说明
 
-本项目主要由 AI 辅助完成。根目录文档用于保留上下文和约束：
+本项目全部由 AI 辅助完成。根目录文档用于保留上下文和约束：
 
 - `AGENTS.md`：开发约束和项目规则。
 - `DEVELOPMENT_PLAN.md`：产品、架构和技术路线。
