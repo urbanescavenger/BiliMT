@@ -61,21 +61,25 @@ jobs:
 
       - name: Build debug APK
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        run: ./gradlew clean assembleDebug --no-daemon -PbilitvBuildRoot=./build
+        run: ./gradlew clean assembleDebug --no-daemon -PbilitvBuildRoot="$GITHUB_WORKSPACE/build"
 
       - name: Build release APK
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-        run: ./gradlew clean assembleRelease --no-daemon -PbilitvBuildRoot=build
+        run: ./gradlew clean assembleRelease --no-daemon -PbilitvBuildRoot="$GITHUB_WORKSPACE/build"
 
       - name: Locate release APK
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-        run: find build -name "*.apk" -type f
+        id: apk
+        run: |
+          APK=$(find "$GITHUB_WORKSPACE/build" -name "*.apk" -type f | head -1)
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          echo "Found APK: $APK"
 
       - name: Create Release
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@v2
         with:
-          files: build/app/outputs/apk/release/*.apk
+          files: ${{ steps.apk.outputs.apk }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
