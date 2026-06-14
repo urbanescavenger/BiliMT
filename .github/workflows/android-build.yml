@@ -5,10 +5,12 @@ on:
     branches:
       - main
       - master
+      - mort_debug
   pull_request:
     branches:
       - main
       - master
+      - mort_debug
   workflow_dispatch: {}
 
 jobs:
