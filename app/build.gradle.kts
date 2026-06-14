@@ -29,26 +29,13 @@ android {
 
   }
 
-  signingConfigs {
-    create("release") {
-      storeFile = file("release.keystore")
-      storePassword = System.getenv("SIGNING_STORE_PASSWORD") ?: ""
-      keyAlias = System.getenv("SIGNING_KEY_ALIAS") ?: ""
-      keyPassword = System.getenv("SIGNING_KEY_PASSWORD") ?: ""
-    }
-  }
-
   buildTypes {
     debug {
       isMinifyEnabled = false
       isShrinkResources = false
     }
     release {
-      signingConfig = if (System.getenv("SIGNING_STORE_PASSWORD") != null) {
-        signingConfigs.getByName("release")
-      } else {
-        signingConfigs.getByName("debug")
-      }
+      signingConfig = signingConfigs.getByName("debug")
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(
