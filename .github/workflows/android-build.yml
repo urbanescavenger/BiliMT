@@ -59,6 +59,25 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
 
+      - name: Restore release keystore
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "${SIGNING_KEYSTORE_BASE64}" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          ls -l "$RUNNER_TEMP/release.keystore"
+          echo "Alias: ${SIGNING_KEY_ALIAS}"
+          echo "::add-mask::${SIGNING_KEY_PASSWORD}"
+          echo "::add-mask::${SIGNING_STORE_PASSWORD}"
+          echo "key.store=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "key.alias=${SIGNING_KEY_ALIAS}" >> "$GITHUB_ENV"
+          echo "key.store.password=${SIGNING_STORE_PASSWORD}" >> "$GITHUB_ENV"
+          echo "key.key.password=${SIGNING_KEY_PASSWORD}" >> "$GITHUB_ENV"
+
       - name: Build debug APK
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: ./gradlew clean assembleDebug --no-daemon -PbilitvBuildRoot="$GITHUB_WORKSPACE/build"

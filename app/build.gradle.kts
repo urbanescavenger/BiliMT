@@ -19,8 +19,8 @@ android {
     applicationId = "com.kirin.mt"
     minSdk = 23
     targetSdk = 36
-    versionCode = 1005004
-    versionName = "1.0.5-alpha.4"
+    versionCode = 1005005
+    versionName = "1.0.5-alpha.5"
 
     ndk {
       abiFilters.clear()
@@ -35,7 +35,16 @@ android {
       isShrinkResources = false
     }
     release {
-      signingConfig = signingConfigs.getByName("debug")
+      signingConfig = if (project.hasProperty("key.store")) {
+        signingConfigs.create("release") {
+          storeFile = file(project.property("key.store") as String)
+          storePassword = project.property("key.store.password") as String
+          keyAlias = project.property("key.alias") as String
+          keyPassword = project.property("key.key.password") as String
+        }
+      } else {
+        signingConfigs.getByName("debug")
+      }
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(
