@@ -16,7 +16,7 @@ if "%ANDROID_SDK_ROOT%"=="" (
   set "ANDROID_SDK_ROOT=%ANDROID_HOME%"
 )
 
-echo Building BiliTVNative release APK...
+echo Building BiliMT release APK...
 echo Target ABI: %TARGET_ABI%
 echo Android SDK: %ANDROID_HOME%
 echo.

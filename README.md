@@ -1,6 +1,6 @@
-# BiliTVNative
+# BiliMT
 
-BiliTVNative 是一个面向 Android TV 的原生 B 站客户端实验项目，使用 Kotlin、Jetpack Compose、Compose for TV 和 Media3 重写电视端观看体验。
+BiliMT 是一个面向 Android TV 的原生 B 站客户端实验项目，使用 Kotlin、Jetpack Compose、Compose for TV 和 Media3 重写电视端观看体验。
 
 项目重点不是做一个极简壳，而是在电视设备上尽量平衡几个实际问题：播放稳定性、遥控器焦点可控性、弹幕性能、主页视觉质感，以及不同硬件档位下的流畅度。
 

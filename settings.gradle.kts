@@ -15,5 +15,5 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "BiliTVNative"
+rootProject.name = "BiliMT"
 include(":app")

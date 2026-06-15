@@ -12,11 +12,11 @@ require(targetAbi == null || targetAbi in supportedAbis) {
 }
 
 android {
-  namespace = "com.kirin.bilitv"
+  namespace = "com.kirin.mt"
   compileSdk = 36
 
   defaultConfig {
-    applicationId = "com.kirin.bilitv"
+    applicationId = "com.kirin.mt"
     minSdk = 23
     targetSdk = 36
     versionCode = 100
