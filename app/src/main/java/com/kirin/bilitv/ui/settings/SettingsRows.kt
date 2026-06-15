@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.kirin.bilitv.R
 import com.kirin.bilitv.core.i18n.ChineseTextVariant
 import com.kirin.bilitv.core.player.CodecCapability
+import com.kirin.bilitv.core.player.PlaybackCdnPreference
 import com.kirin.bilitv.core.player.PlaybackCodecPreference
 import com.kirin.bilitv.core.player.PlaybackQualityPreference
 import com.kirin.bilitv.core.settings.AppVisualPerformanceMode
@@ -246,5 +247,16 @@ internal fun PlaybackCodecPreference.codecLabel(): String {
     PlaybackCodecPreference.H264 -> stringResource(R.string.settings_playback_codec_h264)
     PlaybackCodecPreference.H265 -> stringResource(R.string.settings_playback_codec_h265)
     PlaybackCodecPreference.Av1 -> stringResource(R.string.settings_playback_codec_av1)
+  }
+}
+
+@Composable
+internal fun PlaybackCdnPreference.cdnLabel(): String {
+  return when (this) {
+    PlaybackCdnPreference.Auto -> stringResource(R.string.cdn_option_auto)
+    PlaybackCdnPreference.Official -> stringResource(R.string.cdn_option_official)
+    PlaybackCdnPreference.Aliyun -> stringResource(R.string.cdn_option_aliyun)
+    PlaybackCdnPreference.Akamai -> stringResource(R.string.cdn_option_akamai)
+    PlaybackCdnPreference.Hw -> stringResource(R.string.cdn_option_hw)
   }
 }

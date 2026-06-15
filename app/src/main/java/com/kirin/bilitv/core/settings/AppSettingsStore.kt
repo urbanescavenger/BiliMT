@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.kirin.bilitv.core.i18n.ChineseTextVariant
 import com.kirin.bilitv.core.model.HomeSection
+import com.kirin.bilitv.core.player.PlaybackCdnPreference
 import com.kirin.bilitv.core.player.PlaybackCodecPreference
 import com.kirin.bilitv.core.player.PlaybackQualityPreference
 import com.kirin.bilitv.core.storage.biliDataStore
@@ -45,6 +46,7 @@ class AppSettingsStore(private val context: Context) {
       chineseTextVariant = ChineseTextVariant.fromKey(preferences[Keys.ChineseTextVariant]),
       playbackQualityPreference = PlaybackQualityPreference.fromKey(preferences[Keys.PlaybackQualityPreference]),
       playbackCodecPreference = PlaybackCodecPreference.fromKey(preferences[Keys.PlaybackCodecPreference]),
+      playbackCdnPreference = PlaybackCdnPreference.fromKey(preferences[Keys.PlaybackCdnPreference]),
       seekPreviewSpritesEnabled = preferences[Keys.SeekPreviewSpritesEnabled] ?: true,
       airJumpAssistantEnabled = preferences[Keys.AirJumpAssistantEnabled] ?: true,
       confirmPlaybackExit = preferences[Keys.ConfirmPlaybackExit] ?: true,
@@ -98,6 +100,12 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setPlaybackQualityPreference(preference: PlaybackQualityPreference) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.PlaybackQualityPreference] = preference.key
+    }
+  }
+
+  suspend fun setPlaybackCdnPreference(preference: PlaybackCdnPreference) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.PlaybackCdnPreference] = preference.key
     }
   }
 
@@ -188,6 +196,7 @@ class AppSettingsStore(private val context: Context) {
     val ChineseTextVariant = stringPreferencesKey("chinese_text_variant")
     val PlaybackQualityPreference = stringPreferencesKey("playback_quality_preference")
     val PlaybackCodecPreference = stringPreferencesKey("playback_codec_preference")
+    val PlaybackCdnPreference = stringPreferencesKey("playback_cdn_preference")
     val SeekPreviewSpritesEnabled = booleanPreferencesKey("seek_preview_sprites_enabled")
     val AirJumpAssistantEnabled = booleanPreferencesKey("air_jump_assistant_enabled")
     val ConfirmPlaybackExit = booleanPreferencesKey("confirm_playback_exit")

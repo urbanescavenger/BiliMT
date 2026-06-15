@@ -47,6 +47,7 @@ import com.kirin.bilitv.core.cache.AppCacheManager
 import com.kirin.bilitv.core.i18n.ChineseTextConverters
 import com.kirin.bilitv.core.network.VideoRepository
 import com.kirin.bilitv.core.player.CodecCapabilityProbe
+import com.kirin.bilitv.core.player.PlaybackCdnPreference
 import com.kirin.bilitv.core.player.PlaybackCodecPreference
 import com.kirin.bilitv.core.player.PlaybackRepository
 import com.kirin.bilitv.core.player.PlaybackRequest
@@ -632,6 +633,11 @@ fun BiliTvApp(
                       appSettingsStore.setPlaybackCodecPreference(preference)
                     }
                   },
+                  onPlaybackCdnPreferenceChange = { preference ->
+                    coroutineScope.launch {
+                      appSettingsStore.setPlaybackCdnPreference(preference)
+                    }
+                  },
                   onAirJumpAssistantEnabledChange = { enabled ->
                     coroutineScope.launch {
                       appSettingsStore.setAirJumpAssistantEnabled(enabled)
@@ -704,6 +710,7 @@ fun BiliTvApp(
             playbackHttpClient = playbackHttpClient,
             playbackCodecPreference = effectivePlaybackCodecPreference,
             playbackQualityPreference = settings.playbackQualityPreference,
+            playbackCdnPreference = settings.playbackCdnPreference,
             seekPreviewSpritesEnabled = settings.seekPreviewSpritesEnabled,
             airJumpAssistantEnabled = settings.airJumpAssistantEnabled,
             confirmPlaybackExit = settings.confirmPlaybackExit,

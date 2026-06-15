@@ -66,10 +66,12 @@ import com.kirin.bilitv.core.model.shouldAdvanceToNextHistoryEpisode
 import com.kirin.bilitv.core.network.VideoRepository
 import com.kirin.bilitv.core.player.AirJumpSegment
 import com.kirin.bilitv.core.player.BiliMediaDataSourceFactory
+import com.kirin.bilitv.core.player.CdnRewriter
 import com.kirin.bilitv.core.player.DanmakuEntry
 import com.kirin.bilitv.core.player.DanmakuSettings
 import com.kirin.bilitv.core.player.DanmakuSettingsStore
 import com.kirin.bilitv.core.player.PlaybackInfo
+import com.kirin.bilitv.core.player.PlaybackCdnPreference
 import com.kirin.bilitv.core.player.PlaybackCodecPreference
 import com.kirin.bilitv.core.player.PlaybackQualityPreference
 import com.kirin.bilitv.core.player.PlaybackQuality
@@ -106,6 +108,7 @@ fun PlayerScreen(
   playbackHttpClient: OkHttpClient,
   playbackCodecPreference: PlaybackCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
+  playbackCdnPreference: PlaybackCdnPreference,
   seekPreviewSpritesEnabled: Boolean,
   airJumpAssistantEnabled: Boolean,
   confirmPlaybackExit: Boolean,
@@ -949,7 +952,7 @@ fun PlayerScreen(
     }
   }
 
-  LaunchedEffect(activeRequest, playbackCodecPreference, playbackQualityPreference, retryKey) {
+  LaunchedEffect(activeRequest, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey) {
     playerState = PlayerScreenState.Loading
     cancelPendingCompletionAction()
     completionReported = false
@@ -1018,7 +1021,7 @@ fun PlayerScreen(
               headers = info.headers,
             ).create(),
           ),
-        ).createMediaSource(buildDashMediaItem(info))
+        ).createMediaSource(buildDashMediaItem(info, playbackCdnPreference))
         player.setMediaSource(mediaSource)
         player.prepare()
         player.setPlaybackSpeed(playbackSpeed)
@@ -1423,19 +1426,19 @@ private fun PlayerLoadingOverlay() {
   }
 }
 
-private fun buildDashMediaItem(info: PlaybackInfo): MediaItem {
+private fun buildDashMediaItem(info: PlaybackInfo, cdnPreference: PlaybackCdnPreference): MediaItem {
   return MediaItem.Builder()
-    .setUri(buildDashManifest(info))
+    .setUri(buildDashManifest(info, cdnPreference))
     .setMimeType(MimeTypes.APPLICATION_MPD)
     .build()
 }
 
-private fun buildDashManifest(info: PlaybackInfo): String {
+private fun buildDashManifest(info: PlaybackInfo, cdnPreference: PlaybackCdnPreference): String {
   val videoRepresentations = info.videoTracks.joinToString(separator = "\n") { track ->
-    track.toRepresentation(adaptationSetId = "0", contentType = "video")
+    track.toRepresentation(adaptationSetId = "0", contentType = "video", cdnPreference = cdnPreference)
   }
   val audioRepresentations = info.audioTracks.joinToString(separator = "\n") { track ->
-    track.toRepresentation(adaptationSetId = "1", contentType = "audio")
+    track.toRepresentation(adaptationSetId = "1", contentType = "audio", cdnPreference = cdnPreference)
   }
   val durationSeconds = (info.durationMs / 1000L).coerceAtLeast(1L)
   return """
@@ -1454,8 +1457,13 @@ private fun buildDashManifest(info: PlaybackInfo): String {
     .let { bytes -> "data:application/dash+xml;base64,${android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)}" }
 }
 
-private fun PlaybackTrack.toRepresentation(adaptationSetId: String, contentType: String): String {
-  val escapedUrl = baseUrl.escapeXml()
+private fun PlaybackTrack.toRepresentation(
+  adaptationSetId: String,
+  contentType: String,
+  cdnPreference: PlaybackCdnPreference,
+): String {
+  val effectiveUrl = CdnRewriter.rewrite(baseUrl, cdnPreference)
+  val escapedUrl = effectiveUrl.escapeXml()
   val dimensions = if (contentType == "video") {
     """ width="$width" height="$height""""
   } else {

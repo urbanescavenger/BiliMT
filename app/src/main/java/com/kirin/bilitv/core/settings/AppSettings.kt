@@ -2,6 +2,7 @@ package com.kirin.bilitv.core.settings
 
 import com.kirin.bilitv.core.i18n.ChineseTextVariant
 import com.kirin.bilitv.core.model.HomeSection
+import com.kirin.bilitv.core.player.PlaybackCdnPreference
 import com.kirin.bilitv.core.player.PlaybackCodecPreference
 import com.kirin.bilitv.core.player.PlaybackQualityPreference
 
@@ -36,6 +37,7 @@ data class AppSettings(
   val chineseTextVariant: ChineseTextVariant = ChineseTextVariant.Simplified,
   val playbackQualityPreference: PlaybackQualityPreference = PlaybackQualityPreference.Highest,
   val playbackCodecPreference: PlaybackCodecPreference = PlaybackCodecPreference.Auto,
+  val playbackCdnPreference: PlaybackCdnPreference = PlaybackCdnPreference.Auto,
   val seekPreviewSpritesEnabled: Boolean = true,
   val airJumpAssistantEnabled: Boolean = true,
   val confirmPlaybackExit: Boolean = true,

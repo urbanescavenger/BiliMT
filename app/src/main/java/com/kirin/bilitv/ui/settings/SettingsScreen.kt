@@ -31,6 +31,7 @@ import com.kirin.bilitv.R
 import com.kirin.bilitv.core.i18n.ChineseTextVariant
 import com.kirin.bilitv.core.model.HomeSection
 import com.kirin.bilitv.core.player.CodecCapability
+import com.kirin.bilitv.core.player.PlaybackCdnPreference
 import com.kirin.bilitv.core.player.PlaybackCodecPreference
 import com.kirin.bilitv.core.player.PlaybackQualityPreference
 import com.kirin.bilitv.core.settings.AppSettings
@@ -59,6 +60,7 @@ fun SettingsScreen(
   onSeekPreviewSpritesEnabledChange: (Boolean) -> Unit,
   onPlaybackQualityPreferenceChange: (PlaybackQualityPreference) -> Unit,
   onPlaybackCodecPreferenceChange: (PlaybackCodecPreference) -> Unit,
+  onPlaybackCdnPreferenceChange: (PlaybackCdnPreference) -> Unit,
   onAirJumpAssistantEnabledChange: (Boolean) -> Unit,
   onConfirmPlaybackExitChange: (Boolean) -> Unit,
   onAutoPlayNextEpisodeChange: (Boolean) -> Unit,
@@ -85,6 +87,7 @@ fun SettingsScreen(
       SettingsItemChineseTextVariant to FocusRequester(),
       SettingsItemClearCache to FocusRequester(),
       SettingsItemPlaybackCodec to FocusRequester(),
+      SettingsItemPlaybackCdn to FocusRequester(),
       SettingsItemSeekPreviewSprites to FocusRequester(),
       SettingsItemAirJumpAssistant to FocusRequester(),
       SettingsItemConfirmPlaybackExit to FocusRequester(),
@@ -170,6 +173,7 @@ fun SettingsScreen(
         onSeekPreviewSpritesEnabledChange = onSeekPreviewSpritesEnabledChange,
         onPlaybackQualityPreferenceChange = onPlaybackQualityPreferenceChange,
         onPlaybackCodecPreferenceChange = onPlaybackCodecPreferenceChange,
+        onPlaybackCdnPreferenceChange = onPlaybackCdnPreferenceChange,
         onAirJumpAssistantEnabledChange = onAirJumpAssistantEnabledChange,
         onConfirmPlaybackExitChange = onConfirmPlaybackExitChange,
         onAutoPlayNextEpisodeChange = onAutoPlayNextEpisodeChange,
@@ -219,6 +223,7 @@ private fun SettingsBehaviorColumn(
   onSeekPreviewSpritesEnabledChange: (Boolean) -> Unit,
   onPlaybackQualityPreferenceChange: (PlaybackQualityPreference) -> Unit,
   onPlaybackCodecPreferenceChange: (PlaybackCodecPreference) -> Unit,
+  onPlaybackCdnPreferenceChange: (PlaybackCdnPreference) -> Unit,
   onAirJumpAssistantEnabledChange: (Boolean) -> Unit,
   onConfirmPlaybackExitChange: (Boolean) -> Unit,
   onAutoPlayNextEpisodeChange: (Boolean) -> Unit,
@@ -287,6 +292,27 @@ private fun SettingsBehaviorColumn(
           onClick = {
             val currentIndex = codecOptions.indexOf(configuredPreference).takeIf { it >= 0 } ?: 0
             onPlaybackCodecPreferenceChange(codecOptions[(currentIndex + 1) % codecOptions.size])
+          },
+        )
+      }
+      item(key = "playback-cdn") {
+        val cdnOptions = remember { PlaybackCdnPreference.entries.toList() }
+        val effectivePreference = settings.playbackCdnPreference
+        SettingsOptionRow(
+          title = stringResource(R.string.settings_playback_cdn_title),
+          description = stringResource(R.string.settings_playback_cdn_description),
+          value = effectivePreference.cdnLabel(),
+          modifier = Modifier
+            .focusRequester(focusRequesters.getValue(SettingsItemPlaybackCdn))
+            .settingsBoundaryKeys(
+              itemIndex = SettingsItemPlaybackCdn,
+              onMoveSettingFocus = onMoveSettingFocus,
+              onMoveLeftToNav = onMoveLeftToNav,
+            ),
+          onFocused = { onSettingFocused(SettingsItemPlaybackCdn) },
+          onClick = {
+            val currentIndex = cdnOptions.indexOf(effectivePreference).takeIf { it >= 0 } ?: 0
+            onPlaybackCdnPreferenceChange(cdnOptions[(currentIndex + 1) % cdnOptions.size])
           },
         )
       }
@@ -602,6 +628,7 @@ private fun SettingsSectionTitle(
 private const val SettingsItemPlaybackHeader = 0
 private const val SettingsItemPlaybackQuality = 1
 private const val SettingsItemPlaybackCodec = 2
+private const val SettingsItemPlaybackCdn = 21
 private const val SettingsItemSeekPreviewSprites = 3
 private const val SettingsItemAirJumpAssistant = 4
 private const val SettingsItemConfirmPlaybackExit = 5
@@ -622,6 +649,7 @@ private const val SettingsItemAbout = 20
 private val SettingsFocusableItems = listOf(
   SettingsItemPlaybackQuality,
   SettingsItemPlaybackCodec,
+  SettingsItemPlaybackCdn,
   SettingsItemSeekPreviewSprites,
   SettingsItemAirJumpAssistant,
   SettingsItemConfirmPlaybackExit,

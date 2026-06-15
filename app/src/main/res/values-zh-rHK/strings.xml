@@ -66,6 +66,13 @@
     <string name="settings_playback_codec_h264">H.264</string>
     <string name="settings_playback_codec_h265">H.265</string>
     <string name="settings_playback_codec_av1">AV1</string>
+    <string name="settings_playback_cdn_title">CDN 線路</string>
+    <string name="settings_playback_cdn_description">切換影片串流嘅 CDN 節點。預設跟隨 B 站自動分配,喺繁忙時段或者跨網環境可以手動指定更快嘅節點。</string>
+    <string name="cdn_option_auto">自動</string>
+    <string name="cdn_option_official">官方 (bilivideo)</string>
+    <string name="cdn_option_aliyun">阿里雲</string>
+    <string name="cdn_option_akamai">Akamai</string>
+    <string name="cdn_option_hw">華為雲</string>
     <string name="settings_seek_preview_sprites_title">快轉預覽雪碧圖</string>
     <string name="settings_seek_preview_sprites_description">開啟後快轉倒退時顯示影片預覽圖，按確認跳轉；關閉後只顯示時間。</string>
     <string name="settings_air_jump_assistant_title">空降助手</string>
