@@ -2,7 +2,7 @@
 
 ## 项目目标
 
-使用 Kotlin、Jetpack Compose、Compose for TV 和 Media3，将 `BiliMT` 构建为原生 Android TV 应用。
+使用 Kotlin、Jetpack Compose、Compose for TV 和 Media3，将 `BiliMT` 构建为原生 Android TV 应用。BiliMT 基于 BiliTVNative 1.0.0 继续开发。
 
 现有 Flutter 项目 `../BiliTV` 是行为参考。除非用户明确要求，否则不要修改 Flutter 项目。
 

@@ -2,7 +2,7 @@
 
 ## 目标
 
-将 BiliTV 重写为原生 Android TV 应用，技术栈使用 Kotlin 和 Jetpack Compose，同时保留当前 Flutter 项目作为行为参考和回退版本。
+将 BiliTV 重写为原生 Android TV 应用，技术栈使用 Kotlin 和 Jetpack Compose，同时保留当前 Flutter 项目作为行为参考和回退版本。BiliMT 基于 BiliTVNative 1.0.0 继续开发。
 
 这次重写的目标是改善电视遥控器操作响应、降低安装包体积和空闲内存，并保持现有播放行为兼容。
 
