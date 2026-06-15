@@ -71,9 +71,11 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         id: apk
         run: |
-          APK=$(find "$GITHUB_WORKSPACE/build" -name "*.apk" -type f | head -1)
-          echo "apk=$APK" >> "$GITHUB_OUTPUT"
-          echo "Found APK: $APK"
+          SRC=$(find "$GITHUB_WORKSPACE/build" -name "*.apk" -type f | head -1)
+          DST="$GITHUB_WORKSPACE/BiliMT-${{ github.ref_name }}.apk"
+          cp "$SRC" "$DST"
+          echo "apk=$DST" >> "$GITHUB_OUTPUT"
+          echo "Renamed $SRC -> $DST"
 
       - name: Create Release
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
