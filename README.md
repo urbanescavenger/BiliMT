@@ -1,6 +1,6 @@
 # BiliMT
 
-BiliMT 是一个面向 Android TV 的原生 B 站客户端实验项目，基于 BiliTVNative 1.0.0 开发，使用 Kotlin、Jetpack Compose、Compose for TV 和 Media3 重写电视端观看体验。
+BiliMT 是一个面向 Android TV 的原生 B 站客户端实验项目，基于 [BiliTVNative](https://github.com/Hyper-Beast/BiliTVNative) 1.0.0 开发，使用 Kotlin、Jetpack Compose、Compose for TV 和 Media3 重写电视端观看体验。
 
 项目重点不是做一个极简壳，而是在电视设备上尽量平衡几个实际问题：播放稳定性、遥控器焦点可控性、弹幕性能、主页视觉质感，以及不同硬件档位下的流畅度。
 
@@ -115,6 +115,12 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 - `DEVELOPMENT_PROGRESS.md`：阶段进度和历史决策。
 
 继续开发时建议按小步修改、编译、安装、实机验证的节奏推进，不要一次性重写大模块。播放器、弹幕、焦点路径和液态玻璃开关尤其需要同时考虑性能档位和电视端遥控器操作。
+
+## 致谢
+
+BiliMT 基于 [BiliTVNative 1.0.0](https://github.com/Hyper-Beast/BiliTVNative) 继续开发，沿用了上游项目的整体架构、TV 焦点系统、播放器集成、弹幕叠加层和大量基础能力。感谢原作者及贡献者。
+
+上游项目采用 MIT License，本项目同样以 MIT License 发布。
 
 ## 免责声明
 
