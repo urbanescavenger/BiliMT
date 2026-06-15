@@ -25,13 +25,21 @@ fun latestVersionText(state: UpdateUiState): String {
     UpdateUiState.Status.Idle -> stringResource(R.string.settings_update_latest_version_value_unchecked)
     UpdateUiState.Status.Checking -> stringResource(R.string.settings_update_checking)
     is UpdateUiState.Status.UpToDate -> stringResource(R.string.settings_update_latest_version_value_up_to_date)
-    is UpdateUiState.Status.Available, is UpdateUiState.Status.Downloading, is UpdateUiState.Status.Downloaded -> {
-      stringResource(
-        R.string.settings_update_latest_version_value_available,
-        s.info.versionName,
-        s.info.versionCode,
-      )
-    }
+    is UpdateUiState.Status.Available -> stringResource(
+      R.string.settings_update_latest_version_value_available,
+      s.info.versionName,
+      s.info.versionCode,
+    )
+    is UpdateUiState.Status.Downloading -> stringResource(
+      R.string.settings_update_latest_version_value_available,
+      s.info.versionName,
+      s.info.versionCode,
+    )
+    is UpdateUiState.Status.Downloaded -> stringResource(
+      R.string.settings_update_latest_version_value_available,
+      s.info.versionName,
+      s.info.versionCode,
+    )
     is UpdateUiState.Status.Failed -> s.message
   }
 }
@@ -50,11 +58,8 @@ fun isCheckActionEnabled(state: UpdateUiState): Boolean = when (state.status) {
 
 @Composable
 fun downloadOrInstallLabel(state: UpdateUiState): String? = when (val s = state.status) {
-  is UpdateUiState.Status.Available, is UpdateUiState.Status.Failed -> {
-    if (s is UpdateUiState.Status.Available) {
-      stringResource(R.string.settings_update_download_action)
-    } else null
-  }
+  is UpdateUiState.Status.Available -> stringResource(R.string.settings_update_download_action)
+  is UpdateUiState.Status.Failed -> null
   is UpdateUiState.Status.Downloading -> stringResource(R.string.settings_update_checking)
   is UpdateUiState.Status.Downloaded -> stringResource(R.string.settings_update_install_action)
   else -> null
@@ -74,6 +79,7 @@ fun shouldShowDownloadOrInstallRow(state: UpdateUiState): Boolean = when (state.
 }
 
 fun shouldShowReleaseNotesAction(state: UpdateUiState): Boolean = when (val s = state.status) {
-  is UpdateUiState.Status.Available, is UpdateUiState.Status.Downloaded -> s.info.releaseUrl.isNotEmpty()
+  is UpdateUiState.Status.Available -> s.info.releaseUrl.isNotEmpty()
+  is UpdateUiState.Status.Downloaded -> s.info.releaseUrl.isNotEmpty()
   else -> false
 }

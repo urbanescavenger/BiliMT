@@ -707,7 +707,7 @@ fun BiliTvApp(
                   onInstallUpdate = {
                     val file = updateManager.downloadedFile()
                     val activity = context.findActivity()
-                    if (file == null || activity == null) return@let
+                    if (file == null || activity == null) return@onInstallUpdate
                     val result = apkInstaller.startInstall(activity, file)
                     when (result) {
                       is com.kirin.mt.core.update.InstallResult.NeedsUnknownSourcesPermission -> {
