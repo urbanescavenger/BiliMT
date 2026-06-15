@@ -1,4 +1,4 @@
-# BiliTVNative 开发进度
+# BiliMT 开发进度
 
 最后更新：2026-05-10
 
@@ -21,7 +21,7 @@
 | ID | 任务 | 状态 | 验收/备注 |
 | --- | --- | --- | --- |
 | P0-01 | 确定原生重写方案：Kotlin + Jetpack Compose + Android TV | Done | 已写入 `DEVELOPMENT_PLAN.md` |
-| P0-02 | 确定包名 `com.kirin.bilitv` | Done | Gradle `applicationId` 已使用 |
+| P0-02 | 确定包名 `com.kirin.mt` | Done | Gradle `applicationId` 已使用 |
 | P0-03 | 确定首发 ABI 策略：主发 `armeabi-v7a`，保留 `arm64-v8a` 能力 | Done | `targetAbi` Gradle 参数已支持 |
 | P0-04 | 确定不做应用内更新检查 | Done | 计划中已明确 |
 | P0-05 | 确定不复刻完整插件系统，只保留内置空降助手开关 | Done | 计划中已明确 |

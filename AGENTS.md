@@ -1,8 +1,8 @@
-# BiliTVNative 开发代理规则
+# BiliMT 开发代理规则
 
 ## 项目目标
 
-使用 Kotlin、Jetpack Compose、Compose for TV 和 Media3，将 `BiliTVNative` 构建为原生 Android TV 应用。
+使用 Kotlin、Jetpack Compose、Compose for TV 和 Media3，将 `BiliMT` 构建为原生 Android TV 应用。
 
 现有 Flutter 项目 `../BiliTV` 是行为参考。除非用户明确要求，否则不要修改 Flutter 项目。
 
@@ -17,7 +17,7 @@
 
 ## 当前产品决策
 
-- Android 包名：`com.kirin.bilitv`。
+- Android 包名：`com.kirin.mt`。
 - 最低 SDK：当前 `minSdk 23`；只有在不损害 UI 质量、性能、Compose 或 Media3 的前提下，才评估 `minSdk 21`。
 - 首发 ABI：`armeabi-v7a`。
 - 保留 `arm64-v8a` 构建能力，但不要把它作为首个主发布包。
@@ -131,8 +131,8 @@
 ```powershell
 .\gradlew.bat :app:assembleDebug
 adb install -r $env:USERPROFILE\.gradle\bilitv-native-build\app\outputs\apk\debug\app-debug.apk
-adb shell dumpsys meminfo com.kirin.bilitv
-adb shell dumpsys gfxinfo com.kirin.bilitv
+adb shell dumpsys meminfo com.kirin.mt
+adb shell dumpsys gfxinfo com.kirin.mt
 ```
 
 涉及播放时，使用相同的 BVID、CID、画质、编码、请求头和弹幕时间，对比 Flutter 参考应用行为。

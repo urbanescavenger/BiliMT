@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">BiliTV Native</string>
+    <string name="app_name">BiliMT</string>
     <string name="nav_recommend">推荐</string>
     <string name="nav_search">搜索</string>
     <string name="nav_history">历史</string>
@@ -39,9 +39,9 @@
     <string name="settings_language_taiwan">&#x53F0;&#x6E7E;</string>
     <string name="settings_about_title">&#x5173;&#x4E8E;</string>
     <string name="settings_about_description">&#x67E5;&#x770B;&#x9879;&#x76EE;&#x4ECB;&#x7ECD;&#x3001;&#x9879;&#x76EE;&#x5730;&#x5740;&#x548C;&#x4E3B;&#x8981;&#x5F00;&#x6E90;&#x5E93;&#x3002;</string>
-    <string name="settings_about_project_name">BiliTVNative</string>
+    <string name="settings_about_project_name">BiliMT</string>
     <string name="settings_about_project_intro_title">&#x9879;&#x76EE;&#x7B80;&#x4ECB;</string>
-    <string name="settings_about_project_intro">BiliTVNative &#x662F;&#x4E00;&#x4E2A;&#x9762;&#x5411; Android TV &#x7684;&#x539F;&#x751F; B &#x7AD9;&#x5BA2;&#x6237;&#x7AEF;&#x5B9E;&#x9A8C;&#x9879;&#x76EE;&#xFF0C;&#x4E5F;&#x662F;&#x4E00;&#x4E2A;&#x7EAF; AI &#x9879;&#x76EE;&#xFF1B;&#x4EE3;&#x7801;&#x3001;&#x754C;&#x9762;&#x548C;&#x6587;&#x6863;&#x5747;&#x7531; OpenAI Codex &#x8FED;&#x4EE3;&#x7F16;&#x5199;&#xFF0C;&#x91CD;&#x70B9;&#x5173;&#x6CE8;&#x64AD;&#x653E;&#x7A33;&#x5B9A;&#x6027;&#x3001;&#x9065;&#x63A7;&#x5668;&#x7126;&#x70B9;&#x3001;&#x5F39;&#x5E55;&#x6027;&#x80FD;&#x548C;&#x7535;&#x89C6;&#x7AEF;&#x89C6;&#x89C9;&#x4F53;&#x9A8C;&#x3002;</string>
+    <string name="settings_about_project_intro">BiliMT &#x662F;&#x4E00;&#x4E2A;&#x9762;&#x5411; Android TV &#x7684;&#x539F;&#x751F; B &#x7AD9;&#x5BA2;&#x6237;&#x7AEF;&#x5B9E;&#x9A8C;&#x9879;&#x76EE;&#xFF0C;&#x4E5F;&#x662F;&#x4E00;&#x4E2A;&#x7EAF; AI &#x9879;&#x76EE;&#xFF1B;&#x4EE3;&#x7801;&#x3001;&#x754C;&#x9762;&#x548C;&#x6587;&#x6863;&#x5747;&#x7531; OpenAI Codex &#x8FED;&#x4EE3;&#x7F16;&#x5199;&#xFF0C;&#x91CD;&#x70B9;&#x5173;&#x6CE8;&#x64AD;&#x653E;&#x7A33;&#x5B9A;&#x6027;&#x3001;&#x9065;&#x63A7;&#x5668;&#x7126;&#x70B9;&#x3001;&#x5F39;&#x5E55;&#x6027;&#x80FD;&#x548C;&#x7535;&#x89C6;&#x7AEF;&#x89C6;&#x89C9;&#x4F53;&#x9A8C;&#x3002;</string>
     <string name="settings_about_project_url_title">&#x9879;&#x76EE;&#x5730;&#x5740;</string>
     <string name="settings_about_license_title">&#x5F00;&#x6E90;&#x534F;&#x8BAE;</string>
     <string name="settings_about_license_value">MIT License</string>
@@ -66,6 +66,13 @@
     <string name="settings_playback_codec_h264">H.264</string>
     <string name="settings_playback_codec_h265">H.265</string>
     <string name="settings_playback_codec_av1">AV1</string>
+    <string name="settings_playback_cdn_title">CDN 线路</string>
+    <string name="settings_playback_cdn_description">切换视频流的 CDN 节点。默认跟随 B 站自动分配,在晚高峰或跨网环境可手动指定更快的节点。</string>
+    <string name="cdn_option_auto">自动</string>
+    <string name="cdn_option_official">官方 (bilivideo)</string>
+    <string name="cdn_option_aliyun">阿里云</string>
+    <string name="cdn_option_akamai">Akamai</string>
+    <string name="cdn_option_hw">华为云</string>
     <string name="settings_seek_preview_sprites_title">快进预览雪碧图</string>
     <string name="settings_seek_preview_sprites_description">开启后快进快退时显示视频预览图，按确认跳转；关闭后只显示时间。</string>
     <string name="settings_air_jump_assistant_title">&#x7A7A;&#x964D;&#x52A9;&#x624B;</string>
