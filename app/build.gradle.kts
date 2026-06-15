@@ -19,8 +19,8 @@ android {
     applicationId = "com.kirin.mt"
     minSdk = 23
     targetSdk = 36
-    versionCode = 1005005
-    versionName = "1.0.5-alpha.5"
+    versionCode = 1005006
+    versionName = "1.0.5-alpha.6"
 
     ndk {
       abiFilters.clear()
