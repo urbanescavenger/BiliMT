@@ -707,25 +707,26 @@ fun BiliTvApp(
                   onInstallUpdate = {
                     val file = updateManager.downloadedFile()
                     val activity = context.findActivity()
-                    if (file == null || activity == null) return@onInstallUpdate
-                    val result = apkInstaller.startInstall(activity, file)
-                    when (result) {
-                      is com.kirin.mt.core.update.InstallResult.NeedsUnknownSourcesPermission -> {
-                        context.startActivity(apkInstaller.buildUnknownSourcesIntent())
-                        Toast.makeText(
-                          localizedContext,
-                          R.string.settings_update_install_unknown_sources_required,
-                          Toast.LENGTH_LONG,
-                        ).show()
+                    if (file != null && activity != null) {
+                      val result = apkInstaller.startInstall(activity, file)
+                      when (result) {
+                        is com.kirin.mt.core.update.InstallResult.NeedsUnknownSourcesPermission -> {
+                          context.startActivity(apkInstaller.buildUnknownSourcesIntent())
+                          Toast.makeText(
+                            localizedContext,
+                            R.string.settings_update_install_unknown_sources_required,
+                            Toast.LENGTH_LONG,
+                          ).show()
+                        }
+                        is com.kirin.mt.core.update.InstallResult.Failed -> {
+                          Toast.makeText(
+                            localizedContext,
+                            localizedContext.getString(R.string.settings_update_failed_with_message, result.message),
+                            Toast.LENGTH_SHORT,
+                          ).show()
+                        }
+                        else -> Unit
                       }
-                      is com.kirin.mt.core.update.InstallResult.Failed -> {
-                        Toast.makeText(
-                          localizedContext,
-                          localizedContext.getString(R.string.settings_update_failed_with_message, result.message),
-                          Toast.LENGTH_SHORT,
-                        ).show()
-                      }
-                      else -> Unit
                     }
                   },
                   onOpenReleaseNotes = {
