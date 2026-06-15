@@ -783,11 +783,11 @@ private fun settingsItemToLazyIndex(itemIndex: Int): Int = when (itemIndex) {
   SettingsItemHomeThemeVariant -> 14
   SettingsItemAutoConfirmOnFocus -> 15
   SettingsItemAutoRefreshOnSwitch -> 16
-  SettingsItemUpdateCheck -> 18
-  SettingsItemUpdateDownloadOrInstall -> 19
-  SettingsItemUpdateReleaseNotes -> 20
-  SettingsItemClearCache -> 22
-  SettingsItemChineseTextVariant -> 23
-  SettingsItemAbout -> 24
+  SettingsItemUpdateCheck -> 19
+  SettingsItemUpdateDownloadOrInstall -> 20
+  SettingsItemUpdateReleaseNotes -> 21
+  SettingsItemClearCache -> 21
+  SettingsItemChineseTextVariant -> 22
+  SettingsItemAbout -> 23
   else -> 0
 }
