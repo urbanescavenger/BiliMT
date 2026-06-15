@@ -121,11 +121,7 @@ fun SettingsScreen(
     focusSettingJob?.cancel()
     focusSettingJob = coroutineScope.launch {
       settingsListState.scrollItemIntoComfortableView(
-        index = if (itemIndex == SettingsItemPlaybackQuality) {
-          SettingsItemPlaybackHeader
-        } else {
-          itemIndex
-        },
+        index = settingsItemToLazyIndex(itemIndex),
         direction = direction,
         fallbackItemHeightPx = settingsRowFallbackHeightPx,
         edgeInsetPx = settingsScrollInsetPx,
@@ -718,7 +714,6 @@ private fun SettingsSectionTitle(
 private const val SettingsItemPlaybackHeader = 0
 private const val SettingsItemPlaybackQuality = 1
 private const val SettingsItemPlaybackCodec = 2
-private const val SettingsItemPlaybackCdn = 21
 private const val SettingsItemSeekPreviewSprites = 3
 private const val SettingsItemAirJumpAssistant = 4
 private const val SettingsItemConfirmPlaybackExit = 5
@@ -738,6 +733,7 @@ private const val SettingsItemAbout = 20
 private const val SettingsItemUpdateCheck = 22
 private const val SettingsItemUpdateDownloadOrInstall = 23
 private const val SettingsItemUpdateReleaseNotes = 24
+private const val SettingsItemPlaybackCdn = 21
 
 private val SettingsFocusableItems = listOf(
   SettingsItemPlaybackQuality,
@@ -767,4 +763,31 @@ private val SettingsFocusableItems = listOf(
 private enum class SettingsRightPanel {
   HomeSections,
   About,
+}
+
+private fun settingsItemToLazyIndex(itemIndex: Int): Int = when (itemIndex) {
+  SettingsItemPlaybackHeader -> 0
+  SettingsItemPlaybackQuality -> 1
+  SettingsItemPlaybackCodec -> 2
+  SettingsItemPlaybackCdn -> 3
+  SettingsItemSeekPreviewSprites -> 4
+  SettingsItemAirJumpAssistant -> 5
+  SettingsItemConfirmPlaybackExit -> 6
+  SettingsItemAutoPlayNextEpisode -> 7
+  SettingsItemAutoPlayRelatedVideo -> 8
+  SettingsItemAutoReturnHomeOnCompletion -> 9
+  SettingsItemShowClock -> 10
+  SettingsItemShowMiniProgressBar -> 11
+  SettingsItemVisualPerformanceMode -> 12
+  SettingsItemLiquidGlassCards -> 13
+  SettingsItemHomeThemeVariant -> 14
+  SettingsItemAutoConfirmOnFocus -> 15
+  SettingsItemAutoRefreshOnSwitch -> 16
+  SettingsItemUpdateCheck -> 18
+  SettingsItemUpdateDownloadOrInstall -> 19
+  SettingsItemUpdateReleaseNotes -> 20
+  SettingsItemClearCache -> 22
+  SettingsItemChineseTextVariant -> 23
+  SettingsItemAbout -> 24
+  else -> 0
 }
