@@ -87,6 +87,7 @@ jobs:
         run: |
           ./gradlew clean assembleRelease --no-daemon \
             -PbilitvBuildRoot="$GITHUB_WORKSPACE/build" \
+            -PbilitvVersionName="${{ github.ref_name }}" \
             -Pkey.store="$KEYSTORE_PATH" \
             -Pkey.alias="$KEY_ALIAS" \
             -Pkey.store.password="$STORE_PASSWORD" \

@@ -7,6 +7,32 @@ plugins {
 val supportedAbis = setOf("armeabi-v7a", "arm64-v8a")
 val targetAbi = providers.gradleProperty("targetAbi").orNull?.trim()?.takeIf { it.isNotEmpty() }
 
+/**
+ * Compute versionName / versionCode from an optional Gradle property.
+ *
+ * For release builds the CI passes the Git tag, e.g.
+ *   -PbilitvVersionName=v1.0.5-alpha.10
+ * and we derive versionCode from the semantic version.
+ *
+ * Local / debug builds use a fallback "dev" version.
+ */
+val bilitvVersionName = providers.gradleProperty("bilitvVersionName")
+  .orNull
+  ?.removePrefix("v")
+  ?: "dev"
+
+fun computeVersionCode(versionName: String): Int {
+  val semver = versionName
+    .split("-")
+    .firstOrNull()
+    ?.takeIf { it.matches(Regex("""\d+\.\d+\.\d+""")) }
+    ?: return 1000000
+  val (major, minor, patch) = semver.split(".").map { it.toIntOrNull() ?: 0 }
+  return 1000000 + major * 10000 + minor * 100 + patch
+}
+
+val bilitvVersionCode = computeVersionCode(bilitvVersionName)
+
 require(targetAbi == null || targetAbi in supportedAbis) {
   "Unsupported targetAbi=$targetAbi. Supported values: ${supportedAbis.joinToString()}"
 }
@@ -19,8 +45,8 @@ android {
     applicationId = "com.kirin.mt"
     minSdk = 23
     targetSdk = 36
-    versionCode = 1005010
-    versionName = "1.0.5-alpha.10"
+    versionCode = bilitvVersionCode
+    versionName = bilitvVersionName
 
     ndk {
       abiFilters.clear()
