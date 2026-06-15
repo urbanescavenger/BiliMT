@@ -118,10 +118,12 @@ fun SettingsScreen(
   var rightPanel by remember { mutableStateOf(SettingsRightPanel.HomeSections) }
 
   fun focusSettingItem(itemIndex: Int, direction: Int = 0): Boolean {
+    val lazyIndex = settingsItemToLazyIndex(itemIndex, updateState)
+    if (lazyIndex < 0) return true
     focusSettingJob?.cancel()
     focusSettingJob = coroutineScope.launch {
       settingsListState.scrollItemIntoComfortableView(
-        index = settingsItemToLazyIndex(itemIndex),
+        index = lazyIndex,
         direction = direction,
         fallbackItemHeightPx = settingsRowFallbackHeightPx,
         edgeInsetPx = settingsScrollInsetPx,
@@ -752,11 +754,11 @@ private val SettingsFocusableItems = listOf(
   SettingsItemHomeThemeVariant,
   SettingsItemAutoConfirmOnFocus,
   SettingsItemAutoRefreshOnSwitch,
-  SettingsItemClearCache,
-  SettingsItemChineseTextVariant,
   SettingsItemUpdateCheck,
   SettingsItemUpdateDownloadOrInstall,
   SettingsItemUpdateReleaseNotes,
+  SettingsItemClearCache,
+  SettingsItemChineseTextVariant,
   SettingsItemAbout,
 )
 
@@ -765,7 +767,10 @@ private enum class SettingsRightPanel {
   About,
 }
 
-private fun settingsItemToLazyIndex(itemIndex: Int): Int = when (itemIndex) {
+private fun settingsItemToLazyIndex(
+  itemIndex: Int,
+  updateState: UpdateUiState,
+): Int = when (itemIndex) {
   SettingsItemPlaybackHeader -> 0
   SettingsItemPlaybackQuality -> 1
   SettingsItemPlaybackCodec -> 2
@@ -778,16 +783,38 @@ private fun settingsItemToLazyIndex(itemIndex: Int): Int = when (itemIndex) {
   SettingsItemAutoReturnHomeOnCompletion -> 9
   SettingsItemShowClock -> 10
   SettingsItemShowMiniProgressBar -> 11
-  SettingsItemVisualPerformanceMode -> 12
-  SettingsItemLiquidGlassCards -> 13
-  SettingsItemHomeThemeVariant -> 14
-  SettingsItemAutoConfirmOnFocus -> 15
-  SettingsItemAutoRefreshOnSwitch -> 16
+  // 12 = "ui-header" section title in LazyColumn
+  SettingsItemVisualPerformanceMode -> 13
+  SettingsItemLiquidGlassCards -> 14
+  SettingsItemHomeThemeVariant -> 15
+  SettingsItemAutoConfirmOnFocus -> 16
+  SettingsItemAutoRefreshOnSwitch -> 17
+  // 18 = "update-header" section title in LazyColumn
   SettingsItemUpdateCheck -> 19
-  SettingsItemUpdateDownloadOrInstall -> 20
-  SettingsItemUpdateReleaseNotes -> 21
-  SettingsItemClearCache -> 21
-  SettingsItemChineseTextVariant -> 22
-  SettingsItemAbout -> 23
+  SettingsItemUpdateDownloadOrInstall -> if (shouldShowDownloadOrInstallRow(updateState)) 20 else -1
+  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) {
+    if (shouldShowDownloadOrInstallRow(updateState)) 21 else 20
+  } else {
+    -1
+  }
+  SettingsItemClearCache -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    20 + updateExtraCount
+  }
+  SettingsItemChineseTextVariant -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    21 + updateExtraCount
+  }
+  SettingsItemAbout -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    22 + updateExtraCount
+  }
   else -> 0
+}
+
+private fun updateExtraItemCount(updateState: UpdateUiState): Int {
+  var count = 0
+  if (shouldShowDownloadOrInstallRow(updateState)) count++
+  if (shouldShowReleaseNotesAction(updateState)) count++
+  return count
 }
