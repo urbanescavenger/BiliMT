@@ -37,6 +37,7 @@ import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppVisualPerformanceMode
 import com.kirin.mt.core.settings.HomeThemeVariant
+import com.kirin.mt.core.update.UpdateUiState
 import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
@@ -71,6 +72,11 @@ fun SettingsScreen(
   onAutoConfirmOnFocusChange: (Boolean) -> Unit,
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onHomeSectionEnabledChange: (HomeSection, Boolean) -> Unit,
+  updateState: UpdateUiState,
+  onCheckUpdate: () -> Unit,
+  onDownloadUpdate: () -> Unit,
+  onInstallUpdate: () -> Unit,
+  onOpenReleaseNotes: () -> Unit,
 ) {
   val settingsListState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
@@ -101,6 +107,9 @@ fun SettingsScreen(
       SettingsItemVisualPerformanceMode to FocusRequester(),
       SettingsItemLiquidGlassCards to FocusRequester(),
       SettingsItemHomeThemeVariant to FocusRequester(),
+      SettingsItemUpdateCheck to FocusRequester(),
+      SettingsItemUpdateDownloadOrInstall to FocusRequester(),
+      SettingsItemUpdateReleaseNotes to FocusRequester(),
       SettingsItemAbout to FocusRequester(),
     )
   }
@@ -186,6 +195,11 @@ fun SettingsScreen(
         onAboutSelected = {
           rightPanel = SettingsRightPanel.About
         },
+        updateState = updateState,
+        onCheckUpdate = onCheckUpdate,
+        onDownloadUpdate = onDownloadUpdate,
+        onInstallUpdate = onInstallUpdate,
+        onOpenReleaseNotes = onOpenReleaseNotes,
         modifier = Modifier.weight(1f),
       )
       when (rightPanel) {
@@ -234,6 +248,11 @@ private fun SettingsBehaviorColumn(
   onAutoConfirmOnFocusChange: (Boolean) -> Unit,
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onAboutSelected: () -> Unit,
+  updateState: UpdateUiState,
+  onCheckUpdate: () -> Unit,
+  onDownloadUpdate: () -> Unit,
+  onInstallUpdate: () -> Unit,
+  onOpenReleaseNotes: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   CompositionLocalProvider(LocalBringIntoViewSpec provides SettingsBringIntoViewSpec) {
@@ -547,6 +566,77 @@ private fun SettingsBehaviorColumn(
         onCheckedChange = onAutoRefreshOnSwitchChange,
       )
     }
+    item(key = "update-header") {
+      SettingsSectionTitle(
+        text = stringResource(R.string.settings_update_section),
+        modifier = Modifier.padding(top = BiliSpacing.Lg),
+      )
+    }
+    item(key = "update-current-version") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_update_current_version_title),
+        description = stringResource(R.string.settings_update_section_description),
+        value = currentVersionText(updateState),
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemUpdateCheck))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemUpdateCheck,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemUpdateCheck) },
+        onClick = onCheckUpdate,
+      )
+    }
+    if (shouldShowDownloadOrInstallRow(updateState)) {
+      item(key = "update-download-or-install") {
+        SettingsActionRow(
+          title = when (updateState.status) {
+            is UpdateUiState.Status.Downloaded -> stringResource(R.string.settings_update_install_action)
+            else -> stringResource(R.string.settings_update_download_action)
+          },
+          description = when (updateState.status) {
+            is UpdateUiState.Status.Downloaded -> stringResource(R.string.settings_update_status_downloaded)
+            is UpdateUiState.Status.Downloading -> stringResource(R.string.settings_update_checking)
+            else -> stringResource(R.string.settings_update_latest_version_value_available)
+          },
+          value = latestVersionText(updateState),
+          modifier = Modifier
+            .focusRequester(focusRequesters.getValue(SettingsItemUpdateDownloadOrInstall))
+            .settingsBoundaryKeys(
+              itemIndex = SettingsItemUpdateDownloadOrInstall,
+              onMoveSettingFocus = onMoveSettingFocus,
+              onMoveLeftToNav = onMoveLeftToNav,
+            ),
+          onFocused = { onSettingFocused(SettingsItemUpdateDownloadOrInstall) },
+          onClick = {
+            if (updateState.status is UpdateUiState.Status.Downloaded) {
+              onInstallUpdate()
+            } else {
+              onDownloadUpdate()
+            }
+          },
+        )
+      }
+    }
+    if (shouldShowReleaseNotesAction(updateState)) {
+      item(key = "update-release-notes") {
+        SettingsActionRow(
+          title = stringResource(R.string.settings_update_release_notes_action),
+          description = stringResource(R.string.settings_update_release_notes_action_description),
+          value = "",
+          modifier = Modifier
+            .focusRequester(focusRequesters.getValue(SettingsItemUpdateReleaseNotes))
+            .settingsBoundaryKeys(
+              itemIndex = SettingsItemUpdateReleaseNotes,
+              onMoveSettingFocus = onMoveSettingFocus,
+              onMoveLeftToNav = onMoveLeftToNav,
+            ),
+          onFocused = { onSettingFocused(SettingsItemUpdateReleaseNotes) },
+          onClick = onOpenReleaseNotes,
+        )
+      }
+    }
     item(key = "system-header") {
       SettingsSectionTitle(
         text = stringResource(R.string.settings_performance_section),
@@ -645,6 +735,9 @@ private const val SettingsItemAutoRefreshOnSwitch = 16
 private const val SettingsItemClearCache = 18
 private const val SettingsItemChineseTextVariant = 19
 private const val SettingsItemAbout = 20
+private const val SettingsItemUpdateCheck = 22
+private const val SettingsItemUpdateDownloadOrInstall = 23
+private const val SettingsItemUpdateReleaseNotes = 24
 
 private val SettingsFocusableItems = listOf(
   SettingsItemPlaybackQuality,
@@ -665,6 +758,9 @@ private val SettingsFocusableItems = listOf(
   SettingsItemAutoRefreshOnSwitch,
   SettingsItemClearCache,
   SettingsItemChineseTextVariant,
+  SettingsItemUpdateCheck,
+  SettingsItemUpdateDownloadOrInstall,
+  SettingsItemUpdateReleaseNotes,
   SettingsItemAbout,
 )
 

@@ -21,9 +21,11 @@ class MainActivity : ComponentActivity() {
             authRepository = appContainer.authRepository,
             appSettingsStore = appContainer.appSettingsStore,
             appCacheManager = appContainer.appCacheManager,
-          searchHistoryStore = appContainer.searchHistoryStore,
-          sessionStore = appContainer.sessionStore,
-        )
+            searchHistoryStore = appContainer.searchHistoryStore,
+            sessionStore = appContainer.sessionStore,
+            updateManager = appContainer.updateManager,
+            apkInstaller = appContainer.apkInstaller,
+          )
       }
     }
   }
