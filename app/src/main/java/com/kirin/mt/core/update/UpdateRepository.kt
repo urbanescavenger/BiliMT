@@ -74,10 +74,23 @@ class UpdateRepository(
     val match = VERSION_REGEX.matchEntire(cleaned) ?: return cleaned to 0L
     val (major, minor, patch) = match.destructured
     val name = "$major.$minor.$patch"
-    val code = major.toLongOrNull()?.coerceAtLeast(0L)?.times(10_000L) ?: 0L
-    val code2 = code + (minor.toLongOrNull()?.coerceAtLeast(0L) ?: 0L).times(100L)
-    val code3 = code2 + (patch.toLongOrNull()?.coerceAtLeast(0L) ?: 0L)
-    return name to code3
+    val m = major.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+    val n = minor.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+    val p = patch.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+    val base = m.times(1_000_000L) + n.times(10_000L) + p.times(100L)
+    val pre = SEMVER_PRE_REGEX.find(cleaned)?.let { result ->
+      val label = result.groupValues[1]
+      val index = result.groupValues[2].toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+      labelToOrder(label) * 100L + index
+    } ?: 0L
+    return name to (base + pre)
+  }
+
+  private fun labelToOrder(label: String): Long = when (label.lowercase()) {
+    "alpha" -> 1L
+    "beta" -> 2L
+    "rc" -> 3L
+    else -> 99L
   }
 
   private fun JsonObject.stringOrNull(key: String): String? =
@@ -86,5 +99,6 @@ class UpdateRepository(
   private companion object {
     private const val APK_CONTENT_TYPE = "application/vnd.android.package-archive"
     private val VERSION_REGEX = Regex("""(\d+)\.(\d+)\.(\d+)""")
+    private val SEMVER_PRE_REGEX = Regex("""-([a-zA-Z]+)\.(\d+)""")
   }
 }
