@@ -38,6 +38,7 @@ BiliMT 是一个面向 Android TV 的原生 B 站客户端实验项目，基于 
 - 播放退出二次确认、应用退出二次确认。
 - 简体中文、香港繁体、台湾繁体界面和动态标题转换。
 - Android TV launcher 图标和 TV 横幅。
+- 应用内更新：从 GitHub Releases 手动检查、下载并安装新版 APK。
 
 ## UI 与视觉
 
@@ -106,6 +107,15 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 | ZXing | 二维码生成 | https://github.com/zxing/zxing |
 
 第三方库遵循其各自许可证。
+
+## 版本更新
+
+### v1.0.7
+- 新增应用内更新：设置页可手动检查 GitHub Releases、下载 APK、安装并重启。
+- 修复 prerelease tag 的版本解析，稳定版与 alpha 版均可正确判断新旧。
+- 改进应用内更新 UI：当前版本与检查操作分开显示，下载时展示实时进度。
+- CI 改为按 ABI 分别构建 release APK；发布稳定版时自动清理旧 prerelease，并只保留最近 10 次 workflow run。
+- 关于页面项目地址与简介切换到当前 `urbanescavenger/BiliMT` 仓库。
 
 ## 开发说明
 
