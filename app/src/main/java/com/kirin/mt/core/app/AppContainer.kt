@@ -42,6 +42,7 @@ class AppContainer(context: Context) {
   val httpClientFactory: BiliHttpClientFactory = BiliHttpClientFactory()
   val codecCapabilityProbe: CodecCapabilityProbe = CodecCapabilityProbe()
   val playbackHttpClient = httpClientFactory.createPlaybackClient()
+  val downloadHttpClient = httpClientFactory.createDownloadClient()
   val cdnSpeedTester: CdnSpeedTester = CdnSpeedTester(playbackHttpClient)
   val cdnSelector: CdnSelector = CdnSelector(cdnSpeedTester)
   val apiClient: BiliApiClient = BiliApiClient(
@@ -80,7 +81,7 @@ class AppContainer(context: Context) {
     repoOwner = "urbanescavenger",
     repoName = "BiliMT",
   )
-  val updateDownloader: UpdateDownloader = UpdateDownloader(appContext, apiClient)
+  val updateDownloader: UpdateDownloader = UpdateDownloader(appContext, downloadHttpClient)
   val apkInstaller: ApkInstaller = ApkInstaller(appContext)
   val updateManager: UpdateManager = UpdateManager(
     appInfo = appInfo,

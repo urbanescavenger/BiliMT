@@ -256,6 +256,7 @@
     <string name="settings_update_no_release_url">目前裝置 ABI 沒有匹配的發布資源。</string>
     <string name="settings_update_no_matching_asset">本次發布未包含適配目前裝置 ABI 嘅 APK。</string>
     <string name="settings_update_failed_with_message">更新檢查失敗。%1$s</string>
+    <string name="settings_update_download_failed_with_message">下載更新失敗。%1$s</string>
     <string name="settings_update_install_unknown_sources_required">請先喺系統設定允許安裝未知來源應用。</string>
     <string name="settings_update_status_downloaded">下載完成，可以安裝。</string>
 </resources>

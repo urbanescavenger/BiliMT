@@ -703,7 +703,15 @@ fun BiliTvApp(
                   },
                   onDownloadUpdate = {
                     coroutineScope.launch {
-                      updateManager.download()
+                      try {
+                        updateManager.download()
+                      } catch (e: Exception) {
+                        Toast.makeText(
+                          localizedContext,
+                          localizedContext.getString(R.string.settings_update_download_failed_with_message, e.message ?: e.javaClass.simpleName),
+                          Toast.LENGTH_LONG,
+                        ).show()
+                      }
                     }
                   },
                   onInstallUpdate = {

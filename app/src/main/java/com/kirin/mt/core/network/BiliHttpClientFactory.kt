@@ -39,6 +39,14 @@ class BiliHttpClientFactory {
       .build()
   }
 
+  fun createDownloadClient(): OkHttpClient {
+    return OkHttpClient.Builder()
+      .connectTimeout(DownloadConnectTimeoutSeconds, TimeUnit.SECONDS)
+      .readTimeout(DownloadReadTimeoutSeconds, TimeUnit.SECONDS)
+      .writeTimeout(DownloadWriteTimeoutSeconds, TimeUnit.SECONDS)
+      .build()
+  }
+
   private fun baseBuilder(): OkHttpClient.Builder {
     return OkHttpClient.Builder()
       .connectTimeout(NetworkTimeoutSeconds, TimeUnit.SECONDS)
@@ -48,5 +56,8 @@ class BiliHttpClientFactory {
 
   private companion object {
     const val NetworkTimeoutSeconds = 15L
+    const val DownloadConnectTimeoutSeconds = 30L
+    const val DownloadReadTimeoutSeconds = 300L
+    const val DownloadWriteTimeoutSeconds = 60L
   }
 }

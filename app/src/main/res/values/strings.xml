@@ -256,6 +256,7 @@
     <string name="settings_update_no_release_url">&#x5F53;&#x524D;&#x8BBE;&#x5907; ABI &#x6CA1;&#x6709;&#x5339;&#x914D;&#x7684;&#x53D1;&#x5E03;&#x8D44;&#x6E90;&#x3002;</string>
     <string name="settings_update_no_matching_asset">&#x672C;&#x6B21;&#x53D1;&#x5E03;&#x672A;&#x5305;&#x542B;&#x9002;&#x914D;&#x5F53;&#x524D;&#x8BBE;&#x5907; ABI &#x7684; APK&#x3002;</string>
     <string name="settings_update_failed_with_message">&#x66F4;&#x65B0;&#x68C0;&#x67E5;&#x5931;&#x8D25;&#x3002;%1$s</string>
+    <string name="settings_update_download_failed_with_message">&#x4E0B;&#x8F7D;&#x66F4;&#x65B0;&#x5931;&#x8D25;&#x3002;%1$s</string>
     <string name="settings_update_install_unknown_sources_required">&#x8BF7;&#x5148;&#x5728;&#x7CFB;&#x7EDF;&#x8BBE;&#x7F6E;&#x4E2D;&#x5141;&#x8BB8;&#x5B89;&#x88C5;&#x672A;&#x77E5;&#x6765;&#x6E90;&#x5E94;&#x7528;&#x3002;</string>
     <string name="settings_update_status_downloaded">&#x4E0B;&#x8F7D;&#x5B8C;&#x6210;&#xFF0C;&#x53EF;&#x70B9;&#x51FB;&#x5B89;&#x88C5;&#x3002;</string>
 </resources>
