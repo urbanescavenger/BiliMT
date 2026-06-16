@@ -77,7 +77,7 @@ class UpdateRepository(
     val m = major.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
     val n = minor.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
     val p = patch.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
-    val base = m.times(1_000_000L) + n.times(10_000L) + p.times(100L)
+    val base = m.times(1_000_000L) + n.times(10_000L) + p.times(1_000L)
     val pre = SEMVER_PRE_REGEX.find(cleaned)?.let { result ->
       val label = result.groupValues[1]
       val index = result.groupValues[2].toLongOrNull()?.coerceAtLeast(0L) ?: 0L

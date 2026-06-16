@@ -22,18 +22,21 @@ val bilitvVersionName = providers.gradleProperty("bilitvVersionName")
   ?: "dev"
 
 fun computeVersionCode(versionName: String): Int {
-  val parts = versionName.split("-")
-  val semver = parts
-    .firstOrNull()
-    ?.takeIf { it.matches(Regex("""\d+\.\d+\.\d+""")) }
+  val match = Regex("""(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z]+)\.(\d+))?""")
+    .matchEntire(versionName.removePrefix("v").removePrefix("V"))
     ?: return 1000000
-  val (major, minor, patch) = semver.split(".").map { it.toIntOrNull() ?: 0 }
-  val alpha = parts
-    .getOrNull(1)
-    ?.removePrefix("alpha.")
-    ?.toIntOrNull()
-    ?: 0
-  return major * 1000000 + minor * 10000 + patch * 1000 + alpha
+  val (major, minor, patch, label, index) = match.destructured
+  val m = major.toIntOrNull() ?: 0
+  val n = minor.toIntOrNull() ?: 0
+  val p = patch.toIntOrNull() ?: 0
+  val labelOrder = when (label?.lowercase()) {
+    "alpha" -> 1
+    "beta" -> 2
+    "rc" -> 3
+    else -> 0
+  }
+  val pre = index.toIntOrNull() ?: 0
+  return m * 1000000 + n * 10000 + p * 1000 + labelOrder * 100 + pre
 }
 
 val bilitvVersionCode = computeVersionCode(bilitvVersionName)
