@@ -2,8 +2,6 @@ package com.kirin.mt.core.player
 
 import android.util.Log
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import kotlin.collections.component1
-import kotlin.collections.component2
 
 /**
  * Selects the best CDN URL for a playback track.
@@ -13,7 +11,7 @@ import kotlin.collections.component2
  *   backupUrls) and return the fastest successful one. Results are cached in
  *   memory for [CacheTtlMs] to avoid repeated probes.
  */
-internal class CdnSelector(
+class CdnSelector(
   private val speedTester: CdnSpeedTester,
 ) {
 

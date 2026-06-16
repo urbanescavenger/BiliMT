@@ -13,7 +13,7 @@ import kotlin.system.measureTimeMillis
  * Each candidate is requested with `Range: bytes=0-65535` so we only download
  * up to 64 KiB. The fastest successful candidate is returned first.
  */
-internal class CdnSpeedTester(
+class CdnSpeedTester(
   private val client: OkHttpClient,
 ) {
 
