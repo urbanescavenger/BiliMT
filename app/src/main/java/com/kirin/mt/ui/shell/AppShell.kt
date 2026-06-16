@@ -46,6 +46,7 @@ import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.cache.AppCacheManager
 import com.kirin.mt.core.i18n.ChineseTextConverters
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.CodecCapabilityProbe
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
@@ -129,6 +130,7 @@ fun BiliTvApp(
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
   codecCapabilityProbe: CodecCapabilityProbe,
+  cdnSelector: CdnSelector,
   authRepository: AuthRepository,
   appSettingsStore: AppSettingsStore,
   appCacheManager: AppCacheManager,
@@ -761,6 +763,7 @@ fun BiliTvApp(
             playbackRepository = playbackRepository,
             danmakuSettingsStore = danmakuSettingsStore,
             playbackHttpClient = playbackHttpClient,
+            cdnSelector = cdnSelector,
             playbackCodecPreference = effectivePlaybackCodecPreference,
             playbackQualityPreference = settings.playbackQualityPreference,
             playbackCdnPreference = settings.playbackCdnPreference,

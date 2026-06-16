@@ -40,6 +40,8 @@ class AppContainer(context: Context) {
   val httpClientFactory: BiliHttpClientFactory = BiliHttpClientFactory()
   val codecCapabilityProbe: CodecCapabilityProbe = CodecCapabilityProbe()
   val playbackHttpClient = httpClientFactory.createPlaybackClient()
+  val cdnSpeedTester: CdnSpeedTester = CdnSpeedTester(playbackHttpClient)
+  val cdnSelector: CdnSelector = CdnSelector(cdnSpeedTester)
   val apiClient: BiliApiClient = BiliApiClient(
     client = httpClientFactory.createApiClient(),
     json = json,
