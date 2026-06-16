@@ -352,7 +352,7 @@ private data class SettingsAboutLibrary(
   val url: String,
 )
 
-private const val SettingsAboutProjectUrl = "https://github.com/Hyper-Beast/BiliTVNative"
+private const val SettingsAboutProjectUrl = "https://github.com/urbanescavenger/BiliMT"
 private const val SettingsAboutQrSizePx = 320
 private const val SettingsAboutLibraryColumnCount = 2
 
