@@ -16,7 +16,15 @@
       "Bash(git mv *)",
       "Bash(xargs -0 sed -i 's|com\\\\.kirin\\\\.bilitv|com.kirin.mt|g')",
       "Bash(git checkout *)",
-      "Bash(git remote *)"
+      "Bash(git remote *)",
+      "Bash(git rev-list *)",
+      "Bash(gh --version)",
+      "Bash(gh auth *)",
+      "Bash(curl -sS -o /dev/null -w \"%{http_code}\\\\n\" https://api.github.com/repos/urbanescavenger/BiliMT)",
+      "Bash(git fetch *)",
+      "Bash(git reset *)",
+      "Bash(git stash *)",
+      "Bash(git merge *)"
     ]
   }
 }

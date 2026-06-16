@@ -67,6 +67,7 @@ import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.CdnRewriter
+import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.DanmakuEntry
 import com.kirin.mt.core.player.DanmakuSettings
 import com.kirin.mt.core.player.DanmakuSettingsStore
@@ -106,6 +107,7 @@ fun PlayerScreen(
   playbackRepository: PlaybackRepository,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
+  cdnSelector: CdnSelector,
   playbackCodecPreference: PlaybackCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
   playbackCdnPreference: PlaybackCdnPreference,
@@ -1006,6 +1008,18 @@ fun PlayerScreen(
       } else {
         selectedQuality = info.selectedQuality
         currentCodecText = info.videoTracks.firstOrNull()?.codecLabel().orEmpty()
+        val effectiveInfo = if (playbackCdnPreference == PlaybackCdnPreference.Auto) {
+          info.copy(
+            videoTracks = info.videoTracks.map { track ->
+              track.copy(baseUrl = cdnSelector.select(track, playbackCdnPreference))
+            },
+            audioTracks = info.audioTracks.map { track ->
+              track.copy(baseUrl = cdnSelector.select(track, playbackCdnPreference))
+            },
+          )
+        } else {
+          info
+        }
         val requestedStartPositionMs = if (resolvedRequest.preferredQualityId != null || resolvedRequest.forceStartPosition) {
           resolvedRequest.startPositionMs
         } else {
@@ -1018,10 +1032,10 @@ fun PlayerScreen(
             context,
             BiliMediaDataSourceFactory(
               client = playbackHttpClient,
-              headers = info.headers,
+              headers = effectiveInfo.headers,
             ).create(),
           ),
-        ).createMediaSource(buildDashMediaItem(info, playbackCdnPreference))
+        ).createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
         player.setMediaSource(mediaSource)
         player.prepare()
         player.setPlaybackSpeed(playbackSpeed)

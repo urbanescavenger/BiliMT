@@ -1,11 +1,11 @@
 # BiliMT 开发进度
 
-最后更新：2026-05-10
+最后更新：2026-06-15
 
 ## 更新规则
 
 - 每完成一个可验证任务，都要更新本文件。
-- 状态只使用：`Done`、`In Progress`、`Pending`、`Blocked`。
+- 状态只使用：`Done`、`In Progress`、`Pending`、`Blocked`、`Superseded`。
 - 新任务必须插入到合理阶段，不要只追加到末尾。
 - 完成任务时补充验收结果，例如编译、安装、接口验证或用户确认。
 - UI/UX 交互体验由用户手动测试，开发侧只负责编译、安装和必要的日志验证。
@@ -23,7 +23,7 @@
 | P0-01 | 确定原生重写方案：Kotlin + Jetpack Compose + Android TV | Done | 已写入 `DEVELOPMENT_PLAN.md` |
 | P0-02 | 确定包名 `com.kirin.mt` | Done | Gradle `applicationId` 已使用 |
 | P0-03 | 确定首发 ABI 策略：主发 `armeabi-v7a`，保留 `arm64-v8a` 能力 | Done | `targetAbi` Gradle 参数已支持 |
-| P0-04 | 确定不做应用内更新检查 | Done | 计划中已明确 |
+| P0-04 | 确定不做应用内更新检查 | Superseded | 由 P10-01 推翻；2026-06-15 决定改为仅手动 GitHub Releases 检查 |
 | P0-05 | 确定不复刻完整插件系统，只保留内置空降助手开关 | Done | 计划中已明确 |
 | P0-06 | 建立 `AGENTS.md` 开发约束 | Done | 包含 tokens、焦点、播放器、图片、低配置模式等规则 |
 | P0-07 | 建立进度跟踪文件 | Done | 本文件 |
@@ -246,3 +246,10 @@
 | P9-02 | 播放器页面逻辑拆分 | Done | 将播放器侧栏视频加载、UP 主缓存和恢复重试拆到 `PlayerSidePanelLoader`；将播放完成后的下一集/相关视频选择规则拆到 `PlayerCompletionPlanner`；将快进预览雪碧图时间对齐、预加载 URL、解码和缓存裁剪拆到 `PlayerVideoshotPreview`；保留 ExoPlayer 生命周期、D-pad 主循环和弹幕/Surface 叠层不动；`assembleDebug` 通过 |
 | P9-03 | 视频数据仓库按业务域拆分 | Done | `VideoRepository` 保留对外门面和关注/取消关注，首页/热门/分区/相关推荐拆到 `HomeVideoRepository`，搜索和搜索建议拆到 `SearchVideoRepository`，UP 空间投稿/WBI/buvid/412 恢复策略拆到 `SpaceVideoRepository`，动态和历史拆到 `UserFeedRepository`，JSON 到 `VideoSummary` 的映射集中到 `VideoSummaryMappers`；`assembleDebug` 通过 |
 | P9-04 | 设置页和应用壳 UI 拆分 | Done | 设置页右侧主页栏目/About 面板拆到 `SettingsRightPanels`，设置行和显示文案拆到 `SettingsRows`，设置焦点入口/方向键边界/滚动辅助拆到 `SettingsFocus`；应用左侧导航栏、账号头像和导航按钮拆到 `AppSidebar`；`SettingsScreen` 降到约 646 行，`AppShell` 保留应用级状态、页面切换、播放入口和播放器叠层；`assembleDebug` 通过 |
+
+## P10 应用内更新
+
+| ID | 任务 | 状态 | 验收/备注 |
+| --- | --- | --- | --- |
+| P10-01 | 接入程序更新（仅手动） | Done | 推翻 P0-04；新增 `core/update/` 包（`AppInfo`、`UpdateInfo`、`UpdateRepository`、`UpdateDownloader`、`ApkInstaller`、`UpdateManager`、`UpdateUiState`），设置页 → 系统设置 → 程序更新提供"当前/最新版本展示、检查更新、下载/安装、查看发布说明"四项；`AndroidManifest.xml` 加 `REQUEST_INSTALL_PACKAGES` + `FileProvider` 节点，`res/xml/file_paths.xml` 新建；版本对比走 `tag` → `versionCode`（major×10000+minor×100+patch），按 `Build.SUPPORTED_ABIS` 选 asset；APK 下载到 `cacheDir/updates/`，安装走 `ACTION_VIEW + FileProvider`；不接入自动/后台检查；`assembleDebug` 通过 |
+| P10-02 | 修复 CDN 焦点跳到 LazyList 末尾的 bug | Done | `SettingsItemPlaybackCdn = 21` 与 LazyList 真实索引 3 不匹配，`scrollItemIntoComfortableView(index = 21)` 被 clamp 到 `totalItems - 1`，导致按一次下方向键焦点跳到"关于"。新增 `settingsItemToLazyIndex()` 映射函数统一 `SettingsItem*` → LazyList index。已知 follow-up：当 `update-download-or-install` / `update-release-notes` 条件性 item 渲染/隐藏时，ClearCache/ChineseTextVariant/About 的真实索引会变 1-2；当前仅在"无可用更新"状态下做了对齐。`assembleDebug` 通过 |

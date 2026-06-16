@@ -7,6 +7,40 @@ plugins {
 val supportedAbis = setOf("armeabi-v7a", "arm64-v8a")
 val targetAbi = providers.gradleProperty("targetAbi").orNull?.trim()?.takeIf { it.isNotEmpty() }
 
+/**
+ * Compute versionName / versionCode from an optional Gradle property.
+ *
+ * For release builds the CI passes the Git tag, e.g.
+ *   -PbilitvVersionName=v1.0.5-alpha.11
+ * and we derive versionName / versionCode from the semantic version.
+ *
+ * Local / debug builds use a fallback "dev" version.
+ */
+val bilitvVersionName = providers.gradleProperty("bilitvVersionName")
+  .orNull
+  ?.removePrefix("v")
+  ?: "dev"
+
+fun computeVersionCode(versionName: String): Int {
+  val match = Regex("""(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z]+)\.(\d+))?""")
+    .matchEntire(versionName.removePrefix("v").removePrefix("V"))
+    ?: return 1000000
+  val (major, minor, patch, label, index) = match.destructured
+  val m = major.toIntOrNull() ?: 0
+  val n = minor.toIntOrNull() ?: 0
+  val p = patch.toIntOrNull() ?: 0
+  val labelOrder = when (label?.lowercase()) {
+    "alpha" -> 1
+    "beta" -> 2
+    "rc" -> 3
+    else -> 0
+  }
+  val pre = index.toIntOrNull() ?: 0
+  return m * 1000000 + n * 10000 + p * 1000 + labelOrder * 100 + pre
+}
+
+val bilitvVersionCode = computeVersionCode(bilitvVersionName)
+
 require(targetAbi == null || targetAbi in supportedAbis) {
   "Unsupported targetAbi=$targetAbi. Supported values: ${supportedAbis.joinToString()}"
 }
@@ -19,8 +53,8 @@ android {
     applicationId = "com.kirin.mt"
     minSdk = 23
     targetSdk = 36
-    versionCode = 100
-    versionName = "1.0.0"
+    versionCode = bilitvVersionCode
+    versionName = bilitvVersionName
 
     ndk {
       abiFilters.clear()
@@ -35,7 +69,16 @@ android {
       isShrinkResources = false
     }
     release {
-      signingConfig = signingConfigs.getByName("debug")
+      signingConfig = if (project.hasProperty("key.store")) {
+        signingConfigs.create("release") {
+          storeFile = file(project.property("key.store") as String)
+          storePassword = project.property("key.store.password") as String
+          keyAlias = project.property("key.alias") as String
+          keyPassword = project.property("key.key.password") as String
+        }
+      } else {
+        signingConfigs.getByName("debug")
+      }
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(

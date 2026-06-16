@@ -46,6 +46,7 @@ import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.cache.AppCacheManager
 import com.kirin.mt.core.i18n.ChineseTextConverters
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.CodecCapabilityProbe
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
@@ -62,6 +63,8 @@ import com.kirin.mt.core.settings.supportsLiquidGlassCards
 import com.kirin.mt.core.storage.SearchHistoryStore
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.storage.UserSession
+import com.kirin.mt.core.update.ApkInstaller
+import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.ui.feed.DynamicFeedScreen
 import com.kirin.mt.ui.feed.DynamicFeedUiState
 import com.kirin.mt.ui.feed.HistoryFeedScreen
@@ -127,13 +130,17 @@ fun BiliTvApp(
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
   codecCapabilityProbe: CodecCapabilityProbe,
+  cdnSelector: CdnSelector,
   authRepository: AuthRepository,
   appSettingsStore: AppSettingsStore,
   appCacheManager: AppCacheManager,
   searchHistoryStore: SearchHistoryStore,
   sessionStore: SessionStore,
+  updateManager: UpdateManager,
+  apkInstaller: ApkInstaller,
 ) {
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
+  val updateState by updateManager.state.collectAsState()
   val context = LocalContext.current
   val localizedContext = remember(context, settings.chineseTextVariant) {
     context.localizedContext(settings.chineseTextVariant)
@@ -688,6 +695,54 @@ fun BiliTvApp(
                       appSettingsStore.setHomeSectionEnabled(section, enabled)
                     }
                   },
+                  updateState = updateState,
+                  onCheckUpdate = {
+                    coroutineScope.launch {
+                      updateManager.refresh()
+                    }
+                  },
+                  onDownloadUpdate = {
+                    coroutineScope.launch {
+                      updateManager.download()
+                    }
+                  },
+                  onInstallUpdate = {
+                    val file = updateManager.downloadedFile()
+                    val activity = context.findActivity()
+                    if (file != null && activity != null) {
+                      val result = apkInstaller.startInstall(activity, file)
+                      when (result) {
+                        is com.kirin.mt.core.update.InstallResult.NeedsUnknownSourcesPermission -> {
+                          context.startActivity(apkInstaller.buildUnknownSourcesIntent())
+                          Toast.makeText(
+                            localizedContext,
+                            R.string.settings_update_install_unknown_sources_required,
+                            Toast.LENGTH_LONG,
+                          ).show()
+                        }
+                        is com.kirin.mt.core.update.InstallResult.Failed -> {
+                          Toast.makeText(
+                            localizedContext,
+                            localizedContext.getString(R.string.settings_update_failed_with_message, result.message),
+                            Toast.LENGTH_SHORT,
+                          ).show()
+                        }
+                        else -> Unit
+                      }
+                    }
+                  },
+                  onOpenReleaseNotes = {
+                    val url = (updateState.status as? com.kirin.mt.core.update.UpdateUiState.Status.Available)?.info?.releaseUrl
+                      ?: (updateState.status as? com.kirin.mt.core.update.UpdateUiState.Status.Downloaded)?.info?.releaseUrl
+                    if (!url.isNullOrEmpty()) {
+                      runCatching {
+                        context.startActivity(
+                          android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                      }
+                    }
+                  },
                 )
               }
             }
@@ -708,6 +763,7 @@ fun BiliTvApp(
             playbackRepository = playbackRepository,
             danmakuSettingsStore = danmakuSettingsStore,
             playbackHttpClient = playbackHttpClient,
+            cdnSelector = cdnSelector,
             playbackCodecPreference = effectivePlaybackCodecPreference,
             playbackQualityPreference = settings.playbackQualityPreference,
             playbackCdnPreference = settings.playbackCdnPreference,

@@ -237,4 +237,24 @@
     <string name="player_speed_125">1.25 倍</string>
     <string name="player_speed_150">1.5 倍</string>
     <string name="player_speed_200">2.0 倍</string>
+    <string name="settings_update_section">程式更新</string>
+    <string name="settings_update_section_description">透過 GitHub Releases 偵測新版本並下載安裝。</string>
+    <string name="settings_update_current_version_title">目前版本</string>
+    <string name="settings_update_current_version_value">%1$s (versionCode %2$d)</string>
+    <string name="settings_update_latest_version_title">最新版本</string>
+    <string name="settings_update_latest_version_value_unchecked">尚未檢查</string>
+    <string name="settings_update_latest_version_value_up_to_date">已經是最新版本</string>
+    <string name="settings_update_latest_version_value_available">%1$s (versionCode %2$d)</string>
+    <string name="settings_update_check_action">檢查更新</string>
+    <string name="settings_update_check_action_description">手動向 GitHub Releases 發起一次最新版本檢查。</string>
+    <string name="settings_update_checking">檢查中...</string>
+    <string name="settings_update_download_action">下載更新</string>
+    <string name="settings_update_install_action">安裝並重新啟動</string>
+    <string name="settings_update_release_notes_action">查看發布說明</string>
+    <string name="settings_update_release_notes_action_description">在瀏覽器打開 GitHub Release 頁面。</string>
+    <string name="settings_update_no_release_url">目前裝置 ABI 沒有匹配的發布資源。</string>
+    <string name="settings_update_no_matching_asset">本次發布未包含適配目前裝置 ABI 的 APK。</string>
+    <string name="settings_update_failed_with_message">更新檢查失敗。%1$s</string>
+    <string name="settings_update_install_unknown_sources_required">請先在系統設定允許安裝未知來源應用。</string>
+    <string name="settings_update_status_downloaded">下載完成，可以安裝。</string>
 </resources>

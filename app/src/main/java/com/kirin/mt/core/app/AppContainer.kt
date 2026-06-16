@@ -9,6 +9,8 @@ import com.kirin.mt.core.cache.AppCacheManager
 import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliHttpClientFactory
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.player.CdnSelector
+import com.kirin.mt.core.player.CdnSpeedTester
 import com.kirin.mt.core.player.CodecCapabilityProbe
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.player.PlaybackProgressStore
@@ -17,6 +19,10 @@ import com.kirin.mt.core.settings.AppSettingsStore
 import com.kirin.mt.core.storage.SearchHistoryStore
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.storage.WbiKeyStore
+import com.kirin.mt.core.update.ApkInstaller
+import com.kirin.mt.core.update.UpdateDownloader
+import com.kirin.mt.core.update.UpdateManager
+import com.kirin.mt.core.update.UpdateRepository
 import kotlinx.serialization.json.Json
 
 class AppContainer(context: Context) {
@@ -36,6 +42,8 @@ class AppContainer(context: Context) {
   val httpClientFactory: BiliHttpClientFactory = BiliHttpClientFactory()
   val codecCapabilityProbe: CodecCapabilityProbe = CodecCapabilityProbe()
   val playbackHttpClient = httpClientFactory.createPlaybackClient()
+  val cdnSpeedTester: CdnSpeedTester = CdnSpeedTester(playbackHttpClient)
+  val cdnSelector: CdnSelector = CdnSelector(cdnSpeedTester)
   val apiClient: BiliApiClient = BiliApiClient(
     client = httpClientFactory.createApiClient(),
     json = json,
@@ -65,5 +73,18 @@ class AppContainer(context: Context) {
     apiClient = apiClient,
     tvLoginSigner = tvLoginSigner,
     sessionStore = sessionStore,
+  )
+  val appInfo: AppInfo = AppInfo(appContext)
+  val updateRepository: UpdateRepository = UpdateRepository(
+    apiClient = apiClient,
+    repoOwner = "urbanescavenger",
+    repoName = "BiliMT",
+  )
+  val updateDownloader: UpdateDownloader = UpdateDownloader(appContext, apiClient)
+  val apkInstaller: ApkInstaller = ApkInstaller(appContext)
+  val updateManager: UpdateManager = UpdateManager(
+    appInfo = appInfo,
+    repository = updateRepository,
+    downloader = updateDownloader,
   )
 }

@@ -28,6 +28,7 @@ captures/
 # Local signing material
 *.jks
 *.keystore
+keystore.b64.txt
 
 # Logs / crash dumps
 *.log
