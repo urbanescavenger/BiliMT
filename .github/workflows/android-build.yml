@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
 
     steps:
       - name: Checkout repository
@@ -146,3 +147,23 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Keep only latest 10 workflow runs
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, subprocess
+
+          result = subprocess.run(
+              ['gh', 'run', 'list', '--limit', '1000', '--json', 'databaseId,createdAt'],
+              capture_output=True, text=True, check=True,
+          )
+          runs = json.loads(result.stdout)
+          runs.sort(key=lambda r: r['createdAt'], reverse=True)
+          for run in runs[10:]:
+              run_id = run['databaseId']
+              print(f'Deleting workflow run {run_id}')
+              subprocess.run(['gh', 'run', 'delete', str(run_id)], check=False)
+          PY
