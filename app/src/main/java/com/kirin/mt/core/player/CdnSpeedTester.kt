@@ -69,8 +69,8 @@ class CdnSpeedTester(
       if (!response.isSuccessful && response.code != 206) {
         throw IllegalStateException("HTTP ${response.code}")
       }
-      val receivedMs = response.receivedResponseAtMillis()
-      val sentMs = response.sentRequestAtMillis()
+      val receivedMs = response.receivedResponseAtMillis
+      val sentMs = response.sentRequestAtMillis
       firstByteMs = (receivedMs - sentMs).coerceAtLeast(0L)
       response.body?.source()?.use { source ->
         val buffer = okio.Buffer()
