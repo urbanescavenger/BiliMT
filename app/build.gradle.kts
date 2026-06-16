@@ -33,7 +33,7 @@ fun computeVersionCode(versionName: String): Int {
     ?.removePrefix("alpha.")
     ?.toIntOrNull()
     ?: 0
-  return major * 1000000 + minor * 10000 + patch * 100 + alpha
+  return major * 1000000 + minor * 10000 + patch * 1000 + alpha
 }
 
 val bilitvVersionCode = computeVersionCode(bilitvVersionName)
