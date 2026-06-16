@@ -1,6 +1,6 @@
 # BiliMT 开发进度
 
-最后更新：2026-06-15
+最后更新：2026-06-16
 
 ## 更新规则
 
@@ -253,3 +253,4 @@
 | --- | --- | --- | --- |
 | P10-01 | 接入程序更新（仅手动） | Done | 推翻 P0-04；新增 `core/update/` 包（`AppInfo`、`UpdateInfo`、`UpdateRepository`、`UpdateDownloader`、`ApkInstaller`、`UpdateManager`、`UpdateUiState`），设置页 → 系统设置 → 程序更新提供"当前/最新版本展示、检查更新、下载/安装、查看发布说明"四项；`AndroidManifest.xml` 加 `REQUEST_INSTALL_PACKAGES` + `FileProvider` 节点，`res/xml/file_paths.xml` 新建；版本对比走 `tag` → `versionCode`（major×10000+minor×100+patch），按 `Build.SUPPORTED_ABIS` 选 asset；APK 下载到 `cacheDir/updates/`，安装走 `ACTION_VIEW + FileProvider`；不接入自动/后台检查；`assembleDebug` 通过 |
 | P10-02 | 修复 CDN 焦点跳到 LazyList 末尾的 bug | Done | `SettingsItemPlaybackCdn = 21` 与 LazyList 真实索引 3 不匹配，`scrollItemIntoComfortableView(index = 21)` 被 clamp 到 `totalItems - 1`，导致按一次下方向键焦点跳到"关于"。新增 `settingsItemToLazyIndex()` 映射函数统一 `SettingsItem*` → LazyList index。已知 follow-up：当 `update-download-or-install` / `update-release-notes` 条件性 item 渲染/隐藏时，ClearCache/ChineseTextVariant/About 的真实索引会变 1-2；当前仅在"无可用更新"状态下做了对齐。`assembleDebug` 通过 |
+| P10-03 | v1.0.7 发布与合入 main | Done | 整理 v1.0.6 至 v1.0.7 间的应用内更新、CI 和 About 页面变更；更新 `README.md`、`RELEASE_NOTES.md` 和本文件；打 tag `v1.0.7` 并推送；从 `mort_debug` 发起 PR 合到 `main` |

@@ -72,17 +72,19 @@ class UpdateRepository(
   private fun parseTagVersion(tag: String): Pair<String, Long> {
     val cleaned = tag.trim().removePrefix("v").removePrefix("V")
     val match = VERSION_REGEX.matchEntire(cleaned) ?: return cleaned to 0L
-    val (major, minor, patch) = match.destructured
-    val name = "$major.$minor.$patch"
+    val (major, minor, patch, label, index) = match.destructured
+    val name = if (label.isNullOrEmpty()) {
+      "$major.$minor.$patch"
+    } else {
+      "$major.$minor.$patch-$label.${index ?: "0"}"
+    }
     val m = major.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
     val n = minor.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
     val p = patch.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
     val base = m.times(1_000_000L) + n.times(10_000L) + p.times(1_000L)
-    val pre = SEMVER_PRE_REGEX.find(cleaned)?.let { result ->
-      val label = result.groupValues[1]
-      val index = result.groupValues[2].toLongOrNull()?.coerceAtLeast(0L) ?: 0L
-      labelToOrder(label) * 100L + index
-    } ?: 0L
+    val labelOrder = labelToOrder(label ?: "")
+    val preIndex = index?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+    val pre = labelOrder * 100L + preIndex
     return name to (base + pre)
   }
 
@@ -98,7 +100,6 @@ class UpdateRepository(
 
   private companion object {
     private const val APK_CONTENT_TYPE = "application/vnd.android.package-archive"
-    private val VERSION_REGEX = Regex("""(\d+)\.(\d+)\.(\d+)""")
-    private val SEMVER_PRE_REGEX = Regex("""-([a-zA-Z]+)\.(\d+)""")
+    private val VERSION_REGEX = Regex("""(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z]+)\.(\d+))?""")
   }
 }

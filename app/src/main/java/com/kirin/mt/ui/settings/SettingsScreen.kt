@@ -107,6 +107,7 @@ fun SettingsScreen(
       SettingsItemVisualPerformanceMode to FocusRequester(),
       SettingsItemLiquidGlassCards to FocusRequester(),
       SettingsItemHomeThemeVariant to FocusRequester(),
+      SettingsItemUpdateCurrentVersion to FocusRequester(),
       SettingsItemUpdateCheck to FocusRequester(),
       SettingsItemUpdateDownloadOrInstall to FocusRequester(),
       SettingsItemUpdateReleaseNotes to FocusRequester(),
@@ -580,8 +581,24 @@ private fun SettingsBehaviorColumn(
     item(key = "update-current-version") {
       SettingsActionRow(
         title = stringResource(R.string.settings_update_current_version_title),
-        description = stringResource(R.string.settings_update_section_description),
+        description = stringResource(R.string.settings_update_current_version_description),
         value = currentVersionText(updateState),
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemUpdateCurrentVersion))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemUpdateCurrentVersion,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemUpdateCurrentVersion) },
+        onClick = {},
+      )
+    }
+    item(key = "update-check") {
+      SettingsActionRow(
+        title = checkActionLabel(updateState),
+        description = stringResource(R.string.settings_update_check_action_description),
+        value = latestVersionText(updateState),
         modifier = Modifier
           .focusRequester(focusRequesters.getValue(SettingsItemUpdateCheck))
           .settingsBoundaryKeys(
@@ -596,13 +613,10 @@ private fun SettingsBehaviorColumn(
     if (shouldShowDownloadOrInstallRow(updateState)) {
       item(key = "update-download-or-install") {
         SettingsActionRow(
-          title = when (updateState.status) {
-            is UpdateUiState.Status.Downloaded -> stringResource(R.string.settings_update_install_action)
-            else -> stringResource(R.string.settings_update_download_action)
-          },
-          description = when (updateState.status) {
+          title = downloadOrInstallLabel(updateState) ?: "",
+          description = when (val s = updateState.status) {
             is UpdateUiState.Status.Downloaded -> stringResource(R.string.settings_update_status_downloaded)
-            is UpdateUiState.Status.Downloading -> stringResource(R.string.settings_update_checking)
+            is UpdateUiState.Status.Downloading -> downloadProgressDescription(s.downloadedBytes, s.totalBytes)
             else -> stringResource(R.string.settings_update_latest_version_value_available)
           },
           value = latestVersionText(updateState),
@@ -739,9 +753,10 @@ private const val SettingsItemAutoRefreshOnSwitch = 16
 private const val SettingsItemClearCache = 18
 private const val SettingsItemChineseTextVariant = 19
 private const val SettingsItemAbout = 20
-private const val SettingsItemUpdateCheck = 22
-private const val SettingsItemUpdateDownloadOrInstall = 23
-private const val SettingsItemUpdateReleaseNotes = 24
+private const val SettingsItemUpdateCurrentVersion = 22
+private const val SettingsItemUpdateCheck = 23
+private const val SettingsItemUpdateDownloadOrInstall = 24
+private const val SettingsItemUpdateReleaseNotes = 25
 private const val SettingsItemPlaybackCdn = 21
 
 private val SettingsFocusableItems = listOf(
@@ -761,6 +776,7 @@ private val SettingsFocusableItems = listOf(
   SettingsItemHomeThemeVariant,
   SettingsItemAutoConfirmOnFocus,
   SettingsItemAutoRefreshOnSwitch,
+  SettingsItemUpdateCurrentVersion,
   SettingsItemUpdateCheck,
   SettingsItemUpdateDownloadOrInstall,
   SettingsItemUpdateReleaseNotes,
@@ -797,24 +813,25 @@ private fun settingsItemToLazyIndex(
   SettingsItemAutoConfirmOnFocus -> 16
   SettingsItemAutoRefreshOnSwitch -> 17
   // 18 = "update-header" section title in LazyColumn
-  SettingsItemUpdateCheck -> 19
-  SettingsItemUpdateDownloadOrInstall -> if (shouldShowDownloadOrInstallRow(updateState)) 20 else -1
+  SettingsItemUpdateCurrentVersion -> 19
+  SettingsItemUpdateCheck -> 20
+  SettingsItemUpdateDownloadOrInstall -> if (shouldShowDownloadOrInstallRow(updateState)) 21 else -1
   SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) {
-    if (shouldShowDownloadOrInstallRow(updateState)) 21 else 20
+    if (shouldShowDownloadOrInstallRow(updateState)) 22 else 21
   } else {
     -1
   }
   SettingsItemClearCache -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    21 + updateExtraCount
+    22 + updateExtraCount
   }
   SettingsItemChineseTextVariant -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    22 + updateExtraCount
+    23 + updateExtraCount
   }
   SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    23 + updateExtraCount
+    24 + updateExtraCount
   }
   else -> 0
 }
@@ -824,4 +841,12 @@ private fun updateExtraItemCount(updateState: UpdateUiState): Int {
   if (shouldShowDownloadOrInstallRow(updateState)) count++
   if (shouldShowReleaseNotesAction(updateState)) count++
   return count
+}
+
+@Composable
+private fun downloadProgressDescription(downloaded: Long, total: Long): String {
+  if (total <= 0) return stringResource(R.string.settings_update_downloading)
+  val mb = downloaded / (1024.0 * 1024.0)
+  val totalMb = total / (1024.0 * 1024.0)
+  return String.format(java.util.Locale.US, "%.1f / %.1f MB", mb, totalMb)
 }

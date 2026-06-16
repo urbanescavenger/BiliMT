@@ -55,14 +55,23 @@ class UpdateManager(
     if (info == null) return@withContext null
     val asset = info.matchingAsset ?: return@withContext null
     _state.update { it.copy(status = UpdateUiState.Status.Downloading(info)) }
-    val file = try {
-      downloader.download(asset)
+    try {
+      val file = downloader.download(asset) { downloaded, total ->
+        _state.update { current ->
+          val currentStatus = current.status
+          if (currentStatus is UpdateUiState.Status.Downloading && currentStatus.info.versionCode == info.versionCode) {
+            current.copy(status = currentStatus.copy(downloadedBytes = downloaded, totalBytes = total))
+          } else {
+            current
+          }
+        }
+      }
+      _state.update { it.copy(status = UpdateUiState.Status.Downloaded(info)) }
+      file
     } catch (e: Exception) {
       _state.update { it.copy(status = UpdateUiState.Status.Available(info)) }
-      return@withContext null
+      throw e
     }
-    _state.update { it.copy(status = UpdateUiState.Status.Downloaded(info)) }
-    file
   }
 
   fun downloadedFile(): File? {

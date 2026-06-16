@@ -41,7 +41,7 @@
     <string name="settings_about_description">&#x67E5;&#x770B;&#x5C08;&#x6848;&#x4ECB;&#x7D39;&#x3001;&#x5C08;&#x6848;&#x5730;&#x5740;&#x548C;&#x4E3B;&#x8981;&#x958B;&#x6E90;&#x5EAB;&#x3002;</string>
     <string name="settings_about_project_name">BiliMT</string>
     <string name="settings_about_project_intro_title">&#x5C08;&#x6848;&#x7C21;&#x4ECB;</string>
-    <string name="settings_about_project_intro">BiliMT &#x662F;&#x4E00;&#x500B;&#x9762;&#x5411; Android TV &#x7684;&#x539F;&#x751F; B &#x7AD9;&#x5BA2;&#x6236;&#x7AEF;&#x5BE6;&#x9A57;&#x5C08;&#x6848;&#xFF0C;&#x4E5F;&#x662F;&#x4E00;&#x500B;&#x7D14; AI &#x5C08;&#x6848;&#xFF1B;&#x7A0B;&#x5F0F;&#x78BC;&#x3001;&#x4ECB;&#x9762;&#x548C;&#x6587;&#x4EF6;&#x5747;&#x7531; OpenAI Codex &#x8FED;&#x4EE3;&#x7DE8;&#x5BEB;&#xFF0C;&#x91CD;&#x9EDE;&#x95DC;&#x6CE8;&#x64AD;&#x653E;&#x7A69;&#x5B9A;&#x6027;&#x3001;&#x9059;&#x63A7;&#x5668;&#x7126;&#x9EDE;&#x3001;&#x5F48;&#x5E55;&#x6548;&#x80FD;&#x548C;&#x96FB;&#x8996;&#x7AEF;&#x8996;&#x89BA;&#x9AD4;&#x9A57;&#x3002;</string>
+    <string name="settings_about_project_intro">BiliMT &#x662F;&#x4E00;&#x500B;&#x9762;&#x5411; Android TV &#x7684;&#x539F;&#x751F; B &#x7AD9;&#x5BA2;&#x6236;&#x7AEF;&#x5BE6;&#x9A57;&#x5C08;&#x6848;&#xFF0C;&#x57FA;&#x65BC; BiliTVNative &#x7E7C;&#x7E8C;&#x958B;&#x767C;&#xFF1B;&#x91CD;&#x9EDE;&#x95DC;&#x6CE8;&#x64AD;&#x653E;&#x7A69;&#x5B9A;&#x6027;&#x3001;&#x9059;&#x63A7;&#x5668;&#x7126;&#x9EDE;&#x3001;&#x5F48;&#x5E55;&#x6548;&#x80FD;&#x3001;&#x9996;&#x9801;&#x8996;&#x89BA;&#x8CEA;&#x611F;&#x548C;&#x4E0D;&#x540C;&#x786C;&#x9AD4;&#x6A94;&#x4F4D;&#x4E0B;&#x7684;&#x6D41;&#x66A2;&#x5EA6;&#x3002;</string>
     <string name="settings_about_project_url_title">&#x5C08;&#x6848;&#x5730;&#x5740;</string>
     <string name="settings_about_license_title">&#x958B;&#x6E90;&#x5354;&#x8B70;</string>
     <string name="settings_about_license_value">MIT License</string>
@@ -240,6 +240,7 @@
     <string name="settings_update_section">程式更新</string>
     <string name="settings_update_section_description">透過 GitHub Releases 偵測新版本並下載安裝。</string>
     <string name="settings_update_current_version_title">目前版本</string>
+    <string name="settings_update_current_version_description">目前已安裝的應用版本。</string>
     <string name="settings_update_current_version_value">%1$s (versionCode %2$d)</string>
     <string name="settings_update_latest_version_title">最新版本</string>
     <string name="settings_update_latest_version_value_unchecked">尚未檢查</string>
@@ -248,6 +249,7 @@
     <string name="settings_update_check_action">檢查更新</string>
     <string name="settings_update_check_action_description">手動向 GitHub Releases 發起一次最新版本檢查。</string>
     <string name="settings_update_checking">檢查中...</string>
+    <string name="settings_update_downloading">下載中...</string>
     <string name="settings_update_download_action">下載更新</string>
     <string name="settings_update_install_action">安裝並重新啟動</string>
     <string name="settings_update_release_notes_action">查看發布說明</string>
@@ -255,6 +257,7 @@
     <string name="settings_update_no_release_url">目前裝置 ABI 沒有匹配的發布資源。</string>
     <string name="settings_update_no_matching_asset">本次發布未包含適配目前裝置 ABI 的 APK。</string>
     <string name="settings_update_failed_with_message">更新檢查失敗。%1$s</string>
+    <string name="settings_update_download_failed_with_message">下載更新失敗。%1$s</string>
     <string name="settings_update_install_unknown_sources_required">請先在系統設定允許安裝未知來源應用。</string>
     <string name="settings_update_status_downloaded">下載完成，可以安裝。</string>
 </resources>

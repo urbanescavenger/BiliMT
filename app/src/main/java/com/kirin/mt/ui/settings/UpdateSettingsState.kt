@@ -30,11 +30,7 @@ fun latestVersionText(state: UpdateUiState): String {
       s.info.versionName,
       s.info.versionCode,
     )
-    is UpdateUiState.Status.Downloading -> stringResource(
-      R.string.settings_update_latest_version_value_available,
-      s.info.versionName,
-      s.info.versionCode,
-    )
+    is UpdateUiState.Status.Downloading -> downloadProgressText(s.downloadedBytes, s.totalBytes)
     is UpdateUiState.Status.Downloaded -> stringResource(
       R.string.settings_update_latest_version_value_available,
       s.info.versionName,
@@ -42,6 +38,13 @@ fun latestVersionText(state: UpdateUiState): String {
     )
     is UpdateUiState.Status.Failed -> s.message
   }
+}
+
+@Composable
+private fun downloadProgressText(downloaded: Long, total: Long): String {
+  if (total <= 0) return stringResource(R.string.settings_update_downloading)
+  val percent = (downloaded * 100L / total).toInt().coerceIn(0, 100)
+  return "${percent}%"
 }
 
 @Composable
@@ -60,7 +63,7 @@ fun isCheckActionEnabled(state: UpdateUiState): Boolean = when (state.status) {
 fun downloadOrInstallLabel(state: UpdateUiState): String? = when (val s = state.status) {
   is UpdateUiState.Status.Available -> stringResource(R.string.settings_update_download_action)
   is UpdateUiState.Status.Failed -> null
-  is UpdateUiState.Status.Downloading -> stringResource(R.string.settings_update_checking)
+  is UpdateUiState.Status.Downloading -> stringResource(R.string.settings_update_downloading)
   is UpdateUiState.Status.Downloaded -> stringResource(R.string.settings_update_install_action)
   else -> null
 }
