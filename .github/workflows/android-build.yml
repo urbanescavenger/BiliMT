@@ -137,6 +137,7 @@ jobs:
               if vc is not None and vc < current_vc:
                   print(f'Deleting old prerelease {tag} (versionCode {vc})')
                   subprocess.run(['gh', 'release', 'delete', tag, '--yes'], check=False)
+                  subprocess.run(['git', 'push', 'origin', '--delete', tag], check=False)
           PY
 
       - name: Create Release
