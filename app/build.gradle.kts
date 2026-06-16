@@ -11,8 +11,8 @@ val targetAbi = providers.gradleProperty("targetAbi").orNull?.trim()?.takeIf { i
  * Compute versionName / versionCode from an optional Gradle property.
  *
  * For release builds the CI passes the Git tag, e.g.
- *   -PbilitvVersionName=v1.0.5-alpha.10
- * and we derive versionCode from the semantic version.
+ *   -PbilitvVersionName=v1.0.5-alpha.11
+ * and we derive versionName / versionCode from the semantic version.
  *
  * Local / debug builds use a fallback "dev" version.
  */
@@ -22,13 +22,18 @@ val bilitvVersionName = providers.gradleProperty("bilitvVersionName")
   ?: "dev"
 
 fun computeVersionCode(versionName: String): Int {
-  val semver = versionName
-    .split("-")
+  val parts = versionName.split("-")
+  val semver = parts
     .firstOrNull()
     ?.takeIf { it.matches(Regex("""\d+\.\d+\.\d+""")) }
     ?: return 1000000
   val (major, minor, patch) = semver.split(".").map { it.toIntOrNull() ?: 0 }
-  return 1000000 + major * 10000 + minor * 100 + patch
+  val alpha = parts
+    .getOrNull(1)
+    ?.removePrefix("alpha.")
+    ?.toIntOrNull()
+    ?: 0
+  return major * 1000000 + minor * 10000 + patch * 100 + alpha
 }
 
 val bilitvVersionCode = computeVersionCode(bilitvVersionName)
