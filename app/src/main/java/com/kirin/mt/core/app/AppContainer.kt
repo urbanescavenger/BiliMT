@@ -9,6 +9,8 @@ import com.kirin.mt.core.cache.AppCacheManager
 import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliHttpClientFactory
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.player.CdnSelector
+import com.kirin.mt.core.player.CdnSpeedTester
 import com.kirin.mt.core.player.CodecCapabilityProbe
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.player.PlaybackProgressStore
