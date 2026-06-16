@@ -67,6 +67,7 @@ import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.CdnRewriter
+import com.kirin.mt.core.player.CdnSelection
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.DanmakuEntry
 import com.kirin.mt.core.player.DanmakuSettings
@@ -1008,18 +1009,16 @@ fun PlayerScreen(
       } else {
         selectedQuality = info.selectedQuality
         currentCodecText = info.videoTracks.firstOrNull()?.codecLabel().orEmpty()
-        val effectiveInfo = if (playbackCdnPreference == PlaybackCdnPreference.Auto) {
-          info.copy(
-            videoTracks = info.videoTracks.map { track ->
-              track.copy(baseUrl = cdnSelector.select(track, playbackCdnPreference))
-            },
-            audioTracks = info.audioTracks.map { track ->
-              track.copy(baseUrl = cdnSelector.select(track, playbackCdnPreference))
-            },
-          )
-        } else {
-          info
-        }
+        val effectiveInfo = info.copy(
+          videoTracks = info.videoTracks.map { track ->
+            val selection = cdnSelector.select(track, playbackCdnPreference)
+            track.copy(baseUrl = selection.primaryUrl, backupUrls = selection.fallbackUrls)
+          },
+          audioTracks = info.audioTracks.map { track ->
+            val selection = cdnSelector.select(track, playbackCdnPreference)
+            track.copy(baseUrl = selection.primaryUrl, backupUrls = selection.fallbackUrls)
+          },
+        )
         val requestedStartPositionMs = if (resolvedRequest.preferredQualityId != null || resolvedRequest.forceStartPosition) {
           resolvedRequest.startPositionMs
         } else {
@@ -1476,8 +1475,17 @@ private fun PlaybackTrack.toRepresentation(
   contentType: String,
   cdnPreference: PlaybackCdnPreference,
 ): String {
-  val effectiveUrl = CdnRewriter.rewrite(baseUrl, cdnPreference)
-  val escapedUrl = effectiveUrl.escapeXml()
+  val primaryUrl = CdnRewriter.rewrite(baseUrl, cdnPreference)
+  val fallbackUrls = backupUrls
+    .asSequence()
+    .map { CdnRewriter.rewrite(it, cdnPreference) }
+    .filter { it != primaryUrl }
+    .distinct()
+    .toList()
+  val baseUrlElements = (listOf(primaryUrl) + fallbackUrls)
+    .joinToString(separator = "\n      ") { url ->
+      "<BaseURL>${url.escapeXml()}</BaseURL>"
+    }
   val dimensions = if (contentType == "video") {
     """ width="$width" height="$height""""
   } else {
@@ -1485,7 +1493,7 @@ private fun PlaybackTrack.toRepresentation(
   }
   return """
     <Representation id="${adaptationSetId}_$id" bandwidth="$bandwidth" codecs="${codecs.escapeXml()}"$dimensions>
-      <BaseURL>$escapedUrl</BaseURL>
+      $baseUrlElements
       <SegmentBase indexRange="${segmentBase.indexRange.escapeXml()}">
         <Initialization range="${segmentBase.initializationRange.escapeXml()}" />
       </SegmentBase>

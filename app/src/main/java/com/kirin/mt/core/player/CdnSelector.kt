@@ -8,12 +8,13 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
  *
  * - For non-Auto preferences the existing [CdnRewriter] behavior is used.
  * - For [PlaybackCdnPreference.Auto] we measure the candidates (baseUrl +
- *   backupUrls) and return the fastest successful one. Results are cached in
- *   memory for [CacheTtlMs] to avoid repeated probes.
+ *   backupUrls) and return the fastest successful one as the primary URL, with
+ *   the remaining successful candidates as fallbacks.
  *
- * The cache key is the region prefix of the base URL (e.g. `upos-sz`) so that
- * measurements made for one video can be reused for other videos served from the
- * same region.
+ * Results are cached in memory for [CacheTtlMs] keyed by the full original
+ * base URL. Caching the full URL (instead of just the host) avoids applying a
+ * signed URL from one video onto another video's base URL, which was causing
+ * playback to freeze on the first frame.
  */
 class CdnSelector(
   private val speedTester: CdnSpeedTester,
@@ -21,9 +22,20 @@ class CdnSelector(
 
   private val cache = LinkedHashMap<String, CacheEntry>()
 
-  suspend fun select(track: PlaybackTrack, preference: PlaybackCdnPreference): String {
+  /**
+   * Returns a primary URL and an ordered list of fallback URLs for [track].
+   */
+  suspend fun select(track: PlaybackTrack, preference: PlaybackCdnPreference): CdnSelection {
     if (preference != PlaybackCdnPreference.Auto) {
-      return CdnRewriter.rewrite(track.baseUrl, preference)
+      val primary = CdnRewriter.rewrite(track.baseUrl, preference)
+      val fallbacks = track.backupUrls
+        .asSequence()
+        .map { CdnRewriter.rewrite(it, preference) }
+        .filter { it != primary }
+        .filter { isEligibleCandidate(it) }
+        .distinct()
+        .toList()
+      return CdnSelection(primary, fallbacks)
     }
 
     val baseUrl = track.baseUrl
@@ -33,42 +45,48 @@ class CdnSelector(
       .filter { isEligibleCandidate(it) }
 
     if (candidates.isEmpty()) {
-      return baseUrl
+      return CdnSelection(baseUrl, emptyList())
     }
+
+    val cached = cachedSelection(baseUrl)
+    if (cached != null) {
+      Log.i(LogTag, "Using cached CDN selection for $baseUrl")
+      return cached
+    }
+
     if (candidates.size == 1) {
-      return candidates.first()
+      val selection = CdnSelection(candidates.first(), emptyList())
+      cacheSelection(baseUrl, selection)
+      return selection
     }
 
-    val regionKey = regionKey(baseUrl) ?: return baseUrl
-    val cachedBest = bestHostForRegion(regionKey)
-    if (cachedBest != null) {
-      val rewritten = replaceHost(baseUrl, cachedBest)
-      if (rewritten != null) {
-        Log.i(LogTag, "Using cached CDN host for $regionKey: $cachedBest")
-        return rewritten
-      }
-    }
-
-    Log.i(LogTag, "Measuring ${candidates.size} CDN candidates for $regionKey")
+    Log.i(LogTag, "Measuring ${candidates.size} CDN candidates for $baseUrl")
     val measurements = speedTester.measure(candidates)
-    val best = measurements.firstOrNull()
-    if (best == null) {
-      Log.w(LogTag, "All CDN measurements failed for $regionKey, falling back to baseUrl")
-      return baseUrl
+    val successfulUrls = measurements.map { it.url }
+
+    if (successfulUrls.isEmpty()) {
+      Log.w(LogTag, "All CDN measurements failed for $baseUrl, falling back to baseUrl + backups")
+      val fallbacks = track.backupUrls
+        .filter { it != baseUrl && isEligibleCandidate(it) }
+        .distinct()
+      val selection = CdnSelection(baseUrl, fallbacks)
+      cacheSelection(baseUrl, selection)
+      return selection
     }
 
-    val bestHost = best.url.toHttpUrlOrNull()?.host ?: return baseUrl
-    synchronized(cache) {
-      cache[regionKey] = CacheEntry(
-        bestHost = bestHost,
-        expiresAt = System.currentTimeMillis() + CacheTtlMs,
+    val primary = successfulUrls.first()
+    val fallbacks = successfulUrls.drop(1)
+    val selection = CdnSelection(primary, fallbacks)
+    cacheSelection(baseUrl, selection)
+
+    val best = measurements.firstOrNull()
+    if (best != null) {
+      Log.i(
+        LogTag,
+        "Selected CDN for $baseUrl: ${best.url} (ttfb=${best.firstByteMs}ms, total=${best.totalMs}ms, ${best.downloadedBytes} bytes, score=${"%.2f".format(best.score)})",
       )
     }
-    Log.i(
-      LogTag,
-      "Selected CDN host for $regionKey: $bestHost (ttfb=${best.firstByteMs}ms, total=${best.totalMs}ms, ${best.downloadedBytes} bytes, score=${"%.2f".format(best.score)})",
-    )
-    return best.url
+    return selection
   }
 
   private fun isEligibleCandidate(url: String): Boolean {
@@ -79,30 +97,25 @@ class CdnSelector(
     return true
   }
 
-  private fun regionKey(url: String): String? {
-    val host = url.toHttpUrlOrNull()?.host ?: return null
-    return UposRegionPattern.matchEntire(host)?.groupValues?.getOrNull(0) ?: host
-  }
-
-  private fun bestHostForRegion(regionKey: String): String? {
+  private fun cachedSelection(baseUrl: String): CdnSelection? {
     synchronized(cache) {
       val now = System.currentTimeMillis()
       cache.entries.removeAll { it.value.expiresAt <= now }
-      return cache[regionKey]?.bestHost
+      return cache[baseUrl]?.selection
     }
   }
 
-  private fun replaceHost(url: String, newHost: String): String? {
-    val httpUrl = url.toHttpUrlOrNull() ?: return null
-    if (httpUrl.host == newHost) return url
-    return httpUrl.newBuilder()
-      .host(newHost)
-      .build()
-      .toString()
+  private fun cacheSelection(baseUrl: String, selection: CdnSelection) {
+    synchronized(cache) {
+      cache[baseUrl] = CacheEntry(
+        selection = selection,
+        expiresAt = System.currentTimeMillis() + CacheTtlMs,
+      )
+    }
   }
 
   private data class CacheEntry(
-    val bestHost: String,
+    val selection: CdnSelection,
     val expiresAt: Long,
   )
 
@@ -110,7 +123,11 @@ class CdnSelector(
     const val CacheTtlMs = 5 * 60 * 1000L
     const val LogTag = "BiliMT:CdnSelector"
 
-    val UposRegionPattern = Regex("""^upos-[a-z0-9]+""")
     val BareIpPattern = Regex("""^(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?$""")
   }
 }
+
+data class CdnSelection(
+  val primaryUrl: String,
+  val fallbackUrls: List<String>,
+)
