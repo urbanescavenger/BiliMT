@@ -240,6 +240,7 @@
     <string name="settings_update_section">程式更新</string>
     <string name="settings_update_section_description">透過 GitHub Releases 偵測新版本並下載安裝。</string>
     <string name="settings_update_current_version_title">目前版本</string>
+    <string name="settings_update_current_version_description">目前已安裝的應用版本。</string>
     <string name="settings_update_current_version_value">%1$s (versionCode %2$d)</string>
     <string name="settings_update_latest_version_title">最新版本</string>
     <string name="settings_update_latest_version_value_unchecked">尚未檢查</string>
