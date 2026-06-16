@@ -136,8 +136,15 @@ fun SettingsScreen(
 
   fun moveSettingFocus(itemIndex: Int, direction: Int): Boolean {
     val currentOrderIndex = SettingsFocusableItems.indexOf(itemIndex)
-    val targetItem = SettingsFocusableItems.getOrNull(currentOrderIndex + direction) ?: return true
-    return focusSettingItem(targetItem, direction)
+    var nextOrderIndex = currentOrderIndex + direction
+    while (nextOrderIndex in SettingsFocusableItems.indices) {
+      val targetItem = SettingsFocusableItems[nextOrderIndex]
+      if (settingsItemToLazyIndex(targetItem, updateState) >= 0) {
+        return focusSettingItem(targetItem, direction)
+      }
+      nextOrderIndex += direction
+    }
+    return true
   }
 
   Box(
@@ -799,15 +806,15 @@ private fun settingsItemToLazyIndex(
   }
   SettingsItemClearCache -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    20 + updateExtraCount
+    21 + updateExtraCount
   }
   SettingsItemChineseTextVariant -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    21 + updateExtraCount
+    22 + updateExtraCount
   }
   SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    22 + updateExtraCount
+    23 + updateExtraCount
   }
   else -> 0
 }
