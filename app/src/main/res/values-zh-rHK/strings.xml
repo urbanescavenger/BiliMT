@@ -249,6 +249,7 @@
     <string name="settings_update_check_action">檢查更新</string>
     <string name="settings_update_check_action_description">手動向 GitHub Releases 發起一次最新版本檢查。</string>
     <string name="settings_update_checking">檢查中...</string>
+    <string name="settings_update_downloading">下載中...</string>
     <string name="settings_update_download_action">下載更新</string>
     <string name="settings_update_install_action">安裝並重新啟動</string>
     <string name="settings_update_release_notes_action">查看發布說明</string>

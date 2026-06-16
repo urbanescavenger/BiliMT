@@ -614,9 +614,9 @@ private fun SettingsBehaviorColumn(
       item(key = "update-download-or-install") {
         SettingsActionRow(
           title = downloadOrInstallLabel(updateState) ?: "",
-          description = when (updateState.status) {
+          description = when (val s = updateState.status) {
             is UpdateUiState.Status.Downloaded -> stringResource(R.string.settings_update_status_downloaded)
-            is UpdateUiState.Status.Downloading -> stringResource(R.string.settings_update_checking)
+            is UpdateUiState.Status.Downloading -> downloadProgressDescription(s.downloadedBytes, s.totalBytes)
             else -> stringResource(R.string.settings_update_latest_version_value_available)
           },
           value = latestVersionText(updateState),
@@ -841,4 +841,12 @@ private fun updateExtraItemCount(updateState: UpdateUiState): Int {
   if (shouldShowDownloadOrInstallRow(updateState)) count++
   if (shouldShowReleaseNotesAction(updateState)) count++
   return count
+}
+
+@Composable
+private fun downloadProgressDescription(downloaded: Long, total: Long): String {
+  if (total <= 0) return stringResource(R.string.settings_update_downloading)
+  val mb = downloaded / (1024.0 * 1024.0)
+  val totalMb = total / (1024.0 * 1024.0)
+  return String.format(java.util.Locale.US, "%.1f / %.1f MB", mb, totalMb)
 }

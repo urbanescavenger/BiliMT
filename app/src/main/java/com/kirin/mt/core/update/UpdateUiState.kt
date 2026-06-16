@@ -10,7 +10,11 @@ data class UpdateUiState(
     data object Checking : Status()
     data class UpToDate(val info: UpdateInfo) : Status()
     data class Available(val info: UpdateInfo) : Status()
-    data class Downloading(val info: UpdateInfo) : Status()
+    data class Downloading(
+      val info: UpdateInfo,
+      val downloadedBytes: Long = 0L,
+      val totalBytes: Long = 0L,
+    ) : Status()
     data class Downloaded(val info: UpdateInfo) : Status()
     data class Failed(val message: String) : Status()
   }
