@@ -26,6 +26,46 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Delete tags without releases
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, subprocess
+
+          current_tag = '${{ github.ref_name }}'
+
+          # All remote tags
+          result = subprocess.run(
+              ['git', 'ls-remote', '--tags', 'origin'],
+              capture_output=True, text=True, check=True,
+          )
+          all_tags = set()
+          for line in result.stdout.splitlines():
+              ref = line.split('\t')[1]
+              if not ref.startswith('refs/tags/'):
+                  continue
+              tag = ref.removeprefix('refs/tags/')
+              # Skip annotated tag peeled entries
+              if tag.endswith('^{}'):
+                  continue
+              all_tags.add(tag)
+
+          # Tags that have a release
+          result = subprocess.run(
+              ['gh', 'release', 'list', '--limit', '1000', '--json', 'tagName'],
+              capture_output=True, text=True, check=True,
+          )
+          releases = json.loads(result.stdout)
+          released_tags = {r['tagName'] for r in releases}
+
+          orphan_tags = sorted(all_tags - released_tags - {current_tag})
+          for tag in orphan_tags:
+              print(f'Deleting orphan tag {tag} (no release)')
+              subprocess.run(['git', 'push', 'origin', '--delete', tag], check=False)
+          PY
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
