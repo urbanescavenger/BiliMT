@@ -41,7 +41,7 @@ internal class SpaceVideoRepository(
       "space videos start mid=$mid order=$order page=$page hasSession=${!sessData.isNullOrBlank()} " +
         "hasWbiKeys=${keys != null} hasBuvid3=${!buvid3.isNullOrBlank()} retryMode=$retryMode",
     )
-    val params = mutableMapOf(
+    val params = mapOf(
       "mid" to mid.toString(),
       "pn" to page.toString(),
       "ps" to SpacePageSize.toString(),
@@ -55,15 +55,12 @@ internal class SpaceVideoRepository(
       "dm_img_str" to DmImgStr,
       "dm_cover_img_str" to DmImgStr,
     )
-    val signedParams = if (keys != null) {
-      wbiSigner.sign(params, keys.imgKey, keys.subKey)
-    } else {
-      params
-    }
 
     return runCatching {
-      getSpaceVideosWithParamsWithRetry(
-        params = signedParams,
+      signAndFetchSpaceVideos(
+        params = params,
+        imgKey = keys?.imgKey,
+        subKey = keys?.subKey,
         sessData = sessData,
         biliJct = biliJct,
         dedeUserId = session.mid,
@@ -77,13 +74,15 @@ internal class SpaceVideoRepository(
       if (retryMode == SpaceVideoRetryMode.Interactive) {
         throw signedError
       }
+      // Recovery mode: refresh wbi keys and retry
       val refreshedVideos = if (keys != null) {
         val refreshedKeys = wbiKeyRepository.refreshKeys(sessData)
         if (refreshedKeys != null) {
-          val refreshedSignedParams = wbiSigner.sign(params, refreshedKeys.imgKey, refreshedKeys.subKey)
           runCatching {
-            getSpaceVideosWithParamsWithRetry(
-              params = refreshedSignedParams,
+            signAndFetchSpaceVideos(
+              params = params,
+              imgKey = refreshedKeys.imgKey,
+              subKey = refreshedKeys.subKey,
               sessData = sessData,
               biliJct = biliJct,
               dedeUserId = session.mid,
@@ -101,29 +100,35 @@ internal class SpaceVideoRepository(
       } else {
         null
       }
-      refreshedVideos ?: if (signedParams == params) {
-        emptyList()
-      } else {
-        runCatching {
-          getSpaceVideosWithParamsWithRetry(
-            params = params,
-            sessData = sessData,
-            biliJct = biliJct,
-            dedeUserId = session.mid,
-            buvid3 = buvid3,
-            buvid4 = buvid4,
-            context = "space archives fallback",
-            retryDelaysMs = SpaceRecoveryFallbackRetryDelaysMs,
-          )
-        }.onFailure { fallbackError ->
-          logSpaceVideosFailure("unsigned fallback", fallbackError)
-        }.getOrDefault(emptyList())
-      }
+      refreshedVideos ?: runCatching {
+        signAndFetchSpaceVideos(
+          params = params,
+          imgKey = null,
+          subKey = null,
+          sessData = sessData,
+          biliJct = biliJct,
+          dedeUserId = session.mid,
+          buvid3 = buvid3,
+          buvid4 = buvid4,
+          context = "space archives fallback",
+          retryDelaysMs = SpaceRecoveryFallbackRetryDelaysMs,
+        )
+      }.onFailure { fallbackError ->
+        logSpaceVideosFailure("unsigned fallback", fallbackError)
+      }.getOrDefault(emptyList())
     }
   }
 
-  private suspend fun getSpaceVideosWithParamsWithRetry(
+  /**
+   * Signs params (fresh wts + w_rid per attempt) and fetches with retries.
+   *
+   * Signing inside the loop ensures every retry gets a new timestamp,
+   * which matters when the server rejects stale wts or applies transient 风控 (-352).
+   */
+  private suspend fun signAndFetchSpaceVideos(
     params: Map<String, String>,
+    imgKey: String?,
+    subKey: String?,
     sessData: String?,
     biliJct: String?,
     dedeUserId: Long?,
@@ -143,8 +148,14 @@ internal class SpaceVideoRepository(
         )
         delay(delayMs)
       }
+      // Fresh wts + w_rid on every attempt
+      val signedParams = if (imgKey != null && subKey != null) {
+        wbiSigner.sign(params, imgKey, subKey)
+      } else {
+        params
+      }
       val result = runCatching {
-        getSpaceVideosWithParams(params, sessData, biliJct, dedeUserId, buvid3, buvid4, context)
+        getSpaceVideosWithParams(signedParams, sessData, biliJct, dedeUserId, buvid3, buvid4, context)
       }
       result.onSuccess { return it }
       val error = result.exceptionOrNull() ?: return emptyList()
@@ -217,7 +228,9 @@ internal class SpaceVideoRepository(
   }
 
   private fun Throwable.isRetryableSpaceFailure(): Boolean {
-    return this is BiliNetworkException && statusCode in SpaceRetryableHttpCodes
+    if (this is BiliNetworkException && statusCode in SpaceRetryableHttpCodes) return true
+    if (this is BiliApiCodeException && code == RiskControlCode) return true
+    return false
   }
 
   private val SpaceVideoRetryMode.retryDelaysMs: LongArray
@@ -233,7 +246,8 @@ internal class SpaceVideoRepository(
     const val SpacePageSize = 25
     // base64("WebGL 1.0 (OpenGL ES 2.0 Chromium)") — 风控固定值
     const val DmImgStr = "V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ"
-    val SpaceInteractiveRetryDelaysMs = longArrayOf(600L)
+    const val RiskControlCode = -352
+    val SpaceInteractiveRetryDelaysMs = longArrayOf(500L, 1_000L, 2_000L)
     val SpaceRecoveryRetryDelaysMs = longArrayOf(1_200L, 2_400L)
     val SpaceRecoveryFallbackRetryDelaysMs = longArrayOf(1_200L)
     val SpaceRetryableHttpCodes = setOf(412, 429, 500, 502, 503, 504)
