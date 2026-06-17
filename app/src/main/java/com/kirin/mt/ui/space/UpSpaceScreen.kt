@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.item
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,7 +38,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -410,7 +408,7 @@ private fun UpSpaceHeader(
           },
         )
       }
-      item {
+      items(1) {
         UpSpaceFollowChip(
           isLoggedIn = isLoggedIn,
           followed = followed,
@@ -478,7 +476,7 @@ private fun UpSpaceAvatar(face: String, name: String) {
       Icon(
         painter = painterResource(R.drawable.ic_nav_account),
         contentDescription = name,
-        colorFilter = ColorFilter.tint(BiliColors.BiliPink),
+        tint = BiliColors.BiliPink,
         modifier = Modifier.size(BiliSizing.AccountAvatarSize),
       )
     }
