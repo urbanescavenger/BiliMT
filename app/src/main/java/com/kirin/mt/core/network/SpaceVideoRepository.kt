@@ -52,9 +52,11 @@ internal class SpaceVideoRepository(
       "dm_cover_img_str" to DmImgStr,
     )
     // BV sends only SESSDATA in Cookie — buvid/biliJct/DedeUserID trigger 风控.
+    // User-Agent 必须跟 dm_img_str (OpenGL ES Chromium) 一致，否则指纹矛盾触发 412.
     val headers = mapOf(
       "Cookie" to "SESSDATA=${sessData.orEmpty()};",
       "referer" to BiliHeaders.SpaceOrigin,
+      "User-Agent" to SpaceUserAgent,
     )
 
     return runCatching {
@@ -220,6 +222,9 @@ internal class SpaceVideoRepository(
     const val SpacePageSize = 25
     // base64("WebGL 1.0 (OpenGL ES 2.0 Chromium)") — 风控固定值
     const val DmImgStr = "V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ"
+    // Linux Chromium UA — 跟 dm_img_str (OpenGL ES Chromium) 指纹一致 (ref: BV BiliUserAgent)
+    const val SpaceUserAgent =
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     const val RiskControlCode = -352
     val SpaceInteractiveRetryDelaysMs = longArrayOf(2_000L, 4_000L)
     val SpaceRecoveryRetryDelaysMs = longArrayOf(1_200L, 2_400L)
