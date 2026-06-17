@@ -575,6 +575,12 @@ fun BiliTvApp(
                   onVideoSelected = { video ->
                     playbackRequest = video.toPlaybackRequest(forceStartPosition = true)
                   },
+                  onOwnerSelected = { video ->
+                    upSpaceUiState.reset()
+                    spaceOrigin = SpaceOrigin.Content
+                    spacePlaybackBehind = false
+                    spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+                  },
                 )
                 AppDestination.Dynamic -> DynamicFeedScreen(
                   videoRepository = videoRepository,
@@ -592,6 +598,12 @@ fun BiliTvApp(
                   },
                   onVideoSelected = { video ->
                     playbackRequest = video.toPlaybackRequest()
+                  },
+                  onOwnerSelected = { video ->
+                    upSpaceUiState.reset()
+                    spaceOrigin = SpaceOrigin.Content
+                    spacePlaybackBehind = false
+                    spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
                   },
                 )
                 AppDestination.Settings -> SettingsScreen(

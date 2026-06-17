@@ -83,6 +83,7 @@ internal fun DynamicFeedScreen(
   onRestoreFocusHandled: (Int) -> Unit,
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit = {},
 ) {
   if (!isLoggedIn) {
     FeedStatusScreen(message = stringResource(R.string.dynamic_signed_out))
@@ -191,6 +192,7 @@ internal fun DynamicFeedScreen(
     onLoadMore = ::loadNextPage,
     onMoveLeftToNav = onMoveLeftToNav,
     onVideoSelected = onVideoSelected,
+    onOwnerSelected = onOwnerSelected,
   )
 }
 
@@ -206,6 +208,7 @@ internal fun HistoryFeedScreen(
   onRestoreFocusHandled: (Int) -> Unit,
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit = {},
 ) {
   if (!isLoggedIn) {
     FeedStatusScreen(message = stringResource(R.string.history_signed_out))
@@ -321,6 +324,7 @@ internal fun HistoryFeedScreen(
     onLoadMore = ::loadNextPage,
     onMoveLeftToNav = onMoveLeftToNav,
     onVideoSelected = onVideoSelected,
+    onOwnerSelected = onOwnerSelected,
   )
 }
 
@@ -341,6 +345,7 @@ private fun UserFeedContent(
   onLoadMore: () -> Unit,
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit = {},
 ) {
   when (state) {
     UserFeedState.Loading -> VideoGridSkeleton()
@@ -364,6 +369,7 @@ private fun UserFeedContent(
       onLoadMore = onLoadMore,
       onMoveLeftToNav = onMoveLeftToNav,
       onVideoSelected = onVideoSelected,
+      onOwnerSelected = onOwnerSelected,
     )
   }
 }
@@ -380,6 +386,7 @@ private fun UserFeedGrid(
   onLoadMore: () -> Unit,
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit = {},
 ) {
   TvVideoGrid(
     videos = videos,
@@ -392,6 +399,7 @@ private fun UserFeedGrid(
     onLoadMore = onLoadMore,
     onMoveLeftToNav = onMoveLeftToNav,
     onVideoSelected = onVideoSelected,
+    onOwnerSelected = onOwnerSelected,
     keyFactory = { index, video -> video.feedKey(index) },
   )
 }
