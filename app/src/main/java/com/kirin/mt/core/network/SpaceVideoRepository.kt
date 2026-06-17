@@ -221,7 +221,7 @@ internal class SpaceVideoRepository(
     // base64("WebGL 1.0 (OpenGL ES 2.0 Chromium)") — 风控固定值
     const val DmImgStr = "V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ"
     const val RiskControlCode = -352
-    val SpaceInteractiveRetryDelaysMs = longArrayOf(500L, 1_000L, 2_000L)
+    val SpaceInteractiveRetryDelaysMs = longArrayOf(2_000L, 4_000L)
     val SpaceRecoveryRetryDelaysMs = longArrayOf(1_200L, 2_400L)
     val SpaceRecoveryFallbackRetryDelaysMs = longArrayOf(1_200L)
     val SpaceRetryableHttpCodes = setOf(412, 429, 500, 502, 503, 504)
