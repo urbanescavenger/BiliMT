@@ -33,27 +33,28 @@ internal class SpaceVideoRepository(
 
     val session = sessionStore.session.first()
     val sessData = session.sessData
-    val biliJct = session.biliJct
-    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
     val keys = wbiKeyRepository.ensureKeys(sessData)
     Log.i(
       LogTag,
       "space videos start mid=$mid order=$order page=$page hasSession=${!sessData.isNullOrBlank()} " +
-        "hasWbiKeys=${keys != null} hasBuvid3=${!buvid3.isNullOrBlank()} retryMode=$retryMode",
+        "hasWbiKeys=${keys != null} retryMode=$retryMode",
     )
+    // Params match BV getWebUserSpaceVideos exactly — extra params trigger 风控.
     val params = mapOf(
       "mid" to mid.toString(),
       "pn" to page.toString(),
       "ps" to SpacePageSize.toString(),
       "order" to order,
-      "index" to "1",
-      "order_avoided" to "true",
-      "platform" to "web",
-      "web_location" to SpaceHttpSupport.SpaceWebLocation,
+      "tid" to "0",
       // 风控参数 — 缺少会被 -352 拦截 (ref: BV getWebUserSpaceVideos)
       "dm_img_list" to "[]",
       "dm_img_str" to DmImgStr,
       "dm_cover_img_str" to DmImgStr,
+    )
+    // BV sends only SESSDATA in Cookie — buvid/biliJct/DedeUserID trigger 风控.
+    val headers = mapOf(
+      "Cookie" to "SESSDATA=${sessData.orEmpty()};",
+      "referer" to BiliHeaders.SpaceOrigin,
     )
 
     return runCatching {
@@ -61,11 +62,7 @@ internal class SpaceVideoRepository(
         params = params,
         imgKey = keys?.imgKey,
         subKey = keys?.subKey,
-        sessData = sessData,
-        biliJct = biliJct,
-        dedeUserId = session.mid,
-        buvid3 = buvid3,
-        buvid4 = buvid4,
+        headers = headers,
         context = "space archives",
         retryDelaysMs = retryMode.retryDelaysMs,
       )
@@ -83,11 +80,7 @@ internal class SpaceVideoRepository(
               params = params,
               imgKey = refreshedKeys.imgKey,
               subKey = refreshedKeys.subKey,
-              sessData = sessData,
-              biliJct = biliJct,
-              dedeUserId = session.mid,
-              buvid3 = buvid3,
-              buvid4 = buvid4,
+              headers = headers,
               context = "space archives refreshed",
               retryDelaysMs = SpaceRecoveryFallbackRetryDelaysMs,
             )
@@ -105,11 +98,7 @@ internal class SpaceVideoRepository(
           params = params,
           imgKey = null,
           subKey = null,
-          sessData = sessData,
-          biliJct = biliJct,
-          dedeUserId = session.mid,
-          buvid3 = buvid3,
-          buvid4 = buvid4,
+          headers = headers,
           context = "space archives fallback",
           retryDelaysMs = SpaceRecoveryFallbackRetryDelaysMs,
         )
@@ -129,11 +118,7 @@ internal class SpaceVideoRepository(
     params: Map<String, String>,
     imgKey: String?,
     subKey: String?,
-    sessData: String?,
-    biliJct: String?,
-    dedeUserId: Long?,
-    buvid3: String?,
-    buvid4: String?,
+    headers: Map<String, String>,
     context: String,
     retryDelaysMs: LongArray,
   ): List<VideoSummary> {
@@ -155,7 +140,7 @@ internal class SpaceVideoRepository(
         params
       }
       val result = runCatching {
-        getSpaceVideosWithParams(signedParams, sessData, biliJct, dedeUserId, buvid3, buvid4, context)
+        getSpaceVideosWithParams(signedParams, headers, context)
       }
       result.onSuccess { return it }
       val error = result.exceptionOrNull() ?: return emptyList()
@@ -173,11 +158,7 @@ internal class SpaceVideoRepository(
 
   private suspend fun getSpaceVideosWithParams(
     params: Map<String, String>,
-    sessData: String?,
-    biliJct: String?,
-    dedeUserId: Long?,
-    buvid3: String?,
-    buvid4: String?,
+    headers: Map<String, String>,
     context: String,
   ): List<VideoSummary> {
     val mid = params["mid"].orEmpty()
@@ -186,14 +167,7 @@ internal class SpaceVideoRepository(
     val root = apiClient.getJsonWithHeaders(
       url = BiliApiEndpoints.SpaceArcSearch,
       params = params,
-      headers = SpaceHttpSupport.headers(
-        mid = mid,
-        sessData = sessData,
-        biliJct = biliJct,
-        dedeUserId = dedeUserId,
-        buvid3 = buvid3,
-        buvid4 = buvid4,
-      ),
+      headers = headers,
     ).rootObject()
     root.requireBiliCodeOk(context)
 
