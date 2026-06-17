@@ -50,6 +50,10 @@ internal class SpaceVideoRepository(
       "order_avoided" to "true",
       "platform" to "web",
       "web_location" to SpaceHttpSupport.SpaceWebLocation,
+      // 风控参数 — 缺少会被 -352 拦截 (ref: BV getWebUserSpaceVideos)
+      "dm_img_list" to "[]",
+      "dm_img_str" to DmImgStr,
+      "dm_cover_img_str" to DmImgStr,
     )
     val signedParams = if (keys != null) {
       wbiSigner.sign(params, keys.imgKey, keys.subKey)
@@ -227,6 +231,8 @@ internal class SpaceVideoRepository(
     const val LogBodyPreviewLength = 160
     const val SpaceOrderPubdate = "pubdate"
     const val SpacePageSize = 25
+    // base64("WebGL 1.0 (OpenGL ES 2.0 Chromium)") — 风控固定值
+    const val DmImgStr = "V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ"
     val SpaceInteractiveRetryDelaysMs = longArrayOf(600L)
     val SpaceRecoveryRetryDelaysMs = longArrayOf(1_200L, 2_400L)
     val SpaceRecoveryFallbackRetryDelaysMs = longArrayOf(1_200L)
