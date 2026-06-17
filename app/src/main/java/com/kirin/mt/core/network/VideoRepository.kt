@@ -3,6 +3,7 @@ package com.kirin.mt.core.network
 import com.kirin.mt.core.auth.WbiKeyRepository
 import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.model.HomeSection
+import com.kirin.mt.core.model.SpaceUserProfile
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
 import kotlinx.coroutines.flow.first
@@ -33,6 +34,12 @@ class VideoRepository(
   )
   private val userFeedRepository = UserFeedRepository(
     apiClient = apiClient,
+    sessionStore = sessionStore,
+  )
+  private val spaceProfileRepository = SpaceProfileRepository(
+    apiClient = apiClient,
+    wbiKeyRepository = wbiKeyRepository,
+    wbiSigner = wbiSigner,
     sessionStore = sessionStore,
   )
 
@@ -68,6 +75,10 @@ class VideoRepository(
       order = order,
       retryMode = retryMode,
     )
+  }
+
+  suspend fun getSpaceUserProfile(mid: Long): SpaceUserProfile {
+    return spaceProfileRepository.getSpaceUserProfile(mid)
   }
 
   suspend fun checkFollowStatus(mid: Long): Boolean {

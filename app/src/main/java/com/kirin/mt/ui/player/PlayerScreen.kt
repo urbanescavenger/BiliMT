@@ -67,6 +67,7 @@ import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.CdnRewriter
+import com.kirin.mt.core.player.CdnSelection
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.DanmakuEntry
 import com.kirin.mt.core.player.DanmakuSettings
@@ -120,6 +121,8 @@ fun PlayerScreen(
   showClock: Boolean,
   showMiniProgressBar: Boolean,
   onBack: () -> Unit,
+  onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit = { _, _, _ -> },
+  spaceReturnKey: Int = 0,
 ) {
   val context = LocalContext.current
   val rootView = LocalView.current
@@ -270,6 +273,16 @@ fun PlayerScreen(
     }
     controlsVisible = true
     runCatching { controlsFocusRequester.requestFocus() }
+  }
+
+  // Returning from a UP 主主页 opened from the player chip: re-open the UP videos panel on the 查看主页 chip.
+  LaunchedEffect(spaceReturnKey) {
+    if (spaceReturnKey > 0 && playerState is PlayerScreenState.Ready) {
+      withFrameNanos { }
+      activePanel = PlayerPanel.UpVideos
+      focusedPanelIndex = UpFocusHome
+      showControls()
+    }
   }
 
   fun persistDanmakuSettings(next: DanmakuSettings) {
@@ -815,6 +828,13 @@ fun PlayerScreen(
               setUpFollowStatus(true)
             }
           }
+          UpFocusHome -> {
+            val ownerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
+            if (ownerMid > 0L) {
+              player.pause()
+              onOpenUpSpace(ownerMid, displayRequest.ownerName, displayRequest.ownerFace)
+            }
+          }
           else -> {
             val video = sidePanelVideos.getOrNull(focusedPanelIndex - UpPanelHeaderItemCount) ?: return
             coroutineScope.launch {
@@ -1008,18 +1028,16 @@ fun PlayerScreen(
       } else {
         selectedQuality = info.selectedQuality
         currentCodecText = info.videoTracks.firstOrNull()?.codecLabel().orEmpty()
-        val effectiveInfo = if (playbackCdnPreference == PlaybackCdnPreference.Auto) {
-          info.copy(
-            videoTracks = info.videoTracks.map { track ->
-              track.copy(baseUrl = cdnSelector.select(track, playbackCdnPreference))
-            },
-            audioTracks = info.audioTracks.map { track ->
-              track.copy(baseUrl = cdnSelector.select(track, playbackCdnPreference))
-            },
-          )
-        } else {
-          info
-        }
+        val effectiveInfo = info.copy(
+          videoTracks = info.videoTracks.map { track ->
+            val selection = cdnSelector.select(track, playbackCdnPreference)
+            track.copy(baseUrl = selection.primaryUrl, backupUrls = selection.fallbackUrls)
+          },
+          audioTracks = info.audioTracks.map { track ->
+            val selection = cdnSelector.select(track, playbackCdnPreference)
+            track.copy(baseUrl = selection.primaryUrl, backupUrls = selection.fallbackUrls)
+          },
+        )
         val requestedStartPositionMs = if (resolvedRequest.preferredQualityId != null || resolvedRequest.forceStartPosition) {
           resolvedRequest.startPositionMs
         } else {
@@ -1274,11 +1292,16 @@ fun PlayerScreen(
                     }
                   }
                   PlayerPanel.UpVideos -> {
-                    if (focusedPanelIndex == UpFocusFollow) {
-                      focusedPanelIndex = UpFocusSort
-                      showControls()
-                    } else {
-                      closePanelOrControls()
+                    when (focusedPanelIndex) {
+                      UpFocusHome -> {
+                        focusedPanelIndex = UpFocusFollow
+                        showControls()
+                      }
+                      UpFocusFollow -> {
+                        focusedPanelIndex = UpFocusSort
+                        showControls()
+                      }
+                      else -> closePanelOrControls()
                     }
                   }
                   else -> closePanelOrControls()
@@ -1299,6 +1322,10 @@ fun PlayerScreen(
                   activePanel == PlayerPanel.Danmaku -> adjustFocusedDanmakuSetting(1)
                   activePanel == PlayerPanel.UpVideos && focusedPanelIndex == UpFocusSort -> {
                     focusedPanelIndex = UpFocusFollow
+                    showControls()
+                  }
+                  activePanel == PlayerPanel.UpVideos && focusedPanelIndex == UpFocusFollow -> {
+                    focusedPanelIndex = UpFocusHome
                     showControls()
                   }
                 }
@@ -1476,8 +1503,17 @@ private fun PlaybackTrack.toRepresentation(
   contentType: String,
   cdnPreference: PlaybackCdnPreference,
 ): String {
-  val effectiveUrl = CdnRewriter.rewrite(baseUrl, cdnPreference)
-  val escapedUrl = effectiveUrl.escapeXml()
+  val primaryUrl = CdnRewriter.rewrite(baseUrl, cdnPreference)
+  val fallbackUrls = backupUrls
+    .asSequence()
+    .map { CdnRewriter.rewrite(it, cdnPreference) }
+    .filter { it != primaryUrl }
+    .distinct()
+    .toList()
+  val baseUrlElements = (listOf(primaryUrl) + fallbackUrls)
+    .joinToString(separator = "\n      ") { url ->
+      "<BaseURL>${url.escapeXml()}</BaseURL>"
+    }
   val dimensions = if (contentType == "video") {
     """ width="$width" height="$height""""
   } else {
@@ -1485,7 +1521,7 @@ private fun PlaybackTrack.toRepresentation(
   }
   return """
     <Representation id="${adaptationSetId}_$id" bandwidth="$bandwidth" codecs="${codecs.escapeXml()}"$dimensions>
-      <BaseURL>$escapedUrl</BaseURL>
+      $baseUrlElements
       <SegmentBase indexRange="${segmentBase.indexRange.escapeXml()}">
         <Initialization range="${segmentBase.initializationRange.escapeXml()}" />
       </SegmentBase>

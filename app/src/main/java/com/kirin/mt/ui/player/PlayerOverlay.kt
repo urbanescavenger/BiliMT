@@ -1079,6 +1079,12 @@ private fun UploaderPanelHeader(
       focused = focusedIndex == UpFocusFollow,
       selected = followed,
     )
+    Spacer(modifier = Modifier.width(BiliSpacing.Sm))
+    UpPanelChip(
+      text = stringResource(R.string.player_up_view_home),
+      focused = focusedIndex == UpFocusHome,
+      selected = false,
+    )
   }
 }
 
@@ -1971,7 +1977,8 @@ internal const val UpVideoOrderLatest = "pubdate"
 internal const val UpVideoOrderHot = "click"
 internal const val UpFocusSort = 0
 internal const val UpFocusFollow = 1
-internal const val UpPanelHeaderItemCount = 2
+internal const val UpFocusHome = 2
+internal const val UpPanelHeaderItemCount = 3
 
 private const val UpPanelChipSelectedSurfaceAlpha = 0.16f
 private const val UpPanelChipFocusedBorderAlpha = 0.82f

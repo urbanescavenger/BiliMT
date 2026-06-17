@@ -1,16 +1,13 @@
 package com.kirin.mt.core.network
 
-import android.util.Base64
 import android.util.Log
 import com.kirin.mt.core.auth.WbiKeyRepository
 import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
-import java.util.UUID
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
-import org.json.JSONObject
 
 enum class SpaceVideoRetryMode {
   Interactive,
@@ -36,38 +33,38 @@ internal class SpaceVideoRepository(
 
     val session = sessionStore.session.first()
     val sessData = session.sessData
-    val biliJct = session.biliJct
-    val (buvid3, buvid4) = ensureSpaceBuvidCookies()
     val keys = wbiKeyRepository.ensureKeys(sessData)
     Log.i(
       LogTag,
       "space videos start mid=$mid order=$order page=$page hasSession=${!sessData.isNullOrBlank()} " +
-        "hasWbiKeys=${keys != null} hasBuvid3=${!buvid3.isNullOrBlank()} retryMode=$retryMode",
+        "hasWbiKeys=${keys != null} retryMode=$retryMode",
     )
-    val params = mutableMapOf(
+    // Params match BV getWebUserSpaceVideos exactly — extra params trigger 风控.
+    val params = mapOf(
       "mid" to mid.toString(),
       "pn" to page.toString(),
       "ps" to SpacePageSize.toString(),
       "order" to order,
-      "index" to "1",
-      "order_avoided" to "true",
-      "platform" to "web",
-      "web_location" to SpaceWebLocation,
+      "tid" to "0",
+      // 风控参数 — 缺少会被 -352 拦截 (ref: BV getWebUserSpaceVideos)
+      "dm_img_list" to "[]",
+      "dm_img_str" to DmImgStr,
+      "dm_cover_img_str" to DmImgStr,
     )
-    val signedParams = if (keys != null) {
-      wbiSigner.sign(params, keys.imgKey, keys.subKey)
-    } else {
-      params
-    }
+    // BV sends only SESSDATA in Cookie — buvid/biliJct/DedeUserID trigger 风控.
+    // User-Agent 必须跟 dm_img_str (OpenGL ES Chromium) 一致，否则指纹矛盾触发 412.
+    val headers = mapOf(
+      "Cookie" to "SESSDATA=${sessData.orEmpty()};",
+      "referer" to BiliHeaders.SpaceOrigin,
+      "User-Agent" to SpaceUserAgent,
+    )
 
     return runCatching {
-      getSpaceVideosWithParamsWithRetry(
-        params = signedParams,
-        sessData = sessData,
-        biliJct = biliJct,
-        dedeUserId = session.mid,
-        buvid3 = buvid3,
-        buvid4 = buvid4,
+      signAndFetchSpaceVideos(
+        params = params,
+        imgKey = keys?.imgKey,
+        subKey = keys?.subKey,
+        headers = headers,
         context = "space archives",
         retryDelaysMs = retryMode.retryDelaysMs,
       )
@@ -76,18 +73,16 @@ internal class SpaceVideoRepository(
       if (retryMode == SpaceVideoRetryMode.Interactive) {
         throw signedError
       }
+      // Recovery mode: refresh wbi keys and retry
       val refreshedVideos = if (keys != null) {
         val refreshedKeys = wbiKeyRepository.refreshKeys(sessData)
         if (refreshedKeys != null) {
-          val refreshedSignedParams = wbiSigner.sign(params, refreshedKeys.imgKey, refreshedKeys.subKey)
           runCatching {
-            getSpaceVideosWithParamsWithRetry(
-              params = refreshedSignedParams,
-              sessData = sessData,
-              biliJct = biliJct,
-              dedeUserId = session.mid,
-              buvid3 = buvid3,
-              buvid4 = buvid4,
+            signAndFetchSpaceVideos(
+              params = params,
+              imgKey = refreshedKeys.imgKey,
+              subKey = refreshedKeys.subKey,
+              headers = headers,
               context = "space archives refreshed",
               retryDelaysMs = SpaceRecoveryFallbackRetryDelaysMs,
             )
@@ -100,34 +95,32 @@ internal class SpaceVideoRepository(
       } else {
         null
       }
-      refreshedVideos ?: if (signedParams == params) {
-        emptyList()
-      } else {
-        runCatching {
-          getSpaceVideosWithParamsWithRetry(
-            params = params,
-            sessData = sessData,
-            biliJct = biliJct,
-            dedeUserId = session.mid,
-            buvid3 = buvid3,
-            buvid4 = buvid4,
-            context = "space archives fallback",
-            retryDelaysMs = SpaceRecoveryFallbackRetryDelaysMs,
-          )
-        }.onFailure { fallbackError ->
-          logSpaceVideosFailure("unsigned fallback", fallbackError)
-        }.getOrDefault(emptyList())
-      }
+      refreshedVideos ?: runCatching {
+        signAndFetchSpaceVideos(
+          params = params,
+          imgKey = null,
+          subKey = null,
+          headers = headers,
+          context = "space archives fallback",
+          retryDelaysMs = SpaceRecoveryFallbackRetryDelaysMs,
+        )
+      }.onFailure { fallbackError ->
+        logSpaceVideosFailure("unsigned fallback", fallbackError)
+      }.getOrDefault(emptyList())
     }
   }
 
-  private suspend fun getSpaceVideosWithParamsWithRetry(
+  /**
+   * Signs params (fresh wts + w_rid per attempt) and fetches with retries.
+   *
+   * Signing inside the loop ensures every retry gets a new timestamp,
+   * which matters when the server rejects stale wts or applies transient 风控 (-352).
+   */
+  private suspend fun signAndFetchSpaceVideos(
     params: Map<String, String>,
-    sessData: String?,
-    biliJct: String?,
-    dedeUserId: Long?,
-    buvid3: String?,
-    buvid4: String?,
+    imgKey: String?,
+    subKey: String?,
+    headers: Map<String, String>,
     context: String,
     retryDelaysMs: LongArray,
   ): List<VideoSummary> {
@@ -142,8 +135,14 @@ internal class SpaceVideoRepository(
         )
         delay(delayMs)
       }
+      // Fresh wts + w_rid on every attempt
+      val signedParams = if (imgKey != null && subKey != null) {
+        wbiSigner.sign(params, imgKey, subKey)
+      } else {
+        params
+      }
       val result = runCatching {
-        getSpaceVideosWithParams(params, sessData, biliJct, dedeUserId, buvid3, buvid4, context)
+        getSpaceVideosWithParams(signedParams, headers, context)
       }
       result.onSuccess { return it }
       val error = result.exceptionOrNull() ?: return emptyList()
@@ -161,11 +160,7 @@ internal class SpaceVideoRepository(
 
   private suspend fun getSpaceVideosWithParams(
     params: Map<String, String>,
-    sessData: String?,
-    biliJct: String?,
-    dedeUserId: Long?,
-    buvid3: String?,
-    buvid4: String?,
+    headers: Map<String, String>,
     context: String,
   ): List<VideoSummary> {
     val mid = params["mid"].orEmpty()
@@ -174,14 +169,7 @@ internal class SpaceVideoRepository(
     val root = apiClient.getJsonWithHeaders(
       url = BiliApiEndpoints.SpaceArcSearch,
       params = params,
-      headers = spaceHeaders(
-        mid = mid,
-        sessData = sessData,
-        biliJct = biliJct,
-        dedeUserId = dedeUserId,
-        buvid3 = buvid3,
-        buvid4 = buvid4,
-      ),
+      headers = headers,
     ).rootObject()
     root.requireBiliCodeOk(context)
 
@@ -207,98 +195,6 @@ internal class SpaceVideoRepository(
     Log.w(LogTag, "space videos $stage failed: ${error.toSpaceVideoBrief()}")
   }
 
-  private suspend fun ensureSpaceBuvidCookies(): Pair<String?, String?> {
-    val cachedBuvid3 = sessionStore.buvid3.first()
-    val cachedBuvid4 = sessionStore.buvid4.first()
-    if (!cachedBuvid3.isNullOrBlank()) {
-      return cachedBuvid3 to cachedBuvid4
-    }
-
-    return runCatching {
-      val root = apiClient.getJson(url = BiliApiEndpoints.BuvidSpi).rootObject()
-      root.requireBiliCodeOk("buvid spi")
-      val data = root.obj("data")
-      val buvid3 = data?.string("b_3").orEmpty().ifBlank { "${UUID.randomUUID()}infoc" }
-      val buvid4 = data?.string("b_4").orEmpty().takeIf { it.isNotBlank() }
-      sessionStore.saveDeviceCookies(buvid3 = buvid3, buvid4 = buvid4)
-      runCatching { activateBuvid(buvid3) }.onFailure { error ->
-        Log.w(LogTag, "buvid activate failed: ${error.toSpaceVideoBrief()}")
-      }
-      Log.i(LogTag, "buvid ready source=spi hasBuvid3=${buvid3.isNotBlank()} hasBuvid4=${!buvid4.isNullOrBlank()}")
-      buvid3 to buvid4
-    }.getOrElse { error ->
-      val fallbackBuvid3 = "${UUID.randomUUID()}infoc"
-      sessionStore.saveDeviceCookies(buvid3 = fallbackBuvid3, buvid4 = null)
-      Log.w(LogTag, "buvid spi failed, generated fallback: ${error.toSpaceVideoBrief()}")
-      fallbackBuvid3 to null
-    }
-  }
-
-  private suspend fun activateBuvid(buvid3: String) {
-    val random = java.util.Random()
-    val randomBytes = ByteArray(32).also { random.nextBytes(it) }
-    val tailBytes = byteArrayOf(0, 0, 0, 0, 73, 69, 78, 68) + ByteArray(4).also { random.nextBytes(it) }
-    val encodedTail = Base64.encodeToString(randomBytes + tailBytes, Base64.NO_WRAP)
-    val payload = JSONObject().apply {
-      put("3064", 1)
-      put("39c8", "333.999.fp.risk")
-      put(
-        "3c43",
-        JSONObject().apply {
-          put("adca", "Windows")
-          put("bfe9", encodedTail.takeLast(50))
-        },
-      )
-    }.toString()
-    val root = apiClient.postFormJson(
-      url = BiliApiEndpoints.BuvidActivate,
-      params = mapOf("payload" to payload),
-      headers = buildMap {
-        put("Origin", BiliHeaders.Origin)
-        BiliHeaders.cookie(sessData = null, buvid3 = buvid3)?.let { cookie -> put("Cookie", cookie) }
-      },
-    ).rootObject()
-    val code = root.int("code")
-    if (code != 0) {
-      throw BiliApiCodeException(
-        context = "buvid activate",
-        code = code,
-        biliMessage = root.string("message"),
-      )
-    }
-  }
-
-  private fun spaceHeaders(
-    mid: String,
-    sessData: String?,
-    biliJct: String?,
-    dedeUserId: Long?,
-    buvid3: String?,
-    buvid4: String?,
-  ): Map<String, String> {
-    return buildMap {
-      put("User-Agent", BiliHeaders.UserAgent)
-      put("Accept", "*/*")
-      put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8,ja;q=0.7,zh-TW;q=0.6")
-      put("Origin", BiliHeaders.SpaceOrigin)
-      put("Referer", "https://space.bilibili.com/$mid")
-      put("Priority", "u=1, i")
-      put("sec-ch-ua", "\"Google Chrome\";v=\"147\", \"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"147\"")
-      put("sec-ch-ua-mobile", "?0")
-      put("sec-ch-ua-platform", "\"Windows\"")
-      put("Sec-Fetch-Dest", "empty")
-      put("Sec-Fetch-Mode", "cors")
-      put("Sec-Fetch-Site", "same-site")
-      BiliHeaders.cookie(
-        sessData = sessData,
-        biliJct = biliJct,
-        buvid3 = buvid3,
-        buvid4 = buvid4,
-        dedeUserId = dedeUserId,
-      )?.let { cookie -> put("Cookie", cookie) }
-    }
-  }
-
   private fun Throwable.toSpaceVideoBrief(): String {
     return when (this) {
       is BiliApiCodeException -> "code=$code message=$biliMessage"
@@ -308,7 +204,9 @@ internal class SpaceVideoRepository(
   }
 
   private fun Throwable.isRetryableSpaceFailure(): Boolean {
-    return this is BiliNetworkException && statusCode in SpaceRetryableHttpCodes
+    if (this is BiliNetworkException && statusCode in SpaceRetryableHttpCodes) return true
+    if (this is BiliApiCodeException && code == RiskControlCode) return true
+    return false
   }
 
   private val SpaceVideoRetryMode.retryDelaysMs: LongArray
@@ -321,9 +219,14 @@ internal class SpaceVideoRepository(
     const val LogTag = "BiliVideoRepository"
     const val LogBodyPreviewLength = 160
     const val SpaceOrderPubdate = "pubdate"
-    const val SpacePageSize = 25
-    const val SpaceWebLocation = "333.1387"
-    val SpaceInteractiveRetryDelaysMs = longArrayOf(600L)
+    const val SpacePageSize = 30
+    // base64("WebGL 1.0 (OpenGL ES 2.0 Chromium)") — 风控固定值
+    const val DmImgStr = "V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ"
+    // Linux Chromium UA — 跟 dm_img_str (OpenGL ES Chromium) 指纹一致 (ref: BV BiliUserAgent)
+    const val SpaceUserAgent =
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    const val RiskControlCode = -352
+    val SpaceInteractiveRetryDelaysMs = longArrayOf(2_000L, 4_000L)
     val SpaceRecoveryRetryDelaysMs = longArrayOf(1_200L, 2_400L)
     val SpaceRecoveryFallbackRetryDelaysMs = longArrayOf(1_200L)
     val SpaceRetryableHttpCodes = setOf(412, 429, 500, 502, 503, 504)

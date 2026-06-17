@@ -125,7 +125,7 @@ internal object VideoSummaryMappers {
       .ifBlank { obj("owner")?.string("face").orEmpty() }
   }
 
-  private fun fixPicUrl(url: String): String {
+  internal fun fixPicUrl(url: String): String {
     return when {
       url.startsWith("//") -> "https:$url"
       url.startsWith("http://") -> "https://${url.removePrefix("http://")}"

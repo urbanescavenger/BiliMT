@@ -69,6 +69,9 @@ import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.storage.SearchHistoryStore
 import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.VideoGridSkeleton
+import com.kirin.mt.ui.common.appendUniqueByBvid
+import com.kirin.mt.ui.common.focusRestoreKey
+import com.kirin.mt.ui.common.resolveFocusIndex
 import com.kirin.mt.ui.focus.BiliFocusableSurface
 import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.home.VideoCard
@@ -1044,32 +1047,6 @@ private val LazyGridItemInfo.columnAnchor: Int
 
 private fun Key.isConfirmKey(): Boolean {
   return this == Key.Enter || this == Key.NumPadEnter || this == Key.DirectionCenter
-}
-
-private fun List<VideoSummary>.appendUniqueByBvid(nextVideos: List<VideoSummary>): List<VideoSummary> {
-  if (nextVideos.isEmpty()) {
-    return this
-  }
-  val knownBvids = mapTo(mutableSetOf()) { video -> video.bvid }
-  return this + nextVideos.filter { video -> knownBvids.add(video.bvid) }
-}
-
-private fun List<VideoSummary>.resolveFocusIndex(focusKey: String, fallbackIndex: Int): Int {
-  val keyIndex = focusKey
-    .takeIf { key -> key.isNotBlank() }
-    ?.let { key -> indexOfFirst { video -> video.focusRestoreKey() == key } }
-    ?.takeIf { index -> index >= 0 }
-  return keyIndex ?: fallbackIndex.coerceIn(0, lastIndex)
-}
-
-private fun VideoSummary.focusRestoreKey(): String {
-  return bvid.ifBlank {
-    when {
-      cid > 0L -> "cid-$cid"
-      historyPage > 0 -> "p-$historyPage"
-      else -> ""
-    }
-  }
 }
 
 private fun Int.shouldLoadMore(totalItems: Int, threshold: Int): Boolean {

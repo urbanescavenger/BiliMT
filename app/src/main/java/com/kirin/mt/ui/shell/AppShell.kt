@@ -80,6 +80,9 @@ import com.kirin.mt.ui.search.SearchScreen
 import com.kirin.mt.ui.search.SearchUiState
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.settings.SettingsScreen
+import com.kirin.mt.ui.space.UpSpaceRequest
+import com.kirin.mt.ui.space.UpSpaceScreen
+import com.kirin.mt.ui.space.UpSpaceUiState
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliMotion
@@ -202,6 +205,12 @@ fun BiliTvApp(
   var appExitConfirmToast by remember { mutableStateOf<Toast?>(null) }
   var pendingContentFocusDestination by remember { mutableStateOf<AppDestination?>(null) }
   var cacheSizeBytes by remember { mutableStateOf<Long?>(null) }
+  var spaceRequest by remember { mutableStateOf<UpSpaceRequest?>(null) }
+  var spaceOrigin by remember { mutableStateOf<SpaceOrigin?>(null) }
+  var spacePlaybackBehind by remember { mutableStateOf(false) }
+  var spaceFocusRestoreRequestKey by remember { mutableIntStateOf(0) }
+  val upSpaceUiState = remember { UpSpaceUiState() }
+  val spaceFocusRequester = remember { FocusRequester() }
 
   LaunchedEffect(performancePolicy.imageMemoryCacheEnabled) {
     if (!performancePolicy.imageMemoryCacheEnabled) {
@@ -522,6 +531,12 @@ fun BiliTvApp(
                   onVideoSelected = { video ->
                     playbackRequest = video.toPlaybackRequest()
                   },
+                  onOwnerSelected = { video ->
+                    upSpaceUiState.reset()
+                    spaceOrigin = SpaceOrigin.Content
+                    spacePlaybackBehind = false
+                    spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+                  },
                 )
                 AppDestination.Search -> SearchScreen(
                   videoRepository = videoRepository,
@@ -788,6 +803,51 @@ fun BiliTvApp(
               playbackRequest = null
               playbackFocusRestoreRequestKey += 1
             },
+            onOpenUpSpace = { mid, ownerName, ownerFace ->
+              upSpaceUiState.reset()
+              spaceOrigin = SpaceOrigin.Player
+              spacePlaybackBehind = true
+              spaceRequest = UpSpaceRequest(mid, ownerName, ownerFace)
+            },
+            spaceReturnKey = spaceFocusRestoreRequestKey,
+          )
+        }
+      }
+      val displayedSpaceRequest = spaceRequest
+      if (displayedSpaceRequest != null &&
+        (visiblePlaybackRequest == null || (spaceOrigin == SpaceOrigin.Player && spacePlaybackBehind))
+      ) {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(BiliColors.VideoBlack),
+        ) {
+          UpSpaceScreen(
+            request = displayedSpaceRequest,
+            videoRepository = videoRepository,
+            isLoggedIn = userSession.isLoggedIn,
+            uiState = upSpaceUiState,
+            firstItemFocusRequester = spaceFocusRequester,
+            restoreFocusRequestKey = spaceFocusRestoreRequestKey,
+            onRestoreFocusHandled = { key ->
+              if (key == spaceFocusRestoreRequestKey) spaceFocusRestoreRequestKey = 0
+            },
+            onBack = {
+              spaceRequest = null
+              val origin = spaceOrigin
+              spaceOrigin = null
+              spacePlaybackBehind = false
+              when (origin) {
+                SpaceOrigin.Player -> spaceFocusRestoreRequestKey += 1
+                SpaceOrigin.Content -> requestContentFocusRestore(selectedDestination)
+                else -> Unit
+              }
+              true
+            },
+            onVideoSelected = { video ->
+              spacePlaybackBehind = false
+              playbackRequest = video.toPlaybackRequest()
+            },
           )
         }
       }
@@ -801,6 +861,8 @@ fun BiliTvApp(
     }
   }
 }
+
+private enum class SpaceOrigin { Player, Content }
 
 private tailrec fun Context.findActivity(): Activity? {
   return when (this) {
