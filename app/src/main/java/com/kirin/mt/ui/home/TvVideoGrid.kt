@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.home
 
+import android.os.SystemClock
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
@@ -20,6 +21,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -53,6 +55,10 @@ import kotlin.math.roundToInt
 
 private const val TvGridRestoreFocusRetryCount = 8
 
+// Keys that confirm a card selection; holding one for this long opens the card owner's UP 主主页.
+private val VideoCardOwnerConfirmKeys = setOf(Key.DirectionCenter, Key.Enter, Key.NumPadEnter)
+private const val VideoCardOwnerLongPressMs = 500L
+
 private val TvGridBringIntoViewSpec = object : BringIntoViewSpec {
   override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
     // D-pad row scrolling is handled below. Returning 0 prevents Compose's
@@ -73,6 +79,7 @@ internal fun TvVideoGrid(
   onLoadMore: () -> Unit,
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit = {},
   modifier: Modifier = Modifier,
   cardMode: VideoCardMode = VideoCardMode.Standard,
   requestInitialFocus: Boolean = false,
@@ -94,6 +101,7 @@ internal fun TvVideoGrid(
   }
   val listState = rememberLazyListState(initialFirstVisibleItemIndex = restoreTargetRow)
   val coroutineScope = rememberCoroutineScope()
+  var centerDownMs by remember { mutableLongStateOf(0L) }
   val performancePolicy = LocalBiliPerformancePolicy.current
   val density = LocalDensity.current
   val topBleedPx = with(density) { topBleed.roundToPx() }
@@ -308,20 +316,44 @@ internal fun TvVideoGrid(
                   .weight(1f)
                   .focusRequester(itemFocusRequesters[index])
                   .onPreviewKeyEvent { event ->
-                    if (event.type != KeyEventType.KeyDown) {
-                      return@onPreviewKeyEvent false
-                    }
-                    when (event.key) {
-                      Key.Back -> onBackKey?.invoke() ?: false
-                      Key.DirectionUp,
-                      Key.DirectionDown,
-                      Key.DirectionLeft,
-                      Key.DirectionRight -> moveFocus(index, event.key)
-                      else -> false
+                    if (event.key in VideoCardOwnerConfirmKeys) {
+                      // Long-press of the OK/confirm key opens this card owner's UP 主主页;
+                      // a short tap falls through (returns false) so the card onClick plays the video.
+                      when (event.type) {
+                        KeyEventType.KeyDown -> {
+                          if (centerDownMs == 0L) {
+                            centerDownMs = SystemClock.uptimeMillis()
+                          }
+                          false
+                        }
+                        KeyEventType.KeyUp -> {
+                          val held = if (centerDownMs > 0L) SystemClock.uptimeMillis() - centerDownMs else 0L
+                          centerDownMs = 0L
+                          if (held >= VideoCardOwnerLongPressMs && video.ownerMid > 0L) {
+                            onOwnerSelected(video)
+                            true
+                          } else {
+                            false
+                          }
+                        }
+                        else -> false
+                      }
+                    } else if (event.type != KeyEventType.KeyDown) {
+                      false
+                    } else {
+                      when (event.key) {
+                        Key.Back -> onBackKey?.invoke() ?: false
+                        Key.DirectionUp,
+                        Key.DirectionDown,
+                        Key.DirectionLeft,
+                        Key.DirectionRight -> moveFocus(index, event.key)
+                        else -> false
+                      }
                     }
                 },
                 onFocused = {
                   focusedIndex = index
+                  centerDownMs = 0L
                   commitFocusedItem(index)
                   if (index.shouldLoadMore(
                       totalItems = videos.size,
@@ -335,6 +367,7 @@ internal fun TvVideoGrid(
                   commitFocusedItem(index)
                   onVideoSelected(video)
                 },
+                onOwnerTap = { onOwnerSelected(video) },
               )
             } else {
               Spacer(modifier = Modifier.weight(1f))

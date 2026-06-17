@@ -106,6 +106,7 @@ internal fun RecommendScreen(
   onInitialFocusRequested: () -> Unit,
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit,
 ) {
   val coroutineScope = rememberCoroutineScope()
   val sections = remember(enabledHomeSections) {
@@ -338,6 +339,7 @@ internal fun RecommendScreen(
             onLoadMore = ::loadNextPage,
             onMoveLeftToNav = onMoveLeftToNav,
             onVideoSelected = onVideoSelected,
+            onOwnerSelected = onOwnerSelected,
           )
         }
       }
@@ -537,6 +539,7 @@ private fun RecommendGrid(
   onLoadMore: () -> Unit,
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit,
 ) {
   TvVideoGrid(
     videos = videos,
@@ -557,6 +560,7 @@ private fun RecommendGrid(
     topPadding = BiliSizing.HomeVideoGridTopPadding + BiliSizing.HomeVideoGridTopBleed,
     topBleed = BiliSizing.HomeVideoGridTopBleed,
     onVideoSelected = onVideoSelected,
+    onOwnerSelected = onOwnerSelected,
   )
 }
 

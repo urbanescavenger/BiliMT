@@ -121,6 +121,8 @@ fun PlayerScreen(
   showClock: Boolean,
   showMiniProgressBar: Boolean,
   onBack: () -> Unit,
+  onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit = { _, _, _ -> },
+  spaceReturnKey: Int = 0,
 ) {
   val context = LocalContext.current
   val rootView = LocalView.current
@@ -271,6 +273,16 @@ fun PlayerScreen(
     }
     controlsVisible = true
     runCatching { controlsFocusRequester.requestFocus() }
+  }
+
+  // Returning from a UP 主主页 opened from the player chip: re-open the UP videos panel on the 查看主页 chip.
+  LaunchedEffect(spaceReturnKey) {
+    if (spaceReturnKey > 0 && playerState is PlayerScreenState.Ready) {
+      withFrameNanos { }
+      activePanel = PlayerPanel.UpVideos
+      focusedPanelIndex = UpFocusHome
+      showControls()
+    }
   }
 
   fun persistDanmakuSettings(next: DanmakuSettings) {
@@ -816,6 +828,13 @@ fun PlayerScreen(
               setUpFollowStatus(true)
             }
           }
+          UpFocusHome -> {
+            val ownerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
+            if (ownerMid > 0L) {
+              player.pause()
+              onOpenUpSpace(ownerMid, displayRequest.ownerName, displayRequest.ownerFace)
+            }
+          }
           else -> {
             val video = sidePanelVideos.getOrNull(focusedPanelIndex - UpPanelHeaderItemCount) ?: return
             coroutineScope.launch {
@@ -1273,11 +1292,16 @@ fun PlayerScreen(
                     }
                   }
                   PlayerPanel.UpVideos -> {
-                    if (focusedPanelIndex == UpFocusFollow) {
-                      focusedPanelIndex = UpFocusSort
-                      showControls()
-                    } else {
-                      closePanelOrControls()
+                    when (focusedPanelIndex) {
+                      UpFocusHome -> {
+                        focusedPanelIndex = UpFocusFollow
+                        showControls()
+                      }
+                      UpFocusFollow -> {
+                        focusedPanelIndex = UpFocusSort
+                        showControls()
+                      }
+                      else -> closePanelOrControls()
                     }
                   }
                   else -> closePanelOrControls()
@@ -1298,6 +1322,10 @@ fun PlayerScreen(
                   activePanel == PlayerPanel.Danmaku -> adjustFocusedDanmakuSetting(1)
                   activePanel == PlayerPanel.UpVideos && focusedPanelIndex == UpFocusSort -> {
                     focusedPanelIndex = UpFocusFollow
+                    showControls()
+                  }
+                  activePanel == PlayerPanel.UpVideos && focusedPanelIndex == UpFocusFollow -> {
+                    focusedPanelIndex = UpFocusHome
                     showControls()
                   }
                 }

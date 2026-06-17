@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,6 +42,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -87,6 +89,7 @@ fun VideoCard(
   interactionPaused: Boolean = false,
   onClick: () -> Unit = {},
   onFocused: () -> Unit = {},
+  onOwnerTap: () -> Unit = {},
 ) {
   var focused by remember { mutableStateOf(false) }
   val performancePolicy = LocalBiliPerformancePolicy.current
@@ -236,6 +239,7 @@ fun VideoCard(
             mode = mode,
             focused = focused,
             focusEffectsEnabled = focusEffectsEnabled,
+            onOwnerTap = onOwnerTap,
           )
         }
       }
@@ -330,6 +334,7 @@ private fun MetadataRow(
   mode: VideoCardMode,
   focused: Boolean,
   focusEffectsEnabled: Boolean,
+  onOwnerTap: () -> Unit = {},
 ) {
   val homeColors = LocalHomeColors.current
   val ownerName = convertChineseText(video.ownerName)
@@ -363,17 +368,23 @@ private fun MetadataRow(
     verticalAlignment = Alignment.CenterVertically,
   ) {
     if (video.ownerName.isNotBlank()) {
-      OwnerAvatar(video)
-      Spacer(modifier = Modifier.width(BiliSpacing.Sm))
-      Text(
-        text = ownerName,
-        color = ownerColor,
-        fontSize = BiliTypography.CardMeta,
-        lineHeight = BiliTypography.CardMetaLineHeight,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.weight(1f),
-      )
+      Row(
+        modifier = Modifier
+          .weight(1f)
+          .pointerInput(video.ownerMid) { detectTapGestures(onTap = { onOwnerTap() }) },
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        OwnerAvatar(video)
+        Spacer(modifier = Modifier.width(BiliSpacing.Sm))
+        Text(
+          text = ownerName,
+          color = ownerColor,
+          fontSize = BiliTypography.CardMeta,
+          lineHeight = BiliTypography.CardMetaLineHeight,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
     } else {
       Spacer(modifier = Modifier.weight(1f))
     }
