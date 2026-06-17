@@ -557,6 +557,12 @@ fun BiliTvApp(
                   onVideoSelected = { video ->
                     playbackRequest = video.toPlaybackRequest()
                   },
+                  onOwnerSelected = { video ->
+                    upSpaceUiState.reset()
+                    spaceOrigin = SpaceOrigin.Content
+                    spacePlaybackBehind = false
+                    spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+                  },
                 )
                 AppDestination.History -> HistoryFeedScreen(
                   videoRepository = videoRepository,

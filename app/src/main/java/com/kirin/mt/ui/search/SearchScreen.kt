@@ -161,6 +161,7 @@ internal fun SearchScreen(
   onRestoreFocusHandled: (Int) -> Unit,
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
   val searchHistory by searchHistoryStore.history.collectAsState(initial = emptyList())
@@ -732,6 +733,7 @@ private fun SearchResultsView(
           onMoveLeftToNav = onMoveLeftToNav,
           onBackToKeyboard = onBackToKeyboard,
           onVideoSelected = onVideoSelected,
+          onOwnerSelected = onOwnerSelected,
         )
       }
     }
@@ -900,6 +902,7 @@ private fun SearchResultGrid(
   onMoveLeftToNav: () -> Boolean,
   onBackToKeyboard: () -> Unit,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit = {},
 ) {
   LaunchedEffect(videos, focusFirstResult) {
     if (videos.isNotEmpty() && focusFirstResult) {
@@ -930,6 +933,7 @@ private fun SearchResultGrid(
       true
     },
     onVideoSelected = onVideoSelected,
+    onOwnerSelected = onOwnerSelected,
     horizontalPadding = BiliSizing.SearchVideoGridHorizontalPadding,
   )
 }
