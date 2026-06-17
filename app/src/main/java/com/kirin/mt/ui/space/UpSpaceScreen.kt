@@ -201,16 +201,6 @@ internal fun UpSpaceScreen(
     }
   }
 
-  fun toggleFollow() {
-    if (!isLoggedIn || uiState.followLoading) return
-    if (uiState.followed) {
-      uiState.showUnfollowConfirm = true
-      uiState.unfollowConfirmFocusedConfirm = false
-    } else {
-      setFollow(true)
-    }
-  }
-
   fun setFollow(follow: Boolean) {
     if (mid <= 0L || uiState.followLoading) return
     uiState.followLoading = true
@@ -221,6 +211,16 @@ internal fun UpSpaceScreen(
       }
       uiState.followLoading = false
       uiState.showUnfollowConfirm = false
+    }
+  }
+
+  fun toggleFollow() {
+    if (!isLoggedIn || uiState.followLoading) return
+    if (uiState.followed) {
+      uiState.showUnfollowConfirm = true
+      uiState.unfollowConfirmFocusedConfirm = false
+    } else {
+      setFollow(true)
     }
   }
 
