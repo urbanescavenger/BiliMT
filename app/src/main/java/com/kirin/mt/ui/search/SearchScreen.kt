@@ -245,6 +245,7 @@ internal fun SearchScreen(
           returnFocusToKeyboard = true
         },
         onVideoSelected = onVideoSelected,
+        onOwnerSelected = onOwnerSelected,
       )
     }
   }
@@ -584,6 +585,7 @@ private fun SearchResultsView(
   onMoveLeftToNav: () -> Boolean,
   onBackToKeyboard: () -> Unit,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
   val sortFocusRequesters = remember {
