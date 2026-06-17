@@ -219,7 +219,7 @@ internal class SpaceVideoRepository(
     const val LogTag = "BiliVideoRepository"
     const val LogBodyPreviewLength = 160
     const val SpaceOrderPubdate = "pubdate"
-    const val SpacePageSize = 25
+    const val SpacePageSize = 30
     // base64("WebGL 1.0 (OpenGL ES 2.0 Chromium)") — 风控固定值
     const val DmImgStr = "V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ"
     // Linux Chromium UA — 跟 dm_img_str (OpenGL ES Chromium) 指纹一致 (ref: BV BiliUserAgent)

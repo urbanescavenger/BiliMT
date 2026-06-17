@@ -11,7 +11,7 @@ import com.kirin.mt.core.model.VideoSummary
 
 internal const val UpSpaceOrderLatest = "pubdate"
 internal const val UpSpaceOrderHot = "click"
-internal const val UpSpacePageSize = 25
+internal const val UpSpacePageSize = 30
 
 internal sealed interface SpaceProfileState {
   data object Loading : SpaceProfileState
