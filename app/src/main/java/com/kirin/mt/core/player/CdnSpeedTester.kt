@@ -38,17 +38,19 @@ class CdnSpeedTester(
       .build()
 
     try {
-      withTimeout(TotalTimeoutMs) {
-        val deferreds = uniqueUrls.map { url ->
-          async {
-            runCatching { probeUrl(probeClient, url) }.getOrNull()
-          }
+      val deferreds = uniqueUrls.map { url ->
+        async {
+          runCatching {
+            withTimeoutOrNull(ConnectTimeoutMs) {
+              probeUrl(probeClient, url)
+            }
+          }.getOrNull()
         }
-        deferreds
-          .mapNotNull { it.await() }
-          .filter { it.downloadedBytes > MinDownloadedBytes }
-          .sortedByDescending { it.score }
       }
+      deferreds
+        .mapNotNull { it.await() }
+        .filter { it.downloadedBytes > MinDownloadedBytes }
+        .sortedByDescending { it.score }
     } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
       emptyList()
     }
