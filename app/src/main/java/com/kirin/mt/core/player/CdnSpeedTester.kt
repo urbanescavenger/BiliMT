@@ -44,29 +44,8 @@ class CdnSpeedTester(
       }
     }
 
-    // Wait for fast candidates (within 2s)
-    delay(ConnectTimeoutMs)
-    val earlyResults = deferreds.mapNotNull { deferred ->
-      if (deferred.isCompleted) {
-        try {
-          deferred.await()
-        } catch (_: Exception) {
-          null
-        }
-      } else {
-        null
-      }
-    }
-
-    if (earlyResults.isNotEmpty()) {
-      return@withContext earlyResults
-        .filter { it.downloadedBytes > MinDownloadedBytes }
-        .sortedByDescending { it.score }
-    }
-
-    // No results within 2s, wait up to total timeout
     try {
-      withTimeout(TotalTimeoutMs - ConnectTimeoutMs) {
+      withTimeout(TotalTimeoutMs) {
         deferreds
           .mapNotNull { it.await() }
           .filter { it.downloadedBytes > MinDownloadedBytes }
