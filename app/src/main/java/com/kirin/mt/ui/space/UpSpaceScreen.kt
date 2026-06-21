@@ -36,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.painter.ColorPainter
@@ -73,6 +74,7 @@ import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private data class UpSpaceOrder(val key: String, val titleRes: Int)
@@ -609,8 +611,11 @@ private fun UpSpaceUnfollowConfirmDialog(
   val confirmFocusRequester = remember { FocusRequester() }
 
   LaunchedEffect(Unit) {
-    withFrameNanos { }
-    runCatching { cancelFocusRequester.requestFocus() }
+    repeat(5) {
+      val success = runCatching { cancelFocusRequester.requestFocus() }.isSuccess
+      if (success) return@LaunchedEffect
+      delay(50)
+    }
   }
 
   Box(
@@ -618,11 +623,26 @@ private fun UpSpaceUnfollowConfirmDialog(
       .fillMaxSize()
       .background(BiliColors.VideoBlack.copy(alpha = 0.6f))
       .onPreviewKeyEvent { event ->
-        if (event.type == KeyEventType.KeyDown && event.key == Key.Back) {
-          onCancel()
-          true
-        } else {
-          false
+        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        when (event.key) {
+          Key.Back -> {
+            onCancel()
+            true
+          }
+          Key.DirectionLeft,
+          Key.DirectionRight,
+          Key.DirectionUp,
+          Key.DirectionDown -> {
+            runCatching {
+              if (event.key == Key.DirectionLeft || event.key == Key.DirectionUp) {
+                cancelFocusRequester.requestFocus()
+              } else {
+                confirmFocusRequester.requestFocus()
+              }
+            }
+            true
+          }
+          else -> false
         }
       },
     contentAlignment = Alignment.Center,
@@ -657,7 +677,11 @@ private fun UpSpaceUnfollowConfirmDialog(
           text = stringResource(R.string.player_unfollow_confirm_cancel),
           modifier = Modifier
             .weight(1f)
-            .focusRequester(cancelFocusRequester),
+            .focusProperties {
+              right = confirmFocusRequester
+              down = confirmFocusRequester
+            },
+          focusRequester = cancelFocusRequester,
           onActivate = onCancel,
           onMoveRight = {
             runCatching { confirmFocusRequester.requestFocus() }.isSuccess
@@ -668,7 +692,11 @@ private fun UpSpaceUnfollowConfirmDialog(
           destructive = true,
           modifier = Modifier
             .weight(1f)
-            .focusRequester(confirmFocusRequester),
+            .focusProperties {
+              left = cancelFocusRequester
+              up = cancelFocusRequester
+            },
+          focusRequester = confirmFocusRequester,
           onActivate = onConfirm,
           onMoveLeft = {
             runCatching { cancelFocusRequester.requestFocus() }.isSuccess
@@ -684,6 +712,7 @@ private fun UpSpaceConfirmButton(
   text: String,
   modifier: Modifier = Modifier,
   destructive: Boolean = false,
+  focusRequester: FocusRequester? = null,
   onActivate: () -> Unit,
   onMoveLeft: () -> Boolean = { false },
   onMoveRight: () -> Boolean = { false },
@@ -704,8 +733,14 @@ private fun UpSpaceConfirmButton(
       .onFocusChanged { state -> focused = state.isFocused }
       .onPreviewKeyEvent { event ->
         when {
-          event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft -> onMoveLeft()
-          event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight -> onMoveRight()
+          event.type == KeyEventType.KeyDown && (event.key == Key.DirectionLeft || event.key == Key.DirectionUp) -> {
+            onMoveLeft()
+            false
+          }
+          event.type == KeyEventType.KeyDown && (event.key == Key.DirectionRight || event.key == Key.DirectionDown) -> {
+            onMoveRight()
+            false
+          }
           event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
             onActivate()
             true
@@ -713,6 +748,7 @@ private fun UpSpaceConfirmButton(
           else -> false
         }
       }
+      .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
       .focusable()
       .padding(horizontal = BiliSpacing.Md),
     contentAlignment = Alignment.Center,

@@ -1238,7 +1238,9 @@ fun PlayerScreen(
               true
             }
             Key.DirectionLeft,
-            Key.DirectionRight -> {
+            Key.DirectionRight,
+            Key.DirectionUp,
+            Key.DirectionDown -> {
               unfollowConfirmFocusedConfirm = !unfollowConfirmFocusedConfirm
               showControls()
               true
