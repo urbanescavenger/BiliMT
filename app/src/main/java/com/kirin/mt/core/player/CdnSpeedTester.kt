@@ -2,6 +2,7 @@ package com.kirin.mt.core.player
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
@@ -37,20 +38,40 @@ class CdnSpeedTester(
       .writeTimeout(WriteTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       .build()
 
-    try {
-      val deferreds = uniqueUrls.map { url ->
-        async {
-          runCatching {
-            withTimeoutOrNull(ConnectTimeoutMs) {
-              probeUrl(probeClient, url)
-            }
-          }.getOrNull()
-        }
+    val deferreds = uniqueUrls.map { url ->
+      async {
+        runCatching { probeUrl(probeClient, url) }.getOrNull()
       }
-      deferreds
-        .mapNotNull { it.await() }
+    }
+
+    // Wait for fast candidates (within 2s)
+    delay(ConnectTimeoutMs)
+    val earlyResults = deferreds.mapNotNull { deferred ->
+      if (deferred.isCompleted) {
+        try {
+          deferred.await()
+        } catch (_: Exception) {
+          null
+        }
+      } else {
+        null
+      }
+    }
+
+    if (earlyResults.isNotEmpty()) {
+      return@withContext earlyResults
         .filter { it.downloadedBytes > MinDownloadedBytes }
         .sortedByDescending { it.score }
+    }
+
+    // No results within 2s, wait up to total timeout
+    try {
+      withTimeout(TotalTimeoutMs - ConnectTimeoutMs) {
+        deferreds
+          .mapNotNull { it.await() }
+          .filter { it.downloadedBytes > MinDownloadedBytes }
+          .sortedByDescending { it.score }
+      }
     } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
       emptyList()
     }
