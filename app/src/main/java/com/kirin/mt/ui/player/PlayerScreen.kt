@@ -993,9 +993,11 @@ fun PlayerScreen(
     lastAirJumpPositionMs = 0L
     playerActuallyPlaying = false
     player.clearMediaItems()
-    val videoMetadata = runCatching {
-      playbackRepository.getVideoMetadata(activeRequest)
-    }.getOrNull()
+    val videoMetadata = if (metadata != null && metadata.bvid == activeRequest.bvid) {
+      metadata
+    } else {
+      runCatching { playbackRepository.getVideoMetadata(activeRequest) }.getOrNull()
+    }
     metadata = videoMetadata
     var effectiveRequest = activeRequest.withNextHistoryEpisodeIfNeeded(videoMetadata)
     if (effectiveRequest.canUseLatestSavedProgress()) {

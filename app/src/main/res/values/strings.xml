@@ -77,6 +77,7 @@
     <string name="settings_speed_test_no_last_video">请先播放任意视频后再测速。</string>
     <string name="settings_speed_test_failed">测速失败，请稍后重试。</string>
     <string name="settings_speed_test_source">来源：%1$s</string>
+    <string name="settings_speed_test_summary">接口解析 %1$dms · CDN 首字节 %2$dms（接口耗时不在 CDN 测速内）</string>
     <string name="settings_speed_test_column_rank">排名</string>
     <string name="settings_speed_test_column_host">节点</string>
     <string name="settings_speed_test_column_speed">速度</string>

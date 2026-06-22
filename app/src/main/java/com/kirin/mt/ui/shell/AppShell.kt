@@ -802,6 +802,7 @@ fun BiliTvApp(
                         speedTestState = SpeedTestUiState.NoLastVideo
                         return@launch
                       }
+                      val resolveStartNs = System.nanoTime()
                       val info = runCatching {
                         playbackRepository.getPlaybackInfo(
                           request = PlaybackRequest(bvid = last.bvid, cid = last.cid, title = ""),
@@ -809,21 +810,33 @@ fun BiliTvApp(
                           qualityPreference = settings.playbackQualityPreference,
                         )
                       }.getOrNull()
+                      val playurlResolveMs = (System.nanoTime() - resolveStartNs) / 1_000_000L
                       if (info == null || info.videoTracks.isEmpty()) {
                         speedTestState = SpeedTestUiState.Failed
                         return@launch
                       }
-                      val candidates = info.videoTracks
-                        .flatMap { listOf(it.baseUrl) + it.backupUrls }
-                        .filter { it.startsWith("http://") || it.startsWith("https://") }
+                      // Use the exact same candidate set the player would consider
+                      // (CdnRewriter + isEligibleCandidate applied), so for a non-Auto
+                      // preference we only measure the host the player will actually use.
+                      val cdnPreference = settings.playbackCdnPreference
+                      val candidates = (info.videoTracks + info.audioTracks)
+                        .flatMap { cdnSelector.candidatesFor(it, cdnPreference) }
                         .distinct()
-                      val results = cdnSpeedTester.measure(candidates)
+                      val results = cdnSpeedTester.measure(candidates, CdnSpeedTester.MeasureOptions.Dialog)
+                      // Pre-warm the CdnSelector cache per track so the next open of
+                      // the same video hits "Using cached CDN selection" and skips the
+                      // inline measurement on the live playback path.
+                      if (results.isNotEmpty()) {
+                        info.videoTracks.forEach { cdnSelector.applyMeasurements(it, cdnPreference, results) }
+                        info.audioTracks.forEach { cdnSelector.applyMeasurements(it, cdnPreference, results) }
+                      }
                       speedTestState = if (results.isEmpty()) {
                         SpeedTestUiState.Failed
                       } else {
                         SpeedTestUiState.Succeeded(
                           results = results,
                           sourceLabel = info.title.takeIf { it.isNotBlank() } ?: last.bvid,
+                          playurlResolveMs = playurlResolveMs,
                         )
                       }
                     }

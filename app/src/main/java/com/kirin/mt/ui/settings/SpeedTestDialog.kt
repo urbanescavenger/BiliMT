@@ -148,6 +148,16 @@ private fun SpeedTestDialogBody(
       fontSize = BiliTypography.Body,
     )
     is SpeedTestUiState.Succeeded -> {
+      val bestTtfbMs = state.results.firstOrNull()?.firstByteMs ?: 0L
+      Text(
+        text = stringResource(
+          R.string.settings_speed_test_summary,
+          state.playurlResolveMs,
+          bestTtfbMs,
+        ),
+        color = homeColors.textTertiary,
+        fontSize = BiliTypography.CardMeta,
+      )
       Text(
         text = stringResource(R.string.settings_speed_test_source, state.sourceLabel),
         color = homeColors.textSecondary,

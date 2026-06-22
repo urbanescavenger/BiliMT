@@ -23,7 +23,10 @@ class CdnSpeedTester(
   private val client: OkHttpClient,
 ) {
 
-  suspend fun measure(urls: List<String>): List<Measurement> = withContext(Dispatchers.IO) {
+  suspend fun measure(
+    urls: List<String>,
+    options: MeasureOptions = MeasureOptions.Dialog,
+  ): List<Measurement> = withContext(Dispatchers.IO) {
     val uniqueUrls = urls
       .filter { it.startsWith("http://") || it.startsWith("https://") }
       .distinct()
@@ -33,8 +36,8 @@ class CdnSpeedTester(
     }
 
     val probeClient = client.newBuilder()
-      .connectTimeout(ConnectTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-      .readTimeout(ConnectTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+      .connectTimeout(options.connectMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+      .readTimeout(options.readMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       .writeTimeout(WriteTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       .build()
 
@@ -45,7 +48,7 @@ class CdnSpeedTester(
     }
 
     try {
-      withTimeout(TotalTimeoutMs) {
+      withTimeout(options.totalMs) {
         deferreds
           .mapNotNull { it.await() }
           .filter { it.downloadedBytes > MinDownloadedBytes }
@@ -53,6 +56,34 @@ class CdnSpeedTester(
       }
     } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
       emptyList()
+    }
+  }
+
+  /**
+   * Per-call timeout budget for [measure].
+   *
+   * - [Dialog] is used by the settings speed test: tolerant, since the user is
+   *   explicitly waiting for a ranked result.
+   * - [Open] is used on the live playback path: tight, so a dead CDN cannot
+   *   block first-frame for seconds. A failed/empty measurement safely falls
+   *   back to baseUrl + backupUrls in [CdnSelector].
+   */
+  data class MeasureOptions(
+    val connectMs: Long,
+    val readMs: Long,
+    val totalMs: Long,
+  ) {
+    companion object {
+      val Dialog = MeasureOptions(
+        connectMs = ConnectTimeoutMs,
+        readMs = ProbeReadTimeoutMs,
+        totalMs = TotalTimeoutMs,
+      )
+      val Open = MeasureOptions(
+        connectMs = OpenConnectTimeoutMs,
+        readMs = OpenReadTimeoutMs,
+        totalMs = OpenTotalTimeoutMs,
+      )
     }
   }
 
@@ -124,6 +155,9 @@ class CdnSpeedTester(
     const val ProbeReadTimeoutMs = 3000L
     const val WriteTimeoutMs = 2000L
     const val TotalTimeoutMs = 4000L
+    const val OpenConnectTimeoutMs = 1000L
+    const val OpenReadTimeoutMs = 1000L
+    const val OpenTotalTimeoutMs = 1500L
     const val TtfbWeight = 2.0
     const val TotalWeight = 1.0
   }

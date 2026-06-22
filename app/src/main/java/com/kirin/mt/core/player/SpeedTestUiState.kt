@@ -15,5 +15,12 @@ sealed interface SpeedTestUiState {
   data class Succeeded(
     val results: List<CdnSpeedTester.Measurement>,
     val sourceLabel: String,
+    /**
+     * Wall-clock time spent resolving the playurl API call (api.bilibili.com)
+     * that produced the tested URLs — the part of "open" latency the CDN TTFB
+     * does NOT cover. Shown alongside the CDN TTFB so the user sees where the
+     * seconds actually go.
+     */
+    val playurlResolveMs: Long,
   ) : SpeedTestUiState
 }
