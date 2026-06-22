@@ -21,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -34,6 +35,7 @@ import com.kirin.mt.core.player.CodecCapability
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
+import com.kirin.mt.core.player.SpeedTestUiState
 import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppVisualPerformanceMode
 import com.kirin.mt.core.settings.HomeThemeVariant
@@ -77,6 +79,9 @@ fun SettingsScreen(
   onDownloadUpdate: () -> Unit,
   onInstallUpdate: () -> Unit,
   onOpenReleaseNotes: () -> Unit,
+  speedTestState: SpeedTestUiState,
+  onRunSpeedTest: () -> Unit,
+  onDismissSpeedTest: () -> Unit,
 ) {
   val settingsListState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
@@ -111,6 +116,7 @@ fun SettingsScreen(
       SettingsItemUpdateCheck to FocusRequester(),
       SettingsItemUpdateDownloadOrInstall to FocusRequester(),
       SettingsItemUpdateReleaseNotes to FocusRequester(),
+      SettingsItemSpeedTest to FocusRequester(),
       SettingsItemAbout to FocusRequester(),
     )
   }
@@ -206,6 +212,8 @@ fun SettingsScreen(
         onDownloadUpdate = onDownloadUpdate,
         onInstallUpdate = onInstallUpdate,
         onOpenReleaseNotes = onOpenReleaseNotes,
+        speedTestState = speedTestState,
+        onRunSpeedTest = onRunSpeedTest,
         modifier = Modifier.weight(1f),
       )
       when (rightPanel) {
@@ -219,6 +227,13 @@ fun SettingsScreen(
           modifier = Modifier.weight(1f),
         )
       }
+    }
+    if (speedTestState !is SpeedTestUiState.Idle) {
+      SpeedTestDialog(
+        state = speedTestState,
+        onDismiss = onDismissSpeedTest,
+        modifier = Modifier.align(Alignment.Center),
+      )
     }
   }
 }
@@ -259,6 +274,8 @@ private fun SettingsBehaviorColumn(
   onDownloadUpdate: () -> Unit,
   onInstallUpdate: () -> Unit,
   onOpenReleaseNotes: () -> Unit,
+  speedTestState: SpeedTestUiState,
+  onRunSpeedTest: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   CompositionLocalProvider(LocalBringIntoViewSpec provides SettingsBringIntoViewSpec) {
@@ -339,6 +356,30 @@ private fun SettingsBehaviorColumn(
             val currentIndex = cdnOptions.indexOf(effectivePreference).takeIf { it >= 0 } ?: 0
             onPlaybackCdnPreferenceChange(cdnOptions[(currentIndex + 1) % cdnOptions.size])
           },
+        )
+      }
+      item(key = "speed-test") {
+        val speedTestValue = when (speedTestState) {
+          SpeedTestUiState.Running -> stringResource(R.string.settings_speed_test_running)
+          is SpeedTestUiState.Succeeded -> stringResource(
+            R.string.settings_speed_test_result_count,
+            speedTestState.results.size,
+          )
+          else -> ""
+        }
+        SettingsActionRow(
+          title = stringResource(R.string.settings_speed_test_title),
+          description = stringResource(R.string.settings_speed_test_description),
+          value = speedTestValue,
+          modifier = Modifier
+            .focusRequester(focusRequesters.getValue(SettingsItemSpeedTest))
+            .settingsBoundaryKeys(
+              itemIndex = SettingsItemSpeedTest,
+              onMoveSettingFocus = onMoveSettingFocus,
+              onMoveLeftToNav = onMoveLeftToNav,
+            ),
+          onFocused = { onSettingFocused(SettingsItemSpeedTest) },
+          onClick = onRunSpeedTest,
         )
       }
       item(key = "seek-preview-sprites") {
@@ -745,6 +786,7 @@ private const val SettingsItemAutoPlayRelatedVideo = 7
 private const val SettingsItemAutoReturnHomeOnCompletion = 8
 private const val SettingsItemShowClock = 9
 private const val SettingsItemShowMiniProgressBar = 10
+private const val SettingsItemSpeedTest = 11
 private const val SettingsItemVisualPerformanceMode = 12
 private const val SettingsItemLiquidGlassCards = 13
 private const val SettingsItemHomeThemeVariant = 14
@@ -763,6 +805,7 @@ private val SettingsFocusableItems = listOf(
   SettingsItemPlaybackQuality,
   SettingsItemPlaybackCodec,
   SettingsItemPlaybackCdn,
+  SettingsItemSpeedTest,
   SettingsItemSeekPreviewSprites,
   SettingsItemAirJumpAssistant,
   SettingsItemConfirmPlaybackExit,
@@ -798,40 +841,41 @@ private fun settingsItemToLazyIndex(
   SettingsItemPlaybackQuality -> 1
   SettingsItemPlaybackCodec -> 2
   SettingsItemPlaybackCdn -> 3
-  SettingsItemSeekPreviewSprites -> 4
-  SettingsItemAirJumpAssistant -> 5
-  SettingsItemConfirmPlaybackExit -> 6
-  SettingsItemAutoPlayNextEpisode -> 7
-  SettingsItemAutoPlayRelatedVideo -> 8
-  SettingsItemAutoReturnHomeOnCompletion -> 9
-  SettingsItemShowClock -> 10
-  SettingsItemShowMiniProgressBar -> 11
-  // 12 = "ui-header" section title in LazyColumn
-  SettingsItemVisualPerformanceMode -> 13
-  SettingsItemLiquidGlassCards -> 14
-  SettingsItemHomeThemeVariant -> 15
-  SettingsItemAutoConfirmOnFocus -> 16
-  SettingsItemAutoRefreshOnSwitch -> 17
-  // 18 = "update-header" section title in LazyColumn
-  SettingsItemUpdateCurrentVersion -> 19
-  SettingsItemUpdateCheck -> 20
-  SettingsItemUpdateDownloadOrInstall -> if (shouldShowDownloadOrInstallRow(updateState)) 21 else -1
+  SettingsItemSpeedTest -> 4
+  SettingsItemSeekPreviewSprites -> 5
+  SettingsItemAirJumpAssistant -> 6
+  SettingsItemConfirmPlaybackExit -> 7
+  SettingsItemAutoPlayNextEpisode -> 8
+  SettingsItemAutoPlayRelatedVideo -> 9
+  SettingsItemAutoReturnHomeOnCompletion -> 10
+  SettingsItemShowClock -> 11
+  SettingsItemShowMiniProgressBar -> 12
+  // 13 = "ui-header" section title in LazyColumn
+  SettingsItemVisualPerformanceMode -> 14
+  SettingsItemLiquidGlassCards -> 15
+  SettingsItemHomeThemeVariant -> 16
+  SettingsItemAutoConfirmOnFocus -> 17
+  SettingsItemAutoRefreshOnSwitch -> 18
+  // 19 = "update-header" section title in LazyColumn
+  SettingsItemUpdateCurrentVersion -> 20
+  SettingsItemUpdateCheck -> 21
+  SettingsItemUpdateDownloadOrInstall -> if (shouldShowDownloadOrInstallRow(updateState)) 22 else -1
   SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) {
-    if (shouldShowDownloadOrInstallRow(updateState)) 22 else 21
+    if (shouldShowDownloadOrInstallRow(updateState)) 23 else 22
   } else {
     -1
   }
   SettingsItemClearCache -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    22 + updateExtraCount
+    23 + updateExtraCount
   }
   SettingsItemChineseTextVariant -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    23 + updateExtraCount
+    24 + updateExtraCount
   }
   SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    24 + updateExtraCount
+    25 + updateExtraCount
   }
   else -> 0
 }

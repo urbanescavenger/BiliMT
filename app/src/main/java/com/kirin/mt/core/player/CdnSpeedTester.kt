@@ -34,7 +34,7 @@ class CdnSpeedTester(
 
     val probeClient = client.newBuilder()
       .connectTimeout(ConnectTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-      .readTimeout(ProbeReadTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+      .readTimeout(ConnectTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       .writeTimeout(WriteTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       .build()
 

@@ -47,11 +47,14 @@ import com.kirin.mt.core.cache.AppCacheManager
 import com.kirin.mt.core.i18n.ChineseTextConverters
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.CdnSelector
+import com.kirin.mt.core.player.CdnSpeedTester
 import com.kirin.mt.core.player.CodecCapabilityProbe
+import com.kirin.mt.core.player.LastPlayedStore
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.PlaybackRequest
+import com.kirin.mt.core.player.SpeedTestUiState
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
@@ -176,6 +179,9 @@ fun BiliTvApp(
     settings.playbackCodecPreference
   }
   val coroutineScope = rememberCoroutineScope()
+  val cdnSpeedTester = remember { CdnSpeedTester(playbackHttpClient) }
+  val lastPlayedStore = remember { LastPlayedStore(context) }
+  var speedTestState by remember { mutableStateOf(SpeedTestUiState.Idle) }
   var selectedDestination by rememberSaveable { mutableStateOf(AppDestination.Recommend) }
   var visitedDestinationNames by rememberSaveable { mutableStateOf(setOf(AppDestination.Recommend.name)) }
   var accountSelected by rememberSaveable { mutableStateOf(false) }
@@ -783,6 +789,47 @@ fun BiliTvApp(
                         )
                       }
                     }
+                  },
+                  speedTestState = speedTestState,
+                  onRunSpeedTest = {
+                    if (speedTestState is SpeedTestUiState.Running) {
+                      return@SettingsScreen
+                    }
+                    speedTestState = SpeedTestUiState.Running
+                    coroutineScope.launch {
+                      val last = lastPlayedStore.load()
+                      if (last == null) {
+                        speedTestState = SpeedTestUiState.NoLastVideo
+                        return@launch
+                      }
+                      val info = runCatching {
+                        playbackRepository.getPlaybackInfo(
+                          request = PlaybackRequest(bvid = last.bvid, cid = last.cid, title = ""),
+                          codecPreference = effectivePlaybackCodecPreference,
+                          qualityPreference = settings.playbackQualityPreference,
+                        )
+                      }.getOrNull()
+                      if (info == null || info.videoTracks.isEmpty()) {
+                        speedTestState = SpeedTestUiState.Failed
+                        return@launch
+                      }
+                      val candidates = info.videoTracks
+                        .flatMap { listOf(it.baseUrl) + it.backupUrls }
+                        .filter { it.startsWith("http://") || it.startsWith("https://") }
+                        .distinct()
+                      val results = cdnSpeedTester.measure(candidates)
+                      speedTestState = if (results.isEmpty()) {
+                        SpeedTestUiState.Failed
+                      } else {
+                        SpeedTestUiState.Succeeded(
+                          results = results,
+                          sourceLabel = info.title.takeIf { it.isNotBlank() } ?: last.bvid,
+                        )
+                      }
+                    }
+                  },
+                  onDismissSpeedTest = {
+                    speedTestState = SpeedTestUiState.Idle
                   },
                 )
               }
