@@ -70,4 +70,26 @@ internal object CdnRewriter {
 
     return "upos-$region-$targetCdn"
   }
+
+  /**
+   * Reverse-looks up the CDN provider for a host, or null when the host is
+   * not a recognized B 站 media CDN (mcdn, szbdyd, bare IP, unknown). Used by
+   * the speed-test dialog to show a friendly CDN name ("官方"/"阿里云"/…)
+   * instead of the raw host.
+   */
+  fun providerOf(host: String): PlaybackCdnPreference? = when {
+    host == "upos-sz-mirrorali.bilivideo.com" -> PlaybackCdnPreference.Aliyun
+    RawAliyunPattern.matches(host) -> PlaybackCdnPreference.Aliyun
+    else -> {
+      val cdn = UposHostPattern.matchEntire(host)?.groups?.get("cdn")?.value
+      when {
+        cdn == null -> null
+        cdn.startsWith("mirrorcos") -> PlaybackCdnPreference.Official
+        cdn.startsWith("mirrorali") -> PlaybackCdnPreference.Aliyun
+        cdn.startsWith("mirrorakam") -> PlaybackCdnPreference.Akamai
+        cdn.startsWith("mirrorhw") -> PlaybackCdnPreference.Hw
+        else -> null
+      }
+    }
+  }
 }

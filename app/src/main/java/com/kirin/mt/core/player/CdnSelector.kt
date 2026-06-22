@@ -119,8 +119,11 @@ class CdnSelector(
    * cache so the next open of the same video hits `Using cached CDN selection`
    * instead of re-measuring on the live path.
    *
-   * [measurements] is assumed best-first (as returned by [CdnSpeedTester.measure]);
-   * only entries whose URL is among [candidatesFor] are considered.
+   * [measurements] is assumed best-first (as returned by [CdnSpeedTester.measure]).
+   * Matching is by host (not full URL): the dialog measures one representative
+   * URL per host, but each track has its own signed URLs on that host — so we
+   * pick this track's own candidate URL on the best-measured host it shares,
+   * never handing track B a URL signed for track A.
    */
   fun applyMeasurements(
     track: PlaybackTrack,
@@ -132,15 +135,26 @@ class CdnSelector(
     if (candidates.isEmpty()) {
       return CdnSelection(baseUrl, emptyList())
     }
-    val candidateSet = candidates.toHashSet()
-    val successful = measurements.filter { it.url in candidateSet }
-    val selection = if (successful.isEmpty()) {
+    // This track's own candidate URL per host (first wins).
+    val hostToCandidate = LinkedHashMap<String, String>()
+    for (c in candidates) {
+      val host = c.toHttpUrlOrNull()?.host ?: continue
+      hostToCandidate.putIfAbsent(host, c)
+    }
+    // Best-first measured hosts that this track can serve.
+    val matchedHosts = measurements
+      .mapNotNull { it.url.toHttpUrlOrNull()?.host }
+      .filter { it in hostToCandidate }
+      .distinct()
+    val selection = if (matchedHosts.isEmpty()) {
       val fallbacks = track.backupUrls
         .filter { it != baseUrl && isEligibleCandidate(it) }
         .distinct()
       CdnSelection(baseUrl, fallbacks)
     } else {
-      CdnSelection(successful.first().url, successful.drop(1).map { it.url })
+      val primary = hostToCandidate.getValue(matchedHosts.first())
+      val fallbacks = matchedHosts.drop(1).map { hostToCandidate.getValue(it) }
+      CdnSelection(primary, fallbacks)
     }
     cacheSelection(baseUrl, selection)
     return selection

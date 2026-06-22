@@ -100,6 +100,7 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 
 private const val PlaybackFocusRestoreRetryCount = 8
@@ -821,7 +822,12 @@ fun BiliTvApp(
                       val cdnPreference = settings.playbackCdnPreference
                       val candidates = (info.videoTracks + info.audioTracks)
                         .flatMap { cdnSelector.candidatesFor(it, cdnPreference) }
-                        .distinct()
+                        // De-dup by host: video/audio/multi-quality tracks often
+                        // share a CDN host with different signed URLs; measuring
+                        // the same host multiple times wastes probe slots and
+                        // shows duplicate rows. Keep one representative URL
+                        // per host.
+                        .distinctBy { it.toHttpUrlOrNull()?.host ?: it }
                       val results = cdnSpeedTester.measure(candidates, CdnSpeedTester.MeasureOptions.Dialog)
                       // Pre-warm the CdnSelector cache per track so the next open of
                       // the same video hits "Using cached CDN selection" and skips the

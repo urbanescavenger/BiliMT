@@ -1,5 +1,7 @@
 package com.kirin.mt.core.player
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -7,7 +9,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -73,13 +74,13 @@ class CdnSpeedTester(
     probeClient: OkHttpClient,
     uniqueUrls: List<String>,
     options: MeasureOptions,
-  ): List<Measurement> {
+  ): List<Measurement> = coroutineScope {
     val deferreds = uniqueUrls.map { url ->
       async {
         runCatching { probeUrl(probeClient, url) }.getOrNull()
       }
     }
-    return try {
+    try {
       withTimeout(options.totalMs) {
         deferreds
           .mapNotNull { it.await() }
@@ -101,7 +102,7 @@ class CdnSpeedTester(
     options: MeasureOptions,
   ): List<Measurement> = coroutineScope {
     val channel = Channel<Measurement>(uniqueUrls.size)
-    val jobs = uniqueUrls.map { url ->
+    val jobs: List<Job> = uniqueUrls.map { url ->
       launch {
         val measurement = runCatching { probeUrl(probeClient, url) }.getOrNull()
         if (measurement != null && measurement.downloadedBytes > MinDownloadedBytes) {
@@ -124,9 +125,9 @@ class CdnSpeedTester(
       }
     } finally {
       // Don't keep waiting for the remaining probes — cancel them so the
-      // winner is returned promptly. probeUrl is cancellable (Call.cancel() on
-      // cancellation), so stuck connect-phase probes abort immediately.
-      coroutineContext[Job]?.cancelChildren()
+      // winner is returned promptly. probeUrl cancels its OkHttp call on
+      // cancellation, so stuck connect-phase probes abort immediately.
+      jobs.forEach { it.cancel() }
       channel.close()
     }
     collected.sortedByDescending { it.score }
@@ -168,28 +169,32 @@ class CdnSpeedTester(
       .build()
 
     val startNs = System.nanoTime()
-    // Use OkHttp's async enqueue wrapped in a cancellable continuation so that
-    // cancelling this coroutine (e.g. when an early-return winner is already
-    // available) actually aborts in-flight probes via Call.cancel(). A blocking
-    // execute() would ignore coroutine cancellation and keep occupying an IO
-    // thread until its own timeout, defeating early return.
-    val response = suspendCancellableCoroutine { cont ->
-      val call = client.newCall(request)
-      cont.invokeOnCancellation { runCatching { call.cancel() } }
+    // Drive OkHttp asynchronously and bridge to a coroutine via a
+    // CompletableDeferred. On cancellation we cancel the OkHttp Call so an
+    // early-return winner actually aborts in-flight probes (a blocking
+    // execute() would ignore cancellation and hold an IO thread until its
+    // own timeout, defeating early return).
+    val call = client.newCall(request)
+    val response = try {
+      val deferred = CompletableDeferred<Response>()
       call.enqueue(object : Callback {
         override fun onResponse(call: Call, resp: Response) {
           if (!resp.isSuccessful && resp.code != 206) {
             resp.close()
-            cont.resumeWithException(IllegalStateException("HTTP ${resp.code}"))
+            deferred.completeExceptionally(IllegalStateException("HTTP ${resp.code}"))
           } else {
-            cont.resume(resp)
+            deferred.complete(resp)
           }
         }
 
         override fun onFailure(call: Call, e: IOException) {
-          cont.resumeWithException(e)
+          deferred.completeExceptionally(e)
         }
       })
+      deferred.await()
+    } catch (e: CancellationException) {
+      runCatching { call.cancel() }
+      throw e
     }
 
     response.use {
