@@ -58,7 +58,11 @@ class CdnSelector(
     }
 
     Log.i(LogTag, "Measuring ${candidates.size} CDN candidates for $baseUrl")
-    val measurements = speedTester.measure(candidates, CdnSpeedTester.MeasureOptions.Open)
+    val measurements = speedTester.measure(
+      candidates,
+      CdnSpeedTester.MeasureOptions.Open,
+      earlyReturn = true,
+    )
     val successfulUrls = measurements.map { it.url }
 
     if (successfulUrls.isEmpty()) {

@@ -1,12 +1,22 @@
 package com.kirin.mt.core.player
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import java.io.IOException
 
 /**
  * Measures CDN performance for a list of candidate URLs.
@@ -26,6 +36,16 @@ class CdnSpeedTester(
   suspend fun measure(
     urls: List<String>,
     options: MeasureOptions = MeasureOptions.Dialog,
+    /**
+     * When true, return as soon as the first viable candidate completes
+     * (instead of waiting for every probe). Used on the live playback path so a
+     * dead/slow backupUrl cannot block first-frame for ~1s while the winner
+     * was already back in tens of ms. Any other candidates that already
+     * finished are drained as fallbacks; the rest are cancelled by structured
+     * concurrency. The settings dialog keeps earlyReturn=false to show the
+     * full ranked list.
+     */
+    earlyReturn: Boolean = false,
   ): List<Measurement> = withContext(Dispatchers.IO) {
     val uniqueUrls = urls
       .filter { it.startsWith("http://") || it.startsWith("https://") }
@@ -41,13 +61,25 @@ class CdnSpeedTester(
       .writeTimeout(WriteTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       .build()
 
+    if (earlyReturn) {
+      measureEarly(probeClient, uniqueUrls, options)
+    } else {
+      measureAll(probeClient, uniqueUrls, options)
+    }
+  }
+
+  /** Await every probe and return the full ranked list (dialog behavior). */
+  private suspend fun measureAll(
+    probeClient: OkHttpClient,
+    uniqueUrls: List<String>,
+    options: MeasureOptions,
+  ): List<Measurement> {
     val deferreds = uniqueUrls.map { url ->
       async {
         runCatching { probeUrl(probeClient, url) }.getOrNull()
       }
     }
-
-    try {
+    return try {
       withTimeout(options.totalMs) {
         deferreds
           .mapNotNull { it.await() }
@@ -57,6 +89,47 @@ class CdnSpeedTester(
     } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
       emptyList()
     }
+  }
+
+  /**
+   * Return as soon as the first viable candidate completes, draining any
+   * already-finished probes as fallbacks and cancelling the rest.
+   */
+  private suspend fun measureEarly(
+    probeClient: OkHttpClient,
+    uniqueUrls: List<String>,
+    options: MeasureOptions,
+  ): List<Measurement> = coroutineScope {
+    val channel = Channel<Measurement>(uniqueUrls.size)
+    val jobs = uniqueUrls.map { url ->
+      launch {
+        val measurement = runCatching { probeUrl(probeClient, url) }.getOrNull()
+        if (measurement != null && measurement.downloadedBytes > MinDownloadedBytes) {
+          // trySend is non-throwing; after close() it silently drops, so a late
+          // probe completing during teardown won't crash this coroutine.
+          channel.trySend(measurement)
+        }
+      }
+    }
+    val collected = mutableListOf<Measurement>()
+    try {
+      withTimeoutOrNull(options.totalMs) {
+        // Block until the first viable candidate arrives.
+        collected.add(channel.receive())
+        // Drain any others that already finished, without waiting.
+        while (true) {
+          val m = channel.tryReceive().getOrNull() ?: break
+          collected.add(m)
+        }
+      }
+    } finally {
+      // Don't keep waiting for the remaining probes — cancel them so the
+      // winner is returned promptly. probeUrl is cancellable (Call.cancel() on
+      // cancellation), so stuck connect-phase probes abort immediately.
+      coroutineContext[Job]?.cancelChildren()
+      channel.close()
+    }
+    collected.sortedByDescending { it.score }
   }
 
   /**
@@ -87,7 +160,7 @@ class CdnSpeedTester(
     }
   }
 
-  private fun probeUrl(client: OkHttpClient, url: String): Measurement {
+  private suspend fun probeUrl(client: OkHttpClient, url: String): Measurement {
     val request = Request.Builder()
       .url(url)
       .header("Range", "bytes=0-${MeasureRangeBytes - 1}")
@@ -95,17 +168,34 @@ class CdnSpeedTester(
       .build()
 
     val startNs = System.nanoTime()
-    var firstByteMs = -1L
-    var downloadedBytes = 0L
+    // Use OkHttp's async enqueue wrapped in a cancellable continuation so that
+    // cancelling this coroutine (e.g. when an early-return winner is already
+    // available) actually aborts in-flight probes via Call.cancel(). A blocking
+    // execute() would ignore coroutine cancellation and keep occupying an IO
+    // thread until its own timeout, defeating early return.
+    val response = suspendCancellableCoroutine { cont ->
+      val call = client.newCall(request)
+      cont.invokeOnCancellation { runCatching { call.cancel() } }
+      call.enqueue(object : Callback {
+        override fun onResponse(call: Call, resp: Response) {
+          if (!resp.isSuccessful && resp.code != 206) {
+            resp.close()
+            cont.resumeWithException(IllegalStateException("HTTP ${resp.code}"))
+          } else {
+            cont.resume(resp)
+          }
+        }
 
-    client.newCall(request).execute().use { response ->
-      if (!response.isSuccessful && response.code != 206) {
-        throw IllegalStateException("HTTP ${response.code}")
-      }
-      val receivedMs = response.receivedResponseAtMillis
-      val sentMs = response.sentRequestAtMillis
-      firstByteMs = (receivedMs - sentMs).coerceAtLeast(0L)
-      response.body?.source()?.use { source ->
+        override fun onFailure(call: Call, e: IOException) {
+          cont.resumeWithException(e)
+        }
+      })
+    }
+
+    response.use {
+      val firstByteMs = (it.receivedResponseAtMillis - it.sentRequestAtMillis).coerceAtLeast(0L)
+      var downloadedBytes = 0L
+      it.body?.source()?.use { source ->
         val buffer = okio.Buffer()
         while (downloadedBytes < MeasureRangeBytes) {
           val read = source.read(buffer, MeasureChunkBytes)
@@ -114,15 +204,14 @@ class CdnSpeedTester(
           buffer.clear()
         }
       }
+      val totalMs = (System.nanoTime() - startNs) / 1_000_000L
+      Measurement(
+        url = url,
+        firstByteMs = firstByteMs,
+        totalMs = totalMs,
+        downloadedBytes = downloadedBytes,
+      )
     }
-
-    val totalMs = (System.nanoTime() - startNs) / 1_000_000L
-    return Measurement(
-      url = url,
-      firstByteMs = firstByteMs,
-      totalMs = totalMs,
-      downloadedBytes = downloadedBytes,
-    )
   }
 
   data class Measurement(

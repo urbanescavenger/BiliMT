@@ -588,7 +588,12 @@ private fun VideoCover(
     AsyncImage(
       model = request,
       contentDescription = title,
-      contentScale = ContentScale.Crop,
+      // The cover URL carries a B 站 CDN `1c` suffix that forces the served
+      // image to the exact requested aspect ratio (16:9), matching the card's
+      // aspectRatio. FillBounds stretches the decoded bitmap to fit the box
+      // exactly, so no edges are cropped (matches the BV reference app). Crop
+      // here would cut off top/bottom of non-16:9 source covers.
+      contentScale = ContentScale.FillBounds,
       placeholder = fallbackPainter,
       error = fallbackPainter,
       modifier = Modifier.fillMaxSize(),
