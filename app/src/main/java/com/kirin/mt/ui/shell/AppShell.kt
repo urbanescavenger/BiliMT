@@ -181,7 +181,7 @@ fun BiliTvApp(
   val coroutineScope = rememberCoroutineScope()
   val cdnSpeedTester = remember { CdnSpeedTester(playbackHttpClient) }
   val lastPlayedStore = remember { LastPlayedStore(context) }
-  var speedTestState by remember { mutableStateOf(SpeedTestUiState.Idle) }
+  var speedTestState by remember { mutableStateOf<SpeedTestUiState>(SpeedTestUiState.Idle) }
   var selectedDestination by rememberSaveable { mutableStateOf(AppDestination.Recommend) }
   var visitedDestinationNames by rememberSaveable { mutableStateOf(setOf(AppDestination.Recommend.name)) }
   var accountSelected by rememberSaveable { mutableStateOf(false) }

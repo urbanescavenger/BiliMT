@@ -39,7 +39,6 @@ import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliRadius
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
-import com.kirin.mt.ui.theme.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.LocalHomeColors
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
