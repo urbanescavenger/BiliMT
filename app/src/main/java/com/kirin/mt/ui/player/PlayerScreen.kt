@@ -462,8 +462,18 @@ fun PlayerScreen(
     cancelPlaybackExitConfirmToast()
     cancelPendingCompletionAction()
     coroutineScope.launch {
-      saveAndReportProgressNow()
+      val progressOverride = if (completionReported) CompletedProgressSeconds else null
+      // Local save first: fast, and reads player state while the player is still
+      // alive. Best-effort — a DataStore IOException must not block exit.
+      if (progressOverride == null) {
+        runCatching { saveProgressNow() }
+      }
+      // Exit immediately. Don't gate this on the network heartbeat below.
       onFinished()
+      // Heartbeat is best-effort: if the scope is cancelled during the exit
+      // scrim transition that's fine — progress was already saved locally and
+      // periodic heartbeats during playback keep the server roughly in sync.
+      runCatching { reportProgressNow(progressOverride) }
     }
   }
 
