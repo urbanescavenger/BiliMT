@@ -2,6 +2,7 @@ package com.kirin.mt.core.player
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
@@ -33,17 +34,18 @@ class CdnSpeedTester(
 
     val probeClient = client.newBuilder()
       .connectTimeout(ConnectTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-      .readTimeout(ProbeReadTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+      .readTimeout(ConnectTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       .writeTimeout(WriteTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       .build()
 
+    val deferreds = uniqueUrls.map { url ->
+      async {
+        runCatching { probeUrl(probeClient, url) }.getOrNull()
+      }
+    }
+
     try {
       withTimeout(TotalTimeoutMs) {
-        val deferreds = uniqueUrls.map { url ->
-          async {
-            runCatching { probeUrl(probeClient, url) }.getOrNull()
-          }
-        }
         deferreds
           .mapNotNull { it.await() }
           .filter { it.downloadedBytes > MinDownloadedBytes }

@@ -78,6 +78,7 @@ import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackRepository
+import com.kirin.mt.core.player.LastPlayedStore
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackTrack
 import com.kirin.mt.core.player.PlaybackVideoMetadata
@@ -128,6 +129,7 @@ fun PlayerScreen(
   val rootView = LocalView.current
   val lifecycleOwner = LocalLifecycleOwner.current
   val coroutineScope = rememberCoroutineScope()
+  val lastPlayedStore = remember { LastPlayedStore(context) }
   val performancePolicy = LocalBiliPerformancePolicy.current
   val textConverter = LocalChineseTextConverter.current
   val showClockState = rememberUpdatedState(showClock)
@@ -1026,6 +1028,7 @@ fun PlayerScreen(
       if (info.videoTracks.isEmpty() || info.audioTracks.isEmpty()) {
         PlayerScreenState.Failed(context.getString(R.string.player_error_empty_tracks))
       } else {
+        coroutineScope.launch { lastPlayedStore.save(info.bvid, info.cid) }
         selectedQuality = info.selectedQuality
         currentCodecText = info.videoTracks.firstOrNull()?.codecLabel().orEmpty()
         val effectiveInfo = info.copy(
@@ -1238,7 +1241,9 @@ fun PlayerScreen(
               true
             }
             Key.DirectionLeft,
-            Key.DirectionRight -> {
+            Key.DirectionRight,
+            Key.DirectionUp,
+            Key.DirectionDown -> {
               unfollowConfirmFocusedConfirm = !unfollowConfirmFocusedConfirm
               showControls()
               true
