@@ -197,9 +197,10 @@ class CdnSpeedTester(
       throw e
     }
 
+    var firstByteMs = -1L
+    var downloadedBytes = 0L
     response.use {
-      val firstByteMs = (it.receivedResponseAtMillis - it.sentRequestAtMillis).coerceAtLeast(0L)
-      var downloadedBytes = 0L
+      firstByteMs = (it.receivedResponseAtMillis - it.sentRequestAtMillis).coerceAtLeast(0L)
       it.body?.source()?.use { source ->
         val buffer = okio.Buffer()
         while (downloadedBytes < MeasureRangeBytes) {
@@ -209,14 +210,14 @@ class CdnSpeedTester(
           buffer.clear()
         }
       }
-      val totalMs = (System.nanoTime() - startNs) / 1_000_000L
-      Measurement(
-        url = url,
-        firstByteMs = firstByteMs,
-        totalMs = totalMs,
-        downloadedBytes = downloadedBytes,
-      )
     }
+    val totalMs = (System.nanoTime() - startNs) / 1_000_000L
+    return Measurement(
+      url = url,
+      firstByteMs = firstByteMs,
+      totalMs = totalMs,
+      downloadedBytes = downloadedBytes,
+    )
   }
 
   data class Measurement(
