@@ -4,6 +4,17 @@
     <string name="nav_search">搜尋</string>
     <string name="nav_history">歷史</string>
     <string name="nav_settings">設定</string>
+    <string name="nav_pgc">影視</string>
+    <string name="pgc_type_anime">番劇</string>
+    <string name="pgc_type_guochuang">國創</string>
+    <string name="pgc_type_movie">電影</string>
+    <string name="pgc_type_documentary">紀錄片</string>
+    <string name="pgc_type_tv">電視劇</string>
+    <string name="pgc_type_variety">綜藝</string>
+    <string name="pgc_index_entry">索引</string>
+    <string name="pgc_loading">正在載入…</string>
+    <string name="pgc_empty">暫時沒有內容。</string>
+    <string name="pgc_failed">載入失敗，請重試。</string>
     <string name="nav_login">登入</string>
     <string name="recommend_subtitle">來自 B 站推薦串流</string>
     <string name="recommend_loading">正在載入推薦...</string>

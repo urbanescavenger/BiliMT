@@ -195,6 +195,7 @@ fun BiliTvApp(
   val dynamicFocusRequester = remember { FocusRequester() }
   val historyFocusRequester = remember { FocusRequester() }
   val settingsFocusRequester = remember { FocusRequester() }
+  val pgcFocusRequester = remember { FocusRequester() }
   val recommendUiState = remember { RecommendUiState() }
   val dynamicFeedState = remember { DynamicFeedUiState() }
   val historyFeedState = remember { HistoryFeedUiState() }
@@ -218,6 +219,9 @@ fun BiliTvApp(
   var spaceFocusRestoreRequestKey by remember { mutableIntStateOf(0) }
   val upSpaceUiState = remember { UpSpaceUiState() }
   val spaceFocusRequester = remember { FocusRequester() }
+  val pgcUiState = remember { com.kirin.mt.ui.pgc.PgcUiState() }
+  var pgcSeasonRequest by remember { mutableStateOf<com.kirin.mt.ui.pgc.PgcSeasonRequest?>(null) }
+  var pgcIndexRequest by remember { mutableStateOf<com.kirin.mt.core.model.PgcType?>(null) }
 
   LaunchedEffect(performancePolicy.imageMemoryCacheEnabled) {
     if (!performancePolicy.imageMemoryCacheEnabled) {
@@ -257,6 +261,7 @@ fun BiliTvApp(
         AppDestination.Dynamic -> dynamicFocusRequester.requestFocus()
         AppDestination.History -> historyFocusRequester.requestFocus()
         AppDestination.Settings -> settingsFocusRequester.requestFocus()
+        AppDestination.Pgc -> pgcFocusRequester.requestFocus()
       }
     }.getOrDefault(false)
   }
@@ -855,6 +860,29 @@ fun BiliTvApp(
                   },
                   onDismissSpeedTest = {
                     speedTestState = SpeedTestUiState.Idle
+                  },
+                )
+                AppDestination.Pgc -> com.kirin.mt.ui.pgc.PgcScreen(
+                  videoRepository = videoRepository,
+                  uiState = pgcUiState,
+                  firstItemFocusRequester = pgcFocusRequester,
+                  onMoveLeftToNav = {
+                    runCatching {
+                      navFocusRequesters.getValue(selectedDestination).requestFocus()
+                    }.isSuccess
+                  },
+                  onSeasonSelected = { summary ->
+                    pgcSeasonRequest = com.kirin.mt.ui.pgc.PgcSeasonRequest(
+                      seasonId = summary.seasonId,
+                      epId = summary.episodeId,
+                    )
+                  },
+                  onOpenIndex = { type ->
+                    pgcIndexRequest = type
+                  },
+                  requestInitialFocus = initialHomeFocusPending,
+                  onInitialFocusRequested = {
+                    initialHomeFocusPending = false
                   },
                 )
               }

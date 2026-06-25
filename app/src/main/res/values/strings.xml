@@ -4,6 +4,17 @@
     <string name="nav_search">搜索</string>
     <string name="nav_history">历史</string>
     <string name="nav_settings">设置</string>
+    <string name="nav_pgc">影视</string>
+    <string name="pgc_type_anime">番剧</string>
+    <string name="pgc_type_guochuang">国创</string>
+    <string name="pgc_type_movie">电影</string>
+    <string name="pgc_type_documentary">纪录片</string>
+    <string name="pgc_type_tv">电视剧</string>
+    <string name="pgc_type_variety">综艺</string>
+    <string name="pgc_index_entry">索引</string>
+    <string name="pgc_loading">正在加载…</string>
+    <string name="pgc_empty">暂时没有内容。</string>
+    <string name="pgc_failed">加载失败，请重试。</string>
     <string name="nav_login">登录</string>
     <string name="recommend_subtitle">来自 B 站推荐流</string>
     <string name="recommend_loading">正在加载推荐...</string>
