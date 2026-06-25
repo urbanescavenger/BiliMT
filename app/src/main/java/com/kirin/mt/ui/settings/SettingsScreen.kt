@@ -40,6 +40,7 @@ import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppVisualPerformanceMode
 import com.kirin.mt.core.settings.HomeThemeVariant
 import com.kirin.mt.core.update.UpdateUiState
+import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
@@ -75,6 +76,11 @@ fun SettingsScreen(
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onHomeSectionEnabledChange: (HomeSection, Boolean) -> Unit,
   onHomeSectionsOrderChange: (List<HomeSection>) -> Unit,
+  onLogsSelected: () -> Unit,
+  logFiles: List<LogCatcherUtil.LogFileInfo>,
+  onViewLog: (LogCatcherUtil.LogFileInfo) -> Unit,
+  onShareLog: (LogCatcherUtil.LogFileInfo) -> Unit,
+  onExportLog: () -> Unit,
   updateState: UpdateUiState,
   onCheckUpdate: () -> Unit,
   onDownloadUpdate: () -> Unit,
@@ -119,6 +125,7 @@ fun SettingsScreen(
       SettingsItemUpdateReleaseNotes to FocusRequester(),
       SettingsItemSpeedTest to FocusRequester(),
       SettingsItemHomeSections to FocusRequester(),
+      SettingsItemLogs to FocusRequester(),
       SettingsItemAbout to FocusRequester(),
     )
   }
@@ -182,6 +189,7 @@ fun SettingsScreen(
           rightPanel = when (itemIndex) {
             SettingsItemAbout -> SettingsRightPanel.About
             SettingsItemHomeSections -> SettingsRightPanel.HomeSections
+            SettingsItemLogs -> SettingsRightPanel.Logs
             else -> SettingsRightPanel.None
           }
         },
@@ -220,6 +228,11 @@ fun SettingsScreen(
             SettingsRightPanel.HomeSections
           }
         },
+        onLogsSelected = onLogsSelected,
+        logFiles = logFiles,
+        onViewLog = onViewLog,
+        onShareLog = onShareLog,
+        onExportLog = onExportLog,
         updateState = updateState,
         onCheckUpdate = onCheckUpdate,
         onDownloadUpdate = onDownloadUpdate,
@@ -236,6 +249,14 @@ fun SettingsScreen(
           onMoveLeftToSettings = { focusSettingItem(lastFocusedSettingItem) },
           onHomeSectionEnabledChange = onHomeSectionEnabledChange,
           onHomeSectionsOrderChange = onHomeSectionsOrderChange,
+          modifier = Modifier.weight(1f),
+        )
+        SettingsRightPanel.Logs -> SettingsLogsColumn(
+          files = logFiles,
+          onView = onViewLog,
+          onShare = onShareLog,
+          onExport = onExportLog,
+          onMoveLeftToSettings = { focusSettingItem(lastFocusedSettingItem) },
           modifier = Modifier.weight(1f),
         )
         SettingsRightPanel.About -> SettingsAboutColumn(
@@ -285,6 +306,11 @@ private fun SettingsBehaviorColumn(
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onAboutSelected: () -> Unit,
   onHomeSectionsSelected: () -> Unit,
+  onLogsSelected: () -> Unit,
+  logFiles: List<LogCatcherUtil.LogFileInfo>,
+  onViewLog: (LogCatcherUtil.LogFileInfo) -> Unit,
+  onShareLog: (LogCatcherUtil.LogFileInfo) -> Unit,
+  onExportLog: () -> Unit,
   updateState: UpdateUiState,
   onCheckUpdate: () -> Unit,
   onDownloadUpdate: () -> Unit,
@@ -772,6 +798,22 @@ private fun SettingsBehaviorColumn(
         onClick = onHomeSectionsSelected,
       )
     }
+    item(key = "logs") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_logs_entry_title),
+        description = stringResource(R.string.settings_logs_entry_description),
+        value = "${logFiles.size}",
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemLogs))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemLogs,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemLogs) },
+        onClick = onLogsSelected,
+      )
+    }
     item(key = "about") {
       SettingsActionRow(
         title = stringResource(R.string.settings_about_title),
@@ -833,6 +875,7 @@ private const val SettingsItemUpdateCheck = 23
 private const val SettingsItemUpdateDownloadOrInstall = 24
 private const val SettingsItemUpdateReleaseNotes = 25
 private const val SettingsItemPlaybackCdn = 21
+private const val SettingsItemLogs = 27
 
 private val SettingsFocusableItems = listOf(
   SettingsItemPlaybackQuality,
@@ -859,12 +902,14 @@ private val SettingsFocusableItems = listOf(
   SettingsItemClearCache,
   SettingsItemChineseTextVariant,
   SettingsItemHomeSections,
+  SettingsItemLogs,
   SettingsItemAbout,
 )
 
 private enum class SettingsRightPanel {
   None,
   HomeSections,
+  Logs,
   About,
 }
 
@@ -912,9 +957,13 @@ private fun settingsItemToLazyIndex(
     val updateExtraCount = updateExtraItemCount(updateState)
     25 + updateExtraCount
   }
-  SettingsItemAbout -> {
+  SettingsItemLogs -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     26 + updateExtraCount
+  }
+  SettingsItemAbout -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    27 + updateExtraCount
   }
   else -> 0
 }

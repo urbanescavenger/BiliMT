@@ -1,6 +1,9 @@
 package com.kirin.mt.core.util
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import androidx.core.content.FileProvider
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.io.BufferedReader
 import java.io.File
@@ -16,6 +19,15 @@ object LogCatcherUtil {
   private const val MANUAL_LOG_PREFIX = "logs_manual"
   private const val CRASH_LOG_PREFIX = "logs_crash"
   private const val MAX_LOG_COUNT = 10
+  private const val MAX_PREVIEW_LINES = 500
+
+  enum class LogType { Manual, Crash }
+
+  data class LogFileInfo(
+    val file: File,
+    val type: LogType,
+    val createdAt: Date,
+  )
 
   private lateinit var appContext: Context
 
@@ -111,6 +123,49 @@ object LogCatcherUtil {
     val prefix = if (manual) MANUAL_LOG_PREFIX else CRASH_LOG_PREFIX
     val date = SimpleDateFormat("yyyy-MM-dd_HH:mm:ss", Locale.getDefault()).format(Date())
     return "${prefix}_$date.log"
+  }
+
+  fun allLogFiles(): List<LogFileInfo> {
+    updateLogFiles()
+    val manual = manualFiles.map { LogFileInfo(it, LogType.Manual, Date(it.lastModified())) }
+    val crash = crashFiles.map { LogFileInfo(it, LogType.Crash, Date(it.lastModified())) }
+    return (manual + crash).sortedByDescending { it.createdAt.time }
+  }
+
+  fun readLogPreview(file: File, maxLines: Int = MAX_PREVIEW_LINES): String {
+    return runCatching {
+      file.bufferedReader().use { reader ->
+        reader.lineSequence().take(maxLines).joinToString("\n")
+      }
+    }.getOrElse { "Read failed: ${it.message}" }
+  }
+
+  fun formatFileSize(bytes: Long): String {
+    return when {
+      bytes >= 1024 * 1024 -> String.format(Locale.US, "%.2f MB", bytes / (1024.0 * 1024.0))
+      bytes >= 1024 -> String.format(Locale.US, "%.1f KB", bytes / 1024.0)
+      else -> "$bytes B"
+    }
+  }
+
+  fun shareLogFile(context: Context, file: File) {
+    runCatching {
+      val authority = "${context.packageName}.fileprovider"
+      val uri = FileProvider.getUriForFile(context, authority, file)
+      val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_SUBJECT, file.name)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      val chooser = Intent.createChooser(intent, "Share log").apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      context.startActivity(chooser)
+    }.onFailure { error ->
+      logger.error(error) { "share log file failed: ${file.name}" }
+    }
   }
 
   fun updateLogFiles() {

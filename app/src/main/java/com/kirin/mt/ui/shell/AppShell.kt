@@ -68,6 +68,7 @@ import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateManager
+import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.feed.DynamicFeedScreen
 import com.kirin.mt.ui.feed.DynamicFeedUiState
 import com.kirin.mt.ui.feed.HistoryFeedScreen
@@ -82,6 +83,7 @@ import com.kirin.mt.ui.player.PlayerScreen
 import com.kirin.mt.ui.search.SearchScreen
 import com.kirin.mt.ui.search.SearchUiState
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
+import com.kirin.mt.ui.settings.LogViewerDialog
 import com.kirin.mt.ui.settings.SettingsScreen
 import com.kirin.mt.ui.space.UpSpaceRequest
 import com.kirin.mt.ui.space.UpSpaceScreen
@@ -213,6 +215,8 @@ fun BiliTvApp(
   var appExitConfirmToast by remember { mutableStateOf<Toast?>(null) }
   var pendingContentFocusDestination by remember { mutableStateOf<AppDestination?>(null) }
   var cacheSizeBytes by remember { mutableStateOf<Long?>(null) }
+  var logFiles by remember { mutableStateOf(LogCatcherUtil.allLogFiles()) }
+  var logViewerFile by remember { mutableStateOf<java.io.File?>(null) }
   var spaceRequest by remember { mutableStateOf<UpSpaceRequest?>(null) }
   var spaceOrigin by remember { mutableStateOf<SpaceOrigin?>(null) }
   var spacePlaybackBehind by remember { mutableStateOf(false) }
@@ -253,6 +257,10 @@ fun BiliTvApp(
     coroutineScope.launch {
       cacheSizeBytes = appCacheManager.cacheSizeBytes()
     }
+  }
+
+  fun refreshLogFiles() {
+    logFiles = LogCatcherUtil.allLogFiles()
   }
 
   fun requestDestinationFocus(destination: AppDestination): Boolean {
@@ -379,6 +387,7 @@ fun BiliTvApp(
   LaunchedEffect(selectedDestination) {
     if (selectedDestination == AppDestination.Settings) {
       refreshCacheSize()
+      refreshLogFiles()
     }
   }
 
@@ -748,6 +757,27 @@ fun BiliTvApp(
                       appSettingsStore.setHomeSectionsOrder(order)
                     }
                   },
+                  onLogsSelected = {
+                    // Toggle is handled inside SettingsScreen via rightPanel state.
+                  },
+                  logFiles = logFiles,
+                  onViewLog = { info ->
+                    logViewerFile = info.file
+                  },
+                  onShareLog = { info ->
+                    LogCatcherUtil.shareLogFile(context, info.file)
+                  },
+                  onExportLog = {
+                    coroutineScope.launch {
+                      LogCatcherUtil.logLogcat(manual = true)
+                      refreshLogFiles()
+                      Toast.makeText(
+                        localizedContext,
+                        localizedContext.getString(R.string.settings_logs_export_done, logFiles.firstOrNull()?.file?.name ?: ""),
+                        Toast.LENGTH_SHORT,
+                      ).show()
+                    }
+                  },
                   updateState = updateState,
                   onCheckUpdate = {
                     coroutineScope.launch {
@@ -1035,6 +1065,17 @@ fun BiliTvApp(
           modifier = Modifier
             .fillMaxSize()
             .background(BiliColors.VideoBlack.copy(alpha = transitionScrimAlpha)),
+        )
+      }
+      val displayedLogFile = logViewerFile
+      if (displayedLogFile != null) {
+        LogViewerDialog(
+          file = displayedLogFile,
+          onDismiss = { logViewerFile = null },
+          onShare = { file ->
+            LogCatcherUtil.shareLogFile(context, file)
+          },
+          modifier = Modifier.fillMaxSize(),
         )
       }
     }
