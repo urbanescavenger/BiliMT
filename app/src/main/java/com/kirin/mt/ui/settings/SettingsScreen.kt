@@ -207,7 +207,18 @@ fun SettingsScreen(
         onAutoConfirmOnFocusChange = onAutoConfirmOnFocusChange,
         onAutoRefreshOnSwitchChange = onAutoRefreshOnSwitchChange,
         onAboutSelected = {
-          rightPanel = SettingsRightPanel.About
+          rightPanel = if (rightPanel == SettingsRightPanel.About) {
+            SettingsRightPanel.None
+          } else {
+            SettingsRightPanel.About
+          }
+        },
+        onHomeSectionsSelected = {
+          rightPanel = if (rightPanel == SettingsRightPanel.HomeSections) {
+            SettingsRightPanel.None
+          } else {
+            SettingsRightPanel.HomeSections
+          }
         },
         updateState = updateState,
         onCheckUpdate = onCheckUpdate,
@@ -273,6 +284,7 @@ private fun SettingsBehaviorColumn(
   onAutoConfirmOnFocusChange: (Boolean) -> Unit,
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onAboutSelected: () -> Unit,
+  onHomeSectionsSelected: () -> Unit,
   updateState: UpdateUiState,
   onCheckUpdate: () -> Unit,
   onDownloadUpdate: () -> Unit,
@@ -757,7 +769,7 @@ private fun SettingsBehaviorColumn(
             onMoveLeftToNav = onMoveLeftToNav,
           ),
         onFocused = { onSettingFocused(SettingsItemHomeSections) },
-        onClick = {},
+        onClick = onHomeSectionsSelected,
       )
     }
     item(key = "about") {
