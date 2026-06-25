@@ -308,7 +308,7 @@ private fun PgcGrid(
 }
 
 @Composable
-private fun PgcCard(
+internal fun PgcCard(
   summary: PgcSummary,
   isFirst: Boolean,
   firstItemFocusRequester: FocusRequester,
