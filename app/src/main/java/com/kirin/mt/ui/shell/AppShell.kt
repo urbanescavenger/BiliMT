@@ -83,7 +83,6 @@ import com.kirin.mt.ui.player.PlayerScreen
 import com.kirin.mt.ui.search.SearchScreen
 import com.kirin.mt.ui.search.SearchUiState
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
-import com.kirin.mt.ui.settings.LogViewerDialog
 import com.kirin.mt.ui.settings.SettingsScreen
 import com.kirin.mt.ui.space.UpSpaceRequest
 import com.kirin.mt.ui.space.UpSpaceScreen
@@ -217,7 +216,7 @@ fun BiliTvApp(
   var cacheSizeBytes by remember { mutableStateOf<Long?>(null) }
   var logFiles by remember { mutableStateOf(LogCatcherUtil.allLogFiles()) }
   var isRecordingLog by remember { mutableStateOf(LogCatcherUtil.isRecording) }
-  var logViewerFile by remember { mutableStateOf<java.io.File?>(null) }
+  var viewingLogFile by remember { mutableStateOf<java.io.File?>(null) }
   var spaceRequest by remember { mutableStateOf<UpSpaceRequest?>(null) }
   var spaceOrigin by remember { mutableStateOf<SpaceOrigin?>(null) }
   var spacePlaybackBehind by remember { mutableStateOf(false) }
@@ -764,8 +763,12 @@ fun BiliTvApp(
                   },
                   logFiles = logFiles,
                   isRecordingLog = isRecordingLog,
+                  viewingLogFile = viewingLogFile,
                   onViewLog = { info ->
-                    logViewerFile = info.file
+                    viewingLogFile = info.file
+                  },
+                  onBackFromLogView = {
+                    viewingLogFile = null
                   },
                   onShareLog = { info ->
                     LogCatcherUtil.shareLogFile(context, info.file)
@@ -1079,17 +1082,6 @@ fun BiliTvApp(
           modifier = Modifier
             .fillMaxSize()
             .background(BiliColors.VideoBlack.copy(alpha = transitionScrimAlpha)),
-        )
-      }
-      val displayedLogFile = logViewerFile
-      if (displayedLogFile != null) {
-        LogViewerDialog(
-          file = displayedLogFile,
-          onDismiss = { logViewerFile = null },
-          onShare = { file ->
-            LogCatcherUtil.shareLogFile(context, file)
-          },
-          modifier = Modifier.fillMaxSize(),
         )
       }
     }
