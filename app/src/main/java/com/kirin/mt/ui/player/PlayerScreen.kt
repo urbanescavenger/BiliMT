@@ -96,12 +96,14 @@ import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 
 @Composable
@@ -185,6 +187,8 @@ fun PlayerScreen(
   var playbackExitConfirmToast by remember { mutableStateOf<Toast?>(null) }
   var playbackCompletionToast by remember { mutableStateOf<Toast?>(null) }
   var completionReported by remember { mutableStateOf(false) }
+  /** 播放器主协程可能卡在 prepare/网络；按返回时强制取消并退出。 */
+  var playbackLaunchJob by remember { mutableStateOf<Job?>(null) }
   var completionActionToken by remember { mutableLongStateOf(0L) }
   var completionActionJob by remember { mutableStateOf<Job?>(null) }
   val controlsFocusRequester = remember { FocusRequester() }
@@ -477,11 +481,23 @@ fun PlayerScreen(
     }
   }
 
+  fun forceExitPlayer() {
+    playbackLaunchJob?.cancel()
+    playbackLaunchJob = null
+    player.release()
+    onBack()
+  }
+
   fun exitPlayer() {
     finishPlayer(onBack)
   }
 
   fun requestExitPlayer() {
+    if (playerState is PlayerScreenState.Loading) {
+      // 起播过程中返回：直接强制退出，避免 prepare/网络阻塞导致按返回没反应。
+      forceExitPlayer()
+      return
+    }
     if (!confirmPlaybackExit) {
       exitPlayer()
       return
@@ -1016,6 +1032,9 @@ fun PlayerScreen(
   }
 
   LaunchedEffect(activeRequest, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey) {
+    val launchJob = coroutineContext[Job]
+    playbackLaunchJob = launchJob
+    try {
     playerState = PlayerScreenState.Loading
     cancelPendingCompletionAction()
     completionReported = false
@@ -1112,7 +1131,10 @@ fun PlayerScreen(
           ),
         ).createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
         player.setMediaSource(mediaSource)
-        player.prepare()
+        // DashMediaSource 在 prepare 时可能触发同步 IO；放到 IO 线程避免卡住主线程/UI。
+        withContext(Dispatchers.IO) {
+          player.prepare()
+        }
         player.setPlaybackSpeed(playbackSpeed)
         if (startPositionMs > 0L) {
           player.seekTo(startPositionMs)
@@ -1126,7 +1148,11 @@ fun PlayerScreen(
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {
+      Log.e(PlayerPlaybackLogTag, "playback launch failed: ${error.message}", error)
       PlayerScreenState.Failed(error.message.orEmpty())
+    }
+    } finally {
+      playbackLaunchJob = null
     }
   }
 
