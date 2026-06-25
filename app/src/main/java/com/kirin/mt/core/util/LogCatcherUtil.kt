@@ -299,8 +299,8 @@ object LogCatcherUtil {
           }
         }
       }
-      if (!file.delete()) logger.warning { "trim: delete original failed" }
-      if (!tmp.renameTo(file)) logger.warning { "trim: rename tmp failed" }
+      if (!file.delete()) logger.warn { "trim: delete original failed" }
+      if (!tmp.renameTo(file)) logger.warn { "trim: rename tmp failed" }
     }.onFailure { logger.error(it) { "trim live log failed" } }
   }
 
