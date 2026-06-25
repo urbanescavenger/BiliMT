@@ -200,13 +200,6 @@ private fun HomeSectionMoveButton(
 }
 
 @Composable
-internal fun SettingsEmptyRightPanel(
-  modifier: Modifier = Modifier,
-) {
-  Box(modifier = modifier.fillMaxSize())
-}
-
-@Composable
 internal fun SettingsAboutColumn(
   modifier: Modifier = Modifier,
 ) {

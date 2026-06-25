@@ -219,9 +219,7 @@ fun SettingsScreen(
         modifier = Modifier.weight(1f),
       )
       when (rightPanel) {
-        SettingsRightPanel.None -> SettingsEmptyRightPanel(
-          modifier = Modifier.weight(1f),
-        )
+        SettingsRightPanel.None -> Unit
         SettingsRightPanel.HomeSections -> SettingsHomeSectionsColumn(
           settings = settings,
           onMoveLeftToSettings = { focusSettingItem(lastFocusedSettingItem) },
