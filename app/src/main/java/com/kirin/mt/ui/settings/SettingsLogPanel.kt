@@ -18,7 +18,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -168,7 +170,8 @@ private fun LogContentPanel(
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
-  val content = remember(file) { file.readText() }
+  var refreshKey by remember { mutableStateOf(0L) }
+  val content = remember(file, refreshKey) { LogCatcherUtil.readLogContent(file) }
   val lines = remember(content) { content.lines() }
   val listState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
@@ -294,7 +297,7 @@ private fun LogContentPanel(
         shape = RoundedCornerShape(BiliRadius.Pill),
         onClick = onBack,
         modifier = Modifier
-          .width(160.dp)
+          .weight(1f)
           .focusRequester(backFocusRequester),
       ) {
         Box(
@@ -315,10 +318,31 @@ private fun LogContentPanel(
         scaleOnFocus = false,
         shadowOnFocus = false,
         shape = RoundedCornerShape(BiliRadius.Pill),
+        onClick = { refreshKey += 1L },
+        modifier = Modifier.weight(1f),
+      ) {
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = BiliSpacing.Sm),
+          contentAlignment = Alignment.Center,
+        ) {
+          Text(
+            text = stringResource(R.string.settings_logs_refresh),
+            color = homeColors.textPrimary,
+            fontSize = BiliTypography.Body,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+      }
+      BiliFocusableSurface(
+        scaleOnFocus = false,
+        shadowOnFocus = false,
+        shape = RoundedCornerShape(BiliRadius.Pill),
         onClick = {
           coroutineScope.launch { listState.scrollToItem(0) }
         },
-        modifier = Modifier.width(160.dp),
+        modifier = Modifier.weight(1f),
       ) {
         Box(
           modifier = Modifier
@@ -341,7 +365,7 @@ private fun LogContentPanel(
         onClick = {
           coroutineScope.launch { listState.scrollToItem((totalCount - 1).coerceAtLeast(0)) }
         },
-        modifier = Modifier.width(160.dp),
+        modifier = Modifier.weight(1f),
       ) {
         Box(
           modifier = Modifier
@@ -379,6 +403,7 @@ private fun LogFileRow(
   val label = when (info.type) {
     LogCatcherUtil.LogType.Crash -> stringResource(R.string.settings_logs_type_crash)
     LogCatcherUtil.LogType.Manual -> stringResource(R.string.settings_logs_type_manual)
+    LogCatcherUtil.LogType.Live -> stringResource(R.string.settings_logs_type_live)
   }
   Row(
     modifier = modifier.fillMaxWidth(),

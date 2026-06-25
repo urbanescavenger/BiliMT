@@ -7,8 +7,11 @@ import androidx.core.content.FileProvider
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.io.BufferedReader
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.io.RandomAccessFile
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -19,10 +22,19 @@ object LogCatcherUtil {
   private const val LOG_DIR = "crash_logs"
   private const val MANUAL_LOG_PREFIX = "logs_manual"
   private const val CRASH_LOG_PREFIX = "logs_crash"
+  private const val LIVE_LOG_FILENAME = "logs_live.log"
   private const val MAX_LOG_COUNT = 10
   private const val MAX_PREVIEW_LINES = 500
+  /** 实时日志大小上限：超过即裁掉最旧日志，保留较新部分（用户要求 10MB）。 */
+  private const val MAX_LIVE_LOG_BYTES = 10L * 1024 * 1024
+  /** 裁剪后保留的字节数（略小于上限，避免每写入几行就频繁裁剪）。 */
+  private const val LIVE_TRIM_KEEP_BYTES = 9L * 1024 * 1024
+  /** 每写入多少行 flush 一次并检查大小（越小越实时，但 syscall 越多）。 */
+  private const val LIVE_FLUSH_LINES = 20
+  /** 查看实时日志时只读尾部这么多字节，避免把 10MB 一次性塞进内存导致 TV 盒子 OOM。 */
+  private const val LIVE_LOG_TAIL_BYTES = 2L * 1024 * 1024
 
-  enum class LogType { Manual, Crash }
+  enum class LogType { Manual, Crash, Live }
 
   data class LogFileInfo(
     val file: File,
@@ -49,6 +61,25 @@ object LogCatcherUtil {
     val file: File,
   )
 
+  private val liveState = AtomicReference<LiveState?>(null)
+
+  val isLiveLogging: Boolean
+    get() = liveState.get() != null
+
+  /** 实时日志文件（已存在时），用于在日志列表中展示和查看。 */
+  val liveLogFile: File?
+    get() = if (this::appContext.isInitialized) {
+      val file = File(File(appContext.filesDir, LOG_DIR), LIVE_LOG_FILENAME)
+      if (file.exists()) file else null
+    } else {
+      null
+    }
+
+  private data class LiveState(
+    val process: Process,
+    val file: File,
+  )
+
   fun install(context: Context) {
     appContext = context.applicationContext
     runCatching {
@@ -64,6 +95,7 @@ object LogCatcherUtil {
     }
 
     clearOldLogFiles()
+    startLiveLogging()
   }
 
   fun logLogcat(manual: Boolean = false) {
@@ -164,6 +196,137 @@ object LogCatcherUtil {
     return state.file
   }
 
+  /**
+   * 启动实时日志：常驻一个 logcat 进程，把输出持续追加到 [LIVE_LOG_FILENAME]，
+   * 超过 [MAX_LIVE_LOG_BYTES] 时裁掉最旧部分（保留 [LIVE_TRIM_KEEP_BYTES]）。
+   * 在 [install] 时自动启动，应用存活期间持续记录，跨重启累积——这样 PGC 黑屏等
+   * 问题发生时日志已经在盘上，不用先手动开始录制。写者只在 reader 线程内持有，
+   * 裁剪时同线程先关写者再改文件再重开，避免 append fd 与 rename 冲突。
+   */
+  fun startLiveLogging(): Boolean {
+    if (liveState.get() != null) return false
+    if (!this::appContext.isInitialized) return false
+    return runCatching {
+      val logDir = File(appContext.filesDir, LOG_DIR)
+      if (!logDir.exists()) logDir.mkdirs()
+      val logFile = File(logDir, LIVE_LOG_FILENAME)
+      logFile.createNewFile()
+      // 上次异常退出可能留下超限文件，启动时先裁一次。
+      trimFileTail(logFile)
+
+      val process = ProcessBuilder("logcat", "-v", "threadtime")
+        .redirectErrorStream(true)
+        .start()
+      liveState.set(LiveState(process, logFile))
+
+      Thread {
+        var writer = OutputStreamWriter(FileOutputStream(logFile, true), Charsets.UTF_8)
+        runCatching {
+          if (logFile.length() == 0L) {
+            writer.writeDeviceInfo()
+            writer.writeAppInfo()
+            writer.appendLine("======== Logs (live, rolling ${MAX_LIVE_LOG_BYTES / (1024 * 1024)}MB) ========")
+          } else {
+            writer.appendLine("======== resumed live logging ========")
+          }
+          writer.flush()
+        }
+        val reader = BufferedReader(InputStreamReader(process.inputStream))
+        var linesSinceFlush = 0
+        try {
+          while (true) {
+            val line = reader.readLine() ?: break
+            val current = liveState.get()
+            if (current?.file != logFile) break
+            writer.appendLine(line)
+            linesSinceFlush++
+            if (linesSinceFlush >= LIVE_FLUSH_LINES) {
+              linesSinceFlush = 0
+              runCatching { writer.flush() }
+              if (logFile.length() > MAX_LIVE_LOG_BYTES) {
+                runCatching { writer.flush(); writer.close() }
+                trimFileTail(logFile)
+                writer = OutputStreamWriter(FileOutputStream(logFile, true), Charsets.UTF_8)
+              }
+            }
+          }
+        } catch (e: Exception) {
+          logger.error(e) { "live recording reader failed" }
+        } finally {
+          runCatching { reader.close() }
+          runCatching { writer.flush(); writer.close() }
+        }
+      }.apply {
+        name = "LogCatcher-live"
+        isDaemon = true
+        start()
+      }
+      logger.info { "live logging started: $logFile" }
+      true
+    }.getOrElse { error ->
+      logger.error(error) { "start live logging failed" }
+      false
+    }
+  }
+
+  fun stopLiveLogging() {
+    val state = liveState.getAndSet(null) ?: return
+    runCatching { state.process.destroy() }
+    logger.info { "live logging stopped" }
+  }
+
+  /**
+   * 裁剪日志文件：保留尾部 [LIVE_TRIM_KEEP_BYTES] 字节（跳到下一个换行按行对齐，
+   * 丢弃首部不完整行），用临时文件替换原文件。调用方须保证此时无其它写者持有原文件 fd。
+   */
+  private fun trimFileTail(file: File) {
+    runCatching {
+      val len = file.length()
+      if (len <= MAX_LIVE_LOG_BYTES) return@runCatching
+      val keepFrom = (len - LIVE_TRIM_KEEP_BYTES).coerceAtLeast(0L)
+      val tmp = File(file.parentFile, "${file.name}.trim.tmp")
+      RandomAccessFile(file, "r").use { raf ->
+        raf.seek(keepFrom)
+        // 跳到下一个换行，避免把一行（可能正是 UTF-8 多字节字符的行）劈成两半
+        var b = raf.read()
+        while (b != -1 && b != '\n'.code) b = raf.read()
+        FileOutputStream(tmp).use { out ->
+          val buf = ByteArray(64 * 1024)
+          while (true) {
+            val read = raf.read(buf)
+            if (read <= 0) break
+            out.write(buf, 0, read)
+          }
+        }
+      }
+      if (!file.delete()) logger.warning { "trim: delete original failed" }
+      if (!tmp.renameTo(file)) logger.warning { "trim: rename tmp failed" }
+    }.onFailure { logger.error(it) { "trim live log failed" } }
+  }
+
+  /**
+   * 读取日志内容：小文件直接读全文；大文件（如实时日志）只读尾部 [LIVE_LOG_TAIL_BYTES]
+   * 字节，避免把 10MB 一次性塞进内存导致 TV 盒子 OOM。
+   */
+  fun readLogContent(file: File): String {
+    return runCatching {
+      val len = file.length()
+      if (len <= LIVE_LOG_TAIL_BYTES) return@runCatching file.readText()
+      val sb = StringBuilder()
+      FileInputStream(file).use { fis ->
+        fis.channel.position(len - LIVE_LOG_TAIL_BYTES)
+        BufferedReader(InputStreamReader(fis, Charsets.UTF_8)).use { reader ->
+          reader.readLine() // 丢弃首部可能不完整的一行
+          while (true) {
+            val line = reader.readLine() ?: break
+            sb.appendLine(line)
+          }
+        }
+      }
+      sb.toString()
+    }.getOrElse { "Read failed: ${it.message}" }
+  }
+
   private fun OutputStreamWriter.writeDeviceInfo() {
     val packageName = appContext.packageName
     val packageInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -210,9 +373,11 @@ object LogCatcherUtil {
 
   fun allLogFiles(): List<LogFileInfo> {
     updateLogFiles()
+    val live = liveLogFile?.let { LogFileInfo(it, LogType.Live, Date(it.lastModified())) }
     val manual = manualFiles.map { LogFileInfo(it, LogType.Manual, Date(it.lastModified())) }
     val crash = crashFiles.map { LogFileInfo(it, LogType.Crash, Date(it.lastModified())) }
-    return (manual + crash).sortedByDescending { it.createdAt.time }
+    val all = (manual + crash) + (live?.let { listOf(it) } ?: emptyList())
+    return all.sortedByDescending { it.createdAt.time }
   }
 
   fun readLogPreview(file: File, maxLines: Int = MAX_PREVIEW_LINES): String {
