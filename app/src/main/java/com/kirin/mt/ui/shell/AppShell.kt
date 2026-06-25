@@ -216,6 +216,7 @@ fun BiliTvApp(
   var pendingContentFocusDestination by remember { mutableStateOf<AppDestination?>(null) }
   var cacheSizeBytes by remember { mutableStateOf<Long?>(null) }
   var logFiles by remember { mutableStateOf(LogCatcherUtil.allLogFiles()) }
+  var isRecordingLog by remember { mutableStateOf(LogCatcherUtil.isRecording) }
   var logViewerFile by remember { mutableStateOf<java.io.File?>(null) }
   var spaceRequest by remember { mutableStateOf<UpSpaceRequest?>(null) }
   var spaceOrigin by remember { mutableStateOf<SpaceOrigin?>(null) }
@@ -261,6 +262,7 @@ fun BiliTvApp(
 
   fun refreshLogFiles() {
     logFiles = LogCatcherUtil.allLogFiles()
+    isRecordingLog = LogCatcherUtil.isRecording
   }
 
   fun requestDestinationFocus(destination: AppDestination): Boolean {
@@ -761,21 +763,33 @@ fun BiliTvApp(
                     // Toggle is handled inside SettingsScreen via rightPanel state.
                   },
                   logFiles = logFiles,
+                  isRecordingLog = isRecordingLog,
                   onViewLog = { info ->
                     logViewerFile = info.file
                   },
                   onShareLog = { info ->
                     LogCatcherUtil.shareLogFile(context, info.file)
                   },
-                  onExportLog = {
+                  onToggleLogRecording = {
                     coroutineScope.launch {
-                      LogCatcherUtil.logLogcat(manual = true)
-                      refreshLogFiles()
-                      Toast.makeText(
-                        localizedContext,
-                        localizedContext.getString(R.string.settings_logs_export_done, logFiles.firstOrNull()?.file?.name ?: ""),
-                        Toast.LENGTH_SHORT,
-                      ).show()
+                      if (LogCatcherUtil.isRecording) {
+                        val file = LogCatcherUtil.stopManualRecording()
+                        refreshLogFiles()
+                        Toast.makeText(
+                          localizedContext,
+                          localizedContext.getString(R.string.settings_logs_recording_stopped, file?.name ?: ""),
+                          Toast.LENGTH_SHORT,
+                        ).show()
+                      } else {
+                        val started = LogCatcherUtil.startManualRecording()
+                        isRecordingLog = LogCatcherUtil.isRecording
+                        val message = if (started) {
+                          R.string.settings_logs_recording_started
+                        } else {
+                          R.string.settings_logs_recording_failed
+                        }
+                        Toast.makeText(localizedContext, message, Toast.LENGTH_SHORT).show()
+                      }
                     }
                   },
                   updateState = updateState,

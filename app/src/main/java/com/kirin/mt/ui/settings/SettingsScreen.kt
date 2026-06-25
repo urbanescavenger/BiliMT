@@ -78,9 +78,10 @@ fun SettingsScreen(
   onHomeSectionsOrderChange: (List<HomeSection>) -> Unit,
   onLogsSelected: () -> Unit,
   logFiles: List<LogCatcherUtil.LogFileInfo>,
+  isRecordingLog: Boolean,
   onViewLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onShareLog: (LogCatcherUtil.LogFileInfo) -> Unit,
-  onExportLog: () -> Unit,
+  onToggleLogRecording: () -> Unit,
   updateState: UpdateUiState,
   onCheckUpdate: () -> Unit,
   onDownloadUpdate: () -> Unit,
@@ -230,9 +231,10 @@ fun SettingsScreen(
         },
         onLogsSelected = onLogsSelected,
         logFiles = logFiles,
+        isRecordingLog = isRecordingLog,
         onViewLog = onViewLog,
         onShareLog = onShareLog,
-        onExportLog = onExportLog,
+        onToggleLogRecording = onToggleLogRecording,
         updateState = updateState,
         onCheckUpdate = onCheckUpdate,
         onDownloadUpdate = onDownloadUpdate,
@@ -253,9 +255,10 @@ fun SettingsScreen(
         )
         SettingsRightPanel.Logs -> SettingsLogsColumn(
           files = logFiles,
+          isRecording = isRecordingLog,
           onView = onViewLog,
           onShare = onShareLog,
-          onExport = onExportLog,
+          onToggleRecording = onToggleLogRecording,
           onMoveLeftToSettings = { focusSettingItem(lastFocusedSettingItem) },
           modifier = Modifier.weight(1f),
         )
@@ -308,9 +311,10 @@ private fun SettingsBehaviorColumn(
   onHomeSectionsSelected: () -> Unit,
   onLogsSelected: () -> Unit,
   logFiles: List<LogCatcherUtil.LogFileInfo>,
+  isRecordingLog: Boolean,
   onViewLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onShareLog: (LogCatcherUtil.LogFileInfo) -> Unit,
-  onExportLog: () -> Unit,
+  onToggleLogRecording: () -> Unit,
   updateState: UpdateUiState,
   onCheckUpdate: () -> Unit,
   onDownloadUpdate: () -> Unit,
@@ -802,7 +806,11 @@ private fun SettingsBehaviorColumn(
       SettingsActionRow(
         title = stringResource(R.string.settings_logs_entry_title),
         description = stringResource(R.string.settings_logs_entry_description),
-        value = "${logFiles.size}",
+        value = if (isRecordingLog) {
+          stringResource(R.string.settings_logs_recording_badge)
+        } else {
+          "${logFiles.size}"
+        },
         modifier = Modifier
           .focusRequester(focusRequesters.getValue(SettingsItemLogs))
           .settingsBoundaryKeys(

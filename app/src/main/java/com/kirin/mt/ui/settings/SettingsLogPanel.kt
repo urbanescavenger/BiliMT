@@ -36,9 +36,10 @@ import com.kirin.mt.ui.theme.LocalHomeColors
 @Composable
 internal fun SettingsLogsColumn(
   files: List<LogCatcherUtil.LogFileInfo>,
+  isRecording: Boolean,
   onView: (LogCatcherUtil.LogFileInfo) -> Unit,
   onShare: (LogCatcherUtil.LogFileInfo) -> Unit,
-  onExport: () -> Unit,
+  onToggleRecording: () -> Unit,
   onMoveLeftToSettings: () -> Boolean,
   modifier: Modifier = Modifier,
 ) {
@@ -56,15 +57,19 @@ internal fun SettingsLogsColumn(
       fontWeight = FontWeight.Bold,
     )
     Text(
-      text = stringResource(R.string.settings_logs_description),
-      color = homeColors.textSecondary,
+      text = if (isRecording) {
+        stringResource(R.string.settings_logs_recording_hint)
+      } else {
+        stringResource(R.string.settings_logs_description)
+      },
+      color = if (isRecording) homeColors.accent else homeColors.textSecondary,
       fontSize = BiliTypography.BodySmall,
     )
     BiliFocusableSurface(
       scaleOnFocus = false,
       shadowOnFocus = false,
       shape = RoundedCornerShape(BiliRadius.Pill),
-      onClick = onExport,
+      onClick = onToggleRecording,
       modifier = Modifier.fillMaxWidth(),
     ) {
       Box(
@@ -74,8 +79,12 @@ internal fun SettingsLogsColumn(
         contentAlignment = Alignment.Center,
       ) {
         Text(
-          text = stringResource(R.string.settings_logs_export),
-          color = homeColors.textPrimary,
+          text = if (isRecording) {
+            stringResource(R.string.settings_logs_stop_recording)
+          } else {
+            stringResource(R.string.settings_logs_start_recording)
+          },
+          color = if (isRecording) homeColors.accent else homeColors.textPrimary,
           fontSize = BiliTypography.Body,
           fontWeight = FontWeight.Bold,
         )

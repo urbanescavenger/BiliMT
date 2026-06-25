@@ -12,6 +12,7 @@ import java.io.OutputStreamWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicReference
 
 object LogCatcherUtil {
   private val logger = KotlinLogging.logger("LogCatcher")
@@ -36,6 +37,17 @@ object LogCatcherUtil {
 
   var crashFiles: List<File> = emptyList()
     private set
+
+  private val recordingState = AtomicReference<RecordingState?>(null)
+
+  val isRecording: Boolean
+    get() = recordingState.get() != null
+
+  private data class RecordingState(
+    val process: Process,
+    val writer: OutputStreamWriter,
+    val file: File,
+  )
 
   fun install(context: Context) {
     appContext = context.applicationContext
@@ -79,6 +91,77 @@ object LogCatcherUtil {
     }.onFailure { error ->
       logger.error(error) { "write log to file failed" }
     }
+  }
+
+  fun startManualRecording(): Boolean {
+    if (recordingState.get() != null) return false
+    return runCatching {
+      Runtime.getRuntime().exec("logcat -c")
+      logger.info { "logcat cleared before recording" }
+
+      val logDir = File(appContext.filesDir, LOG_DIR)
+      if (!logDir.exists()) logDir.mkdirs()
+
+      val logFile = File(logDir, createFilename(manual = true))
+      logFile.createNewFile()
+      logger.info { "recording log to: $logFile" }
+
+      val writer = logFile.writer()
+      writer.writeDeviceInfo()
+      writer.writeAppInfo()
+      writer.appendLine("======== Logs ========")
+      writer.flush()
+
+      val process = ProcessBuilder("logcat", "-v", "threadtime")
+        .redirectErrorStream(true)
+        .start()
+
+      val previous = recordingState.getAndSet(RecordingState(process, writer, logFile))
+      if (previous != null) {
+        stopInternal(previous)
+      }
+
+      Thread {
+        val reader = BufferedReader(InputStreamReader(process.inputStream))
+        try {
+          var line: String?
+          while (reader.readLine().also { line = it } != null) {
+            val current = recordingState.get()
+            if (current?.file != logFile) break
+            current.writer.appendLine(line)
+          }
+        } catch (e: Exception) {
+          logger.error(e) { "manual recording reader failed" }
+        } finally {
+          runCatching { reader.close() }
+        }
+      }.apply {
+        name = "LogCatcher-recording"
+        isDaemon = true
+        start()
+      }
+      true
+    }.getOrElse { error ->
+      logger.error(error) { "start manual recording failed" }
+      false
+    }
+  }
+
+  fun stopManualRecording(): File? {
+    val state = recordingState.getAndSet(null) ?: return null
+    return stopInternal(state)
+  }
+
+  private fun stopInternal(state: RecordingState): File {
+    runCatching {
+      state.process.destroy()
+      state.writer.flush()
+      state.writer.close()
+    }.onFailure { error ->
+      logger.error(error) { "stop manual recording failed" }
+    }
+    updateLogFiles()
+    return state.file
   }
 
   private fun OutputStreamWriter.writeDeviceInfo() {
