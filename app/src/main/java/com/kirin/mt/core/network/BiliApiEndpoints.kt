@@ -29,6 +29,12 @@ object BiliApiEndpoints {
   const val SponsorBlockSkipSegments = "https://bsbsb.top/api/skipSegments"
   const val PlayerOnlineTotal = "$ApiBase/x/player/online/total"
   const val PlayerHeartbeat = "$ApiBase/x/click-interface/web/heartbeat"
+  const val PgcFeedV3 = "$ApiBase/pgc/page/web/v3/feed"
+  const val PgcFeed = "$ApiBase/pgc/page/web/feed"
+  const val PgcSeasonView = "$ApiBase/pgc/view/web/season"
+  const val PgcPlayUrl = "$ApiBase/pgc/player/web/playurl"
+  const val PgcSeasonIndex = "$ApiBase/pgc/season/index/result"
+  const val PgcHeartbeat = "$ApiBase/pgc/player/web/heartbeat"
   const val TvQrCode = "$PassportBase/x/passport-tv-login/qrcode/auth_code"
   const val TvQrPoll = "$PassportBase/x/passport-tv-login/qrcode/poll"
 

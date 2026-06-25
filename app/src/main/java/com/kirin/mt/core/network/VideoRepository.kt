@@ -3,6 +3,12 @@ package com.kirin.mt.core.network
 import com.kirin.mt.core.auth.WbiKeyRepository
 import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.model.HomeSection
+import com.kirin.mt.core.model.PgcFeedPage
+import com.kirin.mt.core.model.PgcIndexFilters
+import com.kirin.mt.core.model.PgcIndexPage
+import com.kirin.mt.core.model.PgcIndexResult
+import com.kirin.mt.core.model.PgcSeason
+import com.kirin.mt.core.model.PgcType
 import com.kirin.mt.core.model.SpaceUserProfile
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
@@ -42,6 +48,10 @@ class VideoRepository(
     wbiSigner = wbiSigner,
     sessionStore = sessionStore,
   )
+  private val pgcVideoRepository = PgcVideoRepository(
+    apiClient = apiClient,
+    sessionStore = sessionStore,
+  )
 
   suspend fun getHomeSectionVideos(
     section: HomeSection,
@@ -61,6 +71,22 @@ class VideoRepository(
 
   suspend fun getRelatedVideos(bvid: String): List<VideoSummary> {
     return homeVideoRepository.getRelatedVideos(bvid)
+  }
+
+  suspend fun getPgcFeed(pgcType: PgcType, cursor: Int): PgcFeedPage {
+    return pgcVideoRepository.getFeed(pgcType, cursor)
+  }
+
+  suspend fun getPgcSeasonInfo(seasonId: Int, epId: Int = 0): PgcSeason? {
+    return pgcVideoRepository.getSeasonInfo(seasonId, epId)
+  }
+
+  suspend fun getPgcIndex(
+    pgcType: PgcType,
+    filters: PgcIndexFilters,
+    page: PgcIndexPage,
+  ): PgcIndexResult {
+    return pgcVideoRepository.getPgcIndex(pgcType, filters, page)
   }
 
   suspend fun getSpaceVideos(
