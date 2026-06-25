@@ -96,14 +96,12 @@ import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 
 @Composable
@@ -1131,10 +1129,7 @@ fun PlayerScreen(
           ),
         ).createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
         player.setMediaSource(mediaSource)
-        // DashMediaSource 在 prepare 时可能触发同步 IO；放到 IO 线程避免卡住主线程/UI。
-        withContext(Dispatchers.IO) {
-          player.prepare()
-        }
+        player.prepare()
         player.setPlaybackSpeed(playbackSpeed)
         if (startPositionMs > 0L) {
           player.seekTo(startPositionMs)
