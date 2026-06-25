@@ -1,5 +1,14 @@
 # BiliMT 版本发布说明
 
+## v1.0.12-alpha.3
+
+### 修复
+- **PGC 播放仍黑屏（第二轮）**：进一步对齐 BV 的 PGC playurl 请求参数。
+  - `fnval` 改为固定 `4048`（BV 同款完整 DASH 能力集），替代原先按 codec 能力动态计算的 `16/80/1040/1104`。
+  - 移除 BiliTVNative 自己添加的 `from_client=bilibili-web` 和 `support_multi_audio=true`；这两个参数可能让 B站返回 Web DRM 流或当前播放器无法处理的格式。
+  - 增加 PGC 响应关键字段校验：`type` 非 DASH、`is_drm=true`、`is_preview=1`、`result` 异常时直接给出明确错误提示，不再黑屏 silent fail。
+  - 增强 ExoPlayer 错误/状态日志，便于后续真机抓 logcat 定位。
+
 ## v1.0.12-alpha.2
 
 ### 修复

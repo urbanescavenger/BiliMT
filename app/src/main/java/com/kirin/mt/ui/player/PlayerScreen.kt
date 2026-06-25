@@ -941,7 +941,26 @@ fun PlayerScreen(
   DisposableEffect(player) {
     val listener = object : Player.Listener {
       override fun onPlayerError(error: PlaybackException) {
+        Log.e(
+          PlayerPlaybackLogTag,
+          "player error code=${error.errorCode} codeName=${error.errorCodeName} message=${error.message}",
+          error,
+        )
         playerState = PlayerScreenState.Failed(error.message.orEmpty())
+      }
+
+      override fun onPlayerErrorChanged(error: PlaybackException?) {
+        error?.let {
+          Log.e(
+            PlayerPlaybackLogTag,
+            "player error changed code=${it.errorCode} codeName=${it.errorCodeName} message=${it.message}",
+            it,
+          )
+        }
+      }
+
+      override fun onIsLoadingChanged(isLoading: Boolean) {
+        Log.d(PlayerPlaybackLogTag, "player isLoading=$isLoading state=${player.playbackState}")
       }
 
       override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -955,6 +974,12 @@ fun PlayerScreen(
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {
+        Log.d(
+          PlayerPlaybackLogTag,
+          "player state=${playbackStateName(playbackState)} " +
+            "tracks=${player.currentTracks.groups.size} " +
+            "video=${player.videoFormat?.codecs} audio=${player.audioFormat?.codecs}",
+        )
         if (playbackState == Player.STATE_ENDED && playerState is PlayerScreenState.Ready && player.mediaItemCount > 0) {
           reportPlaybackCompleted()
         }
@@ -1694,6 +1719,16 @@ private const val AirJumpCompletionToastSuppressMs = 1_500L
 private const val AirJumpRewindResetThresholdMs = 2_000L
 private const val AirJumpRewindResetLeadMs = 1_000L
 private const val PlayerDanmakuLogTag = "BiliMT:Danmaku"
+private const val PlayerPlaybackLogTag = "BiliMT:Player"
+
+private fun playbackStateName(state: Int): String = when (state) {
+  Player.STATE_IDLE -> "IDLE"
+  Player.STATE_BUFFERING -> "BUFFERING"
+  Player.STATE_READY -> "READY"
+  Player.STATE_ENDED -> "ENDED"
+  else -> "UNKNOWN($state)"
+}
+
 private val DanmakuOpacityOptions = listOf(0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f)
 private val DanmakuFontSizeOptions = listOf(16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36)
 private val DanmakuAreaOptions = listOf(0.25f, 0.5f, 0.75f, 1.0f)

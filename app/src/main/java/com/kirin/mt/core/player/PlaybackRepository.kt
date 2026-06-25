@@ -78,14 +78,14 @@ class PlaybackRepository(
       "playurl codec requested=${codecPreference.key} effective=${effectiveCodecPreference.key} fnval=$fnval qn=$requestedQualityId",
     )
     val params = if (request.isPgc) {
+      // 对齐 BV 的 PGC playurl 参数：固定 fnval=4048，不声明 from_client / support_multi_audio，
+      // 避免服务端返回 Web DRM 流或当前播放器无法处理的格式。
       mutableMapOf(
         "cid" to request.cid.toString(),
         "qn" to requestedQualityId.toString(),
-        "fnval" to fnval.toString(),
+        "fnval" to PgcFnval.toString(),
         "fnver" to "0",
         "fourk" to "1",
-        "from_client" to "bilibili-web",
-        "support_multi_audio" to "true",
       ).apply {
         if (request.epId > 0L) put("ep_id", request.epId.toString())
         if (request.bvid.isNotBlank()) put("bvid", request.bvid)
@@ -115,10 +115,12 @@ class PlaybackRepository(
       headers = headers.asMap(),
     ).rootObject()
     root.requireBiliCodeOk("playurl")
+    val data = root.obj("data") ?: JsonObject(emptyMap())
+    if (request.isPgc) logPgcPlayUrlResponse(request, data)
     val info = parsePlaybackInfo(
       request = request,
       headers = headers,
-      data = root.obj("data") ?: JsonObject(emptyMap()),
+      data = data,
       requestedQualityId = requestedQualityId,
       codecPreference = effectiveCodecPreference,
       codecCapability = codecCapability,
@@ -351,6 +353,24 @@ class PlaybackRepository(
     }.getOrDefault(false)
   }
 
+  private fun logPgcPlayUrlResponse(request: PlaybackRequest, data: JsonObject) {
+    val type = data.string("type")
+    val result = data.string("result")
+    val isDrm = data.boolean("is_drm")
+    val hasPaid = data.boolean("has_paid")
+    val isPreview = data.int("is_preview") == 1
+    val quality = data.int("quality")
+    val dash = data.obj("dash")
+    val videoCount = (dash?.get("video") as? JsonArray)?.size ?: 0
+    val audioCount = (dash?.get("audio") as? JsonArray)?.size ?: 0
+    Log.i(
+      PlaybackLogTag,
+      "pgc playurl epId=${request.epId} cid=${request.cid} type=$type result=$result " +
+        "quality=$quality drm=$isDrm paid=$hasPaid preview=$isPreview " +
+        "videos=$videoCount audios=$audioCount",
+    )
+  }
+
   private fun parsePlaybackInfo(
     request: PlaybackRequest,
     headers: BiliPlaybackHeaders,
@@ -359,6 +379,25 @@ class PlaybackRepository(
     codecPreference: PlaybackCodecPreference,
     codecCapability: CodecCapability,
   ): PlaybackInfo {
+    if (request.isPgc) {
+      val type = data.string("type")
+      val result = data.string("result")
+      val isDrm = data.boolean("is_drm")
+      val hasPaid = data.boolean("has_paid")
+      val isPreview = data.int("is_preview") == 1
+      if (type.isNotBlank() && type != "DASH") {
+        throw BiliPlaybackException("PGC playurl returned type=$type, only DASH is supported")
+      }
+      if (isDrm) {
+        throw BiliPlaybackException("PGC content requires DRM, which is not supported yet")
+      }
+      if (isPreview) {
+        throw BiliPlaybackException("PGC content requires purchase/preview only")
+      }
+      if (result.isNotBlank() && result != "suee") {
+        throw BiliPlaybackException("PGC playurl business result=$result")
+      }
+    }
     val dash = data.obj("dash")
     val videoTracks = (dash?.get("video") as? JsonArray)
       ?.mapNotNull { it.asObjectOrNull()?.toPlaybackTrack() }
@@ -518,7 +557,11 @@ class PlaybackRepository(
     const val FnvalDash = 16
     const val FnvalH265 = 64
     const val FnvalAv1 = 1024
+    /** 对齐 BV：PGC playurl 请求完整的 DASH 能力集（含 HDR/杜比/多音轨等高级标志）。 */
+    const val PgcFnval = 4048
     const val PlaybackLogTag = "BiliMT:Playback"
     const val PlaybackCacheTtlMs = 90_000L
   }
 }
+
+class BiliPlaybackException(message: String) : Exception(message)
