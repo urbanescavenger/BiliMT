@@ -6,6 +6,7 @@ import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliNumberParser
+import com.kirin.mt.core.network.PgcMappers
 import com.kirin.mt.core.network.asObjectOrNull
 import com.kirin.mt.core.network.int
 import com.kirin.mt.core.network.long
@@ -74,23 +75,40 @@ class PlaybackRepository(
       PlaybackLogTag,
       "playurl codec requested=${codecPreference.key} effective=${effectiveCodecPreference.key} fnval=$fnval qn=$requestedQualityId",
     )
-    val params = mutableMapOf(
-      "bvid" to request.bvid,
-      "cid" to request.cid.toString(),
-      "qn" to requestedQualityId.toString(),
-      "fnval" to fnval.toString(),
-      "fourk" to "1",
-    )
-    val keys = wbiKeyRepository.ensureKeys(sessData)
-    val signedParams = if (keys != null) {
-      wbiSigner.sign(params, keys.imgKey, keys.subKey)
+    val params = if (request.isPgc) {
+      mutableMapOf(
+        "cid" to request.cid.toString(),
+        "qn" to requestedQualityId.toString(),
+        "fnval" to fnval.toString(),
+        "fnver" to "0",
+        "fourk" to "1",
+        "from_client" to "bilibili-web",
+        "support_multi_audio" to "true",
+      ).apply {
+        if (request.epId > 0L) put("ep_id", request.epId.toString())
+        if (request.bvid.isNotBlank()) put("bvid", request.bvid)
+        if (request.aid > 0L) put("avid", request.aid.toString())
+      }
     } else {
-      params
+      mutableMapOf(
+        "bvid" to request.bvid,
+        "cid" to request.cid.toString(),
+        "qn" to requestedQualityId.toString(),
+        "fnval" to fnval.toString(),
+        "fourk" to "1",
+      )
+    }
+    val keys = wbiKeyRepository.ensureKeys(sessData)
+    val signedParams = when {
+      request.isPgc -> params
+      keys != null -> wbiSigner.sign(params, keys.imgKey, keys.subKey)
+      else -> params
     }
 
     val headers = BiliPlaybackHeaders(sessData = sessData, biliJct = biliJct)
+    val url = if (request.isPgc) BiliApiEndpoints.PgcPlayUrl else BiliApiEndpoints.PlayUrl
     val root = apiClient.getJsonWithHeaders(
-      url = BiliApiEndpoints.PlayUrl,
+      url = url,
       params = signedParams,
       headers = headers.asMap(),
     ).rootObject()
@@ -161,6 +179,10 @@ class PlaybackRepository(
   }
 
   suspend fun getVideoMetadata(request: PlaybackRequest): PlaybackVideoMetadata {
+    if (request.seasonId > 0L) {
+      return getPgcVideoMetadata(request)
+    }
+
     val root = apiClient.getJson(
       url = BiliApiEndpoints.View,
       params = mapOf("bvid" to request.bvid),
@@ -197,6 +219,44 @@ class PlaybackRepository(
       viewCount = BiliNumberParser.toInt(stat?.get("view")),
       danmakuCount = BiliNumberParser.toInt(stat?.get("danmaku")),
       pubdate = data.long("pubdate"),
+      pages = pages,
+    )
+  }
+
+  private suspend fun getPgcVideoMetadata(request: PlaybackRequest): PlaybackVideoMetadata {
+    val sessData = sessionStore.sessData.first()
+    val root = apiClient.getJson(
+      url = BiliApiEndpoints.PgcSeasonView,
+      params = mapOf("season_id" to request.seasonId.toString()),
+      sessData = sessData,
+    ).rootObject()
+    root.requireBiliCodeOk("pgc season metadata")
+
+    val data = root.obj("data") ?: JsonObject(emptyMap())
+    val season = PgcMappers.fromSeasonData(data)
+    val pages = season.episodes.mapIndexed { index, ep ->
+      PlaybackEpisode(
+        cid = ep.cid,
+        page = index + 1,
+        title = ep.longTitle.ifBlank { ep.title },
+        durationSeconds = ep.duration,
+        epId = ep.id.toLong(),
+      )
+    }.filter { it.cid > 0L }
+
+    return PlaybackVideoMetadata(
+      aid = request.aid,
+      bvid = request.bvid,
+      cid = request.cid.takeIf { it > 0L }
+        ?: pages.firstOrNull()?.cid
+        ?: 0L,
+      title = season.title.ifBlank { request.title },
+      ownerName = "",
+      ownerFace = "",
+      ownerMid = 0L,
+      viewCount = 0,
+      danmakuCount = 0,
+      pubdate = 0L,
       pages = pages,
     )
   }

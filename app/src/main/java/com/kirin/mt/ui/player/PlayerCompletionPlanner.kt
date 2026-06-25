@@ -25,6 +25,7 @@ internal fun PlaybackRequest.nextEpisodeCompletion(
     forceStartPosition = true,
     historyPage = nextEpisode.page,
     advanceToNextHistoryEpisode = false,
+    epId = nextEpisode.epId,
   )
   return PlayerNextEpisodeCompletion(
     request = nextRequest,

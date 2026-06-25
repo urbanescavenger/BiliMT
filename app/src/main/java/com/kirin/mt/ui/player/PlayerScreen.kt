@@ -823,9 +823,11 @@ fun PlayerScreen(
           saveAndReportProgressNow()
           val nextRequest = displayRequest.copy(
             cid = episode.cid,
+            epId = episode.epId,
             startPositionMs = 0L,
             preferredQualityId = selectedQuality?.id,
             forceStartPosition = true,
+            historyPage = episode.page,
           )
           startPlaybackRequest(nextRequest, clearMetadata = false)
         }
@@ -1608,6 +1610,7 @@ private fun PlaybackRequest.withNextHistoryEpisodeIfNeeded(
   val nextEpisode = metadata.pages.getOrNull(currentIndex + 1) ?: return this
   return copy(
     cid = nextEpisode.cid,
+    epId = nextEpisode.epId,
     startPositionMs = 0L,
     forceStartPosition = true,
     historyPage = nextEpisode.page,

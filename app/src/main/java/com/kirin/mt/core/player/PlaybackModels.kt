@@ -16,7 +16,14 @@ data class PlaybackRequest(
   val forceStartPosition: Boolean = false,
   val historyPage: Int = 0,
   val advanceToNextHistoryEpisode: Boolean = false,
-)
+  /** PGC 剧集 id；>0 表示这是 PGC 播放请求，走 /pgc/player/web/playurl。 */
+  val epId: Long = 0L,
+  /** PGC 季 id；>0 时 getVideoMetadata 走 /pgc/view/web/season 取分集列表。 */
+  val seasonId: Long = 0L,
+) {
+  val isPgc: Boolean
+    get() = epId > 0L || seasonId > 0L
+}
 
 data class PlaybackInfo(
   val bvid: String,
@@ -54,6 +61,8 @@ data class PlaybackEpisode(
   val page: Int,
   val title: String,
   val durationSeconds: Int,
+  /** PGC 剧集 ep_id；UGC 多 P 为 0。 */
+  val epId: Long = 0L,
 )
 
 data class PlaybackTrack(
