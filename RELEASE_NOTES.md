@@ -1,5 +1,38 @@
 # BiliMT 版本发布说明
 
+## v1.0.11
+
+汇总 v1.0.11-alpha.1 ~ alpha.7 的改动，作为首个 1.0.11 稳定版发布。
+
+### 首页分区设置（新功能）
+- 设置页新增「首页分区」入口：点击 toggle 显示/隐藏右侧面板；聚焦普通设置项时左侧列表占满全宽，面板不再常驻占用半屏。
+- 分区面板改为竖向列表 + ▲▼ 上移/下移按钮，可自定义首页 tab 的**显隐**与**排列顺序**，顺序持久化到 DataStore（`home_sections_order`），首页 tab 按自定义顺序显示。
+- 顺序与显隐数据分离，读取时对持久化顺序补齐缺失分区，前向兼容新增分区。
+
+### 播放器退出卡死修复
+- 播放中按返回，第二次退不出去：退出被 `saveProgress`（DataStore IO 异常未兜底）和 `reportProgress`（网络心跳）阻塞。改为先本地保存（`runCatching` 兜底）→ 立即退出 → 网络上报 best-effort 放退出之后，退出不再被存储/网络卡住。
+
+### CDN 测速与起播优化
+- **Auto 起播变快**：测速增加 `earlyReturn` 模式，第一个够好的候选一回来就返回，不再被死链 backupUrl 拖到 ~1s；`probeUrl` 改 `enqueue` + 可取消；video/audio 选优并行。
+- **测速更诚实**：对话框顶部摘要行区分「接口耗时」与「CDN 首字节」，数字与体感对得上；测速走 `CdnSelector` 实际候选过滤，测完预热缓存，重开同视频跳过重复测速。
+- 测速候选按 host 去重，结果行显示 CDN 友好名（官方/阿里云/Akamai/华为云）。
+- 起播紧预算（连接/读取 1s、整体 1.5s），playurl 90s 内存缓存，复用同 bvid 元数据。
+- 修测速编译错误（`CompletableDeferred` 桥接 OkHttp `enqueue`）、读超时误用 `ConnectTimeoutMs` 等参数问题。
+
+### 首页缩略图
+- 封面 `ContentScale` 改 `FillBounds`（对齐 BV 源码 + B 站 `1c` 后缀），不再切边丢画面。
+
+### 设置页交互
+- 「首页分区」「关于」入口改为 toggle：点一下显示右侧面板、再点一下隐藏。
+
+### 安装包
+- `BiliMT-v1.0.11-arm64-v8a.apk`
+- `BiliMT-v1.0.11-armeabi-v7a.apk`
+
+---
+
+以下为 1.0.11 测试版（alpha）的逐版记录：
+
 ## v1.0.11-alpha.7
 
 ### 设置入口 toggle + 首页分区点击修复
