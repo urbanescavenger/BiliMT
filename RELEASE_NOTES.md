@@ -1,5 +1,11 @@
 # BiliMT 版本发布说明
 
+## v1.0.12-alpha.6
+
+### 修复
+- **PGC 黑屏时无法返回**：起播过程中（`PlayerScreenState.Loading`）按返回键现在会强制取消起播协程、释放 ExoPlayer 并退出播放页，避免 PGC playurl/prepare 阻塞导致 UI 卡死、返回无响应。
+- **ExoPlayer prepare 不再阻塞主线程**：`player.prepare()` 改到 `Dispatchers.IO` 执行，降低起播阶段 UI 假死概率。
+
 ## v1.0.12-alpha.5
 
 ### 新增 / 改进
