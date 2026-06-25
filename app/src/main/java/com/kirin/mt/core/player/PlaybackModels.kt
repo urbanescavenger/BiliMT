@@ -79,11 +79,19 @@ data class PlaybackTrack(
   val isH264: Boolean
     get() = codecs.contains("avc", ignoreCase = true)
 
+  /**
+   * 杜比视界（dvhe/dvh1/dav1 等，codecs 以 "dv" 开头）。设备普遍无 DV 解码器，
+   * CodecCapabilityProbe 也不探测，故单独识别以便 [isPlayable] 将其排除。
+   */
+  val isDolbyVision: Boolean
+    get() = codecs.startsWith("dv", ignoreCase = true)
+
   val isH265: Boolean
-    get() = codecs.contains("hev", ignoreCase = true) || codecs.contains("hvc", ignoreCase = true)
+    get() = (codecs.contains("hev", ignoreCase = true) || codecs.contains("hvc", ignoreCase = true)) &&
+      !isDolbyVision
 
   val isAv1: Boolean
-    get() = codecs.contains("av01", ignoreCase = true)
+    get() = codecs.contains("av01", ignoreCase = true) && !isDolbyVision
 }
 
 data class PlaybackSegmentBase(

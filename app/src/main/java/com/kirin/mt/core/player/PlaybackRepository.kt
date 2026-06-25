@@ -79,12 +79,14 @@ class PlaybackRepository(
       "playurl codec requested=${codecPreference.key} effective=${effectiveCodecPreference.key} fnval=$fnval qn=$requestedQualityId",
     )
     val params = if (request.isPgc) {
-      // 对齐 BV 的 PGC playurl 参数：固定 fnval=4048，不声明 from_client / support_multi_audio，
-      // 避免服务端返回 Web DRM 流或当前播放器无法处理的格式。
+      // PGC 复用与 UGC 相同的 SDR fnval（buildFnval：DASH+H265+AV1），不请求 HDR/杜比视界/8K/杜比音轨。
+      // 原因：CodecCapabilityProbe 只探测 avc/hevc/av01，不探测 DV/HDR profile；fnval=4048 会让服务端给
+      // 大会员返回顶部 HDR/DV 清晰度，设备声称支持 H.265 却渲染不了 HDR/DV → 黑屏无 onPlayerError。
+      // 不声明 from_client / support_multi_audio，避免服务端返回 Web DRM 流或当前播放器无法处理的格式。
       mutableMapOf(
         "cid" to request.cid.toString(),
         "qn" to requestedQualityId.toString(),
-        "fnval" to PgcFnval.toString(),
+        "fnval" to fnval.toString(),
         "fnver" to "0",
         "fourk" to "1",
       ).apply {
@@ -425,10 +427,14 @@ class PlaybackRepository(
     val selectedQualityTracks = acceptedVideoTracks.filter { track -> track.id == selectedQuality.id }
       .ifEmpty { acceptedVideoTracks }
       .sortedWith(videoTrackComparator(codecPreference))
+    val selectedVideo = selectedQualityTracks.firstOrNull()
     Log.i(
       PlaybackLogTag,
-      "playurl qn requested=$requestedQualityId returned=${selectedQuality.id} tracks=" +
-        selectedQualityTracks.joinToString { track -> "${track.id}:${track.width}x${track.height}:${track.codecLabel()}" },
+      "playurl ${if (request.isPgc) "pgc" else "ugc"} qn requested=$requestedQualityId returned=${selectedQuality.id} " +
+        "selected=${selectedVideo?.codecs ?: "none"} mime=${selectedVideo?.mimeType.orEmpty()} " +
+        "${selectedVideo?.width ?: 0}x${selectedVideo?.height ?: 0} " +
+        "(accepted=${acceptedVideoTracks.size}/${videoTracks.size}) " +
+        "tracks=${selectedQualityTracks.joinToString { "${it.id}:${it.width}x${it.height}:${it.codecs}" }}",
     )
 
     return PlaybackInfo(
@@ -507,7 +513,9 @@ class PlaybackRepository(
       isAv1 -> capability.supportsAv1
       isH265 -> capability.supportsH265
       isH264 -> capability.supportsH264
-      else -> true
+      // 未知 codec（含杜比视界 dvhe/dvh1 等已落到此分支）一律判不可播，
+      // 避免 fnval 万一仍带回高级流时把不可解轨道选进 manifest 导致黑屏。
+      else -> false
     }
   }
 
@@ -561,7 +569,11 @@ class PlaybackRepository(
     const val FnvalDash = 16
     const val FnvalH265 = 64
     const val FnvalAv1 = 1024
-    /** 对齐 BV：PGC playurl 请求完整的 DASH 能力集（含 HDR/杜比/多音轨等高级标志）。 */
+    /**
+     * 弃用：原 PGC 固定 fnval=4048（DASH+H265+HDR+4K+DolbyAudio+DolbyVision+8K）。
+     * 现已改为 PGC 复用 buildFnval（仅 SDR DASH+H265+AV1），避免服务端返回设备渲染不了的
+     * HDR/杜比视界流导致黑屏。保留此常量供未来在 CodecCapabilityProbe 加 DV/HDR 能力探测后重新启用。
+     */
     const val PgcFnval = 4048
     /**
      * PGC playurl 业务成功标识。BV 只靠 code==0 + isPreview/is_drm 判定，不校验该字符串；
