@@ -8,6 +8,7 @@ import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliNumberParser
 import com.kirin.mt.core.network.PgcMappers
 import com.kirin.mt.core.network.asObjectOrNull
+import com.kirin.mt.core.network.boolean
 import com.kirin.mt.core.network.int
 import com.kirin.mt.core.network.long
 import com.kirin.mt.core.network.obj
