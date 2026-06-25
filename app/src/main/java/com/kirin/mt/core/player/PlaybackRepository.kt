@@ -116,7 +116,10 @@ class PlaybackRepository(
       headers = headers.asMap(),
     ).rootObject()
     root.requireBiliCodeOk("playurl")
-    val data = root.obj("data") ?: JsonObject(emptyMap())
+    // 对齐 BV 的 BiliResponse.getResponseData()：UGC /x/player/playurl 的 payload 在 data 下，
+    // 而 PGC /pgc/player/web/playurl v1 把整个 payload 包在根级 result 对象下（其内层 result 才是 "suee"）。
+    // PGC 响应没有 data 字段，必须回退到 result，否则 dash 永远为空、PGC 起播黑屏。
+    val data = root.obj("data") ?: root.obj("result") ?: JsonObject(emptyMap())
     if (request.isPgc) logPgcPlayUrlResponse(request, data)
     val info = parsePlaybackInfo(
       request = request,
@@ -395,7 +398,7 @@ class PlaybackRepository(
       if (isPreview) {
         throw BiliPlaybackException("PGC content requires purchase/preview only")
       }
-      if (result.isNotBlank() && result != "suee") {
+      if (result.isNotBlank() && result !in PgcSuccessResults) {
         throw BiliPlaybackException("PGC playurl business result=$result")
       }
     }
@@ -560,6 +563,11 @@ class PlaybackRepository(
     const val FnvalAv1 = 1024
     /** 对齐 BV：PGC playurl 请求完整的 DASH 能力集（含 HDR/杜比/多音轨等高级标志）。 */
     const val PgcFnval = 4048
+    /**
+     * PGC playurl 业务成功标识。BV 只靠 code==0 + isPreview/is_drm 判定，不校验该字符串；
+     * 这里宽松接受 b 站历史出现过的两种取值，避免误杀导致起播失败。
+     */
+    val PgcSuccessResults = setOf("suee", "success")
     const val PlaybackLogTag = "BiliMT:Playback"
     const val PlaybackCacheTtlMs = 90_000L
   }
