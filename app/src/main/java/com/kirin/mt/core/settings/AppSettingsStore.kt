@@ -28,6 +28,16 @@ class AppSettingsStore(private val context: Context) {
       ?.takeIf { sections -> sections.isNotEmpty() }
       ?: HomeSection.DefaultOrder.toSet()
 
+    val homeSectionsOrder = preferences[Keys.HomeSectionsOrder]
+      ?.split(',')
+      ?.mapNotNull(HomeSection::fromKey)
+      ?.let { ordered ->
+        // 追加未出现在持久化列表里的分区（前向兼容：新增分区时自动补到末尾）
+        val missing = HomeSection.DefaultOrder.filter { it !in ordered }
+        if (missing.isEmpty()) ordered else ordered + missing
+      }
+      ?: HomeSection.DefaultOrder
+
     val autoConfirmOnFocus = preferences[Keys.AutoConfirmOnFocus] ?: false
     val autoRefreshOnSwitch = autoConfirmOnFocus && (preferences[Keys.AutoRefreshOnSwitch] ?: false)
     val liquidGlassCardsEnabled = supportsLiquidGlassCards() && (preferences[Keys.LiquidGlassCardsEnabled] ?: false)
@@ -59,6 +69,7 @@ class AppSettingsStore(private val context: Context) {
       autoRefreshOnSwitch = autoRefreshOnSwitch,
       liquidGlassCardsEnabled = liquidGlassCardsEnabled,
       enabledHomeSections = enabledSections,
+      homeSectionsOrder = homeSectionsOrder,
     )
   }
 
@@ -189,6 +200,16 @@ class AppSettingsStore(private val context: Context) {
     }
   }
 
+  suspend fun setHomeSectionsOrder(order: List<HomeSection>) {
+    context.biliDataStore.edit { preferences ->
+      // 保留 order 的顺序，过滤已知分区，再补齐缺失的默认分区
+      val known = order.filter { it in HomeSection.DefaultOrder }
+      val missing = HomeSection.DefaultOrder.filter { it !in known }
+      val normalized = known + missing
+      preferences[Keys.HomeSectionsOrder] = normalized.joinToString(",") { it.key }
+    }
+  }
+
   private object Keys {
     val LowSpecMode = booleanPreferencesKey("low_spec_mode")
     val VisualPerformanceMode = stringPreferencesKey("visual_performance_mode")
@@ -209,6 +230,7 @@ class AppSettingsStore(private val context: Context) {
     val AutoRefreshOnSwitch = booleanPreferencesKey("auto_refresh_on_switch")
     val LiquidGlassCardsEnabled = booleanPreferencesKey("liquid_glass_cards_enabled")
     val EnabledHomeSections = stringSetPreferencesKey("enabled_home_sections")
+    val HomeSectionsOrder = stringPreferencesKey("home_sections_order")
   }
 }
 

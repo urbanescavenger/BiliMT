@@ -23,5 +23,15 @@ enum class HomeSection(
     fun fromKey(key: String): HomeSection? {
       return entries.firstOrNull { section -> section.key == key }
     }
+
+    /** 交换 [list] 中 [i] 与 [j] 位置，返回新列表。越界时原样返回。 */
+    fun swapped(list: List<HomeSection>, i: Int, j: Int): List<HomeSection> {
+      if (i == j || i !in list.indices || j !in list.indices) return list
+      val mutable = list.toMutableList()
+      val tmp = mutable[i]
+      mutable[i] = mutable[j]
+      mutable[j] = tmp
+      return mutable.toList()
+    }
   }
 }

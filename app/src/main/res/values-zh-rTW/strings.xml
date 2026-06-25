@@ -77,6 +77,7 @@
     <string name="settings_speed_test_no_last_video">請先播放任意影片後再測速。</string>
     <string name="settings_speed_test_failed">測速失敗，請稍後再試。</string>
     <string name="settings_speed_test_source">來源：%1$s</string>
+    <string name="settings_speed_test_summary">介面解析 %1$dms · CDN 首位元組 %2$dms（介面耗時不在 CDN 測速內）</string>
     <string name="settings_speed_test_column_rank">排名</string>
     <string name="settings_speed_test_column_host">節點</string>
     <string name="settings_speed_test_column_speed">速度</string>
@@ -109,7 +110,11 @@
     <string name="settings_auto_refresh_on_switch_title">切換時自動重新整理</string>
     <string name="settings_auto_refresh_on_switch_description">依賴「切換時自動確認」。開啟後自動切到已有內容時重新拉取資料；關閉後保留原內容，按確認鍵切換時重新整理。</string>
     <string name="settings_home_sections_section">首頁分區</string>
-    <string name="settings_home_sections_description">確認鍵切換顯示/隱藏，至少顯示一個分區。</string>
+    <string name="settings_home_sections_description">確認鍵切顯隱，▲▼ 調整順序，至少顯示一個分區。</string>
+    <string name="settings_home_sections_entry_title">首頁分區</string>
+    <string name="settings_home_sections_entry_description">選擇顯示的分區與排列順序</string>
+    <string name="settings_home_sections_move_up">上移</string>
+    <string name="settings_home_sections_move_down">下移</string>
     <string name="search_input_placeholder">輸入關鍵字搜尋...</string>
     <string name="search_action_clear">清空</string>
     <string name="search_action_backspace">退格</string>

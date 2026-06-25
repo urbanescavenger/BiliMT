@@ -97,6 +97,7 @@ internal fun RecommendScreen(
   uiState: RecommendUiState,
   firstItemFocusRequester: FocusRequester,
   enabledHomeSections: Set<HomeSection>,
+  homeSectionsOrder: List<HomeSection>,
   autoConfirmOnFocus: Boolean,
   autoRefreshOnSwitch: Boolean,
   manualRefreshKey: Int,
@@ -109,8 +110,8 @@ internal fun RecommendScreen(
   onOwnerSelected: (VideoSummary) -> Unit,
 ) {
   val coroutineScope = rememberCoroutineScope()
-  val sections = remember(enabledHomeSections) {
-    HomeSection.DefaultOrder.filter { section -> section in enabledHomeSections }
+  val sections = remember(enabledHomeSections, homeSectionsOrder) {
+    homeSectionsOrder.filter { section -> section in enabledHomeSections }
       .ifEmpty { listOf(HomeSection.Recommend) }
   }
   val selectedSectionKey = uiState.selectedSectionKey.takeIf { key -> sections.any { section -> section.key == key } }

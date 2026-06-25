@@ -100,6 +100,7 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 
 private const val PlaybackFocusRestoreRetryCount = 8
@@ -516,6 +517,7 @@ fun BiliTvApp(
                   uiState = recommendUiState,
                   firstItemFocusRequester = contentFocusRequester,
                   enabledHomeSections = settings.enabledHomeSections,
+                  homeSectionsOrder = settings.homeSectionsOrder,
                   autoConfirmOnFocus = autoConfirmOnFocus,
                   autoRefreshOnSwitch = autoRefreshOnSwitch,
                   manualRefreshKey = recommendManualRefreshKey,
@@ -734,6 +736,11 @@ fun BiliTvApp(
                       appSettingsStore.setHomeSectionEnabled(section, enabled)
                     }
                   },
+                  onHomeSectionsOrderChange = { order ->
+                    coroutineScope.launch {
+                      appSettingsStore.setHomeSectionsOrder(order)
+                    }
+                  },
                   updateState = updateState,
                   onCheckUpdate = {
                     coroutineScope.launch {
@@ -802,6 +809,7 @@ fun BiliTvApp(
                         speedTestState = SpeedTestUiState.NoLastVideo
                         return@launch
                       }
+                      val resolveStartNs = System.nanoTime()
                       val info = runCatching {
                         playbackRepository.getPlaybackInfo(
                           request = PlaybackRequest(bvid = last.bvid, cid = last.cid, title = ""),
@@ -809,21 +817,38 @@ fun BiliTvApp(
                           qualityPreference = settings.playbackQualityPreference,
                         )
                       }.getOrNull()
+                      val playurlResolveMs = (System.nanoTime() - resolveStartNs) / 1_000_000L
                       if (info == null || info.videoTracks.isEmpty()) {
                         speedTestState = SpeedTestUiState.Failed
                         return@launch
                       }
-                      val candidates = info.videoTracks
-                        .flatMap { listOf(it.baseUrl) + it.backupUrls }
-                        .filter { it.startsWith("http://") || it.startsWith("https://") }
-                        .distinct()
-                      val results = cdnSpeedTester.measure(candidates)
+                      // Use the exact same candidate set the player would consider
+                      // (CdnRewriter + isEligibleCandidate applied), so for a non-Auto
+                      // preference we only measure the host the player will actually use.
+                      val cdnPreference = settings.playbackCdnPreference
+                      val candidates = (info.videoTracks + info.audioTracks)
+                        .flatMap { cdnSelector.candidatesFor(it, cdnPreference) }
+                        // De-dup by host: video/audio/multi-quality tracks often
+                        // share a CDN host with different signed URLs; measuring
+                        // the same host multiple times wastes probe slots and
+                        // shows duplicate rows. Keep one representative URL
+                        // per host.
+                        .distinctBy { it.toHttpUrlOrNull()?.host ?: it }
+                      val results = cdnSpeedTester.measure(candidates, CdnSpeedTester.MeasureOptions.Dialog)
+                      // Pre-warm the CdnSelector cache per track so the next open of
+                      // the same video hits "Using cached CDN selection" and skips the
+                      // inline measurement on the live playback path.
+                      if (results.isNotEmpty()) {
+                        info.videoTracks.forEach { cdnSelector.applyMeasurements(it, cdnPreference, results) }
+                        info.audioTracks.forEach { cdnSelector.applyMeasurements(it, cdnPreference, results) }
+                      }
                       speedTestState = if (results.isEmpty()) {
                         SpeedTestUiState.Failed
                       } else {
                         SpeedTestUiState.Succeeded(
                           results = results,
                           sourceLabel = info.title.takeIf { it.isNotBlank() } ?: last.bvid,
+                          playurlResolveMs = playurlResolveMs,
                         )
                       }
                     }

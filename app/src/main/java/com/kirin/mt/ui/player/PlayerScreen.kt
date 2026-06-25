@@ -97,6 +97,8 @@ import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -460,8 +462,18 @@ fun PlayerScreen(
     cancelPlaybackExitConfirmToast()
     cancelPendingCompletionAction()
     coroutineScope.launch {
-      saveAndReportProgressNow()
+      val progressOverride = if (completionReported) CompletedProgressSeconds else null
+      // Local save first: fast, and reads player state while the player is still
+      // alive. Best-effort — a DataStore IOException must not block exit.
+      if (progressOverride == null) {
+        runCatching { saveProgressNow() }
+      }
+      // Exit immediately. Don't gate this on the network heartbeat below.
       onFinished()
+      // Heartbeat is best-effort: if the scope is cancelled during the exit
+      // scrim transition that's fine — progress was already saved locally and
+      // periodic heartbeats during playback keep the server roughly in sync.
+      runCatching { reportProgressNow(progressOverride) }
     }
   }
 
@@ -993,9 +1005,12 @@ fun PlayerScreen(
     lastAirJumpPositionMs = 0L
     playerActuallyPlaying = false
     player.clearMediaItems()
-    val videoMetadata = runCatching {
-      playbackRepository.getVideoMetadata(activeRequest)
-    }.getOrNull()
+    val existingMetadata = metadata
+    val videoMetadata = if (existingMetadata != null && existingMetadata.bvid == activeRequest.bvid) {
+      existingMetadata
+    } else {
+      runCatching { playbackRepository.getVideoMetadata(activeRequest) }.getOrNull()
+    }
     metadata = videoMetadata
     var effectiveRequest = activeRequest.withNextHistoryEpisodeIfNeeded(videoMetadata)
     if (effectiveRequest.canUseLatestSavedProgress()) {
@@ -1031,15 +1046,27 @@ fun PlayerScreen(
         coroutineScope.launch { lastPlayedStore.save(info.bvid, info.cid) }
         selectedQuality = info.selectedQuality
         currentCodecText = info.videoTracks.firstOrNull()?.codecLabel().orEmpty()
+        // Resolve video and audio CDN selections concurrently so the two
+        // select() calls (each of which may measure Auto candidates) overlap
+        // instead of running back-to-back on the open path.
+        val (resolvedVideoTracks, resolvedAudioTracks) = coroutineScope {
+          val videoDeferred = async {
+            info.videoTracks.map { track ->
+              val selection = cdnSelector.select(track, playbackCdnPreference)
+              track.copy(baseUrl = selection.primaryUrl, backupUrls = selection.fallbackUrls)
+            }
+          }
+          val audioDeferred = async {
+            info.audioTracks.map { track ->
+              val selection = cdnSelector.select(track, playbackCdnPreference)
+              track.copy(baseUrl = selection.primaryUrl, backupUrls = selection.fallbackUrls)
+            }
+          }
+          videoDeferred.await() to audioDeferred.await()
+        }
         val effectiveInfo = info.copy(
-          videoTracks = info.videoTracks.map { track ->
-            val selection = cdnSelector.select(track, playbackCdnPreference)
-            track.copy(baseUrl = selection.primaryUrl, backupUrls = selection.fallbackUrls)
-          },
-          audioTracks = info.audioTracks.map { track ->
-            val selection = cdnSelector.select(track, playbackCdnPreference)
-            track.copy(baseUrl = selection.primaryUrl, backupUrls = selection.fallbackUrls)
-          },
+          videoTracks = resolvedVideoTracks,
+          audioTracks = resolvedAudioTracks,
         )
         val requestedStartPositionMs = if (resolvedRequest.preferredQualityId != null || resolvedRequest.forceStartPosition) {
           resolvedRequest.startPositionMs

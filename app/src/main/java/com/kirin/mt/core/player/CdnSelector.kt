@@ -39,10 +39,7 @@ class CdnSelector(
     }
 
     val baseUrl = track.baseUrl
-    val candidates = (listOf(baseUrl) + track.backupUrls)
-      .filter { it.startsWith("http://") || it.startsWith("https://") }
-      .distinct()
-      .filter { isEligibleCandidate(it) }
+    val candidates = candidatesFor(track, preference)
 
     if (candidates.isEmpty()) {
       return CdnSelection(baseUrl, emptyList())
@@ -61,7 +58,11 @@ class CdnSelector(
     }
 
     Log.i(LogTag, "Measuring ${candidates.size} CDN candidates for $baseUrl")
-    val measurements = speedTester.measure(candidates)
+    val measurements = speedTester.measure(
+      candidates,
+      CdnSpeedTester.MeasureOptions.Open,
+      earlyReturn = true,
+    )
     val successfulUrls = measurements.map { it.url }
 
     if (successfulUrls.isEmpty()) {
@@ -86,6 +87,76 @@ class CdnSelector(
         "Selected CDN for $baseUrl: ${best.url} (ttfb=${best.firstByteMs}ms, total=${best.totalMs}ms, ${best.downloadedBytes} bytes, score=${"%.2f".format(best.score)})",
       )
     }
+    return selection
+  }
+
+  /**
+   * The candidate URLs the player would actually consider for [track] under
+   * [preference] — i.e. the same set [select] measures for Auto, and the
+   * rewritten hosts it would force for a non-Auto preference. Exposed so the
+   * settings speed test measures exactly what the player uses, instead of the
+   * raw baseUrl + backupUrls (which for non-Auto include hosts the player
+   * rewrites away and never contacts).
+   */
+  fun candidatesFor(track: PlaybackTrack, preference: PlaybackCdnPreference): List<String> {
+    val raw = listOf(track.baseUrl) + track.backupUrls
+    return if (preference != PlaybackCdnPreference.Auto) {
+      raw
+        .map { CdnRewriter.rewrite(it, preference) }
+        .filter { isEligibleCandidate(it) }
+        .distinct()
+    } else {
+      raw
+        .filter { it.startsWith("http://") || it.startsWith("https://") }
+        .distinct()
+        .filter { isEligibleCandidate(it) }
+    }
+  }
+
+  /**
+   * Builds and caches a [CdnSelection] for [track] from already-measured
+   * [measurements] (no network). Lets the settings speed test pre-warm the
+   * cache so the next open of the same video hits `Using cached CDN selection`
+   * instead of re-measuring on the live path.
+   *
+   * [measurements] is assumed best-first (as returned by [CdnSpeedTester.measure]).
+   * Matching is by host (not full URL): the dialog measures one representative
+   * URL per host, but each track has its own signed URLs on that host — so we
+   * pick this track's own candidate URL on the best-measured host it shares,
+   * never handing track B a URL signed for track A.
+   */
+  fun applyMeasurements(
+    track: PlaybackTrack,
+    preference: PlaybackCdnPreference,
+    measurements: List<CdnSpeedTester.Measurement>,
+  ): CdnSelection {
+    val baseUrl = track.baseUrl
+    val candidates = candidatesFor(track, preference)
+    if (candidates.isEmpty()) {
+      return CdnSelection(baseUrl, emptyList())
+    }
+    // This track's own candidate URL per host (first wins).
+    val hostToCandidate = LinkedHashMap<String, String>()
+    for (c in candidates) {
+      val host = c.toHttpUrlOrNull()?.host ?: continue
+      hostToCandidate.putIfAbsent(host, c)
+    }
+    // Best-first measured hosts that this track can serve.
+    val matchedHosts = measurements
+      .mapNotNull { it.url.toHttpUrlOrNull()?.host }
+      .filter { it in hostToCandidate }
+      .distinct()
+    val selection = if (matchedHosts.isEmpty()) {
+      val fallbacks = track.backupUrls
+        .filter { it != baseUrl && isEligibleCandidate(it) }
+        .distinct()
+      CdnSelection(baseUrl, fallbacks)
+    } else {
+      val primary = hostToCandidate.getValue(matchedHosts.first())
+      val fallbacks = matchedHosts.drop(1).map { hostToCandidate.getValue(it) }
+      CdnSelection(primary, fallbacks)
+    }
+    cacheSelection(baseUrl, selection)
     return selection
   }
 

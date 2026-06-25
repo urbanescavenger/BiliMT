@@ -147,8 +147,7 @@ object BiliSizing {
   val SettingsRowHeight = 96.dp
   val SettingsChipHeight = 44.dp
   val SettingsCodecValueWidth = 112.dp
-  val SettingsHomeSectionGridHeight = 156.dp
-  const val SettingsHomeSectionColumns = 4
+  val SettingsMoveButtonSize = 44.dp
   val HomeSectionTabHeight = 40.dp
   val HomeSectionCapsuleHeight = 58.dp
   val HomeSectionCapsuleTopOffset = 6.dp
@@ -343,6 +342,7 @@ object BiliFocus {
   const val HomeSectionCapsuleBorderAlpha = 0.18f
   const val HomeSectionTabFocusedSurfaceAlpha = 0.08f
   const val SettingsChipSelectedBackgroundAlpha = 0.24f
+  const val SettingsChipDisabledAlpha = 0.3f
   val BorderWidth = 3.dp
   val RestingBorderWidth = 1.dp
   val RestingShadowElevation = 0.dp

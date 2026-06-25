@@ -190,6 +190,26 @@ jobs:
             --generate-notes \
             --title "${{ github.ref_name }}"
 
+      - name: Publish curated release notes
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          notes="$(mktemp)"
+          awk -v t="$tag" '
+            $0 == "## " t { capture=1; next }
+            /^## / && capture { capture=0 }
+            capture { print }
+          ' RELEASE_NOTES.md > "$notes"
+          if [ -s "$notes" ]; then
+            echo "Publishing curated notes for $tag"
+            gh release edit "$tag" --notes-file "$notes"
+          else
+            echo "No curated section for $tag in RELEASE_NOTES.md; keeping auto-generated notes"
+          fi
+
       - name: Keep only latest 10 workflow runs
         if: ${{ always() }}
         env:

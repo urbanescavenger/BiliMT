@@ -31,6 +31,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
+import com.kirin.mt.core.player.CdnRewriter
 import com.kirin.mt.core.player.CdnSpeedTester
 import com.kirin.mt.core.player.SpeedTestUiState
 import com.kirin.mt.ui.focus.BiliFocusableSurface
@@ -148,6 +149,16 @@ private fun SpeedTestDialogBody(
       fontSize = BiliTypography.Body,
     )
     is SpeedTestUiState.Succeeded -> {
+      val bestTtfbMs = state.results.firstOrNull()?.firstByteMs ?: 0L
+      Text(
+        text = stringResource(
+          R.string.settings_speed_test_summary,
+          state.playurlResolveMs,
+          bestTtfbMs,
+        ),
+        color = homeColors.textTertiary,
+        fontSize = BiliTypography.CardMeta,
+      )
       Text(
         text = stringResource(R.string.settings_speed_test_source, state.sourceLabel),
         color = homeColors.textSecondary,
@@ -226,6 +237,10 @@ private fun SpeedTestResultRow(
   val host = remember(measurement.url) {
     measurement.url.toHttpUrlOrNull()?.host ?: measurement.url
   }
+  // Show a friendly CDN name when the host maps to a known provider, falling
+  // back to the raw host for unrecognized hosts.
+  val provider = remember(host) { CdnRewriter.providerOf(host) }
+  val displayLabel = provider?.cdnLabel() ?: host
   val speedText = remember(measurement) { formatSpeed(measurement) }
   val downloadedKb = remember(measurement) { measurement.downloadedBytes / 1024L }
   val rowShape = RoundedCornerShape(BiliRadius.Card)
@@ -258,7 +273,7 @@ private fun SpeedTestResultRow(
         verticalAlignment = Alignment.CenterVertically,
       ) {
         Text(
-          text = host,
+          text = displayLabel,
           color = if (highlight) homeColors.textPrimary else homeColors.textSecondary,
           fontSize = BiliTypography.BodySmall,
           fontWeight = FontWeight.Bold,

@@ -39,11 +39,25 @@ class PlaybackRepository(
   )
   private val airJumpRepository = AirJumpRepository(apiClient)
 
+  private val playbackCache = LinkedHashMap<PlaybackCacheKey, CachedPlaybackInfo>()
+
   suspend fun getPlaybackInfo(
     request: PlaybackRequest,
     codecPreference: PlaybackCodecPreference,
     qualityPreference: PlaybackQualityPreference,
   ): PlaybackInfo {
+    val requestedQualityId = request.preferredQualityId ?: qualityPreference.requestedQualityId
+    val cacheKey = PlaybackCacheKey(
+      bvid = request.bvid,
+      cid = request.cid,
+      codecPreference = codecPreference,
+      requestedQualityId = requestedQualityId,
+    )
+    cachedPlaybackInfo(cacheKey)?.let {
+      Log.i(PlaybackLogTag, "playurl cache hit for bvid=${request.bvid} cid=${request.cid}")
+      return it
+    }
+
     val sessData = sessionStore.sessData.first()
     val biliJct = sessionStore.biliJct.first()
     val codecCapability = codecCapabilityProbe.probe()
@@ -56,7 +70,6 @@ class PlaybackRepository(
       codecPreference = effectiveCodecPreference,
       codecCapability = codecCapability,
     )
-    val requestedQualityId = request.preferredQualityId ?: qualityPreference.requestedQualityId
     Log.i(
       PlaybackLogTag,
       "playurl codec requested=${codecPreference.key} effective=${effectiveCodecPreference.key} fnval=$fnval qn=$requestedQualityId",
@@ -82,7 +95,7 @@ class PlaybackRepository(
       headers = headers.asMap(),
     ).rootObject()
     root.requireBiliCodeOk("playurl")
-    return parsePlaybackInfo(
+    val info = parsePlaybackInfo(
       request = request,
       headers = headers,
       data = root.obj("data") ?: JsonObject(emptyMap()),
@@ -90,7 +103,45 @@ class PlaybackRepository(
       codecPreference = effectiveCodecPreference,
       codecCapability = codecCapability,
     )
+    storeCachedPlaybackInfo(cacheKey, info)
+    return info
   }
+
+  /**
+   * Short-TTL in-memory cache for resolved playurl. The signed media URLs
+   * returned by B 站 stay valid far longer than [PlaybackCacheTtlMs], so a
+   * ~90s cache is safe and lets reopening a video (or flipping between
+   * episodes) skip the 1–3s api.bilibili.com round-trip. codecCapability is
+   * device-stable, so keying on the requested codec preference is sufficient.
+   */
+  private fun cachedPlaybackInfo(key: PlaybackCacheKey): PlaybackInfo? {
+    synchronized(playbackCache) {
+      val now = System.currentTimeMillis()
+      playbackCache.entries.removeAll { it.value.expiresAt <= now }
+      return playbackCache[key]?.info
+    }
+  }
+
+  private fun storeCachedPlaybackInfo(key: PlaybackCacheKey, info: PlaybackInfo) {
+    synchronized(playbackCache) {
+      playbackCache[key] = CachedPlaybackInfo(
+        info = info,
+        expiresAt = System.currentTimeMillis() + PlaybackCacheTtlMs,
+      )
+    }
+  }
+
+  private data class PlaybackCacheKey(
+    val bvid: String,
+    val cid: Long,
+    val codecPreference: PlaybackCodecPreference,
+    val requestedQualityId: Int,
+  )
+
+  private data class CachedPlaybackInfo(
+    val info: PlaybackInfo,
+    val expiresAt: Long,
+  )
 
   suspend fun resolveCid(bvid: String): Long {
     if (bvid.isBlank()) {
@@ -406,5 +457,6 @@ class PlaybackRepository(
     const val FnvalH265 = 64
     const val FnvalAv1 = 1024
     const val PlaybackLogTag = "BiliMT:Playback"
+    const val PlaybackCacheTtlMs = 90_000L
   }
 }
