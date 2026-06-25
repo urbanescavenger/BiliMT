@@ -59,8 +59,10 @@ class PlaybackRepository(
       return it
     }
 
-    val sessData = sessionStore.sessData.first()
-    val biliJct = sessionStore.biliJct.first()
+    val session = sessionStore.session.first()
+    val sessData = session.sessData
+    val biliJct = session.biliJct
+    val mid = session.mid
     val codecCapability = codecCapabilityProbe.probe()
     val effectiveCodecPreference = when {
       codecPreference == PlaybackCodecPreference.H264 -> PlaybackCodecPreference.H264
@@ -105,7 +107,7 @@ class PlaybackRepository(
       else -> params
     }
 
-    val headers = BiliPlaybackHeaders(sessData = sessData, biliJct = biliJct)
+    val headers = BiliPlaybackHeaders(sessData = sessData, biliJct = biliJct, mid = mid)
     val url = if (request.isPgc) BiliApiEndpoints.PgcPlayUrl else BiliApiEndpoints.PlayUrl
     val root = apiClient.getJsonWithHeaders(
       url = url,
