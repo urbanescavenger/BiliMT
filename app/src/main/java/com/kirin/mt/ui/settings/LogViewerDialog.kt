@@ -18,13 +18,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -34,12 +42,14 @@ import com.kirin.mt.R
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.focus.BiliFocusableSurface
 import com.kirin.mt.ui.glass.biliLiquidGlassSurface
+import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliRadius
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
 import java.io.File
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun LogViewerDialog(
@@ -51,11 +61,23 @@ internal fun LogViewerDialog(
   val homeColors = LocalHomeColors.current
   val performancePolicy = LocalBiliPerformancePolicy.current
   val panelShape = RoundedCornerShape(BiliRadius.Panel)
-  val content = remember(file) { LogCatcherUtil.readLogPreview(file) }
+  val content = remember(file) { file.readText() }
   val lines = remember(content) { content.lines() }
   val listState = rememberLazyListState()
+  val coroutineScope = rememberCoroutineScope()
   val closeFocusRequester = remember { FocusRequester() }
   val shareFocusRequester = remember { FocusRequester() }
+  val topFocusRequester = remember { FocusRequester() }
+  val bottomFocusRequester = remember { FocusRequester() }
+
+  val totalCount = lines.size
+  val visibleRange by remember {
+    derivedStateOf {
+      listState.layoutInfo.visibleItemsInfo.let { info ->
+        if (info.isEmpty()) 0..0 else info.first().index..info.last().index
+      }
+    }
+  }
 
   BackHandler { onDismiss() }
 
@@ -67,8 +89,32 @@ internal fun LogViewerDialog(
   ) {
     Column(
       modifier = Modifier
-        .width(960.dp)
-        .heightIn(max = 720.dp)
+        .width(1080.dp)
+        .heightIn(max = 780.dp)
+        .onPreviewKeyEvent { event ->
+          if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+          when (event.key) {
+            Key.PageUp -> {
+              val target = (listState.firstVisibleItemIndex - PAGE_JUMP_SIZE).coerceAtLeast(0)
+              coroutineScope.launch { listState.scrollToItem(target) }
+              true
+            }
+            Key.PageDown -> {
+              val target = (listState.firstVisibleItemIndex + PAGE_JUMP_SIZE).coerceAtMost(totalCount - 1)
+              coroutineScope.launch { listState.scrollToItem(target) }
+              true
+            }
+            Key.MoveHome -> {
+              coroutineScope.launch { listState.scrollToItem(0) }
+              true
+            }
+            Key.MoveEnd -> {
+              coroutineScope.launch { listState.scrollToItem((totalCount - 1).coerceAtLeast(0)) }
+              true
+            }
+            else -> false
+          }
+        }
         .biliLiquidGlassSurface(
           enabled = performancePolicy.cinematicVisualEffectsEnabled &&
             performancePolicy.liquidGlassCardsEnabled,
@@ -80,23 +126,44 @@ internal fun LogViewerDialog(
         .padding(BiliSpacing.Xl),
       verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
     ) {
-      Text(
-        text = file.name,
-        color = homeColors.textPrimary,
-        fontSize = BiliTypography.SectionTitle,
-        fontWeight = FontWeight.Bold,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-      )
-      Text(
-        text = stringResource(
-          R.string.settings_log_viewer_size,
-          LogCatcherUtil.formatFileSize(file.length()),
-          lines.size,
-        ),
-        color = homeColors.textTertiary,
-        fontSize = BiliTypography.BodySmall,
-      )
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Column(
+          modifier = Modifier.weight(1f),
+          verticalArrangement = Arrangement.spacedBy(BiliSpacing.Xs),
+        ) {
+          Text(
+            text = file.name,
+            color = homeColors.textPrimary,
+            fontSize = BiliTypography.SectionTitle,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+          Text(
+            text = stringResource(
+              R.string.settings_log_viewer_size,
+              LogCatcherUtil.formatFileSize(file.length()),
+              totalCount,
+            ),
+            color = homeColors.textTertiary,
+            fontSize = BiliTypography.BodySmall,
+          )
+        }
+        Text(
+          text = stringResource(
+            R.string.settings_log_viewer_position,
+            visibleRange.first + 1,
+            visibleRange.last + 1,
+            totalCount,
+          ),
+          color = homeColors.textTertiary,
+          fontSize = BiliTypography.CardMeta,
+        )
+      }
       Box(
         modifier = Modifier
           .fillMaxWidth()
@@ -111,12 +178,7 @@ internal fun LogViewerDialog(
           verticalArrangement = Arrangement.spacedBy(BiliSpacing.Xs),
         ) {
           itemsIndexed(lines, key = { index, _ -> index }) { _, line ->
-            Text(
-              text = line,
-              color = homeColors.textSecondary,
-              fontSize = BiliTypography.BodySmall,
-              fontFamily = FontFamily.Monospace,
-            )
+            LogLineText(line = line, homeColors = homeColors)
           }
         }
       }
@@ -128,9 +190,57 @@ internal fun LogViewerDialog(
           scaleOnFocus = false,
           shadowOnFocus = false,
           shape = RoundedCornerShape(BiliRadius.Pill),
+          onClick = {
+            coroutineScope.launch { listState.scrollToItem(0) }
+          },
+          modifier = Modifier
+            .width(160.dp)
+            .focusRequester(topFocusRequester),
+        ) {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(vertical = BiliSpacing.Sm),
+            contentAlignment = Alignment.Center,
+          ) {
+            Text(
+              text = stringResource(R.string.settings_logs_top),
+              color = homeColors.textPrimary,
+              fontSize = BiliTypography.Body,
+              fontWeight = FontWeight.Bold,
+            )
+          }
+        }
+        BiliFocusableSurface(
+          scaleOnFocus = false,
+          shadowOnFocus = false,
+          shape = RoundedCornerShape(BiliRadius.Pill),
+          onClick = {
+            coroutineScope.launch { listState.scrollToItem((totalCount - 1).coerceAtLeast(0)) }
+          },
+          modifier = Modifier.width(160.dp),
+        ) {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(vertical = BiliSpacing.Sm),
+            contentAlignment = Alignment.Center,
+          ) {
+            Text(
+              text = stringResource(R.string.settings_logs_bottom),
+              color = homeColors.textPrimary,
+              fontSize = BiliTypography.Body,
+              fontWeight = FontWeight.Bold,
+            )
+          }
+        }
+        BiliFocusableSurface(
+          scaleOnFocus = false,
+          shadowOnFocus = false,
+          shape = RoundedCornerShape(BiliRadius.Pill),
           onClick = { onShare(file) },
           modifier = Modifier
-            .width(200.dp)
+            .width(160.dp)
             .focusRequester(shareFocusRequester),
         ) {
           Box(
@@ -153,8 +263,8 @@ internal fun LogViewerDialog(
           shape = RoundedCornerShape(BiliRadius.Pill),
           onClick = onDismiss,
           modifier = Modifier
-            .width(200.dp)
-            .focusRequester(closeFocusRequester),
+            .width(160.dp)
+            .focusRequester(bottomFocusRequester),
         ) {
           Box(
             modifier = Modifier
@@ -178,3 +288,27 @@ internal fun LogViewerDialog(
     runCatching { closeFocusRequester.requestFocus() }
   }
 }
+
+@Composable
+private fun LogLineText(
+  line: String,
+  homeColors: com.kirin.mt.ui.theme.HomeColorScheme,
+) {
+  val color = when {
+    ERROR_PATTERNS.any { line.contains(it, ignoreCase = true) } -> BiliColors.BiliPink
+    WARN_PATTERNS.any { line.contains(it, ignoreCase = true) } -> BiliColors.AirJumpGreen
+    DEBUG_PATTERNS.any { line.contains(it, ignoreCase = true) } -> homeColors.textTertiary
+    else -> homeColors.textSecondary
+  }
+  Text(
+    text = line,
+    color = color,
+    fontSize = BiliTypography.BodySmall,
+    fontFamily = FontFamily.Monospace,
+  )
+}
+
+private val ERROR_PATTERNS = listOf(" E ", "ERROR", "FATAL", "UncaughtException", "Exception:")
+private val WARN_PATTERNS = listOf(" W ", "WARN")
+private val DEBUG_PATTERNS = listOf(" D ", "DEBUG")
+private const val PAGE_JUMP_SIZE = 20
