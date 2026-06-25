@@ -90,6 +90,7 @@ android {
 
   buildFeatures {
     compose = true
+    buildConfig = true
   }
 
   androidResources {
@@ -135,6 +136,7 @@ dependencies {
   implementation(libs.coroutines.android)
   implementation(libs.danmaku.render.engine)
   implementation(libs.kotlinx.serialization.json)
+  implementation(libs.logging)
   implementation(libs.media3.datasource.okhttp)
   implementation(libs.media3.exoplayer)
   implementation(libs.media3.exoplayer.dash)
@@ -142,6 +144,8 @@ dependencies {
   implementation(libs.okhttp)
   implementation(libs.okhttp.brotli)
   implementation(libs.opencc4j)
+  implementation(libs.slf4j.api)
+  implementation(libs.slf4j.android.mvysny)
   implementation(libs.tv.material)
   implementation(libs.zxing.core)
 

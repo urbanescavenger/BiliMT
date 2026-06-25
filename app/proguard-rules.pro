@@ -15,6 +15,14 @@
 -keep class com.kirin.mt.ui.settings.** { *; }
 -keepclassmembers class com.kirin.mt.ui.settings.** { *; }
 
+# kotlin-logging / SLF4J / logback classes referenced but unused on Android.
+-dontwarn ch.qos.logback.classic.Level
+-dontwarn ch.qos.logback.classic.Logger
+-dontwarn ch.qos.logback.classic.LoggerContext
+-dontwarn ch.qos.logback.classic.spi.ILoggingEvent
+-dontwarn ch.qos.logback.classic.spi.LogbackServiceProvider
+-dontwarn ch.qos.logback.classic.spi.LoggingEvent
+
 # Optional desktop/server integrations referenced by the library but unused on Android.
 -dontwarn com.huaban.analysis.jieba.**
 -dontwarn java.beans.**

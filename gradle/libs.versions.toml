@@ -11,9 +11,12 @@ datastore = "1.1.7"
 danmakuRenderEngine = "0.1.0"
 kotlinxSerializationJson = "1.9.0"
 lifecycle = "2.9.4"
+logging = "7.0.7"
 media3 = "1.10.0"
 okhttp = "4.12.0"
 opencc4j = "1.14.0"
+slf4j = "2.0.13"
+slf4j-android-mvysny = "2.0.13"
 tvMaterial = "1.0.0"
 zxing = "3.5.4"
 
@@ -35,6 +38,7 @@ coil-compose = { module = "io.coil-kt:coil-compose", version.ref = "coil" }
 coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 danmaku-render-engine = { module = "com.github.bytedance:danmaku-render-engine", version.ref = "danmakuRenderEngine" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
+logging = { module = "io.github.oshai:kotlin-logging-jvm", version.ref = "logging" }
 media3-datasource-okhttp = { module = "androidx.media3:media3-datasource-okhttp", version.ref = "media3" }
 media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
 media3-exoplayer-dash = { module = "androidx.media3:media3-exoplayer-dash", version.ref = "media3" }
@@ -42,6 +46,8 @@ media3-ui = { module = "androidx.media3:media3-ui", version.ref = "media3" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 okhttp-brotli = { module = "com.squareup.okhttp3:okhttp-brotli", version.ref = "okhttp" }
 opencc4j = { module = "com.github.houbb:opencc4j", version.ref = "opencc4j" }
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+slf4j-android-mvysny = { module = "com.gitlab.mvysny.slf4j:slf4j-handroid", version.ref = "slf4j-android-mvysny" }
 tv-material = { module = "androidx.tv:tv-material", version.ref = "tvMaterial" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 

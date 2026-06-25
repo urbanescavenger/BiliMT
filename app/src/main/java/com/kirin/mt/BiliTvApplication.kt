@@ -6,6 +6,8 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.kirin.mt.core.app.AppContainer
+import com.kirin.mt.core.util.LogCatcherUtil
+import org.slf4j.impl.HandroidLoggerAdapter
 
 class BiliTvApplication : Application(), ImageLoaderFactory {
   lateinit var appContainer: AppContainer
@@ -13,6 +15,8 @@ class BiliTvApplication : Application(), ImageLoaderFactory {
 
   override fun onCreate() {
     super.onCreate()
+    HandroidLoggerAdapter.DEBUG = BuildConfig.DEBUG
+    LogCatcherUtil.install(this)
     appContainer = AppContainer(this)
   }
 
