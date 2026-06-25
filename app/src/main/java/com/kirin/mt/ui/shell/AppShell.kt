@@ -517,6 +517,7 @@ fun BiliTvApp(
                   uiState = recommendUiState,
                   firstItemFocusRequester = contentFocusRequester,
                   enabledHomeSections = settings.enabledHomeSections,
+                  homeSectionsOrder = settings.homeSectionsOrder,
                   autoConfirmOnFocus = autoConfirmOnFocus,
                   autoRefreshOnSwitch = autoRefreshOnSwitch,
                   manualRefreshKey = recommendManualRefreshKey,
@@ -733,6 +734,11 @@ fun BiliTvApp(
                   onHomeSectionEnabledChange = { section, enabled ->
                     coroutineScope.launch {
                       appSettingsStore.setHomeSectionEnabled(section, enabled)
+                    }
+                  },
+                  onHomeSectionsOrderChange = { order ->
+                    coroutineScope.launch {
+                      appSettingsStore.setHomeSectionsOrder(order)
                     }
                   },
                   updateState = updateState,

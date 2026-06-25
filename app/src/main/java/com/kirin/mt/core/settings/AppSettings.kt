@@ -50,6 +50,7 @@ data class AppSettings(
   val autoRefreshOnSwitch: Boolean = false,
   val liquidGlassCardsEnabled: Boolean = false,
   val enabledHomeSections: Set<HomeSection> = HomeSection.DefaultOrder.toSet(),
+  val homeSectionsOrder: List<HomeSection> = HomeSection.DefaultOrder,
 ) {
   val lowSpecMode: Boolean
     get() = visualPerformanceMode == AppVisualPerformanceMode.Smooth

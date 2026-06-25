@@ -74,6 +74,7 @@ fun SettingsScreen(
   onAutoConfirmOnFocusChange: (Boolean) -> Unit,
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onHomeSectionEnabledChange: (HomeSection, Boolean) -> Unit,
+  onHomeSectionsOrderChange: (List<HomeSection>) -> Unit,
   updateState: UpdateUiState,
   onCheckUpdate: () -> Unit,
   onDownloadUpdate: () -> Unit,
@@ -117,12 +118,13 @@ fun SettingsScreen(
       SettingsItemUpdateDownloadOrInstall to FocusRequester(),
       SettingsItemUpdateReleaseNotes to FocusRequester(),
       SettingsItemSpeedTest to FocusRequester(),
+      SettingsItemHomeSections to FocusRequester(),
       SettingsItemAbout to FocusRequester(),
     )
   }
   var lastFocusedSettingItem by remember { mutableIntStateOf(SettingsItemPlaybackQuality) }
   var focusSettingJob by remember { mutableStateOf<Job?>(null) }
-  var rightPanel by remember { mutableStateOf(SettingsRightPanel.HomeSections) }
+  var rightPanel by remember { mutableStateOf(SettingsRightPanel.None) }
 
   fun focusSettingItem(itemIndex: Int, direction: Int = 0): Boolean {
     val lazyIndex = settingsItemToLazyIndex(itemIndex, updateState)
@@ -177,10 +179,10 @@ fun SettingsScreen(
         focusRequesters = settingFocusRequesters,
         onSettingFocused = { itemIndex ->
           lastFocusedSettingItem = itemIndex
-          rightPanel = if (itemIndex == SettingsItemAbout) {
-            SettingsRightPanel.About
-          } else {
-            SettingsRightPanel.HomeSections
+          rightPanel = when (itemIndex) {
+            SettingsItemAbout -> SettingsRightPanel.About
+            SettingsItemHomeSections -> SettingsRightPanel.HomeSections
+            else -> SettingsRightPanel.None
           }
         },
         onMoveSettingFocus = ::moveSettingFocus,
@@ -217,10 +219,14 @@ fun SettingsScreen(
         modifier = Modifier.weight(1f),
       )
       when (rightPanel) {
+        SettingsRightPanel.None -> SettingsEmptyRightPanel(
+          modifier = Modifier.weight(1f),
+        )
         SettingsRightPanel.HomeSections -> SettingsHomeSectionsColumn(
           settings = settings,
           onMoveLeftToSettings = { focusSettingItem(lastFocusedSettingItem) },
           onHomeSectionEnabledChange = onHomeSectionEnabledChange,
+          onHomeSectionsOrderChange = onHomeSectionsOrderChange,
           modifier = Modifier.weight(1f),
         )
         SettingsRightPanel.About -> SettingsAboutColumn(
@@ -740,6 +746,22 @@ private fun SettingsBehaviorColumn(
         },
       )
     }
+    item(key = "home-sections") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_home_sections_entry_title),
+        description = stringResource(R.string.settings_home_sections_entry_description),
+        value = "",
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemHomeSections))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemHomeSections,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemHomeSections) },
+        onClick = {},
+      )
+    }
     item(key = "about") {
       SettingsActionRow(
         title = stringResource(R.string.settings_about_title),
@@ -795,6 +817,7 @@ private const val SettingsItemAutoRefreshOnSwitch = 16
 private const val SettingsItemClearCache = 18
 private const val SettingsItemChineseTextVariant = 19
 private const val SettingsItemAbout = 20
+private const val SettingsItemHomeSections = 26
 private const val SettingsItemUpdateCurrentVersion = 22
 private const val SettingsItemUpdateCheck = 23
 private const val SettingsItemUpdateDownloadOrInstall = 24
@@ -825,10 +848,12 @@ private val SettingsFocusableItems = listOf(
   SettingsItemUpdateReleaseNotes,
   SettingsItemClearCache,
   SettingsItemChineseTextVariant,
+  SettingsItemHomeSections,
   SettingsItemAbout,
 )
 
 private enum class SettingsRightPanel {
+  None,
   HomeSections,
   About,
 }
@@ -873,9 +898,13 @@ private fun settingsItemToLazyIndex(
     val updateExtraCount = updateExtraItemCount(updateState)
     24 + updateExtraCount
   }
-  SettingsItemAbout -> {
+  SettingsItemHomeSections -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     25 + updateExtraCount
+  }
+  SettingsItemAbout -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    26 + updateExtraCount
   }
   else -> 0
 }

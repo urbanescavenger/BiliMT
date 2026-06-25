@@ -12,9 +12,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,6 +30,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
@@ -52,9 +54,13 @@ internal fun SettingsHomeSectionsColumn(
   settings: AppSettings,
   onMoveLeftToSettings: () -> Boolean,
   onHomeSectionEnabledChange: (HomeSection, Boolean) -> Unit,
+  onHomeSectionsOrderChange: (List<HomeSection>) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
+  val order = settings.homeSectionsOrder
+  val listState = rememberLazyListState()
+  val lastIndex = order.lastIndex
   Column(
     modifier = modifier,
     verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
@@ -70,31 +76,134 @@ internal fun SettingsHomeSectionsColumn(
       color = homeColors.textSecondary,
       fontSize = BiliTypography.BodySmall,
     )
-    LazyVerticalGrid(
-      columns = GridCells.Fixed(BiliSizing.SettingsHomeSectionColumns),
+    LazyColumn(
+      state = listState,
       modifier = Modifier
         .fillMaxWidth()
-        .height(BiliSizing.SettingsHomeSectionGridHeight),
-      horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
-      verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
-      userScrollEnabled = false,
+        .weight(1f),
+      verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
     ) {
-      itemsIndexed(HomeSection.DefaultOrder, key = { _, section -> section.key }) { index, section ->
-        HomeSectionChip(
-          title = stringResource(section.titleRes()),
+      itemsIndexed(order, key = { _, section -> section.key }) { index, section ->
+        HomeSectionOrderRow(
+          section = section,
           selected = section in settings.enabledHomeSections,
-          modifier = Modifier.settingsSectionChipBoundaryKeys(
-            index = index,
-            columns = BiliSizing.SettingsHomeSectionColumns,
-            onMoveLeftToSettings = onMoveLeftToSettings,
-          ),
-          onClick = {
+          canMoveUp = index > 0,
+          canMoveDown = index < lastIndex,
+          onMoveLeftToSettings = onMoveLeftToSettings,
+          onToggle = {
             onHomeSectionEnabledChange(section, section !in settings.enabledHomeSections)
+          },
+          onMoveUp = {
+            onHomeSectionsOrderChange(HomeSection.swapped(order, index, index - 1))
+          },
+          onMoveDown = {
+            onHomeSectionsOrderChange(HomeSection.swapped(order, index, index + 1))
           },
         )
       }
     }
   }
+}
+
+@Composable
+private fun HomeSectionOrderRow(
+  section: HomeSection,
+  selected: Boolean,
+  canMoveUp: Boolean,
+  canMoveDown: Boolean,
+  onMoveLeftToSettings: () -> Boolean,
+  onToggle: () -> Unit,
+  onMoveUp: () -> Unit,
+  onMoveDown: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  Row(
+    modifier = modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    HomeSectionChip(
+      title = stringResource(section.titleRes()),
+      selected = selected,
+      modifier = Modifier
+        .weight(1f)
+        .onPreviewKeyEvent { event ->
+          if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft) {
+            onMoveLeftToSettings()
+          } else {
+            false
+          }
+        },
+      onClick = onToggle,
+    )
+    HomeSectionMoveButton(
+      text = "▲",
+      contentDescription = stringResource(R.string.settings_home_sections_move_up),
+      enabled = canMoveUp,
+      onClick = onMoveUp,
+    )
+    HomeSectionMoveButton(
+      text = "▼",
+      contentDescription = stringResource(R.string.settings_home_sections_move_down),
+      enabled = canMoveDown,
+      onClick = onMoveDown,
+    )
+  }
+}
+
+@Composable
+private fun HomeSectionMoveButton(
+  text: String,
+  contentDescription: String,
+  enabled: Boolean,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val homeColors = LocalHomeColors.current
+  val size = BiliSizing.SettingsMoveButtonSize
+  val shape = RoundedCornerShape(BiliRadius.Pill)
+  if (!enabled) {
+    Box(
+      modifier = modifier.size(size),
+      contentAlignment = Alignment.Center,
+    ) {
+      Text(
+        text = text,
+        color = homeColors.textTertiary.copy(alpha = BiliFocus.SettingsChipDisabledAlpha),
+        fontSize = BiliTypography.Body,
+      )
+    }
+  } else {
+    BiliFocusableSurface(
+      scaleOnFocus = false,
+      shadowOnFocus = false,
+      shape = shape,
+      onClick = onClick,
+      modifier = modifier
+        .size(size)
+        .semantics { this.contentDescription = contentDescription },
+    ) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .clip(shape),
+        contentAlignment = Alignment.Center,
+      ) {
+        Text(
+          text = text,
+          color = homeColors.textSecondary,
+          fontSize = BiliTypography.Body,
+        )
+      }
+    }
+  }
+}
+
+@Composable
+internal fun SettingsEmptyRightPanel(
+  modifier: Modifier = Modifier,
+) {
+  Box(modifier = modifier.fillMaxSize())
 }
 
 @Composable
@@ -325,23 +434,6 @@ private fun HomeSectionChip(
         fontSize = BiliTypography.BodySmall,
         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
       )
-    }
-  }
-}
-
-private fun Modifier.settingsSectionChipBoundaryKeys(
-  index: Int,
-  columns: Int,
-  onMoveLeftToSettings: () -> Boolean,
-): Modifier {
-  return onPreviewKeyEvent { event ->
-    if (event.type != KeyEventType.KeyDown) {
-      return@onPreviewKeyEvent false
-    }
-    when (event.key) {
-      Key.DirectionUp -> index < columns
-      Key.DirectionLeft -> if (index % columns == 0) onMoveLeftToSettings() else false
-      else -> false
     }
   }
 }
