@@ -30,6 +30,8 @@
     <string name="pgc_loading">正在載入…</string>
     <string name="pgc_empty">暫時沒有內容。</string>
     <string name="pgc_failed">載入失敗，請重試。</string>
+    <string name="pgc_season_main_section">正片</string>
+    <string name="pgc_season_select">選集</string>
     <string name="nav_login">登入</string>
     <string name="recommend_subtitle">來自 B 站推薦串流</string>
     <string name="recommend_loading">正在載入推薦...</string>

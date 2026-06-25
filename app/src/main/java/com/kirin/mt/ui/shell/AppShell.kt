@@ -223,6 +223,7 @@ fun BiliTvApp(
   var pgcSeasonRequest by remember { mutableStateOf<com.kirin.mt.ui.pgc.PgcSeasonRequest?>(null) }
   var pgcIndexRequest by remember { mutableStateOf<com.kirin.mt.core.model.PgcType?>(null) }
   val pgcIndexFocusRequester = remember { FocusRequester() }
+  val pgcSeasonFocusRequester = remember { FocusRequester() }
 
   LaunchedEffect(performancePolicy.imageMemoryCacheEnabled) {
     if (!performancePolicy.imageMemoryCacheEnabled) {
@@ -911,6 +912,41 @@ fun BiliTvApp(
               pgcSeasonRequest = com.kirin.mt.ui.pgc.PgcSeasonRequest(
                 seasonId = summary.seasonId,
                 epId = summary.episodeId,
+              )
+            },
+          )
+        }
+      }
+      val displayedPgcSeasonRequest = pgcSeasonRequest
+      if (displayedPgcSeasonRequest != null && visiblePlaybackRequest == null) {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(BiliColors.VideoBlack),
+        ) {
+          com.kirin.mt.ui.pgc.PgcSeasonScreen(
+            videoRepository = videoRepository,
+            request = displayedPgcSeasonRequest,
+            firstItemFocusRequester = pgcSeasonFocusRequester,
+            onBack = {
+              pgcSeasonRequest = null
+              true
+            },
+            onPlayEpisode = { season, ep ->
+              val startMs = season.progress
+                ?.takeIf { it.lastEpId == ep.id }
+                ?.lastTime
+                ?.let { it * 1000L }
+                ?: 0L
+              playbackRequest = com.kirin.mt.core.player.PlaybackRequest(
+                bvid = ep.bvid,
+                cid = ep.cid,
+                aid = ep.aid,
+                title = season.title,
+                startPositionMs = startMs,
+                epId = ep.id.toLong(),
+                seasonId = season.seasonId.toLong(),
+                forceStartPosition = startMs > 0L,
               )
             },
           )
