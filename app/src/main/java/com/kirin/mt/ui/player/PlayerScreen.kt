@@ -107,13 +107,12 @@ import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.TimeoutCancellation
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 
 @Composable
@@ -1093,7 +1092,7 @@ fun PlayerScreen(
     )
     displayRequest = resolvedRequest
     playerState = try {
-      withTimeout(LaunchTimeoutMs) {
+      withTimeoutOrNull(LaunchTimeoutMs) {
         Log.i(PlayerPlaybackLogTag, "launch step: playurl")
         val info = playbackRepository.getPlaybackInfo(
           request = resolvedRequest,
@@ -1172,16 +1171,13 @@ fun PlayerScreen(
         playbackPaused = false
         PlayerScreenState.Ready(info)
       }
-      }
+      } ?: PlayerScreenState.Failed(context.getString(R.string.player_error_launch_timeout))
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {
       Log.e(PlayerPlaybackLogTag, "playback launch failed: ${error.message}", error)
       PlayerScreenState.Failed(error.message.orEmpty())
     }
-    } catch (error: TimeoutCancellation) {
-      Log.e(PlayerPlaybackLogTag, "playback launch timed out (${LaunchTimeoutMs}ms)")
-      playerState = PlayerScreenState.Failed(context.getString(R.string.player_error_launch_timeout))
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {
