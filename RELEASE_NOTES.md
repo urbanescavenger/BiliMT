@@ -1,5 +1,10 @@
 # BiliMT 版本发布说明
 
+## v1.0.12-alpha.19
+
+### 修复
+- **PGC 季详情「返回空」**：alpha.18 报 `ERR: 返回空(data=null)`——请求成功（code=0）但 `data` 字段为 null。PGC playurl 的 payload 在根级 `result` 下（alpha.9 已修 `data?:result`），BV 的 `getResponseData()` 也是 `data?:result`。PGC 季详情 `/pgc/view/web/season` 同样把 payload 包在 `result` 下，而 `getSeasonInfo` 只读 `data` → 拿不到 → 返回空。`getSeasonInfo` 和 `getPgcVideoMetadata`（PlayerScreen 的 PGC metadata，同问题）都改成读 `data ?: result`。
+
 ## v1.0.12-alpha.18
 
 ### 改进
