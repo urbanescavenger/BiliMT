@@ -1,5 +1,13 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.1
+
+### 新增
+- **UGC 子分区导航**：每个 UGC 主分区（动画/番剧/影视/游戏/知识/科技/音乐/舞蹈/生活/美食）下方新增一行子分区胶囊，移植自 BV 源码 `PartitionUtil` 传统 tid 树——如动画→MAD·AMV / MMD·3D / 短片·手书·配音 / 手办·模玩 / 特摄 / 动漫杂谈 / 综合；游戏→单机 / 电竞 / 手游 / 网游 / 桌游棋牌 / GMV / 音游 / Mugen，共 10 主分区 63 子分区。选中子分区后用子分区 tid 作为 `rid` 请求 `/x/web-interface/dynamic/region`，复用现有接口、无需新端点。按主分区记忆选中子分区，切回时恢复；D-pad 焦点衔接：子分区行 ↑→主 Tab、↓→网格，网格 ↑→子分区行（Recommend/热门等无子分区时回退主 Tab）。新增 64 条 `ugc_sub_*` 字符串资源（简体 + 繁体两套）。
+
+### 已知待验（真机）
+- `dynamic/region?rid=<子tid>` 返回 `data.archives` 结构需真机确认；若某子分区显示空/报错，后续换 `/x/web-interface/region/dynamic` 或 app 端 `/x/v2/region/dynamic` 兜底（仅接口层一处改动，逻辑层不动）。
+
 ## v1.0.13
 
 ### 修复
