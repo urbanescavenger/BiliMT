@@ -1,5 +1,10 @@
 # BiliMT 版本发布说明
 
+## v1.0.12-alpha.17
+
+### 修复
+- **PGC 季详情 fetch 失败（真根因）**：alpha.16 诊断叠层揭示 PGC 卡在 PgcSeasonScreen 的季详情 fetch（`/pgc/view/web/season`，state=失败），根本没到 PlayerScreen——前几轮 PlayerScreen 修复全用不上。猜测 2026-01 B 站关停 API 文档后收紧了 PGC 端点（可能要 w_rid）。给 PGC 季详情和 PGC playurl 都加了 WBI 签名（与 UGC 一致）；并捕获 fetch 异常（BiliApiCodeException 含 code、HTTP status）显示在诊断叠层 `ERR:` 行和失败页，不再被吞。仍失败时能看到真实错误码。
+
 ## v1.0.12-alpha.16
 
 ### 改进
