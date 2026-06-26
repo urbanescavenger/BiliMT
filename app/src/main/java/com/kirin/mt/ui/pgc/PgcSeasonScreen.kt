@@ -91,19 +91,23 @@ internal fun PgcSeasonScreen(
     uiState.error = null
     uiState.loading = true
     var caught: String? = null
+    var completed = false
     val result = withTimeoutOrNull(20_000L) {
-      runCatching { videoRepository.getPgcSeasonInfo(currentRequest.seasonId, currentRequest.epId) }
+      val r = runCatching { videoRepository.getPgcSeasonInfo(currentRequest.seasonId, currentRequest.epId) }
         .onFailure {
           caught = "${it.javaClass.simpleName}: ${it.message}"
           Log.e("BiliMT:Pgc", "season fetch failed (seasonId=${currentRequest.seasonId} epId=${currentRequest.epId})", it)
         }
         .getOrNull()
+      completed = true
+      r
     }
     uiState.loading = false
     when {
       result != null -> uiState.season = result
       caught != null -> { uiState.failed = true; uiState.error = caught }
-      else -> { uiState.failed = true; uiState.error = "超时(20s)" }
+      !completed -> { uiState.failed = true; uiState.error = "真超时(20s)——HTTP 挂死" }
+      else -> { uiState.failed = true; uiState.error = "返回空(data=null)——看日志 raw 行" }
     }
   }
 

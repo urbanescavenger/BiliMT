@@ -50,8 +50,6 @@ class VideoRepository(
   )
   private val pgcVideoRepository = PgcVideoRepository(
     apiClient = apiClient,
-    wbiKeyRepository = wbiKeyRepository,
-    wbiSigner = wbiSigner,
     sessionStore = sessionStore,
   )
 
