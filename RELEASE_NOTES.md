@@ -1,5 +1,10 @@
 # BiliMT 版本发布说明
 
+## v1.0.12-alpha.18
+
+### 改进
+- **PGC 季详情对齐 BV + 抓原始响应定论**：alpha.17 加的 WBI 签名偏离了 BV（BV 的 `/pgc/view/web/season` 不签名），回退——PGC 季详情和 PGC playurl 恢复不签名（对齐 BV `getWebSeasonInfo`），Referer 去尾斜杠（`https://www.bilibili.com`）。同时加定论性诊断：`getSeasonInfo` 打印原始响应（code/message/hasData/keys，进实时日志→叠层）；修标签 bug——区分「真超时(HTTP 挂死)」「返回空(data=null)」「异常(含 code)」，不再把返回 null 误标成超时。装上后看叠层 `ERR:` 行 + 日志 `pgc season raw:` 行即可定论 BV 对齐请求的真实结果。
+
 ## v1.0.12-alpha.17
 
 ### 修复
