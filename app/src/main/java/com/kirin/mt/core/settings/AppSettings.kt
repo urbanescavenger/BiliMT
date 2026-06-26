@@ -46,6 +46,8 @@ data class AppSettings(
   val autoReturnHomeOnCompletion: Boolean = false,
   val showClock: Boolean = true,
   val showMiniProgressBar: Boolean = true,
+  /** PGC 黑屏时把实时日志盖在画面上，便于直接排查。仅诊断用，默认关。 */
+  val playerLogOverlayEnabled: Boolean = false,
   val autoConfirmOnFocus: Boolean = false,
   val autoRefreshOnSwitch: Boolean = false,
   val liquidGlassCardsEnabled: Boolean = false,

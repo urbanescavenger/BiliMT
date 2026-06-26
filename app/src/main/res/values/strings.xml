@@ -158,6 +158,8 @@
     <string name="settings_show_clock_description">&#x5728;&#x64AD;&#x653E;&#x754C;&#x9762;&#x53F3;&#x4E0A;&#x89D2;&#x663E;&#x793A;&#x5F53;&#x524D;&#x65F6;&#x95F4;&#x3002;</string>
     <string name="settings_show_mini_progress_bar_title">显示迷你进度条</string>
     <string name="settings_show_mini_progress_bar_description">控制播放时底部细进度条是否常驻显示。</string>
+    <string name="settings_player_log_overlay_title">播放器日志叠层</string>
+    <string name="settings_player_log_overlay_description">PGC 黑屏时把实时日志盖在画面上，便于直接排查。仅诊断用。</string>
     <string name="settings_auto_confirm_on_focus_title">切换时自动确认</string>
     <string name="settings_auto_confirm_on_focus_description">开启后焦点移到导航栏或首页分区标签会自动进入；关闭后需要按确认键。首次进入或无内容时仍会自动进入加载。</string>
     <string name="settings_auto_refresh_on_switch_title">切换时自动刷新</string>

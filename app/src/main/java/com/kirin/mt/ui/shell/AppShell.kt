@@ -738,6 +738,11 @@ fun BiliTvApp(
                       appSettingsStore.setShowMiniProgressBar(enabled)
                     }
                   },
+                  onPlayerLogOverlayEnabledChange = { enabled ->
+                    coroutineScope.launch {
+                      appSettingsStore.setPlayerLogOverlayEnabled(enabled)
+                    }
+                  },
                   onAutoConfirmOnFocusChange = { enabled ->
                     coroutineScope.launch {
                       appSettingsStore.setAutoConfirmOnFocus(enabled)
@@ -1024,6 +1029,7 @@ fun BiliTvApp(
             autoReturnHomeOnCompletion = settings.autoReturnHomeOnCompletion,
             showClock = settings.showClock,
             showMiniProgressBar = settings.showMiniProgressBar,
+            playerLogOverlayEnabled = settings.playerLogOverlayEnabled,
             onBack = {
               playbackFocusRestoreDestination = selectedDestination
               playbackRequest = null

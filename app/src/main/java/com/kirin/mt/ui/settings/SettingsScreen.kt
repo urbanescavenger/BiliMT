@@ -72,6 +72,7 @@ fun SettingsScreen(
   onAutoReturnHomeOnCompletionChange: (Boolean) -> Unit,
   onShowClockChange: (Boolean) -> Unit,
   onShowMiniProgressBarChange: (Boolean) -> Unit,
+  onPlayerLogOverlayEnabledChange: (Boolean) -> Unit,
   onAutoConfirmOnFocusChange: (Boolean) -> Unit,
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onHomeSectionEnabledChange: (HomeSection, Boolean) -> Unit,
@@ -117,6 +118,7 @@ fun SettingsScreen(
       SettingsItemAutoReturnHomeOnCompletion to FocusRequester(),
       SettingsItemShowClock to FocusRequester(),
       SettingsItemShowMiniProgressBar to FocusRequester(),
+      SettingsItemPlayerLogOverlay to FocusRequester(),
       SettingsItemAutoConfirmOnFocus to FocusRequester(),
       SettingsItemAutoRefreshOnSwitch to FocusRequester(),
       SettingsItemVisualPerformanceMode to FocusRequester(),
@@ -215,6 +217,7 @@ fun SettingsScreen(
         onAutoReturnHomeOnCompletionChange = onAutoReturnHomeOnCompletionChange,
         onShowClockChange = onShowClockChange,
         onShowMiniProgressBarChange = onShowMiniProgressBarChange,
+        onPlayerLogOverlayEnabledChange = onPlayerLogOverlayEnabledChange,
         onAutoConfirmOnFocusChange = onAutoConfirmOnFocusChange,
         onAutoRefreshOnSwitchChange = onAutoRefreshOnSwitchChange,
         onAboutSelected = {
@@ -311,6 +314,7 @@ private fun SettingsBehaviorColumn(
   onAutoReturnHomeOnCompletionChange: (Boolean) -> Unit,
   onShowClockChange: (Boolean) -> Unit,
   onShowMiniProgressBarChange: (Boolean) -> Unit,
+  onPlayerLogOverlayEnabledChange: (Boolean) -> Unit,
   onAutoConfirmOnFocusChange: (Boolean) -> Unit,
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onAboutSelected: () -> Unit,
@@ -846,6 +850,22 @@ private fun SettingsBehaviorColumn(
         onClick = onAboutSelected,
       )
     }
+    item(key = "player-log-overlay") {
+      SettingsToggleRow(
+        title = stringResource(R.string.settings_player_log_overlay_title),
+        description = stringResource(R.string.settings_player_log_overlay_description),
+        checked = settings.playerLogOverlayEnabled,
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemPlayerLogOverlay))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemPlayerLogOverlay,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemPlayerLogOverlay) },
+        onCheckedChange = onPlayerLogOverlayEnabledChange,
+      )
+    }
   }
   }
 }
@@ -892,6 +912,7 @@ private const val SettingsItemUpdateDownloadOrInstall = 24
 private const val SettingsItemUpdateReleaseNotes = 25
 private const val SettingsItemPlaybackCdn = 21
 private const val SettingsItemLogs = 27
+private const val SettingsItemPlayerLogOverlay = 28
 
 private val SettingsFocusableItems = listOf(
   SettingsItemPlaybackQuality,
@@ -906,6 +927,7 @@ private val SettingsFocusableItems = listOf(
   SettingsItemAutoReturnHomeOnCompletion,
   SettingsItemShowClock,
   SettingsItemShowMiniProgressBar,
+  SettingsItemPlayerLogOverlay,
   SettingsItemVisualPerformanceMode,
   SettingsItemLiquidGlassCards,
   SettingsItemHomeThemeVariant,
@@ -920,6 +942,7 @@ private val SettingsFocusableItems = listOf(
   SettingsItemHomeSections,
   SettingsItemLogs,
   SettingsItemAbout,
+  SettingsItemPlayerLogOverlay,
 )
 
 private enum class SettingsRightPanel {
@@ -980,6 +1003,10 @@ private fun settingsItemToLazyIndex(
   SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     27 + updateExtraCount
+  }
+  SettingsItemPlayerLogOverlay -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    28 + updateExtraCount
   }
   else -> 0
 }

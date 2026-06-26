@@ -33,6 +33,8 @@ object LogCatcherUtil {
   private const val LIVE_FLUSH_LINES = 20
   /** 查看实时日志时只读尾部这么多字节，避免把 10MB 一次性塞进内存导致 TV 盒子 OOM。 */
   private const val LIVE_LOG_TAIL_BYTES = 2L * 1024 * 1024
+  /** 播放器日志叠层每秒刷新用的轻量尾部读取量。 */
+  private const val LIVE_OVERLAY_TAIL_BYTES = 256L * 1024
 
   enum class LogType { Manual, Crash, Live }
 
@@ -325,6 +327,33 @@ object LogCatcherUtil {
       }
       sb.toString()
     }.getOrElse { "Read failed: ${it.message}" }
+  }
+
+  /**
+   * 轻量版尾部读取：只读 [liveLogFile] 最后 256KB，返回最后 [maxLines] 行。
+   * 给播放器日志叠层每秒调用用，避免每次读 2MB。文件不存在/读失败返回空表。
+   */
+  fun readLiveLogTailLines(maxLines: Int): List<String> {
+    val file = liveLogFile ?: return emptyList()
+    return runCatching {
+      val len = file.length()
+      if (len <= LIVE_OVERLAY_TAIL_BYTES) {
+        file.readText().lines().takeLast(maxLines)
+      } else {
+        val sb = StringBuilder()
+        FileInputStream(file).use { fis ->
+          fis.channel.position(len - LIVE_OVERLAY_TAIL_BYTES)
+          BufferedReader(InputStreamReader(fis, Charsets.UTF_8)).use { reader ->
+            reader.readLine() // 丢弃首部可能不完整的一行
+            while (true) {
+              val line = reader.readLine() ?: break
+              sb.appendLine(line)
+            }
+          }
+        }
+        sb.toString().lines().takeLast(maxLines)
+      }
+    }.getOrElse { emptyList() }
   }
 
   private fun OutputStreamWriter.writeDeviceInfo() {

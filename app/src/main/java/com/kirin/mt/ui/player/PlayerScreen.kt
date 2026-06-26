@@ -13,9 +13,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -45,6 +50,8 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -86,6 +93,7 @@ import com.kirin.mt.core.player.PlaybackTrack
 import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.VideoshotData
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
+import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.common.ClockOverlay
 import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.currentClockMinuteKey
@@ -125,6 +133,7 @@ fun PlayerScreen(
   autoReturnHomeOnCompletion: Boolean,
   showClock: Boolean,
   showMiniProgressBar: Boolean,
+  playerLogOverlayEnabled: Boolean,
   onBack: () -> Unit,
   onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit = { _, _, _ -> },
   spaceReturnKey: Int = 0,
@@ -1539,6 +1548,68 @@ fun PlayerScreen(
             end = BiliSizing.ClockOverlayEndPadding,
           ),
         )
+    }
+    if (playerLogOverlayEnabled && request.isPgc) {
+      PlayerLogOverlay()
+    }
+  }
+}
+
+@Composable
+private fun BoxScope.PlayerLogOverlay() {
+  var lines by remember { mutableStateOf<List<String>>(emptyList()) }
+  val listState = rememberLazyListState()
+  LaunchedEffect(Unit) {
+    while (isActive) {
+      lines = LogCatcherUtil.readLiveLogTailLines(40)
+      delay(1000L)
+    }
+  }
+  LaunchedEffect(lines.size) {
+    if (lines.isNotEmpty()) {
+      listState.scrollToItem((lines.lastIndex).coerceAtLeast(0))
+    }
+  }
+  Box(
+    modifier = Modifier
+      .align(Alignment.TopStart)
+      .fillMaxWidth()
+      .fillMaxHeight(0.6f)
+      .background(BiliColors.VideoBlack.copy(alpha = 0.72f))
+      .padding(BiliSpacing.Sm),
+  ) {
+    Column(modifier = Modifier.fillMaxSize()) {
+      Text(
+        text = "实时日志（PGC 诊断）",
+        color = BiliColors.BiliPink,
+        fontSize = BiliTypography.BodySmall,
+        fontWeight = FontWeight.Bold,
+      )
+      LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+      ) {
+        items(lines.size) { index ->
+          val line = lines[index]
+          val color = when {
+            line.contains(" E ", ignoreCase = true) ||
+              line.contains("ERROR", ignoreCase = true) ||
+              line.contains("FATAL", ignoreCase = true) ||
+              line.contains("Exception", ignoreCase = true) -> BiliColors.BiliPink
+            line.contains(" W ", ignoreCase = true) ||
+              line.contains("WARN", ignoreCase = true) -> BiliColors.AirJumpGreen
+            line.contains(" D ", ignoreCase = true) ||
+              line.contains("DEBUG", ignoreCase = true) -> BiliColors.TextTertiary
+            else -> BiliColors.TextSecondary
+          }
+          Text(
+            text = line,
+            color = color,
+            fontSize = BiliTypography.CardMeta,
+            fontFamily = FontFamily.Monospace,
+          )
+        }
+      }
     }
   }
 }
