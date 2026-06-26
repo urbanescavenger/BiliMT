@@ -1,5 +1,10 @@
 # BiliMT 版本发布说明
 
+## v1.0.12-alpha.16
+
+### 改进
+- **PGC 叠层不渲染决定性诊断**：用户确认 UGC 有叠层、PGC 完全没叠层（连彩色字也没有），同一开关同一 PlayerScreen 按代码不可能——需设备级诊断。PlayerScreen 加内联 DEBUG 行（亮粉底黑字，toggle 开时显示 `isPgc/epId/seasonId/cid/state/step`，放早子节点不走叠层子组合）；叠层背景改不透明深灰+亮粉边框（排除黑底不可见）。PgcSeasonScreen fetch 包 `withTimeoutOrNull(20s)`（不再永远「正在加载…」）并加季详情诊断叠层。用于定位 PGC 到底卡在哪、为何叠层不显示。
+
 ## v1.0.12-alpha.15
 
 ### 改进
