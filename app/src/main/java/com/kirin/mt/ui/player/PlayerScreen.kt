@@ -192,6 +192,8 @@ fun PlayerScreen(
   var danmakuSyncToken by remember { mutableLongStateOf(0L) }
   var playbackPaused by remember { mutableStateOf(false) }
   var playerActuallyPlaying by remember { mutableStateOf(false) }
+  /** 内存态诊断：launch 协程当前步骤，不依赖 logcat，PGC 卡死时叠层直接显示。 */
+  var launchStep by remember { mutableStateOf("") }
   var retryKey by remember { mutableLongStateOf(0L) }
   var lastPlaybackExitBackPressMs by remember { mutableLongStateOf(0L) }
   var playbackExitConfirmToast by remember { mutableStateOf<Toast?>(null) }
@@ -1060,7 +1062,9 @@ fun PlayerScreen(
     skippedAirJumpIds = emptySet()
     lastAirJumpPositionMs = 0L
     playerActuallyPlaying = false
+    launchStep = ""
     player.clearMediaItems()
+    launchStep = "metadata"
     Log.i(PlayerPlaybackLogTag, "launch step: metadata (pgc=${activeRequest.isPgc})")
     val existingMetadata = metadata
     val videoMetadata = if (existingMetadata != null && existingMetadata.bvid == activeRequest.bvid) {
@@ -1093,6 +1097,7 @@ fun PlayerScreen(
     displayRequest = resolvedRequest
     playerState = try {
       withTimeoutOrNull(LaunchTimeoutMs) {
+        launchStep = "playurl"
         Log.i(PlayerPlaybackLogTag, "launch step: playurl")
         val info = playbackRepository.getPlaybackInfo(
           request = resolvedRequest,
@@ -1105,6 +1110,7 @@ fun PlayerScreen(
         coroutineScope.launch { lastPlayedStore.save(info.bvid, info.cid) }
         selectedQuality = info.selectedQuality
         currentCodecText = info.videoTracks.firstOrNull()?.codecLabel().orEmpty()
+        launchStep = "cdn"
         Log.i(PlayerPlaybackLogTag, "launch step: cdn")
         // Resolve video and audio CDN selections concurrently so the two
         // select() calls (each of which may measure Auto candidates) overlap
@@ -1159,6 +1165,7 @@ fun PlayerScreen(
             .createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
         }
         player.setMediaSource(mediaSource)
+        launchStep = "prepare"
         Log.i(PlayerPlaybackLogTag, "launch step: prepare")
         player.prepare()
         player.setPlaybackSpeed(playbackSpeed)
@@ -1562,18 +1569,28 @@ fun PlayerScreen(
         )
     }
     if (playerLogOverlayEnabled) {
-      PlayerLogOverlay()
+      PlayerLogOverlay(
+        playerState = playerState,
+        launchStep = launchStep,
+        request = displayRequest,
+      )
     }
   }
 }
 
 @Composable
-private fun BoxScope.PlayerLogOverlay() {
+private fun BoxScope.PlayerLogOverlay(
+  playerState: PlayerScreenState,
+  launchStep: String,
+  request: PlaybackRequest,
+) {
   var lines by remember { mutableStateOf<List<String>>(emptyList()) }
+  var liveLogBytes by remember { mutableStateOf(0L) }
   val listState = rememberLazyListState()
   LaunchedEffect(Unit) {
     while (isActive) {
       lines = LogCatcherUtil.readLiveLogTailLines(40)
+      liveLogBytes = LogCatcherUtil.liveLogFile?.length() ?: 0L
       delay(1000L)
     }
   }
@@ -1582,20 +1599,50 @@ private fun BoxScope.PlayerLogOverlay() {
       listState.scrollToItem((lines.lastIndex).coerceAtLeast(0))
     }
   }
+  val stateText = when (playerState) {
+    PlayerScreenState.Loading -> "Loading"
+    is PlayerScreenState.Failed -> "Failed: ${playerState.message}"
+    is PlayerScreenState.Ready -> "Ready"
+  }
+  val liveLogText = if (liveLogBytes > 0L) LogCatcherUtil.formatFileSize(liveLogBytes) else "无"
   Box(
     modifier = Modifier
       .align(Alignment.TopStart)
       .fillMaxWidth()
-      .fillMaxHeight(0.6f)
-      .background(BiliColors.VideoBlack.copy(alpha = 0.72f))
+      .fillMaxHeight(0.7f)
+      .background(BiliColors.VideoBlack.copy(alpha = 0.78f))
       .padding(BiliSpacing.Sm),
   ) {
     Column(modifier = Modifier.fillMaxSize()) {
       Text(
-        text = "实时日志（PGC 诊断）",
+        text = "● 叠层工作中",
         color = BiliColors.BiliPink,
         fontSize = BiliTypography.BodySmall,
         fontWeight = FontWeight.Bold,
+      )
+      Text(
+        text = "请求: isPgc=${request.isPgc} epId=${request.epId} seasonId=${request.seasonId} cid=${request.cid} bvid=${request.bvid}",
+        color = BiliColors.TextSecondary,
+        fontSize = BiliTypography.CardMeta,
+        fontFamily = FontFamily.Monospace,
+      )
+      Text(
+        text = "状态: $stateText",
+        color = if (playerState is PlayerScreenState.Failed) BiliColors.BiliPink else BiliColors.AirJumpGreen,
+        fontSize = BiliTypography.CardMeta,
+        fontFamily = FontFamily.Monospace,
+      )
+      Text(
+        text = "步骤: ${launchStep.ifEmpty { "（未开始）" }}",
+        color = BiliColors.AirJumpGreen,
+        fontSize = BiliTypography.CardMeta,
+        fontFamily = FontFamily.Monospace,
+      )
+      Text(
+        text = "实时日志 (live: $liveLogText):",
+        color = BiliColors.TextTertiary,
+        fontSize = BiliTypography.CardMeta,
+        fontFamily = FontFamily.Monospace,
       )
       LazyColumn(
         state = listState,
@@ -1604,7 +1651,7 @@ private fun BoxScope.PlayerLogOverlay() {
         if (lines.isEmpty()) {
           item {
             Text(
-              text = "（暂无日志输出，若持续为空说明 logcat 未捕获到本应用日志）",
+              text = "（暂无日志输出）",
               color = BiliColors.TextTertiary,
               fontSize = BiliTypography.CardMeta,
               fontFamily = FontFamily.Monospace,
