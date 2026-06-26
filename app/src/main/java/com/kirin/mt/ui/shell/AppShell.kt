@@ -980,6 +980,7 @@ fun BiliTvApp(
             videoRepository = videoRepository,
             request = displayedPgcSeasonRequest,
             firstItemFocusRequester = pgcSeasonFocusRequester,
+            playerLogOverlayEnabled = settings.playerLogOverlayEnabled,
             onBack = {
               pgcSeasonRequest = null
               true

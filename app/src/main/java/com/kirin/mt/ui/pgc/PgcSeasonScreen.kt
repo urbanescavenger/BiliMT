@@ -1,7 +1,10 @@
 package com.kirin.mt.ui.pgc
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
@@ -35,6 +38,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -44,11 +48,16 @@ import com.kirin.mt.core.model.PgcEpisode
 import com.kirin.mt.core.model.PgcSeason
 import com.kirin.mt.core.model.PgcSeasonRef
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.focus.BiliFocusableSurface
+import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliRadius
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 
 @Stable
 internal class PgcSeasonUiState {
@@ -62,6 +71,7 @@ internal fun PgcSeasonScreen(
   videoRepository: VideoRepository,
   request: PgcSeasonRequest,
   firstItemFocusRequester: FocusRequester,
+  playerLogOverlayEnabled: Boolean,
   onBack: () -> Boolean,
   onPlayEpisode: (PgcSeason, PgcEpisode) -> Unit,
 ) {
@@ -77,15 +87,17 @@ internal fun PgcSeasonScreen(
     uiState.season = null
     uiState.failed = false
     uiState.loading = true
-    runCatching { videoRepository.getPgcSeasonInfo(currentRequest.seasonId, currentRequest.epId) }
-      .onSuccess {
-        uiState.season = it
-        uiState.loading = false
-      }
-      .onFailure {
-        uiState.failed = true
-        uiState.loading = false
-      }
+    val result = withTimeoutOrNull(20_000L) {
+      runCatching { videoRepository.getPgcSeasonInfo(currentRequest.seasonId, currentRequest.epId) }
+        .getOrNull()
+    }
+    if (result != null) {
+      uiState.season = result
+      uiState.loading = false
+    } else {
+      uiState.failed = true
+      uiState.loading = false
+    }
   }
 
   // 季详情加载完成后聚焦第一个分集
@@ -159,6 +171,61 @@ internal fun PgcSeasonScreen(
             }
           }
         }
+      }
+    }
+    if (playerLogOverlayEnabled) {
+      PgcSeasonLogOverlay(
+        loading = uiState.loading,
+        failed = uiState.failed,
+        seasonId = currentRequest.seasonId,
+        epId = currentRequest.epId,
+      )
+    }
+  }
+}
+
+@Composable
+private fun BoxScope.PgcSeasonLogOverlay(
+  loading: Boolean,
+  failed: Boolean,
+  seasonId: Int,
+  epId: Int,
+) {
+  var lines by remember { mutableStateOf<List<String>>(emptyList()) }
+  LaunchedEffect(Unit) {
+    while (isActive) {
+      lines = LogCatcherUtil.readLiveLogTailLines(30)
+      delay(1000L)
+    }
+  }
+  val stateText = when {
+    loading -> "加载中（season fetch）"
+    failed -> "失败/超时（20s）"
+    else -> "已加载"
+  }
+  Box(
+    modifier = Modifier
+      .align(Alignment.TopStart)
+      .fillMaxWidth()
+      .background(Color(0xE6333333))
+      .border(width = 2.dp, color = BiliColors.BiliPink)
+      .padding(BiliSpacing.Sm),
+  ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+      Text(
+        text = "● 季详情诊断 | state=$stateText | seasonId=$seasonId epId=$epId",
+        color = BiliColors.BiliPink,
+        fontSize = BiliTypography.Body,
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.Bold,
+      )
+      lines.forEach { line ->
+        Text(
+          text = line,
+          color = BiliColors.TextSecondary,
+          fontSize = BiliTypography.CardMeta,
+          fontFamily = FontFamily.Monospace,
+        )
       }
     }
   }

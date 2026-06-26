@@ -10,6 +10,7 @@ import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.ImageBitmap
@@ -52,6 +54,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -1502,6 +1505,27 @@ fun PlayerScreen(
       modifier = Modifier.fillMaxSize(),
     )
 
+    if (playerLogOverlayEnabled) {
+      // 内联诊断：不走 PlayerLogOverlay 子组合，直接放 Box 早子节点。决定性测试——
+      // 若 PGC 能看到「正在加载」却看不到这行，说明 PGC 的 PlayerScreen 组合不渲染叠层。
+      val debugState = when (playerState) {
+        PlayerScreenState.Loading -> "Loading"
+        is PlayerScreenState.Failed -> "Failed:${playerState.message}"
+        is PlayerScreenState.Ready -> "Ready"
+      }
+      Text(
+        text = "DEBUG | isPgc=${displayRequest.isPgc} epId=${displayRequest.epId} seasonId=${displayRequest.seasonId} cid=${displayRequest.cid} | state=$debugState | step=${launchStep.ifEmpty { "—" }}",
+        color = BiliColors.VideoBlack,
+        fontSize = BiliTypography.Body,
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier
+          .align(Alignment.TopStart)
+          .background(BiliColors.BiliPink)
+          .padding(BiliSpacing.Xs),
+      )
+    }
+
     when (val state = playerState) {
       PlayerScreenState.Loading -> PlayerLoadingOverlay()
       is PlayerScreenState.Failed -> FeedStatusScreen(
@@ -1610,7 +1634,8 @@ private fun BoxScope.PlayerLogOverlay(
       .align(Alignment.TopStart)
       .fillMaxWidth()
       .fillMaxHeight(0.7f)
-      .background(BiliColors.VideoBlack.copy(alpha = 0.78f))
+      .background(Color(0xE6333333))
+      .border(width = 2.dp, color = BiliColors.BiliPink)
       .padding(BiliSpacing.Sm),
   ) {
     Column(modifier = Modifier.fillMaxSize()) {
