@@ -107,11 +107,13 @@ import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellation
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
 
 @Composable
@@ -1060,6 +1062,7 @@ fun PlayerScreen(
     lastAirJumpPositionMs = 0L
     playerActuallyPlaying = false
     player.clearMediaItems()
+    Log.i(PlayerPlaybackLogTag, "launch step: metadata (pgc=${activeRequest.isPgc})")
     val existingMetadata = metadata
     val videoMetadata = if (existingMetadata != null && existingMetadata.bvid == activeRequest.bvid) {
       existingMetadata
@@ -1090,17 +1093,20 @@ fun PlayerScreen(
     )
     displayRequest = resolvedRequest
     playerState = try {
-      val info = playbackRepository.getPlaybackInfo(
-        request = resolvedRequest,
-        codecPreference = playbackCodecPreference,
-        qualityPreference = playbackQualityPreference,
-      )
+      withTimeout(LaunchTimeoutMs) {
+        Log.i(PlayerPlaybackLogTag, "launch step: playurl")
+        val info = playbackRepository.getPlaybackInfo(
+          request = resolvedRequest,
+          codecPreference = playbackCodecPreference,
+          qualityPreference = playbackQualityPreference,
+        )
       if (info.videoTracks.isEmpty() || info.audioTracks.isEmpty()) {
         PlayerScreenState.Failed(context.getString(R.string.player_error_empty_tracks))
       } else {
         coroutineScope.launch { lastPlayedStore.save(info.bvid, info.cid) }
         selectedQuality = info.selectedQuality
         currentCodecText = info.videoTracks.firstOrNull()?.codecLabel().orEmpty()
+        Log.i(PlayerPlaybackLogTag, "launch step: cdn")
         // Resolve video and audio CDN selections concurrently so the two
         // select() calls (each of which may measure Auto candidates) overlap
         // instead of running back-to-back on the open path.
@@ -1154,6 +1160,7 @@ fun PlayerScreen(
             .createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
         }
         player.setMediaSource(mediaSource)
+        Log.i(PlayerPlaybackLogTag, "launch step: prepare")
         player.prepare()
         player.setPlaybackSpeed(playbackSpeed)
         if (startPositionMs > 0L) {
@@ -1165,12 +1172,21 @@ fun PlayerScreen(
         playbackPaused = false
         PlayerScreenState.Ready(info)
       }
+      }
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {
       Log.e(PlayerPlaybackLogTag, "playback launch failed: ${error.message}", error)
       PlayerScreenState.Failed(error.message.orEmpty())
     }
+    } catch (error: TimeoutCancellation) {
+      Log.e(PlayerPlaybackLogTag, "playback launch timed out (${LaunchTimeoutMs}ms)")
+      playerState = PlayerScreenState.Failed(context.getString(R.string.player_error_launch_timeout))
+    } catch (error: CancellationException) {
+      throw error
+    } catch (error: Exception) {
+      Log.e(PlayerPlaybackLogTag, "playback launch failed: ${error.message}", error)
+      playerState = PlayerScreenState.Failed(error.message.orEmpty())
     } finally {
       playbackLaunchJob = null
     }
@@ -1549,7 +1565,7 @@ fun PlayerScreen(
           ),
         )
     }
-    if (playerLogOverlayEnabled && request.isPgc) {
+    if (playerLogOverlayEnabled) {
       PlayerLogOverlay()
     }
   }
@@ -1589,6 +1605,16 @@ private fun BoxScope.PlayerLogOverlay() {
         state = listState,
         modifier = Modifier.fillMaxSize(),
       ) {
+        if (lines.isEmpty()) {
+          item {
+            Text(
+              text = "（暂无日志输出，若持续为空说明 logcat 未捕获到本应用日志）",
+              color = BiliColors.TextTertiary,
+              fontSize = BiliTypography.CardMeta,
+              fontFamily = FontFamily.Monospace,
+            )
+          }
+        }
         items(lines.size) { index ->
           val line = lines[index]
           val color = when {
@@ -1828,6 +1854,8 @@ private const val AirJumpRewindResetThresholdMs = 2_000L
 private const val AirJumpRewindResetLeadMs = 1_000L
 private const val PlayerDanmakuLogTag = "BiliMT:Danmaku"
 private const val PlayerPlaybackLogTag = "BiliMT:Player"
+/** 起播整体超时：callTimeout 兜住单次 HTTP，withTimeout 兜住整条 launch（含串行调用叠加）。 */
+private const val LaunchTimeoutMs = 30_000L
 
 private fun playbackStateName(state: Int): String = when (state) {
   Player.STATE_IDLE -> "IDLE"

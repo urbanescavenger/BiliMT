@@ -29,8 +29,8 @@ object LogCatcherUtil {
   private const val MAX_LIVE_LOG_BYTES = 10L * 1024 * 1024
   /** 裁剪后保留的字节数（略小于上限，避免每写入几行就频繁裁剪）。 */
   private const val LIVE_TRIM_KEEP_BYTES = 9L * 1024 * 1024
-  /** 每写入多少行 flush 一次并检查大小（越小越实时，但 syscall 越多）。 */
-  private const val LIVE_FLUSH_LINES = 20
+  /** 每写入多少行检查一次大小（每行都 flush，但大小检查/裁剪每 N 行一次，减少 stat 开销）。 */
+  private const val LIVE_SIZE_CHECK_LINES = 200
   /** 查看实时日志时只读尾部这么多字节，避免把 10MB 一次性塞进内存导致 TV 盒子 OOM。 */
   private const val LIVE_LOG_TAIL_BYTES = 2L * 1024 * 1024
   /** 播放器日志叠层每秒刷新用的轻量尾部读取量。 */
@@ -234,17 +234,18 @@ object LogCatcherUtil {
           writer.flush()
         }
         val reader = BufferedReader(InputStreamReader(process.inputStream))
-        var linesSinceFlush = 0
+        var linesSinceSizeCheck = 0
         try {
           while (true) {
             val line = reader.readLine() ?: break
             val current = liveState.get()
             if (current?.file != logFile) break
             writer.appendLine(line)
-            linesSinceFlush++
-            if (linesSinceFlush >= LIVE_FLUSH_LINES) {
-              linesSinceFlush = 0
-              runCatching { writer.flush() }
+            // 每行 flush：Loading 卡死期间日志稀疏，攒够批量才 flush 会导致叠层读不到近期日志。
+            runCatching { writer.flush() }
+            linesSinceSizeCheck++
+            if (linesSinceSizeCheck >= LIVE_SIZE_CHECK_LINES) {
+              linesSinceSizeCheck = 0
               if (logFile.length() > MAX_LIVE_LOG_BYTES) {
                 runCatching { writer.flush(); writer.close() }
                 trimFileTail(logFile)

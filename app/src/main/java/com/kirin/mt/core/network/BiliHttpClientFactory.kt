@@ -52,6 +52,10 @@ class BiliHttpClientFactory {
       .connectTimeout(NetworkTimeoutSeconds, TimeUnit.SECONDS)
       .readTimeout(NetworkTimeoutSeconds, TimeUnit.SECONDS)
       .writeTimeout(NetworkTimeoutSeconds, TimeUnit.SECONDS)
+      // cap 整个调用（含 body 读取）。OkHttp 的 readTimeout 按每次 read 重置，
+      // 慢 drip 服务器（每 <15s 吐一个字节）会让 response.body.string() 永不返回、
+      // getPlaybackInfo 无限挂死 → PGC 卡在 Loading。callTimeout 兜住整调用。
+      .callTimeout(NetworkTimeoutSeconds, TimeUnit.SECONDS)
   }
 
   private companion object {

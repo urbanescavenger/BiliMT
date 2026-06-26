@@ -249,6 +249,7 @@
     <string name="player_failed_with_message">&#25773;&#25918;&#21152;&#36733;&#22833;&#36133;&#12290;%1$s</string>
     <string name="player_error_missing_cid">&#26410;&#33021;&#33719;&#21462;&#35270;&#39057; CID</string>
     <string name="player_error_empty_tracks">&#25773;&#25918;&#25509;&#21475;&#26410;&#36820;&#22238;&#21487;&#29992;&#38899;&#35270;&#39057;&#36712;</string>
+    <string name="player_error_launch_timeout">起播超时（30s），请重试</string>
     <string name="player_control_episodes">&#x9009;&#x96C6;</string>
     <string name="player_control_up">UP&#x4E3B;</string>
     <string name="player_control_related">&#x76F8;&#x5173;</string>
