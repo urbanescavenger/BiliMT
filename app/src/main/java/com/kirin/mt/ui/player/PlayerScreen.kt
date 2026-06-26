@@ -1508,9 +1508,9 @@ fun PlayerScreen(
     if (playerLogOverlayEnabled) {
       // 内联诊断：不走 PlayerLogOverlay 子组合，直接放 Box 早子节点。决定性测试——
       // 若 PGC 能看到「正在加载」却看不到这行，说明 PGC 的 PlayerScreen 组合不渲染叠层。
-      val debugState = when (playerState) {
+      val debugState = when (val state = playerState) {
         PlayerScreenState.Loading -> "Loading"
-        is PlayerScreenState.Failed -> "Failed:${playerState.message}"
+        is PlayerScreenState.Failed -> "Failed:${state.message}"
         is PlayerScreenState.Ready -> "Ready"
       }
       Text(
