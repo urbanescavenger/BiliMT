@@ -1,5 +1,22 @@
 # BiliMT 版本发布说明
 
+## v1.0.13
+
+### 修复
+- **PGC（番剧）播放黑屏——彻底修复**：经过 alpha.9–alpha.19 多轮调试，定位到真根因：PGC 季详情接口 `/pgc/view/web/season` 的 payload 包在根级 `result` 字段下（和 PGC playurl 一样，BV 的 `BiliResponse.getResponseData()` 也是 `data?:result`），而 `getSeasonInfo`/`getPgcVideoMetadata` 只读 `data` → 拿到 null → 季详情加载失败 → PGC 卡在季详情页「正在加载…」根本进不了播放器。修：两处都改成读 `data ?: result`。PGC 现在能正常加载季详情、进播放器播放。
+
+### 改进（本轮 alpha 累积）
+- **实时日志**（alpha.11/14）：常驻滚动 logcat 写 `logs_live.log`，上限 10MB 丢弃最旧，每行 flush；设置→日志可查看/分享，播放器诊断叠层实时滚动。
+- **播放器日志叠层**（alpha.13–16）：开关开启后，播放器/季详情页把实时日志 + 内存态（state/step/请求信息）盖在画面上，黑屏时直接排查，不用退出。
+- **PGC 起播超时兜底**（alpha.14）：HTTP 客户端加 `callTimeout(15s)`，launch 协程包 `withTimeoutOrNull(30s)`，季详情 fetch 包 `withTimeoutOrNull(20s)`——不再无限卡 Loading，超时跳 Failed。
+- **PGC playurl SDR fnval + 排除杜比视界**（alpha.10）：PGC 用 SDR fnval，轨道选择排除 dvhe/未知 codec。
+- **PGC playurl 用 MergingMediaSource**（alpha.12）：对齐 BV，绕开合成 DASH MPD 的 SegmentBase 拼接风险。
+- **网络层 Referer 对齐 BV**（alpha.18）：`https://www.bilibili.com`（去尾斜杠）。
+
+### 调试基础设施
+- 季详情/播放器 fetch 异常不再被吞，错误码显示在叠层 `ERR:` 行 + 失败页。
+- PGC 季详情 fetch 区分「真超时」/「返回空(data=null)」/「异常」三种失败模式。
+
 ## v1.0.12-alpha.19
 
 ### 修复
