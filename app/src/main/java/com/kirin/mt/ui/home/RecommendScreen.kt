@@ -27,6 +27,8 @@ import androidx.compose.foundation.lazy.grid.LazyGridItemInfo
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -57,6 +59,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import com.kirin.mt.R
 import com.kirin.mt.core.model.HomeSection
+import com.kirin.mt.core.model.UgcSubPartition
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.ui.common.FeedStatusScreen
@@ -81,6 +84,7 @@ import kotlin.math.roundToInt
 internal class RecommendUiState {
   var selectedSectionKey by mutableStateOf("")
   var activeSectionKey by mutableStateOf("")
+  var activeSubTidBySection by mutableStateOf<Map<String, Int?>>(emptyMap())
   var sectionStates by mutableStateOf<Map<String, RecommendState>>(emptyMap())
   var loadedSectionKeys by mutableStateOf(emptySet<String>())
   var sectionRefreshKeys by mutableStateOf<Map<String, Int>>(emptyMap())
@@ -120,16 +124,19 @@ internal fun RecommendScreen(
     ?: selectedSectionKey
   val selectedSection = sections.firstOrNull { section -> section.key == selectedSectionKey } ?: sections.first()
   val activeSection = sections.firstOrNull { section -> section.key == activeSectionKey } ?: selectedSection
+  val activeSubTid: Int? = uiState.activeSubTidBySection[activeSection.key]
   val selectedSectionFocusRequester = remember { FocusRequester() }
+  val subPartitionFocusRequester = remember { FocusRequester() }
   val state = uiState.sectionStates[activeSection.key] ?: RecommendState.Loading
   val activeRefreshKey = uiState.sectionRefreshKeys[activeSection.key] ?: 0
 
-  fun requestSectionLoad(sectionKey: String, refreshKey: Int) {
+  fun requestSectionLoad(sectionKey: String, refreshKey: Int, subTid: Int?) {
     uiState.nextLoadRequestId += 1
     uiState.loadRequest = RecommendLoadRequest(
       id = uiState.nextLoadRequestId,
       sectionKey = sectionKey,
       refreshKey = refreshKey,
+      subTid = subTid,
     )
   }
 
@@ -160,6 +167,7 @@ internal fun RecommendScreen(
       requestSectionLoad(
         sectionKey = sectionKeyToLoad,
         refreshKey = uiState.sectionRefreshKeys[sectionKeyToLoad] ?: 0,
+        subTid = uiState.activeSubTidBySection[sectionKeyToLoad],
       )
     }
   }
@@ -176,6 +184,7 @@ internal fun RecommendScreen(
         section = sectionToLoad,
         page = FirstPage,
         idx = if (sectionToLoad == HomeSection.Recommend) request.refreshKey else 0,
+        regionTidOverride = request.subTid,
       )
       if (videos.isEmpty()) {
         RecommendState.Empty
@@ -207,7 +216,11 @@ internal fun RecommendScreen(
     uiState.handledManualRefreshKey = manualRefreshKey
     val nextRefreshKey = (uiState.sectionRefreshKeys[activeSection.key] ?: 0) + 1
     uiState.sectionRefreshKeys = uiState.sectionRefreshKeys + (activeSection.key to nextRefreshKey)
-    requestSectionLoad(sectionKey = activeSection.key, refreshKey = nextRefreshKey)
+    requestSectionLoad(
+      sectionKey = activeSection.key,
+      refreshKey = nextRefreshKey,
+      subTid = uiState.activeSubTidBySection[activeSection.key],
+    )
   }
 
   fun loadNextPage() {
@@ -237,6 +250,7 @@ internal fun RecommendScreen(
           } else {
             0
           },
+          regionTidOverride = uiState.activeSubTidBySection[sectionKeyToLoad],
         )
         val latestState = uiState.sectionStates[sectionKeyToLoad] as? RecommendState.Success ?: return@launch
         val mergedVideos = latestState.videos.appendUniqueByBvid(nextVideos)
@@ -274,9 +288,29 @@ internal fun RecommendScreen(
         uiState.sectionRefreshKeys[section.key] ?: 0
       }
       uiState.sectionRefreshKeys = uiState.sectionRefreshKeys + (section.key to nextRefreshKey)
-      requestSectionLoad(sectionKey = section.key, refreshKey = nextRefreshKey)
+      requestSectionLoad(
+        sectionKey = section.key,
+        refreshKey = nextRefreshKey,
+        subTid = uiState.activeSubTidBySection[section.key],
+      )
     }
   }
+
+  fun selectSubPartition(subTid: Int?) {
+    val section = activeSection
+    if (uiState.activeSubTidBySection[section.key] == subTid) return
+    uiState.activeSubTidBySection = uiState.activeSubTidBySection + (section.key to subTid)
+    uiState.focusedVideoIndex = 0
+    uiState.focusedVideoKey = ""
+    // 子分区切换 = 不同的 rid，需重新加载该分区槽位
+    uiState.loadedSectionKeys = uiState.loadedSectionKeys - section.key
+    uiState.sectionStates = uiState.sectionStates - section.key
+    val nextRefreshKey = (uiState.sectionRefreshKeys[section.key] ?: 0) + 1
+    uiState.sectionRefreshKeys = uiState.sectionRefreshKeys + (section.key to nextRefreshKey)
+    requestSectionLoad(sectionKey = section.key, refreshKey = nextRefreshKey, subTid = subTid)
+  }
+
+  val activeSubPartitions = activeSection.subPartitions()
 
   Column(
     modifier = Modifier.fillMaxSize(),
@@ -304,6 +338,16 @@ internal fun RecommendScreen(
         }
       },
     )
+    if (activeSubPartitions.isNotEmpty()) {
+      UgcSubPartitionBar(
+        subPartitions = activeSubPartitions,
+        selectedSubTid = activeSubTid,
+        selectedFocusRequester = subPartitionFocusRequester,
+        onMoveUp = { runCatching { selectedSectionFocusRequester.requestFocus() }.isSuccess },
+        onMoveDown = { runCatching { firstItemFocusRequester.requestFocus() }.isSuccess },
+        onSelected = { subTid -> selectSubPartition(subTid) },
+      )
+    }
     Box(
       modifier = Modifier
         .fillMaxSize()
@@ -327,7 +371,6 @@ internal fun RecommendScreen(
           RecommendGrid(
             videos = currentState.videos,
             firstItemFocusRequester = firstItemFocusRequester,
-            selectedSectionFocusRequester = selectedSectionFocusRequester,
             restoredFocusIndex = restoredFocusIndex,
             restoreFocusRequestKey = restoreFocusRequestKey,
             onRestoreFocusHandled = onRestoreFocusHandled,
@@ -339,6 +382,13 @@ internal fun RecommendScreen(
             },
             onLoadMore = ::loadNextPage,
             onMoveLeftToNav = onMoveLeftToNav,
+            onMoveUpFromFirstRow = {
+              if (activeSubPartitions.isNotEmpty()) {
+                runCatching { subPartitionFocusRequester.requestFocus() }.isSuccess
+              } else {
+                runCatching { selectedSectionFocusRequester.requestFocus() }.isSuccess
+              }
+            },
             onVideoSelected = onVideoSelected,
             onOwnerSelected = onOwnerSelected,
           )
@@ -527,10 +577,138 @@ private fun HomeSectionTab(
 }
 
 @Composable
+private fun UgcSubPartitionBar(
+  subPartitions: List<UgcSubPartition>,
+  selectedSubTid: Int?,
+  selectedFocusRequester: FocusRequester,
+  onMoveUp: () -> Boolean,
+  onMoveDown: () -> Boolean,
+  onSelected: (Int?) -> Unit,
+) {
+  LazyRow(
+    modifier = Modifier
+      .fillMaxWidth()
+      .height(BiliSizing.UgcSubPartitionBarHeight)
+      .padding(horizontal = BiliSpacing.Lg),
+    horizontalArrangement = Arrangement.spacedBy(BiliSizing.UgcSubPartitionItemSpacing),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    item {
+      UgcSubPartitionChip(
+        text = stringResource(R.string.ugc_sub_all),
+        selected = selectedSubTid == null,
+        focusRequester = if (selectedSubTid == null) selectedFocusRequester else null,
+        onMoveUp = onMoveUp,
+        onMoveDown = onMoveDown,
+        onClick = { onSelected(null) },
+      )
+    }
+    items(subPartitions) { sub ->
+      UgcSubPartitionChip(
+        text = stringResource(sub.titleRes),
+        selected = selectedSubTid == sub.tid,
+        focusRequester = if (selectedSubTid == sub.tid) selectedFocusRequester else null,
+        onMoveUp = onMoveUp,
+        onMoveDown = onMoveDown,
+        onClick = { onSelected(sub.tid) },
+      )
+    }
+  }
+}
+
+@Composable
+private fun UgcSubPartitionChip(
+  text: String,
+  selected: Boolean,
+  focusRequester: FocusRequester?,
+  onMoveUp: () -> Boolean,
+  onMoveDown: () -> Boolean,
+  onClick: () -> Unit,
+) {
+  var focused by remember { mutableStateOf(false) }
+  val performancePolicy = LocalBiliPerformancePolicy.current
+  val homeColors = LocalHomeColors.current
+  val shape = RoundedCornerShape(BiliRadius.Pill)
+  val targetBorderColor = if (focused) homeColors.accent else BiliColors.Transparent
+  val targetTextColor = when {
+    selected -> homeColors.accent
+    focused -> homeColors.textPrimary
+    else -> homeColors.textSecondary
+  }
+  val borderColor = if (performancePolicy.motionEnabled) {
+    animateColorAsState(
+      targetValue = targetBorderColor,
+      animationSpec = androidx.compose.animation.core.tween(BiliMotion.FocusMs, easing = BiliMotion.FocusEasing),
+      label = "ugcSubBorder",
+    ).value
+  } else {
+    targetBorderColor
+  }
+  val textColor = if (performancePolicy.motionEnabled) {
+    animateColorAsState(
+      targetValue = targetTextColor,
+      animationSpec = androidx.compose.animation.core.tween(BiliMotion.FocusMs, easing = BiliMotion.FocusEasing),
+      label = "ugcSubText",
+    ).value
+  } else {
+    targetTextColor
+  }
+  val interactionSource = remember { MutableInteractionSource() }
+
+  Box(
+    modifier = Modifier
+      .height(BiliSizing.UgcSubPartitionTabHeight)
+      .widthIn(min = BiliSizing.UgcSubPartitionTabMinWidth)
+      .clip(shape)
+      .background(
+        if (focused) {
+          homeColors.textPrimary.copy(alpha = BiliFocus.HomeSectionTabFocusedSurfaceAlpha)
+        } else {
+          BiliColors.Transparent
+        },
+      )
+      .border(BorderStroke(BiliFocus.RestingBorderWidth, borderColor), shape)
+      .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+      .onFocusChanged { focusState -> focused = focusState.isFocused }
+      .onPreviewKeyEvent { event ->
+        when {
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> onMoveUp()
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
+          event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
+            onClick()
+            true
+          }
+          else -> false
+        }
+      }
+      .focusable(interactionSource = interactionSource)
+      .clickable(
+        interactionSource = interactionSource,
+        indication = null,
+        onClick = onClick,
+      )
+      .padding(horizontal = BiliSpacing.Md),
+    contentAlignment = Alignment.Center,
+  ) {
+    Text(
+      text = text,
+      color = textColor,
+      fontSize = BiliTypography.UgcSubPartitionTab,
+      lineHeight = BiliTypography.UgcSubPartitionTabLineHeight,
+      fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium,
+      textAlign = TextAlign.Center,
+      maxLines = 1,
+      style = TextStyle(
+        platformStyle = PlatformTextStyle(includeFontPadding = false),
+      ),
+    )
+  }
+}
+
+@Composable
 private fun RecommendGrid(
   videos: List<VideoSummary>,
   firstItemFocusRequester: FocusRequester,
-  selectedSectionFocusRequester: FocusRequester,
   restoredFocusIndex: Int,
   restoreFocusRequestKey: Int,
   onRestoreFocusHandled: (Int) -> Unit,
@@ -539,6 +717,7 @@ private fun RecommendGrid(
   onFocusedIndexChange: (Int, VideoSummary) -> Unit,
   onLoadMore: () -> Unit,
   onMoveLeftToNav: () -> Boolean,
+  onMoveUpFromFirstRow: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit,
 ) {
@@ -553,11 +732,7 @@ private fun RecommendGrid(
     onFocusedIndexChange = onFocusedIndexChange,
     onLoadMore = onLoadMore,
     onMoveLeftToNav = onMoveLeftToNav,
-    onMoveUpFromFirstRow = {
-      runCatching {
-        selectedSectionFocusRequester.requestFocus()
-      }.isSuccess
-    },
+    onMoveUpFromFirstRow = onMoveUpFromFirstRow,
     topPadding = BiliSizing.HomeVideoGridTopPadding + BiliSizing.HomeVideoGridTopBleed,
     topBleed = BiliSizing.HomeVideoGridTopBleed,
     onVideoSelected = onVideoSelected,
@@ -726,6 +901,7 @@ internal data class RecommendLoadRequest(
   val id: Int,
   val sectionKey: String,
   val refreshKey: Int,
+  val subTid: Int?,
 )
 
 @Composable

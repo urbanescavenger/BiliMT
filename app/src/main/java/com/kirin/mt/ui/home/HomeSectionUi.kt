@@ -3,6 +3,7 @@ package com.kirin.mt.ui.home
 import androidx.annotation.StringRes
 import com.kirin.mt.R
 import com.kirin.mt.core.model.HomeSection
+import com.kirin.mt.core.model.UgcSubPartition
 
 @StringRes
 fun HomeSection.titleRes(): Int {
@@ -20,4 +21,12 @@ fun HomeSection.titleRes(): Int {
     HomeSection.Food -> R.string.home_section_food
     HomeSection.Douga -> R.string.home_section_douga
   }
+}
+
+/**
+ * 该主分区下的子分区列表。Recommend/Popular 等无 [HomeSection.regionTid] 的入口返回空，
+ * 调用方据此决定是否渲染子分区胶囊行。
+ */
+fun HomeSection.subPartitions(): List<UgcSubPartition> {
+  return regionTid?.let { UgcPartitionTree.subPartitions(it) } ?: emptyList()
 }

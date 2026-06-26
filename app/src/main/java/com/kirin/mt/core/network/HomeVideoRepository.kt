@@ -18,12 +18,13 @@ internal class HomeVideoRepository(
     section: HomeSection,
     page: Int = 1,
     idx: Int = 0,
+    regionTidOverride: Int? = null,
   ): List<VideoSummary> {
     return when (section) {
       HomeSection.Recommend -> getRecommendVideos(idx)
       HomeSection.Popular -> getPopularVideos(page)
       else -> getRegionVideos(
-        tid = section.regionTid ?: return emptyList(),
+        tid = regionTidOverride ?: section.regionTid ?: return emptyList(),
         page = page,
       )
     }

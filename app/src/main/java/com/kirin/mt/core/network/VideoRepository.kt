@@ -57,11 +57,13 @@ class VideoRepository(
     section: HomeSection,
     page: Int = 1,
     idx: Int = 0,
+    regionTidOverride: Int? = null,
   ): List<VideoSummary> {
     return homeVideoRepository.getHomeSectionVideos(
       section = section,
       page = page,
       idx = idx,
+      regionTidOverride = regionTidOverride,
     )
   }
 

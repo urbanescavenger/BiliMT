@@ -156,6 +156,10 @@ object BiliSizing {
   val HomeSectionCapsuleItemSpacing = 20.dp
   val HomeSectionTabMinWidth = 72.dp
   val HomeSectionTabCompactMinWidth = 44.dp
+  val UgcSubPartitionBarHeight = 40.dp
+  val UgcSubPartitionTabHeight = 32.dp
+  val UgcSubPartitionTabMinWidth = 40.dp
+  val UgcSubPartitionItemSpacing = 10.dp
   val SearchKeyboardPanelWidth = 380.dp
   val SearchInputHeight = 44.dp
   val SearchKeyboardButtonHeight = 48.dp
@@ -215,6 +219,8 @@ object BiliTypography {
   val SearchInput = 18.sp
   val HomeSectionTab = 19.sp
   val HomeSectionTabLineHeight = 23.sp
+  val UgcSubPartitionTab = 16.sp
+  val UgcSubPartitionTabLineHeight = 20.sp
   val CardTitle = 14.sp
   val CardTitleLineHeight = 19.sp
   val CardMeta = 12.sp
