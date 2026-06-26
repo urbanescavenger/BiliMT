@@ -1,5 +1,14 @@
 # BiliMT 版本发布说明
 
+## v1.0.12-alpha.14
+
+### 修复
+- **PGC 卡在「正在加载」+ 日志叠层不显示**：用户反馈 alpha.13 PGC 黑屏实际是卡在 Loading（不是 Ready），launch 协程没走到 `prepare()`；且打开日志叠层后没有日志。根因：HTTP 客户端只有 readTimeout（按每次 read 重置），慢 drip 服务器能让 `getPlaybackInfo` 永不返回 → 无限 Loading；实时日志写者每 20 行才 flush，稀疏日志不落盘 → 叠层读空；叠层还被 `request.isPgc` 门控。修：
+  - HTTP 客户端加 `callTimeout(15s)`，cap 整个调用含 body 读取，治慢 drip 无限挂死。
+  - launch 协程包 `withTimeoutOrNull(30s)`，超时跳 Failed「起播超时」，不再永远 Loading；加 `launch step: metadata/playurl/cdn/prepare` 步骤日志，叠层能看出卡哪步。
+  - 实时日志改为每行 flush（size 检查每 200 行），稀疏日志立即落盘。
+  - 日志叠层去掉 `request.isPgc` 门控（开关开即显示），空时显示提示行。
+
 ## v1.0.12-alpha.13
 
 ### 新增
