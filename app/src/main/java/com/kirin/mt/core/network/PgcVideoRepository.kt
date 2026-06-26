@@ -66,10 +66,9 @@ internal class PgcVideoRepository(
       params = params,
       sessData = sessData,
     ).rootObject()
-    Log.i("BiliMT:Pgc", "pgc season raw: code=${root.int("code")} message=${root.string("message")} hasData=${root.obj("data") != null} keys=${root.keys.toList().take(8)}")
+    Log.i("BiliMT:Pgc", "pgc season raw: code=${root.int("code")} message=${root.string("message")} hasData=${root.obj("data") != null} hasResult=${root.obj("result") != null} keys=${root.keys.toList().take(8)}")
     root.requireBiliCodeOk("pgc season")
-    root.requireBiliCodeOk("pgc season")
-    val data = root.obj("data") ?: return null
+    val data = root.obj("data") ?: root.obj("result") ?: return null
     return PgcMappers.fromSeasonData(data)
   }
 

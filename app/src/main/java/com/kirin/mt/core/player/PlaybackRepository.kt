@@ -243,7 +243,7 @@ class PlaybackRepository(
     ).rootObject()
     root.requireBiliCodeOk("pgc season metadata")
 
-    val data = root.obj("data") ?: JsonObject(emptyMap())
+    val data = root.obj("data") ?: root.obj("result") ?: JsonObject(emptyMap())
     val season = PgcMappers.fromSeasonData(data)
     val pages = season.episodes.mapIndexed { index, ep ->
       PlaybackEpisode(
