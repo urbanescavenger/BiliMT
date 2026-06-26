@@ -57,6 +57,8 @@ import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
+import androidx.media3.exoplayer.source.MergingMediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.kirin.mt.R
@@ -1119,15 +1121,29 @@ fun PlayerScreen(
             ?: resolvedRequest.startPositionMs
         }
         val startPositionMs = requestedStartPositionMs
-        val mediaSource = DashMediaSource.Factory(
-          DefaultDataSource.Factory(
-            context,
-            BiliMediaDataSourceFactory(
-              client = playbackHttpClient,
-              headers = effectiveInfo.headers,
-            ).create(),
-          ),
-        ).createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
+        val dataSourceFactory = DefaultDataSource.Factory(
+          context,
+          BiliMediaDataSourceFactory(
+            client = playbackHttpClient,
+            headers = effectiveInfo.headers,
+          ).create(),
+        )
+        val mediaSource = if (resolvedRequest.isPgc) {
+          // 对齐 BV：PGC 用 MergingMediaSource(ProgressiveMediaSource×2)，直接喂视频+音频两条
+          // progressive fMP4 流，绕开合成 DASH MPD 的 SegmentBase/indexRange/Initialization 拼接风险
+          //（PGC 黑屏疑似合成 MPD 对某字段拼错导致 ExoPlayer 不出帧）。selectedQualityTracks 已按
+          // codec 优先级排序、过滤掉设备解不了的轨道（含杜比视界），故取 first() 即可解的流。
+          val videoTrack = effectiveInfo.videoTracks.first()
+          val audioTrack = effectiveInfo.audioTracks.first()
+          val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+            .createMediaSource(MediaItem.fromUri(videoTrack.baseUrl))
+          val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+            .createMediaSource(MediaItem.fromUri(audioTrack.baseUrl))
+          MergingMediaSource(videoSource, audioSource)
+        } else {
+          DashMediaSource.Factory(dataSourceFactory)
+            .createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
+        }
         player.setMediaSource(mediaSource)
         player.prepare()
         player.setPlaybackSpeed(playbackSpeed)
