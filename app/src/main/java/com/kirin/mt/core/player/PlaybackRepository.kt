@@ -104,8 +104,9 @@ class PlaybackRepository(
       )
     }
     val keys = wbiKeyRepository.ensureKeys(sessData)
+    // PGC playurl 也 WBI 签名（与 UGC 一致）。原 PGC 不签名是对齐旧版 BV，但 2026-01 B 站收紧后
+    // PGC 端点可能要求 w_rid（-352 风控）。签名只加 w_rid/wts，不影响 fnval/响应格式。
     val signedParams = when {
-      request.isPgc -> params
       keys != null -> wbiSigner.sign(params, keys.imgKey, keys.subKey)
       else -> params
     }

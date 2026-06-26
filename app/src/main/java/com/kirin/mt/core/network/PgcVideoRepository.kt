@@ -6,12 +6,16 @@ import com.kirin.mt.core.model.PgcIndexPage
 import com.kirin.mt.core.model.PgcIndexResult
 import com.kirin.mt.core.model.PgcSeason
 import com.kirin.mt.core.model.PgcType
+import com.kirin.mt.core.auth.WbiKeyRepository
+import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.storage.SessionStore
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
 
 internal class PgcVideoRepository(
   private val apiClient: BiliApiClient,
+  private val wbiKeyRepository: WbiKeyRepository,
+  private val wbiSigner: WbiSigner,
   private val sessionStore: SessionStore,
 ) {
   suspend fun getFeed(pgcType: PgcType, cursor: Int): PgcFeedPage {
@@ -60,9 +64,13 @@ internal class PgcVideoRepository(
     }
 
     val sessData = sessionStore.sessData.first()
+    // 主动 WBI 签名：2026-01 B 站收紧第三方 API 后，/pgc/view/web/season 可能要求 w_rid。
+    // 若不需要，服务端忽略 w_rid 无害；若是 -352 风控，签名即修好。镜像 UGC playurl 的签名。
+    val keys = wbiKeyRepository.ensureKeys(sessData)
+    val signedParams = if (keys != null) wbiSigner.sign(params, keys.imgKey, keys.subKey) else params
     val root = apiClient.getJson(
       url = BiliApiEndpoints.PgcSeasonView,
-      params = params,
+      params = signedParams,
       sessData = sessData,
     ).rootObject()
     root.requireBiliCodeOk("pgc season")

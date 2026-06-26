@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.pgc
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -64,6 +65,7 @@ internal class PgcSeasonUiState {
   var season by mutableStateOf<PgcSeason?>(null)
   var loading by mutableStateOf(false)
   var failed by mutableStateOf(false)
+  var error by mutableStateOf<String?>(null)
 }
 
 @Composable
@@ -86,17 +88,22 @@ internal fun PgcSeasonScreen(
     if (currentRequest.seasonId <= 0) return@LaunchedEffect
     uiState.season = null
     uiState.failed = false
+    uiState.error = null
     uiState.loading = true
+    var caught: String? = null
     val result = withTimeoutOrNull(20_000L) {
       runCatching { videoRepository.getPgcSeasonInfo(currentRequest.seasonId, currentRequest.epId) }
+        .onFailure {
+          caught = "${it.javaClass.simpleName}: ${it.message}"
+          Log.e("BiliMT:Pgc", "season fetch failed (seasonId=${currentRequest.seasonId} epId=${currentRequest.epId})", it)
+        }
         .getOrNull()
     }
-    if (result != null) {
-      uiState.season = result
-      uiState.loading = false
-    } else {
-      uiState.failed = true
-      uiState.loading = false
+    uiState.loading = false
+    when {
+      result != null -> uiState.season = result
+      caught != null -> { uiState.failed = true; uiState.error = caught }
+      else -> { uiState.failed = true; uiState.error = "超时(20s)" }
     }
   }
 
@@ -120,7 +127,7 @@ internal fun PgcSeasonScreen(
         modifier = Modifier.fillMaxSize().padding(BiliSpacing.Xl),
       )
       uiState.season == null && uiState.failed -> Text(
-        text = stringResource(R.string.pgc_failed),
+        text = stringResource(R.string.pgc_failed) + (uiState.error?.let { "\n$it" } ?: ""),
         color = homeColors.textSecondary,
         modifier = Modifier.fillMaxSize().padding(BiliSpacing.Xl),
       )
@@ -177,6 +184,7 @@ internal fun PgcSeasonScreen(
       PgcSeasonLogOverlay(
         loading = uiState.loading,
         failed = uiState.failed,
+        error = uiState.error,
         seasonId = currentRequest.seasonId,
         epId = currentRequest.epId,
       )
@@ -188,6 +196,7 @@ internal fun PgcSeasonScreen(
 private fun BoxScope.PgcSeasonLogOverlay(
   loading: Boolean,
   failed: Boolean,
+  error: String?,
   seasonId: Int,
   epId: Int,
 ) {
@@ -219,6 +228,14 @@ private fun BoxScope.PgcSeasonLogOverlay(
         fontFamily = FontFamily.Monospace,
         fontWeight = FontWeight.Bold,
       )
+      error?.let { err ->
+        Text(
+          text = "ERR: $err",
+          color = BiliColors.BiliPink,
+          fontSize = BiliTypography.CardMeta,
+          fontFamily = FontFamily.Monospace,
+        )
+      }
       lines.forEach { line ->
         Text(
           text = line,
