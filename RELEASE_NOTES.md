@@ -1,5 +1,14 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.4
+
+### 新增
+- **动态 / 历史合并为单页，顶部 Tab 切换**：侧栏原本「动态」「历史」两个独立入口合并为一个「动态」入口，进入后顶部一行胶囊 Tab（动态 / 历史，默认动态）切换两种内容。合并后的 `UserFeedScreen` 复用 `PgcScreen` 的 `PgcTabRow` 胶囊范式与 `TvVideoGrid.onMoveUpFromFirstRow`，实现网格首行 ↑→顶部 Tab、Tab ↑→侧栏的 D-pad 焦点衔接。每个 Tab 各自保留独立的游标/卡片模式/加载文案：动态走 `x/polymer/web-dynamic/v1/feed/all`（`VideoCardMode.Dynamic`）、历史走 `x/web-interface/history/cursor`（`VideoCardMode.History`，带进度条/已看完 badge），历史 Tab 点卡片仍从历史位置续播（`forceStartPosition=true`），动态 Tab 从头播。切 Tab 用 `key(selectedTab)` 重建网格，内容保留在子 state（`loadedOnce` 守卫不重拉），焦点按各自 `focusedVideoIndex/Key` 恢复。删除 `AppDestination.History` 及其在 `AppShell` 的 focusRequester / state / manualRefreshKey / `when` 分支。
+
+### 已知待验（真机，需登录态）
+- 两个 Tab 的加载/分页/卡片展示、Tab 间切换焦点衔接、历史续播位置、未登录态登录提示文案需真机确认。
+- 手动刷新（侧栏「动态」项已选中时再按一次）应刷新当前 Tab。
+
 ## v1.0.13-alpha.3
 
 ### 修复
