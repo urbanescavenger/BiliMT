@@ -2,14 +2,20 @@ package com.kirin.mt.ui.feed
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridItemInfo
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -20,6 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -30,23 +37,31 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.VideoGridSkeleton
+import com.kirin.mt.ui.focus.BiliFocusableSurface
 import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.home.VideoCard
 import com.kirin.mt.ui.home.VideoCardMode
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliMotion
+import com.kirin.mt.ui.theme.BiliRadius
 import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
+import com.kirin.mt.ui.theme.BiliTypography
+import com.kirin.mt.ui.theme.LocalHomeColors
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+internal enum class UserFeedTab { Dynamic, History }
 
 @Stable
 internal class DynamicFeedUiState {
@@ -71,261 +86,340 @@ internal class HistoryFeedUiState {
   var handledManualRefreshKey by mutableIntStateOf(0)
 }
 
-@Composable
-internal fun DynamicFeedScreen(
-  videoRepository: VideoRepository,
-  isLoggedIn: Boolean,
-  feedState: DynamicFeedUiState,
-  autoRefreshOnSwitch: Boolean,
-  manualRefreshKey: Int,
-  firstItemFocusRequester: FocusRequester,
-  restoreFocusRequestKey: Int,
-  onRestoreFocusHandled: (Int) -> Unit,
-  onMoveLeftToNav: () -> Boolean,
-  onVideoSelected: (VideoSummary) -> Unit,
-  onOwnerSelected: (VideoSummary) -> Unit = {},
-) {
-  if (!isLoggedIn) {
-    FeedStatusScreen(message = stringResource(R.string.dynamic_signed_out))
-    return
-  }
-
-  val coroutineScope = rememberCoroutineScope()
-
-  suspend fun loadFirstPage(forceRefresh: Boolean) {
-    if (!forceRefresh && feedState.loadedOnce) {
-      return
-    }
-
-    feedState.state = UserFeedState.Loading
-    feedState.focusedVideoIndex = 0
-    feedState.focusedVideoKey = ""
-    feedState.nextOffset = ""
-    feedState.state = try {
-      val page = videoRepository.getDynamicFeed()
-      feedState.nextOffset = page.offset
-      feedState.loadedOnce = true
-      if (page.videos.isEmpty()) {
-        UserFeedState.Empty
-      } else {
-        feedState.hasLoadedContent = true
-        UserFeedState.Success(
-          videos = page.videos,
-          loadingMore = false,
-          endReached = !page.hasMore,
-          loadMoreError = "",
-        )
-      }
-    } catch (error: CancellationException) {
-      throw error
-    } catch (error: Exception) {
-      feedState.loadedOnce = true
-      UserFeedState.Failed(error.message.orEmpty())
-    }
-  }
-
-  LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch) {
-    loadFirstPage(forceRefresh = autoRefreshOnSwitch)
-  }
-
-  LaunchedEffect(manualRefreshKey) {
-    if (manualRefreshKey > 0 && manualRefreshKey != feedState.handledManualRefreshKey) {
-      feedState.handledManualRefreshKey = manualRefreshKey
-      loadFirstPage(forceRefresh = true)
-    }
-  }
-
-  fun loadNextPage() {
-    val currentState = feedState.state as? UserFeedState.Success ?: return
-    if (currentState.loadingMore || currentState.endReached) {
-      return
-    }
-
-    val offsetToLoad = feedState.nextOffset
-    feedState.state = currentState.copy(loadingMore = true, loadMoreError = "")
-    coroutineScope.launch {
-      feedState.state = try {
-        val page = videoRepository.getDynamicFeed(offset = offsetToLoad)
-        feedState.nextOffset = page.offset
-        val latestState = feedState.state as? UserFeedState.Success ?: return@launch
-        val mergedVideos = latestState.videos.appendUnique(nextVideos = page.videos)
-        if (mergedVideos.isNotEmpty()) {
-          feedState.hasLoadedContent = true
-        }
-        latestState.copy(
-          videos = mergedVideos,
-          loadingMore = false,
-          endReached = !page.hasMore ||
-            page.videos.isEmpty() ||
-            mergedVideos.size == latestState.videos.size,
-          loadMoreError = "",
-        )
-      } catch (error: CancellationException) {
-        throw error
-      } catch (error: Exception) {
-        val latestState = feedState.state as? UserFeedState.Success ?: return@launch
-        latestState.copy(loadingMore = false, loadMoreError = error.message.orEmpty())
-      }
-    }
-  }
-
-  UserFeedContent(
-    state = feedState.state,
-    loadingMessage = stringResource(R.string.dynamic_loading),
-    emptyMessage = stringResource(R.string.dynamic_empty),
-    failedMessage = { message -> stringResource(R.string.dynamic_failed_with_message, message) },
-    cardMode = VideoCardMode.Dynamic,
-    firstItemFocusRequester = firstItemFocusRequester,
-    restoredFocusIndex = feedState.focusedVideoIndex,
-    restoredFocusKey = feedState.focusedVideoKey,
-    restoreFocusRequestKey = restoreFocusRequestKey,
-    onRestoreFocusHandled = onRestoreFocusHandled,
-    onFocusedIndexChange = { index, video ->
-      feedState.focusedVideoIndex = index
-      feedState.focusedVideoKey = video.focusRestoreKey()
-    },
-    onRetry = {
-      coroutineScope.launch {
-        loadFirstPage(forceRefresh = true)
-      }
-    },
-    onLoadMore = ::loadNextPage,
-    onMoveLeftToNav = onMoveLeftToNav,
-    onVideoSelected = onVideoSelected,
-    onOwnerSelected = onOwnerSelected,
-  )
+@Stable
+internal class UserFeedUiState {
+  var selectedTab by mutableStateOf(UserFeedTab.Dynamic)
+  val dynamic = DynamicFeedUiState()
+  val history = HistoryFeedUiState()
 }
 
 @Composable
-internal fun HistoryFeedScreen(
+internal fun UserFeedScreen(
   videoRepository: VideoRepository,
   isLoggedIn: Boolean,
-  feedState: HistoryFeedUiState,
+  feedState: UserFeedUiState,
   autoRefreshOnSwitch: Boolean,
   manualRefreshKey: Int,
   firstItemFocusRequester: FocusRequester,
   restoreFocusRequestKey: Int,
   onRestoreFocusHandled: (Int) -> Unit,
   onMoveLeftToNav: () -> Boolean,
-  onVideoSelected: (VideoSummary) -> Unit,
+  onVideoSelected: (VideoSummary, Boolean) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
 ) {
-  if (!isLoggedIn) {
-    FeedStatusScreen(message = stringResource(R.string.history_signed_out))
-    return
-  }
-
   val coroutineScope = rememberCoroutineScope()
+  val tabFocusRequester = remember { FocusRequester() }
+  val selectedTab = feedState.selectedTab
 
-  suspend fun loadFirstPage(forceRefresh: Boolean) {
-    if (!forceRefresh && feedState.loadedOnce) {
-      return
+  LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab) {
+    if (!isLoggedIn) return@LaunchedEffect
+    when (selectedTab) {
+      UserFeedTab.Dynamic -> loadDynamicFirstPage(
+        videoRepository,
+        feedState.dynamic,
+        forceRefresh = autoRefreshOnSwitch,
+      )
+      UserFeedTab.History -> loadHistoryFirstPage(
+        videoRepository,
+        feedState.history,
+        forceRefresh = autoRefreshOnSwitch,
+      )
     }
-
-    feedState.state = UserFeedState.Loading
-    feedState.focusedVideoIndex = 0
-    feedState.focusedVideoKey = ""
-    feedState.nextViewAt = 0L
-    feedState.nextMax = 0L
-    feedState.state = try {
-      val page = videoRepository.getHistoryPage()
-      feedState.nextViewAt = page.nextViewAt
-      feedState.nextMax = page.nextMax
-      feedState.loadedOnce = true
-      if (page.videos.isEmpty()) {
-        UserFeedState.Empty
-      } else {
-        feedState.hasLoadedContent = true
-        UserFeedState.Success(
-          videos = page.videos,
-          loadingMore = false,
-          endReached = !page.hasMore,
-          loadMoreError = "",
-        )
-      }
-    } catch (error: CancellationException) {
-      throw error
-    } catch (error: Exception) {
-      feedState.loadedOnce = true
-      UserFeedState.Failed(error.message.orEmpty())
-    }
-  }
-
-  LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch) {
-    loadFirstPage(forceRefresh = autoRefreshOnSwitch)
   }
 
   LaunchedEffect(manualRefreshKey) {
-    if (manualRefreshKey > 0 && manualRefreshKey != feedState.handledManualRefreshKey) {
-      feedState.handledManualRefreshKey = manualRefreshKey
-      loadFirstPage(forceRefresh = true)
+    if (!isLoggedIn) return@LaunchedEffect
+    val handledKey = when (selectedTab) {
+      UserFeedTab.Dynamic -> feedState.dynamic.handledManualRefreshKey
+      UserFeedTab.History -> feedState.history.handledManualRefreshKey
     }
-  }
-
-  fun loadNextPage() {
-    val currentState = feedState.state as? UserFeedState.Success ?: return
-    if (currentState.loadingMore || currentState.endReached) {
-      return
-    }
-
-    val viewAtToLoad = feedState.nextViewAt
-    val maxToLoad = feedState.nextMax
-    feedState.state = currentState.copy(loadingMore = true, loadMoreError = "")
-    coroutineScope.launch {
-      feedState.state = try {
-        val page = videoRepository.getHistoryPage(
-          viewAt = viewAtToLoad,
-          max = maxToLoad,
-        )
-        feedState.nextViewAt = page.nextViewAt
-        feedState.nextMax = page.nextMax
-        val latestState = feedState.state as? UserFeedState.Success ?: return@launch
-        val mergedVideos = latestState.videos.appendUnique(nextVideos = page.videos)
-        if (mergedVideos.isNotEmpty()) {
-          feedState.hasLoadedContent = true
+    if (manualRefreshKey > 0 && manualRefreshKey != handledKey) {
+      when (selectedTab) {
+        UserFeedTab.Dynamic -> {
+          feedState.dynamic.handledManualRefreshKey = manualRefreshKey
+          loadDynamicFirstPage(videoRepository, feedState.dynamic, forceRefresh = true)
         }
-        latestState.copy(
-          videos = mergedVideos,
-          loadingMore = false,
-          endReached = !page.hasMore ||
-            page.videos.isEmpty() ||
-            mergedVideos.size == latestState.videos.size,
-          loadMoreError = "",
-        )
-      } catch (error: CancellationException) {
-        throw error
-      } catch (error: Exception) {
-        val latestState = feedState.state as? UserFeedState.Success ?: return@launch
-        latestState.copy(loadingMore = false, loadMoreError = error.message.orEmpty())
+        UserFeedTab.History -> {
+          feedState.history.handledManualRefreshKey = manualRefreshKey
+          loadHistoryFirstPage(videoRepository, feedState.history, forceRefresh = true)
+        }
       }
     }
   }
 
-  UserFeedContent(
-    state = feedState.state,
-    loadingMessage = stringResource(R.string.history_loading),
-    emptyMessage = stringResource(R.string.history_empty),
-    failedMessage = { message -> stringResource(R.string.history_failed_with_message, message) },
-    cardMode = VideoCardMode.History,
-    firstItemFocusRequester = firstItemFocusRequester,
-    restoredFocusIndex = feedState.focusedVideoIndex,
-    restoredFocusKey = feedState.focusedVideoKey,
-    restoreFocusRequestKey = restoreFocusRequestKey,
-    onRestoreFocusHandled = onRestoreFocusHandled,
-    onFocusedIndexChange = { index, video ->
-      feedState.focusedVideoIndex = index
-      feedState.focusedVideoKey = video.focusRestoreKey()
-    },
-    onRetry = {
-      coroutineScope.launch {
-        loadFirstPage(forceRefresh = true)
+  Column(modifier = Modifier.fillMaxSize()) {
+    UserFeedTabRow(
+      selectedTab = selectedTab,
+      onSelect = { tab -> if (tab != selectedTab) feedState.selectedTab = tab },
+      tabFocusRequester = tabFocusRequester,
+      onMoveLeftToNav = onMoveLeftToNav,
+    )
+    if (!isLoggedIn) {
+      val message = stringResource(
+        if (selectedTab == UserFeedTab.History) R.string.history_signed_out
+        else R.string.dynamic_signed_out,
+      )
+      FeedStatusScreen(message = message)
+    } else {
+      androidx.compose.runtime.key(selectedTab) {
+        when (selectedTab) {
+          UserFeedTab.Dynamic -> UserFeedContent(
+            state = feedState.dynamic.state,
+            loadingMessage = stringResource(R.string.dynamic_loading),
+            emptyMessage = stringResource(R.string.dynamic_empty),
+            failedMessage = { message -> stringResource(R.string.dynamic_failed_with_message, message) },
+            cardMode = VideoCardMode.Dynamic,
+            firstItemFocusRequester = firstItemFocusRequester,
+            restoredFocusIndex = feedState.dynamic.focusedVideoIndex,
+            restoredFocusKey = feedState.dynamic.focusedVideoKey,
+            restoreFocusRequestKey = restoreFocusRequestKey,
+            onRestoreFocusHandled = onRestoreFocusHandled,
+            onFocusedIndexChange = { index, video ->
+              feedState.dynamic.focusedVideoIndex = index
+              feedState.dynamic.focusedVideoKey = video.focusRestoreKey()
+            },
+            onRetry = {
+              coroutineScope.launch {
+                loadDynamicFirstPage(videoRepository, feedState.dynamic, forceRefresh = true)
+              }
+            },
+            onLoadMore = { loadDynamicNextPage(videoRepository, coroutineScope, feedState.dynamic) },
+            onMoveUpFromFirstRow = { runCatching { tabFocusRequester.requestFocus() }.isSuccess },
+            onMoveLeftToNav = onMoveLeftToNav,
+            onVideoSelected = { video -> onVideoSelected(video, false) },
+            onOwnerSelected = onOwnerSelected,
+          )
+          UserFeedTab.History -> UserFeedContent(
+            state = feedState.history.state,
+            loadingMessage = stringResource(R.string.history_loading),
+            emptyMessage = stringResource(R.string.history_empty),
+            failedMessage = { message -> stringResource(R.string.history_failed_with_message, message) },
+            cardMode = VideoCardMode.History,
+            firstItemFocusRequester = firstItemFocusRequester,
+            restoredFocusIndex = feedState.history.focusedVideoIndex,
+            restoredFocusKey = feedState.history.focusedVideoKey,
+            restoreFocusRequestKey = restoreFocusRequestKey,
+            onRestoreFocusHandled = onRestoreFocusHandled,
+            onFocusedIndexChange = { index, video ->
+              feedState.history.focusedVideoIndex = index
+              feedState.history.focusedVideoKey = video.focusRestoreKey()
+            },
+            onRetry = {
+              coroutineScope.launch {
+                loadHistoryFirstPage(videoRepository, feedState.history, forceRefresh = true)
+              }
+            },
+            onLoadMore = { loadHistoryNextPage(videoRepository, coroutineScope, feedState.history) },
+            onMoveUpFromFirstRow = { runCatching { tabFocusRequester.requestFocus() }.isSuccess },
+            onMoveLeftToNav = onMoveLeftToNav,
+            onVideoSelected = { video -> onVideoSelected(video, true) },
+            onOwnerSelected = onOwnerSelected,
+          )
+        }
       }
-    },
-    onLoadMore = ::loadNextPage,
-    onMoveLeftToNav = onMoveLeftToNav,
-    onVideoSelected = onVideoSelected,
-    onOwnerSelected = onOwnerSelected,
-  )
+    }
+  }
+}
+
+@Composable
+private fun UserFeedTabRow(
+  selectedTab: UserFeedTab,
+  onSelect: (UserFeedTab) -> Unit,
+  tabFocusRequester: FocusRequester,
+  onMoveLeftToNav: () -> Boolean,
+) {
+  val homeColors = LocalHomeColors.current
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(horizontal = BiliSpacing.Xl, vertical = BiliSpacing.Md),
+    horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    UserFeedTab.entries.forEach { tab ->
+      val selected = tab == selectedTab
+      BiliFocusableSurface(
+        scaleOnFocus = false,
+        shadowOnFocus = false,
+        shape = RoundedCornerShape(BiliRadius.Pill),
+        onClick = { onSelect(tab) },
+        restingBorderColor = if (selected) homeColors.accent else homeColors.glassBorder,
+        focusedBorderColor = homeColors.accent,
+        modifier = Modifier
+          .then(if (selected) Modifier.focusRequester(tabFocusRequester) else Modifier)
+          .onPreviewKeyEvent { event ->
+            if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp) {
+              onMoveLeftToNav()
+            } else {
+              false
+            }
+          },
+      ) {
+        Text(
+          text = stringResource(if (tab == UserFeedTab.History) R.string.nav_history else R.string.nav_dynamic),
+          color = if (selected) homeColors.accent else homeColors.textSecondary,
+          fontSize = BiliTypography.BodySmall,
+          fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+          modifier = Modifier.padding(horizontal = BiliSpacing.Md, vertical = BiliSpacing.Xs),
+        )
+      }
+    }
+  }
+}
+
+private suspend fun loadDynamicFirstPage(
+  videoRepository: VideoRepository,
+  state: DynamicFeedUiState,
+  forceRefresh: Boolean,
+) {
+  if (!forceRefresh && state.loadedOnce) {
+    return
+  }
+
+  state.state = UserFeedState.Loading
+  state.focusedVideoIndex = 0
+  state.focusedVideoKey = ""
+  state.nextOffset = ""
+  state.state = try {
+    val page = videoRepository.getDynamicFeed()
+    state.nextOffset = page.offset
+    state.loadedOnce = true
+    if (page.videos.isEmpty()) {
+      UserFeedState.Empty
+    } else {
+      state.hasLoadedContent = true
+      UserFeedState.Success(
+        videos = page.videos,
+        loadingMore = false,
+        endReached = !page.hasMore,
+        loadMoreError = "",
+      )
+    }
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    state.loadedOnce = true
+    UserFeedState.Failed(error.message.orEmpty())
+  }
+}
+
+private fun loadDynamicNextPage(
+  videoRepository: VideoRepository,
+  coroutineScope: CoroutineScope,
+  state: DynamicFeedUiState,
+) {
+  val currentState = state.state as? UserFeedState.Success ?: return
+  if (currentState.loadingMore || currentState.endReached) {
+    return
+  }
+
+  val offsetToLoad = state.nextOffset
+  state.state = currentState.copy(loadingMore = true, loadMoreError = "")
+  coroutineScope.launch {
+    state.state = try {
+      val page = videoRepository.getDynamicFeed(offset = offsetToLoad)
+      state.nextOffset = page.offset
+      val latestState = state.state as? UserFeedState.Success ?: return@launch
+      val mergedVideos = latestState.videos.appendUnique(nextVideos = page.videos)
+      if (mergedVideos.isNotEmpty()) {
+        state.hasLoadedContent = true
+      }
+      latestState.copy(
+        videos = mergedVideos,
+        loadingMore = false,
+        endReached = !page.hasMore ||
+          page.videos.isEmpty() ||
+          mergedVideos.size == latestState.videos.size,
+        loadMoreError = "",
+      )
+    } catch (error: CancellationException) {
+      throw error
+    } catch (error: Exception) {
+      val latestState = state.state as? UserFeedState.Success ?: return@launch
+      latestState.copy(loadingMore = false, loadMoreError = error.message.orEmpty())
+    }
+  }
+}
+
+private suspend fun loadHistoryFirstPage(
+  videoRepository: VideoRepository,
+  state: HistoryFeedUiState,
+  forceRefresh: Boolean,
+) {
+  if (!forceRefresh && state.loadedOnce) {
+    return
+  }
+
+  state.state = UserFeedState.Loading
+  state.focusedVideoIndex = 0
+  state.focusedVideoKey = ""
+  state.nextViewAt = 0L
+  state.nextMax = 0L
+  state.state = try {
+    val page = videoRepository.getHistoryPage()
+    state.nextViewAt = page.nextViewAt
+    state.nextMax = page.nextMax
+    state.loadedOnce = true
+    if (page.videos.isEmpty()) {
+      UserFeedState.Empty
+    } else {
+      state.hasLoadedContent = true
+      UserFeedState.Success(
+        videos = page.videos,
+        loadingMore = false,
+        endReached = !page.hasMore,
+        loadMoreError = "",
+      )
+    }
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    state.loadedOnce = true
+    UserFeedState.Failed(error.message.orEmpty())
+  }
+}
+
+private fun loadHistoryNextPage(
+  videoRepository: VideoRepository,
+  coroutineScope: CoroutineScope,
+  state: HistoryFeedUiState,
+) {
+  val currentState = state.state as? UserFeedState.Success ?: return
+  if (currentState.loadingMore || currentState.endReached) {
+    return
+  }
+
+  val viewAtToLoad = state.nextViewAt
+  val maxToLoad = state.nextMax
+  state.state = currentState.copy(loadingMore = true, loadMoreError = "")
+  coroutineScope.launch {
+    state.state = try {
+      val page = videoRepository.getHistoryPage(
+        viewAt = viewAtToLoad,
+        max = maxToLoad,
+      )
+      state.nextViewAt = page.nextViewAt
+      state.nextMax = page.nextMax
+      val latestState = state.state as? UserFeedState.Success ?: return@launch
+      val mergedVideos = latestState.videos.appendUnique(nextVideos = page.videos)
+      if (mergedVideos.isNotEmpty()) {
+        state.hasLoadedContent = true
+      }
+      latestState.copy(
+        videos = mergedVideos,
+        loadingMore = false,
+        endReached = !page.hasMore ||
+          page.videos.isEmpty() ||
+          mergedVideos.size == latestState.videos.size,
+        loadMoreError = "",
+      )
+    } catch (error: CancellationException) {
+      throw error
+    } catch (error: Exception) {
+      val latestState = state.state as? UserFeedState.Success ?: return@launch
+      latestState.copy(loadingMore = false, loadMoreError = error.message.orEmpty())
+    }
+  }
 }
 
 @Composable
@@ -343,6 +437,7 @@ private fun UserFeedContent(
   onFocusedIndexChange: (Int, VideoSummary) -> Unit,
   onRetry: () -> Unit,
   onLoadMore: () -> Unit,
+  onMoveUpFromFirstRow: () -> Boolean,
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
@@ -367,6 +462,7 @@ private fun UserFeedContent(
       onRestoreFocusHandled = onRestoreFocusHandled,
       onFocusedIndexChange = onFocusedIndexChange,
       onLoadMore = onLoadMore,
+      onMoveUpFromFirstRow = onMoveUpFromFirstRow,
       onMoveLeftToNav = onMoveLeftToNav,
       onVideoSelected = onVideoSelected,
       onOwnerSelected = onOwnerSelected,
@@ -384,6 +480,7 @@ private fun UserFeedGrid(
   onRestoreFocusHandled: (Int) -> Unit,
   onFocusedIndexChange: (Int, VideoSummary) -> Unit,
   onLoadMore: () -> Unit,
+  onMoveUpFromFirstRow: () -> Boolean,
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
@@ -397,6 +494,7 @@ private fun UserFeedGrid(
     onRestoreFocusHandled = onRestoreFocusHandled,
     onFocusedIndexChange = onFocusedIndexChange,
     onLoadMore = onLoadMore,
+    onMoveUpFromFirstRow = onMoveUpFromFirstRow,
     onMoveLeftToNav = onMoveLeftToNav,
     onVideoSelected = onVideoSelected,
     onOwnerSelected = onOwnerSelected,

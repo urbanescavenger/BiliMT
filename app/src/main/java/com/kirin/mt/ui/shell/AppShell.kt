@@ -69,10 +69,8 @@ import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.util.LogCatcherUtil
-import com.kirin.mt.ui.feed.DynamicFeedScreen
-import com.kirin.mt.ui.feed.DynamicFeedUiState
-import com.kirin.mt.ui.feed.HistoryFeedScreen
-import com.kirin.mt.ui.feed.HistoryFeedUiState
+import com.kirin.mt.ui.feed.UserFeedScreen
+import com.kirin.mt.ui.feed.UserFeedUiState
 import com.kirin.mt.ui.home.RecommendScreen
 import com.kirin.mt.ui.home.RecommendUiState
 import com.kirin.mt.ui.glass.LocalLiquidGlassBackdrop
@@ -194,17 +192,14 @@ fun BiliTvApp(
   val contentFocusRequester = remember { FocusRequester() }
   val searchFocusRequester = remember { FocusRequester() }
   val dynamicFocusRequester = remember { FocusRequester() }
-  val historyFocusRequester = remember { FocusRequester() }
   val settingsFocusRequester = remember { FocusRequester() }
   val pgcFocusRequester = remember { FocusRequester() }
   val recommendUiState = remember { RecommendUiState() }
-  val dynamicFeedState = remember { DynamicFeedUiState() }
-  val historyFeedState = remember { HistoryFeedUiState() }
+  val userFeedState = remember { UserFeedUiState() }
   val searchUiState = remember { SearchUiState() }
   var initialHomeFocusPending by remember { mutableStateOf(true) }
   var recommendManualRefreshKey by rememberSaveable { mutableStateOf(0) }
   var dynamicManualRefreshKey by rememberSaveable { mutableStateOf(0) }
-  var historyManualRefreshKey by rememberSaveable { mutableStateOf(0) }
   var playbackRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
   var playbackFocusRestoreDestination by remember { mutableStateOf<AppDestination?>(null) }
   var playbackFocusRestoreRequestKey by remember { mutableIntStateOf(0) }
@@ -270,7 +265,6 @@ fun BiliTvApp(
         AppDestination.Recommend -> contentFocusRequester.requestFocus()
         AppDestination.Search -> searchFocusRequester.requestFocus()
         AppDestination.Dynamic -> dynamicFocusRequester.requestFocus()
-        AppDestination.History -> historyFocusRequester.requestFocus()
         AppDestination.Settings -> settingsFocusRequester.requestFocus()
         AppDestination.Pgc -> pgcFocusRequester.requestFocus()
       }
@@ -296,7 +290,7 @@ fun BiliTvApp(
   }
 
   fun AppDestination.usesGridFocusRestore(): Boolean {
-    return this == AppDestination.Recommend || this == AppDestination.Dynamic || this == AppDestination.History
+    return this == AppDestination.Recommend || this == AppDestination.Dynamic
   }
 
   fun requestContentFocusRestore(destination: AppDestination) {
@@ -313,7 +307,6 @@ fun BiliTvApp(
     when (destination) {
       AppDestination.Recommend -> recommendManualRefreshKey += 1
       AppDestination.Dynamic -> dynamicManualRefreshKey += 1
-      AppDestination.History -> historyManualRefreshKey += 1
       else -> Unit
     }
   }
@@ -589,34 +582,10 @@ fun BiliTvApp(
                     spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
                   },
                 )
-                AppDestination.History -> HistoryFeedScreen(
+                AppDestination.Dynamic -> UserFeedScreen(
                   videoRepository = videoRepository,
                   isLoggedIn = userSession.isLoggedIn,
-                  feedState = historyFeedState,
-                  autoRefreshOnSwitch = autoRefreshOnSwitch,
-                  manualRefreshKey = historyManualRefreshKey,
-                  firstItemFocusRequester = historyFocusRequester,
-                  restoreFocusRequestKey = restoreFocusRequestKeyFor(AppDestination.History),
-                  onRestoreFocusHandled = { key -> clearFocusRestoreRequest(AppDestination.History, key) },
-                  onMoveLeftToNav = {
-                    runCatching {
-                      navFocusRequesters.getValue(selectedDestination).requestFocus()
-                    }.isSuccess
-                  },
-                  onVideoSelected = { video ->
-                    playbackRequest = video.toPlaybackRequest(forceStartPosition = true)
-                  },
-                  onOwnerSelected = { video ->
-                    upSpaceUiState.reset()
-                    spaceOrigin = SpaceOrigin.Content
-                    spacePlaybackBehind = false
-                    spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
-                  },
-                )
-                AppDestination.Dynamic -> DynamicFeedScreen(
-                  videoRepository = videoRepository,
-                  isLoggedIn = userSession.isLoggedIn,
-                  feedState = dynamicFeedState,
+                  feedState = userFeedState,
                   autoRefreshOnSwitch = autoRefreshOnSwitch,
                   manualRefreshKey = dynamicManualRefreshKey,
                   firstItemFocusRequester = dynamicFocusRequester,
@@ -627,8 +596,8 @@ fun BiliTvApp(
                       navFocusRequesters.getValue(selectedDestination).requestFocus()
                     }.isSuccess
                   },
-                  onVideoSelected = { video ->
-                    playbackRequest = video.toPlaybackRequest()
+                  onVideoSelected = { video, forceStart ->
+                    playbackRequest = video.toPlaybackRequest(forceStartPosition = forceStart)
                   },
                   onOwnerSelected = { video ->
                     upSpaceUiState.reset()
