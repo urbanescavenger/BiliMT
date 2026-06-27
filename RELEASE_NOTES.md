@@ -1,5 +1,16 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.3
+
+### 修复
+- **主分区按 OK 不刷新**：`dynamic/region` 是确定性"最新"流，重载几乎不变（实测 `rid=1` 两次调用 9/10 bvid 相同），按 OK 重载视频不变。BV 的 `feed/rcmd` 是推荐流、重载出不同内容。主分区改走 BV 的 `region/feed/rcmd?from_region=<新父tid>`（动画 1005 / 影视 1001 / 游戏 1008 / 知识 1010 / 科技 1012 / 音乐 1003 / 舞蹈 1004 / 美食 1020，带 SESSDATA），重载出新鲜推荐；失败/未登录回退 `dynamic/region` 旧 tid 不阻断。番剧/生活 BV 新体系无对应 UGC 主分类（番剧是 PGC、生活被拆成 vlog/life_joy/emotion 等），留 null 继续走 `dynamic/region` 旧流（确定性重载，边缘已知）。
+- **主分区焦点不切显示**：`autoConfirmOnFocus` 默认 false 时三处门控挡住，d-pad 焦点落主分区不切 `activeSectionKey`、显示停在上一分区。解耦：焦点落上就切显示（对齐 BV `TopNav.onSelectedChanged`），已加载秒切不重载、未加载才加载；OK 键仍走 `selectSection(forceRefresh=true)` 强制重载。
+- **子分区回退 `dynamic/region`**：alpha.2 的 `4b7bca3` 把子分区误切到 `feed/rcmd?from_region=<旧子tid>`，feed/rcmd 不认旧 tid、返回同质推荐 → 子分区不刷新。回退到 `dynamic/region?rid=<旧子tid>`（实测各子分区返回不同内容：rid=24→MAD、rid=25→MMD，零重叠），切换子分区即刷新。
+
+### 已知待验（真机，需登录态）
+- `feed/rcmd?from_region=<新父tid>` 能否在登录态返回新鲜推荐流需真机确认；未登录已自动回退 `dynamic/region`（确定性流，不阻断）。
+- 番剧/生活主分区按 OK 内容可能不变（走 `dynamic/region` 旧流，BV 新体系无对应 UGC 主分类）。
+
 ## v1.0.13-alpha.2
 
 ### 修复
