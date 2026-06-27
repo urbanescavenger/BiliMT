@@ -298,7 +298,7 @@ internal fun RecommendScreen(
 
   fun selectSubPartition(subTid: Int?) {
     val section = activeSection
-    if (uiState.activeSubTidBySection[section.key] == subTid) return
+    // 子分区胶囊点击始终强制刷新（含重复点击当前子分区），与主分区 onSectionSelected→selectSection(forceRefresh=true) 对齐
     uiState.activeSubTidBySection = uiState.activeSubTidBySection + (section.key to subTid)
     uiState.focusedVideoIndex = 0
     uiState.focusedVideoKey = ""
