@@ -318,9 +318,6 @@ internal fun RecommendScreen(
     RecommendHeader(
       sections = sections,
       selectedSection = selectedSection,
-      autoConfirmOnFocus = autoConfirmOnFocus,
-      shouldAutoRefreshOnFocus = autoRefreshOnSwitch,
-      isSectionLoaded = { section -> section.key in uiState.loadedSectionKeys },
       selectedSectionFocusRequester = selectedSectionFocusRequester,
       onMoveLeftToNav = onMoveLeftToNav,
       onSectionSelected = { section ->
@@ -328,10 +325,12 @@ internal fun RecommendScreen(
       },
       onSectionFocused = { section ->
         uiState.selectedSectionKey = section.key
+        val isAlreadyActive = uiState.activeSectionKey == section.key
         val shouldLoad = autoRefreshOnSwitch || section.key !in uiState.loadedSectionKeys
         if (shouldLoad) {
           selectSection(section = section, forceRefresh = autoRefreshOnSwitch && section.key in uiState.loadedSectionKeys)
-        } else if (autoConfirmOnFocus) {
+        } else if (!isAlreadyActive) {
+          // 已加载但显示不在该分区：焦点落上就切显示（对齐 BV onSelectedChanged），不重载。
           uiState.activeSectionKey = section.key
           uiState.focusedVideoIndex = 0
           uiState.focusedVideoKey = ""
@@ -402,9 +401,6 @@ internal fun RecommendScreen(
 private fun RecommendHeader(
   sections: List<HomeSection>,
   selectedSection: HomeSection,
-  autoConfirmOnFocus: Boolean,
-  shouldAutoRefreshOnFocus: Boolean,
-  isSectionLoaded: (HomeSection) -> Boolean,
   selectedSectionFocusRequester: FocusRequester,
   onMoveLeftToNav: () -> Boolean,
   onSectionSelected: (HomeSection) -> Unit,
@@ -451,7 +447,6 @@ private fun RecommendHeader(
         HomeSectionTab(
           section = section,
           selected = section == selectedSection,
-          autoConfirmOnFocus = autoConfirmOnFocus || !isSectionLoaded(section),
           modifier = if (section == selectedSection) {
             Modifier.focusRequester(selectedSectionFocusRequester)
           } else {
@@ -461,11 +456,7 @@ private fun RecommendHeader(
           onClick = {
             onSectionSelected(section)
           },
-          onFocused = {
-            if (autoConfirmOnFocus || shouldAutoRefreshOnFocus || !isSectionLoaded(section)) {
-              onSectionFocused(section)
-            }
-          },
+          onFocused = { onSectionFocused(section) },
         )
       }
     }
@@ -476,7 +467,6 @@ private fun RecommendHeader(
 private fun HomeSectionTab(
   section: HomeSection,
   selected: Boolean,
-  autoConfirmOnFocus: Boolean,
   modifier: Modifier = Modifier,
   onMoveLeftToNav: (() -> Boolean)?,
   onClick: () -> Unit,
@@ -536,7 +526,8 @@ private fun HomeSectionTab(
       .border(BorderStroke(borderWidth, borderColor), shape)
       .onFocusChanged { focusState ->
         focused = focusState.isFocused
-        if (focusState.isFocused && autoConfirmOnFocus && !selected) {
+        if (focusState.isFocused && !selected) {
+          // 焦点落主分区就通知切显示（对齐 BV TopNav onSelectedChanged），不卡 autoConfirmOnFocus。
           onFocused()
         }
       }

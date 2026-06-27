@@ -26,10 +26,14 @@ internal class HomeVideoRepository(
       HomeSection.Popular -> getPopularVideos(page)
       else -> {
         val tid = regionTidOverride ?: section.regionTid ?: return emptyList()
-        // 子分区 tid 用 BV 的 region/feed/rcmd 接口（dynamic/region 对子分区过滤不可靠，
-        // 实测 rid=25 标“MMD·3D”却返回游戏区内容）。主分区仍走 dynamic/region。
-        if (regionTidOverride != null) getRegionFeedRcmdVideos(tid, page)
-        else getRegionVideos(tid, page)
+        val feedTid = section.feedRcmdTid
+        if (regionTidOverride == null && feedTid != null) {
+          // 主分区走 BV 的 feed/rcmd（新父 tid），重载出新鲜推荐流；失败/未登录回退 dynamic/region 旧 tid。
+          getRegionFeedRcmdVideos(feedTid, page, fallbackTid = tid)
+        } else {
+          // 子分区（旧子 tid，各子分区返回不同内容）或无 feedRcmdTid 的主分区（番剧/生活）走 dynamic/region。
+          getRegionVideos(tid, page)
+        }
       }
     }
   }
@@ -117,17 +121,21 @@ internal class HomeVideoRepository(
       .map(VideoSummaryMappers::fromArchive)
   }
 
-  private suspend fun getRegionFeedRcmdVideos(tid: Int, page: Int): List<VideoSummary> {
+  private suspend fun getRegionFeedRcmdVideos(
+    feedRegionTid: Int,
+    page: Int,
+    fallbackTid: Int,
+  ): List<VideoSummary> {
     val sessData = sessionStore.sessData.first()
-    // 未登录 feed/rcmd 会 -400，回退 dynamic/region 保证子分区仍出内容。
-    if (sessData.isNullOrBlank()) return getRegionVideos(tid, page)
+    // 未登录 feed/rcmd 会 -400，回退 dynamic/region 保底。
+    if (sessData.isNullOrBlank()) return getRegionVideos(fallbackTid, page)
     return try {
       val root = apiClient.getJson(
         url = BiliApiEndpoints.RegionFeedRcmd,
         params = mapOf(
           "display_id" to page.toString(),
           "request_cnt" to "20",
-          "from_region" to tid.toString(),
+          "from_region" to feedRegionTid.toString(),
           "device" to "web",
           "plat" to "30",
         ),
@@ -136,15 +144,17 @@ internal class HomeVideoRepository(
       root.requireBiliCodeOk("region feed rcmd")
 
       val archives = root.obj("data")?.get("archives") as? JsonArray ?: emptyList()
-      archives
+      val videos = archives
         .mapNotNull { it.asObjectOrNull() }
         .filter { it.string("bvid").isNotBlank() }
         .map(VideoSummaryMappers::fromArchive)
+      // feed/rcmd 返回空（冷门分区或异常）也回退，避免主分区空白。
+      if (videos.isEmpty()) getRegionVideos(fallbackTid, page) else videos
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {
-      // feed/rcmd 失败（鉴权波动/接口异常）回退 dynamic/region，不阻断子分区浏览。
-      getRegionVideos(tid, page)
+      // feed/rcmd 失败（鉴权波动/接口异常）回退 dynamic/region，不阻断主分区浏览。
+      getRegionVideos(fallbackTid, page)
     }
   }
 }

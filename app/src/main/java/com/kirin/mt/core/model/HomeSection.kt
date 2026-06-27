@@ -3,19 +3,22 @@ package com.kirin.mt.core.model
 enum class HomeSection(
   val key: String,
   val regionTid: Int?,
+  /** BV 新版分区 tid，用于 `region/feed/rcmd?from_region=`。主分区有此值时走 feed/rcmd（重载出新鲜推荐流），
+   *  否则回退 `dynamic/region?rid=regionTid`。番剧/生活 BV 新体系无对应 UGC 主分类，留 null。 */
+  val feedRcmdTid: Int? = null,
 ) {
   Recommend("recommend", null),
   Popular("popular", null),
   Anime("anime", 13),
-  Movie("movie", 181),
-  Game("game", 4),
-  Knowledge("knowledge", 36),
-  Tech("tech", 188),
-  Music("music", 3),
-  Dance("dance", 129),
+  Movie("movie", 181, 1001),
+  Game("game", 4, 1008),
+  Knowledge("knowledge", 36, 1010),
+  Tech("tech", 188, 1012),
+  Music("music", 3, 1003),
+  Dance("dance", 129, 1004),
   Life("life", 160),
-  Food("food", 211),
-  Douga("douga", 1);
+  Food("food", 211, 1020),
+  Douga("douga", 1, 1005);
 
   companion object {
     val DefaultOrder = entries.toList()
