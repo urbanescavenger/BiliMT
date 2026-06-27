@@ -1,5 +1,14 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.5
+
+### 改进
+- **侧栏进入合并页焦点落顶部 Tab（对齐 BV）**：从侧栏「动态」项进入合并页时，焦点落在顶部 TabRow（动态/历史）的当前 Tab，而非直接进内容网格——对齐 BV `HomeContent` 从 Drawer 进 Home 焦点落 `TopNav` 的行为。`AppShell` 新增 `feedTabFocusRequester` 绑到选中 Tab 胶囊，`requestDestinationFocus(Dynamic)` 指向它；`Dynamic` 从 `usesGridFocusRestore` 移除，侧栏进入改走 pending → `requestDestinationFocus` → Tab 焦点路径。播放返回仍走 `playbackFocusRestore` 恢复到离开时的网格卡片（不变）。`UserFeedTabRow` 新增 ↓ 键进网格、↑ 键回侧栏，网格首行 ↑ 回 Tab（alpha.4 已加），D-pin 焦点衔接闭环。
+
+### 已知待验（真机）
+- 侧栏→合并页：焦点应落在顶部 Tab（动态），按 ↓ 进网格，网格 ↑ 回 Tab，Tab ↑ 回侧栏。
+- 播放返回：焦点恢复到播放前那张卡片（不变）。
+
 ## v1.0.13-alpha.4
 
 ### 新增
