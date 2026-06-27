@@ -1,5 +1,16 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.2
+
+### 修复
+- **UGC 子分区再次点击不刷新**：`selectSubPartition` 有个去重 guard——点击的子分区 tid 等于当前已选 tid 时直接 `return`，导致再次点同一个子分区胶囊不重载、视频不变。主分区 `onSectionSelected` 走 `selectSection(forceRefresh=true)` 无此 guard，子分区行为不一致。删掉 guard，子分区胶囊点击（含重复点击当前子分区）始终强制刷新，与主分区对齐。
+- **UGC 子分区内容文不对题**：alpha.1 用子分区 tid 作 `rid` 请求 `/x/web-interface/dynamic/region`，但该接口对子分区 tid 过滤不可靠——实测 `rid=25`（标"动画→MMD·3D"）返回的是游戏区内容，`rid=47`/`rid=17` 也与标签对不上。改对齐 BV 源码：子分区走 `/x/web-interface/region/feed/rcmd?from_region=<tid>`（带 SESSDATA，无需 WBI 签名），主分区仍走 `dynamic/region`。
+  - `BiliApiEndpoints` 新增 `RegionFeedRcmd`；`fromArchive` 兼容两种 archive 形状（`owner`/`pic` 与 `author`/`cover`，feed/rcmd 用后者且 author 无 face）。
+  - `HomeVideoRepository` 新增 `getRegionFeedRcmdVideos`：子分区（`regionTidOverride != null`）走该接口；未登录（feed/rcmd 会 -400）或接口异常时回退 `dynamic/region`，不阻断浏览。
+
+### 已知待验（真机）
+- `region/feed/rcmd` 需登录态，未登录已自动回退 `dynamic/region`（仍是文不对题的旧行为，但不阻断）。登录态下子分区内容是否准确需真机确认。
+
 ## v1.0.13-alpha.1
 
 ### 新增
