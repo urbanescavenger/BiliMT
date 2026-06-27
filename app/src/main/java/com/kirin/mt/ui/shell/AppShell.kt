@@ -192,6 +192,7 @@ fun BiliTvApp(
   val contentFocusRequester = remember { FocusRequester() }
   val searchFocusRequester = remember { FocusRequester() }
   val dynamicFocusRequester = remember { FocusRequester() }
+  val feedTabFocusRequester = remember { FocusRequester() }
   val settingsFocusRequester = remember { FocusRequester() }
   val pgcFocusRequester = remember { FocusRequester() }
   val recommendUiState = remember { RecommendUiState() }
@@ -264,7 +265,7 @@ fun BiliTvApp(
       when (destination) {
         AppDestination.Recommend -> contentFocusRequester.requestFocus()
         AppDestination.Search -> searchFocusRequester.requestFocus()
-        AppDestination.Dynamic -> dynamicFocusRequester.requestFocus()
+        AppDestination.Dynamic -> feedTabFocusRequester.requestFocus()
         AppDestination.Settings -> settingsFocusRequester.requestFocus()
         AppDestination.Pgc -> pgcFocusRequester.requestFocus()
       }
@@ -290,7 +291,7 @@ fun BiliTvApp(
   }
 
   fun AppDestination.usesGridFocusRestore(): Boolean {
-    return this == AppDestination.Recommend || this == AppDestination.Dynamic
+    return this == AppDestination.Recommend
   }
 
   fun requestContentFocusRestore(destination: AppDestination) {
@@ -589,6 +590,7 @@ fun BiliTvApp(
                   autoRefreshOnSwitch = autoRefreshOnSwitch,
                   manualRefreshKey = dynamicManualRefreshKey,
                   firstItemFocusRequester = dynamicFocusRequester,
+                  tabFocusRequester = feedTabFocusRequester,
                   restoreFocusRequestKey = restoreFocusRequestKeyFor(AppDestination.Dynamic),
                   onRestoreFocusHandled = { key -> clearFocusRestoreRequest(AppDestination.Dynamic, key) },
                   onMoveLeftToNav = {

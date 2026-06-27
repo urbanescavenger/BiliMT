@@ -101,6 +101,7 @@ internal fun UserFeedScreen(
   autoRefreshOnSwitch: Boolean,
   manualRefreshKey: Int,
   firstItemFocusRequester: FocusRequester,
+  tabFocusRequester: FocusRequester,
   restoreFocusRequestKey: Int,
   onRestoreFocusHandled: (Int) -> Unit,
   onMoveLeftToNav: () -> Boolean,
@@ -108,7 +109,6 @@ internal fun UserFeedScreen(
   onOwnerSelected: (VideoSummary) -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
-  val tabFocusRequester = remember { FocusRequester() }
   val selectedTab = feedState.selectedTab
 
   LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab) {
@@ -153,6 +153,7 @@ internal fun UserFeedScreen(
       onSelect = { tab -> if (tab != selectedTab) feedState.selectedTab = tab },
       tabFocusRequester = tabFocusRequester,
       onMoveLeftToNav = onMoveLeftToNav,
+      onMoveDownToGrid = { runCatching { firstItemFocusRequester.requestFocus() }.isSuccess },
     )
     if (!isLoggedIn) {
       val message = stringResource(
@@ -227,6 +228,7 @@ private fun UserFeedTabRow(
   onSelect: (UserFeedTab) -> Unit,
   tabFocusRequester: FocusRequester,
   onMoveLeftToNav: () -> Boolean,
+  onMoveDownToGrid: () -> Boolean,
 ) {
   val homeColors = LocalHomeColors.current
   Row(
@@ -248,8 +250,12 @@ private fun UserFeedTabRow(
         modifier = Modifier
           .then(if (selected) Modifier.focusRequester(tabFocusRequester) else Modifier)
           .onPreviewKeyEvent { event ->
-            if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp) {
-              onMoveLeftToNav()
+            if (event.type == KeyEventType.KeyDown) {
+              when (event.key) {
+                Key.DirectionUp -> onMoveLeftToNav()
+                Key.DirectionDown -> onMoveDownToGrid()
+                else -> false
+              }
             } else {
               false
             }
