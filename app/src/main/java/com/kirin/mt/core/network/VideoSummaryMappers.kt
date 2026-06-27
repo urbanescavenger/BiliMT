@@ -7,12 +7,13 @@ import kotlinx.serialization.json.jsonPrimitive
 
 internal object VideoSummaryMappers {
   fun fromArchive(json: JsonObject): VideoSummary {
-    val owner = json.obj("owner")
+    // dynamic/region 用 owner/pic；region/feed/rcmd 用 author/cover，二者字段名不同，统一兜底。
+    val owner = json.obj("owner") ?: json.obj("author")
     val stat = json.obj("stat")
     return VideoSummary(
       bvid = json.string("bvid"),
       title = json.string("title"),
-      pic = fixPicUrl(json.string("pic")),
+      pic = fixPicUrl(json.string("pic").ifBlank { json.string("cover") }),
       ownerName = owner?.string("name").orEmpty(),
       ownerFace = fixPicUrl(owner?.string("face").orEmpty()),
       ownerMid = owner?.long("mid") ?: 0L,

@@ -5,6 +5,7 @@ import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
 
@@ -23,10 +24,13 @@ internal class HomeVideoRepository(
     return when (section) {
       HomeSection.Recommend -> getRecommendVideos(idx)
       HomeSection.Popular -> getPopularVideos(page)
-      else -> getRegionVideos(
-        tid = regionTidOverride ?: section.regionTid ?: return emptyList(),
-        page = page,
-      )
+      else -> {
+        val tid = regionTidOverride ?: section.regionTid ?: return emptyList()
+        // 子分区 tid 用 BV 的 region/feed/rcmd 接口（dynamic/region 对子分区过滤不可靠，
+        // 实测 rid=25 标“MMD·3D”却返回游戏区内容）。主分区仍走 dynamic/region。
+        if (regionTidOverride != null) getRegionFeedRcmdVideos(tid, page)
+        else getRegionVideos(tid, page)
+      }
     }
   }
 
@@ -111,5 +115,36 @@ internal class HomeVideoRepository(
       .mapNotNull { it.asObjectOrNull() }
       .filter { it.string("bvid").isNotBlank() }
       .map(VideoSummaryMappers::fromArchive)
+  }
+
+  private suspend fun getRegionFeedRcmdVideos(tid: Int, page: Int): List<VideoSummary> {
+    val sessData = sessionStore.sessData.first()
+    // 未登录 feed/rcmd 会 -400，回退 dynamic/region 保证子分区仍出内容。
+    if (sessData.isBlank()) return getRegionVideos(tid, page)
+    return try {
+      val root = apiClient.getJson(
+        url = BiliApiEndpoints.RegionFeedRcmd,
+        params = mapOf(
+          "display_id" to page.toString(),
+          "request_cnt" to "20",
+          "from_region" to tid.toString(),
+          "device" to "web",
+          "plat" to "30",
+        ),
+        sessData = sessData,
+      ).rootObject()
+      root.requireBiliCodeOk("region feed rcmd")
+
+      val archives = root.obj("data")?.get("archives") as? JsonArray ?: emptyList()
+      archives
+        .mapNotNull { it.asObjectOrNull() }
+        .filter { it.string("bvid").isNotBlank() }
+        .map(VideoSummaryMappers::fromArchive)
+    } catch (error: CancellationException) {
+      throw error
+    } catch (error: Exception) {
+      // feed/rcmd 失败（鉴权波动/接口异常）回退 dynamic/region，不阻断子分区浏览。
+      getRegionVideos(tid, page)
+    }
   }
 }
