@@ -120,7 +120,7 @@ internal class HomeVideoRepository(
   private suspend fun getRegionFeedRcmdVideos(tid: Int, page: Int): List<VideoSummary> {
     val sessData = sessionStore.sessData.first()
     // 未登录 feed/rcmd 会 -400，回退 dynamic/region 保证子分区仍出内容。
-    if (sessData.isBlank()) return getRegionVideos(tid, page)
+    if (sessData.isNullOrBlank()) return getRegionVideos(tid, page)
     return try {
       val root = apiClient.getJson(
         url = BiliApiEndpoints.RegionFeedRcmd,
