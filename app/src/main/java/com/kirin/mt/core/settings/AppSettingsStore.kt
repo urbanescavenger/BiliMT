@@ -27,12 +27,16 @@ class AppSettingsStore(private val context: Context) {
       HomeSection.DefaultOrder.toSet()
     } else {
       val mapped = persistedEnabledKeys.mapNotNull(HomeSection::fromKey).toSet()
-      // 前向兼容：本轮新增的 UGC 分区（BV 31 分区里 key 与旧版不同的）默认启用，
-      // 不影响用户此前显式禁用的旧分区（它们的 key 不在 newlyAddedHomeSectionKeys 里）。
-      val missingNew = HomeSection.DefaultOrder.filter {
-        it.key in newlyAddedHomeSectionKeys && it.key !in persistedEnabledKeys
+      if (preferences[Keys.HomeSectionsUgcMigrationV1] == true) {
+        // 迁移已跑:持久化集合即真相,用户显式禁用的新分区 key 不再被补回。
+        mapped
+      } else {
+        // 迁移未跑:临时前向兼容补启用本轮新增 UGC 分区(ensureHomeSectionsMigration 跑过后走 mapped 分支)。
+        val missingNew = HomeSection.DefaultOrder.filter {
+          it.key in newlyAddedHomeSectionKeys && it.key !in persistedEnabledKeys
+        }
+        (mapped + missingNew).toSet()
       }
-      (mapped + missingNew).toSet()
     }
 
     val homeSectionsOrder = preferences[Keys.HomeSectionsOrder]
@@ -214,6 +218,29 @@ class AppSettingsStore(private val context: Context) {
     }
   }
 
+  /**
+   * 一次性迁移:把本轮新增的 UGC 分区写进持久化启用集合并置标志。
+   * 之前读路径每次都临时补启用这些 key,导致用户在显隐面板关掉它们时 remove 是 no-op、
+   * 下次发射又被补回。迁移后持久化集合即真相,显式禁用才生效。首启由 AppShell 调一次。
+   */
+  suspend fun ensureHomeSectionsMigration() {
+    context.biliDataStore.edit { preferences ->
+      if (preferences[Keys.HomeSectionsUgcMigrationV1] == true) return@edit
+      val current = preferences[Keys.EnabledHomeSections]
+        ?.mapNotNull(HomeSection::fromKey)
+        ?.toMutableSet()
+        ?: HomeSection.DefaultOrder.toMutableSet()
+      val missingNew = HomeSection.DefaultOrder.filter {
+        it.key in newlyAddedHomeSectionKeys && it !in current
+      }
+      if (missingNew.isNotEmpty()) {
+        current.addAll(missingNew)
+        preferences[Keys.EnabledHomeSections] = current.map { it.key }.toSet()
+      }
+      preferences[Keys.HomeSectionsUgcMigrationV1] = true
+    }
+  }
+
   suspend fun setHomeSectionsOrder(order: List<HomeSection>) {
     context.biliDataStore.edit { preferences ->
       // 保留 order 的顺序，过滤已知分区，再补齐缺失的默认分区
@@ -246,6 +273,7 @@ class AppSettingsStore(private val context: Context) {
     val LiquidGlassCardsEnabled = booleanPreferencesKey("liquid_glass_cards_enabled")
     val EnabledHomeSections = stringSetPreferencesKey("enabled_home_sections")
     val HomeSectionsOrder = stringPreferencesKey("home_sections_order")
+    val HomeSectionsUgcMigrationV1 = booleanPreferencesKey("home_sections_ugc_migration_v1")
   }
 }
 

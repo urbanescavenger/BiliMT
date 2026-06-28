@@ -233,6 +233,11 @@ fun BiliTvApp(
     }
   }
 
+  // 一次性迁移:把本轮新增的 UGC 分区持久化为启用,之后显隐面板才能正常切换它们的开关。
+  LaunchedEffect(Unit) {
+    appSettingsStore.ensureHomeSectionsMigration()
+  }
+
   DisposableEffect(Unit) {
     onDispose {
       appExitConfirmToast?.cancel()
