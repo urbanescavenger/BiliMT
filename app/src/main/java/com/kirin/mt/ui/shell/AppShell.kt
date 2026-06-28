@@ -1015,9 +1015,15 @@ fun BiliTvApp(
             showMiniProgressBar = settings.showMiniProgressBar,
             playerLogOverlayEnabled = settings.playerLogOverlayEnabled,
             onBack = {
-              playbackFocusRestoreDestination = selectedDestination
-              playbackRequest = null
-              playbackFocusRestoreRequestKey += 1
+              if (spaceRequest != null && spaceOrigin == SpaceOrigin.Content) {
+                // 从 UP 主页(内容来源)起播:返回时可见层是 UpSpace 网格,arm 它的 restore
+                playbackRequest = null
+                spaceFocusRestoreRequestKey += 1
+              } else {
+                playbackFocusRestoreDestination = selectedDestination
+                playbackRequest = null
+                playbackFocusRestoreRequestKey += 1
+              }
             },
             onOpenUpSpace = { mid, ownerName, ownerFace ->
               upSpaceUiState.reset()
