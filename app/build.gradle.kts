@@ -36,7 +36,9 @@ fun computeVersionCode(versionName: String): Int {
     else -> 0
   }
   val pre = index.toIntOrNull() ?: 0
-  return m * 1000000 + n * 10000 + p * 1000 + labelOrder * 100 + pre
+  // minor 权重 1e5 > patch 最大 99*1e3,避免 patch≥10 时 minor bump 反而降级
+  // (如 v1.0.13=1,013,000 < v1.1.0=1,100,000)。
+  return m * 1000000 + n * 100000 + p * 1000 + labelOrder * 100 + pre
 }
 
 val bilitvVersionCode = computeVersionCode(bilitvVersionName)

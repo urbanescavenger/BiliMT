@@ -1,5 +1,28 @@
 # BiliMT 版本发布说明
 
+## v1.1.0
+
+v1.0.13-alpha.8 ~ alpha.17 稳定版汇总。焦点/布局/分区设置全面对齐 BV。
+
+### 焦点与导航
+- **UGC/PGC 侧键进入先落顶部 tab**（alpha.8/11）：侧键进 UGC/PGC 焦点先落顶部分区 tab 行（选中那个 pill），不直接进网格，对齐动态/BV。Down 进内容、Up 回侧栏。
+- **PGC tab 焦点即选中**（alpha.13）：焦点落某 PgcType tab 即选中、grid 切到它的内容，无需先 Enter。
+- **PGC 全屏详情页/索引页按 Back 显示侧键**（alpha.9）：番剧/索引全屏 overlay 按 Back 关闭回带侧栏基页（含分集对话框/滤镜的嵌套 Back）。
+- **UGC 分区显隐面板 Up/Down 修复**（alpha.10）：33 行面板显式 D-pad 纵向导航 + 滚入视野 + 排序后焦点跟随。
+- **UP 主页起播返回焦点无法选中修复**（alpha.16）：从 UP 主页起播返回后焦点落回离开时那张卡片。
+
+### 布局与样式
+- **UGC/PGC/动态 上部 tab 样式统一**（alpha.11）：提取共享 `BiliCapsuleTabRow` + `BiliPillTab`（玻璃胶囊 pill），三页顶部 tab 视觉一致。
+- **PGC 网格 5 列**（alpha.14）：主内容网格 + index 网格改 5 列（PGC 专用 `PgcGridColumns`），一屏约 5×2。
+- **PGC 海报比例 3:4**（alpha.15）：`PgcCard`/季详情封面改固定 3:4（`PgcPosterAspect=0.75`），不拉伸海报，对齐 BV。
+
+### 分区设置
+- **UGC 新增分区显隐切换修复**（alpha.12）：24 个新 UGC 分区关不掉的 bug（前向兼容每次补回）经一次性迁移修复。
+- **UGC 排序显示的排前面**（alpha.17）：`homeSectionsOrder` 维持 enabled-first 不变式（显示的分区排前、隐藏排后），toggle 即时重排 + 重启检测。
+
+### 构建
+- **`computeVersionCode` minor 权重 1e4→1e5**：使 v1.1.0 的 versionCode（1,100,000）高于 v1.0.13（1,013,000），避免 patch≥10 时 minor bump 反而降级。历史 v1.0.x 的 versionCode 不变（minor=0）。
+
 ## v1.0.13-alpha.17
 
 ### 新增
