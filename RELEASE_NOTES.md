@@ -1,5 +1,17 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.12
+
+### 修复
+- **UGC 新增分区显隐切换不生效**：设置→首页分区面板里，alpha.6 新增的 24 个 UGC 分区（鬼畜/影视/娱乐/…/神秘学）按 Enter 关不掉、chip 永远卡在"开"。根因：`AppSettingsStore` 读 `enabledHomeSections` 时每次都把这 24 个新 key 补成启用（前向兼容 `newlyAddedHomeSectionKeys` 缺失就补），导致 `setHomeSectionEnabled(section, false)` 从持久化集合 `remove` 一个本不在集合里的 key（no-op），下次发射又被补回。原 9 个老 key 不在该集合里，故切换正常。alpha.10 修的 Up/Down 导航不受影响。
+  - 修法（一次性迁移）：加 `HomeSectionsUgcMigrationV1` 标志；读路径前向兼容改为仅迁移未跑时才补；新增 `ensureHomeSectionsMigration()` 把 24 个新 key 写进持久化启用集合 + 置标志，`AppShell` 首启 `LaunchedEffect` 调一次。迁移后持久化集合即真相，`remove` 找得到 key、写回不含该 key、下次发射不再补回 → 切换生效。升级路径不变（首启仍默认启用新分区）。
+
+### 已知待验（真机）
+- 把 24 个新分区之一（如 鬼畜/神秘学）按 Enter 关掉 → 立即变未选，离开设置回来仍禁用；再按 Enter 开 → 持久化。
+- 老 9 个分区切换仍正常（不回归）。
+- 首页 `RecommendHeader` tab 行只显示启用的分区；只剩 1 个启用时关不掉（守卫不变）。
+- 从老版本升级 → 首启 24 个新分区仍默认启用（可见状态不变），之后可正常切换。
+
 ## v1.0.13-alpha.11
 
 ### 新增
