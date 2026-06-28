@@ -1,5 +1,15 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.14
+
+### 改进
+- **PGC 网格改 5 列（对齐 BV 密度，一屏约 5×2）**：PGC 两个网格（主内容季度卡片网格 `PgcScreen` PgcGrid、index 索引网格 `PgcIndexScreen`）原都用 `BiliSizing.VideoGridColumns = 4`（与 UGC 共用）。加 PGC 专用 `PgcGridColumns = 5` token，两个 PGC 网格改用 5 列，一屏约 5×2=10 张可见，对齐 BV 更密的网格风格。仅布局调整：cursor feed / index 分页无限滚不变，卡片 aspect（0.7）/间距/padding 不变。UGC/推荐网格仍 4 列、PGC 分集对话框仍 4 列（不回归）。
+
+### 已知待验（真机）
+- PGC 主内容网格、index 索引网格都 5 列；Down 无限滚加载不变；一屏约 10 张可见。
+- UGC/推荐网格仍 4 列；PGC 分集对话框仍 4 列（不回归）。
+- 若一屏不是约 2 行，可再调 `PgcCard` cover aspect（现 0.7）或网格 vertical spacing 微调。
+
 ## v1.0.13-alpha.13
 
 ### 修复
