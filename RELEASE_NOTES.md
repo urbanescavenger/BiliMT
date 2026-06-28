@@ -1,5 +1,22 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.6
+
+### 重构
+- **UGC 全量对齐 BV：31 个一级分区 + 顶部轮播 banner + 取消子分区**。原本混在首页 HomeSection Tab 行的 10 个 UGC 分区替换为 BV `UgcTypeV2` 的完整 31 个一级分区（动画/游戏/鬼畜/音乐/舞蹈/影视/娱乐/知识/科技数码/资讯/美食/小剧场/汽车/时尚美妆/体育运动/动物/Vlog/绘画/人工智能/家装房产/户外潮流/健身/手工/旅游出行/三农/亲子/健康/情感/生活兴趣/生活经验/神秘学），顺序按 BV `UgcTopNavItem` 枚举声明顺序。删掉番剧(13)/生活(160)——BV 31 里无此两项（番剧是 PGC、生活拆成 LifeJoy/LifeExperience/Vlog/Emotion 等）。
+- **删子分区**：移除 `UgcSubPartition`/`UgcPartitionTree`、`UgcSubPartitionBar`/`Chip`、`activeSubTidBySection`/`selectSubPartition`/`regionTidOverride` 全套子分区数据/UI/路由；三套 strings 删 64 条 `ugc_sub_*`；`BiliTokens` 删子分区尺寸 token。
+- **数据层走 feed/rcmd only**：UGC 分区统一走 `/x/web-interface/region/feed/rcmd?from_region=<BV tid>&display_id=<页号>`（BV 唯一接口），删 `dynamic/region` 回退与 `getRegionVideos`/`BiliApiEndpoints.Region`。未登录/失败返回空（app 登录门控，与动态/历史一致）。
+- **轮播 banner**：每个 UGC 分区顶部加轮播（`/x/web-show/region/banner?region_id=<tid>`），单张封面自动轮播（获焦暂停）、左右键循环、OK 起播。banner `url` 经移植的 BV `AvBvConverter`(av→bv) 解析为 bvid，cid 由播放器经 `/x/web-interface/view` 解析。`UgcBannerCarousel` 放在原子分区胶囊行位置，仅 UGC 分区显示；焦点链 tab↓→banner→grid、grid↑→banner、banner↑→tab。
+- **分区 Tab 行可滚动**：`RecommendHeader` 加 `horizontalScroll`，33 个分区（推荐/热门 + 31 UGC）可横向滚动，聚焦分区自动滚入视野。
+- **前向兼容启用集合**：`AppSettingsStore` 读取持久化启用集合时，把本轮 24 个新增分区 key 默认补为启用，不影响用户此前显式禁用的旧分区。
+
+### 已知待验（真机，需登录态）
+- 33 个分区 Tab 可滚动、顺序与文案；切到 UGC 分区加载 feed/rcmd 网格。
+- 轮播 banner 自动轮播/获焦暂停/左右循环/OK 起播（avid→bvid 转换正确性需重点验证，避免跳错视频）。
+- 焦点衔接：tab↓→banner(UGC)/grid(推荐热门)、banner↓→grid、grid↑→banner/tab、banner↑→tab、tab↑→侧栏。
+- 未登录 UGC 分区为空（feed/rcmd 无回退，预期）。
+- 老用户升级后 24 个新分区默认出现且启用，已禁用的旧分区保持禁用。
+
 ## v1.0.13-alpha.5
 
 ### 改进
