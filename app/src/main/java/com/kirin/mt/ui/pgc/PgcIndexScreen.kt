@@ -236,7 +236,7 @@ internal fun PgcIndexScreen(
         )
         else -> LazyVerticalGrid(
           state = gridState,
-          columns = GridCells.Fixed(BiliSizing.VideoGridColumns),
+          columns = GridCells.Fixed(BiliSizing.PgcGridColumns),
           modifier = Modifier.fillMaxSize(),
           contentPadding = PaddingValues(
             horizontal = BiliSpacing.Xl,

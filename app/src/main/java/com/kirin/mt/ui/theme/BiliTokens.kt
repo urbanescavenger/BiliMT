@@ -129,6 +129,7 @@ object BiliSizing {
   val ContentPadding = 16.dp
   val VideoCardWidth = 248.dp
   const val VideoGridColumns = 4
+  const val PgcGridColumns = 5
   val VideoGridSpacing = 10.dp
   val VideoGridHorizontalPadding = 0.dp
   val HomeVideoGridTopPadding = 24.dp

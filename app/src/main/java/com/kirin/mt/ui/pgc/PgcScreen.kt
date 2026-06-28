@@ -218,7 +218,7 @@ private fun PgcGrid(
   onInitialFocusRequested: () -> Unit,
 ) {
   val homeColors = LocalHomeColors.current
-  val columns = BiliSizing.VideoGridColumns
+  val columns = BiliSizing.PgcGridColumns
 
   Box(modifier = Modifier.fillMaxSize()) {
     when {
