@@ -3,6 +3,7 @@ package com.kirin.mt.ui.pgc
 import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -12,18 +13,28 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -43,6 +54,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.PgcEpisode
@@ -53,12 +66,14 @@ import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.focus.BiliFocusableSurface
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliRadius
+import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.ceil
 
 @Stable
 internal class PgcSeasonUiState {
@@ -345,6 +360,8 @@ private fun PgcEpisodeRow(
   onPlay: (PgcEpisode) -> Unit,
 ) {
   val homeColors = LocalHomeColors.current
+  var showEpisodesDialog by remember { mutableStateOf(false) }
+  val selectButtonFocusRequester = remember { FocusRequester() }
   Column(verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm)) {
     Text(
       text = title,
@@ -353,16 +370,39 @@ private fun PgcEpisodeRow(
       fontWeight = FontWeight.Bold,
     )
     LazyRow(horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md)) {
+      item(key = "select") {
+        PgcSelectButton(
+          isFirst = !firstItemHandled,
+          focusRequester = selectButtonFocusRequester,
+          onMoveLeftToNav = onMoveLeftToNav,
+          onClick = { showEpisodesDialog = true },
+        )
+      }
       items(episodes, key = { it.id }) { ep ->
         PgcEpisodeButton(
           episode = ep,
           isFirst = !firstItemHandled && episodes.firstOrNull()?.id == ep.id,
           firstItemFocusRequester = firstItemFocusRequester,
-          onMoveLeftToNav = onMoveLeftToNav,
+          // 左键交由默认焦点移动跳到前面的「选集」按钮；nav 逃逸由选集按钮承担。
+          onMoveLeftToNav = { false },
           onClick = { onPlay(ep) },
         )
       }
     }
+  }
+  if (showEpisodesDialog) {
+    PgcEpisodesDialog(
+      title = title,
+      episodes = episodes,
+      onPlay = { ep ->
+        showEpisodesDialog = false
+        onPlay(ep)
+      },
+      onDismiss = {
+        showEpisodesDialog = false
+        runCatching { selectButtonFocusRequester.requestFocus() }
+      },
+    )
   }
 }
 
@@ -373,11 +413,12 @@ private fun PgcEpisodeButton(
   firstItemFocusRequester: FocusRequester,
   onMoveLeftToNav: () -> Boolean,
   onClick: () -> Unit,
+  fillMaxWidth: Boolean = false,
 ) {
   val homeColors = LocalHomeColors.current
   val shape = RoundedCornerShape(BiliRadius.Card)
   val modifier = Modifier
-    .width(200.dp)
+    .let { if (fillMaxWidth) it.fillMaxWidth() else it.width(200.dp) }
     .let { if (isFirst) it.focusRequester(firstItemFocusRequester) else it }
     .onPreviewKeyEvent { event ->
       if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft && isFirst) {
@@ -431,5 +472,213 @@ private fun PgcEpisodeButton(
           .padding(BiliSpacing.Sm),
       )
     }
+  }
+}
+
+// 选集入口按钮：挂在每个分集行 LazyRow 的最前面，点击弹出分页选集对话框，
+// 对齐 BV SeasonEpisodeRow 头部的 ViewModule 按钮。
+@Composable
+private fun PgcSelectButton(
+  isFirst: Boolean,
+  focusRequester: FocusRequester,
+  onMoveLeftToNav: () -> Boolean,
+  onClick: () -> Unit,
+) {
+  val homeColors = LocalHomeColors.current
+  val shape = RoundedCornerShape(BiliRadius.Card)
+  BiliFocusableSurface(
+    scaleOnFocus = true,
+    shadowOnFocus = true,
+    shape = shape,
+    onClick = onClick,
+    modifier = Modifier
+      .width(200.dp)
+      .height(114.dp)
+      .focusRequester(focusRequester)
+      .onPreviewKeyEvent { event ->
+        if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft && isFirst) {
+          onMoveLeftToNav()
+        } else {
+          false
+        }
+      },
+    restingBorderColor = homeColors.glassBorder,
+    focusedBorderColor = homeColors.accent,
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .padding(BiliSpacing.Sm),
+      contentAlignment = Alignment.Center,
+    ) {
+      Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(BiliSpacing.Xs),
+      ) {
+        Text(
+          text = "☰",
+          color = homeColors.textPrimary,
+          fontSize = BiliTypography.Body,
+          fontWeight = FontWeight.Bold,
+        )
+        Text(
+          text = stringResource(R.string.pgc_season_select),
+          color = homeColors.textPrimary,
+          fontSize = BiliTypography.CardMeta,
+          fontWeight = FontWeight.Medium,
+        )
+      }
+    }
+  }
+}
+
+// 分页选集对话框：每页 20 集，P1-20 / P21-40 / ... 标签焦点切换，4 列封面网格。
+// 对齐 BV SeasonEpisodesDialog（SeasonInfoScreen.kt:663）。
+@Composable
+private fun PgcEpisodesDialog(
+  title: String,
+  episodes: List<PgcEpisode>,
+  onPlay: (PgcEpisode) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val homeColors = LocalHomeColors.current
+  var selectedTabIndex by remember { mutableIntStateOf(0) }
+  val tabCount by remember { mutableIntStateOf(ceil(episodes.size / 20.0).toInt()) }
+  val selectedEpisodes = remember { mutableStateListOf<PgcEpisode>() }
+
+  val tabFocusRequesters = remember(tabCount) { List(tabCount) { FocusRequester() } }
+  val gridFocusRequester = remember { FocusRequester() }
+  val listState = rememberLazyGridState()
+  val scrollState = rememberScrollState()
+
+  LaunchedEffect(selectedTabIndex, episodes) {
+    val fromIndex = selectedTabIndex * 20
+    var toIndex = (selectedTabIndex + 1) * 20
+    if (toIndex >= episodes.size) {
+      toIndex = episodes.size
+    }
+    if (fromIndex <= toIndex) {
+      selectedEpisodes.clear()
+      selectedEpisodes.addAll(episodes.subList(fromIndex, toIndex))
+    }
+  }
+
+  LaunchedEffect(Unit) {
+    if (tabCount > 1) {
+      runCatching { tabFocusRequesters[0].requestFocus() }
+    } else {
+      runCatching { gridFocusRequester.requestFocus() }
+    }
+  }
+
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false),
+  ) {
+    Column(
+      modifier = Modifier
+        .size(960.dp, 540.dp)
+        .clip(RoundedCornerShape(BiliRadius.Card))
+        .background(homeColors.cardSurface)
+        .padding(BiliSpacing.Lg),
+      verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+    ) {
+      Text(
+        text = title,
+        color = homeColors.textPrimary,
+        fontSize = BiliTypography.Body,
+        fontWeight = FontWeight.Bold,
+      )
+      // 分页标签：焦点驱动切换（对齐 BV onFocus = { selectedTabIndex = i }）
+      if (tabCount > 1) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(scrollState),
+          horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
+        ) {
+          for (i in 0 until tabCount) {
+            PgcPageTab(
+              label = "P${i * 20 + 1}-${(i + 1) * 20}",
+              selected = i == selectedTabIndex,
+              focusRequester = tabFocusRequesters[i],
+              onFocused = { selectedTabIndex = i },
+            )
+          }
+        }
+      }
+      LazyVerticalGrid(
+        modifier = Modifier
+          .fillMaxWidth()
+          .onPreviewKeyEvent { event ->
+            if (event.type == KeyEventType.KeyDown && event.key == Key.Back) {
+              if (tabCount > 1) {
+                runCatching { tabFocusRequesters[selectedTabIndex].requestFocus() }
+              } else {
+                onDismiss()
+              }
+              true
+            } else {
+              false
+            }
+          },
+        state = listState,
+        columns = GridCells.Fixed(BiliSizing.VideoGridColumns),
+        contentPadding = PaddingValues(BiliSpacing.Xs),
+        verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+        horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+      ) {
+        itemsIndexed(
+          items = selectedEpisodes,
+          key = { _, ep -> ep.id },
+        ) { index, ep ->
+          PgcEpisodeButton(
+            episode = ep,
+            isFirst = index == 0,
+            firstItemFocusRequester = gridFocusRequester,
+            onMoveLeftToNav = {
+              if (tabCount > 1) {
+                runCatching { tabFocusRequesters[selectedTabIndex].requestFocus() }
+              } else {
+                onDismiss()
+              }
+              true
+            },
+            onClick = { onPlay(ep) },
+            fillMaxWidth = true,
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun PgcPageTab(
+  label: String,
+  selected: Boolean,
+  focusRequester: FocusRequester,
+  onFocused: () -> Unit,
+) {
+  val homeColors = LocalHomeColors.current
+  BiliFocusableSurface(
+    scaleOnFocus = false,
+    shadowOnFocus = false,
+    shape = RoundedCornerShape(BiliRadius.Pill),
+    onClick = onFocused,
+    onFocused = onFocused,
+    restingBorderColor = if (selected) homeColors.accent else homeColors.glassBorder,
+    focusedBorderColor = homeColors.accent,
+    modifier = Modifier
+      .widthIn(min = 96.dp)
+      .focusRequester(focusRequester),
+  ) {
+    Text(
+      text = label,
+      color = if (selected) homeColors.accent else homeColors.textSecondary,
+      fontSize = BiliTypography.CardMeta,
+      fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+      modifier = Modifier.padding(horizontal = BiliSpacing.Md, vertical = BiliSpacing.Xs),
+    )
   }
 }
