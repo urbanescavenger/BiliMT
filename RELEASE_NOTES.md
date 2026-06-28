@@ -1,5 +1,21 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.10
+
+### 修复
+- **UGC 分区显隐面板 Up/Down 失效**：设置 → 首页分区的显隐/排序面板（`SettingsHomeSectionsColumn`）原本只靠 Compose 默认空间焦点遍历做纵向导航——无 `FocusRequester`、无 Up/Down 键处理、无 scroll-into-view。alpha.6 把分区从 2 个扩到 33 个后 `LazyColumn` 要滚动，默认遍历在屏外行失效，表现为上下键无反应、31 个新增 UGC 分区够不着也滚不到。现把左侧设置列那套 D-pad 纵向导航模式（`SettingsFocus.kt`）套过来：
+  - 每行 `FocusRequester` 按 `HomeSection` 枚举身份建（reorder 后仍稳定），挂到每行 chip。
+  - Row 级 `onPreviewKeyEvent` 拦 Up/Down → `moveRowFocus`（`scrollItemIntoComfortableView` + `requestFocus`），屏外行自动滚入视野；Left/Right 放行（chip 的 Left 逃逸、▲/▼ 的左右默认遍历不变）。捕获相 Row 先于子节点，Up/Down 在 Row 拦掉。
+  - 外包 `CompositionLocalProvider(LocalBringIntoViewSpec provides SettingsBringIntoViewSpec)`，`requestFocus` 也能把屏外行带入视野（双保险）。
+  - ▲/▼ 排序后焦点跟随：swap 后重新滚到新位置并聚焦移动的行（枚举身份不变，requester 仍有效）。
+- **编译修复**：`LocalBringIntoViewSpec` 是实验 foundation API，给 `SettingsHomeSectionsColumn` 加 `@OptIn(ExperimentalFoundationApi::class)`（同 `SettingsBehaviorColumn`）。
+
+### 已知待验（真机）
+- 设置 → 首页分区，Right 进面板，焦点落第一行 chip。
+- 按 Down 逐行下移到第 33 行（神秘学），屏外行自动滚入视野；按 Up 反向回走。
+- 任意新分区行 Enter 切换显隐；▲/▼ Enter 排序，焦点跟随移动的行到新位置；首页 `RecommendHeader` tab 顺序对应变化。
+- chip 按 Left 回左侧设置列（不变）；▲/▼ 按 Left 仍走默认遍历到 chip/▲（不变）。
+
 ## v1.0.13-alpha.9
 
 ### 修复
