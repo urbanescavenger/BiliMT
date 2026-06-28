@@ -2,6 +2,7 @@ package com.kirin.mt.ui.settings
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,10 +19,18 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.key.Key
@@ -29,6 +38,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -48,6 +58,8 @@ import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun SettingsHomeSectionsColumn(
@@ -61,6 +73,51 @@ internal fun SettingsHomeSectionsColumn(
   val order = settings.homeSectionsOrder
   val listState = rememberLazyListState()
   val lastIndex = order.lastIndex
+  val coroutineScope = rememberCoroutineScope()
+  val density = LocalDensity.current
+  val rowFallbackHeightPx = with(density) {
+    (BiliSizing.SettingsChipHeight + BiliSpacing.Sm).roundToPx()
+  }
+  val rowScrollInsetPx = with(density) {
+    BiliSpacing.Sm.roundToPx()
+  }
+  // 按 HomeSection 枚举身份建 requester,reorder 后仍稳定(不随 index 变)。
+  val rowFocusRequesters = remember {
+    HomeSection.entries.associateWith { FocusRequester() }
+  }
+  var focusRowJob by remember { mutableStateOf<Job?>(null) }
+
+  fun moveRowFocus(index: Int, direction: Int): Boolean {
+    val targetIndex = (index + direction).coerceIn(0, lastIndex)
+    focusRowJob?.cancel()
+    focusRowJob = coroutineScope.launch {
+      listState.scrollItemIntoComfortableView(
+        index = targetIndex,
+        direction = direction,
+        fallbackItemHeightPx = rowFallbackHeightPx,
+        edgeInsetPx = rowScrollInsetPx,
+      )
+      withFrameNanos { }
+      rowFocusRequesters[order[targetIndex]]?.requestFocus()
+    }
+    return true
+  }
+
+  fun refocusAfterMove(newIndex: Int, section: HomeSection, direction: Int) {
+    focusRowJob?.cancel()
+    focusRowJob = coroutineScope.launch {
+      withFrameNanos { } // 等 onHomeSectionsOrderChange 触发的重组
+      listState.scrollItemIntoComfortableView(
+        index = newIndex,
+        direction = direction,
+        fallbackItemHeightPx = rowFallbackHeightPx,
+        edgeInsetPx = rowScrollInsetPx,
+      )
+      withFrameNanos { }
+      rowFocusRequesters[section]?.requestFocus()
+    }
+  }
+
   Column(
     modifier = modifier,
     verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
@@ -76,30 +133,36 @@ internal fun SettingsHomeSectionsColumn(
       color = homeColors.textSecondary,
       fontSize = BiliTypography.BodySmall,
     )
-    LazyColumn(
-      state = listState,
-      modifier = Modifier
-        .fillMaxWidth()
-        .weight(1f),
-      verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
-    ) {
-      itemsIndexed(order, key = { _, section -> section.key }) { index, section ->
-        HomeSectionOrderRow(
-          section = section,
-          selected = section in settings.enabledHomeSections,
-          canMoveUp = index > 0,
-          canMoveDown = index < lastIndex,
-          onMoveLeftToSettings = onMoveLeftToSettings,
-          onToggle = {
-            onHomeSectionEnabledChange(section, section !in settings.enabledHomeSections)
-          },
-          onMoveUp = {
-            onHomeSectionsOrderChange(HomeSection.swapped(order, index, index - 1))
-          },
-          onMoveDown = {
-            onHomeSectionsOrderChange(HomeSection.swapped(order, index, index + 1))
-          },
-        )
+    CompositionLocalProvider(LocalBringIntoViewSpec provides SettingsBringIntoViewSpec) {
+      LazyColumn(
+        state = listState,
+        modifier = Modifier
+          .fillMaxWidth()
+          .weight(1f),
+        verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
+      ) {
+        itemsIndexed(order, key = { _, section -> section.key }) { index, section ->
+          HomeSectionOrderRow(
+            section = section,
+            selected = section in settings.enabledHomeSections,
+            canMoveUp = index > 0,
+            canMoveDown = index < lastIndex,
+            rowFocusRequester = rowFocusRequesters.getValue(section),
+            onNavigateRow = { direction -> moveRowFocus(index, direction) },
+            onMoveLeftToSettings = onMoveLeftToSettings,
+            onToggle = {
+              onHomeSectionEnabledChange(section, section !in settings.enabledHomeSections)
+            },
+            onMoveUp = {
+              onHomeSectionsOrderChange(HomeSection.swapped(order, index, index - 1))
+              refocusAfterMove(index - 1, section, -1)
+            },
+            onMoveDown = {
+              onHomeSectionsOrderChange(HomeSection.swapped(order, index, index + 1))
+              refocusAfterMove(index + 1, section, 1)
+            },
+          )
+        }
       }
     }
   }
@@ -111,6 +174,8 @@ private fun HomeSectionOrderRow(
   selected: Boolean,
   canMoveUp: Boolean,
   canMoveDown: Boolean,
+  rowFocusRequester: FocusRequester,
+  onNavigateRow: (Int) -> Boolean,
   onMoveLeftToSettings: () -> Boolean,
   onToggle: () -> Unit,
   onMoveUp: () -> Unit,
@@ -118,7 +183,21 @@ private fun HomeSectionOrderRow(
   modifier: Modifier = Modifier,
 ) {
   Row(
-    modifier = modifier.fillMaxWidth(),
+    modifier = modifier
+      .fillMaxWidth()
+      .onPreviewKeyEvent { event ->
+        // 捕获相:Row 先于子节点。只拦 Up/Down 做纵向导航,其余放行
+        // (chip 的 Left 逃逸、▲/▼ 的 Left/Right 默认遍历不受影响)。
+        if (event.type == KeyEventType.KeyDown) {
+          when (event.key) {
+            Key.DirectionUp -> onNavigateRow(-1)
+            Key.DirectionDown -> onNavigateRow(1)
+            else -> false
+          }
+        } else {
+          false
+        }
+      },
     horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
     verticalAlignment = Alignment.CenterVertically,
   ) {
@@ -127,6 +206,7 @@ private fun HomeSectionOrderRow(
       selected = selected,
       modifier = Modifier
         .weight(1f)
+        .focusRequester(rowFocusRequester)
         .onPreviewKeyEvent { event ->
           if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft) {
             onMoveLeftToSettings()
