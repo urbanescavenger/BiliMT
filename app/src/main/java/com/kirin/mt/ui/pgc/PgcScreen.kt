@@ -80,6 +80,8 @@ internal fun PgcScreen(
   videoRepository: VideoRepository,
   uiState: PgcUiState,
   firstItemFocusRequester: FocusRequester,
+  tabFocusRequester: FocusRequester,
+  onMoveDownFromTab: () -> Boolean,
   onMoveLeftToNav: () -> Boolean,
   onSeasonSelected: (PgcSummary) -> Unit,
   onOpenIndex: (PgcType) -> Unit,
@@ -88,7 +90,6 @@ internal fun PgcScreen(
 ) {
   val selectedTab = uiState.selectedTab
   val tabState = uiState.stateFor(selectedTab)
-  val tabFocusRequester = remember { FocusRequester() }
   val gridState = rememberLazyGridState()
   var initialFocusHandled by remember { mutableStateOf(false) }
 
@@ -126,6 +127,7 @@ internal fun PgcScreen(
       },
       onOpenIndex = { onOpenIndex(selectedTab) },
       tabFocusRequester = tabFocusRequester,
+      onMoveDownToGrid = onMoveDownFromTab,
       onMoveLeftToNav = onMoveLeftToNav,
     )
     PgcGrid(
@@ -176,6 +178,7 @@ private fun PgcTabRow(
   onSelect: (PgcType) -> Unit,
   onOpenIndex: () -> Unit,
   tabFocusRequester: FocusRequester,
+  onMoveDownToGrid: () -> Boolean,
   onMoveLeftToNav: () -> Boolean,
 ) {
   val homeColors = LocalHomeColors.current
@@ -196,9 +199,14 @@ private fun PgcTabRow(
         restingBorderColor = if (selected) homeColors.accent else homeColors.glassBorder,
         focusedBorderColor = homeColors.accent,
         modifier = Modifier
+          .then(if (selected) Modifier.focusRequester(tabFocusRequester) else Modifier)
           .onPreviewKeyEvent { event ->
-            if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp) {
-              onMoveLeftToNav()
+            if (event.type == KeyEventType.KeyDown) {
+              when (event.key) {
+                Key.DirectionUp -> onMoveLeftToNav()
+                Key.DirectionDown -> onMoveDownToGrid()
+                else -> false
+              }
             } else {
               false
             }
@@ -222,10 +230,13 @@ private fun PgcTabRow(
       restingBorderColor = homeColors.glassBorder,
       focusedBorderColor = homeColors.accent,
       modifier = Modifier
-        .focusRequester(tabFocusRequester)
         .onPreviewKeyEvent { event ->
-          if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp) {
-            onMoveLeftToNav()
+          if (event.type == KeyEventType.KeyDown) {
+            when (event.key) {
+              Key.DirectionUp -> onMoveLeftToNav()
+              Key.DirectionDown -> onMoveDownToGrid()
+              else -> false
+            }
           } else {
             false
           }

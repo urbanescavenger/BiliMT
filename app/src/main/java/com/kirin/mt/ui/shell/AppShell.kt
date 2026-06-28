@@ -196,6 +196,7 @@ fun BiliTvApp(
   val feedTabFocusRequester = remember { FocusRequester() }
   val settingsFocusRequester = remember { FocusRequester() }
   val pgcFocusRequester = remember { FocusRequester() }
+  val pgcTabFocusRequester = remember { FocusRequester() }
   val recommendUiState = remember { RecommendUiState() }
   val userFeedState = remember { UserFeedUiState() }
   val searchUiState = remember { SearchUiState() }
@@ -268,7 +269,7 @@ fun BiliTvApp(
         AppDestination.Search -> searchFocusRequester.requestFocus()
         AppDestination.Dynamic -> feedTabFocusRequester.requestFocus()
         AppDestination.Settings -> settingsFocusRequester.requestFocus()
-        AppDestination.Pgc -> pgcFocusRequester.requestFocus()
+        AppDestination.Pgc -> pgcTabFocusRequester.requestFocus()
       }
     }.getOrDefault(false)
   }
@@ -893,6 +894,10 @@ fun BiliTvApp(
                   videoRepository = videoRepository,
                   uiState = pgcUiState,
                   firstItemFocusRequester = pgcFocusRequester,
+                  tabFocusRequester = pgcTabFocusRequester,
+                  onMoveDownFromTab = {
+                    runCatching { pgcFocusRequester.requestFocus() }.isSuccess
+                  },
                   onMoveLeftToNav = {
                     runCatching {
                       navFocusRequesters.getValue(selectedDestination).requestFocus()
