@@ -1,5 +1,16 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.13
+
+### 修复
+- **PGC 上部 tab 焦点即选中（对齐 UGC/BV）**：alpha.11 把 PGC 侧键进入改成先落顶部 tab 并统一到 `BiliPillTab`，但 PGC 的 PgcType pill 没传 `onFocused`，焦点落到非选中 tab 不切 `selectedTab`，下方 grid 仍显示原 tab 内容，必须先按 Enter 选中才能进对应内容（用户反馈「只有先选中才能进入下部主页」）。现给 PgcType pill 加 `onFocused = { onSelect(type) }`，对齐 UGC `onSectionFocused` / BV `TopNav` onFocus：焦点落某 PgcType tab 即选中、grid 切到它的内容，Down 直接进该 tab grid，无需先 Enter。侧键进入焦点落已选中 tab（`selected=true`），`onFocused` 不触发，无多余切换；index 按钮不加（Enter 才开 index 页）。
+
+### 已知待验（真机）
+- 侧键进 PGC → 焦点落选中 PgcType tab；按 Down 直接进该 tab grid（无需先 Enter）。
+- tab 行 Right 移焦点到另一 PgcType tab → 该 tab 立即变选中、grid 切内容；再 Down 进该 tab grid。
+- 快速 Left/Right 扫过多个 tab → 依次选中、grid 跟切（已访问不重载、未访问加载）。
+- index 按钮：焦点移上去不自动开 index 页，Enter 才开；tab Up 回侧栏、grid Up 回 tab 不回归。
+
 ## v1.0.13-alpha.12
 
 ### 修复
