@@ -1,5 +1,23 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.8
+
+### 改进
+- **UGC 侧键进入先落顶部分区 Tab（对齐动态）**：从侧栏「推荐/UGC」项进入时，焦点落在顶部分区 Tab 行（选中分区胶囊）而非直接进内容网格——把 alpha.5 给动态做的 `7750ccc` 范式移植到 Recommend。`AppShell` 新增 `recommendTabFocusRequester`（上提自 `RecommendScreen` 内部的 `selectedSectionFocusRequester`），`requestDestinationFocus(Recommend)` 指向它；`Recommend` 从 `usesGridFocusRestore` 移除，侧栏进入改走 pending → `requestDestinationFocus` → Tab 焦点路径。`HomeSectionTab` 新增 ↓ 键显式跳转：有 banner 落 banner、无 banner 落 grid 首项（原靠默认焦点遍历不可靠）。焦点链闭环：tab↓→banner(UGC)/grid(推荐热门)、banner↓→grid、grid↑→banner/tab、banner↑→tab、tab↑/左→侧栏。
+
+### 保持不变
+- 冷启动仍在 Recommend 时焦点落 grid（`InitialHomeCardFocusEffect` 未改）。
+- 看完视频返回仍走 `playbackFocusRestore` 恢复到离开时的网格卡片。
+- 副作用（与动态一致）：从 UP 主空间返回 Recommend 会落 Tab 而非原 grid 卡。
+
+### 已知待验（真机）
+- 冷启动：焦点仍在 grid 第一个卡片（不变）。
+- 从侧栏切到动态/PGC 再按侧栏回 UGC：焦点落顶部分区 Tab，不落 grid。
+- 已在 UGC（grid 有焦）时再按一次侧栏 UGC：焦点跳到分区 Tab。
+- 分区 Tab 按 ↓：有 banner 落 banner、无 banner 落 grid 首行；banner 上按 ↓ 落 grid。
+- Tab 按 ↑ 回侧栏；首个分区按 ← 回侧栏。
+- 看完一个视频返回：仍回原 grid 卡片（播放返回路径未变）。
+
 ## v1.0.13-alpha.7
 
 ### 新增
