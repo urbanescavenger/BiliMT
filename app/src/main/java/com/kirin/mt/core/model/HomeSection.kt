@@ -1,24 +1,48 @@
 package com.kirin.mt.core.model
 
+/**
+ * 首页分区。`Recommend`/`Popular` 为非 UGC 入口（无分区 tid）；其余 31 项对齐 BV `UgcTypeV2`
+ * 的一级分区，`feedRcmdTid` 即 BV 新版分区 tid，用于 `region/feed/rcmd?from_region=`。
+ * 顺序按 BV `UgcTopNavItem` 枚举声明顺序（= `channelId` 7→36、然后 44）。
+ */
 enum class HomeSection(
   val key: String,
-  val regionTid: Int?,
-  /** BV 新版分区 tid，用于 `region/feed/rcmd?from_region=`。主分区有此值时走 feed/rcmd（重载出新鲜推荐流），
-   *  否则回退 `dynamic/region?rid=regionTid`。番剧/生活 BV 新体系无对应 UGC 主分类，留 null。 */
+  /** BV 新版分区 tid，用于 `region/feed/rcmd?from_region=`。Recommend/Popular 无此值。 */
   val feedRcmdTid: Int? = null,
 ) {
-  Recommend("recommend", null),
-  Popular("popular", null),
-  Anime("anime", 13),
-  Movie("movie", 181, 1001),
-  Game("game", 4, 1008),
-  Knowledge("knowledge", 36, 1010),
-  Tech("tech", 188, 1012),
-  Music("music", 3, 1003),
-  Dance("dance", 129, 1004),
-  Life("life", 160),
-  Food("food", 211, 1020),
-  Douga("douga", 1, 1005);
+  Recommend("recommend"),
+  Popular("popular"),
+  Douga("douga", 1005),
+  Game("game", 1008),
+  Kichiku("kichiku", 1007),
+  Music("music", 1003),
+  Dance("dance", 1004),
+  Cinephile("cinephile", 1001),
+  Ent("ent", 1002),
+  Knowledge("knowledge", 1010),
+  Tech("tech", 1012),
+  Information("information", 1009),
+  Food("food", 1020),
+  Shortplay("shortplay", 1021),
+  Car("car", 1013),
+  Fashion("fashion", 1014),
+  Sports("sports", 1018),
+  Animal("animal", 1024),
+  Vlog("vlog", 1029),
+  Painting("painting", 1006),
+  Ai("ai", 1011),
+  HomeDecor("home", 1015),
+  Outdoors("outdoors", 1016),
+  Gym("gym", 1017),
+  Handmake("handmake", 1019),
+  Travel("travel", 1022),
+  Rural("rural", 1023),
+  Parenting("parenting", 1025),
+  Health("health", 1026),
+  Emotion("emotion", 1027),
+  LifeJoy("life_joy", 1030),
+  LifeExperience("life_experience", 1031),
+  Mysticism("mysticism", 1028);
 
   companion object {
     val DefaultOrder = entries.toList()

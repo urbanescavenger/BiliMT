@@ -22,11 +22,18 @@ class AppSettingsStore(private val context: Context) {
   }
 
   val settings: Flow<AppSettings> = context.biliDataStore.data.map { preferences ->
-    val enabledSections = preferences[Keys.EnabledHomeSections]
-      ?.mapNotNull(HomeSection::fromKey)
-      ?.toSet()
-      ?.takeIf { sections -> sections.isNotEmpty() }
-      ?: HomeSection.DefaultOrder.toSet()
+    val persistedEnabledKeys = preferences[Keys.EnabledHomeSections]
+    val enabledSections = if (persistedEnabledKeys.isNullOrEmpty()) {
+      HomeSection.DefaultOrder.toSet()
+    } else {
+      val mapped = persistedEnabledKeys.mapNotNull(HomeSection::fromKey).toSet()
+      // 前向兼容：本轮新增的 UGC 分区（BV 31 分区里 key 与旧版不同的）默认启用，
+      // 不影响用户此前显式禁用的旧分区（它们的 key 不在 newlyAddedHomeSectionKeys 里）。
+      val missingNew = HomeSection.DefaultOrder.filter {
+        it.key in newlyAddedHomeSectionKeys && it.key !in persistedEnabledKeys
+      }
+      (mapped + missingNew).toSet()
+    }
 
     val homeSectionsOrder = preferences[Keys.HomeSectionsOrder]
       ?.split(',')
@@ -241,6 +248,14 @@ class AppSettingsStore(private val context: Context) {
     val HomeSectionsOrder = stringPreferencesKey("home_sections_order")
   }
 }
+
+/** 本轮对齐 BV 31 分区时新增的 UGC 分区 key（旧版不存在这些 key）。读取持久化启用集合时
+ *  把新增分区默认补为启用，不影响用户此前显式禁用的旧分区。 */
+private val newlyAddedHomeSectionKeys = setOf(
+  "kichiku", "cinephile", "ent", "information", "shortplay", "car", "fashion", "sports",
+  "animal", "vlog", "painting", "ai", "home", "outdoors", "gym", "handmake", "travel",
+  "rural", "parenting", "health", "emotion", "life_joy", "life_experience", "mysticism",
+)
 
 fun supportsLiquidGlassCards(): Boolean {
   return Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU

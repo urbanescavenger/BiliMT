@@ -3,30 +3,42 @@ package com.kirin.mt.ui.home
 import androidx.annotation.StringRes
 import com.kirin.mt.R
 import com.kirin.mt.core.model.HomeSection
-import com.kirin.mt.core.model.UgcSubPartition
 
 @StringRes
 fun HomeSection.titleRes(): Int {
   return when (this) {
     HomeSection.Recommend -> R.string.home_section_recommend
     HomeSection.Popular -> R.string.home_section_popular
-    HomeSection.Anime -> R.string.home_section_anime
-    HomeSection.Movie -> R.string.home_section_movie
+    HomeSection.Douga -> R.string.home_section_douga
     HomeSection.Game -> R.string.home_section_game
-    HomeSection.Knowledge -> R.string.home_section_knowledge
-    HomeSection.Tech -> R.string.home_section_tech
+    HomeSection.Kichiku -> R.string.home_section_kichiku
     HomeSection.Music -> R.string.home_section_music
     HomeSection.Dance -> R.string.home_section_dance
-    HomeSection.Life -> R.string.home_section_life
+    HomeSection.Cinephile -> R.string.home_section_cinephile
+    HomeSection.Ent -> R.string.home_section_ent
+    HomeSection.Knowledge -> R.string.home_section_knowledge
+    HomeSection.Tech -> R.string.home_section_tech
+    HomeSection.Information -> R.string.home_section_information
     HomeSection.Food -> R.string.home_section_food
-    HomeSection.Douga -> R.string.home_section_douga
+    HomeSection.Shortplay -> R.string.home_section_shortplay
+    HomeSection.Car -> R.string.home_section_car
+    HomeSection.Fashion -> R.string.home_section_fashion
+    HomeSection.Sports -> R.string.home_section_sports
+    HomeSection.Animal -> R.string.home_section_animal
+    HomeSection.Vlog -> R.string.home_section_vlog
+    HomeSection.Painting -> R.string.home_section_painting
+    HomeSection.Ai -> R.string.home_section_ai
+    HomeSection.HomeDecor -> R.string.home_section_home
+    HomeSection.Outdoors -> R.string.home_section_outdoors
+    HomeSection.Gym -> R.string.home_section_gym
+    HomeSection.Handmake -> R.string.home_section_handmake
+    HomeSection.Travel -> R.string.home_section_travel
+    HomeSection.Rural -> R.string.home_section_rural
+    HomeSection.Parenting -> R.string.home_section_parenting
+    HomeSection.Health -> R.string.home_section_health
+    HomeSection.Emotion -> R.string.home_section_emotion
+    HomeSection.LifeJoy -> R.string.home_section_life_joy
+    HomeSection.LifeExperience -> R.string.home_section_life_experience
+    HomeSection.Mysticism -> R.string.home_section_mysticism
   }
-}
-
-/**
- * 该主分区下的子分区列表。Recommend/Popular 等无 [HomeSection.regionTid] 的入口返回空，
- * 调用方据此决定是否渲染子分区胶囊行。
- */
-fun HomeSection.subPartitions(): List<UgcSubPartition> {
-  return regionTid?.let { UgcPartitionTree.subPartitions(it) } ?: emptyList()
 }

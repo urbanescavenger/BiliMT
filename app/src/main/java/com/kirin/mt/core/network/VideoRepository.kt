@@ -10,6 +10,7 @@ import com.kirin.mt.core.model.PgcIndexResult
 import com.kirin.mt.core.model.PgcSeason
 import com.kirin.mt.core.model.PgcType
 import com.kirin.mt.core.model.SpaceUserProfile
+import com.kirin.mt.core.model.UgcBannerItem
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
 import kotlinx.coroutines.flow.first
@@ -57,14 +58,16 @@ class VideoRepository(
     section: HomeSection,
     page: Int = 1,
     idx: Int = 0,
-    regionTidOverride: Int? = null,
   ): List<VideoSummary> {
     return homeVideoRepository.getHomeSectionVideos(
       section = section,
       page = page,
       idx = idx,
-      regionTidOverride = regionTidOverride,
     )
+  }
+
+  suspend fun getRegionBanner(tid: Int): List<UgcBannerItem> {
+    return homeVideoRepository.getRegionBanner(tid)
   }
 
   suspend fun getRecommendVideos(idx: Int = 0): List<VideoSummary> {
