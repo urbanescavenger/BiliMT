@@ -213,8 +213,16 @@ class AppSettingsStore(private val context: Context) {
       } else if (current.size > 1) {
         current.remove(section)
       }
+      val newEnabled = current.toSet()
 
-      preferences[Keys.EnabledHomeSections] = current.map { item -> item.key }.toSet()
+      preferences[Keys.EnabledHomeSections] = newEnabled.map { item -> item.key }.toSet()
+      // toggle 显隐后即时重排:显示的排前、隐藏的排后
+      val orderList = preferences[Keys.HomeSectionsOrder]
+        ?.split(',')
+        ?.mapNotNull(HomeSection::fromKey)
+        ?: HomeSection.DefaultOrder
+      val result = enabledFirstOrder(orderList, newEnabled)
+      preferences[Keys.HomeSectionsOrder] = result.joinToString(",") { it.key }
     }
   }
 
@@ -241,14 +249,43 @@ class AppSettingsStore(private val context: Context) {
     }
   }
 
+  /** 每次重启调一次:把持久化顺序 re-partition 成 enabled-first(显示的排前)。已是则不动。 */
+  suspend fun ensureEnabledSectionsFirst() {
+    context.biliDataStore.edit { preferences ->
+      val enabled = preferences[Keys.EnabledHomeSections]
+        ?.mapNotNull(HomeSection::fromKey)
+        ?.toSet()
+        ?: HomeSection.DefaultOrder.toSet()
+      val orderList = preferences[Keys.HomeSectionsOrder]
+        ?.split(',')
+        ?.mapNotNull(HomeSection::fromKey)
+        ?: return@edit
+      val result = enabledFirstOrder(orderList, enabled)
+      if (result != orderList) {
+        preferences[Keys.HomeSectionsOrder] = result.joinToString(",") { it.key }
+      }
+    }
+  }
+
   suspend fun setHomeSectionsOrder(order: List<HomeSection>) {
     context.biliDataStore.edit { preferences ->
-      // 保留 order 的顺序，过滤已知分区，再补齐缺失的默认分区
-      val known = order.filter { it in HomeSection.DefaultOrder }
-      val missing = HomeSection.DefaultOrder.filter { it !in known }
-      val normalized = known + missing
-      preferences[Keys.HomeSectionsOrder] = normalized.joinToString(",") { it.key }
+      // 显示的(enabled)排前、隐藏的(disabled)排后,各自保持相对顺序
+      val enabled = preferences[Keys.EnabledHomeSections]
+        ?.mapNotNull(HomeSection::fromKey)
+        ?.toSet()
+        ?: HomeSection.DefaultOrder.toSet()
+      val result = enabledFirstOrder(order, enabled)
+      preferences[Keys.HomeSectionsOrder] = result.joinToString(",") { it.key }
     }
+  }
+
+  /** normalized(known + missing)后 stable partition:enabled 在前、disabled 在后,各自保持相对顺序。 */
+  private fun enabledFirstOrder(order: List<HomeSection>, enabled: Set<HomeSection>): List<HomeSection> {
+    val known = order.filter { it in HomeSection.DefaultOrder }
+    val missing = HomeSection.DefaultOrder.filter { it !in known }
+    val normalized = known + missing
+    val (enabledPart, disabledPart) = normalized.partition { it in enabled }
+    return enabledPart + disabledPart
   }
 
   private object Keys {

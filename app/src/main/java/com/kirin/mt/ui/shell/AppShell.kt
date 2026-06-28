@@ -238,6 +238,11 @@ fun BiliTvApp(
     appSettingsStore.ensureHomeSectionsMigration()
   }
 
+  // 每次重启检测排序:显示的(enabled)分区排前、隐藏的排后。
+  LaunchedEffect(Unit) {
+    appSettingsStore.ensureEnabledSectionsFirst()
+  }
+
   DisposableEffect(Unit) {
     onDispose {
       appExitConfirmToast?.cancel()
