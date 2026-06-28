@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.11
+
+### 新增
+- **PGC 入口侧键先进入上部 tab**：镜像 alpha.8 对 UGC 做的，侧键进 PGC 焦点现在落顶部分区 tab 行（选中的 PgcType pill），不落 grid 首项。`AppShell` hoist `pgcTabFocusRequester`（与 `pgcFocusRequester` 分离），`requestDestinationFocus(Pgc)` 指向它；`PgcScreen` 接收 `tabFocusRequester` + `onMoveDownFromTab`，`PgcTabRow` 把 requester 绑到**选中的 PgcType pill**（原来是 index 按钮）、加 Down→grid。冷启动 grid 焦点不变。
+
+### 重构
+- **UGC/PGC/动态 上部 tab 样式统一**：三页顶部 tab 之前各用一套样式（UGC 玻璃胶囊+40dp/19sp/3 层色；PGC/动态 裸 Row+15sp/cardSurface 底）。现提取 UGC 的胶囊样式为共享组件 `BiliCapsuleTabRow`（玻璃胶囊容器+可横滚 pill 行）+ `BiliPillTab`（pill 项：透明底、focused=accent 边框+微底色、3 层文字色 selected=accent/focused=textPrimary/resting=textSecondary、19sp Bold when selected/focused），置于 `ui/common/BiliCapsuleTab.kt`。`RecommendHeader`/`PgcTabRow`/`UserFeedTabRow` 三处改用共享组件，删各自的 `HomeSectionTab`/`BiliFocusableSurface` pill 重复。`BiliPillTab` 支持 Left/Up 逃逸 + Down→grid 可选 hook，各页保留原逃逸方向（UGC=Left 首项、PGC/动态=Up）。PGC 的 index 按钮现在作为普通 pill 进胶囊。项目未依赖 `androidx.tv:tv-material`，故手写复用 `LocalHomeColors`，不引 TV-Material3。
+
+### 已知待验（真机）
+- PGC 侧键进入：焦点落选中 PgcType pill；tab 按 Down 进 grid；grid 按 Up 回 tab；tab 按 Up 回侧栏。
+- 三页顶部 tab 视觉一致：都套玻璃胶囊容器、pill 同高(40dp)同字号(19sp)同配色；UGC 33 tab 横滚、PGC 6 type+index、动态 2 tab 在胶囊内排布。
+- 三页 tab 的 Left/Right 移动、逃逸回侧栏、Down 进内容行为不回归。
+
 ## v1.0.13-alpha.10
 
 ### 修复
