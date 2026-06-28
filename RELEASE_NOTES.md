@@ -1,5 +1,17 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.17
+
+### 新增
+- **UGC 排序:显示的分区排前面**：分区排序设置里，设为「显示」(enabled)的分区排在前面、「隐藏」(disabled)的排在后面，各自保持相对顺序。在 `homeSectionsOrder` 上维持 enabled-first 不变式（stable partition）：`setHomeSectionsOrder` 持久化前 re-partition（▲/▼ 同组内换序正常，隐藏分区无法跨进显示区）；`setHomeSectionEnabled` toggle 后即时 re-partition（面板里关掉立即落到隐藏区、开了回到显示区）；新增 `ensureEnabledSectionsFirst()` 重启时检测排序（idempotent），AppShell `LaunchedEffect` 每次启动调一次。排序面板和首页 tab 行读 `homeSectionsOrder` 不改，持久化顺序满足 enabled-first 后两端自然显示对。
+
+### 已知待验（真机）
+- 设置→首页分区：显示的分区排上半、隐藏的排下半，各自相对顺序保留。
+- 关掉一个显示分区 → 立即落到隐藏区；再开 → 回显示区上半末尾。
+- ▲/▼ 在显示区内换序正常；隐藏区内换序正常；隐藏分区无法 ▲ 进显示区。
+- 首页 tab 行只显示 enabled 分区，顺序与面板显示区一致。
+- 重启 app：顺序仍 enabled-first（脏顺序启动时修好）。
+
 ## v1.0.13-alpha.16
 
 ### 修复
