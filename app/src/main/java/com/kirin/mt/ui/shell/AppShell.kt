@@ -190,6 +190,7 @@ fun BiliTvApp(
     AppDestination.entries.associateWith { FocusRequester() }
   }
   val contentFocusRequester = remember { FocusRequester() }
+  val recommendTabFocusRequester = remember { FocusRequester() }
   val searchFocusRequester = remember { FocusRequester() }
   val dynamicFocusRequester = remember { FocusRequester() }
   val feedTabFocusRequester = remember { FocusRequester() }
@@ -263,7 +264,7 @@ fun BiliTvApp(
   fun requestDestinationFocus(destination: AppDestination): Boolean {
     return runCatching {
       when (destination) {
-        AppDestination.Recommend -> contentFocusRequester.requestFocus()
+        AppDestination.Recommend -> recommendTabFocusRequester.requestFocus()
         AppDestination.Search -> searchFocusRequester.requestFocus()
         AppDestination.Dynamic -> feedTabFocusRequester.requestFocus()
         AppDestination.Settings -> settingsFocusRequester.requestFocus()
@@ -291,7 +292,7 @@ fun BiliTvApp(
   }
 
   fun AppDestination.usesGridFocusRestore(): Boolean {
-    return this == AppDestination.Recommend
+    return false
   }
 
   fun requestContentFocusRestore(destination: AppDestination) {
@@ -527,6 +528,7 @@ fun BiliTvApp(
                   videoRepository = videoRepository,
                   uiState = recommendUiState,
                   firstItemFocusRequester = contentFocusRequester,
+                  tabFocusRequester = recommendTabFocusRequester,
                   enabledHomeSections = settings.enabledHomeSections,
                   homeSectionsOrder = settings.homeSectionsOrder,
                   autoConfirmOnFocus = autoConfirmOnFocus,

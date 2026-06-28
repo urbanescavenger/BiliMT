@@ -100,6 +100,7 @@ internal fun RecommendScreen(
   videoRepository: VideoRepository,
   uiState: RecommendUiState,
   firstItemFocusRequester: FocusRequester,
+  tabFocusRequester: FocusRequester,
   enabledHomeSections: Set<HomeSection>,
   homeSectionsOrder: List<HomeSection>,
   autoConfirmOnFocus: Boolean,
@@ -124,7 +125,7 @@ internal fun RecommendScreen(
     ?: selectedSectionKey
   val selectedSection = sections.firstOrNull { section -> section.key == selectedSectionKey } ?: sections.first()
   val activeSection = sections.firstOrNull { section -> section.key == activeSectionKey } ?: selectedSection
-  val selectedSectionFocusRequester = remember { FocusRequester() }
+  val selectedSectionFocusRequester = tabFocusRequester
   val bannerFocusRequester = remember { FocusRequester() }
   val state = uiState.sectionStates[activeSection.key] ?: RecommendState.Loading
   val activeRefreshKey = uiState.sectionRefreshKeys[activeSection.key] ?: 0
@@ -297,6 +298,15 @@ internal fun RecommendScreen(
 
   val activeBanners = uiState.bannerBySection[activeSection.key] ?: emptyList()
   val activeSectionHasBanner = activeSection.feedRcmdTid != null && activeBanners.isNotEmpty()
+  val onMoveDownFromTab: () -> Boolean = {
+    runCatching {
+      if (activeSectionHasBanner) {
+        bannerFocusRequester.requestFocus()
+      } else {
+        firstItemFocusRequester.requestFocus()
+      }
+    }.isSuccess
+  }
 
   Column(
     modifier = Modifier.fillMaxSize(),
@@ -306,6 +316,7 @@ internal fun RecommendScreen(
       selectedSection = selectedSection,
       selectedSectionFocusRequester = selectedSectionFocusRequester,
       onMoveLeftToNav = onMoveLeftToNav,
+      onMoveDownFromTab = onMoveDownFromTab,
       onSectionSelected = { section ->
         selectSection(section = section, forceRefresh = true)
       },
@@ -393,6 +404,7 @@ private fun RecommendHeader(
   selectedSection: HomeSection,
   selectedSectionFocusRequester: FocusRequester,
   onMoveLeftToNav: () -> Boolean,
+  onMoveDownFromTab: () -> Boolean,
   onSectionSelected: (HomeSection) -> Unit,
   onSectionFocused: (HomeSection) -> Unit,
 ) {
@@ -444,6 +456,7 @@ private fun RecommendHeader(
             Modifier
           },
           onMoveLeftToNav = if (index == 0) onMoveLeftToNav else null,
+          onMoveDownToGrid = onMoveDownFromTab,
           onClick = {
             onSectionSelected(section)
           },
@@ -460,6 +473,7 @@ private fun HomeSectionTab(
   selected: Boolean,
   modifier: Modifier = Modifier,
   onMoveLeftToNav: (() -> Boolean)?,
+  onMoveDownToGrid: (() -> Boolean)?,
   onClick: () -> Unit,
   onFocused: () -> Unit,
 ) {
@@ -527,6 +541,9 @@ private fun HomeSectionTab(
           event.type == KeyEventType.KeyDown &&
             event.key == Key.DirectionLeft &&
             onMoveLeftToNav != null -> onMoveLeftToNav()
+          event.type == KeyEventType.KeyDown &&
+            event.key == Key.DirectionDown &&
+            onMoveDownToGrid != null -> onMoveDownToGrid()
           event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
             onClick()
             true
