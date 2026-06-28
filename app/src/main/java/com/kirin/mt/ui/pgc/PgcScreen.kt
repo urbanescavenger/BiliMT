@@ -193,6 +193,7 @@ private fun PgcTabRow(
         onMoveUpToNav = onMoveLeftToNav,
         onMoveDownToGrid = onMoveDownToGrid,
         onClick = { onSelect(type) },
+        onFocused = { onSelect(type) }, // 焦点即选中:对齐 UGC onSectionFocused / BV TopNav onFocus
       )
     }
     BiliPillTab(
