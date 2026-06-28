@@ -48,6 +48,8 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.PgcSummary
 import com.kirin.mt.core.model.PgcType
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.ui.common.BiliCapsuleTabRow
+import com.kirin.mt.ui.common.BiliPillTab
 import com.kirin.mt.ui.focus.BiliFocusableSurface
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliRadius
@@ -181,75 +183,25 @@ private fun PgcTabRow(
   onMoveDownToGrid: () -> Boolean,
   onMoveLeftToNav: () -> Boolean,
 ) {
-  val homeColors = LocalHomeColors.current
-  Row(
-    modifier = Modifier
-      .fillMaxWidth()
-      .padding(horizontal = BiliSpacing.Xl, vertical = BiliSpacing.Md),
-    horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
+  BiliCapsuleTabRow(itemCount = PgcType.entries.size + 1) {
     PgcType.entries.forEach { type ->
       val selected = type == selectedTab
-      BiliFocusableSurface(
-        scaleOnFocus = false,
-        shadowOnFocus = false,
-        shape = RoundedCornerShape(BiliRadius.Pill),
+      BiliPillTab(
+        text = stringResource(type.titleRes()),
+        selected = selected,
+        modifier = if (selected) Modifier.focusRequester(tabFocusRequester) else Modifier,
+        onMoveUpToNav = onMoveLeftToNav,
+        onMoveDownToGrid = onMoveDownToGrid,
         onClick = { onSelect(type) },
-        restingBorderColor = if (selected) homeColors.accent else homeColors.glassBorder,
-        focusedBorderColor = homeColors.accent,
-        modifier = Modifier
-          .then(if (selected) Modifier.focusRequester(tabFocusRequester) else Modifier)
-          .onPreviewKeyEvent { event ->
-            if (event.type == KeyEventType.KeyDown) {
-              when (event.key) {
-                Key.DirectionUp -> onMoveLeftToNav()
-                Key.DirectionDown -> onMoveDownToGrid()
-                else -> false
-              }
-            } else {
-              false
-            }
-          },
-      ) {
-        Text(
-          text = stringResource(type.titleRes()),
-          color = if (selected) homeColors.accent else homeColors.textSecondary,
-          fontSize = BiliTypography.BodySmall,
-          fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-          modifier = Modifier.padding(horizontal = BiliSpacing.Md, vertical = BiliSpacing.Xs),
-        )
-      }
-    }
-    Box(modifier = Modifier.size(BiliSpacing.Md))
-    BiliFocusableSurface(
-      scaleOnFocus = false,
-      shadowOnFocus = false,
-      shape = RoundedCornerShape(BiliRadius.Pill),
-      onClick = onOpenIndex,
-      restingBorderColor = homeColors.glassBorder,
-      focusedBorderColor = homeColors.accent,
-      modifier = Modifier
-        .onPreviewKeyEvent { event ->
-          if (event.type == KeyEventType.KeyDown) {
-            when (event.key) {
-              Key.DirectionUp -> onMoveLeftToNav()
-              Key.DirectionDown -> onMoveDownToGrid()
-              else -> false
-            }
-          } else {
-            false
-          }
-        },
-    ) {
-      Text(
-        text = stringResource(R.string.pgc_index_entry),
-        color = homeColors.textPrimary,
-        fontSize = BiliTypography.BodySmall,
-        fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(horizontal = BiliSpacing.Md, vertical = BiliSpacing.Xs),
       )
     }
+    BiliPillTab(
+      text = stringResource(R.string.pgc_index_entry),
+      selected = false,
+      onMoveUpToNav = onMoveLeftToNav,
+      onMoveDownToGrid = onMoveDownToGrid,
+      onClick = onOpenIndex,
+    )
   }
 }
 

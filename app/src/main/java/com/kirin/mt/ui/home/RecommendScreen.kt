@@ -62,6 +62,8 @@ import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.UgcBannerItem
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.ui.common.BiliCapsuleTabRow
+import com.kirin.mt.ui.common.BiliPillTab
 import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.VideoGridSkeleton
 import com.kirin.mt.ui.glass.biliLiquidGlassSurface
@@ -408,170 +410,22 @@ private fun RecommendHeader(
   onSectionSelected: (HomeSection) -> Unit,
   onSectionFocused: (HomeSection) -> Unit,
 ) {
-  val homeColors = LocalHomeColors.current
-  val performancePolicy = LocalBiliPerformancePolicy.current
-  val capsuleShape = RoundedCornerShape(BiliRadius.Pill)
-  val liquidGlassEnabled = performancePolicy.cinematicVisualEffectsEnabled && performancePolicy.liquidGlassCardsEnabled
-  BoxWithConstraints(
-    modifier = Modifier
-      .fillMaxWidth()
-      .height(BiliSizing.HomeSectionCapsuleHeight),
-    contentAlignment = Alignment.Center,
-  ) {
-    val capsuleMaxWidth = maxWidth
-    val capsuleMinWidth = capsuleMaxWidth * homeSectionCapsuleMinWidthFraction(sections.size)
-    val capsuleArrangement = if (sections.size <= HomeSectionCapsuleSpreadMaxCount) {
-      Arrangement.SpaceEvenly
-    } else {
-      Arrangement.spacedBy(BiliSizing.HomeSectionCapsuleItemSpacing)
-    }
-    Row(
-      modifier = Modifier
-        .align(Alignment.Center)
-        .offset(y = -BiliSizing.HomeSectionCapsuleTopOffset)
-        .widthIn(min = capsuleMinWidth, max = capsuleMaxWidth)
-        .clip(capsuleShape)
-        .biliLiquidGlassSurface(
-          enabled = liquidGlassEnabled,
-          shape = capsuleShape,
-          surfaceColor = homeColors.glassSurface.copy(alpha = BiliFocus.HomeSectionCapsuleSurfaceAlpha),
-          borderColor = homeColors.textPrimary.copy(alpha = BiliFocus.HomeSectionCapsuleBorderAlpha),
-          borderWidth = BiliFocus.RestingBorderWidth,
-        )
-        .padding(
-          horizontal = BiliSizing.HomeSectionCapsuleHorizontalPadding,
-          vertical = BiliSizing.HomeSectionCapsuleVerticalPadding,
-        )
-        .horizontalScroll(rememberScrollState()),
-      horizontalArrangement = capsuleArrangement,
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      sections.forEachIndexed { index, section ->
-        HomeSectionTab(
-          section = section,
-          selected = section == selectedSection,
-          modifier = if (section == selectedSection) {
-            Modifier.focusRequester(selectedSectionFocusRequester)
-          } else {
-            Modifier
-          },
-          onMoveLeftToNav = if (index == 0) onMoveLeftToNav else null,
-          onMoveDownToGrid = onMoveDownFromTab,
-          onClick = {
-            onSectionSelected(section)
-          },
-          onFocused = { onSectionFocused(section) },
-        )
-      }
-    }
-  }
-}
-
-@Composable
-private fun HomeSectionTab(
-  section: HomeSection,
-  selected: Boolean,
-  modifier: Modifier = Modifier,
-  onMoveLeftToNav: (() -> Boolean)?,
-  onMoveDownToGrid: (() -> Boolean)?,
-  onClick: () -> Unit,
-  onFocused: () -> Unit,
-) {
-  var focused by remember { mutableStateOf(false) }
-  val performancePolicy = LocalBiliPerformancePolicy.current
-  val homeColors = LocalHomeColors.current
-  val shape = RoundedCornerShape(BiliRadius.Pill)
-  val targetBorderColor = if (focused) homeColors.accent else BiliColors.Transparent
-  val targetTextColor = when {
-    selected -> homeColors.accent
-    focused -> homeColors.textPrimary
-    else -> homeColors.textSecondary
-  }
-  val borderWidth = if (performancePolicy.motionEnabled) {
-    animateDpAsState(
-      targetValue = if (focused) BiliFocus.BorderWidth else BiliFocus.RestingBorderWidth,
-      animationSpec = androidx.compose.animation.core.tween(BiliMotion.FocusMs, easing = BiliMotion.FocusEasing),
-      label = "homeSectionBorderWidth",
-    ).value
-  } else {
-    if (focused) BiliFocus.BorderWidth else BiliFocus.RestingBorderWidth
-  }
-  val borderColor = if (performancePolicy.motionEnabled) {
-    animateColorAsState(
-      targetValue = targetBorderColor,
-      animationSpec = androidx.compose.animation.core.tween(BiliMotion.FocusMs, easing = BiliMotion.FocusEasing),
-      label = "homeSectionBorder",
-    ).value
-  } else {
-    targetBorderColor
-  }
-  val textColor = if (performancePolicy.motionEnabled) {
-    animateColorAsState(
-      targetValue = targetTextColor,
-      animationSpec = androidx.compose.animation.core.tween(BiliMotion.FocusMs, easing = BiliMotion.FocusEasing),
-      label = "homeSectionText",
-    ).value
-  } else {
-    targetTextColor
-  }
-  val interactionSource = remember { MutableInteractionSource() }
-
-  Box(
-    modifier = modifier
-      .height(BiliSizing.HomeSectionTabHeight)
-      .widthIn(min = BiliSizing.HomeSectionTabCompactMinWidth)
-      .clip(shape)
-      .background(
-        if (focused) {
-          homeColors.textPrimary.copy(alpha = BiliFocus.HomeSectionTabFocusedSurfaceAlpha)
+  BiliCapsuleTabRow(itemCount = sections.size) {
+    sections.forEachIndexed { index, section ->
+      BiliPillTab(
+        text = stringResource(section.titleRes()),
+        selected = section == selectedSection,
+        modifier = if (section == selectedSection) {
+          Modifier.focusRequester(selectedSectionFocusRequester)
         } else {
-          BiliColors.Transparent
+          Modifier
         },
+        onMoveLeftToNav = if (index == 0) onMoveLeftToNav else null,
+        onMoveDownToGrid = onMoveDownFromTab,
+        onClick = { onSectionSelected(section) },
+        onFocused = { onSectionFocused(section) },
       )
-      .border(BorderStroke(borderWidth, borderColor), shape)
-      .onFocusChanged { focusState ->
-        focused = focusState.isFocused
-        if (focusState.isFocused && !selected) {
-          // 焦点落主分区就通知切显示（对齐 BV TopNav onSelectedChanged），不卡 autoConfirmOnFocus。
-          onFocused()
-        }
-      }
-      .onPreviewKeyEvent { event ->
-        when {
-          event.type == KeyEventType.KeyDown &&
-            event.key == Key.DirectionLeft &&
-            onMoveLeftToNav != null -> onMoveLeftToNav()
-          event.type == KeyEventType.KeyDown &&
-            event.key == Key.DirectionDown &&
-            onMoveDownToGrid != null -> onMoveDownToGrid()
-          event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
-            onClick()
-            true
-          }
-          else -> false
-        }
-      }
-      .focusable(interactionSource = interactionSource)
-      .clickable(
-        interactionSource = interactionSource,
-        indication = null,
-        onClick = onClick,
-      )
-      .padding(horizontal = BiliSpacing.Sm),
-    contentAlignment = Alignment.Center,
-  ) {
-    Text(
-      text = stringResource(section.titleRes()),
-      color = textColor,
-      fontSize = BiliTypography.HomeSectionTab,
-      lineHeight = BiliTypography.HomeSectionTabLineHeight,
-      fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium,
-      textAlign = TextAlign.Center,
-      maxLines = 1,
-      style = TextStyle(
-        platformStyle = PlatformTextStyle(includeFontPadding = false),
-      ),
-    )
+    }
   }
 }
 
@@ -608,18 +462,6 @@ private fun RecommendGrid(
     onVideoSelected = onVideoSelected,
     onOwnerSelected = onOwnerSelected,
   )
-}
-
-private const val HomeSectionCapsuleSpreadMaxCount = 6
-
-private fun homeSectionCapsuleMinWidthFraction(sectionCount: Int): Float = when (sectionCount) {
-  0, 1 -> 0.24f
-  2 -> 0.34f
-  3 -> 0.44f
-  4 -> 0.54f
-  5 -> 0.60f
-  6 -> 0.66f
-  else -> 0f
 }
 
 private suspend fun LazyGridState.scrollItemIntoStablePosition(
@@ -732,10 +574,6 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridLayoutInfo.estimatedCo
 
 private val LazyGridItemInfo.columnAnchor: Int
   get() = offset.x
-
-private fun Key.isConfirmKey(): Boolean {
-  return this == Key.Enter || this == Key.NumPadEnter || this == Key.DirectionCenter
-}
 
 private fun List<VideoSummary>.appendUniqueByBvid(nextVideos: List<VideoSummary>): List<VideoSummary> {
   if (nextVideos.isEmpty()) {

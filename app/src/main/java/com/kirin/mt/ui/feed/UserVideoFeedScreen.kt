@@ -230,45 +230,17 @@ private fun UserFeedTabRow(
   onMoveLeftToNav: () -> Boolean,
   onMoveDownToGrid: () -> Boolean,
 ) {
-  val homeColors = LocalHomeColors.current
-  Row(
-    modifier = Modifier
-      .fillMaxWidth()
-      .padding(horizontal = BiliSpacing.Xl, vertical = BiliSpacing.Md),
-    horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
+  BiliCapsuleTabRow(itemCount = UserFeedTab.entries.size) {
     UserFeedTab.entries.forEach { tab ->
       val selected = tab == selectedTab
-      BiliFocusableSurface(
-        scaleOnFocus = false,
-        shadowOnFocus = false,
-        shape = RoundedCornerShape(BiliRadius.Pill),
+      BiliPillTab(
+        text = stringResource(if (tab == UserFeedTab.History) R.string.nav_history else R.string.nav_dynamic),
+        selected = selected,
+        modifier = if (selected) Modifier.focusRequester(tabFocusRequester) else Modifier,
+        onMoveUpToNav = onMoveLeftToNav,
+        onMoveDownToGrid = onMoveDownToGrid,
         onClick = { onSelect(tab) },
-        restingBorderColor = if (selected) homeColors.accent else homeColors.glassBorder,
-        focusedBorderColor = homeColors.accent,
-        modifier = Modifier
-          .then(if (selected) Modifier.focusRequester(tabFocusRequester) else Modifier)
-          .onPreviewKeyEvent { event ->
-            if (event.type == KeyEventType.KeyDown) {
-              when (event.key) {
-                Key.DirectionUp -> onMoveLeftToNav()
-                Key.DirectionDown -> onMoveDownToGrid()
-                else -> false
-              }
-            } else {
-              false
-            }
-          },
-      ) {
-        Text(
-          text = stringResource(if (tab == UserFeedTab.History) R.string.nav_history else R.string.nav_dynamic),
-          color = if (selected) homeColors.accent else homeColors.textSecondary,
-          fontSize = BiliTypography.BodySmall,
-          fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-          modifier = Modifier.padding(horizontal = BiliSpacing.Md, vertical = BiliSpacing.Xs),
-        )
-      }
+      )
     }
   }
 }
