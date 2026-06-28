@@ -1,5 +1,20 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.9
+
+### 修复
+- **PGC 全屏详情页按 Back 显示侧键**：点番剧进 `PgcSeasonScreen`（全屏 overlay，盖住侧栏）后，硬件 Back 之前不会关掉详情页，而是落到 shell 的 app-exit 逻辑弹「再按一次退出」toast —— 因为 `PgcSeasonScreen`/`PgcIndexScreen` 的 `onBack` 只绑在 D-pad 左/上键，没绑 Back 键。现给两个全屏 overlay 加 `BackHandler`（镜像 `UpSpaceScreen.kt:109` 同款模式）：Back 关掉 overlay → 回到带侧栏的 PGC 基页（即「显示侧键」）。
+  - `PgcSeasonScreen`：`BackHandler { onBack() }` 无条件。分集 `PgcEpisodesDialog` 是独立 `Dialog` window，开时 Back 由对话框 window 消费（多页回当前分页标签 / 单页关对话框），不误关详情页；对话框关掉后 Back 才关详情页。
+  - `PgcIndexScreen`：`BackHandler { if (showFilter) showFilter = false else onBack() }`。分类索引的滤镜 `PgcIndexFilterDialog` 是内嵌 `Box` 非独立 window，故须带分支——Back 先关滤镜，再按才关 index 页，否则滤镜开时 Back 会直接关掉整个 index 页。
+  - shell 级 app-exit `BackHandler` 不动；overlay 的 BackHandler 后注册（LIFO 优先），overlay 开时 Back 走 overlay，关掉后才回 app-exit。
+
+### 已知待验（真机）
+- PGC 基页点番剧 → 全屏详情页；按 Back → 回带侧栏基页。
+- 详情页开分集对话框时按 Back → 只关对话框（不关详情页）；再按 Back → 关详情页回基页。
+- PGC 基页进 index（分类索引）→ 全屏；按 Back → 回带侧栏基页。
+- index 页开滤镜时按 Back → 关滤镜（不关 index 页）；再按 Back → 关 index 页回基页。
+- 所有 overlay 都关掉后（PGC 基页）按 Back → 走原 app-exit「再按一次退出」（不变）。
+
 ## v1.0.13-alpha.8
 
 ### 改进
