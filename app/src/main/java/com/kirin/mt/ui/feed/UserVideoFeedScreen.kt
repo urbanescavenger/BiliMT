@@ -41,6 +41,8 @@ import androidx.compose.ui.text.font.FontWeight
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.ui.common.BiliCapsuleTabRow
+import com.kirin.mt.ui.common.BiliPillTab
 import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.VideoGridSkeleton
 import com.kirin.mt.ui.focus.BiliFocusableSurface
