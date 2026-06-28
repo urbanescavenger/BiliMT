@@ -1,6 +1,7 @@
 package com.kirin.mt.ui.pgc
 
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -94,6 +95,10 @@ internal fun PgcSeasonScreen(
 ) {
   val uiState = remember { PgcSeasonUiState() }
   var currentRequest by remember { mutableStateOf(request) }
+
+  // 全屏 overlay:按 Back 关掉详情页回到带侧栏的 PGC 基页(对齐 UpSpaceScreen)。
+  // PgcEpisodesDialog 是独立 Dialog window,开时 Back 由对话框消费,此处不触发。
+  BackHandler { onBack() }
 
   LaunchedEffect(request) {
     currentRequest = request

@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.pgc
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -133,6 +134,12 @@ internal fun PgcIndexScreen(
   val gridState = rememberLazyGridState()
   var showFilter by remember { mutableStateOf(false) }
   var initialFocusDone by remember { mutableStateOf(false) }
+
+  // 全屏 overlay:Back 滤镜开→关滤镜,滤镜关→关 index 页回带侧栏基页(对齐 UpSpaceScreen)。
+  // PgcIndexFilterDialog 是内嵌 Box 非独立 window,故此处需带 showFilter 分支。
+  BackHandler {
+    if (showFilter) showFilter = false else onBack()
+  }
 
   LaunchedEffect(pgcType) {
     uiState.resetForType(pgcType)
