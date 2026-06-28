@@ -1,5 +1,16 @@
 # BiliMT 版本发布说明
 
+## v1.0.13-alpha.16
+
+### 修复
+- **从 UP 主页起播返回后焦点无法选中**：从 UP 主页（`UpSpaceScreen`，`spaceOrigin == Content`）点视频卡片起播，播完返回时焦点悬空、无法选中。根因：播放期间 UpSpace overlay 被拆除，返回后可见层是 UpSpace 网格，但 `PlayerScreen.onBack` 无脑 arm 内容网格的 restore（`playbackFocusRestoreRequestKey`），从不 bump UpSpace 的 `spaceFocusRestoreRequestKey` → `TvVideoGrid` 的 restore effect（gated on key>0）早退 → 没人 `requestFocus()` → 焦点悬空。现 `PlayerScreen.onBack` 加 Content-origin 分支：`spaceRequest != null && spaceOrigin == Content` 时 `playbackRequest = null` + `spaceFocusRestoreRequestKey += 1`（arm UpSpace 网格 restore，落回离开时聚焦的卡片），跳过内容网格 restore。Player-origin 不动。
+
+### 已知待验（真机）
+- 内容页点 UP 主头像进 UP 主页；聚焦某张卡片（非首张，可滚到屏外）→ Enter 起播 → Back 返回 → 焦点落回离开时那张卡片（可选中、Enter 能再起播），不再「无法选中」。
+- 离开时聚焦的卡片在屏外时，返回应自动滚到该行再聚焦。
+- 从内容页直接起播（不经 UP 主页）返回仍正常恢复内容网格焦点（不回归）。
+- 从玩家内开 UP 主页（Player-origin）再返回，行为不变（不回归）。
+
 ## v1.0.13-alpha.15
 
 ### 修复
