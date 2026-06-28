@@ -283,7 +283,7 @@ private fun PgcSeasonHeader(season: PgcSeason) {
     Box(
       modifier = Modifier
         .width(160.dp)
-        .aspectRatio(0.7f)
+        .aspectRatio(BiliSizing.PgcPosterAspect)
         .clip(RoundedCornerShape(BiliRadius.Card)),
     ) {
       AsyncImage(

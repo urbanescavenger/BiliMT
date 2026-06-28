@@ -314,7 +314,7 @@ internal fun PgcCard(
       Box(
         modifier = Modifier
           .fillMaxWidth()
-          .aspectRatio(0.7f)
+          .aspectRatio(BiliSizing.PgcPosterAspect)
           .clip(cardShape),
       ) {
         AsyncImage(

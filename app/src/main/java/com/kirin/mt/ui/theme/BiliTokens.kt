@@ -130,6 +130,7 @@ object BiliSizing {
   val VideoCardWidth = 248.dp
   const val VideoGridColumns = 4
   const val PgcGridColumns = 5
+  const val PgcPosterAspect = 0.75f // B 站番剧季海报固定 3:4,对齐 BV SeasonCard
   val VideoGridSpacing = 10.dp
   val VideoGridHorizontalPadding = 0.dp
   val HomeVideoGridTopPadding = 24.dp
