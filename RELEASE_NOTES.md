@@ -1,5 +1,17 @@
 # BiliMT 版本发布说明
 
+## v1.1.1-alpha.1
+
+v1.1.1 稳定版后的第一个 alpha。把动态页两行结构合并成一行：动态 tab 拆成「视频」「综合」两个一级 tab，删掉第二行的类型过滤 pill。
+
+### 动态页
+- **「动态」tab 拆成「视频 / 综合」两个一级 tab**：tab 行变为 视频 综合 历史 收藏 追番（5 个，`BiliCapsuleTabRow` 横滚）。「视频」= `type=video`（默认），「综合」= `type=all`。
+- **删掉第二行类型过滤 pill**：原来「动态」tab 下方还有一行「全部 / 视频」pill，与本端只渲染 archive 视频动态的现实冲突（选「全部」非视频类型被 `fromDynamicItem` 丢弃，结果与「视频」几乎一致）。拆成一级 tab 后语义清晰，不再有"选了等于没选"的困惑。
+- **状态独立**：`dynamic` state 拆成 `dynamicVideo` + `dynamicAll`，各自缓存（切 tab 不丢已加载内容）；`DynamicFeedUiState.selectedType` 删除，type 改由 tab 决定、加载函数外部传入。
+- **焦点**：网格首行 Up 直接回 tab 行当前选中 pill（原先是回到第二行类型 pill）；tab 行 Down 进网格、Up/Left 回左侧栏。
+- **文案**：新增 `nav_dynamic_video` / `nav_dynamic_all`，TW/HK 繁体「影片 / 綜合」；删掉无用的 `feed_type_all` / `feed_type_video`。
+- **「综合」tab 预留**：当前与「视频」可见结果接近，作为后续专栏 / 番剧等多类型动态渲染的入口。
+
 ## v1.1.1
 
 v1.1.0-alpha.1 ~ alpha.6 稳定版汇总 + alpha 后续修复。本版聚焦动态页（Dynamic feed）体验完善与 PGC 番剧选集改进。
