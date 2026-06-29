@@ -1,35 +1,29 @@
 # BiliMT 版本发布说明
 
-## v1.1.0-alpha.4
+## v1.1.0-alpha.5
 
-动态页按类型过滤(Phase B):Dynamic tab 顶部加 全部/视频 子 pill 行,`type` 透传给动态 API,默认 `video`。
+动态页体验完善(Phase C)+ 按类型过滤(Phase B)合并发布。(alpha.3/alpha.4 因 `TvVideoGrid` footer 漏 `import Box` 编译失败,tag 已被 CI 孤儿清理,本 alpha 修复并合并。)
 
-### 新增
-- **动态类型过滤 pill 行**：新建 `DynamicFeedContent` 包装器(仿 `FavoriteFeedContent`),在 Dynamic tab 网格上方加 `BiliCapsuleTabRow`(全部=all / 视频=video)。`DynamicFeedUiState.selectedType` 默认 `video`;切换 type → `loadDynamicFirstPage(forceRefresh=true)` 重载。`getDynamicFeed(type, offset)` 把 `type` 透传给 `/x/polymer/web-dynamic/v1/feed/all`(原来硬编码 `all`)。网格 `onMoveUpFromFirstRow` 改指类型 pill 行的 `typeFocusRequester`,类型行 Up 回侧栏、Down 进网格(与收藏夹 pill 行同一焦点模式)。
+### 修复
+- **`TvVideoGrid` 补 `import androidx.compose.foundation.layout.Box`**：footer 的重试按钮用到 `Box` 但原文件未导入 Box,导致 alpha.3/alpha.4 编译失败(Unresolved reference 'Box' + 级联 @Composable 报错)。
+
+### 新增(Phase C)
+- **网格尾部 footer**：`TvVideoGrid` 在列表末尾追加 footer 项,展示「加载中… / 没有更多了 / 加载失败 + 重试」。`UserFeedState.Success` 已有的 `loadingMore/endReached/loadMoreError` 之前未渲染,现经 `GridFooterState` 透传到网格。失败态的重试按钮可聚焦,OK 触发 `onLoadMore` 重试;`moveFocus` 末行 Down 改为不消费,让默认焦点遍历落到 footer 重试按钮。
+- **未读动态红点**：新增 `VideoRepository.getDynamicUnread()`(端点 `DynamicUnread`,读 `data.new_default`/`new`)。AppShell 在登录态/切 tab/手动刷新时各拉一次,`AppSidebar` 在 Dynamic 导航项右上角叠红点(`NavUnreadDotSize=8dp`),未读为 0 不显示。
+- **收藏排序 order 透传**：`getFavoriteFolderVideos` 加 `order` 参数(默认 `mtime`),`FavoriteFeedUiState.currentOrder` 字段就位。本期无 UI 设置,默认 `mtime` 行为不变;排序 pill 行(最近收藏/最多播放)推迟到后续,因其焦点接线需真机调试。
+
+### 新增(Phase B)
+- **动态类型过滤 pill 行**：新建 `DynamicFeedContent` 包装器(仿 `FavoriteFeedContent`),在 Dynamic tab 网格上方加 `BiliCapsuleTabRow`(全部=all / 视频=video)。`DynamicFeedUiState.selectedType` 默认 `video`;切换 type → `loadDynamicFirstPage(forceRefresh=true)` 重载。`getDynamicFeed(type, offset)` 把 `type` 透传给 `/x/polymer/web-dynamic/v1/feed/all`(原来硬编码 `all`)。网格 `onMoveUpFromFirstRow` 改指类型 pill 行的 `typeFocusRequester`(与收藏夹 pill 行同一焦点模式)。
 - **默认 type 从 `all` 改 `video`**：本端只渲染 archive 视频动态,`video` 是更干净的连续视频流(`all` 会把图文/专栏等类型也拉回但被 `fromDynamicItem` 丢弃,offset 有空耗)。
 
 ### 已知局限
 - 非 archive 类型(图文/专栏/转发/番剧)的卡片渲染不在本期范围,「全部」与「视频」可见集合基本一致(差异仅在 `all` 模式下非视频动态占用 offset 槽位)。专栏/番剧动态渲染(番剧可复用项目已有 PGC 播放基建)见后续,需给 `VideoSummary` 加 `epid/seasonId` 并改卡片点击路由。
 
 ### 已知待验(真机)
-- Dynamic tab 顶部出现 全部/视频 两个 pill,默认选中「视频」;切到「全部」重载;切回「视频」重载。
-- 网格 Up 落到类型 pill 行;类型行 Up 回侧栏;类型行 Down 进网格;侧栏→Down 仍直接进网格(跳过类型行,与收藏夹一致)。
-- 切类型后焦点/翻页加载正常。
-
-## v1.1.0-alpha.3
-
-动态页体验完善(Phase C 部分):加载更多 footer + 重试、未读动态红点;收藏排序 order 透传铺路(排序行 UI 待后续)。
-
-### 新增
-- **网格尾部 footer**：`TvVideoGrid` 在列表末尾追加 footer 项,展示「加载中… / 没有更多了 / 加载失败 + 重试」。`UserFeedState.Success` 已有的 `loadingMore/endReached/loadMoreError` 之前未渲染,现经 `GridFooterState` 透传到网格。失败态的重试按钮可聚焦,OK 触发 `onLoadMore` 重试;`moveFocus` 末行 Down 改为不消费,让默认焦点遍历落到 footer 重试按钮。
-- **未读动态红点**：新增 `VideoRepository.getDynamicUnread()`(端点 `DynamicUnread`,读 `data.new_default`/`new`)。AppShell 在登录态/切 tab/手动刷新时各拉一次,`AppSidebar` 在 Dynamic 导航项右上角叠红点(`NavUnreadDotSize=8dp`),未读为 0 不显示。
-- **收藏排序 order 透传**：`getFavoriteFolderVideos` 加 `order` 参数(默认 `mtime`),`FavoriteFeedUiState.currentOrder` 字段就位。本期无 UI 设置,默认 `mtime` 行为不变;排序 pill 行(最近收藏/最多播放)推迟到后续 alpha,因其焦点接线需真机调试。
-
-### 已知待验(真机)
-- 翻到网格底部:footer 显示「加载中…」→ 加载完显示「没有更多了」;加载更多失败时显示「加载失败」+ 可聚焦重试按钮,OK 重试。
-- 末行 Down 能落到重试按钮;重试按钮 Up 回到末行卡片。
-- 登录后侧栏 Dynamic 图标右上角出现红点(有未读动态时);切到 Dynamic tab / 手动刷新后红点更新;无未读时不显示。
-- 网格 D-pad 焦点/翻页加载/焦点恢复未回归(footer 注入 + moveFocus 末行 Down 改动)。
+- 翻到网格底部:footer 显示「加载中…」→ 加载完显示「没有更多了」;加载更多失败时显示「加载失败」+ 可聚焦重试按钮,OK 重试;末行 Down 落到重试按钮、Up 回末行卡片。
+- 登录后侧栏 Dynamic 图标右上角红点(有未读动态时);切 Dynamic tab / 手动刷新后更新;无未读不显示。
+- Dynamic tab 顶部 全部/视频 pill,默认「视频」;切换重载;网格 Up 落类型行、类型行 Up 回侧栏、Down 进网格。
+- 网格 D-pad 焦点/翻页加载/焦点恢复未回归(footer 注入 + moveFocus 末行 Down 改动 + 类型 pill 行)。
 
 ## v1.1.0-alpha.2
 
