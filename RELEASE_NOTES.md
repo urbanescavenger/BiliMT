@@ -1,5 +1,29 @@
 # BiliMT 版本发布说明
 
+## v1.1.1
+
+v1.1.0-alpha.1 ~ alpha.6 稳定版汇总 + alpha 后续修复。本版聚焦动态页（Dynamic feed）体验完善与 PGC 番剧选集改进。
+
+### 动态页
+- **收藏 / 追番 tab**：动态页 tab 行新增「收藏」「追番」入口，复用现有收藏夹与追番基建。
+- **动态卡片社交计数 + 长按操作菜单**（Phase A，alpha.2）：卡片展示点赞 / 评论 / 分享数；长按弹出操作面板（点赞 / 稍后再看 / 去 UP 主主页）。对照 BV 源码后自写 API（BV mobile 端这些均为 `notYetImplemented()` 桩，无可抄实现）。
+- **类型过滤 pill 行**（Phase B，alpha.5）：顶部「全部 / 视频」胶囊 pill，默认「视频」，切换重载；网格 Up 落类型行、类型行 Up 回侧栏、Down 进网格。
+- **网格 footer + 未读红点 + 收藏排序透传**（Phase C，alpha.5）：列表末尾 footer（加载中 / 没有更多了 / 加载失败 + 可聚焦重试）；侧栏 Dynamic 图标未读红点；`getFavoriteFolderVideos` 加 `order` 参数（默认 `mtime`，排序 pill UI 推迟）。
+- **动态详情评论全屏页**（Phase D，alpha.6）：长按菜单「查看评论」进入全屏评论页，热门 / 最新排序、焦点驱动翻页，尾部 footer 复用 Phase C 模式；楼中楼二级回复本期仅显示回复数。
+
+### PGC 番剧选集
+- **选集弹窗每页 20 → 100**：抽出 `EPISODES_PER_PAGE = 100` 常量替换 4 处硬编码 `20`，绝大多数番剧一页搞定，不再翻 tab。
+- **默认聚焦上次播放集**：用服务端 `user_status.progress.last_ep_id` 定位初始焦点，重新进入看过的番剧焦点直接停在上次那一集并滚动可见；无记录 / 找不到回退第 1 集正片。BV 源码只给对应集打进度徽标、未自动定位焦点，本版补强。
+
+### 修复
+- **`TvVideoGrid` footer 漏 `import Box`**：alpha.3 / alpha.4 编译失败根因，补齐导入（两个 tag 已被 CI 孤儿清理）。
+- **`UserFeedScreen` 首个 `LaunchedEffect` 关闭**：避免重复加载副作用。
+- **`UpdateRepository` versionCode 公式与 build.gradle 对齐**：应用内更新版本对比与构建期 versionCode 计算一致，稳定版 / prerelease 都能正确识别新旧关系。
+
+### 安装包
+- `BiliMT-v1.1.1-armeabi-v7a.apk`
+- `BiliMT-v1.1.1-arm64-v8a.apk`
+
 ## v1.1.0-alpha.6
 
 动态详情页 + 评论(Phase D):长按菜单「查看评论」进入全屏评论页,热门/最新排序、焦点驱动翻页。
