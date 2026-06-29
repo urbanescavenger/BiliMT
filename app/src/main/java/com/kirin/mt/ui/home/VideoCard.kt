@@ -737,6 +737,22 @@ private fun StandardCoverMetadata(video: VideoSummary, modifier: Modifier = Modi
           text = video.danmaku.formatCompactCountText(),
         )
       }
+      if (video.likeCount > 0) {
+        Spacer(modifier = Modifier.width(BiliSpacing.Sm))
+        VideoMetric(
+          iconRes = R.drawable.ic_video_like_count,
+          contentDescription = stringResource(R.string.video_like_count_content_description),
+          text = video.likeCount.formatCompactCountText(),
+        )
+      }
+      if (video.commentCount > 0) {
+        Spacer(modifier = Modifier.width(BiliSpacing.Sm))
+        VideoMetric(
+          iconRes = R.drawable.ic_video_comment_count,
+          contentDescription = stringResource(R.string.video_comment_count_content_description),
+          text = video.commentCount.formatCompactCountText(),
+        )
+      }
     }
     Text(
       text = video.durationText(),

@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.feed
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Column
@@ -35,12 +36,15 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.ui.common.BiliActionItem
+import com.kirin.mt.ui.common.BiliActionSheet
 import com.kirin.mt.ui.common.BiliCapsuleTabRow
 import com.kirin.mt.ui.common.BiliPillTab
 import com.kirin.mt.ui.common.FeedStatusScreen
@@ -125,7 +129,9 @@ internal fun UserFeedScreen(
   onOwnerSelected: (VideoSummary) -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
+  val context = LocalContext.current
   val selectedTab = feedState.selectedTab
+  var actionSheetVideo by remember { mutableStateOf<VideoSummary?>(null) }
 
   LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab) {
     if (!isLoggedIn) return@LaunchedEffect
@@ -218,6 +224,7 @@ internal fun UserFeedScreen(
             onMoveLeftToNav = onMoveLeftToNav,
             onVideoSelected = { video -> onVideoSelected(video, false) },
             onOwnerSelected = onOwnerSelected,
+            onCardLongPress = { video -> actionSheetVideo = video },
           )
           UserFeedTab.History -> UserFeedContent(
             state = feedState.history.state,
@@ -244,6 +251,7 @@ internal fun UserFeedScreen(
             onMoveLeftToNav = onMoveLeftToNav,
            onVideoSelected = { video -> onVideoSelected(video, true) },
            onOwnerSelected = onOwnerSelected,
+           onCardLongPress = { video -> onOwnerSelected(video) },
           )
           UserFeedTab.Favorite -> FavoriteFeedContent(
             state = feedState.favorite,
@@ -257,10 +265,63 @@ internal fun UserFeedScreen(
             onMoveLeftToNav = onMoveLeftToNav,
            onVideoSelected = { video -> onVideoSelected(video, false) },
            onOwnerSelected = onOwnerSelected,
+           onCardLongPress = { video -> onOwnerSelected(video) },
           )
         }
       }
     }
+  }
+
+  actionSheetVideo?.let { video ->
+    val likeLabel = stringResource(R.string.feed_action_like)
+    val toviewLabel = stringResource(R.string.feed_action_toview)
+    val upspaceLabel = stringResource(R.string.feed_action_upspace)
+    val likeDone = stringResource(R.string.feed_action_like_done)
+    val likeFailed = stringResource(R.string.feed_action_like_failed)
+    val toviewDone = stringResource(R.string.feed_action_toview_done)
+    val toviewFailed = stringResource(R.string.feed_action_toview_failed)
+
+    BiliActionSheet(
+      title = stringResource(R.string.feed_action_sheet_title),
+      items = listOf(
+        BiliActionItem(
+          label = likeLabel,
+          enabled = video.dynId.isNotBlank(),
+          onClick = {
+            coroutineScope.launch {
+              val ok = runCatching { videoRepository.likeDynamic(video.dynId) }
+                .getOrDefault(false)
+              Toast.makeText(
+                context,
+                if (ok) likeDone else likeFailed,
+                Toast.LENGTH_SHORT,
+              ).show()
+            }
+          },
+        ),
+        BiliActionItem(
+          label = toviewLabel,
+          enabled = video.aid > 0L,
+          onClick = {
+            coroutineScope.launch {
+              val ok = runCatching { videoRepository.addToView(video.aid) }
+                .getOrDefault(false)
+              Toast.makeText(
+                context,
+                if (ok) toviewDone else toviewFailed,
+                Toast.LENGTH_SHORT,
+              ).show()
+            }
+          },
+        ),
+        BiliActionItem(
+          label = upspaceLabel,
+          enabled = video.ownerMid > 0L,
+          onClick = { onOwnerSelected(video) },
+        ),
+      ),
+      onDismiss = { actionSheetVideo = null },
+    )
   }
 }
 
@@ -586,6 +647,7 @@ private fun FavoriteFeedContent(
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
+  onCardLongPress: (VideoSummary) -> Unit = {},
 ) {
  val folderFocusRequester = remember { FocusRequester() }
   val hasMultipleFolders = state.folders.size > 1
@@ -657,6 +719,7 @@ private fun FavoriteFeedContent(
       onMoveLeftToNav = onMoveLeftToNav,
       onVideoSelected = onVideoSelected,
       onOwnerSelected = onOwnerSelected,
+      onCardLongPress = onCardLongPress,
     )
   }
 }
@@ -680,6 +743,7 @@ private fun UserFeedContent(
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
+  onCardLongPress: (VideoSummary) -> Unit = {},
 ) {
   when (state) {
     UserFeedState.Loading -> VideoGridSkeleton()
@@ -705,6 +769,7 @@ private fun UserFeedContent(
       onMoveLeftToNav = onMoveLeftToNav,
       onVideoSelected = onVideoSelected,
       onOwnerSelected = onOwnerSelected,
+      onCardLongPress = onCardLongPress,
     )
   }
 }
@@ -723,6 +788,7 @@ private fun UserFeedGrid(
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
+  onCardLongPress: (VideoSummary) -> Unit = {},
 ) {
   TvVideoGrid(
     videos = videos,
@@ -737,6 +803,7 @@ private fun UserFeedGrid(
     onMoveLeftToNav = onMoveLeftToNav,
     onVideoSelected = onVideoSelected,
     onOwnerSelected = onOwnerSelected,
+    onCardLongPress = onCardLongPress,
     keyFactory = { index, video -> video.feedKey(index) },
   )
 }

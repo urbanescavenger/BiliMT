@@ -170,6 +170,18 @@ class VideoRepository(
     return userFeedRepository.getDynamicFeed(offset)
   }
 
+  suspend fun getDynamicUnread(): Int {
+    return userFeedRepository.getDynamicUnread()
+  }
+
+  suspend fun likeDynamic(dynId: String): Boolean {
+    return userFeedRepository.likeDynamic(dynId)
+  }
+
+  suspend fun addToView(aid: Long): Boolean {
+    return userFeedRepository.addToView(aid)
+  }
+
   suspend fun getHistoryPage(
     pageSize: Int = HistoryPageSize,
     viewAt: Long = 0L,

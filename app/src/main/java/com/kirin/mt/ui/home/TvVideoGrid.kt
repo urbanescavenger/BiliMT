@@ -55,7 +55,7 @@ import kotlin.math.roundToInt
 
 private const val TvGridRestoreFocusRetryCount = 8
 
-// Keys that confirm a card selection; holding one for this long opens the card owner's UP 主主页.
+// Keys that confirm a card selection; holding one for this long opens the card's long-press action menu.
 private val VideoCardOwnerConfirmKeys = setOf(Key.DirectionCenter, Key.Enter, Key.NumPadEnter)
 private const val VideoCardOwnerLongPressMs = 500L
 
@@ -80,6 +80,7 @@ internal fun TvVideoGrid(
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
+  onCardLongPress: (VideoSummary) -> Unit = {},
   modifier: Modifier = Modifier,
   cardMode: VideoCardMode = VideoCardMode.Standard,
   requestInitialFocus: Boolean = false,
@@ -317,8 +318,9 @@ internal fun TvVideoGrid(
                   .focusRequester(itemFocusRequesters[index])
                   .onPreviewKeyEvent { event ->
                     if (event.key in VideoCardOwnerConfirmKeys) {
-                      // Long-press of the OK/confirm key opens this card owner's UP 主主页;
-                      // a short tap falls through (returns false) so the card onClick plays the video.
+                      // Long-press of the OK/confirm key opens this card's action menu
+                      // (点赞/稍后再看/去 UP 主主页); a short tap falls through (returns false)
+                      // so the card onClick plays the video.
                       when (event.type) {
                         KeyEventType.KeyDown -> {
                           if (centerDownMs == 0L) {
@@ -330,7 +332,7 @@ internal fun TvVideoGrid(
                           val held = if (centerDownMs > 0L) SystemClock.uptimeMillis() - centerDownMs else 0L
                           centerDownMs = 0L
                           if (held >= VideoCardOwnerLongPressMs && video.ownerMid > 0L) {
-                            onOwnerSelected(video)
+                            onCardLongPress(video)
                             true
                           } else {
                             false

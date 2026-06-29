@@ -41,6 +41,60 @@ internal class UserFeedRepository(
     )
   }
 
+  suspend fun getDynamicUnread(): Int {
+    val sessData = sessionStore.sessData.first()
+    if (sessData.isNullOrBlank()) return 0
+
+    val root = apiClient.getJson(
+      url = BiliApiEndpoints.DynamicUnread,
+      sessData = sessData,
+    ).rootObject()
+    if (root.int("code") != 0) return 0
+    val data = root.obj("data") ?: return 0
+    // web 接口未读数在 data.new_default(关注动态)或 data.new;两者都取较大值兜底。
+    val default = data.int("new_default")
+    val newCount = data.int("new")
+    return maxOf(default, newCount)
+  }
+
+  suspend fun likeDynamic(dynId: String): Boolean {
+    if (dynId.isBlank()) return false
+    val sessData = sessionStore.sessData.first()
+    val biliJct = sessionStore.biliJct.first()
+    if (sessData.isNullOrBlank() || biliJct.isNullOrBlank()) return false
+
+    val root = apiClient.postFormJson(
+      url = BiliApiEndpoints.DynamicLike,
+      params = mapOf(
+        "dyn_id" to dynId,
+        "csrf" to biliJct,
+      ),
+      sessData = sessData,
+      biliJct = biliJct,
+    ).rootObject()
+    root.requireBiliCodeOk("dynamic like")
+    return true
+  }
+
+  suspend fun addToView(aid: Long): Boolean {
+    if (aid <= 0L) return false
+    val sessData = sessionStore.sessData.first()
+    val biliJct = sessionStore.biliJct.first()
+    if (sessData.isNullOrBlank() || biliJct.isNullOrBlank()) return false
+
+    val root = apiClient.postFormJson(
+      url = BiliApiEndpoints.ToviewAdd,
+      params = mapOf(
+        "aid" to aid.toString(),
+        "csrf" to biliJct,
+      ),
+      sessData = sessData,
+      biliJct = biliJct,
+    ).rootObject()
+    root.requireBiliCodeOk("toview add")
+    return true
+  }
+
   suspend fun getHistoryPage(
     pageSize: Int,
     viewAt: Long = 0L,

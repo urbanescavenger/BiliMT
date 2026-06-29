@@ -239,6 +239,8 @@
     <string name="video_count_yi">%1$.1f 億</string>
     <string name="video_play_count_content_description">播放數</string>
     <string name="video_danmaku_count_content_description">彈幕數</string>
+    <string name="video_like_count_content_description">點讚數</string>
+    <string name="video_comment_count_content_description">評論數</string>
     <string name="player_loading">正在載入播放位址...</string>
     <string name="player_failed_with_message">播放載入失敗。%1$s</string>
     <string name="player_error_missing_cid">未能取得影片 CID</string>

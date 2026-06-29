@@ -40,6 +40,8 @@ internal object VideoSummaryMappers {
     val archive = major.obj("archive") ?: return null
     val author = modules.obj("module_author")
     val stat = archive.obj("stat")
+    // module_stat 是动态本身的社交计数(点赞/评论/转发),区别于 archive.stat 的播放/弹幕。
+    val dynStat = modules.obj("module_stat")
     return VideoSummary(
       bvid = archive.string("bvid"),
       title = archive.string("title"),
@@ -52,6 +54,11 @@ internal object VideoSummaryMappers {
       duration = BiliNumberParser.parseDuration(archive["duration_text"]),
       pubdate = author?.long("pub_ts") ?: 0L,
       badge = filterBadge(archive.obj("badge")?.string("text").orEmpty()),
+      dynId = json.string("id_str"),
+      aid = archive.long("aid"),
+      likeCount = dynStat?.obj("like")?.int("count") ?: 0,
+      commentCount = dynStat?.obj("comment")?.int("count") ?: 0,
+      forwardCount = dynStat?.obj("forward")?.int("count") ?: 0,
     )
   }
 

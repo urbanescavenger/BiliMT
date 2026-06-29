@@ -1,5 +1,23 @@
 # BiliMT 版本发布说明
 
+## v1.1.0-alpha.2
+
+动态页（Phase A）增强：卡片展示动态社交计数 + 长按操作菜单（点赞 / 稍后再看 / 去 UP 主主页）。对照 BV 源码后补齐动态页缺失的社交属性——BV mobile 端的点赞/评论/分享均为 `notYetImplemented()` 桩，无可抄实现，本次自写 API 调用。
+
+### 新增
+- **动态卡片展示点赞/评论计数**：`fromDynamicItem` 补取 `module_stat.like/comment/forward.count` 与 `id_str`、`archive.aid`；`VideoSummary` 加 `dynId/aid/likeCount/commentCount/forwardCount` 字段（其它来源默认 0，不影响推荐/历史/收藏卡片）。`VideoCard` 封面元数据行在播放/弹幕后追加点赞、评论计数（>0 才显示，自然仅动态卡可见），新增 `ic_video_like_count` / `ic_video_comment_count` 矢量图标。
+- **长按操作菜单**：动态卡片长按 OK（≥500ms）从「直接进 UP 主主页」改为弹出 `BiliActionSheet` 模态菜单（D-pad 上下选、OK 确认、Back 关闭、首项自动聚焦）。菜单项：点赞、稍后再看、去 UP 主主页。历史/收藏 tab 长按仍直接进 UP 主主页（无动态 id/aid，保留原行为）。
+- **点赞 API**：新增 `BiliApiEndpoints.DynamicLike`（`/x/polymer/web-dynamic/v1/like/like`），`UserFeedRepository.likeDynamic(dynId)` 走 `postFormJson`（`dyn_id`+`csrf`），命中后 toast 提示。
+- **稍后再看 API**：新增 `BiliApiEndpoints.ToviewAdd`（`/x/v2/history/toview`），`UserFeedRepository.addToView(aid)`（`aid`+`csrf`）；动态 archive 的 `aid` 已在 mapper 取出，无 aid 时菜单项置灰。
+- **未读动态端点**：新增 `BiliApiEndpoints.DynamicUnread` + `UserFeedRepository.getDynamicUnread()`（读 `data.new_default`/`new`），为 Phase C 红点功能铺路（本期 UI 暂未接入）。
+
+### 已知待验（真机，BV 无参照）
+- 动态点赞 web 端点 `like/like` 入参/返回形状（疑似切换型）：菜单点「点赞」后 toast 显示「已点赞」即调用成功，需真机确认是否真翻转点赞态（接口可能为切换型，重复点击会取消）。
+- 稍后再看 `toview` 端点：点「稍后再看」后到 B 站「稍后再看」列表确认是否出现。
+- 长按菜单 D-pad 焦点是否正常在菜单项间移动、Back 是否关闭、蒙层外点击是否关闭。
+- 动态卡片点赞/评论计数是否正确显示（来自 `module_stat`）。
+- 短按仍起播、头像点击仍进 UP 主主页、网格 D-pad 焦点/翻页加载未回归。
+
 ## v1.1.0
 
 v1.0.13-alpha.8 ~ alpha.17 稳定版汇总。焦点/布局/分区设置全面对齐 BV。
