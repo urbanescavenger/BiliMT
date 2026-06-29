@@ -9,7 +9,7 @@ internal class UserFeedRepository(
   private val apiClient: BiliApiClient,
   private val sessionStore: SessionStore,
 ) {
-  suspend fun getDynamicFeed(offset: String = ""): DynamicFeedPage {
+  suspend fun getDynamicFeed(offset: String = "", type: String = "video"): DynamicFeedPage {
     val sessData = sessionStore.sessData.first()
     if (sessData.isNullOrBlank()) {
       return DynamicFeedPage(videos = emptyList(), offset = "", hasMore = false)
@@ -18,7 +18,7 @@ internal class UserFeedRepository(
     val root = apiClient.getJson(
       url = BiliApiEndpoints.DynamicFeed,
       params = buildMap {
-        put("type", "all")
+        put("type", type)
         if (offset.isNotBlank()) {
           put("offset", offset)
         }

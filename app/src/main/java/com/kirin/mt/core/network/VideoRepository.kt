@@ -166,8 +166,8 @@ class VideoRepository(
     return searchVideoRepository.getSearchSuggestions(keyword)
   }
 
-  suspend fun getDynamicFeed(offset: String = ""): DynamicFeedPage {
-    return userFeedRepository.getDynamicFeed(offset)
+  suspend fun getDynamicFeed(offset: String = "", type: String = "video"): DynamicFeedPage {
+    return userFeedRepository.getDynamicFeed(offset = offset, type = type)
   }
 
   suspend fun getDynamicUnread(): Int {

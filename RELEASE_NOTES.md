@@ -1,5 +1,21 @@
 # BiliMT 版本发布说明
 
+## v1.1.0-alpha.4
+
+动态页按类型过滤(Phase B):Dynamic tab 顶部加 全部/视频 子 pill 行,`type` 透传给动态 API,默认 `video`。
+
+### 新增
+- **动态类型过滤 pill 行**：新建 `DynamicFeedContent` 包装器(仿 `FavoriteFeedContent`),在 Dynamic tab 网格上方加 `BiliCapsuleTabRow`(全部=all / 视频=video)。`DynamicFeedUiState.selectedType` 默认 `video`;切换 type → `loadDynamicFirstPage(forceRefresh=true)` 重载。`getDynamicFeed(type, offset)` 把 `type` 透传给 `/x/polymer/web-dynamic/v1/feed/all`(原来硬编码 `all`)。网格 `onMoveUpFromFirstRow` 改指类型 pill 行的 `typeFocusRequester`,类型行 Up 回侧栏、Down 进网格(与收藏夹 pill 行同一焦点模式)。
+- **默认 type 从 `all` 改 `video`**：本端只渲染 archive 视频动态,`video` 是更干净的连续视频流(`all` 会把图文/专栏等类型也拉回但被 `fromDynamicItem` 丢弃,offset 有空耗)。
+
+### 已知局限
+- 非 archive 类型(图文/专栏/转发/番剧)的卡片渲染不在本期范围,「全部」与「视频」可见集合基本一致(差异仅在 `all` 模式下非视频动态占用 offset 槽位)。专栏/番剧动态渲染(番剧可复用项目已有 PGC 播放基建)见后续,需给 `VideoSummary` 加 `epid/seasonId` 并改卡片点击路由。
+
+### 已知待验(真机)
+- Dynamic tab 顶部出现 全部/视频 两个 pill,默认选中「视频」;切到「全部」重载;切回「视频」重载。
+- 网格 Up 落到类型 pill 行;类型行 Up 回侧栏;类型行 Down 进网格;侧栏→Down 仍直接进网格(跳过类型行,与收藏夹一致)。
+- 切类型后焦点/翻页加载正常。
+
 ## v1.1.0-alpha.3
 
 动态页体验完善(Phase C 部分):加载更多 footer + 重试、未读动态红点;收藏排序 order 透传铺路(排序行 UI 待后续)。

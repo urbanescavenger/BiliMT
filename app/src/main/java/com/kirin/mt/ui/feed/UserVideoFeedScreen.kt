@@ -73,6 +73,7 @@ internal enum class UserFeedTab { Dynamic, History, Favorite }
 @Stable
 internal class DynamicFeedUiState {
   var nextOffset by mutableStateOf("")
+  var selectedType by mutableStateOf("video")
   var state by mutableStateOf<UserFeedState>(UserFeedState.Loading)
   var focusedVideoIndex by mutableIntStateOf(0)
   var focusedVideoKey by mutableStateOf("")
@@ -201,28 +202,14 @@ internal fun UserFeedScreen(
     } else {
       androidx.compose.runtime.key(selectedTab) {
         when (selectedTab) {
-          UserFeedTab.Dynamic -> UserFeedContent(
-            state = feedState.dynamic.state,
-            loadingMessage = stringResource(R.string.dynamic_loading),
-            emptyMessage = stringResource(R.string.dynamic_empty),
-            failedMessage = { message -> stringResource(R.string.dynamic_failed_with_message, message) },
+          UserFeedTab.Dynamic -> DynamicFeedContent(
+            state = feedState.dynamic,
             cardMode = VideoCardMode.Dynamic,
             firstItemFocusRequester = firstItemFocusRequester,
-            restoredFocusIndex = feedState.dynamic.focusedVideoIndex,
-            restoredFocusKey = feedState.dynamic.focusedVideoKey,
             restoreFocusRequestKey = restoreFocusRequestKey,
             onRestoreFocusHandled = onRestoreFocusHandled,
-            onFocusedIndexChange = { index, video ->
-              feedState.dynamic.focusedVideoIndex = index
-              feedState.dynamic.focusedVideoKey = video.focusRestoreKey()
-            },
-            onRetry = {
-              coroutineScope.launch {
-                loadDynamicFirstPage(videoRepository, feedState.dynamic, forceRefresh = true)
-              }
-            },
-            onLoadMore = { loadDynamicNextPage(videoRepository, coroutineScope, feedState.dynamic) },
-            onMoveUpFromFirstRow = { runCatching { tabFocusRequester.requestFocus() }.isSuccess },
+            coroutineScope = coroutineScope,
+            videoRepository = videoRepository,
             onMoveLeftToNav = onMoveLeftToNav,
             onVideoSelected = { video -> onVideoSelected(video, false) },
             onOwnerSelected = onOwnerSelected,
@@ -370,7 +357,7 @@ private suspend fun loadDynamicFirstPage(
   state.focusedVideoKey = ""
   state.nextOffset = ""
   state.state = try {
-    val page = videoRepository.getDynamicFeed()
+    val page = videoRepository.getDynamicFeed(type = state.selectedType)
     state.nextOffset = page.offset
     state.loadedOnce = true
     if (page.videos.isEmpty()) {
@@ -406,7 +393,10 @@ private fun loadDynamicNextPage(
   state.state = currentState.copy(loadingMore = true, loadMoreError = "")
   coroutineScope.launch {
     state.state = try {
-      val page = videoRepository.getDynamicFeed(offset = offsetToLoad)
+      val page = videoRepository.getDynamicFeed(
+        offset = offsetToLoad,
+        type = state.selectedType,
+      )
       state.nextOffset = page.offset
       val latestState = state.state as? UserFeedState.Success ?: return@launch
       val mergedVideos = latestState.videos.appendUnique(nextVideos = page.videos)
@@ -638,6 +628,84 @@ private fun loadFavoriteNextPage(
     }
   }
 }
+
+@Composable
+private fun DynamicFeedContent(
+  state: DynamicFeedUiState,
+  cardMode: VideoCardMode,
+  firstItemFocusRequester: FocusRequester,
+  restoreFocusRequestKey: Int,
+  onRestoreFocusHandled: (Int) -> Unit,
+  coroutineScope: CoroutineScope,
+  videoRepository: VideoRepository,
+  onMoveLeftToNav: () -> Boolean,
+  onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit = {},
+  onCardLongPress: (VideoSummary) -> Unit = {},
+) {
+  val typeFocusRequester = remember { FocusRequester() }
+  // 全部(all) vs 仅视频(video)。本端只渲染 archive 视频动态,「全部」会把图文/专栏等
+  // 类型也拉回但被 fromDynamicItem 丢弃,可见集合与「视频」基本一致;「视频」是更干净的
+  // 连续视频流,作为默认。专栏/番剧等多类型渲染见后续。
+  val typeOptions = remember {
+    listOf(
+      DynamicTypeOption("all", R.string.feed_type_all),
+      DynamicTypeOption("video", R.string.feed_type_video),
+    )
+  }
+
+  Column(modifier = Modifier.fillMaxSize()) {
+    BiliCapsuleTabRow(itemCount = typeOptions.size, modifier = Modifier) {
+      typeOptions.forEach { option ->
+        val selected = state.selectedType == option.type
+        BiliPillTab(
+          text = stringResource(option.labelRes),
+          selected = selected,
+          modifier = if (selected) Modifier.focusRequester(typeFocusRequester) else Modifier,
+          onMoveUpToNav = onMoveLeftToNav,
+          onMoveDownToGrid = { runCatching { firstItemFocusRequester.requestFocus() }.isSuccess },
+          onClick = {
+            if (!selected) {
+              state.selectedType = option.type
+              coroutineScope.launch {
+                loadDynamicFirstPage(videoRepository, state, forceRefresh = true)
+              }
+            }
+          },
+        )
+      }
+    }
+    UserFeedContent(
+      state = state.state,
+      loadingMessage = stringResource(R.string.dynamic_loading),
+      emptyMessage = stringResource(R.string.dynamic_empty),
+      failedMessage = { message -> stringResource(R.string.dynamic_failed_with_message, message) },
+      cardMode = cardMode,
+      firstItemFocusRequester = firstItemFocusRequester,
+      restoredFocusIndex = state.focusedVideoIndex,
+      restoredFocusKey = state.focusedVideoKey,
+      restoreFocusRequestKey = restoreFocusRequestKey,
+      onRestoreFocusHandled = onRestoreFocusHandled,
+      onFocusedIndexChange = { index, video ->
+        state.focusedVideoIndex = index
+        state.focusedVideoKey = video.focusRestoreKey()
+      },
+      onRetry = {
+        coroutineScope.launch {
+          loadDynamicFirstPage(videoRepository, state, forceRefresh = true)
+        }
+      },
+      onLoadMore = { loadDynamicNextPage(videoRepository, coroutineScope, state) },
+      onMoveUpFromFirstRow = { runCatching { typeFocusRequester.requestFocus() }.isSuccess },
+      onMoveLeftToNav = onMoveLeftToNav,
+      onVideoSelected = onVideoSelected,
+      onOwnerSelected = onOwnerSelected,
+      onCardLongPress = onCardLongPress,
+    )
+  }
+}
+
+private data class DynamicTypeOption(val type: String, val labelRes: Int)
 
 @Composable
 private fun FavoriteFeedContent(

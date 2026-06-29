@@ -210,6 +210,8 @@
     <string name="feed_footer_loading">加载中…</string>
     <string name="feed_footer_end">没有更多了</string>
     <string name="feed_footer_failed">加载失败</string>
+    <string name="feed_type_all">全部</string>
+    <string name="feed_type_video">视频</string>
     <string name="home_section_recommend">推荐</string>
     <string name="home_section_popular">热门</string>
     <string name="home_section_douga">动画</string>
