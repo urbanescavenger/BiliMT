@@ -1,5 +1,6 @@
 package com.kirin.mt.core.network
 
+import com.kirin.mt.core.model.Comment
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
 import kotlinx.coroutines.flow.first
@@ -93,6 +94,39 @@ internal class UserFeedRepository(
     ).rootObject()
     root.requireBiliCodeOk("toview add")
     return true
+  }
+
+  suspend fun getComments(
+    aid: Long,
+    page: Int,
+    sort: Int,
+    pageSize: Int = 20,
+  ): CommentPage {
+    if (aid <= 0L) return CommentPage(comments = emptyList(), currentPage = page, hasMore = false)
+    val sessData = sessionStore.sessData.first()
+
+    val root = apiClient.getJson(
+      url = BiliApiEndpoints.CommentReply,
+      params = mapOf(
+        "oid" to aid.toString(),
+        "type" to "1",
+        "pn" to page.toString(),
+        "ps" to pageSize.toString(),
+        "sort" to sort.toString(),
+      ),
+      sessData = sessData,
+    ).rootObject()
+    root.requireBiliCodeOk("comments")
+
+    val data = root.obj("data") ?: return CommentPage(comments = emptyList(), currentPage = page, hasMore = false)
+    val replies = data["replies"] as? JsonArray
+      ?: return CommentPage(comments = emptyList(), currentPage = page, hasMore = false)
+    val comments = replies
+      .mapNotNull { it.asObjectOrNull() }
+      .map(VideoSummaryMappers::fromComment)
+    val count = data.obj("page")?.int("count") ?: comments.size
+    val hasMore = page * pageSize < count && comments.isNotEmpty()
+    return CommentPage(comments = comments, currentPage = page, hasMore = hasMore)
   }
 
   suspend fun getHistoryPage(
@@ -228,5 +262,11 @@ data class FavoriteFolder(
 
 data class FavoriteFolderPage(
   val videos: List<VideoSummary>,
+  val hasMore: Boolean,
+)
+
+data class CommentPage(
+  val comments: List<Comment>,
+  val currentPage: Int,
   val hasMore: Boolean,
 )

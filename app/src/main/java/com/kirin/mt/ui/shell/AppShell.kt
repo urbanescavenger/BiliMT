@@ -220,6 +220,7 @@ fun BiliTvApp(
   var spaceOrigin by remember { mutableStateOf<SpaceOrigin?>(null) }
   var spacePlaybackBehind by remember { mutableStateOf(false) }
   var spaceFocusRestoreRequestKey by remember { mutableIntStateOf(0) }
+  var commentRequest by remember { mutableStateOf<com.kirin.mt.ui.feed.CommentRequest?>(null) }
   val upSpaceUiState = remember { UpSpaceUiState() }
   val spaceFocusRequester = remember { FocusRequester() }
   val pgcUiState = remember { com.kirin.mt.ui.pgc.PgcUiState() }
@@ -630,6 +631,12 @@ fun BiliTvApp(
                     spaceOrigin = SpaceOrigin.Content
                     spacePlaybackBehind = false
                     spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+                  },
+                  onCommentSelected = { video ->
+                    commentRequest = com.kirin.mt.ui.feed.CommentRequest(
+                      aid = video.aid,
+                      title = video.title,
+                    )
                   },
                 )
                 AppDestination.Settings -> SettingsScreen(
@@ -1094,6 +1101,15 @@ fun BiliTvApp(
           modifier = Modifier
             .fillMaxSize()
             .background(BiliColors.VideoBlack.copy(alpha = transitionScrimAlpha)),
+        )
+      }
+
+      commentRequest?.let { request ->
+        com.kirin.mt.ui.feed.CommentScreen(
+          aid = request.aid,
+          title = request.title,
+          videoRepository = videoRepository,
+          onDismiss = { commentRequest = null },
         )
       }
     }

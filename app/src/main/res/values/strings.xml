@@ -212,6 +212,17 @@
     <string name="feed_footer_failed">加载失败</string>
     <string name="feed_type_all">全部</string>
     <string name="feed_type_video">视频</string>
+    <string name="feed_action_comment">查看评论</string>
+    <string name="nav_comment">评论</string>
+    <string name="comment_loading">正在加载评论...</string>
+    <string name="comment_empty">暂无评论</string>
+    <string name="comment_failed_with_message">评论加载失败。%1$s</string>
+    <string name="comment_sort_hot">热门</string>
+    <string name="comment_sort_latest">最新</string>
+    <string name="comment_anonymous">匿名用户</string>
+    <string name="comment_empty_content">(无文字内容)</string>
+    <string name="comment_like_count">赞 %1$d</string>
+    <string name="comment_reply_count">回复 %1$d</string>
     <string name="home_section_recommend">推荐</string>
     <string name="home_section_popular">热门</string>
     <string name="home_section_douga">动画</string>

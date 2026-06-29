@@ -1,5 +1,20 @@
 # BiliMT 版本发布说明
 
+## v1.1.0-alpha.6
+
+动态详情页 + 评论(Phase D):长按菜单「查看评论」进入全屏评论页,热门/最新排序、焦点驱动翻页。
+
+### 新增
+- **评论 API**：新增 `BiliApiEndpoints.CommentReply`(`/x/v2/reply`,`pn` 分页),`UserFeedRepository.getComments(aid, page, sort)` + `Comment` 模型(`rpid/uname/avatar/mid/content/like/reply_count/ctime`)+ `fromComment` mapper,`VideoRepository.getComments` 代理。oid=视频 aid、type=1。
+- **评论页 `CommentScreen`**：Dialog 全屏覆盖层。顶部标题 + 热门(sort=1)/最新(sort=0)排序 pill(复用 `BiliCapsuleTabRow`/`BiliPillTab`),切换排序重载首页。`LazyColumn` 评论项(头像/用户名/相对时间/正文/点赞数/回复数),焦点驱动翻页(聚焦到倒数第 3 项触发 `loadCommentsNextPage`),尾部 footer(加载中/没有更多了/失败+重试,复用 Phase C footer 模式)。空/失败/重试复用 `FeedStatusScreen`。Back 关闭 Dialog。楼中楼二级回复本期不展开,仅显示回复数。
+- **菜单「查看评论」入口**：`BiliActionSheet` 在点赞前加「查看评论」项(`video.aid > 0` 才启用),`UserFeedScreen` 加 `onCommentSelected` 回调;AppShell 用 `commentRequest: CommentRequest?(aid,title)` 状态驱动(参照 `spaceRequest` 模式),渲染 `CommentScreen` 覆盖层。
+
+### 已知待验(真机,无 BV 参照)
+- 评论 API `/x/v2/reply` 是否需要 wbi 签名:若返回 code!=0(被风控),需改走 wbi 或 `/x/v2/reply/main` cursor。先按非 wbi GET 实现,真机抓包确认。
+- 长按动态 → 菜单「查看评论」→ 全屏评论页打开;热门/最新切换重载;翻到底部加载更多;Back 关闭回动态页。
+- 评论项 D-pad 上下移动、排序 pill 与列表间焦点切换正常。
+- 仅视频动态有 aid 可进评论;无 aid 的菜单项置灰。
+
 ## v1.1.0-alpha.5
 
 动态页体验完善(Phase C)+ 按类型过滤(Phase B)合并发布。(alpha.3/alpha.4 因 `TvVideoGrid` footer 漏 `import Box` 编译失败,tag 已被 CI 孤儿清理,本 alpha 修复并合并。)

@@ -1,5 +1,6 @@
 package com.kirin.mt.core.network
 
+import com.kirin.mt.core.model.Comment
 import com.kirin.mt.core.model.VideoSummary
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -141,6 +142,21 @@ internal object VideoSummaryMappers {
       duration = BiliNumberParser.parseDuration(json["duration"]),
       pubdate = json.long("pubtime"),
       badge = filterBadge(json.string("badge")),
+    )
+  }
+
+  fun fromComment(json: JsonObject): Comment {
+    val member = json.obj("member")
+    val content = json.obj("content")
+    return Comment(
+      id = json.long("rpid"),
+      uname = member?.string("uname").orEmpty(),
+      avatar = fixPicUrl(member?.string("avatar_url").orEmpty()),
+      mid = member?.long("mid") ?: 0L,
+      content = content?.string("message").orEmpty(),
+      likeCount = json.int("like"),
+      replyCount = json.int("reply_count"),
+      ctime = json.long("ctime"),
     )
   }
 

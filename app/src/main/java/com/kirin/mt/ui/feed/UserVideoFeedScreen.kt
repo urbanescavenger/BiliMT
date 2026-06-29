@@ -130,6 +130,7 @@ internal fun UserFeedScreen(
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary, Boolean) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
+  onCommentSelected: (VideoSummary) -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
   val context = LocalContext.current
@@ -265,6 +266,7 @@ internal fun UserFeedScreen(
     val likeLabel = stringResource(R.string.feed_action_like)
     val toviewLabel = stringResource(R.string.feed_action_toview)
     val upspaceLabel = stringResource(R.string.feed_action_upspace)
+    val commentLabel = stringResource(R.string.feed_action_comment)
     val likeDone = stringResource(R.string.feed_action_like_done)
     val likeFailed = stringResource(R.string.feed_action_like_failed)
     val toviewDone = stringResource(R.string.feed_action_toview_done)
@@ -273,6 +275,11 @@ internal fun UserFeedScreen(
     BiliActionSheet(
       title = stringResource(R.string.feed_action_sheet_title),
       items = listOf(
+        BiliActionItem(
+          label = commentLabel,
+          enabled = video.aid > 0L,
+          onClick = { onCommentSelected(video) },
+        ),
         BiliActionItem(
           label = likeLabel,
           enabled = video.dynId.isNotBlank(),

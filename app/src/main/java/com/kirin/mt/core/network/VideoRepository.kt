@@ -182,6 +182,10 @@ class VideoRepository(
     return userFeedRepository.addToView(aid)
   }
 
+  suspend fun getComments(aid: Long, page: Int, sort: Int): CommentPage {
+    return userFeedRepository.getComments(aid = aid, page = page, sort = sort)
+  }
+
   suspend fun getHistoryPage(
     pageSize: Int = HistoryPageSize,
     viewAt: Long = 0L,
