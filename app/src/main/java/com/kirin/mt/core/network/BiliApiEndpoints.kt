@@ -26,6 +26,7 @@ object BiliApiEndpoints {
  const val HistoryCursor = "$ApiBase/x/web-interface/history/cursor"
  const val FavoriteFolderListAll = "$ApiBase/x/v3/fav/folder/created/list-all"
  const val FavoriteResourceList = "$ApiBase/x/v3/fav/resource/list"
+ const val FollowingSeasonList = "$ApiBase/x/space/bangumi/follow/list"
  const val Search = "$ApiBase/x/web-interface/wbi/search/type"
   const val SearchSuggest = "https://s.search.bilibili.com/main/suggest"
   const val PlayUrl = "$ApiBase/x/player/wbi/playurl"

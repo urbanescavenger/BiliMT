@@ -199,45 +199,79 @@ internal class UserFeedRepository(
       .filter { it.mediaId > 0L }
   }
 
-  suspend fun getFavoriteFolderVideos(
-    mediaId: Long,
+ suspend fun getFavoriteFolderVideos(
+   mediaId: Long,
+   page: Int,
+   pageSize: Int = 20,
+   order: String = "mtime",
+ ): FavoriteFolderPage {
+   if (mediaId <= 0L) {
+     return FavoriteFolderPage(videos = emptyList(), hasMore = false)
+   }
+   val sessData = sessionStore.sessData.first()
+   if (sessData.isNullOrBlank()) {
+     return FavoriteFolderPage(videos = emptyList(), hasMore = false)
+   }
+
+   val root = apiClient.getJson(
+     url = BiliApiEndpoints.FavoriteResourceList,
+     params = mapOf(
+       "media_id" to mediaId.toString(),
+       "pn" to page.toString(),
+       "ps" to pageSize.toString(),
+       "order" to order,
+       "type" to "0",
+       "tid" to "0",
+     ),
+     sessData = sessData,
+   ).rootObject()
+   root.requireBiliCodeOk("favorite folder videos")
+
+   val data = root.obj("data") ?: return FavoriteFolderPage(videos = emptyList(), hasMore = false)
+   val medias = data["medias"] as? JsonArray ?: return FavoriteFolderPage(videos = emptyList(), hasMore = false)
+   val videos = medias
+     .mapNotNull { it.asObjectOrNull() }
+     .map(VideoSummaryMappers::fromFavoriteItem)
+     .filter { it.bvid.isNotBlank() }
+
+   return FavoriteFolderPage(
+     videos = videos,
+     hasMore = data.boolean("has_more") && videos.isNotEmpty(),
+   )
+ }
+
+  suspend fun getFollowingSeasons(
+    mid: Long,
     page: Int,
-    pageSize: Int = 20,
-    order: String = "mtime",
-  ): FavoriteFolderPage {
-    if (mediaId <= 0L) {
-      return FavoriteFolderPage(videos = emptyList(), hasMore = false)
-    }
+    pageSize: Int = 30,
+    type: Int = 1,
+    status: Int = 0,
+  ): FollowingSeasonPage {
+    if (mid <= 0L) return FollowingSeasonPage(seasons = emptyList(), hasMore = false)
     val sessData = sessionStore.sessData.first()
     if (sessData.isNullOrBlank()) {
-      return FavoriteFolderPage(videos = emptyList(), hasMore = false)
+      return FollowingSeasonPage(seasons = emptyList(), hasMore = false)
     }
 
     val root = apiClient.getJson(
-      url = BiliApiEndpoints.FavoriteResourceList,
+      url = BiliApiEndpoints.FollowingSeasonList,
       params = mapOf(
-        "media_id" to mediaId.toString(),
+        "type" to type.toString(),
+        "follow_status" to status.toString(),
         "pn" to page.toString(),
         "ps" to pageSize.toString(),
-        "order" to order,
-        "type" to "0",
-        "tid" to "0",
+        "vmid" to mid.toString(),
       ),
       sessData = sessData,
     ).rootObject()
-    root.requireBiliCodeOk("favorite folder videos")
+    root.requireBiliCodeOk("following seasons")
 
-    val data = root.obj("data") ?: return FavoriteFolderPage(videos = emptyList(), hasMore = false)
-    val medias = data["medias"] as? JsonArray ?: return FavoriteFolderPage(videos = emptyList(), hasMore = false)
-    val videos = medias
-      .mapNotNull { it.asObjectOrNull() }
-      .map(VideoSummaryMappers::fromFavoriteItem)
-      .filter { it.bvid.isNotBlank() }
-
-    return FavoriteFolderPage(
-      videos = videos,
-      hasMore = data.boolean("has_more") && videos.isNotEmpty(),
-    )
+    val data = root.obj("data") ?: return FollowingSeasonPage(seasons = emptyList(), hasMore = false)
+    val list = data["list"] as? JsonArray ?: return FollowingSeasonPage(seasons = emptyList(), hasMore = false)
+    val seasons = list.mapNotNull { it.asObjectOrNull() }.map(VideoSummaryMappers::fromFollowingSeason)
+    val total = data.int("total")
+    val hasMore = page * pageSize < total && seasons.isNotEmpty()
+    return FollowingSeasonPage(seasons = seasons, hasMore = hasMore)
   }
 }
 
@@ -268,5 +302,21 @@ data class FavoriteFolderPage(
 data class CommentPage(
   val comments: List<Comment>,
   val currentPage: Int,
+  val hasMore: Boolean,
+)
+
+data class FollowingSeason(
+  val seasonId: Int,
+  val title: String,
+  val cover: String,
+  val badge: String,
+  val progress: String,
+  val newEpDesc: String,
+  val seasonTypeName: String,
+  val firstEpId: Int,
+)
+
+data class FollowingSeasonPage(
+  val seasons: List<FollowingSeason>,
   val hasMore: Boolean,
 )

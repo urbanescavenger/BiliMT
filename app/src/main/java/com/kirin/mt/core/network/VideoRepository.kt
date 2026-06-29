@@ -220,6 +220,22 @@ class VideoRepository(
     )
   }
 
+  suspend fun getFollowingSeasons(
+    page: Int,
+    pageSize: Int = FollowingSeasonPageSize,
+    type: Int = 1,
+    status: Int = 0,
+  ): FollowingSeasonPage {
+    val mid = sessionStore.session.first().mid ?: 0L
+    return userFeedRepository.getFollowingSeasons(
+      mid = mid,
+      page = page,
+      pageSize = pageSize,
+      type = type,
+      status = status,
+    )
+  }
+
   private companion object {
     const val SearchOrderTotalRank = "totalrank"
     const val HistoryPageSize = 30
@@ -229,5 +245,6 @@ class VideoRepository(
     const val FollowAttribute = 2
     const val MutualFollowAttribute = 6
     const val FavoriteFolderPageSize = 20
+    const val FollowingSeasonPageSize = 30
   }
 }

@@ -638,6 +638,12 @@ fun BiliTvApp(
                       title = video.title,
                     )
                   },
+                  onSeasonSelected = { season ->
+                    pgcSeasonRequest = com.kirin.mt.ui.pgc.PgcSeasonRequest(
+                      seasonId = season.seasonId,
+                      epId = season.firstEpId,
+                    )
+                  },
                 )
                 AppDestination.Settings -> SettingsScreen(
                   settings = settings,

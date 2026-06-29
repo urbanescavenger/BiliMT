@@ -140,8 +140,23 @@ internal object VideoSummaryMappers {
       view = BiliNumberParser.toInt(cntInfo?.get("play")),
       danmaku = BiliNumberParser.toInt(cntInfo?.get("danmaku")),
       duration = BiliNumberParser.parseDuration(json["duration"]),
-      pubdate = json.long("pubtime"),
-      badge = filterBadge(json.string("badge")),
+     pubdate = json.long("pubtime"),
+     badge = filterBadge(json.string("badge")),
+   )
+ }
+
+  fun fromFollowingSeason(json: JsonObject): FollowingSeason {
+    val newEp = json.obj("new_ep")
+    val firstEp = json.obj("first_ep_info")
+    return FollowingSeason(
+      seasonId = json.int("season_id"),
+      title = json.string("title"),
+      cover = fixPicUrl(json.string("cover")),
+      badge = json.string("badge"),
+      progress = json.string("progress"),
+      newEpDesc = newEp?.string("index_show").orEmpty(),
+      seasonTypeName = json.string("season_type_name"),
+      firstEpId = firstEp?.int("id") ?: 0,
     )
   }
 

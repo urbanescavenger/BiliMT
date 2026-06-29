@@ -199,6 +199,16 @@
     <string name="favorite_empty">收藏夹为空</string>
     <string name="favorite_failed_with_message">收藏夹加载失败。%1$s</string>
     <string name="favorite_signed_out">请先登录，登录后可查看收藏夹。</string>
+    <string name="bangumi_loading">正在加载追番列表...</string>
+    <string name="bangumi_empty">暂无追番</string>
+    <string name="bangumi_failed_with_message">追番列表加载失败。%1$s</string>
+    <string name="bangumi_signed_out">请先登录，登录后可查看追番列表。</string>
+    <string name="bangumi_type_bangumi">番剧</string>
+    <string name="bangumi_type_cinema">影视</string>
+    <string name="bangumi_status_all">全部</string>
+    <string name="bangumi_status_want">想看</string>
+    <string name="bangumi_status_watching">在看</string>
+    <string name="bangumi_status_watched">看过</string>
     <string name="feed_action_sheet_title">动态操作</string>
     <string name="feed_action_like">点赞</string>
     <string name="feed_action_toview">稍后再看</string>
@@ -260,6 +270,7 @@
     <string name="action_retry">重试</string>
     <string name="nav_dynamic">&#21160;&#24577;</string>
     <string name="nav_favorite">&#25910;&#34255;</string>
+    <string name="nav_bangumi">&#36861;&#30058;</string>
     <string name="placeholder_dynamic">&#21160;&#24577;&#20250;&#22312;&#36134;&#21495; API &#25509;&#20837;&#21518;&#23454;&#29616;&#12290;</string>
     <string name="settings_account_section">&#36134;&#21495;</string>
     <string name="settings_login_title">&#30331;&#24405; B &#31449;</string>

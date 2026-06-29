@@ -42,6 +42,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.network.FollowingSeason
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.ui.common.BiliActionItem
 import com.kirin.mt.ui.common.BiliActionSheet
@@ -68,7 +69,32 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-internal enum class UserFeedTab { Dynamic, History, Favorite }
+internal enum class UserFeedTab { Dynamic, History, Favorite, Bangumi }
+
+internal enum class BangumiFollowType(val id: Int, val labelRes: Int) {
+  Bangumi(id = 1, labelRes = R.string.bangumi_type_bangumi),
+  Cinema(id = 2, labelRes = R.string.bangumi_type_cinema),
+}
+
+internal enum class BangumiFollowStatus(val id: Int, val labelRes: Int) {
+  All(id = 0, labelRes = R.string.bangumi_status_all),
+  Want(id = 1, labelRes = R.string.bangumi_status_want),
+  Watching(id = 2, labelRes = R.string.bangumi_status_watching),
+  Watched(id = 3, labelRes = R.string.bangumi_status_watched),
+}
+
+@Stable
+internal class BangumiFollowUiState {
+  var selectedType by mutableStateOf(BangumiFollowType.Bangumi)
+  var selectedStatus by mutableStateOf(BangumiFollowStatus.All)
+  var currentPage by mutableIntStateOf(0)
+  var state by mutableStateOf<UserFeedState>(UserFeedState.Loading)
+  var focusedVideoIndex by mutableIntStateOf(0)
+  var focusedVideoKey by mutableStateOf("")
+  var hasLoadedContent by mutableStateOf(false)
+  var loadedOnce by mutableStateOf(false)
+  var handledManualRefreshKey by mutableIntStateOf(0)
+}
 
 @Stable
 internal class DynamicFeedUiState {
@@ -114,6 +140,7 @@ internal class UserFeedUiState {
   val dynamic = DynamicFeedUiState()
   val history = HistoryFeedUiState()
   val favorite = FavoriteFeedUiState()
+  val bangumi = BangumiFollowUiState()
 }
 
 @Composable
@@ -129,8 +156,9 @@ internal fun UserFeedScreen(
   onRestoreFocusHandled: (Int) -> Unit,
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary, Boolean) -> Unit,
-  onOwnerSelected: (VideoSummary) -> Unit = {},
-  onCommentSelected: (VideoSummary) -> Unit = {},
+ onOwnerSelected: (VideoSummary) -> Unit = {},
+ onCommentSelected: (VideoSummary) -> Unit = {},
+ onSeasonSelected: (com.kirin.mt.core.network.FollowingSeason) -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
   val context = LocalContext.current
@@ -150,20 +178,26 @@ internal fun UserFeedScreen(
         feedState.history,
         forceRefresh = autoRefreshOnSwitch,
       )
-      UserFeedTab.Favorite -> loadFavoriteFolders(
-        videoRepository,
-        feedState.favorite,
+     UserFeedTab.Favorite -> loadFavoriteFolders(
+       videoRepository,
+       feedState.favorite,
+      forceRefresh = autoRefreshOnSwitch,
+     )
+     UserFeedTab.Bangumi -> loadBangumiFirstPage(
+       videoRepository,
+       feedState.bangumi,
        forceRefresh = autoRefreshOnSwitch,
-      )
+     )
     }
   }
 
   LaunchedEffect(manualRefreshKey) {
     if (!isLoggedIn) return@LaunchedEffect
-    val handledKey = when (selectedTab) {
-      UserFeedTab.Dynamic -> feedState.dynamic.handledManualRefreshKey
-      UserFeedTab.History -> feedState.history.handledManualRefreshKey
-      UserFeedTab.Favorite -> feedState.favorite.handledManualRefreshKey
+   val handledKey = when (selectedTab) {
+     UserFeedTab.Dynamic -> feedState.dynamic.handledManualRefreshKey
+     UserFeedTab.History -> feedState.history.handledManualRefreshKey
+     UserFeedTab.Favorite -> feedState.favorite.handledManualRefreshKey
+     UserFeedTab.Bangumi -> feedState.bangumi.handledManualRefreshKey
     }
     if (manualRefreshKey > 0 && manualRefreshKey != handledKey) {
       when (selectedTab) {
@@ -175,10 +209,14 @@ internal fun UserFeedScreen(
           feedState.history.handledManualRefreshKey = manualRefreshKey
           loadHistoryFirstPage(videoRepository, feedState.history, forceRefresh = true)
         }
-        UserFeedTab.Favorite -> {
-          feedState.favorite.handledManualRefreshKey = manualRefreshKey
-          loadFavoriteFolders(videoRepository, feedState.favorite, forceRefresh = true)
-        }
+       UserFeedTab.Favorite -> {
+         feedState.favorite.handledManualRefreshKey = manualRefreshKey
+         loadFavoriteFolders(videoRepository, feedState.favorite, forceRefresh = true)
+       }
+       UserFeedTab.Bangumi -> {
+         feedState.bangumi.handledManualRefreshKey = manualRefreshKey
+         loadBangumiFirstPage(videoRepository, feedState.bangumi, forceRefresh = true)
+       }
       }
     }
   }
@@ -193,11 +231,12 @@ internal fun UserFeedScreen(
     )
     if (!isLoggedIn) {
       val message = stringResource(
-        when (selectedTab) {
-          UserFeedTab.History -> R.string.history_signed_out
-          UserFeedTab.Favorite -> R.string.favorite_signed_out
-          UserFeedTab.Dynamic -> R.string.dynamic_signed_out
-        },
+       when (selectedTab) {
+         UserFeedTab.History -> R.string.history_signed_out
+         UserFeedTab.Favorite -> R.string.favorite_signed_out
+         UserFeedTab.Dynamic -> R.string.dynamic_signed_out
+         UserFeedTab.Bangumi -> R.string.bangumi_signed_out
+       },
       )
       FeedStatusScreen(message = message)
     } else {
@@ -255,9 +294,20 @@ internal fun UserFeedScreen(
             onMoveLeftToNav = onMoveLeftToNav,
            onVideoSelected = { video -> onVideoSelected(video, false) },
            onOwnerSelected = onOwnerSelected,
-           onCardLongPress = { video -> onOwnerSelected(video) },
-          )
-        }
+          onCardLongPress = { video -> onOwnerSelected(video) },
+         )
+         UserFeedTab.Bangumi -> BangumiFollowContent(
+           state = feedState.bangumi,
+           firstItemFocusRequester = firstItemFocusRequester,
+           restoreFocusRequestKey = restoreFocusRequestKey,
+           onRestoreFocusHandled = onRestoreFocusHandled,
+           tabFocusRequester = tabFocusRequester,
+           coroutineScope = coroutineScope,
+           videoRepository = videoRepository,
+           onMoveLeftToNav = onMoveLeftToNav,
+           onSeasonSelected = onSeasonSelected,
+         )
+       }
       }
     }
   }
@@ -335,10 +385,11 @@ private fun UserFeedTabRow(
       BiliPillTab(
         text = stringResource(
           when (tab) {
-            UserFeedTab.Dynamic -> R.string.nav_dynamic
-            UserFeedTab.History -> R.string.nav_history
-            UserFeedTab.Favorite -> R.string.nav_favorite
-          },
+           UserFeedTab.Dynamic -> R.string.nav_dynamic
+           UserFeedTab.History -> R.string.nav_history
+           UserFeedTab.Favorite -> R.string.nav_favorite
+           UserFeedTab.Bangumi -> R.string.nav_bangumi
+         },
         ),
         selected = selected,
         modifier = if (selected) Modifier.focusRequester(tabFocusRequester) else Modifier,
@@ -636,6 +687,82 @@ private fun loadFavoriteNextPage(
   }
 }
 
+private suspend fun loadBangumiFirstPage(
+  videoRepository: VideoRepository,
+  state: BangumiFollowUiState,
+  forceRefresh: Boolean,
+) {
+  if (!forceRefresh && state.loadedOnce) return
+  state.state = UserFeedState.Loading
+  state.focusedVideoIndex = 0
+  state.focusedVideoKey = ""
+  state.currentPage = 0
+  state.state = try {
+    val page = videoRepository.getFollowingSeasons(
+      page = 1,
+      type = state.selectedType.id,
+      status = state.selectedStatus.id,
+    )
+    state.currentPage = 1
+    state.loadedOnce = true
+    state.hasLoadedContent = page.seasons.isNotEmpty()
+    if (page.seasons.isEmpty()) {
+      UserFeedState.Empty
+    } else {
+      UserFeedState.Success(
+        seasons = page.seasons,
+        loadingMore = false,
+        endReached = !page.hasMore,
+        loadMoreError = "",
+      )
+    }
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    state.loadedOnce = true
+    UserFeedState.Failed(error.message.orEmpty())
+  }
+}
+
+private fun loadBangumiNextPage(
+  videoRepository: VideoRepository,
+  coroutineScope: CoroutineScope,
+  state: BangumiFollowUiState,
+) {
+  val currentState = state.state as? UserFeedState.Success ?: return
+  if (currentState.loadingMore || currentState.endReached) return
+  val nextPage = state.currentPage + 1
+  val typeToLoad = state.selectedType.id
+  val statusToLoad = state.selectedStatus.id
+  state.state = currentState.copy(loadingMore = true, loadMoreError = "")
+  coroutineScope.launch {
+    state.state = try {
+      val page = videoRepository.getFollowingSeasons(
+        page = nextPage,
+        type = typeToLoad,
+        status = statusToLoad,
+      )
+      state.currentPage = nextPage
+      val latestState = state.state as? UserFeedState.Success ?: return@launch
+      val merged = latestState.seasons.appendSeasonsUnique(page.seasons)
+      if (merged.isNotEmpty()) state.hasLoadedContent = true
+      latestState.copy(
+        seasons = merged,
+        loadingMore = false,
+        endReached = !page.hasMore ||
+          page.seasons.isEmpty() ||
+          merged.size == latestState.seasons.size,
+        loadMoreError = "",
+      )
+    } catch (error: CancellationException) {
+      throw error
+    } catch (error: Exception) {
+      val latestState = state.state as? UserFeedState.Success ?: return@launch
+      latestState.copy(loadingMore = false, loadMoreError = error.message.orEmpty())
+    }
+  }
+}
+
 @Composable
 private fun DynamicFeedContent(
   state: DynamicFeedUiState,
@@ -805,6 +932,148 @@ private fun FavoriteFeedContent(
 }
 
 @Composable
+private fun BangumiFollowContent(
+  state: BangumiFollowUiState,
+  firstItemFocusRequester: FocusRequester,
+  restoreFocusRequestKey: Int,
+  onRestoreFocusHandled: (Int) -> Unit,
+  tabFocusRequester: FocusRequester,
+  coroutineScope: CoroutineScope,
+  videoRepository: VideoRepository,
+  onMoveLeftToNav: () -> Boolean,
+  onSeasonSelected: (com.kirin.mt.core.network.FollowingSeason) -> Unit,
+) {
+  val filterFocusRequester = remember { FocusRequester() }
+
+  LaunchedEffect(state.selectedType, state.selectedStatus) {
+    if (state.loadedOnce) {
+      loadBangumiFirstPage(videoRepository, state, forceRefresh = true)
+    }
+  }
+
+  Column(modifier = Modifier.fillMaxSize()) {
+    BiliCapsuleTabRow(
+      itemCount = BangumiFollowType.entries.size + BangumiFollowStatus.entries.size,
+      modifier = Modifier,
+    ) {
+      BangumiFollowType.entries.forEach { type ->
+        val selected = type == state.selectedType
+        BiliPillTab(
+          text = stringResource(type.labelRes),
+          selected = selected,
+          modifier = if (selected) Modifier.focusRequester(filterFocusRequester) else Modifier,
+          onMoveUpToNav = onMoveLeftToNav,
+          onMoveDownToGrid = { runCatching { firstItemFocusRequester.requestFocus() }.isSuccess },
+          onClick = {
+            if (!selected) {
+              state.selectedType = type
+              coroutineScope.launch {
+                loadBangumiFirstPage(videoRepository, state, forceRefresh = true)
+              }
+            }
+          },
+        )
+      }
+      BangumiFollowStatus.entries.forEach { status ->
+        val selected = status == state.selectedStatus
+        BiliPillTab(
+          text = stringResource(status.labelRes),
+          selected = selected,
+          modifier = if (selected) Modifier.focusRequester(filterFocusRequester) else Modifier,
+          onMoveUpToNav = onMoveLeftToNav,
+          onMoveDownToGrid = { runCatching { firstItemFocusRequester.requestFocus() }.isSuccess },
+          onClick = {
+            if (!selected) {
+              state.selectedStatus = status
+              coroutineScope.launch {
+                loadBangumiFirstPage(videoRepository, state, forceRefresh = true)
+              }
+            }
+          },
+        )
+      }
+    }
+
+    val feedState = state.state
+    when (feedState) {
+      UserFeedState.Loading -> VideoGridSkeleton()
+      UserFeedState.Empty -> FeedStatusScreen(message = stringResource(R.string.bangumi_empty))
+      is UserFeedState.Failed -> FeedStatusScreen(
+        message = stringResource(R.string.bangumi_failed_with_message, feedState.message),
+        actionLabel = stringResource(R.string.action_retry),
+        onAction = {
+          coroutineScope.launch {
+            loadBangumiFirstPage(videoRepository, state, forceRefresh = true)
+          }
+        },
+      )
+      is UserFeedState.Success -> {
+        val seasons = feedState.seasons
+       if (seasons.isEmpty()) {
+         FeedStatusScreen(message = stringResource(R.string.bangumi_empty))
+       } else {
+         BangumiGrid(
+           seasons = seasons,
+           firstItemFocusRequester = firstItemFocusRequester,
+           restoredFocusIndex = seasons.resolveSeasonFocusIndex(
+             focusKey = state.focusedVideoKey,
+             fallbackIndex = state.focusedVideoIndex,
+           ),
+           restoreFocusRequestKey = restoreFocusRequestKey,
+           onRestoreFocusHandled = onRestoreFocusHandled,
+           onFocusedIndexChange = { index, season ->
+             state.focusedVideoIndex = index
+             state.focusedVideoKey = season.seasonFocusKey()
+           },
+           onLoadMore = { loadBangumiNextPage(videoRepository, coroutineScope, state) },
+           onMoveUpFromFirstRow = { runCatching { filterFocusRequester.requestFocus() }.isSuccess },
+           onMoveLeftToNav = onMoveLeftToNav,
+           onSeasonSelected = onSeasonSelected,
+           footer = when {
+             feedState.loadMoreError.isNotBlank() -> GridFooterState.Error(feedState.loadMoreError)
+             feedState.loadingMore -> GridFooterState.Loading
+             feedState.endReached -> GridFooterState.EndReached
+             else -> GridFooterState.None
+           },
+         )
+       }
+      }
+    }
+  }
+}
+
+private fun com.kirin.mt.core.network.FollowingSeason.toVideoSummary(): VideoSummary {
+  return VideoSummary(
+    bvid = "season-$seasonId",
+    title = title,
+    pic = cover,
+    ownerName = seasonTypeName,
+    ownerFace = "",
+    ownerMid = 0L,
+    view = 0,
+    danmaku = 0,
+    duration = 0,
+    pubdate = 0L,
+    badge = badge,
+  )
+}
+
+private fun com.kirin.mt.core.network.FollowingSeason.seasonFocusKey(): String {
+  return "season-$seasonId"
+}
+
+private fun List<com.kirin.mt.core.network.FollowingSeason>.resolveSeasonFocusIndex(
+  focusKey: String,
+  fallbackIndex: Int,
+): Int {
+  if (isEmpty()) return 0
+  val lastIndex = lastIndex
+  if (focusKey.isBlank()) return fallbackIndex.coerceIn(0, lastIndex)
+  val keyIndex = indexOfFirst { it.seasonFocusKey() == focusKey }
+  return keyIndex.coerceAtLeast(0).coerceAtMost(lastIndex)
+}
+
+@Composable
 private fun UserFeedContent(
   state: UserFeedState,
   loadingMessage: String,
@@ -893,6 +1162,40 @@ private fun UserFeedGrid(
     onCardLongPress = onCardLongPress,
     footer = footer,
     keyFactory = { index, video -> video.feedKey(index) },
+  )
+}
+
+@Composable
+private fun BangumiGrid(
+  seasons: List<FollowingSeason>,
+  firstItemFocusRequester: FocusRequester,
+  restoredFocusIndex: Int,
+  restoreFocusRequestKey: Int,
+  onRestoreFocusHandled: (Int) -> Unit,
+  onFocusedIndexChange: (Int, FollowingSeason) -> Unit,
+  onLoadMore: () -> Unit,
+  onMoveUpFromFirstRow: () -> Boolean,
+  onMoveLeftToNav: () -> Boolean,
+  onSeasonSelected: (FollowingSeason) -> Unit,
+  footer: GridFooterState = GridFooterState.None,
+) {
+  val videos = remember(seasons) { seasons.map { it.toVideoSummary() } }
+  val seasonByKey = remember(seasons) { seasons.associateBy { it.seasonFocusKey() } }
+  TvVideoGrid(
+    videos = videos,
+    firstItemFocusRequester = firstItemFocusRequester,
+    restoredFocusIndex = restoredFocusIndex,
+    restoreFocusRequestKey = restoreFocusRequestKey,
+    onRestoreFocusHandled = onRestoreFocusHandled,
+    onFocusedIndexChange = { index, video ->
+      seasonByKey[video.bvid]?.let { onFocusedIndexChange(index, it) }
+    },
+    onLoadMore = onLoadMore,
+    onMoveUpFromFirstRow = onMoveUpFromFirstRow,
+    onMoveLeftToNav = onMoveLeftToNav,
+    onVideoSelected = { video -> seasonByKey[video.bvid]?.let(onSeasonSelected) },
+    keyFactory = { _, video -> video.bvid },
+    footer = footer,
   )
 }
 
@@ -1017,6 +1320,14 @@ private fun List<VideoSummary>.resolveFocusIndex(focusKey: String, fallbackIndex
   return keyIndex ?: fallbackIndex.coerceIn(0, lastIndex)
 }
 
+private fun List<com.kirin.mt.core.network.FollowingSeason>.appendSeasonsUnique(
+  nextSeasons: List<com.kirin.mt.core.network.FollowingSeason>,
+): List<com.kirin.mt.core.network.FollowingSeason> {
+  if (nextSeasons.isEmpty()) return this
+  val knownIds = map { it.seasonId }.toMutableSet()
+  return this + nextSeasons.filter { knownIds.add(it.seasonId) }
+}
+
 private fun VideoSummary.focusRestoreKey(): String {
   return bvid.ifBlank {
     when {
@@ -1044,10 +1355,11 @@ internal sealed interface UserFeedState {
   data object Loading : UserFeedState
   data object Empty : UserFeedState
   data class Failed(val message: String) : UserFeedState
-  data class Success(
-    val videos: List<VideoSummary>,
-    val loadingMore: Boolean,
-    val endReached: Boolean,
-    val loadMoreError: String,
-  ) : UserFeedState
+ data class Success(
+   val videos: List<VideoSummary> = emptyList(),
+   val loadingMore: Boolean,
+   val endReached: Boolean,
+   val loadMoreError: String,
+   val seasons: List<FollowingSeason> = emptyList(),
+ ) : UserFeedState
 }
