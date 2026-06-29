@@ -143,9 +143,10 @@ internal fun UserFeedScreen(
       UserFeedTab.Favorite -> loadFavoriteFolders(
         videoRepository,
         feedState.favorite,
-        forceRefresh = autoRefreshOnSwitch,
+       forceRefresh = autoRefreshOnSwitch,
       )
     }
+  }
 
   LaunchedEffect(manualRefreshKey) {
     if (!isLoggedIn) return@LaunchedEffect
