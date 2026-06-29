@@ -204,6 +204,8 @@
     <string name="action_refresh">重新整理</string>
     <string name="action_retry">重試</string>
     <string name="nav_dynamic">動態</string>
+    <string name="nav_dynamic_video">影片</string>
+    <string name="nav_dynamic_all">綜合</string>
     <string name="placeholder_dynamic">動態會在帳號 API 接入後實現。</string>
     <string name="settings_account_section">帳號</string>
     <string name="settings_login_title">登入 B 站</string>

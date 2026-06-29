@@ -69,7 +69,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-internal enum class UserFeedTab { Dynamic, History, Favorite, Bangumi }
+internal enum class UserFeedTab { DynamicVideo, DynamicAll, History, Favorite, Bangumi }
 
 internal enum class BangumiFollowType(val id: Int, val labelRes: Int) {
   Bangumi(id = 1, labelRes = R.string.bangumi_type_bangumi),
@@ -99,7 +99,6 @@ internal class BangumiFollowUiState {
 @Stable
 internal class DynamicFeedUiState {
   var nextOffset by mutableStateOf("")
-  var selectedType by mutableStateOf("video")
   var state by mutableStateOf<UserFeedState>(UserFeedState.Loading)
   var focusedVideoIndex by mutableIntStateOf(0)
   var focusedVideoKey by mutableStateOf("")
@@ -136,8 +135,9 @@ internal class FavoriteFeedUiState {
 
 @Stable
 internal class UserFeedUiState {
-  var selectedTab by mutableStateOf(UserFeedTab.Dynamic)
-  val dynamic = DynamicFeedUiState()
+  var selectedTab by mutableStateOf(UserFeedTab.DynamicVideo)
+  val dynamicVideo = DynamicFeedUiState()
+  val dynamicAll = DynamicFeedUiState()
   val history = HistoryFeedUiState()
   val favorite = FavoriteFeedUiState()
   val bangumi = BangumiFollowUiState()
@@ -168,9 +168,16 @@ internal fun UserFeedScreen(
   LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab) {
     if (!isLoggedIn) return@LaunchedEffect
     when (selectedTab) {
-      UserFeedTab.Dynamic -> loadDynamicFirstPage(
+      UserFeedTab.DynamicVideo -> loadDynamicFirstPage(
         videoRepository,
-        feedState.dynamic,
+        feedState.dynamicVideo,
+        "video",
+        forceRefresh = autoRefreshOnSwitch,
+      )
+      UserFeedTab.DynamicAll -> loadDynamicFirstPage(
+        videoRepository,
+        feedState.dynamicAll,
+        "all",
         forceRefresh = autoRefreshOnSwitch,
       )
       UserFeedTab.History -> loadHistoryFirstPage(
@@ -194,16 +201,21 @@ internal fun UserFeedScreen(
   LaunchedEffect(manualRefreshKey) {
     if (!isLoggedIn) return@LaunchedEffect
    val handledKey = when (selectedTab) {
-     UserFeedTab.Dynamic -> feedState.dynamic.handledManualRefreshKey
+     UserFeedTab.DynamicVideo -> feedState.dynamicVideo.handledManualRefreshKey
+     UserFeedTab.DynamicAll -> feedState.dynamicAll.handledManualRefreshKey
      UserFeedTab.History -> feedState.history.handledManualRefreshKey
      UserFeedTab.Favorite -> feedState.favorite.handledManualRefreshKey
      UserFeedTab.Bangumi -> feedState.bangumi.handledManualRefreshKey
     }
     if (manualRefreshKey > 0 && manualRefreshKey != handledKey) {
       when (selectedTab) {
-        UserFeedTab.Dynamic -> {
-          feedState.dynamic.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, feedState.dynamic, forceRefresh = true)
+        UserFeedTab.DynamicVideo -> {
+          feedState.dynamicVideo.handledManualRefreshKey = manualRefreshKey
+          loadDynamicFirstPage(videoRepository, feedState.dynamicVideo, "video", forceRefresh = true)
+        }
+        UserFeedTab.DynamicAll -> {
+          feedState.dynamicAll.handledManualRefreshKey = manualRefreshKey
+          loadDynamicFirstPage(videoRepository, feedState.dynamicAll, "all", forceRefresh = true)
         }
         UserFeedTab.History -> {
           feedState.history.handledManualRefreshKey = manualRefreshKey
@@ -234,7 +246,8 @@ internal fun UserFeedScreen(
        when (selectedTab) {
          UserFeedTab.History -> R.string.history_signed_out
          UserFeedTab.Favorite -> R.string.favorite_signed_out
-         UserFeedTab.Dynamic -> R.string.dynamic_signed_out
+         UserFeedTab.DynamicVideo -> R.string.dynamic_signed_out
+         UserFeedTab.DynamicAll -> R.string.dynamic_signed_out
          UserFeedTab.Bangumi -> R.string.bangumi_signed_out
        },
       )
@@ -242,10 +255,27 @@ internal fun UserFeedScreen(
     } else {
       androidx.compose.runtime.key(selectedTab) {
         when (selectedTab) {
-          UserFeedTab.Dynamic -> DynamicFeedContent(
-            state = feedState.dynamic,
+          UserFeedTab.DynamicVideo -> DynamicFeedContent(
+            state = feedState.dynamicVideo,
+            type = "video",
             cardMode = VideoCardMode.Dynamic,
             firstItemFocusRequester = firstItemFocusRequester,
+            tabFocusRequester = tabFocusRequester,
+            restoreFocusRequestKey = restoreFocusRequestKey,
+            onRestoreFocusHandled = onRestoreFocusHandled,
+            coroutineScope = coroutineScope,
+            videoRepository = videoRepository,
+            onMoveLeftToNav = onMoveLeftToNav,
+            onVideoSelected = { video -> onVideoSelected(video, false) },
+            onOwnerSelected = onOwnerSelected,
+            onCardLongPress = { video -> actionSheetVideo = video },
+          )
+          UserFeedTab.DynamicAll -> DynamicFeedContent(
+            state = feedState.dynamicAll,
+            type = "all",
+            cardMode = VideoCardMode.Dynamic,
+            firstItemFocusRequester = firstItemFocusRequester,
+            tabFocusRequester = tabFocusRequester,
             restoreFocusRequestKey = restoreFocusRequestKey,
             onRestoreFocusHandled = onRestoreFocusHandled,
             coroutineScope = coroutineScope,
@@ -385,7 +415,8 @@ private fun UserFeedTabRow(
       BiliPillTab(
         text = stringResource(
           when (tab) {
-           UserFeedTab.Dynamic -> R.string.nav_dynamic
+           UserFeedTab.DynamicVideo -> R.string.nav_dynamic_video
+           UserFeedTab.DynamicAll -> R.string.nav_dynamic_all
            UserFeedTab.History -> R.string.nav_history
            UserFeedTab.Favorite -> R.string.nav_favorite
            UserFeedTab.Bangumi -> R.string.nav_bangumi
@@ -404,6 +435,7 @@ private fun UserFeedTabRow(
 private suspend fun loadDynamicFirstPage(
   videoRepository: VideoRepository,
   state: DynamicFeedUiState,
+  type: String,
   forceRefresh: Boolean,
 ) {
   if (!forceRefresh && state.loadedOnce) {
@@ -415,7 +447,7 @@ private suspend fun loadDynamicFirstPage(
   state.focusedVideoKey = ""
   state.nextOffset = ""
   state.state = try {
-    val page = videoRepository.getDynamicFeed(type = state.selectedType)
+    val page = videoRepository.getDynamicFeed(type = type)
     state.nextOffset = page.offset
     state.loadedOnce = true
     if (page.videos.isEmpty()) {
@@ -441,6 +473,7 @@ private fun loadDynamicNextPage(
   videoRepository: VideoRepository,
   coroutineScope: CoroutineScope,
   state: DynamicFeedUiState,
+  type: String,
 ) {
   val currentState = state.state as? UserFeedState.Success ?: return
   if (currentState.loadingMore || currentState.endReached) {
@@ -453,7 +486,7 @@ private fun loadDynamicNextPage(
     state.state = try {
       val page = videoRepository.getDynamicFeed(
         offset = offsetToLoad,
-        type = state.selectedType,
+        type = type,
       )
       state.nextOffset = page.offset
       val latestState = state.state as? UserFeedState.Success ?: return@launch
@@ -766,8 +799,10 @@ private fun loadBangumiNextPage(
 @Composable
 private fun DynamicFeedContent(
   state: DynamicFeedUiState,
+  type: String,
   cardMode: VideoCardMode,
   firstItemFocusRequester: FocusRequester,
+  tabFocusRequester: FocusRequester,
   restoreFocusRequestKey: Int,
   onRestoreFocusHandled: (Int) -> Unit,
   coroutineScope: CoroutineScope,
@@ -777,38 +812,8 @@ private fun DynamicFeedContent(
   onOwnerSelected: (VideoSummary) -> Unit = {},
   onCardLongPress: (VideoSummary) -> Unit = {},
 ) {
-  val typeFocusRequester = remember { FocusRequester() }
-  // 全部(all) vs 仅视频(video)。本端只渲染 archive 视频动态,「全部」会把图文/专栏等
-  // 类型也拉回但被 fromDynamicItem 丢弃,可见集合与「视频」基本一致;「视频」是更干净的
-  // 连续视频流,作为默认。专栏/番剧等多类型渲染见后续。
-  val typeOptions = remember {
-    listOf(
-      DynamicTypeOption("all", R.string.feed_type_all),
-      DynamicTypeOption("video", R.string.feed_type_video),
-    )
-  }
-
+  // type（video / all）由上层 tab 决定，这里不再有独立的类型过滤行；网格 Up 直接回 tab 行。
   Column(modifier = Modifier.fillMaxSize()) {
-    BiliCapsuleTabRow(itemCount = typeOptions.size, modifier = Modifier) {
-      typeOptions.forEach { option ->
-        val selected = state.selectedType == option.type
-        BiliPillTab(
-          text = stringResource(option.labelRes),
-          selected = selected,
-          modifier = if (selected) Modifier.focusRequester(typeFocusRequester) else Modifier,
-          onMoveUpToNav = onMoveLeftToNav,
-          onMoveDownToGrid = { runCatching { firstItemFocusRequester.requestFocus() }.isSuccess },
-          onClick = {
-            if (!selected) {
-              state.selectedType = option.type
-              coroutineScope.launch {
-                loadDynamicFirstPage(videoRepository, state, forceRefresh = true)
-              }
-            }
-          },
-        )
-      }
-    }
     UserFeedContent(
       state = state.state,
       loadingMessage = stringResource(R.string.dynamic_loading),
@@ -826,11 +831,11 @@ private fun DynamicFeedContent(
       },
       onRetry = {
         coroutineScope.launch {
-          loadDynamicFirstPage(videoRepository, state, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, state, type, forceRefresh = true)
         }
       },
-      onLoadMore = { loadDynamicNextPage(videoRepository, coroutineScope, state) },
-      onMoveUpFromFirstRow = { runCatching { typeFocusRequester.requestFocus() }.isSuccess },
+      onLoadMore = { loadDynamicNextPage(videoRepository, coroutineScope, state, type) },
+      onMoveUpFromFirstRow = { runCatching { tabFocusRequester.requestFocus() }.isSuccess },
       onMoveLeftToNav = onMoveLeftToNav,
       onVideoSelected = onVideoSelected,
       onOwnerSelected = onOwnerSelected,
@@ -838,8 +843,6 @@ private fun DynamicFeedContent(
     )
   }
 }
-
-private data class DynamicTypeOption(val type: String, val labelRes: Int)
 
 @Composable
 private fun FavoriteFeedContent(

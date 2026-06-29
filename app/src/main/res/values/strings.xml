@@ -220,8 +220,6 @@
     <string name="feed_footer_loading">加载中…</string>
     <string name="feed_footer_end">没有更多了</string>
     <string name="feed_footer_failed">加载失败</string>
-    <string name="feed_type_all">全部</string>
-    <string name="feed_type_video">视频</string>
     <string name="feed_action_comment">查看评论</string>
     <string name="nav_comment">评论</string>
     <string name="comment_loading">正在加载评论...</string>
@@ -269,6 +267,8 @@
     <string name="action_refresh">刷新</string>
     <string name="action_retry">重试</string>
     <string name="nav_dynamic">&#21160;&#24577;</string>
+    <string name="nav_dynamic_video">视频</string>
+    <string name="nav_dynamic_all">综合</string>
     <string name="nav_favorite">&#25910;&#34255;</string>
     <string name="nav_bangumi">&#36861;&#30058;</string>
     <string name="placeholder_dynamic">&#21160;&#24577;&#20250;&#22312;&#36134;&#21495; API &#25509;&#20837;&#21518;&#23454;&#29616;&#12290;</string>
