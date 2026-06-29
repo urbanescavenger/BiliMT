@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -75,6 +76,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.ceil
+
+// 选集弹窗每页集数（对齐 BV SeasonEpisodesDialog 的本地切片分页，BV 为 20，这里放大到 100）。
+private const val EPISODES_PER_PAGE = 100
 
 @Stable
 internal class PgcSeasonUiState {
@@ -131,11 +135,15 @@ internal fun PgcSeasonScreen(
     }
   }
 
-  // 季详情加载完成后聚焦第一个分集
-  LaunchedEffect(uiState.season?.seasonId) {
-    if (uiState.season != null) {
-      runCatching { firstItemFocusRequester.requestFocus() }
-    }
+  // 上次播放集：用服务端 progress.lastEpId 定位初始焦点；无记录/找不到则回退第 1 集正片。
+  // 焦点由持有目标集的 PgcEpisodeRow 在滚动到该集后请求，避免目标未进入视口时盲请求失败。
+  val initialFocusEpId = remember(uiState.season?.seasonId, uiState.season?.progress?.lastEpId) {
+    val s = uiState.season ?: return@remember 0
+    val target = s.progress?.lastEpId ?: 0
+    val inMain = s.episodes.any { it.id == target }
+    val inSection = s.sections.any { sec -> sec.episodes.any { it.id == target } }
+    if (target != 0 && (inMain || inSection)) target
+    else s.episodes.firstOrNull()?.id ?: 0
   }
 
   val homeColors = LocalHomeColors.current
@@ -183,6 +191,7 @@ internal fun PgcSeasonScreen(
                 title = stringResource(R.string.pgc_season_main_section),
                 episodes = season.episodes,
                 firstItemFocusRequester = firstItemFocusRequester,
+                initialFocusEpId = initialFocusEpId,
                 firstItemHandled = false,
                 onMoveLeftToNav = onBack,
                 onPlay = { ep -> onPlayEpisode(season, ep) },
@@ -195,6 +204,7 @@ internal fun PgcSeasonScreen(
                 title = section.title,
                 episodes = section.episodes,
                 firstItemFocusRequester = firstItemFocusRequester,
+                initialFocusEpId = initialFocusEpId,
                 firstItemHandled = season.episodes.isNotEmpty(),
                 onMoveLeftToNav = onBack,
                 onPlay = { ep -> onPlayEpisode(season, ep) },
@@ -360,6 +370,7 @@ private fun PgcEpisodeRow(
   title: String,
   episodes: List<PgcEpisode>,
   firstItemFocusRequester: FocusRequester,
+  initialFocusEpId: Int,
   firstItemHandled: Boolean,
   onMoveLeftToNav: () -> Boolean,
   onPlay: (PgcEpisode) -> Unit,
@@ -367,6 +378,18 @@ private fun PgcEpisodeRow(
   val homeColors = LocalHomeColors.current
   var showEpisodesDialog by remember { mutableStateOf(false) }
   val selectButtonFocusRequester = remember { FocusRequester() }
+  val listState = rememberLazyListState()
+  val focusIndex = remember(episodes, initialFocusEpId) {
+    episodes.indexOfFirst { it.id == initialFocusEpId }
+  }
+  // 持有目标集的那一行滚动到该集后再请求焦点；focusIndex<0 的行不动作，行间不冲突。
+  // +1 是因为行首还有「选集」按钮占 LazyRow 的 item 0；第 0 集不滚动以保留选集按钮可见。
+  LaunchedEffect(episodes, initialFocusEpId) {
+    if (focusIndex >= 0) {
+      if (focusIndex > 0) listState.scrollToItem(focusIndex + 1)
+      runCatching { firstItemFocusRequester.requestFocus() }
+    }
+  }
   Column(verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm)) {
     Text(
       text = title,
@@ -374,7 +397,10 @@ private fun PgcEpisodeRow(
       fontSize = BiliTypography.Body,
       fontWeight = FontWeight.Bold,
     )
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md)) {
+    LazyRow(
+      state = listState,
+      horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+    ) {
       item(key = "select") {
         PgcSelectButton(
           isFirst = !firstItemHandled,
@@ -386,7 +412,7 @@ private fun PgcEpisodeRow(
       items(episodes, key = { it.id }) { ep ->
         PgcEpisodeButton(
           episode = ep,
-          isFirst = !firstItemHandled && episodes.firstOrNull()?.id == ep.id,
+          isFirst = ep.id == initialFocusEpId,
           firstItemFocusRequester = firstItemFocusRequester,
           // 左键交由默认焦点移动跳到前面的「选集」按钮；nav 逃逸由选集按钮承担。
           onMoveLeftToNav = { false },
@@ -537,7 +563,7 @@ private fun PgcSelectButton(
   }
 }
 
-// 分页选集对话框：每页 20 集，P1-20 / P21-40 / ... 标签焦点切换，4 列封面网格。
+// 分页选集对话框：每页 100 集，P1-100 / P101-200 / ... 标签焦点切换，4 列封面网格。
 // 对齐 BV SeasonEpisodesDialog（SeasonInfoScreen.kt:663）。
 @Composable
 private fun PgcEpisodesDialog(
@@ -548,7 +574,7 @@ private fun PgcEpisodesDialog(
 ) {
   val homeColors = LocalHomeColors.current
   var selectedTabIndex by remember { mutableIntStateOf(0) }
-  val tabCount by remember { mutableIntStateOf(ceil(episodes.size / 20.0).toInt()) }
+  val tabCount by remember { mutableIntStateOf(ceil(episodes.size / EPISODES_PER_PAGE.toDouble()).toInt()) }
   val selectedEpisodes = remember { mutableStateListOf<PgcEpisode>() }
 
   val tabFocusRequesters = remember(tabCount) { List(tabCount) { FocusRequester() } }
@@ -557,8 +583,8 @@ private fun PgcEpisodesDialog(
   val scrollState = rememberScrollState()
 
   LaunchedEffect(selectedTabIndex, episodes) {
-    val fromIndex = selectedTabIndex * 20
-    var toIndex = (selectedTabIndex + 1) * 20
+    val fromIndex = selectedTabIndex * EPISODES_PER_PAGE
+    var toIndex = (selectedTabIndex + 1) * EPISODES_PER_PAGE
     if (toIndex >= episodes.size) {
       toIndex = episodes.size
     }
@@ -604,7 +630,7 @@ private fun PgcEpisodesDialog(
         ) {
           for (i in 0 until tabCount) {
             PgcPageTab(
-              label = "P${i * 20 + 1}-${(i + 1) * 20}",
+              label = "P${i * EPISODES_PER_PAGE + 1}-${(i + 1) * EPISODES_PER_PAGE}",
               selected = i == selectedTabIndex,
               focusRequester = tabFocusRequesters[i],
               onFocused = { selectedTabIndex = i },
