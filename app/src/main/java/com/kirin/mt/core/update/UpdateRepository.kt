@@ -81,18 +81,22 @@ class UpdateRepository(
     val m = major.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
     val n = minor.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
     val p = patch.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
-    val base = m.times(1_000_000L) + n.times(10_000L) + p.times(1_000L)
+    // minor 权重 1e5 须与 build.gradle#computeVersionCode 一致，否则同一 tag 在本地(编译期)
+    // 与远端(运行期)算出不同 versionCode，导致 alpha.x 这种 minor>0 的预发布被误判为"已是最新"。
+    val base = m.times(1_000_000L) + n.times(100_000L) + p.times(1_000L)
     val labelOrder = labelToOrder(label ?: "")
     val preIndex = index?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
     val pre = labelOrder * 100L + preIndex
     return name to (base + pre)
   }
 
+  // 与 build.gradle#computeVersionCode 的 when(label?.lowercase()) 完全一致：
+  // 稳定版(label 为空)与未知 label 都映射为 0，避免稳定版虚高 99*100=9900 而误报"有更新"。
   private fun labelToOrder(label: String): Long = when (label.lowercase()) {
     "alpha" -> 1L
     "beta" -> 2L
     "rc" -> 3L
-    else -> 99L
+    else -> 0L
   }
 
   private fun JsonObject.stringOrNull(key: String): String? =
