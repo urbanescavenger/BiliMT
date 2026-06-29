@@ -7,7 +7,7 @@ import kotlinx.serialization.json.jsonPrimitive
 
 internal object VideoSummaryMappers {
   fun fromArchive(json: JsonObject): VideoSummary {
-    // dynamic/region 用 owner/pic；region/feed/rcmd 用 author/cover，二者字段名不同，统一兜底。
+    // dynamic/region 鐢?owner/pic锛況egion/feed/rcmd 鐢?author/cover锛屼簩鑰呭瓧娈靛悕涓嶅悓锛岀粺涓€鍏滃簳銆?
     val owner = json.obj("owner") ?: json.obj("author")
     val stat = json.obj("stat")
     return VideoSummary(
@@ -115,6 +115,24 @@ internal object VideoSummaryMappers {
       danmaku = BiliNumberParser.toInt(json["video_review"]),
       duration = BiliNumberParser.parseDuration(json["length"]),
       pubdate = json.long("created"),
+      badge = filterBadge(json.string("badge")),
+    )
+  }
+
+  fun fromFavoriteItem(json: JsonObject): VideoSummary {
+    val upper = json.obj("upper")
+    val cntInfo = json.obj("cnt_info")
+    return VideoSummary(
+      bvid = json.string("bvid"),
+      title = json.string("title"),
+      pic = fixPicUrl(json.string("cover")),
+      ownerName = upper?.string("name").orEmpty(),
+      ownerFace = fixPicUrl(upper?.string("face").orEmpty()),
+      ownerMid = upper?.long("mid") ?: 0L,
+      view = BiliNumberParser.toInt(cntInfo?.get("play")),
+      danmaku = BiliNumberParser.toInt(cntInfo?.get("danmaku")),
+      duration = BiliNumberParser.parseDuration(json["duration"]),
+      pubdate = json.long("pubtime"),
       badge = filterBadge(json.string("badge")),
     )
   }

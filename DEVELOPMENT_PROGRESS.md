@@ -99,6 +99,7 @@
 | P3-04 | 实现历史页卡片列表 | Done | 使用 `VideoCardMode.History` 显示已看时长/总时长、进度条、最后观看时间和多 P 提示 |
 | P3-05 | 未登录页面提示与跳转 | Done | 动态/历史未登录时显示居中登录提示；暂不自动跳转账号入口，避免焦点链路不确定 |
 | P3-06 | 视频卡片播放量图标 | Done | 封面左下角播放数前新增播放 icon；`assembleDebug` 通过并安装到 `127.0.0.1:16384` |
+| P3-07 | 动态分页增加收藏 tab | In Progress | 参考 BV 源码接入 `/x/v3/fav/folder/created/list-all` 和 `/x/v3/fav/resource/list`；`UserFeedTab` 新增 `Favorite`，`FavoriteFeedUiState` 管理收藏夹列表/当前文件夹/分页状态；`FavoriteFeedContent` 提供收藏夹 pill 行切换 + 视频网格复用 `UserFeedGrid`；加载函数 `loadFavoriteFolders`/`loadFavoriteFirstPage`/`loadFavoriteNextPage` 对齐历史页模式；strings.xml 新增 `nav_favorite` 和 `favorite_*` 文案；待云编译验证 |
 
 ## P4 播放器
 

@@ -81,6 +81,75 @@ internal class UserFeedRepository(
       hasMore = videos.isNotEmpty() && cursor != null,
     )
   }
+
+  suspend fun getFavoriteFolders(mid: Long): List<FavoriteFolder> {
+    if (mid <= 0L) return emptyList()
+    val sessData = sessionStore.sessData.first()
+    if (sessData.isNullOrBlank()) return emptyList()
+
+    val root = apiClient.getJson(
+      url = BiliApiEndpoints.FavoriteFolderListAll,
+      params = mapOf(
+        "up_mid" to mid.toString(),
+        "type" to "0",
+      ),
+      sessData = sessData,
+    ).rootObject()
+    root.requireBiliCodeOk("favorite folders")
+
+    val data = root.obj("data") ?: return emptyList()
+    val list = data["list"] as? JsonArray ?: return emptyList()
+    return list
+      .mapNotNull { it.asObjectOrNull() }
+      .map { folder ->
+        FavoriteFolder(
+          mediaId = folder.long("id"),
+          title = folder.string("title"),
+          mediaCount = folder.int("media_count"),
+        )
+      }
+      .filter { it.mediaId > 0L }
+  }
+
+  suspend fun getFavoriteFolderVideos(
+    mediaId: Long,
+    page: Int,
+    pageSize: Int = 20,
+  ): FavoriteFolderPage {
+    if (mediaId <= 0L) {
+      return FavoriteFolderPage(videos = emptyList(), hasMore = false)
+    }
+    val sessData = sessionStore.sessData.first()
+    if (sessData.isNullOrBlank()) {
+      return FavoriteFolderPage(videos = emptyList(), hasMore = false)
+    }
+
+    val root = apiClient.getJson(
+      url = BiliApiEndpoints.FavoriteResourceList,
+      params = mapOf(
+        "media_id" to mediaId.toString(),
+        "pn" to page.toString(),
+        "ps" to pageSize.toString(),
+        "order" to "mtime",
+        "type" to "0",
+        "tid" to "0",
+      ),
+      sessData = sessData,
+    ).rootObject()
+    root.requireBiliCodeOk("favorite folder videos")
+
+    val data = root.obj("data") ?: return FavoriteFolderPage(videos = emptyList(), hasMore = false)
+    val medias = data["medias"] as? JsonArray ?: return FavoriteFolderPage(videos = emptyList(), hasMore = false)
+    val videos = medias
+      .mapNotNull { it.asObjectOrNull() }
+      .map(VideoSummaryMappers::fromFavoriteItem)
+      .filter { it.bvid.isNotBlank() }
+
+    return FavoriteFolderPage(
+      videos = videos,
+      hasMore = data.boolean("has_more") && videos.isNotEmpty(),
+    )
+  }
 }
 
 data class DynamicFeedPage(
@@ -93,5 +162,16 @@ data class HistoryFeedPage(
   val videos: List<VideoSummary>,
   val nextViewAt: Long,
   val nextMax: Long,
+  val hasMore: Boolean,
+)
+
+data class FavoriteFolder(
+  val mediaId: Long,
+  val title: String,
+  val mediaCount: Int,
+)
+
+data class FavoriteFolderPage(
+  val videos: List<VideoSummary>,
   val hasMore: Boolean,
 )

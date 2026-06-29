@@ -182,6 +182,26 @@ class VideoRepository(
     )
   }
 
+  suspend fun getFavoriteFolders(mid: Long): List<FavoriteFolder> {
+    return userFeedRepository.getFavoriteFolders(mid)
+  }
+
+  suspend fun currentMid(): Long {
+    return sessionStore.session.first().mid ?: 0L
+  }
+
+  suspend fun getFavoriteFolderVideos(
+    mediaId: Long,
+    page: Int,
+    pageSize: Int = FavoriteFolderPageSize,
+  ): FavoriteFolderPage {
+    return userFeedRepository.getFavoriteFolderVideos(
+      mediaId = mediaId,
+      page = page,
+      pageSize = pageSize,
+    )
+  }
+
   private companion object {
     const val SearchOrderTotalRank = "totalrank"
     const val HistoryPageSize = 30
@@ -190,5 +210,6 @@ class VideoRepository(
     const val UnfollowAction = 2
     const val FollowAttribute = 2
     const val MutualFollowAttribute = 6
+    const val FavoriteFolderPageSize = 20
   }
 }

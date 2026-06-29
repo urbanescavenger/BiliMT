@@ -63,7 +63,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-internal enum class UserFeedTab { Dynamic, History }
+internal enum class UserFeedTab { Dynamic, History, Favorite }
 
 @Stable
 internal class DynamicFeedUiState {
@@ -89,10 +89,24 @@ internal class HistoryFeedUiState {
 }
 
 @Stable
+internal class FavoriteFeedUiState {
+  var folders by mutableStateOf<List<com.kirin.mt.core.network.FavoriteFolder>>(emptyList())
+  var currentFolderMediaId by mutableStateOf(0L)
+  var currentPage by mutableIntStateOf(0)
+  var state by mutableStateOf<UserFeedState>(UserFeedState.Loading)
+  var focusedVideoIndex by mutableIntStateOf(0)
+  var focusedVideoKey by mutableStateOf("")
+  var hasLoadedContent by mutableStateOf(false)
+  var foldersLoaded by mutableStateOf(false)
+  var handledManualRefreshKey by mutableIntStateOf(0)
+}
+
+@Stable
 internal class UserFeedUiState {
   var selectedTab by mutableStateOf(UserFeedTab.Dynamic)
   val dynamic = DynamicFeedUiState()
   val history = HistoryFeedUiState()
+  val favorite = FavoriteFeedUiState()
 }
 
 @Composable
@@ -126,14 +140,19 @@ internal fun UserFeedScreen(
         feedState.history,
         forceRefresh = autoRefreshOnSwitch,
       )
+      UserFeedTab.Favorite -> loadFavoriteFolders(
+        videoRepository,
+        feedState.favorite,
+        forceRefresh = autoRefreshOnSwitch,
+      )
     }
-  }
 
   LaunchedEffect(manualRefreshKey) {
     if (!isLoggedIn) return@LaunchedEffect
     val handledKey = when (selectedTab) {
       UserFeedTab.Dynamic -> feedState.dynamic.handledManualRefreshKey
       UserFeedTab.History -> feedState.history.handledManualRefreshKey
+      UserFeedTab.Favorite -> feedState.favorite.handledManualRefreshKey
     }
     if (manualRefreshKey > 0 && manualRefreshKey != handledKey) {
       when (selectedTab) {
@@ -144,6 +163,10 @@ internal fun UserFeedScreen(
         UserFeedTab.History -> {
           feedState.history.handledManualRefreshKey = manualRefreshKey
           loadHistoryFirstPage(videoRepository, feedState.history, forceRefresh = true)
+        }
+        UserFeedTab.Favorite -> {
+          feedState.favorite.handledManualRefreshKey = manualRefreshKey
+          loadFavoriteFolders(videoRepository, feedState.favorite, forceRefresh = true)
         }
       }
     }
@@ -159,8 +182,11 @@ internal fun UserFeedScreen(
     )
     if (!isLoggedIn) {
       val message = stringResource(
-        if (selectedTab == UserFeedTab.History) R.string.history_signed_out
-        else R.string.dynamic_signed_out,
+        when (selectedTab) {
+          UserFeedTab.History -> R.string.history_signed_out
+          UserFeedTab.Favorite -> R.string.favorite_signed_out
+          UserFeedTab.Dynamic -> R.string.dynamic_signed_out
+        },
       )
       FeedStatusScreen(message = message)
     } else {
@@ -215,8 +241,21 @@ internal fun UserFeedScreen(
             onLoadMore = { loadHistoryNextPage(videoRepository, coroutineScope, feedState.history) },
             onMoveUpFromFirstRow = { runCatching { tabFocusRequester.requestFocus() }.isSuccess },
             onMoveLeftToNav = onMoveLeftToNav,
-            onVideoSelected = { video -> onVideoSelected(video, true) },
-            onOwnerSelected = onOwnerSelected,
+           onVideoSelected = { video -> onVideoSelected(video, true) },
+           onOwnerSelected = onOwnerSelected,
+          )
+          UserFeedTab.Favorite -> FavoriteFeedContent(
+            state = feedState.favorite,
+            cardMode = VideoCardMode.Dynamic,
+            firstItemFocusRequester = firstItemFocusRequester,
+            restoreFocusRequestKey = restoreFocusRequestKey,
+            onRestoreFocusHandled = onRestoreFocusHandled,
+            tabFocusRequester = tabFocusRequester,
+            coroutineScope = coroutineScope,
+            videoRepository = videoRepository,
+            onMoveLeftToNav = onMoveLeftToNav,
+           onVideoSelected = { video -> onVideoSelected(video, false) },
+           onOwnerSelected = onOwnerSelected,
           )
         }
       }
@@ -236,7 +275,13 @@ private fun UserFeedTabRow(
     UserFeedTab.entries.forEach { tab ->
       val selected = tab == selectedTab
       BiliPillTab(
-        text = stringResource(if (tab == UserFeedTab.History) R.string.nav_history else R.string.nav_dynamic),
+        text = stringResource(
+          when (tab) {
+            UserFeedTab.Dynamic -> R.string.nav_dynamic
+            UserFeedTab.History -> R.string.nav_history
+            UserFeedTab.Favorite -> R.string.nav_favorite
+          },
+        ),
         selected = selected,
         modifier = if (selected) Modifier.focusRequester(tabFocusRequester) else Modifier,
         onMoveUpToNav = onMoveLeftToNav,
@@ -399,6 +444,219 @@ private fun loadHistoryNextPage(
       val latestState = state.state as? UserFeedState.Success ?: return@launch
       latestState.copy(loadingMore = false, loadMoreError = error.message.orEmpty())
     }
+ }
+}
+
+private suspend fun loadFavoriteFolders(
+  videoRepository: VideoRepository,
+  state: FavoriteFeedUiState,
+  forceRefresh: Boolean,
+) {
+  if (!forceRefresh && state.foldersLoaded) {
+    return
+  }
+
+  state.state = UserFeedState.Loading
+  state.focusedVideoIndex = 0
+  state.focusedVideoKey = ""
+  state.currentPage = 0
+  state.state = try {
+    val mid = videoRepository.currentMid()
+    val folders = if (mid > 0L) videoRepository.getFavoriteFolders(mid) else emptyList()
+    state.folders = folders
+    state.foldersLoaded = true
+    if (folders.isEmpty()) {
+      UserFeedState.Empty
+    } else {
+      state.currentFolderMediaId = folders.first().mediaId
+      val page = videoRepository.getFavoriteFolderVideos(
+        mediaId = state.currentFolderMediaId,
+        page = 1,
+      )
+      state.currentPage = 1
+      state.hasLoadedContent = page.videos.isNotEmpty()
+      if (page.videos.isEmpty()) {
+        UserFeedState.Empty
+      } else {
+        UserFeedState.Success(
+          videos = page.videos,
+          loadingMore = false,
+          endReached = !page.hasMore,
+          loadMoreError = "",
+        )
+      }
+    }
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    state.foldersLoaded = true
+    UserFeedState.Failed(error.message.orEmpty())
+  }
+}
+
+private suspend fun loadFavoriteFirstPage(
+  videoRepository: VideoRepository,
+  state: FavoriteFeedUiState,
+) {
+  state.state = UserFeedState.Loading
+  state.focusedVideoIndex = 0
+  state.focusedVideoKey = ""
+  state.currentPage = 0
+  state.state = try {
+    if (state.currentFolderMediaId <= 0L) {
+      UserFeedState.Empty
+    } else {
+      val page = videoRepository.getFavoriteFolderVideos(
+        mediaId = state.currentFolderMediaId,
+        page = 1,
+      )
+      state.currentPage = 1
+      state.hasLoadedContent = page.videos.isNotEmpty()
+      if (page.videos.isEmpty()) {
+        UserFeedState.Empty
+      } else {
+        UserFeedState.Success(
+          videos = page.videos,
+          loadingMore = false,
+          endReached = !page.hasMore,
+          loadMoreError = "",
+        )
+      }
+    }
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    UserFeedState.Failed(error.message.orEmpty())
+  }
+}
+
+private fun loadFavoriteNextPage(
+  videoRepository: VideoRepository,
+  coroutineScope: CoroutineScope,
+  state: FavoriteFeedUiState,
+) {
+  val currentState = state.state as? UserFeedState.Success ?: return
+  if (currentState.loadingMore || currentState.endReached) {
+    return
+  }
+
+  val nextPage = state.currentPage + 1
+  val mediaIdToLoad = state.currentFolderMediaId
+  state.state = currentState.copy(loadingMore = true, loadMoreError = "")
+  coroutineScope.launch {
+    state.state = try {
+      val page = videoRepository.getFavoriteFolderVideos(
+        mediaId = mediaIdToLoad,
+        page = nextPage,
+      )
+      state.currentPage = nextPage
+      val latestState = state.state as? UserFeedState.Success ?: return@launch
+      val mergedVideos = latestState.videos.appendUnique(nextVideos = page.videos)
+      if (mergedVideos.isNotEmpty()) {
+        state.hasLoadedContent = true
+      }
+      latestState.copy(
+        videos = mergedVideos,
+        loadingMore = false,
+        endReached = !page.hasMore ||
+          page.videos.isEmpty() ||
+          mergedVideos.size == latestState.videos.size,
+        loadMoreError = "",
+      )
+    } catch (error: CancellationException) {
+      throw error
+    } catch (error: Exception) {
+      val latestState = state.state as? UserFeedState.Success ?: return@launch
+      latestState.copy(loadingMore = false, loadMoreError = error.message.orEmpty())
+    }
+  }
+}
+
+@Composable
+private fun FavoriteFeedContent(
+  state: FavoriteFeedUiState,
+  cardMode: VideoCardMode,
+  firstItemFocusRequester: FocusRequester,
+  restoreFocusRequestKey: Int,
+  onRestoreFocusHandled: (Int) -> Unit,
+  tabFocusRequester: FocusRequester,
+  coroutineScope: CoroutineScope,
+  videoRepository: VideoRepository,
+  onMoveLeftToNav: () -> Boolean,
+  onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit = {},
+) {
+ val folderFocusRequester = remember { FocusRequester() }
+  val hasMultipleFolders = state.folders.size > 1
+
+  LaunchedEffect(state.folders) {
+    if (state.folders.isNotEmpty() && hasMultipleFolders) {
+      runCatching { folderFocusRequester.requestFocus() }
+    }
+  }
+
+  Column(modifier = Modifier.fillMaxSize()) {
+    if (hasMultipleFolders) {
+      BiliCapsuleTabRow(
+        itemCount = state.folders.size,
+        modifier = Modifier,
+      ) {
+        state.folders.forEachIndexed { index, folder ->
+          val selected = folder.mediaId == state.currentFolderMediaId
+          BiliPillTab(
+            text = folder.title,
+            selected = selected,
+            modifier = if (selected) Modifier.focusRequester(folderFocusRequester) else Modifier,
+            onMoveUpToNav = onMoveLeftToNav,
+            onMoveDownToGrid = { runCatching { firstItemFocusRequester.requestFocus() }.isSuccess },
+            onClick = {
+              if (!selected) {
+                state.currentFolderMediaId = folder.mediaId
+                coroutineScope.launch {
+                  loadFavoriteFirstPage(videoRepository, state)
+                }
+              }
+            },
+          )
+        }
+      }
+    }
+    UserFeedContent(
+      state = state.state,
+      loadingMessage = stringResource(R.string.favorite_loading),
+      emptyMessage = stringResource(R.string.favorite_empty),
+      failedMessage = { message -> stringResource(R.string.favorite_failed_with_message, message) },
+      cardMode = cardMode,
+      firstItemFocusRequester = firstItemFocusRequester,
+      restoredFocusIndex = state.focusedVideoIndex,
+      restoredFocusKey = state.focusedVideoKey,
+      restoreFocusRequestKey = restoreFocusRequestKey,
+      onRestoreFocusHandled = onRestoreFocusHandled,
+      onFocusedIndexChange = { index, video ->
+        state.focusedVideoIndex = index
+        state.focusedVideoKey = video.focusRestoreKey()
+      },
+      onRetry = {
+        coroutineScope.launch {
+          if (state.folders.isEmpty()) {
+            loadFavoriteFolders(videoRepository, state, forceRefresh = true)
+          } else {
+            loadFavoriteFirstPage(videoRepository, state)
+          }
+        }
+      },
+      onLoadMore = { loadFavoriteNextPage(videoRepository, coroutineScope, state) },
+      onMoveUpFromFirstRow = {
+        if (state.folders.size > 1) {
+          runCatching { folderFocusRequester.requestFocus() }.isSuccess
+        } else {
+          runCatching { tabFocusRequester.requestFocus() }.isSuccess
+        }
+      },
+      onMoveLeftToNav = onMoveLeftToNav,
+      onVideoSelected = onVideoSelected,
+      onOwnerSelected = onOwnerSelected,
+    )
   }
 }
 

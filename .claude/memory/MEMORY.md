@@ -1,0 +1,1 @@
+- [debug build no monitor](debug-build-no-monitor.md) — debug 编译成功后直接打 alpha tag 推送，不用再监控 CI

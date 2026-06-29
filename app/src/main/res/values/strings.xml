@@ -195,6 +195,10 @@
     <string name="history_empty">暂无观看历史</string>
     <string name="history_failed_with_message">历史记录加载失败。%1$s</string>
     <string name="history_signed_out">请先登录，登录后可查看观看历史。</string>
+    <string name="favorite_loading">正在加载收藏夹...</string>
+    <string name="favorite_empty">收藏夹为空</string>
+    <string name="favorite_failed_with_message">收藏夹加载失败。%1$s</string>
+    <string name="favorite_signed_out">请先登录，登录后可查看收藏夹。</string>
     <string name="home_section_recommend">推荐</string>
     <string name="home_section_popular">热门</string>
     <string name="home_section_douga">动画</string>
@@ -231,6 +235,7 @@
     <string name="action_refresh">刷新</string>
     <string name="action_retry">重试</string>
     <string name="nav_dynamic">&#21160;&#24577;</string>
+    <string name="nav_favorite">&#25910;&#34255;</string>
     <string name="placeholder_dynamic">&#21160;&#24577;&#20250;&#22312;&#36134;&#21495; API &#25509;&#20837;&#21518;&#23454;&#29616;&#12290;</string>
     <string name="settings_account_section">&#36134;&#21495;</string>
     <string name="settings_login_title">&#30331;&#24405; B &#31449;</string>
