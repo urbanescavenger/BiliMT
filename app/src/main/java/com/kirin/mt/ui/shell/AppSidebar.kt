@@ -69,6 +69,7 @@ internal fun AppSidebar(
   autoConfirmOnFocus: Boolean,
   accountFocusRequester: FocusRequester,
   navFocusRequesters: Map<AppDestination, FocusRequester>,
+  dynamicUnread: Int,
   onAccountSelected: () -> Unit,
   onDestinationSelected: (AppDestination) -> Unit,
   shouldAutoConfirmDestination: (AppDestination) -> Boolean,
@@ -155,6 +156,7 @@ internal fun AppSidebar(
           destination = destination,
           selected = !accountSelected && selectedDestination == destination,
           autoConfirmOnFocus = shouldAutoConfirmDestination(destination),
+          badge = if (destination == AppDestination.Dynamic) dynamicUnread else 0,
           modifier = Modifier.focusRequester(navFocusRequesters.getValue(destination)),
           onClick = {
             onDestinationSelected(destination)
@@ -333,6 +335,7 @@ private fun AppNavItem(
   destination: AppDestination,
   selected: Boolean,
   autoConfirmOnFocus: Boolean,
+  badge: Int,
   modifier: Modifier,
   onClick: () -> Unit,
   onMoveRight: () -> Boolean,
@@ -405,6 +408,16 @@ private fun AppNavItem(
           .width(BiliSizing.NavIconSize)
           .height(BiliSizing.NavIconSize),
       )
+      if (badge > 0) {
+        // 未读动态红点:叠在导航项右上角。
+        Box(
+          modifier = Modifier
+            .align(Alignment.TopEnd)
+            .size(BiliSizing.NavUnreadDotSize)
+            .clip(CircleShape)
+            .background(BiliColors.BiliPink),
+        )
+      }
     }
   }
 }

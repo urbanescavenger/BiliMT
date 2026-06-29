@@ -169,6 +169,7 @@ internal class UserFeedRepository(
     mediaId: Long,
     page: Int,
     pageSize: Int = 20,
+    order: String = "mtime",
   ): FavoriteFolderPage {
     if (mediaId <= 0L) {
       return FavoriteFolderPage(videos = emptyList(), hasMore = false)
@@ -184,7 +185,7 @@ internal class UserFeedRepository(
         "media_id" to mediaId.toString(),
         "pn" to page.toString(),
         "ps" to pageSize.toString(),
-        "order" to "mtime",
+        "order" to order,
         "type" to "0",
         "tid" to "0",
       ),

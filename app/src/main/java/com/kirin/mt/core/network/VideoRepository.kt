@@ -206,11 +206,13 @@ class VideoRepository(
     mediaId: Long,
     page: Int,
     pageSize: Int = FavoriteFolderPageSize,
+    order: String = "mtime",
   ): FavoriteFolderPage {
     return userFeedRepository.getFavoriteFolderVideos(
       mediaId = mediaId,
       page = page,
       pageSize = pageSize,
+      order = order,
     )
   }
 

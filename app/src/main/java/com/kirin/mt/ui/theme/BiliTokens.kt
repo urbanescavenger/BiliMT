@@ -117,6 +117,7 @@ object BiliSizing {
   val SidebarWidth = 76.dp
   val NavItemHeight = 48.dp
   val NavIconSize = 24.dp
+  val NavUnreadDotSize = 8.dp
   val SidebarNavGroupTopPadding = 58.dp
   val SidebarNavGroupSpacing = 26.dp
   val AccountAvatarSize = 40.dp

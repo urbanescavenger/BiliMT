@@ -1,5 +1,20 @@
 # BiliMT 版本发布说明
 
+## v1.1.0-alpha.3
+
+动态页体验完善(Phase C 部分):加载更多 footer + 重试、未读动态红点;收藏排序 order 透传铺路(排序行 UI 待后续)。
+
+### 新增
+- **网格尾部 footer**：`TvVideoGrid` 在列表末尾追加 footer 项,展示「加载中… / 没有更多了 / 加载失败 + 重试」。`UserFeedState.Success` 已有的 `loadingMore/endReached/loadMoreError` 之前未渲染,现经 `GridFooterState` 透传到网格。失败态的重试按钮可聚焦,OK 触发 `onLoadMore` 重试;`moveFocus` 末行 Down 改为不消费,让默认焦点遍历落到 footer 重试按钮。
+- **未读动态红点**：新增 `VideoRepository.getDynamicUnread()`(端点 `DynamicUnread`,读 `data.new_default`/`new`)。AppShell 在登录态/切 tab/手动刷新时各拉一次,`AppSidebar` 在 Dynamic 导航项右上角叠红点(`NavUnreadDotSize=8dp`),未读为 0 不显示。
+- **收藏排序 order 透传**：`getFavoriteFolderVideos` 加 `order` 参数(默认 `mtime`),`FavoriteFeedUiState.currentOrder` 字段就位。本期无 UI 设置,默认 `mtime` 行为不变;排序 pill 行(最近收藏/最多播放)推迟到后续 alpha,因其焦点接线需真机调试。
+
+### 已知待验(真机)
+- 翻到网格底部:footer 显示「加载中…」→ 加载完显示「没有更多了」;加载更多失败时显示「加载失败」+ 可聚焦重试按钮,OK 重试。
+- 末行 Down 能落到重试按钮;重试按钮 Up 回到末行卡片。
+- 登录后侧栏 Dynamic 图标右上角出现红点(有未读动态时);切到 Dynamic tab / 手动刷新后红点更新;无未读时不显示。
+- 网格 D-pad 焦点/翻页加载/焦点恢复未回归(footer 注入 + moveFocus 末行 Down 改动)。
+
 ## v1.1.0-alpha.2
 
 动态页（Phase A）增强：卡片展示动态社交计数 + 长按操作菜单（点赞 / 稍后再看 / 去 UP 主主页）。对照 BV 源码后补齐动态页缺失的社交属性——BV mobile 端的点赞/评论/分享均为 `notYetImplemented()` 桩，无可抄实现，本次自写 API 调用。

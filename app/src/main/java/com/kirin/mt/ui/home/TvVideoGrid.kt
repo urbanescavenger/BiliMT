@@ -16,6 +16,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -27,9 +34,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -37,16 +47,24 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.ui.common.VideoThumbnailPrefetcher
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
+import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliMotion
+import com.kirin.mt.ui.theme.BiliRadius
 import com.kirin.mt.ui.theme.BiliSizing
+import com.kirin.mt.ui.theme.BiliSpacing
+import com.kirin.mt.ui.theme.BiliTypography
+import com.kirin.mt.ui.theme.LocalHomeColors
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -58,6 +76,16 @@ private const val TvGridRestoreFocusRetryCount = 8
 // Keys that confirm a card selection; holding one for this long opens the card's long-press action menu.
 private val VideoCardOwnerConfirmKeys = setOf(Key.DirectionCenter, Key.Enter, Key.NumPadEnter)
 private const val VideoCardOwnerLongPressMs = 500L
+
+/**
+ * 网格尾部状态:展示加载更多进度/到底/失败重试。None 时不渲染 footer。
+ */
+internal sealed interface GridFooterState {
+  data object None : GridFooterState
+  data object Loading : GridFooterState
+  data object EndReached : GridFooterState
+  data class Error(val message: String) : GridFooterState
+}
 
 private val TvGridBringIntoViewSpec = object : BringIntoViewSpec {
   override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
@@ -83,6 +111,7 @@ internal fun TvVideoGrid(
   onCardLongPress: (VideoSummary) -> Unit = {},
   modifier: Modifier = Modifier,
   cardMode: VideoCardMode = VideoCardMode.Standard,
+  footer: GridFooterState = GridFooterState.None,
   requestInitialFocus: Boolean = false,
   onInitialFocusRequested: () -> Unit = {},
   onMoveUpFromFirstRow: () -> Boolean = { true },
@@ -237,7 +266,10 @@ internal fun TvVideoGrid(
       Key.DirectionLeft -> (fromIndex - 1).takeIf { currentColumn > 0 }
       Key.DirectionRight -> (fromIndex + 1).takeIf { currentColumn < columns - 1 && it <= lastIndex && it / columns == currentRow }
       else -> null
-    } ?: return direction == Key.DirectionDown || direction == Key.DirectionRight
+    } ?: return direction == Key.DirectionRight
+    // Down on the last row falls through (returns false) so default focus traversal can
+    // reach a focusable footer below (e.g. the load-more retry button). When there is no
+    // focusable footer, traversal finds nothing below and focus stays — same as before.
 
     if (direction == Key.DirectionLeft || direction == Key.DirectionRight) {
       return focusItem(targetIndex)
@@ -377,8 +409,91 @@ internal fun TvVideoGrid(
           }
         }
       }
+      if (footer != GridFooterState.None) {
+        item(key = "grid-footer", contentType = "grid-footer") {
+          TvGridFooter(footer = footer, onRetry = onLoadMore)
+        }
+      }
     }
   }
+}
+
+@Composable
+private fun TvGridFooter(
+  footer: GridFooterState,
+  onRetry: () -> Unit,
+) {
+  val homeColors = LocalHomeColors.current
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(vertical = BiliSizing.VideoGridSpacing),
+    horizontalArrangement = Arrangement.Center,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    when (footer) {
+      GridFooterState.None -> Unit
+      GridFooterState.Loading -> FooterText(text = stringResource(R.string.feed_footer_loading))
+      GridFooterState.EndReached -> FooterText(text = stringResource(R.string.feed_footer_end))
+      is GridFooterState.Error -> {
+        FooterText(text = stringResource(R.string.feed_footer_failed))
+        Spacer(modifier = Modifier.width(BiliSizing.VideoGridSpacing))
+        FooterRetryButton(onRetry = onRetry)
+      }
+    }
+  }
+}
+
+@Composable
+private fun FooterText(text: String) {
+  val homeColors = LocalHomeColors.current
+  Text(
+    text = text,
+    color = homeColors.textTertiary,
+    fontSize = BiliTypography.CardMeta,
+    maxLines = 1,
+  )
+}
+
+@Composable
+private fun FooterRetryButton(onRetry: () -> Unit) {
+  val homeColors = LocalHomeColors.current
+  var focused by remember { mutableStateOf(false) }
+  val shape = RoundedCornerShape(BiliRadius.Pill)
+  Box(
+    modifier = Modifier
+      .clip(shape)
+      .background(if (focused) homeColors.accent.copy(alpha = 0.18f) else BiliColors.Transparent)
+      .border(
+        width = if (focused) BiliFocus.BorderWidth else BiliFocus.RestingBorderWidth,
+        color = if (focused) homeColors.accent else homeColors.textPrimary.copy(alpha = 0.25f),
+        shape = shape,
+      )
+      .onFocusChanged { focused = it.isFocused }
+      .onPreviewKeyEvent { event ->
+        if (event.type == KeyEventType.KeyUp && event.key.isFooterConfirmKey()) {
+          onRetry()
+          true
+        } else {
+          false
+        }
+      }
+      .focusable()
+      .padding(horizontal = BiliSpacing.Sm, vertical = BiliSpacing.Xs),
+    contentAlignment = Alignment.Center,
+  ) {
+    Text(
+      text = stringResource(R.string.action_retry),
+      color = if (focused) homeColors.accent else homeColors.textSecondary,
+      fontSize = BiliTypography.CardMeta,
+      fontWeight = FontWeight.Medium,
+      maxLines = 1,
+    )
+  }
+}
+
+private fun Key.isFooterConfirmKey(): Boolean {
+  return this == Key.Enter || this == Key.NumPadEnter || this == Key.DirectionCenter
 }
 
 private suspend fun LazyListState.scrollRowIntoStablePosition(

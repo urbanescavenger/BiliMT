@@ -51,6 +51,7 @@ import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.VideoGridSkeleton
 import com.kirin.mt.ui.focus.BiliFocusableSurface
 import com.kirin.mt.ui.home.TvVideoGrid
+import com.kirin.mt.ui.home.GridFooterState
 import com.kirin.mt.ui.home.VideoCard
 import com.kirin.mt.ui.home.VideoCardMode
 import com.kirin.mt.ui.theme.BiliFocus
@@ -97,6 +98,7 @@ internal class FavoriteFeedUiState {
   var folders by mutableStateOf<List<com.kirin.mt.core.network.FavoriteFolder>>(emptyList())
   var currentFolderMediaId by mutableStateOf(0L)
   var currentPage by mutableIntStateOf(0)
+  var currentOrder by mutableStateOf("mtime")
   var state by mutableStateOf<UserFeedState>(UserFeedState.Loading)
   var focusedVideoIndex by mutableIntStateOf(0)
   var focusedVideoKey by mutableStateOf("")
@@ -534,6 +536,7 @@ private suspend fun loadFavoriteFolders(
       val page = videoRepository.getFavoriteFolderVideos(
         mediaId = state.currentFolderMediaId,
         page = 1,
+        order = state.currentOrder,
       )
       state.currentPage = 1
       state.hasLoadedContent = page.videos.isNotEmpty()
@@ -571,6 +574,7 @@ private suspend fun loadFavoriteFirstPage(
       val page = videoRepository.getFavoriteFolderVideos(
         mediaId = state.currentFolderMediaId,
         page = 1,
+        order = state.currentOrder,
       )
       state.currentPage = 1
       state.hasLoadedContent = page.videos.isNotEmpty()
@@ -610,6 +614,7 @@ private fun loadFavoriteNextPage(
       val page = videoRepository.getFavoriteFolderVideos(
         mediaId = mediaIdToLoad,
         page = nextPage,
+        order = state.currentOrder,
       )
       state.currentPage = nextPage
       val latestState = state.state as? UserFeedState.Success ?: return@launch
@@ -770,6 +775,12 @@ private fun UserFeedContent(
       onVideoSelected = onVideoSelected,
       onOwnerSelected = onOwnerSelected,
       onCardLongPress = onCardLongPress,
+      footer = when {
+        state.loadMoreError.isNotBlank() -> GridFooterState.Error(state.loadMoreError)
+        state.loadingMore -> GridFooterState.Loading
+        state.endReached -> GridFooterState.EndReached
+        else -> GridFooterState.None
+      },
     )
   }
 }
@@ -789,6 +800,7 @@ private fun UserFeedGrid(
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
   onCardLongPress: (VideoSummary) -> Unit = {},
+  footer: GridFooterState = GridFooterState.None,
 ) {
   TvVideoGrid(
     videos = videos,
@@ -804,6 +816,7 @@ private fun UserFeedGrid(
     onVideoSelected = onVideoSelected,
     onOwnerSelected = onOwnerSelected,
     onCardLongPress = onCardLongPress,
+    footer = footer,
     keyFactory = { index, video -> video.feedKey(index) },
   )
 }

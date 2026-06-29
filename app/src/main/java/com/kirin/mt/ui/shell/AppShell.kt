@@ -203,6 +203,7 @@ fun BiliTvApp(
   var initialHomeFocusPending by remember { mutableStateOf(true) }
   var recommendManualRefreshKey by rememberSaveable { mutableStateOf(0) }
   var dynamicManualRefreshKey by rememberSaveable { mutableStateOf(0) }
+  var dynamicUnread by remember { mutableIntStateOf(0) }
   var playbackRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
   var playbackFocusRestoreDestination by remember { mutableStateOf<AppDestination?>(null) }
   var playbackFocusRestoreRequestKey by remember { mutableIntStateOf(0) }
@@ -398,6 +399,15 @@ fun BiliTvApp(
     }
   }
 
+  // 拉取动态未读数:登录态变化、切 tab、手动刷新时各拉一次,驱动侧栏 Dynamic 红点。
+  LaunchedEffect(userSession.isLoggedIn, selectedDestination, dynamicManualRefreshKey) {
+    dynamicUnread = if (userSession.isLoggedIn) {
+      runCatching { videoRepository.getDynamicUnread() }.getOrDefault(0)
+    } else {
+      0
+    }
+  }
+
   CompositionLocalProvider(
     LocalContext provides localizedContext,
     LocalBiliPerformancePolicy provides performancePolicy,
@@ -504,6 +514,7 @@ fun BiliTvApp(
             autoConfirmOnFocus = autoConfirmOnFocus,
             accountFocusRequester = accountFocusRequester,
             navFocusRequesters = navFocusRequesters,
+            dynamicUnread = dynamicUnread,
             onAccountSelected = {
               accountSelected = true
             },
