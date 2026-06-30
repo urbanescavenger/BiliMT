@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -254,10 +254,11 @@ private fun PgcGrid(
         verticalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
         horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
       ) {
-        items(state.items, key = { it.seasonId }) { summary ->
+        itemsIndexed(state.items, key = { _, it -> it.seasonId }) { index, summary ->
           PgcCard(
             summary = summary,
-            isFirst = state.items.firstOrNull()?.seasonId == summary.seasonId,
+            isFirst = index == 0,
+            isFirstColumn = index % columns == 0,
             firstItemFocusRequester = firstItemFocusRequester,
             requestInitialFocus = requestInitialFocus,
             onInitialFocusRequested = onInitialFocusRequested,
@@ -275,6 +276,7 @@ private fun PgcGrid(
 internal fun PgcCard(
   summary: PgcSummary,
   isFirst: Boolean,
+  isFirstColumn: Boolean,
   firstItemFocusRequester: FocusRequester,
   requestInitialFocus: Boolean,
   onInitialFocusRequested: () -> Unit,
@@ -292,7 +294,7 @@ internal fun PgcCard(
     .onPreviewKeyEvent { event ->
       if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
       when (event.key) {
-        Key.DirectionLeft -> onMoveLeftToNav()
+        Key.DirectionLeft -> if (isFirstColumn) onMoveLeftToNav() else false
         Key.DirectionUp -> onMoveUpToTab()
         else -> false
       }

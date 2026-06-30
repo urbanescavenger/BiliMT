@@ -79,6 +79,7 @@ enum class VideoCardMode {
   Standard,
   Dynamic,
   History,
+  Bangumi,
 }
 
 @Composable
@@ -210,18 +211,25 @@ fun VideoCard(
             .background(cardInfoBackground)
             .padding(horizontal = BiliSpacing.Sm, vertical = BiliSpacing.Xs),
         ) {
+          val bangumiMode = mode == VideoCardMode.Bangumi
           Text(
             text = title,
             color = titleColor,
             fontSize = BiliTypography.CardTitle,
             lineHeight = BiliTypography.CardTitleLineHeight,
             fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = if (focused) TextOverflow.Clip else TextOverflow.Ellipsis,
+            maxLines = if (bangumiMode) 2 else 1,
+            overflow = if (bangumiMode) {
+              TextOverflow.Ellipsis
+            } else if (focused) {
+              TextOverflow.Clip
+            } else {
+              TextOverflow.Ellipsis
+            },
             modifier = Modifier
               .fillMaxWidth()
               .then(
-                if (focused && !interactionPaused) {
+                if (!bangumiMode && focused && !interactionPaused) {
                   Modifier.basicMarquee(
                     iterations = Int.MAX_VALUE,
                     repeatDelayMillis = BiliMotion.TitleMarqueeRepeatDelayMs,
@@ -234,13 +242,15 @@ fun VideoCard(
               ),
           )
           Spacer(modifier = Modifier.weight(1f))
-          MetadataRow(
-            video = video,
-            mode = mode,
-            focused = focused,
-            focusEffectsEnabled = focusEffectsEnabled,
-            onOwnerTap = onOwnerTap,
-          )
+          if (!bangumiMode) {
+            MetadataRow(
+              video = video,
+              mode = mode,
+              focused = focused,
+              focusEffectsEnabled = focusEffectsEnabled,
+              onOwnerTap = onOwnerTap,
+            )
+          }
         }
       }
       if (focused && cinematicEffectsEnabled) {
@@ -343,6 +353,7 @@ private fun MetadataRow(
     VideoCardMode.Standard,
     VideoCardMode.Dynamic -> video.pubdateText(relativeText)
     VideoCardMode.History -> video.viewAtText(relativeText)
+    VideoCardMode.Bangumi -> ""
   }
   val ownerColor = if (focusEffectsEnabled) {
     animateColorAsState(
@@ -640,7 +651,8 @@ private fun VideoCover(
 
     when (mode) {
       VideoCardMode.Standard,
-      VideoCardMode.Dynamic -> StandardCoverMetadata(
+      VideoCardMode.Dynamic,
+      VideoCardMode.Bangumi -> StandardCoverMetadata(
         video = video,
         modifier = Modifier
           .align(Alignment.BottomCenter)

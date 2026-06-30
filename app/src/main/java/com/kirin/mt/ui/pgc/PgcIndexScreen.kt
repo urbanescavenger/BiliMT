@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -245,10 +245,11 @@ internal fun PgcIndexScreen(
           verticalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
           horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
         ) {
-          items(uiState.items, key = { it.seasonId }) { summary ->
+          itemsIndexed(uiState.items, key = { _, it -> it.seasonId }) { index, summary ->
             PgcCard(
               summary = summary,
-              isFirst = uiState.items.firstOrNull()?.seasonId == summary.seasonId,
+              isFirst = index == 0,
+              isFirstColumn = index % BiliSizing.PgcGridColumns == 0,
               firstItemFocusRequester = firstItemFocusRequester,
               requestInitialFocus = false,
               onInitialFocusRequested = {},

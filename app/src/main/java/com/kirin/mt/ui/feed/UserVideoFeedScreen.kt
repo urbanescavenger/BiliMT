@@ -1186,6 +1186,7 @@ private fun BangumiGrid(
   val seasonByKey = remember(seasons) { seasons.associateBy { it.seasonFocusKey() } }
   TvVideoGrid(
     videos = videos,
+    cardMode = VideoCardMode.Bangumi,
     firstItemFocusRequester = firstItemFocusRequester,
     restoredFocusIndex = restoredFocusIndex,
     restoreFocusRequestKey = restoreFocusRequestKey,
