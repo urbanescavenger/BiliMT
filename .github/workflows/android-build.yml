@@ -185,10 +185,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" \
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          # 含 '-' 的 tag（如 v1.1.1-alpha.1）标为 prerelease；
+          # 与「Delete old prereleases」步骤的稳定版判定 !contains(ref_name,'-') 一致。
+          prerelease_args=()
+          case "$tag" in
+            *-*) prerelease_args+=(--prerelease) ;;
+          esac
+          gh release create "$tag" \
             release-apks/*.apk \
             --generate-notes \
-            --title "${{ github.ref_name }}"
+            --title "$tag" \
+            "${prerelease_args[@]}"
 
       - name: Publish curated release notes
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
