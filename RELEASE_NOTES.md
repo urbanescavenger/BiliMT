@@ -1,5 +1,15 @@
 # BiliMT 版本发布说明
 
+## v1.1.1-alpha.5
+
+v1.1.1-alpha.4 后的对齐 BV 修复：PGC 番剧播放退出后「上次播放」记录现在能更新到服务端。
+
+### PGC 番剧播放
+- **播放进度上报带 PGC 字段（对齐 BV）**：`PlaybackRepository.reportProgress` 原先对 PGC 也只发 UGC heartbeat（`/x/click-interface/web/heartbeat`，仅 `bvid/cid/played_time/start_ts/csrf`），服务端不会把进度记到该季 `user_status.progress.last_ep_id/last_time`，退出后再进番剧页焦点仍停在上次的集。现在 PGC 时附 `type=4`、`epid`、`sid`、`sub_type`（= `season.type`，1番剧/2电影/3纪录/4国创/5电视剧/7综艺）、`aid`，服务端据此更新该季上次播放集。复用 BV Web 端同一个 heartbeat 端点，未启用仓内废弃的 `PgcHeartbeat` 常量。
+- **`PlaybackRequest` 新增 `subType`**：`AppShell.onPlayEpisode` 传 `subType = season.type`；切集路径（自动续播下一集、选集面板切集）经 `copy(...)` 保留 `seasonId/subType`，仅覆盖 `epId/cid`，无需额外改动。
+- **`reportProgressNow` 透传 PGC 字段**：`PlayerScreen.reportProgressNow` 从当前 `activeRequest` 取 `epId/seasonId/subType/aid` 一并下发，退出 / 暂停 / 切集 / 完成等所有上报点自动生效。
+- **播放中周期 heartbeat（对齐 BV）**：新增 `LaunchedEffect`，播放 Ready 时每 15s（仅 `isPlaying` 时）发一次 heartbeat（`BiliMotion.PlayerHeartbeatIntervalMs`）。BV 同款机制：保证退出前服务端已是最新 `last_ep_id`，`finishPlayer` 退出时那发 best-effort heartbeat 即便被取消也不影响。`PgcSeasonScreen` 退出后本就会重挂载重拉 `getPgcSeasonInfo`，服务端已更新即可刷新上次播放集焦点。
+
 ## v1.1.1-alpha.4
 
 v1.1.1-alpha.3 后的两个 UI 修正：追番卡片去掉分区行 + PGC 页左键只在最左列跳侧栏。
