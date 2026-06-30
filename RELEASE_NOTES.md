@@ -1,5 +1,15 @@
 # BiliMT 版本发布说明
 
+## v1.1.1-alpha.4
+
+v1.1.1-alpha.3 后的两个 UI 修正：追番卡片去掉分区行 + PGC 页左键只在最左列跳侧栏。
+
+### 追番
+- **卡片去掉分区行、标题完整显示**：追番 tab 卡片改用新增的 `VideoCardMode.Bangumi`，不再渲染第二行 `MetadataRow`（空头像 + `seasonTypeName` 分区标签如「影视/番剧」+ 日期，对追番数据基本无用），标题改为 `maxLines = 2` 直接在卡片里换行完整显示，不挂跑马灯也能看全。视频 / 综合 / 历史 / 收藏等 tab 卡片仍保持原两行布局不变。
+
+### PGC 番剧
+- **页面左键只在最左列跳侧栏**：`PgcCard.onPreviewKeyEvent` 原先对 `DirectionLeft` 无条件 `onMoveLeftToNav()`，导致非首列卡片按左也直接跳侧栏。改为新增 `isFirstColumn`（`index % columns == 0`），仅最左列跳侧栏，其它列返回 `false` 走默认焦点遍历切到左邻番剧卡，与右键行为对称。`PgcScreen` 与 `PgcIndexScreen`（索引/筛选页）共用 `PgcCard`，一并修正，`items` 改 `itemsIndexed` 拿 index。
+
 ## v1.1.1-alpha.3
 
 v1.1.1-alpha.2 后的修正：☰ 选集按钮横滑不动 + 回退上轮误做的整行垂直 sticky。
