@@ -946,57 +946,7 @@ private fun BangumiFollowContent(
   onMoveLeftToNav: () -> Boolean,
   onSeasonSelected: (com.kirin.mt.core.network.FollowingSeason) -> Unit,
 ) {
-  val filterFocusRequester = remember { FocusRequester() }
-
-  LaunchedEffect(state.selectedType, state.selectedStatus) {
-    if (state.loadedOnce) {
-      loadBangumiFirstPage(videoRepository, state, forceRefresh = true)
-    }
-  }
-
   Column(modifier = Modifier.fillMaxSize()) {
-    BiliCapsuleTabRow(
-      itemCount = BangumiFollowType.entries.size + BangumiFollowStatus.entries.size,
-      modifier = Modifier,
-    ) {
-      BangumiFollowType.entries.forEach { type ->
-        val selected = type == state.selectedType
-        BiliPillTab(
-          text = stringResource(type.labelRes),
-          selected = selected,
-          modifier = if (selected) Modifier.focusRequester(filterFocusRequester) else Modifier,
-          onMoveUpToNav = onMoveLeftToNav,
-          onMoveDownToGrid = { runCatching { firstItemFocusRequester.requestFocus() }.isSuccess },
-          onClick = {
-            if (!selected) {
-              state.selectedType = type
-              coroutineScope.launch {
-                loadBangumiFirstPage(videoRepository, state, forceRefresh = true)
-              }
-            }
-          },
-        )
-      }
-      BangumiFollowStatus.entries.forEach { status ->
-        val selected = status == state.selectedStatus
-        BiliPillTab(
-          text = stringResource(status.labelRes),
-          selected = selected,
-          modifier = if (selected) Modifier.focusRequester(filterFocusRequester) else Modifier,
-          onMoveUpToNav = onMoveLeftToNav,
-          onMoveDownToGrid = { runCatching { firstItemFocusRequester.requestFocus() }.isSuccess },
-          onClick = {
-            if (!selected) {
-              state.selectedStatus = status
-              coroutineScope.launch {
-                loadBangumiFirstPage(videoRepository, state, forceRefresh = true)
-              }
-            }
-          },
-        )
-      }
-    }
-
     val feedState = state.state
     when (feedState) {
       UserFeedState.Loading -> VideoGridSkeleton()
@@ -1029,7 +979,7 @@ private fun BangumiFollowContent(
              state.focusedVideoKey = season.seasonFocusKey()
            },
            onLoadMore = { loadBangumiNextPage(videoRepository, coroutineScope, state) },
-           onMoveUpFromFirstRow = { runCatching { filterFocusRequester.requestFocus() }.isSuccess },
+           onMoveUpFromFirstRow = { runCatching { tabFocusRequester.requestFocus() }.isSuccess },
            onMoveLeftToNav = onMoveLeftToNav,
            onSeasonSelected = onSeasonSelected,
            footer = when {
