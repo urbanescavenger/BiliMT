@@ -157,7 +157,7 @@ jobs:
                   return None
               major, minor, patch, label, index = m.groups()
               label_order = {'alpha': 1, 'beta': 2, 'rc': 3}.get((label or '').lower(), 0)
-              return int(major) * 1000000 + int(minor) * 10000 + int(patch) * 1000 + label_order * 100 + int(index or 0)
+              return int(major) * 1000000 + int(minor) * 100000 + int(patch) * 1000 + label_order * 100 + int(index or 0)
 
           current_tag = '${{ github.ref_name }}'
           current_vc = parse_version_code(current_tag)
