@@ -186,23 +186,16 @@ internal fun PgcSeasonScreen(
             }
           }
           if (season.episodes.isNotEmpty()) {
-            stickyHeader(key = "main") {
-              // sticky 置顶时用页面底色 VideoBlack 遮挡滚动内容，避免简介/花絮从选集行底下透出。
-              Box(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .background(BiliColors.VideoBlack),
-              ) {
-                PgcEpisodeRow(
-                  title = stringResource(R.string.pgc_season_main_section),
-                  episodes = season.episodes,
-                  firstItemFocusRequester = firstItemFocusRequester,
-                  initialFocusEpId = initialFocusEpId,
-                  firstItemHandled = false,
-                  onMoveLeftToNav = onBack,
-                  onPlay = { ep -> onPlayEpisode(season, ep) },
-                )
-              }
+            item(key = "main") {
+              PgcEpisodeRow(
+                title = stringResource(R.string.pgc_season_main_section),
+                episodes = season.episodes,
+                firstItemFocusRequester = firstItemFocusRequester,
+                initialFocusEpId = initialFocusEpId,
+                firstItemHandled = false,
+                onMoveLeftToNav = onBack,
+                onPlay = { ep -> onPlayEpisode(season, ep) },
+              )
             }
           }
           season.sections.forEach { section ->
@@ -390,10 +383,10 @@ private fun PgcEpisodeRow(
     episodes.indexOfFirst { it.id == initialFocusEpId }
   }
   // 持有目标集的那一行滚动到该集后再请求焦点；focusIndex<0 的行不动作，行间不冲突。
-  // +1 是因为行首还有「选集」按钮占 LazyRow 的 item 0；第 0 集不滚动以保留选集按钮可见。
+  // 第 0 集不滚动以保留按钮+首集可见；目标集进视口后再请求焦点。
   LaunchedEffect(episodes, initialFocusEpId) {
     if (focusIndex >= 0) {
-      if (focusIndex > 0) listState.scrollToItem(focusIndex + 1)
+      if (focusIndex > 0) listState.scrollToItem(focusIndex)
       runCatching { firstItemFocusRequester.requestFocus() }
     }
   }
@@ -404,27 +397,29 @@ private fun PgcEpisodeRow(
       fontSize = BiliTypography.Body,
       fontWeight = FontWeight.Bold,
     )
-    LazyRow(
-      state = listState,
-      horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
-    ) {
-      item(key = "select") {
-        PgcSelectButton(
-          isFirst = !firstItemHandled,
-          focusRequester = selectButtonFocusRequester,
-          onMoveLeftToNav = onMoveLeftToNav,
-          onClick = { showEpisodesDialog = true },
-        )
-      }
-      items(episodes, key = { it.id }) { ep ->
-        PgcEpisodeButton(
-          episode = ep,
-          isFirst = ep.id == initialFocusEpId,
-          firstItemFocusRequester = firstItemFocusRequester,
-          // 左键交由默认焦点移动跳到前面的「选集」按钮；nav 逃逸由选集按钮承担。
-          onMoveLeftToNav = { false },
-          onClick = { onPlay(ep) },
-        )
+    // ☰ 选集按钮固定在行左（不随卡片横滑），剧集卡片在它右边的 LazyRow 里独立横滑。
+    Row(horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md)) {
+      PgcSelectButton(
+        isFirst = !firstItemHandled,
+        focusRequester = selectButtonFocusRequester,
+        onMoveLeftToNav = onMoveLeftToNav,
+        onClick = { showEpisodesDialog = true },
+      )
+      LazyRow(
+        state = listState,
+        modifier = Modifier.weight(1f),
+        horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+      ) {
+        items(episodes, key = { it.id }) { ep ->
+          PgcEpisodeButton(
+            episode = ep,
+            isFirst = ep.id == initialFocusEpId,
+            firstItemFocusRequester = firstItemFocusRequester,
+            // 左键交由默认焦点移动跳到前面的「选集」按钮；nav 逃逸由选集按钮承担。
+            onMoveLeftToNav = { false },
+            onClick = { onPlay(ep) },
+          )
+        }
       }
     }
   }
