@@ -416,7 +416,10 @@ class PlaybackRepository(
         throw BiliPlaybackException("PGC playurl returned type=$type, only DASH is supported")
       }
       if (isDrm) {
-        throw BiliPlaybackException("PGC content requires DRM, which is not supported yet")
+        // 对齐 BV：不请求 drm_tech_type / from_client，服务端对 fnval DASH 请求仍返回清晰流，
+        // is_drm 只表示该标题「有 DRM 版本可用」。BV 直接忽略该标志播返回的 DASH，这里同样不拦截，
+        // 让清晰 DASH 正常起播；播放器无 Widevine，若服务端真给加密流会在解码层失败（与 BV 一致）。
+        Log.w(PlaybackLogTag, "pgc is_drm=true — proceeding with returned DASH (aligned with BV, no Widevine)")
       }
       if (isPreview) {
         throw BiliPlaybackException("PGC content requires purchase/preview only")
