@@ -1,5 +1,12 @@
 # BiliMT 版本发布说明
 
+## v1.1.1-alpha.8
+
+v1.1.1-alpha.7 后的修复：部分 PGC 番剧因 `is_drm=true` 被硬拦截起播即失败，现在对齐 BV 直接播返回的清晰 DASH。
+
+### PGC 番剧播放
+- **`is_drm` 不再拦截**：`parsePlaybackInfo` 原先在 PGC playurl 响应 `is_drm=true` 时抛 `PGC content requires DRM, which is not supported yet`，导致部分番剧起播即失败。对齐 BV：BV 也没有 Widevine、不请求 `drm_tech_type`/`from_client`，服务端对 `fnval` DASH 请求仍返回清晰流，`is_drm` 只是「该标题有 DRM 版本可用」的标志，BV 直接忽略它播 DASH。本应用 playurl 请求参数本就和 BV 一致（无 `drm_tech_type`/`from_client`），返回的也是清晰 DASH，故去掉该硬拦截、仅记 warning，让清晰 DASH 正常起播。若服务端真给加密流（理论不会）会在解码层失败，与 BV 行为一致。
+
 ## v1.1.1-alpha.7
 
 v1.1.1-alpha.6 后的修复：追番 tab 去掉二次分区筛选行，直接显示卡片。
