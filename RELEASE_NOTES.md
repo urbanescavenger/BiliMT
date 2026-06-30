@@ -1,5 +1,15 @@
 # BiliMT 版本发布说明
 
+## v1.1.1-alpha.6
+
+v1.1.1-alpha.5 后的两个 UI 修复：PGC 上键非首行不再跳 tab + UGC 网格长按进 UP 主页。
+
+### PGC 番剧
+- **上键非首行不再直接跳顶部 tab**：`PgcCard.onPreviewKeyEvent` 的 `DirectionUp` 原先无条件 `onMoveUpToTab()`，非首行按上也跳 tab。新增 `isFirstRow`（`index < columns`），仅第一行上键回 tab，其它行返回 `false` 走默认焦点遍历上移一行，与右键/左键修法对称。`PgcScreen` 与 `PgcIndexScreen` 两处 `itemsIndexed` 一并传 `isFirstRow`。
+
+### UGC 视频
+- **推荐 / 搜索网格长按确认键进 UP 主页**：`TvVideoGrid` 早支持长按确认键调 `onCardLongPress`，但推荐 `RecommendScreen`、搜索 `SearchScreen` 之前没传，长按无反应。现补 `onCardLongPress = { video -> onOwnerSelected(video) }`，长按确认键直接进 UP 主主页，与动态页历史/收藏 tab 一致。`UpSpaceScreen` 本就在 UP 主页内，不加。
+
 ## v1.1.1-alpha.5
 
 v1.1.1-alpha.4 后的对齐 BV 修复：PGC 番剧播放退出后「上次播放」记录现在能更新到服务端。
