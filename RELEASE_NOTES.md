@@ -1,5 +1,37 @@
 # BiliMT 版本发布说明
 
+## v1.1.2
+
+v1.1.1 稳定版后的 alpha.1 ~ alpha.8 汇总。本版聚焦动态/追番页 UI 精简、PGC 番剧播放与进度上报对齐 BV、PGC/UGC 焦点导航修正。详细逐条见下方各 alpha 段。
+
+### 动态页
+- **「动态」tab 拆成「视频 / 综合」两个一级 tab**（alpha.1）：tab 行变 视频 综合 历史 收藏 追番（`BiliCapsuleTabRow` 横滚），删掉第二行「全部/视频」类型过滤 pill；`dynamic` state 拆成 `dynamicVideo` + `dynamicAll` 各自缓存；网格首行 Up 回 tab 行当前 pill。
+- **追番 tab 去掉二次分区筛选行**（alpha.7）：删掉网格上方「番剧/影视 + 全部/想看/在看/看过」pill 行，直接显示卡片；上键回顶部 tab 行，与其它 tab 一致。保留 `番剧/全部` 默认值供 Bili follow 接口（必须带 `type`，无「全部」）。
+- **追番卡片去掉分区行、标题完整显示**（alpha.4）：新增 `VideoCardMode.Bangumi`，不渲染第二行分区标签，标题 `maxLines = 2` 完整显示；其它 tab 卡片布局不变。
+
+### PGC 番剧详情页
+- **正片选集行 sticky 置顶常驻**（alpha.2）：`PgcSeasonScreen` 正片选集行改 `stickyHeader`，滚动简介/花絮时常驻顶部；花絮 section 行保持普通 item 随内容滚动。
+- **☰ 选集按钮横滑不动**（alpha.3）：`PgcEpisodeRow` 把 ☰「选集」按钮从 `LazyRow` 内移到外层固定左栏，剧集卡片在右 `LazyRow` 独立横滑；回退 alpha.2 误做的整行垂直 sticky。
+
+### PGC 番剧播放
+- **播放进度上报带 PGC 字段 + 周期 heartbeat（对齐 BV）**（alpha.5）：`reportProgress` 对 PGC 在 `/x/click-interface/web/heartbeat` 附 `type=4/epid/sid/sub_type/aid`，服务端据此更新该季 `user_status.progress.last_ep_id/last_time`，退出后再进季页上次播放集焦点更新。新增播放中每 15s 周期 heartbeat（仅 `isPlaying` 时），退出前服务端即已最新。
+- **`is_drm` 不再拦截**（alpha.8）：去掉 `is_drm=true` 时 `PGC content requires DRM` 硬拦截，对齐 BV 直接播返回的清晰 DASH（playurl 请求本就不带 `drm_tech_type`/`from_client`，服务端返回清晰流）。
+
+### PGC / UGC 焦点导航
+- **PGC 左键只在最左列跳侧栏**（alpha.4）：`PgcCard` 新增 `isFirstColumn`，左键仅最左列跳侧栏，其它列走默认遍历切左邻番剧卡；`PgcScreen` + `PgcIndexScreen` 一并修。
+- **PGC 上键非首行不跳 tab**（alpha.6）：`PgcCard` 新增 `isFirstRow`，上键仅第一行回 tab，其它行上移一行。
+- **UGC 网格长按进 UP 主页**（alpha.6）：推荐 / 搜索 `TvVideoGrid` 补 `onCardLongPress = { video -> onOwnerSelected(video) }`，长按确认键直接进 UP 主主页，与动态页历史/收藏 tab 一致。
+
+### 检查更新
+- **alpha 用户能收到更新的 alpha**（alpha.2）：`UpdateRepository.checkLatest` 改用 GitHub `/releases` 列表（含 prerelease）按 versionCode 取最大；稳定版/dev 用户只在稳定版里挑，alpha/beta/rc 用户在全部 release 里挑（能收新 alpha，也能毕业到新稳定版）。
+
+### CI / 发布流程
+- **alpha tag 标 `--prerelease`**（alpha.2）：`gh release create` 按 tag 含 `-` 判定 prerelease；「Delete old prereleases」minor 权重 1e4→1e5 与 `computeVersionCode` 三处统一，避免 patch≥10 跨 minor 时 prerelease 新旧顺序误判。
+
+### 安装包
+- `BiliMT-v1.1.2-arm64-v8a.apk`
+- `BiliMT-v1.1.2-armeabi-v7a.apk`
+
 ## v1.1.1-alpha.8
 
 v1.1.1-alpha.7 后的修复：部分 PGC 番剧因 `is_drm=true` 被硬拦截起播即失败，现在对齐 BV 直接播返回的清晰 DASH。
