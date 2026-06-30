@@ -936,6 +936,7 @@ private fun SearchResultGrid(
     },
     onVideoSelected = onVideoSelected,
     onOwnerSelected = onOwnerSelected,
+    onCardLongPress = { video -> onOwnerSelected(video) },
     horizontalPadding = BiliSizing.SearchVideoGridHorizontalPadding,
   )
 }

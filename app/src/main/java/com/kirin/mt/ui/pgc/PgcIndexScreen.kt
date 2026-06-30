@@ -250,6 +250,7 @@ internal fun PgcIndexScreen(
               summary = summary,
               isFirst = index == 0,
               isFirstColumn = index % BiliSizing.PgcGridColumns == 0,
+              isFirstRow = index < BiliSizing.PgcGridColumns,
               firstItemFocusRequester = firstItemFocusRequester,
               requestInitialFocus = false,
               onInitialFocusRequested = {},

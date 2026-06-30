@@ -461,6 +461,7 @@ private fun RecommendGrid(
     topBleed = BiliSizing.HomeVideoGridTopBleed,
     onVideoSelected = onVideoSelected,
     onOwnerSelected = onOwnerSelected,
+    onCardLongPress = { video -> onOwnerSelected(video) },
   )
 }
 

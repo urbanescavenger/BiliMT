@@ -259,6 +259,7 @@ private fun PgcGrid(
             summary = summary,
             isFirst = index == 0,
             isFirstColumn = index % columns == 0,
+            isFirstRow = index < columns,
             firstItemFocusRequester = firstItemFocusRequester,
             requestInitialFocus = requestInitialFocus,
             onInitialFocusRequested = onInitialFocusRequested,
@@ -277,6 +278,7 @@ internal fun PgcCard(
   summary: PgcSummary,
   isFirst: Boolean,
   isFirstColumn: Boolean,
+  isFirstRow: Boolean,
   firstItemFocusRequester: FocusRequester,
   requestInitialFocus: Boolean,
   onInitialFocusRequested: () -> Unit,
@@ -295,7 +297,7 @@ internal fun PgcCard(
       if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
       when (event.key) {
         Key.DirectionLeft -> if (isFirstColumn) onMoveLeftToNav() else false
-        Key.DirectionUp -> onMoveUpToTab()
+        Key.DirectionUp -> if (isFirstRow) onMoveUpToTab() else false
         else -> false
       }
     }
