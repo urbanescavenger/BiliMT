@@ -28,13 +28,17 @@ class UpdateManager(
 
   suspend fun refresh() {
     _state.update { it.copy(status = UpdateUiState.Status.Checking) }
+    val installed = appInfo.current()
+    // 安装版本 versionName 含 '-'（如 1.1.1-alpha.1）= 预发布用户，允许收到更新的 alpha/稳定版；
+    // 稳定版/dev 构建只在稳定版里挑，避免把 alpha 推给稳定用户。
+    val includePrereleases = installed.versionName.contains("-")
     val info = try {
-      repository.checkLatest()
+      repository.checkLatest(includePrereleases)
     } catch (e: Exception) {
       _state.update { it.copy(status = UpdateUiState.Status.Failed(e.message ?: e.javaClass.simpleName)) }
       return
     }
-    if (info.versionCode <= _state.value.currentVersionCode) {
+    if (info.versionCode <= installed.versionCode) {
       _state.update { it.copy(status = UpdateUiState.Status.UpToDate(info)) }
       return
     }

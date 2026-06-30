@@ -4,6 +4,7 @@ import android.os.Build
 import com.kirin.mt.core.network.BiliApiClient
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -15,8 +16,17 @@ class UpdateRepository(
   private val repoOwner: String,
   private val repoName: String,
 ) {
-  suspend fun checkLatest(): UpdateInfo {
-    val url = "https://api.github.com/repos/$repoOwner/$repoName/releases/latest"
+  /**
+   * 拉取 GitHub Releases 列表，返回当前用户应升级到的目标 release。
+   *
+   * GitHub `/releases/latest` 只返回非 prerelease，alpha 用户永远收不到更新的 alpha。
+   * 改用 `/releases`（含 prerelease）按 versionCode 取最大者：
+   * - includePrereleases=false（稳定版/dev 用户）：只在非 prerelease 里挑，避免把 alpha 推给稳定用户。
+   * - includePrereleases=true（alpha/beta/rc 用户）：全部 release 里挑 versionCode 最大者，
+   *   既能收到更新的 alpha，也能在有更新稳定版时毕业到稳定版。
+   */
+  suspend fun checkLatest(includePrereleases: Boolean): UpdateInfo {
+    val url = "https://api.github.com/repos/$repoOwner/$repoName/releases?per_page=100"
     val element = apiClient.getJsonWithHeaders(
       url = url,
       headers = mapOf(
@@ -24,22 +34,33 @@ class UpdateRepository(
         "User-Agent" to "BiliMT-Android",
       ),
     )
-    val obj = element.jsonObject
-    val tagName = obj.stringOrNull("tag_name").orEmpty()
-    val releaseUrl = obj.stringOrNull("html_url").orEmpty()
-    val releaseNotes = obj.stringOrNull("body").orEmpty()
-    val (versionName, versionCode) = parseTagVersion(tagName)
-    val assets = obj["assets"]?.jsonArray?.toAssets().orEmpty()
-    val matchingAsset = pickAssetForDevice(assets)
-    return UpdateInfo(
-      tagName = tagName,
-      versionName = versionName,
-      versionCode = versionCode,
-      releaseUrl = releaseUrl,
-      releaseNotes = releaseNotes,
-      assets = assets,
-      matchingAsset = matchingAsset,
-    )
+    val releases = element.jsonArray
+    var best: UpdateInfo? = null
+    for (entry in releases) {
+      val obj = entry as? JsonObject ?: continue
+      if (obj["draft"]?.jsonPrimitive?.booleanOrNull == true) continue
+      val isPrerelease = obj["prerelease"]?.jsonPrimitive?.booleanOrNull == true
+      if (!includePrereleases && isPrerelease) continue
+      val tagName = obj.stringOrNull("tag_name").orEmpty()
+      if (tagName.isBlank()) continue
+      val (versionName, versionCode) = parseTagVersion(tagName)
+      if (versionCode <= 0L) continue
+      if (best != null && versionCode <= best.versionCode) continue
+      val releaseUrl = obj.stringOrNull("html_url").orEmpty()
+      val releaseNotes = obj.stringOrNull("body").orEmpty()
+      val assets = obj["assets"]?.jsonArray?.toAssets().orEmpty()
+      val matchingAsset = pickAssetForDevice(assets)
+      best = UpdateInfo(
+        tagName = tagName,
+        versionName = versionName,
+        versionCode = versionCode,
+        releaseUrl = releaseUrl,
+        releaseNotes = releaseNotes,
+        assets = assets,
+        matchingAsset = matchingAsset,
+      )
+    }
+    return best ?: throw Exception("No eligible releases found")
   }
 
   private fun pickAssetForDevice(assets: List<UpdateAsset>): UpdateAsset? {
