@@ -1,5 +1,14 @@
 # BiliMT 版本发布说明
 
+## v1.1.1-alpha.3
+
+v1.1.1-alpha.2 后的修正：☰ 选集按钮横滑不动 + 回退上轮误做的整行垂直 sticky。
+
+### PGC 番剧详情页
+- **☰ 选集按钮横滑不动**：`PgcEpisodeRow` 把 ☰「选集」按钮（点开 `PgcEpisodesDialog` 批量跳集）从 `LazyRow` 内移到外层 `Row` 的固定左栏，剧集卡片在右边 `LazyRow`（`weight 1f`）里独立横滑。左右滑卡片时 ☰ 按钮钉在行最左不动，随时可点开批量跳集弹窗，不用先滑回最左。正片行 + 各花絮 section 行共用此布局，一致生效。
+- **回退上轮整行垂直 sticky**：alpha.2 误把正片选集整行做 `stickyHeader` 垂直置顶（方向和范围都错了），已回退为普通 `item` 随页面垂直滚动。
+- 同步修正滚动到目标集的 index 偏移：☰ 按钮不再占 LazyRow item 0，`scrollToItem(focusIndex)` 去掉 +1。
+
 ## v1.1.1-alpha.2
 
 v1.1.1-alpha.1 后的改进：PGC 选集行常驻 + alpha 用户检查更新能收到新 alpha + 两个 CI 修复。
