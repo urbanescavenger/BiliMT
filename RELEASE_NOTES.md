@@ -1,5 +1,12 @@
 # BiliMT 版本发布说明
 
+## v1.1.1-alpha.7
+
+v1.1.1-alpha.6 后的修复：追番 tab 去掉二次分区筛选行，直接显示卡片。
+
+### 追番
+- **去掉顶部二次分区筛选行**：`BangumiFollowContent` 原本在网格上方多一行 `BiliCapsuleTabRow`（番剧/影视 类型 + 全部/想看/在看/看过 状态两组 pill）做二次分区，与其它 tab 不一致。现删除该筛选行、对应 `filterFocusRequester` 与筛选 reload `LaunchedEffect`，直接显示卡片。`BangumiGrid` 上键 `onMoveUpFromFirstRow` 改回 `tabFocusRequester`（顶部 tab 行），与视频/综合/历史/收藏 tab 一致。保留 `selectedType=番剧 / selectedStatus=全部` 默认值供 API 调用（Bili follow 接口必须带 `type`，无「全部」），即显示所有状态的追番番剧。
+
 ## v1.1.1-alpha.6
 
 v1.1.1-alpha.5 后的两个 UI 修复：PGC 上键非首行不再跳 tab + UGC 网格长按进 UP 主页。
