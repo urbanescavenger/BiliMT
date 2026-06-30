@@ -23,6 +23,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.stickyHeader
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -88,6 +90,7 @@ internal class PgcSeasonUiState {
   var error by mutableStateOf<String?>(null)
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun PgcSeasonScreen(
   videoRepository: VideoRepository,
@@ -186,16 +189,23 @@ internal fun PgcSeasonScreen(
             }
           }
           if (season.episodes.isNotEmpty()) {
-            item(key = "main") {
-              PgcEpisodeRow(
-                title = stringResource(R.string.pgc_season_main_section),
-                episodes = season.episodes,
-                firstItemFocusRequester = firstItemFocusRequester,
-                initialFocusEpId = initialFocusEpId,
-                firstItemHandled = false,
-                onMoveLeftToNav = onBack,
-                onPlay = { ep -> onPlayEpisode(season, ep) },
-              )
+            stickyHeader(key = "main") {
+              // sticky 置顶时用页面底色 VideoBlack 遮挡滚动内容，避免简介/花絮从选集行底下透出。
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .background(BiliColors.VideoBlack),
+              ) {
+                PgcEpisodeRow(
+                  title = stringResource(R.string.pgc_season_main_section),
+                  episodes = season.episodes,
+                  firstItemFocusRequester = firstItemFocusRequester,
+                  initialFocusEpId = initialFocusEpId,
+                  firstItemHandled = false,
+                  onMoveLeftToNav = onBack,
+                  onPlay = { ep -> onPlayEpisode(season, ep) },
+                )
+              }
             }
           }
           season.sections.forEach { section ->
