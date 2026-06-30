@@ -255,6 +255,7 @@ object BiliMotion {
   const val FocusSpringStiffness = 560f
   const val PlayerControlsAutoHideMs = 4_000L
   const val PlayerProgressUpdateMs = 500L
+  const val PlayerHeartbeatIntervalMs = 15_000L
   const val PlayerSeekPreviewAutoCommitMs = 1_200L
   const val PlayerClockUpdateMs = 30_000L
   const val PlaybackTransitionScrimInMs = 30

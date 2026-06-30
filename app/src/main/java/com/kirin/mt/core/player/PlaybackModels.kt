@@ -20,6 +20,8 @@ data class PlaybackRequest(
   val epId: Long = 0L,
   /** PGC 季 id；>0 时 getVideoMetadata 走 /pgc/view/web/season 取分集列表。 */
   val seasonId: Long = 0L,
+  /** PGC 季副类型（season.type：1番剧/2电影/3纪录/4国创/5电视剧/7综艺），heartbeat type=4 时作 sub_type。 */
+  val subType: Int = 0,
 ) {
   val isPgc: Boolean
     get() = epId > 0L || seasonId > 0L

@@ -335,23 +335,43 @@ class PlaybackRepository(
     bvid: String,
     cid: Long,
     progressSeconds: Int,
+    epId: Long = 0L,
+    seasonId: Long = 0L,
+    subType: Int = 0,
+    aid: Long = 0L,
   ): Boolean {
     if (bvid.isBlank() || cid <= 0L) return false
     val sessData = sessionStore.sessData.first()
     val biliJct = sessionStore.biliJct.first()
     if (sessData.isNullOrBlank() || biliJct.isNullOrBlank()) return false
 
+    val isPgc = epId > 0L || seasonId > 0L
+    val baseParams = mapOf(
+      "bvid" to bvid,
+      "cid" to cid.toString(),
+      "played_time" to progressSeconds.toString(),
+      "real_played_time" to progressSeconds.toString(),
+      "start_ts" to (System.currentTimeMillis() / 1000L).toString(),
+      "csrf" to biliJct,
+    )
+    val params = if (!isPgc) {
+      baseParams
+    } else {
+      // 对齐 BV：PGC 复用 /x/click-interface/web/heartbeat，附 type=4 + epid/sid/sub_type/aid，
+      // 服务端据此更新该季 user_status.progress.last_ep_id / last_time。
+      baseParams + mapOf(
+        "type" to "4",
+        "epid" to epId.toString(),
+        "sid" to seasonId.toString(),
+        "sub_type" to subType.toString(),
+        "aid" to aid.toString(),
+      )
+    }
+
     return runCatching {
       val root = apiClient.postJson(
         url = BiliApiEndpoints.PlayerHeartbeat,
-        params = mapOf(
-          "bvid" to bvid,
-          "cid" to cid.toString(),
-          "played_time" to progressSeconds.toString(),
-          "real_played_time" to progressSeconds.toString(),
-          "start_ts" to (System.currentTimeMillis() / 1000L).toString(),
-          "csrf" to biliJct,
-        ),
+        params = params,
         sessData = sessData,
         biliJct = biliJct,
       ).rootObject()

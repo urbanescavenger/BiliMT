@@ -454,6 +454,10 @@ fun PlayerScreen(
       bvid = state.info.bvid,
       cid = state.info.cid,
       progressSeconds = progressSeconds,
+      epId = activeRequest.epId,
+      seasonId = activeRequest.seasonId,
+      subType = activeRequest.subType,
+      aid = activeRequest.aid,
     )
   }
 
@@ -1043,6 +1047,16 @@ fun PlayerScreen(
     lifecycleOwner.lifecycle.addObserver(observer)
     onDispose {
       lifecycleOwner.lifecycle.removeObserver(observer)
+    }
+  }
+
+  // 对齐 BV：播放中周期上报 heartbeat（每 15s，仅 isPlaying 时），保证退出前服务端
+  // user_status.progress 已是最新，退出时 best-effort 那一发被取消也不影响 last_ep_id。
+  LaunchedEffect(playerState is PlayerScreenState.Ready) {
+    if (playerState !is PlayerScreenState.Ready) return@LaunchedEffect
+    while (isActive) {
+      delay(BiliMotion.PlayerHeartbeatIntervalMs)
+      if (playerActuallyPlaying) runCatching { reportProgressNow() }
     }
   }
 

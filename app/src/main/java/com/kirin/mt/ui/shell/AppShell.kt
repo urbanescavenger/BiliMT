@@ -1011,6 +1011,7 @@ fun BiliTvApp(
                 startPositionMs = startMs,
                 epId = ep.id.toLong(),
                 seasonId = season.seasonId.toLong(),
+                subType = season.type,
                 forceStartPosition = startMs > 0L,
               )
             },
