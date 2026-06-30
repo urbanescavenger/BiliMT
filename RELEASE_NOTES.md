@@ -1,5 +1,20 @@
 # BiliMT 版本发布说明
 
+## v1.1.1-alpha.2
+
+v1.1.1-alpha.1 后的改进：PGC 选集行常驻 + alpha 用户检查更新能收到新 alpha + 两个 CI 修复。
+
+### PGC 番剧详情页
+- **正片选集行 sticky 置顶常驻**：`PgcSeasonScreen` 把正片选集行从 `LazyColumn` 普通 item 改成 `stickyHeader`，滚动简介/花絮时它始终钉在顶部可见，换集不用先滚回顶部找回选集行。外层套页面底色 `BiliColors.VideoBlack` 背景遮挡滚动内容。花絮 section 行保持普通 item 随内容滚动。
+- 注：Compose BOM 2026.05.00（Foundation ≥1.8.0）里 `LazyListScope.stickyHeader` 已稳定为成员，无需 `@OptIn(ExperimentalFoundationApi)`。
+
+### 检查更新
+- **alpha 用户能收到更新的 alpha**：`UpdateRepository.checkLatest` 改用 GitHub `/releases` 列表（含 prerelease）按 versionCode 取最大者，取代只返回非 prerelease 的 `/releases/latest`。新增 `includePrereleases` 参数：稳定版/dev 用户只在稳定版里挑（不推 alpha），alpha/beta/rc 用户在全部 release 里挑（能收新 alpha，也能毕业到新稳定版）。`UpdateManager.refresh` 按安装版本 versionName 含 `-` 判定预发布用户。
+
+### CI / 发布流程
+- **alpha tag 标 `--prerelease`**：`gh release create` 按 tag 含 `-` 判定 prerelease 加 `--prerelease`，与「Delete old prereleases」稳定版判定一致。修复 alpha 在 GitHub 上显示为普通 release、且被 `/releases/latest` 当成最新发布推给稳定用户的 bug。
+- **「Delete old prereleases」minor 权重 1e4→1e5**：与 build.gradle `computeVersionCode` 和 `UpdateRepository.parseTagVersion` 三处统一，避免 patch≥10 跨 minor 时 prerelease 新旧顺序误判。
+
 ## v1.1.1-alpha.1
 
 v1.1.1 稳定版后的第一个 alpha。把动态页两行结构合并成一行：动态 tab 拆成「视频」「综合」两个一级 tab，删掉第二行的类型过滤 pill。
