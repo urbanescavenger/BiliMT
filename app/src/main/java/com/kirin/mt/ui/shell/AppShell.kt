@@ -684,6 +684,7 @@ fun BiliTvApp(
                     coroutineScope.launch {
                       val result = appCacheManager.clearCache()
                       cacheSizeBytes = appCacheManager.cacheSizeBytes()
+                      refreshLogFiles()
                       Toast.makeText(
                         localizedContext,
                         localizedContext.getString(R.string.settings_clear_cache_done, formatCacheSize(result.clearedBytes)),

@@ -56,7 +56,7 @@
     <string name="settings_home_theme_gray">高级灰</string>
     <string name="settings_home_theme_blue_gray">蓝灰</string>
     <string name="settings_clear_cache_title">&#x6E05;&#x9664;&#x7F13;&#x5B58;</string>
-    <string name="settings_clear_cache_description">&#x6E05;&#x7406;&#x5C01;&#x9762;&#x56FE;&#x7247;&#x548C;&#x4E34;&#x65F6;&#x6587;&#x4EF6;&#xFF0C;&#x4E0D;&#x4F1A;&#x5220;&#x9664;&#x767B;&#x5F55;&#x3001;&#x8BBE;&#x7F6E;&#x548C;&#x64AD;&#x653E;&#x8FDB;&#x5EA6;&#x3002;</string>
+    <string name="settings_clear_cache_description">&#x6E05;&#x7406;&#x5C01;&#x9762;&#x56FE;&#x7247;&#x3001;&#x4E34;&#x65F6;&#x6587;&#x4EF6;&#x3001;&#x5DF2;&#x4E0B;&#x8F7D;&#x7684;&#x66F4;&#x65B0;&#x5305;&#x548C;&#x65E5;&#x5FD7;&#xFF0C;&#x4E0D;&#x4F1A;&#x5220;&#x9664;&#x767B;&#x5F55;&#x3001;&#x8BBE;&#x7F6E;&#x548C;&#x64AD;&#x653E;&#x8FDB;&#x5EA6;&#x3002;</string>
     <string name="settings_clear_cache_action">&#x6E05;&#x7406;</string>
     <string name="settings_clear_cache_calculating">&#x8BA1;&#x7B97;&#x4E2D;</string>
     <string name="settings_clear_cache_done">&#x5DF2;&#x6E05;&#x7406; %1$s &#x7F13;&#x5B58;</string>
