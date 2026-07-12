@@ -207,7 +207,9 @@ internal fun TvVideoGrid(
     }
   }
 
-  LaunchedEffect(focusFirstItemKey, videos.size) {
+  // 只在显式触发（tab 按下键）时滚回并聚焦首项；不要监听 videos.size，
+  // 否则刷新分区/加载更多后焦点会自动从 tab 跳回网格第一项。
+  LaunchedEffect(focusFirstItemKey) {
     if (focusFirstItemKey <= 0 || videos.isEmpty()) {
       return@LaunchedEffect
     }
