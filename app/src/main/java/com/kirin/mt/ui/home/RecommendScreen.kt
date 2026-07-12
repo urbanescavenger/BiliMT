@@ -305,8 +305,6 @@ internal fun RecommendScreen(
     if (activeSectionHasBanner) {
       runCatching { bannerFocusRequester.requestFocus() }.getOrDefault(false)
     } else {
-      uiState.focusedVideoIndex = 0
-      uiState.focusedVideoKey = ""
       uiState.focusFirstItemKey += 1
       true
     }
