@@ -37,3 +37,6 @@ keystore.b64.txt
 # OS temporary files
 .DS_Store
 Thumbs.db
+
+# Claude Code local state
+.claude/
