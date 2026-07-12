@@ -115,6 +115,7 @@ internal fun TvVideoGrid(
   footer: GridFooterState = GridFooterState.None,
   requestInitialFocus: Boolean = false,
   onInitialFocusRequested: () -> Unit = {},
+  focusFirstItemKey: Int = 0,
   onMoveUpFromFirstRow: () -> Boolean = { true },
   onBackKey: (() -> Boolean)? = null,
   horizontalPadding: Dp = BiliSizing.VideoGridHorizontalPadding,
@@ -206,10 +207,26 @@ internal fun TvVideoGrid(
     }
   }
 
+  LaunchedEffect(focusFirstItemKey, videos.size) {
+    if (focusFirstItemKey <= 0 || videos.isEmpty()) {
+      return@LaunchedEffect
+    }
+    listState.scrollToItem(0, scrollOffset = -focusedRowTopPaddingPx)
+    repeat(TvGridRestoreFocusRetryCount) {
+      withFrameNanos { }
+      val focused = runCatching {
+        firstItemFocusRequester.requestFocus()
+      }.getOrDefault(false)
+      if (focused) {
+        return@LaunchedEffect
+      }
+    }
+  }
+
   fun focusItem(index: Int): Boolean {
     return runCatching {
       itemFocusRequesters[index].requestFocus()
-    }.isSuccess
+    }.getOrDefault(false)
   }
 
   fun commitFocusedItem(index: Int) {

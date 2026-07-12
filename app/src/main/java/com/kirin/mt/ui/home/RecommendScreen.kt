@@ -95,6 +95,7 @@ internal class RecommendUiState {
   var handledManualRefreshKey by mutableIntStateOf(0)
   var focusedVideoIndex by mutableIntStateOf(0)
   var focusedVideoKey by mutableStateOf("")
+  var focusFirstItemKey by mutableIntStateOf(0)
 }
 
 @Composable
@@ -301,13 +302,14 @@ internal fun RecommendScreen(
   val activeBanners = uiState.bannerBySection[activeSection.key] ?: emptyList()
   val activeSectionHasBanner = activeSection.feedRcmdTid != null && activeBanners.isNotEmpty()
   val onMoveDownFromTab: () -> Boolean = {
-    runCatching {
-      if (activeSectionHasBanner) {
-        bannerFocusRequester.requestFocus()
-      } else {
-        firstItemFocusRequester.requestFocus()
-      }
-    }.isSuccess
+    if (activeSectionHasBanner) {
+      runCatching { bannerFocusRequester.requestFocus() }.getOrDefault(false)
+    } else {
+      uiState.focusedVideoIndex = 0
+      uiState.focusedVideoKey = ""
+      uiState.focusFirstItemKey += 1
+      true
+    }
   }
 
   Column(
@@ -378,6 +380,7 @@ internal fun RecommendScreen(
             onRestoreFocusHandled = onRestoreFocusHandled,
             requestInitialFocus = requestInitialFocus,
             onInitialFocusRequested = onInitialFocusRequested,
+            focusFirstItemKey = uiState.focusFirstItemKey,
             onFocusedIndexChange = { index, video ->
               uiState.focusedVideoIndex = index
               uiState.focusedVideoKey = video.focusRestoreKey()
@@ -444,6 +447,7 @@ private fun RecommendGrid(
   onMoveUpFromFirstRow: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit,
+  focusFirstItemKey: Int = 0,
 ) {
   TvVideoGrid(
     videos = videos,
@@ -453,6 +457,7 @@ private fun RecommendGrid(
     onRestoreFocusHandled = onRestoreFocusHandled,
     requestInitialFocus = requestInitialFocus,
     onInitialFocusRequested = onInitialFocusRequested,
+    focusFirstItemKey = focusFirstItemKey,
     onFocusedIndexChange = onFocusedIndexChange,
     onLoadMore = onLoadMore,
     onMoveLeftToNav = onMoveLeftToNav,
