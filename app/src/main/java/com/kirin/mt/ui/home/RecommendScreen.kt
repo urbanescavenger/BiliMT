@@ -177,7 +177,12 @@ internal fun RecommendScreen(
     val request = uiState.loadRequest ?: return@LaunchedEffect
     val sectionToLoad = sections.firstOrNull { section -> section.key == request.sectionKey }
       ?: return@LaunchedEffect
-    uiState.sectionStates = uiState.sectionStates + (sectionToLoad.key to RecommendState.Loading)
+    // 刷新时若已有 Success，保留旧 videos 不切到 Loading 骨架，避免网格销毁重建
+    // 导致 Compose 把焦点从 tab/侧栏抢到第一个视频卡片。
+    val previousState = uiState.sectionStates[sectionToLoad.key]
+    if (previousState !is RecommendState.Success) {
+      uiState.sectionStates = uiState.sectionStates + (sectionToLoad.key to RecommendState.Loading)
+    }
     uiState.focusedVideoIndex = 0
     uiState.focusedVideoKey = ""
     val nextState = try {
