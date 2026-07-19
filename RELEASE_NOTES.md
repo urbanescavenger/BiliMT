@@ -1,5 +1,23 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.3
+
+v2.0.0-alpha.2 后的 Phase 3:移动端触屏播放器。
+
+### 触屏播放器
+- **`MobilePlayerScreen`**:复用 BiliTVNative 的 Media3/ExoPlayer 引擎(`PlaybackRepository.getPlaybackInfo` → DASH/PGC `MediaSource` + `PlayerDanmakuLayer`),输入层换触屏——点击切换控件、`Slider` 拖动 seek、播放/暂停、弹幕开关、返回。
+- **复用 TV load 序列**:CDN 并发选择、`saveProgress`/`reportProgress` 心跳上报(每 15s)、播放完成上报(`CompletedProgressSeconds=-1`)、`ON_PAUSE` 暂停存进度、屏幕常亮。弹幕复用 `PlayerDanmakuLayer`。
+- **引擎复用改造**:把 `PlayerScreen.kt` 的 `buildDashMediaItem`/`buildDashManifest`/`toRepresentation`/`withResolvedMetadata` 从 `private` 提升为 `internal`(零行为风险);新增 `PlayerLaunchSupport.kt` 提供 `VideoSummary.toPlaybackRequest()`(TV/移动端共用)。
+- **接入**:首页点视频 → `toPlaybackRequest()` → 全屏 `MobilePlayerScreen` 覆盖层,返回清除。`MainActivity` 透传播放引擎依赖。
+
+### 暂未覆盖(Phase 3 v2)
+- 画质/倍速/弹幕设置弹窗(当前用设置里的画质/编码/CDN 偏好与默认弹幕设置)
+- 自动连播下一集 / 空降助手 / 在线人数 / 选集侧栏
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.3-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.3-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.2
 
 v2.0.0-alpha.1 后的 Phase 2:移动端登录 + 卡片式设置。
