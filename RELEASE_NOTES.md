@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.10
+
+v2.0.0-alpha.9 后:后台播放(前台 service 保活 + 通知控件)。
+
+### 后台播放
+- 新增 `PlaybackService`(前台 service,`foregroundServiceType=mediaPlayback`)+ `PlayerHolder`:播放器仍由 `MobilePlayerScreen` 持有,服务经 `PlayerHolder` 操作同一个 ExoPlayer,负责后台保活 + 通知控件(播放/暂停/停止)。
+- `MobilePlayerScreen` 去掉 `ON_PAUSE` 的 `player.pause()`(仅存进度,心跳继续每 15s 上报),app 进后台/息屏**音频继续**;播放开始/标题变化启动 service,播放结束/出错/关播放器停 service。
+- Manifest 加 `FOREGROUND_SERVICE`/`FOREGROUND_SERVICE_MEDIA_PLAYBACK`/`POST_NOTIFICATIONS` 权限与 service 声明。仅移动端启动,TV 不动。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.10-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.10-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.9
 
 v2.0.0-alpha.8 后:底栏重复点击"推荐"触发刷新。
