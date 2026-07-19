@@ -12,7 +12,7 @@ danmakuRenderEngine = "0.1.0"
 kotlinxSerializationJson = "1.9.0"
 lifecycle = "2.9.4"
 logging = "7.0.7"
-material3Adaptive = "1.4.0"
+material3Adaptive = "1.2.0"
 media3 = "1.10.0"
 okhttp = "4.12.0"
 opencc4j = "1.14.0"
@@ -31,7 +31,7 @@ backdrop = { module = "io.github.kyant0:backdrop", version.ref = "backdrop" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
 compose-foundation = { module = "androidx.compose.foundation:foundation" }
 compose-material3 = { module = "androidx.compose.material3:material3" }
-compose-material3-adaptive = { module = "androidx.compose.material3:material3-adaptive", version.ref = "material3Adaptive" }
+compose-adaptive-navigation-suite = { module = "androidx.compose.material3.adaptive:adaptive-navigation-suite", version.ref = "material3Adaptive" }
 compose-ui = { module = "androidx.compose.ui:ui" }
 compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
 compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
