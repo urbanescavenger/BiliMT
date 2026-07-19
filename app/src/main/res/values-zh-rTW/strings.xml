@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">BiliMT</string>
+    <string name="app_name">BiliMO</string>
     <string name="nav_recommend">推薦</string>
     <string name="nav_search">搜尋</string>
     <string name="nav_history">歷史</string>
