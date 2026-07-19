@@ -222,7 +222,8 @@ fun MobileSearchScreen(
       .collect { nearEnd -> if (nearEnd) loadNextPage() }
   }
 
-  // 结果态系统返回键回到输入态(播放器覆盖层的 BackHandler 优先级更高,不冲突)。
+  // 结果态系统返回键回到输入态。播放器开着时,MobileApp 中播放器覆盖层的 BackHandler
+  // 组合在更后位、dispatcher 优先级更高,会先关播放器,不会与本 handler 冲突。
   BackHandler(enabled = uiState.submittedQuery != null) {
     uiState.backToInput()
   }

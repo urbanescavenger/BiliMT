@@ -3,6 +3,7 @@ package com.kirin.mt
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import com.kirin.mt.ui.mobile.isTvUi
 import com.kirin.mt.ui.mobile.shell.BiliMobileApp
 import com.kirin.mt.ui.shell.BiliTvApp
@@ -13,6 +14,9 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     val appContainer = (application as BiliTvApplication).appContainer
     val tvUi = isTvUi(this)
+    // 仅移动端启用 edge-to-edge(让 WindowInsets.statusBars 在各 API 级别正确填充);
+    // TV 无状态栏,不动其窗口行为。
+    if (!tvUi) enableEdgeToEdge()
     setContent {
       BiliTvTheme {
         if (tvUi) {

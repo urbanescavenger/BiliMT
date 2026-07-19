@@ -2,9 +2,11 @@ package com.kirin.mt.ui.mobile.shell
 
 import android.content.Intent
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
@@ -85,6 +87,7 @@ fun BiliMobileApp(
 
   Box(modifier = Modifier.fillMaxSize()) {
     NavigationSuiteScaffold(
+      modifier = Modifier.statusBarsPadding(),
       navigationSuiteItems = {
         bottomNav.forEach { dest ->
           item(
@@ -133,6 +136,9 @@ fun BiliMobileApp(
 
     val request = playbackRequest
     if (request != null) {
+      // 组合在 NavigationSuiteScaffold 内容(含搜索页 BackHandler)之后,
+      // OnBackPressedDispatcher 栈中更靠顶,系统返回优先关播放器而非退 app / 回搜索输入态。
+      BackHandler { playbackRequest = null }
       Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         MobilePlayerScreen(
           request = request,
