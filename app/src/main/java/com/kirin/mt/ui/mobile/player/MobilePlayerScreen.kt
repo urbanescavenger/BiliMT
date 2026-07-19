@@ -1,5 +1,7 @@
 package com.kirin.mt.ui.mobile.player
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -25,6 +27,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +50,8 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.kirin.mt.R
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.CdnSelector
@@ -113,6 +118,30 @@ fun MobilePlayerScreen(
   val playbackDurationState = remember { mutableLongStateOf(0L) }
   var danmakuSyncToken by remember { mutableLongStateOf(0L) }
   var danmakuEntries by remember { mutableStateOf<List<com.kirin.mt.core.player.DanmakuEntry>>(emptyList()) }
+  var fullscreen by rememberSaveable { mutableStateOf(false) }
+
+  // 全屏切换:强制横屏 + 隐藏系统栏(沉浸);退出/关播放器恢复,避免主页卡横屏。
+  DisposableEffect(fullscreen) {
+    val activity = context.findActivity()
+    if (activity != null) {
+      val controller = WindowInsetsControllerCompat(activity.window, activity.window.decorView)
+      if (fullscreen) {
+        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior =
+          WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_AND_BY_SWIPE
+      } else {
+        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        controller.show(WindowInsetsCompat.Type.systemBars())
+      }
+      onDispose {
+        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        controller.show(WindowInsetsCompat.Type.systemBars())
+      }
+    } else {
+      onDispose {}
+    }
+  }
 
   val player = remember {
     ExoPlayer.Builder(context)
@@ -403,6 +432,12 @@ fun MobilePlayerScreen(
               color = if (danmakuSettings.enabled) Color.White else Color.Gray,
             )
           }
+          TextButton(onClick = { fullscreen = !fullscreen }) {
+            Text(
+              text = if (fullscreen) "退出全屏" else "全屏",
+              color = Color.White,
+            )
+          }
         }
       }
     }
@@ -421,6 +456,16 @@ private fun android.content.Context.findActivityWindow(): android.view.Window? {
   var ctx: android.content.Context? = this
   while (ctx is android.content.ContextWrapper) {
     if (ctx is android.app.Activity) return ctx.window
+    ctx = ctx.baseContext
+  }
+  return null
+}
+
+/** 找到承载的 Activity,用于全屏方向/系统栏控制。 */
+private fun android.content.Context.findActivity(): Activity? {
+  var ctx: android.content.Context? = this
+  while (ctx is android.content.ContextWrapper) {
+    if (ctx is Activity) return ctx
     ctx = ctx.baseContext
   }
   return null
