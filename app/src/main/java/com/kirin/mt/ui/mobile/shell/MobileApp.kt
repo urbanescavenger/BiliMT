@@ -32,11 +32,14 @@ import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppSettingsStore
 import com.kirin.mt.core.storage.SessionStore
+import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.auth.AuthRepository
+import com.kirin.mt.ui.mobile.LoginActivity
 import com.kirin.mt.ui.mobile.SettingsActivity
 import com.kirin.mt.ui.mobile.common.DevelopingTipContent
+import com.kirin.mt.ui.mobile.feed.MobileDynamicScreen
 import com.kirin.mt.ui.mobile.home.MobileHomeScreen
 import com.kirin.mt.ui.mobile.player.MobilePlayerScreen
 import com.kirin.mt.ui.player.toPlaybackRequest
@@ -64,6 +67,7 @@ fun BiliMobileApp(
   val context = LocalContext.current
   var selected by rememberSaveable { mutableStateOf(AppDestination.Recommend) }
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
+  val session by sessionStore.session.collectAsState(initial = UserSession())
   var playbackRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
 
   val effectiveCodecPreference =
@@ -104,7 +108,13 @@ fun BiliMobileApp(
           },
           modifier = Modifier.fillMaxSize(),
         )
-        AppDestination.Dynamic -> DevelopingTipContent()
+        AppDestination.Dynamic -> MobileDynamicScreen(
+          videoRepository = videoRepository,
+          isLoggedIn = session.isLoggedIn,
+          onVideoSelected = { video -> playbackRequest = video.toPlaybackRequest() },
+          onLogin = { context.startActivity(Intent(context, LoginActivity::class.java)) },
+          modifier = Modifier.fillMaxSize(),
+        )
         AppDestination.Pgc -> DevelopingTipContent()
         AppDestination.Settings -> DevelopingTipContent()
         AppDestination.Search -> DevelopingTipContent()

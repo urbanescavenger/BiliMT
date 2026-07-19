@@ -80,7 +80,7 @@ fun MobileVideoCard(
         modifier = Modifier.weight(1f, fill = false),
       )
       Text(
-        text = formatCount(video.view),
+        text = formatCount(if (video.view > 0) video.view else video.likeCount),
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
       )

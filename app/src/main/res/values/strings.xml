@@ -9,6 +9,7 @@
     <string name="mobile_logout">退出登录</string>
     <string name="mobile_account_signed_in">已登录：%1$s</string>
     <string name="mobile_account_signed_out">未登录</string>
+    <string name="mobile_dynamic_empty">暂无动态</string>
     <string name="mobile_dialog_choose">选择</string>
     <string name="mobile_dialog_cancel">取消</string>
     <string name="login_mobile_title">扫码登录</string>
