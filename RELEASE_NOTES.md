@@ -1,5 +1,16 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.13
+
+v2.0.0-alpha.12 后:自动连播下一集。
+
+### 自动连播
+- 播放完成(`completionReported`)后 `LaunchedEffect(completionReported)` 按 `metadata.pages` 取下一分P(`activeRequest.nextEpisodeCompletion(metadata, selectedQualityId)`),延迟 3s 切 `activeRequest` 重载(镜像 TV `PlayerCompletionPlanner`)。切走/手动换集时 `completionReported` 复位,effect 重键取消,不会误触。复用 `ui.player` 包 `internal nextEpisodeCompletion` 扩展。单 P 视频无下一集不触发。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.13-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.13-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.12
 
 v2.0.0-alpha.11 后:选集(分P)侧栏弹窗。
