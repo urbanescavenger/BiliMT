@@ -1,5 +1,25 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.1
+
+首个 **2.0.0 大版本**：参照 [BV](https://github.com/aaa1115910/bv) `feature/mobile` 分支设计，移植触屏移动端 UI。本版为 alpha.1（Phase 1：外壳 + 首页），后续阶段补登录/卡片式设置/触屏播放器。独立 `mobile` 分支，应用显示名 **BiliMO**。
+
+### 构建形态
+- **一个 APK 适配 TV + 手机**：`MainActivity` 新增 `isTvUi()` 检测（`UI_MODE_TYPE_TELEVISION` 或 `FEATURE_LEANBACK`），TV 设备走原 `BiliTvApp`（零改动），手机/平板走新 `BiliMobileApp`。
+- **应用名 BiliMO**：mobile 分支 `app_name` 改为 BiliMO（`applicationId` 不变，不影响签名/升级）。
+
+### 移动端外壳
+- **`NavigationSuiteScaffold` 自适应导航**（`androidx.compose.material3:material3-adaptive-navigation-suite:1.4.0`）：窄屏底部 `NavigationBar`，宽屏侧边 `NavigationRail`，`layoutType` 由 scaffold 自动从 `WindowAdaptiveInfo` 推导。底栏复用 `AppDestination`（推荐/动态/影视/设置）。
+- **触屏首页**：`PrimaryScrollableTabRow` 分区标签（推荐/热门/动画…，复用 `home_section_*` 文案）+ `LazyVerticalGrid` 可点卡片网格 + 滑到底自动分页，复用 `VideoRepository`/`HomeSection`/`VideoSummary` 加载引擎，去掉所有 `FocusRequester`/`onPreviewKeyEvent` 焦点逻辑。
+- 其余 tab（动态/影视/设置）占位「功能开发中」，触屏播放器留待 Phase 3（点视频暂以 Toast 提示）。
+
+### 依赖
+- 新增 `androidx.compose.material3:material3-adaptive-navigation-suite` 1.4.0（Compose BOM 不覆盖该 artifact，显式 pin；`NavigationSuiteScaffold` 在主 material3 group，非 `androidx.compose.material3.adaptive` 点分 group）。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.1-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.1-armeabi-v7a.apk`
+
 ## v1.1.2
 
 v1.1.1 稳定版后的 alpha.1 ~ alpha.8 汇总。本版聚焦动态/追番页 UI 精简、PGC 番剧播放与进度上报对齐 BV、PGC/UGC 焦点导航修正。详细逐条见下方各 alpha 段。
