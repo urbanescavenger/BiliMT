@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.mobile.shell
 
+import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Icon
@@ -22,6 +23,7 @@ import com.kirin.mt.core.settings.AppSettingsStore
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateManager
+import com.kirin.mt.ui.mobile.SettingsActivity
 import com.kirin.mt.ui.mobile.common.DevelopingTipContent
 import com.kirin.mt.ui.mobile.home.MobileHomeScreen
 import com.kirin.mt.ui.shell.AppDestination
@@ -55,7 +57,14 @@ fun BiliMobileApp(
       bottomNav.forEach { dest ->
         item(
           selected = selected == dest,
-          onClick = { selected = dest },
+          onClick = {
+            if (dest == AppDestination.Settings) {
+              // 设置走独立 Activity,不切走当前内容。
+              context.startActivity(Intent(context, SettingsActivity::class.java))
+            } else {
+              selected = dest
+            }
+          },
           icon = { Icon(painterResource(dest.iconRes), contentDescription = null) },
           label = { Text(stringResource(dest.titleRes)) },
         )
