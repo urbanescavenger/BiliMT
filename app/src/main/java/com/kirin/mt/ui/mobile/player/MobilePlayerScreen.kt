@@ -78,6 +78,7 @@ import com.kirin.mt.core.player.PlayerHolder
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.ui.player.PlayerDanmakuLayer
 import com.kirin.mt.ui.player.buildDashMediaItem
+import com.kirin.mt.ui.player.nextEpisodeCompletion
 import com.kirin.mt.ui.player.withResolvedMetadata
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -87,6 +88,7 @@ import okhttp3.OkHttpClient
 private const val ProgressUpdateMs = 500L
 private const val HeartbeatIntervalMs = 15_000L
 private const val CompletedProgressSeconds = -1
+private const val CompletionActionDelayMs = 3000L
 
 private sealed interface MobilePlayerState {
   data object Loading : MobilePlayerState
@@ -352,6 +354,16 @@ fun MobilePlayerScreen(
       delay(HeartbeatIntervalMs)
       if (isPlaying) saveAndReportProgress()
     }
+  }
+
+  // 自动连播下一集:播放完成(completionReported)后,按 metadata.pages 取下一分P,
+  // 延迟 3s 切换 activeRequest 重载(镜像 TV PlayerCompletionPlanner)。切走/手动换集时
+  // completionReported 复位,本 effect 重键取消,不会误触。
+  LaunchedEffect(completionReported) {
+    if (!completionReported) return@LaunchedEffect
+    val next = activeRequest.nextEpisodeCompletion(metadata, selectedQualityId) ?: return@LaunchedEffect
+    delay(CompletionActionDelayMs)
+    activeRequest = next.request
   }
 
   val positionMs = seekPreviewMs ?: playbackPositionState.longValue
