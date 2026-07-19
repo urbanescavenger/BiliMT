@@ -1,5 +1,20 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.8
+
+v2.0.0-alpha.7 后:状态栏透明+浅色图标 + 播放全屏。
+
+### 状态栏透明 + 浅色图标
+- 上一版顶部留了 inset,但状态栏条是深色、图标不可见。`MainActivity`/`SettingsActivity`/`LoginActivity` 的 `enableEdgeToEdge()` 改传 `SystemBarStyle.dark(Color.TRANSPARENT)`(状态栏 + 导航栏):透明系统栏背景 + 强制**浅色(白)图标**,深色 app 上白时钟/电量清晰可见。TV 仍 `!tvUi` 闸住,不动。
+
+### 播放全屏
+- `MainActivity` 加 `configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"`:旋转不 recreate activity,`remember` 的 ExoPlayer 与状态存活。
+- `MobilePlayerScreen` 加 `fullscreen` 状态 + 底栏"全屏/退出全屏"按钮:`DisposableEffect(fullscreen)` 设 `requestedOrientation`(LANDSCAPE/UNSPECIFIED)+ `WindowInsetsControllerCompat` 隐藏/显示系统栏(沉浸 `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`),`onDispose` 兜底恢复 —— 关播放器不卡横屏、主页不残留沉浸。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.8-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.8-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.7
 
 v2.0.0-alpha.6 后:移植搜索 tab(取代底栏影视占位)+ 修播放器返回键退出 + 顶部留状态栏 inset。
