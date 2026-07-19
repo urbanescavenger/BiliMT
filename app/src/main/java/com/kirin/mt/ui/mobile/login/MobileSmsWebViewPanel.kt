@@ -40,7 +40,9 @@ import kotlinx.coroutines.launch
 
 private const val Tag = "BiliMT:SmsLogin"
 private const val BiliLoginUrl = "https://passport.bilibili.com/login"
-private const val CookiePollIntervalMs = 1000L
+private const val CookiePollIntervalMs = 500L
+private const val ManualRetryIntervalMs = 400L
+private const val ManualRetryAttempts = 13 // ~5s @400ms
 
 /**
  * 短信登录(移动端唯一登录方式):WebView 托管 B站 登录页,用户在 B站 自己的页面完成
@@ -58,6 +60,7 @@ fun MobileSmsWebViewPanel(
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   var consumed by remember { mutableStateOf(false) }
+  var manualStarted by remember { mutableStateOf(false) }
 
   fun completeLogin(sessData: String, biliJct: String, buvid3: String?, buvid4: String?) {
     if (consumed) return
@@ -123,16 +126,26 @@ fun MobileSmsWebViewPanel(
     }
   }
 
-  // 手动兜底:B站"登录"无自动返回时,用户点"完成登录"读 cookie 完成。
+  // 手动兜底:B站"登录"无自动返回时,用户点"完成登录"。点一下后自动重试 ~5s,
+  // cookie 一出现就完成(避免 B站异步登录、用户点早了导致"要点第二下")。
   fun tryManualFinish() {
-    if (consumed) return
-    val cookies = readBiliCookies()
-    val sessData = cookies["SESSDATA"]
-    val biliJct = cookies["bili_jct"]
-    if (!sessData.isNullOrBlank() && !biliJct.isNullOrBlank()) {
-      completeLogin(sessData, biliJct, cookies["buvid3"], cookies["buvid4"])
-    } else {
-      Toast.makeText(context, context.getString(R.string.login_sms_not_detected), Toast.LENGTH_SHORT).show()
+    if (consumed || manualStarted) return
+    manualStarted = true
+    scope.launch {
+      repeat(ManualRetryAttempts) {
+        if (consumed) return@launch
+        val cookies = readBiliCookies()
+        val sessData = cookies["SESSDATA"]
+        val biliJct = cookies["bili_jct"]
+        if (!sessData.isNullOrBlank() && !biliJct.isNullOrBlank()) {
+          completeLogin(sessData, biliJct, cookies["buvid3"], cookies["buvid4"])
+          return@launch
+        }
+        delay(ManualRetryIntervalMs)
+      }
+      if (!consumed) {
+        Toast.makeText(context, context.getString(R.string.login_sms_not_detected), Toast.LENGTH_SHORT).show()
+      }
     }
   }
 
