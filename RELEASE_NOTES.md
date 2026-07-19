@@ -1,5 +1,25 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.2
+
+v2.0.0-alpha.1 后的 Phase 2:移动端登录 + 卡片式设置。
+
+### 移动端登录(QR)
+- **`MobileLoginScreen` + `LoginActivity`**:复用 `AuthRepository` TV QR 流程(`generateTvQrCode`/`pollTvLogin`)+ `createQrCodeBitmap`,触屏 Material3 布局;扫码成功自动写入 session 并 `finish()` 回设置页。
+- **短信登录暂未支持**:引擎(`AuthRepository`)无 SMS 路径,需另建 B站 SMS + geetest 验证流程(引擎工作,非 UI 移植),登录页留占位提示。
+
+### 卡片式设置
+- **`MobileSettingsScreen` + `SettingsActivity`**:Material3 卡片行 + 开关行 + 单选对话框,四组——账号 / 播放设置 / 界面与交互 / 程序更新。复用 `AppSettingsStore` 逐字段 `setX()` 写入(与 TV 共用同一 DataStore)。
+- **程序更新卡**:复用 `UpdateManager` + `ApkInstaller.startInstall` 实现检查更新 / 下载 / 安装。
+- **账号行**:显示登录态(用户名/uid)+ 登录 / 退出登录。
+
+### 外壳
+- **Settings tab 点击直接 `startActivity(SettingsActivity)`**:不切走当前内容,设置以独立 Activity 承载。`LoginActivity`/`SettingsActivity` 注册到 Manifest(复用 `AppTheme`)。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.2-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.2-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.1
 
 首个 **2.0.0 大版本**：参照 [BV](https://github.com/aaa1115910/bv) `feature/mobile` 分支设计，移植触屏移动端 UI。本版为 alpha.1（Phase 1：外壳 + 首页），后续阶段补登录/卡片式设置/触屏播放器。独立 `mobile` 分支，应用显示名 **BiliMO**。
