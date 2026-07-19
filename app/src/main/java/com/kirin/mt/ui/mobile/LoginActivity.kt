@@ -15,6 +15,7 @@ class LoginActivity : ComponentActivity() {
       BiliTvTheme {
         MobileLoginScreen(
           authRepository = appContainer.authRepository,
+          sessionStore = appContainer.sessionStore,
           onClose = { finish() },
         )
       }

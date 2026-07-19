@@ -7,12 +7,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -23,10 +26,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -34,6 +37,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.kirin.mt.R
 import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.auth.TvLoginPollResult
+import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.ui.login.createQrCodeBitmap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -50,9 +54,50 @@ private sealed interface QrLoginState {
   data class Error(val message: String) : QrLoginState
 }
 
-/** 移动端登录:复用 AuthRepository TV QR 流程。短信登录暂未支持(引擎无 SMS 路径)。 */
+/**
+ * 移动端登录:顶部 扫码登录 / 短信登录 两个 tab。
+ * - 扫码:复用 AuthRepository TV QR 流程(generateTvQrCode/pollTvLogin)。
+ * - 短信:WebView 托管 B站 登录页(手机号+极验滑块+短信),抓 cookie 存 session。
+ */
 @Composable
 fun MobileLoginScreen(
+  authRepository: AuthRepository,
+  sessionStore: SessionStore,
+  onClose: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  var loginTab by remember { mutableStateOf(0) } // 0=扫码, 1=短信
+  Column(modifier = modifier.fillMaxSize()) {
+    TabRow(selectedTabIndex = loginTab) {
+      Tab(
+        selected = loginTab == 0,
+        onClick = { loginTab = 0 },
+        text = { Text(stringResource(R.string.login_mobile_title)) },
+      )
+      Tab(
+        selected = loginTab == 1,
+        onClick = { loginTab = 1 },
+        text = { Text(stringResource(R.string.login_sms_title)) },
+      )
+    }
+    when (loginTab) {
+      0 -> QrLoginPanel(
+        authRepository = authRepository,
+        onClose = onClose,
+        modifier = Modifier.fillMaxWidth().weight(1f),
+      )
+      1 -> MobileSmsWebViewPanel(
+        sessionStore = sessionStore,
+        authRepository = authRepository,
+        onSuccess = onClose,
+        modifier = Modifier.fillMaxWidth().weight(1f),
+      )
+    }
+  }
+}
+
+@Composable
+private fun QrLoginPanel(
   authRepository: AuthRepository,
   onClose: () -> Unit,
   modifier: Modifier = Modifier,
@@ -107,21 +152,15 @@ fun MobileLoginScreen(
     horizontalAlignment = Alignment.CenterHorizontally,
   ) {
     Text(
-      text = stringResource(R.string.login_mobile_title),
-      style = MaterialTheme.typography.headlineSmall,
-      fontWeight = FontWeight.Bold,
-    )
-    Text(
       text = stringResource(R.string.login_mobile_hint),
       style = MaterialTheme.typography.bodyMedium,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
-      modifier = Modifier.padding(top = 8.dp),
     )
     Box(
       modifier = Modifier
         .padding(top = 24.dp)
         .size(280.dp)
-        .background(androidx.compose.ui.graphics.Color.White, RoundedCornerShape(16.dp)),
+        .background(Color.White, RoundedCornerShape(16.dp)),
       contentAlignment = Alignment.Center,
     ) {
       when (val s = state) {
@@ -149,12 +188,6 @@ fun MobileLoginScreen(
         Text(stringResource(R.string.login_qr_refresh))
       }
     }
-    Text(
-      text = stringResource(R.string.login_sms_placeholder),
-      style = MaterialTheme.typography.bodySmall,
-      color = MaterialTheme.colorScheme.outline,
-      modifier = Modifier.padding(top = 24.dp),
-    )
   }
 }
 
