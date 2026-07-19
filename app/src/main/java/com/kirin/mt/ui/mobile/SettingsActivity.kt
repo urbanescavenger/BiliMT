@@ -36,7 +36,7 @@ class SettingsActivity : ComponentActivity() {
               apkInstaller = appContainer.apkInstaller,
               sessionStore = appContainer.sessionStore,
               authRepository = appContainer.authRepository,
-              onLogin = { startActivity(android.content.Intent(this, LoginActivity::class.java)) },
+              onLogin = { startActivity(android.content.Intent(this@SettingsActivity, LoginActivity::class.java)) },
               modifier = Modifier.fillMaxWidth(),
             )
           }
