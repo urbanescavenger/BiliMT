@@ -1,5 +1,21 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.6
+
+v2.0.0-alpha.5 后:短信登录时序修复 + 移植动态 tab。
+
+### 短信登录时序修复
+- **"点一下即完成"**:B站"登录"是异步,之前点"完成登录"太早会读空 cookie 要点第二下。现点一下后自动每 400ms 重试 ~5s,cookie 一出现立刻完成;自动轮询也从 1s 缩到 500ms,B站登录完成更快自动返回。
+
+### 动态 tab(新增)
+- **`MobileDynamicScreen`**:底栏"动态"不再是占位,显示关注动态视频网格(复用 `VideoRepository.getDynamicFeed(type=video)` + `MobileVideoCard`),滑到底按 offset 自动分页(按 bvid 去重,`hasMore` 判结束)。点卡片进触屏播放器。
+- **未登录态**:动态 tab 未登录时显示"未登录 + 登录"按钮,点进短信登录页。
+- **卡片统计**:动态项 `view=0`,卡片尾统计改显示点赞数(`likeCount`),不再显示"0";首页视频(`view>0`)不变。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.6-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.6-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.5
 
 v2.0.0-alpha.4 后:移动端登录改 SMS-only + 修短信"点登录没反应"。
