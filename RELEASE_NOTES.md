@@ -1,5 +1,21 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.5
+
+v2.0.0-alpha.4 后:移动端登录改 SMS-only + 修短信"点登录没反应"。
+
+### 移动端登录
+- **去掉二维码登录**:移动端 TV QR 接口一直扫不出来,登录页只留短信登录(WebView 托管 B站 登录页)。`MobileLoginScreen` 简化为直接渲染 `MobileSmsWebViewPanel`。TV 端 `AccountScreen` 的 QR 不受影响。
+- **加固 SMS WebView**(修"点 B站 登录没反应"):
+  - 顶部覆盖 **返回 / 完成登录** 栏——B站"登录"无自动返回时,点"完成登录"读 cookie 完成(`SESSDATA`+`bili_jct` 存 session + 刷新资料 + 返回);没抓到则 Toast 提示。
+  - WebView 设置补全:`WebChromeClient`(开 console)、第三方 cookie、JS 可开窗、`onReceivedError` 日志 → logcat tag `BiliMT:SmsLogin` 便于 `adb logcat` 定位 B站页面卡点。
+  - 扩大 cookie 域读取:`passport.bilibili.com` / `www.bilibili.com` / `m.bilibili.com`。
+  - 自动轮询(1s)保留,与手动按钮共用 `completeLogin`。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.5-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.5-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.4
 
 v2.0.0-alpha.3 后:移动端 SMS 短信登录 + 应用名改回 BiliMT。
