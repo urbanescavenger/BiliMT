@@ -15,6 +15,9 @@
     <string name="login_mobile_hint">使用 B站 App 扫描下方二维码登录</string>
     <string name="login_sms_title">短信登录</string>
     <string name="login_sms_placeholder">短信登录暂未支持，请使用扫码登录</string>
+    <string name="login_sms_done">完成登录</string>
+    <string name="login_sms_hint_done">登录成功后点此返回</string>
+    <string name="login_sms_not_detected">未检测到登录信息，请先在页面完成登录</string>
     <string name="nav_recommend">推荐</string>
     <string name="nav_search">搜索</string>
     <string name="nav_history">历史</string>
