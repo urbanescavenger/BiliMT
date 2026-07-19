@@ -1,5 +1,20 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.11
+
+v2.0.0-alpha.10 后:播放器设置弹窗(画质/倍速/弹幕)—— P1 开始。
+
+### 播放器设置弹窗
+- `MobilePlayerScreen` 底栏加"设置"按钮,弹 `ModalBottomSheet`:
+  - **画质**:列 `info.qualities`,选中高亮;切换改 `activeRequest.preferredQualityId` + 携带当前位置 → load effect 重载(镜像 TV,`getPlaybackInfo` 按 qn 重取)。
+  - **倍速**:`[0.5..3.0]x`,实时 `player.setPlaybackSpeed` + 弹幕层 `playbackSpeed` 同步。
+  - **弹幕**:开关 + 不透明度/字号/显示区域/速度滑块 + 顶部/底部开关,经 `DanmakuSettingsStore` 持久化。
+- 引入 `activeRequest`/`metadata`/`selectedQualityId`/`playbackSpeed` 状态,load effect 改 keyed `activeRequest`(支持画质/分P 切换重载);sheet 深色底 + 白字/品牌粉高亮。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.11-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.11-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.10
 
 v2.0.0-alpha.9 后:后台播放(前台 service 保活 + 通知控件)。
