@@ -2,48 +2,72 @@ package com.kirin.mt.ui.mobile.shell
 
 import android.content.Intent
 import android.widget.Toast
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.kirin.mt.R
-import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.player.PlaybackCdnPreference
+import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.PlaybackRepository
+import com.kirin.mt.core.player.PlaybackRequest
+import com.kirin.mt.core.player.CdnSelector
+import com.kirin.mt.core.player.DanmakuSettingsStore
+import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppSettingsStore
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateManager
+import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.ui.mobile.SettingsActivity
 import com.kirin.mt.ui.mobile.common.DevelopingTipContent
 import com.kirin.mt.ui.mobile.home.MobileHomeScreen
+import com.kirin.mt.ui.mobile.player.MobilePlayerScreen
+import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.shell.AppDestination
+import okhttp3.OkHttpClient
 
 /**
  * 移动端应用壳:NavigationSuiteScaffold 自适应——窄屏底部 NavigationBar,宽屏侧边 NavigationRail,
- * 由 NavigationSuiteScaffold 根据 WindowAdaptiveInfo 自动决定。底栏项复用 [AppDestination]
- * (titleRes/iconRes)。Phase 1 仅首页(Recommend)可用,其余占位。
+ * 由 NavigationSuiteScaffold 根据 WindowAdaptiveInfo 自动决定。底栏项复用 [AppDestination]。
+ * 点首页视频 → 全屏触屏播放器(MobilePlayerScreen)覆盖在上层。
  */
 @Composable
 fun BiliMobileApp(
   videoRepository: VideoRepository,
-  sessionStore: SessionStore,
+  playbackRepository: PlaybackRepository,
+  danmakuSettingsStore: DanmakuSettingsStore,
+  playbackHttpClient: OkHttpClient,
+  cdnSelector: CdnSelector,
   authRepository: AuthRepository,
   appSettingsStore: AppSettingsStore,
+  sessionStore: SessionStore,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
 ) {
   val context = LocalContext.current
   var selected by rememberSaveable { mutableStateOf(AppDestination.Recommend) }
+  val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
+  var playbackRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
+
+  val effectiveCodecPreference =
+    if (settings.lowSpecMode) PlaybackCodecPreference.H264 else settings.playbackCodecPreference
 
   val bottomNav = listOf(
     AppDestination.Recommend,
@@ -52,39 +76,57 @@ fun BiliMobileApp(
     AppDestination.Settings,
   )
 
-  NavigationSuiteScaffold(
-    navigationSuiteItems = {
-      bottomNav.forEach { dest ->
-        item(
-          selected = selected == dest,
-          onClick = {
-            if (dest == AppDestination.Settings) {
-              // 设置走独立 Activity,不切走当前内容。
-              context.startActivity(Intent(context, SettingsActivity::class.java))
-            } else {
-              selected = dest
-            }
+  Box(modifier = Modifier.fillMaxSize()) {
+    NavigationSuiteScaffold(
+      navigationSuiteItems = {
+        bottomNav.forEach { dest ->
+          item(
+            selected = selected == dest,
+            onClick = {
+              if (dest == AppDestination.Settings) {
+                context.startActivity(Intent(context, SettingsActivity::class.java))
+              } else {
+                selected = dest
+              }
+            },
+            icon = { Icon(painterResource(dest.iconRes), contentDescription = null) },
+            label = { Text(stringResource(dest.titleRes)) },
+          )
+        }
+      },
+    ) {
+      when (selected) {
+        AppDestination.Recommend -> MobileHomeScreen(
+          videoRepository = videoRepository,
+          enabledSections = HomeSection.DefaultOrder,
+          onVideoSelected = { video ->
+            playbackRequest = video.toPlaybackRequest()
           },
-          icon = { Icon(painterResource(dest.iconRes), contentDescription = null) },
-          label = { Text(stringResource(dest.titleRes)) },
+          modifier = Modifier.fillMaxSize(),
+        )
+        AppDestination.Dynamic -> DevelopingTipContent()
+        AppDestination.Pgc -> DevelopingTipContent()
+        AppDestination.Settings -> DevelopingTipContent()
+        AppDestination.Search -> DevelopingTipContent()
+      }
+    }
+
+    val request = playbackRequest
+    if (request != null) {
+      Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        MobilePlayerScreen(
+          request = request,
+          playbackRepository = playbackRepository,
+          danmakuSettingsStore = danmakuSettingsStore,
+          playbackHttpClient = playbackHttpClient,
+          cdnSelector = cdnSelector,
+          playbackCodecPreference = effectiveCodecPreference,
+          playbackQualityPreference = settings.playbackQualityPreference,
+          playbackCdnPreference = settings.playbackCdnPreference,
+          onBack = { playbackRequest = null },
+          modifier = Modifier.fillMaxSize(),
         )
       }
-    },
-  ) {
-    when (selected) {
-      AppDestination.Recommend -> MobileHomeScreen(
-        videoRepository = videoRepository,
-        enabledSections = HomeSection.DefaultOrder,
-        onVideoSelected = { video ->
-          // Phase 3 接触屏播放器,暂以 Toast 占位。
-          Toast.makeText(context, context.getString(R.string.mobile_player_pending), Toast.LENGTH_SHORT).show()
-        },
-        modifier = Modifier.fillMaxSize(),
-      )
-      AppDestination.Dynamic -> DevelopingTipContent()
-      AppDestination.Pgc -> DevelopingTipContent()
-      AppDestination.Settings -> DevelopingTipContent()
-      AppDestination.Search -> DevelopingTipContent()
     }
   }
 }

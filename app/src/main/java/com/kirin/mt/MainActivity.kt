@@ -34,9 +34,13 @@ class MainActivity : ComponentActivity() {
         } else {
           BiliMobileApp(
             videoRepository = appContainer.videoRepository,
-            sessionStore = appContainer.sessionStore,
+            playbackRepository = appContainer.playbackRepository,
+            danmakuSettingsStore = appContainer.danmakuSettingsStore,
+            playbackHttpClient = appContainer.playbackHttpClient,
+            cdnSelector = appContainer.cdnSelector,
             authRepository = appContainer.authRepository,
             appSettingsStore = appContainer.appSettingsStore,
+            sessionStore = appContainer.sessionStore,
             updateManager = appContainer.updateManager,
             apkInstaller = appContainer.apkInstaller,
           )

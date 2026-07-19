@@ -1742,14 +1742,14 @@ private fun PlayerLoadingOverlay() {
   }
 }
 
-private fun buildDashMediaItem(info: PlaybackInfo, cdnPreference: PlaybackCdnPreference): MediaItem {
+internal fun buildDashMediaItem(info: PlaybackInfo, cdnPreference: PlaybackCdnPreference): MediaItem {
   return MediaItem.Builder()
     .setUri(buildDashManifest(info, cdnPreference))
     .setMimeType(MimeTypes.APPLICATION_MPD)
     .build()
 }
 
-private fun buildDashManifest(info: PlaybackInfo, cdnPreference: PlaybackCdnPreference): String {
+internal fun buildDashManifest(info: PlaybackInfo, cdnPreference: PlaybackCdnPreference): String {
   val videoRepresentations = info.videoTracks.joinToString(separator = "\n") { track ->
     track.toRepresentation(adaptationSetId = "0", contentType = "video", cdnPreference = cdnPreference)
   }
@@ -1773,7 +1773,7 @@ private fun buildDashManifest(info: PlaybackInfo, cdnPreference: PlaybackCdnPref
     .let { bytes -> "data:application/dash+xml;base64,${android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)}" }
 }
 
-private fun PlaybackTrack.toRepresentation(
+internal fun PlaybackTrack.toRepresentation(
   adaptationSetId: String,
   contentType: String,
   cdnPreference: PlaybackCdnPreference,
@@ -1869,7 +1869,7 @@ private fun PlaybackVideoMetadata?.hasEpisodeCid(cid: Long): Boolean {
   return pages.isEmpty() || pages.any { episode -> episode.cid == cid }
 }
 
-private fun PlaybackRequest.withResolvedMetadata(
+internal fun PlaybackRequest.withResolvedMetadata(
   metadata: PlaybackVideoMetadata?,
   cid: Long,
 ): PlaybackRequest {
