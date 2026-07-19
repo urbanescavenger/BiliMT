@@ -1,6 +1,7 @@
 package com.kirin.mt.ui.mobile.player
 
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.view.WindowManager
 import androidx.compose.foundation.background
@@ -50,6 +51,7 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kirin.mt.R
@@ -62,6 +64,8 @@ import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.PlaybackRequest
+import com.kirin.mt.core.player.PlaybackService
+import com.kirin.mt.core.player.PlayerHolder
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.ui.player.PlayerDanmakuLayer
 import com.kirin.mt.ui.player.buildDashMediaItem
@@ -183,11 +187,15 @@ fun MobilePlayerScreen(
         if (playbackState == Player.STATE_ENDED && playerState is MobilePlayerState.Ready && player.mediaItemCount > 0 && !completionReported) {
           completionReported = true
           saveAndReportProgress(CompletedProgressSeconds)
+          context.stopService(Intent(context, PlaybackService::class.java))
         }
       }
 
       override fun onPlayerErrorChanged(error: PlaybackException?) {
-        if (error != null) playerState = MobilePlayerState.Failed(error.message.orEmpty())
+        if (error != null) {
+          playerState = MobilePlayerState.Failed(error.message.orEmpty())
+          context.stopService(Intent(context, PlaybackService::class.java))
+        }
       }
     }
     player.addListener(listener)
@@ -195,10 +203,13 @@ fun MobilePlayerScreen(
     val window = context.findActivityWindow()
     window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+    // 暴露 player 给后台 PlaybackService 做通知控件;不暂停,后台音频继续。
+    PlayerHolder.player = player
+
     val observer = LifecycleEventObserver { _, event ->
       when (event) {
         Lifecycle.Event.ON_PAUSE -> {
-          player.pause()
+          // 后台播放:不暂停,仅存一次进度(心跳继续每 15s 上报)。
           saveAndReportProgress()
         }
         else -> Unit
@@ -210,8 +221,18 @@ fun MobilePlayerScreen(
       player.removeListener(listener)
       lifecycleOwner.lifecycle.removeObserver(observer)
       saveAndReportProgress()
+      context.stopService(Intent(context, PlaybackService::class.java))
+      PlayerHolder.player = null
       player.release()
       window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+  }
+
+  // 开始播放时启动后台保活服务(通知控件);标题变化时刷新。
+  LaunchedEffect(isPlaying, displayTitle) {
+    PlayerHolder.title = displayTitle
+    if (isPlaying) {
+      ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
     }
   }
 
