@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.view.WindowManager
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -114,6 +115,7 @@ fun MobilePlayerScreen(
   playbackQualityPreference: PlaybackQualityPreference,
   playbackCdnPreference: PlaybackCdnPreference,
   onBack: () -> Unit,
+  onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit = { _, _, _ -> },
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -432,8 +434,19 @@ fun MobilePlayerScreen(
           color = Color.White,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.weight(1f),
+          modifier = Modifier
+            .weight(1f)
+            .clickable(enabled = activeRequest.ownerMid > 0L) {
+              onOpenUpSpace(activeRequest.ownerMid, activeRequest.ownerName, activeRequest.ownerFace)
+            },
         )
+        if (activeRequest.ownerMid > 0L) {
+          TextButton(onClick = {
+            onOpenUpSpace(activeRequest.ownerMid, activeRequest.ownerName, activeRequest.ownerFace)
+          }) {
+            Text("UP", color = Color.White)
+          }
+        }
       }
 
       // 底栏

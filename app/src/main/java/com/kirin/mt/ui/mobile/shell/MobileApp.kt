@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.Composable
@@ -75,6 +76,7 @@ fun BiliMobileApp(
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
   val session by sessionStore.session.collectAsState(initial = UserSession())
   var playbackRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
+  var spaceRequest by remember { mutableStateOf<com.kirin.mt.ui.space.UpSpaceRequest?>(null) }
 
   val effectiveCodecPreference =
     if (settings.lowSpecMode) PlaybackCodecPreference.H264 else settings.playbackCodecPreference
@@ -156,6 +158,32 @@ fun BiliMobileApp(
           playbackQualityPreference = settings.playbackQualityPreference,
           playbackCdnPreference = settings.playbackCdnPreference,
           onBack = { playbackRequest = null },
+          onOpenUpSpace = { mid, name, face ->
+            spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(mid, name, face)
+          },
+          modifier = Modifier.fillMaxSize(),
+        )
+      }
+    }
+
+    val space = spaceRequest
+    if (space != null) {
+      BackHandler { spaceRequest = null }
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(MaterialTheme.colorScheme.background),
+      ) {
+        com.kirin.mt.ui.mobile.space.MobileUserSpaceScreen(
+          videoRepository = videoRepository,
+          mid = space.mid,
+          ownerName = space.ownerName,
+          ownerFace = space.ownerFace,
+          onVideoSelected = { video ->
+            spaceRequest = null
+            playbackRequest = video.toPlaybackRequest()
+          },
+          onBack = { spaceRequest = null },
           modifier = Modifier.fillMaxSize(),
         )
       }
