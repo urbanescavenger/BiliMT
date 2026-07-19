@@ -71,6 +71,7 @@ fun BiliMobileApp(
 ) {
   val context = LocalContext.current
   var selected by rememberSaveable { mutableStateOf(AppDestination.Recommend) }
+  var recommendRefreshKey by rememberSaveable { mutableStateOf(0) }
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
   val session by sessionStore.session.collectAsState(initial = UserSession())
   var playbackRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
@@ -96,6 +97,10 @@ fun BiliMobileApp(
               if (dest == AppDestination.Settings) {
                 context.startActivity(Intent(context, SettingsActivity::class.java))
               } else {
+                // 重复点击当前已选中的"推荐"tab -> 触发首页刷新(滚顶 + 重载)
+                if (dest == AppDestination.Recommend && selected == dest) {
+                  recommendRefreshKey++
+                }
                 selected = dest
               }
             },
@@ -109,6 +114,7 @@ fun BiliMobileApp(
         AppDestination.Recommend -> MobileHomeScreen(
           videoRepository = videoRepository,
           enabledSections = HomeSection.DefaultOrder,
+          refreshKey = recommendRefreshKey,
           onVideoSelected = { video ->
             playbackRequest = video.toPlaybackRequest()
           },

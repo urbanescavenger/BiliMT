@@ -81,6 +81,7 @@ fun MobileHomeScreen(
   enabledSections: List<HomeSection>,
   onVideoSelected: (VideoSummary) -> Unit,
   modifier: Modifier = Modifier,
+  refreshKey: Int = 0,
 ) {
   val sections = remember(enabledSections) { enabledSections.ifEmpty { listOf(HomeSection.Recommend) } }
   var selectedKey by remember { mutableStateOf(sections.first().key) }
@@ -170,6 +171,13 @@ fun MobileHomeScreen(
   }
 
   val gridState = rememberLazyGridState()
+  // 底栏重复点击"推荐":bump refreshKey 触发当前分区强制刷新并滚顶
+  LaunchedEffect(refreshKey) {
+    if (refreshKey > 0) {
+      loadSection(selectedSection, forceRefresh = true)
+      gridState.scrollToItem(0)
+    }
+  }
   // 滑动接近底部自动加载下一页
   LaunchedEffect(selectedKey) {
     snapshotFlow {
