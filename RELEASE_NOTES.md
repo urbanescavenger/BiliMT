@@ -1,5 +1,20 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.4
+
+v2.0.0-alpha.3 后:移动端 SMS 短信登录 + 应用名改回 BiliMT。
+
+### 移动端短信登录(WebView 托管)
+- **`MobileSmsWebViewPanel`**:WebView 打开 B站登录页(`https://passport.bilibili.com/login`),用户在 B站自己的页面完成 手机号 + 极验滑块 + 短信;轮询 `CookieManager` 抓 `SESSDATA`/`bili_jct`(+`buvid3/4`)存进 `SessionStore` 并 `refreshUserProfile`,成功自动 `finish` 回设置页。**不引入极验 SDK、不逆向 B站 sms/captcha API**——B站改 API 不受影响。启动先清旧 cookie 以便检测本次新登录。
+- **登录页加 扫码登录 / 短信登录 Tab 切换**:QR 抽成 `QrLoginPanel`,与短信 WebView 并列。
+
+### 应用名
+- **改回 BiliMT**:此前 alpha 版本按"moblie版本叫BiliMO"改名为 BiliMO,现恢复 BiliMT(三个 locale 一并)。`applicationId`(`com.kirin.mt`)不动。单 APK,Tv/手机共用。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.4-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.4-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.3
 
 v2.0.0-alpha.2 后的 Phase 3:移动端触屏播放器。
