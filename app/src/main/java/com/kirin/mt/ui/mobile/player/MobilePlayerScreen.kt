@@ -139,6 +139,7 @@ fun MobilePlayerScreen(
   var selectedQualityId by remember { mutableStateOf<Int?>(null) }
   var playbackSpeed by remember { mutableFloatStateOf(1f) }
   var settingsSheet by remember { mutableStateOf(false) }
+  var episodesSheet by remember { mutableStateOf(false) }
 
   // 全屏切换:强制横屏 + 隐藏系统栏(沉浸);退出/关播放器恢复,避免主页卡横屏。
   DisposableEffect(fullscreen) {
@@ -478,6 +479,11 @@ fun MobilePlayerScreen(
               color = Color.White,
             )
           }
+          if ((metadata?.pages?.size ?: 0) > 1) {
+            TextButton(onClick = { episodesSheet = true }) {
+              Text("选集", color = Color.White)
+            }
+          }
           TextButton(onClick = { settingsSheet = true }) {
             Text("设置", color = Color.White)
           }
@@ -520,6 +526,49 @@ fun MobilePlayerScreen(
           onDanmakuAllowTop = { scope.launch { danmakuSettingsStore.setAllowTop(it) } },
           onDanmakuAllowBottom = { scope.launch { danmakuSettingsStore.setAllowBottom(it) } },
         )
+      }
+    }
+
+    // 选集(分P)弹窗
+    if (episodesSheet) {
+      val epSheetState = rememberModalBottomSheetState()
+      ModalBottomSheet(
+        onDismissRequest = { episodesSheet = false },
+        sheetState = epSheetState,
+        containerColor = Color(0xFF1A1A20),
+      ) {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+          SectionTitle("选集")
+          metadata?.pages.orEmpty().forEach { ep ->
+            val selected = ep.cid == activeRequest.cid ||
+              (ep.epId > 0L && ep.epId == activeRequest.epId)
+            TextButton(
+              onClick = {
+                episodesSheet = false
+                activeRequest = activeRequest.copy(
+                  cid = ep.cid,
+                  epId = ep.epId,
+                  startPositionMs = 0L,
+                  preferredQualityId = selectedQualityId,
+                  forceStartPosition = true,
+                  historyPage = ep.page,
+                )
+              },
+              modifier = Modifier.fillMaxWidth(),
+            ) {
+              Text(
+                text = "P${ep.page} ${ep.title}",
+                color = if (selected) Color(0xFFFB7299) else Color.White,
+              )
+            }
+          }
+          Spacer(Modifier.padding(top = 8.dp))
+        }
       }
     }
   }
