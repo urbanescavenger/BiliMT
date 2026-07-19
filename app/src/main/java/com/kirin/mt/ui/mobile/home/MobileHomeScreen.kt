@@ -205,7 +205,7 @@ fun MobileHomeScreen(
         is MobileSectionState.Success -> LazyVerticalGrid(
           columns = GridCells.Adaptive(minSize = 160.dp),
           state = gridState,
-          contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)
+          contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
           horizontalArrangement = Arrangement.spacedBy(12.dp),
           verticalArrangement = Arrangement.spacedBy(12.dp),
           modifier = Modifier.fillMaxSize(),

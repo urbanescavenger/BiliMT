@@ -3,8 +3,8 @@ package com.kirin.mt
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import com.kirin.mt.ui.mobile.BiliMobileApp
 import com.kirin.mt.ui.mobile.isTvUi
+import com.kirin.mt.ui.mobile.shell.BiliMobileApp
 import com.kirin.mt.ui.shell.BiliTvApp
 import com.kirin.mt.ui.theme.BiliTvTheme
 
