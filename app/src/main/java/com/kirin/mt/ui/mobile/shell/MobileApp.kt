@@ -31,6 +31,7 @@ import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppSettingsStore
+import com.kirin.mt.core.storage.SearchHistoryStore
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.core.update.ApkInstaller
@@ -42,6 +43,7 @@ import com.kirin.mt.ui.mobile.common.DevelopingTipContent
 import com.kirin.mt.ui.mobile.feed.MobileDynamicScreen
 import com.kirin.mt.ui.mobile.home.MobileHomeScreen
 import com.kirin.mt.ui.mobile.player.MobilePlayerScreen
+import com.kirin.mt.ui.mobile.search.MobileSearchScreen
 import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.shell.AppDestination
 import okhttp3.OkHttpClient
@@ -61,6 +63,7 @@ fun BiliMobileApp(
   authRepository: AuthRepository,
   appSettingsStore: AppSettingsStore,
   sessionStore: SessionStore,
+  searchHistoryStore: SearchHistoryStore,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
 ) {
@@ -76,7 +79,7 @@ fun BiliMobileApp(
   val bottomNav = listOf(
     AppDestination.Recommend,
     AppDestination.Dynamic,
-    AppDestination.Pgc,
+    AppDestination.Search,
     AppDestination.Settings,
   )
 
@@ -116,8 +119,15 @@ fun BiliMobileApp(
           modifier = Modifier.fillMaxSize(),
         )
         AppDestination.Pgc -> DevelopingTipContent()
+        AppDestination.Search -> MobileSearchScreen(
+          videoRepository = videoRepository,
+          searchHistoryStore = searchHistoryStore,
+          onVideoSelected = { video ->
+            playbackRequest = video.toPlaybackRequest()
+          },
+          modifier = Modifier.fillMaxSize(),
+        )
         AppDestination.Settings -> DevelopingTipContent()
-        AppDestination.Search -> DevelopingTipContent()
       }
     }
 

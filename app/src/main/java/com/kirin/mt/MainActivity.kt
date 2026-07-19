@@ -41,6 +41,7 @@ class MainActivity : ComponentActivity() {
             authRepository = appContainer.authRepository,
             appSettingsStore = appContainer.appSettingsStore,
             sessionStore = appContainer.sessionStore,
+            searchHistoryStore = appContainer.searchHistoryStore,
             updateManager = appContainer.updateManager,
             apkInstaller = appContainer.apkInstaller,
           )
