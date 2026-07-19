@@ -1,6 +1,8 @@
 package com.kirin.mt.ui.player
 
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.model.isWatchCompleted
+import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
 import com.kirin.mt.core.player.PlaybackRequest
 
 /**
