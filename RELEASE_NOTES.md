@@ -1,5 +1,16 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.12
+
+v2.0.0-alpha.11 后:选集(分P)侧栏弹窗。
+
+### 选集侧栏
+- 多 P 视频(`metadata.pages.size > 1`)底栏显示"选集"按钮,弹 `ModalBottomSheet` 列分P,选中高亮(`cid`/`epId` 匹配),点击 `activeRequest.copy(cid, epId, forceStartPosition, historyPage, preferredQualityId)` 重载(镜像 TV `PlayerScreen.Episodes`)。单 P 不显示按钮。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.12-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.12-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.11
 
 v2.0.0-alpha.10 后:播放器设置弹窗(画质/倍速/弹幕)—— P1 开始。
