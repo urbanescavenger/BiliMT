@@ -7,23 +7,29 @@ import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,10 +67,12 @@ import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackInfo
+import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackService
+import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.PlayerHolder
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.ui.player.PlayerDanmakuLayer
@@ -123,6 +131,12 @@ fun MobilePlayerScreen(
   var danmakuSyncToken by remember { mutableLongStateOf(0L) }
   var danmakuEntries by remember { mutableStateOf<List<com.kirin.mt.core.player.DanmakuEntry>>(emptyList()) }
   var fullscreen by rememberSaveable { mutableStateOf(false) }
+  // 画质/分P 切换:activeRequest 驱动 load effect(镜像 TV),metadata 供选集,selectedQualityId 供画质高亮
+  var activeRequest by remember(request) { mutableStateOf(request) }
+  var metadata by remember { mutableStateOf<PlaybackVideoMetadata?>(null) }
+  var selectedQualityId by remember { mutableStateOf<Int?>(null) }
+  var playbackSpeed by remember { mutableFloatStateOf(1f) }
+  var settingsSheet by remember { mutableStateOf(false) }
 
   // 全屏切换:强制横屏 + 隐藏系统栏(沉浸);退出/关播放器恢复,避免主页卡横屏。
   DisposableEffect(fullscreen) {
@@ -167,10 +181,10 @@ fun MobilePlayerScreen(
           bvid = info.bvid,
           cid = info.cid,
           progressSeconds = progressSeconds,
-          epId = request.epId,
-          seasonId = request.seasonId,
-          subType = request.subType,
-          aid = request.aid,
+          epId = activeRequest.epId,
+          seasonId = activeRequest.seasonId,
+          subType = activeRequest.subType,
+          aid = activeRequest.aid,
         )
       }
     }
@@ -236,8 +250,8 @@ fun MobilePlayerScreen(
     }
   }
 
-  // 加载(镜像 TV PlayerScreen 的 load 序列)
-  LaunchedEffect(request, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference) {
+  // 加载(镜像 TV PlayerScreen 的 load 序列);key 为 activeRequest,支持画质/分P 切换重载
+  LaunchedEffect(activeRequest, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference) {
     playerState = MobilePlayerState.Loading
     completionReported = false
     seekPreviewMs = null
@@ -246,21 +260,23 @@ fun MobilePlayerScreen(
     danmakuEntries = emptyList()
     player.clearMediaItems()
     try {
-      val videoMetadata = runCatching { playbackRepository.getVideoMetadata(request) }.getOrNull()
-      val cid = request.cid.takeIf { it > 0L }
+      val videoMetadata = runCatching { playbackRepository.getVideoMetadata(activeRequest) }.getOrNull()
+      metadata = videoMetadata
+      val cid = activeRequest.cid.takeIf { it > 0L }
         ?: videoMetadata?.cid?.takeIf { it > 0L }
-        ?: playbackRepository.resolveCid(request.bvid)
+        ?: playbackRepository.resolveCid(activeRequest.bvid)
       if (cid <= 0L) {
         playerState = MobilePlayerState.Failed(context.getString(R.string.player_error_missing_cid))
         return@LaunchedEffect
       }
-      val resolvedRequest = request.withResolvedMetadata(metadata = videoMetadata, cid = cid)
-      displayTitle = resolvedRequest.title.ifBlank { request.title }
+      val resolvedRequest = activeRequest.withResolvedMetadata(metadata = videoMetadata, cid = cid)
+      displayTitle = resolvedRequest.title.ifBlank { activeRequest.title }
       val info = playbackRepository.getPlaybackInfo(
         request = resolvedRequest,
         codecPreference = playbackCodecPreference,
         qualityPreference = playbackQualityPreference,
       )
+      selectedQualityId = info.selectedQuality.id
       if (info.videoTracks.isEmpty() || info.audioTracks.isEmpty()) {
         playerState = MobilePlayerState.Failed(context.getString(R.string.player_error_empty_tracks))
         return@LaunchedEffect
@@ -276,7 +292,7 @@ fun MobilePlayerScreen(
       }
       val effectiveInfo = info.copy(videoTracks = resolvedVideo, audioTracks = resolvedAudio)
       val startPositionMs = playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
-        ?: request.startPositionMs
+        ?: activeRequest.startPositionMs
       val dataSourceFactory = DefaultDataSource.Factory(
         context,
         BiliMediaDataSourceFactory(client = playbackHttpClient, headers = effectiveInfo.headers).create(),
@@ -293,6 +309,7 @@ fun MobilePlayerScreen(
       }
       player.setMediaSource(mediaSource)
       player.prepare()
+      player.playbackSpeed = playbackSpeed
       if (startPositionMs > 0L) {
         player.seekTo(startPositionMs)
         playbackPositionState.longValue = startPositionMs
@@ -362,7 +379,7 @@ fun MobilePlayerScreen(
         positionState = playbackPositionState,
         syncToken = danmakuSyncToken,
         isPlaying = isPlaying && seekPreviewMs == null && !completionReported,
-        playbackSpeed = 1f,
+        playbackSpeed = playbackSpeed,
         lowSpecMode = false,
         modifier = Modifier.fillMaxSize(),
       )
@@ -459,7 +476,48 @@ fun MobilePlayerScreen(
               color = Color.White,
             )
           }
+          TextButton(onClick = { settingsSheet = true }) {
+            Text("设置", color = Color.White)
+          }
         }
+      }
+    }
+
+    // 设置弹窗:画质 / 倍速 / 弹幕
+    if (settingsSheet) {
+      val sheetState = rememberModalBottomSheetState()
+      val ready = playerState as? MobilePlayerState.Ready
+      ModalBottomSheet(
+        onDismissRequest = { settingsSheet = false },
+        sheetState = sheetState,
+        containerColor = Color(0xFF1A1A20),
+      ) {
+        PlayerSettingsSheet(
+          qualities = ready?.info?.qualities.orEmpty(),
+          selectedQualityId = selectedQualityId,
+          onQualitySelected = { q ->
+            settingsSheet = false
+            selectedQualityId = q.id
+            activeRequest = activeRequest.copy(
+              startPositionMs = player.currentPosition.takeIf { it > 0L }
+                ?: playbackPositionState.longValue,
+              preferredQualityId = q.id,
+            )
+          },
+          playbackSpeed = playbackSpeed,
+          onSpeedSelected = { rate ->
+            playbackSpeed = rate
+            player.playbackSpeed = rate
+          },
+          danmakuSettings = danmakuSettings,
+          onDanmakuEnabled = { scope.launch { danmakuSettingsStore.setEnabled(it) } },
+          onDanmakuOpacity = { scope.launch { danmakuSettingsStore.setOpacity(it) } },
+          onDanmakuFontSize = { scope.launch { danmakuSettingsStore.setFontSize(it) } },
+          onDanmakuArea = { scope.launch { danmakuSettingsStore.setArea(it) } },
+          onDanmakuSpeed = { scope.launch { danmakuSettingsStore.setSpeed(it) } },
+          onDanmakuAllowTop = { scope.launch { danmakuSettingsStore.setAllowTop(it) } },
+          onDanmakuAllowBottom = { scope.launch { danmakuSettingsStore.setAllowBottom(it) } },
+        )
       }
     }
   }
@@ -470,6 +528,121 @@ private fun formatMs(ms: Long): String {
   val m = totalSeconds / 60
   val s = totalSeconds % 60
   return "%d:%02d".format(m, s)
+}
+
+private val PlaybackSpeedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f)
+
+/**
+ * 播放器设置弹窗:画质(列表)/ 倍速(列表)/ 弹幕(开关 + 4 滑块 + 顶底开关)。
+ * 画质切换改 activeRequest.preferredQualityId 重载;倍速实时设 player.playbackSpeed;
+ * 弹幕经 DanmakuSettingsStore 持久化。
+ */
+@Composable
+private fun PlayerSettingsSheet(
+  qualities: List<PlaybackQuality>,
+  selectedQualityId: Int?,
+  onQualitySelected: (PlaybackQuality) -> Unit,
+  playbackSpeed: Float,
+  onSpeedSelected: (Float) -> Unit,
+  danmakuSettings: com.kirin.mt.core.player.DanmakuSettings,
+  onDanmakuEnabled: (Boolean) -> Unit,
+  onDanmakuOpacity: (Float) -> Unit,
+  onDanmakuFontSize: (Int) -> Unit,
+  onDanmakuArea: (Float) -> Unit,
+  onDanmakuSpeed: (Int) -> Unit,
+  onDanmakuAllowTop: (Boolean) -> Unit,
+  onDanmakuAllowBottom: (Boolean) -> Unit,
+) {
+  Column(
+    modifier = Modifier
+      .fillMaxWidth()
+      .verticalScroll(rememberScrollState())
+      .padding(horizontal = 16.dp, vertical = 8.dp),
+  ) {
+    SectionTitle("画质")
+    qualities.forEach { q ->
+      val selected = q.id == selectedQualityId
+      TextButton(
+        onClick = { onQualitySelected(q) },
+        modifier = Modifier.fillMaxWidth(),
+      ) {
+        Text(
+          text = q.description,
+          color = if (selected) Color(0xFFFB7299) else Color.White,
+        )
+      }
+    }
+
+    SectionTitle("倍速")
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      PlaybackSpeedOptions.forEach { rate ->
+        val selected = rate == playbackSpeed
+        TextButton(onClick = { onSpeedSelected(rate) }) {
+          Text(
+            text = "${rate}x",
+            color = if (selected) Color(0xFFFB7299) else Color.White,
+          )
+        }
+      }
+    }
+
+    SectionTitle("弹幕")
+    SettingRow("弹幕开关") {
+      Switch(checked = danmakuSettings.enabled, onCheckedChange = onDanmakuEnabled)
+    }
+    SliderRow("不透明度", danmakuSettings.opacity, 0.1f..1f) { onDanmakuOpacity(it) }
+    SliderRow("字号", danmakuSettings.fontSize.toFloat(), 16f..36f) { onDanmakuFontSize(it.toInt()) }
+    SliderRow("显示区域", danmakuSettings.area, 0.25f..1f) { onDanmakuArea(it) }
+    SliderRow("速度", danmakuSettings.speed.toFloat(), 3f..7f, steps = 3) { onDanmakuSpeed(it.toInt()) }
+    SettingRow("顶部弹幕") {
+      Switch(checked = danmakuSettings.allowTop, onCheckedChange = onDanmakuAllowTop)
+    }
+    SettingRow("底部弹幕") {
+      Switch(checked = danmakuSettings.allowBottom, onCheckedChange = onDanmakuAllowBottom)
+    }
+    Spacer(Modifier.padding(top = 8.dp))
+  }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+  Text(
+    text = text,
+    color = Color.White,
+    style = MaterialTheme.typography.titleSmall,
+    modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+  )
+}
+
+@Composable
+private fun SettingRow(label: String, trailing: @Composable () -> Unit) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(label, color = Color.White)
+    trailing()
+  }
+}
+
+@Composable
+private fun SliderRow(
+  label: String,
+  value: Float,
+  range: ClosedFloatingPointRange<Float>,
+  steps: Int = 0,
+  onValueChange: (Float) -> Unit,
+) {
+  Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    Text(label, color = Color.White, style = MaterialTheme.typography.bodyMedium)
+    Slider(
+      value = value.coerceIn(range.start, range.endInclusive),
+      onValueChange = onValueChange,
+      valueRange = range,
+      steps = steps,
+    )
+  }
 }
 
 /** 找到承载的 Activity 的 Window,用于点亮屏幕。 */
