@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
@@ -99,6 +100,7 @@ private sealed interface MobilePlayerState {
  * 输入层换成触屏——点击切换控件、Slider 拖动 seek、播放/暂停/弹幕/返回。
  * 画质/倍速/弹幕设置弹窗留待 Phase 3 v2。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MobilePlayerScreen(
   request: PlaybackRequest,
@@ -309,7 +311,7 @@ fun MobilePlayerScreen(
       }
       player.setMediaSource(mediaSource)
       player.prepare()
-      player.playbackSpeed = playbackSpeed
+      player.setPlaybackSpeed(playbackSpeed)
       if (startPositionMs > 0L) {
         player.seekTo(startPositionMs)
         playbackPositionState.longValue = startPositionMs
@@ -507,7 +509,7 @@ fun MobilePlayerScreen(
           playbackSpeed = playbackSpeed,
           onSpeedSelected = { rate ->
             playbackSpeed = rate
-            player.playbackSpeed = rate
+            player.setPlaybackSpeed(rate)
           },
           danmakuSettings = danmakuSettings,
           onDanmakuEnabled = { scope.launch { danmakuSettingsStore.setEnabled(it) } },
