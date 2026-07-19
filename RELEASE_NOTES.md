@@ -1,5 +1,16 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.9
+
+v2.0.0-alpha.8 后:底栏重复点击"推荐"触发刷新。
+
+### 推荐 tab 重复点击刷新
+- 之前底栏重复点击已选中的"推荐"无反应(内容不刷新)。`MobileApp` 检测 Recommend 重复点击 → bump `recommendRefreshKey`,`MobileHomeScreen` 新增 `refreshKey` 参数,`LaunchedEffect(refreshKey>0)` 对当前分区 `loadSection(forceRefresh=true)` 并 `gridState.scrollToItem(0)`(滚顶 + 重载,参照 BV `navigate` 对 Home 的 `animateScrollToItem(0)`+重载)。仅移动端,TV 不动。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.9-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.9-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.8
 
 v2.0.0-alpha.7 后:状态栏透明+浅色图标 + 播放全屏。
