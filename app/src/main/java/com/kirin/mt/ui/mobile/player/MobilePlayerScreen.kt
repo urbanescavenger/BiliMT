@@ -129,7 +129,7 @@ fun MobilePlayerScreen(
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior =
-          WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_AND_BY_SWIPE
+          WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
       } else {
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         controller.show(WindowInsetsCompat.Type.systemBars())
