@@ -1,5 +1,25 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.7
+
+v2.0.0-alpha.6 后:移植搜索 tab(取代底栏影视占位)+ 修播放器返回键退出 + 顶部留状态栏 inset。
+
+### 搜索 tab(新增,取代底栏 PGC 占位)
+- **`MobileSearchScreen`**:底栏"影视"占位换成"搜索",新增触屏搜索页。顶部 `OutlinedTextField`(系统软键盘 + IME 搜索),输入态显示搜索历史 / 联想(防抖 250ms,复用 `SearchHistoryStore` 与 `VideoRepository.getSearchSuggestions`);结果态显示排序 chip(综合/播放/发布/弹幕)+ `LazyVerticalGrid` 复用 `MobileVideoCard`,page-number 分页(PageSize=20,滚到底自动翻页,按 bvid 去重)。
+- **点卡片**走 `onVideoSelected → toPlaybackRequest → MobilePlayerScreen`,复用触屏播放器进度上报。
+- **TV 端零改动**:排序选项移动端私有复制,不动 TV `SearchScreen`;`AppDestination.Search` 入口与 `search_*` 字符串本就存在。
+- 历史清除、清空输入、结果态系统返回回输入态(BackHandler)。
+
+### 播放器返回键修复
+- **返回不再退 app**:之前播放器覆盖层没有 `BackHandler`,系统返回无人消费 → activity finish 退 app。现 `MobileApp` 播放器覆盖层加 `BackHandler { playbackRequest = null }`,组合在 `NavigationSuiteScaffold` 内容之后、`OnBackPressedDispatcher` 栈更靠顶,系统返回优先**关播放器回选片页**。搜索结果进播放器再返回也正确关播放器(而非回搜索输入态)。
+
+### 顶部状态栏 inset
+- **内容不再压在状态栏下**:`MainActivity` 仅移动端 `enableEdgeToEdge()`(TV 不动),`MobileApp` 的 `NavigationSuiteScaffold` 加 `statusBarsPadding()`;`SettingsActivity` 根 `Surface`、`LoginActivity` 的 `MobileLoginScreen` 同补顶部 inset。播放器覆盖层保持全屏不动。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.7-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.7-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.6
 
 v2.0.0-alpha.5 后:短信登录时序修复 + 移植动态 tab。
