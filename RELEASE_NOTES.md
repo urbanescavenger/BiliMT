@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.14
+
+v2.0.0-alpha.13 后:UP 主空间页 —— P1 收尾。
+
+### UP 主空间页
+- 新增 `MobileUserSpaceScreen`:资料头(头像/名/签名/粉丝数)+ 关注按钮(`checkFollowStatus`/`setFollowStatus`)+ 投稿网格(`getSpaceVideos`,最新/最热排序,page 分页滚到底自动翻页,复用 `MobileVideoCard`),浅色底。
+- **入口**:`MobilePlayerScreen` 顶栏标题与"UP"按钮(`ownerMid > 0`)→ `onOpenUpSpace` → `MobileApp` 的 `spaceRequest` 覆盖层(`BackHandler` 关,点视频先关空间再开播放器)。
+- 复用 `VideoRepository.getSpaceVideos/getSpaceUserProfile/checkFollowStatus/setFollowStatus` 与 `ui.space.UpSpaceRequest`。TV 不动。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.14-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.14-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.13
 
 v2.0.0-alpha.12 后:自动连播下一集。
