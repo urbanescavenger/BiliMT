@@ -6,6 +6,7 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 
 /**
@@ -28,9 +29,11 @@ internal suspend fun PointerInputScope.detectPlayerGestures(
   onSeekEnd: () -> Unit,
   onSeekCancel: () -> Unit,
 ) {
-  val slop = viewConfiguration.pointerSlop
-  // Compose 1.7+ 起 longPressTimeout 为 kotlin.time.Duration,转毫秒与 uptimeMillis 差比较
-  val longPressTimeoutMs = viewConfiguration.longPressTimeout.inWholeMilliseconds
+  // 用 Compose 默认值(与 DefaultViewConfiguration 一致),避免不同 Compose 版本
+  // ViewConfiguration 成员名差异(touchSlop/longPressTimeout vs *Millis/pointerSlop)。
+  // PointerInputScope 即 Density,8.dp.toPx() 直接可用。
+  val slop = 8.dp.toPx()
+  val longPressTimeoutMs = 500L
   val width = size.width.toFloat()
 
   // 外层 while 保证多次手势连续识别(awaitEachGesture 单次语义在不同版本里有差异)
