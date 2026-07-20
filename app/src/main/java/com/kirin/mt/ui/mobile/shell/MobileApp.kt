@@ -49,10 +49,12 @@ import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.ui.mobile.LoginActivity
 import com.kirin.mt.ui.mobile.SettingsActivity
 import com.kirin.mt.ui.mobile.common.DevelopingTipContent
-import com.kirin.mt.ui.mobile.feed.MobileDynamicScreen
+import com.kirin.mt.ui.mobile.feed.MobileFeedScreen
 import com.kirin.mt.ui.mobile.home.MobileHomeScreen
+import com.kirin.mt.ui.mobile.pgc.MobilePgcSeasonScreen
 import com.kirin.mt.ui.mobile.player.MobilePlayerScreen
 import com.kirin.mt.ui.mobile.search.MobileSearchScreen
+import com.kirin.mt.ui.pgc.PgcSeasonRequest
 import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.shell.AppDestination
 import okhttp3.OkHttpClient
@@ -87,6 +89,9 @@ fun BiliMobileApp(
   // false=从空间起了播(播放器在上)。配合空间叠层显示门控与 BackHandler enabled,
   // 让"空间→视频→返回→空间"成立(不销毁 spaceRequest),镜像 TV AppShell spacePlaybackBehind。
   var spacePlaybackBehind by remember { mutableStateOf(false) }
+  // 追番点季 -> 季详情外壳;选集后起播,player 盖在季详情之上。z 序同 space。
+  var pgcSeasonRequest by remember { mutableStateOf<PgcSeasonRequest?>(null) }
+  var pgcPlaybackBehind by remember { mutableStateOf(false) }
 
   // Android 13+ 需运行时请求 POST_NOTIFICATIONS,否则后台播放通知(及控件)不显示。
   val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -147,13 +152,17 @@ fun BiliMobileApp(
           },
           modifier = Modifier.fillMaxSize(),
         )
-        AppDestination.Dynamic -> MobileDynamicScreen(
+        AppDestination.Dynamic -> MobileFeedScreen(
           videoRepository = videoRepository,
           isLoggedIn = session.isLoggedIn,
           onVideoSelected = { video -> playbackRequest = video.toPlaybackRequest() },
           onOpenOwner = { video ->
             spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
             spacePlaybackBehind = false
+          },
+          onSeasonSelected = { season ->
+            pgcSeasonRequest = PgcSeasonRequest(seasonId = season.seasonId, epId = season.firstEpId)
+            pgcPlaybackBehind = false
           },
           onLogin = { context.startActivity(Intent(context, LoginActivity::class.java)) },
           modifier = Modifier.fillMaxSize(),
@@ -238,6 +247,53 @@ fun BiliMobileApp(
             onBack = {
               spaceRequest = null
               spacePlaybackBehind = false
+            },
+            modifier = Modifier.fillMaxSize(),
+          )
+        }
+      }
+    }
+
+    val seasonReq = pgcSeasonRequest
+    if (seasonReq != null) {
+      // 季详情在顶层(无播放器)时才接管返回键;播放器在上时让播放器响应。
+      BackHandler(enabled = playbackRequest == null || pgcPlaybackBehind) {
+        pgcSeasonRequest = null
+        pgcPlaybackBehind = false
+      }
+      // 显示门控:仅在季详情处于顶层时渲染,选集起播后让播放器盖在上面。
+      if (playbackRequest == null || pgcPlaybackBehind) {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        ) {
+          MobilePgcSeasonScreen(
+            videoRepository = videoRepository,
+            request = seasonReq,
+            // 选集 -> PGC PlaybackRequest,照 AppShell PgcSeasonScreen onPlayEpisode 范式。
+            onPlayEpisode = { season, ep ->
+              val startMs = season.progress
+                ?.takeIf { it.lastEpId == ep.id }
+                ?.lastTime
+                ?.let { it * 1000L }
+                ?: 0L
+              pgcPlaybackBehind = false
+              playbackRequest = PlaybackRequest(
+                bvid = ep.bvid,
+                cid = ep.cid,
+                aid = ep.aid,
+                title = season.title,
+                startPositionMs = startMs,
+                epId = ep.id.toLong(),
+                seasonId = season.seasonId.toLong(),
+                subType = season.type,
+                forceStartPosition = startMs > 0L,
+              )
+            },
+            onBack = {
+              pgcSeasonRequest = null
+              pgcPlaybackBehind = false
             },
             modifier = Modifier.fillMaxSize(),
           )
