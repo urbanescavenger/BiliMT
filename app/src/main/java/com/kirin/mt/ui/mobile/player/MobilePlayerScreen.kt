@@ -4,19 +4,24 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.view.WindowManager
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +45,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -146,6 +152,11 @@ fun MobilePlayerScreen(
   var playbackSpeed by remember { mutableFloatStateOf(1f) }
   var settingsSheet by remember { mutableStateOf(false) }
   var episodesSheet by remember { mutableStateOf(false) }
+  // 手势交互状态:横拖 seek 进行中 / 长按 2x 进行中 / 居中播放暂停反馈闪现
+  var dragSeekActive by remember { mutableStateOf(false) }
+  var speedBoostActive by remember { mutableStateOf(false) }
+  var centerIconFlash by remember { mutableStateOf(false) }
+  var centerIconIsPlaying by remember { mutableStateOf(true) }
 
   // 全屏切换:强制横屏 + 隐藏系统栏(沉浸);退出/关播放器恢复,避免主页卡横屏。
   DisposableEffect(fullscreen) {
@@ -197,6 +208,16 @@ fun MobilePlayerScreen(
         )
       }
     }
+  }
+
+  // 播放/暂停切换:对齐 TV togglePlayback() 语义——暂停显控件、播放隐控件,
+  // 并触发居中图标反馈闪现。isPlaying 异步回写,这里用调用前的值判断"即将进入"的状态。
+  fun togglePlayback() {
+    val willPlay = !isPlaying
+    if (willPlay) player.play() else player.pause()
+    controlsVisible = !willPlay
+    centerIconIsPlaying = willPlay
+    centerIconFlash = true
   }
 
   // ExoPlayer 监听 + 生命周期释放
@@ -390,6 +411,23 @@ fun MobilePlayerScreen(
     activeRequest = next.request
   }
 
+  // 居中播放/暂停图标反馈:触发后 800ms 自动隐
+  LaunchedEffect(centerIconFlash) {
+    if (centerIconFlash) {
+      delay(800)
+      centerIconFlash = false
+    }
+  }
+
+  // 控件自动隐藏:播放中控件可见时,4s 后自动隐(对齐 TV PlayerControlsAutoHideMs)。
+  // 暂停时 isPlaying=false,本 effect 不触发,控件保持可见。
+  LaunchedEffect(controlsVisible, isPlaying) {
+    if (controlsVisible && isPlaying) {
+      delay(4000)
+      controlsVisible = false
+    }
+  }
+
   val positionMs = seekPreviewMs ?: playbackPositionState.longValue
   val durationMs = playbackDurationState.longValue.coerceAtLeast(1L)
 
@@ -398,7 +436,44 @@ fun MobilePlayerScreen(
       .fillMaxSize()
       .background(Color.Black)
       .pointerInput(Unit) {
-        detectTapGestures(onTap = { controlsVisible = !controlsVisible })
+        detectPlayerGestures(
+          onCenterTap = { togglePlayback() },
+          onEdgeTap = { controlsVisible = !controlsVisible },
+          onLongPressStart = {
+            speedBoostActive = true
+            player.setPlaybackSpeed(2f)
+          },
+          onLongPressEnd = {
+            if (speedBoostActive) {
+              speedBoostActive = false
+              player.setPlaybackSpeed(playbackSpeed)
+            }
+          },
+          onSeekStart = { dragSeekActive = true },
+          onSeekDelta = { dx ->
+            val dur = player.duration
+            if (dur > 0L) {
+              val w = size.width.toFloat().coerceAtLeast(1f)
+              val cur = seekPreviewMs ?: player.currentPosition
+              seekPreviewMs = (cur + dx / w * dur.toFloat())
+                .coerceIn(0f, dur.toFloat())
+                .toLong()
+            }
+          },
+          onSeekEnd = {
+            dragSeekActive = false
+            seekPreviewMs?.let { target ->
+              player.seekTo(target)
+              playbackPositionState.longValue = target
+              danmakuSyncToken += 1L
+            }
+            seekPreviewMs = null
+          },
+          onSeekCancel = {
+            dragSeekActive = false
+            seekPreviewMs = null
+          },
+        )
       },
   ) {
     AndroidView(
@@ -438,6 +513,61 @@ fun MobilePlayerScreen(
         TextButton(onClick = onBack) { Text("返回", color = Color.White) }
       }
       is MobilePlayerState.Ready -> Unit
+    }
+
+    // 居中播放/暂停反馈:点击中央切换时闪现 800ms
+    AnimatedVisibility(
+      visible = centerIconFlash,
+      enter = fadeIn(),
+      exit = fadeOut(),
+      modifier = Modifier.align(Alignment.Center),
+    ) {
+      Box(
+        modifier = Modifier
+          .size(72.dp)
+          .clip(CircleShape)
+          .background(Color(0x99000000)),
+        contentAlignment = Alignment.Center,
+      ) {
+        Text(
+          text = if (centerIconIsPlaying) "▶" else "⏸",
+          color = Color.White,
+        )
+      }
+    }
+
+    // 长按 2 倍速提示
+    AnimatedVisibility(
+      visible = speedBoostActive,
+      enter = fadeIn(),
+      exit = fadeOut(),
+      modifier = Modifier.align(Alignment.TopCenter).padding(top = 64.dp),
+    ) {
+      Box(
+        modifier = Modifier
+          .clip(RoundedCornerShape(16.dp))
+          .background(Color(0x99000000))
+          .padding(horizontal = 16.dp, vertical = 6.dp),
+      ) {
+        Text("2.0x", color = Color.White)
+      }
+    }
+
+    // 横拖 seek 时间气泡(仅手势拖拽时;Slider 拖动 dragSeekActive=false 不显示)
+    if (dragSeekActive && seekPreviewMs != null) {
+      Box(
+        modifier = Modifier.align(Alignment.Center),
+        contentAlignment = Alignment.Center,
+      ) {
+        Box(
+          modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xCC000000))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+          Text(formatMs(seekPreviewMs ?: 0L), color = Color.White)
+        }
+      }
     }
 
     if (controlsVisible && playerState is MobilePlayerState.Ready) {
@@ -505,9 +635,7 @@ fun MobilePlayerScreen(
           horizontalArrangement = Arrangement.SpaceBetween,
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          TextButton(onClick = {
-            if (isPlaying) player.pause() else player.play()
-          }) {
+          TextButton(onClick = { togglePlayback() }) {
             Text(if (isPlaying) "⏸" else "▶", color = Color.White)
           }
           TextButton(onClick = {
