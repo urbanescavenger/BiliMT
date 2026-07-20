@@ -1,5 +1,19 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.20
+
+v2.0.0-alpha.19 后:移动端播放器底栏按钮图标化(参考 TV 版)。
+
+### 底栏按钮重设计
+- 5 个文字按钮(⏸/▶、弹 开/弹 关、全屏、选集、设置)改为**图标按钮**,移动端扁平半透明风格(40dp 圆角半透明底 + 22dp 图标),参考 TV 版 `PlayerIconButton` 图标化思路但不搬液态玻璃/焦点(触屏不需要)。
+- 图标:复用现有 `ic_player_subtitles`(弹幕)、`ic_player_playlist`(选集)、`ic_nav_settings`(设置);新增 `ic_player_play`/`ic_player_pause`/`ic_player_fullscreen`/`ic_player_fullscreen_exit` 四枚矢量图(沿用 32dp/viewport32/白色风格)。
+- 状态高亮对齐 `BiliColors`:弹幕开=BiliPink、关=TextSecondary;播放/暂停、全屏按状态切图标。新增 `MobilePlayerIconButton` Composable。
+- 功能集不变(倍速/画质仍走设置 sheet,空降/UP/相关本次不做)。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.20-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.20-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.19
 
 v2.0.0-alpha.18 后:移动端播放器接入空降助手(自动跳过广告/片头/片尾段)。

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -24,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -50,6 +52,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -70,6 +73,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kirin.mt.R
+import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
@@ -718,33 +722,38 @@ fun MobilePlayerScreen(
           horizontalArrangement = Arrangement.SpaceBetween,
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          TextButton(onClick = { togglePlayback() }) {
-            Text(if (isPlaying) "⏸" else "▶", color = Color.White)
-          }
-          TextButton(onClick = {
-            scope.launch {
-              danmakuSettingsStore.setEnabled(!danmakuSettings.enabled)
-            }
-          }) {
-            Text(
-              text = if (danmakuSettings.enabled) "弹 开" else "弹 关",
-              color = if (danmakuSettings.enabled) Color.White else Color.Gray,
-            )
-          }
-          TextButton(onClick = { fullscreen = !fullscreen }) {
-            Text(
-              text = if (fullscreen) "退出全屏" else "全屏",
-              color = Color.White,
-            )
-          }
+          MobilePlayerIconButton(
+            iconRes = if (isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play,
+            contentDescription = if (isPlaying) "暂停" else "播放",
+            tint = BiliColors.TextPrimary,
+            onClick = { togglePlayback() },
+          )
+          MobilePlayerIconButton(
+            iconRes = R.drawable.ic_player_subtitles,
+            contentDescription = "弹幕",
+            tint = if (danmakuSettings.enabled) BiliColors.BiliPink else BiliColors.TextSecondary,
+            onClick = { scope.launch { danmakuSettingsStore.setEnabled(!danmakuSettings.enabled) } },
+          )
           if ((metadata?.pages?.size ?: 0) > 1) {
-            TextButton(onClick = { episodesSheet = true }) {
-              Text("选集", color = Color.White)
-            }
+            MobilePlayerIconButton(
+              iconRes = R.drawable.ic_player_playlist,
+              contentDescription = "选集",
+              tint = BiliColors.TextPrimary,
+              onClick = { episodesSheet = true },
+            )
           }
-          TextButton(onClick = { settingsSheet = true }) {
-            Text("设置", color = Color.White)
-          }
+          MobilePlayerIconButton(
+            iconRes = R.drawable.ic_nav_settings,
+            contentDescription = "设置",
+            tint = BiliColors.TextPrimary,
+            onClick = { settingsSheet = true },
+          )
+          MobilePlayerIconButton(
+            iconRes = if (fullscreen) R.drawable.ic_player_fullscreen_exit else R.drawable.ic_player_fullscreen,
+            contentDescription = if (fullscreen) "退出全屏" else "全屏",
+            tint = BiliColors.TextPrimary,
+            onClick = { fullscreen = !fullscreen },
+          )
         }
       }
     }
@@ -972,4 +981,32 @@ private fun android.content.Context.findActivity(): Activity? {
     ctx = ctx.baseContext
   }
   return null
+}
+
+/**
+ * 移动端播放器底栏图标按钮:扁平半透明圆角底 + 居中图标。
+ * 选中/激活态由调用方传 tint(如弹幕开=BiliPink、关=TextSecondary)。无焦点/无玻璃(触屏)。
+ */
+@Composable
+private fun MobilePlayerIconButton(
+  @DrawableRes iconRes: Int,
+  contentDescription: String,
+  tint: Color,
+  onClick: () -> Unit,
+) {
+  Box(
+    modifier = Modifier
+      .size(40.dp)
+      .clip(RoundedCornerShape(12.dp))
+      .background(BiliColors.PlayerControlIdle)
+      .clickable(onClick = onClick),
+    contentAlignment = Alignment.Center,
+  ) {
+    Icon(
+      painter = painterResource(iconRes),
+      contentDescription = contentDescription,
+      tint = tint,
+      modifier = Modifier.size(22.dp),
+    )
+  }
 }
