@@ -1,5 +1,28 @@
 # BiliMT 版本发布说明
 
+## v2.0.1
+
+v2.0.0 后移动端 UI 继续打磨：视频详情改上下分栏 + 评论列表、动态 tab 四子 tab、番剧季上次看到位置、首页/播放器多处体验修复。合并 mort_debug → main 打稳定 tag。
+
+### 视频详情上下分栏 UI + 评论列表
+- 点入视频由整屏播放器覆盖改为**竖屏上下分栏**：上半 16:9 播放器 + 下半评论列表；点底栏全屏按钮切横屏全屏沉浸（评论隐藏），退出回竖屏分栏。
+- 评论列表 `MobileCommentList` 复用 `VideoRepository.getComments`（`/x/v2/reply`），滚动到底自动翻页、热门/最新排序切换；aid 取自 `PlaybackVideoMetadata`（卡片不带 aid），白底深字。PGC 暂占位"暂无评论"。
+
+### 动态 tab 四子 tab + 季详情选集
+- "动态"底栏 tab 改为动态/历史/收藏/追番四子 tab（`PrimaryScrollableTabRow` + `HorizontalPager` 左右滑动）。历史双游标分页续播、收藏夹 chip 切换、追番两组筛选。
+- 触屏季详情外壳 `MobilePgcSeasonScreen`：封面/简介 + 同系列季切换 + 正片/花絮分集列表，续播高亮上次集，进/切季自动滚到上次看到的位置并叠主色进度条。
+
+### 播放器与卡片体验
+- 播放底栏加 UP 主页图标、视频分享；视频卡片 UP 名旁加头像可点进 UP 主页；UP 主页进视频返回回 UP 主页而非首页。
+- 首页内容区左右滑动切顶部 tab；首页下滑到底不自动加载（PageSize 30→20）；加载列表两圈合并；全屏点击视频不暂停修复（width 缓存失真）。
+
+### versionCode 说明
+本版 vc=2,001,000。`computeVersionCode` 对 prerelease 加 `labelOrder*100+pre`，故 `v2.0.1-alpha.*`（2,001,101~2,001,106）高于本稳定版——已装 alpha 的用户需**手动安装 v2.0.1** 升级（与 v2.0.0 同策略，不改 `labelOrder`）。
+
+### 安装包
+- `BiliMT-v2.0.1-arm64-v8a.apk`
+- `BiliMT-v2.0.1-armeabi-v7a.apk`
+
 ## v2.0.1-alpha.6
 
 v2.0.1-alpha.5 后:修评论不显示 + 评论背景改白底。
