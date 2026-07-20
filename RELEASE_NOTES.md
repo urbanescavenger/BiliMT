@@ -1,5 +1,23 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.15
+
+v2.0.0-alpha.14 后:后台播放通知改主流 MediaStyle + 内容页下滑刷新。
+
+### 后台播放通知(MediaStyle 主流样式)
+- `PlaybackService` 改 `MediaSessionService`,`MediaSession` 绑 `PlayerHolder.player`(composable 的 ExoPlayer),自动前台化 + 默认 MediaStyle 通知(**视频封面 + 标题/UP + 播放/暂停 + 锁屏媒体控件**),随播放状态自动更新。
+- 封面:`PlaybackRequest` 加 `coverUrl`(`toPlaybackRequest` 带 `VideoSummary.pic`),加载时用 `playbackHttpClient` 下载 bytes 设 `MediaItem.mediaMetadata.artworkData`(UGC `buildDashMediaItem.buildUpon` + PGC `MediaItem` 带 metadata)。
+- Manifest 加 `MediaSessionService` intent-filter;`MobileApp` 请求 `POST_NOTIFICATIONS` 运行时权限(Android 13+,此前未请求导致通知不显示)。加 `media3-session` 依赖。
+- 上一版通知不显示根因:POST_NOTIFICATIONS 未运行时请求。
+
+### 内容页下滑刷新
+- 新增自定义 `PullToRefreshLayout`(foundation `nestedScroll`,版本无关——material3 无 `PullToRefreshBox` 符号):列表到顶继续下拉越过阈值松手触发 onRefresh,顶部转圈指示器。
+- 接入首页/动态/搜索结果/UP 空间四个网格页(onRefresh 复用各自首屏重载)。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.15-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.15-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.14
 
 v2.0.0-alpha.13 后:UP 主空间页 —— P1 收尾。
