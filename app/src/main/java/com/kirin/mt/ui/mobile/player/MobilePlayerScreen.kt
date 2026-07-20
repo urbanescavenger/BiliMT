@@ -248,6 +248,28 @@ fun MobilePlayerScreen(
     centerIconFlash = true
   }
 
+  // 分享视频:bvid 优先,无 bvid 用 av{aid};文本=标题+换行+链接,走系统 share sheet。
+  fun shareVideo() {
+    val bvid = activeRequest.bvid
+    val url = when {
+      bvid.isNotBlank() -> "https://www.bilibili.com/video/$bvid"
+      activeRequest.aid > 0L -> "https://www.bilibili.com/video/av${activeRequest.aid}"
+      else -> return
+    }
+    val shareText = buildString {
+      if (displayTitle.isNotBlank()) {
+        append(displayTitle)
+        append('\n')
+      }
+      append(url)
+    }
+    val intent = Intent(Intent.ACTION_SEND).apply {
+      type = "text/plain"
+      putExtra(Intent.EXTRA_TEXT, shareText)
+    }
+    runCatching { context.startActivity(Intent.createChooser(intent, "分享视频")) }
+  }
+
   // 空降助手:进度轮询每 tick 调用,命中段 seek 到段末,入段前预警,回退重置去重(镜像 TV)
   fun handleAirJumpPosition(currentPositionMs: Long) {
     if (!airJumpAssistantEnabled || seekPreviewMs != null || airJumpSegments.isEmpty()) {
@@ -709,6 +731,15 @@ fun MobilePlayerScreen(
             onOpenUpSpace(activeRequest.ownerMid, activeRequest.ownerName, activeRequest.ownerFace)
           }) {
             Text("UP", color = Color.White)
+          }
+        }
+        if (activeRequest.bvid.isNotBlank() || activeRequest.aid > 0L) {
+          TextButton(onClick = { shareVideo() }) {
+            Icon(
+              painter = painterResource(R.drawable.ic_player_share),
+              contentDescription = "分享",
+              tint = Color.White,
+            )
           }
         }
       }
