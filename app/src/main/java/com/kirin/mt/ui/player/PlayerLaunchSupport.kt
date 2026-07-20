@@ -21,6 +21,7 @@ internal fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false)
     ownerName = ownerName,
     ownerFace = ownerFace,
     ownerMid = ownerMid,
+    coverUrl = pic,
     viewCount = view,
     danmakuCount = danmaku,
     pubdate = pubdate,

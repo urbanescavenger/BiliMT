@@ -82,8 +82,10 @@ import com.kirin.mt.ui.player.buildDashMediaItem
 import com.kirin.mt.ui.player.nextEpisodeCompletion
 import com.kirin.mt.ui.player.withResolvedMetadata
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 
 private const val ProgressUpdateMs = 500L
@@ -300,19 +302,39 @@ fun MobilePlayerScreen(
       val effectiveInfo = info.copy(videoTracks = resolvedVideo, audioTracks = resolvedAudio)
       val startPositionMs = playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
         ?: activeRequest.startPositionMs
+      // 后台播放 MediaStyle 通知封面:下载 coverUrl bytes(IO),失败忽略。
+      val coverBytes = activeRequest.coverUrl.takeIf { it.isNotEmpty() }?.let { url ->
+        runCatching {
+          withContext(Dispatchers.IO) {
+            playbackHttpClient.newCall(okhttp3.Request.Builder().url(url).build()).execute()
+              .use { resp -> resp.body?.bytes() }
+          }
+        }.getOrNull()
+      }
+      val metadata = androidx.media3.common.MediaMetadata.Builder()
+        .setTitle(displayTitle)
+        .setArtist(activeRequest.ownerName)
+        .apply { if (coverBytes != null) setArtworkData(coverBytes, androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
+        .build()
       val dataSourceFactory = DefaultDataSource.Factory(
         context,
         BiliMediaDataSourceFactory(client = playbackHttpClient, headers = effectiveInfo.headers).create(),
       )
       val mediaSource: MediaSource = if (resolvedRequest.isPgc) {
-        val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-          .createMediaSource(androidx.media3.common.MediaItem.fromUri(effectiveInfo.videoTracks.first().baseUrl))
+        val videoItem = androidx.media3.common.MediaItem.Builder()
+          .setUri(effectiveInfo.videoTracks.first().baseUrl)
+          .setMediaMetadata(metadata)
+          .build()
+        val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
         val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
           .createMediaSource(androidx.media3.common.MediaItem.fromUri(effectiveInfo.audioTracks.first().baseUrl))
         MergingMediaSource(videoSource, audioSource)
       } else {
-        DashMediaSource.Factory(dataSourceFactory)
-          .createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
+        val dashItem = buildDashMediaItem(effectiveInfo, playbackCdnPreference)
+          .buildUpon()
+          .setMediaMetadata(metadata)
+          .build()
+        DashMediaSource.Factory(dataSourceFactory).createMediaSource(dashItem)
       }
       player.setMediaSource(mediaSource)
       player.prepare()

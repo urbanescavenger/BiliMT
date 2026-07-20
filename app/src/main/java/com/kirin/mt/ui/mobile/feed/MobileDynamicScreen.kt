@@ -14,7 +14,9 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PullToRefreshBox
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -52,6 +54,7 @@ private sealed interface DynamicState {
  * 移动端动态 tab:关注动态视频网格 + offset 分页。复用 VideoRepository.getDynamicFeed
  * 与 MobileVideoCard。未登录时显示登录入口。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MobileDynamicScreen(
   videoRepository: VideoRepository,
@@ -81,8 +84,7 @@ fun MobileDynamicScreen(
   var state by remember { mutableStateOf<DynamicState>(DynamicState.Loading) }
   var nextOffset by remember { mutableStateOf("") }
 
-  LaunchedEffect(isLoggedIn) {
-    if (!isLoggedIn) return@LaunchedEffect
+  suspend fun loadFirstBody() {
     state = DynamicState.Loading
     nextOffset = ""
     state = try {
@@ -102,6 +104,15 @@ fun MobileDynamicScreen(
     } catch (e: Exception) {
       DynamicState.Failed(e.message.orEmpty().ifBlank { "加载失败" })
     }
+  }
+
+  LaunchedEffect(isLoggedIn) {
+    if (!isLoggedIn) return@LaunchedEffect
+    loadFirstBody()
+  }
+
+  fun reloadFirst() {
+    scope.launch { loadFirstBody() }
   }
 
   val gridState = rememberLazyGridState()
@@ -168,23 +179,29 @@ fun MobileDynamicScreen(
           modifier = Modifier.padding(24.dp),
         )
       }
-      is DynamicState.Success -> LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 160.dp),
-        state = gridState,
-        contentPadding = PaddingValues(12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+      is DynamicState.Success -> PullToRefreshBox(
+        isRefreshing = state is DynamicState.Loading,
+        onRefresh = { reloadFirst() },
         modifier = Modifier.fillMaxSize(),
       ) {
-        items(s.videos, key = { it.bvid }) { video ->
-          MobileVideoCard(video = video, onClick = onVideoSelected)
-        }
-        if (s.loadingMore) {
-          item(span = { GridItemSpan(maxLineSpan) }) {
-            Box(
-              modifier = Modifier.fillMaxWidth().padding(16.dp),
-              contentAlignment = Alignment.Center,
-            ) { CircularProgressIndicator() }
+        LazyVerticalGrid(
+          columns = GridCells.Adaptive(minSize = 160.dp),
+          state = gridState,
+          contentPadding = PaddingValues(12.dp),
+          horizontalArrangement = Arrangement.spacedBy(12.dp),
+          verticalArrangement = Arrangement.spacedBy(12.dp),
+          modifier = Modifier.fillMaxSize(),
+        ) {
+          items(s.videos, key = { it.bvid }) { video ->
+            MobileVideoCard(video = video, onClick = onVideoSelected)
+          }
+          if (s.loadingMore) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+              Box(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                contentAlignment = Alignment.Center,
+              ) { CircularProgressIndicator() }
+            }
           }
         }
       }

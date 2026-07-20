@@ -19,8 +19,10 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.PullToRefreshBox
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -65,6 +67,7 @@ private sealed interface SpaceState {
  * 复用 VideoRepository.getSpaceVideos/getSpaceUserProfile/checkFollowStatus/setFollowStatus,
  * 视频卡复用 MobileVideoCard。点卡片走 onVideoSelected。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MobileUserSpaceScreen(
   videoRepository: VideoRepository,
@@ -148,16 +151,21 @@ fun MobileUserSpaceScreen(
       .collect { nearEnd -> if (nearEnd) loadNextPage() }
   }
 
-  LazyVerticalGrid(
-    columns = GridCells.Adaptive(minSize = 160.dp),
-    state = gridState,
-    contentPadding = PaddingValues(12.dp),
-    horizontalArrangement = Arrangement.spacedBy(12.dp),
-    verticalArrangement = Arrangement.spacedBy(12.dp),
+  PullToRefreshBox(
+    isRefreshing = state is SpaceState.Loading,
+    onRefresh = { loadFirst(order) },
     modifier = modifier
       .fillMaxSize()
       .background(MaterialTheme.colorScheme.background),
   ) {
+    LazyVerticalGrid(
+      columns = GridCells.Adaptive(minSize = 160.dp),
+      state = gridState,
+      contentPadding = PaddingValues(12.dp),
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp),
+      modifier = Modifier.fillMaxSize(),
+    ) {
     // 顶栏 + 资料头 + 排序(跨整行)
     item(span = { GridItemSpan(maxLineSpan) }) {
       Column(modifier = Modifier.fillMaxWidth()) {
@@ -263,6 +271,7 @@ fun MobileUserSpaceScreen(
           }
         }
       }
+    }
     }
   }
 }

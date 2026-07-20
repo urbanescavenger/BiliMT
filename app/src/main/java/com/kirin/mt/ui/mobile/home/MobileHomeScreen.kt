@@ -12,8 +12,10 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryScrollableTabRow
+import androidx.compose.material3.PullToRefreshBox
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -75,6 +77,7 @@ private class MobileHomeUiState {
   fun refreshKey(key: String): Int = refreshKeys[key] ?: 0
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MobileHomeScreen(
   videoRepository: VideoRepository,
@@ -210,25 +213,31 @@ fun MobileHomeScreen(
           modifier = Modifier.align(Alignment.Center),
         )
         is MobileSectionState.Failed -> DevelopingTipContent() // 复用占位,后续替换为可重试状态
-        is MobileSectionState.Success -> LazyVerticalGrid(
-          columns = GridCells.Adaptive(minSize = 160.dp),
-          state = gridState,
-          contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-          horizontalArrangement = Arrangement.spacedBy(12.dp),
-          verticalArrangement = Arrangement.spacedBy(12.dp),
+        is MobileSectionState.Success -> PullToRefreshBox(
+          isRefreshing = uiState.sectionStates[selectedSection.key] is MobileSectionState.Loading,
+          onRefresh = { loadSection(selectedSection, forceRefresh = true) },
           modifier = Modifier.fillMaxSize(),
         ) {
-          items(state.videos, key = { it.bvid }) { video ->
-            MobileVideoCard(video = video, onClick = onVideoSelected)
-          }
-          if (state.loadingMore) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
-              Box(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .padding(16.dp),
-                contentAlignment = Alignment.Center,
-              ) { CircularProgressIndicator() }
+          LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = 160.dp),
+            state = gridState,
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxSize(),
+          ) {
+            items(state.videos, key = { it.bvid }) { video ->
+              MobileVideoCard(video = video, onClick = onVideoSelected)
+            }
+            if (state.loadingMore) {
+              item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                  contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator() }
+              }
             }
           }
         }

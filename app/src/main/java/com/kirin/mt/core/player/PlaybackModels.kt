@@ -9,6 +9,8 @@ data class PlaybackRequest(
   val ownerName: String = "",
   val ownerFace: String = "",
   val ownerMid: Long = 0L,
+  /** 视频封面 URL,用于后台播放 MediaStyle 通知封面。 */
+  val coverUrl: String = "",
   val viewCount: Int = 0,
   val danmakuCount: Int = 0,
   val pubdate: Long = 0L,

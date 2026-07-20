@@ -21,11 +21,13 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PullToRefreshBox
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -115,6 +117,7 @@ private class MobileSearchUiState {
  * getSearchSuggestions 与 SearchHistoryStore,结果卡片复用 MobileVideoCard。点卡片走
  * onVideoSelected → 触屏播放器。TV 端搜索不受影响。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MobileSearchScreen(
   videoRepository: VideoRepository,
@@ -326,23 +329,29 @@ fun MobileSearchScreen(
               modifier = Modifier.padding(24.dp),
             )
           }
-          is SearchResultState.Success -> LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 160.dp),
-            state = gridState,
-            contentPadding = PaddingValues(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+          is SearchResultState.Success -> PullToRefreshBox(
+            isRefreshing = uiState.resultState is SearchResultState.Loading,
+            onRefresh = { loadFirstPage(submitted, uiState.orderKey) },
             modifier = Modifier.fillMaxSize(),
           ) {
-            gridItems(s.videos, key = { it.bvid }) { video ->
-              MobileVideoCard(video = video, onClick = onVideoSelected)
-            }
-            if (s.loadingMore) {
-              item(span = { GridItemSpan(maxLineSpan) }) {
-                Box(
-                  modifier = Modifier.fillMaxWidth().padding(16.dp),
-                  contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator() }
+            LazyVerticalGrid(
+              columns = GridCells.Adaptive(minSize = 160.dp),
+              state = gridState,
+              contentPadding = PaddingValues(12.dp),
+              horizontalArrangement = Arrangement.spacedBy(12.dp),
+              verticalArrangement = Arrangement.spacedBy(12.dp),
+              modifier = Modifier.fillMaxSize(),
+            ) {
+              gridItems(s.videos, key = { it.bvid }) { video ->
+                MobileVideoCard(video = video, onClick = onVideoSelected)
+              }
+              if (s.loadingMore) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                  Box(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    contentAlignment = Alignment.Center,
+                  ) { CircularProgressIndicator() }
+                }
               }
             }
           }
