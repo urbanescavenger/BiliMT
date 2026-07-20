@@ -1,5 +1,22 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.22
+
+v2.0.0-alpha.21 后:播放器加推荐视频按钮 + 修内容页下拉刷新无效。
+
+### 播放器推荐视频(相关视频)按钮
+- 底栏加"推荐视频"图标按钮(常驻,复用 `ic_player_related`),点击弹深色 `ModalBottomSheet`,2 列列出当前视频的相关视频(`VideoRepository.getRelatedVideos(bvid)`),点击切播(不关播放器,`playbackRequest = video.toPlaybackRequest()` 重载)。
+- sheet 内容用 `MaterialTheme(darkColorScheme())` 包一层让 `MobileVideoCard` 文字在深色底可读。`MobilePlayerScreen` 加 `videoRepository`/`onPlayVideo` 参数,`MobileApp` 传 `toPlaybackRequest` 切播。选集守卫保持(单 P 不显示)。
+
+### 修下拉刷新无效
+- 根因:首页/动态/搜索三页把 `PullToRefreshLayout` 放在 `when(state)` 的 Success 分支内,`isRefreshing = state is Loading` 在 Success 分支求值永远 false;onRefresh 触发后 state→Loading,上层 `when` 切 Loading 分支用全屏转圈**替换掉整个 PullToRefreshLayout**(列表滚动位置、指示器一起销毁)→ 体感"下滑无效"。
+- 修法:三页照 `MobileUserSpaceScreen` 范式重构——`PullToRefreshLayout` 提到 `when` 外、`isRefreshing` 顶层求值真值、Loading/Empty/Failed 内联为 grid `item(span=GridItemSpan(maxLineSpan))`,刷新时容器不卸载、滚动位置与顶部指示器保留。
+- 次修:`PullToRefreshLayout` 的 `remember{object:NestedScrollConnection}` 捕获陈旧 isRefreshing/onRefresh,改用 `rememberUpdatedState` 持最新值。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.22-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.22-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.21
 
 v2.0.0-alpha.20 后:修播放中拖拽 seek 松手后意外暂停。

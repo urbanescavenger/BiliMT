@@ -208,35 +208,45 @@ fun MobileHomeScreen(
       }
     }
     Box(modifier = Modifier.fillMaxSize()) {
-      when (val state = uiState.sectionStates[selectedSection.key]) {
-        null, MobileSectionState.Loading -> CircularProgressIndicator(
-          modifier = Modifier.align(Alignment.Center),
-        )
-        is MobileSectionState.Failed -> DevelopingTipContent() // 复用占位,后续替换为可重试状态
-        is MobileSectionState.Success -> PullToRefreshLayout(
-          isRefreshing = uiState.sectionStates[selectedSection.key] is MobileSectionState.Loading,
-          onRefresh = { loadSection(selectedSection, forceRefresh = true) },
+      val state = uiState.sectionStates[selectedSection.key]
+      // PullToRefreshLayout 提到 when 外,isRefreshing 顶层求值真值;刷新时 state→Loading 不再卸载容器,
+      // 列表滚动位置与指示器保留,Loading/Failed 内联为 grid item(照 MobileUserSpaceScreen 范式)。
+      PullToRefreshLayout(
+        isRefreshing = state is MobileSectionState.Loading,
+        onRefresh = { loadSection(selectedSection, forceRefresh = true) },
+        modifier = Modifier.fillMaxSize(),
+      ) {
+        LazyVerticalGrid(
+          columns = GridCells.Adaptive(minSize = 160.dp),
+          state = gridState,
+          contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+          horizontalArrangement = Arrangement.spacedBy(12.dp),
+          verticalArrangement = Arrangement.spacedBy(12.dp),
           modifier = Modifier.fillMaxSize(),
         ) {
-          LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 160.dp),
-            state = gridState,
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxSize(),
-          ) {
-            items(state.videos, key = { it.bvid }) { video ->
-              MobileVideoCard(video = video, onClick = onVideoSelected)
+          when (state) {
+            null, MobileSectionState.Loading -> item(span = { GridItemSpan(maxLineSpan) }) {
+              Box(
+                modifier = Modifier.fillMaxWidth().padding(32.dp),
+                contentAlignment = Alignment.Center,
+              ) { CircularProgressIndicator() }
             }
-            if (state.loadingMore) {
-              item(span = { GridItemSpan(maxLineSpan) }) {
-                Box(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                  contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator() }
+            is MobileSectionState.Failed -> item(span = { GridItemSpan(maxLineSpan) }) {
+              DevelopingTipContent() // 复用占位,后续替换为可重试状态
+            }
+            is MobileSectionState.Success -> {
+              items(state.videos, key = { it.bvid }) { video ->
+                MobileVideoCard(video = video, onClick = onVideoSelected)
+              }
+              if (state.loadingMore) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                  Box(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(16.dp),
+                    contentAlignment = Alignment.Center,
+                  ) { CircularProgressIndicator() }
+                }
               }
             }
           }

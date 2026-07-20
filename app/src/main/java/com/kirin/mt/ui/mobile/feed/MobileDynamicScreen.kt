@@ -152,55 +152,66 @@ fun MobileDynamicScreen(
   }
 
   Box(modifier = modifier.fillMaxSize()) {
-    when (val s = state) {
-      DynamicState.Loading -> CircularProgressIndicator(
-        modifier = Modifier.align(Alignment.Center),
-      )
-      DynamicState.Empty -> Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center,
-      ) {
-        Text(
-          text = stringResource(R.string.mobile_dynamic_empty),
-          style = MaterialTheme.typography.bodyLarge,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          textAlign = TextAlign.Center,
-        )
-      }
-      is DynamicState.Failed -> Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center,
-      ) {
-        Text(
-          text = s.message,
-          style = MaterialTheme.typography.bodyLarge,
-          color = MaterialTheme.colorScheme.error,
-          textAlign = TextAlign.Center,
-          modifier = Modifier.padding(24.dp),
-        )
-      }
-      is DynamicState.Success -> PullToRefreshLayout(
-        isRefreshing = state is DynamicState.Loading,
-        onRefresh = { reloadFirst() },
+    // PullToRefreshLayout 提到 when 外,isRefreshing 顶层求值真值;刷新时 state→Loading 不再卸载容器,
+    // 列表滚动位置与指示器保留,各状态内联为 grid item(照 MobileUserSpaceScreen 范式)。
+    PullToRefreshLayout(
+      isRefreshing = state is DynamicState.Loading,
+      onRefresh = { reloadFirst() },
+      modifier = Modifier.fillMaxSize(),
+    ) {
+      LazyVerticalGrid(
+        columns = GridCells.Adaptive(minSize = 160.dp),
+        state = gridState,
+        contentPadding = PaddingValues(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier.fillMaxSize(),
       ) {
-        LazyVerticalGrid(
-          columns = GridCells.Adaptive(minSize = 160.dp),
-          state = gridState,
-          contentPadding = PaddingValues(12.dp),
-          horizontalArrangement = Arrangement.spacedBy(12.dp),
-          verticalArrangement = Arrangement.spacedBy(12.dp),
-          modifier = Modifier.fillMaxSize(),
-        ) {
-          items(s.videos, key = { it.bvid }) { video ->
-            MobileVideoCard(video = video, onClick = onVideoSelected)
+        when (val s = state) {
+          DynamicState.Loading -> item(span = { GridItemSpan(maxLineSpan) }) {
+            Box(
+              modifier = Modifier.fillMaxWidth().padding(32.dp),
+              contentAlignment = Alignment.Center,
+            ) { CircularProgressIndicator() }
           }
-          if (s.loadingMore) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
-              Box(
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
-                contentAlignment = Alignment.Center,
-              ) { CircularProgressIndicator() }
+          DynamicState.Empty -> item(span = { GridItemSpan(maxLineSpan) }) {
+            Box(
+              modifier = Modifier.fillMaxWidth().padding(32.dp),
+              contentAlignment = Alignment.Center,
+            ) {
+              Text(
+                text = stringResource(R.string.mobile_dynamic_empty),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+              )
+            }
+          }
+          is DynamicState.Failed -> item(span = { GridItemSpan(maxLineSpan) }) {
+            Box(
+              modifier = Modifier.fillMaxWidth().padding(32.dp),
+              contentAlignment = Alignment.Center,
+            ) {
+              Text(
+                text = s.message,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(24.dp),
+              )
+            }
+          }
+          is DynamicState.Success -> {
+            items(s.videos, key = { it.bvid }) { video ->
+              MobileVideoCard(video = video, onClick = onVideoSelected)
+            }
+            if (s.loadingMore) {
+              item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                  modifier = Modifier.fillMaxWidth().padding(16.dp),
+                  contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator() }
+              }
             }
           }
         }

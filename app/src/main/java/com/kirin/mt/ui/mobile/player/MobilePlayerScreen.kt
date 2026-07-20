@@ -57,6 +57,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.material3.darkColorScheme
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -74,6 +75,9 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kirin.mt.R
 import com.kirin.mt.ui.theme.BiliColors
+import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
@@ -134,6 +138,8 @@ fun MobilePlayerScreen(
   playbackQualityPreference: PlaybackQualityPreference,
   playbackCdnPreference: PlaybackCdnPreference,
   airJumpAssistantEnabled: Boolean,
+  videoRepository: VideoRepository,
+  onPlayVideo: (VideoSummary) -> Unit = {},
   onBack: () -> Unit,
   onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit = { _, _, _ -> },
   modifier: Modifier = Modifier,
@@ -176,6 +182,9 @@ fun MobilePlayerScreen(
   var warnedAirJumpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
   var skippedAirJumpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
   var lastAirJumpPositionMs by remember { mutableLongStateOf(0L) }
+  // 推荐视频(相关视频):按 bvid 拉,弹 sheet 列出,点击切播
+  var relatedVideos by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
+  var relatedSheet by remember { mutableStateOf(false) }
 
   // 全屏切换:强制横屏 + 隐藏系统栏(沉浸);退出/关播放器恢复,避免主页卡横屏。
   DisposableEffect(fullscreen) {
@@ -481,6 +490,15 @@ fun MobilePlayerScreen(
     }.getOrDefault(emptyList())
   }
 
+  // 推荐视频(相关视频):按 bvid 拉,切视频重载(镜像 TV PlayerScreen)
+  LaunchedEffect(activeRequest.bvid) {
+    relatedVideos = emptyList()
+    if (activeRequest.bvid.isBlank()) return@LaunchedEffect
+    relatedVideos = runCatching {
+      videoRepository.getRelatedVideos(activeRequest.bvid)
+    }.getOrDefault(emptyList())
+  }
+
   // 心跳上报
   LaunchedEffect(playerState is MobilePlayerState.Ready, isPlaying) {
     if (playerState !is MobilePlayerState.Ready || !isPlaying) return@LaunchedEffect
@@ -754,6 +772,12 @@ fun MobilePlayerScreen(
             )
           }
           MobilePlayerIconButton(
+            iconRes = R.drawable.ic_player_related,
+            contentDescription = "推荐视频",
+            tint = BiliColors.TextPrimary,
+            onClick = { relatedSheet = true },
+          )
+          MobilePlayerIconButton(
             iconRes = R.drawable.ic_nav_settings,
             contentDescription = "设置",
             tint = BiliColors.TextPrimary,
@@ -846,6 +870,50 @@ fun MobilePlayerScreen(
             }
           }
           Spacer(Modifier.padding(top = 8.dp))
+        }
+      }
+    }
+
+    // 推荐视频(相关视频)sheet:深色 MaterialTheme 让 MobileVideoCard 文字可读,2 列 chunked Row
+    if (relatedSheet) {
+      val relatedSheetState = rememberModalBottomSheetState()
+      ModalBottomSheet(
+        onDismissRequest = { relatedSheet = false },
+        sheetState = relatedSheetState,
+        containerColor = Color(0xFF1A1A20),
+      ) {
+        MaterialTheme(colorScheme = darkColorScheme()) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .verticalScroll(rememberScrollState())
+              .padding(horizontal = 16.dp, vertical = 8.dp),
+          ) {
+            SectionTitle("推荐视频")
+            if (relatedVideos.isEmpty()) {
+              Text(
+                text = "暂无相关视频",
+                color = BiliColors.TextSecondary,
+                modifier = Modifier.padding(vertical = 12.dp),
+              )
+            }
+            relatedVideos.chunked(2).forEach { rowItems ->
+              Row(modifier = Modifier.fillMaxWidth()) {
+                rowItems.forEach { v ->
+                  MobileVideoCard(
+                    video = v,
+                    onClick = {
+                      relatedSheet = false
+                      onPlayVideo(v)
+                    },
+                    modifier = Modifier.weight(1f).padding(4.dp),
+                  )
+                }
+                if (rowItems.size == 1) Spacer(Modifier.weight(1f))
+              }
+            }
+            Spacer(Modifier.padding(top = 8.dp))
+          }
         }
       }
     }

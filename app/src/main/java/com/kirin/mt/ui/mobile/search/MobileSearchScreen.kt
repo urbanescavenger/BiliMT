@@ -302,55 +302,66 @@ fun MobileSearchScreen(
       }
 
       Box(modifier = Modifier.fillMaxSize()) {
-        when (val s = uiState.resultState) {
-          SearchResultState.Loading -> CircularProgressIndicator(
-            modifier = Modifier.align(Alignment.Center),
-          )
-          SearchResultState.Empty -> Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-          ) {
-            Text(
-              text = stringResource(R.string.search_empty),
-              style = MaterialTheme.typography.bodyLarge,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              textAlign = TextAlign.Center,
-            )
-          }
-          is SearchResultState.Failed -> Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-          ) {
-            Text(
-              text = stringResource(R.string.search_failed_with_message, s.message),
-              style = MaterialTheme.typography.bodyLarge,
-              color = MaterialTheme.colorScheme.error,
-              textAlign = TextAlign.Center,
-              modifier = Modifier.padding(24.dp),
-            )
-          }
-          is SearchResultState.Success -> PullToRefreshLayout(
-            isRefreshing = uiState.resultState is SearchResultState.Loading,
-            onRefresh = { loadFirstPage(submitted, uiState.orderKey) },
+        // PullToRefreshLayout 提到 when 外,isRefreshing 顶层求值真值;刷新时 resultState→Loading 不再卸载容器,
+        // 列表滚动位置与指示器保留,各状态内联为 grid item(照 MobileUserSpaceScreen 范式)。
+        PullToRefreshLayout(
+          isRefreshing = uiState.resultState is SearchResultState.Loading,
+          onRefresh = { loadFirstPage(submitted, uiState.orderKey) },
+          modifier = Modifier.fillMaxSize(),
+        ) {
+          LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = 160.dp),
+            state = gridState,
+            contentPadding = PaddingValues(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.fillMaxSize(),
           ) {
-            LazyVerticalGrid(
-              columns = GridCells.Adaptive(minSize = 160.dp),
-              state = gridState,
-              contentPadding = PaddingValues(12.dp),
-              horizontalArrangement = Arrangement.spacedBy(12.dp),
-              verticalArrangement = Arrangement.spacedBy(12.dp),
-              modifier = Modifier.fillMaxSize(),
-            ) {
-              gridItems(s.videos, key = { it.bvid }) { video ->
-                MobileVideoCard(video = video, onClick = onVideoSelected)
+            when (val s = uiState.resultState) {
+              SearchResultState.Loading -> item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                  modifier = Modifier.fillMaxWidth().padding(32.dp),
+                  contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator() }
               }
-              if (s.loadingMore) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                  Box(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    contentAlignment = Alignment.Center,
-                  ) { CircularProgressIndicator() }
+              SearchResultState.Empty -> item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                  modifier = Modifier.fillMaxWidth().padding(32.dp),
+                  contentAlignment = Alignment.Center,
+                ) {
+                  Text(
+                    text = stringResource(R.string.search_empty),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                  )
+                }
+              }
+              is SearchResultState.Failed -> item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                  modifier = Modifier.fillMaxWidth().padding(32.dp),
+                  contentAlignment = Alignment.Center,
+                ) {
+                  Text(
+                    text = stringResource(R.string.search_failed_with_message, s.message),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(24.dp),
+                  )
+                }
+              }
+              is SearchResultState.Success -> {
+                gridItems(s.videos, key = { it.bvid }) { video ->
+                  MobileVideoCard(video = video, onClick = onVideoSelected)
+                }
+                if (s.loadingMore) {
+                  item(span = { GridItemSpan(maxLineSpan) }) {
+                    Box(
+                      modifier = Modifier.fillMaxWidth().padding(16.dp),
+                      contentAlignment = Alignment.Center,
+                    ) { CircularProgressIndicator() }
+                  }
                 }
               }
             }

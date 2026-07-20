@@ -10,6 +10,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,11 +44,15 @@ fun PullToRefreshLayout(
     if (!isRefreshing) pullPx = 0f
   }
 
+  // rememberUpdatedState 让单例 connection 读到最新 isRefreshing/onRefresh,避免 remember{object} 陈旧捕获
+  val refreshState = rememberUpdatedState(isRefreshing)
+  val refreshAction = rememberUpdatedState(onRefresh)
+
   val connection = remember {
     object : NestedScrollConnection {
       override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
         // available.y < 0 => 列表到顶后继续下拉(overscroll),累加拉动距离并消费,避免子控件回弹
-        if (available.y < 0f && !isRefreshing) {
+        if (available.y < 0f && !refreshState.value) {
           pullPx = (pullPx + (-available.y)).coerceAtMost(maxPullPx)
           return Offset(0f, available.y)
         }
@@ -55,10 +60,10 @@ fun PullToRefreshLayout(
       }
 
       override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-        if (pullPx >= thresholdPx && !isRefreshing) {
+        if (pullPx >= thresholdPx && !refreshState.value) {
           pullPx = thresholdPx
-          onRefresh()
-        } else if (!isRefreshing) {
+          refreshAction.value()
+        } else if (!refreshState.value) {
           pullPx = 0f
         }
         return Velocity.Zero
