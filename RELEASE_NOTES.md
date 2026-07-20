@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.16
+
+v2.0.0-alpha.15 后:修复后台播放通知不显示。
+
+### 通知不显示修复
+- 根因:`alpha.15` 用 `MediaSessionService`,但本应用从不连 `MediaController`(PGC `MergingMediaSource` 不能走 MediaController),`MediaSessionService` 无 controller 时不保证及时 `startForeground` → 通知不显示。
+- 修法:`PlaybackService` 改回**普通 `Service`** + 手动 `MediaSession` + `MediaStyleNotificationHelper.MediaStyle(session)`(主流样式:封面 + 播放/暂停 + 锁屏控件)+ **显式 `startForeground`**(保证 5s 内显示)+ "停止"按钮;Manifest 去掉 `MediaSessionService` intent-filter。
+- 保留:封面下载(`MediaItem.mediaMetadata.artworkData`)、`POST_NOTIFICATIONS` 运行时权限请求、下滑刷新。真机需确认已授予通知权限。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.16-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.16-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.15
 
 v2.0.0-alpha.14 后:后台播放通知改主流 MediaStyle + 内容页下滑刷新。
