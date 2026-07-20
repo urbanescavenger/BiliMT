@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -70,6 +71,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kirin.mt.R
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
+import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.player.PlaybackCdnPreference
@@ -98,6 +100,11 @@ private const val ProgressUpdateMs = 500L
 private const val HeartbeatIntervalMs = 15_000L
 private const val CompletedProgressSeconds = -1
 private const val CompletionActionDelayMs = 3000L
+// 空降助手阈值(镜像 TV PlayerScreen)
+private const val AirJumpWarningLeadMs = 3_500L
+private const val AirJumpCompletionToastSuppressMs = 1_500L
+private const val AirJumpRewindResetThresholdMs = 2_000L
+private const val AirJumpRewindResetLeadMs = 1_000L
 
 private sealed interface MobilePlayerState {
   data object Loading : MobilePlayerState
@@ -122,6 +129,7 @@ fun MobilePlayerScreen(
   playbackCodecPreference: PlaybackCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
   playbackCdnPreference: PlaybackCdnPreference,
+  airJumpAssistantEnabled: Boolean,
   onBack: () -> Unit,
   onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit = { _, _, _ -> },
   modifier: Modifier = Modifier,
@@ -157,6 +165,11 @@ fun MobilePlayerScreen(
   var speedBoostActive by remember { mutableStateOf(false) }
   var centerIconFlash by remember { mutableStateOf(false) }
   var centerIconIsPlaying by remember { mutableStateOf(true) }
+  // 空降助手(AirJump):SponsorBlock 风格自动跳过广告/片头/片尾段,镜像 TV PlayerScreen
+  var airJumpSegments by remember { mutableStateOf<List<AirJumpSegment>>(emptyList()) }
+  var warnedAirJumpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+  var skippedAirJumpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+  var lastAirJumpPositionMs by remember { mutableLongStateOf(0L) }
 
   // 全屏切换:强制横屏 + 隐藏系统栏(沉浸);退出/关播放器恢复,避免主页卡横屏。
   DisposableEffect(fullscreen) {
@@ -218,6 +231,59 @@ fun MobilePlayerScreen(
     controlsVisible = !willPlay
     centerIconIsPlaying = willPlay
     centerIconFlash = true
+  }
+
+  // 空降助手:进度轮询每 tick 调用,命中段 seek 到段末,入段前预警,回退重置去重(镜像 TV)
+  fun handleAirJumpPosition(currentPositionMs: Long) {
+    if (!airJumpAssistantEnabled || seekPreviewMs != null || airJumpSegments.isEmpty()) {
+      lastAirJumpPositionMs = currentPositionMs
+      return
+    }
+
+    if (currentPositionMs < lastAirJumpPositionMs - AirJumpRewindResetThresholdMs) {
+      val resetIds = airJumpSegments
+        .filter { segment -> currentPositionMs < segment.startMs - AirJumpRewindResetLeadMs }
+        .map(AirJumpSegment::id)
+        .toSet()
+      if (resetIds.isNotEmpty()) {
+        warnedAirJumpIds = warnedAirJumpIds - resetIds
+        skippedAirJumpIds = skippedAirJumpIds - resetIds
+      }
+    }
+    lastAirJumpPositionMs = currentPositionMs
+
+    val hitSegment = airJumpSegments.firstOrNull { segment ->
+      segment.id !in skippedAirJumpIds &&
+        currentPositionMs >= segment.startMs &&
+        currentPositionMs < segment.endMs
+    }
+    if (hitSegment != null) {
+      val duration = player.duration.takeIf { it > 0L } ?: 0L
+      val targetPositionMs = hitSegment.endMs.coerceIn(
+        0L,
+        duration.takeIf { it > 0L } ?: hitSegment.endMs,
+      )
+      skippedAirJumpIds = skippedAirJumpIds + hitSegment.id
+      warnedAirJumpIds = warnedAirJumpIds + hitSegment.id
+      player.seekTo(targetPositionMs)
+      playbackPositionState.longValue = targetPositionMs
+      danmakuSyncToken += 1L
+      if (duration <= 0L || targetPositionMs < duration - AirJumpCompletionToastSuppressMs) {
+        Toast.makeText(context, context.getString(R.string.player_air_jump_skipped), Toast.LENGTH_SHORT).show()
+      }
+      return
+    }
+
+    val warningSegment = airJumpSegments.firstOrNull { segment ->
+      segment.id !in warnedAirJumpIds &&
+        segment.id !in skippedAirJumpIds &&
+        currentPositionMs >= segment.startMs - AirJumpWarningLeadMs &&
+        currentPositionMs < segment.startMs
+    }
+    if (warningSegment != null) {
+      warnedAirJumpIds = warnedAirJumpIds + warningSegment.id
+      Toast.makeText(context, context.getString(R.string.player_air_jump_will_skip), Toast.LENGTH_LONG).show()
+    }
   }
 
   // ExoPlayer 监听 + 生命周期释放
@@ -384,12 +450,29 @@ fun MobilePlayerScreen(
     while (true) {
       delay(ProgressUpdateMs)
       val ready = playerState as? MobilePlayerState.Ready ?: continue
+      val currentPositionMs = player.currentPosition.coerceAtLeast(0L)
       if (seekPreviewMs == null) {
-        playbackPositionState.longValue = player.currentPosition.coerceAtLeast(0L)
+        playbackPositionState.longValue = currentPositionMs
       }
       val dur = player.duration
       if (dur > 0L) playbackDurationState.longValue = dur
+      // 空降助手:seekPreviewMs 期间 handleAirJumpPosition 内部早退,不与手动拖拽冲突
+      handleAirJumpPosition(currentPositionMs)
     }
+  }
+
+  // 空降助手:按 bvid 拉 SponsorBlock 段;切集/开关变化时重置四组状态(镜像 TV)
+  LaunchedEffect(airJumpAssistantEnabled, activeRequest.bvid, activeRequest.cid) {
+    airJumpSegments = emptyList()
+    warnedAirJumpIds = emptySet()
+    skippedAirJumpIds = emptySet()
+    lastAirJumpPositionMs = 0L
+    if (!airJumpAssistantEnabled || activeRequest.bvid.isBlank()) {
+      return@LaunchedEffect
+    }
+    airJumpSegments = runCatching {
+      playbackRepository.getAirJumpSegments(activeRequest.bvid)
+    }.getOrDefault(emptyList())
   }
 
   // 心跳上报

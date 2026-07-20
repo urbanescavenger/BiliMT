@@ -1,5 +1,19 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.19
+
+v2.0.0-alpha.18 后:移动端播放器接入空降助手(自动跳过广告/片头/片尾段)。
+
+### 空降助手(AirJump)
+- **自动跳过**:播放进度轮询每 tick 检查当前位置是否落在 SponsorBlock 段内(`sponsor`/`intro`/`outro`/`interaction`/`selfpromo`),命中则 seek 到段末。入段前 3.5s 弹"即将跳过广告"Toast,跳过后弹"已跳过广告"(距末尾 ≤1.5s 抑制)。回退超过 2s 重置段去重状态,允许再次触发。
+- **数据来源**:第三方 SponsorBlock 镜像 `https://bsbsb.top/api/skipSegments?videoID=<bvid>`,按 bvid 拉取,独立于播放元数据。
+- **设置开关**:复用移动端已有的"空降助手"设置项(`MobileSettingsScreen`),`MobileApp` 接通 `settings.airJumpAssistantEnabled` 传入播放器;关闭时不拉取、不跳过。
+- 镜像 TV `PlayerScreen` 的 `handleAirJumpPosition` 与加载/重置 effect,复用共享层 `PlaybackRepository.getAirJumpSegments` / `AirJumpSegment`。不做进度条段标注(移动端 Material3 Slider,后续可加)。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.19-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.19-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.18
 
 v2.0.0-alpha.16 后:移动端播放器手势优化,符合手机使用习惯。

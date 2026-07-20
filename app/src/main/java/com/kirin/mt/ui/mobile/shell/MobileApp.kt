@@ -174,6 +174,7 @@ fun BiliMobileApp(
           playbackCodecPreference = effectiveCodecPreference,
           playbackQualityPreference = settings.playbackQualityPreference,
           playbackCdnPreference = settings.playbackCdnPreference,
+          airJumpAssistantEnabled = settings.airJumpAssistantEnabled,
           onBack = { playbackRequest = null },
           onOpenUpSpace = { mid, name, face ->
             spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(mid, name, face)
