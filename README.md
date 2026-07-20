@@ -1,8 +1,8 @@
 # BiliMT
 
-BiliMT 是一个面向 Android TV 的原生 B 站客户端实验项目，基于 [BiliTVNative](https://github.com/Hyper-Beast/BiliTVNative) 1.0.0 开发，使用 Kotlin、Jetpack Compose、Compose for TV 和 Media3 重写电视端观看体验。
+BiliMT 是一个原生 B 站客户端实验项目，基于 [BiliTVNative](https://github.com/Hyper-Beast/BiliTVNative) 1.0.0 开发，使用 Kotlin、Jetpack Compose 和 Media3 重写观看体验。同一个 APK 同时适配 Android TV 与安卓手机：TV 端用 Compose for TV 和遥控器焦点系统，手机端用触屏交互外壳，共享同一套网络、播放、账号、设置和存储引擎。
 
-项目重点不是做一个极简壳，而是在电视设备上尽量平衡几个实际问题：播放稳定性、遥控器焦点可控性、弹幕性能、主页视觉质感，以及不同硬件档位下的流畅度。
+电视端重点不是做一个极简壳，而是在电视设备上尽量平衡几个实际问题：播放稳定性、遥控器焦点可控性、弹幕性能、主页视觉质感，以及不同硬件档位下的流畅度。
 
 直播暂缓，不在当前版本范围内。
 
@@ -26,9 +26,10 @@ BiliMT 是一个面向 Android TV 的原生 B 站客户端实验项目，基于 
 
 ## 主要功能
 
-- 首页推荐、热门、分区内容流。
+- 首页推荐、热门、分区内容流；自适应底栏导航外壳和触屏首页分区网格。
 - 搜索键盘、搜索建议、搜索历史、搜索结果排序和分页。
-- 动态、历史记录和账号二维码登录。
+- 动态关注 feed、历史记录和账号登录（TV 二维码、手机短信 WebView）。
+- 手机端"动态"tab 四子 tab：动态关注 feed / 历史 / 收藏（收藏夹切换）/ 追番（番剧·影视 + 想看·在看·看过筛选）。
 - Media3 点播播放器，支持 DASH 播放、进度保存和返回焦点恢复。
 - 默认画质、解码器偏好、倍速、弹幕、快进预览雪碧图。
 - CDN 自动测速择优：选择“自动”时会对 B 站返回的候选 CDN 并发测速（首字节时间 + 64 KB 下载吞吐），过滤 mcdn、szbdyd、裸 IP 等不良候选，并按区域缓存 5 分钟，避免每次播放都重复探测。
@@ -37,8 +38,13 @@ BiliMT 是一个面向 Android TV 的原生 B 站客户端实验项目，基于 
 - 空降助手，支持跳过片段提示并在进度条上标出跳过范围。
 - 自动播放下一集、自动播放相关推荐、播放完成后自动退出。
 - 播放退出二次确认、应用退出二次确认。
+- 触屏播放器：全屏横屏沉浸、画质/倍速/弹幕设置弹窗、分 P 选集侧栏、UP 主空间入口、空降助手、推荐视频切播、手势（点中央暂停/长按 2x/横拖 seek）。
+- 追番进季详情选集：封面/简介/同系列季切换/正片+花絮分集，选集开 PGC 播放。
+- 后台播放：前台 service + MediaStyle 通知（封面、播放/暂停、锁屏控件），显式 startForeground 保活。
+- UP 主空间页：头像、签名、关注和投稿网格。
+- 状态栏透明 + 浅色图标、内容页下滑刷新、底栏重复点推荐触发刷新 + 滚顶。
 - 简体中文、香港繁体、台湾繁体界面和动态标题转换。
-- Android TV launcher 图标和 TV 横幅。
+- Android TV launcher 图标和 TV 横幅，手机与 TV 双桌面入口。
 - 应用内更新：从 GitHub Releases 手动检查、下载并安装新版 APK。
 
 ## UI 与视觉
@@ -86,6 +92,12 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 首页分区开关独立显示在右侧，至少保留一个分区。
 
+## 二合一架构
+
+同一个 APK 同时适配 Android TV 和安卓手机，不拆包、不另起桌面入口。`MainActivity` 运行时用 `isTvUi()`（`UI_MODE_TYPE_TELEVISION` 或 `FEATURE_LEANBACK`）选择 `BiliTvApp`（TV，遥控器焦点）或 `BiliMobileApp`（手机，触屏外壳）。Manifest 同时挂 `LAUNCHER` 和 `LEANBACK_LAUNCHER`，一个包同时出现在手机桌面和 TV 桌面。`AppContainer` 和 DataStore（设置、登录、播放进度等）两端共享同一份；手机端 UI 放在 `ui/mobile/` 包，复用 `core/*` 全部引擎，触屏交互替换 TV 焦点机制。手机端 UI 参照 [BV](https://github.com/aaa1115910/bv) `feature/mobile` 的设计重新实现，属于设计移植而非代码拷贝。
+
+仍在开发中：PGC（影视）tab、评论、动态点赞/稍后再看、手机端深色主题统一。
+
 
 
 ## 技术栈
@@ -110,6 +122,51 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 第三方库遵循其各自许可证。
 
 ## 版本更新
+
+### v2.0.1-alpha
+
+v2.0.0 稳定版后的继续迭代线（patch 线 alpha），单 APK 通吃 TV + 手机。
+
+| tag | 内容 |
+| --- | --- |
+| v2.0.1-alpha.1 | 播放器加视频分享 |
+| v2.0.1-alpha.2 | 修加载列表时两个圈（顶部静止圈 + 居中转圈） |
+| v2.0.1-alpha.3 | 首页内容区左右滑动切顶部 tab |
+| v2.0.1-alpha.4 | 动态 tab 补 历史/收藏/追番 子 tab + 追番进季详情选集 |
+
+### v2.0.0
+
+稳定版：移动端 UI 移植完成，合并 mobile → mort_debug → main，单 APK 双桌面入口（`isTvUi()` 选 TV `BiliTvApp` 或手机 `BiliMobileApp`），TV 端零改动，复用全部 `core/*` 引擎。
+
+### v2.0.0-alpha
+
+手机端形态在独立分支上以 alpha tag 迭代，单 APK 通吃 TV + 手机，稳定后合主干。
+
+| tag | 内容 |
+| --- | --- |
+| v2.0.0-alpha.1 | 自适应外壳（`NavigationSuiteScaffold`）+ 触屏首页分区网格 |
+| v2.0.0-alpha.2 | QR 登录 + 卡片式设置（`SettingsActivity`） |
+| v2.0.0-alpha.3 | 触屏播放器（复用 Media3/ExoPlayer + `PlayerDanmakuLayer` + 进度/心跳/完成上报） |
+| v2.0.0-alpha.4 | SMS WebView 登录 + 应用名改回 BiliMT |
+| v2.0.0-alpha.5 | 登录改 SMS-only（移除移动端 QR，因 TV QR 接口在手机扫不出）+ 加固 WebView |
+| v2.0.0-alpha.6 | 短信"点一下即完成"（时序修复）+ 动态 tab（关注 feed 网格 + offset 分页） |
+| v2.0.0-alpha.7 | 搜索 tab（取代底栏 PGC 占位）+ 修播放器返回键退出 + 顶部留状态栏 inset |
+| v2.0.0-alpha.8 | 状态栏透明 + 浅色图标 + 播放全屏（activity 旋转 + configChanges + 沉浸） |
+| v2.0.0-alpha.9 | 底栏重复点"推荐"触发刷新 + 滚顶 |
+| v2.0.0-alpha.10 | 后台播放（前台 service + PlayerHolder + 通知控件，去 ON_PAUSE 暂停） |
+| v2.0.0-alpha.11 | 播放器设置弹窗（画质/倍速/弹幕，activeRequest 驱动 load 重载） |
+| v2.0.0-alpha.12 | 选集（分P）侧栏弹窗 |
+| v2.0.0-alpha.13 | 自动连播下一集（nextEpisodeCompletion） |
+| v2.0.0-alpha.14 | UP 主空间页（头像/签名/关注 + 投稿网格，入口：播放器顶栏标题/"UP"） |
+| v2.0.0-alpha.15 | 后台播放通知改 MediaStyle（MediaSessionService）+ 请求 POST_NOTIFICATIONS + 内容页下滑刷新 |
+| v2.0.0-alpha.16 | 修通知不显示（改回普通 Service + 手动 MediaSession + 显式 startForeground + MediaStyle） |
+| v2.0.0-alpha.17 | 播放器手势前序（release 已发） |
+| v2.0.0-alpha.18 | 播放器手势优化（点中央暂停/长按 2x/横拖 seek 松手恢复） |
+| v2.0.0-alpha.19 | 空降助手 AirJump（SponsorBlock 自动跳过广告/片头/片尾） |
+| v2.0.0-alpha.20 | 播放器底栏按钮图标化（参考 TV 版） |
+| v2.0.0-alpha.21 | 修拖拽 seek 松手后意外暂停 |
+| v2.0.0-alpha.22 | 播放器推荐视频按钮 + 修内容页下拉刷新无效 |
+| v2.0.0-alpha.23 | 修下拉刷新方向反了（上滑触发→下拉触发） |
 
 ### v1.0.9
 - 新增设置内"网络测速"：以最后一次播放的视频对各 CDN 节点并发测速，弹窗列出首字节/速度排名并标记最快节点。

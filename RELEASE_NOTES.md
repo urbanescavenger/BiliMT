@@ -1,5 +1,23 @@
 # BiliMT 版本发布说明
 
+## v2.0.1-alpha.4
+
+v2.0.1-alpha.3 后:移动端"动态"tab 补 历史/收藏/追番 三个子 tab + 追番进季详情选集。
+
+### 动态 tab 四子 tab(动态/历史/收藏/追番)
+- "动态"底栏 tab 改为 4 个子 tab(动态/历史/收藏/追番),`PrimaryScrollableTabRow` + `HorizontalPager` 左右滑动切换,镜像首页分区范式。未登录整体显示登录入口。
+- **历史**:`getHistoryPage` 双游标(viewAt/max)分页,历史项 `VideoSummary` 带 cid/progress/historyPage,`toPlaybackRequest` 自动用 progress 作 startPositionMs 续播。
+- **收藏**:顶部收藏夹 chip 切换(`getFavoriteFolders` + `getFavoriteFolderVideos`),page 分页,默认全部收藏夹。
+- **追番**:番剧/影视 + 全部/想看/在看/看过 两组筛选(`getFollowingSeasons`),季映射 `VideoSummary` 渲染,page 分页;季非 UGC,点击走 `onSeasonSelected`。
+
+### 追番进季详情选集
+- 新增触屏季详情外壳 `MobilePgcSeasonScreen`:封面/简介 + 同系列其它季切换 + 正片与花絮分集列表,续播高亮上次集,选集回调 `onPlayEpisode`。
+- `MobileApp` 加 `pgcSeasonRequest` 状态 + z 序(镜像 space),`onPlayEpisode` 照 TV `AppShell` 范式构造 PGC `PlaybackRequest`(epId/seasonId/subType/续播 startMs)。移动端播放器已支持 PGC,无需改播放器。
+
+### 安装包
+- `BiliMT-v2.0.1-alpha.4-arm64-v8a.apk`
+- `BiliMT-v2.0.1-alpha.4-armeabi-v7a.apk`
+
 ## v2.0.0
 
 2.0.0 稳定版:移动端 UI 移植完成。在 `mobile`/`mort_debug` 分支参照 [BV](https://github.com/aaa1115910/bv) `feature/mobile` 设计,把触屏移动端 UI 移植进**单 APK**(运行时 `isTvUi()` 选 TV `BiliTvApp` 或手机 `BiliMobileApp`,Manifest 双桌面入口),TV 端零改动,复用全部 `core/*` 引擎。本版合并 mobile → mort_debug → main,打稳定 tag。
