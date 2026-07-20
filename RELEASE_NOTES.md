@@ -1,5 +1,20 @@
 # BiliMT 版本发布说明
 
+## v2.0.1-alpha.6
+
+v2.0.1-alpha.5 后:修评论不显示 + 评论背景改白底。
+
+### 修评论不显示
+- `toPlaybackRequest` 未带 aid、卡片除动态外也不带 aid,导致 `activeRequest.aid` 恒为 0,`MobileCommentList` 永远走"暂无评论"占位。
+- 改 aid 取自 `PlaybackVideoMetadata.aid`(播放器加载 `/x/web-interface/view` 后就绪):metadata 加载前显示加载圈(不再误判"暂无评论"),加载后自动拉评论;PGC 用 `isPgc` 占位(本期不接 PGC 评论)。
+
+### 评论背景改白底
+- 评论区背景由深色改为白色,配深色文字;不再套局部深色 `MaterialTheme`,自带浅色 `CommentColor` token。
+
+### 安装包
+- `BiliMT-v2.0.1-alpha.6-arm64-v8a.apk`
+- `BiliMT-v2.0.1-alpha.6-armeabi-v7a.apk`
+
 ## v2.0.1-alpha.5
 
 v2.0.1-alpha.4 后:移动端视频详情改上下分栏 UI + 补评论列表;番剧季详情补上次看到的位置。
