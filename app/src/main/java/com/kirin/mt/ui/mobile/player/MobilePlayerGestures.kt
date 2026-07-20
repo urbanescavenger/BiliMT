@@ -34,10 +34,12 @@ internal suspend fun PointerInputScope.detectPlayerGestures(
   // PointerInputScope 即 Density,8.dp.toPx() 直接可用。
   val slop = 8.dp.toPx()
   val longPressTimeoutMs = 500L
-  val width = size.width.toFloat()
 
   // 外层 while 保证多次手势连续识别(awaitEachGesture 单次语义在不同版本里有差异)
   while (true) awaitEachGesture {
+    // 每次手势现读宽度:pointerInput(Unit) 块只启动一次,若在顶部缓存 width,
+    // 竖屏→全屏切换后布局变宽但 width 仍是旧值,中央/边缘判定会失真(全屏点击判为边缘、不暂停)。
+    val width = size.width.toFloat()
     val down = awaitFirstDown()
     val pointerId = down.id
     val downPos = down.position
