@@ -11,11 +11,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.animateScrollToItem
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -32,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -41,6 +45,7 @@ import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.PgcEpisode
 import com.kirin.mt.core.model.PgcSeason
+import com.kirin.mt.core.model.formatDurationSeconds
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.ui.pgc.PgcSeasonRequest
 import kotlinx.coroutines.withTimeoutOrNull
@@ -63,6 +68,7 @@ internal fun MobilePgcSeasonScreen(
   var season by remember { mutableStateOf<PgcSeason?>(null) }
   var loading by remember { mutableStateOf(true) }
   var failed by remember { mutableStateOf(false) }
+  val listState = rememberLazyListState()
 
   LaunchedEffect(request) { currentRequest = request }
 
@@ -80,6 +86,16 @@ internal fun MobilePgcSeasonScreen(
       result != null -> season = result
       else -> failed = true
     }
+  }
+
+  // 进入季详情 / 切换同系列其它季后,自动滚到上次看到的那一集(对齐 TV 端 progress.lastEpId 初始焦点)。
+  // targetIndex 仅在 season 加载完成或换季时变化,LaunchedEffect 不会因手动滚动重触发。
+  val targetIndex = remember(season?.seasonId, season?.progress?.lastEpId) {
+    val s = season ?: return@remember -1
+    lastPlayedItemIndex(s, s.progress?.lastEpId ?: 0)
+  }
+  LaunchedEffect(targetIndex) {
+    if (targetIndex >= 0) listState.animateScrollToItem(targetIndex)
   }
 
   BackHandler { onBack() }
@@ -127,6 +143,7 @@ internal fun MobilePgcSeasonScreen(
       season != null -> {
         val s = season!!
         LazyColumn(
+          state = listState,
           modifier = Modifier.fillMaxSize(),
           contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
           verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -155,9 +172,11 @@ internal fun MobilePgcSeasonScreen(
               )
             }
             items(s.episodes, key = { it.id }) { ep ->
+              val isLast = s.progress?.lastEpId == ep.id
               PgcEpisodeRowItem(
                 episode = ep,
-                isLastPlayed = s.progress?.lastEpId == ep.id,
+                isLastPlayed = isLast,
+                lastTime = if (isLast) s.progress?.lastTime ?: 0 else 0,
                 onPlay = { onPlayEpisode(s, ep) },
               )
             }
@@ -171,9 +190,11 @@ internal fun MobilePgcSeasonScreen(
               )
             }
             items(section.episodes, key = { "${section.id}-${it.id}" }) { ep ->
+              val isLast = s.progress?.lastEpId == ep.id
               PgcEpisodeRowItem(
                 episode = ep,
-                isLastPlayed = s.progress?.lastEpId == ep.id,
+                isLastPlayed = isLast,
+                lastTime = if (isLast) s.progress?.lastTime ?: 0 else 0,
                 onPlay = { onPlayEpisode(s, ep) },
               )
             }
@@ -232,6 +253,7 @@ private fun PgcSeasonHeader(season: PgcSeason) {
 private fun PgcEpisodeRowItem(
   episode: PgcEpisode,
   isLastPlayed: Boolean,
+  lastTime: Int,
   onPlay: () -> Unit,
 ) {
   Row(
@@ -254,6 +276,24 @@ private fun PgcEpisodeRowItem(
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxSize(),
       )
+      // 上次那集叠进度条(样式参照 TV VideoCard:track + fillMaxWidth(ratio) 填充)。
+      if (isLastPlayed && episode.duration > 0 && lastTime > 0) {
+        val ratio = (lastTime.toFloat() / episode.duration).coerceIn(0f, 1f)
+        Box(
+          modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .height(3.dp)
+            .background(Color.Black.copy(alpha = 0.4f)),
+        ) {
+          Box(
+            modifier = Modifier
+              .fillMaxHeight()
+              .fillMaxWidth(ratio)
+              .background(MaterialTheme.colorScheme.primary),
+          )
+        }
+      }
     }
     Column(modifier = Modifier.padding(end = 8.dp)) {
       Text(
@@ -266,11 +306,35 @@ private fun PgcEpisodeRowItem(
       )
       if (isLastPlayed) {
         Text(
-          text = "上次观看",
+          text = if (lastTime > 0) "上次看到 ${lastTime.formatDurationSeconds()}" else "上次观看",
           style = MaterialTheme.typography.labelSmall,
           color = MaterialTheme.colorScheme.primary,
         )
       }
     }
   }
+}
+
+/**
+ * 按 MobilePgcSeasonScreen 的 LazyColumn item 顺序,算上次观看集(lastEpId)的线性索引。
+ * header(1) → season-selector(可选) → main-title(可选)+ 正片 → 各 section-title + 该 section 集。
+ * 与上方 LazyColumn 的 item 顺序一一对应;找不到或 lastEpId==0 返回 -1(不滚动)。
+ */
+private fun lastPlayedItemIndex(season: PgcSeason, lastEpId: Int): Int {
+  if (lastEpId == 0) return -1
+  var idx = 1 // header
+  if (season.seasons.size > 1) idx++ // season-selector
+  if (season.episodes.isNotEmpty()) {
+    idx++ // main-title
+    val i = season.episodes.indexOfFirst { it.id == lastEpId }
+    if (i >= 0) return idx + i
+    idx += season.episodes.size
+  }
+  for (section in season.sections) {
+    idx++ // section-title-{id}
+    val i = section.episodes.indexOfFirst { it.id == lastEpId }
+    if (i >= 0) return idx + i
+    idx += section.episodes.size
+  }
+  return -1
 }
