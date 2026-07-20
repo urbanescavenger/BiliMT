@@ -15,7 +15,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryScrollableTabRow
-import androidx.compose.material3.PullToRefreshBox
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -35,6 +34,7 @@ import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.ui.mobile.common.DevelopingTipContent
+import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -213,7 +213,7 @@ fun MobileHomeScreen(
           modifier = Modifier.align(Alignment.Center),
         )
         is MobileSectionState.Failed -> DevelopingTipContent() // 复用占位,后续替换为可重试状态
-        is MobileSectionState.Success -> PullToRefreshBox(
+        is MobileSectionState.Success -> PullToRefreshLayout(
           isRefreshing = uiState.sectionStates[selectedSection.key] is MobileSectionState.Loading,
           onRefresh = { loadSection(selectedSection, forceRefresh = true) },
           modifier = Modifier.fillMaxSize(),

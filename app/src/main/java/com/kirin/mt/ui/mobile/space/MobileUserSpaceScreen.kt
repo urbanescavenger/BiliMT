@@ -22,7 +22,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.PullToRefreshBox
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -42,6 +41,7 @@ import coil.compose.AsyncImage
 import com.kirin.mt.core.model.SpaceUserProfile
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.ui.mobile.home.formatCount
 import kotlinx.coroutines.CancellationException
@@ -151,7 +151,7 @@ fun MobileUserSpaceScreen(
       .collect { nearEnd -> if (nearEnd) loadNextPage() }
   }
 
-  PullToRefreshBox(
+  PullToRefreshLayout(
     isRefreshing = state is SpaceState.Loading,
     onRefresh = { loadFirst(order) },
     modifier = modifier
