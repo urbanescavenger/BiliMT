@@ -19,6 +19,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
@@ -53,14 +54,14 @@ fun PullToRefreshLayout(
         return Offset.Zero
       }
 
-      override suspend fun onPostFling(consumed: Offset, available: Offset): Offset {
+      override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
         if (pullPx >= thresholdPx && !isRefreshing) {
           pullPx = thresholdPx
           onRefresh()
         } else if (!isRefreshing) {
           pullPx = 0f
         }
-        return Offset.Zero
+        return Velocity.Zero
       }
     }
   }
