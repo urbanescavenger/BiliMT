@@ -38,8 +38,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import androidx.compose.material3.darkColorScheme
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.Comment
@@ -53,7 +53,10 @@ import kotlinx.coroutines.launch
  * 移动端视频评论列表(触屏):嵌入 MobilePlayerScreen 竖屏分栏的下半区。
  * 数据复用 VideoRepository.getComments(/x/v2/reply, oid=aid, type=1)。
  * 滚动到末尾自动翻页;顶部热门/最新排序切换重载;楼中楼本期仅显示计数(对齐 TV CommentScreen)。
- * 局部套深色 MaterialTheme,避免内容页浅色默认主题导致评论不可读(全局主题统一属 P3,不在本期)。
+ *
+ * aid 来源:`toPlaybackRequest` 未带 aid、卡片除动态外也不带 aid,故 aid 取自
+ * `PlaybackVideoMetadata.aid`(播放器加载后才就绪)。metadata 加载前 aid=0 显示加载圈;
+ * PGC 无 aid 显示"暂无评论"占位(本期不接 PGC 评论接口)。白底深字。
  */
 @Stable
 internal class MobileCommentListState {
@@ -68,39 +71,42 @@ internal class MobileCommentListState {
   var currentPage by mutableIntStateOf(0)
 }
 
+/** 白底评论列表的浅色 token(全局内容页主题统一属 P3,这里自带浅色,不依赖 MaterialTheme)。 */
+private object CommentColor {
+  val Surface = Color(0xFFF2F2F4)
+  val ChipContainer = Color(0xFFEAEAEA)
+  val ChipLabel = Color(0xFF555555)
+  val TextPrimary = Color(0xFF222222)
+  val TextSecondary = Color(0xFF999999)
+  val Divider = Color(0xFFEEEEEE)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun MobileCommentList(
   aid: Long,
+  isPgc: Boolean,
   videoRepository: VideoRepository,
   modifier: Modifier = Modifier,
 ) {
-  // 局部深色主题:背景/字色用 Bili token,primary 用 BiliPink,让评论在深色背景上可读。
-  MaterialTheme(
-    colorScheme = darkColorScheme(
-      background = BiliColors.Background,
-      surface = BiliColors.Surface,
-      onSurface = BiliColors.TextPrimary,
-      onSurfaceVariant = BiliColors.TextSecondary,
-      primary = BiliColors.BiliPink,
-      onPrimary = BiliColors.TextPrimary,
-    ),
+  Box(
+    modifier = modifier
+      .fillMaxWidth()
+      .background(Color.White),
   ) {
-    Box(
-      modifier = modifier
-        .fillMaxWidth()
-        .background(BiliColors.Background),
-    ) {
-      if (aid <= 0L) {
-        // PGC 等无 aid 的内容用 type=1 oid=aid 接口取不到评论,直接占位,不发请求。
-        Text(
-          text = stringResource(R.string.comment_empty),
-          color = BiliColors.TextSecondary,
-          modifier = Modifier.align(Alignment.Center),
-        )
-      } else {
-        CommentListContent(aid = aid, videoRepository = videoRepository)
-      }
+    when {
+      // PGC 用 epId 无 aid,/x/v2/reply type=1 取不到,本期不接 PGC 评论,占位。
+      isPgc -> Text(
+        text = stringResource(R.string.comment_empty),
+        color = CommentColor.TextSecondary,
+        modifier = Modifier.align(Alignment.Center),
+      )
+      // metadata 未加载完(aid=0):显示加载圈,而非"暂无评论",避免误判。
+      aid <= 0L -> CircularProgressIndicator(
+        color = BiliColors.BiliPink,
+        modifier = Modifier.align(Alignment.Center),
+      )
+      else -> CommentListContent(aid = aid, videoRepository = videoRepository)
     }
   }
 }
@@ -135,7 +141,7 @@ private fun CommentListContent(
     Row(
       modifier = Modifier
         .fillMaxWidth()
-        .background(BiliColors.Surface)
+        .background(CommentColor.Surface)
         .padding(horizontal = 12.dp, vertical = 6.dp),
       horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -164,7 +170,7 @@ private fun CommentListContent(
       ) {
         Text(
           text = stringResource(R.string.comment_failed_with_message, state.error),
-          color = BiliColors.TextSecondary,
+          color = CommentColor.TextSecondary,
         )
       }
       state.comments.isEmpty() -> Box(
@@ -173,7 +179,7 @@ private fun CommentListContent(
       ) {
         Text(
           text = stringResource(R.string.comment_empty),
-          color = BiliColors.TextSecondary,
+          color = CommentColor.TextSecondary,
         )
       }
       else -> LazyColumn(
@@ -206,9 +212,9 @@ private fun SortChip(
     label = { Text(label) },
     colors = FilterChipDefaults.filterChipColors(
       selectedContainerColor = BiliColors.BiliPink,
-      selectedLabelColor = BiliColors.TextPrimary,
-      containerColor = BiliColors.SurfaceElevated,
-      labelColor = BiliColors.TextSecondary,
+      selectedLabelColor = Color.White,
+      containerColor = CommentColor.ChipContainer,
+      labelColor = CommentColor.ChipLabel,
     ),
   )
 }
@@ -228,12 +234,12 @@ private fun CommentListFooter(state: MobileCommentListState) {
       )
       state.loadMoreError.isNotBlank() -> Text(
         text = state.loadMoreError,
-        color = BiliColors.TextTertiary,
+        color = CommentColor.TextSecondary,
         style = MaterialTheme.typography.bodySmall,
       )
       state.endReached -> Text(
         text = "没有更多了",
-        color = BiliColors.TextTertiary,
+        color = CommentColor.TextSecondary,
         style = MaterialTheme.typography.bodySmall,
       )
     }
@@ -269,14 +275,14 @@ private fun CommentItem(comment: Comment) {
         )
         Text(
           text = formatCommentRelativeTime(comment.ctime),
-          color = BiliColors.TextTertiary,
+          color = CommentColor.TextSecondary,
           style = MaterialTheme.typography.bodySmall,
         )
       }
       Spacer(Modifier.size(4.dp))
       Text(
         text = comment.content.ifBlank { stringResource(R.string.comment_empty_content) },
-        color = BiliColors.TextPrimary,
+        color = CommentColor.TextPrimary,
         style = MaterialTheme.typography.bodyMedium,
         overflow = TextOverflow.Ellipsis,
       )
@@ -287,13 +293,13 @@ private fun CommentItem(comment: Comment) {
       ) {
         Text(
           text = stringResource(R.string.comment_like_count, comment.likeCount),
-          color = BiliColors.TextSecondary,
+          color = CommentColor.TextSecondary,
           style = MaterialTheme.typography.bodySmall,
         )
         if (comment.replyCount > 0) {
           Text(
             text = stringResource(R.string.comment_reply_count, comment.replyCount),
-            color = BiliColors.TextSecondary,
+            color = CommentColor.TextSecondary,
             style = MaterialTheme.typography.bodySmall,
           )
         }

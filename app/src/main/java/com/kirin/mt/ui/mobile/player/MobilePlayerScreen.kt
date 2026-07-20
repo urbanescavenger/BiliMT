@@ -976,7 +976,10 @@ fun MobilePlayerScreen(
   // 下半区:评论列表(仅非全屏竖屏分栏时渲染;全屏横屏时隐藏)
   if (!fullscreen) {
     MobileCommentList(
-      aid = activeRequest.aid,
+      // toPlaybackRequest/卡片均不带 aid(仅动态带),aid 取自 metadata(加载后就绪);
+      // metadata 加载前 aid=0 → 列表显示加载圈,避免误显示"暂无评论"。
+      aid = metadata?.aid ?: 0L,
+      isPgc = activeRequest.isPgc,
       videoRepository = videoRepository,
       modifier = Modifier.weight(1f).fillMaxWidth(),
     )
