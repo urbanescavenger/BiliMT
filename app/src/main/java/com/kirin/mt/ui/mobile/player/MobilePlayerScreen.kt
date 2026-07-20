@@ -658,7 +658,9 @@ fun MobilePlayerScreen(
     }
 
     // 居中播放/暂停反馈:点击中央切换时闪现 800ms
-    AnimatedVisibility(
+    // 显式 BoxScope 接收者:外层 Column 引入 ColumnScope 后,裸 AnimatedVisibility
+    // 在 BoxScope/ColumnScope/顶层三义,编译报错;用 this 锁定内层 Box 变体。
+    this.AnimatedVisibility(
       visible = centerIconFlash,
       enter = fadeIn(),
       exit = fadeOut(),
@@ -679,7 +681,7 @@ fun MobilePlayerScreen(
     }
 
     // 长按 2 倍速提示
-    AnimatedVisibility(
+    this.AnimatedVisibility(
       visible = speedBoostActive,
       enter = fadeIn(),
       exit = fadeOut(),
