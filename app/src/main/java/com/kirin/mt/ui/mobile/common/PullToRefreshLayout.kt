@@ -26,7 +26,9 @@ import kotlin.math.roundToInt
 
 /**
  * 轻量自定义下拉刷新容器(版本无关,仅用 foundation nestedScroll + material3 CircularProgressIndicator)。
- * 列表到顶后继续下拉,越过阈值松手触发 onRefresh;isRefreshing 时顶部显示转圈指示器。
+ * 列表到顶后继续下拉,越过阈值松手触发 onRefresh;下拉手势进行中顶部显示进度弧(0→1),
+ * 松手触发刷新后进度弧收起,加载态由内容侧(各 screen 内联转圈)承担。
+ * isRefreshing 仅用于下拉期间禁用重复拉动与兜底重置 pullPx,不再画顶部圈。
  */
 @Composable
 fun PullToRefreshLayout(
@@ -62,7 +64,8 @@ fun PullToRefreshLayout(
 
       override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
         if (pullPx >= thresholdPx && !refreshState.value) {
-          pullPx = thresholdPx
+          // 收起顶部进度弧,让内容侧内联转圈接管加载指示(避免顶部静止圈 + 居中转圈同屏)。
+          pullPx = 0f
           refreshAction.value()
         } else if (!refreshState.value) {
           pullPx = 0f
@@ -74,14 +77,15 @@ fun PullToRefreshLayout(
 
   Box(modifier.nestedScroll(connection)) {
     content()
-    if (isRefreshing || pullPx > 0f) {
-      val indicatorTop = if (isRefreshing) thresholdPx else pullPx
+    // 仅在下拉手势进行中显示进度弧(0→1);触发刷新后由内容侧内联转圈承担加载指示,
+    // 不在 isRefreshing 时画顶部圈(否则 determinate 满圈静止 + 居中转圈同屏成两个圈)。
+    if (pullPx > 0f && !isRefreshing) {
       CircularProgressIndicator(
-        progress = if (isRefreshing) 1f else (pullPx / thresholdPx).coerceIn(0f, 1f),
+        progress = (pullPx / thresholdPx).coerceIn(0f, 1f),
         modifier = Modifier
           .align(Alignment.TopCenter)
           .padding(top = 8.dp)
-          .offset { IntOffset(0, (indicatorTop).roundToInt()) },
+          .offset { IntOffset(0, pullPx.roundToInt()) },
       )
     }
   }
