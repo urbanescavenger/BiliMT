@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -560,9 +561,16 @@ fun MobilePlayerScreen(
   val positionMs = seekPreviewMs ?: playbackPositionState.longValue
   val durationMs = playbackDurationState.longValue.coerceAtLeast(1L)
 
-  Box(
+  // 竖屏分栏:非全屏时上半 16:9 播放器 + 下半评论;全屏时播放器占满,评论区不渲染。
+  val playerModifier = if (fullscreen) Modifier.fillMaxSize()
+    else Modifier.aspectRatio(16f / 9f).fillMaxWidth()
+  Column(
     modifier = modifier
       .fillMaxSize()
+      .background(Color.Black),
+  ) {
+  Box(
+    modifier = playerModifier
       .background(Color.Black)
       .pointerInput(Unit) {
         detectPlayerGestures(
@@ -962,6 +970,15 @@ fun MobilePlayerScreen(
         }
       }
     }
+  }
+  // 下半区:评论列表(仅非全屏竖屏分栏时渲染;全屏横屏时隐藏)
+  if (!fullscreen) {
+    MobileCommentList(
+      aid = activeRequest.aid,
+      videoRepository = videoRepository,
+      modifier = Modifier.weight(1f).fillMaxWidth(),
+    )
+  }
   }
 }
 
