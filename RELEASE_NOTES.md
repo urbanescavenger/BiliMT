@@ -1,5 +1,23 @@
 # BiliMT 版本发布说明
 
+## v2.0.1-alpha.5
+
+v2.0.1-alpha.4 后:移动端视频详情改上下分栏 UI + 补评论列表;番剧季详情补上次看到的位置。
+
+### 视频详情上下分栏 UI + 评论列表
+- 点入视频后由"整屏播放器覆盖"改为**竖屏上下分栏**:上半 16:9 播放器 + 下半评论列表;点底栏全屏按钮切横屏全屏沉浸播放(评论区隐藏),退出全屏回竖屏分栏。
+- 新增 `MobileCommentList`(嵌入播放器下半区):复用 `VideoRepository.getComments`(`/x/v2/reply`, oid=aid、type=1),滚动到末尾自动翻页,顶部热门/最新排序切换重载;楼中楼本期仅显示回复计数(对齐 TV `CommentScreen`)。
+- 评论列表局部套深色 `MaterialTheme`,深色背景下文字可读(全局内容页主题统一属 P3,不在本期)。
+- `MobilePlayerScreen` 根布局改为 `Column`,player Box 在非全屏时 `aspectRatio(16/9).fillMaxWidth()`;PGC 等无 aid 内容评论占位"暂无评论"。外层 `Column` 引入 `ColumnScope` 致内层 `Box` 里的 `AnimatedVisibility` 三义,改全限定顶层调用修复。
+- aid 随换 P / 切相关视频变化,`LaunchedEffect(aid, sort)` 自动重载评论。
+
+### 番剧季详情补上次看到的位置
+- 进季详情/切季后 `LazyColumn` 自动滚到 `progress.lastEpId` 那一集(对齐 TV 端初始焦点);该集封面底部叠主色进度条(`lastTime/duration`);badge 文案由"上次观看"改为"上次看到 mm:ss",`lastTime=0` 回退原文案。复用 `Int.formatDurationSeconds` 与 TV `VideoCard` 进度条样式,不动模型/网络/播放器。
+
+### 安装包
+- `BiliMT-v2.0.1-alpha.5-arm64-v8a.apk`
+- `BiliMT-v2.0.1-alpha.5-armeabi-v7a.apk`
+
 ## v2.0.1-alpha.4
 
 v2.0.1-alpha.3 后:移动端"动态"tab 补 历史/收藏/追番 三个子 tab + 追番进季详情选集。
