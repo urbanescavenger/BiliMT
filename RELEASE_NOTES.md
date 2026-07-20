@@ -1,5 +1,24 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.17
+
+v2.0.0-alpha.16 后:移动端播放器手势优化,符合手机使用习惯。
+
+### 播放器手势
+- **点中央播放/暂停**:点击画面中央三分之一区域切换播放/暂停(对齐 TV `togglePlayback` 语义——暂停显控件、播放隐控件),并闪现居中 ▶/⏸ 反馈图标(800ms)。
+- **点边缘切控件**:点击左右三分之一区域切换顶/底栏控件显隐。
+- **长按 2 倍速**:长按屏幕临时 2.0x,松手恢复原倍速,顶部显示"2.0x"提示。
+- **横向拖动 seek**:左右拖动调整进度,画面中央显示目标时间气泡,松手 seek。
+- **控件自动隐藏**:播放中控件可见时 4s 后自动隐(对齐 TV `PlayerControlsAutoHideMs`),暂停时保持可见。
+
+### 实现备注
+- 新增 `MobilePlayerGestures.kt`:单个 `pointerInput` 内手写 `awaitPointerEventScope` 循环,按「超时→长按、越过 touchSlop→拖拽、抬起→单击」分支互斥判定,避免 `detectTapGestures` + `detectHorizontalDragGestures` 双 detector 抢 down 事件。Compose 1.7+ `longPressTimeout` 已改 `Duration`,按 `inWholeMilliseconds` 比较。
+- `MobilePlayerScreen` 抽出 `togglePlayback()`(底栏按钮与中央点击共用),复用现有 `isPlaying`/`seekPreviewMs`/`playbackSpeed`/`player.seekTo` 状态。TV 端、后台播放通知不动。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.17-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.17-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.16
 
 v2.0.0-alpha.15 后:修复后台播放通知不显示。
