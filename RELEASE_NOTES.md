@@ -1,5 +1,22 @@
 # BiliMT 版本发布说明
 
+## v2.0.0
+
+2.0.0 稳定版:移动端 UI 移植完成。在 `mobile`/`mort_debug` 分支参照 [BV](https://github.com/aaa1115910/bv) `feature/mobile` 设计,把触屏移动端 UI 移植进**单 APK**(运行时 `isTvUi()` 选 TV `BiliTvApp` 或手机 `BiliMobileApp`,Manifest 双桌面入口),TV 端零改动,复用全部 `core/*` 引擎。本版合并 mobile → mort_debug → main,打稳定 tag。
+
+### 移动端能力(alpha.1 ~ alpha.23 汇总)
+- **外壳**:`NavigationSuiteScaffold` 自适应 + 状态栏透明浅色图标 + 内容页下滑刷新(下拉触发)。
+- **内容页**:首页分区网格、动态关注 feed 网格、搜索(历史/联想/排序/结果网格)、卡片式设置、短信登录。
+- **触屏播放器**:Media3/ExoPlayer + 弹幕层 + 进度/心跳/完成上报;**手势**(点中央播放/暂停、长按 2x、横拖 seek 松手自动恢复、控件 4s 自动隐藏);**画质/倍速/弹幕设置弹窗**;**分P选集**;**自动连播下一集**;**UP 空间入口**;**空降助手**(SponsorBlock 自动跳过广告/片头/片尾);**后台播放**(主流 MediaStyle 通知:封面+播放/暂停+锁屏控件);**全屏横屏沉浸**;**底栏图标按钮**(播放/弹幕/选集/推荐视频/设置/全屏);**推荐视频**(相关视频)切播。
+- PGC 分支 `MergingMediaSource` 已支持。
+
+### versionCode 说明
+本版 vc=2000000。`computeVersionCode` 对 prerelease 加 `labelOrder*100+pre`,故 `2.0.0-alpha.*` 的 vc(2000101~2000123)高于本稳定版——已装 alpha 的用户需**手动安装 2.0.0** 升级(alpha 不自动提示)。后续如需让稳定版 vc 高于其 alpha,再调 `computeVersionCode` 的 stable labelOrder。
+
+### 安装包
+- `BiliMT-v2.0.0-arm64-v8a.apk`
+- `BiliMT-v2.0.0-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.23
 
 v2.0.0-alpha.22 后:修下拉刷新方向反了(上滑触发→应为下拉触发)。
