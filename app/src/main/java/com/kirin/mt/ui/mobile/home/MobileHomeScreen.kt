@@ -40,7 +40,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 private const val FirstPage = 1
-private const val PageSize = 30
+// 与 API 实际每页量对齐(推荐/热门 ps=20、分区 request_cnt=20),且与 TV RecommendScreen 一致。
+// 之前写 30 导致首屏 20 条后 endReached=20<30=true,loadNextPage 早退,下滑不翻页。
+private const val PageSize = 20
 
 /** 单分区加载状态。 */
 private sealed interface MobileSectionState {
