@@ -763,6 +763,16 @@ fun MobilePlayerScreen(
             tint = if (danmakuSettings.enabled) BiliColors.BiliPink else BiliColors.TextSecondary,
             onClick = { scope.launch { danmakuSettingsStore.setEnabled(!danmakuSettings.enabled) } },
           )
+          if (activeRequest.ownerMid > 0L) {
+            MobilePlayerIconButton(
+              iconRes = R.drawable.ic_nav_account,
+              contentDescription = "UP 主页",
+              tint = BiliColors.TextPrimary,
+              onClick = {
+                onOpenUpSpace(activeRequest.ownerMid, activeRequest.ownerName, activeRequest.ownerFace)
+              },
+            )
+          }
           if ((metadata?.pages?.size ?: 0) > 1) {
             MobilePlayerIconButton(
               iconRes = R.drawable.ic_player_playlist,
