@@ -1,5 +1,17 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.21
+
+v2.0.0-alpha.20 后:修播放中拖拽 seek 松手后意外暂停。
+
+### 拖拽松手自动恢复播放
+- 之前:播放中横拖 / 拖进度条 seek,松手后 `player.seekTo` 不保证恢复播放,会出现停在 seek 点不继续放。
+- 修法:拖拽起点记录 `player.playWhenReady`(播放意图),松手 seek 后若之前在播放就 `player.play()` 恢复;暂停态下拖拽仍保持暂停。手势横拖与 Slider 两条路径都修。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.21-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.21-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.20
 
 v2.0.0-alpha.19 后:移动端播放器底栏按钮图标化(参考 TV 版)。

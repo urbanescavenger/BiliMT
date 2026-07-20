@@ -169,6 +169,8 @@ fun MobilePlayerScreen(
   var speedBoostActive by remember { mutableStateOf(false) }
   var centerIconFlash by remember { mutableStateOf(false) }
   var centerIconIsPlaying by remember { mutableStateOf(true) }
+  // 拖拽 seek 起点记录的播放意图:松手 seek 后若之前在播放则恢复,避免拖拽后意外暂停
+  var wasPlayingBeforeSeek by remember { mutableStateOf(false) }
   // 空降助手(AirJump):SponsorBlock 风格自动跳过广告/片头/片尾段,镜像 TV PlayerScreen
   var airJumpSegments by remember { mutableStateOf<List<AirJumpSegment>>(emptyList()) }
   var warnedAirJumpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -536,7 +538,10 @@ fun MobilePlayerScreen(
               player.setPlaybackSpeed(playbackSpeed)
             }
           },
-          onSeekStart = { dragSeekActive = true },
+          onSeekStart = {
+            dragSeekActive = true
+            wasPlayingBeforeSeek = player.playWhenReady
+          },
           onSeekDelta = { dx ->
             val dur = player.duration
             if (dur > 0L) {
@@ -554,6 +559,8 @@ fun MobilePlayerScreen(
               playbackPositionState.longValue = target
               danmakuSyncToken += 1L
             }
+            // 播放中拖拽松手后恢复播放(对齐手机播放器习惯),暂停态下拖拽保持暂停
+            if (wasPlayingBeforeSeek) player.play()
             seekPreviewMs = null
           },
           onSeekCancel = {
@@ -703,7 +710,10 @@ fun MobilePlayerScreen(
           Text(formatMs(positionMs), color = Color.White)
           Slider(
             value = positionMs.toFloat().coerceIn(0f, durationMs.toFloat()),
-            onValueChange = { seekPreviewMs = it.toLong() },
+            onValueChange = {
+              if (seekPreviewMs == null) wasPlayingBeforeSeek = player.playWhenReady
+              seekPreviewMs = it.toLong()
+            },
             valueRange = 0f..durationMs.toFloat(),
             onValueChangeFinished = {
               seekPreviewMs?.let { target ->
@@ -711,6 +721,7 @@ fun MobilePlayerScreen(
                 playbackPositionState.longValue = target
                 danmakuSyncToken += 1L
               }
+              if (wasPlayingBeforeSeek) player.play()
               seekPreviewMs = null
             },
             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
