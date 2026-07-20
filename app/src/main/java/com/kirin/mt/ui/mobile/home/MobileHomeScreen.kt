@@ -85,6 +85,7 @@ fun MobileHomeScreen(
   videoRepository: VideoRepository,
   enabledSections: List<HomeSection>,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOpenOwner: (VideoSummary) -> Unit,
   modifier: Modifier = Modifier,
   refreshKey: Int = 0,
 ) {
@@ -238,7 +239,7 @@ fun MobileHomeScreen(
             }
             is MobileSectionState.Success -> {
               items(state.videos, key = { it.bvid }) { video ->
-                MobileVideoCard(video = video, onClick = onVideoSelected)
+                MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner)
               }
               if (state.loadingMore) {
                 item(span = { GridItemSpan(maxLineSpan) }) {

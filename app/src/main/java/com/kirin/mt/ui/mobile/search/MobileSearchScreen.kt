@@ -123,6 +123,7 @@ fun MobileSearchScreen(
   videoRepository: VideoRepository,
   searchHistoryStore: SearchHistoryStore,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOpenOwner: (VideoSummary) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val scope = rememberCoroutineScope()
@@ -353,7 +354,7 @@ fun MobileSearchScreen(
               }
               is SearchResultState.Success -> {
                 gridItems(s.videos, key = { it.bvid }) { video ->
-                  MobileVideoCard(video = video, onClick = onVideoSelected)
+                  MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner)
                 }
                 if (s.loadingMore) {
                   item(span = { GridItemSpan(maxLineSpan) }) {

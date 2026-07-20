@@ -60,6 +60,7 @@ fun MobileDynamicScreen(
   videoRepository: VideoRepository,
   isLoggedIn: Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
+  onOpenOwner: (VideoSummary) -> Unit,
   onLogin: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -203,7 +204,7 @@ fun MobileDynamicScreen(
           }
           is DynamicState.Success -> {
             items(s.videos, key = { it.bvid }) { video ->
-              MobileVideoCard(video = video, onClick = onVideoSelected)
+              MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner)
             }
             if (s.loadingMore) {
               item(span = { GridItemSpan(maxLineSpan) }) {

@@ -906,6 +906,10 @@ fun MobilePlayerScreen(
                       relatedSheet = false
                       onPlayVideo(v)
                     },
+                    onOpenOwner = { video ->
+                      relatedSheet = false
+                      onOpenUpSpace(video.ownerMid, video.ownerName, video.ownerFace)
+                    },
                     modifier = Modifier.weight(1f).padding(4.dp),
                   )
                 }

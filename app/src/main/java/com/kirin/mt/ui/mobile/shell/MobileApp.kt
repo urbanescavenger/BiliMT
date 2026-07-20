@@ -141,12 +141,20 @@ fun BiliMobileApp(
           onVideoSelected = { video ->
             playbackRequest = video.toPlaybackRequest()
           },
+          onOpenOwner = { video ->
+            spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+            spacePlaybackBehind = false
+          },
           modifier = Modifier.fillMaxSize(),
         )
         AppDestination.Dynamic -> MobileDynamicScreen(
           videoRepository = videoRepository,
           isLoggedIn = session.isLoggedIn,
           onVideoSelected = { video -> playbackRequest = video.toPlaybackRequest() },
+          onOpenOwner = { video ->
+            spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+            spacePlaybackBehind = false
+          },
           onLogin = { context.startActivity(Intent(context, LoginActivity::class.java)) },
           modifier = Modifier.fillMaxSize(),
         )
@@ -156,6 +164,10 @@ fun BiliMobileApp(
           searchHistoryStore = searchHistoryStore,
           onVideoSelected = { video ->
             playbackRequest = video.toPlaybackRequest()
+          },
+          onOpenOwner = { video ->
+            spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+            spacePlaybackBehind = false
           },
           modifier = Modifier.fillMaxSize(),
         )
@@ -217,6 +229,11 @@ fun BiliMobileApp(
             onVideoSelected = { video ->
               spacePlaybackBehind = false
               playbackRequest = video.toPlaybackRequest()
+            },
+            // 点空间内卡片的 UP 头像 -> 切到该 UP 空间(LaunchedEffect(mid) 自动重载)。
+            // 不动 spacePlaybackBehind:保留来源栈(从播放器进来的返回回播放器,从 tab 进来的返回回 tab)。
+            onOpenOwner = { video ->
+              spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
             },
             onBack = {
               spaceRequest = null
