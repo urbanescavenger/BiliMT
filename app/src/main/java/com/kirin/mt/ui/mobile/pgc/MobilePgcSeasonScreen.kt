@@ -52,7 +52,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MobilePgcSeasonScreen(
+internal fun MobilePgcSeasonScreen(
   videoRepository: VideoRepository,
   request: PgcSeasonRequest,
   onPlayEpisode: (PgcSeason, PgcEpisode) -> Unit,

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items as lazyItems
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -187,7 +188,7 @@ fun MobileFavoritePage(
               horizontalArrangement = Arrangement.spacedBy(8.dp),
               contentPadding = PaddingValues(bottom = 4.dp),
             ) {
-              androidx.compose.foundation.lazy.items(folders, key = { it.mediaId }) { folder ->
+              lazyItems(folders, key = { it.mediaId }) { folder ->
                 FilterChip(
                   selected = folder.mediaId == currentMediaId,
                   onClick = { selectFolder(folder.mediaId) },

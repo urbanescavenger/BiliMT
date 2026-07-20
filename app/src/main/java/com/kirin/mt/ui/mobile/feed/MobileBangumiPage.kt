@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items as lazyItems
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -190,7 +191,7 @@ fun MobileBangumiPage(
         item(span = { GridItemSpan(maxLineSpan) }) {
           androidx.compose.foundation.layout.Column {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-              androidx.compose.foundation.lazy.items(BangumiType.entries.toList()) { t ->
+              lazyItems(BangumiType.entries.toList()) { t ->
                 FilterChip(
                   selected = type == t,
                   onClick = { type = t },
@@ -203,7 +204,7 @@ fun MobileBangumiPage(
               horizontalArrangement = Arrangement.spacedBy(8.dp),
               modifier = Modifier.padding(top = 4.dp),
             ) {
-              androidx.compose.foundation.lazy.items(BangumiStatus.entries.toList()) { st ->
+              lazyItems(BangumiStatus.entries.toList()) { st ->
                 FilterChip(
                   selected = status == st,
                   onClick = { status = st },
