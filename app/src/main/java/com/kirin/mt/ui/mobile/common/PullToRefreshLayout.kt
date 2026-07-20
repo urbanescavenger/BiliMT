@@ -51,9 +51,10 @@ fun PullToRefreshLayout(
   val connection = remember {
     object : NestedScrollConnection {
       override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-        // available.y < 0 => 列表到顶后继续下拉(overscroll),累加拉动距离并消费,避免子控件回弹
-        if (available.y < 0f && !refreshState.value) {
-          pullPx = (pullPx + (-available.y)).coerceAtMost(maxPullPx)
+        // available.y > 0 => 列表到顶后继续下拉(overscroll),累加拉动距离并消费,避免子控件回弹。
+        // (Compose 约定:y>0=手指下拖/内容下移=下拉,见官方 PullToRefresh 样板 onPostScroll)
+        if (available.y > 0f && !refreshState.value) {
+          pullPx = (pullPx + available.y).coerceAtMost(maxPullPx)
           return Offset(0f, available.y)
         }
         return Offset.Zero

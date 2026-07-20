@@ -1,5 +1,17 @@
 # BiliMT 版本发布说明
 
+## v2.0.0-alpha.23
+
+v2.0.0-alpha.22 后:修下拉刷新方向反了(上滑触发→应为下拉触发)。
+
+### 修下拉刷新方向
+- 根因:`PullToRefreshLayout.onPostScroll` 原判 `available.y < 0` 触发,但 Compose 约定 `available.y > 0` = 手指下拖/下拉(见官方 PullToRefresh 样板 onPostScroll),`< 0` 是上滑 → 刷新错触在上滑方向。
+- 修法:改成 `available.y > 0` 触发,累加 `available.y`(正值)。下拉时顶部指示器向下展开、达阈值松手刷新。`onPostFling` 阈值判定与指示器偏移不变。
+
+### 安装包
+- `BiliMT-v2.0.0-alpha.23-arm64-v8a.apk`
+- `BiliMT-v2.0.0-alpha.23-armeabi-v7a.apk`
+
 ## v2.0.0-alpha.22
 
 v2.0.0-alpha.21 后:播放器加推荐视频按钮 + 修内容页下拉刷新无效。
