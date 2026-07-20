@@ -83,6 +83,10 @@ fun BiliMobileApp(
   val session by sessionStore.session.collectAsState(initial = UserSession())
   var playbackRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
   var spaceRequest by remember { mutableStateOf<com.kirin.mt.ui.space.UpSpaceRequest?>(null) }
+  // 空间是否压在播放器之上:true=刚从播放器进空间(空间在上、播放器藏后),
+  // false=从空间起了播(播放器在上)。配合空间叠层显示门控与 BackHandler enabled,
+  // 让"空间→视频→返回→空间"成立(不销毁 spaceRequest),镜像 TV AppShell spacePlaybackBehind。
+  var spacePlaybackBehind by remember { mutableStateOf(false) }
 
   // Android 13+ 需运行时请求 POST_NOTIFICATIONS,否则后台播放通知(及控件)不显示。
   val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -163,7 +167,10 @@ fun BiliMobileApp(
     if (request != null) {
       // 组合在 NavigationSuiteScaffold 内容(含搜索页 BackHandler)之后,
       // OnBackPressedDispatcher 栈中更靠顶,系统返回优先关播放器而非退 app / 回搜索输入态。
-      BackHandler { playbackRequest = null }
+      // 空间压在播放器之上时(spacePlaybackBehind),播放器让出返回键由空间响应。
+      BackHandler(enabled = !(spaceRequest != null && spacePlaybackBehind)) {
+        playbackRequest = null
+      }
       Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         MobilePlayerScreen(
           request = request,
@@ -180,6 +187,7 @@ fun BiliMobileApp(
           onBack = { playbackRequest = null },
           onOpenUpSpace = { mid, name, face ->
             spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(mid, name, face)
+            spacePlaybackBehind = true
           },
           modifier = Modifier.fillMaxSize(),
         )
@@ -188,24 +196,35 @@ fun BiliMobileApp(
 
     val space = spaceRequest
     if (space != null) {
-      BackHandler { spaceRequest = null }
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .background(MaterialTheme.colorScheme.background),
-      ) {
-        com.kirin.mt.ui.mobile.space.MobileUserSpaceScreen(
-          videoRepository = videoRepository,
-          mid = space.mid,
-          ownerName = space.ownerName,
-          ownerFace = space.ownerFace,
-          onVideoSelected = { video ->
-            spaceRequest = null
-            playbackRequest = video.toPlaybackRequest()
-          },
-          onBack = { spaceRequest = null },
-          modifier = Modifier.fillMaxSize(),
-        )
+      // 空间在顶层(无播放器或刚从播放器进空间)时才接管返回键;播放器在上时让播放器响应。
+      BackHandler(enabled = playbackRequest == null || spacePlaybackBehind) {
+        spaceRequest = null
+        spacePlaybackBehind = false
+      }
+      // 显示门控:仅在空间处于顶层时渲染,避免从空间起播后空间仍盖在播放器之上。
+      if (playbackRequest == null || spacePlaybackBehind) {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        ) {
+          com.kirin.mt.ui.mobile.space.MobileUserSpaceScreen(
+            videoRepository = videoRepository,
+            mid = space.mid,
+            ownerName = space.ownerName,
+            ownerFace = space.ownerFace,
+            // 不销毁 spaceRequest:播放器返回时由门控重新露出空间,而非落回首页。
+            onVideoSelected = { video ->
+              spacePlaybackBehind = false
+              playbackRequest = video.toPlaybackRequest()
+            },
+            onBack = {
+              spaceRequest = null
+              spacePlaybackBehind = false
+            },
+            modifier = Modifier.fillMaxSize(),
+          )
+        }
       }
     }
   }
