@@ -11,7 +11,7 @@ import kotlin.math.abs
 
 /**
  * 移动端播放器统一手势检测:在单个 pointerInput 里互斥地识别
- *   - 单击(中央三分之一区域 / 左右边缘)
+ *   - 单击(中央三分之二区域 / 左右各六分之一边缘)
  *   - 长按(越过 longPressTimeout 仍未越过 touchSlop)
  *   - 横向拖拽(越过水平 touchSlop)
  *
@@ -73,8 +73,9 @@ internal suspend fun PointerInputScope.detectPlayerGestures(
             Mode.LongPress -> onLongPressEnd()
             Mode.Drag -> onSeekEnd()
             Mode.Tap -> {
-              val third = width / 3f
-              if (downPos.x >= third && downPos.x <= width - third) {
+              // 中央 2/3 区域 → 暂停/播放;左右各 1/6 边缘 → 切换控件显隐。
+              val edge = width / 6f
+              if (downPos.x >= edge && downPos.x <= width - edge) {
                 onCenterTap()
               } else {
                 onEdgeTap()
