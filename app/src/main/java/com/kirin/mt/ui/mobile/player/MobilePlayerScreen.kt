@@ -732,8 +732,8 @@ fun MobilePlayerScreen(
         modifier = Modifier
           .align(Alignment.TopCenter)
           .fillMaxWidth()
-          .background(Color(0x99000000))
-          .padding(horizontal = 8.dp, vertical = 6.dp),
+          .background(Color.Black)
+          .padding(horizontal = 16.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
         TextButton(onClick = onBack) { Text("‹", color = Color.White) }
@@ -771,8 +771,8 @@ fun MobilePlayerScreen(
         modifier = Modifier
           .align(Alignment.BottomCenter)
           .fillMaxWidth()
-          .background(Color(0x99000000))
-          .padding(horizontal = 12.dp, vertical = 8.dp),
+          .background(Color.Black)
+          .padding(horizontal = 16.dp, vertical = 4.dp),
       ) {
         Row(
           modifier = Modifier.fillMaxWidth(),
@@ -1156,7 +1156,7 @@ private fun MobilePlayerIntroTab(
         .fillMaxSize()
         .background(Color(0xFF121217))
         .verticalScroll(rememberScrollState())
-        .padding(horizontal = 16.dp, vertical = 8.dp),
+        .padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
       // 标题
       Text(

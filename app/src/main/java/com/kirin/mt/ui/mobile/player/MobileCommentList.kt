@@ -142,7 +142,7 @@ private fun CommentListContent(
       modifier = Modifier
         .fillMaxWidth()
         .background(CommentColor.Surface)
-        .padding(horizontal = 12.dp, vertical = 6.dp),
+        .padding(horizontal = 12.dp, vertical = 4.dp),
       horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
       SortChip(
