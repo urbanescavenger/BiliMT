@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,6 +31,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -90,6 +93,7 @@ import com.kirin.mt.R
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.network.FavoriteFolder
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.AirJumpSegment
@@ -958,6 +962,8 @@ fun MobilePlayerScreen(
             relatedVideos = relatedVideos,
             onPlayVideo = onPlayVideo,
             onOpenUpSpace = onOpenUpSpace,
+            videoRepository = videoRepository,
+            onShare = { shareVideo() },
             modifier = Modifier.fillMaxSize(),
           )
           1 -> MobileCommentList(
@@ -1067,6 +1073,8 @@ private fun MobilePlayerIntroTab(
   relatedVideos: List<VideoSummary>,
   onPlayVideo: (VideoSummary) -> Unit,
   onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit,
+  videoRepository: VideoRepository,
+  onShare: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   if (metadata == null) {
@@ -1079,6 +1087,38 @@ private fun MobilePlayerIntroTab(
     return
   }
   val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+
+  // 互动状态:从 metadata 同步(初次加载完成后),本地维护点击后的乐观更新。
+  var liked by remember { mutableStateOf(metadata.liked) }
+  var likeCount by remember { mutableStateOf(metadata.likeCount) }
+  var coined by remember { mutableStateOf(metadata.coined) }
+  var coinCount by remember { mutableStateOf(metadata.coinCount) }
+  var faved by remember { mutableStateOf(metadata.faved) }
+  var favCount by remember { mutableStateOf(metadata.favoriteCount) }
+  LaunchedEffect(metadata.aid) {
+    liked = metadata.liked
+    likeCount = metadata.likeCount
+    coined = metadata.coined
+    coinCount = metadata.coinCount
+    faved = metadata.faved
+    favCount = metadata.favoriteCount
+  }
+  var busy by remember { mutableStateOf(false) }
+  var showCoinDialog by remember { mutableStateOf(false) }
+  var showFavDialog by remember { mutableStateOf(false) }
+  var favFolders by remember { mutableStateOf<List<FavoriteFolder>>(emptyList()) }
+  var favLoading by remember { mutableStateOf(false) }
+  // 收藏夹多选:勾选要加入的收藏夹 mediaId 集合(本次只做 add 增量,不处理 del/取消已收藏)。
+  var selectedFolderIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+
+  fun toast(ok: Boolean, successMsg: String) {
+    Toast.makeText(
+      context,
+      if (ok) successMsg else "操作失败,请检查登录或稍后重试",
+      Toast.LENGTH_SHORT,
+    ).show()
+  }
   MaterialTheme(colorScheme = darkColorScheme()) {
     Column(
       modifier = modifier
@@ -1164,6 +1204,77 @@ private fun MobilePlayerIntroTab(
         )
       }
 
+      // 互动按钮行:点赞 / 投币 / 收藏 / 分享。PGC 无此交互,整行隐藏。
+      if (!request.isPgc && metadata.aid > 0L) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp),
+          horizontalArrangement = Arrangement.SpaceAround,
+        ) {
+          IntroActionButton(
+            iconRes = R.drawable.ic_player_like,
+            label = "点赞",
+            count = formatCount(likeCount),
+            active = liked,
+            enabled = !busy,
+            onClick = {
+              if (busy) return@IntroActionButton
+              scope.launch {
+                busy = true
+                val ok = runCatching { videoRepository.likeVideoArchive(metadata.aid) }
+                  .getOrDefault(false)
+                if (ok) {
+                  liked = !liked
+                  likeCount = (likeCount + if (liked) 1 else -1).coerceAtLeast(0)
+                  toast(true, if (liked) "已点赞" else "已取消点赞")
+                } else {
+                  toast(false, "")
+                }
+                busy = false
+              }
+            },
+          )
+          IntroActionButton(
+            iconRes = R.drawable.ic_player_coin,
+            label = "投币",
+            count = formatCount(coinCount),
+            active = coined,
+            enabled = !busy,
+            onClick = { if (!busy) showCoinDialog = true },
+          )
+          IntroActionButton(
+            iconRes = R.drawable.ic_player_favorite,
+            label = "收藏",
+            count = formatCount(favCount),
+            active = faved,
+            enabled = !busy,
+            onClick = {
+              if (busy) return@IntroActionButton
+              showFavDialog = true
+              scope.launch {
+                favLoading = true
+                val mid = runCatching { videoRepository.currentMid() }.getOrDefault(0L)
+                val folders = if (mid > 0L) {
+                  runCatching { videoRepository.getFavoriteFolders(mid) }.getOrDefault(emptyList())
+                } else emptyList()
+                favFolders = folders
+                selectedFolderIds = emptySet()
+                favLoading = false
+              }
+            },
+          )
+          IntroActionButton(
+            iconRes = R.drawable.ic_player_share,
+            label = "分享",
+            count = formatCount(metadata.shareCount),
+            active = false,
+            enabled = true,
+            onClick = onShare,
+          )
+        }
+      }
+
       // 相关视频:2 列 chunked Row,复用 MobileVideoCard,点击切播 / 进 UP 主页。
       SectionTitle("相关视频")
       if (relatedVideos.isEmpty()) {
@@ -1190,6 +1301,174 @@ private fun MobilePlayerIntroTab(
       }
       Spacer(Modifier.height(16.dp))
     }
+
+    // 投币弹窗:选择投 1 枚 / 2 枚。
+    if (showCoinDialog) {
+      AlertDialog(
+        onDismissRequest = { showCoinDialog = false },
+        title = { Text("投币") },
+        text = {
+          Column {
+            TextButton(
+              onClick = {
+                showCoinDialog = false
+                scope.launch {
+                  busy = true
+                  val ok = runCatching {
+                    videoRepository.coinVideo(metadata.aid, multiply = 1, selectLike = false)
+                  }.getOrDefault(false)
+                  if (ok) {
+                    coined = true
+                    coinCount += 1
+                    toast(true, "投币成功")
+                  } else {
+                    toast(false, "")
+                  }
+                  busy = false
+                }
+              },
+              modifier = Modifier.fillMaxWidth(),
+            ) { Text("投 1 枚", modifier = Modifier.fillMaxWidth()) }
+            TextButton(
+              onClick = {
+                showCoinDialog = false
+                scope.launch {
+                  busy = true
+                  val ok = runCatching {
+                    videoRepository.coinVideo(metadata.aid, multiply = 2, selectLike = false)
+                  }.getOrDefault(false)
+                  if (ok) {
+                    coined = true
+                    coinCount += 2
+                    toast(true, "投币成功")
+                  } else {
+                    toast(false, "")
+                  }
+                  busy = false
+                }
+              },
+              modifier = Modifier.fillMaxWidth(),
+            ) { Text("投 2 枚", modifier = Modifier.fillMaxWidth()) }
+          }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = { showCoinDialog = false }) { Text("取消") } },
+      )
+    }
+
+    // 收藏夹选择弹窗:多选,确认后调 deal(rid=aid, type=2, add_media_ids=选中)。
+    if (showFavDialog) {
+      AlertDialog(
+        onDismissRequest = { showFavDialog = false },
+        title = { Text("收藏到收藏夹") },
+        text = {
+          if (favLoading) {
+            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+              CircularProgressIndicator()
+            }
+          } else if (favFolders.isEmpty()) {
+            Text(
+              "暂无收藏夹",
+              color = BiliColors.TextSecondary,
+              modifier = Modifier.padding(16.dp),
+            )
+          } else {
+            Column(modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+              favFolders.forEach { folder ->
+                val checked = folder.mediaId in selectedFolderIds
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable {
+                      selectedFolderIds = if (checked) {
+                        selectedFolderIds - folder.mediaId
+                      } else {
+                        selectedFolderIds + folder.mediaId
+                      }
+                    }
+                    .padding(vertical = 4.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Checkbox(
+                    checked = checked,
+                    onCheckedChange = { c ->
+                      selectedFolderIds = if (c) {
+                        selectedFolderIds + folder.mediaId
+                      } else {
+                        selectedFolderIds - folder.mediaId
+                      }
+                    },
+                  )
+                  Column {
+                    Text(folder.title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${folder.mediaCount} 个内容", color = BiliColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+                  }
+                }
+              }
+            }
+          }
+        },
+        confirmButton = {
+          TextButton(
+            enabled = !favLoading,
+            onClick = {
+              showFavDialog = false
+              val adds = selectedFolderIds.toList()
+              if (adds.isEmpty()) return@TextButton
+              scope.launch {
+                busy = true
+                val ok = runCatching {
+                  videoRepository.dealFavorite(metadata.aid, addMediaIds = adds, delMediaIds = emptyList())
+                }.getOrDefault(false)
+                if (ok) {
+                  if (!faved) favCount += 1
+                  faved = true
+                  toast(true, "已收藏")
+                } else {
+                  toast(false, "")
+                }
+                busy = false
+              }
+            },
+          ) { Text("确认") }
+        },
+        dismissButton = { TextButton(onClick = { showFavDialog = false }) { Text("取消") } },
+      )
+    }
+  }
+}
+
+// 简介页互动按钮:图标 + 计数纵向排列,active 时图标变 Bili 粉。
+@Composable
+private fun IntroActionButton(
+  @DrawableRes iconRes: Int,
+  label: String,
+  count: String,
+  active: Boolean,
+  enabled: Boolean,
+  onClick: () -> Unit,
+) {
+  Column(
+    modifier = Modifier
+      .clip(RoundedCornerShape(10.dp))
+      .clickable(enabled = enabled, onClick = onClick)
+      .padding(horizontal = 12.dp, vertical = 6.dp),
+    horizontalAlignment = Alignment.CenterHorizontally,
+  ) {
+    Icon(
+      painter = painterResource(iconRes),
+      contentDescription = label,
+      tint = if (active) BiliColors.BiliPink else BiliColors.TextPrimary,
+      modifier = Modifier.size(24.dp),
+    )
+    Spacer(Modifier.height(4.dp))
+    Text(
+      text = if (count.isBlank() || count == "0") label else count,
+      color = if (active) BiliColors.BiliPink else BiliColors.TextSecondary,
+      style = MaterialTheme.typography.labelSmall,
+      maxLines = 1,
+    )
   }
 }
 

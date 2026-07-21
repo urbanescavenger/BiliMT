@@ -60,6 +60,15 @@ data class PlaybackVideoMetadata(
   val pages: List<PlaybackEpisode>,
   /** 视频简介(B 站 view 接口 data.desc / PGC season.desc),移动端播放页简介 Tab 展示。 */
   val desc: String = "",
+  /** 互动计数(B 站 view 接口 data.stat)。PGC 无,默认 0。 */
+  val likeCount: Int = 0,
+  val coinCount: Int = 0,
+  val favoriteCount: Int = 0,
+  val shareCount: Int = 0,
+  /** 当前用户对该视频的互动状态(B 站 view 接口 data.req_user,仅登录态返回)。 */
+  val liked: Boolean = false,
+  val coined: Boolean = false,
+  val faved: Boolean = false,
 )
 
 data class PlaybackEpisode(

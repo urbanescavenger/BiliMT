@@ -96,6 +96,79 @@ internal class UserFeedRepository(
     return true
   }
 
+  // 点赞视频(UGc archive):/x/web-archive/like,form POST + csrf。aid 为视频 aid。
+  suspend fun likeVideoArchive(aid: Long): Boolean {
+    if (aid <= 0L) return false
+    val sessData = sessionStore.sessData.first()
+    val biliJct = sessionStore.biliJct.first()
+    if (sessData.isNullOrBlank() || biliJct.isNullOrBlank()) return false
+
+    val root = apiClient.postFormJson(
+      url = BiliApiEndpoints.ArchiveLike,
+      params = mapOf(
+        "aid" to aid.toString(),
+        "like" to "1",
+        "csrf" to biliJct,
+      ),
+      sessData = sessData,
+      biliJct = biliJct,
+    ).rootObject()
+    root.requireBiliCodeOk("archive like")
+    return true
+  }
+
+  // 投币:/x/web-interface/coin/add,multiply 取 1 或 2;selectLike=true 时同时点赞。
+  suspend fun coinVideo(aid: Long, multiply: Int, selectLike: Boolean): Boolean {
+    if (aid <= 0L) return false
+    val sessData = sessionStore.sessData.first()
+    val biliJct = sessionStore.biliJct.first()
+    if (sessData.isNullOrBlank() || biliJct.isNullOrBlank()) return false
+
+    val root = apiClient.postFormJson(
+      url = BiliApiEndpoints.CoinAdd,
+      params = mapOf(
+        "aid" to aid.toString(),
+        "multiply" to multiply.coerceIn(1, 2).toString(),
+        "select_like" to if (selectLike) "1" else "0",
+        "csrf" to biliJct,
+      ),
+      sessData = sessData,
+      biliJct = biliJct,
+    ).rootObject()
+    root.requireBiliCodeOk("coin add")
+    return true
+  }
+
+  // 收藏/取消收藏:/x/v3/fav/resource/deal。type=2 表示视频(oid=aid)。
+  // addMediaIds/delMediaIds 为要加入/移出的收藏夹 media_id 列表,逗号拼接。
+  suspend fun dealFavorite(
+    aid: Long,
+    addMediaIds: List<Long>,
+    delMediaIds: List<Long>,
+  ): Boolean {
+    if (aid <= 0L) return false
+    val sessData = sessionStore.sessData.first()
+    val biliJct = sessionStore.biliJct.first()
+    if (sessData.isNullOrBlank() || biliJct.isNullOrBlank()) return false
+
+    val params = mutableMapOf(
+      "rid" to aid.toString(),
+      "type" to "2",
+      "csrf" to biliJct,
+    )
+    if (addMediaIds.isNotEmpty()) params["add_media_ids"] = addMediaIds.joinToString(",")
+    if (delMediaIds.isNotEmpty()) params["del_media_ids"] = delMediaIds.joinToString(",")
+
+    val root = apiClient.postFormJson(
+      url = BiliApiEndpoints.FavoriteDeal,
+      params = params,
+      sessData = sessData,
+      biliJct = biliJct,
+    ).rootObject()
+    root.requireBiliCodeOk("fav deal")
+    return true
+  }
+
   suspend fun getComments(
     aid: Long,
     page: Int,

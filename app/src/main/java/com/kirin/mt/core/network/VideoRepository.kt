@@ -182,6 +182,22 @@ class VideoRepository(
     return userFeedRepository.addToView(aid)
   }
 
+  suspend fun likeVideoArchive(aid: Long): Boolean {
+    return userFeedRepository.likeVideoArchive(aid)
+  }
+
+  suspend fun coinVideo(aid: Long, multiply: Int, selectLike: Boolean): Boolean {
+    return userFeedRepository.coinVideo(aid, multiply, selectLike)
+  }
+
+  suspend fun dealFavorite(
+    aid: Long,
+    addMediaIds: List<Long>,
+    delMediaIds: List<Long>,
+  ): Boolean {
+    return userFeedRepository.dealFavorite(aid, addMediaIds, delMediaIds)
+  }
+
   suspend fun getComments(aid: Long, page: Int, sort: Int): CommentPage {
     return userFeedRepository.getComments(aid = aid, page = page, sort = sort)
   }

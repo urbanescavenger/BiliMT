@@ -203,6 +203,7 @@ class PlaybackRepository(
     val data = root.obj("data") ?: JsonObject(emptyMap())
     val owner = data.obj("owner")
     val stat = data.obj("stat")
+    val reqUser = data.obj("req_user")
     val pages = (data["pages"] as? JsonArray)
       ?.mapNotNull { element ->
         val page = element.asObjectOrNull() ?: return@mapNotNull null
@@ -232,6 +233,13 @@ class PlaybackRepository(
       pubdate = data.long("pubdate"),
       pages = pages,
       desc = data.string("desc"),
+      likeCount = BiliNumberParser.toInt(stat?.get("like")),
+      coinCount = BiliNumberParser.toInt(stat?.get("coin")),
+      favoriteCount = BiliNumberParser.toInt(stat?.get("favorite")),
+      shareCount = BiliNumberParser.toInt(stat?.get("share")),
+      liked = reqUser?.int("like") == 1,
+      coined = (reqUser?.int("coin") ?: 0) > 0,
+      faved = reqUser?.int("favorite") == 1,
     )
   }
 
