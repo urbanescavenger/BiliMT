@@ -186,8 +186,8 @@ fun MobilePlayerScreen(
   // 手势交互状态:横拖 seek 进行中 / 长按 2x 进行中 / 居中播放暂停反馈闪现
   var dragSeekActive by remember { mutableStateOf(false) }
   var speedBoostActive by remember { mutableStateOf(false) }
-  var centerIconFlash by remember { mutableStateOf(false) }
-  var centerIconIsPlaying by remember { mutableStateOf(true) }
+  // 用户主动暂停标志:驱动中央常驻暂停图标(区别于缓冲中/播放结束 isPlaying=false)
+  var userPaused by remember { mutableStateOf(false) }
   // 拖拽 seek 起点记录的播放意图:松手 seek 后若之前在播放则恢复,避免拖拽后意外暂停
   var wasPlayingBeforeSeek by remember { mutableStateOf(false) }
   // 空降助手(AirJump):SponsorBlock 风格自动跳过广告/片头/片尾段,镜像 TV PlayerScreen
@@ -250,14 +250,13 @@ fun MobilePlayerScreen(
     }
   }
 
-  // 播放/暂停切换:对齐 TV togglePlayback() 语义——暂停显控件、播放隐控件,
-  // 并触发居中图标反馈闪现。isPlaying 异步回写,这里用调用前的值判断"即将进入"的状态。
+  // 播放/暂停切换:对齐 TV togglePlayback() 语义——暂停显控件 + 中央常驻暂停图标、
+  // 播放隐控件 + 隐中央图标。isPlaying 异步回写,这里用调用前的值判断"即将进入"的状态。
   fun togglePlayback() {
     val willPlay = !isPlaying
     if (willPlay) player.play() else player.pause()
     controlsVisible = !willPlay
-    centerIconIsPlaying = willPlay
-    centerIconFlash = true
+    userPaused = !willPlay
   }
 
   // 分享视频:bvid 优先,无 bvid 用 av{aid};文本=标题+换行+链接,走系统 share sheet。
@@ -399,6 +398,7 @@ fun MobilePlayerScreen(
   LaunchedEffect(activeRequest, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference) {
     playerState = MobilePlayerState.Loading
     completionReported = false
+    userPaused = false
     seekPreviewMs = null
     playbackPositionState.longValue = 0L
     playbackDurationState.longValue = 0L
@@ -552,14 +552,6 @@ fun MobilePlayerScreen(
     activeRequest = next.request
   }
 
-  // 居中播放/暂停图标反馈:触发后 800ms 自动隐
-  LaunchedEffect(centerIconFlash) {
-    if (centerIconFlash) {
-      delay(800)
-      centerIconFlash = false
-    }
-  }
-
   // 控件自动隐藏:播放中控件可见时,4s 后自动隐(对齐 TV PlayerControlsAutoHideMs)。
   // 暂停时 isPlaying=false,本 effect 不触发,控件保持可见。
   LaunchedEffect(controlsVisible, isPlaying) {
@@ -668,11 +660,13 @@ fun MobilePlayerScreen(
       is MobilePlayerState.Ready -> Unit
     }
 
-    // 居中播放/暂停反馈:点击中央切换时闪现 800ms
+    // 居中常驻暂停图标:用户暂停时显示,点击中央恢复播放。
     // 全限定调用顶层 AnimatedVisibility:外层 Column 引入 ColumnScope 后,裸 AnimatedVisibility
     // 在 BoxScope/ColumnScope/顶层三义,编译报错;全限定走无接收者的顶层版,.align 仍用内层 BoxScope。
+    // 用 userPaused 而非 !isPlaying,避免缓冲中/播放结束时误显;叠层无 clickable,点击透传到
+    // 外层 detectPlayerGestures.onCenterTap → togglePlayback() 恢复播放。
     androidx.compose.animation.AnimatedVisibility(
-      visible = centerIconFlash,
+      visible = userPaused && playerState is MobilePlayerState.Ready,
       enter = fadeIn(),
       exit = fadeOut(),
       modifier = Modifier.align(Alignment.Center),
@@ -684,14 +678,9 @@ fun MobilePlayerScreen(
           .background(Color(0x99000000)),
         contentAlignment = Alignment.Center,
       ) {
-        // 用项目自有矢量图标(白色 tint)而非 Unicode ▶/⏸——后者在多数设备被 emoji
-        // 字体按彩色(黄)字形渲染,color 不起作用,导致点击暂停闪出黄色图标。
         Icon(
-          painter = painterResource(
-            if (centerIconIsPlaying) R.drawable.ic_player_play
-            else R.drawable.ic_player_pause,
-          ),
-          contentDescription = if (centerIconIsPlaying) "播放" else "暂停",
+          painter = painterResource(R.drawable.ic_player_pause),
+          contentDescription = "已暂停,点击播放",
           tint = Color.White,
           modifier = Modifier.size(36.dp),
         )
@@ -810,12 +799,6 @@ fun MobilePlayerScreen(
           horizontalArrangement = Arrangement.SpaceBetween,
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          MobilePlayerIconButton(
-            iconRes = if (isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play,
-            contentDescription = if (isPlaying) "暂停" else "播放",
-            tint = BiliColors.TextPrimary,
-            onClick = { togglePlayback() },
-          )
           MobilePlayerIconButton(
             iconRes = R.drawable.ic_player_subtitles,
             contentDescription = "弹幕",
