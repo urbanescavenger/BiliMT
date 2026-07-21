@@ -14,7 +14,7 @@ object BiliApiEndpoints {
   const val RegionBanner = "$ApiBase/x/web-show/region/banner"
   const val View = "$ApiBase/x/web-interface/view"
   const val ArchiveRelated = "$ApiBase/x/web-interface/archive/related"
-  const val ArchiveLike = "$ApiBase/x/web-archive/like"
+  const val ArchiveLike = "$ApiBase/x/web-interface/archive/like"
   const val CoinAdd = "$ApiBase/x/web-interface/coin/add"
   const val FavoriteDeal = "$ApiBase/x/v3/fav/resource/deal"
   const val SpaceArcSearch = "$ApiBase/x/space/wbi/arc/search"

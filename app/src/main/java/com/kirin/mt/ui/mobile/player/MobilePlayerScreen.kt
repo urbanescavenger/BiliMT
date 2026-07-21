@@ -94,6 +94,7 @@ import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.network.FavoriteFolder
+import com.kirin.mt.core.network.BiliApiCodeException
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.AirJumpSegment
@@ -1119,6 +1120,36 @@ private fun MobilePlayerIntroTab(
       Toast.LENGTH_SHORT,
     ).show()
   }
+
+  // 透出 B站业务错误:如「硬币不足」「你已经对该视频投过币了」「请求错误」等,便于区分代码 bug 与业务失败。
+  fun toastError(e: Throwable) {
+    val msg = (e as? BiliApiCodeException)?.biliMessage?.takeIf { it.isNotBlank() }
+      ?: "操作失败,请稍后重试"
+    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+  }
+
+  // 投币:关弹窗 → 调 coin/add → 成功乐观 +multiply 计数;失败透出 B站消息(硬币不足/已投币等)。
+  val doCoin: (Int) -> Unit = { multiply ->
+    showCoinDialog = false
+    scope.launch {
+      busy = true
+      try {
+        val ok = videoRepository.coinVideo(metadata.aid, multiply = multiply, selectLike = false)
+        if (ok) {
+          coined = true
+          coinCount += multiply
+          toast(true, "投币成功")
+        } else {
+          toast(false, "")
+        }
+      } catch (e: BiliApiCodeException) {
+        toastError(e)
+      } catch (e: Exception) {
+        toast(false, "")
+      }
+      busy = false
+    }
+  }
   MaterialTheme(colorScheme = darkColorScheme()) {
     Column(
       modifier = modifier
@@ -1222,13 +1253,18 @@ private fun MobilePlayerIntroTab(
               if (busy) return@IntroActionButton
               scope.launch {
                 busy = true
-                val ok = runCatching { videoRepository.likeVideoArchive(metadata.aid) }
-                  .getOrDefault(false)
-                if (ok) {
-                  liked = !liked
-                  likeCount = (likeCount + if (liked) 1 else -1).coerceAtLeast(0)
-                  toast(true, if (liked) "已点赞" else "已取消点赞")
-                } else {
+                try {
+                  val ok = videoRepository.likeVideoArchive(metadata.aid)
+                  if (ok) {
+                    liked = !liked
+                    likeCount = (likeCount + if (liked) 1 else -1).coerceAtLeast(0)
+                    toast(true, if (liked) "已点赞" else "已取消点赞")
+                  } else {
+                    toast(false, "")
+                  }
+                } catch (e: BiliApiCodeException) {
+                  toastError(e)
+                } catch (e: Exception) {
                   toast(false, "")
                 }
                 busy = false
@@ -1310,43 +1346,11 @@ private fun MobilePlayerIntroTab(
         text = {
           Column {
             TextButton(
-              onClick = {
-                showCoinDialog = false
-                scope.launch {
-                  busy = true
-                  val ok = runCatching {
-                    videoRepository.coinVideo(metadata.aid, multiply = 1, selectLike = false)
-                  }.getOrDefault(false)
-                  if (ok) {
-                    coined = true
-                    coinCount += 1
-                    toast(true, "投币成功")
-                  } else {
-                    toast(false, "")
-                  }
-                  busy = false
-                }
-              },
+              onClick = { doCoin(1) },
               modifier = Modifier.fillMaxWidth(),
             ) { Text("投 1 枚", modifier = Modifier.fillMaxWidth()) }
             TextButton(
-              onClick = {
-                showCoinDialog = false
-                scope.launch {
-                  busy = true
-                  val ok = runCatching {
-                    videoRepository.coinVideo(metadata.aid, multiply = 2, selectLike = false)
-                  }.getOrDefault(false)
-                  if (ok) {
-                    coined = true
-                    coinCount += 2
-                    toast(true, "投币成功")
-                  } else {
-                    toast(false, "")
-                  }
-                  busy = false
-                }
-              },
+              onClick = { doCoin(2) },
               modifier = Modifier.fillMaxWidth(),
             ) { Text("投 2 枚", modifier = Modifier.fillMaxWidth()) }
           }
@@ -1418,14 +1422,18 @@ private fun MobilePlayerIntroTab(
               if (adds.isEmpty()) return@TextButton
               scope.launch {
                 busy = true
-                val ok = runCatching {
-                  videoRepository.dealFavorite(metadata.aid, addMediaIds = adds, delMediaIds = emptyList())
-                }.getOrDefault(false)
-                if (ok) {
-                  if (!faved) favCount += 1
-                  faved = true
-                  toast(true, "已收藏")
-                } else {
+                try {
+                  val ok = videoRepository.dealFavorite(metadata.aid, addMediaIds = adds, delMediaIds = emptyList())
+                  if (ok) {
+                    if (!faved) favCount += 1
+                    faved = true
+                    toast(true, "已收藏")
+                  } else {
+                    toast(false, "")
+                  }
+                } catch (e: BiliApiCodeException) {
+                  toastError(e)
+                } catch (e: Exception) {
                   toast(false, "")
                 }
                 busy = false
