@@ -337,6 +337,15 @@
     <string name="player_control_related">&#x76F8;&#x5173;</string>
     <string name="player_control_settings">&#x8BBE;&#x7F6E;</string>
     <string name="player_control_like">&#x70B9;&#x8D5E;</string>
+    <string name="player_control_coin">&#x6295;&#x5E01;</string>
+    <string name="player_control_favorite">&#x6536;&#x85CF;</string>
+    <string name="player_panel_favorite">&#x6536;&#x85CF;&#x5230;&#x6536;&#x85CF;&#x5939;</string>
+    <string name="player_favorite_confirm">&#x786E;&#x8BA4;&#x6536;&#x85CF;</string>
+    <string name="player_favorite_empty">&#x6682;&#x65E0;&#x6536;&#x85CF;&#x5939;</string>
+    <string name="player_favorite_count">%1$d &#x4E2A;&#x5185;&#x5BB9;</string>
+    <string name="player_coin_title">&#x6295;&#x5E01;</string>
+    <string name="player_coin_one">&#x6295; 1 &#x679A;</string>
+    <string name="player_coin_two">&#x6295; 2 &#x679A;</string>
     <string name="player_online_status">&#x5728;&#x770B;:%1$s</string>
     <string name="player_panel_episodes">&#x9009;&#x96C6;</string>
     <string name="player_panel_up_videos">UP&#x4E3B;&#x89C6;&#x9891;</string>

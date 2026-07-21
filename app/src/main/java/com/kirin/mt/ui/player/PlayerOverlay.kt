@@ -51,6 +51,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import coil.compose.AsyncImage
@@ -58,6 +59,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.image.buildVideoThumbnailRequest
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.network.FavoriteFolder
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.DanmakuSettings
 import com.kirin.mt.core.player.PlaybackInfo
@@ -70,6 +72,7 @@ import com.kirin.mt.core.player.VideoshotFrame
 import com.kirin.mt.ui.common.ClockOverlay
 import com.kirin.mt.ui.glass.biliLiquidGlassSurface
 import com.kirin.mt.ui.i18n.convertChineseText
+import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
@@ -87,6 +90,9 @@ internal enum class PlayerControl {
   Episodes,
   Up,
   Related,
+  Like,
+  Coin,
+  Favorite,
   Settings,
 }
 
@@ -99,6 +105,7 @@ internal enum class PlayerPanel {
   Episodes,
   UpVideos,
   RelatedVideos,
+  Favorite,
 }
 
 @Composable
@@ -121,6 +128,7 @@ internal fun BoxScope.PlayerOverlay(
   unfollowConfirmFocusedConfirm: Boolean,
   controlsVisible: Boolean,
   focusedControl: PlayerControl,
+  availableControls: List<PlayerControl>,
   progressFocused: Boolean,
   activePanel: PlayerPanel,
   focusedPanelIndex: Int,
@@ -134,6 +142,17 @@ internal fun BoxScope.PlayerOverlay(
   showClock: Boolean,
   clockText: String,
   showMiniProgressBar: Boolean,
+  likeCount: Int,
+  liked: Boolean,
+  coinCount: Int,
+  coined: Boolean,
+  favCount: Int,
+  faved: Boolean,
+  favFolders: List<FavoriteFolder>,
+  favLoading: Boolean,
+  favSelectedIds: Set<Long>,
+  showCoinDialog: Boolean,
+  coinDialogFocusedIndex: Int,
 ) {
   if (controlsVisible) {
     PlayerTopOverlay(
@@ -146,6 +165,7 @@ internal fun BoxScope.PlayerOverlay(
     PlayerBottomOverlay(
       request = request,
       info = info,
+      availableControls = availableControls,
       focusedControl = focusedControl,
       progressFocused = progressFocused,
       positionState = positionState,
@@ -156,6 +176,12 @@ internal fun BoxScope.PlayerOverlay(
       danmakuSettings = danmakuSettings,
       onlineCountText = onlineCountText,
       currentCodecText = currentCodecText,
+      likeCount = likeCount,
+      liked = liked,
+      coinCount = coinCount,
+      coined = coined,
+      favCount = favCount,
+      faved = faved,
       modifier = Modifier.align(Alignment.BottomCenter),
     )
   } else {
@@ -236,6 +262,13 @@ internal fun BoxScope.PlayerOverlay(
         upFollowLoading = upFollowLoading,
         modifier = Modifier.align(Alignment.CenterEnd),
       )
+      PlayerPanel.Favorite -> PlayerFavoritePanel(
+        folders = favFolders,
+        loading = favLoading,
+        selectedIds = favSelectedIds,
+        focusedIndex = focusedPanelIndex,
+        modifier = Modifier.align(Alignment.CenterEnd),
+      )
       PlayerPanel.None -> Unit
     }
   }
@@ -243,6 +276,13 @@ internal fun BoxScope.PlayerOverlay(
   if (showUnfollowConfirm) {
     UnfollowConfirmDialog(
       focusedConfirm = unfollowConfirmFocusedConfirm,
+      modifier = Modifier.align(Alignment.Center),
+    )
+  }
+
+  if (showCoinDialog) {
+    CoinConfirmDialog(
+      focusedIndex = coinDialogFocusedIndex,
       modifier = Modifier.align(Alignment.Center),
     )
   }
@@ -396,6 +436,7 @@ private fun PlayerMetaItem(
 private fun PlayerBottomOverlay(
   request: PlaybackRequest,
   info: PlaybackInfo,
+  availableControls: List<PlayerControl>,
   focusedControl: PlayerControl,
   progressFocused: Boolean,
   positionState: State<Long>,
@@ -406,6 +447,12 @@ private fun PlayerBottomOverlay(
   danmakuSettings: DanmakuSettings,
   onlineCountText: String,
   currentCodecText: String,
+  likeCount: Int,
+  liked: Boolean,
+  coinCount: Int,
+  coined: Boolean,
+  favCount: Int,
+  faved: Boolean,
   modifier: Modifier = Modifier,
 ) {
   Column(
@@ -449,13 +496,44 @@ private fun PlayerBottomOverlay(
       modifier = Modifier.fillMaxWidth(),
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      PlayerControl.entries.forEachIndexed { index, control ->
-        PlayerIconButton(
-          iconRes = control.iconRes,
-          contentDescription = stringResource(control.labelRes),
-          focused = !progressFocused && focusedControl == control,
-        )
-        if (index != PlayerControl.entries.lastIndex) {
+      availableControls.forEachIndexed { index, control ->
+        val focused = !progressFocused && focusedControl == control
+        if (control.isAction) {
+          val count: Int
+          val active: Boolean
+          when (control) {
+            PlayerControl.Like -> {
+              count = likeCount
+              active = liked
+            }
+            PlayerControl.Coin -> {
+              count = coinCount
+              active = coined
+            }
+            PlayerControl.Favorite -> {
+              count = favCount
+              active = faved
+            }
+            else -> {
+              count = 0
+              active = false
+            }
+          }
+          PlayerActionButton(
+            iconRes = control.iconRes,
+            contentDescription = stringResource(control.labelRes),
+            count = count,
+            active = active,
+            focused = focused,
+          )
+        } else {
+          PlayerIconButton(
+            iconRes = control.iconRes,
+            contentDescription = stringResource(control.labelRes),
+            focused = focused,
+          )
+        }
+        if (index != availableControls.lastIndex) {
           Spacer(modifier = Modifier.width(BiliSpacing.Xl))
         }
       }
@@ -494,6 +572,51 @@ private fun PlayerIconButton(
       contentDescription = contentDescription,
       tint = BiliColors.TextPrimary,
       modifier = Modifier.size(BiliSizing.PlayerControlIconSize),
+    )
+  }
+}
+
+/**
+ * 互动按钮(点赞/投币/收藏):图标 + 下方计数,激活时 BiliPink 着色。
+ * 尺寸与 PlayerIconButton 等宽,高度略增以容纳计数文本。
+ */
+@Composable
+private fun PlayerActionButton(
+  @DrawableRes iconRes: Int,
+  contentDescription: String,
+  count: Int,
+  active: Boolean,
+  focused: Boolean,
+) {
+  val shape = RoundedCornerShape(BiliRadius.Card)
+  val tint = if (active) BiliColors.BiliPink else BiliColors.TextPrimary
+  Column(
+    modifier = Modifier
+      .width(BiliSizing.PlayerControlIconButtonSize)
+      .height(BiliSizing.PlayerControlIconButtonSize)
+      .clip(shape)
+      .playerLiquidGlassSurface(
+        shape = shape,
+        focused = focused,
+        surfaceColor = if (focused) BiliColors.PlayerControlFocused else BiliColors.PlayerControlIdle,
+      )
+      .padding(vertical = BiliSpacing.Xs),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.Center,
+  ) {
+    Icon(
+      painter = painterResource(iconRes),
+      contentDescription = contentDescription,
+      tint = tint,
+      modifier = Modifier.size(BiliSizing.PlayerControlIconSize - 6.dp),
+    )
+    Spacer(modifier = Modifier.height(BiliSpacing.Xxs))
+    Text(
+      text = formatCount(count),
+      color = tint,
+      fontSize = 11.sp,
+      fontWeight = if (active || focused) FontWeight.Bold else FontWeight.Normal,
+      maxLines = 1,
     )
   }
 }
@@ -1225,6 +1348,209 @@ private fun ConfirmDialogButton(
 }
 
 @Composable
+private fun CoinConfirmDialog(
+  focusedIndex: Int,
+  modifier: Modifier = Modifier,
+) {
+  val shape = RoundedCornerShape(BiliRadius.Panel)
+  Column(
+    modifier = modifier
+      .width(BiliSizing.PlayerUnfollowDialogWidth)
+      .clip(shape)
+      .playerLiquidGlassSurface(
+        shape = shape,
+        focused = false,
+        surfaceColor = BiliColors.OverlayScrim,
+      )
+      .padding(BiliSpacing.Xl),
+    verticalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
+  ) {
+    Text(
+      text = stringResource(R.string.player_coin_title),
+      color = BiliColors.TextPrimary,
+      fontSize = BiliTypography.PlayerPanelTitle,
+      fontWeight = FontWeight.Bold,
+      maxLines = 1,
+    )
+    Row(
+      horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      ConfirmDialogButton(
+        text = stringResource(R.string.player_coin_one),
+        focused = focusedIndex == 0,
+        destructive = true,
+        modifier = Modifier.weight(1f),
+      )
+      ConfirmDialogButton(
+        text = stringResource(R.string.player_coin_two),
+        focused = focusedIndex == 1,
+        destructive = true,
+        modifier = Modifier.weight(1f),
+      )
+    }
+  }
+}
+
+@Composable
+private fun PlayerFavoritePanel(
+  folders: List<FavoriteFolder>,
+  loading: Boolean,
+  selectedIds: Set<Long>,
+  focusedIndex: Int,
+  modifier: Modifier = Modifier,
+) {
+  val listState = rememberLazyListState()
+  val performancePolicy = LocalBiliPerformancePolicy.current
+  val shape = RoundedCornerShape(topStart = BiliRadius.Panel, bottomStart = BiliRadius.Panel)
+  val itemCount = 1 + folders.size
+  LaunchedEffect(focusedIndex, folders.size) {
+    if (itemCount > 0) {
+      val target = focusedIndex.coerceIn(0, itemCount - 1)
+      if (performancePolicy.smoothScrollingEnabled) {
+        listState.animateScrollToItem(target)
+      } else {
+        listState.scrollToItem(target)
+      }
+    }
+  }
+
+  Column(
+    modifier = modifier
+      .width(BiliSizing.PlayerSettingsPanelWidth)
+      .fillMaxHeight()
+      .clip(shape)
+      .playerLiquidGlassSurface(
+        shape = shape,
+        focused = false,
+        surfaceColor = BiliColors.PlayerPanel,
+      ),
+  ) {
+    PlayerPanelTitleRow(titleRes = R.string.player_panel_favorite)
+    PlayerPanelDivider()
+    if (loading) {
+      PlayerPanelLoadingOrEmpty(loading = true)
+    } else if (folders.isEmpty()) {
+      PlayerPanelLoadingOrEmpty(loading = false)
+    } else {
+      LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+      ) {
+        item {
+          FavoriteConfirmRow(
+            focused = focusedIndex == 0,
+            hasSelection = selectedIds.isNotEmpty(),
+          )
+        }
+        itemsIndexed(folders) { index, folder ->
+          FavoriteFolderRow(
+            title = convertChineseText(folder.title),
+            mediaCount = folder.mediaCount,
+            selected = folder.mediaId in selectedIds,
+            focused = focusedIndex == index + 1,
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun FavoriteConfirmRow(
+  focused: Boolean,
+  hasSelection: Boolean,
+) {
+  val shape = RoundedCornerShape(BiliRadius.Card)
+  val tint = if (hasSelection) BiliColors.BiliPink else BiliColors.TextSecondary
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .height(BiliSizing.PlayerEpisodeRowHeight)
+      .playerFocusedLiquidGlassSurface(shape = shape, focused = focused),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    if (hasSelection) {
+      Icon(
+        painter = painterResource(R.drawable.ic_player_check),
+        contentDescription = null,
+        tint = BiliColors.BiliPink,
+        modifier = Modifier
+          .padding(start = BiliSpacing.Lg)
+          .size(BiliSizing.VideoOverlayIconSize + 2.dp),
+      )
+    } else {
+      Spacer(modifier = Modifier.width(BiliSpacing.Lg + BiliSizing.VideoOverlayIconSize + 2.dp))
+    }
+    Text(
+      text = stringResource(R.string.player_favorite_confirm),
+      color = tint,
+      fontSize = BiliTypography.PlayerSettingTitle,
+      fontWeight = if (hasSelection || focused) FontWeight.Bold else FontWeight.Normal,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+    )
+  }
+}
+
+@Composable
+private fun FavoriteFolderRow(
+  title: String,
+  mediaCount: Int,
+  selected: Boolean,
+  focused: Boolean,
+) {
+  val shape = RoundedCornerShape(BiliRadius.Card)
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .height(BiliSizing.PlayerEpisodeRowHeight)
+      .playerFocusedLiquidGlassSurface(shape = shape, focused = focused),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Box(
+      modifier = Modifier
+        .padding(start = BiliSpacing.Lg)
+        .size(BiliSizing.VideoOverlayIconSize + 2.dp)
+        .clip(RoundedCornerShape(BiliRadius.Card))
+        .border(
+          width = BiliFocus.RestingBorderWidth,
+          color = if (selected) BiliColors.BiliPink else BiliColors.TextTertiary,
+          shape = RoundedCornerShape(BiliRadius.Card),
+        ),
+      contentAlignment = Alignment.Center,
+    ) {
+      if (selected) {
+        Icon(
+          painter = painterResource(R.drawable.ic_player_check),
+          contentDescription = null,
+          tint = BiliColors.BiliPink,
+          modifier = Modifier.size(BiliSizing.VideoOverlayIconSize),
+        )
+      }
+    }
+    Text(
+      text = title,
+      color = if (selected) BiliColors.BiliPink else BiliColors.TextPrimary,
+      fontSize = BiliTypography.PlayerSettingTitle,
+      fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Normal,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+      modifier = Modifier
+        .padding(start = BiliSpacing.Md)
+        .weight(1f),
+    )
+    Text(
+      text = stringResource(R.string.player_favorite_count, mediaCount),
+      color = BiliColors.TextTertiary,
+      fontSize = BiliTypography.PlayerSettingValue,
+      maxLines = 1,
+      modifier = Modifier.padding(end = BiliSpacing.Lg),
+    )
+  }
+}
+
+@Composable
 private fun PlayerPanelDivider() {
   Box(
     modifier = Modifier
@@ -1593,6 +1919,7 @@ private fun PlayerSettingsPanel(
         PlayerPanel.Episodes,
         PlayerPanel.UpVideos,
         PlayerPanel.RelatedVideos,
+        PlayerPanel.Favorite,
         PlayerPanel.None -> Unit
       }
     }
@@ -1608,6 +1935,7 @@ private fun PlayerPanel.settingsRowCount(info: PlaybackInfo): Int {
     PlayerPanel.Episodes,
     PlayerPanel.UpVideos,
     PlayerPanel.RelatedVideos,
+    PlayerPanel.Favorite,
     PlayerPanel.None -> 0
   }
 }
@@ -1877,6 +2205,9 @@ private val PlayerControl.iconRes: Int
     PlayerControl.Episodes -> R.drawable.ic_player_playlist
     PlayerControl.Up -> R.drawable.ic_nav_account
     PlayerControl.Related -> R.drawable.ic_player_related
+    PlayerControl.Like -> R.drawable.ic_player_like
+    PlayerControl.Coin -> R.drawable.ic_player_coin
+    PlayerControl.Favorite -> R.drawable.ic_player_favorite
     PlayerControl.Settings -> R.drawable.ic_nav_settings
   }
 
@@ -1885,8 +2216,15 @@ private val PlayerControl.labelRes: Int
     PlayerControl.Episodes -> R.string.player_control_episodes
     PlayerControl.Up -> R.string.player_control_up
     PlayerControl.Related -> R.string.player_control_related
+    PlayerControl.Like -> R.string.player_control_like
+    PlayerControl.Coin -> R.string.player_control_coin
+    PlayerControl.Favorite -> R.string.player_control_favorite
     PlayerControl.Settings -> R.string.player_control_settings
   }
+
+/** 是否带计数 + 激活态的互动按钮(点赞/投币/收藏),用 PlayerActionButton 渲染。 */
+internal val PlayerControl.isAction: Boolean
+  get() = this == PlayerControl.Like || this == PlayerControl.Coin || this == PlayerControl.Favorite
 
 private val PlayerPanel.titleRes: Int
   get() = when (this) {
@@ -1897,6 +2235,7 @@ private val PlayerPanel.titleRes: Int
     PlayerPanel.Episodes -> R.string.player_panel_episodes
     PlayerPanel.UpVideos -> R.string.player_panel_up_videos
     PlayerPanel.RelatedVideos -> R.string.player_panel_related_videos
+    PlayerPanel.Favorite -> R.string.player_panel_favorite
     PlayerPanel.None -> R.string.player_settings_title
   }
 

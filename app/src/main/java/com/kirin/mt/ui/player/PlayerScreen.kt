@@ -75,6 +75,8 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
+import com.kirin.mt.core.network.BiliApiCodeException
+import com.kirin.mt.core.network.FavoriteFolder
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
@@ -165,6 +167,21 @@ fun PlayerScreen(
   var upFollowLoading by remember { mutableStateOf(false) }
   var showUnfollowConfirm by remember { mutableStateOf(false) }
   var unfollowConfirmFocusedConfirm by remember { mutableStateOf(false) }
+  // 点赞/投币/收藏 互动状态(UGC)。初始值由 PlaybackRepository check 端点预填进 metadata。
+  var liked by remember { mutableStateOf(false) }
+  var likeCount by remember { mutableIntStateOf(0) }
+  var coined by remember { mutableStateOf(false) }
+  var coinCount by remember { mutableIntStateOf(0) }
+  var faved by remember { mutableStateOf(false) }
+  var favCount by remember { mutableIntStateOf(0) }
+  var interactionBusy by remember { mutableStateOf(false) }
+  var showCoinDialog by remember { mutableStateOf(false) }
+  var coinDialogFocusedIndex by remember { mutableIntStateOf(0) }
+  var favFolders by remember { mutableStateOf<List<FavoriteFolder>>(emptyList()) }
+  var favLoading by remember { mutableStateOf(false) }
+  var favSelectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+  var favLoadedForAid by remember { mutableLongStateOf(0L) }
+  var interactionToast by remember { mutableStateOf<Toast?>(null) }
   var onlineCountText by remember { mutableStateOf("") }
   var onlineCountRequestJob by remember { mutableStateOf<Job?>(null) }
   var onlineCountRequestToken by remember { mutableLongStateOf(0L) }
@@ -228,6 +245,7 @@ fun PlayerScreen(
       onlineCountRequestJob = null
       playbackExitConfirmToast?.cancel()
       playbackCompletionToast?.cancel()
+      interactionToast?.cancel()
     }
   }
 
@@ -552,6 +570,15 @@ fun PlayerScreen(
 
   fun applyResolvedMetadata(videoMetadata: PlaybackVideoMetadata): PlaybackRequest {
     metadata = videoMetadata
+    // 从 metadata 同步互动初始状态(check 端点预填的 liked/coined/faved 与计数)。
+    liked = videoMetadata.liked
+    likeCount = videoMetadata.likeCount
+    coined = videoMetadata.coined
+    coinCount = videoMetadata.coinCount
+    faved = videoMetadata.faved
+    favCount = videoMetadata.favoriteCount
+    favLoadedForAid = 0L
+    favSelectedIds = emptySet()
     val resolved = displayRequest.withResolvedMetadata(
       metadata = videoMetadata,
       cid = displayRequest.cid.takeIf { it > 0L } ?: videoMetadata.cid,
@@ -666,11 +693,144 @@ fun PlayerScreen(
     }
   }
 
+  /** 控制栏可见按钮:PGC 或无 aid 时隐藏点赞/投币/收藏。 */
+  fun availableControls(): List<PlayerControl> {
+    val hideInteraction = displayRequest.isPgc || displayRequest.aid <= 0L
+    return if (hideInteraction) {
+      PlayerControl.entries.filter { !it.isAction }
+    } else {
+      PlayerControl.entries.toList()
+    }
+  }
+
+  fun showInteractionToast(ok: Boolean, successMsg: String, error: Throwable? = null) {
+    val message = when {
+      !ok && error != null -> {
+        (error as? BiliApiCodeException)?.biliMessage
+          ?.takeIf { it.isNotBlank() }
+          ?: "操作失败,请检查登录或稍后重试"
+      }
+      !ok -> "操作失败,请检查登录或稍后重试"
+      else -> successMsg
+    }
+    interactionToast?.cancel()
+    interactionToast = Toast.makeText(context, message, Toast.LENGTH_SHORT).also { it.show() }
+  }
+
+  fun doLike() {
+    val aid = displayRequest.aid
+    if (aid <= 0L || interactionBusy) return
+    interactionBusy = true
+    coroutineScope.launch {
+      val result = runCatching { videoRepository.likeVideoArchive(aid) }
+      val ok = result.getOrDefault(false)
+      if (ok) {
+        liked = !liked
+        likeCount = (likeCount + if (liked) 1 else -1).coerceAtLeast(0)
+        showInteractionToast(true, if (liked) "已点赞" else "已取消点赞")
+      } else {
+        showInteractionToast(false, "", result.exceptionOrNull())
+      }
+      interactionBusy = false
+      showControls()
+    }
+  }
+
+  fun doCoin(multiply: Int) {
+    val aid = displayRequest.aid
+    showCoinDialog = false
+    if (aid <= 0L || interactionBusy) return
+    interactionBusy = true
+    coroutineScope.launch {
+      val result = runCatching {
+        videoRepository.coinVideo(aid, multiply = multiply, selectLike = false)
+      }
+      val ok = result.getOrDefault(false)
+      if (ok) {
+        coined = true
+        coinCount += multiply
+        showInteractionToast(true, "投币成功")
+      } else {
+        showInteractionToast(false, "", result.exceptionOrNull())
+      }
+      interactionBusy = false
+      showControls()
+    }
+  }
+
+  fun openFavoritePanel() {
+    val aid = displayRequest.aid
+    if (aid <= 0L) return
+    openPanel(PlayerPanel.Favorite)
+    focusedPanelIndex = 0
+    favSelectedIds = emptySet()
+    if (favLoadedForAid == aid && favFolders.isNotEmpty()) {
+      favLoading = false
+      showControls()
+      return
+    }
+    favLoading = true
+    favLoadedForAid = aid
+    coroutineScope.launch {
+      val mid = runCatching { videoRepository.currentMid() }.getOrDefault(0L)
+      val folders = if (mid > 0L) {
+        runCatching { videoRepository.getFavoriteFolders(mid) }.getOrDefault(emptyList())
+      } else {
+        emptyList()
+      }
+      favFolders = folders
+      favLoading = false
+      showControls()
+    }
+  }
+
+  fun toggleFavoriteFolder(mediaId: Long) {
+    favSelectedIds = if (mediaId in favSelectedIds) {
+      favSelectedIds - mediaId
+    } else {
+      favSelectedIds + mediaId
+    }
+    showControls()
+  }
+
+  fun confirmFavorite() {
+    val aid = displayRequest.aid
+    val adds = favSelectedIds.toList()
+    if (aid <= 0L || interactionBusy) return
+    if (adds.isEmpty()) {
+      showInteractionToast(false, "请先选择收藏夹")
+      showControls()
+      return
+    }
+    interactionBusy = true
+    coroutineScope.launch {
+      val result = runCatching {
+        videoRepository.dealFavorite(aid, addMediaIds = adds, delMediaIds = emptyList())
+      }
+      val ok = result.getOrDefault(false)
+      if (ok) {
+        if (!faved) {
+          favCount += 1
+        }
+        faved = true
+        openPanel(PlayerPanel.None)
+        showInteractionToast(true, "已收藏")
+      } else {
+        showInteractionToast(false, "", result.exceptionOrNull())
+      }
+      interactionBusy = false
+      showControls()
+    }
+  }
+
   fun closePanelOrControls() {
     if (completionReported) {
       cancelPendingCompletionAction()
     }
     when {
+      showCoinDialog -> {
+        showCoinDialog = false
+      }
       showUnfollowConfirm -> {
         showUnfollowConfirm = false
         unfollowConfirmFocusedConfirm = false
@@ -803,6 +963,7 @@ fun PlayerScreen(
       PlayerPanel.Episodes -> metadata?.pages?.size ?: 0
       PlayerPanel.UpVideos -> UpPanelHeaderItemCount + sidePanelVideos.size
       PlayerPanel.RelatedVideos -> if (sidePanelLoading) 0 else sidePanelVideos.size
+      PlayerPanel.Favorite -> if (favLoading) 0 else 1 + favFolders.size
       PlayerPanel.None -> 0
     }
   }
@@ -904,6 +1065,16 @@ fun PlayerScreen(
         }
         return
       }
+      PlayerPanel.Favorite -> {
+        if (favLoading) return
+        when (focusedPanelIndex) {
+          0 -> confirmFavorite()
+          else -> {
+            val folder = favFolders.getOrNull(focusedPanelIndex - 1) ?: return
+            toggleFavoriteFolder(folder.mediaId)
+          }
+        }
+      }
       PlayerPanel.None -> Unit
     }
     showControls()
@@ -924,8 +1095,9 @@ fun PlayerScreen(
   }
 
   fun moveFocusedControl(delta: Int) {
-    val controls = PlayerControl.entries
-    val next = (controls.indexOf(focusedControl) + delta).coerceIn(0, controls.lastIndex)
+    val controls = availableControls()
+    val current = controls.indexOf(focusedControl).takeIf { it >= 0 } ?: 0
+    val next = (current + delta).coerceIn(0, controls.lastIndex)
     focusedControl = controls[next]
     progressFocused = false
     showControls()
@@ -944,6 +1116,14 @@ fun PlayerScreen(
           videoRepository.getRelatedVideos(displayRequest.bvid)
         }
       }
+      PlayerControl.Like -> doLike()
+      PlayerControl.Coin -> {
+        if (interactionBusy) return
+        coinDialogFocusedIndex = 0
+        showCoinDialog = true
+        showControls()
+      }
+      PlayerControl.Favorite -> openFavoritePanel()
     }
   }
 
@@ -1340,12 +1520,12 @@ fun PlayerScreen(
     runCatching { controlsFocusRequester.requestFocus() }
   }
 
-  LaunchedEffect(controlsVisible, playerState, activePanel, previewPositionMs, playbackPaused) {
+  LaunchedEffect(controlsVisible, playerState, activePanel, previewPositionMs, playbackPaused, showCoinDialog) {
     if (controlsVisible && playerState is PlayerScreenState.Ready) {
       runCatching { controlsFocusRequester.requestFocus() }
-      if (!playbackPaused) {
+      if (!playbackPaused && !showCoinDialog) {
         delay(BiliMotion.PlayerControlsAutoHideMs)
-        if (activePanel == PlayerPanel.None && previewPositionMs == null && !playbackPaused) {
+        if (activePanel == PlayerPanel.None && previewPositionMs == null && !playbackPaused && !showCoinDialog) {
           controlsVisible = false
         }
       }
@@ -1394,6 +1574,30 @@ fun PlayerScreen(
                 unfollowConfirmFocusedConfirm = false
               }
               showControls()
+              true
+            }
+            else -> true
+          }
+        }
+        if (showCoinDialog) {
+          return@onPreviewKeyEvent when (event.key) {
+            Key.Back -> {
+              showCoinDialog = false
+              showControls()
+              true
+            }
+            Key.DirectionLeft,
+            Key.DirectionRight,
+            Key.DirectionUp,
+            Key.DirectionDown -> {
+              coinDialogFocusedIndex = if (coinDialogFocusedIndex == 0) 1 else 0
+              showControls()
+              true
+            }
+            Key.DirectionCenter,
+            Key.Enter,
+            Key.NumPadEnter -> {
+              doCoin(coinDialogFocusedIndex + 1)
               true
             }
             else -> true
@@ -1579,6 +1783,7 @@ fun PlayerScreen(
           unfollowConfirmFocusedConfirm = unfollowConfirmFocusedConfirm,
           controlsVisible = controlsVisible,
           focusedControl = focusedControl,
+          availableControls = availableControls(),
           progressFocused = progressFocused,
           activePanel = activePanel,
           focusedPanelIndex = focusedPanelIndex,
@@ -1592,6 +1797,17 @@ fun PlayerScreen(
           showClock = showClock,
           clockText = clockText,
           showMiniProgressBar = showMiniProgressBar,
+          likeCount = likeCount,
+          liked = liked,
+          coinCount = coinCount,
+          coined = coined,
+          favCount = favCount,
+          faved = faved,
+          favFolders = favFolders,
+          favLoading = favLoading,
+          favSelectedIds = favSelectedIds,
+          showCoinDialog = showCoinDialog,
+          coinDialogFocusedIndex = coinDialogFocusedIndex,
         )
       }
     }
