@@ -129,6 +129,8 @@ class BiliApiClient(
     headers: Map<String, String> = emptyMap(),
     sessData: String? = null,
     biliJct: String? = null,
+    buvid3: String? = null,
+    buvid4: String? = null,
   ): JsonElement = withContext(Dispatchers.IO) {
     val formBuilder = FormBody.Builder()
     params.forEach { (key, value) ->
@@ -143,7 +145,7 @@ class BiliApiClient(
       requestBuilder.header(key, value)
     }
 
-    BiliHeaders.cookie(sessData, biliJct)?.let { cookie ->
+    BiliHeaders.cookie(sessData, biliJct, buvid3, buvid4)?.let { cookie ->
       requestBuilder.header("Cookie", cookie)
     }
 

@@ -96,12 +96,14 @@ internal class UserFeedRepository(
     return true
   }
 
-  // 点赞视频(UGc archive):/x/web-archive/like,form POST + csrf。aid 为视频 aid。
+  // 点赞视频(UGC archive):/x/web-interface/archive/like,form POST + csrf。aid 为视频 aid。
+  // 带 buvid3 指纹 cookie(B站互动接口风控校验)。
   suspend fun likeVideoArchive(aid: Long): Boolean {
     if (aid <= 0L) return false
     val sessData = sessionStore.sessData.first()
     val biliJct = sessionStore.biliJct.first()
     if (sessData.isNullOrBlank() || biliJct.isNullOrBlank()) return false
+    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
 
     val root = apiClient.postFormJson(
       url = BiliApiEndpoints.ArchiveLike,
@@ -112,17 +114,21 @@ internal class UserFeedRepository(
       ),
       sessData = sessData,
       biliJct = biliJct,
+      buvid3 = buvid3,
+      buvid4 = buvid4,
     ).rootObject()
     root.requireBiliCodeOk("archive like")
     return true
   }
 
   // 投币:/x/web-interface/coin/add,multiply 取 1 或 2;selectLike=true 时同时点赞。
+  // 带 buvid3:投币接口风控最严,缺 buvid3 会回"非法请求"。
   suspend fun coinVideo(aid: Long, multiply: Int, selectLike: Boolean): Boolean {
     if (aid <= 0L) return false
     val sessData = sessionStore.sessData.first()
     val biliJct = sessionStore.biliJct.first()
     if (sessData.isNullOrBlank() || biliJct.isNullOrBlank()) return false
+    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
 
     val root = apiClient.postFormJson(
       url = BiliApiEndpoints.CoinAdd,
@@ -134,6 +140,8 @@ internal class UserFeedRepository(
       ),
       sessData = sessData,
       biliJct = biliJct,
+      buvid3 = buvid3,
+      buvid4 = buvid4,
     ).rootObject()
     root.requireBiliCodeOk("coin add")
     return true
@@ -141,6 +149,7 @@ internal class UserFeedRepository(
 
   // 收藏/取消收藏:/x/v3/fav/resource/deal。type=2 表示视频(oid=aid)。
   // addMediaIds/delMediaIds 为要加入/移出的收藏夹 media_id 列表,逗号拼接。
+  // 带 buvid3 统一风控指纹(收藏接口本身不强制,但带上与真实客户端一致)。
   suspend fun dealFavorite(
     aid: Long,
     addMediaIds: List<Long>,
@@ -150,6 +159,7 @@ internal class UserFeedRepository(
     val sessData = sessionStore.sessData.first()
     val biliJct = sessionStore.biliJct.first()
     if (sessData.isNullOrBlank() || biliJct.isNullOrBlank()) return false
+    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
 
     val params = mutableMapOf(
       "rid" to aid.toString(),
@@ -164,6 +174,8 @@ internal class UserFeedRepository(
       params = params,
       sessData = sessData,
       biliJct = biliJct,
+      buvid3 = buvid3,
+      buvid4 = buvid4,
     ).rootObject()
     root.requireBiliCodeOk("fav deal")
     return true
