@@ -89,6 +89,7 @@ import java.util.Date
 import java.util.Locale
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
@@ -191,6 +192,8 @@ fun MobilePlayerScreen(
   var danmakuSyncToken by remember { mutableLongStateOf(0L) }
   var danmakuEntries by remember { mutableStateOf<List<com.kirin.mt.core.player.DanmakuEntry>>(emptyList()) }
   var fullscreen by rememberSaveable { mutableStateOf(false) }
+  // 视频真实尺寸:全屏方向据此自适应横/竖屏。null=尚未拿到,默认按横屏处理。
+  var videoSizeInfo by remember { mutableStateOf<VideoSize?>(null) }
   // 画质/分P 切换:activeRequest 驱动 load effect(镜像 TV),metadata 供选集,selectedQualityId 供画质高亮
   var activeRequest by remember(request) { mutableStateOf(request) }
   var metadata by remember { mutableStateOf<PlaybackVideoMetadata?>(null) }
@@ -213,13 +216,17 @@ fun MobilePlayerScreen(
   // 推荐视频(相关视频):按 bvid 拉,简介 Tab 内列出,点击切播
   var relatedVideos by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
 
-  // 全屏切换:强制横屏 + 隐藏系统栏(沉浸);退出/关播放器恢复,避免主页卡横屏。
-  DisposableEffect(fullscreen) {
+  // 全屏切换:按视频真实比例自动选横/竖屏 + 隐藏系统栏(沉浸);退出/关播放器恢复,避免主页卡横/竖屏。
+  // key 含 isPortraitVideo:视频尺寸到达后、用户已在全屏时也能纠正方向。
+  val isPortraitVideo = videoSizeInfo?.let { it.height > it.width } ?: false
+  DisposableEffect(fullscreen, isPortraitVideo) {
     val activity = context.findActivity()
     if (activity != null) {
       val controller = WindowInsetsControllerCompat(activity.window, activity.window.decorView)
       if (fullscreen) {
-        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        activity.requestedOrientation =
+          if (isPortraitVideo) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+          else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior =
           WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -354,6 +361,10 @@ fun MobilePlayerScreen(
     val listener = object : Player.Listener {
       override fun onIsPlayingChanged(playing: Boolean) {
         isPlaying = playing
+      }
+
+      override fun onVideoSizeChanged(videoSize: VideoSize) {
+        videoSizeInfo = videoSize
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {
