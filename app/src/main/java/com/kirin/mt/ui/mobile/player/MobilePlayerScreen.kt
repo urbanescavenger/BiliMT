@@ -684,9 +684,16 @@ fun MobilePlayerScreen(
           .background(Color(0x99000000)),
         contentAlignment = Alignment.Center,
       ) {
-        Text(
-          text = if (centerIconIsPlaying) "▶" else "⏸",
-          color = Color.White,
+        // 用项目自有矢量图标(白色 tint)而非 Unicode ▶/⏸——后者在多数设备被 emoji
+        // 字体按彩色(黄)字形渲染,color 不起作用,导致点击暂停闪出黄色图标。
+        Icon(
+          painter = painterResource(
+            if (centerIconIsPlaying) R.drawable.ic_player_play
+            else R.drawable.ic_player_pause,
+          ),
+          contentDescription = if (centerIconIsPlaying) "播放" else "暂停",
+          tint = Color.White,
+          modifier = Modifier.size(36.dp),
         )
       }
     }
