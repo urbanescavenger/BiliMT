@@ -9,8 +9,10 @@ import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +26,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -59,8 +64,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
@@ -570,167 +579,27 @@ fun MobilePlayerScreen(
   val durationMs = playbackDurationState.longValue.coerceAtLeast(1L)
 
   // 竖屏分栏:非全屏时上半 16:9 播放器 + 下半评论;全屏时播放器占满,评论区不渲染。
-  val playerModifier = if (fullscreen) Modifier.fillMaxSize()
-    else Modifier.aspectRatio(16f / 9f).fillMaxWidth()
+  // 视频播放区外层:竖屏宽度铺满、高度自适应(16:9 视频 + 顶/底栏堆叠);全屏铺满。
+  // windowInsetsPadding(statusBars):竖屏 edge-to-edge 下最顶留系统状态栏高度;全屏 hide(systemBars) 时 inset=0 不留空。
+  val playerAreaModifier = if (fullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth()
   Column(
     modifier = modifier
       .fillMaxSize()
       .background(Color.Black),
   ) {
-  Box(
-    modifier = playerModifier
-      .background(Color.Black)
-      .pointerInput(Unit) {
-        detectPlayerGestures(
-          onCenterTap = { togglePlayback() },
-          onEdgeTap = { controlsVisible = !controlsVisible },
-          onLongPressStart = {
-            speedBoostActive = true
-            player.setPlaybackSpeed(2f)
-          },
-          onLongPressEnd = {
-            if (speedBoostActive) {
-              speedBoostActive = false
-              player.setPlaybackSpeed(playbackSpeed)
-            }
-          },
-          onSeekStart = {
-            dragSeekActive = true
-            wasPlayingBeforeSeek = player.playWhenReady
-          },
-          onSeekDelta = { dx ->
-            val dur = player.duration
-            if (dur > 0L) {
-              val w = size.width.toFloat().coerceAtLeast(1f)
-              val cur = seekPreviewMs ?: player.currentPosition
-              seekPreviewMs = (cur + dx / w * dur.toFloat())
-                .coerceIn(0f, dur.toFloat())
-                .toLong()
-            }
-          },
-          onSeekEnd = {
-            dragSeekActive = false
-            seekPreviewMs?.let { target ->
-              player.seekTo(target)
-              playbackPositionState.longValue = target
-              danmakuSyncToken += 1L
-            }
-            // 播放中拖拽松手后恢复播放(对齐手机播放器习惯),暂停态下拖拽保持暂停
-            if (wasPlayingBeforeSeek) player.play()
-            seekPreviewMs = null
-          },
-          onSeekCancel = {
-            dragSeekActive = false
-            seekPreviewMs = null
-          },
-        )
-      },
+  // 视频播放区:顶栏(额外高度)+ 16:9 视频区 + 底栏(额外高度),两栏不再叠在视频上。
+  Column(
+    modifier = playerAreaModifier
+      .windowInsetsPadding(WindowInsets.statusBars)
+      .background(Color.Black),
   ) {
-    AndroidView(
-      modifier = Modifier.fillMaxSize(),
-      factory = { ctx ->
-        PlayerView(ctx).apply {
-          useController = false
-          this.player = player
-        }
-      },
-    )
-
-    if (danmakuSettings.enabled && playerState is MobilePlayerState.Ready) {
-      PlayerDanmakuLayer(
-        entries = danmakuEntries,
-        settings = danmakuSettings,
-        positionState = playbackPositionState,
-        syncToken = danmakuSyncToken,
-        isPlaying = isPlaying && seekPreviewMs == null && !completionReported,
-        playbackSpeed = playbackSpeed,
-        lowSpecMode = false,
-        modifier = Modifier.fillMaxSize(),
-      )
-    }
-
-    when (val s = playerState) {
-      MobilePlayerState.Loading -> CircularProgressIndicator(
-        modifier = Modifier.align(Alignment.Center),
-        color = Color.White,
-      )
-      is MobilePlayerState.Failed -> Column(
-        modifier = Modifier.align(Alignment.Center).padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-      ) {
-        Text(s.message.ifBlank { "播放失败" }, color = Color.White, textAlign = TextAlign.Center)
-        Spacer(Modifier.padding(top = 12.dp))
-        TextButton(onClick = onBack) { Text("返回", color = Color.White) }
-      }
-      is MobilePlayerState.Ready -> Unit
-    }
-
-    // 居中常驻暂停图标:用户暂停时显示,点击中央恢复播放。
-    // 全限定调用顶层 AnimatedVisibility:外层 Column 引入 ColumnScope 后,裸 AnimatedVisibility
-    // 在 BoxScope/ColumnScope/顶层三义,编译报错;全限定走无接收者的顶层版,.align 仍用内层 BoxScope。
-    // 用 userPaused 而非 !isPlaying,避免缓冲中/播放结束时误显;叠层无 clickable,点击透传到
-    // 外层 detectPlayerGestures.onCenterTap → togglePlayback() 恢复播放。
-    androidx.compose.animation.AnimatedVisibility(
-      visible = userPaused && playerState is MobilePlayerState.Ready,
-      enter = fadeIn(),
-      exit = fadeOut(),
-      modifier = Modifier.align(Alignment.Center),
-    ) {
-      Box(
-        modifier = Modifier
-          .size(72.dp)
-          .clip(CircleShape)
-          .background(Color(0x99000000)),
-        contentAlignment = Alignment.Center,
-      ) {
-        Icon(
-          painter = painterResource(R.drawable.ic_player_pause),
-          contentDescription = "已暂停,点击播放",
-          tint = Color.White,
-          modifier = Modifier.size(36.dp),
-        )
-      }
-    }
-
-    // 长按 2 倍速提示
-    androidx.compose.animation.AnimatedVisibility(
-      visible = speedBoostActive,
-      enter = fadeIn(),
-      exit = fadeOut(),
-      modifier = Modifier.align(Alignment.TopCenter).padding(top = 64.dp),
-    ) {
-      Box(
-        modifier = Modifier
-          .clip(RoundedCornerShape(16.dp))
-          .background(Color(0x99000000))
-          .padding(horizontal = 16.dp, vertical = 6.dp),
-      ) {
-        Text("2.0x", color = Color.White)
-      }
-    }
-
-    // 横拖 seek 时间气泡(仅手势拖拽时;Slider 拖动 dragSeekActive=false 不显示)
-    if (dragSeekActive && seekPreviewMs != null) {
-      Box(
-        modifier = Modifier.align(Alignment.Center),
-        contentAlignment = Alignment.Center,
-      ) {
-        Box(
-          modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xCC000000))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-          Text(formatMs(seekPreviewMs ?: 0L), color = Color.White)
-        }
-      }
-    }
-
+    // 视频区本身:竖屏固定 16:9;全屏取两栏之间剩余(weight(1f),需 ColumnScope)
+    val videoModifier = if (fullscreen) Modifier.weight(1f).fillMaxWidth()
+      else Modifier.aspectRatio(16f / 9f).fillMaxWidth()
+    // 顶栏(仅 controlsVisible && Ready)
     if (controlsVisible && playerState is MobilePlayerState.Ready) {
-      // 顶栏
       Row(
         modifier = Modifier
-          .align(Alignment.TopCenter)
           .fillMaxWidth()
           .background(Color.Black)
           .padding(horizontal = 16.dp, vertical = 4.dp),
@@ -765,11 +634,162 @@ fun MobilePlayerScreen(
           }
         }
       }
+    }
 
-      // 底栏
+    // 视频区(16:9 本身,手势挂这里)
+    Box(
+      modifier = videoModifier
+        .background(Color.Black)
+        .pointerInput(Unit) {
+          detectPlayerGestures(
+            onCenterTap = { togglePlayback() },
+            onEdgeTap = { controlsVisible = !controlsVisible },
+            onLongPressStart = {
+              speedBoostActive = true
+              player.setPlaybackSpeed(2f)
+            },
+            onLongPressEnd = {
+              if (speedBoostActive) {
+                speedBoostActive = false
+                player.setPlaybackSpeed(playbackSpeed)
+              }
+            },
+            onSeekStart = {
+              dragSeekActive = true
+              wasPlayingBeforeSeek = player.playWhenReady
+            },
+            onSeekDelta = { dx ->
+              val dur = player.duration
+              if (dur > 0L) {
+                val w = size.width.toFloat().coerceAtLeast(1f)
+                val cur = seekPreviewMs ?: player.currentPosition
+                seekPreviewMs = (cur + dx / w * dur.toFloat())
+                  .coerceIn(0f, dur.toFloat())
+                  .toLong()
+              }
+            },
+            onSeekEnd = {
+              dragSeekActive = false
+              seekPreviewMs?.let { target ->
+                player.seekTo(target)
+                playbackPositionState.longValue = target
+                danmakuSyncToken += 1L
+              }
+              // 播放中拖拽松手后恢复播放(对齐手机播放器习惯),暂停态下拖拽保持暂停
+              if (wasPlayingBeforeSeek) player.play()
+              seekPreviewMs = null
+            },
+            onSeekCancel = {
+              dragSeekActive = false
+              seekPreviewMs = null
+            },
+          )
+        },
+    ) {
+      AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { ctx ->
+          PlayerView(ctx).apply {
+            useController = false
+            this.player = player
+          }
+        },
+      )
+
+      if (danmakuSettings.enabled && playerState is MobilePlayerState.Ready) {
+        PlayerDanmakuLayer(
+          entries = danmakuEntries,
+          settings = danmakuSettings,
+          positionState = playbackPositionState,
+          syncToken = danmakuSyncToken,
+          isPlaying = isPlaying && seekPreviewMs == null && !completionReported,
+          playbackSpeed = playbackSpeed,
+          lowSpecMode = false,
+          modifier = Modifier.fillMaxSize(),
+        )
+      }
+
+      when (val s = playerState) {
+        MobilePlayerState.Loading -> CircularProgressIndicator(
+          modifier = Modifier.align(Alignment.Center),
+          color = Color.White,
+        )
+        is MobilePlayerState.Failed -> Column(
+          modifier = Modifier.align(Alignment.Center).padding(24.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+          Text(s.message.ifBlank { "播放失败" }, color = Color.White, textAlign = TextAlign.Center)
+          Spacer(Modifier.padding(top = 12.dp))
+          TextButton(onClick = onBack) { Text("返回", color = Color.White) }
+        }
+        is MobilePlayerState.Ready -> Unit
+      }
+
+      // 居中常驻暂停图标:用户暂停时显示,点击中央恢复播放。
+      // 全限定调用顶层 AnimatedVisibility:视频 Box 内是 BoxScope,.align 用 BoxScope。
+      // 用 userPaused 而非 !isPlaying,避免缓冲中/播放结束时误显;叠层无 clickable,点击透传到
+      // 视频 Box 的 detectPlayerGestures.onCenterTap → togglePlayback() 恢复播放。
+      androidx.compose.animation.AnimatedVisibility(
+        visible = userPaused && playerState is MobilePlayerState.Ready,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = Modifier.align(Alignment.Center),
+      ) {
+        Box(
+          modifier = Modifier
+            .size(72.dp)
+            .clip(CircleShape)
+            .background(Color(0x99000000)),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(
+            painter = painterResource(R.drawable.ic_player_pause),
+            contentDescription = "已暂停,点击播放",
+            tint = Color.White,
+            modifier = Modifier.size(36.dp),
+          )
+        }
+      }
+
+      // 长按 2 倍速提示
+      androidx.compose.animation.AnimatedVisibility(
+        visible = speedBoostActive,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = Modifier.align(Alignment.TopCenter).padding(top = 64.dp),
+      ) {
+        Box(
+          modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color(0x99000000))
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        ) {
+          Text("2.0x", color = Color.White)
+        }
+      }
+
+      // 横拖 seek 时间气泡(仅手势拖拽时;Slider 拖动 dragSeekActive=false 不显示)
+      if (dragSeekActive && seekPreviewMs != null) {
+        Box(
+          modifier = Modifier.align(Alignment.Center),
+          contentAlignment = Alignment.Center,
+        ) {
+          Box(
+            modifier = Modifier
+              .clip(RoundedCornerShape(8.dp))
+              .background(Color(0xCC000000))
+              .padding(horizontal = 12.dp, vertical = 6.dp),
+          ) {
+            Text(formatMs(seekPreviewMs ?: 0L), color = Color.White)
+          }
+        }
+      }
+    }
+
+    // 底栏(仅 controlsVisible && Ready)
+    if (controlsVisible && playerState is MobilePlayerState.Ready) {
       Column(
         modifier = Modifier
-          .align(Alignment.BottomCenter)
           .fillMaxWidth()
           .background(Color.Black)
           .padding(horizontal = 16.dp, vertical = 4.dp),
@@ -779,13 +799,13 @@ fun MobilePlayerScreen(
           verticalAlignment = Alignment.CenterVertically,
         ) {
           Text(formatMs(positionMs), color = Color.White)
-          Slider(
-            value = positionMs.toFloat().coerceIn(0f, durationMs.toFloat()),
+          SlimSeekSlider(
+            value = (seekPreviewMs ?: positionMs).toFloat().coerceIn(0f, durationMs.toFloat()),
+            valueRange = 0f..durationMs.toFloat(),
             onValueChange = {
               if (seekPreviewMs == null) wasPlayingBeforeSeek = player.playWhenReady
               seekPreviewMs = it.toLong()
             },
-            valueRange = 0f..durationMs.toFloat(),
             onValueChangeFinished = {
               seekPreviewMs?.let { target ->
                 player.seekTo(target)
@@ -979,6 +999,75 @@ fun MobilePlayerScreen(
       }
     }
   }
+  }
+}
+
+/**
+ * 瘦身 seek 滑块:Canvas 自绘细轨道(3dp)+ 小拇指(5dp 半径),总高约 20dp,
+ * 替代 Material3 Slider(~48dp)以解决"进度条上下太厚"。seek 逻辑由调用方经
+ * onValueChange/onValueChangeFinished 复用(与原 Slider 一致)。
+ * 拖拽时拇指实时跟随 value(调用方传 seekPreviewMs ?: positionMs)。
+ */
+@Composable
+private fun SlimSeekSlider(
+  value: Float,
+  valueRange: ClosedFloatingPointRange<Float>,
+  onValueChange: (Float) -> Unit,
+  onValueChangeFinished: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(0f)
+  val fraction = if (span > 0f) ((value - valueRange.start) / span).coerceIn(0f, 1f) else 0f
+  var widthPx by remember { mutableStateOf(1f) }
+  var dragFraction by remember { mutableStateOf<Float?>(null) }
+  val current = dragFraction ?: fraction
+  Box(
+    modifier
+      .height(20.dp)
+      .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
+      .pointerInput(valueRange) {
+        detectHorizontalDragGestures(
+          onDragStart = { offset ->
+            val f = (offset.x / widthPx).coerceIn(0f, 1f)
+            dragFraction = f
+            onValueChange(f * span + valueRange.start)
+          },
+          onHorizontalDrag = { change, _ ->
+            val f = (change.position.x / widthPx).coerceIn(0f, 1f)
+            dragFraction = f
+            onValueChange(f * span + valueRange.start)
+          },
+          onDragEnd = {
+            onValueChangeFinished()
+            dragFraction = null
+          },
+          onDragCancel = { dragFraction = null },
+        )
+      },
+  ) {
+    Canvas(Modifier.fillMaxSize()) {
+      val trackPx = 3.dp.toPx()
+      val thumbPx = 5.dp.toPx()
+      val cy = size.height / 2f
+      val corner = CornerRadius(trackPx / 2f, trackPx / 2f)
+      drawRoundRect(
+        color = Color(0x66FFFFFF),
+        topLeft = Offset(0f, cy - trackPx / 2f),
+        size = Size(size.width, trackPx),
+        cornerRadius = corner,
+      )
+      drawRoundRect(
+        color = BiliColors.BiliPink,
+        topLeft = Offset(0f, cy - trackPx / 2f),
+        size = Size(size.width * current, trackPx),
+        cornerRadius = corner,
+      )
+      drawCircle(
+        color = Color.White,
+        radius = thumbPx,
+        center = Offset(size.width * current, cy),
+      )
+    }
   }
 }
 
