@@ -636,55 +636,12 @@ fun MobilePlayerScreen(
       }
     }
 
-    // 视频区(16:9 本身,手势挂这里)
+    // 视频区(16:9 本身):PlayerView + 弹幕层 + 状态/暂停图标等均在此 Box 内。
+    // 手势检测不再挂本 Box modifier,而是放到末尾的顶层透明 Box(z 序最顶=事件优先),
+    // 避免弹幕层 AndroidView(DanmakuView)消费 ACTION_DOWN 挡住 tap/drag/longpress。
     Box(
       modifier = videoModifier
-        .background(Color.Black)
-        .pointerInput(Unit) {
-          detectPlayerGestures(
-            onCenterTap = { togglePlayback() },
-            onEdgeTap = { controlsVisible = !controlsVisible },
-            onLongPressStart = {
-              speedBoostActive = true
-              player.setPlaybackSpeed(2f)
-            },
-            onLongPressEnd = {
-              if (speedBoostActive) {
-                speedBoostActive = false
-                player.setPlaybackSpeed(playbackSpeed)
-              }
-            },
-            onSeekStart = {
-              dragSeekActive = true
-              wasPlayingBeforeSeek = player.playWhenReady
-            },
-            onSeekDelta = { dx ->
-              val dur = player.duration
-              if (dur > 0L) {
-                val w = size.width.toFloat().coerceAtLeast(1f)
-                val cur = seekPreviewMs ?: player.currentPosition
-                seekPreviewMs = (cur + dx / w * dur.toFloat())
-                  .coerceIn(0f, dur.toFloat())
-                  .toLong()
-              }
-            },
-            onSeekEnd = {
-              dragSeekActive = false
-              seekPreviewMs?.let { target ->
-                player.seekTo(target)
-                playbackPositionState.longValue = target
-                danmakuSyncToken += 1L
-              }
-              // 播放中拖拽松手后恢复播放(对齐手机播放器习惯),暂停态下拖拽保持暂停
-              if (wasPlayingBeforeSeek) player.play()
-              seekPreviewMs = null
-            },
-            onSeekCancel = {
-              dragSeekActive = false
-              seekPreviewMs = null
-            },
-          )
-        },
+        .background(Color.Black),
     ) {
       AndroidView(
         modifier = Modifier.fillMaxSize(),
@@ -784,6 +741,61 @@ fun MobilePlayerScreen(
           }
         }
       }
+
+      // 顶层手势层:z 序最顶(最后绘制=事件分发优先),先于弹幕层 AndroidView(DanmakuView)
+      // 与 PlayerView 收到触摸。弹幕层的 DanmakuView 会消费 ACTION_DOWN,若手势挂在父 Box
+      // modifier 上会被它挡住(弹幕开启即点不暂停/切不出控件);提到这里一劳永逸避开,且不依赖
+      // 第三方 View 的触摸行为。透明无内容,不遮挡下层视觉。width 现读,仍为视频区宽,中央 2/3
+      // 判定边界不变(左右各 1/6 边缘 → 切控件,中间 2/3 → 暂停/播放)。
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .pointerInput(Unit) {
+            detectPlayerGestures(
+              onCenterTap = { togglePlayback() },
+              onEdgeTap = { controlsVisible = !controlsVisible },
+              onLongPressStart = {
+                speedBoostActive = true
+                player.setPlaybackSpeed(2f)
+              },
+              onLongPressEnd = {
+                if (speedBoostActive) {
+                  speedBoostActive = false
+                  player.setPlaybackSpeed(playbackSpeed)
+                }
+              },
+              onSeekStart = {
+                dragSeekActive = true
+                wasPlayingBeforeSeek = player.playWhenReady
+              },
+              onSeekDelta = { dx ->
+                val dur = player.duration
+                if (dur > 0L) {
+                  val w = size.width.toFloat().coerceAtLeast(1f)
+                  val cur = seekPreviewMs ?: player.currentPosition
+                  seekPreviewMs = (cur + dx / w * dur.toFloat())
+                    .coerceIn(0f, dur.toFloat())
+                    .toLong()
+                }
+              },
+              onSeekEnd = {
+                dragSeekActive = false
+                seekPreviewMs?.let { target ->
+                  player.seekTo(target)
+                  playbackPositionState.longValue = target
+                  danmakuSyncToken += 1L
+                }
+                // 播放中拖拽松手后恢复播放(对齐手机播放器习惯),暂停态下拖拽保持暂停
+                if (wasPlayingBeforeSeek) player.play()
+                seekPreviewMs = null
+              },
+              onSeekCancel = {
+                dragSeekActive = false
+                seekPreviewMs = null
+              },
+            )
+          },
+      ) {}
     }
 
     // 底栏(仅 controlsVisible && Ready)
