@@ -47,6 +47,13 @@ private fun downloadProgressText(downloaded: Long, total: Long): String {
   return "${percent}%"
 }
 
+/** 下载进度比例(0..1),仅 Downloading 且 total>0 时非 null,供进度条使用。 */
+fun downloadProgressFraction(state: UpdateUiState): Float? {
+  val s = state.status as? UpdateUiState.Status.Downloading ?: return null
+  if (s.totalBytes <= 0L) return null
+  return (s.downloadedBytes.toFloat() / s.totalBytes).coerceIn(0f, 1f)
+}
+
 @Composable
 fun checkActionLabel(state: UpdateUiState): String = when (val s = state.status) {
   UpdateUiState.Status.Checking -> stringResource(R.string.settings_update_checking)

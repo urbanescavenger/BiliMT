@@ -33,15 +33,16 @@ import com.kirin.mt.core.settings.HomeThemeVariant
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.core.update.ApkInstaller
+import com.kirin.mt.core.update.InstallResult
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.update.UpdateUiState
 import com.kirin.mt.ui.settings.checkActionLabel
 import com.kirin.mt.ui.settings.currentVersionText
 import com.kirin.mt.ui.settings.downloadOrInstallLabel
+import com.kirin.mt.ui.settings.downloadProgressFraction
 import com.kirin.mt.ui.settings.isCheckActionEnabled
 import com.kirin.mt.ui.settings.isDownloadOrInstallActionEnabled
 import com.kirin.mt.ui.settings.latestVersionText
-import com.kirin.mt.ui.settings.shouldShowDownloadOrInstallRow
 import kotlinx.coroutines.launch
 
 @Composable
@@ -59,6 +60,36 @@ fun MobileSettingsScreen(
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
   val updateState by updateManager.state.collectAsState()
   val session by sessionStore.session.collectAsState(initial = UserSession())
+
+  // 安装已下载的 APK:弹系统安装 Intent,补未知来源授权兜底(镜像 TV AppShell)。
+  fun installDownloadedApk() {
+    val activity = context.findActivity()
+    val file = updateManager.downloadedFile()
+    if (activity == null || file == null) return
+    when (val result = apkInstaller.startInstall(activity, file)) {
+      is InstallResult.NeedsUnknownSourcesPermission -> {
+        context.startActivity(apkInstaller.buildUnknownSourcesIntent())
+        Toast.makeText(
+          context,
+          R.string.settings_update_install_unknown_sources_required,
+          Toast.LENGTH_LONG,
+        ).show()
+      }
+      is InstallResult.Failed -> Toast.makeText(
+        context,
+        context.getString(R.string.settings_update_failed_with_message, result.message),
+        Toast.LENGTH_SHORT,
+      ).show()
+      else -> Unit
+    }
+  }
+
+  // 最新版本 row 的动作分派:Available → 下载,Downloaded → 安装,其它 → 不可点。
+  val updateVersionOnClick: (() -> Unit)? = when (updateState.status) {
+    is UpdateUiState.Status.Available -> { { scope.launch { updateManager.download() } } }
+    is UpdateUiState.Status.Downloaded -> { { installDownloadedApk() } }
+    else -> null
+  }
 
   Column(
     modifier = modifier
@@ -200,9 +231,14 @@ fun MobileSettingsScreen(
       title = stringResource(R.string.settings_update_current_version_title),
       description = currentVersionText(updateState),
     )
-    MobileSettingsRow(
+    // 最新版本 row 内联下载/进度/安装:不再单开下载更新栏。
+    MobileUpdateVersionRow(
       title = stringResource(R.string.settings_update_latest_version_title),
       description = latestVersionText(updateState),
+      actionLabel = downloadOrInstallLabel(updateState),
+      actionEnabled = isDownloadOrInstallActionEnabled(updateState),
+      progress = downloadProgressFraction(updateState),
+      onClick = updateVersionOnClick,
     )
     MobileSettingsRow(
       title = stringResource(R.string.settings_update_check_action),
@@ -217,34 +253,6 @@ fun MobileSettingsScreen(
         )
       },
     )
-    if (shouldShowDownloadOrInstallRow(updateState)) {
-      MobileSettingsRow(
-        title = downloadOrInstallLabel(updateState).orEmpty(),
-        enabled = isDownloadOrInstallActionEnabled(updateState),
-        onClick = {
-          val s = updateState.status
-          if (s is UpdateUiState.Status.Available) {
-            scope.launch { updateManager.download() }
-          } else if (s is UpdateUiState.Status.Downloaded) {
-            val activity = context.findActivity()
-            val file = updateManager.downloadedFile()
-            if (activity != null && file != null) {
-              val result = apkInstaller.startInstall(activity, file)
-              if (result is com.kirin.mt.core.update.InstallResult.Failed) {
-                Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
-              }
-            }
-          }
-        },
-        trailing = {
-          Text(
-            text = downloadOrInstallLabel(updateState).orEmpty(),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-          )
-        },
-      )
-    }
   }
 }
 
