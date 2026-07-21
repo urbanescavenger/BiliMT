@@ -16,6 +16,8 @@ import com.kirin.mt.core.network.requireBiliCodeOk
 import com.kirin.mt.core.network.rootObject
 import com.kirin.mt.core.network.string
 import com.kirin.mt.core.storage.SessionStore
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -219,8 +221,30 @@ class PlaybackRepository(
       ?.filter { episode -> episode.cid > 0L }
       .orEmpty()
 
+    val aid = data.long("aid")
+    // req_user 状态作基线(B站 web view 对部分登录态不返回 req_user,不可靠)。
+    val reqLiked = reqUser?.int("like") == 1
+    val reqCoined = (reqUser?.int("coin") ?: 0) > 0
+    val reqFaved = reqUser?.int("favorite") == 1
+    // 登录态下用 3 个专门 check 端点(BV 在用,只需 SESSDATA)取权威状态,失败回退 req_user 基线。
+    var liked = reqLiked
+    var coined = reqCoined
+    var faved = reqFaved
+    if (!sessData.isNullOrBlank() && aid > 0L) {
+      runCatching {
+        coroutineScope {
+          val l = async { runCatching { archiveHasLike(aid, sessData) }.getOrDefault(reqLiked) }
+          val c = async { runCatching { archiveCoins(aid, sessData) }.getOrDefault(reqCoined) }
+          val f = async { runCatching { archiveFavoured(aid, sessData) }.getOrDefault(reqFaved) }
+          liked = l.await()
+          coined = c.await()
+          faved = f.await()
+        }
+      }
+    }
+
     return PlaybackVideoMetadata(
-      aid = data.long("aid"),
+      aid = aid,
       bvid = data.string("bvid").ifBlank { request.bvid },
       cid = request.cid.takeIf { it > 0L }
         ?: data.long("cid").takeIf { it > 0L }
@@ -239,10 +263,41 @@ class PlaybackRepository(
       coinCount = BiliNumberParser.toInt(stat?.get("coin")),
       favoriteCount = BiliNumberParser.toInt(stat?.get("favorite")),
       shareCount = BiliNumberParser.toInt(stat?.get("share")),
-      liked = reqUser?.int("like") == 1,
-      coined = (reqUser?.int("coin") ?: 0) > 0,
-      faved = reqUser?.int("favorite") == 1,
+      liked = liked,
+      coined = coined,
+      faved = faved,
     )
+  }
+
+  // 已点赞:/x/web-interface/archive/has/like → data==1。不调 requireBiliCodeOk(未赞时可能非 0)。
+  private suspend fun archiveHasLike(aid: Long, sessData: String): Boolean {
+    val root = apiClient.getJson(
+      url = BiliApiEndpoints.ArchiveHasLike,
+      params = mapOf("aid" to aid.toString()),
+      sessData = sessData,
+    ).rootObject()
+    return root.int("data") == 1
+  }
+
+  // 已投币:/x/web-interface/archive/coins → data.multiply != 0。
+  private suspend fun archiveCoins(aid: Long, sessData: String): Boolean {
+    val root = apiClient.getJson(
+      url = BiliApiEndpoints.ArchiveCoins,
+      params = mapOf("aid" to aid.toString()),
+      sessData = sessData,
+    ).rootObject()
+    return (root.obj("data")?.int("multiply") ?: 0) != 0
+  }
+
+  // 已收藏:/x/v2/fav/video/favoured → data.favoured(boolean,兜底 int==1)。
+  private suspend fun archiveFavoured(aid: Long, sessData: String): Boolean {
+    val root = apiClient.getJson(
+      url = BiliApiEndpoints.FavVideoFavoured,
+      params = mapOf("aid" to aid.toString()),
+      sessData = sessData,
+    ).rootObject()
+    val dataObj = root.obj("data")
+    return dataObj?.boolean("favoured") ?: (dataObj?.int("favoured") == 1)
   }
 
   private suspend fun getPgcVideoMetadata(request: PlaybackRequest): PlaybackVideoMetadata {
