@@ -194,9 +194,11 @@ class PlaybackRepository(
       return getPgcVideoMetadata(request)
     }
 
+    val sessData = sessionStore.sessData.first()
     val root = apiClient.getJson(
       url = BiliApiEndpoints.View,
       params = mapOf("bvid" to request.bvid),
+      sessData = sessData,
     ).rootObject()
     root.requireBiliCodeOk("view metadata")
 
