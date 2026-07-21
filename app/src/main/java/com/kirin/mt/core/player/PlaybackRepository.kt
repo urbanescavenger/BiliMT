@@ -231,6 +231,7 @@ class PlaybackRepository(
       danmakuCount = BiliNumberParser.toInt(stat?.get("danmaku")),
       pubdate = data.long("pubdate"),
       pages = pages,
+      desc = data.string("desc"),
     )
   }
 
@@ -269,6 +270,7 @@ class PlaybackRepository(
       danmakuCount = 0,
       pubdate = 0L,
       pages = pages,
+      desc = season.evaluate,
     )
   }
 

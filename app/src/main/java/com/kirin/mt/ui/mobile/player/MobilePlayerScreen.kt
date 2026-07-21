@@ -19,8 +19,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,8 +34,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -62,6 +68,12 @@ import androidx.compose.material3.darkColorScheme
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import coil.compose.AsyncImage
+import com.kirin.mt.core.image.buildOwnerAvatarRequest
+import com.kirin.mt.ui.mobile.home.formatCount
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
@@ -183,9 +195,8 @@ fun MobilePlayerScreen(
   var warnedAirJumpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
   var skippedAirJumpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
   var lastAirJumpPositionMs by remember { mutableLongStateOf(0L) }
-  // 推荐视频(相关视频):按 bvid 拉,弹 sheet 列出,点击切播
+  // 推荐视频(相关视频):按 bvid 拉,简介 Tab 内列出,点击切播
   var relatedVideos by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
-  var relatedSheet by remember { mutableStateOf(false) }
 
   // 全屏切换:强制横屏 + 隐藏系统栏(沉浸);退出/关播放器恢复,避免主页卡横屏。
   DisposableEffect(fullscreen) {
@@ -823,12 +834,6 @@ fun MobilePlayerScreen(
             )
           }
           MobilePlayerIconButton(
-            iconRes = R.drawable.ic_player_related,
-            contentDescription = "推荐视频",
-            tint = BiliColors.TextPrimary,
-            onClick = { relatedSheet = true },
-          )
-          MobilePlayerIconButton(
             iconRes = R.drawable.ic_nav_settings,
             contentDescription = "设置",
             tint = BiliColors.TextPrimary,
@@ -924,65 +929,58 @@ fun MobilePlayerScreen(
         }
       }
     }
-
-    // 推荐视频(相关视频)sheet:深色 MaterialTheme 让 MobileVideoCard 文字可读,2 列 chunked Row
-    if (relatedSheet) {
-      val relatedSheetState = rememberModalBottomSheetState()
-      ModalBottomSheet(
-        onDismissRequest = { relatedSheet = false },
-        sheetState = relatedSheetState,
+  }
+  // 下半区:简介/评论双 Tab(仅非全屏竖屏分栏时渲染;全屏横屏时隐藏)。
+  // 简介 Tab 展示视频详情 + 相关视频;评论 Tab 复用 MobileCommentList。
+  if (!fullscreen) {
+    val tabPagerState = rememberPagerState(pageCount = { 2 })
+    Column(
+      modifier = Modifier
+        .weight(1f)
+        .fillMaxWidth()
+        .background(Color.Black),
+    ) {
+      PrimaryScrollableTabRow(
+        selectedTabIndex = tabPagerState.currentPage.coerceIn(0, 1),
         containerColor = Color(0xFF1A1A20),
+        contentColor = Color.White,
+        edgePadding = 0.dp,
       ) {
-        MaterialTheme(colorScheme = darkColorScheme()) {
-          Column(
-            modifier = Modifier
-              .fillMaxWidth()
-              .verticalScroll(rememberScrollState())
-              .padding(horizontal = 16.dp, vertical = 8.dp),
-          ) {
-            SectionTitle("推荐视频")
-            if (relatedVideos.isEmpty()) {
-              Text(
-                text = "暂无相关视频",
-                color = BiliColors.TextSecondary,
-                modifier = Modifier.padding(vertical = 12.dp),
-              )
-            }
-            relatedVideos.chunked(2).forEach { rowItems ->
-              Row(modifier = Modifier.fillMaxWidth()) {
-                rowItems.forEach { v ->
-                  MobileVideoCard(
-                    video = v,
-                    onClick = {
-                      relatedSheet = false
-                      onPlayVideo(v)
-                    },
-                    onOpenOwner = { video ->
-                      relatedSheet = false
-                      onOpenUpSpace(video.ownerMid, video.ownerName, video.ownerFace)
-                    },
-                    modifier = Modifier.weight(1f).padding(4.dp),
-                  )
-                }
-                if (rowItems.size == 1) Spacer(Modifier.weight(1f))
-              }
-            }
-            Spacer(Modifier.padding(top = 8.dp))
-          }
+        Tab(
+          selected = tabPagerState.currentPage == 0,
+          onClick = { scope.launch { tabPagerState.animateScrollToPage(0) } },
+          text = { Text("简介") },
+        )
+        Tab(
+          selected = tabPagerState.currentPage == 1,
+          onClick = { scope.launch { tabPagerState.animateScrollToPage(1) } },
+          text = { Text("评论") },
+        )
+      }
+      HorizontalPager(
+        state = tabPagerState,
+        modifier = Modifier.fillMaxSize(),
+      ) { page ->
+        when (page) {
+          0 -> MobilePlayerIntroTab(
+            metadata = metadata,
+            request = activeRequest,
+            relatedVideos = relatedVideos,
+            onPlayVideo = onPlayVideo,
+            onOpenUpSpace = onOpenUpSpace,
+            modifier = Modifier.fillMaxSize(),
+          )
+          1 -> MobileCommentList(
+            // aid 取自 metadata(加载后就绪);metadata 加载前 aid=0 → 列表显示加载圈,
+            // 避免误显示"暂无评论"。
+            aid = metadata?.aid ?: 0L,
+            isPgc = activeRequest.isPgc,
+            videoRepository = videoRepository,
+            modifier = Modifier.fillMaxSize(),
+          )
         }
       }
     }
-  }
-  // 下半区:评论列表(仅非全屏竖屏分栏时渲染;全屏横屏时隐藏)
-  if (!fullscreen) {
-    MobileCommentList(
-      // toPlaybackRequest/卡片均不带 aid(仅动态带),aid 取自 metadata(加载后就绪);
-      // metadata 加载前 aid=0 → 列表显示加载圈,避免误显示"暂无评论"。
-      aid = metadata?.aid ?: 0L,
-      isPgc = activeRequest.isPgc,
-      videoRepository = videoRepository,
-      modifier = Modifier.weight(1f).fillMaxWidth(),
-    )
   }
   }
 }
@@ -1065,6 +1063,143 @@ private fun PlayerSettingsSheet(
       Switch(checked = danmakuSettings.allowBottom, onCheckedChange = onDanmakuAllowBottom)
     }
     Spacer(Modifier.padding(top = 8.dp))
+  }
+}
+
+/**
+ * 简介 Tab:视频详情(标题 / UP 主 / 播放量·弹幕·发布时间 / 简介 desc)+ 相关视频列表。
+ * metadata 未就绪时居中加载圈占位;深色背景,MobileVideoCard 包在 darkColorScheme 内保文字可读。
+ */
+@Composable
+private fun MobilePlayerIntroTab(
+  metadata: PlaybackVideoMetadata?,
+  request: PlaybackRequest,
+  relatedVideos: List<VideoSummary>,
+  onPlayVideo: (VideoSummary) -> Unit,
+  onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  if (metadata == null) {
+    Box(
+      modifier = modifier.background(Color.Black),
+      contentAlignment = Alignment.Center,
+    ) {
+      CircularProgressIndicator()
+    }
+    return
+  }
+  val context = LocalContext.current
+  MaterialTheme(colorScheme = darkColorScheme()) {
+    Column(
+      modifier = modifier
+        .fillMaxSize()
+        .background(Color(0xFF121217))
+        .verticalScroll(rememberScrollState())
+        .padding(horizontal = 16.dp, vertical = 8.dp),
+    ) {
+      // 标题
+      Text(
+        text = metadata.title.ifBlank { request.title },
+        color = Color.White,
+        style = MaterialTheme.typography.titleMedium,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+      )
+
+      // UP 主行(头像 + 名):PGC 无 owner 时整行隐藏。点头像/名进 UP 主页。
+      if (metadata.ownerMid > 0L && metadata.ownerName.isNotBlank()) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable {
+              onOpenUpSpace(metadata.ownerMid, metadata.ownerName, metadata.ownerFace)
+            },
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          val avatarModifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+          if (metadata.ownerFace.isBlank()) {
+            Box(modifier = avatarModifier)
+          } else {
+            AsyncImage(
+              model = remember(context, metadata.ownerFace) {
+                buildOwnerAvatarRequest(context, metadata.ownerFace)
+              },
+              contentDescription = metadata.ownerName,
+              contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+              modifier = avatarModifier,
+            )
+          }
+          Spacer(Modifier.width(10.dp))
+          Text(
+            text = metadata.ownerName,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+      }
+
+      // 数据行:播放 · 弹幕 · 发布时间(pubdate 为秒,转 yyyy-MM-dd)
+      val pubdateText = remember(metadata.pubdate) {
+        if (metadata.pubdate <= 0L) "" else
+          SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(metadata.pubdate * 1000L))
+      }
+      val metaParts = buildList {
+        if (metadata.viewCount > 0) add("播放 ${formatCount(metadata.viewCount)}")
+        if (metadata.danmakuCount > 0) add("弹幕 ${formatCount(metadata.danmakuCount)}")
+        if (pubdateText.isNotBlank()) add(pubdateText)
+      }
+      if (metaParts.isNotEmpty()) {
+        Text(
+          text = metaParts.joinToString(" · "),
+          color = BiliColors.TextSecondary,
+          style = MaterialTheme.typography.labelMedium,
+          modifier = Modifier.padding(top = 8.dp),
+        )
+      }
+
+      // 简介 desc
+      if (metadata.desc.isNotBlank()) {
+        Text(
+          text = metadata.desc,
+          color = BiliColors.TextSecondary,
+          style = MaterialTheme.typography.bodySmall,
+          modifier = Modifier.padding(top = 10.dp),
+        )
+      }
+
+      // 相关视频:2 列 chunked Row,复用 MobileVideoCard,点击切播 / 进 UP 主页。
+      SectionTitle("相关视频")
+      if (relatedVideos.isEmpty()) {
+        Text(
+          text = "暂无相关视频",
+          color = BiliColors.TextSecondary,
+          modifier = Modifier.padding(vertical = 12.dp),
+        )
+      }
+      relatedVideos.chunked(2).forEach { rowItems ->
+        Row(modifier = Modifier.fillMaxWidth()) {
+          rowItems.forEach { v ->
+            MobileVideoCard(
+              video = v,
+              onClick = { onPlayVideo(v) },
+              onOpenOwner = { video ->
+                onOpenUpSpace(video.ownerMid, video.ownerName, video.ownerFace)
+              },
+              modifier = Modifier.weight(1f).padding(4.dp),
+            )
+          }
+          if (rowItems.size == 1) Spacer(Modifier.weight(1f))
+        }
+      }
+      Spacer(Modifier.height(16.dp))
+    }
   }
 }
 

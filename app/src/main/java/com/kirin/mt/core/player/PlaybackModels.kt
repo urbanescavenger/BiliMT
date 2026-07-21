@@ -58,6 +58,8 @@ data class PlaybackVideoMetadata(
   val danmakuCount: Int,
   val pubdate: Long,
   val pages: List<PlaybackEpisode>,
+  /** 视频简介(B 站 view 接口 data.desc / PGC season.desc),移动端播放页简介 Tab 展示。 */
+  val desc: String = "",
 )
 
 data class PlaybackEpisode(
