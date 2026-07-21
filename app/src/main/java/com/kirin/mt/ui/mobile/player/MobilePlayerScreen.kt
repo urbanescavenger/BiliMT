@@ -56,6 +56,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -961,6 +962,10 @@ fun MobilePlayerScreen(
   // 简介 Tab 展示视频详情 + 相关视频;评论 Tab 复用 MobileCommentList。
   if (!fullscreen) {
     val tabPagerState = rememberPagerState(pageCount = { 2 })
+    var commentTotalCount by remember { mutableIntStateOf(0) }
+    // 切换视频(metadata.aid 变)时先清零,避免新视频评论加载完前 Tab 残留旧视频评论数;
+    // 评论首屏加载后经 onTotalCountChange 回调更新为真实总数。
+    LaunchedEffect(metadata?.aid) { commentTotalCount = 0 }
     Column(
       modifier = Modifier
         .weight(1f)
@@ -981,7 +986,7 @@ fun MobilePlayerScreen(
         Tab(
           selected = tabPagerState.currentPage == 1,
           onClick = { scope.launch { tabPagerState.animateScrollToPage(1) } },
-          text = { Text("评论") },
+          text = { Text(if (commentTotalCount > 0) "评论 ${formatCount(commentTotalCount)}" else "评论") },
         )
       }
       HorizontalPager(
@@ -1006,6 +1011,7 @@ fun MobilePlayerScreen(
             isPgc = activeRequest.isPgc,
             videoRepository = videoRepository,
             modifier = Modifier.fillMaxSize(),
+            onTotalCountChange = { commentTotalCount = it },
           )
         }
       }

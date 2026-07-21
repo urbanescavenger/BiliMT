@@ -66,6 +66,8 @@ internal class MobileCommentListState {
   var error by mutableStateOf("")
   var loadMoreError by mutableStateOf("")
   var endReached by mutableStateOf(false)
+  // B 站 data.page.count:评论总数,经 onTotalCountChange 回调透到外层 Tab 标题显示。
+  var totalCount by mutableIntStateOf(0)
   // 1=按热度, 0=按时间(bilibili reply sort)
   var sort by mutableIntStateOf(1)
   var currentPage by mutableIntStateOf(0)
@@ -88,6 +90,7 @@ internal fun MobileCommentList(
   isPgc: Boolean,
   videoRepository: VideoRepository,
   modifier: Modifier = Modifier,
+  onTotalCountChange: ((Int) -> Unit)? = null,
 ) {
   Box(
     modifier = modifier
@@ -106,7 +109,7 @@ internal fun MobileCommentList(
         color = BiliColors.BiliPink,
         modifier = Modifier.align(Alignment.Center),
       )
-      else -> CommentListContent(aid = aid, videoRepository = videoRepository)
+      else -> CommentListContent(aid = aid, videoRepository = videoRepository, onTotalCountChange = onTotalCountChange)
     }
   }
 }
@@ -116,10 +119,16 @@ internal fun MobileCommentList(
 private fun CommentListContent(
   aid: Long,
   videoRepository: VideoRepository,
+  onTotalCountChange: ((Int) -> Unit)? = null,
 ) {
   val state = remember { MobileCommentListState() }
   val coroutineScope = rememberCoroutineScope()
   val listState = rememberLazyListState()
+
+  // 评论总数变化时回调外层(评论 Tab 标题显示)。分页/排序重载后 state.totalCount 更新即触发。
+  LaunchedEffect(state.totalCount) {
+    onTotalCountChange?.invoke(state.totalCount)
+  }
 
   LaunchedEffect(aid, state.sort) {
     loadCommentFirstPage(videoRepository, state, aid)
@@ -337,6 +346,7 @@ private suspend fun loadCommentFirstPage(
     state.currentPage = 1
     state.comments = page.comments
     state.endReached = !page.hasMore
+    state.totalCount = page.totalCount
   } catch (error: CancellationException) {
     throw error
   } catch (error: Exception) {
@@ -365,6 +375,7 @@ private fun loadCommentNextPage(
       val fresh = page.comments.filter { known.add(it.id) }
       state.comments = state.comments + fresh
       state.endReached = !page.hasMore || fresh.isEmpty()
+      state.totalCount = page.totalCount
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {

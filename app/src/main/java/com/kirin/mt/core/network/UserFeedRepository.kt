@@ -211,7 +211,7 @@ internal class UserFeedRepository(
       .map(VideoSummaryMappers::fromComment)
     val count = data.obj("page")?.int("count") ?: comments.size
     val hasMore = page * pageSize < count && comments.isNotEmpty()
-    return CommentPage(comments = comments, currentPage = page, hasMore = hasMore)
+    return CommentPage(comments = comments, currentPage = page, hasMore = hasMore, totalCount = count)
   }
 
   suspend fun getHistoryPage(
@@ -388,6 +388,8 @@ data class CommentPage(
   val comments: List<Comment>,
   val currentPage: Int,
   val hasMore: Boolean,
+  // B 站 /x/v2/reply 返回 data.page.count:视频评论总数(含楼中楼),用于评论 Tab 标题显示。
+  val totalCount: Int = 0,
 )
 
 data class FollowingSeason(
