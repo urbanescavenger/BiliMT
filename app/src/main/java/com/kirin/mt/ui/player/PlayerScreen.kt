@@ -568,15 +568,20 @@ fun PlayerScreen(
     showControls()
   }
 
-  fun applyResolvedMetadata(videoMetadata: PlaybackVideoMetadata): PlaybackRequest {
-    metadata = videoMetadata
-    // 从 metadata 同步互动初始状态(check 端点预填的 liked/coined/faved 与计数)。
+  // 从 metadata 同步互动初始状态(check 端点预填的 liked/coined/faved 与计数)。
+  // 主播放路径与 applyResolvedMetadata 共用,保证计数/互动状态单一数据源。
+  fun syncInteractionStateFromMetadata(videoMetadata: PlaybackVideoMetadata) {
     liked = videoMetadata.liked
     likeCount = videoMetadata.likeCount
     coined = videoMetadata.coined
     coinCount = videoMetadata.coinCount
     faved = videoMetadata.faved
     favCount = videoMetadata.favoriteCount
+  }
+
+  fun applyResolvedMetadata(videoMetadata: PlaybackVideoMetadata): PlaybackRequest {
+    metadata = videoMetadata
+    syncInteractionStateFromMetadata(videoMetadata)
     favLoadedForAid = 0L
     favSelectedIds = emptySet()
     val resolved = displayRequest.withResolvedMetadata(
@@ -1267,7 +1272,10 @@ fun PlayerScreen(
     val videoMetadata = if (existingMetadata != null && existingMetadata.bvid == activeRequest.bvid) {
       existingMetadata
     } else {
+      // 首次加载/换视频:同步互动初始状态,让控制栏点赞/投币/收藏显示真实计数。
+      // 同 bvid 重试/切码率走 existingMetadata 分支不同步,避免回退用户当次会话的互动。
       runCatching { playbackRepository.getVideoMetadata(activeRequest) }.getOrNull()
+        ?.also(::syncInteractionStateFromMetadata)
     }
     metadata = videoMetadata
     var effectiveRequest = activeRequest.withNextHistoryEpisodeIfNeeded(videoMetadata)
