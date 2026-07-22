@@ -125,7 +125,6 @@ fun SettingsScreen(
       SettingsItemLiquidGlassCards to FocusRequester(),
       SettingsItemHomeThemeVariant to FocusRequester(),
       SettingsItemUpdateCurrentVersion to FocusRequester(),
-      SettingsItemUpdateCheck to FocusRequester(),
       SettingsItemUpdateDownloadOrInstall to FocusRequester(),
       SettingsItemUpdateReleaseNotes to FocusRequester(),
       SettingsItemSpeedTest to FocusRequester(),
@@ -693,13 +692,14 @@ private fun SettingsBehaviorColumn(
         onClick = {},
       )
     }
-    // 最新版本合并行(镜像移动端):内联下载/进度/安装 + 进度条,无条件渲染。
+    // 最新版本合并行(镜像移动端):内联检查/下载/进度/安装 + 进度条,无条件渲染。
+    // 「检查更新」已并入此行——Idle/UpToDate/Failed 点按触发检查,Available 下载,Downloaded 安装。
     item(key = "update-latest-version") {
       SettingsUpdateVersionRow(
         title = stringResource(R.string.settings_update_latest_version_title),
         description = latestVersionText(updateState),
-        actionLabel = downloadOrInstallLabel(updateState),
-        actionEnabled = isDownloadOrInstallActionEnabled(updateState),
+        actionLabel = updateVersionActionLabel(updateState),
+        actionEnabled = isUpdateVersionActionEnabled(updateState),
         progress = downloadProgressFraction(updateState),
         modifier = Modifier
           .focusRequester(focusRequesters.getValue(SettingsItemUpdateDownloadOrInstall))
@@ -713,25 +713,10 @@ private fun SettingsBehaviorColumn(
           when (updateState.status) {
             is UpdateUiState.Status.Available -> onDownloadUpdate()
             is UpdateUiState.Status.Downloaded -> onInstallUpdate()
-            else -> {}
+            is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> {}
+            else -> onCheckUpdate()
           }
         },
-      )
-    }
-    item(key = "update-check") {
-      SettingsActionRow(
-        title = stringResource(R.string.settings_update_check_action),
-        description = stringResource(R.string.settings_update_check_action_description),
-        value = checkActionLabel(updateState),
-        modifier = Modifier
-          .focusRequester(focusRequesters.getValue(SettingsItemUpdateCheck))
-          .settingsBoundaryKeys(
-            itemIndex = SettingsItemUpdateCheck,
-            onMoveSettingFocus = onMoveSettingFocus,
-            onMoveLeftToNav = onMoveLeftToNav,
-          ),
-        onFocused = { onSettingFocused(SettingsItemUpdateCheck) },
-        onClick = { if (isCheckActionEnabled(updateState)) onCheckUpdate() },
       )
     }
     if (shouldShowReleaseNotesAction(updateState)) {
@@ -904,7 +889,6 @@ private const val SettingsItemChineseTextVariant = 19
 private const val SettingsItemAbout = 20
 private const val SettingsItemHomeSections = 26
 private const val SettingsItemUpdateCurrentVersion = 22
-private const val SettingsItemUpdateCheck = 23
 private const val SettingsItemUpdateDownloadOrInstall = 24
 private const val SettingsItemUpdateReleaseNotes = 25
 private const val SettingsItemPlaybackCdn = 21
@@ -932,7 +916,6 @@ private val SettingsFocusableItems = listOf(
   SettingsItemAutoRefreshOnSwitch,
   SettingsItemUpdateCurrentVersion,
   SettingsItemUpdateDownloadOrInstall,
-  SettingsItemUpdateCheck,
   SettingsItemUpdateReleaseNotes,
   SettingsItemClearCache,
   SettingsItemChineseTextVariant,
@@ -975,31 +958,30 @@ private fun settingsItemToLazyIndex(
   // 19 = "update-header" section title in LazyColumn
   SettingsItemUpdateCurrentVersion -> 20
   SettingsItemUpdateDownloadOrInstall -> 21
-  SettingsItemUpdateCheck -> 22
-  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 23 else -1
+  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 22 else -1
   SettingsItemClearCache -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    24 + updateExtraCount
+    23 + updateExtraCount
   }
   SettingsItemChineseTextVariant -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    25 + updateExtraCount
+    24 + updateExtraCount
   }
   SettingsItemHomeSections -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    26 + updateExtraCount
+    25 + updateExtraCount
   }
   SettingsItemLogs -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    27 + updateExtraCount
+    26 + updateExtraCount
   }
   SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    28 + updateExtraCount
+    27 + updateExtraCount
   }
   SettingsItemPlayerLogOverlay -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    29 + updateExtraCount
+    28 + updateExtraCount
   }
   else -> 0
 }

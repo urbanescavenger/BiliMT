@@ -81,6 +81,22 @@ fun isDownloadOrInstallActionEnabled(state: UpdateUiState): Boolean = when (stat
   else -> false
 }
 
+/**
+ * 合并「最新版本」行的动作文案:有下载/安装动作时取之,否则取检查动作文案。
+ * Idle/UpToDate/Failed → 检查更新;Checking → 检查中…;Available → 下载更新;
+ * Downloading → 下载中…;Downloaded → 安装并重新启动。
+ */
+@Composable
+fun updateVersionActionLabel(state: UpdateUiState): String =
+  downloadOrInstallLabel(state) ?: checkActionLabel(state)
+
+/**
+ * 合并「最新版本」行是否可点:下载/安装可用 或 检查可用即启用。
+ * Checking/Downloading 不可点,其余状态均可点(触发检查/下载/安装)。
+ */
+fun isUpdateVersionActionEnabled(state: UpdateUiState): Boolean =
+  isDownloadOrInstallActionEnabled(state) || isCheckActionEnabled(state)
+
 fun shouldShowDownloadOrInstallRow(state: UpdateUiState): Boolean = when (state.status) {
   is UpdateUiState.Status.Available,
   is UpdateUiState.Status.Downloading,

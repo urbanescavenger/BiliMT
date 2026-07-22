@@ -36,13 +36,11 @@ import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.InstallResult
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.update.UpdateUiState
-import com.kirin.mt.ui.settings.checkActionLabel
 import com.kirin.mt.ui.settings.currentVersionText
-import com.kirin.mt.ui.settings.downloadOrInstallLabel
 import com.kirin.mt.ui.settings.downloadProgressFraction
-import com.kirin.mt.ui.settings.isCheckActionEnabled
-import com.kirin.mt.ui.settings.isDownloadOrInstallActionEnabled
+import com.kirin.mt.ui.settings.isUpdateVersionActionEnabled
 import com.kirin.mt.ui.settings.latestVersionText
+import com.kirin.mt.ui.settings.updateVersionActionLabel
 import kotlinx.coroutines.launch
 
 @Composable
@@ -84,11 +82,13 @@ fun MobileSettingsScreen(
     }
   }
 
-  // 最新版本 row 的动作分派:Available → 下载,Downloaded → 安装,其它 → 不可点。
+  // 最新版本 row 的动作分派(已并入「检查更新」):Available → 下载,Downloaded → 安装,
+  // Idle/UpToDate/Failed → 检查更新,Checking/Downloading → 不可点。
   val updateVersionOnClick: (() -> Unit)? = when (updateState.status) {
     is UpdateUiState.Status.Available -> { { scope.launch { updateManager.download() } } }
     is UpdateUiState.Status.Downloaded -> { { installDownloadedApk() } }
-    else -> null
+    is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> null
+    else -> { { scope.launch { updateManager.refresh() } } }
   }
 
   Column(
@@ -231,27 +231,14 @@ fun MobileSettingsScreen(
       title = stringResource(R.string.settings_update_current_version_title),
       description = currentVersionText(updateState),
     )
-    // 最新版本 row 内联下载/进度/安装:不再单开下载更新栏。
+    // 最新版本 row 内联下载/进度/安装 + 检查更新(已并入此行,不再单开检查更新栏)。
     MobileUpdateVersionRow(
       title = stringResource(R.string.settings_update_latest_version_title),
       description = latestVersionText(updateState),
-      actionLabel = downloadOrInstallLabel(updateState),
-      actionEnabled = isDownloadOrInstallActionEnabled(updateState),
+      actionLabel = updateVersionActionLabel(updateState),
+      actionEnabled = isUpdateVersionActionEnabled(updateState),
       progress = downloadProgressFraction(updateState),
       onClick = updateVersionOnClick,
-    )
-    MobileSettingsRow(
-      title = stringResource(R.string.settings_update_check_action),
-      description = stringResource(R.string.settings_update_check_action_description),
-      enabled = isCheckActionEnabled(updateState),
-      onClick = { scope.launch { updateManager.refresh() } },
-      trailing = {
-        Text(
-          text = checkActionLabel(updateState),
-          style = MaterialTheme.typography.labelLarge,
-          color = MaterialTheme.colorScheme.primary,
-        )
-      },
     )
   }
 }
