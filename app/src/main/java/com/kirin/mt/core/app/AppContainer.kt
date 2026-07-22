@@ -1,14 +1,21 @@
 package com.kirin.mt.core.app
 
 import android.content.Context
+import android.util.Log
 import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.auth.TvLoginSigner
 import com.kirin.mt.core.auth.WbiKeyRepository
 import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.cache.AppCacheManager
 import com.kirin.mt.core.network.BiliApiClient
+import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliHttpClientFactory
 import com.kirin.mt.core.network.VideoRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import java.util.concurrent.TimeUnit
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.CdnSpeedTester
 import com.kirin.mt.core.player.CodecCapabilityProbe
@@ -27,6 +34,12 @@ import kotlinx.serialization.json.Json
 
 class AppContainer(context: Context) {
   private val appContext = context.applicationContext
+
+  /**
+   * Application-scoped coroutine scope for fire-and-forget background work like API warmup.
+   * SupervisorJob so one failure doesn't cancel siblings.
+   */
+  private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
   val json: Json = Json {
     ignoreUnknownKeys = true
@@ -88,4 +101,29 @@ class AppContainer(context: Context) {
     repository = updateRepository,
     downloader = updateDownloader,
   )
+
+  /**
+   * 预热 api.bilibili.com 连接:启动后后台发一个轻量请求(BuvidSpi — 未登录可用,body 小,
+   * 顺便预拉 buvid 种子),把 DNS+TCP+TLS 握手提前做完,连接进 OkHttp 连接池保留 ~5min。
+   * 之后首开 UP 主主页等接口省掉冷建连的几百毫秒。HTTP/2 下同 host 后续请求复用此连接。
+   * Fire-and-forget:失败静默,不影响 app 启动。
+   *
+   * 与视频流 CDN 优选不同 — 接口域名固定(api.bilibili.com),无多 CDN 候选可挑,
+   * 这里只暖连接池,不选节点。
+   */
+  fun warmupApiConnection() {
+    applicationScope.launch {
+      val startedNs = System.nanoTime()
+      runCatching { apiClient.getJson(BiliApiEndpoints.BuvidSpi) }
+        .onSuccess {
+          val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNs)
+          Log.i(LogTag, "api warmup ok: ${elapsedMs}ms (connection pooled for api.bilibili.com)")
+        }
+        .onFailure { error -> Log.w(LogTag, "api warmup failed: ${error.message}") }
+    }
+  }
+
+  private companion object {
+    const val LogTag = "BiliWarmup"
+  }
 }

@@ -18,6 +18,8 @@ class BiliTvApplication : Application(), ImageLoaderFactory {
     HandroidLoggerAdapter.DEBUG = BuildConfig.DEBUG
     LogCatcherUtil.install(this)
     appContainer = AppContainer(this)
+    // 预热 api.bilibili.com 连接池,首开主页/播放省掉冷建连。fire-and-forget。
+    appContainer.warmupApiConnection()
   }
 
   override fun newImageLoader(): ImageLoader {
