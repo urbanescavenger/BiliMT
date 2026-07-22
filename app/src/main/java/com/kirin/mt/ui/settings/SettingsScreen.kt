@@ -693,11 +693,36 @@ private fun SettingsBehaviorColumn(
         onClick = {},
       )
     }
+    // 最新版本合并行(镜像移动端):内联下载/进度/安装 + 进度条,无条件渲染。
+    item(key = "update-latest-version") {
+      SettingsUpdateVersionRow(
+        title = stringResource(R.string.settings_update_latest_version_title),
+        description = latestVersionText(updateState),
+        actionLabel = downloadOrInstallLabel(updateState),
+        actionEnabled = isDownloadOrInstallActionEnabled(updateState),
+        progress = downloadProgressFraction(updateState),
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemUpdateDownloadOrInstall))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemUpdateDownloadOrInstall,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemUpdateDownloadOrInstall) },
+        onClick = {
+          when (updateState.status) {
+            is UpdateUiState.Status.Available -> onDownloadUpdate()
+            is UpdateUiState.Status.Downloaded -> onInstallUpdate()
+            else -> {}
+          }
+        },
+      )
+    }
     item(key = "update-check") {
       SettingsActionRow(
-        title = checkActionLabel(updateState),
+        title = stringResource(R.string.settings_update_check_action),
         description = stringResource(R.string.settings_update_check_action_description),
-        value = latestVersionText(updateState),
+        value = checkActionLabel(updateState),
         modifier = Modifier
           .focusRequester(focusRequesters.getValue(SettingsItemUpdateCheck))
           .settingsBoundaryKeys(
@@ -706,36 +731,8 @@ private fun SettingsBehaviorColumn(
             onMoveLeftToNav = onMoveLeftToNav,
           ),
         onFocused = { onSettingFocused(SettingsItemUpdateCheck) },
-        onClick = onCheckUpdate,
+        onClick = { if (isCheckActionEnabled(updateState)) onCheckUpdate() },
       )
-    }
-    if (shouldShowDownloadOrInstallRow(updateState)) {
-      item(key = "update-download-or-install") {
-        SettingsActionRow(
-          title = downloadOrInstallLabel(updateState) ?: "",
-          description = when (val s = updateState.status) {
-            is UpdateUiState.Status.Downloaded -> stringResource(R.string.settings_update_status_downloaded)
-            is UpdateUiState.Status.Downloading -> downloadProgressDescription(s.downloadedBytes, s.totalBytes)
-            else -> stringResource(R.string.settings_update_latest_version_value_available)
-          },
-          value = latestVersionText(updateState),
-          modifier = Modifier
-            .focusRequester(focusRequesters.getValue(SettingsItemUpdateDownloadOrInstall))
-            .settingsBoundaryKeys(
-              itemIndex = SettingsItemUpdateDownloadOrInstall,
-              onMoveSettingFocus = onMoveSettingFocus,
-              onMoveLeftToNav = onMoveLeftToNav,
-            ),
-          onFocused = { onSettingFocused(SettingsItemUpdateDownloadOrInstall) },
-          onClick = {
-            if (updateState.status is UpdateUiState.Status.Downloaded) {
-              onInstallUpdate()
-            } else {
-              onDownloadUpdate()
-            }
-          },
-        )
-      }
     }
     if (shouldShowReleaseNotesAction(updateState)) {
       item(key = "update-release-notes") {
@@ -934,8 +931,8 @@ private val SettingsFocusableItems = listOf(
   SettingsItemAutoConfirmOnFocus,
   SettingsItemAutoRefreshOnSwitch,
   SettingsItemUpdateCurrentVersion,
-  SettingsItemUpdateCheck,
   SettingsItemUpdateDownloadOrInstall,
+  SettingsItemUpdateCheck,
   SettingsItemUpdateReleaseNotes,
   SettingsItemClearCache,
   SettingsItemChineseTextVariant,
@@ -977,51 +974,37 @@ private fun settingsItemToLazyIndex(
   SettingsItemAutoRefreshOnSwitch -> 18
   // 19 = "update-header" section title in LazyColumn
   SettingsItemUpdateCurrentVersion -> 20
-  SettingsItemUpdateCheck -> 21
-  SettingsItemUpdateDownloadOrInstall -> if (shouldShowDownloadOrInstallRow(updateState)) 22 else -1
-  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) {
-    if (shouldShowDownloadOrInstallRow(updateState)) 23 else 22
-  } else {
-    -1
-  }
+  SettingsItemUpdateDownloadOrInstall -> 21
+  SettingsItemUpdateCheck -> 22
+  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 23 else -1
   SettingsItemClearCache -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    23 + updateExtraCount
-  }
-  SettingsItemChineseTextVariant -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     24 + updateExtraCount
   }
-  SettingsItemHomeSections -> {
+  SettingsItemChineseTextVariant -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     25 + updateExtraCount
   }
-  SettingsItemLogs -> {
+  SettingsItemHomeSections -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     26 + updateExtraCount
   }
-  SettingsItemAbout -> {
+  SettingsItemLogs -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     27 + updateExtraCount
   }
-  SettingsItemPlayerLogOverlay -> {
+  SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     28 + updateExtraCount
+  }
+  SettingsItemPlayerLogOverlay -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    29 + updateExtraCount
   }
   else -> 0
 }
 
+// 合并行(update-latest-version)无条件渲染,只数 release-notes 一个条件项。
 private fun updateExtraItemCount(updateState: UpdateUiState): Int {
-  var count = 0
-  if (shouldShowDownloadOrInstallRow(updateState)) count++
-  if (shouldShowReleaseNotesAction(updateState)) count++
-  return count
-}
-
-@Composable
-private fun downloadProgressDescription(downloaded: Long, total: Long): String {
-  if (total <= 0) return stringResource(R.string.settings_update_downloading)
-  val mb = downloaded / (1024.0 * 1024.0)
-  val totalMb = total / (1024.0 * 1024.0)
-  return String.format(java.util.Locale.US, "%.1f / %.1f MB", mb, totalMb)
+  return if (shouldShowReleaseNotesAction(updateState)) 1 else 0
 }

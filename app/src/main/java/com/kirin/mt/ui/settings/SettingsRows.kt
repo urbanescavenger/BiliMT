@@ -1,14 +1,17 @@
 package com.kirin.mt.ui.settings
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -110,6 +113,88 @@ internal fun SettingsActionRow(
     onFocused = onFocused,
     onClick = onClick,
   )
+}
+
+/**
+ * 最新版本合并行(镜像移动端 MobileUpdateVersionRow):标题+描述 + 右侧动作文案
+ * (下载更新/下载中.../安装并重启),Downloading 时下方进度条。整行可点(Available→下载,
+ * Downloaded→安装,其它状态确认无效但仍可聚焦,保持 D-pad 焦点连续性)。
+ * 不固定高度——进度条出现时行变高。
+ */
+@Composable
+internal fun SettingsUpdateVersionRow(
+  title: String,
+  description: String,
+  actionLabel: String?,
+  actionEnabled: Boolean,
+  progress: Float?,
+  modifier: Modifier = Modifier,
+  onFocused: () -> Unit = {},
+  onClick: () -> Unit,
+) {
+  val homeColors = LocalHomeColors.current
+  BiliFocusableSurface(
+    scaleOnFocus = false,
+    shadowOnFocus = false,
+    shape = RoundedCornerShape(BiliRadius.Panel),
+    onClick = onClick,
+    onFocused = onFocused,
+    modifier = modifier.fillMaxWidth(),
+  ) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(start = BiliSpacing.Lg, end = BiliSpacing.Xl, top = BiliSpacing.Md, bottom = BiliSpacing.Md),
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = title,
+            color = homeColors.textPrimary,
+            fontSize = BiliTypography.Body,
+            fontWeight = FontWeight.Bold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+          )
+          if (description.isNotBlank()) {
+            Text(
+              text = description,
+              color = homeColors.textSecondary,
+              fontSize = BiliTypography.BodySmall,
+              maxLines = 3,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.padding(top = BiliSpacing.Xs),
+            )
+          }
+        }
+        if (actionLabel != null) {
+          Text(
+            text = actionLabel,
+            color = if (actionEnabled) homeColors.accent else homeColors.textTertiary,
+            fontSize = BiliTypography.Body,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End,
+            modifier = Modifier
+              .padding(start = BiliSpacing.Lg)
+              .width(BiliSizing.SettingsCodecValueWidth),
+          )
+        }
+      }
+      if (progress != null) {
+        Spacer(Modifier.height(BiliSpacing.Xs))
+        LinearProgressIndicator(
+          progress = { progress },
+          modifier = Modifier.fillMaxWidth(),
+        )
+      }
+    }
+  }
 }
 
 @Composable
