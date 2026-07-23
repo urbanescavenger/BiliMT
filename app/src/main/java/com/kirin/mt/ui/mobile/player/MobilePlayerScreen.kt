@@ -221,17 +221,17 @@ fun MobilePlayerScreen(
 
   // 视频真实尺寸:全屏方向据此自适应横/竖屏。null=尚未拿到,默认按横屏处理。
   val isPortraitVideo = videoSizeInfo?.let { it.height > it.width } ?: false
-  // 竖屏视频播放时自动全屏(视频居中铺满,PlayerView RESIZE_MODE_FIT 自带横向居中黑边),
-  // 暂停(含缓冲/播完等 userPaused 之外的状态)回退分栏显示简介/评论;横屏视频沿用手动 fullscreen 开关。
-  // 用 !userPaused 而非 isPlaying:缓冲中 isPlaying=false 但仍保持沉浸全屏,避免回退分栏抖动。
-  val effectiveFullscreen = if (isPortraitVideo) !userPaused else fullscreen
-  // 全屏切换:按视频真实比例自动选横/竖屏 + 隐藏系统栏(沉浸);退出/关播放器恢复,避免主页卡横/竖屏。
+  // 非全屏默认播放:视频区铺满高度居中(16:9 视频上下留黑)、简介隐藏;暂停(userPaused)回退 16:9+简介/评论分栏。
+  // 手动 fullscreen 仍为沉浸式(强制方向+隐藏系统栏)。用 !userPaused 而非 isPlaying:缓冲中保持居中避免回退分栏抖动。
+  val playerFillsScreen = fullscreen || !userPaused
+  // 全屏切换(仅手动 fullscreen):按视频真实比例自动选横/竖屏 + 隐藏系统栏(沉浸);
+  // 居中播放(非全屏)不动方向/系统栏,保持竖屏 + 系统栏可见。退出/关播放器恢复,避免主页卡横/竖屏。
   // key 含 isPortraitVideo:视频尺寸到达后、用户已在全屏时也能纠正方向。
-  DisposableEffect(effectiveFullscreen, isPortraitVideo) {
+  DisposableEffect(fullscreen, isPortraitVideo) {
     val activity = context.findActivity()
     if (activity != null) {
       val controller = WindowInsetsControllerCompat(activity.window, activity.window.decorView)
-      if (effectiveFullscreen) {
+      if (fullscreen) {
         activity.requestedOrientation =
           if (isPortraitVideo) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
           else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
@@ -599,10 +599,10 @@ fun MobilePlayerScreen(
   val durationMs = playbackDurationState.longValue.coerceAtLeast(1L)
 
   // 竖屏分栏:非全屏时上半 16:9 播放器 + 下半评论;全屏时播放器占满,评论区不渲染。
-  // 竖屏视频播放时 effectiveFullscreen 自动为 true → 全屏;暂停回退分栏(同原 16:9 + 评论)。
-  // 视频播放区外层:竖屏宽度铺满、高度自适应(16:9 视频 + 顶/底栏堆叠);全屏铺满。
-  // windowInsetsPadding(statusBars):竖屏 edge-to-edge 下最顶留系统状态栏高度;全屏 hide(systemBars) 时 inset=0 不留空。
-  val playerAreaModifier = if (effectiveFullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth()
+  // 非全屏播放时 playerFillsScreen=true → 视频铺满高度居中(上下留黑)、简介隐藏;暂停回退 16:9+评论分栏。
+  // 视频播放区外层:竖屏宽度铺满、高度自适应(16:9 视频 + 顶/底栏堆叠);全屏/居中播放铺满。
+  // windowInsetsPadding(statusBars):竖屏 edge-to-edge 下最顶留系统状态栏高度;手动全屏 hide(systemBars) 时 inset=0 不留空。
+  val playerAreaModifier = if (playerFillsScreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth()
   Column(
     modifier = modifier
       .fillMaxSize()
@@ -614,8 +614,8 @@ fun MobilePlayerScreen(
       .windowInsetsPadding(WindowInsets.statusBars)
       .background(Color.Black),
   ) {
-    // 视频区本身:竖屏固定 16:9;全屏取两栏之间剩余(weight(1f),需 ColumnScope)
-    val videoModifier = if (effectiveFullscreen) Modifier.weight(1f).fillMaxWidth()
+    // 视频区本身:竖屏固定 16:9;全屏/居中播放取两栏之间剩余(weight(1f),需 ColumnScope)
+    val videoModifier = if (playerFillsScreen) Modifier.weight(1f).fillMaxWidth()
       else Modifier.aspectRatio(16f / 9f).fillMaxWidth()
     // 顶栏(仅 controlsVisible && Ready)
     if (controlsVisible && playerState is MobilePlayerState.Ready) {
@@ -890,15 +890,13 @@ fun MobilePlayerScreen(
               }
             }
           }
-          // 竖屏视频的播放/暂停已驱动全屏切换,手动全屏按钮无意义且会造成"点了没反应",仅横屏视频显示。
-          if (!isPortraitVideo) {
-            MobilePlayerIconButton(
-              iconRes = if (fullscreen) R.drawable.ic_player_fullscreen_exit else R.drawable.ic_player_fullscreen,
-              contentDescription = if (fullscreen) "退出全屏" else "全屏",
-              tint = BiliColors.TextPrimary,
-              onClick = { fullscreen = !fullscreen },
-            )
-          }
+          // 手动沉浸式全屏入口(强制方向 + 隐藏系统栏);所有视频都显示。居中播放由播放/暂停驱动,与此独立。
+          MobilePlayerIconButton(
+            iconRes = if (fullscreen) R.drawable.ic_player_fullscreen_exit else R.drawable.ic_player_fullscreen,
+            contentDescription = if (fullscreen) "退出全屏" else "全屏",
+            tint = BiliColors.TextPrimary,
+            onClick = { fullscreen = !fullscreen },
+          )
         }
       }
     }
@@ -934,9 +932,9 @@ fun MobilePlayerScreen(
     }
 
   }
-  // 下半区:简介/评论双 Tab(仅非全屏竖屏分栏时渲染;全屏横屏/竖屏播放时隐藏)。
+  // 下半区:简介/评论双 Tab(仅"非全屏 + 暂停"分栏时渲染;居中播放/手动全屏时隐藏)。
   // 简介 Tab 展示视频详情 + 相关视频;评论 Tab 复用 MobileCommentList。
-  if (!effectiveFullscreen) {
+  if (!playerFillsScreen) {
     val tabPagerState = rememberPagerState(pageCount = { 2 })
     var commentTotalCount by remember { mutableIntStateOf(0) }
     // 切换视频(metadata.aid 变)时先清零,避免新视频评论加载完前 Tab 残留旧视频评论数;
