@@ -38,6 +38,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -115,7 +117,6 @@ import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackEpisode
-import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.PlaybackRequest
@@ -201,6 +202,8 @@ fun MobilePlayerScreen(
   var selectedQualityId by remember { mutableStateOf<Int?>(null) }
   var playbackSpeed by remember { mutableFloatStateOf(1f) }
   var settingsSheet by remember { mutableStateOf(false) }
+  // 底栏画质下拉菜单(挂在 HD 图标按钮上)
+  var showQualityMenu by remember { mutableStateOf(false) }
   // 手势交互状态:横拖 seek 进行中 / 长按 2x 进行中 / 居中播放暂停反馈闪现
   var dragSeekActive by remember { mutableStateOf(false) }
   var speedBoostActive by remember { mutableStateOf(false) }
@@ -846,6 +849,47 @@ fun MobilePlayerScreen(
             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
           )
           Text(formatMs(durationMs), color = Color.White)
+          // 画质快捷入口:HD 图标按钮 + DropdownMenu,放在进度条与全屏按钮之间。
+          // 切换逻辑与原设置弹窗 onQualitySelected 一致(改 selectedQualityId + activeRequest.preferredQualityId 重载)。
+          // 播放器页面未包 MaterialTheme,DropdownMenu 显式深色 containerColor,否则默认白底。
+          val readyInfo = (playerState as? MobilePlayerState.Ready)?.info
+          val qualities = readyInfo?.qualities.orEmpty()
+          if (qualities.isNotEmpty()) {
+            Box {
+              MobilePlayerIconButton(
+                iconRes = R.drawable.ic_player_hd,
+                contentDescription = "画质",
+                tint = BiliColors.TextPrimary,
+                onClick = { showQualityMenu = true },
+              )
+              DropdownMenu(
+                expanded = showQualityMenu,
+                onDismissRequest = { showQualityMenu = false },
+                containerColor = Color(0xFF1A1A20),
+              ) {
+                qualities.forEach { q ->
+                  val selected = q.id == selectedQualityId
+                  DropdownMenuItem(
+                    text = {
+                      Text(
+                        text = q.description,
+                        color = if (selected) Color(0xFFFB7299) else Color.White,
+                      )
+                    },
+                    onClick = {
+                      showQualityMenu = false
+                      selectedQualityId = q.id
+                      activeRequest = activeRequest.copy(
+                        startPositionMs = player.currentPosition.takeIf { it > 0L }
+                          ?: playbackPositionState.longValue,
+                        preferredQualityId = q.id,
+                      )
+                    },
+                  )
+                }
+              }
+            }
+          }
           // 竖屏视频的播放/暂停已驱动全屏切换,手动全屏按钮无意义且会造成"点了没反应",仅横屏视频显示。
           if (!isPortraitVideo) {
             MobilePlayerIconButton(
@@ -859,27 +903,15 @@ fun MobilePlayerScreen(
       }
     }
 
-    // 设置弹窗:画质 / 倍速 / 弹幕
+    // 设置弹窗:倍速 / 弹幕 / 分享(画质已移至底栏 HD 按钮)
     if (settingsSheet) {
       val sheetState = rememberModalBottomSheetState()
-      val ready = playerState as? MobilePlayerState.Ready
       ModalBottomSheet(
         onDismissRequest = { settingsSheet = false },
         sheetState = sheetState,
         containerColor = Color(0xFF1A1A20),
       ) {
         PlayerSettingsSheet(
-          qualities = ready?.info?.qualities.orEmpty(),
-          selectedQualityId = selectedQualityId,
-          onQualitySelected = { q ->
-            settingsSheet = false
-            selectedQualityId = q.id
-            activeRequest = activeRequest.copy(
-              startPositionMs = player.currentPosition.takeIf { it > 0L }
-                ?: playbackPositionState.longValue,
-              preferredQualityId = q.id,
-            )
-          },
           playbackSpeed = playbackSpeed,
           onSpeedSelected = { rate ->
             playbackSpeed = rate
@@ -1053,15 +1085,12 @@ private fun formatMs(ms: Long): String {
 private val PlaybackSpeedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f)
 
 /**
- * 播放器设置弹窗:画质(列表)/ 倍速(列表)/ 弹幕(开关 + 4 滑块 + 顶底开关)。
- * 画质切换改 activeRequest.preferredQualityId 重载;倍速实时设 player.playbackSpeed;
+ * 播放器设置弹窗:倍速(列表)/ 弹幕(开关 + 4 滑块 + 顶底开关)/ 分享。
+ * 画质已移至底栏 HD 按钮(进度条与全屏之间);倍速实时设 player.playbackSpeed;
  * 弹幕经 DanmakuSettingsStore 持久化。
  */
 @Composable
 private fun PlayerSettingsSheet(
-  qualities: List<PlaybackQuality>,
-  selectedQualityId: Int?,
-  onQualitySelected: (PlaybackQuality) -> Unit,
   playbackSpeed: Float,
   onSpeedSelected: (Float) -> Unit,
   danmakuSettings: com.kirin.mt.core.player.DanmakuSettings,
@@ -1080,20 +1109,6 @@ private fun PlayerSettingsSheet(
       .verticalScroll(rememberScrollState())
       .padding(horizontal = 16.dp, vertical = 8.dp),
   ) {
-    SectionTitle("画质")
-    qualities.forEach { q ->
-      val selected = q.id == selectedQualityId
-      TextButton(
-        onClick = { onQualitySelected(q) },
-        modifier = Modifier.fillMaxWidth(),
-      ) {
-        Text(
-          text = q.description,
-          color = if (selected) Color(0xFFFB7299) else Color.White,
-        )
-      }
-    }
-
     SectionTitle("倍速")
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
       PlaybackSpeedOptions.forEach { rate ->
