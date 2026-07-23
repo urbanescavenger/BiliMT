@@ -114,6 +114,7 @@ import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackInfo
+import com.kirin.mt.core.player.PlaybackEpisode
 import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.PlaybackRepository
@@ -200,7 +201,6 @@ fun MobilePlayerScreen(
   var selectedQualityId by remember { mutableStateOf<Int?>(null) }
   var playbackSpeed by remember { mutableFloatStateOf(1f) }
   var settingsSheet by remember { mutableStateOf(false) }
-  var episodesSheet by remember { mutableStateOf(false) }
   // 手势交互状态:横拖 seek 进行中 / 长按 2x 进行中 / 居中播放暂停反馈闪现
   var dragSeekActive by remember { mutableStateOf(false) }
   var speedBoostActive by remember { mutableStateOf(false) }
@@ -636,14 +636,12 @@ fun MobilePlayerScreen(
             Text("UP", color = Color.White)
           }
         }
-        if (activeRequest.bvid.isNotBlank() || activeRequest.aid > 0L) {
-          TextButton(onClick = { shareVideo() }) {
-            Icon(
-              painter = painterResource(R.drawable.ic_player_share),
-              contentDescription = "分享",
-              tint = Color.White,
-            )
-          }
+        TextButton(onClick = { settingsSheet = true }) {
+          Icon(
+            painter = painterResource(R.drawable.ic_nav_settings),
+            contentDescription = "设置",
+            tint = Color.White,
+          )
         }
       }
     }
@@ -842,42 +840,6 @@ fun MobilePlayerScreen(
             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
           )
           Text(formatMs(durationMs), color = Color.White)
-        }
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          MobilePlayerIconButton(
-            iconRes = R.drawable.ic_player_subtitles,
-            contentDescription = "弹幕",
-            tint = if (danmakuSettings.enabled) BiliColors.BiliPink else BiliColors.TextSecondary,
-            onClick = { scope.launch { danmakuSettingsStore.setEnabled(!danmakuSettings.enabled) } },
-          )
-          if (activeRequest.ownerMid > 0L) {
-            MobilePlayerIconButton(
-              iconRes = R.drawable.ic_nav_account,
-              contentDescription = "UP 主页",
-              tint = BiliColors.TextPrimary,
-              onClick = {
-                onOpenUpSpace(activeRequest.ownerMid, activeRequest.ownerName, activeRequest.ownerFace)
-              },
-            )
-          }
-          if ((metadata?.pages?.size ?: 0) > 1) {
-            MobilePlayerIconButton(
-              iconRes = R.drawable.ic_player_playlist,
-              contentDescription = "选集",
-              tint = BiliColors.TextPrimary,
-              onClick = { episodesSheet = true },
-            )
-          }
-          MobilePlayerIconButton(
-            iconRes = R.drawable.ic_nav_settings,
-            contentDescription = "设置",
-            tint = BiliColors.TextPrimary,
-            onClick = { settingsSheet = true },
-          )
           MobilePlayerIconButton(
             iconRes = if (fullscreen) R.drawable.ic_player_fullscreen_exit else R.drawable.ic_player_fullscreen,
             contentDescription = if (fullscreen) "退出全屏" else "全屏",
@@ -922,52 +884,14 @@ fun MobilePlayerScreen(
           onDanmakuSpeed = { scope.launch { danmakuSettingsStore.setSpeed(it) } },
           onDanmakuAllowTop = { scope.launch { danmakuSettingsStore.setAllowTop(it) } },
           onDanmakuAllowBottom = { scope.launch { danmakuSettingsStore.setAllowBottom(it) } },
+          onShare = {
+            settingsSheet = false
+            shareVideo()
+          },
         )
       }
     }
 
-    // 选集(分P)弹窗
-    if (episodesSheet) {
-      val epSheetState = rememberModalBottomSheetState()
-      ModalBottomSheet(
-        onDismissRequest = { episodesSheet = false },
-        sheetState = epSheetState,
-        containerColor = Color(0xFF1A1A20),
-      ) {
-        Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        ) {
-          SectionTitle("选集")
-          metadata?.pages.orEmpty().forEach { ep ->
-            val selected = ep.cid == activeRequest.cid ||
-              (ep.epId > 0L && ep.epId == activeRequest.epId)
-            TextButton(
-              onClick = {
-                episodesSheet = false
-                activeRequest = activeRequest.copy(
-                  cid = ep.cid,
-                  epId = ep.epId,
-                  startPositionMs = 0L,
-                  preferredQualityId = selectedQualityId,
-                  forceStartPosition = true,
-                  historyPage = ep.page,
-                )
-              },
-              modifier = Modifier.fillMaxWidth(),
-            ) {
-              Text(
-                text = "P${ep.page} ${ep.title}",
-                color = if (selected) Color(0xFFFB7299) else Color.White,
-              )
-            }
-          }
-          Spacer(Modifier.padding(top = 8.dp))
-        }
-      }
-    }
   }
   // 下半区:简介/评论双 Tab(仅非全屏竖屏分栏时渲染;全屏横屏时隐藏)。
   // 简介 Tab 展示视频详情 + 相关视频;评论 Tab 复用 MobileCommentList。
@@ -1013,6 +937,16 @@ fun MobilePlayerScreen(
             onOpenUpSpace = onOpenUpSpace,
             videoRepository = videoRepository,
             onShare = { shareVideo() },
+            onSelectPage = { ep ->
+              activeRequest = activeRequest.copy(
+                cid = ep.cid,
+                epId = ep.epId,
+                startPositionMs = 0L,
+                preferredQualityId = selectedQualityId,
+                forceStartPosition = true,
+                historyPage = ep.page,
+              )
+            },
             modifier = Modifier.fillMaxSize(),
           )
           1 -> MobileCommentList(
@@ -1129,6 +1063,7 @@ private fun PlayerSettingsSheet(
   onDanmakuSpeed: (Int) -> Unit,
   onDanmakuAllowTop: (Boolean) -> Unit,
   onDanmakuAllowBottom: (Boolean) -> Unit,
+  onShare: () -> Unit,
 ) {
   Column(
     modifier = Modifier
@@ -1177,6 +1112,13 @@ private fun PlayerSettingsSheet(
     SettingRow("底部弹幕") {
       Switch(checked = danmakuSettings.allowBottom, onCheckedChange = onDanmakuAllowBottom)
     }
+
+    SectionTitle("分享")
+    SettingRow("分享视频") {
+      TextButton(onClick = onShare) {
+        Text("分享", color = Color(0xFFFB7299))
+      }
+    }
     Spacer(Modifier.padding(top = 8.dp))
   }
 }
@@ -1194,6 +1136,7 @@ private fun MobilePlayerIntroTab(
   onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit,
   videoRepository: VideoRepository,
   onShare: () -> Unit,
+  onSelectPage: (PlaybackEpisode) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   if (metadata == null) {
@@ -1429,28 +1372,46 @@ private fun MobilePlayerIntroTab(
         }
       }
 
-      // 相关视频:2 列 chunked Row,复用 MobileVideoCard,点击切播 / 进 UP 主页。
-      SectionTitle("相关视频")
-      if (relatedVideos.isEmpty()) {
-        Text(
-          text = "暂无相关视频",
-          color = BiliColors.TextSecondary,
-          modifier = Modifier.padding(vertical = 12.dp),
-        )
-      }
-      relatedVideos.chunked(2).forEach { rowItems ->
-        Row(modifier = Modifier.fillMaxWidth()) {
-          rowItems.forEach { v ->
-            MobileVideoCard(
-              video = v,
-              onClick = { onPlayVideo(v) },
-              onOpenOwner = { video ->
-                onOpenUpSpace(video.ownerMid, video.ownerName, video.ownerFace)
-              },
-              modifier = Modifier.weight(1f).padding(4.dp),
+      // 多分P:在此处展示选集(替代相关视频);单P:保持相关视频列表。
+      if (metadata.pages.size > 1) {
+        SectionTitle("选集")
+        metadata.pages.forEach { ep ->
+          val selected = ep.cid == request.cid ||
+            (ep.epId > 0L && ep.epId == request.epId)
+          TextButton(
+            onClick = { onSelectPage(ep) },
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Text(
+              text = "P${ep.page} ${ep.title}",
+              color = if (selected) Color(0xFFFB7299) else Color.White,
             )
           }
-          if (rowItems.size == 1) Spacer(Modifier.weight(1f))
+        }
+      } else {
+        // 相关视频:2 列 chunked Row,复用 MobileVideoCard,点击切播 / 进 UP 主页。
+        SectionTitle("相关视频")
+        if (relatedVideos.isEmpty()) {
+          Text(
+            text = "暂无相关视频",
+            color = BiliColors.TextSecondary,
+            modifier = Modifier.padding(vertical = 12.dp),
+          )
+        }
+        relatedVideos.chunked(2).forEach { rowItems ->
+          Row(modifier = Modifier.fillMaxWidth()) {
+            rowItems.forEach { v ->
+              MobileVideoCard(
+                video = v,
+                onClick = { onPlayVideo(v) },
+                onOpenOwner = { video ->
+                  onOpenUpSpace(video.ownerMid, video.ownerName, video.ownerFace)
+                },
+                modifier = Modifier.weight(1f).padding(4.dp),
+              )
+            }
+            if (rowItems.size == 1) Spacer(Modifier.weight(1f))
+          }
         }
       }
       Spacer(Modifier.height(16.dp))
