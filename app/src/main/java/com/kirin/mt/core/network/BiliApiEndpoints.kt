@@ -38,6 +38,8 @@ object BiliApiEndpoints {
   const val PlayUrl = "$ApiBase/x/player/wbi/playurl"
   const val PlayerVideoshot = "$ApiBase/x/player/videoshot"
   const val PlayerDanmaku = "$ApiBase/x/v1/dm/list.so"
+  // 发送弹幕(web):POST form body + WBI 签名(w_rid/wts 在 URL query)。csrf=bili_jct。
+  const val DmPost = "$ApiBase/x/v2/dm/post"
   const val CommentBase = "https://comment.bilibili.com"
   const val CommentReply = "$ApiBase/x/v2/reply"
   const val SponsorBlockSkipSegments = "https://bsbsb.top/api/skipSegments"

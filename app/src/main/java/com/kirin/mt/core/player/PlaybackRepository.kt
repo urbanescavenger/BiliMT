@@ -7,6 +7,7 @@ import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliNumberParser
 import com.kirin.mt.core.network.PgcMappers
+import com.kirin.mt.core.network.SpaceHttpSupport
 import com.kirin.mt.core.network.asObjectOrNull
 import com.kirin.mt.core.network.boolean
 import com.kirin.mt.core.network.int
@@ -24,6 +25,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import okhttp3.HttpUrl.Companion.toHttpUrl
 
 class PlaybackRepository(
   private val apiClient: BiliApiClient,
@@ -370,6 +372,74 @@ class PlaybackRepository(
 
   suspend fun getDanmaku(cid: Long): List<DanmakuEntry> {
     return danmakuRepository.getDanmaku(cid)
+  }
+
+  /**
+   * 发送弹幕(web /x/v2/dm/post)。镜像 likeVideoArchive 的 POST+csrf+buvid 风控范式,
+   * 额外对 URL query 做 WBI 签名(w_rid/wts 只签 query,body 不参与签名)。
+   *
+   * 失败抛 [com.kirin.mt.core.network.BiliApiCodeException](带 B站原始中文 message,如
+   * "发送频率过快"/"等级不足"/"该视频禁止发送弹幕"),由 UI 层 catch 后 Toast。
+   * 未登录(cid/bvid/msg 非法、sessData/biliJct 缺失)直接返回 false,不抛。
+   *
+   * @param progressMs 弹幕出现时间(毫秒),取当前播放位置。
+   * @param mode 1=滚动 4=底部 5=顶部(最小可用固定 1)。
+   * @param color 十进制 RGB888,默认 0xFFFFFF 白。
+   * @param fontsize 默认 25(标准)。
+   */
+  suspend fun sendDanmaku(
+    cid: Long,
+    bvid: String,
+    msg: String,
+    progressMs: Long,
+    mode: Int = 1,
+    color: Int = 0xFFFFFF,
+    fontsize: Int = 25,
+  ): Boolean {
+    if (cid <= 0L || bvid.isBlank() || msg.isBlank()) return false
+    val session = sessionStore.session.first()
+    val sessData = session.sessData ?: return false
+    val biliJct = session.biliJct ?: return false
+    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
+
+    // WBI 只签 URL query(w_rid/wts 加在这里);form body 不参与签名。
+    val keys = wbiKeyRepository.ensureKeys(sessData)
+    val queryMap = linkedMapOf("web_location" to "1315873", "csrf" to biliJct)
+    val signedQuery = if (keys != null) {
+      wbiSigner.sign(queryMap, keys.imgKey, keys.subKey)
+    } else {
+      queryMap
+    }
+    val urlBuilder = BiliApiEndpoints.DmPost.toHttpUrl().newBuilder()
+    signedQuery.forEach { (key, value) -> urlBuilder.addQueryParameter(key, value) }
+    val fullUrl = urlBuilder.build().toString()
+
+    val body = mapOf(
+      "type" to "1",
+      "oid" to cid.toString(),
+      "msg" to msg,
+      // aid 与 bvid 二选一;PlaybackInfo 无 aid,故用 bvid。
+      "bvid" to bvid,
+      "progress" to progressMs.toString(),
+      "mode" to mode.toString(),
+      "color" to color.toString(),
+      "fontsize" to fontsize.toString(),
+      "pool" to "0",
+      // rnd=时间戳×1000000:带此项冷却 5s,不带则 90s。
+      "rnd" to (System.currentTimeMillis() * 1000L).toString(),
+      "csrf" to biliJct,
+    )
+
+    val root = apiClient.postFormJson(
+      url = fullUrl,
+      params = body,
+      sessData = sessData,
+      biliJct = biliJct,
+      buvid3 = buvid3,
+      buvid4 = buvid4,
+    ).rootObject()
+    root.requireBiliCodeOk("send danmaku")
+    return true
   }
 
   suspend fun getAirJumpSegments(bvid: String): List<AirJumpSegment> {

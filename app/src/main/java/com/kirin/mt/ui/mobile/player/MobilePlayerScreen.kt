@@ -44,6 +44,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -74,7 +76,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -112,6 +116,8 @@ import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
+import com.kirin.mt.core.player.DanmakuEntry
+import com.kirin.mt.core.player.DanmakuMode
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
@@ -204,6 +210,10 @@ fun MobilePlayerScreen(
   var settingsSheet by remember { mutableStateOf(false) }
   // 底栏画质下拉菜单(挂在 HD 图标按钮上)
   var showQualityMenu by remember { mutableStateOf(false) }
+  // 发送弹幕:底栏内联输入栏开关 / 文本 / 发送中。发在当前播放位置(progress 毫秒)。
+  var danmakuInputActive by remember { mutableStateOf(false) }
+  var danmakuInputText by remember { mutableStateOf("") }
+  var danmakuSending by remember { mutableStateOf(false) }
   // 手势交互状态:横拖 seek 进行中 / 长按 2x 进行中 / 居中播放暂停反馈闪现
   var dragSeekActive by remember { mutableStateOf(false) }
   var speedBoostActive by remember { mutableStateOf(false) }
@@ -819,12 +829,66 @@ fun MobilePlayerScreen(
 
     // 底栏(仅 controlsVisible && Ready)
     if (controlsVisible && playerState is MobilePlayerState.Ready) {
+      val readyInfo = (playerState as MobilePlayerState.Ready).info
+      val keyboardController = LocalSoftwareKeyboardController.current
       Column(
         modifier = Modifier
           .fillMaxWidth()
           .background(Color.Black)
           .padding(horizontal = 16.dp, vertical = 4.dp),
       ) {
+        // 发送弹幕:内联输入栏(TextField + 发送),发在当前播放位置 progress 毫秒。
+        if (danmakuInputActive) {
+          DanmakuInputBar(
+            text = danmakuInputText,
+            onTextChange = { if (it.length <= 100) danmakuInputText = it },
+            sending = danmakuSending,
+            onSend = {
+              val msg = danmakuInputText.trim()
+              if (msg.isBlank()) {
+                Toast.makeText(context, "弹幕内容不能为空", Toast.LENGTH_SHORT).show()
+              } else {
+                val progressMs = playbackPositionState.longValue
+                danmakuSending = true
+                scope.launch {
+                  val result = runCatching {
+                    playbackRepository.sendDanmaku(
+                      cid = readyInfo.cid,
+                      bvid = readyInfo.bvid,
+                      msg = msg,
+                      progressMs = progressMs,
+                    )
+                  }
+                  danmakuSending = false
+                  result
+                    .onSuccess { ok ->
+                      if (ok) {
+                        // 本地插入,立即在弹幕层渲染(白色滚动)。
+                        danmakuEntries = danmakuEntries + DanmakuEntry(
+                          showAtMs = progressMs,
+                          text = msg,
+                          mode = DanmakuMode.Scroll,
+                          color = android.graphics.Color.WHITE,
+                        )
+                        danmakuInputText = ""
+                        danmakuInputActive = false
+                        keyboardController?.hide()
+                        Toast.makeText(context, "弹幕已发送", Toast.LENGTH_SHORT).show()
+                      } else {
+                        // sendDanmaku 对未登录/参数非法返回 false(未抛)。
+                        Toast.makeText(context, "发送失败,请先登录", Toast.LENGTH_SHORT).show()
+                      }
+                    }
+                    .onFailure { error ->
+                      if (error is CancellationException) throw error
+                      val message = (error as? BiliApiCodeException)?.biliMessage ?: "发送失败"
+                      Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                    }
+                }
+              }
+            },
+          )
+        }
         Row(
           modifier = Modifier.fillMaxWidth(),
           verticalAlignment = Alignment.CenterVertically,
@@ -852,8 +916,7 @@ fun MobilePlayerScreen(
           // 画质快捷入口:HD 图标按钮 + DropdownMenu,放在进度条与全屏按钮之间。
           // 切换逻辑与原设置弹窗 onQualitySelected 一致(改 selectedQualityId + activeRequest.preferredQualityId 重载)。
           // 播放器页面未包 MaterialTheme,DropdownMenu 显式深色 containerColor,否则默认白底。
-          val readyInfo = (playerState as? MobilePlayerState.Ready)?.info
-          val qualities = readyInfo?.qualities.orEmpty()
+          val qualities = readyInfo.qualities
           if (qualities.isNotEmpty()) {
             Box {
               MobilePlayerIconButton(
@@ -890,6 +953,14 @@ fun MobilePlayerScreen(
               }
             }
           }
+          // 发送弹幕入口:点开底栏内联输入栏(DanmakuInputBar),发在当前播放位置。
+          // 图标复用 ic_player_subtitles(TV 弹幕设置亦用此图标);激活态高亮 BiliPink。
+          MobilePlayerIconButton(
+            iconRes = R.drawable.ic_player_subtitles,
+            contentDescription = "发送弹幕",
+            tint = if (danmakuInputActive) BiliColors.BiliPink else BiliColors.TextPrimary,
+            onClick = { danmakuInputActive = !danmakuInputActive },
+          )
           // 手动沉浸式全屏入口(强制方向 + 隐藏系统栏);所有视频都显示。居中播放由播放/暂停驱动,与此独立。
           MobilePlayerIconButton(
             iconRes = if (fullscreen) R.drawable.ic_player_fullscreen_exit else R.drawable.ic_player_fullscreen,
@@ -1667,5 +1738,54 @@ private fun MobilePlayerIconButton(
       tint = tint,
       modifier = Modifier.size(22.dp),
     )
+  }
+}
+
+/**
+ * 发送弹幕内联输入栏:OutlinedTextField + 发送按钮,挂在底栏顶部,发在当前播放位置。
+ * 字数上限 100(对齐 B站 36702),由调用方 onTextChange 拦截。
+ * 播放器页面未包 MaterialTheme,OutlinedTextField 显式深色 colors,否则默认白底不可读。
+ */
+@Composable
+private fun DanmakuInputBar(
+  text: String,
+  onTextChange: (String) -> Unit,
+  sending: Boolean,
+  onSend: () -> Unit,
+) {
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(bottom = 6.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    OutlinedTextField(
+      value = text,
+      onValueChange = onTextChange,
+      modifier = Modifier.weight(1f),
+      singleLine = true,
+      placeholder = { Text("发个弹幕…", color = Color(0xFF8A8A95)) },
+      textStyle = TextStyle(color = Color.White),
+      trailingIcon = {
+        Text("${text.length}/100", color = Color(0xFF8A8A95))
+      },
+      colors = OutlinedTextFieldDefaults.colors(
+        focusedContainerColor = Color(0xFF1A1A20),
+        unfocusedContainerColor = Color(0xFF1A1A20),
+        focusedBorderColor = BiliColors.BiliPink,
+        unfocusedBorderColor = Color(0xFF3A3A45),
+        cursorColor = BiliColors.BiliPink,
+      ),
+    )
+    Spacer(Modifier.width(8.dp))
+    TextButton(
+      onClick = onSend,
+      enabled = !sending && text.isNotBlank(),
+    ) {
+      Text(
+        if (sending) "发送中" else "发送",
+        color = if (sending || text.isBlank()) Color(0xFF8A8A95) else BiliColors.BiliPink,
+      )
+    }
   }
 }
