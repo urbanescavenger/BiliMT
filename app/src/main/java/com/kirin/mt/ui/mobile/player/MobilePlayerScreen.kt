@@ -3,6 +3,7 @@ package com.kirin.mt.ui.mobile.player
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.annotation.DrawableRes
@@ -34,6 +35,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.AlertDialog
@@ -79,6 +82,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -112,6 +116,7 @@ import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.network.FavoriteFolder
 import com.kirin.mt.core.network.BiliApiCodeException
+import com.kirin.mt.core.network.BiliNetworkException
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.AirJumpSegment
@@ -145,6 +150,7 @@ private const val ProgressUpdateMs = 500L
 private const val HeartbeatIntervalMs = 15_000L
 private const val CompletedProgressSeconds = -1
 private const val CompletionActionDelayMs = 3000L
+private const val DanmakuSendLogTag = "BiliDanmakuSend"
 // 空降助手阈值(镜像 TV PlayerScreen)
 private const val AirJumpWarningLeadMs = 3_500L
 private const val AirJumpCompletionToastSuppressMs = 1_500L
@@ -845,6 +851,7 @@ fun MobilePlayerScreen(
             sending = danmakuSending,
             onSend = {
               val msg = danmakuInputText.trim()
+              Log.i(DanmakuSendLogTag, "onSend triggered msg=${msg.length}c cid=${readyInfo.cid} bvid=${readyInfo.bvid}")
               if (msg.isBlank()) {
                 Toast.makeText(context, "弹幕内容不能为空", Toast.LENGTH_SHORT).show()
               } else {
@@ -876,13 +883,18 @@ fun MobilePlayerScreen(
                         Toast.makeText(context, "弹幕已发送", Toast.LENGTH_SHORT).show()
                       } else {
                         // sendDanmaku 对未登录/参数非法返回 false(未抛)。
-                        Toast.makeText(context, "发送失败,请先登录", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "发送失败(未登录或参数异常)", Toast.LENGTH_LONG).show()
                       }
                     }
                     .onFailure { error ->
                       if (error is CancellationException) throw error
-                      val message = (error as? BiliApiCodeException)?.biliMessage ?: "发送失败"
-                      Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                      Log.w(DanmakuSendLogTag, "send danmaku failed", error)
+                      val message = when (error) {
+                        is BiliApiCodeException -> "弹幕${error.code}:${error.biliMessage}"
+                        is BiliNetworkException -> "网络错误 HTTP ${error.statusCode}"
+                        else -> "发送失败:${error.localizedMessage ?: error::class.simpleName}"
+                      }
+                      Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                     }
                 }
               }
@@ -1769,6 +1781,9 @@ private fun DanmakuInputBar(
       trailingIcon = {
         Text("${text.length}/100", color = Color(0xFF8A8A95))
       },
+      // 接键盘发送键:手机用户打完字习惯点键盘右下角发送,默认 Done 不触发 onSend。
+      keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+      keyboardActions = KeyboardActions(onSend = { onSend() }),
       colors = OutlinedTextFieldDefaults.colors(
         focusedContainerColor = Color(0xFF1A1A20),
         unfocusedContainerColor = Color(0xFF1A1A20),
