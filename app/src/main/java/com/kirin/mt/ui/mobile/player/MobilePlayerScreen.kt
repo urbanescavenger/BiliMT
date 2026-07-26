@@ -99,6 +99,8 @@ import com.kirin.mt.ui.mobile.home.formatCount
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
@@ -286,6 +288,17 @@ fun MobilePlayerScreen(
   val player = remember {
     ExoPlayer.Builder(context)
       .setLoadControl(createTvPlaybackLoadControl())
+      // 后台播放优化:别的应用抢音频焦点→自动暂停,焦点回来→自动续播;
+      // 耳机/蓝牙音频设备断开(AUDIO_BECOMING_NOISY)→自动暂停。Media3 内部管理焦点
+      // 请求/放弃与 becoming-noisy receiver 的注册/反注册(随 player release 自动清理)。
+      .setAudioAttributes(
+        AudioAttributes.Builder()
+          .setUsage(C.USAGE_MEDIA)
+          .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+          .build(),
+        /* handleAudioFocus = */ true,
+      )
+      .setHandleAudioBecomingNoisy(true)
       .build()
   }
 
