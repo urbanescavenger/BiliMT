@@ -149,15 +149,22 @@ private fun List<DanmakuEntry>.toTextData(
   maxEntries: Int,
   textConverter: ChineseTextConverter,
 ): List<TextData> {
-  return asSequence()
-    .filter { entry ->
-      when (entry.mode) {
-        DanmakuMode.Scroll -> true
-        DanmakuMode.Top -> settings.allowTop
-        DanmakuMode.Bottom -> settings.allowBottom
-      }
+  // 自己发的弹幕(isMine)必保留,不参与 maxEntries 限流。否则弹幕多的视频里
+  // DanmakuRepository 已限 5000 条普通弹幕,自己发的那条 append 成第 5001 条,
+  // showAtMs 在当前播放位置(时间线靠后),被 take(maxEntries) 按列表顺序截掉看不到。
+  val modeAllowed: (DanmakuEntry) -> Boolean = { entry ->
+    when (entry.mode) {
+      DanmakuMode.Scroll -> true
+      DanmakuMode.Top -> settings.allowTop
+      DanmakuMode.Bottom -> settings.allowBottom
     }
-    .take(maxEntries)
+  }
+  val mine = filter { it.isMine && modeAllowed(it) }
+  val others = asSequence()
+    .filter { !it.isMine && modeAllowed(it) }
+    .take((maxEntries - mine.size).coerceAtLeast(0))
+    .toList()
+  return (mine + others).asSequence()
     .map { entry ->
       TextData().apply {
         text = textConverter.convert(entry.text)
