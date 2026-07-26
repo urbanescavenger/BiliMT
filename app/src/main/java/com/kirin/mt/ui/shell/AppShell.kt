@@ -332,7 +332,11 @@ fun BiliTvApp(
     }
     accountSelected = false
     val destinationChanged = selectedDestination != destination
-    if (!destinationChanged) {
+    if (destinationChanged) {
+      // 用户已手动切换目的地，「启动初始焦点」期结束：避免从其它 tab 切回首页/PGC 时
+      // 焦点被 TvVideoGrid 的初始焦点 effect 抢到第一个视频卡片，而非停在侧边栏/胶囊 tab。
+      initialHomeFocusPending = false
+    } else {
       requestManualRefresh(destination)
     }
     selectedDestination = destination
