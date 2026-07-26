@@ -7,6 +7,8 @@ data class DanmakuEntry(
   val text: String,
   val mode: DanmakuMode,
   val color: Int = Color.WHITE,
+  /** 本地发送的弹幕标记:渲染时用粉色粗描边区别于普通弹幕,便于识别"我发的"。 */
+  val isMine: Boolean = false,
 )
 
 enum class DanmakuMode {

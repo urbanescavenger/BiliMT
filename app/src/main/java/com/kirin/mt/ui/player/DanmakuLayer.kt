@@ -165,8 +165,14 @@ private fun List<DanmakuEntry>.toTextData(
         layerType = entry.mode.layerType
         textSize = fontSizePx
         textColor = entry.color
-        textStrokeWidth = (fontSizePx * 0.08f).coerceAtLeast(1.5f)
-        textStrokeColor = Color.argb(190, 0, 0, 0)
+        if (entry.isMine) {
+          // 自己发的弹幕:BiliPink 粗描边,在弹幕流里一眼识别"我发的"。
+          textStrokeWidth = (fontSizePx * 0.22f).coerceAtLeast(4f)
+          textStrokeColor = Color.argb(255, 0xFB, 0x72, 0x99)
+        } else {
+          textStrokeWidth = (fontSizePx * 0.08f).coerceAtLeast(1.5f)
+          textStrokeColor = Color.argb(190, 0, 0, 0)
+        }
         includeFontPadding = false
       }
     }

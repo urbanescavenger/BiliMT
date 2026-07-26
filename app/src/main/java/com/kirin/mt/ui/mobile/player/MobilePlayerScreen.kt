@@ -932,7 +932,7 @@ fun MobilePlayerScreen(
                   result
                     .onSuccess { posted ->
                       if (posted != null) {
-                        // 本地插入,立即在弹幕层渲染(白色滚动)。
+                        // 本地插入,立即在弹幕层渲染(白色滚动 + 粉色粗描边识别)。
                         // showAtMs 用响应回来时的实时播放头 + 前置偏移:发送网络请求耗时 1-3s,
                         // 期间视频在播,用发送时的 progressMs 会让 showAtMs 落后于实际播放头被引擎跳过
                         // (Bytedance 对 showAtTime < start(time) 不显示)。实时位置 + 1s 保证落在 set time 之后。
@@ -943,16 +943,12 @@ fun MobilePlayerScreen(
                           text = msg,
                           mode = DanmakuMode.Scroll,
                           color = android.graphics.Color.WHITE,
+                          isMine = true,
                         )
                         danmakuInputText = ""
                         danmakuInputActive = false
                         keyboardController?.hide()
-                        // 诊断 toast(临时):暴露 B站返回 dmid/visible + 本地插入关键值,定位"发送成功但看不到"。
-                        Toast.makeText(
-                          context,
-                          "已发送 dmid=${posted.dmid} vis=${posted.visible} showAt=$showAtMs live=$livePos entries=${danmakuEntries.size} play=$isPlaying",
-                          Toast.LENGTH_LONG,
-                        ).show()
+                        Toast.makeText(context, "弹幕已发送", Toast.LENGTH_SHORT).show()
                       } else {
                         // sendDanmaku 对未登录/参数非法返回 null(未抛)。
                         Toast.makeText(context, "发送失败(未登录或参数异常)", Toast.LENGTH_LONG).show()
