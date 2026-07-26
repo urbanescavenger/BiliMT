@@ -27,6 +27,11 @@ class BiliHttpClientFactory {
 
   fun createPlaybackClient(): OkHttpClient {
     return baseBuilder()
+      // 流式拉流单次 OkHttp Call 跨整个分片(DASH)或整段视频(PGC progressive),不能被
+      // baseBuilder 的 15s callTimeout 强切——那是为保护 getPlaybackInfo(走 apiClient)
+      // 加的,playback client 继承它会导致单段下载 >15s 时 onPlayerError 卡在播放中段。
+      // 0 = 禁用整调用上限;connect/read/write 仍各 15s(per-read 兜底,连接真死会报错)。
+      .callTimeout(0, TimeUnit.SECONDS)
       .addInterceptor { chain ->
         val request = chain.request()
         val enriched = request.newBuilder()

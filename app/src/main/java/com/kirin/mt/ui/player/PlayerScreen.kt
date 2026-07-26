@@ -215,6 +215,10 @@ fun PlayerScreen(
   /** 内存态诊断：launch 协程当前步骤，不依赖 logcat，PGC 卡死时叠层直接显示。 */
   var launchStep by remember { mutableStateOf("") }
   var retryKey by remember { mutableLongStateOf(0L) }
+  // stall 自动恢复:BUFFERING 且进度长时间不前进时,记当前位置并 bump retryKey 重载源续播。
+  // autoResumePositionMs=-1L 表示无续播位(走 saved progress);>=0 时 launch effect 优先 seekTo 它。
+  var autoResumePositionMs by remember { mutableLongStateOf(-1L) }
+  var autoRetryCount by remember { mutableIntStateOf(0) }
   var lastPlaybackExitBackPressMs by remember { mutableLongStateOf(0L) }
   var playbackExitConfirmToast by remember { mutableStateOf<Toast?>(null) }
   var playbackCompletionToast by remember { mutableStateOf<Toast?>(null) }
@@ -1191,6 +1195,10 @@ fun PlayerScreen(
           pausedByUser -> showControls()
           isPlaying -> hideControlsForPlayback()
         }
+        if (isPlaying && autoRetryCount > 0) {
+          autoRetryCount = 0
+          Log.i(PlayerPlaybackLogTag, "stall auto-retry recovered, counter reset")
+        }
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {
@@ -1339,11 +1347,14 @@ fun PlayerScreen(
           videoTracks = resolvedVideoTracks,
           audioTracks = resolvedAudioTracks,
         )
-        val requestedStartPositionMs = if (resolvedRequest.preferredQualityId != null || resolvedRequest.forceStartPosition) {
-          resolvedRequest.startPositionMs
-        } else {
-          playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
-            ?: resolvedRequest.startPositionMs
+        val requestedStartPositionMs = when {
+          // stall 自动重试续播:优先用卡住时的当前位置,而非 saved progress(可能更旧)。
+          autoResumePositionMs >= 0L -> autoResumePositionMs.also { autoResumePositionMs = -1L }
+          resolvedRequest.preferredQualityId != null || resolvedRequest.forceStartPosition ->
+            resolvedRequest.startPositionMs
+          else ->
+            playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
+              ?: resolvedRequest.startPositionMs
         }
         val startPositionMs = requestedStartPositionMs
         val dataSourceFactory = DefaultDataSource.Factory(
@@ -1408,6 +1419,8 @@ fun PlayerScreen(
   val displayRequestState = rememberUpdatedState(displayRequest)
 
   LaunchedEffect(player, playerState) {
+    var stallBaselinePositionMs = 0L
+    var stallSinceMs = 0L
     while (isActive) {
       val nowMs = SystemClock.elapsedRealtime()
       val currentPositionMs = player.currentPosition.takeIf { it >= 0L } ?: 0L
@@ -1460,6 +1473,35 @@ fun PlayerScreen(
       }
       if (playerState is PlayerScreenState.Ready) {
         handleAirJumpPosition(currentPositionMs)
+      }
+      // stall 检测:STATE_BUFFERING 且用户想播(playWhenReady)、进度连续 N 秒不前进 → 自动重载续播。
+      // 排除:已暂停(playWhenReady=false)、已结束、非 Ready 态。seek/换段后 position 变化会清零基线。
+      val isStallBuffering = playerState is PlayerScreenState.Ready &&
+        player.playbackState == Player.STATE_BUFFERING &&
+        player.playWhenReady &&
+        !completionReported
+      if (isStallBuffering) {
+        if (currentPositionMs == stallBaselinePositionMs) {
+          if (stallSinceMs == 0L) {
+            stallSinceMs = nowMs
+          } else if (nowMs - stallSinceMs >= StallThresholdMs && autoRetryCount < MaxStallAutoRetry) {
+            autoResumePositionMs = currentPositionMs
+            autoRetryCount += 1
+            Log.w(
+              PlayerPlaybackLogTag,
+              "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
+            )
+            stallSinceMs = 0L
+            stallBaselinePositionMs = 0L
+            retryKey += 1L
+          }
+        } else {
+          stallBaselinePositionMs = currentPositionMs
+          stallSinceMs = 0L
+        }
+      } else {
+        stallBaselinePositionMs = currentPositionMs
+        stallSinceMs = 0L
       }
       delay(BiliMotion.PlayerProgressUpdateMs)
     }
@@ -2160,6 +2202,10 @@ private const val AirJumpRewindResetThresholdMs = 2_000L
 private const val AirJumpRewindResetLeadMs = 1_000L
 private const val PlayerDanmakuLogTag = "BiliMT:Danmaku"
 private const val PlayerPlaybackLogTag = "BiliMT:Player"
+/** BUFFERING 且进度不前进超过此阈值判定为 stall,触发自动重载续播。 */
+private const val StallThresholdMs = 8_000L
+/** 单次播放会话内 stall 自动重试上限,超过则交用户手动重试,避免死循环刷 CDN。 */
+private const val MaxStallAutoRetry = 2
 /** 起播整体超时：callTimeout 兜住单次 HTTP，withTimeout 兜住整条 launch（含串行调用叠加）。 */
 private const val LaunchTimeoutMs = 30_000L
 
