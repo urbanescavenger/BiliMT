@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import com.kirin.mt.core.storage.biliDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -19,6 +20,7 @@ class DanmakuSettingsStore(private val context: Context) {
       speed = (preferences[Keys.Speed] ?: DefaultSpeed).coerceIn(MinSpeed, MaxSpeed),
       allowTop = preferences[Keys.AllowTop] ?: true,
       allowBottom = preferences[Keys.AllowBottom] ?: true,
+      capacity = DanmakuCapacity.fromKey(preferences[Keys.Capacity]),
     )
   }
 
@@ -31,6 +33,7 @@ class DanmakuSettingsStore(private val context: Context) {
       preferences[Keys.Speed] = settings.speed.coerceIn(MinSpeed, MaxSpeed)
       preferences[Keys.AllowTop] = settings.allowTop
       preferences[Keys.AllowBottom] = settings.allowBottom
+      preferences[Keys.Capacity] = settings.capacity.key
     }
   }
 
@@ -76,6 +79,12 @@ class DanmakuSettingsStore(private val context: Context) {
     }
   }
 
+  suspend fun setCapacity(capacity: DanmakuCapacity) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.Capacity] = capacity.key
+    }
+  }
+
   private object Keys {
     val Enabled = booleanPreferencesKey("player_danmaku_enabled")
     val Opacity = floatPreferencesKey("player_danmaku_opacity")
@@ -84,6 +93,7 @@ class DanmakuSettingsStore(private val context: Context) {
     val Speed = intPreferencesKey("player_danmaku_speed")
     val AllowTop = booleanPreferencesKey("player_danmaku_allow_top")
     val AllowBottom = booleanPreferencesKey("player_danmaku_allow_bottom")
+    val Capacity = stringPreferencesKey("player_danmaku_capacity")
   }
 
   private companion object {

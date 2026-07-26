@@ -2028,6 +2028,12 @@ private fun danmakuSettingRows(settings: DanmakuSettings): List<DanmakuSettingRo
       iconRes = R.drawable.ic_player_subtitles,
       valueRes = if (settings.allowBottom) R.string.player_value_on else R.string.player_value_off,
     ),
+    DanmakuSettingRow(
+      titleRes = R.string.player_settings_danmaku_capacity,
+      iconRes = R.drawable.ic_player_subtitles,
+      valueRes = settings.capacity.labelRes,
+      adjustable = true,
+    ),
   )
 }
 
@@ -2323,7 +2329,7 @@ private const val UpPanelChipSelectedSurfaceAlpha = 0.16f
 private const val UpPanelChipFocusedBorderAlpha = 0.82f
 private const val UpPanelChipSelectedBorderAlpha = 0.54f
 private const val UpPanelChipRestingBorderAlpha = 0.16f
-private const val DanmakuSettingsRowCount = 7
+private const val DanmakuSettingsRowCount = 8
 private const val SeekPreviewSpriteScale = 2f
 private const val SeekPreviewSpriteMaxWidth = 360f
 private const val SeekPreviewSpriteMaxHeight = 220f

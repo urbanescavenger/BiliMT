@@ -38,7 +38,6 @@ internal fun PlayerDanmakuLayer(
   syncToken: Long,
   isPlaying: Boolean,
   playbackSpeed: Float,
-  lowSpecMode: Boolean,
   modifier: Modifier = Modifier,
 ) {
   if (!settings.enabled || entries.isEmpty()) {
@@ -50,24 +49,23 @@ internal fun PlayerDanmakuLayer(
     val textConverter = LocalChineseTextConverter.current
     val fontSizePx = with(density) { settings.fontSize.sp.toPx() }
     val viewportHeightPx = with(density) { maxHeight.toPx() }
-    val danmakuData = remember(entries, settings, fontSizePx, lowSpecMode, textConverter) {
+    val danmakuData = remember(entries, settings, fontSizePx, textConverter) {
       entries.toTextData(
         settings = settings,
         fontSizePx = fontSizePx,
-        maxEntries = if (lowSpecMode) LowSpecMaxDanmakuEntries else StandardMaxDanmakuEntries,
+        maxEntries = settings.capacity.maxEntries,
         textConverter = textConverter,
       )
     }
     var danmakuView by remember { mutableStateOf<DanmakuView?>(null) }
     val latestIsPlaying by rememberUpdatedState(isPlaying)
     val currentDanmakuView by rememberUpdatedState(danmakuView)
-    val configKey = remember(settings, fontSizePx, viewportHeightPx, playbackSpeed, lowSpecMode) {
+    val configKey = remember(settings, fontSizePx, viewportHeightPx, playbackSpeed) {
       DanmakuConfigKey(
         settings = settings,
         fontSizePx = fontSizePx,
         viewportHeightPx = viewportHeightPx,
         playbackSpeed = playbackSpeed,
-        lowSpecMode = lowSpecMode,
       )
     }
     val lastAppliedConfigKey = remember { arrayOfNulls<DanmakuConfigKey>(1) }
@@ -140,7 +138,6 @@ private data class DanmakuConfigKey(
   val fontSizePx: Float,
   val viewportHeightPx: Float,
   val playbackSpeed: Float,
-  val lowSpecMode: Boolean,
 )
 
 private fun List<DanmakuEntry>.toTextData(
@@ -188,17 +185,17 @@ private fun List<DanmakuEntry>.toTextData(
 
 private fun DanmakuView.applyDanmakuConfig(config: DanmakuConfigKey) {
   val settings = config.settings
+  val capacity = settings.capacity
   val fontSizePx = config.fontSizePx
   val viewportHeightPx = config.viewportHeightPx
   val playbackSpeed = config.playbackSpeed
-  val lowSpecMode = config.lowSpecMode
   val lineHeightPx = (fontSizePx * 1.35f).coerceAtLeast(32f)
   val lineMarginPx = (fontSizePx * 0.32f).coerceAtLeast(6f)
   val availableHeightPx = (viewportHeightPx * settings.area.coerceIn(0.25f, 1f)).coerceAtLeast(lineHeightPx)
   val lineCount = (availableHeightPx / (lineHeightPx + lineMarginPx))
     .roundToInt()
-    .coerceIn(1, if (lowSpecMode) 5 else 10)
-  val fixedLineCount = (lineCount / 3).coerceIn(1, if (lowSpecMode) 1 else 3)
+    .coerceIn(1, capacity.lineCountMax)
+  val fixedLineCount = (lineCount / 3).coerceIn(1, capacity.fixedLineCountMax)
   val baseMoveTimeMs = ((13 - settings.speed.coerceIn(3, 7)) * 1000L).coerceIn(6000L, 10000L)
   val effectivePlaybackSpeed = playbackSpeed.coerceIn(0.5f, 2.0f)
 
@@ -220,19 +217,19 @@ private fun DanmakuView.applyDanmakuConfig(config: DanmakuConfigKey) {
   controller.config.scroll.lineCount = lineCount
   controller.config.scroll.marginTop = 0f
   controller.config.scroll.itemMargin = fontSizePx
-  controller.config.scroll.bufferSize = if (lowSpecMode) 3 else 8
+  controller.config.scroll.bufferSize = capacity.scrollBuffer
 
   controller.config.top.lineHeight = lineHeightPx
   controller.config.top.lineMargin = lineMarginPx
   controller.config.top.lineCount = fixedLineCount
   controller.config.top.marginTop = 0f
-  controller.config.top.bufferSize = if (lowSpecMode) 2 else 4
+  controller.config.top.bufferSize = capacity.fixedBuffer
 
   controller.config.bottom.lineHeight = lineHeightPx
   controller.config.bottom.lineMargin = lineMarginPx
   controller.config.bottom.lineCount = fixedLineCount
   controller.config.bottom.marginBottom = lineMarginPx
-  controller.config.bottom.bufferSize = if (lowSpecMode) 2 else 4
+  controller.config.bottom.bufferSize = capacity.fixedBuffer
 }
 
 private val DanmakuMode.layerType: Int
@@ -241,6 +238,3 @@ private val DanmakuMode.layerType: Int
     DanmakuMode.Top -> LAYER_TYPE_TOP_CENTER
     DanmakuMode.Bottom -> LAYER_TYPE_BOTTOM_CENTER
   }
-
-private const val StandardMaxDanmakuEntries = 5000
-private const val LowSpecMaxDanmakuEntries = 2500

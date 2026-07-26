@@ -136,6 +136,8 @@ internal class DanmakuRepository(
   }
 
   private companion object {
-    const val MaxDanmakuEntries = 5000
+    // 放宽 parse 上限:配合用户可选的 DanmakuCapacity.Ultra/Ulimited 档(8000/12000/无限),
+    // 让超热门视频(弹幕上万)能拉到更多。B站 list.so 实际返回通常 <3000,20000 是保护性上限。
+    const val MaxDanmakuEntries = 20000
   }
 }

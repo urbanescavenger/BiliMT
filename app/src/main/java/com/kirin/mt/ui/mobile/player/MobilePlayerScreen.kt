@@ -82,6 +82,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -758,7 +759,6 @@ fun MobilePlayerScreen(
           syncToken = danmakuSyncToken,
           isPlaying = isPlaying && seekPreviewMs == null && !completionReported,
           playbackSpeed = playbackSpeed,
-          lowSpecMode = false,
           modifier = Modifier.fillMaxSize(),
         )
       }
@@ -1074,6 +1074,7 @@ fun MobilePlayerScreen(
           onDanmakuSpeed = { scope.launch { danmakuSettingsStore.setSpeed(it) } },
           onDanmakuAllowTop = { scope.launch { danmakuSettingsStore.setAllowTop(it) } },
           onDanmakuAllowBottom = { scope.launch { danmakuSettingsStore.setAllowBottom(it) } },
+          onDanmakuCapacity = { c -> scope.launch { danmakuSettingsStore.setCapacity(c) } },
           onShare = {
             settingsSheet = false
             shareVideo()
@@ -1250,6 +1251,7 @@ private fun PlayerSettingsSheet(
   onDanmakuSpeed: (Int) -> Unit,
   onDanmakuAllowTop: (Boolean) -> Unit,
   onDanmakuAllowBottom: (Boolean) -> Unit,
+  onDanmakuCapacity: (com.kirin.mt.core.player.DanmakuCapacity) -> Unit,
   onShare: () -> Unit,
 ) {
   Column(
@@ -1284,6 +1286,19 @@ private fun PlayerSettingsSheet(
     }
     SettingRow("底部弹幕") {
       Switch(checked = danmakuSettings.allowBottom, onCheckedChange = onDanmakuAllowBottom)
+    }
+    SettingRow("弹幕数量") {
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        com.kirin.mt.core.player.DanmakuCapacity.entries.forEach { c ->
+          val selected = c == danmakuSettings.capacity
+          TextButton(onClick = { onDanmakuCapacity(c) }) {
+            Text(
+              text = stringResource(c.labelRes),
+              color = if (selected) Color(0xFFFB7299) else Color.White,
+            )
+          }
+        }
+      }
     }
 
     SectionTitle("分享")

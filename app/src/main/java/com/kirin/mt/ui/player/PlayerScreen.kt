@@ -83,6 +83,7 @@ import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.CdnRewriter
 import com.kirin.mt.core.player.CdnSelection
 import com.kirin.mt.core.player.CdnSelector
+import com.kirin.mt.core.player.DanmakuCapacity
 import com.kirin.mt.core.player.DanmakuEntry
 import com.kirin.mt.core.player.DanmakuSettings
 import com.kirin.mt.core.player.DanmakuSettingsStore
@@ -104,7 +105,6 @@ import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.currentClockMinuteKey
 import com.kirin.mt.ui.common.currentClockText
 import com.kirin.mt.ui.i18n.LocalChineseTextConverter
-import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliMotion
 import com.kirin.mt.ui.theme.BiliSizing
@@ -149,7 +149,6 @@ fun PlayerScreen(
   val lifecycleOwner = LocalLifecycleOwner.current
   val coroutineScope = rememberCoroutineScope()
   val lastPlayedStore = remember { LastPlayedStore(context) }
-  val performancePolicy = LocalBiliPerformancePolicy.current
   val textConverter = LocalChineseTextConverter.current
   val showClockState = rememberUpdatedState(showClock)
   var activeRequest by remember(request) { mutableStateOf(request) }
@@ -967,7 +966,7 @@ fun PlayerScreen(
     return when (activePanel) {
       PlayerPanel.Main -> 3
       PlayerPanel.Quality -> info?.qualities?.size?.coerceAtLeast(1) ?: 1
-      PlayerPanel.Danmaku -> 7
+      PlayerPanel.Danmaku -> 8
       PlayerPanel.Speed -> PlayerSpeedOptions.size
       PlayerPanel.Episodes -> metadata?.pages?.size ?: 0
       PlayerPanel.UpVideos -> UpPanelHeaderItemCount + sidePanelVideos.size
@@ -1096,6 +1095,9 @@ fun PlayerScreen(
       2 -> danmakuSettings.copy(fontSize = stepInt(danmakuSettings.fontSize, DanmakuFontSizeOptions, delta))
       3 -> danmakuSettings.copy(area = stepFloat(danmakuSettings.area, DanmakuAreaOptions, delta))
       4 -> danmakuSettings.copy(speed = stepInt(danmakuSettings.speed, DanmakuSpeedOptions, delta))
+      7 -> danmakuSettings.copy(
+        capacity = DanmakuCapacity.entries[stepInt(danmakuSettings.capacity.ordinal, DanmakuCapacityOptions, delta)],
+      )
       else -> return false
     }
     persistDanmakuSettings(next)
@@ -1811,7 +1813,6 @@ fun PlayerScreen(
           syncToken = danmakuSyncToken,
           isPlaying = playerActuallyPlaying && previewPositionMs == null && !completionReported,
           playbackSpeed = playbackSpeed,
-          lowSpecMode = performancePolicy.lowSpecMode,
           modifier = Modifier.fillMaxSize(),
         )
         PlayerOverlay(
@@ -2221,3 +2222,5 @@ private val DanmakuOpacityOptions = listOf(0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0
 private val DanmakuFontSizeOptions = listOf(16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36)
 private val DanmakuAreaOptions = listOf(0.25f, 0.5f, 0.75f, 1.0f)
 private val DanmakuSpeedOptions = listOf(3, 4, 5, 6, 7)
+// 弹幕容量档位 ordinal 循环(标准/宽松/极致/无限),用 stepInt 在 0..3 间循环。
+private val DanmakuCapacityOptions = listOf(0, 1, 2, 3)

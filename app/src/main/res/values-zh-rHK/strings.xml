@@ -294,6 +294,11 @@
     <string name="player_settings_danmaku_speed">彈幕速度</string>
     <string name="player_settings_danmaku_top">允許頂部懸停彈幕</string>
     <string name="player_settings_danmaku_bottom">允許底部懸停彈幕</string>
+    <string name="player_settings_danmaku_capacity">彈幕數量</string>
+    <string name="player_danmaku_capacity_standard">標準</string>
+    <string name="player_danmaku_capacity_high">寬鬆</string>
+    <string name="player_danmaku_capacity_ultra">極致</string>
+    <string name="player_danmaku_capacity_unlimited">無限</string>
     <string name="player_value_on">開</string>
     <string name="player_value_off">關</string>
     <string name="player_value_current">目前</string>

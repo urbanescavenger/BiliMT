@@ -388,6 +388,11 @@
     <string name="player_settings_danmaku_speed">&#x5F39;&#x5E55;&#x901F;&#x5EA6;</string>
     <string name="player_settings_danmaku_top">&#x5141;&#x8BB8;&#x9876;&#x90E8;&#x60AC;&#x505C;&#x5F39;&#x5E55;</string>
     <string name="player_settings_danmaku_bottom">&#x5141;&#x8BB8;&#x5E95;&#x90E8;&#x60AC;&#x505C;&#x5F39;&#x5E55;</string>
+    <string name="player_settings_danmaku_capacity">弹幕数量</string>
+    <string name="player_danmaku_capacity_standard">标准</string>
+    <string name="player_danmaku_capacity_high">宽松</string>
+    <string name="player_danmaku_capacity_ultra">极致</string>
+    <string name="player_danmaku_capacity_unlimited">无限</string>
     <string name="player_value_on">&#x5F00;</string>
     <string name="player_value_off">&#x5173;</string>
     <string name="player_value_current">&#x5F53;&#x524D;</string>
