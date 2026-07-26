@@ -124,6 +124,7 @@ import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.DanmakuEntry
 import com.kirin.mt.core.player.DanmakuMode
+import com.kirin.mt.core.player.DanmakuPostResult
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
@@ -929,13 +930,16 @@ fun MobilePlayerScreen(
                   }
                   danmakuSending = false
                   result
-                    .onSuccess { ok ->
-                      if (ok) {
+                    .onSuccess { posted ->
+                      if (posted != null) {
                         // 本地插入,立即在弹幕层渲染(白色滚动)。
-                        // showAtMs 加前置偏移:Bytedance 引擎对 showAtTime < start(time) 的弹幕不显示,
-                        // append 触发 LaunchedEffect 重启 start(currentPos≥progressMs),用 progressMs 会被跳过。
+                        // showAtMs 用响应回来时的实时播放头 + 前置偏移:发送网络请求耗时 1-3s,
+                        // 期间视频在播,用发送时的 progressMs 会让 showAtMs 落后于实际播放头被引擎跳过
+                        // (Bytedance 对 showAtTime < start(time) 不显示)。实时位置 + 1s 保证落在 set time 之后。
+                        val livePos = player.currentPosition
+                        val showAtMs = livePos + LocalDanmakuLeadMs
                         danmakuEntries = danmakuEntries + DanmakuEntry(
-                          showAtMs = progressMs + LocalDanmakuLeadMs,
+                          showAtMs = showAtMs,
                           text = msg,
                           mode = DanmakuMode.Scroll,
                           color = android.graphics.Color.WHITE,
@@ -943,9 +947,14 @@ fun MobilePlayerScreen(
                         danmakuInputText = ""
                         danmakuInputActive = false
                         keyboardController?.hide()
-                        Toast.makeText(context, "弹幕已发送", Toast.LENGTH_SHORT).show()
+                        // 诊断 toast(临时):暴露 B站返回 dmid/visible + 本地插入关键值,定位"发送成功但看不到"。
+                        Toast.makeText(
+                          context,
+                          "已发送 dmid=${posted.dmid} vis=${posted.visible} showAt=$showAtMs live=$livePos entries=${danmakuEntries.size} play=$isPlaying",
+                          Toast.LENGTH_LONG,
+                        ).show()
                       } else {
-                        // sendDanmaku 对未登录/参数非法返回 false(未抛)。
+                        // sendDanmaku 对未登录/参数非法返回 null(未抛)。
                         Toast.makeText(context, "发送失败(未登录或参数异常)", Toast.LENGTH_LONG).show()
                       }
                     }

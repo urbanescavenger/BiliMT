@@ -378,9 +378,10 @@ class PlaybackRepository(
    * 发送弹幕(web /x/v2/dm/post)。镜像 likeVideoArchive 的 POST+csrf+buvid 风控范式,
    * 额外对 URL query 做 WBI 签名(w_rid/wts 只签 query,body 不参与签名)。
    *
-   * 失败抛 [com.kirin.mt.core.network.BiliApiCodeException](带 B站原始中文 message,如
+   * 成功返回 [DanmakuPostResult](dmid + visible);B站 code!=0 抛
+   * [com.kirin.mt.core.network.BiliApiCodeException](带 B站原始中文 message,如
    * "发送频率过快"/"等级不足"/"该视频禁止发送弹幕"),由 UI 层 catch 后 Toast。
-   * 未登录(cid/bvid/msg 非法、sessData/biliJct 缺失)直接返回 false,不抛。
+   * 未登录(cid/bvid/msg 非法、sessData/biliJct 缺失)直接返回 null,不抛。
    *
    * @param progressMs 弹幕出现时间(毫秒),取当前播放位置。
    * @param mode 1=滚动 4=底部 5=顶部(最小可用固定 1)。
@@ -395,11 +396,11 @@ class PlaybackRepository(
     mode: Int = 1,
     color: Int = 0xFFFFFF,
     fontsize: Int = 25,
-  ): Boolean {
-    if (cid <= 0L || bvid.isBlank() || msg.isBlank()) return false
+  ): DanmakuPostResult? {
+    if (cid <= 0L || bvid.isBlank() || msg.isBlank()) return null
     val session = sessionStore.session.first()
-    val sessData = session.sessData ?: return false
-    val biliJct = session.biliJct ?: return false
+    val sessData = session.sessData ?: return null
+    val biliJct = session.biliJct ?: return null
     val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
 
     // WBI 只签 URL query(w_rid/wts 加在这里);form body 不参与签名。
@@ -439,7 +440,13 @@ class PlaybackRepository(
       buvid4 = buvid4,
     ).rootObject()
     root.requireBiliCodeOk("send danmaku")
-    return true
+    val data = root.obj("data")
+    val dmid = data?.string("dmid_str")?.takeIf { it.isNotBlank() }
+      ?: data?.long("dmid")?.toString()
+      ?: ""
+    val visible = data?.boolean("visible") ?: true
+    Log.i(PlaybackLogTag, "send danmaku ok dmid=$dmid visible=$visible cid=$cid progress=$progressMs")
+    return DanmakuPostResult(dmid = dmid, visible = visible)
   }
 
   suspend fun getAirJumpSegments(bvid: String): List<AirJumpSegment> {
