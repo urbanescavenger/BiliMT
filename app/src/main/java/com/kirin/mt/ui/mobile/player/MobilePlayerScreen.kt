@@ -301,7 +301,8 @@ fun MobilePlayerScreen(
   fun togglePlayback() {
     val willPlay = !isPlaying
     if (willPlay) player.play() else player.pause()
-    controlsVisible = !willPlay
+    // 非全屏:栏常驻,不随播放/暂停变;全屏:对齐沉浸式,播放隐/暂停显。
+    if (fullscreen) controlsVisible = !willPlay
     userPaused = !willPlay
   }
 
@@ -602,13 +603,19 @@ fun MobilePlayerScreen(
     activeRequest = next.request
   }
 
-  // 控件自动隐藏:播放中控件可见时,4s 后自动隐(对齐 TV PlayerControlsAutoHideMs)。
-  // 暂停时 isPlaying=false,本 effect 不触发,控件保持可见。
-  LaunchedEffect(controlsVisible, isPlaying) {
-    if (controlsVisible && isPlaying) {
+  // 控件自动隐藏:仅手动全屏(沉浸式)下,播放中 4s 后自动隐(对齐 TV PlayerControlsAutoHideMs)。
+  // 非全屏播放栏常驻,不自动隐;暂停 isPlaying=false 不触发,全屏控件保持可见。
+  LaunchedEffect(controlsVisible, isPlaying, fullscreen) {
+    if (controlsVisible && isPlaying && fullscreen) {
       delay(4000)
       controlsVisible = false
     }
+  }
+
+  // 退出全屏回非全屏:强制恢复栏可见(全屏中栏多已被自动隐),非全屏始终留栏。
+  // 初始组合 fullscreen=false 且 controlsVisible 已 true,无副作用。
+  LaunchedEffect(fullscreen) {
+    if (!fullscreen) controlsVisible = true
   }
 
   val positionMs = seekPreviewMs ?: playbackPositionState.longValue
