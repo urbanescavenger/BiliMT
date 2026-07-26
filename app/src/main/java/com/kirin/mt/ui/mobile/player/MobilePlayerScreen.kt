@@ -152,6 +152,9 @@ private const val HeartbeatIntervalMs = 15_000L
 private const val CompletedProgressSeconds = -1
 private const val CompletionActionDelayMs = 3000L
 private const val DanmakuSendLogTag = "BiliDanmakuSend"
+/** 本地插入的发送弹幕前置时间:Bytedance 引擎对 showAtTime < start(time) 的弹幕不显示,
+ *  发送时 showAtMs=当前位置会被 start(currentPos≥该位置) 跳过,故向前加 1s 让其落在 set time 之后。 */
+private const val LocalDanmakuLeadMs = 1000L
 private const val MobilePlayerLogTag = "BiliMT:MobilePlayer"
 /** BUFFERING 且进度不前进超过此阈值判定为 stall,触发自动重载续播。 */
 private const val StallThresholdMs = 8_000L
@@ -929,8 +932,10 @@ fun MobilePlayerScreen(
                     .onSuccess { ok ->
                       if (ok) {
                         // 本地插入,立即在弹幕层渲染(白色滚动)。
+                        // showAtMs 加前置偏移:Bytedance 引擎对 showAtTime < start(time) 的弹幕不显示,
+                        // append 触发 LaunchedEffect 重启 start(currentPos≥progressMs),用 progressMs 会被跳过。
                         danmakuEntries = danmakuEntries + DanmakuEntry(
-                          showAtMs = progressMs,
+                          showAtMs = progressMs + LocalDanmakuLeadMs,
                           text = msg,
                           mode = DanmakuMode.Scroll,
                           color = android.graphics.Color.WHITE,
