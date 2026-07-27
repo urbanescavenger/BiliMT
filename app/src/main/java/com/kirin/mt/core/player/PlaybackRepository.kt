@@ -153,7 +153,7 @@ class PlaybackRepository(
     val sessData = session.sessData
     val biliJct = session.biliJct
     val mid = session.mid
-    // 直播接口靠 buvid cookie + live Referer 过风控,缺则 -352。
+    // 直播接口靠 buvid cookie + live Referer 过基础风控,WBI 签名 + web_location 过 -352。
     val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
     val apiHeaders = SpaceHttpSupport.liveHeaders(
       roomId = roomId.toString(),
@@ -163,19 +163,23 @@ class PlaybackRepository(
       buvid3 = buvid3,
       buvid4 = buvid4,
     )
+    val playParams = mutableMapOf(
+      "room_id" to roomId.toString(),
+      "protocol" to "0,1",
+      "format" to "0,1,2",
+      "codec" to "0,1,2",
+      "qn" to qn.toString(),
+      "platform" to "web",
+      "ptype" to "8",
+      "dolby" to "5",
+      "panoramic" to "1",
+      "web_location" to "444.7",
+    )
+    val keys = wbiKeyRepository.ensureKeys(sessData)
+    val signedParams = if (keys != null) wbiSigner.sign(playParams, keys.imgKey, keys.subKey) else playParams
     val root = apiClient.getJsonWithHeaders(
       url = BiliApiEndpoints.LiveRoomPlayInfo,
-      params = mapOf(
-        "room_id" to roomId.toString(),
-        "protocol" to "0,1",
-        "format" to "0,1,2",
-        "codec" to "0,1,2",
-        "qn" to qn.toString(),
-        "platform" to "web",
-        "ptype" to "8",
-        "dolby" to "5",
-        "panoramic" to "1",
-      ),
+      params = signedParams,
       headers = apiHeaders,
     ).rootObject()
     root.requireBiliCodeOk("live playurl")

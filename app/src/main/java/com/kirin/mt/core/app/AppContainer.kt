@@ -76,6 +76,8 @@ class AppContainer(context: Context) {
   )
   val liveRepository: LiveRepository = LiveRepository(
     apiClient = apiClient,
+    wbiKeyRepository = wbiKeyRepository,
+    wbiSigner = wbiSigner,
     sessionStore = sessionStore,
   )
   val playbackRepository: PlaybackRepository = PlaybackRepository(
