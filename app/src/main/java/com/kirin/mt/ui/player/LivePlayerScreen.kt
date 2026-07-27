@@ -1,21 +1,28 @@
 package com.kirin.mt.ui.player
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Brush
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -30,17 +37,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -49,12 +59,22 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
+import com.kirin.mt.R
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.LivePlayInfo
+import com.kirin.mt.core.player.LiveQuality
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.PlaybackRequest
+import com.kirin.mt.ui.common.ClockOverlay
 import com.kirin.mt.ui.common.FeedStatusScreen
+import com.kirin.mt.ui.common.currentClockText
+import com.kirin.mt.ui.i18n.convertChineseText
 import com.kirin.mt.ui.theme.BiliColors
+import com.kirin.mt.ui.theme.BiliMotion
+import com.kirin.mt.ui.theme.BiliRadius
+import com.kirin.mt.ui.theme.BiliSizing
+import com.kirin.mt.ui.theme.BiliSpacing
+import com.kirin.mt.ui.theme.BiliTypography
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -62,6 +82,11 @@ import okhttp3.OkHttpClient
 
 /** 直播默认请求清晰度:原画。服务端不可用时自动降级。 */
 private const val LiveDefaultQn = 10000
+
+/** 顶栏控件索引:0=返回,1=清晰度。 */
+private const val ControlIndexBack = 0
+private const val ControlIndexQuality = 1
+private const val ControlCount = 2
 
 /** 直播播放器加载状态。 */
 private sealed interface LiveLoadState {
@@ -73,8 +98,10 @@ private sealed interface LiveLoadState {
 /**
  * 直播播放器(独立于点播 [PlayerScreen])。直播不走 DASH/合成 MPD/弹幕/进度/分集,
  * 直接把 [LivePlayInfo.streamUrl] 喂给 HlsMediaSource 或 ProgressiveMediaSource(FLV)。
- * 支持清晰度切换(侧面板)。TV(D-pad)与移动端(触屏)共用:中心区域点按=播放/暂停,
- * 顶部条提供返回 + 清晰度入口。
+ *
+ * UI/交互对齐点播 [PlayerScreen]/[PlayerOverlay]:玻璃质感顶栏(渐变 + 主播名/人气 +
+ * 清晰度入口)、Canvas 暂停指示器、玻璃清晰度面板、统一 D-pad 按键路由与层级关闭、
+ * [BiliMotion.PlayerControlsAutoHideMs] 自动隐藏。TV(D-pad)与移动端(触屏)共用。
  */
 @Composable
 fun LivePlayerScreen(
@@ -89,17 +116,20 @@ fun LivePlayerScreen(
   var loadState by remember(roomId) { mutableStateOf<LiveLoadState>(LiveLoadState.Loading) }
   var liveInfo by remember(roomId) { mutableStateOf<LivePlayInfo?>(null) }
   val isPlayingState = remember { mutableStateOf(false) }
-  val playbackStateInt = remember { mutableIntStateOf(Player.STATE_IDLE) }
   val playerErrorMsg = remember { mutableStateOf<String?>(null) }
   var controlsVisible by remember { mutableStateOf(true) }
   var showQualityPanel by remember { mutableStateOf(false) }
+  var focusedControlIndex by remember { mutableIntStateOf(ControlIndexQuality) }
+  var focusedQualityIndex by remember { mutableIntStateOf(0) }
   var retryKey by remember { mutableIntStateOf(0) }
+  var clockText by remember { mutableStateOf(currentClockText()) }
 
   val player = remember(roomId) {
     ExoPlayer.Builder(context).build()
   }
-  val centerFocus = remember { FocusRequester() }
-  val qualityButtonFocus = remember { FocusRequester() }
+  val controlsFocusRequester = remember { FocusRequester() }
+
+  val qualities = liveInfo?.qualities.orEmpty()
 
   DisposableEffect(player) {
     player.addListener(object : Player.Listener {
@@ -107,10 +137,6 @@ fun LivePlayerScreen(
         // 用 MutableState 对象而非委托的局部 var:匿名对象里不能改捕获的局部 var,
         // 但可以改对象属性(.value)。
         isPlayingState.value = isPlayingChanged
-      }
-
-      override fun onPlaybackStateChanged(state: Int) {
-        playbackStateInt.value = state
       }
 
       override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
@@ -151,37 +177,122 @@ fun LivePlayerScreen(
     }
   }
 
-  // 控制条自动隐藏:播放中且无清晰度面板时 5s 后隐藏。
-  LaunchedEffect(controlsVisible, isPlayingState.value, showQualityPanel) {
-    if (controlsVisible && isPlayingState.value && !showQualityPanel) {
-      delay(5000)
-      if (isActive) controlsVisible = false
+  // 时钟:每 30s 刷新一次,供顶栏右上角显示。
+  LaunchedEffect(Unit) {
+    while (isActive) {
+      clockText = currentClockText()
+      delay(30_000L)
     }
   }
 
-  // TV:进入时把焦点放到中心播放/暂停区,让 D-pad 中心键能直接控制播放。
-  LaunchedEffect(Unit) {
-    runCatching { centerFocus.requestFocus() }
+  // 控制条自动隐藏:播放中、无清晰度面板时 [PlayerControlsAutoHideMs] 后隐藏。
+  // 暂停时不隐藏(与点播一致),面板打开时不隐藏。
+  LaunchedEffect(controlsVisible, isPlayingState.value, showQualityPanel) {
+    if (controlsVisible && isPlayingState.value && !showQualityPanel) {
+      delay(BiliMotion.PlayerControlsAutoHideMs)
+      if (isActive && controlsVisible && isPlayingState.value && !showQualityPanel) {
+        controlsVisible = false
+      }
+    }
   }
 
-  // 返回:清晰度面板打开时先关面板,否则退出播放器。覆盖 TV 遥控器返回键与移动端系统返回。
-  BackHandler {
-    if (showQualityPanel) showQualityPanel = false else onBack()
+  // TV:进入时把焦点收到根容器,统一由 onPreviewKeyEvent 路由 D-pad 按键。
+  LaunchedEffect(Unit) {
+    runCatching { controlsFocusRequester.requestFocus() }
   }
+
+  fun togglePlayback() {
+    if (player.isPlaying) player.pause() else player.play()
+    controlsVisible = true
+  }
+
+  fun showControls() {
+    controlsVisible = true
+    runCatching { controlsFocusRequester.requestFocus() }
+  }
+
+  fun openQualityPanel() {
+    if (qualities.isEmpty()) return
+    showQualityPanel = true
+    focusedQualityIndex = qualities.indexOfFirst { it.qn == selectedQn }.coerceAtLeast(0)
+    controlsVisible = true
+  }
+
+  fun moveControl(delta: Int) {
+    focusedControlIndex = (focusedControlIndex + delta).coerceIn(0, ControlCount - 1)
+  }
+
+  fun changeQualityFocus(delta: Int) {
+    if (qualities.isEmpty()) return
+    focusedQualityIndex = (focusedQualityIndex + delta).coerceIn(0, qualities.lastIndex)
+  }
+
+  fun activateControl() {
+    when (focusedControlIndex) {
+      ControlIndexBack -> onBack()
+      ControlIndexQuality -> openQualityPanel()
+    }
+  }
+
+  // 层级关闭:清晰度面板→控件→退出。TV 遥控器返回键与移动端系统返回共用此函数。
+  fun closePanelOrControls() {
+    when {
+      showQualityPanel -> showQualityPanel = false
+      controlsVisible -> controlsVisible = false
+      else -> onBack()
+    }
+  }
+
+  BackHandler { closePanelOrControls() }
 
   Box(
     modifier = Modifier
       .fillMaxSize()
       .background(Color.Black)
+      .focusRequester(controlsFocusRequester)
+      .focusable()
       .onPreviewKeyEvent { event ->
-        when {
-          event.type == KeyEventType.KeyUp && (event.key == Key.DirectionUp ||
-              event.key == Key.DirectionDown ||
-              event.key == Key.DirectionLeft ||
-              event.key == Key.DirectionRight) -> {
-            controlsVisible = true
-            false // 不消费,让焦点在顶部条按钮间流转;中心键交给焦点按钮自身处理
+        if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
+        when (event.key) {
+          Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+            when {
+              showQualityPanel && qualities.isNotEmpty() -> {
+                selectedQn = qualities[focusedQualityIndex].qn
+                showQualityPanel = false
+              }
+              controlsVisible -> activateControl()
+              else -> togglePlayback()
+            }
+            true
           }
+          Key.DirectionLeft -> {
+            when {
+              showQualityPanel -> true // 面板纵向滚动,左右消费避免原生焦点移入面板行
+              controlsVisible -> { moveControl(-1); true }
+              else -> { showControls(); true }
+            }
+          }
+          Key.DirectionRight -> {
+            when {
+              showQualityPanel -> true
+              controlsVisible -> { moveControl(1); true }
+              else -> { showControls(); true }
+            }
+          }
+          Key.DirectionUp -> {
+            when {
+              showQualityPanel -> { changeQualityFocus(-1); true }
+              else -> { showControls(); true }
+            }
+          }
+          Key.DirectionDown -> {
+            when {
+              showQualityPanel -> { changeQualityFocus(1); true }
+              controlsVisible -> { controlsVisible = false; true }
+              else -> { showControls(); true }
+            }
+          }
+          Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause -> { togglePlayback(); true }
           else -> false
         }
       },
@@ -193,25 +304,33 @@ fun LivePlayerScreen(
           useController = false
           this.player = player
           setShutterBackgroundColor(android.graphics.Color.BLACK)
+          keepScreenOn = true
+          resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
         }
       },
       update = { it.player = player },
     )
 
-    // 中心播放/暂停区(触屏点按 + D-pad 中心键)。
+    // 中心触屏区:点按在"显示控件/切换播放"间分派。不获取焦点,键盘由根容器统一路由。
     Box(
       modifier = Modifier
         .fillMaxSize()
-        .focusRequester(centerFocus)
-        .clickable {
-          if (player.isPlaying) player.pause() else player.play()
-          controlsVisible = true
+        .pointerInput(Unit) {
+          detectTapGestures(onTap = {
+            when {
+              showQualityPanel -> showQualityPanel = false
+              controlsVisible -> togglePlayback()
+              else -> showControls()
+            }
+          })
         },
-      contentAlignment = Alignment.Center,
-    ) {
-      if (loadState is LiveLoadState.Ready && !isPlayingState.value) {
-        PlayPauseIcon(isPlaying = false)
-      }
+    )
+
+    // 暂停指示器(仅 Ready 且未在播时):复用点播 Canvas 双竖杠,替换旧文字图标。
+    if (loadState is LiveLoadState.Ready && !isPlayingState.value) {
+      PauseIndicatorOverlay(
+        modifier = Modifier.align(Alignment.Center),
+      )
     }
 
     val errorMsg = playerErrorMsg.value
@@ -244,45 +363,25 @@ fun LivePlayerScreen(
       else -> Unit
     }
 
-    // 诊断叠层:Ready 后底部小字显示播放状态/是否在播/流URL/错误,定位卡住原因(403/格式/超时)。
-    if (loadState is LiveLoadState.Ready) {
-      val stateName = when (playbackStateInt.value) {
-        Player.STATE_IDLE -> "IDLE"
-        Player.STATE_BUFFERING -> "BUFFERING"
-        Player.STATE_READY -> "READY"
-        Player.STATE_ENDED -> "ENDED"
-        else -> "?"
-      }
-      Text(
-        text = "state=$stateName playing=${isPlayingState.value} qn=$selectedQn hls=${liveInfo?.isHls} url=${liveInfo?.streamUrl?.take(50)}",
-        color = BiliColors.BiliPink,
-        fontSize = 11.sp,
-        modifier = Modifier
-          .align(Alignment.BottomStart)
-          .padding(8.dp),
-      )
-    }
-
     if (controlsVisible && loadState is LiveLoadState.Ready) {
-      TopBar(
-        title = request.title,
-        currentQualityDesc = liveInfo?.qualities
-          ?.firstOrNull { it.qn == selectedQn }?.description
-          ?: liveInfo?.qualities?.firstOrNull()?.description
+      LiveTopOverlay(
+        request = request,
+        currentQualityDesc = qualities
+          .firstOrNull { it.qn == selectedQn }?.description
+          ?: qualities.firstOrNull()?.description
           ?: "清晰度",
+        focusedControlIndex = focusedControlIndex,
+        clockText = clockText,
         onBack = onBack,
-        onOpenQuality = {
-          showQualityPanel = true
-          controlsVisible = true
-        },
-        qualityButtonFocus = qualityButtonFocus,
+        onOpenQuality = { openQualityPanel() },
       )
     }
 
-    if (showQualityPanel && liveInfo != null) {
-      QualityPanel(
-        qualities = liveInfo!!.qualities,
+    if (showQualityPanel && qualities.isNotEmpty()) {
+      LiveQualityPanel(
+        qualities = qualities,
         selectedQn = selectedQn,
+        focusedQualityIndex = focusedQualityIndex,
         onPick = { qn ->
           selectedQn = qn
           showQualityPanel = false
@@ -294,55 +393,167 @@ fun LivePlayerScreen(
 }
 
 @Composable
-private fun TopBar(
-  title: String,
+private fun LiveTopOverlay(
+  request: PlaybackRequest,
   currentQualityDesc: String,
+  focusedControlIndex: Int,
+  clockText: String,
   onBack: () -> Unit,
   onOpenQuality: () -> Unit,
-  qualityButtonFocus: FocusRequester,
+  modifier: Modifier = Modifier,
 ) {
-  Row(
-    modifier = Modifier
+  Box(
+    modifier = modifier
       .fillMaxWidth()
-      .background(BiliColors.OverlayStrong)
-      .padding(horizontal = 16.dp, vertical = 12.dp),
-    verticalAlignment = Alignment.CenterVertically,
+      .height(BiliSizing.PlayerTopGradientHeight)
+      .background(
+        Brush.verticalGradient(
+          colors = listOf(BiliColors.OverlayStrong, BiliColors.OverlayTransparent),
+        ),
+      ),
   ) {
-    Text(
-      text = "← 返回",
-      color = BiliColors.TextPrimary,
-      fontWeight = FontWeight.Bold,
+    Row(
       modifier = Modifier
-        .clickable(onClick = onBack)
-        .padding(horizontal = 8.dp, vertical = 6.dp),
-    )
-    Text(
-      text = title,
-      color = BiliColors.TextPrimary,
-      maxLines = 1,
-      overflow = TextOverflow.Ellipsis,
+        .align(Alignment.TopStart)
+        .fillMaxWidth()
+        .padding(
+          start = BiliSizing.PlayerOverlayHorizontalPadding,
+          top = BiliSizing.PlayerTopPadding,
+          end = BiliSizing.PlayerOverlayHorizontalPadding,
+        ),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      LiveControlButton(
+        iconRes = R.drawable.ic_player_chevron_left,
+        focused = focusedControlIndex == ControlIndexBack,
+        onClick = onBack,
+      )
+      Spacer(modifier = Modifier.width(BiliSpacing.Sm))
+      Column(
+        modifier = Modifier.weight(1f),
+        verticalArrangement = Arrangement.spacedBy(BiliSpacing.Xs),
+      ) {
+        val displayTitle = convertChineseText(request.title)
+        if (displayTitle.isNotBlank()) {
+          Text(
+            text = displayTitle,
+            color = BiliColors.TextPrimary,
+            fontSize = BiliTypography.PlayerTitle,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+        val ownerName = convertChineseText(request.ownerName)
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          if (ownerName.isNotBlank()) {
+            PlayerMetaItem(
+              iconRes = R.drawable.ic_nav_account,
+              text = ownerName,
+              modifier = Modifier.weight(1f, fill = false),
+            )
+          }
+          if (request.viewCount > 0) {
+            PlayerMetaItem(
+              iconRes = R.drawable.ic_video_play_count,
+              text = stringResource(R.string.live_meta_online, request.viewCount.formatCompactCountText()),
+            )
+          }
+        }
+      }
+      Spacer(modifier = Modifier.width(BiliSpacing.Sm))
+      LiveQualityChip(
+        description = currentQualityDesc,
+        focused = focusedControlIndex == ControlIndexQuality,
+        onClick = onOpenQuality,
+      )
+    }
+    ClockOverlay(
+      clockText = clockText,
       modifier = Modifier
-        .weight(1f)
-        .padding(horizontal = 12.dp),
-    )
-    Text(
-      text = currentQualityDesc,
-      color = BiliColors.BiliPink,
-      fontWeight = FontWeight.Bold,
-      modifier = Modifier
-        .focusRequester(qualityButtonFocus)
-        .clip(RoundedCornerShape(50))
-        .background(BiliColors.SurfaceElevated)
-        .clickable(onClick = onOpenQuality)
-        .padding(horizontal = 12.dp, vertical = 6.dp),
+        .align(Alignment.TopEnd)
+        .padding(
+          top = BiliSizing.ClockOverlayTopPadding,
+          end = BiliSizing.ClockOverlayEndPadding,
+        ),
     )
   }
 }
 
 @Composable
-private fun QualityPanel(
-  qualities: List<com.kirin.mt.core.player.LiveQuality>,
+private fun LiveControlButton(
+  iconRes: Int,
+  focused: Boolean,
+  onClick: () -> Unit,
+) {
+  val shape = RoundedCornerShape(BiliRadius.Card)
+  Box(
+    modifier = Modifier
+      .size(BiliSizing.PlayerControlIconButtonSize)
+      .clip(shape)
+      .playerLiquidGlassSurface(
+        shape = shape,
+        focused = focused,
+        surfaceColor = if (focused) BiliColors.PlayerControlFocused else BiliColors.PlayerControlIdle,
+      )
+      .clickable(onClick = onClick),
+    contentAlignment = Alignment.Center,
+  ) {
+    Icon(
+      painter = painterResource(iconRes),
+      contentDescription = null,
+      tint = BiliColors.TextPrimary,
+      modifier = Modifier.size(BiliSizing.PlayerControlIconSize),
+    )
+  }
+}
+
+@Composable
+private fun LiveQualityChip(
+  description: String,
+  focused: Boolean,
+  onClick: () -> Unit,
+) {
+  val shape = RoundedCornerShape(BiliRadius.Card)
+  Row(
+    modifier = Modifier
+      .clip(shape)
+      .playerLiquidGlassSurface(
+        shape = shape,
+        focused = focused,
+        surfaceColor = if (focused) BiliColors.PlayerControlFocused else BiliColors.PlayerControlIdle,
+      )
+      .clickable(onClick = onClick)
+      .padding(horizontal = BiliSpacing.Md, vertical = BiliSpacing.Sm),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Icon(
+      painter = painterResource(R.drawable.ic_player_hd),
+      contentDescription = null,
+      tint = BiliColors.TextPrimary,
+      modifier = Modifier.size(BiliSizing.PlayerControlIconSize),
+    )
+    Spacer(modifier = Modifier.width(BiliSpacing.Sm))
+    Text(
+      text = convertChineseText(description),
+      color = BiliColors.TextPrimary,
+      fontSize = BiliTypography.PlayerMeta,
+      fontWeight = FontWeight.Bold,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+    )
+  }
+}
+
+@Composable
+private fun LiveQualityPanel(
+  qualities: List<LiveQuality>,
   selectedQn: Int,
+  focusedQualityIndex: Int,
   onPick: (Int) -> Unit,
   onDismiss: () -> Unit,
 ) {
@@ -353,31 +564,55 @@ private fun QualityPanel(
       .clickable(onClick = onDismiss),
     contentAlignment = Alignment.Center,
   ) {
+    val shape = RoundedCornerShape(BiliRadius.Panel)
     Column(
       modifier = Modifier
-        .widthIn(max = 320.dp)
-        .clip(RoundedCornerShape(16.dp))
-        .background(BiliColors.PlayerPanel)
-        .padding(vertical = 8.dp),
+        .widthIn(max = BiliSizing.PlayerSettingsPanelWidth)
+        .clip(shape)
+        .playerLiquidGlassSurface(
+          shape = shape,
+          focused = false,
+          surfaceColor = BiliColors.PlayerPanel,
+        ),
     ) {
-      Text(
-        text = "清晰度",
-        color = BiliColors.TextSecondary,
-        fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(BiliSizing.PlayerSettingsHeaderHeight)
+          .padding(horizontal = BiliSpacing.Xl),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text(
+          text = stringResource(R.string.live_quality),
+          color = BiliColors.TextPrimary,
+          fontSize = BiliTypography.PlayerPanelTitle,
+          fontWeight = FontWeight.Bold,
+          maxLines = 1,
+        )
+      }
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(BiliSizing.PlayerSettingsDividerHeight)
+          .background(BiliColors.PlayerPanelDivider),
       )
-      LazyColumn(modifier = Modifier.fillMaxWidth()) {
-        items(qualities, key = { it.qn }) { quality ->
+      LazyColumn(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(max = 420.dp)
+          .padding(vertical = BiliSpacing.Xs),
+      ) {
+        itemsIndexed(qualities, key = { _, quality -> quality.qn }) { index, quality ->
           val selected = quality.qn == selectedQn
-          Text(
-            text = quality.description.ifBlank { "qn ${quality.qn}" },
-            color = if (selected) BiliColors.BiliPink else BiliColors.TextPrimary,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            modifier = Modifier
-              .fillMaxWidth()
-              .clickable { onPick(quality.qn) }
-              .padding(horizontal = 20.dp, vertical = 12.dp),
-          )
+          Box(modifier = Modifier.clickable { onPick(quality.qn) }) {
+            SettingsRow(
+              iconRes = R.drawable.ic_player_hd,
+              title = convertChineseText(quality.description.ifBlank { "qn ${quality.qn}" }),
+              value = if (selected) stringResource(R.string.player_value_current) else "",
+              focused = index == focusedQualityIndex,
+              trailingCheck = selected,
+            )
+          }
         }
       }
     }
@@ -391,22 +626,5 @@ private fun LoadingOverlay() {
     contentAlignment = Alignment.Center,
   ) {
     CircularProgressIndicator(color = BiliColors.BiliPink)
-  }
-}
-
-@Composable
-private fun BoxScope.PlayPauseIcon(isPlaying: Boolean) {
-  Box(
-    modifier = Modifier
-      .size(88.dp)
-      .clip(RoundedCornerShape(50))
-      .background(BiliColors.OverlayStrong),
-    contentAlignment = Alignment.Center,
-  ) {
-    Text(
-      text = if (isPlaying) "❚❚" else "▶",
-      color = BiliColors.TextPrimary,
-      fontWeight = FontWeight.Bold,
-    )
   }
 }

@@ -289,7 +289,7 @@ internal fun BoxScope.PlayerOverlay(
 }
 
 @Composable
-private fun PauseIndicatorOverlay(modifier: Modifier = Modifier) {
+internal fun PauseIndicatorOverlay(modifier: Modifier = Modifier) {
   val shape = CircleShape
   Box(
     modifier = modifier
@@ -406,7 +406,7 @@ private fun PlayerTopOverlay(
 }
 
 @Composable
-private fun PlayerMetaItem(
+internal fun PlayerMetaItem(
   @DrawableRes iconRes: Int,
   text: String,
   modifier: Modifier = Modifier,
@@ -622,7 +622,7 @@ private fun PlayerActionButton(
 }
 
 @Composable
-private fun Modifier.playerLiquidGlassSurface(
+internal fun Modifier.playerLiquidGlassSurface(
   shape: Shape,
   focused: Boolean,
   surfaceColor: Color,
@@ -645,7 +645,7 @@ private fun Modifier.playerLiquidGlassSurface(
 }
 
 @Composable
-private fun Modifier.playerFocusedLiquidGlassSurface(
+internal fun Modifier.playerFocusedLiquidGlassSurface(
   shape: Shape,
   focused: Boolean,
   surfaceColor: Color = BiliColors.PlayerPanelFocused,
@@ -2063,7 +2063,7 @@ private fun SpeedRows(
 }
 
 @Composable
-private fun SettingsRow(
+internal fun SettingsRow(
   @DrawableRes iconRes: Int,
   title: String,
   value: String,
@@ -2268,7 +2268,7 @@ private fun PlaybackRequest.formatPubdate(): String? {
 }
 
 @Composable
-private fun Int.formatCompactCountText(): String {
+internal fun Int.formatCompactCountText(): String {
   return when {
     this >= 100_000_000 -> stringResource(R.string.player_count_yi, this / 100_000_000.0)
     this >= 10_000 -> stringResource(R.string.player_count_wan, this / 10_000.0)

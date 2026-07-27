@@ -59,6 +59,8 @@
     <string name="recommend_failed_with_message">推荐加载失败。%1$s</string>
     <string name="live_empty">暂时没有正在直播的房间。</string>
     <string name="live_failed_with_message">直播加载失败。%1$s</string>
+    <string name="live_meta_online">%1$s 人气</string>
+    <string name="live_quality">清晰度</string>
     <string name="placeholder_search">搜索键盘和结果网格会在首页体验稳定后接入。</string>
     <string name="placeholder_history">历史记录依赖登录和播放进度存储。</string>
     <string name="placeholder_settings">设置会包含图片、播放和空降助手开关。</string>
