@@ -210,7 +210,17 @@ internal fun TvVideoGrid(
 
   // 只在显式触发（tab 按下键）时滚回并聚焦首项；不要监听 videos.size，
   // 否则刷新分区/加载更多后焦点会自动从 tab 跳回网格第一项。
+  // 另：LaunchedEffect 首次组合必定执行一次，而切 tab 会让本 Composable 被销毁后
+  // 全新重组——此时 focusFirstItemKey 是 RecommendUiState 里持久化的旧值（上次按
+  // Down 进网格后自增过）。若不加 guard，从动态切回首页就会用这个旧值抢首项焦点。
+  // 用 lastHandledFirstItemKey 记录已处理过的 key，首次组合（含切 tab 重组）跳过，
+  // 只在 key 真正自增时执行。
+  val lastHandledFirstItemKey = remember { mutableIntStateOf(focusFirstItemKey) }
   LaunchedEffect(focusFirstItemKey) {
+    if (focusFirstItemKey == lastHandledFirstItemKey.intValue) {
+      return@LaunchedEffect
+    }
+    lastHandledFirstItemKey.intValue = focusFirstItemKey
     if (focusFirstItemKey <= 0 || videos.isEmpty()) {
       return@LaunchedEffect
     }
@@ -229,7 +239,14 @@ internal fun TvVideoGrid(
   // 只在显式触发（tab 按下键）时滚回并聚焦上次所在项；不监听 videos.size，
   // 避免刷新/加载更多后焦点从 tab 误跳。与 focusFirstItemKey 同理，但落点是
   // restoreTargetIndex（上次聚焦的卡片），保留下滑位置而非滚回顶部。
+  // 同样需要首次组合 guard：切 tab 重组时 focusRestoredItemKey 是 UserFeedUiState
+  // 里的持久旧值，不抢焦点；只在 key 真正自增时执行。
+  val lastHandledRestoredItemKey = remember { mutableIntStateOf(focusRestoredItemKey) }
   LaunchedEffect(focusRestoredItemKey) {
+    if (focusRestoredItemKey == lastHandledRestoredItemKey.intValue) {
+      return@LaunchedEffect
+    }
+    lastHandledRestoredItemKey.intValue = focusRestoredItemKey
     if (focusRestoredItemKey <= 0 || videos.isEmpty()) {
       return@LaunchedEffect
     }
