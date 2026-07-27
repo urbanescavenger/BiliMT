@@ -197,8 +197,14 @@ class PlaybackRepository(
     val chosen = pickLiveStreamCandidate(streams)
       ?: throw IllegalStateException("直播间无可用流(无 HLS/FLV)")
 
-    // 流媒体 CDN 取流用 BiliPlaybackHeaders(www Referer + Cookie);API 调用已用 liveHeaders 过风控。
-    val streamHeaders = BiliPlaybackHeaders(sessData = sessData, biliJct = biliJct, mid = mid)
+    // 流媒体 CDN(bilivideo.com)取流要 live.bilibili.com Referer,发 www 会被 403 → 取流失败卡住。
+    val streamHeaders = BiliPlaybackHeaders(
+      sessData = sessData,
+      biliJct = biliJct,
+      mid = mid,
+      referer = "https://live.bilibili.com/$roomId",
+      origin = "https://live.bilibili.com",
+    )
     return LivePlayInfo(
       roomId = roomId,
       streamUrl = chosen.url,

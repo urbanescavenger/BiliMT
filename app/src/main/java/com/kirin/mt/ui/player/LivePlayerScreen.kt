@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -88,6 +89,8 @@ fun LivePlayerScreen(
   var loadState by remember(roomId) { mutableStateOf<LiveLoadState>(LiveLoadState.Loading) }
   var liveInfo by remember(roomId) { mutableStateOf<LivePlayInfo?>(null) }
   val isPlayingState = remember { mutableStateOf(false) }
+  val playbackStateInt = remember { mutableIntStateOf(Player.STATE_IDLE) }
+  val playerErrorMsg = remember { mutableStateOf<String?>(null) }
   var controlsVisible by remember { mutableStateOf(true) }
   var showQualityPanel by remember { mutableStateOf(false) }
   var retryKey by remember { mutableIntStateOf(0) }
@@ -105,12 +108,23 @@ fun LivePlayerScreen(
         // 但可以改对象属性(.value)。
         isPlayingState.value = isPlayingChanged
       }
+
+      override fun onPlaybackStateChanged(state: Int) {
+        playbackStateInt.value = state
+      }
+
+      override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+        // 取流失败(如 CDN 403)不再静默卡住,记到 MutableState 让叠层显示错误便于定位。
+        // 不能在此改委托的局部 var loadState(匿名对象里禁改捕获 var),改 playerErrorMsg.value。
+        playerErrorMsg.value = error.message.orEmpty().ifBlank { "播放出错" }
+      }
     })
     onDispose { player.release() }
   }
 
   LaunchedEffect(roomId, selectedQn, retryKey) {
     loadState = LiveLoadState.Loading
+    playerErrorMsg.value = null
     player.clearMediaItems()
     try {
       val info = playbackRepository.getLivePlayInfo(roomId, selectedQn)
@@ -200,19 +214,53 @@ fun LivePlayerScreen(
       }
     }
 
-    when (val state = loadState) {
-      is LiveLoadState.Loading -> LoadingOverlay()
-      is LiveLoadState.Failed -> Box(
+    val errorMsg = playerErrorMsg.value
+    when {
+      errorMsg != null -> Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+      ) {
+        // onPlayerError(取流 403 等)或加载失败都走这里,重试清错误 + 重载。
+        FeedStatusScreen(
+          message = errorMsg,
+          actionLabel = "重试",
+          onAction = {
+            playerErrorMsg.value = null
+            retryKey++
+          },
+        )
+      }
+      loadState is LiveLoadState.Loading -> LoadingOverlay()
+      loadState is LiveLoadState.Failed -> Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
       ) {
         FeedStatusScreen(
-          message = state.message,
+          message = (loadState as LiveLoadState.Failed).message,
           actionLabel = "重试",
-          onAction = { retryKey++ }, // 触发 LaunchedEffect 重载
+          onAction = { retryKey++ },
         )
       }
       else -> Unit
+    }
+
+    // 诊断叠层:Ready 后底部小字显示播放状态/是否在播/流URL/错误,定位卡住原因(403/格式/超时)。
+    if (loadState is LiveLoadState.Ready) {
+      val stateName = when (playbackStateInt.value) {
+        Player.STATE_IDLE -> "IDLE"
+        Player.STATE_BUFFERING -> "BUFFERING"
+        Player.STATE_READY -> "READY"
+        Player.STATE_ENDED -> "ENDED"
+        else -> "?"
+      }
+      Text(
+        text = "state=$stateName playing=${isPlayingState.value} qn=$selectedQn hls=${liveInfo?.isHls} url=${liveInfo?.streamUrl?.take(50)}",
+        color = BiliColors.BiliPink,
+        fontSize = 11.sp,
+        modifier = Modifier
+          .align(Alignment.BottomStart)
+          .padding(8.dp),
+      )
     }
 
     if (controlsVisible && loadState is LiveLoadState.Ready) {

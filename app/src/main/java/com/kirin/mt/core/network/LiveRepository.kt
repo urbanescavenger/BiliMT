@@ -52,14 +52,23 @@ class LiveRepository(
     root.requireBiliCodeOk("live list")
 
     val data = root.obj("data")
-    // index/getList 返回 data.recommend_room_list(回退 data.list 兼容旧端点)。
-    val list = (data?.get("recommend_room_list") as? JsonArray)
-      ?: (data?.get("list") as? JsonArray)
-      ?: emptyList()
-    val items = list
-      .mapNotNull { it.asObjectOrNull() }
+    // index/getList:recommend_room_list 是精选高亮(~5),大头在 room_list 模块数组里
+    // (每个模块含自己的 list 房间数组,字段同 recommend_room_list)。合并 + 按 roomid 去重。
+    val rooms = mutableListOf<JsonObject>()
+    (data?.get("recommend_room_list") as? JsonArray)?.forEach { room ->
+      room.asObjectOrNull()?.let(rooms::add)
+    }
+    (data?.get("room_list") as? JsonArray)?.forEach { modEl ->
+      val mod = modEl.asObjectOrNull() ?: return@forEach
+      val inner = (mod.get("list") as? JsonArray)
+        ?: (mod.get("room_list") as? JsonArray)
+        ?: (mod.get("rooms") as? JsonArray)
+      inner?.forEach { room -> room.asObjectOrNull()?.let(rooms::add) }
+    }
+    val seen = mutableSetOf<Long>()
+    val items = rooms
       .map(::fromLiveRoom)
-      .filter { it.roomId > 0L }
+      .filter { it.roomId > 0L && seen.add(it.roomId) }
     // index/getList 是首页聚合,无分页 → 单批。
     return LiveListPage(
       items = items,
