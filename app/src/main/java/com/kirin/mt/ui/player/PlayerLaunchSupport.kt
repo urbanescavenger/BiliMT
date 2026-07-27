@@ -64,6 +64,7 @@ internal fun LiveRoom.toVideoSummary(): VideoSummary {
     badge = "直播",
     isLive = true,
     liveRoomId = roomId,
+    liveAreaName = areaName,
   )
 }
 

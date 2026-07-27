@@ -61,6 +61,12 @@
     <string name="live_failed_with_message">直播加载失败。%1$s</string>
     <string name="live_meta_online">%1$s 人气</string>
     <string name="live_quality">清晰度</string>
+    <string name="live_title">直播</string>
+    <string name="live_subtitle">推荐</string>
+    <string name="live_retry">重试</string>
+    <string name="live_load_more_failed">加载更多失败,点击重试</string>
+    <string name="live_indicator">直播中</string>
+    <string name="live_danmaku_unavailable">直播弹幕暂未开放</string>
     <string name="placeholder_search">搜索键盘和结果网格会在首页体验稳定后接入。</string>
     <string name="placeholder_history">历史记录依赖登录和播放进度存储。</string>
     <string name="placeholder_settings">设置会包含图片、播放和空降助手开关。</string>

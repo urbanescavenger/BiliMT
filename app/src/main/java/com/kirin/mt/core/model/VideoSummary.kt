@@ -21,6 +21,8 @@ data class VideoSummary(
   val isLive: Boolean = false,
   /** 直播间 id;>0 表示这张卡片是直播间(由 LiveRoom 映射而来),点击走直播播放。 */
   val liveRoomId: Long = 0L,
+  /** 直播分区名(仅直播卡片填充,移动端卡片据此显示分区)。 */
+  val liveAreaName: String = "",
   // 动态专属字段:仅 fromDynamicItem 填充,其它来源保持默认 0/空。
   // dynId 用于点赞等动态操作;aid 用于稍后再看;三个计数用于卡片展示动态本身的社交数据。
   val dynId: String = "",

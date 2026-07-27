@@ -135,6 +135,7 @@ fun BiliTvApp(
   liveRepository: com.kirin.mt.core.network.LiveRepository,
   playbackRepository: PlaybackRepository,
   danmakuSettingsStore: DanmakuSettingsStore,
+  liveQualityPreferenceStore: com.kirin.mt.core.player.LiveQualityPreferenceStore,
   playbackHttpClient: OkHttpClient,
   codecCapabilityProbe: CodecCapabilityProbe,
   cdnSelector: CdnSelector,
@@ -1078,6 +1079,7 @@ fun BiliTvApp(
               request = displayedPlaybackRequest,
               playbackRepository = playbackRepository,
               playbackHttpClient = playbackHttpClient,
+              liveQualityPreferenceStore = liveQualityPreferenceStore,
               onBack = {
                 playbackFocusRestoreDestination = selectedDestination
                 playbackRequest = null

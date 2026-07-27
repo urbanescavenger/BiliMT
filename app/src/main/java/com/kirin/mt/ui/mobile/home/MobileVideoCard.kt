@@ -24,11 +24,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.ui.theme.BiliColors
 
 /** 移动端视频卡片:纯触屏(无焦点缩放),clickable 点击播放。点头像/UP 名区域进 UP 主页。 */
 @Composable
@@ -55,7 +57,9 @@ fun MobileVideoCard(
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxWidth(),
       )
-      if (video.badge.isNotEmpty()) {
+      if (video.isLive) {
+        LiveBadge(text = video.badge.ifBlank { "直播" }, modifier = Modifier.align(Alignment.TopStart))
+      } else if (video.badge.isNotEmpty()) {
         Text(
           text = video.badge,
           style = MaterialTheme.typography.labelSmall,
@@ -100,10 +104,77 @@ fun MobileVideoCard(
           overflow = TextOverflow.Ellipsis,
         )
       }
+      if (video.isLive) {
+        LiveOnlineCount(online = video.view, areaName = video.liveAreaName)
+      } else {
+        Text(
+          text = formatCount(if (video.view > 0) video.view else video.likeCount),
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+    }
+  }
+}
+
+/** 直播角标:红色圆角 pill + 左侧白色小圆点 + "直播"文字,贴封面左上(调用处用 BoxScope.align 定位)。 */
+@Composable
+private fun LiveBadge(text: String, modifier: Modifier = Modifier) {
+  Row(
+    modifier = modifier
+      .padding(6.dp)
+      .clip(RoundedCornerShape(4.dp))
+      .background(BiliColors.BiliPink)
+      .padding(horizontal = 5.dp, vertical = 2.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Box(
+      modifier = Modifier
+        .size(4.dp)
+        .clip(CircleShape)
+        .background(Color.White),
+    )
+    Spacer(modifier = Modifier.width(3.dp))
+    Text(
+      text = text,
+      style = MaterialTheme.typography.labelSmall,
+      color = Color.White,
+      fontWeight = FontWeight.Bold,
+      maxLines = 1,
+    )
+  }
+}
+
+/** 直播在线人数:红色小圆点 + 在线数(万以上用"万")+ 可选分区名。 */
+@Composable
+private fun LiveOnlineCount(online: Int, areaName: String, modifier: Modifier = Modifier) {
+  Row(
+    modifier = modifier,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Box(
+      modifier = Modifier
+        .size(5.dp)
+        .clip(CircleShape)
+        .background(BiliColors.BiliPink),
+    )
+    Spacer(modifier = Modifier.width(3.dp))
+    if (online > 0) {
       Text(
-        text = formatCount(if (video.view > 0) video.view else video.likeCount),
+        text = formatCount(online),
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+      )
+    }
+    if (areaName.isNotEmpty()) {
+      Text(
+        text = "· $areaName",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(start = 2.dp),
       )
     }
   }

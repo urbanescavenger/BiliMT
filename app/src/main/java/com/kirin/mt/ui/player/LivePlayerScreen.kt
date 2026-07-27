@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -79,6 +80,19 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import okhttp3.OkHttpClient
+import android.app.Activity
+import android.content.pm.ActivityInfo
+import android.widget.Toast
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberSaveable
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import com.kirin.mt.core.player.LiveQualityPreferenceStore
+import com.kirin.mt.ui.mobile.player.MobilePlayerIconButton
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /** 直播默认请求清晰度:原画。服务端不可用时自动降级。 */
 private const val LiveDefaultQn = 10000
@@ -108,10 +122,13 @@ fun LivePlayerScreen(
   request: PlaybackRequest,
   playbackRepository: PlaybackRepository,
   playbackHttpClient: OkHttpClient,
+  liveQualityPreferenceStore: LiveQualityPreferenceStore,
   onBack: () -> Unit,
+  isMobile: Boolean = false,
 ) {
   val context = LocalContext.current
   val roomId = request.liveRoomId
+  val scope = rememberCoroutineScope()
   var selectedQn by remember(roomId) { mutableIntStateOf(request.preferredQualityId ?: LiveDefaultQn) }
   var loadState by remember(roomId) { mutableStateOf<LiveLoadState>(LiveLoadState.Loading) }
   var liveInfo by remember(roomId) { mutableStateOf<LivePlayInfo?>(null) }
@@ -119,10 +136,15 @@ fun LivePlayerScreen(
   val playerErrorMsg = remember { mutableStateOf<String?>(null) }
   var controlsVisible by remember { mutableStateOf(true) }
   var showQualityPanel by remember { mutableStateOf(false) }
+  var showQualityMenu by remember { mutableStateOf(false) }
   var focusedControlIndex by remember { mutableIntStateOf(ControlIndexQuality) }
   var focusedQualityIndex by remember { mutableIntStateOf(0) }
   var retryKey by remember { mutableIntStateOf(0) }
   var clockText by remember { mutableStateOf(currentClockText()) }
+  // 直播画质持久化:首次进入从 store 读上次选择的 qn(若无显式 preferredQualityId)。
+  // initialResolved 门控主加载,避免默认画质先加载一次再切存储值造成双加载/闪切。
+  var initialResolved by remember { mutableStateOf(request.preferredQualityId != null) }
+  var fullscreen by rememberSaveable { mutableStateOf(false) }
 
   val player = remember(roomId) {
     ExoPlayer.Builder(context).build()
@@ -130,6 +152,7 @@ fun LivePlayerScreen(
   val controlsFocusRequester = remember { FocusRequester() }
 
   val qualities = liveInfo?.qualities.orEmpty()
+  val qualityLabel = stringResource(R.string.live_quality)
 
   DisposableEffect(player) {
     player.addListener(object : Player.Listener {
@@ -148,7 +171,17 @@ fun LivePlayerScreen(
     onDispose { player.release() }
   }
 
-  LaunchedEffect(roomId, selectedQn, retryKey) {
+  // 首次进入:若无显式 preferredQualityId,从 store 读上次直播画质选择,再解锁主加载。
+  LaunchedEffect(roomId) {
+    if (!initialResolved) {
+      val stored = runCatching { liveQualityPreferenceStore.quality.first() }.getOrDefault(LiveDefaultQn)
+      if (stored > 0 && stored != selectedQn) selectedQn = stored
+      initialResolved = true
+    }
+  }
+
+  LaunchedEffect(roomId, selectedQn, retryKey, initialResolved) {
+    if (!initialResolved) return@LaunchedEffect
     loadState = LiveLoadState.Loading
     playerErrorMsg.value = null
     player.clearMediaItems()
@@ -185,12 +218,12 @@ fun LivePlayerScreen(
     }
   }
 
-  // 控制条自动隐藏:播放中、无清晰度面板时 [PlayerControlsAutoHideMs] 后隐藏。
-  // 暂停时不隐藏(与点播一致),面板打开时不隐藏。
-  LaunchedEffect(controlsVisible, isPlayingState.value, showQualityPanel) {
-    if (controlsVisible && isPlayingState.value && !showQualityPanel) {
+  // 控制条自动隐藏:播放中、无清晰度面板/下拉时 [PlayerControlsAutoHideMs] 后隐藏。
+  // 暂停时不隐藏(与点播一致),面板/下拉打开时不隐藏。
+  LaunchedEffect(controlsVisible, isPlayingState.value, showQualityPanel, showQualityMenu) {
+    if (controlsVisible && isPlayingState.value && !showQualityPanel && !showQualityMenu) {
       delay(BiliMotion.PlayerControlsAutoHideMs)
-      if (isActive && controlsVisible && isPlayingState.value && !showQualityPanel) {
+      if (isActive && controlsVisible && isPlayingState.value && !showQualityPanel && !showQualityMenu) {
         controlsVisible = false
       }
     }
@@ -199,6 +232,35 @@ fun LivePlayerScreen(
   // TV:进入时把焦点收到根容器,统一由 onPreviewKeyEvent 路由 D-pad 按键。
   LaunchedEffect(Unit) {
     runCatching { controlsFocusRequester.requestFocus() }
+  }
+
+  // 移动端全屏:强制横屏(直播恒横屏)+ 隐藏系统栏;退出/离开恢复,避免主页卡横屏。
+  if (isMobile) {
+    DisposableEffect(fullscreen) {
+      val activity = context.findActivity()
+      if (activity != null) {
+        val controller = WindowInsetsControllerCompat(activity.window, activity.window.decorView)
+        if (fullscreen) {
+          activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+          controller.hide(WindowInsetsCompat.Type.systemBars())
+          controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+          activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+          controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose {
+          activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+          controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+      } else {
+        onDispose {}
+      }
+    }
+  }
+
+  fun persistQuality(qn: Int) {
+    scope.launch { runCatching { liveQualityPreferenceStore.setQuality(qn) } }
   }
 
   fun togglePlayback() {
@@ -257,8 +319,10 @@ fun LivePlayerScreen(
           Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
             when {
               showQualityPanel && qualities.isNotEmpty() -> {
-                selectedQn = qualities[focusedQualityIndex].qn
+                val qn = qualities[focusedQualityIndex].qn
+                selectedQn = qn
                 showQualityPanel = false
+                persistQuality(qn)
               }
               controlsVisible -> activateControl()
               else -> togglePlayback()
@@ -369,11 +433,33 @@ fun LivePlayerScreen(
         currentQualityDesc = qualities
           .firstOrNull { it.qn == selectedQn }?.description
           ?: qualities.firstOrNull()?.description
-          ?: "清晰度",
+          ?: qualityLabel,
         focusedControlIndex = focusedControlIndex,
         clockText = clockText,
+        showQuality = !isMobile,
         onBack = onBack,
         onOpenQuality = { openQualityPanel() },
+      )
+    }
+
+    // 移动端底栏控制条:直播中红点 + 画质下拉 + 预留弹幕按钮 + 全屏。TV 不渲染。
+    if (isMobile && controlsVisible && loadState is LiveLoadState.Ready) {
+      LiveBottomBar(
+        qualities = qualities,
+        selectedQn = selectedQn,
+        showQualityMenu = showQualityMenu,
+        onToggleQualityMenu = { showQualityMenu = it },
+        onPickQuality = { qn ->
+          selectedQn = qn
+          showQualityMenu = false
+          persistQuality(qn)
+        },
+        onDanmaku = {
+          Toast.makeText(context, context.getString(R.string.live_danmaku_unavailable), Toast.LENGTH_SHORT).show()
+        },
+        fullscreen = fullscreen,
+        onToggleFullscreen = { fullscreen = !fullscreen },
+        modifier = Modifier.align(Alignment.BottomStart),
       )
     }
 
@@ -385,6 +471,7 @@ fun LivePlayerScreen(
         onPick = { qn ->
           selectedQn = qn
           showQualityPanel = false
+          persistQuality(qn)
         },
         onDismiss = { showQualityPanel = false },
       )
@@ -398,6 +485,7 @@ private fun LiveTopOverlay(
   currentQualityDesc: String,
   focusedControlIndex: Int,
   clockText: String,
+  showQuality: Boolean,
   onBack: () -> Unit,
   onOpenQuality: () -> Unit,
   modifier: Modifier = Modifier,
@@ -465,12 +553,14 @@ private fun LiveTopOverlay(
           }
         }
       }
-      Spacer(modifier = Modifier.width(BiliSpacing.Sm))
-      LiveQualityChip(
-        description = currentQualityDesc,
-        focused = focusedControlIndex == ControlIndexQuality,
-        onClick = onOpenQuality,
-      )
+      if (showQuality) {
+        Spacer(modifier = Modifier.width(BiliSpacing.Sm))
+        LiveQualityChip(
+          description = currentQualityDesc,
+          focused = focusedControlIndex == ControlIndexQuality,
+          onClick = onOpenQuality,
+        )
+      }
     }
     ClockOverlay(
       clockText = clockText,
@@ -626,5 +716,103 @@ private fun LoadingOverlay() {
     contentAlignment = Alignment.Center,
   ) {
     CircularProgressIndicator(color = BiliColors.BiliPink)
+  }
+}
+
+/**
+ * 移动端直播底栏控制条(参考 [com.kirin.mt.ui.mobile.player.MobilePlayerScreen] 底栏):
+ * 左侧"直播中"红点指示,右侧画质下拉 + 预留弹幕按钮 + 全屏。直播无进度条/时间,故底栏仅单行控件。
+ */
+@Composable
+private fun LiveBottomBar(
+  qualities: List<LiveQuality>,
+  selectedQn: Int,
+  showQualityMenu: Boolean,
+  onToggleQualityMenu: (Boolean) -> Unit,
+  onPickQuality: (Int) -> Unit,
+  onDanmaku: () -> Unit,
+  fullscreen: Boolean,
+  onToggleFullscreen: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  Column(
+    modifier = modifier
+      .fillMaxWidth()
+      .background(Color.Black)
+      .padding(horizontal = 16.dp, vertical = 8.dp),
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      // 直播中红点指示(替代视频底栏的时间/进度条区域)。
+      Box(
+        modifier = Modifier
+          .size(8.dp)
+          .clip(CircleShape)
+          .background(BiliColors.BiliPink),
+      )
+      Spacer(modifier = Modifier.width(6.dp))
+      Text(
+        text = stringResource(R.string.live_indicator),
+        color = BiliColors.TextPrimary,
+        fontWeight = FontWeight.Bold,
+      )
+      Spacer(modifier = Modifier.weight(1f))
+      // 画质下拉:HD 图标按钮 + DropdownMenu 列直播可用清晰度。
+      if (qualities.isNotEmpty()) {
+        Box {
+          MobilePlayerIconButton(
+            iconRes = R.drawable.ic_player_hd,
+            contentDescription = stringResource(R.string.live_quality),
+            tint = BiliColors.TextPrimary,
+            onClick = { onToggleQualityMenu(!showQualityMenu) },
+          )
+          DropdownMenu(
+            expanded = showQualityMenu,
+            onDismissRequest = { onToggleQualityMenu(false) },
+            containerColor = Color(0xFF1A1A20),
+          ) {
+            qualities.forEach { quality ->
+              val selected = quality.qn == selectedQn
+              DropdownMenuItem(
+                text = {
+                  Text(
+                    text = convertChineseText(quality.description.ifBlank { "qn ${quality.qn}" }),
+                    color = if (selected) BiliColors.BiliPink else Color.White,
+                  )
+                },
+                onClick = { onPickQuality(quality.qn) },
+              )
+            }
+          }
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+      }
+      // 预留弹幕输入按钮:直播 WebSocket 弹幕未实现,点击提示"暂未开放"占位。
+      MobilePlayerIconButton(
+        iconRes = R.drawable.ic_player_subtitles,
+        contentDescription = "弹幕",
+        tint = BiliColors.TextPrimary,
+        onClick = onDanmaku,
+      )
+      Spacer(modifier = Modifier.width(8.dp))
+      // 全屏:强制横屏 + 沉浸(由 LivePlayerScreen 的 DisposableEffect 处理),此按钮只 toggle 状态。
+      MobilePlayerIconButton(
+        iconRes = if (fullscreen) R.drawable.ic_player_fullscreen_exit else R.drawable.ic_player_fullscreen,
+        contentDescription = if (fullscreen) "退出全屏" else "全屏",
+        tint = BiliColors.TextPrimary,
+        onClick = onToggleFullscreen,
+      )
+    }
+  }
+}
+
+/** 从 Compose Context 逐层解包出 Activity(全屏方向/系统栏控制需要)。镜像 PlayerScreen 同名工具。 */
+private tailrec fun android.content.Context.findActivity(): Activity? {
+  val ctx = this as? Activity ?: (this as? android.content.ContextWrapper)?.baseContext
+  return when (ctx) {
+    is Activity -> ctx
+    else -> ctx?.findActivity()
   }
 }

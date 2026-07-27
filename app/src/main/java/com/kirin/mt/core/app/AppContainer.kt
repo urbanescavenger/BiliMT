@@ -21,6 +21,7 @@ import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.CdnSpeedTester
 import com.kirin.mt.core.player.CodecCapabilityProbe
 import com.kirin.mt.core.player.DanmakuSettingsStore
+import com.kirin.mt.core.player.LiveQualityPreferenceStore
 import com.kirin.mt.core.player.PlaybackProgressStore
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.settings.AppSettingsStore
@@ -89,6 +90,7 @@ class AppContainer(context: Context) {
     progressStore = PlaybackProgressStore(appContext),
   )
   val danmakuSettingsStore: DanmakuSettingsStore = DanmakuSettingsStore(appContext)
+  val liveQualityPreferenceStore: LiveQualityPreferenceStore = LiveQualityPreferenceStore(appContext)
   val tvLoginSigner: TvLoginSigner = TvLoginSigner()
   val authRepository: AuthRepository = AuthRepository(
     apiClient = apiClient,

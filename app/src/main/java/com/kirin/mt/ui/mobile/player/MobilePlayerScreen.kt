@@ -1826,7 +1826,7 @@ private fun android.content.Context.findActivity(): Activity? {
  * 选中/激活态由调用方传 tint(如弹幕开=BiliPink、关=TextSecondary)。无焦点/无玻璃(触屏)。
  */
 @Composable
-private fun MobilePlayerIconButton(
+internal fun MobilePlayerIconButton(
   @DrawableRes iconRes: Int,
   contentDescription: String,
   tint: Color,

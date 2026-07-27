@@ -73,6 +73,7 @@ fun BiliMobileApp(
   liveRepository: LiveRepository,
   playbackRepository: PlaybackRepository,
   danmakuSettingsStore: DanmakuSettingsStore,
+  liveQualityPreferenceStore: com.kirin.mt.core.player.LiveQualityPreferenceStore,
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
   authRepository: AuthRepository,
@@ -160,6 +161,10 @@ fun BiliMobileApp(
         AppDestination.Live -> MobileLiveScreen(
           liveRepository = liveRepository,
           onVideoSelected = { video -> playbackRequest = video.toPlaybackRequest() },
+          onOpenOwner = { video ->
+            spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+            spacePlaybackBehind = false
+          },
           modifier = Modifier.fillMaxSize(),
         )
         AppDestination.Dynamic -> MobileFeedScreen(
@@ -208,7 +213,9 @@ fun BiliMobileApp(
             request = request,
             playbackRepository = playbackRepository,
             playbackHttpClient = playbackHttpClient,
+            liveQualityPreferenceStore = liveQualityPreferenceStore,
             onBack = { playbackRequest = null },
+            isMobile = true,
           )
         } else {
         MobilePlayerScreen(
