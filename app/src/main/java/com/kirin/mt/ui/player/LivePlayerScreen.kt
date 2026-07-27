@@ -272,7 +272,7 @@ private fun TopBar(
       text = title,
       color = BiliColors.TextPrimary,
       maxLines = 1,
-      textOverflow = TextOverflow.Ellipsis,
+      overflow = TextOverflow.Ellipsis,
       modifier = Modifier
         .weight(1f)
         .padding(horizontal = 12.dp),

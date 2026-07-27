@@ -182,7 +182,7 @@ class PlaybackRepository(
       .map { LiveQuality(qn = it.int("qn"), description = it.string("desc").ifBlank { it.string("description") }) }
       .filter { it.qn > 0 }
 
-    val streams = playurl.get("stream") as? JsonArray ?: emptyList()
+    val streams = playurl.get("stream") as? JsonArray ?: JsonArray(emptyList())
     val chosen = pickLiveStreamCandidate(streams)
       ?: throw IllegalStateException("直播间无可用流(无 HLS/FLV)")
 

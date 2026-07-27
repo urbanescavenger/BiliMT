@@ -5,6 +5,7 @@ import com.kirin.mt.core.model.LiveRoom
 import com.kirin.mt.core.storage.SessionStore
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 
 /**
  * 直播数据仓库:推荐直播列表。镜像 [HomeVideoRepository] 的结构
@@ -57,11 +58,11 @@ class LiveRepository(
       uid = json.long("uid"),
       uname = json.string("uname"),
       title = json.string("title"),
-      cover = fixPicUrl(cover),
-      face = fixPicUrl(json.string("face")),
+      cover = VideoSummaryMappers.fixPicUrl(cover),
+      face = VideoSummaryMappers.fixPicUrl(json.string("face")),
       online = online,
       areaName = json.string("area_name"),
-      keyframe = fixPicUrl(json.string("keyframe")),
+      keyframe = VideoSummaryMappers.fixPicUrl(json.string("keyframe")),
       liveStatus = json.int("live_status"),
     )
   }
