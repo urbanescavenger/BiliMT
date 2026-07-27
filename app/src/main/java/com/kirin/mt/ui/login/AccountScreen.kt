@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -47,6 +46,7 @@ import kotlinx.coroutines.launch
 fun AccountScreen(
   userSession: UserSession,
   authRepository: AuthRepository,
+  modifier: Modifier = Modifier,
 ) {
   if (userSession.isLoggedIn) {
     LaunchedEffect(userSession.face, userSession.uname, userSession.isLoggedIn) {
@@ -58,18 +58,20 @@ fun AccountScreen(
     }
     LoggedInAccount(
       userSession = userSession,
+      modifier = modifier,
     )
   } else {
-    TvQrLoginPanel(authRepository = authRepository)
+    TvQrLoginPanel(authRepository = authRepository, modifier = modifier)
   }
 }
 
 @Composable
 private fun LoggedInAccount(
   userSession: UserSession,
+  modifier: Modifier,
 ) {
   Column(
-    modifier = Modifier.fillMaxSize(),
+    modifier = modifier,
     verticalArrangement = Arrangement.Center,
     horizontalAlignment = Alignment.CenterHorizontally,
   ) {
@@ -82,7 +84,7 @@ private fun LoggedInAccount(
 }
 
 @Composable
-private fun TvQrLoginPanel(authRepository: AuthRepository) {
+private fun TvQrLoginPanel(authRepository: AuthRepository, modifier: Modifier) {
   val coroutineScope = rememberCoroutineScope()
   val lifecycle = LocalLifecycleOwner.current.lifecycle
   var state by remember { mutableStateOf<QrLoginState>(QrLoginState.Loading) }
@@ -134,7 +136,7 @@ private fun TvQrLoginPanel(authRepository: AuthRepository) {
   }
 
   Column(
-    modifier = Modifier.fillMaxSize(),
+    modifier = modifier,
     verticalArrangement = Arrangement.Center,
     horizontalAlignment = Alignment.CenterHorizontally,
   ) {

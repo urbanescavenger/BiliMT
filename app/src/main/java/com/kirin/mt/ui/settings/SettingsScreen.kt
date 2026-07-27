@@ -53,6 +53,7 @@ fun SettingsScreen(
   settings: AppSettings,
   cacheSizeText: String,
   codecCapability: CodecCapability,
+  modifier: Modifier = Modifier,
   firstItemFocusRequester: FocusRequester,
   onMoveLeftToNav: () -> Boolean,
   onVisualPerformanceModeChange: (AppVisualPerformanceMode) -> Unit,
@@ -168,7 +169,7 @@ fun SettingsScreen(
   }
 
   Box(
-    modifier = Modifier.fillMaxSize(),
+    modifier = modifier.fillMaxSize(),
   ) {
     SettingsEntryFocusTarget(
       focusRequester = firstItemFocusRequester,

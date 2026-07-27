@@ -28,7 +28,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.painter.ColorPainter
@@ -131,27 +130,25 @@ internal fun AppSidebar(
       .padding(horizontal = BiliSpacing.Md, vertical = BiliSizing.ContentPadding),
     horizontalAlignment = Alignment.CenterHorizontally,
   ) {
-    if (userSession.isLoggedIn) {
-      AccountStatusAvatar(userSession = userSession)
-    } else {
-      AccountNavItem(
-        selected = accountSelected,
-        userSession = userSession,
-        autoConfirmOnFocus = autoConfirmOnFocus,
-        modifier = Modifier.focusRequester(accountFocusRequester),
-        onClick = onAccountSelected,
-        onMoveRight = {
-          onMoveRight(selectedDestination)
-        },
-      )
-    }
+    // 头像即「我的」入口(账号区 + 设置区合并页):登录/未登录都可点击进入。
+    AccountNavItem(
+      selected = accountSelected,
+      userSession = userSession,
+      autoConfirmOnFocus = autoConfirmOnFocus,
+      modifier = Modifier.focusRequester(accountFocusRequester),
+      onClick = onAccountSelected,
+      onMoveRight = {
+        onMoveRight(selectedDestination)
+      },
+    )
     Spacer(modifier = Modifier.height(BiliSizing.SidebarNavGroupTopPadding))
     Column(
       modifier = Modifier.fillMaxWidth(),
       horizontalAlignment = Alignment.CenterHorizontally,
       verticalArrangement = Arrangement.spacedBy(BiliSizing.SidebarNavGroupSpacing),
     ) {
-      AppDestination.entries.forEach { destination ->
+      // 「设置」已并入头像「我的」入口,侧栏不再单独渲染设置导航项。
+      AppDestination.entries.filter { it != AppDestination.Settings }.forEach { destination ->
         AppNavItem(
           destination = destination,
           selected = !accountSelected && selectedDestination == destination,
@@ -237,19 +234,6 @@ private fun AccountNavItem(
     ) {
       AccountAvatar(userSession = userSession)
     }
-  }
-}
-
-@Composable
-private fun AccountStatusAvatar(userSession: UserSession) {
-  Box(
-    modifier = Modifier
-      .fillMaxWidth()
-      .height(BiliSizing.NavItemHeight)
-      .focusProperties { canFocus = false },
-    contentAlignment = Alignment.Center,
-  ) {
-    AccountAvatar(userSession = userSession)
   }
 }
 

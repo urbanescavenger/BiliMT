@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -352,7 +353,11 @@ fun BiliTvApp(
 
   fun moveIntoDestination(destination: AppDestination): Boolean {
     if (accountSelected) {
-      return false
+      // 在「我的」页时,右移进入设置列表首项(头像已与设置合并)。
+      runCatching {
+        settingsFocusRequester.requestFocus()
+      }
+      return true
     }
     if (selectedDestination != destination) {
       selectDestination(destination)
@@ -402,9 +407,9 @@ fun BiliTvApp(
 
   LaunchedEffect(userSession.isLoggedIn) {
     if (userSession.isLoggedIn && accountSelected) {
-      selectDestination(AppDestination.Recommend)
+      // 登录成功后留在「我的」页(头像+设置合并页),把焦点交给设置列表首项。
       runCatching {
-        contentFocusRequester.requestFocus()
+        settingsFocusRequester.requestFocus()
       }
     }
   }
@@ -417,8 +422,8 @@ fun BiliTvApp(
     }
   }
 
-  LaunchedEffect(selectedDestination) {
-    if (selectedDestination == AppDestination.Settings) {
+  LaunchedEffect(selectedDestination, accountSelected) {
+    if (selectedDestination == AppDestination.Settings || accountSelected) {
       refreshCacheSize()
       refreshLogFiles()
     }
@@ -564,11 +569,301 @@ fun BiliTvApp(
                 },
               ),
           ) {
-            if (accountSelected) {
-              AccountScreen(
-                userSession = userSession,
-                authRepository = authRepository,
+            // 「我的」页 = 账号区(置顶) + 设置区(下方),设置区复用 SettingsScreen 的焦点/滚动体系。
+            // 此 lambda 同时供 accountSelected 的「我的」页与(不可达的)Settings 目的地分支使用,
+            // onMoveLeftToNav 在 accountSelected 时回到侧栏头像、否则回到对应 nav 项。
+            val settingsContent: @Composable (Modifier) -> Unit = { mod ->
+              SettingsScreen(
+                modifier = mod,
+                settings = settings,
+                cacheSizeText = cacheSizeBytes?.let(::formatCacheSize) ?: stringResource(R.string.settings_clear_cache_calculating),
+                codecCapability = codecCapability,
+                firstItemFocusRequester = settingsFocusRequester,
+                onMoveLeftToNav = {
+                  runCatching {
+                    if (accountSelected) {
+                      accountFocusRequester.requestFocus()
+                    } else {
+                      navFocusRequesters.getValue(selectedDestination).requestFocus()
+                    }
+                  }.isSuccess
+                },
+                onVisualPerformanceModeChange = { mode ->
+                  coroutineScope.launch {
+                    appSettingsStore.setVisualPerformanceMode(mode)
+                  }
+                },
+                liquidGlassCardsSupported = liquidGlassCardsSupported,
+                onLiquidGlassCardsEnabledChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setLiquidGlassCardsEnabled(enabled)
+                  }
+                },
+                onHomeThemeVariantChange = { variant ->
+                  coroutineScope.launch {
+                    appSettingsStore.setHomeThemeVariant(variant)
+                  }
+                },
+                onChineseTextVariantChange = { variant ->
+                  coroutineScope.launch {
+                    appSettingsStore.setChineseTextVariant(variant)
+                  }
+                },
+                onClearCache = {
+                  coroutineScope.launch {
+                    val result = appCacheManager.clearCache()
+                    cacheSizeBytes = appCacheManager.cacheSizeBytes()
+                    refreshLogFiles()
+                    Toast.makeText(
+                      localizedContext,
+                      localizedContext.getString(R.string.settings_clear_cache_done, formatCacheSize(result.clearedBytes)),
+                      Toast.LENGTH_SHORT,
+                    ).show()
+                  }
+                },
+                onSeekPreviewSpritesEnabledChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setSeekPreviewSpritesEnabled(enabled)
+                  }
+                },
+                onPlaybackQualityPreferenceChange = { preference ->
+                  coroutineScope.launch {
+                    appSettingsStore.setPlaybackQualityPreference(preference)
+                  }
+                },
+                onPlaybackCodecPreferenceChange = { preference ->
+                  coroutineScope.launch {
+                    appSettingsStore.setPlaybackCodecPreference(preference)
+                  }
+                },
+                onPlaybackCdnPreferenceChange = { preference ->
+                  coroutineScope.launch {
+                    appSettingsStore.setPlaybackCdnPreference(preference)
+                  }
+                },
+                onAirJumpAssistantEnabledChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setAirJumpAssistantEnabled(enabled)
+                  }
+                },
+                onConfirmPlaybackExitChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setConfirmPlaybackExit(enabled)
+                  }
+                },
+                onAutoPlayNextEpisodeChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setAutoPlayNextEpisode(enabled)
+                  }
+                },
+                onAutoPlayRelatedVideoChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setAutoPlayRelatedVideo(enabled)
+                  }
+                },
+                onAutoReturnHomeOnCompletionChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setAutoReturnHomeOnCompletion(enabled)
+                  }
+                },
+                onShowClockChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setShowClock(enabled)
+                  }
+                },
+                onShowMiniProgressBarChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setShowMiniProgressBar(enabled)
+                  }
+                },
+                onPlayerLogOverlayEnabledChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setPlayerLogOverlayEnabled(enabled)
+                  }
+                },
+                onAutoConfirmOnFocusChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setAutoConfirmOnFocus(enabled)
+                  }
+                },
+                onAutoRefreshOnSwitchChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setAutoRefreshOnSwitch(enabled)
+                  }
+                },
+                onHomeSectionEnabledChange = { section, enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setHomeSectionEnabled(section, enabled)
+                  }
+                },
+                onHomeSectionsOrderChange = { order ->
+                  coroutineScope.launch {
+                    appSettingsStore.setHomeSectionsOrder(order)
+                  }
+                },
+                onLogsSelected = {
+                  // Toggle is handled inside SettingsScreen via rightPanel state.
+                },
+                logFiles = logFiles,
+                isRecordingLog = isRecordingLog,
+                viewingLogFile = viewingLogFile,
+                onViewLog = { info ->
+                  viewingLogFile = info.file
+                },
+                onBackFromLogView = {
+                  viewingLogFile = null
+                },
+                onShareLog = { info ->
+                  LogCatcherUtil.shareLogFile(context, info.file)
+                },
+                onToggleLogRecording = {
+                  coroutineScope.launch {
+                    if (LogCatcherUtil.isRecording) {
+                      val file = LogCatcherUtil.stopManualRecording()
+                      refreshLogFiles()
+                      Toast.makeText(
+                        localizedContext,
+                        localizedContext.getString(R.string.settings_logs_recording_stopped, file?.name ?: ""),
+                        Toast.LENGTH_SHORT,
+                      ).show()
+                    } else {
+                      val started = LogCatcherUtil.startManualRecording()
+                      isRecordingLog = LogCatcherUtil.isRecording
+                      val message = if (started) {
+                        R.string.settings_logs_recording_started
+                      } else {
+                        R.string.settings_logs_recording_failed
+                      }
+                      Toast.makeText(localizedContext, message, Toast.LENGTH_SHORT).show()
+                    }
+                  }
+                },
+                updateState = updateState,
+                onCheckUpdate = {
+                  coroutineScope.launch {
+                    updateManager.refresh()
+                  }
+                },
+                onDownloadUpdate = {
+                  coroutineScope.launch {
+                    try {
+                      updateManager.download()
+                    } catch (e: Exception) {
+                      Toast.makeText(
+                        localizedContext,
+                        localizedContext.getString(R.string.settings_update_download_failed_with_message, e.message ?: e.javaClass.simpleName),
+                        Toast.LENGTH_LONG,
+                      ).show()
+                    }
+                  }
+                },
+                onInstallUpdate = {
+                  val file = updateManager.downloadedFile()
+                  val activity = context.findActivity()
+                  if (file != null && activity != null) {
+                    val result = apkInstaller.startInstall(activity, file)
+                    when (result) {
+                      is com.kirin.mt.core.update.InstallResult.NeedsUnknownSourcesPermission -> {
+                        context.startActivity(apkInstaller.buildUnknownSourcesIntent())
+                        Toast.makeText(
+                          localizedContext,
+                          R.string.settings_update_install_unknown_sources_required,
+                          Toast.LENGTH_LONG,
+                        ).show()
+                      }
+                      is com.kirin.mt.core.update.InstallResult.Failed -> {
+                        Toast.makeText(
+                          localizedContext,
+                          localizedContext.getString(R.string.settings_update_failed_with_message, result.message),
+                          Toast.LENGTH_SHORT,
+                        ).show()
+                      }
+                      else -> Unit
+                    }
+                  }
+                },
+                onOpenReleaseNotes = {
+                  val url = (updateState.status as? com.kirin.mt.core.update.UpdateUiState.Status.Available)?.info?.releaseUrl
+                    ?: (updateState.status as? com.kirin.mt.core.update.UpdateUiState.Status.Downloaded)?.info?.releaseUrl
+                  if (!url.isNullOrEmpty()) {
+                    runCatching {
+                      context.startActivity(
+                        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                          .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                      )
+                    }
+                  }
+                },
+                speedTestState = speedTestState,
+                onRunSpeedTest = {
+                  if (speedTestState is SpeedTestUiState.Running) {
+                    return@SettingsScreen
+                  }
+                  speedTestState = SpeedTestUiState.Running
+                  coroutineScope.launch {
+                    val last = lastPlayedStore.load()
+                    if (last == null) {
+                      speedTestState = SpeedTestUiState.NoLastVideo
+                      return@launch
+                    }
+                    val resolveStartNs = System.nanoTime()
+                    val info = runCatching {
+                      playbackRepository.getPlaybackInfo(
+                        request = PlaybackRequest(bvid = last.bvid, cid = last.cid, title = ""),
+                        codecPreference = effectivePlaybackCodecPreference,
+                        qualityPreference = settings.playbackQualityPreference,
+                      )
+                    }.getOrNull()
+                    val playurlResolveMs = (System.nanoTime() - resolveStartNs) / 1_000_000L
+                    if (info == null || info.videoTracks.isEmpty()) {
+                      speedTestState = SpeedTestUiState.Failed
+                      return@launch
+                    }
+                    // Use the exact same candidate set the player would consider
+                    // (CdnRewriter + isEligibleCandidate applied), so for a non-Auto
+                    // preference we only measure the host the player will actually use.
+                    val cdnPreference = settings.playbackCdnPreference
+                    val candidates = (info.videoTracks + info.audioTracks)
+                      .flatMap { cdnSelector.candidatesFor(it, cdnPreference) }
+                      // De-dup by host: video/audio/multi-quality tracks often
+                      // share a CDN host with different signed URLs; measuring
+                      // the same host multiple times wastes probe slots and
+                      // shows duplicate rows. Keep one representative URL
+                      // per host.
+                      .distinctBy { it.toHttpUrlOrNull()?.host ?: it }
+                    val results = cdnSpeedTester.measure(candidates, CdnSpeedTester.MeasureOptions.Dialog)
+                    // Pre-warm the CdnSelector cache per track so the next open of
+                    // the same video hits "Using cached CDN selection" and skips the
+                    // inline measurement on the live playback path.
+                    if (results.isNotEmpty()) {
+                      info.videoTracks.forEach { cdnSelector.applyMeasurements(it, cdnPreference, results) }
+                      info.audioTracks.forEach { cdnSelector.applyMeasurements(it, cdnPreference, results) }
+                    }
+                    speedTestState = if (results.isEmpty()) {
+                      SpeedTestUiState.Failed
+                    } else {
+                      SpeedTestUiState.Succeeded(
+                        results = results,
+                        sourceLabel = info.title.takeIf { it.isNotBlank() } ?: last.bvid,
+                        playurlResolveMs = playurlResolveMs,
+                      )
+                    }
+                  }
+                },
+                onDismissSpeedTest = {
+                  speedTestState = SpeedTestUiState.Idle
+                },
               )
+            }
+            if (accountSelected) {
+              Column(Modifier.fillMaxSize()) {
+                AccountScreen(
+                  userSession = userSession,
+                  authRepository = authRepository,
+                  modifier = Modifier.fillMaxWidth(),
+                )
+                settingsContent(Modifier.weight(1f))
+              }
             } else {
               when (selectedDestination) {
                 AppDestination.Recommend -> RecommendScreen(
@@ -669,286 +964,7 @@ fun BiliTvApp(
                     )
                   },
                 )
-                AppDestination.Settings -> SettingsScreen(
-                  settings = settings,
-                  cacheSizeText = cacheSizeBytes?.let(::formatCacheSize) ?: stringResource(R.string.settings_clear_cache_calculating),
-                  codecCapability = codecCapability,
-                  firstItemFocusRequester = settingsFocusRequester,
-                  onMoveLeftToNav = {
-                    runCatching {
-                      if (accountSelected) {
-                        accountFocusRequester.requestFocus()
-                      } else {
-                        navFocusRequesters.getValue(selectedDestination).requestFocus()
-                      }
-                    }.isSuccess
-                  },
-                  onVisualPerformanceModeChange = { mode ->
-                    coroutineScope.launch {
-                      appSettingsStore.setVisualPerformanceMode(mode)
-                    }
-                  },
-                  liquidGlassCardsSupported = liquidGlassCardsSupported,
-                  onLiquidGlassCardsEnabledChange = { enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setLiquidGlassCardsEnabled(enabled)
-                    }
-                  },
-                  onHomeThemeVariantChange = { variant ->
-                    coroutineScope.launch {
-                      appSettingsStore.setHomeThemeVariant(variant)
-                    }
-                  },
-                  onChineseTextVariantChange = { variant ->
-                    coroutineScope.launch {
-                      appSettingsStore.setChineseTextVariant(variant)
-                    }
-                  },
-                  onClearCache = {
-                    coroutineScope.launch {
-                      val result = appCacheManager.clearCache()
-                      cacheSizeBytes = appCacheManager.cacheSizeBytes()
-                      refreshLogFiles()
-                      Toast.makeText(
-                        localizedContext,
-                        localizedContext.getString(R.string.settings_clear_cache_done, formatCacheSize(result.clearedBytes)),
-                        Toast.LENGTH_SHORT,
-                      ).show()
-                    }
-                  },
-                  onSeekPreviewSpritesEnabledChange = { enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setSeekPreviewSpritesEnabled(enabled)
-                    }
-                  },
-                  onPlaybackQualityPreferenceChange = { preference ->
-                    coroutineScope.launch {
-                      appSettingsStore.setPlaybackQualityPreference(preference)
-                    }
-                  },
-                  onPlaybackCodecPreferenceChange = { preference ->
-                    coroutineScope.launch {
-                      appSettingsStore.setPlaybackCodecPreference(preference)
-                    }
-                  },
-                  onPlaybackCdnPreferenceChange = { preference ->
-                    coroutineScope.launch {
-                      appSettingsStore.setPlaybackCdnPreference(preference)
-                    }
-                  },
-                  onAirJumpAssistantEnabledChange = { enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setAirJumpAssistantEnabled(enabled)
-                    }
-                  },
-                  onConfirmPlaybackExitChange = { enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setConfirmPlaybackExit(enabled)
-                    }
-                  },
-                  onAutoPlayNextEpisodeChange = { enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setAutoPlayNextEpisode(enabled)
-                    }
-                  },
-                  onAutoPlayRelatedVideoChange = { enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setAutoPlayRelatedVideo(enabled)
-                    }
-                  },
-                  onAutoReturnHomeOnCompletionChange = { enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setAutoReturnHomeOnCompletion(enabled)
-                    }
-                  },
-                  onShowClockChange = { enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setShowClock(enabled)
-                    }
-                  },
-                  onShowMiniProgressBarChange = { enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setShowMiniProgressBar(enabled)
-                    }
-                  },
-                  onPlayerLogOverlayEnabledChange = { enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setPlayerLogOverlayEnabled(enabled)
-                    }
-                  },
-                  onAutoConfirmOnFocusChange = { enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setAutoConfirmOnFocus(enabled)
-                    }
-                  },
-                  onAutoRefreshOnSwitchChange = { enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setAutoRefreshOnSwitch(enabled)
-                    }
-                  },
-                  onHomeSectionEnabledChange = { section, enabled ->
-                    coroutineScope.launch {
-                      appSettingsStore.setHomeSectionEnabled(section, enabled)
-                    }
-                  },
-                  onHomeSectionsOrderChange = { order ->
-                    coroutineScope.launch {
-                      appSettingsStore.setHomeSectionsOrder(order)
-                    }
-                  },
-                  onLogsSelected = {
-                    // Toggle is handled inside SettingsScreen via rightPanel state.
-                  },
-                  logFiles = logFiles,
-                  isRecordingLog = isRecordingLog,
-                  viewingLogFile = viewingLogFile,
-                  onViewLog = { info ->
-                    viewingLogFile = info.file
-                  },
-                  onBackFromLogView = {
-                    viewingLogFile = null
-                  },
-                  onShareLog = { info ->
-                    LogCatcherUtil.shareLogFile(context, info.file)
-                  },
-                  onToggleLogRecording = {
-                    coroutineScope.launch {
-                      if (LogCatcherUtil.isRecording) {
-                        val file = LogCatcherUtil.stopManualRecording()
-                        refreshLogFiles()
-                        Toast.makeText(
-                          localizedContext,
-                          localizedContext.getString(R.string.settings_logs_recording_stopped, file?.name ?: ""),
-                          Toast.LENGTH_SHORT,
-                        ).show()
-                      } else {
-                        val started = LogCatcherUtil.startManualRecording()
-                        isRecordingLog = LogCatcherUtil.isRecording
-                        val message = if (started) {
-                          R.string.settings_logs_recording_started
-                        } else {
-                          R.string.settings_logs_recording_failed
-                        }
-                        Toast.makeText(localizedContext, message, Toast.LENGTH_SHORT).show()
-                      }
-                    }
-                  },
-                  updateState = updateState,
-                  onCheckUpdate = {
-                    coroutineScope.launch {
-                      updateManager.refresh()
-                    }
-                  },
-                  onDownloadUpdate = {
-                    coroutineScope.launch {
-                      try {
-                        updateManager.download()
-                      } catch (e: Exception) {
-                        Toast.makeText(
-                          localizedContext,
-                          localizedContext.getString(R.string.settings_update_download_failed_with_message, e.message ?: e.javaClass.simpleName),
-                          Toast.LENGTH_LONG,
-                        ).show()
-                      }
-                    }
-                  },
-                  onInstallUpdate = {
-                    val file = updateManager.downloadedFile()
-                    val activity = context.findActivity()
-                    if (file != null && activity != null) {
-                      val result = apkInstaller.startInstall(activity, file)
-                      when (result) {
-                        is com.kirin.mt.core.update.InstallResult.NeedsUnknownSourcesPermission -> {
-                          context.startActivity(apkInstaller.buildUnknownSourcesIntent())
-                          Toast.makeText(
-                            localizedContext,
-                            R.string.settings_update_install_unknown_sources_required,
-                            Toast.LENGTH_LONG,
-                          ).show()
-                        }
-                        is com.kirin.mt.core.update.InstallResult.Failed -> {
-                          Toast.makeText(
-                            localizedContext,
-                            localizedContext.getString(R.string.settings_update_failed_with_message, result.message),
-                            Toast.LENGTH_SHORT,
-                          ).show()
-                        }
-                        else -> Unit
-                      }
-                    }
-                  },
-                  onOpenReleaseNotes = {
-                    val url = (updateState.status as? com.kirin.mt.core.update.UpdateUiState.Status.Available)?.info?.releaseUrl
-                      ?: (updateState.status as? com.kirin.mt.core.update.UpdateUiState.Status.Downloaded)?.info?.releaseUrl
-                    if (!url.isNullOrEmpty()) {
-                      runCatching {
-                        context.startActivity(
-                          android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
-                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                      }
-                    }
-                  },
-                  speedTestState = speedTestState,
-                  onRunSpeedTest = {
-                    if (speedTestState is SpeedTestUiState.Running) {
-                      return@SettingsScreen
-                    }
-                    speedTestState = SpeedTestUiState.Running
-                    coroutineScope.launch {
-                      val last = lastPlayedStore.load()
-                      if (last == null) {
-                        speedTestState = SpeedTestUiState.NoLastVideo
-                        return@launch
-                      }
-                      val resolveStartNs = System.nanoTime()
-                      val info = runCatching {
-                        playbackRepository.getPlaybackInfo(
-                          request = PlaybackRequest(bvid = last.bvid, cid = last.cid, title = ""),
-                          codecPreference = effectivePlaybackCodecPreference,
-                          qualityPreference = settings.playbackQualityPreference,
-                        )
-                      }.getOrNull()
-                      val playurlResolveMs = (System.nanoTime() - resolveStartNs) / 1_000_000L
-                      if (info == null || info.videoTracks.isEmpty()) {
-                        speedTestState = SpeedTestUiState.Failed
-                        return@launch
-                      }
-                      // Use the exact same candidate set the player would consider
-                      // (CdnRewriter + isEligibleCandidate applied), so for a non-Auto
-                      // preference we only measure the host the player will actually use.
-                      val cdnPreference = settings.playbackCdnPreference
-                      val candidates = (info.videoTracks + info.audioTracks)
-                        .flatMap { cdnSelector.candidatesFor(it, cdnPreference) }
-                        // De-dup by host: video/audio/multi-quality tracks often
-                        // share a CDN host with different signed URLs; measuring
-                        // the same host multiple times wastes probe slots and
-                        // shows duplicate rows. Keep one representative URL
-                        // per host.
-                        .distinctBy { it.toHttpUrlOrNull()?.host ?: it }
-                      val results = cdnSpeedTester.measure(candidates, CdnSpeedTester.MeasureOptions.Dialog)
-                      // Pre-warm the CdnSelector cache per track so the next open of
-                      // the same video hits "Using cached CDN selection" and skips the
-                      // inline measurement on the live playback path.
-                      if (results.isNotEmpty()) {
-                        info.videoTracks.forEach { cdnSelector.applyMeasurements(it, cdnPreference, results) }
-                        info.audioTracks.forEach { cdnSelector.applyMeasurements(it, cdnPreference, results) }
-                      }
-                      speedTestState = if (results.isEmpty()) {
-                        SpeedTestUiState.Failed
-                      } else {
-                        SpeedTestUiState.Succeeded(
-                          results = results,
-                          sourceLabel = info.title.takeIf { it.isNotBlank() } ?: last.bvid,
-                          playurlResolveMs = playurlResolveMs,
-                        )
-                      }
-                    }
-                  },
-                  onDismissSpeedTest = {
-                    speedTestState = SpeedTestUiState.Idle
-                  },
-                )
+                AppDestination.Settings -> settingsContent(Modifier.fillMaxSize())
                 AppDestination.Pgc -> com.kirin.mt.ui.pgc.PgcScreen(
                   videoRepository = videoRepository,
                   uiState = pgcUiState,
