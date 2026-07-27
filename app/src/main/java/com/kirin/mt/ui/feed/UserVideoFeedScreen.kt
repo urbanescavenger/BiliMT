@@ -456,9 +456,13 @@ private suspend fun loadDynamicFirstPage(
     return
   }
 
-  state.state = UserFeedState.Loading
-  state.focusedVideoIndex = 0
-  state.focusedVideoKey = ""
+  // force-refresh 且已有内容时保留旧 videos 与焦点,不切骨架、不清焦点,
+  // 避免网格销毁重建后跳到第一个视频(对齐推荐页刷新策略)。
+  if (state.state !is UserFeedState.Success) {
+    state.state = UserFeedState.Loading
+    state.focusedVideoIndex = 0
+    state.focusedVideoKey = ""
+  }
   state.nextOffset = ""
   state.state = try {
     val page = videoRepository.getDynamicFeed(type = type)
@@ -534,9 +538,13 @@ private suspend fun loadHistoryFirstPage(
     return
   }
 
-  state.state = UserFeedState.Loading
-  state.focusedVideoIndex = 0
-  state.focusedVideoKey = ""
+  // force-refresh 且已有内容时保留旧 videos 与焦点,不切骨架、不清焦点,
+  // 避免网格销毁重建后跳到第一个视频(对齐推荐页刷新策略)。
+  if (state.state !is UserFeedState.Success) {
+    state.state = UserFeedState.Loading
+    state.focusedVideoIndex = 0
+    state.focusedVideoKey = ""
+  }
   state.nextViewAt = 0L
   state.nextMax = 0L
   state.state = try {
@@ -615,9 +623,13 @@ private suspend fun loadFavoriteFolders(
     return
   }
 
-  state.state = UserFeedState.Loading
-  state.focusedVideoIndex = 0
-  state.focusedVideoKey = ""
+  // force-refresh 且已有内容时保留旧 videos 与焦点,不切骨架、不清焦点,
+  // 避免网格销毁重建后跳到第一个视频(对齐推荐页刷新策略)。
+  if (state.state !is UserFeedState.Success) {
+    state.state = UserFeedState.Loading
+    state.focusedVideoIndex = 0
+    state.focusedVideoKey = ""
+  }
   state.currentPage = 0
   state.state = try {
     val mid = videoRepository.currentMid()
@@ -740,9 +752,13 @@ private suspend fun loadBangumiFirstPage(
   forceRefresh: Boolean,
 ) {
   if (!forceRefresh && state.loadedOnce) return
-  state.state = UserFeedState.Loading
-  state.focusedVideoIndex = 0
-  state.focusedVideoKey = ""
+  // force-refresh 且已有内容时保留旧 videos 与焦点,不切骨架、不清焦点,
+  // 避免网格销毁重建后跳到第一个视频(对齐推荐页刷新策略)。
+  if (state.state !is UserFeedState.Success) {
+    state.state = UserFeedState.Loading
+    state.focusedVideoIndex = 0
+    state.focusedVideoKey = ""
+  }
   state.currentPage = 0
   state.state = try {
     val page = videoRepository.getFollowingSeasons(

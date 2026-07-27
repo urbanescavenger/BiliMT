@@ -182,9 +182,9 @@ internal fun RecommendScreen(
     val previousState = uiState.sectionStates[sectionToLoad.key]
     if (previousState !is RecommendState.Success) {
       uiState.sectionStates = uiState.sectionStates + (sectionToLoad.key to RecommendState.Loading)
+      uiState.focusedVideoIndex = 0
+      uiState.focusedVideoKey = ""
     }
-    uiState.focusedVideoIndex = 0
-    uiState.focusedVideoKey = ""
     val nextState = try {
       val videos = videoRepository.getHomeSectionVideos(
         section = sectionToLoad,
@@ -285,10 +285,15 @@ internal fun RecommendScreen(
   }
 
   fun selectSection(section: HomeSection, forceRefresh: Boolean) {
+    val isSameSection = uiState.activeSectionKey == section.key
     uiState.selectedSectionKey = section.key
     uiState.activeSectionKey = section.key
-    uiState.focusedVideoIndex = 0
-    uiState.focusedVideoKey = ""
+    // 切到不同分区才回顶部;同一分区只是 force-refresh 时保留焦点位置,
+    // 避免自动刷新把焦点/滚动位置抢回第一个视频。
+    if (!isSameSection) {
+      uiState.focusedVideoIndex = 0
+      uiState.focusedVideoKey = ""
+    }
     val hasLoadedSection = section.key in uiState.loadedSectionKeys
     if (forceRefresh || !hasLoadedSection) {
       val nextRefreshKey = if (forceRefresh) {
