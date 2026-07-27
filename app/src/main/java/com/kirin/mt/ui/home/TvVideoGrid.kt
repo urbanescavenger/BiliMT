@@ -116,6 +116,7 @@ internal fun TvVideoGrid(
   requestInitialFocus: Boolean = false,
   onInitialFocusRequested: () -> Unit = {},
   focusFirstItemKey: Int = 0,
+  focusRestoredItemKey: Int = 0,
   onMoveUpFromFirstRow: () -> Boolean = { true },
   onBackKey: (() -> Boolean)? = null,
   horizontalPadding: Dp = BiliSizing.VideoGridHorizontalPadding,
@@ -218,6 +219,26 @@ internal fun TvVideoGrid(
       withFrameNanos { }
       val focused = runCatching {
         firstItemFocusRequester.requestFocus()
+      }.getOrDefault(false)
+      if (focused) {
+        return@LaunchedEffect
+      }
+    }
+  }
+
+  // 只在显式触发（tab 按下键）时滚回并聚焦上次所在项；不监听 videos.size，
+  // 避免刷新/加载更多后焦点从 tab 误跳。与 focusFirstItemKey 同理，但落点是
+  // restoreTargetIndex（上次聚焦的卡片），保留下滑位置而非滚回顶部。
+  LaunchedEffect(focusRestoredItemKey) {
+    if (focusRestoredItemKey <= 0 || videos.isEmpty()) {
+      return@LaunchedEffect
+    }
+    val targetIndex = restoreTargetIndex
+    scrollRow(targetIndex / columns, smoothScroll = false)
+    repeat(TvGridRestoreFocusRetryCount) {
+      withFrameNanos { }
+      val focused = runCatching {
+        itemFocusRequesters[targetIndex].requestFocus()
       }.getOrDefault(false)
       if (focused) {
         return@LaunchedEffect

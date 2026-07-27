@@ -94,6 +94,7 @@ internal class BangumiFollowUiState {
   var hasLoadedContent by mutableStateOf(false)
   var loadedOnce by mutableStateOf(false)
   var handledManualRefreshKey by mutableIntStateOf(0)
+  var focusRestoredItemKey by mutableIntStateOf(0)
 }
 
 @Stable
@@ -105,6 +106,7 @@ internal class DynamicFeedUiState {
   var hasLoadedContent by mutableStateOf(false)
   var loadedOnce by mutableStateOf(false)
   var handledManualRefreshKey by mutableIntStateOf(0)
+  var focusRestoredItemKey by mutableIntStateOf(0)
 }
 
 @Stable
@@ -117,6 +119,7 @@ internal class HistoryFeedUiState {
   var hasLoadedContent by mutableStateOf(false)
   var loadedOnce by mutableStateOf(false)
   var handledManualRefreshKey by mutableIntStateOf(0)
+  var focusRestoredItemKey by mutableIntStateOf(0)
 }
 
 @Stable
@@ -131,6 +134,7 @@ internal class FavoriteFeedUiState {
   var hasLoadedContent by mutableStateOf(false)
   var foldersLoaded by mutableStateOf(false)
   var handledManualRefreshKey by mutableIntStateOf(0)
+  var focusRestoredItemKey by mutableIntStateOf(0)
 }
 
 @Stable
@@ -239,7 +243,16 @@ internal fun UserFeedScreen(
       onSelect = { tab -> if (tab != selectedTab) feedState.selectedTab = tab },
       tabFocusRequester = tabFocusRequester,
       onMoveLeftToNav = onMoveLeftToNav,
-      onMoveDownToGrid = { runCatching { firstItemFocusRequester.requestFocus() }.isSuccess },
+      onMoveDownToGrid = {
+        when (selectedTab) {
+          UserFeedTab.DynamicVideo -> feedState.dynamicVideo.focusRestoredItemKey += 1
+          UserFeedTab.DynamicAll -> feedState.dynamicAll.focusRestoredItemKey += 1
+          UserFeedTab.History -> feedState.history.focusRestoredItemKey += 1
+          UserFeedTab.Favorite -> feedState.favorite.focusRestoredItemKey += 1
+          UserFeedTab.Bangumi -> feedState.bangumi.focusRestoredItemKey += 1
+        }
+        true
+      },
     )
     if (!isLoggedIn) {
       val message = stringResource(
@@ -311,6 +324,7 @@ internal fun UserFeedScreen(
            onVideoSelected = { video -> onVideoSelected(video, true) },
            onOwnerSelected = onOwnerSelected,
            onCardLongPress = { video -> onOwnerSelected(video) },
+           focusRestoredItemKey = feedState.history.focusRestoredItemKey,
           )
           UserFeedTab.Favorite -> FavoriteFeedContent(
             state = feedState.favorite,
@@ -840,6 +854,7 @@ private fun DynamicFeedContent(
       onVideoSelected = onVideoSelected,
       onOwnerSelected = onOwnerSelected,
       onCardLongPress = onCardLongPress,
+      focusRestoredItemKey = state.focusRestoredItemKey,
     )
   }
 }
@@ -881,7 +896,7 @@ private fun FavoriteFeedContent(
             selected = selected,
             modifier = if (selected) Modifier.focusRequester(folderFocusRequester) else Modifier,
             onMoveUpToNav = onMoveLeftToNav,
-            onMoveDownToGrid = { runCatching { firstItemFocusRequester.requestFocus() }.isSuccess },
+            onMoveDownToGrid = { state.focusRestoredItemKey += 1; true },
             onClick = {
               if (!selected) {
                 state.currentFolderMediaId = folder.mediaId
@@ -930,6 +945,7 @@ private fun FavoriteFeedContent(
       onVideoSelected = onVideoSelected,
       onOwnerSelected = onOwnerSelected,
       onCardLongPress = onCardLongPress,
+      focusRestoredItemKey = state.focusRestoredItemKey,
     )
   }
 }
@@ -988,6 +1004,7 @@ private fun BangumiFollowContent(
              feedState.endReached -> GridFooterState.EndReached
              else -> GridFooterState.None
            },
+           focusRestoredItemKey = state.focusRestoredItemKey,
          )
        }
       }
@@ -1046,6 +1063,7 @@ private fun UserFeedContent(
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
   onCardLongPress: (VideoSummary) -> Unit = {},
+  focusRestoredItemKey: Int = 0,
 ) {
   when (state) {
     UserFeedState.Loading -> VideoGridSkeleton()
@@ -1072,6 +1090,7 @@ private fun UserFeedContent(
       onVideoSelected = onVideoSelected,
       onOwnerSelected = onOwnerSelected,
       onCardLongPress = onCardLongPress,
+      focusRestoredItemKey = focusRestoredItemKey,
       footer = when {
         state.loadMoreError.isNotBlank() -> GridFooterState.Error(state.loadMoreError)
         state.loadingMore -> GridFooterState.Loading
@@ -1098,6 +1117,7 @@ private fun UserFeedGrid(
   onOwnerSelected: (VideoSummary) -> Unit = {},
   onCardLongPress: (VideoSummary) -> Unit = {},
   footer: GridFooterState = GridFooterState.None,
+  focusRestoredItemKey: Int = 0,
 ) {
   TvVideoGrid(
     videos = videos,
@@ -1114,6 +1134,7 @@ private fun UserFeedGrid(
     onOwnerSelected = onOwnerSelected,
     onCardLongPress = onCardLongPress,
     footer = footer,
+    focusRestoredItemKey = focusRestoredItemKey,
     keyFactory = { index, video -> video.feedKey(index) },
   )
 }
@@ -1131,6 +1152,7 @@ private fun BangumiGrid(
   onMoveLeftToNav: () -> Boolean,
   onSeasonSelected: (FollowingSeason) -> Unit,
   footer: GridFooterState = GridFooterState.None,
+  focusRestoredItemKey: Int = 0,
 ) {
   val videos = remember(seasons) { seasons.map { it.toVideoSummary() } }
   val seasonByKey = remember(seasons) { seasons.associateBy { it.seasonFocusKey() } }
@@ -1150,6 +1172,7 @@ private fun BangumiGrid(
     onVideoSelected = { video -> seasonByKey[video.bvid]?.let(onSeasonSelected) },
     keyFactory = { _, video -> video.bvid },
     footer = footer,
+    focusRestoredItemKey = focusRestoredItemKey,
   )
 }
 
