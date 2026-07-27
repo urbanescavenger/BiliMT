@@ -28,7 +28,7 @@ v2.0.3 后主打**看直播**:TV 与移动端新增直播入口与独立直播�
 - 修切 tab 重组不再用持久 `focusFirstItemKey` 抢首项焦点。
 
 ### versionCode 说明
-本版 vc=2,004,000。`computeVersionCode` 对 prerelease 加 `labelOrder*100+pre`,故 `v2.0.4-alpha.1~9`(2,004,101~2,004,109)高于本稳定版——已装 alpha 的用户需**手动安装 v2.0.4** 升级(沿用 v2.0.0~v2.0.3 同策略,不改 `labelOrder`)。
+本版 vc=2,004,000。`computeVersionCode` 对 prerelease 加 `labelOrder*100+pre`,故 `v2.0.4-alpha.1~8`(2,004,101~2,004,108)高于本稳定版——已装 alpha 的用户需**手动安装 v2.0.4** 升级(沿用 v2.0.0~v2.0.3 同策略,不改 `labelOrder`)。
 
 ### 安装包
 - `BiliMT-v2.0.4-arm64-v8a.apk`
