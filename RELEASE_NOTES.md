@@ -1,5 +1,39 @@
 # BiliMT 版本发布说明
 
+## v2.0.4
+
+v2.0.3 后主打**看直播**:TV 与移动端新增直播入口与独立直播播放器,过 -352 风控(WBI 签名 + buvid cookie + live Referer);直播播放器 UI 对齐视频界面(玻璃质感顶栏/Canvas 暂停指示器/统一 D-pad 按键路由);移动端直播列表补齐(标题条/骨架/错误重试/翻页失败提示)、直播卡片红 pill 角标 + 红点在线人数 + 分区名、移动端直播播放器底栏(画质下拉/预留弹幕/全屏)、直播画质跨房间持久化;TV 修动态页 tab→Down 焦点失效、自动刷新跳首项、切 tab 抢首项焦点。合并 mort_debug → main 打稳定 tag。
+
+### 看直播(TV + 移动端)
+- 新增直播 tab:TV 侧栏 + 移动端底栏均新增"直播"入口,拉 B 站直播推荐流(`xlive/web-interface/v1/index/getList`,WBI 签名),合并 `recommend_room_list` + `room_list` 模块按 roomid 去重。
+- 直播播放器(独立于点播 PlayerScreen):HLS/FLV 取流(`xlive/web-room/v2/index/getRoomPlayInfo`),清晰度切换(原画/蓝光/超清/高清/流畅)。
+- 过 -352 风控:直播接口补 buvid cookie + live Referer + web_location + WBI 签名;播放地址去 WBI 签名。
+
+### 直播播放器 UI 对齐视频界面
+- 玻璃质感渐变顶栏(主播名/人气 meta + 清晰度入口 + 时钟)、Canvas 双竖杠暂停指示器、玻璃清晰度面板(选中对勾 + TV 焦点驱动)。
+- 统一 D-pad 按键路由(中心/方向/媒体键)+ 层级关闭(面板→控件→退出)+ `BiliMotion` 自动隐藏常量与守卫(暂停/面板/下拉时不隐藏)。
+- 移除开发期诊断叠层;PlayerView 补 `keepScreenOn` + `RESIZE_MODE_FIT`。
+
+### 移动端直播界面
+- 直播播放器底栏控制条(移动专用,`isMobile` 门控):直播中红点指示 + 画质下拉 + 预留弹幕按钮(暂未开放,Toast 占位)+ 全屏(强制横屏 + 沉浸式)。
+- 直播列表补齐:顶部"直播"标题条、骨架屏加载态、带重试按钮的错误态、翻页失败可点重试、点头像进 UP 空间。
+- 直播卡片:红色"直播"pill 角标 + 红点在线人数 + 分区名。
+
+### 直播画质持久化
+- 新增 `LiveQualityPreferenceStore`(DataStore):记住用户上次选的直播清晰度,下次进任何直播间默认沿用(TV/移动共用,`initialResolved` 门控防双加载)。
+
+### TV
+- 修动态页 tab→Down 焦点失效(离屏 index0 requester 脱离)。
+- 修自动刷新不再跳到第一个视频(保留焦点/滚动位置)。
+- 修切 tab 重组不再用持久 `focusFirstItemKey` 抢首项焦点。
+
+### versionCode 说明
+本版 vc=2,004,000。`computeVersionCode` 对 prerelease 加 `labelOrder*100+pre`,故 `v2.0.4-alpha.1~9`(2,004,101~2,004,109)高于本稳定版——已装 alpha 的用户需**手动安装 v2.0.4** 升级(沿用 v2.0.0~v2.0.3 同策略,不改 `labelOrder`)。
+
+### 安装包
+- `BiliMT-v2.0.4-arm64-v8a.apk`
+- `BiliMT-v2.0.4-armeabi-v7a.apk`
+
 ## v2.0.3
 
 v2.0.2 后移动端播放器继续打磨:竖屏视频自动全屏居中、画质入口下移、发送弹幕(本地插入+粉色描边识别)、弹幕数量档位、播放卡死自愈、后台播放音频焦点/耳机断开自动暂停;TV 修切回首页焦点抢走。合并 mort_debug → main 打稳定 tag。
