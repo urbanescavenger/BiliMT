@@ -10,6 +10,7 @@ import com.kirin.mt.core.cache.AppCacheManager
 import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliHttpClientFactory
+import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.core.network.VideoRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -71,6 +72,10 @@ class AppContainer(context: Context) {
     apiClient = apiClient,
     wbiKeyRepository = wbiKeyRepository,
     wbiSigner = wbiSigner,
+    sessionStore = sessionStore,
+  )
+  val liveRepository: LiveRepository = LiveRepository(
+    apiClient = apiClient,
     sessionStore = sessionStore,
   )
   val playbackRepository: PlaybackRepository = PlaybackRepository(

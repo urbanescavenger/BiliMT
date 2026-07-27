@@ -30,6 +30,7 @@ internal fun List<VideoSummary>.resolveFocusIndex(focusKey: String, fallbackInde
 internal fun VideoSummary.focusRestoreKey(): String {
   return bvid.ifBlank {
     when {
+      liveRoomId > 0L -> "live-$liveRoomId"
       cid > 0L -> "cid-$cid"
       historyPage > 0 -> "p-$historyPage"
       else -> ""

@@ -24,10 +24,39 @@ data class PlaybackRequest(
   val seasonId: Long = 0L,
   /** PGC 季副类型（season.type：1番剧/2电影/3纪录/4国创/5电视剧/7综艺），heartbeat type=4 时作 sub_type。 */
   val subType: Int = 0,
+  /** 直播间 id;>0 表示这是直播播放请求,走 xlive/web-room/v2/index/getRoomPlayInfo,跳过 DASH playurl。 */
+  val liveRoomId: Long = 0L,
 ) {
   val isPgc: Boolean
     get() = epId > 0L || seasonId > 0L
+
+  val isLive: Boolean
+    get() = liveRoomId > 0L
 }
+
+/** 直播清晰度(qn + 描述,如 10000/原画)。 */
+data class LiveQuality(
+  val qn: Int,
+  val description: String,
+)
+
+/**
+ * 直播播放信息:一条可播流 URL + 可选清晰度列表。
+ * 直播不走 DASH/合成 MPD,直接把 [streamUrl] 喂给 HlsMediaSource([isHls]=true)或
+ * ProgressiveMediaSource([isHls]=false,FLV)。
+ */
+data class LivePlayInfo(
+  val roomId: Long,
+  val streamUrl: String,
+  /** true=HLS(m3u8)用 HlsMediaSource;false=FLV 用 ProgressiveMediaSource。 */
+  val isHls: Boolean,
+  /** 当前实际下发清晰度(服务端可能因不可用而降级)。 */
+  val currentQn: Int,
+  /** 该直播间可选清晰度(已按 accept_qn 过滤)。 */
+  val qualities: List<LiveQuality>,
+  /** 播放流所需的 HTTP 头(Cookie/Referer/UA)。 */
+  val headers: BiliPlaybackHeaders,
+)
 
 data class PlaybackInfo(
   val bvid: String,

@@ -24,6 +24,7 @@
     <string name="nav_history">历史</string>
     <string name="nav_settings">设置</string>
     <string name="nav_pgc">影视</string>
+    <string name="nav_live">直播</string>
     <string name="pgc_type_anime">番剧</string>
     <string name="pgc_type_guochuang">国创</string>
     <string name="pgc_type_movie">电影</string>
@@ -56,6 +57,8 @@
     <string name="recommend_loading">正在加载推荐...</string>
     <string name="recommend_empty">推荐接口暂时没有返回视频。</string>
     <string name="recommend_failed_with_message">推荐加载失败。%1$s</string>
+    <string name="live_empty">暂时没有正在直播的房间。</string>
+    <string name="live_failed_with_message">直播加载失败。%1$s</string>
     <string name="placeholder_search">搜索键盘和结果网格会在首页体验稳定后接入。</string>
     <string name="placeholder_history">历史记录依赖登录和播放进度存储。</string>
     <string name="placeholder_settings">设置会包含图片、播放和空降助手开关。</string>

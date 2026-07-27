@@ -27,6 +27,7 @@ class MainActivity : ComponentActivity() {
         if (tvUi) {
           BiliTvApp(
             videoRepository = appContainer.videoRepository,
+            liveRepository = appContainer.liveRepository,
             playbackRepository = appContainer.playbackRepository,
             danmakuSettingsStore = appContainer.danmakuSettingsStore,
             playbackHttpClient = appContainer.playbackHttpClient,
@@ -43,6 +44,7 @@ class MainActivity : ComponentActivity() {
         } else {
           BiliMobileApp(
             videoRepository = appContainer.videoRepository,
+            liveRepository = appContainer.liveRepository,
             playbackRepository = appContainer.playbackRepository,
             danmakuSettingsStore = appContainer.danmakuSettingsStore,
             playbackHttpClient = appContainer.playbackHttpClient,

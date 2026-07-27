@@ -141,6 +141,124 @@ class PlaybackRepository(
   }
 
   /**
+   * 直播播放信息。走 xlive/web-room/v2/index/getRoomPlayInfo,返回单条可播流 URL
+   * (HLS 优先,FLV 退化) + 可选清晰度。直播不走 DASH/合成 MPD,直接把 URL 喂给
+   * HlsMediaSource 或 ProgressiveMediaSource。
+   *
+   * @param roomId 直播间 id
+   * @param qn 目标清晰度(0=自动;首次起播用 10000 原画,服务端不可用会自动降级)
+   */
+  suspend fun getLivePlayInfo(roomId: Long, qn: Int): LivePlayInfo {
+    val session = sessionStore.session.first()
+    val sessData = session.sessData
+    val biliJct = session.biliJct
+    val mid = session.mid
+    val headers = BiliPlaybackHeaders(sessData = sessData, biliJct = biliJct, mid = mid)
+    val root = apiClient.getJsonWithHeaders(
+      url = BiliApiEndpoints.LiveRoomPlayInfo,
+      params = mapOf(
+        "room_id" to roomId.toString(),
+        "protocol" to "0,1",
+        "format" to "0,1,2",
+        "codec" to "0,1,2",
+        "qn" to qn.toString(),
+        "platform" to "web",
+        "ptype" to "8",
+        "dolby" to "5",
+        "panoramic" to "1",
+      ),
+      headers = headers.asMap(),
+    ).rootObject()
+    root.requireBiliCodeOk("live playurl")
+    val data = root.obj("data") ?: JsonObject(emptyMap())
+    if (data.int("live_status") != 1) {
+      throw IllegalStateException("直播间未开播(live_status=${data.int("live_status")})")
+    }
+    val playurl = data.obj("playurl_info")?.obj("playurl")
+      ?: throw IllegalStateException("直播间无播放地址")
+
+    val qualities = (playurl.get("g_qn_desc") as? JsonArray ?: emptyList())
+      .mapNotNull { it.asObjectOrNull() }
+      .map { LiveQuality(qn = it.int("qn"), description = it.string("desc").ifBlank { it.string("description") }) }
+      .filter { it.qn > 0 }
+
+    val streams = playurl.get("stream") as? JsonArray ?: emptyList()
+    val chosen = pickLiveStreamCandidate(streams)
+      ?: throw IllegalStateException("直播间无可用流(无 HLS/FLV)")
+
+    return LivePlayInfo(
+      roomId = roomId,
+      streamUrl = chosen.url,
+      isHls = chosen.isHls,
+      currentQn = chosen.qn,
+      qualities = qualities.filter { it.qn in chosen.acceptQn },
+      headers = headers,
+    )
+  }
+
+  private data class LiveStreamCandidate(
+    val url: String,
+    val isHls: Boolean,
+    val qn: Int,
+    val acceptQn: List<Int>,
+  )
+
+  /**
+   * 从 stream[] 里挑一条可播流。优先 HLS(http_hls + fmp4/ts + avc),退化 FLV(http_stream + flv)。
+   * URL = url_info[0].host + base_url + url_info[0].extra。
+   */
+  private fun pickLiveStreamCandidate(streams: JsonArray): LiveStreamCandidate? {
+    var best: LiveStreamCandidate? = null
+    var bestScore = Int.MIN_VALUE
+    for (streamEl in streams) {
+      val stream = streamEl.asObjectOrNull() ?: continue
+      val protocolName = stream.string("protocol_name")
+      val isHls = protocolName == "http_hls"
+      val isFlv = protocolName == "http_stream"
+      if (!isHls && !isFlv) continue
+      val formats = stream.get("format") as? JsonArray ?: continue
+      for (formatEl in formats) {
+        val format = formatEl.asObjectOrNull() ?: continue
+        val formatName = format.string("format_name")
+        val codecs = format.get("codec") as? JsonArray ?: continue
+        for (codecEl in codecs) {
+          val codec = codecEl.asObjectOrNull() ?: continue
+          val baseUrl = codec.string("base_url")
+          val urlInfos = codec.get("url_info") as? JsonArray ?: continue
+          val urlInfo = urlInfos.firstOrNull()?.asObjectOrNull() ?: continue
+          val host = urlInfo.string("host")
+          val extra = urlInfo.string("extra")
+          if (host.isBlank() || baseUrl.isBlank()) continue
+          val url = host + baseUrl + extra
+          val qn = codec.int("current_qn")
+          val acceptQn = (codec.get("accept_qn") as? JsonArray ?: emptyList())
+            .map { BiliNumberParser.toInt(it) }
+            .filter { it > 0 }
+          val codecScore = when (codec.string("codec_name")) {
+            "avc" -> 3
+            "hevc" -> 2
+            "av1" -> 1
+            else -> 0
+          }
+          val formatScore = when (formatName) {
+            "fmp4" -> 3
+            "ts" -> 2
+            "flv" -> 1
+            else -> 0
+          }
+          // HLS 整体优先于 FLV;同协议内按 codec 再 format 排序。
+          val score = (if (isHls) 1000 else 0) + codecScore * 10 + formatScore
+          if (score > bestScore) {
+            bestScore = score
+            best = LiveStreamCandidate(url, isHls, qn, acceptQn)
+          }
+        }
+      }
+    }
+    return best
+  }
+
+  /**
    * Short-TTL in-memory cache for resolved playurl. The signed media URLs
    * returned by B 站 stay valid far longer than [PlaybackCacheTtlMs], so a
    * ~90s cache is safe and lets reopening a video (or flipping between

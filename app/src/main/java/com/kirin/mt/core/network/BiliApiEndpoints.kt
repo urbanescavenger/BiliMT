@@ -4,6 +4,7 @@ object BiliApiEndpoints {
   const val ApiBase = "https://api.bilibili.com"
   const val PassportBase = "https://passport.bilibili.com"
   const val AppBase = "https://app.bilibili.com"
+  const val LiveBase = "https://api.live.bilibili.com"
 
   const val WbiNav = "$ApiBase/x/web-interface/nav"
   const val BuvidSpi = "$ApiBase/x/frontend/finger/spi"
@@ -53,6 +54,10 @@ object BiliApiEndpoints {
   const val PgcHeartbeat = "$ApiBase/pgc/player/web/heartbeat"
   const val TvQrCode = "$PassportBase/x/passport-tv-login/qrcode/auth_code"
   const val TvQrPoll = "$PassportBase/x/passport-tv-login/qrcode/poll"
+  // 直播推荐列表(parent_area_id=0 跨全分区;按 page 分页)。
+  const val LiveList = "$LiveBase/xlive/web-interface/v1/second/getList"
+  // 直播播放地址(qn 切清晰度;protocol/format/codec 决定返回的流类型)。
+  const val LiveRoomPlayInfo = "$LiveBase/xlive/web-room/v2/index/getRoomPlayInfo"
 
   fun legacyDanmaku(cid: Long): String = "$CommentBase/$cid.xml"
 }

@@ -31,6 +31,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.kirin.mt.R
 import com.kirin.mt.core.model.HomeSection
+import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
@@ -50,11 +51,13 @@ import com.kirin.mt.ui.mobile.LoginActivity
 import com.kirin.mt.ui.mobile.SettingsActivity
 import com.kirin.mt.ui.mobile.common.DevelopingTipContent
 import com.kirin.mt.ui.mobile.feed.MobileFeedScreen
+import com.kirin.mt.ui.mobile.feed.MobileLiveScreen
 import com.kirin.mt.ui.mobile.home.MobileHomeScreen
 import com.kirin.mt.ui.mobile.pgc.MobilePgcSeasonScreen
 import com.kirin.mt.ui.mobile.player.MobilePlayerScreen
 import com.kirin.mt.ui.mobile.search.MobileSearchScreen
 import com.kirin.mt.ui.pgc.PgcSeasonRequest
+import com.kirin.mt.ui.player.LivePlayerScreen
 import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.shell.AppDestination
 import okhttp3.OkHttpClient
@@ -67,6 +70,7 @@ import okhttp3.OkHttpClient
 @Composable
 fun BiliMobileApp(
   videoRepository: VideoRepository,
+  liveRepository: LiveRepository,
   playbackRepository: PlaybackRepository,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
@@ -109,6 +113,7 @@ fun BiliMobileApp(
 
   val bottomNav = listOf(
     AppDestination.Recommend,
+    AppDestination.Live,
     AppDestination.Dynamic,
     AppDestination.Search,
     AppDestination.Settings,
@@ -152,6 +157,11 @@ fun BiliMobileApp(
           },
           modifier = Modifier.fillMaxSize(),
         )
+        AppDestination.Live -> MobileLiveScreen(
+          liveRepository = liveRepository,
+          onVideoSelected = { video -> playbackRequest = video.toPlaybackRequest() },
+          modifier = Modifier.fillMaxSize(),
+        )
         AppDestination.Dynamic -> MobileFeedScreen(
           videoRepository = videoRepository,
           isLoggedIn = session.isLoggedIn,
@@ -193,6 +203,14 @@ fun BiliMobileApp(
         playbackRequest = null
       }
       Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        if (request.isLive) {
+          LivePlayerScreen(
+            request = request,
+            playbackRepository = playbackRepository,
+            playbackHttpClient = playbackHttpClient,
+            onBack = { playbackRequest = null },
+          )
+        } else {
         MobilePlayerScreen(
           request = request,
           playbackRepository = playbackRepository,
@@ -212,6 +230,7 @@ fun BiliMobileApp(
           },
           modifier = Modifier.fillMaxSize(),
         )
+        }
       }
     }
 

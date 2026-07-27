@@ -132,6 +132,7 @@ private fun buildStringField(name: String): String {
 @Composable
 fun BiliTvApp(
   videoRepository: VideoRepository,
+  liveRepository: com.kirin.mt.core.network.LiveRepository,
   playbackRepository: PlaybackRepository,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
@@ -197,12 +198,15 @@ fun BiliTvApp(
   val settingsFocusRequester = remember { FocusRequester() }
   val pgcFocusRequester = remember { FocusRequester() }
   val pgcTabFocusRequester = remember { FocusRequester() }
+  val liveFocusRequester = remember { FocusRequester() }
   val recommendUiState = remember { RecommendUiState() }
   val userFeedState = remember { UserFeedUiState() }
   val searchUiState = remember { SearchUiState() }
+  val liveUiState = remember { com.kirin.mt.ui.live.LiveUiState() }
   var initialHomeFocusPending by remember { mutableStateOf(true) }
   var recommendManualRefreshKey by rememberSaveable { mutableStateOf(0) }
   var dynamicManualRefreshKey by rememberSaveable { mutableStateOf(0) }
+  var liveManualRefreshKey by rememberSaveable { mutableStateOf(0) }
   var dynamicUnread by remember { mutableIntStateOf(0) }
   var playbackRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
   var playbackFocusRestoreDestination by remember { mutableStateOf<AppDestination?>(null) }
@@ -282,6 +286,7 @@ fun BiliTvApp(
         AppDestination.Dynamic -> feedTabFocusRequester.requestFocus()
         AppDestination.Settings -> settingsFocusRequester.requestFocus()
         AppDestination.Pgc -> pgcTabFocusRequester.requestFocus()
+        AppDestination.Live -> liveFocusRequester.requestFocus()
       }
     }.getOrDefault(false)
   }
@@ -322,6 +327,7 @@ fun BiliTvApp(
     when (destination) {
       AppDestination.Recommend -> recommendManualRefreshKey += 1
       AppDestination.Dynamic -> dynamicManualRefreshKey += 1
+      AppDestination.Live -> liveManualRefreshKey += 1
       else -> Unit
     }
   }
@@ -360,6 +366,19 @@ fun BiliTvApp(
   }
 
   fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false): PlaybackRequest {
+    // 直播卡片:走直播播放(独立 LivePlayerScreen),不带点播字段。
+    if (liveRoomId > 0L) {
+      return PlaybackRequest(
+        bvid = "",
+        cid = 0L,
+        title = title,
+        ownerName = ownerName,
+        ownerFace = ownerFace,
+        ownerMid = ownerMid,
+        coverUrl = pic,
+        liveRoomId = liveRoomId,
+      )
+    }
     val advanceToNextEpisode = shouldAdvanceToNextHistoryEpisode()
     return PlaybackRequest(
       bvid = bvid,
@@ -956,6 +975,30 @@ fun BiliTvApp(
                     initialHomeFocusPending = false
                   },
                 )
+                AppDestination.Live -> com.kirin.mt.ui.live.LiveScreen(
+                  liveRepository = liveRepository,
+                  uiState = liveUiState,
+                  firstItemFocusRequester = liveFocusRequester,
+                  manualRefreshKey = liveManualRefreshKey,
+                  restoreFocusRequestKey = restoreFocusRequestKeyFor(AppDestination.Live),
+                  onRestoreFocusHandled = { key -> clearFocusRestoreRequest(AppDestination.Live, key) },
+                  requestInitialFocus = initialHomeFocusPending,
+                  onInitialFocusRequested = {
+                    initialHomeFocusPending = false
+                  },
+                  onMoveLeftToNav = {
+                    runCatching {
+                      if (accountSelected) {
+                        accountFocusRequester.requestFocus()
+                      } else {
+                        navFocusRequesters.getValue(selectedDestination).requestFocus()
+                      }
+                    }.isSuccess
+                  },
+                  onVideoSelected = { video ->
+                    playbackRequest = video.toPlaybackRequest()
+                  },
+                )
               }
             }
           }
@@ -1030,44 +1073,57 @@ fun BiliTvApp(
             .fillMaxSize()
             .background(BiliColors.VideoBlack),
         ) {
-          PlayerScreen(
-            request = displayedPlaybackRequest,
-            videoRepository = videoRepository,
-            playbackRepository = playbackRepository,
-            danmakuSettingsStore = danmakuSettingsStore,
-            playbackHttpClient = playbackHttpClient,
-            cdnSelector = cdnSelector,
-            playbackCodecPreference = effectivePlaybackCodecPreference,
-            playbackQualityPreference = settings.playbackQualityPreference,
-            playbackCdnPreference = settings.playbackCdnPreference,
-            seekPreviewSpritesEnabled = settings.seekPreviewSpritesEnabled,
-            airJumpAssistantEnabled = settings.airJumpAssistantEnabled,
-            confirmPlaybackExit = settings.confirmPlaybackExit,
-            autoPlayNextEpisode = settings.autoPlayNextEpisode,
-            autoPlayRelatedVideo = settings.autoPlayRelatedVideo,
-            autoReturnHomeOnCompletion = settings.autoReturnHomeOnCompletion,
-            showClock = settings.showClock,
-            showMiniProgressBar = settings.showMiniProgressBar,
-            playerLogOverlayEnabled = settings.playerLogOverlayEnabled,
-            onBack = {
-              if (spaceRequest != null && spaceOrigin == SpaceOrigin.Content) {
-                // 从 UP 主页(内容来源)起播:返回时可见层是 UpSpace 网格,arm 它的 restore
-                playbackRequest = null
-                spaceFocusRestoreRequestKey += 1
-              } else {
+          if (displayedPlaybackRequest.isLive) {
+            com.kirin.mt.ui.player.LivePlayerScreen(
+              request = displayedPlaybackRequest,
+              playbackRepository = playbackRepository,
+              playbackHttpClient = playbackHttpClient,
+              onBack = {
                 playbackFocusRestoreDestination = selectedDestination
                 playbackRequest = null
                 playbackFocusRestoreRequestKey += 1
-              }
-            },
-            onOpenUpSpace = { mid, ownerName, ownerFace ->
-              upSpaceUiState.reset()
-              spaceOrigin = SpaceOrigin.Player
-              spacePlaybackBehind = true
-              spaceRequest = UpSpaceRequest(mid, ownerName, ownerFace)
-            },
-            spaceReturnKey = spaceFocusRestoreRequestKey,
-          )
+              },
+            )
+          } else {
+            PlayerScreen(
+              request = displayedPlaybackRequest,
+              videoRepository = videoRepository,
+              playbackRepository = playbackRepository,
+              danmakuSettingsStore = danmakuSettingsStore,
+              playbackHttpClient = playbackHttpClient,
+              cdnSelector = cdnSelector,
+              playbackCodecPreference = effectivePlaybackCodecPreference,
+              playbackQualityPreference = settings.playbackQualityPreference,
+              playbackCdnPreference = settings.playbackCdnPreference,
+              seekPreviewSpritesEnabled = settings.seekPreviewSpritesEnabled,
+              airJumpAssistantEnabled = settings.airJumpAssistantEnabled,
+              confirmPlaybackExit = settings.confirmPlaybackExit,
+              autoPlayNextEpisode = settings.autoPlayNextEpisode,
+              autoPlayRelatedVideo = settings.autoPlayRelatedVideo,
+              autoReturnHomeOnCompletion = settings.autoReturnHomeOnCompletion,
+              showClock = settings.showClock,
+              showMiniProgressBar = settings.showMiniProgressBar,
+              playerLogOverlayEnabled = settings.playerLogOverlayEnabled,
+              onBack = {
+                if (spaceRequest != null && spaceOrigin == SpaceOrigin.Content) {
+                  // 从 UP 主页(内容来源)起播:返回时可见层是 UpSpace 网格,arm 它的 restore
+                  playbackRequest = null
+                  spaceFocusRestoreRequestKey += 1
+                } else {
+                  playbackFocusRestoreDestination = selectedDestination
+                  playbackRequest = null
+                  playbackFocusRestoreRequestKey += 1
+                }
+              },
+              onOpenUpSpace = { mid, ownerName, ownerFace ->
+                upSpaceUiState.reset()
+                spaceOrigin = SpaceOrigin.Player
+                spacePlaybackBehind = true
+                spaceRequest = UpSpaceRequest(mid, ownerName, ownerFace)
+              },
+              spaceReturnKey = spaceFocusRestoreRequestKey,
+            )
+          }
         }
       }
       val displayedSpaceRequest = spaceRequest

@@ -13,6 +13,8 @@ data class VideoCardRelativeText(
 )
 
 fun VideoSummary.durationText(): String {
+  // 直播无时长,不在封面叠层显示 00:00。
+  if (isLive) return ""
   return duration.formatDurationSeconds()
 }
 
