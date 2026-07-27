@@ -54,8 +54,8 @@ object BiliApiEndpoints {
   const val PgcHeartbeat = "$ApiBase/pgc/player/web/heartbeat"
   const val TvQrCode = "$PassportBase/x/passport-tv-login/qrcode/auth_code"
   const val TvQrPoll = "$PassportBase/x/passport-tv-login/qrcode/poll"
-  // 直播推荐列表(parent_area_id=0 跨全分区;按 page 分页)。
-  const val LiveList = "$LiveBase/xlive/web-interface/v1/second/getList"
+  // 直播推荐列表(首页聚合,WBI 端点;无分页)。second/getList 是非 WBI 端点,给它 WBI 签名会 -352。
+  const val LiveList = "$LiveBase/xlive/web-interface/v1/index/getList"
   // 直播播放地址(qn 切清晰度;protocol/format/codec 决定返回的流类型)。
   const val LiveRoomPlayInfo = "$LiveBase/xlive/web-room/v2/index/getRoomPlayInfo"
 

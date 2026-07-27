@@ -13,11 +13,11 @@ import kotlinx.serialization.json.JsonObject
  * 直播数据仓库:推荐直播列表。镜像 [HomeVideoRepository] 的结构
  * (apiClient + WBI 签名 + requireBiliCodeOk + JsonExt 手动映射)。
  *
- * 端点 [BiliApiEndpoints.LiveList](`xlive/web-interface/v1/second/getList`),
- * `parent_area_id=0` 跨全分区,按 `page` 分页,`sort_type=online` 按人气排序。
+ * 端点 [BiliApiEndpoints.LiveList](`xlive/web-interface/v1/index/getList`)是 WBI 端点
+ * (首页聚合,无分页),需 WBI 签名(`w_rid`+`wts`)+ `web_location`,文档核实不需要 Cookie。
+ * 之前误用 `second/getList`(非 WBI 端点)却给它 WBI 签名 → -352;换成 `index/getList` 即对。
  *
- * 风控:直播接口要过 -352 必须 WBI 签名(`w_rid`+`wts`,和推荐接口同一套)+ `web_location`,
- * 再加 buvid cookie + live Referer。缺 WBI 签名只加 buvid 仍 -352。
+ * 风控:WBI 签名是过 -352 的钥匙(同推荐接口那套);buvid cookie + live Referer 叠加更稳。
  */
 class LiveRepository(
   private val apiClient: BiliApiClient,
@@ -27,7 +27,7 @@ class LiveRepository(
 ) {
   suspend fun getLiveList(page: Int = 1): LiveListPage {
     val session = sessionStore.session.first()
-    // buvid cookie + live Referer 过基础风控。
+    // buvid cookie + live Referer 过基础风控(WBI 端点文档说不需要 Cookie,但带上无害更稳)。
     val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
     val headers = SpaceHttpSupport.liveHeaders(
       roomId = null,
@@ -37,13 +37,9 @@ class LiveRepository(
       buvid3 = buvid3,
       buvid4 = buvid4,
     )
-    // WBI 签名(同推荐接口)+ web_location 过 -352。keys 为空(未登录/取键失败)则裸发,退化为只靠 buvid。
+    // WBI 签名(同推荐接口)+ web_location 过 -352。keys 为空(取键失败)则裸发。
     val params = mutableMapOf(
       "platform" to "web",
-      "parent_area_id" to "0",
-      "area_id" to "0",
-      "page" to page.toString(),
-      "sort_type" to "online",
       "web_location" to "444.7",
     )
     val keys = wbiKeyRepository.ensureKeys(session.sessData)
@@ -56,16 +52,19 @@ class LiveRepository(
     root.requireBiliCodeOk("live list")
 
     val data = root.obj("data")
-    val list = data?.get("list") as? JsonArray ?: emptyList()
+    // index/getList 返回 data.recommend_room_list(回退 data.list 兼容旧端点)。
+    val list = (data?.get("recommend_room_list") as? JsonArray)
+      ?: (data?.get("list") as? JsonArray)
+      ?: emptyList()
     val items = list
       .mapNotNull { it.asObjectOrNull() }
       .map(::fromLiveRoom)
       .filter { it.roomId > 0L }
-    val hasMore = (data?.int("has_more") ?: 0) == 1
+    // index/getList 是首页聚合,无分页 → 单批。
     return LiveListPage(
       items = items,
       nextPage = page + 1,
-      hasMore = hasMore,
+      hasMore = false,
     )
   }
 
@@ -82,9 +81,11 @@ class LiveRepository(
       cover = VideoSummaryMappers.fixPicUrl(cover),
       face = VideoSummaryMappers.fixPicUrl(json.string("face")),
       online = online,
-      areaName = json.string("area_name"),
+      // index/getList 用 area_v2_name(回退 area_name 兼容 second/getList)。
+      areaName = json.string("area_v2_name").ifBlank { json.string("area_name") },
       keyframe = VideoSummaryMappers.fixPicUrl(json.string("keyframe")),
-      liveStatus = json.int("live_status"),
+      // recommend_room_list 都是正在直播,无 live_status 字段 → 缺省 1。
+      liveStatus = json.int("live_status").takeIf { it > 0 } ?: 1,
     )
   }
 }
