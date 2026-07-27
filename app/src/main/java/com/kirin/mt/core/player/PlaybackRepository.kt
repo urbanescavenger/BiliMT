@@ -153,7 +153,16 @@ class PlaybackRepository(
     val sessData = session.sessData
     val biliJct = session.biliJct
     val mid = session.mid
-    val headers = BiliPlaybackHeaders(sessData = sessData, biliJct = biliJct, mid = mid)
+    // 直播接口靠 buvid cookie + live Referer 过风控,缺则 -352。
+    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
+    val apiHeaders = SpaceHttpSupport.liveHeaders(
+      roomId = roomId.toString(),
+      sessData = sessData,
+      biliJct = biliJct,
+      dedeUserId = mid,
+      buvid3 = buvid3,
+      buvid4 = buvid4,
+    )
     val root = apiClient.getJsonWithHeaders(
       url = BiliApiEndpoints.LiveRoomPlayInfo,
       params = mapOf(
@@ -167,7 +176,7 @@ class PlaybackRepository(
         "dolby" to "5",
         "panoramic" to "1",
       ),
-      headers = headers.asMap(),
+      headers = apiHeaders,
     ).rootObject()
     root.requireBiliCodeOk("live playurl")
     val data = root.obj("data") ?: JsonObject(emptyMap())
@@ -186,13 +195,15 @@ class PlaybackRepository(
     val chosen = pickLiveStreamCandidate(streams)
       ?: throw IllegalStateException("直播间无可用流(无 HLS/FLV)")
 
+    // 流媒体 CDN 取流用 BiliPlaybackHeaders(www Referer + Cookie);API 调用已用 liveHeaders 过风控。
+    val streamHeaders = BiliPlaybackHeaders(sessData = sessData, biliJct = biliJct, mid = mid)
     return LivePlayInfo(
       roomId = roomId,
       streamUrl = chosen.url,
       isHls = chosen.isHls,
       currentQn = chosen.qn,
       qualities = qualities.filter { it.qn in chosen.acceptQn },
-      headers = headers,
+      headers = streamHeaders,
     )
   }
 

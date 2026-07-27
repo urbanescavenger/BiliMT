@@ -20,8 +20,18 @@ class LiveRepository(
   private val sessionStore: SessionStore,
 ) {
   suspend fun getLiveList(page: Int = 1): LiveListPage {
-    val sessData = sessionStore.sessData.first()
-    val root = apiClient.getJson(
+    val session = sessionStore.session.first()
+    // 直播接口靠 buvid cookie + live Referer 过风控,缺则 -352。
+    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
+    val headers = SpaceHttpSupport.liveHeaders(
+      roomId = null,
+      sessData = session.sessData,
+      biliJct = session.biliJct,
+      dedeUserId = session.mid,
+      buvid3 = buvid3,
+      buvid4 = buvid4,
+    )
+    val root = apiClient.getJsonWithHeaders(
       url = BiliApiEndpoints.LiveList,
       params = mapOf(
         "platform" to "web",
@@ -30,7 +40,7 @@ class LiveRepository(
         "page" to page.toString(),
         "sort_type" to "online",
       ),
-      sessData = sessData,
+      headers = headers,
     ).rootObject()
     root.requireBiliCodeOk("live list")
 

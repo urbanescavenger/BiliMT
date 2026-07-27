@@ -86,6 +86,36 @@ internal object SpaceHttpSupport {
     }
   }
 
+  /**
+   * 直播接口(api.live.bilibili.com)请求头:UA + live Referer/Origin + 带 buvid 的 Cookie。
+   * 直播接口不像 wbi 端点靠 w_rid 过风控,而是靠 buvid3/buvid4 cookie + 正确 Referer,
+   * 缺这些会直接 -352(风控校验失败)。先调 [ensureBuvidCookies] 拿 buvid 再传进来。
+   */
+  fun liveHeaders(
+    roomId: String? = null,
+    sessData: String?,
+    biliJct: String?,
+    dedeUserId: Long?,
+    buvid3: String?,
+    buvid4: String?,
+  ): Map<String, String> {
+    val referer = if (roomId != null) "https://live.bilibili.com/$roomId" else "https://live.bilibili.com/"
+    return buildMap {
+      put("User-Agent", BiliHeaders.UserAgent)
+      put("Origin", "https://live.bilibili.com")
+      put("Referer", referer)
+      put("Accept", "*/*")
+      put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8,ja;q=0.7,zh-TW;q=0.6")
+      BiliHeaders.cookie(
+        sessData = sessData,
+        biliJct = biliJct,
+        buvid3 = buvid3,
+        buvid4 = buvid4,
+        dedeUserId = dedeUserId,
+      )?.let { cookie -> put("Cookie", cookie) }
+    }
+  }
+
   private suspend fun activateBuvid(apiClient: BiliApiClient, buvid3: String) {
     val random = java.util.Random()
     val randomBytes = ByteArray(32).also { random.nextBytes(it) }
