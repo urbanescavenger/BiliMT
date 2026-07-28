@@ -54,6 +54,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -62,6 +63,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.kirin.mt.R
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
+import com.kirin.mt.core.player.LiveLoadErrorHandlingPolicy
 import com.kirin.mt.core.player.LivePlayInfo
 import com.kirin.mt.core.player.LiveQuality
 import com.kirin.mt.core.player.PlaybackRepository
@@ -101,6 +103,20 @@ private const val LiveDefaultQn = 10000
 private const val ControlIndexBack = 0
 private const val ControlIndexQuality = 1
 private const val ControlCount = 2
+
+/** BUFFERING 且进度不前进超过此阈值判定为 stall,触发自动重载源。 */
+private const val LiveStallThresholdMs = 8_000L
+/** 单次直播会话内自动重试上限,超过后交用户手动重试,避免死循环刷 CDN。 */
+private const val MaxLiveAutoRetry = 3
+private const val LivePlaybackLogTag = "BiliMT:LivePlayback"
+
+private fun livePlaybackStateName(state: Int): String = when (state) {
+  Player.STATE_IDLE -> "IDLE"
+  Player.STATE_BUFFERING -> "BUFFERING"
+  Player.STATE_READY -> "READY"
+  Player.STATE_ENDED -> "ENDED"
+  else -> "UNKNOWN($state)"
+}
 
 /** 直播播放器加载状态。 */
 private sealed interface LiveLoadState {
@@ -145,6 +161,9 @@ fun LivePlayerScreen(
   // initialResolved 门控主加载,避免默认画质先加载一次再切存储值造成双加载/闪切。
   var initialResolved by remember { mutableStateOf(request.preferredQualityId != null) }
   var fullscreen by rememberSaveable { mutableStateOf(false) }
+  // stall 自动恢复:缓冲卡住且进度不前进时自动重载源。
+  var autoRetryCount by remember { mutableIntStateOf(0) }
+  var autoResumePositionMs by remember { mutableLongStateOf(-1L) }
 
   val player = remember(roomId) {
     ExoPlayer.Builder(context).build()
@@ -160,12 +179,41 @@ fun LivePlayerScreen(
         // 用 MutableState 对象而非委托的局部 var:匿名对象里不能改捕获的局部 var,
         // 但可以改对象属性(.value)。
         isPlayingState.value = isPlayingChanged
+        if (isPlayingChanged && autoRetryCount > 0) {
+          autoRetryCount = 0
+          android.util.Log.i(LivePlaybackLogTag, "live stall auto-retry recovered, counter reset")
+        }
       }
 
-      override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-        // 取流失败(如 CDN 403)不再静默卡住,记到 MutableState 让叠层显示错误便于定位。
-        // 不能在此改委托的局部 var loadState(匿名对象里禁改捕获 var),改 playerErrorMsg.value。
-        playerErrorMsg.value = error.message.orEmpty().ifBlank { "播放出错" }
+      override fun onPlayerError(error: PlaybackException) {
+        // 取流失败(如 CDN 403/404/超时)不再静默卡住,记到 MutableState 让叠层显示。
+        android.util.Log.e(
+          LivePlaybackLogTag,
+          "live player error code=${error.errorCode} codeName=${error.errorCodeName} " +
+            "cause=${error.cause?.javaClass?.simpleName} message=${error.message}",
+          error,
+        )
+        // 自动重试一次;耗尽后展示错误 overlay 等用户手动重试。
+        if (autoRetryCount < MaxLiveAutoRetry) {
+          autoRetryCount += 1
+          autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
+          android.util.Log.w(
+            LivePlaybackLogTag,
+            "live auto-retry #${autoRetryCount} @pos=${autoResumePositionMs}ms",
+          )
+          retryKey += 1
+        } else {
+          playerErrorMsg.value = error.message.orEmpty().ifBlank { "播放出错" }
+        }
+      }
+
+      override fun onPlaybackStateChanged(playbackState: Int) {
+        android.util.Log.d(
+          LivePlaybackLogTag,
+          "live player state=${livePlaybackStateName(playbackState)} " +
+            "tracks=${player.currentTracks.groups.size} " +
+            "video=${player.videoFormat?.codecs} audio=${player.audioFormat?.codecs}",
+        )
       }
     })
     onDispose { player.release() }
@@ -188,20 +236,29 @@ fun LivePlayerScreen(
     try {
       val info = playbackRepository.getLivePlayInfo(roomId, selectedQn)
       liveInfo = info
+      android.util.Log.i(LivePlaybackLogTag, "live playurl resolved room=$roomId qn=${info.currentQn} hls=${info.isHls}")
       val dataSourceFactory = DefaultDataSource.Factory(
         context,
         BiliMediaDataSourceFactory(playbackHttpClient, info.headers).create(),
       )
+      val loadErrorPolicy = remember { LiveLoadErrorHandlingPolicy() }
       val mediaSource = if (info.isHls) {
         HlsMediaSource.Factory(dataSourceFactory)
+          .setLoadErrorHandlingPolicy(loadErrorPolicy)
           .createMediaSource(MediaItem.fromUri(info.streamUrl))
       } else {
         ProgressiveMediaSource.Factory(dataSourceFactory)
+          .setLoadErrorHandlingPolicy(loadErrorPolicy)
           .createMediaSource(MediaItem.fromUri(info.streamUrl))
       }
       player.setMediaSource(mediaSource)
       player.prepare()
       player.playWhenReady = true
+      val resumeMs = autoResumePositionMs
+      if (resumeMs >= 0L) {
+        player.seekTo(resumeMs)
+        autoResumePositionMs = -1L
+      }
       loadState = LiveLoadState.Ready(info)
     } catch (error: CancellationException) {
       throw error
@@ -215,6 +272,41 @@ fun LivePlayerScreen(
     while (isActive) {
       clockText = currentClockText()
       delay(30_000L)
+    }
+  }
+
+  // stall 检测:STATE_BUFFERING 且用户想播、进度连续 N 秒不前进 → 自动重载源。
+  LaunchedEffect(loadState, player) {
+    var stallBaselinePositionMs = 0L
+    var stallSinceMs = 0L
+    while (isActive) {
+      if (loadState is LiveLoadState.Ready) {
+        val currentPositionMs = player.currentPosition
+        val nowMs = System.currentTimeMillis()
+        val isStallBuffering =
+          player.playbackState == Player.STATE_BUFFERING &&
+            player.playWhenReady &&
+            currentPositionMs == stallBaselinePositionMs
+        if (isStallBuffering) {
+          if (stallSinceMs == 0L) {
+            stallSinceMs = nowMs
+          } else if (nowMs - stallSinceMs >= LiveStallThresholdMs && autoRetryCount < MaxLiveAutoRetry) {
+            autoRetryCount += 1
+            autoResumePositionMs = currentPositionMs.coerceAtLeast(0L)
+            android.util.Log.w(
+              LivePlaybackLogTag,
+              "live stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
+            )
+            stallBaselinePositionMs = 0L
+            stallSinceMs = 0L
+            retryKey += 1
+          }
+        } else {
+          stallBaselinePositionMs = currentPositionMs
+          stallSinceMs = 0L
+        }
+      }
+      delay(BiliMotion.PlayerProgressUpdateMs)
     }
   }
 
