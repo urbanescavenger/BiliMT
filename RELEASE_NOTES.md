@@ -1,5 +1,19 @@
 # BiliMT 版本发布说明
 
+## v2.0.5-alpha.3
+
+v2.0.5-alpha.2 后继续强化直播能力并修复长时间播放报错问题。
+
+### 新增
+- 直播分区接口:后端新增 `LiveAreaList`/`LiveAreaRoomList` 端点、`LiveArea`/`LiveAreaGroup` 模型,`LiveRepository` 支持 `getAreaList()` 与 `getLiveListByArea()`。
+
+### 修复
+- 直播长时间播放报错且重试无效:为 HLS/FLV 添加 `LiveLoadErrorHandlingPolicy`,对网络/HTTP 错误指数退避重试;增加 stall 检测与自动重载;错误日志补充 `errorCode`/`errorCodeName` 便于诊断。
+
+### 安装包
+- `BiliMT-v2.0.5-alpha.3-arm64-v8a.apk`
+- `BiliMT-v2.0.5-alpha.3-armeabi-v7a.apk`
+
 ## v2.0.4
 
 v2.0.3 后主打**看直播**:TV 与移动端新增直播入口与独立直播播放器,过 -352 风控(WBI 签名 + buvid cookie + live Referer);直播播放器 UI 对齐视频界面(玻璃质感顶栏/Canvas 暂停指示器/统一 D-pad 按键路由);移动端直播列表补齐(标题条/骨架/错误重试/翻页失败提示)、直播卡片红 pill 角标 + 红点在线人数 + 分区名、移动端直播播放器底栏(画质下拉/预留弹幕/全屏)、直播画质跨房间持久化;TV 修动态页 tab→Down 焦点失效、自动刷新跳首项、切 tab 抢首项焦点。合并 mort_debug → main 打稳定 tag。
