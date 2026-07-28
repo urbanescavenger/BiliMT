@@ -2,6 +2,8 @@ package com.kirin.mt.core.network
 
 import com.kirin.mt.core.auth.WbiKeyRepository
 import com.kirin.mt.core.auth.WbiSigner
+import com.kirin.mt.core.model.LiveArea
+import com.kirin.mt.core.model.LiveAreaGroup
 import com.kirin.mt.core.model.LiveListPage
 import com.kirin.mt.core.model.LiveRoom
 import com.kirin.mt.core.storage.SessionStore
@@ -9,15 +11,18 @@ import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 
+private const val LiveAreaPageSize = 20
+
 /**
- * 直播数据仓库:推荐直播列表。镜像 [HomeVideoRepository] 的结构
- * (apiClient + WBI 签名 + requireBiliCodeOk + JsonExt 手动映射)。
+ * 直播数据仓库:推荐直播列表 + 直播分区列表 + 按分区拉直播间。
+ * 镜像 [HomeVideoRepository] 的结构(apiClient + WBI 签名 + requireBiliCodeOk + JsonExt 手动映射)。
  *
  * 端点 [BiliApiEndpoints.LiveList](`xlive/web-interface/v1/index/getList`)是 WBI 端点
  * (首页聚合,无分页),需 WBI 签名(`w_rid`+`wts`)+ `web_location`,文档核实不需要 Cookie。
  * 之前误用 `second/getList`(非 WBI 端点)却给它 WBI 签名 → -352;换成 `index/getList` 即对。
  *
  * 风控:WBI 签名是过 -352 的钥匙(同推荐接口那套);buvid cookie + live Referer 叠加更稳。
+ * 分区相关接口(`getWebAreaList`/`second/getList`)不是 WBI 端点,裸发+live headers即可。
  */
 class LiveRepository(
   private val apiClient: BiliApiClient,
@@ -77,6 +82,103 @@ class LiveRepository(
     )
   }
 
+  /**
+   * 获取直播分区树。公开 GET,无需 WBI 签名,但需 live headers 过基础风控。
+   */
+  suspend fun getAreaList(): List<LiveAreaGroup> {
+    val session = sessionStore.session.first()
+    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
+    val headers = SpaceHttpSupport.liveHeaders(
+      roomId = null,
+      sessData = session.sessData,
+      biliJct = session.biliJct,
+      dedeUserId = session.mid,
+      buvid3 = buvid3,
+      buvid4 = buvid4,
+    )
+
+    val root = apiClient.getJsonWithHeaders(
+      url = BiliApiEndpoints.LiveAreaList,
+      params = mapOf("source_id" to "2"),
+      headers = headers,
+    ).rootObject()
+    root.requireBiliCodeOk("live area list")
+
+    val data = root["data"] as? JsonArray ?: return emptyList()
+    return data
+      .mapNotNull { it.asObjectOrNull() }
+      .map { parent ->
+        val parentId = parent.int("id")
+        LiveAreaGroup(
+          id = parentId,
+          name = parent.string("name"),
+          areas = (parent.get("list") as? JsonArray)
+            ?.mapNotNull { it.asObjectOrNull() }
+            ?.map { child ->
+              LiveArea(
+                id = child.int("id"),
+                parentId = child.int("parent_id").takeIf { it > 0 } ?: parentId,
+                name = child.string("name"),
+                icon = VideoSummaryMappers.fixPicUrl(child.string("pic")),
+              )
+            }
+            ?: emptyList(),
+        )
+      }
+  }
+
+  /**
+   * 按分区拉直播间列表。非 WBI 端点,裸发+live headers;按返回条数判断是否还有更多。
+   */
+  suspend fun getLiveListByArea(
+    parentAreaId: Int,
+    areaId: Int,
+    page: Int = 1,
+  ): LiveListPage {
+    if (areaId <= 0) {
+      return LiveListPage(items = emptyList(), nextPage = page, hasMore = false)
+    }
+    val session = sessionStore.session.first()
+    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
+    val headers = SpaceHttpSupport.liveHeaders(
+      roomId = null,
+      sessData = session.sessData,
+      biliJct = session.biliJct,
+      dedeUserId = session.mid,
+      buvid3 = buvid3,
+      buvid4 = buvid4,
+    )
+
+    val params = mutableMapOf(
+      "platform" to "web",
+      "parent_area_id" to parentAreaId.toString(),
+      "area_id" to areaId.toString(),
+      "page" to page.toString(),
+      "page_size" to LiveAreaPageSize.toString(),
+      "sort_type" to "",
+    )
+    val root = apiClient.getJsonWithHeaders(
+      url = BiliApiEndpoints.LiveAreaRoomList,
+      params = params,
+      headers = headers,
+    ).rootObject()
+    root.requireBiliCodeOk("live area rooms")
+
+    val data = root.obj("data")
+    val rooms = (data?.get("list") as? JsonArray)
+      ?.mapNotNull { it.asObjectOrNull() }
+      ?: emptyList()
+    val seen = mutableSetOf<Long>()
+    val items = rooms
+      .map(::fromLiveRoom)
+      .filter { it.roomId > 0L && seen.add(it.roomId) }
+    return LiveListPage(
+      items = items,
+      nextPage = page + 1,
+      hasMore = rooms.size >= LiveAreaPageSize,
+    )
+  }
+
   private fun fromLiveRoom(json: JsonObject): LiveRoom {
     val cover = json.string("cover").ifBlank { json.string("keyframe") }
     val watched = json.obj("watched_show")
@@ -95,6 +197,9 @@ class LiveRepository(
       keyframe = VideoSummaryMappers.fixPicUrl(json.string("keyframe")),
       // recommend_room_list 都是正在直播,无 live_status 字段 → 缺省 1。
       liveStatus = json.int("live_status").takeIf { it > 0 } ?: 1,
+      areaId = json.int("area_v2_id").takeIf { it > 0 } ?: json.int("area_id"),
+      parentAreaId = json.int("parent_area_v2_id").takeIf { it > 0 }
+        ?: json.int("parent_area_id"),
     )
   }
 }

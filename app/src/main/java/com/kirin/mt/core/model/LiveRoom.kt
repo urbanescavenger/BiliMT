@@ -1,6 +1,28 @@
 package com.kirin.mt.core.model
 
 /**
+ * 直播分区(二级分区)。来自 xlive/web-interface/v1/index/getWebAreaList
+ * data[].list[]。
+ */
+data class LiveArea(
+  val id: Int,
+  val parentId: Int,
+  val name: String,
+  /** 分区图标 URL(可能为空)。 */
+  val icon: String = "",
+)
+
+/**
+ * 直播分区组(一级分区及其子分区)。来自 xlive/web-interface/v1/index/getWebAreaList
+ * data[]。
+ */
+data class LiveAreaGroup(
+  val id: Int,
+  val name: String,
+  val areas: List<LiveArea>,
+)
+
+/**
  * 直播间摘要(推荐列表项)。来自 xlive/web-interface/v1/second/getList 的 data.list[]。
  */
 data class LiveRoom(
@@ -17,6 +39,10 @@ data class LiveRoom(
   val keyframe: String,
   /** 1=正在直播。 */
   val liveStatus: Int,
+  /** 二级分区 ID。 */
+  val areaId: Int = 0,
+  /** 一级分区 ID。 */
+  val parentAreaId: Int = 0,
 )
 
 /**
