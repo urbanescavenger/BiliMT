@@ -252,6 +252,9 @@ fun MobilePlayerScreen(
   var lastAirJumpPositionMs by remember { mutableLongStateOf(0L) }
   // 推荐视频(相关视频):按 bvid 拉,简介 Tab 内列出,点击切播
   var relatedVideos by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
+  // 从后台返回(ON_RESUME)时自增,作为手势 pointerInput 的 key,使手势协程在每次回前台时重新启动。
+  // 避免后台/前台切换导致 SurfaceView/DanmakuView 重建后手势协程在 awaitFirstDown 处卡死、点击无响应。
+  var resumeTick by remember { mutableIntStateOf(0) }
 
   // 视频真实尺寸:全屏方向据此自适应横/竖屏。null=尚未拿到,默认按横屏处理。
   val isPortraitVideo = videoSizeInfo?.let { it.height > it.width } ?: false
@@ -453,6 +456,13 @@ fun MobilePlayerScreen(
         Lifecycle.Event.ON_PAUSE -> {
           // 后台播放:不暂停,仅存一次进度(心跳继续每 15s 上报)。
           saveAndReportProgress()
+        }
+        Lifecycle.Event.ON_RESUME -> {
+          // 后台时系统会清除 FLAG_KEEP_SCREEN_ON,回前台重新挂载;
+          // bump resumeTick 让手势 pointerInput 重新启动,避免 SurfaceView/DanmakuView 重建后
+          // 手势协程在 awaitFirstDown 处卡死、点击事件被下层消费导致全屏播放控件点击无响应。
+          window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+          resumeTick++
         }
         else -> Unit
       }
@@ -860,7 +870,7 @@ fun MobilePlayerScreen(
       Box(
         modifier = Modifier
           .fillMaxSize()
-          .pointerInput(Unit) {
+          .pointerInput(resumeTick) {
             detectPlayerGestures(
               onCenterTap = { togglePlayback() },
               onEdgeTap = { controlsVisible = !controlsVisible },
