@@ -30,6 +30,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -169,6 +170,7 @@ fun LivePlayerScreen(
     ExoPlayer.Builder(context).build()
   }
   val controlsFocusRequester = remember { FocusRequester() }
+  val liveLoadErrorPolicy = remember { LiveLoadErrorHandlingPolicy() }
 
   val qualities = liveInfo?.qualities.orEmpty()
   val qualityLabel = stringResource(R.string.live_quality)
@@ -241,14 +243,13 @@ fun LivePlayerScreen(
         context,
         BiliMediaDataSourceFactory(playbackHttpClient, info.headers).create(),
       )
-      val loadErrorPolicy = remember { LiveLoadErrorHandlingPolicy() }
       val mediaSource = if (info.isHls) {
         HlsMediaSource.Factory(dataSourceFactory)
-          .setLoadErrorHandlingPolicy(loadErrorPolicy)
+          .setLoadErrorHandlingPolicy(liveLoadErrorPolicy)
           .createMediaSource(MediaItem.fromUri(info.streamUrl))
       } else {
         ProgressiveMediaSource.Factory(dataSourceFactory)
-          .setLoadErrorHandlingPolicy(loadErrorPolicy)
+          .setLoadErrorHandlingPolicy(liveLoadErrorPolicy)
           .createMediaSource(MediaItem.fromUri(info.streamUrl))
       }
       player.setMediaSource(mediaSource)
