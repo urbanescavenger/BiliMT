@@ -1,5 +1,16 @@
 # BiliMT 版本发布说明
 
+## v2.0.5-alpha.4
+
+v2.0.5-alpha.3 后移动端直播页加分区 tab:顶部可滚动 tab 行("推荐" + B 站直播分区) + HorizontalPager 左右切换,每个 tab 独立网格、下拉刷新与底部翻页;复用已有 `LiveRepository.getAreaList()` 与 `getLiveListByArea()` 接口。
+
+### 新增
+- 移动端直播分区浏览:tab 行展示所有二级分区,推荐 tab 保留原有推荐流,分区 tab 按 `parent_area_id`/`area_id` 分页拉房间列表。
+
+### 安装包
+- `BiliMT-v2.0.5-alpha.4-arm64-v8a.apk`
+- `BiliMT-v2.0.5-alpha.4-armeabi-v7a.apk`
+
 ## v2.0.5-alpha.3
 
 v2.0.5-alpha.2 后继续强化直播能力并修复长时间播放报错问题。
