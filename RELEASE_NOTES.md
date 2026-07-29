@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v2.0.5-alpha.8
+
+v2.0.5-alpha.7 后直播分区 tab 改用**一级父分区**(TV + 移动同步)。原移动端把 438 个叶子子分区全铺成 tab,游戏类(网游 111+手游 188+单机 89=388)排最前,非游戏类(娱乐/电台/生活/知识…)要到第 389 个 tab 才出现,看起来全是游戏;TV 之前只有推荐、无分区 tab。
+
+### 修改
+- 移动端 `MobileLiveScreen`:tab 从叶子子分区改为"推荐"+一级父分区(网游/手游/单机/虚拟主播/娱乐/电台/赛事/聊天室/生活/知识/帮我玩/互动玩法/购物),非游戏类立即可见。
+- TV `LiveScreen`:从单推荐流改为镜像 `RecommendScreen` 的 capsule tab 行 + 单网格结构,新增"推荐"+一级父分区 tab,D-pad 焦点在 tab↔网格间互通;新增 `liveTabFocusRequester` 接线。
+- `LiveRepository.getLiveListByArea`:支持父分区模式(`parent_area_id`+`area_id=0` 拉该大类所有房间,已实测可行),短路条件改为两者都 0 才空。
+
+### 安装包
+- `BiliMT-v2.0.5-alpha.8-arm64-v8a.apk`
+- `BiliMT-v2.0.5-alpha.8-armeabi-v7a.apk`
+
 ## v2.0.5-alpha.7
 
 v2.0.5-alpha.6 后修复移动端直播页"什么都没有"的问题:`getAreaList()` 解析 `getWebAreaList` 响应时按顶层 `data` 取数组,但实测返回 `{"code":0,"data":{"data":[...]}}`(父分区数组在 `data.data`),导致解析为空 → 分区树为空 → 移动端 `MobileLiveScreen` 顶层 `when(areaListState)` 走 Empty 全屏遮罩,tab/pager/推荐全不渲染;TV 不调该接口故不受影响。双兼容 `data:[...]` 与 `data.data` 防上游漂移。
