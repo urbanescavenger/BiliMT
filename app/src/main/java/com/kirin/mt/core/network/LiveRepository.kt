@@ -104,8 +104,13 @@ class LiveRepository(
     ).rootObject()
     root.requireBiliCodeOk("live area list")
 
-    val data = root["data"] as? JsonArray ?: return emptyList()
-    return data
+    // getWebAreaList 实测返回 {"code":0,"data":{"data":[...]}}:父分区数组在 data.data(data 是
+    // 对象,内嵌 data 数组),不是顶层 data。旧文档曾写 data 直接为数组,双兼容防上游漂移。
+    val dataElem = root["data"]
+    val areaArray = (dataElem as? JsonArray)
+      ?: (dataElem?.asObjectOrNull()?.get("data") as? JsonArray)
+      ?: return emptyList()
+    return areaArray
       .mapNotNull { it.asObjectOrNull() }
       .map { parent ->
         val parentId = parent.int("id")
