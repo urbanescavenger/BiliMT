@@ -1,5 +1,16 @@
 # BiliMT 版本发布说明
 
+## v2.0.5-alpha.5
+
+v2.0.5-alpha.4 后修复移动端直播页默认列表为空的问题:HorizontalPager 初始化后 `targetPage` 未变化,导致"推荐"tab 未触发加载;现于 tabs 可用后立即主动加载当前页一次。
+
+### 修复
+- 移动端直播推荐 tab 初始为空:分区树加载完成后立即加载当前 tab 内容,确保"推荐"页正常显示房间列表。
+
+### 安装包
+- `BiliMT-v2.0.5-alpha.5-arm64-v8a.apk`
+- `BiliMT-v2.0.5-alpha.5-armeabi-v7a.apk`
+
 ## v2.0.5-alpha.4
 
 v2.0.5-alpha.3 后移动端直播页加分区 tab:顶部可滚动 tab 行("推荐" + B 站直播分区) + HorizontalPager 左右切换,每个 tab 独立网格、下拉刷新与底部翻页;复用已有 `LiveRepository.getAreaList()` 与 `getLiveListByArea()` 接口。

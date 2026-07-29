@@ -1,1 +1,2 @@
 - [debug build no monitor](debug-build-no-monitor.md) — debug 编译成功后直接打 alpha tag 推送，不用再监控 CI
+- [tag after test CI green](tag-after-test-ci-green.md) — 直播 bug 修复测试编译绿后，直接补下一个 alpha tag 发布，无需再确认
