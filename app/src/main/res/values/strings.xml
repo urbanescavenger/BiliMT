@@ -63,6 +63,7 @@
     <string name="live_quality">清晰度</string>
     <string name="live_title">直播</string>
     <string name="live_subtitle">推荐</string>
+    <string name="live_area_recommend">推荐</string>
     <string name="live_retry">重试</string>
     <string name="live_load_more_failed">加载更多失败,点击重试</string>
     <string name="live_indicator">直播中</string>
