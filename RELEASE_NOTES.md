@@ -1,5 +1,16 @@
 # BiliMT 版本发布说明
 
+## v2.0.5-alpha.7
+
+v2.0.5-alpha.6 后修复移动端直播页"什么都没有"的问题:`getAreaList()` 解析 `getWebAreaList` 响应时按顶层 `data` 取数组,但实测返回 `{"code":0,"data":{"data":[...]}}`(父分区数组在 `data.data`),导致解析为空 → 分区树为空 → 移动端 `MobileLiveScreen` 顶层 `when(areaListState)` 走 Empty 全屏遮罩,tab/pager/推荐全不渲染;TV 不调该接口故不受影响。双兼容 `data:[...]` 与 `data.data` 防上游漂移。
+
+### 修复
+- 移动端直播页全屏空白:`getAreaList()` 改读 `data.data`(兼容 `data` 直接为数组),分区树正常返回 → "推荐"+分区 tab 与房间列表恢复显示。
+
+### 安装包
+- `BiliMT-v2.0.5-alpha.7-arm64-v8a.apk`
+- `BiliMT-v2.0.5-alpha.7-armeabi-v7a.apk`
+
 ## v2.0.5-alpha.5
 
 v2.0.5-alpha.4 后修复移动端直播页默认列表为空的问题:HorizontalPager 初始化后 `targetPage` 未变化,导致"推荐"tab 未触发加载;现于 tabs 可用后立即主动加载当前页一次。
