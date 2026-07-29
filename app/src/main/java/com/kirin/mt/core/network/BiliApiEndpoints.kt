@@ -58,8 +58,8 @@ object BiliApiEndpoints {
   const val LiveList = "$LiveBase/xlive/web-interface/v1/index/getList"
   // 直播分区树。公开 GET,无需 WBI 签名。
   const val LiveAreaList = "$LiveBase/xlive/web-interface/v1/index/getWebAreaList"
-  // 按分区拉直播间列表。非 WBI 端点,裸发+live headers。
-  const val LiveAreaRoomList = "$LiveBase/xlive/web-interface/v1/second/getList"
+  // 按分区拉直播间列表。新版 second/getList 裸发也会 -352,改用旧版公开接口。
+  const val LiveAreaRoomList = "$LiveBase/room/v1/Area/getRoomList"
   // 直播播放地址(qn 切清晰度;protocol/format/codec 决定返回的流类型)。
   const val LiveRoomPlayInfo = "$LiveBase/xlive/web-room/v2/index/getRoomPlayInfo"
 

@@ -128,7 +128,8 @@ class LiveRepository(
   }
 
   /**
-   * 按分区拉直播间列表。非 WBI 端点,裸发+live headers;按返回条数判断是否还有更多。
+   * 按分区拉直播间列表。改用旧版公开接口 /room/v1/Area/getRoomList，无需 WBI 签名，
+   * 也不用 session cookies，只需基础 web headers。
    */
   suspend fun getLiveListByArea(
     parentAreaId: Int,
@@ -138,34 +139,26 @@ class LiveRepository(
     if (areaId <= 0) {
       return LiveListPage(items = emptyList(), nextPage = page, hasMore = false)
     }
-    val session = sessionStore.session.first()
-    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
-    val headers = SpaceHttpSupport.liveHeaders(
-      roomId = null,
-      sessData = session.sessData,
-      biliJct = session.biliJct,
-      dedeUserId = session.mid,
-      buvid3 = buvid3,
-      buvid4 = buvid4,
-    )
-
     val params = mutableMapOf(
-      "platform" to "web",
-      "parent_area_id" to parentAreaId.toString(),
       "area_id" to areaId.toString(),
       "page" to page.toString(),
       "page_size" to LiveAreaPageSize.toString(),
-      "sort_type" to "",
     )
     val root = apiClient.getJsonWithHeaders(
       url = BiliApiEndpoints.LiveAreaRoomList,
       params = params,
-      headers = headers,
+      headers = SpaceHttpSupport.liveHeaders(
+        roomId = null,
+        sessData = null,
+        biliJct = null,
+        dedeUserId = null,
+        buvid3 = null,
+        buvid4 = null,
+      ),
     ).rootObject()
     root.requireBiliCodeOk("live area rooms")
 
-    val data = root.obj("data")
-    val rooms = (data?.get("list") as? JsonArray)
+    val rooms = (root.get("data") as? JsonArray)
       ?.mapNotNull { it.asObjectOrNull() }
       ?: emptyList()
     val seen = mutableSetOf<Long>()
