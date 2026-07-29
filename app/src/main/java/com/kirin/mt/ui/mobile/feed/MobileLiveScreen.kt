@@ -235,6 +235,11 @@ fun MobileLiveScreen(
 
   // 切换 tab / 首次进入时预载当前页。
   LaunchedEffect(pagerState, tabs) {
+    // tabs 初始化后当前页可能从未加载过(尤其是第 0 页"推荐"),先主动加载一次。
+    if (tabs.isNotEmpty()) {
+      val initialPage = pagerState.currentPage.coerceIn(0, tabs.lastIndex)
+      loadSection(tabs[initialPage].key, forceRefresh = false)
+    }
     snapshotFlow { pagerState.targetPage }
       .distinctUntilChanged()
       .collect { page ->
