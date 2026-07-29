@@ -3,9 +3,7 @@ package com.kirin.mt.ui.live
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -17,10 +15,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
 import com.kirin.mt.R
+import com.kirin.mt.core.model.LiveAreaGroup
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.LiveRepository
+import com.kirin.mt.ui.common.BiliCapsuleTabRow
+import com.kirin.mt.ui.common.BiliPillTab
 import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.VideoGridSkeleton
 import com.kirin.mt.ui.common.focusRestoreKey
@@ -34,7 +36,23 @@ import kotlinx.coroutines.launch
 
 private const val FirstPage = 1
 
-/** 直播列表加载状态。Success 内联分页字段(单列表,无分区 map)。 */
+/** 直播分区 tab:推荐 + 各一级分区(网游/手游/娱乐/电台/...)。镜像移动端父分区做 tab 的策略。 */
+internal sealed interface LiveSection {
+  val key: String
+  val label: String
+
+  data object Recommend : LiveSection {
+    override val key = "recommend"
+    override val label = "推荐"
+  }
+
+  data class Area(val group: LiveAreaGroup) : LiveSection {
+    override val key = "area-${group.id}"
+    override val label = group.name
+  }
+}
+
+/** 单个 tab 的加载状态。Success 内联分页字段。 */
 internal sealed interface LiveState {
   data object Loading : LiveState
   data object Empty : LiveState
@@ -50,17 +68,32 @@ internal sealed interface LiveState {
 
 @Stable
 internal class LiveUiState {
-  var state by mutableStateOf<LiveState>(LiveState.Loading)
-  var loadRequest by mutableIntStateOf(0)
-  var focusedIndex by mutableIntStateOf(0)
-  var focusedKey by mutableStateOf("")
-  var focusFirstItemKey by mutableIntStateOf(0)
+  /** 直播分区树(构建 tab 用)。 */
+  var areaGroups by mutableStateOf<List<LiveAreaGroup>>(emptyList())
+  var selectedSectionKey by mutableStateOf("")
+  var activeSectionKey by mutableStateOf("")
+  var sectionStates by mutableStateOf<Map<String, LiveState>>(emptyMap())
+  var loadedSectionKeys by mutableStateOf(emptySet<String>())
+  var sectionRefreshKeys by mutableStateOf<Map<String, Int>>(emptyMap())
+  var loadRequest by mutableStateOf<LiveLoadRequest?>(null)
+  var nextLoadRequestId by mutableIntStateOf(0)
   var handledManualRefreshKey by mutableIntStateOf(0)
+  var focusedVideoIndex by mutableIntStateOf(0)
+  var focusedVideoKey by mutableStateOf("")
+  var focusFirstItemKey by mutableIntStateOf(0)
 }
 
+internal data class LiveLoadRequest(
+  val id: Int,
+  val sectionKey: String,
+  val refreshKey: Int,
+)
+
 /**
- * TV 直播列表(单一推荐流)。镜像 [com.kirin.mt.ui.home.RecommendScreen] 的结构但去掉分区 tab:
- * 复用 [TvVideoGrid] 的 D-pad 焦点/分页机制,卡片由 [LiveRoom.toVideoSummary] 映射而来,
+ * TV 直播列表(分区 tab + 单网格)。镜像 [com.kirin.mt.ui.home.RecommendScreen] 的结构:
+ * 顶部 capsule tab 行("推荐" + 一级直播分区) + 下方 [TvVideoGrid] 的 D-pad 焦点/分页机制。
+ * tab = 父分区(而非 438 个叶子子分区,游戏类 388 个会霸屏);每个父分区 tab 按
+ * `parent_area_id` + `area_id=0` 拉该大类下所有房间。卡片由 [LiveRoom.toVideoSummary] 映射,
  * 点击走 [onVideoSelected] → 壳层据 [VideoSummary.liveRoomId] 挂载 [com.kirin.mt.ui.player.LivePlayerScreen]。
  */
 @Composable
@@ -68,6 +101,7 @@ internal fun LiveScreen(
   liveRepository: LiveRepository,
   uiState: LiveUiState,
   firstItemFocusRequester: FocusRequester,
+  tabFocusRequester: FocusRequester,
   manualRefreshKey: Int,
   restoreFocusRequestKey: Int,
   onRestoreFocusHandled: (Int) -> Unit,
@@ -78,17 +112,86 @@ internal fun LiveScreen(
 ) {
   val coroutineScope = rememberCoroutineScope()
 
-  // 首次进入 / 手动刷新触发首页加载。
+  // 首次进入加载分区树(构建 tab);失败则仅保留"推荐"tab,推荐流仍可用。
   LaunchedEffect(liveRepository) {
-    if (uiState.loadRequest == 0) uiState.loadRequest = 1
+    if (uiState.areaGroups.isEmpty()) {
+      uiState.areaGroups = runCatching { liveRepository.getAreaList() }.getOrDefault(emptyList())
+    }
   }
+
+  val sections = remember(uiState.areaGroups) {
+    buildList {
+      add(LiveSection.Recommend)
+      uiState.areaGroups.forEach { add(LiveSection.Area(it)) }
+    }
+  }
+  val selectedSectionKey = uiState.selectedSectionKey
+    .takeIf { key -> sections.any { it.key == key } }
+    ?: sections.first().key
+  val activeSectionKey = uiState.activeSectionKey
+    .takeIf { key -> sections.any { it.key == key } }
+    ?: selectedSectionKey
+  val activeSection = sections.firstOrNull { it.key == activeSectionKey }
+    ?: sections.first()
+  val selectedSection = sections.firstOrNull { it.key == selectedSectionKey }
+    ?: sections.first()
+  val selectedSectionFocusRequester = tabFocusRequester
+  val state = uiState.sectionStates[activeSection.key] ?: LiveState.Loading
+
+  fun requestSectionLoad(sectionKey: String, refreshKey: Int) {
+    uiState.nextLoadRequestId += 1
+    uiState.loadRequest = LiveLoadRequest(
+      id = uiState.nextLoadRequestId,
+      sectionKey = sectionKey,
+      refreshKey = refreshKey,
+    )
+  }
+
+  LaunchedEffect(sections) {
+    val sectionKeys = sections.mapTo(mutableSetOf()) { it.key }
+    uiState.loadedSectionKeys = uiState.loadedSectionKeys.filterTo(mutableSetOf()) { it in sectionKeys }
+    uiState.sectionStates = uiState.sectionStates.filterKeys { it in sectionKeys }
+    uiState.sectionRefreshKeys = uiState.sectionRefreshKeys.filterKeys { it in sectionKeys }
+    if (sections.none { it.key == uiState.selectedSectionKey }) {
+      uiState.selectedSectionKey = sections.first().key
+    }
+    if (sections.none { it.key == uiState.activeSectionKey }) {
+      uiState.activeSectionKey = sections.first().key
+      uiState.focusedVideoIndex = 0
+      uiState.focusedVideoKey = ""
+    }
+    if (uiState.loadRequest != null && sections.none { it.key == uiState.loadRequest?.sectionKey }) {
+      uiState.loadRequest = null
+    }
+    val sectionKeyToLoad = uiState.activeSectionKey
+      .takeIf { key -> sections.any { it.key == key } }
+      ?: sections.first().key
+    if (uiState.loadRequest == null && uiState.sectionStates[sectionKeyToLoad] == null) {
+      requestSectionLoad(
+        sectionKey = sectionKeyToLoad,
+        refreshKey = uiState.sectionRefreshKeys[sectionKeyToLoad] ?: 0,
+      )
+    }
+  }
+
   LaunchedEffect(liveRepository, uiState.loadRequest) {
-    if (uiState.loadRequest <= 0) return@LaunchedEffect
-    uiState.state = LiveState.Loading
-    uiState.focusedIndex = 0
-    uiState.focusedKey = ""
+    val request = uiState.loadRequest ?: return@LaunchedEffect
+    val sectionToLoad = sections.firstOrNull { it.key == request.sectionKey } ?: return@LaunchedEffect
+    // 刷新时若已有 Success,保留旧 videos 不切骨架,避免网格销毁重建抢焦点。
+    if (uiState.sectionStates[sectionToLoad.key] !is LiveState.Success) {
+      uiState.sectionStates = uiState.sectionStates + (sectionToLoad.key to LiveState.Loading)
+      uiState.focusedVideoIndex = 0
+      uiState.focusedVideoKey = ""
+    }
     val nextState = try {
-      val page = liveRepository.getLiveList(FirstPage)
+      val page = when (sectionToLoad) {
+        LiveSection.Recommend -> liveRepository.getLiveList(FirstPage)
+        is LiveSection.Area -> liveRepository.getLiveListByArea(
+          parentAreaId = sectionToLoad.group.id,
+          areaId = 0,
+          page = FirstPage,
+        )
+      }
       if (page.items.isEmpty()) {
         LiveState.Empty
       } else {
@@ -105,65 +208,127 @@ internal fun LiveScreen(
     } catch (error: Exception) {
       LiveState.Failed(error.message.orEmpty())
     }
-    uiState.state = nextState
+    uiState.loadedSectionKeys = uiState.loadedSectionKeys + sectionToLoad.key
+    uiState.sectionStates = uiState.sectionStates + (sectionToLoad.key to nextState)
+    if (uiState.loadRequest?.id == request.id) {
+      uiState.loadRequest = null
+    }
   }
 
-  // 侧边栏同 tab 二次点击 → 手动刷新。
   LaunchedEffect(manualRefreshKey) {
-    if (manualRefreshKey <= 0 || manualRefreshKey == uiState.handledManualRefreshKey) return@LaunchedEffect
+    if (manualRefreshKey <= 0 || manualRefreshKey == uiState.handledManualRefreshKey) {
+      return@LaunchedEffect
+    }
     uiState.handledManualRefreshKey = manualRefreshKey
-    uiState.loadRequest += 1
+    val nextRefreshKey = (uiState.sectionRefreshKeys[activeSection.key] ?: 0) + 1
+    uiState.sectionRefreshKeys = uiState.sectionRefreshKeys + (activeSection.key to nextRefreshKey)
+    requestSectionLoad(sectionKey = activeSection.key, refreshKey = nextRefreshKey)
   }
 
   fun loadNextPage() {
-    val current = uiState.state as? LiveState.Success ?: return
-    if (current.loadingMore || current.endReached) return
-    val pageToLoad = current.nextPage
-    uiState.state = current.copy(loadingMore = true, loadMoreError = "")
+    val currentState = uiState.sectionStates[activeSection.key] as? LiveState.Success ?: return
+    if (currentState.loadingMore || currentState.endReached) return
+    val pageToLoad = currentState.nextPage
+    val sectionToLoad = activeSection
+    val sectionKeyToLoad = activeSection.key
+    uiState.sectionStates = uiState.sectionStates + (
+      sectionKeyToLoad to currentState.copy(loadingMore = true, loadMoreError = "")
+    )
     coroutineScope.launch {
       val nextState = try {
-        val page = liveRepository.getLiveList(pageToLoad)
-        val known = current.videos.map { it.liveRoomId }.toMutableSet()
-        val merged = current.videos + page.items
+        val nextVideos = when (sectionToLoad) {
+          LiveSection.Recommend -> liveRepository.getLiveList(pageToLoad)
+          is LiveSection.Area -> liveRepository.getLiveListByArea(
+            parentAreaId = sectionToLoad.group.id,
+            areaId = 0,
+            page = pageToLoad,
+          )
+        }
+        val latestState = uiState.sectionStates[sectionKeyToLoad] as? LiveState.Success ?: return@launch
+        val known = latestState.videos.mapTo(mutableSetOf()) { it.liveRoomId }
+        val merged = latestState.videos + nextVideos.items
           .map { it.toVideoSummary() }
           .filter { it.liveRoomId > 0L && known.add(it.liveRoomId) }
-        val latest = uiState.state as? LiveState.Success ?: return@launch
-        latest.copy(
+        latestState.copy(
           videos = merged,
-          nextPage = page.nextPage,
+          nextPage = nextVideos.nextPage,
           loadingMore = false,
-          endReached = !page.hasMore || merged.size == latest.videos.size,
+          endReached = !nextVideos.hasMore || merged.size == latestState.videos.size,
           loadMoreError = "",
         )
       } catch (error: CancellationException) {
         throw error
       } catch (error: Exception) {
-        val latest = uiState.state as? LiveState.Success ?: return@launch
-        latest.copy(loadingMore = false, loadMoreError = error.message.orEmpty())
+        val latestState = uiState.sectionStates[sectionKeyToLoad] as? LiveState.Success ?: return@launch
+        latestState.copy(loadingMore = false, loadMoreError = error.message.orEmpty())
       }
-      uiState.state = nextState
+      uiState.sectionStates = uiState.sectionStates + (sectionKeyToLoad to nextState)
     }
   }
 
+  fun selectSection(section: LiveSection, forceRefresh: Boolean) {
+    val isSameSection = uiState.activeSectionKey == section.key
+    uiState.selectedSectionKey = section.key
+    uiState.activeSectionKey = section.key
+    if (!isSameSection) {
+      uiState.focusedVideoIndex = 0
+      uiState.focusedVideoKey = ""
+    }
+    val hasLoadedSection = section.key in uiState.loadedSectionKeys
+    if (forceRefresh || !hasLoadedSection) {
+      val nextRefreshKey = if (forceRefresh) {
+        (uiState.sectionRefreshKeys[section.key] ?: 0) + 1
+      } else {
+        uiState.sectionRefreshKeys[section.key] ?: 0
+      }
+      uiState.sectionRefreshKeys = uiState.sectionRefreshKeys + (section.key to nextRefreshKey)
+      requestSectionLoad(sectionKey = section.key, refreshKey = nextRefreshKey)
+    }
+  }
+
+  val onMoveDownFromTab: () -> Boolean = {
+    uiState.focusFirstItemKey += 1
+    true
+  }
+
   Column(modifier = Modifier.fillMaxSize()) {
-    LiveHeader()
+    LiveHeader(
+      sections = sections,
+      selectedSection = selectedSection,
+      selectedSectionFocusRequester = selectedSectionFocusRequester,
+      onMoveLeftToNav = onMoveLeftToNav,
+      onMoveDownFromTab = onMoveDownFromTab,
+      onSectionSelected = { section -> selectSection(section = section, forceRefresh = true) },
+      onSectionFocused = { section ->
+        uiState.selectedSectionKey = section.key
+        val isAlreadyActive = uiState.activeSectionKey == section.key
+        val shouldLoad = section.key !in uiState.loadedSectionKeys
+        if (shouldLoad) {
+          selectSection(section = section, forceRefresh = false)
+        } else if (!isAlreadyActive) {
+          uiState.activeSectionKey = section.key
+          uiState.focusedVideoIndex = 0
+          uiState.focusedVideoKey = ""
+        }
+      },
+    )
     Box(
       modifier = Modifier
         .fillMaxSize()
         .padding(top = BiliSpacing.Xs),
     ) {
-      when (val currentState = uiState.state) {
+      when (val currentState = state) {
         LiveState.Loading -> VideoGridSkeleton()
         LiveState.Empty -> FeedStatusScreen(message = stringResource(R.string.live_empty))
         is LiveState.Failed -> FeedStatusScreen(
           message = stringResource(R.string.live_failed_with_message, currentState.message),
           actionLabel = stringResource(R.string.action_retry),
-          onAction = { uiState.loadRequest += 1 },
+          onAction = { selectSection(section = activeSection, forceRefresh = true) },
         )
         is LiveState.Success -> {
           val restoredFocusIndex = currentState.videos.resolveFocusIndex(
-            focusKey = uiState.focusedKey,
-            fallbackIndex = uiState.focusedIndex,
+            focusKey = uiState.focusedVideoKey,
+            fallbackIndex = uiState.focusedVideoIndex,
           )
           TvVideoGrid(
             videos = currentState.videos,
@@ -175,12 +340,14 @@ internal fun LiveScreen(
             onInitialFocusRequested = onInitialFocusRequested,
             focusFirstItemKey = uiState.focusFirstItemKey,
             onFocusedIndexChange = { index, video ->
-              uiState.focusedIndex = index
-              uiState.focusedKey = video.focusRestoreKey()
+              uiState.focusedVideoIndex = index
+              uiState.focusedVideoKey = video.focusRestoreKey()
             },
             onLoadMore = ::loadNextPage,
             onMoveLeftToNav = onMoveLeftToNav,
-            onMoveUpFromFirstRow = { true },
+            onMoveUpFromFirstRow = {
+              runCatching { selectedSectionFocusRequester.requestFocus() }.isSuccess
+            },
             onVideoSelected = onVideoSelected,
             onOwnerSelected = { },
             onCardLongPress = { },
@@ -195,15 +362,30 @@ internal fun LiveScreen(
 }
 
 @Composable
-private fun LiveHeader() {
-  // 单一推荐流,无分区 tab;留一个标题条与首页网格顶部对齐。
-  Text(
-    text = stringResource(R.string.nav_live),
-    color = com.kirin.mt.ui.theme.BiliColors.TextPrimary,
-    fontSize = com.kirin.mt.ui.theme.BiliTypography.SectionTitle,
-    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-    modifier = Modifier
-      .fillMaxWidth()
-      .padding(start = BiliSpacing.Lg, top = BiliSpacing.Md, bottom = BiliSpacing.Xs),
-  )
+private fun LiveHeader(
+  sections: List<LiveSection>,
+  selectedSection: LiveSection,
+  selectedSectionFocusRequester: FocusRequester,
+  onMoveLeftToNav: () -> Boolean,
+  onMoveDownFromTab: () -> Boolean,
+  onSectionSelected: (LiveSection) -> Unit,
+  onSectionFocused: (LiveSection) -> Unit,
+) {
+  BiliCapsuleTabRow(itemCount = sections.size) {
+    sections.forEachIndexed { index, section ->
+      BiliPillTab(
+        text = section.label,
+        selected = section == selectedSection,
+        modifier = if (section == selectedSection) {
+          Modifier.focusRequester(selectedSectionFocusRequester)
+        } else {
+          Modifier
+        },
+        onMoveLeftToNav = if (index == 0) onMoveLeftToNav else null,
+        onMoveDownToGrid = onMoveDownFromTab,
+        onClick = { onSectionSelected(section) },
+        onFocused = { onSectionFocused(section) },
+      )
+    }
+  }
 }

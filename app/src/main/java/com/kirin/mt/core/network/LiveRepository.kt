@@ -141,7 +141,9 @@ class LiveRepository(
     areaId: Int,
     page: Int = 1,
   ): LiveListPage {
-    if (areaId <= 0) {
+    // 父分区模式:areaId=0 + parentAreaId>0(拉该大类下所有房间,移动端 tab 用);
+    // 叶子分区模式:areaId>0(可选带 parentAreaId)。两者都 0 无过滤,兜底空。
+    if (parentAreaId <= 0 && areaId <= 0) {
       return LiveListPage(items = emptyList(), nextPage = page, hasMore = false)
     }
     val params = mutableMapOf(
@@ -149,6 +151,9 @@ class LiveRepository(
       "page" to page.toString(),
       "page_size" to LiveAreaPageSize.toString(),
     )
+    if (parentAreaId > 0) {
+      params["parent_area_id"] = parentAreaId.toString()
+    }
     val root = apiClient.getJsonWithHeaders(
       url = BiliApiEndpoints.LiveAreaRoomList,
       params = params,

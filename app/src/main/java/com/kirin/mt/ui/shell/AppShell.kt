@@ -201,6 +201,7 @@ fun BiliTvApp(
   val pgcFocusRequester = remember { FocusRequester() }
   val pgcTabFocusRequester = remember { FocusRequester() }
   val liveFocusRequester = remember { FocusRequester() }
+  val liveTabFocusRequester = remember { FocusRequester() }
   val recommendUiState = remember { RecommendUiState() }
   val userFeedState = remember { UserFeedUiState() }
   val searchUiState = remember { SearchUiState() }
@@ -996,6 +997,7 @@ fun BiliTvApp(
                   liveRepository = liveRepository,
                   uiState = liveUiState,
                   firstItemFocusRequester = liveFocusRequester,
+                  tabFocusRequester = liveTabFocusRequester,
                   manualRefreshKey = liveManualRefreshKey,
                   restoreFocusRequestKey = restoreFocusRequestKeyFor(AppDestination.Live),
                   onRestoreFocusHandled = { key -> clearFocusRestoreRequest(AppDestination.Live, key) },

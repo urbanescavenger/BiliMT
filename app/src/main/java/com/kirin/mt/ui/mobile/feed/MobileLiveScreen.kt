@@ -48,7 +48,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
-import com.kirin.mt.core.model.LiveArea
 import com.kirin.mt.core.model.LiveAreaGroup
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.LiveRepository
@@ -104,7 +103,6 @@ private class MobileLiveUiState {
   fun refreshKey(key: String): Int = refreshKeys[key] ?: 0
 }
 
-private fun LiveArea.tabKey(): String = "${parentId}-${id}"
 
 /**
  * 移动端直播列表:顶部可滚动 tab 行("推荐" + 直播分区) + HorizontalPager 左右切换,
@@ -150,9 +148,7 @@ fun MobileLiveScreen(
     buildList {
       add(LiveTab.Recommend)
       uiState.areaGroups.forEach { group ->
-        group.areas.forEach { area ->
-          add(LiveTab.Area(groupName = group.name, area = area))
-        }
+        add(LiveTab.Area(group = group))
       }
     }
   }
@@ -171,11 +167,11 @@ fun MobileLiveScreen(
         val page = if (key == RecommendTabKey) {
           liveRepository.getLiveList(FirstPage)
         } else {
-          val area = tabs.find { it.key == key }?.areaOrNull()
-          if (area == null) {
+          val group = tabs.find { it.key == key }?.groupOrNull()
+          if (group == null) {
             MobileListPage.empty()
           } else {
-            liveRepository.getLiveListByArea(area.parentId, area.id, FirstPage)
+            liveRepository.getLiveListByArea(group.id, areaId = 0, page = FirstPage)
           }
         }
         when {
@@ -206,11 +202,11 @@ fun MobileLiveScreen(
         val page = if (key == RecommendTabKey) {
           liveRepository.getLiveList(current.nextPage)
         } else {
-          val area = tabs.find { it.key == key }?.areaOrNull()
-          if (area == null) {
+          val group = tabs.find { it.key == key }?.groupOrNull()
+          if (group == null) {
             MobileListPage.empty()
           } else {
-            liveRepository.getLiveListByArea(area.parentId, area.id, current.nextPage)
+            liveRepository.getLiveListByArea(group.id, areaId = 0, page = current.nextPage)
           }
         }
         val known = current.videos.map { it.liveRoomId }.toMutableSet()
@@ -503,16 +499,15 @@ private sealed interface LiveTab {
   }
 
   data class Area(
-    val groupName: String,
-    val area: LiveArea,
+    val group: LiveAreaGroup,
   ) : LiveTab {
-    override val key: String = area.tabKey()
-    override val label: String = area.name
+    override val key: String = "area-${group.id}"
+    override val label: String = group.name
   }
 }
 
-private fun LiveTab.areaOrNull(): LiveArea? = when (this) {
-  is LiveTab.Area -> area
+private fun LiveTab.groupOrNull(): LiveAreaGroup? = when (this) {
+  is LiveTab.Area -> group
   else -> null
 }
 
