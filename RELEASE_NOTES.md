@@ -1,5 +1,36 @@
 # BiliMT 版本发布说明
 
+## v2.0.5
+
+v2.0.3 后主打**看直播**(TV + 移动),并补齐直播分区浏览。合并 mort_debug → main 打稳定 tag。
+
+### 看直播(TV + 移动)
+- 新增直播入口:TV 侧栏 + 移动端底栏均新增"直播",拉 B 站直播推荐流(`xlive/web-interface/v1/index/getList`,WBI 签名),合并 `recommend_room_list` + `room_list` 模块按 roomid 去重。
+- 独立直播播放器(区别于点播 PlayerScreen):HLS/FLV 取流(`xlive/web-room/v2/index/getRoomPlayInfo`),清晰度切换(原画/蓝光/超清/高清/流畅),跨房间持久化默认画质。
+- 过 -352 风控:直播接口补 WBI 签名 + buvid cookie + live Referer + web_location;播放地址去 WBI 签名。
+
+### 直播播放器 UI 对齐视频界面
+- 玻璃质感渐变顶栏(主播名/人气 meta + 清晰度入口 + 时钟)、Canvas 双竖杠暂停指示器、玻璃清晰度面板(选中对勾 + TV 焦点驱动)。
+- 统一 D-pad 按键路由(中心/方向/媒体键)+ 层级关闭(面板→控件→退出)+ `BiliMotion` 自动隐藏常量与守卫。
+- 移动端直播播放器底栏:直播中红点指示 + 画质下拉 + 预留弹幕按钮 + 全屏(强制横屏 + 沉浸式)。
+- 直播卡片:红色"直播"pill 角标 + 红点在线人数 + 分区名。
+
+### 直播分区浏览(移动 + TV)
+- 移动端:顶部可滚动 tab 行("推荐" + 一级父分区) + HorizontalPager 左右切换,每个 tab 独立网格、下拉刷新、底部翻页。
+- TV: capsule tab 行("推荐" + 一级父分区) + 单网格,D-pad 焦点在 tab↔网格间互通。
+- 分区 tab 用**一级父分区**(网游/手游/单机/虚拟主播/娱乐/电台/赛事/聊天室/生活/知识/帮我玩/互动玩法/购物),而非 438 个叶子子分区(游戏类 388 个会霸屏、非游戏类要到第 389 个 tab 才出现)。
+- 分区树 `getWebAreaList`(解析 `data.data` 双层嵌套);分区房间 `getRoomList`,支持父分区模式(`parent_area_id`+`area_id=0` 拉该大类所有房间)。
+
+### 修复
+- 移动端直播页全屏空白:`getAreaList()` 解析 `getWebAreaList` 的 `data.data` 形状(原按顶层 `data` 取数组致空 → 移动端整屏"暂无直播"遮罩)。
+- 移动端直播推荐 tab 初始为空:分区树加载完成后主动加载当前 tab 内容。
+- 分区房间列表改用旧版公开接口 `/room/v1/Area/getRoomList` 过 -352。
+- 直播长时间播放报错且重试无效:为 HLS/FLV 添加 `LiveLoadErrorHandlingPolicy`,网络/HTTP 错误指数退避重试 + stall 检测自动重载。
+
+### 安装包
+- `BiliMT-v2.0.5-arm64-v8a.apk`
+- `BiliMT-v2.0.5-armeabi-v7a.apk`
+
 ## v2.0.5-alpha.8
 
 v2.0.5-alpha.7 后直播分区 tab 改用**一级父分区**(TV + 移动同步)。原移动端把 438 个叶子子分区全铺成 tab,游戏类(网游 111+手游 188+单机 89=388)排最前,非游戏类(娱乐/电台/生活/知识…)要到第 389 个 tab 才出现,看起来全是游戏;TV 之前只有推荐、无分区 tab。
