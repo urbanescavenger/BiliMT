@@ -205,7 +205,7 @@ internal class SpaceVideoRepository(
 
   private fun Throwable.isRetryableSpaceFailure(): Boolean {
     if (this is BiliNetworkException && statusCode in SpaceRetryableHttpCodes) return true
-    if (this is BiliApiCodeException && code == RiskControlCode) return true
+    if (this is BiliApiCodeException && code in SpaceRetryableApiCodes) return true
     return false
   }
 
@@ -225,8 +225,11 @@ internal class SpaceVideoRepository(
     // Linux Chromium UA — 跟 dm_img_str (OpenGL ES Chromium) 指纹一致 (ref: BV BiliUserAgent)
     const val SpaceUserAgent =
       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    const val RiskControlCode = -352
-    val SpaceInteractiveRetryDelaysMs = longArrayOf(2_000L, 4_000L)
+    // 风控软拦截码:正/负 452(首进 UP 主页偶发的瞬态 warm-up 软风控,重试可过)+ -352。
+    // 452 不在 buvid 缓存路径(本 path 只发 SESSDATA),属 wbi/指纹瞬态,靠退避等窗口过去。
+    val SpaceRetryableApiCodes = setOf(-352, 452, -452)
+    // 初始 + 3 次重试 = 4 次尝试,累计 12s:覆盖首进 warm-up 窗口,UI 停在 loading 直到成功。
+    val SpaceInteractiveRetryDelaysMs = longArrayOf(2_000L, 4_000L, 6_000L)
     val SpaceRecoveryRetryDelaysMs = longArrayOf(1_200L, 2_400L)
     val SpaceRecoveryFallbackRetryDelaysMs = longArrayOf(1_200L)
     val SpaceRetryableHttpCodes = setOf(412, 429, 500, 502, 503, 504)

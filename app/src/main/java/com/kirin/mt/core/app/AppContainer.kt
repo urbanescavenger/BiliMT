@@ -11,6 +11,7 @@ import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliHttpClientFactory
 import com.kirin.mt.core.network.LiveRepository
+import com.kirin.mt.core.network.SpaceHttpSupport
 import com.kirin.mt.core.network.VideoRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -129,6 +130,15 @@ class AppContainer(context: Context) {
           Log.i(LogTag, "api warmup ok: ${elapsedMs}ms (connection pooled for api.bilibili.com)")
         }
         .onFailure { error -> Log.w(LogTag, "api warmup failed: ${error.message}") }
+
+      // 预热 buvid3/4:spi 拿 b_3/b_4 → activateBuvid 激活 → 存盘。这样用户首进 UP 主页前
+      // buvid 已激活且服务端有秒级采信窗口,SpaceProfileRepository.fetchAccInfo 直接命中缓存,
+      // 资料/粉丝数首进即加载,不再因 buvid 冷启动被判 452 空白。fire-and-forget,失败静默。
+      runCatching { SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient) }
+        .onSuccess { (buvid3, buvid4) ->
+          Log.i(LogTag, "buvid warmup ok: hasBuvid3=${!buvid3.isNullOrBlank()} hasBuvid4=${!buvid4.isNullOrBlank()}")
+        }
+        .onFailure { error -> Log.w(LogTag, "buvid warmup failed: ${error.message}") }
     }
   }
 
