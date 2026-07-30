@@ -5,6 +5,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -49,6 +50,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
@@ -418,10 +420,12 @@ private fun OwnerAvatar(video: VideoSummary) {
   val performancePolicy = LocalBiliPerformancePolicy.current
   val homeColors = LocalHomeColors.current
   val fallbackPainter = ColorPainter(homeColors.glassSurfaceStrong)
+  // 正直播的 UP 头像套 BiliPink 红环,作为"直播头像"视觉信号(与移动端 MobileVideoCard 对齐)。
   val modifier = Modifier
     .size(BiliSizing.OwnerAvatarSize)
     .clip(CircleShape)
     .background(homeColors.glassSurfaceStrong)
+    .then(if (video.isLive) Modifier.border(2.dp, BiliColors.BiliPink, CircleShape) else Modifier)
 
   if (video.ownerFace.isBlank()) {
     Box(modifier = modifier)

@@ -52,6 +52,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.image.BiliImageSizing
@@ -244,6 +245,7 @@ internal fun UpSpaceScreen(
         firstItemFocusRequester = firstItemFocusRequester,
         onOrderSelected = { uiState.selectOrder(it) },
         onFollowClicked = ::toggleFollow,
+        onVideoSelected = onVideoSelected,
       )
       Box(
         modifier = Modifier
@@ -302,6 +304,7 @@ private fun UpSpaceHeader(
   firstItemFocusRequester: FocusRequester,
   onOrderSelected: (String) -> Unit,
   onFollowClicked: () -> Unit,
+  onVideoSelected: (VideoSummary) -> Unit,
 ) {
   val homeColors = LocalHomeColors.current
   val profile = (profileState as? SpaceProfileState.Loaded)?.profile
@@ -325,7 +328,37 @@ private fun UpSpaceHeader(
       horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Xl),
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      UpSpaceAvatar(face = displayFace, name = displayName)
+      // 正直播的 UP:头像套红环 + "直播"pill,且可聚焦/确认切到直播间(DPad 选中头像 → onVideoSelected
+      // 合成 live VideoSummary → LivePlayerScreen;返回键回到主页)。非直播时头像不可聚焦,行为同前。
+      val upLive = profile?.liveStatus == 1 && (profile?.liveRoomId ?: 0L) > 0L
+      UpSpaceAvatar(
+        face = displayFace,
+        name = displayName,
+        isLive = upLive,
+        onActivate = if (upLive) {
+          {
+            val liveSummary = VideoSummary(
+              bvid = "",
+              title = profile?.liveTitle?.ifBlank { displayName } ?: displayName,
+              pic = profile?.liveCover?.ifBlank { displayFace } ?: displayFace,
+              ownerName = displayName,
+              ownerFace = displayFace,
+              ownerMid = request.mid,
+              view = 0,
+              danmaku = 0,
+              duration = 0,
+              pubdate = 0L,
+              badge = "直播",
+              isLive = true,
+              liveRoomId = profile?.liveRoomId ?: 0L,
+            )
+            onVideoSelected(liveSummary)
+          }
+        } else null,
+        onMoveDown = {
+          runCatching { sortFocusRequesters.getValue(order).requestFocus() }.isSuccess
+        },
+      )
       Column(
         modifier = Modifier.weight(1f),
         verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
@@ -430,21 +463,57 @@ private fun UpSpaceHeader(
 }
 
 @Composable
-private fun UpSpaceAvatar(face: String, name: String) {
+private fun UpSpaceAvatar(
+  face: String,
+  name: String,
+  isLive: Boolean = false,
+  onActivate: (() -> Unit)? = null,
+  onMoveDown: (() -> Boolean)? = null,
+) {
   val context = LocalContext.current
   val performancePolicy = LocalBiliPerformancePolicy.current
+  val homeColors = LocalHomeColors.current
   val requestSizePx = if (performancePolicy.lowSpecMode) {
     BiliImageSizing.AccountAvatarSizePx
   } else {
     BiliImageSizing.AccountProfileAvatarSizePx
   }
   val fallbackPainter = ColorPainter(BiliColors.Surface)
+  // 正直播:头像套 BiliPink 红环;可聚焦,DPad 选中(确认键/点击)切到直播间。
+  // 聚焦时环色换成主题 accent + 加粗,作为焦点提示。
+  val live = onActivate != null
+  var focused by remember { mutableStateOf(false) }
+  val interactionSource = remember { MutableInteractionSource() }
+  val ringColor = if (focused) homeColors.accent else BiliColors.BiliPink
+  val ringWidth = if (focused) BiliFocus.BorderWidth else 2.dp
 
   Box(
     modifier = Modifier
       .size(BiliSizing.AccountProfileAvatarSize)
       .clip(CircleShape)
-      .background(BiliColors.Surface),
+      .background(BiliColors.Surface)
+      .then(if (isLive) Modifier.border(ringWidth, ringColor, CircleShape) else Modifier)
+      .then(
+        if (live) {
+          Modifier
+            .onFocusChanged { state -> focused = state.isFocused }
+            .onPreviewKeyEvent { event ->
+              when {
+                event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown ->
+                  onMoveDown?.invoke() == true
+                event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
+                  onActivate?.invoke()
+                  true
+                }
+                else -> false
+              }
+            }
+            .focusable(interactionSource = interactionSource)
+            .clickable(interactionSource = interactionSource, indication = null) { onActivate?.invoke() }
+        } else {
+          Modifier
+        },
+      ),
     contentAlignment = Alignment.Center,
   ) {
     if (face.isNotBlank()) {
@@ -481,6 +550,31 @@ private fun UpSpaceAvatar(face: String, name: String) {
         tint = BiliColors.BiliPink,
         modifier = Modifier.size(BiliSizing.AccountAvatarSize),
       )
+    }
+    if (isLive) {
+      Row(
+        modifier = Modifier
+          .align(Alignment.BottomCenter)
+          .clip(RoundedCornerShape(3.dp))
+          .background(BiliColors.BiliPink)
+          .padding(horizontal = 4.dp, vertical = 1.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Box(
+          modifier = Modifier
+            .size(3.dp)
+            .clip(CircleShape)
+            .background(BiliColors.TextPrimary),
+        )
+        Text(
+          text = "直播",
+          color = BiliColors.TextPrimary,
+          fontSize = BiliTypography.AccountProfileVipBadge,
+          fontWeight = FontWeight.Bold,
+          maxLines = 1,
+        )
+      }
     }
   }
 }
