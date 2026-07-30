@@ -14,6 +14,12 @@ data class SpaceUserProfile(
   val officialRole: Int,
   val officialTitle: String,
   val officialDesc: String,
+  // 来自 x/space/acc/info 的 data.live_room:liveStatus 1=正直播、roomid 直播间短号、title/cover 直播间信息。
+  // 无直播时 liveStatus=0 / liveRoomId=0。用于主页头像"直播"标记 + 点头像切直播间。
+  val liveRoomId: Long = 0L,
+  val liveStatus: Int = 0,
+  val liveTitle: String = "",
+  val liveCover: String = "",
 ) {
   companion object {
     val EMPTY = SpaceUserProfile(

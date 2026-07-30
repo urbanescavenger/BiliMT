@@ -1,6 +1,7 @@
 package com.kirin.mt.ui.mobile.home
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -94,7 +95,7 @@ fun MobileVideoCard(
           },
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        OwnerAvatar(face = video.ownerFace)
+        OwnerAvatar(face = video.ownerFace, isLive = video.isLive)
         Spacer(modifier = Modifier.width(4.dp))
         Text(
           text = video.ownerName,
@@ -182,11 +183,14 @@ private fun LiveOnlineCount(online: Int, areaName: String, modifier: Modifier = 
 
 /** UP 主圆形头像:20dp,空 face 纯色占位;复用 buildOwnerAvatarRequest 带 Bili 头与 CDN 尺寸。 */
 @Composable
-private fun OwnerAvatar(face: String) {
+private fun OwnerAvatar(face: String, isLive: Boolean = false) {
+  // 正直播的 UP 头像套红色环(BiliPink),作为"直播头像"视觉信号;20dp 太小不放"直播"文字,
+  // 封面已有 LiveBadge 文字,头像用红环标识即可。
   val modifier = Modifier
     .size(20.dp)
     .clip(CircleShape)
     .background(MaterialTheme.colorScheme.surfaceVariant)
+    .then(if (isLive) Modifier.border(2.dp, BiliColors.BiliPink, CircleShape) else Modifier)
   if (face.isBlank()) {
     Box(modifier = modifier)
     return

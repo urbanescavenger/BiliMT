@@ -2,11 +2,16 @@ package com.kirin.mt.core.network
 
 import com.kirin.mt.core.model.Comment
 import com.kirin.mt.core.model.VideoSummary
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 internal object VideoSummaryMappers {
+
+  /** 用于二次解析动态 live_rcmd.content 这类内嵌 JSON 字符串字段。宽松配置,失败由调用处兜底。 */
+  private val nestedJson = Json { ignoreUnknownKeys = true; isLenient = true }
   fun fromArchive(json: JsonObject): VideoSummary {
     // dynamic/region 鐢?owner/pic锛況egion/feed/rcmd 鐢?author/cover锛屼簩鑰呭瓧娈靛悕涓嶅悓锛岀粺涓€鍏滃簳銆?
     val owner = json.obj("owner") ?: json.obj("author")
@@ -34,12 +39,24 @@ internal object VideoSummaryMappers {
     val modules = json.obj("modules") ?: return null
     val dynamicModule = modules.obj("module_dynamic") ?: return null
     val major = dynamicModule.obj("major") ?: return null
-    if (major.string("type") != "MAJOR_TYPE_ARCHIVE") {
-      return null
-    }
-
-    val archive = major.obj("archive") ?: return null
     val author = modules.obj("module_author")
+
+    // 按 major 类型分流:普通视频动态走 archive;直播推荐卡走 live_rcmd(原生带 live_status);
+    // 其余类型(图文/PGC/专栏等)暂不收入。用 live_rcmd 字段存在性判定,避免依赖 type 字符串。
+    return when {
+      major.string("type") == "MAJOR_TYPE_ARCHIVE" -> fromArchiveDynamic(json, modules, major, author)
+      major.obj("live_rcmd") != null -> fromLiveRcmdDynamic(json, major, author)
+      else -> null
+    }
+  }
+
+  private fun fromArchiveDynamic(
+    json: JsonObject,
+    modules: JsonObject,
+    major: JsonObject,
+    author: JsonObject?,
+  ): VideoSummary? {
+    val archive = major.obj("archive") ?: return null
     val stat = archive.obj("stat")
     // module_stat 是动态本身的社交计数(点赞/评论/转发),区别于 archive.stat 的播放/弹幕。
     val dynStat = modules.obj("module_stat")
@@ -60,6 +77,42 @@ internal object VideoSummaryMappers {
       likeCount = dynStat?.obj("like")?.int("count") ?: 0,
       commentCount = dynStat?.obj("comment")?.int("count") ?: 0,
       forwardCount = dynStat?.obj("forward")?.int("count") ?: 0,
+    )
+  }
+
+  /**
+   * 动态直播推荐卡(MAJOR_TYPE_LIVE / live_rcmd):live_rcmd.content 是内嵌 JSON 字符串,
+   * 二次解析出 live_play_info。仅 live_status==1(正直播)收入为 isLive 卡片,可点进直播间;
+   * 解析失败或非直播静默 drop(null),不影响其余动态。
+   * 字段依据:BV DynamicResponse.kt(live_rcmd.content)、Dynamic.kt(live_play_info: live_status/room_id/online/area_name)。
+   */
+  private fun fromLiveRcmdDynamic(
+    json: JsonObject,
+    major: JsonObject,
+    author: JsonObject?,
+  ): VideoSummary? {
+    val contentStr = major.obj("live_rcmd")?.string("content").orEmpty()
+    if (contentStr.isBlank()) return null
+    val playInfo = runCatching {
+      nestedJson.parseToJsonElement(contentStr).jsonObject.obj("live_play_info")
+    }.getOrNull() ?: return null
+    if (playInfo.int("live_status") != 1) return null
+    return VideoSummary(
+      bvid = "",
+      title = playInfo.string("title"),
+      pic = fixPicUrl(playInfo.string("cover")),
+      ownerName = author?.string("name").orEmpty(),
+      ownerFace = fixPicUrl(author?.string("face").orEmpty()),
+      ownerMid = author?.long("mid") ?: 0L,
+      view = playInfo.int("online"),
+      danmaku = 0,
+      duration = 0,
+      pubdate = author?.long("pub_ts") ?: 0L,
+      badge = "直播",
+      isLive = true,
+      liveRoomId = playInfo.long("room_id"),
+      liveAreaName = playInfo.string("area_name"),
+      dynId = json.string("id_str"),
     )
   }
 

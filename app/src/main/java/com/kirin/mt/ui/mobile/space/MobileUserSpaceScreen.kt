@@ -1,6 +1,8 @@
 package com.kirin.mt.ui.mobile.space
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,12 +13,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -34,7 +38,9 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -44,6 +50,7 @@ import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.ui.mobile.home.formatCount
+import com.kirin.mt.ui.theme.BiliColors
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -187,12 +194,67 @@ fun MobileUserSpaceScreen(
           modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          AsyncImage(
-            model = profile?.face ?: ownerFace,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.size(56.dp).clip(CircleShape),
-          )
+          // 正直播的 UP:头像套红环 + 底部"直播"pill,且可点头像切到该直播间(onVideoSelected →
+          // toPlaybackRequest 的 liveRoomId>0 分支 → LivePlayerScreen;返回键回到主页)。
+          val upLive = profile?.liveStatus == 1 && (profile?.liveRoomId ?: 0L) > 0L
+          Box(
+            modifier = Modifier
+              .size(56.dp)
+              .then(if (upLive) Modifier.border(2.dp, BiliColors.BiliPink, CircleShape) else Modifier)
+              .then(
+                if (upLive) Modifier.clickable {
+                  val liveSummary = VideoSummary(
+                    bvid = "",
+                    title = profile?.liveTitle?.ifBlank { profile?.name ?: ownerName } ?: (profile?.name ?: ownerName),
+                    pic = profile?.liveCover?.ifBlank { profile?.face ?: ownerFace } ?: (profile?.face ?: ownerFace),
+                    ownerName = profile?.name ?: ownerName,
+                    ownerFace = profile?.face ?: ownerFace,
+                    ownerMid = mid,
+                    view = 0,
+                    danmaku = 0,
+                    duration = 0,
+                    pubdate = 0L,
+                    badge = "直播",
+                    isLive = true,
+                    liveRoomId = profile?.liveRoomId ?: 0L,
+                  )
+                  onVideoSelected(liveSummary)
+                } else Modifier,
+              ),
+            contentAlignment = Alignment.Center,
+          ) {
+            AsyncImage(
+              model = profile?.face ?: ownerFace,
+              contentDescription = null,
+              contentScale = ContentScale.Crop,
+              modifier = Modifier.size(56.dp).clip(CircleShape),
+            )
+            if (upLive) {
+              Row(
+                modifier = Modifier
+                  .align(Alignment.BottomCenter)
+                  .clip(RoundedCornerShape(3.dp))
+                  .background(BiliColors.BiliPink)
+                  .padding(horizontal = 4.dp, vertical = 1.dp),
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Box(
+                  modifier = Modifier
+                    .size(3.dp)
+                    .clip(CircleShape)
+                    .background(Color.White),
+                )
+                Spacer(modifier = Modifier.width(2.dp))
+                Text(
+                  text = "直播",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = Color.White,
+                  fontWeight = FontWeight.Bold,
+                  maxLines = 1,
+                )
+              }
+            }
+          }
           Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
             Text(profile?.name ?: ownerName, style = MaterialTheme.typography.titleSmall)
             val sign = profile?.sign.orEmpty()
