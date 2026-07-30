@@ -44,7 +44,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
@@ -327,7 +326,6 @@ fun MobileLiveScreen(
         val gridStates = remember { mutableStateMapOf<String, LazyGridState>() }
         val gridState = gridStates.getOrPut(tab.key) { rememberLazyGridState() }
         MobileLiveSectionPage(
-          title = tab.label,
           state = uiState.sectionStates[tab.key],
           gridState = gridState,
           onRefresh = { loadSection(tab.key, forceRefresh = true) },
@@ -344,7 +342,6 @@ fun MobileLiveScreen(
 /** 单个直播 tab 内容页:PullToRefreshLayout + LazyVerticalGrid + 近底翻页。 */
 @Composable
 private fun MobileLiveSectionPage(
-  title: String,
   state: MobileLiveSectionState?,
   gridState: LazyGridState,
   onRefresh: () -> Unit,
@@ -376,13 +373,6 @@ private fun MobileLiveSectionPage(
       verticalArrangement = Arrangement.spacedBy(12.dp),
       modifier = Modifier.fillMaxSize(),
     ) {
-      // 顶部标题条(失败态独占居中时除外)。
-      if (state !is MobileLiveSectionState.Failed) {
-        item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
-          MobileLiveHeader(title = title)
-        }
-      }
-
       when (state) {
         null, MobileLiveSectionState.Loading -> {
           items(SkeletonCount) { LiveSkeletonCard() }
@@ -438,22 +428,6 @@ private fun MobileLiveSectionPage(
         }
       }
     }
-  }
-}
-
-@Composable
-private fun MobileLiveHeader(title: String) {
-  Column(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
-    Text(
-      text = stringResource(R.string.live_title),
-      style = MaterialTheme.typography.titleLarge,
-      fontWeight = FontWeight.Bold,
-    )
-    Text(
-      text = title,
-      style = MaterialTheme.typography.bodySmall,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
   }
 }
 
