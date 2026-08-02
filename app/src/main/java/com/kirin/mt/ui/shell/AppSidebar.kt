@@ -184,11 +184,8 @@ private fun AccountNavItem(
     shape = CircleShape,
     shadowOnFocus = !cinematicVisualsEnabled,
     focusedScale = if (cinematicVisualsEnabled) BiliFocus.CinematicNavScale else BiliFocus.CardScale,
-    focusedBorderColor = if (cinematicVisualsEnabled) {
-      homeColors.textPrimary.copy(alpha = BiliFocus.CinematicFocusedBorderAlpha)
-    } else {
-      null
-    },
+    // 焦点环统一用白色(非默认粉色 accent),与选中态粉色左条区分。
+    focusedBorderColor = homeColors.textPrimary.copy(alpha = BiliFocus.CinematicFocusedBorderAlpha),
     restingBorderColor = if (cinematicVisualsEnabled) {
       homeColors.textPrimary.copy(alpha = BiliFocus.CinematicRestingBorderAlpha)
     } else {
@@ -333,11 +330,8 @@ private fun AppNavItem(
     shape = RoundedCornerShape(BiliRadius.Pill),
     shadowOnFocus = !cinematicVisualsEnabled,
     focusedScale = if (cinematicVisualsEnabled) BiliFocus.CinematicNavScale else BiliFocus.CardScale,
-    focusedBorderColor = if (cinematicVisualsEnabled) {
-      homeColors.textPrimary.copy(alpha = BiliFocus.CinematicFocusedBorderAlpha)
-    } else {
-      null
-    },
+    // 焦点环统一用白色(非默认粉色 accent),与选中态粉色左条区分。
+    focusedBorderColor = homeColors.textPrimary.copy(alpha = BiliFocus.CinematicFocusedBorderAlpha),
     restingBorderColor = if (cinematicVisualsEnabled) {
       homeColors.textPrimary.copy(alpha = BiliFocus.CinematicRestingBorderAlpha)
     } else {
@@ -394,10 +388,16 @@ private fun AppNavItem(
             .background(homeColors.accent),
         )
       }
+      // 选中=粉色图标,焦点(非选中)=白色图标,其余=次级灰。
+      // 与选中态粉色左条区分:焦点用白色系,选中用粉色系。
       Icon(
         painter = painterResource(destination.iconRes),
         contentDescription = stringResource(destination.titleRes),
-        tint = if (selected || focused) homeColors.accent else homeColors.textSecondary,
+        tint = when {
+          selected -> homeColors.accent
+          focused -> homeColors.textPrimary
+          else -> homeColors.textSecondary
+        },
         modifier = Modifier
           .width(BiliSizing.NavIconSize)
           .height(BiliSizing.NavIconSize),

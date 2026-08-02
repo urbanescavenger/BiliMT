@@ -129,7 +129,10 @@ fun BiliPillTab(
   val performancePolicy = LocalBiliPerformancePolicy.current
   val homeColors = LocalHomeColors.current
   val shape = RoundedCornerShape(BiliRadius.Pill)
-  val targetBorderColor = if (focused) homeColors.accent else BiliColors.Transparent
+  // 焦点环用亮色(textPrimary 白)而非 accent(粉):与选中态的粉色底指示条区分,
+  // 选中+焦点同时命中时白环(焦点)与粉条(选中)颜色/形状不同,可明确分辨。
+  val targetBorderColor =
+    if (focused) homeColors.textPrimary.copy(alpha = BiliFocus.CinematicFocusedBorderAlpha) else BiliColors.Transparent
   val targetTextColor = when {
     selected -> homeColors.accent
     focused -> homeColors.textPrimary
