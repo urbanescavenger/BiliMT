@@ -339,6 +339,7 @@ internal fun LiveScreen(
             requestInitialFocus = requestInitialFocus,
             onInitialFocusRequested = onInitialFocusRequested,
             focusFirstItemKey = uiState.focusFirstItemKey,
+            sectionKey = activeSection.key,
             onFocusedIndexChange = { index, video ->
               uiState.focusedVideoIndex = index
               uiState.focusedVideoKey = video.focusRestoreKey()

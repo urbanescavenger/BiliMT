@@ -147,6 +147,33 @@ internal class UserFeedUiState {
   val bangumi = BangumiFollowUiState()
 }
 
+// 把指定子 tab 的聚焦位置清回顶部。切子 tab / 侧栏切回动态页时调用,
+// 让重组后的网格从第 0 行起始、按 Down 进列表落第一行(不再停在旧位置 / 跳版面)。
+private fun resetFeedTabFocus(feedState: UserFeedUiState, tab: UserFeedTab) {
+  when (tab) {
+    UserFeedTab.DynamicVideo -> {
+      feedState.dynamicVideo.focusedVideoIndex = 0
+      feedState.dynamicVideo.focusedVideoKey = ""
+    }
+    UserFeedTab.DynamicAll -> {
+      feedState.dynamicAll.focusedVideoIndex = 0
+      feedState.dynamicAll.focusedVideoKey = ""
+    }
+    UserFeedTab.History -> {
+      feedState.history.focusedVideoIndex = 0
+      feedState.history.focusedVideoKey = ""
+    }
+    UserFeedTab.Favorite -> {
+      feedState.favorite.focusedVideoIndex = 0
+      feedState.favorite.focusedVideoKey = ""
+    }
+    UserFeedTab.Bangumi -> {
+      feedState.bangumi.focusedVideoIndex = 0
+      feedState.bangumi.focusedVideoKey = ""
+    }
+  }
+}
+
 @Composable
 internal fun UserFeedScreen(
   videoRepository: VideoRepository,
@@ -168,6 +195,16 @@ internal fun UserFeedScreen(
   val context = LocalContext.current
   val selectedTab = feedState.selectedTab
   var actionSheetVideo by remember { mutableStateOf<VideoSummary?>(null) }
+
+  // 侧栏切回动态页时 screen 重组但未切子 tab → onSelect 不触发,当前子 tab 的旧
+  // focusedVideoIndex 仍在,从 tab 按 Down 走 focusRestoredItemKey 会跳到旧深位置。
+  // 进入时(非视频恢复,restoreFocusRequestKey <= 0)把当前子 tab 重置回顶部。
+  // 视频退出返回时 restoreFocusRequestKey > 0 → 不重置,沿用既有恢复。
+  LaunchedEffect(Unit) {
+    if (restoreFocusRequestKey <= 0) {
+      resetFeedTabFocus(feedState, selectedTab)
+    }
+  }
 
   LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab) {
     if (!isLoggedIn) return@LaunchedEffect
@@ -240,7 +277,12 @@ internal fun UserFeedScreen(
   Column(modifier = Modifier.fillMaxSize()) {
     UserFeedTabRow(
       selectedTab = selectedTab,
-      onSelect = { tab -> if (tab != selectedTab) feedState.selectedTab = tab },
+      onSelect = { tab ->
+        if (tab != selectedTab) {
+          resetFeedTabFocus(feedState, tab)
+          feedState.selectedTab = tab
+        }
+      },
       tabFocusRequester = tabFocusRequester,
       onMoveLeftToNav = onMoveLeftToNav,
       onMoveDownToGrid = {

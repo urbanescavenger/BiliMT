@@ -389,6 +389,7 @@ internal fun RecommendScreen(
             requestInitialFocus = requestInitialFocus,
             onInitialFocusRequested = onInitialFocusRequested,
             focusFirstItemKey = uiState.focusFirstItemKey,
+            sectionKey = activeSection.key,
             onFocusedIndexChange = { index, video ->
               uiState.focusedVideoIndex = index
               uiState.focusedVideoKey = video.focusRestoreKey()
@@ -456,6 +457,7 @@ private fun RecommendGrid(
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit,
   focusFirstItemKey: Int = 0,
+  sectionKey: Any? = null,
 ) {
   TvVideoGrid(
     videos = videos,
@@ -466,6 +468,7 @@ private fun RecommendGrid(
     requestInitialFocus = requestInitialFocus,
     onInitialFocusRequested = onInitialFocusRequested,
     focusFirstItemKey = focusFirstItemKey,
+    sectionKey = sectionKey,
     onFocusedIndexChange = onFocusedIndexChange,
     onLoadMore = onLoadMore,
     onMoveLeftToNav = onMoveLeftToNav,

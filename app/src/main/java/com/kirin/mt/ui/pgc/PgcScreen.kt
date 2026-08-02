@@ -95,6 +95,18 @@ internal fun PgcScreen(
   val gridState = rememberLazyGridState()
   var initialFocusHandled by remember { mutableStateOf(false) }
 
+  // 切 PGC tab 时网格被复用(无 key),gridState 保留旧滚动位置 → 列表停在旧位置、
+  // 从 tab 按 Down 聚焦首项会跳版面。这里在 selectedTab 真正变化时滚回第 0 行。
+  // 首次组合 guard:screen 重组(侧栏切回)时 remember 重新初始化,与当前 selectedTab 相等 → 不触发。
+  val lastScrolledTab = remember { mutableStateOf(selectedTab) }
+  LaunchedEffect(selectedTab) {
+    if (selectedTab == lastScrolledTab.value) {
+      return@LaunchedEffect
+    }
+    lastScrolledTab.value = selectedTab
+    runCatching { gridState.scrollToItem(0) }
+  }
+
   LaunchedEffect(selectedTab) {
     if (!tabState.initialized && !tabState.loading) {
       loadPgcFeed(videoRepository, tabState, selectedTab, reset = true)

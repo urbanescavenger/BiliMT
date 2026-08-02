@@ -117,6 +117,10 @@ internal fun TvVideoGrid(
   onInitialFocusRequested: () -> Unit = {},
   focusFirstItemKey: Int = 0,
   focusRestoredItemKey: Int = 0,
+  // 当前 section/分区标识。变化时(切已缓存分区,网格被复用而非重组)主动滚回第 0 行,
+  // 避免「列表内容更新但视口停在旧位置 / 从 tab 按 Down 跳过整版」。
+  // 网格被重组(侧栏 nav / 视频返回)时由 rememberLazyListState 的 initial 行处理,本 effect 不触发。
+  sectionKey: Any? = null,
   onMoveUpFromFirstRow: () -> Boolean = { true },
   onBackKey: (() -> Boolean)? = null,
   horizontalPadding: Dp = BiliSizing.VideoGridHorizontalPadding,
@@ -132,7 +136,11 @@ internal fun TvVideoGrid(
   } else {
     restoreTargetIndex / columns
   }
-  val listState = rememberLazyListState(initialFirstVisibleItemIndex = restoreTargetRow)
+  // 仅在「视频退出恢复」(restoreFocusRequestKey > 0)时用 restoreTargetRow 起始;其它重组场景
+  // (侧栏 nav 切目的地 / 首次进入 / 切子 tab)从 0 开始,不再停在持久化 UiState 里的旧位置。
+  val listState = rememberLazyListState(
+    initialFirstVisibleItemIndex = if (restoreFocusRequestKey > 0) restoreTargetRow else 0,
+  )
   val coroutineScope = rememberCoroutineScope()
   var centerDownMs by remember { mutableLongStateOf(0L) }
   val performancePolicy = LocalBiliPerformancePolicy.current
@@ -233,6 +241,22 @@ internal fun TvVideoGrid(
       if (focused) {
         return@LaunchedEffect
       }
+    }
+  }
+
+  // 切已缓存分区时网格被复用(不经过 Loading 销毁),listState 实例保留旧滚动位置。
+  // 这里在 sectionKey 真正变化时主动滚回第 0 行(只滚不抢焦点,焦点留在 tab 上),
+  // 让「切 tab → 列表回顶 → 按 Down 落第一行(不跳版面)」。
+  // 首次组合 guard:网格被重组(侧栏 nav / 视频返回)时 remember 重新初始化 lastSectionKey,
+  // 与当前 sectionKey 相等 → 不触发(由 rememberLazyListState 的 initial 行处理)。
+  val lastSectionKey = remember { mutableStateOf(sectionKey) }
+  LaunchedEffect(sectionKey) {
+    if (sectionKey == lastSectionKey.value) {
+      return@LaunchedEffect
+    }
+    lastSectionKey.value = sectionKey
+    if (videos.isNotEmpty()) {
+      listState.scrollToItem(0, scrollOffset = -focusedRowTopPaddingPx)
     }
   }
 
