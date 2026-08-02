@@ -257,9 +257,10 @@ fun MobilePlayerScreen(
   // 避免后台/前台切换导致 SurfaceView/DanmakuView 重建后手势协程在 awaitFirstDown 处卡死、点击无响应。
   var resumeTick by remember { mutableIntStateOf(0) }
 
-  // 非全屏默认播放:视频区铺满高度居中(16:9 视频上下留黑)、简介隐藏;暂停(userPaused)回退 16:9+简介/评论分栏。
-  // 手动 fullscreen 仍为沉浸式(跟随设备方向+隐藏系统栏)。用 !userPaused 而非 isPlaying:缓冲中保持居中避免回退分栏抖动。
-  val playerFillsScreen = fullscreen || !userPaused
+  // 非全屏恒为分栏:上半 16:9 视频 + 下半 简介/评论 Tab,播放/暂停都保留底栏简介。
+  // 手动 fullscreen 才沉浸式铺满(跟随设备方向+隐藏系统栏),此时简介隐藏。
+  // 不依赖 userPaused/isPlaying,缓冲/播放结束不影响布局,无分栏抖动。
+  val playerFillsScreen = fullscreen
   // 全屏切换(仅手动 fullscreen):跟随设备方向 + 隐藏系统栏(沉浸);
   // 居中播放(非全屏)不动方向/系统栏,保持竖屏 + 系统栏可见。退出/关播放器恢复,避免主页卡横/竖屏。
   // SENSOR 跟随设备传感器切横/竖屏,不依赖系统"自动旋转"开关——用户调转手机必生效;
@@ -704,9 +705,9 @@ fun MobilePlayerScreen(
   val positionMs = seekPreviewMs ?: playbackPositionState.longValue
   val durationMs = playbackDurationState.longValue.coerceAtLeast(1L)
 
-  // 竖屏分栏:非全屏时上半 16:9 播放器 + 下半评论;全屏时播放器占满,评论区不渲染。
-  // 非全屏播放时 playerFillsScreen=true → 视频铺满高度居中(上下留黑)、简介隐藏;暂停回退 16:9+评论分栏。
-  // 视频播放区外层:竖屏宽度铺满、高度自适应(16:9 视频 + 顶/底栏堆叠);全屏/居中播放铺满。
+  // 竖屏分栏:非全屏时上半 16:9 播放器 + 下半简介/评论;全屏时播放器占满,简介区不渲染。
+  // 非全屏(播放/暂停)恒为分栏;仅手动 fullscreen 时 playerFillsScreen=true → 铺满居中、简介隐藏。
+  // 视频播放区外层:竖屏宽度铺满、高度自适应(16:9 视频 + 顶/底栏堆叠);全屏铺满。
   // windowInsetsPadding(statusBars):竖屏 edge-to-edge 下最顶留系统状态栏高度;手动全屏 hide(systemBars) 时 inset=0 不留空。
   val playerAreaModifier = if (playerFillsScreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth()
   Column(
@@ -1130,7 +1131,7 @@ fun MobilePlayerScreen(
     }
 
   }
-  // 下半区:简介/评论双 Tab(仅"非全屏 + 暂停"分栏时渲染;居中播放/手动全屏时隐藏)。
+  // 下半区:简介/评论双 Tab(非全屏时分栏渲染;手动全屏时隐藏)。
   // 简介 Tab 展示视频详情 + 相关视频;评论 Tab 复用 MobileCommentList。
   if (!playerFillsScreen) {
     val tabPagerState = rememberPagerState(pageCount = { 2 })
