@@ -1,5 +1,35 @@
 # BiliMT 版本发布说明
 
+## v2.0.6
+
+v2.0.5 后继续打磨移动端与 TV 端体验:正直播 UP 头像点进直播间、移动端播放器缓冲/全屏/返回体验优化、首页分区配置与 TV 同步、设置面板折叠。合并 mort_debug → main 打稳定 tag。
+
+### 正直播 UP 头像(TV + 移动)
+- 直播推荐流中"正直播"的 UP 头像加直播标记;TV 端与移动端主页头像点击可直接切进对应直播间。
+
+### TV 导航选中态指示条
+- 顶部 tab / 侧栏导航选中态加强调色指示条,焦点位置更清晰。
+
+### 移动端播放器体验
+- **缓冲期加载图标 + 控制栏**:全屏拖拽快进后缓冲(`STATE_BUFFERING`)期间显示加载图标并强制显示控制栏,不再黑屏"什么都控制不了";播放恢复后照常 4s 自动隐藏。
+- **全屏跟随设备方向**:全屏 `requestedOrientation` 由强制横/竖屏改为 `SCREEN_ORIENTATION_SENSOR`,调转手机自动切横/竖屏(`configChanges` 已声明,旋转不重建 Activity、不丢播放);清理据此失效的 VideoSize 死代码。
+- **放大返回图标**:顶栏返回由极小的 `‹` 文字按钮换为 IconButton + 白色 chevron(48dp 触控区),易点中。
+
+### 移动端首页分区配置(与 TV 同步)
+- 移动端首页分区 tab 顺序 + 显隐改读共享 `AppSettings.homeSectionsOrder`/`enabledHomeSections`(原硬编码 `DefaultOrder`),与 TV 用同一份 DataStore 配置,两端双向同步。
+- 移动端设置新增「首页分区」面板(Switch 显隐 + ▲/▼ 排序),镜像 TV 的 `SettingsHomeSectionsColumn`;默认折叠,点标题才展开 33 行列表,不占满设置页。
+
+### 修复
+- 修首进 UP 主页 452 错误。
+- 移除移动端直播/推荐页冗余底部标题。
+
+### versionCode 说明
+本版 vc=2,006,000。`computeVersionCode` 对 prerelease 加 `labelOrder*100+pre`,故 `v2.0.6-alpha.1~9`(2,006,101~2,006,109)高于本稳定版——已装 alpha 的用户需**手动安装 v2.0.6** 升级(沿用历版同策略,不改 `labelOrder`)。
+
+### 安装包
+- `BiliMT-v2.0.6-arm64-v8a.apk`
+- `BiliMT-v2.0.6-armeabi-v7a.apk`
+
 ## v2.0.5
 
 v2.0.3 后主打**看直播**(TV + 移动),并补齐直播分区浏览。合并 mort_debug → main 打稳定 tag。
