@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -709,7 +710,7 @@ fun MobilePlayerScreen(
   val positionMs = seekPreviewMs ?: playbackPositionState.longValue
   val durationMs = playbackDurationState.longValue.coerceAtLeast(1L)
 
-  // 全屏:播放器铺满、简介不渲染。非全屏播放:上半区 weight(1f) 容纳居中视频(上下留黑)、下半区 weight(1f) 完整简介。
+  // 全屏:播放器铺满、简介不渲染。非全屏播放:视频区 weight(1f) 优先铺满居中(上下留黑)、底部简介小条(≤200dp,仅标题/UP/简介,无相关视频)。
   // 非全屏暂停:播放器按内容高(16:9+顶栏+底栏)、简介/评论 Tab 占剩余。
   // windowInsetsPadding(statusBars):竖屏 edge-to-edge 下最顶留系统状态栏高度;手动全屏 hide(systemBars) 时 inset=0 不留空。
   Column(
@@ -1140,38 +1141,22 @@ fun MobilePlayerScreen(
 
   }
   // 下半区:
-  //  播放中(isPlayingInline) → 仅完整简介(可滚动,无 Tab 栏/无评论),占下半区 weight(1f)
-  //  暂停(isPausedSplit)   → 简介/评论双 Tab + HorizontalPager
+  //  播放中(isPlayingInline) → 简介小条(≤200dp,仅标题/UP/简介,无相关视频/选集/操作),视频区上方 weight(1f) 已优先铺满居中
+  //  暂停(isPausedSplit)   → 简介/评论双 Tab + HorizontalPager(完整 IntroTab 含操作/选集/相关视频)
   //  全屏(playerFillsScreen) → 不渲染
   when {
     isPlayingInline -> {
-      Column(
+      // 视频区上方已占 weight(1f) 优先铺满居中;简介只占剩余一小条(≤200dp),无相关视频/选集/操作。
+      MobilePlayerIntroSummary(
+        metadata = metadata,
+        request = activeRequest,
+        onOpenUpSpace = onOpenUpSpace,
         modifier = Modifier
-          .weight(1f)
           .fillMaxWidth()
+          .heightIn(max = 200.dp)
+          .windowInsetsPadding(WindowInsets.navigationBars)
           .background(Color.Black),
-      ) {
-        MobilePlayerIntroTab(
-          metadata = metadata,
-          request = activeRequest,
-          relatedVideos = relatedVideos,
-          onPlayVideo = onPlayVideo,
-          onOpenUpSpace = onOpenUpSpace,
-          videoRepository = videoRepository,
-          onShare = { shareVideo() },
-          onSelectPage = { ep ->
-            activeRequest = activeRequest.copy(
-              cid = ep.cid,
-              epId = ep.epId,
-              startPositionMs = 0L,
-              preferredQualityId = selectedQualityId,
-              forceStartPosition = true,
-              historyPage = ep.page,
-            )
-          },
-          modifier = Modifier.fillMaxSize(),
-        )
-      }
+      )
     }
     isPausedSplit -> {
       val tabPagerState = rememberPagerState(pageCount = { 2 })
@@ -1400,6 +1385,131 @@ private fun PlayerSettingsSheet(
 }
 
 /**
+ * 简介头部:标题 / UP 主行 / 数据行(播放·弹幕·发布时间)/ 简介 desc。纯渲染(无本地状态),
+ * 供完整 简介 Tab(MobilePlayerIntroTab)与播放态简介小条(MobilePlayerIntroSummary)复用。
+ */
+@Composable
+private fun MobilePlayerIntroHeader(
+  metadata: PlaybackVideoMetadata,
+  request: PlaybackRequest,
+  onOpenUpSpace: (Long, String, String) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val context = LocalContext.current
+  Column(modifier = modifier) {
+    // 标题
+    Text(
+      text = metadata.title.ifBlank { request.title },
+      color = Color.White,
+      style = MaterialTheme.typography.titleMedium,
+      maxLines = 2,
+      overflow = TextOverflow.Ellipsis,
+    )
+
+    // UP 主行(头像 + 名):PGC 无 owner 时整行隐藏。点头像/名进 UP 主页。
+    if (metadata.ownerMid > 0L && metadata.ownerName.isNotBlank()) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(top = 10.dp)
+          .clip(RoundedCornerShape(8.dp))
+          .clickable {
+            onOpenUpSpace(metadata.ownerMid, metadata.ownerName, metadata.ownerFace)
+          },
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        val avatarModifier = Modifier
+          .size(40.dp)
+          .clip(CircleShape)
+          .background(MaterialTheme.colorScheme.surfaceVariant)
+        if (metadata.ownerFace.isBlank()) {
+          Box(modifier = avatarModifier)
+        } else {
+          AsyncImage(
+            model = remember(context, metadata.ownerFace) {
+              buildOwnerAvatarRequest(context, metadata.ownerFace)
+            },
+            contentDescription = metadata.ownerName,
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            modifier = avatarModifier,
+          )
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+          text = metadata.ownerName,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          style = MaterialTheme.typography.bodyMedium,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
+    }
+
+    // 数据行:播放 · 弹幕 · 发布时间(pubdate 为秒,转 yyyy-MM-dd)
+    val pubdateText = remember(metadata.pubdate) {
+      if (metadata.pubdate <= 0L) "" else
+        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(metadata.pubdate * 1000L))
+    }
+    val metaParts = buildList {
+      if (metadata.viewCount > 0) add("播放 ${formatCount(metadata.viewCount)}")
+      if (metadata.danmakuCount > 0) add("弹幕 ${formatCount(metadata.danmakuCount)}")
+      if (pubdateText.isNotBlank()) add(pubdateText)
+    }
+    if (metaParts.isNotEmpty()) {
+      Text(
+        text = metaParts.joinToString(" · "),
+        color = BiliColors.TextSecondary,
+        style = MaterialTheme.typography.labelMedium,
+        modifier = Modifier.padding(top = 8.dp),
+      )
+    }
+
+    // 简介 desc
+    if (metadata.desc.isNotBlank()) {
+      Text(
+        text = metadata.desc,
+        color = BiliColors.TextSecondary,
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 10.dp),
+      )
+    }
+  }
+}
+
+/**
+ * 播放态简介小条:仅 头部(标题/UP/数据/简介),无 互动按钮行、无 选集/相关视频。
+ * 外部以 heightIn(max) 限高 + verticalScroll,内容短自适应、长则限高内滚动。
+ * metadata 未就绪时居中加载圈占位。
+ */
+@Composable
+private fun MobilePlayerIntroSummary(
+  metadata: PlaybackVideoMetadata?,
+  request: PlaybackRequest,
+  onOpenUpSpace: (Long, String, String) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  if (metadata == null) {
+    Box(
+      modifier = modifier.background(Color.Black),
+      contentAlignment = Alignment.Center,
+    ) {
+      CircularProgressIndicator()
+    }
+    return
+  }
+  MaterialTheme(colorScheme = darkColorScheme()) {
+    Column(
+      modifier = modifier
+        .background(Color(0xFF121217))
+        .verticalScroll(rememberScrollState())
+        .padding(horizontal = 16.dp, vertical = 4.dp),
+    ) {
+      MobilePlayerIntroHeader(metadata, request, onOpenUpSpace)
+    }
+  }
+}
+
+/**
  * 简介 Tab:视频详情(标题 / UP 主 / 播放量·弹幕·发布时间 / 简介 desc)+ 相关视频列表。
  * metadata 未就绪时居中加载圈占位;深色背景,MobileVideoCard 包在 darkColorScheme 内保文字可读。
  */
@@ -1495,82 +1605,8 @@ private fun MobilePlayerIntroTab(
         .verticalScroll(rememberScrollState())
         .padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
-      // 标题
-      Text(
-        text = metadata.title.ifBlank { request.title },
-        color = Color.White,
-        style = MaterialTheme.typography.titleMedium,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
-      )
-
-      // UP 主行(头像 + 名):PGC 无 owner 时整行隐藏。点头像/名进 UP 主页。
-      if (metadata.ownerMid > 0L && metadata.ownerName.isNotBlank()) {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 10.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .clickable {
-              onOpenUpSpace(metadata.ownerMid, metadata.ownerName, metadata.ownerFace)
-            },
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          val avatarModifier = Modifier
-            .size(40.dp)
-            .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-          if (metadata.ownerFace.isBlank()) {
-            Box(modifier = avatarModifier)
-          } else {
-            AsyncImage(
-              model = remember(context, metadata.ownerFace) {
-                buildOwnerAvatarRequest(context, metadata.ownerFace)
-              },
-              contentDescription = metadata.ownerName,
-              contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-              modifier = avatarModifier,
-            )
-          }
-          Spacer(Modifier.width(10.dp))
-          Text(
-            text = metadata.ownerName,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
-        }
-      }
-
-      // 数据行:播放 · 弹幕 · 发布时间(pubdate 为秒,转 yyyy-MM-dd)
-      val pubdateText = remember(metadata.pubdate) {
-        if (metadata.pubdate <= 0L) "" else
-          SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(metadata.pubdate * 1000L))
-      }
-      val metaParts = buildList {
-        if (metadata.viewCount > 0) add("播放 ${formatCount(metadata.viewCount)}")
-        if (metadata.danmakuCount > 0) add("弹幕 ${formatCount(metadata.danmakuCount)}")
-        if (pubdateText.isNotBlank()) add(pubdateText)
-      }
-      if (metaParts.isNotEmpty()) {
-        Text(
-          text = metaParts.joinToString(" · "),
-          color = BiliColors.TextSecondary,
-          style = MaterialTheme.typography.labelMedium,
-          modifier = Modifier.padding(top = 8.dp),
-        )
-      }
-
-      // 简介 desc
-      if (metadata.desc.isNotBlank()) {
-        Text(
-          text = metadata.desc,
-          color = BiliColors.TextSecondary,
-          style = MaterialTheme.typography.bodySmall,
-          modifier = Modifier.padding(top = 10.dp),
-        )
-      }
+      // 简介 头部:标题 / UP 主行 / 数据行 / 简介 desc(抽成 MobilePlayerIntroHeader 复用)。
+      MobilePlayerIntroHeader(metadata, request, onOpenUpSpace)
 
       // 互动按钮行:点赞 / 投币 / 收藏 / 分享。PGC 无此交互,整行隐藏。
       if (!request.isPgc && metadata.aid > 0L) {
