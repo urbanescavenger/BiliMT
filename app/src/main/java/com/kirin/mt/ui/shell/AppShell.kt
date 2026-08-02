@@ -538,11 +538,15 @@ fun BiliTvApp(
         Row(
           modifier = Modifier.fillMaxSize(),
         ) {
+          // 视频退出后恢复窗口内抑制头像 autoConfirm,避免焦点被头像抢占并打开「我的」页,
+          // 让 TvVideoGrid 的网格恢复 effect 有机会把焦点拉回原视频卡片。
+          val suppressAccountAutoConfirm = playbackFocusRestoreDestination != null
           AppSidebar(
             selectedDestination = selectedDestination,
             accountSelected = accountSelected,
             userSession = userSession,
             autoConfirmOnFocus = autoConfirmOnFocus,
+            suppressAccountAutoConfirm = suppressAccountAutoConfirm,
             accountFocusRequester = accountFocusRequester,
             navFocusRequesters = navFocusRequesters,
             dynamicUnread = dynamicUnread,

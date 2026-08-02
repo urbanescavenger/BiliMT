@@ -66,6 +66,7 @@ internal fun AppSidebar(
   accountSelected: Boolean,
   userSession: UserSession,
   autoConfirmOnFocus: Boolean,
+  suppressAccountAutoConfirm: Boolean = false,
   accountFocusRequester: FocusRequester,
   navFocusRequesters: Map<AppDestination, FocusRequester>,
   dynamicUnread: Int,
@@ -135,6 +136,7 @@ internal fun AppSidebar(
       selected = accountSelected,
       userSession = userSession,
       autoConfirmOnFocus = autoConfirmOnFocus,
+      suppressAutoConfirm = suppressAccountAutoConfirm,
       modifier = Modifier.focusRequester(accountFocusRequester),
       onClick = onAccountSelected,
       onMoveRight = {
@@ -173,6 +175,7 @@ private fun AccountNavItem(
   selected: Boolean,
   userSession: UserSession,
   autoConfirmOnFocus: Boolean,
+  suppressAutoConfirm: Boolean = false,
   modifier: Modifier,
   onClick: () -> Unit,
   onMoveRight: () -> Boolean,
@@ -220,7 +223,7 @@ private fun AccountNavItem(
       },
     onClick = onClick,
     onFocused = {
-      if (autoConfirmOnFocus && !selected) {
+      if (autoConfirmOnFocus && !selected && !suppressAutoConfirm) {
         onClick()
       }
     },
