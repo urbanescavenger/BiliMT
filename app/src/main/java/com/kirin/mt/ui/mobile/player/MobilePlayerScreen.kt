@@ -45,6 +45,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -103,7 +104,6 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
@@ -227,8 +227,6 @@ fun MobilePlayerScreen(
   var autoRetryCount by remember { mutableIntStateOf(0) }
   var danmakuEntries by remember { mutableStateOf<List<com.kirin.mt.core.player.DanmakuEntry>>(emptyList()) }
   var fullscreen by rememberSaveable { mutableStateOf(false) }
-  // 视频真实尺寸:全屏方向据此自适应横/竖屏。null=尚未拿到,默认按横屏处理。
-  var videoSizeInfo by remember { mutableStateOf<VideoSize?>(null) }
   // 画质/分P 切换:activeRequest 驱动 load effect(镜像 TV),metadata 供选集,selectedQualityId 供画质高亮
   var activeRequest by remember(request) { mutableStateOf(request) }
   var metadata by remember { mutableStateOf<PlaybackVideoMetadata?>(null) }
@@ -259,22 +257,19 @@ fun MobilePlayerScreen(
   // 避免后台/前台切换导致 SurfaceView/DanmakuView 重建后手势协程在 awaitFirstDown 处卡死、点击无响应。
   var resumeTick by remember { mutableIntStateOf(0) }
 
-  // 视频真实尺寸:全屏方向据此自适应横/竖屏。null=尚未拿到,默认按横屏处理。
-  val isPortraitVideo = videoSizeInfo?.let { it.height > it.width } ?: false
   // 非全屏默认播放:视频区铺满高度居中(16:9 视频上下留黑)、简介隐藏;暂停(userPaused)回退 16:9+简介/评论分栏。
-  // 手动 fullscreen 仍为沉浸式(强制方向+隐藏系统栏)。用 !userPaused 而非 isPlaying:缓冲中保持居中避免回退分栏抖动。
+  // 手动 fullscreen 仍为沉浸式(跟随设备方向+隐藏系统栏)。用 !userPaused 而非 isPlaying:缓冲中保持居中避免回退分栏抖动。
   val playerFillsScreen = fullscreen || !userPaused
-  // 全屏切换(仅手动 fullscreen):按视频真实比例自动选横/竖屏 + 隐藏系统栏(沉浸);
+  // 全屏切换(仅手动 fullscreen):跟随设备方向 + 隐藏系统栏(沉浸);
   // 居中播放(非全屏)不动方向/系统栏,保持竖屏 + 系统栏可见。退出/关播放器恢复,避免主页卡横/竖屏。
-  // key 含 isPortraitVideo:视频尺寸到达后、用户已在全屏时也能纠正方向。
-  DisposableEffect(fullscreen, isPortraitVideo) {
+  // SENSOR 跟随设备传感器切横/竖屏,不依赖系统"自动旋转"开关——用户调转手机必生效;
+  // configChanges 已声明 orientation,旋转不重建 Activity,ExoPlayer 与 fullscreen 状态均存活。
+  DisposableEffect(fullscreen) {
     val activity = context.findActivity()
     if (activity != null) {
       val controller = WindowInsetsControllerCompat(activity.window, activity.window.decorView)
       if (fullscreen) {
-        activity.requestedOrientation =
-          if (isPortraitVideo) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-          else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior =
           WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -425,10 +420,6 @@ fun MobilePlayerScreen(
           autoRetryCount = 0
           Log.i(MobilePlayerLogTag, "stall auto-retry recovered, counter reset")
         }
-      }
-
-      override fun onVideoSizeChanged(videoSize: VideoSize) {
-        videoSizeInfo = videoSize
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {
@@ -741,7 +732,14 @@ fun MobilePlayerScreen(
           .padding(horizontal = 16.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        TextButton(onClick = onBack) { Text("‹", color = Color.White) }
+        IconButton(onClick = onBack) {
+          Icon(
+            painter = painterResource(R.drawable.ic_player_chevron_left),
+            contentDescription = "返回",
+            tint = Color.White,
+            modifier = Modifier.size(32.dp),
+          )
+        }
         Text(
           text = displayTitle,
           color = Color.White,
