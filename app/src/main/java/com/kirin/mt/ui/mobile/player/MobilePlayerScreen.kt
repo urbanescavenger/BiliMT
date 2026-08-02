@@ -951,8 +951,8 @@ fun MobilePlayerScreen(
       ) {}
     }
 
-    // 底栏(进度条等;仅非 PLAYING && controlsVisible && Ready;PLAYING 无控制栏)
-    if (controlsVisible && playerState is MobilePlayerState.Ready && !isPlayingInline) {
+    // 底栏(进度条等;controlsVisible && Ready。播放态也显示,顶栏仍黑)
+    if (controlsVisible && playerState is MobilePlayerState.Ready) {
       val readyInfo = (playerState as MobilePlayerState.Ready).info
       val keyboardController = LocalSoftwareKeyboardController.current
       Column(
