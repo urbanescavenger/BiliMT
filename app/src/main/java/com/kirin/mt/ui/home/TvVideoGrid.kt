@@ -72,7 +72,11 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private const val TvGridRestoreFocusRetryCount = 8
+// 视频退出后把焦点拉回原卡片的最多重试帧数。长视频后主线程繁忙(图片缓存被挤占、
+// 播放器 teardown、GC)时目标卡片首帧布局可能延迟到 8 帧之后,8 次会提前放弃导致
+// 焦点停在头像。调大到 90 帧(60fps≈1.5s、30fps≈3s)覆盖慢布局;短视频首帧即就绪,
+// 重试随即 break 不会等满。配合 AppShell 的 PlaybackFocusRestoreCleanupFrameCount(>本值)。
+private const val TvGridRestoreFocusRetryCount = 90
 
 // Keys that confirm a card selection; holding one for this long opens the card's long-press action menu.
 private val VideoCardOwnerConfirmKeys = setOf(Key.DirectionCenter, Key.Enter, Key.NumPadEnter)

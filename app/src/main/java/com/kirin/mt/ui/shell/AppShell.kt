@@ -104,7 +104,11 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 
 private const val PlaybackFocusRestoreRetryCount = 8
-private const val PlaybackFocusRestoreCleanupFrameCount = 30
+// 视频退出后焦点恢复的清理 backstop 帧数。必须 > TvGridRestoreFocusRetryCount(90),
+// 否则会在 TvVideoGrid 恢复 effect 重试途中提前清掉 playbackFocusRestoreDestination,
+// 令 restoreFocusRequestKeyFor 变 0 取消恢复 effect → 长视频后慢布局时焦点停在头像。
+// 正常路径恢复 effect 自己调 onRestoreFocusHandled 清 destination,本 backstop 仅作兜底。
+private const val PlaybackFocusRestoreCleanupFrameCount = 120
 private const val ExitConfirmWindowMs = 3_000L
 
 private fun isConstrainedTvUiDevice(): Boolean {
