@@ -225,8 +225,7 @@ fun MobileSettingsScreen(
       onSelected = { scope.launch { appSettingsStore.setChineseTextVariant(it) } },
     )
 
-    // ===== 首页分区(与 TV 同一份配置,排序+显示隐藏) =====
-    MobileSettingsSectionHeader(stringResource(R.string.settings_home_sections_section))
+    // ===== 首页分区(与 TV 同一份配置,排序+显示隐藏;默认折叠,点标题展开) =====
     MobileHomeSectionsPanel(
       settings = settings,
       appSettingsStore = appSettingsStore,
