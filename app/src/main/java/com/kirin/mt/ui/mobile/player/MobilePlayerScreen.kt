@@ -212,6 +212,9 @@ fun MobilePlayerScreen(
   var displayTitle by remember { mutableStateOf(request.title) }
   var controlsVisible by remember { mutableStateOf(true) }
   var isPlaying by remember { mutableStateOf(false) }
+  // 中途缓冲(STATE_BUFFERING)态:seek 后重载/网络抖动时为 true,驱动加载图标 + 强制显控制栏。
+  // 区别于 playerState.Loading(仅初始加载);此态下 playerState 仍为 Ready。
+  var isBuffering by remember { mutableStateOf(false) }
   var completionReported by remember { mutableStateOf(false) }
   var seekPreviewMs by remember { mutableStateOf<Long?>(null) }
   val playbackPositionState = remember { mutableLongStateOf(0L) }
@@ -429,6 +432,9 @@ fun MobilePlayerScreen(
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {
+        // 暴露缓冲态为可观察 state:STATE_BUFFERING→true,READY/ENDED/IDLE→false。
+        // 原本仅命令式读 player.playbackState 做 stall 检测,UI 无法据此显加载图标/控制栏。
+        isBuffering = playbackState == Player.STATE_BUFFERING
         if (playbackState == Player.STATE_ENDED && playerState is MobilePlayerState.Ready && player.mediaItemCount > 0 && !completionReported) {
           completionReported = true
           saveAndReportProgress(CompletedProgressSeconds)
@@ -691,6 +697,13 @@ fun MobilePlayerScreen(
     }
   }
 
+  // 缓冲(含 seek 后重载、网络抖动)强制显示控制栏,避免全屏黑屏"什么都控制不了"。
+  // 缓冲期 isPlaying=false,上面自动隐藏 effect 不触发,栏保持可见;播放恢复后照常 4s 自动隐藏。
+  // 非全屏栏本就常驻,强制 true 无副作用;初始 Loading 态栏受 Ready 守卫不渲染,亦无副作用。
+  LaunchedEffect(isBuffering) {
+    if (isBuffering) controlsVisible = true
+  }
+
   // 退出全屏回非全屏:强制恢复栏可见(全屏中栏多已被自动隐),非全屏始终留栏。
   // 初始组合 fullscreen=false 且 controlsVisible 已 true,无副作用。
   LaunchedEffect(fullscreen) {
@@ -800,6 +813,18 @@ fun MobilePlayerScreen(
           TextButton(onClick = onBack) { Text("返回", color = Color.White) }
         }
         is MobilePlayerState.Ready -> Unit
+      }
+
+      // 缓冲加载图标:seek 后/网络抖动进入 BUFFERING 时显示,区别于初始 Loading 态的 spinner。
+      // 仅 Ready 且缓冲中才显;seekPreviewMs!=null(拖拽预览中)不显,避免与时间气泡争位。
+      // 与中央暂停图标互斥:userPaused 时多为 STATE_IDLE,isBuffering=false,二者不并存。
+      androidx.compose.animation.AnimatedVisibility(
+        visible = playerState is MobilePlayerState.Ready && isBuffering && seekPreviewMs == null,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = Modifier.align(Alignment.Center),
+      ) {
+        CircularProgressIndicator(color = Color.White)
       }
 
       // 居中常驻暂停图标:用户暂停时显示,点击中央恢复播放。
