@@ -220,19 +220,6 @@ internal fun RecommendScreen(
     }
   }
 
-  LaunchedEffect(manualRefreshKey) {
-    if (manualRefreshKey <= 0 || manualRefreshKey == uiState.handledManualRefreshKey) {
-      return@LaunchedEffect
-    }
-    uiState.handledManualRefreshKey = manualRefreshKey
-    val nextRefreshKey = (uiState.sectionRefreshKeys[activeSection.key] ?: 0) + 1
-    uiState.sectionRefreshKeys = uiState.sectionRefreshKeys + (activeSection.key to nextRefreshKey)
-    requestSectionLoad(
-      sectionKey = activeSection.key,
-      refreshKey = nextRefreshKey,
-    )
-  }
-
   fun loadNextPage() {
     val currentState = uiState.sectionStates[activeSection.key] as? RecommendState.Success ?: return
     if (currentState.loadingMore || currentState.endReached) {
@@ -288,9 +275,10 @@ internal fun RecommendScreen(
     val isSameSection = uiState.activeSectionKey == section.key
     uiState.selectedSectionKey = section.key
     uiState.activeSectionKey = section.key
-    // 切到不同分区才回顶部;同一分区只是 force-refresh 时保留焦点位置,
-    // 避免自动刷新把焦点/滚动位置抢回第一个视频。
-    if (!isSameSection) {
+    // 切到不同分区回顶部;同一分区被显式 force-refresh(重点击当前顶栏 tab /
+    // 侧栏当前目的地)也回顶,避免刷新后视口停旧位置、Down 落旧深位置。
+    // autoRefreshOnSwitch 同分区聚焦刷新同样回顶(罕见,与"刷新=回顶"一致)。
+    if (!isSameSection || forceRefresh) {
       uiState.focusedVideoIndex = 0
       uiState.focusedVideoKey = ""
     }
@@ -307,6 +295,16 @@ internal fun RecommendScreen(
         refreshKey = nextRefreshKey,
       )
     }
+  }
+
+  LaunchedEffect(manualRefreshKey) {
+    if (manualRefreshKey <= 0 || manualRefreshKey == uiState.handledManualRefreshKey) {
+      return@LaunchedEffect
+    }
+    uiState.handledManualRefreshKey = manualRefreshKey
+    // 侧栏重点击当前目的地 = 显式刷新当前分区:复用 selectSection(forceRefresh=true),
+    // 一并 bump refreshKey + 重置 focusedVideoIndex,配合下方复合 sectionKey 让列表回顶。
+    selectSection(section = activeSection, forceRefresh = true)
   }
 
   val activeBanners = uiState.bannerBySection[activeSection.key] ?: emptyList()
@@ -389,7 +387,10 @@ internal fun RecommendScreen(
             requestInitialFocus = requestInitialFocus,
             onInitialFocusRequested = onInitialFocusRequested,
             focusFirstItemKey = uiState.focusFirstItemKey,
-            sectionKey = activeSection.key,
+            // sectionKey 复合 refreshKey:重点击当前 tab/侧栏刷新时 refreshKey bump →
+            // 复合 key 变 → TvVideoGrid 的 sectionKey effect 滚回第 0 行(只滚不抢焦点)。
+            // loadMore 不 bump refreshKey,复合 key 不变 → 不抢回顶(保留下滑位置)。
+            sectionKey = activeSection.key to activeRefreshKey,
             onFocusedIndexChange = { index, video ->
               uiState.focusedVideoIndex = index
               uiState.focusedVideoKey = video.focusRestoreKey()

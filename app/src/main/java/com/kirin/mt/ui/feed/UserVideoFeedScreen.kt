@@ -249,6 +249,10 @@ internal fun UserFeedScreen(
      UserFeedTab.Bangumi -> feedState.bangumi.handledManualRefreshKey
     }
     if (manualRefreshKey > 0 && manualRefreshKey != handledKey) {
+      // 侧栏重点击"动态"(当前目的地)= 显式刷新当前子 tab。重置当前子 tab 焦点回顶,
+      // 配合下方 key(selectedTab, manualRefreshKey) 重建网格(initialFirstVisibleItemIndex=0)
+      // → 视口回顶;之后 Down(focusRestoredItemKey)落第 0 行、视频返回也回顶。
+      resetFeedTabFocus(feedState, selectedTab)
       when (selectedTab) {
         UserFeedTab.DynamicVideo -> {
           feedState.dynamicVideo.handledManualRefreshKey = manualRefreshKey
@@ -308,7 +312,10 @@ internal fun UserFeedScreen(
       )
       FeedStatusScreen(message = message)
     } else {
-      androidx.compose.runtime.key(selectedTab) {
+      // key 纳入 manualRefreshKey:侧栏重点击"动态"刷新时 manualRefreshKey 变 →
+      // 网格重建 → rememberLazyListState 重新初始化(restoreFocusRequestKey<=0 →
+      // initialFirstVisibleItemIndex=0)→ 视口回顶。子 tab 切换行为不变(selectedTab 部分仍变)。
+      androidx.compose.runtime.key(selectedTab, manualRefreshKey) {
         when (selectedTab) {
           UserFeedTab.DynamicVideo -> DynamicFeedContent(
             state = feedState.dynamicVideo,
