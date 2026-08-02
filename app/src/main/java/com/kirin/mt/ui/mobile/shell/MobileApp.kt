@@ -147,7 +147,11 @@ fun BiliMobileApp(
       when (selected) {
         AppDestination.Recommend -> MobileHomeScreen(
           videoRepository = videoRepository,
-          enabledSections = HomeSection.DefaultOrder,
+          // 与 TV 共享同一份配置(AppSettings.homeSectionsOrder + enabledHomeSections):
+          // 按用户排序筛掉隐藏分区,空兜底 Recommend。TV 端改顺序/显隐移动端即时同步。
+          enabledSections = settings.homeSectionsOrder
+            .filter { it in settings.enabledHomeSections }
+            .ifEmpty { listOf(HomeSection.Recommend) },
           refreshKey = recommendRefreshKey,
           onVideoSelected = { video ->
             playbackRequest = video.toPlaybackRequest()
