@@ -146,6 +146,8 @@ class LiveRepository(
     if (parentAreaId <= 0 && areaId <= 0) {
       return LiveListPage(items = emptyList(), nextPage = page, hasMore = false)
     }
+    val session = sessionStore.session.first()
+    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
     val params = mutableMapOf(
       "area_id" to areaId.toString(),
       "page" to page.toString(),
@@ -159,11 +161,11 @@ class LiveRepository(
       params = params,
       headers = SpaceHttpSupport.liveHeaders(
         roomId = null,
-        sessData = null,
-        biliJct = null,
-        dedeUserId = null,
-        buvid3 = null,
-        buvid4 = null,
+        sessData = session.sessData,
+        biliJct = session.biliJct,
+        dedeUserId = session.mid,
+        buvid3 = buvid3,
+        buvid4 = buvid4,
       ),
     ).rootObject()
     root.requireBiliCodeOk("live area rooms")

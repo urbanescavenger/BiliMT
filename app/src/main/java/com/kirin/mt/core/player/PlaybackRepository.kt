@@ -172,8 +172,6 @@ class PlaybackRepository(
       "qn" to qn.toString(),
       "platform" to "web",
       "ptype" to "8",
-      "dolby" to "5",
-      "panoramic" to "1",
     )
     val root = apiClient.getJsonWithHeaders(
       url = BiliApiEndpoints.LiveRoomPlayInfo,
@@ -181,21 +179,49 @@ class PlaybackRepository(
       headers = apiHeaders,
     ).rootObject()
     root.requireBiliCodeOk("live playurl")
-    val data = root.obj("data") ?: JsonObject(emptyMap())
-    if (data.int("live_status") != 1) {
-      throw IllegalStateException("直播间未开播(live_status=${data.int("live_status")})")
+    // web-room/v2 规范 payload 在 data 下；防御性 fallback 到 result，防上游字段漂移。
+    val data = root.obj("data") ?: root.obj("result") ?: JsonObject(emptyMap())
+
+    val liveStatus = data.int("live_status")
+    val isLocked = data.boolean("is_locked")
+    val encrypted = data.boolean("encrypted")
+    val specialType = data.int("special_type")
+    val playurlInfo = data.obj("playurl_info")
+    val playurl = playurlInfo?.obj("playurl")
+    val streamArray = playurl?.get("stream") as? JsonArray
+    val durlArray = playurl?.get("durl") as? JsonArray
+    Log.i(
+      PlaybackLogTag,
+      "live playurl raw room=$roomId qn=$qn " +
+        "code=${root.int("code")} message=${root.string("message")} " +
+        "live_status=$liveStatus is_locked=$isLocked encrypted=$encrypted special_type=$specialType " +
+        "hasPlayUrlInfo=${playurlInfo != null} streamCount=${streamArray?.size ?: 0} durlCount=${durlArray?.size ?: 0}",
+    )
+
+    when {
+      isLocked -> throw IllegalStateException("直播间已被锁定")
+      encrypted -> throw IllegalStateException("加密直播间，暂不支持")
+      liveStatus != 1 -> throw IllegalStateException("直播间未开播(live_status=$liveStatus)")
     }
-    val playurl = data.obj("playurl_info")?.obj("playurl")
-      ?: throw IllegalStateException("直播间无播放地址")
+
+    if (playurl == null) {
+      throw IllegalStateException("直播间无播放地址")
+    }
 
     val qualities = (playurl.get("g_qn_desc") as? JsonArray ?: emptyList())
       .mapNotNull { it.asObjectOrNull() }
       .map { LiveQuality(qn = it.int("qn"), description = it.string("desc").ifBlank { it.string("description") }) }
       .filter { it.qn > 0 }
 
-    val streams = playurl.get("stream") as? JsonArray ?: JsonArray(emptyList())
+    val streams = streamArray ?: JsonArray(emptyList())
     val chosen = pickLiveStreamCandidate(streams)
-      ?: throw IllegalStateException("直播间无可用流(无 HLS/FLV)")
+      ?: pickLiveDurl(durlArray ?: JsonArray(emptyList()))
+      ?: if (qn != 0) {
+        Log.w(PlaybackLogTag, "live room=$roomId no stream for qn=$qn, retry with qn=0")
+        return getLivePlayInfo(roomId, 0)
+      } else {
+        throw IllegalStateException("该直播间暂无可用视频流（可能为音频/付费/特殊协议直播间）")
+      }
 
     // 流媒体 CDN(bilivideo.com)取流要 live.bilibili.com Referer,发 www 会被 403 → 取流失败卡住。
     val streamHeaders = BiliPlaybackHeaders(
@@ -221,6 +247,20 @@ class PlaybackRepository(
     val qn: Int,
     val acceptQn: List<Int>,
   )
+
+  /**
+   * v2 接口偶尔在 `playurl.durl` 直接返回 FLV 直链数组（无 stream[] 结构），兜底取第一条。
+   */
+  private fun pickLiveDurl(durlArray: JsonArray): LiveStreamCandidate? {
+    val item = durlArray.firstOrNull()?.asObjectOrNull() ?: return null
+    val url = item.string("url").takeIf { it.isNotBlank() } ?: return null
+    return LiveStreamCandidate(
+      url = url,
+      isHls = false,
+      qn = item.int("qn"),
+      acceptQn = emptyList(),
+    )
+  }
 
   /**
    * 从 stream[] 里挑一条可播流。优先 HLS(http_hls + fmp4/ts + avc),退化 FLV(http_stream + flv)。
