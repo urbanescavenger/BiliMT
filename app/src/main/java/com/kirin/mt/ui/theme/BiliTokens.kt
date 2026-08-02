@@ -159,6 +159,9 @@ object BiliSizing {
   val HomeSectionCapsuleItemSpacing = 20.dp
   val HomeSectionTabMinWidth = 72.dp
   val HomeSectionTabCompactMinWidth = 44.dp
+  val HomeSectionTabIndicatorWidth = 20.dp
+  val HomeSectionTabIndicatorHeight = 3.dp
+  val SidebarNavIndicatorWidth = 3.dp
   val SearchKeyboardPanelWidth = 380.dp
   val SearchInputHeight = 44.dp
   val SearchKeyboardButtonHeight = 48.dp

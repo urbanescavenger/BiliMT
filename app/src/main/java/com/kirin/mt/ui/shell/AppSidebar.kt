@@ -384,6 +384,16 @@ private fun AppNavItem(
         .padding(BiliSpacing.Sm),
       contentAlignment = Alignment.Center,
     ) {
+      if (selected) {
+        Box(
+          modifier = Modifier
+            .align(Alignment.CenterStart)
+            .fillMaxHeight(0.5f)
+            .width(BiliSizing.SidebarNavIndicatorWidth)
+            .clip(RoundedCornerShape(BiliRadius.Pill))
+            .background(homeColors.accent),
+        )
+      }
       Icon(
         painter = painterResource(destination.iconRes),
         contentDescription = stringResource(destination.titleRes),

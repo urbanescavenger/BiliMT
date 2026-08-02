@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
@@ -209,6 +210,17 @@ fun BiliPillTab(
       .padding(horizontal = BiliSpacing.Sm),
     contentAlignment = Alignment.Center,
   ) {
+    if (selected) {
+      Box(
+        modifier = Modifier
+          .align(Alignment.BottomCenter)
+          .padding(bottom = BiliSpacing.Xs)
+          .width(BiliSizing.HomeSectionTabIndicatorWidth)
+          .height(BiliSizing.HomeSectionTabIndicatorHeight)
+          .clip(RoundedCornerShape(BiliRadius.Pill))
+          .background(homeColors.accent),
+      )
+    }
     Text(
       text = text,
       color = textColor,
