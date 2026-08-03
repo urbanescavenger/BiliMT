@@ -720,28 +720,22 @@ fun MobilePlayerScreen(
       .fillMaxSize()
       .background(Color.Black),
   ) {
-  // playerAreaModifier 需 ColumnScope(weight),故在外层 Column 内派生。
-  val playerAreaModifier = when {
-    playerFillsScreen -> Modifier.fillMaxSize()
-    isPlayingInline -> Modifier.weight(1f).fillMaxWidth()
-    else -> Modifier.fillMaxWidth()
-  }
+  // playerAreaModifier:全屏/播放 fillMaxSize 占满外层(播放态简介移入视频区填底);暂停 fillMaxWidth(内容高,外层留分栏 Tab)。
+  val playerAreaModifier = if (playerFillsScreen || isPlayingInline) Modifier.fillMaxSize()
+    else Modifier.fillMaxWidth()
   // 视频播放区:顶栏 + 视频区 + 底栏(PLAYING 顶栏/底栏不渲染,只剩居中视频)。
   BoxWithConstraints(
     modifier = playerAreaModifier
       .windowInsetsPadding(WindowInsets.statusBars)
       .background(Color.Black),
   ) {
-    // H=视频区高(maxHeight)、V=视频高(宽×9/16);播放态视频 Box 高=(H+V)/2 让视频居中(上黑=(H-V)/2)。
+    // H=视频区高(maxHeight)、V=视频高(宽×9/16);播放态上黑 Spacer height((H-V)/2) 让视频居中,简介 weight 填底。
     val areaH = maxHeight
     val videoH = maxWidth * 9f / 16f
     Column(modifier = Modifier.fillMaxSize()) {
-      // 视频区:全屏铺满;播放态高=(H+V)/2(视频贴底居中);暂停固定 16:9。
-      val videoModifier = when {
-        playerFillsScreen -> Modifier.fillMaxSize()
-        isPlayingInline -> Modifier.height(areaH / 2 + videoH / 2).fillMaxWidth()
-        else -> Modifier.aspectRatio(16f / 9f).fillMaxWidth()
-      }
+      // 视频区:全屏 fillMaxSize;否则 16:9(播放态 16:9 + 上黑居中 + 控制栏紧跟 + 简介填底;暂停 16:9 内容高)。
+      val videoModifier = if (playerFillsScreen) Modifier.fillMaxSize()
+        else Modifier.aspectRatio(16f / 9f).fillMaxWidth()
       // 顶栏(仅非 PLAYING && controlsVisible && Ready;PLAYING 顶栏黑)
       if (controlsVisible && playerState is MobilePlayerState.Ready && !isPlayingInline) {
         Row(
@@ -787,22 +781,17 @@ fun MobilePlayerScreen(
         }
       }
 
-      // 视频区外层 Box:三态尺寸由 videoModifier 决定(全屏 fillMaxSize / 播放 height((H+V)/2) / 暂停 16:9)。
-      // 播放态(isPlayingInline)外层高=(H+V)/2,内层 16:9 贴视频 Box 底 → 视频 16:9 在视频区垂直居中
-      // (上黑=(H-V)/2),底栏控制栏紧接视频下方(上移),控制栏下方到视频区底留黑=(H-V)/2-C。
-      // 暂停态外层 16:9,内层 fillMaxSize 填满;全屏态内外 fillMaxSize 不破坏沉浸。
+      // 播放态:上黑 Spacer 让 16:9 视频垂直居中(上黑=(H-V)/2);控制栏紧跟视频下方,简介 weight 填底(无下黑)。
+      if (isPlayingInline) Spacer(Modifier.height((areaH - videoH) / 2))
+
+      // 视频区外层 Box:全屏 fillMaxSize;否则 16:9 aspectRatio。播放态视频 16:9 居中,控制栏紧跟,简介填底。
       // 手势层放末尾顶层透明 Box(z 序最顶=事件优先),避免弹幕层 AndroidView 消费 ACTION_DOWN。
       Box(
         modifier = videoModifier
           .background(Color.Black),
       ) {
-        // 内层视频画面区:全屏 fillMaxSize;播放态 16:9 贴视频 Box 底(视频居中,上黑=(H-V)/2));
-        // 暂停态 fillMaxSize 填满 16:9 Box。align(BottomCenter) 是 BoxScope 扩展,在此外层 Box 内合法。
-        val videoFrameModifier = when {
-          playerFillsScreen -> Modifier.fillMaxSize()
-          isPlayingInline -> Modifier.fillMaxWidth().aspectRatio(16f / 9f).align(Alignment.BottomCenter)
-          else -> Modifier.fillMaxSize()
-        }
+        // 内层视频画面区:填满视频 Box(全屏/播放/暂停均 fillMaxSize)。视频 Box 已 16:9(非全屏),内层填满即视频画面区。
+        val videoFrameModifier = Modifier.fillMaxSize()
         Box(modifier = videoFrameModifier) {
           AndroidView(
             modifier = Modifier.fillMaxSize(),
@@ -1159,26 +1148,22 @@ fun MobilePlayerScreen(
         }
       }
 
+      // 播放态:简介填底(weight 1f 占控制栏下方到屏底),无下黑边。暂停态简介在分栏 Tab(外层 when)。
+      if (isPlayingInline) {
+        MobilePlayerIntroSummary(
+          metadata = metadata,
+          request = activeRequest,
+          onOpenUpSpace = onOpenUpSpace,
+          modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f)
+            .windowInsetsPadding(WindowInsets.navigationBars),
+        )
+      }
     }
   }
-  // 下半区:
-  //  播放中(isPlayingInline) → 简介小条(≤200dp,仅标题/UP/简介,无相关视频/选集/操作),视频区居中后底栏贴视频下、留黑到底
-  //  暂停(isPausedSplit)   → 简介/评论双 Tab + HorizontalPager(完整 IntroTab 含操作/选集/相关视频)
-  //  全屏(playerFillsScreen) → 不渲染
+  // 下半区(外层):播放态简介已移入视频区填底;暂停态分栏 Tab;全屏不渲染。
   when {
-    isPlayingInline -> {
-      // 视频区占 weight(1f),视频居中 + 底栏贴视频下;简介只占剩余一小条(≤200dp),无相关视频/选集/操作。
-      MobilePlayerIntroSummary(
-        metadata = metadata,
-        request = activeRequest,
-        onOpenUpSpace = onOpenUpSpace,
-        modifier = Modifier
-          .fillMaxWidth()
-          .heightIn(max = 200.dp)
-          .windowInsetsPadding(WindowInsets.navigationBars)
-          .background(Color.Black),
-      )
-    }
     isPausedSplit -> {
       val tabPagerState = rememberPagerState(pageCount = { 2 })
       var commentTotalCount by remember { mutableIntStateOf(0) }
