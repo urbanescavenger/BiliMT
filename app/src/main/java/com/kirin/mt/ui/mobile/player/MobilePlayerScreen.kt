@@ -83,6 +83,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
@@ -734,6 +735,9 @@ fun MobilePlayerScreen(
     // H=视频区高(maxHeight)、V=视频高(宽×9/16);播放态上黑 Spacer height(H/2-V) 视频底部居中(视频上移),底栏+Tab 占下半。
     val areaH = maxHeight
     val videoH = maxWidth * 9f / 16f
+    // 顶栏高度(px→dp):用于非全屏上黑 Spacer 扣除顶栏占位,让视频底部精确对齐中线。
+    val density = LocalDensity.current
+    var topBarHeightDp by remember { mutableStateOf(0.dp) }
     // 暂停态用 fillMaxWidth(高 wrap 内容),只占视频+顶栏+底栏内容高,留剩余给外层 when 的简介/评论 Tab 分栏。
     // 全屏/播放态 fillMaxSize 占满(播放态简介 weight 填底、全屏沉浸均需铺满)。条件与 playerAreaModifier 同步。
     Column(modifier = if (playerFillsScreen || isPlayingInline) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
@@ -742,13 +746,14 @@ fun MobilePlayerScreen(
       // 控制栏隐藏时顶栏/底栏不渲染,weight(1f) 视频自动占满全屏(沉浸)。fillMaxSize 会把底栏挤出视口。
       val videoModifier = if (playerFillsScreen) Modifier.weight(1f).fillMaxWidth()
         else Modifier.aspectRatio(16f / 9f).fillMaxWidth()
-      // 顶栏(仅非 PLAYING && controlsVisible && Ready;PLAYING 顶栏黑)
-      if (controlsVisible && playerState is MobilePlayerState.Ready && !isPlayingInline) {
+      // 顶栏(两态都渲染,随 controlsVisible 显隐):返回/标题/UP/设置。onSizeChanged 测高供上黑 Spacer 扣顶栏。
+      if (controlsVisible && playerState is MobilePlayerState.Ready) {
         Row(
           modifier = Modifier
             .fillMaxWidth()
             .background(Color.Black)
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .onSizeChanged { topBarHeightDp = with(density) { it.height.toDp() } },
           verticalAlignment = Alignment.CenterVertically,
         ) {
           IconButton(onClick = onBack) {
@@ -787,9 +792,12 @@ fun MobilePlayerScreen(
         }
       }
 
-      // 播放态:视频底部对齐屏幕中线(视频上移),底栏+简介/评论 Tab 占下半。上黑 = H/2 - V;
-      // 竖屏 V< H/2 必然成立,coerceAtLeast(0.dp) 防极端宽屏 V>H/2 时负高崩溃。
-      if (isPlayingInline) Spacer(Modifier.height((areaH / 2 - videoH).coerceAtLeast(0.dp)))
+      // 非全屏(播放/暂停):顶栏贴顶 + 上黑让视频底部对齐中线。上黑 = H/2 - V - 顶栏高(顶栏占视频上方);
+      // 顶栏随 controlsVisible 显隐——显时扣 topBarHeightDp,隐时 topBarSpace=0 视频上移,视频底部始终中线。
+      // topBarHeightDp 首帧 0(顶栏未测),重组后精确;coerceAtLeast(0.dp) 防负高。全屏两分支都不走(weight 让位)。
+      val showTopBar = controlsVisible && playerState is MobilePlayerState.Ready
+      val topBarSpace = if (showTopBar) topBarHeightDp else 0.dp
+      if (isPlayingInline || isPausedSplit) Spacer(Modifier.height((areaH / 2 - videoH - topBarSpace).coerceAtLeast(0.dp)))
 
       // 视频区外层 Box:全屏 fillMaxSize;否则 16:9 aspectRatio。播放态视频 16:9 居中,控制栏紧跟,简介填底。
       // 手势层放末尾顶层透明 Box(z 序最顶=事件优先),避免弹幕层 AndroidView 消费 ACTION_DOWN。
