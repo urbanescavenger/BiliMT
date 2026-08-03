@@ -702,10 +702,11 @@ fun MobilePlayerScreen(
     if (isBuffering) controlsVisible = true
   }
 
-  // 退出全屏回非全屏:强制恢复栏可见(全屏中栏多已被自动隐),非全屏始终留栏。
+  // 切换全屏状态时重置控制栏可见:进入全屏先显示(播放中再由下方 4s 自动隐藏 effect 沉浸),
+  // 退出全屏恢复常驻。避免非全屏手动隐栏后进全屏栏永远不回来的回归。
   // 初始组合 fullscreen=false 且 controlsVisible 已 true,无副作用。
   LaunchedEffect(fullscreen) {
-    if (!fullscreen) controlsVisible = true
+    controlsVisible = true
   }
 
   val positionMs = seekPreviewMs ?: playbackPositionState.longValue
