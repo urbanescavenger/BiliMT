@@ -733,7 +733,9 @@ fun MobilePlayerScreen(
     // H=视频区高(maxHeight)、V=视频高(宽×9/16);播放态上黑 Spacer height((H-V)/2) 让视频居中,简介 weight 填底。
     val areaH = maxHeight
     val videoH = maxWidth * 9f / 16f
-    Column(modifier = Modifier.fillMaxSize()) {
+    // 暂停态用 fillMaxWidth(高 wrap 内容),只占视频+顶栏+底栏内容高,留剩余给外层 when 的简介/评论 Tab 分栏。
+    // 全屏/播放态 fillMaxSize 占满(播放态简介 weight 填底、全屏沉浸均需铺满)。条件与 playerAreaModifier 同步。
+    Column(modifier = if (playerFillsScreen || isPlayingInline) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
       // 视频区:全屏 fillMaxSize;否则 16:9(播放态 16:9 + 上黑居中 + 控制栏紧跟 + 简介填底;暂停 16:9 内容高)。
       // 全屏用 weight(1f):视频区占顶栏/底栏之间剩余空间,让底栏在 Column 流里有位渲染(让位模式)。
       // 控制栏隐藏时顶栏/底栏不渲染,weight(1f) 视频自动占满全屏(沉浸)。fillMaxSize 会把底栏挤出视口。
