@@ -778,177 +778,185 @@ fun MobilePlayerScreen(
       }
     }
 
-    // 视频区(16:9 本身):PlayerView + 弹幕层 + 状态/暂停图标等均在此 Box 内。
-    // 手势检测不再挂本 Box modifier,而是放到末尾的顶层透明 Box(z 序最顶=事件优先),
-    // 避免弹幕层 AndroidView(DanmakuView)消费 ACTION_DOWN 挡住 tap/drag/longpress。
+    // 视频区外层 Box:三态尺寸由 videoModifier 决定(weight(1f)/fillMaxSize/aspectRatio(16:9))。
+    // 播放态(isPlayingInline)外层 weight(1f) 高容器黑背景;内层 videoFrameModifier 以
+    // aspectRatio(16:9)+BottomCenter 贴底 → 顶部留黑、视频下边紧接底栏控制栏,消除中段黑边。
+    // 暂停态外层已 16:9,内层填满无副作用;全屏态内层 fillMaxSize 不破坏沉浸。
+    // 手势层放末尾顶层透明 Box(z 序最顶=事件优先),避免弹幕层 AndroidView 消费 ACTION_DOWN。
     Box(
       modifier = videoModifier
         .background(Color.Black),
     ) {
-      AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-          PlayerView(ctx).apply {
-            useController = false
-            this.player = player
-          }
-        },
-      )
-
-      if (danmakuSettings.enabled && playerState is MobilePlayerState.Ready) {
-        PlayerDanmakuLayer(
-          entries = danmakuEntries,
-          settings = danmakuSettings,
-          positionState = playbackPositionState,
-          syncToken = danmakuSyncToken,
-          isPlaying = isPlaying && seekPreviewMs == null && !completionReported,
-          playbackSpeed = playbackSpeed,
+      // 内层视频画面区:全屏 fillMaxSize;否则 16:9 宽满 + 贴底,使播放态视频下边接底栏。
+      // align(BottomCenter) 是 BoxScope 扩展,在此外层 Box 内构造合法。
+      val videoFrameModifier = if (playerFillsScreen) Modifier.fillMaxSize()
+        else Modifier.fillMaxWidth().aspectRatio(16f / 9f).align(Alignment.BottomCenter)
+      Box(modifier = videoFrameModifier) {
+        AndroidView(
           modifier = Modifier.fillMaxSize(),
+          factory = { ctx ->
+            PlayerView(ctx).apply {
+              useController = false
+              this.player = player
+            }
+          },
         )
-      }
 
-      when (val s = playerState) {
-        MobilePlayerState.Loading -> CircularProgressIndicator(
-          modifier = Modifier.align(Alignment.Center),
-          color = Color.White,
-        )
-        is MobilePlayerState.Failed -> Column(
-          modifier = Modifier.align(Alignment.Center).padding(24.dp),
-          horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-          Text(s.message.ifBlank { "播放失败" }, color = Color.White, textAlign = TextAlign.Center)
-          Spacer(Modifier.padding(top = 12.dp))
-          TextButton(onClick = onBack) { Text("返回", color = Color.White) }
-        }
-        is MobilePlayerState.Ready -> Unit
-      }
-
-      // 缓冲加载图标:seek 后/网络抖动进入 BUFFERING 时显示,区别于初始 Loading 态的 spinner。
-      // 仅 Ready 且缓冲中才显;seekPreviewMs!=null(拖拽预览中)不显,避免与时间气泡争位。
-      // 与中央暂停图标互斥:userPaused 时多为 STATE_IDLE,isBuffering=false,二者不并存。
-      androidx.compose.animation.AnimatedVisibility(
-        visible = playerState is MobilePlayerState.Ready && isBuffering && seekPreviewMs == null,
-        enter = fadeIn(),
-        exit = fadeOut(),
-        modifier = Modifier.align(Alignment.Center),
-      ) {
-        CircularProgressIndicator(color = Color.White)
-      }
-
-      // 居中常驻暂停图标:用户暂停时显示,点击中央恢复播放。
-      // 全限定调用顶层 AnimatedVisibility:视频 Box 内是 BoxScope,.align 用 BoxScope。
-      // 用 userPaused 而非 !isPlaying,避免缓冲中/播放结束时误显;叠层无 clickable,点击透传到
-      // 视频 Box 的 detectPlayerGestures.onCenterTap → togglePlayback() 恢复播放。
-      androidx.compose.animation.AnimatedVisibility(
-        visible = userPaused && playerState is MobilePlayerState.Ready,
-        enter = fadeIn(),
-        exit = fadeOut(),
-        modifier = Modifier.align(Alignment.Center),
-      ) {
-        Box(
-          modifier = Modifier
-            .size(72.dp)
-            .clip(CircleShape)
-            .background(Color(0x99000000)),
-          contentAlignment = Alignment.Center,
-        ) {
-          Icon(
-            painter = painterResource(R.drawable.ic_player_pause),
-            contentDescription = "已暂停,点击播放",
-            tint = Color.White,
-            modifier = Modifier.size(36.dp),
+        if (danmakuSettings.enabled && playerState is MobilePlayerState.Ready) {
+          PlayerDanmakuLayer(
+            entries = danmakuEntries,
+            settings = danmakuSettings,
+            positionState = playbackPositionState,
+            syncToken = danmakuSyncToken,
+            isPlaying = isPlaying && seekPreviewMs == null && !completionReported,
+            playbackSpeed = playbackSpeed,
+            modifier = Modifier.fillMaxSize(),
           )
         }
-      }
 
-      // 长按 2 倍速提示
-      androidx.compose.animation.AnimatedVisibility(
-        visible = speedBoostActive,
-        enter = fadeIn(),
-        exit = fadeOut(),
-        modifier = Modifier.align(Alignment.TopCenter).padding(top = 64.dp),
-      ) {
-        Box(
-          modifier = Modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(Color(0x99000000))
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        ) {
-          Text("2.0x", color = Color.White)
+        when (val s = playerState) {
+          MobilePlayerState.Loading -> CircularProgressIndicator(
+            modifier = Modifier.align(Alignment.Center),
+            color = Color.White,
+          )
+          is MobilePlayerState.Failed -> Column(
+            modifier = Modifier.align(Alignment.Center).padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+          ) {
+            Text(s.message.ifBlank { "播放失败" }, color = Color.White, textAlign = TextAlign.Center)
+            Spacer(Modifier.padding(top = 12.dp))
+            TextButton(onClick = onBack) { Text("返回", color = Color.White) }
+          }
+          is MobilePlayerState.Ready -> Unit
         }
-      }
 
-      // 横拖 seek 时间气泡(仅手势拖拽时;Slider 拖动 dragSeekActive=false 不显示)
-      if (dragSeekActive && seekPreviewMs != null) {
-        Box(
+        // 缓冲加载图标:seek 后/网络抖动进入 BUFFERING 时显示,区别于初始 Loading 态的 spinner。
+        // 仅 Ready 且缓冲中才显;seekPreviewMs!=null(拖拽预览中)不显,避免与时间气泡争位。
+        // 与中央暂停图标互斥:userPaused 时多为 STATE_IDLE,isBuffering=false,二者不并存。
+        androidx.compose.animation.AnimatedVisibility(
+          visible = playerState is MobilePlayerState.Ready && isBuffering && seekPreviewMs == null,
+          enter = fadeIn(),
+          exit = fadeOut(),
           modifier = Modifier.align(Alignment.Center),
-          contentAlignment = Alignment.Center,
+        ) {
+          CircularProgressIndicator(color = Color.White)
+        }
+
+        // 居中常驻暂停图标:用户暂停时显示,点击中央恢复播放。
+        // 全限定调用顶层 AnimatedVisibility:视频 Box 内是 BoxScope,.align 用 BoxScope。
+        // 用 userPaused 而非 !isPlaying,避免缓冲中/播放结束时误显;叠层无 clickable,点击透传到
+        // 视频 Box 的 detectPlayerGestures.onCenterTap → togglePlayback() 恢复播放。
+        androidx.compose.animation.AnimatedVisibility(
+          visible = userPaused && playerState is MobilePlayerState.Ready,
+          enter = fadeIn(),
+          exit = fadeOut(),
+          modifier = Modifier.align(Alignment.Center),
         ) {
           Box(
             modifier = Modifier
-              .clip(RoundedCornerShape(8.dp))
-              .background(Color(0xCC000000))
-              .padding(horizontal = 12.dp, vertical = 6.dp),
+              .size(72.dp)
+              .clip(CircleShape)
+              .background(Color(0x99000000)),
+            contentAlignment = Alignment.Center,
           ) {
-            Text(formatMs(seekPreviewMs ?: 0L), color = Color.White)
+            Icon(
+              painter = painterResource(R.drawable.ic_player_pause),
+              contentDescription = "已暂停,点击播放",
+              tint = Color.White,
+              modifier = Modifier.size(36.dp),
+            )
           }
         }
-      }
 
-      // 顶层手势层:z 序最顶(最后绘制=事件分发优先),先于弹幕层 AndroidView(DanmakuView)
-      // 与 PlayerView 收到触摸。弹幕层的 DanmakuView 会消费 ACTION_DOWN,若手势挂在父 Box
-      // modifier 上会被它挡住(弹幕开启即点不暂停/切不出控件);提到这里一劳永逸避开,且不依赖
-      // 第三方 View 的触摸行为。透明无内容,不遮挡下层视觉。width 现读,仍为视频区宽,中央 2/3
-      // 判定边界不变(左右各 1/6 边缘 → 切控件,中间 2/3 → 暂停/播放)。
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .pointerInput(resumeTick) {
-            detectPlayerGestures(
-              onCenterTap = { togglePlayback() },
-              onEdgeTap = { controlsVisible = !controlsVisible },
-              onLongPressStart = {
-                speedBoostActive = true
-                player.setPlaybackSpeed(2f)
-              },
-              onLongPressEnd = {
-                if (speedBoostActive) {
-                  speedBoostActive = false
-                  player.setPlaybackSpeed(playbackSpeed)
-                }
-              },
-              onSeekStart = {
-                dragSeekActive = true
-                wasPlayingBeforeSeek = player.playWhenReady
-              },
-              onSeekDelta = { dx ->
-                val dur = player.duration
-                if (dur > 0L) {
-                  val w = size.width.toFloat().coerceAtLeast(1f)
-                  val cur = seekPreviewMs ?: player.currentPosition
-                  seekPreviewMs = (cur + dx / w * dur.toFloat())
-                    .coerceIn(0f, dur.toFloat())
-                    .toLong()
-                }
-              },
-              onSeekEnd = {
-                dragSeekActive = false
-                seekPreviewMs?.let { target ->
-                  player.seekTo(target)
-                  playbackPositionState.longValue = target
-                  danmakuSyncToken += 1L
-                }
-                // 播放中拖拽松手后恢复播放(对齐手机播放器习惯),暂停态下拖拽保持暂停
-                if (wasPlayingBeforeSeek) player.play()
-                seekPreviewMs = null
-              },
-              onSeekCancel = {
-                dragSeekActive = false
-                seekPreviewMs = null
-              },
-            )
-          },
-      ) {}
+        // 长按 2 倍速提示
+        androidx.compose.animation.AnimatedVisibility(
+          visible = speedBoostActive,
+          enter = fadeIn(),
+          exit = fadeOut(),
+          modifier = Modifier.align(Alignment.TopCenter).padding(top = 64.dp),
+        ) {
+          Box(
+            modifier = Modifier
+              .clip(RoundedCornerShape(16.dp))
+              .background(Color(0x99000000))
+              .padding(horizontal = 16.dp, vertical = 6.dp),
+          ) {
+            Text("2.0x", color = Color.White)
+          }
+        }
+
+        // 横拖 seek 时间气泡(仅手势拖拽时;Slider 拖动 dragSeekActive=false 不显示)
+        if (dragSeekActive && seekPreviewMs != null) {
+          Box(
+            modifier = Modifier.align(Alignment.Center),
+            contentAlignment = Alignment.Center,
+          ) {
+            Box(
+              modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xCC000000))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            ) {
+              Text(formatMs(seekPreviewMs ?: 0L), color = Color.White)
+            }
+          }
+        }
+
+        // 顶层手势层:z 序最顶(最后绘制=事件分发优先),先于弹幕层 AndroidView(DanmakuView)
+        // 与 PlayerView 收到触摸。弹幕层的 DanmakuView 会消费 ACTION_DOWN,若手势挂在父 Box
+        // modifier 上会被它挡住(弹幕开启即点不暂停/切不出控件);提到这里一劳永逸避开,且不依赖
+        // 第三方 View 的触摸行为。透明无内容,不遮挡下层视觉。width 现读,仍为视频区宽,中央 2/3
+        // 判定边界不变(左右各 1/6 边缘 → 切控件,中间 2/3 → 暂停/播放)。
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(resumeTick) {
+              detectPlayerGestures(
+                onCenterTap = { togglePlayback() },
+                onEdgeTap = { controlsVisible = !controlsVisible },
+                onLongPressStart = {
+                  speedBoostActive = true
+                  player.setPlaybackSpeed(2f)
+                },
+                onLongPressEnd = {
+                  if (speedBoostActive) {
+                    speedBoostActive = false
+                    player.setPlaybackSpeed(playbackSpeed)
+                  }
+                },
+                onSeekStart = {
+                  dragSeekActive = true
+                  wasPlayingBeforeSeek = player.playWhenReady
+                },
+                onSeekDelta = { dx ->
+                  val dur = player.duration
+                  if (dur > 0L) {
+                    val w = size.width.toFloat().coerceAtLeast(1f)
+                    val cur = seekPreviewMs ?: player.currentPosition
+                    seekPreviewMs = (cur + dx / w * dur.toFloat())
+                      .coerceIn(0f, dur.toFloat())
+                      .toLong()
+                  }
+                },
+                onSeekEnd = {
+                  dragSeekActive = false
+                  seekPreviewMs?.let { target ->
+                    player.seekTo(target)
+                    playbackPositionState.longValue = target
+                    danmakuSyncToken += 1L
+                  }
+                  // 播放中拖拽松手后恢复播放(对齐手机播放器习惯),暂停态下拖拽保持暂停
+                  if (wasPlayingBeforeSeek) player.play()
+                  seekPreviewMs = null
+                },
+                onSeekCancel = {
+                  dragSeekActive = false
+                  seekPreviewMs = null
+                },
+              )
+            },
+        ) {}
+      }
     }
 
     // 底栏(进度条等;controlsVisible && Ready。播放态也显示,顶栏仍黑)
