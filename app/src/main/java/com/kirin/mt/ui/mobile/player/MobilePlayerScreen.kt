@@ -731,7 +731,7 @@ fun MobilePlayerScreen(
       .windowInsetsPadding(WindowInsets.statusBars)
       .background(Color.Black),
   ) {
-    // H=视频区高(maxHeight)、V=视频高(宽×9/16);播放态上黑 Spacer height((H-V)/2) 让视频居中,简介 weight 填底。
+    // H=视频区高(maxHeight)、V=视频高(宽×9/16);播放态上黑 Spacer height(H/2-V) 视频底部居中(视频上移),底栏+Tab 占下半。
     val areaH = maxHeight
     val videoH = maxWidth * 9f / 16f
     // 暂停态用 fillMaxWidth(高 wrap 内容),只占视频+顶栏+底栏内容高,留剩余给外层 when 的简介/评论 Tab 分栏。
@@ -787,8 +787,9 @@ fun MobilePlayerScreen(
         }
       }
 
-      // 播放态:上黑 Spacer 让 16:9 视频垂直居中(上黑=(H-V)/2);控制栏紧跟视频下方,简介 weight 填底(无下黑)。
-      if (isPlayingInline) Spacer(Modifier.height((areaH - videoH) / 2))
+      // 播放态:视频底部对齐屏幕中线(视频上移),底栏+简介/评论 Tab 占下半。上黑 = H/2 - V;
+      // 竖屏 V< H/2 必然成立,coerceAtLeast(0.dp) 防极端宽屏 V>H/2 时负高崩溃。
+      if (isPlayingInline) Spacer(Modifier.height((areaH / 2 - videoH).coerceAtLeast(0.dp)))
 
       // 视频区外层 Box:全屏 fillMaxSize;否则 16:9 aspectRatio。播放态视频 16:9 居中,控制栏紧跟,简介填底。
       // 手势层放末尾顶层透明 Box(z 序最顶=事件优先),避免弹幕层 AndroidView 消费 ACTION_DOWN。
