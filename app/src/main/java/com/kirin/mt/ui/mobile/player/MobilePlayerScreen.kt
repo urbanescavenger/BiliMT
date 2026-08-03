@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -1153,89 +1154,55 @@ fun MobilePlayerScreen(
         }
       }
 
-      // 播放态:简介填底(weight 1f 占控制栏下方到屏底),无下黑边。暂停态简介在分栏 Tab(外层 when)。
+      // 播放态:简介/评论 Tab 分栏填底(weight 1f,视频居中+底栏之后),复用暂停态同款 Tab。
+      // 底栏因视频垂直居中而偏下(区别于暂停态视频贴顶底栏偏上)。
       if (isPlayingInline) {
-        MobilePlayerIntroSummary(
+        MobilePlayerIntroCommentTabs(
           metadata = metadata,
           request = activeRequest,
+          relatedVideos = relatedVideos,
+          isPgc = activeRequest.isPgc,
+          videoRepository = videoRepository,
+          onPlayVideo = onPlayVideo,
           onOpenUpSpace = onOpenUpSpace,
-          modifier = Modifier
-            .fillMaxWidth()
-            .weight(1f)
-            .windowInsetsPadding(WindowInsets.navigationBars),
+          onShare = { shareVideo() },
+          onSelectPage = { ep ->
+            activeRequest = activeRequest.copy(
+              cid = ep.cid,
+              epId = ep.epId,
+              startPositionMs = 0L,
+              preferredQualityId = selectedQualityId,
+              forceStartPosition = true,
+              historyPage = ep.page,
+            )
+          },
+          modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars),
         )
       }
     }
   }
-  // 下半区(外层):播放态简介已移入视频区填底;暂停态分栏 Tab;全屏不渲染。
+  // 下半区(外层):播放态简介/评论 Tab 已移入视频区填底;暂停态同款 Tab 分栏;全屏不渲染。
   when {
-    isPausedSplit -> {
-      val tabPagerState = rememberPagerState(pageCount = { 2 })
-      var commentTotalCount by remember { mutableIntStateOf(0) }
-      // 切换视频(metadata.aid 变)时先清零,避免新视频评论加载完前 Tab 残留旧视频评论数;
-      // 评论首屏加载后经 onTotalCountChange 回调更新为真实总数。
-      LaunchedEffect(metadata?.aid) { commentTotalCount = 0 }
-      Column(
-        modifier = Modifier
-          .weight(1f)
-          .fillMaxWidth()
-          .background(Color.Black),
-      ) {
-        PrimaryScrollableTabRow(
-          selectedTabIndex = tabPagerState.currentPage.coerceIn(0, 1),
-          containerColor = Color(0xFF1A1A20),
-          contentColor = Color.White,
-          edgePadding = 0.dp,
-        ) {
-          Tab(
-            selected = tabPagerState.currentPage == 0,
-            onClick = { scope.launch { tabPagerState.animateScrollToPage(0) } },
-            text = { Text("简介") },
-          )
-          Tab(
-            selected = tabPagerState.currentPage == 1,
-            onClick = { scope.launch { tabPagerState.animateScrollToPage(1) } },
-            text = { Text(if (commentTotalCount > 0) "评论 ${formatCount(commentTotalCount)}" else "评论") },
-          )
-        }
-        HorizontalPager(
-          state = tabPagerState,
-          modifier = Modifier.fillMaxSize(),
-        ) { page ->
-          when (page) {
-            0 -> MobilePlayerIntroTab(
-              metadata = metadata,
-              request = activeRequest,
-              relatedVideos = relatedVideos,
-              onPlayVideo = onPlayVideo,
-              onOpenUpSpace = onOpenUpSpace,
-              videoRepository = videoRepository,
-              onShare = { shareVideo() },
-              onSelectPage = { ep ->
-                activeRequest = activeRequest.copy(
-                  cid = ep.cid,
-                  epId = ep.epId,
-                  startPositionMs = 0L,
-                  preferredQualityId = selectedQualityId,
-                  forceStartPosition = true,
-                  historyPage = ep.page,
-                )
-              },
-              modifier = Modifier.fillMaxSize(),
-            )
-            1 -> MobileCommentList(
-              // aid 取自 metadata(加载后就绪);metadata 加载前 aid=0 → 列表显示加载圈,
-              // 避免误显示"暂无评论"。
-              aid = metadata?.aid ?: 0L,
-              isPgc = activeRequest.isPgc,
-              videoRepository = videoRepository,
-              modifier = Modifier.fillMaxSize(),
-              onTotalCountChange = { commentTotalCount = it },
-            )
-          }
-        }
-      }
-    }
+    isPausedSplit -> MobilePlayerIntroCommentTabs(
+      metadata = metadata,
+      request = activeRequest,
+      relatedVideos = relatedVideos,
+      isPgc = activeRequest.isPgc,
+      videoRepository = videoRepository,
+      onPlayVideo = onPlayVideo,
+      onOpenUpSpace = onOpenUpSpace,
+      onShare = { shareVideo() },
+      onSelectPage = { ep ->
+        activeRequest = activeRequest.copy(
+          cid = ep.cid,
+          epId = ep.epId,
+          startPositionMs = 0L,
+          preferredQualityId = selectedQualityId,
+          forceStartPosition = true,
+          historyPage = ep.page,
+        )
+      },
+    )
   }
   }
 }
@@ -1397,7 +1364,7 @@ private fun PlayerSettingsSheet(
 
 /**
  * 简介头部:标题 / UP 主行 / 数据行(播放·弹幕·发布时间)/ 简介 desc。纯渲染(无本地状态),
- * 供完整 简介 Tab(MobilePlayerIntroTab)与播放态简介小条(MobilePlayerIntroSummary)复用。
+ * 供完整 简介 Tab(MobilePlayerIntroTab)复用(播放态/暂停态共用 MobilePlayerIntroCommentTabs)。
  */
 @Composable
 private fun MobilePlayerIntroHeader(
@@ -1488,34 +1455,76 @@ private fun MobilePlayerIntroHeader(
 }
 
 /**
- * 播放态简介小条:仅 头部(标题/UP/数据/简介),无 互动按钮行、无 选集/相关视频。
- * 外部以 heightIn(max) 限高 + verticalScroll,内容短自适应、长则限高内滚动。
- * metadata 未就绪时居中加载圈占位。
+ * 简介/评论 Tab 分栏:简介 Tab(MobilePlayerIntroTab,详情+相关视频+互动)+ 评论 Tab(MobileCommentList)。
+ * 播放态在视频区 BoxWithConstraints 内层 Column 填底(weight 1f,视频居中+底栏之后);暂停态在外层
+ * Column 填底(BoxWithConstraints 内容高之后)。ColumnScope 扩展让 weight(1f) 在两处调用方均有效。
+ * 切视频(metadata.aid 变)清零评论数,首屏加载后经 onTotalCountChange 回调更新真实总数。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MobilePlayerIntroSummary(
+private fun ColumnScope.MobilePlayerIntroCommentTabs(
   metadata: PlaybackVideoMetadata?,
   request: PlaybackRequest,
+  relatedVideos: List<VideoSummary>,
+  isPgc: Boolean,
+  videoRepository: VideoRepository,
+  onPlayVideo: (VideoSummary) -> Unit,
   onOpenUpSpace: (Long, String, String) -> Unit,
+  onShare: () -> Unit,
+  onSelectPage: (PlaybackEpisode) -> Unit,
   modifier: Modifier = Modifier,
 ) {
-  if (metadata == null) {
-    Box(
-      modifier = modifier.background(Color.Black),
-      contentAlignment = Alignment.Center,
+  val scope = rememberCoroutineScope()
+  val tabPagerState = rememberPagerState(pageCount = { 2 })
+  var commentTotalCount by remember { mutableIntStateOf(0) }
+  LaunchedEffect(metadata?.aid) { commentTotalCount = 0 }
+  Column(
+    modifier = modifier
+      .weight(1f)
+      .fillMaxWidth()
+      .background(Color.Black),
+  ) {
+    PrimaryScrollableTabRow(
+      selectedTabIndex = tabPagerState.currentPage.coerceIn(0, 1),
+      containerColor = Color(0xFF1A1A20),
+      contentColor = Color.White,
+      edgePadding = 0.dp,
     ) {
-      CircularProgressIndicator()
+      Tab(
+        selected = tabPagerState.currentPage == 0,
+        onClick = { scope.launch { tabPagerState.animateScrollToPage(0) } },
+        text = { Text("简介") },
+      )
+      Tab(
+        selected = tabPagerState.currentPage == 1,
+        onClick = { scope.launch { tabPagerState.animateScrollToPage(1) } },
+        text = { Text(if (commentTotalCount > 0) "评论 ${formatCount(commentTotalCount)}" else "评论") },
+      )
     }
-    return
-  }
-  MaterialTheme(colorScheme = darkColorScheme()) {
-    Column(
-      modifier = modifier
-        .background(Color(0xFF121217))
-        .verticalScroll(rememberScrollState())
-        .padding(horizontal = 16.dp, vertical = 4.dp),
-    ) {
-      MobilePlayerIntroHeader(metadata, request, onOpenUpSpace)
+    HorizontalPager(
+      state = tabPagerState,
+      modifier = Modifier.fillMaxSize(),
+    ) { page ->
+      when (page) {
+        0 -> MobilePlayerIntroTab(
+          metadata = metadata,
+          request = request,
+          relatedVideos = relatedVideos,
+          onPlayVideo = onPlayVideo,
+          onOpenUpSpace = onOpenUpSpace,
+          videoRepository = videoRepository,
+          onShare = onShare,
+          onSelectPage = onSelectPage,
+          modifier = Modifier.fillMaxSize(),
+        )
+        1 -> MobileCommentList(
+          aid = metadata?.aid ?: 0L,
+          isPgc = isPgc,
+          videoRepository = videoRepository,
+          modifier = Modifier.fillMaxSize(),
+          onTotalCountChange = { commentTotalCount = it },
+        )
+      }
     }
   }
 }
