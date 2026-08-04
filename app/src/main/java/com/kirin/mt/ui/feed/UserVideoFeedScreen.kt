@@ -69,7 +69,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-internal enum class UserFeedTab { DynamicVideo, DynamicAll, History, Favorite, Bangumi }
+internal enum class UserFeedTab { DynamicVideo, DynamicAll, History, Favorite, Bangumi, YoutubeSubscriptions }
 
 internal enum class BangumiFollowType(val id: Int, val labelRes: Int) {
   Bangumi(id = 1, labelRes = R.string.bangumi_type_bangumi),
@@ -145,6 +145,7 @@ internal class UserFeedUiState {
   val history = HistoryFeedUiState()
   val favorite = FavoriteFeedUiState()
   val bangumi = BangumiFollowUiState()
+  val youtube = DynamicFeedUiState()
 }
 
 // 把指定子 tab 的聚焦位置清回顶部。切子 tab / 侧栏切回动态页时调用,
@@ -171,12 +172,17 @@ private fun resetFeedTabFocus(feedState: UserFeedUiState, tab: UserFeedTab) {
       feedState.bangumi.focusedVideoIndex = 0
       feedState.bangumi.focusedVideoKey = ""
     }
+    UserFeedTab.YoutubeSubscriptions -> {
+      feedState.youtube.focusedVideoIndex = 0
+      feedState.youtube.focusedVideoKey = ""
+    }
   }
 }
 
 @Composable
 internal fun UserFeedScreen(
   videoRepository: VideoRepository,
+  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   isLoggedIn: Boolean,
   feedState: UserFeedUiState,
   autoRefreshOnSwitch: Boolean,
@@ -195,6 +201,7 @@ internal fun UserFeedScreen(
   val context = LocalContext.current
   val selectedTab = feedState.selectedTab
   var actionSheetVideo by remember { mutableStateOf<VideoSummary?>(null) }
+  val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
 
   // 侧栏切回动态页时 screen 重组但未切子 tab → onSelect 不触发,当前子 tab 的旧
   // focusedVideoIndex 仍在,从 tab 按 Down 走 focusRestoredItemKey 会跳到旧深位置。
@@ -206,8 +213,9 @@ internal fun UserFeedScreen(
     }
   }
 
-  LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab) {
-    if (!isLoggedIn) return@LaunchedEffect
+  LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab, youtubeChannels) {
+    // YouTube 关注无需登录(手动配置频道),其余 tab 需要登录。
+    if (!isLoggedIn && selectedTab != UserFeedTab.YoutubeSubscriptions) return@LaunchedEffect
     when (selectedTab) {
       UserFeedTab.DynamicVideo -> loadDynamicFirstPage(
         videoRepository,
@@ -236,17 +244,24 @@ internal fun UserFeedScreen(
        feedState.bangumi,
        forceRefresh = autoRefreshOnSwitch,
      )
+     UserFeedTab.YoutubeSubscriptions -> loadYoutubeSubscriptions(
+       videoRepository,
+       youtubeChannels,
+       feedState.youtube,
+       forceRefresh = autoRefreshOnSwitch,
+     )
     }
   }
 
   LaunchedEffect(manualRefreshKey) {
-    if (!isLoggedIn) return@LaunchedEffect
+   if (!isLoggedIn && selectedTab != UserFeedTab.YoutubeSubscriptions) return@LaunchedEffect
    val handledKey = when (selectedTab) {
      UserFeedTab.DynamicVideo -> feedState.dynamicVideo.handledManualRefreshKey
      UserFeedTab.DynamicAll -> feedState.dynamicAll.handledManualRefreshKey
      UserFeedTab.History -> feedState.history.handledManualRefreshKey
      UserFeedTab.Favorite -> feedState.favorite.handledManualRefreshKey
      UserFeedTab.Bangumi -> feedState.bangumi.handledManualRefreshKey
+     UserFeedTab.YoutubeSubscriptions -> feedState.youtube.handledManualRefreshKey
     }
     if (manualRefreshKey > 0 && manualRefreshKey != handledKey) {
       // 侧栏重点击"动态"(当前目的地)= 显式刷新当前子 tab。重置当前子 tab 焦点回顶,
@@ -274,6 +289,10 @@ internal fun UserFeedScreen(
          feedState.bangumi.handledManualRefreshKey = manualRefreshKey
          loadBangumiFirstPage(videoRepository, feedState.bangumi, forceRefresh = true)
        }
+       UserFeedTab.YoutubeSubscriptions -> {
+         feedState.youtube.handledManualRefreshKey = manualRefreshKey
+         loadYoutubeSubscriptions(videoRepository, youtubeChannels, feedState.youtube, forceRefresh = true)
+       }
       }
     }
   }
@@ -296,11 +315,12 @@ internal fun UserFeedScreen(
           UserFeedTab.History -> feedState.history.focusRestoredItemKey += 1
           UserFeedTab.Favorite -> feedState.favorite.focusRestoredItemKey += 1
           UserFeedTab.Bangumi -> feedState.bangumi.focusRestoredItemKey += 1
+          UserFeedTab.YoutubeSubscriptions -> feedState.youtube.focusRestoredItemKey += 1
         }
         true
       },
     )
-    if (!isLoggedIn) {
+    if (!isLoggedIn && selectedTab != UserFeedTab.YoutubeSubscriptions) {
       val message = stringResource(
        when (selectedTab) {
          UserFeedTab.History -> R.string.history_signed_out
@@ -308,6 +328,7 @@ internal fun UserFeedScreen(
          UserFeedTab.DynamicVideo -> R.string.dynamic_signed_out
          UserFeedTab.DynamicAll -> R.string.dynamic_signed_out
          UserFeedTab.Bangumi -> R.string.bangumi_signed_out
+         UserFeedTab.YoutubeSubscriptions -> R.string.feed_youtube_empty
        },
       )
       FeedStatusScreen(message = message)
@@ -400,6 +421,34 @@ internal fun UserFeedScreen(
            onMoveLeftToNav = onMoveLeftToNav,
            onSeasonSelected = onSeasonSelected,
          )
+         UserFeedTab.YoutubeSubscriptions -> UserFeedContent(
+           state = feedState.youtube.state,
+           loadingMessage = stringResource(R.string.search_loading),
+           emptyMessage = stringResource(R.string.feed_youtube_empty),
+           failedMessage = { message -> stringResource(R.string.history_failed_with_message, message) },
+           cardMode = VideoCardMode.Dynamic,
+           firstItemFocusRequester = firstItemFocusRequester,
+           restoredFocusIndex = feedState.youtube.focusedVideoIndex,
+           restoredFocusKey = feedState.youtube.focusedVideoKey,
+           restoreFocusRequestKey = restoreFocusRequestKey,
+           onRestoreFocusHandled = onRestoreFocusHandled,
+           onFocusedIndexChange = { index, video ->
+             feedState.youtube.focusedVideoIndex = index
+             feedState.youtube.focusedVideoKey = video.focusRestoreKey()
+           },
+           onRetry = {
+             coroutineScope.launch {
+               loadYoutubeSubscriptions(videoRepository, youtubeChannels, feedState.youtube, forceRefresh = true)
+             }
+           },
+           onLoadMore = {},
+           onMoveUpFromFirstRow = { runCatching { tabFocusRequester.requestFocus() }.isSuccess },
+           onMoveLeftToNav = onMoveLeftToNav,
+           onVideoSelected = { video -> onVideoSelected(video, false) },
+           onOwnerSelected = onOwnerSelected,
+           onCardLongPress = { video -> actionSheetVideo = video },
+           focusRestoredItemKey = feedState.youtube.focusRestoredItemKey,
+         )
        }
       }
     }
@@ -483,6 +532,7 @@ private fun UserFeedTabRow(
            UserFeedTab.History -> R.string.nav_history
            UserFeedTab.Favorite -> R.string.nav_favorite
            UserFeedTab.Bangumi -> R.string.nav_bangumi
+           UserFeedTab.YoutubeSubscriptions -> R.string.feed_tab_youtube
          },
         ),
         selected = selected,
@@ -525,6 +575,43 @@ private suspend fun loadDynamicFirstPage(
         videos = page.videos,
         loadingMore = false,
         endReached = !page.hasMore,
+        loadMoreError = "",
+      )
+    }
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    state.loadedOnce = true
+    UserFeedState.Failed(error.message.orEmpty())
+  }
+}
+
+/** 加载 YouTube 关注流(手动配置频道的最新视频,按时间合并,单页)。无需登录。 */
+private suspend fun loadYoutubeSubscriptions(
+  videoRepository: VideoRepository,
+  channels: List<com.kirin.mt.core.youtube.YoutubeChannel>,
+  state: DynamicFeedUiState,
+  forceRefresh: Boolean,
+) {
+  if (!forceRefresh && state.loadedOnce) {
+    return
+  }
+  if (state.state !is UserFeedState.Success) {
+    state.state = UserFeedState.Loading
+    state.focusedVideoIndex = 0
+    state.focusedVideoKey = ""
+  }
+  state.state = try {
+    val videos = videoRepository.youtubeSubscriptionsFeed(channels)
+    state.loadedOnce = true
+    if (videos.isEmpty()) {
+      UserFeedState.Empty
+    } else {
+      state.hasLoadedContent = true
+      UserFeedState.Success(
+        videos = videos,
+        loadingMore = false,
+        endReached = true,
         loadMoreError = "",
       )
     }

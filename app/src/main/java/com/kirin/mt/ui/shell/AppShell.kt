@@ -149,6 +149,7 @@ fun BiliTvApp(
   appCacheManager: AppCacheManager,
   searchHistoryStore: SearchHistoryStore,
   sessionStore: SessionStore,
+  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
 ) {
@@ -938,6 +939,7 @@ fun BiliTvApp(
                 )
                 AppDestination.Dynamic -> UserFeedScreen(
                   videoRepository = videoRepository,
+                  youtubeChannelStore = youtubeChannelStore,
                   isLoggedIn = userSession.isLoggedIn,
                   feedState = userFeedState,
                   autoRefreshOnSwitch = autoRefreshOnSwitch,
