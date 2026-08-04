@@ -75,7 +75,10 @@ class YoutubeRepository(
     channels: List<YoutubeChannel>,
     perChannel: Int = 8,
   ): List<VideoSummary> {
-    if (channels.isEmpty()) return emptyList()
+    if (channels.isEmpty()) {
+      // 未配置频道时回退显示热门,避免动态 tab 空白(设置里可添加频道)。
+      return getTrending(YoutubeConstants.TrendingTabs.values.first())
+    }
     val merged = channels.flatMap { channel ->
       runCatching {
         getChannelVideos(channel.channelId).items.take(perChannel)
