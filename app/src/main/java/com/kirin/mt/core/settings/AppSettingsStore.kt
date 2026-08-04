@@ -233,19 +233,32 @@ class AppSettingsStore(private val context: Context) {
    */
   suspend fun ensureHomeSectionsMigration() {
     context.biliDataStore.edit { preferences ->
-      if (preferences[Keys.HomeSectionsUgcMigrationV1] == true) return@edit
-      val current = preferences[Keys.EnabledHomeSections]
-        ?.mapNotNull(HomeSection::fromKey)
-        ?.toMutableSet()
-        ?: HomeSection.DefaultOrder.toMutableSet()
-      val missingNew = HomeSection.DefaultOrder.filter {
-        it.key in newlyAddedHomeSectionKeys && it !in current
+      if (preferences[Keys.HomeSectionsUgcMigrationV1] != true) {
+        val current = preferences[Keys.EnabledHomeSections]
+          ?.mapNotNull(HomeSection::fromKey)
+          ?.toMutableSet()
+          ?: HomeSection.DefaultOrder.toMutableSet()
+        val missingNew = HomeSection.DefaultOrder.filter {
+          it.key in newlyAddedHomeSectionKeys && it !in current
+        }
+        if (missingNew.isNotEmpty()) {
+          current.addAll(missingNew)
+          preferences[Keys.EnabledHomeSections] = current.map { it.key }.toSet()
+        }
+        preferences[Keys.HomeSectionsUgcMigrationV1] = true
       }
-      if (missingNew.isNotEmpty()) {
-        current.addAll(missingNew)
-        preferences[Keys.EnabledHomeSections] = current.map { it.key }.toSet()
+      // 一次性启用新分区 YouTube 热门(仅对已存在安装;全新安装 DefaultOrder 已含)。
+      if (preferences[Keys.HomeSectionsYoutubeMigrationV1] != true) {
+        val current = preferences[Keys.EnabledHomeSections]
+          ?.mapNotNull(HomeSection::fromKey)
+          ?.toMutableSet()
+          ?: HomeSection.DefaultOrder.toMutableSet()
+        if (HomeSection.YoutubeTrending !in current) {
+          current.add(HomeSection.YoutubeTrending)
+          preferences[Keys.EnabledHomeSections] = current.map { it.key }.toSet()
+        }
+        preferences[Keys.HomeSectionsYoutubeMigrationV1] = true
       }
-      preferences[Keys.HomeSectionsUgcMigrationV1] = true
     }
   }
 
@@ -311,6 +324,7 @@ class AppSettingsStore(private val context: Context) {
     val EnabledHomeSections = stringSetPreferencesKey("enabled_home_sections")
     val HomeSectionsOrder = stringPreferencesKey("home_sections_order")
     val HomeSectionsUgcMigrationV1 = booleanPreferencesKey("home_sections_ugc_migration_v1")
+    val HomeSectionsYoutubeMigrationV1 = booleanPreferencesKey("home_sections_youtube_migration_v1")
   }
 }
 
