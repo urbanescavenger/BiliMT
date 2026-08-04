@@ -64,6 +64,10 @@ class VideoRepository(
     page: Int = 1,
     idx: Int = 0,
   ): List<VideoSummary> {
+    // YouTube 热门走独立 InnerTube 通道；分页忽略(热门为单页,滚动翻页 dedup 后自然到底)。
+    if (section == HomeSection.YoutubeTrending) {
+      return youtubeTrending(YoutubeConstants.TrendingTabs.keys.first())
+    }
     return homeVideoRepository.getHomeSectionVideos(
       section = section,
       page = page,
