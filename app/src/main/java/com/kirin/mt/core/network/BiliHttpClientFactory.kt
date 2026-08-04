@@ -44,6 +44,14 @@ class BiliHttpClientFactory {
       .build()
   }
 
+  /**
+   * YouTube InnerTube 客户端。与 B 站 API client 的关键区别：不做 B 站 referer/UA 拦截器，
+   * 由 InnerTubeClient 显式设置自己的 headers（referer 必须为 youtube.com）。
+   */
+  fun createYoutubeClient(): OkHttpClient {
+    return baseBuilder().build()
+  }
+
   fun createDownloadClient(): OkHttpClient {
     return OkHttpClient.Builder()
       .connectTimeout(DownloadConnectTimeoutSeconds, TimeUnit.SECONDS)

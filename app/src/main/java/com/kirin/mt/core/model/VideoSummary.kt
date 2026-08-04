@@ -30,6 +30,12 @@ data class VideoSummary(
   val likeCount: Int = 0,
   val commentCount: Int = 0,
   val forwardCount: Int = 0,
+  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube]。YouTube 卡片 bvid 字段承载 videoId。 */
+  val source: String = SourceBili,
 )
 
 const val ProgressUnset = -1
+
+/** 内容来源常量。 */
+const val SourceBili = "bili"
+const val SourceYoutube = "youtube"

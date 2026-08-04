@@ -13,6 +13,10 @@ import com.kirin.mt.core.model.SpaceUserProfile
 import com.kirin.mt.core.model.UgcBannerItem
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
+import com.kirin.mt.core.youtube.YoutubeChannel
+import com.kirin.mt.core.youtube.YoutubeConstants
+import com.kirin.mt.core.youtube.YoutubeRepository
+import com.kirin.mt.core.youtube.YoutubeVideoPage
 import kotlinx.coroutines.flow.first
 
 class VideoRepository(
@@ -20,6 +24,7 @@ class VideoRepository(
   private val wbiKeyRepository: WbiKeyRepository,
   private val wbiSigner: WbiSigner,
   private val sessionStore: SessionStore,
+  private val youtubeRepository: YoutubeRepository,
 ) {
   private val spaceVideoRepository = SpaceVideoRepository(
     apiClient = apiClient,
@@ -164,6 +169,34 @@ class VideoRepository(
 
   suspend fun getSearchSuggestions(keyword: String): List<String> {
     return searchVideoRepository.getSearchSuggestions(keyword)
+  }
+
+  // ---- YouTube（来源切换：搜索/热门/动态关注） ----
+
+  suspend fun youtubeSearch(
+    query: String,
+    params: String = "",
+    continuation: String? = null,
+  ): YoutubeVideoPage {
+    val feed = youtubeRepository.search(
+      query = query,
+      params = params,
+      continuation = continuation,
+    )
+    return YoutubeVideoPage(
+      items = feed.items.map(youtubeRepository::toVideoSummary),
+      continuation = feed.continuation,
+    )
+  }
+
+  suspend fun youtubeTrending(tabName: String): List<VideoSummary> {
+    val tab = YoutubeConstants.TrendingTabs[tabName]
+      ?: YoutubeConstants.TrendingTabs.values.first()
+    return youtubeRepository.getTrending(tab)
+  }
+
+  suspend fun youtubeSubscriptionsFeed(channels: List<YoutubeChannel>): List<VideoSummary> {
+    return youtubeRepository.getSubscriptionsFeed(channels)
   }
 
   suspend fun getDynamicFeed(offset: String = "", type: String = "video"): DynamicFeedPage {

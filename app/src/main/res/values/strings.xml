@@ -455,4 +455,11 @@
     <string name="settings_update_download_failed_with_message">&#x4E0B;&#x8F7D;&#x66F4;&#x65B0;&#x5931;&#x8D25;&#x3002;%1$s</string>
     <string name="settings_update_install_unknown_sources_required">&#x8BF7;&#x5148;&#x5728;&#x7CFB;&#x7EDF;&#x8BBE;&#x7F6E;&#x4E2D;&#x5141;&#x8BB8;&#x5B89;&#x88C5;&#x672A;&#x77E5;&#x6765;&#x6E90;&#x5E94;&#x7528;&#x3002;</string>
     <string name="settings_update_status_downloaded">&#x4E0B;&#x8F7D;&#x5B8C;&#x6210;&#xFF0C;&#x53EF;&#x70B9;&#x51FB;&#x5B89;&#x88C5;&#x3002;</string>
+    <string name="search_source_bili">B站</string>
+    <string name="search_source_youtube">YouTube</string>
+    <string name="home_section_youtube_trending">YouTube 热门</string>
+    <string name="feed_tab_youtube">YouTube 关注</string>
+    <string name="feed_youtube_empty">尚未配置 YouTube 频道，去设置里添加</string>
+    <string name="settings_youtube_channels">YouTube 频道</string>
+    <string name="youtube_playback_pending">YouTube 播放开发中</string>
 </resources>

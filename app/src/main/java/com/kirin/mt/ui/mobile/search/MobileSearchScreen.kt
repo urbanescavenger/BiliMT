@@ -48,6 +48,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
+import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.storage.SearchHistoryStore
@@ -70,6 +72,8 @@ private sealed interface SearchResultState {
   data class Success(
     val videos: List<VideoSummary>,
     val nextPage: Int,
+    /** YouTube 来源的续页 token；B站来源恒为 null。 */
+    val continuation: String? = null,
     val loadingMore: Boolean,
     val endReached: Boolean,
   ) : SearchResultState
@@ -91,6 +95,7 @@ private val SearchSortOptions = listOf(
 private class MobileSearchUiState {
   var query by mutableStateOf("")
   var submittedQuery by mutableStateOf<String?>(null)
+  var source by mutableStateOf(SourceBili)
   var orderKey by mutableStateOf(SearchSortOptions.first().key)
   var suggestions by mutableStateOf<List<String>>(emptyList())
   var resultState by mutableStateOf<SearchResultState>(SearchResultState.Loading)
@@ -108,6 +113,13 @@ private class MobileSearchUiState {
     query = ""
     submittedQuery = null
     suggestions = emptyList()
+    resultState = SearchResultState.Loading
+  }
+
+  /** 切换来源。若已有搜索结果,重置结果态以便重搜。 */
+  fun selectSource(newSource: String) {
+    if (source == newSource) return
+    source = newSource
     resultState = SearchResultState.Loading
   }
 }
@@ -137,14 +149,26 @@ fun MobileSearchScreen(
     uiState.resultState = SearchResultState.Loading
     scope.launch {
       val state = try {
-        val videos = videoRepository.searchVideos(keyword = query, page = FirstPage, order = order)
-        if (videos.isEmpty()) SearchResultState.Empty
-        else SearchResultState.Success(
-          videos = videos,
-          nextPage = FirstPage + 1,
-          loadingMore = false,
-          endReached = videos.size < PageSize,
-        )
+        if (uiState.source == SourceYoutube) {
+          val page = videoRepository.youtubeSearch(query = query)
+          if (page.items.isEmpty()) SearchResultState.Empty
+          else SearchResultState.Success(
+            videos = page.items,
+            nextPage = FirstPage + 1,
+            continuation = page.continuation,
+            loadingMore = false,
+            endReached = page.continuation == null,
+          )
+        } else {
+          val videos = videoRepository.searchVideos(keyword = query, page = FirstPage, order = order)
+          if (videos.isEmpty()) SearchResultState.Empty
+          else SearchResultState.Success(
+            videos = videos,
+            nextPage = FirstPage + 1,
+            loadingMore = false,
+            endReached = videos.size < PageSize,
+          )
+        }
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
@@ -179,13 +203,27 @@ fun MobileSearchScreen(
     uiState.resultState = current.copy(loadingMore = true)
     scope.launch {
       val next = try {
-        val more = videoRepository.searchVideos(keyword = q, page = current.nextPage, order = uiState.orderKey)
+        val more: List<VideoSummary>
+        val nextContinuation: String?
+        if (uiState.source == SourceYoutube) {
+          val page = videoRepository.youtubeSearch(query = q, continuation = current.continuation)
+          more = page.items
+          nextContinuation = page.continuation
+        } else {
+          more = videoRepository.searchVideos(keyword = q, page = current.nextPage, order = uiState.orderKey)
+          nextContinuation = null
+        }
         val merged = (current.videos + more).distinctBy { it.bvid }
         current.copy(
           videos = merged,
           nextPage = current.nextPage + 1,
+          continuation = nextContinuation,
           loadingMore = false,
-          endReached = more.size < PageSize || merged.size == current.videos.size,
+          endReached = if (uiState.source == SourceYoutube) {
+            nextContinuation == null || merged.size == current.videos.size
+          } else {
+            more.size < PageSize || merged.size == current.videos.size
+          },
         )
       } catch (e: CancellationException) {
         throw e
@@ -233,6 +271,21 @@ fun MobileSearchScreen(
   }
 
   Column(modifier = modifier.fillMaxSize()) {
+    Row(
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      listOf(
+        SourceBili to stringResource(R.string.search_source_bili),
+        SourceYoutube to stringResource(R.string.search_source_youtube),
+      ).forEach { (value, label) ->
+        FilterChip(
+          selected = uiState.source == value,
+          onClick = { uiState.selectSource(value) },
+          label = { Text(label) },
+        )
+      }
+    }
     OutlinedTextField(
       value = uiState.query,
       onValueChange = { text ->
@@ -288,17 +341,19 @@ fun MobileSearchScreen(
         )
       }
     } else {
-      // 结果态:排序 chip + 结果网格。
-      Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
-        SearchSortOptions.forEach { opt ->
-          FilterChip(
-            selected = uiState.orderKey == opt.key,
-            onClick = { selectOrder(opt.key) },
-            label = { Text(stringResource(opt.titleRes)) },
-          )
+      // 结果态:排序 chip(B站) + 结果网格。YouTube 无排序选项。
+      if (uiState.source == SourceBili) {
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          SearchSortOptions.forEach { opt ->
+            FilterChip(
+              selected = uiState.orderKey == opt.key,
+              onClick = { selectOrder(opt.key) },
+              label = { Text(stringResource(opt.titleRes)) },
+            )
+          }
         }
       }
 
