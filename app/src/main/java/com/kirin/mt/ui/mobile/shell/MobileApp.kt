@@ -80,6 +80,7 @@ fun BiliMobileApp(
   appSettingsStore: AppSettingsStore,
   sessionStore: SessionStore,
   searchHistoryStore: SearchHistoryStore,
+  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
 ) {
@@ -173,6 +174,7 @@ fun BiliMobileApp(
         )
         AppDestination.Dynamic -> MobileFeedScreen(
           videoRepository = videoRepository,
+          youtubeChannelStore = youtubeChannelStore,
           isLoggedIn = session.isLoggedIn,
           onVideoSelected = { video -> playbackRequest = video.toPlaybackRequest() },
           onOpenOwner = { video ->
