@@ -199,7 +199,7 @@ class YoutubeRepository(
           val videos: List<YoutubeVideo> = rssSemaphore.withPermit {
             runCatching { getChannelRss(channel.channelId) }.getOrDefault(emptyList())
           }
-          val resolved: List<YoutubeVideo> = if (videos.isEmpty()) {
+          val resolved: List<VideoSummary> = if (videos.isEmpty()) {
             // RSS 失败/空 → 回退 InnerTube /browse。
             innerTubeSemaphore.withPermit {
               runCatching {
@@ -207,7 +207,7 @@ class YoutubeRepository(
               }.getOrDefault(emptyList())
             }
           } else {
-            videos.take(perChannel)
+            videos.take(perChannel).map(::toVideoSummary)
           }
           // lockupViewModel 不重复频道名/频道id,给空作者名与空频道id的视频补上所属频道,
           // 卡片作者行才有内容、点 UP 头像才能进本频道主页。
