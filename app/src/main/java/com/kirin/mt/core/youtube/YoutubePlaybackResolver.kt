@@ -64,60 +64,84 @@ class YoutubePlaybackResolver(
 
     val streamingData = player.obj("streamingData")
       ?: throw YoutubeApiException(0, "", "YouTube /player missing streamingData")
-    val formats = streamingData.array("adaptiveFormats")
-      ?: throw YoutubeApiException(0, "", "YouTube /player missing adaptiveFormats")
+    // adaptiveFormats = 分离的纯视频/纯音频；formats = 单个合并的 progressive 流(音视频一体)。
+    // 实测：未带 PO token 时 YouTube 常剥离 adaptiveFormats 的 url，仅保留 formats(progressive) 的 url。
+    val adaptive = (streamingData.array("adaptiveFormats") ?: emptyList())
+      .mapNotNull { it as? JsonObject }.mapNotNull(::parseFormat)
+    val progressive = (streamingData.array("formats") ?: emptyList())
+      .mapNotNull { it as? JsonObject }.mapNotNull(::parseFormat)
 
-    val parsedFormats = formats.mapNotNull { it as? JsonObject }.mapNotNull(::parseFormat)
+    val videoCandidates = adaptive.filter { it.kind == Kind.Video && !it.combined }
+    val audioCandidates = adaptive.filter { it.kind == Kind.Audio }
+    val combinedCandidates = (adaptive + progressive).filter { it.kind == Kind.Video && it.combined }
 
-    val videoCandidates = parsedFormats.filter { it.kind == Kind.Video }
-    val audioCandidates = parsedFormats.filter { it.kind == Kind.Audio }
-    if (videoCandidates.isEmpty() || audioCandidates.isEmpty()) {
-      throw YoutubeApiException(0, "", "YouTube no decodable video/audio formats")
-    }
-
-    // 2) 按 codec 偏好挑视频格式 + 挑最佳音频。
-    val video = pickVideo(videoCandidates, codecPreference)
-      ?: throw YoutubeApiException(0, "", "YouTube no video format for codec pref $codecPreference")
-    val audio = pickAudio(audioCandidates)
-      ?: throw YoutubeApiException(0, "", "YouTube no audio format")
-
-    // 3) 取 base.js 用于 `n` 解密（仅在存在 `n` 参数时拉取）。
+    // 取 base.js 用于 `n` 解密（仅当存在 `n` 参数时拉取）。
     val playerJsUrl = resolvePlayerJsUrl(videoId)
-
-    val videoUrl = resolveStreamUrl(video, playerJsUrl)
-    val audioUrl = resolveStreamUrl(audio, playerJsUrl)
-    if (videoUrl.isBlank() || audioUrl.isBlank()) {
-      throw YoutubeApiException(0, "", "YouTube stream URL blank after decrypt")
-    }
-
     val durationMs = (player.obj("videoDetails")?.stringOrNull("lengthSeconds")?.toLongOrNull() ?: 0L) * 1000L
+
+    // Case A：adaptive 视频+音频直链齐备 → 双轨 MergingMediaSource（高清）。
+    val video = pickVideo(videoCandidates, codecPreference)
+    val audio = pickAudio(audioCandidates)
+    if (video != null && audio != null) {
+      val videoUrl = resolveStreamUrl(video, playerJsUrl)
+      val audioUrl = resolveStreamUrl(audio, playerJsUrl)
+      if (videoUrl.isNotBlank() && audioUrl.isNotBlank()) {
+        return buildInfo(request, videoId, durationMs, video, audio, videoUrl, audioUrl)
+      }
+    }
+    // Case B：无 adaptive 直链（PO token 未带时常见）→ 回退单个合并 progressive 流(如 itag 18, 360p)。
+    val combined = combinedCandidates.maxWithOrNull(compareBy({ it.height }, { it.bitrate }))
+    if (combined != null) {
+      val combinedUrl = resolveStreamUrl(combined, playerJsUrl)
+      if (combinedUrl.isNotBlank()) {
+        return buildInfo(request, videoId, durationMs, combined, null, combinedUrl, "")
+      }
+    }
+    throw YoutubeApiException(0, "", "YouTube no decodable video/audio formats")
+  }
+
+  private fun buildInfo(
+    request: PlaybackRequest,
+    videoId: String,
+    durationMs: Long,
+    videoFmt: ParsedFormat,
+    audioFmt: ParsedFormat?,
+    videoUrl: String,
+    audioUrl: String,
+  ): PlaybackInfo {
+    val quality = PlaybackQuality(id = videoFmt.itag, description = videoFmt.qualityLabel)
     val videoTrack = PlaybackTrack(
-      id = video.itag,
+      id = videoFmt.itag,
       baseUrl = videoUrl,
       backupUrls = emptyList(),
-      bandwidth = video.bitrate,
-      codecs = video.codecs,
-      width = video.width,
-      height = video.height,
-      mimeType = video.mimeType,
+      bandwidth = videoFmt.bitrate,
+      codecs = videoFmt.codecs,
+      width = videoFmt.width,
+      height = videoFmt.height,
+      mimeType = videoFmt.mimeType,
     )
-    val audioTrack = PlaybackTrack(
-      id = audio.itag,
-      baseUrl = audioUrl,
-      backupUrls = emptyList(),
-      bandwidth = audio.bitrate,
-      codecs = audio.codecs,
-      width = 0,
-      height = 0,
-      mimeType = audio.mimeType,
-    )
-    val quality = PlaybackQuality(id = video.itag, description = video.qualityLabel)
+    val audioTracks = if (audioFmt != null && audioUrl.isNotBlank()) {
+      listOf(
+        PlaybackTrack(
+          id = audioFmt.itag,
+          baseUrl = audioUrl,
+          backupUrls = emptyList(),
+          bandwidth = audioFmt.bitrate,
+          codecs = audioFmt.codecs,
+          width = 0,
+          height = 0,
+          mimeType = audioFmt.mimeType,
+        ),
+      )
+    } else {
+      emptyList()
+    }
+    val kindLabel = if (audioFmt != null) "${videoFmt.qualityLabel} + audio" else "${videoFmt.qualityLabel} (progressive)"
     Log.i(
       Tag,
-      "resolve ok: ${video.qualityLabel} ${video.codecs} (itag=${video.itag}) / audio itag=${audio.itag}; " +
-        "nDecrypt=${if (videoUrl.contains("n=")) "left" else "applied"}",
+      "resolve ok: $kindLabel itag=${videoFmt.itag}; nDecrypt=${if (videoUrl.contains("n=")) "left" else "applied"}",
     )
-    PlaybackInfo(
+    return PlaybackInfo(
       bvid = videoId,
       cid = 0L,
       title = request.title,
@@ -125,7 +149,7 @@ class YoutubePlaybackResolver(
       qualities = listOf(quality),
       selectedQuality = quality,
       videoTracks = listOf(videoTrack),
-      audioTracks = listOf(audioTrack),
+      audioTracks = audioTracks,
       headers = YoutubePlaybackHeaders,
     )
   }
@@ -240,6 +264,8 @@ class YoutubePlaybackResolver(
       qualityLabel = node.stringOrNull("qualityLabel") ?: "${node.intOrNull("height") ?: 0}p",
       url = url.orEmpty(),
       signatureCipher = cipher,
+      // 合并流(音视频一体，如 progressive itag 18)的 mimeType 里含音频 codec(mp4a/opus)。
+      combined = mimeType.contains("mp4a", ignoreCase = true) || mimeType.contains("opus", ignoreCase = true),
     )
   }
 
@@ -294,6 +320,8 @@ class YoutubePlaybackResolver(
     val qualityLabel: String,
     val url: String,
     val signatureCipher: String?,
+    /** 是否合并流(音视频一体，progressive itag 18 等)。 */
+    val combined: Boolean,
     val kind: Kind = if (mimeType.startsWith("video/")) Kind.Video else Kind.Audio,
   )
 

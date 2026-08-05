@@ -1391,14 +1391,18 @@ fun PlayerScreen(
           // progressive fMP4 流，绕开合成 DASH MPD 的 SegmentBase/indexRange/Initialization 拼接风险
           //（PGC 黑屏疑似合成 MPD 对某字段拼错导致 ExoPlayer 不出帧）。selectedQualityTracks 已按
           // codec 优先级排序、过滤掉设备解不了的轨道（含杜比视界），故取 first() 即可解的流。
-          // YouTube 也是 progressive 直链（segmentBase=null），同样走这条合并路径。
+          // YouTube 也是 progressive 直链（segmentBase=null），同样走这条合并路径；
+          // 若 audioTracks 为空（YouTube 未带 PO token 时回退到单个合并流 itag 18），直接单轨播放。
           val videoTrack = effectiveInfo.videoTracks.first()
-          val audioTrack = effectiveInfo.audioTracks.first()
           val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory)
             .createMediaSource(MediaItem.fromUri(videoTrack.baseUrl))
-          val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-            .createMediaSource(MediaItem.fromUri(audioTrack.baseUrl))
-          MergingMediaSource(videoSource, audioSource)
+          if (effectiveInfo.audioTracks.isEmpty()) {
+            videoSource
+          } else {
+            val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+              .createMediaSource(MediaItem.fromUri(effectiveInfo.audioTracks.first().baseUrl))
+            MergingMediaSource(videoSource, audioSource)
+          }
         } else {
           DashMediaSource.Factory(dataSourceFactory)
             .createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))

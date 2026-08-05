@@ -575,9 +575,14 @@ fun MobilePlayerScreen(
           .setMediaMetadata(metadata)
           .build()
         val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
-        val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-          .createMediaSource(androidx.media3.common.MediaItem.fromUri(effectiveInfo.audioTracks.first().baseUrl))
-        MergingMediaSource(videoSource, audioSource)
+        // audioTracks 为空(YouTube 无 PO token 时回退单个合并流)时直接单轨播放。
+        if (effectiveInfo.audioTracks.isEmpty()) {
+          videoSource
+        } else {
+          val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+            .createMediaSource(androidx.media3.common.MediaItem.fromUri(effectiveInfo.audioTracks.first().baseUrl))
+          MergingMediaSource(videoSource, audioSource)
+        }
       } else {
         val dashItem = buildDashMediaItem(effectiveInfo, playbackCdnPreference)
           .buildUpon()
