@@ -27,8 +27,9 @@ import java.util.Locale
  * → 产出 [PlaybackInfo]（adaptive DASH 优先，progressive 兜底）。
  *
  * 策略：
- *  - 先 WEB 客户端直连（无 PO token）；`playabilityStatus != OK`（被风控拦截）时
- *    回退 ANDROID 客户端（guest 取流更宽容）再试一次。
+ *  - 合并 WEB + ANDROID 两个客户端（均 guest 直连，无 PO token）的 streamingData 候选。
+ *    无 PO token 时 WEB 常剥离 adaptiveFormats 的 url（只剩 progressive itag 18/22=360p），
+ *    ANDROID 客户端对多数视频直接返回带 url 的高清 adaptive（NewPipe 同款），故合并后取高清。
  *  - PO token（jnn）尚未跑通，[YoutubeBotGuard] 返回 null 时走直连；对多数视频仍可播。
  *  - 优先 adaptive 高清视频+音频（1080P/2K/4K，走 DASH 合成 MPD）；仅当 adaptive 取不到
  *    可播直链时回退单个合并 progressive 流（itag 18/22）。用 [CodecCapability] 过滤设备
@@ -50,46 +51,50 @@ class YoutubePlaybackResolver(
   ): PlaybackInfo = withContext(Dispatchers.IO) {
     val videoId = request.bvid
     var lastError: String? = null
+    var havePlayable = false
 
-    // 1) 尝试 WEB（直连，无 PO token）。
-    var player = runCatching { postPlayer(videoId, client = InnerTubeClient.Client.WEB, poToken = null) }
-      .getOrNull()
-    if (!player.isPlayable()) {
-      lastError = player.playabilityReason()
-      Log.w(Tag, "player WEB not playable ($lastError); retry ANDROID")
-      player = runCatching { postPlayer(videoId, client = InnerTubeClient.Client.ANDROID, poToken = null) }
-        .getOrNull()
+    // 收集 playable 客户端(WEB → ANDROID)的 streamingData 合并候选。
+    // 关键：无 PO token 时 WEB guest 常剥离 adaptiveFormats 的 url(只剩 progressive itag 18/22=360p)，
+    // 而 ANDROID 客户端(guest 取流更宽容,NewPipe 同款)对多数视频直接返回带 url 的高清 adaptive。
+    // 故合并两个客户端的流，统一选最高 adaptive，progressive 仅兜底。
+    val allAdaptive = mutableListOf<ParsedFormat>()
+    val allCombined = mutableListOf<ParsedFormat>()
+    var durationMs = 0L
+    for (client in listOf(InnerTubeClient.Client.WEB, InnerTubeClient.Client.ANDROID)) {
+      val player = runCatching { postPlayer(videoId, client = client, poToken = null) }.getOrNull()
       if (!player.isPlayable()) {
         lastError = player?.playabilityReason() ?: lastError
-        throw YoutubeApiException(
-          statusCode = 0,
-          responseBody = "",
-          message = "YouTube playback blocked: ${lastError ?: "no streamingData"}",
-        )
+        Log.w(Tag, "player $client not playable (${player?.playabilityReason()}); next client")
+        continue
       }
+      havePlayable = true
+      val streamingData = player.obj("streamingData") ?: continue
+      if (durationMs <= 0L) {
+        durationMs = (player.obj("videoDetails")?.stringOrNull("lengthSeconds")?.toLongOrNull() ?: 0L) * 1000L
+      }
+      // adaptiveFormats = 分离的纯视频/纯音频；formats = 单个合并的 progressive 流(音视频一体)。
+      val adaptive = (streamingData.array("adaptiveFormats") ?: emptyList())
+        .mapNotNull { it as? JsonObject }.mapNotNull(::parseFormat)
+      val progressive = (streamingData.array("formats") ?: emptyList())
+        .mapNotNull { it as? JsonObject }.mapNotNull(::parseFormat)
+      allAdaptive += adaptive
+      allCombined += (adaptive + progressive).filter { it.kind == Kind.Video && it.combined }
+      Log.i(Tag, "$client formats: adaptive=${adaptive.size} progressive=${progressive.size}")
+    }
+    if (!havePlayable) {
+      throw YoutubeApiException(0, "", "YouTube playback blocked: ${lastError ?: "no streamingData"}")
     }
 
-    val streamingData = player.obj("streamingData")
-      ?: throw YoutubeApiException(0, "", "YouTube /player missing streamingData")
-    // adaptiveFormats = 分离的纯视频/纯音频；formats = 单个合并的 progressive 流(音视频一体)。
-    // 实测：未带 PO token 时 YouTube 常剥离 adaptiveFormats 的 url，仅保留 formats(progressive) 的 url。
-    val adaptive = (streamingData.array("adaptiveFormats") ?: emptyList())
-      .mapNotNull { it as? JsonObject }.mapNotNull(::parseFormat)
-    val progressive = (streamingData.array("formats") ?: emptyList())
-      .mapNotNull { it as? JsonObject }.mapNotNull(::parseFormat)
-
-    val videoCandidates = adaptive.filter { it.kind == Kind.Video && !it.combined }
-    val audioCandidates = adaptive.filter { it.kind == Kind.Audio }
-    val combinedCandidates = (adaptive + progressive).filter { it.kind == Kind.Video && it.combined }
+    val videoCandidates = allAdaptive.filter { it.kind == Kind.Video && !it.combined }
+    val audioCandidates = allAdaptive.filter { it.kind == Kind.Audio }
 
     // 取 base.js 用于 `n`/`s` 解密（仅当存在对应参数时拉取）。
     val playerJsUrl = resolvePlayerJsUrl(videoId)
-    val durationMs = (player.obj("videoDetails")?.stringOrNull("lengthSeconds")?.toLongOrNull() ?: 0L) * 1000L
 
     // 硬件能力过滤：不选 TV 解不了的 4K VP9/AV1（HEVC/AV1 无硬解时回退，避免黑屏/卡顿）。
     val decodableVideos = videoCandidates.filter { codecKeySupported(it.codecKey, codecCapability) }
 
-    // Case A（优先）：adaptive 高清视频+音频双轨。fMP4 分片喂 ProgressiveMediaSource 会解析失败，
+    // 优先：adaptive 高清视频+音频双轨。fMP4 分片喂 ProgressiveMediaSource 会解析失败，
     // 故走 DASH 分支（segmentBase 由 initRange/indexRange 填充），由合成 MPD 播放。
     val adaptiveVideo = pickVideo(decodableVideos, codecPreference, request.preferredQualityId)
     if (adaptiveVideo != null) {
@@ -111,8 +116,8 @@ class YoutubePlaybackResolver(
         }
       }
     }
-    // Case B（兜底）：单个合并 progressive 流(如 itag 18/22)是真实 mp4，ProgressiveMediaSource 可正确播放。
-    val combined = combinedCandidates.maxWithOrNull(compareBy({ it.height }, { it.bitrate }))
+    // 兜底：单个合并 progressive 流(如 itag 18/22)是真实 mp4，ProgressiveMediaSource 可正确播放。
+    val combined = allCombined.maxWithOrNull(compareBy({ it.height }, { it.bitrate }))
     if (combined != null) {
       val combinedUrl = resolveStreamUrl(combined, playerJsUrl)
       if (combinedUrl.isNotBlank()) {
@@ -284,20 +289,23 @@ class YoutubePlaybackResolver(
     if (preferredItag != null) {
       candidates.firstOrNull { it.itag == preferredItag }?.let { return it }
     }
-    val priority = when (preference) {
-      PlaybackCodecPreference.H264 -> listOf("avc")
-      PlaybackCodecPreference.H265 -> listOf("hevc")
-      PlaybackCodecPreference.Av1 -> listOf("av01")
-      PlaybackCodecPreference.Auto -> listOf("avc", "vp9", "av01", "hevc")
+    // 最大化分辨率，codec 偏好仅在同分辨率下打破平局。避免旧逻辑「avc 优先」压过更高的 vp9/av01。
+    return candidates.maxWithOrNull(
+      compareBy<ParsedFormat> { it.height }
+        .thenByDescending { codecRank(it.codecKey, preference) }
+        .thenBy { it.bitrate },
+    )
+  }
+
+  /** codec 偏好秩：偏好 codec 排最前，越靠前数字越小。 */
+  private fun codecRank(codecKey: String, preference: PlaybackCodecPreference): Int {
+    val order = when (preference) {
+      PlaybackCodecPreference.H264 -> listOf("avc", "vp9", "av01", "hevc", "other")
+      PlaybackCodecPreference.H265 -> listOf("hevc", "avc", "vp9", "av01", "other")
+      PlaybackCodecPreference.Av1 -> listOf("av01", "vp9", "avc", "hevc", "other")
+      PlaybackCodecPreference.Auto -> listOf("avc", "vp9", "av01", "hevc", "other")
     }
-    for (codecKey in priority) {
-      val group = candidates.filter { it.codecKey == codecKey }
-      if (group.isNotEmpty()) {
-        return group.maxWithOrNull(compareBy({ it.height }, { it.bitrate }))
-      }
-    }
-    // 偏好 codec 全无 → 退化为最高分辨率任意 codec。
-    return candidates.maxWithOrNull(compareBy({ it.height }, { it.bitrate }))
+    return order.indexOf(codecKey).let { if (it < 0) order.size else it }
   }
 
   private fun pickAudio(candidates: List<ParsedFormat>): ParsedFormat? {
