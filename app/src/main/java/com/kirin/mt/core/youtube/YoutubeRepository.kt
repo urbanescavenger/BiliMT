@@ -196,10 +196,10 @@ class YoutubeRepository(
     return coroutineScope {
       channels.map { channel ->
         async {
-          val videos = rssSemaphore.withPermit {
+          val videos: List<YoutubeVideo> = rssSemaphore.withPermit {
             runCatching { getChannelRss(channel.channelId) }.getOrDefault(emptyList())
           }
-          val resolved = if (videos.isEmpty()) {
+          val resolved: List<YoutubeVideo> = if (videos.isEmpty()) {
             // RSS 失败/空 → 回退 InnerTube /browse。
             innerTubeSemaphore.withPermit {
               runCatching {

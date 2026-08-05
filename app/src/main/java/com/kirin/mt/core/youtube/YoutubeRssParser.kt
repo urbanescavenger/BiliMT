@@ -51,7 +51,7 @@ internal object YoutubeRssParser {
         }
         XmlPullParser.END_TAG -> {
           if (parser.name == "entry") {
-            current?.let { videos.add(it.toVideo()) }
+            current?.toVideo()?.let { videos.add(it) }
             current = null
           }
         }
