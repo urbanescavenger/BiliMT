@@ -90,6 +90,29 @@ class InnerTubeClient(
     }
   }
 
+  /**
+   * 普通 GET,返回 body 字符串。供非 InnerTube 的轻量抓取复用共享连接池
+   * (如频道 RSS `/feeds/videos.xml`)。非 2xx 抛 [YoutubeApiException]。
+   */
+  suspend fun getText(url: String): String = withContext(Dispatchers.IO) {
+    val request = Request.Builder()
+      .url(url)
+      .header("User-Agent", YoutubeConstants.UserAgent)
+      .header("Referer", YoutubeConstants.Referer)
+      .build()
+    httpClient.newCall(request).execute().use { response ->
+      val text = response.body?.string().orEmpty()
+      if (!response.isSuccessful) {
+        throw YoutubeApiException(
+          statusCode = response.code,
+          responseBody = text,
+          message = "GET $url failed with status ${response.code}",
+        )
+      }
+      text
+    }
+  }
+
   /** InnerTube 客户端类型。 */
   enum class Client {
     WEB,

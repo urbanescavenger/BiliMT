@@ -19,6 +19,9 @@ data class YoutubeVideoPage(
 /** 订阅流逐频道拉取的并发上限。并发太高易触发 InnerTube 风控，4 是实测安全值。 */
 const val YoutubeMaxConcurrentChannelFetches = 4
 
+/** RSS 订阅流并发上限。RSS 是轻量 GET、无 InnerTube 风控，可放宽到 8。 */
+const val YoutubeMaxConcurrentRssFetches = 8
+
 /**
  * YouTube 内容门面，供 [com.kirin.mt.core.network.VideoRepository] 转发。
  * 只暴露"搜索 / 热门 / 频道视频"元数据接口；播放流解析（InnerTube /player + PO token）
@@ -175,8 +178,10 @@ class YoutubeRepository(
   /**
    * 动态页"YouTube 关注"流：遍历配置的频道取各自最新视频，按发布时间倒序合并。
    * 对齐 FreeTube `grabAllSubscriptions` 的"逐频道拉取+本地合并"思路（独立实现）。
-   * 并发拉取（[YoutubeMaxConcurrentChannelFetches] 限并发，防 InnerTube 风控），
-   * 关注多时总耗时≈批次×单批耗时，而非频道数×单频道耗时。
+   *
+   * **RSS 优先**：每频道先走轻量 RSS GET（[YoutubeMaxConcurrentRssFetches] 并发，无 InnerTube
+   * 风控、不计配额、无 lockupViewModel 渲染器变更风险）；RSS 失败/空时回退 InnerTube `/browse`
+   * （[YoutubeMaxConcurrentChannelFetches] 限并发防风控）。RSS 缺 duration/live，需要时由回退补全。
    */
   suspend fun getSubscriptionsFeed(
     channels: List<YoutubeChannel>,
@@ -186,25 +191,41 @@ class YoutubeRepository(
       // 未配置频道时回退显示热门,避免动态 tab 空白(设置里可添加频道)。
       return getTrending(YoutubeConstants.TrendingTabs.values.first())
     }
-    val semaphore = Semaphore(YoutubeMaxConcurrentChannelFetches)
+    val rssSemaphore = Semaphore(YoutubeMaxConcurrentRssFetches)
+    val innerTubeSemaphore = Semaphore(YoutubeMaxConcurrentChannelFetches)
     return coroutineScope {
       channels.map { channel ->
         async {
-          semaphore.withPermit {
-            runCatching {
-              // lockupViewModel 不重复频道名/频道id,给空作者名与空频道id的视频补上所属频道,
-              // 卡片作者行才有内容、点 UP 头像才能进本频道主页。
-              getChannelVideos(channel.channelId).items.take(perChannel).map { video ->
-                video.copy(
-                  ownerName = if (video.ownerName.isBlank()) channel.name else video.ownerName,
-                  channelId = if (video.channelId.isBlank()) channel.channelId else video.channelId,
-                )
-              }
-            }.getOrDefault(emptyList())
+          val videos = rssSemaphore.withPermit {
+            runCatching { getChannelRss(channel.channelId) }.getOrDefault(emptyList())
+          }
+          val resolved = if (videos.isEmpty()) {
+            // RSS 失败/空 → 回退 InnerTube /browse。
+            innerTubeSemaphore.withPermit {
+              runCatching {
+                getChannelVideos(channel.channelId).items.take(perChannel)
+              }.getOrDefault(emptyList())
+            }
+          } else {
+            videos.take(perChannel)
+          }
+          // lockupViewModel 不重复频道名/频道id,给空作者名与空频道id的视频补上所属频道,
+          // 卡片作者行才有内容、点 UP 头像才能进本频道主页。
+          resolved.map { video ->
+            video.copy(
+              ownerName = if (video.ownerName.isBlank()) channel.name else video.ownerName,
+              channelId = if (video.channelId.isBlank()) channel.channelId else video.channelId,
+            )
           }
         }
       }.awaitAll().flatten().sortedByDescending { it.pubdate }
     }
+  }
+
+  /** 拉取单频道 RSS 订阅流并解析成 [YoutubeVideo]。失败抛异常，由调用方回退。 */
+  private suspend fun getChannelRss(channelId: String): List<YoutubeVideo> {
+    val xml = client.getText("${YoutubeConstants.RssFeedBase}?channel_id=$channelId")
+    return YoutubeRssParser.parse(xml)
   }
 
   /** 把 [YoutubeVideo] 映射成 biliMT 统一的 [VideoSummary] 卡片。 */
