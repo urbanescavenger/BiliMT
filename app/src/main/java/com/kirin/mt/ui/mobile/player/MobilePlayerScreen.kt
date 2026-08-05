@@ -1573,8 +1573,10 @@ private fun MobileYoutubeIntroTab(
     val pubdateText = detail.publishedAt?.let { t ->
       if (t <= 0L) "" else SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(t * 1000L))
     }.orEmpty()
+    // formatCount 只收 Int，YouTube 的 viewCount 是 Long，先收敛到 Int。
+    val viewCountInt = (detail.viewCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     val metaParts = buildList {
-      if ((detail.viewCount ?: 0L) > 0) add("播放 ${formatCount(detail.viewCount ?: 0L)}")
+      if (viewCountInt > 0) add("播放 ${formatCount(viewCountInt)}")
       if (pubdateText.isNotBlank()) add(pubdateText)
     }
     if (metaParts.isNotEmpty()) {
