@@ -119,7 +119,7 @@ fun MobileYoutubeChannelsPanel(
           ) {
             Row(
               modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-              verticalArrangement = Arrangement.SpaceBetween,
+              horizontalArrangement = Arrangement.SpaceBetween,
             ) {
               Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                 Text(
