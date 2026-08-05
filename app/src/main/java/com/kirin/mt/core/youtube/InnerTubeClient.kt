@@ -24,7 +24,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
  * 协议来源：YouTube.js/FreeTube（见 [YoutubeConstants] 头注）。仅复用请求形态，独立实现。
  */
 class InnerTubeClient(
-  private val client: OkHttpClient,
+  private val httpClient: OkHttpClient,
 ) {
   private val json = Json {
     ignoreUnknownKeys = true
@@ -40,33 +40,43 @@ class InnerTubeClient(
    *
    * @param endpoint 以 / 开头的 API path，如 "/search"、"/browse"。
    * @param payload  业务字段（query/browseId/params/continuation…），context 会自动注入。
+   * @param client   客户端（WEB 默认；ANDROID 供 /player 回退用，guest 取流更宽容）。
+   * @param poToken  可选 PO token；非空时注入 context.serviceIntegrityDimensions。
    * @return 响应根 JsonObject。
    */
   suspend fun postJson(
     endpoint: String,
     payload: JsonObject = buildJsonObject {},
+    client: Client = Client.WEB,
+    poToken: String? = null,
   ): JsonObject = withContext(Dispatchers.IO) {
     val body = buildJsonObject {
       // 业务字段在前，context 在后（youtubei.js 的 ...payload 后接 context）
       payload.forEach { (key, value) -> put(key, value) }
-      put("context", buildContext())
+      put("context", buildContext(client = client, poToken = poToken))
     }
 
     val url = "${YoutubeConstants.InnerTubeBase}/${YoutubeConstants.ApiVersion}$endpoint" +
       "?key=${YoutubeConstants.ApiKey}&prettyPrint=false&alt=json"
 
-    val request = Request.Builder()
+    val requestBuilder = Request.Builder()
       .url(url)
       .post(body.toString().toRequestBody(JsonMediaType))
       .header("Content-Type", "application/json")
-      .header("User-Agent", YoutubeConstants.UserAgent)
+      .header("User-Agent", client.userAgent)
       .header("Referer", YoutubeConstants.Referer)
       .header("X-Goog-Visitor-Id", currentVisitorData())
-      .header("X-Youtube-Client-Version", YoutubeConstants.ClientVersion)
-      .header("X-Youtube-Client-Name", YoutubeConstants.ClientNameId)
-      .build()
+    when (client) {
+      Client.WEB -> requestBuilder
+        .header("X-Youtube-Client-Version", YoutubeConstants.ClientVersion)
+        .header("X-Youtube-Client-Name", YoutubeConstants.ClientNameId)
+      Client.ANDROID -> requestBuilder
+        .header("X-Goog-API-Format-Version", YoutubeConstants.AndroidGoogApiFormatVersion)
+        .header("X-Youtube-Client-Version", YoutubeConstants.AndroidClientVersion)
+        .header("X-Youtube-Client-Name", "30")
+    }
 
-    client.newCall(request).execute().use { response ->
+    httpClient.newCall(requestBuilder.build()).execute().use { response ->
       val text = response.body?.string().orEmpty()
       if (!response.isSuccessful) {
         throw YoutubeApiException(
@@ -80,15 +90,38 @@ class InnerTubeClient(
     }
   }
 
-  private fun buildContext(): JsonObject {
+  /** InnerTube 客户端类型。 */
+  enum class Client {
+    WEB,
+    ANDROID;
+
+    val userAgent: String
+      get() = when (this) {
+        WEB -> YoutubeConstants.UserAgent
+        ANDROID -> YoutubeConstants.AndroidUserAgent
+      }
+  }
+
+  private fun buildContext(client: Client = Client.WEB, poToken: String? = null): JsonObject {
     return buildJsonObject {
       put(
         "client",
         buildJsonObject {
-          put("clientName", YoutubeConstants.ClientName)
-          put("clientVersion", YoutubeConstants.ClientVersion)
-          put("hl", YoutubeConstants.Hl)
-          put("gl", YoutubeConstants.Gl)
+          when (client) {
+            Client.WEB -> {
+              put("clientName", YoutubeConstants.ClientName)
+              put("clientVersion", YoutubeConstants.ClientVersion)
+              put("hl", YoutubeConstants.Hl)
+              put("gl", YoutubeConstants.Gl)
+            }
+            Client.ANDROID -> {
+              put("clientName", "ANDROID")
+              put("clientVersion", YoutubeConstants.AndroidClientVersion)
+              put("androidSdkVersion", YoutubeConstants.AndroidSdkVersion)
+              put("hl", YoutubeConstants.Hl)
+              put("gl", YoutubeConstants.Gl)
+            }
+          }
           put("visitorData", currentVisitorData())
         },
       )
@@ -106,6 +139,12 @@ class InnerTubeClient(
           put("internalExperimentFlags", kotlinx.serialization.json.buildJsonArray {})
         },
       )
+      if (!poToken.isNullOrBlank()) {
+        put(
+          "serviceIntegrityDimensions",
+          buildJsonObject { put("poToken", poToken) },
+        )
+      }
     }
   }
 

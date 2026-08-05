@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>yt-js-shell</title>
+</head>
+<body>
+  <!--
+    隐藏 WebView JS 引擎宿主页。
+    仅作为 evaluateJavascript 的稳定执行上下文(固定 file:// origin)，
+    本身不承载业务逻辑。Kotlin 侧通过 WebView.evaluateJavascript 注入
+    n 解密 / BotGuard 的 JS，避免每次重建 WebView。
+  -->
+</body>
+</html>

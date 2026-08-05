@@ -31,6 +31,13 @@ object YoutubeConstants {
   /** X-Youtube-Client-Name 数值 id（WEB=1）。 */
   const val ClientNameId = "1"
 
+  /** ANDROID 客户端（/player 回退用）：guest 取流更宽容，browse 已废弃不可用。 */
+  const val AndroidClientVersion = "21.03.36"
+  const val AndroidSdkVersion = "36"
+  const val AndroidUserAgent =
+    "com.google.android.youtube/21.03.36 (Linux; U; Android 13; en_US) gzip"
+  const val AndroidGoogApiFormatVersion = "2"
+
   /** 桌面 Chrome UA（FreeTube getRandomUserAgent('desktop') 同源）。 */
   const val UserAgent =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"

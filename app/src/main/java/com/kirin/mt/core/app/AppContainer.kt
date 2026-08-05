@@ -14,7 +14,11 @@ import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.core.network.SpaceHttpSupport
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.youtube.InnerTubeClient
+import com.kirin.mt.core.youtube.YoutubeBotGuard
 import com.kirin.mt.core.youtube.YoutubeChannelStore
+import com.kirin.mt.core.youtube.YoutubeJsExecutor
+import com.kirin.mt.core.youtube.YoutubeNDecryptor
+import com.kirin.mt.core.youtube.YoutubePlaybackResolver
 import com.kirin.mt.core.youtube.YoutubeRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -74,8 +78,19 @@ class AppContainer(context: Context) {
     keyStore = wbiKeyStore,
   )
   val youtubeChannelStore: YoutubeChannelStore = YoutubeChannelStore(appContext)
+  // 共享同一个 YouTube OkHttpClient（InnerTube 数据 + /player + base.js/watch 抓取复用连接池）。
+  val youtubeHttpClient = httpClientFactory.createYoutubeClient()
+  val youtubeJsExecutor: YoutubeJsExecutor = YoutubeJsExecutor(appContext)
+  val youtubeBotGuard: YoutubeBotGuard = YoutubeBotGuard(youtubeJsExecutor, youtubeHttpClient)
+  val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(youtubeJsExecutor, youtubeHttpClient)
   val youtubeRepository: YoutubeRepository = YoutubeRepository(
-    client = InnerTubeClient(client = httpClientFactory.createYoutubeClient()),
+    client = InnerTubeClient(httpClient = youtubeHttpClient),
+  )
+  val youtubePlaybackResolver: YoutubePlaybackResolver = YoutubePlaybackResolver(
+    innerTubeClient = InnerTubeClient(httpClient = youtubeHttpClient),
+    botGuard = youtubeBotGuard,
+    nDecryptor = youtubeNDecryptor,
+    httpClient = youtubeHttpClient,
   )
   val videoRepository: VideoRepository = VideoRepository(
     apiClient = apiClient,
@@ -97,6 +112,7 @@ class AppContainer(context: Context) {
     sessionStore = sessionStore,
     codecCapabilityProbe = codecCapabilityProbe,
     progressStore = PlaybackProgressStore(appContext),
+    youtubePlaybackResolver = youtubePlaybackResolver,
   )
   val danmakuSettingsStore: DanmakuSettingsStore = DanmakuSettingsStore(appContext)
   val liveQualityPreferenceStore: LiveQualityPreferenceStore = LiveQualityPreferenceStore(appContext)

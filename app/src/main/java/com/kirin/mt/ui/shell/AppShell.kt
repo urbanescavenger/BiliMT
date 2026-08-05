@@ -410,6 +410,7 @@ fun BiliTvApp(
       forceStartPosition = forceStartPosition,
       historyPage = historyPage,
       advanceToNextHistoryEpisode = advanceToNextEpisode,
+      source = source,
     )
   }
 

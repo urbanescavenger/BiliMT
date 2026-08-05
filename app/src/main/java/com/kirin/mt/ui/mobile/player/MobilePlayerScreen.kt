@@ -318,19 +318,22 @@ fun MobilePlayerScreen(
     val positionMs = player.currentPosition.coerceAtLeast(0L)
     val durationMs = player.duration.takeIf { it > 0 } ?: info.durationMs
     scope.launch {
+      // 本地进度保存保留（YouTube 按 videoId 也能续播）；B 站 heartbeat 仅 B 站视频上报。
       runCatching { playbackRepository.saveProgress(info.bvid, info.cid, positionMs, durationMs) }
-      val progressSeconds = progressSecondsOverride
-        ?: (positionMs / 1000L).toInt()
-      runCatching {
-        playbackRepository.reportProgress(
-          bvid = info.bvid,
-          cid = info.cid,
-          progressSeconds = progressSeconds,
-          epId = activeRequest.epId,
-          seasonId = activeRequest.seasonId,
-          subType = activeRequest.subType,
-          aid = activeRequest.aid,
-        )
+      if (!activeRequest.isYoutube) {
+        val progressSeconds = progressSecondsOverride
+          ?: (positionMs / 1000L).toInt()
+        runCatching {
+          playbackRepository.reportProgress(
+            bvid = info.bvid,
+            cid = info.cid,
+            progressSeconds = progressSeconds,
+            epId = activeRequest.epId,
+            seasonId = activeRequest.seasonId,
+            subType = activeRequest.subType,
+            aid = activeRequest.aid,
+          )
+        }
       }
     }
   }
@@ -505,12 +508,18 @@ fun MobilePlayerScreen(
     danmakuEntries = emptyList()
     player.clearMediaItems()
     try {
-      val videoMetadata = runCatching { playbackRepository.getVideoMetadata(activeRequest) }.getOrNull()
+      // YouTube 无 B 站 view/metadata/cid，跳过 B 站元数据与 cid 解析。
+      val isYoutube = activeRequest.isYoutube
+      val videoMetadata = if (isYoutube) null else runCatching { playbackRepository.getVideoMetadata(activeRequest) }.getOrNull()
       metadata = videoMetadata
-      val cid = activeRequest.cid.takeIf { it > 0L }
-        ?: videoMetadata?.cid?.takeIf { it > 0L }
-        ?: playbackRepository.resolveCid(activeRequest.bvid)
-      if (cid <= 0L) {
+      val cid = if (isYoutube) {
+        0L
+      } else {
+        activeRequest.cid.takeIf { it > 0L }
+          ?: videoMetadata?.cid?.takeIf { it > 0L }
+          ?: playbackRepository.resolveCid(activeRequest.bvid)
+      }
+      if (cid <= 0L && !isYoutube) {
         playerState = MobilePlayerState.Failed(context.getString(R.string.player_error_missing_cid))
         return@LaunchedEffect
       }
@@ -560,7 +569,7 @@ fun MobilePlayerScreen(
         context,
         BiliMediaDataSourceFactory(client = playbackHttpClient, headers = effectiveInfo.headers).create(),
       )
-      val mediaSource: MediaSource = if (resolvedRequest.isPgc) {
+      val mediaSource: MediaSource = if (resolvedRequest.isPgc || effectiveInfo.videoTracks.first().isProgressive) {
         val videoItem = androidx.media3.common.MediaItem.Builder()
           .setUri(effectiveInfo.videoTracks.first().baseUrl)
           .setMediaMetadata(metadata)

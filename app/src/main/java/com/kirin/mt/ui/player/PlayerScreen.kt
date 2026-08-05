@@ -468,6 +468,8 @@ fun PlayerScreen(
   }
 
   suspend fun reportProgressNow(overrideProgressSeconds: Int? = null) {
+    // YouTube 无 B 站 heartbeat，跳过上报；本地进度保存仍走 saveProgressNow。
+    if (activeRequest.isYoutube) return
     val state = playerState as? PlayerScreenState.Ready ?: return
     val progressSeconds = overrideProgressSeconds
       ?: ((player.currentPosition.takeIf { it >= 0L } ?: playbackPositionState.longValue).coerceAtLeast(0L) / 1000L).toInt()
@@ -596,6 +598,8 @@ fun PlayerScreen(
   }
 
   suspend fun resolveDisplayMetadata(): PlaybackVideoMetadata? {
+    // YouTube 无 B 站 view/互动数据，直接返回 null。
+    if (displayRequest.isYoutube) return null
     metadata?.let { return it }
     return runCatching { playbackRepository.getVideoMetadata(displayRequest) }
       .onFailure { error ->
@@ -1277,31 +1281,47 @@ fun PlayerScreen(
     launchStep = ""
     player.clearMediaItems()
     launchStep = "metadata"
-    Log.i(PlayerPlaybackLogTag, "launch step: metadata (pgc=${activeRequest.isPgc})")
-    val existingMetadata = metadata
-    val videoMetadata = if (existingMetadata != null && existingMetadata.bvid == activeRequest.bvid) {
-      existingMetadata
+    Log.i(PlayerPlaybackLogTag, "launch step: metadata (pgc=${activeRequest.isPgc} youtube=${activeRequest.isYoutube})")
+    // YouTube 无 B 站 view/metadata/分P，跳过 B 站专属的元数据、历史续播和 cid 解析，cid 恒为 0。
+    val isYoutube = activeRequest.isYoutube
+    val videoMetadata = if (isYoutube) {
+      null
     } else {
-      // 首次加载/换视频:同步互动初始状态,让控制栏点赞/投币/收藏显示真实计数。
-      // 同 bvid 重试/切码率走 existingMetadata 分支不同步,避免回退用户当次会话的互动。
-      runCatching { playbackRepository.getVideoMetadata(activeRequest) }.getOrNull()
-        ?.also(::syncInteractionStateFromMetadata)
+      val existingMetadata = metadata
+      if (existingMetadata != null && existingMetadata.bvid == activeRequest.bvid) {
+        existingMetadata
+      } else {
+        // 首次加载/换视频:同步互动初始状态,让控制栏点赞/投币/收藏显示真实计数。
+        // 同 bvid 重试/切码率走 existingMetadata 分支不同步,避免回退用户当次会话的互动。
+        runCatching { playbackRepository.getVideoMetadata(activeRequest) }.getOrNull()
+          ?.also(::syncInteractionStateFromMetadata)
+      }
     }
     metadata = videoMetadata
-    var effectiveRequest = activeRequest.withNextHistoryEpisodeIfNeeded(videoMetadata)
-    if (effectiveRequest.canUseLatestSavedProgress()) {
-      val latestSavedProgress = playbackRepository.getLatestSavedProgress(effectiveRequest.bvid)
-      val latestSavedCid = latestSavedProgress?.cid?.takeIf { savedCid ->
-        savedCid > 0L && videoMetadata.hasEpisodeCid(savedCid)
-      }
-      if (latestSavedCid != null) {
-        effectiveRequest = effectiveRequest.copy(cid = latestSavedCid)
-      }
+    var effectiveRequest = if (isYoutube) {
+      activeRequest
+    } else {
+      activeRequest.withNextHistoryEpisodeIfNeeded(videoMetadata)
+        .let { next ->
+          if (next.canUseLatestSavedProgress()) {
+            val latestSavedProgress = playbackRepository.getLatestSavedProgress(next.bvid)
+            val latestSavedCid = latestSavedProgress?.cid?.takeIf { savedCid ->
+              savedCid > 0L && videoMetadata.hasEpisodeCid(savedCid)
+            }
+            if (latestSavedCid != null) next.copy(cid = latestSavedCid) else next
+          } else {
+            next
+          }
+        }
     }
-    val cid = effectiveRequest.cid.takeIf { it > 0L }
-      ?: videoMetadata?.cid?.takeIf { it > 0L }
-      ?: playbackRepository.resolveCid(effectiveRequest.bvid)
-    if (cid <= 0L) {
+    val cid = if (isYoutube) {
+      0L
+    } else {
+      effectiveRequest.cid.takeIf { it > 0L }
+        ?: videoMetadata?.cid?.takeIf { it > 0L }
+        ?: playbackRepository.resolveCid(effectiveRequest.bvid)
+    }
+    if (cid <= 0L && !isYoutube) {
       playerState = PlayerScreenState.Failed(context.getString(R.string.player_error_missing_cid))
       return@LaunchedEffect
     }
@@ -1366,11 +1386,12 @@ fun PlayerScreen(
             headers = effectiveInfo.headers,
           ).create(),
         )
-        val mediaSource = if (resolvedRequest.isPgc) {
+        val mediaSource = if (resolvedRequest.isPgc || effectiveInfo.videoTracks.first().isProgressive) {
           // 对齐 BV：PGC 用 MergingMediaSource(ProgressiveMediaSource×2)，直接喂视频+音频两条
           // progressive fMP4 流，绕开合成 DASH MPD 的 SegmentBase/indexRange/Initialization 拼接风险
           //（PGC 黑屏疑似合成 MPD 对某字段拼错导致 ExoPlayer 不出帧）。selectedQualityTracks 已按
           // codec 优先级排序、过滤掉设备解不了的轨道（含杜比视界），故取 first() 即可解的流。
+          // YouTube 也是 progressive 直链（segmentBase=null），同样走这条合并路径。
           val videoTrack = effectiveInfo.videoTracks.first()
           val audioTrack = effectiveInfo.audioTracks.first()
           val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory)
@@ -2061,12 +2082,18 @@ internal fun PlaybackTrack.toRepresentation(
   } else {
     ""
   }
+  // progressive 直链（segmentBase == null，如 YouTube）不走 MPD；此处防御性省略 SegmentBase 段。
+  val segmentBaseElement = segmentBase?.let {
+    """
+      <SegmentBase indexRange="${it.indexRange.escapeXml()}">
+        <Initialization range="${it.initializationRange.escapeXml()}" />
+      </SegmentBase>
+    """.trimIndent()
+  } ?: ""
   return """
     <Representation id="${adaptationSetId}_$id" bandwidth="$bandwidth" codecs="${codecs.escapeXml()}"$dimensions>
       $baseUrlElements
-      <SegmentBase indexRange="${segmentBase.indexRange.escapeXml()}">
-        <Initialization range="${segmentBase.initializationRange.escapeXml()}" />
-      </SegmentBase>
+      $segmentBaseElement
     </Representation>
   """.trimIndent()
 }

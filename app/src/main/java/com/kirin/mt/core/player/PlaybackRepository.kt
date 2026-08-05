@@ -17,6 +17,7 @@ import com.kirin.mt.core.network.requireBiliCodeOk
 import com.kirin.mt.core.network.rootObject
 import com.kirin.mt.core.network.string
 import com.kirin.mt.core.storage.SessionStore
+import com.kirin.mt.core.youtube.YoutubePlaybackResolver
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
@@ -34,6 +35,7 @@ class PlaybackRepository(
   private val sessionStore: SessionStore,
   private val codecCapabilityProbe: CodecCapabilityProbe,
   private val progressStore: PlaybackProgressStore,
+  private val youtubePlaybackResolver: YoutubePlaybackResolver,
 ) {
   private val videoshotRepository = VideoshotRepository(
     apiClient = apiClient,
@@ -52,6 +54,10 @@ class PlaybackRepository(
     codecPreference: PlaybackCodecPreference,
     qualityPreference: PlaybackQualityPreference,
   ): PlaybackInfo {
+    // YouTube 播放：走 InnerTube /player（PO token + n 解密），不走 B 站 DASH playurl。
+    if (request.isYoutube) {
+      return youtubePlaybackResolver.resolve(request, codecPreference)
+    }
     val requestedQualityId = request.preferredQualityId ?: qualityPreference.requestedQualityId
     val cacheKey = PlaybackCacheKey(
       bvid = request.bvid,
