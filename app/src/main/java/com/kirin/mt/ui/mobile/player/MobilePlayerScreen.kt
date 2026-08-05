@@ -120,6 +120,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kirin.mt.R
 import com.kirin.mt.ui.theme.BiliColors
+import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.youtube.YoutubeVideoDetail
@@ -148,6 +149,7 @@ import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.ui.player.PlayerDanmakuLayer
 import com.kirin.mt.ui.player.buildDashMediaItem
 import com.kirin.mt.ui.player.nextEpisodeCompletion
+import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.player.withResolvedMetadata
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -200,6 +202,8 @@ fun MobilePlayerScreen(
   playbackCdnPreference: PlaybackCdnPreference,
   airJumpAssistantEnabled: Boolean,
   videoRepository: VideoRepository,
+  youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
+  playQueue: List<VideoSummary> = emptyList(),
   onPlayVideo: (VideoSummary) -> Unit = {},
   onBack: () -> Unit,
   onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit = { _, _, _ -> },
@@ -703,14 +707,20 @@ fun MobilePlayerScreen(
     }
   }
 
-  // 自动连播下一集:播放完成(completionReported)后,按 metadata.pages 取下一分P,
-  // 延迟 3s 切换 activeRequest 重载(镜像 TV PlayerCompletionPlanner)。切走/手动换集时
-  // completionReported 复位,本 effect 重键取消,不会误触。
+  // 自动连播下一集:播放完成(completionReported)后,若来自播放列表(playQueue 有下一项)则切下一项;
+  // 否则按 metadata.pages 取下一分P(镜像 TV PlayerCompletionPlanner),都没有则不连播。
+  // 延迟 3s 切换 activeRequest 重载。切走/手动换集时 completionReported 复位,本 effect 重键取消。
   LaunchedEffect(completionReported) {
     if (!completionReported) return@LaunchedEffect
-    val next = activeRequest.nextEpisodeCompletion(metadata, selectedQualityId) ?: return@LaunchedEffect
+    val queueNext = if (playQueue.size > 1) {
+      val cur = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
+      if (cur in 0 until playQueue.lastIndex) playQueue[cur + 1] else null
+    } else null
+    val next = queueNext?.toPlaybackRequest()
+      ?: activeRequest.nextEpisodeCompletion(metadata, selectedQualityId)?.request
+    if (next == null) return@LaunchedEffect
     delay(CompletionActionDelayMs)
-    activeRequest = next.request
+    activeRequest = next
   }
 
   // 控件自动隐藏:仅手动全屏(沉浸式)下,播放中 4s 后自动隐(对齐 TV PlayerControlsAutoHideMs)。
@@ -1200,6 +1210,7 @@ fun MobilePlayerScreen(
           relatedVideos = relatedVideos,
           isPgc = activeRequest.isPgc,
           videoRepository = videoRepository,
+          youtubePlaylistStore = youtubePlaylistStore,
           onPlayVideo = onPlayVideo,
           onOpenUpSpace = onOpenUpSpace,
           onShare = { shareVideo() },
@@ -1229,6 +1240,7 @@ fun MobilePlayerScreen(
       relatedVideos = relatedVideos,
       isPgc = activeRequest.isPgc,
       videoRepository = videoRepository,
+      youtubePlaylistStore = youtubePlaylistStore,
       onPlayVideo = onPlayVideo,
       onOpenUpSpace = onOpenUpSpace,
       onShare = { shareVideo() },
@@ -1504,9 +1516,15 @@ private fun MobileYoutubeIntroTab(
   youtubeDetail: YoutubeVideoDetail?,
   loading: Boolean,
   request: PlaybackRequest,
+  youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
   modifier: Modifier = Modifier,
 ) {
   val detail = youtubeDetail
+  // hooks 规则:collectAsState 等必须在早期 return 之前无条件调用。
+  val playlistVideos by youtubePlaylistStore.videos.collectAsState(initial = emptyList())
+  val inPlaylist = playlistVideos.any { it.bvid == request.bvid }
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
   if (detail == null) {
     // 加载中显示转圈;加载完仍未取到(受限视频/解析失败)显示占位,避免永远转圈。
     Box(
@@ -1596,6 +1614,31 @@ private fun MobileYoutubeIntroTab(
         modifier = Modifier.padding(top = 10.dp),
       )
     }
+    // 加入播放列表按钮(/player 无 channelId 字段,存卡缺少 channelId,不影响播放与删除)。
+    TextButton(
+      onClick = {
+        val video = VideoSummary(
+          bvid = request.bvid,
+          title = detail.title.ifBlank { request.title },
+          pic = "https://i.ytimg.com/vi/${request.bvid}/mqdefault.jpg",
+          ownerName = detail.channelName,
+          view = (detail.viewCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+          duration = 0,
+          source = SourceYoutube,
+        )
+        scope.launch {
+          val added = youtubePlaylistStore.toggle(video)
+          Toast.makeText(
+            context,
+            context.getString(if (added) R.string.playlist_added else R.string.playlist_removed),
+            Toast.LENGTH_SHORT,
+          ).show()
+        }
+      },
+      modifier = Modifier.padding(top = 12.dp),
+    ) {
+      Text(if (inPlaylist) stringResource(R.string.in_playlist) else stringResource(R.string.add_to_playlist))
+    }
   }
 }
 
@@ -1616,6 +1659,7 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
   relatedVideos: List<VideoSummary>,
   isPgc: Boolean,
   videoRepository: VideoRepository,
+  youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
   onPlayVideo: (VideoSummary) -> Unit,
   onOpenUpSpace: (Long, String, String) -> Unit,
   onShare: () -> Unit,
@@ -1659,6 +1703,7 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
             youtubeDetail = youtubeDetail,
             loading = youtubeDetailLoading,
             request = request,
+            youtubePlaylistStore = youtubePlaylistStore,
             modifier = Modifier.fillMaxSize(),
           )
         } else {

@@ -83,6 +83,7 @@ fun MobileUserSpaceScreen(
   ownerFace: String,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
+  onLongPress: ((VideoSummary) -> Unit)? = null,
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -323,7 +324,7 @@ fun MobileUserSpaceScreen(
           }
         } else {
           items(s.videos, key = { it.bvid }) { video ->
-            MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner)
+            MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner, onLongPress = onLongPress)
           }
         }
         if (s.loadingMore) {

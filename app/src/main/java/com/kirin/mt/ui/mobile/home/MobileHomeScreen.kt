@@ -92,6 +92,7 @@ fun MobileHomeScreen(
   onOpenOwner: (VideoSummary) -> Unit,
   modifier: Modifier = Modifier,
   refreshKey: Int = 0,
+  onLongPress: ((VideoSummary) -> Unit)? = null,
 ) {
   val sections = remember(enabledSections) { enabledSections.ifEmpty { listOf(HomeSection.Recommend) } }
   val uiState = remember { MobileHomeUiState() }
@@ -282,7 +283,7 @@ private fun HomeSectionPage(
         }
         is MobileSectionState.Success -> {
           items(state.videos, key = { it.bvid }) { video ->
-            MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner)
+            MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner, onLongPress = onLongPress)
           }
           if (state.loadingMore) {
             item(span = { GridItemSpan(maxLineSpan) }) {

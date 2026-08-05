@@ -137,6 +137,7 @@ fun MobileSearchScreen(
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
   modifier: Modifier = Modifier,
+  onLongPress: ((VideoSummary) -> Unit)? = null,
 ) {
   val scope = rememberCoroutineScope()
   val keyboard = LocalSoftwareKeyboardController.current
@@ -409,7 +410,7 @@ fun MobileSearchScreen(
               }
               is SearchResultState.Success -> {
                 gridItems(s.videos, key = { it.bvid }) { video ->
-                  MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner)
+                  MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner, onLongPress = onLongPress)
                 }
                 if (s.loadingMore) {
                   item(span = { GridItemSpan(maxLineSpan) }) {

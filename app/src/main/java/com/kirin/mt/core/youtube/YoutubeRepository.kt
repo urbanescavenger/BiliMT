@@ -178,9 +178,13 @@ class YoutubeRepository(
     }
     val merged = channels.flatMap { channel ->
       runCatching {
-        // lockupViewModel 不重复频道名,给空作者名的视频补上所属频道名,卡片作者行才有内容。
+        // lockupViewModel 不重复频道名/频道id,给空作者名与空频道id的视频补上所属频道,
+        // 卡片作者行才有内容、点 UP 头像才能进本频道主页。
         getChannelVideos(channel.channelId).items.take(perChannel).map { video ->
-          if (video.ownerName.isBlank()) video.copy(ownerName = channel.name) else video
+          video.copy(
+            ownerName = if (video.ownerName.isBlank()) channel.name else video.ownerName,
+            channelId = if (video.channelId.isBlank()) channel.channelId else video.channelId,
+          )
         }
       }.getOrDefault(emptyList())
     }
@@ -203,6 +207,7 @@ class YoutubeRepository(
       badge = video.badge,
       isLive = video.liveNow,
       source = SourceYoutube,
+      channelId = video.channelId,
     )
   }
 }

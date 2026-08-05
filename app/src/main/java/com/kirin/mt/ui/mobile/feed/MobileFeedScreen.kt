@@ -38,25 +38,30 @@ import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.FollowingSeason
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.youtube.YoutubeChannelStore
+import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
-/** 子 tab:动态 / 历史 / 收藏 / 追番 / YouTube 关注。 */
+/** 子 tab:动态 / 历史 / 收藏 / 追番 / YouTube 关注 / 播放列表。 */
 private val FeedTabs = listOf(
   R.string.nav_dynamic,
   R.string.nav_history,
   R.string.nav_favorite,
   R.string.nav_bangumi,
   R.string.feed_tab_youtube,
+  R.string.feed_tab_playlist,
 )
 
-/** YouTube 关注 tab 在 pager 中的下标(最后一个,免登录)。 */
+/** YouTube 关注 tab 在 pager 中的下标(免登录)。 */
 private const val YoutubeTabIndex = 4
+/** 播放列表 tab 下标(免登录)。 */
+private const val PlaylistTabIndex = 5
 
 /**
- * 移动端"动态"底栏 tab 内容:4 个子 tab(动态/历史/收藏/追番)+ HorizontalPager 左右滑动切换,
- * 镜像 MobileHomeScreen 的 PrimaryScrollableTabRow + Pager 范式。未登录时整体显示登录入口。
+ * 移动端"动态"底栏 tab 内容:6 个子 tab(动态/历史/收藏/追番/YouTube关注/播放列表)+
+ * HorizontalPager 左右滑动切换,镜像 MobileHomeScreen 的 PrimaryScrollableTabRow + Pager 范式。
+ * 未登录时整体显示登录入口(YouTube 关注与播放列表免登录豁免)。
  * 复用 MobileDynamicScreen(动态)与 MobileHistoryPage/MobileFavoritePage/MobileBangumiPage。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -64,18 +69,21 @@ private const val YoutubeTabIndex = 4
 fun MobileFeedScreen(
   videoRepository: VideoRepository,
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
+  youtubePlaylistStore: YoutubePlaylistStore,
   isLoggedIn: Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
   onSeasonSelected: (FollowingSeason) -> Unit,
+  onLongPress: ((VideoSummary) -> Unit)? = null,
+  onStartPlaylist: (List<VideoSummary>) -> Unit = {},
   onLogin: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val scope = rememberCoroutineScope()
   val pagerState = rememberPagerState(pageCount = { FeedTabs.size }, initialPage = 0)
 
-  // YouTube 关注无需登录;其余 tab 未登录时显示登录入口。
-  if (!isLoggedIn && pagerState.currentPage != YoutubeTabIndex) {
+  // YouTube 关注 / 播放列表无需登录;其余 tab 未登录时显示登录入口。
+  if (!isLoggedIn && pagerState.currentPage != YoutubeTabIndex && pagerState.currentPage != PlaylistTabIndex) {
     Column(
       modifier = modifier.fillMaxSize().padding(24.dp),
       verticalArrangement = Arrangement.Center,
@@ -140,6 +148,14 @@ fun MobileFeedScreen(
           youtubeChannelStore = youtubeChannelStore,
           onVideoSelected = onVideoSelected,
           onOpenOwner = onOpenOwner,
+          onLongPress = onLongPress,
+          modifier = Modifier.fillMaxSize(),
+        )
+        5 -> MobileYoutubePlaylistPage(
+          youtubePlaylistStore = youtubePlaylistStore,
+          onVideoSelected = onVideoSelected,
+          onLongPress = onLongPress,
+          onStartPlaylist = onStartPlaylist,
           modifier = Modifier.fillMaxSize(),
         )
       }
@@ -153,6 +169,7 @@ private fun MobileYoutubeSubscriptions(
   youtubeChannelStore: YoutubeChannelStore,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
+  onLongPress: ((VideoSummary) -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
   val channels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
@@ -207,7 +224,12 @@ private fun MobileYoutubeSubscriptions(
       }
       is YoutubeFeedState.Success -> {
         items(s.videos, key = { it.bvid }) { video ->
-          MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner)
+          MobileVideoCard(
+            video = video,
+            onClick = onVideoSelected,
+            onOpenOwner = onOpenOwner,
+            onLongPress = onLongPress,
+          )
         }
       }
     }

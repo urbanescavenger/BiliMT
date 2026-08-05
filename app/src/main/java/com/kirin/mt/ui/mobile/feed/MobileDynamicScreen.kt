@@ -63,6 +63,7 @@ fun MobileDynamicScreen(
   onOpenOwner: (VideoSummary) -> Unit,
   onLogin: () -> Unit,
   modifier: Modifier = Modifier,
+  onLongPress: ((VideoSummary) -> Unit)? = null,
 ) {
   if (!isLoggedIn) {
     Column(
@@ -204,7 +205,7 @@ fun MobileDynamicScreen(
           }
           is DynamicState.Success -> {
             items(s.videos, key = { it.bvid }) { video ->
-              MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner)
+              MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner, onLongPress = onLongPress)
             }
             if (s.loadingMore) {
               item(span = { GridItemSpan(maxLineSpan) }) {
