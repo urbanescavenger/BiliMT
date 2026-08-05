@@ -1,5 +1,23 @@
 # BiliMT 版本发布说明
 
+## v2.0.9-alpha.1
+
+**YouTube 高清播放(Tier 1)**:把 YouTube 实际播放从最高 720p 提升到 1080P,视设备与取流可得性常到 2K/4K。方案详见 `docs/youtube-hd-playback.md`(P11-14)。
+
+### 功能
+- **YouTube 多档清晰度**:清晰度面板从「只有一项」变为列出全部可播档(1080P/2K/4K),可实时切换。
+- **adaptive 高清设为首选**:优先取分离的视频+音频高清流,progressive 合并流(≤720p)仅作兜底。
+
+### 技术
+- **`s` 签名解密**:`signatureCipher` 形式返回的高清流,复用隐藏 WebView JS 引擎解密 `s`(与 `n` 解密同款机制,最佳努力)。
+- **DASH 播放**:解析 `initRange`/`indexRange` 填充 `segmentBase`,YouTube adaptive 流走合成 MPD 的 `DashMediaSource` 分支(此前恒走 ProgressiveMediaSource,对 fMP4 分片会解析失败)。
+- **硬件能力过滤**:复用 `CodecCapability` 过滤设备解不了的 4K VP9/AV1 轨道,无硬解时自动回退,避免黑屏/卡顿。
+- **MPD 修复**:净化 YouTube mimeType(去掉 `; codecs=...` 尾缀),避免写进 `<AdaptationSet>` 破坏 MPD 解析;`combined` 判定改用原始 mime 串。
+
+### 说明
+- `s` 解密与 DASH 出帧**依赖真机**(base.js 结构常变),云编译仅验证编译绿,运行时需真机手测迭代。
+- versionCode 由 CI 从 tag 推导:vc=2,009,101。
+
 ## v2.0.8
 
 v2.0.7 后主打 **YouTube 内容集成**:搜索/热门/动态关注/播放全链路接入 YouTube,移动端设置加账号与关注管理,动态页统一 B 站动态 + YouTube 关注为一条流,并优化关注流加载性能。合并 mort_debug → main 打稳定 tag。
