@@ -94,6 +94,9 @@ fun SettingsScreen(
   speedTestState: SpeedTestUiState,
   onRunSpeedTest: () -> Unit,
   onDismissSpeedTest: () -> Unit,
+  channels: List<com.kirin.mt.core.youtube.YoutubeChannel>,
+  onAddYoutubeChannel: suspend (String) -> Boolean,
+  onRemoveYoutubeChannel: suspend (String) -> Boolean,
 ) {
   val settingsListState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
@@ -130,6 +133,7 @@ fun SettingsScreen(
       SettingsItemUpdateReleaseNotes to FocusRequester(),
       SettingsItemSpeedTest to FocusRequester(),
       SettingsItemHomeSections to FocusRequester(),
+      SettingsItemYoutubeChannels to FocusRequester(),
       SettingsItemLogs to FocusRequester(),
       SettingsItemAbout to FocusRequester(),
     )
@@ -195,6 +199,7 @@ fun SettingsScreen(
             SettingsItemAbout -> SettingsRightPanel.About
             SettingsItemHomeSections -> SettingsRightPanel.HomeSections
             SettingsItemLogs -> SettingsRightPanel.Logs
+            SettingsItemYoutubeChannels -> SettingsRightPanel.YoutubeChannels
             else -> SettingsRightPanel.None
           }
         },
@@ -234,6 +239,13 @@ fun SettingsScreen(
             SettingsRightPanel.HomeSections
           }
         },
+        onYoutubeChannelsSelected = {
+          rightPanel = if (rightPanel == SettingsRightPanel.YoutubeChannels) {
+            SettingsRightPanel.None
+          } else {
+            SettingsRightPanel.YoutubeChannels
+          }
+        },
         onLogsSelected = onLogsSelected,
         logFiles = logFiles,
         isRecordingLog = isRecordingLog,
@@ -249,6 +261,9 @@ fun SettingsScreen(
         onOpenReleaseNotes = onOpenReleaseNotes,
         speedTestState = speedTestState,
         onRunSpeedTest = onRunSpeedTest,
+        channels = channels,
+        onAddYoutubeChannel = onAddYoutubeChannel,
+        onRemoveYoutubeChannel = onRemoveYoutubeChannel,
         modifier = Modifier.weight(1f),
       )
       when (rightPanel) {
@@ -272,6 +287,13 @@ fun SettingsScreen(
           modifier = Modifier.weight(1f),
         )
         SettingsRightPanel.About -> SettingsAboutColumn(
+          modifier = Modifier.weight(1f),
+        )
+        SettingsRightPanel.YoutubeChannels -> SettingsYoutubeChannelsColumn(
+          channels = channels,
+          onAdd = onAddYoutubeChannel,
+          onRemove = onRemoveYoutubeChannel,
+          onMoveLeftToSettings = { focusSettingItem(lastFocusedSettingItem) },
           modifier = Modifier.weight(1f),
         )
       }
@@ -334,6 +356,10 @@ private fun SettingsBehaviorColumn(
   onOpenReleaseNotes: () -> Unit,
   speedTestState: SpeedTestUiState,
   onRunSpeedTest: () -> Unit,
+  channels: List<com.kirin.mt.core.youtube.YoutubeChannel>,
+  onAddYoutubeChannel: suspend (String) -> Boolean,
+  onRemoveYoutubeChannel: suspend (String) -> Boolean,
+  onYoutubeChannelsSelected: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   CompositionLocalProvider(LocalBringIntoViewSpec provides SettingsBringIntoViewSpec) {
@@ -797,6 +823,28 @@ private fun SettingsBehaviorColumn(
         onClick = onHomeSectionsSelected,
       )
     }
+    item(key = "youtube-header") {
+      SettingsSectionTitle(
+        text = stringResource(R.string.settings_youtube_section),
+        modifier = Modifier.padding(top = BiliSpacing.Lg),
+      )
+    }
+    item(key = "youtube-channels") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_youtube_channels),
+        description = stringResource(R.string.settings_youtube_channels_desc),
+        value = "${channels.size}",
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemYoutubeChannels))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemYoutubeChannels,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemYoutubeChannels) },
+        onClick = onYoutubeChannelsSelected,
+      )
+    }
     item(key = "logs") {
       SettingsActionRow(
         title = stringResource(R.string.settings_logs_entry_title),
@@ -895,6 +943,7 @@ private const val SettingsItemUpdateReleaseNotes = 25
 private const val SettingsItemPlaybackCdn = 21
 private const val SettingsItemLogs = 27
 private const val SettingsItemPlayerLogOverlay = 28
+private const val SettingsItemYoutubeChannels = 29
 
 private val SettingsFocusableItems = listOf(
   SettingsItemPlaybackQuality,
@@ -921,6 +970,7 @@ private val SettingsFocusableItems = listOf(
   SettingsItemClearCache,
   SettingsItemChineseTextVariant,
   SettingsItemHomeSections,
+  SettingsItemYoutubeChannels,
   SettingsItemLogs,
   SettingsItemAbout,
   SettingsItemPlayerLogOverlay,
@@ -931,6 +981,7 @@ private enum class SettingsRightPanel {
   HomeSections,
   Logs,
   About,
+  YoutubeChannels,
 }
 
 private fun settingsItemToLazyIndex(
@@ -974,15 +1025,19 @@ private fun settingsItemToLazyIndex(
   }
   SettingsItemLogs -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    26 + updateExtraCount
+    28 + updateExtraCount
   }
   SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    27 + updateExtraCount
+    29 + updateExtraCount
   }
   SettingsItemPlayerLogOverlay -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    28 + updateExtraCount
+    30 + updateExtraCount
+  }
+  SettingsItemYoutubeChannels -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    27 + updateExtraCount
   }
   else -> 0
 }

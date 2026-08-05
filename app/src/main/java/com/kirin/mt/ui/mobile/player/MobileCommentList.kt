@@ -44,6 +44,7 @@ import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.Comment
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.youtube.YoutubeComment
 import com.kirin.mt.ui.theme.BiliColors
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -376,6 +377,182 @@ private fun loadCommentNextPage(
       state.comments = state.comments + fresh
       state.endReached = !page.hasMore || fresh.isEmpty()
       state.totalCount = page.totalCount
+    } catch (error: CancellationException) {
+      throw error
+    } catch (error: Exception) {
+      state.loadMoreError = error.message.orEmpty()
+    } finally {
+      state.loadingMore = false
+    }
+  }
+}
+
+// ---- YouTube 评论 ----
+
+/** YouTube 评论列表状态（/next + continuation 续页）。评论映射成 B 站 [Comment] 复用渲染。 */
+@Stable
+internal class MobileYoutubeCommentListState {
+  var comments by mutableStateOf<List<Comment>>(emptyList())
+  var loading by mutableStateOf(true)
+  var loadingMore by mutableStateOf(false)
+  var error by mutableStateOf("")
+  var loadMoreError by mutableStateOf("")
+  var endReached by mutableStateOf(false)
+  /** 下一页 continuation token；null 表示到底。 */
+  var continuation: String? = null
+}
+
+/**
+ * YouTube 视频评论列表(触屏)。数据走 VideoRepository.getYoutubeComments(/next)，
+ * 滚动到末尾自动用 continuation 续页；把 YoutubeComment 映射成 B 站 [Comment] 复用 [CommentItem] 渲染。
+ * YouTube 无 aid，故不接评论总数回调(评论 Tab 标题不带计数)；无排序切换(取默认排序)。
+ */
+@Composable
+internal fun MobileYoutubeCommentList(
+  videoId: String,
+  videoRepository: VideoRepository,
+  modifier: Modifier = Modifier,
+) {
+  val state = remember { MobileYoutubeCommentListState() }
+  val coroutineScope = rememberCoroutineScope()
+  val listState = rememberLazyListState()
+
+  LaunchedEffect(videoId) {
+    loadYoutubeCommentFirstPage(videoRepository, state, videoId)
+  }
+
+  // 触屏翻页:可见末尾临近时触发下一页。
+  val nearEnd by remember {
+    derivedStateOf {
+      val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+      last >= 0 && last >= state.comments.size - 3
+    }
+  }
+  LaunchedEffect(nearEnd) {
+    if (nearEnd) loadYoutubeCommentNextPage(videoRepository, coroutineScope, state, videoId)
+  }
+
+  Box(
+    modifier = modifier
+      .fillMaxWidth()
+      .background(Color.White),
+  ) {
+    when {
+      state.loading && state.comments.isEmpty() -> CircularProgressIndicator(
+        color = BiliColors.BiliPink,
+        modifier = Modifier.align(Alignment.Center),
+      )
+      state.error.isNotBlank() && state.comments.isEmpty() -> Text(
+        text = state.error,
+        color = CommentColor.TextSecondary,
+        modifier = Modifier.align(Alignment.Center),
+      )
+      state.comments.isEmpty() -> Text(
+        text = stringResource(R.string.comment_empty),
+        color = CommentColor.TextSecondary,
+        modifier = Modifier.align(Alignment.Center),
+      )
+      else -> LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+      ) {
+        items(state.comments, key = { it.id }) { comment ->
+          CommentItem(comment)
+        }
+        item {
+          YoutubeCommentFooter(state = state)
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun YoutubeCommentFooter(state: MobileYoutubeCommentListState) {
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(vertical = 8.dp),
+    horizontalArrangement = Arrangement.Center,
+  ) {
+    when {
+      state.loadingMore -> CircularProgressIndicator(
+        modifier = Modifier.size(20.dp),
+        color = BiliColors.BiliPink,
+      )
+      state.loadMoreError.isNotBlank() -> Text(
+        text = state.loadMoreError,
+        color = CommentColor.TextSecondary,
+        style = MaterialTheme.typography.bodySmall,
+      )
+      state.endReached -> Text(
+        text = "没有更多了",
+        color = CommentColor.TextSecondary,
+        style = MaterialTheme.typography.bodySmall,
+      )
+    }
+  }
+}
+
+/** 把 [YoutubeComment] 映射成 B 站 [Comment] 复用渲染；YouTube 无 mid/replyCount，用 0 占位。 */
+private fun mapYoutubeComment(c: YoutubeComment): Comment {
+  return Comment(
+    id = c.commentId.hashCode().toLong(),
+    uname = c.authorName,
+    avatar = c.authorAvatarUrl,
+    mid = 0L,
+    content = c.content,
+    likeCount = (c.likeCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+    replyCount = 0,
+    ctime = c.publishedAt ?: 0L,
+  )
+}
+
+private suspend fun loadYoutubeCommentFirstPage(
+  videoRepository: VideoRepository,
+  state: MobileYoutubeCommentListState,
+  videoId: String,
+) {
+  state.loading = true
+  state.error = ""
+  state.loadMoreError = ""
+  state.endReached = false
+  state.continuation = null
+  state.comments = emptyList()
+  try {
+    val page = videoRepository.getYoutubeComments(videoId, null)
+    state.comments = page.items.map(::mapYoutubeComment)
+    state.continuation = page.continuation
+    state.endReached = page.continuation == null || page.items.isEmpty()
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    state.error = error.message.orEmpty()
+  } finally {
+    state.loading = false
+  }
+}
+
+private fun loadYoutubeCommentNextPage(
+  videoRepository: VideoRepository,
+  coroutineScope: CoroutineScope,
+  state: MobileYoutubeCommentListState,
+  videoId: String,
+) {
+  if (state.loadingMore || state.endReached || state.loading) return
+  val token = state.continuation ?: return
+  state.loadingMore = true
+  state.loadMoreError = ""
+  coroutineScope.launch {
+    try {
+      val page = videoRepository.getYoutubeComments(videoId, token)
+      state.continuation = page.continuation
+      val known = state.comments.mapTo(mutableSetOf()) { it.id }
+      val fresh = page.items.map(::mapYoutubeComment).filter { known.add(it.id) }
+      state.comments = state.comments + fresh
+      state.endReached = page.continuation == null || fresh.isEmpty()
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {

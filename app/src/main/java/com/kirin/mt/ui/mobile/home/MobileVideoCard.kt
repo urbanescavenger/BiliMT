@@ -1,8 +1,10 @@
 package com.kirin.mt.ui.mobile.home
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,21 +32,33 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
+import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.ui.theme.BiliColors
 
-/** 移动端视频卡片:纯触屏(无焦点缩放),clickable 点击播放。点头像/UP 名区域进 UP 主页。 */
+/** YouTube 卡片绿框颜色(Material Green 600),动态页区分 YouTube 与 B 站内容。 */
+private val YoutubeBorderColor = Color(0xFF00C853)
+
+/** 移动端视频卡片:纯触屏(无焦点缩放),点击播放;长按加入/移除播放列表(仅 YouTube)。点头像/UP 名区域进 UP 主页。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MobileVideoCard(
   video: VideoSummary,
   onClick: (VideoSummary) -> Unit,
   modifier: Modifier = Modifier,
   onOpenOwner: ((VideoSummary) -> Unit)? = null,
+  onLongPress: ((VideoSummary) -> Unit)? = null,
+  showYoutubeBorder: Boolean = false,
 ) {
+  val youtubeBorder = showYoutubeBorder && video.source == SourceYoutube
   Column(
     modifier = modifier
       .fillMaxWidth()
-      .clickable { onClick(video) },
+      .then(if (youtubeBorder) Modifier.border(2.dp, YoutubeBorderColor, RoundedCornerShape(12.dp)) else Modifier)
+      .combinedClickable(
+        onClick = { onClick(video) },
+        onLongClick = onLongPress?.let { { it(video) } },
+      ),
   ) {
     Box(
       modifier = Modifier
@@ -90,7 +104,7 @@ fun MobileVideoCard(
         modifier = Modifier
           .weight(1f, fill = false)
           .clip(RoundedCornerShape(4.dp))
-          .clickable(enabled = onOpenOwner != null && video.ownerMid > 0) {
+          .clickable(enabled = onOpenOwner != null && ownerClickable(video)) {
             onOpenOwner?.invoke(video)
           },
         verticalAlignment = Alignment.CenterVertically,
@@ -209,4 +223,9 @@ fun formatCount(count: Int): String {
   if (count < 10_000) return count.toString()
   val wan = count / 10_000.0
   return if (wan >= 100) "${wan.toInt()}万" else "${"%.1f".format(wan)}万"
+}
+
+/** 是否可点 UP 头像进主页:B站 ownerMid>0,YouTube 需带 channelId。 */
+private fun ownerClickable(video: VideoSummary): Boolean {
+  return video.ownerMid > 0L || (video.source == SourceYoutube && video.channelId.isNotBlank())
 }

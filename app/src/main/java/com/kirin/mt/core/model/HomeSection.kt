@@ -12,6 +12,7 @@ enum class HomeSection(
 ) {
   Recommend("recommend"),
   Popular("popular"),
+  YoutubeTrending("youtube_trending"),
   Douga("douga", 1005),
   Game("game", 1008),
   Kichiku("kichiku", 1007),

@@ -13,6 +13,8 @@ import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,33 +24,51 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.FollowingSeason
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.youtube.YoutubeChannelStore
+import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import kotlinx.coroutines.launch
 
-/** 子 tab:动态 / 历史 / 收藏 / 追番。 */
+/** 子 tab:动态 / 历史 / 收藏 / 追番 / 播放列表。YouTube 关注已并入动态(统一流)。 */
 private val FeedTabs = listOf(
   R.string.nav_dynamic,
   R.string.nav_history,
   R.string.nav_favorite,
   R.string.nav_bangumi,
+  R.string.feed_tab_playlist,
 )
 
+/** 播放列表 tab 下标(免登录)。 */
+private const val PlaylistTabIndex = 4
+
 /**
- * 移动端"动态"底栏 tab 内容:4 个子 tab(动态/历史/收藏/追番)+ HorizontalPager 左右滑动切换,
- * 镜像 MobileHomeScreen 的 PrimaryScrollableTabRow + Pager 范式。未登录时整体显示登录入口。
+ * 移动端"动态"底栏 tab 内容:5 个子 tab(动态/历史/收藏/追番/播放列表)+
+ * HorizontalPager 左右滑动切换,镜像 MobileHomeScreen 的 PrimaryScrollableTabRow + Pager 范式。
+ * YouTube 关注已并入动态(统一流);播放列表免登录,动态在有 YouTube 频道时也免登录。
  * 复用 MobileDynamicScreen(动态)与 MobileHistoryPage/MobileFavoritePage/MobileBangumiPage。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MobileFeedScreen(
   videoRepository: VideoRepository,
+  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
+  youtubePlaylistStore: YoutubePlaylistStore,
+  youtubeFeedCacheStore: com.kirin.mt.core.youtube.YoutubeFeedCacheStore,
   isLoggedIn: Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
   onSeasonSelected: (FollowingSeason) -> Unit,
+  onLongPress: ((VideoSummary) -> Unit)? = null,
+  onStartPlaylist: (List<VideoSummary>) -> Unit = {},
   onLogin: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
-  if (!isLoggedIn) {
+  val scope = rememberCoroutineScope()
+  val pagerState = rememberPagerState(pageCount = { FeedTabs.size }, initialPage = 0)
+  val channels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
+
+  // 播放列表免登录;动态(合并 YouTube 关注)在有频道时也免登录;其余 tab 未登录时显示登录入口。
+  if (!isLoggedIn && pagerState.currentPage != PlaylistTabIndex &&
+      !(pagerState.currentPage == 0 && channels.isNotEmpty())) {
     Column(
       modifier = modifier.fillMaxSize().padding(24.dp),
       verticalArrangement = Arrangement.Center,
@@ -64,9 +84,6 @@ fun MobileFeedScreen(
     }
     return
   }
-
-  val scope = rememberCoroutineScope()
-  val pagerState = rememberPagerState(pageCount = { FeedTabs.size }, initialPage = 0)
 
   Column(modifier = modifier.fillMaxSize()) {
     PrimaryScrollableTabRow(
@@ -88,10 +105,13 @@ fun MobileFeedScreen(
       when (page) {
         0 -> MobileDynamicScreen(
           videoRepository = videoRepository,
+          youtubeFeedCacheStore = youtubeFeedCacheStore,
           isLoggedIn = true,
+          youtubeChannels = channels,
           onVideoSelected = onVideoSelected,
           onOpenOwner = onOpenOwner,
           onLogin = onLogin,
+          onLongPress = onLongPress,
           modifier = Modifier.fillMaxSize(),
         )
         1 -> MobileHistoryPage(
@@ -109,6 +129,12 @@ fun MobileFeedScreen(
         3 -> MobileBangumiPage(
           videoRepository = videoRepository,
           onSeasonSelected = onSeasonSelected,
+          modifier = Modifier.fillMaxSize(),
+        )
+        4 -> MobileYoutubePlaylistPage(
+          youtubePlaylistStore = youtubePlaylistStore,
+          onVideoSelected = onVideoSelected,
+          onStartPlaylist = onStartPlaylist,
           modifier = Modifier.fillMaxSize(),
         )
       }

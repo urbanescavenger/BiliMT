@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -31,6 +30,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.kirin.mt.R
 import com.kirin.mt.core.model.HomeSection
+import com.kirin.mt.core.model.SourceYoutube
+import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.PlaybackCdnPreference
@@ -47,10 +48,16 @@ import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.auth.AuthRepository
+import com.kirin.mt.core.youtube.YoutubeChannel
+import com.kirin.mt.core.youtube.YoutubePlaylistStore
+import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.LoginActivity
 import com.kirin.mt.ui.mobile.SettingsActivity
 import com.kirin.mt.ui.mobile.common.DevelopingTipContent
 import com.kirin.mt.ui.mobile.feed.MobileFeedScreen
+import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
+import com.kirin.mt.ui.mobile.feed.MobileYoutubeLongPressSheet
+import com.kirin.mt.ui.mobile.space.MobileYoutubeChannelScreen
 import com.kirin.mt.ui.mobile.feed.MobileLiveScreen
 import com.kirin.mt.ui.mobile.home.MobileHomeScreen
 import com.kirin.mt.ui.mobile.pgc.MobilePgcSeasonScreen
@@ -80,6 +87,10 @@ fun BiliMobileApp(
   appSettingsStore: AppSettingsStore,
   sessionStore: SessionStore,
   searchHistoryStore: SearchHistoryStore,
+  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
+  youtubeRepository: YoutubeRepository,
+  youtubePlaylistStore: YoutubePlaylistStore,
+  youtubeFeedCacheStore: com.kirin.mt.core.youtube.YoutubeFeedCacheStore,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
 ) {
@@ -97,6 +108,33 @@ fun BiliMobileApp(
   // 追番点季 -> 季详情外壳;选集后起播,player 盖在季详情之上。z 序同 space。
   var pgcSeasonRequest by remember { mutableStateOf<PgcSeasonRequest?>(null) }
   var pgcPlaybackBehind by remember { mutableStateOf(false) }
+  // YouTube 频道主页(channelId + 名),镜像 space 的覆盖层范式。
+  var youtubeChannelRequest by remember { mutableStateOf<YoutubeChannel?>(null) }
+  var channelPlaybackBehind by remember { mutableStateOf(false) }
+  // 播放列表连播队列:播放列表 tab 起播时快照当前播放列表;其它入口起播时置空。
+  var playQueue by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
+  // 长按视频卡片弹出操作菜单的视频;再点「加入播放列表」切换到播放列表选择弹窗。
+  var longPressVideo by remember { mutableStateOf<VideoSummary?>(null) }
+  var showPlaylistPicker by remember { mutableStateOf(false) }
+
+  // 卡片长按:仅 YouTube 弹操作菜单(加入播放列表→选列表/新建),不再直接 toggle。
+  val onLongPress: (VideoSummary) -> Unit = { video ->
+    if (video.source == SourceYoutube) {
+      longPressVideo = video
+      showPlaylistPicker = false
+    }
+  }
+
+  // 打开 UP 主页:按来源分流——YouTube 带 channelId 进频道主页,否则 B 站空间。
+  fun openOwner(video: VideoSummary) {
+    if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
+      youtubeChannelRequest = YoutubeChannel(video.channelId, video.ownerName)
+      channelPlaybackBehind = false
+    } else {
+      spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+      spacePlaybackBehind = false
+    }
+  }
 
   // Android 13+ 需运行时请求 POST_NOTIFICATIONS,否则后台播放通知(及控件)不显示。
   val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -147,6 +185,7 @@ fun BiliMobileApp(
       when (selected) {
         AppDestination.Recommend -> MobileHomeScreen(
           videoRepository = videoRepository,
+          youtubeChannelStore = youtubeChannelStore,
           // 与 TV 共享同一份配置(AppSettings.homeSectionsOrder + enabledHomeSections):
           // 按用户排序筛掉隐藏分区,空兜底 Recommend。TV 端改顺序/显隐移动端即时同步。
           enabledSections = settings.homeSectionsOrder
@@ -154,35 +193,39 @@ fun BiliMobileApp(
             .ifEmpty { listOf(HomeSection.Recommend) },
           refreshKey = recommendRefreshKey,
           onVideoSelected = { video ->
+            playQueue = emptyList()
             playbackRequest = video.toPlaybackRequest()
           },
-          onOpenOwner = { video ->
-            spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
-            spacePlaybackBehind = false
-          },
+          onOpenOwner = { video -> openOwner(video) },
+          onLongPress = onLongPress,
           modifier = Modifier.fillMaxSize(),
         )
         AppDestination.Live -> MobileLiveScreen(
           liveRepository = liveRepository,
-          onVideoSelected = { video -> playbackRequest = video.toPlaybackRequest() },
-          onOpenOwner = { video ->
-            spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
-            spacePlaybackBehind = false
+          onVideoSelected = { video ->
+            playQueue = emptyList()
+            playbackRequest = video.toPlaybackRequest()
           },
+          onOpenOwner = { video -> openOwner(video) },
           modifier = Modifier.fillMaxSize(),
         )
         AppDestination.Dynamic -> MobileFeedScreen(
           videoRepository = videoRepository,
+          youtubeChannelStore = youtubeChannelStore,
+          youtubePlaylistStore = youtubePlaylistStore,
+          youtubeFeedCacheStore = youtubeFeedCacheStore,
           isLoggedIn = session.isLoggedIn,
-          onVideoSelected = { video -> playbackRequest = video.toPlaybackRequest() },
-          onOpenOwner = { video ->
-            spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
-            spacePlaybackBehind = false
+          onVideoSelected = { video ->
+            playQueue = emptyList()
+            playbackRequest = video.toPlaybackRequest()
           },
+          onOpenOwner = { video -> openOwner(video) },
           onSeasonSelected = { season ->
             pgcSeasonRequest = PgcSeasonRequest(seasonId = season.seasonId, epId = season.firstEpId)
             pgcPlaybackBehind = false
           },
+          onLongPress = onLongPress,
+          onStartPlaylist = { queue -> playQueue = queue },
           onLogin = { context.startActivity(Intent(context, LoginActivity::class.java)) },
           modifier = Modifier.fillMaxSize(),
         )
@@ -191,12 +234,11 @@ fun BiliMobileApp(
           videoRepository = videoRepository,
           searchHistoryStore = searchHistoryStore,
           onVideoSelected = { video ->
+            playQueue = emptyList()
             playbackRequest = video.toPlaybackRequest()
           },
-          onOpenOwner = { video ->
-            spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
-            spacePlaybackBehind = false
-          },
+          onOpenOwner = { video -> openOwner(video) },
+          onLongPress = onLongPress,
           modifier = Modifier.fillMaxSize(),
         )
         AppDestination.Settings -> DevelopingTipContent()
@@ -233,8 +275,16 @@ fun BiliMobileApp(
           playbackCdnPreference = settings.playbackCdnPreference,
           airJumpAssistantEnabled = settings.airJumpAssistantEnabled,
           videoRepository = videoRepository,
-          onPlayVideo = { video -> playbackRequest = video.toPlaybackRequest() },
-          onBack = { playbackRequest = null },
+          youtubePlaylistStore = youtubePlaylistStore,
+          playQueue = playQueue,
+          onPlayVideo = { video ->
+            playQueue = emptyList()
+            playbackRequest = video.toPlaybackRequest()
+          },
+          onBack = {
+            playQueue = emptyList()
+            playbackRequest = null
+          },
           onOpenUpSpace = { mid, name, face ->
             spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(mid, name, face)
             spacePlaybackBehind = true
@@ -266,17 +316,51 @@ fun BiliMobileApp(
             ownerFace = space.ownerFace,
             // 不销毁 spaceRequest:播放器返回时由门控重新露出空间,而非落回首页。
             onVideoSelected = { video ->
+              playQueue = emptyList()
               spacePlaybackBehind = false
               playbackRequest = video.toPlaybackRequest()
             },
-            // 点空间内卡片的 UP 头像 -> 切到该 UP 空间(LaunchedEffect(mid) 自动重载)。
+            // 点空间内卡片的 UP 头像 -> 切到该 UP 空间/YouTube 频道(LaunchedEffect(mid/channelId) 自动重载)。
             // 不动 spacePlaybackBehind:保留来源栈(从播放器进来的返回回播放器,从 tab 进来的返回回 tab)。
-            onOpenOwner = { video ->
-              spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
-            },
+            onOpenOwner = { video -> openOwner(video) },
+            onLongPress = onLongPress,
             onBack = {
               spaceRequest = null
               spacePlaybackBehind = false
+            },
+            modifier = Modifier.fillMaxSize(),
+          )
+        }
+      }
+    }
+
+    val channel = youtubeChannelRequest
+    if (channel != null) {
+      // 频道主页覆盖层:镜像 space 的返回键接管 + 显示门控。
+      BackHandler(enabled = playbackRequest == null || channelPlaybackBehind) {
+        youtubeChannelRequest = null
+        channelPlaybackBehind = false
+      }
+      if (playbackRequest == null || channelPlaybackBehind) {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        ) {
+          MobileYoutubeChannelScreen(
+            youtubeRepository = youtubeRepository,
+            youtubeChannelStore = youtubeChannelStore,
+            channelId = channel.channelId,
+            channelName = channel.name,
+            onVideoSelected = { video ->
+              playQueue = emptyList()
+              channelPlaybackBehind = false
+              playbackRequest = video.toPlaybackRequest()
+            },
+            onLongPress = onLongPress,
+            onBack = {
+              youtubeChannelRequest = null
+              channelPlaybackBehind = false
             },
             modifier = Modifier.fillMaxSize(),
           )
@@ -328,6 +412,29 @@ fun BiliMobileApp(
             modifier = Modifier.fillMaxSize(),
           )
         }
+      }
+    }
+
+    // 长按 YouTube 卡片:底部操作菜单 →「加入播放列表」→ 列表选择/新建弹窗。
+    longPressVideo?.let { video ->
+      if (showPlaylistPicker) {
+        MobilePlaylistPickerDialog(
+          video = video,
+          youtubePlaylistStore = youtubePlaylistStore,
+          onDismiss = {
+            showPlaylistPicker = false
+            longPressVideo = null
+          },
+        )
+      } else {
+        MobileYoutubeLongPressSheet(
+          video = video,
+          onPickPlaylist = { showPlaylistPicker = true },
+          onDismiss = {
+            showPlaylistPicker = false
+            longPressVideo = null
+          },
+        )
       }
     }
   }

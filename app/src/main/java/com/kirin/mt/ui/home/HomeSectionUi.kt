@@ -9,6 +9,7 @@ fun HomeSection.titleRes(): Int {
   return when (this) {
     HomeSection.Recommend -> R.string.home_section_recommend
     HomeSection.Popular -> R.string.home_section_popular
+    HomeSection.YoutubeTrending -> R.string.home_section_youtube_trending
     HomeSection.Douga -> R.string.home_section_douga
     HomeSection.Game -> R.string.home_section_game
     HomeSection.Kichiku -> R.string.home_section_kichiku

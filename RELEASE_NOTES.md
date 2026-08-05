@@ -1,5 +1,103 @@
 # BiliMT 版本发布说明
 
+## v2.0.8
+
+v2.0.7 后主打 **YouTube 内容集成**:搜索/热门/动态关注/播放全链路接入 YouTube,移动端设置加账号与关注管理,动态页统一 B 站动态 + YouTube 关注为一条流,并优化关注流加载性能。合并 mort_debug → main 打稳定 tag。
+
+### YouTube 内容集成(移动端 + TV 双端)
+- **搜索/热门来源切换**:搜索与首页热门可看 YouTube 内容(独立实现 InnerTube 私有 API,guest 认证免登录,复用 FreeTube/youtubei.js 协议形状)。
+- **YouTube 播放(P11)**:搜索/热门/动态里的 YouTube 视频可播放。`POST /player`(WEB→ANDROID 回退)解析 `adaptiveFormats`/`formats`,无 PO token 时优先 progressive 合并流(itag 18/22 真实 mp4),adaptive 高清双轨作兜底;含 `n` 参数解密(隐藏 WebView JS 引擎)+ PO token 结构 best-effort。默认 360p。
+- **频道管理**:设置页可添加/移除关注频道(`resolveChannel` 解析 UC ID / @handle / 名称 / 完整 URL),TV + 移动双端面板。
+- **UP 主页进频道可关注**:点 YouTube 视频卡片 UP 头像进频道主页,频道名 + 关注按钮 + 视频网格(continuation 分页)。
+- **多播放列表**:本地多命名播放列表(预置「默认」),长按 YouTube 卡片/播放器简介 tab 加入;动态「播放列表」tab 两层浏览、长按拖动排序、编辑删除;从播放列表起播后播放器出现 ◀▶ 连播、相关视频即列表后续。
+- **播放器去弹幕**:YouTube 无弹幕,播放器不再显示发弹幕按钮(仅 B 站保留)。
+
+### 账号与关注管理(移动端)
+- 设置顶部账号信息卡(B站头像/昵称/UID/VIP 角标,未登录显示登录入口);点卡弹「B站关注 / YouTube关注 / 退出登录」,列表逐条取消关注。
+
+### 动态页统一关注流
+- 动态页把 **B站动态 + YouTube 关注合并为一条流**(TV + 移动),5s 兜底;移除独立 tab。
+- 首页 YouTube「最热」分区换为关注流 + 超时提示。
+- 关注流逐频道**并行化**(限并发防 InnerTube 风控)+ 动态超时 + 持久化缓存(增删频道自动失效)+ 移动端绿框。
+
+### 关注流加载性能(本版收尾)
+- **RSS 优先加载关注流**:每频道走轻量 GET `/feeds/videos.xml`(不计 InnerTube 配额、无 429、无 lockupViewModel 渲染器变更风险),失败/空回退 InnerTube `/browse`;并发放宽到 8。RSS 缺 duration/live,由回退补全。
+
+### versionCode 说明
+本版 vc=2,008,000。`computeVersionCode` 对 prerelease 加 `labelOrder*100+pre`,故 `v2.0.8-alpha.*`(2,008,101~2,008,117)高于本稳定版——已装 alpha 的用户需**手动安装 v2.0.8** 升级(沿用历版同策略,不改 `labelOrder`)。
+
+### 安装包
+- `BiliMT-v2.0.8-arm64-v8a.apk`
+- `BiliMT-v2.0.8-armeabi-v7a.apk`
+
+## v2.0.8-alpha.13
+
+移动端设置页升级：**账号信息头 + B站/YouTube 关注管理**。
+
+### 功能
+- **账号信息卡**:设置顶部显示当前 B站账号头像/昵称/UID(登录态),VIP 角标;未登录显示登录入口。
+- **关注管理**:登录后点账号卡弹底部选择「B站关注 / YouTube关注 / 退出登录」;进入对应列表可逐条「取消关注」。
+  - **B站关注**:我的关注用户列表,分页加载,头像+昵称+签名,点「取消关注」即时移除。
+  - **YouTube关注**:复用频道管理面板(取关/添加,免登录)。
+
+### 技术
+- 新增 B 站关注列表接口 `x/relation/followings` + `VideoRepository.getFollowingUsers`。
+- 新增 `MobileFollowManageScreen`,B站列表逐条 `setFollowStatus(false)` 取消关注并即时移除。
+- SettingsActivity 内接关注管理子屏(免新增 Activity / 改 manifest)。
+
+## v2.0.8-alpha.12
+
+移动端 YouTube **多播放列表** 与 **播放器列表连播增强**。
+
+### 功能
+- **多播放列表**:播放列表支持多个命名列表,预置「默认」。长按 YouTube 视频卡片弹出菜单,点「加入播放列表」选已有列表或新建列表;播放器"简介"tab 的加入按钮同样走选列表弹窗。
+- **播放列表两层浏览**:动态"播放列表"tab 先选列表,点进某列表后单列展示;长按视频可拖动排序,编辑模式删除。
+- **播放器 ◀▶ 连播**:从播放列表起播后,控制栏出现「上一个/下一个」按钮切播列表内视频;相关视频即列表后续视频。
+- **YouTube 去弹幕**:YouTube 无弹幕,播放器不再显示发送弹幕按钮(仅 B 站保留)。
+
+### 技术
+- `YoutubePlaylistStore` 重写为多命名列表(`youtube_playlists`),旧单列表自动迁移进「默认」。
+- 长按拖动排序用 `detectDragGesturesAfterLongPress`,结束后 `replaceVideos` 持久化。
+- 播放器 `playQueue` 驱动 ◀▶ 与相关视频(就地切 `activeRequest`,保留列表上下文)。
+
+## v2.0.8-alpha.11
+
+移动端 YouTube 三件套：**UP 主页进频道可关注**、**视频可加入播放列表**、**动态新增播放列表 tab**。
+
+### 功能
+- **YouTube UP 主页**:点 YouTube 视频卡片 UP 头像进频道主页,显示频道名 + 关注按钮 + 视频网格(continuation 分页)。关注写入本地频道列表(免登录),动态"YouTube 关注"tab 即时生效。
+- **加入播放列表**:YouTube 视频卡片长按 / 播放器"简介"tab 里的"加入播放列表"按钮,可加/移除到本地播放列表(免登录,DataStore 持久化)。
+- **动态播放列表 tab**:动态底栏新增"播放列表",展示已存视频;"编辑"模式或长按可删减;从播放列表起播后播完自动连播下一项。
+
+### 技术
+- `VideoSummary` 加 `channelId`(YouTube 卡片进频道);新建 `YoutubePlaylistStore` 本地播放列表。
+- 播放列表连播复用播放器完成连播机制(`playQueue` 队列)。
+
+## v2.0.8-alpha.9
+
+修 YouTube 播放「接口未返回可用音视频轨」误报：合并 progressive 流(itag 18/22,音视频一体)`audioTracks` 为空属正常,播放器空轨检查对 progressive 视频轨放行(B 站 DASH 仍严格要求音频轨)。
+
+## v2.0.8-alpha.7
+
+修 YouTube 播放音频接口报错：adaptive 流(fMP4 分片)不能喂 `ProgressiveMediaSource`(按普通 mp4 解会解析失败)。改为优先用 `formats`(progressive)合并流(itag 18/22,真实 mp4),adaptive 双轨仅作最后兜底。
+
+## v2.0.8-alpha.6
+
+YouTube 内容集成(P11)收尾——**YouTube 播放**。搜索/热门/动态里的 YouTube 视频现在可播放(默认 360p)。
+
+### 功能
+- **YouTube 播放(P11-09)**:从搜索/热门/动态进 YouTube 视频可播放。无 PO token 时走 ANDROID 客户端 `formats`(progressive,itag 18 360p)直链;设备网络好、adaptive 直链齐备时走高清双轨。
+- 复用手动配置频道 + 反爬规避(`en/US` locale)。
+
+### 技术实现
+- `POST /player`(WEB→ANDROID 回退)解析 `adaptiveFormats`/`formats`,按 codec 偏好挑流。
+- 隐藏 WebView JS 引擎(`YoutubeJsExecutor`)+ `n` 参数解密(`YoutubeNDecryptor`)+ PO token 结构(`YoutubeBotGuard`,best-effort)。
+- TV/移动播放器走 progressive `MergingMediaSource`(镜像 PGC),门控 B 站专属副作用(heartbeat/元数据/弹幕)。
+
+### 已知限制
+- **高清(720p+)需 PO token**:YouTube 未带 PO token 时剥离 adaptive 高清 URL,仅保留 360p progressive。PO token(jnn WASM)在隐藏 WebView 里通过完整性校验难度大,暂未接通,后续迭代。
+- `n` 解密为正则法,base.js 结构常变,可能需真机迭代。
+
 ## v2.0.7
 
 v2.0.6 后移动端播放器非全屏三态布局重做 + 全屏/暂停控制栏修复 + 直播间播放地址兜底 + TV 焦点/选中态打磨。合并 mort_debug → main 打稳定 tag。

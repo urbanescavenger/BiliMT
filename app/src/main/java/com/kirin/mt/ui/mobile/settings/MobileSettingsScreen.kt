@@ -4,24 +4,48 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.widget.Toast
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.auth.AuthRepository
+import com.kirin.mt.core.image.BiliImageSizing
+import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.i18n.ChineseTextVariant
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
@@ -43,6 +67,7 @@ import com.kirin.mt.ui.settings.latestVersionText
 import com.kirin.mt.ui.settings.updateVersionActionLabel
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MobileSettingsScreen(
   appSettingsStore: AppSettingsStore,
@@ -50,6 +75,7 @@ fun MobileSettingsScreen(
   apkInstaller: ApkInstaller,
   sessionStore: SessionStore,
   authRepository: AuthRepository,
+  onOpenFollows: (FollowManageKind) -> Unit,
   onLogin: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -58,6 +84,8 @@ fun MobileSettingsScreen(
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
   val updateState by updateManager.state.collectAsState()
   val session by sessionStore.session.collectAsState(initial = UserSession())
+  var showFollowSheet by remember { mutableStateOf(false) }
+  var showLoginRequiredDialog by remember { mutableStateOf(false) }
 
   // 安装已下载的 APK:弹系统安装 Intent,补未知来源授权兜底(镜像 TV AppShell)。
   fun installDownloadedApk() {
@@ -100,26 +128,11 @@ fun MobileSettingsScreen(
   ) {
     // ===== 账号 =====
     MobileSettingsSectionHeader(stringResource(R.string.settings_account_section))
-    MobileSettingsRow(
-      title = if (session.isLoggedIn) {
-        stringResource(R.string.mobile_account_signed_in, session.uname.orEmpty().ifBlank { "uid ${session.mid}" })
-      } else {
-        stringResource(R.string.mobile_account_signed_out)
-      },
-      description = if (session.isLoggedIn) null else stringResource(R.string.settings_login_description),
+    MobileAccountHeader(
+      session = session,
       onClick = {
-        if (session.isLoggedIn) {
-          scope.launch { authRepository.clearSession() }
-        } else {
-          onLogin()
-        }
-      },
-      trailing = {
-        Text(
-          text = if (session.isLoggedIn) stringResource(R.string.mobile_logout) else stringResource(R.string.mobile_login),
-          style = MaterialTheme.typography.labelLarge,
-          color = MaterialTheme.colorScheme.primary,
-        )
+        if (session.isLoggedIn) showFollowSheet = true
+        else showLoginRequiredDialog = true
       },
     )
 
@@ -247,6 +260,167 @@ fun MobileSettingsScreen(
       progress = downloadProgressFraction(updateState),
       onClick = updateVersionOnClick,
     )
+  }
+
+    if (showFollowSheet) {
+      MobileFollowSheet(
+        onDismiss = { showFollowSheet = false },
+        onBiliFollows = {
+          showFollowSheet = false
+          onOpenFollows(FollowManageKind.BiliFollows)
+        },
+        onYoutubeFollows = {
+          showFollowSheet = false
+          onOpenFollows(FollowManageKind.YoutubeFollows)
+        },
+        onLogout = {
+          showFollowSheet = false
+          scope.launch { authRepository.clearSession() }
+        },
+      )
+    }
+
+    if (showLoginRequiredDialog) {
+      AlertDialog(
+        onDismissRequest = { showLoginRequiredDialog = false },
+        title = { Text(stringResource(R.string.mobile_account_login_required)) },
+        text = { Text(stringResource(R.string.mobile_account_login_required_body)) },
+        confirmButton = {
+          TextButton(onClick = {
+            showLoginRequiredDialog = false
+            onLogin()
+          }) {
+            Text(stringResource(R.string.mobile_login))
+          }
+        },
+        dismissButton = {
+          TextButton(onClick = { showLoginRequiredDialog = false }) {
+            Text(stringResource(R.string.mobile_dialog_cancel))
+          }
+        },
+      )
+    }
+}
+
+/** 设置顶部账号信息卡:圆形头像 + 昵称/UID + VIP 角标 + 右箭头;点击走关注管理/登录弹窗。 */
+@Composable
+private fun MobileAccountHeader(
+  session: UserSession,
+  onClick: () -> Unit,
+) {
+  val context = LocalContext.current
+  Card(
+    modifier = Modifier.fillMaxWidth().clickable { onClick() },
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    shape = MaterialTheme.shapes.medium,
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+        if (session.isLoggedIn && !session.face.isNullOrBlank()) {
+          val request = remember(context, session.face) {
+            buildOwnerAvatarRequest(
+              context = context,
+              url = session.face.orEmpty(),
+              sizePx = BiliImageSizing.AccountAvatarSizePx,
+            )
+          }
+          AsyncImage(
+            model = request,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(48.dp).clip(CircleShape),
+          )
+        } else {
+          Box(
+            modifier = Modifier.size(48.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surface),
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              painter = painterResource(R.drawable.ic_nav_account),
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(28.dp),
+            )
+          }
+        }
+        if (session.isVip) {
+          Box(
+            modifier = Modifier
+              .align(Alignment.BottomEnd)
+              .size(16.dp)
+              .clip(CircleShape)
+              .background(MaterialTheme.colorScheme.primary),
+            contentAlignment = Alignment.Center,
+          ) {
+            Text(
+              text = "V",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onPrimary,
+            )
+          }
+        }
+      }
+      Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
+        Text(
+          text = if (session.isLoggedIn) {
+            session.uname.orEmpty().ifBlank { "uid ${session.mid}" }
+          } else {
+            stringResource(R.string.mobile_account_signed_out)
+          },
+          style = MaterialTheme.typography.titleMedium,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+          text = if (session.isLoggedIn) {
+            session.mid?.let { "UID $it" } ?: "UID"
+          } else {
+            stringResource(R.string.settings_login_description)
+          },
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
+      Icon(
+        painter = painterResource(R.drawable.ic_player_chevron_right),
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+  }
+}
+
+/** 登录后点账号卡弹出的底部选择:关注管理(二选一) + 退出登录。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MobileFollowSheet(
+  onDismiss: () -> Unit,
+  onBiliFollows: () -> Unit,
+  onYoutubeFollows: () -> Unit,
+  onLogout: () -> Unit,
+) {
+  ModalBottomSheet(onDismissRequest = onDismiss) {
+    Column(
+      modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
+    ) {
+      MobileSettingsRow(
+        title = stringResource(R.string.mobile_follows_bili),
+        onClick = onBiliFollows,
+      )
+      MobileSettingsRow(
+        title = stringResource(R.string.mobile_follows_youtube),
+        onClick = onYoutubeFollows,
+      )
+      MobileSettingsRow(
+        title = stringResource(R.string.mobile_logout),
+        onClick = onLogout,
+      )
+    }
   }
 }
 

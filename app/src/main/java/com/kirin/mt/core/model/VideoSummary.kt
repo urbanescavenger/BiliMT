@@ -1,5 +1,8 @@
 package com.kirin.mt.core.model
 
+import kotlinx.serialization.Serializable
+
+@Serializable
 data class VideoSummary(
   val bvid: String,
   val title: String,
@@ -30,6 +33,14 @@ data class VideoSummary(
   val likeCount: Int = 0,
   val commentCount: Int = 0,
   val forwardCount: Int = 0,
+  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube]。YouTube 卡片 bvid 字段承载 videoId。 */
+  val source: String = SourceBili,
+  /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 卡片填充，用于进 UP 主页；B 站卡片为空串。 */
+  val channelId: String = "",
 )
 
 const val ProgressUnset = -1
+
+/** 内容来源常量。 */
+const val SourceBili = "bili"
+const val SourceYoutube = "youtube"

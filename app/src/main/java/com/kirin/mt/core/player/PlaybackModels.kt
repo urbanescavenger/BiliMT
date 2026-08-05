@@ -1,5 +1,8 @@
 package com.kirin.mt.core.player
 
+import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceYoutube
+
 data class PlaybackRequest(
   val bvid: String,
   val cid: Long,
@@ -26,12 +29,18 @@ data class PlaybackRequest(
   val subType: Int = 0,
   /** 直播间 id;>0 表示这是直播播放请求,走 xlive/web-room/v2/index/getRoomPlayInfo,跳过 DASH playurl。 */
   val liveRoomId: Long = 0L,
+  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube]。YouTube 请求 bvid 字段承载 videoId。 */
+  val source: String = SourceBili,
 ) {
   val isPgc: Boolean
     get() = epId > 0L || seasonId > 0L
 
   val isLive: Boolean
     get() = liveRoomId > 0L
+
+  /** 这是 YouTube 播放请求：走 InnerTube /player 解析 progressive 直链，跳过 B 站 DASH playurl。 */
+  val isYoutube: Boolean
+    get() = source == SourceYoutube
 }
 
 /** 直播清晰度(qn + 描述,如 10000/原画)。 */
@@ -118,8 +127,16 @@ data class PlaybackTrack(
   val width: Int,
   val height: Int,
   val mimeType: String,
-  val segmentBase: PlaybackSegmentBase,
+  /**
+   * DASH SegmentBase 信息（B 站 playurl 有；YouTube progressive 直链为 null）。
+   * null 时播放器走 progressive [MergingMediaSource] 分支，不经 MPD 合成。
+   */
+  val segmentBase: PlaybackSegmentBase? = null,
 ) {
+  /** 是否为 progressive 直链（无 DASH SegmentBase），如 YouTube 流。 */
+  val isProgressive: Boolean
+    get() = segmentBase == null
+
   val isH264: Boolean
     get() = codecs.contains("avc", ignoreCase = true)
 

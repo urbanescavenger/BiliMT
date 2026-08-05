@@ -1,6 +1,6 @@
 # BiliMT 开发进度
 
-最后更新：2026-06-22
+最后更新：2026-08-05
 
 ## 更新规则
 
@@ -12,9 +12,9 @@
 
 ## 当前状态
 
-当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；直播播放暂缓，后续单独评估。
+当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理/播放/多播放列表+播放器◀▶ 已实施（P11-12 编译绿待云编译，运行时待真机；此前已发布 v2.0.8-alpha.11）**；直播播放暂缓，后续单独评估。
 
-推荐下一项：围绕当前 UI 收尾做真机视觉/性能抽样，重点检查液态玻璃开启/关闭两条路径、设置/About 右侧面板、搜索播放返回、播放器侧栏列表和高弹幕播放。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
+推荐下一项：**云编译验证 P11-12 多播放列表改动后真机手测**（长按弹菜单→选列表/新建、播放列表两层浏览+长按拖动排序、播放列表起播后◀▶上/下一个、相关视频=列表后续、YouTube 无弹幕按钮），以及 P11-09 YouTube 播放（重点看 `n` 解密与 PO token，日志 tag `YtResolver`/`YtNDecrypt`/`YtBotGuard`），据真机结果迭代。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
 
 ## P0 项目决策与规则
 
@@ -99,7 +99,7 @@
 | P3-04 | 实现历史页卡片列表 | Done | 使用 `VideoCardMode.History` 显示已看时长/总时长、进度条、最后观看时间和多 P 提示 |
 | P3-05 | 未登录页面提示与跳转 | Done | 动态/历史未登录时显示居中登录提示；暂不自动跳转账号入口，避免焦点链路不确定 |
 | P3-06 | 视频卡片播放量图标 | Done | 封面左下角播放数前新增播放 icon；`assembleDebug` 通过并安装到 `127.0.0.1:16384` |
-| P3-07 | 动态分页增加收藏 tab | In Progress | 参考 BV 源码接入 `/x/v3/fav/folder/created/list-all` 和 `/x/v3/fav/resource/list`；`UserFeedTab` 新增 `Favorite`，`FavoriteFeedUiState` 管理收藏夹列表/当前文件夹/分页状态；`FavoriteFeedContent` 提供收藏夹 pill 行切换 + 视频网格复用 `UserFeedGrid`；加载函数 `loadFavoriteFolders`/`loadFavoriteFirstPage`/`loadFavoriteNextPage` 对齐历史页模式；strings.xml 新增 `nav_favorite` 和 `favorite_*` 文案；待云编译验证 |
+| P3-07 | 动态分页增加收藏 tab | Done | 参考 BV 源码接入 `/x/v3/fav/folder/created/list-all` 和 `/x/v3/fav/resource/list`；`UserFeedTab` 新增 `Favorite`，`FavoriteFeedUiState` 管理收藏夹列表/当前文件夹/分页状态；`FavoriteFeedContent` 提供收藏夹 pill 行切换 + 视频网格复用 `UserFeedGrid`；加载函数 `loadFavoriteFolders`/`loadFavoriteFirstPage`/`loadFavoriteNextPage` 对齐历史页模式；strings.xml 新增 `nav_favorite` 和 `favorite_*` 文案；`assembleDebug` 云编译通过 |
 
 ## P4 播放器
 
@@ -256,3 +256,38 @@
 | P10-02 | 修复 CDN 焦点跳到 LazyList 末尾的 bug | Done | `SettingsItemPlaybackCdn = 21` 与 LazyList 真实索引 3 不匹配，`scrollItemIntoComfortableView(index = 21)` 被 clamp 到 `totalItems - 1`，导致按一次下方向键焦点跳到"关于"。新增 `settingsItemToLazyIndex()` 映射函数统一 `SettingsItem*` → LazyList index。已知 follow-up：当 `update-download-or-install` / `update-release-notes` 条件性 item 渲染/隐藏时，ClearCache/ChineseTextVariant/About 的真实索引会变 1-2；当前仅在"无可用更新"状态下做了对齐。`assembleDebug` 通过 |
 | P10-03 | v1.0.7 发布与合入 main | Done | 整理 v1.0.6 至 v1.0.7 间的应用内更新、CI 和 About 页面变更；更新 `README.md`、`RELEASE_NOTES.md` 和本文件；打 tag `v1.0.7` 并推送；从 `mort_debug` 发起 PR 合到 `main` |
 | P10-04 | v1.0.9 发布与合入 main | Done | 整理 v1.0.8 稳定版后的 1.0.8-alpha 周期变更（设置内网络测速、CdnSpeedTester 探测策略优化、搜索/动态/历史 onOwnerSelected 回调补全、UP 主取消关注对话框焦点修复、CI 发布说明改用 gh release create）；更新 `README.md`、`RELEASE_NOTES.md` 和本文件；打 tag `v1.0.9` 并推送；从 `mort_debug` 合到 `main` |
+
+## 移动端 UI 与直播（v2.0.x 里程碑）
+
+> 此阶段从 `mobile` 分支把触屏移动端移植进单 APK（运行时 `isTvUi()` 选 TV/手机），并新增直播播放。详细逐条见 `RELEASE_NOTES.md`。
+
+| ID | 任务 | 状态 | 验收/备注 |
+| --- | --- | --- | --- |
+| v2.0.0 | 移动端 UI 移植完成 | Done | 单 APK 双入口；移动端外壳（NavigationSuiteScaffold）、内容页（首页/动态/搜索/设置/短信登录）、触屏播放器（手势/画质倍速弹幕/分P/自动连播/UP空间/空降/后台播放/全屏）、PGC MergingMediaSource；合并 mobile → mort_debug → main 打 v2.0.0 稳定 tag |
+| v2.0.1 | 视频详情上下分栏 + 评论 + 动态四子 tab + 季详情 | Done | 播放器上半+评论下半；动态/历史/收藏/追番四子 tab（PrimaryScrollableTabRow + Pager）；MobilePgcSeasonScreen 季详情选集续播高亮 |
+| v2.0.2 | 移动端播放器重构 + 互动 + 检查更新 | Done | 简介/评论双 Tab；点赞/投币/收藏/分享（真实计数与已操作状态）；顶/底栏不遮视频；全屏按视频比例自适应；检查更新内联下载 |
+| v2.0.3 | 移动端播放器打磨 + 弹幕发送 | Done | 竖屏自动全屏居中；画质入口下移；发弹幕（本地插入+粉色描边）；弹幕数量档位；播放卡死自愈（stall 重载）；后台播放音频焦点/耳机断开自动暂停 |
+| v2.0.4 | 看直播（TV + 移动） | Done | 直播入口 + 独立直播播放器（HLS/FLV 取流、画质切换）；过 -352 风控（WBI 签名 + buvid + live Referer）；直播 UI 对齐视频界面；直播画质跨房间持久化（LiveQualityPreferenceStore） |
+| v2.0.5 | 直播分区浏览 | Done | 移动端 tab 行 + Pager，TV capsule tab + 网格；分区树 `getWebAreaList`（data.data 双层）；直播长播报错重试（LiveLoadErrorHandlingPolicy 指数退避 + stall 重载） |
+| v2.0.6 | 移动端体验 + 首页分区同步 + 设置折叠 | Done | 正直播 UP 头像；缓冲期加载图标+控制栏；全屏跟随设备方向（SENSOR）；移动端首页分区配置与 TV 双向同步；设置面板折叠 |
+| v2.0.7 | 非全屏三态布局 + 控制栏修复 + 直播兜底 | Done | 移动端播放器非全屏三态统一（顶栏贴顶+视频底部对齐中线+简介/评论 Tab 占下半）；全屏/暂停控制栏修复；直播间无播放地址 durl 兜底；TV 焦点/选中态打磨 |
+
+## P11 YouTube 内容集成（InnerTube）
+
+> 背景：把 YouTube 内容加进原生 搜索/首页热门/动态 三个入口。数据来自 FreeTube / YouTube.js（MIT）的 InnerTube 私有 API，biliMT 用 Kotlin 独立重写协议（不复用 AGPL 代码）。关键 API 实测发现记录在 `docs/youtube-api-notes.md`。
+
+| ID | 任务 | 状态 | 验收/备注 |
+| --- | --- | --- | --- |
+| P11-01 | InnerTube 数据层 | Done | 新增 `core/youtube/` 包：`YoutubeConstants` / `InnerTubeClient` / `YoutubeModels` / `YoutubeParsers` / `YoutubeRepository` / `YoutubeChannelStore`；guest 认证（visitorData protobuf 编码）无需 key；`VideoSummary` 加 `source` 字段（bili/youtube）；`AppContainer` 注册 `youtubeRepository`；`VideoRepository` 转发 youtube 方法 |
+| P11-02 | 搜索 B站/YouTube 来源切换 | Done | TV `SearchScreen` + 移动 `MobileSearchScreen` 顶部加来源切换；YouTube 走 continuation 分页；B站排序只在 B站来源显示 |
+| P11-03 | 首页 YouTube 热门分区 | Done | `HomeSection` 加 `YoutubeTrending`；`VideoRepository.getHomeSectionVideos` 特判调 `youtubeTrending`；移动/设置面板通用渲染自动生效 |
+| P11-04 | 动态页 YouTube 关注 tab | Done | `UserFeedTab` 加 `YoutubeSubscriptions`（TV 8 处 switch 补齐）；移动 `MobileFeedScreen` 加第 5 个 tab；免登录；空频道回退热门 |
+| P11-05 | 首页迁移自动启用 YouTube 分区 | Done | 新增 `HomeSectionsYoutubeMigrationV1` 一次性把 `YoutubeTrending` 加入启用集，修复已装设备不显示 |
+| P11-06 | 反爬与 renderer 解析修复 | Done | 实测：`zh-CN/CN` locale 触发反爬（搜索返回「出了点问题」拦截页），改 `en/US` 正常；通用热门 `FEtrending` 已被 YouTube 废弃（400），改用 topic 热门（游戏/体育/播客）返回 `gridVideoRenderer`；parser 统一收集 `videoRenderer`/`gridVideoRenderer`/`compactVideoRenderer`/`lockupViewModel` 四种格式，gridVideoRenderer 时长在 `thumbnailOverlayTimeStatusRenderer`；用户确认搜索/热门可用 |
+| P11-07 | YouTube API 笔记文档 | Done | 新建 `docs/youtube-api-notes.md`，记录 InnerTube 请求形态、反爬规避、renderer 解析、废弃端点、播放难点 |
+| P11-08 | 设置页 YouTube 频道管理 | Done | 新增 `YoutubeParsers.parseChannelInfo`（解析频道页 c4TabbedHeaderRenderer/channelMetadataRenderer/microformat 取 channelId+名称）和 `YoutubeRepository.resolveChannel`（归一化输入，`/browse` 支持 @handle / UC... 频道 ID）；TV `SettingsScreen` 新增「YouTube 内容」区 + `SettingsYoutubeChannelsColumn` 右面板（内嵌轻量 D-pad 键盘、添加/清空、频道行删除），懒索引重编号；移动 `MobileSettingsScreen` 新增 `MobileYoutubeChannelsPanel`（TextField 输入+删除列表）；`AppShell`/`SettingsActivity` 接线 store+repo；`assembleDebug` 云编译通过；打测试 tag 验证 |
+| P11-09 | Phase 2 YouTube 播放 | Done（编译绿，运行时待真机） | `POST /player`（WEB→ANDROID 回退）解析 `adaptiveFormats`，按 codec 偏好挑视频 + 最佳音频，产出 progressive `PlaybackInfo`（segmentBase=null）；TV/移动播放器走 progressive `MergingMediaSource`（镜像 PGC）+ 门控 B 站副作用（heartbeat/元数据/弹幕）；`YoutubeJsExecutor` 隐藏 WebView JS 引擎（eval 桥、懒建、会话级复用）；`YoutubeNDecryptor` 拉 base.js + 隐藏 WebView 整体 eval + 正则识别 transform 解密 `n`；`YoutubeBotGuard` jnn PO token 结构占位、失败降级直连。**运行时依赖真机**：`n` 解密（正则法，base.js 常变）与 PO token（jnn WASM 完整性校验）无法云编译验证，需真机手测迭代 |
+| P11-10 | 移动播放器 YouTube 简介/评论 Tab | Done（编译绿，运行时待真机） | 修复 YouTube 进视频后简介 Tab 永转圈、评论 Tab 空白：`YoutubeModels` 加 `YoutubeVideoDetail`/`YoutubeComment`/`YoutubeCommentPage`；`YoutubeParsers` 加 `parseVideoDetail`（`/player` videoDetails.shortDescription + microformat.publishDate）与 `parseCommentPage`/`parseCommentRenderer`（`/next` 递归收 `commentRenderer` + section 内 continuation，防御回退全根）；`YoutubeRepository` 加 `getVideoDetail`/`getComments`，`VideoRepository` 转发；移动播放器 `MobilePlayerIntroCommentTabs` 按 `isYoutube` 分流到新增 `MobileYoutubeIntroTab`（标题/频道行/观看·发布时间/简介，无 B 站互动行，详情失败显示「简介暂不可用」）与 `MobileYoutubeCommentList`（`/next` continuation 续页 + 去重，映射成 `Comment` 复用渲染，无计数/无排序）；相关视频 effect 对 YouTube 加守卫。**运行时依赖真机**：`/next` 评论结构与 `/player` videoDetails 字段随 YouTube 改版可能漂移，需真机手测迭代 |
+| P11-11 | 移动端 YouTube UP主页关注/加入播放列表/动态播放列表tab | Done（v2.0.8-alpha.11，编译绿，运行时待真机） | `VideoSummary` 加 `channelId` 并补 `toVideoSummary`、订阅流给空 channelId 视频注入所属频道；新建 `YoutubePlaylistStore`（DataStore 本地播放列表，免登录）+ `MobileYoutubeChannelScreen`（频道名+关注按钮+continuation 分页网格，镜像 MobileUserSpaceScreen）；`MobileVideoCard` 放开 owner 点击（YouTube 按 channelId）+ 长按 `combinedClickable` 加/移除播放列表；`MobileApp` 新增 `youtubeChannelRequest` 覆盖层 + `openOwner` 按 source 分流 + `playQueue` 连播队列；`MobilePlayerScreen` YouTube 简介 tab 加"加入播放列表"按钮 + 播放列表播完自动连播下一项；`MobileFeedScreen` 加播放列表 tab，`MobileYoutubePlaylistPage` 含编辑删减模式。**运行时依赖真机**：进频道解析、关注持久化、长按/按钮 toggle、连播切换需真机手测 |
+| P11-12 | 多播放列表 + 播放器◀▶/去弹幕/相关视频=列表后续 | 实施中（编译绿待云编译，运行时待真机） | `YoutubePlaylistStore` 重写为多命名列表（`YoutubePlaylist(name,videos)`，新 key `youtube_playlists`，旧扁平列表迁移进「默认」；`playlists`/`addVideo`/`removeVideo`/`createPlaylist`/`replaceVideos`/`moveVideo`/`migrateLegacyIfNeeded`）；长按不再自动 toggle——新增 `MobileYoutubeLongPressSheet`（底部菜单「加入播放列表」）+ `MobilePlaylistPickerDialog`（列列表勾选加入/移除 + 新建列表），`MobileApp.onLongPress` 改弹菜单；`MobileYoutubePlaylistPage` 改两层（第一层列表选择+新建，第二层单列 + `detectDragGesturesAfterLongPress` 长按拖动排序 + 编辑删减）；`MobilePlayerScreen` 播放列表内加◀▶上/下一个按钮（`playQueue` 定位 + 就地切 `activeRequest`）、所有 YouTube 隐藏发送弹幕按钮/输入栏、相关视频改 `playQueue.drop(curIndex+1)`、简介 tab「加入播放列表」改弹选列表 + 新增相关视频单列区。**运行时依赖真机**：多列表增删/拖动排序、◀▶连播、相关视频、弹幕隐藏需真机手测 |
+| P11-13 | 动态页统一流:B站动态 + YouTube 关注合并(TV+移动) | 实施中(代码改完待云编译) | `VideoRepository` 加顶层 `mergeByPubdate`(concat+按 pubdate 倒序) + `YoutubeFeedTimeoutMs=5000`;TV `UserVideoFeedScreen` 移除 `UserFeedTab.YoutubeSubscriptions` 与 `feedState.youtube`,`loadDynamicFirstPage` 增 `coroutineScope`/`youtubeChannels` 参数,`type=="video"` 且有频道时后台 `mergeYoutubeIntoDynamic`(withTimeoutOrNull 5s 兜底,就绪后与 B 站动态合并重排;Empty→Success(yt)),登录门槛改为「合并 tab 有频道也可免登录」,删 `loadYoutubeSubscriptions`,`DynamicFeedContent` 增 `youtubeChannels`;移动 `MobileFeedScreen` 删第 4 个「YouTube关注」tab(播放列表前移到下标 4),外层登录 gate 放行「动态+有频道」,`MobileDynamicScreen` 增 `youtubeChannels` 参数并在 `loadFirstBody` 后台合并 YouTube;删 `MobileYoutubeSubscriptions`/`YoutubeFeedState`。分页不变(load-more 只拉 B 站 offset 页追加尾部)。**运行时待真机**:交错合并、5s 兜底、免登录 YouTube-only、独立 tab 消失 |

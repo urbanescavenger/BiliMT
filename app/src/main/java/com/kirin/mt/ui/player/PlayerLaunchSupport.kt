@@ -42,6 +42,7 @@ internal fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false)
     forceStartPosition = forceStartPosition,
     historyPage = historyPage,
     advanceToNextHistoryEpisode = advanceToNextEpisode,
+    source = source,
   )
 }
 

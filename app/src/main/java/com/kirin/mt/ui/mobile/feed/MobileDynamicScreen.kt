@@ -31,13 +31,20 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
+import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.network.YoutubeFeedCacheTtlMs
+import com.kirin.mt.core.network.mergeByPubdate
+import com.kirin.mt.core.network.youtubeFeedTimeoutMs
+import com.kirin.mt.core.youtube.YoutubeChannel
+import com.kirin.mt.core.youtube.YoutubeFeedCacheStore
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 private sealed interface DynamicState {
   data object Loading : DynamicState
@@ -58,11 +65,14 @@ private sealed interface DynamicState {
 @Composable
 fun MobileDynamicScreen(
   videoRepository: VideoRepository,
+  youtubeFeedCacheStore: YoutubeFeedCacheStore,
   isLoggedIn: Boolean,
+  youtubeChannels: List<YoutubeChannel>,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
   onLogin: () -> Unit,
   modifier: Modifier = Modifier,
+  onLongPress: ((VideoSummary) -> Unit)? = null,
 ) {
   if (!isLoggedIn) {
     Column(
@@ -84,10 +94,25 @@ fun MobileDynamicScreen(
   val scope = rememberCoroutineScope()
   var state by remember { mutableStateOf<DynamicState>(DynamicState.Loading) }
   var nextOffset by remember { mutableStateOf("") }
+  // YouTube 关注拉取超时/失败提示:true 时网格顶部显示提示条(区别于静默空)。
+  var youtubeTimeoutNotice by remember { mutableStateOf(false) }
+
+  /** 把 YouTube 流合并进当前 B 站动态(先去掉旧 YouTube 部分再合并,保证缓存秒出+网络刷新不重复)。 */
+  fun mergeYoutube(yt: List<VideoSummary>) {
+    when (val cur = state) {
+      is DynamicState.Success -> {
+        val biliOnly = cur.videos.filterNot { it.source == SourceYoutube }
+        state = cur.copy(videos = mergeByPubdate(biliOnly, yt))
+      }
+      is DynamicState.Empty -> state = DynamicState.Success(yt, loadingMore = false, endReached = true)
+      else -> {} // Failed / Loading 保持原样
+    }
+  }
 
   suspend fun loadFirstBody() {
     state = DynamicState.Loading
     nextOffset = ""
+    youtubeTimeoutNotice = false
     state = try {
       val page = videoRepository.getDynamicFeed(type = "video")
       nextOffset = page.offset
@@ -104,6 +129,41 @@ fun MobileDynamicScreen(
       throw e
     } catch (e: Exception) {
       DynamicState.Failed(e.message.orEmpty().ifBlank { "加载失败" })
+    }
+
+    // 合并 YouTube 关注:先读缓存秒出(10min 内),后台按频道数动态超时拉网络刷新并写回缓存;
+    // 网络失败/超时用缓存兜底(即使过期)。无频道时不产生额外加载。
+    if (youtubeChannels.isNotEmpty()) {
+      val currentIds = youtubeChannels.map { it.channelId }
+      val cached = youtubeFeedCacheStore.read()
+      val cacheValid = cached != null && cached.channelIds == currentIds
+      val cacheFresh = cacheValid && System.currentTimeMillis() - cached.fetchedAt <= YoutubeFeedCacheTtlMs
+      if (cacheFresh && cached.videos.isNotEmpty()) {
+        mergeYoutube(cached.videos) // 秒出
+      }
+      scope.launch {
+        val result = try {
+          withTimeoutOrNull(youtubeFeedTimeoutMs(youtubeChannels.size)) {
+            videoRepository.youtubeSubscriptionsFeed(youtubeChannels)
+          }
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          null
+        }
+        if (result == null) {
+          // 超时/失败:提示 + 缓存兜底(即使过期)。
+          youtubeTimeoutNotice = true
+          if (cacheValid && cached.videos.isNotEmpty()) mergeYoutube(cached.videos)
+        } else if (result.isNotEmpty()) {
+          youtubeTimeoutNotice = false
+          youtubeFeedCacheStore.write(currentIds, result)
+          mergeYoutube(result)
+        } else if (cacheValid && cached.videos.isNotEmpty()) {
+          // 空结果(无内容),缓存兜底。
+          mergeYoutube(cached.videos)
+        }
+      }
     }
   }
 
@@ -203,8 +263,25 @@ fun MobileDynamicScreen(
             }
           }
           is DynamicState.Success -> {
+            if (youtubeTimeoutNotice) {
+              item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                  text = "YouTube 关注加载超时",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.error,
+                  textAlign = TextAlign.Center,
+                  modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+              }
+            }
             items(s.videos, key = { it.bvid }) { video ->
-              MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner)
+              MobileVideoCard(
+                video = video,
+                onClick = onVideoSelected,
+                onOpenOwner = onOpenOwner,
+                onLongPress = onLongPress,
+                showYoutubeBorder = true,
+              )
             }
             if (s.loadingMore) {
               item(span = { GridItemSpan(maxLineSpan) }) {

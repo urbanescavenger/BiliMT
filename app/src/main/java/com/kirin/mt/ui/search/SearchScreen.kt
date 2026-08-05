@@ -64,6 +64,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import com.kirin.mt.R
+import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.storage.SearchHistoryStore
@@ -95,6 +97,7 @@ import kotlin.math.roundToInt
 internal class SearchUiState {
   var searchText by mutableStateOf("")
   var activeQuery by mutableStateOf<String?>(null)
+  var source by mutableStateOf(SourceBili)
   var selectedOrderKey by mutableStateOf(SearchSortOptions.first().key)
   var focusFirstResult by mutableStateOf(true)
   var focusedResultIndex by mutableIntStateOf(0)
@@ -103,6 +106,7 @@ internal class SearchUiState {
   var resultState by mutableStateOf<SearchResultState>(SearchResultState.Loading)
   var loadedQuery by mutableStateOf("")
   var loadedOrderKey by mutableStateOf("")
+  var loadedSource by mutableStateOf("")
   var loadedRetryKey by mutableIntStateOf(-1)
 
   fun startSearch(query: String) {
@@ -111,6 +115,22 @@ internal class SearchUiState {
       resetResultsForQuery(query)
     }
     activeQuery = query
+  }
+
+  fun selectSource(newSource: String) {
+    if (source == newSource) {
+      return
+    }
+    source = newSource
+    focusFirstResult = true
+    focusedResultIndex = 0
+    focusedResultKey = ""
+    retryKey = 0
+    resultState = SearchResultState.Loading
+    loadedQuery = ""
+    loadedOrderKey = ""
+    loadedSource = ""
+    loadedRetryKey = -1
   }
 
   fun backToKeyboard() {
@@ -147,6 +167,7 @@ internal class SearchUiState {
     resultState = SearchResultState.Loading
     loadedQuery = query.takeIf { it.isBlank() }.orEmpty()
     loadedOrderKey = ""
+    loadedSource = ""
     loadedRetryKey = -1
   }
 }
@@ -194,59 +215,114 @@ internal fun SearchScreen(
   }
 
   val query = uiState.activeQuery
-  Box(
+  Column(
     modifier = Modifier
       .fillMaxSize()
       .focusRequester(screenFocusRequester)
       .focusable(),
   ) {
-    if (query == null) {
-      SearchKeyboardView(
-        searchText = uiState.searchText,
-        suggestions = suggestions,
-        searchHistory = searchHistory,
-        keyboardFocusRequester = firstItemFocusRequester,
-        onMoveLeftToNav = onMoveLeftToNav,
-        onTextChange = { nextText ->
-          uiState.searchText = nextText
-        },
-        onClearSearchHistory = {
-          runCatching {
-            firstItemFocusRequester.requestFocus()
-          }
-          coroutineScope.launch {
-            searchHistoryStore.clear()
-          }
-        },
-        onSearch = { text ->
-          val trimmed = text.trim()
-          if (trimmed.isNotEmpty()) {
+    SearchSourceToggle(
+      source = uiState.source,
+      onSourceSelected = { newSource ->
+        if (uiState.activeQuery != null) {
+          uiState.selectSource(newSource)
+        } else {
+          uiState.source = newSource
+        }
+      },
+      modifier = Modifier.padding(horizontal = BiliSizing.ContentPadding),
+    )
+    Box(
+      modifier = Modifier.fillMaxSize(),
+    ) {
+      if (query == null) {
+        SearchKeyboardView(
+          searchText = uiState.searchText,
+          suggestions = suggestions,
+          searchHistory = searchHistory,
+          keyboardFocusRequester = firstItemFocusRequester,
+          onMoveLeftToNav = onMoveLeftToNav,
+          onTextChange = { nextText ->
+            uiState.searchText = nextText
+          },
+          onClearSearchHistory = {
             runCatching {
-              screenFocusRequester.requestFocus()
+              firstItemFocusRequester.requestFocus()
             }
             coroutineScope.launch {
-              searchHistoryStore.add(trimmed)
+              searchHistoryStore.clear()
             }
-            uiState.startSearch(trimmed)
-          }
-        },
-      )
-    } else {
-      SearchResultsView(
-        query = query,
-        videoRepository = videoRepository,
-        uiState = uiState,
-        firstResultFocusRequester = firstItemFocusRequester,
-        restoreFocusRequestKey = restoreFocusRequestKey,
-        onRestoreFocusHandled = onRestoreFocusHandled,
-        onMoveLeftToNav = onMoveLeftToNav,
-        onBackToKeyboard = {
-          uiState.backToKeyboard()
-          returnFocusToKeyboard = true
-        },
-        onVideoSelected = onVideoSelected,
-        onOwnerSelected = onOwnerSelected,
-      )
+          },
+          onSearch = { text ->
+            val trimmed = text.trim()
+            if (trimmed.isNotEmpty()) {
+              runCatching {
+                screenFocusRequester.requestFocus()
+              }
+              coroutineScope.launch {
+                searchHistoryStore.add(trimmed)
+              }
+              uiState.startSearch(trimmed)
+            }
+          },
+        )
+      } else {
+        SearchResultsView(
+          query = query,
+          videoRepository = videoRepository,
+          uiState = uiState,
+          firstResultFocusRequester = firstItemFocusRequester,
+          restoreFocusRequestKey = restoreFocusRequestKey,
+          onRestoreFocusHandled = onRestoreFocusHandled,
+          onMoveLeftToNav = onMoveLeftToNav,
+          onBackToKeyboard = {
+            uiState.backToKeyboard()
+            returnFocusToKeyboard = true
+          },
+          onVideoSelected = onVideoSelected,
+          onOwnerSelected = onOwnerSelected,
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun SearchSourceToggle(
+  source: String,
+  onSourceSelected: (String) -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val homeColors = LocalHomeColors.current
+  Row(
+    modifier = modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+  ) {
+    listOf(
+      SourceBili to stringResource(R.string.search_source_bili),
+      SourceYoutube to stringResource(R.string.search_source_youtube),
+    ).forEach { (value, label) ->
+      val selected = source == value
+      BiliFocusableSurface(
+        scaleOnFocus = false,
+        shape = RoundedCornerShape(BiliRadius.Pill),
+        onClick = { onSourceSelected(value) },
+        modifier = Modifier.height(BiliSizing.HomeSectionTabHeight),
+      ) {
+        Box(
+          modifier = Modifier
+            .padding(horizontal = BiliSpacing.Lg)
+            .fillMaxSize(),
+          contentAlignment = Alignment.Center,
+        ) {
+          Text(
+            text = label,
+            color = if (selected) homeColors.accent else homeColors.textSecondary,
+            fontSize = BiliTypography.HomeSectionTab,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+          )
+        }
+      }
     }
   }
 }
@@ -592,11 +668,13 @@ private fun SearchResultsView(
     SearchSortOptions.associate { option -> option.key to FocusRequester() }
   }
   val selectedOrderKey = uiState.selectedOrderKey
+  val source = uiState.source
 
-  LaunchedEffect(videoRepository, query, selectedOrderKey, uiState.retryKey) {
+  LaunchedEffect(videoRepository, query, selectedOrderKey, source, uiState.retryKey) {
     if (
       uiState.loadedQuery == query &&
       uiState.loadedOrderKey == selectedOrderKey &&
+      uiState.loadedSource == source &&
       uiState.loadedRetryKey == uiState.retryKey &&
       uiState.resultState !is SearchResultState.Loading
     ) {
@@ -607,21 +685,37 @@ private fun SearchResultsView(
     uiState.focusedResultIndex = 0
     uiState.focusedResultKey = ""
     val nextState = try {
-      val videos = videoRepository.searchVideos(
-        keyword = query,
-        page = FirstPage,
-        order = selectedOrderKey,
-      )
-      if (videos.isEmpty()) {
-        SearchResultState.Empty
+      if (source == SourceYoutube) {
+        val page = videoRepository.youtubeSearch(query = query)
+        if (page.items.isEmpty()) {
+          SearchResultState.Empty
+        } else {
+          SearchResultState.Success(
+            videos = page.items,
+            nextPage = FirstPage + 1,
+            continuation = page.continuation,
+            loadingMore = false,
+            endReached = page.continuation == null,
+            loadMoreError = "",
+          )
+        }
       } else {
-        SearchResultState.Success(
-          videos = videos,
-          nextPage = FirstPage + 1,
-          loadingMore = false,
-          endReached = videos.size < PageSize,
-          loadMoreError = "",
+        val videos = videoRepository.searchVideos(
+          keyword = query,
+          page = FirstPage,
+          order = selectedOrderKey,
         )
+        if (videos.isEmpty()) {
+          SearchResultState.Empty
+        } else {
+          SearchResultState.Success(
+            videos = videos,
+            nextPage = FirstPage + 1,
+            loadingMore = false,
+            endReached = videos.size < PageSize,
+            loadMoreError = "",
+          )
+        }
       }
     } catch (error: CancellationException) {
       throw error
@@ -630,6 +724,7 @@ private fun SearchResultsView(
     }
     uiState.loadedQuery = query
     uiState.loadedOrderKey = selectedOrderKey
+    uiState.loadedSource = source
     uiState.loadedRetryKey = uiState.retryKey
     uiState.resultState = nextState
   }
@@ -642,6 +737,7 @@ private fun SearchResultsView(
 
     val pageToLoad = currentState.nextPage
     val orderToLoad = selectedOrderKey
+    val continuation = currentState.continuation
     uiState.resultState = currentState.copy(
       loadingMore = true,
       loadMoreError = "",
@@ -649,19 +745,36 @@ private fun SearchResultsView(
 
     coroutineScope.launch {
       uiState.resultState = try {
-        val nextVideos = videoRepository.searchVideos(
-          keyword = query,
-          page = pageToLoad,
-          order = orderToLoad,
-        )
+        val nextVideos: List<VideoSummary>
+        val nextContinuation: String?
+        if (source == SourceYoutube) {
+          val page = videoRepository.youtubeSearch(
+            query = query,
+            continuation = continuation,
+          )
+          nextVideos = page.items
+          nextContinuation = page.continuation
+        } else {
+          nextVideos = videoRepository.searchVideos(
+            keyword = query,
+            page = pageToLoad,
+            order = orderToLoad,
+          )
+          nextContinuation = null
+        }
         val latestState = uiState.resultState as? SearchResultState.Success ?: return@launch
         val mergedVideos = latestState.videos.appendUniqueByBvid(nextVideos)
         latestState.copy(
           videos = mergedVideos,
           nextPage = pageToLoad + 1,
+          continuation = nextContinuation,
           loadingMore = false,
-          endReached = nextVideos.size < PageSize ||
-            mergedVideos.size == latestState.videos.size,
+          endReached = if (source == SourceYoutube) {
+            nextContinuation == null || mergedVideos.size == latestState.videos.size
+          } else {
+            nextVideos.size < PageSize ||
+              mergedVideos.size == latestState.videos.size
+          },
           loadMoreError = "",
         )
       } catch (error: CancellationException) {
@@ -690,6 +803,7 @@ private fun SearchResultsView(
   ) {
     SearchResultsHeader(
       query = query,
+      source = source,
       selectedOrderKey = selectedOrderKey,
       sortFocusRequesters = sortFocusRequesters,
       firstResultFocusRequester = firstResultFocusRequester,
@@ -745,6 +859,7 @@ private fun SearchResultsView(
 @Composable
 private fun SearchResultsHeader(
   query: String,
+  source: String,
   selectedOrderKey: String,
   sortFocusRequesters: Map<String, FocusRequester>,
   firstResultFocusRequester: FocusRequester,
@@ -763,31 +878,33 @@ private fun SearchResultsHeader(
       fontWeight = FontWeight.Bold,
       modifier = Modifier.padding(horizontal = BiliSizing.SearchVideoGridHorizontalPadding),
     )
-    LazyRow(
-      modifier = Modifier
-        .padding(horizontal = BiliSizing.SearchVideoGridHorizontalPadding)
-        .fillMaxWidth()
-        .height(BiliSizing.HomeSectionTabHeight + BiliSpacing.Xs)
-        .padding(BiliSpacing.Xs),
-      horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
-      contentPadding = PaddingValues(horizontal = BiliSpacing.Xs),
-    ) {
-      itemsIndexed(SearchSortOptions, key = { _, option -> option.key }) { index, option ->
-        val selected = selectedOrderKey == option.key
-        SearchSortButton(
-          option = option,
-          selected = selected,
-          modifier = Modifier.focusRequester(sortFocusRequesters.getValue(option.key)),
-          onMoveLeftToNav = if (index == 0) onMoveLeftToNav else null,
-          onMoveDownToResults = {
-            runCatching {
-              firstResultFocusRequester.requestFocus()
-            }.isSuccess
-          },
-          onSelected = {
-            onOrderSelected(option.key)
-          },
-        )
+    if (source == SourceBili) {
+      LazyRow(
+        modifier = Modifier
+          .padding(horizontal = BiliSizing.SearchVideoGridHorizontalPadding)
+          .fillMaxWidth()
+          .height(BiliSizing.HomeSectionTabHeight + BiliSpacing.Xs)
+          .padding(BiliSpacing.Xs),
+        horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
+        contentPadding = PaddingValues(horizontal = BiliSpacing.Xs),
+      ) {
+        itemsIndexed(SearchSortOptions, key = { _, option -> option.key }) { index, option ->
+          val selected = selectedOrderKey == option.key
+          SearchSortButton(
+            option = option,
+            selected = selected,
+            modifier = Modifier.focusRequester(sortFocusRequesters.getValue(option.key)),
+            onMoveLeftToNav = if (index == 0) onMoveLeftToNav else null,
+            onMoveDownToResults = {
+              runCatching {
+                firstResultFocusRequester.requestFocus()
+              }.isSuccess
+            },
+            onSelected = {
+              onOrderSelected(option.key)
+            },
+          )
+        }
       }
     }
   }
@@ -1067,6 +1184,8 @@ internal sealed interface SearchResultState {
   data class Success(
     val videos: List<VideoSummary>,
     val nextPage: Int,
+    /** YouTube 来源的续页 token；B站来源恒为 null。 */
+    val continuation: String? = null,
     val loadingMore: Boolean,
     val endReached: Boolean,
     val loadMoreError: String,

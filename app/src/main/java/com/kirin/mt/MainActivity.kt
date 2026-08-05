@@ -39,6 +39,8 @@ class MainActivity : ComponentActivity() {
             appCacheManager = appContainer.appCacheManager,
             searchHistoryStore = appContainer.searchHistoryStore,
             sessionStore = appContainer.sessionStore,
+            youtubeChannelStore = appContainer.youtubeChannelStore,
+            youtubeRepository = appContainer.youtubeRepository,
             updateManager = appContainer.updateManager,
             apkInstaller = appContainer.apkInstaller,
           )
@@ -55,6 +57,10 @@ class MainActivity : ComponentActivity() {
             appSettingsStore = appContainer.appSettingsStore,
             sessionStore = appContainer.sessionStore,
             searchHistoryStore = appContainer.searchHistoryStore,
+            youtubeChannelStore = appContainer.youtubeChannelStore,
+            youtubeRepository = appContainer.youtubeRepository,
+            youtubePlaylistStore = appContainer.youtubePlaylistStore,
+            youtubeFeedCacheStore = appContainer.youtubeFeedCacheStore,
             updateManager = appContainer.updateManager,
             apkInstaller = appContainer.apkInstaller,
           )
