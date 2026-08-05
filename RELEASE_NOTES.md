@@ -1,5 +1,35 @@
 # BiliMT 版本发布说明
 
+## v2.0.8
+
+v2.0.7 后主打 **YouTube 内容集成**:搜索/热门/动态关注/播放全链路接入 YouTube,移动端设置加账号与关注管理,动态页统一 B 站动态 + YouTube 关注为一条流,并优化关注流加载性能。合并 mort_debug → main 打稳定 tag。
+
+### YouTube 内容集成(移动端 + TV 双端)
+- **搜索/热门来源切换**:搜索与首页热门可看 YouTube 内容(独立实现 InnerTube 私有 API,guest 认证免登录,复用 FreeTube/youtubei.js 协议形状)。
+- **YouTube 播放(P11)**:搜索/热门/动态里的 YouTube 视频可播放。`POST /player`(WEB→ANDROID 回退)解析 `adaptiveFormats`/`formats`,无 PO token 时优先 progressive 合并流(itag 18/22 真实 mp4),adaptive 高清双轨作兜底;含 `n` 参数解密(隐藏 WebView JS 引擎)+ PO token 结构 best-effort。默认 360p。
+- **频道管理**:设置页可添加/移除关注频道(`resolveChannel` 解析 UC ID / @handle / 名称 / 完整 URL),TV + 移动双端面板。
+- **UP 主页进频道可关注**:点 YouTube 视频卡片 UP 头像进频道主页,频道名 + 关注按钮 + 视频网格(continuation 分页)。
+- **多播放列表**:本地多命名播放列表(预置「默认」),长按 YouTube 卡片/播放器简介 tab 加入;动态「播放列表」tab 两层浏览、长按拖动排序、编辑删除;从播放列表起播后播放器出现 ◀▶ 连播、相关视频即列表后续。
+- **播放器去弹幕**:YouTube 无弹幕,播放器不再显示发弹幕按钮(仅 B 站保留)。
+
+### 账号与关注管理(移动端)
+- 设置顶部账号信息卡(B站头像/昵称/UID/VIP 角标,未登录显示登录入口);点卡弹「B站关注 / YouTube关注 / 退出登录」,列表逐条取消关注。
+
+### 动态页统一关注流
+- 动态页把 **B站动态 + YouTube 关注合并为一条流**(TV + 移动),5s 兜底;移除独立 tab。
+- 首页 YouTube「最热」分区换为关注流 + 超时提示。
+- 关注流逐频道**并行化**(限并发防 InnerTube 风控)+ 动态超时 + 持久化缓存(增删频道自动失效)+ 移动端绿框。
+
+### 关注流加载性能(本版收尾)
+- **RSS 优先加载关注流**:每频道走轻量 GET `/feeds/videos.xml`(不计 InnerTube 配额、无 429、无 lockupViewModel 渲染器变更风险),失败/空回退 InnerTube `/browse`;并发放宽到 8。RSS 缺 duration/live,由回退补全。
+
+### versionCode 说明
+本版 vc=2,008,000。`computeVersionCode` 对 prerelease 加 `labelOrder*100+pre`,故 `v2.0.8-alpha.*`(2,008,101~2,008,117)高于本稳定版——已装 alpha 的用户需**手动安装 v2.0.8** 升级(沿用历版同策略,不改 `labelOrder`)。
+
+### 安装包
+- `BiliMT-v2.0.8-arm64-v8a.apk`
+- `BiliMT-v2.0.8-armeabi-v7a.apk`
+
 ## v2.0.8-alpha.13
 
 移动端设置页升级：**账号信息头 + B站/YouTube 关注管理**。
