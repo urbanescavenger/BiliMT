@@ -1,5 +1,22 @@
 # BiliMT 版本发布说明
 
+## v2.0.8-alpha.6
+
+YouTube 内容集成(P11)收尾——**YouTube 播放**。搜索/热门/动态里的 YouTube 视频现在可播放(默认 360p)。
+
+### 功能
+- **YouTube 播放(P11-09)**:从搜索/热门/动态进 YouTube 视频可播放。无 PO token 时走 ANDROID 客户端 `formats`(progressive,itag 18 360p)直链;设备网络好、adaptive 直链齐备时走高清双轨。
+- 复用手动配置频道 + 反爬规避(`en/US` locale)。
+
+### 技术实现
+- `POST /player`(WEB→ANDROID 回退)解析 `adaptiveFormats`/`formats`,按 codec 偏好挑流。
+- 隐藏 WebView JS 引擎(`YoutubeJsExecutor`)+ `n` 参数解密(`YoutubeNDecryptor`)+ PO token 结构(`YoutubeBotGuard`,best-effort)。
+- TV/移动播放器走 progressive `MergingMediaSource`(镜像 PGC),门控 B 站专属副作用(heartbeat/元数据/弹幕)。
+
+### 已知限制
+- **高清(720p+)需 PO token**:YouTube 未带 PO token 时剥离 adaptive 高清 URL,仅保留 360p progressive。PO token(jnn WASM)在隐藏 WebView 里通过完整性校验难度大,暂未接通,后续迭代。
+- `n` 解密为正则法,base.js 结构常变,可能需真机迭代。
+
 ## v2.0.7
 
 v2.0.6 后移动端播放器非全屏三态布局重做 + 全屏/暂停控制栏修复 + 直播间播放地址兜底 + TV 焦点/选中态打磨。合并 mort_debug → main 打稳定 tag。
