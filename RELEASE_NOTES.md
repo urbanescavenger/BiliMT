@@ -1,5 +1,9 @@
 # BiliMT 版本发布说明
 
+## v2.0.8-alpha.7
+
+修 YouTube 播放音频接口报错：adaptive 流(fMP4 分片)不能喂 `ProgressiveMediaSource`(按普通 mp4 解会解析失败)。改为优先用 `formats`(progressive)合并流(itag 18/22,真实 mp4),adaptive 双轨仅作最后兜底。
+
 ## v2.0.8-alpha.6
 
 YouTube 内容集成(P11)收尾——**YouTube 播放**。搜索/热门/动态里的 YouTube 视频现在可播放(默认 360p)。
