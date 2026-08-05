@@ -94,6 +94,8 @@ fun MobileDynamicScreen(
   val scope = rememberCoroutineScope()
   var state by remember { mutableStateOf<DynamicState>(DynamicState.Loading) }
   var nextOffset by remember { mutableStateOf("") }
+  // YouTube 关注拉取超时/失败提示:true 时网格顶部显示提示条(区别于静默空)。
+  var youtubeTimeoutNotice by remember { mutableStateOf(false) }
 
   /** 把 YouTube 流合并进当前 B 站动态(先去掉旧 YouTube 部分再合并,保证缓存秒出+网络刷新不重复)。 */
   fun mergeYoutube(yt: List<VideoSummary>) {
@@ -110,6 +112,7 @@ fun MobileDynamicScreen(
   suspend fun loadFirstBody() {
     state = DynamicState.Loading
     nextOffset = ""
+    youtubeTimeoutNotice = false
     state = try {
       val page = videoRepository.getDynamicFeed(type = "video")
       nextOffset = page.offset
@@ -139,20 +142,26 @@ fun MobileDynamicScreen(
         mergeYoutube(cached.videos) // 秒出
       }
       scope.launch {
-        val yt = try {
+        val result = try {
           withTimeoutOrNull(youtubeFeedTimeoutMs(youtubeChannels.size)) {
             videoRepository.youtubeSubscriptionsFeed(youtubeChannels)
-          }.orEmpty()
+          }
         } catch (e: CancellationException) {
           throw e
         } catch (e: Exception) {
-          emptyList()
+          null
         }
-        if (yt.isNotEmpty()) {
-          youtubeFeedCacheStore.write(currentIds, yt)
-          mergeYoutube(yt)
+        if (result == null) {
+          // 超时/失败:提示 + 缓存兜底(即使过期)。
+          youtubeTimeoutNotice = true
+          if (cacheValid && cached.videos.isNotEmpty()) mergeYoutube(cached.videos)
+        } else if (result.isNotEmpty()) {
+          youtubeTimeoutNotice = false
+          youtubeFeedCacheStore.write(currentIds, result)
+          mergeYoutube(result)
         } else if (cacheValid && cached.videos.isNotEmpty()) {
-          mergeYoutube(cached.videos) // 网络失败/超时,缓存兜底
+          // 空结果(无内容),缓存兜底。
+          mergeYoutube(cached.videos)
         }
       }
     }
@@ -254,6 +263,17 @@ fun MobileDynamicScreen(
             }
           }
           is DynamicState.Success -> {
+            if (youtubeTimeoutNotice) {
+              item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                  text = "YouTube 关注加载超时",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.error,
+                  textAlign = TextAlign.Center,
+                  modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+              }
+            }
             items(s.videos, key = { it.bvid }) { video ->
               MobileVideoCard(
                 video = video,

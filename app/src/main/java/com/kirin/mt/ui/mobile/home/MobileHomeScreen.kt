@@ -23,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -33,15 +34,18 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
-import com.kirin.mt.ui.mobile.common.DevelopingTipContent
+import com.kirin.mt.core.network.youtubeFeedTimeoutMs
+import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 private const val FirstPage = 1
 // 与 API 实际每页量对齐(推荐/热门 ps=20、分区 request_cnt=20),且与 TV RecommendScreen 一致。
@@ -87,6 +91,7 @@ private class MobileHomeUiState {
 @Composable
 fun MobileHomeScreen(
   videoRepository: VideoRepository,
+  youtubeChannelStore: YoutubeChannelStore,
   enabledSections: List<HomeSection>,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
@@ -97,6 +102,7 @@ fun MobileHomeScreen(
   val sections = remember(enabledSections) { enabledSections.ifEmpty { listOf(HomeSection.Recommend) } }
   val uiState = remember { MobileHomeUiState() }
   val scope = rememberCoroutineScope()
+  val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   val context = LocalContext.current
 
   // pagerState 是 tab 选择的唯一真相源:左右滑动内容区跟手平移到相邻分区,
@@ -106,6 +112,26 @@ fun MobileHomeScreen(
   // 每个分区一份独立滚动状态,切回某 tab 保留原滚动位置(替代原先单共享 gridState)。
   val gridStates = remember { mutableStateMapOf<String, LazyGridState>() }
   fun gridStateFor(key: String): LazyGridState = gridStates.getOrPut(key) { LazyGridState() }
+
+  /** 首页 YouTube 区块:加载关注流(单页),超时/未关注给明确提示而非静默空。 */
+  fun loadYoutubeTrending(): MobileSectionState {
+    if (youtubeChannels.isEmpty()) {
+      return MobileSectionState.Failed("未添加 YouTube 关注频道")
+    }
+    val result = withTimeoutOrNull(youtubeFeedTimeoutMs(youtubeChannels.size)) {
+      videoRepository.youtubeSubscriptionsFeed(youtubeChannels)
+    }
+    return when {
+      result == null -> MobileSectionState.Failed("YouTube 关注加载超时")
+      result.isEmpty() -> MobileSectionState.Failed("暂无内容")
+      else -> MobileSectionState.Success(
+        videos = result,
+        nextPage = FirstPage + 1,
+        loadingMore = false,
+        endReached = true, // 订阅流单页,不翻页
+      )
+    }
+  }
 
   fun loadSection(section: HomeSection, forceRefresh: Boolean) {
     val key = section.key
@@ -121,21 +147,25 @@ fun MobileHomeScreen(
     uiState.setState(key, MobileSectionState.Loading)
     scope.launch {
       val state = try {
-        val idx = if (section == HomeSection.Recommend) uiState.refreshKey(key) else 0
-        val videos = videoRepository.getHomeSectionVideos(
-          section = section,
-          page = FirstPage,
-          idx = idx,
-        )
-        if (videos.isEmpty()) {
-          MobileSectionState.Failed("暂无内容")
+        if (section == HomeSection.YoutubeTrending) {
+          loadYoutubeTrending()
         } else {
-          MobileSectionState.Success(
-            videos = videos,
-            nextPage = FirstPage + 1,
-            loadingMore = false,
-            endReached = videos.size < PageSize,
+          val idx = if (section == HomeSection.Recommend) uiState.refreshKey(key) else 0
+          val videos = videoRepository.getHomeSectionVideos(
+            section = section,
+            page = FirstPage,
+            idx = idx,
           )
+          if (videos.isEmpty()) {
+            MobileSectionState.Failed("暂无内容")
+          } else {
+            MobileSectionState.Success(
+              videos = videos,
+              nextPage = FirstPage + 1,
+              loadingMore = false,
+              endReached = videos.size < PageSize,
+            )
+          }
         }
       } catch (e: CancellationException) {
         throw e
@@ -281,7 +311,17 @@ private fun HomeSectionPage(
           ) { CircularProgressIndicator() }
         }
         is MobileSectionState.Failed -> item(span = { GridItemSpan(maxLineSpan) }) {
-          DevelopingTipContent() // 复用占位,后续替换为可重试状态
+          Box(
+            modifier = Modifier.fillMaxWidth().padding(32.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            Text(
+              text = state.message,
+              style = MaterialTheme.typography.bodyLarge,
+              color = MaterialTheme.colorScheme.error,
+              textAlign = TextAlign.Center,
+            )
+          }
         }
         is MobileSectionState.Success -> {
           items(state.videos, key = { it.bvid }) { video ->
