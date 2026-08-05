@@ -79,7 +79,16 @@ class YoutubePlaybackResolver(
     val playerJsUrl = resolvePlayerJsUrl(videoId)
     val durationMs = (player.obj("videoDetails")?.stringOrNull("lengthSeconds")?.toLongOrNull() ?: 0L) * 1000L
 
-    // Case A：adaptive 视频+音频直链齐备 → 双轨 MergingMediaSource（高清）。
+    // Case B（优先）：单个合并 progressive 流(如 itag 18/22)是真实 mp4，ProgressiveMediaSource 可正确播放。
+    // 实测 YouTube adaptive 流多为 fMP4 分片，喂 ProgressiveMediaSource 会解析失败(音频接口报错)，故不用它做首选项。
+    val combined = combinedCandidates.maxWithOrNull(compareBy({ it.height }, { it.bitrate }))
+    if (combined != null) {
+      val combinedUrl = resolveStreamUrl(combined, playerJsUrl)
+      if (combinedUrl.isNotBlank()) {
+        return@withContext buildInfo(request, videoId, durationMs, combined, null, combinedUrl, "")
+      }
+    }
+    // Case A（last resort）：adaptive 视频+音频双轨。fMP4 分片经 ProgressiveMediaSource 可能解不了，仅作兜底。
     val video = pickVideo(videoCandidates, codecPreference)
     val audio = pickAudio(audioCandidates)
     if (video != null && audio != null) {
@@ -87,14 +96,6 @@ class YoutubePlaybackResolver(
       val audioUrl = resolveStreamUrl(audio, playerJsUrl)
       if (videoUrl.isNotBlank() && audioUrl.isNotBlank()) {
         return@withContext buildInfo(request, videoId, durationMs, video, audio, videoUrl, audioUrl)
-      }
-    }
-    // Case B：无 adaptive 直链（PO token 未带时常见）→ 回退单个合并 progressive 流(如 itag 18, 360p)。
-    val combined = combinedCandidates.maxWithOrNull(compareBy({ it.height }, { it.bitrate }))
-    if (combined != null) {
-      val combinedUrl = resolveStreamUrl(combined, playerJsUrl)
-      if (combinedUrl.isNotBlank()) {
-        return@withContext buildInfo(request, videoId, durationMs, combined, null, combinedUrl, "")
       }
     }
     throw YoutubeApiException(0, "", "YouTube no decodable video/audio formats")
