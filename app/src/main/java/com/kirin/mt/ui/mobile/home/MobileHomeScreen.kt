@@ -114,7 +114,7 @@ fun MobileHomeScreen(
   fun gridStateFor(key: String): LazyGridState = gridStates.getOrPut(key) { LazyGridState() }
 
   /** 首页 YouTube 区块:加载关注流(单页),超时/未关注给明确提示而非静默空。 */
-  fun loadYoutubeTrending(): MobileSectionState {
+  suspend fun loadYoutubeTrending(): MobileSectionState {
     if (youtubeChannels.isEmpty()) {
       return MobileSectionState.Failed("未添加 YouTube 关注频道")
     }
