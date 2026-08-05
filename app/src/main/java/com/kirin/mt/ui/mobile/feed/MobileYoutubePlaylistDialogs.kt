@@ -169,8 +169,10 @@ fun MobilePlaylistPickerDialog(
               if (want && !inList) youtubePlaylistStore.addVideo(pl.name, video)
               else if (!want && inList) youtubePlaylistStore.removeVideo(pl.name, video.bvid)
             }
+            // 写库完成后再关弹窗:否则 rememberCoroutineScope 随弹窗销毁被取消,
+            // DataStore 写未落地,确认键点了没反应。
+            onDismiss()
           }
-          onDismiss()
         }) { Text(stringResource(R.string.playlist_confirm), color = Color.White) }
       },
       dismissButton = {
