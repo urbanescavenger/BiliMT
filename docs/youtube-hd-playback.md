@@ -1,0 +1,82 @@
+# YouTube 高清播放实现笔记
+
+> 本文档记录 biliMT `core/youtube/` 实现 **YouTube 高清(1080P/2K/4K)播放** 的可行性分析、三个阻断点与实现方案。参考实现:FreeTube(本地/匿名,不登录——与 bilibili 主 App 登录策略一致,见 `docs/youtube-api-notes.md` §5)。数据来自代码实测(2026-08),协议来源 FreeTube / YouTube.js(MIT)。
+
+## 1. 现状:最高只有 720p,但数据其实已就绪
+
+YouTube 播放已上线(P11-09),走 `POST /youtubei/v1/player`(WEB→ANDROID 回退)+ `n` 解密,产出 progressive `PlaybackInfo`。但**实际最高只到 720p**,原因不是缺数据:
+
+- `YoutubePlaybackResolver.parseFormat`(L244)已解析 `adaptiveFormats` 里的 `itag/mimeType/width/height/bitrate/qualityLabel`,**1080P/2K/4K 的 avc1/vp9/av01/hevc 候选都在**(L69-70)。
+- 但 `buildInfo`(L113)只把选中的**单个**格式写进 `PlaybackInfo.qualities`,所以清晰度面板对 YouTube 只显示一项「当前清晰度」,没有多档可选。
+
+> **结论:数据层已解析高清 itag,缺的不是数据,是三个环节的工程缺口。** 下文三个阻断点按"取流 URL → 选择策略 → 播放路径"排列。
+
+## 2. 阻断点 1:取流 URL(硬前置)
+
+高清流要能播,先得拿到**可播的直链 URL**。这里有两个坑:
+
+### 2.1 无 PO token 时 adaptive url 常被剥离
+`adaptiveFormats` 高清流在无 PO token 时**经常被 YouTube 剥掉 `url`**,只剩 `formats`(progressive)有 url([L68 注释](app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L68))。
+
+### 2.2 `s` 签名解密未实现
+当以 `signatureCipher` 形式返回时,`signatureCipherUrl`([L205-212](app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L205))**只回填未签名 url、不执行 `s` 解密** → 拿到的 url 必然 403。
+
+**这是高清能否拿到可播直链的前提。**
+
+| 形态 | 现状 | 需要 |
+| --- | --- | --- |
+| `url` 直给 | 直接可播 | 无需处理 |
+| `signatureCipher`(s 签名) | 回填未签名 url → 403 | **实现 `s` 解密** |
+| 无 PO token 被剥 url | 拿不到 | Tier 2:PO token(jnn) |
+
+## 3. 阻断点 2:选择策略
+
+`resolve()` 里 **Case B 优先取单个合并 progressive 流**(itag 18/22,≤720p),[L84](app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L84):
+
+```kotlin
+val combined = combinedCandidates.maxWithOrNull(compareBy({ it.height }, { it.bitrate }))
+if (combined != null) { ... return buildInfo(...combined...) }
+```
+
+adaptive 高清永远选不到。**要让高清生效,须把可解的 adaptive 高清提到 progressive 之前,progressive 仅作兜底。** 同时用 `CodecCapabilityProbe`(B 站已有)过滤 adaptive 候选,避免选到 TV 解不了的 4K VP9/AV1(黑屏)。
+
+## 4. 阻断点 3:播放路径
+
+[PlayerScreen.kt:1390](app/src/main/java/com/kirin/mt/ui/player/PlayerScreen.kt#L1390) 因 YouTube 的 `segmentBase==null`(`isProgressive=true`)走 `ProgressiveMediaSource`/`MergingMediaSource`。但 L83 注释明说 **adaptive fMP4 分片喂 ProgressiveMediaSource 会解析失败**。
+
+真正的 DASH 分支(L1407 `buildDashMediaItem`)对 YouTube 从未进入。**而 `buildDashManifest`(L2053)已正确处理 SegmentBase/Initialization——只要把 YouTube adaptive 的 `initRange`/`indexRange` 填进 `PlaybackTrack.segmentBase`,YouTube 就自动进 DASH 分支,零改动喂流。**
+
+## 5. 实现方案:三个环节闭环(可行性=高)
+
+复用现有基础设施,不引新播放器:
+
+### ① `s` 签名解密(解锁高清 url)
+复用隐藏 WebView JS 引擎 `YoutubeJsExecutor`(n 解密同款机制):拉 base.js 一次,识别签名函数执行 `s` 解密,回填 `signatureCipher` 的 url。**运行时依赖真机**(base.js 结构常变)。
+
+### ② 高分辨 adaptive 设为首选
+`pickVideo` 把可解的 adaptive 高清提到 progressive 之前;用 `CodecCapabilityProbe` 过滤设备解不了的轨道;`buildInfo` 把全部可播 quality 写进 `PlaybackInfo.qualities`,让清晰度面板出现 1080P/2K/4K 多档。
+
+### ③ 走 DASH 播放(用现有 MPD 构建器)
+`parseFormat` 补解析 `initRange`/`indexRange`(on-demand fMP4),填进 `PlaybackTrack.segmentBase` → 自动进 `PlayerScreen.kt:1407` DASH 分支。
+
+## 6. 分阶段
+
+| 阶段 | 内容 | 收益 |
+| --- | --- | --- |
+| **Tier 1(核心)** | ①②③ | 1080P,视设备与 url 可得性常到 2K/4K |
+| **Tier 2(增强)** | PO token(jnn)跑通 | 覆盖「YouTube 剥光所有 adaptive url」的极端场景 |
+| **Out of scope** | DRM 保护内容、8K、HDR | 与 B 站同理由:TV 面板普遍不支持,探测不到会黑屏 |
+
+## 7. 关键文件
+
+| 文件 | 作用 |
+| --- | --- |
+| `core/youtube/YoutubePlaybackResolver.kt` | `parseFormat`/`signatureCipherUrl`/`resolve`/`pickVideo`/`buildInfo` |
+| `core/youtube/YoutubeJsExecutor.kt` | 复用做 `s` 解密 |
+| `core/youtube/YoutubeBotGuard.kt` | Tier 2 PO token |
+| `ui/player/PlayerScreen.kt:1390` / `:2038-2104` | 喂流分支 + MPD 构建(改 feed 路径即可复用) |
+| `core/player/CodecCapabilityProbe.kt` | 硬件过滤 |
+
+## 8. 参考来源
+- FreeTube 上游:`src/renderer/helpers/api/local.js`(InnerTube 封装)与 `formatUtils`(itag/adaptive 选择)
+- YouTube.js(LuanRT/YouTube.js):`core/Player.ts`、`utils/FormatUtils.ts`

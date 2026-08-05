@@ -791,6 +791,13 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 - `YoutubeBotGuard`：jnn PO token 结构占位，失败降级不阻塞直连。
 - **运行时依赖真机**：`n` 解密（base.js 结构常变）与 PO token（jnn WASM 完整性校验）无法用云编译验证，需真机手测迭代。
 
+### 播放高清（P11-14）实现要点
+- **现状**：YouTube 实际最高只到 720p（Case B 优先单个合并 progressive 流 itag 18/22，≤720p）；`adaptiveFormats` 里的 1080P/2K/4K 已解析但选不到，且 `signatureCipherUrl` 只回填未签名 url、`s` 解密未实现（403）。
+- **Tier 1（核心）**：① 复用 `YoutubeJsExecutor` 做 `s` 签名解密（拉 base.js 识别签名函数执行）→ 解锁 adaptive 高清直链；② `pickVideo` 把可解 adaptive 高清提到 progressive 之前 + 复用 `CodecCapabilityProbe` 过滤设备解不了的轨道 + `buildInfo` 把全部可播 quality 写进 `PlaybackInfo.qualities`（面板出 1080P/2K/4K 多档）；③ `parseFormat` 补解析 `initRange`/`indexRange` 填进 `PlaybackTrack.segmentBase` → 自动进 `PlayerScreen.kt:1407` DASH 分支（现有 `buildDashManifest` 已正确处理 SegmentBase/Initialization，零改动喂流）。
+- **Tier 2（增强）**：PO token（jnn，`YoutubeBotGuard`）跑通，覆盖「YouTube 剥光所有 adaptive url」的极端场景。
+- **Out of scope**：DRM 保护内容、8K、HDR（同 B 站理由：TV 面板普遍不支持，探测不到会黑屏）。
+- 详见 `docs/youtube-hd-playback.md`。
+
 ### 反爬与废弃端点（实测关键）
 - `hl`/`gl` 用 `zh-CN/CN` 触发反爬（搜索返回 `backgroundPromoRenderer`「出了点问题」）；必须用 `en/US`。
 - 通用热门 `FEtrending` 已被 YouTube 废弃（400，`/feed/trending` 已移除）；改用 topic 热门（游戏/体育/播客）。
@@ -812,6 +819,7 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | P11-11 | 移动端 UP主页关注/加入播放列表/动态播放列表tab | ✅ Done（v2.0.8-alpha.11，编译绿，运行时待真机） |
 | P11-12 | 多播放列表（长按弹菜单→选列表/新建）+ 播放列表两层+长按拖动排序 + 播放器◀▶/去弹幕/相关视频=列表后续 | 实施中（编译绿待云编译，运行时待真机） |
 | P11-13 | 动态页统一流：B 站动态 + YouTube 关注合并（TV+移动，5s 兜底，移除独立 YouTube tab） | 实施中 |
+| P11-14 | YouTube 高清播放（Tier 1：`s` 解密 + adaptive 首选 + DASH 播放 + 硬件过滤 + 多档清晰度；Tier 2：PO token） | Pending（方案见 `docs/youtube-hd-playback.md`） |
 
 ### 发布
 - 测试版 `v2.0.8-alpha.1/.2/.3` 已发布验证；搜索/热门可用。

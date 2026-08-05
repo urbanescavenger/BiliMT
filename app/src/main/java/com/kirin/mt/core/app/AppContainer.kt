@@ -21,6 +21,7 @@ import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.core.youtube.YoutubeJsExecutor
 import com.kirin.mt.core.youtube.YoutubeNDecryptor
 import com.kirin.mt.core.youtube.YoutubePlaybackResolver
+import com.kirin.mt.core.youtube.YoutubeSDecryptor
 import com.kirin.mt.core.youtube.YoutubeRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -87,6 +88,7 @@ class AppContainer(context: Context) {
   val youtubeJsExecutor: YoutubeJsExecutor = YoutubeJsExecutor(appContext)
   val youtubeBotGuard: YoutubeBotGuard = YoutubeBotGuard(youtubeJsExecutor, youtubeHttpClient)
   val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(youtubeJsExecutor, youtubeHttpClient)
+  val youtubeSDecryptor: YoutubeSDecryptor = YoutubeSDecryptor(youtubeJsExecutor, youtubeHttpClient)
   val youtubeRepository: YoutubeRepository = YoutubeRepository(
     client = InnerTubeClient(httpClient = youtubeHttpClient),
   )
@@ -94,6 +96,7 @@ class AppContainer(context: Context) {
     innerTubeClient = InnerTubeClient(httpClient = youtubeHttpClient),
     botGuard = youtubeBotGuard,
     nDecryptor = youtubeNDecryptor,
+    sDecryptor = youtubeSDecryptor,
     httpClient = youtubeHttpClient,
   )
   val videoRepository: VideoRepository = VideoRepository(
