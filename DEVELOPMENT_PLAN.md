@@ -774,6 +774,36 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 - **连续打 tag 必须等上一个 release CI 的 Create Release 步骤完成再推下一个**：工作流有"Delete tags without releases"步骤会删"远端有 tag 但无 release 且非当前 tag"的孤儿 tag,连推会撞清理竞态把刚推的新 tag 删掉(alpha.12/13 曾被误删,已补回)。
 - 复用 `core/*` 引擎，不重写；TV 端零改动（除非提升 helper 可见性）。
 
+## YouTube 内容集成（P11）
+
+> 目标：把 YouTube 内容加进原生 搜索 / 首页热门 / 动态 三个入口。数据来自 FreeTube / YouTube.js（MIT）的 InnerTube 私有 API。**关键技术约束：InnerTube 逻辑全在 JS，且 FreeTube 本体是 AGPL（biliMT 是 MIT），只能 Kotlin 独立重写协议，不复用其代码。** 详见 `docs/youtube-api-notes.md`。
+
+### 已定方案
+- **内容数据**：原生 Kotlin 重写 InnerTube（guest 认证，无需 key）。
+- **动态源**：手动配置频道列表，逐频道拉最新视频合并（免登录）。
+- **播放（P11-09）**：`/player` + PO token + `n` 解密，需隐藏 WebView 执行 botguard JS（无法纯 Kotlin），暂缓。
+
+### 反爬与废弃端点（实测关键）
+- `hl`/`gl` 用 `zh-CN/CN` 触发反爬（搜索返回 `backgroundPromoRenderer`「出了点问题」）；必须用 `en/US`。
+- 通用热门 `FEtrending` 已被 YouTube 废弃（400，`/feed/trending` 已移除）；改用 topic 热门（游戏/体育/播客）。
+- renderer 因端点/客户端而异：WEB 搜索 `videoRenderer`、topic 热门 `gridVideoRenderer`、ANDROID `compactVideoRenderer`、频道页 `lockupViewModel`。
+
+### 里程碑
+| ID | 任务 | 状态 |
+| --- | --- | --- |
+| P11-01 | InnerTube 数据层（core/youtube 包 + source 字段 + DI） | ✅ Done |
+| P11-02 | 搜索 B站/YouTube 来源切换（TV+移动） | ✅ Done |
+| P11-03 | 首页 YouTube 热门分区 | ✅ Done |
+| P11-04 | 动态页 YouTube 关注 tab（TV+移动，免登录） | ✅ Done |
+| P11-05 | 首页迁移自动启用 YouTube 分区 | ✅ Done |
+| P11-06 | 反爬与 renderer 解析修复（搜索/热门可用，用户确认） | ✅ Done |
+| P11-07 | YouTube API 笔记文档 | ✅ Done |
+| P11-08 | 设置页 YouTube 频道管理（TV+移动） | ⏳ Pending |
+| P11-09 | Phase 2 YouTube 播放（PO token + n 解密，需 JS 引擎） | ⏳ Pending |
+
+### 发布
+- 测试版 `v2.0.8-alpha.1/.2/.3` 已发布验证；搜索/热门可用。
+
 ## 测试计划
 
 手工设备检查：

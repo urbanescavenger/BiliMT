@@ -1,6 +1,6 @@
 # BiliMT 开发进度
 
-最后更新：2026-06-22
+最后更新：2026-08-05
 
 ## 更新规则
 
@@ -12,9 +12,9 @@
 
 ## 当前状态
 
-当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；直播播放暂缓，后续单独评估。
+当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态 已可用**；直播播放暂缓，后续单独评估。
 
-推荐下一项：围绕当前 UI 收尾做真机视觉/性能抽样，重点检查液态玻璃开启/关闭两条路径、设置/About 右侧面板、搜索播放返回、播放器侧栏列表和高弹幕播放。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
+推荐下一项：完成 P11 收尾——设置页 YouTube 频道管理（P11-08），再评估 Phase 2 YouTube 播放（P11-09，需隐藏 WebView 跑 botguard/n 解密，工作量最大）。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
 
 ## P0 项目决策与规则
 
@@ -256,3 +256,19 @@
 | P10-02 | 修复 CDN 焦点跳到 LazyList 末尾的 bug | Done | `SettingsItemPlaybackCdn = 21` 与 LazyList 真实索引 3 不匹配，`scrollItemIntoComfortableView(index = 21)` 被 clamp 到 `totalItems - 1`，导致按一次下方向键焦点跳到"关于"。新增 `settingsItemToLazyIndex()` 映射函数统一 `SettingsItem*` → LazyList index。已知 follow-up：当 `update-download-or-install` / `update-release-notes` 条件性 item 渲染/隐藏时，ClearCache/ChineseTextVariant/About 的真实索引会变 1-2；当前仅在"无可用更新"状态下做了对齐。`assembleDebug` 通过 |
 | P10-03 | v1.0.7 发布与合入 main | Done | 整理 v1.0.6 至 v1.0.7 间的应用内更新、CI 和 About 页面变更；更新 `README.md`、`RELEASE_NOTES.md` 和本文件；打 tag `v1.0.7` 并推送；从 `mort_debug` 发起 PR 合到 `main` |
 | P10-04 | v1.0.9 发布与合入 main | Done | 整理 v1.0.8 稳定版后的 1.0.8-alpha 周期变更（设置内网络测速、CdnSpeedTester 探测策略优化、搜索/动态/历史 onOwnerSelected 回调补全、UP 主取消关注对话框焦点修复、CI 发布说明改用 gh release create）；更新 `README.md`、`RELEASE_NOTES.md` 和本文件；打 tag `v1.0.9` 并推送；从 `mort_debug` 合到 `main` |
+
+## P11 YouTube 内容集成（InnerTube）
+
+> 背景：把 YouTube 内容加进原生 搜索/首页热门/动态 三个入口。数据来自 FreeTube / YouTube.js（MIT）的 InnerTube 私有 API，biliMT 用 Kotlin 独立重写协议（不复用 AGPL 代码）。关键 API 实测发现记录在 `docs/youtube-api-notes.md`。
+
+| ID | 任务 | 状态 | 验收/备注 |
+| --- | --- | --- | --- |
+| P11-01 | InnerTube 数据层 | Done | 新增 `core/youtube/` 包：`YoutubeConstants` / `InnerTubeClient` / `YoutubeModels` / `YoutubeParsers` / `YoutubeRepository` / `YoutubeChannelStore`；guest 认证（visitorData protobuf 编码）无需 key；`VideoSummary` 加 `source` 字段（bili/youtube）；`AppContainer` 注册 `youtubeRepository`；`VideoRepository` 转发 youtube 方法 |
+| P11-02 | 搜索 B站/YouTube 来源切换 | Done | TV `SearchScreen` + 移动 `MobileSearchScreen` 顶部加来源切换；YouTube 走 continuation 分页；B站排序只在 B站来源显示 |
+| P11-03 | 首页 YouTube 热门分区 | Done | `HomeSection` 加 `YoutubeTrending`；`VideoRepository.getHomeSectionVideos` 特判调 `youtubeTrending`；移动/设置面板通用渲染自动生效 |
+| P11-04 | 动态页 YouTube 关注 tab | Done | `UserFeedTab` 加 `YoutubeSubscriptions`（TV 8 处 switch 补齐）；移动 `MobileFeedScreen` 加第 5 个 tab；免登录；空频道回退热门 |
+| P11-05 | 首页迁移自动启用 YouTube 分区 | Done | 新增 `HomeSectionsYoutubeMigrationV1` 一次性把 `YoutubeTrending` 加入启用集，修复已装设备不显示 |
+| P11-06 | 反爬与 renderer 解析修复 | Done | 实测：`zh-CN/CN` locale 触发反爬（搜索返回「出了点问题」拦截页），改 `en/US` 正常；通用热门 `FEtrending` 已被 YouTube 废弃（400），改用 topic 热门（游戏/体育/播客）返回 `gridVideoRenderer`；parser 统一收集 `videoRenderer`/`gridVideoRenderer`/`compactVideoRenderer`/`lockupViewModel` 四种格式，gridVideoRenderer 时长在 `thumbnailOverlayTimeStatusRenderer`；用户确认搜索/热门可用 |
+| P11-07 | YouTube API 笔记文档 | Done | 新建 `docs/youtube-api-notes.md`，记录 InnerTube 请求形态、反爬规避、renderer 解析、废弃端点、播放难点 |
+| P11-08 | 设置页 YouTube 频道管理 | Pending | 添加/删除要跟的 YouTube 频道；TV + 移动设置面板；当前动态 tab 空频道回退热门 |
+| P11-09 | Phase 2 YouTube 播放 | Pending | `POST /player` + PO token + `n` 参数解密（需隐藏 WebView 执行 bgutils-js，无法纯 Kotlin）；回退 Invidious 取流；难度大、暂缓 |
