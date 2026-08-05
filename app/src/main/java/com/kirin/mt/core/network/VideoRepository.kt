@@ -16,6 +16,7 @@ import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeCommentPage
 import com.kirin.mt.core.youtube.YoutubeConstants
+import com.kirin.mt.core.youtube.YoutubeMaxConcurrentChannelFetches
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.core.youtube.YoutubeVideoDetail
 import com.kirin.mt.core.youtube.YoutubeVideoPage
@@ -24,6 +25,19 @@ import kotlinx.serialization.json.JsonArray
 
 /** 统一动态流:YouTube 关注拉取的兜底超时(ms)。B 站秒出,YouTube 最多等这么久。 */
 const val YoutubeFeedTimeoutMs = 5_000L
+
+/** YouTube 关注流缓存的有效期(ms)。10 分钟内复用缓存秒出,超过则等网络刷新。 */
+const val YoutubeFeedCacheTtlMs = 10 * 60 * 1000L
+
+/**
+ * 按关注频道数动态计算 YouTube 订阅流拉取超时(ms)。
+ * 并行化后总耗时≈批次×单批耗时,关注多自动放宽;上限 10s 防长时间卡住。
+ */
+fun youtubeFeedTimeoutMs(channelCount: Int): Long {
+  if (channelCount <= 0) return YoutubeFeedTimeoutMs
+  val batches = (channelCount + YoutubeMaxConcurrentChannelFetches - 1) / YoutubeMaxConcurrentChannelFetches
+  return (batches * 1_000L + 2_000L).coerceAtMost(10_000L)
+}
 
 /** 把 B 站动态与 YouTube 关注流按发布时间倒序合并成统一流。 */
 fun mergeByPubdate(bili: List<VideoSummary>, youtube: List<VideoSummary>): List<VideoSummary> =

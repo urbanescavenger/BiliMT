@@ -31,11 +31,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
+import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
-import com.kirin.mt.core.network.YoutubeFeedTimeoutMs
+import com.kirin.mt.core.network.YoutubeFeedCacheTtlMs
 import com.kirin.mt.core.network.mergeByPubdate
+import com.kirin.mt.core.network.youtubeFeedTimeoutMs
 import com.kirin.mt.core.youtube.YoutubeChannel
+import com.kirin.mt.core.youtube.YoutubeFeedCacheStore
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import kotlinx.coroutines.CancellationException
@@ -62,6 +65,7 @@ private sealed interface DynamicState {
 @Composable
 fun MobileDynamicScreen(
   videoRepository: VideoRepository,
+  youtubeFeedCacheStore: YoutubeFeedCacheStore,
   isLoggedIn: Boolean,
   youtubeChannels: List<YoutubeChannel>,
   onVideoSelected: (VideoSummary) -> Unit,
@@ -112,11 +116,19 @@ fun MobileDynamicScreen(
       DynamicState.Failed(e.message.orEmpty().ifBlank { "加载失败" })
     }
 
-    // 合并 YouTube 关注(5s 兜底),就绪后与 B 站动态按发布时间重排;无频道时不产生额外加载。
+    // 合并 YouTube 关注:先读缓存秒出(10min 内),后台按频道数动态超时拉网络刷新并写回缓存;
+    // 网络失败/超时用缓存兜底(即使过期)。无频道时不产生额外加载。
     if (youtubeChannels.isNotEmpty()) {
+      val currentIds = youtubeChannels.map { it.channelId }
+      val cached = youtubeFeedCacheStore.read()
+      val cacheValid = cached != null && cached.channelIds == currentIds
+      val cacheFresh = cacheValid && System.currentTimeMillis() - cached.fetchedAt <= YoutubeFeedCacheTtlMs
+      if (cacheFresh && cached.videos.isNotEmpty()) {
+        mergeYoutube(cached.videos) // 秒出
+      }
       scope.launch {
         val yt = try {
-          withTimeoutOrNull(YoutubeFeedTimeoutMs) {
+          withTimeoutOrNull(youtubeFeedTimeoutMs(youtubeChannels.size)) {
             videoRepository.youtubeSubscriptionsFeed(youtubeChannels)
           }.orEmpty()
         } catch (e: CancellationException) {
@@ -124,13 +136,25 @@ fun MobileDynamicScreen(
         } catch (e: Exception) {
           emptyList()
         }
-        if (yt.isEmpty()) return@launch
-        when (val cur = state) {
-          is DynamicState.Success -> state = cur.copy(videos = mergeByPubdate(cur.videos, yt))
-          is DynamicState.Empty -> state = DynamicState.Success(yt, loadingMore = false, endReached = true)
-          else -> {} // Failed / Loading 保持原样
+        if (yt.isNotEmpty()) {
+          youtubeFeedCacheStore.write(currentIds, yt)
+          mergeYoutube(yt)
+        } else if (cacheValid && cached.videos.isNotEmpty()) {
+          mergeYoutube(cached.videos) // 网络失败/超时,缓存兜底
         }
       }
+    }
+  }
+
+  /** 把 YouTube 流合并进当前 B 站动态(先去掉旧 YouTube 部分再合并,保证缓存秒出+网络刷新不重复)。 */
+  fun mergeYoutube(yt: List<VideoSummary>) {
+    when (val cur = state) {
+      is DynamicState.Success -> {
+        val biliOnly = cur.videos.filterNot { it.source == SourceYoutube }
+        state = cur.copy(videos = mergeByPubdate(biliOnly, yt))
+      }
+      is DynamicState.Empty -> state = DynamicState.Success(yt, loadingMore = false, endReached = true)
+      else -> {} // Failed / Loading 保持原样
     }
   }
 
@@ -231,7 +255,13 @@ fun MobileDynamicScreen(
           }
           is DynamicState.Success -> {
             items(s.videos, key = { it.bvid }) { video ->
-              MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner, onLongPress = onLongPress)
+              MobileVideoCard(
+                video = video,
+                onClick = onVideoSelected,
+                onOpenOwner = onOpenOwner,
+                onLongPress = onLongPress,
+                showYoutubeBorder = true,
+              )
             }
             if (s.loadingMore) {
               item(span = { GridItemSpan(maxLineSpan) }) {

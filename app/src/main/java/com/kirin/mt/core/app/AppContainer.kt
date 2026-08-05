@@ -16,6 +16,7 @@ import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.youtube.InnerTubeClient
 import com.kirin.mt.core.youtube.YoutubeBotGuard
 import com.kirin.mt.core.youtube.YoutubeChannelStore
+import com.kirin.mt.core.youtube.YoutubeFeedCacheStore
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.core.youtube.YoutubeJsExecutor
 import com.kirin.mt.core.youtube.YoutubeNDecryptor
@@ -80,6 +81,7 @@ class AppContainer(context: Context) {
   )
   val youtubeChannelStore: YoutubeChannelStore = YoutubeChannelStore(appContext)
   val youtubePlaylistStore: YoutubePlaylistStore = YoutubePlaylistStore(appContext)
+  val youtubeFeedCacheStore: YoutubeFeedCacheStore = YoutubeFeedCacheStore(appContext)
   // 共享同一个 YouTube OkHttpClient（InnerTube 数据 + /player + base.js/watch 抓取复用连接池）。
   val youtubeHttpClient = httpClientFactory.createYoutubeClient()
   val youtubeJsExecutor: YoutubeJsExecutor = YoutubeJsExecutor(appContext)

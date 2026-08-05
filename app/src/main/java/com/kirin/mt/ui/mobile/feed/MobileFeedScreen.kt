@@ -52,6 +52,7 @@ fun MobileFeedScreen(
   videoRepository: VideoRepository,
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   youtubePlaylistStore: YoutubePlaylistStore,
+  youtubeFeedCacheStore: com.kirin.mt.core.youtube.YoutubeFeedCacheStore,
   isLoggedIn: Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
@@ -104,6 +105,7 @@ fun MobileFeedScreen(
       when (page) {
         0 -> MobileDynamicScreen(
           videoRepository = videoRepository,
+          youtubeFeedCacheStore = youtubeFeedCacheStore,
           isLoggedIn = true,
           youtubeChannels = channels,
           onVideoSelected = onVideoSelected,

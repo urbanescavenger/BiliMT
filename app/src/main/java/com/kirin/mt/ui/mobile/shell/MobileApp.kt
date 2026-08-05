@@ -90,6 +90,7 @@ fun BiliMobileApp(
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   youtubeRepository: YoutubeRepository,
   youtubePlaylistStore: YoutubePlaylistStore,
+  youtubeFeedCacheStore: com.kirin.mt.core.youtube.YoutubeFeedCacheStore,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
 ) {
@@ -211,6 +212,7 @@ fun BiliMobileApp(
           videoRepository = videoRepository,
           youtubeChannelStore = youtubeChannelStore,
           youtubePlaylistStore = youtubePlaylistStore,
+          youtubeFeedCacheStore = youtubeFeedCacheStore,
           isLoggedIn = session.isLoggedIn,
           onVideoSelected = { video ->
             playQueue = emptyList()

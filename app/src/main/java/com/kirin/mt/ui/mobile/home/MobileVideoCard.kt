@@ -36,6 +36,9 @@ import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.ui.theme.BiliColors
 
+/** YouTube 卡片绿框颜色(Material Green 600),动态页区分 YouTube 与 B 站内容。 */
+private val YoutubeBorderColor = Color(0xFF00C853)
+
 /** 移动端视频卡片:纯触屏(无焦点缩放),点击播放;长按加入/移除播放列表(仅 YouTube)。点头像/UP 名区域进 UP 主页。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -45,10 +48,13 @@ fun MobileVideoCard(
   modifier: Modifier = Modifier,
   onOpenOwner: ((VideoSummary) -> Unit)? = null,
   onLongPress: ((VideoSummary) -> Unit)? = null,
+  showYoutubeBorder: Boolean = false,
 ) {
+  val youtubeBorder = showYoutubeBorder && video.source == SourceYoutube
   Column(
     modifier = modifier
       .fillMaxWidth()
+      .then(if (youtubeBorder) Modifier.border(2.dp, YoutubeBorderColor, RoundedCornerShape(12.dp)) else Modifier)
       .combinedClickable(
         onClick = { onClick(video) },
         onLongClick = onLongPress?.let { { it(video) } },

@@ -2,6 +2,10 @@ package com.kirin.mt.core.youtube
 
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -10,6 +14,9 @@ data class YoutubeVideoPage(
   val items: List<VideoSummary>,
   val continuation: String?,
 )
+
+/** 订阅流逐频道拉取的并发上限。并发太高易触发 InnerTube 风控，4 是实测安全值。 */
+const val YoutubeMaxConcurrentChannelFetches = 4
 
 /**
  * YouTube 内容门面，供 [com.kirin.mt.core.network.VideoRepository] 转发。
@@ -167,6 +174,8 @@ class YoutubeRepository(
   /**
    * 动态页"YouTube 关注"流：遍历配置的频道取各自最新视频，按发布时间倒序合并。
    * 对齐 FreeTube `grabAllSubscriptions` 的"逐频道拉取+本地合并"思路（独立实现）。
+   * 并发拉取（[YoutubeMaxConcurrentChannelFetches] 限并发，防 InnerTube 风控），
+   * 关注多时总耗时≈批次×单批耗时，而非频道数×单频道耗时。
    */
   suspend fun getSubscriptionsFeed(
     channels: List<YoutubeChannel>,
@@ -176,19 +185,25 @@ class YoutubeRepository(
       // 未配置频道时回退显示热门,避免动态 tab 空白(设置里可添加频道)。
       return getTrending(YoutubeConstants.TrendingTabs.values.first())
     }
-    val merged = channels.flatMap { channel ->
-      runCatching {
-        // lockupViewModel 不重复频道名/频道id,给空作者名与空频道id的视频补上所属频道,
-        // 卡片作者行才有内容、点 UP 头像才能进本频道主页。
-        getChannelVideos(channel.channelId).items.take(perChannel).map { video ->
-          video.copy(
-            ownerName = if (video.ownerName.isBlank()) channel.name else video.ownerName,
-            channelId = if (video.channelId.isBlank()) channel.channelId else video.channelId,
-          )
+    val semaphore = Semaphore(YoutubeMaxConcurrentChannelFetches)
+    return coroutineScope {
+      channels.map { channel ->
+        async {
+          semaphore.withPermit {
+            runCatching {
+              // lockupViewModel 不重复频道名/频道id,给空作者名与空频道id的视频补上所属频道,
+              // 卡片作者行才有内容、点 UP 头像才能进本频道主页。
+              getChannelVideos(channel.channelId).items.take(perChannel).map { video ->
+                video.copy(
+                  ownerName = if (video.ownerName.isBlank()) channel.name else video.ownerName,
+                  channelId = if (video.channelId.isBlank()) channel.channelId else video.channelId,
+                )
+              }
+            }.getOrDefault(emptyList())
+          }
         }
-      }.getOrDefault(emptyList())
+      }.awaitAll().flatten().sortedByDescending { it.pubdate }
     }
-    return merged.sortedByDescending { it.pubdate }
   }
 
   /** 把 [YoutubeVideo] 映射成 biliMT 统一的 [VideoSummary] 卡片。 */
