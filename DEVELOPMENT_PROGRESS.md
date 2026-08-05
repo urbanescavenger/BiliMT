@@ -12,9 +12,9 @@
 
 ## 当前状态
 
-当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理/播放 已可用（编译绿，播放运行时待真机）**；直播播放暂缓，后续单独评估。
+当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理/播放 已可用（编译绿，播放运行时待真机）；移动端 UP主页关注/加入播放列表/动态播放列表tab 已发布（v2.0.8-alpha.11，编译绿，运行时待真机）**；直播播放暂缓，后续单独评估。
 
-推荐下一项：**真机手测 P11-09 YouTube 播放**（重点看 `n` 解密与 PO token，日志 tag `YtResolver`/`YtNDecrypt`/`YtBotGuard`），据真机结果迭代。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
+推荐下一项：**真机手测 v2.0.8-alpha.11 移动端 YouTube 三功能**（UP主页进频道关注、卡片长按/播放器按钮加入播放列表、动态播放列表tab 连播+删减），以及 P11-09 YouTube 播放（重点看 `n` 解密与 PO token，日志 tag `YtResolver`/`YtNDecrypt`/`YtBotGuard`），据真机结果迭代。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
 
 ## P0 项目决策与规则
 
@@ -288,3 +288,4 @@
 | P11-08 | 设置页 YouTube 频道管理 | Done | 新增 `YoutubeParsers.parseChannelInfo`（解析频道页 c4TabbedHeaderRenderer/channelMetadataRenderer/microformat 取 channelId+名称）和 `YoutubeRepository.resolveChannel`（归一化输入，`/browse` 支持 @handle / UC... 频道 ID）；TV `SettingsScreen` 新增「YouTube 内容」区 + `SettingsYoutubeChannelsColumn` 右面板（内嵌轻量 D-pad 键盘、添加/清空、频道行删除），懒索引重编号；移动 `MobileSettingsScreen` 新增 `MobileYoutubeChannelsPanel`（TextField 输入+删除列表）；`AppShell`/`SettingsActivity` 接线 store+repo；`assembleDebug` 云编译通过；打测试 tag 验证 |
 | P11-09 | Phase 2 YouTube 播放 | Done（编译绿，运行时待真机） | `POST /player`（WEB→ANDROID 回退）解析 `adaptiveFormats`，按 codec 偏好挑视频 + 最佳音频，产出 progressive `PlaybackInfo`（segmentBase=null）；TV/移动播放器走 progressive `MergingMediaSource`（镜像 PGC）+ 门控 B 站副作用（heartbeat/元数据/弹幕）；`YoutubeJsExecutor` 隐藏 WebView JS 引擎（eval 桥、懒建、会话级复用）；`YoutubeNDecryptor` 拉 base.js + 隐藏 WebView 整体 eval + 正则识别 transform 解密 `n`；`YoutubeBotGuard` jnn PO token 结构占位、失败降级直连。**运行时依赖真机**：`n` 解密（正则法，base.js 常变）与 PO token（jnn WASM 完整性校验）无法云编译验证，需真机手测迭代 |
 | P11-10 | 移动播放器 YouTube 简介/评论 Tab | Done（编译绿，运行时待真机） | 修复 YouTube 进视频后简介 Tab 永转圈、评论 Tab 空白：`YoutubeModels` 加 `YoutubeVideoDetail`/`YoutubeComment`/`YoutubeCommentPage`；`YoutubeParsers` 加 `parseVideoDetail`（`/player` videoDetails.shortDescription + microformat.publishDate）与 `parseCommentPage`/`parseCommentRenderer`（`/next` 递归收 `commentRenderer` + section 内 continuation，防御回退全根）；`YoutubeRepository` 加 `getVideoDetail`/`getComments`，`VideoRepository` 转发；移动播放器 `MobilePlayerIntroCommentTabs` 按 `isYoutube` 分流到新增 `MobileYoutubeIntroTab`（标题/频道行/观看·发布时间/简介，无 B 站互动行，详情失败显示「简介暂不可用」）与 `MobileYoutubeCommentList`（`/next` continuation 续页 + 去重，映射成 `Comment` 复用渲染，无计数/无排序）；相关视频 effect 对 YouTube 加守卫。**运行时依赖真机**：`/next` 评论结构与 `/player` videoDetails 字段随 YouTube 改版可能漂移，需真机手测迭代 |
+| P11-11 | 移动端 YouTube UP主页关注/加入播放列表/动态播放列表tab | Done（v2.0.8-alpha.11，编译绿，运行时待真机） | `VideoSummary` 加 `channelId` 并补 `toVideoSummary`、订阅流给空 channelId 视频注入所属频道；新建 `YoutubePlaylistStore`（DataStore 本地播放列表，免登录）+ `MobileYoutubeChannelScreen`（频道名+关注按钮+continuation 分页网格，镜像 MobileUserSpaceScreen）；`MobileVideoCard` 放开 owner 点击（YouTube 按 channelId）+ 长按 `combinedClickable` 加/移除播放列表；`MobileApp` 新增 `youtubeChannelRequest` 覆盖层 + `openOwner` 按 source 分流 + `playQueue` 连播队列；`MobilePlayerScreen` YouTube 简介 tab 加"加入播放列表"按钮 + 播放列表播完自动连播下一项；`MobileFeedScreen` 加播放列表 tab，`MobileYoutubePlaylistPage` 含编辑删减模式。**运行时依赖真机**：进频道解析、关注持久化、长按/按钮 toggle、连播切换需真机手测 |
