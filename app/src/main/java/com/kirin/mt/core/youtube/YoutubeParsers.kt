@@ -97,33 +97,66 @@ internal object YoutubeParsers {
   }
 
   /**
-   * 新格式 lockupViewModel(频道页)。videoId/title 嵌在嵌套结构里,解析不稳定;
-   * 拿不到就跳过(动态 tab 空频道会回退热门,不依赖此解析)。防御式,不抛错。
+   * 新格式 lockupViewModel(频道页，实测为频道视频 tab 唯一格式)。
+   *
+   * 实测结构（2026-08）：
+   *  - videoId 在顶层 `contentId`(字符串,不是对象!)
+   *  - 标题 `metadata.lockupMetadataViewModel.title.content`
+   *  - 封面 `contentImage.thumbnailViewModel.image.sources[].url`(取最后一张最大)
+   *  - 时长/直播角标在 contentImage overlay 的 `thumbnailBadgeViewModel.text`(如 "13:09")
+   *  - 播放量/发布时间在 `metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel
+   *    .metadataRows[].metadataParts[].text.content`(如 "56K views"、"4 days ago")
+   *  - 无频道名(频道页视频不重复显示频道名)
+   * 拿不到关键字段就跳过。防御式,不抛错。
    */
   private fun parseLockupViewModel(node: JsonObject): YoutubeVideo? {
-    val videoId = node.obj("contentId")?.stringOrNull("videoId")
-      ?: node.obj("contentMetadataViewModel")?.obj("contentId")?.stringOrNull("videoId")
+    val videoId = node.stringOrNull("contentId")
     if (videoId.isNullOrBlank()) return null
-    val title = node.obj("contentMetadataViewModel")
+    val title = node.obj("metadata")
+      ?.obj("lockupMetadataViewModel")
       ?.obj("title")
       ?.stringOrNull("content")
       .orEmpty()
+    if (title.isBlank()) return null
+
     val thumbnailUrl = node.obj("contentImage")
-      ?.obj("image")?.array("sources")
-      ?.firstNotNullOfOrNull { (it as? JsonObject)?.stringOrNull("url") }
+      ?.obj("thumbnailViewModel")?.obj("image")?.array("sources")
+      ?.lastOrNull()?.let { (it as? JsonObject)?.stringOrNull("url") }
       ?: "https://i.ytimg.com/vi/$videoId/mqdefault.jpg"
+
+    // 封面子树里的文本:时长 / LIVE / Premieres。
+    val imageTexts = mutableListOf<String>()
+    collectStrings(node.obj("contentImage"), imageTexts)
+    val durationSec = imageTexts.firstNotNullOfOrNull { parseDuration(it) }
+    val isUpcoming = imageTexts.any { it.contains("Premieres", ignoreCase = true) }
+    val liveNow = imageTexts.any {
+      it.contains("watching", ignoreCase = true) ||
+        it.equals("LIVE", ignoreCase = true) ||
+        isUpcoming
+    }
+
+    // metadata 子树里的文本:播放量 / 发布时间 / 角标。
+    val metaTexts = mutableListOf<String>()
+    collectStrings(node.obj("metadata"), metaTexts)
+    val viewCount = metaTexts.firstNotNullOfOrNull { parseCount(it) }
+    val publishedAt = metaTexts.firstNotNullOfOrNull { parsePublished(it, liveNow, isUpcoming) }
+    val badge = metaTexts.firstOrNull {
+      it.contains("LIVE", ignoreCase = true) ||
+        it.contains("Premieres", ignoreCase = true)
+    }.orEmpty()
+
     return YoutubeVideo(
       videoId = videoId,
       title = title,
       channelName = "",
       channelId = "",
       thumbnailUrl = thumbnailUrl,
-      viewCount = null,
-      durationSec = null,
-      publishedAt = null,
-      liveNow = false,
-      isUpcoming = false,
-      badge = "",
+      viewCount = viewCount,
+      durationSec = durationSec,
+      publishedAt = publishedAt,
+      liveNow = liveNow,
+      isUpcoming = isUpcoming,
+      badge = badge,
     )
   }
 
@@ -283,6 +316,26 @@ internal object YoutubeParsers {
         for (item in element) {
           collectByKey(item, key, visit)
         }
+      }
+      else -> Unit
+    }
+  }
+
+  /** 递归收集子树里的所有字符串叶子(lockupViewModel 里时长/播放量/发布时间都藏在文本里)。 */
+  private fun collectStrings(element: JsonElement?, out: MutableList<String>) {
+    when (element) {
+      is JsonObject -> {
+        for ((_, value) in element) {
+          collectStrings(value, out)
+        }
+      }
+      is JsonArray -> {
+        for (item in element) {
+          collectStrings(item, out)
+        }
+      }
+      is kotlinx.serialization.json.JsonPrimitive -> {
+        element.contentOrNull?.let { out.add(it) }
       }
       else -> Unit
     }

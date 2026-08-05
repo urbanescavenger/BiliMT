@@ -147,7 +147,10 @@ class YoutubeRepository(
     }
     val merged = channels.flatMap { channel ->
       runCatching {
-        getChannelVideos(channel.channelId).items.take(perChannel)
+        // lockupViewModel 不重复频道名,给空作者名的视频补上所属频道名,卡片作者行才有内容。
+        getChannelVideos(channel.channelId).items.take(perChannel).map { video ->
+          if (video.ownerName.isBlank()) video.copy(ownerName = channel.name) else video
+        }
       }.getOrDefault(emptyList())
     }
     return merged.sortedByDescending { it.pubdate }

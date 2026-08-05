@@ -108,7 +108,7 @@ params 原样传，不额外 URL 编码。
 ## 4. 解析实现建议
 
 - 用「递归收集指定 renderer key」的方式统一兼容 search/browse/continuation 三种容器结构，比按固定路径遍历更稳。
-- `lockupViewModel`（新格式）videoId/title 深嵌在 `contentMetadataViewModel`、overlay commands 里，解析不可靠；**拿不到就跳过**（动态 tab 空频道会回退 topic 热门，不依赖它）。
+- `lockupViewModel`（新格式，实测为频道视频 tab 唯一格式）实际结构：`contentId`（字符串=videoId）、`metadata.lockupMetadataViewModel.title.content`（标题）、`contentImage.thumbnailViewModel.image.sources[].url`（封面）、时长在 contentImage overlay 的 `thumbnailBadgeViewModel.text`（如 "13:09"）、播放量/发布时间在 `metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows[].metadataParts[].text.content`（如 "56K views"/"4 days ago"）；无频道名（订阅流给空作者名补频道名）。
 
 ---
 
