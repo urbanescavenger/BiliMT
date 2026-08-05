@@ -47,6 +47,41 @@ class YoutubeRepository(
     return feed.items.map(::toVideoSummary)
   }
 
+  /**
+   * 把用户输入解析成可持久化的 [YoutubeChannel]。接受 `@handle` 或 `UC...` 频道 ID。
+   *
+   * 归一化后用 `/browse`（browseId 支持 @handle 和 UC... 两种形态）拉频道页，
+   * 从 header 解析规范 channelId + name。解析失败（非频道页/网络异常）抛 [YoutubeApiException]。
+   */
+  suspend fun resolveChannel(input: String): YoutubeChannel {
+    val browseId = normalizeChannelInput(input)
+    if (browseId.isBlank()) {
+      throw YoutubeApiException(statusCode = 0, responseBody = "", message = "empty channel input")
+    }
+    val payload = buildJsonObject { put("browseId", browseId) }
+    val root = client.postJson("/browse", payload)
+    val resolved = YoutubeParsers.parseChannelInfo(root)
+    val channelId = resolved?.first?.takeIf { it.isNotBlank() } ?: browseId
+    val name = resolved?.second?.takeIf { it.isNotBlank() } ?: browseId
+    return YoutubeChannel(channelId = channelId, name = name)
+  }
+
+  /** 归一化频道输入：去掉 URL 前缀、尾部斜杠、头部 @。 */
+  private fun normalizeChannelInput(input: String): String {
+    var value = input.trim()
+    for (prefix in listOf("https://www.youtube.com/", "http://www.youtube.com/", "https://youtube.com/", "www.youtube.com/", "youtube.com/")) {
+      if (value.startsWith(prefix)) {
+        value = value.removePrefix(prefix)
+        break
+      }
+    }
+    value = value.trimEnd('/')
+    if (value.startsWith("@")) {
+      value = value.removePrefix("@")
+    }
+    return value
+  }
+
   /** 频道"视频"tab 的最新视频，返回映射后的卡片 + 续页 token。 */
   suspend fun getChannelVideos(
     channelId: String,

@@ -798,7 +798,7 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | P11-05 | 首页迁移自动启用 YouTube 分区 | ✅ Done |
 | P11-06 | 反爬与 renderer 解析修复（搜索/热门可用，用户确认） | ✅ Done |
 | P11-07 | YouTube API 笔记文档 | ✅ Done |
-| P11-08 | 设置页 YouTube 频道管理（TV+移动） | ⏳ Pending |
+| P11-08 | 设置页 YouTube 频道管理（TV+移动） | ⏳ In Progress（解析/双端面板已实现，待云编译） |
 | P11-09 | Phase 2 YouTube 播放（PO token + n 解密，需 JS 引擎） | ⏳ Pending |
 
 ### 发布

@@ -44,6 +44,8 @@ class SettingsActivity : ComponentActivity() {
               apkInstaller = appContainer.apkInstaller,
               sessionStore = appContainer.sessionStore,
               authRepository = appContainer.authRepository,
+              youtubeChannelStore = appContainer.youtubeChannelStore,
+              youtubeRepository = appContainer.youtubeRepository,
               onLogin = { startActivity(android.content.Intent(this@SettingsActivity, LoginActivity::class.java)) },
               modifier = Modifier.fillMaxWidth(),
             )

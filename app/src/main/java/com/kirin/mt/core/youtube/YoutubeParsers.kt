@@ -47,6 +47,38 @@ internal object YoutubeParsers {
   }
 
   /**
+   * 从频道页 /browse 响应解析频道 info，返回 (channelId, name)。
+   *
+   * YouTube 频道页 header 有三种形态，任一命中即用：
+   *   1. header → c4TabbedHeaderRenderer → { channelId, title }
+   *   2. metadata → channelMetadataRenderer → { externalId, title }
+   *   3. microformat → microformatDataRenderer → { externalId, title }
+   *
+   * @return 解析出的 (channelId, name)；解析不到时返回 null（由调用方回退输入串）。
+   */
+  fun parseChannelInfo(root: JsonObject): Pair<String, String>? {
+    val c4Header = root.obj("header")?.obj("c4TabbedHeaderRenderer")
+    if (c4Header != null) {
+      val id = c4Header.stringOrNull("channelId")
+      val name = c4Header.stringOrNull("title")
+      if (!id.isNullOrBlank()) return id to (name ?: "")
+    }
+    val channelMetadata = root.obj("metadata")?.obj("channelMetadataRenderer")
+    if (channelMetadata != null) {
+      val id = channelMetadata.stringOrNull("externalId")
+      val name = channelMetadata.stringOrNull("title")
+      if (!id.isNullOrBlank()) return id to (name ?: "")
+    }
+    val microformat = root.obj("microformat")?.obj("microformatDataRenderer")
+    if (microformat != null) {
+      val id = microformat.stringOrNull("externalId")
+      val name = microformat.stringOrNull("title")
+      if (!id.isNullOrBlank()) return id to (name ?: "")
+    }
+    return null
+  }
+
+  /**
    * 新格式 lockupViewModel(频道页)。videoId/title 嵌在嵌套结构里,解析不稳定;
    * 拿不到就跳过(动态 tab 空频道会回退热门,不依赖此解析)。防御式,不抛错。
    */

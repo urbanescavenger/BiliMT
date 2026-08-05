@@ -33,6 +33,8 @@ import com.kirin.mt.core.settings.HomeThemeVariant
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.core.update.ApkInstaller
+import com.kirin.mt.core.youtube.YoutubeChannelStore
+import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.core.update.InstallResult
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.update.UpdateUiState
@@ -50,6 +52,8 @@ fun MobileSettingsScreen(
   apkInstaller: ApkInstaller,
   sessionStore: SessionStore,
   authRepository: AuthRepository,
+  youtubeChannelStore: YoutubeChannelStore,
+  youtubeRepository: YoutubeRepository,
   onLogin: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -230,6 +234,13 @@ fun MobileSettingsScreen(
       settings = settings,
       appSettingsStore = appSettingsStore,
       scope = scope,
+    )
+
+    // ===== YouTube 频道管理 =====
+    MobileSettingsSectionHeader(stringResource(R.string.settings_youtube_section))
+    MobileYoutubeChannelsPanel(
+      youtubeChannelStore = youtubeChannelStore,
+      youtubeRepository = youtubeRepository,
     )
 
     // ===== 程序更新 =====

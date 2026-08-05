@@ -461,5 +461,16 @@
     <string name="feed_tab_youtube">YouTube 关注</string>
     <string name="feed_youtube_empty">尚未配置 YouTube 频道，去设置里添加</string>
     <string name="settings_youtube_channels">YouTube 频道</string>
+    <string name="settings_youtube_section">YouTube 内容</string>
+    <string name="settings_youtube_channels_desc">添加/删除要在动态页跟踪的 YouTube 频道，支持输入 @频道handle 或 UC... 频道ID</string>
+    <string name="youtube_add_channel">添加</string>
+    <string name="youtube_clear_input">清空</string>
+    <string name="youtube_channel_hint">例如 @MKBHD 或 UC0vBXGSyV14uvfKIKTIVGWQ</string>
+    <string name="youtube_channel_empty">尚未添加频道，动态页将回退显示热门</string>
+    <string name="youtube_channel_parse_failed">解析频道失败，请检查输入是否正确</string>
+    <string name="youtube_channel_added">频道已添加</string>
+    <string name="youtube_channel_remove">删除</string>
+    <string name="youtube_channel_resolving">解析中…</string>
+    <string name="youtube_channel_count">已跟频道（%1$d）</string>
     <string name="youtube_playback_pending">YouTube 播放开发中</string>
 </resources>

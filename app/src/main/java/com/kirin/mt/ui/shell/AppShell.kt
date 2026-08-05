@@ -150,10 +150,12 @@ fun BiliTvApp(
   searchHistoryStore: SearchHistoryStore,
   sessionStore: SessionStore,
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
+  youtubeRepository: com.kirin.mt.core.youtube.YoutubeRepository,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
 ) {
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
+  val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   val updateState by updateManager.state.collectAsState()
   val context = LocalContext.current
   val localizedContext = remember(context, settings.chineseTextVariant) {
@@ -862,6 +864,16 @@ fun BiliTvApp(
                 },
                 onDismissSpeedTest = {
                   speedTestState = SpeedTestUiState.Idle
+                },
+                channels = youtubeChannels,
+                onAddYoutubeChannel = { input ->
+                  runCatching {
+                    val channel = youtubeRepository.resolveChannel(input)
+                    youtubeChannelStore.add(channel)
+                  }.isSuccess
+                },
+                onRemoveYoutubeChannel = { channelId ->
+                  runCatching { youtubeChannelStore.remove(channelId) }.isSuccess
                 },
               )
             }
