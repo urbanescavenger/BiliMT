@@ -781,7 +781,15 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 ### 已定方案
 - **内容数据**：原生 Kotlin 重写 InnerTube（guest 认证，无需 key）。
 - **动态源**：手动配置频道列表，逐频道拉最新视频合并（免登录）。
-- **播放（P11-09）**：`/player` + PO token + `n` 解密，需隐藏 WebView 执行 botguard JS（无法纯 Kotlin），暂缓。
+- **播放（P11-09）**：`POST /player`（WEB→ANDROID 回退）+ `n` 解密，用隐藏 WebView 执行 JS。主路径为无 PO token 直连（多数视频可播）；PO token（jnn WASM VM）best-effort，真机迭代。
+
+### 播放（P11-09）实现要点
+- `YoutubePlaybackResolver`：`/player` 解析 `adaptiveFormats`，按 codec 偏好挑视频 + 最佳音频，产出 progressive `PlaybackInfo`（segmentBase=null）。
+- 播放器复用：TV/移动走 progressive `MergingMediaSource`（镜像 PGC），门控 B 站专属副作用（heartbeat/元数据/弹幕）。
+- `YoutubeJsExecutor`：隐藏 WebView JS 引擎（eval 桥、懒建、会话级复用），SMS 登录同款机制。
+- `YoutubeNDecryptor`：拉 base.js + 隐藏 WebView 整体 eval + 正则识别 transform 解密 `n`（AST 解析未移植，正则法可能需真机调）。
+- `YoutubeBotGuard`：jnn PO token 结构占位，失败降级不阻塞直连。
+- **运行时依赖真机**：`n` 解密（base.js 结构常变）与 PO token（jnn WASM 完整性校验）无法用云编译验证，需真机手测迭代。
 
 ### 反爬与废弃端点（实测关键）
 - `hl`/`gl` 用 `zh-CN/CN` 触发反爬（搜索返回 `backgroundPromoRenderer`「出了点问题」）；必须用 `en/US`。
@@ -799,7 +807,7 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | P11-06 | 反爬与 renderer 解析修复（搜索/热门可用，用户确认） | ✅ Done |
 | P11-07 | YouTube API 笔记文档 | ✅ Done |
 | P11-08 | 设置页 YouTube 频道管理（TV+移动） | ✅ Done（v2.0.8-alpha.4，频道解析 + 双端面板） |
-| P11-09 | Phase 2 YouTube 播放（PO token + n 解密，需 JS 引擎） | ⏳ Pending |
+| P11-09 | Phase 2 YouTube 播放（InnerTube /player + n 解密，隐藏 WebView JS 引擎） | ✅ Done（v2.0.9-alpha，编译绿；n/PO token 运行时待真机迭代） |
 
 ### 发布
 - 测试版 `v2.0.8-alpha.1/.2/.3` 已发布验证；搜索/热门可用。
