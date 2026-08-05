@@ -48,38 +48,69 @@ class YoutubeRepository(
   }
 
   /**
-   * 把用户输入解析成可持久化的 [YoutubeChannel]。接受 `@handle` 或 `UC...` 频道 ID。
+   * 把用户输入解析成可持久化的 [YoutubeChannel]。接受 `UC...` 频道 ID、`@handle`、频道名或完整 URL。
    *
-   * 归一化后用 `/browse`（browseId 支持 @handle 和 UC... 两种形态）拉频道页，
-   * 从 header 解析规范 channelId + name。解析失败（非频道页/网络异常）抛 [YoutubeApiException]。
+   * 实测关键：`/browse` 只接受 `UC...` 频道 ID；`@handle` 做 browseId 会 400。
+   * 所以：UC ID 走 `/browse`；handle / 频道名走 `/search` 收集 `channelRenderer`。
+   * 解析失败（非频道页/无匹配频道/网络异常）抛 [YoutubeApiException]。
    */
   suspend fun resolveChannel(input: String): YoutubeChannel {
-    val browseId = normalizeChannelInput(input)
-    if (browseId.isBlank()) {
+    val query = normalizeChannelInput(input)
+    if (query.isBlank()) {
       throw YoutubeApiException(statusCode = 0, responseBody = "", message = "empty channel input")
     }
-    val payload = buildJsonObject { put("browseId", browseId) }
-    val root = client.postJson("/browse", payload)
-    val resolved = YoutubeParsers.parseChannelInfo(root)
-    val channelId = resolved?.first?.takeIf { it.isNotBlank() } ?: browseId
-    val name = resolved?.second?.takeIf { it.isNotBlank() } ?: browseId
-    return YoutubeChannel(channelId = channelId, name = name)
+    return if (query.matches(ChannelIdRegex)) {
+      // UC... 频道 ID：/browse 直接拉频道页。
+      val payload = buildJsonObject { put("browseId", query) }
+      val root = client.postJson("/browse", payload)
+      val resolved = YoutubeParsers.parseChannelInfo(root)
+      val channelId = resolved?.first?.takeIf { it.isNotBlank() } ?: query
+      val name = resolved?.second?.takeIf { it.isNotBlank() } ?: query
+      YoutubeChannel(channelId = channelId, name = name)
+    } else {
+      // handle / 频道名：/search 找 channelRenderer。
+      val payload = buildJsonObject { put("query", query) }
+      val root = client.postJson("/search", payload)
+      val candidates = YoutubeParsers.parseChannelCandidates(root)
+      val match = pickChannelCandidate(candidates, query)
+        ?: throw YoutubeApiException(statusCode = 0, responseBody = "", message = "channel not found: $query")
+      YoutubeChannel(channelId = match.first, name = match.second.ifBlank { query })
+    }
   }
 
-  /** 归一化频道输入：去掉 URL 前缀、尾部斜杠、头部 @。 */
+  /**
+   * 从搜索候选里挑最佳匹配：优先名称精确匹配(忽略大小写)，
+   * 其次第一个含 query 的候选，最后退回到首个候选。实测对 `@handle` 搜索首条即目标频道。
+   */
+  private fun pickChannelCandidate(
+    candidates: List<Pair<String, String>>,
+    query: String,
+  ): Pair<String, String>? {
+    if (candidates.isEmpty()) return null
+    val lower = query.lowercase()
+    candidates.firstOrNull { (_, name) -> name.equals(query, ignoreCase = true) }?.let { return it }
+    candidates.firstOrNull { (_, name) -> name.lowercase().contains(lower) }?.let { return it }
+    return candidates.first()
+  }
+
+  /** 归一化频道输入：去掉 URL 前缀(/channel/ / @handle)、尾部斜杠、头部 @。 */
   private fun normalizeChannelInput(input: String): String {
     var value = input.trim()
-    for (prefix in listOf("https://www.youtube.com/", "http://www.youtube.com/", "https://youtube.com/", "www.youtube.com/", "youtube.com/")) {
+    for (prefix in listOf(
+      "https://www.youtube.com/channel/", "http://www.youtube.com/channel/", "www.youtube.com/channel/", "youtube.com/channel/",
+      "https://www.youtube.com/", "http://www.youtube.com/", "https://youtube.com/", "www.youtube.com/", "youtube.com/",
+    )) {
       if (value.startsWith(prefix)) {
         value = value.removePrefix(prefix)
         break
       }
     }
     value = value.trimEnd('/')
-    if (value.startsWith("@")) {
-      value = value.removePrefix("@")
-    }
-    return value
+    return value.removePrefix("@")
+  }
+
+  private companion object {
+    val ChannelIdRegex = Regex("""UC[0-9A-Za-z_-]{22}""")
   }
 
   /** 频道"视频"tab 的最新视频，返回映射后的卡片 + 续页 token。 */

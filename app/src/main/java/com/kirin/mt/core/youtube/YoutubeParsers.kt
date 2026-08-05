@@ -79,6 +79,24 @@ internal object YoutubeParsers {
   }
 
   /**
+   * 从 /search 响应收集频道候选，返回 (channelId, name) 列表。
+   *
+   * 关键发现（实测）：`/browse` 只接受 `UC...` 频道 ID；`@handle` 做 browseId 会 400。
+   * 所以 handle / 频道名必须走搜索，从 `channelRenderer` 里取 channelId + 名称。
+   */
+  fun parseChannelCandidates(root: JsonObject): List<Pair<String, String>> {
+    val result = mutableListOf<Pair<String, String>>()
+    collectByKey(root, KEY_CHANNEL_RENDERER) { node ->
+      val id = node.stringOrNull("channelId")
+      if (!id.isNullOrBlank()) {
+        val title = runsText(node.obj("title")).ifBlank { simpleText(node.obj("title")) }
+        result.add(id to title)
+      }
+    }
+    return result
+  }
+
+  /**
    * 新格式 lockupViewModel(频道页)。videoId/title 嵌在嵌套结构里,解析不稳定;
    * 拿不到就跳过(动态 tab 空频道会回退热门,不依赖此解析)。防御式,不抛错。
    */
@@ -305,4 +323,5 @@ internal object YoutubeParsers {
   private const val KEY_COMPACT_VIDEO_RENDERER = "compactVideoRenderer"
   private const val KEY_LOCKUP_VIEW_MODEL = "lockupViewModel"
   private const val KEY_CONTINUATION_ITEM_RENDERER = "continuationItemRenderer"
+  private const val KEY_CHANNEL_RENDERER = "channelRenderer"
 }

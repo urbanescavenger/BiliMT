@@ -54,6 +54,8 @@ POST https://www.youtube.com/youtubei/v1/{endpoint}?key={API_KEY}&prettyPrint=fa
 | `/browse` FEtrending（通用热门） | 任意 | ❌ **400 invalid argument** | 已废弃 |
 | `/browse` topic 热门（游戏/体育/播客） | WEB | ✅ 200 | `gridVideoRenderer` |
 | `/browse` 频道视频（UC... + params） | WEB | ✅ 200 | `lockupViewModel`（新格式） |
+| `/browse` @handle（无 UC... id） | WEB | ❌ **400** | **只接受 `UC...` 频道 ID；`@handle` 做 browseId 会 400**，解析 handle 必须走 `/search` 找 `channelRenderer` |
+| `/search`（handle/频道名） | WEB | ✅ 200 | `channelRenderer`（含 `channelId` + `title.simpleText`）|
 | `/browse` 频道/热门 | ANDROID | ❌ 400 | ANDROID browse 不可用 |
 | `/browse` FEwhat_to_watch（home feed） | WEB/ANDROID | ⚠️ 200 但无视频内容 | 空/导航壳 |
 
