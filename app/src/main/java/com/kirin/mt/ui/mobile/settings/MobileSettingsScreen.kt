@@ -330,11 +330,11 @@ private fun MobileAccountHeader(
       verticalAlignment = Alignment.CenterVertically,
     ) {
       Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-        if (session.isLoggedIn && session.face.isNotBlank()) {
+        if (session.isLoggedIn && !session.face.isNullOrBlank()) {
           val request = remember(context, session.face) {
             buildOwnerAvatarRequest(
               context = context,
-              url = session.face,
+              url = session.face.orEmpty(),
               sizePx = BiliImageSizing.AccountAvatarSizePx,
             )
           }
@@ -387,7 +387,7 @@ private fun MobileAccountHeader(
         )
         Text(
           text = if (session.isLoggedIn) {
-            "UID ${session.mid ?: ""}"
+            session.mid?.let { "UID $it" } ?: "UID"
           } else {
             stringResource(R.string.settings_login_description)
           },
