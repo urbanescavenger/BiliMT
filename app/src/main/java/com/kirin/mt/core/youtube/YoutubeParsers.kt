@@ -27,11 +27,54 @@ internal object YoutubeParsers {
    */
   fun parseFeedPage(root: JsonObject): YoutubeFeedPage {
     val videos = mutableListOf<YoutubeVideo>()
+    // 不同端点/客户端返回不同 renderer,字段结构一致:
+    //  WEB 搜索 videoRenderer / topic 热门 gridVideoRenderer / ANDROID 搜索 compactVideoRenderer
     collectByKey(root, KEY_VIDEO_RENDERER) { node ->
       parseVideoRenderer(node)?.let { videos.add(it) }
     }
+    collectByKey(root, KEY_GRID_VIDEO_RENDERER) { node ->
+      parseVideoRenderer(node)?.let { videos.add(it) }
+    }
+    collectByKey(root, KEY_COMPACT_VIDEO_RENDERER) { node ->
+      parseVideoRenderer(node)?.let { videos.add(it) }
+    }
+    // 频道页新格式 lockupViewModel(richItemRenderer → content)
+    collectByKey(root, KEY_LOCKUP_VIEW_MODEL) { node ->
+      parseLockupViewModel(node)?.let { videos.add(it) }
+    }
     val continuation = findContinuation(root)
     return YoutubeFeedPage(items = videos, continuation = continuation)
+  }
+
+  /**
+   * 新格式 lockupViewModel(频道页)。videoId/title 嵌在嵌套结构里,解析不稳定;
+   * 拿不到就跳过(动态 tab 空频道会回退热门,不依赖此解析)。防御式,不抛错。
+   */
+  private fun parseLockupViewModel(node: JsonObject): YoutubeVideo? {
+    val videoId = node.obj("contentId")?.stringOrNull("videoId")
+      ?: node.obj("contentMetadataViewModel")?.obj("contentId")?.stringOrNull("videoId")
+    if (videoId.isNullOrBlank()) return null
+    val title = node.obj("contentMetadataViewModel")
+      ?.obj("title")
+      ?.stringOrNull("content")
+      .orEmpty()
+    val thumbnailUrl = node.obj("contentImage")
+      ?.obj("image")?.array("sources")
+      ?.firstNotNullOfOrNull { (it as? JsonObject)?.stringOrNull("url") }
+      ?: "https://i.ytimg.com/vi/$videoId/mqdefault.jpg"
+    return YoutubeVideo(
+      videoId = videoId,
+      title = title,
+      channelName = "",
+      channelId = "",
+      thumbnailUrl = thumbnailUrl,
+      viewCount = null,
+      durationSec = null,
+      publishedAt = null,
+      liveNow = false,
+      isUpcoming = false,
+      badge = "",
+    )
   }
 
   // ---- 单个 videoRenderer 解析 ----
@@ -59,7 +102,10 @@ internal object YoutubeParsers {
       ?.lastOrNull()
       ?: "https://i.ytimg.com/vi/$videoId/mqdefault.jpg"
 
-    val lengthText = node.obj("lengthText")?.stringOrNull("simpleText").orEmpty()
+    // 时长:videoRenderer 在 lengthText;gridVideoRenderer 在 thumbnailOverlayTimeStatusRenderer。
+    val lengthText = node.obj("lengthText")?.stringOrNull("simpleText")
+      ?: node.obj("thumbnailOverlayTimeStatusRenderer")?.obj("text")?.stringOrNull("simpleText")
+      ?: ""
     val explicitLive = node.booleanOrNull("isLiveNow") ?: false
     val watchingText = node.obj("viewCountText")?.stringOrNull("simpleText")
       ?.contains("watching", ignoreCase = true) == true
@@ -223,5 +269,8 @@ internal object YoutubeParsers {
   }
 
   private const val KEY_VIDEO_RENDERER = "videoRenderer"
+  private const val KEY_GRID_VIDEO_RENDERER = "gridVideoRenderer"
+  private const val KEY_COMPACT_VIDEO_RENDERER = "compactVideoRenderer"
+  private const val KEY_LOCKUP_VIEW_MODEL = "lockupViewModel"
   private const val KEY_CONTINUATION_ITEM_RENDERER = "continuationItemRenderer"
 }

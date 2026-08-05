@@ -38,9 +38,13 @@ object YoutubeConstants {
   /** Referer 必须是 youtube，否则 InnerTube 拒收。 */
   const val Referer = "https://www.youtube.com"
 
-  /** 界面语言 / 地区，影响返回内容语言。 */
-  const val Hl = "zh-CN"
-  const val Gl = "CN"
+  /**
+   * 界面语言 / 地区。注意:实测 zh-CN/CN 会触发 YouTube 反爬(搜索返回
+   * backgroundPromoRenderer「出了点问题」);en/US 正常返回 videoRenderer。
+   * 中文内容少但稳定,先保证能拉取。
+   */
+  const val Hl = "en"
+  const val Gl = "US"
 
   /** 频道"视频"tab 的 protobuf 参数（YouTube 实际使用的值，去掉会失效）。 */
   const val ChannelVideosParams = "EgZ2aWRlb3PyBgQKAjoA"
@@ -48,12 +52,14 @@ object YoutubeConstants {
   /** 频道"直播"tab 的 protobuf 参数。 */
   const val ChannelLiveParams = "EgdzdHJlYW1z8gYECgJ6AA%3D%3D"
 
-  /** 热门(趋势)默认 browseId。 */
-  const val TrendingBrowseId = "FEtrending"
-
-  /** 热门页各子 tab 的 browseId + 参数（来自 FreeTube local.js getLocalTrending）。 */
+  /**
+   * 热门页各子 tab 的 browseId + 参数。
+   *
+   * 注意:通用 `FEtrending` 已于 2025-03 被 YouTube 废弃(400 invalid argument,
+   * /feed/trending 已移除),现仅 topic 热门(gaming/sports/podcasts)可用。
+   * 默认用"游戏"热门(实测 200 返回 gridVideoRenderer)。
+   */
   val TrendingTabs: Map<String, TrendingTab> = mapOf(
-    "默认" to TrendingTab(TrendingBrowseId, null),
     "游戏" to TrendingTab("UCOpNcN46UbXVtpKMrmU4Abg", "Egh0cmVuZGluZ7gBAJIDAPIGBAoCMgA"),
     "体育" to TrendingTab("UCEgdi0XIXXZ-qJOFPf4JSKw", "EglzcG9ydHN0YWK4AQCSAwDyBgQKAjIA"),
     "播客" to TrendingTab("FEpodcasts_destination", "qgcCCAM%3D"),
