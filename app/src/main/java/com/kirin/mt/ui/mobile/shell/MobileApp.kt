@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,7 +21,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -57,6 +55,8 @@ import com.kirin.mt.ui.mobile.LoginActivity
 import com.kirin.mt.ui.mobile.SettingsActivity
 import com.kirin.mt.ui.mobile.common.DevelopingTipContent
 import com.kirin.mt.ui.mobile.feed.MobileFeedScreen
+import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
+import com.kirin.mt.ui.mobile.feed.MobileYoutubeLongPressSheet
 import com.kirin.mt.ui.mobile.space.MobileYoutubeChannelScreen
 import com.kirin.mt.ui.mobile.feed.MobileLiveScreen
 import com.kirin.mt.ui.mobile.home.MobileHomeScreen
@@ -67,7 +67,6 @@ import com.kirin.mt.ui.pgc.PgcSeasonRequest
 import com.kirin.mt.ui.player.LivePlayerScreen
 import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.shell.AppDestination
-import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
 /**
@@ -113,19 +112,15 @@ fun BiliMobileApp(
   var channelPlaybackBehind by remember { mutableStateOf(false) }
   // 播放列表连播队列:播放列表 tab 起播时快照当前播放列表;其它入口起播时置空。
   var playQueue by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
+  // 长按视频卡片弹出操作菜单的视频;再点「加入播放列表」切换到播放列表选择弹窗。
+  var longPressVideo by remember { mutableStateOf<VideoSummary?>(null) }
+  var showPlaylistPicker by remember { mutableStateOf(false) }
 
-  val scope = rememberCoroutineScope()
-  // 卡片长按:仅 YouTube 加入/移除播放列表。
+  // 卡片长按:仅 YouTube 弹操作菜单(加入播放列表→选列表/新建),不再直接 toggle。
   val onLongPress: (VideoSummary) -> Unit = { video ->
     if (video.source == SourceYoutube) {
-      scope.launch {
-        val added = youtubePlaylistStore.toggle(video)
-        Toast.makeText(
-          context,
-          context.getString(if (added) R.string.playlist_added else R.string.playlist_removed),
-          Toast.LENGTH_SHORT,
-        ).show()
-      }
+      longPressVideo = video
+      showPlaylistPicker = false
     }
   }
 
@@ -414,6 +409,29 @@ fun BiliMobileApp(
             modifier = Modifier.fillMaxSize(),
           )
         }
+      }
+    }
+
+    // 长按 YouTube 卡片:底部操作菜单 →「加入播放列表」→ 列表选择/新建弹窗。
+    longPressVideo?.let { video ->
+      if (showPlaylistPicker) {
+        MobilePlaylistPickerDialog(
+          video = video,
+          youtubePlaylistStore = youtubePlaylistStore,
+          onDismiss = {
+            showPlaylistPicker = false
+            longPressVideo = null
+          },
+        )
+      } else {
+        MobileYoutubeLongPressSheet(
+          video = video,
+          onPickPlaylist = { showPlaylistPicker = true },
+          onDismiss = {
+            showPlaylistPicker = false
+            longPressVideo = null
+          },
+        )
       }
     }
   }

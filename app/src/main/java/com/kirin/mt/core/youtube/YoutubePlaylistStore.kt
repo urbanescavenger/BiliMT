@@ -6,76 +6,142 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.biliDataStore
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
+/** 默认播放列表名：首次使用预置,保证播放列表 tab 至少有一个可加入的列表。 */
+const val DEFAULT_PLAYLIST_NAME = "默认"
+
 /**
- * 本地自定义 YouTube 播放列表，用 DataStore 持久化，免登录。
- * 卡片长按 / 播放器"加入播放列表"按钮把 [VideoSummary] 存入，动态页"播放列表"tab 展示。
+ * 一个命名 YouTube 播放列表。免登录，DataStore 持久化。
+ */
+@Serializable
+data class YoutubePlaylist(
+  val name: String,
+  val videos: List<VideoSummary> = emptyList(),
+)
+
+/**
+ * 本地自定义 YouTube 播放列表(可多个命名列表)，用 DataStore 持久化，免登录。
+ * 卡片长按「加入播放列表」/ 播放器简介按钮把 [VideoSummary] 存入指定列表，
+ * 动态页"播放列表"tab 分层展示，单列 + 长按拖动排序。
  */
 class YoutubePlaylistStore(private val context: Context) {
   private val json = Json { ignoreUnknownKeys = true }
-  private val serializer = ListSerializer(VideoSummary.serializer())
+  private val serializer = ListSerializer(YoutubePlaylist.serializer())
+  private val legacySerializer = ListSerializer(VideoSummary.serializer())
 
-  val videos: Flow<List<VideoSummary>> = context.biliDataStore.data.map { prefs ->
-    prefs[Keys.Playlist]?.let(::decode).orEmpty()
+  /** 全部命名播放列表；存储为空时返回一个空"默认"列表。 */
+  val playlists: Flow<List<YoutubePlaylist>> = context.biliDataStore.data.map { prefs ->
+    val list = prefs[Keys.Playlists]?.let(::decode).orEmpty()
+    if (list.isEmpty()) listOf(YoutubePlaylist(DEFAULT_PLAYLIST_NAME)) else list
   }
 
-  /** 加入播放列表：按 videoId(bvid) 去重，新项前置。已在列表则忽略。 */
-  suspend fun add(video: VideoSummary) {
+  /** 首次迁移旧版单扁平列表(旧 key youtube_playlist)进"默认"列表，避免丢既有数据。 */
+  suspend fun migrateLegacyIfNeeded() {
     context.biliDataStore.edit { prefs ->
-      val current = decode(prefs[Keys.Playlist]).orEmpty()
-      if (current.any { it.bvid == video.bvid }) return@edit
-      prefs[Keys.Playlist] = json.encodeToString(serializer, listOf(video) + current)
+      val legacy = prefs[Keys.LegacyPlaylist] ?: return@edit
+      if (prefs[Keys.Playlists] != null) return@edit
+      val videos = runCatching { json.decodeFromString(legacySerializer, legacy) }
+        .getOrDefault(emptyList())
+      prefs[Keys.Playlists] = json.encodeToString(
+        serializer,
+        listOf(YoutubePlaylist(DEFAULT_PLAYLIST_NAME, videos)),
+      )
     }
   }
 
-  /** 从播放列表移除指定 videoId(bvid)。 */
-  suspend fun remove(videoId: String) {
+  /** 加入指定播放列表：列表不存在则新建；按 videoId(bvid) 去重，新项前置。 */
+  suspend fun addVideo(playlistName: String, video: VideoSummary) {
+    editPlaylists { list ->
+      if (list.none { it.name == playlistName }) {
+        list + YoutubePlaylist(playlistName, listOf(video))
+      } else {
+        list.map { pl ->
+          if (pl.name == playlistName && pl.videos.none { it.bvid == video.bvid }) {
+            pl.copy(videos = listOf(video) + pl.videos)
+          } else {
+            pl
+          }
+        }
+      }
+    }
+  }
+
+  /** 从指定播放列表移除 videoId(bvid)。 */
+  suspend fun removeVideo(playlistName: String, videoId: String) {
+    editPlaylists { list ->
+      list.map { pl ->
+        if (pl.name == playlistName) pl.copy(videos = pl.videos.filterNot { it.bvid == videoId })
+        else pl
+      }
+    }
+  }
+
+  /** 新建空播放列表；重名返回 false。 */
+  suspend fun createPlaylist(name: String): Boolean {
+    var created = false
+    editPlaylists { list ->
+      if (name.isBlank() || list.any { it.name == name }) {
+        list
+      } else {
+        created = true
+        list + YoutubePlaylist(name)
+      }
+    }
+    return created
+  }
+
+  /** 用整列新顺序覆盖某播放列表(长按拖动排序结束后写入最终顺序)。 */
+  suspend fun replaceVideos(playlistName: String, videos: List<VideoSummary>) {
+    editPlaylists { list ->
+      list.map { pl ->
+        if (pl.name == playlistName) pl.copy(videos = videos) else pl
+      }
+    }
+  }
+
+  /** 长按拖动排序：把 fromIndex 位置移到 toIndex。 */
+  suspend fun moveVideo(playlistName: String, fromIndex: Int, toIndex: Int) {
+    editPlaylists { list ->
+      list.map { pl ->
+        if (pl.name == playlistName) {
+          val videos = pl.videos.toMutableList()
+          if (fromIndex in videos.indices && toIndex in videos.indices && fromIndex != toIndex) {
+            val item = videos.removeAt(fromIndex)
+            videos.add(toIndex, item)
+            pl.copy(videos = videos)
+          } else {
+            pl
+          }
+        } else {
+          pl
+        }
+      }
+    }
+  }
+
+  /** 统一读写入口：读当前列表 → 变换 → 写回；结果为空则删 key。 */
+  private suspend fun editPlaylists(transform: (List<YoutubePlaylist>) -> List<YoutubePlaylist>) {
     context.biliDataStore.edit { prefs ->
-      val next = decode(prefs[Keys.Playlist]).orEmpty().filterNot { it.bvid == videoId }
+      val current = prefs[Keys.Playlists]?.let(::decode).orEmpty()
+      val next = transform(current)
       if (next.isEmpty()) {
-        prefs.remove(Keys.Playlist)
+        prefs.remove(Keys.Playlists)
       } else {
-        prefs[Keys.Playlist] = json.encodeToString(serializer, next)
+        prefs[Keys.Playlists] = json.encodeToString(serializer, next)
       }
     }
   }
 
-  /**
-   * 切换加入/移除，返回操作后是否在列表中（true=刚加入，false=刚移除）。
-   * 供长按/播放器按钮的乐观切换 + Toast 文案。
-   */
-  suspend fun toggle(video: VideoSummary): Boolean {
-    var added = false
-    context.biliDataStore.edit { prefs ->
-      val current = decode(prefs[Keys.Playlist]).orEmpty()
-      added = current.none { it.bvid == video.bvid }
-      if (added) {
-        prefs[Keys.Playlist] = json.encodeToString(serializer, listOf(video) + current)
-      } else {
-        val next = current.filterNot { it.bvid == video.bvid }
-        if (next.isEmpty()) prefs.remove(Keys.Playlist)
-        else prefs[Keys.Playlist] = json.encodeToString(serializer, next)
-      }
-    }
-    return added
-  }
-
-  /** 判断 videoId(bvid) 是否已在播放列表。 */
-  suspend fun contains(videoId: String): Boolean {
-    return context.biliDataStore.data.first()[Keys.Playlist]?.let(::decode)
-      .orEmpty().any { it.bvid == videoId }
-  }
-
-  private fun decode(raw: String?): List<VideoSummary> {
-    if (raw == null) return emptyList()
+  private fun decode(raw: String): List<YoutubePlaylist> {
     return runCatching { json.decodeFromString(serializer, raw) }.getOrDefault(emptyList())
   }
 
   private object Keys {
-    val Playlist = stringPreferencesKey("youtube_playlist")
+    val Playlists = stringPreferencesKey("youtube_playlists")
+    val LegacyPlaylist = stringPreferencesKey("youtube_playlist")
   }
 }

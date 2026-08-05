@@ -469,6 +469,14 @@
     <string name="playlist_removed">已从播放列表移除</string>
     <string name="add_to_playlist">加入播放列表</string>
     <string name="in_playlist">已加入</string>
+    <string name="playlist_add_title">加入播放列表</string>
+    <string name="playlist_new_list">新建列表</string>
+    <string name="playlist_name_hint">列表名称</string>
+    <string name="playlist_confirm">确定</string>
+    <string name="playlist_cancel">取消</string>
+    <string name="player_previous">上一个</string>
+    <string name="player_next">下一个</string>
+    <string name="playlist_section_related">相关视频</string>
     <string name="youtube_channel_follow">关注</string>
     <string name="youtube_channel_following">已关注</string>
     <string name="settings_youtube_channels">YouTube 频道</string>

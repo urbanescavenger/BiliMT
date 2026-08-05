@@ -124,6 +124,7 @@ import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.youtube.YoutubeVideoDetail
+import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
 import com.kirin.mt.core.network.FavoriteFolder
 import com.kirin.mt.core.network.BiliApiCodeException
 import com.kirin.mt.core.network.BiliNetworkException
@@ -687,12 +688,15 @@ fun MobilePlayerScreen(
     }.getOrDefault(emptyList())
   }
 
-  // 推荐视频(相关视频):按 bvid 拉,切视频重载(镜像 TV PlayerScreen)
+  // 相关视频:B站按 bvid 拉 related;YouTube 无该接口,用播放列表(playQueue)当前视频之后的项。
   LaunchedEffect(activeRequest.bvid) {
     relatedVideos = emptyList()
-    // YouTube 的 bvid 是 videoId，B 站 related 接口用不上，直接跳过(简介 Tab 不列相关视频)。
-    if (activeRequest.isYoutube) return@LaunchedEffect
     if (activeRequest.bvid.isBlank()) return@LaunchedEffect
+    if (activeRequest.isYoutube) {
+      val curIndex = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
+      if (curIndex >= 0) relatedVideos = playQueue.drop(curIndex + 1)
+      return@LaunchedEffect
+    }
     relatedVideos = runCatching {
       videoRepository.getRelatedVideos(activeRequest.bvid)
     }.getOrDefault(emptyList())
@@ -748,6 +752,17 @@ fun MobilePlayerScreen(
 
   val positionMs = seekPreviewMs ?: playbackPositionState.longValue
   val durationMs = playbackDurationState.longValue.coerceAtLeast(1L)
+
+  // 播放列表内点相关/后续视频:就地切换 activeRequest(保留 playQueue 上下文,◀▶ 与相关视频持续可用);
+  // 非列表视频回退外层 onPlayVideo(会清队列)。
+  val playPlaylistVideo: (VideoSummary) -> Unit = { video ->
+    val idx = playQueue.indexOfFirst { it.bvid == video.bvid }
+    if (idx >= 0) {
+      activeRequest = playQueue[idx].toPlaybackRequest().copy(preferredQualityId = selectedQualityId)
+    } else {
+      onPlayVideo(video)
+    }
+  }
 
   // 全屏:播放器铺满、简介不渲染。非全屏播放:视频区高 H(weight(1f)) 内视频 16:9 垂直居中(上下黑边等),
   // 底栏控制栏贴视频下方(上移),控制栏下留黑;底部简介小条(≤200dp,仅标题/UP/简介,无相关视频)。
@@ -1021,7 +1036,8 @@ fun MobilePlayerScreen(
             .padding(horizontal = 16.dp, vertical = 4.dp),
         ) {
           // 发送弹幕:内联输入栏(TextField + 发送),发在当前播放位置 progress 毫秒。
-          if (danmakuInputActive) {
+          // YouTube 无弹幕,所有 YouTube 播放不显示。
+          if (danmakuInputActive && !activeRequest.isYoutube) {
             DanmakuInputBar(
               text = danmakuInputText,
               onTextChange = { if (it.length <= 100) danmakuInputText = it },
@@ -1108,6 +1124,32 @@ fun MobilePlayerScreen(
               modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
             )
             Text(formatMs(durationMs), color = Color.White)
+            // 播放列表内:上一个 / 下一个视频按钮(◀ ▶)。非播放列表(curQueueIndex==-1)不显示。
+            val curQueueIndex = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
+            if (curQueueIndex >= 0) {
+              MobilePlayerIconButton(
+                iconRes = R.drawable.ic_player_chevron_left,
+                contentDescription = stringResource(R.string.player_previous),
+                tint = if (curQueueIndex > 0) BiliColors.TextPrimary else BiliColors.TextTertiary,
+                onClick = {
+                  if (curQueueIndex > 0) {
+                    activeRequest = playQueue[curQueueIndex - 1].toPlaybackRequest()
+                      .copy(preferredQualityId = selectedQualityId)
+                  }
+                },
+              )
+              MobilePlayerIconButton(
+                iconRes = R.drawable.ic_player_chevron_right,
+                contentDescription = stringResource(R.string.player_next),
+                tint = if (curQueueIndex < playQueue.lastIndex) BiliColors.TextPrimary else BiliColors.TextTertiary,
+                onClick = {
+                  if (curQueueIndex < playQueue.lastIndex) {
+                    activeRequest = playQueue[curQueueIndex + 1].toPlaybackRequest()
+                      .copy(preferredQualityId = selectedQualityId)
+                  }
+                },
+              )
+            }
             // 画质快捷入口:HD 图标按钮 + DropdownMenu,放在进度条与全屏按钮之间。
             // 切换逻辑与原设置弹窗 onQualitySelected 一致(改 selectedQualityId + activeRequest.preferredQualityId 重载)。
             // 播放器页面未包 MaterialTheme,DropdownMenu 显式深色 containerColor,否则默认白底。
@@ -1150,12 +1192,15 @@ fun MobilePlayerScreen(
             }
             // 发送弹幕入口:点开底栏内联输入栏(DanmakuInputBar),发在当前播放位置。
             // 图标复用 ic_player_subtitles(TV 弹幕设置亦用此图标);激活态高亮 BiliPink。
-            MobilePlayerIconButton(
-              iconRes = R.drawable.ic_player_subtitles,
-              contentDescription = "发送弹幕",
-              tint = if (danmakuInputActive) BiliColors.BiliPink else BiliColors.TextPrimary,
-              onClick = { danmakuInputActive = !danmakuInputActive },
-            )
+            // YouTube 无弹幕,所有 YouTube 播放不显示此按钮。
+            if (!activeRequest.isYoutube) {
+              MobilePlayerIconButton(
+                iconRes = R.drawable.ic_player_subtitles,
+                contentDescription = "发送弹幕",
+                tint = if (danmakuInputActive) BiliColors.BiliPink else BiliColors.TextPrimary,
+                onClick = { danmakuInputActive = !danmakuInputActive },
+              )
+            }
             // 手动沉浸式全屏入口(强制方向 + 隐藏系统栏);所有视频都显示。居中播放由播放/暂停驱动,与此独立。
             MobilePlayerIconButton(
               iconRes = if (fullscreen) R.drawable.ic_player_fullscreen_exit else R.drawable.ic_player_fullscreen,
@@ -1211,7 +1256,7 @@ fun MobilePlayerScreen(
           isPgc = activeRequest.isPgc,
           videoRepository = videoRepository,
           youtubePlaylistStore = youtubePlaylistStore,
-          onPlayVideo = onPlayVideo,
+          onPlayVideo = playPlaylistVideo,
           onOpenUpSpace = onOpenUpSpace,
           onShare = { shareVideo() },
           onSelectPage = { ep ->
@@ -1241,7 +1286,7 @@ fun MobilePlayerScreen(
       isPgc = activeRequest.isPgc,
       videoRepository = videoRepository,
       youtubePlaylistStore = youtubePlaylistStore,
-      onPlayVideo = onPlayVideo,
+      onPlayVideo = playPlaylistVideo,
       onOpenUpSpace = onOpenUpSpace,
       onShare = { shareVideo() },
       onSelectPage = { ep ->
@@ -1516,15 +1561,14 @@ private fun MobileYoutubeIntroTab(
   youtubeDetail: YoutubeVideoDetail?,
   loading: Boolean,
   request: PlaybackRequest,
+  relatedVideos: List<VideoSummary>,
   youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
+  onPlayVideo: (VideoSummary) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val detail = youtubeDetail
   // hooks 规则:collectAsState 等必须在早期 return 之前无条件调用。
-  val playlistVideos by youtubePlaylistStore.videos.collectAsState(initial = emptyList())
-  val inPlaylist = playlistVideos.any { it.bvid == request.bvid }
-  val context = LocalContext.current
-  val scope = rememberCoroutineScope()
+  var showPlaylistPicker by remember { mutableStateOf(false) }
   if (detail == null) {
     // 加载中显示转圈;加载完仍未取到(受限视频/解析失败)显示占位,避免永远转圈。
     Box(
@@ -1614,36 +1658,89 @@ private fun MobileYoutubeIntroTab(
         modifier = Modifier.padding(top = 10.dp),
       )
     }
-    // 加入播放列表按钮(/player 无 channelId 字段,存卡缺少 channelId,不影响播放与删除)。
+    // 加入播放列表:打开播放列表选择/新建弹窗(/player 无 channelId 字段,存卡缺少 channelId,不影响播放与删除)。
     TextButton(
-      onClick = {
-        val video = VideoSummary(
-          bvid = request.bvid,
-          title = detail.title.ifBlank { request.title },
-          pic = "https://i.ytimg.com/vi/${request.bvid}/mqdefault.jpg",
-          ownerName = detail.channelName,
-          ownerFace = "",
-          ownerMid = 0L,
-          view = (detail.viewCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-          danmaku = 0,
-          duration = 0,
-          pubdate = 0L,
-          badge = "",
-          source = SourceYoutube,
-        )
-        scope.launch {
-          val added = youtubePlaylistStore.toggle(video)
-          Toast.makeText(
-            context,
-            context.getString(if (added) R.string.playlist_added else R.string.playlist_removed),
-            Toast.LENGTH_SHORT,
-          ).show()
-        }
-      },
+      onClick = { showPlaylistPicker = true },
       modifier = Modifier.padding(top = 12.dp),
     ) {
-      Text(if (inPlaylist) stringResource(R.string.in_playlist) else stringResource(R.string.add_to_playlist))
+      Text(stringResource(R.string.add_to_playlist))
     }
+
+    // 相关视频:播放列表后续视频(播放列表起播时由外层注入),单列展示,点击切播。
+    if (relatedVideos.isNotEmpty()) {
+      Text(
+        text = stringResource(R.string.playlist_section_related),
+        color = Color.White,
+        style = MaterialTheme.typography.titleSmall,
+        modifier = Modifier.padding(top = 20.dp, bottom = 6.dp),
+      )
+      relatedVideos.forEach { v ->
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable { onPlayVideo(v) }
+            .padding(vertical = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          AsyncImage(
+            model = v.pic,
+            contentDescription = v.title,
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            modifier = Modifier
+              .width(110.dp)
+              .height(62.dp)
+              .clip(RoundedCornerShape(8.dp)),
+          )
+          Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
+            Text(
+              text = v.title,
+              color = Color.White,
+              style = MaterialTheme.typography.bodyMedium,
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+              text = buildString {
+                if (v.ownerName.isNotBlank()) append(v.ownerName)
+                if (v.view > 0) {
+                  if (isNotEmpty()) append(" · ")
+                  append(formatCount(v.view))
+                }
+              },
+              color = BiliColors.TextSecondary,
+              style = MaterialTheme.typography.labelSmall,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+        }
+      }
+    }
+  }
+
+  // 加入播放列表选择弹窗:选已有列表或新建。
+  if (showPlaylistPicker) {
+    val video = VideoSummary(
+      bvid = request.bvid,
+      title = detail.title.ifBlank { request.title },
+      pic = "https://i.ytimg.com/vi/${request.bvid}/mqdefault.jpg",
+      ownerName = detail.channelName,
+      ownerFace = "",
+      ownerMid = 0L,
+      view = (detail.viewCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+      danmaku = 0,
+      duration = 0,
+      pubdate = 0L,
+      badge = "",
+      source = SourceYoutube,
+    )
+    MobilePlaylistPickerDialog(
+      video = video,
+      youtubePlaylistStore = youtubePlaylistStore,
+      onDismiss = { showPlaylistPicker = false },
+    )
   }
 }
 
@@ -1708,7 +1805,9 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
             youtubeDetail = youtubeDetail,
             loading = youtubeDetailLoading,
             request = request,
+            relatedVideos = relatedVideos,
             youtubePlaylistStore = youtubePlaylistStore,
+            onPlayVideo = onPlayVideo,
             modifier = Modifier.fillMaxSize(),
           )
         } else {
