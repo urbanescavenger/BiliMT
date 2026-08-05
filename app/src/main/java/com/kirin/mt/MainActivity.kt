@@ -41,7 +41,6 @@ class MainActivity : ComponentActivity() {
             sessionStore = appContainer.sessionStore,
             youtubeChannelStore = appContainer.youtubeChannelStore,
             youtubeRepository = appContainer.youtubeRepository,
-            youtubeFeedCacheStore = appContainer.youtubeFeedCacheStore,
             updateManager = appContainer.updateManager,
             apkInstaller = appContainer.apkInstaller,
           )

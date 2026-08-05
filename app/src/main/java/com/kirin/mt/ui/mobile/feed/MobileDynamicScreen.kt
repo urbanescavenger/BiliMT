@@ -95,6 +95,18 @@ fun MobileDynamicScreen(
   var state by remember { mutableStateOf<DynamicState>(DynamicState.Loading) }
   var nextOffset by remember { mutableStateOf("") }
 
+  /** 把 YouTube 流合并进当前 B 站动态(先去掉旧 YouTube 部分再合并,保证缓存秒出+网络刷新不重复)。 */
+  fun mergeYoutube(yt: List<VideoSummary>) {
+    when (val cur = state) {
+      is DynamicState.Success -> {
+        val biliOnly = cur.videos.filterNot { it.source == SourceYoutube }
+        state = cur.copy(videos = mergeByPubdate(biliOnly, yt))
+      }
+      is DynamicState.Empty -> state = DynamicState.Success(yt, loadingMore = false, endReached = true)
+      else -> {} // Failed / Loading 保持原样
+    }
+  }
+
   suspend fun loadFirstBody() {
     state = DynamicState.Loading
     nextOffset = ""
@@ -143,18 +155,6 @@ fun MobileDynamicScreen(
           mergeYoutube(cached.videos) // 网络失败/超时,缓存兜底
         }
       }
-    }
-  }
-
-  /** 把 YouTube 流合并进当前 B 站动态(先去掉旧 YouTube 部分再合并,保证缓存秒出+网络刷新不重复)。 */
-  fun mergeYoutube(yt: List<VideoSummary>) {
-    when (val cur = state) {
-      is DynamicState.Success -> {
-        val biliOnly = cur.videos.filterNot { it.source == SourceYoutube }
-        state = cur.copy(videos = mergeByPubdate(biliOnly, yt))
-      }
-      is DynamicState.Empty -> state = DynamicState.Success(yt, loadingMore = false, endReached = true)
-      else -> {} // Failed / Loading 保持原样
     }
   }
 
