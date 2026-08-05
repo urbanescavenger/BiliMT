@@ -12,9 +12,9 @@
 
 ## 当前状态
 
-当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态 已可用**；直播播放暂缓，后续单独评估。
+当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理 已可用**；直播播放暂缓，后续单独评估。
 
-推荐下一项：完成 P11 收尾——设置页 YouTube 频道管理（P11-08），再评估 Phase 2 YouTube 播放（P11-09，需隐藏 WebView 跑 botguard/n 解密，工作量最大）。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
+推荐下一项：P11 内容侧已收尾，下一步评估 Phase 2 YouTube 播放（P11-09，需隐藏 WebView 跑 botguard/n 解密，工作量最大）或继续验证排队中的 P3-07 动态收藏 tab。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
 
 ## P0 项目决策与规则
 
@@ -285,5 +285,5 @@
 | P11-05 | 首页迁移自动启用 YouTube 分区 | Done | 新增 `HomeSectionsYoutubeMigrationV1` 一次性把 `YoutubeTrending` 加入启用集，修复已装设备不显示 |
 | P11-06 | 反爬与 renderer 解析修复 | Done | 实测：`zh-CN/CN` locale 触发反爬（搜索返回「出了点问题」拦截页），改 `en/US` 正常；通用热门 `FEtrending` 已被 YouTube 废弃（400），改用 topic 热门（游戏/体育/播客）返回 `gridVideoRenderer`；parser 统一收集 `videoRenderer`/`gridVideoRenderer`/`compactVideoRenderer`/`lockupViewModel` 四种格式，gridVideoRenderer 时长在 `thumbnailOverlayTimeStatusRenderer`；用户确认搜索/热门可用 |
 | P11-07 | YouTube API 笔记文档 | Done | 新建 `docs/youtube-api-notes.md`，记录 InnerTube 请求形态、反爬规避、renderer 解析、废弃端点、播放难点 |
-| P11-08 | 设置页 YouTube 频道管理 | Pending | 添加/删除要跟的 YouTube 频道；TV + 移动设置面板；当前动态 tab 空频道回退热门 |
+| P11-08 | 设置页 YouTube 频道管理 | Done | 新增 `YoutubeParsers.parseChannelInfo`（解析频道页 c4TabbedHeaderRenderer/channelMetadataRenderer/microformat 取 channelId+名称）和 `YoutubeRepository.resolveChannel`（归一化输入，`/browse` 支持 @handle / UC... 频道 ID）；TV `SettingsScreen` 新增「YouTube 内容」区 + `SettingsYoutubeChannelsColumn` 右面板（内嵌轻量 D-pad 键盘、添加/清空、频道行删除），懒索引重编号；移动 `MobileSettingsScreen` 新增 `MobileYoutubeChannelsPanel`（TextField 输入+删除列表）；`AppShell`/`SettingsActivity` 接线 store+repo；`assembleDebug` 云编译通过；打测试 tag 验证 |
 | P11-09 | Phase 2 YouTube 播放 | Pending | `POST /player` + PO token + `n` 参数解密（需隐藏 WebView 执行 bgutils-js，无法纯 Kotlin）；回退 Invidious 取流；难度大、暂缓 |
