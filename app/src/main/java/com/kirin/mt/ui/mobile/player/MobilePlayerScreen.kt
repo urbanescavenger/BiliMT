@@ -1622,8 +1622,13 @@ private fun MobileYoutubeIntroTab(
           title = detail.title.ifBlank { request.title },
           pic = "https://i.ytimg.com/vi/${request.bvid}/mqdefault.jpg",
           ownerName = detail.channelName,
+          ownerFace = "",
+          ownerMid = 0L,
           view = (detail.viewCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+          danmaku = 0,
           duration = 0,
+          pubdate = 0L,
+          badge = "",
           source = SourceYoutube,
         )
         scope.launch {

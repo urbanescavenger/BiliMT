@@ -225,6 +225,7 @@ fun MobileHomeScreen(
         onLoadNext = { loadNextPage(section) },
         onVideoSelected = onVideoSelected,
         onOpenOwner = onOpenOwner,
+        onLongPress = onLongPress,
         modifier = Modifier.fillMaxSize(),
       )
     }
@@ -241,6 +242,7 @@ private fun HomeSectionPage(
   onLoadNext: () -> Unit,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
+  onLongPress: ((VideoSummary) -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
   // 滑动接近底部自动加载下一页(绑定本页 gridState)。
