@@ -264,11 +264,11 @@ class YoutubePlaybackResolver(
   // ---- Json 辅助 ----
 
   // 全部用可空 receiver，兼容 runCatching.getOrNull() 可能为 null 的 /player 响应。
-  private fun JsonObject?.obj(name: String): JsonObject? = this?[name] as? JsonObject
-  private fun JsonObject?.array(name: String): JsonArray? = this?[name] as? JsonArray
-  private fun JsonObject?.stringOrNull(name: String): String? = this?[name]?.jsonPrimitive?.contentOrNull
-  private fun JsonObject?.intOrNull(name: String): Int? = this?[name]?.jsonPrimitive?.content?.toIntOrNull()
-  private fun JsonObject?.longOrNull(name: String): Long? = this?[name]?.jsonPrimitive?.content?.toLongOrNull()
+  private fun JsonObject?.obj(name: String): JsonObject? = this?.get(name) as? JsonObject
+  private fun JsonObject?.array(name: String): JsonArray? = this?.get(name) as? JsonArray
+  private fun JsonObject?.stringOrNull(name: String): String? = this?.get(name)?.jsonPrimitive?.contentOrNull
+  private fun JsonObject?.intOrNull(name: String): Int? = this?.get(name)?.jsonPrimitive?.content?.toIntOrNull()
+  private fun JsonObject?.longOrNull(name: String): Long? = this?.get(name)?.jsonPrimitive?.content?.toLongOrNull()
 
   private fun JsonObject?.isPlayable(): Boolean {
     return obj("playabilityStatus")?.stringOrNull("status")?.let { it == "OK" } == true ||
