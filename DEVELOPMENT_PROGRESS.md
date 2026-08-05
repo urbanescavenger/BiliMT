@@ -257,6 +257,21 @@
 | P10-03 | v1.0.7 发布与合入 main | Done | 整理 v1.0.6 至 v1.0.7 间的应用内更新、CI 和 About 页面变更；更新 `README.md`、`RELEASE_NOTES.md` 和本文件；打 tag `v1.0.7` 并推送；从 `mort_debug` 发起 PR 合到 `main` |
 | P10-04 | v1.0.9 发布与合入 main | Done | 整理 v1.0.8 稳定版后的 1.0.8-alpha 周期变更（设置内网络测速、CdnSpeedTester 探测策略优化、搜索/动态/历史 onOwnerSelected 回调补全、UP 主取消关注对话框焦点修复、CI 发布说明改用 gh release create）；更新 `README.md`、`RELEASE_NOTES.md` 和本文件；打 tag `v1.0.9` 并推送；从 `mort_debug` 合到 `main` |
 
+## 移动端 UI 与直播（v2.0.x 里程碑）
+
+> 此阶段从 `mobile` 分支把触屏移动端移植进单 APK（运行时 `isTvUi()` 选 TV/手机），并新增直播播放。详细逐条见 `RELEASE_NOTES.md`。
+
+| ID | 任务 | 状态 | 验收/备注 |
+| --- | --- | --- | --- |
+| v2.0.0 | 移动端 UI 移植完成 | Done | 单 APK 双入口；移动端外壳（NavigationSuiteScaffold）、内容页（首页/动态/搜索/设置/短信登录）、触屏播放器（手势/画质倍速弹幕/分P/自动连播/UP空间/空降/后台播放/全屏）、PGC MergingMediaSource；合并 mobile → mort_debug → main 打 v2.0.0 稳定 tag |
+| v2.0.1 | 视频详情上下分栏 + 评论 + 动态四子 tab + 季详情 | Done | 播放器上半+评论下半；动态/历史/收藏/追番四子 tab（PrimaryScrollableTabRow + Pager）；MobilePgcSeasonScreen 季详情选集续播高亮 |
+| v2.0.2 | 移动端播放器重构 + 互动 + 检查更新 | Done | 简介/评论双 Tab；点赞/投币/收藏/分享（真实计数与已操作状态）；顶/底栏不遮视频；全屏按视频比例自适应；检查更新内联下载 |
+| v2.0.3 | 移动端播放器打磨 + 弹幕发送 | Done | 竖屏自动全屏居中；画质入口下移；发弹幕（本地插入+粉色描边）；弹幕数量档位；播放卡死自愈（stall 重载）；后台播放音频焦点/耳机断开自动暂停 |
+| v2.0.4 | 看直播（TV + 移动） | Done | 直播入口 + 独立直播播放器（HLS/FLV 取流、画质切换）；过 -352 风控（WBI 签名 + buvid + live Referer）；直播 UI 对齐视频界面；直播画质跨房间持久化（LiveQualityPreferenceStore） |
+| v2.0.5 | 直播分区浏览 | Done | 移动端 tab 行 + Pager，TV capsule tab + 网格；分区树 `getWebAreaList`（data.data 双层）；直播长播报错重试（LiveLoadErrorHandlingPolicy 指数退避 + stall 重载） |
+| v2.0.6 | 移动端体验 + 首页分区同步 + 设置折叠 | Done | 正直播 UP 头像；缓冲期加载图标+控制栏；全屏跟随设备方向（SENSOR）；移动端首页分区配置与 TV 双向同步；设置面板折叠 |
+| v2.0.7 | 非全屏三态布局 + 控制栏修复 + 直播兜底 | Done | 移动端播放器非全屏三态统一（顶栏贴顶+视频底部对齐中线+简介/评论 Tab 占下半）；全屏/暂停控制栏修复；直播间无播放地址 durl 兜底；TV 焦点/选中态打磨 |
+
 ## P11 YouTube 内容集成（InnerTube）
 
 > 背景：把 YouTube 内容加进原生 搜索/首页热门/动态 三个入口。数据来自 FreeTube / YouTube.js（MIT）的 InnerTube 私有 API，biliMT 用 Kotlin 独立重写协议（不复用 AGPL 代码）。关键 API 实测发现记录在 `docs/youtube-api-notes.md`。
