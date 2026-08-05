@@ -33,11 +33,15 @@ import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.network.YoutubeFeedTimeoutMs
+import com.kirin.mt.core.network.mergeByPubdate
+import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 private sealed interface DynamicState {
   data object Loading : DynamicState
@@ -59,6 +63,7 @@ private sealed interface DynamicState {
 fun MobileDynamicScreen(
   videoRepository: VideoRepository,
   isLoggedIn: Boolean,
+  youtubeChannels: List<YoutubeChannel>,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
   onLogin: () -> Unit,
@@ -105,6 +110,27 @@ fun MobileDynamicScreen(
       throw e
     } catch (e: Exception) {
       DynamicState.Failed(e.message.orEmpty().ifBlank { "加载失败" })
+    }
+
+    // 合并 YouTube 关注(5s 兜底),就绪后与 B 站动态按发布时间重排;无频道时不产生额外加载。
+    if (youtubeChannels.isNotEmpty()) {
+      scope.launch {
+        val yt = try {
+          withTimeoutOrNull(YoutubeFeedTimeoutMs) {
+            videoRepository.youtubeSubscriptionsFeed(youtubeChannels)
+          }.orEmpty()
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          emptyList()
+        }
+        if (yt.isEmpty()) return@launch
+        when (val cur = state) {
+          is DynamicState.Success -> state = cur.copy(videos = mergeByPubdate(cur.videos, yt))
+          is DynamicState.Empty -> state = DynamicState.Success(yt, loadingMore = false, endReached = true)
+          else -> {} // Failed / Loading 保持原样
+        }
+      }
     }
   }
 

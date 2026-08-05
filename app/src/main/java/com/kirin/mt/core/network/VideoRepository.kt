@@ -22,6 +22,13 @@ import com.kirin.mt.core.youtube.YoutubeVideoPage
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
 
+/** 统一动态流:YouTube 关注拉取的兜底超时(ms)。B 站秒出,YouTube 最多等这么久。 */
+const val YoutubeFeedTimeoutMs = 5_000L
+
+/** 把 B 站动态与 YouTube 关注流按发布时间倒序合并成统一流。 */
+fun mergeByPubdate(bili: List<VideoSummary>, youtube: List<VideoSummary>): List<VideoSummary> =
+  (bili + youtube).sortedByDescending { it.pubdate }
+
 class VideoRepository(
   private val apiClient: BiliApiClient,
   private val wbiKeyRepository: WbiKeyRepository,

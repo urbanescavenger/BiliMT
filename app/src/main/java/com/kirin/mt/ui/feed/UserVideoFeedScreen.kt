@@ -45,6 +45,9 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.FollowingSeason
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.network.YoutubeFeedTimeoutMs
+import com.kirin.mt.core.network.mergeByPubdate
+import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.ui.common.BiliActionItem
 import com.kirin.mt.ui.common.BiliActionSheet
 import com.kirin.mt.ui.common.BiliCapsuleTabRow
@@ -68,9 +71,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToInt
 
-internal enum class UserFeedTab { DynamicVideo, DynamicAll, History, Favorite, Bangumi, YoutubeSubscriptions }
+internal enum class UserFeedTab { DynamicVideo, DynamicAll, History, Favorite, Bangumi }
 
 internal enum class BangumiFollowType(val id: Int, val labelRes: Int) {
   Bangumi(id = 1, labelRes = R.string.bangumi_type_bangumi),
@@ -146,7 +150,6 @@ internal class UserFeedUiState {
   val history = HistoryFeedUiState()
   val favorite = FavoriteFeedUiState()
   val bangumi = BangumiFollowUiState()
-  val youtube = DynamicFeedUiState()
 }
 
 // 把指定子 tab 的聚焦位置清回顶部。切子 tab / 侧栏切回动态页时调用,
@@ -172,10 +175,6 @@ private fun resetFeedTabFocus(feedState: UserFeedUiState, tab: UserFeedTab) {
     UserFeedTab.Bangumi -> {
       feedState.bangumi.focusedVideoIndex = 0
       feedState.bangumi.focusedVideoKey = ""
-    }
-    UserFeedTab.YoutubeSubscriptions -> {
-      feedState.youtube.focusedVideoIndex = 0
-      feedState.youtube.focusedVideoKey = ""
     }
   }
 }
@@ -215,19 +214,25 @@ internal fun UserFeedScreen(
   }
 
   LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab, youtubeChannels) {
-    // YouTube 关注无需登录(手动配置频道),其余 tab 需要登录。
-    if (!isLoggedIn && selectedTab != UserFeedTab.YoutubeSubscriptions) return@LaunchedEffect
+    // 统一动态「动态(视频)」合并了 YouTube 关注(免登录,手动配置频道);其余 tab 需要登录。
+    if (!isLoggedIn && !(selectedTab == UserFeedTab.DynamicVideo && youtubeChannels.isNotEmpty())) {
+      return@LaunchedEffect
+    }
     when (selectedTab) {
       UserFeedTab.DynamicVideo -> loadDynamicFirstPage(
         videoRepository,
+        coroutineScope,
         feedState.dynamicVideo,
         "video",
+        youtubeChannels,
         forceRefresh = autoRefreshOnSwitch,
       )
       UserFeedTab.DynamicAll -> loadDynamicFirstPage(
         videoRepository,
+        coroutineScope,
         feedState.dynamicAll,
         "all",
+        emptyList(),
         forceRefresh = autoRefreshOnSwitch,
       )
       UserFeedTab.History -> loadHistoryFirstPage(
@@ -245,24 +250,19 @@ internal fun UserFeedScreen(
        feedState.bangumi,
        forceRefresh = autoRefreshOnSwitch,
      )
-     UserFeedTab.YoutubeSubscriptions -> loadYoutubeSubscriptions(
-       videoRepository,
-       youtubeChannels,
-       feedState.youtube,
-       forceRefresh = autoRefreshOnSwitch,
-     )
     }
   }
 
   LaunchedEffect(manualRefreshKey) {
-   if (!isLoggedIn && selectedTab != UserFeedTab.YoutubeSubscriptions) return@LaunchedEffect
+   if (!isLoggedIn && !(selectedTab == UserFeedTab.DynamicVideo && youtubeChannels.isNotEmpty())) {
+     return@LaunchedEffect
+   }
    val handledKey = when (selectedTab) {
      UserFeedTab.DynamicVideo -> feedState.dynamicVideo.handledManualRefreshKey
      UserFeedTab.DynamicAll -> feedState.dynamicAll.handledManualRefreshKey
      UserFeedTab.History -> feedState.history.handledManualRefreshKey
      UserFeedTab.Favorite -> feedState.favorite.handledManualRefreshKey
      UserFeedTab.Bangumi -> feedState.bangumi.handledManualRefreshKey
-     UserFeedTab.YoutubeSubscriptions -> feedState.youtube.handledManualRefreshKey
     }
     if (manualRefreshKey > 0 && manualRefreshKey != handledKey) {
       // 侧栏重点击"动态"(当前目的地)= 显式刷新当前子 tab。重置当前子 tab 焦点回顶,
@@ -272,11 +272,11 @@ internal fun UserFeedScreen(
       when (selectedTab) {
         UserFeedTab.DynamicVideo -> {
           feedState.dynamicVideo.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, feedState.dynamicVideo, "video", forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, coroutineScope, feedState.dynamicVideo, "video", youtubeChannels, forceRefresh = true)
         }
         UserFeedTab.DynamicAll -> {
           feedState.dynamicAll.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, feedState.dynamicAll, "all", forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, coroutineScope, feedState.dynamicAll, "all", emptyList(), forceRefresh = true)
         }
         UserFeedTab.History -> {
           feedState.history.handledManualRefreshKey = manualRefreshKey
@@ -289,10 +289,6 @@ internal fun UserFeedScreen(
        UserFeedTab.Bangumi -> {
          feedState.bangumi.handledManualRefreshKey = manualRefreshKey
          loadBangumiFirstPage(videoRepository, feedState.bangumi, forceRefresh = true)
-       }
-       UserFeedTab.YoutubeSubscriptions -> {
-         feedState.youtube.handledManualRefreshKey = manualRefreshKey
-         loadYoutubeSubscriptions(videoRepository, youtubeChannels, feedState.youtube, forceRefresh = true)
        }
       }
     }
@@ -316,12 +312,11 @@ internal fun UserFeedScreen(
           UserFeedTab.History -> feedState.history.focusRestoredItemKey += 1
           UserFeedTab.Favorite -> feedState.favorite.focusRestoredItemKey += 1
           UserFeedTab.Bangumi -> feedState.bangumi.focusRestoredItemKey += 1
-          UserFeedTab.YoutubeSubscriptions -> feedState.youtube.focusRestoredItemKey += 1
         }
         true
       },
     )
-    if (!isLoggedIn && selectedTab != UserFeedTab.YoutubeSubscriptions) {
+    if (!isLoggedIn && !(selectedTab == UserFeedTab.DynamicVideo && youtubeChannels.isNotEmpty())) {
       val message = stringResource(
        when (selectedTab) {
          UserFeedTab.History -> R.string.history_signed_out
@@ -329,7 +324,6 @@ internal fun UserFeedScreen(
          UserFeedTab.DynamicVideo -> R.string.dynamic_signed_out
          UserFeedTab.DynamicAll -> R.string.dynamic_signed_out
          UserFeedTab.Bangumi -> R.string.bangumi_signed_out
-         UserFeedTab.YoutubeSubscriptions -> R.string.feed_youtube_empty
        },
       )
       FeedStatusScreen(message = message)
@@ -342,6 +336,7 @@ internal fun UserFeedScreen(
           UserFeedTab.DynamicVideo -> DynamicFeedContent(
             state = feedState.dynamicVideo,
             type = "video",
+            youtubeChannels = youtubeChannels,
             cardMode = VideoCardMode.Dynamic,
             firstItemFocusRequester = firstItemFocusRequester,
             tabFocusRequester = tabFocusRequester,
@@ -357,6 +352,7 @@ internal fun UserFeedScreen(
           UserFeedTab.DynamicAll -> DynamicFeedContent(
             state = feedState.dynamicAll,
             type = "all",
+            youtubeChannels = emptyList(),
             cardMode = VideoCardMode.Dynamic,
             firstItemFocusRequester = firstItemFocusRequester,
             tabFocusRequester = tabFocusRequester,
@@ -421,34 +417,6 @@ internal fun UserFeedScreen(
            videoRepository = videoRepository,
            onMoveLeftToNav = onMoveLeftToNav,
            onSeasonSelected = onSeasonSelected,
-         )
-         UserFeedTab.YoutubeSubscriptions -> UserFeedContent(
-           state = feedState.youtube.state,
-           loadingMessage = stringResource(R.string.search_loading),
-           emptyMessage = stringResource(R.string.feed_youtube_empty),
-           failedMessage = { message -> stringResource(R.string.history_failed_with_message, message) },
-           cardMode = VideoCardMode.Dynamic,
-           firstItemFocusRequester = firstItemFocusRequester,
-           restoredFocusIndex = feedState.youtube.focusedVideoIndex,
-           restoredFocusKey = feedState.youtube.focusedVideoKey,
-           restoreFocusRequestKey = restoreFocusRequestKey,
-           onRestoreFocusHandled = onRestoreFocusHandled,
-           onFocusedIndexChange = { index, video ->
-             feedState.youtube.focusedVideoIndex = index
-             feedState.youtube.focusedVideoKey = video.focusRestoreKey()
-           },
-           onRetry = {
-             coroutineScope.launch {
-               loadYoutubeSubscriptions(videoRepository, youtubeChannels, feedState.youtube, forceRefresh = true)
-             }
-           },
-           onLoadMore = {},
-           onMoveUpFromFirstRow = { runCatching { tabFocusRequester.requestFocus() }.isSuccess },
-           onMoveLeftToNav = onMoveLeftToNav,
-           onVideoSelected = { video -> onVideoSelected(video, false) },
-           onOwnerSelected = onOwnerSelected,
-           onCardLongPress = { video -> actionSheetVideo = video },
-           focusRestoredItemKey = feedState.youtube.focusRestoredItemKey,
          )
        }
       }
@@ -533,7 +501,6 @@ private fun UserFeedTabRow(
            UserFeedTab.History -> R.string.nav_history
            UserFeedTab.Favorite -> R.string.nav_favorite
            UserFeedTab.Bangumi -> R.string.nav_bangumi
-           UserFeedTab.YoutubeSubscriptions -> R.string.feed_tab_youtube
          },
         ),
         selected = selected,
@@ -548,8 +515,10 @@ private fun UserFeedTabRow(
 
 private suspend fun loadDynamicFirstPage(
   videoRepository: VideoRepository,
+  coroutineScope: CoroutineScope,
   state: DynamicFeedUiState,
   type: String,
+  youtubeChannels: List<YoutubeChannel>,
   forceRefresh: Boolean,
 ) {
   if (!forceRefresh && state.loadedOnce) {
@@ -585,42 +554,49 @@ private suspend fun loadDynamicFirstPage(
     state.loadedOnce = true
     UserFeedState.Failed(error.message.orEmpty())
   }
-}
 
-/** 加载 YouTube 关注流(手动配置频道的最新视频,按时间合并,单页)。无需登录。 */
-private suspend fun loadYoutubeSubscriptions(
-  videoRepository: VideoRepository,
-  channels: List<com.kirin.mt.core.youtube.YoutubeChannel>,
-  state: DynamicFeedUiState,
-  forceRefresh: Boolean,
-) {
-  if (!forceRefresh && state.loadedOnce) {
+  // 仅「动态(视频)」合并 YouTube 关注;无频道或 type="all" 时不产生额外加载。
+  if (type != "video" || youtubeChannels.isEmpty()) {
     return
   }
-  if (state.state !is UserFeedState.Success) {
-    state.state = UserFeedState.Loading
-    state.focusedVideoIndex = 0
-    state.focusedVideoKey = ""
-  }
-  state.state = try {
-    val videos = videoRepository.youtubeSubscriptionsFeed(channels)
-    state.loadedOnce = true
-    if (videos.isEmpty()) {
-      UserFeedState.Empty
-    } else {
-      state.hasLoadedContent = true
-      UserFeedState.Success(
-        videos = videos,
-        loadingMore = false,
-        endReached = true,
-        loadMoreError = "",
-      )
+  mergeYoutubeIntoDynamic(videoRepository, coroutineScope, state, youtubeChannels)
+}
+
+/** 后台拉取 YouTube 关注流(5s 兜底),就绪后与当前 B 站动态按发布时间合并重排。 */
+private fun mergeYoutubeIntoDynamic(
+  videoRepository: VideoRepository,
+  coroutineScope: CoroutineScope,
+  state: DynamicFeedUiState,
+  channels: List<YoutubeChannel>,
+) {
+  coroutineScope.launch {
+    val yt = try {
+      withTimeoutOrNull(YoutubeFeedTimeoutMs) {
+        videoRepository.youtubeSubscriptionsFeed(channels)
+      }.orEmpty()
+    } catch (error: CancellationException) {
+      throw error
+    } catch (error: Exception) {
+      emptyList()
     }
-  } catch (error: CancellationException) {
-    throw error
-  } catch (error: Exception) {
-    state.loadedOnce = true
-    UserFeedState.Failed(error.message.orEmpty())
+    if (yt.isEmpty()) return@launch
+    when (val cur = state.state) {
+      is UserFeedState.Success -> {
+        val merged = mergeByPubdate(cur.videos, yt)
+        if (merged.size > cur.videos.size) state.hasLoadedContent = true
+        state.state = cur.copy(videos = merged)
+      }
+      is UserFeedState.Empty -> {
+        state.hasLoadedContent = true
+        state.state = UserFeedState.Success(
+          videos = yt,
+          loadingMore = false,
+          endReached = true,
+          loadMoreError = "",
+        )
+      }
+      else -> {} // Failed / Loading 保持原样
+    }
   }
 }
 
@@ -967,6 +943,7 @@ private fun loadBangumiNextPage(
 private fun DynamicFeedContent(
   state: DynamicFeedUiState,
   type: String,
+  youtubeChannels: List<YoutubeChannel>,
   cardMode: VideoCardMode,
   firstItemFocusRequester: FocusRequester,
   tabFocusRequester: FocusRequester,
@@ -998,7 +975,7 @@ private fun DynamicFeedContent(
       },
       onRetry = {
         coroutineScope.launch {
-          loadDynamicFirstPage(videoRepository, state, type, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, coroutineScope, state, type, youtubeChannels, forceRefresh = true)
         }
       },
       onLoadMore = { loadDynamicNextPage(videoRepository, coroutineScope, state, type) },
