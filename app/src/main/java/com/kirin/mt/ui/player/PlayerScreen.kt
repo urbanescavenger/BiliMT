@@ -1339,7 +1339,8 @@ fun PlayerScreen(
           codecPreference = playbackCodecPreference,
           qualityPreference = playbackQualityPreference,
         )
-      if (info.videoTracks.isEmpty() || info.audioTracks.isEmpty()) {
+      // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体)。
+      if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive)) {
         PlayerScreenState.Failed(context.getString(R.string.player_error_empty_tracks))
       } else {
         coroutineScope.launch { lastPlayedStore.save(info.bvid, info.cid) }
