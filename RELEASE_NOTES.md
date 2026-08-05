@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v2.0.8-alpha.11
+
+移动端 YouTube 三件套：**UP 主页进频道可关注**、**视频可加入播放列表**、**动态新增播放列表 tab**。
+
+### 功能
+- **YouTube UP 主页**:点 YouTube 视频卡片 UP 头像进频道主页,显示频道名 + 关注按钮 + 视频网格(continuation 分页)。关注写入本地频道列表(免登录),动态"YouTube 关注"tab 即时生效。
+- **加入播放列表**:YouTube 视频卡片长按 / 播放器"简介"tab 里的"加入播放列表"按钮,可加/移除到本地播放列表(免登录,DataStore 持久化)。
+- **动态播放列表 tab**:动态底栏新增"播放列表",展示已存视频;"编辑"模式或长按可删减;从播放列表起播后播完自动连播下一项。
+
+### 技术
+- `VideoSummary` 加 `channelId`(YouTube 卡片进频道);新建 `YoutubePlaylistStore` 本地播放列表。
+- 播放列表连播复用播放器完成连播机制(`playQueue` 队列)。
+
 ## v2.0.8-alpha.9
 
 修 YouTube 播放「接口未返回可用音视频轨」误报：合并 progressive 流(itag 18/22,音视频一体)`audioTracks` 为空属正常,播放器空轨检查对 progressive 视频轨放行(B 站 DASH 仍严格要求音频轨)。
