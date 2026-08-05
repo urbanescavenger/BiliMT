@@ -134,6 +134,37 @@ class YoutubeRepository(
   }
 
   /**
+   * 视频详情（简介 Tab）：POST /player 取 videoDetails（title/author/shortDescription/viewCount）
+   * + microformat（publishDate）。受限视频可能无 videoDetails，此时返回 null（UI 显示重试）。
+   */
+  suspend fun getVideoDetail(videoId: String): YoutubeVideoDetail? {
+    if (videoId.isBlank()) return null
+    return runCatching {
+      val payload = buildJsonObject {
+        put("videoId", videoId)
+        put("contentCheckOk", true)
+        put("racyCheckOk", true)
+      }
+      client.postJson("/player", payload).let(YoutubeParsers::parseVideoDetail)
+    }.getOrNull()
+  }
+
+  /**
+   * 评论列表（/next）：首屏 payload 只带 videoId；续页带 continuation token。
+   * 返回一页 [YoutubeComment] + 续页 token（null 表示到底）。
+   */
+  suspend fun getComments(
+    videoId: String,
+    continuation: String? = null,
+  ): YoutubeCommentPage {
+    val payload = buildJsonObject {
+      put("videoId", videoId)
+      if (!continuation.isNullOrBlank()) put("continuation", continuation)
+    }
+    return client.postJson("/next", payload).let(YoutubeParsers::parseCommentPage)
+  }
+
+  /**
    * 动态页"YouTube 关注"流：遍历配置的频道取各自最新视频，按发布时间倒序合并。
    * 对齐 FreeTube `grabAllSubscriptions` 的"逐频道拉取+本地合并"思路（独立实现）。
    */

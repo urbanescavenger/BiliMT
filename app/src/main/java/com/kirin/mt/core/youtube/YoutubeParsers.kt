@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import java.util.Calendar
 
 /**
  * InnerTube JSON → [YoutubeVideo] 解析器。独立实现，仅复用响应"形状"。
@@ -94,6 +95,96 @@ internal object YoutubeParsers {
       }
     }
     return result
+  }
+
+  /**
+   * 从 /player 响应解析视频详情（简介 Tab）。
+   *
+   * 取 `videoDetails`（title / author 频道名 / shortDescription 简介 / viewCount）+ `microformat`
+   * （publishDate）。频道头像在 /player 里没有对应字段，留空由 UI 渲染占位。
+   * 取不到 videoId/title 返回 null（调用方降级为「简介不可用」）。
+   */
+  fun parseVideoDetail(playerJson: JsonObject): YoutubeVideoDetail? {
+    val vd = playerJson.obj("videoDetails") ?: return null
+    val videoId = vd.stringOrNull("videoId") ?: return null
+    val title = vd.stringOrNull("title").orEmpty()
+    if (title.isBlank()) return null
+    val description = vd.stringOrNull("shortDescription").orEmpty()
+    val channelName = vd.stringOrNull("author").orEmpty()
+    val viewCount = parseCount(vd.stringOrNull("viewCount"))
+    val publishedAt = playerJson.obj("microformat")
+      ?.obj("playerMicroformatRenderer")
+      ?.stringOrNull("publishDate")
+      ?.let { parsePublishDate(it) }
+    return YoutubeVideoDetail(
+      videoId = videoId,
+      title = title,
+      description = description,
+      channelName = channelName,
+      channelAvatarUrl = "",
+      viewCount = viewCount,
+      publishedAt = publishedAt,
+    )
+  }
+
+  /**
+   * 从 /next 响应解析一页评论 + 续页 token。
+   *
+   * 评论实体散落在 commentSectionRenderer 子树里（commentThreadRenderer → comment.commentRenderer），
+   * 用 collectByKey 递归收集；续页 token 优先取评论 section 子树内的 continuation（避免把相关视频等
+   * 其它 section 的 token 误当评论续页），取不到再回退到全局最后一个 continuation。
+   */
+  fun parseCommentPage(root: JsonObject): YoutubeCommentPage {
+    val comments = mutableListOf<YoutubeComment>()
+    var token: String? = null
+    collectByKey(root, KEY_COMMENT_SECTION_RENDERER) { section ->
+      collectByKey(section, KEY_COMMENT_RENDERER) { node ->
+        parseCommentRenderer(node)?.let { comments.add(it) }
+      }
+      if (token == null) token = findContinuation(section)
+    }
+    // 防御：无 commentSectionRenderer 容器时回退全根收集。
+    if (comments.isEmpty() && token == null) {
+      collectByKey(root, KEY_COMMENT_RENDERER) { node ->
+        parseCommentRenderer(node)?.let { comments.add(it) }
+      }
+      token = findContinuation(root)
+    }
+    return YoutubeCommentPage(items = comments, continuation = token)
+  }
+
+  private fun parseCommentRenderer(node: JsonObject): YoutubeComment? {
+    val commentId = node.stringOrNull("commentId") ?: return null
+    val authorName = runsText(node.obj("authorText")).ifBlank { simpleText(node.obj("authorText")) }
+    val avatarUrl = node.obj("authorThumbnail")
+      ?.array("thumbnails")
+      ?.mapNotNull { (it as? JsonObject)?.stringOrNull("url") }
+      ?.firstOrNull()
+      .orEmpty()
+    val content = runsText(node.obj("contentText")).ifBlank { simpleText(node.obj("contentText")) }
+    val likeCount = parseCount(node.stringOrNull("likeCount"))
+    val publishedAt = node.obj("publishedTimeText")?.let { pt ->
+      parsePublished(simpleText(pt).ifBlank { runsText(pt) }, liveNow = false, isUpcoming = false)
+    }
+    return YoutubeComment(
+      commentId = commentId,
+      authorName = authorName,
+      authorAvatarUrl = avatarUrl,
+      content = content,
+      likeCount = likeCount,
+      publishedAt = publishedAt,
+    )
+  }
+
+  /** "YYYY-MM-DD" → epoch 秒；解析失败返回 null。 */
+  private fun parsePublishDate(date: String): Long? {
+    val parts = date.split('-').mapNotNull { it.toIntOrNull() }
+    if (parts.size != 3) return null
+    val cal = Calendar.getInstance().apply {
+      clear()
+      set(parts[0], parts[1] - 1, parts[2], 0, 0, 0)
+    }
+    return cal.timeInMillis / 1000L
   }
 
   /**
@@ -377,4 +468,6 @@ internal object YoutubeParsers {
   private const val KEY_LOCKUP_VIEW_MODEL = "lockupViewModel"
   private const val KEY_CONTINUATION_ITEM_RENDERER = "continuationItemRenderer"
   private const val KEY_CHANNEL_RENDERER = "channelRenderer"
+  private const val KEY_COMMENT_RENDERER = "commentRenderer"
+  private const val KEY_COMMENT_SECTION_RENDERER = "commentSectionRenderer"
 }

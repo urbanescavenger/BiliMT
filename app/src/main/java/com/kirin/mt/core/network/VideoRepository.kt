@@ -14,8 +14,10 @@ import com.kirin.mt.core.model.UgcBannerItem
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.youtube.YoutubeChannel
+import com.kirin.mt.core.youtube.YoutubeCommentPage
 import com.kirin.mt.core.youtube.YoutubeConstants
 import com.kirin.mt.core.youtube.YoutubeRepository
+import com.kirin.mt.core.youtube.YoutubeVideoDetail
 import com.kirin.mt.core.youtube.YoutubeVideoPage
 import kotlinx.coroutines.flow.first
 
@@ -201,6 +203,16 @@ class VideoRepository(
 
   suspend fun youtubeSubscriptionsFeed(channels: List<YoutubeChannel>): List<VideoSummary> {
     return youtubeRepository.getSubscriptionsFeed(channels)
+  }
+
+  /** YouTube 视频详情（简介 Tab）。 */
+  suspend fun getYoutubeVideoDetail(videoId: String): YoutubeVideoDetail? {
+    return youtubeRepository.getVideoDetail(videoId)
+  }
+
+  /** YouTube 评论列表（/next + continuation 续页）。 */
+  suspend fun getYoutubeComments(videoId: String, continuation: String? = null): YoutubeCommentPage {
+    return youtubeRepository.getComments(videoId, continuation)
   }
 
   suspend fun getDynamicFeed(offset: String = "", type: String = "video"): DynamicFeedPage {

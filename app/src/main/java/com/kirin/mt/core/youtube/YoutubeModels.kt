@@ -34,6 +34,40 @@ data class YoutubeFeedPage(
   val continuation: String?,
 )
 
+/** YouTube 视频详情（简介 Tab）。由 /player 响应 videoDetails + microformat 填充。 */
+data class YoutubeVideoDetail(
+  val videoId: String,
+  val title: String,
+  /** 简介（shortDescription）。 */
+  val description: String,
+  /** 频道名。 */
+  val channelName: String,
+  /** 频道头像 URL；无则空串。 */
+  val channelAvatarUrl: String,
+  /** 观看数；未知为 null。 */
+  val viewCount: Long?,
+  /** 发布时间（epoch 秒）；未知为 null。 */
+  val publishedAt: Long?,
+)
+
+/** 一条 YouTube 评论。 */
+data class YoutubeComment(
+  val commentId: String,
+  val authorName: String,
+  val authorAvatarUrl: String,
+  val content: String,
+  val likeCount: Long?,
+  /** 发布时间（epoch 秒，相对时间反推）；未知为 null。 */
+  val publishedAt: Long?,
+)
+
+/** 一页 YouTube 评论（/next 响应），带续页 token。 */
+data class YoutubeCommentPage(
+  val items: List<YoutubeComment>,
+  /** 续页 token；null 表示没有下一页。 */
+  val continuation: String?,
+)
+
 /** 搜索排序参数（InnerTube search params 串，对齐 FreeTube convertSearchFilters）。 */
 object YoutubeSearchParams {
   /** 默认综合排序（无 params，youtubei.js 默认）。 */

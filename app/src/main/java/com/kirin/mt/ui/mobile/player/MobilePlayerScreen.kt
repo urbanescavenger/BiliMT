@@ -122,6 +122,7 @@ import com.kirin.mt.R
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.youtube.YoutubeVideoDetail
 import com.kirin.mt.core.network.FavoriteFolder
 import com.kirin.mt.core.network.BiliApiCodeException
 import com.kirin.mt.core.network.BiliNetworkException
@@ -234,6 +235,9 @@ fun MobilePlayerScreen(
   // 画质/分P 切换:activeRequest 驱动 load effect(镜像 TV),metadata 供选集,selectedQualityId 供画质高亮
   var activeRequest by remember(request) { mutableStateOf(request) }
   var metadata by remember { mutableStateOf<PlaybackVideoMetadata?>(null) }
+  // YouTube 视频详情(简介 Tab 数据源;YouTube 无 B 站 view 元数据,单独拉 /player videoDetails)
+  var youtubeDetail by remember { mutableStateOf<YoutubeVideoDetail?>(null) }
+  var youtubeDetailLoading by remember { mutableStateOf(false) }
   var selectedQualityId by remember { mutableStateOf<Int?>(null) }
   var playbackSpeed by remember { mutableFloatStateOf(1f) }
   var settingsSheet by remember { mutableStateOf(false) }
@@ -512,6 +516,10 @@ fun MobilePlayerScreen(
       val isYoutube = activeRequest.isYoutube
       val videoMetadata = if (isYoutube) null else runCatching { playbackRepository.getVideoMetadata(activeRequest) }.getOrNull()
       metadata = videoMetadata
+      // YouTube 简介 Tab 单独拉 /player videoDetails（view/metadata 走 B 站，YouTube 无）。
+      youtubeDetailLoading = isYoutube
+      youtubeDetail = if (isYoutube) runCatching { videoRepository.getYoutubeVideoDetail(activeRequest.bvid) }.getOrNull() else null
+      youtubeDetailLoading = false
       val cid = if (isYoutube) {
         0L
       } else {
@@ -678,6 +686,8 @@ fun MobilePlayerScreen(
   // 推荐视频(相关视频):按 bvid 拉,切视频重载(镜像 TV PlayerScreen)
   LaunchedEffect(activeRequest.bvid) {
     relatedVideos = emptyList()
+    // YouTube 的 bvid 是 videoId，B 站 related 接口用不上，直接跳过(简介 Tab 不列相关视频)。
+    if (activeRequest.isYoutube) return@LaunchedEffect
     if (activeRequest.bvid.isBlank()) return@LaunchedEffect
     relatedVideos = runCatching {
       videoRepository.getRelatedVideos(activeRequest.bvid)
@@ -1183,6 +1193,9 @@ fun MobilePlayerScreen(
       if (isPlayingInline) {
         MobilePlayerIntroCommentTabs(
           metadata = metadata,
+          youtubeDetail = youtubeDetail,
+          youtubeDetailLoading = youtubeDetailLoading,
+          isYoutube = activeRequest.isYoutube,
           request = activeRequest,
           relatedVideos = relatedVideos,
           isPgc = activeRequest.isPgc,
@@ -1209,6 +1222,9 @@ fun MobilePlayerScreen(
   when {
     isPausedSplit -> MobilePlayerIntroCommentTabs(
       metadata = metadata,
+      youtubeDetail = youtubeDetail,
+      youtubeDetailLoading = youtubeDetailLoading,
+      isYoutube = activeRequest.isYoutube,
       request = activeRequest,
       relatedVideos = relatedVideos,
       isPgc = activeRequest.isPgc,
@@ -1479,6 +1495,109 @@ private fun MobilePlayerIntroHeader(
 }
 
 /**
+ * YouTube 简介 Tab:标题 / 频道行(头像+名) / 数据行(观看·发布时间) / 简介 desc。
+ * YouTube 无 B 站 view 元数据,由 /player videoDetails 填充;youtubeDetail 未就绪时居中加载圈。
+ * 无 B 站互动(点赞/投币)行;简介可能很长,可纵向滚动。
+ */
+@Composable
+private fun MobileYoutubeIntroTab(
+  youtubeDetail: YoutubeVideoDetail?,
+  loading: Boolean,
+  request: PlaybackRequest,
+  modifier: Modifier = Modifier,
+) {
+  val detail = youtubeDetail
+  if (detail == null) {
+    // 加载中显示转圈;加载完仍未取到(受限视频/解析失败)显示占位,避免永远转圈。
+    Box(
+      modifier = modifier.background(Color.Black),
+      contentAlignment = Alignment.Center,
+    ) {
+      if (loading) {
+        CircularProgressIndicator()
+      } else {
+        Text(
+          text = "简介暂不可用",
+          color = BiliColors.TextSecondary,
+          style = MaterialTheme.typography.bodyMedium,
+        )
+      }
+    }
+    return
+  }
+  Column(
+    modifier = modifier
+      .background(Color.Black)
+      .verticalScroll(rememberScrollState())
+      .padding(horizontal = 16.dp, vertical = 12.dp),
+  ) {
+    // 标题
+    Text(
+      text = detail.title.ifBlank { request.title },
+      color = Color.White,
+      style = MaterialTheme.typography.titleMedium,
+      maxLines = 2,
+      overflow = TextOverflow.Ellipsis,
+    )
+    // 频道行(头像 + 名)。/player 无频道头像字段,渲染占位圆;仅展示,不进频道。
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(top = 10.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      val avatarModifier = Modifier
+        .size(40.dp)
+        .clip(CircleShape)
+        .background(MaterialTheme.colorScheme.surfaceVariant)
+      if (detail.channelAvatarUrl.isBlank()) {
+        Box(modifier = avatarModifier)
+      } else {
+        AsyncImage(
+          model = detail.channelAvatarUrl,
+          contentDescription = detail.channelName,
+          contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+          modifier = avatarModifier,
+        )
+      }
+      Spacer(Modifier.width(10.dp))
+      Text(
+        text = detail.channelName.ifBlank { "YouTube" },
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.bodyMedium,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+      )
+    }
+    // 数据行:观看 · 发布时间(pubdate 为秒,转 yyyy-MM-dd)
+    val pubdateText = detail.publishedAt?.let { t ->
+      if (t <= 0L) "" else SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(t * 1000L))
+    }.orEmpty()
+    val metaParts = buildList {
+      if ((detail.viewCount ?: 0L) > 0) add("播放 ${formatCount(detail.viewCount ?: 0L)}")
+      if (pubdateText.isNotBlank()) add(pubdateText)
+    }
+    if (metaParts.isNotEmpty()) {
+      Text(
+        text = metaParts.joinToString(" · "),
+        color = BiliColors.TextSecondary,
+        style = MaterialTheme.typography.labelMedium,
+        modifier = Modifier.padding(top = 8.dp),
+      )
+    }
+    // 简介 desc
+    if (detail.description.isNotBlank()) {
+      Text(
+        text = detail.description,
+        color = BiliColors.TextSecondary,
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 10.dp),
+      )
+    }
+  }
+}
+
+/**
  * 简介/评论 Tab 分栏:简介 Tab(MobilePlayerIntroTab,详情+相关视频+互动)+ 评论 Tab(MobileCommentList)。
  * 播放态在视频区 BoxWithConstraints 内层 Column 填底(weight 1f,视频居中+底栏之后);暂停态在外层
  * Column 填底(BoxWithConstraints 内容高之后)。ColumnScope 扩展让 weight(1f) 在两处调用方均有效。
@@ -1488,6 +1607,9 @@ private fun MobilePlayerIntroHeader(
 @Composable
 private fun ColumnScope.MobilePlayerIntroCommentTabs(
   metadata: PlaybackVideoMetadata?,
+  youtubeDetail: YoutubeVideoDetail?,
+  youtubeDetailLoading: Boolean,
+  isYoutube: Boolean,
   request: PlaybackRequest,
   relatedVideos: List<VideoSummary>,
   isPgc: Boolean,
@@ -1530,24 +1652,41 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
       modifier = Modifier.fillMaxSize(),
     ) { page ->
       when (page) {
-        0 -> MobilePlayerIntroTab(
-          metadata = metadata,
-          request = request,
-          relatedVideos = relatedVideos,
-          onPlayVideo = onPlayVideo,
-          onOpenUpSpace = onOpenUpSpace,
-          videoRepository = videoRepository,
-          onShare = onShare,
-          onSelectPage = onSelectPage,
-          modifier = Modifier.fillMaxSize(),
-        )
-        1 -> MobileCommentList(
-          aid = metadata?.aid ?: 0L,
-          isPgc = isPgc,
-          videoRepository = videoRepository,
-          modifier = Modifier.fillMaxSize(),
-          onTotalCountChange = { commentTotalCount = it },
-        )
+        0 -> if (isYoutube) {
+          MobileYoutubeIntroTab(
+            youtubeDetail = youtubeDetail,
+            loading = youtubeDetailLoading,
+            request = request,
+            modifier = Modifier.fillMaxSize(),
+          )
+        } else {
+          MobilePlayerIntroTab(
+            metadata = metadata,
+            request = request,
+            relatedVideos = relatedVideos,
+            onPlayVideo = onPlayVideo,
+            onOpenUpSpace = onOpenUpSpace,
+            videoRepository = videoRepository,
+            onShare = onShare,
+            onSelectPage = onSelectPage,
+            modifier = Modifier.fillMaxSize(),
+          )
+        }
+        1 -> if (isYoutube) {
+          MobileYoutubeCommentList(
+            videoId = request.bvid,
+            videoRepository = videoRepository,
+            modifier = Modifier.fillMaxSize(),
+          )
+        } else {
+          MobileCommentList(
+            aid = metadata?.aid ?: 0L,
+            isPgc = isPgc,
+            videoRepository = videoRepository,
+            modifier = Modifier.fillMaxSize(),
+            onTotalCountChange = { commentTotalCount = it },
+          )
+        }
       }
     }
   }
