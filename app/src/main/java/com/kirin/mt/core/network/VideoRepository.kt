@@ -20,6 +20,7 @@ import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.core.youtube.YoutubeVideoDetail
 import com.kirin.mt.core.youtube.YoutubeVideoPage
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.JsonArray
 
 class VideoRepository(
   private val apiClient: BiliApiClient,
@@ -159,6 +160,46 @@ class VideoRepository(
     ).rootObject()
     root.requireBiliCodeOk("relation modify")
     return true
+  }
+
+  /** 拉取我关注的 B 站用户列表(分页)。镜像 getFollowingSeasons 模式。未登录返回空页。 */
+  suspend fun getFollowingUsers(
+    mid: Long,
+    page: Int,
+    pageSize: Int = FollowingUsersPageSize,
+  ): FollowingUserPage {
+    if (mid <= 0L) return FollowingUserPage(users = emptyList(), total = 0, hasMore = false)
+    val sessData = sessionStore.sessData.first()
+    if (sessData.isNullOrBlank()) {
+      return FollowingUserPage(users = emptyList(), total = 0, hasMore = false)
+    }
+
+    val root = apiClient.getJson(
+      url = BiliApiEndpoints.RelationFollowings,
+      params = mapOf(
+        "vmid" to mid.toString(),
+        "pn" to page.toString(),
+        "ps" to pageSize.toString(),
+        "order" to "desc",
+        "order_type" to "attention",
+      ),
+      sessData = sessData,
+    ).rootObject()
+    root.requireBiliCodeOk("following users")
+
+    val data = root.obj("data") ?: return FollowingUserPage(users = emptyList(), total = 0, hasMore = false)
+    val list = data["list"] as? JsonArray ?: return FollowingUserPage(users = emptyList(), total = 0, hasMore = false)
+    val users = list.mapNotNull { it.asObjectOrNull() }.map {
+      FollowingUser(
+        mid = it.long("mid"),
+        uname = it.string("uname"),
+        face = it.string("face"),
+        sign = it.string("sign"),
+      )
+    }
+    val total = data.int("total")
+    val hasMore = page * pageSize < total && users.isNotEmpty()
+    return FollowingUserPage(users = users, total = total, hasMore = hasMore)
   }
 
   suspend fun searchVideos(
@@ -311,5 +352,20 @@ class VideoRepository(
     const val MutualFollowAttribute = 6
     const val FavoriteFolderPageSize = 20
     const val FollowingSeasonPageSize = 30
+    const val FollowingUsersPageSize = 50
   }
 }
+
+/** B 站关注列表中的单个用户(镜像 FollowingSeason 放网络包层)。 */
+data class FollowingUser(
+  val mid: Long,
+  val uname: String,
+  val face: String,
+  val sign: String,
+)
+
+data class FollowingUserPage(
+  val users: List<FollowingUser>,
+  val total: Int,
+  val hasMore: Boolean,
+)

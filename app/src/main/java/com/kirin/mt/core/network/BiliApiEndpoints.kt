@@ -26,6 +26,7 @@ object BiliApiEndpoints {
   const val Relation = "$ApiBase/x/relation"
   const val RelationModify = "$ApiBase/x/relation/modify"
   const val RelationStat = "$ApiBase/x/relation/stat"
+  const val RelationFollowings = "$ApiBase/x/relation/followings"
  const val DynamicFeed = "$ApiBase/x/polymer/web-dynamic/v1/feed/all"
  const val DynamicUnread = "$ApiBase/x/polymer/web-dynamic/v1/feed/unread"
  const val DynamicLike = "$ApiBase/x/polymer/web-dynamic/v1/like/like"

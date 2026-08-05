@@ -9,6 +9,15 @@
     <string name="mobile_logout">退出登录</string>
     <string name="mobile_account_signed_in">已登录：%1$s</string>
     <string name="mobile_account_signed_out">未登录</string>
+    <string name="mobile_account_login_required">请先登录</string>
+    <string name="mobile_account_login_required_body">登录后可查看和管理你的关注列表</string>
+    <string name="mobile_follows_bili">B站关注</string>
+    <string name="mobile_follows_youtube">YouTube关注</string>
+    <string name="mobile_follows_unfollow">取消关注</string>
+    <string name="mobile_follows_unfollowed">已取消关注</string>
+    <string name="mobile_follows_unfollow_failed">取关失败</string>
+    <string name="mobile_follows_empty">暂无关注</string>
+    <string name="mobile_follows_load_failed">关注列表加载失败</string>
     <string name="mobile_dynamic_empty">暂无动态</string>
     <string name="mobile_dialog_choose">选择</string>
     <string name="mobile_dialog_cancel">取消</string>
