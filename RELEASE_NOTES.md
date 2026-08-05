@@ -1,5 +1,20 @@
 # BiliMT 版本发布说明
 
+## v2.0.8-alpha.13
+
+移动端设置页升级：**账号信息头 + B站/YouTube 关注管理**。
+
+### 功能
+- **账号信息卡**:设置顶部显示当前 B站账号头像/昵称/UID(登录态),VIP 角标;未登录显示登录入口。
+- **关注管理**:登录后点账号卡弹底部选择「B站关注 / YouTube关注 / 退出登录」;进入对应列表可逐条「取消关注」。
+  - **B站关注**:我的关注用户列表,分页加载,头像+昵称+签名,点「取消关注」即时移除。
+  - **YouTube关注**:复用频道管理面板(取关/添加,免登录)。
+
+### 技术
+- 新增 B 站关注列表接口 `x/relation/followings` + `VideoRepository.getFollowingUsers`。
+- 新增 `MobileFollowManageScreen`,B站列表逐条 `setFollowStatus(false)` 取消关注并即时移除。
+- SettingsActivity 内接关注管理子屏(免新增 Activity / 改 manifest)。
+
 ## v2.0.8-alpha.12
 
 移动端 YouTube **多播放列表** 与 **播放器列表连播增强**。
