@@ -24,8 +24,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -93,8 +95,8 @@ fun MobileYoutubeLongPressSheet(
 }
 
 /**
- * 加入播放列表选择弹窗：列出全部命名列表，勾选表示视频已在该列表，点击切换加入/移除；
- * 底部「新建列表」进入次级命名对话框。
+ * 加入播放列表选择弹窗：列出全部命名列表，勾选表示"该视频在这列表"，点行/勾选仅改本地暂存；
+ * 「确认」一次性应用差异（新增勾选=加入，取消勾选=移除），「取消」丢弃不写库。底部可新建列表。
  */
 @Composable
 fun MobilePlaylistPickerDialog(
@@ -105,67 +107,78 @@ fun MobilePlaylistPickerDialog(
   val scope = rememberCoroutineScope()
   val playlists by youtubePlaylistStore.playlists.collectAsState(initial = emptyList())
   var showCreate by remember { mutableStateOf(false) }
+  // 勾选态(仅本地,确认才写库):true=要加入该列表,false=要移除。初始对应当前归属。
+  val pending = remember { mutableStateMapOf<String, Boolean>() }
+  LaunchedEffect(playlists) {
+    playlists.forEach { pl ->
+      if (!pending.containsKey(pl.name)) {
+        pending[pl.name] = pl.videos.any { it.bvid == video.bvid }
+      }
+    }
+  }
 
   MaterialTheme(colorScheme = darkColorScheme()) {
-  AlertDialog(
-    onDismissRequest = onDismiss,
-    title = { Text(stringResource(R.string.playlist_add_title), color = Color.White) },
-    text = {
-      Column(
-        modifier = Modifier
-          .fillMaxWidth()
-          .heightIn(max = 360.dp)
-          .verticalScroll(rememberScrollState()),
-      ) {
-        playlists.forEach { pl ->
-          val inList = pl.videos.any { it.bvid == video.bvid }
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .clip(RoundedCornerShape(8.dp))
-              .clickable {
-                scope.launch {
-                  if (inList) youtubePlaylistStore.removeVideo(pl.name, video.bvid)
-                  else youtubePlaylistStore.addVideo(pl.name, video)
-                }
-              }
-              .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    AlertDialog(
+      onDismissRequest = onDismiss,
+      title = { Text(stringResource(R.string.playlist_add_title), color = Color.White) },
+      text = {
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 360.dp)
+            .verticalScroll(rememberScrollState()),
+        ) {
+          playlists.forEach { pl ->
+            val checked = pending[pl.name] ?: false
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { pending[pl.name] = !checked }
+                .padding(vertical = 4.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Checkbox(
+                checked = checked,
+                onCheckedChange = { pending[pl.name] = it },
+              )
+              Text(pl.name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+              Spacer(Modifier.weight(1f))
+              Text(
+                text = "${pl.videos.size} 个",
+                color = BiliColors.TextSecondary,
+                style = MaterialTheme.typography.labelSmall,
+              )
+            }
+          }
+          Spacer(Modifier.padding(top = 8.dp))
+          OutlinedButton(
+            onClick = { showCreate = true },
+            modifier = Modifier.fillMaxWidth(),
           ) {
-            Checkbox(
-              checked = inList,
-              onCheckedChange = { c ->
-                scope.launch {
-                  if (c) youtubePlaylistStore.addVideo(pl.name, video)
-                  else youtubePlaylistStore.removeVideo(pl.name, video.bvid)
-                }
-              },
-            )
-            Text(pl.name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.weight(1f))
-            Text(
-              text = "${pl.videos.size} 个",
-              color = BiliColors.TextSecondary,
-              style = MaterialTheme.typography.labelSmall,
-            )
+            Text(stringResource(R.string.playlist_new_list), color = Color.White)
           }
         }
-        Spacer(Modifier.padding(top = 8.dp))
-        OutlinedButton(
-          onClick = { showCreate = true },
-          modifier = Modifier.fillMaxWidth(),
-        ) {
-          Text(stringResource(R.string.playlist_new_list), color = Color.White)
+      },
+      confirmButton = {
+        TextButton(onClick = {
+          scope.launch {
+            playlists.forEach { pl ->
+              val want = pending[pl.name] ?: false
+              val inList = pl.videos.any { it.bvid == video.bvid }
+              if (want && !inList) youtubePlaylistStore.addVideo(pl.name, video)
+              else if (!want && inList) youtubePlaylistStore.removeVideo(pl.name, video.bvid)
+            }
+          }
+          onDismiss()
+        }) { Text(stringResource(R.string.playlist_confirm), color = Color.White) }
+      },
+      dismissButton = {
+        TextButton(onClick = onDismiss) {
+          Text(stringResource(R.string.playlist_cancel), color = Color.White)
         }
-      }
-    },
-    confirmButton = {},
-    dismissButton = {
-      TextButton(onClick = onDismiss) {
-        Text(stringResource(R.string.playlist_cancel), color = Color.White)
-      }
-    },
-  )
+      },
+    )
   }
 
   if (showCreate) {
@@ -174,7 +187,8 @@ fun MobilePlaylistPickerDialog(
       onDismiss = { showCreate = false },
       onCreated = { name ->
         showCreate = false
-        scope.launch { youtubePlaylistStore.addVideo(name, video) }
+        // 新建列表已创建(createPlaylist),勾选它;视频在「确认」时统一加入。
+        pending[name] = true
       },
     )
   }
