@@ -263,18 +263,19 @@ class YoutubePlaybackResolver(
 
   // ---- Json 辅助 ----
 
-  private fun JsonObject.obj(name: String): JsonObject? = this[name] as? JsonObject
-  private fun JsonObject.array(name: String): JsonArray? = this[name] as? JsonArray
-  private fun JsonObject.stringOrNull(name: String): String? = this[name]?.jsonPrimitive?.contentOrNull
-  private fun JsonObject.intOrNull(name: String): Int? = this[name]?.jsonPrimitive?.content?.toIntOrNull()
-  private fun JsonObject.longOrNull(name: String): Long? = this[name]?.jsonPrimitive?.content?.toLongOrNull()
+  // 全部用可空 receiver，兼容 runCatching.getOrNull() 可能为 null 的 /player 响应。
+  private fun JsonObject?.obj(name: String): JsonObject? = this?[name] as? JsonObject
+  private fun JsonObject?.array(name: String): JsonArray? = this?[name] as? JsonArray
+  private fun JsonObject?.stringOrNull(name: String): String? = this?[name]?.jsonPrimitive?.contentOrNull
+  private fun JsonObject?.intOrNull(name: String): Int? = this?[name]?.jsonPrimitive?.content?.toIntOrNull()
+  private fun JsonObject?.longOrNull(name: String): Long? = this?[name]?.jsonPrimitive?.content?.toLongOrNull()
 
-  private fun JsonObject.isPlayable(): Boolean {
+  private fun JsonObject?.isPlayable(): Boolean {
     return obj("playabilityStatus")?.stringOrNull("status")?.let { it == "OK" } == true ||
       obj("streamingData") != null
   }
 
-  private fun JsonObject.playabilityReason(): String {
+  private fun JsonObject?.playabilityReason(): String {
     return obj("playabilityStatus")?.stringOrNull("reason")
       ?: obj("playabilityStatus")?.stringOrNull("status")
       ?: "unknown"
