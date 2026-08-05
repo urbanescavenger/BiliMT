@@ -1,5 +1,17 @@
 # BiliMT 版本发布说明
 
+## v2.0.9-alpha.2
+
+修复 alpha.1 的 **YouTube 仍只有 360p** 问题(高清 Tier 1 补丁)。
+
+### 技术
+- **合并 WEB + ANDROID 客户端取高清**:无 PO token 时 WEB guest 剥离 adaptive 高清 url(只剩 progressive 360p);合并 ANDROID 客户端(NewPipe 同款,guest 取流更宽容,常直接返回带 url 的高清 adaptive)候选,统一选最高 adaptive,progressive 仅兜底。
+- **pickVideo 最大化分辨率**:旧逻辑按 codec 优先级(Auto 先选 avc)取第一个非空组,会「avc@360p 压过 vp9@1080p」;改成分辨率优先,codec 偏好仅作同分辨率打破平局。
+- 新增 `YtResolver` 日志:每客户端打印 `WEB/ANDROID formats: adaptive=N progressive=M`,便于真机定位取流情况。
+
+### 说明
+- 高清(DASH + `s`/`n` 解密)仍依赖真机验证;若仍拿不到高清,看 logcat `YtResolver` 行的 adaptive/progressive 数定位。
+
 ## v2.0.9-alpha.1
 
 **YouTube 高清播放(Tier 1)**:把 YouTube 实际播放从最高 720p 提升到 1080P,视设备与取流可得性常到 2K/4K。方案详见 `docs/youtube-hd-playback.md`(P11-14)。
