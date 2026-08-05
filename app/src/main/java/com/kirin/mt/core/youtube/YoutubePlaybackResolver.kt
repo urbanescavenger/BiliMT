@@ -86,7 +86,7 @@ class YoutubePlaybackResolver(
       val videoUrl = resolveStreamUrl(video, playerJsUrl)
       val audioUrl = resolveStreamUrl(audio, playerJsUrl)
       if (videoUrl.isNotBlank() && audioUrl.isNotBlank()) {
-        return buildInfo(request, videoId, durationMs, video, audio, videoUrl, audioUrl)
+        return@withContext buildInfo(request, videoId, durationMs, video, audio, videoUrl, audioUrl)
       }
     }
     // Case B：无 adaptive 直链（PO token 未带时常见）→ 回退单个合并 progressive 流(如 itag 18, 360p)。
@@ -94,7 +94,7 @@ class YoutubePlaybackResolver(
     if (combined != null) {
       val combinedUrl = resolveStreamUrl(combined, playerJsUrl)
       if (combinedUrl.isNotBlank()) {
-        return buildInfo(request, videoId, durationMs, combined, null, combinedUrl, "")
+        return@withContext buildInfo(request, videoId, durationMs, combined, null, combinedUrl, "")
       }
     }
     throw YoutubeApiException(0, "", "YouTube no decodable video/audio formats")
