@@ -1,6 +1,6 @@
 # BiliMT 版本发布说明
 
-## v2.0.8-alpha.8
+## v2.0.8-alpha.9
 
 修 YouTube 播放「接口未返回可用音视频轨」误报：合并 progressive 流(itag 18/22,音视频一体)`audioTracks` 为空属正常,播放器空轨检查对 progressive 视频轨放行(B 站 DASH 仍严格要求音频轨)。
 
