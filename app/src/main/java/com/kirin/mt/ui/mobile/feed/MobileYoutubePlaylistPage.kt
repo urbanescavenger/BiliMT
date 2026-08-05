@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -181,7 +182,7 @@ private fun PlaylistListScreen(
             modifier = Modifier.size(20.dp),
           )
         }
-        androidx.compose.foundation.HorizontalDivider(
+        HorizontalDivider(
           modifier = Modifier.padding(horizontal = 12.dp),
           color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
         )
@@ -367,7 +368,7 @@ private fun PlaylistDetailScreen(
             }
           }
         }
-        androidx.compose.foundation.HorizontalDivider(
+        HorizontalDivider(
           modifier = Modifier.padding(horizontal = 12.dp),
           color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
         )
