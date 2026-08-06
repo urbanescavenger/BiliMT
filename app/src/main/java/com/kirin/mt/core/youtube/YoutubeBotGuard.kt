@@ -70,10 +70,15 @@ class YoutubeBotGuard(
     Log.i(Tag, "challenge ok: interpreter=${interpreterJs.length}B program=${program.length}B global=$globalName")
 
     // 2) 加载 interpreter JS 进 WebView（定义 window[globalName]）。
-    if (executor.eval(interpreterJs) == null) {
+    val interpreterEval = executor.eval(interpreterJs)
+    Log.i(Tag, "interpreter eval result=${interpreterEval?.take(60)}")
+    if (interpreterEval == null) {
       Log.w(Tag, "interpreter eval failed")
       return null
     }
+    // 确认 window[globalName] 是否真的定义了。
+    val globalCheck = executor.eval("typeof window.$globalName")
+    Log.i(Tag, "global $globalName typeof=$globalCheck")
 
     // 3) snapshot → botguardResponse。
     val contentBinding = buildContentBinding(videoId)
@@ -144,7 +149,9 @@ class YoutubeBotGuard(
   // ---- WebView snapshot / mint ----
 
   private suspend fun runSnapshot(program: String, globalName: String, contentBinding: JsonObject): JsonObject? {
-    executor.eval("window.__runSnapshot(${jsonString(program)}, ${jsonString(globalName)}, ${contentBinding.toString()})")
+    val script = "window.__runSnapshot(${jsonString(program)}, ${jsonString(globalName)}, ${contentBinding.toString()})"
+    val evalResult = executor.eval(script)
+    Log.i(Tag, "__runSnapshot eval result=${evalResult?.take(60)}")
     return pollState("snapshot-done")
   }
 
@@ -157,9 +164,20 @@ class YoutubeBotGuard(
   /** 轮询 window.__poToken 直到目标 status 或 error/超时。 */
   private suspend fun pollState(target: String): JsonObject? {
     val deadline = System.currentTimeMillis() + PollTimeoutMs
+    var pollCount = 0
     while (System.currentTimeMillis() < deadline) {
-      val raw = executor.eval("JSON.stringify(window.__poToken)") ?: return null
-      val state = runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return null
+      val raw = executor.eval("JSON.stringify(window.__poToken)")
+      if (raw == null) {
+        Log.w(Tag, "pollState eval returned null (poll #$pollCount)")
+        return null
+      }
+      val state = runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull()
+      if (state == null) {
+        Log.w(Tag, "pollState parse failed: $raw")
+        return null
+      }
+      if (pollCount == 0) Log.i(Tag, "poll #0 state=$raw")
+      pollCount++
       when (state.stringOrNull("status")) {
         target -> return state
         "error" -> {
