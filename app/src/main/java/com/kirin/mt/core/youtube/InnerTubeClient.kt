@@ -67,7 +67,13 @@ class InnerTubeClient(
     val body = buildJsonObject {
       // 业务字段在前，context 在后（youtubei.js 的 ...payload 后接 context）
       payload.forEach { (key, value) -> put(key, value) }
-      put("context", buildContext(client = client, poToken = poToken))
+      // PO token 必须放请求【顶层】serviceIntegrityDimensions（对齐 youtubei.js Innertube.ts
+      // getInfo 的 extra_payload.serviceIntegrityDimensions），不是 context 里。
+      // 放错位置 → token 不被应用 → WEB /player 仍 "The page needs to be reloaded"(alpha.27 实测)。
+      if (!poToken.isNullOrBlank()) {
+        put("serviceIntegrityDimensions", buildJsonObject { put("poToken", poToken) })
+      }
+      put("context", buildContext(client = client))
     }
 
     val url = "${YoutubeConstants.InnerTubeBase}/${YoutubeConstants.ApiVersion}$endpoint" +
@@ -208,7 +214,7 @@ class InnerTubeClient(
       }
   }
 
-  private fun buildContext(client: Client = Client.WEB, poToken: String? = null): JsonObject {
+  private fun buildContext(client: Client = Client.WEB): JsonObject {
     return buildJsonObject {
       put(
         "client",
@@ -274,12 +280,8 @@ class InnerTubeClient(
           buildJsonObject { put("embedUrl", YoutubeConstants.EmbedUrl) },
         )
       }
-      if (!poToken.isNullOrBlank()) {
-        put(
-          "serviceIntegrityDimensions",
-          buildJsonObject { put("poToken", poToken) },
-        )
-      }
+      // 注意：serviceIntegrityDimensions.poToken 已移到请求顶层（见 postJson），
+      // 不再放 context 里（对齐 youtubei.js）。
     }
   }
 
