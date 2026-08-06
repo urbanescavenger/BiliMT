@@ -178,10 +178,11 @@ class YoutubeJsExecutor(context: Context) {
                 }
               }
               WebResourceResponse(contentType, contentEncoding, inputStream).apply {
-                setResponseHeader("Access-Control-Allow-Origin", "*")
-                setResponseHeader(
-                  "Access-Control-Allow-Methods",
-                  "GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH"
+                setResponseHeaders(
+                  mapOf(
+                    "Access-Control-Allow-Origin" to "*",
+                    "Access-Control-Allow-Methods" to "GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH"
+                  )
                 )
               }
             }
