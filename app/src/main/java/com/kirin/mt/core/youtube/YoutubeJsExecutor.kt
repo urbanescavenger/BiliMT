@@ -138,7 +138,7 @@ class YoutubeJsExecutor(context: Context) {
    *
    * @param url     同源 URL（youtube.com，与宿主页基址同源，无 CORS）。
    * @param method  HTTP 方法（默认 POST）。
-   * @param headers 请求头（InnerTube 认证头等；浏览器会叠加自己的 Origin/Sec-Fetch-*/UA）。
+   * @param headers 请求头（InnerTube 认证头等；浏览器会叠加自己的 Origin/Sec-Fetch-* 与 UA）。
    * @param body    POST body（JSON 字符串）。
    * @return 响应 body 文本；网络错误/非 2xx/超时抛 [YoutubeApiException]。
    */
