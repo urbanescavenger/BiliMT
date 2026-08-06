@@ -9,9 +9,14 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.coroutines.resume
@@ -45,6 +50,9 @@ class YoutubeJsExecutor(context: Context) {
 
   /** js_shell.html 是否已加载完成（onPageFinished 置位）；eval 前必须等它，否则 evaluateJavascript 失败。 */
   private var shellReady: CompletableDeferred<Unit>? = null
+
+  /** 解析 fetchViaWebView 响应（window.__webViewResp 双编码）。 */
+  private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
   /**
    * 在隐藏 WebView 里同步执行一段 JS 表达式并取回结果文本。
@@ -121,6 +129,83 @@ class YoutubeJsExecutor(context: Context) {
     return true
   }
 
+  /**
+   * 在隐藏 WebView 里发起一个同源 fetch 并取回响应文本。
+   *
+   * 对齐 FreeTubeAndroid 主 WebView：/player 请求走 WebView 的**原生网络栈(Chromium)**，
+   * 带真实浏览器头/cookie/TLS 指纹——这是 OkHttp 直连被拦("The page needs to be reloaded")、
+   * FreeTubeAndroid 能过的根因。shouldInterceptRequest 对 /player 返回 null 放行原生。
+   *
+   * @param url     同源 URL（youtube.com，与宿主页基址同源，无 CORS）。
+   * @param method  HTTP 方法（默认 POST）。
+   * @param headers 请求头（InnerTube 认证头等；浏览器会叠加自己的 Origin/Sec-Fetch-*/UA）。
+   * @param body    POST body（JSON 字符串）。
+   * @return 响应 body 文本；网络错误/非 2xx/超时抛 [YoutubeApiException]。
+   */
+  suspend fun fetchViaWebView(
+    url: String,
+    method: String = "POST",
+    headers: Map<String, String> = emptyMap(),
+    body: String? = null,
+  ): String = withContext(Dispatchers.Main) {
+    ensureWebView()
+    awaitShellReady()
+    eval("window.__webViewResp = null")
+    eval(buildFetchScript(url, method, headers, body))
+    pollWebViewResponse()
+  }
+
+  /** 构造 fetch 脚本：响应存 window.__webViewResp，网络错误存 {status:0,error}。 */
+  private fun buildFetchScript(url: String, method: String, headers: Map<String, String>, body: String?): String {
+    val headersJs = headers.entries.joinToString(",") { (k, v) -> "${jsonString(k)}:${jsonString(v)}" }
+    val bodyJs = body?.let { jsonString(it) } ?: "null"
+    return "window.__webViewResp = null; (async () => { try { " +
+      "const resp = await fetch(${jsonString(url)}, { method: ${jsonString(method)}, " +
+      "headers: { $headersJs }, body: $bodyJs }); " +
+      "const text = await resp.text(); " +
+      "window.__webViewResp = JSON.stringify({ status: resp.status, ok: resp.ok, body: text }); " +
+      "} catch (e) { " +
+      "window.__webViewResp = JSON.stringify({ status: 0, ok: false, error: String(e && e.stack || e) }); " +
+      "} })();"
+  }
+
+  /** 轮询 window.__webViewResp 直到非 null（对齐 BotGuard pollState 双解码）。 */
+  private suspend fun pollWebViewResponse(): String {
+    val deadline = System.currentTimeMillis() + FetchTimeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      val raw = eval("window.__webViewResp")
+      if (raw != null && raw != "null") {
+        // evaluateJavascript 对字符串结果做 JSON 编码(带引号+转义)，先解出内层字符串再解析。
+        val inner = runCatching { json.parseToJsonElement(raw).jsonPrimitive.contentOrNull }.getOrNull()
+        if (inner.isNullOrBlank()) {
+          Log.w(Tag, "fetchViaWebView inner parse failed: $raw")
+          throw YoutubeApiException(0, "", "fetchViaWebView invalid response")
+        }
+        val obj = runCatching { json.parseToJsonElement(inner).jsonObject }.getOrNull()
+        if (obj == null) {
+          Log.w(Tag, "fetchViaWebView state parse failed: $inner")
+          throw YoutubeApiException(0, "", "fetchViaWebView invalid response")
+        }
+        val status = obj["status"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+        val respBody = obj["body"]?.jsonPrimitive?.contentOrNull
+        val error = obj["error"]?.jsonPrimitive?.contentOrNull
+        if (status == 0) {
+          Log.w(Tag, "fetchViaWebView network error: $error")
+          throw YoutubeApiException(0, "", "fetchViaWebView network error: $error")
+        }
+        if (status !in 200..299) {
+          Log.w(Tag, "fetchViaWebView HTTP $status body=${respBody?.take(200)}")
+          throw YoutubeApiException(status, respBody ?: "", "fetchViaWebView HTTP $status")
+        }
+        Log.i(Tag, "fetchViaWebView ok status=$status body=${respBody?.length ?: 0}B")
+        return respBody ?: ""
+      }
+      delay(FetchPollIntervalMs)
+    }
+    Log.w(Tag, "fetchViaWebView timeout")
+    throw YoutubeApiException(0, "", "fetchViaWebView timeout")
+  }
+
   private suspend fun ensureWebView(): WebView = withContext(Dispatchers.Main) {
     webView?.let { return@withContext it }
     val created = createWebView()
@@ -156,6 +241,12 @@ class YoutubeJsExecutor(context: Context) {
           val urlStr = request?.url?.toString() ?: return super.shouldInterceptRequest(view, request)
           if (urlStr.startsWith("data:") || urlStr.startsWith("file:")) {
             return super.shouldInterceptRequest(view, request)
+          }
+          // /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView。
+          // 返回 null 让 WebView 用真实浏览器上下文直接发请求(带真实头/cookie/TLS 指纹)，
+          // 这是 OkHttp 直连被拦("The page needs to be reloaded")、FreeTubeAndroid 能过的根因。
+          if (urlStr.startsWith("https://www.youtube.com/youtubei/v1/player")) {
+            return null
           }
           return try {
             with(URL(urlStr).openConnection() as HttpURLConnection) {
@@ -201,8 +292,21 @@ class YoutubeJsExecutor(context: Context) {
     }
   }
 
+  /** JS 字符串字面量转义（嵌入 fetch 脚本用）。 */
+  private fun jsonString(input: String): String {
+    val escaped = input
+      .replace("\\", "\\\\")
+      .replace("\"", "\\\"")
+      .replace("\n", "\\n")
+      .replace("\r", "\\r")
+      .replace("\t", "\\t")
+    return "\"$escaped\""
+  }
+
   private companion object {
     const val Tag = "YtJsExecutor"
     const val ShellReadyTimeoutMs = 3_000L
+    const val FetchTimeoutMs = 20_000L
+    const val FetchPollIntervalMs = 100L
   }
 }

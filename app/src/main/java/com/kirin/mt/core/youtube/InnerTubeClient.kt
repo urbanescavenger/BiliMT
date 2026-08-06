@@ -2,6 +2,7 @@ package com.kirin.mt.core.youtube
 
 import android.util.Base64
 import android.util.Log
+import android.webkit.CookieManager
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -31,6 +32,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
  */
 class InnerTubeClient(
   private val httpClient: OkHttpClient,
+  /** 可选：WEB /player 走 WebView 原生网络栈(Chromium)时注入（对齐 FreeTubeAndroid 主 WebView）。 */
+  private val jsExecutor: YoutubeJsExecutor? = null,
 ) {
   private val json = Json {
     ignoreUnknownKeys = true
@@ -61,6 +64,7 @@ class InnerTubeClient(
     payload: JsonObject = buildJsonObject {},
     client: Client = Client.WEB,
     poToken: String? = null,
+    viaWebView: Boolean = false,
   ): JsonObject = withContext(Dispatchers.IO) {
     // 先拉真实 visitorData（WEB /player 用合成 visitorData 会被拦，见 ensureRealSessionData）。
     ensureRealSessionData()
@@ -78,6 +82,15 @@ class InnerTubeClient(
 
     val url = "${YoutubeConstants.InnerTubeBase}/${YoutubeConstants.ApiVersion}$endpoint" +
       "?key=${YoutubeConstants.ApiKey}&prettyPrint=false&alt=json"
+
+    // WEB /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView。
+    // OkHttp 直连被拦("The page needs to be reloaded")、FreeTubeAndroid 能过的根因是请求没走
+    // 真实浏览器网络栈。ANDROID 客户端保持 OkHttp 直连(作为回退)。
+    if (viaWebView && client == Client.WEB && jsExecutor != null) {
+      val text = jsExecutor.fetchViaWebView(url, "POST", buildWebViewHeaders(), body.toString())
+      return@withContext runCatching { json.parseToJsonElement(text).jsonObject }
+        .getOrElse { throw YoutubeApiException(0, text, "InnerTube $endpoint returned invalid JSON") }
+    }
 
     val requestBuilder = Request.Builder()
       .url(url)
@@ -288,6 +301,30 @@ class InnerTubeClient(
       // 注意：serviceIntegrityDimensions.poToken 已移到请求顶层（见 postJson），
       // 不再放 context 里（对齐 youtubei.js）。
     }
+  }
+
+  /** WEB /player 走 WebView 时的请求头（对齐 OkHttp WEB 分支 + best-effort Cookie）。 */
+  private fun buildWebViewHeaders(): Map<String, String> {
+    val headers = mutableMapOf(
+      "Content-Type" to "application/json",
+      "User-Agent" to YoutubeConstants.UserAgent,
+      "Referer" to YoutubeConstants.Referer,
+      "X-Goog-Visitor-Id" to currentVisitorData(),
+      "X-Youtube-Client-Version" to currentClientVersion(),
+      "X-Youtube-Client-Name" to YoutubeConstants.ClientNameId,
+      "Origin" to YoutubeConstants.Referer,
+      "Accept" to "*/*",
+      "Accept-Language" to "*",
+      "Sec-Fetch-Site" to "same-origin",
+      "Sec-Fetch-Mode" to "cors",
+      "X-Youtube-Bootstrap-Logged-In" to "false",
+    )
+    // best-effort：把 WebView cookie store 里的 youtube.com cookie 带上（HttpURLConnection/原生
+    // fetch 不自动用 WebView cookie store）。shell 页通常无 cookie，可能为空，不阻塞。
+    runCatching {
+      CookieManager.getInstance().getCookie("https://www.youtube.com")
+    }.getOrNull()?.takeIf { it.isNotBlank() }?.let { headers["Cookie"] = it }
+    return headers
   }
 
   private fun currentVisitorData(): String {

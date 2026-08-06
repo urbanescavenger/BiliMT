@@ -92,7 +92,11 @@ class AppContainer(context: Context) {
   // 共享同一个 InnerTubeClient：visitorData/realSessionData 必须跨 BotGuard(铸 token)与
   // PlaybackResolver(/player)一致，否则 token 绑定 A、/player 用 B → token 无效
   // → "The page needs to be reloaded"(alpha.26 实测：3 个独立实例各 fetch 不同 visitorData)。
-  val youtubeInnerTubeClient = InnerTubeClient(httpClient = youtubeHttpClient)
+  val youtubeInnerTubeClient = InnerTubeClient(
+    httpClient = youtubeHttpClient,
+    // WEB /player 走 WebView 原生网络栈(Chromium)时用同一 executor（对齐 FreeTubeAndroid 主 WebView）。
+    jsExecutor = youtubeJsExecutor,
+  )
   val youtubeBotGuard: YoutubeBotGuard = YoutubeBotGuard(
     executor = youtubeJsExecutor,
     httpClient = youtubeHttpClient,

@@ -250,7 +250,12 @@ class YoutubePlaybackResolver(
         })
       })
     }
-    return innerTubeClient.postJson("/player", payload, client = client, poToken = poToken)
+    // WEB /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView；
+    // ANDROID 保持 OkHttp 直连(作为回退)。
+    return innerTubeClient.postJson(
+      "/player", payload, client = client, poToken = poToken,
+      viaWebView = client == InnerTubeClient.Client.WEB,
+    )
   }
 
   /** 从 watch 页 HTML 提取 base.js URL（用于 n/s 解密）。失败返回 null。结果缓存复用。 */
