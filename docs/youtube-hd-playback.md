@@ -85,7 +85,24 @@ curl 实测 `/youtubei/v1/player`(guest,无 PO token):
 - **流程**(`YoutubeBotGuard`):`POST /api/jnn/v1/Create`(requestKey=`O43z0dpjhgX20SCx4KAo`)→ descramble(base64+97)→ interpreter JS 加载进 WebView → `__runSnapshot`(BotGuardClient.create + snapshot)→ `POST Waa/GenerateIT` → `__mint`(WebPoMinter)→ 视频 ID 绑定 PO token。
 - **注入**:resolver 生成 token 后注入 `/player` 的 `serviceIntegrityDimensions.poToken`。
 - **降级**:任一步失败返回 null,走无 token 直连(360p),不阻塞主路径。
-- **脆弱点(需真机)**:snapshot 的 contentBinding `c` 值当前为占位(`b=PLACEHOLDER&hh=PLACEHOLDER`),需对照真实 player 响应/attestation 钉死;interpreter JS/WASM 能否通过 BotGuard 运行时校验;GenerateIT 响应结构。真机看 logcat `YtBotGuard` 行定位。
+- **脆弱点(需真机)**:snapshot 的 contentBinding `c` 值当前为占位(`b=PLACEHOLDER&hh=PLACEHOLDER`),需对照真实 player 响应/attestation 钉死;interpreter JS/WASM 能否通过 BotGuard 运行时校验。真机看 logcat `YtBotGuard` 行定位。
+
+## 6.7 PO token 真机调试记录(2026-08,逐层推进)
+
+真机(Sony XQ-EC72, Android 16)逐层修掉的障碍,按日志 `YtBotGuard`/`YtJsExecutor` 行定位:
+
+| # | 真机日志 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| 1 | `window.__runSnapshot is not a function` | WebView 被 app 后台销毁后 `bgUtilsLoaded` 残留 true,bundle 没重载 | `eval` 用「evaluateJavascript 抛错」检测 WebView 销毁,重建重试;`loadBgUtilsBundle` 验证 `__runSnapshot` 丢失重载 |
+| 2 | `__runSnapshot typeof="undefined"`(bundle 加载后) | `createWebView` 返回时 js_shell.html 还在异步加载,`evaluateJavascript` 对未就绪 WebView 失败 | `onPageFinished` 置位 `shellReady`(CompletableDeferred),`eval` 前 `awaitShellReady`(最多 3s) |
+| 3 | `pollState parse failed: "{\"status\":...}"` | `evaluateJavascript` 对 `JSON.stringify` 的 JS 字符串结果做 JSON 编码(带引号+转义),直接 `.jsonObject` 解析失败 | 先 `jsonPrimitive.contentOrNull` 解出内层字符串再解析 |
+| 4 | `GenerateIT response missing integrityToken` | GenerateIT 响应格式 `[null, <ttl>, null, "<token>"]`,token 在 **index 3**(纯字符串),原解析只查 `{integrityToken}` 对象和 `[null,{integrityToken}]` | 加 `arr.getOrNull(3)?.jsonPrimitive?.contentOrNull` |
+
+**已跑通**:challenge 获取 → descramble → interpreter 加载(`window.trayride` 定义)→ snapshot 成功(`botguardResponse` 拿到)→ GenerateIT 返回 `[null,43200,null,"<token>"]`。
+
+**待验证(alpha.12 起)**:GenerateIT 解析修复后 → mint(WebPoMinter)→ `PO token minted`。若 mint 报错,看 `PO token JS error`(可能 webPoSignalOutput 或 contentBinding `c` 占位)。
+
+**注意**:`webPoSignalOutput` 在 JSON 里显示 `[]` 是正常的——minter 是函数,`JSON.stringify` 会省略它,但函数确实在数组里。
 
 ## 7. 关键文件
 
