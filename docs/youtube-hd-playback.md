@@ -129,6 +129,85 @@ curl 实测 `/youtubei/v1/player`(guest,无 PO token):
 
 **注意**:早期注释说「`webPoSignalOutput` 显示 `[]` 是正常的(函数确实在数组里)」——**已被 alpha.17+ 证明错误**,数组确为空(否则不会 `PMD:Undefined`)。`JSON.stringify` 省略函数没错,但这里 minter 真的没生成。
 
+## 6.8 FreeTubeAndroid 核心实现参考(2026-08 核对源码)
+
+> 参考仓库:MarmadileManteater/FreeTubeAndroid(development 分支,Cordova 包装 FreeTube web 版)。
+> 它是**唯一能在 Android WebView 稳定产出 PO token 并切 1080P+ 的参考实现**,逐文件核对如下。
+
+### 6.8.1 架构:WebView 只跑 BotGuard,网络全走 Kotlin/原生
+
+- **`android/.../webviews/BotGuardWebView.kt`**:隐藏 WebView,宿主页 `loadDataWithBaseURL("https://www.youtube.com/", …)` 把 **origin 设成 youtube.com**(真浏览器页面环境,破 minter 门控的关键)。`allowUniversalAccessFromFileURLs=true` + 每次 `clearCache(true)`。
+- **页内网络代理**:`shouldInterceptRequest` 拦截页内 `fetch` → `HttpURLConnection` 转发,对 `youtubei/` 注入 `Referer`/`Origin`/`Sec-Fetch-Site`/`Sec-Fetch-Mode`/`X-Youtube-Bootstrap-Logged-In`,对 `google.com/js/` 注入 `referer`/`origin`/`Sec-Fetch-Dest`/`Sec-Fetch-Site`/`Accept-Language`;回注 `Access-Control-Allow-Origin: *`。GenerateIT 请求放行给原生。
+- **`javascript/BotGuardJavascriptInterface.kt`**:`@JavascriptInterface returnToken(token)` 把铸好的 PO token 回传给 Kotlin;`queueBody` 缓存 GenerateIT 请求体。
+- **`src/botGuardScript.js`**(webpack 打包成字符串,`evaluateJavascript` 注入):完整 mint 流程,见下。
+
+### 6.8.2 PO token 铸取流程(botGuardScript.js,对齐 bgutils-js)
+
+```js
+// 1) att/get challenge(WEB 客户端专属通道)
+fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', {
+  headers: { Accept:'*/*', 'Content-Type':'application/json',
+    'X-Goog-Visitor-Id': context.client.visitorData,
+    'X-Youtube-Client-Version': context.client.clientVersion,
+    'X-Youtube-Client-Name': '1' },   // 硬编码 WEB=1
+  body: JSON.stringify({ engagementType:'ENGAGEMENT_TYPE_UNBOUND', context })
+})
+// 2) interpreterUrl 单独 GET,new Function(interpreterJavascript)() 定义 window[globalName]
+// 3) BotGuardClient.create({ program, globalName, globalObject: window })
+// 4) botGuard.snapshot({ webPoSignalOutput }, 10_000) → botguardResponse
+// 5) GenerateIT: POST buildURL('GenerateIT') body JSON.stringify([requestKey, botguardResponse])
+//    response[0] 必须是 string(integrityToken)
+// 6) WebPoMinter.create({ integrityToken: response[0] }, webPoSignalOutput)
+//    .mintAsWebsafeString(videoId) → 视频 ID 绑定的 PO token
+```
+
+**关键点**:
+- **att/get 是 WEB 客户端专属 challenge 通道**(硬编码 `X-Youtube-Client-Name:'1'`);ANDROID context 的 att/get 不返回 bgChallenge(alpha.22 实测)。
+- **snapshot 只传 `{ webPoSignalOutput }`**,不带 contentBinding(alpha.17 曾因带占位 contentBinding 报 `PMD:Undefined`)。
+- **GenerateIT 响应 `response[0]` 是 integrityToken**(minter 产生后格式 `["<token>",ttl,n]`,token 在 index 0)。
+- **token 绑定 videoId**(`mintAsWebsafeString(videoId)`)+ 铸取时的 context。
+
+### 6.8.3 /player 请求(web 侧 local.js + youtubei.js)
+
+- **`src/renderer/helpers/api/local.js` `getLocalVideoInfo`**:`createInnertube({ withPlayer:true })` 建 **WEB session**(`webInnertube`),`generatePOToken(id, JSON.stringify(webInnertube.session.context))` 把**完整 WEB context** 传给铸取,`webInnertube.session.player.po_token = contentPoToken`,再 `webInnertube.getInfo(id, { po_token })`。
+- **token 与 /player 同 context 绑定**:铸取和 /player 都用同一个 `webInnertube.session.context`(含同一 visitorData),token 才有效。**这是高清落地的核心前提**。
+- **youtubei.js `Innertube.ts getInfo` 的 /player body**:
+  ```json
+  { "videoId":"...", "racyCheckOk":true, "contentCheckOk":true,
+    "playbackContext":{ "contentPlaybackContext":{ "vis":0, "splay":false,
+      "lactMilliseconds":"-1", "signatureTimestamp":<player JS 提取> } },
+    "serviceIntegrityDimensions":{ "poToken":"..." } }
+  ```
+- **youtubei.js `Session.ts #buildContext` 的 WEB context**(反爬关键字段):
+  ```json
+  { "client":{ "hl":"en","gl":"US","screenDensityFloat":1,"screenHeightPoints":1440,
+      "screenPixelDensity":1,"screenWidthPoints":2560,"visitorData":"...",
+      "clientName":"WEB","clientVersion":"...","osName":"...","osVersion":"...",
+      "userAgent":"...","platform":"DESKTOP","clientFormFactor":"UNKNOWN_FORM_FACTOR",
+      "userInterfaceTheme":"USER_INTERFACE_THEME_LIGHT","timeZone":"...",
+      "originalUrl":"https://www.youtube.com","browserName":"...","browserVersion":"...",
+      "utcOffsetMinutes":0,"memoryTotalKbytes":"8000000",
+      "mainAppWebInfo":{ "graftUrl":"https://www.youtube.com",
+        "pwaInstallabilityStatus":"PWA_INSTALLABILITY_STATUS_UNKNOWN",
+        "webDisplayMode":"WEB_DISPLAY_MODE_BROWSER","isWebNativeShareAvailable":true } },
+    "user":{ "enableSafetyMode":false,"lockedSafetyMode":false },
+    "request":{ "useSsl":true,"internalExperimentFlags":[] } }
+  ```
+- **youtubei.js `HTTPClient.ts #setupCommonHeaders` 的请求头**:`Accept:*/*`、`Accept-Language:*`、`X-Goog-Visitor-Id`、`X-Youtube-Client-Version`、`X-Youtube-Client-Name`、`User-Agent`(桌面 Chrome)、`Origin: request_url.origin`。
+- **纯 WEB 客户端不设 `thirdParty.embedUrl`**(HTTPClient.ts 里 WEB 走 `default` 分支;仅 TV_EMBEDDED/WEB_EMBEDDED 设)。**visitorData 也是本地生成的**(`ProtoUtils.encodeVisitorData(generateRandomString(11), now)`),与我们一致。
+
+### 6.8.4 对我们实现的启示(alpha.23 结论)
+
+| 维度 | FreeTubeAndroid | 我们(alpha.23 前) | 修复 |
+| --- | --- | --- | --- |
+| 铸取 context | 完整 WEB context(含 visitorData) | 最小 WEB context | 已补全(§6.7 row 18) |
+| /player context | 同一完整 WEB context | 最小 WEB context | 已补全 |
+| 请求头 | Origin/Accept/Accept-Language | 仅 Referer | 已加 Origin/Accept/Accept-Language |
+| contentPlaybackContext | vis/splay/lactMilliseconds/signatureTimestamp | 仅 html5Preference | 已对齐(缺 signatureTimestamp) |
+| 宿主页 origin | youtube.com 同源 | youtube.com 同源(alpha.20 已修) | ✓ |
+
+**待补**:`signatureTimestamp`(从 player JS 提取,`Player.ts` 用 `signatureTimestampVar` 正则提取)尚未实现,可能影响 n/s 解密与 /player 校验。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
@@ -143,6 +222,7 @@ curl 实测 `/youtubei/v1/player`(guest,无 PO token):
 
 ## 8. 参考来源
 - FreeTube 上游:`src/renderer/helpers/api/local.js`(InnerTube 封装)与 `formatUtils`(itag/adaptive 选择)
-- YouTube.js(LuanRT/YouTube.js):`core/Player.ts`、`utils/FormatUtils.ts`
+- **FreeTubeAndroid(MarmadileManteater/FreeTubeAndroid,development)**:`android/.../webviews/BotGuardWebView.kt`、`javascript/BotGuardJavascriptInterface.kt`、`src/botGuardScript.js`、`src/renderer/helpers/api/local.js`、`src/renderer/helpers/android/potokens.js`(Android WebView 产 PO token 的唯一参考,§6.8)
+- YouTube.js(LuanRT/YouTube.js):`core/Player.ts`、`core/Session.ts`(#buildContext)、`core/Innertube.ts`(getInfo)、`utils/HTTPClient.ts`(#setupCommonHeaders)、`utils/FormatUtils.ts`
 - bgutils-js(LuanRT/BgUtils,MIT):`BotGuardClient`/`ChallengeFetcher`/`WebPoMinter`
 - FreeTube PR #8137(video ID 绑定 poToken)、#6931(jnn 端点)、#6977(legacy 360p 兜底)
