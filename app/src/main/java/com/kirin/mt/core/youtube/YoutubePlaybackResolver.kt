@@ -59,10 +59,11 @@ class YoutubePlaybackResolver(
     if (poToken != null) Log.i(Tag, "PO token minted (${poToken.length} chars)") else Log.w(Tag, "PO token unavailable; degrade to no-token")
 
     // 收集 playable 客户端(WEB → ANDROID)的 streamingData 合并候选。
-    // 关键：实测(§6.5)无有效 PO token 时 WEB 和 ANDROID 都会剥光 adaptiveFormats 的 url
-    // (只剩 progressive itag 18=360p)。PO token 是绑定 client context 的，/att/get 铸取时
-    // 用 ANDROID context，/player 也走 ANDROID，token 才认。WEB guest 在此环境整块被拦。
-    // 故合并两个客户端的流，统一选最高 adaptive，progressive 仅兜底。
+    // 实测(§6.5):无有效 PO token 时两客户端都会剥光 adaptiveFormats 的 url(只剩 progressive 360p)。
+    // PO token 只能铸成 WEB 绑定(att/get 是 WEB challenge 通道,ANDROID att/get 不返回 bgChallenge)，
+    // 但本环境 WEB /player 报 "Video unavailable"(原因待诊断,见下方失败日志),ANDROID /player 能返回
+    // streamingData 却因收到 WEB 绑定 token 判定无效而仍剥 url。故目前走 ANDROID 仅能 360p,高清待解。
+    // 合并两个客户端的流,统一选最高 adaptive,progressive 仅兜底。
     val allAdaptive = mutableListOf<ParsedFormat>()
     val allCombined = mutableListOf<ParsedFormat>()
     var durationMs = 0L
@@ -70,7 +71,12 @@ class YoutubePlaybackResolver(
       val player = runCatching { postPlayer(videoId, client = client, poToken = poToken) }.getOrNull()
       if (!player.isPlayable()) {
         lastError = player?.playabilityReason() ?: lastError
-        Log.w(Tag, "player $client not playable (${player?.playabilityReason()}); next client")
+        // 诊断:dump 完整 playabilityStatus(status/reason/errorScreen),定位 WEB "Video unavailable" 真因。
+        Log.w(
+          Tag,
+          "player $client not playable (videoId=$videoId status=${player?.obj("playabilityStatus")?.stringOrNull("status")} " +
+            "reason=${player?.playabilityReason()} ps=${player?.obj("playabilityStatus").toString().take(400)}); next client"
+        )
         continue
       }
       havePlayable = true
