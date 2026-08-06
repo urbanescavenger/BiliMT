@@ -2,6 +2,7 @@ package com.kirin.mt.core.youtube
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.util.Log
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.Dispatchers
@@ -60,20 +61,36 @@ class YoutubeJsExecutor(context: Context) {
    * @return 是否加载成功。
    */
   suspend fun loadBgUtilsBundle(): Boolean {
-    if (bgUtilsLoaded) return true
+    // 已加载过也验证 __runSnapshot 仍在：WebView 可能被重建（app 后台/生命周期）导致
+    // window.__runSnapshot 丢失，此时需重置标志重新加载。
+    if (bgUtilsLoaded) {
+      val check = eval("typeof window.__runSnapshot")
+      if (check?.contains("function") == true) return true
+      Log.w(Tag, "bgutils __runSnapshot lost (webview recreated?); reload")
+      bgUtilsLoaded = false
+    }
     val js = withContext(Dispatchers.IO) {
       runCatching {
         appContext.assets.open("youtube/bgutils.js").bufferedReader().use { it.readText() }
       }.getOrNull()
     }
     if (js.isNullOrBlank()) return false
-    val ok = eval(js) != null
-    if (ok) bgUtilsLoaded = true
-    return ok
+    val result = eval(js)
+    val check = eval("typeof window.__runSnapshot")
+    Log.i(Tag, "bgutils load result=${result?.take(30)} __runSnapshot typeof=$check")
+    if (check?.contains("function") != true) {
+      Log.w(Tag, "bgutils __runSnapshot not defined after load (result=$result)")
+      return false
+    }
+    bgUtilsLoaded = true
+    return true
   }
 
   private suspend fun ensureWebView(): WebView = withContext(Dispatchers.Main) {
-    webView?.let { return@withContext it }
+    val existing = webView
+    if (existing != null && !existing.isDestroyed) return@withContext existing
+    // WebView 被销毁（app 后台）→ 重建并重置已加载标志。
+    bgUtilsLoaded = false
     val created = createWebView()
     webView = created
     created
