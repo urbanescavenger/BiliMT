@@ -224,7 +224,14 @@ class YoutubePlaybackResolver(
       put("contentCheckOk", true)
       put("racyCheckOk", true)
       put("playbackContext", buildJsonObject {
-        put("contentPlaybackContext", buildJsonObject { put("html5Preference", "HTML5_PREF_WANTS") })
+        put("contentPlaybackContext", buildJsonObject {
+          // 对齐 youtubei.js getInfo 的 contentPlaybackContext(vis/splay/lactMilliseconds)。
+          // signatureTimestamp 需从 player JS 提取,暂缺(不影响 PO token 校验)。
+          put("vis", 0)
+          put("splay", false)
+          put("lactMilliseconds", "-1")
+          put("html5Preference", "HTML5_PREF_WANTS")
+        })
       })
     }
     return innerTubeClient.postJson("/player", payload, client = client, poToken = poToken)

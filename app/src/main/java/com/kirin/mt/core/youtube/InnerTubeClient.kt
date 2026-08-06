@@ -72,6 +72,9 @@ class InnerTubeClient(
       Client.WEB -> requestBuilder
         .header("X-Youtube-Client-Version", YoutubeConstants.ClientVersion)
         .header("X-Youtube-Client-Name", YoutubeConstants.ClientNameId)
+        .header("Origin", YoutubeConstants.Referer)
+        .header("Accept", "*/*")
+        .header("Accept-Language", "*")
       Client.ANDROID -> requestBuilder
         .header("X-Goog-API-Format-Version", YoutubeConstants.AndroidGoogApiFormatVersion)
         .header("X-Youtube-Client-Version", YoutubeConstants.AndroidClientVersion)
@@ -202,6 +205,26 @@ class InnerTubeClient(
               put("clientVersion", YoutubeConstants.ClientVersion)
               put("hl", YoutubeConstants.Hl)
               put("gl", YoutubeConstants.Gl)
+              // 对齐 youtubei.js 的 WEB context(反爬关键字段)。缺这些 WEB /player 会被判
+              // "非真浏览器" → "The page needs to be reloaded"(playerErrorMessageRenderer)。
+              put("platform", YoutubeConstants.WebPlatform)
+              put("clientFormFactor", YoutubeConstants.WebClientFormFactor)
+              put("userInterfaceTheme", YoutubeConstants.WebUserInterfaceTheme)
+              put("originalUrl", YoutubeConstants.WebOriginalUrl)
+              put("userAgent", YoutubeConstants.UserAgent)
+              put("screenWidthPoints", 1920)
+              put("screenHeightPoints", 1080)
+              put("screenPixelDensity", 1)
+              put("screenDensityFloat", 1)
+              put("utcOffsetMinutes", 0)
+              put("timeZone", "Asia/Shanghai")
+              put("clientScreen", "WATCH")
+              put(
+                "mainAppWebInfo",
+                buildJsonObject {
+                  YoutubeConstants.WebMainAppWebInfo.forEach { (k, v) -> put(k, v) }
+                },
+              )
             }
             Client.ANDROID -> {
               put("clientName", "ANDROID")
