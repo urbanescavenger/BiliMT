@@ -53,6 +53,11 @@ class YoutubePlaybackResolver(
     var lastError: String? = null
     var havePlayable = false
 
+    // 生成视频 ID 绑定的 PO token（best-effort）。无 PO token 时 YouTube 剥掉 adaptive 高清 url
+    // （只剩 progressive 360p）；有 token 才能拿高清直链。失败降级为无 token 直连。
+    val poToken = botGuard.generatePoToken(videoId)
+    if (poToken != null) Log.i(Tag, "PO token minted (${poToken.length} chars)") else Log.w(Tag, "PO token unavailable; degrade to no-token")
+
     // 收集 playable 客户端(WEB → ANDROID)的 streamingData 合并候选。
     // 关键：无 PO token 时 WEB guest 常剥离 adaptiveFormats 的 url(只剩 progressive itag 18/22=360p)，
     // 而 ANDROID 客户端(guest 取流更宽容,NewPipe 同款)对多数视频直接返回带 url 的高清 adaptive。
@@ -61,7 +66,7 @@ class YoutubePlaybackResolver(
     val allCombined = mutableListOf<ParsedFormat>()
     var durationMs = 0L
     for (client in listOf(InnerTubeClient.Client.WEB, InnerTubeClient.Client.ANDROID)) {
-      val player = runCatching { postPlayer(videoId, client = client, poToken = null) }.getOrNull()
+      val player = runCatching { postPlayer(videoId, client = client, poToken = poToken) }.getOrNull()
       if (!player.isPlayable()) {
         lastError = player?.playabilityReason() ?: lastError
         Log.w(Tag, "player $client not playable (${player?.playabilityReason()}); next client")

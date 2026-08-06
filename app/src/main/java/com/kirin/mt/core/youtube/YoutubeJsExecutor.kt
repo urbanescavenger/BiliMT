@@ -32,6 +32,9 @@ class YoutubeJsExecutor(context: Context) {
   /** 已创建的隐藏 WebView；懒创建。 */
   private var webView: WebView? = null
 
+  /** bgutils.js 是否已加载进 WebView（PO token 用）。 */
+  private var bgUtilsLoaded = false
+
   /**
    * 在隐藏 WebView 里同步执行一段 JS 表达式并取回结果文本。
    *
@@ -49,6 +52,24 @@ class YoutubeJsExecutor(context: Context) {
         if (cont.isActive) cont.resume(null)
       }
     }
+  }
+
+  /**
+   * 把打包好的 bgutils.js（PO token 生成，MIT）整体 eval 进隐藏 WebView，暴露
+   * `window.__runSnapshot` / `window.__mint`。会话级只加载一次。
+   * @return 是否加载成功。
+   */
+  suspend fun loadBgUtilsBundle(): Boolean {
+    if (bgUtilsLoaded) return true
+    val js = withContext(Dispatchers.IO) {
+      runCatching {
+        appContext.assets.open("youtube/bgutils.js").bufferedReader().use { it.readText() }
+      }.getOrNull()
+    }
+    if (js.isNullOrBlank()) return false
+    val ok = eval(js) != null
+    if (ok) bgUtilsLoaded = true
+    return ok
   }
 
   private suspend fun ensureWebView(): WebView = withContext(Dispatchers.Main) {
