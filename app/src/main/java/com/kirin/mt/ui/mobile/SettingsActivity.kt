@@ -73,6 +73,8 @@ class SettingsActivity : ComponentActivity() {
                 onOpenFollows = { followScreen = it },
                 onLogin = { startActivity(android.content.Intent(this@SettingsActivity, LoginActivity::class.java)) },
                 onOpenLogs = { showLogs = true },
+                webdavConfigStore = appContainer.webdavConfigStore,
+                webdavBackupService = appContainer.webdavBackupService,
                 modifier = Modifier.fillMaxWidth(),
               )
             } else {

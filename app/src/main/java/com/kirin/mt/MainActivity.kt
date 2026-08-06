@@ -43,6 +43,8 @@ class MainActivity : ComponentActivity() {
             youtubeRepository = appContainer.youtubeRepository,
             updateManager = appContainer.updateManager,
             apkInstaller = appContainer.apkInstaller,
+            webdavConfigStore = appContainer.webdavConfigStore,
+            webdavBackupService = appContainer.webdavBackupService,
           )
         } else {
           BiliMobileApp(

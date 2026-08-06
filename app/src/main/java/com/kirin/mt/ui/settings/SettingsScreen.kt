@@ -97,6 +97,10 @@ fun SettingsScreen(
   channels: List<com.kirin.mt.core.youtube.YoutubeChannel>,
   onAddYoutubeChannel: suspend (String) -> Boolean,
   onRemoveYoutubeChannel: suspend (String) -> Boolean,
+  webDavConfig: com.kirin.mt.core.webdav.WebDavConfig,
+  onWebDavConfigChange: (com.kirin.mt.core.webdav.WebDavConfig) -> Unit,
+  onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
+  onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
 ) {
   val settingsListState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
@@ -134,6 +138,7 @@ fun SettingsScreen(
       SettingsItemSpeedTest to FocusRequester(),
       SettingsItemHomeSections to FocusRequester(),
       SettingsItemYoutubeChannels to FocusRequester(),
+      SettingsItemWebDav to FocusRequester(),
       SettingsItemLogs to FocusRequester(),
       SettingsItemAbout to FocusRequester(),
     )
@@ -200,6 +205,7 @@ fun SettingsScreen(
             SettingsItemHomeSections -> SettingsRightPanel.HomeSections
             SettingsItemLogs -> SettingsRightPanel.Logs
             SettingsItemYoutubeChannels -> SettingsRightPanel.YoutubeChannels
+            SettingsItemWebDav -> SettingsRightPanel.WebDav
             else -> SettingsRightPanel.None
           }
         },
@@ -246,6 +252,13 @@ fun SettingsScreen(
             SettingsRightPanel.YoutubeChannels
           }
         },
+        onWebDavSelected = {
+          rightPanel = if (rightPanel == SettingsRightPanel.WebDav) {
+            SettingsRightPanel.None
+          } else {
+            SettingsRightPanel.WebDav
+          }
+        },
         onLogsSelected = onLogsSelected,
         logFiles = logFiles,
         isRecordingLog = isRecordingLog,
@@ -264,6 +277,10 @@ fun SettingsScreen(
         channels = channels,
         onAddYoutubeChannel = onAddYoutubeChannel,
         onRemoveYoutubeChannel = onRemoveYoutubeChannel,
+        webDavConfig = webDavConfig,
+        onWebDavConfigChange = onWebDavConfigChange,
+        onWebDavBackup = onWebDavBackup,
+        onWebDavRestore = onWebDavRestore,
         modifier = Modifier.weight(1f),
       )
       when (rightPanel) {
@@ -293,6 +310,14 @@ fun SettingsScreen(
           channels = channels,
           onAdd = onAddYoutubeChannel,
           onRemove = onRemoveYoutubeChannel,
+          onMoveLeftToSettings = { focusSettingItem(lastFocusedSettingItem) },
+          modifier = Modifier.weight(1f),
+        )
+        SettingsRightPanel.WebDav -> SettingsWebDavColumn(
+          config = webDavConfig,
+          onConfigChange = onWebDavConfigChange,
+          onBackup = onWebDavBackup,
+          onRestore = onWebDavRestore,
           onMoveLeftToSettings = { focusSettingItem(lastFocusedSettingItem) },
           modifier = Modifier.weight(1f),
         )
@@ -360,6 +385,11 @@ private fun SettingsBehaviorColumn(
   onAddYoutubeChannel: suspend (String) -> Boolean,
   onRemoveYoutubeChannel: suspend (String) -> Boolean,
   onYoutubeChannelsSelected: () -> Unit,
+  webDavConfig: com.kirin.mt.core.webdav.WebDavConfig,
+  onWebDavConfigChange: (com.kirin.mt.core.webdav.WebDavConfig) -> Unit,
+  onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
+  onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
+  onWebDavSelected: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   CompositionLocalProvider(LocalBringIntoViewSpec provides SettingsBringIntoViewSpec) {
@@ -845,6 +875,22 @@ private fun SettingsBehaviorColumn(
         onClick = onYoutubeChannelsSelected,
       )
     }
+    item(key = "webdav") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_webdav_title),
+        description = stringResource(R.string.settings_webdav_description),
+        value = if (webDavConfig.isConfigured) stringResource(R.string.settings_webdav_configured) else "",
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemWebDav))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemWebDav,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemWebDav) },
+        onClick = onWebDavSelected,
+      )
+    }
     item(key = "logs") {
       SettingsActionRow(
         title = stringResource(R.string.settings_logs_entry_title),
@@ -944,6 +990,7 @@ private const val SettingsItemPlaybackCdn = 21
 private const val SettingsItemLogs = 27
 private const val SettingsItemPlayerLogOverlay = 28
 private const val SettingsItemYoutubeChannels = 29
+private const val SettingsItemWebDav = 30
 
 private val SettingsFocusableItems = listOf(
   SettingsItemPlaybackQuality,
@@ -971,6 +1018,7 @@ private val SettingsFocusableItems = listOf(
   SettingsItemChineseTextVariant,
   SettingsItemHomeSections,
   SettingsItemYoutubeChannels,
+  SettingsItemWebDav,
   SettingsItemLogs,
   SettingsItemAbout,
   SettingsItemPlayerLogOverlay,
@@ -982,6 +1030,7 @@ private enum class SettingsRightPanel {
   Logs,
   About,
   YoutubeChannels,
+  WebDav,
 }
 
 private fun settingsItemToLazyIndex(
@@ -1025,19 +1074,23 @@ private fun settingsItemToLazyIndex(
   }
   SettingsItemLogs -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    28 + updateExtraCount
+    29 + updateExtraCount
   }
   SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    29 + updateExtraCount
+    30 + updateExtraCount
   }
   SettingsItemPlayerLogOverlay -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    30 + updateExtraCount
+    31 + updateExtraCount
   }
   SettingsItemYoutubeChannels -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     27 + updateExtraCount
+  }
+  SettingsItemWebDav -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    28 + updateExtraCount
   }
   else -> 0
 }

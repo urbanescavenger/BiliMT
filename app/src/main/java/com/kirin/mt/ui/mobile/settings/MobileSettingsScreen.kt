@@ -16,13 +16,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -39,6 +42,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -78,6 +83,8 @@ fun MobileSettingsScreen(
   onOpenFollows: (FollowManageKind) -> Unit,
   onLogin: () -> Unit,
   onOpenLogs: () -> Unit,
+  webdavConfigStore: com.kirin.mt.core.webdav.WebDavConfigStore,
+  webdavBackupService: com.kirin.mt.core.webdav.WebDavBackupService,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -85,6 +92,7 @@ fun MobileSettingsScreen(
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
   val updateState by updateManager.state.collectAsState()
   val session by sessionStore.session.collectAsState(initial = UserSession())
+  val webDavConfig by webdavConfigStore.config.collectAsState(initial = com.kirin.mt.core.webdav.WebDavConfig())
   var showFollowSheet by remember { mutableStateOf(false) }
   var showLoginRequiredDialog by remember { mutableStateOf(false) }
 
@@ -268,6 +276,14 @@ fun MobileSettingsScreen(
       title = stringResource(R.string.settings_logs_entry_title),
       description = stringResource(R.string.settings_logs_entry_description),
       onClick = onOpenLogs,
+    )
+
+    // ===== WebDAV 备份 =====
+    MobileWebDavSection(
+      config = webDavConfig,
+      onConfigChange = { cfg -> scope.launch { webdavConfigStore.setConfig(cfg) } },
+      onBackup = { cfg -> webdavBackupService.backup(cfg) },
+      onRestore = { cfg -> webdavBackupService.restore(cfg) },
     )
   }
 
@@ -511,4 +527,99 @@ private fun Context.findActivity(): Activity? {
     ctx = ctx.baseContext
   }
   return null
+}
+
+/** WebDAV 备份区:URL/账号/密码输入 + 备份/还原按钮。触屏直接输入,比 TV 的 D-pad 键盘简单。 */
+@Composable
+private fun MobileWebDavSection(
+  config: com.kirin.mt.core.webdav.WebDavConfig,
+  onConfigChange: (com.kirin.mt.core.webdav.WebDavConfig) -> Unit,
+  onBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
+  onRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
+) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+  var url by remember { mutableStateOf(config.url) }
+  var username by remember { mutableStateOf(config.username) }
+  var password by remember { mutableStateOf(config.password) }
+  var busy by remember { mutableStateOf(false) }
+  var message by remember { mutableStateOf<String?>(null) }
+
+  fun persist() = onConfigChange(com.kirin.mt.core.webdav.WebDavConfig(url, username, password))
+
+  MobileSettingsSectionHeader(stringResource(R.string.settings_webdav_section))
+  OutlinedTextField(
+    value = url,
+    onValueChange = { url = it; persist() },
+    label = { Text(stringResource(R.string.settings_webdav_url_label)) },
+    singleLine = true,
+    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+  )
+  OutlinedTextField(
+    value = username,
+    onValueChange = { username = it; persist() },
+    label = { Text(stringResource(R.string.settings_webdav_username_label)) },
+    singleLine = true,
+    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+  )
+  OutlinedTextField(
+    value = password,
+    onValueChange = { password = it; persist() },
+    label = { Text(stringResource(R.string.settings_webdav_password_label)) },
+    singleLine = true,
+    visualTransformation = PasswordVisualTransformation(),
+    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+  )
+  Row(
+    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+    horizontalArrangement = Arrangement.spacedBy(12.dp),
+  ) {
+    Button(
+      onClick = {
+        if (busy) return@Button
+        busy = true
+        message = null
+        scope.launch {
+          val result = onBackup(com.kirin.mt.core.webdav.WebDavConfig(url, username, password))
+          busy = false
+          message = result.fold(
+            onSuccess = { context.getString(R.string.settings_webdav_backup_success) },
+            onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
+          )
+        }
+      },
+      enabled = !busy,
+      modifier = Modifier.weight(1f),
+    ) {
+      Text(stringResource(R.string.settings_webdav_backup))
+    }
+    Button(
+      onClick = {
+        if (busy) return@Button
+        busy = true
+        message = null
+        scope.launch {
+          val result = onRestore(com.kirin.mt.core.webdav.WebDavConfig(url, username, password))
+          busy = false
+          message = result.fold(
+            onSuccess = { count -> context.getString(R.string.settings_webdav_restore_success, count) },
+            onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
+          )
+        }
+      },
+      enabled = !busy,
+      modifier = Modifier.weight(1f),
+    ) {
+      Text(stringResource(R.string.settings_webdav_restore))
+    }
+  }
+  message?.let { msg ->
+    Text(
+      text = msg,
+      style = MaterialTheme.typography.bodySmall,
+      color = MaterialTheme.colorScheme.primary,
+      modifier = Modifier.padding(horizontal = 16.dp),
+    )
+  }
 }

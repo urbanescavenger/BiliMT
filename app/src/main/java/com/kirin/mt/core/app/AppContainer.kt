@@ -43,6 +43,9 @@ import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateDownloader
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.update.UpdateRepository
+import com.kirin.mt.core.webdav.WebDavBackupService
+import com.kirin.mt.core.webdav.WebDavConfigStore
+import com.kirin.mt.core.webdav.WebDavRepository
 import kotlinx.serialization.json.Json
 
 class AppContainer(context: Context) {
@@ -141,6 +144,13 @@ class AppContainer(context: Context) {
     appInfo = appInfo,
     repository = updateRepository,
     downloader = updateDownloader,
+  )
+  val webdavConfigStore: WebDavConfigStore = WebDavConfigStore(appContext)
+  val webdavRepository: WebDavRepository = WebDavRepository(downloadHttpClient)
+  val webdavBackupService: WebDavBackupService = WebDavBackupService(
+    channelStore = youtubeChannelStore,
+    repository = webdavRepository,
+    json = json,
   )
 
   /**
