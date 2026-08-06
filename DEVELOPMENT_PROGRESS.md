@@ -271,6 +271,7 @@
 | v2.0.5 | 直播分区浏览 | Done | 移动端 tab 行 + Pager，TV capsule tab + 网格；分区树 `getWebAreaList`（data.data 双层）；直播长播报错重试（LiveLoadErrorHandlingPolicy 指数退避 + stall 重载） |
 | v2.0.6 | 移动端体验 + 首页分区同步 + 设置折叠 | Done | 正直播 UP 头像；缓冲期加载图标+控制栏；全屏跟随设备方向（SENSOR）；移动端首页分区配置与 TV 双向同步；设置面板折叠 |
 | v2.0.7 | 非全屏三态布局 + 控制栏修复 + 直播兜底 | Done | 移动端播放器非全屏三态统一（顶栏贴顶+视频底部对齐中线+简介/评论 Tab 占下半）；全屏/暂停控制栏修复；直播间无播放地址 durl 兜底；TV 焦点/选中态打磨 |
+| v2.0.9-alpha.4 | 移动端设置页补日志查看/导出 | Done（编译绿，运行时待真机） | 新增 `MobileLogsScreen`（触屏版日志列表+内容查看+分享导出+手动开始/停止录制），`MobileSettingsScreen` 加「系统设置/日志」入口，`SettingsActivity` 接 `showLogs` 导航；复用共享 `LogCatcherUtil`，镜像 TV `SettingsLogsColumn` 但去掉 D-pad 焦点逻辑。**运行时待真机**：列表显示实时/崩溃/手动文件、点开查看、分享、录制开关 |
 
 ## P11 YouTube 内容集成（InnerTube）
 
