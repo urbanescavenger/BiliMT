@@ -1,5 +1,28 @@
 # BiliMT 版本发布说明
 
+## v2.0.9
+
+**YouTube 全链路 + 高清播放(P11 系列)**:从数据层到播放器完整接入 YouTube,支持关注流/搜索/UP 主页/播放列表/评论/多档清晰度切换,并实现 PO token(jnn) 高清取流。另含 WebDAV 备份、移动端日志、空降段修复等。
+
+### 功能
+- **YouTube 关注流**:动态页 B站动态 + YouTube 关注合并为一条流(TV+移动),免登录,空频道回退热门。
+- **YouTube 搜索/UP 主页**:InnerTube 数据层,UP 主页关注/加入播放列表/动态播放列表 tab。
+- **YouTube 播放器**:简介/评论 tab、多播放列表、◀▶/去弹幕/相关视频=列表后续、后台播放自动连播。
+- **YouTube 高清播放**:多档清晰度(1080P/2K/4K)实时切换,adaptive 高清首选,`s`/`n` 签名解密,DASH 播放,硬件能力过滤。
+- **PO token(jnn)**:bgutils-js 打包进隐藏 WebView 完整铸取流程,注入 /player 取高清;任一步失败降级 360p 不阻塞。
+- **WebDAV 备份/还原**:YouTube 关注频道 + 日志一起备份上传。
+- **移动端日志**:设置页日志查看/导出。
+- **空降段修复**:广告空降段拉取加重试+缓存,首次进入即生效。
+
+### 技术
+- **WEB /player 走 WebView 原生网络栈(Chromium)**:对齐 FreeTubeAndroid 主 WebView,带真实浏览器头/cookie/TLS 指纹,破 "The page needs to be reloaded" 拦截;ANDROID 客户端保持 OkHttp 直连作回退。
+- **真实 visitorData**:从 sw.js_data 拉真实 visitorData + 当前 client version,共享同一 InnerTubeClient 实例 + Mutex 双检锁,保证铸 token 与 /player 用同一 visitorData。
+- **PO token 放请求顶层** `serviceIntegrityDimensions`(对齐 youtubei.js),非 context 内。
+- **contentPlaybackContext** 注入 `signatureTimestamp`(从 base.js 正则提取+缓存)。
+
+### 说明
+- YouTube 高清运行时正确性依赖真机验证;若某视频仍 360p,看 logcat `YtResolver` 的 `WEB/ANDROID formats: adaptive=N progressive=M` 定位。
+
 ## v2.0.9-alpha.3
 
 **YouTube 高清 PO token(jnn)实现**:无 PO token 时 YouTube 剥掉 adaptive 高清 url(只剩 360p),PO token 是高清唯一前置。本版打包 bgutils-js(MIT)进 WebView 实现完整 PO token 流程。
