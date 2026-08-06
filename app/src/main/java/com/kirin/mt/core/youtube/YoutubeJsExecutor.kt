@@ -3,6 +3,8 @@ package com.kirin.mt.core.youtube
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
@@ -10,6 +12,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlin.coroutines.resume
 
 /**
@@ -25,8 +29,9 @@ import kotlin.coroutines.resume
  *  - 必须创建于主线程（有 Looper），本类公开方法内部先 `withContext(Dispatchers.Main)`。
  *  - 单例生命周期由 [com.kirin.mt.core.app.AppContainer] 持有，懒创建、会话级复用，
  *    不随播放器生命周期销毁，避免反复建/拆重型 WebView。
- *  - JS 里跨源 fetch 会被 CORS 拦，因此网络请求一律由 Kotlin 侧发，
- *    WebView 只做"加载脚本 + eval + 跑 WASM"，不做 HTTP。
+ *  - BotGuard 宿主页用 loadDataWithBaseURL 加载为 youtube.com 同源基址（对齐 FreeTubeAndroid），
+ *    VM 才能通过 origin/页内网络反爬校验产生 minter；页内网络经 shouldInterceptRequest 代理注入
+ *    YouTube/Google 头 + CORS。challenge/interpreter/GenerateIT 主请求仍由 Kotlin 侧发。
  */
 class YoutubeJsExecutor(context: Context) {
 
@@ -132,18 +137,66 @@ class YoutubeJsExecutor(context: Context) {
       settings.domStorageEnabled = true
       settings.allowFileAccess = true
       settings.allowContentAccess = true
-      // 关键:BotGuard 的 minter(webPoSignalOutput[0])被反爬环境检测门控,检测 navigator.userAgent。
-      // 默认移动端 WebView UA 会被判定"非真浏览器"而不产生 minter(alpha.17 的 PMD:Undefined)。
-      // 设成与 InnerTubeClient 一致的桌面 Chrome UA,对齐 FreeTube(Electron 真 Chromium 桌面 UA)。
+      @Suppress("DEPRECATION")
+      settings.allowUniversalAccessFromFileURLs = true
+      // 关键:BotGuard 的 minter(webPoSignalOutput[0])被反爬环境检测门控。
+      // alpha.19 已证仅设桌面 UA + skipPrivacyBuffer 无效——真正卡住的是 document 上下文。
+      // FreeTubeAndroid 用 loadDataWithBaseURL("https://www.youtube.com/", …) 让宿主页的
+      // document origin = youtube.com(真浏览器页面环境),VM 的 origin/页内网络探测才能通过 → 产生 minter。
+      // 这里同样把宿主页从 file:// 换成 youtube.com 同源基址(仍只承载 evaluateJavascript,不显示内容)。
       settings.userAgentString = YoutubeConstants.UserAgent
-      // 只做单向 evaluateJavascript，不暴露任何 JavascriptInterface 桥，降低暴露面。
-      // onPageFinished 标记 shell 就绪，eval 前 await 它，避免对未就绪 WebView 调用 evaluateJavascript 失败。
       webViewClient = object : WebViewClient() {
         override fun onPageFinished(view: WebView?, url: String?) {
           deferred.complete(Unit)
         }
+        // 页内网络代理(对齐 FreeTube BotGuardWebView.shouldInterceptRequest):
+        // VM 若在 snapshot 里做页内 fetch/XHR 探测,走这里注入 YouTube/Google 头 + CORS,
+        // 避免因跨源被拦而把环境误判为"非真浏览器"。GET/HEAD 为主;POST 体由 Kotlin 侧发,不受影响。
+        override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+          val urlStr = request?.url?.toString() ?: return super.shouldInterceptRequest(view, request)
+          if (urlStr.startsWith("data:") || urlStr.startsWith("file:")) {
+            return super.shouldInterceptRequest(view, request)
+          }
+          return try {
+            with(URL(urlStr).openConnection() as HttpURLConnection) {
+              requestMethod = request.method
+              request.requestHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+              when {
+                urlStr.startsWith("https://www.youtube.com/youtubei/") -> {
+                  setRequestProperty("Referer", "https://www.youtube.com/")
+                  setRequestProperty("Origin", "https://www.youtube.com")
+                  setRequestProperty("Sec-Fetch-Site", "same-origin")
+                  setRequestProperty("Sec-Fetch-Mode", "same-origin")
+                  setRequestProperty("X-Youtube-Bootstrap-Logged-In", "false")
+                }
+                urlStr.startsWith("https://www.google.com/js/") -> {
+                  setRequestProperty("referer", "https://www.google.com/")
+                  setRequestProperty("origin", "https://www.google.com")
+                  setRequestProperty("Sec-Fetch-Dest", "script")
+                  setRequestProperty("Sec-Fetch-Site", "cross-site")
+                  setRequestProperty("Accept-Language", "*")
+                }
+              }
+              WebResourceResponse(contentType, contentEncoding, inputStream).apply {
+                setResponseHeader("Access-Control-Allow-Origin", "*")
+                setResponseHeader(
+                  "Access-Control-Allow-Methods",
+                  "GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH"
+                )
+              }
+            }
+          } catch (e: Exception) {
+            Log.w(Tag, "intercept failed: ${e.message}")
+            super.shouldInterceptRequest(view, request)
+          }
+        }
       }
-      loadUrl("file:///android_asset/youtube/js_shell.html")
+      clearCache(true)
+      // 宿主页改为 youtube.com 同源基址(读 assets 里的 html,经 loadDataWithBaseURL 注入)。
+      val shellHtml = runCatching {
+        appContext.assets.open("youtube/js_shell.html").bufferedReader().use { it.readText() }
+      }.getOrNull() ?: "<!DOCTYPE html><html><body></body></html>"
+      loadDataWithBaseURL(YoutubeConstants.Origin, shellHtml, "text/html", "utf-8", null)
     }
   }
 

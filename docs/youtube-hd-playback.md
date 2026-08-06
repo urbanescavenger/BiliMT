@@ -118,6 +118,11 @@ curl 实测 `/youtubei/v1/player`(guest,无 PO token):
 
 **待决策方向**:①WebView 环境诊断(确认具体检测项,便宜);②QuickJS + browser polyfill(大改高风险);③搁置 PO token,接受 360p 兜底,优先其它功能。
 
+| # | 新证据 | 结论/行动 |
+| --- | --- | --- |
+| 13 | 对照 **FreeTubeAndroid**(MarmadileManteater/FreeTubeAndroid,Cordova 包装 FreeTube web 版)原生侧 `BotGuardWebView.kt`:同一套 Android WebView + bgutils,能稳定产出 PO token 并切 1080P+。**它没用 QuickJS,也没换 UA** | 推翻 alpha.18/19「Android WebView 无法产 minter」结论——minter 门控不是「深度指纹不可绕」,而是**宿主页 document 上下文** |
+| 14 | FreeTubeAndroid 关键差异:`loadDataWithBaseURL("https://www.youtube.com/", …)` 把宿主页 **origin 设成 youtube.com**(真浏览器页面环境);页内 `fetch` 经 `shouldInterceptRequest`→HttpURLConnection 注入 Referer/Origin/Sec-Fetch-*,并回注 `Access-Control-Allow-Origin: *`;`allowUniversalAccessFromFileURLs=true` + 每次 `clearCache(true)`。我们原来宿主页是 `file://`,origin 非 youtube,VM 判「非真页面」→ 不产 minter | **alpha.20 方案**:`YoutubeJsExecutor` 宿主页改 `loadDataWithBaseURL(Origin, js_shell.html, …)` 为 youtube.com 同源;加 shouldInterceptRequest 页内网络代理 + CORS;补 allowUniversalAccessFromFileURLs + clearCache。challenge/interpreter/GenerateIT 仍 Kotlin 发。真机看 `webPoSignalOutput.length` 是否 >0 |
+
 **注意**:早期注释说「`webPoSignalOutput` 显示 `[]` 是正常的(函数确实在数组里)」——**已被 alpha.17+ 证明错误**,数组确为空(否则不会 `PMD:Undefined`)。`JSON.stringify` 省略函数没错,但这里 minter 真的没生成。
 
 ## 7. 关键文件

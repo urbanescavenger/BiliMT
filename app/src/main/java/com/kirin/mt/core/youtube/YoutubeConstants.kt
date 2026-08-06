@@ -48,6 +48,9 @@ object YoutubeConstants {
   /** Referer 必须是 youtube，否则 InnerTube 拒收。 */
   const val Referer = "https://www.youtube.com"
 
+  /** 宿主页同源基址（loadDataWithBaseURL）。让 BotGuard VM 看到 youtube.com origin，通过 document 反爬校验。 */
+  const val Origin = "https://www.youtube.com/"
+
   /**
    * 界面语言 / 地区。注意:实测 zh-CN/CN 会触发 YouTube 反爬(搜索返回
    * backgroundPromoRenderer「出了点问题」);en/US 正常返回 videoRenderer。
