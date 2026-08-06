@@ -77,6 +77,7 @@ fun MobileSettingsScreen(
   authRepository: AuthRepository,
   onOpenFollows: (FollowManageKind) -> Unit,
   onLogin: () -> Unit,
+  onOpenLogs: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -259,6 +260,14 @@ fun MobileSettingsScreen(
       actionEnabled = isUpdateVersionActionEnabled(updateState),
       progress = downloadProgressFraction(updateState),
       onClick = updateVersionOnClick,
+    )
+
+    // ===== 系统设置 =====
+    MobileSettingsSectionHeader(stringResource(R.string.settings_performance_section))
+    MobileSettingsRow(
+      title = stringResource(R.string.settings_logs_entry_title),
+      description = stringResource(R.string.settings_logs_entry_description),
+      onClick = onOpenLogs,
     )
   }
 
