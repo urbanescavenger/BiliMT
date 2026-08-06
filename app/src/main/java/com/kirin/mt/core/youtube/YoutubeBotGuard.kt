@@ -176,12 +176,19 @@ class YoutubeBotGuard(
         Log.w(Tag, "pollState eval returned null (poll #$pollCount)")
         return null
       }
-      val state = runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull()
-      if (state == null) {
-        Log.w(Tag, "pollState parse failed: $raw")
+      // evaluateJavascript 对 JS 字符串结果做 JSON 编码(带引号+转义)，
+      // 故 raw 形如 "{\"status\":...}" —— 先解析出内层字符串,再解析为 JsonObject。
+      val inner = runCatching { json.parseToJsonElement(raw).jsonPrimitive.contentOrNull }.getOrNull()
+      if (inner.isNullOrBlank()) {
+        Log.w(Tag, "pollState inner parse failed: $raw")
         return null
       }
-      if (pollCount == 0) Log.i(Tag, "poll #0 state=$raw")
+      val state = runCatching { json.parseToJsonElement(inner).jsonObject }.getOrNull()
+      if (state == null) {
+        Log.w(Tag, "pollState state parse failed: $inner")
+        return null
+      }
+      if (pollCount == 0) Log.i(Tag, "poll #0 state=$inner")
       pollCount++
       when (state.stringOrNull("status")) {
         target -> return state
