@@ -99,6 +99,7 @@ curl 实测 `/youtubei/v1/player`(guest,无 PO token):
 | 4 | `GenerateIT response missing integrityToken` | GenerateIT 响应格式 `[null, <ttl>, null, "<token>"]`,token 在 **index 3**(纯字符串),原解析只查 `{integrityToken}` 对象和 `[null,{integrityToken}]` | 加 `arr.getOrNull(3)?.jsonPrimitive?.contentOrNull` |
 | 5 | index-3 修复后仍取不到 token | 修复里 `arr?.getOrNull(1)?.jsonObject` 在 `arr[1]` 是数字(43200)时抛 `ClassCastException`,index 3 永远取不到 | index 3 提到优先,整条解析链包 `runCatching`(cast 失败回退 index 3),加 `onFailure` 日志 |
 | 6 | `PO token JS error: TypeError: Cannot read properties of undefined (reading '0')` at `_WebPoMinter.create` | bgutils.js `__mint` 先覆盖 `window.__poToken` 为 `{status:"minting"}` 再读 `prev`,导致 `prev.webPoSignalOutput` 为 undefined,`WebPoMinter.create` 里 `webPoSignalOutput[0]` 报错 | `__mint` 在覆盖 `__poToken` **之前**先捕获 `prev`,再取 `prev.webPoSignalOutput` |
+| 7 | `PO token JS error: BgError: PMD:Undefined` at `_WebPoMinter.create` | `webPoSignalOutput[0]` 为空——snapshot 传了带占位符 `c`(b=PLACEHOLDER&hh=PLACEHOLDER) 的 contentBinding,VM 不产生 minter。FreeTube 只传 `{ webPoSignalOutput }` 不带 contentBinding,视频绑定在 mint 阶段用 videoId 完成 | `__runSnapshot` 的 `client.snapshot` 只传 `{ webPoSignalOutput }`,去掉 contentBinding |
 
 **已跑通**:challenge 获取 → descramble → interpreter 加载(`window.trayride` 定义)→ snapshot 成功(`botguardResponse` 拿到)→ GenerateIT 返回 `[null,43200,null,"<token>"]`。
 

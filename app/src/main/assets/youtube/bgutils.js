@@ -399,10 +399,11 @@
             const globalObject = window;
             const client = await BotGuardClient.create({ globalObject, globalName, program });
             const webPoSignalOutput = [];
-            const botguardResponse = await client.snapshot({
-              contentBinding,
-              webPoSignalOutput
-            });
+            // 对齐 FreeTube:snapshot 只传 webPoSignalOutput,不带 contentBinding。
+            // 带占位符 c(b=PLACEHOLDER&hh=PLACEHOLDER) 的 contentBinding 会让 VM 不产生 minter,
+            // 导致 webPoSignalOutput 空 → WebPoMinter.create 报 PMD:Undefined。
+            // 视频绑定在 mint 阶段用 videoId 完成(mintAsWebsafeString(videoId))。
+            const botguardResponse = await client.snapshot({ webPoSignalOutput });
             window.__poToken = { status: "snapshot-done", token: null, error: null, botguardResponse, webPoSignalOutput };
           } catch (e) {
             window.__poToken = { status: "error", token: null, error: String(e && e.stack || e) };
