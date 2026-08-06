@@ -432,6 +432,140 @@ fun MobilePlayerScreen(
     }
   }
 
+  // 计算自动连播的下一集:播放列表(playQueue)有下一项则取下一项,否则按 metadata.pages 取下一分P
+  // (镜像 TV PlayerCompletionPlanner),都没有则返回 null(不连播)。
+  fun computeNextRequest(): PlaybackRequest? {
+    val queueNext = if (playQueue.size > 1) {
+      val cur = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
+      if (cur in 0 until playQueue.lastIndex) playQueue[cur + 1] else null
+    } else null
+    return queueNext?.toPlaybackRequest()
+      ?: activeRequest.nextEpisodeCompletion(metadata, selectedQualityId)?.request
+  }
+
+  // 加载(镜像 TV PlayerScreen 的 load 序列)。抽成独立 suspend 函数,使自动连播/用户切集/切画质
+  // 都能在"不依赖 Compose 重组"的协程作用域里直接调用——后台播放时帧时钟暂停、重组被推迟,
+  // 若仍靠 LaunchedEffect(activeRequest) 触发加载,后台播完当前视频后下一集永远不会加载。
+  suspend fun loadRequest(request: PlaybackRequest) {
+    playerState = MobilePlayerState.Loading
+    completionReported = false
+    userPaused = false
+    seekPreviewMs = null
+    playbackPositionState.longValue = 0L
+    playbackDurationState.longValue = 0L
+    danmakuEntries = emptyList()
+    activeRequest = request
+    player.clearMediaItems()
+    try {
+      // YouTube 无 B 站 view/metadata/cid，跳过 B 站元数据与 cid 解析。
+      val isYoutube = request.isYoutube
+      val videoMetadata = if (isYoutube) null else runCatching { playbackRepository.getVideoMetadata(request) }.getOrNull()
+      metadata = videoMetadata
+      // YouTube 简介 Tab 单独拉 /player videoDetails（view/metadata 走 B 站，YouTube 无）。
+      youtubeDetailLoading = isYoutube
+      youtubeDetail = if (isYoutube) runCatching { videoRepository.getYoutubeVideoDetail(request.bvid) }.getOrNull() else null
+      youtubeDetailLoading = false
+      val cid = if (isYoutube) {
+        0L
+      } else {
+        request.cid.takeIf { it > 0L }
+          ?: videoMetadata?.cid?.takeIf { it > 0L }
+          ?: playbackRepository.resolveCid(request.bvid)
+      }
+      if (cid <= 0L && !isYoutube) {
+        playerState = MobilePlayerState.Failed(context.getString(R.string.player_error_missing_cid))
+        return
+      }
+      val resolvedRequest = request.withResolvedMetadata(metadata = videoMetadata, cid = cid)
+      displayTitle = resolvedRequest.title.ifBlank { request.title }
+      val info = playbackRepository.getPlaybackInfo(
+        request = resolvedRequest,
+        codecPreference = playbackCodecPreference,
+        qualityPreference = playbackQualityPreference,
+      )
+      selectedQualityId = info.selectedQuality.id
+      // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体)。
+      if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive)) {
+        playerState = MobilePlayerState.Failed(context.getString(R.string.player_error_empty_tracks))
+        return
+      }
+      // CDN 选择
+      val resolvedVideo = info.videoTracks.map { track ->
+        val sel = cdnSelector.select(track, playbackCdnPreference)
+        track.copy(baseUrl = sel.primaryUrl, backupUrls = sel.fallbackUrls)
+      }
+      val resolvedAudio = info.audioTracks.map { track ->
+        val sel = cdnSelector.select(track, playbackCdnPreference)
+        track.copy(baseUrl = sel.primaryUrl, backupUrls = sel.fallbackUrls)
+      }
+      val effectiveInfo = info.copy(videoTracks = resolvedVideo, audioTracks = resolvedAudio)
+      val startPositionMs = when {
+        // stall 自动重试续播:优先用卡住时的当前位置,而非 saved progress(可能更旧)。
+        autoResumePositionMs >= 0L -> autoResumePositionMs.also { autoResumePositionMs = -1L }
+        else -> playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
+          ?: request.startPositionMs
+      }
+      // 后台播放 MediaStyle 通知封面:下载 coverUrl bytes(IO),失败忽略。
+      val coverBytes = request.coverUrl.takeIf { it.isNotEmpty() }?.let { url ->
+        runCatching {
+          withContext(Dispatchers.IO) {
+            playbackHttpClient.newCall(okhttp3.Request.Builder().url(url).build()).execute()
+              .use { resp -> resp.body?.bytes() }
+          }
+        }.getOrNull()
+      }
+      val metadata = androidx.media3.common.MediaMetadata.Builder()
+        .setTitle(displayTitle)
+        .setArtist(request.ownerName)
+        .apply { if (coverBytes != null) setArtworkData(coverBytes, androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
+        .build()
+      val dataSourceFactory = DefaultDataSource.Factory(
+        context,
+        BiliMediaDataSourceFactory(client = playbackHttpClient, headers = effectiveInfo.headers).create(),
+      )
+      val mediaSource: MediaSource = if (resolvedRequest.isPgc || effectiveInfo.videoTracks.first().isProgressive) {
+        val videoItem = androidx.media3.common.MediaItem.Builder()
+          .setUri(effectiveInfo.videoTracks.first().baseUrl)
+          .setMediaMetadata(metadata)
+          .build()
+        val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
+        // audioTracks 为空(YouTube 无 PO token 时回退单个合并流)时直接单轨播放。
+        if (effectiveInfo.audioTracks.isEmpty()) {
+          videoSource
+        } else {
+          val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+            .createMediaSource(androidx.media3.common.MediaItem.fromUri(effectiveInfo.audioTracks.first().baseUrl))
+          MergingMediaSource(videoSource, audioSource)
+        }
+      } else {
+        val dashItem = buildDashMediaItem(effectiveInfo, playbackCdnPreference)
+          .buildUpon()
+          .setMediaMetadata(metadata)
+          .build()
+        DashMediaSource.Factory(dataSourceFactory).createMediaSource(dashItem)
+      }
+      player.setMediaSource(mediaSource)
+      player.prepare()
+      player.setPlaybackSpeed(playbackSpeed)
+      if (startPositionMs > 0L) {
+        player.seekTo(startPositionMs)
+        playbackPositionState.longValue = startPositionMs
+        danmakuSyncToken += 1L
+      }
+      player.playWhenReady = true
+      playerState = MobilePlayerState.Ready(effectiveInfo)
+
+      // 弹幕
+      if (danmakuSettings.enabled && cid > 0L) {
+        danmakuEntries = runCatching { playbackRepository.getDanmaku(cid) }.getOrDefault(emptyList())
+      }
+    } catch (error: CancellationException) {
+      throw error
+    } catch (error: Exception) {
+      playerState = MobilePlayerState.Failed(error.message.orEmpty())
+    }
+  }
+
   // ExoPlayer 监听 + 生命周期释放
   DisposableEffect(player) {
     val listener = object : Player.Listener {
@@ -451,6 +585,20 @@ fun MobilePlayerScreen(
           completionReported = true
           saveAndReportProgress(CompletedProgressSeconds)
           context.stopService(Intent(context, PlaybackService::class.java))
+          // 自动连播下一集:后台播放时帧时钟暂停、Compose 重组被推迟,LaunchedEffect(completionReported)
+          // 不会重启,故在此用不依赖帧时钟的 scope 直接调度(镜像 TV scheduleCompletionAction)。
+          scope.launch {
+            delay(CompletionActionDelayMs)
+            val next = computeNextRequest()
+            if (next != null) {
+              loadRequest(next)
+              // 下一集加载成功并开始播放,重启后台保活服务(原 LaunchedEffect(isPlaying, displayTitle) 在后台被推迟)。
+              if (playerState is MobilePlayerState.Ready) {
+                PlayerHolder.title = displayTitle
+                ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
+              }
+            }
+          }
         }
       }
 
@@ -506,124 +654,11 @@ fun MobilePlayerScreen(
     }
   }
 
-  // 加载(镜像 TV PlayerScreen 的 load 序列);key 为 activeRequest,支持画质/分P 切换重载
-  LaunchedEffect(activeRequest, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey) {
-    playerState = MobilePlayerState.Loading
-    completionReported = false
-    userPaused = false
-    seekPreviewMs = null
-    playbackPositionState.longValue = 0L
-    playbackDurationState.longValue = 0L
-    danmakuEntries = emptyList()
-    player.clearMediaItems()
-    try {
-      // YouTube 无 B 站 view/metadata/cid，跳过 B 站元数据与 cid 解析。
-      val isYoutube = activeRequest.isYoutube
-      val videoMetadata = if (isYoutube) null else runCatching { playbackRepository.getVideoMetadata(activeRequest) }.getOrNull()
-      metadata = videoMetadata
-      // YouTube 简介 Tab 单独拉 /player videoDetails（view/metadata 走 B 站，YouTube 无）。
-      youtubeDetailLoading = isYoutube
-      youtubeDetail = if (isYoutube) runCatching { videoRepository.getYoutubeVideoDetail(activeRequest.bvid) }.getOrNull() else null
-      youtubeDetailLoading = false
-      val cid = if (isYoutube) {
-        0L
-      } else {
-        activeRequest.cid.takeIf { it > 0L }
-          ?: videoMetadata?.cid?.takeIf { it > 0L }
-          ?: playbackRepository.resolveCid(activeRequest.bvid)
-      }
-      if (cid <= 0L && !isYoutube) {
-        playerState = MobilePlayerState.Failed(context.getString(R.string.player_error_missing_cid))
-        return@LaunchedEffect
-      }
-      val resolvedRequest = activeRequest.withResolvedMetadata(metadata = videoMetadata, cid = cid)
-      displayTitle = resolvedRequest.title.ifBlank { activeRequest.title }
-      val info = playbackRepository.getPlaybackInfo(
-        request = resolvedRequest,
-        codecPreference = playbackCodecPreference,
-        qualityPreference = playbackQualityPreference,
-      )
-      selectedQualityId = info.selectedQuality.id
-      // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体)。
-      if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive)) {
-        playerState = MobilePlayerState.Failed(context.getString(R.string.player_error_empty_tracks))
-        return@LaunchedEffect
-      }
-      // CDN 选择
-      val resolvedVideo = info.videoTracks.map { track ->
-        val sel = cdnSelector.select(track, playbackCdnPreference)
-        track.copy(baseUrl = sel.primaryUrl, backupUrls = sel.fallbackUrls)
-      }
-      val resolvedAudio = info.audioTracks.map { track ->
-        val sel = cdnSelector.select(track, playbackCdnPreference)
-        track.copy(baseUrl = sel.primaryUrl, backupUrls = sel.fallbackUrls)
-      }
-      val effectiveInfo = info.copy(videoTracks = resolvedVideo, audioTracks = resolvedAudio)
-      val startPositionMs = when {
-        // stall 自动重试续播:优先用卡住时的当前位置,而非 saved progress(可能更旧)。
-        autoResumePositionMs >= 0L -> autoResumePositionMs.also { autoResumePositionMs = -1L }
-        else -> playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
-          ?: activeRequest.startPositionMs
-      }
-      // 后台播放 MediaStyle 通知封面:下载 coverUrl bytes(IO),失败忽略。
-      val coverBytes = activeRequest.coverUrl.takeIf { it.isNotEmpty() }?.let { url ->
-        runCatching {
-          withContext(Dispatchers.IO) {
-            playbackHttpClient.newCall(okhttp3.Request.Builder().url(url).build()).execute()
-              .use { resp -> resp.body?.bytes() }
-          }
-        }.getOrNull()
-      }
-      val metadata = androidx.media3.common.MediaMetadata.Builder()
-        .setTitle(displayTitle)
-        .setArtist(activeRequest.ownerName)
-        .apply { if (coverBytes != null) setArtworkData(coverBytes, androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
-        .build()
-      val dataSourceFactory = DefaultDataSource.Factory(
-        context,
-        BiliMediaDataSourceFactory(client = playbackHttpClient, headers = effectiveInfo.headers).create(),
-      )
-      val mediaSource: MediaSource = if (resolvedRequest.isPgc || effectiveInfo.videoTracks.first().isProgressive) {
-        val videoItem = androidx.media3.common.MediaItem.Builder()
-          .setUri(effectiveInfo.videoTracks.first().baseUrl)
-          .setMediaMetadata(metadata)
-          .build()
-        val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
-        // audioTracks 为空(YouTube 无 PO token 时回退单个合并流)时直接单轨播放。
-        if (effectiveInfo.audioTracks.isEmpty()) {
-          videoSource
-        } else {
-          val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-            .createMediaSource(androidx.media3.common.MediaItem.fromUri(effectiveInfo.audioTracks.first().baseUrl))
-          MergingMediaSource(videoSource, audioSource)
-        }
-      } else {
-        val dashItem = buildDashMediaItem(effectiveInfo, playbackCdnPreference)
-          .buildUpon()
-          .setMediaMetadata(metadata)
-          .build()
-        DashMediaSource.Factory(dataSourceFactory).createMediaSource(dashItem)
-      }
-      player.setMediaSource(mediaSource)
-      player.prepare()
-      player.setPlaybackSpeed(playbackSpeed)
-      if (startPositionMs > 0L) {
-        player.seekTo(startPositionMs)
-        playbackPositionState.longValue = startPositionMs
-        danmakuSyncToken += 1L
-      }
-      player.playWhenReady = true
-      playerState = MobilePlayerState.Ready(effectiveInfo)
-
-      // 弹幕
-      if (danmakuSettings.enabled && cid > 0L) {
-        danmakuEntries = runCatching { playbackRepository.getDanmaku(cid) }.getOrDefault(emptyList())
-      }
-    } catch (error: CancellationException) {
-      throw error
-    } catch (error: Exception) {
-      playerState = MobilePlayerState.Failed(error.message.orEmpty())
-    }
+  // 加载(镜像 TV PlayerScreen 的 load 序列)。key 不含 activeRequest:自动连播/用户切集/切画质
+  // 由显式 loadRequest 调用触发(见 ExoPlayer 监听器与各 onClick),避免后台重组被推迟时无法加载;
+  // 本 effect 只处理初始加载、新视频(request 变)、设置变更、stall 重试(retryKey 变)。
+  LaunchedEffect(request, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey) {
+    loadRequest(activeRequest)
   }
 
   // 进度轮询
@@ -711,22 +746,6 @@ fun MobilePlayerScreen(
     }
   }
 
-  // 自动连播下一集:播放完成(completionReported)后,若来自播放列表(playQueue 有下一项)则切下一项;
-  // 否则按 metadata.pages 取下一分P(镜像 TV PlayerCompletionPlanner),都没有则不连播。
-  // 延迟 3s 切换 activeRequest 重载。切走/手动换集时 completionReported 复位,本 effect 重键取消。
-  LaunchedEffect(completionReported) {
-    if (!completionReported) return@LaunchedEffect
-    val queueNext = if (playQueue.size > 1) {
-      val cur = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
-      if (cur in 0 until playQueue.lastIndex) playQueue[cur + 1] else null
-    } else null
-    val next = queueNext?.toPlaybackRequest()
-      ?: activeRequest.nextEpisodeCompletion(metadata, selectedQualityId)?.request
-    if (next == null) return@LaunchedEffect
-    delay(CompletionActionDelayMs)
-    activeRequest = next
-  }
-
   // 控件自动隐藏:仅手动全屏(沉浸式)下,播放中 4s 后自动隐(对齐 TV PlayerControlsAutoHideMs)。
   // 非全屏播放栏常驻,不自动隐;暂停 isPlaying=false 不触发,全屏控件保持可见。
   LaunchedEffect(controlsVisible, isPlaying, fullscreen) {
@@ -758,7 +777,7 @@ fun MobilePlayerScreen(
   val playPlaylistVideo: (VideoSummary) -> Unit = { video ->
     val idx = playQueue.indexOfFirst { it.bvid == video.bvid }
     if (idx >= 0) {
-      activeRequest = playQueue[idx].toPlaybackRequest().copy(preferredQualityId = selectedQualityId)
+      scope.launch { loadRequest(playQueue[idx].toPlaybackRequest().copy(preferredQualityId = selectedQualityId)) }
     } else {
       onPlayVideo(video)
     }
@@ -1133,8 +1152,10 @@ fun MobilePlayerScreen(
                 tint = if (curQueueIndex > 0) BiliColors.TextPrimary else BiliColors.TextTertiary,
                 onClick = {
                   if (curQueueIndex > 0) {
-                    activeRequest = playQueue[curQueueIndex - 1].toPlaybackRequest()
-                      .copy(preferredQualityId = selectedQualityId)
+                    scope.launch {
+                      loadRequest(playQueue[curQueueIndex - 1].toPlaybackRequest()
+                        .copy(preferredQualityId = selectedQualityId))
+                    }
                   }
                 },
               )
@@ -1144,8 +1165,10 @@ fun MobilePlayerScreen(
                 tint = if (curQueueIndex < playQueue.lastIndex) BiliColors.TextPrimary else BiliColors.TextTertiary,
                 onClick = {
                   if (curQueueIndex < playQueue.lastIndex) {
-                    activeRequest = playQueue[curQueueIndex + 1].toPlaybackRequest()
-                      .copy(preferredQualityId = selectedQualityId)
+                    scope.launch {
+                      loadRequest(playQueue[curQueueIndex + 1].toPlaybackRequest()
+                        .copy(preferredQualityId = selectedQualityId))
+                    }
                   }
                 },
               )
@@ -1179,11 +1202,13 @@ fun MobilePlayerScreen(
                       onClick = {
                         showQualityMenu = false
                         selectedQualityId = q.id
-                        activeRequest = activeRequest.copy(
-                          startPositionMs = player.currentPosition.takeIf { it > 0L }
-                            ?: playbackPositionState.longValue,
-                          preferredQualityId = q.id,
-                        )
+                        scope.launch {
+                          loadRequest(activeRequest.copy(
+                            startPositionMs = player.currentPosition.takeIf { it > 0L }
+                              ?: playbackPositionState.longValue,
+                            preferredQualityId = q.id,
+                          ))
+                        }
                       },
                     )
                   }
@@ -1260,14 +1285,16 @@ fun MobilePlayerScreen(
           onOpenUpSpace = onOpenUpSpace,
           onShare = { shareVideo() },
           onSelectPage = { ep ->
-            activeRequest = activeRequest.copy(
-              cid = ep.cid,
-              epId = ep.epId,
-              startPositionMs = 0L,
-              preferredQualityId = selectedQualityId,
-              forceStartPosition = true,
-              historyPage = ep.page,
-            )
+            scope.launch {
+              loadRequest(activeRequest.copy(
+                cid = ep.cid,
+                epId = ep.epId,
+                startPositionMs = 0L,
+                preferredQualityId = selectedQualityId,
+                forceStartPosition = true,
+                historyPage = ep.page,
+              ))
+            }
           },
           modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars),
         )
@@ -1290,14 +1317,16 @@ fun MobilePlayerScreen(
       onOpenUpSpace = onOpenUpSpace,
       onShare = { shareVideo() },
       onSelectPage = { ep ->
-        activeRequest = activeRequest.copy(
-          cid = ep.cid,
-          epId = ep.epId,
-          startPositionMs = 0L,
-          preferredQualityId = selectedQualityId,
-          forceStartPosition = true,
-          historyPage = ep.page,
-        )
+        scope.launch {
+          loadRequest(activeRequest.copy(
+            cid = ep.cid,
+            epId = ep.epId,
+            startPositionMs = 0L,
+            preferredQualityId = selectedQualityId,
+            forceStartPosition = true,
+            historyPage = ep.page,
+          ))
+        }
       },
     )
   }
