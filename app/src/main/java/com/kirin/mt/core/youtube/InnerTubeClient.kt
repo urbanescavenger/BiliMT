@@ -148,10 +148,10 @@ class InnerTubeClient(
       return@withContext null
     }
     val bg = runCatching {
-      json.parseToJsonElement(text).jsonObject.obj("challengeData")?.obj("bgChallenge")
+      json.parseToJsonElement(text).jsonObject.obj("bgChallenge")
     }.getOrNull()
     if (bg == null) {
-      Log.w(Tag, "att/get response missing challengeData.bgChallenge")
+      Log.w(Tag, "att/get response missing bgChallenge: ${text.take(300)}")
       return@withContext null
     }
     val program = bg.stringOrNull("program")
