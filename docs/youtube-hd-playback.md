@@ -67,16 +67,40 @@ adaptive 高清永远选不到。**要让高清生效,须把可解的 adaptive �
 | **Tier 2(增强)** | PO token(jnn)跑通 | 覆盖「YouTube 剥光所有 adaptive url」的极端场景 |
 | **Out of scope** | DRM 保护内容、8K、HDR | 与 B 站同理由:TV 面板普遍不支持,探测不到会黑屏 |
 
+## 6.5 实测结论:高清唯一前置是 PO token(2026-08)
+
+curl 实测 `/youtubei/v1/player`(guest,无 PO token):
+
+| 客户端 | 结果 |
+| --- | --- |
+| WEB | UNPLAYABLE(被拦) |
+| ANDROID | OK,29 个 adaptive 格式(2160/1440/1080p 都在),但**全部无 url、无 signatureCipher**——只有元数据 |
+| ANDROID_VR / TVHTML5 / IOS | 全部失败 |
+
+**结论:无 PO token 时 YouTube 在所有客户端剥掉流 url,只留元数据;360p 来自唯一的 progressive 兜底流(itag 18)。** 合并 ANDROID 客户端救不了高清,PO token 是唯一路径。
+
+## 6.6 PO token 实现(跟随 bgutils-js, MIT)
+
+- **打包**:`assets/youtube/bgutils.js`(esbuild 打包 bgutils-js v4.0.3,暴露 `__runSnapshot`/`__mint`)。
+- **流程**(`YoutubeBotGuard`):`POST /api/jnn/v1/Create`(requestKey=`O43z0dpjhgX20SCx4KAo`)→ descramble(base64+97)→ interpreter JS 加载进 WebView → `__runSnapshot`(BotGuardClient.create + snapshot)→ `POST Waa/GenerateIT` → `__mint`(WebPoMinter)→ 视频 ID 绑定 PO token。
+- **注入**:resolver 生成 token 后注入 `/player` 的 `serviceIntegrityDimensions.poToken`。
+- **降级**:任一步失败返回 null,走无 token 直连(360p),不阻塞主路径。
+- **脆弱点(需真机)**:snapshot 的 contentBinding `c` 值当前为占位(`b=PLACEHOLDER&hh=PLACEHOLDER`),需对照真实 player 响应/attestation 钉死;interpreter JS/WASM 能否通过 BotGuard 运行时校验;GenerateIT 响应结构。真机看 logcat `YtBotGuard` 行定位。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
 | --- | --- |
-| `core/youtube/YoutubePlaybackResolver.kt` | `parseFormat`/`signatureCipherUrl`/`resolve`/`pickVideo`/`buildInfo` |
-| `core/youtube/YoutubeJsExecutor.kt` | 复用做 `s` 解密 |
-| `core/youtube/YoutubeBotGuard.kt` | Tier 2 PO token |
+| `core/youtube/YoutubePlaybackResolver.kt` | `parseFormat`/`signatureCipherUrl`/`resolve`/`pickVideo`/`buildInfo` + PO token 注入 |
+| `core/youtube/YoutubeSDecryptor.kt` | `s` 签名解密 |
+| `core/youtube/YoutubeBotGuard.kt` | PO token 生成(challenge/snapshot/GenerateIT/mint) |
+| `core/youtube/YoutubeJsExecutor.kt` | WebView JS 引擎 + `loadBgUtilsBundle` |
+| `assets/youtube/bgutils.js` | 打包的 bgutils-js(MIT) |
 | `ui/player/PlayerScreen.kt:1390` / `:2038-2104` | 喂流分支 + MPD 构建(改 feed 路径即可复用) |
 | `core/player/CodecCapabilityProbe.kt` | 硬件过滤 |
 
 ## 8. 参考来源
 - FreeTube 上游:`src/renderer/helpers/api/local.js`(InnerTube 封装)与 `formatUtils`(itag/adaptive 选择)
 - YouTube.js(LuanRT/YouTube.js):`core/Player.ts`、`utils/FormatUtils.ts`
+- bgutils-js(LuanRT/BgUtils,MIT):`BotGuardClient`/`ChallengeFetcher`/`WebPoMinter`
+- FreeTube PR #8137(video ID 绑定 poToken)、#6931(jnn 端点)、#6977(legacy 360p 兜底)

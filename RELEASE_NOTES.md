@@ -1,5 +1,19 @@
 # BiliMT 版本发布说明
 
+## v2.0.9-alpha.3
+
+**YouTube 高清 PO token(jnn)实现**:无 PO token 时 YouTube 剥掉 adaptive 高清 url(只剩 360p),PO token 是高清唯一前置。本版打包 bgutils-js(MIT)进 WebView 实现完整 PO token 流程。
+
+### 技术
+- **bgutils-js 打包**:`assets/youtube/bgutils.js`(esbuild 打包 v4.0.3,暴露 `__runSnapshot`/`__mint`)。
+- **`YoutubeBotGuard` 完整流程**:`POST /api/jnn/v1/Create`(requestKey=`O43z0dpjhgX20SCx4KAo`)→ descramble → interpreter JS 加载进隐藏 WebView → snapshot → `Waa/GenerateIT` → mint → 视频 ID 绑定 PO token。
+- **注入**:resolver 生成 token 后注入 `/player` 的 `serviceIntegrityDimensions.poToken`。
+- **降级**:任一步失败返回 null,走无 token 直连(360p),不阻塞主路径。
+
+### 说明
+- **脆弱点需真机**:snapshot 的 contentBinding `c` 值当前为占位(`b=PLACEHOLDER&hh=PLACEHOLDER`),需对照真实 player 响应钉死;interpreter JS/WASM 校验、GenerateIT 响应结构待真机验证。真机看 logcat `YtBotGuard` 行(`challenge ok` / `PO token minted` / `PO token JS error` / `PO token poll timeout`)定位。
+- 云编译仅验编译绿,PO token 运行时正确性必须真机迭代。
+
 ## v2.0.9-alpha.2
 
 修复 alpha.1 的 **YouTube 仍只有 360p** 问题(高清 Tier 1 补丁)。
