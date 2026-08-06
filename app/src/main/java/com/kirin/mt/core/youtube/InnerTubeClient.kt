@@ -122,11 +122,15 @@ class InnerTubeClient(
    *
    * 对齐后 VM 才会把 minter 填进 `webPoSignalOutput`（jnn Create 的 program 不产生 minter，
    * 真机曾报 `BgError: PMD:Undefined`）。
+   *
+   * 关键：PO token 是**绑定铸取时的 client context** 的，/player 必须用同 client 才认。
+   * 本环境 WEB guest 整块被拦("Video unavailable")，实际播放走 ANDROID，故此处用 ANDROID context，
+   * 否则 ANDROID /player 收到 WEB 绑定的 token 判定无效，adaptive url 仍被剥(adaptive=0)。
    */
   suspend fun fetchBotGuardChallenge(): BotGuardChallenge? = withContext(Dispatchers.IO) {
     val body = buildJsonObject {
       put("engagementType", "ENGAGEMENT_TYPE_UNBOUND")
-      put("context", buildContext(Client.WEB))
+      put("context", buildContext(Client.ANDROID))
     }
     val url = "${YoutubeConstants.InnerTubeBase}/${YoutubeConstants.ApiVersion}/att/get?prettyPrint=false&alt=json"
     val request = Request.Builder()

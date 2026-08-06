@@ -59,8 +59,9 @@ class YoutubePlaybackResolver(
     if (poToken != null) Log.i(Tag, "PO token minted (${poToken.length} chars)") else Log.w(Tag, "PO token unavailable; degrade to no-token")
 
     // 收集 playable 客户端(WEB → ANDROID)的 streamingData 合并候选。
-    // 关键：无 PO token 时 WEB guest 常剥离 adaptiveFormats 的 url(只剩 progressive itag 18/22=360p)，
-    // 而 ANDROID 客户端(guest 取流更宽容,NewPipe 同款)对多数视频直接返回带 url 的高清 adaptive。
+    // 关键：实测(§6.5)无有效 PO token 时 WEB 和 ANDROID 都会剥光 adaptiveFormats 的 url
+    // (只剩 progressive itag 18=360p)。PO token 是绑定 client context 的，/att/get 铸取时
+    // 用 ANDROID context，/player 也走 ANDROID，token 才认。WEB guest 在此环境整块被拦。
     // 故合并两个客户端的流，统一选最高 adaptive，progressive 仅兜底。
     val allAdaptive = mutableListOf<ParsedFormat>()
     val allCombined = mutableListOf<ParsedFormat>()
