@@ -231,9 +231,13 @@ class YoutubeBotGuard(
     // 兼容其它形态：{ integrityToken: "..." } 或 [null, { integrityToken: "..." }]。
     val arr = runCatching { json.parseToJsonElement(text).jsonArray }.getOrNull()
     val root = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull()
-    val token = root?.stringOrNull("integrityToken")
-      ?: arr?.getOrNull(1)?.jsonObject?.stringOrNull("integrityToken")
-      ?: arr?.getOrNull(3)?.jsonPrimitive?.contentOrNull
+    // index 3 优先（实测格式 [null,<ttl>,null,"<token>"]）；整条链包 runCatching，
+    // 避免 arr[1] 是数字(43200)时 .jsonObject cast 抛异常而取不到 index 3。
+    val token = runCatching {
+      root?.stringOrNull("integrityToken")
+        ?: arr?.getOrNull(3)?.jsonPrimitive?.contentOrNull
+        ?: arr?.getOrNull(1)?.jsonObject?.stringOrNull("integrityToken")
+    }.onFailure { Log.w(Tag, "GenerateIT token parse failed: ${it.message}") }.getOrNull()
     if (token.isNullOrBlank()) Log.w(Tag, "GenerateIT response missing integrityToken")
     token
   }
