@@ -44,6 +44,12 @@ class YoutubePlaybackResolver(
   private val httpClient: OkHttpClient,
 ) {
 
+  /** 从 player base.js 提取的 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp）。 */
+  private var signatureTimestamp: Int? = null
+
+  /** 缓存的 base.js URL（避免 resolvePlayerJsUrl 重复拉 watch 页）。 */
+  private var cachedPlayerJsUrl: String? = null
+
   suspend fun resolve(
     request: PlaybackRequest,
     codecPreference: PlaybackCodecPreference,
@@ -58,6 +64,10 @@ class YoutubePlaybackResolver(
     val poToken = botGuard.generatePoToken(videoId)
     if (poToken != null) Log.i(Tag, "PO token minted (${poToken.length} chars)") else Log.w(Tag, "PO token unavailable; degrade to no-token")
 
+    // 提取 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp），注入 /player
+    // 的 contentPlaybackContext。缺它 WEB /player 可能被判"非真浏览器" → "The page needs to be reloaded"。
+    val signatureTimestamp = resolveSignatureTimestamp(videoId)
+
     // 收集 playable 客户端(WEB → ANDROID)的 streamingData 合并候选。
     // 实测(§6.5):无有效 PO token 时两客户端都会剥光 adaptiveFormats 的 url(只剩 progressive 360p)。
     // PO token 只能铸成 WEB 绑定(att/get 是 WEB challenge 通道,ANDROID att/get 不返回 bgChallenge)，
@@ -68,7 +78,7 @@ class YoutubePlaybackResolver(
     val allCombined = mutableListOf<ParsedFormat>()
     var durationMs = 0L
     for (client in listOf(InnerTubeClient.Client.WEB, InnerTubeClient.Client.ANDROID)) {
-      val player = runCatching { postPlayer(videoId, client = client, poToken = poToken) }.getOrNull()
+      val player = runCatching { postPlayer(videoId, client = client, poToken = poToken, signatureTimestamp = signatureTimestamp) }.getOrNull()
       if (!player.isPlayable()) {
         lastError = player?.playabilityReason() ?: lastError
         // 诊断:dump 完整 playabilityStatus(status/reason/errorScreen),定位 WEB "Video unavailable" 真因。
@@ -218,18 +228,24 @@ class YoutubePlaybackResolver(
 
   // ---- /player 请求与解析 ----
 
-  private suspend fun postPlayer(videoId: String, client: InnerTubeClient.Client, poToken: String?): JsonObject {
+  private suspend fun postPlayer(
+    videoId: String,
+    client: InnerTubeClient.Client,
+    poToken: String?,
+    signatureTimestamp: Int?,
+  ): JsonObject {
     val payload = buildJsonObject {
       put("videoId", videoId)
       put("contentCheckOk", true)
       put("racyCheckOk", true)
       put("playbackContext", buildJsonObject {
         put("contentPlaybackContext", buildJsonObject {
-          // 对齐 youtubei.js getInfo 的 contentPlaybackContext(vis/splay/lactMilliseconds)。
-          // signatureTimestamp 需从 player JS 提取,暂缺(不影响 PO token 校验)。
+          // 对齐 youtubei.js getInfo 的 contentPlaybackContext(vis/splay/lactMilliseconds/signatureTimestamp)。
+          // signatureTimestamp 从 player base.js 提取(§6.8.4 待补项),缺它 WEB /player 可能被判"非真浏览器"。
           put("vis", 0)
           put("splay", false)
           put("lactMilliseconds", "-1")
+          if (signatureTimestamp != null) put("signatureTimestamp", signatureTimestamp)
           put("html5Preference", "HTML5_PREF_WANTS")
         })
       })
@@ -237,23 +253,56 @@ class YoutubePlaybackResolver(
     return innerTubeClient.postJson("/player", payload, client = client, poToken = poToken)
   }
 
-  /** 从 watch 页 HTML 提取 base.js URL（用于 n/s 解密）。失败返回 null。 */
-  private suspend fun resolvePlayerJsUrl(videoId: String): String? = withContext(Dispatchers.IO) {
-    val page = runCatching {
+  /** 从 watch 页 HTML 提取 base.js URL（用于 n/s 解密）。失败返回 null。结果缓存复用。 */
+  private suspend fun resolvePlayerJsUrl(videoId: String): String? {
+    cachedPlayerJsUrl?.let { return it }
+    val url = withContext(Dispatchers.IO) {
+      val page = runCatching {
+        val req = Request.Builder()
+          .url("https://www.youtube.com/watch?v=$videoId")
+          .header("User-Agent", YoutubeConstants.UserAgent)
+          .build()
+        httpClient.newCall(req).execute().use { it.body?.string().orEmpty() }
+      }.getOrNull()
+      if (page.isNullOrBlank()) return@withContext null
+      val m = Regex("""\"jsUrl\":\"([^\"]+base\.js)\"""").find(page)
+        ?: Regex("""\"jsUrl\":\"([^\"]+)\"""").find(page)
+      val raw = m?.groupValues?.get(1)
+      raw?.takeIf { it.isNotBlank() }
+        ?.replace("\\/", "/")
+        ?.replace("\\u0026", "&")
+        ?.let { if (it.startsWith("http")) it else "https://www.youtube.com$it" }
+    }
+    cachedPlayerJsUrl = url
+    return url
+  }
+
+  /**
+   * 从 player base.js 提取 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp）。
+   * 结果缓存复用。失败返回 null（不阻塞 /player，仅少一个反爬字段）。
+   */
+  private suspend fun resolveSignatureTimestamp(videoId: String): Int? {
+    signatureTimestamp?.let { return it }
+    val playerJsUrl = resolvePlayerJsUrl(videoId) ?: return null
+    val js = runCatching {
       val req = Request.Builder()
-        .url("https://www.youtube.com/watch?v=$videoId")
+        .url(playerJsUrl)
         .header("User-Agent", YoutubeConstants.UserAgent)
         .build()
       httpClient.newCall(req).execute().use { it.body?.string().orEmpty() }
     }.getOrNull()
-    if (page.isNullOrBlank()) return@withContext null
-    val m = Regex("""\"jsUrl\":\"([^\"]+base\.js)\"""").find(page)
-      ?: Regex("""\"jsUrl\":\"([^\"]+)\"""").find(page)
-    val raw = m?.groupValues?.get(1)
-    raw?.takeIf { it.isNotBlank() }
-      ?.replace("\\/", "/")
-      ?.replace("\\u0026", "&")
-      ?.let { if (it.startsWith("http")) it else "https://www.youtube.com$it" }
+    if (js.isNullOrBlank()) {
+      Log.w(Tag, "signatureTimestamp: base.js fetch failed/blank")
+      return null
+    }
+    val ts = Regex("""signatureTimestamp:(\d+)""").find(js)?.groupValues?.get(1)?.toIntOrNull()
+    if (ts != null) {
+      signatureTimestamp = ts
+      Log.i(Tag, "signatureTimestamp=$ts")
+    } else {
+      Log.w(Tag, "signatureTimestamp not found in base.js")
+    }
+    return ts
   }
 
   private suspend fun resolveStreamUrl(format: ParsedFormat, playerJsUrl: String?): String {

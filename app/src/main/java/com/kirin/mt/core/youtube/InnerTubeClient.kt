@@ -93,6 +93,11 @@ class InnerTubeClient(
         .header("Origin", YoutubeConstants.Referer)
         .header("Accept", "*/*")
         .header("Accept-Language", "*")
+        // 对齐 FreeTubeAndroid shouldInterceptRequest 对 youtubei/ 注入的浏览器指纹头
+        // (§6.8.1)。缺这些 WEB /player 更易被判"非真浏览器" → "The page needs to be reloaded"。
+        .header("Sec-Fetch-Site", "same-origin")
+        .header("Sec-Fetch-Mode", "cors")
+        .header("X-Youtube-Bootstrap-Logged-In", "false")
       Client.ANDROID -> requestBuilder
         .header("X-Goog-API-Format-Version", YoutubeConstants.AndroidGoogApiFormatVersion)
         .header("X-Youtube-Client-Version", YoutubeConstants.AndroidClientVersion)

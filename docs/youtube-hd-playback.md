@@ -130,6 +130,7 @@ curl 实测 `/youtubei/v1/player`(guest,无 PO token):
 | 20 | **alpha.25 真机(拉真实 visitorData 后)**:`real session data: visitorData=... clientVersion=2.20260805.01.00` **成功拉到真实 visitorData + 当前 client version**(比硬编码 2.20260623.01.00 新)。但 WEB /player **仍** `UNPLAYABLE "The page needs to be reloaded."`。**根因:并发 bug**——`real session data` 出现 3 次且 visitorData 各不同:铸 token 线程 fetch 到 visitorData B,`/player` 线程又 fetch 到 visitorData C 并覆盖缓存 → **token 绑定 B、/player 用 C → token 无效**。`ensureRealSessionData()` 的 `if (realSessionData != null) return` 有竞态,多线程并发时各自 fetch | **修复**:`ensureRealSessionData()` 加 `Mutex` 双检锁——`sessionMutex.withLock { if (realSessionData != null) return; fetch }`,保证**只 fetch 一次**,铸 token 与 /player 用**同一真实 visitorData**。修后 token 与 /player 的 visitorData 一致 → token 应生效 → WEB /player 返回 OK + 高清 |
 | 21 | **alpha.26 真机(Mutex 双检锁后)**:`real session data` **仍出现 3 次**且 visitorData 各不同(A/B/C)。**Mutex 只锁单实例,跨实例无效**——根因是 **AppContainer 里建了 3 个独立 InnerTubeClient 实例**(BotGuard 用实例 A、Repository 用实例 B、PlaybackResolver 用实例 C),各自有独立的 `realSessionData`/`visitorData` 字段。BotGuard 铸 token 用实例 A 的 visitorData B,PlaybackResolver 调 /player 用实例 C 的 visitorData C → **token 绑定 B、/player 用 C → token 无效** | **修复**:AppContainer 共享**同一个** `youtubeInnerTubeClient` 实例给 BotGuard/Repository/PlaybackResolver,保证铸 token 与 /player 用**同一真实 visitorData**。修后 token 与 /player 的 visitorData 一致 → token 应生效 → WEB /player 返回 OK + 高清 |
 | 22 | **alpha.27 真机(共享实例后)**:`real session data` **只出现 1 次**(22:34:59.077),铸 token 与 /player 用**同一真实 visitorData**。但 WEB /player **仍** `UNPLAYABLE "The page needs to be reloaded."`。**根因:PO token 放错位置**——对照 youtubei.js `Innertube.ts getInfo` + `HTTPClient.ts #processJsonPayload`:youtubei.js 把 `serviceIntegrityDimensions.poToken` 放请求**顶层**(`extra_payload.serviceIntegrityDimensions`),`context` 由 HTTP 层单独注入;我们一直把 `serviceIntegrityDimensions` 放 **context 里面** → **token 不被 YouTube 应用** → 仍 "The page needs to be reloaded" | **修复**:`postJson` 把 `serviceIntegrityDimensions.poToken` 移到请求**顶层**(`buildJsonObject { put("serviceIntegrityDimensions", {poToken}) }`),`buildContext` 不再放 context 里。修后 token 被 YouTube 应用 → WEB /player 应返回 OK + 带 url 的 adaptive 高清 |
+| 23 | **alpha.28 方案(补 FreeTubeAndroid 剩余差异)**:对照 §6.8.4 表格,已对齐项之外还剩两处 FreeTubeAndroid 有而我们没有:①`contentPlaybackContext.signatureTimestamp`(youtubei.js 每个 /player 都带,从 player base.js 正则 `signatureTimestamp:(\d+)` 提取);②WEB 请求头 `Sec-Fetch-Site`/`Sec-Fetch-Mode`/`X-Youtube-Bootstrap-Logged-In`(FreeTubeAndroid shouldInterceptRequest 对 youtubei/ 注入的浏览器指纹头)。文档 §6.8.4 曾标 signatureTimestamp「待补」 | **修复**:①`YoutubePlaybackResolver` 加 `resolveSignatureTimestamp`(拉 base.js 正则提取,缓存复用)+ 注入 postPlayer 的 contentPlaybackContext;②`InnerTubeClient` WEB 分支加 `Sec-Fetch-Site: same-origin`/`Sec-Fetch-Mode: cors`/`X-Youtube-Bootstrap-Logged-In: false`。修后 WEB /player 应返回 OK + 带 url 的 adaptive 高清(待真机验证) |
 
 **注意**:早期注释说「`webPoSignalOutput` 显示 `[]` 是正常的(函数确实在数组里)」——**已被 alpha.17+ 证明错误**,数组确为空(否则不会 `PMD:Undefined`)。`JSON.stringify` 省略函数没错,但这里 minter 真的没生成。
 
@@ -206,11 +207,11 @@ fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', 
 | --- | --- | --- | --- |
 | 铸取 context | 完整 WEB context(含 visitorData) | 最小 WEB context | 已补全(§6.7 row 18) |
 | /player context | 同一完整 WEB context | 最小 WEB context | 已补全 |
-| 请求头 | Origin/Accept/Accept-Language | 仅 Referer | 已加 Origin/Accept/Accept-Language |
-| contentPlaybackContext | vis/splay/lactMilliseconds/signatureTimestamp | 仅 html5Preference | 已对齐(缺 signatureTimestamp) |
+| 请求头 | Origin/Accept/Accept-Language + Sec-Fetch-Site/Mode + X-Youtube-Bootstrap-Logged-In | 仅 Referer | 已加 Origin/Accept/Accept-Language + Sec-Fetch-* + Bootstrap-Logged-In(§6.7 row 23) |
+| contentPlaybackContext | vis/splay/lactMilliseconds/signatureTimestamp | 仅 html5Preference | 已对齐(含 signatureTimestamp,§6.7 row 23) |
 | 宿主页 origin | youtube.com 同源 | youtube.com 同源(alpha.20 已修) | ✓ |
 
-**待补**:`signatureTimestamp`(从 player JS 提取,`Player.ts` 用 `signatureTimestampVar` 正则提取)尚未实现,可能影响 n/s 解密与 /player 校验。
+**已补(§6.7 row 23)**:`signatureTimestamp`(从 player base.js 正则 `signatureTimestamp:(\d+)` 提取,缓存复用)已实现并注入 /player 的 contentPlaybackContext;WEB 请求头补 `Sec-Fetch-Site: same-origin`/`Sec-Fetch-Mode: cors`/`X-Youtube-Bootstrap-Logged-In: false`(对齐 FreeTubeAndroid shouldInterceptRequest 注入)。
 
 ## 7. 关键文件
 
