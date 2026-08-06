@@ -215,13 +215,18 @@ class YoutubeBotGuard(
       .header("x-user-agent", "grpc-web-javascript/0.1")
       .header("User-Agent", YoutubeConstants.UserAgent)
       .build()
+    var status = 0
     val text = runCatching {
-      httpClient.newCall(request).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
+      httpClient.newCall(request).execute().use { resp ->
+        status = resp.code
+        if (resp.isSuccessful) resp.body?.string().orEmpty() else ""
+      }
     }.getOrNull()
     if (text.isNullOrBlank()) {
-      Log.w(Tag, "GenerateIT failed/blank")
+      Log.w(Tag, "GenerateIT failed/blank (status=$status)")
       return@withContext null
     }
+    Log.i(Tag, "GenerateIT response (status=$status): ${text.take(400)}")
     // 响应形如 [null, { integrityToken: "..." }] 或 { integrityToken: "..." }。
     val root = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull()
     val token = root?.stringOrNull("integrityToken")
