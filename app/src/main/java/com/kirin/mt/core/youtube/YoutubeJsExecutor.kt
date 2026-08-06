@@ -40,17 +40,28 @@ class YoutubeJsExecutor(context: Context) {
    * 在隐藏 WebView 里同步执行一段 JS 表达式并取回结果文本。
    *
    * @param script JS 表达式；其结果会被 WebView 序列化（字符串带引号、对象为 null 或 {}）。
-   * @return WebView 原始返回文本；执行失败/WebView 不可用时返回 null。
+   * @return WebView 原始返回文本；脚本结果正常但为 null/undefined 时也返回 null；
+   *         WebView 被销毁导致 `evaluateJavascript` 抛错时，重建 WebView 并重试一次。
    */
   suspend fun eval(script: String): String? = withContext(Dispatchers.Main) {
-    val view = ensureWebView()
-    suspendCancellableCoroutine { cont ->
+    val first = evalOn(ensureWebView(), script)
+    if (first.isSuccess) return@withContext first.getOrNull()
+    // evaluateJavascript 抛错（多为 WebView 被 app 后台销毁）→ 重建后重试一次。
+    Log.w(Tag, "eval threw: ${first.exceptionOrNull()?.message}; recreating WebView")
+    webView?.destroy()
+    webView = null
+    bgUtilsLoaded = false
+    evalOn(ensureWebView(), script).getOrNull()
+  }
+
+  private suspend fun evalOn(view: WebView, script: String): Result<String?> {
+    return suspendCancellableCoroutine { cont ->
       runCatching {
         view.evaluateJavascript(script) { result ->
-          if (cont.isActive) cont.resume(result)
+          if (cont.isActive) cont.resume(Result.success(result))
         }
-      }.onFailure {
-        if (cont.isActive) cont.resume(null)
+      }.onFailure { e ->
+        if (cont.isActive) cont.resume(Result.failure(e))
       }
     }
   }
@@ -87,10 +98,7 @@ class YoutubeJsExecutor(context: Context) {
   }
 
   private suspend fun ensureWebView(): WebView = withContext(Dispatchers.Main) {
-    val alive = webView?.takeIf { !it.isDestroyed }
-    if (alive != null) return@withContext alive
-    // WebView 被销毁（app 后台）→ 重建并重置已加载标志。
-    bgUtilsLoaded = false
+    webView?.let { return@withContext it }
     val created = createWebView()
     webView = created
     created
