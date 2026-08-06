@@ -1,8 +1,11 @@
 package com.kirin.mt.core.webdav
 
+import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeChannelStore
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.io.IOException
@@ -24,8 +27,10 @@ class WebDavBackupService(
   /** 备份目录名(相对 WebDAV 根)。 */
   private val backupDir = "bilitv"
   private val backupFileName = "youtube_channels.json"
+  /** 日志备份子目录。 */
+  private val logsDir = "logs"
 
-  /** 备份:序列化当前频道列表并上传。返回失败原因或成功。 */
+  /** 备份:序列化当前频道列表并上传,再把日志一起上传(同名覆盖),全部成功后删本地日志。 */
   suspend fun backup(config: WebDavConfig): Result<Unit> {
     if (!config.isConfigured) {
       return Result.failure(IllegalStateException("WebDAV 未配置"))
@@ -37,6 +42,8 @@ class WebDavBackupService(
       repository.mkcol(dirUrl(config), config.username, config.password)
       val ok = repository.put(fileUrl(config), config.username, config.password, body)
       if (!ok) throw IOException("上传失败:服务器返回非 2xx")
+      // 日志一起备份(覆盖),全部上传成功后才删本地日志,避免部分失败丢日志。
+      backupLogs(config)
     }
   }
 
@@ -55,9 +62,44 @@ class WebDavBackupService(
     }
   }
 
+  /**
+   * 备份日志:把 crash_logs 目录下所有日志(手动/崩溃/实时)上传到 `{url}/bilitv/logs/`(同名覆盖)。
+   * 全部上传成功后才删本地日志。无日志时直接返回。
+   */
+  private suspend fun backupLogs(config: WebDavConfig) {
+    val logFiles = LogCatcherUtil.allLogFiles()
+    if (logFiles.isEmpty()) return
+    repository.mkcol(logsDirUrl(config), config.username, config.password)
+    logFiles.forEach { info ->
+      val bytes = withContext(Dispatchers.IO) { info.file.readBytes() }
+      val ok = repository.put(logFileUrl(config, info.file.name), config.username, config.password, bytes)
+      if (!ok) throw IOException("日志上传失败:${info.file.name}")
+    }
+    deleteBackedUpLogs(logFiles)
+  }
+
+  /** 删除已备份的本地日志。实时日志常驻写入,先停再删再重启,避免删掉后写者仍持有 fd。 */
+  private fun deleteBackedUpLogs(logFiles: List<LogCatcherUtil.LogFileInfo>) {
+    logFiles.forEach { info ->
+      when (info.type) {
+        LogCatcherUtil.LogType.Live -> {
+          LogCatcherUtil.stopLiveLogging()
+          info.file.delete()
+          LogCatcherUtil.startLiveLogging()
+        }
+        else -> info.file.delete()
+      }
+    }
+    LogCatcherUtil.updateLogFiles()
+  }
+
   private fun dirUrl(config: WebDavConfig): String = "${trimTrailingSlash(config.url)}/$backupDir"
 
   private fun fileUrl(config: WebDavConfig): String = "${dirUrl(config)}/$backupFileName"
+
+  private fun logsDirUrl(config: WebDavConfig): String = "${dirUrl(config)}/$logsDir"
+
+  private fun logFileUrl(config: WebDavConfig, name: String): String = "${logsDirUrl(config)}/$name"
 
   private fun trimTrailingSlash(url: String): String = url.trimEnd('/')
 }

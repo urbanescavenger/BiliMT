@@ -513,12 +513,12 @@
     <string name="settings_webdav_close">关闭</string>
     <string name="settings_webdav_backup">备份</string>
     <string name="settings_webdav_restore">还原</string>
-    <string name="settings_webdav_backup_success">备份成功</string>
+    <string name="settings_webdav_backup_success">备份成功(含日志)</string>
     <string name="settings_webdav_restore_success">还原成功，共 %1$d 个频道</string>
     <string name="settings_webdav_failed">操作失败：%1$s</string>
     <string name="settings_webdav_section">WebDAV 备份</string>
     <string name="settings_webdav_backup_row">备份到 WebDAV</string>
     <string name="settings_webdav_restore_row">从 WebDAV 还原</string>
-    <string name="settings_webdav_backup_desc">把 YouTube 关注频道上传到 WebDAV 服务器</string>
+    <string name="settings_webdav_backup_desc">把 YouTube 关注频道和日志上传到 WebDAV 服务器，备份后删除本地日志</string>
     <string name="settings_webdav_restore_desc">从 WebDAV 服务器下载并覆盖本地频道列表</string>
 </resources>
