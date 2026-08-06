@@ -102,12 +102,13 @@ curl 实测 `/youtubei/v1/player`(guest,无 PO token):
 | 7 | `PO token JS error: BgError: PMD:Undefined` at `_WebPoMinter.create` | `webPoSignalOutput[0]` 为空——snapshot 传了带占位符 `c`(b=PLACEHOLDER&hh=PLACEHOLDER) 的 contentBinding,VM 不产生 minter。FreeTube 只传 `{ webPoSignalOutput }` 不带 contentBinding,视频绑定在 mint 阶段用 videoId 完成 | `__runSnapshot` 的 `client.snapshot` 只传 `{ webPoSignalOutput }`,去掉 contentBinding |
 | 8 | 去掉 contentBinding 后仍 `BgError: PMD:Undefined` | `webPoSignalOutput` 仍空——问题不在 contentBinding,而在 challenge 源:jnn `/api/jnn/v1/Create` 给的 program 不产生 minter。FreeTube 用 `/youtubei/v1/att/get`(ENGAGEMENT_TYPE_UNBOUND) | challenge 源对齐 FreeTube:`fetchBotGuardChallenge` POST `/att/get` + 从 `bgChallenge` 取 program/globalName/interpreterUrl,interpreter 单独 GET |
 | 9 | `att/get response missing challengeData.bgChallenge` | 解析多套了一层 `challengeData`——FreeTube 的 `challengeData` 是响应根变量名,`bgChallenge` 在**根**(`challengeData.bgChallenge`),不是 `{challengeData:{bgChallenge}}` | 改 `jsonObject.obj("bgChallenge")`(去掉 challengeData 嵌套),加响应文本诊断日志 |
+| 10 | `/att/get` 已取到 challenge(`program=35311B`)但 `webPoSignalOutput[0]` 仍空 → `PMD:Undefined`;首尝试 `PO token failed: timeout` | challenge 源已对(program 35KB > jnn 10KB),但 BotGuard VM 在该 WebView 环境**仍不产生 minter**(anti-bot 检测/运行时缺 API);program 变大后 8s 总超时不够,首尝试 VM 加载中就被杀 | **待查**:加日志确认 `webPoSignalOutput.length`;可能需 `skipPrivacyBuffer`/真实 contentBinding `c`/更完整的 WebView 环境;适当加长 OverallTimeoutMs |
 
-**已跑通**:challenge 获取 → descramble → interpreter 加载(`window.trayride` 定义)→ snapshot 成功(`botguardResponse` 拿到)→ GenerateIT 返回 `[null,43200,null,"<token>"]`。
+**已跑通(alpha.17)**:challenge 获取(`/att/get`,program=35311B)→ interpreter 加载(`window.trayride` 定义)→ snapshot 成功(`botguardResponse` 拿到)→ GenerateIT 返回 `[null,43200,null,"<token>"]`。
 
-**待验证(alpha.12 起)**:GenerateIT 解析修复后 → mint(WebPoMinter)→ `PO token minted`。若 mint 报错,看 `PO token JS error`(可能 webPoSignalOutput 或 contentBinding `c` 占位)。
+**卡点(alpha.17)**:`webPoSignalOutput[0]` 为空 → `WebPoMinter.create` 抛 `BgError: PMD:Undefined`。即使换成 `/att/get` 的完整 program,snapshot 也拿到 botguardResponse,但 BotGuard VM 在该 WebView 环境里**没把 minter 函数填进 `webPoSignalOutput`**。下一步:加诊断日志确认 `webPoSignalOutput.length`,排查是否需 `skipPrivacyBuffer`/真实 contentBinding `c`/更完整环境;另注意 program 变大后 `OverallTimeoutMs=8s` 首尝试会 timeout,需加长。
 
-**注意**:`webPoSignalOutput` 在 JSON 里显示 `[]` 是正常的——minter 是函数,`JSON.stringify` 会省略它,但函数确实在数组里。
+**注意**:早期注释说「`webPoSignalOutput` 显示 `[]` 是正常的(函数确实在数组里)」——**alpha.17 证明该假设错误**,数组确为空(否则不会 `PMD:Undefined`)。`JSON.stringify` 省略函数没错,但这里 minter 真的没生成。
 
 ## 7. 关键文件
 
