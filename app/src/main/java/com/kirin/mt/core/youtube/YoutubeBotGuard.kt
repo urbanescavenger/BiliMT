@@ -1,15 +1,12 @@
 package com.kirin.mt.core.youtube
 
-import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -25,23 +22,24 @@ import okhttp3.RequestBody.Companion.toRequestBody
  * YouTube PO token（Proof-of-Origin）生成，基于 **bgutils-js(MIT)** 打包进隐藏 WebView。
  *
  * 无 PO token 时 YouTube 会剥掉 adaptive 高清流 url（只剩 progressive 360p），
- * 这是高清(1080P/2K/4K)的唯一前置。流程（跟随 bgutils-js v4）：
- *  1. `POST /api/jnn/v1/Create`（requestKey=`O43z0dpjhgX20SCx4KAo`）拿 challenge。
- *  2. descramble（base64 解码 + 每字节 +97）→ `{ interpreterJavascript, program, globalName }`。
- *  3. 隐藏 WebView eval interpreter JS → 定义 `window[globalName]`。
- *  4. `__runSnapshot`（bgutils BotGuardClient.create + snapshot）→ botguardResponse。
- *  5. `POST Waa/GenerateIT`（[requestKey, botguardResponse]）→ integrityToken。
- *  6. `__mint`（bgutils WebPoMinter）→ 视频 ID 绑定的 PO token。
+ * 这是高清(1080P/2K/4K)的唯一前置。流程（对齐 FreeTube botGuardScript.js + bgutils-js v4）：
+ *  1. `POST /youtubei/v1/att/get`（ENGAGEMENT_TYPE_UNBOUND，对齐 FreeTube）→
+ *     `challengeData.bgChallenge` { program, globalName, interpreterUrl }，interpreter 单独 GET。
+ *  2. 隐藏 WebView eval interpreter JS → 定义 `window[globalName]`。
+ *  3. `__runSnapshot`（bgutils BotGuardClient.create + snapshot，只传 webPoSignalOutput）→ botguardResponse。
+ *  4. `POST Waa/GenerateIT`（[requestKey, botguardResponse]）→ integrityToken。
+ *  5. `__mint`（bgutils WebPoMinter）→ 视频 ID 绑定的 PO token。
  *
  * 网络由 Kotlin 发（WebView 跨源 fetch 被 CORS 拦），WebView 只执行 interpreter JS + WASM。
  * 任一步失败返回 null，绝不阻塞"无 PO token 直连 /player"主路径。
  *
- * 脆弱点（需真机迭代）：interpreter JS/WASM 能否通过 BotGuard 运行时校验、snapshot 的
- * contentBinding `c` 值格式（当前为占位，需对照真实 player 响应钉死）、GenerateIT 响应结构。
+ * 脆弱点（需真机迭代）：interpreter JS/WASM 能否通过 BotGuard 运行时校验、snapshot 是否
+ * 把 minter 填进 webPoSignalOutput（jnn Create 的 program 不产生，须用 /att/get）、GenerateIT 响应结构。
  */
 class YoutubeBotGuard(
   private val executor: YoutubeJsExecutor,
   private val httpClient: OkHttpClient,
+  private val innerTubeClient: InnerTubeClient,
 ) {
 
   private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -96,7 +94,7 @@ class YoutubeBotGuard(
     return mintToken(integrityToken, videoId)
   }
 
-  // ---- challenge 获取与 descramble ----
+  // ---- challenge 获取（对齐 FreeTube /att/get） ----
 
   private data class Challenge(
     val interpreterJavascript: String?,
@@ -104,50 +102,9 @@ class YoutubeBotGuard(
     val globalName: String?,
   )
 
-  private suspend fun fetchChallenge(): Challenge? = withContext(Dispatchers.IO) {
-    val body = "[\"$RequestKey\"]".toRequestBody(JsonProtobufMediaType)
-    val request = Request.Builder()
-      .url("https://www.youtube.com/api/jnn/v1/Create")
-      .post(body)
-      .header("Content-Type", "application/json+protobuf")
-      .header("x-goog-api-key", WaaApiKey)
-      .header("x-user-agent", "grpc-web-javascript/0.1")
-      .header("User-Agent", YoutubeConstants.UserAgent)
-      .header("Referer", YoutubeConstants.Referer)
-      .build()
-    val text = runCatching {
-      httpClient.newCall(request).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
-    }.getOrNull()
-    if (text.isNullOrBlank()) {
-      Log.w(Tag, "challenge fetch failed/blank")
-      return@withContext null
-    }
-    // 响应形如 [null, "<scrambled>"]。
-    val scrambled = runCatching {
-      json.parseToJsonElement(text).jsonArray.getOrNull(1)?.jsonPrimitive?.contentOrNull
-    }.getOrNull()
-    if (scrambled.isNullOrBlank()) {
-      Log.w(Tag, "challenge response missing scrambled data")
-      return@withContext null
-    }
-    parseChallenge(descramble(scrambled))
-  }
-
-  /** base64 解码 + 每字节 +97 → UTF-8 JSON 串（对齐 bgutils-js descrambleChallenge）。 */
-  private fun descramble(scrambled: String): String? {
-    val bytes = runCatching { Base64.decode(scrambled, Base64.DEFAULT) }.getOrNull() ?: return null
-    return runCatching { bytes.map { (it + 97).toByte() }.toByteArray().toString(Charsets.UTF_8) }.getOrNull()
-  }
-
-  /** 解析 descramble 后的 JSON 数组 → [messageId, wrappedScript, wrappedUrl, hash, program, globalName, ...]。 */
-  private fun parseChallenge(descrambled: String?): Challenge? {
-    if (descrambled.isNullOrBlank()) return null
-    val arr = runCatching { json.parseToJsonElement(descrambled).jsonArray }.getOrNull() ?: return null
-    val wrappedScript = arr.getOrNull(1) as? JsonArray
-    val interpreterJavascript = wrappedScript?.firstNotNullOfOrNull { (it as? JsonPrimitive)?.contentOrNull }
-    val program = (arr.getOrNull(4) as? JsonPrimitive)?.contentOrNull
-    val globalName = (arr.getOrNull(5) as? JsonPrimitive)?.contentOrNull
-    return Challenge(interpreterJavascript, program, globalName)
+  private suspend fun fetchChallenge(): Challenge? {
+    val c = innerTubeClient.fetchBotGuardChallenge() ?: return null
+    return Challenge(c.interpreterJavascript, c.program, c.globalName)
   }
 
   // ---- WebView snapshot / mint ----

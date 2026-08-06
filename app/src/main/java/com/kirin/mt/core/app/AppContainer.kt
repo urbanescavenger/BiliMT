@@ -89,7 +89,11 @@ class AppContainer(context: Context) {
   // 共享同一个 YouTube OkHttpClient（InnerTube 数据 + /player + base.js/watch 抓取复用连接池）。
   val youtubeHttpClient = httpClientFactory.createYoutubeClient()
   val youtubeJsExecutor: YoutubeJsExecutor = YoutubeJsExecutor(appContext)
-  val youtubeBotGuard: YoutubeBotGuard = YoutubeBotGuard(youtubeJsExecutor, youtubeHttpClient)
+  val youtubeBotGuard: YoutubeBotGuard = YoutubeBotGuard(
+    executor = youtubeJsExecutor,
+    httpClient = youtubeHttpClient,
+    innerTubeClient = InnerTubeClient(httpClient = youtubeHttpClient),
+  )
   val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(youtubeJsExecutor, youtubeHttpClient)
   val youtubeSDecryptor: YoutubeSDecryptor = YoutubeSDecryptor(youtubeJsExecutor, youtubeHttpClient)
   val youtubeRepository: YoutubeRepository = YoutubeRepository(

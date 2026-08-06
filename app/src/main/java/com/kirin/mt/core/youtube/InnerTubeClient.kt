@@ -1,14 +1,16 @@
 package com.kirin.mt.core.youtube
 
 import android.util.Base64
+import android.util.Log
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -112,6 +114,66 @@ class InnerTubeClient(
       text
     }
   }
+
+  /**
+   * 拉取 BotGuard challenge（对齐 FreeTube botGuardScript.js）：
+   * `POST /youtubei/v1/att/get`（ENGAGEMENT_TYPE_UNBOUND），从 `challengeData.bgChallenge`
+   * 取 program/globalName/interpreterUrl，再单独 GET interpreter JS。
+   *
+   * 对齐后 VM 才会把 minter 填进 `webPoSignalOutput`（jnn Create 的 program 不产生 minter，
+   * 真机曾报 `BgError: PMD:Undefined`）。
+   */
+  suspend fun fetchBotGuardChallenge(): BotGuardChallenge? = withContext(Dispatchers.IO) {
+    val body = buildJsonObject {
+      put("engagementType", "ENGAGEMENT_TYPE_UNBOUND")
+      put("context", buildContext(Client.WEB))
+    }
+    val url = "${YoutubeConstants.InnerTubeBase}/${YoutubeConstants.ApiVersion}/att/get?prettyPrint=false&alt=json"
+    val request = Request.Builder()
+      .url(url)
+      .post(body.toString().toRequestBody(JsonMediaType))
+      .header("Accept", "*/*")
+      .header("Content-Type", "application/json")
+      .header("X-Goog-Visitor-Id", currentVisitorData())
+      .header("X-Youtube-Client-Version", YoutubeConstants.ClientVersion)
+      .header("X-Youtube-Client-Name", YoutubeConstants.ClientNameId)
+      .header("User-Agent", YoutubeConstants.UserAgent)
+      .header("Referer", YoutubeConstants.Referer)
+      .build()
+    val text = runCatching {
+      httpClient.newCall(request).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
+    }.getOrNull()
+    if (text.isNullOrBlank()) {
+      Log.w(Tag, "att/get challenge fetch failed/blank")
+      return@withContext null
+    }
+    val bg = runCatching {
+      json.parseToJsonElement(text).jsonObject.obj("challengeData")?.obj("bgChallenge")
+    }.getOrNull()
+    if (bg == null) {
+      Log.w(Tag, "att/get response missing challengeData.bgChallenge")
+      return@withContext null
+    }
+    val program = bg.stringOrNull("program")
+    val globalName = bg.stringOrNull("globalName")
+    val interpreterUrl = bg.obj("interpreterUrl")?.stringOrNull("privateDoNotAccessOrElseTrustedResourceUrlWrappedValue")
+      ?: bg.stringOrNull("interpreterUrl")
+    if (program.isNullOrBlank() || globalName.isNullOrBlank() || interpreterUrl.isNullOrBlank()) {
+      Log.w(Tag, "att/get challenge missing fields: program=${program?.length} global=$globalName url=$interpreterUrl")
+      return@withContext null
+    }
+    val resolvedUrl = if (interpreterUrl.startsWith("//")) "https:$interpreterUrl" else interpreterUrl
+    val interpreter = getText(resolvedUrl)
+    if (interpreter.isNullOrBlank()) {
+      Log.w(Tag, "att/get interpreter fetch failed/blank: $resolvedUrl")
+      return@withContext null
+    }
+    BotGuardChallenge(interpreter, program, globalName)
+  }
+
+  private fun JsonObject.obj(name: String): JsonObject? = this[name]?.jsonObject
+
+  private fun JsonObject.stringOrNull(name: String): String? = this[name]?.jsonPrimitive?.contentOrNull
 
   /** InnerTube 客户端类型。 */
   enum class Client {
@@ -241,6 +303,7 @@ class InnerTubeClient(
   }
 
   private companion object {
+    const val Tag = "YtBotGuard"
     val JsonMediaType = "application/json; charset=utf-8".toMediaType()
   }
 }
@@ -250,3 +313,10 @@ class YoutubeApiException(
   val responseBody: String,
   message: String,
 ) : Exception(message)
+
+/** BotGuard challenge（对齐 FreeTube `challengeData.bgChallenge`）。 */
+data class BotGuardChallenge(
+  val interpreterJavascript: String?,
+  val program: String?,
+  val globalName: String?,
+)
