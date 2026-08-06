@@ -104,12 +104,21 @@ curl 实测 `/youtubei/v1/player`(guest,无 PO token):
 | 9 | `att/get response missing challengeData.bgChallenge` | 解析多套了一层 `challengeData`——FreeTube 的 `challengeData` 是响应根变量名,`bgChallenge` 在**根**(`challengeData.bgChallenge`),不是 `{challengeData:{bgChallenge}}` | 改 `jsonObject.obj("bgChallenge")`(去掉 challengeData 嵌套),加响应文本诊断日志 |
 | 10 | `/att/get` 已取到 challenge(`program=35311B`)但 `webPoSignalOutput[0]` 仍空 → `PMD:Undefined`;首尝试 `PO token failed: timeout` | challenge 源已对(program 35KB > jnn 10KB),但 BotGuard VM 在该 WebView 环境**仍不产生 minter**(anti-bot 检测/运行时缺 API);program 变大后 8s 总超时不够,首尝试 VM 加载中就被杀 | **待查**:加日志确认 `webPoSignalOutput.length`;可能需 `skipPrivacyBuffer`/真实 contentBinding `c`/更完整的 WebView 环境;适当加长 OverallTimeoutMs |
 | 11 | `PMD:Undefined` 主因疑为 WebView 环境检测 | BotGuard 的 minter(webPoSignalOutput[0])被反爬门控,检测 `navigator.userAgent`。默认移动端 WebView UA 被判定"非真浏览器",故只产 botguardResponse 不产 minter。FreeTube 跑 Electron(真桌面 Chromium UA)能拿到 | **尝试**:`YoutubeJsExecutor` 给 WebView 设桌面 Chrome UA(`settings.userAgentString = YoutubeConstants.UserAgent`),加 `__diag` 日志确认 `webPoSignalOutput.length`;`OverallTimeoutMs` 8s→20s |
+| 12 | 桌面 UA + skipPrivacyBuffer 后 `webPoSignalOutput` 仍 `{"length":0}`(alpha.18/19) | minter 门控**不是** UA 或隐私缓冲能绕过的——是 BotGuard VM 对该 WebView 环境的**深度 anti-bot 指纹检测**(navigator 属性/WebGL/canvas/行为时序等)。bgutils.js 只转发 webPoSignalOutput,填充全在混淆 VM 内部,看不到触发点 | **结论**:在 Android WebView 跑通 BotGuard minter 极难;裸 JS 引擎(QuickJS/V8)更不像浏览器,大概率同样不产 minter。**待决策**:①加 WebView 环境诊断确认具体检测项;②QuickJS+browser polyfill(大改高风险);③搁置 PO token 接受 360p |
 
-**已跑通(alpha.17)**:challenge 获取(`/att/get`,program=35311B)→ interpreter 加载(`window.trayride` 定义)→ snapshot 成功(`botguardResponse` 拿到)→ GenerateIT 返回 `[null,43200,null,"<token>"]`。
+**已跑通(alpha.17~19)**:challenge 获取(`/att/get`,program≈35KB)→ interpreter 加载(`window.trayride` 定义)→ snapshot 成功(`botguardResponse` 拿到)→ GenerateIT 返回 `[null,43200,null,"<token>"]`。
 
-**卡点(alpha.17)**:`webPoSignalOutput[0]` 为空 → `WebPoMinter.create` 抛 `BgError: PMD:Undefined`。即使换成 `/att/get` 的完整 program,snapshot 也拿到 botguardResponse,但 BotGuard VM 在该 WebView 环境里**没把 minter 函数填进 `webPoSignalOutput`**。下一步:加诊断日志确认 `webPoSignalOutput.length`,排查是否需 `skipPrivacyBuffer`/真实 contentBinding `c`/更完整环境;另注意 program 变大后 `OverallTimeoutMs=8s` 首尝试会 timeout,需加长。
+**卡点(alpha.19 结论)**:`webPoSignalOutput[0]` 始终为空 → `WebPoMinter.create` 抛 `BgError: PMD:Undefined`。已试过且**都无效**:
+- 换 `/att/get` challenge 源(program 35KB > jnn 10KB)
+- 去掉 snapshot 的 contentBinding
+- WebView 设桌面 Chrome UA(`__diag` 确认新构建在跑,仍 `length:0`)
+- `skipPrivacyBuffer: true`
 
-**注意**:早期注释说「`webPoSignalOutput` 显示 `[]` 是正常的(函数确实在数组里)」——**alpha.17 证明该假设错误**,数组确为空(否则不会 `PMD:Undefined`)。`JSON.stringify` 省略函数没错,但这里 minter 真的没生成。
+**根因判断**:BotGuard VM 对 Android WebView 环境的**深度 anti-bot 指纹检测**门控了 minter——bgutils.js 只把 `webPoSignalOutput` 转发给混淆 VM,minter 填充全在 VM 内部,产出 botguardResponse 但不产 minter。**裸 JS 引擎(QuickJS/V8)更不像浏览器,大概率同样不产 minter**。
+
+**待决策方向**:①WebView 环境诊断(确认具体检测项,便宜);②QuickJS + browser polyfill(大改高风险);③搁置 PO token,接受 360p 兜底,优先其它功能。
+
+**注意**:早期注释说「`webPoSignalOutput` 显示 `[]` 是正常的(函数确实在数组里)」——**已被 alpha.17+ 证明错误**,数组确为空(否则不会 `PMD:Undefined`)。`JSON.stringify` 省略函数没错,但这里 minter 真的没生成。
 
 ## 7. 关键文件
 
