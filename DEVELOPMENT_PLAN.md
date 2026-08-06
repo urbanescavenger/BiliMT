@@ -897,6 +897,21 @@ Flutter 参考 app 继续保留在原项目中，用于行为对照和回退参�
 - 基础搜索和历史页面。
 - 应用壳和侧边栏 UI。
 
+## 已知崩溃 / 待修问题
+
+> 记录真机/日志发现的崩溃，先记问题、以后再修。每条含现象、根因、复现环境、修复方向。
+
+### C-01 应用内更新下载 SSL 握手失败崩溃
+
+- **现象**：`UpdateDownloader.download` 抛 `javax.net.ssl.SSLHandshakeException: connection closed`（根因 `java.io.EOFException: connection closed`），触发 UncaughtException 崩溃。
+- **复现环境**：v2.0.8-alpha.14，Sony XQ-EC72（Android 16），下载 GitHub Releases 更新包时。
+- **根因**：下载更新包时 SSL 握手被服务端/网络中断（GitHub Releases 下载域名 `objects.githubusercontent.com` 可能被墙/限流，或网络抖动）。
+- **修复方向**（未做）：
+  - 更新下载加 SSL 重试 + 超时处理，失败降级为「提示手动下载」而非崩溃。
+  - 检查设备能否访问 GitHub Releases 下载域名；必要时走代理/CDN 镜像。
+  - 用 `runCatching`/`try-catch` 包裹下载，避免 SSL 异常冒泡到 UncaughtException。
+- **状态**：待修（与 YouTube 高清无关，独立问题）。
+
 ## 实现原则
 
 - 先匹配 Flutter 行为，再改善架构。
