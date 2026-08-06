@@ -149,6 +149,7 @@
 | P5-04 | 弹幕显示开关与样式设置 | Done | 弹幕开关、透明度、字号、占屏比、速度、顶部/底部悬停全部接入独立 DataStore 持久化；透明度按 0.1 调节，字号最小 16 且按 2 调节；`assembleDebug` 通过 |
 | P5-05 | 空降助手内置开关 | Done | 设置页新增默认开启的空降助手开关，使用 AppSettings/DataStore 持久化；不做插件标签页；`assembleDebug` 通过 |
 | P5-06 | 空降助手播放跳转逻辑 | Done | 播放器按 BVID 请求 `bsbsb.top/api/skipSegments` 的 sponsor/intro/outro/interaction/selfpromo 片段，进度条和迷你进度条用绿色标出跳过范围；跳过前 3.5 秒显示 `Toast.LENGTH_LONG` 的即将跳过提示，跳过后保持 `Toast.LENGTH_SHORT` 的已跳过提示；回退到片段前会重置触发状态；`assembleDebug` 通过，已安装并启动到 `192.168.1.131:5555` |
+| P5-07 | 空降助手首击拉段可靠性 | Done | 修「很多视频要二次进入才识别广告段」：`AirJumpRepository.getAirJumpSegments` 原为每次进入拉一次，冷连接首击到 `bsbsb.top` 慢/失败被 `runCatching` 静默吞成空。现在加 ①失败短退避重试(最多 3 次共 2 次重试)②按 bvid 内存缓存(仅成功/404 才缓存,二次进入秒回)③加载/命中/失败/重试分级日志(LogTag `BiliMT:AirJump`)。TV `PlayerScreen` 与移动 `MobilePlayerScreen` 的 `LaunchedEffect` 接口不变、零改动,自动获得重试+缓存;冷连接首击靠重试兜住,等效预取+热连接 |
 
 ## P6 收尾与发布
 

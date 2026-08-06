@@ -766,6 +766,18 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 - 内容页浅色主题未统一为深色（无 MaterialTheme 包装）,P3 主题阶段处理。
 - 在线人数未做（P1 可选项；空降助手已做）。
 
+### 待修：空降助手首次进入识别不到广告段
+
+**现象**：很多 B 站视频要二次进入播放器，绿色跳过标记/自动跳过才生效。
+
+**根因**：`AirJumpRepository.getAirJumpSegments` 每次进入播放器拉一次，且对第三方镜像 `bsbsb.top` 是冷连接（DNS+TLS+服务端），首击慢/失败时被 `LaunchedEffect` 里 `runCatching{}.getOrDefault(emptyList())` 静默吞成空 → 整次播放无段不跳；二次进入复用了 OkHttp keep-alive 热连接秒回才正常。
+
+**修复方向**（计划全做）：
+1. 失败自动重试（短退避），不再静默吞错。
+2. 按 bvid 内存缓存，成功（含真无段 404）才缓存 → 再次进入秒回；冷连接首击靠重试保证成功，等效「预取+热连接」。
+3. 失败/重试打日志，成功打条数日志。
+4. TV `PlayerScreen` 与移动 `MobilePlayerScreen` 共用 repository 重试+缓存，拉段仍组合即启动（与拉流并行）。
+
 ### 工程约束（移动端专用）
 
 - 本地无 Android SDK，走云编译闭环；`mobile` 分支 push 不触发 CI（只有 main/master/mort_debug + tag 触发），先 push 再打 alpha tag 验证。
