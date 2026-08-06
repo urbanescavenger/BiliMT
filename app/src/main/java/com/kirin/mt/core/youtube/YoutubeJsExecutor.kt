@@ -87,8 +87,8 @@ class YoutubeJsExecutor(context: Context) {
   }
 
   private suspend fun ensureWebView(): WebView = withContext(Dispatchers.Main) {
-    val existing = webView
-    if (existing != null && !existing.isDestroyed) return@withContext existing
+    val alive = webView?.takeIf { !it.isDestroyed }
+    if (alive != null) return@withContext alive
     // WebView 被销毁（app 后台）→ 重建并重置已加载标志。
     bgUtilsLoaded = false
     val created = createWebView()
@@ -107,5 +107,9 @@ class YoutubeJsExecutor(context: Context) {
       webViewClient = WebViewClient()
       loadUrl("file:///android_asset/youtube/js_shell.html")
     }
+  }
+
+  private companion object {
+    const val Tag = "YtJsExecutor"
   }
 }
