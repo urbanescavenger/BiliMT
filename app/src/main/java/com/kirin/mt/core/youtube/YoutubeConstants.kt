@@ -48,6 +48,14 @@ object YoutubeConstants {
   /** Referer 必须是 youtube，否则 InnerTube 拒收。 */
   const val Referer = "https://www.youtube.com"
 
+  /**
+   * WEB 客户端 /player 的 `context.thirdParty.embedUrl`。缺它 WEB /player 直接返回
+   * "Video unavailable" / "The page needs to be reloaded"(playerErrorMessageRenderer)，
+   * 即使带有效 PO token 也被拦(实测 alpha.22)。youtubei.js/FreeTube 均带此字段。
+   * 用 youtube.com 自身作 embed 源(guest 直连,非真实嵌入)。
+   */
+  const val EmbedUrl = "https://www.youtube.com/"
+
   /** 宿主页同源基址（loadDataWithBaseURL）。让 BotGuard VM 看到 youtube.com origin，通过 document 反爬校验。 */
   const val Origin = "https://www.youtube.com/"
 

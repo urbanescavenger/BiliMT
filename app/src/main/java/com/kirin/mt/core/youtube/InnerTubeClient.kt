@@ -228,6 +228,15 @@ class InnerTubeClient(
           put("internalExperimentFlags", kotlinx.serialization.json.buildJsonArray {})
         },
       )
+      // WEB 客户端 /player 必须带 thirdParty.embedUrl，否则返回 "Video unavailable"/
+      // "The page needs to be reloaded"(实测 alpha.22,即使带有效 PO token 也被拦)。
+      // ANDROID 客户端不需要此字段。
+      if (client == Client.WEB) {
+        put(
+          "thirdParty",
+          buildJsonObject { put("embedUrl", YoutubeConstants.EmbedUrl) },
+        )
+      }
       if (!poToken.isNullOrBlank()) {
         put(
           "serviceIntegrityDimensions",
