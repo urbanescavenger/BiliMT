@@ -5,9 +5,11 @@ import android.content.Context
 import android.util.Log
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 
 /**
@@ -36,6 +38,9 @@ class YoutubeJsExecutor(context: Context) {
   /** bgutils.js 是否已加载进 WebView（PO token 用）。 */
   private var bgUtilsLoaded = false
 
+  /** js_shell.html 是否已加载完成（onPageFinished 置位）；eval 前必须等它，否则 evaluateJavascript 失败。 */
+  private var shellReady: CompletableDeferred<Unit>? = null
+
   /**
    * 在隐藏 WebView 里同步执行一段 JS 表达式并取回结果文本。
    *
@@ -44,14 +49,28 @@ class YoutubeJsExecutor(context: Context) {
    *         WebView 被销毁导致 `evaluateJavascript` 抛错时，重建 WebView 并重试一次。
    */
   suspend fun eval(script: String): String? = withContext(Dispatchers.Main) {
-    val first = evalOn(ensureWebView(), script)
+    // 先确保 WebView 创建（会设置 shellReady），再等 shell 加载完成，最后 eval。
+    ensureWebView()
+    awaitShellReady()
+    val first = evalOn(webView!!, script)
     if (first.isSuccess) return@withContext first.getOrNull()
     // evaluateJavascript 抛错（多为 WebView 被 app 后台销毁）→ 重建后重试一次。
     Log.w(Tag, "eval threw: ${first.exceptionOrNull()?.message}; recreating WebView")
     webView?.destroy()
     webView = null
     bgUtilsLoaded = false
-    evalOn(ensureWebView(), script).getOrNull()
+    ensureWebView()
+    awaitShellReady()
+    val retried = evalOn(webView!!, script)
+    if (retried.isSuccess) retried.getOrNull() else {
+      Log.w(Tag, "eval retry threw: ${retried.exceptionOrNull()?.message}")
+      null
+    }
+  }
+
+  /** 等 js_shell.html 加载完成（onPageFinished），否则 evaluateJavascript 对未就绪 WebView 失败。最多等 3s。 */
+  private suspend fun awaitShellReady() {
+    shellReady?.let { withTimeoutOrNull(ShellReadyTimeoutMs) { it.await() } }
   }
 
   private suspend fun evalOn(view: WebView, script: String): Result<String?> {
@@ -106,18 +125,26 @@ class YoutubeJsExecutor(context: Context) {
 
   @SuppressLint("SetJavaScriptEnabled")
   private fun createWebView(): WebView {
+    val deferred = CompletableDeferred<Unit>()
+    shellReady = deferred
     return WebView(appContext).apply {
       settings.javaScriptEnabled = true
       settings.domStorageEnabled = true
       settings.allowFileAccess = true
       settings.allowContentAccess = true
       // 只做单向 evaluateJavascript，不暴露任何 JavascriptInterface 桥，降低暴露面。
-      webViewClient = WebViewClient()
+      // onPageFinished 标记 shell 就绪，eval 前 await 它，避免对未就绪 WebView 调用 evaluateJavascript 失败。
+      webViewClient = object : WebViewClient() {
+        override fun onPageFinished(view: WebView?, url: String?) {
+          deferred.complete(Unit)
+        }
+      }
       loadUrl("file:///android_asset/youtube/js_shell.html")
     }
   }
 
   private companion object {
     const val Tag = "YtJsExecutor"
+    const val ShellReadyTimeoutMs = 3_000L
   }
 }
