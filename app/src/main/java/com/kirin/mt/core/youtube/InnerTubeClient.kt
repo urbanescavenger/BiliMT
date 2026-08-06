@@ -4,6 +4,8 @@ import android.util.Base64
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -41,6 +43,9 @@ class InnerTubeClient(
 
   /** 从 sw.js_data 拉取的真实会话数据（visitorData + 当前 WEB client version）。 */
   private var realSessionData: RealSessionData? = null
+
+  /** 保证 sw.js_data 只 fetch 一次（铸 token 与 /player 并发调用时用同一真实 visitorData）。 */
+  private val sessionMutex = Mutex()
 
   /**
    * 发送一个 InnerTube JSON 请求。
@@ -304,14 +309,20 @@ class InnerTubeClient(
    * 失败回退合成 visitorData（不阻塞主路径）。
    */
   private suspend fun ensureRealSessionData() {
+    // 双检锁：铸 token(BotGuard 线程)与 /player 并发调用时，保证只 fetch 一次，
+    // 否则各自 fetch 到不同 visitorData → token 绑定 A、/player 用 B → token 无效
+    // → "The page needs to be reloaded"(alpha.25 实测)。
     if (realSessionData != null) return
-    val data = runCatching { fetchRealSessionData() }.getOrNull()
-    if (data != null) {
-      realSessionData = data
-      visitorData = data.visitorData
-      Log.i(Tag, "real session data: visitorData=${data.visitorData.take(24)}... clientVersion=${data.clientVersion}")
-    } else {
-      Log.w(Tag, "sw.js_data fetch failed; fallback to synthetic visitorData")
+    sessionMutex.withLock {
+      if (realSessionData != null) return
+      val data = runCatching { fetchRealSessionData() }.getOrNull()
+      if (data != null) {
+        realSessionData = data
+        visitorData = data.visitorData
+        Log.i(Tag, "real session data: visitorData=${data.visitorData.take(24)}... clientVersion=${data.clientVersion}")
+      } else {
+        Log.w(Tag, "sw.js_data fetch failed; fallback to synthetic visitorData")
+      }
     }
   }
 
