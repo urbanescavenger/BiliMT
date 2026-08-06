@@ -404,6 +404,9 @@
             // 导致 webPoSignalOutput 空 → WebPoMinter.create 报 PMD:Undefined。
             // 视频绑定在 mint 阶段用 videoId 完成(mintAsWebsafeString(videoId))。
             const botguardResponse = await client.snapshot({ webPoSignalOutput });
+            // 诊断:确认 minter 是否真的产生(UA 修正后应 length>0 且 [0] 是 function)。
+            // console.log 会被 evaluateJavascript 捕获为 null,改用 __diag。
+            window.__diag = { length: webPoSignalOutput.length, isFunc: typeof webPoSignalOutput[0] };
             window.__poToken = { status: "snapshot-done", token: null, error: null, botguardResponse, webPoSignalOutput };
           } catch (e) {
             window.__poToken = { status: "error", token: null, error: String(e && e.stack || e) };

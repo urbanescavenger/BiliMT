@@ -132,6 +132,10 @@ class YoutubeJsExecutor(context: Context) {
       settings.domStorageEnabled = true
       settings.allowFileAccess = true
       settings.allowContentAccess = true
+      // 关键:BotGuard 的 minter(webPoSignalOutput[0])被反爬环境检测门控,检测 navigator.userAgent。
+      // 默认移动端 WebView UA 会被判定"非真浏览器"而不产生 minter(alpha.17 的 PMD:Undefined)。
+      // 设成与 InnerTubeClient 一致的桌面 Chrome UA,对齐 FreeTube(Electron 真 Chromium 桌面 UA)。
+      settings.userAgentString = YoutubeConstants.UserAgent
       // 只做单向 evaluateJavascript，不暴露任何 JavascriptInterface 桥，降低暴露面。
       // onPageFinished 标记 shell 就绪，eval 前 await 它，避免对未就绪 WebView 调用 evaluateJavascript 失败。
       webViewClient = object : WebViewClient() {

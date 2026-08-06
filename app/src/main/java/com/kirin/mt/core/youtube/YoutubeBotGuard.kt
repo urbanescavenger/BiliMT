@@ -114,7 +114,11 @@ class YoutubeBotGuard(
       "catch(e) { window.__poToken = { status: 'error', token: null, error: String(e && e.stack || e) }; }"
     val evalResult = executor.eval(script)
     Log.i(Tag, "__runSnapshot eval result=${evalResult?.take(60)}")
-    return pollState("snapshot-done")
+    val state = pollState("snapshot-done")
+    // 诊断:确认 minter 是否产生(UA 修正后期望 length>0 & isFunc=function)。
+    val diag = executor.eval("window.__diag ? JSON.stringify(window.__diag) : 'n/a'")
+    Log.i(Tag, "webPoSignalOutput diag=$diag")
+    return state
   }
 
   private suspend fun mintToken(integrityToken: String, videoId: String): String? {
@@ -230,7 +234,8 @@ class YoutubeBotGuard(
     const val RequestKey = "O43z0dpjhgX20SCx4KAo"
     const val WaaApiKey = "AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw"
     const val PollTimeoutMs = 6_000L
-    const val OverallTimeoutMs = 8_000L
+    // /att/get 的 program 更大(35KB>10KB),VM 加载/eval 更慢,8s 首尝试会 timeout,加到 20s。
+    const val OverallTimeoutMs = 20_000L
     val JsonProtobufMediaType = "application/json+protobuf".toMediaType()
   }
 }
