@@ -1,5 +1,72 @@
 # BiliMT 版本发布说明
 
+## v2.0.9
+
+**YouTube 全链路 + 高清播放(P11 系列)**:从数据层到播放器完整接入 YouTube,支持关注流/搜索/UP 主页/播放列表/评论/多档清晰度切换,并实现 PO token(jnn) 高清取流。另含 WebDAV 备份、移动端日志、空降段修复等。
+
+### 功能
+- **YouTube 关注流**:动态页 B站动态 + YouTube 关注合并为一条流(TV+移动),免登录,空频道回退热门。
+- **YouTube 搜索/UP 主页**:InnerTube 数据层,UP 主页关注/加入播放列表/动态播放列表 tab。
+- **YouTube 播放器**:简介/评论 tab、多播放列表、◀▶/去弹幕/相关视频=列表后续、后台播放自动连播。
+- **YouTube 高清播放**:多档清晰度(1080P/2K/4K)实时切换,adaptive 高清首选,`s`/`n` 签名解密,DASH 播放,硬件能力过滤。
+- **PO token(jnn)**:bgutils-js 打包进隐藏 WebView 完整铸取流程,注入 /player 取高清;任一步失败降级 360p 不阻塞。
+- **WebDAV 备份/还原**:YouTube 关注频道 + 日志一起备份上传。
+- **移动端日志**:设置页日志查看/导出。
+- **空降段修复**:广告空降段拉取加重试+缓存,首次进入即生效。
+
+### 技术
+- **WEB /player 走 WebView 原生网络栈(Chromium)**:对齐 FreeTubeAndroid 主 WebView,带真实浏览器头/cookie/TLS 指纹,破 "The page needs to be reloaded" 拦截;ANDROID 客户端保持 OkHttp 直连作回退。
+- **真实 visitorData**:从 sw.js_data 拉真实 visitorData + 当前 client version,共享同一 InnerTubeClient 实例 + Mutex 双检锁,保证铸 token 与 /player 用同一 visitorData。
+- **PO token 放请求顶层** `serviceIntegrityDimensions`(对齐 youtubei.js),非 context 内。
+- **contentPlaybackContext** 注入 `signatureTimestamp`(从 base.js 正则提取+缓存)。
+
+### 说明
+- YouTube 高清运行时正确性依赖真机验证;若某视频仍 360p,看 logcat `YtResolver` 的 `WEB/ANDROID formats: adaptive=N progressive=M` 定位。
+
+## v2.0.9-alpha.3
+
+**YouTube 高清 PO token(jnn)实现**:无 PO token 时 YouTube 剥掉 adaptive 高清 url(只剩 360p),PO token 是高清唯一前置。本版打包 bgutils-js(MIT)进 WebView 实现完整 PO token 流程。
+
+### 技术
+- **bgutils-js 打包**:`assets/youtube/bgutils.js`(esbuild 打包 v4.0.3,暴露 `__runSnapshot`/`__mint`)。
+- **`YoutubeBotGuard` 完整流程**:`POST /api/jnn/v1/Create`(requestKey=`O43z0dpjhgX20SCx4KAo`)→ descramble → interpreter JS 加载进隐藏 WebView → snapshot → `Waa/GenerateIT` → mint → 视频 ID 绑定 PO token。
+- **注入**:resolver 生成 token 后注入 `/player` 的 `serviceIntegrityDimensions.poToken`。
+- **降级**:任一步失败返回 null,走无 token 直连(360p),不阻塞主路径。
+
+### 说明
+- **脆弱点需真机**:snapshot 的 contentBinding `c` 值当前为占位(`b=PLACEHOLDER&hh=PLACEHOLDER`),需对照真实 player 响应钉死;interpreter JS/WASM 校验、GenerateIT 响应结构待真机验证。真机看 logcat `YtBotGuard` 行(`challenge ok` / `PO token minted` / `PO token JS error` / `PO token poll timeout`)定位。
+- 云编译仅验编译绿,PO token 运行时正确性必须真机迭代。
+
+## v2.0.9-alpha.2
+
+修复 alpha.1 的 **YouTube 仍只有 360p** 问题(高清 Tier 1 补丁)。
+
+### 技术
+- **合并 WEB + ANDROID 客户端取高清**:无 PO token 时 WEB guest 剥离 adaptive 高清 url(只剩 progressive 360p);合并 ANDROID 客户端(NewPipe 同款,guest 取流更宽容,常直接返回带 url 的高清 adaptive)候选,统一选最高 adaptive,progressive 仅兜底。
+- **pickVideo 最大化分辨率**:旧逻辑按 codec 优先级(Auto 先选 avc)取第一个非空组,会「avc@360p 压过 vp9@1080p」;改成分辨率优先,codec 偏好仅作同分辨率打破平局。
+- 新增 `YtResolver` 日志:每客户端打印 `WEB/ANDROID formats: adaptive=N progressive=M`,便于真机定位取流情况。
+
+### 说明
+- 高清(DASH + `s`/`n` 解密)仍依赖真机验证;若仍拿不到高清,看 logcat `YtResolver` 行的 adaptive/progressive 数定位。
+
+## v2.0.9-alpha.1
+
+**YouTube 高清播放(Tier 1)**:把 YouTube 实际播放从最高 720p 提升到 1080P,视设备与取流可得性常到 2K/4K。方案详见 `docs/youtube-hd-playback.md`(P11-14)。
+
+### 功能
+- **YouTube 多档清晰度**:清晰度面板从「只有一项」变为列出全部可播档(1080P/2K/4K),可实时切换。
+- **adaptive 高清设为首选**:优先取分离的视频+音频高清流,progressive 合并流(≤720p)仅作兜底。
+
+### 技术
+- **`s` 签名解密**:`signatureCipher` 形式返回的高清流,复用隐藏 WebView JS 引擎解密 `s`(与 `n` 解密同款机制,最佳努力)。
+- **DASH 播放**:解析 `initRange`/`indexRange` 填充 `segmentBase`,YouTube adaptive 流走合成 MPD 的 `DashMediaSource` 分支(此前恒走 ProgressiveMediaSource,对 fMP4 分片会解析失败)。
+- **硬件能力过滤**:复用 `CodecCapability` 过滤设备解不了的 4K VP9/AV1 轨道,无硬解时自动回退,避免黑屏/卡顿。
+- **MPD 修复**:净化 YouTube mimeType(去掉 `; codecs=...` 尾缀),避免写进 `<AdaptationSet>` 破坏 MPD 解析;`combined` 判定改用原始 mime 串。
+
+### 说明
+- `s` 解密与 DASH 出帧**依赖真机**(base.js 结构常变),云编译仅验证编译绿,运行时需真机手测迭代。
+- versionCode 由 CI 从 tag 推导:vc=2,009,101。
+
 ## v2.0.8
 
 v2.0.7 后主打 **YouTube 内容集成**:搜索/热门/动态关注/播放全链路接入 YouTube,移动端设置加账号与关注管理,动态页统一 B 站动态 + YouTube 关注为一条流,并优化关注流加载性能。合并 mort_debug → main 打稳定 tag。

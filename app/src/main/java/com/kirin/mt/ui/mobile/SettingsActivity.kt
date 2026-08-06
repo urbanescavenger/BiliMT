@@ -30,6 +30,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.ui.mobile.settings.FollowManageKind
 import com.kirin.mt.ui.mobile.settings.MobileFollowManageScreen
+import com.kirin.mt.ui.mobile.settings.MobileLogsScreen
 import com.kirin.mt.ui.mobile.settings.MobileSettingsScreen
 import com.kirin.mt.ui.theme.BiliTvTheme
 
@@ -46,9 +47,19 @@ class SettingsActivity : ComponentActivity() {
         Surface(modifier = Modifier.fillMaxSize().statusBarsPadding(), color = MaterialTheme.colorScheme.background) {
           val session by appContainer.sessionStore.session.collectAsState(initial = UserSession())
           var followScreen by remember { mutableStateOf<FollowManageKind?>(null) }
+          var showLogs by remember { mutableStateOf(false) }
           Column(modifier = Modifier.fillMaxSize()) {
             val kind = followScreen
-            if (kind == null) {
+            if (showLogs) {
+              SettingsTopBar(
+                title = stringResource(R.string.settings_logs_entry_title),
+                onBack = { showLogs = false },
+              )
+              MobileLogsScreen(
+                onBack = { showLogs = false },
+                modifier = Modifier.fillMaxWidth(),
+              )
+            } else if (kind == null) {
               SettingsTopBar(
                 title = stringResource(R.string.mobile_settings_title),
                 onBack = { finish() },
@@ -61,6 +72,9 @@ class SettingsActivity : ComponentActivity() {
                 authRepository = appContainer.authRepository,
                 onOpenFollows = { followScreen = it },
                 onLogin = { startActivity(android.content.Intent(this@SettingsActivity, LoginActivity::class.java)) },
+                onOpenLogs = { showLogs = true },
+                webdavConfigStore = appContainer.webdavConfigStore,
+                webdavBackupService = appContainer.webdavBackupService,
                 modifier = Modifier.fillMaxWidth(),
               )
             } else {

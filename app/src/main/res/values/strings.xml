@@ -501,4 +501,24 @@
     <string name="youtube_channel_resolving">解析中…</string>
     <string name="youtube_channel_count">已跟频道（%1$d）</string>
     <string name="youtube_playback_pending">YouTube 播放开发中</string>
+    <string name="settings_webdav_title">WebDAV 备份</string>
+    <string name="settings_webdav_description">把 YouTube 关注频道备份到 WebDAV 服务器，换设备后还原</string>
+    <string name="settings_webdav_configured">已配置</string>
+    <string name="settings_webdav_url_label">服务器地址</string>
+    <string name="settings_webdav_username_label">账号</string>
+    <string name="settings_webdav_password_label">密码</string>
+    <string name="settings_webdav_field_hint">未填写</string>
+    <string name="settings_webdav_configure_hint">未配置，点按编辑</string>
+    <string name="settings_webdav_save">保存</string>
+    <string name="settings_webdav_close">关闭</string>
+    <string name="settings_webdav_backup">备份</string>
+    <string name="settings_webdav_restore">还原</string>
+    <string name="settings_webdav_backup_success">备份成功(含日志)</string>
+    <string name="settings_webdav_restore_success">还原成功，共 %1$d 个频道</string>
+    <string name="settings_webdav_failed">操作失败：%1$s</string>
+    <string name="settings_webdav_section">WebDAV 备份</string>
+    <string name="settings_webdav_backup_row">备份到 WebDAV</string>
+    <string name="settings_webdav_restore_row">从 WebDAV 还原</string>
+    <string name="settings_webdav_backup_desc">把 YouTube 关注频道和日志上传到 WebDAV 服务器，备份后删除本地日志</string>
+    <string name="settings_webdav_restore_desc">从 WebDAV 服务器下载并覆盖本地频道列表</string>
 </resources>

@@ -766,6 +766,18 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 - 内容页浅色主题未统一为深色（无 MaterialTheme 包装）,P3 主题阶段处理。
 - 在线人数未做（P1 可选项；空降助手已做）。
 
+### 待修：空降助手首次进入识别不到广告段
+
+**现象**：很多 B 站视频要二次进入播放器，绿色跳过标记/自动跳过才生效。
+
+**根因**：`AirJumpRepository.getAirJumpSegments` 每次进入播放器拉一次，且对第三方镜像 `bsbsb.top` 是冷连接（DNS+TLS+服务端），首击慢/失败时被 `LaunchedEffect` 里 `runCatching{}.getOrDefault(emptyList())` 静默吞成空 → 整次播放无段不跳；二次进入复用了 OkHttp keep-alive 热连接秒回才正常。
+
+**修复方向**（计划全做）：
+1. 失败自动重试（短退避），不再静默吞错。
+2. 按 bvid 内存缓存，成功（含真无段 404）才缓存 → 再次进入秒回；冷连接首击靠重试保证成功，等效「预取+热连接」。
+3. 失败/重试打日志，成功打条数日志。
+4. TV `PlayerScreen` 与移动 `MobilePlayerScreen` 共用 repository 重试+缓存，拉段仍组合即启动（与拉流并行）。
+
 ### 工程约束（移动端专用）
 
 - 本地无 Android SDK，走云编译闭环；`mobile` 分支 push 不触发 CI（只有 main/master/mort_debug + tag 触发），先 push 再打 alpha tag 验证。
@@ -791,6 +803,13 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 - `YoutubeBotGuard`：jnn PO token 结构占位，失败降级不阻塞直连。
 - **运行时依赖真机**：`n` 解密（base.js 结构常变）与 PO token（jnn WASM 完整性校验）无法用云编译验证，需真机手测迭代。
 
+### 播放高清（P11-14）实现要点
+- **现状**：YouTube 实际最高只到 720p（Case B 优先单个合并 progressive 流 itag 18/22，≤720p）；`adaptiveFormats` 里的 1080P/2K/4K 已解析但选不到，且 `signatureCipherUrl` 只回填未签名 url、`s` 解密未实现（403）。
+- **Tier 1（核心）**：① 复用 `YoutubeJsExecutor` 做 `s` 签名解密（拉 base.js 识别签名函数执行）→ 解锁 adaptive 高清直链；② `pickVideo` 把可解 adaptive 高清提到 progressive 之前 + 复用 `CodecCapabilityProbe` 过滤设备解不了的轨道 + `buildInfo` 把全部可播 quality 写进 `PlaybackInfo.qualities`（面板出 1080P/2K/4K 多档）；③ `parseFormat` 补解析 `initRange`/`indexRange` 填进 `PlaybackTrack.segmentBase` → 自动进 `PlayerScreen.kt:1407` DASH 分支（现有 `buildDashManifest` 已正确处理 SegmentBase/Initialization，零改动喂流）。
+- **Tier 2（增强）**：PO token（jnn，`YoutubeBotGuard`）跑通，覆盖「YouTube 剥光所有 adaptive url」的极端场景。
+- **Out of scope**：DRM 保护内容、8K、HDR（同 B 站理由：TV 面板普遍不支持，探测不到会黑屏）。
+- 详见 `docs/youtube-hd-playback.md`。
+
 ### 反爬与废弃端点（实测关键）
 - `hl`/`gl` 用 `zh-CN/CN` 触发反爬（搜索返回 `backgroundPromoRenderer`「出了点问题」）；必须用 `en/US`。
 - 通用热门 `FEtrending` 已被 YouTube 废弃（400，`/feed/trending` 已移除）；改用 topic 热门（游戏/体育/播客）。
@@ -812,6 +831,8 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | P11-11 | 移动端 UP主页关注/加入播放列表/动态播放列表tab | ✅ Done（v2.0.8-alpha.11，编译绿，运行时待真机） |
 | P11-12 | 多播放列表（长按弹菜单→选列表/新建）+ 播放列表两层+长按拖动排序 + 播放器◀▶/去弹幕/相关视频=列表后续 | 实施中（编译绿待云编译，运行时待真机） |
 | P11-13 | 动态页统一流：B 站动态 + YouTube 关注合并（TV+移动，5s 兜底，移除独立 YouTube tab） | 实施中 |
+| P11-14 | YouTube 高清播放（Tier 1：`s` 解密 + adaptive 首选 + DASH 播放 + 硬件过滤 + 多档清晰度；Tier 2：PO token） | Pending（方案见 `docs/youtube-hd-playback.md`） |
+| P11-15 | WebDAV 备份/还原 YouTube 关注频道（跨设备复用关注列表） | 实施中（代码改完待云编译） |
 
 ### 发布
 - 测试版 `v2.0.8-alpha.1/.2/.3` 已发布验证；搜索/热门可用。
@@ -888,6 +909,21 @@ Flutter 参考 app 继续保留在原项目中，用于行为对照和回退参�
 - 静态设置页面。
 - 基础搜索和历史页面。
 - 应用壳和侧边栏 UI。
+
+## 已知崩溃 / 待修问题
+
+> 记录真机/日志发现的崩溃，先记问题、以后再修。每条含现象、根因、复现环境、修复方向。
+
+### C-01 应用内更新下载 SSL 握手失败崩溃
+
+- **现象**：`UpdateDownloader.download` 抛 `javax.net.ssl.SSLHandshakeException: connection closed`（根因 `java.io.EOFException: connection closed`），触发 UncaughtException 崩溃。
+- **复现环境**：v2.0.8-alpha.14，Sony XQ-EC72（Android 16），下载 GitHub Releases 更新包时。
+- **根因**：下载更新包时 SSL 握手被服务端/网络中断（GitHub Releases 下载域名 `objects.githubusercontent.com` 可能被墙/限流，或网络抖动）。
+- **修复方向**（未做）：
+  - 更新下载加 SSL 重试 + 超时处理，失败降级为「提示手动下载」而非崩溃。
+  - 检查设备能否访问 GitHub Releases 下载域名；必要时走代理/CDN 镜像。
+  - 用 `runCatching`/`try-catch` 包裹下载，避免 SSL 异常冒泡到 UncaughtException。
+- **状态**：待修（与 YouTube 高清无关，独立问题）。
 
 ## 实现原则
 

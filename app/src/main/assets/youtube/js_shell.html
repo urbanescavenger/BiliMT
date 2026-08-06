@@ -7,9 +7,11 @@
 <body>
   <!--
     隐藏 WebView JS 引擎宿主页。
-    仅作为 evaluateJavascript 的稳定执行上下文(固定 file:// origin)，
-    本身不承载业务逻辑。Kotlin 侧通过 WebView.evaluateJavascript 注入
-    n 解密 / BotGuard 的 JS，避免每次重建 WebView。
+    仅作为 evaluateJavascript 的稳定执行上下文，本身不承载业务逻辑。
+    Kotlin 侧通过 WebView.evaluateJavascript 注入 n 解密 / BotGuard 的 JS。
+    注意:由 YoutubeJsExecutor 以 loadDataWithBaseURL("https://www.youtube.com/", …) 加载，
+    document origin = youtube.com —— 对齐 FreeTubeAndroid,BotGuard VM 需此才能通过反爬
+    环境校验并产生 minter(webPoSignalOutput)。勿改回 file:// 基址,否则 PMD:Undefined 复现。
   -->
 </body>
 </html>

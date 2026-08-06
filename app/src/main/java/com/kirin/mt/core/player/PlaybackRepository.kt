@@ -54,9 +54,10 @@ class PlaybackRepository(
     codecPreference: PlaybackCodecPreference,
     qualityPreference: PlaybackQualityPreference,
   ): PlaybackInfo {
-    // YouTube 播放：走 InnerTube /player（PO token + n 解密），不走 B 站 DASH playurl。
+    // YouTube 播放：走 InnerTube /player（PO token + n/s 解密），不走 B 站 DASH playurl。
+    // 传 codecCapability 让 resolver 过滤设备解不了的高清轨道（4K VP9/AV1 无硬解时回退）。
     if (request.isYoutube) {
-      return youtubePlaybackResolver.resolve(request, codecPreference)
+      return youtubePlaybackResolver.resolve(request, codecPreference, codecCapabilityProbe.probe())
     }
     val requestedQualityId = request.preferredQualityId ?: qualityPreference.requestedQualityId
     val cacheKey = PlaybackCacheKey(

@@ -1,6 +1,8 @@
 package com.kirin.mt.ui.mobile.settings
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,6 +23,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /** 移动端设置行:卡片式可点击行,标题 + 副标题 + 右侧 trailing 槽(放当前值文本或开关)。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MobileSettingsRow(
   title: String,
@@ -29,11 +32,14 @@ fun MobileSettingsRow(
   enabled: Boolean = true,
   trailing: @Composable (() -> Unit)? = null,
   onClick: (() -> Unit)? = null,
+  onLongClick: (() -> Unit)? = null,
 ) {
-  val cardMod = if (onClick != null) {
-    Modifier.fillMaxWidth().clickable(enabled = enabled) { onClick() }
-  } else {
-    Modifier.fillMaxWidth()
+  val cardMod = when {
+    onClick != null && onLongClick != null -> {
+      Modifier.fillMaxWidth().combinedClickable(enabled = enabled, onClick = onClick, onLongClick = onLongClick)
+    }
+    onClick != null -> Modifier.fillMaxWidth().clickable(enabled = enabled) { onClick() }
+    else -> Modifier.fillMaxWidth()
   }
   Card(
     modifier = modifier.then(cardMod),

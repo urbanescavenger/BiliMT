@@ -49,6 +49,35 @@ object YoutubeConstants {
   const val Referer = "https://www.youtube.com"
 
   /**
+   * WEB 客户端 /player 的 `context.thirdParty.embedUrl`。youtubei.js 的 WEB_EMBEDDED 用它；
+   * 对纯 WEB 客户端非必需(实测 youtubei.js 纯 WEB 不设此字段),但带上无害。
+   */
+  const val EmbedUrl = "https://www.youtube.com/"
+
+  /** WEB 客户端 context 的 `client.platform`(对齐 youtubei.js DESKTOP)。 */
+  const val WebPlatform = "DESKTOP"
+
+  /** WEB 客户端 context 的 `client.clientFormFactor`。 */
+  const val WebClientFormFactor = "UNKNOWN_FORM_FACTOR"
+
+  /** WEB 客户端 context 的 `client.userInterfaceTheme`。 */
+  const val WebUserInterfaceTheme = "USER_INTERFACE_THEME_LIGHT"
+
+  /** WEB 客户端 context 的 `client.originalUrl`(对齐 youtubei.js Constants.URLS.YT_BASE)。 */
+  const val WebOriginalUrl = "https://www.youtube.com"
+
+  /** WEB 客户端 context 的 `client.mainAppWebInfo`(对齐 youtubei.js,反爬关键字段)。 */
+  val WebMainAppWebInfo: Map<String, String> = mapOf(
+    "graftUrl" to "https://www.youtube.com",
+    "pwaInstallabilityStatus" to "PWA_INSTALLABILITY_STATUS_UNKNOWN",
+    "webDisplayMode" to "WEB_DISPLAY_MODE_BROWSER",
+    "isWebNativeShareAvailable" to "true",
+  )
+
+  /** 宿主页同源基址（loadDataWithBaseURL）。让 BotGuard VM 看到 youtube.com origin，通过 document 反爬校验。 */
+  const val Origin = "https://www.youtube.com/"
+
+  /**
    * 界面语言 / 地区。注意:实测 zh-CN/CN 会触发 YouTube 反爬(搜索返回
    * backgroundPromoRenderer「出了点问题」);en/US 正常返回 videoRenderer。
    * 中文内容少但稳定,先保证能拉取。

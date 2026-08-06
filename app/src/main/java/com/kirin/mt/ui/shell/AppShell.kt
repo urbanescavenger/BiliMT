@@ -153,9 +153,12 @@ fun BiliTvApp(
   youtubeRepository: com.kirin.mt.core.youtube.YoutubeRepository,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
+  webdavConfigStore: com.kirin.mt.core.webdav.WebDavConfigStore,
+  webdavBackupService: com.kirin.mt.core.webdav.WebDavBackupService,
 ) {
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
+  val webDavConfig by webdavConfigStore.config.collectAsState(initial = com.kirin.mt.core.webdav.WebDavConfig())
   val updateState by updateManager.state.collectAsState()
   val context = LocalContext.current
   val localizedContext = remember(context, settings.chineseTextVariant) {
@@ -876,6 +879,12 @@ fun BiliTvApp(
                 onRemoveYoutubeChannel = { channelId ->
                   runCatching { youtubeChannelStore.remove(channelId) }.isSuccess
                 },
+                webDavConfig = webDavConfig,
+                onWebDavConfigChange = { cfg ->
+                  coroutineScope.launch { webdavConfigStore.setConfig(cfg) }
+                },
+                onWebDavBackup = { cfg -> webdavBackupService.backup(cfg) },
+                onWebDavRestore = { cfg -> webdavBackupService.restore(cfg) },
               )
             }
             if (accountSelected) {

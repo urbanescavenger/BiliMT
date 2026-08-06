@@ -1,14 +1,21 @@
 package com.kirin.mt.core.youtube
 
 import android.util.Base64
+import android.util.Log
+import android.webkit.CookieManager
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -25,6 +32,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
  */
 class InnerTubeClient(
   private val httpClient: OkHttpClient,
+  /** 可选：WEB /player 走 WebView 原生网络栈(Chromium)时注入（对齐 FreeTubeAndroid 主 WebView）。 */
+  private val jsExecutor: YoutubeJsExecutor? = null,
 ) {
   private val json = Json {
     ignoreUnknownKeys = true
@@ -34,6 +43,12 @@ class InnerTubeClient(
 
   /** guest 会话的 visitorData，首次使用时生成并复用（对齐 youtubei.js 单会话）。 */
   private var visitorData: String? = null
+
+  /** 从 sw.js_data 拉取的真实会话数据（visitorData + 当前 WEB client version）。 */
+  private var realSessionData: RealSessionData? = null
+
+  /** 保证 sw.js_data 只 fetch 一次（铸 token 与 /player 并发调用时用同一真实 visitorData）。 */
+  private val sessionMutex = Mutex()
 
   /**
    * 发送一个 InnerTube JSON 请求。
@@ -49,15 +64,33 @@ class InnerTubeClient(
     payload: JsonObject = buildJsonObject {},
     client: Client = Client.WEB,
     poToken: String? = null,
+    viaWebView: Boolean = false,
   ): JsonObject = withContext(Dispatchers.IO) {
+    // 先拉真实 visitorData（WEB /player 用合成 visitorData 会被拦，见 ensureRealSessionData）。
+    ensureRealSessionData()
     val body = buildJsonObject {
       // 业务字段在前，context 在后（youtubei.js 的 ...payload 后接 context）
       payload.forEach { (key, value) -> put(key, value) }
-      put("context", buildContext(client = client, poToken = poToken))
+      // PO token 必须放请求【顶层】serviceIntegrityDimensions（对齐 youtubei.js Innertube.ts
+      // getInfo 的 extra_payload.serviceIntegrityDimensions），不是 context 里。
+      // 放错位置 → token 不被应用 → WEB /player 仍 "The page needs to be reloaded"(alpha.27 实测)。
+      if (!poToken.isNullOrBlank()) {
+        put("serviceIntegrityDimensions", buildJsonObject { put("poToken", poToken) })
+      }
+      put("context", buildContext(client = client))
     }
 
     val url = "${YoutubeConstants.InnerTubeBase}/${YoutubeConstants.ApiVersion}$endpoint" +
       "?key=${YoutubeConstants.ApiKey}&prettyPrint=false&alt=json"
+
+    // WEB /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView。
+    // OkHttp 直连被拦("The page needs to be reloaded")、FreeTubeAndroid 能过的根因是请求没走
+    // 真实浏览器网络栈。ANDROID 客户端保持 OkHttp 直连(作为回退)。
+    if (viaWebView && client == Client.WEB && jsExecutor != null) {
+      val text = jsExecutor.fetchViaWebView(url, "POST", buildWebViewHeaders(), body.toString())
+      return@withContext runCatching { json.parseToJsonElement(text).jsonObject }
+        .getOrElse { throw YoutubeApiException(0, text, "InnerTube $endpoint returned invalid JSON") }
+    }
 
     val requestBuilder = Request.Builder()
       .url(url)
@@ -68,8 +101,16 @@ class InnerTubeClient(
       .header("X-Goog-Visitor-Id", currentVisitorData())
     when (client) {
       Client.WEB -> requestBuilder
-        .header("X-Youtube-Client-Version", YoutubeConstants.ClientVersion)
+        .header("X-Youtube-Client-Version", currentClientVersion())
         .header("X-Youtube-Client-Name", YoutubeConstants.ClientNameId)
+        .header("Origin", YoutubeConstants.Referer)
+        .header("Accept", "*/*")
+        .header("Accept-Language", "*")
+        // 对齐 FreeTubeAndroid shouldInterceptRequest 对 youtubei/ 注入的浏览器指纹头
+        // (§6.8.1)。缺这些 WEB /player 更易被判"非真浏览器" → "The page needs to be reloaded"。
+        .header("Sec-Fetch-Site", "same-origin")
+        .header("Sec-Fetch-Mode", "cors")
+        .header("X-Youtube-Bootstrap-Logged-In", "false")
       Client.ANDROID -> requestBuilder
         .header("X-Goog-API-Format-Version", YoutubeConstants.AndroidGoogApiFormatVersion)
         .header("X-Youtube-Client-Version", YoutubeConstants.AndroidClientVersion)
@@ -113,6 +154,72 @@ class InnerTubeClient(
     }
   }
 
+  /**
+   * 拉取 BotGuard challenge（对齐 FreeTube botGuardScript.js）：
+   * `POST /youtubei/v1/att/get`（ENGAGEMENT_TYPE_UNBOUND），从 `challengeData.bgChallenge`
+   * 取 program/globalName/interpreterUrl，再单独 GET interpreter JS。
+   *
+   * 对齐后 VM 才会把 minter 填进 `webPoSignalOutput`（jnn Create 的 program 不产生 minter，
+   * 真机曾报 `BgError: PMD:Undefined`）。
+   *
+   * 必须用 WEB context：实测(alpha.22)ANDROID context 的 /att/get 不返回 bgChallenge
+   * （FreeTube 的 botGuardScript.js 也硬编码 X-Youtube-Client-Name:'1'，att/get 是 WEB 客户端的
+   * challenge 通道）。故 PO token 只能铸成 WEB 绑定的；能否用于播放取决于 /player 用 WEB 还是 ANDROID。
+   */
+  suspend fun fetchBotGuardChallenge(): BotGuardChallenge? = withContext(Dispatchers.IO) {
+    // 先拉真实 visitorData，保证铸 token 与 /player 用同一真实 visitorData（token 绑定前提）。
+    ensureRealSessionData()
+    val body = buildJsonObject {
+      put("engagementType", "ENGAGEMENT_TYPE_UNBOUND")
+      put("context", buildContext(Client.WEB))
+    }
+    val url = "${YoutubeConstants.InnerTubeBase}/${YoutubeConstants.ApiVersion}/att/get?prettyPrint=false&alt=json"
+    val request = Request.Builder()
+      .url(url)
+      .post(body.toString().toRequestBody(JsonMediaType))
+      .header("Accept", "*/*")
+      .header("Content-Type", "application/json")
+      .header("X-Goog-Visitor-Id", currentVisitorData())
+      .header("X-Youtube-Client-Version", currentClientVersion())
+      .header("X-Youtube-Client-Name", YoutubeConstants.ClientNameId)
+      .header("User-Agent", YoutubeConstants.UserAgent)
+      .header("Referer", YoutubeConstants.Referer)
+      .build()
+    val text = runCatching {
+      httpClient.newCall(request).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
+    }.getOrNull()
+    if (text.isNullOrBlank()) {
+      Log.w(Tag, "att/get challenge fetch failed/blank")
+      return@withContext null
+    }
+    val bg = runCatching {
+      json.parseToJsonElement(text).jsonObject.obj("bgChallenge")
+    }.getOrNull()
+    if (bg == null) {
+      Log.w(Tag, "att/get response missing bgChallenge: ${text.take(300)}")
+      return@withContext null
+    }
+    val program = bg.stringOrNull("program")
+    val globalName = bg.stringOrNull("globalName")
+    val interpreterUrl = bg.obj("interpreterUrl")?.stringOrNull("privateDoNotAccessOrElseTrustedResourceUrlWrappedValue")
+      ?: bg.stringOrNull("interpreterUrl")
+    if (program.isNullOrBlank() || globalName.isNullOrBlank() || interpreterUrl.isNullOrBlank()) {
+      Log.w(Tag, "att/get challenge missing fields: program=${program?.length} global=$globalName url=$interpreterUrl")
+      return@withContext null
+    }
+    val resolvedUrl = if (interpreterUrl.startsWith("//")) "https:$interpreterUrl" else interpreterUrl
+    val interpreter = getText(resolvedUrl)
+    if (interpreter.isNullOrBlank()) {
+      Log.w(Tag, "att/get interpreter fetch failed/blank: $resolvedUrl")
+      return@withContext null
+    }
+    BotGuardChallenge(interpreter, program, globalName)
+  }
+
+  private fun JsonObject.obj(name: String): JsonObject? = this[name]?.jsonObject
+
+  private fun JsonObject.stringOrNull(name: String): String? = this[name]?.jsonPrimitive?.contentOrNull
+
   /** InnerTube 客户端类型。 */
   enum class Client {
     WEB,
@@ -125,7 +232,7 @@ class InnerTubeClient(
       }
   }
 
-  private fun buildContext(client: Client = Client.WEB, poToken: String? = null): JsonObject {
+  private fun buildContext(client: Client = Client.WEB): JsonObject {
     return buildJsonObject {
       put(
         "client",
@@ -133,9 +240,29 @@ class InnerTubeClient(
           when (client) {
             Client.WEB -> {
               put("clientName", YoutubeConstants.ClientName)
-              put("clientVersion", YoutubeConstants.ClientVersion)
+              put("clientVersion", currentClientVersion())
               put("hl", YoutubeConstants.Hl)
               put("gl", YoutubeConstants.Gl)
+              // 对齐 youtubei.js 的 WEB context(反爬关键字段)。缺这些 WEB /player 会被判
+              // "非真浏览器" → "The page needs to be reloaded"(playerErrorMessageRenderer)。
+              put("platform", YoutubeConstants.WebPlatform)
+              put("clientFormFactor", YoutubeConstants.WebClientFormFactor)
+              put("userInterfaceTheme", YoutubeConstants.WebUserInterfaceTheme)
+              put("originalUrl", YoutubeConstants.WebOriginalUrl)
+              put("userAgent", YoutubeConstants.UserAgent)
+              put("screenWidthPoints", 1920)
+              put("screenHeightPoints", 1080)
+              put("screenPixelDensity", 1)
+              put("screenDensityFloat", 1)
+              put("utcOffsetMinutes", 0)
+              put("timeZone", "Asia/Shanghai")
+              put("clientScreen", "WATCH")
+              put(
+                "mainAppWebInfo",
+                buildJsonObject {
+                  YoutubeConstants.WebMainAppWebInfo.forEach { (k, v) -> put(k, v) }
+                },
+              )
             }
             Client.ANDROID -> {
               put("clientName", "ANDROID")
@@ -162,13 +289,42 @@ class InnerTubeClient(
           put("internalExperimentFlags", kotlinx.serialization.json.buildJsonArray {})
         },
       )
-      if (!poToken.isNullOrBlank()) {
+      // WEB 客户端 /player 必须带 thirdParty.embedUrl，否则返回 "Video unavailable"/
+      // "The page needs to be reloaded"(实测 alpha.22,即使带有效 PO token 也被拦)。
+      // ANDROID 客户端不需要此字段。
+      if (client == Client.WEB) {
         put(
-          "serviceIntegrityDimensions",
-          buildJsonObject { put("poToken", poToken) },
+          "thirdParty",
+          buildJsonObject { put("embedUrl", YoutubeConstants.EmbedUrl) },
         )
       }
+      // 注意：serviceIntegrityDimensions.poToken 已移到请求顶层（见 postJson），
+      // 不再放 context 里（对齐 youtubei.js）。
     }
+  }
+
+  /** WEB /player 走 WebView 时的请求头（对齐 OkHttp WEB 分支 + best-effort Cookie）。 */
+  private fun buildWebViewHeaders(): Map<String, String> {
+    val headers = mutableMapOf(
+      "Content-Type" to "application/json",
+      "User-Agent" to YoutubeConstants.UserAgent,
+      "Referer" to YoutubeConstants.Referer,
+      "X-Goog-Visitor-Id" to currentVisitorData(),
+      "X-Youtube-Client-Version" to currentClientVersion(),
+      "X-Youtube-Client-Name" to YoutubeConstants.ClientNameId,
+      "Origin" to YoutubeConstants.Referer,
+      "Accept" to "*/*",
+      "Accept-Language" to "*",
+      "Sec-Fetch-Site" to "same-origin",
+      "Sec-Fetch-Mode" to "cors",
+      "X-Youtube-Bootstrap-Logged-In" to "false",
+    )
+    // best-effort：把 WebView cookie store 里的 youtube.com cookie 带上（HttpURLConnection/原生
+    // fetch 不自动用 WebView cookie store）。shell 页通常无 cookie，可能为空，不阻塞。
+    runCatching {
+      CookieManager.getInstance().getCookie("https://www.youtube.com")
+    }.getOrNull()?.takeIf { it.isNotBlank() }?.let { headers["Cookie"] = it }
+    return headers
   }
 
   private fun currentVisitorData(): String {
@@ -181,6 +337,69 @@ class InnerTubeClient(
     visitorData = generated
     return generated
   }
+
+  /** 当前 WEB client version：优先用 sw.js_data 拉到的真实版本，否则回退硬编码。 */
+  private fun currentClientVersion(): String {
+    return realSessionData?.clientVersion ?: YoutubeConstants.ClientVersion
+  }
+
+  /**
+   * 拉取真实 visitorData（对齐 youtubei.js `generateSessionLocally:false` 的 #getSessionData）。
+   *
+   * 实测(alpha.24)：WEB /player 用**合成** visitorData 会被判"非真浏览器" → 返回
+   * "The page needs to be reloaded"(playerErrorMessageRenderer)，即使带有效 PO token 也被拦。
+   * FreeTubeAndroid 用 `createInnertube({ generateSessionLocally:false })` 从
+   * `https://www.youtube.com/sw.js_data` 取真实 visitorData + 当前 client version。
+   * 失败回退合成 visitorData（不阻塞主路径）。
+   */
+  private suspend fun ensureRealSessionData() {
+    // 双检锁：铸 token(BotGuard 线程)与 /player 并发调用时，保证只 fetch 一次，
+    // 否则各自 fetch 到不同 visitorData → token 绑定 A、/player 用 B → token 无效
+    // → "The page needs to be reloaded"(alpha.25 实测)。
+    if (realSessionData != null) return
+    sessionMutex.withLock {
+      if (realSessionData != null) return
+      val data = runCatching { fetchRealSessionData() }.getOrNull()
+      if (data != null) {
+        realSessionData = data
+        visitorData = data.visitorData
+        Log.i(Tag, "real session data: visitorData=${data.visitorData.take(24)}... clientVersion=${data.clientVersion}")
+      } else {
+        Log.w(Tag, "sw.js_data fetch failed; fallback to synthetic visitorData")
+      }
+    }
+  }
+
+  private suspend fun fetchRealSessionData(): RealSessionData? = withContext(Dispatchers.IO) {
+    val visitorId = randomId()
+    val request = Request.Builder()
+      .url("https://www.youtube.com/sw.js_data")
+      .header("Accept-Language", "en-US")
+      .header("User-Agent", YoutubeConstants.UserAgent)
+      .header("Accept", "*/*")
+      .header("Referer", "https://www.youtube.com/sw.js")
+      .header("Cookie", "PREF=tz=Asia.Shanghai;VISITOR_INFO1_LIVE=$visitorId;")
+      .build()
+    val text = runCatching {
+      httpClient.newCall(request).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
+    }.getOrNull()
+    if (text.isNullOrBlank() || !text.startsWith(")]}'")) return@withContext null
+    val root = runCatching { json.parseToJsonElement(text.removePrefix(")]}'").trim()).jsonArray }.getOrNull()
+      ?: return@withContext null
+    // JSPB 结构：data[0][2]=ytcfg；ytcfg[0][0]=device_info；device_info[13]=visitorData，[16]=clientVersion。
+    val ytcfg = root.getOrNull(0)?.jsonArray?.getOrNull(2)?.jsonArray ?: return@withContext null
+    val deviceInfo = ytcfg.getOrNull(0)?.jsonArray?.getOrNull(0)?.jsonArray ?: return@withContext null
+    val visitor = deviceInfo.getOrNull(13)?.jsonPrimitive?.contentOrNull
+    if (visitor.isNullOrBlank()) return@withContext null
+    val version = deviceInfo.getOrNull(16)?.jsonPrimitive?.contentOrNull
+    RealSessionData(visitor, version ?: YoutubeConstants.ClientVersion)
+  }
+
+  /** sw.js_data 拉取的真实会话数据。 */
+  private data class RealSessionData(
+    val visitorData: String,
+    val clientVersion: String,
+  )
 
   // ---- visitorData 编码（对齐 youtubei.js ProtoUtils.encodeVisitorData） ----
 
@@ -241,6 +460,7 @@ class InnerTubeClient(
   }
 
   private companion object {
+    const val Tag = "YtBotGuard"
     val JsonMediaType = "application/json; charset=utf-8".toMediaType()
   }
 }
@@ -250,3 +470,10 @@ class YoutubeApiException(
   val responseBody: String,
   message: String,
 ) : Exception(message)
+
+/** BotGuard challenge（对齐 FreeTube `challengeData.bgChallenge`）。 */
+data class BotGuardChallenge(
+  val interpreterJavascript: String?,
+  val program: String?,
+  val globalName: String?,
+)

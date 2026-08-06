@@ -21,6 +21,7 @@ import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.core.youtube.YoutubeJsExecutor
 import com.kirin.mt.core.youtube.YoutubeNDecryptor
 import com.kirin.mt.core.youtube.YoutubePlaybackResolver
+import com.kirin.mt.core.youtube.YoutubeSDecryptor
 import com.kirin.mt.core.youtube.YoutubeRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,9 @@ import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateDownloader
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.update.UpdateRepository
+import com.kirin.mt.core.webdav.WebDavBackupService
+import com.kirin.mt.core.webdav.WebDavConfigStore
+import com.kirin.mt.core.webdav.WebDavRepository
 import kotlinx.serialization.json.Json
 
 class AppContainer(context: Context) {
@@ -85,15 +89,29 @@ class AppContainer(context: Context) {
   // 共享同一个 YouTube OkHttpClient（InnerTube 数据 + /player + base.js/watch 抓取复用连接池）。
   val youtubeHttpClient = httpClientFactory.createYoutubeClient()
   val youtubeJsExecutor: YoutubeJsExecutor = YoutubeJsExecutor(appContext)
-  val youtubeBotGuard: YoutubeBotGuard = YoutubeBotGuard(youtubeJsExecutor, youtubeHttpClient)
+  // 共享同一个 InnerTubeClient：visitorData/realSessionData 必须跨 BotGuard(铸 token)与
+  // PlaybackResolver(/player)一致，否则 token 绑定 A、/player 用 B → token 无效
+  // → "The page needs to be reloaded"(alpha.26 实测：3 个独立实例各 fetch 不同 visitorData)。
+  val youtubeInnerTubeClient = InnerTubeClient(
+    httpClient = youtubeHttpClient,
+    // WEB /player 走 WebView 原生网络栈(Chromium)时用同一 executor（对齐 FreeTubeAndroid 主 WebView）。
+    jsExecutor = youtubeJsExecutor,
+  )
+  val youtubeBotGuard: YoutubeBotGuard = YoutubeBotGuard(
+    executor = youtubeJsExecutor,
+    httpClient = youtubeHttpClient,
+    innerTubeClient = youtubeInnerTubeClient,
+  )
   val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(youtubeJsExecutor, youtubeHttpClient)
+  val youtubeSDecryptor: YoutubeSDecryptor = YoutubeSDecryptor(youtubeJsExecutor, youtubeHttpClient)
   val youtubeRepository: YoutubeRepository = YoutubeRepository(
-    client = InnerTubeClient(httpClient = youtubeHttpClient),
+    client = youtubeInnerTubeClient,
   )
   val youtubePlaybackResolver: YoutubePlaybackResolver = YoutubePlaybackResolver(
-    innerTubeClient = InnerTubeClient(httpClient = youtubeHttpClient),
+    innerTubeClient = youtubeInnerTubeClient,
     botGuard = youtubeBotGuard,
     nDecryptor = youtubeNDecryptor,
+    sDecryptor = youtubeSDecryptor,
     httpClient = youtubeHttpClient,
   )
   val videoRepository: VideoRepository = VideoRepository(
@@ -138,6 +156,13 @@ class AppContainer(context: Context) {
     appInfo = appInfo,
     repository = updateRepository,
     downloader = updateDownloader,
+  )
+  val webdavConfigStore: WebDavConfigStore = WebDavConfigStore(appContext)
+  val webdavRepository: WebDavRepository = WebDavRepository(downloadHttpClient)
+  val webdavBackupService: WebDavBackupService = WebDavBackupService(
+    channelStore = youtubeChannelStore,
+    repository = webdavRepository,
+    json = json,
   )
 
   /**
