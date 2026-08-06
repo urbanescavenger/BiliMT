@@ -410,10 +410,10 @@
         })();
       };
       window.__mint = function(integrityToken, contentBinding) {
+        const prev = window.__poToken;
         window.__poToken = { status: "minting", token: null, error: null };
         (async () => {
           try {
-            const prev = window.__poToken;
             const webPoSignalOutput = prev.webPoSignalOutput;
             const minter = await WebPoMinter.create({ integrityToken }, webPoSignalOutput);
             const token = await minter.mintAsWebsafeString(contentBinding);

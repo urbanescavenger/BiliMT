@@ -98,6 +98,7 @@ curl 实测 `/youtubei/v1/player`(guest,无 PO token):
 | 3 | `pollState parse failed: "{\"status\":...}"` | `evaluateJavascript` 对 `JSON.stringify` 的 JS 字符串结果做 JSON 编码(带引号+转义),直接 `.jsonObject` 解析失败 | 先 `jsonPrimitive.contentOrNull` 解出内层字符串再解析 |
 | 4 | `GenerateIT response missing integrityToken` | GenerateIT 响应格式 `[null, <ttl>, null, "<token>"]`,token 在 **index 3**(纯字符串),原解析只查 `{integrityToken}` 对象和 `[null,{integrityToken}]` | 加 `arr.getOrNull(3)?.jsonPrimitive?.contentOrNull` |
 | 5 | index-3 修复后仍取不到 token | 修复里 `arr?.getOrNull(1)?.jsonObject` 在 `arr[1]` 是数字(43200)时抛 `ClassCastException`,index 3 永远取不到 | index 3 提到优先,整条解析链包 `runCatching`(cast 失败回退 index 3),加 `onFailure` 日志 |
+| 6 | `PO token JS error: TypeError: Cannot read properties of undefined (reading '0')` at `_WebPoMinter.create` | bgutils.js `__mint` 先覆盖 `window.__poToken` 为 `{status:"minting"}` 再读 `prev`,导致 `prev.webPoSignalOutput` 为 undefined,`WebPoMinter.create` 里 `webPoSignalOutput[0]` 报错 | `__mint` 在覆盖 `__poToken` **之前**先捕获 `prev`,再取 `prev.webPoSignalOutput` |
 
 **已跑通**:challenge 获取 → descramble → interpreter 加载(`window.trayride` 定义)→ snapshot 成功(`botguardResponse` 拿到)→ GenerateIT 返回 `[null,43200,null,"<token>"]`。
 
