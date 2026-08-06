@@ -190,12 +190,15 @@ class YoutubeBotGuard(
     Log.i(Tag, "GenerateIT response (status=$status): ${text.take(400)}")
     // 实测响应形如 [null, <ttl>, null, "<integrityToken>"] —— token 在 index 3(纯字符串)。
     // 兼容其它形态：{ integrityToken: "..." } 或 [null, { integrityToken: "..." }]。
+    // 注意:minter 真正产生后(webPoSignalOutput.length=1)响应变为 ["<token>", <ttl>, <n>] ——
+    // token 在 index 0(对齐 FreeTube botGuardScript.js 的 response[0])。故 index 0 优先。
     val arr = runCatching { json.parseToJsonElement(text).jsonArray }.getOrNull()
     val root = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull()
-    // index 3 优先（实测格式 [null,<ttl>,null,"<token>"]）；整条链包 runCatching，
-    // 避免 arr[1] 是数字(43200)时 .jsonObject cast 抛异常而取不到 index 3。
+    // index 0 优先(新格式 ["<token>",ttl,n]);整条链包 runCatching,
+    // 避免 arr[1] 是数字(43200)时 .jsonObject cast 抛异常而取不到 index 0/3。
     val token = runCatching {
       root?.stringOrNull("integrityToken")
+        ?: arr?.getOrNull(0)?.jsonPrimitive?.contentOrNull
         ?: arr?.getOrNull(3)?.jsonPrimitive?.contentOrNull
         ?: arr?.getOrNull(1)?.jsonObject?.stringOrNull("integrityToken")
     }.onFailure { Log.w(Tag, "GenerateIT token parse failed: ${it.message}") }.getOrNull()
