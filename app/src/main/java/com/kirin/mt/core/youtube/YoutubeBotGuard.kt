@@ -227,10 +227,13 @@ class YoutubeBotGuard(
       return@withContext null
     }
     Log.i(Tag, "GenerateIT response (status=$status): ${text.take(400)}")
-    // 响应形如 [null, { integrityToken: "..." }] 或 { integrityToken: "..." }。
+    // 实测响应形如 [null, <ttl>, null, "<integrityToken>"] —— token 在 index 3(纯字符串)。
+    // 兼容其它形态：{ integrityToken: "..." } 或 [null, { integrityToken: "..." }]。
+    val arr = runCatching { json.parseToJsonElement(text).jsonArray }.getOrNull()
     val root = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull()
     val token = root?.stringOrNull("integrityToken")
-      ?: runCatching { json.parseToJsonElement(text).jsonArray.getOrNull(1)?.jsonObject?.stringOrNull("integrityToken") }.getOrNull()
+      ?: arr?.getOrNull(1)?.jsonObject?.stringOrNull("integrityToken")
+      ?: arr?.getOrNull(3)?.jsonPrimitive?.contentOrNull
     if (token.isNullOrBlank()) Log.w(Tag, "GenerateIT response missing integrityToken")
     token
   }
