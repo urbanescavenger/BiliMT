@@ -70,15 +70,19 @@ class YoutubeBotGuard(
     Log.i(Tag, "challenge ok: interpreter=${interpreterJs.length}B program=${program.length}B global=$globalName")
 
     // 2) 加载 interpreter JS 进 WebView（定义 window[globalName]）。
-    val interpreterEval = executor.eval(interpreterJs)
+    // 用 try-catch 包裹捕获 interpreter JS 的运行时错误（evaluateJavascript 对抛错脚本返回 null）。
+    val wrappedInterpreter = "try { $interpreterJs } catch(e) { window.__interpreterError = String(e && e.stack || e); }"
+    val interpreterEval = executor.eval(wrappedInterpreter)
     Log.i(Tag, "interpreter eval result=${interpreterEval?.take(60)}")
-    if (interpreterEval == null) {
-      Log.w(Tag, "interpreter eval failed")
-      return null
-    }
+    val interpreterError = executor.eval("window.__interpreterError")
+    Log.i(Tag, "interpreter error: $interpreterError")
     // 确认 window[globalName] 是否真的定义了。
     val globalCheck = executor.eval("typeof window.$globalName")
     Log.i(Tag, "global $globalName typeof=$globalCheck")
+    if (interpreterError != null && interpreterError != "null" && interpreterError.isNotBlank()) {
+      Log.w(Tag, "interpreter JS threw: $interpreterError")
+      return null
+    }
 
     // 3) snapshot → botguardResponse。
     val contentBinding = buildContentBinding(videoId)
@@ -149,7 +153,8 @@ class YoutubeBotGuard(
   // ---- WebView snapshot / mint ----
 
   private suspend fun runSnapshot(program: String, globalName: String, contentBinding: JsonObject): JsonObject? {
-    val script = "window.__runSnapshot(${jsonString(program)}, ${jsonString(globalName)}, ${contentBinding.toString()})"
+    val script = "try { window.__runSnapshot(${jsonString(program)}, ${jsonString(globalName)}, ${contentBinding.toString()}) } " +
+      "catch(e) { window.__poToken = { status: 'error', token: null, error: String(e && e.stack || e) }; }"
     val evalResult = executor.eval(script)
     Log.i(Tag, "__runSnapshot eval result=${evalResult?.take(60)}")
     return pollState("snapshot-done")
