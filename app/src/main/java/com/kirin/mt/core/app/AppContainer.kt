@@ -89,18 +89,22 @@ class AppContainer(context: Context) {
   // 共享同一个 YouTube OkHttpClient（InnerTube 数据 + /player + base.js/watch 抓取复用连接池）。
   val youtubeHttpClient = httpClientFactory.createYoutubeClient()
   val youtubeJsExecutor: YoutubeJsExecutor = YoutubeJsExecutor(appContext)
+  // 共享同一个 InnerTubeClient：visitorData/realSessionData 必须跨 BotGuard(铸 token)与
+  // PlaybackResolver(/player)一致，否则 token 绑定 A、/player 用 B → token 无效
+  // → "The page needs to be reloaded"(alpha.26 实测：3 个独立实例各 fetch 不同 visitorData)。
+  val youtubeInnerTubeClient = InnerTubeClient(httpClient = youtubeHttpClient)
   val youtubeBotGuard: YoutubeBotGuard = YoutubeBotGuard(
     executor = youtubeJsExecutor,
     httpClient = youtubeHttpClient,
-    innerTubeClient = InnerTubeClient(httpClient = youtubeHttpClient),
+    innerTubeClient = youtubeInnerTubeClient,
   )
   val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(youtubeJsExecutor, youtubeHttpClient)
   val youtubeSDecryptor: YoutubeSDecryptor = YoutubeSDecryptor(youtubeJsExecutor, youtubeHttpClient)
   val youtubeRepository: YoutubeRepository = YoutubeRepository(
-    client = InnerTubeClient(httpClient = youtubeHttpClient),
+    client = youtubeInnerTubeClient,
   )
   val youtubePlaybackResolver: YoutubePlaybackResolver = YoutubePlaybackResolver(
-    innerTubeClient = InnerTubeClient(httpClient = youtubeHttpClient),
+    innerTubeClient = youtubeInnerTubeClient,
     botGuard = youtubeBotGuard,
     nDecryptor = youtubeNDecryptor,
     sDecryptor = youtubeSDecryptor,
