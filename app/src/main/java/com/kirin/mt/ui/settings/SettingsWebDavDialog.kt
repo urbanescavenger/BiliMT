@@ -121,6 +121,7 @@ internal fun SettingsWebDavDialog(
           // 弹窗内任意位置按左键回设置列。
           if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft) {
             onDismiss()
+            true
           } else {
             false
           }
