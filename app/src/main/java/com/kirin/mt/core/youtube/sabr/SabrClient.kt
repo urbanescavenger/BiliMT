@@ -34,6 +34,10 @@ internal data class SabrSession(
   val clientInfo: ClientInfoInput,
   val audioFormatId: FormatId,
   val videoFormatId: FormatId,
+  /** 会话传输头——与 /player 同会话(对齐 FreeTube 走浏览器/shaka fetch 自动带 cookie+UA+visitor)。 */
+  val userAgent: String,
+  val cookieHeader: String,
+  val visitorData: String,
 ) {
   companion object {
     private val tag = "YtSabr"
@@ -44,14 +48,17 @@ internal data class SabrSession(
       clientInfo: ClientInfoInput,
       audioFormatId: FormatId,
       videoFormatId: FormatId,
+      userAgent: String,
+      cookieHeader: String,
+      visitorData: String,
     ): SabrSession {
-      // sabrUrl 加 alr=yes + cpn(对齐 FreeTube L1619-1620)。cpn = 16 随机字节 base64url
+      // sabrUrl 加 alr=yes + cpn(对齐 FreeTube Watch.js L1619-1620 + SabrSchemePlugin 追加 rn)。cpn = 16 随机字节 base64url
       val cpn = randomCpn()
       val withParams = sabrUrlWithParams(sabrUrl, cpn)
       val po = Base64.decode(poTokenB64, Base64.DEFAULT)
       val ustreamer = Base64.decode(ustreamerConfigB64, Base64.DEFAULT)
-      Log.i(tag, "SabrSession: sabrUrl=${withParams.take(80)}... poToken=${po.size}B ustreamerCfg=${ustreamer.size}B cpn=$cpn audio=$audioFormatId video=$videoFormatId")
-      return SabrSession(withParams, po, ustreamer, clientInfo, audioFormatId, videoFormatId)
+      Log.i(tag, "SabrSession: sabrUrl=${withParams.take(200)}... poToken=${po.size}B ustreamerCfg=${ustreamer.size}B cpn=$cpn audio=$audioFormatId video=$videoFormatId ua=${userAgent.take(40)} cookie=${cookieHeader.length}B visitor=${visitorData.length}B")
+      return SabrSession(withParams, po, ustreamer, clientInfo, audioFormatId, videoFormatId, userAgent, cookieHeader, visitorData)
     }
 
     /** 16 字节随机 → base64url 无 padding(对齐 youtubei.js generateRandomString 16 位 cpn)。 */
@@ -153,11 +160,20 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
         .post(body.toRequestBody("application/x-protobuf".toMediaType()))
         .header("accept-encoding", "identity")
         .header("accept", "application/vnd.yt-ump")
+        // 会话传输头(对齐 /player 同会话:UA + Cookie + X-Goog-Visitor-Id)——googlevideo SABR 端点
+        // 拒绝无会话绑定的裸请求(alpha.17 实测 HTTP 403 空响应体)。
+        .header("User-Agent", session.userAgent)
+        .header("Cookie", session.cookieHeader)
+        .header("X-Goog-Visitor-Id", session.visitorData)
+        .header("Origin", "https://www.youtube.com")
+        .header("Referer", "https://www.youtube.com/")
         .build()
       httpClient.newCall(request).execute().use { response ->
         val code = response.code
         if (code != 200) {
-          Log.w(tag, "fetch rn=$rn HTTP $code: ${response.body?.string()?.take(200)}")
+          // 全量响应头 + 体——googlevideo 403 空体时,header 里常带 x-gxxx 错误码定位真因。
+          val hdrs = response.headers.joinToString("; ") { "${it.first}=${it.second.take(80)}" }
+          Log.w(tag, "fetch rn=$rn HTTP $code headers=[$hdrs] body=${response.body?.string()?.take(200)}")
           return SabrFetchResult.Error("SABR HTTP $code")
         }
         processUmpStream(response, session, req)

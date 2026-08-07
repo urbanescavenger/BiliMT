@@ -186,6 +186,9 @@ class YoutubePlaybackResolver(
           )
           val session = SabrSession.fromSabrData(
             sabrUrl, poToken, ustreamerCfgStr, innerTubeClient.sabrClientInfo(), aFmt, vFmt,
+            userAgent = client.userAgent,
+            cookieHeader = innerTubeClient.currentSessionCookies(),
+            visitorData = innerTubeClient.currentVisitorData(),
           )
           val sabrClient = SabrClient(httpClient)
           val result = sabrClient.fetch(session, SabrFetchRequest(isInit = true, streamType = SabrStreamType.VIDEO))
