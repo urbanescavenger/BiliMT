@@ -1,5 +1,6 @@
 package com.kirin.mt.core.youtube
 
+import android.util.Base64
 import android.util.Log
 import com.kirin.mt.core.player.BiliPlaybackHeaders
 import com.kirin.mt.core.player.CodecCapability
@@ -23,8 +24,10 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.Locale
 
 /**
@@ -48,6 +51,7 @@ class YoutubePlaybackResolver(
   private val nDecryptor: YoutubeNDecryptor,
   private val sDecryptor: YoutubeSDecryptor,
   private val httpClient: OkHttpClient,
+  private val sabrHarvester: YoutubeSabrHarvester,
 ) {
 
   /** 从 player base.js 提取的 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp）。 */
@@ -179,6 +183,7 @@ class YoutubePlaybackResolver(
           // Content-Length=0,§6.7 row 41)。resolvePlayerJsUrl 内部缓存,此处与下游 resolveStreamUrl
           // 共用同一份 playerJsUrl,不重复拉 watch 页。
           val sabrUrlDeciphered = decipherSabrUrl(sabrUrl, resolvePlayerJsUrl(videoId))
+          val nTransformed = sabrUrlDeciphered != sabrUrl
           val vFmt = SabrFormatId(
             firstVideo.longOrNull("itag")?.toInt() ?: 0,
             firstVideo.longOrNull("lastModified") ?: 0L,
@@ -190,15 +195,38 @@ class YoutubePlaybackResolver(
             firstAudio.longOrNull("lastModified") ?: 0L,
             firstAudio.stringOrNull("xtags"),
           )
-          val session = SabrSession.fromSabrData(
-            sabrUrlDeciphered, poToken, ustreamerCfgStr, innerTubeClient.sabrClientInfo(), aFmt, vFmt,
-            userAgent = client.userAgent,
-            cookieHeader = innerTubeClient.currentSessionCookies(),
-            visitorData = innerTubeClient.currentVisitorData(),
-          )
-          val sabrClient = SabrClient(httpClient)
-          val result = sabrClient.fetch(session, SabrFetchRequest(isInit = true, streamType = SabrStreamType.VIDEO))
-          Log.i(Tag, "SABR init probe(video): ${summarizeSabrResult(result)}")
+          if (nTransformed) {
+            // classic 播放器:n-decrypt 成功 → 走原生 SabrClient(自驱 init 段)。
+            val session = SabrSession.fromSabrData(
+              sabrUrlDeciphered, poToken, ustreamerCfgStr, innerTubeClient.sabrClientInfo(), aFmt, vFmt,
+              userAgent = client.userAgent,
+              cookieHeader = innerTubeClient.currentSessionCookies(),
+              visitorData = innerTubeClient.currentVisitorData(),
+            )
+            val sabrClient = SabrClient(httpClient)
+            val result = sabrClient.fetch(session, SabrFetchRequest(isInit = true, streamType = SabrStreamType.VIDEO))
+            Log.i(Tag, "SABR init probe(video, deciphered): ${summarizeSabrResult(result)}")
+          } else {
+            // plasma 播放器:n-transform 在 WASM 里,[YoutubeNDecryptor] 正则结构性失效(§6.7 row 42)
+            // → sabrUrl 带 n 未解 → googlevideo 403。改让 Android WebView 浏览器引擎(原生跑 WASM)
+            // 加载 embed 页替我们做 n-transform,采集其 SABR POST(url 已 transform + body 含
+            // poToken/ustreamerConfig/formatIds),alpha.21 再喂回 SabrClient。
+            Log.i(Tag, "SABR n-decrypt NO-CHANGE (plasma WASM) → harvest embed WebView")
+            val capture = sabrHarvester.harvest(videoId)
+            if (capture != null) {
+              val harvestedN = extractParam(capture.url, "n")
+              val rawN = extractParam(sabrUrl, "n")
+              Log.i(
+                Tag,
+                "SABR harvest: status=${capture.status} " +
+                  "n(harvested=${harvestedN ?: "ABSENT"} raw=${rawN ?: "ABSENT"} same=${harvestedN == rawN}) " +
+                  "url=${capture.url.take(220)}... bodyB64=${capture.bodyB64.length}B"
+              )
+              replaySabrCapture(capture, client)
+            } else {
+              Log.w(Tag, "SABR harvest: no capture (embed 未在 25s 内发 SABR POST — autoplay 被拦/嵌入客户端差异?)")
+            }
+          }
         } else {
           Log.w(Tag, "SABR init probe skipped: video=${firstVideo != null} audio=${firstAudio != null}")
         }
@@ -503,6 +531,58 @@ class YoutubePlaybackResolver(
     val valueStart = start + key.length + 1
     val end = url.indexOf('&', valueStart).let { if (it < 0) url.length else it }
     return url.substring(0, valueStart) + value + url.substring(end)
+  }
+
+  /** 取 URL query 参数值(首段 ? 之后,不依赖正则)。 */
+  private fun extractParam(url: String, key: String): String? {
+    val query = url.substringAfter("?", "")
+    return query.split("&").firstNotNullOfOrNull { e ->
+      val i = e.indexOf("=")
+      if (i < 0) null else if (e.substring(0, i) == key) e.substring(i + 1) else null
+    }
+  }
+
+  /**
+   * 采集回放诊断(alpha.20):把 embed 播放器发出的 SABR POST(url+body)用 httpClient 原样重发,
+   * 看 WE 能否驱动 SABR——预期 200+UMP(会话接受重放)或 403/SABR_ERROR(rn/cpn 重放冲突 →
+   * alpha.21 须用新鲜 rn + embed 完整会话上下文,而非重放 rn=0)。注意:body 是 embed 会话的
+   * poToken/ustreamerConfig,而我们带的 Cookie/visitor 是 WEB /player 会话——若 403 可能是
+   * 会话不匹配而非 rn 冲突,alpha.21 应直接用 embed 的完整上下文。
+   */
+  private suspend fun replaySabrCapture(capture: YoutubeSabrHarvester.SabrCapture, client: InnerTubeClient.Client) {
+    val body = runCatching { Base64.decode(capture.bodyB64, Base64.DEFAULT) }.getOrNull()
+    if (body == null) {
+      Log.w(Tag, "SABR replay: body decode failed (empty/invalid base64 len=${capture.bodyB64.length})")
+      return
+    }
+    // 剥 embed 的 rn/cpn(会话级,重放会冲突),保留 sig/n 等 URL 签名,再加我们自己的 rn=0。
+    val stripped = capture.url.split("&").filterNot { it.startsWith("rn=") || it.startsWith("cpn=") }
+      .joinToString("&")
+      .let { if (it.startsWith("http")) it else "&$it" }
+    val replayUrl = if (stripped.contains("rn=")) stripped else "${stripped}&rn=0"
+    val request = Request.Builder()
+      .url(replayUrl)
+      .post(body.toRequestBody("application/x-protobuf".toMediaType()))
+      .header("accept-encoding", "identity")
+      .header("accept", "application/vnd.yt-ump")
+      .header("User-Agent", client.userAgent)
+      .header("Cookie", innerTubeClient.currentSessionCookies())
+      .header("X-Goog-Visitor-Id", innerTubeClient.currentVisitorData())
+      .header("Origin", "https://www.youtube.com")
+      .header("Referer", "https://www.youtube.com/")
+      .build()
+    runCatching {
+      httpClient.newCall(request).execute().use { r ->
+        val ct = r.header("Content-Type")
+        val cl = r.header("Content-Length")
+        val bodyBytes = r.body?.byteStream()?.use { it.readBytes() }
+        Log.i(
+          Tag,
+          "SABR replay: HTTP ${r.code} Content-Type=$ct Content-Length=$cl " +
+            "body=${bodyBytes?.size ?: 0}B ${bodyBytes?.take(40)?.joinToString("") { "%02x".format(it) } ?: ""}"
+        )
+      }
+    }.onFailure { Log.w(Tag, "SABR replay failed: ${it.message}") }
   }
 
   // ---- 格式挑选 ----

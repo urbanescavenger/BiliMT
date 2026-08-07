@@ -21,6 +21,7 @@ import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.core.youtube.YoutubeJsExecutor
 import com.kirin.mt.core.youtube.YoutubeNDecryptor
 import com.kirin.mt.core.youtube.YoutubePlaybackResolver
+import com.kirin.mt.core.youtube.YoutubeSabrHarvester
 import com.kirin.mt.core.youtube.YoutubeSDecryptor
 import com.kirin.mt.core.youtube.YoutubeRepository
 import kotlinx.coroutines.CoroutineScope
@@ -104,6 +105,9 @@ class AppContainer(context: Context) {
   )
   val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(youtubeJsExecutor, youtubeHttpClient)
   val youtubeSDecryptor: YoutubeSDecryptor = YoutubeSDecryptor(youtubeJsExecutor, youtubeHttpClient)
+  // SABR n-decrypt 的 WebView 嵌入采集器(plasma 兜底):独立 WebView,不复用 youtubeJsExecutor
+  // 单例(导航会破坏其 bgutils 上下文)。每次 harvest 建新 WebView 用完销毁(alpha.20 MVP)。
+  val youtubeSabrHarvester: YoutubeSabrHarvester = YoutubeSabrHarvester(appContext, youtubeInnerTubeClient)
   val youtubeRepository: YoutubeRepository = YoutubeRepository(
     client = youtubeInnerTubeClient,
   )
@@ -113,6 +117,7 @@ class AppContainer(context: Context) {
     nDecryptor = youtubeNDecryptor,
     sDecryptor = youtubeSDecryptor,
     httpClient = youtubeHttpClient,
+    sabrHarvester = youtubeSabrHarvester,
   )
   val videoRepository: VideoRepository = VideoRepository(
     apiClient = apiClient,
