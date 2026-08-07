@@ -25,6 +25,7 @@ internal object SabrProto {
   const val PART_STREAM_PROTECTION_STATUS = 58
   const val PART_SABR_CONTEXT_SENDING_POLICY = 59
   const val PART_END_OF_TRACK = 62
+  const val PART_SNACKBAR_MESSAGE = 67
 
   // ---- FormatId(misc/common.proto):itag(int32)/last_modified(uint64)/xtags(string) ----
   fun encodeFormatId(itag: Int, lastModified: Long, xtags: String?): ByteArray {
@@ -206,6 +207,88 @@ internal object SabrProto {
     }
     return null
   }
+
+  /**
+   * alpha.31:解码 SABR_CONTEXT_UPDATE(part type 57)。服务端借此下发上下文,要求客户端
+   * 把 {type, value} 回传进下次请求 streamerContext.sabr_contexts(field5,sendByDefault=true
+   * 的才 active)+ unsent_sabr_contexts(field6,非 active 的只回 type id)。不回传 → 握手不闭合
+   * → 服务端只回 context+backoff 不发 media → premature EOF(alpha.29/30 打不开视频根因)。
+   * 对齐 FreeTube SabrSchemePlugin.js L430-447 + sabr_context_update.proto:
+   *   field1 type(int32) / field2 scope(enum,不用) / field3 value(bytes) /
+   *   field4 send_by_default(bool) / field5 write_policy(enum: UNSPECIFIED=0/OVERWRITE=1/KEEP_EXISTING=2)。
+   */
+  data class SabrContextUpdate(
+    val type: Int,
+    val value: ByteArray,
+    val sendByDefault: Boolean,
+    val writePolicy: Int,
+  )
+  fun decodeSabrContextUpdate(payload: ByteArray): SabrContextUpdate? {
+    val r = ProtoReader(payload)
+    var type = 0; var value: ByteArray = ByteArray(0)
+    var sendByDefault = false; var writePolicy = 0
+    while (true) {
+      val f = r.nextField() ?: break
+      when (f.fieldNumber) {
+        1 -> type = (f.value as Long).toInt()
+        3 -> value = f.value as ByteArray
+        4 -> sendByDefault = (f.value as Long) != 0L
+        5 -> writePolicy = (f.value as Long).toInt()
+      }
+    }
+    return SabrContextUpdate(type, value, sendByDefault, writePolicy)
+  }
+
+  /**
+   * alpha.31:解码 SABR_CONTEXT_SENDING_POLICY(part type 59)。服务端动态控制哪些上下文
+   * 该发(start)/停发(stop)/丢弃(discard)。对齐 sabr_context_sending_policy.proto:
+   *   field1 start_policy(repeated int32) / field2 stop_policy / field3 discard_policy。
+   * 当前服务端未发 59(active 集合只由 57 的 sendByDefault 驱动),补全状态机对齐 FreeTube L450-470。
+   */
+  data class SabrContextSendingPolicy(
+    val start: List<Int>,
+    val stop: List<Int>,
+    val discard: List<Int>,
+  )
+  fun decodeSabrContextSendingPolicy(payload: ByteArray): SabrContextSendingPolicy? {
+    val r = ProtoReader(payload)
+    val start = ArrayList<Int>(); val stop = ArrayList<Int>(); val discard = ArrayList<Int>()
+    while (true) {
+      val f = r.nextField() ?: break
+      // repeated int32 在 proto wire 里每个元素都是独立 varint field;但 YouTube/googlevideo 的
+      // protobuf 打包 repeated scalar 常用 packed 形态(wire 2, 一个 length 前缀包多个 varint)。
+      // 两种都兼容:非 packed → f.value 是 Long;packed → f.value 是 ByteArray 需展开。
+      when (f.fieldNumber) {
+        1 -> addInts(f, start)
+        2 -> addInts(f, stop)
+        3 -> addInts(f, discard)
+      }
+    }
+    return SabrContextSendingPolicy(start, stop, discard)
+  }
+
+  /** repeated int32 兼容 packed(wire2, ByteArray 内多无 tag varint)与 non-packed(wire0, 单 Long)。 */
+  private fun addInts(f: ProtoReader.Field, out: ArrayList<Int>) {
+    when (val v = f.value) {
+      is Long -> out.add(v.toInt())
+      is ByteArray -> {
+        // packed: concatenated standard varints, no tags
+        var i = 0
+        while (i < v.size) {
+          var result = 0L; var shift = 0
+          while (i < v.size) {
+            val b = v[i].toInt() and 0xFF
+            i++
+            result = result or ((b and 0x7F).toLong() shl shift)
+            if (b and 0x80 == 0) break
+            shift += 7
+          }
+          out.add(result.toInt())
+        }
+      }
+    }
+  }
+
 
   // ===================== 请求体解码(alpha.26) =====================
   // 从 WebView harvest 到的 VideoPlaybackAbrRequest body 解出建 SabrSession 所需的会话参数:

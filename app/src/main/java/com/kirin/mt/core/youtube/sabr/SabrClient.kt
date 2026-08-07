@@ -16,6 +16,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -61,10 +62,40 @@ internal data class SabrSession(
    * processUmpStream 捕获写回;fetch 读它填 StreamerContext。null=首请求/尚无 cookie。
    */
   @Volatile var playbackCookie: ByteArray? = null,
+  /**
+   * alpha.31:SABR 上下文握手状态机——服务端用 SABR_CONTEXT_UPDATE(part 57)下发上下文,要求客户端
+   * 把 {type, value} 回传进下次请求 streamerContext.sabr_contexts(field5)+ unsent_sabr_contexts(field6)。
+   * **不回传 → 服务端判定握手未完成 → 只回 context+backoff 不发 media → 8 次重试后 EOF → 视频打不开
+   * (alpha.29/30 一直加载的根因)。** 对齐 FreeTube SabrSchemePlugin.js `prepareSabrContexts`(L223-239)。
+   *
+   * 会话级(与 [playbackCookie] 同理:服务端对同一会话发同一组 context,log 证实 audio/video 两 loader
+   * 都收同一 92B context)→ 两 loader 共享安全。用 ConcurrentHashMap/newKeySet 因两 loader 线程并发写。
+   * - [sabrContexts]:type → value(服务端给的原始 opaque bytes,不解码/重组),active+非 active 都存这。
+   * - [activeSabrContextTypes]:type 集合,标记 [sabrContexts] 中哪些该完整回传(其余只回 type id)。
+   * processUmpStream 捕获写回(part 57/59);fetch 读它经 [prepareSabrContexts] 填 StreamerContext。
+   */
+  val sabrContexts: MutableMap<Int, ByteArray> = ConcurrentHashMap(),
+  val activeSabrContextTypes: MutableSet<Int> = ConcurrentHashMap.newKeySet(),
 ) {
   /** alpha.29:按 itag 查多清晰度 FormatId;查不到回退默认 [videoFormatId](同 itag 时)。 */
   fun videoFormat(itag: Int): FormatId? =
     videoFormats.firstOrNull { it.itag == itag } ?: videoFormatId.takeIf { it.itag == itag }
+
+  /**
+   * alpha.31:对齐 FreeTube `prepareSabrContexts`(SabrSchemePlugin.js L223-239)——每次请求(含重试)
+   * 重算回传集:[sabrContexts] 中 type 在 [activeSabrContextTypes] 的 → 完整 `SabrContext{type, value}`
+   * (field5);非 active 的 → 只 type id(field6)。value 用服务端给的原始 bytes,opaque 回传。
+   */
+  fun prepareSabrContexts(): Pair<List<SabrContext>, List<Int>> {
+    val active = ArrayList<SabrContext>()
+    val unsent = ArrayList<Int>()
+    for ((type, value) in sabrContexts) {
+      if (type in activeSabrContextTypes) active.add(SabrContext(type, value))
+      else unsent.add(type)
+    }
+    return active to unsent
+  }
+
   /**
    * SABR_REDIRECT 给的新 sabrUrl 可能是 base(无 alr/cpn)→ 重加 alr+cpn 写回 [sabrUrl]。
    * 复用 [Companion.sabrUrlWithParams](对齐 fromSabrData 的拼接,只在无 `?`/无 alr 时补)。
@@ -185,12 +216,16 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     // alpha.30:回传 playbackCookie(StreamerContext.field3)——服务端 NextRequestPolicy 要求客户端
     // 把 cookie 塞进下个请求,否则 ~6 段后丢失会话连续性 → premature EOF(FreeTube 源码确认)。
     // cookie 存 session.playbackCookie(processUmpStream 捕获写回),会话级共享。
+    // alpha.31:同时回传 SABR 上下文握手(field5 sabrContexts / field6 unsentSabrContexts)——
+    // 不回传则服务端只回 context+backoff 不发 media → 8 次后 EOF(alpha.29/30 打不开视频根因)。
+    // session.prepareSabrContexts 按 active 集合分派(processUmpStream 捕获 part 57/59 写回)。
+    val (activeCtxs, unsentCtxTypes) = session.prepareSabrContexts()
     val streamerContext = StreamerContextInput(
       clientInfo = session.clientInfo,
       poToken = session.poToken,
       playbackCookie = session.playbackCookie,
-      sabrContexts = emptyList(),
-      unsentSabrContexts = emptyList(),
+      sabrContexts = activeCtxs,
+      unsentSabrContexts = unsentCtxTypes,
     )
     val resolution = videoFmt.height.takeIf { it > 0 }
     val clientAbrState = ClientAbrStateInput(
@@ -237,7 +272,7 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     val body = SabrProto.encodeVideoPlaybackAbrRequest(input)
     val rn = requestNumber.getAndIncrement()
     val url = "${session.sabrUrl}&rn=$rn"
-    Log.i(tag, "fetch rn=$rn isInit=${req.isInit} stream=${req.streamType} seq=${req.sequenceNumber} body=${body.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()}")
+    Log.i(tag, "fetch rn=$rn isInit=${req.isInit} stream=${req.streamType} seq=${req.sequenceNumber} body=${body.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size}")
 
     return try {
       val request = Request.Builder()
@@ -353,9 +388,34 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
               errorMsg = "SABR Error type=${err?.type} code=${err?.code}"
               Log.w(tag, errorMsg!!)
             }
-            PART_SABR_CONTEXT_UPDATE, PART_SABR_CONTEXT_SENDING_POLICY -> {
-              // 首版不维护 SABR context(retry 时回传);log 计数
-              Log.i(tag, "part type=$type(${partName(type)}) payloadLen=${payload.size} (context policy, ignored)")
+            PART_SABR_CONTEXT_UPDATE -> {
+              // alpha.31:捕获服务端下发的上下文,回传进下次请求 streamerContext.sabr_contexts(field5)
+              // / unsent_sabr_contexts(field6)。不回传 → 服务端只回 context+backoff 不发 media → EOF
+              // (alpha.29/30 打不开视频根因)。对齐 FreeTube SabrSchemePlugin.js L430-447。
+              val u = SabrProto.decodeSabrContextUpdate(payload)
+              if (u != null && u.type != 0 && u.value.isNotEmpty()) {
+                // writePolicy KEEP_EXISTING(2) 且已存 → 跳过(不覆盖、不加 active);否则覆盖存。
+                val keepExisting = u.writePolicy == 2 && session.sabrContexts.containsKey(u.type)
+                if (!keepExisting) {
+                  session.sabrContexts[u.type] = u.value
+                  if (u.sendByDefault) session.activeSabrContextTypes.add(u.type)
+                }
+                Log.i(tag, "SABR_CONTEXT_UPDATE type=${u.type} valLen=${u.value.size} sendByDefault=${u.sendByDefault} writePolicy=${u.writePolicy} keepExisting=$keepExisting ctxs=${session.sabrContexts.size} active=${session.activeSabrContextTypes.size}")
+              } else {
+                Log.i(tag, "part type=$type(SABR_CONTEXT_UPDATE) payloadLen=${payload.size} (no type/value, ignored)")
+              }
+            }
+            PART_SABR_CONTEXT_SENDING_POLICY -> {
+              // alpha.31:服务端动态控制 active 集合(start 发/stop 停/discard 丢)。对齐 FreeTube L450-470。
+              val p = SabrProto.decodeSabrContextSendingPolicy(payload)
+              if (p != null) {
+                p.start.forEach { session.activeSabrContextTypes.add(it) }
+                p.stop.forEach { session.activeSabrContextTypes.remove(it) }
+                p.discard.forEach { session.sabrContexts.remove(it) }
+                Log.i(tag, "SABR_CONTEXT_SENDING_POLICY start=${p.start} stop=${p.stop} discard=${p.discard} ctxs=${session.sabrContexts.size} active=${session.activeSabrContextTypes.size}")
+              } else {
+                Log.i(tag, "part type=$type(SABR_CONTEXT_SENDING_POLICY) payloadLen=${payload.size} (decode failed, ignored)")
+              }
             }
             else -> {
               // 其余 part type(LAWNMOWER/CACHE_LOAD/RELOAD_PLAYER/END_OF_TRACK 等)首版仅记录
@@ -433,6 +493,7 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     58 -> "STREAM_PROTECTION_STATUS"
     59 -> "SABR_CONTEXT_SENDING_POLICY"
     62 -> "END_OF_TRACK"
+    67 -> "SNACKBAR_MESSAGE"
     else -> "?"
   }
 }
