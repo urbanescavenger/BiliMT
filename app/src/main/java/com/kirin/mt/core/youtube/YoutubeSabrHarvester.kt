@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
+import android.view.View
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -73,7 +74,7 @@ class YoutubeSabrHarvester(
         CookieManager.getInstance().flush()
       }.onFailure { Log.w(Tag, "seed cookies failed: ${it.message}") }
       Log.i(Tag, "harvest: load embed videoId=$videoId cookie=${cookies.length}B")
-      view.loadUrl("https://www.youtube.com/embed/$videoId?autoplay=1&mute=1&playsinline=1")
+      view.loadUrl("https://www.youtube.com/embed/$videoId?autoplay=1&mute=1&playsinline=1&origin=https://www.youtube.com")
       // 轮询 window.__gvCaptures[0](对齐 BotGuard pollState 双解码:evaluateJavascript 对字符串
       // 结果做 JSON 编码,先解内层字符串再解析对象)。alpha.20 只截 SABR POST 致 25s 无捕获——
       // alpha.21 放宽到所有 googlevideo 请求(含 DASH GET),并加页面加载/console 诊断定位 embed 行为。
@@ -122,6 +123,13 @@ class YoutubeSabrHarvester(
 
       override fun onPageFinished(view: WebView?, url: String?) {
         Log.i(Tag, "embed onPageFinished: $url")
+        // dump 页面内容——确认 embed 页真渲染了播放器(不是 consent 墙/error 壳)。title/body/player
+        // 元素经 console 路由(被 onConsoleMessage 捕获)。alpha.21 真机:onPageFinished 触发但 25s 零
+        // googlevideo 请求 + 零 console → 疑 detached WebView 0 尺寸致播放器 JS 不 init(本版补 measure+layout)。
+        view?.evaluateJavascript(
+          "try{var p=document.getElementById('movie_player')||document.querySelector('.html5-video-player');console.log('PAGE diag title='+document.title+' body='+((document.body&&document.body.innerText)||'NOBODY').slice(0,150)+' player='+!!p+' vp='+(window.innerWidth+'x'+window.innerHeight));}catch(e){console.log('PAGE diag err '+e);}",
+          null,
+        )
       }
 
       override fun onReceivedError(
@@ -156,6 +164,13 @@ class YoutubeSabrHarvester(
       }
     }
     clearCache(true)
+    // 关键:detached WebView 默认 0 尺寸,YouTube 播放器 JS 检测元素/视口尺寸为 0 → 拒绝 init
+    // (alpha.21 真机:onPageFinished 触发但零 console 零 googlevideo 请求,即此因)。measure+layout
+    // 给真实内部尺寸,player 元素与 window.innerWidth/Height 非 0 → 播放器 init → 发 googlevideo 请求。
+    val w = View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY)
+    val h = View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY)
+    measure(w, h)
+    layout(0, 0, measuredWidth, measuredHeight)
   }
 
   /** 取 URL query 参数值(首段 ? 之后,不依赖正则)。 */
