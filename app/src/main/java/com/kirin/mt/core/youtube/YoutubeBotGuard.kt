@@ -175,6 +175,9 @@ class YoutubeBotGuard(
   // ---- GenerateIT ----
 
   private suspend fun generateIntegrityToken(botguardResponse: String): String? = withContext(Dispatchers.IO) {
+    val genCookie = innerTubeClient.currentSessionCookies()
+    val genVisitor = innerTubeClient.currentVisitorData()
+    Log.i(Tag, "GenerateIT cookie=${genCookie.take(60)} visitor=${genVisitor.take(24)}")
     val body = "[\"$RequestKey\",${jsonString(botguardResponse)}]".toRequestBody(JsonProtobufMediaType)
     val request = Request.Builder()
       // 对齐 FreeTube botGuardScript.js 的 buildURL('GenerateIT', true) = www.youtube.com/api/jnn/v1/GenerateIT。
@@ -186,6 +189,12 @@ class YoutubeBotGuard(
       .header("x-goog-api-key", WaaApiKey)
       .header("x-user-agent", "grpc-web-javascript/0.1")
       .header("User-Agent", YoutubeConstants.UserAgent)
+      // 对齐 FreeTube botGuardScript.js：GenerateIT 在 WebView 同源发，自动携带完整浏览器
+      // cookie(含 VISITOR_INFO1_LIVE) + visitorData。我们 OkHttp 直发必须显式带 Cookie +
+      // X-Goog-Visitor-Id，否则 integrityToken 未绑定到会话 → 最终 PO token 无效 → /player 拒签
+      // DASH 流(§6.7 row 34)。
+      .header("Cookie", innerTubeClient.currentSessionCookies())
+      .header("X-Goog-Visitor-Id", innerTubeClient.currentVisitorData())
       .build()
     var status = 0
     val text = runCatching {

@@ -382,7 +382,8 @@ class InnerTubeClient(
     return headers
   }
 
-  private fun currentVisitorData(): String {
+  /** 当前 visitorData（真实会话优先，否则合成）。GenerateIT 需带它把 integrityToken 绑定到会话。 */
+  fun currentVisitorData(): String {
     val cached = visitorData
     if (cached != null) return cached
     val generated = encodeVisitorData(
@@ -399,10 +400,11 @@ class InnerTubeClient(
   }
 
   /** 当前完整会话 cookie（CONSENT/SOCS/VISITOR_INFO1_LIVE/PREF）；未捕获到则降级仅 VISITOR_INFO1_LIVE=V。 */
-  private fun currentSessionCookies(): String {
+  fun currentSessionCookies(): String {
     return realSessionData?.sessionCookies
       ?: "VISITOR_INFO1_LIVE=${currentVisitorData()}; PREF=tz=Asia.Shanghai"
   }
+
 
   /**
    * 拉取真实 visitorData（对齐 youtubei.js `generateSessionLocally:false` 的 #getSessionData）。
