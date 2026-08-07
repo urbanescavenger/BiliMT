@@ -180,6 +180,27 @@ class YoutubePlaybackResolver(
         val firstVideo = raws.firstOrNull { (it.intOrNull("height") ?: 0) > 0 }
         val firstAudio = raws.firstOrNull { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
         if (firstVideo != null && firstAudio != null) {
+          // alpha.29:多清晰度——切清晰度重跑 resolve 时,若该 videoId 已有缓存 SABR 会话
+          // (poToken/ustreamerConfig/cpn 会话级可复用 ~6h,核对 FreeTube Watch.js 证实同 token 跨多 itag),
+          // 跳过 harvest/decipher 直接复用,用 preferredQualityId 选 itag 建 PlaybackInfo。
+          val cachedSid = SabrStreamRegistry.getByVideoId(videoId)
+          if (cachedSid != null) {
+            val cached = SabrStreamRegistry.get(cachedSid)
+            if (cached != null) {
+              Log.i(Tag, "SABR cache hit: videoId=$videoId sid=$cachedSid → reuse session (skip harvest/decipher), preferredQuality=${request.preferredQualityId}")
+              return@withContext buildSabrPlaybackInfo(request, videoId, durationMs, raws, cached.session, cachedSid)
+            }
+          }
+          // alpha.29:同会话所有可播视频 itag 的 FormatId(从 /player adaptiveFormats 全收)。
+          // poToken 会话级不绑 itag → 多清晰度 = 请求体 preferredVideoFormatIds 填哪个 itag(见 SabrClient.fetch)。
+          val videoFormats = raws.filter { (it.intOrNull("height") ?: 0) > 0 }.map {
+            SabrFormatId(
+              it.longOrNull("itag")?.toInt() ?: 0,
+              it.longOrNull("lastModified") ?: 0L,
+              it.stringOrNull("xtags"),
+              it.intOrNull("height") ?: 0,
+            )
+          }
           // SABR URL 需 decipher(n-param transform)——对齐 googlevideo 示例
           // `innertube.session.player.decipher(serverAbrStreamingUrl)`。googlevideo URL 带 `n` 签名参数,
           // 未用 base.js transform 解出真值则返回 403 空体(alpha.18 实测 Server=gvs 1.0
@@ -209,6 +230,7 @@ class YoutubePlaybackResolver(
               userAgent = client.userAgent,
               cookieHeader = innerTubeClient.currentSessionCookies(),
               visitorData = innerTubeClient.currentVisitorData(),
+              videoFormats = videoFormats,
             )
           } else {
             // plasma 播放器:n-transform 在 WASM 里,[YoutubeNDecryptor] 正则结构性失效(§6.7 row 43)
@@ -232,12 +254,12 @@ class YoutubePlaybackResolver(
                   "url=${capture.url} bodyB64=${capture.bodyB64.length}B " +
                   "→ ${if (isPost) "POST(build SabrSession from harvested body)" else "GET(SABR 需 POST body,skip)"}"
               )
-              if (isPost) buildSabrSessionFromCapture(capture, client) else null
+              if (isPost) buildSabrSessionFromCapture(capture, client, videoFormats) else null
             }
           }
           if (sabrSession != null) {
             val sabrClient = SabrClient(httpClient)
-            val sid = SabrStreamRegistry.register(sabrSession, sabrClient)
+            val sid = SabrStreamRegistry.registerByVideoId(videoId, sabrSession, sabrClient)
             Log.i(
               Tag,
               "SABR playback ready: sid=$sid nTransformed=$nTransformed " +
@@ -568,7 +590,7 @@ class YoutubePlaybackResolver(
    * SabrClient 自构 body 驱 init+seg 全 Success(§6.7 row 50)。返回 null 表示 body/formatIds/cpn 缺失
    * → 上层回退普通 adaptive/progressive 路径。
    */
-  private suspend fun buildSabrSessionFromCapture(capture: YoutubeSabrHarvester.SabrCapture, client: InnerTubeClient.Client): SabrSession? {
+  private suspend fun buildSabrSessionFromCapture(capture: YoutubeSabrHarvester.SabrCapture, client: InnerTubeClient.Client, videoFormats: List<SabrFormatId>): SabrSession? {
     val body = runCatching { Base64.decode(capture.bodyB64, Base64.DEFAULT) }.getOrNull()
     if (body == null || body.isEmpty()) {
       Log.w(Tag, "SABR session: body empty (len=${capture.bodyB64.length}) — hook 没捕到 body?")
@@ -603,6 +625,7 @@ class YoutubePlaybackResolver(
       cookieHeader = innerTubeClient.currentSessionCookies(),
       visitorData = innerTubeClient.currentVisitorData(),
       cpn = browserCpn,
+      videoFormats = videoFormats,
     )
   }
 
@@ -612,6 +635,13 @@ class YoutubePlaybackResolver(
    * SabrStreamingDataSource 把 read() 翻译成 SabrClient.fetch(init/seg))。track 元数据
    * (codecs/width/height)按会话 formatId 的 itag 从 /player adaptive 原始 JSON 取,确保与 SABR
    * 实际服务的格式一致。
+   *
+   * alpha.29:多清晰度——`qualities` = 会话全部视频 itag(从 videoFormats,按 height 降序),
+   * `videoTracks` = 仅选中 itag 的一条(progressive 分支只播 first(),见 PlayerScreen MergingMediaSource
+   * 构建),`selectedQuality` = `preferredQualityId` 命中菜单则用之,否则默认 videoFormatId(harvested)。
+   * 切清晰度:播放器用 preferredQualityId 重跑 resolve → 缓存命中跳过 harvest → 用新 itag 建 PlaybackInfo
+   * → 重建 MediaSource(新 `sabr://...&itag=N` → SabrStreamingDataSource 按新 itag 请求)。poToken 会话级
+   * 不绑 itag(FreeTube 证实),同 sid 换 itag 即换清晰度,无需重 harvest。
    */
   private fun buildSabrPlaybackInfo(
     request: PlaybackRequest,
@@ -621,19 +651,31 @@ class YoutubePlaybackResolver(
     sabrSession: SabrSession,
     sid: String,
   ): PlaybackInfo {
-    val vItag = sabrSession.videoFormatId.itag
     val aItag = sabrSession.audioFormatId.itag
-    val vRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == vItag }
     val aRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == aItag }
-    val videoTrack = buildSabrTrack(vItag, vRaw, "video", sid)
     val audioTrack = buildSabrTrack(aItag, aRaw, "audio", sid)
-    val selectedQuality = PlaybackQuality(
-      id = vItag,
-      description = if (videoTrack.height > 0) "${videoTrack.height}p" else "SABR",
-    )
+
+    // 全部视频 itag 作清晰度菜单;videoFormats 为空(classic 仅首条)则兜底默认 videoFormatId。
+    val videoFmts = sabrSession.videoFormats.ifEmpty { listOf(sabrSession.videoFormatId) }
+    val qualities = videoFmts.sortedByDescending { it.height }.map { fmt ->
+      val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == fmt.itag }
+      val h = raw?.intOrNull("height") ?: fmt.height
+      val codec = shortCodec(extractCodecs(raw?.stringOrNull("mimeType") ?: ""))
+      PlaybackQuality(
+        id = fmt.itag,
+        description = (if (h > 0) "${h}p" else "itag ${fmt.itag}") + (if (codec.isNotEmpty()) " $codec" else ""),
+      )
+    }
+    // 选档:preferredQualityId 命中菜单用之;否则默认 videoFormatId(harvested/首条,服务端已验过)。
+    val selectedItag = request.preferredQualityId
+      ?.takeIf { pid -> videoFmts.any { it.itag == pid } }
+      ?: sabrSession.videoFormatId.itag
+    val selectedQuality = qualities.firstOrNull { it.id == selectedItag } ?: qualities.first()
+    val vRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == selectedItag }
+    val videoTrack = buildSabrTrack(selectedItag, vRaw, "video", sid)
     Log.i(
       Tag,
-      "SABR PlaybackInfo: sid=$sid video=itag$vItag(${videoTrack.height}p ${videoTrack.codecs}) " +
+      "SABR PlaybackInfo: sid=$sid qualities=${qualities.size} selected=itag$selectedItag(${videoTrack.height}p ${videoTrack.codecs}) " +
         "audio=itag$aItag(${audioTrack.codecs}) duration=${durationMs}ms → sabr:// progressive"
     )
     return PlaybackInfo(
@@ -641,7 +683,7 @@ class YoutubePlaybackResolver(
       cid = 0L,
       title = request.title,
       durationMs = durationMs,
-      qualities = listOf(selectedQuality),
+      qualities = qualities,
       selectedQuality = selectedQuality,
       videoTracks = listOf(videoTrack),
       audioTracks = listOf(audioTrack),
@@ -649,15 +691,18 @@ class YoutubePlaybackResolver(
     )
   }
 
-  /** 构造单条 SABR progressive track。元数据从 /player adaptive 原始 JSON 取,缺则用合理默认。 */
+  /** 构造单条 SABR progressive track。元数据从 /player adaptive 原始 JSON 取,缺则用合理默认。
+   *  alpha.29:视频流 baseUrl 带 `&itag=<itag>`(同 sid 换 itag 即换清晰度);audio 不带(用会话默认)。 */
   private fun buildSabrTrack(itag: Int, raw: JsonObject?, stream: String, sid: String): PlaybackTrack {
     val rawMime = raw?.stringOrNull("mimeType")
     val mime = (rawMime ?: if (stream == "video") "video/mp4" else "audio/mp4").substringBefore(";").trim()
     val codecs = extractCodecs(rawMime ?: "")
     val isVideo = stream == "video"
+    val baseUrl = if (isVideo) "sabr://youtube/$sid?stream=video&itag=$itag"
+      else "sabr://youtube/$sid?stream=audio"
     return PlaybackTrack(
       id = itag,
-      baseUrl = "sabr://youtube/$sid?stream=$stream",
+      baseUrl = baseUrl,
       backupUrls = emptyList(),
       bandwidth = raw?.intOrNull("bitrate") ?: 0,
       codecs = codecs,
@@ -667,6 +712,15 @@ class YoutubePlaybackResolver(
       // null → 播放器 progressive 分支(MergingMediaSource),SabrStreamingDataSource 接管 sabr://。
       segmentBase = null,
     )
+  }
+
+  /** alpha.29:清晰度描述用的简短 codec 标签(区分同高度多 codec,如 1080p H264 vs VP9 vs AV1)。 */
+  private fun shortCodec(codecs: String): String = when {
+    codecs.contains("av01", true) -> "AV1"
+    codecs.contains("vp09", true) || codecs.contains("vp9", true) -> "VP9"
+    codecs.contains("avc1", true) || codecs.contains("avc3", true) -> "H264"
+    codecs.contains("hevc", true) || codecs.contains("hvc1", true) -> "HEVC"
+    else -> ""
   }
 
   private suspend fun replaySabrCapture(capture: YoutubeSabrHarvester.SabrCapture, client: InnerTubeClient.Client) {

@@ -39,13 +39,22 @@ internal data class SabrSession(
   val clientInfo: ClientInfoInput,
   val audioFormatId: FormatId,
   val videoFormatId: FormatId,
-  /** 会话传输头——与 /player 同会话(对齐 FreeTube 走浏览器/shaka fetch 自动带 cookie+UA+visitor)。 */
+  /**
+   * alpha.29:同一会话下所有可播视频 itag 的 FormatId(从 /player adaptiveFormats 全收)。
+   * poToken 是**会话级**不绑 itag(核对 FreeTube Watch.js createLocalSabrManifest 证实:一个 poToken
+   * 给整个 SABR 会话,播放器用同一 token 请求不同 itag)→ 多清晰度 = 请求体 preferredVideoFormatIds
+   * 填哪个 itag,服务端发对应流。`videoFormatId` 是默认(harvested/首条)兜底,本表查不到时回退它。
+   */
+  val videoFormats: List<FormatId> = emptyList(),
   val userAgent: String,
   val cookieHeader: String,
   val visitorData: String,
   /** 会话 cpn——Redirect 重写 sabrUrl 时需重新追加 `cpn=`(会话绑定)。 */
   val cpn: String,
 ) {
+  /** alpha.29:按 itag 查多清晰度 FormatId;查不到回退默认 [videoFormatId](同 itag 时)。 */
+  fun videoFormat(itag: Int): FormatId? =
+    videoFormats.firstOrNull { it.itag == itag } ?: videoFormatId.takeIf { it.itag == itag }
   /**
    * SABR_REDIRECT 给的新 sabrUrl 可能是 base(无 alr/cpn)→ 重加 alr+cpn 写回 [sabrUrl]。
    * 复用 [Companion.sabrUrlWithParams](对齐 fromSabrData 的拼接,只在无 `?`/无 alr 时补)。
@@ -69,14 +78,19 @@ internal data class SabrSession(
       /** 会话 cpn——alpha.26 harvest 路径须传浏览器原 cpn(绑定 body 的 poToken/ustreamerConfig 会话);
        * null 时随机生成(classic /player 路径)。 */
       cpn: String? = null,
+      /**
+       * alpha.29:同会话所有可播视频 itag 的 FormatId(从 /player adaptiveFormats 全收)。poToken 会话级
+       * 不绑 itag(FreeTube 证实)→ 多清晰度 = 请求体填哪个 itag。默认空(仅 [videoFormatId] 一档)。
+       */
+      videoFormats: List<FormatId> = emptyList(),
     ): SabrSession {
       // sabrUrl 加 alr=yes + cpn(对齐 FreeTube Watch.js L1619-1620 + SabrSchemePlugin 追加 rn)。cpn = 16 随机字节 base64url
       val usedCpn = cpn ?: randomCpn()
       val withParams = sabrUrlWithParams(sabrUrl, usedCpn)
       val po = Base64.decode(poTokenB64, Base64.DEFAULT)
       val ustreamer = Base64.decode(ustreamerConfigB64, Base64.DEFAULT)
-      Log.i(tag, "SabrSession: sabrUrl=${withParams.take(200)}... poToken=${po.size}B ustreamerCfg=${ustreamer.size}B cpn=$usedCpn audio=$audioFormatId video=$videoFormatId ua=${userAgent.take(40)} cookie=${cookieHeader.length}B visitor=${visitorData.length}B")
-      return SabrSession(withParams, po, ustreamer, clientInfo, audioFormatId, videoFormatId, userAgent, cookieHeader, visitorData, usedCpn)
+      Log.i(tag, "SabrSession: sabrUrl=${withParams.take(200)}... poToken=${po.size}B ustreamerCfg=${ustreamer.size}B cpn=$usedCpn audio=$audioFormatId video=$videoFormatId videoFormats=${videoFormats.size} ua=${userAgent.take(40)} cookie=${cookieHeader.length}B visitor=${visitorData.length}B")
+      return SabrSession(withParams, po, ustreamer, clientInfo, audioFormatId, videoFormatId, videoFormats, userAgent, cookieHeader, visitorData, usedCpn)
     }
 
     /** 16 字节随机 → base64url 无 padding(对齐 youtubei.js generateRandomString 16 位 cpn)。 */
@@ -101,6 +115,9 @@ internal data class SabrFetchRequest(
   val isInit: Boolean,
   val sequenceNumber: Int = 0,
   val streamType: SabrStreamType,
+  /** alpha.29:本次请求要播的视频 itag(null=用会话默认 videoFormatId,即 harvested/首条)。
+   * poToken 会话级不绑 itag → 换 itag 即换清晰度,无需重 harvest。audio 流忽略本字段。 */
+  val videoItag: Int? = null,
   /** alpha.28:SABR 服务端驱动——服务端按 playerTimeMs + bufferedRanges 决定发哪段。
    * alpha.27 硬死 playerTimeMs=0/无 buffer → 服务端只发初始 ~4 段(segs 1-4,~26s lookahead)
    * 就不再发新段 → seq5 拿不到 → premature EOF(黑屏)。改:每段请求带 cumulativeDurationMs
@@ -142,7 +159,9 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
    */
   suspend fun fetch(session: SabrSession, req: SabrFetchRequest): SabrFetchResult {
     val audioEnc = SabrProto.encodeFormatId(session.audioFormatId.itag, session.audioFormatId.lastModified, session.audioFormatId.xtags)
-    val videoEnc = SabrProto.encodeFormatId(session.videoFormatId.itag, session.videoFormatId.lastModified, session.videoFormatId.xtags)
+    // alpha.29:按请求 itag 选视频 FormatId(poToken 会话级不绑 itag → 换 itag 换清晰度);查不到回退默认。
+    val videoFmt = req.videoItag?.let { session.videoFormat(it) } ?: session.videoFormatId
+    val videoEnc = SabrProto.encodeFormatId(videoFmt.itag, videoFmt.lastModified, videoFmt.xtags)
     val selected = if (req.isInit) emptyList() else listOf(audioEnc, videoEnc)
     val streamerContext = StreamerContextInput(
       clientInfo = session.clientInfo,
@@ -150,7 +169,7 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
       sabrContexts = emptyList(),
       unsentSabrContexts = emptyList(),
     )
-    val resolution = session.videoFormatId.height.takeIf { it > 0 }
+    val resolution = videoFmt.height.takeIf { it > 0 }
     val clientAbrState = ClientAbrStateInput(
       timeSinceLastManualFormatSelectionMs = if (req.streamType == SabrStreamType.VIDEO) 0L else null,
       lastManualSelectedResolution = resolution,
@@ -249,7 +268,8 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
                 Log.w(tag, "MEDIA_HEADER decode failed payloadLen=${payload.size}")
               } else if (matchedHeaderId == null) {
                 val matched = matchesFormat(mh, session, req)
-                val wanted = if (req.streamType == SabrStreamType.AUDIO) session.audioFormatId else session.videoFormatId
+                val wanted = if (req.streamType == SabrStreamType.AUDIO) session.audioFormatId
+                  else req.videoItag?.let { session.videoFormat(it) } ?: session.videoFormatId
                 Log.i(tag, "MEDIA_HEADER headerId=${mh.headerId} itag=${mh.itag} lmt=${mh.lmt} xtags=${mh.xtags} isInit=${mh.isInitSeg} seq=${mh.sequenceNumber} contentLen=${mh.contentLength} dur=${mh.durationMs}ms | matched=$matched (wanted itag=${wanted.itag} lmt=${wanted.lastModified} xtags=${wanted.xtags})")
                 if (matched) {
                   matchedHeaderId = mh.headerId
@@ -315,7 +335,9 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
 
   /** 匹配 MEDIA_HEADER:formatId(itag/lastModified/xtags) 一致 + isInit/seq 对齐请求(对齐 SabrSchemePlugin L386-396)。 */
   private fun matchesFormat(mh: SabrProto.MediaHeader, session: SabrSession, req: SabrFetchRequest): Boolean {
-    val wanted = if (req.streamType == SabrStreamType.AUDIO) session.audioFormatId else session.videoFormatId
+    // alpha.29:视频流按请求 itag 匹配(poToken 会话级不绑 itag,服务端按 preferredVideoFormatIds 发对应流)。
+    val wanted = if (req.streamType == SabrStreamType.AUDIO) session.audioFormatId
+      else req.videoItag?.let { session.videoFormat(it) } ?: session.videoFormatId
     if (mh.itag != wanted.itag) return false
     if (mh.lmt != wanted.lastModified) return false
     // xtags 双方都可能 null(无 xtags 的常规 itag);null 与 "" 等价。

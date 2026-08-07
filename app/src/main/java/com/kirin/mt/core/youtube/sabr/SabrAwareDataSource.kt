@@ -30,9 +30,9 @@ internal class SabrAwareDataSource(private val http: DataSource) : DataSource {
     val scheme = uri.scheme
     val parsed = if (scheme?.equals("sabr", ignoreCase = true) == true) parseSabrUri(uri) else null
     return if (parsed != null) {
-      val (sid, stream) = parsed
-      Log.i(tag, "route sabr:// sid=$sid stream=$stream → SabrStreamingDataSource")
-      val sabr = SabrStreamingDataSource(sid, stream)
+      val (sid, stream, itag) = parsed
+      Log.i(tag, "route sabr:// sid=$sid stream=$stream itag=${itag ?: "default"} → SabrStreamingDataSource")
+      val sabr = SabrStreamingDataSource(sid, stream, itag)
       delegate = sabr
       sabr.open(dataSpec)
     } else {
@@ -53,13 +53,18 @@ internal class SabrAwareDataSource(private val http: DataSource) : DataSource {
 
   override fun close() = delegate.close()
 
-  /** `sabr://youtube/<sessionId>?stream=video|audio` → (sessionId, streamType)。 */
-  private fun parseSabrUri(uri: Uri): Pair<String, SabrStreamType>? {
+  /**
+   * `sabr://youtube/<sessionId>?stream=video|audio&itag=<N>` → (sessionId, streamType, videoItag?)。
+   * alpha.29:`&itag=` 指定本次播放的视频清晰度(poToken 会话级不绑 itag,同 sid 换 itag 即换清晰度)。
+   * audio 流不带 itag(用会话默认 audioFormatId)。
+   */
+  private fun parseSabrUri(uri: Uri): Triple<String, SabrStreamType, Int?>? {
     // host 段 = "youtube";最后一个 path segment = sessionId。
     val sid = uri.lastPathSegment ?: return null
     if (sid.isBlank()) return null
     val stream = uri.getQueryParameter("stream") ?: "video"
     val st = if (stream.equals("audio", ignoreCase = true)) SabrStreamType.AUDIO else SabrStreamType.VIDEO
-    return sid to st
+    val itag = uri.getQueryParameter("itag")?.toIntOrNull()
+    return Triple(sid, st, itag)
   }
 }

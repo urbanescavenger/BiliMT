@@ -25,6 +25,8 @@ import kotlinx.coroutines.runBlocking
 internal class SabrStreamingDataSource(
   private val sessionId: String,
   private val streamType: SabrStreamType,
+  /** alpha.29:本流要播的视频 itag(null=会话默认 videoFormatId)。来自 sabr:// URL 的 `&itag=`。 */
+  private val requestedItag: Int?,
 ) : DataSource {
   private val tag = "YtSabr"
   private var entry: SabrStreamRegistry.Entry? = null
@@ -49,7 +51,8 @@ internal class SabrStreamingDataSource(
     entry = e
     Log.i(tag, "SabrStream open sid=$sessionId stream=$streamType sabrUrl=${e.session.sabrUrl.take(80)}...")
     // init 段(seq=0,isInit=true);init durationMs=0,cumulative 不变(playerTimeMs=0,无 bufferedRange)。
-    val initResult = fetchUntilReady(SabrFetchRequest(isInit = true, streamType = streamType))
+    // alpha.29:带 requestedItag 让服务端按该 itag 发对应清晰度的 init(视频流)。
+    val initResult = fetchUntilReady(SabrFetchRequest(isInit = true, streamType = streamType, videoItag = requestedItag))
       ?: run {
         Log.w(tag, "SabrStream open: init fetch failed sid=$sessionId stream=$streamType → throw")
         throw java.io.IOException("SABR init fetch failed: sid=$sessionId stream=$streamType")
@@ -102,7 +105,9 @@ internal class SabrStreamingDataSource(
    * 构造下一段请求:playerTimeMs = 已缓冲终点(cumulativeDurationMs),bufferedRange = [0, cumulative]。
    * 服务端据此 lookahead 窗口发下一段(init 后 cumulative=0 时跳过 bufferedRange,等同 alpha.27 行为)。 */
   private fun buildSegRequest(e: SabrStreamRegistry.Entry): SabrFetchRequest {
-    val fmt = if (streamType == SabrStreamType.AUDIO) e.session.audioFormatId else e.session.videoFormatId
+    // alpha.29:视频流按 requestedItag 取 FormatId(poToken 会话级不绑 itag);audio 用会话默认。
+    val fmt = if (streamType == SabrStreamType.AUDIO) e.session.audioFormatId
+      else requestedItag?.let { e.session.videoFormat(it) } ?: e.session.videoFormatId
     val br = if (cumulativeDurationMs > 0L) BufferedRangeInput(
       itag = fmt.itag,
       lastModified = fmt.lastModified,
@@ -117,6 +122,7 @@ internal class SabrStreamingDataSource(
       isInit = false,
       sequenceNumber = nextSeq,
       streamType = streamType,
+      videoItag = requestedItag,
       playerTimeMs = cumulativeDurationMs,
       bufferedRange = br,
     )
