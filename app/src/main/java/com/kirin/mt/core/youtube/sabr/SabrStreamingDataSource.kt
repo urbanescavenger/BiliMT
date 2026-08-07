@@ -35,6 +35,9 @@ internal class SabrStreamingDataSource(
   /** 下一段 seq(init 段后从 1 起)。 */
   private var nextSeq: Int = 1
   private var done: Boolean = false
+  /** alpha.28:已取段的累计 durationMs——作下次请求的 playerTimeMs + bufferedRange 终点,
+   * 推动服务端 lookahead 窗口前移(否则只发初始 ~4 段就 premature EOF → 黑屏)。init 段 dur=0 不累计。 */
+  private var cumulativeDurationMs: Long = 0L
 
   override fun open(dataSpec: DataSpec): Long {
     currentUri = dataSpec.uri
@@ -45,30 +48,33 @@ internal class SabrStreamingDataSource(
       }
     entry = e
     Log.i(tag, "SabrStream open sid=$sessionId stream=$streamType sabrUrl=${e.session.sabrUrl.take(80)}...")
-    // init 段(seq=0,isInit=true)
-    val initBytes = fetchUntilReady(SabrFetchRequest(isInit = true, streamType = streamType))
+    // init 段(seq=0,isInit=true);init durationMs=0,cumulative 不变(playerTimeMs=0,无 bufferedRange)。
+    val initResult = fetchUntilReady(SabrFetchRequest(isInit = true, streamType = streamType))
       ?: run {
         Log.w(tag, "SabrStream open: init fetch failed sid=$sessionId stream=$streamType → throw")
         throw java.io.IOException("SABR init fetch failed: sid=$sessionId stream=$streamType")
       }
-    buffer = initBytes
+    buffer = initResult.data
     bufferPos = 0
+    cumulativeDurationMs += initResult.mediaHeader?.durationMs ?: 0L
     return C.LENGTH_UNSET.toLong()
   }
 
   override fun read(target: ByteArray, offset: Int, length: Int): Int {
     if (done) return C.RESULT_END_OF_INPUT
-    if (entry == null) return C.RESULT_END_OF_INPUT
+    val e = entry ?: return C.RESULT_END_OF_INPUT
     while (bufferPos >= buffer.size) {
-      // 当前段读完,拉下一段。
-      val seg = fetchUntilReady(SabrFetchRequest(isInit = false, sequenceNumber = nextSeq, streamType = streamType))
+      // 当前段读完,拉下一段。alpha.28:带 playerTimeMs + bufferedRange(已缓冲 0..cumulative)
+      // 让服务端 lookahead 窗口前移持续发新段(否则初始 ~4 段后 premature EOF → 黑屏)。
+      val seg = fetchUntilReady(buildSegRequest(e))
       if (seg == null) {
         done = true
-        Log.i(tag, "SabrStream read EOF sid=$sessionId stream=$streamType at seq=$nextSeq (no more segments)")
+        Log.i(tag, "SabrStream read EOF sid=$sessionId stream=$streamType at seq=$nextSeq playerTimeMs=$cumulativeDurationMs (no more segments)")
         return C.RESULT_END_OF_INPUT
       }
-      buffer = seg
+      buffer = seg.data
       bufferPos = 0
+      cumulativeDurationMs += seg.mediaHeader?.durationMs ?: 0L
       nextSeq++
     }
     val toCopy = minOf(length, buffer.size - bufferPos)
@@ -93,11 +99,35 @@ internal class SabrStreamingDataSource(
   }
 
   /**
+   * 构造下一段请求:playerTimeMs = 已缓冲终点(cumulativeDurationMs),bufferedRange = [0, cumulative]。
+   * 服务端据此 lookahead 窗口发下一段(init 后 cumulative=0 时跳过 bufferedRange,等同 alpha.27 行为)。 */
+  private fun buildSegRequest(e: SabrStreamRegistry.Entry): SabrFetchRequest {
+    val fmt = if (streamType == SabrStreamType.AUDIO) e.session.audioFormatId else e.session.videoFormatId
+    val br = if (cumulativeDurationMs > 0L) BufferedRangeInput(
+      itag = fmt.itag,
+      lastModified = fmt.lastModified,
+      xtags = fmt.xtags,
+      startTimeMs = 0L,
+      durationMs = cumulativeDurationMs,
+      startSegmentIndex = 0,
+      endSegmentIndex = nextSeq - 1,
+      timeRange = null,
+    ) else null
+    return SabrFetchRequest(
+      isInit = false,
+      sequenceNumber = nextSeq,
+      streamType = streamType,
+      playerTimeMs = cumulativeDurationMs,
+      bufferedRange = br,
+    )
+  }
+
+  /**
    * 发一次 SABR 请求,处理 Redirect(更新 sabrUrl 重试)/Backoff(sleep 重试);
    * Success → 返回段字节;Error/InvalidPoToken → 返回 null(由 read() 当 EOF)。
    * 重试上限 8 次(防 Redirect/Backoff 死循环)。
    */
-  private fun fetchUntilReady(req: SabrFetchRequest): ByteArray? {
+  private fun fetchUntilReady(req: SabrFetchRequest): SabrFetchResult.Success? {
     val e = entry ?: return null
     var attempt = 0
     while (attempt < 8) {
@@ -105,8 +135,8 @@ internal class SabrStreamingDataSource(
       val result = runBlocking { e.client.fetch(e.session, req) }
       when (result) {
         is SabrFetchResult.Success -> {
-          Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} isInit=${req.isInit} bytes=${result.data.size}B")
-          return result.data
+          Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} isInit=${req.isInit} bytes=${result.data.size}B dur=${result.mediaHeader?.durationMs}ms playerTimeMs=${req.playerTimeMs}")
+          return result
         }
         is SabrFetchResult.Redirect -> {
           Log.i(tag, "SabrStream sid=$streamType Redirect → ${result.sanitized} (applyRedirect + refetch same seq)")

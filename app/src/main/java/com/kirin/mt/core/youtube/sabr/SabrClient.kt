@@ -101,6 +101,12 @@ internal data class SabrFetchRequest(
   val isInit: Boolean,
   val sequenceNumber: Int = 0,
   val streamType: SabrStreamType,
+  /** alpha.28:SABR 服务端驱动——服务端按 playerTimeMs + bufferedRanges 决定发哪段。
+   * alpha.27 硬死 playerTimeMs=0/无 buffer → 服务端只发初始 ~4 段(segs 1-4,~26s lookahead)
+   * 就不再发新段 → seq5 拿不到 → premature EOF(黑屏)。改:每段请求带 cumulativeDurationMs
+   * (已缓冲到的位置)+ bufferedRange(0..cumulative)让服务端 lookahead 窗口前移持续发新段。 */
+  val playerTimeMs: Long = 0L,
+  val bufferedRange: BufferedRangeInput? = null,
 )
 
 internal sealed class SabrFetchResult {
@@ -153,7 +159,8 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
       stickyResolution = resolution,
       clientViewportIsFlexible = false,
       bandwidthEstimate = 0L,
-      playerTimeMs = 0L,
+      // alpha.28:playerTimeMs 推进(已缓冲到的位置),否则服务端 lookahead 窗口停在 0 → premature EOF。
+      playerTimeMs = req.playerTimeMs,
       playbackRate = 1.0f,
       // 对齐 googlevideo EnabledTrackTypes(AUDIO_ONLY=1 / VIDEO_ONLY=2 / VIDEO_AND_AUDIO=0)——
       // createVideoPlaybackAbrRequest 按 currentFormat.width 取 VIDEO_ONLY/AUDIO_ONLY。alpha.18 误用
@@ -165,8 +172,9 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     val input = SabrRequestInput(
       clientAbrState = clientAbrState,
       selectedFormatIds = selected,
-      bufferedRanges = emptyList(),
-      playerTimeMs = 0L,
+      // alpha.28:报已缓冲 0..cumulative,让服务端发下一段而非重发初始窗(alpha.27 emptyList 致 premature EOF)。
+      bufferedRanges = listOfNotNull(req.bufferedRange),
+      playerTimeMs = req.playerTimeMs,
       videoPlaybackUstreamerConfig = session.ustreamerConfig,
       preferredAudioFormatIds = listOf(audioEnc),
       preferredVideoFormatIds = listOf(videoEnc),
