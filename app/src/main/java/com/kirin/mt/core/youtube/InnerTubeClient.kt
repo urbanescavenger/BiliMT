@@ -184,9 +184,18 @@ class InnerTubeClient(
   suspend fun fetchBotGuardChallenge(): BotGuardChallenge? = withContext(Dispatchers.IO) {
     // 先拉真实 visitorData，保证铸 token 与 /player 用同一真实 visitorData（token 绑定前提）。
     ensureRealSessionData()
+    val ctx = buildContext(Client.WEB)
+    val ctxClient = ctx.obj("client")
+    Log.i(
+      Tag,
+      "challenge context: os=${ctxClient?.stringOrNull("osName")}/${ctxClient?.stringOrNull("osVersion")} " +
+        "browser=${ctxClient?.stringOrNull("browserName")}/${ctxClient?.stringOrNull("browserVersion")} " +
+        "device=${ctxClient?.stringOrNull("deviceMake")}/${ctxClient?.stringOrNull("deviceModel")} " +
+        "mem=${ctxClient?.stringOrNull("memoryTotalKbytes")} tz=${ctxClient?.stringOrNull("timeZone")}"
+    )
     val body = buildJsonObject {
       put("engagementType", "ENGAGEMENT_TYPE_UNBOUND")
-      put("context", buildContext(Client.WEB))
+      put("context", ctx)
     }
     val url = "${YoutubeConstants.InnerTubeBase}/${YoutubeConstants.ApiVersion}/att/get?prettyPrint=false&alt=json"
     val request = Request.Builder()
@@ -235,6 +244,9 @@ class InnerTubeClient(
 
   private fun JsonObject.stringOrNull(name: String): String? = this[name]?.jsonPrimitive?.contentOrNull
 
+  /** 从 JSPB device_info 数组按索引取字符串（越界/非字符串返回 null）。 */
+  private fun JsonArray?.str(i: Int): String? = this?.getOrNull(i)?.jsonPrimitive?.contentOrNull
+
   /** InnerTube 客户端类型。 */
   enum class Client {
     WEB,
@@ -270,8 +282,19 @@ class InnerTubeClient(
               put("screenPixelDensity", 1)
               put("screenDensityFloat", 1)
               put("utcOffsetMinutes", 0)
-              put("timeZone", "Asia/Shanghai")
+              put("timeZone", realSessionData?.timeZone ?: "Asia/Shanghai")
               put("clientScreen", "WATCH")
+              // 浏览器指纹字段（对齐 youtubei.js #buildContext，challenge context 关键）。
+              // 缺这些 BotGuard VM 产出的 token 被判无效 → adaptive URL 被剥（§6.7 row 29）。
+              realSessionData?.osName?.let { put("osName", it) }
+              realSessionData?.osVersion?.let { put("osVersion", it) }
+              realSessionData?.browserName?.let { put("browserName", it) }
+              realSessionData?.browserVersion?.let { put("browserVersion", it) }
+              realSessionData?.deviceMake?.let { put("deviceMake", it) }
+              realSessionData?.deviceModel?.let { put("deviceModel", it) }
+              realSessionData?.deviceExperimentId?.let { put("deviceExperimentId", it) }
+              realSessionData?.rolloutToken?.let { put("rolloutToken", it) }
+              put("memoryTotalKbytes", "8000000")
               put(
                 "mainAppWebInfo",
                 buildJsonObject {
@@ -401,19 +424,44 @@ class InnerTubeClient(
     if (text.isNullOrBlank() || !text.startsWith(")]}'")) return@withContext null
     val root = runCatching { json.parseToJsonElement(text.removePrefix(")]}'").trim()).jsonArray }.getOrNull()
       ?: return@withContext null
-    // JSPB 结构：data[0][2]=ytcfg；ytcfg[0][0]=device_info；device_info[13]=visitorData，[16]=clientVersion。
+    // JSPB 结构：data[0][2]=ytcfg；ytcfg[0][0]=device_info。
+    // device_info 索引对齐 youtubei.js getSessionData：13=visitorData，16=clientVersion，
+    // 11/12=deviceMake/Model，17/18=osName/Version，79=timeZone，86/87=browserName/Version，
+    // 103=deviceExperimentId，107=rolloutToken。这些浏览器指纹字段是 challenge context 的关键
+    // （缺了 BotGuard VM 产出的 token 被判无效 → adaptive URL 被剥，§6.7 row 29）。
     val ytcfg = root.getOrNull(0)?.jsonArray?.getOrNull(2)?.jsonArray ?: return@withContext null
     val deviceInfo = ytcfg.getOrNull(0)?.jsonArray?.getOrNull(0)?.jsonArray ?: return@withContext null
-    val visitor = deviceInfo.getOrNull(13)?.jsonPrimitive?.contentOrNull
+    val visitor = deviceInfo.str(13)
     if (visitor.isNullOrBlank()) return@withContext null
-    val version = deviceInfo.getOrNull(16)?.jsonPrimitive?.contentOrNull
-    RealSessionData(visitor, version ?: YoutubeConstants.ClientVersion)
+    val version = deviceInfo.str(16)
+    RealSessionData(
+      visitorData = visitor,
+      clientVersion = version ?: YoutubeConstants.ClientVersion,
+      osName = deviceInfo.str(17),
+      osVersion = deviceInfo.str(18),
+      browserName = deviceInfo.str(86),
+      browserVersion = deviceInfo.str(87),
+      deviceMake = deviceInfo.str(11),
+      deviceModel = deviceInfo.str(12),
+      timeZone = deviceInfo.str(79),
+      deviceExperimentId = deviceInfo.str(103),
+      rolloutToken = deviceInfo.str(107),
+    )
   }
 
-  /** sw.js_data 拉取的真实会话数据。 */
+  /** sw.js_data 拉取的真实会话数据（含浏览器指纹字段，供 challenge context 用）。 */
   private data class RealSessionData(
     val visitorData: String,
     val clientVersion: String,
+    val osName: String?,
+    val osVersion: String?,
+    val browserName: String?,
+    val browserVersion: String?,
+    val deviceMake: String?,
+    val deviceModel: String?,
+    val timeZone: String?,
+    val deviceExperimentId: String?,
+    val rolloutToken: String?,
   )
 
   // ---- visitorData 编码（对齐 youtubei.js ProtoUtils.encodeVisitorData） ----
