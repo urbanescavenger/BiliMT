@@ -342,8 +342,10 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
               // (cookie 含双格式 resolution,服务端对同一会话发同一值)。
               sawPolicy = true
               cookieBytes = policy?.playbackCookieBytes
-              if (!cookieBytes.isNullOrEmpty()) session.playbackCookie = cookieBytes
-              Log.i(tag, "NEXT_REQUEST_POLICY backoff=${policy?.backoffTimeMs}ms cookie=${!cookieBytes.isNullOrEmpty()}")
+              // ByteArray? 无 isNullOrEmpty() 扩展(仅 Array<T?>/Collection? 有),显式判空。
+              val hasCookie = cookieBytes != null && cookieBytes.isNotEmpty()
+              if (hasCookie) session.playbackCookie = cookieBytes
+              Log.i(tag, "NEXT_REQUEST_POLICY backoff=${policy?.backoffTimeMs}ms cookie=$hasCookie")
             }
             PART_SABR_ERROR -> {
               val err = SabrProto.decodeSabrError(payload)
