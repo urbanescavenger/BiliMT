@@ -241,7 +241,9 @@ class YoutubeJsExecutor(context: Context) {
       // FreeTubeAndroid 用 loadDataWithBaseURL("https://www.youtube.com/", …) 让宿主页的
       // document origin = youtube.com(真浏览器页面环境),VM 的 origin/页内网络探测才能通过 → 产生 minter。
       // 这里同样把宿主页从 file:// 换成 youtube.com 同源基址(仍只承载 evaluateJavascript,不显示内容)。
-      settings.userAgentString = YoutubeConstants.UserAgent
+      // UA 用移动 Chrome(对齐 FreeTubeAndroid 原生 WebView 移动环境)而非桌面——我们此前硬成桌面 UA,
+      // 与真实 Android 设备不一致 → BotGuard VM 环境/context 自相矛盾 → token 判无效(§6.7 row 37)。
+      settings.userAgentString = YoutubeConstants.MobileUserAgent
       webViewClient = object : WebViewClient() {
         override fun onPageFinished(view: WebView?, url: String?) {
           deferred.complete(Unit)

@@ -50,6 +50,15 @@ object YoutubeConstants {
   const val UserAgent =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
+  /**
+   * 移动端 Chrome UA（对齐 FreeTubeAndroid——它在 Android 真机上跑原生 WebView，UA/context/VM
+   * 全链路一致地移动，YouTube 才能把 guest token 绑定到真实设备会话。我们此前把 UA/context/VM
+   * 硬成桌面，与真实 Android 设备不一致 → token 判无效 → adaptive 被剥空，§6.7 row 37）。
+   * 用移动 Chrome UA 让 sw.js_data 报 Android context + 原生移动 VM 指纹，与 FreeTubeAndroid 对齐。
+   */
+  const val MobileUserAgent =
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+
   /** Referer 必须是 youtube，否则 InnerTube 拒收。 */
   const val Referer = "https://www.youtube.com"
 

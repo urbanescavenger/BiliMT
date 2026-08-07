@@ -192,7 +192,7 @@ class YoutubeBotGuard(
       .header("Content-Type", "application/json+protobuf")
       .header("x-goog-api-key", WaaApiKey)
       .header("x-user-agent", "grpc-web-javascript/0.1")
-      .header("User-Agent", YoutubeConstants.UserAgent)
+      .header("User-Agent", YoutubeConstants.MobileUserAgent)
       // 对齐 FreeTube botGuardScript.js：GenerateIT 在 WebView 同源发，自动携带完整浏览器
       // cookie(含 VISITOR_INFO1_LIVE) + visitorData。我们 OkHttp 直发必须显式带 Cookie +
       // X-Goog-Visitor-Id，否则 integrityToken 未绑定到会话 → 最终 PO token 无效 → /player 拒签

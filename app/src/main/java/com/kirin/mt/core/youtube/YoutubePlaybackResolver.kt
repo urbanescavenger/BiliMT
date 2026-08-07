@@ -325,7 +325,7 @@ class YoutubePlaybackResolver(
       val page = runCatching {
         val req = Request.Builder()
           .url("https://www.youtube.com/watch?v=$videoId")
-          .header("User-Agent", YoutubeConstants.UserAgent)
+          .header("User-Agent", YoutubeConstants.MobileUserAgent)
           .build()
         httpClient.newCall(req).execute().use { it.body?.string().orEmpty() }
       }.getOrNull()
@@ -352,7 +352,7 @@ class YoutubePlaybackResolver(
     val js = runCatching {
       val req = Request.Builder()
         .url(playerJsUrl)
-        .header("User-Agent", YoutubeConstants.UserAgent)
+        .header("User-Agent", YoutubeConstants.MobileUserAgent)
         .build()
       httpClient.newCall(req).execute().use { it.body?.string().orEmpty() }
     }.getOrNull()

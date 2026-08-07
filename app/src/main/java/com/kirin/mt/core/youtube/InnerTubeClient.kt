@@ -161,7 +161,7 @@ class InnerTubeClient(
   suspend fun getText(url: String): String = withContext(Dispatchers.IO) {
     val request = Request.Builder()
       .url(url)
-      .header("User-Agent", YoutubeConstants.UserAgent)
+      .header("User-Agent", YoutubeConstants.MobileUserAgent)
       .header("Referer", YoutubeConstants.Referer)
       .build()
     httpClient.newCall(request).execute().use { response ->
@@ -214,7 +214,7 @@ class InnerTubeClient(
       .header("X-Goog-Visitor-Id", currentVisitorData())
       .header("X-Youtube-Client-Version", currentClientVersion())
       .header("X-Youtube-Client-Name", YoutubeConstants.ClientNameId)
-      .header("User-Agent", YoutubeConstants.UserAgent)
+      .header("User-Agent", YoutubeConstants.MobileUserAgent)
       .header("Referer", YoutubeConstants.Referer)
       .header("Cookie", currentSessionCookies())
       .build()
@@ -264,7 +264,8 @@ class InnerTubeClient(
 
     val userAgent: String
       get() = when (this) {
-        WEB, WEB_EMBEDDED -> YoutubeConstants.UserAgent
+        // WEB/WEB_EMBEDDED 用移动 Chrome UA(对齐 FreeTubeAndroid,§6.7 row 37)。
+        WEB, WEB_EMBEDDED -> YoutubeConstants.MobileUserAgent
         ANDROID -> YoutubeConstants.AndroidUserAgent
       }
   }
@@ -286,7 +287,7 @@ class InnerTubeClient(
               put("clientFormFactor", YoutubeConstants.WebClientFormFactor)
               put("userInterfaceTheme", YoutubeConstants.WebUserInterfaceTheme)
               put("originalUrl", YoutubeConstants.WebOriginalUrl)
-              put("userAgent", YoutubeConstants.UserAgent)
+              put("userAgent", YoutubeConstants.MobileUserAgent)
               put("screenWidthPoints", 1920)
               put("screenHeightPoints", 1080)
               put("screenPixelDensity", 1)
@@ -367,7 +368,7 @@ class InnerTubeClient(
     }
     val headers = mutableMapOf(
       "Content-Type" to "application/json",
-      "User-Agent" to YoutubeConstants.UserAgent,
+      "User-Agent" to YoutubeConstants.MobileUserAgent,
       "Referer" to YoutubeConstants.Referer,
       "X-Goog-Visitor-Id" to currentVisitorData(),
       "X-Youtube-Client-Version" to clientVersion,
@@ -443,7 +444,9 @@ class InnerTubeClient(
     val request = Request.Builder()
       .url("https://www.youtube.com/sw.js_data")
       .header("Accept-Language", "en-US")
-      .header("User-Agent", YoutubeConstants.UserAgent)
+      // 移动 UA 请求 → sw.js_data 报 Android context(osName/browserName 等 device_info),
+      // 让铸 token 的 context 与真实设备一致(对齐 FreeTubeAndroid,§6.7 row 37)。
+      .header("User-Agent", YoutubeConstants.MobileUserAgent)
       .header("Accept", "*/*")
       .header("Referer", "https://www.youtube.com/sw.js")
       .header("Cookie", "PREF=tz=Asia.Shanghai")
@@ -491,7 +494,7 @@ class InnerTubeClient(
   private suspend fun captureSessionCookies(visitorId: String): String? = withContext(Dispatchers.IO) {
     val request = Request.Builder()
       .url("https://www.youtube.com/")
-      .header("User-Agent", YoutubeConstants.UserAgent)
+      .header("User-Agent", YoutubeConstants.MobileUserAgent)
       .header("Accept-Language", "en-US")
       .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
       .header("Cookie", "VISITOR_INFO1_LIVE=$visitorId; PREF=tz=Asia.Shanghai")
