@@ -90,7 +90,7 @@ class YoutubeSabrHarvester(
         delay(200)
       }
       Log.w(Tag, "harvest: timeout (no SABR POST captured in 25s)")
-      null
+      return null
     } finally {
       view.destroy()
     }
