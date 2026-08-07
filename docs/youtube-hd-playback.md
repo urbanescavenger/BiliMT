@@ -241,6 +241,145 @@ fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', 
 
 **§6.7 row 39(alpha.14 真机结果——SABR 确认成立(camelCase 理论坐实)+ plasma WASM n-decrypt 深挖定位)**:真机日志(15:48,videoId=m-zCHXBbO58)直接坐实 row 38 的 camelCase 理论:`WEB streamingData keys=[expiresInSeconds, adaptiveFormats, serverAbrStreamingUrl]`、`ANDROID streamingData keys=[expiresInSeconds, formats, adaptiveFormats, serverAbrStreamingUrl]` → **`serverAbrStreamingUrl` 真的 present(WEB 918B、ANDROID 883B,带/不带 token 都 present)**。alpha.13 的 `sabrUrl=ABSENT` 确认是 snake_case 假阴性,**SABR 方向确认成立,row 37「SABR 证伪」彻底推翻**。adaptive 仍是 40/41 条纯元数据(无 url/cipher)——正是 SABR 模式形态(YouTube 期望客户端走 serverAbrStreamingUrl + 元数据构建 manifest)。**gate 2(ustreamerCfg)诊断需修正**:我们读了子层 `playerConfig.mediaCommonConfig.mediaUstreamerRequestConfig.videoPlaybackUstreamerConfig` 报 ABSENT,但 `mediaCommonConfig` 在 playerConfig keys 里;FreeTube Watch.js L884 的 gate 只查**父层** `media_ustreamer_request_config`(不查 videoPlaybackUstreamerConfig),createLocalSabrManifest 才用子层——需补查父层 `mediaUstreamerRequestConfig` present/ABSENT 才能定 SABR gate 2。其它:WEB 现在 `progressiveRaw=0`(连 progressive 都不给,纯 SABR);ANDROID `progressiveRaw=1`(仍给 itag=18,resolve 落 360p)。**plasma WASM n-decrypt 根因(深挖 base.js 锁定,非正则可修)**:拉当前 base.js(`player-plasma-es6-en_US.vflset/base.js`,player id 95daa498,1480318B)发现 YouTube 已切 plasma 变体,n/sig 解码**移进 WASM**,无 JS n-transform 函数可正则定位——证据:①`get("n")` 全表只 1 处,在 `yoh` 函数里做 URL 路径 `/n/X` 规范化(非签名 transform);②经典 n-transform 调用点 `.get("n"))&&(b=Name(c))`/`&&(b=Name(c)` **全 0 匹配**,`b=Name(c)` 只 1 处且无关;③`"sig"`/`sig=`/`decipher`/`set("n"` 全 0,`nsig` 只匹配无关子串;④WASM 重度:`WebAssembly`×6/`wasm`×44/`o_W`(WASM 模块)×2,`signature`/`encrypt` 跑在 WASM 实例 `c.DY` 上(`c.DY.memory.moveOut`、`x.encrypt(I,...,iv)`)。→ `YoutubeNDecryptor` 的「正则找名 + WebView eval 调用」方案对 plasma **结构性失效**,alpha.13/14 的 `could not locate transform name` 不是正则写错是 player 变体变了(已存 memory `youtube-plasma-wasm-n-decrypt`)。**下一步路径(待定,非一正则可修)**:①加 IOS InnerTube 客户端(yt-dlp 用法,常给无 n-param 直链绕开 n-decrypt,中等工作量,最务实);②实现 SABR(gate 2 父层先补诊断确认,SABR url 仍可能需 decipher 但走 poToken+ustreamerConfig);③经 WebView 调 plasma WASM 入口(找混淆入口难);④移植 youtubei.js decipher(jintr,巨大)。
 
+## 6.9 SABR 实现调研(FreeTubeAndroid 源码 + googlevideo proto + UMP 协议)
+
+为评估「②实现 SABR」的工程量,系统性 diff FreeTubeAndroid 的 SABR 全链路 + `googlevideo` npm 包(v4.0.4,作者 LuanRT)的 proto/UMP 协议。结论:**SABR 是一个自包含的二进制流协议,FreeTube 用 shaka-player 的「scheme plugin」机制接它;Kotlin/Media3 侧需自建 protobuf 编码 + UMP 流解析 + 自定义 DataSource/MediaSource,工程量大但有界**。
+
+### 6.9.1 FreeTube 决策门(Watch.js L885-915)
+
+```
+if (streaming_data.server_abr_streaming_url &&
+    player_config.media_common_config.media_ustreamer_request_config)        // ← 父层!不查 video_playback_ustreamer_config
+  → SABR: createLocalSabrManifest → manifestMimeType=application/sabr+json
+else if (adaptive_formats[0].url || signature_cipher || cipher)             // legacy DASH 直链
+  → createLocalDashManifest → application/dash+xml
+else → enableLegacyFormat() (progressive 回退)
+```
+
+**关键**:gate 2 只查父层 `media_ustreamer_request_config`(camelCase=`mediaUstreamerRequestConfig`),**不查子层** `video_playback_ustreamer_config`。alpha.14 诊断只 dump 了子层报 ABSENT——这正是 alpha.15 补父层诊断的原因。若父层也 ABSENT → FreeTube 自己也不会走 SABR → 说明我们的 /player 响应本就没拿到 SABR 数据(需查为何 YouTube 不下发 ustreamer config,可能缺 client context 字段)。
+
+### 6.9.2 createLocalSabrManifest(Watch.js L1617)——/player 响应 → SABR manifest JSON
+
+`sabrData`(给 scheme plugin用)= `{ url, poToken, ustreamerConfig(子层 bytes), clientInfo }`,其中 `url` = `serverAbrStreamingUrl` + `?alr=yes&cpn=<cpn>`。
+
+manifest JSON(`data:application/sabr+json,<urlencoded>`,给 shaka parser 用):
+- `duration` = min(各 adaptive `approx_duration_ms`) / 1000
+- `formats[]` = adaptive_formats 映射:`itag`/`lastModified`(last_modified_ms)/`mimeType`/`xtags`/`bitrate`/`initRange`/`indexRange`/`width`/`height`/`frameRate`(fps)/`quality`/`language`/`audioSampleRate`/`audioChannels`/`isDrc`/`isVoiceBoost`/`isOriginal`/`isDubbed`/`isAutoDubbed`/`isDescriptive`/`isSecondary`/`spatialAudio`/`label`(audio_track.display_name)/`colorTransferCharacteristics`/`colorPrimaries`
+- `captions[]` / `storyboards[]`
+
+→ **这些字段全在我们 /player raw JSON(camelCase)里已解析**:itag/mimeType/bitrate/initRange/indexRange/width/height/fps/quality(label)/audioSampleRate/audioChannels/approxDurationMs/contentLength/lastModified/xtags/spatialAudioType/colorInfo。**数据层面我们已具备建 SABR manifest 的全部输入**,缺的只是 `videoPlaybackUstreamerConfig`(子层 bytes,塞进 protobuf field 5)与 `cpn`。
+
+### 6.9.3 SabrManifestParser(shaka 插件)——manifest JSON → shaka Manifest
+
+`data:` URI 反序列化 → `variants`(audio × video 全交叉,按 codec 优先级 av01>vp09>vp9>avc1 排序)/`textStreams`(captions)/`imageStreams`(storyboards)。每个 stream 的 `createSegmentIndex`:
+1. 构造 `sabr:<audio|video>?formatId=<itag>-<lastModified>-<xtags>[&videoFormatId=...][&drc|&vb][&resolution=N]` URI
+2. 发 init 请求(`&init`)拿回 init 段字节,从 `initRange`/`indexRange` 切出 init data + index data
+3. 用 `parseMp4SegmentIndex`(sidx box)/`parseWebmSegmentIndex`(Cues)解析 index → 生成 SegmentReference 列表(每个 ref 的 uri = 上面的 sabr url + `&sq=<seq>`)
+4. 后续每段 media 请求都走 `sabr:` scheme → SabrSchemePlugin
+
+### 6.9.4 SabrSchemePlugin(shaka `sabr:` networking scheme)——核心协议引擎
+
+每次 segment 请求(init/media)触发:
+
+**请求构造**(`VideoPlaybackAbrRequest` protobuf,见 §6.9.5):
+```
+POST <sabrUrl>?rn=<requestNumber>
+headers: content-type: application/x-protobuf, accept-encoding: identity, accept: application/vnd.yt-ump
+body = VideoPlaybackAbrRequest.encode({
+  clientAbrState: { bandwidthEstimate, playbackRate, playerTimeMs,
+    clientViewportWidth/Height, clientViewportIsFlexible=false,
+    stickyResolution, lastManualSelectedResolution, enabledTrackTypesBitfield(audio=1?),
+    drcEnabled, enableVoiceBoost, timeSinceLastManualFormatSelectionMs },
+  preferredAudioFormatIds: [audioFormatId],
+  preferredVideoFormatIds: [videoFormatId],
+  preferredSubtitleFormatIds: [],
+  selectedFormatIds: isInit ? [] : [audioFormatId, videoFormatId],
+  bufferedRanges: [...],
+  streamerContext: { poToken, clientInfo, sabrContexts, unsentSabrContexts, playbackCookie? },
+  field1000: [],
+  videoPlaybackUstreamerConfig: <base64-decoded 子层 bytes>
+})
+```
+FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
+
+**响应解析**(UMP 流式容器,见 §6.9.6):`UmpReader` 逐 part 处理:
+- `STREAM_PROTECTION_STATUS`(status==3 → PO token 无效,CRITICAL)
+- `SABR_ERROR`(type+code → 抛错)
+- `SABR_REDIRECT`(新 url → 用新 sabrUrl 重试,shouldRetry)
+- `MEDIA_HEADER`(匹配 itag/lastModified/xtags + isInitSeg/sequenceNumber,记 `mediaHeaderId`)
+- `MEDIA`(`part.data.getUint8(0)==mediaHeaderId` 的段字节 → 收集)
+- `MEDIA_END`(该 headerId 段完成 → segmentComplete,abort)
+- `NEXT_REQUEST_POLICY`(backoffTimeMs/playbackCookie → 更新 abrRequest,shouldRetry)
+- `SABR_CONTEXT_UPDATE`/`SABR_CONTEXT_SENDING_POLICY`(维护 activeSabrContextTypes Set,下次请求回传)
+- `RELOAD_PLAYER_RESPONSE`(整视频无法播 → reload)
+- `FORMAT_INITIALIZATION_METADATA`(忽略)
+
+收集的 MEDIA chunks → `concatenateChunks` → 段字节,返回给 shaka。重试时把 `streamerContext.sabrContexts/unsentSabrContexts` 填进 abrRequest 重新 encode POST。backoff 用 `setTimeout` 等待(可 abort),累计 backoff ≥3 次或逼近 timeout → 触发 fake reload。
+
+### 6.9.5 protobuf schema(googlevideo/protos,移植 Kotlin 依据)
+
+**`VideoPlaybackAbrRequest`**(`video_playback_abr_request.proto`,proto2):
+| field# | name | type |
+|---|---|---|
+| 1 | client_abr_state | ClientAbrState |
+| 2 | selected_format_ids | repeated FormatId |
+| 3 | buffered_ranges | repeated BufferedRange |
+| 4 | player_time_ms | int64 |
+| **5** | **video_playback_ustreamer_config** | **bytes** ← /player 子层 |
+| 6 | field6 | UnknownMessage1(format_id/lmt/sequence_number/time_range) |
+| 16 | preferred_audio_format_ids | repeated FormatId |
+| 17 | preferred_video_format_ids | repeated FormatId |
+| 18 | preferred_subtitle_format_ids | repeated FormatId |
+| 19 | streamer_context | StreamerContext |
+| 21/22/23 | — | — |
+| 1000 | field1000 | repeated UnknownMessage3 |
+
+**`FormatId`**(`misc/common.proto`):`itag`(int32)/`last_modified`(uint64)/`xtags`(string)。
+
+**`ClientAbrState`**(`client_abr_state.proto`):关键字段号——13 time_since_last_manual_format_selection_ms(int64)、16 last_manual_selected_resolution(int32)、18 client_viewport_width、19 client_viewport_height、21 sticky_resolution、22 client_viewport_is_flexible(bool)、23 bandwidth_estimate(int64)、28 player_time_ms、35 playback_rate(float)、40 enabled_track_types_bitfield(int32)、46 drc_enabled(bool)、76 enable_voice_boost(bool)。
+
+**`StreamerContext`**(`streamer_context.proto`):`client_info`(ClientInfo)/`po_token`(bytes)/`playback_cookie`(bytes)/`sabr_contexts`(repeated)/`unsent_sabr_contexts`。ClientInfo 含 clientName/clientVersion/clientFormFactor/osName/osVersion/deviceMake/deviceModel/screenInfo 等(对齐我们 InnerTubeClient.buildContext 已有的字段)。
+
+**`MediaHeader`**(`media_header.proto`):1 header_id(uint32)/3 itag/4 lmt(uint64)/5 xtags/8 is_init_seg(bool)/9 sequence_number(int32)/13 format_id(FormatId)/14 content_length/15 time_range。
+
+→ **移植路径**:可用 `wire`(Square)或 `kotlinx-protobuf` 生成,或手写轻量 protobuf 编码(消息数有限,手写可控)。**重点**:field 5 的 `video_playback_ustreamer_config` 是 /player 下发的 opaque bytes,我们原样透传,不需解码——这是 SABR 相对 legacy DASH 的优势:**ustreamerConfig 是服务端签好的会话凭证,客户端不参与签名/n-decrypt**,只要 poToken 有效就能拿流。
+
+### 6.9.6 UMP 二进制流容器(googlevideo/src/core/UmpReader.ts)
+
+每个 UMP part = **[type varint][size varint][payload bytes]**,无 magic/delimiter,纯长度前缀,parts 背靠背串行。
+
+**varint 是 YouTube 自定义格式(非标准 protobuf varint!)**,按首字节高位判总字节数(little-endian):
+- `<128`:1 byte,值=byte0
+- `<192`:2 byte,值=`(b0&0x3F) + 64*b1`
+- `<224`:3 byte,值=`(b0&0x1F) + 32*(b1 + 256*b2)`
+- `<240`:4 byte,值=`(b0&0x0F) + 16*(b1 + 256*(b2 + 256*b3))`
+- `≥240`:5 byte,b0 纯长度 tag,后 4 byte 按 `getUint32(littleEndian)` 读
+
+`UmpReader.read(handlePart)` 循环:读 type→读 size→`canReadBytes(offset,partSize)`?够则 split 出 payload 调 handlePart、剩余作 tail;不够则返回 partial Part(data=整个剩余 buffer,等调用方 append 更多数据重试)。`CompositeBuffer` = 多 chunk 逻辑拼接(append/getUint8/canReadBytes/split(focus+extractedBuffer/remainingBuffer),跨 chunk 不拷贝)。
+
+→ **Kotlin 移植**:`ByteArrayOutputStream` 或 `Deque<ByteBuffer>` 模拟 CompositeBuffer;varint 按上表解码;part 流循环读 type/size/payload,partial 时攒着等下次 append。UMP part type 用 `UMPPartId` 枚举(0-67,见 `ump_part_id.proto`)。
+
+### 6.9.7 Kotlin/Media3 移植评估
+
+| 模块 | 工作量 | 说明 |
+|---|---|---|
+| protobuf 编码 VideoPlaybackAbrRequest + 子消息 | 中 | wire/kotlinx-protobuf 或手写;消息约 10 个,字段号已定 |
+| UMP varint + UmpReader + CompositeBuffer | 中 | 自定义 varint + chunk 流,~300 行 |
+| UMP part 解码(MediaHeader/SabrError/...) | 中 | 同上 protobuf 解码 |
+| MP4 sidx / WebM Cues index 解析 | 中-高 | Media3 已有 `Mp4Extractor`/`WebmExtractor` 的 box 解析可借,但 SABR 的 init+index 是从单次 init 响应里切的,要适配 |
+| Media3 集成 | 高 | Media3 无 shaka 的 scheme plugin;需自建 `MediaSource`(或 `BundledChunkExtractor`+自定义 `ChunkSource`/`DataSource`),把 sabr: URI 映射到 SABR POST+UMP。最贴近的是实现 `DataSource.Factory` 处理 sabr: scheme 返回段字节,外层用 `MergingMediaSource`(audio+video)+ 自建 segment timeline |
+| SABR 状态机(redirect/backoff/nextRequestPolicy/contextUpdate/reload) | 中 | SabrSchemePlugin 的 doRequest 循环移植 |
+
+**总体:中-大工程(估 1500-2500 行 + proto schema),但有界、有上游 JS 逐行对照、数据层已具备**。相对 n-decrypt(plasma WASM 不可解),SABR 是**唯一不需要解 n/sig 的拿流路径**——ustreamerConfig 是服务端签好的,客户端只透传。
+
+### 6.9.8 启动 SABR 移植的前置闸——alpha.15 gate 2 父层
+
+**决定是否启动这项大工程的关键数据点 = alpha.15 真机日志的 `ustreamerReqCfg`(父层 `mediaUstreamerRequestConfig`)值**:
+- `ustreamerReqCfg=present` → SABR 数据齐全(FreeTube gating 通过),启动 Kotlin 移植有据
+- `ustreamerReqCfg=ABSENT` → FreeTube 自己也不走 SABR,说明 YouTube 对我们的会话没下发 ustreamer config → **先查为何**(可能 client context 缺字段/用了错 client/缺某种触发),不要盲目投移植
+
+(alpha.15 tag 已推 eef9ec5,待真机日志更新到 `Y:\download\bilitv\logs\logs_live.log`。)
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
