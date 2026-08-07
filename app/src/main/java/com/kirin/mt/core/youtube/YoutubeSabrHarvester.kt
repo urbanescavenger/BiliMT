@@ -227,6 +227,10 @@ class YoutubeSabrHarvester(
      * alpha.20 只截 SABR POST(`sabr=` + POST 过滤)致 25s 无捕获——放宽到全方法 + 全 googlevideo,
      * 定位 embed 到底用 SABR POST 还是 DASH GET(决定 alpha.21 是建 SabrSession 还是直接复用 GET url)。
      * body 可能是 ArrayBuffer/Uint8Array/Blob/string,统一转 base64;GET 段请求 body 空。
+     * alpha.24:真机 SABR POST 捕获到 url+status+transformed-n(status=200 证浏览器 WASM n-transform
+     * 被服务端接受)但 bodyB64=0B——播放器用 `fetch(new Request(url,{body}))` 形态,init.body 为空、
+     * body 在 Request 对象里(ReadableStream 不可同步读)。改用 `input.clone().arrayBuffer()` 克隆
+     * Request 读其 body(不消耗原请求),Promise.all(body,response) 后再 record(拿到 status)。
      */
     @Suppress("MaxLineLength")
     const val HOOK_JS = """
@@ -241,10 +245,13 @@ class YoutubeSabrHarvester(
       var url=(typeof input==='string')?input:((input&&input.url)||'');
       var method=(init&&init.method)||(input&&input.method)||'GET';
       if(isGv(url)){
-        var body=init&&init.body;
-        var doFetch=function(b){ return _f.call(this,input,init).then(function(r){ record(url,method,b,r.status); return r; }); };
-        if(body instanceof Blob){ return body.arrayBuffer().then(function(ab){ return doFetch(new Uint8Array(ab)); }); }
-        return doFetch(body);
+        var bodySrc=(init&&init.body!=null)?init.body:input;
+        var bp;
+        if(bodySrc instanceof Blob){ bp=bodySrc.arrayBuffer().then(function(ab){return new Uint8Array(ab);}); }
+        else if(bodySrc&&typeof bodySrc.clone==='function'&&typeof bodySrc.arrayBuffer==='function'){ bp=bodySrc.clone().arrayBuffer().then(function(ab){return (ab&&ab.byteLength)?new Uint8Array(ab):null;}).catch(function(){return null;}); }
+        else if(bodySrc instanceof ArrayBuffer||(bodySrc&&typeof bodySrc.byteLength==='number'&&typeof bodySrc.getReader!=='function')){ bp=Promise.resolve(new Uint8Array(bodySrc)); }
+        else { bp=Promise.resolve(null); }
+        return _f.apply(this,arguments).then(function(r){ Promise.all([bp]).then(function(res){ record(url,method,res[0],r.status); }); return r; });
       }
     }catch(e){}
     return _f.apply(this,arguments);
