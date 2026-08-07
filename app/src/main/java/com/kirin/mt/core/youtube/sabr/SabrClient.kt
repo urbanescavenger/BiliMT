@@ -134,7 +134,10 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
       bandwidthEstimate = 0L,
       playerTimeMs = 0L,
       playbackRate = 1.0f,
-      enabledTrackTypesBitfield = if (req.streamType == SabrStreamType.AUDIO) 1 else 0,
+      // 对齐 googlevideo EnabledTrackTypes(AUDIO_ONLY=1 / VIDEO_ONLY=2 / VIDEO_AND_AUDIO=0)——
+      // createVideoPlaybackAbrRequest 按 currentFormat.width 取 VIDEO_ONLY/AUDIO_ONLY。alpha.18 误用
+      // 0(VIDEO_AND_AUDIO)致视频 init 请求声明要音视频双轨,虽非 403 主因但属语义错(§6.7 row 41)。
+      enabledTrackTypesBitfield = if (req.streamType == SabrStreamType.AUDIO) 1 else 2,
       drcEnabled = false,
       enableVoiceBoost = false,
     )

@@ -173,6 +173,12 @@ class YoutubePlaybackResolver(
         val firstVideo = raws.firstOrNull { (it.intOrNull("height") ?: 0) > 0 }
         val firstAudio = raws.firstOrNull { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
         if (firstVideo != null && firstAudio != null) {
+          // SABR URL 需 decipher(n-param transform)——对齐 googlevideo 示例
+          // `innertube.session.player.decipher(serverAbrStreamingUrl)`。googlevideo URL 带 `n` 签名参数,
+          // 未用 base.js transform 解出真值则返回 403 空体(alpha.18 实测 Server=gvs 1.0
+          // Content-Length=0,§6.7 row 41)。resolvePlayerJsUrl 内部缓存,此处与下游 resolveStreamUrl
+          // 共用同一份 playerJsUrl,不重复拉 watch 页。
+          val sabrUrlDeciphered = decipherSabrUrl(sabrUrl, resolvePlayerJsUrl(videoId))
           val vFmt = SabrFormatId(
             firstVideo.longOrNull("itag")?.toInt() ?: 0,
             firstVideo.longOrNull("lastModified") ?: 0L,
@@ -185,7 +191,7 @@ class YoutubePlaybackResolver(
             firstAudio.stringOrNull("xtags"),
           )
           val session = SabrSession.fromSabrData(
-            sabrUrl, poToken, ustreamerCfgStr, innerTubeClient.sabrClientInfo(), aFmt, vFmt,
+            sabrUrlDeciphered, poToken, ustreamerCfgStr, innerTubeClient.sabrClientInfo(), aFmt, vFmt,
             userAgent = client.userAgent,
             cookieHeader = innerTubeClient.currentSessionCookies(),
             visitorData = innerTubeClient.currentVisitorData(),
@@ -464,6 +470,31 @@ class YoutubePlaybackResolver(
       }
     }
     return baseUrl
+  }
+
+  /**
+   * SABR `server_abr_streaming_url` 的 decipher——对齐 googlevideo 示例
+   * `innertube.session.player.decipher(serverAbrStreamingUrl)`。googlevideo URL 带 `n` 签名参数,
+   * 未用 base.js transform 解出真值则返回 403 空体(alpha.18 实测 Server=gvs 1.0 Content-Length=0)。
+   * 同时 dump 全量 param key + n/sig/s/pot 存在性——alpha.18 仅截 200 字看不到 n 是否在 URL 里,
+   * 此日志在 403 持续时定位是「n 未解」还是「poToken 绑定错」还是「URL 本无 n」。
+   * 无 `n` 或无 base.js 时原样返回(best-effort)。
+   */
+  private suspend fun decipherSabrUrl(url: String, playerJsUrl: String?): String {
+    val query = url.substringAfter("?", "")
+    val params = query.split("&").mapNotNull { e ->
+      val i = e.indexOf("=")
+      if (i < 0) e to "" else e.substring(0, i) to e.substring(i + 1)
+    }.toMap()
+    val hasN = params.containsKey("n")
+    val hasSig = params.containsKey("sig")
+    val hasS = params.containsKey("s")
+    val hasPot = params.containsKey("pot")
+    Log.i(Tag, "sabrUrl params: keys=${params.keys.toList()} n=$hasN sig=$hasSig s=$hasS pot=$hasPot playerJs=${playerJsUrl != null}")
+    if (!hasN || playerJsUrl == null) return url
+    val transformed = nDecryptor.decrypt(url, playerJsUrl)
+    Log.i(Tag, "sabrUrl n-decrypt: ${if (transformed == url) "NO-CHANGE(transform fail/no-op)" else "applied"}")
+    return transformed
   }
 
   private fun replaceParam(url: String, key: String, value: String): String {
