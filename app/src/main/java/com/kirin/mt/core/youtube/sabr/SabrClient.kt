@@ -16,6 +16,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.security.SecureRandom
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * SABR 协议会话——一次 YouTube 视频播放对应一个 [SabrSession],持有跨请求不变的状态。
@@ -28,7 +29,11 @@ import java.security.SecureRandom
  *  - [audioFormatId]/[videoFormatId] = adaptive 元数据的 itag/lastModified/xtags
  */
 internal data class SabrSession(
-  val sabrUrl: String,
+  /**
+   * SABR 基址 + 已附 `?alr=yes&cpn=<cpn>`(SabrClient.fetch 再追加 `&rn=<rn>`)。
+   * `var`:SABR_REDIRECT 会换新 sabrUrl,[applyRedirect] 写回(重加 alr+cpn)。
+   */
+  var sabrUrl: String,
   val poToken: ByteArray,
   val ustreamerConfig: ByteArray,
   val clientInfo: ClientInfoInput,
@@ -38,7 +43,17 @@ internal data class SabrSession(
   val userAgent: String,
   val cookieHeader: String,
   val visitorData: String,
+  /** 会话 cpn——Redirect 重写 sabrUrl 时需重新追加 `cpn=`(会话绑定)。 */
+  val cpn: String,
 ) {
+  /**
+   * SABR_REDIRECT 给的新 sabrUrl 可能是 base(无 alr/cpn)→ 重加 alr+cpn 写回 [sabrUrl]。
+   * 复用 [Companion.sabrUrlWithParams](对齐 fromSabrData 的拼接,只在无 `?`/无 alr 时补)。
+   */
+  fun applyRedirect(newBaseSabrUrl: String) {
+    sabrUrl = sabrUrlWithParams(newBaseSabrUrl, cpn)
+  }
+
   companion object {
     private val tag = "YtSabr"
     fun fromSabrData(
@@ -61,7 +76,7 @@ internal data class SabrSession(
       val po = Base64.decode(poTokenB64, Base64.DEFAULT)
       val ustreamer = Base64.decode(ustreamerConfigB64, Base64.DEFAULT)
       Log.i(tag, "SabrSession: sabrUrl=${withParams.take(200)}... poToken=${po.size}B ustreamerCfg=${ustreamer.size}B cpn=$usedCpn audio=$audioFormatId video=$videoFormatId ua=${userAgent.take(40)} cookie=${cookieHeader.length}B visitor=${visitorData.length}B")
-      return SabrSession(withParams, po, ustreamer, clientInfo, audioFormatId, videoFormatId, userAgent, cookieHeader, visitorData)
+      return SabrSession(withParams, po, ustreamer, clientInfo, audioFormatId, videoFormatId, userAgent, cookieHeader, visitorData, usedCpn)
     }
 
     /** 16 字节随机 → base64url 无 padding(对齐 youtubei.js generateRandomString 16 位 cpn)。 */
@@ -111,7 +126,10 @@ internal sealed class SabrFetchResult {
  */
 internal class SabrClient(private val httpClient: OkHttpClient) {
   private val tag = "YtSabr"
-  private var requestNumber = 0
+  // alpha.27:SabrClient 现在在一个 SABR 播放会话内被 video+audio 两路 loader 线程并发调用
+  //(MergingMediaSource 双 ProgressiveMediaSource),requestNumber 必须线程安全,否则 rn 重复
+  //→服务端可能拒签。AtomicInt 保证每次 fetch 拿唯一 rn。
+  private val requestNumber = AtomicInteger(0)
 
   /**
    * 发一次 SABR 段请求。[session] 的 sabrUrl 可能因 Redirect 变化(调用方把新 url 写回 session 再重试)。
@@ -156,7 +174,7 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
       streamerContext = streamerContext,
     )
     val body = SabrProto.encodeVideoPlaybackAbrRequest(input)
-    val rn = requestNumber++
+    val rn = requestNumber.getAndIncrement()
     val url = "${session.sabrUrl}&rn=$rn"
     Log.i(tag, "fetch rn=$rn isInit=${req.isInit} stream=${req.streamType} seq=${req.sequenceNumber} body=${body.size}B")
 

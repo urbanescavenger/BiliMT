@@ -132,6 +132,7 @@ import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
+import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
 import com.kirin.mt.core.player.DanmakuEntry
 import com.kirin.mt.core.player.DanmakuMode
 import com.kirin.mt.core.player.DanmakuPostResult
@@ -519,9 +520,13 @@ fun MobilePlayerScreen(
         .setArtist(request.ownerName)
         .apply { if (coverBytes != null) setArtworkData(coverBytes, androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
         .build()
+      // alpha.27:包一层 SabrAwareDataSourceFactory——sabr:// URI(YouTube SABR 流)交 SabrStreamingDataSource
+      //(走 SabrStreamRegistry 查表 + SabrClient 驱动 init/seg),其余 http/https(B站 + YouTube 回退)走 OkHttp。
       val dataSourceFactory = DefaultDataSource.Factory(
         context,
-        BiliMediaDataSourceFactory(client = playbackHttpClient, headers = effectiveInfo.headers).create(),
+        SabrAwareDataSourceFactory(
+          BiliMediaDataSourceFactory(client = playbackHttpClient, headers = effectiveInfo.headers).create(),
+        ),
       )
       val mediaSource: MediaSource = if (resolvedRequest.isPgc || effectiveInfo.videoTracks.first().isProgressive) {
         val videoItem = androidx.media3.common.MediaItem.Builder()

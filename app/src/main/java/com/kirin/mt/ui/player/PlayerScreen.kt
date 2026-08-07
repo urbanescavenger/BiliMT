@@ -99,6 +99,7 @@ import com.kirin.mt.core.player.PlaybackTrack
 import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.VideoshotData
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
+import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.common.ClockOverlay
 import com.kirin.mt.ui.common.FeedStatusScreen
@@ -1380,12 +1381,17 @@ fun PlayerScreen(
               ?: resolvedRequest.startPositionMs
         }
         val startPositionMs = requestedStartPositionMs
+        // alpha.27:包一层 SabrAwareDataSourceFactory——sabr:// URI(YouTube SABR 流)交 SabrStreamingDataSource
+        //(走 SabrStreamRegistry 查表 + SabrClient 驱动 init/seg),其余 http/https(B站 + YouTube 回退)走 OkHttp。
+        // 一处包装,非 sabr 流不受影响;SABR track segmentBase=null → 走下方 progressive MergingMediaSource 分支。
         val dataSourceFactory = DefaultDataSource.Factory(
           context,
-          BiliMediaDataSourceFactory(
-            client = playbackHttpClient,
-            headers = effectiveInfo.headers,
-          ).create(),
+          SabrAwareDataSourceFactory(
+            BiliMediaDataSourceFactory(
+              client = playbackHttpClient,
+              headers = effectiveInfo.headers,
+            ).create(),
+          ),
         )
         val mediaSource = if (resolvedRequest.isPgc || effectiveInfo.videoTracks.first().isProgressive) {
           // 对齐 BV：PGC 用 MergingMediaSource(ProgressiveMediaSource×2)，直接喂视频+音频两条
