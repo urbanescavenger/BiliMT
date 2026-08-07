@@ -415,7 +415,7 @@ class InnerTubeClient(
    * 用 sw.js_data 拉到的真实浏览器指纹字段（WEB 绑定，对齐 poToken 是 WEB challenge 铸的）。
    * clientName 用 X-Youtube-Client-Name 的数值（WEB=1）；clientFormFactor=UNKNOWN_FORM_FACTOR(0)。
    */
-  fun sabrClientInfo(): com.kirin.mt.core.youtube.sabr.ClientInfoInput {
+  internal fun sabrClientInfo(): com.kirin.mt.core.youtube.sabr.ClientInfoInput {
     val d = realSessionData
     return com.kirin.mt.core.youtube.sabr.ClientInfoInput(
       deviceMake = d?.deviceMake,

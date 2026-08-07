@@ -177,6 +177,7 @@ class YoutubePlaybackResolver(
             firstVideo.longOrNull("itag")?.toInt() ?: 0,
             firstVideo.longOrNull("lastModified") ?: 0L,
             firstVideo.stringOrNull("xtags"),
+            firstVideo.intOrNull("height") ?: 0,
           )
           val aFmt = SabrFormatId(
             firstAudio.longOrNull("itag")?.toInt() ?: 0,

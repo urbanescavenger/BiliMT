@@ -259,7 +259,7 @@ internal object SabrProto {
 
 // ===================== 输入数据类(供 SabrDataSource 填充) =====================
 
-internal data class FormatId(val itag: Int, val lastModified: Long, val xtags: String?)
+internal data class FormatId(val itag: Int, val lastModified: Long, val xtags: String?, val height: Int = 0)
 
 internal data class ClientAbrStateInput(
   val timeSinceLastManualFormatSelectionMs: Long? = null,
