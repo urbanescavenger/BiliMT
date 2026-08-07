@@ -37,7 +37,7 @@ internal class SabrStreamingDataSource(
   private var done: Boolean = false
 
   override fun open(dataSpec: DataSpec): Long {
-    currentUri = dataSpec.getUri()
+    currentUri = dataSpec.uri
     val e = SabrStreamRegistry.get(sessionId)
       ?: run {
         Log.w(tag, "SabrStream open: session NOT FOUND sid=$sessionId → throw")

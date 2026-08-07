@@ -26,9 +26,9 @@ internal class SabrAwareDataSource(private val http: DataSource) : DataSource {
   private var delegate: DataSource = http
 
   override fun open(dataSpec: DataSpec): Long {
-    val uri = dataSpec.getUri()
-    val scheme = uri?.scheme
-    val parsed = if (scheme?.equals("sabr", ignoreCase = true) == true && uri != null) parseSabrUri(uri) else null
+    val uri = dataSpec.uri
+    val scheme = uri.scheme
+    val parsed = if (scheme?.equals("sabr", ignoreCase = true) == true) parseSabrUri(uri) else null
     return if (parsed != null) {
       val (sid, stream) = parsed
       Log.i(tag, "route sabr:// sid=$sid stream=$stream → SabrStreamingDataSource")
