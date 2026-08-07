@@ -41,6 +41,11 @@ object YoutubeConstants {
     "com.google.android.youtube/21.03.36 (Linux; U; Android 13; en_US) gzip"
   const val AndroidGoogApiFormatVersion = "2"
 
+  /** WEB_EMBEDDED 客户端（/player 回退用，对齐 FreeTubeAndroid 年龄限制回退）。 */
+  const val WebEmbeddedClientVersion = "1.20260206.01.00"
+  const val WebEmbeddedClientName = "WEB_EMBEDDED_PLAYER"
+  const val WebEmbeddedClientNameId = "56"
+
   /** 桌面 Chrome UA（FreeTube getRandomUserAgent('desktop') 同源）。 */
   const val UserAgent =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"

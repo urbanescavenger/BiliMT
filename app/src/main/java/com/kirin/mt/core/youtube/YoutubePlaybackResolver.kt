@@ -68,16 +68,15 @@ class YoutubePlaybackResolver(
     // 的 contentPlaybackContext。缺它 WEB /player 可能被判"非真浏览器" → "The page needs to be reloaded"。
     val signatureTimestamp = resolveSignatureTimestamp(videoId)
 
-    // 收集 playable 客户端(WEB → ANDROID)的 streamingData 合并候选。
-    // 实测(§6.5):无有效 PO token 时两客户端都会剥光 adaptiveFormats 的 url(只剩 progressive 360p)。
-    // PO token 只能铸成 WEB 绑定(att/get 是 WEB challenge 通道,ANDROID att/get 不返回 bgChallenge)，
-    // 但本环境 WEB /player 报 "Video unavailable"(原因待诊断,见下方失败日志),ANDROID /player 能返回
-    // streamingData 却因收到 WEB 绑定 token 判定无效而仍剥 url。故目前走 ANDROID 仅能 360p,高清待解。
-    // 合并两个客户端的流,统一选最高 adaptive,progressive 仅兜底。
+    // 收集 playable 客户端(WEB → WEB_EMBEDDED → ANDROID)的 streamingData 合并候选。
+    // 实测(§6.5):无有效 PO token 时各客户端都会剥光 adaptiveFormats 的 url(只剩 progressive 360p)。
+    // PO token 只能铸成 WEB 绑定(att/get 是 WEB challenge 通道,ANDROID att/get 不返回 bgChallenge)。
+    // FreeTubeAndroid 对 WEB 失败时回退 WEB_EMBEDDED(复用 WEB 的 visitorData + 同一个 WEB 绑定 token)，
+    // 该嵌入式客户端对 PO token 校验可能更宽容。故合并三客户端候选,统一选最高 adaptive,progressive 仅兜底。
     val allAdaptive = mutableListOf<ParsedFormat>()
     val allCombined = mutableListOf<ParsedFormat>()
     var durationMs = 0L
-    for (client in listOf(InnerTubeClient.Client.WEB, InnerTubeClient.Client.ANDROID)) {
+    for (client in listOf(InnerTubeClient.Client.WEB, InnerTubeClient.Client.WEB_EMBEDDED, InnerTubeClient.Client.ANDROID)) {
       val player = runCatching { postPlayer(videoId, client = client, poToken = poToken, signatureTimestamp = signatureTimestamp) }.getOrNull()
       if (!player.isPlayable()) {
         lastError = player?.playabilityReason() ?: lastError
@@ -283,11 +282,11 @@ class YoutubePlaybackResolver(
         })
       })
     }
-    // WEB /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView；
+    // WEB/WEB_EMBEDDED /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView；
     // ANDROID 保持 OkHttp 直连(作为回退)。
     return innerTubeClient.postJson(
       "/player", payload, client = client, poToken = poToken,
-      viaWebView = client == InnerTubeClient.Client.WEB,
+      viaWebView = client == InnerTubeClient.Client.WEB || client == InnerTubeClient.Client.WEB_EMBEDDED,
     )
   }
 

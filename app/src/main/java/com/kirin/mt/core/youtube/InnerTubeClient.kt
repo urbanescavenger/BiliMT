@@ -98,11 +98,11 @@ class InnerTubeClient(
     val url = "${YoutubeConstants.InnerTubeBase}/${YoutubeConstants.ApiVersion}$endpoint" +
       "?key=${YoutubeConstants.ApiKey}&prettyPrint=false&alt=json"
 
-    // WEB /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView。
+    // WEB/WEB_EMBEDDED /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView。
     // OkHttp 直连被拦("The page needs to be reloaded")、FreeTubeAndroid 能过的根因是请求没走
     // 真实浏览器网络栈。ANDROID 客户端保持 OkHttp 直连(作为回退)。
-    if (viaWebView && client == Client.WEB && jsExecutor != null) {
-      val text = jsExecutor.fetchViaWebView(url, "POST", buildWebViewHeaders(), body.toString())
+    if (viaWebView && (client == Client.WEB || client == Client.WEB_EMBEDDED) && jsExecutor != null) {
+      val text = jsExecutor.fetchViaWebView(url, "POST", buildWebViewHeaders(client), body.toString())
       return@withContext runCatching { json.parseToJsonElement(text).jsonObject }
         .getOrElse { throw YoutubeApiException(0, text, "InnerTube $endpoint returned invalid JSON") }
     }
@@ -115,9 +115,9 @@ class InnerTubeClient(
       .header("Referer", YoutubeConstants.Referer)
       .header("X-Goog-Visitor-Id", currentVisitorData())
     when (client) {
-      Client.WEB -> requestBuilder
-        .header("X-Youtube-Client-Version", currentClientVersion())
-        .header("X-Youtube-Client-Name", YoutubeConstants.ClientNameId)
+      Client.WEB, Client.WEB_EMBEDDED -> requestBuilder
+        .header("X-Youtube-Client-Version", if (client == Client.WEB) currentClientVersion() else YoutubeConstants.WebEmbeddedClientVersion)
+        .header("X-Youtube-Client-Name", if (client == Client.WEB) YoutubeConstants.ClientNameId else YoutubeConstants.WebEmbeddedClientNameId)
         .header("Origin", YoutubeConstants.Referer)
         .header("Accept", "*/*")
         .header("Accept-Language", "*")
@@ -250,11 +250,12 @@ class InnerTubeClient(
   /** InnerTube 客户端类型。 */
   enum class Client {
     WEB,
+    WEB_EMBEDDED,
     ANDROID;
 
     val userAgent: String
       get() = when (this) {
-        WEB -> YoutubeConstants.UserAgent
+        WEB, WEB_EMBEDDED -> YoutubeConstants.UserAgent
         ANDROID -> YoutubeConstants.AndroidUserAgent
       }
   }
@@ -265,9 +266,9 @@ class InnerTubeClient(
         "client",
         buildJsonObject {
           when (client) {
-            Client.WEB -> {
-              put("clientName", YoutubeConstants.ClientName)
-              put("clientVersion", currentClientVersion())
+            Client.WEB, Client.WEB_EMBEDDED -> {
+              put("clientName", if (client == Client.WEB) YoutubeConstants.ClientName else YoutubeConstants.WebEmbeddedClientName)
+              put("clientVersion", if (client == Client.WEB) currentClientVersion() else YoutubeConstants.WebEmbeddedClientVersion)
               put("hl", YoutubeConstants.Hl)
               put("gl", YoutubeConstants.Gl)
               // 对齐 youtubei.js 的 WEB context(反爬关键字段)。缺这些 WEB /player 会被判
@@ -295,6 +296,8 @@ class InnerTubeClient(
               realSessionData?.deviceExperimentId?.let { put("deviceExperimentId", it) }
               realSessionData?.rolloutToken?.let { put("rolloutToken", it) }
               put("memoryTotalKbytes", "8000000")
+              // mainAppWebInfo：youtubei.js #buildContext 对所有客户端无条件设置（反爬关键字段）。
+              // WEB 和 WEB_EMBEDDED 都带。
               put(
                 "mainAppWebInfo",
                 buildJsonObject {
@@ -329,8 +332,8 @@ class InnerTubeClient(
       )
       // WEB 客户端 /player 必须带 thirdParty.embedUrl，否则返回 "Video unavailable"/
       // "The page needs to be reloaded"(实测 alpha.22,即使带有效 PO token 也被拦)。
-      // ANDROID 客户端不需要此字段。
-      if (client == Client.WEB) {
+      // WEB_EMBEDDED 是嵌入式播放器也带 embedUrl；ANDROID 客户端不需要此字段。
+      if (client == Client.WEB || client == Client.WEB_EMBEDDED) {
         put(
           "thirdParty",
           buildJsonObject { put("embedUrl", YoutubeConstants.EmbedUrl) },
@@ -341,15 +344,25 @@ class InnerTubeClient(
     }
   }
 
-  /** WEB /player 走 WebView 时的请求头（对齐 OkHttp WEB 分支 + best-effort Cookie）。 */
-  private fun buildWebViewHeaders(): Map<String, String> {
+  /** WEB/WEB_EMBEDDED /player 走 WebView 时的请求头（对齐 OkHttp WEB 分支 + best-effort Cookie）。 */
+  private fun buildWebViewHeaders(client: Client = Client.WEB): Map<String, String> {
+    val clientNameId = when (client) {
+      Client.WEB -> YoutubeConstants.ClientNameId
+      Client.WEB_EMBEDDED -> YoutubeConstants.WebEmbeddedClientNameId
+      Client.ANDROID -> "30"
+    }
+    val clientVersion = when (client) {
+      Client.WEB -> currentClientVersion()
+      Client.WEB_EMBEDDED -> YoutubeConstants.WebEmbeddedClientVersion
+      Client.ANDROID -> YoutubeConstants.AndroidClientVersion
+    }
     val headers = mutableMapOf(
       "Content-Type" to "application/json",
       "User-Agent" to YoutubeConstants.UserAgent,
       "Referer" to YoutubeConstants.Referer,
       "X-Goog-Visitor-Id" to currentVisitorData(),
-      "X-Youtube-Client-Version" to currentClientVersion(),
-      "X-Youtube-Client-Name" to YoutubeConstants.ClientNameId,
+      "X-Youtube-Client-Version" to clientVersion,
+      "X-Youtube-Client-Name" to clientNameId,
       "Origin" to YoutubeConstants.Referer,
       "Accept" to "*/*",
       "Accept-Language" to "*",
