@@ -111,6 +111,13 @@ class YoutubePlaybackResolver(
       // 若 /player 有 server_abr_streaming_url + adaptive 元数据(无 url),说明 YouTube 期望客户端走 SABR,
       // url 空不是 token 无效,而是拿流机制变了——我们该切 SABR 而非死磕 legacy DASH。
       val sabrUrl = streamingData.stringOrNull("server_abr_streaming_url")
+      // SABR 路径第二道闸:FreeTube 决策逻辑(Watch.js)要求 server_abr_streaming_url 与
+      // player_config.media_common_config.media_ustreamer_request_config.video_playback_ustreamer_config
+      // 同时 present 才走 SABR(§6.7 row 36)。只 dump sabrUrl 不够,两道闸都要确认。
+      val ustreamerCfg = player.obj("player_config")
+        ?.obj("media_common_config")
+        ?.obj("media_ustreamer_request_config")
+        ?.obj("video_playback_ustreamer_config")
       Log.i(
         Tag,
         "$client diag: playable=${player.obj("playabilityStatus")?.stringOrNull("status")} " +
@@ -118,6 +125,7 @@ class YoutubePlaybackResolver(
           "firstUrl=${if (firstUrl.isNullOrBlank()) "EMPTY" else "present(${firstUrl.length}B)"} " +
           "firstCipher=${if (firstCipher.isNullOrBlank()) "none" else "present"} " +
           "sabrUrl=${if (sabrUrl.isNullOrBlank()) "ABSENT" else "present(${sabrUrl.length}B)"} " +
+          "ustreamerCfg=${if (ustreamerCfg == null) "ABSENT" else "present(${ustreamerCfg.toString().length}B)"} " +
           "progressiveRaw=${(streamingData.array("formats") ?: emptyList()).size}"
       )
       // 决定性诊断:dump 第一条 adaptive 完整字段 + 全表扫描任何 url 类字段。若 YouTube 给的是
@@ -141,12 +149,17 @@ class YoutubePlaybackResolver(
       val noTokenFirst = noTokenRaw?.firstOrNull() as? JsonObject
       val noTokenFirstUrl = noTokenFirst?.stringOrNull("url")
       val noTokenSabr = noTokenSd?.stringOrNull("server_abr_streaming_url")
+      val noTokenUstreamer = noTokenPlayer?.obj("player_config")
+        ?.obj("media_common_config")
+        ?.obj("media_ustreamer_request_config")
+        ?.obj("video_playback_ustreamer_config")
       Log.i(
         Tag,
         "diag no-token WEB: playable=${noTokenPlayer?.obj("playabilityStatus")?.stringOrNull("status")} " +
           "rawAdaptive=${noTokenRaw?.size ?: 0} " +
           "firstUrl=${if (noTokenFirstUrl.isNullOrBlank()) "EMPTY" else "present(${noTokenFirstUrl.length}B)"} " +
           "sabrUrl=${if (noTokenSabr.isNullOrBlank()) "ABSENT" else "present(${noTokenSabr.length}B)"} " +
+          "ustreamerCfg=${if (noTokenUstreamer == null) "ABSENT" else "present(${noTokenUstreamer.toString().length}B)"} " +
           "(对比 with-token WEB 见上方 diag)"
       )
     }
