@@ -110,6 +110,14 @@ class YoutubeBotGuard(
   // ---- WebView snapshot / mint ----
 
   private suspend fun runSnapshot(program: String, globalName: String, contentBinding: JsonObject): JsonObject? {
+    // 诊断:确认 js_shell.html 的桌面指纹 polyfill 在真机生效(VM 读到与 context 一致的桌面环境)。
+    val fp = executor.eval(
+      "JSON.stringify({platform:navigator.platform, uaMobile:(navigator.userAgentData?navigator.userAgentData.mobile:'n/a'), " +
+        "uaPlatform:(navigator.userAgentData?navigator.userAgentData.platform:'n/a'), plugins:navigator.plugins.length, " +
+        "screenW:screen.width, screenH:screen.height, dpr:window.devicePixelRatio, " +
+        "touch:navigator.maxTouchPoints, webdriver:navigator.webdriver, mem:navigator.deviceMemory, cores:navigator.hardwareConcurrency})"
+    )
+    Log.i(Tag, "VM fingerprint=$fp")
     val script = "try { window.__runSnapshot(${jsonString(program)}, ${jsonString(globalName)}, ${contentBinding.toString()}) } " +
       "catch(e) { window.__poToken = { status: 'error', token: null, error: String(e && e.stack || e) }; }"
     val evalResult = executor.eval(script)

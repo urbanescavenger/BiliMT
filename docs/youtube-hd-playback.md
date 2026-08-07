@@ -227,6 +227,8 @@ fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', 
 
 **alpha.30/2.0.9 真机验证(§6.7 row 25)**:WebView 原生 /player **已真机验证成功**——`fetchViaWebView ok status=200 body=202714B`,拦截彻底消失。但 adaptive 仍 0(有 PO token 仍无高清),待加诊断 dump streamingData 定位。
 
+**§6.7 row 33(alpha.9,VM 桌面指纹硬化)**:row 32 的 raw dump 证明 YouTube 对 guest+token 会话**拒签所有 DASH 流**——40 条 adaptive 全是纯元数据(initRange/indexRange/contentLength/qualityLabel 齐全),**无 url/cipher/sabr/pot**;ANDROID 仍给 progressive(360p 能播),WEB 连 progressive 都不给。token 结构在 body(128B serviceIntegrityDimensions)、visitorData 配对正确、session cookies 捕获(YSC+VISITOR_INFO1_LIVE,无 CONSENT)。结论:token 结构性有效但**信任度不足以解锁签名流**。根因锁定为 **botguard VM 环境指纹与 context 自相矛盾**——context 声称 `os=Windows/10.0 browser=Chrome/126`(桌面),但 VM 跑在安卓 WebView:UA 虽覆盖为桌面 Chrome,`navigator.platform=Linux aarch64`、`userAgentData.mobile=true`、`plugins` 空、`screen` 安卓物理像素、`maxTouchPoints=5`。FreeTubeAndroid 用 CDP `setDeviceMetricsOverride` 让 VM 呈现一致桌面指纹。**修复**:js_shell.html 头部加内联 polyfill,在 document 解析时(早于任何 eval 的 interpreter)覆盖 `navigator.platform/oscpu/vendor/appVersion/deviceMemory/hardwareConcurrency/maxTouchPoints/language/languages/webdriver/userAgentData/plugins/mimeTypes/connection` + `screen.*` + `window.devicePixelRatio/outer*/inner*/screenX/Y` 为桌面 Chrome 值;YoutubeBotGuard.runSnapshot 加 `VM fingerprint=` 诊断 dump 确认真机生效。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
