@@ -3,7 +3,7 @@ package com.kirin.mt.core.youtube.sabr
 import android.net.Uri
 import android.util.Log
 import androidx.media3.common.C
-import androidx.media3.common.DataSpec
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.TransferListener
 import kotlinx.coroutines.runBlocking
@@ -37,7 +37,7 @@ internal class SabrStreamingDataSource(
   private var done: Boolean = false
 
   override fun open(dataSpec: DataSpec): Long {
-    currentUri = dataSpec.uri
+    currentUri = dataSpec.getUri()
     val e = SabrStreamRegistry.get(sessionId)
       ?: run {
         Log.w(tag, "SabrStream open: session NOT FOUND sid=$sessionId → throw")
@@ -53,7 +53,7 @@ internal class SabrStreamingDataSource(
       }
     buffer = initBytes
     bufferPos = 0
-    return C.LENGTH_UNSET
+    return C.LENGTH_UNSET.toLong()
   }
 
   override fun read(target: ByteArray, offset: Int, length: Int): Int {
@@ -77,7 +77,7 @@ internal class SabrStreamingDataSource(
     return toCopy
   }
 
-  override val uri: Uri? get() = currentUri
+  override fun getUri(): Uri? = currentUri
 
   override fun addTransferListener(transferListener: TransferListener) {
     // SABR 流不走 ExoPlayer 的数据转移/带宽估计监听(alpha.27 MVP);http 流由外层
