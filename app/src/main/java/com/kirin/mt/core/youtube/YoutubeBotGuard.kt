@@ -169,7 +169,10 @@ class YoutubeBotGuard(
   private suspend fun generateIntegrityToken(botguardResponse: String): String? = withContext(Dispatchers.IO) {
     val body = "[\"$RequestKey\",${jsonString(botguardResponse)}]".toRequestBody(JsonProtobufMediaType)
     val request = Request.Builder()
-      .url("https://jnn-pa.googleapis.com/\$rpc/google.internal.waa.v1.Waa/GenerateIT")
+      // 对齐 FreeTube botGuardScript.js 的 buildURL('GenerateIT', true) = www.youtube.com/api/jnn/v1/GenerateIT。
+      // PR #6931 说明 youtube.com/api/jnn 是 jnn-pa.googleapis.com 的代理,但真机实测(§6.7 row 26)
+      // 用 jnn-pa 直连 mint 出的 token 被判无效,先切到 YouTube 托管端点重测。
+      .url("https://www.youtube.com/api/jnn/v1/GenerateIT")
       .post(body)
       .header("Content-Type", "application/json+protobuf")
       .header("x-goog-api-key", WaaApiKey)
