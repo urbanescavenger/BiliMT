@@ -102,6 +102,20 @@ class YoutubePlaybackResolver(
       allAdaptive += adaptive
       allCombined += (adaptive + progressive).filter { it.kind == Kind.Video && it.combined }
       Log.i(Tag, "$client formats: adaptive=${adaptive.size} progressive=${progressive.size}")
+      // 诊断:dump streamingData 原始结构,定位 adaptive=0 是「token 没被应用(有 adaptive 但 url 空)」
+      // 还是「guest 不给 adaptive(无 adaptiveFormats)」。§6.7 row 25。
+      val rawAdaptive = streamingData.array("adaptiveFormats") ?: emptyList()
+      val firstFmt = rawAdaptive.firstOrNull() as? JsonObject
+      val firstUrl = firstFmt?.stringOrNull("url")
+      val firstCipher = firstFmt?.stringOrNull("signatureCipher")
+      Log.i(
+        Tag,
+        "$client diag: playable=${player.obj("playabilityStatus")?.stringOrNull("status")} " +
+          "rawAdaptive=${rawAdaptive.size} parsedAdaptive=${adaptive.size} " +
+          "firstUrl=${if (firstUrl.isNullOrBlank()) "EMPTY" else "present(${firstUrl.length}B)"} " +
+          "firstCipher=${if (firstCipher.isNullOrBlank()) "none" else "present"} " +
+          "progressiveRaw=${(streamingData.array("formats") ?: emptyList()).size}"
+      )
     }
     if (!havePlayable) {
       throw YoutubeApiException(0, "", "YouTube playback blocked: ${lastError ?: "no streamingData"}")
