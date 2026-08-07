@@ -342,8 +342,9 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
               // (cookie 含双格式 resolution,服务端对同一会话发同一值)。
               sawPolicy = true
               cookieBytes = policy?.playbackCookieBytes
-              // ByteArray? 无 isNullOrEmpty() 扩展(仅 Array<T?>/Collection? 有),显式判空。
-              val hasCookie = cookieBytes != null && cookieBytes.isNotEmpty()
+              // ByteArray? 无 isNullOrEmpty() 扩展;且 cookieBytes 是 var 跨 when 臂赋值,
+              // smart cast 不生效——用 ?.isNotEmpty() == true 不依赖 smart cast。
+              val hasCookie = cookieBytes?.isNotEmpty() == true
               if (hasCookie) session.playbackCookie = cookieBytes
               Log.i(tag, "NEXT_REQUEST_POLICY backoff=${policy?.backoffTimeMs}ms cookie=$hasCookie")
             }
