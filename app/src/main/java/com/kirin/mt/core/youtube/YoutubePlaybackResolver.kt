@@ -117,6 +117,25 @@ class YoutubePlaybackResolver(
           "progressiveRaw=${(streamingData.array("formats") ?: emptyList()).size}"
       )
     }
+    // 诊断:带/不带 token 对比——同一 videoId 再发一次无 token 的 WEB /player,对比 adaptive 条数/首条 url,
+    // 判断 token 是否真的起作用(§6.7 row 28)。若带/不带 token 响应完全一样(都剥空)→ token 无效;
+    // 若有差异 → token 在起作用但不够。走 WebView 原生栈与 with-token WEB 同路径,公平对比。
+    if (poToken != null) {
+      val noTokenPlayer = runCatching {
+        postPlayer(videoId, client = InnerTubeClient.Client.WEB, poToken = null, signatureTimestamp = signatureTimestamp)
+      }.getOrNull()
+      val noTokenSd = noTokenPlayer?.obj("streamingData")
+      val noTokenRaw = noTokenSd?.array("adaptiveFormats")
+      val noTokenFirst = noTokenRaw?.firstOrNull() as? JsonObject
+      val noTokenFirstUrl = noTokenFirst?.stringOrNull("url")
+      Log.i(
+        Tag,
+        "diag no-token WEB: playable=${noTokenPlayer?.obj("playabilityStatus")?.stringOrNull("status")} " +
+          "rawAdaptive=${noTokenRaw?.size ?: 0} " +
+          "firstUrl=${if (noTokenFirstUrl.isNullOrBlank()) "EMPTY" else "present(${noTokenFirstUrl.length}B)"} " +
+          "(对比 with-token WEB 见上方 diag)"
+      )
+    }
     if (!havePlayable) {
       throw YoutubeApiException(0, "", "YouTube playback blocked: ${lastError ?: "no streamingData"}")
     }
