@@ -207,6 +207,63 @@ internal object SabrProto {
     return null
   }
 
+  // ===================== 请求体解码(alpha.26) =====================
+  // 从 WebView harvest 到的 VideoPlaybackAbrRequest body 解出建 SabrSession 所需的会话参数:
+  // poToken(StreamerContext.field2)、ustreamerConfig(field5)、preferredAudio/VideoFormatId(field16/17[0])。
+  // 这些是浏览器(watch 页)会话绑定的值——必须原样用,不能换我们 /player 的(会话不一致→服务端只回 context)。
+
+  /** 从 harvested body 解出的会话参数(用于建 SabrSession 驱动 init/segment)。 */
+  data class DecodedAbrRequest(
+    val poToken: ByteArray,
+    val ustreamerConfig: ByteArray,
+    val audioFormatId: FormatIdLite?,
+    val videoFormatId: FormatIdLite?,
+  )
+  data class FormatIdLite(val itag: Int, val lastModified: Long, val xtags: String?)
+
+  fun decodeVideoPlaybackAbrRequest(body: ByteArray): DecodedAbrRequest {
+    val r = ProtoReader(body)
+    var ustreamerConfig: ByteArray = ByteArray(0)
+    var audioFmt: FormatIdLite? = null
+    var videoFmt: FormatIdLite? = null
+    var poToken: ByteArray = ByteArray(0)
+    while (true) {
+      val f = r.nextField() ?: break
+      when (f.fieldNumber) {
+        5 -> ustreamerConfig = f.value as ByteArray
+        16 -> if (audioFmt == null) audioFmt = decodeFormatIdLite(f.value as ByteArray)
+        17 -> if (videoFmt == null) videoFmt = decodeFormatIdLite(f.value as ByteArray)
+        19 -> poToken = decodeStreamerContextPoToken(f.value as ByteArray)
+      }
+    }
+    return DecodedAbrRequest(poToken, ustreamerConfig, audioFmt, videoFmt)
+  }
+
+  /** FormatId(itag/lastModified/xtags)——对齐 encodeFormatId 的字段号(1/2/3)。 */
+  fun decodeFormatIdLite(payload: ByteArray): FormatIdLite {
+    val r = ProtoReader(payload)
+    var itag = 0; var lmt = 0L; var xtags: String? = null
+    while (true) {
+      val f = r.nextField() ?: break
+      when (f.fieldNumber) {
+        1 -> itag = (f.value as Long).toInt()
+        2 -> lmt = f.value as Long
+        3 -> xtags = String(f.value as ByteArray, Charsets.UTF_8)
+      }
+    }
+    return FormatIdLite(itag, lmt, xtags)
+  }
+
+  /** StreamerContext.field2 = poToken(bytes)。 */
+  private fun decodeStreamerContextPoToken(payload: ByteArray): ByteArray {
+    val r = ProtoReader(payload)
+    while (true) {
+      val f = r.nextField() ?: break
+      if (f.fieldNumber == 2) return f.value as ByteArray
+    }
+    return ByteArray(0)
+  }
+
   /** NextRequestPolicy:backoffTimeMs + playbackCookie(用于重试)。 */
   data class PlaybackCookie(val resolution: Int?, val videoFmt: Pair<Int, Long>?, val audioFmt: Pair<Int, Long>?)
   data class NextRequestPolicy(

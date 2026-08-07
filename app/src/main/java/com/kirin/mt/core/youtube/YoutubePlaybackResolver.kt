@@ -224,9 +224,9 @@ class YoutubePlaybackResolver(
                 "harvest: ${capture.method} status=${capture.status} " +
                   "n(harvested=${harvestedN ?: "ABSENT"} raw=${rawN ?: "ABSENT"} same=${harvestedN == rawN}) " +
                   "url=${capture.url} bodyB64=${capture.bodyB64.length}B " +
-                  "→ ${if (isPost) "SABR POST(replay diagnostic)" else "DASH GET(url 含 transform 的 n,可直接喂 Media3?)"}"
+                  "→ ${if (isPost) "SABR POST(drive SabrClient from harvested session)" else "DASH GET(url 含 transform 的 n,可直接喂 Media3?)"}"
               )
-              if (isPost) replaySabrCapture(capture, client)
+              if (isPost) driveSabrFromHarvest(capture, client)
             } else {
               Log.w(Tag, "harvest: no capture (embed 25s 内未发 googlevideo 请求 — 页没加载/autoplay 被拦/consent 墙;查 YtSabrHarvest onPageStarted/onPageFinished/console 日志)")
             }
@@ -553,6 +553,58 @@ class YoutubePlaybackResolver(
    * poToken/ustreamerConfig,而我们带的 Cookie/visitor 是 WEB /player 会话——若 403 可能是
    * 会话不匹配而非 rn 冲突,alpha.21 应直接用 embed 的完整上下文。
    */
+  /**
+   * alpha.26:用 harvested (url+body) 驱动真正的 SabrClient(不再仅重放 echo)——
+   * 解码 body 取 poToken/ustreamerConfig/formatIds(浏览器会话绑定值),建 SabrSession(用浏览器 cpn
+   * 绑会话),SabrClient 自己构造 init/segment body 发 rn=0/1 POST。证「我们构造的 body 能否驱动
+   * SABR」(不只是 echo 浏览器 body)。Success(media bytes)→ 可接 Media3;Error/context-only →
+   * 构造 body 与浏览器 body 有差异(clientInfo/clientAbrState),需对齐或回退 echo 路径。
+   */
+  private suspend fun driveSabrFromHarvest(capture: YoutubeSabrHarvester.SabrCapture, client: InnerTubeClient.Client) {
+    val body = runCatching { Base64.decode(capture.bodyB64, Base64.DEFAULT) }.getOrNull()
+    if (body == null || body.isEmpty()) {
+      Log.w(Tag, "SABR drive: body empty (len=${capture.bodyB64.length}) — hook 没捕到 body?")
+      return
+    }
+    val decoded = SabrProto.decodeVideoPlaybackAbrRequest(body)
+    val browserCpn = extractParam(capture.url, "cpn")
+    // 剥 alr/cpn/rn → base sabrUrl(fromSabrData 再加 alr=yes+cpn=browserCpn;SabrClient.fetch 加 rn)。
+    // cver 等浏览器参数保留(与 alpha.25 replay 一致)。
+    val baseSabrUrl = capture.url.split("&").filterNot {
+      it.startsWith("alr=") || it.startsWith("cpn=") || it.startsWith("rn=")
+    }.joinToString("&").let { if (it.startsWith("http")) it else "&$it" }
+    val audioFmt = decoded.audioFormatId
+    val videoFmt = decoded.videoFormatId
+    Log.i(
+      Tag,
+      "SABR drive: decoded poToken=${decoded.poToken.size}B ustreamerCfg=${decoded.ustreamerConfig.size}B " +
+        "audio=$audioFmt video=$videoFmt cpn=$browserCpn base=${baseSabrUrl.take(120)}..."
+    )
+    if (audioFmt == null || videoFmt == null) {
+      Log.w(Tag, "SABR drive: decoded formatIds null — body 解码异常?")
+      return
+    }
+    val session = SabrSession.fromSabrData(
+      baseSabrUrl,
+      Base64.encodeToString(decoded.poToken, Base64.NO_WRAP),
+      Base64.encodeToString(decoded.ustreamerConfig, Base64.NO_WRAP),
+      innerTubeClient.sabrClientInfo(),
+      SabrFormatId(audioFmt.itag, audioFmt.lastModified, audioFmt.xtags, 0),
+      SabrFormatId(videoFmt.itag, videoFmt.lastModified, videoFmt.xtags, 0),
+      userAgent = client.userAgent,
+      cookieHeader = innerTubeClient.currentSessionCookies(),
+      visitorData = innerTubeClient.currentVisitorData(),
+      cpn = browserCpn,
+    )
+    val sabrClient = SabrClient(httpClient)
+    val initResult = sabrClient.fetch(session, SabrFetchRequest(isInit = true, streamType = SabrStreamType.VIDEO))
+    Log.i(Tag, "SABR drive init(video, constructed body): ${summarizeSabrResult(initResult)}")
+    if (initResult is SabrFetchResult.Success) {
+      val segResult = sabrClient.fetch(session, SabrFetchRequest(isInit = false, sequenceNumber = 1, streamType = SabrStreamType.VIDEO))
+      Log.i(Tag, "SABR drive seg1(video, constructed body): ${summarizeSabrResult(segResult)}")
+    }
+  }
+
   private suspend fun replaySabrCapture(capture: YoutubeSabrHarvester.SabrCapture, client: InnerTubeClient.Client) {
     val body = runCatching { Base64.decode(capture.bodyB64, Base64.DEFAULT) }.getOrNull()
     if (body == null || body.isEmpty()) {

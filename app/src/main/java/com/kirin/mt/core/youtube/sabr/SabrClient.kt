@@ -51,13 +51,16 @@ internal data class SabrSession(
       userAgent: String,
       cookieHeader: String,
       visitorData: String,
+      /** 会话 cpn——alpha.26 harvest 路径须传浏览器原 cpn(绑定 body 的 poToken/ustreamerConfig 会话);
+       * null 时随机生成(classic /player 路径)。 */
+      cpn: String? = null,
     ): SabrSession {
       // sabrUrl 加 alr=yes + cpn(对齐 FreeTube Watch.js L1619-1620 + SabrSchemePlugin 追加 rn)。cpn = 16 随机字节 base64url
-      val cpn = randomCpn()
-      val withParams = sabrUrlWithParams(sabrUrl, cpn)
+      val usedCpn = cpn ?: randomCpn()
+      val withParams = sabrUrlWithParams(sabrUrl, usedCpn)
       val po = Base64.decode(poTokenB64, Base64.DEFAULT)
       val ustreamer = Base64.decode(ustreamerConfigB64, Base64.DEFAULT)
-      Log.i(tag, "SabrSession: sabrUrl=${withParams.take(200)}... poToken=${po.size}B ustreamerCfg=${ustreamer.size}B cpn=$cpn audio=$audioFormatId video=$videoFormatId ua=${userAgent.take(40)} cookie=${cookieHeader.length}B visitor=${visitorData.length}B")
+      Log.i(tag, "SabrSession: sabrUrl=${withParams.take(200)}... poToken=${po.size}B ustreamerCfg=${ustreamer.size}B cpn=$usedCpn audio=$audioFormatId video=$videoFormatId ua=${userAgent.take(40)} cookie=${cookieHeader.length}B visitor=${visitorData.length}B")
       return SabrSession(withParams, po, ustreamer, clientInfo, audioFormatId, videoFormatId, userAgent, cookieHeader, visitorData)
     }
 
