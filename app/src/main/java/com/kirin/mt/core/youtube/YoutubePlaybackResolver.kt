@@ -110,14 +110,26 @@ class YoutubePlaybackResolver(
       // 决定性诊断:FreeTube 用 SABR(server_abr_streaming_url)而非 legacy DASH 直链(§6.7 row 36)。
       // 若 /player 有 server_abr_streaming_url + adaptive 元数据(无 url),说明 YouTube 期望客户端走 SABR,
       // url 空不是 token 无效,而是拿流机制变了——我们该切 SABR 而非死磕 legacy DASH。
-      val sabrUrl = streamingData.stringOrNull("server_abr_streaming_url")
+      //
+      // 注意 raw InnerTube JSON 用 camelCase(serverAbrStreamingUrl / playerConfig / mediaCommonConfig /
+      // mediaUstreamerRequestConfig / videoPlaybackUstreamerConfig)。FreeTube 代码里的 snake_case
+      // (server_abr_streaming_url 等)是 youtubei.js 库端 camelCase→snake_case 转换后的形态,不是
+      // raw 响应里的 key——alpha.13 的 sabrUrl=ABSENT/ustreamerCfg=ABSENT 是查错 key 导致的假阴性
+      // (§6.7 row 38 定位)。
+      val sabrUrl = streamingData.stringOrNull("serverAbrStreamingUrl")
       // SABR 路径第二道闸:FreeTube 决策逻辑(Watch.js)要求 server_abr_streaming_url 与
       // player_config.media_common_config.media_ustreamer_request_config.video_playback_ustreamer_config
       // 同时 present 才走 SABR(§6.7 row 36)。只 dump sabrUrl 不够,两道闸都要确认。
-      val ustreamerCfg = player.obj("player_config")
-        ?.obj("media_common_config")
-        ?.obj("media_ustreamer_request_config")
-        ?.obj("video_playback_ustreamer_config")
+      val playerCfg = player.obj("playerConfig")
+      val ustreamerCfg = playerCfg
+        ?.obj("mediaCommonConfig")
+        ?.obj("mediaUstreamerRequestConfig")
+        ?.obj("videoPlaybackUstreamerConfig")
+      // 原始 key 全量 dump:彻底坐实「camelCase 假阴性」理论。若 streamingData.keys 里有
+      // serverAbrStreamingUrl 而 snake_case 读不到,根因即定。同时 dump 第一条 adaptive 的全部
+      // key,确认 url/signatureCipher 是否真无(而非换成了别的拿流字段名)。
+      Log.i(Tag, "$client streamingData keys=${streamingData.keys.toList()}")
+      Log.i(Tag, "$client playerConfig keys=${playerCfg?.keys?.toList() ?: "NO playerConfig"}")
       Log.i(
         Tag,
         "$client diag: playable=${player.obj("playabilityStatus")?.stringOrNull("status")} " +
@@ -148,11 +160,11 @@ class YoutubePlaybackResolver(
       val noTokenRaw = noTokenSd?.array("adaptiveFormats")
       val noTokenFirst = noTokenRaw?.firstOrNull() as? JsonObject
       val noTokenFirstUrl = noTokenFirst?.stringOrNull("url")
-      val noTokenSabr = noTokenSd?.stringOrNull("server_abr_streaming_url")
-      val noTokenUstreamer = noTokenPlayer?.obj("player_config")
-        ?.obj("media_common_config")
-        ?.obj("media_ustreamer_request_config")
-        ?.obj("video_playback_ustreamer_config")
+      val noTokenSabr = noTokenSd?.stringOrNull("serverAbrStreamingUrl")
+      val noTokenUstreamer = noTokenPlayer?.obj("playerConfig")
+        ?.obj("mediaCommonConfig")
+        ?.obj("mediaUstreamerRequestConfig")
+        ?.obj("videoPlaybackUstreamerConfig")
       Log.i(
         Tag,
         "diag no-token WEB: playable=${noTokenPlayer?.obj("playabilityStatus")?.stringOrNull("status")} " +
@@ -160,6 +172,7 @@ class YoutubePlaybackResolver(
           "firstUrl=${if (noTokenFirstUrl.isNullOrBlank()) "EMPTY" else "present(${noTokenFirstUrl.length}B)"} " +
           "sabrUrl=${if (noTokenSabr.isNullOrBlank()) "ABSENT" else "present(${noTokenSabr.length}B)"} " +
           "ustreamerCfg=${if (noTokenUstreamer == null) "ABSENT" else "present(${noTokenUstreamer.toString().length}B)"} " +
+          "streamingData keys=${noTokenSd?.keys?.toList() ?: "NONE"} " +
           "(对比 with-token WEB 见上方 diag)"
       )
     }
