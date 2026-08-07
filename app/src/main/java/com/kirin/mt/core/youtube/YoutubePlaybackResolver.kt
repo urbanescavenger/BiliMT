@@ -129,11 +129,16 @@ class YoutubePlaybackResolver(
         ?.obj("mediaUstreamerRequestConfig")
       val ustreamerCfg = ustreamerReqCfg
         ?.obj("videoPlaybackUstreamerConfig")
+      // videoPlaybackUstreamerConfig 在 proto 里是 bytes(googlevideo field 5),JSON 里是 base64 字符串,
+      // .obj() 必返回 null(alpha.15 报 ABSENT 疑似类型不符假阴性)。补:父层 keys + 子层按 string 读,
+      // 坐实它是 base64 串并拿确切长度(SABR 移植要透传这串 bytes)。
+      val ustreamerCfgStr = ustreamerReqCfg?.stringOrNull("videoPlaybackUstreamerConfig")
       // 原始 key 全量 dump:彻底坐实「camelCase 假阴性」理论。若 streamingData.keys 里有
       // serverAbrStreamingUrl 而 snake_case 读不到,根因即定。同时 dump 第一条 adaptive 的全部
       // key,确认 url/signatureCipher 是否真无(而非换成了别的拿流字段名)。
       Log.i(Tag, "$client streamingData keys=${streamingData.keys.toList()}")
       Log.i(Tag, "$client playerConfig keys=${playerCfg?.keys?.toList() ?: "NO playerConfig"}")
+      Log.i(Tag, "$client ustreamerReqCfg keys=${ustreamerReqCfg?.keys?.toList() ?: "NO ustreamerReqCfg"}")
       Log.i(
         Tag,
         "$client diag: playable=${player.obj("playabilityStatus")?.stringOrNull("status")} " +
@@ -142,7 +147,8 @@ class YoutubePlaybackResolver(
           "firstCipher=${if (firstCipher.isNullOrBlank()) "none" else "present"} " +
           "sabrUrl=${if (sabrUrl.isNullOrBlank()) "ABSENT" else "present(${sabrUrl.length}B)"} " +
           "ustreamerReqCfg=${if (ustreamerReqCfg == null) "ABSENT" else "present(${ustreamerReqCfg.toString().length}B)"} " +
-          "ustreamerCfg=${if (ustreamerCfg == null) "ABSENT" else "present(${ustreamerCfg.toString().length}B)"} " +
+          "ustreamerCfg=${if (ustreamerCfg == null) "ABSENT(obj)" else "present(obj ${ustreamerCfg.toString().length}B)"} " +
+          "ustreamerCfgStr=${if (ustreamerCfgStr.isNullOrBlank()) "ABSENT(str)" else "present(str ${ustreamerCfgStr.length}B)"} " +
           "progressiveRaw=${(streamingData.array("formats") ?: emptyList()).size}"
       )
       // 决定性诊断:dump 第一条 adaptive 完整字段 + 全表扫描任何 url 类字段。若 YouTube 给的是
