@@ -115,6 +115,14 @@ class YoutubePlaybackResolver(
           "firstCipher=${if (firstCipher.isNullOrBlank()) "none" else "present"} " +
           "progressiveRaw=${(streamingData.array("formats") ?: emptyList()).size}"
       )
+      // 决定性诊断:dump 第一条 adaptive 完整字段 + 全表扫描任何 url 类字段。若 YouTube 给的是
+      // `pot`/`sabr`/其它拿流字段而非 url,说明拿流机制变了,url 空不代表真没有(§6.7 row 32)。
+      val firstRawJson = firstFmt?.toString()?.take(600)
+      val urlishKeys = rawAdaptive.mapNotNull { it as? JsonObject }
+        .flatMap { it.keys }.filter { it.contains("url", true) || it.contains("cipher", true) || it.contains("sabr", true) || it == "pot" }.distinct()
+      val firstHasAny = firstFmt?.keys?.any { it.contains("url", true) || it.contains("cipher", true) || it.contains("sabr", true) || it == "pot" } == true
+      Log.i(Tag, "$client rawAdaptive keys(all adaptive url/cipher/pot-ish)=${if (urlishKeys.isEmpty()) "NONE" else urlishKeys} firstHasAny=$firstHasAny")
+      Log.i(Tag, "$client rawAdaptive first format json=$firstRawJson")
     }
     // 诊断:带/不带 token 对比——同一 videoId 再发一次无 token 的 WEB /player,对比 adaptive 条数/首条 url,
     // 判断 token 是否真的起作用(§6.7 row 28)。若带/不带 token 响应完全一样(都剥空)→ token 无效;

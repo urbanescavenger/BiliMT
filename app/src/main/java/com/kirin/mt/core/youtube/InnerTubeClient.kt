@@ -117,7 +117,7 @@ class InnerTubeClient(
       // PO token 生效前提：请求必须带与 visitorData 配对的 VISITOR_INFO1_LIVE cookie
       // （对齐 youtubei.js Session，cookie 值 == visitorData proto）。只有 visitorData、无配对
       // cookie → YouTube 无法把 token 绑定到真实会话 → adaptive URL 被剥空（§6.7 row 31）。
-      .header("Cookie", "VISITOR_INFO1_LIVE=${currentVisitorData()}; PREF=tz=Asia.Shanghai")
+      .header("Cookie", currentSessionCookies())
     when (client) {
       Client.WEB, Client.WEB_EMBEDDED -> requestBuilder
         .header("X-Youtube-Client-Version", if (client == Client.WEB) currentClientVersion() else YoutubeConstants.WebEmbeddedClientVersion)
@@ -212,6 +212,7 @@ class InnerTubeClient(
       .header("X-Youtube-Client-Name", YoutubeConstants.ClientNameId)
       .header("User-Agent", YoutubeConstants.UserAgent)
       .header("Referer", YoutubeConstants.Referer)
+      .header("Cookie", currentSessionCookies())
       .build()
     val text = runCatching {
       httpClient.newCall(request).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
@@ -375,8 +376,8 @@ class InnerTubeClient(
       "X-Youtube-Bootstrap-Logged-In" to "false",
       // PO token 生效前提：/player 必须带与 visitorData 配对的 VISITOR_INFO1_LIVE cookie
       // （对齐 youtubei.js Session，cookie 值 == visitorData proto）。WebView cookie store 里是
-      // botguard VM 页自己的不配对 cookie，须显式覆盖为会话 visitorData（§6.7 row 31）。
-      "Cookie" to "VISITOR_INFO1_LIVE=${currentVisitorData()}; PREF=tz=Asia.Shanghai",
+      // botguard VM 页自己的不配对 cookie，须显式覆盖为会话 cookie（§6.7 row 31/32）。
+      "Cookie" to currentSessionCookies(),
     )
     return headers
   }
@@ -395,6 +396,12 @@ class InnerTubeClient(
   /** 当前 WEB client version：优先用 sw.js_data 拉到的真实版本，否则回退硬编码。 */
   private fun currentClientVersion(): String {
     return realSessionData?.clientVersion ?: YoutubeConstants.ClientVersion
+  }
+
+  /** 当前完整会话 cookie（CONSENT/SOCS/VISITOR_INFO1_LIVE/PREF）；未捕获到则降级仅 VISITOR_INFO1_LIVE=V。 */
+  private fun currentSessionCookies(): String {
+    return realSessionData?.sessionCookies
+      ?: "VISITOR_INFO1_LIVE=${currentVisitorData()}; PREF=tz=Asia.Shanghai"
   }
 
   /**
@@ -451,6 +458,10 @@ class InnerTubeClient(
     val visitor = deviceInfo.str(13)
     if (visitor.isNullOrBlank()) return@withContext null
     val version = deviceInfo.str(16)
+    // 完整会话 cookie：抓真实首页拿 CONSENT/SOCS 等（YouTube 对无 consent cookie 的会话判
+    // "未同意浏览"，常只回 progressive 不给 adaptive，§6.7 row 32）。失败降级仅 VISITOR_INFO1_LIVE。
+    val sessionCookies = captureSessionCookies(visitor)
+    Log.i(Tag, "session cookies: ${sessionCookies?.take(160) ?: "NONE (fallback VISITOR_INFO1_LIVE only)"}")
     RealSessionData(
       visitorData = visitor,
       clientVersion = version ?: YoutubeConstants.ClientVersion,
@@ -463,7 +474,38 @@ class InnerTubeClient(
       timeZone = deviceInfo.str(79),
       deviceExperimentId = deviceInfo.str(103),
       rolloutToken = deviceInfo.str(107),
+      sessionCookies = sessionCookies,
     )
+  }
+
+  /**
+   * 抓真实首页 `https://www.youtube.com/` 捕获完整会话 cookie（CONSENT/SOCS/VISITOR_INFO1_LIVE/PREF），
+   * 对齐 youtubei.js Session（首页加载时 Set-Cookie 一整套）。失败返回 null（调用方降级仅 VISITOR_INFO1_LIVE）。
+   */
+  private suspend fun captureSessionCookies(visitorId: String): String? = withContext(Dispatchers.IO) {
+    val request = Request.Builder()
+      .url("https://www.youtube.com/")
+      .header("User-Agent", YoutubeConstants.UserAgent)
+      .header("Accept-Language", "en-US")
+      .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+      .header("Cookie", "VISITOR_INFO1_LIVE=$visitorId; PREF=tz=Asia.Shanghai")
+      .build()
+    val captured = linkedMapOf<String, String>()
+    val ok = runCatching {
+      httpClient.newCall(request).execute().use { resp ->
+        resp.headers("Set-Cookie").forEach { sc ->
+          val name = sc.substringBefore("=").trim()
+          val value = sc.substringAfter("=").substringBefore(";").trim()
+          if (name in setOf("CONSENT", "SOCS", "VISITOR_INFO1_LIVE", "PREF", "YSC")) captured[name] = value
+        }
+        resp.body?.close()
+      }
+      true
+    }.getOrDefault(false)
+    if (!ok || captured.isEmpty()) return@withContext null
+    // 显式保证 VISITOR_INFO1_LIVE = visitorData（token 会话配对前提）。
+    captured["VISITOR_INFO1_LIVE"] = visitorId
+    captured.entries.joinToString("; ") { (k, v) -> "$k=$v" }
   }
 
   /** sw.js_data 拉取的真实会话数据（含浏览器指纹字段，供 challenge context 用）。 */
@@ -479,6 +521,7 @@ class InnerTubeClient(
     val timeZone: String?,
     val deviceExperimentId: String?,
     val rolloutToken: String?,
+    val sessionCookies: String?,
   )
 
   // ---- visitorData 编码（对齐 youtubei.js ProtoUtils.encodeVisitorData） ----
