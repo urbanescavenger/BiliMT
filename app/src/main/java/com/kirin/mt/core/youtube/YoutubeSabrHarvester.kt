@@ -54,9 +54,9 @@ class YoutubeSabrHarvester(
 
   /**
    * 加载 embed 页,采集首个 SABR POST。失败/超时返回 null(绝不抛,不阻塞主路径)。
-   * @param timeoutMs 上限(默认 25s);embed 播放器 init 通常 3-8s 内发首个 SABR POST。
+   * @param timeoutMs 上限(默认 30s);embed 播放器 init 通常 3-8s,watch 页回退更慢。
    */
-  suspend fun harvest(videoId: String, timeoutMs: Long = 25_000L): SabrCapture? =
+  suspend fun harvest(videoId: String, timeoutMs: Long = 30_000L): SabrCapture? =
     withContext(Dispatchers.Main) {
       runCatching { withTimeoutOrNull(timeoutMs) { harvestImpl(videoId) } }
         .onFailure { Log.w(Tag, "harvest failed: ${it.message ?: it::class.simpleName}") }
@@ -78,7 +78,10 @@ class YoutubeSabrHarvester(
       // 轮询 window.__gvCaptures[0](对齐 BotGuard pollState 双解码:evaluateJavascript 对字符串
       // 结果做 JSON 编码,先解内层字符串再解析对象)。alpha.20 只截 SABR POST 致 25s 无捕获——
       // alpha.21 放宽到所有 googlevideo 请求(含 DASH GET),并加页面加载/console 诊断定位 embed 行为。
-      val deadline = System.currentTimeMillis() + 25_000L
+      // alpha.23:embed 报「错误 153」(config 拒)→ 10s 无捕获则回退 watch 页(无 embed 权限闸)。
+      val start = System.currentTimeMillis()
+      val deadline = start + 30_000L
+      var triedWatch = false
       while (System.currentTimeMillis() < deadline) {
         val raw = evalOn(view, "(window.__gvCaptures && window.__gvCaptures[0]) ? JSON.stringify(window.__gvCaptures[0]) : null")
         val obj = parseCapture(raw)
@@ -93,9 +96,16 @@ class YoutubeSabrHarvester(
             return SabrCapture(url, method, body ?: "", status)
           }
         }
+        // 10s 内 embed 无捕获 → 回退 watch 页(同 videoId,无 embed 权限闸,播放器同 plasma base.js
+        // 做 n-transform)。hook 在 onPageStarted 重新注入,idempotent,导航存活。
+        if (!triedWatch && System.currentTimeMillis() - start > 10_000L) {
+          Log.i(Tag, "harvest: embed 无捕获 10s → 回退 watch 页")
+          view.loadUrl("https://www.youtube.com/watch?v=$videoId")
+          triedWatch = true
+        }
         delay(200)
       }
-      Log.w(Tag, "harvest: timeout (no SABR POST captured in 25s)")
+      Log.w(Tag, "harvest: timeout (30s 内 embed+watch 均无 googlevideo 请求)")
       return null
     } finally {
       view.destroy()
@@ -111,7 +121,10 @@ class YoutubeSabrHarvester(
     @Suppress("DEPRECATION")
     settings.allowUniversalAccessFromFileURLs = true
     settings.mediaPlaybackRequiresUserGesture = false // 允许 muted autoplay,触发播放器 → SABR POST
-    settings.userAgentString = YoutubeConstants.MobileUserAgent
+    // 桌面 UA——alpha.22 真机 embed 报「错误 153 视频播放器配置错误」:embed 播放器自己的 config
+    // 请求被拒(mobile UA 嫌疑;FreeTube 桌面 Electron 能播)。harvester 是独立 WebView,UA 不影响
+    // 我们 mobile /player 流程,故此处用桌面 UA 让 embed/watch 页播放器正常 init。
+    settings.userAgentString = YoutubeConstants.UserAgent
     webViewClient = object : WebViewClient() {
       // onPageStarted 在页面脚本(含播放器 base.js)加载前触发——SABR/GET 在播放器 init 后
       // (数秒)才发,故此处注入的 fetch/XHR wrapper 必先于首个 googlevideo 请求就位。
