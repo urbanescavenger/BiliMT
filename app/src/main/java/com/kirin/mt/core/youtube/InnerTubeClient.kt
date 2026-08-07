@@ -80,6 +80,21 @@ class InnerTubeClient(
       put("context", buildContext(client = client))
     }
 
+    // 诊断:dump /player 请求体,确认 contentPoToken 真的在顶层 serviceIntegrityDimensions 里
+    // (§6.7 row 26 真机 adaptive=0 定位:排除「token 没注入请求」分支)。
+    if (endpoint == "/player") {
+      val sid = body["serviceIntegrityDimensions"]?.jsonObject
+      val sidToken = sid?.stringOrNull("poToken")
+      Log.i(
+        Tag,
+        "postJson /player client=$client viaWebView=$viaWebView " +
+          "poTokenArg=${if (poToken.isNullOrBlank()) "null" else "${poToken.length}B"} " +
+          "bodySID=${if (sid == null) "ABSENT" else "present"} " +
+          "bodySIDToken=${if (sidToken.isNullOrBlank()) "EMPTY" else "${sidToken.length}B"} " +
+          "bodyLen=${body.toString().length}B"
+      )
+    }
+
     val url = "${YoutubeConstants.InnerTubeBase}/${YoutubeConstants.ApiVersion}$endpoint" +
       "?key=${YoutubeConstants.ApiKey}&prettyPrint=false&alt=json"
 
