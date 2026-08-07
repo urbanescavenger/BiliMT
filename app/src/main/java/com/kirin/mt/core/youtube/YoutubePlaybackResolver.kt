@@ -207,24 +207,26 @@ class YoutubePlaybackResolver(
             val result = sabrClient.fetch(session, SabrFetchRequest(isInit = true, streamType = SabrStreamType.VIDEO))
             Log.i(Tag, "SABR init probe(video, deciphered): ${summarizeSabrResult(result)}")
           } else {
-            // plasma 播放器:n-transform 在 WASM 里,[YoutubeNDecryptor] 正则结构性失效(§6.7 row 42)
+            // plasma 播放器:n-transform 在 WASM 里,[YoutubeNDecryptor] 正则结构性失效(§6.7 row 43)
             // → sabrUrl 带 n 未解 → googlevideo 403。改让 Android WebView 浏览器引擎(原生跑 WASM)
-            // 加载 embed 页替我们做 n-transform,采集其 SABR POST(url 已 transform + body 含
-            // poToken/ustreamerConfig/formatIds),alpha.21 再喂回 SabrClient。
+            // 加载 embed 页替我们做 n-transform,采集其 googlevideo 请求(SABR POST 或 DASH GET,
+            // url 已 transform)。alpha.21 据捕获 method 决定建 SabrSession(POST)还是直用 GET url(DASH)。
             Log.i(Tag, "SABR n-decrypt NO-CHANGE (plasma WASM) → harvest embed WebView")
             val capture = sabrHarvester.harvest(videoId)
             if (capture != null) {
               val harvestedN = extractParam(capture.url, "n")
               val rawN = extractParam(sabrUrl, "n")
+              val isPost = capture.method.equals("POST", ignoreCase = true)
               Log.i(
                 Tag,
-                "SABR harvest: status=${capture.status} " +
+                "harvest: ${capture.method} status=${capture.status} " +
                   "n(harvested=${harvestedN ?: "ABSENT"} raw=${rawN ?: "ABSENT"} same=${harvestedN == rawN}) " +
-                  "url=${capture.url.take(220)}... bodyB64=${capture.bodyB64.length}B"
+                  "url=${capture.url} bodyB64=${capture.bodyB64.length}B " +
+                  "→ ${if (isPost) "SABR POST(replay diagnostic)" else "DASH GET(url 含 transform 的 n,可直接喂 Media3?)"}"
               )
-              replaySabrCapture(capture, client)
+              if (isPost) replaySabrCapture(capture, client)
             } else {
-              Log.w(Tag, "SABR harvest: no capture (embed 未在 25s 内发 SABR POST — autoplay 被拦/嵌入客户端差异?)")
+              Log.w(Tag, "harvest: no capture (embed 25s 内未发 googlevideo 请求 — 页没加载/autoplay 被拦/consent 墙;查 YtSabrHarvest onPageStarted/onPageFinished/console 日志)")
             }
           }
         } else {
