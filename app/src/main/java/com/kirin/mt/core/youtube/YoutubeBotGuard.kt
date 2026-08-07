@@ -111,11 +111,15 @@ class YoutubeBotGuard(
 
   private suspend fun runSnapshot(program: String, globalName: String, contentBinding: JsonObject): JsonObject? {
     // 诊断:确认 js_shell.html 的桌面指纹 polyfill 在真机生效(VM 读到与 context 一致的桌面环境)。
+    // 含实际 navigator.userAgent(非 polyfill 覆盖的只读属性,由 settings.userAgentString 决定)与
+    // window.chrome 等强指纹信号——BotGuard VM 若探测到安卓 WebView 环境会铸出无效 token(§6.7 row 35)。
     val fp = executor.eval(
-      "JSON.stringify({platform:navigator.platform, uaMobile:(navigator.userAgentData?navigator.userAgentData.mobile:'n/a'), " +
+      "JSON.stringify({ua:navigator.userAgent, platform:navigator.platform, uaMobile:(navigator.userAgentData?navigator.userAgentData.mobile:'n/a'), " +
         "uaPlatform:(navigator.userAgentData?navigator.userAgentData.platform:'n/a'), plugins:navigator.plugins.length, " +
         "screenW:screen.width, screenH:screen.height, dpr:window.devicePixelRatio, " +
-        "touch:navigator.maxTouchPoints, webdriver:navigator.webdriver, mem:navigator.deviceMemory, cores:navigator.hardwareConcurrency})"
+        "touch:navigator.maxTouchPoints, webdriver:navigator.webdriver, mem:navigator.deviceMemory, cores:navigator.hardwareConcurrency, " +
+        "vendorSub:navigator.vendorSub, productSub:navigator.productSub, appCodeName:navigator.appCodeName, appName:navigator.appName, " +
+        "chrome:typeof window.chrome, docURL:document.URL, baseURI:document.baseURI})"
     )
     Log.i(Tag, "VM fingerprint=$fp")
     val script = "try { window.__runSnapshot(${jsonString(program)}, ${jsonString(globalName)}, ${contentBinding.toString()}) } " +

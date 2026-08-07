@@ -65,6 +65,32 @@
       define(navigator, 'language', D.language);
       define(navigator, 'languages', D.languages);
       define(navigator, 'webdriver', D.webdriver);
+      // 桌面 Chrome 的次要 UA 字段（安卓 WebView 可能缺/不同，BotGuard VM 会探测）
+      define(navigator, 'vendorSub', '');
+      define(navigator, 'productSub', '20030107');
+      define(navigator, 'appCodeName', 'Mozilla');
+      define(navigator, 'appName', 'Netscape');
+      define(navigator, 'product', 'Gecko');
+      define(navigator, 'doNotTrack', null);
+      define(navigator, 'pdfViewerEnabled', true);
+
+      // window.chrome（桌面 Chrome 强指纹；安卓 WebView 可能缺或版本不同）
+      try {
+        if (!window.chrome) {
+          Object.defineProperty(window, 'chrome', {
+            get: function () {
+              return {
+                loadTimes: function () { return {}; },
+                csi: function () { return {}; },
+                app: { isInstalled: false },
+                runtime: {},
+                webstore: {}
+              };
+            },
+            configurable: true
+          });
+        }
+      } catch (e) {}
 
       // userAgentData（Chrome 新指纹，安卓默认 mobile=true/platform=Android）
       try {

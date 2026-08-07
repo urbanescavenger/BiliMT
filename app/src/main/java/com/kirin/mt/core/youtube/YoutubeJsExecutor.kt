@@ -3,6 +3,7 @@ package com.kirin.mt.core.youtube
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
+import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -150,8 +151,19 @@ class YoutubeJsExecutor(context: Context) {
   ): String = withContext(Dispatchers.Main) {
     ensureWebView()
     awaitShellReady()
+    // Cookie 是 fetch 的 forbidden header,浏览器会静默忽略 → WebView 原生网络栈不带会话 cookie,
+    // /player 请求缺 VISITOR_INFO1_LIVE 配对 → token 无法绑定会话 → adaptive 被剥(§6.7 row 35)。
+    // 改为写入 WebView CookieManager,让原生网络栈自动携带(对齐 FreeTube 主 WebView 的真实浏览器 cookie)。
+    val cookie = headers["Cookie"]
+    if (!cookie.isNullOrBlank()) {
+      runCatching {
+        CookieManager.getInstance().setCookie("https://www.youtube.com", cookie)
+        CookieManager.getInstance().flush()
+      }.onFailure { Log.w(Tag, "setCookie failed: ${it.message}") }
+    }
+    val fetchHeaders = headers - "Cookie"
     eval("window.__webViewResp = null")
-    eval(buildFetchScript(url, method, headers, body))
+    eval(buildFetchScript(url, method, fetchHeaders, body))
     pollWebViewResponse()
   }
 

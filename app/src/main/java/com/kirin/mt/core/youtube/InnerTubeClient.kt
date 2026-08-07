@@ -84,6 +84,7 @@ class InnerTubeClient(
     if (endpoint == "/player") {
       val sid = body["serviceIntegrityDimensions"]?.jsonObject
       val sidToken = sid?.stringOrNull("poToken")
+      val ctxClient = body["context"]?.jsonObject?.obj("client")
       Log.i(
         Tag,
         "postJson /player client=$client viaWebView=$viaWebView " +
@@ -91,6 +92,9 @@ class InnerTubeClient(
           "bodySID=${if (sid == null) "ABSENT" else "present"} " +
           "bodySIDToken=${if (sidToken.isNullOrBlank()) "EMPTY" else "${sidToken.length}B"} " +
           "cookieV1L=${currentVisitorData().take(24)} " +
+          "ctxOs=${ctxClient?.stringOrNull("osName")}/${ctxClient?.stringOrNull("osVersion")} " +
+          "ctxBrowser=${ctxClient?.stringOrNull("browserName")}/${ctxClient?.stringOrNull("browserVersion")} " +
+          "ctxMem=${ctxClient?.stringOrNull("memoryTotalKbytes")} " +
           "bodyLen=${body.toString().length}B"
       )
     }
