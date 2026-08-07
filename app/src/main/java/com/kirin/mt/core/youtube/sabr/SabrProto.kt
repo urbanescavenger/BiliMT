@@ -264,11 +264,16 @@ internal object SabrProto {
     return ByteArray(0)
   }
 
-  /** NextRequestPolicy:backoffTimeMs + playbackCookie(用于重试)。 */
+  /** NextRequestPolicy:backoffTimeMs + playbackCookie(用于重试)。
+   *  alpha.30:[playbackCookieBytes] 是 field7 的**原始 bytes**——服务端要求客户端把它原样
+   *  回传进下个请求的 StreamerContext.field3(opaque 透传,不需解码/再编码,对齐 FreeTube
+   *  `streamerContext.playbackCookie = PlaybackCookie.encode(...).finish()`,但我们直接透传 raw)。 */
   data class PlaybackCookie(val resolution: Int?, val videoFmt: Pair<Int, Long>?, val audioFmt: Pair<Int, Long>?)
   data class NextRequestPolicy(
     val backoffTimeMs: Int,
     val playbackCookie: PlaybackCookie?,
+    /** alpha.30:field7 原始 bytes,供 StreamerContext.field3 回传(opaque 透传)。 */
+    val playbackCookieBytes: ByteArray?,
     val videoId: String?,
   )
   fun decodeNextRequestPolicy(payload: ByteArray): NextRequestPolicy? {
@@ -283,7 +288,7 @@ internal object SabrProto {
       }
     }
     val cookie = cookieBytes?.let { decodePlaybackCookie(it) }
-    return NextRequestPolicy(backoff, cookie, videoId)
+    return NextRequestPolicy(backoff, cookie, cookieBytes, videoId)
   }
 
   private fun decodePlaybackCookie(payload: ByteArray): PlaybackCookie? {

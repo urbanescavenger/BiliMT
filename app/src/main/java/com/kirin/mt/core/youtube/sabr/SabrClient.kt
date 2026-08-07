@@ -51,6 +51,16 @@ internal data class SabrSession(
   val visitorData: String,
   /** 会话 cpn——Redirect 重写 sabrUrl 时需重新追加 `cpn=`(会话绑定)。 */
   val cpn: String,
+  /**
+   * alpha.30:服务端 NextRequestPolicy 回传的 playbackCookie(原始 bytes),下个请求 opaque 透传进
+   * StreamerContext.field3。FreeTube 源码确认必须回传——不回传则服务端 ~6 段后丢失会话连续性
+   * → 只回 policy 不回 media → premature EOF(我们 alpha.28 seq7 黑屏的根因)。
+   *
+   * 会话级(PlaybackCookie 含双格式 resolution,服务端对同一会话发同一 cookie)→ 两 loader
+   * (audio/video)共享安全。@Volatile:两 loader 线程并发写,保证引用可见性。
+   * processUmpStream 捕获写回;fetch 读它填 StreamerContext。null=首请求/尚无 cookie。
+   */
+  @Volatile var playbackCookie: ByteArray? = null,
 ) {
   /** alpha.29:按 itag 查多清晰度 FormatId;查不到回退默认 [videoFormatId](同 itag 时)。 */
   fun videoFormat(itag: Int): FormatId? =
@@ -124,11 +134,20 @@ internal data class SabrFetchRequest(
    * (已缓冲到的位置)+ bufferedRange(0..cumulative)让服务端 lookahead 窗口前移持续发新段。 */
   val playerTimeMs: Long = 0L,
   val bufferedRange: BufferedRangeInput? = null,
+  // alpha.30:playbackCookie 存 [SabrSession.playbackCookie](会话级——cookie 含双格式 resolution,
+  // 服务端对同一会话发同一 cookie,两 loader 共享安全),不在 req 里——Backoff 重试同 req 时
+  // session 已更新 cookie,fetch 自动读到,无需 req 重建。
 )
 
 internal sealed class SabrFetchResult {
-  /** 段字节已收齐(MEDIA_END)+ 匹配到的 MediaHeader(含 contentLength/duration 等)。 */
-  data class Success(val data: ByteArray, val mediaHeader: SabrProto.MediaHeader?) : SabrFetchResult()
+  /** 段字节已收齐(MEDIA_END)+ 匹配到的 MediaHeader + alpha.30:本响应的 playbackCookie(诊断用)。
+   * cookie 实际存 [SabrSession.playbackCookie](processUmpStream 写回),下个请求 fetch 自动读。 */
+  data class Success(
+    val data: ByteArray,
+    val mediaHeader: SabrProto.MediaHeader?,
+    /** alpha.30:本响应 NextRequestPolicy 的 playbackCookie(诊断 log 用);null=无 policy/无 cookie。 */
+    val playbackCookie: ByteArray?,
+  ) : SabrFetchResult()
   /** 服务端要求重定向到新 url(用新 sabrUrl 重试)。 */
   data class Redirect(val newSabrUrl: String, val sanitized: String) : SabrFetchResult()
   /** 服务端要求 backoff,重试同一请求。 */
@@ -163,9 +182,13 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     val videoFmt = req.videoItag?.let { session.videoFormat(it) } ?: session.videoFormatId
     val videoEnc = SabrProto.encodeFormatId(videoFmt.itag, videoFmt.lastModified, videoFmt.xtags)
     val selected = if (req.isInit) emptyList() else listOf(audioEnc, videoEnc)
+    // alpha.30:回传 playbackCookie(StreamerContext.field3)——服务端 NextRequestPolicy 要求客户端
+    // 把 cookie 塞进下个请求,否则 ~6 段后丢失会话连续性 → premature EOF(FreeTube 源码确认)。
+    // cookie 存 session.playbackCookie(processUmpStream 捕获写回),会话级共享。
     val streamerContext = StreamerContextInput(
       clientInfo = session.clientInfo,
       poToken = session.poToken,
+      playbackCookie = session.playbackCookie,
       sabrContexts = emptyList(),
       unsentSabrContexts = emptyList(),
     )
@@ -188,11 +211,22 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
       drcEnabled = false,
       enableVoiceBoost = false,
     )
+    // alpha.30:bufferedRanges 对齐 FreeTube fillBufferedRanges——own 格式报真实已缓冲段(让服务端
+    // 发下一段不重发)+ **对方格式标「满缓冲」**(createFullBufferRange,durationMs/seg=Int.MAX)告诉
+    // 服务端「这格式别发,我只要 own 这条」。不标则服务端每流试图发双格式(audio itag 251 header 混进
+    // video 响应)→ 会话状态混乱。init 请求不发 bufferedRanges(对齐 FreeTube:isInit 不 fillBufferedRanges)。
+    val bufferedRanges = if (req.isInit) emptyList() else {
+      val own = req.bufferedRange
+      // 对方格式 = 本流不播的那条(audio 流→video,video 流→audio)。
+      val otherFmt = if (req.streamType == SabrStreamType.AUDIO) videoFmt else session.audioFormatId
+      val otherFull = createFullBufferRange(otherFmt)
+      listOfNotNull(otherFull, own)
+    }
     val input = SabrRequestInput(
       clientAbrState = clientAbrState,
       selectedFormatIds = selected,
-      // alpha.28:报已缓冲 0..cumulative,让服务端发下一段而非重发初始窗(alpha.27 emptyList 致 premature EOF)。
-      bufferedRanges = listOfNotNull(req.bufferedRange),
+      // alpha.30:own 格式报已缓冲 0..cumulative + 对方格式标满缓冲(见上),让服务端只发 own 下一段。
+      bufferedRanges = bufferedRanges,
       playerTimeMs = req.playerTimeMs,
       videoPlaybackUstreamerConfig = session.ustreamerConfig,
       preferredAudioFormatIds = listOf(audioEnc),
@@ -203,7 +237,7 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     val body = SabrProto.encodeVideoPlaybackAbrRequest(input)
     val rn = requestNumber.getAndIncrement()
     val url = "${session.sabrUrl}&rn=$rn"
-    Log.i(tag, "fetch rn=$rn isInit=${req.isInit} stream=${req.streamType} seq=${req.sequenceNumber} body=${body.size}B")
+    Log.i(tag, "fetch rn=$rn isInit=${req.isInit} stream=${req.streamType} seq=${req.sequenceNumber} body=${body.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()}")
 
     return try {
       val request = Request.Builder()
@@ -250,6 +284,9 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     var backoffMs: Int? = null
     var redirectUrl: String? = null
     var errorMsg: String? = null
+    // alpha.30:NextRequestPolicy 出现标志 + 原始 playbackCookie bytes(回传进下个请求 StreamerContext.field3)。
+    var sawPolicy = false
+    var cookieBytes: ByteArray? = null
 
     response.body?.byteStream()?.use { stream ->
       val buf = ByteArray(64 * 1024)
@@ -300,7 +337,13 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
             PART_NEXT_REQUEST_POLICY -> {
               val policy = SabrProto.decodeNextRequestPolicy(payload)
               backoffMs = policy?.backoffTimeMs
-              Log.i(tag, "NEXT_REQUEST_POLICY backoff=${policy?.backoffTimeMs}ms cookie=${policy?.playbackCookie != null}")
+              // alpha.30:捕获原始 playbackCookie bytes 写回 session.playbackCookie(opaque 透传,
+              // 下个请求 fetch 读它填 StreamerContext.field3)。会话级共享,两 loader 并发写安全
+              // (cookie 含双格式 resolution,服务端对同一会话发同一值)。
+              sawPolicy = true
+              cookieBytes = policy?.playbackCookieBytes
+              if (!cookieBytes.isNullOrEmpty()) session.playbackCookie = cookieBytes
+              Log.i(tag, "NEXT_REQUEST_POLICY backoff=${policy?.backoffTimeMs}ms cookie=${!cookieBytes.isNullOrEmpty()}")
             }
             PART_SABR_ERROR -> {
               val err = SabrProto.decodeSabrError(payload)
@@ -324,13 +367,21 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     if (invalidPo) return SabrFetchResult.InvalidPoToken
     redirectUrl?.let { return SabrFetchResult.Redirect(it, it.take(80)) }
     errorMsg?.let { return SabrFetchResult.Error(it) }
-    backoffMs?.let { if (it > 0) return SabrFetchResult.Backoff(it) }
-    if (matchedHeaderId == null) {
-      Log.w(tag, "no MEDIA_HEADER matched; got ${mediaChunks.size} chunks but no header")
-      return SabrFetchResult.Error("no matching MEDIA_HEADER")
+    if (matchedHeaderId != null) {
+      val data = mediaChunks.fold(ByteArray(0)) { acc, c -> acc + c }
+      // alpha.30:把本响应的 playbackCookie 透传给调用方,塞进下个请求 StreamerContext.field3 回传。
+      return SabrFetchResult.Success(data, matchedHeader, cookieBytes)
     }
-    val data = mediaChunks.fold(ByteArray(0)) { acc, c -> acc + c }
-    return SabrFetchResult.Success(data, matchedHeader)
+    // alpha.30:无 MEDIA_HEADER 匹配的两种情况(对齐 FreeTube SabrSchemePlugin doRequest 重试语义):
+    // ① 有 NEXT_REQUEST_POLICY(sawPolicy)→「软空响应」,服务端在等 cookie/会话推进 → Backoff 重试
+    //   同 seq(回传 cookie 重发),不当永久 EOF。这是 alpha.28 seq7 黑屏的直接触发点(我们原来当 Error→EOF)。
+    // ② 无 policy → 真「无 media 无原因」,Error→EOF。
+    if (sawPolicy) {
+      Log.i(tag, "no MEDIA_HEADER but NEXT_REQUEST_POLICY present → Backoff ${backoffMs ?: 0}ms (retry with cookie, not EOF)")
+      return SabrFetchResult.Backoff(backoffMs ?: 0)
+    }
+    Log.w(tag, "no MEDIA_HEADER matched; got ${mediaChunks.size} chunks but no header")
+    return SabrFetchResult.Error("no matching MEDIA_HEADER")
   }
 
   /** 匹配 MEDIA_HEADER:formatId(itag/lastModified/xtags) 一致 + isInit/seq 对齐请求(对齐 SabrSchemePlugin L386-396)。 */
@@ -344,6 +395,24 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     if ((mh.xtags ?: "") != (wanted.xtags ?: "")) return false
     return if (req.isInit) mh.isInitSeg else mh.sequenceNumber == req.sequenceNumber
   }
+
+  /**
+   * alpha.30:构造「满缓冲」条目——告诉服务端「这格式别发,我只要 own 那条」。
+   * 对齐 FreeTube `createFullBufferRange`(SabrSchemePlugin.js L85-97):
+   * durationMs=Int.MAX / startSegmentIndex=Int.MAX / endSegmentIndex=Int.MAX / startTimeMs=0
+   * + timeRange(durationTicks=Int.MAX, startTicks=0, timescale=1000)。
+   * encodeBufferedRange 已支持这些字段(BufferedRangeInput 全填即可,无需新编码逻辑)。
+   */
+  private fun createFullBufferRange(fmt: FormatId): BufferedRangeInput = BufferedRangeInput(
+    itag = fmt.itag,
+    lastModified = fmt.lastModified,
+    xtags = fmt.xtags,
+    startTimeMs = 0L,
+    durationMs = Int.MAX_VALUE.toLong(),
+    startSegmentIndex = Int.MAX_VALUE,
+    endSegmentIndex = Int.MAX_VALUE,
+    timeRange = TimeRangeInput(startTicks = 0L, durationTicks = Int.MAX_VALUE.toLong(), timescale = 1000),
+  )
 
   /** UMP part type 数值 → 可读名(仅诊断 log 用)。 */
   private fun partName(type: Int): String = when (type) {
