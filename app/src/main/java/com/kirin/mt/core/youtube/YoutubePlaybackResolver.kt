@@ -121,9 +121,13 @@ class YoutubePlaybackResolver(
       // player_config.media_common_config.media_ustreamer_request_config.video_playback_ustreamer_config
       // 同时 present 才走 SABR(§6.7 row 36)。只 dump sabrUrl 不够,两道闸都要确认。
       val playerCfg = player.obj("playerConfig")
-      val ustreamerCfg = playerCfg
+      // SABR 第二道闸拆两级:FreeTube Watch.js 决策(L884)只查父层 media_ustreamer_request_config
+      // (camelCase=mediaUstreamerRequestConfig),createLocalSabrManifest 才读子层 videoPlaybackUstreamerConfig。
+      // alpha.14 真机只 dump 了子层报 ABSENT,但 mediaCommonConfig 在 keys 里——需补查父层才能定 gate 2。
+      val ustreamerReqCfg = playerCfg
         ?.obj("mediaCommonConfig")
         ?.obj("mediaUstreamerRequestConfig")
+      val ustreamerCfg = ustreamerReqCfg
         ?.obj("videoPlaybackUstreamerConfig")
       // 原始 key 全量 dump:彻底坐实「camelCase 假阴性」理论。若 streamingData.keys 里有
       // serverAbrStreamingUrl 而 snake_case 读不到,根因即定。同时 dump 第一条 adaptive 的全部
@@ -137,6 +141,7 @@ class YoutubePlaybackResolver(
           "firstUrl=${if (firstUrl.isNullOrBlank()) "EMPTY" else "present(${firstUrl.length}B)"} " +
           "firstCipher=${if (firstCipher.isNullOrBlank()) "none" else "present"} " +
           "sabrUrl=${if (sabrUrl.isNullOrBlank()) "ABSENT" else "present(${sabrUrl.length}B)"} " +
+          "ustreamerReqCfg=${if (ustreamerReqCfg == null) "ABSENT" else "present(${ustreamerReqCfg.toString().length}B)"} " +
           "ustreamerCfg=${if (ustreamerCfg == null) "ABSENT" else "present(${ustreamerCfg.toString().length}B)"} " +
           "progressiveRaw=${(streamingData.array("formats") ?: emptyList()).size}"
       )
@@ -161,16 +166,17 @@ class YoutubePlaybackResolver(
       val noTokenFirst = noTokenRaw?.firstOrNull() as? JsonObject
       val noTokenFirstUrl = noTokenFirst?.stringOrNull("url")
       val noTokenSabr = noTokenSd?.stringOrNull("serverAbrStreamingUrl")
-      val noTokenUstreamer = noTokenPlayer?.obj("playerConfig")
+      val noTokenUstreamerReq = noTokenPlayer?.obj("playerConfig")
         ?.obj("mediaCommonConfig")
         ?.obj("mediaUstreamerRequestConfig")
-        ?.obj("videoPlaybackUstreamerConfig")
+      val noTokenUstreamer = noTokenUstreamerReq?.obj("videoPlaybackUstreamerConfig")
       Log.i(
         Tag,
         "diag no-token WEB: playable=${noTokenPlayer?.obj("playabilityStatus")?.stringOrNull("status")} " +
           "rawAdaptive=${noTokenRaw?.size ?: 0} " +
           "firstUrl=${if (noTokenFirstUrl.isNullOrBlank()) "EMPTY" else "present(${noTokenFirstUrl.length}B)"} " +
           "sabrUrl=${if (noTokenSabr.isNullOrBlank()) "ABSENT" else "present(${noTokenSabr.length}B)"} " +
+          "ustreamerReqCfg=${if (noTokenUstreamerReq == null) "ABSENT" else "present(${noTokenUstreamerReq.toString().length}B)"} " +
           "ustreamerCfg=${if (noTokenUstreamer == null) "ABSENT" else "present(${noTokenUstreamer.toString().length}B)"} " +
           "streamingData keys=${noTokenSd?.keys?.toList() ?: "NONE"} " +
           "(对比 with-token WEB 见上方 diag)"
