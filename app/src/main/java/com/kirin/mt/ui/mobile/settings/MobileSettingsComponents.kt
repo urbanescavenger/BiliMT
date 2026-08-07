@@ -94,15 +94,27 @@ fun MobileSwitchRow(
   )
 }
 
-/** 区段标题(不带卡片)。 */
+/** 区段标题(不带卡片)。可选 onClick/trailing 用于做成可折叠区头(如 WebDAV 备份)。 */
 @Composable
-fun MobileSettingsSectionHeader(text: String) {
-  Text(
-    text = text,
-    style = MaterialTheme.typography.titleSmall,
-    color = MaterialTheme.colorScheme.primary,
-    modifier = Modifier.fillMaxWidth().padding(start = 16.dp, top = 20.dp, bottom = 8.dp),
-  )
+fun MobileSettingsSectionHeader(
+  text: String,
+  onClick: (() -> Unit)? = null,
+  trailing: @Composable (() -> Unit)? = null,
+) {
+  val base = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 8.dp)
+  val mod = if (onClick != null) base.clickable { onClick() } else base
+  Row(
+    modifier = mod,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(
+      text = text,
+      style = MaterialTheme.typography.titleSmall,
+      color = MaterialTheme.colorScheme.primary,
+      modifier = Modifier.weight(1f),
+    )
+    if (trailing != null) trailing()
+  }
 }
 
 /**

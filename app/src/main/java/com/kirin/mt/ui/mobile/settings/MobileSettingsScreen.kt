@@ -25,6 +25,9 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -572,6 +575,7 @@ private fun MobileWebDavSection(
   val scope = rememberCoroutineScope()
   var showEditDialog by remember { mutableStateOf(false) }
   var busy by remember { mutableStateOf(false) }
+  var expanded by remember { mutableStateOf(false) }
 
   fun runBackup() {
     if (busy) return
@@ -601,22 +605,36 @@ private fun MobileWebDavSection(
     }
   }
 
-  MobileSettingsSectionHeader(stringResource(R.string.settings_webdav_section))
-  MobileSettingsRow(
-    title = stringResource(R.string.settings_webdav_url_label),
-    description = config.url.ifBlank { stringResource(R.string.settings_webdav_configure_hint) },
-    onClick = { showEditDialog = true },
-    onLongClick = { showEditDialog = true },
+  MobileSettingsSectionHeader(
+    text = stringResource(R.string.settings_webdav_section),
+    onClick = { expanded = !expanded },
+    trailing = {
+      Icon(
+        imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.primary,
+      )
+    },
   )
-  Row(
-    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-    horizontalArrangement = Arrangement.spacedBy(12.dp),
-  ) {
-    Button(onClick = ::runBackup, enabled = !busy, modifier = Modifier.weight(1f)) {
-      Text(stringResource(R.string.settings_webdav_backup))
-    }
-    Button(onClick = ::runRestore, enabled = !busy, modifier = Modifier.weight(1f)) {
-      Text(stringResource(R.string.settings_webdav_restore))
+  androidx.compose.animation.AnimatedVisibility(visible = expanded) {
+    Column {
+      MobileSettingsRow(
+        title = stringResource(R.string.settings_webdav_url_label),
+        description = config.url.ifBlank { stringResource(R.string.settings_webdav_configure_hint) },
+        onClick = { showEditDialog = true },
+        onLongClick = { showEditDialog = true },
+      )
+      Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+      ) {
+        Button(onClick = ::runBackup, enabled = !busy, modifier = Modifier.weight(1f)) {
+          Text(stringResource(R.string.settings_webdav_backup))
+        }
+        Button(onClick = ::runRestore, enabled = !busy, modifier = Modifier.weight(1f)) {
+          Text(stringResource(R.string.settings_webdav_restore))
+        }
+      }
     }
   }
 
