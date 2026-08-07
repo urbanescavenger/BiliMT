@@ -9,6 +9,12 @@ import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackSegmentBase
 import com.kirin.mt.core.player.PlaybackTrack
+import com.kirin.mt.core.youtube.sabr.FormatId as SabrFormatId
+import com.kirin.mt.core.youtube.sabr.SabrClient
+import com.kirin.mt.core.youtube.sabr.SabrFetchRequest
+import com.kirin.mt.core.youtube.sabr.SabrFetchResult
+import com.kirin.mt.core.youtube.sabr.SabrSession
+import com.kirin.mt.core.youtube.sabr.SabrStreamType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
@@ -159,6 +165,34 @@ class YoutubePlaybackResolver(
       val firstHasAny = firstFmt?.keys?.any { it.contains("url", true) || it.contains("cipher", true) || it.contains("sabr", true) || it == "pot" } == true
       Log.i(Tag, "$client rawAdaptive keys(all adaptive url/cipher/pot-ish)=${if (urlishKeys.isEmpty()) "NONE" else urlishKeys} firstHasAny=$firstHasAny")
       Log.i(Tag, "$client rawAdaptive first format json=$firstRawJson")
+
+      // SABR 协议往返探针(§6.9):WEB 数据齐全时发一次 init 段请求,验证 encode→POST→UMP→MEDIA 全链。
+      // 首版仅诊断——拿回字节即证明协议层通,再接 Media3 播放(Phase 2b)。
+      if (client == InnerTubeClient.Client.WEB && !sabrUrl.isNullOrBlank() && !ustreamerCfgStr.isNullOrBlank() && poToken != null) {
+        val raws = rawAdaptive.mapNotNull { it as? JsonObject }
+        val firstVideo = raws.firstOrNull { (it.intOrNull("height") ?: 0) > 0 }
+        val firstAudio = raws.firstOrNull { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
+        if (firstVideo != null && firstAudio != null) {
+          val vFmt = SabrFormatId(
+            firstVideo.longOrNull("itag")?.toInt() ?: 0,
+            firstVideo.longOrNull("lastModified") ?: 0L,
+            firstVideo.stringOrNull("xtags"),
+          )
+          val aFmt = SabrFormatId(
+            firstAudio.longOrNull("itag")?.toInt() ?: 0,
+            firstAudio.longOrNull("lastModified") ?: 0L,
+            firstAudio.stringOrNull("xtags"),
+          )
+          val session = SabrSession.fromSabrData(
+            sabrUrl, poToken, ustreamerCfgStr, innerTubeClient.sabrClientInfo(), aFmt, vFmt,
+          )
+          val sabrClient = SabrClient(httpClient)
+          val result = sabrClient.fetch(session, SabrFetchRequest(isInit = true, streamType = SabrStreamType.VIDEO))
+          Log.i(Tag, "SABR init probe(video): ${summarizeSabrResult(result)}")
+        } else {
+          Log.w(Tag, "SABR init probe skipped: video=${firstVideo != null} audio=${firstAudio != null}")
+        }
+      }
     }
     // 诊断:带/不带 token 对比——同一 videoId 再发一次无 token 的 WEB /player,对比 adaptive 条数/首条 url,
     // 判断 token 是否真的起作用(§6.7 row 28)。若带/不带 token 响应完全一样(都剥空)→ token 无效;
@@ -566,6 +600,16 @@ class YoutubePlaybackResolver(
     val start = range.longOrNull("start")
     val end = range.longOrNull("end")
     return if (start != null && end != null) "$start-$end" else ""
+  }
+
+  /** SABR 探针结果摘要(§6.9)。 */
+  private fun summarizeSabrResult(r: SabrFetchResult): String = when (r) {
+    is SabrFetchResult.Success ->
+      "Success bytes=${r.data.size}B headerId=${r.mediaHeader?.headerId} itag=${r.mediaHeader?.itag} isInit=${r.mediaHeader?.isInitSeg} contentLen=${r.mediaHeader?.contentLength} dur=${r.mediaHeader?.durationMs}ms"
+    is SabrFetchResult.Redirect -> "Redirect -> ${r.sanitized}"
+    is SabrFetchResult.Backoff -> "Backoff ${r.ms}ms"
+    SabrFetchResult.InvalidPoToken -> "InvalidPoToken (STREAM_PROTECTION_STATUS=3)"
+    is SabrFetchResult.Error -> "Error: ${r.message}"
   }
 
   private fun JsonObject?.isPlayable(): Boolean {

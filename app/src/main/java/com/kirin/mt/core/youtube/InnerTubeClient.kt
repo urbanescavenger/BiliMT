@@ -410,6 +410,30 @@ class InnerTubeClient(
       ?: "VISITOR_INFO1_LIVE=${currentVisitorData()}; PREF=tz=Asia.Shanghai"
   }
 
+  /**
+   * SABR StreamerContext.ClientInfo（对齐 googlevideo `streamer_context.proto` ClientInfo）。
+   * 用 sw.js_data 拉到的真实浏览器指纹字段（WEB 绑定，对齐 poToken 是 WEB challenge 铸的）。
+   * clientName 用 X-Youtube-Client-Name 的数值（WEB=1）；clientFormFactor=UNKNOWN_FORM_FACTOR(0)。
+   */
+  fun sabrClientInfo(): com.kirin.mt.core.youtube.sabr.ClientInfoInput {
+    val d = realSessionData
+    return com.kirin.mt.core.youtube.sabr.ClientInfoInput(
+      deviceMake = d?.deviceMake,
+      deviceModel = d?.deviceModel,
+      clientName = YoutubeConstants.ClientNameId.toIntOrNull(),
+      clientVersion = d?.clientVersion ?: YoutubeConstants.ClientVersion,
+      osName = d?.osName,
+      osVersion = d?.osVersion,
+      acceptLanguage = "${YoutubeConstants.Hl}-${YoutubeConstants.Gl}",
+      acceptRegion = YoutubeConstants.Gl,
+      screenWidthPoints = 1920,
+      screenHeightPoints = 1080,
+      screenPixelDensity = 1,
+      clientFormFactor = 0,
+      timeZone = d?.timeZone,
+    )
+  }
+
 
   /**
    * 拉取真实 visitorData（对齐 youtubei.js `generateSessionLocally:false` 的 #getSessionData）。
