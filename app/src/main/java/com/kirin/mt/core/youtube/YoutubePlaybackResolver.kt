@@ -14,8 +14,10 @@ import com.kirin.mt.core.youtube.sabr.FormatId as SabrFormatId
 import com.kirin.mt.core.youtube.sabr.SabrClient
 import com.kirin.mt.core.youtube.sabr.SabrFetchRequest
 import com.kirin.mt.core.youtube.sabr.SabrFetchResult
+import com.kirin.mt.core.youtube.sabr.SabrProto
 import com.kirin.mt.core.youtube.sabr.SabrSession
 import com.kirin.mt.core.youtube.sabr.SabrStreamType
+import com.kirin.mt.core.youtube.sabr.UmpReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
@@ -553,15 +555,18 @@ class YoutubePlaybackResolver(
    */
   private suspend fun replaySabrCapture(capture: YoutubeSabrHarvester.SabrCapture, client: InnerTubeClient.Client) {
     val body = runCatching { Base64.decode(capture.bodyB64, Base64.DEFAULT) }.getOrNull()
-    if (body == null) {
-      Log.w(Tag, "SABR replay: body decode failed (empty/invalid base64 len=${capture.bodyB64.length})")
+    if (body == null || body.isEmpty()) {
+      Log.w(Tag, "SABR replay: body decode failed/empty (len=${capture.bodyB64.length}) — hook 仍没捕到 body?")
       return
     }
-    // 剥 embed 的 rn/cpn(会话级,重放会冲突),保留 sig/n 等 URL 签名,再加我们自己的 rn=0。
-    val stripped = capture.url.split("&").filterNot { it.startsWith("rn=") || it.startsWith("cpn=") }
-      .joinToString("&")
-      .let { if (it.startsWith("http")) it else "&$it" }
-    val replayUrl = if (stripped.contains("rn=")) stripped else "${stripped}&rn=0"
+    // alpha.24 真机:空 body 重放得 `sabr.malformed_config`;捕到真 body(4632B)后重放得 105B UMP
+    // (非 malformed_config)但仍无 MEDIA。推测:alpha.24 剥了 cpn → URL 失会话绑定 → 服务端只回
+    // context update 不发媒体。**保留浏览器 cpn**(它绑定 body 的 poToken/ustreamerConfig 会话),
+    // 只剥 rn(重置为 0 做 re-init),让 cpn+body+transport 三者会话一致。
+    val strippedRn = capture.url.split("&").filterNot { it.startsWith("rn=") }
+      .joinToString("&").let { if (it.startsWith("http")) it else "&$it" }
+    val replayUrl = if (strippedRn.contains("rn=")) strippedRn else "${strippedRn}&rn=0"
+    val hasCpn = replayUrl.contains("cpn=")
     val request = Request.Builder()
       .url(replayUrl)
       .post(body.toRequestBody("application/x-protobuf".toMediaType()))
@@ -576,15 +581,52 @@ class YoutubePlaybackResolver(
     runCatching {
       httpClient.newCall(request).execute().use { r ->
         val ct = r.header("Content-Type")
-        val cl = r.header("Content-Length")
         val bodyBytes = r.body?.byteStream()?.use { it.readBytes() }
         Log.i(
           Tag,
-          "SABR replay: HTTP ${r.code} Content-Type=$ct Content-Length=$cl " +
-            "body=${bodyBytes?.size ?: 0}B ${bodyBytes?.take(40)?.joinToString("") { "%02x".format(it) } ?: ""}"
+          "SABR replay: HTTP ${r.code} Content-Type=$ct body=${bodyBytes?.size ?: 0}B " +
+            "cpn=$hasCpn → ${bodyBytes?.take(60)?.joinToString("") { "%02x".format(it) } ?: ""}"
         )
+        // alpha.25:用 UmpReader + SabrProto 解析响应 UMP,逐 part log 类型+内容——
+        // 定位 105B 是 SABR_ERROR(会话/poToken 不匹配?) / SABR_REDIRECT(换节点?) /
+        // NEXT_REQUEST_POLICY(backoff?) / SABR_CONTEXT_UPDATE(无媒体) / MEDIA_HEADER(成功?)。
+        if (bodyBytes != null && (ct?.contains("yt-ump") == true)) {
+          val ump = UmpReader()
+          ump.append(bodyBytes)
+          ump.readParts { type, payload ->
+            val name = partName(type)
+            val detail = when (type) {
+              SabrProto.PART_SABR_ERROR -> SabrProto.decodeSabrError(payload)?.let { "type=${it.type} code=${it.code}" }
+              SabrProto.PART_SABR_REDIRECT -> "url=${SabrProto.decodeSabrRedirect(payload)?.take(120)}"
+              SabrProto.PART_STREAM_PROTECTION_STATUS -> "status=${SabrProto.decodeStreamProtectionStatus(payload)}"
+              SabrProto.PART_NEXT_REQUEST_POLICY -> SabrProto.decodeNextRequestPolicy(payload)?.let { "backoff=${it.backoffTimeMs}ms cookie=${it.playbackCookie != null} vid=${it.videoId}" }
+              SabrProto.PART_MEDIA_HEADER -> SabrProto.decodeMediaHeader(payload)?.let { "headerId=${it.headerId} itag=${it.itag} lmt=${it.lmt} isInit=${it.isInitSeg} seq=${it.sequenceNumber} contentLen=${it.contentLength} dur=${it.durationMs}ms" }
+              else -> "payloadLen=${payload.size}"
+            }
+            Log.i(Tag, "SABR replay UMP part: type=$type($name) $detail")
+          }
+        }
       }
     }.onFailure { Log.w(Tag, "SABR replay failed: ${it.message}") }
+  }
+
+  /** UMP part type 数值 → 可读名(诊断用,对齐 SabrClient.partName)。 */
+  private fun partName(type: Int): String = when (type) {
+    20 -> "MEDIA_HEADER"
+    21 -> "MEDIA"
+    22 -> "MEDIA_END"
+    30 -> "CONFIG"
+    35 -> "NEXT_REQUEST_POLICY"
+    42 -> "FORMAT_INIT_METADATA"
+    43 -> "SABR_REDIRECT"
+    44 -> "SABR_ERROR"
+    45 -> "SABR_SEEK"
+    46 -> "RELOAD_PLAYER_RESPONSE"
+    57 -> "SABR_CONTEXT_UPDATE"
+    58 -> "STREAM_PROTECTION_STATUS"
+    59 -> "SABR_CONTEXT_SENDING_POLICY"
+    62 -> "END_OF_TRACK"
+    else -> "?"
   }
 
   // ---- 格式挑选 ----
