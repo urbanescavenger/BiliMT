@@ -2,7 +2,6 @@ package com.kirin.mt.core.youtube
 
 import android.util.Base64
 import android.util.Log
-import android.webkit.CookieManager
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -91,6 +90,7 @@ class InnerTubeClient(
           "poTokenArg=${if (poToken.isNullOrBlank()) "null" else "${poToken.length}B"} " +
           "bodySID=${if (sid == null) "ABSENT" else "present"} " +
           "bodySIDToken=${if (sidToken.isNullOrBlank()) "EMPTY" else "${sidToken.length}B"} " +
+          "cookieV1L=${currentVisitorData().take(24)} " +
           "bodyLen=${body.toString().length}B"
       )
     }
@@ -114,6 +114,10 @@ class InnerTubeClient(
       .header("User-Agent", client.userAgent)
       .header("Referer", YoutubeConstants.Referer)
       .header("X-Goog-Visitor-Id", currentVisitorData())
+      // PO token 生效前提：请求必须带与 visitorData 配对的 VISITOR_INFO1_LIVE cookie
+      // （对齐 youtubei.js Session，cookie 值 == visitorData proto）。只有 visitorData、无配对
+      // cookie → YouTube 无法把 token 绑定到真实会话 → adaptive URL 被剥空（§6.7 row 31）。
+      .header("Cookie", "VISITOR_INFO1_LIVE=${currentVisitorData()}; PREF=tz=Asia.Shanghai")
     when (client) {
       Client.WEB, Client.WEB_EMBEDDED -> requestBuilder
         .header("X-Youtube-Client-Version", if (client == Client.WEB) currentClientVersion() else YoutubeConstants.WebEmbeddedClientVersion)
@@ -344,7 +348,7 @@ class InnerTubeClient(
     }
   }
 
-  /** WEB/WEB_EMBEDDED /player 走 WebView 时的请求头（对齐 OkHttp WEB 分支 + best-effort Cookie）。 */
+  /** WEB/WEB_EMBEDDED /player 走 WebView 时的请求头（对齐 OkHttp WEB 分支 + 会话配对 Cookie）。 */
   private fun buildWebViewHeaders(client: Client = Client.WEB): Map<String, String> {
     val clientNameId = when (client) {
       Client.WEB -> YoutubeConstants.ClientNameId
@@ -369,12 +373,11 @@ class InnerTubeClient(
       "Sec-Fetch-Site" to "same-origin",
       "Sec-Fetch-Mode" to "cors",
       "X-Youtube-Bootstrap-Logged-In" to "false",
+      // PO token 生效前提：/player 必须带与 visitorData 配对的 VISITOR_INFO1_LIVE cookie
+      // （对齐 youtubei.js Session，cookie 值 == visitorData proto）。WebView cookie store 里是
+      // botguard VM 页自己的不配对 cookie，须显式覆盖为会话 visitorData（§6.7 row 31）。
+      "Cookie" to "VISITOR_INFO1_LIVE=${currentVisitorData()}; PREF=tz=Asia.Shanghai",
     )
-    // best-effort：把 WebView cookie store 里的 youtube.com cookie 带上（HttpURLConnection/原生
-    // fetch 不自动用 WebView cookie store）。shell 页通常无 cookie，可能为空，不阻塞。
-    runCatching {
-      CookieManager.getInstance().getCookie("https://www.youtube.com")
-    }.getOrNull()?.takeIf { it.isNotBlank() }?.let { headers["Cookie"] = it }
     return headers
   }
 
@@ -422,14 +425,15 @@ class InnerTubeClient(
   }
 
   private suspend fun fetchRealSessionData(): RealSessionData? = withContext(Dispatchers.IO) {
-    val visitorId = randomId()
+    // 不注入随机 VISITOR_INFO1_LIVE：响应 body 的 device_info[13] 才是 YouTube 为本会话生成的真实
+    // visitorData，用它本身作 /player 的配对 cookie（见 buildWebViewHeaders / postJson Cookie 头）。
     val request = Request.Builder()
       .url("https://www.youtube.com/sw.js_data")
       .header("Accept-Language", "en-US")
       .header("User-Agent", YoutubeConstants.UserAgent)
       .header("Accept", "*/*")
       .header("Referer", "https://www.youtube.com/sw.js")
-      .header("Cookie", "PREF=tz=Asia.Shanghai;VISITOR_INFO1_LIVE=$visitorId;")
+      .header("Cookie", "PREF=tz=Asia.Shanghai")
       .build()
     val text = runCatching {
       httpClient.newCall(request).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
