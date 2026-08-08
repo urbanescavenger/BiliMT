@@ -493,7 +493,13 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     if (mh.lmt != wanted.lastModified) return false
     // xtags 双方都可能 null(无 xtags 的常规 itag);null 与 "" 等价。
     if ((mh.xtags ?: "") != (wanted.xtags ?: "")) return false
-    return if (req.isInit) mh.isInitSeg else mh.sequenceNumber == req.sequenceNumber
+    // alpha.44:续播/切清晰度时 client 用 playerTimeMs=startMs 让服务端从续播点发段,返回的段 seq 可能
+    // > 请求 seq(nextSeq 从 1 起算,而续播点落在更高 seq);接受 `mh.sequenceNumber >= req.sequenceNumber`
+    // 避免死磕低 seq → matched=false → 6 backoff → EOF(alpha.43 真机:reuse session req seq=1,服务端按
+    // playerTimeMs=7194 给 seq=2+,严格相等判 false 死磕 → evict)。拒绝 `<`(服务端重发回退段)避免
+    // alpha.36 5s 断崖复发(req=2 收 seq=1 仍 reject)。同 itag/lmt/xtags 已挡对方 itag 混入 header
+    // (docs §6.9 row:audio itag 251 混进 video 响应),seq 检查只针对同 itag,`>=` 安全。
+    return if (req.isInit) mh.isInitSeg else mh.sequenceNumber >= req.sequenceNumber
   }
 
   /**

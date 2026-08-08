@@ -133,7 +133,11 @@ internal class SabrStreamingDataSource(
       val dur = seg.mediaHeader?.durationMs ?: 0L
       segDurations.add(dur)
       cumulativeDurationMs += dur
-      nextSeq++
+      // alpha.44:对齐 nextSeq 到服务端实际给的段 seq+1。续播/切清晰度时 playerTimeMs=startMs 让服务端
+      // 按续播点定位,返回段 seq 可能 > 请求 seq(matchesFormat 已 accept >=);不对齐会持续错位(下次仍 req
+      // 低于服务端给的 seq)→ matched=false → EOF。首播 realSeq==nextSeq 走 +1 等同原 ++,行为不变。
+      val realSeq = seg.mediaHeader?.sequenceNumber
+      if (realSeq != null && realSeq >= nextSeq) nextSeq = realSeq + 1 else nextSeq++
     }
     val toCopy = minOf(length, buffer.size - bufferPos)
     System.arraycopy(buffer, bufferPos, target, offset, toCopy)
@@ -191,21 +195,20 @@ internal class SabrStreamingDataSource(
 
   /**
    * 构造下一段请求:
-   *  - `playerTimeMs = cumulativeDurationMs`(所请求段的呈现起始时间 = 已缓冲终点;对齐 FreeTube
-   *    `startTimeMs`——它是**每段**该段的起始时间,随段推进涨,非固定 0 锚点。alpha.36/39 曾误读成
-   *    `playerTimeMs=startMs`(首播=0 固定)→ 服务端 ABR 见客户端恒在 0 位置 → 永远重发 seq=1 →
-   *    seq=2 matched=false → 6 backoff → EOF,video 5s/ audio 10s 即断。alpha.37/40 回退此错。)
+   *  - `playerTimeMs = playheadEstimateMs()`(当前播放位置)——SABR clientAbrState.playerTimeMs 标准语义即
+   *    客户端当前播放位置,服务端 ABR 据此预发段。alpha.44 改此:alpha.37 误设成 `cumulativeDurationMs`
+   *    (缓冲终点)→ 播到 ~60s 时 cumulative>60000=maxTimeSinceReq → 服务端软拒(只回 NEXT_REQUEST_POLICY
+   *    backoff 不给 MEDIA_HEADER)→ 6 backoff → EOF → evict(alpha.43 真机 seq=13 playerTimeMs=60031 死)。
+   *    alpha.36/39 更早误设成 `startMs`(首播恒 0)→ 服务端见客户端恒在 0 → 重发 seq=1 → seq=2 matched=false
+   *    → 6 backoff → EOF,video 5s/audio 10s 即断。playhead 随实时 1x 播放涨,既非恒 0(不撞 5s 断崖)
+   *    亦非缓冲终点(不撞 60s 断崖)。
    *  - `bufferedRange = [playhead..cumulative]` 滑动窗口:`startTimeMs=playhead`、`durationMs=cumulative-playhead`
    *    (小窗口,非绝对终点)、`startSegmentIndex=segIndexAtPlayhead`、`endSegmentIndex=nextSeq-1`
    *  - 对方格式标「满缓冲」(createFullBufferRange)让服务端只发 own 下一段(沿用 alpha.30)
    *
-   * **alpha.40 诊断(60s 断崖真因取证)**:alpha.39 回退后 60s 断崖(alpha.37/38 基线)回归。横跳史证
-   *   playerTimeMs 非 FreeTube-vs-我们的区分因子(FreeTube 发 '0' 跑通,我们发 0 撞 5s、发 cumulative 撞 60s)。
-   *   主嫌假设:burst-fetch 让 cumulative(缓冲终点)跑在 playhead 前——playhead ~46s 时 cumulative 已
-   *   60001,服务端按 playerTimeMs(=cumulative)判「客户端位置超 60s」软拒(backoff=0 不给 MEDIA_HEADER)。
-   *   **SegDiag** 日志逐段打 playerTimeMs/playhead/cumulative/lead/ownRange,到 60s 断崖点(看 MEDIA_HEADER
-   *   matched=false 或 NEXT_REQUEST_POLICY backoff 那刻)即可证/伪「缓冲膨胀」假设——若证,下版 alpha.41
-   *   试 `playerTimeMs=playheadEstimateMs()`(随实时 1x 播放涨,既非 0 也非 buffered 终点,不膨胀)。 */
+   * **alpha.40 诊断(60s 断崖真因取证)**:SegDiag 逐段打 playerTimeMs/playhead/cumulative/lead/ownRange,
+   *   alpha.43 真机坐实「缓冲膨胀」假设——seq=13 时 playerTimeMs(=cumulative)=60031 > 60000,服务端 6×
+   *   `no MEDIA_HEADER but NEXT_REQUEST_POLICY backoff` 软拒 → evict。alpha.44 据此改 playerTimeMs=playhead。 */
   private fun buildSegRequest(e: SabrStreamRegistry.Entry): SabrFetchRequest {
     // alpha.29:视频流按 requestedItag 取 FormatId(poToken 会话级不绑 itag);audio 用会话默认。
     val fmt = if (streamType == SabrStreamType.AUDIO) e.session.audioFormatId
@@ -231,14 +234,19 @@ internal class SabrStreamingDataSource(
     // alpha.40:SegDiag——逐段打 playerTimeMs(发)/playhead(实时)/cumulative(缓冲终点)/lead(缓冲超前量)/
     // ownRange(报给服务端的窗口),到 60s 断崖点取证「缓冲膨胀」假设(见方法注释)。
     val lead = cumulativeDurationMs - playheadMs
-    Log.i(tag, "SegDiag sid=$sessionId stream=$streamType seq=$nextSeq playerTimeMs=$cumulativeDurationMs playhead=$playheadMs cumulative=$cumulativeDurationMs lead=${lead}ms ownRange=[${own?.startTimeMs}..+${own?.durationMs}] segIdx=${own?.startSegmentIndex}..${own?.endSegmentIndex}")
+    Log.i(tag, "SegDiag sid=$sessionId stream=$streamType seq=$nextSeq playerTimeMs=$playheadMs playhead=$playheadMs cumulative=$cumulativeDurationMs lead=${lead}ms ownRange=[${own?.startTimeMs}..+${own?.durationMs}] segIdx=${own?.startSegmentIndex}..${own?.endSegmentIndex}")
     return SabrFetchRequest(
       isInit = false,
       sequenceNumber = nextSeq,
       streamType = streamType,
       videoItag = requestedItag,
-      // alpha.40:回退 alpha.39 的 startMs(0)→ cumulativeDurationMs(alpha.37 原值)。详见方法注释。
-      playerTimeMs = cumulativeDurationMs,
+      // alpha.44:playerTimeMs 改用 playhead(当前播放位置)——SABR clientAbrState.playerTimeMs 语义即客户端
+      // 当前播放位置,服务端 ABR 据此预发段。alpha.37 误设成 cumulativeDurationMs(缓冲终点),播到 ~60s 时
+      // cumulative>60000=maxTimeSinceReq → 服务端软拒(只回 NEXT_REQUEST_POLICY backoff 不给 MEDIA_HEADER)
+      // → 6 backoff → EOF → evict(alpha.43 真机:seq=13 playerTimeMs=60031 playhead=48535 死)。
+      // 注释 L208 早已建议此改。playhead 随实时 1x 播放涨,不膨胀超前;alpha.36 的 5s 断崖是 playerTimeMs 恒 0
+      // (startMs)致服务端重发 seq=1,playhead 不恒 0 不复发。
+      playerTimeMs = playheadMs,
       bufferedRange = own,
     )
   }
