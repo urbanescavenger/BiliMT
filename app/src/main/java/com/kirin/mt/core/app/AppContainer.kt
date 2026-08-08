@@ -103,7 +103,7 @@ class AppContainer(context: Context) {
     httpClient = youtubeHttpClient,
     innerTubeClient = youtubeInnerTubeClient,
   )
-  val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(youtubeJsExecutor, youtubeHttpClient)
+  val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(appContext, youtubeJsExecutor, youtubeHttpClient)
   val youtubeSDecryptor: YoutubeSDecryptor = YoutubeSDecryptor(youtubeJsExecutor, youtubeHttpClient)
   // SABR n-decrypt 的 WebView 嵌入采集器(plasma 兜底):独立 WebView,不复用 youtubeJsExecutor
   // 单例(导航会破坏其 bgutils 上下文)。每次 harvest 建新 WebView 用完销毁(alpha.20 MVP)。

@@ -1,10 +1,16 @@
 package com.kirin.mt.core.youtube
 
+import android.content.Context
 import android.util.Log
 import java.net.URLDecoder
 import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -32,13 +38,47 @@ import okhttp3.Request
  * 网络请求由 Kotlin 发（WebView 跨源 fetch 会被 CORS 拦），WebView 只执行 JS。
  */
 class YoutubeNDecryptor(
+  context: Context,
   private val executor: YoutubeJsExecutor,
   private val httpClient: OkHttpClient,
 ) {
 
+  private val appContext = context.applicationContext
+  private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
   private var baseJs: String? = null
   /** 当前 player 的 nClass（URL 类名），由 [resolveNClass] 从 player hash 查 config；null=无 config→兜底。 */
   private var resolvedNClass: String? = null
+
+  /**
+   * player hash → nClass(URL 类名) config，从 bundled asset
+   * `youtube/player_configs.json` 加载（种子取自 zemer-cipher 公开 config，
+   * https://github.com/ZemerTeam/zemer-cipher，覆盖 224 条 player 含当前 plasma）。
+   * 每个 player 条目同时登记主 hash 与 [aliases]，故 alias 形式的 URL hash 也能命中。
+   * YouTube 每次 player 轮换若 config 未覆盖 → resolveNClass 返 null → 走 harvest 兜底。
+   * 后续(不在本 PoC)：叠自愈远程 fetch（6h TTL + 失败强刷，镜像 zemer PlayerConfigStore）。
+   */
+  private val nClassByPlayerHash: Map<String, String> by lazy { loadPlayerConfig() }
+
+  private fun loadPlayerConfig(): Map<String, String> {
+    return runCatching {
+      val raw = appContext.assets.open("youtube/player_configs.json").bufferedReader().use { it.readText() }
+      val root = json.parseToJsonElement(raw).jsonObject
+      val players = root["players"]?.jsonObject ?: return emptyMap()
+      val out = HashMap<String, String>(players.size * 2)
+      for ((hash, entry) in players) {
+        val e = entry.jsonObject
+        val nClass = e["nClass"]?.jsonPrimitive?.contentOrNull ?: continue
+        out[hash] = nClass
+        val aliases = e["aliases"] as? JsonArray
+        aliases?.forEach { a -> a.jsonPrimitive.contentOrNull?.let { alias -> out[alias] = nClass } }
+      }
+      out
+    }.getOrElse {
+      Log.w(Tag, "n-decrypt: failed to load player_configs.json (${it.message}); config empty → harvest fallback")
+      emptyMap()
+    }
+  }
 
   /** 拉取并缓存 base.js 文本。失败返回 null。 */
   suspend fun loadBaseJs(playerJsUrl: String): String? {
@@ -174,31 +214,6 @@ class YoutubeNDecryptor(
 
   private companion object {
     const val Tag = "YtNDecrypt"
-
-    /**
-     * player hash → nClass(URL 类名) config。种子取自 zemer-cipher 公开 config
-     * (https://github.com/ZemerTeam/zemer-cipher, library/src/main/assets/player_configs.json),
-     * 覆盖当前 plasma player 95daa498=Xz 等 sts 最近的 ~16 条。YouTube 每次 player 轮换
-     * 要加条目。后续(不在本 PoC):换成 bundled assets + 自愈远程 fetch(镜像 zemer PlayerConfigStore)。
-     */
-    val nClassByPlayerHash = mapOf(
-      "95daa498" to "Xz", // plasma player-plasma-es6-en_US.vflset(锁死我们的那个) sts=20671
-      "92b88e4d" to "Xz", // sts=20671
-      "3e6aa434" to "Xz", // sts=20671
-      "879f7172" to "dN", // sts=20671
-      "fac48bea" to "dN", // sts=20671
-      "54bf3cd6" to "dN", // sts=20671
-      "9a134ead" to "as", // sts=20670
-      "6b32b3d1" to "as", // sts=20670
-      "4c6b06b8" to "as", // sts=20670
-      "341562bc" to "as", // sts=20670
-      "17554f56" to "b6", // sts=20670
-      "7ca87de3" to "MF", // sts=20669
-      "e0eecb93" to "MF", // sts=20669
-      "a7fa0486" to "gV", // sts=20669
-      "4c5c9743" to "Dp", // sts=20669
-      "bc79a29c" to "gV", // sts=20669
-    )
 
     /** 从 base.js URL 路径抽 8-hex player hash。对齐 zemer-cipher FunctionNameExtractor.PLAYER_HASH_PATTERNS。 */
     val PLAYER_HASH_PATTERNS = listOf(
