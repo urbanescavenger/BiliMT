@@ -74,8 +74,10 @@ class YoutubePlaybackResolver(
 
     // 生成视频 ID 绑定的 PO token（best-effort）。无 PO token 时 YouTube 剥掉 adaptive 高清 url
     // （只剩 progressive 360p）；有 token 才能拿高清直链。失败降级为无 token 直连。
+    YoutubeLoadProgress.emit(YoutubeLoadStep.FetchPlayer)
     val poToken = botGuard.generatePoToken(videoId)
     if (poToken != null) Log.i(Tag, "PO token minted (${poToken.length} chars)") else Log.w(Tag, "PO token unavailable; degrade to no-token")
+    YoutubeLoadProgress.emit(YoutubeLoadStep.MintToken)
 
     // 提取 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp），注入 /player
     // 的 contentPlaybackContext。缺它 WEB /player 可能被判"非真浏览器" → "The page needs to be reloaded"。
@@ -89,6 +91,7 @@ class YoutubePlaybackResolver(
     val allAdaptive = mutableListOf<ParsedFormat>()
     val allCombined = mutableListOf<ParsedFormat>()
     var durationMs = 0L
+    YoutubeLoadProgress.emit(YoutubeLoadStep.ResolvePlayer)
     for (client in listOf(InnerTubeClient.Client.WEB, InnerTubeClient.Client.WEB_EMBEDDED, InnerTubeClient.Client.ANDROID)) {
       val player = runCatching { postPlayer(videoId, client = client, poToken = poToken, signatureTimestamp = signatureTimestamp) }.getOrNull()
       if (!player.isPlayable()) {
@@ -206,6 +209,7 @@ class YoutubePlaybackResolver(
           // 未用 base.js transform 解出真值则返回 403 空体(alpha.18 实测 Server=gvs 1.0
           // Content-Length=0,§6.7 row 41)。resolvePlayerJsUrl 内部缓存,此处与下游 resolveStreamUrl
           // 共用同一份 playerJsUrl,不重复拉 watch 页。
+          YoutubeLoadProgress.emit(YoutubeLoadStep.DecipherN)
           val sabrUrlDeciphered = decipherSabrUrl(sabrUrl, resolvePlayerJsUrl(videoId))
           val nTransformed = sabrUrlDeciphered != sabrUrl
           val vFmt = SabrFormatId(
@@ -258,6 +262,7 @@ class YoutubePlaybackResolver(
             }
           }
           if (sabrSession != null) {
+            YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
             val sabrClient = SabrClient(httpClient)
             val sid = SabrStreamRegistry.registerByVideoId(videoId, sabrSession, sabrClient)
             // alpha.57(轮换):装填会话轮换工厂。服务端对每会话 ~60s 服务量上限,到点主动开新 harvest
@@ -275,11 +280,15 @@ class YoutubePlaybackResolver(
                 if (newSession == null) {
                   Log.w(Tag, "rotation: buildSabrSessionFromCapture failed videoId=$v (keep old session)")
                 } else {
+                  YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
                   val newSid = SabrStreamRegistry.registerByVideoId(v, newSession, SabrClient(httpClient))
                   Log.i(Tag, "rotation: registered new session videoId=$v startMs=$startMs sid=$newSid (switched)")
                 }
               }
+              // alpha.58:轮换(后台)结束,隐藏加载步骤提示(成功/失败都隐藏)。
+              YoutubeLoadProgress.clear()
             }
+            YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
             Log.i(
               Tag,
               "SABR playback ready: sid=$sid nTransformed=$nTransformed " +

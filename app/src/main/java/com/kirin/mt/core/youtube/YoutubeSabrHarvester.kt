@@ -53,14 +53,16 @@ class YoutubeSabrHarvester(
   data class SabrCapture(val url: String, val method: String, val bodyB64: String, val status: Int)
 
   /**
-   * 加载 embed 页,采集首个 SABR POST。失败/超时返回 null(绝不抛,不阻塞主路径)。
-   * @param timeoutMs 上限(默认 30s);embed 播放器 init 通常 3-8s,watch 页回退更慢。
+   * 加载 watch 页采集首个 SABR POST(alpha.58 起 watch 优先;embed 几乎总 Error 153 config 拒,
+   * 仅作兜底)。失败/超时返回 null(绝不抛,不阻塞主路径)。
+   * @param timeoutMs 上限(默认 30s);watch 页 SPA 播放器 init 通常 4-8s,embed 兜底更慢。
    */
   /**
-   * alpha.57(轮换):支持 `startMs` 锚定——embed URL 加 `&start=`(秒)让浏览器播放器**从该位置起播**,
-   * 其首发 SABR POST 锚定在 startMs。服务端会话窗口 = 锚点..锚点+60s(见 docs row 72,锚点服务端侧,
-   * 由浏览器 POST 时播放位置定),故旋转到 mid-playhead 必须先让浏览器锚定在播放头,否则新会话窗口
-   * 仍从 0 起算 → 请求 playhead>60s 被拒(alpha.47 session2 死因)。默认 startMs=0(从头播,原行为)。
+   * alpha.57/58(轮换+顺序反转):支持 `startMs` 锚定——watch 页 URL 加 `&t=<秒>`(embed 兜底用
+   * `&start=<秒>`)让浏览器播放器**从该位置起播**,其首发 SABR POST 锚定在 startMs。服务端会话窗口 =
+   * 锚点..锚点+60s(见 docs row 72,锚点服务端侧,由浏览器 POST 时播放位置定),故旋转到 mid-playhead
+   * 必须先让浏览器锚定在播放头,否则新会话窗口仍从 0 起算 → 请求 playhead>60s 被拒(alpha.47 session2
+   * 死因)。默认 startMs=0(从头播,原行为)。
    */
   suspend fun harvest(videoId: String, startMs: Long = 0L, timeoutMs: Long = 30_000L): SabrCapture? =
     withContext(Dispatchers.Main) {
@@ -79,18 +81,22 @@ class YoutubeSabrHarvester(
         CookieManager.getInstance().setCookie(YoutubeConstants.Origin, cookies)
         CookieManager.getInstance().flush()
       }.onFailure { Log.w(Tag, "seed cookies failed: ${it.message}") }
-      // alpha.57(轮换):startMs>0 → embed URL 加 `&start=<秒>` 让浏览器从该位置起播,首 POST 锚定播放头
-      //(服务端会话窗口=锚点..+60s;旋转会话必须锚定 mid-playhead,否则 0 锚点新会话请求 playhead>60s 被拒)。
-      val startParam = if (startMs > 0) "&start=${startMs / 1000}" else ""
-      Log.i(Tag, "harvest: load embed videoId=$videoId startMs=$startMs${startParam} cookie=${cookies.length}B")
-      view.loadUrl("https://www.youtube.com/embed/$videoId?autoplay=1&mute=1&playsinline=1&origin=https://www.youtube.com$startParam")
+      // alpha.58(顺序反转):watch 页优先——row 47 起 watch 页是唯一稳定捕获源(embed 几乎总
+      // Error 153 config 拒、白等 10s),故先 load watch,10s 无捕获再回退 embed。watch 页锚定用
+      // `t=<秒>`(SPA 起播位置参数,替代 embed 的 `&start=`;startMs=0 首播不锚定)。
+      val watchT = if (startMs > 0) "&t=${startMs / 1000}" else ""
+      // embed 兜底仍需 `&start=<秒>` 锚定(embed 播放器用 start 参数,alpha.57 轮换验证过)。
+      val embedStart = if (startMs > 0) "&start=${startMs / 1000}" else ""
+      YoutubeLoadProgress.emit(YoutubeLoadStep.HarvestWatch)
+      Log.i(Tag, "harvest: load watch videoId=$videoId startMs=$startMs${watchT} cookie=${cookies.length}B")
+      view.loadUrl("https://www.youtube.com/watch?v=$videoId&autoplay=1&mute=1$watchT")
       // 轮询 window.__gvCaptures[0](对齐 BotGuard pollState 双解码:evaluateJavascript 对字符串
       // 结果做 JSON 编码,先解内层字符串再解析对象)。alpha.20 只截 SABR POST 致 25s 无捕获——
       // alpha.21 放宽到所有 googlevideo 请求(含 DASH GET),并加页面加载/console 诊断定位 embed 行为。
       // alpha.23:embed 报「错误 153」(config 拒)→ 10s 无捕获则回退 watch 页(无 embed 权限闸)。
       val start = System.currentTimeMillis()
       val deadline = start + 30_000L
-      var triedWatch = false
+      var triedEmbed = false
       var lastDiag = start
       var lastCaptureDump = start
       while (System.currentTimeMillis() < deadline) {
@@ -129,12 +135,13 @@ class YoutubeSabrHarvester(
           lastDiag = System.currentTimeMillis()
           view.evaluateJavascript(PAGE_DIAG_JS, null)
         }
-        // 10s 内 embed 无捕获 → 回退 watch 页(同 videoId,无 embed 权限闸,播放器同 plasma base.js
-        // 做 n-transform)。hook 在 onPageStarted 重新注入,idempotent,导航存活。
-        if (!triedWatch && System.currentTimeMillis() - start > 10_000L) {
-          Log.i(Tag, "harvest: embed 无捕获 10s → 回退 watch 页")
-          view.loadUrl("https://www.youtube.com/watch?v=$videoId")
-          triedWatch = true
+        // 10s 内 watch 无捕获 → 回退 embed 页(同 videoId;embed 播放器同 plasma base.js 做 n-transform,
+        // 但常有 Error 153 config 拒,故仅兜底)。hook 在 onPageStarted 重新注入,idempotent,导航存活。
+        if (!triedEmbed && System.currentTimeMillis() - start > 10_000L) {
+          Log.i(Tag, "harvest: watch 无捕获 10s → 回退 embed 页")
+          YoutubeLoadProgress.emit(YoutubeLoadStep.HarvestEmbed)
+          view.loadUrl("https://www.youtube.com/embed/$videoId?autoplay=1&mute=1&playsinline=1&origin=https://www.youtube.com$embedStart")
+          triedEmbed = true
         }
         delay(200)
       }

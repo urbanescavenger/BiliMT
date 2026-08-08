@@ -93,6 +93,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material3.darkColorScheme
 import androidx.lifecycle.Lifecycle
@@ -123,6 +124,8 @@ import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.youtube.YoutubeLoadProgress
+import com.kirin.mt.core.youtube.YoutubeLoadStep
 import com.kirin.mt.core.youtube.YoutubeVideoDetail
 import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
 import com.kirin.mt.core.network.FavoriteFolder
@@ -222,6 +225,9 @@ fun MobilePlayerScreen(
   )
 
   var playerState by remember { mutableStateOf<MobilePlayerState>(MobilePlayerState.Loading) }
+  // alpha.58:YouTube 加载步骤提示(resolver/harvester 经 YoutubeLoadProgress 写入当前步骤)。
+  // 独立于 playerState——初始加载、切画质/续播轮换都显示;播放就绪/失败时置 null 隐藏。
+  val youtubeLoadStep by YoutubeLoadProgress.step.collectAsState()
   var displayTitle by remember { mutableStateOf(request.title) }
   var controlsVisible by remember { mutableStateOf(true) }
   var isPlaying by remember { mutableStateOf(false) }
@@ -573,6 +579,8 @@ fun MobilePlayerScreen(
       }
       player.playWhenReady = true
       playerState = MobilePlayerState.Ready(sabrEffectiveInfo)
+      // alpha.58:播放就绪,隐藏加载步骤提示。
+      YoutubeLoadProgress.clear()
 
       // 弹幕
       if (danmakuSettings.enabled && cid > 0L) {
@@ -582,6 +590,8 @@ fun MobilePlayerScreen(
       throw error
     } catch (error: Exception) {
       playerState = MobilePlayerState.Failed(error.message.orEmpty())
+      // alpha.58:加载失败,隐藏加载步骤提示。
+      YoutubeLoadProgress.clear()
     }
   }
 
@@ -946,6 +956,25 @@ fun MobilePlayerScreen(
               TextButton(onClick = onBack) { Text("返回", color = Color.White) }
             }
             is MobilePlayerState.Ready -> Unit
+          }
+
+          // alpha.58:YouTube 加载步骤提示——小转圈 + 单行当前步骤,独立于 playerState 常显于底部
+          //(初始加载、切画质/续播轮换都覆盖;resolver/harvester 经 YoutubeLoadProgress 写步骤,
+          // 播放就绪/失败时置 null 隐藏)。
+          if (youtubeLoadStep != null) {
+            Column(
+              modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp),
+              horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+              CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+              Spacer(Modifier.padding(top = 6.dp))
+              Text(
+                youtubeLoadStep.label,
+                color = Color.White.copy(alpha = 0.9f),
+                fontSize = 13.sp,
+                textAlign = TextAlign.Center,
+              )
+            }
           }
 
           // 缓冲加载图标:seek 后/网络抖动进入 BUFFERING 时显示,区别于初始 Loading 态的 spinner。
