@@ -47,7 +47,7 @@ internal object SabrStreamRegistry {
    * read() 路径);工厂内部自行 harvest+建会话+registerByVideoId。防并发:同 videoId 在途旋转期间
    * 重复请求直接忽略。
    */
-  @Volatile var rotationFactory: ((videoId: String, startMs: Long) -> Unit)? = null
+  @Volatile var rotationFactory: (suspend (videoId: String, startMs: Long) -> Unit)? = null
 
   private val rotationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val rotationInFlight = ConcurrentHashMap.newKeySet<String>()
