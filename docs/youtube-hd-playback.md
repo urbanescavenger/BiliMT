@@ -342,6 +342,21 @@ fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', 
 
 **§6.7 row 72(alpha.46——修视频加载不出:harvest 只读 `__gvCaptures[0]`,首条无效(status=0/url 空)挡住后续 SABR POST)**:alpha.46 真机日志(`logs_live.log` 22:00,videoId uXivtcpC3MY)视频**加载不出**——ExoPlayer 只 Init 不 READY,~70s 后 Release。判读:app 自己 `/player` 响应 `parsedAdaptive=0 firstUrl=EMPTY firstCipher=none`(adaptive 全剥空),**唯一可播路径是 SABR**(`sabrUrl=present`),而 SABR 依赖 harvest 成功。harvest 两次尝试都**没打出 `harvest: captured`**——watch 页明明发了 SABR POST(`gv req method=POST itag=? sabr=true`),但 harvest 循环只读 `window.__gvCaptures[0]` 且要求 `status>0`:**首条 capture 无效(status=0/url 空)时循环永远卡在 `[0]`,从不检查 `[1]`/`[2]` 里的 SABR POST** → 30s 超时 → 返回 null → 无 playable URL → 加载不出。旁证:watch 页 `/player` 响应 `sabrUrl=absent formats=2`(走 progressive itag=18),但 SABR POST 仍发生(来自带 sabrUrl 的早期 /player 响应),hook 记了 captures=4/1 却无一条被 harvest 采纳。**根修** [YoutubeSabrHarvester.kt](app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt):harvest 循环改读**全数组** `JSON.stringify(window.__gvCaptures)` 并遍历,首条无效不再挡住后续;新增 `parseCaptureArray`(双解码数组);全数组无有效项时每 ~3s dump 每条 `method/status/url/bodyB64` 长度诊断。**待真机**:看 `harvest: captured POST status=200` 出现(遍历到 SABR POST)或 `harvest: no valid capture (N): ...` dump 揭示 hook 到底记了什么(status 是否全 0 / 是否根本没 POST)。
 
+**§6.7 row 73(alpha.57——主动会话轮换破 60s 断崖:服务端每会话 ~60s 服务量上限,到点主动开新 harvest 锚定播放头无缝续播)**:alpha.47 真机日志(`logs_live.log`)坐实 row 70/71 的「客户端上报技巧」全失败,**服务端看的是它自己发出的服务量,上报封顶瞒不过**:
+- **session1(锚点 0)**:`AUDIO seq=7 playerTimeMs=60001` / `VIDEO seq=11 playerTimeMs=60003` 死,`reportedEnd=55000` 封顶**仍被拒** → 服务端按**它自己的会话累计服务量**计数,`maxTimeSinceReq=60000` 检的是服务端计数器非客户端上报。
+- **session2(startMs=77840,锚点仍 0)**:init OK,但 **seq=1 每请求 `playerTimeMs=77840` 全拒**(backoff=0/2000)→ **锚点=服务端会话窗口起点(浏览器 POST 时播放位置),非 URL 可改参数**(URL 只有 alr/cpn/rn,无位置参数)。
+
+**结论**:60s 断崖唯一解是**主动会话轮换**——服务端每会话上限 ~60s(锚点..+60s),被动 stall-retry 已太晚(playhead 已 >60s,新会话还是 0 锚点照样拒)。须在 ~50s **主动**开新 harvest 建新会话,并让新会话**锚定当前播放头**(否则新会话窗口仍 0..60s,请求 playhead>60s 照样拒)。
+
+**alpha.57 实现**(5 文件):
+- [YoutubeSabrHarvester.kt](app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt):`harvest(videoId, startMs)` 追加 embed URL `&start=<秒>`——浏览器从该位置起播,首 SABR POST 锚定播放头。
+- [SabrStreamRegistry.kt](app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrStreamRegistry.kt):加 `rotationFactory`(suspend,resolver 装填)+ `requestRotation(videoId, startMs)`(后台协程 + `rotationInFlight` 同 videoId 防并发——video/audio 两路 DataSource 共享同 sid 都会触发,只许一次)。
+- [YoutubePlaybackResolver.kt](app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt):SABR 路径装 `rotationFactory`(harvest(startMs)+建会话+`registerByVideoId` 复用同 sid 覆盖 entry);`sabr://` URI 带 `&videoId=`。
+- [SabrAwareDataSource.kt](app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrAwareDataSource.kt):解析 `&videoId=`。
+- [SabrStreamingDataSource.kt](app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrStreamingDataSource.kt):`maybeTriggerRotation`——缓冲距当前会话锚点 >= `ROTATE_AT_MS=50s` 触发一次;`switchIfRotated`——检测 registry entry 引用变化(registerByVideoId 覆盖)后拉新会话 init(丢弃字节,extractor 已有同 itag moov 不重喂)→ 重置 cumulative/nextSeq/segDurations 到新锚点 → 续播;切换后复位 `rotationTriggered`,下一会话到点再轮换。**关键**:触发用「距锚点增量」非绝对 cumulative,否则每次切换把 cumulative 重置回锚点后下一次 read() 立即满足绝对阈值 → 死循环轮换。
+
+**待真机**(`Y:/download/bilitv/logs/logs_live.log`):看 `rotation: start harvest ... startMs=~45000` → `rotation: registered new session ... startMs=... sid=... (switched)` → 新会话 seq 请求正常返回 media(服务端窗口=播放头..+60s)→ 越过 60s 断崖继续播。**关键待验证点**:embed `&start=` 是否真的让浏览器**首 SABR POST 锚定在播放头**——若 embed 从 0 起播再 seek,首 POST 仍锚定 0 → 新会话窗口仍 0..60s → 切后 ~60s 又断(换 WebView 先 seek 再采集路线)。另注意:alpha.57 用 `ROTATE_AT_MS=50s`,若真机 harvest 慢(>10s,watch 回退更慢)可能旧会话先断(stall-retry 兜底,不更糟);可据真机耗时调触发点(45s 留更多余量)。
+
 ## 6.9 SABR 实现调研(FreeTubeAndroid 源码 + googlevideo proto + UMP 协议)
 
 ## 6.9 SABR 实现调研(FreeTubeAndroid 源码 + googlevideo proto + UMP 协议)
