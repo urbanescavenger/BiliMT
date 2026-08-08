@@ -183,15 +183,18 @@ class YoutubePlaybackResolver(
         val firstVideo = raws.firstOrNull { (it.intOrNull("height") ?: 0) > 0 }
         val firstAudio = raws.firstOrNull { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
         if (firstVideo != null && firstAudio != null) {
-          // alpha.29:多清晰度——切清晰度重跑 resolve 时,若该 videoId 已有缓存 SABR 会话
-          // (poToken/ustreamerConfig/cpn 会话级可复用 ~6h,核对 FreeTube Watch.js 证实同 token 跨多 itag),
-          // 跳过 harvest/decipher 直接复用,用 preferredQualityId 选 itag 建 PlaybackInfo。
-          val cachedSid = SabrStreamRegistry.getByVideoId(videoId)
-          if (cachedSid != null) {
-            val cached = SabrStreamRegistry.get(cachedSid)
-            if (cached != null) {
-              Log.i(Tag, "SABR cache hit: videoId=$videoId sid=$cachedSid → reuse session (skip harvest/decipher), preferredQuality=${request.preferredQualityId}")
-              return@withContext buildSabrPlaybackInfo(request, videoId, durationMs, raws, cached.session, cachedSid)
+          // alpha.29+alpha.52:切清晰度/seek 重跑 resolve 时,若「正在播的窗口会话」覆盖目标窗口
+          // (floor(startPositionMs/60s)*60s),直接复用——poToken/ustreamerConfig/cpn 会话级可复用 ~6h。
+          // activeSessionForWindow 取 DataSource 正在播的窗口会话(而非被预取覆盖的最新 entry),保证
+          // 会话窗口 == 目标窗口(否则跨窗口 seek 会复用错会话、请求被拒)。无匹配 → 跨窗口 seek/首次 →
+          // 下方 harvest 锚定目标窗口。
+          val targetWindow = (request.startPositionMs / WINDOW_LEN) * WINDOW_LEN
+          val activeEntry = SabrStreamRegistry.activeSessionForWindow(videoId, targetWindow)
+          if (activeEntry != null) {
+            val cachedSid = SabrStreamRegistry.getByVideoId(videoId)
+            if (cachedSid != null) {
+              Log.i(Tag, "SABR session reuse: videoId=$videoId window=$targetWindow sid=$cachedSid → reuse (skip harvest/decipher), preferredQuality=${request.preferredQualityId}")
+              return@withContext buildSabrPlaybackInfo(request, videoId, durationMs, raws, activeEntry.session, cachedSid)
             }
           }
           // alpha.29:同会话所有可播视频 itag 的 FormatId(从 /player adaptiveFormats 全收)。
@@ -243,7 +246,11 @@ class YoutubePlaybackResolver(
             // poToken/ustreamerConfig/formatIds)。alpha.26 已证:用 harvested body 解码出的会话参数
             // + 浏览器 cpn,SabrClient 自构 body 驱 init+seg 全 Success(§6.7 row 50)。
             Log.i(Tag, "SABR n-decrypt NO-CHANGE (plasma WASM) → harvest watch WebView")
-            val capture = sabrHarvester.harvest(videoId)
+            // alpha.52(窗口):跨窗口 seek/首次 → 先丢弃过期在途预取(resetForSeek bump 代际,防旧窗口预取
+            // 覆盖本会话),再 harvest 锚定目标窗口(窗口起点经 watch &t= 作浏览器起播位置)。目标窗口 ==
+            // 当前播放窗口的复用已在上方 activeSessionForWindow 判过(匹配则不进来)。
+            SabrStreamRegistry.resetForSeek(videoId)
+            val capture = sabrHarvester.harvest(videoId, targetWindow)
             if (capture == null) {
               Log.w(Tag, "harvest: no capture (watch 页 30s 内未发 googlevideo 请求 — 页没加载/autoplay 被拦;查 YtSabrHarvest 日志)")
               null
@@ -264,12 +271,14 @@ class YoutubePlaybackResolver(
           if (sabrSession != null) {
             YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
             val sabrClient = SabrClient(httpClient)
-            val sid = SabrStreamRegistry.registerByVideoId(videoId, sabrSession, sabrClient)
+            val sid = SabrStreamRegistry.registerByVideoId(videoId, sabrSession, sabrClient, targetWindow)
             // alpha.48(轮换):装填会话轮换工厂。服务端对每会话 ~60s 服务量上限,到点主动开新 harvest
-            // 建新会话(锚定当前播放头),[requestRotation] 后台执行 → registerByVideoId 复用同 sid 覆盖
-            // entry → DataSource 检测切换。捕获本 resolve 的 client/videoFormats(harvest 建会话要它们)。
-            SabrStreamRegistry.rotationFactory = { v, startMs ->
-              Log.i(Tag, "rotation: start harvest videoId=$v startMs=$startMs")
+            // 建下一个窗口的会话([requestRotation] 后台执行 → registerByVideoId 复用同 sid 覆盖 entry →
+            // DataSource 检测切换)。捕获本 resolve 的 client/videoFormats(harvest 建会话要它们)。
+            // alpha.52:工厂签名带 epoch——seek 后过期预取(旧窗口)在注册前校验代际丢弃,不覆盖 seek 锚定
+            // 的新会话。startMs 即窗口起点(DataSource 传 sessionAnchorMs+WINDOW_LEN),作 session 窗口存盘。
+            SabrStreamRegistry.rotationFactory = { v, startMs, epoch ->
+              Log.i(Tag, "rotation: start harvest videoId=$v startMs=$startMs epoch=$epoch")
               val cap = sabrHarvester.harvest(v, startMs)
               if (cap == null) {
                 Log.w(Tag, "rotation: harvest failed videoId=$v startMs=$startMs (keep old session)")
@@ -279,10 +288,13 @@ class YoutubePlaybackResolver(
                 val newSession = buildSabrSessionFromCapture(cap, client, videoFormats)
                 if (newSession == null) {
                   Log.w(Tag, "rotation: buildSabrSessionFromCapture failed videoId=$v (keep old session)")
+                } else if (!SabrStreamRegistry.isRotationEpochCurrent(v, epoch)) {
+                  // alpha.52:seek 后旧窗口过期预取 → 丢弃,不覆盖 seek 锚定的新窗口会话。
+                  Log.w(Tag, "rotation: stale after seek epoch=$epoch videoId=$v → drop (seek re-anchored session)")
                 } else {
                   YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
-                  val newSid = SabrStreamRegistry.registerByVideoId(v, newSession, SabrClient(httpClient))
-                  Log.i(Tag, "rotation: registered new session videoId=$v startMs=$startMs sid=$newSid (switched)")
+                  val newSid = SabrStreamRegistry.registerByVideoId(v, newSession, SabrClient(httpClient), startMs)
+                  Log.i(Tag, "rotation: registered new session videoId=$v startMs=$startMs window=$startMs sid=$newSid (switched)")
                 }
               }
               // alpha.49:轮换(后台)结束,隐藏加载步骤提示(成功/失败都隐藏)。
@@ -1008,6 +1020,12 @@ class YoutubePlaybackResolver(
 
   private companion object {
     const val Tag = "YtResolver"
+
+    /**
+     * alpha.52(窗口):每 SABR 会话服务的 60s 窗口长度(ms),与 [com.kirin.mt.core.youtube.sabr.SabrStreamingDataSource.WINDOW_LEN]
+     * 一致。目标窗口 = floor(startMs/60s)*60s;会话必须锚定到覆盖所选位置的窗口,`startTimeMs=X` 才被服务端接受。
+     */
+    const val WINDOW_LEN = 60_000L
 
     /** googlevideo 直链无需 B 站 Cookie；仅带 youtube Referer/Origin。 */
     val YoutubePlaybackHeaders = BiliPlaybackHeaders(

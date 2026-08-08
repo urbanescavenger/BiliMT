@@ -59,9 +59,9 @@ internal class SabrStreamingDataSource(
    */
   private val startMs: Long = 0L,
   /**
-   * alpha.48(轮换):videoId(来自 sabr:// URI `&videoId=`)。读到 ~[ROTATE_AT_MS] 时主动触发
-   * [SabrStreamRegistry.requestRotation] 建新会话(锚定当前播放头),绕开服务端每会话 ~60s 服务量
-   * 上限。null=老 URI 无 videoId(轮换不可用,保持原被动 stall-retry 行为)。
+   * alpha.48(轮换):videoId(来自 sabr:// URI `&videoId=`)。当前窗口 cumulative 距锚点 ~[PREFETCH_AT_MS]
+   * 时主动触发 [SabrStreamRegistry.requestRotation] 建下一个窗口会话(锚定窗口起点),绕开服务端每会话
+   * ~60s 服务量上限。null=老 URI 无 videoId(轮换不可用,保持原被动 stall-retry 行为)。
    */
   private val videoId: String?,
 ) : DataSource {
@@ -69,10 +69,10 @@ internal class SabrStreamingDataSource(
   private var entry: SabrStreamRegistry.Entry? = null
   private var currentUri: Uri? = null
   /**
-   * alpha.48(轮换):当前会话的锚点——轮换触发判断用「距本会话锚点 >= [ROTATE_AT_MS]」,而非绝对
-   * cumulative。否则每次轮换把 cumulative 重置回锚点后,下一次 read() 立即满足绝对阈值 → 死循环轮换。
-   * 初始 = [startMs](首播 0);轮换切换后 = 新会话锚点(即触发时的播放头)。服务端每会话服务量上限
-   * ~60s(锚点..+60s),故每个会话只主动轮换一次,到点换新会话续播。
+   * alpha.52(窗口):当前会话的窗口起点(anchor)——轮换触发/切换判断用「cumulative 距本锚点」,而非绝对
+   * cumulative。否则每次切换把 cumulative 重置回锚点后,下一次 read() 立即满足绝对阈值 → 死循环轮换。
+   * 初始 = [startMs] 所在窗口(floor(startMs/60)*60);窗口切换后 = 下一个窗口起点(+WINDOW_LEN)。服务端
+   * 每会话服务量上限 ~60s(锚点..+60s),故每窗口只预取一次、耗尽才切。
    */
   private var sessionAnchorMs: Long = 0L
   /** alpha.48:当前会话是否已触发过轮换(video/audio 两路 DataSource 各自触发一次无妨,registry 防并发)。 */
@@ -119,8 +119,13 @@ internal class SabrStreamingDataSource(
     buffer = initResult.data
     bufferPos = 0
     cumulativeDurationMs = startMs + (initResult.mediaHeader?.durationMs ?: 0L)
-    // alpha.48(轮换):当前会话锚点 = startMs(首播 0/续播续播点)。轮换判断按距此锚点的增量触发。
-    sessionAnchorMs = startMs
+    // alpha.52(窗口):会话锚点 = startMs 所在 60s 窗口起点(floor(startMs/60s)*60s),而非 startMs 本身。
+    // 服务端对每会话服务量上限 [anchor..anchor+60s];续播/seek 到任意位置 X 时,会话由 resolver 锚定到
+    // floor(X/60)*60(覆盖 X),这里锚点取同窗口起点,使「窗口耗尽/预取触发」按距窗口起点的累计增量判断
+    // (滚动:anchor 0→60→120...)。startMs=0 首播 → 0,原行为。
+    sessionAnchorMs = (startMs / WINDOW_LEN) * WINDOW_LEN
+    // alpha.52(seek):上报「正在播放的窗口会话」——resolver 据此判断 seek 目标窗口可否复用本会话。
+    videoId?.let { SabrStreamRegistry.noteActive(it, e) }
     return C.LENGTH_UNSET.toLong()
   }
 
@@ -244,27 +249,27 @@ internal class SabrStreamingDataSource(
    *   alpha.43 真机坐实「缓冲膨胀」假设——seq=13 时 playerTimeMs(=cumulative)=60031 > 60000,服务端 6×
    *   `no MEDIA_HEADER but NEXT_REQUEST_POLICY backoff` 软拒 → evict。alpha.44 据此改 playerTimeMs=playhead。 */
   /**
-   * alpha.48(轮换):当前会话缓冲到距锚点 >= [ROTATE_AT_MS] 时,主动触发一次新会话轮换
-   * ([SabrStreamRegistry.requestRotation])。服务端对每会话有 ~60s 服务量上限,被动 stall-retry
-   * 已太晚(playhead 已 >60s,新会话 0 锚点仍拒)。提前到 ~45s(留 harvest 3-8s 余量)触发,让新会话
-   * 锚定当前播放头(harvest 带 startMs → embed &start=),[switchIfRotated] 检测到后无缝切换续播。
-   * 每会话只触发一次(rotationTriggered);轮换切换后 sessionAnchorMs 更新为锚点,下一轮到点再触发。
+   * alpha.52(窗口):当前窗口会话 cumulative 距锚点 >= [PREFETCH_AT_MS] 时,后台预取下一个窗口的会话
+   * ([SabrStreamRegistry.requestRotation] 锚定 sessionAnchorMs+WINDOW_LEN)。服务端对每会话 ~60s 服务量
+   * 上限(窗口耗尽即软拒);被动 stall-retry 已太晚。cumulative 40s 时 playhead 才 ~25s,harvest 5-6s 在
+   * ~48s 完成,窗口耗尽(60s)时新会话已就绪,[switchIfRotated] 无缝切换续播。
+   * 每窗口只触发一次(rotationTriggered);切换后 sessionAnchorMs 推进 + rotationTriggered 复位,下一窗口再触发。
    * video/audio 两路 DataSource 各自触发一次无妨(registry rotationInFlight 防并发重复 harvest)。
    */
   private fun maybeTriggerRotation() {
     val vid = videoId ?: return
     if (rotationTriggered) return
-    // alpha.49:改按 playhead(真实播放位置)而非 cumulative(缓冲终点)判断。audio 缓冲领先(video
-    // 锁步、audio 段小 burst 到 +25s 领先)会让 cumulative-anchor 提前到 ~ROTATE-lead 秒就触发 →
-    // 每 ~25s 轮换一次、锚点提前、服务器 grant 耗尽;按 playhead 后 video/audio 两路 DataSource 在
-    // 同一 playhead 阈值触发,频率稳定为每 [ROTATE_AT_MS] 一次。服务端每会话 ~60s 服务量上限按
-    // playerTimeMs=playhead 计(上报封顶瞒不过),故以 playhead 距锚点超阈值开新会话最贴合。
-    val sinceAnchor = playheadEstimateMs() - sessionAnchorMs
-    if (sinceAnchor < ROTATE_AT_MS) return
+    // alpha.52(窗口):改按 cumulative 距窗口锚点的增量判断(非 alpha.49 的 playhead)。alpha.51 真机坐实
+    // 会话死在 cumulative 达 ~60s(media 服务量上限),而 playhead 领先累积 ~20s(缓冲 lead)→ playhead
+    // 触发点永远够不到(playhead 只到 ~40s 会话已死)→ 0 次轮换。cumulative 到 40s 时 playhead 才 ~25s,
+    // 远在死亡点前,触发可靠。预取锚定**下一个窗口起点**(sessionAnchorMs+60s,非 playhead)——让浏览器
+    // watch `&t=` 锚定新会话窗口到边界,旧窗口耗尽后新会话从边界续,无 gap。
+    val sinceAnchor = cumulativeDurationMs - sessionAnchorMs
+    if (sinceAnchor < PREFETCH_AT_MS) return
     rotationTriggered = true
-    val anchorMs = playheadEstimateMs().coerceAtLeast(sessionAnchorMs)
-    Log.i(tag, "ROTATION trigger sid=$sessionId stream=$streamType playheadSinceAnchor=${sinceAnchor}ms playhead=$anchorMs → requestRotation(videoId=$vid)")
-    SabrStreamRegistry.requestRotation(vid, anchorMs)
+    val nextWindowStart = sessionAnchorMs + WINDOW_LEN
+    Log.i(tag, "ROTATION trigger sid=$sessionId stream=$streamType cumulativeSinceAnchor=${sinceAnchor}ms → requestRotation(videoId=$vid startMs=$nextWindowStart window=${nextWindowStart})")
+    SabrStreamRegistry.requestRotation(vid, nextWindowStart)
   }
 
   /**
@@ -276,8 +281,13 @@ internal class SabrStreamingDataSource(
   private fun switchIfRotated(): Boolean {
     val cur = SabrStreamRegistry.get(sessionId) ?: return false
     if (cur === entry) return false
-    val anchorMs = playheadEstimateMs().coerceAtLeast(cumulativeDurationMs)
-    Log.i(tag, "ROTATION switch sid=$sessionId stream=$streamType oldSession=${entry?.session?.sabrUrl?.take(50)} newSession=${cur.session.sabrUrl.take(50)} anchor=$anchorMs")
+    // alpha.52(窗口):切换门 = 旧窗口**已耗尽**(cumulative 距锚点 >= SWITCH_AT_MS=60s)。新会话(register
+    // 覆盖同 sid)可能在预取触发后 ~8s 就已就绪,若此时就切,旧会话只服务到 ~48s → 新会话从 60s 续 →
+    // buffer gap [48..60] → stall。必须等旧会话把窗口服务满(最后一段 duration 把 cumulative 顶过 60s,
+    // 如 video seq12→61604)才切 → 旧已缓冲到边界,新从 60s 续,连续。
+    if (cumulativeDurationMs - sessionAnchorMs < SWITCH_AT_MS) return false
+    val nextWindowStart = sessionAnchorMs + WINDOW_LEN
+    Log.i(tag, "ROTATION switch sid=$sessionId stream=$streamType oldSession=${entry?.session?.sabrUrl?.take(50)} newSession=${cur.session.sabrUrl.take(50)} window=$nextWindowStart")
     // 新会话(新 sabrUrl/poToken)需先发 init 建立服务端会话态(同 open());init 字节丢弃——extractor
     // 已持有同 itag 的 moov(格式一致,不重喂避免 "Multiple Segment elements not supported")。
     val e0 = entry
@@ -289,11 +299,14 @@ internal class SabrStreamingDataSource(
       entry = e0
       return false
     }
-    sessionAnchorMs = anchorMs
-    cumulativeDurationMs = anchorMs + (init.mediaHeader?.durationMs ?: 0L)
+    // 锚点推进到下一个窗口起点(cumulative 从该窗口续,首段 playerTimeMs=nextWindowStart → 服务端从边界发段)。
+    sessionAnchorMs = nextWindowStart
+    cumulativeDurationMs = nextWindowStart + (init.mediaHeader?.durationMs ?: 0L)
+    // alpha.52(seek):上报切换到的新窗口会话——seek 复用判断取当前播放窗口。
+    videoId?.let { SabrStreamRegistry.noteActive(it, cur) }
     nextSeq = 1
     segDurations.clear()
-    // 每会话独立触发一次轮换——切到新会话后复位,下一会话到 ~45s 再触发(否则第二会话永久不旋转)。
+    // 每窗口独立触发一次预取——切到新窗口后复位,下一窗口 cumulative 到 PREFETCH_AT_MS 再触发(否则第二窗口永久不预取)。
     rotationTriggered = false
     return true
   }
@@ -440,14 +453,23 @@ internal class SabrStreamingDataSource(
     /** alpha.36:单段请求的 backoff 重试上限(对齐 FreeTube 简洁 reload 语义;耗尽→EOF→evict→stall-retry 新 harvest)。 */
     const val BACKOFF_MAX_ATTEMPTS = 6
     /**
-     * alpha.48(轮换):主动轮换触发阈值——当前会话距锚点超过此值即开新会话。服务端每会话服务量
-     * 上限 ~60s(锚点..+60s,按 playerTimeMs=playhead 计),故留 harvest 余量提前到 ~45s 触发,
-     * 确保新会话在旧会话服务量耗尽前就绪并切换。alpha.49 提前 50→45:watch 优先 harvest ~6s
-     * (最坏 embed 兜底 ~15s),给 60s 上限留 15s 余量。太小频繁轮换(harvest 成本 + 服务器 grant
-     * 有限),太大撞 60s 断崖。配合 [maybeTriggerRotation] 按 playhead 触发,audio 缓冲领先不再
-     * 虚高提前(否则每 ~25s 轮换、grant 耗尽)。
+     * alpha.52(窗口):每 SABR 会话服务的 60s 窗口长度(ms)。服务端对每会话服务量上限 [anchor..anchor+60s]
+     * (alpha.51 坐实,URL 锚点绕不开)。窗口起点 = harvest 的 watch `&t=`(起播位置),滚动推进 0→60→120...。
      */
-    const val ROTATE_AT_MS = 45_000L
+    const val WINDOW_LEN = 60_000L
+    /**
+     * alpha.52(窗口):预取触发阈值——当前窗口会话 cumulative 距锚点 ≥ 此值(40s)时,后台 harvest 下一个
+     * 窗口的会话([SabrStreamRegistry.requestRotation] 锚定 sessionAnchorMs+WINDOW_LEN)。cumulative 40s 时
+     * playhead 才 ~25s(缓冲 lead,alpha.51 证),远在 60s 死亡点前;harvest 5-6s 在 ~48s 完成,60s 切换时
+     * 已就绪。比 alpha.48/49 的 playhead≥45s(够不到,0 次触发)可靠得多。
+     */
+    const val PREFETCH_AT_MS = 40_000L
+    /**
+     * alpha.52(窗口):切换门阈值——旧窗口 cumulative 距锚点 ≥ 此值(60s=窗口耗尽)才切到新窗口会话。
+     * 旧会话最后一段 duration 把 cumulative 顶过 60s(如 video seq12→61604)→ 旧已缓冲到窗口边界,新从
+     * 边界续,无 buffer gap。切早了(如 50s)留 [50..60] 缺口 → stall。
+     */
+    const val SWITCH_AT_MS = 60_000L
     /** alpha.45:上报给服务端的 bufferedRange 终点封顶值(ms)。服务端对客户端缓冲终点有 ~60s 上限
      * (maxTimeSinceReq),超过即软拒只回 NEXT_REQUEST_POLICY backoff 不发 media。封顶在 55s(<60s)
      * 让服务端永远看到客户端只缓冲到 55s 持续发段,避免 cumulative 随 playhead 涨破 60s 触发断崖。 */

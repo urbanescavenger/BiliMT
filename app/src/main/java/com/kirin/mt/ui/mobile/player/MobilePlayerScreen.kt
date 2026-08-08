@@ -243,6 +243,11 @@ fun MobilePlayerScreen(
   // autoResumePositionMs=-1L 表示无续播位(走 saved progress);>=0 时 launch effect 优先 seekTo 它。
   var retryKey by remember { mutableLongStateOf(0L) }
   var autoResumePositionMs by remember { mutableLongStateOf(-1L) }
+  // alpha.52:SABR 源不可 seekTo(LENGTH_UNSET 双 init 崩)→ 中段 seek 走「重新起播」:记目标位置 + bump
+  // sabrSeekReloadKey 重跑 loadRequest(fresh MediaSource + startMs=target,窗口内复用会话/跨窗口新 harvest)。
+  // pendingSABRSeekMs 由 loadRequest 消费后置空,避免重复 seek。
+  var pendingSABRSeekMs by remember { mutableStateOf<Long?>(null) }
+  var sabrSeekReloadKey by remember { mutableIntStateOf(0) }
   var autoRetryCount by remember { mutableIntStateOf(0) }
   var danmakuEntries by remember { mutableStateOf<List<com.kirin.mt.core.player.DanmakuEntry>>(emptyList()) }
   var fullscreen by rememberSaveable { mutableStateOf(false) }
@@ -420,7 +425,7 @@ fun MobilePlayerScreen(
       )
       skippedAirJumpIds = skippedAirJumpIds + hitSegment.id
       warnedAirJumpIds = warnedAirJumpIds + hitSegment.id
-      player.seekTo(targetPositionMs)
+      routeSeek(targetPositionMs)
       playbackPositionState.longValue = targetPositionMs
       danmakuSyncToken += 1L
       if (duration <= 0L || targetPositionMs < duration - AirJumpCompletionToastSuppressMs) {
@@ -450,6 +455,24 @@ fun MobilePlayerScreen(
     } else null
     return queueNext?.toPlaybackRequest()
       ?: activeRequest.nextEpisodeCompletion(metadata, selectedQualityId)?.request
+  }
+
+  /**
+   * alpha.52:SABR 源中段 seek 路由——progressive 直链 SABR 源 LENGTH_UNSET,Media3 原生 seekTo
+   * 会重开 DataSource 喂双 init 致 MatroskaExtractor "Multiple Segment elements not supported" 崩。
+   * 故 SABR seek 改走「重新起播」:记 pendingSABRSeekMs + bump sabrSeekReloadKey 重跑 loadRequest
+   * (fresh MediaSource → fresh extractor → 单 init;目标经 startMs 透传进 sabr:// URL,resolver 按
+   * 窗口锚定,窗口内复用会话/跨窗口新 harvest)。非 SABR(B站等)保持直接 player.seekTo。
+   */
+  fun routeSeek(targetMs: Long) {
+    val maxMs = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+    val clamped = targetMs.coerceIn(0L, maxMs)
+    if ((playerState as? MobilePlayerState.Ready)?.info?.isSabrProgressive() == true) {
+      pendingSABRSeekMs = clamped
+      sabrSeekReloadKey++
+    } else {
+      player.seekTo(clamped)
+    }
   }
 
   // 加载(镜像 TV PlayerScreen 的 load 序列)。抽成独立 suspend 函数,使自动连播/用户切集/切画质
@@ -508,7 +531,11 @@ fun MobilePlayerScreen(
         track.copy(baseUrl = sel.primaryUrl, backupUrls = sel.fallbackUrls)
       }
       val effectiveInfo = info.copy(videoTracks = resolvedVideo, audioTracks = resolvedAudio)
+      // alpha.52:SABR 中段 seek 目标优先(重跑 loadRequest),绕过 saved progress 避免回退到更旧位置。
+      val pendingSABRSeek = pendingSABRSeekMs
+      pendingSABRSeekMs = null
       val startPositionMs = when {
+        pendingSABRSeek != null -> pendingSABRSeek
         // stall 自动重试续播:优先用卡住时的当前位置,而非 saved progress(可能更旧)。
         autoResumePositionMs >= 0L -> autoResumePositionMs.also { autoResumePositionMs = -1L }
         else -> playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
@@ -700,7 +727,7 @@ fun MobilePlayerScreen(
   // 加载(镜像 TV PlayerScreen 的 load 序列)。key 不含 activeRequest:自动连播/用户切集/切画质
   // 由显式 loadRequest 调用触发(见 ExoPlayer 监听器与各 onClick),避免后台重组被推迟时无法加载;
   // 本 effect 只处理初始加载、新视频(request 变)、设置变更、stall 重试(retryKey 变)。
-  LaunchedEffect(request, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey) {
+  LaunchedEffect(request, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
     loadRequest(activeRequest)
   }
 
@@ -1089,7 +1116,7 @@ fun MobilePlayerScreen(
                   onSeekEnd = {
                     dragSeekActive = false
                     seekPreviewMs?.let { target ->
-                      player.seekTo(target)
+                      routeSeek(target)
                       playbackPositionState.longValue = target
                       danmakuSyncToken += 1L
                     }
@@ -1196,7 +1223,7 @@ fun MobilePlayerScreen(
               },
               onValueChangeFinished = {
                 seekPreviewMs?.let { target ->
-                  player.seekTo(target)
+                  routeSeek(target)
                   playbackPositionState.longValue = target
                   danmakuSyncToken += 1L
                 }

@@ -218,6 +218,11 @@ fun PlayerScreen(
   // stall 自动恢复:BUFFERING 且进度长时间不前进时,记当前位置并 bump retryKey 重载源续播。
   // autoResumePositionMs=-1L 表示无续播位(走 saved progress);>=0 时 launch effect 优先 seekTo 它。
   var autoResumePositionMs by remember { mutableLongStateOf(-1L) }
+  // alpha.52:SABR 源不可 seekTo(LENGTH_UNSET 双 init 崩)→ 中段 seek 走「重新起播」:记目标位置 + bump
+  // sabrSeekReloadKey 重跑 launch effect(fresh MediaSource + startMs=target,窗口内复用会话/跨窗口新 harvest)。
+  // pendingSABRSeekMs 由 launch effect 消费后置空,避免重复 seek。
+  var pendingSABRSeekMs by remember { mutableStateOf<Long?>(null) }
+  var sabrSeekReloadKey by remember { mutableIntStateOf(0) }
   var autoRetryCount by remember { mutableIntStateOf(0) }
   var lastPlaybackExitBackPressMs by remember { mutableLongStateOf(0L) }
   var playbackExitConfirmToast by remember { mutableStateOf<Toast?>(null) }
@@ -368,9 +373,27 @@ fun PlayerScreen(
     )
   }
 
+  /**
+   * alpha.52:SABR 源中段 seek 路由——progressive 直链 SABR 源 LENGTH_UNSET,Media3 原生 seekTo
+   * 会重开 DataSource 喂双 init 致 MatroskaExtractor "Multiple Segment elements not supported" 崩。
+   * 故 SABR seek 改走「重新起播」:记 pendingSABRSeekMs + bump sabrSeekReloadKey 重跑 launch effect
+   * (fresh MediaSource → fresh extractor → 单 init;目标经 startMs 透传进 sabr:// URL,resolver 按
+   * 窗口锚定,窗口内复用会话/跨窗口新 harvest)。非 SABR(B站等)保持直接 player.seekTo。
+   */
+  fun routeSeek(targetMs: Long) {
+    val maxMs = maxDurationMs().takeIf { it > 0L } ?: Long.MAX_VALUE
+    val clamped = targetMs.coerceIn(0L, maxMs)
+    if ((playerState as? PlayerScreenState.Ready)?.info?.isSabrProgressive() == true) {
+      pendingSABRSeekMs = clamped
+      sabrSeekReloadKey++
+    } else {
+      player.seekTo(clamped)
+    }
+  }
+
   fun commitPreviewSeek(revealControls: Boolean = controlsVisible || progressFocused) {
     val target = previewPositionMs ?: return
-    player.seekTo(target.coerceIn(0L, maxDurationMs().takeIf { it > 0L } ?: Long.MAX_VALUE))
+    routeSeek(target)
     playbackPositionState.longValue = target
     danmakuSyncToken += 1L
     previewPositionMs = null
@@ -433,7 +456,7 @@ fun PlayerScreen(
       )
       skippedAirJumpIds = skippedAirJumpIds + hitSegment.id
       warnedAirJumpIds = warnedAirJumpIds + hitSegment.id
-      player.seekTo(targetPositionMs)
+      routeSeek(targetPositionMs)
       playbackPositionState.longValue = targetPositionMs
       danmakuSyncToken += 1L
       val duration = maxDurationMs().takeIf { it > 0L } ?: 0L
@@ -1260,7 +1283,7 @@ fun PlayerScreen(
     }
   }
 
-  LaunchedEffect(activeRequest, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey) {
+  LaunchedEffect(activeRequest, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
     val launchJob = coroutineContext[Job]
     playbackLaunchJob = launchJob
     try {
@@ -1326,10 +1349,14 @@ fun PlayerScreen(
       playerState = PlayerScreenState.Failed(context.getString(R.string.player_error_missing_cid))
       return@LaunchedEffect
     }
+    // alpha.52:SABR 中段 seek 目标——重跑 launch effect 前把目标位置覆盖进 startPositionMs+forceStartPosition,
+    // 让下方 requestedStartPositionMs 选到它,并经 startMs 透传进 sabr:// URL(窗口内复用会话/跨窗口新 harvest)。
+    val pendingSABRSeek = pendingSABRSeekMs
+    pendingSABRSeekMs = null
     val resolvedRequest = effectiveRequest.withResolvedMetadata(
       metadata = videoMetadata,
       cid = cid,
-    )
+    ).let { if (pendingSABRSeek != null) it.copy(startPositionMs = pendingSABRSeek, forceStartPosition = true) else it }
     displayRequest = resolvedRequest
     playerState = try {
       withTimeoutOrNull(LaunchTimeoutMs) {
