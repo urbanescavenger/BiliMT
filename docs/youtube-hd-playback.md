@@ -340,6 +340,8 @@ fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', 
 
 **待真机**:播 YouTube >90s 看 backoff 后 `RESUMED after N backoffs` 出现(服务端恢复发段)而非 `exhausted 6 backoffs`;若仍断,查服务端是否对 lead 上限更严(<15s)或 backoff 时长更长(需加大 `BACKOFF_MAX_ATTEMPTS`)。
 
+**§6.7 row 72(alpha.46——修视频加载不出:harvest 只读 `__gvCaptures[0]`,首条无效(status=0/url 空)挡住后续 SABR POST)**:alpha.46 真机日志(`logs_live.log` 22:00,videoId uXivtcpC3MY)视频**加载不出**——ExoPlayer 只 Init 不 READY,~70s 后 Release。判读:app 自己 `/player` 响应 `parsedAdaptive=0 firstUrl=EMPTY firstCipher=none`(adaptive 全剥空),**唯一可播路径是 SABR**(`sabrUrl=present`),而 SABR 依赖 harvest 成功。harvest 两次尝试都**没打出 `harvest: captured`**——watch 页明明发了 SABR POST(`gv req method=POST itag=? sabr=true`),但 harvest 循环只读 `window.__gvCaptures[0]` 且要求 `status>0`:**首条 capture 无效(status=0/url 空)时循环永远卡在 `[0]`,从不检查 `[1]`/`[2]` 里的 SABR POST** → 30s 超时 → 返回 null → 无 playable URL → 加载不出。旁证:watch 页 `/player` 响应 `sabrUrl=absent formats=2`(走 progressive itag=18),但 SABR POST 仍发生(来自带 sabrUrl 的早期 /player 响应),hook 记了 captures=4/1 却无一条被 harvest 采纳。**根修** [YoutubeSabrHarvester.kt](app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt):harvest 循环改读**全数组** `JSON.stringify(window.__gvCaptures)` 并遍历,首条无效不再挡住后续;新增 `parseCaptureArray`(双解码数组);全数组无有效项时每 ~3s dump 每条 `method/status/url/bodyB64` 长度诊断。**待真机**:看 `harvest: captured POST status=200` 出现(遍历到 SABR POST)或 `harvest: no valid capture (N): ...` dump 揭示 hook 到底记了什么(status 是否全 0 / 是否根本没 POST)。
+
 ## 6.9 SABR 实现调研(FreeTubeAndroid 源码 + googlevideo proto + UMP 协议)
 
 ## 6.9 SABR 实现调研(FreeTubeAndroid 源码 + googlevideo proto + UMP 协议)
