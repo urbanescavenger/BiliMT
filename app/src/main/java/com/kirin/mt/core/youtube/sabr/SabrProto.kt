@@ -209,6 +209,53 @@ internal object SabrProto {
   }
 
   /**
+   * alpha.41:解码 RELOAD_PLAYER_RESPONSE(part 46)。FreeTube 语义「whole video cannot be played →
+   * reload /player」——服务端明令重载 player response(取新 formats/poToken/sabrUrl),**非** backoff。
+   * alpha.40 真机:video 流 init 每次都收到 144B 的 part 46 + STREAM_PROTECTION_STATUS status=1 +
+   * NEXT_REQUEST_POLICY,但 audio 流同会话正常拿 media → 服务端针对 video 格式/会话要求 reload。
+   *
+   * proto 结构 youtube 侧未公开,故**不假定字段名**——通用遍历顶层 field,逐个打 fieldNumber/wireType/
+   * 值预览(varint 数 / length-delimited 的 len+hex 头 + 可打印则 UTF-8),加全量 hexdump。一次真机即可
+   * 判:payload 是否带新 sabrUrl(field=str,googlevideo.com)+ 新 format 列表 / 原因码,
+   * 从而区分「video itag 398 formatId 过期」(根因 A) vs「session 已初始化」(根因 B)。
+   */
+  fun decodeReloadPlayerResponse(payload: ByteArray): ReloadPlayerDiag {
+    val fields = StringBuilder()
+    val r = ProtoReader(payload)
+    while (true) {
+      val f = r.nextField() ?: break
+      if (fields.isNotEmpty()) fields.append(' ')
+      fields.append("f").append(f.fieldNumber).append('(').append(wireName(f.wireType)).append("):")
+      when (f.wireType) {
+        ProtoWire.WIRE_VARINT, ProtoWire.WIRE_64 -> fields.append(f.value as Long)
+        ProtoWire.WIRE_32 -> fields.append(f.value as Int)
+        ProtoWire.WIRE_LEN -> {
+          val b = f.value as ByteArray
+          fields.append('[').append(b.size).append("B]")
+          val printable = b.isNotEmpty() && b.all { it.toInt() and 0xFF in 32..126 }
+          if (printable) fields.append(" str=\"").append(String(b, Charsets.UTF_8).take(64)).append('"')
+          fields.append(" hex=").append(hexHead(b, 16))
+        }
+      }
+    }
+    return ReloadPlayerDiag(fieldsSummary = fields.toString(), hexDump = hexHead(payload, payload.size))
+  }
+
+  private fun wireName(w: Int): String = when (w) {
+    0 -> "varint"; 1 -> "i64"; 2 -> "len"; 5 -> "i32"; else -> "?$w"
+  }
+
+  private fun hexHead(b: ByteArray, max: Int): String {
+    val n = minOf(b.size, max)
+    val sb = StringBuilder(n * 2)
+    for (i in 0 until n) sb.append("%02x".format(b[i].toInt() and 0xFF))
+    if (b.size > max) sb.append("..(+$").append(b.size - max).append('B)')
+    return sb.toString()
+  }
+
+  data class ReloadPlayerDiag(val fieldsSummary: String, val hexDump: String)
+
+  /**
    * alpha.31:解码 SABR_CONTEXT_UPDATE(part type 57)。服务端借此下发上下文,要求客户端
    * 把 {type, value} 回传进下次请求 streamerContext.sabr_contexts(field5,sendByDefault=true
    * 的才 active)+ unsent_sabr_contexts(field6,非 active 的只回 type id)。不回传 → 握手不闭合

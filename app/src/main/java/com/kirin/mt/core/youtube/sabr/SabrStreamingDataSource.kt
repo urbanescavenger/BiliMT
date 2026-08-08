@@ -88,7 +88,11 @@ internal class SabrStreamingDataSource(
     // elements not supported" 崩)。
     val initResult = fetchUntilReady(SabrFetchRequest(isInit = true, streamType = streamType, videoItag = requestedItag))
       ?: run {
-        Log.w(tag, "SabrStream open: init fetch failed sid=$sessionId stream=$streamType → throw")
+        // alpha.41:init 失败必须 evict——否则播放器/ExoPlayer 重开同一 sabr:// URI 时 registry 仍命中
+        // 同一死会话 → 反复 RELOAD_PLAYER_RESPONSE/backoff 死循环(alpha.40 同 sid 反复 re-route 的根因)。
+        // evict 后 getByVideoId cache miss → 重 resolve 走新 harvest(配合 MobilePlayer error-retry)。
+        SabrStreamRegistry.evict(sessionId)
+        Log.w(tag, "SabrStream open: init fetch failed sid=$sessionId stream=$streamType → evict+throw")
         throw java.io.IOException("SABR init fetch failed: sid=$sessionId stream=$streamType")
       }
     buffer = initResult.data
@@ -256,6 +260,13 @@ internal class SabrStreamingDataSource(
           Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} Backoff ${result.ms}ms attempt=$attempt bufferedEnd=$cumulativeDurationMs (sleep + refetch)")
           try { Thread.sleep(result.ms.toLong()) } catch (_: InterruptedException) { return null }
           continue
+        }
+        is SabrFetchResult.ReloadPlayer -> {
+          // alpha.41:服务端明令 RELOAD_PLAYER_RESPONSE——重发同一 req 是构造性死循环(alpha.40
+          // 6× backoff 全 backoff=0 → EOF 的根因)。terminal:立即退出,交 open()/read() evict 会话
+          // → 播放器 error/stall-retry 走新 harvest。dump 已在 SabrClient 记录,这里只标 terminal。
+          Log.w(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} RELOAD_PLAYER_RESPONSE (terminal, not backoff) → ${if (req.isInit) "open() evict+throw" else "read() evict+EOF"} dump=${result.dump}")
+          return null
         }
         SabrFetchResult.InvalidPoToken -> {
           Log.w(tag, "SabrStream sid=$sessionId stream=$streamType InvalidPoToken at seq=${req.sequenceNumber} isInit=${req.isInit} → EOF")

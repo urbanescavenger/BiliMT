@@ -623,8 +623,22 @@ fun MobilePlayerScreen(
 
       override fun onPlayerErrorChanged(error: PlaybackException?) {
         if (error != null) {
-          playerState = MobilePlayerState.Failed(error.message.orEmpty())
-          context.stopService(Intent(context, PlaybackService::class.java))
+          // alpha.41:SABR RELOAD_PLAYER_RESPONSE / init fetch 失败时 DataSource.open 抛 IOException →
+          // ExoPlayer 上报 source error。此前直接 Failed,但 init 失败的会话已被 evict,重 resolve 会走新
+          // harvest(可能拿到不同 itag/更新 poToken 的可用会话)。复用 stall-retry 计数(MaxStallAutoRetry)
+          // bump retryKey → LaunchedEffect → loadRequest → getPlaybackInfo(cache miss → 新 harvest)。
+          // 耗尽上限才 Failed,避免不可恢复错误无限重试(同 stall 语义)。
+          if (autoRetryCount < MaxStallAutoRetry) {
+            autoRetryCount += 1
+            Log.w(
+              MobilePlayerLogTag,
+              "playback error, auto-retry #${autoRetryCount}: ${error.message}",
+            )
+            retryKey += 1L
+          } else {
+            playerState = MobilePlayerState.Failed(error.message.orEmpty())
+            context.stopService(Intent(context, PlaybackService::class.java))
+          }
         }
       }
     }

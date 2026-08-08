@@ -6,6 +6,7 @@ import com.kirin.mt.core.youtube.sabr.SabrProto.PART_MEDIA
 import com.kirin.mt.core.youtube.sabr.SabrProto.PART_MEDIA_END
 import com.kirin.mt.core.youtube.sabr.SabrProto.PART_MEDIA_HEADER
 import com.kirin.mt.core.youtube.sabr.SabrProto.PART_NEXT_REQUEST_POLICY
+import com.kirin.mt.core.youtube.sabr.SabrProto.PART_RELOAD_PLAYER_RESPONSE
 import com.kirin.mt.core.youtube.sabr.SabrProto.PART_SABR_CONTEXT_SENDING_POLICY
 import com.kirin.mt.core.youtube.sabr.SabrProto.PART_SABR_CONTEXT_UPDATE
 import com.kirin.mt.core.youtube.sabr.SabrProto.PART_SABR_ERROR
@@ -183,6 +184,13 @@ internal sealed class SabrFetchResult {
   data class Redirect(val newSabrUrl: String, val sanitized: String) : SabrFetchResult()
   /** 服务端要求 backoff,重试同一请求。 */
   data class Backoff(val ms: Int) : SabrFetchResult()
+  /**
+   * alpha.41:RELOAD_PLAYER_RESPONSE(part 46)——服务端明令重载 player response(取新 formats/poToken/
+   * sabrUrl),**非** backoff。FreeTube 语义「whole video cannot be played → reload /player」。
+   * terminal:不再当 Backoff 死循环重发同一过期请求,交由 [SabrStreamingDataSource] evict 会话
+   * → 播放器 stall/error-retry 走新 harvest。携带 [dump] 取证(顶层字段 + hex)。
+   */
+  data class ReloadPlayer(val dump: String) : SabrFetchResult()
   /** STREAM_PROTECTION_STATUS status==3 → PO token 无效。 */
   object InvalidPoToken : SabrFetchResult()
   data class Error(val message: String) : SabrFetchResult()
@@ -327,6 +335,8 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     var backoffMs: Int? = null
     var redirectUrl: String? = null
     var errorMsg: String? = null
+    // alpha.41:RELOAD_PLAYER_RESPONSE(part 46)取证 dump——非空则 terminal,优先于 Backoff 返回 ReloadPlayer。
+    var reloadPlayerDump: String? = null
     // alpha.30:NextRequestPolicy 出现标志 + 原始 playbackCookie bytes(回传进下个请求 StreamerContext.field3)。
     var sawPolicy = false
     var cookieBytes: ByteArray? = null
@@ -433,9 +443,17 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
                 Log.i(tag, "part type=$type(SABR_CONTEXT_SENDING_POLICY) payloadLen=${payload.size} (decode failed, ignored)")
               }
             }
+            PART_RELOAD_PLAYER_RESPONSE -> {
+              // alpha.41:服务端明令重载 player response——非 backoff,不可重发同一过期请求(否则 6× 死循环
+              // → EOF,见 alpha.40 logs)。解码 144B payload 取证(顶层字段 + hex):是否带新 sabrUrl /
+              // format 列表 / 原因码,区分根因 A(video itag formatId 过期)vs B(session 已初始化)。
+              // terminal:置 dump,循环外优先返回 ReloadPlayer(交 DataSource evict → 播放器重 harvest)。
+              val diag = SabrProto.decodeReloadPlayerResponse(payload)
+              reloadPlayerDump = "fields={${diag.fieldsSummary}} hex=${diag.hexDump}"
+              Log.w(tag, "RELOAD_PLAYER_RESPONSE payloadLen=${payload.size} $reloadPlayerDump")
+            }
             else -> {
-              // 其余 part type(LAWNMOWER/CACHE_LOAD/RELOAD_PLAYER/END_OF_TRACK 等)首版仅记录
-              // —— RELOAD_PLAYER_RESPONSE(46)是要注意的:它要求重载 /player,这里只 log 不处理。
+              // 其余 part type(LAWNMOWER/CACHE_LOAD/END_OF_TRACK 等)首版仅记录。
               Log.i(tag, "part type=$type(${partName(type)}) payloadLen=${payload.size} (unhandled)")
             }
           }
@@ -444,6 +462,9 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     }
 
     if (invalidPo) return SabrFetchResult.InvalidPoToken
+    // alpha.41:RELOAD_PLAYER_RESPONSE 优先级高于 Redirect/Error/Backoff——服务端明令重载 player
+    // response,重发同一 req 无意义,terminal 交 DataSource evict → 播放器重 harvest。
+    reloadPlayerDump?.let { return SabrFetchResult.ReloadPlayer(it) }
     redirectUrl?.let { return SabrFetchResult.Redirect(it, it.take(80)) }
     errorMsg?.let { return SabrFetchResult.Error(it) }
     if (matchedHeaderId != null) {
