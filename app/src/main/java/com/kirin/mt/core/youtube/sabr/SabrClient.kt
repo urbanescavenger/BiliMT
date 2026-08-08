@@ -239,12 +239,14 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
       // alpha.28:playerTimeMs 推进(已缓冲到的位置),否则服务端 lookahead 窗口停在 0 → premature EOF。
       playerTimeMs = req.playerTimeMs,
       playbackRate = 1.0f,
-      // alpha.39:对齐 FreeTube `SabrSchemePlugin.js` L733 `enabledTrackTypesBitfield: streamIsAudio ? 1 : 0`
-      // ——audio 流=1(AUDIO_ONLY),video 流=0(VIDEO_AND_AUDIO)。alpha.18→38 误用 video=2(VIDEO_ONLY),
-      // 与 FreeTube 硬冲突;且 alpha.36 单改 playerTimeMs=0 撞 5s 断崖时 audio(已 1 正确)仍 10s 断,
-      // 说明 bitfield 非 5s 单一成因,但 video=2 是确凿背离,与 playerTimeMs 同改对齐 FreeTube。
+      // alpha.40:回退 alpha.39 的 video=0(VIDEO_AND_AUDIO)。alpha.39 真机证伪——bitfield=0 让视频流
+      // 请求声明「要音视频双轨」→ 服务端向 VIDEO 流灌 itag=251(audio) MEDIA_HEADER(matched=false,
+      // wanted itag=video);itag401 靠 headerId=2 侥幸拿到 video 头,itag399 则几十次 backoff=0
+      // 拿不到任何 video 头 → seq0 init 即 EOF(alpha.39 logs_live.log:97/635/1091-1340)。
+      // video=0 对齐 FreeTube `streamIsAudio?1:0` 仅在 shaka 单路按段拉时成立;我们是 audio/video
+      // 双 ProgressiveMediaSource 分流,video 流必须 VIDEO_ONLY(=2,alpha.18→38 原值,语义正确)。
       // googlevideo EnabledTrackTypes:AUDIO_ONLY=1 / VIDEO_ONLY=2 / VIDEO_AND_AUDIO=0。
-      enabledTrackTypesBitfield = if (req.streamType == SabrStreamType.AUDIO) 1 else 0,
+      enabledTrackTypesBitfield = if (req.streamType == SabrStreamType.AUDIO) 1 else 2,
       drcEnabled = false,
       enableVoiceBoost = false,
     )

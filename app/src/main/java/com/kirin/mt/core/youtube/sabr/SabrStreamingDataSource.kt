@@ -176,22 +176,21 @@ internal class SabrStreamingDataSource(
 
   /**
    * 构造下一段请求:
-   *  - `playerTimeMs = startMs`(对齐 FreeTube `SabrSchemePlugin.js` L712-715:`playerTimeMs` 默认 `'0'`,
-   *    仅续播时取 URL `startTimeMs`——**固定锉点,不随段推进涨**)。alpha.37/38 误用 `cumulativeDurationMs`
-   *    (涨到 60001),真机证:断崖精确发生在 `playerTimeMs≈60000`(audio seq7=60001 / video seq12=62766),
-   *    而 FreeTube `playerTimeMs=0` 恒不过 60s → 60s 断崖是我们独有。alpha.38 诊断三规则全排除
-   *    (cookie clobber:同流 sentCookieHash 恒等于上一 PolicyDiag.cookieHash;readahead:seq7 拒绝时
-   *    lead≈12000 ≤ target 15000,非超前;cookie 共享:FreeTube 同样共享)→ 主嫌锁定 playerTimeMs。
+   *  - `playerTimeMs = cumulativeDurationMs`(所请求段的呈现起始时间 = 已缓冲终点;对齐 FreeTube
+   *    `startTimeMs`——它是**每段**该段的起始时间,随段推进涨,非固定 0 锚点。alpha.36/39 曾误读成
+   *    `playerTimeMs=startMs`(首播=0 固定)→ 服务端 ABR 见客户端恒在 0 位置 → 永远重发 seq=1 →
+   *    seq=2 matched=false → 6 backoff → EOF,video 5s/ audio 10s 即断。alpha.37/40 回退此错。)
    *  - `bufferedRange = [playhead..cumulative]` 滑动窗口:`startTimeMs=playhead`、`durationMs=cumulative-playhead`
    *    (小窗口,非绝对终点)、`startSegmentIndex=segIndexAtPlayhead`、`endSegmentIndex=nextSeq-1`
-   *    (保留 alpha.37 滑动窗口;pacing/窗口非 60s 成因,alpha.38 已削弱)。
    *  - 对方格式标「满缓冲」(createFullBufferRange)让服务端只发 own 下一段(沿用 alpha.30)
    *
-   * **alpha.39 风险**:alpha.36 曾单改 `playerTimeMs=startMs`(0)→ 60s 断崖反退成 5s(audio 10s)断崖
-   * (服务端对 seq=2 重发 seq=1 → matched=false → EOF)。本版**同时**把 `enabledTrackTypesBitfield`
-   * video 流 2(VIDEO_ONLY)→0(VIDEO_AND_AUDIO)对齐 FreeTube L733——这是 alpha.36 未改的另一处确凿
-   * FreeTube 背离,同改降低重蹈 5s 覆辙的概率。若仍 5s,MEDIA_HEADER matched=false 日志会立刻暴露
-   * 服务端发的 seq,再定位第三个伴生因素(不盲改)。 */
+   * **alpha.40 诊断(60s 断崖真因取证)**:alpha.39 回退后 60s 断崖(alpha.37/38 基线)回归。横跳史证
+   *   playerTimeMs 非 FreeTube-vs-我们的区分因子(FreeTube 发 '0' 跑通,我们发 0 撞 5s、发 cumulative 撞 60s)。
+   *   主嫌假设:burst-fetch 让 cumulative(缓冲终点)跑在 playhead 前——playhead ~46s 时 cumulative 已
+   *   60001,服务端按 playerTimeMs(=cumulative)判「客户端位置超 60s」软拒(backoff=0 不给 MEDIA_HEADER)。
+   *   **SegDiag** 日志逐段打 playerTimeMs/playhead/cumulative/lead/ownRange,到 60s 断崖点(看 MEDIA_HEADER
+   *   matched=false 或 NEXT_REQUEST_POLICY backoff 那刻)即可证/伪「缓冲膨胀」假设——若证,下版 alpha.41
+   *   试 `playerTimeMs=playheadEstimateMs()`(随实时 1x 播放涨,既非 0 也非 buffered 终点,不膨胀)。 */
   private fun buildSegRequest(e: SabrStreamRegistry.Entry): SabrFetchRequest {
     // alpha.29:视频流按 requestedItag 取 FormatId(poToken 会话级不绑 itag);audio 用会话默认。
     val fmt = if (streamType == SabrStreamType.AUDIO) e.session.audioFormatId
@@ -210,13 +209,17 @@ internal class SabrStreamingDataSource(
       endSegmentIndex = (nextSeq - 1).coerceAtLeast(0),
       timeRange = null,
     ) else null
+    // alpha.40:SegDiag——逐段打 playerTimeMs(发)/playhead(实时)/cumulative(缓冲终点)/lead(缓冲超前量)/
+    // ownRange(报给服务端的窗口),到 60s 断崖点取证「缓冲膨胀」假设(见方法注释)。
+    val lead = cumulativeDurationMs - playheadMs
+    Log.i(tag, "SegDiag sid=$sessionId stream=$streamType seq=$nextSeq playerTimeMs=$cumulativeDurationMs playhead=$playheadMs cumulative=$cumulativeDurationMs lead=${lead}ms ownRange=[${own?.startTimeMs}..+${own?.durationMs}] segIdx=${own?.startSegmentIndex}..${own?.endSegmentIndex}")
     return SabrFetchRequest(
       isInit = false,
       sequenceNumber = nextSeq,
       streamType = streamType,
       videoItag = requestedItag,
-      // alpha.39:playerTimeMs=startMs 对齐 FreeTube 固定锉点(0=首播,非 cumulative)。详见方法注释。
-      playerTimeMs = startMs,
+      // alpha.40:回退 alpha.39 的 startMs(0)→ cumulativeDurationMs(alpha.37 原值)。详见方法注释。
+      playerTimeMs = cumulativeDurationMs,
       bufferedRange = own,
     )
   }
