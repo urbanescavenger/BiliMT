@@ -239,10 +239,12 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
       // alpha.28:playerTimeMs 推进(已缓冲到的位置),否则服务端 lookahead 窗口停在 0 → premature EOF。
       playerTimeMs = req.playerTimeMs,
       playbackRate = 1.0f,
-      // 对齐 googlevideo EnabledTrackTypes(AUDIO_ONLY=1 / VIDEO_ONLY=2 / VIDEO_AND_AUDIO=0)——
-      // createVideoPlaybackAbrRequest 按 currentFormat.width 取 VIDEO_ONLY/AUDIO_ONLY。alpha.18 误用
-      // 0(VIDEO_AND_AUDIO)致视频 init 请求声明要音视频双轨,虽非 403 主因但属语义错(§6.7 row 41)。
-      enabledTrackTypesBitfield = if (req.streamType == SabrStreamType.AUDIO) 1 else 2,
+      // alpha.39:对齐 FreeTube `SabrSchemePlugin.js` L733 `enabledTrackTypesBitfield: streamIsAudio ? 1 : 0`
+      // ——audio 流=1(AUDIO_ONLY),video 流=0(VIDEO_AND_AUDIO)。alpha.18→38 误用 video=2(VIDEO_ONLY),
+      // 与 FreeTube 硬冲突;且 alpha.36 单改 playerTimeMs=0 撞 5s 断崖时 audio(已 1 正确)仍 10s 断,
+      // 说明 bitfield 非 5s 单一成因,但 video=2 是确凿背离,与 playerTimeMs 同改对齐 FreeTube。
+      // googlevideo EnabledTrackTypes:AUDIO_ONLY=1 / VIDEO_ONLY=2 / VIDEO_AND_AUDIO=0。
+      enabledTrackTypesBitfield = if (req.streamType == SabrStreamType.AUDIO) 1 else 0,
       drcEnabled = false,
       enableVoiceBoost = false,
     )
