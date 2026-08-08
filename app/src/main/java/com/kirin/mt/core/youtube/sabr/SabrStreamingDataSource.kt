@@ -24,18 +24,22 @@ import kotlinx.coroutines.runBlocking
  *
  * **alpha.36(对齐 FreeTube SabrSchemePlugin.js)**:SABR 是服务端驱动 + 流控——服务端按
  * `clientAbrState.playerTimeMs` + `bufferedRanges` 决定发哪段,且对「客户端缓冲量」有上限。
- * 本类镜像 FreeTube 三点:① `playerTimeMs` = 所请求段的起始时间;② `bufferedRange` 滑动小窗口
- * `[playhead..cumulative]`(`durationMs` 小,非绝对终点);③ [read] 实时 pacing(lead > [MAX_LEAD_MS]
- * 则睡到追上,不贪婪 burst);④ EOF 时驱逐会话使 stall-retry 走新 harvest。playhead 用 wall-elapsed
- * 代理(实时 1x 播放下 ≈ 真实播放位置)。
+ * 本类镜像 FreeTube 两点:① `playerTimeMs` = 当前播放位置(playhead);② `bufferedRange` 滑动小窗口
+ * `[playhead..cumulative]`(`durationMs` 小,非绝对终点);③ EOF 时驱逐会话使 stall-retry 走新 harvest。
+ * playhead 用 wall-elapsed 代理(实时 1x 播放下 ≈ 真实播放位置)。
  *
+ * **alpha.45:删除 alpha.36 在 read() 内的 Thread.sleep pacing**。alpha.36 想「不贪婪 burst,lead 超
+ * MAX_LEAD_MS 则睡到追上」,但 sleep 在 ExoPlayer loader 调用的同步 read() 路径里 → 阻塞 loader →
+ * 解码器抽空 sample 队列 → stall buffered=0% → stall-retry 反复 reuse 重载 → 在途 fetch 被 cancel 成
+ * timeout → EOF → evict(alpha.44 真机:1080p pace sleep 9636ms → 8s 后 stall @3110 buffered=0%,三轮重载
+ * 后 rn=37/38 timeout 死,死时 cumulative 峰值 53133 未到 60s——非 60s 断崖,是 pacer 阻塞致死)。
+ * 防 60s 断崖改由 LoadControl `MaxBufferMs=50s`(< 60s)自动停拉替代,不在 read 路径阻塞。alpha.36/37
+ * 对 playerTimeMs 的反复(startMs→cumulative→playhead)与本次无关——alpha.30 已证伪 playerTimeMs=
+ * bufferedEnd 致停发(seq1-6 正常),60s 软拒的真变量是 cumulative/bufferedRange 终点不是 playerTimeMs。
  * **alpha.37 修正 alpha.36 的 playerTimeMs 误读**:alpha.36 把 FreeTube `playerTimeMs=startTimeMs`
  * 误解成「固定 0 锚点」,实装成 `playerTimeMs=startMs`(首播=0 恒定)。真机证伪:服务端 ABR 见客户端
  * 恒在 0 位置 → 对 seq=2 请求永远重发 seq=1 的 MEDIA_HEADER → [matchesFormat] 判 seq 不等 →
- * 6 backoff → EOF,video ~5s(audio seq1=10001ms ~10s)即断(原 60s 断崖反退成 5s)。FreeTube
- * `startTimeMs` 实为**所请求段的呈现起始时间**(= 已缓冲终点 cumulativeDurationMs,随段推进涨),
- * 故改回 `playerTimeMs=cumulativeDurationMs`(alpha.28 原值)。pacing/滑动窗口保留(非 5s 成因)。
- * 60s 断崖是否随之消失待真机验;若仍在,次选线索:contexts=0/0 + 服务端发的 part 47/52/53 进 unhandled。
+ * 6 backoff → EOF,video ~5s(audio seq1=10001ms ~10s)即断(原 60s 断崖反退成 5s)。pacing/滑动窗口保留(非 5s 成因)。
  */
 internal class SabrStreamingDataSource(
   private val sessionId: String,
@@ -105,16 +109,14 @@ internal class SabrStreamingDataSource(
     if (done) return C.RESULT_END_OF_INPUT
     val e = entry ?: return C.RESULT_END_OF_INPUT
     while (bufferPos >= buffer.size) {
-      // alpha.36 实时 pacing:不贪婪 burst-fetch。lead = 已缓冲终点 - 当前播放位置;若超过
-      // MAX_LEAD_MS,睡到追上再拉下一段——对齐 FreeTube/shaka 逐段实时 paced。否则 burst 拉满 60s
-      // → 服务端流控见「已缓冲 60s=maxed」→ backoff 不发 media → 60s 断崖(见类注释)。
-      val playheadMs = playheadEstimateMs()
-      val lead = cumulativeDurationMs - playheadMs
-      if (lead > MAX_LEAD_MS) {
-        val sleepMs = lead - MAX_LEAD_MS
-        Log.d(tag, "SabrStream sid=$sessionId stream=$streamType pace: lead=${lead}ms > ${MAX_LEAD_MS}ms → sleep ${sleepMs}ms (cumulative=$cumulativeDurationMs playhead=$playheadMs nextSeq=$nextSeq)")
-        try { Thread.sleep(sleepMs) } catch (_: InterruptedException) { /* loader 被 cancel,继续尝试取段 */ }
-      }
+      // alpha.45:删除 alpha.36 在 read() 内的 Thread.sleep pacing。sleep 阻塞 ExoPlayer loader
+      // 线程 → 解码器抽空 sample 队列 → stall buffered=0% → stall-retry 反复 reuse 重载 → 在途 fetch
+      // 被 cancel 成 timeout(InterruptedIOException: Canceled)→ EOF → evict。alpha.44 真机坐实:
+      // pace sleep 9636ms → 8s 后 stall @pos=3110 buffered=0%;三轮重载后 rn=37/38 fetch timeout 死,
+      // 死时 cumulative 峰值才 53133(未到 60s,非 60s 断崖致死)。1080p 段大,audio 1s 内 burst 到
+      // 20-30s 后 pacer 长 sleep,video 只拿到 5.1s → 解码器抽干 video → stall;480p 段小撑得过 sleep 窗。
+      // 防 60s 断崖改由 LoadControl MaxBufferMs=50s(< 60s)自动停拉替代,不在 read 路径阻塞。
+      // lead 仍由 SegDiag 逐段记录,供验证。
       // 当前段读完,拉下一段。alpha.36/42:bufferedRange 改滑动窗口 [playhead..cumulative]
       // (durationMs=小窗口),playerTimeMs=cumulativeDurationMs(所请求段呈现起始,随段推进涨);
       // 让服务端流控见「客户端只缓冲少量」持续发新段。alpha.42:playhead 含 startMs(续播/切清晰度
@@ -221,12 +223,18 @@ internal class SabrStreamingDataSource(
     // (startMs>0)时 open 后 cumulative=startMs>0 但尚无媒体段,旧条件 `cumulativeDurationMs>0` 会造出
     // 零宽 own=[startMs..+0] 畸形窗口;首段应同首播(startMs=0,cumulative=0→旧亦 null)报 null,
     // 拿到首条媒体段后再报真实窗口。首播行为不变。
+    // alpha.45:封顶上报的 bufferedRange 终点。alpha.44 真机坐实服务端看 bufferedRange 终点(cumulative)
+    // 而非 playerTimeMs——seq=11 playerTimeMs=50686(<60000)仍被拒,因 cumulative=62686>60000。MaxBufferMs
+    // 限的是 buffered(cumulative-playhead)不是 cumulative,故 cumulative=playhead+50s 会在 playhead≈10s 就
+    // 撞 60s 断崖(比 pacer 更早)。封顶上报终点在 MAX_REPORTED_BUFFER_MS(<60s),服务端永远看到客户端只
+    // 缓冲到 55s 持续发段;客户端实际缓冲更多(更流畅),但上报封顶不触发服务端软拒。
+    val reportedEnd = minOf(cumulativeDurationMs, MAX_REPORTED_BUFFER_MS)
     val own = if (segDurations.isNotEmpty()) BufferedRangeInput(
       itag = fmt.itag,
       lastModified = fmt.lastModified,
       xtags = fmt.xtags,
       startTimeMs = playheadMs,
-      durationMs = (cumulativeDurationMs - playheadMs).coerceAtLeast(0L),
+      durationMs = (reportedEnd - playheadMs).coerceAtLeast(0L),
       startSegmentIndex = segIndexAtPlayhead(playheadMs),
       endSegmentIndex = (nextSeq - 1).coerceAtLeast(0),
       timeRange = null,
@@ -234,7 +242,7 @@ internal class SabrStreamingDataSource(
     // alpha.40:SegDiag——逐段打 playerTimeMs(发)/playhead(实时)/cumulative(缓冲终点)/lead(缓冲超前量)/
     // ownRange(报给服务端的窗口),到 60s 断崖点取证「缓冲膨胀」假设(见方法注释)。
     val lead = cumulativeDurationMs - playheadMs
-    Log.i(tag, "SegDiag sid=$sessionId stream=$streamType seq=$nextSeq playerTimeMs=$playheadMs playhead=$playheadMs cumulative=$cumulativeDurationMs lead=${lead}ms ownRange=[${own?.startTimeMs}..+${own?.durationMs}] segIdx=${own?.startSegmentIndex}..${own?.endSegmentIndex}")
+    Log.i(tag, "SegDiag sid=$sessionId stream=$streamType seq=$nextSeq playerTimeMs=$playheadMs playhead=$playheadMs cumulative=$cumulativeDurationMs reportedEnd=$reportedEnd lead=${lead}ms ownRange=[${own?.startTimeMs}..+${own?.durationMs}] segIdx=${own?.startSegmentIndex}..${own?.endSegmentIndex}")
     return SabrFetchRequest(
       isInit = false,
       sequenceNumber = nextSeq,
@@ -306,9 +314,11 @@ internal class SabrStreamingDataSource(
   }
 
   private companion object {
-    /** alpha.36:实时 pacing 的最大超前量。lead 超此值则睡到追上,避免 burst 拉满触发服务端 maxed-out 流控。 */
-    const val MAX_LEAD_MS = 12_000L
     /** alpha.36:单段请求的 backoff 重试上限(对齐 FreeTube 简洁 reload 语义;耗尽→EOF→evict→stall-retry 新 harvest)。 */
     const val BACKOFF_MAX_ATTEMPTS = 6
+    /** alpha.45:上报给服务端的 bufferedRange 终点封顶值(ms)。服务端对客户端缓冲终点有 ~60s 上限
+     * (maxTimeSinceReq),超过即软拒只回 NEXT_REQUEST_POLICY backoff 不发 media。封顶在 55s(<60s)
+     * 让服务端永远看到客户端只缓冲到 55s 持续发段,避免 cumulative 随 playhead 涨破 60s 触发断崖。 */
+    const val MAX_REPORTED_BUFFER_MS = 55_000L
   }
 }
