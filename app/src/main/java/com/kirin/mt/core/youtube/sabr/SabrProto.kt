@@ -249,7 +249,7 @@ internal object SabrProto {
     val n = minOf(b.size, max)
     val sb = StringBuilder(n * 2)
     for (i in 0 until n) sb.append("%02x".format(b[i].toInt() and 0xFF))
-    if (b.size > max) sb.append("..(+$").append(b.size - max).append('B)')
+    if (b.size > max) sb.append("..(+").append(b.size - max).append("B)")
     return sb.toString()
   }
 

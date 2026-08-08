@@ -937,6 +937,7 @@ class YoutubePlaybackResolver(
       "Success bytes=${r.data.size}B headerId=${r.mediaHeader?.headerId} itag=${r.mediaHeader?.itag} isInit=${r.mediaHeader?.isInitSeg} contentLen=${r.mediaHeader?.contentLength} dur=${r.mediaHeader?.durationMs}ms"
     is SabrFetchResult.Redirect -> "Redirect -> ${r.sanitized}"
     is SabrFetchResult.Backoff -> "Backoff ${r.ms}ms"
+    is SabrFetchResult.ReloadPlayer -> "ReloadPlayer (part 46, terminal) ${r.dump.take(120)}"
     SabrFetchResult.InvalidPoToken -> "InvalidPoToken (STREAM_PROTECTION_STATUS=3)"
     is SabrFetchResult.Error -> "Error: ${r.message}"
   }
