@@ -260,6 +260,26 @@ class YoutubePlaybackResolver(
           if (sabrSession != null) {
             val sabrClient = SabrClient(httpClient)
             val sid = SabrStreamRegistry.registerByVideoId(videoId, sabrSession, sabrClient)
+            // alpha.57(轮换):装填会话轮换工厂。服务端对每会话 ~60s 服务量上限,到点主动开新 harvest
+            // 建新会话(锚定当前播放头),[requestRotation] 后台执行 → registerByVideoId 复用同 sid 覆盖
+            // entry → DataSource 检测切换。捕获本 resolve 的 client/videoFormats(harvest 建会话要它们)。
+            SabrStreamRegistry.rotationFactory = { v, startMs ->
+              Log.i(Tag, "rotation: start harvest videoId=$v startMs=$startMs")
+              val cap = sabrHarvester.harvest(v, startMs)
+              if (cap == null) {
+                Log.w(Tag, "rotation: harvest failed videoId=$v startMs=$startMs (keep old session)")
+              } else if (!cap.method.equals("POST", ignoreCase = true)) {
+                Log.w(Tag, "rotation: captured ${cap.method} not POST → skip (need SABR POST body)")
+              } else {
+                val newSession = buildSabrSessionFromCapture(cap, client, videoFormats)
+                if (newSession == null) {
+                  Log.w(Tag, "rotation: buildSabrSessionFromCapture failed videoId=$v (keep old session)")
+                } else {
+                  val newSid = SabrStreamRegistry.registerByVideoId(v, newSession, SabrClient(httpClient))
+                  Log.i(Tag, "rotation: registered new session videoId=$v startMs=$startMs sid=$newSid (switched)")
+                }
+              }
+            }
             Log.i(
               Tag,
               "SABR playback ready: sid=$sid nTransformed=$nTransformed " +
@@ -653,7 +673,7 @@ class YoutubePlaybackResolver(
   ): PlaybackInfo {
     val aItag = sabrSession.audioFormatId.itag
     val aRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == aItag }
-    val audioTrack = buildSabrTrack(aItag, aRaw, "audio", sid)
+    val audioTrack = buildSabrTrack(aItag, aRaw, "audio", sid, videoId)
 
     // 全部视频 itag 作清晰度菜单;videoFormats 为空(classic 仅首条)则兜底默认 videoFormatId。
     val videoFmts = sabrSession.videoFormats.ifEmpty { listOf(sabrSession.videoFormatId) }
@@ -672,7 +692,7 @@ class YoutubePlaybackResolver(
       ?: sabrSession.videoFormatId.itag
     val selectedQuality = qualities.firstOrNull { it.id == selectedItag } ?: qualities.first()
     val vRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == selectedItag }
-    val videoTrack = buildSabrTrack(selectedItag, vRaw, "video", sid)
+    val videoTrack = buildSabrTrack(selectedItag, vRaw, "video", sid, videoId)
     Log.i(
       Tag,
       "SABR PlaybackInfo: sid=$sid qualities=${qualities.size} selected=itag$selectedItag(${videoTrack.height}p ${videoTrack.codecs}) " +
@@ -693,13 +713,15 @@ class YoutubePlaybackResolver(
 
   /** 构造单条 SABR progressive track。元数据从 /player adaptive 原始 JSON 取,缺则用合理默认。
    *  alpha.29:视频流 baseUrl 带 `&itag=<itag>`(同 sid 换 itag 即换清晰度);audio 不带(用会话默认)。 */
-  private fun buildSabrTrack(itag: Int, raw: JsonObject?, stream: String, sid: String): PlaybackTrack {
+  private fun buildSabrTrack(itag: Int, raw: JsonObject?, stream: String, sid: String, videoId: String): PlaybackTrack {
     val rawMime = raw?.stringOrNull("mimeType")
     val mime = (rawMime ?: if (stream == "video") "video/mp4" else "audio/mp4").substringBefore(";").trim()
     val codecs = extractCodecs(rawMime ?: "")
     val isVideo = stream == "video"
-    val baseUrl = if (isVideo) "sabr://youtube/$sid?stream=video&itag=$itag"
-      else "sabr://youtube/$sid?stream=audio"
+    // alpha.57(轮换):URI 带 `&videoId=`——DataSource 主动旋转到 ~45s 时需知道 videoId 触发
+    // [SabrStreamRegistry.requestRotation](工厂按 videoId 建新会话)。轮换复用同 sid,URI 不变。
+    val baseUrl = if (isVideo) "sabr://youtube/$sid?stream=video&itag=$itag&videoId=$videoId"
+      else "sabr://youtube/$sid?stream=audio&videoId=$videoId"
     return PlaybackTrack(
       id = itag,
       baseUrl = baseUrl,

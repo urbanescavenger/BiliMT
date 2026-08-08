@@ -2,6 +2,10 @@ package com.kirin.mt.core.youtube.sabr
 
 import android.util.Base64
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 
@@ -31,6 +35,48 @@ internal object SabrStreamRegistry {
     val session: SabrSession,
     val client: SabrClient,
   )
+
+  /**
+   * alpha.57(轮换):主动会话轮换工厂——服务端对每个 SABR 会话有 ~60s 服务量上限(锚点..+60s,
+   * docs row 72),到点后同一会话任何请求都被软拒。被动 stall-retry 已太晚(playhead 已 >60s,新
+   * 会话 0 锚点仍拒)。唯一解:播放到 ~45s 时**主动**开新 harvest 建新会话(startMs=当前播放头 →
+   * 浏览器锚定播放头),用 [registerByVideoId] 复用同 sid 覆盖 entry,DataSource 检测 entry 引用
+   * 变化后无缝切换。由 resolver 在 SABR 路径装填(持有 harvester/client/videoFormats)。
+   *
+   * 签名 `(videoId, startMs) -> Unit`。返回即触发异步执行([requestRotation] 在后台协程跑,不阻塞
+   * read() 路径);工厂内部自行 harvest+建会话+registerByVideoId。防并发:同 videoId 在途旋转期间
+   * 重复请求直接忽略。
+   */
+  @Volatile var rotationFactory: ((videoId: String, startMs: Long) -> Unit)? = null
+
+  private val rotationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+  private val rotationInFlight = ConcurrentHashMap.newKeySet<String>()
+
+  /**
+   * alpha.57:主动触发会话旋转——后台协程跑 [rotationFactory],同 videoId 在途期间忽略重复请求
+   * (video/audio 两路 DataSource 共享同 sid,都会触发;只许一次)。[rotationFactory] 未装填(非 SABR
+   * 路径)→ no-op。完成后 [registerByVideoId] 覆盖 entry(复用同 sid),DataSource 检测到切换。
+   */
+  fun requestRotation(videoId: String, startMs: Long) {
+    val factory = rotationFactory ?: run {
+      Log.i(tag, "requestRotation videoId=$videoId startMs=$startMs (no factory — non-SABR path, skip)")
+      return
+    }
+    if (!rotationInFlight.add(videoId)) {
+      Log.i(tag, "requestRotation videoId=$videoId startMs=$startMs (already in flight, skip)")
+      return
+    }
+    Log.i(tag, "requestRotation videoId=$videoId startMs=$startMs (start async harvest)")
+    rotationScope.launch {
+      try {
+        factory(videoId, startMs)
+      } catch (t: Throwable) {
+        Log.w(tag, "requestRotation videoId=$videoId failed: ${t.message}", t)
+      } finally {
+        rotationInFlight.remove(videoId)
+      }
+    }
+  }
 
   /**
    * 注册会话并按 [videoId] 缓存(同视频切清晰度时复用)。返回 opaque sessionId。

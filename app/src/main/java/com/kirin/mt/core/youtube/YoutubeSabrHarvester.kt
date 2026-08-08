@@ -56,14 +56,20 @@ class YoutubeSabrHarvester(
    * 加载 embed 页,采集首个 SABR POST。失败/超时返回 null(绝不抛,不阻塞主路径)。
    * @param timeoutMs 上限(默认 30s);embed 播放器 init 通常 3-8s,watch 页回退更慢。
    */
-  suspend fun harvest(videoId: String, timeoutMs: Long = 30_000L): SabrCapture? =
+  /**
+   * alpha.57(轮换):支持 `startMs` 锚定——embed URL 加 `&start=`(秒)让浏览器播放器**从该位置起播**,
+   * 其首发 SABR POST 锚定在 startMs。服务端会话窗口 = 锚点..锚点+60s(见 docs row 72,锚点服务端侧,
+   * 由浏览器 POST 时播放位置定),故旋转到 mid-playhead 必须先让浏览器锚定在播放头,否则新会话窗口
+   * 仍从 0 起算 → 请求 playhead>60s 被拒(alpha.47 session2 死因)。默认 startMs=0(从头播,原行为)。
+   */
+  suspend fun harvest(videoId: String, startMs: Long = 0L, timeoutMs: Long = 30_000L): SabrCapture? =
     withContext(Dispatchers.Main) {
-      runCatching { withTimeoutOrNull(timeoutMs) { harvestImpl(videoId) } }
+      runCatching { withTimeoutOrNull(timeoutMs) { harvestImpl(videoId, startMs) } }
         .onFailure { Log.w(Tag, "harvest failed: ${it.message ?: it::class.simpleName}") }
         .getOrNull()
     }
 
-  private suspend fun harvestImpl(videoId: String): SabrCapture? {
+  private suspend fun harvestImpl(videoId: String, startMs: Long = 0L): SabrCapture? {
     val view = createWebView()
     try {
       // seed cookies:embed 播放器在 WebView 里发 /youtubei/v1/player 需要 VISITOR_INFO1_LIVE
@@ -73,8 +79,11 @@ class YoutubeSabrHarvester(
         CookieManager.getInstance().setCookie(YoutubeConstants.Origin, cookies)
         CookieManager.getInstance().flush()
       }.onFailure { Log.w(Tag, "seed cookies failed: ${it.message}") }
-      Log.i(Tag, "harvest: load embed videoId=$videoId cookie=${cookies.length}B")
-      view.loadUrl("https://www.youtube.com/embed/$videoId?autoplay=1&mute=1&playsinline=1&origin=https://www.youtube.com")
+      // alpha.57(轮换):startMs>0 → embed URL 加 `&start=<秒>` 让浏览器从该位置起播,首 POST 锚定播放头
+      //(服务端会话窗口=锚点..+60s;旋转会话必须锚定 mid-playhead,否则 0 锚点新会话请求 playhead>60s 被拒)。
+      val startParam = if (startMs > 0) "&start=${startMs / 1000}" else ""
+      Log.i(Tag, "harvest: load embed videoId=$videoId startMs=$startMs${startParam} cookie=${cookies.length}B")
+      view.loadUrl("https://www.youtube.com/embed/$videoId?autoplay=1&mute=1&playsinline=1&origin=https://www.youtube.com$startParam")
       // 轮询 window.__gvCaptures[0](对齐 BotGuard pollState 双解码:evaluateJavascript 对字符串
       // 结果做 JSON 编码,先解内层字符串再解析对象)。alpha.20 只截 SABR POST 致 25s 无捕获——
       // alpha.21 放宽到所有 googlevideo 请求(含 DASH GET),并加页面加载/console 诊断定位 embed 行为。
