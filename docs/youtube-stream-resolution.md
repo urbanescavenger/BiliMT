@@ -2,14 +2,14 @@
 
 > 本文档是 BiliMT `core/youtube/` 实现 YouTube 高清(SABR)播放的**top-down 工程参考**,把「解析方案 / 实现细节 / 调试问题 / 样例日志 / 参考资料」汇于一处。按时间线堆叠的逐 alpha 调试记录见 [youtube-hd-playback.md](youtube-hd-playback.md) §6.7(row 1-53);本文是那条链的**结论提炼**。
 >
-- **状态(2026-08-08)**:SABR 协议层 + Media3 接线 + 多清晰度已跑通(alpha.17-29,跨 13 个 alpha);可出帧出音、可切清晰度。**alpha.30 已实现** premature-EOF 修复(playbackCookie 回传 + 无-media→backoff 重试 + 对方 itag 标满缓冲,见 §8),**待真机验证**(预期 audio 过 60s 黑屏消失)。
+- **状态(2026-08-08)**:SABR 协议层 + Media3 接线 + 多清晰度已跑通(alpha.17-29,跨 13 个 alpha);可出帧出音、可切清晰度。alpha.30 premature-EOF 修复(playbackCookie 回传 + 无-media→backoff 重试 + 对方 itag 标满缓冲)+ alpha.31 SABR 上下文握手(sabrContexts 回传)已实现。**alpha.32 n-decrypt 突破**:推翻「plasma 锁死」结论——URL 类方式(`new g.<nClass>(url).get('n')`+IIFE 注入)可在 Kotlin 侧解 n,harvest 作自动兜底(零回退);alpha.32 真机证 fallback 链正确但当前 player 854a788e 未在硬编码 config → alpha.33 把 zemer 整份 224 条 config 打包成 asset 运行时加载,854a788e=tL 现能命中。**待真机验 URL 类成功路径**(预期 30s harvest 被跳过,落地 ~5-8s)。
 - **参考实现**:FreeTube / FreeTubeAndroid(MarmadileManteater,MIT),youtubei.js(LuanRT),googlevideo npm(LuanRT,MIT,proto/UMP 协议源),bgutils-js(LuanRT,MIT)。
 
 ---
 
 ## 1. 一句话方案
 
-YouTube 已把高清流从「签名直链(legacy DASH)」迁到 **SABR(Server ABR 二进制流协议)**;直链的 `n`-参数解密又被 **plasma 播放器移进 WASM** 结构性锁死。**解法**:用 Android **WebView 浏览器引擎**(原生跑 WASM)加载 watch 页替我们做 n-transform + 采集它发出的 SABR POST 的 body(含 poToken/ustreamerConfig/cpn 会话三要素),再用我们自构的 `VideoPlaybackAbrRequest` protobuf body 驱动 SABR,经自定义 `sabr://` DataSource 喂给 Media3 progressive 播放。
+YouTube 已把高清流从「签名直链(legacy DASH)」迁到 **SABR(Server ABR 二进制流协议)**;直链的 `n`-参数解密在 **plasma 播放器**上经典正则方案失效(n/sig 移进 WASM,正则锚点 0 匹配 + 函数名是 IIFE 内局部外部 eval 取不到)。**解法(双路径)**:① **alpha.32 URL 类方式**(主路径,对齐 zemer-cipher):`new g.<nClass>(url).get('n')` 注入到 base.js IIFE 闭包内,`.get('n')` 内部触发 transform(即便在 WASM 也照跑),nClass 从 player hash 查 config(alpha.33 打包 224 条);② **WebView harvest**(兜底路径,alpha.20-25 跑通):n-decrypt 失败时加载 watch 页让浏览器引擎替我们做 n-transform + 采集它发出的 SABR POST body(含 poToken/ustreamerConfig/cpn 会话三要素),用自构 `VideoPlaybackAbrRequest` protobuf body 驱动 SABR,经自定义 `sabr://` DataSource 喂给 Media3 progressive 播放。主路径成功则跳过 30s harvest,失败自动回退(零回退风险)。
 
 ---
 
@@ -48,7 +48,7 @@ YouTube 已把高清流从「签名直链(legacy DASH)」迁到 **SABR(Server AB
 
 **为什么走 SABR 而非 legacy DASH 直链**:`/player` 响应里 40 条 adaptive **全是纯元数据**(initRange/indexRange/contentLength 齐全但无 `url`/`signatureCipher`),这正是 SABR 模式形态——YouTube 期望客户端用 `serverAbrStreamingUrl` + 元数据构建 manifest,adaptiveFormats 本就不该有 url。死磕 legacy 直链的「url 空」是方向错了(alpha.14 真机坐实)。
 
-**为什么用 WebView harvest 而非 Kotlin 解 n**:plasma 播放器把 n/sig 解码移进 **WASM**(`WebAssembly`×6、`signature`/`encrypt` 跑在 WASM 实例 `c.DY` 上),经典 n-transform 正则锚点 `.get("n"))&&(b=Name(c))` 全表 0 匹配——`YoutubeNDecryptor` 的「正则找名 + WebView eval 调用」方案**结构性失效**(社区 yt-dlp/youtubei.js 同卡)。WebView 浏览器引擎原生跑 WASM,替我们做 n-transform 是唯一可行路径(alpha.20-25 跑通)。
+**为什么 alpha.32 起 Kotlin 侧能解 n(URL 类方式)**:plasma 播放器把 n/sig 解码移进 **WASM**(`WebAssembly`×6、`signature`/`encrypt` 跑在 WASM 实例 `c.DY` 上),经典「正则找名 + WebView eval 直接调用」方案**两重失效**:①正则锚点 `.get("n"))&&(b=Name(c))` 全表 0 匹配;②即便命中,函数名是 base.js IIFE 内局部,外部 `evaluateJavascript` 取不到。**但**对齐 zemer-cipher 改实例化 YouTube 内部 URL 类 `new g.<nClass>(url).get('n')`——`.get('n')` 内部触发 transform(即便在 WASM 也照跑,这是 YouTube 播放器自己取 n 的原生路径);把 `window.__nTransformFunc=function(n){...}` 注入到 `})(_yt_player);` 之前(IIFE 闭包内捕获 `g` 局部)即可从外部调用。nClass 从 player hash 查 config(alpha.33 打包 zemer 224 条)。**alpha.32 真机**:URL 类方案 fallback 链正确(零回退),当前 player 854a788e 已在 alpha.33 config 覆盖(tL),待真机验成功路径。**WebView harvest**(alpha.20-25 跑通)保留作自动兜底:n-decrypt 失败 → `nTransformed=false` → 走 harvest 老路(最坏只是没提速)。
 
 ---
 
@@ -62,7 +62,11 @@ YouTube 已把高清流从「签名直链(legacy DASH)」迁到 **SABR(Server AB
 **token 有效性**:token 必须**与 /player 同 context(含同一 visitorData)绑定**才有效。关键修法链:共享单一 `InnerTubeClient` 实例(alpha.26 修跨实例 visitorData 不一致)+ `ensureRealSessionData` Mutex 双检锁(只 fetch 一次)+ token 放请求**顶层** `serviceIntegrityDimensions`(非 context 内,alpha.22 修)+ /player 走 **WebView 原生网络栈**(alpha.29 修,OkHttp Java TLS 指纹被判非真浏览器)。
 
 ### 3.2 阻断点 B:n-decrypt(plasma WASM)
-见上 §2。**突破路径(alpha.20-26,跨 7 个 alpha)**:
+见上 §2。**双突破路径**:
+
+**路径 ① URL 类方式(alpha.32,主路径)**:对齐 zemer-cipher,实例化 YouTube 内部 URL 类 `new g.<nClass>(url).get('n')`,`.get('n')` 内部触发 transform(即便在 WASM 也照跑),IIFE 注入 `window.__nTransformFunc` 捕获 `g` 局部,外部 evaluateJavascript 调用。nClass 从 player hash 查 config(alpha.33 打包 zemer 224 条 player_configs.json)。成功 → `nTransformed=true` 走 resolver 直接分支(用 /player 数据 + Flow A poToken + 自生成 cpn 建会话),**30s harvest 整个跳过**。失败 → 自动回退路径 ②(零回退风险)。待真机验成功路径。
+
+**路径 ② WebView harvest(alpha.20-26,跨 7 个 alpha,兜底路径)**:
 1. alpha.20-22:采集器分叉 + detached WebView `measure+layout` 给真实尺寸(0 尺寸播放器拒 init)+ 桌面 UA + watch 页回退(embed Error 153 不可解)。
 2. alpha.23:**watch 页捕到 SABR POST status=200 + transformed-n**,证浏览器 WASM n-transform 被服务端接受(403 阻塞打破)。
 3. alpha.24:body 采集修复(`input.Clone().arrayBuffer()` 克隆读 Request body 不消耗原请求)→ 4632B body。
@@ -168,12 +172,14 @@ SABR = fragmented MP4:`seq=0` init(ftyp+moov) → `seq=1,2,…` 每 ~6s(moof+mda
 2. token 放 context 内而非请求顶层 → 移到顶层 `serviceIntegrityDimensions`(alpha.22)。
 3. /player 走 OkHttp(Java TLS 指纹)被判非真浏览器 → 改 `fetchViaWebView` 走隐藏 WebView 原生 Chromium 网络栈(alpha.29)。
 
-### 6.3 n-decrypt 结构性失效(plasma WASM)
+### 6.3 n-decrypt 经典正则方案失效(plasma WASM)— alpha.32 URL 类方式已修
 **症状**:`YoutubeNDecryptor: could not locate transform name`,SABR URL 带 `n` 原样未解 → googlevideo 403。
 
-**根因**:YouTube 上线 plasma 播放器变体,把 n/sig 解码移进 WASM。证据:`get("n")` 全表只 1 处(在 `yoh` 做 URL 路径规范化非签名);经典调用点 `.get("n"))&&(b=Name(c))` 全 0 匹配;`WebAssembly`×6、`signature`/`encrypt` 跑在 WASM 实例 `c.DY`。正则找名方案对 plasma 结构性失效。**不可在 Kotlin 侧修**(社区同卡)。
+**根因(经典正则方案两重失效)**:YouTube 上线 plasma 播放器变体,把 n/sig 解码移进 WASM。证据:`get("n")` 全表只 1 处(在 `yoh` 做 URL 路径规范化非签名);经典调用点 `.get("n"))&&(b=Name(c))` 全 0 匹配;`WebAssembly`×6、`signature`/`encrypt` 跑在 WASM 实例 `c.DY`。①正则锚点 0 匹配;②即便命中,函数名是 base.js IIFE 内局部,外部 `evaluateJavascript` 取不到。**「不可在 Kotlin 侧修」的旧结论已被 alpha.32 推翻**(社区 zemer-cipher 已用 URL 类方式解)。
 
-**突破(alpha.20-26)**:WebView 浏览器引擎原生跑 WASM,加载 watch 页让播放器替我们做 n-transform,hook 截获它发的 SABR POST。
+**突破 ① URL 类方式(alpha.32,主路径,对齐 zemer-cipher)**:实例化 YouTube 内部 URL 类 `new g.<nClass>(url).get('n')`,`.get('n')` 内部触发 transform(即便在 WASM 也照跑——YouTube 播放器自己取 n 的原生路径);`window.__nTransformFunc` 注入到 `})(_yt_player);` 之前(IIFE 闭包内捕获 `g` 局部),外部 evaluateJavascript 调用。nClass 从 player hash 查 config(alpha.33 打包 zemer 224 条)。**alpha.32 真机**:fallback 链正确(零回退),当前 player 854a788e 已在 alpha.33 config 覆盖(tL),待真机验成功路径。
+
+**突破 ② WebView harvest(alpha.20-26,兜底)**:n-decrypt 失败 → 浏览器引擎原生跑 WASM,加载 watch 页让播放器替我们做 n-transform,hook 截获它发的 SABR POST。零回退风险:主路径失败自动回退此路径(最坏只是没提速)。
 
 ### 6.4 WebView harvest 采集器逐层修(alpha.20-25)
 - **embed Error 153 不可解** → 回退 watch 页(无 embed 权限闸)。
@@ -283,6 +289,7 @@ type=20(MEDIA_HEADER) itag=251 isInit=false seq=1 contentLen=101540 dur=6041ms  
 - **googlevideo npm**(LuanRT/googlevideo,v4.0.4):SABR proto/UMP 协议源。`protos/video_streaming.*` + `misc/common.proto`(FormatId:itag/last_modified/xtags)+ `src/core/UmpReader.ts`(UMP varint + CompositeBuffer)。
 - **youtubei.js**(LuanRT/YouTube.js):`core/Session.ts #buildContext`(WEB context 反爬字段)+ `utils/HTTPClient.ts #setupCommonHeaders`(请求头)+ `core/Innertube.ts getInfo`(/player body)。
 - **bgutils-js**(LuanRT/BgUtils,MIT):`BotGuardClient`/`ChallengeFetcher`/`WebPoMinter`。
+- **zemer-cipher**(ZemerTeam/zemer-cipher,alpha.32 URL 类 n-decrypt 方案源):`library/src/main/assets/player_configs.json`(224 条 player hash→nClass,含 plasma 95daa498=Xz、当前 854a788e=tL)+ `buildNJsExpression`/`buildModifiedPlayerJsImpl`(IIFE 注入 `window._nTransformFunc`)+ `FunctionNameExtractor`(PLAYER_HASH_PATTERNS + md5 alias fallback)。本仓库 `assets/youtube/player_configs.json` 即此 config 镜像。
 
 ### 9.2 关键源码 URL(raw.githubusercontent.com)
 - SabrSchemePlugin.js:`MarmadileManteater/FreeTubeAndroid/development/src/renderer/helpers/player/SabrSchemePlugin.js`
@@ -299,4 +306,4 @@ type=20(MEDIA_HEADER) itag=251 isInit=false seq=1 contentLen=101540 dur=6041ms  
 ### 9.4 内部文档
 - [youtube-hd-playback.md](youtube-hd-playback.md):逐 alpha 调试记录(§6.7 row 1-53)+ FreeTube 核对(§6.8)+ SABR 调研(§6.9)。
 - [DEVELOPMENT_PROGRESS.md](../../DEVELOPMENT_PROGRESS.md):P11-14 YouTube 播放进度。
-- memory `youtube-plasma-wasm-n-decrypt`:plasma WASM 根因 + alpha.17-29 跨阶段突破记录。
+- memory `youtube-plasma-wasm-n-decrypt`:plasma WASM 根因 + alpha.17-33 跨阶段突破记录(含 alpha.32 URL 类方式推翻「锁死」结论)。
