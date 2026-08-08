@@ -317,6 +317,19 @@ fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', 
 
 **Bug B(reuse session seq 错位,切清晰度触发)**:切清晰度 → re-resolve → `SABR cache hit → reuse session`(L190)→ `open()` 设 `cumulativeDurationMs=startMs`(=playhead=7194)但 `nextSeq` 字段默认仍 `1` → 发 `sequenceNumber=1, playerTimeMs=7194`。VIDEO segDur=5800ms,7194>5800 落 seq=2 → 服务端按 playerTimeMs 返回 seq=2,3,4,5 header → `matchesFormat`(L496 `mh.sequenceNumber == req.sequenceNumber` 即 `2==1`)判 false → 死磕 → EOF → evict。AUDIO segDur=10000ms,7194<10000 落 seq=1 → AUDIO 不错位(日志证实仅 VIDEO 卡)。此乃 alpha.34 续播机制(playerTimeMs=startMs 让服务端从续播点发段)**漏了对齐 nextSeq** 的潜伏 bug,首播 startMs=0 不暴露。**修复**:①`matchesFormat` L496 改 `mh.sequenceNumber >= req.sequenceNumber`(续播接受服务端给的更高 seq;拒绝 `<` 即重发回退段,避免 5s 断崖复发;itag/lmt/xtags 已挡对方 itag 混入,`>=` 安全)②`read()` nextSeq 推进改对齐 `nextSeq=realSeq+1`(服务端实际给的 seq+1;首播 realSeq==nextSeq 走 +1 等同原 `++`)。**不动**:YoutubePlaybackResolver reuse 路径(alpha.29 poToken 会话级复用正确)/pacing/不加新诊断叠层(证据充分)。**待真机**:播 YouTube >90s 看 SegDiag `playerTimeMs=`≈playhead 不卡过 seq=13;切清晰度看 `MEDIA_HEADER seq=N | matched=true`(接受更高 seq)不再 matched=false 死磕。
 
+**§6.7 row 70(alpha.45——修 60s 断崖:删 read() 内 pacer 阻塞 + MaxBufferMs 90s→50s + 封顶上报 bufferedRange 终点 55s)**:alpha.44 真机日志(`logs_live.log` 20:34-20:35)坐实 row 69 的 Bug A 修复**无效**——60s 断崖仍在,且暴露**服务端看的是 bufferedRange 终点(cumulative)而非 playerTimeMs**:
+
+**alpha.44 真机取证(推翻 row 69 的 playerTimeMs 假设)**:视频 seq=11 请求 `playerTimeMs=50686`(playhead,**<60000**)仍被服务端软拒(6×`no MEDIA_HEADER but NEXT_REQUEST_POLICY backoff` → EOF evict);音频 seq=7 `playerTimeMs=48662`(<60000)同样被拒。而视频 seq=10 `cumulative=56880<60000` 正常发段、seq=11 `cumulative=62686>60000` 被拒——**临界点精确在 cumulative=60000**。结论:服务端 `maxTimeSinceReq` 上限看的是**上报的 bufferedRange 终点(cumulative)**,不是 `clientAbrState.playerTimeMs`。row 69 把 playerTimeMs 改成 playhead 是无效的(服务端根本不看它)。
+
+**根因链**:pacer(`lead=cumulative-playhead` 超 `MAX_LEAD_MS=12000` 则 `Thread.sleep` 到追上)让 cumulative 一直领先 playhead ~12s,故 playhead 才 50s 时 cumulative 已 62s 撞 60s 上限。且 pacer 的 `Thread.sleep` 在 ExoPlayer loader 调用的同步 `read()` 路径里 → 阻塞 loader → 解码器抽空 sample 队列 → stall buffered=0% → stall-retry 反复 reuse 重载 → 在途 fetch 被 cancel 成 timeout(`InterruptedIOException: Canceled`)→ EOF → evict(alpha.44 真机:1080p pace sleep 9636ms → 8s 后 stall @pos=3110 buffered=0%,三轮重载后 rn=37/38 timeout 死,死时 cumulative 峰值才 53133 未到 60s——非 60s 断崖,是 pacer 阻塞致死)。
+
+**三处修复**:
+1. **删 read() 内 `Thread.sleep` pacing**(alpha.36 引入)——sleep 阻塞 loader 线程致 stall 死循环。防 60s 断崖改由 LoadControl 自动停拉替代,不在 read 路径阻塞。
+2. **`TvPlaybackLoadControl` MaxBufferMs 90s→50s**——删 pacer 后 ExoPlayer 会 burst 拉,50s(<60s)让 LoadControl 在服务端上限前自动停拉。`createTvPlaybackLoadControl` 被 TV/移动两播放器共用,改动对两者生效。
+3. **封顶上报 bufferedRange 终点 `MAX_REPORTED_BUFFER_MS=55s`**(关键)——MaxBufferMs 限的是 buffered(`cumulative-playhead`)不是 cumulative,故 `cumulative=playhead+50s` 会在 playhead≈10s 就撞 60s 断崖(比 pacer 更早)。`buildSegRequest` 里 `reportedEnd=minOf(cumulativeDurationMs, 55000)`,`own.durationMs=(reportedEnd-playheadMs)`,服务端永远看到客户端只缓冲到 55s 持续发段;客户端实际缓冲更多(更流畅)但上报封顶不触发软拒。SegDiag 加 `reportedEnd` 字段供真机验证。
+
+**待真机**:播 YouTube >90s 看 SegDiag `reportedEnd=55000` 恒定(封顶生效)而 `cumulative` 继续涨、`playerTimeMs`≈playhead 不卡过 seq=13;若仍断,查服务端是否对 `endSegmentIndex`(仍报 nextSeq-1 实际缓冲段)也设上限,或封顶值需再降。
+
 ## 6.9 SABR 实现调研(FreeTubeAndroid 源码 + googlevideo proto + UMP 协议)
 
 ## 6.9 SABR 实现调研(FreeTubeAndroid 源码 + googlevideo proto + UMP 协议)
