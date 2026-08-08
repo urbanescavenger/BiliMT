@@ -330,6 +330,16 @@ fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', 
 
 **待真机**:播 YouTube >90s 看 SegDiag `reportedEnd=55000` 恒定(封顶生效)而 `cumulative` 继续涨、`playerTimeMs`≈playhead 不卡过 seq=13;若仍断,查服务端是否对 `endSegmentIndex`(仍报 nextSeq-1 实际缓冲段)也设上限,或封顶值需再降。
 
+**§6.7 row 71(alpha.55——修 55s 断崖:backoff 重试重建请求刷新 playhead,服务端流控见 lead 回落恢复发段)**:alpha.55 真机日志(`logs_live.log` 21:30-21:35)坐实 row 70 的封顶修复**仍不够**——断崖从 60s 提前到 ~55s,且**切换清晰度同样卡**。根因不是封顶值,是**backoff 重试重发固定 req 致服务端流控永不恢复**:
+
+**alpha.55 真机取证**:视频 `seq=12` `bufferedEnd=54558`(54.5s)卡死,音频 `seq=4` `bufferedEnd=30001`(30s)卡死——两条流都是服务端连续回 `backoff=2000ms` 6 次 → `fetchUntilReady exhausted 6 backoffs (server not resuming)` → EOF → evict。卡点上报 lead=18180ms(18.5s),而服务端 `PolicyDiag targetV=15000`(target readahead=15s)——**服务端流控按「客户端缓冲超前量 lead」决定发不发段,lead 超 15s 即只回 NEXT_REQUEST_POLICY backoff 不发 media**。row 70 封顶只压了 bufferedRange 终点(cumulative),没压 lead;lead 随 playhead 涨到 18.5s 撞 15s 流控线。
+
+**真因**:`fetchUntilReady` 把 `buildSegRequest` 构造的 `req` 当**固定参数**重发——backoff 期间 `playerTimeMs`/`bufferedRange` 全程不变,服务端永远看到 lead=18.5s>15s → 恒 backoff 永不恢复 → 6× 后 EOF。row 60 已点过「重发同一 req」问题,但当时归因到 playerTimeMs 恒 0/恒 60s;alpha.55 坐实**即使 playerTimeMs=playhead 正确,backoff 期间不刷新 playhead 一样死**——服务端流控看的是「每次请求上报的 lead」,重发旧 req 等于上报旧 lead。
+
+**根修** [SabrStreamingDataSource.kt](app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrStreamingDataSource.kt):`fetchUntilReady` 入参从固定 `req` 改 `reqProvider: () -> SabrFetchRequest`,每次重试(含 backoff)都重建请求——`buildSegRequest` 用 `playheadEstimateMs()`(墙钟代理)刷新 playhead,lead 逐次回落 <15s → 服务端恢复发段。init 请求重建结果不变(无 playhead/bufferedRange)。卡点 lead=18.5s,2s/backoff 下 ~2 次即回落 <15s,6 次上限足够。
+
+**待真机**:播 YouTube >90s 看 backoff 后 `RESUMED after N backoffs` 出现(服务端恢复发段)而非 `exhausted 6 backoffs`;若仍断,查服务端是否对 lead 上限更严(<15s)或 backoff 时长更长(需加大 `BACKOFF_MAX_ATTEMPTS`)。
+
 ## 6.9 SABR 实现调研(FreeTubeAndroid 源码 + googlevideo proto + UMP 协议)
 
 ## 6.9 SABR 实现调研(FreeTubeAndroid 源码 + googlevideo proto + UMP 协议)
