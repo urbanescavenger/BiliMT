@@ -393,6 +393,24 @@ fun MobilePlayerScreen(
     runCatching { context.startActivity(Intent.createChooser(intent, "分享视频")) }
   }
 
+  /**
+   * alpha.52:SABR 源中段 seek 路由——progressive 直链 SABR 源 LENGTH_UNSET,Media3 原生 seekTo
+   * 会重开 DataSource 喂双 init 致 MatroskaExtractor "Multiple Segment elements not supported" 崩。
+   * 故 SABR seek 改走「重新起播」:记 pendingSABRSeekMs + bump sabrSeekReloadKey 重跑 loadRequest
+   * (fresh MediaSource → fresh extractor → 单 init;目标经 startMs 透传进 sabr:// URL,resolver 按
+   * 窗口锚定,窗口内复用会话/跨窗口新 harvest)。非 SABR(B站等)保持直接 player.seekTo。
+   */
+  fun routeSeek(targetMs: Long) {
+    val maxMs = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+    val clamped = targetMs.coerceIn(0L, maxMs)
+    if ((playerState as? MobilePlayerState.Ready)?.info?.isSabrProgressive() == true) {
+      pendingSABRSeekMs = clamped
+      sabrSeekReloadKey++
+    } else {
+      player.seekTo(clamped)
+    }
+  }
+
   // 空降助手:进度轮询每 tick 调用,命中段 seek 到段末,入段前预警,回退重置去重(镜像 TV)
   fun handleAirJumpPosition(currentPositionMs: Long) {
     if (!airJumpAssistantEnabled || seekPreviewMs != null || airJumpSegments.isEmpty()) {
@@ -455,24 +473,6 @@ fun MobilePlayerScreen(
     } else null
     return queueNext?.toPlaybackRequest()
       ?: activeRequest.nextEpisodeCompletion(metadata, selectedQualityId)?.request
-  }
-
-  /**
-   * alpha.52:SABR 源中段 seek 路由——progressive 直链 SABR 源 LENGTH_UNSET,Media3 原生 seekTo
-   * 会重开 DataSource 喂双 init 致 MatroskaExtractor "Multiple Segment elements not supported" 崩。
-   * 故 SABR seek 改走「重新起播」:记 pendingSABRSeekMs + bump sabrSeekReloadKey 重跑 loadRequest
-   * (fresh MediaSource → fresh extractor → 单 init;目标经 startMs 透传进 sabr:// URL,resolver 按
-   * 窗口锚定,窗口内复用会话/跨窗口新 harvest)。非 SABR(B站等)保持直接 player.seekTo。
-   */
-  fun routeSeek(targetMs: Long) {
-    val maxMs = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
-    val clamped = targetMs.coerceIn(0L, maxMs)
-    if ((playerState as? MobilePlayerState.Ready)?.info?.isSabrProgressive() == true) {
-      pendingSABRSeekMs = clamped
-      sabrSeekReloadKey++
-    } else {
-      player.seekTo(clamped)
-    }
   }
 
   // 加载(镜像 TV PlayerScreen 的 load 序列)。抽成独立 suspend 函数,使自动连播/用户切集/切画质
