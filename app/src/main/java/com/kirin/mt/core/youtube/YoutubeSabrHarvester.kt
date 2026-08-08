@@ -82,6 +82,7 @@ class YoutubeSabrHarvester(
       val start = System.currentTimeMillis()
       val deadline = start + 30_000L
       var triedWatch = false
+      var lastDiag = start
       while (System.currentTimeMillis() < deadline) {
         val raw = evalOn(view, "(window.__gvCaptures && window.__gvCaptures[0]) ? JSON.stringify(window.__gvCaptures[0]) : null")
         val obj = parseCapture(raw)
@@ -95,6 +96,13 @@ class YoutubeSabrHarvester(
             Log.i(Tag, "harvest: captured $method status=$status n=${n ?: "ABSENT"} url=$url bodyB64=${body?.length ?: 0}B")
             return SabrCapture(url, method, body ?: "", status)
           }
+        }
+        // alpha.43:周期性 PAGE diag(每 ~3s)——watch 页 SPA 播放器 init 在 onPageFinished 后数秒,
+        // 周期 dump 看 player false→true/videoSrc 出现/captures 增长演进。非 suspend evaluateJavascript
+        // (经 console 路由),fire-and-forget 不阻塞 capture 轮询。
+        if (System.currentTimeMillis() - lastDiag > 3_000L) {
+          lastDiag = System.currentTimeMillis()
+          view.evaluateJavascript(PAGE_DIAG_JS, null)
         }
         // 10s 内 embed 无捕获 → 回退 watch 页(同 videoId,无 embed 权限闸,播放器同 plasma base.js
         // 做 n-transform)。hook 在 onPageStarted 重新注入,idempotent,导航存活。
@@ -137,12 +145,9 @@ class YoutubeSabrHarvester(
       override fun onPageFinished(view: WebView?, url: String?) {
         Log.i(Tag, "embed onPageFinished: $url")
         // dump 页面内容——确认 embed 页真渲染了播放器(不是 consent 墙/error 壳)。title/body/player
-        // 元素经 console 路由(被 onConsoleMessage 捕获)。alpha.21 真机:onPageFinished 触发但 25s 零
-        // googlevideo 请求 + 零 console → 疑 detached WebView 0 尺寸致播放器 JS 不 init(本版补 measure+layout)。
-        view?.evaluateJavascript(
-          "try{var p=document.getElementById('movie_player')||document.querySelector('.html5-video-player');console.log('PAGE diag title='+document.title+' body='+((document.body&&document.body.innerText)||'NOBODY').slice(0,150)+' player='+!!p+' vp='+(window.innerWidth+'x'+window.innerHeight));}catch(e){console.log('PAGE diag err '+e);}",
-          null,
-        )
+        // 元素/video src/captures 经 console 路由(被 onConsoleMessage 捕获)。alpha.21 真机:onPageFinished
+        // 触发但 25s 零 googlevideo 请求 + 零 console → 疑 detached WebView 0 尺寸致播放器 JS 不 init(本版补 measure+layout)。
+        view?.evaluateJavascript(PAGE_DIAG_JS, null)
       }
 
       override fun onReceivedError(
@@ -165,8 +170,19 @@ class YoutubeSabrHarvester(
         Log.w(Tag, "embed onReceivedHttpError: ${request?.url} code=${errorResponse?.statusCode} reason=${errorResponse?.reasonPhrase}")
       }
 
-      // 不覆盖 shouldInterceptRequest:让播放器的所有请求(/player、base.js、googlevideo SABR POST)
-      // 走 WebView 原生 Chromium 栈(真实 TLS/cookie/UA)。采集发生在 JS fetch-hook 层,不拦截原生。
+      // alpha.43:shouldInterceptRequest 只读记录所有 googlevideo 请求的 itag/sabr(method+url),
+      // return null 放行原生 Chromium 栈(真实 TLS/cookie/UA)——progressive GET 经 media stack 不经 fetch
+      // hook(alpha.42 watch 页 6 次 itag=18 403 由 onReceivedHttpError 才看到),此层补全 200 的 progressive
+      // 也结构化记录,确认 watch 页选 progressive(itag 18 sabr=false)而非 SABR POST。
+      override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+        val url = request?.url?.toString() ?: return null
+        if (url.contains("googlevideo.com/videoplayback")) {
+          val itag = extractQuery(url, "itag") ?: "?"
+          val sabr = if (url.contains("sabr=")) "true" else "false"
+          Log.i(Tag, "gv req method=${request.method} itag=$itag sabr=$sabr")
+        }
+        return null
+      }
     }
     // 捕获 embed 播放器 console 输出——播放器 init 失败/autoplay 被拒会在 console 报错,
     // 是 alpha.20「无捕获」定位的关键信号。
@@ -222,6 +238,15 @@ class YoutubeSabrHarvester(
     const val Tag = "YtSabrHarvest"
 
     /**
+     * 页面状态诊断脚本——dump player 元素 present/viewport 尺寸/<video> src/captures 条数,
+     * 经 console.log 路由到 [onConsoleMessage]。onPageFinished 调一次 + harvest 轮询循环每 ~3s 调一次
+     * (alpha.43:watch 页 SPA 播放器 init 在 onPageFinished 后数秒,周期性 dump 看状态演进 player false→true、
+     * videoSrc 出现、captures 增长;videoSrc 看 progressive 经 media stack 实际选的格式)。
+     */
+    @Suppress("MaxLineLength")
+    const val PAGE_DIAG_JS = """try{var p=document.getElementById('movie_player')||document.querySelector('.html5-video-player');var v=document.querySelector('video');var vs=(v&&(v.currentSrc||v.src))||'NONE';var gvc=(window.__gvCaptures&&window.__gvCaptures.length)||0;console.log('PAGE diag title='+document.title+' body='+((document.body&&document.body.innerText)||'NOBODY').slice(0,60)+' player='+!!p+' vp='+(window.innerWidth+'x'+window.innerHeight)+' videoSrc='+vs.slice(0,120)+' captures='+gvc);}catch(e){console.log('PAGE diag err '+e);}"""
+
+    /**
      * fetch/XHR wrapper——截获**所有**发往 googlevideo.com/videoplayback 的请求(POST=SABR / GET=DASH 段),
      * 记录 {url, method, bodyB64, status} 到 window.__gvCaptures(最多 5 条防灌)。请求照常放行。
      * alpha.20 只截 SABR POST(`sabr=` + POST 过滤)致 25s 无捕获——放宽到全方法 + 全 googlevideo,
@@ -238,6 +263,9 @@ class YoutubeSabrHarvester(
   if(window.__gvHook) return; window.__gvHook=true; window.__gvCaptures=[];
   function b64(buf){ try{ if(!buf) return ''; var bytes=(buf instanceof Uint8Array)?buf:new Uint8Array(buf); var s=''; for(var i=0;i<bytes.length;i++) s+=String.fromCharCode(bytes[i]); return btoa(s); }catch(e){ return ''; } }
   function isGv(url){ return /googlevideo\.com\/videoplayback/.test(url||''); }
+  function isPlayer(url){ return /youtubei\/v[0-9]+\/player/.test(url||''); }
+  // 读请求 body 成字符串(youtubei /player body 是 JSON 文本)。兼容 Blob/ArrayBuffer/Request/string。
+  function readBody(src){ try{ if(!src) return Promise.resolve(null); if(src instanceof Blob){ return src.text(); } if(typeof src==='string'){ return Promise.resolve(src); } if(src instanceof ArrayBuffer||(src&&typeof src.byteLength==='number'&&typeof src.getReader!=='function')){ return Promise.resolve(new TextDecoder().decode(new Uint8Array(src))); } if(src&&typeof src.clone==='function'&&typeof src.arrayBuffer==='function'){ return src.clone().arrayBuffer().then(function(ab){ return (ab&&ab.byteLength)?new TextDecoder().decode(new Uint8Array(ab)):null; }); } }catch(e){} return Promise.resolve(null); }
   function record(url,method,body,status){ if(window.__gvCaptures.length<5) window.__gvCaptures.push({url:url,method:method||'GET',bodyB64:b64(body),status:status}); }
   var _f=window.fetch;
   window.fetch=function(input,init){
@@ -252,6 +280,17 @@ class YoutubeSabrHarvester(
         else if(bodySrc instanceof ArrayBuffer||(bodySrc&&typeof bodySrc.byteLength==='number'&&typeof bodySrc.getReader!=='function')){ bp=Promise.resolve(new Uint8Array(bodySrc)); }
         else { bp=Promise.resolve(null); }
         return _f.apply(this,arguments).then(function(r){ Promise.all([bp]).then(function(res){ record(url,method,res[0],r.status); }); return r; });
+      }
+      // alpha.43 诊断:截获 watch 页 /youtubei/v1/player 请求+响应——取证 watch 页为何走 progressive 而非 SABR。
+      // 请求 body(JSON 文本)搜 poToken/serviceIntegrityDimensions → 判 watch 页是否铸了 PO token;
+      // 响应 clone 读 json → dump streamingData keys/serverAbrStreamingUrl/adaptive0Url/ustreamerCfg/formats → 判服务端是否给 SABR 数据。
+      else if(isPlayer(url)){
+        var reqBp=(typeof input==='string') ? readBody(init&&init.body) : readBody(input);
+        return _f.apply(this,arguments).then(function(r){
+          Promise.all([reqBp]).then(function(res){ var bs=res[0]; console.log('PLAYERREQ poToken='+(bs&&bs.indexOf('poToken')>=0?'present':'absent')+' sid='+(bs&&bs.indexOf('serviceIntegrityDimensions')>=0?'present':'absent')); });
+          r.clone().json().then(function(j){ try{ var ps=(j.playabilityStatus&&j.playabilityStatus.status)||'?'; var sd=j.streamingData||{}; var sdK=Object.keys(sd).join(','); var sabr=sd.serverAbrStreamingUrl?'present':'absent'; var af=sd.adaptiveFormats; var a0=(af&&af[0])?(af[0].url?'url':(af[0].signatureCipher?'cipher':'empty')):'none'; var ust=(j.playerConfig&&j.playerConfig.mediaCommonConfig&&j.playerConfig.mediaCommonConfig.mediaUstreamerRequestConfig)?'present':'absent'; var fmts=sd.formats?sd.formats.length:0; console.log('PLAYERRESP status='+ps+' sdKeys='+sdK+' sabrUrl='+sabr+' adaptive0Url='+a0+' ustreamerCfg='+ust+' formats='+fmts); }catch(e){ console.log('PLAYERRESP err '+e); } }).catch(function(e){ console.log('PLAYERRESP json err '+e); });
+          return r;
+        });
       }
     }catch(e){}
     return _f.apply(this,arguments);
