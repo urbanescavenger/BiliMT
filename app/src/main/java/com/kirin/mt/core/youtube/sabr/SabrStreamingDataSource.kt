@@ -11,7 +11,7 @@ import kotlinx.coroutines.runBlocking
 /**
  * 把 Media3 的 progressive 读取请求翻译成 [SabrClient] 的 init/segment 段请求。
  *
- * SABR 段序列:seq=0 init(fMP4 ftyp+moov)→ seq=1,2,… 每 ~6s(moof+mdat fragment)。
+ * SABR 段序列:seq=0 init(fMP4 ftyp+moov)→ seq=1,2,… 每 ~6-10s(moof+mdat fragment)。
  * 本 DataSource 在 [open] 拉 init, [read] 逐段拉取并拼接成连续字节流——
  * ProgressiveMediaSource 的 MP4 extractor 把 init+fragments 当 fragmented MP4 解析。
  *
@@ -21,6 +21,18 @@ import kotlinx.coroutines.runBlocking
  *
  * runBlocking 桥接 suspend fetch:播放器 loader 线程是后台线程,阻塞网络是
  * progressive DataSource 模型常态(同 OkHttpDataSource 阻塞 read)。
+ *
+ * **alpha.36(对齐 FreeTube SabrSchemePlugin.js)**:SABR 是服务端驱动 + 流控——服务端按
+ * `clientAbrState.playerTimeMs` + `bufferedRanges` 决定发哪段,且对「客户端缓冲量」有上限。
+ * alpha.28 起我们误报 `playerTimeMs=cumulativeDurationMs`(涨到 60s)+ `bufferedRange=[0..cumulative]`
+ * (`durationMs=cumulative`,绝对终点涨到 60s)+ Media3 贪婪 burst-fetch(2.3s 拉满 60s)→ 服务端流控
+ * 见「客户端已缓冲 60s = maxed out」→ `backoff=2000ms` 只回 policy 不回 media;我们 backoff 后重发
+ * **同一 req**(playerTimeMs/bufferedRange 不随实时播放推进)→ 恒 backoff 永不恢复 → 60s 断崖。
+ * FreeTube 对照:`playerTimeMs=startTimeMs`(**固定锚点不涨**)、`durationMs=buffered.end-started.start`
+ * (**小窗口 ~10s** 且随 playhead 滑动)、shaka 逐段 `?sq=N` **实时 paced**。本类镜像之:
+ * ① `playerTimeMs=startMs` 固定;② `bufferedRange` 滑动窗口 `[playhead..cumulative]`(`durationMs` 小);
+ * ③ [read] 加实时 pacing(lead > [MAX_LEAD_MS] 则睡到追上,不贪婪 burst);④ EOF 时驱逐会话使
+ * stall-retry 走新 harvest。playhead 用 wall-elapsed 代理(实时 1x 播放下 ≈ 真实播放位置)。
  */
 internal class SabrStreamingDataSource(
   private val sessionId: String,
@@ -33,6 +45,9 @@ internal class SabrStreamingDataSource(
    * 续播由协议层完成而非 ExoPlayer seekTo(对 LENGTH_UNSET 不可 seek 的 SABR 源,seekTo 会取消
    * 正在飞的 fetch 重开 DataSource,init 喂两遍给 MatroskaExtractor → "Multiple Segment elements
    * not supported" 崩)。0=从头播(首播),等同原行为。
+   *
+   * alpha.36:同时作 [buildSegRequest] 的**固定 playerTimeMs 锚点**(对齐 FreeTube startTimeMs),
+   * 不再随段推进(原 alpha.28 cumulative 涨到 60s 是 60s 断崖主因之一)。
    */
   private val startMs: Long = 0L,
 ) : DataSource {
@@ -45,9 +60,12 @@ internal class SabrStreamingDataSource(
   /** 下一段 seq(init 段后从 1 起)。 */
   private var nextSeq: Int = 1
   private var done: Boolean = false
-  /** alpha.28:已取段的累计 durationMs——作下次请求的 playerTimeMs + bufferedRange 终点,
-   * 推动服务端 lookahead 窗口前移(否则只发初始 ~4 段就 premature EOF → 黑屏)。init 段 dur=0 不累计。 */
+  /** 已取段的累计 durationMs——作 bufferedRange 终点(own 流报「已缓冲到哪」)。init 段 dur=0 不累计。 */
   private var cumulativeDurationMs: Long = 0L
+  /** alpha.36:每段的 durationMs 列表(按 seq 顺序),算 playhead 落在哪段(startSegmentIndex)。 */
+  private val segDurations = ArrayList<Long>()
+  /** alpha.36:open() 时的墙钟,作 playhead 代理基准(实时 1x 播放下 elapsed ≈ 播放位置)。 */
+  private var openWallMs: Long = 0L
 
   override fun open(dataSpec: DataSpec): Long {
     currentUri = dataSpec.uri
@@ -57,6 +75,7 @@ internal class SabrStreamingDataSource(
         throw java.io.IOException("SABR session not found: $sessionId")
       }
     entry = e
+    openWallMs = System.currentTimeMillis()
     Log.i(tag, "SabrStream open sid=$sessionId stream=$streamType sabrUrl=${e.session.sabrUrl.take(80)}... startMs=$startMs")
     // init 段(seq=0,isInit=true);init durationMs=0。alpha.29:带 requestedItag 让服务端按该 itag 发对应清晰度的 init(视频流)。
     // alpha.34:续播点 startMs 置进 cumulativeDurationMs——首段请求带 playerTimeMs=startMs,
@@ -78,17 +97,32 @@ internal class SabrStreamingDataSource(
     if (done) return C.RESULT_END_OF_INPUT
     val e = entry ?: return C.RESULT_END_OF_INPUT
     while (bufferPos >= buffer.size) {
-      // 当前段读完,拉下一段。alpha.28:带 playerTimeMs + bufferedRange(已缓冲 0..cumulative)
-      // 让服务端 lookahead 窗口前移持续发新段(否则初始 ~4 段后 premature EOF → 黑屏)。
+      // alpha.36 实时 pacing:不贪婪 burst-fetch。lead = 已缓冲终点 - 当前播放位置;若超过
+      // MAX_LEAD_MS,睡到追上再拉下一段——对齐 FreeTube/shaka 逐段实时 paced。否则 burst 拉满 60s
+      // → 服务端流控见「已缓冲 60s=maxed」→ backoff 不发 media → 60s 断崖(见类注释)。
+      val playheadMs = playheadEstimateMs()
+      val lead = cumulativeDurationMs - playheadMs
+      if (lead > MAX_LEAD_MS) {
+        val sleepMs = lead - MAX_LEAD_MS
+        Log.d(tag, "SabrStream sid=$sessionId stream=$streamType pace: lead=${lead}ms > ${MAX_LEAD_MS}ms → sleep ${sleepMs}ms (cumulative=$cumulativeDurationMs playhead=$playheadMs nextSeq=$nextSeq)")
+        try { Thread.sleep(sleepMs) } catch (_: InterruptedException) { /* loader 被 cancel,继续尝试取段 */ }
+      }
+      // 当前段读完,拉下一段。alpha.36:bufferedRange 改滑动窗口 [playhead..cumulative]
+      // (durationMs=小窗口),playerTimeMs 固定=startMs;让服务端流控见「客户端只缓冲少量」持续发新段。
       val seg = fetchUntilReady(buildSegRequest(e))
       if (seg == null) {
         done = true
         Log.i(tag, "SabrStream read EOF sid=$sessionId stream=$streamType at seq=$nextSeq playerTimeMs=$cumulativeDurationMs (no more segments)")
+        // alpha.36:驱逐会话——stall-retry 重跑 resolve 时 getByVideoId cache miss → 新 harvest,
+        // 不复用服务端已停发的死会话(alpha.35 日志:stall-reload 复用死会话 → 立即 backoff 死循环)。
+        SabrStreamRegistry.evict(sessionId)
         return C.RESULT_END_OF_INPUT
       }
       buffer = seg.data
       bufferPos = 0
-      cumulativeDurationMs += seg.mediaHeader?.durationMs ?: 0L
+      val dur = seg.mediaHeader?.durationMs ?: 0L
+      segDurations.add(dur)
+      cumulativeDurationMs += dur
       nextSeq++
     }
     val toCopy = minOf(length, buffer.size - bufferPos)
@@ -113,20 +147,53 @@ internal class SabrStreamingDataSource(
   }
 
   /**
-   * 构造下一段请求:playerTimeMs = 已缓冲终点(cumulativeDurationMs),bufferedRange = [0, cumulative]。
-   * 服务端据此 lookahead 窗口发下一段(init 后 cumulative=0 时跳过 bufferedRange,等同 alpha.27 行为)。 */
+   * alpha.36:估算当前播放位置(墙钟自 open 起的 elapsed,clamp 到 [0, cumulative])。实时 1x 播放下
+   * ≈ 真实 playhead。用于 bufferedRange 滑动窗口起点 + pacing lead 计算。对齐 FreeTube
+   * `player.getBufferedInfo()`(shaka 给真实 buffer,我们无 player 引用,用 wall-elapsed 代理)。 */
+  private fun playheadEstimateMs(): Long {
+    if (openWallMs == 0L) return startMs
+    val elapsed = System.currentTimeMillis() - openWallMs
+    return elapsed.coerceAtLeast(0L).coerceAtMost(cumulativeDurationMs)
+  }
+
+  /**
+   * alpha.36:playhead 落在哪段(1-based seq)——给 bufferedRange.startSegmentIndex。遍历 [segDurations]
+   * 累计,找包含 playhead 的段。playhead 超出已取段则返回最后一段(后续 buildSegRequest 会先 pacing)。
+   */
+  private fun segIndexAtPlayhead(playheadMs: Long): Int {
+    if (segDurations.isEmpty()) return nextSeq.coerceAtLeast(1)
+    var acc = 0L
+    for ((i, d) in segDurations.withIndex()) {
+      acc += d
+      if (playheadMs < acc) return i + 1
+    }
+    return segDurations.size
+  }
+
+  /**
+   * 构造下一段请求(alpha.36 对齐 FreeTube):
+   *  - `playerTimeMs = startMs`(**固定锚点**,不随段涨;FreeTube `startTimeMs`)
+   *  - `bufferedRange = [playhead..cumulative]` 滑动窗口:`startTimeMs=playhead`、`durationMs=cumulative-playhead`
+   *    (小窗口,非绝对终点)、`startSegmentIndex=segIndexAtPlayhead`、`endSegmentIndex=nextSeq-1`
+   *  - 对方格式标「满缓冲」(createFullBufferRange)让服务端只发 own 下一段(非 alpha.36 改动,沿用 alpha.30)
+   *
+   * 服务端据此 lookahead 窗口发下一段;durationMs 小(实时 paced)→ 不触发「maxed out」backoff。 */
   private fun buildSegRequest(e: SabrStreamRegistry.Entry): SabrFetchRequest {
     // alpha.29:视频流按 requestedItag 取 FormatId(poToken 会话级不绑 itag);audio 用会话默认。
     val fmt = if (streamType == SabrStreamType.AUDIO) e.session.audioFormatId
       else requestedItag?.let { e.session.videoFormat(it) } ?: e.session.videoFormatId
-    val br = if (cumulativeDurationMs > 0L) BufferedRangeInput(
+    val playheadMs = playheadEstimateMs()
+    // alpha.36:own 格式报滑动窗口 [playhead..cumulative](durationMs=小窗口,非绝对终点)。
+    // 对方格式的「满缓冲」条目由 SabrClient.fetch 自行追加(见 alpha.30 createFullBufferRange),
+    // 这里只带 own——与原结构一致,不扩散可见性。
+    val own = if (cumulativeDurationMs > 0L) BufferedRangeInput(
       itag = fmt.itag,
       lastModified = fmt.lastModified,
       xtags = fmt.xtags,
-      startTimeMs = 0L,
-      durationMs = cumulativeDurationMs,
-      startSegmentIndex = 0,
-      endSegmentIndex = nextSeq - 1,
+      startTimeMs = playheadMs,
+      durationMs = (cumulativeDurationMs - playheadMs).coerceAtLeast(0L),
+      startSegmentIndex = segIndexAtPlayhead(playheadMs),
+      endSegmentIndex = (nextSeq - 1).coerceAtLeast(0),
       timeRange = null,
     ) else null
     return SabrFetchRequest(
@@ -134,8 +201,8 @@ internal class SabrStreamingDataSource(
       sequenceNumber = nextSeq,
       streamType = streamType,
       videoItag = requestedItag,
-      playerTimeMs = cumulativeDurationMs,
-      bufferedRange = br,
+      playerTimeMs = startMs,
+      bufferedRange = own,
     )
   }
 
@@ -143,78 +210,53 @@ internal class SabrStreamingDataSource(
    * 发一次 SABR 请求,处理 Redirect(更新 sabrUrl 重试)/Backoff(sleep 重试);
    * Success → 返回段字节;Error/InvalidPoToken → 返回 null(由 read() 当 EOF)。
    *
-   * alpha.35 诊断:60s 断流真因未定(n-throttle 限前视 / 8 次 backoff 过早 EOF / 会话硬拒 三者
-   * 无法从现日志区分)。改「8 次 backoff 即 EOF」为「8 次内层耗尽后长睡 [BACKOFF_LONG_WAIT_MS]
-   * 整轮重试,最多 [BACKOFF_OUTER_ROUNDS] 轮」(~84s 墙钟预算),每次重试打 elapsed/bufferedEnd。
-   * 判读:
-   *  - 某轮 RESUMED → 服务端在实时推进后恢复发段 = flow-control(n-throttle 限前视,非硬拒)。
-   *  - 全 outer 轮 backoff 不恢复 → 「server never resumed」= 会话硬拒/真 EOF。
-   * 请求数有界(≤ outer×8,带长睡间隔,不轰服务器)。诊断结论到手后回退或据此根修。
+   * alpha.35 诊断叠层已回退(alpha.36):不再 4 outer×8 + 20s 长睡(诊断证 60s 断崖非「服务端会恢复」
+   * 的 flow-control 而是请求体报告错,长睡只挡 stall-retry)。恢复简洁 backoff:内层最多
+   * [BACKOFF_MAX_ATTEMPTS] 次 backoff(sleep+重发同 seq,带已更新 cookie/context),耗尽 → null(EOF)
+   * → read() 触发 [SabrStreamRegistry.evict] → stall-retry 新 harvest。对齐 FreeTube
+   * `cumulativeBackOffRequested>=3` 即 reload 的语义(我们靠播放器 stall-retry 实现 reload)。
    * Redirect → 更新 sabrUrl 重试同请求;Error/InvalidPoToken → 立即返回 null(EOF)。
    */
   private fun fetchUntilReady(req: SabrFetchRequest): SabrFetchResult.Success? {
     val e = entry ?: return null
-    val fetchStartMs = System.currentTimeMillis()
-    var outer = 0
-    while (outer < BACKOFF_OUTER_ROUNDS) {
-      outer++
-      var attempt = 0
-      while (attempt < 8) {
-        attempt++
-        val result = runBlocking { e.client.fetch(e.session, req) }
-        when (result) {
-          is SabrFetchResult.Success -> {
-            val elapsedMs = System.currentTimeMillis() - fetchStartMs
-            // 重试过才打 RESUMED(首请求成功不必)——拿「恢复耗时」+ bufferedEnd 算超前差。
-            if (outer > 1 || attempt > 1) {
-              Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} RESUMED after ${elapsedMs}ms (outer=$outer attempt=$attempt bufferedEnd=$cumulativeDurationMs)")
-            }
-            Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} isInit=${req.isInit} bytes=${result.data.size}B dur=${result.mediaHeader?.durationMs}ms playerTimeMs=${req.playerTimeMs}")
-            return result
-          }
-          is SabrFetchResult.Redirect -> {
-            Log.i(tag, "SabrStream sid=$sessionId stream=$streamType Redirect → ${result.sanitized} (applyRedirect + refetch same seq)")
-            e.session.applyRedirect(result.newSabrUrl)
-            continue
-          }
-          is SabrFetchResult.Backoff -> {
-            val elapsedMs = System.currentTimeMillis() - fetchStartMs
-            Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} Backoff ${result.ms}ms outer=$outer attempt=$attempt elapsed=${elapsedMs}ms bufferedEnd=$cumulativeDurationMs (sleep + refetch)")
-            try { Thread.sleep(result.ms.toLong()) } catch (_: InterruptedException) {}
-            continue
-          }
-          SabrFetchResult.InvalidPoToken -> {
-            Log.w(tag, "SabrStream sid=$sessionId stream=$streamType InvalidPoToken at seq=${req.sequenceNumber} isInit=${req.isInit} → EOF")
-            return null
-          }
-          is SabrFetchResult.Error -> {
-            Log.w(tag, "SabrStream sid=$sessionId stream=$streamType Error at seq=${req.sequenceNumber} isInit=${req.isInit}: ${result.message} → EOF")
-            return null
-          }
+    var attempt = 0
+    while (attempt < BACKOFF_MAX_ATTEMPTS) {
+      attempt++
+      val result = runBlocking { e.client.fetch(e.session, req) }
+      when (result) {
+        is SabrFetchResult.Success -> {
+          if (attempt > 1) Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} RESUMED after ${attempt} backoffs (bufferedEnd=$cumulativeDurationMs)")
+          Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} isInit=${req.isInit} bytes=${result.data.size}B dur=${result.mediaHeader?.durationMs}ms playerTimeMs=${req.playerTimeMs}")
+          return result
         }
-      }
-      // alpha.35 诊断:内层 8 次 backoff 耗尽——不立即 EOF,长睡 BACKOFF_LONG_WAIT_MS 后整轮重试,
-      // 看实时播放推进(墙钟推进)后服务端是否恢复发段。最后一轮不再睡,落到下方 EOF。
-      if (outer < BACKOFF_OUTER_ROUNDS) {
-        val elapsedMs = System.currentTimeMillis() - fetchStartMs
-        Log.w(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} inner exhausted (8×Backoff) at outer=$outer elapsed=${elapsedMs}ms bufferedEnd=$cumulativeDurationMs → sleep ${BACKOFF_LONG_WAIT_MS}ms then retry whole cycle [diagnostic]")
-        try {
-          Thread.sleep(BACKOFF_LONG_WAIT_MS)
-        } catch (_: InterruptedException) {
-          Log.w(tag, "SabrStream sid=$sessionId stream=$streamType long-wait interrupted → EOF")
+        is SabrFetchResult.Redirect -> {
+          Log.i(tag, "SabrStream sid=$sessionId stream=$streamType Redirect → ${result.sanitized} (applyRedirect + refetch same seq)")
+          e.session.applyRedirect(result.newSabrUrl)
+          continue
+        }
+        is SabrFetchResult.Backoff -> {
+          Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} Backoff ${result.ms}ms attempt=$attempt bufferedEnd=$cumulativeDurationMs (sleep + refetch)")
+          try { Thread.sleep(result.ms.toLong()) } catch (_: InterruptedException) { return null }
+          continue
+        }
+        SabrFetchResult.InvalidPoToken -> {
+          Log.w(tag, "SabrStream sid=$sessionId stream=$streamType InvalidPoToken at seq=${req.sequenceNumber} isInit=${req.isInit} → EOF")
+          return null
+        }
+        is SabrFetchResult.Error -> {
+          Log.w(tag, "SabrStream sid=$sessionId stream=$streamType Error at seq=${req.sequenceNumber} isInit=${req.isInit}: ${result.message} → EOF")
           return null
         }
       }
     }
-    val totalMs = System.currentTimeMillis() - fetchStartMs
-    Log.w(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} fetchUntilReady exhausted ${BACKOFF_OUTER_ROUNDS}×8 attempts over ${totalMs}ms (all Backoff, server never resumed) → EOF [diagnostic: = hard-refuse/n-throttle, NOT flow-control]")
+    Log.w(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} fetchUntilReady exhausted $BACKOFF_MAX_ATTEMPTS backoffs (server not resuming) → EOF → evict session for stall-retry fresh harvest")
     return null
   }
 
   private companion object {
-    /** alpha.35 诊断:内层 backoff 耗尽后,长睡再整轮重试的间隔(墙钟推进给实时播放追上)。 */
-    const val BACKOFF_LONG_WAIT_MS = 20_000L
-    /** alpha.35 诊断:外层整轮重试上限(含首轮)。4 轮 ×(8 内层 + 20s 长睡)≈ 84s 预算。 */
-    const val BACKOFF_OUTER_ROUNDS = 4
+    /** alpha.36:实时 pacing 的最大超前量。lead 超此值则睡到追上,避免 burst 拉满触发服务端 maxed-out 流控。 */
+    const val MAX_LEAD_MS = 12_000L
+    /** alpha.36:单段请求的 backoff 重试上限(对齐 FreeTube 简洁 reload 语义;耗尽→EOF→evict→stall-retry 新 harvest)。 */
+    const val BACKOFF_MAX_ATTEMPTS = 6
   }
 }

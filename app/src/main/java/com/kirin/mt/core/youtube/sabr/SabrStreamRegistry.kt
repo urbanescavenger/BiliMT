@@ -68,6 +68,19 @@ internal object SabrStreamRegistry {
 
   fun get(sessionId: String): Entry? = sessions[sessionId]
 
+  /**
+   * alpha.36:驱逐会话——清 [sessions] + [byVideoId] 反查表。SABR 流 EOF(backoff 耗尽 / 60s 断崖)
+   * 时由 [SabrStreamingDataSource] read() 调用,使播放器 stall-retry 重跑 resolve 时 [getByVideoId]
+   * cache miss → 重新 harvest 建新会话,而非复用服务端已停发的死会话(stall-reload 又开同一死会话
+   * → 立即 backoff 死循环,alpha.35 日志证实)。正常播完也调,无害(视频已完,无复用需要)。
+   */
+  fun evict(sessionId: String) {
+    sessions.remove(sessionId)
+    val it = byVideoId.entries.iterator()
+    while (it.hasNext()) { if (it.next().value == sessionId) it.remove() }
+    Log.i(tag, "evict sid=$sessionId (active=${sessions.size})")
+  }
+
   fun release(sessionId: String) {
     sessions.remove(sessionId)?.let {
       Log.i(tag, "release sid=$sessionId (active=${sessions.size})")
