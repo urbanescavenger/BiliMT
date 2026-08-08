@@ -24,15 +24,18 @@ import kotlinx.coroutines.runBlocking
  *
  * **alpha.36(对齐 FreeTube SabrSchemePlugin.js)**:SABR 是服务端驱动 + 流控——服务端按
  * `clientAbrState.playerTimeMs` + `bufferedRanges` 决定发哪段,且对「客户端缓冲量」有上限。
- * alpha.28 起我们误报 `playerTimeMs=cumulativeDurationMs`(涨到 60s)+ `bufferedRange=[0..cumulative]`
- * (`durationMs=cumulative`,绝对终点涨到 60s)+ Media3 贪婪 burst-fetch(2.3s 拉满 60s)→ 服务端流控
- * 见「客户端已缓冲 60s = maxed out」→ `backoff=2000ms` 只回 policy 不回 media;我们 backoff 后重发
- * **同一 req**(playerTimeMs/bufferedRange 不随实时播放推进)→ 恒 backoff 永不恢复 → 60s 断崖。
- * FreeTube 对照:`playerTimeMs=startTimeMs`(**固定锚点不涨**)、`durationMs=buffered.end-started.start`
- * (**小窗口 ~10s** 且随 playhead 滑动)、shaka 逐段 `?sq=N` **实时 paced**。本类镜像之:
- * ① `playerTimeMs=startMs` 固定;② `bufferedRange` 滑动窗口 `[playhead..cumulative]`(`durationMs` 小);
- * ③ [read] 加实时 pacing(lead > [MAX_LEAD_MS] 则睡到追上,不贪婪 burst);④ EOF 时驱逐会话使
- * stall-retry 走新 harvest。playhead 用 wall-elapsed 代理(实时 1x 播放下 ≈ 真实播放位置)。
+ * 本类镜像 FreeTube 三点:① `playerTimeMs` = 所请求段的起始时间;② `bufferedRange` 滑动小窗口
+ * `[playhead..cumulative]`(`durationMs` 小,非绝对终点);③ [read] 实时 pacing(lead > [MAX_LEAD_MS]
+ * 则睡到追上,不贪婪 burst);④ EOF 时驱逐会话使 stall-retry 走新 harvest。playhead 用 wall-elapsed
+ * 代理(实时 1x 播放下 ≈ 真实播放位置)。
+ *
+ * **alpha.37 修正 alpha.36 的 playerTimeMs 误读**:alpha.36 把 FreeTube `playerTimeMs=startTimeMs`
+ * 误解成「固定 0 锚点」,实装成 `playerTimeMs=startMs`(首播=0 恒定)。真机证伪:服务端 ABR 见客户端
+ * 恒在 0 位置 → 对 seq=2 请求永远重发 seq=1 的 MEDIA_HEADER → [matchesFormat] 判 seq 不等 →
+ * 6 backoff → EOF,video ~5s(audio seq1=10001ms ~10s)即断(原 60s 断崖反退成 5s)。FreeTube
+ * `startTimeMs` 实为**所请求段的呈现起始时间**(= 已缓冲终点 cumulativeDurationMs,随段推进涨),
+ * 故改回 `playerTimeMs=cumulativeDurationMs`(alpha.28 原值)。pacing/滑动窗口保留(非 5s 成因)。
+ * 60s 断崖是否随之消失待真机验;若仍在,次选线索:contexts=0/0 + 服务端发的 part 47/52/53 进 unhandled。
  */
 internal class SabrStreamingDataSource(
   private val sessionId: String,
@@ -46,8 +49,9 @@ internal class SabrStreamingDataSource(
    * 正在飞的 fetch 重开 DataSource,init 喂两遍给 MatroskaExtractor → "Multiple Segment elements
    * not supported" 崩)。0=从头播(首播),等同原行为。
    *
-   * alpha.36:同时作 [buildSegRequest] 的**固定 playerTimeMs 锚点**(对齐 FreeTube startTimeMs),
-   * 不再随段推进(原 alpha.28 cumulative 涨到 60s 是 60s 断崖主因之一)。
+   * 注意:本字段**只**作续播点,不作 playerTimeMs 锚点——alpha.36 曾误把它当固定 playerTimeMs
+   * 锚点(首播=0 恒定)致服务端重发 seq=1 → 5s 断崖;alpha.37 已回退(playerTimeMs 改回
+   * cumulativeDurationMs = 所请求段起始时间,对齐 FreeTube startTimeMs 每段推进)。
    */
   private val startMs: Long = 0L,
 ) : DataSource {
@@ -171,11 +175,14 @@ internal class SabrStreamingDataSource(
   }
 
   /**
-   * 构造下一段请求(alpha.36 对齐 FreeTube):
-   *  - `playerTimeMs = startMs`(**固定锚点**,不随段涨;FreeTube `startTimeMs`)
+   * 构造下一段请求:
+   *  - `playerTimeMs = cumulativeDurationMs`(所请求段的呈现起始时间 = 已缓冲终点;对齐 FreeTube
+   *    `startTimeMs`——它是**每段**该段的起始时间,随段推进涨,非固定 0 锚点。alpha.36 曾误读成
+   *    `playerTimeMs=startMs`(首播=0 固定)→ 服务端 ABR 见客户端恒在 0 位置 → 永远重发 seq=1 →
+   *    seq=2 matched=false → 6 backoff → EOF,video 5s/ audio 10s 即断,alpha.37 回退此错。)
    *  - `bufferedRange = [playhead..cumulative]` 滑动窗口:`startTimeMs=playhead`、`durationMs=cumulative-playhead`
    *    (小窗口,非绝对终点)、`startSegmentIndex=segIndexAtPlayhead`、`endSegmentIndex=nextSeq-1`
-   *  - 对方格式标「满缓冲」(createFullBufferRange)让服务端只发 own 下一段(非 alpha.36 改动,沿用 alpha.30)
+   *  - 对方格式标「满缓冲」(createFullBufferRange)让服务端只发 own 下一段(沿用 alpha.30)
    *
    * 服务端据此 lookahead 窗口发下一段;durationMs 小(实时 paced)→ 不触发「maxed out」backoff。 */
   private fun buildSegRequest(e: SabrStreamRegistry.Entry): SabrFetchRequest {
@@ -201,7 +208,7 @@ internal class SabrStreamingDataSource(
       sequenceNumber = nextSeq,
       streamType = streamType,
       videoItag = requestedItag,
-      playerTimeMs = startMs,
+      playerTimeMs = cumulativeDurationMs,
       bufferedRange = own,
     )
   }
