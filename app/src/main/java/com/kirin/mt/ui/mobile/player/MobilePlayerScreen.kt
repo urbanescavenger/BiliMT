@@ -960,8 +960,9 @@ fun MobilePlayerScreen(
 
           // alpha.58:YouTube 加载步骤提示——小转圈 + 单行当前步骤,独立于 playerState 常显于底部
           //(初始加载、切画质/续播轮换都覆盖;resolver/harvester 经 YoutubeLoadProgress 写步骤,
-          // 播放就绪/失败时置 null 隐藏)。
-          if (youtubeLoadStep != null) {
+          // 播放就绪/失败时置 null 隐藏)。委托属性不能 smart cast,先取局部变量。
+          val step = youtubeLoadStep
+          if (step != null) {
             Column(
               modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp),
               horizontalAlignment = Alignment.CenterHorizontally,
@@ -969,7 +970,7 @@ fun MobilePlayerScreen(
               CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
               Spacer(Modifier.padding(top = 6.dp))
               Text(
-                youtubeLoadStep.label,
+                step.label,
                 color = Color.White.copy(alpha = 0.9f),
                 fontSize = 13.sp,
                 textAlign = TextAlign.Center,
