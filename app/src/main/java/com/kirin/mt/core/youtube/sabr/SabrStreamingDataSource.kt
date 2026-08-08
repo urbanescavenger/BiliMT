@@ -142,40 +142,79 @@ internal class SabrStreamingDataSource(
   /**
    * 发一次 SABR 请求,处理 Redirect(更新 sabrUrl 重试)/Backoff(sleep 重试);
    * Success → 返回段字节;Error/InvalidPoToken → 返回 null(由 read() 当 EOF)。
-   * 重试上限 8 次(防 Redirect/Backoff 死循环)。
+   *
+   * alpha.35 诊断:60s 断流真因未定(n-throttle 限前视 / 8 次 backoff 过早 EOF / 会话硬拒 三者
+   * 无法从现日志区分)。改「8 次 backoff 即 EOF」为「8 次内层耗尽后长睡 [BACKOFF_LONG_WAIT_MS]
+   * 整轮重试,最多 [BACKOFF_OUTER_ROUNDS] 轮」(~84s 墙钟预算),每次重试打 elapsed/bufferedEnd。
+   * 判读:
+   *  - 某轮 RESUMED → 服务端在实时推进后恢复发段 = flow-control(n-throttle 限前视,非硬拒)。
+   *  - 全 outer 轮 backoff 不恢复 → 「server never resumed」= 会话硬拒/真 EOF。
+   * 请求数有界(≤ outer×8,带长睡间隔,不轰服务器)。诊断结论到手后回退或据此根修。
+   * Redirect → 更新 sabrUrl 重试同请求;Error/InvalidPoToken → 立即返回 null(EOF)。
    */
   private fun fetchUntilReady(req: SabrFetchRequest): SabrFetchResult.Success? {
     val e = entry ?: return null
-    var attempt = 0
-    while (attempt < 8) {
-      attempt++
-      val result = runBlocking { e.client.fetch(e.session, req) }
-      when (result) {
-        is SabrFetchResult.Success -> {
-          Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} isInit=${req.isInit} bytes=${result.data.size}B dur=${result.mediaHeader?.durationMs}ms playerTimeMs=${req.playerTimeMs}")
-          return result
+    val fetchStartMs = System.currentTimeMillis()
+    var outer = 0
+    while (outer < BACKOFF_OUTER_ROUNDS) {
+      outer++
+      var attempt = 0
+      while (attempt < 8) {
+        attempt++
+        val result = runBlocking { e.client.fetch(e.session, req) }
+        when (result) {
+          is SabrFetchResult.Success -> {
+            val elapsedMs = System.currentTimeMillis() - fetchStartMs
+            // 重试过才打 RESUMED(首请求成功不必)——拿「恢复耗时」+ bufferedEnd 算超前差。
+            if (outer > 1 || attempt > 1) {
+              Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} RESUMED after ${elapsedMs}ms (outer=$outer attempt=$attempt bufferedEnd=$cumulativeDurationMs)")
+            }
+            Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} isInit=${req.isInit} bytes=${result.data.size}B dur=${result.mediaHeader?.durationMs}ms playerTimeMs=${req.playerTimeMs}")
+            return result
+          }
+          is SabrFetchResult.Redirect -> {
+            Log.i(tag, "SabrStream sid=$sessionId stream=$streamType Redirect → ${result.sanitized} (applyRedirect + refetch same seq)")
+            e.session.applyRedirect(result.newSabrUrl)
+            continue
+          }
+          is SabrFetchResult.Backoff -> {
+            val elapsedMs = System.currentTimeMillis() - fetchStartMs
+            Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} Backoff ${result.ms}ms outer=$outer attempt=$attempt elapsed=${elapsedMs}ms bufferedEnd=$cumulativeDurationMs (sleep + refetch)")
+            try { Thread.sleep(result.ms.toLong()) } catch (_: InterruptedException) {}
+            continue
+          }
+          SabrFetchResult.InvalidPoToken -> {
+            Log.w(tag, "SabrStream sid=$sessionId stream=$streamType InvalidPoToken at seq=${req.sequenceNumber} isInit=${req.isInit} → EOF")
+            return null
+          }
+          is SabrFetchResult.Error -> {
+            Log.w(tag, "SabrStream sid=$sessionId stream=$streamType Error at seq=${req.sequenceNumber} isInit=${req.isInit}: ${result.message} → EOF")
+            return null
+          }
         }
-        is SabrFetchResult.Redirect -> {
-          Log.i(tag, "SabrStream sid=$streamType Redirect → ${result.sanitized} (applyRedirect + refetch same seq)")
-          e.session.applyRedirect(result.newSabrUrl)
-          continue
-        }
-        is SabrFetchResult.Backoff -> {
-          Log.i(tag, "SabrStream sid=$sessionId Backoff ${result.ms}ms (sleep + refetch)")
-          try { Thread.sleep(result.ms.toLong()) } catch (_: InterruptedException) {}
-          continue
-        }
-        SabrFetchResult.InvalidPoToken -> {
-          Log.w(tag, "SabrStream sid=$sessionId stream=$streamType InvalidPoToken at seq=${req.sequenceNumber} isInit=${req.isInit} → EOF")
-          return null
-        }
-        is SabrFetchResult.Error -> {
-          Log.w(tag, "SabrStream sid=$sessionId stream=$streamType Error at seq=${req.sequenceNumber} isInit=${req.isInit}: ${result.message} → EOF")
+      }
+      // alpha.35 诊断:内层 8 次 backoff 耗尽——不立即 EOF,长睡 BACKOFF_LONG_WAIT_MS 后整轮重试,
+      // 看实时播放推进(墙钟推进)后服务端是否恢复发段。最后一轮不再睡,落到下方 EOF。
+      if (outer < BACKOFF_OUTER_ROUNDS) {
+        val elapsedMs = System.currentTimeMillis() - fetchStartMs
+        Log.w(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} inner exhausted (8×Backoff) at outer=$outer elapsed=${elapsedMs}ms bufferedEnd=$cumulativeDurationMs → sleep ${BACKOFF_LONG_WAIT_MS}ms then retry whole cycle [diagnostic]")
+        try {
+          Thread.sleep(BACKOFF_LONG_WAIT_MS)
+        } catch (_: InterruptedException) {
+          Log.w(tag, "SabrStream sid=$sessionId stream=$streamType long-wait interrupted → EOF")
           return null
         }
       }
     }
-    Log.w(tag, "SabrStream sid=$sessionId stream=$streamType fetchUntilReady exhausted 8 attempts → EOF")
+    val totalMs = System.currentTimeMillis() - fetchStartMs
+    Log.w(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} fetchUntilReady exhausted ${BACKOFF_OUTER_ROUNDS}×8 attempts over ${totalMs}ms (all Backoff, server never resumed) → EOF [diagnostic: = hard-refuse/n-throttle, NOT flow-control]")
     return null
+  }
+
+  private companion object {
+    /** alpha.35 诊断:内层 backoff 耗尽后,长睡再整轮重试的间隔(墙钟推进给实时播放追上)。 */
+    const val BACKOFF_LONG_WAIT_MS = 20_000L
+    /** alpha.35 诊断:外层整轮重试上限(含首轮)。4 轮 ×(8 内层 + 20s 长睡)≈ 84s 预算。 */
+    const val BACKOFF_OUTER_ROUNDS = 4
   }
 }
