@@ -1367,7 +1367,7 @@ fun PlayerScreen(
           }
           videoDeferred.await() to audioDeferred.await()
         }
-        val effectiveInfo = info.copy(
+        var effectiveInfo = info.copy(
           videoTracks = resolvedVideoTracks,
           audioTracks = resolvedAudioTracks,
         )
@@ -1381,6 +1381,16 @@ fun PlayerScreen(
               ?: resolvedRequest.startPositionMs
         }
         val startPositionMs = requestedStartPositionMs
+        // alpha.34:SABR 源不可 seek(LENGTH_UNSET)。把续播点 startMs 透传进 sabr:// URL,
+        // 让 DataSource 首段按 playerTimeMs=startMs 从续播点发段(协议层续播),并在下方跳过
+        // ExoPlayer.seekTo(否则 seek 取消 fetch 重开 DataSource,init 喂两遍给 MatroskaExtractor
+        // → "Multiple Segment elements not supported" 崩)。
+        if (startPositionMs > 0L && effectiveInfo.isSabrProgressive()) {
+          effectiveInfo = effectiveInfo.copy(
+            videoTracks = effectiveInfo.videoTracks.map { it.copy(baseUrl = appendSabrStartMs(it.baseUrl, startPositionMs)) },
+            audioTracks = effectiveInfo.audioTracks.map { it.copy(baseUrl = appendSabrStartMs(it.baseUrl, startPositionMs)) },
+          )
+        }
         // alpha.27:包一层 SabrAwareDataSourceFactory——sabr:// URI(YouTube SABR 流)交 SabrStreamingDataSource
         //(走 SabrStreamRegistry 查表 + SabrClient 驱动 init/seg),其余 http/https(B站 + YouTube 回退)走 OkHttp。
         // 一处包装,非 sabr 流不受影响;SABR track segmentBase=null → 走下方 progressive MergingMediaSource 分支。
@@ -1420,7 +1430,9 @@ fun PlayerScreen(
         player.prepare()
         player.setPlaybackSpeed(playbackSpeed)
         if (startPositionMs > 0L) {
-          player.seekTo(startPositionMs)
+          // alpha.34:SABR 源(LENGTH_UNSET 不可 seek)跳过 seekTo——续播已由 startMs 透传进
+          // sabr:// URL 协议层完成;seekTo 会重开 DataSource 喂双 init 致 MatroskaExtractor 崩。
+          if (!effectiveInfo.isSabrProgressive()) player.seekTo(startPositionMs)
           playbackPositionState.longValue = startPositionMs
           danmakuSyncToken += 1L
         }
@@ -2047,6 +2059,28 @@ internal fun buildDashMediaItem(info: PlaybackInfo, cdnPreference: PlaybackCdnPr
     .setMimeType(MimeTypes.APPLICATION_MPD)
     .build()
 }
+
+/**
+ * alpha.34:给 `sabr://` baseUrl 追加 `&startMs=<ms>` 续播点(无则原样返回)。
+ * 由 Mobile/TV 播放器在 startPositionMs>0 且源是 SABR 时调用,把续播点透传进
+ * [com.kirin.mt.core.youtube.sabr.SabrStreamingDataSource.startMs],让首段请求按
+ * playerTimeMs=startMs 从续播点发段——绕开对不可 seek 的 SABR 源调 ExoPlayer.seekTo
+ * (会取消 fetch 重开 DataSource,init 喂两遍致 MatroskaExtractor "Multiple Segment
+ * elements not supported" 崩)。已带 startMs 的 URL 先剥再加(支持反复切换)。
+ */
+internal fun appendSabrStartMs(baseUrl: String, startMs: Long): String {
+  if (startMs <= 0L || !baseUrl.startsWith("sabr://")) return baseUrl
+  val stripped = if (baseUrl.contains("startMs=")) {
+    baseUrl.replace(Regex("""[?&]startMs=\d+"""), "")
+  } else baseUrl
+  val sep = if (stripped.contains('?')) '&' else '?'
+  return "$stripped${sep}startMs=$startMs"
+}
+
+/** alpha.34:源是否走 SABR progressive 路径(sabr:// scheme → 不可 seek,seekTo 会崩)。 */
+internal fun PlaybackInfo.isSabrProgressive(): Boolean =
+  videoTracks.firstOrNull()?.baseUrl?.startsWith("sabr://") == true
+
 
 internal fun buildDashManifest(info: PlaybackInfo, cdnPreference: PlaybackCdnPreference): String {
   val videoRepresentations = info.videoTracks.joinToString(separator = "\n") { track ->

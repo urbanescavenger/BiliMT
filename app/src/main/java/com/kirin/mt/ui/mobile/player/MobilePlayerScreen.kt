@@ -149,7 +149,9 @@ import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.PlayerHolder
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.ui.player.PlayerDanmakuLayer
+import com.kirin.mt.ui.player.appendSabrStartMs
 import com.kirin.mt.ui.player.buildDashMediaItem
+import com.kirin.mt.ui.player.isSabrProgressive
 import com.kirin.mt.ui.player.nextEpisodeCompletion
 import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.player.withResolvedMetadata
@@ -506,6 +508,16 @@ fun MobilePlayerScreen(
         else -> playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
           ?: request.startPositionMs
       }
+      // alpha.34:SABR 源不可 seek(LENGTH_UNSET)。把续播点 startMs 透传进 sabr:// URL,
+      // 让 DataSource 首段按 playerTimeMs=startMs 从续播点发段(协议层续播),并在下方跳过
+      // ExoPlayer.seekTo(否则 seek 取消 fetch 重开 DataSource,init 喂两遍给 MatroskaExtractor
+      // → "Multiple Segment elements not supported" 崩)。
+      val sabrEffectiveInfo = if (startPositionMs > 0L && effectiveInfo.isSabrProgressive()) {
+        effectiveInfo.copy(
+          videoTracks = effectiveInfo.videoTracks.map { it.copy(baseUrl = appendSabrStartMs(it.baseUrl, startPositionMs)) },
+          audioTracks = effectiveInfo.audioTracks.map { it.copy(baseUrl = appendSabrStartMs(it.baseUrl, startPositionMs)) },
+        )
+      } else effectiveInfo
       // 后台播放 MediaStyle 通知封面:下载 coverUrl bytes(IO),失败忽略。
       val coverBytes = request.coverUrl.takeIf { it.isNotEmpty() }?.let { url ->
         runCatching {
@@ -525,25 +537,25 @@ fun MobilePlayerScreen(
       val dataSourceFactory = DefaultDataSource.Factory(
         context,
         SabrAwareDataSourceFactory(
-          BiliMediaDataSourceFactory(client = playbackHttpClient, headers = effectiveInfo.headers).create(),
+          BiliMediaDataSourceFactory(client = playbackHttpClient, headers = sabrEffectiveInfo.headers).create(),
         ),
       )
-      val mediaSource: MediaSource = if (resolvedRequest.isPgc || effectiveInfo.videoTracks.first().isProgressive) {
+      val mediaSource: MediaSource = if (resolvedRequest.isPgc || sabrEffectiveInfo.videoTracks.first().isProgressive) {
         val videoItem = androidx.media3.common.MediaItem.Builder()
-          .setUri(effectiveInfo.videoTracks.first().baseUrl)
+          .setUri(sabrEffectiveInfo.videoTracks.first().baseUrl)
           .setMediaMetadata(metadata)
           .build()
         val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
         // audioTracks 为空(YouTube 无 PO token 时回退单个合并流)时直接单轨播放。
-        if (effectiveInfo.audioTracks.isEmpty()) {
+        if (sabrEffectiveInfo.audioTracks.isEmpty()) {
           videoSource
         } else {
           val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-            .createMediaSource(androidx.media3.common.MediaItem.fromUri(effectiveInfo.audioTracks.first().baseUrl))
+            .createMediaSource(androidx.media3.common.MediaItem.fromUri(sabrEffectiveInfo.audioTracks.first().baseUrl))
           MergingMediaSource(videoSource, audioSource)
         }
       } else {
-        val dashItem = buildDashMediaItem(effectiveInfo, playbackCdnPreference)
+        val dashItem = buildDashMediaItem(sabrEffectiveInfo, playbackCdnPreference)
           .buildUpon()
           .setMediaMetadata(metadata)
           .build()
@@ -553,12 +565,14 @@ fun MobilePlayerScreen(
       player.prepare()
       player.setPlaybackSpeed(playbackSpeed)
       if (startPositionMs > 0L) {
-        player.seekTo(startPositionMs)
+        // alpha.34:SABR 源(LENGTH_UNSET 不可 seek)跳过 seekTo——续播已由 startMs 透传进
+        // sabr:// URL 协议层完成;seekTo 会重开 DataSource 喂双 init 致 MatroskaExtractor 崩。
+        if (!sabrEffectiveInfo.isSabrProgressive()) player.seekTo(startPositionMs)
         playbackPositionState.longValue = startPositionMs
         danmakuSyncToken += 1L
       }
       player.playWhenReady = true
-      playerState = MobilePlayerState.Ready(effectiveInfo)
+      playerState = MobilePlayerState.Ready(sabrEffectiveInfo)
 
       // 弹幕
       if (danmakuSettings.enabled && cid > 0L) {

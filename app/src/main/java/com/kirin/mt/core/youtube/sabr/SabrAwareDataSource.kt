@@ -30,9 +30,8 @@ internal class SabrAwareDataSource(private val http: DataSource) : DataSource {
     val scheme = uri.scheme
     val parsed = if (scheme?.equals("sabr", ignoreCase = true) == true) parseSabrUri(uri) else null
     return if (parsed != null) {
-      val (sid, stream, itag) = parsed
-      Log.i(tag, "route sabr:// sid=$sid stream=$stream itag=${itag ?: "default"} → SabrStreamingDataSource")
-      val sabr = SabrStreamingDataSource(sid, stream, itag)
+      Log.i(tag, "route sabr:// sid=${parsed.sid} stream=${parsed.stream} itag=${parsed.itag ?: "default"} startMs=${parsed.startMs} → SabrStreamingDataSource")
+      val sabr = SabrStreamingDataSource(parsed.sid, parsed.stream, parsed.itag, parsed.startMs)
       delegate = sabr
       sabr.open(dataSpec)
     } else {
@@ -54,17 +53,21 @@ internal class SabrAwareDataSource(private val http: DataSource) : DataSource {
   override fun close() = delegate.close()
 
   /**
-   * `sabr://youtube/<sessionId>?stream=video|audio&itag=<N>` → (sessionId, streamType, videoItag?)。
+   * `sabr://youtube/<sessionId>?stream=video|audio&itag=<N>&startMs=<ms>` → SabrUriParts。
    * alpha.29:`&itag=` 指定本次播放的视频清晰度(poToken 会话级不绑 itag,同 sid 换 itag 即换清晰度)。
    * audio 流不带 itag(用会话默认 audioFormatId)。
+   * alpha.34:`&startMs=` 续播/切清晰度起始 playerTimeMs(见 [SabrStreamingDataSource.startMs]);无则 0(从头播)。
    */
-  private fun parseSabrUri(uri: Uri): Triple<String, SabrStreamType, Int?>? {
+  private data class SabrUriParts(val sid: String, val stream: SabrStreamType, val itag: Int?, val startMs: Long)
+
+  private fun parseSabrUri(uri: Uri): SabrUriParts? {
     // host 段 = "youtube";最后一个 path segment = sessionId。
     val sid = uri.lastPathSegment ?: return null
     if (sid.isBlank()) return null
     val stream = uri.getQueryParameter("stream") ?: "video"
     val st = if (stream.equals("audio", ignoreCase = true)) SabrStreamType.AUDIO else SabrStreamType.VIDEO
     val itag = uri.getQueryParameter("itag")?.toIntOrNull()
-    return Triple(sid, st, itag)
+    val startMs = uri.getQueryParameter("startMs")?.toLongOrNull() ?: 0L
+    return SabrUriParts(sid, st, itag, startMs)
   }
 }

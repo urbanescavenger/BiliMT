@@ -27,6 +27,14 @@ internal class SabrStreamingDataSource(
   private val streamType: SabrStreamType,
   /** alpha.29:本流要播的视频 itag(null=会话默认 videoFormatId)。来自 sabr:// URL 的 `&itag=`。 */
   private val requestedItag: Int?,
+  /**
+   * alpha.34:续播/切清晰度的起始 playerTimeMs(来自 sabr:// URL 的 `&startMs=`)。
+   * open() 把它置进 [cumulativeDurationMs],使首段请求带 playerTimeMs=startMs → 服务端从续播点发段,
+   * 续播由协议层完成而非 ExoPlayer seekTo(对 LENGTH_UNSET 不可 seek 的 SABR 源,seekTo 会取消
+   * 正在飞的 fetch 重开 DataSource,init 喂两遍给 MatroskaExtractor → "Multiple Segment elements
+   * not supported" 崩)。0=从头播(首播),等同原行为。
+   */
+  private val startMs: Long = 0L,
 ) : DataSource {
   private val tag = "YtSabr"
   private var entry: SabrStreamRegistry.Entry? = null
@@ -49,9 +57,12 @@ internal class SabrStreamingDataSource(
         throw java.io.IOException("SABR session not found: $sessionId")
       }
     entry = e
-    Log.i(tag, "SabrStream open sid=$sessionId stream=$streamType sabrUrl=${e.session.sabrUrl.take(80)}...")
-    // init 段(seq=0,isInit=true);init durationMs=0,cumulative 不变(playerTimeMs=0,无 bufferedRange)。
-    // alpha.29:带 requestedItag 让服务端按该 itag 发对应清晰度的 init(视频流)。
+    Log.i(tag, "SabrStream open sid=$sessionId stream=$streamType sabrUrl=${e.session.sabrUrl.take(80)}... startMs=$startMs")
+    // init 段(seq=0,isInit=true);init durationMs=0。alpha.29:带 requestedItag 让服务端按该 itag 发对应清晰度的 init(视频流)。
+    // alpha.34:续播点 startMs 置进 cumulativeDurationMs——首段请求带 playerTimeMs=startMs,
+    // 服务端从续播点发段(0=从头播,等同原行为);绕开 ExoPlayer.seekTo(对 LENGTH_UNSET 不可 seek 的
+    // SABR 源,seekTo 会取消 fetch 重开 DataSource 喂双 init 致 MatroskaExtractor "Multiple Segment
+    // elements not supported" 崩)。
     val initResult = fetchUntilReady(SabrFetchRequest(isInit = true, streamType = streamType, videoItag = requestedItag))
       ?: run {
         Log.w(tag, "SabrStream open: init fetch failed sid=$sessionId stream=$streamType → throw")
@@ -59,7 +70,7 @@ internal class SabrStreamingDataSource(
       }
     buffer = initResult.data
     bufferPos = 0
-    cumulativeDurationMs += initResult.mediaHeader?.durationMs ?: 0L
+    cumulativeDurationMs = startMs + (initResult.mediaHeader?.durationMs ?: 0L)
     return C.LENGTH_UNSET.toLong()
   }
 
