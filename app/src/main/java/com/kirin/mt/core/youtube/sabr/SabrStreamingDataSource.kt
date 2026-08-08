@@ -115,8 +115,10 @@ internal class SabrStreamingDataSource(
         Log.d(tag, "SabrStream sid=$sessionId stream=$streamType pace: lead=${lead}ms > ${MAX_LEAD_MS}ms → sleep ${sleepMs}ms (cumulative=$cumulativeDurationMs playhead=$playheadMs nextSeq=$nextSeq)")
         try { Thread.sleep(sleepMs) } catch (_: InterruptedException) { /* loader 被 cancel,继续尝试取段 */ }
       }
-      // 当前段读完,拉下一段。alpha.36:bufferedRange 改滑动窗口 [playhead..cumulative]
-      // (durationMs=小窗口),playerTimeMs 固定=startMs;让服务端流控见「客户端只缓冲少量」持续发新段。
+      // 当前段读完,拉下一段。alpha.36/42:bufferedRange 改滑动窗口 [playhead..cumulative]
+      // (durationMs=小窗口),playerTimeMs=cumulativeDurationMs(所请求段呈现起始,随段推进涨);
+      // 让服务端流控见「客户端只缓冲少量」持续发新段。alpha.42:playhead 含 startMs(续播/切清晰度
+      // 不再死睡 61s)。
       val seg = fetchUntilReady(buildSegRequest(e))
       if (seg == null) {
         done = true
@@ -155,22 +157,31 @@ internal class SabrStreamingDataSource(
   }
 
   /**
-   * alpha.36:估算当前播放位置(墙钟自 open 起的 elapsed,clamp 到 [0, cumulative])。实时 1x 播放下
-   * ≈ 真实 playhead。用于 bufferedRange 滑动窗口起点 + pacing lead 计算。对齐 FreeTube
-   * `player.getBufferedInfo()`(shaka 给真实 buffer,我们无 player 引用,用 wall-elapsed 代理)。 */
+   * alpha.36/42:估算当前播放位置,用于 bufferedRange 滑动窗口起点 + pacing lead 计算。实时 1x 播放下
+   * ≈ 真实 playhead。对齐 FreeTube `player.getBufferedInfo()`(shaka 给真实 buffer,我们无 player 引用,
+   * 用 wall-elapsed 代理)。
+   *
+   * **alpha.42 修清晰度切换/续播死睡**:alpha.36 只用 `open` 以来的墙钟 elapsed 当 playhead——对首播
+   * (startMs=0)正确(elapsed≈播放位置),但对续播/切清晰度(startMs>0,player 从 startMs 处开播)
+   * **漏了 startMs 基准** → 开播瞬间 playhead≈0 而 cumulative=startMs(74753)→ lead≈74753 →
+   * sleep 61s → 服务端会话空闲过期 → seq=1 只回 NEXT_REQUEST_POLICY backoff 不给 media → 6 backoff
+   * → EOF → evict(alpha.41 真机:16:40:04 pace sleep 61442ms → 16:40:57 seq=1 反复 backoff 死)。
+   * 改回 `startMs + elapsed`:续播点 + 实时推进;首播 startMs=0 时 = elapsed,行为不变(不动 60s 断崖基线)。 */
   private fun playheadEstimateMs(): Long {
     if (openWallMs == 0L) return startMs
     val elapsed = System.currentTimeMillis() - openWallMs
-    return elapsed.coerceAtLeast(0L).coerceAtMost(cumulativeDurationMs)
+    return (startMs + elapsed).coerceAtLeast(0L).coerceAtMost(cumulativeDurationMs)
   }
 
   /**
-   * alpha.36:playhead 落在哪段(1-based seq)——给 bufferedRange.startSegmentIndex。遍历 [segDurations]
+   * alpha.36/42:playhead 落在哪段(1-based seq)——给 bufferedRange.startSegmentIndex。遍历 [segDurations]
    * 累计,找包含 playhead 的段。playhead 超出已取段则返回最后一段(后续 buildSegRequest 会先 pacing)。
-   */
+   *
+   * **alpha.42**:playhead 现含 startMs(见 [playheadEstimateMs]),故段时间线起点也是 startMs
+   * (续播/切清晰度时 seg1 呈现于 startMs 处,非 0)。acc 从 startMs 起累加。首播 startMs=0 时同原行为。 */
   private fun segIndexAtPlayhead(playheadMs: Long): Int {
     if (segDurations.isEmpty()) return nextSeq.coerceAtLeast(1)
-    var acc = 0L
+    var acc = startMs
     for ((i, d) in segDurations.withIndex()) {
       acc += d
       if (playheadMs < acc) return i + 1
@@ -200,10 +211,14 @@ internal class SabrStreamingDataSource(
     val fmt = if (streamType == SabrStreamType.AUDIO) e.session.audioFormatId
       else requestedItag?.let { e.session.videoFormat(it) } ?: e.session.videoFormatId
     val playheadMs = playheadEstimateMs()
-    // alpha.36:own 格式报滑动窗口 [playhead..cumulative](durationMs=小窗口,非绝对终点)。
+    // alpha.36/42:own 格式报滑动窗口 [playhead..cumulative](durationMs=小窗口,非绝对终点)。
     // 对方格式的「满缓冲」条目由 SabrClient.fetch 自行追加(见 alpha.30 createFullBufferRange),
     // 这里只带 own——与原结构一致,不扩散可见性。
-    val own = if (cumulativeDurationMs > 0L) BufferedRangeInput(
+    // alpha.42:条件改 segDurations.isNotEmpty()——只有真取到 ≥1 条媒体段后才报 own。续播/切清晰度
+    // (startMs>0)时 open 后 cumulative=startMs>0 但尚无媒体段,旧条件 `cumulativeDurationMs>0` 会造出
+    // 零宽 own=[startMs..+0] 畸形窗口;首段应同首播(startMs=0,cumulative=0→旧亦 null)报 null,
+    // 拿到首条媒体段后再报真实窗口。首播行为不变。
+    val own = if (segDurations.isNotEmpty()) BufferedRangeInput(
       itag = fmt.itag,
       lastModified = fmt.lastModified,
       xtags = fmt.xtags,
