@@ -50,6 +50,14 @@ class YoutubeSabrHarvester(
   private val appContext = context.applicationContext
   private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
+  /**
+   * alpha.52B:最近一次 harvest 的页面是否已加载完成(即 [WebViewClient.onPageFinished] 是否触发)。
+   * 正常 watch 页 ~1-2s 触发;空白页(YouTube 风控/WebView 渲染进程崩)时**永不触发**且 title 空/body
+   * NOBODY。据此 fail-fast 而非干等满 30s,给轮换工厂的重试留出窗口内(剩余 ~20s)时间。
+   * 每次 [harvest] 开始时清零;单次并发由 registry rotationInFlight 保证,无需加锁。
+   */
+  @Volatile private var pageFinishedMs: Long = 0L
+
   /** 一次采集到的 googlevideo 请求(SABR POST 或 DASH GET;url 含已 transform 的 n + body 含 poToken/ustreamerConfig/formatIds)。 */
   data class SabrCapture(val url: String, val method: String, val bodyB64: String, val status: Int)
 
@@ -86,6 +94,7 @@ class YoutubeSabrHarvester(
       val watchT = if (startMs > 0) "&t=${startMs / 1000}" else ""
       YoutubeLoadProgress.emit(YoutubeLoadStep.HarvestWatch)
       Log.i(Tag, "harvest: load watch videoId=$videoId startMs=$startMs${watchT} cookie=${cookies.length}B")
+      pageFinishedMs = 0L
       view.loadUrl("https://www.youtube.com/watch?v=$videoId&autoplay=1&mute=1$watchT")
       // 轮询 window.__gvCaptures[0](对齐 BotGuard pollState 双解码:evaluateJavascript 对字符串
       // 结果做 JSON 编码,先解内层字符串再解析对象)。alpha.20 只截 SABR POST 致 25s 无捕获——
@@ -96,6 +105,13 @@ class YoutubeSabrHarvester(
       var lastDiag = start
       var lastCaptureDump = start
       while (System.currentTimeMillis() < deadline) {
+        // alpha.52B:空白页 fail-fast——onPageFinished 正常 ~1-2s 触发;超 [BLANK_PAGE_ABORT_MS] 仍没触发
+        // = 页根本没渲染(风控/WebView 渲染崩,alpha.52 真机 w120:title 空/NOBODY/player=false 干等 30s)。
+        // 立即放弃交轮换工厂重试,不耗满 30s(否则重试永远赶不上窗口耗尽)。正常页 1-2s 已过该闸,无副作用。
+        if (pageFinishedMs == 0L && System.currentTimeMillis() - start > BLANK_PAGE_ABORT_MS) {
+          Log.w(Tag, "harvest: onPageFinished not fired within ${BLANK_PAGE_ABORT_MS}ms (blank page — throttle/renderer died) → fail fast, let rotation retry")
+          return null
+        }
         // alpha.47:读全数组并遍历,不再只读 [0]——首条无效(status=0/url 空)不再挡住后续 SABR POST。
         val raw = evalOn(view, "(window.__gvCaptures && window.__gvCaptures.length) ? JSON.stringify(window.__gvCaptures) : null")
         val arr = parseCaptureArray(raw)
@@ -163,6 +179,8 @@ class YoutubeSabrHarvester(
       }
 
       override fun onPageFinished(view: WebView?, url: String?) {
+        // alpha.52B:记录页面加载完成时刻——空白页 fail-fast 判定用(见 harvestImpl 轮询循环)。
+        pageFinishedMs = System.currentTimeMillis()
         Log.i(Tag, "harvest onPageFinished: $url")
         // dump 页面内容——确认页真渲染了播放器(不是 consent 墙/error 壳)。title/body/player
         // 元素/video src/captures 经 console 路由(被 onConsoleMessage 捕获)。alpha.21 真机:onPageFinished
@@ -262,6 +280,11 @@ class YoutubeSabrHarvester(
 
   private companion object {
     const val Tag = "YtSabrHarvest"
+    /**
+     * alpha.52B:空白页 fail-fast 阈值——watch 页 [onPageFinished] 正常 ~1-2s 触发;超过此值仍没触发
+     * = 页未渲染(风控/渲染崩),立即放弃让轮换重试,不干等 30s。正常加载远快于 8s,不会误杀。
+     */
+    const val BLANK_PAGE_ABORT_MS = 8_000L
 
     /**
      * 页面状态诊断脚本——dump player 元素 present/viewport 尺寸/<video> src/captures 条数,

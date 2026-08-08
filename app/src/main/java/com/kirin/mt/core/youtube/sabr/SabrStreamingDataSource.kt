@@ -262,13 +262,22 @@ internal class SabrStreamingDataSource(
     // alpha.52(窗口):改按 cumulative 距窗口锚点的增量判断(非 alpha.49 的 playhead)。alpha.51 真机坐实
     // 会话死在 cumulative 达 ~60s(media 服务量上限),而 playhead 领先累积 ~20s(缓冲 lead)→ playhead
     // 触发点永远够不到(playhead 只到 ~40s 会话已死)→ 0 次轮换。cumulative 到 40s 时 playhead 才 ~25s,
-    // 远在死亡点前,触发可靠。预取锚定**下一个窗口起点**(sessionAnchorMs+60s,非 playhead)——让浏览器
-    // watch `&t=` 锚定新会话窗口到边界,旧窗口耗尽后新会话从边界续,无 gap。
-    val sinceAnchor = cumulativeDurationMs - sessionAnchorMs
+    // 远在死亡点前,触发可靠。预取锚定**下一个窗口起点**(+60s,非 playhead)——让浏览器 watch `&t=`
+    // 锚定新会话窗口到边界,旧窗口耗尽后新会话从边界续,无 gap。
+    // alpha.52B(Bug B 修复):当前窗口取**共享** activeWindow(registry 按 videoId 记录真正在播的窗口),
+    // 而非本 DataSource 私有 sessionAnchorMs——VIDEO/AUDIO 共用同 sid,各自私有锚点会错位(一路切了、
+    // 另一路锚点仍旧)→ 对已轮换窗口重复 harvest(alpha.52 真机 VIDEO 重复 w60)。用共享窗口 + 按窗口
+    // 去重(markRotationRequested),每窗口只 harvest 一次。
+    val currentWindow = SabrStreamRegistry.activeWindow(vid) ?: sessionAnchorMs
+    val sinceAnchor = cumulativeDurationMs - currentWindow
     if (sinceAnchor < PREFETCH_AT_MS) return
     rotationTriggered = true
-    val nextWindowStart = sessionAnchorMs + WINDOW_LEN
-    Log.i(tag, "ROTATION trigger sid=$sessionId stream=$streamType cumulativeSinceAnchor=${sinceAnchor}ms → requestRotation(videoId=$vid startMs=$nextWindowStart window=${nextWindowStart})")
+    val nextWindowStart = currentWindow + WINDOW_LEN
+    if (!SabrStreamRegistry.markRotationRequested(vid, nextWindowStart)) {
+      Log.i(tag, "ROTATION trigger skip sid=$sessionId stream=$streamType window=$nextWindowStart (already requested) → no redundant harvest")
+      return
+    }
+    Log.i(tag, "ROTATION trigger sid=$sessionId stream=$streamType cumulativeSinceAnchor=${sinceAnchor}ms window=${currentWindow} → requestRotation(videoId=$vid startMs=$nextWindowStart window=$nextWindowStart)")
     SabrStreamRegistry.requestRotation(vid, nextWindowStart)
   }
 

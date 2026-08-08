@@ -20,6 +20,7 @@ import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import com.kirin.mt.core.youtube.sabr.SabrStreamType
 import com.kirin.mt.core.youtube.sabr.UmpReader
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -279,9 +280,23 @@ class YoutubePlaybackResolver(
             // 的新会话。startMs 即窗口起点(DataSource 传 sessionAnchorMs+WINDOW_LEN),作 session 窗口存盘。
             SabrStreamRegistry.rotationFactory = { v, startMs, epoch ->
               Log.i(Tag, "rotation: start harvest videoId=$v startMs=$startMs epoch=$epoch")
-              val cap = sabrHarvester.harvest(v, startMs)
+              // alpha.52B:轮换 harvest 失败重试——单次瞬时空白页(风控/WebView 渲染崩)不立即放弃。
+              // harvester 已对空白页 fail-fast(~8s 而非 30s),配合短退避,最多 ROTATION_HARVEST_ATTEMPTS
+              // 次,赶在窗口耗尽(距预取触发 ~20s)前完成。全败才 keep old session(旧会话若已耗尽,交播放器
+              // stall-retry fresh-harvest 兜底)。retry 只在后台轮换协程(rotationScope)跑,不阻塞 read()。
+              var cap: YoutubeSabrHarvester.SabrCapture? = null
+              var attempt = 0
+              while (attempt < ROTATION_HARVEST_ATTEMPTS) {
+                attempt++
+                cap = sabrHarvester.harvest(v, startMs)
+                if (cap != null) break
+                if (attempt < ROTATION_HARVEST_ATTEMPTS) {
+                  Log.w(Tag, "rotation: harvest attempt $attempt/$ROTATION_HARVEST_ATTEMPTS failed videoId=$v startMs=$startMs → retry in ${ROTATION_RETRY_MS}ms")
+                  delay(ROTATION_RETRY_MS)
+                }
+              }
               if (cap == null) {
-                Log.w(Tag, "rotation: harvest failed videoId=$v startMs=$startMs (keep old session)")
+                Log.w(Tag, "rotation: harvest failed after $ROTATION_HARVEST_ATTEMPTS attempts videoId=$v startMs=$startMs (keep old session)")
               } else if (!cap.method.equals("POST", ignoreCase = true)) {
                 Log.w(Tag, "rotation: captured ${cap.method} not POST → skip (need SABR POST body)")
               } else {
@@ -1026,6 +1041,15 @@ class YoutubePlaybackResolver(
      * 一致。目标窗口 = floor(startMs/60s)*60s;会话必须锚定到覆盖所选位置的窗口,`startTimeMs=X` 才被服务端接受。
      */
     const val WINDOW_LEN = 60_000L
+
+    /**
+     * alpha.52B:轮换 harvest 失败重试次数上限(含首次)。harvester 对空白页 fail-fast ~8s,故 3 次 ≈
+     * 8s+1s+8s+1s+8s ≈ 26s,赶在窗口耗尽(距预取触发 ~20s)前后完成;全败交播放器 stall-retry 兜底。
+     */
+    const val ROTATION_HARVEST_ATTEMPTS = 3
+
+    /** alpha.52B:轮换 harvest 重试间退避(ms)。风控多为瞬时,短退避后重试可绕过。 */
+    const val ROTATION_RETRY_MS = 1_000L
 
     /** googlevideo 直链无需 B 站 Cookie；仅带 youtube Referer/Origin。 */
     val YoutubePlaybackHeaders = BiliPlaybackHeaders(

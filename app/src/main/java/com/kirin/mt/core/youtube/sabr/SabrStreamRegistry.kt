@@ -58,6 +58,13 @@ internal object SabrStreamRegistry {
 
   private val rotationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val rotationInFlight = ConcurrentHashMap.newKeySet<String>()
+  /**
+   * alpha.52B(Bug B 修复):每 videoId 已请求轮换的**窗口**——去重顺序重复触发。video/audio 两路
+   * DataSource 共用同 sid 且各自独立触发轮换,若各自持有私有锚点会因错位对同一窗口重复 harvest
+   * (alpha.52 真机:02:23:31 VIDEO 对 w60 重复 harvest,多耗一次 watch 页加载,加重风控)。这里按窗口
+   * 去重:某窗口已请求过(或已请求到更后窗口)即拒绝再次触发,每窗口只 harvest 一次。
+   */
+  private val rotationRequestedWindow = ConcurrentHashMap<String, Long>()
   /** alpha.52:每 videoId 的旋转代际计数——seek 时 bump,让旧窗口在途预取结果作废。 */
   private val rotationEpoch = ConcurrentHashMap<String, Long>()
 
@@ -96,7 +103,23 @@ internal object SabrStreamRegistry {
   fun resetForSeek(videoId: String) {
     rotationEpoch[videoId] = (rotationEpoch[videoId] ?: 0L) + 1
     rotationInFlight.remove(videoId)
+    rotationRequestedWindow.remove(videoId)
     Log.i(tag, "resetForSeek videoId=$videoId epoch=${rotationEpoch[videoId]} (drop stale prefetch after seek)")
+  }
+
+  /** alpha.52B:该 videoId 当前**真正在播**的窗口起点(seek 复用判断 + 轮换触发用共享窗口,非每 DataSource 私有锚点)。 */
+  fun activeWindow(videoId: String): Long? = activeWindowByVideoId[videoId]
+
+  /**
+   * alpha.52B(Bug B 修复):声明「已为该窗口请求轮换」,并返回是否应真正发起。
+   * 该 videoId 已请求过 ≥ 此窗口的轮换(顺序重复触发)→ 返回 false,触发方跳过(不再重复 harvest)。
+   * 首次为某窗口请求 → 记录并返回 true。窗口单调递增,seek 时 [resetForSeek] 清空重建。
+   */
+  fun markRotationRequested(videoId: String, windowStartMs: Long): Boolean {
+    val prev = rotationRequestedWindow[videoId]
+    if (prev != null && prev >= windowStartMs) return false
+    rotationRequestedWindow[videoId] = windowStartMs
+    return true
   }
 
   /** alpha.52:某次轮换发起时代际是否仍是最新——false 表示期间发生过 seek,结果应丢弃。 */
