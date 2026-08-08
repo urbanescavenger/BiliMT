@@ -350,6 +350,11 @@ internal class SabrStreamingDataSource(
       sequenceNumber = nextSeq,
       streamType = streamType,
       videoItag = requestedItag,
+      // alpha.51(Track A 移动播放点):startTimeMs = 本段起始呈现时间(cumulative = 下一段起点),镜像
+      // FreeTube 段 URL 的 `startTimeMs`。仅用于拼 URL(`&startTimeMs=<T>&sq=<seq>`),让段请求自锚定。
+      // 诊断目的:验证服务端是否接受显式 startTimeMs 按目标呈现时间发段,从而越过 ~60s 会话窗口上限。
+      // 注意:body 的 playerTimeMs 仍用 playhead(alpha.44 防 60s 断崖结论),URL 与 body 分离。
+      startTimeMs = cumulativeDurationMs,
       // alpha.44:playerTimeMs 改用 playhead(当前播放位置)——SABR clientAbrState.playerTimeMs 语义即客户端
       // 当前播放位置,服务端 ABR 据此预发段。alpha.37 误设成 cumulativeDurationMs(缓冲终点),播到 ~60s 时
       // cumulative>60000=maxTimeSinceReq → 服务端软拒(只回 NEXT_REQUEST_POLICY backoff 不给 MEDIA_HEADER)
@@ -393,7 +398,11 @@ internal class SabrStreamingDataSource(
       when (result) {
         is SabrFetchResult.Success -> {
           if (attempt > 1) Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} RESUMED after ${attempt} backoffs (bufferedEnd=$cumulativeDurationMs)")
-          Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} isInit=${req.isInit} bytes=${result.data.size}B dur=${result.mediaHeader?.durationMs}ms playerTimeMs=${req.playerTimeMs}")
+          // alpha.51(Track A 诊断):reqSeq=请求的 sq / realSeq=服务端实际回段 seq / startTimeMs=请求的 URL 锚点。
+          // 对比三者可判定服务端是否接受显式 startTimeMs 按其发段:若 realSeq 持续跟进、startTimeMs 推进,
+          // 且 cumulative 越过 60000 仍继续 → 移动播放点生效,FreeTube 模型成立;若 realSeq 停在某 seq 反复 /
+          // 回 startTimeMs 附近重发 → 服务端未按 URL 锚点发,轮换兜底。
+          Log.i(tag, "SabrStream sid=$sessionId stream=$streamType reqSeq=${req.sequenceNumber} realSeq=${result.mediaHeader?.sequenceNumber} startTimeMs=${req.startTimeMs} isInit=${req.isInit} bytes=${result.data.size}B dur=${result.mediaHeader?.durationMs}ms playerTimeMs=${req.playerTimeMs}")
           return result
         }
         is SabrFetchResult.Redirect -> {

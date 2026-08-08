@@ -166,6 +166,11 @@ internal data class SabrFetchRequest(
    * (已缓冲到的位置)+ bufferedRange(0..cumulative)让服务端 lookahead 窗口前移持续发新段。 */
   val playerTimeMs: Long = 0L,
   val bufferedRange: BufferedRangeInput? = null,
+  /** alpha.51(Track A 移动播放点):本段起始呈现时间(ms),镜像 FreeTube 段 URL 的 `startTimeMs`。
+   * 仅用于拼段请求 URL(`&startTimeMs=<T>&sq=<seq>`),让每次段请求**自锚定**到目标呈现时间——
+   * FreeTube 靠此绕开服务端会话锚定窗口的 ~60s 服务量上限(见 Mp4SegmentIndexParser.js)。
+   * body 的 [playerTimeMs] 仍保持 playhead(alpha.44 防 60s 断崖结论,不随 URL 改)。 */
+  val startTimeMs: Long = 0L,
   // alpha.30:playbackCookie 存 [SabrSession.playbackCookie](会话级——cookie 含双格式 resolution,
   // 服务端对同一会话发同一 cookie,两 loader 共享安全),不在 req 里——Backoff 重试同 req 时
   // session 已更新 cookie,fetch 自动读到,无需 req 重建。
@@ -283,12 +288,17 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     )
     val body = SabrProto.encodeVideoPlaybackAbrRequest(input)
     val rn = requestNumber.getAndIncrement()
-    val url = "${session.sabrUrl}&rn=$rn"
+    // alpha.51(Track A 移动播放点):非 init 的段请求在 URL 加 `startTimeMs`+`sq`,让每段请求自锚定到
+    // 目标呈现时间(镜像 FreeTube Mp4SegmentIndexParser.js `${uri}&startTimeMs=..&sq=..`)。诊断目的:验证
+    // 服务端是否接受显式 startTimeMs(按其发段)→ 可越过累积 ~60s 会话窗口上限,轮换不再必须;若仍按
+    // 自己窗口回段 → 保留服务端流控,靠 alpha.48 轮换兜底续播。init 段不带(对齐 FreeTube isInit)。
+    val url = if (req.isInit) "${session.sabrUrl}&rn=$rn" else
+      "${session.sabrUrl}&rn=$rn&startTimeMs=${req.startTimeMs}&sq=${req.sequenceNumber}"
     // alpha.38 诊断:打**发出**的 cookie 哈希(sentCookieHash)。对比同流上一个 PolicyDiag 收到的
     // cookieHash——若两者不等,说明两 loader 并发期间 cookie 被对方覆盖(§8 clobber 风险的铁证);
     // 若始终相等,cookie 共享安全,clobber 排除。结合 PolicyDiag 逐流读。
     val sentCookieHash = session.playbackCookie?.let { java.util.Arrays.hashCode(it) }
-    Log.i(tag, "fetch rn=$rn isInit=${req.isInit} stream=${req.streamType} seq=${req.sequenceNumber} body=${body.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} sentCookieHash=$sentCookieHash contexts=${activeCtxs.size}/${unsentCtxTypes.size}")
+    Log.i(tag, "fetch rn=$rn isInit=${req.isInit} stream=${req.streamType} seq=${req.sequenceNumber} startTimeMs=${req.startTimeMs} body=${body.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} sentCookieHash=$sentCookieHash contexts=${activeCtxs.size}/${unsentCtxTypes.size}")
 
     return try {
       val request = Request.Builder()

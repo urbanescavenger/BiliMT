@@ -30,8 +30,9 @@ import kotlin.coroutines.resume
  * 背景:plasma 播放器把 n/sig transform 移进 WASM,[YoutubeNDecryptor] 正则方案结构性
  * 失效(§6.7 row 42/43)→ SABR URL 带 `n` 未解 → googlevideo 403。逆向 WASM 不可行,
  * 故让 Android **WebView 浏览器引擎**(原生跑 WASM+WebCrypto)替我们做 n-transform:
- *  - 加载 YouTube embed 页 `https://www.youtube.com/embed/<id>`,embed 播放器(同 plasma base.js)
- *    会自己 decipher(含 n-transform)并发起 SABR POST。
+ *  - 加载 YouTube watch 页 `https://www.youtube.com/watch?v=<id>`(alpha.23 起 watch 回退捕获;
+ *    embed 页 Error 153 config 拒不可解,已删),watch 播放器(同 plasma base.js)会自己
+ *    decipher(含 n-transform)并发起 SABR POST。
  *  - 在 [onPageStarted] 注入 fetch/XHR wrapper,截获首个发往 `googlevideo.com/videoplayback` 的
  *    POST(URL 含 `sabr`),采集 {url(已 transform 的 n), bodyB64, status}。
  *  - 让请求照常放行(返回真实 Response),播放器拿到 200 即证「浏览器 transform 的 n 被服务端接受」。
@@ -53,16 +54,15 @@ class YoutubeSabrHarvester(
   data class SabrCapture(val url: String, val method: String, val bodyB64: String, val status: Int)
 
   /**
-   * 加载 watch 页采集首个 SABR POST(alpha.49 起 watch 优先;embed 几乎总 Error 153 config 拒,
-   * 仅作兜底)。失败/超时返回 null(绝不抛,不阻塞主路径)。
-   * @param timeoutMs 上限(默认 30s);watch 页 SPA 播放器 init 通常 4-8s,embed 兜底更慢。
+   * 加载 watch 页采集首个 SABR POST(alpha.49 起 watch 优先;embed Error 153 config 拒不可解,已删)。
+   * 失败/超时返回 null(绝不抛,不阻塞主路径)。
+   * @param timeoutMs 上限(默认 30s);watch 页 SPA 播放器 init 通常 4-8s。
    */
   /**
-   * alpha.48/49(轮换+顺序反转):支持 `startMs` 锚定——watch 页 URL 加 `&t=<秒>`(embed 兜底用
-   * `&start=<秒>`)让浏览器播放器**从该位置起播**,其首发 SABR POST 锚定在 startMs。服务端会话窗口 =
-   * 锚点..锚点+60s(见 docs row 72,锚点服务端侧,由浏览器 POST 时播放位置定),故旋转到 mid-playhead
-   * 必须先让浏览器锚定在播放头,否则新会话窗口仍从 0 起算 → 请求 playhead>60s 被拒(alpha.47 session2
-   * 死因)。默认 startMs=0(从头播,原行为)。
+   * alpha.48/49(轮换):支持 `startMs` 锚定——watch 页 URL 加 `&t=<秒>` 让浏览器播放器**从该位置起播**,
+   * 其首发 SABR POST 锚定在 startMs。服务端会话窗口 = 锚点..锚点+60s(见 docs row 72,锚点服务端侧,
+   * 由浏览器 POST 时播放位置定),故旋转到 mid-playhead 必须先让浏览器锚定在播放头,否则新会话窗口仍
+   * 从 0 起算 → 请求 playhead>60s 被拒(alpha.47 session2 死因)。默认 startMs=0(从头播,原行为)。
    */
   suspend fun harvest(videoId: String, startMs: Long = 0L, timeoutMs: Long = 30_000L): SabrCapture? =
     withContext(Dispatchers.Main) {
@@ -74,29 +74,25 @@ class YoutubeSabrHarvester(
   private suspend fun harvestImpl(videoId: String, startMs: Long = 0L): SabrCapture? {
     val view = createWebView()
     try {
-      // seed cookies:embed 播放器在 WebView 里发 /youtubei/v1/player 需要 VISITOR_INFO1_LIVE
+      // seed cookies:watch 播放器在 WebView 里发 /youtubei/v1/player 需要 VISITOR_INFO1_LIVE
       // 等会话 cookie(对齐 YoutubeJsExecutor.fetchViaWebView 的 CookieManager 写法)。
       val cookies = innerTubeClient.currentSessionCookies()
       runCatching {
         CookieManager.getInstance().setCookie(YoutubeConstants.Origin, cookies)
         CookieManager.getInstance().flush()
       }.onFailure { Log.w(Tag, "seed cookies failed: ${it.message}") }
-      // alpha.49(顺序反转):watch 页优先——row 47 起 watch 页是唯一稳定捕获源(embed 几乎总
-      // Error 153 config 拒、白等 10s),故先 load watch,10s 无捕获再回退 embed。watch 页锚定用
-      // `t=<秒>`(SPA 起播位置参数,替代 embed 的 `&start=`;startMs=0 首播不锚定)。
+      // alpha.49(顺序反转):watch 页唯一稳定捕获源(embed Error 153 config 拒不可解,已删)。
+      // 锚定用 `t=<秒>`(SPA 起播位置参数;startMs=0 首播不锚定)。
       val watchT = if (startMs > 0) "&t=${startMs / 1000}" else ""
-      // embed 兜底仍需 `&start=<秒>` 锚定(embed 播放器用 start 参数,alpha.48 轮换验证过)。
-      val embedStart = if (startMs > 0) "&start=${startMs / 1000}" else ""
       YoutubeLoadProgress.emit(YoutubeLoadStep.HarvestWatch)
       Log.i(Tag, "harvest: load watch videoId=$videoId startMs=$startMs${watchT} cookie=${cookies.length}B")
       view.loadUrl("https://www.youtube.com/watch?v=$videoId&autoplay=1&mute=1$watchT")
       // 轮询 window.__gvCaptures[0](对齐 BotGuard pollState 双解码:evaluateJavascript 对字符串
       // 结果做 JSON 编码,先解内层字符串再解析对象)。alpha.20 只截 SABR POST 致 25s 无捕获——
-      // alpha.21 放宽到所有 googlevideo 请求(含 DASH GET),并加页面加载/console 诊断定位 embed 行为。
-      // alpha.23:embed 报「错误 153」(config 拒)→ 10s 无捕获则回退 watch 页(无 embed 权限闸)。
+      // alpha.21 放宽到所有 googlevideo 请求(含 DASH GET),并加页面加载/console 诊断定位行为。
+      // alpha.23:embed 报「错误 153」(config 拒不可解)→ 主源定为 watch 页(无 embed 权限闸)。
       val start = System.currentTimeMillis()
       val deadline = start + 30_000L
-      var triedEmbed = false
       var lastDiag = start
       var lastCaptureDump = start
       while (System.currentTimeMillis() < deadline) {
@@ -135,17 +131,9 @@ class YoutubeSabrHarvester(
           lastDiag = System.currentTimeMillis()
           view.evaluateJavascript(PAGE_DIAG_JS, null)
         }
-        // 10s 内 watch 无捕获 → 回退 embed 页(同 videoId;embed 播放器同 plasma base.js 做 n-transform,
-        // 但常有 Error 153 config 拒,故仅兜底)。hook 在 onPageStarted 重新注入,idempotent,导航存活。
-        if (!triedEmbed && System.currentTimeMillis() - start > 10_000L) {
-          Log.i(Tag, "harvest: watch 无捕获 10s → 回退 embed 页")
-          YoutubeLoadProgress.emit(YoutubeLoadStep.HarvestEmbed)
-          view.loadUrl("https://www.youtube.com/embed/$videoId?autoplay=1&mute=1&playsinline=1&origin=https://www.youtube.com$embedStart")
-          triedEmbed = true
-        }
         delay(200)
       }
-      Log.w(Tag, "harvest: timeout (30s 内 embed+watch 均无 googlevideo 请求)")
+      Log.w(Tag, "harvest: timeout (30s 内 watch 无 googlevideo 请求)")
       return null
     } finally {
       view.destroy()
@@ -161,22 +149,22 @@ class YoutubeSabrHarvester(
     @Suppress("DEPRECATION")
     settings.allowUniversalAccessFromFileURLs = true
     settings.mediaPlaybackRequiresUserGesture = false // 允许 muted autoplay,触发播放器 → SABR POST
-    // 桌面 UA——alpha.22 真机 embed 报「错误 153 视频播放器配置错误」:embed 播放器自己的 config
+    // 桌面 UA——alpha.22 真机 embed 报「错误 153 视频播放器配置错误」:播放器自己的 config
     // 请求被拒(mobile UA 嫌疑;FreeTube 桌面 Electron 能播)。harvester 是独立 WebView,UA 不影响
-    // 我们 mobile /player 流程,故此处用桌面 UA 让 embed/watch 页播放器正常 init。
+    // 我们 mobile /player 流程,故此处用桌面 UA 让 watch 页播放器正常 init。
     settings.userAgentString = YoutubeConstants.UserAgent
     webViewClient = object : WebViewClient() {
       // onPageStarted 在页面脚本(含播放器 base.js)加载前触发——SABR/GET 在播放器 init 后
       // (数秒)才发,故此处注入的 fetch/XHR wrapper 必先于首个 googlevideo 请求就位。
-      // 同时 log 页面导航——alpha.20 真机 25s 无捕获,需确认 embed 页是否真加载/是否被 consent 拦。
+      // 同时 log 页面导航——alpha.20 真机 25s 无捕获,需确认页是否真加载/是否被 consent 拦。
       override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-        Log.i(Tag, "embed onPageStarted: $url")
+        Log.i(Tag, "harvest onPageStarted: $url")
         view?.evaluateJavascript(HOOK_JS, null)
       }
 
       override fun onPageFinished(view: WebView?, url: String?) {
-        Log.i(Tag, "embed onPageFinished: $url")
-        // dump 页面内容——确认 embed 页真渲染了播放器(不是 consent 墙/error 壳)。title/body/player
+        Log.i(Tag, "harvest onPageFinished: $url")
+        // dump 页面内容——确认页真渲染了播放器(不是 consent 墙/error 壳)。title/body/player
         // 元素/video src/captures 经 console 路由(被 onConsoleMessage 捕获)。alpha.21 真机:onPageFinished
         // 触发但 25s 零 googlevideo 请求 + 零 console → 疑 detached WebView 0 尺寸致播放器 JS 不 init(本版补 measure+layout)。
         view?.evaluateJavascript(PAGE_DIAG_JS, null)
@@ -190,7 +178,7 @@ class YoutubeSabrHarvester(
         if (request?.url?.toString()?.contains("googlevideo") == true ||
           request?.url?.toString()?.contains("youtube") == true
         ) {
-          Log.w(Tag, "embed onReceivedError: ${request?.url} ${error?.description}")
+          Log.w(Tag, "harvest onReceivedError: ${request?.url} ${error?.description}")
         }
       }
 
@@ -199,7 +187,7 @@ class YoutubeSabrHarvester(
         request: WebResourceRequest?,
         errorResponse: WebResourceResponse?,
       ) {
-        Log.w(Tag, "embed onReceivedHttpError: ${request?.url} code=${errorResponse?.statusCode} reason=${errorResponse?.reasonPhrase}")
+        Log.w(Tag, "harvest onReceivedHttpError: ${request?.url} code=${errorResponse?.statusCode} reason=${errorResponse?.reasonPhrase}")
       }
 
       // alpha.43:shouldInterceptRequest 只读记录所有 googlevideo 请求的 itag/sabr(method+url),
@@ -216,11 +204,11 @@ class YoutubeSabrHarvester(
         return null
       }
     }
-    // 捕获 embed 播放器 console 输出——播放器 init 失败/autoplay 被拒会在 console 报错,
+    // 捕获 watch 播放器 console 输出——播放器 init 失败/autoplay 被拒会在 console 报错,
     // 是 alpha.20「无捕获」定位的关键信号。
     webChromeClient = object : WebChromeClient() {
       override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
-        Log.i(Tag, "embed console[${msg.messageLevel()}]: ${msg.message()} @${msg.sourceId()}:${msg.lineNumber()}")
+        Log.i(Tag, "harvest console[${msg.messageLevel()}]: ${msg.message()} @${msg.sourceId()}:${msg.lineNumber()}")
         return true
       }
     }
@@ -288,7 +276,7 @@ class YoutubeSabrHarvester(
      * fetch/XHR wrapper——截获**所有**发往 googlevideo.com/videoplayback 的请求(POST=SABR / GET=DASH 段),
      * 记录 {url, method, bodyB64, status} 到 window.__gvCaptures(最多 5 条防灌)。请求照常放行。
      * alpha.20 只截 SABR POST(`sabr=` + POST 过滤)致 25s 无捕获——放宽到全方法 + 全 googlevideo,
-     * 定位 embed 到底用 SABR POST 还是 DASH GET(决定 alpha.21 是建 SabrSession 还是直接复用 GET url)。
+     * 定位 watch 到底用 SABR POST 还是 DASH GET(决定 alpha.21 是建 SabrSession 还是直接复用 GET url)。
      * body 可能是 ArrayBuffer/Uint8Array/Blob/string,统一转 base64;GET 段请求 body 空。
      * alpha.24:真机 SABR POST 捕获到 url+status+transformed-n(status=200 证浏览器 WASM n-transform
      * 被服务端接受)但 bodyB64=0B——播放器用 `fetch(new Request(url,{body}))` 形态,init.body 为空、

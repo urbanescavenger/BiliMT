@@ -18,7 +18,6 @@ enum class YoutubeLoadStep(val label: String) {
   ResolvePlayer("正在解析播放地址"),
   DecipherN("正在解密签名"),
   HarvestWatch("正在采集播放签名…"),
-  HarvestEmbed("正在回退采集签名…"),
   BuildSession("正在建立视频会话"),
   Connect("正在连接视频流"),
 }
