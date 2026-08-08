@@ -225,7 +225,7 @@ fun MobilePlayerScreen(
   )
 
   var playerState by remember { mutableStateOf<MobilePlayerState>(MobilePlayerState.Loading) }
-  // alpha.58:YouTube 加载步骤提示(resolver/harvester 经 YoutubeLoadProgress 写入当前步骤)。
+  // alpha.49:YouTube 加载步骤提示(resolver/harvester 经 YoutubeLoadProgress 写入当前步骤)。
   // 独立于 playerState——初始加载、切画质/续播轮换都显示;播放就绪/失败时置 null 隐藏。
   val youtubeLoadStep by YoutubeLoadProgress.step.collectAsState()
   var displayTitle by remember { mutableStateOf(request.title) }
@@ -579,7 +579,7 @@ fun MobilePlayerScreen(
       }
       player.playWhenReady = true
       playerState = MobilePlayerState.Ready(sabrEffectiveInfo)
-      // alpha.58:播放就绪,隐藏加载步骤提示。
+      // alpha.49:播放就绪,隐藏加载步骤提示。
       YoutubeLoadProgress.clear()
 
       // 弹幕
@@ -590,7 +590,7 @@ fun MobilePlayerScreen(
       throw error
     } catch (error: Exception) {
       playerState = MobilePlayerState.Failed(error.message.orEmpty())
-      // alpha.58:加载失败,隐藏加载步骤提示。
+      // alpha.49:加载失败,隐藏加载步骤提示。
       YoutubeLoadProgress.clear()
     }
   }
@@ -958,7 +958,7 @@ fun MobilePlayerScreen(
             is MobilePlayerState.Ready -> Unit
           }
 
-          // alpha.58:YouTube 加载步骤提示——小转圈 + 单行当前步骤,独立于 playerState 常显于底部
+          // alpha.49:YouTube 加载步骤提示——小转圈 + 单行当前步骤,独立于 playerState 常显于底部
           //(初始加载、切画质/续播轮换都覆盖;resolver/harvester 经 YoutubeLoadProgress 写步骤,
           // 播放就绪/失败时置 null 隐藏)。委托属性不能 smart cast,先取局部变量。
           val step = youtubeLoadStep

@@ -265,7 +265,7 @@ class YoutubePlaybackResolver(
             YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
             val sabrClient = SabrClient(httpClient)
             val sid = SabrStreamRegistry.registerByVideoId(videoId, sabrSession, sabrClient)
-            // alpha.57(轮换):装填会话轮换工厂。服务端对每会话 ~60s 服务量上限,到点主动开新 harvest
+            // alpha.48(轮换):装填会话轮换工厂。服务端对每会话 ~60s 服务量上限,到点主动开新 harvest
             // 建新会话(锚定当前播放头),[requestRotation] 后台执行 → registerByVideoId 复用同 sid 覆盖
             // entry → DataSource 检测切换。捕获本 resolve 的 client/videoFormats(harvest 建会话要它们)。
             SabrStreamRegistry.rotationFactory = { v, startMs ->
@@ -285,7 +285,7 @@ class YoutubePlaybackResolver(
                   Log.i(Tag, "rotation: registered new session videoId=$v startMs=$startMs sid=$newSid (switched)")
                 }
               }
-              // alpha.58:轮换(后台)结束,隐藏加载步骤提示(成功/失败都隐藏)。
+              // alpha.49:轮换(后台)结束,隐藏加载步骤提示(成功/失败都隐藏)。
               YoutubeLoadProgress.clear()
             }
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
@@ -727,7 +727,7 @@ class YoutubePlaybackResolver(
     val mime = (rawMime ?: if (stream == "video") "video/mp4" else "audio/mp4").substringBefore(";").trim()
     val codecs = extractCodecs(rawMime ?: "")
     val isVideo = stream == "video"
-    // alpha.57(轮换):URI 带 `&videoId=`——DataSource 主动旋转到 ~45s 时需知道 videoId 触发
+    // alpha.48(轮换):URI 带 `&videoId=`——DataSource 主动旋转到 ~45s 时需知道 videoId 触发
     // [SabrStreamRegistry.requestRotation](工厂按 videoId 建新会话)。轮换复用同 sid,URI 不变。
     val baseUrl = if (isVideo) "sabr://youtube/$sid?stream=video&itag=$itag&videoId=$videoId"
       else "sabr://youtube/$sid?stream=audio&videoId=$videoId"

@@ -37,7 +37,7 @@ internal object SabrStreamRegistry {
   )
 
   /**
-   * alpha.57(轮换):主动会话轮换工厂——服务端对每个 SABR 会话有 ~60s 服务量上限(锚点..+60s,
+   * alpha.48(轮换):主动会话轮换工厂——服务端对每个 SABR 会话有 ~60s 服务量上限(锚点..+60s,
    * docs row 72),到点后同一会话任何请求都被软拒。被动 stall-retry 已太晚(playhead 已 >60s,新
    * 会话 0 锚点仍拒)。唯一解:播放到 ~45s 时**主动**开新 harvest 建新会话(startMs=当前播放头 →
    * 浏览器锚定播放头),用 [registerByVideoId] 复用同 sid 覆盖 entry,DataSource 检测 entry 引用
@@ -53,7 +53,7 @@ internal object SabrStreamRegistry {
   private val rotationInFlight = ConcurrentHashMap.newKeySet<String>()
 
   /**
-   * alpha.57:主动触发会话旋转——后台协程跑 [rotationFactory],同 videoId 在途期间忽略重复请求
+   * alpha.48:主动触发会话旋转——后台协程跑 [rotationFactory],同 videoId 在途期间忽略重复请求
    * (video/audio 两路 DataSource 共享同 sid,都会触发;只许一次)。[rotationFactory] 未装填(非 SABR
    * 路径)→ no-op。完成后 [registerByVideoId] 覆盖 entry(复用同 sid),DataSource 检测到切换。
    */

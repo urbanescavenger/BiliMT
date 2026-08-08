@@ -59,7 +59,7 @@ internal class SabrStreamingDataSource(
    */
   private val startMs: Long = 0L,
   /**
-   * alpha.57(轮换):videoId(来自 sabr:// URI `&videoId=`)。读到 ~[ROTATE_AT_MS] 时主动触发
+   * alpha.48(轮换):videoId(来自 sabr:// URI `&videoId=`)。读到 ~[ROTATE_AT_MS] 时主动触发
    * [SabrStreamRegistry.requestRotation] 建新会话(锚定当前播放头),绕开服务端每会话 ~60s 服务量
    * 上限。null=老 URI 无 videoId(轮换不可用,保持原被动 stall-retry 行为)。
    */
@@ -69,13 +69,13 @@ internal class SabrStreamingDataSource(
   private var entry: SabrStreamRegistry.Entry? = null
   private var currentUri: Uri? = null
   /**
-   * alpha.57(轮换):当前会话的锚点——轮换触发判断用「距本会话锚点 >= [ROTATE_AT_MS]」,而非绝对
+   * alpha.48(轮换):当前会话的锚点——轮换触发判断用「距本会话锚点 >= [ROTATE_AT_MS]」,而非绝对
    * cumulative。否则每次轮换把 cumulative 重置回锚点后,下一次 read() 立即满足绝对阈值 → 死循环轮换。
    * 初始 = [startMs](首播 0);轮换切换后 = 新会话锚点(即触发时的播放头)。服务端每会话服务量上限
    * ~60s(锚点..+60s),故每个会话只主动轮换一次,到点换新会话续播。
    */
   private var sessionAnchorMs: Long = 0L
-  /** alpha.57:当前会话是否已触发过轮换(video/audio 两路 DataSource 各自触发一次无妨,registry 防并发)。 */
+  /** alpha.48:当前会话是否已触发过轮换(video/audio 两路 DataSource 各自触发一次无妨,registry 防并发)。 */
   private var rotationTriggered: Boolean = false
   /** 当前段字节缓冲(init 段 + 各 media 段轮流替换)。 */
   private var buffer: ByteArray = ByteArray(0)
@@ -110,14 +110,16 @@ internal class SabrStreamingDataSource(
         // alpha.41:init 失败必须 evict——否则播放器/ExoPlayer 重开同一 sabr:// URI 时 registry 仍命中
         // 同一死会话 → 反复 RELOAD_PLAYER_RESPONSE/backoff 死循环(alpha.40 同 sid 反复 re-route 的根因)。
         // evict 后 getByVideoId cache miss → 重 resolve 走新 harvest(配合 MobilePlayer error-retry)。
-        SabrStreamRegistry.evict(sessionId)
+        // alpha.49:统一走 evictIfStillOwner——open 时 entry===cur 恒真(刚 get),行为不变,只保证
+        // 没有任何绕过守卫的 evict 路径(避免误删轮换新会话)。
+        evictIfStillOwner()
         Log.w(tag, "SabrStream open: init fetch failed sid=$sessionId stream=$streamType → evict+throw")
         throw java.io.IOException("SABR init fetch failed: sid=$sessionId stream=$streamType")
       }
     buffer = initResult.data
     bufferPos = 0
     cumulativeDurationMs = startMs + (initResult.mediaHeader?.durationMs ?: 0L)
-    // alpha.57(轮换):当前会话锚点 = startMs(首播 0/续播续播点)。轮换判断按距此锚点的增量触发。
+    // alpha.48(轮换):当前会话锚点 = startMs(首播 0/续播续播点)。轮换判断按距此锚点的增量触发。
     sessionAnchorMs = startMs
     return C.LENGTH_UNSET.toLong()
   }
@@ -139,16 +141,25 @@ internal class SabrStreamingDataSource(
       // 让服务端流控见「客户端只缓冲少量」持续发新段。alpha.42:playhead 含 startMs(续播/切清晰度
       // 不再死睡 61s)。
       maybeTriggerRotation()
-      // alpha.57:轮换完成(registry entry 被 registerByVideoId 覆盖为新会话)后刷新 e——
+      // alpha.48:轮换完成(registry entry 被 registerByVideoId 覆盖为新会话)后刷新 e——
       // 否则 buildSegRequest 仍用旧 entry 的 session(旧 sabrUrl)→ 服务端已停发 → 继续 backoff 死。
       if (switchIfRotated()) e = entry ?: return C.RESULT_END_OF_INPUT
       val seg = fetchUntilReady { buildSegRequest(e) }
       if (seg == null) {
+        // alpha.49(轮换):旧会话服务量耗尽 EOF 时,若轮换已在本段失败的请求期间完成
+        // (registerByVideoId 已覆盖同 sid),直接交棒新会话续读——否则 evict(sessionId)
+        // 会误删轮换好的新会话(共享 sid,alpha.48 真机 register 后紧接 evict active=0 即此因)。
+        if (switchIfRotated()) {
+          Log.i(tag, "SabrStream sid=$sessionId stream=$streamType EOF→rotation ready → hand off to new session")
+          e = entry ?: return C.RESULT_END_OF_INPUT
+          continue
+        }
         done = true
         Log.i(tag, "SabrStream read EOF sid=$sessionId stream=$streamType at seq=$nextSeq playerTimeMs=$cumulativeDurationMs (no more segments)")
         // alpha.36:驱逐会话——stall-retry 重跑 resolve 时 getByVideoId cache miss → 新 harvest,
         // 不复用服务端已停发的死会话(alpha.35 日志:stall-reload 复用死会话 → 立即 backoff 死循环)。
-        SabrStreamRegistry.evict(sessionId)
+        // alpha.49:仅当本 DataSource 仍是该 sid 的当前 entry 才 evict(避免误删轮换新会话)。
+        evictIfStillOwner()
         return C.RESULT_END_OF_INPUT
       }
       buffer = seg.data
@@ -233,7 +244,7 @@ internal class SabrStreamingDataSource(
    *   alpha.43 真机坐实「缓冲膨胀」假设——seq=13 时 playerTimeMs(=cumulative)=60031 > 60000,服务端 6×
    *   `no MEDIA_HEADER but NEXT_REQUEST_POLICY backoff` 软拒 → evict。alpha.44 据此改 playerTimeMs=playhead。 */
   /**
-   * alpha.57(轮换):当前会话缓冲到距锚点 >= [ROTATE_AT_MS] 时,主动触发一次新会话轮换
+   * alpha.48(轮换):当前会话缓冲到距锚点 >= [ROTATE_AT_MS] 时,主动触发一次新会话轮换
    * ([SabrStreamRegistry.requestRotation])。服务端对每会话有 ~60s 服务量上限,被动 stall-retry
    * 已太晚(playhead 已 >60s,新会话 0 锚点仍拒)。提前到 ~45s(留 harvest 3-8s 余量)触发,让新会话
    * 锚定当前播放头(harvest 带 startMs → embed &start=),[switchIfRotated] 检测到后无缝切换续播。
@@ -243,16 +254,21 @@ internal class SabrStreamingDataSource(
   private fun maybeTriggerRotation() {
     val vid = videoId ?: return
     if (rotationTriggered) return
-    val sinceAnchor = cumulativeDurationMs - sessionAnchorMs
+    // alpha.49:改按 playhead(真实播放位置)而非 cumulative(缓冲终点)判断。audio 缓冲领先(video
+    // 锁步、audio 段小 burst 到 +25s 领先)会让 cumulative-anchor 提前到 ~ROTATE-lead 秒就触发 →
+    // 每 ~25s 轮换一次、锚点提前、服务器 grant 耗尽;按 playhead 后 video/audio 两路 DataSource 在
+    // 同一 playhead 阈值触发,频率稳定为每 [ROTATE_AT_MS] 一次。服务端每会话 ~60s 服务量上限按
+    // playerTimeMs=playhead 计(上报封顶瞒不过),故以 playhead 距锚点超阈值开新会话最贴合。
+    val sinceAnchor = playheadEstimateMs() - sessionAnchorMs
     if (sinceAnchor < ROTATE_AT_MS) return
     rotationTriggered = true
     val anchorMs = playheadEstimateMs().coerceAtLeast(sessionAnchorMs)
-    Log.i(tag, "ROTATION trigger sid=$sessionId stream=$streamType sinceAnchor=${sinceAnchor}ms playhead=$anchorMs → requestRotation(videoId=$vid)")
+    Log.i(tag, "ROTATION trigger sid=$sessionId stream=$streamType playheadSinceAnchor=${sinceAnchor}ms playhead=$anchorMs → requestRotation(videoId=$vid)")
     SabrStreamRegistry.requestRotation(vid, anchorMs)
   }
 
   /**
-   * alpha.57(轮换):检测轮换是否已完成——[requestRotation] 的工厂用 registerByVideoId(同 videoId)
+   * alpha.48(轮换):检测轮换是否已完成——[requestRotation] 的工厂用 registerByVideoId(同 videoId)
    * 覆盖了 registry entry(sid 不变)。若当前 [entry] 与 registry 里不再是同一对象 → 新会话已就绪:
    * 切换到它并重置段状态(cumulative/nextSeq/segDurations 归零到新锚点),下个 buildSegRequest 用新
    * session 的 sabrUrl/poToken。返回是否切换(切换后调用方须刷新本地 entry 引用)。
@@ -277,9 +293,24 @@ internal class SabrStreamingDataSource(
     cumulativeDurationMs = anchorMs + (init.mediaHeader?.durationMs ?: 0L)
     nextSeq = 1
     segDurations.clear()
-    // 每会话独立触发一次轮换——切到新会话后复位,下一会话到 ~50s 再触发(否则第二会话永久不旋转)。
+    // 每会话独立触发一次轮换——切到新会话后复位,下一会话到 ~45s 再触发(否则第二会话永久不旋转)。
     rotationTriggered = false
     return true
+  }
+
+  /**
+   * alpha.49(轮换):驱逐会话,但只删「仍是当前 entry」的死会话。轮换([registerByVideoId])复用同
+   * sid 覆盖 entry;若本 DataSource 的 [entry] 已不是 registry 里该 sid 的当前 entry(即轮换已完成、
+   * 新会话已就位),则**跳过 evict**——否则会误删轮换好的新会话(共享 sid,alpha.48 真机 register 后
+   * 紧接 evict active=0 即此因)。只有确认真无更新会话时才 evict,让 stall-retry 重跑 resolve 走新 harvest。
+   */
+  private fun evictIfStillOwner() {
+    val cur = SabrStreamRegistry.get(sessionId)
+    if (cur === entry) {
+      SabrStreamRegistry.evict(sessionId)
+    } else {
+      Log.i(tag, "SabrStream sid=$sessionId stream=$streamType skip evict: entry replaced by rotation (keep new session)")
+    }
   }
 
   private fun buildSegRequest(e: SabrStreamRegistry.Entry): SabrFetchRequest {
@@ -341,9 +372,9 @@ internal class SabrStreamingDataSource(
    * `cumulativeBackOffRequested>=3` 即 reload 的语义(我们靠播放器 stall-retry 实现 reload)。
    * Redirect → 更新 sabrUrl 重试同请求;Error/InvalidPoToken → 立即返回 null(EOF)。
    *
-   * alpha.55:入参改 [reqProvider] 而非固定 req——每次重试(含 backoff)都重建请求,playhead/
+   * alpha.46:入参改 [reqProvider] 而非固定 req——每次重试(含 backoff)都重建请求,playhead/
    * bufferedRange 随墙钟刷新。服务端流控按「客户端缓冲超前量 lead」决定发不发段(target readahead
-   * 15s),旧实现重发固定 req 使服务端永远看到 lead 超限 → 6× backoff → EOF(alpha.55 真机 55s 断崖)。
+   * 15s),旧实现重发固定 req 使服务端永远看到 lead 超限 → 6× backoff → EOF(alpha.46 真机 55s 断崖)。
    */
   private fun fetchUntilReady(reqProvider: () -> SabrFetchRequest): SabrFetchResult.Success? {
     val e = entry ?: return null
@@ -351,10 +382,10 @@ internal class SabrStreamingDataSource(
     var lastReq: SabrFetchRequest? = null
     while (attempt < BACKOFF_MAX_ATTEMPTS) {
       attempt++
-      // alpha.55:每次重试都重建请求——服务端流控按「客户端缓冲超前量(lead)」决定发不发段(target
+      // alpha.46:每次重试都重建请求——服务端流控按「客户端缓冲超前量(lead)」决定发不发段(target
       // readahead=15s,lead 超即只回 NEXT_REQUEST_POLICY backoff)。旧实现把 buildSegRequest 的 req 当
       // 固定参数重发,playhead/bufferedRange 全程不变 → 服务端永远看到 lead=18.5s>15s → 6× backoff →
-      // EOF → evict(alpha.55 真机:video seq=12 bufferedEnd=54558 卡 55s)。重建后 playhead 随墙钟涨,
+      // EOF → evict(alpha.46 真机:video seq=12 bufferedEnd=54558 卡 55s)。重建后 playhead 随墙钟涨,
       // lead 逐次回落 <15s → 服务端恢复发段。init 请求重建结果不变(无 playhead/bufferedRange)。
       val req = reqProvider()
       lastReq = req
@@ -400,11 +431,14 @@ internal class SabrStreamingDataSource(
     /** alpha.36:单段请求的 backoff 重试上限(对齐 FreeTube 简洁 reload 语义;耗尽→EOF→evict→stall-retry 新 harvest)。 */
     const val BACKOFF_MAX_ATTEMPTS = 6
     /**
-     * alpha.57(轮换):主动轮换触发阈值——当前会话缓冲距锚点超过此值即开新会话。服务端每会话服务量
-     * 上限 ~60s,留 harvest 余量(embed 3-8s / watch 回退更长)提前到 ~50s 触发,确保新会话在旧会话
-     * 服务量耗尽前就绪并切换。太小频繁轮换(harvest 成本),太大撞 60s 断崖。
+     * alpha.48(轮换):主动轮换触发阈值——当前会话距锚点超过此值即开新会话。服务端每会话服务量
+     * 上限 ~60s(锚点..+60s,按 playerTimeMs=playhead 计),故留 harvest 余量提前到 ~45s 触发,
+     * 确保新会话在旧会话服务量耗尽前就绪并切换。alpha.49 提前 50→45:watch 优先 harvest ~6s
+     * (最坏 embed 兜底 ~15s),给 60s 上限留 15s 余量。太小频繁轮换(harvest 成本 + 服务器 grant
+     * 有限),太大撞 60s 断崖。配合 [maybeTriggerRotation] 按 playhead 触发,audio 缓冲领先不再
+     * 虚高提前(否则每 ~25s 轮换、grant 耗尽)。
      */
-    const val ROTATE_AT_MS = 50_000L
+    const val ROTATE_AT_MS = 45_000L
     /** alpha.45:上报给服务端的 bufferedRange 终点封顶值(ms)。服务端对客户端缓冲终点有 ~60s 上限
      * (maxTimeSinceReq),超过即软拒只回 NEXT_REQUEST_POLICY backoff 不发 media。封顶在 55s(<60s)
      * 让服务端永远看到客户端只缓冲到 55s 持续发段,避免 cumulative 随 playhead 涨破 60s 触发断崖。 */

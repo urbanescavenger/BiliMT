@@ -68,7 +68,7 @@ internal class SabrAwareDataSource(private val http: DataSource) : DataSource {
     val st = if (stream.equals("audio", ignoreCase = true)) SabrStreamType.AUDIO else SabrStreamType.VIDEO
     val itag = uri.getQueryParameter("itag")?.toIntOrNull()
     val startMs = uri.getQueryParameter("startMs")?.toLongOrNull() ?: 0L
-    // alpha.57(轮换):`&videoId=` 供 DataSource 主动旋转时触发 [SabrStreamRegistry.requestRotation]。
+    // alpha.48(轮换):`&videoId=` 供 DataSource 主动旋转时触发 [SabrStreamRegistry.requestRotation]。
     val videoId = uri.getQueryParameter("videoId")
     return SabrUriParts(sid, st, itag, startMs, videoId)
   }
