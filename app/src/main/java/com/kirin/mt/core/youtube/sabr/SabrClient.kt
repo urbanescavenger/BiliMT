@@ -272,7 +272,11 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     val body = SabrProto.encodeVideoPlaybackAbrRequest(input)
     val rn = requestNumber.getAndIncrement()
     val url = "${session.sabrUrl}&rn=$rn"
-    Log.i(tag, "fetch rn=$rn isInit=${req.isInit} stream=${req.streamType} seq=${req.sequenceNumber} body=${body.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size}")
+    // alpha.38 诊断:打**发出**的 cookie 哈希(sentCookieHash)。对比同流上一个 PolicyDiag 收到的
+    // cookieHash——若两者不等,说明两 loader 并发期间 cookie 被对方覆盖(§8 clobber 风险的铁证);
+    // 若始终相等,cookie 共享安全,clobber 排除。结合 PolicyDiag 逐流读。
+    val sentCookieHash = session.playbackCookie?.let { java.util.Arrays.hashCode(it) }
+    Log.i(tag, "fetch rn=$rn isInit=${req.isInit} stream=${req.streamType} seq=${req.sequenceNumber} body=${body.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} sentCookieHash=$sentCookieHash contexts=${activeCtxs.size}/${unsentCtxTypes.size}")
 
     return try {
       val request = Request.Builder()
@@ -382,6 +386,14 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
               val hasCookie = cookieBytes?.isNotEmpty() == true
               if (hasCookie) session.playbackCookie = cookieBytes
               Log.i(tag, "NEXT_REQUEST_POLICY backoff=${policy?.backoffTimeMs}ms cookie=$hasCookie")
+              // alpha.38 诊断叠层:逐流逐段打 cookie 指纹 + 解码后的 PlaybackCookie 双格式 +
+              // 服务端 readahead 流控字段。一次真机即可判定:① audio/video 收到的 cookie bytes 是否
+              // 同值(cookieHash 比)—同值→共享安全,排除 §8 clobber 风险;异值→需改 per-stream cookie。
+              // ② 60s 软拒是否我们超前缓冲触发(target_*_readahead vs 实际 lead)或请求间隔超
+              // max_time_since_last_request_ms。纯诊断,不改请求构造(对齐「拿证据再改」)。
+              val cookieHash = cookieBytes?.let { java.util.Arrays.hashCode(it) }
+              val pc = policy?.playbackCookie
+              Log.i(tag, "PolicyDiag stream=${req.streamType} seq=${req.sequenceNumber} backoff=${policy?.backoffTimeMs}ms cookieLen=${cookieBytes?.size ?: 0} cookieHash=$cookieHash cookieRes=${pc?.resolution} vFmt=${pc?.videoFmt} aFmt=${pc?.audioFmt} readahead targetA=${policy?.targetAudioReadaheadMs} targetV=${policy?.targetVideoReadaheadMs} maxTimeSinceReq=${policy?.maxTimeSinceLastRequestMs} minA=${policy?.minAudioReadaheadMs} minV=${policy?.minVideoReadaheadMs}")
             }
             PART_SABR_ERROR -> {
               val err = SabrProto.decodeSabrError(payload)

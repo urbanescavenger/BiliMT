@@ -2,7 +2,7 @@
 
 > 本文档是 BiliMT `core/youtube/` 实现 YouTube 高清(SABR)播放的**top-down 工程参考**,把「解析方案 / 实现细节 / 调试问题 / 样例日志 / 参考资料」汇于一处。按时间线堆叠的逐 alpha 调试记录见 [youtube-hd-playback.md](youtube-hd-playback.md) §6.7(row 1-53);本文是那条链的**结论提炼**。
 >
-- **状态(2026-08-08)**:SABR 协议层 + Media3 接线 + 多清晰度已跑通(alpha.17-29,跨 13 个 alpha);可出帧出音、可切清晰度。alpha.30 premature-EOF 修复(playbackCookie 回传 + 无-media→backoff 重试 + 对方 itag 标满缓冲)+ alpha.31 SABR 上下文握手(sabrContexts 回传)已实现。**alpha.32 n-decrypt 突破**:推翻「plasma 锁死」结论——URL 类方式(`new g.<nClass>(url).get('n')`+IIFE 注入)可在 Kotlin 侧解 n,harvest 作自动兜底(零回退);alpha.32 真机证 fallback 链正确但当前 player 854a788e 未在硬编码 config → alpha.33 把 zemer 整份 224 条 config 打包成 asset 运行时加载,854a788e=tL 现能命中。**待真机验 URL 类成功路径**(预期 30s harvest 被跳过,落地 ~5-8s)。
+- **状态(2026-08-08)**:SABR 协议层 + Media3 接线 + 多清晰度已跑通(alpha.17-37,跨 21 个 alpha);可出帧出音、可切清晰度,但 **60s 断崖仍未根除**。alpha.30 premature-EOF 三层修(cookie 回传 + 无-media→backoff 重试 + 对方 itag 标满缓冲)+ alpha.31 SABR 上下文握手(sabrContexts 回传)+ alpha.36/37 playerTimeMs 修(startMs 误读致 5s 断崖→回退 cumulative)均**未解 60s**。**alpha.37 真机重新排查(row 61)**证伪旧线索:① contexts=0/0 非病根——`ump_part_id.proto` 注释 `SABR_CONTEXT_UPDATE(57) usually used for ads`,普通播放服务端从不发 57,成功段也是 0/0;② part 47/52/53(PLAYBACK_START_POLICY/REQUEST_IDENTIFIER/REQUEST_CANCELLATION_POLICY)非病根——FreeTube switch 也无此三 case 却能跑 1080p+;③ cookie-clobber(§8 风险)大幅削弱——FreeTube 也是单共享 `sabrStreamState`(L644)共享一个 cookie 能跑。真因未锁,**alpha.38 上纯诊断叠层**(解全 NextRequestPolicy readahead 字段 + 逐流逐段 cookieHash + 发出 sentCookieHash,见 row 62)拿证据再定根修。
 - **参考实现**:FreeTube / FreeTubeAndroid(MarmadileManteater,MIT),youtubei.js(LuanRT),googlevideo npm(LuanRT,MIT,proto/UMP 协议源),bgutils-js(LuanRT,MIT)。
 
 ---
@@ -264,7 +264,7 @@ type=20(MEDIA_HEADER) itag=251 isInit=false seq=1 contentLen=101540 dur=6041ms  
 
 ---
 
-## 8. alpha.30 premature-EOF 修复方案(已实现,待真机验证)
+## 8. alpha.30 premature-EOF 修复方案(已实现,但 alpha.37 真机证 60s 断崖仍在——见 row 61)
 
 基于 FreeTube `SabrSchemePlugin.js` 源码核对确认的三层修(详见 §6.5)。**代码已落地**(`SabrClient.kt` + `SabrProto.kt`,alpha.30),改动集中在协议层不动播放器接线,与 alpha.29 多清晰度正交。
 
@@ -277,6 +277,8 @@ type=20(MEDIA_HEADER) itag=251 isInit=false seq=1 contentLen=101540 dur=6041ms  
 **playerTimeMs/bufferedRange 保留 alpha.28 行为**(seq1-6 正常返回 media 证明数值可用——`playerTimeMs==bufferedEnd` 致停发假设被证伪;cookie 是 seq7 触发点,非 playerTimeMs)。
 
 **真机验证预期(alpha.30)**:① `fetch ... cookie=true`(cookie 回传生效);② seq7/8/9… 持续 `SabrStream ... bytes=NB`(非 EOF);③ audio playerTimeMs 过 60001、video 不被 InterruptedIOException 打断;④ 黑屏消失持续播放。**风险**:若 cookie 会话级假设错(stream-specific),两 loader cookie 互相覆盖致混乱 → 需改 per-stream cookie(较大重构)。
+
+**⚠️ alpha.30-37 真机证伪(见 [youtube-hd-playback.md](youtube-hd-playback.md) row 61)**:上述预期①②③④**全未兑现**——cookie 回传后 60s 断崖仍在(audio seq7 playerTimeMs=60001 / video seq14 62170 均 6 backoff→EOF)。row 61 重新排查证伪 contexts(57=ads-only 服务端从不发)、part 47/52/53(FreeTube 也忽略)、cookie-clobber大幅削弱(FreeTube 单共享 state 也能跑)。**§8 风险项(per-stream cookie)未彻底排除**——需 alpha.38 诊断叠层打 cookieHash 比对 audio/video 收发才能定。真因未锁,alpha.38 起转纯诊断拿证据再改。
 
 **已知限制(MVP 接受,后续)**:① 不可 seek(C.LENGTH_UNSET;后续 DASH MPD + /player lengthSeconds);② n-param/URL ~6h 过期,长暂停可能 mid-stream 403(后续 re-harvest on 403);③ harvest ~30s 加载慢(后续 video-detail 页后台预 harvest 缓存);④ alpha.29 多清晰度未真机验(切档后新 itag 请求成功否)。
 

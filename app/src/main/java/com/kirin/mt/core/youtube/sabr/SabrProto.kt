@@ -358,20 +358,36 @@ internal object SabrProto {
     /** alpha.30:field7 原始 bytes,供 StreamerContext.field3 回传(opaque 透传)。 */
     val playbackCookieBytes: ByteArray?,
     val videoId: String?,
+    /** alpha.38 诊断:服务端流控上限字段(next_request_policy.proto)——
+     * target_*_readahead_ms(1/2,期望缓冲量)、max_time_since_last_request_ms(3,请求间最大间隔)、
+     * min_*_readahead_ms(5/6,最低缓冲)。全解码**只为打日志**——看 60s 软拒是不是我们超前缓冲触发
+     * (target readahead vs 实际 lead)、或请求间隔超 max_time。不参与请求构造。 */
+    val targetAudioReadaheadMs: Int?,
+    val targetVideoReadaheadMs: Int?,
+    val maxTimeSinceLastRequestMs: Int?,
+    val minAudioReadaheadMs: Int?,
+    val minVideoReadaheadMs: Int?,
   )
   fun decodeNextRequestPolicy(payload: ByteArray): NextRequestPolicy? {
     val r = ProtoReader(payload)
     var backoff = 0; var videoId: String? = null; var cookieBytes: ByteArray? = null
+    var targetA: Int? = null; var targetV: Int? = null; var maxTime: Int? = null
+    var minA: Int? = null; var minV: Int? = null
     while (true) {
       val f = r.nextField() ?: break
       when (f.fieldNumber) {
+        1 -> targetA = (f.value as Long).toInt()
+        2 -> targetV = (f.value as Long).toInt()
+        3 -> maxTime = (f.value as Long).toInt()
         4 -> backoff = (f.value as Long).toInt()
+        5 -> minA = (f.value as Long).toInt()
+        6 -> minV = (f.value as Long).toInt()
         7 -> cookieBytes = f.value as ByteArray
         8 -> videoId = String(f.value as ByteArray, Charsets.UTF_8)
       }
     }
     val cookie = cookieBytes?.let { decodePlaybackCookie(it) }
-    return NextRequestPolicy(backoff, cookie, cookieBytes, videoId)
+    return NextRequestPolicy(backoff, cookie, cookieBytes, videoId, targetA, targetV, maxTime, minA, minV)
   }
 
   private fun decodePlaybackCookie(payload: ByteArray): PlaybackCookie? {
