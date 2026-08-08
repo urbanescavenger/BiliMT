@@ -90,7 +90,7 @@ internal class SabrStreamingDataSource(
     // 服务端从续播点发段(0=从头播,等同原行为);绕开 ExoPlayer.seekTo(对 LENGTH_UNSET 不可 seek 的
     // SABR 源,seekTo 会取消 fetch 重开 DataSource 喂双 init 致 MatroskaExtractor "Multiple Segment
     // elements not supported" 崩)。
-    val initResult = fetchUntilReady(SabrFetchRequest(isInit = true, streamType = streamType, videoItag = requestedItag))
+    val initResult = fetchUntilReady { SabrFetchRequest(isInit = true, streamType = streamType, videoItag = requestedItag) }
       ?: run {
         // alpha.41:init 失败必须 evict——否则播放器/ExoPlayer 重开同一 sabr:// URI 时 registry 仍命中
         // 同一死会话 → 反复 RELOAD_PLAYER_RESPONSE/backoff 死循环(alpha.40 同 sid 反复 re-route 的根因)。
@@ -121,7 +121,7 @@ internal class SabrStreamingDataSource(
       // (durationMs=小窗口),playerTimeMs=cumulativeDurationMs(所请求段呈现起始,随段推进涨);
       // 让服务端流控见「客户端只缓冲少量」持续发新段。alpha.42:playhead 含 startMs(续播/切清晰度
       // 不再死睡 61s)。
-      val seg = fetchUntilReady(buildSegRequest(e))
+      val seg = fetchUntilReady { buildSegRequest(e) }
       if (seg == null) {
         done = true
         Log.i(tag, "SabrStream read EOF sid=$sessionId stream=$streamType at seq=$nextSeq playerTimeMs=$cumulativeDurationMs (no more segments)")
@@ -269,12 +269,24 @@ internal class SabrStreamingDataSource(
    * → read() 触发 [SabrStreamRegistry.evict] → stall-retry 新 harvest。对齐 FreeTube
    * `cumulativeBackOffRequested>=3` 即 reload 的语义(我们靠播放器 stall-retry 实现 reload)。
    * Redirect → 更新 sabrUrl 重试同请求;Error/InvalidPoToken → 立即返回 null(EOF)。
+   *
+   * alpha.55:入参改 [reqProvider] 而非固定 req——每次重试(含 backoff)都重建请求,playhead/
+   * bufferedRange 随墙钟刷新。服务端流控按「客户端缓冲超前量 lead」决定发不发段(target readahead
+   * 15s),旧实现重发固定 req 使服务端永远看到 lead 超限 → 6× backoff → EOF(alpha.55 真机 55s 断崖)。
    */
-  private fun fetchUntilReady(req: SabrFetchRequest): SabrFetchResult.Success? {
+  private fun fetchUntilReady(reqProvider: () -> SabrFetchRequest): SabrFetchResult.Success? {
     val e = entry ?: return null
     var attempt = 0
+    var lastReq: SabrFetchRequest? = null
     while (attempt < BACKOFF_MAX_ATTEMPTS) {
       attempt++
+      // alpha.55:每次重试都重建请求——服务端流控按「客户端缓冲超前量(lead)」决定发不发段(target
+      // readahead=15s,lead 超即只回 NEXT_REQUEST_POLICY backoff)。旧实现把 buildSegRequest 的 req 当
+      // 固定参数重发,playhead/bufferedRange 全程不变 → 服务端永远看到 lead=18.5s>15s → 6× backoff →
+      // EOF → evict(alpha.55 真机:video seq=12 bufferedEnd=54558 卡 55s)。重建后 playhead 随墙钟涨,
+      // lead 逐次回落 <15s → 服务端恢复发段。init 请求重建结果不变(无 playhead/bufferedRange)。
+      val req = reqProvider()
+      lastReq = req
       val result = runBlocking { e.client.fetch(e.session, req) }
       when (result) {
         is SabrFetchResult.Success -> {
@@ -309,7 +321,7 @@ internal class SabrStreamingDataSource(
         }
       }
     }
-    Log.w(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} fetchUntilReady exhausted $BACKOFF_MAX_ATTEMPTS backoffs (server not resuming) → EOF → evict session for stall-retry fresh harvest")
+    Log.w(tag, "SabrStream sid=$sessionId stream=$streamType seq=${lastReq?.sequenceNumber} fetchUntilReady exhausted $BACKOFF_MAX_ATTEMPTS backoffs (server not resuming) → EOF → evict session for stall-retry fresh harvest")
     return null
   }
 
