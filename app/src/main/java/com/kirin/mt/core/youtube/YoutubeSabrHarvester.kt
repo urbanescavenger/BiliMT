@@ -18,9 +18,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.coroutines.resume
 
@@ -83,18 +83,34 @@ class YoutubeSabrHarvester(
       val deadline = start + 30_000L
       var triedWatch = false
       var lastDiag = start
+      var lastCaptureDump = start
       while (System.currentTimeMillis() < deadline) {
-        val raw = evalOn(view, "(window.__gvCaptures && window.__gvCaptures[0]) ? JSON.stringify(window.__gvCaptures[0]) : null")
-        val obj = parseCapture(raw)
-        if (obj != null) {
-          val url = obj["url"]?.jsonPrimitive?.contentOrNull
-          val method = obj["method"]?.jsonPrimitive?.contentOrNull ?: "GET"
-          val body = obj["bodyB64"]?.jsonPrimitive?.contentOrNull
-          val status = obj["status"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
-          if (!url.isNullOrBlank() && status > 0) {
-            val n = extractQuery(url, "n")
-            Log.i(Tag, "harvest: captured $method status=$status n=${n ?: "ABSENT"} url=$url bodyB64=${body?.length ?: 0}B")
-            return SabrCapture(url, method, body ?: "", status)
+        // alpha.46:读全数组并遍历,不再只读 [0]——首条无效(status=0/url 空)不再挡住后续 SABR POST。
+        val raw = evalOn(view, "(window.__gvCaptures && window.__gvCaptures.length) ? JSON.stringify(window.__gvCaptures) : null")
+        val arr = parseCaptureArray(raw)
+        if (arr != null) {
+          for (obj in arr) {
+            val url = obj["url"]?.jsonPrimitive?.contentOrNull
+            val method = obj["method"]?.jsonPrimitive?.contentOrNull ?: "GET"
+            val body = obj["bodyB64"]?.jsonPrimitive?.contentOrNull
+            val status = obj["status"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+            if (!url.isNullOrBlank() && status > 0) {
+              val n = extractQuery(url, "n")
+              Log.i(Tag, "harvest: captured $method status=$status n=${n ?: "ABSENT"} url=$url bodyB64=${body?.length ?: 0}B")
+              return SabrCapture(url, method, body ?: "", status)
+            }
+          }
+          // alpha.46 诊断:全数组无有效项——每 ~3s dump 看 hook 到底记了什么、status 是否全 0。
+          if (System.currentTimeMillis() - lastCaptureDump > 3_000L) {
+            lastCaptureDump = System.currentTimeMillis()
+            val dump = arr.joinToString(" | ") { c ->
+              val u = c["url"]?.jsonPrimitive?.contentOrNull
+              val m = c["method"]?.jsonPrimitive?.contentOrNull ?: "GET"
+              val s = c["status"]?.jsonPrimitive?.contentOrNull ?: "?"
+              val b = c["bodyB64"]?.jsonPrimitive?.contentOrNull?.length ?: 0
+              "$m s=$s u=${u?.take(60) ?: "BLANK"} b=$b"
+            }
+            Log.w(Tag, "harvest: no valid capture (${arr.size}): $dump")
           }
         }
         // alpha.43:周期性 PAGE diag(每 ~3s)——watch 页 SPA 播放器 init 在 onPageFinished 后数秒,
@@ -219,19 +235,25 @@ class YoutubeSabrHarvester(
     }
 
   /**
-   * 解析 evaluateJavascript 回传的 capture 对象——兼容两种 WebView 行为:
-   *  1. 字符串结果被 JSON 编码(加引号):raw=`"{\"url\":...}"` → 剥一层引号再解对象。
-   *  2. 直接回传对象:raw=`{"url":...}` → 直接解对象。
+   * 解析 evaluateJavascript 回传的 capture 数组——兼容两种 WebView 行为:
+   *  1. 字符串结果被 JSON 编码(加引号):raw=`"[{\"url\":...}]"` → 剥一层引号再解数组。
+   *  2. 直接回传数组:raw=`[{"url":...}]` → 直接解数组。
    * null/空/"null" 返回 null。
    */
-  private fun parseCapture(raw: String?): JsonObject? {
+  private fun parseCaptureArray(raw: String?): List<JsonObject>? {
     if (raw.isNullOrBlank() || raw == "null") return null
-    // 路径 2:直解对象。
-    runCatching { return json.parseToJsonElement(raw).jsonObject }.getOrNull()
-    // 路径 1:剥引号。
+    // 路径 2:直解数组。
+    runCatching {
+      val el = json.parseToJsonElement(raw)
+      if (el is JsonArray) return el.mapNotNull { it as? JsonObject }
+    }.getOrNull()
+    // 路径 1:剥引号后解数组。
     val inner = runCatching { json.parseToJsonElement(raw).jsonPrimitive.contentOrNull }.getOrNull()
     if (inner.isNullOrBlank() || inner == "null") return null
-    return runCatching { json.parseToJsonElement(inner).jsonObject }.getOrNull()
+    return runCatching {
+      val el = json.parseToJsonElement(inner)
+      if (el is JsonArray) el.mapNotNull { it as? JsonObject } else null
+    }.getOrNull()
   }
 
   private companion object {
