@@ -442,6 +442,22 @@ class InnerTubeClient(
     )
   }
 
+  /**
+   * path C(NewPipe visionOS 取流):SABR StreamerContext 的 ClientInfo **必须用 visionOS 客户端**——
+   * NewPipe getInfo 走的 visionOS /player 返回的 ustreamerConfig 绑定 visionOS 客户端,配 WEB client
+   * info(clientName=1)会被服务端 RELOAD_PLAYER 整体拒(alpha.75 真机:所有 init 全拒)。逐字对齐
+   * LibreTube `SabrClient.kt:398-405`(clientName=101/clientVersion=1.02/Apple/RealityDevice14,1/visionOS)。
+   */
+  internal fun visionOsSabrClientInfo(): com.kirin.mt.core.youtube.sabr.ClientInfoInput =
+    com.kirin.mt.core.youtube.sabr.ClientInfoInput(
+      deviceMake = "Apple",
+      deviceModel = "RealityDevice14,1",
+      clientName = 101,
+      clientVersion = "1.02",
+      osName = "visionOS",
+      osVersion = "25.6.0.23O471",
+    )
+
 
   /**
    * 拉取真实 visitorData（对齐 youtubei.js `generateSessionLocally:false` 的 #getSessionData）。

@@ -631,7 +631,9 @@ class YoutubePlaybackResolver(
       sabrUrl,
       poTokenB64,
       ustreamerCfgB64,
-      innerTubeClient.sabrClientInfo(),
+      // alpha.75:NewPipe getInfo 是 visionOS /player,其 ustreamerConfig 绑 visionOS 客户端。这里必须
+      // 用 visionOS client info(对齐 LibreTube),用 WEB client info 会被服务端 RELOAD_PLAYER 全拒。
+      innerTubeClient.visionOsSabrClientInfo(),
       aFmt,
       vFmt,
       userAgent = InnerTubeClient.Client.WEB.userAgent,
