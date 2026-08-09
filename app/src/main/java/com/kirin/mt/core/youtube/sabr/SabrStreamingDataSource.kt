@@ -363,27 +363,25 @@ internal class SabrStreamingDataSource(
       endSegmentIndex = (nextSeq - 1).coerceAtLeast(0),
       timeRange = null,
     ) else null
-    // alpha.40:SegDiag——逐段打 playerTimeMs(发)/playhead(实时)/cumulative(缓冲终点)/lead(缓冲超前量)/
-    // ownRange(报给服务端的窗口),到 60s 断崖点取证「缓冲膨胀」假设(见方法注释)。
+    // alpha.40:SegDiag——逐段打 playerTimeMs(发,alpha.52C 起=段绝对起点 cumulative)/playhead(实时)/
+    // cumulative(缓冲终点)/lead(缓冲超前量)/ownRange(报给服务端的窗口),到 60s 断崖点取证。
     val lead = cumulativeDurationMs - playheadMs
-    Log.i(tag, "SegDiag sid=$sessionId stream=$streamType seq=$nextSeq playerTimeMs=$playheadMs playhead=$playheadMs cumulative=$cumulativeDurationMs reportedEnd=$reportedEnd lead=${lead}ms ownRange=[${own?.startTimeMs}..+${own?.durationMs}] segIdx=${own?.startSegmentIndex}..${own?.endSegmentIndex}")
+    Log.i(tag, "SegDiag sid=$sessionId stream=$streamType seq=$nextSeq playerTimeMs=$cumulativeDurationMs playhead=$playheadMs cumulative=$cumulativeDurationMs reportedEnd=$reportedEnd lead=${lead}ms ownRange=[${own?.startTimeMs}..+${own?.durationMs}] segIdx=${own?.startSegmentIndex}..${own?.endSegmentIndex}")
     return SabrFetchRequest(
       isInit = false,
       sequenceNumber = nextSeq,
       streamType = streamType,
       videoItag = requestedItag,
-      // alpha.51(Track A 移动播放点):startTimeMs = 本段起始呈现时间(cumulative = 下一段起点),镜像
-      // FreeTube 段 URL 的 `startTimeMs`。仅用于拼 URL(`&startTimeMs=<T>&sq=<seq>`),让段请求自锚定。
-      // 诊断目的:验证服务端是否接受显式 startTimeMs 按目标呈现时间发段,从而越过 ~60s 会话窗口上限。
-      // 注意:body 的 playerTimeMs 仍用 playhead(alpha.44 防 60s 断崖结论),URL 与 body 分离。
-      startTimeMs = cumulativeDurationMs,
-      // alpha.44:playerTimeMs 改用 playhead(当前播放位置)——SABR clientAbrState.playerTimeMs 语义即客户端
-      // 当前播放位置,服务端 ABR 据此预发段。alpha.37 误设成 cumulativeDurationMs(缓冲终点),播到 ~60s 时
-      // cumulative>60000=maxTimeSinceReq → 服务端软拒(只回 NEXT_REQUEST_POLICY backoff 不给 MEDIA_HEADER)
-      // → 6 backoff → EOF → evict(alpha.43 真机:seq=13 playerTimeMs=60031 playhead=48535 死)。
-      // 注释 L208 早已建议此改。playhead 随实时 1x 播放涨,不膨胀超前;alpha.36 的 5s 断崖是 playerTimeMs 恒 0
-      // (startMs)致服务端重发 seq=1,playhead 不恒 0 不复发。
-      playerTimeMs = playheadMs,
+      // alpha.52C:不再拼 URL `&startTimeMs=`/`&sq=`(alpha.51 Track A 诊断已证伪),对齐 FreeTube
+      // SabrStreamingAdapter 只发 `rn`。轮换到新会话(harvest 自 &t=60)时旧实现 URL startTimeMs=
+      // cumulative=60000 未封顶直接触发服务端 maxTimeSinceReq 软拒(NEXT_REQUEST_POLICY 不给段)→ 6 backoff
+      // → EOF(alpha.52 真机:轮换首段 seq=1 startTimeMs=60000 死)。去掉 URL 参数即去掉该触发源。
+      // alpha.52C:playerTimeMs 改为所请求段的**绝对起点**(cumulativeDurationMs=缓冲边=下一段起点),对齐
+      // FreeTube "abusing playerTimeMs as exact segment start"(服务端按该时间精确发段,不断推进即无 60s 上限)。
+      // alpha.44 曾因此 60s 拒,但那是 alpha.45 的 MAX_REPORTED_BUFFER_MS 封顶**之前** bufferedRange 终点
+      // (cumulative)不封顶所致,非 playerTimeMs;封顶已上线 + FreeTube 段起点先例 → 安全。对轮换新会话
+      // playerTimeMs=60000 正确锚定其首段(旧 playhead≈34159 对从 60s 起的新会话是无效位置)。
+      playerTimeMs = cumulativeDurationMs,
       bufferedRange = own,
     )
   }

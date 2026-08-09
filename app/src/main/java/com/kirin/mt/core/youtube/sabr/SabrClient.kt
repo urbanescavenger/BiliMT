@@ -288,12 +288,11 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     )
     val body = SabrProto.encodeVideoPlaybackAbrRequest(input)
     val rn = requestNumber.getAndIncrement()
-    // alpha.51(Track A 移动播放点):非 init 的段请求在 URL 加 `startTimeMs`+`sq`,让每段请求自锚定到
-    // 目标呈现时间(镜像 FreeTube Mp4SegmentIndexParser.js `${uri}&startTimeMs=..&sq=..`)。诊断目的:验证
-    // 服务端是否接受显式 startTimeMs(按其发段)→ 可越过累积 ~60s 会话窗口上限,轮换不再必须;若仍按
-    // 自己窗口回段 → 保留服务端流控,靠 alpha.48 轮换兜底续播。init 段不带(对齐 FreeTube isInit)。
-    val url = if (req.isInit) "${session.sabrUrl}&rn=$rn" else
-      "${session.sabrUrl}&rn=$rn&startTimeMs=${req.startTimeMs}&sq=${req.sequenceNumber}"
+    // alpha.52C:段 URL 只加 `rn`(对齐 FreeTube SabrStreamingAdapter,后者段 URL 仅 rn、时间只在 body
+    // playerTimeMs)。删掉 alpha.51 Track A 的 `&startTimeMs=&sq=`——真机证伪该诊断:轮换新会话(harvest
+    // 自 &t=60)URL startTimeMs=cumulative=60000 未封顶直接触发服务端 maxTimeSinceReq 软拒 → 6 backoff →
+    // EOF(alpha.52 死因)。init/段统一只拼 rn。
+    val url = "${session.sabrUrl}&rn=$rn"
     // alpha.38 诊断:打**发出**的 cookie 哈希(sentCookieHash)。对比同流上一个 PolicyDiag 收到的
     // cookieHash——若两者不等,说明两 loader 并发期间 cookie 被对方覆盖(§8 clobber 风险的铁证);
     // 若始终相等,cookie 共享安全,clobber 排除。结合 PolicyDiag 逐流读。
