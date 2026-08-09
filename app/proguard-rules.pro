@@ -41,5 +41,4 @@
     *** newBuilder();
 }
 -dontwarn org.schabi.newpipe.**
--dontwarn org.chaosnet.jam/**
 
