@@ -63,6 +63,14 @@ import kotlin.math.min
 internal class SabrMediaFetcher(
   private val session: SabrSession,
   private val httpClient: OkHttpClient,
+  /**
+   * alpha.65:status=2(Attestation pending)时重铸 PO token 的回调,对齐 LibreTube
+   * `SabrClient.generatePoToken`(parser/SabrClient.kt:594 `poToken = generatePoToken()`)。
+   * null=无 BotGuard 可用(alpha.64 行为:不刷新,沿用初始 token,~60s 后服务端 status=3 terminal)。
+   * 回调由 [com.kirin.mt.core.youtube.YoutubePlaybackResolver] 在 resolve 阶段注入,
+   * 捕获进程级 [com.kirin.mt.core.youtube.YoutubeBotGuard](AppContainer 单例),长生命周期安全。
+   */
+  private val refreshPoToken: (suspend () -> ByteArray?)? = null,
 ) {
   private val tag = "YtSabr"
 
@@ -87,6 +95,15 @@ internal class SabrMediaFetcher(
   @Volatile private var invalidPo = false
   @Volatile private var fatalError: String? = null
   @Volatile private var reloadPlayerDump: String? = null
+
+  /**
+   * alpha.65:当前生效 PO token(初始=[session.poToken];status=2 时由 [refreshPoToken] 换新)。
+   * 对齐 LibreTube `var poToken`(可变)——alpha.64 只读 [session.poToken](val,~60s 过期无刷新)。
+   * 请求体 StreamerContext.poToken 用本字段而非 [session.poToken]。
+   */
+  @Volatile private var currentPoToken: ByteArray = session.poToken
+  /** status=2(Attestation pending)收到→置位,[media] readParts 后调 [refreshPoToken] 换新(对齐 LibreTube)。 */
+  @Volatile private var poRefreshPending = false
 
   /** selectTracks 时间戳(由 [SabrMediaPeriod] 写,ClientAbrState timeSinceLast* 用)。 */
   @Volatile var lastSeekMs: Long? = null
@@ -160,6 +177,19 @@ internal class SabrMediaFetcher(
     val ump = UmpReader()
     ump.append(data)
     ump.readParts { type, payload -> processPart(type, payload) }
+    // alpha.65:STREAM_PROTECTION_STATUS status=2(Attestation pending)→ 服务端预警,主动重铸 PO token,
+    // 下次请求带新 token(对齐 LibreTube SabrClient.processPart status=2 `poToken = generatePoToken()`)。
+    // 不刷新则服务端 ~60s 后 status=3(InvalidPoToken)terminal → 整体重启(alpha.64 一分钟重启根因)。
+    if (poRefreshPending) {
+      poRefreshPending = false
+      val fresh = refreshPoToken?.invoke()
+      if (fresh != null && fresh.isNotEmpty()) {
+        currentPoToken = fresh
+        Log.i(tag, "PO token refreshed on status=2: ${fresh.size}B → next request uses fresh token")
+      } else {
+        Log.w(tag, "PO token refresh unavailable on status=2 (refreshPoToken=${refreshPoToken != null}) — keep stale, expect status=3")
+      }
+    }
   }
 
   /**
@@ -187,7 +217,7 @@ internal class SabrMediaFetcher(
     val (activeCtxs, unsentCtxTypes) = session.prepareSabrContexts()
     val streamerContext = StreamerContextInput(
       clientInfo = session.clientInfo,
-      poToken = session.poToken,
+      poToken = currentPoToken,
       playbackCookie = session.playbackCookie,
       sabrContexts = activeCtxs,
       unsentSabrContexts = unsentCtxTypes,
@@ -229,7 +259,7 @@ internal class SabrMediaFetcher(
     val rn = requestNumber.getAndIncrement()
     lastRequestMs.set(now)
     val url = "${session.sabrUrl}&rn=$rn"
-    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs bitfield=${if (videoFormat == null) 1 else 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} body=${body.size}B")
+    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs bitfield=${if (videoFormat == null) 1 else 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${currentPoToken.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} body=${body.size}B")
 
     val request = Request.Builder()
       .url(url)
@@ -358,6 +388,10 @@ internal class SabrMediaFetcher(
         val status = SabrProto.decodeStreamProtectionStatus(payload)
         Log.w(tag, "STREAM_PROTECTION_STATUS status=$status")
         if (status == 3) invalidPo = true
+        // alpha.65:status=2(Attestation pending)=服务端预警,置位 → [media] readParts 后重铸 PO token。
+        // 对齐 LibreTube processPart status==2 `poToken = generatePoToken()`(parser/SabrClient.kt:594)。
+        // alpha.64 此处只打 log,放任 token 60s 过期 → status=3 terminal → 一分钟重启。
+        else if (status == 2) poRefreshPending = true
       }
       PART_RELOAD_PLAYER_RESPONSE -> {
         val diag = SabrProto.decodeReloadPlayerResponse(payload)

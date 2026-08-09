@@ -279,7 +279,12 @@ class YoutubePlaybackResolver(
             YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
             val sabrClient = SabrClient(httpClient)
             // alpha.59(Phase 2 DASH):注册会话(无窗口锚点——DASH 会话服务整段视频,无 60s 轮换)。
-            val sid = SabrStreamRegistry.registerByVideoId(videoId, sabrSession, sabrClient)
+            // alpha.65:注入 PO token 刷新回调——SABR status=2(Attestation pending)时重铸 streamingDataPoToken,
+            // 对齐 LibreTube SabrClient.generatePoToken。botGuard 是 AppContainer 进程级单例,lambda 长生命周期安全。
+            val sid = SabrStreamRegistry.registerByVideoId(
+              videoId, sabrSession, sabrClient,
+              refreshPoToken = { botGuard.generatePoToken(videoId)?.toByteArray(Charsets.UTF_8) },
+            )
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
             Log.i(
               Tag,

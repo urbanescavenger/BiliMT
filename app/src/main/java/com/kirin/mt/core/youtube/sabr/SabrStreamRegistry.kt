@@ -37,6 +37,13 @@ internal object SabrStreamRegistry {
      * 用「目标窗口 == 当前窗口」判断是否可复用会话。
      */
     val windowStartMs: Long = 0L,
+    /**
+     * alpha.65:STREAM_PROTECTION_STATUS status=2(Attestation pending)时重铸 PO token 的回调,
+     * 对齐 LibreTube `SabrClient.generatePoToken`。由 [com.kirin.mt.core.youtube.YoutubePlaybackResolver]
+     * 在 resolve 阶段注入(捕获进程级 [com.kirin.mt.core.youtube.YoutubeBotGuard])。
+     * null=alpha.64 行为(不刷新,~60s 后 status=3 terminal)。由 [SabrMediaFetcher] 取用。
+     */
+    val refreshPoToken: (suspend () -> ByteArray?)? = null,
   ) {
     /**
      * alpha.62(Phase 2 DASH A/V 同步修复):每流已取 media 段的**实际**累计媒体时长(ms)。
@@ -70,16 +77,16 @@ internal object SabrStreamRegistry {
    * 若 [videoId] 已有缓存会话,复用其 sid + 覆盖更新 entry(会话参数可能因重 harvest 略变)。
    * alpha.59(Phase 2 DASH):无窗口锚点——DASH 会话服务整段视频,无 60s 轮换。
    */
-  fun registerByVideoId(videoId: String, session: SabrSession, client: SabrClient, windowStartMs: Long = 0L): String {
+  fun registerByVideoId(videoId: String, session: SabrSession, client: SabrClient, windowStartMs: Long = 0L, refreshPoToken: (suspend () -> ByteArray?)? = null): String {
     val existingSid = byVideoId[videoId]
     val sid = if (existingSid != null && sessions.containsKey(existingSid)) {
-      sessions[existingSid] = Entry(session, client, windowStartMs)
+      sessions[existingSid] = Entry(session, client, windowStartMs, refreshPoToken)
       existingSid
     } else {
       val bytes = ByteArray(16)
       SecureRandom().nextBytes(bytes)
       val newSid = Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
-      sessions[newSid] = Entry(session, client, windowStartMs)
+      sessions[newSid] = Entry(session, client, windowStartMs, refreshPoToken)
       byVideoId[videoId] = newSid
       newSid
     }

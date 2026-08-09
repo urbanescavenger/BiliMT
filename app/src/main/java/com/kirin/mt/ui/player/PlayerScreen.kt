@@ -1444,7 +1444,7 @@ fun PlayerScreen(
           if (sid == null || entry == null) {
             throw IllegalStateException("SABR single-stream session not found for ${effectiveInfo.bvid}")
           }
-          val fetcher = SabrMediaFetcher(entry.session, playbackHttpClient)
+          val fetcher = SabrMediaFetcher(entry.session, playbackHttpClient, entry.refreshPoToken)
           val manifest = SabrManifest.fromSession(entry.session, effectiveInfo)
           Log.i(PlayerPlaybackLogTag, "SABR single-stream: sid=$sid qualities=${effectiveInfo.qualities.size} duration=${effectiveInfo.durationMs}ms")
           SabrMediaSource.Factory(manifest, fetcher, sid)
