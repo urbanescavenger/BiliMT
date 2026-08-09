@@ -128,6 +128,11 @@ data class PlaybackTrack(
   val height: Int,
   val mimeType: String,
   /**
+   * alpha.64(端口 LibreTube Representation):视频帧率(fps,/player adaptiveFormats 的 fps 字段)。
+   * media3 Format.setFrameRate 用;SABR 单流 Representation 建表需此(非 SABR 路径忽略)。
+   */
+  val fps: Int = 0,
+  /**
    * DASH SegmentBase 信息（B 站 playurl 有；YouTube progressive 直链为 null）。
    * null 时播放器走 progressive [MergingMediaSource] 分支，不经 MPD 合成。
    */
@@ -137,8 +142,18 @@ data class PlaybackTrack(
    * 播放器须走 DASH 分支 + MPD 用 SegmentTemplate(每段一个 sabr:// seg/init URL),而非 progressive
    * MergingMediaSource。segmentBase 仍为 null(无 indexRange),故 [isProgressive] 为 true——播放器分支
    * 判断须额外排除本标记(见 PlayerScreen/MobilePlayerScreen 的 `&& !isSabrDash`)。
+   *
+   * **alpha.64 起此路径退役**(改走 [isSabrSingle] 自定义 SabrMediaSource),但保留字段+合成 DASH 死代码,
+   * 待真机验证单流跑通后在后续 alpha 删除。
    */
   val isSabrDash: Boolean = false,
+  /**
+   * alpha.64(单流移植):SABR 单流自定义 MediaSource 轨标记。播放器据此走 [SabrMediaSource] 分支
+   *(A/V 两 ChunkSampleStream 共享一个 SabrMediaFetcher,单流 POST 修 60s 断崖 + A/V 同步 + 后台音频)。
+   * 取代 [isSabrDash] 合成 DASH 双流路径。segmentBase 仍为 null → [isProgressive] 为 true,
+   * 播放器分支判断须优先排除本标记(见 PlayerScreen/MobilePlayerScreen 的 `effectiveInfo.isSabrSingle()`)。
+   */
+  val isSabrSingle: Boolean = false,
 ) {
   /** 是否为 progressive 直链（无 DASH SegmentBase），如 YouTube 流。 */
   val isProgressive: Boolean

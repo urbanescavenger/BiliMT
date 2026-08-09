@@ -136,6 +136,10 @@ import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
+import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
+import com.kirin.mt.core.youtube.sabr.media.SabrManifest
+import com.kirin.mt.core.youtube.sabr.media.SabrMediaFetcher
+import com.kirin.mt.core.youtube.sabr.media.SabrMediaSource
 import com.kirin.mt.core.player.DanmakuEntry
 import com.kirin.mt.core.player.DanmakuMode
 import com.kirin.mt.core.player.DanmakuPostResult
@@ -156,6 +160,7 @@ import com.kirin.mt.ui.player.appendSabrStartMs
 import com.kirin.mt.ui.player.buildDashMediaItem
 import com.kirin.mt.ui.player.isSabrDash
 import com.kirin.mt.ui.player.isSabrProgressive
+import com.kirin.mt.ui.player.isSabrSingle
 import com.kirin.mt.ui.player.nextEpisodeCompletion
 import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.player.withResolvedMetadata
@@ -576,7 +581,21 @@ fun MobilePlayerScreen(
       )
       // alpha.59(Phase 2 DASH):SABR 轨 isSabrDash=true(segmentBase 仍 null → isProgressive 为 true),
       // 须排除走 DASH 分支(SegmentTemplate MPD + SabrDashDataSource 逐段拉),而非 progressive MergingMediaSource。
-      val mediaSource: MediaSource = if (resolvedRequest.isPgc || (sabrEffectiveInfo.videoTracks.first().isProgressive && !sabrEffectiveInfo.isSabrDash())) {
+      // alpha.64(单流移植):isSabrSingle=true → 走自定义 SabrMediaSource(单流,修 60s 断崖 + A/V 同步 + 后台音频)。
+      val mediaSource: MediaSource = if (sabrEffectiveInfo.isSabrSingle()) {
+        val sid = SabrStreamRegistry.getByVideoId(sabrEffectiveInfo.bvid)
+        val entry = SabrStreamRegistry.getEntryByVideoId(sabrEffectiveInfo.bvid)
+        if (sid == null || entry == null) {
+          throw IllegalStateException("SABR single-stream session not found for ${sabrEffectiveInfo.bvid}")
+        }
+        val fetcher = SabrMediaFetcher(entry.session, playbackHttpClient)
+        val manifest = SabrManifest.fromSession(entry.session, sabrEffectiveInfo)
+        val sabrItem = androidx.media3.common.MediaItem.Builder()
+          .setUri(manifest.sabrUrl)
+          .setMediaMetadata(metadata)
+          .build()
+        SabrMediaSource.Factory(manifest, fetcher, sid).createMediaSource(sabrItem)
+      } else if (resolvedRequest.isPgc || (sabrEffectiveInfo.videoTracks.first().isProgressive && !sabrEffectiveInfo.isSabrDash())) {
         val videoItem = androidx.media3.common.MediaItem.Builder()
           .setUri(sabrEffectiveInfo.videoTracks.first().baseUrl)
           .setMediaMetadata(metadata)

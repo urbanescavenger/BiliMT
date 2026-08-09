@@ -19,6 +19,6 @@ private const val MinBufferMs = 10_000
  * 60s 撞服务端断崖(alpha.54 日志 cumulative=60001 即此)。10s 让 ProgressiveMediaSource 每 ~6s 播放才拉
  * 一段(缓冲耗尽才续拉),请求节奏与墙钟同步 → paced,对齐 FreeTube 的按需取段,验证服务端能否不靠轮换
  * 持续发段跨过 60s。Phase 2 换 DashMediaSource 后沿用此小缓冲目标,让 playerTimeMs 贴近墙钟。 */
-private const val MaxBufferMs = 10_000
+private const val MaxBufferMs = 50_000 // alpha.64(单流移植):恢复 50s——SabrMediaSource 单流服务端驱动多段,不再需 alpha.58 压缓冲规避 60s 断崖
 private const val BufferForPlaybackMs = 1_500
 private const val BufferForPlaybackAfterRebufferMs = 4_000

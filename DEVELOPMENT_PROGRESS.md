@@ -1,6 +1,6 @@
 # BiliMT 开发进度
 
-最后更新：2026-08-08
+最后更新：2026-08-09
 
 ## 更新规则
 
@@ -12,9 +12,9 @@
 
 ## 当前状态
 
-当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理/播放/多播放列表+播放器◀▶ 已实施，SABR 播放 alpha.59 已切合成 DASH MPD（SegmentTemplate + 每段 DataSource，DashMediaSource 按需逐段拉跨 60s + 原生 seek，彻底移除轮换）；alpha.59 方案A 网络栈根因修复——/player 走真实浏览器会话 WebView（真实页上下文 + 真实 cookie/TLS），用其真实 visitorData/cookie，对齐 FreeTubeAndroid 主 WebView，修 LOGIN_REQUIRED bot 拦截；alpha.61 SABR n-decrypt/harvest 修复——harvest 用长期存活 WebView（首次懒建+加载真实首页建立浏览上下文，跨 harvest 复用），对齐 YoutubeBrowserSession 成功模式，避免 fresh WebView 被风控成空白页致 SABR POST 采不到**；alpha.62 SABR DASH A/V 同步修复——真机 alpha.61 暴露音频先出/视频卡顿需暂停续播/快 1 分钟重播，研究 FreeTube 源码定位根因：DASH 每段 playerTimeMs 用了 `(段号-1)*声明段长`（video 声明 6000 > 实际 ~4360 → playerTimeMs 超前 → 服务端跳段 realSeq>N → 视频内容有洞抽干，progressive 兜底路径早已用实际累计所以正常），改回**每段实际 MediaHeader.durationMs 累加**作 playerTimeMs（对齐 FreeTube getTotalDownloadedDuration），并把 video MPD 段时长 6000→4300 对齐时间线（seek/EOS）；**直播播放暂缓，后续单独评估。
+当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理/播放/多播放列表+播放器◀▶ 已实施，SABR 播放 alpha.59 已切合成 DASH MPD（SegmentTemplate + 每段 DataSource，DashMediaSource 按需逐段拉跨 60s + 原生 seek，彻底移除轮换）；alpha.59 方案A 网络栈根因修复——/player 走真实浏览器会话 WebView（真实页上下文 + 真实 cookie/TLS），用其真实 visitorData/cookie，对齐 FreeTubeAndroid 主 WebView，修 LOGIN_REQUIRED bot 拦截；alpha.61 SABR n-decrypt/harvest 修复——harvest 用长期存活 WebView（首次懒建+加载真实首页建立浏览上下文，跨 harvest 复用），对齐 YoutubeBrowserSession 成功模式，避免 fresh WebView 被风控成空白页致 SABR POST 采不到**；alpha.62 SABR DASH A/V 同步修复——真机 alpha.61 暴露音频先出/视频卡顿需暂停续播/快 1 分钟重播，研究 FreeTube 源码定位根因：DASH 每段 playerTimeMs 用了 `(段号-1)*声明段长`（video 声明 6000 > 实际 ~4360 → playerTimeMs 超前 → 服务端跳段 realSeq>N → 视频内容有洞抽干，progressive 兜底路径早已用实际累计所以正常），改回**每段实际 MediaHeader.durationMs 累加**作 playerTimeMs（对齐 FreeTube getTotalDownloadedDuration），并把 video MPD 段时长 6000→4300 对齐时间线（seek/EOS）；alpha.63 真机坐实 A/V 已同步但 60s 断崖仍在（own range 报真实增长仍被服务端在 playerTimeMs≈61604 软拒不给 MEDIA_HEADER → 6 backoff → evict → 重播），锁定根因=**双流架构**（video/audio 两个独立 SABR POST 互标对方格式假满缓冲 Int.MAX），服务端 60s-per-session 窗口在双流模型边界软拒；alpha.64 完整移植 LibreTube 自定义 SABR MediaSource（**单流**——一个 POST 同时带 A+V 两 itag、bitfield=0、两 selectedFormatIds、两真实 bufferedRanges，一次 UMP 拉多段缓存续喂，A/V 在 MediaPeriod 层拆成两个 ChunkSampleStream 共享一个 SabrMediaFetcher），替换 DASH 双流，根治 60s 断崖 + A/V 异步 + 退出后台音频残留；新建 `sabr/media/` 包 11 文件（Manifest/AdaptationSet/Representation/MediaSource/MediaPeriod/ChunkSource/DefaultChunkSource/DataSource/Segment/SegmentRequest/SabrMediaFetcher），resolver/PlaybackModels/PlayerScreen/MobilePlayerScreen 接 `isSabrSingle` 分支，MaxBufferMs 恢复 50s**；直播播放暂缓，后续单独评估。
 
-推荐下一项：**云编译验证 P11-14 alpha.62 SABR DASH A/V 同步修复后真机手测**（真机验证点：①日志 `reqSeq=... realSeq=...` **realSeq == reqSeq**，不再跳段；②A/V 同步、视频不卡、无需暂停续播；③播放跨 1/2 分钟**无重播**。若仍跳段：查 `playerTimeMs` 与段实际起点偏差、seek 重置的 MPD 近似值。前序 alpha.61 harvest 长期存活 WebView 已验证能起播（日志出现 `harvest WebView initialized (long-lived)` + 真实页 + SABR POST 采到 + DASH 段播放）。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
+推荐下一项：**云编译验证 P11-14 alpha.64 LibreTube SABR MediaSource 单流移植后真机手测**（真机验证点 `logs_live.log`：①单流 fetch——一次 POST 同时收 video+audio MediaHeader（多段），bitfield=0；②seg 跨 13（playerTimeMs>60000）**不再** 6 backoff/evict/重播；③A/V 同步（音频不再先加载、视频不再初始卡）；④退出视频音频不残留（单 MediaSource 原子释放）。若 60s 仍断：SegDiag 抓单流请求体字段对照 LibreTube，迭代下一 alpha。前序 alpha.61 harvest 长期存活 WebView 已验证能起播。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
 
 ## P0 项目决策与规则
 

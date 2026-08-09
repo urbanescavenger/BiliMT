@@ -686,15 +686,15 @@ class YoutubePlaybackResolver(
     )
   }
 
-  /** 构造单条 SABR DASH track。元数据从 /player adaptive 原始 JSON 取,缺则用合理默认。
+  /** 构造单条 SABR track。元数据从 /player adaptive 原始 JSON 取,缺则用合理默认。
    *  alpha.29:视频流 baseUrl 带 `&itag=<itag>`(同 sid 换 itag 即换清晰度);audio 不带(用会话默认)。
-   *  alpha.59(Phase 2 DASH):isSabrDash=true → 播放器走 DASH 分支,MPD 用 SegmentTemplate 逐段拉。 */
+   *  alpha.64(单流移植):isSabrSingle=true → 播放器走自定义 SabrMediaSource 分支(取代 alpha.59 合成 DASH)。 */
   private fun buildSabrTrack(itag: Int, raw: JsonObject?, stream: String, sid: String, videoId: String): PlaybackTrack {
     val rawMime = raw?.stringOrNull("mimeType")
     val mime = (rawMime ?: if (stream == "video") "video/mp4" else "audio/mp4").substringBefore(";").trim()
     val codecs = extractCodecs(rawMime ?: "")
     val isVideo = stream == "video"
-    // alpha.59(Phase 2 DASH):URI 带 `&videoId=`(兼容旧 progressive 兜底;DASH 段 URL 由 MPD 追加 &init/&seg)。
+    // alpha.64:baseUrl 仍带 sid(供 isSabrSingle 扩展判断 scheme;SabrMediaSource 不用此 URL,用 manifest.sabrUrl)。
     val baseUrl = if (isVideo) "sabr://youtube/$sid?stream=video&itag=$itag&videoId=$videoId"
       else "sabr://youtube/$sid?stream=audio&videoId=$videoId"
     return PlaybackTrack(
@@ -706,11 +706,13 @@ class YoutubePlaybackResolver(
       width = if (isVideo) (raw?.intOrNull("width") ?: 0) else 0,
       height = if (isVideo) (raw?.intOrNull("height") ?: 0) else 0,
       mimeType = mime,
+      // alpha.64:fps(/player adaptiveFormats 的 fps 字段,SabrManifest Representation 建表用)。
+      fps = if (isVideo) (raw?.intOrNull("fps") ?: 0) else 0,
       // null → 播放器 progressive 分支(MergingMediaSource),SabrStreamingDataSource 接管 sabr://。
       segmentBase = null,
-      // alpha.59(Phase 2 DASH):SABR 走合成 DASH(SegmentTemplate 每段一个 sabr:// seg/init URL,
-      // SabrDashDataSource 逐段拉),非 progressive。播放器分支判断据此排除(见 PlayerScreen/MobilePlayerScreen)。
-      isSabrDash = true,
+      // alpha.64(单流移植):走自定义 SabrMediaSource(单流,修 60s 断崖)。isSabrDash 合成 DASH 双流退役(保留死代码)。
+      isSabrDash = false,
+      isSabrSingle = true,
     )
   }
 

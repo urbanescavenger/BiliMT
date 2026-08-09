@@ -399,6 +399,41 @@ internal object SabrProto {
     return ByteArray(0)
   }
 
+  /**
+   * alpha.64:解码 FORMAT_INITIALIZATION_METADATA(part 42)。服务端在首次 init 段后发此 part,告知客户端
+   * 该格式已初始化 + 总段数(endSegmentNumber)+ 总时长(endTimeMs),供 buildBufferedRanges 计算。
+   * 对齐 LibreTube `format_initialization_metadata.proto`(format_initialization_metadata.proto):
+   *   field1 video_id(string,不用) / field2 format_id(FormatId 子消息,itag/lastModified/xtags) /
+   *   field3 end_time_ms(int64,=durationMs 总时长) / field4 end_segment_number(int64,=总段数) /
+   *   field5 mime_type / field6 init_range / field7 index_range(LibreTube 取 6/7 解出 fMP4 ChunkIndex,
+   *   我们用 BundledChunkExtractor 从 init 段解,不需 6/7)。
+   */
+  data class FormatInitialization(
+    val itag: Int,
+    val lastModified: Long,
+    val xtags: String?,
+    val endTimeMs: Long,
+    val endSegmentNumber: Long,
+  )
+  fun decodeFormatInitializationMetadata(payload: ByteArray): FormatInitialization? {
+    val r = ProtoReader(payload)
+    var itag = 0; var lmt = 0L; var xtags: String? = null
+    var endTimeMs = 0L; var endSegNum = 0L
+    while (true) {
+      val f = r.nextField() ?: break
+      when (f.fieldNumber) {
+        2 -> {
+          // field2 = FormatId 子消息(重复用 decodeFormatIdLite 解 itag/lastModified/xtags)
+          val fid = decodeFormatIdLite(f.value as ByteArray)
+          itag = fid.itag; lmt = fid.lastModified; xtags = fid.xtags
+        }
+        3 -> endTimeMs = f.value as Long
+        4 -> endSegNum = f.value as Long
+      }
+    }
+    return FormatInitialization(itag, lmt, xtags, endTimeMs, endSegNum)
+  }
+
   /** NextRequestPolicy:backoffTimeMs + playbackCookie(用于重试)。
    *  alpha.30:[playbackCookieBytes] 是 field7 的**原始 bytes**——服务端要求客户端把它原样
    *  回传进下个请求的 StreamerContext.field3(opaque 透传,不需解码/再编码,对齐 FreeTube

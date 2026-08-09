@@ -100,6 +100,10 @@ import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.VideoshotData
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
+import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
+import com.kirin.mt.core.youtube.sabr.media.SabrManifest
+import com.kirin.mt.core.youtube.sabr.media.SabrMediaFetcher
+import com.kirin.mt.core.youtube.sabr.media.SabrMediaSource
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.common.ClockOverlay
 import com.kirin.mt.ui.common.FeedStatusScreen
@@ -1432,7 +1436,20 @@ fun PlayerScreen(
         )
         // alpha.59(Phase 2 DASH):SABR 轨 isSabrDash=true(segmentBase 仍 null → isProgressive 为 true),
         // 须排除走 DASH 分支(SegmentTemplate MPD + SabrDashDataSource 逐段拉),而非 progressive MergingMediaSource。
-        val mediaSource = if (resolvedRequest.isPgc || (effectiveInfo.videoTracks.first().isProgressive && !effectiveInfo.isSabrDash())) {
+        // alpha.64(单流移植):isSabrSingle=true → 走自定义 SabrMediaSource(单流,修 60s 断崖 + A/V 同步 + 后台音频)。
+        val mediaSource = if (effectiveInfo.isSabrSingle()) {
+          // 单流 SABR:A/V 两 ChunkSampleStream 共享一个 SabrMediaFetcher,一次 POST 拉多段缓存续喂。
+          val sid = SabrStreamRegistry.getByVideoId(effectiveInfo.bvid)
+          val entry = SabrStreamRegistry.getEntryByVideoId(effectiveInfo.bvid)
+          if (sid == null || entry == null) {
+            throw IllegalStateException("SABR single-stream session not found for ${effectiveInfo.bvid}")
+          }
+          val fetcher = SabrMediaFetcher(entry.session, playbackHttpClient)
+          val manifest = SabrManifest.fromSession(entry.session, effectiveInfo)
+          Log.i(PlayerPlaybackLogTag, "SABR single-stream: sid=$sid qualities=${effectiveInfo.qualities.size} duration=${effectiveInfo.durationMs}ms")
+          SabrMediaSource.Factory(manifest, fetcher, sid)
+            .createMediaSource(MediaItem.fromUri(manifest.sabrUrl))
+        } else if (resolvedRequest.isPgc || (effectiveInfo.videoTracks.first().isProgressive && !effectiveInfo.isSabrDash())) {
           // 对齐 BV：PGC 用 MergingMediaSource(ProgressiveMediaSource×2)，直接喂视频+音频两条
           // progressive fMP4 流，绕开合成 DASH MPD 的 SegmentBase/indexRange/Initialization 拼接风险
           //（PGC 黑屏疑似合成 MPD 对某字段拼错导致 ExoPlayer 不出帧）。selectedQualityTracks 已按
@@ -2108,13 +2125,20 @@ internal fun appendSabrStartMs(baseUrl: String, startMs: Long): String {
 
 /** alpha.34:源是否走 SABR progressive 路径(sabr:// scheme → 不可 seek,seekTo 会崩)。
  *  alpha.59(Phase 2 DASH):SABR 已走合成 DASH(SegmentTemplate,可原生 seek),故排除 [isSabrDash]——
- *  仅旧 progressive 兜底(sabr:// 无 seg/init)才算 progressive。 */
+ *  仅旧 progressive 兜底(sabr:// 无 seg/init)才算 progressive。
+ *  alpha.64(单流移植):SABR 走自定义 [SabrMediaSource](可原生 seek),亦排除 [isSabrSingle]。 */
 internal fun PlaybackInfo.isSabrProgressive(): Boolean =
-  videoTracks.firstOrNull()?.baseUrl?.startsWith("sabr://") == true && !isSabrDash()
+  videoTracks.firstOrNull()?.baseUrl?.startsWith("sabr://") == true && !isSabrDash() && !isSabrSingle()
 
-/** alpha.59(Phase 2 DASH):源是否走 SABR 合成 DASH 路径(sabr:// scheme + isSabrDash 标记 → SegmentTemplate MPD)。 */
+/** alpha.59(Phase 2 DASH):源是否走 SABR 合成 DASH 路径(sabr:// scheme + isSabrDash 标记 → SegmentTemplate MPD)。
+ *  alpha.64:此路径退役(改走 [isSabrSingle]),保留死代码待删。 */
 internal fun PlaybackInfo.isSabrDash(): Boolean =
   videoTracks.firstOrNull()?.isSabrDash == true
+
+/** alpha.64(单流移植):源是否走 SABR 单流自定义 [SabrMediaSource](sabr:// scheme + isSabrSingle 标记)。
+ *  A/V 两 ChunkSampleStream 共享一个 SabrMediaFetcher(单流 POST,修 60s 断崖 + A/V 同步 + 后台音频)。 */
+internal fun PlaybackInfo.isSabrSingle(): Boolean =
+  videoTracks.firstOrNull()?.isSabrSingle == true
 
 /**
  * alpha.62:SABR 合成 DASH 的 MPD 段时长(ms)。video 服务端实际段可变(~3067-5934,均值 ~4360),
