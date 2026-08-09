@@ -47,7 +47,12 @@ internal object SabrProto {
     s.clientViewportIsFlexible?.let { w.bool(22, it) }
     s.bandwidthEstimate?.let { w.varint(23, it) }
     s.playerTimeMs?.let { w.varint(28, it) }
+    // alpha.63(对齐 LibreTube client_abr_state.proto):补 29/34/36/39,缺这些字段曾被疑为 60s 软拒辅因。
+    s.timeSinceLastSeekMs?.let { w.varint(29, it) }
+    s.visibility?.let { w.int32(34, it) }
     s.playbackRate?.let { w.float(35, it) }
+    s.elapsedWallTimeMs?.let { w.varint(36, it) }
+    s.timeSinceLastActionMs?.let { w.varint(39, it) }
     s.enabledTrackTypesBitfield?.let { w.int32(40, it) }
     s.drcEnabled?.let { w.bool(46, it) }
     s.enableVoiceBoost?.let { w.bool(76, it) }
@@ -478,7 +483,15 @@ internal data class ClientAbrStateInput(
   val clientViewportIsFlexible: Boolean? = null,
   val bandwidthEstimate: Long? = null,
   val playerTimeMs: Long? = null,
+  /** alpha.63(对齐 LibreTube client_abr_state.proto):time_since_last_seek=29,首播/无 seek 发 0。 */
+  val timeSinceLastSeekMs: Long? = null,
+  /** alpha.63:visibility=34(1=可见,LibreTube setVisibility(1))。 */
+  val visibility: Int? = null,
   val playbackRate: Float? = null,
+  /** alpha.63:elapsed_wall_time_ms=36,距上次请求墙钟(LibreTube setElapsedWallTimeMs)。 */
+  val elapsedWallTimeMs: Long? = null,
+  /** alpha.63:time_since_last_action_ms=39,无操作发 0(LibreTube setTimeSinceLastActionMs)。 */
+  val timeSinceLastActionMs: Long? = null,
   val enabledTrackTypesBitfield: Int? = null,
   val drcEnabled: Boolean? = null,
   val enableVoiceBoost: Boolean? = null,

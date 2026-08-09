@@ -55,6 +55,14 @@ internal object SabrStreamRegistry {
     /** 每流最后成功 fetch 的 media 段号(1-based);init 段不更新。非顺序请求(seek/重载)用它判断并按 MPD 时间线近似重置累计。 */
     val videoFetchedSeg = AtomicLong(0L)
     val audioFetchedSeg = AtomicLong(0L)
+    /**
+     * alpha.63(对齐 LibreTube buildBufferedRanges):每流首段服务端自报 startMs(MediaHeader.startMs)。
+     * own bufferedRange 用 [firstStartMs .. firstStartMs+cumulative] 锚定到服务端时间线(非我们累计估算),
+     * startSegmentIndex=1 / endSegmentIndex=fetchedSeg。首段请求前=0(无 own range,同 LibreTube 空列表)。
+     * 非顺序(seek)时累计会重置但本字段不重置——首播顺序播跨 60s 是 60s 断崖场景,seek 续播另议。
+     */
+    val videoFirstStartMs = AtomicLong(0L)
+    val audioFirstStartMs = AtomicLong(0L)
   }
 
   /**

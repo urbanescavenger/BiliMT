@@ -216,6 +216,12 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
   //(MergingMediaSource 双 ProgressiveMediaSource),requestNumber 必须线程安全,否则 rn 重复
   //→服务端可能拒签。AtomicInt 保证每次 fetch 拿唯一 rn。
   private val requestNumber = AtomicInteger(0)
+  /**
+   * alpha.63(对齐 LibreTube setElapsedWallTimeMs):上次请求墙钟(epoch ms,0=首次)。
+   * 两路 loader 共享一个 SabrClient,elapsedWallTimeMs=now-lastRequestMs(A/V 任一路都算「上次请求」,
+   * 对齐 LibreTube 单 SabrClient 共享 lastRequestMs)。AtomicLong 线程安全。
+   */
+  private val lastRequestMs = java.util.concurrent.atomic.AtomicLong(0L)
 
   /**
    * 发一次 SABR 段请求。[session] 的 sabrUrl 可能因 Redirect 变化(调用方把新 url 写回 session 再重试)。
@@ -253,6 +259,12 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
       unsentSabrContexts = unsentCtxTypes,
     )
     val resolution = videoFmt.height.takeIf { it > 0 }
+    // alpha.63(对齐 LibreTube fetchStreamData):补 ClientAbrState 字段 29/34/36/39。
+    // elapsedWallTimeMs=距上次请求墙钟(首请求 0);visibility=1(可见);seek/action 首播发 0。
+    val now = System.currentTimeMillis()
+    val lastMs = lastRequestMs.get()
+    val elapsed = if (lastMs > 0L) (now - lastMs).coerceAtLeast(0L) else 0L
+    lastRequestMs.set(now)
     val clientAbrState = ClientAbrStateInput(
       timeSinceLastManualFormatSelectionMs = if (req.streamType == SabrStreamType.VIDEO) 0L else null,
       lastManualSelectedResolution = resolution,
@@ -263,7 +275,11 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
       bandwidthEstimate = 0L,
       // alpha.28:playerTimeMs 推进(已缓冲到的位置),否则服务端 lookahead 窗口停在 0 → premature EOF。
       playerTimeMs = req.playerTimeMs,
+      timeSinceLastSeekMs = 0L,
+      visibility = 1,
       playbackRate = 1.0f,
+      elapsedWallTimeMs = elapsed,
+      timeSinceLastActionMs = 0L,
       // alpha.40:回退 alpha.39 的 video=0(VIDEO_AND_AUDIO)。alpha.39 真机证伪——bitfield=0 让视频流
       // 请求声明「要音视频双轨」→ 服务端向 VIDEO 流灌 itag=251(audio) MEDIA_HEADER(matched=false,
       // wanted itag=video);itag401 靠 headerId=2 侥幸拿到 video 头,itag399 则几十次 backoff=0

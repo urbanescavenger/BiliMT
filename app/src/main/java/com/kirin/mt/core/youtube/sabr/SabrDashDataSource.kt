@@ -64,16 +64,39 @@ internal class SabrDashDataSource(
       cum.get()
     }
     Log.i(tag, "SabrDash open sid=$sessionId stream=$streamType isInit=$isInit seg=$segmentNumber playerTimeMs=$playerTimeMs dur=$segmentDurationMs")
+    // alpha.63(对齐 LibreTube buildBufferedRanges):报**真实增长 own bufferedRange** 替代 null——
+    // DASH 路径此前 bufferedRange=null 让服务端回落按 body playerTimeMs 判缓冲,cumulative 过 60s 撞
+    // MaxBufferMs 软拒 → 6 backoff → evict → 重播(alpha.62 真机 seg=13 playerTimeMs=61604 死)。LibreTube
+    // (安卓/media3 同栈)用 firstSegment.header.startMs + Σduration 拼连续 own range,终点同样过 60s 却不死,
+    // 证明服务端用 own range 而非 playerTimeMs 判缓冲。我们 MediaHeader 已解析 startMs,这里用它锚定。
+    // own = [firstStartMs .. firstStartMs+cumulative] startSegmentIndex=1 endSegmentIndex=fetchedSeg(已取段)。
+    // 首段(fetchedSeg=0)无 own range,同 LibreTube 空列表 → null(只报对方满缓冲,见 SabrClient)。
+    val firstStartMs = if (streamType == SabrStreamType.VIDEO) e.videoFirstStartMs else e.audioFirstStartMs
+    val ownRange: BufferedRangeInput? = if (isInit || fetchedSeg.get() == 0L) {
+      null
+    } else {
+      val fmt = if (streamType == SabrStreamType.VIDEO) e.session.videoFormatId else e.session.audioFormatId
+      BufferedRangeInput(
+        itag = fmt.itag,
+        lastModified = fmt.lastModified,
+        xtags = fmt.xtags,
+        startTimeMs = firstStartMs.get(),
+        durationMs = cum.get(),
+        startSegmentIndex = 1,
+        endSegmentIndex = fetchedSeg.get().toInt(),
+        timeRange = null,
+      )
+    }
+    Log.i(tag, "SegDiag sid=$sessionId stream=$streamType seg=$segmentNumber playerTimeMs=$playerTimeMs cumulative=${cum.get()} firstStartMs=${firstStartMs.get()} fetchedSeg=${fetchedSeg.get()} ownRange=[${ownRange?.startTimeMs}..+${ownRange?.durationMs}] segIdx=1..${ownRange?.endSegmentIndex}")
     val result = fetchUntilReady(e) {
       SabrFetchRequest(
         isInit = isInit,
         sequenceNumber = if (isInit) 0 else segmentNumber,
         streamType = streamType,
         videoItag = requestedItag,
-        // alpha.59:playerTimeMs = 所请求段绝对起点(对齐 FreeTube)。bufferedRange=null——DASH 按需逐段
-        // 拉,不报 own 缓冲窗口(服务端按 playerTimeMs 精确发段;对方格式满缓冲由 SabrClient 自行追加)。
+        // alpha.63:own bufferedRange 真实增长(替代 null),让服务端按 range 而非 playerTimeMs 判缓冲跨 60s。
         playerTimeMs = playerTimeMs,
-        bufferedRange = null,
+        bufferedRange = ownRange,
       )
     }
     if (result == null) {
@@ -86,6 +109,9 @@ internal class SabrDashDataSource(
     // alpha.62:成功 fetch 后累加本段实际时长(init 段 dur=0 不累计),作下一段的 playerTimeMs 起点
     // ——对齐 progressive [SabrStreamingDataSource.cumulativeDurationMs](alpha.36 已验证跨 60s)。
     if (!isInit) {
+      // alpha.63:首段(fetchedSeg 此刻==0)记服务端自报 startMs(后续 own range 起点锚,不再覆盖);
+      // 用 fetchedSeg==0 而非 firstStartMs==0 作哨兵——seg1 的 startMs 常就是 0(首播从 0 起)。
+      if (fetchedSeg.get() == 0L) result.mediaHeader?.startMs?.let { firstStartMs.set(it) }
       result.mediaHeader?.durationMs?.let { cum.addAndGet(it) }
       fetchedSeg.set(segmentNumber.toLong())
     }
