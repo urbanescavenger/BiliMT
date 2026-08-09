@@ -38,7 +38,14 @@ internal data class Representation(
           .setHeight(if (track.height > 0) track.height else -1)
           .setFrameRate(if (track.fps > 0) track.fps.toFloat() else -1f)
       } else {
-        builder.setSampleMimeType(MimeTypes.getAudioMediaMimeType(track.codecs))
+        // alpha.74 修真机黑屏无声:音频 codecs 从 /player/NewPipe mimeType 提取时常为空
+        // (itag139 的 mimeType 不带 codecs) → getAudioMediaMimeType("") 返回 null → sampleMimeType=null
+        // → media3 无法把音频轨关联到 audio renderer → 音频轨不被 selectTracks 选中 → audioFormat=null
+        // → SABR 只请求视频、白名单[137]挡掉服务端音频 itag251 → 整场无声。用 containerMimeType
+        // (audio/mp4 / audio/webm)兜底 sampleMimeType,让音频轨可被选中(对齐媒体真实容器)。
+        builder.setSampleMimeType(
+          MimeTypes.getAudioMediaMimeType(track.codecs) ?: track.mimeType
+        )
           .setChannelCount(2)
       }
       return Representation(builder.build(), formatId)

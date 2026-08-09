@@ -644,6 +644,10 @@ fun MobilePlayerScreen(
   // ExoPlayer 监听 + 生命周期释放
   DisposableEffect(player) {
     val listener = object : Player.Listener {
+      override fun onRenderedFirstFrame() {
+        Log.i(MobilePlayerLogTag, "onRenderedFirstFrame (视频首帧已渲染)")
+      }
+
       override fun onIsPlayingChanged(playing: Boolean) {
         isPlaying = playing
         if (playing && autoRetryCount > 0) {
@@ -653,6 +657,11 @@ fun MobilePlayerScreen(
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {
+        // alpha.74 诊断:确认音频轨是否被选中(videoFormat/audioFormat)+ 播放器最终状态。
+        Log.i(
+          MobilePlayerLogTag,
+          "playerState=$playbackState pos=${player.currentPosition} videoFmt=${player.videoFormat} audioFmt=${player.audioFormat}",
+        )
         // 暴露缓冲态为可观察 state:STATE_BUFFERING→true,READY/ENDED/IDLE→false。
         // 原本仅命令式读 player.playbackState 做 stall 检测,UI 无法据此显加载图标/控制栏。
         isBuffering = playbackState == Player.STATE_BUFFERING
