@@ -257,6 +257,10 @@ internal class SabrStreamingDataSource(
    * video/audio 两路 DataSource 各自触发一次无妨(registry rotationInFlight 防并发重复 harvest)。
    */
   private fun maybeTriggerRotation() {
+    // alpha.58(Phase 1 paced 验证):临时禁用轮换——验证小 LoadControl 缓冲目标(10s)让请求 paced 后,
+    // 服务端能否不靠轮换持续发段跨过 60s。Phase 2 换 DashMediaSource 后此机制整体移除。
+    return
+    // @Suppress("UNREACHABLE_CODE") 以下为原轮换逻辑,Phase 2 删除。
     val vid = videoId ?: return
     if (rotationTriggered) return
     // alpha.52(窗口):改按 cumulative 距窗口锚点的增量判断(非 alpha.49 的 playhead)。alpha.51 真机坐实
@@ -288,6 +292,9 @@ internal class SabrStreamingDataSource(
    * session 的 sabrUrl/poToken。返回是否切换(切换后调用方须刷新本地 entry 引用)。
    */
   private fun switchIfRotated(): Boolean {
+    // alpha.58(Phase 1 paced 验证):临时禁用轮换切换(见 maybeTriggerRotation)。Phase 2 整体移除。
+    return false
+    // @Suppress("UNREACHABLE_CODE") 以下为原轮换逻辑,Phase 2 删除。
     val cur = SabrStreamRegistry.get(sessionId) ?: return false
     if (cur === entry) return false
     // alpha.52(窗口):切换门 = 旧窗口**已耗尽**(cumulative 距锚点 >= SWITCH_AT_MS=60s)。新会话(register
