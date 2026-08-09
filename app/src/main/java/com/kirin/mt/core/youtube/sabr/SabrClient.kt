@@ -229,6 +229,11 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     // alpha.30:回传 playbackCookie(StreamerContext.field3)——服务端 NextRequestPolicy 要求客户端
     // 把 cookie 塞进下个请求,否则 ~6 段后丢失会话连续性 → premature EOF(FreeTube 源码确认)。
     // cookie 存 session.playbackCookie(processUmpStream 捕获写回),会话级共享。
+    // alpha.55:init 请求**不带** playbackCookie——会话级共享 cookie 在轮换时会被另一路 loader 先写入
+    // (AUDIO 轮换后先跑、写 session.playbackCookie),导致后轮换的 VIDEO 其 init 复用 AUDIO 派生的
+    // cookie → STREAM_PROTECTION_STATUS status=3(InvalidPoToken) → init 失败 → 视频卡死在 ~1min
+    // (alpha.54 真机:VIDEO 轮换 init cookie=true 失败,而所有成功 init 皆 cookie=false)。init 是全新
+    // 会话首请求,不该携带前一会话的 cookie;MEDIA(段)请求仍回传(alpha.30 结论,服务端要求)。
     // alpha.31:同时回传 SABR 上下文握手(field5 sabrContexts / field6 unsentSabrContexts)——
     // 不回传则服务端只回 context+backoff 不发 media → 8 次后 EOF(alpha.29/30 打不开视频根因)。
     // session.prepareSabrContexts 按 active 集合分派(processUmpStream 捕获 part 57/59 写回)。
@@ -236,7 +241,7 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     val streamerContext = StreamerContextInput(
       clientInfo = session.clientInfo,
       poToken = session.poToken,
-      playbackCookie = session.playbackCookie,
+      playbackCookie = if (req.isInit) null else session.playbackCookie,
       sabrContexts = activeCtxs,
       unsentSabrContexts = unsentCtxTypes,
     )
