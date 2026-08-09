@@ -317,7 +317,9 @@ internal class SabrStreamingDataSource(
     }
     // 锚点推进到下一个窗口起点(cumulative 从该窗口续,首段 playerTimeMs=nextWindowStart → 服务端从边界发段)。
     sessionAnchorMs = nextWindowStart
-    cumulativeDurationMs = nextWindowStart + (init.mediaHeader?.durationMs ?: 0L)
+    // alpha.58(Phase 1):init 已在上方 null-check(if (init == null) return false),但死代码里 smart-cast
+    // 不生效,需 !! 断言(Phase 2 删除整段轮换逻辑)。
+    cumulativeDurationMs = nextWindowStart + (init!!.mediaHeader?.durationMs ?: 0L)
     // alpha.52(seek):上报切换到的新窗口会话——seek 复用判断取当前播放窗口。
     videoId?.let { SabrStreamRegistry.noteActive(it, cur) }
     nextSeq = 1
