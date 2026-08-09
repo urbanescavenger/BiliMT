@@ -15,6 +15,7 @@ import com.kirin.mt.core.network.SpaceHttpSupport
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.youtube.InnerTubeClient
 import com.kirin.mt.core.youtube.YoutubeBotGuard
+import com.kirin.mt.core.youtube.YoutubeBrowserSession
 import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeFeedCacheStore
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
