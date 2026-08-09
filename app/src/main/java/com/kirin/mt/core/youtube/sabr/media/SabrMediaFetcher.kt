@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import com.kirin.mt.core.youtube.sabr.ClientAbrStateInput
+import com.kirin.mt.core.youtube.sabr.FormatId
 import com.kirin.mt.core.youtube.sabr.SabrProto
 import com.kirin.mt.core.youtube.sabr.SabrProto.PART_FORMAT_INITIALIZATION_METADATA
 import com.kirin.mt.core.youtube.sabr.SabrProto.PART_MEDIA
@@ -322,7 +323,7 @@ internal class SabrMediaFetcher(
         }
         Log.i(tag, "FORMAT_INITIALIZATION_METADATA itag=${fi.itag} endSegNum=${fi.endSegmentNumber} duration=${fi.endTimeMs}ms")
         initializedFormats[fi.itag] = InitializedFormat(
-          id = com.kirin.mt.core.youtube.sabr.FormatId(fi.itag, fi.lastModified, fi.xtags, 0),
+          id = FormatId(fi.itag, fi.lastModified, fi.xtags, 0),
           endSegmentNumber = fi.endSegmentNumber,
           duration = fi.endTimeMs,
         )
