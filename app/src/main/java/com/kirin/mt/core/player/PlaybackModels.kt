@@ -132,6 +132,13 @@ data class PlaybackTrack(
    * null 时播放器走 progressive [MergingMediaSource] 分支，不经 MPD 合成。
    */
   val segmentBase: PlaybackSegmentBase? = null,
+  /**
+   * alpha.59(Phase 2 DASH):SABR 合成 DASH 轨标记。SABR 无 indexRange/initRange(服务端按段发),
+   * 播放器须走 DASH 分支 + MPD 用 SegmentTemplate(每段一个 sabr:// seg/init URL),而非 progressive
+   * MergingMediaSource。segmentBase 仍为 null(无 indexRange),故 [isProgressive] 为 true——播放器分支
+   * 判断须额外排除本标记(见 PlayerScreen/MobilePlayerScreen 的 `&& !isSabrDash`)。
+   */
+  val isSabrDash: Boolean = false,
 ) {
   /** 是否为 progressive 直链（无 DASH SegmentBase），如 YouTube 流。 */
   val isProgressive: Boolean

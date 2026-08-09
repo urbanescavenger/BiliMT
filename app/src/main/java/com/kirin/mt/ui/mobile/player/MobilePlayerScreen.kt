@@ -154,6 +154,7 @@ import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.ui.player.PlayerDanmakuLayer
 import com.kirin.mt.ui.player.appendSabrStartMs
 import com.kirin.mt.ui.player.buildDashMediaItem
+import com.kirin.mt.ui.player.isSabrDash
 import com.kirin.mt.ui.player.isSabrProgressive
 import com.kirin.mt.ui.player.nextEpisodeCompletion
 import com.kirin.mt.ui.player.toPlaybackRequest
@@ -573,7 +574,9 @@ fun MobilePlayerScreen(
           BiliMediaDataSourceFactory(client = playbackHttpClient, headers = sabrEffectiveInfo.headers).create(),
         ),
       )
-      val mediaSource: MediaSource = if (resolvedRequest.isPgc || sabrEffectiveInfo.videoTracks.first().isProgressive) {
+      // alpha.59(Phase 2 DASH):SABR 轨 isSabrDash=true(segmentBase 仍 null → isProgressive 为 true),
+      // 须排除走 DASH 分支(SegmentTemplate MPD + SabrDashDataSource 逐段拉),而非 progressive MergingMediaSource。
+      val mediaSource: MediaSource = if (resolvedRequest.isPgc || (sabrEffectiveInfo.videoTracks.first().isProgressive && !sabrEffectiveInfo.isSabrDash())) {
         val videoItem = androidx.media3.common.MediaItem.Builder()
           .setUri(sabrEffectiveInfo.videoTracks.first().baseUrl)
           .setMediaMetadata(metadata)

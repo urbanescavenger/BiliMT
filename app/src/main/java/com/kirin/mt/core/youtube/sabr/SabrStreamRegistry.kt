@@ -2,10 +2,6 @@ package com.kirin.mt.core.youtube.sabr
 
 import android.util.Base64
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 
@@ -43,93 +39,9 @@ internal object SabrStreamRegistry {
   )
 
   /**
-   * alpha.48(轮换):主动会话轮换工厂——服务端对每个 SABR 会话有 ~60s 服务量上限(锚点..+60s,
-   * docs row 72),到点后同一会话任何请求都被软拒。被动 stall-retry 已太晚(playhead 已 >60s,新
-   * 会话 0 锚点仍拒)。唯一解:播放到窗口耗尽前**主动**开新 harvest 建下一个窗口的会话(startMs=
-   * 窗口起点),用 [registerByVideoId] 复用同 sid 覆盖 entry,DataSource 检测 entry 引用变化后无缝切换。
-   * 由 resolver 在 SABR 路径装填(持有 harvester/client/videoFormats)。
-   *
-   * 签名 `(videoId, startMs, epoch) -> Unit`。返回即触发异步执行([requestRotation] 在后台协程跑,不
-   * 阻塞 read() 路径);工厂内部自行 harvest+建会话+registerByVideoId。`epoch` 是发起时的旋转代际——
-   * 工厂注册前用 [isRotationEpochCurrent] 校验,seek 后过期预取(旧窗口)丢弃,不覆盖 seek 锚定的新会话。
-   * 防并发:同 videoId 在途旋转期间重复请求直接忽略。
-   */
-  @Volatile var rotationFactory: (suspend (videoId: String, startMs: Long, epoch: Long) -> Unit)? = null
-
-  private val rotationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-  private val rotationInFlight = ConcurrentHashMap.newKeySet<String>()
-  /**
-   * alpha.53(Bug B 修复):每 videoId 已请求轮换的**窗口**——去重顺序重复触发。video/audio 两路
-   * DataSource 共用同 sid 且各自独立触发轮换,若各自持有私有锚点会因错位对同一窗口重复 harvest
-   * (alpha.52 真机:02:23:31 VIDEO 对 w60 重复 harvest,多耗一次 watch 页加载,加重风控)。这里按窗口
-   * 去重:某窗口已请求过(或已请求到更后窗口)即拒绝再次触发,每窗口只 harvest 一次。
-   */
-  private val rotationRequestedWindow = ConcurrentHashMap<String, Long>()
-  /** alpha.52:每 videoId 的旋转代际计数——seek 时 bump,让旧窗口在途预取结果作废。 */
-  private val rotationEpoch = ConcurrentHashMap<String, Long>()
-
-  /**
-   * alpha.48:主动触发会话旋转——后台协程跑 [rotationFactory],同 videoId 在途期间忽略重复请求
-   * (video/audio 两路 DataSource 共享同 sid,都会触发;只许一次)。[rotationFactory] 未装填(非 SABR
-   * 路径)→ no-op。完成后 [registerByVideoId] 覆盖 entry(复用同 sid),DataSource 检测到切换。
-   */
-  fun requestRotation(videoId: String, startMs: Long) {
-    val factory = rotationFactory ?: run {
-      Log.i(tag, "requestRotation videoId=$videoId startMs=$startMs (no factory — non-SABR path, skip)")
-      return
-    }
-    if (!rotationInFlight.add(videoId)) {
-      Log.i(tag, "requestRotation videoId=$videoId startMs=$startMs (already in flight, skip)")
-      return
-    }
-    val epoch = rotationEpoch[videoId] ?: 0L
-    Log.i(tag, "requestRotation videoId=$videoId startMs=$startMs epoch=$epoch (start async harvest)")
-    rotationScope.launch {
-      try {
-        factory(videoId, startMs, epoch)
-      } catch (t: Throwable) {
-        Log.w(tag, "requestRotation videoId=$videoId failed: ${t.message}", t)
-      } finally {
-        rotationInFlight.remove(videoId)
-      }
-    }
-  }
-
-  /**
-   * alpha.52:seek 重新起播前调用——bump 该 videoId 的旋转代际 + 释放 in-flight 锁。此后在途的旧窗口
-   * 预取,其工厂注册前经 [isRotationEpochCurrent] 校验发现代际不符 → 丢弃(否则会覆盖 seek 锚定的新
-   * 窗口会话,致 DataSource 开出来的窗口与实际会话错位)。
-   */
-  fun resetForSeek(videoId: String) {
-    rotationEpoch[videoId] = (rotationEpoch[videoId] ?: 0L) + 1
-    rotationInFlight.remove(videoId)
-    rotationRequestedWindow.remove(videoId)
-    Log.i(tag, "resetForSeek videoId=$videoId epoch=${rotationEpoch[videoId]} (drop stale prefetch after seek)")
-  }
-
-  /** alpha.53:该 videoId 当前**真正在播**的窗口起点(seek 复用判断 + 轮换触发用共享窗口,非每 DataSource 私有锚点)。 */
-  fun activeWindow(videoId: String): Long? = activeWindowByVideoId[videoId]
-
-  /**
-   * alpha.53(Bug B 修复):声明「已为该窗口请求轮换」,并返回是否应真正发起。
-   * 该 videoId 已请求过 ≥ 此窗口的轮换(顺序重复触发)→ 返回 false,触发方跳过(不再重复 harvest)。
-   * 首次为某窗口请求 → 记录并返回 true。窗口单调递增,seek 时 [resetForSeek] 清空重建。
-   */
-  fun markRotationRequested(videoId: String, windowStartMs: Long): Boolean {
-    val prev = rotationRequestedWindow[videoId]
-    if (prev != null && prev >= windowStartMs) return false
-    rotationRequestedWindow[videoId] = windowStartMs
-    return true
-  }
-
-  /** alpha.52:某次轮换发起时代际是否仍是最新——false 表示期间发生过 seek,结果应丢弃。 */
-  fun isRotationEpochCurrent(videoId: String, epoch: Long): Boolean =
-    (rotationEpoch[videoId] ?: 0L) == epoch
-
-  /**
    * 注册会话并按 [videoId] 缓存(同视频切清晰度/seek 时复用)。返回 opaque sessionId。
    * 若 [videoId] 已有缓存会话,复用其 sid + 覆盖更新 entry(会话参数可能因重 harvest 略变)。
-   * @param windowStartMs 本会话服务的 60s 窗口起点(见 [Entry.windowStartMs])。
+   * alpha.59(Phase 2 DASH):无窗口锚点——DASH 会话服务整段视频,无 60s 轮换。
    */
   fun registerByVideoId(videoId: String, session: SabrSession, client: SabrClient, windowStartMs: Long = 0L): String {
     val existingSid = byVideoId[videoId]
@@ -153,23 +65,6 @@ internal object SabrStreamRegistry {
 
   /** alpha.52:按 videoId 查当前活跃会话 entry(含 windowStartMs);未缓存返回 null。 */
   fun getEntryByVideoId(videoId: String): Entry? = byVideoId[videoId]?.let { sessions[it] }
-
-  /**
-   * alpha.52(seek):「正在播放的窗口会话」追踪——[SabrStreamingDataSource] 在 open()/窗口切换时调用,
-   * 记录该 videoId 当前真正在播的会话(而非被预取覆盖的最新 entry)。resolver 据此判断 seek 目标窗口
-   * 是否可复用当前会话(窗口内 seek 免 re-harvest)。
-   */
-  private val activeWindowByVideoId = ConcurrentHashMap<String, Long>()
-  private val activeEntryByVideoId = ConcurrentHashMap<String, Entry>()
-
-  fun noteActive(videoId: String, entry: Entry) {
-    activeWindowByVideoId[videoId] = entry.windowStartMs
-    activeEntryByVideoId[videoId] = entry
-  }
-
-  /** alpha.52(seek):目标窗口 == 当前播放窗口 → 返回当前播放会话(可复用,免 re-harvest);否则 null。 */
-  fun activeSessionForWindow(videoId: String, windowStartMs: Long): Entry? =
-    if (activeWindowByVideoId[videoId] == windowStartMs) activeEntryByVideoId[videoId] else null
 
   /** 注册会话,返回 opaque sessionId(16 随机字节 base64url,用作 `sabr://youtube/<sid>` 查表 key)。 */
   fun register(session: SabrSession, client: SabrClient): String {

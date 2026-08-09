@@ -30,10 +30,20 @@ internal class SabrAwareDataSource(private val http: DataSource) : DataSource {
     val scheme = uri.scheme
     val parsed = if (scheme?.equals("sabr", ignoreCase = true) == true) parseSabrUri(uri) else null
     return if (parsed != null) {
-      Log.i(tag, "route sabr:// sid=${parsed.sid} stream=${parsed.stream} itag=${parsed.itag ?: "default"} startMs=${parsed.startMs} videoId=${parsed.videoId} → SabrStreamingDataSource")
-      val sabr = SabrStreamingDataSource(parsed.sid, parsed.stream, parsed.itag, parsed.startMs, parsed.videoId)
-      delegate = sabr
-      sabr.open(dataSpec)
+      // alpha.59(Phase 2 DASH):带 `&init=`/`&seg=` 的 sabr:// URL 是合成 DASH MPD 的段请求
+      // (DashMediaSource 按 SegmentTemplate 逐段拉)→ 交 [SabrDashDataSource](每段独立,不 burst)。
+      // 其余(progressive 兜底,无 seg/init)仍走 [SabrStreamingDataSource]。
+      if (parsed.isInit || parsed.segmentNumber > 0) {
+        Log.i(tag, "route sabr:// sid=${parsed.sid} stream=${parsed.stream} itag=${parsed.itag ?: "default"} isInit=${parsed.isInit} seg=${parsed.segmentNumber} dur=${parsed.segmentDurationMs} → SabrDashDataSource")
+        val sabr = SabrDashDataSource(parsed.sid, parsed.stream, parsed.itag, parsed.isInit, parsed.segmentNumber, parsed.segmentDurationMs)
+        delegate = sabr
+        sabr.open(dataSpec)
+      } else {
+        Log.i(tag, "route sabr:// sid=${parsed.sid} stream=${parsed.stream} itag=${parsed.itag ?: "default"} startMs=${parsed.startMs} videoId=${parsed.videoId} → SabrStreamingDataSource")
+        val sabr = SabrStreamingDataSource(parsed.sid, parsed.stream, parsed.itag, parsed.startMs, parsed.videoId)
+        delegate = sabr
+        sabr.open(dataSpec)
+      }
     } else {
       delegate = http
       http.open(dataSpec)
@@ -57,8 +67,19 @@ internal class SabrAwareDataSource(private val http: DataSource) : DataSource {
    * alpha.29:`&itag=` 指定本次播放的视频清晰度(poToken 会话级不绑 itag,同 sid 换 itag 即换清晰度)。
    * audio 流不带 itag(用会话默认 audioFormatId)。
    * alpha.34:`&startMs=` 续播/切清晰度起始 playerTimeMs(见 [SabrStreamingDataSource.startMs]);无则 0(从头播)。
+   * alpha.59(Phase 2 DASH):`&init=1`/`&seg=N&dur=D` 是合成 DASH MPD 的段请求参数——init 段(isInit=true)
+   * 或第 N 段(段时长 D ms)。带这些参数 → 路由到 [SabrDashDataSource];否则 progressive 兜底。
    */
-  private data class SabrUriParts(val sid: String, val stream: SabrStreamType, val itag: Int?, val startMs: Long, val videoId: String?)
+  private data class SabrUriParts(
+    val sid: String,
+    val stream: SabrStreamType,
+    val itag: Int?,
+    val startMs: Long,
+    val videoId: String?,
+    val isInit: Boolean,
+    val segmentNumber: Int,
+    val segmentDurationMs: Long,
+  )
 
   private fun parseSabrUri(uri: Uri): SabrUriParts? {
     // host 段 = "youtube";最后一个 path segment = sessionId。
@@ -68,8 +89,12 @@ internal class SabrAwareDataSource(private val http: DataSource) : DataSource {
     val st = if (stream.equals("audio", ignoreCase = true)) SabrStreamType.AUDIO else SabrStreamType.VIDEO
     val itag = uri.getQueryParameter("itag")?.toIntOrNull()
     val startMs = uri.getQueryParameter("startMs")?.toLongOrNull() ?: 0L
-    // alpha.48(轮换):`&videoId=` 供 DataSource 主动旋转时触发 [SabrStreamRegistry.requestRotation]。
+    // alpha.48(轮换):`&videoId=`(兼容旧 progressive 兜底;DASH 段 URL 由 MPD 追加 &init/&seg)。
     val videoId = uri.getQueryParameter("videoId")
-    return SabrUriParts(sid, st, itag, startMs, videoId)
+    // alpha.59(Phase 2 DASH):`&init=1` → init 段;`&seg=N&dur=D` → 第 N 段(段时长 D)。无则 0(progressive 兜底)。
+    val isInit = uri.getQueryParameter("init")?.toIntOrNull() == 1
+    val segmentNumber = uri.getQueryParameter("seg")?.toIntOrNull() ?: 0
+    val segmentDurationMs = uri.getQueryParameter("dur")?.toLongOrNull() ?: 0L
+    return SabrUriParts(sid, st, itag, startMs, videoId, isInit, segmentNumber, segmentDurationMs)
   }
 }

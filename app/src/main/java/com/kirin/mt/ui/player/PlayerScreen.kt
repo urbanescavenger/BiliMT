@@ -1430,7 +1430,9 @@ fun PlayerScreen(
             ).create(),
           ),
         )
-        val mediaSource = if (resolvedRequest.isPgc || effectiveInfo.videoTracks.first().isProgressive) {
+        // alpha.59(Phase 2 DASH):SABR 轨 isSabrDash=true(segmentBase 仍 null → isProgressive 为 true),
+        // 须排除走 DASH 分支(SegmentTemplate MPD + SabrDashDataSource 逐段拉),而非 progressive MergingMediaSource。
+        val mediaSource = if (resolvedRequest.isPgc || (effectiveInfo.videoTracks.first().isProgressive && !effectiveInfo.isSabrDash())) {
           // 对齐 BV：PGC 用 MergingMediaSource(ProgressiveMediaSource×2)，直接喂视频+音频两条
           // progressive fMP4 流，绕开合成 DASH MPD 的 SegmentBase/indexRange/Initialization 拼接风险
           //（PGC 黑屏疑似合成 MPD 对某字段拼错导致 ExoPlayer 不出帧）。selectedQualityTracks 已按
@@ -2104,9 +2106,19 @@ internal fun appendSabrStartMs(baseUrl: String, startMs: Long): String {
   return "$stripped${sep}startMs=$startMs"
 }
 
-/** alpha.34:源是否走 SABR progressive 路径(sabr:// scheme → 不可 seek,seekTo 会崩)。 */
+/** alpha.34:源是否走 SABR progressive 路径(sabr:// scheme → 不可 seek,seekTo 会崩)。
+ *  alpha.59(Phase 2 DASH):SABR 已走合成 DASH(SegmentTemplate,可原生 seek),故排除 [isSabrDash]——
+ *  仅旧 progressive 兜底(sabr:// 无 seg/init)才算 progressive。 */
 internal fun PlaybackInfo.isSabrProgressive(): Boolean =
-  videoTracks.firstOrNull()?.baseUrl?.startsWith("sabr://") == true
+  videoTracks.firstOrNull()?.baseUrl?.startsWith("sabr://") == true && !isSabrDash()
+
+/** alpha.59(Phase 2 DASH):源是否走 SABR 合成 DASH 路径(sabr:// scheme + isSabrDash 标记 → SegmentTemplate MPD)。 */
+internal fun PlaybackInfo.isSabrDash(): Boolean =
+  videoTracks.firstOrNull()?.isSabrDash == true
+
+/** alpha.59(Phase 2 DASH):SABR 合成 DASH 的 MPD 段时长(ms)——服务端实际段的安全上界,避免 MPD 时长 < 实际段致服务端重发上一段。 */
+internal const val SabrDashSegmentDurationMsVideo = 6_000L
+internal const val SabrDashSegmentDurationMsAudio = 10_000L
 
 
 internal fun buildDashManifest(info: PlaybackInfo, cdnPreference: PlaybackCdnPreference): String {
@@ -2117,8 +2129,10 @@ internal fun buildDashManifest(info: PlaybackInfo, cdnPreference: PlaybackCdnPre
     track.toRepresentation(adaptationSetId = "1", contentType = "audio", cdnPreference = cdnPreference)
   }
   val durationSeconds = (info.durationMs / 1000L).coerceAtLeast(1L)
+  // alpha.59(Phase 2 DASH):SABR 用 SegmentTemplate(逐段拉),需 live profile;PGC SegmentBase 用 on-demand。
+  val profiles = if (info.isSabrDash()) "urn:mpeg:dash:profile:isoff-live:2011" else "urn:mpeg:dash:profile:isoff-on-demand:2011"
   return """
-    <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT${durationSeconds}S" minBufferTime="PT1.5S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
+    <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT${durationSeconds}S" minBufferTime="PT1.5S" profiles="$profiles">
       <Period duration="PT${durationSeconds}S">
         <AdaptationSet id="0" contentType="video" mimeType="${info.videoTracks.firstOrNull()?.mimeType.orEmpty().ifBlank { "video/mp4" }}" segmentAlignment="true">
           $videoRepresentations
@@ -2138,6 +2152,26 @@ internal fun PlaybackTrack.toRepresentation(
   contentType: String,
   cdnPreference: PlaybackCdnPreference,
 ): String {
+  val dimensions = if (contentType == "video") {
+    """ width="$width" height="$height""""
+  } else {
+    ""
+  }
+  // alpha.59(Phase 2 DASH):SABR 轨用 SegmentTemplate——每段一个 sabr:// seg/init URL,SabrDashDataSource
+  // 逐段拉(播到才拉下一段,不 burst → 跨 60s 上限)。段时长取服务端实际段的安全上界(video ~5740-5840 →
+  // 6000;audio ~10000 → 10000),避免 MPD 时长 < 实际段导致服务端重发上一段。
+  if (isSabrDash) {
+    val dur = if (contentType == "video") SabrDashSegmentDurationMsVideo else SabrDashSegmentDurationMsAudio
+    val initUrl = "$baseUrl&init=1"
+    val mediaUrl = "$baseUrl&seg=\$Number\$&dur=$dur"
+    return """
+      <Representation id="${adaptationSetId}_$id" bandwidth="$bandwidth" codecs="${codecs.escapeXml()}"$dimensions>
+        <SegmentTemplate timescale="1000" duration="$dur" startNumber="1"
+          initialization="${initUrl.escapeXml()}"
+          media="${mediaUrl.escapeXml()}"/>
+      </Representation>
+    """.trimIndent()
+  }
   val primaryUrl = CdnRewriter.rewrite(baseUrl, cdnPreference)
   val fallbackUrls = backupUrls
     .asSequence()
@@ -2149,11 +2183,6 @@ internal fun PlaybackTrack.toRepresentation(
     .joinToString(separator = "\n      ") { url ->
       "<BaseURL>${url.escapeXml()}</BaseURL>"
     }
-  val dimensions = if (contentType == "video") {
-    """ width="$width" height="$height""""
-  } else {
-    ""
-  }
   // progressive 直链（segmentBase == null，如 YouTube）不走 MPD；此处防御性省略 SegmentBase 段。
   val segmentBaseElement = segmentBase?.let {
     """

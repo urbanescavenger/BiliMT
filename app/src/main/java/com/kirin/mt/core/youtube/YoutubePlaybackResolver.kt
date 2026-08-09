@@ -20,7 +20,6 @@ import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import com.kirin.mt.core.youtube.sabr.SabrStreamType
 import com.kirin.mt.core.youtube.sabr.UmpReader
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -184,18 +183,15 @@ class YoutubePlaybackResolver(
         val firstVideo = raws.firstOrNull { (it.intOrNull("height") ?: 0) > 0 }
         val firstAudio = raws.firstOrNull { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
         if (firstVideo != null && firstAudio != null) {
-          // alpha.29+alpha.52:切清晰度/seek 重跑 resolve 时,若「正在播的窗口会话」覆盖目标窗口
-          // (floor(startPositionMs/60s)*60s),直接复用——poToken/ustreamerConfig/cpn 会话级可复用 ~6h。
-          // activeSessionForWindow 取 DataSource 正在播的窗口会话(而非被预取覆盖的最新 entry),保证
-          // 会话窗口 == 目标窗口(否则跨窗口 seek 会复用错会话、请求被拒)。无匹配 → 跨窗口 seek/首次 →
-          // 下方 harvest 锚定目标窗口。
-          val targetWindow = (request.startPositionMs / WINDOW_LEN) * WINDOW_LEN
-          val activeEntry = SabrStreamRegistry.activeSessionForWindow(videoId, targetWindow)
-          if (activeEntry != null) {
-            val cachedSid = SabrStreamRegistry.getByVideoId(videoId)
-            if (cachedSid != null) {
-              Log.i(Tag, "SABR session reuse: videoId=$videoId window=$targetWindow sid=$cachedSid → reuse (skip harvest/decipher), preferredQuality=${request.preferredQualityId}")
-              return@withContext buildSabrPlaybackInfo(request, videoId, durationMs, raws, activeEntry.session, cachedSid)
+          // alpha.29:切清晰度/seek 重跑 resolve 时,若同 videoId 已有会话,直接复用——poToken/ustreamerConfig/
+          // cpn 会话级可复用 ~6h(FreeTube 证实)。alpha.59(Phase 2 DASH):DASH 按需逐段拉,会话服务整段视频
+          // (无 60s 窗口/轮换),故不再按窗口判断,直接 getByVideoId 复用。无缓存 → 下方 harvest 建新会话。
+          val cachedSid = SabrStreamRegistry.getByVideoId(videoId)
+          if (cachedSid != null) {
+            val cachedEntry = SabrStreamRegistry.getEntryByVideoId(videoId)
+            if (cachedEntry != null) {
+              Log.i(Tag, "SABR session reuse: videoId=$videoId sid=$cachedSid → reuse (skip harvest/decipher), preferredQuality=${request.preferredQualityId}")
+              return@withContext buildSabrPlaybackInfo(request, videoId, durationMs, raws, cachedEntry.session, cachedSid)
             }
           }
           // alpha.29:同会话所有可播视频 itag 的 FormatId(从 /player adaptiveFormats 全收)。
@@ -247,11 +243,9 @@ class YoutubePlaybackResolver(
             // poToken/ustreamerConfig/formatIds)。alpha.26 已证:用 harvested body 解码出的会话参数
             // + 浏览器 cpn,SabrClient 自构 body 驱 init+seg 全 Success(§6.7 row 50)。
             Log.i(Tag, "SABR n-decrypt NO-CHANGE (plasma WASM) → harvest watch WebView")
-            // alpha.52(窗口):跨窗口 seek/首次 → 先丢弃过期在途预取(resetForSeek bump 代际,防旧窗口预取
-            // 覆盖本会话),再 harvest 锚定目标窗口(窗口起点经 watch &t= 作浏览器起播位置)。目标窗口 ==
-            // 当前播放窗口的复用已在上方 activeSessionForWindow 判过(匹配则不进来)。
-            SabrStreamRegistry.resetForSeek(videoId)
-            val capture = sabrHarvester.harvest(videoId, targetWindow)
+            // alpha.59(Phase 2 DASH):harvest 锚定续播点(浏览器 watch &t= 起播位置)。DASH 会话服务整段
+            // 视频(无 60s 窗口/轮换),锚点只作浏览器初始位置,不限制会话服务范围。
+            val capture = sabrHarvester.harvest(videoId, request.startPositionMs)
             if (capture == null) {
               Log.w(Tag, "harvest: no capture (watch 页 30s 内未发 googlevideo 请求 — 页没加载/autoplay 被拦;查 YtSabrHarvest 日志)")
               null
@@ -272,55 +266,14 @@ class YoutubePlaybackResolver(
           if (sabrSession != null) {
             YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
             val sabrClient = SabrClient(httpClient)
-            val sid = SabrStreamRegistry.registerByVideoId(videoId, sabrSession, sabrClient, targetWindow)
-            // alpha.48(轮换):装填会话轮换工厂。服务端对每会话 ~60s 服务量上限,到点主动开新 harvest
-            // 建下一个窗口的会话([requestRotation] 后台执行 → registerByVideoId 复用同 sid 覆盖 entry →
-            // DataSource 检测切换)。捕获本 resolve 的 client/videoFormats(harvest 建会话要它们)。
-            // alpha.52:工厂签名带 epoch——seek 后过期预取(旧窗口)在注册前校验代际丢弃,不覆盖 seek 锚定
-            // 的新会话。startMs 即窗口起点(DataSource 传 sessionAnchorMs+WINDOW_LEN),作 session 窗口存盘。
-            SabrStreamRegistry.rotationFactory = { v, startMs, epoch ->
-              Log.i(Tag, "rotation: start harvest videoId=$v startMs=$startMs epoch=$epoch")
-              // alpha.53:轮换 harvest 失败重试——单次瞬时空白页(风控/WebView 渲染崩)不立即放弃。
-              // harvester 已对空白页 fail-fast(~8s 而非 30s),配合短退避,最多 ROTATION_HARVEST_ATTEMPTS
-              // 次,赶在窗口耗尽(距预取触发 ~20s)前完成。全败才 keep old session(旧会话若已耗尽,交播放器
-              // stall-retry fresh-harvest 兜底)。retry 只在后台轮换协程(rotationScope)跑,不阻塞 read()。
-              var cap: YoutubeSabrHarvester.SabrCapture? = null
-              var attempt = 0
-              while (attempt < ROTATION_HARVEST_ATTEMPTS) {
-                attempt++
-                cap = sabrHarvester.harvest(v, startMs)
-                if (cap != null) break
-                if (attempt < ROTATION_HARVEST_ATTEMPTS) {
-                  Log.w(Tag, "rotation: harvest attempt $attempt/$ROTATION_HARVEST_ATTEMPTS failed videoId=$v startMs=$startMs → retry in ${ROTATION_RETRY_MS}ms")
-                  delay(ROTATION_RETRY_MS)
-                }
-              }
-              if (cap == null) {
-                Log.w(Tag, "rotation: harvest failed after $ROTATION_HARVEST_ATTEMPTS attempts videoId=$v startMs=$startMs (keep old session)")
-              } else if (!cap.method.equals("POST", ignoreCase = true)) {
-                Log.w(Tag, "rotation: captured ${cap.method} not POST → skip (need SABR POST body)")
-              } else {
-                val newSession = buildSabrSessionFromCapture(cap, client, videoFormats)
-                if (newSession == null) {
-                  Log.w(Tag, "rotation: buildSabrSessionFromCapture failed videoId=$v (keep old session)")
-                } else if (!SabrStreamRegistry.isRotationEpochCurrent(v, epoch)) {
-                  // alpha.52:seek 后旧窗口过期预取 → 丢弃,不覆盖 seek 锚定的新窗口会话。
-                  Log.w(Tag, "rotation: stale after seek epoch=$epoch videoId=$v → drop (seek re-anchored session)")
-                } else {
-                  YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
-                  val newSid = SabrStreamRegistry.registerByVideoId(v, newSession, SabrClient(httpClient), startMs)
-                  Log.i(Tag, "rotation: registered new session videoId=$v startMs=$startMs window=$startMs sid=$newSid (switched)")
-                }
-              }
-              // alpha.49:轮换(后台)结束,隐藏加载步骤提示(成功/失败都隐藏)。
-              YoutubeLoadProgress.clear()
-            }
+            // alpha.59(Phase 2 DASH):注册会话(无窗口锚点——DASH 会话服务整段视频,无 60s 轮换)。
+            val sid = SabrStreamRegistry.registerByVideoId(videoId, sabrSession, sabrClient)
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
             Log.i(
               Tag,
               "SABR playback ready: sid=$sid nTransformed=$nTransformed " +
                 "video=itag${sabrSession.videoFormatId.itag}(${sabrSession.videoFormatId.height}p) " +
-                "audio=itag${sabrSession.audioFormatId.itag} → sabr:// progressive tracks"
+                "audio=itag${sabrSession.audioFormatId.itag} → sabr:// DASH tracks"
             )
             return@withContext buildSabrPlaybackInfo(request, videoId, durationMs, raws, sabrSession, sid)
           }
@@ -732,7 +685,7 @@ class YoutubePlaybackResolver(
     Log.i(
       Tag,
       "SABR PlaybackInfo: sid=$sid qualities=${qualities.size} selected=itag$selectedItag(${videoTrack.height}p ${videoTrack.codecs}) " +
-        "audio=itag$aItag(${audioTrack.codecs}) duration=${durationMs}ms → sabr:// progressive"
+        "audio=itag$aItag(${audioTrack.codecs}) duration=${durationMs}ms → sabr:// DASH"
     )
     return PlaybackInfo(
       bvid = videoId,
@@ -747,15 +700,15 @@ class YoutubePlaybackResolver(
     )
   }
 
-  /** 构造单条 SABR progressive track。元数据从 /player adaptive 原始 JSON 取,缺则用合理默认。
-   *  alpha.29:视频流 baseUrl 带 `&itag=<itag>`(同 sid 换 itag 即换清晰度);audio 不带(用会话默认)。 */
+  /** 构造单条 SABR DASH track。元数据从 /player adaptive 原始 JSON 取,缺则用合理默认。
+   *  alpha.29:视频流 baseUrl 带 `&itag=<itag>`(同 sid 换 itag 即换清晰度);audio 不带(用会话默认)。
+   *  alpha.59(Phase 2 DASH):isSabrDash=true → 播放器走 DASH 分支,MPD 用 SegmentTemplate 逐段拉。 */
   private fun buildSabrTrack(itag: Int, raw: JsonObject?, stream: String, sid: String, videoId: String): PlaybackTrack {
     val rawMime = raw?.stringOrNull("mimeType")
     val mime = (rawMime ?: if (stream == "video") "video/mp4" else "audio/mp4").substringBefore(";").trim()
     val codecs = extractCodecs(rawMime ?: "")
     val isVideo = stream == "video"
-    // alpha.48(轮换):URI 带 `&videoId=`——DataSource 主动旋转到 ~45s 时需知道 videoId 触发
-    // [SabrStreamRegistry.requestRotation](工厂按 videoId 建新会话)。轮换复用同 sid,URI 不变。
+    // alpha.59(Phase 2 DASH):URI 带 `&videoId=`(兼容旧 progressive 兜底;DASH 段 URL 由 MPD 追加 &init/&seg)。
     val baseUrl = if (isVideo) "sabr://youtube/$sid?stream=video&itag=$itag&videoId=$videoId"
       else "sabr://youtube/$sid?stream=audio&videoId=$videoId"
     return PlaybackTrack(
@@ -769,6 +722,9 @@ class YoutubePlaybackResolver(
       mimeType = mime,
       // null → 播放器 progressive 分支(MergingMediaSource),SabrStreamingDataSource 接管 sabr://。
       segmentBase = null,
+      // alpha.59(Phase 2 DASH):SABR 走合成 DASH(SegmentTemplate 每段一个 sabr:// seg/init URL,
+      // SabrDashDataSource 逐段拉),非 progressive。播放器分支判断据此排除(见 PlayerScreen/MobilePlayerScreen)。
+      isSabrDash = true,
     )
   }
 
@@ -1035,21 +991,6 @@ class YoutubePlaybackResolver(
 
   private companion object {
     const val Tag = "YtResolver"
-
-    /**
-     * alpha.52(窗口):每 SABR 会话服务的 60s 窗口长度(ms),与 [com.kirin.mt.core.youtube.sabr.SabrStreamingDataSource.WINDOW_LEN]
-     * 一致。目标窗口 = floor(startMs/60s)*60s;会话必须锚定到覆盖所选位置的窗口,`startTimeMs=X` 才被服务端接受。
-     */
-    const val WINDOW_LEN = 60_000L
-
-    /**
-     * alpha.53:轮换 harvest 失败重试次数上限(含首次)。harvester 对空白页 fail-fast ~8s,故 3 次 ≈
-     * 8s+1s+8s+1s+8s ≈ 26s,赶在窗口耗尽(距预取触发 ~20s)前后完成;全败交播放器 stall-retry 兜底。
-     */
-    const val ROTATION_HARVEST_ATTEMPTS = 3
-
-    /** alpha.53:轮换 harvest 重试间退避(ms)。风控多为瞬时,短退避后重试可绕过。 */
-    const val ROTATION_RETRY_MS = 1_000L
 
     /** googlevideo 直链无需 B 站 Cookie；仅带 youtube Referer/Origin。 */
     val YoutubePlaybackHeaders = BiliPlaybackHeaders(
