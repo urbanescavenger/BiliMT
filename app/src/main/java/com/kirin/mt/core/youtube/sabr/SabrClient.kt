@@ -130,7 +130,9 @@ internal data class SabrSession(
       val usedCpn = cpn ?: randomCpn()
       val withParams = sabrUrlWithParams(sabrUrl, usedCpn)
       val po = Base64.decode(poTokenB64, Base64.DEFAULT)
-      val ustreamer = Base64.decode(ustreamerConfigB64, Base64.DEFAULT)
+      // ustreamerConfig 是 YouTube 的 URL-safe base64(含 -/_),DEFAULT 解码会丢弃非法字符→损坏字节
+      // → 服务端判 sabr.malformed_config(alpha.72 真机全黑)。对齐 LibreTube SabrManifest URL_SAFE 解码。
+      val ustreamer = Base64.decode(ustreamerConfigB64, Base64.URL_SAFE)
       Log.i(tag, "SabrSession: sabrUrl=${withParams.take(200)}... poToken=${po.size}B ustreamerCfg=${ustreamer.size}B cpn=$usedCpn audio=$audioFormatId video=$videoFormatId videoFormats=${videoFormats.size} ua=${userAgent.take(40)} cookie=${cookieHeader.length}B visitor=${visitorData.length}B")
       return SabrSession(withParams, po, ustreamer, clientInfo, audioFormatId, videoFormatId, videoFormats, userAgent, cookieHeader, visitorData, usedCpn)
     }
