@@ -2116,8 +2116,14 @@ internal fun PlaybackInfo.isSabrProgressive(): Boolean =
 internal fun PlaybackInfo.isSabrDash(): Boolean =
   videoTracks.firstOrNull()?.isSabrDash == true
 
-/** alpha.59(Phase 2 DASH):SABR 合成 DASH 的 MPD 段时长(ms)——服务端实际段的安全上界,避免 MPD 时长 < 实际段致服务端重发上一段。 */
-internal const val SabrDashSegmentDurationMsVideo = 6_000L
+/**
+ * alpha.62:SABR 合成 DASH 的 MPD 段时长(ms)。video 服务端实际段可变(~3067-5934,均值 ~4360),
+ * 取 4300(< 均值,偏保守:playerTimeMs 略低会让服务端重发边界段[无害]而非跳段[有害])。作用:
+ * ① Media3 DASH 时间线(seek 映射/period 总时长/EOS 检测)贴近实际;② [SabrDashDataSource] alpha.62
+ * 非顺序请求(seek)重置累计用的 MPD 近似值准确。真正的 playerTimeMs 已改由每段实际 MediaHeader.durationMs
+ * 累加得出(见 [SabrDashDataSource]/[SabrStreamRegistry.Entry] alpha.62)。audio 服务端固定 ~10000,不变。
+ */
+internal const val SabrDashSegmentDurationMsVideo = 4_300L
 internal const val SabrDashSegmentDurationMsAudio = 10_000L
 
 

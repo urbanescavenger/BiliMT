@@ -49,7 +49,20 @@ internal class SabrDashDataSource(
         Log.w(tag, "SabrDash open: session NOT FOUND sid=$sessionId → throw")
         throw java.io.IOException("SABR session not found: $sessionId")
       }
-    val playerTimeMs = if (isInit) 0L else (segmentNumber - 1L) * segmentDurationMs
+    // alpha.62:playerTimeMs = 本流已取段**实际**累计媒体时长(段真实起点,FreeTube getTotalDownloadedDuration),
+    // 不再用 (segmentNumber-1)*segmentDurationMs(video 声明 6000 > 实际 ~4360 → playerTimeMs 超前 → 服务端跳段
+    // realSeq>N → 视频抽干卡顿/A/V 不同步,alpha.61 真机坐实)。非顺序请求(seek/重载,段号 != 已取+1)用 MPD
+    // 时间线近似段起点并重置累计,后续顺序段从这往上累加实际时长。
+    val cum = if (streamType == SabrStreamType.VIDEO) e.videoCumulativeMs else e.audioCumulativeMs
+    val fetchedSeg = if (streamType == SabrStreamType.VIDEO) e.videoFetchedSeg else e.audioFetchedSeg
+    val playerTimeMs: Long = if (isInit) {
+      0L
+    } else {
+      if (segmentNumber.toLong() != fetchedSeg.get() + 1L) {
+        cum.set((segmentNumber - 1L) * segmentDurationMs)
+      }
+      cum.get()
+    }
     Log.i(tag, "SabrDash open sid=$sessionId stream=$streamType isInit=$isInit seg=$segmentNumber playerTimeMs=$playerTimeMs dur=$segmentDurationMs")
     val result = fetchUntilReady(e) {
       SabrFetchRequest(
@@ -69,6 +82,12 @@ internal class SabrDashDataSource(
       SabrStreamRegistry.evict(sessionId)
       Log.w(tag, "SabrDash open: ${if (isInit) "init" else "segment $segmentNumber"} fetch failed sid=$sessionId stream=$streamType → evict+throw")
       throw java.io.IOException("SABR ${if (isInit) "init" else "segment $segmentNumber"} fetch failed: sid=$sessionId stream=$streamType")
+    }
+    // alpha.62:成功 fetch 后累加本段实际时长(init 段 dur=0 不累计),作下一段的 playerTimeMs 起点
+    // ——对齐 progressive [SabrStreamingDataSource.cumulativeDurationMs](alpha.36 已验证跨 60s)。
+    if (!isInit) {
+      result.mediaHeader?.durationMs?.let { cum.addAndGet(it) }
+      fetchedSeg.set(segmentNumber.toLong())
     }
     buffer = result.data
     bufferPos = 0

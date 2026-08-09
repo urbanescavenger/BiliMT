@@ -36,7 +36,25 @@ internal object SabrStreamRegistry {
      * 用「目标窗口 == 当前窗口」判断是否可复用会话。
      */
     val windowStartMs: Long = 0L,
-  )
+  ) {
+    /**
+     * alpha.62(Phase 2 DASH A/V 同步修复):每流已取 media 段的**实际**累计媒体时长(ms)。
+     *
+     * SABR 服务端按 `clientAbrState.playerTimeMs` 选段,不认段号——playerTimeMs 必须发段的**真实展示起点**
+     * (FreeTube SabrStreamingAdapter "abusing playerTimeMs as exact segment start";googlevideo 由 SIDX/Cues
+     * 取真实 startTime,FreeTube 由 MPD/容器索引)。DASH 每段 DataSource open() 用本累计作 playerTimeMs,
+     * 成功 fetch 后累加实际 MediaHeader.durationMs——对齐 progressive 兜底 [SabrStreamingDataSource.cumulativeDurationMs]
+     * (alpha.36 已验证跨 60s 不断)。
+     *
+     * **不要**用 `(segmentNumber-1)*声明段长`(video 声明 6000 > 实际 ~4360 → playerTimeMs 超前 → 服务端跳段
+     * realSeq>N → 视频内容有洞 → 视频抽干卡顿 → 与 audio 不同步 → 会话 ~60s 亡重播,alpha.61 真机坐实)。
+     */
+    val videoCumulativeMs = AtomicLong(0L)
+    val audioCumulativeMs = AtomicLong(0L)
+    /** 每流最后成功 fetch 的 media 段号(1-based);init 段不更新。非顺序请求(seek/重载)用它判断并按 MPD 时间线近似重置累计。 */
+    val videoFetchedSeg = AtomicLong(0L)
+    val audioFetchedSeg = AtomicLong(0L)
+  }
 
   /**
    * 注册会话并按 [videoId] 缓存(同视频切清晰度/seek 时复用)。返回 opaque sessionId。
