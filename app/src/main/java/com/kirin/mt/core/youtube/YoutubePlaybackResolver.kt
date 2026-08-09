@@ -12,12 +12,10 @@ import com.kirin.mt.core.player.PlaybackSegmentBase
 import com.kirin.mt.core.player.PlaybackTrack
 import com.kirin.mt.core.youtube.sabr.FormatId as SabrFormatId
 import com.kirin.mt.core.youtube.sabr.SabrClient
-import com.kirin.mt.core.youtube.sabr.SabrFetchRequest
 import com.kirin.mt.core.youtube.sabr.SabrFetchResult
 import com.kirin.mt.core.youtube.sabr.SabrProto
 import com.kirin.mt.core.youtube.sabr.SabrSession
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
-import com.kirin.mt.core.youtube.sabr.SabrStreamType
 import com.kirin.mt.core.youtube.sabr.UmpReader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -272,16 +270,22 @@ class YoutubePlaybackResolver(
                   "url=${capture.url} bodyB64=${capture.bodyB64.length}B " +
                   "→ ${if (isPost) "POST(build SabrSession from harvested body)" else "GET(SABR 需 POST body,skip)"}"
               )
-              // alpha.69(选项 C 诊断探针):真实会话仍用 harvested 10B(现行路径不变);额外发一次
-              // 独立 init POST 验证「我们的 128B + harvested ustreamerCfg」能否建立会话,决定 path A/B。
-              // 探针用全新 cpn + 独立 SabrClient,不污染真实会话。poToken=null(BotGuard 未铸出)时跳过。
-              if (isPost) {
-                val session = buildSabrSessionFromCapture(capture, client, videoFormats)
-                if (session != null && poToken != null) {
-                  probeInitWithOurPoToken(capture, client, videoFormats, poToken)
-                }
-                session
-              } else null
+              // alpha.70(path A 真修复):plasma 真实会话从 init 就用我们 128B BotGuard poToken(app minter),
+              // 与探针(alpha.69 已验证 status=1 ACCEPTED)同构——poToken.toByteArray(UTF_8) 再 standard-b64 编码
+              // 交给 fromSabrData(DEFAULT 解码)还原为 websafe 串的 UTF-8 字节(与 LibreTube
+              // it.streamingDataPoToken.toByteArray() 同构,StreamerContext.poToken 存 UTF-8 字节不 base64-decode)。
+              // 配 freshCpn=true(随机 cpn,避开浏览器 cpn 可能的 minter 绑定;LibreTube 根本不用 cpn)。
+              // 这样 init=128B app minter、status=2 刷新(lambda L295 也铸 128B app minter)= 同一 minter
+              // → 根除 alpha.68 的跨 minter status=3(alpha.68 init=harvested 10B 浏览器 minter、refresh=128B app
+              // minter 被跨 minter 拒)。poToken=null(BotGuard 铸失败)降级回 harvested 10B + 浏览器 cpn(保底,不比 alpha.68 差)。
+              val ourPoTokenB64 = poToken?.let {
+                Base64.encodeToString(it.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+              }
+              if (isPost) buildSabrSessionFromCapture(
+                capture, client, videoFormats,
+                poTokenOverride = ourPoTokenB64,
+                freshCpn = ourPoTokenB64 != null,
+              ) else null
             }
           }
           if (sabrSession != null) {
@@ -600,13 +604,16 @@ class YoutubePlaybackResolver(
    * → 上层回退普通 adaptive/progressive 路径。
    */
   /**
-   * alpha.69(选项 C 诊断探针):支持用**我们的 128B BotGuard poToken** 替换 harvested 10B,且可选全新
-   * 随机 cpn,复刻「path A:从 init 就用我们自己的 128B + harvested ustreamerConfig/n-URL」的会话,供
-   * [probeInitWithOurPoToken] 发一次 init POST 验证可行性。默认参数(null/false)等价原行为,真实播放路径不受影响。
+   * alpha.70(path A 真修复):plasma 真实会话从 init 就用**我们的 128B BotGuard poToken**(app minter)替代
+   * harvested 10B(浏览器 minter),并配全新随机 cpn(freshCpn=true,避开浏览器 cpn 可能的 minter 绑定)。
+   * alpha.69 诊断探针已真机验证此配置 init → status=1 ACCEPTED(`logs_live.log:2342`),即 128B token 被服务端接受、
+   * ustreamerConfig 不绑浏览器 minter。这样 init=128B app minter、status=2 刷新(lambda 注入的 `generatePoToken`
+   * 同为 128B app minter)= 同一 minter → 根除 alpha.68 跨 minter status=3(10B init→128B refresh 被拒)。
    *
    * poTokenOverride 语义:已 standard-b64 编码的 poToken 字符串(供 [SabrSession.fromSabrData] DEFAULT 解码)。
    * 传入 = 我们的 128B(`poToken.toByteArray(UTF_8)` 再 NO_WRAP 编码,与 LibreTube `poToken = it.streamingDataPoToken
-   * .toByteArray()` 同构——StreamerContext.poToken 字段存 websafe mint 串的 UTF-8 字节);null = harvested 10B 原样。
+   * .toByteArray()` 同构——StreamerContext.poToken 字段存 websafe mint 串的 UTF-8 字节);null = harvested 10B 原样
+   * (BotGuard 铸失败降级保底,不比 alpha.68 差)。freshCpn=true 配 poTokenOverride 用;null poToken 时 freshCpn=false 回浏览器 cpn。
    */
   private suspend fun buildSabrSessionFromCapture(
     capture: YoutubeSabrHarvester.SabrCapture, client: InnerTubeClient.Client, videoFormats: List<SabrFormatId>,
@@ -633,7 +640,7 @@ class YoutubePlaybackResolver(
     Log.i(
       Tag,
       "SABR session: decoded poToken=${decoded.poToken.size}B usingPoToken=${poTokenBytes.size}B " +
-        "(${if (poTokenOverride != null) "OUR 128B-probe" else "harvested"}) ustreamerCfg=${decoded.ustreamerConfig.size}B " +
+        "(${if (poTokenOverride != null) "OUR 128B (path A)" else "harvested 10B (fallback)"}) ustreamerCfg=${decoded.ustreamerConfig.size}B " +
         "audio=$audioFmt video=$videoFmt cpn=${if (freshCpn) "<fresh random>" else browserCpn} base=${baseSabrUrl.take(120)}..."
     )
     if (audioFmt == null || videoFmt == null || (!freshCpn && browserCpn == null)) {
@@ -653,41 +660,6 @@ class YoutubePlaybackResolver(
       cpn = cpn,
       videoFormats = videoFormats,
     )
-  }
-
-  /**
-   * alpha.69(选项 C 诊断探针):验证「我们的 128B BotGuard poToken 能否与 harvested ustreamerConfig/cpn/n-URL
-   * 建立 SABR 会话」——若能,则 status=2 刷新改用我们 128B(path A)即可根治 60s 重启;若被拒(status=3),
-   * 则 ustreamerConfig 也绑定浏览器 minter,只能 path B(重新 harvest)。
-   *
-   * **非阻塞**:真实会话仍注册 harvested 10B(现行路径),探针只发一次独立 init POST。用全新随机 cpn + 全新
-   * [SabrClient] 实例,与真实会话完全隔离,不污染服务端 cpn 会话状态。判定直读 [SabrFetchResult] 变体:
-   * Success→status=1(path A 可行);InvalidPoToken→status=3(path A 死,去 B)。
-   */
-  private suspend fun probeInitWithOurPoToken(capture: YoutubeSabrHarvester.SabrCapture, client: InnerTubeClient.Client, videoFormats: List<SabrFormatId>, ourPoToken: String) {
-    runCatching {
-      // 与 LibreTube 同构:StreamerContext.poToken 存 websafe mint 串的 UTF-8 字节(不 base64-decode)。
-      // 再 NO_WRAP standard-b64 编码交给 fromSabrData(DEFAULT 解码)→ 还原为同一 UTF-8 字节。
-      val probePoTokenB64 = Base64.encodeToString(ourPoToken.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-      val probeSession = buildSabrSessionFromCapture(capture, client, videoFormats, poTokenOverride = probePoTokenB64, freshCpn = true)
-        ?: run { Log.w(Tag, "SABR probe: probe session build failed"); return@runCatching }
-      val probeClient = SabrClient(httpClient)
-      val result = probeClient.fetch(
-        probeSession,
-        SabrFetchRequest(isInit = true, streamType = SabrStreamType.VIDEO, sequenceNumber = 0, startTimeMs = 0),
-      )
-      val verdict = when (result) {
-        is SabrFetchResult.Success ->
-          "status=1 ACCEPTED (mediaBytes=${result.data.size}, poTokenValid=true) → 我们的 128B 可与 harvested ustreamerCfg init → **path A 可行**"
-        is SabrFetchResult.InvalidPoToken ->
-          "status=3 REJECTED (STREAM_PROTECTION_STATUS InvalidPoToken) → 我们的 128B 被 ustreamerCfg 绑定拒收 → **path A 死,去 path B(重新 harvest)**"
-        is SabrFetchResult.ReloadPlayer -> "RELOAD_PLAYER (server 要求重载 player response,非 poToken 判定): dump=${result.dump.take(120)}"
-        is SabrFetchResult.Redirect -> "REDIRECT → newSabrUrl=${result.newSabrUrl.take(120)}"
-        is SabrFetchResult.Backoff -> "backoff=${result.ms}ms (服务端限流,非 poToken 判定)"
-        is SabrFetchResult.Error -> "Error: ${result.message}"
-      }
-      Log.i(Tag, "SABR probe(our 128B poToken vs harvested ustreamerCfg, fresh cpn, init): $verdict")
-    }.onFailure { Log.w(Tag, "SABR probe failed: ${it::class.simpleName}: ${it.message}") }
   }
 
   /**
