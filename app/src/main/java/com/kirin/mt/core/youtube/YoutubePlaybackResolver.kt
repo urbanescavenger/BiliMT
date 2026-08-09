@@ -669,7 +669,7 @@ class YoutubePlaybackResolver(
     put("itag", stream.itag.toLong())
     put("height", stream.height)
     put("width", stream.width)
-    put("mimeType", stream.mimeType ?: "")
+    put("mimeType", stream.format?.mimeType ?: "")
     put("bitrate", stream.bitrate)
     put("fps", stream.fps)
   }
@@ -677,7 +677,7 @@ class YoutubePlaybackResolver(
   /** 把 NewPipe 音频流包装成 /player adaptive 风格的 JsonObject。 */
   private fun newPipeAudioRaw(stream: AudioStream): JsonObject = buildJsonObject {
     put("itag", stream.itag.toLong())
-    put("mimeType", stream.mimeType ?: "")
+    put("mimeType", stream.format?.mimeType ?: "")
     put("bitrate", stream.bitrate)
   }
 
