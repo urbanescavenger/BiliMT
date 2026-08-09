@@ -237,7 +237,14 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     // alpha.31:同时回传 SABR 上下文握手(field5 sabrContexts / field6 unsentSabrContexts)——
     // 不回传则服务端只回 context+backoff 不发 media → 8 次后 EOF(alpha.29/30 打不开视频根因)。
     // session.prepareSabrContexts 按 active 集合分派(processUmpStream 捕获 part 57/59 写回)。
-    val (activeCtxs, unsentCtxTypes) = session.prepareSabrContexts()
+    // alpha.57:init 请求**不带** SABR 上下文(field5/field6)——与 alpha.55 的 playbackCookie 同理:会话级
+    // 共享上下文在轮换时会被另一路 loader 先写入(AUDIO 轮换后先跑、写 session.sabrContexts),导致后轮换的
+    // VIDEO 其 init 复用 AUDIO 派生的上下文 → STREAM_PROTECTION_STATUS status=3(InvalidPoToken) → init 失败
+    // → 视频卡死在 ~1min(alpha.56 真机:VIDEO 轮换 init cookie=false 但 contexts=1/0 仍 status=3,而 AUDIO
+    // 轮换 init contexts=0/0 成功)。init 是全新会话首请求,不该携带前一会话的上下文;MEDIA(段)请求仍回传
+    // (alpha.31 结论,服务端要求)。对齐 FreeTube:init 首请求天然无上下文。
+    val (activeCtxs, unsentCtxTypes) =
+      if (req.isInit) emptyList<SabrContext>() to emptyList<Int>() else session.prepareSabrContexts()
     val streamerContext = StreamerContextInput(
       clientInfo = session.clientInfo,
       poToken = session.poToken,
