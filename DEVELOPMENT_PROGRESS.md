@@ -14,7 +14,7 @@
 
 当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理/播放/多播放列表+播放器◀▶ 已实施（P11-12 编译绿待云编译，运行时待真机；此前已发布 v2.0.8-alpha.11）**；直播播放暂缓，后续单独评估。
 
-推荐下一项：**云编译验证 P11-14 alpha.52 统一 60s 窗口会话模型后真机手测**（①连续性：播放越过 60s/120s，日志出现 `ROTATION trigger ... sinceAnchor≈40000` + `ROTATION switch ... anchor≈60000`；②seek：从历史/指定位置起播 `harvest startMs=<窗口>` + 首段 `playerTimeMs≈目标`，播放中拖进度条窗口内复用会话 ~1s 续播、跨窗口新 harvest ~5s 续播，无双 init 崩），据真机结果迭代。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
+推荐下一项：**云编译验证 P11-14 alpha.52B 修轮换 120s 卡死后真机手测**（alpha.52 真机已证 0→60→120 窗口预取/切换跑通，但第三轮 120s harvest 的 WebView 加载空白页超时失败 → 断在 ~120s；alpha.52B 已修：①Bug B 共享窗口去重消除重复 w60 harvest、②轮换 harvest 失败重试 3 次、③harvest 空白页 fail-fast 8s。真机验证点：①播放越过 120s——不再 `rotation: harvest failed ... (keep old session)` 后接 EOF 死，而是 `ROTATION trigger window=120000` → 成功注册新会话 → 继续播；②无重复 w60——不再对已轮换窗口重复 `ROTATION trigger`；③空白页 fail-fast+重试——若风控仍现应见 `harvest: onPageFinished not fired within 8000ms → fail fast` + 工厂重试而非干等 30s；④seek：从历史/指定位置起播 `harvest startMs=<窗口>` + 首段 `playerTimeMs≈目标`，播放中拖进度条窗口内复用会话 ~1s 续播、跨窗口新 harvest ~5s 续播，无双 init 崩），据真机结果迭代。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
 
 ## P0 项目决策与规则
 
