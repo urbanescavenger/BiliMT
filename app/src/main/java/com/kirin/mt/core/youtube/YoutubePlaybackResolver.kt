@@ -13,10 +13,9 @@ import com.kirin.mt.core.player.PlaybackTrack
 import com.kirin.mt.core.youtube.sabr.FormatId as SabrFormatId
 import com.kirin.mt.core.youtube.sabr.SabrClient
 import com.kirin.mt.core.youtube.sabr.SabrFetchResult
-import com.kirin.mt.core.youtube.sabr.SabrProto
 import com.kirin.mt.core.youtube.sabr.SabrSession
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
-import com.kirin.mt.core.youtube.sabr.UmpReader
+import com.kirin.mt.core.youtube.newpipe.BiliTvPoTokenProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
@@ -25,10 +24,11 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.stream.StreamInfo
+import org.schabi.newpipe.extractor.stream.VideoStream
 import java.util.Locale
 
 /**
@@ -52,7 +52,7 @@ class YoutubePlaybackResolver(
   private val nDecryptor: YoutubeNDecryptor,
   private val sDecryptor: YoutubeSDecryptor,
   private val httpClient: OkHttpClient,
-  private val sabrHarvester: YoutubeSabrHarvester,
+  private val biliTvPoTokenProvider: BiliTvPoTokenProvider,
 ) {
 
   /** 从 player base.js 提取的 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp）。 */
@@ -233,60 +233,34 @@ class YoutubePlaybackResolver(
             firstAudio.longOrNull("lastModified") ?: 0L,
             firstAudio.stringOrNull("xtags"),
           )
-          // alpha.27:SABR 数据齐全 → 建 SabrSession 注册进 SabrStreamRegistry,返回 sabr://
-          // progressive track(播放器走 MergingMediaSource(ProgressiveMediaSource×2),SabrStreamingDataSource
-          // 把 read() 翻译成 SabrClient.fetch(init/seg))。nTransformed(classic)用 /player 数据直接建;
-          // NO-CHANGE(plasma WASM)走 WebView harvest 取 transformed-n + body(poToken/ustreamerConfig/formatIds)。
-          val sabrSession = if (nTransformed) {
-            // classic 播放器:n-decrypt 成功 → 用 /player 数据(poToken+ustreamerCfgStr+firstVideo/firstAudio formatIds)建会话。
-            SabrSession.fromSabrData(
-              sabrUrlDeciphered, poToken, ustreamerCfgStr, innerTubeClient.sabrClientInfo(), aFmt, vFmt,
+          // alpha.71(path C):NewPipeExtractor fork 作 SABR 取流主路径(visionOS 客户端,干净 /player,
+          // 无浏览器会话绑定,网关 URL 无 n-param 需 decipher)。彻底退役 alpha.20-70 的 WebView harvest
+          // 兜底(harvest 抓回的 serverAbrStreamingUrl+ustreamerConfig 绑浏览器会话 → 跨 minter status=3 /
+          // alpha.70 纯 backoff 无 cookie)。NewPipe 自铸 poToken(getInfo 期间经 [BiliTvPoTokenProvider]),
+          // 复用缓存供 SABR init → init==extraction 同 minter,根除 60s 重启。
+          // NewPipe 无 SABR 数据时降级 classic(n-decrypt 成功的非 plasma 视频作兜底),再落 DASH。
+          var sabrSession: SabrSession? = null
+          var sabrRaws: List<JsonObject> = raws
+          var sabrDuration = durationMs
+          val npResult = buildSabrSessionFromNewPipe(videoId, poToken)
+          if (npResult != null) {
+            sabrSession = npResult.session
+            sabrRaws = npResult.raws
+            sabrDuration = npResult.durationMs
+          } else if (nTransformed) {
+            // classic 兜底:n-decrypt 成功(非 plasma)→ 用 /player 数据直接建会话。
+            // poToken 同 path C 做 websafe→UTF-8→standard-b64 编码(对齐 LibreTube streamingDataPoToken.toByteArray())。
+            Log.i(Tag, "SABR: NewPipe 无 SABR 数据 → classic n-decrypt 兜底")
+            val classicPoTokenB64 = Base64.encodeToString(poToken.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            sabrSession = SabrSession.fromSabrData(
+              sabrUrlDeciphered, classicPoTokenB64, ustreamerCfgStr, innerTubeClient.sabrClientInfo(), aFmt, vFmt,
               userAgent = client.userAgent,
               cookieHeader = innerTubeClient.currentSessionCookies(),
               visitorData = innerTubeClient.currentVisitorData(),
               videoFormats = videoFormats,
             )
           } else {
-            // plasma 播放器:n-transform 在 WASM 里,[YoutubeNDecryptor] 正则结构性失效(§6.7 row 43)
-            // → sabrUrl 带 n 未解 → googlevideo 403。改让 Android WebView 浏览器引擎(原生跑 WASM)
-            // 加载 watch 页替我们做 n-transform,采集其 SABR POST(url 已 transform + body 含
-            // poToken/ustreamerConfig/formatIds)。alpha.26 已证:用 harvested body 解码出的会话参数
-            // + 浏览器 cpn,SabrClient 自构 body 驱 init+seg 全 Success(§6.7 row 50)。
-            Log.i(Tag, "SABR n-decrypt NO-CHANGE (plasma WASM) → harvest watch WebView")
-            // alpha.59(Phase 2 DASH):harvest 锚定续播点(浏览器 watch &t= 起播位置)。DASH 会话服务整段
-            // 视频(无 60s 窗口/轮换),锚点只作浏览器初始位置,不限制会话服务范围。
-            val capture = sabrHarvester.harvest(videoId, request.startPositionMs)
-            if (capture == null) {
-              Log.w(Tag, "harvest: no capture (watch 页 30s 内未发 googlevideo 请求 — 页没加载/autoplay 被拦;查 YtSabrHarvest 日志)")
-              null
-            } else {
-              val harvestedN = extractParam(capture.url, "n")
-              val rawN = extractParam(sabrUrl, "n")
-              val isPost = capture.method.equals("POST", ignoreCase = true)
-              Log.i(
-                Tag,
-                "harvest: ${capture.method} status=${capture.status} " +
-                  "n(harvested=${harvestedN ?: "ABSENT"} raw=${rawN ?: "ABSENT"} same=${harvestedN == rawN}) " +
-                  "url=${capture.url} bodyB64=${capture.bodyB64.length}B " +
-                  "→ ${if (isPost) "POST(build SabrSession from harvested body)" else "GET(SABR 需 POST body,skip)"}"
-              )
-              // alpha.70(path A 真修复):plasma 真实会话从 init 就用我们 128B BotGuard poToken(app minter),
-              // 与探针(alpha.69 已验证 status=1 ACCEPTED)同构——poToken.toByteArray(UTF_8) 再 standard-b64 编码
-              // 交给 fromSabrData(DEFAULT 解码)还原为 websafe 串的 UTF-8 字节(与 LibreTube
-              // it.streamingDataPoToken.toByteArray() 同构,StreamerContext.poToken 存 UTF-8 字节不 base64-decode)。
-              // 配 freshCpn=true(随机 cpn,避开浏览器 cpn 可能的 minter 绑定;LibreTube 根本不用 cpn)。
-              // 这样 init=128B app minter、status=2 刷新(lambda L295 也铸 128B app minter)= 同一 minter
-              // → 根除 alpha.68 的跨 minter status=3(alpha.68 init=harvested 10B 浏览器 minter、refresh=128B app
-              // minter 被跨 minter 拒)。poToken=null(BotGuard 铸失败)降级回 harvested 10B + 浏览器 cpn(保底,不比 alpha.68 差)。
-              val ourPoTokenB64 = poToken?.let {
-                Base64.encodeToString(it.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-              }
-              if (isPost) buildSabrSessionFromCapture(
-                capture, client, videoFormats,
-                poTokenOverride = ourPoTokenB64,
-                freshCpn = ourPoTokenB64 != null,
-              ) else null
-            }
+            Log.w(Tag, "SABR: NewPipe 无数据 + classic n-decrypt 失败(plasma,harvest 已退役)→ 落 DASH 兜底")
           }
           if (sabrSession != null) {
             YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
@@ -301,11 +275,11 @@ class YoutubePlaybackResolver(
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
             Log.i(
               Tag,
-              "SABR playback ready: sid=$sid nTransformed=$nTransformed " +
+              "SABR playback ready: sid=$sid source=${if (npResult != null) "NewPipe" else "classic"} nTransformed=$nTransformed " +
                 "video=itag${sabrSession.videoFormatId.itag}(${sabrSession.videoFormatId.height}p) " +
                 "audio=itag${sabrSession.audioFormatId.itag} → sabr:// DASH tracks"
             )
-            return@withContext buildSabrPlaybackInfo(request, videoId, durationMs, raws, sabrSession, sid)
+            return@withContext buildSabrPlaybackInfo(request, videoId, sabrDuration, sabrRaws, sabrSession, sid)
           }
         } else {
           Log.w(Tag, "SABR init probe skipped: video=${firstVideo != null} audio=${firstAudio != null}")
@@ -587,79 +561,124 @@ class YoutubePlaybackResolver(
     return url.substring(0, valueStart) + value + url.substring(end)
   }
 
-  /** 取 URL query 参数值(首段 ? 之后,不依赖正则)。 */
-  private fun extractParam(url: String, key: String): String? {
-    val query = url.substringAfter("?", "")
-    return query.split("&").firstNotNullOfOrNull { e ->
-      val i = e.indexOf("=")
-      if (i < 0) null else if (e.substring(0, i) == key) e.substring(i + 1) else null
-    }
+  /** 从 URL query 中移除指定 key 的参数(用于 strip NewPipe 追加的 &cpn=)。 */
+  private fun stripQueryParam(url: String, key: String): String {
+    val qIdx = url.indexOf("?")
+    if (qIdx < 0) return url
+    val base = url.substring(0, qIdx)
+    val query = url.substring(qIdx + 1)
+    val kept = query.split("&").filterNot { it == key || it.startsWith("$key=") }
+    return if (kept.isEmpty()) base else "$base?${kept.joinToString("&")}"
   }
 
+  /** path C:[StreamInfo.getInfo] 的结果包装——session + 供 buildSabrPlaybackInfo 的 raws + 时长。 */
+  private data class NewPipeSabrResult(
+    val session: SabrSession,
+    val raws: List<JsonObject>,
+    val durationMs: Long,
+  )
+
   /**
-   * alpha.27:从 harvested POST(url+body)构造 [SabrSession](plasma 路径)。
-   * 解码 body 取 poToken/ustreamerConfig/formatIds(浏览器会话绑定值),用浏览器 cpn 绑会话,
-   * 剥 alr/cpn/rn 得 base sabrUrl(fromSabrData 再加 alr=yes+cpn)。alpha.26 已证此会话 +
-   * SabrClient 自构 body 驱 init+seg 全 Success(§6.7 row 50)。返回 null 表示 body/formatIds/cpn 缺失
-   * → 上层回退普通 adaptive/progressive 路径。
-   */
-  /**
-   * alpha.70(path A 真修复):plasma 真实会话从 init 就用**我们的 128B BotGuard poToken**(app minter)替代
-   * harvested 10B(浏览器 minter),并配全新随机 cpn(freshCpn=true,避开浏览器 cpn 可能的 minter 绑定)。
-   * alpha.69 诊断探针已真机验证此配置 init → status=1 ACCEPTED(`logs_live.log:2342`),即 128B token 被服务端接受、
-   * ustreamerConfig 不绑浏览器 minter。这样 init=128B app minter、status=2 刷新(lambda 注入的 `generatePoToken`
-   * 同为 128B app minter)= 同一 minter → 根除 alpha.68 跨 minter status=3(10B init→128B refresh 被拒)。
+   * alpha.71(path C):用 NewPipeExtractor fork(`libre-tube`)取 SABR 会话。`StreamInfo.getInfo` 内部
+   * 走 visionOS 客户端(不带 poToken)发干净 /player,拿到未绑定任何浏览器会话的
+   * [StreamInfo.getServerAbrStreamingUrl](SABR 网关端点,无 n-param 需 decipher)+ [StreamInfo.getUstreamerConfig]。
    *
-   * poTokenOverride 语义:已 standard-b64 编码的 poToken 字符串(供 [SabrSession.fromSabrData] DEFAULT 解码)。
-   * 传入 = 我们的 128B(`poToken.toByteArray(UTF_8)` 再 NO_WRAP 编码,与 LibreTube `poToken = it.streamingDataPoToken
-   * .toByteArray()` 同构——StreamerContext.poToken 字段存 websafe mint 串的 UTF-8 字节);null = harvested 10B 原样
-   * (BotGuard 铸失败降级保底,不比 alpha.68 差)。freshCpn=true 配 poTokenOverride 用;null poToken 时 freshCpn=false 回浏览器 cpn。
+   * poToken 取 [BiliTvPoTokenProvider.cached]——即 getInfo() 期间 NewPipe 经 PoTokenProvider 铸造并缓存
+   * 的同一枚(若 visionOS 路径未触发铸造则降级用 resolve() 顶部已铸的 poToken,同为 BotGuard 128B minter)。
+   * 这样 init poToken == extraction poToken(单一 minter),根除跨 minter status=3。
+   *
+   * 返回 null = 视频无 SABR / getInfo 失败 → 上层 classic(n-decrypt)或 DASH 兜底。
    */
-  private suspend fun buildSabrSessionFromCapture(
-    capture: YoutubeSabrHarvester.SabrCapture, client: InnerTubeClient.Client, videoFormats: List<SabrFormatId>,
-    poTokenOverride: String? = null,
-    freshCpn: Boolean = false,
-  ): SabrSession? {
-    val body = runCatching { Base64.decode(capture.bodyB64, Base64.DEFAULT) }.getOrNull()
-    if (body == null || body.isEmpty()) {
-      Log.w(Tag, "SABR session: body empty (len=${capture.bodyB64.length}) — hook 没捕到 body?")
+  private suspend fun buildSabrSessionFromNewPipe(videoId: String, poToken: String?): NewPipeSabrResult? {
+    val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
+      .getOrElse {
+        Log.w(Tag, "NewPipe getInfo failed: ${it.message}")
+        return null
+      }
+    val sabrUrlRaw = info.serverAbrStreamingUrl
+    val ustreamerCfgB64 = info.ustreamerConfig
+    if (sabrUrlRaw.isNullOrBlank() || ustreamerCfgB64.isNullOrBlank()) {
+      Log.w(Tag, "NewPipe: no serverAbrStreamingUrl/ustreamerConfig (video lacks SABR) → fallback")
       return null
     }
-    val decoded = SabrProto.decodeVideoPlaybackAbrRequest(body)
-    val browserCpn = extractParam(capture.url, "cpn")
-    // 剥 alr/cpn/rn → base sabrUrl(fromSabrData 再加 alr=yes+cpn=browserCpn;SabrClient.fetch 加 rn)。
-    // cver 等浏览器参数保留(与 alpha.25/26 replay 一致)。
-    val baseSabrUrl = capture.url.split("&").filterNot {
-      it.startsWith("alr=") || it.startsWith("cpn=") || it.startsWith("rn=")
-    }.joinToString("&").let { if (it.startsWith("http")) it else "&$it" }
-    val audioFmt = decoded.audioFormatId
-    val videoFmt = decoded.videoFormatId
-    // alpha.69:探针模式用我们 128B + 随机 cpn(避免与真实会话 cpn 撞车污染会话状态)。
-    val poTokenBytes = if (poTokenOverride != null) Base64.decode(poTokenOverride, Base64.DEFAULT) else decoded.poToken
-    val cpn = if (freshCpn) null else browserCpn
-    Log.i(
-      Tag,
-      "SABR session: decoded poToken=${decoded.poToken.size}B usingPoToken=${poTokenBytes.size}B " +
-        "(${if (poTokenOverride != null) "OUR 128B (path A)" else "harvested 10B (fallback)"}) ustreamerCfg=${decoded.ustreamerConfig.size}B " +
-        "audio=$audioFmt video=$videoFmt cpn=${if (freshCpn) "<fresh random>" else browserCpn} base=${baseSabrUrl.take(120)}..."
-    )
-    if (audioFmt == null || videoFmt == null || (!freshCpn && browserCpn == null)) {
-      Log.w(Tag, "SABR session: missing formatIds/cpn (audio=$audioFmt video=$videoFmt cpn=$browserCpn freshCpn=$freshCpn)")
+    // NewPipe 给网关 URL 追加了 &cpn=<cpn>;fromSabrData 会自建 cpn,strip 掉避免重复参数。
+    val sabrUrl = stripQueryParam(sabrUrlRaw, "cpn")
+    val videoStreams = info.videoOnlyStreams
+    val audioStreams = info.audioStreams
+    val firstVideo = videoStreams.firstOrNull { it.height > 0 } ?: videoStreams.firstOrNull()
+    val firstAudio = audioStreams.firstOrNull()
+    if (firstVideo == null || firstAudio == null) {
+      Log.w(Tag, "NewPipe: missing streams (video=${firstVideo != null} audio=${firstAudio != null})")
       return null
     }
-    return SabrSession.fromSabrData(
-      baseSabrUrl,
-      Base64.encodeToString(poTokenBytes, Base64.NO_WRAP),
-      Base64.encodeToString(decoded.ustreamerConfig, Base64.NO_WRAP),
+    val videoFormats = videoStreams.filter { it.height > 0 }.map { it.toSabrFormatId() }
+    val vFmt = firstVideo.toSabrFormatId()
+    val aFmt = firstAudio.toSabrFormatId()
+    // 优先 provider 缓存(getInfo 期间铸造的同一枚);否则 resolve() 顶部已铸的。同为 BotGuard 128B minter。
+    val cachedPoToken = biliTvPoTokenProvider.cached()?.streamingDataPoToken
+    val poTokenForSabr = cachedPoToken ?: poToken
+    if (poTokenForSabr.isNullOrEmpty()) {
+      Log.w(Tag, "NewPipe SABR: no poToken (BotGuard null + provider cache empty) → fallback")
+      return null
+    }
+    // websafe mint 串 → UTF-8 字节 → standard-b64(对齐 LibreTube it.streamingDataPoToken.toByteArray(),
+    // StreamerContext.poToken 存 websafe 串的 UTF-8 字节;fromSabrData DEFAULT 解码还原)。
+    // poTokenForSabr 已 isNullOrEmpty 判空 return,此处 !! 安全。
+    val poTokenB64 = Base64.encodeToString(poTokenForSabr!!.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+    val durationMs = info.duration * 1000L
+    val raws = videoStreams.map { newPipeVideoRaw(it) } + audioStreams.map { newPipeAudioRaw(it) }
+    val session = SabrSession.fromSabrData(
+      sabrUrl,
+      poTokenB64,
+      ustreamerCfgB64,
       innerTubeClient.sabrClientInfo(),
-      SabrFormatId(audioFmt.itag, audioFmt.lastModified, audioFmt.xtags, 0),
-      SabrFormatId(videoFmt.itag, videoFmt.lastModified, videoFmt.xtags, 0),
-      userAgent = client.userAgent,
+      aFmt,
+      vFmt,
+      userAgent = InnerTubeClient.Client.WEB.userAgent,
       cookieHeader = innerTubeClient.currentSessionCookies(),
       visitorData = innerTubeClient.currentVisitorData(),
-      cpn = cpn,
       videoFormats = videoFormats,
     )
+    Log.i(
+      Tag,
+      "NewPipe SABR session: sabrUrl=${sabrUrl.take(80)}... poToken=${poTokenForSabr!!.length}B" +
+        "(${if (cachedPoToken != null) "provider-cached" else "resolve-minted"}) ustreamerCfg=${ustreamerCfgB64.length}B " +
+        "video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} videoFormats=${videoFormats.size} dur=${durationMs}ms"
+    )
+    return NewPipeSabrResult(session, raws, durationMs)
+  }
+
+  /** NewPipe [VideoStream] → SABR [SabrFormatId](itag/lastModified/xtags 来自 ItagItem,height 来自流)。 */
+  private fun VideoStream.toSabrFormatId(): SabrFormatId = SabrFormatId(
+    itag,
+    itagItem?.lastModified ?: 0L,
+    itagItem?.xtags,
+    height,
+  )
+
+  /** NewPipe [AudioStream] → SABR [SabrFormatId](音频无 height)。 */
+  private fun AudioStream.toSabrFormatId(): SabrFormatId = SabrFormatId(
+    itag,
+    itagItem?.lastModified ?: 0L,
+    itagItem?.xtags,
+    0,
+  )
+
+  /** 把 NewPipe 视频流包装成 /player adaptive 风格的 JsonObject(供 buildSabrPlaybackInfo 取 codec/height/fps)。 */
+  private fun newPipeVideoRaw(stream: VideoStream): JsonObject = buildJsonObject {
+    put("itag", stream.itag.toLong())
+    put("height", stream.height)
+    put("width", stream.width)
+    put("mimeType", stream.mimeType ?: "")
+    put("bitrate", stream.bitrate)
+    put("fps", stream.fps)
+  }
+
+  /** 把 NewPipe 音频流包装成 /player adaptive 风格的 JsonObject。 */
+  private fun newPipeAudioRaw(stream: AudioStream): JsonObject = buildJsonObject {
+    put("itag", stream.itag.toLong())
+    put("mimeType", stream.mimeType ?: "")
+    put("bitrate", stream.bitrate)
   }
 
   /**
@@ -761,82 +780,6 @@ class YoutubePlaybackResolver(
     codecs.contains("avc1", true) || codecs.contains("avc3", true) -> "H264"
     codecs.contains("hevc", true) || codecs.contains("hvc1", true) -> "HEVC"
     else -> ""
-  }
-
-  private suspend fun replaySabrCapture(capture: YoutubeSabrHarvester.SabrCapture, client: InnerTubeClient.Client) {
-    val body = runCatching { Base64.decode(capture.bodyB64, Base64.DEFAULT) }.getOrNull()
-    if (body == null || body.isEmpty()) {
-      Log.w(Tag, "SABR replay: body decode failed/empty (len=${capture.bodyB64.length}) — hook 仍没捕到 body?")
-      return
-    }
-    // alpha.24 真机:空 body 重放得 `sabr.malformed_config`;捕到真 body(4632B)后重放得 105B UMP
-    // (非 malformed_config)但仍无 MEDIA。推测:alpha.24 剥了 cpn → URL 失会话绑定 → 服务端只回
-    // context update 不发媒体。**保留浏览器 cpn**(它绑定 body 的 poToken/ustreamerConfig 会话),
-    // 只剥 rn(重置为 0 做 re-init),让 cpn+body+transport 三者会话一致。
-    val strippedRn = capture.url.split("&").filterNot { it.startsWith("rn=") }
-      .joinToString("&").let { if (it.startsWith("http")) it else "&$it" }
-    val replayUrl = if (strippedRn.contains("rn=")) strippedRn else "${strippedRn}&rn=0"
-    val hasCpn = replayUrl.contains("cpn=")
-    val request = Request.Builder()
-      .url(replayUrl)
-      .post(body.toRequestBody("application/x-protobuf".toMediaType()))
-      .header("accept-encoding", "identity")
-      .header("accept", "application/vnd.yt-ump")
-      .header("User-Agent", client.userAgent)
-      .header("Cookie", innerTubeClient.currentSessionCookies())
-      .header("X-Goog-Visitor-Id", innerTubeClient.currentVisitorData())
-      .header("Origin", "https://www.youtube.com")
-      .header("Referer", "https://www.youtube.com/")
-      .build()
-    runCatching {
-      httpClient.newCall(request).execute().use { r ->
-        val ct = r.header("Content-Type")
-        val bodyBytes = r.body?.byteStream()?.use { it.readBytes() }
-        Log.i(
-          Tag,
-          "SABR replay: HTTP ${r.code} Content-Type=$ct body=${bodyBytes?.size ?: 0}B " +
-            "cpn=$hasCpn → ${bodyBytes?.take(60)?.joinToString("") { "%02x".format(it) } ?: ""}"
-        )
-        // alpha.25:用 UmpReader + SabrProto 解析响应 UMP,逐 part log 类型+内容——
-        // 定位 105B 是 SABR_ERROR(会话/poToken 不匹配?) / SABR_REDIRECT(换节点?) /
-        // NEXT_REQUEST_POLICY(backoff?) / SABR_CONTEXT_UPDATE(无媒体) / MEDIA_HEADER(成功?)。
-        if (bodyBytes != null && (ct?.contains("yt-ump") == true)) {
-          val ump = UmpReader()
-          ump.append(bodyBytes)
-          ump.readParts { type, payload ->
-            val name = partName(type)
-            val detail = when (type) {
-              SabrProto.PART_SABR_ERROR -> SabrProto.decodeSabrError(payload)?.let { "type=${it.type} code=${it.code}" }
-              SabrProto.PART_SABR_REDIRECT -> "url=${SabrProto.decodeSabrRedirect(payload)?.take(120)}"
-              SabrProto.PART_STREAM_PROTECTION_STATUS -> "status=${SabrProto.decodeStreamProtectionStatus(payload)}"
-              SabrProto.PART_NEXT_REQUEST_POLICY -> SabrProto.decodeNextRequestPolicy(payload)?.let { "backoff=${it.backoffTimeMs}ms cookie=${it.playbackCookie != null} vid=${it.videoId}" }
-              SabrProto.PART_MEDIA_HEADER -> SabrProto.decodeMediaHeader(payload)?.let { "headerId=${it.headerId} itag=${it.itag} lmt=${it.lmt} isInit=${it.isInitSeg} seq=${it.sequenceNumber} contentLen=${it.contentLength} dur=${it.durationMs}ms" }
-              else -> "payloadLen=${payload.size}"
-            }
-            Log.i(Tag, "SABR replay UMP part: type=$type($name) $detail")
-          }
-        }
-      }
-    }.onFailure { Log.w(Tag, "SABR replay failed: ${it.message}") }
-  }
-
-  /** UMP part type 数值 → 可读名(诊断用,对齐 SabrClient.partName)。 */
-  private fun partName(type: Int): String = when (type) {
-    20 -> "MEDIA_HEADER"
-    21 -> "MEDIA"
-    22 -> "MEDIA_END"
-    30 -> "CONFIG"
-    35 -> "NEXT_REQUEST_POLICY"
-    42 -> "FORMAT_INIT_METADATA"
-    43 -> "SABR_REDIRECT"
-    44 -> "SABR_ERROR"
-    45 -> "SABR_SEEK"
-    46 -> "RELOAD_PLAYER_RESPONSE"
-    57 -> "SABR_CONTEXT_UPDATE"
-    58 -> "STREAM_PROTECTION_STATUS"
-    59 -> "SABR_CONTEXT_SENDING_POLICY"
-    62 -> "END_OF_TRACK"
-    else -> "?"
   }
 
   // ---- 格式挑选 ----

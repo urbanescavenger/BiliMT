@@ -304,6 +304,13 @@ internal class SabrMediaFetcher(
           Log.w(tag, "MEDIA_HEADER empty (headerId=0 itag=0) payloadLen=${payload.size}")
           return
         }
+        // alpha.71 广告防御层:跳过非白名单 itag 的 MEDIA_HEADER(广告段)。不入 partialSegments
+        // → 其后续 MEDIA/MEDIA_END 按 headerId 找不到段自动丢弃。
+        val hdrWhitelist = setOfNotNull(audioFormat?.itag, videoFormat?.itag)
+        if (hdrWhitelist.isNotEmpty() && mh.itag !in hdrWhitelist) {
+          Log.w(tag, "skip ad/unrequested MEDIA_HEADER itag=${mh.itag} headerId=${mh.headerId} (whitelist=$hdrWhitelist)")
+          return
+        }
         val duration = mh.durationMs
         if (partialSegments.containsKey(mh.headerId)) {
           Log.w(tag, "MEDIA_HEADER duplicate headerId=${mh.headerId} (overwrite)")
@@ -350,6 +357,15 @@ internal class SabrMediaFetcher(
         }
         if (initializedFormats.containsKey(fi.itag)) {
           Log.i(tag, "FORMAT_INITIALIZATION_METADATA itag=${fi.itag} already initialized (skip)")
+          return
+        }
+        // alpha.71 广告防御层:只接受本会话请求的音视频 itag,跳过服务端注入的广告/未请求格式。
+        // visionOS 客户端(path C)通常不注入广告,但作安全网:广告格式不入表 → 其 MEDIA 段
+        // 在 partialSegments 找不到 headerId → MEDIA/MEDIA_END 自动丢弃 → 不喂解码器。
+        // 白名单空(audioFormat/videoFormat 均未设)时不过滤,避免误杀。
+        val whitelistedItags = setOfNotNull(audioFormat?.itag, videoFormat?.itag)
+        if (whitelistedItags.isNotEmpty() && fi.itag !in whitelistedItags) {
+          Log.w(tag, "skip ad/unrequested FORMAT_INIT itag=${fi.itag} (whitelist=$whitelistedItags)")
           return
         }
         Log.i(tag, "FORMAT_INITIALIZATION_METADATA itag=${fi.itag} endSegNum=${fi.endSegmentNumber} duration=${fi.endTimeMs}ms")

@@ -27,3 +27,19 @@
 -dontwarn com.huaban.analysis.jieba.**
 -dontwarn java.beans.**
 -dontwarn java.lang.management.**
+
+# NewPipeExtractor fork (libre-tube) — uses reflection for extractors/playlist
+# builders, ships generated protobuf (com.google.protobuf.*) and a JS engine
+# (rhino) for n-decrypt/signature. Keep the whole package so R8 does not strip
+# extractors referenced only by ServiceList or remove protobuf message classes.
+-keep class org.schabi.newpipe.** { *; }
+-keep class org.schabi.newpipe.extractor.** { *; }
+# Generated protobuf messages (NewPipe bundles protobuf-java).
+-keepclassmembers class com.google.protobuf.** {
+    public static ** parseFrom(**);
+    public static ** getDefaultInstance();
+    *** newBuilder();
+}
+-dontwarn org.schabi.newpipe.**
+-dontwarn org.chaosnet.jam/**
+

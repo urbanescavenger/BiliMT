@@ -7,6 +7,7 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.kirin.mt.core.app.AppContainer
 import com.kirin.mt.core.util.LogCatcherUtil
+import com.kirin.mt.core.youtube.newpipe.NewPipeHolder
 import org.slf4j.impl.HandroidLoggerAdapter
 
 class BiliTvApplication : Application(), ImageLoaderFactory {
@@ -18,6 +19,9 @@ class BiliTvApplication : Application(), ImageLoaderFactory {
     HandroidLoggerAdapter.DEBUG = BuildConfig.DEBUG
     LogCatcherUtil.install(this)
     appContainer = AppContainer(this)
+    // path C:初始化 NewPipeExtractor fork(YouTube 服务 + PoTokenProvider)。必须在任何
+    // StreamInfo.getInfo() 调用前完成(YoutubePlaybackResolver.resolve 内会调)。
+    NewPipeHolder.init(appContainer.youtubeHttpClient, appContainer.biliTvPoTokenProvider)
     // 预热 api.bilibili.com 连接池,首开主页/播放省掉冷建连。fire-and-forget。
     appContainer.warmupApiConnection()
   }

@@ -22,9 +22,9 @@ import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.core.youtube.YoutubeJsExecutor
 import com.kirin.mt.core.youtube.YoutubeNDecryptor
 import com.kirin.mt.core.youtube.YoutubePlaybackResolver
-import com.kirin.mt.core.youtube.YoutubeSabrHarvester
 import com.kirin.mt.core.youtube.YoutubeSDecryptor
 import com.kirin.mt.core.youtube.YoutubeRepository
+import com.kirin.mt.core.youtube.newpipe.BiliTvPoTokenProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -109,11 +109,14 @@ class AppContainer(context: Context) {
     httpClient = youtubeHttpClient,
     innerTubeClient = youtubeInnerTubeClient,
   )
+  // path C:NewPipeExtractor fork 的 PoTokenProvider,由 BotGuard + InnerTubeClient 支撑。
+  // 铸造的 poToken 缓存供 SABR init 复用(init==extraction 同 minter)。
+  val biliTvPoTokenProvider: BiliTvPoTokenProvider = BiliTvPoTokenProvider(
+    botGuard = youtubeBotGuard,
+    innerTubeClient = youtubeInnerTubeClient,
+  )
   val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(appContext, youtubeJsExecutor, youtubeHttpClient)
   val youtubeSDecryptor: YoutubeSDecryptor = YoutubeSDecryptor(youtubeJsExecutor, youtubeHttpClient)
-  // SABR n-decrypt 的 WebView 嵌入采集器(plasma 兜底):独立 WebView,不复用 youtubeJsExecutor
-  // 单例(导航会破坏其 bgutils 上下文)。每次 harvest 建新 WebView 用完销毁(alpha.20 MVP)。
-  val youtubeSabrHarvester: YoutubeSabrHarvester = YoutubeSabrHarvester(appContext, youtubeInnerTubeClient)
   val youtubeRepository: YoutubeRepository = YoutubeRepository(
     client = youtubeInnerTubeClient,
   )
@@ -123,7 +126,7 @@ class AppContainer(context: Context) {
     nDecryptor = youtubeNDecryptor,
     sDecryptor = youtubeSDecryptor,
     httpClient = youtubeHttpClient,
-    sabrHarvester = youtubeSabrHarvester,
+    biliTvPoTokenProvider = biliTvPoTokenProvider,
   )
   val videoRepository: VideoRepository = VideoRepository(
     apiClient = apiClient,

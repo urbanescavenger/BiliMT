@@ -5,10 +5,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 /**
  * YouTube 播放加载的步骤提示状态。
  *
- * [YoutubePlaybackResolver] / [YoutubeSabrHarvester] 在加载链路的各阶段写入当前步骤,
+ * [YoutubePlaybackResolver] 在加载链路的各阶段写入当前步骤,
  * UI(如 MobilePlayerScreen)收集显示"转圈 + 单行当前步骤文字",让用户感知加载进度。
  *
- * 用全局单例而非穿透回调,是因其从 UI 到 repository → resolver → harvester 的调用链很深,
+ * 用全局单例而非穿透回调,是因其从 UI 到 repository → resolver 的调用链很深,
  * 回调解耦成本高;且 YouTube 单播放器场景下全局状态足够(无并发多实例冲突)。
  * 播放就绪/加载结束时置 null 隐藏提示。
  */
