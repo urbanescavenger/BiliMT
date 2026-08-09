@@ -670,6 +670,7 @@ class YoutubePlaybackResolver(
     put("height", stream.height)
     put("width", stream.width)
     put("mimeType", stream.format?.mimeType ?: "")
+    put("codec", stream.codec ?: "")
     put("bitrate", stream.bitrate)
     put("fps", stream.fps)
   }
@@ -678,6 +679,7 @@ class YoutubePlaybackResolver(
   private fun newPipeAudioRaw(stream: AudioStream): JsonObject = buildJsonObject {
     put("itag", stream.itag.toLong())
     put("mimeType", stream.format?.mimeType ?: "")
+    put("codec", stream.codec ?: "")
     put("bitrate", stream.bitrate)
   }
 
@@ -749,7 +751,12 @@ class YoutubePlaybackResolver(
   private fun buildSabrTrack(itag: Int, raw: JsonObject?, stream: String, sid: String, videoId: String): PlaybackTrack {
     val rawMime = raw?.stringOrNull("mimeType")
     val mime = (rawMime ?: if (stream == "video") "video/mp4" else "audio/mp4").substringBefore(";").trim()
+    // alpha.75 修真机无声:音频 codec 从 mimeType 抠为空(NewPipe MediaFormat.mimeType 是纯 "audio/mp4" 不含
+    // codecs=),而 NewPipe Stream 自带 codec 字段(newPipeAudioRaw 已写入 "codec" key)→ 优先读它。reuse/WEB
+    // 路径无 "codec" key 且 aRaw 可能为 null → 音频再按 itag 兜底(等价 Piped 的 codec 字段)。
     val codecs = extractCodecs(rawMime ?: "")
+      .ifEmpty { raw?.stringOrNull("codec").orEmpty() }
+      .ifEmpty { if (stream == "audio") audioCodecForItag(itag) else "" }
     val isVideo = stream == "video"
     // alpha.64:baseUrl 仍带 sid(供 isSabrSingle 扩展判断 scheme;SabrMediaSource 不用此 URL,用 manifest.sabrUrl)。
     val baseUrl = if (isVideo) "sabr://youtube/$sid?stream=video&itag=$itag&videoId=$videoId"
@@ -771,6 +778,16 @@ class YoutubePlaybackResolver(
       isSabrDash = false,
       isSabrSingle = true,
     )
+  }
+
+  /** alpha.75:音频 codec 的最后兜底——NewPipe/WEB 都取不到时按 itag 定(等价 Piped 的 codec 字段)。
+   *  仅 mimeType 与 "codec" key 都无 codec 时触发(如 reuse/WEB 路径 aRaw=null)。 */
+  private fun audioCodecForItag(itag: Int): String = when (itag) {
+    139, 140, 141, 142 -> "mp4a.40.2"   // m4a / AAC-LC
+    249, 250, 251      -> "opus"        // webm / Opus
+    171, 172           -> "vorbis"      // webm / Vorbis
+    338, 774           -> "flac"        // FLAC
+    else               -> ""
   }
 
   /** alpha.29:清晰度描述用的简短 codec 标签(区分同高度多 codec,如 1080p H264 vs VP9 vs AV1)。 */
