@@ -264,7 +264,7 @@ internal class SabrStreamingDataSource(
     // 触发点永远够不到(playhead 只到 ~40s 会话已死)→ 0 次轮换。cumulative 到 40s 时 playhead 才 ~25s,
     // 远在死亡点前,触发可靠。预取锚定**下一个窗口起点**(+60s,非 playhead)——让浏览器 watch `&t=`
     // 锚定新会话窗口到边界,旧窗口耗尽后新会话从边界续,无 gap。
-    // alpha.52B(Bug B 修复):当前窗口取**共享** activeWindow(registry 按 videoId 记录真正在播的窗口),
+    // alpha.53(Bug B 修复):当前窗口取**共享** activeWindow(registry 按 videoId 记录真正在播的窗口),
     // 而非本 DataSource 私有 sessionAnchorMs——VIDEO/AUDIO 共用同 sid,各自私有锚点会错位(一路切了、
     // 另一路锚点仍旧)→ 对已轮换窗口重复 harvest(alpha.52 真机 VIDEO 重复 w60)。用共享窗口 + 按窗口
     // 去重(markRotationRequested),每窗口只 harvest 一次。
@@ -363,7 +363,7 @@ internal class SabrStreamingDataSource(
       endSegmentIndex = (nextSeq - 1).coerceAtLeast(0),
       timeRange = null,
     ) else null
-    // alpha.40:SegDiag——逐段打 playerTimeMs(发,alpha.52C 起=段绝对起点 cumulative)/playhead(实时)/
+    // alpha.40:SegDiag——逐段打 playerTimeMs(发,alpha.54 起=段绝对起点 cumulative)/playhead(实时)/
     // cumulative(缓冲终点)/lead(缓冲超前量)/ownRange(报给服务端的窗口),到 60s 断崖点取证。
     val lead = cumulativeDurationMs - playheadMs
     Log.i(tag, "SegDiag sid=$sessionId stream=$streamType seq=$nextSeq playerTimeMs=$cumulativeDurationMs playhead=$playheadMs cumulative=$cumulativeDurationMs reportedEnd=$reportedEnd lead=${lead}ms ownRange=[${own?.startTimeMs}..+${own?.durationMs}] segIdx=${own?.startSegmentIndex}..${own?.endSegmentIndex}")
@@ -372,11 +372,11 @@ internal class SabrStreamingDataSource(
       sequenceNumber = nextSeq,
       streamType = streamType,
       videoItag = requestedItag,
-      // alpha.52C:不再拼 URL `&startTimeMs=`/`&sq=`(alpha.51 Track A 诊断已证伪),对齐 FreeTube
+      // alpha.54:不再拼 URL `&startTimeMs=`/`&sq=`(alpha.51 Track A 诊断已证伪),对齐 FreeTube
       // SabrStreamingAdapter 只发 `rn`。轮换到新会话(harvest 自 &t=60)时旧实现 URL startTimeMs=
       // cumulative=60000 未封顶直接触发服务端 maxTimeSinceReq 软拒(NEXT_REQUEST_POLICY 不给段)→ 6 backoff
       // → EOF(alpha.52 真机:轮换首段 seq=1 startTimeMs=60000 死)。去掉 URL 参数即去掉该触发源。
-      // alpha.52C:playerTimeMs 改为所请求段的**绝对起点**(cumulativeDurationMs=缓冲边=下一段起点),对齐
+      // alpha.54:playerTimeMs 改为所请求段的**绝对起点**(cumulativeDurationMs=缓冲边=下一段起点),对齐
       // FreeTube "abusing playerTimeMs as exact segment start"(服务端按该时间精确发段,不断推进即无 60s 上限)。
       // alpha.44 曾因此 60s 拒,但那是 alpha.45 的 MAX_REPORTED_BUFFER_MS 封顶**之前** bufferedRange 终点
       // (cumulative)不封顶所致,非 playerTimeMs;封顶已上线 + FreeTube 段起点先例 → 安全。对轮换新会话

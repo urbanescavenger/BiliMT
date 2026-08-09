@@ -280,7 +280,7 @@ class YoutubePlaybackResolver(
             // 的新会话。startMs 即窗口起点(DataSource 传 sessionAnchorMs+WINDOW_LEN),作 session 窗口存盘。
             SabrStreamRegistry.rotationFactory = { v, startMs, epoch ->
               Log.i(Tag, "rotation: start harvest videoId=$v startMs=$startMs epoch=$epoch")
-              // alpha.52B:轮换 harvest 失败重试——单次瞬时空白页(风控/WebView 渲染崩)不立即放弃。
+              // alpha.53:轮换 harvest 失败重试——单次瞬时空白页(风控/WebView 渲染崩)不立即放弃。
               // harvester 已对空白页 fail-fast(~8s 而非 30s),配合短退避,最多 ROTATION_HARVEST_ATTEMPTS
               // 次,赶在窗口耗尽(距预取触发 ~20s)前完成。全败才 keep old session(旧会话若已耗尽,交播放器
               // stall-retry fresh-harvest 兜底)。retry 只在后台轮换协程(rotationScope)跑,不阻塞 read()。
@@ -1043,12 +1043,12 @@ class YoutubePlaybackResolver(
     const val WINDOW_LEN = 60_000L
 
     /**
-     * alpha.52B:轮换 harvest 失败重试次数上限(含首次)。harvester 对空白页 fail-fast ~8s,故 3 次 ≈
+     * alpha.53:轮换 harvest 失败重试次数上限(含首次)。harvester 对空白页 fail-fast ~8s,故 3 次 ≈
      * 8s+1s+8s+1s+8s ≈ 26s,赶在窗口耗尽(距预取触发 ~20s)前后完成;全败交播放器 stall-retry 兜底。
      */
     const val ROTATION_HARVEST_ATTEMPTS = 3
 
-    /** alpha.52B:轮换 harvest 重试间退避(ms)。风控多为瞬时,短退避后重试可绕过。 */
+    /** alpha.53:轮换 harvest 重试间退避(ms)。风控多为瞬时,短退避后重试可绕过。 */
     const val ROTATION_RETRY_MS = 1_000L
 
     /** googlevideo 直链无需 B 站 Cookie；仅带 youtube Referer/Origin。 */

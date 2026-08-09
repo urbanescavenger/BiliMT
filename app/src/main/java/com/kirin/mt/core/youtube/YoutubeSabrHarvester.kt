@@ -51,7 +51,7 @@ class YoutubeSabrHarvester(
   private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
   /**
-   * alpha.52B:最近一次 harvest 的页面是否已加载完成(即 [WebViewClient.onPageFinished] 是否触发)。
+   * alpha.53:最近一次 harvest 的页面是否已加载完成(即 [WebViewClient.onPageFinished] 是否触发)。
    * 正常 watch 页 ~1-2s 触发;空白页(YouTube 风控/WebView 渲染进程崩)时**永不触发**且 title 空/body
    * NOBODY。据此 fail-fast 而非干等满 30s,给轮换工厂的重试留出窗口内(剩余 ~20s)时间。
    * 每次 [harvest] 开始时清零;单次并发由 registry rotationInFlight 保证,无需加锁。
@@ -105,7 +105,7 @@ class YoutubeSabrHarvester(
       var lastDiag = start
       var lastCaptureDump = start
       while (System.currentTimeMillis() < deadline) {
-        // alpha.52B:空白页 fail-fast——onPageFinished 正常 ~1-2s 触发;超 [BLANK_PAGE_ABORT_MS] 仍没触发
+        // alpha.53:空白页 fail-fast——onPageFinished 正常 ~1-2s 触发;超 [BLANK_PAGE_ABORT_MS] 仍没触发
         // = 页根本没渲染(风控/WebView 渲染崩,alpha.52 真机 w120:title 空/NOBODY/player=false 干等 30s)。
         // 立即放弃交轮换工厂重试,不耗满 30s(否则重试永远赶不上窗口耗尽)。正常页 1-2s 已过该闸,无副作用。
         if (pageFinishedMs == 0L && System.currentTimeMillis() - start > BLANK_PAGE_ABORT_MS) {
@@ -179,7 +179,7 @@ class YoutubeSabrHarvester(
       }
 
       override fun onPageFinished(view: WebView?, url: String?) {
-        // alpha.52B:记录页面加载完成时刻——空白页 fail-fast 判定用(见 harvestImpl 轮询循环)。
+        // alpha.53:记录页面加载完成时刻——空白页 fail-fast 判定用(见 harvestImpl 轮询循环)。
         pageFinishedMs = System.currentTimeMillis()
         Log.i(Tag, "harvest onPageFinished: $url")
         // dump 页面内容——确认页真渲染了播放器(不是 consent 墙/error 壳)。title/body/player
@@ -281,7 +281,7 @@ class YoutubeSabrHarvester(
   private companion object {
     const val Tag = "YtSabrHarvest"
     /**
-     * alpha.52B:空白页 fail-fast 阈值——watch 页 [onPageFinished] 正常 ~1-2s 触发;超过此值仍没触发
+     * alpha.53:空白页 fail-fast 阈值——watch 页 [onPageFinished] 正常 ~1-2s 触发;超过此值仍没触发
      * = 页未渲染(风控/渲染崩),立即放弃让轮换重试,不干等 30s。正常加载远快于 8s,不会误杀。
      */
     const val BLANK_PAGE_ABORT_MS = 8_000L

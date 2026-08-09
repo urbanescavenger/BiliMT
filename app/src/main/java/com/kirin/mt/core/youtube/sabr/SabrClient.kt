@@ -288,7 +288,7 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     )
     val body = SabrProto.encodeVideoPlaybackAbrRequest(input)
     val rn = requestNumber.getAndIncrement()
-    // alpha.52C:段 URL 只加 `rn`(对齐 FreeTube SabrStreamingAdapter,后者段 URL 仅 rn、时间只在 body
+    // alpha.54:段 URL 只加 `rn`(对齐 FreeTube SabrStreamingAdapter,后者段 URL 仅 rn、时间只在 body
     // playerTimeMs)。删掉 alpha.51 Track A 的 `&startTimeMs=&sq=`——真机证伪该诊断:轮换新会话(harvest
     // 自 &t=60)URL startTimeMs=cumulative=60000 未封顶直接触发服务端 maxTimeSinceReq 软拒 → 6 backoff →
     // EOF(alpha.52 死因)。init/段统一只拼 rn。
