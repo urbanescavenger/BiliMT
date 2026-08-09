@@ -432,7 +432,14 @@ internal class SabrStreamingDataSource(
         }
         is SabrFetchResult.Backoff -> {
           Log.i(tag, "SabrStream sid=$sessionId stream=$streamType seq=${req.sequenceNumber} Backoff ${result.ms}ms attempt=$attempt bufferedEnd=$cumulativeDurationMs (sleep + refetch)")
-          try { Thread.sleep(result.ms.toLong()) } catch (_: InterruptedException) { return null }
+          // alpha.56:封顶 backoff sleep——服务端 init/段 backoff 常给 8.8s,远超 MobilePlayer 的
+          // StallThresholdMs(8s)。长睡阻塞 ExoPlayer loader 线程 → 解码器抽空 + stall watchdog(8s)
+          // 先发制人 cancel 在途 open() → InterruptedException → fetchUntilReady null → evict+throw →
+          // 无限 re-harvest(alpha.55 真机:init 每会话 backoff=8800ms,全程播不出)。封顶到 2500ms(<8s)
+          // 让重试总在 watchdog 前触发;backoff 是服务端流控建议(advisory),提前重试服务端照收(alpha.54
+          // 工作运行 4.3s 即恢复 → status=2)。对齐 alpha.45「勿在 loader 线程长睡」教训,顺带护 segment 路径。
+          val sleepMs = minOf(result.ms, MAX_BACKOFF_SLEEP_MS)
+          try { Thread.sleep(sleepMs.toLong()) } catch (_: InterruptedException) { return null }
           continue
         }
         is SabrFetchResult.ReloadPlayer -> {
@@ -459,6 +466,9 @@ internal class SabrStreamingDataSource(
   private companion object {
     /** alpha.36:单段请求的 backoff 重试上限(对齐 FreeTube 简洁 reload 语义;耗尽→EOF→evict→stall-retry 新 harvest)。 */
     const val BACKOFF_MAX_ATTEMPTS = 6
+    /** alpha.56:单次 backoff 最大 sleep(ms)。服务端 backoff 常到 8.8s > MobilePlayer StallThresholdMs(8s),
+     *  长睡阻塞 loader → stall watchdog 先 cancel 在途 init → 无限 re-harvest。封顶 <8s 让重试在 watchdog 前触发。 */
+    const val MAX_BACKOFF_SLEEP_MS = 2_500
     /**
      * alpha.52(窗口):每 SABR 会话服务的 60s 窗口长度(ms)。服务端对每会话服务量上限 [anchor..anchor+60s]
      * (alpha.51 坐实,URL 锚点绕不开)。窗口起点 = harvest 的 watch `&t=`(起播位置),滚动推进 0→60→120...。
