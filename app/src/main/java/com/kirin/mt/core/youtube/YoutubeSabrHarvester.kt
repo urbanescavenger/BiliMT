@@ -12,6 +12,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -58,13 +59,24 @@ class YoutubeSabrHarvester(
    */
   @Volatile private var pageFinishedMs: Long = 0L
 
+  /**
+   * 长期存活 WebView(alpha.61:复用跨 harvest 积累真实浏览上下文——每次新建 fresh WebView 被
+   * YouTube 风控成空白页 `body=NOBODY player=false`(alpha.60 真机),长期存活 + 先加载真实首页
+   * 对齐 [YoutubeBrowserSession] 成功模式,让 WebView 建立真实 cookie/会话后再采集 watch 页 SABR POST)。
+   */
+  private var webView: WebView? = null
+
+  /** 首次首页加载完成信号([ensureWebView] 用)。 */
+  private var ready: CompletableDeferred<Unit>? = null
+
   /** 一次采集到的 googlevideo 请求(SABR POST 或 DASH GET;url 含已 transform 的 n + body 含 poToken/ustreamerConfig/formatIds)。 */
   data class SabrCapture(val url: String, val method: String, val bodyB64: String, val status: Int)
 
   /**
    * 加载 watch 页采集首个 SABR POST(alpha.49 起 watch 优先;embed Error 153 config 拒不可解,已删)。
    * 失败/超时返回 null(绝不抛,不阻塞主路径)。
-   * @param timeoutMs 上限(默认 30s);watch 页 SPA 播放器 init 通常 4-8s。
+   * @param timeoutMs 上限(默认 50s);首次调用含 ensureWebView 加载首页建立上下文(至多 HOMEPAGE_LOAD_MS=15s),
+   *   之后 watch 页 SPA 播放器 init 通常 4-8s。50s = 15s 首页 + 30s watch 轮询(首次),后续复用 WebView 更短。
    */
   /**
    * alpha.48/49(轮换):支持 `startMs` 锚定——watch 页 URL 加 `&t=<秒>` 让浏览器播放器**从该位置起播**,
@@ -72,7 +84,7 @@ class YoutubeSabrHarvester(
    * 由浏览器 POST 时播放位置定),故旋转到 mid-playhead 必须先让浏览器锚定在播放头,否则新会话窗口仍
    * 从 0 起算 → 请求 playhead>60s 被拒(alpha.47 session2 死因)。默认 startMs=0(从头播,原行为)。
    */
-  suspend fun harvest(videoId: String, startMs: Long = 0L, timeoutMs: Long = 30_000L): SabrCapture? =
+  suspend fun harvest(videoId: String, startMs: Long = 0L, timeoutMs: Long = 50_000L): SabrCapture? =
     withContext(Dispatchers.Main) {
       runCatching { withTimeoutOrNull(timeoutMs) { harvestImpl(videoId, startMs) } }
         .onFailure { Log.w(Tag, "harvest failed: ${it.message ?: it::class.simpleName}") }
@@ -80,22 +92,23 @@ class YoutubeSabrHarvester(
     }
 
   private suspend fun harvestImpl(videoId: String, startMs: Long = 0L): SabrCapture? {
-    val view = createWebView()
-    try {
-      // seed cookies:watch 播放器在 WebView 里发 /youtubei/v1/player 需要 VISITOR_INFO1_LIVE
-      // 等会话 cookie(对齐 YoutubeJsExecutor.fetchViaWebView 的 CookieManager 写法)。
-      val cookies = innerTubeClient.currentSessionCookies()
-      runCatching {
-        CookieManager.getInstance().setCookie(YoutubeConstants.Origin, cookies)
-        CookieManager.getInstance().flush()
-      }.onFailure { Log.w(Tag, "seed cookies failed: ${it.message}") }
-      // alpha.49(顺序反转):watch 页唯一稳定捕获源(embed Error 153 config 拒不可解,已删)。
-      // 锚定用 `t=<秒>`(SPA 起播位置参数;startMs=0 首播不锚定)。
-      val watchT = if (startMs > 0) "&t=${startMs / 1000}" else ""
-      YoutubeLoadProgress.emit(YoutubeLoadStep.HarvestWatch)
-      Log.i(Tag, "harvest: load watch videoId=$videoId startMs=$startMs${watchT} cookie=${cookies.length}B")
-      pageFinishedMs = 0L
-      view.loadUrl("https://www.youtube.com/watch?v=$videoId&autoplay=1&mute=1$watchT")
+    // alpha.61:复用长期存活 WebView(首次懒建并加载首页建立真实上下文),不再每次新建+销毁。
+    val view = ensureWebView()
+    // seed cookies:watch 播放器在 WebView 里发 /youtubei/v1/player 需要 VISITOR_INFO1_LIVE
+    // 等会话 cookie(对齐 YoutubeJsExecutor.fetchViaWebView 的 CookieManager 写法)。
+    // 每次 harvest 重播一遍(会话 cookie 可能变化),长期存活 WebView 已有的真实 cookie 会叠加。
+    val cookies = innerTubeClient.currentSessionCookies()
+    runCatching {
+      CookieManager.getInstance().setCookie(YoutubeConstants.Origin, cookies)
+      CookieManager.getInstance().flush()
+    }.onFailure { Log.w(Tag, "seed cookies failed: ${it.message}") }
+    // alpha.49(顺序反转):watch 页唯一稳定捕获源(embed Error 153 config 拒不可解,已删)。
+    // 锚定用 `t=<秒>`(SPA 起播位置参数;startMs=0 首播不锚定)。
+    val watchT = if (startMs > 0) "&t=${startMs / 1000}" else ""
+    YoutubeLoadProgress.emit(YoutubeLoadStep.HarvestWatch)
+    Log.i(Tag, "harvest: load watch videoId=$videoId startMs=$startMs${watchT} cookie=${cookies.length}B (reuse WebView)")
+    pageFinishedMs = 0L
+    view.loadUrl("https://www.youtube.com/watch?v=$videoId&autoplay=1&mute=1$watchT")
       // 轮询 window.__gvCaptures[0](对齐 BotGuard pollState 双解码:evaluateJavascript 对字符串
       // 结果做 JSON 编码,先解内层字符串再解析对象)。alpha.20 只截 SABR POST 致 25s 无捕获——
       // alpha.21 放宽到所有 googlevideo 请求(含 DASH GET),并加页面加载/console 诊断定位行为。
@@ -150,14 +163,28 @@ class YoutubeSabrHarvester(
         delay(200)
       }
       Log.w(Tag, "harvest: timeout (30s 内 watch 无 googlevideo 请求)")
+      // 注意:不再 view.destroy()——WebView 长期存活复用(alpha.61),下次 harvest 直接导航到新 watch 页。
       return null
-    } finally {
-      view.destroy()
-    }
   }
 
   @SuppressLint("SetJavaScriptEnabled")
-  private fun createWebView(): WebView = WebView(appContext).apply {
+  /**
+   * 复用长期存活 WebView(alpha.61):首次懒建 + 加载真实首页建立浏览上下文,之后跨 harvest 复用
+   * (每次直接导航到新 watch 页)。镜像 [YoutubeBrowserSession] 成功模式——长期存活 + 真实页上下文
+   * 让 WebView 不被 YouTube 风控成空白页。返回 WebView 前等待首页加载完成(或超时 HOMEPAGE_LOAD_MS)。
+   */
+  private suspend fun ensureWebView(): WebView = withContext(Dispatchers.Main) {
+    webView?.let { return@withContext it }
+    val deferred = CompletableDeferred<Unit>()
+    ready = deferred
+    val created = createWebView(deferred)
+    webView = created
+    withTimeoutOrNull(HOMEPAGE_LOAD_MS) { deferred.await() }
+    Log.i(Tag, "harvest WebView initialized (long-lived): ${created.url}")
+    created
+  }
+
+  private fun createWebView(deferred: CompletableDeferred<Unit>): WebView = WebView(appContext).apply {
     settings.javaScriptEnabled = true
     settings.domStorageEnabled = true
     settings.allowFileAccess = true
@@ -181,6 +208,8 @@ class YoutubeSabrHarvester(
       override fun onPageFinished(view: WebView?, url: String?) {
         // alpha.53:记录页面加载完成时刻——空白页 fail-fast 判定用(见 harvestImpl 轮询循环)。
         pageFinishedMs = System.currentTimeMillis()
+        // alpha.61:首次首页加载完成 → 解除 ensureWebView 等待。
+        if (deferred.isActive) deferred.complete(Unit)
         Log.i(Tag, "harvest onPageFinished: $url")
         // dump 页面内容——确认页真渲染了播放器(不是 consent 墙/error 壳)。title/body/player
         // 元素/video src/captures 经 console 路由(被 onConsoleMessage 捕获)。alpha.21 真机:onPageFinished
@@ -238,6 +267,9 @@ class YoutubeSabrHarvester(
     val h = View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY)
     measure(w, h)
     layout(0, 0, measuredWidth, measuredHeight)
+    // alpha.61:首次先加载真实首页建立浏览上下文(对齐 YoutubeBrowserSession 成功模式——
+    // 长期存活 + 真实 cookie/会话,避免 fresh WebView 被风控成空白页)。onPageFinished 解除 ensureWebView 等待。
+    loadUrl("https://www.youtube.com/")
   }
 
   /** 取 URL query 参数值(首段 ? 之后,不依赖正则)。 */
@@ -285,6 +317,12 @@ class YoutubeSabrHarvester(
      * = 页未渲染(风控/渲染崩),立即放弃让轮换重试,不干等 30s。正常加载远快于 8s,不会误杀。
      */
     const val BLANK_PAGE_ABORT_MS = 8_000L
+
+    /**
+     * alpha.61:首次首页加载超时——ensureWebView 等首页 onPageFinished 建立真实上下文的兜底上限。
+     * 超时仍返回 WebView(已创建,可能未完全加载),harvest 照常导航到 watch 页。
+     */
+    const val HOMEPAGE_LOAD_MS = 15_000L
 
     /**
      * 页面状态诊断脚本——dump player 元素 present/viewport 尺寸/<video> src/captures 条数,
