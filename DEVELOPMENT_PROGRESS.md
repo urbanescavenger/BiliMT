@@ -12,9 +12,9 @@
 
 ## 当前状态
 
-当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理/播放/多播放列表+播放器◀▶ 已实施，SABR 播放正在 alpha.58 走 FreeTube paced 模型（Phase 1 小 LoadControl 缓冲目标验证 paced 请求能否不靠轮换跨 60s，Phase 2 换 DashMediaSource 消除轮换 + 原生 seek）**；直播播放暂缓，后续单独评估。
+当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理/播放/多播放列表+播放器◀▶ 已实施，SABR 播放 alpha.59 已切合成 DASH MPD（SegmentTemplate + 每段 DataSource，DashMediaSource 按需逐段拉跨 60s + 原生 seek，彻底移除轮换）**；直播播放暂缓，后续单独评估。
 
-推荐下一项：**云编译验证 P11-14 alpha.58 Phase 1 paced 验证后真机手测**（LoadControl 缓冲 50s→10s 让 ProgressiveMediaSource 每 ~6s 播放才拉一段、请求节奏与墙钟同步 + 临时禁用轮换,验证 FreeTube paced 模型核心假设:服务端能否不靠轮换持续发段跨过 60s。50s 缓冲边沿=playhead+50s,playhead≈10s 时 cumulative 已到 60s 撞断崖(alpha.54 日志 cumulative=60001);10s 让请求 paced。真机验证点:①播放跨 1min/2min,**无** `requestRotation`/`switchIfRotated` 日志;②无连续 6 次 `no MEDIA_HEADER but NEXT_REQUEST_POLICY`。若跨过 → 假设成立,进 Phase 2(合成 DASH MPD SegmentTemplate + DataSource per-segment + 播放器接线 + 原生 seek + 彻底移除轮换);若死在 60s → 假设不成立,回退,不投入 Phase 2。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
+推荐下一项：**云编译验证 P11-14 alpha.59 Phase 2 合成 DASH 后真机手测**（DashMediaSource 按 SegmentTemplate 逐段拉,验证 FreeTube paced 模型:服务端能否不靠轮换持续发段跨过 60s + 原生 seek。真机验证点:①走 DASH 分支(日志出现 SabrDashDataSource 段请求);②cumulative 越过 60000→120000,播放跨 1min/2min,**无轮换、无 6-backoff EOF**;③seek 即时(原生 seekTo,不再重新起播)。若仍卡 60s:查段请求是否 paced(每 ~6-10s 一段,非 burst);若服务端仍按 cumulative 断崖,再评估段时长/会话复用。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
 
 ## P0 项目决策与规则
 
