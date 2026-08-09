@@ -269,7 +269,7 @@ internal class SabrMediaPeriod(
       loadErrorHandlingPolicy,
       mediaSourceEventDispatcher,
       canReportInitialDiscontinuity,
-      null,
+      C.TIME_UNSET, // firstChunkStartTimeUs:1.10.0 新增(1.9.2 无此参),C.TIME_UNSET=未指定(对齐 LibreTube 1.9.2 不传此值的语义)
       null,
     )
   }

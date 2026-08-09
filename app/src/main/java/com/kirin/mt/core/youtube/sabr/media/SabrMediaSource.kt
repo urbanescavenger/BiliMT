@@ -108,7 +108,7 @@ internal class SabrMediaSource(
 
   override fun prepareSourceInternal(mediaTransferListener: TransferListener?) {
     this.mediaTransferListener = mediaTransferListener
-    drmSessionManager.setPlayer(Looper.myLooper()!!, playerId)
+    drmSessionManager.setPlayer(Looper.myLooper()!!, getPlayerId())
     drmSessionManager.prepare()
     processManifest()
   }
@@ -133,7 +133,7 @@ internal class SabrMediaSource(
       elapsedRealtimeOffsetMs,
       allocator,
       compositeSequenceableLoaderFactory,
-      playerId,
+      getPlayerId(),
     )
   }
 
