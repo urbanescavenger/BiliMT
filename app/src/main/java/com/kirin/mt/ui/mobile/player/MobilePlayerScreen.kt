@@ -3,7 +3,6 @@ package com.kirin.mt.ui.mobile.player
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.ActivityInfo
-import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
@@ -180,9 +179,7 @@ private const val DanmakuSendLogTag = "BiliDanmakuSend"
  *  发送时 showAtMs=当前位置会被 start(currentPos≥该位置) 跳过,故向前加 1s 让其落在 set time 之后。 */
 private const val LocalDanmakuLeadMs = 1000L
 private const val MobilePlayerLogTag = "BiliMT:MobilePlayer"
-/** BUFFERING 且进度不前进超过此阈值判定为 stall,触发自动重载续播。 */
-private const val StallThresholdMs = 8_000L
-/** 单次播放会话内 stall 自动重试上限,超过则交用户手动重试,避免死循环刷 CDN。 */
+/** alpha.67:单次播放会话内 error-retry 上限(onPlayerErrorChanged),超过则交用户手动重试,避免死循环。 */
 private const val MaxStallAutoRetry = 2
 // 空降助手阈值(镜像 TV PlayerScreen)
 private const val AirJumpWarningLeadMs = 3_500L
@@ -245,7 +242,7 @@ fun MobilePlayerScreen(
   val playbackPositionState = remember { mutableLongStateOf(0L) }
   val playbackDurationState = remember { mutableLongStateOf(0L) }
   var danmakuSyncToken by remember { mutableLongStateOf(0L) }
-  // stall 自动恢复:BUFFERING 且进度长时间不前进时,记当前位置并 bump retryKey 重载源续播。
+  // error-retry 续播:onPlayerErrorChanged 记卡住时位置 + bump retryKey 重载源续播(不回退到 saved progress)。
   // autoResumePositionMs=-1L 表示无续播位(走 saved progress);>=0 时 launch effect 优先 seekTo 它。
   var retryKey by remember { mutableLongStateOf(0L) }
   var autoResumePositionMs by remember { mutableLongStateOf(-1L) }
@@ -542,7 +539,7 @@ fun MobilePlayerScreen(
       pendingSABRSeekMs = null
       val startPositionMs = when {
         pendingSABRSeek != null -> pendingSABRSeek
-        // stall 自动重试续播:优先用卡住时的当前位置,而非 saved progress(可能更旧)。
+        // error-retry 续播:优先用卡住时的当前位置,而非 saved progress(可能更旧)。
         autoResumePositionMs >= 0L -> autoResumePositionMs.also { autoResumePositionMs = -1L }
         else -> playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
           ?: request.startPositionMs
@@ -651,7 +648,7 @@ fun MobilePlayerScreen(
         isPlaying = playing
         if (playing && autoRetryCount > 0) {
           autoRetryCount = 0
-          Log.i(MobilePlayerLogTag, "stall auto-retry recovered, counter reset")
+          Log.i(MobilePlayerLogTag, "playback error auto-retry recovered, counter reset")
         }
       }
 
@@ -682,16 +679,18 @@ fun MobilePlayerScreen(
 
       override fun onPlayerErrorChanged(error: PlaybackException?) {
         if (error != null) {
-          // alpha.41:SABR RELOAD_PLAYER_RESPONSE / init fetch 失败时 DataSource.open 抛 IOException →
-          // ExoPlayer 上报 source error。此前直接 Failed,但 init 失败的会话已被 evict,重 resolve 会走新
-          // harvest(可能拿到不同 itag/更新 poToken 的可用会话)。复用 stall-retry 计数(MaxStallAutoRetry)
+          // alpha.41/67:SABR RELOAD_PLAYER_RESPONSE / SABR_ERROR / init fetch 失败时 DataSource.open
+          // 抛 IOException → ExoPlayer 上报 source error。会话已被 evict,重 resolve 走新 harvest。
           // bump retryKey → LaunchedEffect → loadRequest → getPlaybackInfo(cache miss → 新 harvest)。
-          // 耗尽上限才 Failed,避免不可恢复错误无限重试(同 stall 语义)。
+          // 记当前位置进 autoResumePositionMs,重载后续播点 = 卡住位置(不回退到 saved progress,
+          // 避免重播已看过的一段——status=3 已被同步刷新消除,此路径仅真终端错误偶发)。
+          // 计数上限(MaxStallAutoRetry)防不可恢复错误无限重试。同步刷新后 status=3 不再触发本路径。
           if (autoRetryCount < MaxStallAutoRetry) {
             autoRetryCount += 1
+            autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
             Log.w(
               MobilePlayerLogTag,
-              "playback error, auto-retry #${autoRetryCount}: ${error.message}",
+              "playback error, auto-retry #${autoRetryCount} @pos=${autoResumePositionMs}ms: ${error.message}",
             )
             retryKey += 1L
           } else {
@@ -748,19 +747,16 @@ fun MobilePlayerScreen(
 
   // 加载(镜像 TV PlayerScreen 的 load 序列)。key 不含 activeRequest:自动连播/用户切集/切画质
   // 由显式 loadRequest 调用触发(见 ExoPlayer 监听器与各 onClick),避免后台重组被推迟时无法加载;
-  // 本 effect 只处理初始加载、新视频(request 变)、设置变更、stall 重试(retryKey 变)。
+  // 本 effect 只处理初始加载、新视频(request 变)、设置变更、error-retry(retryKey 变)。
   LaunchedEffect(request, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
     loadRequest(activeRequest)
   }
 
   // 进度轮询
   LaunchedEffect(player, playerState) {
-    var stallBaselinePositionMs = 0L
-    var stallSinceMs = 0L
     while (true) {
       delay(ProgressUpdateMs)
       val ready = playerState as? MobilePlayerState.Ready ?: continue
-      val nowMs = SystemClock.elapsedRealtime()
       val currentPositionMs = player.currentPosition.coerceAtLeast(0L)
       if (seekPreviewMs == null) {
         playbackPositionState.longValue = currentPositionMs
@@ -769,35 +765,11 @@ fun MobilePlayerScreen(
       if (dur > 0L) playbackDurationState.longValue = dur
       // 空降助手:seekPreviewMs 期间 handleAirJumpPosition 内部早退,不与手动拖拽冲突
       handleAirJumpPosition(currentPositionMs)
-      // stall 检测:STATE_BUFFERING 且用户想播(playWhenReady)、进度连续 N 秒不前进 → 自动重载续播。
-      // 排除:已暂停(playWhenReady=false)、拖拽预览(seekPreviewMs!=null)、已结束、非 Ready 态。
-      val isStallBuffering = player.playbackState == Player.STATE_BUFFERING &&
-        player.playWhenReady &&
-        !completionReported &&
-        seekPreviewMs == null
-      if (isStallBuffering) {
-        if (currentPositionMs == stallBaselinePositionMs) {
-          if (stallSinceMs == 0L) {
-            stallSinceMs = nowMs
-          } else if (nowMs - stallSinceMs >= StallThresholdMs && autoRetryCount < MaxStallAutoRetry) {
-            autoResumePositionMs = currentPositionMs
-            autoRetryCount += 1
-            Log.w(
-              MobilePlayerLogTag,
-              "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
-            )
-            stallSinceMs = 0L
-            stallBaselinePositionMs = 0L
-            retryKey += 1L
-          }
-        } else {
-          stallBaselinePositionMs = currentPositionMs
-          stallSinceMs = 0L
-        }
-      } else {
-        stallBaselinePositionMs = currentPositionMs
-        stallSinceMs = 0L
-      }
+      // alpha.67:取消 8s stall 看门狗(原 STATE_BUFFERING + 进度连续 8s 不前进 → retryKey 重载)。
+      // 它是当初逼 alpha.66 把 status=2 PO token 刷新改异步(怕同步阻塞被看门狗 cancel→evict)的元凶;
+      // 异步又引入竞态(刷新晚一拍,请求带旧 token 撞 status=3 → 全量重载 → 重播前 60s + 音频先现)。
+      // 改回同步刷新(对齐 LibreTube,下个请求一定带新 token)+ 取消看门狗 = 正解。status=3 不再出现。
+      // 真终端错误(RELOAD_PLAYER/SABR_ERROR)由 onPlayerErrorChanged 的 error-retry 处理(非看门狗)。
     }
   }
 

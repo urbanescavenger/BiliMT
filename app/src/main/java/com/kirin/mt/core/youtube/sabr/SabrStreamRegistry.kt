@@ -2,13 +2,8 @@ package com.kirin.mt.core.youtube.sabr
 
 import android.util.Base64
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -25,12 +20,6 @@ internal object SabrStreamRegistry {
   private const val tag = "YtSabr"
   private val sessions = ConcurrentHashMap<String, Entry>()
   /**
-   * alpha.66:PO token 后台刷新的进程级 scope。SupervisorJob(单次 refresh 失败不取消后续/兄弟);
-   * 进程级 object 持有,fetcher 随 MediaSource 释放被 GC 不影响本 scope(不泄漏)。供 [maybeRefreshPoToken]
-   * launch 异步刷新,把 BotGuard 重操作移出 ExoPlayer chunk load 阻塞路径(修 alpha.65 回归)。
-   */
-  internal val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-  /**
    * alpha.29:videoId → sessionId 反查表。切清晰度会重跑 resolve(播放器用 preferredQualityId 重建
    * MediaSource),但 poToken/ustreamerConfig/cpn 是**会话级**可复用(~6h 有效,FreeTube 证实同 token
    * 跨多 itag),无需重 harvest。命中则 [getByVideoId] 返回已有 sid,resolver 跳过 harvest 直接建
@@ -39,15 +28,14 @@ internal object SabrStreamRegistry {
   private val byVideoId = ConcurrentHashMap<String, String>()
 
   /**
-   * alpha.66:会话级 PO token 状态(holder,避免 data class [Entry] 加 var 破坏 equals)。
-   * [currentPoToken] 初始=[SabrSession.poToken];status=2 时由 [maybeRefreshPoToken] 后台重铸换新。
-   * 提升到会话级(非 fetcher 实例)——切清晰度重建 fetcher 时新 fetcher 仍读已刷新的 token(修 alpha.65
-   * fetcher-instance currentPoToken 重建即丢的回归)。@Volatile 保证跨线程可见,单 ByteArray 引用读写无撕裂。
-   * [inFlight] CAS 防并发刷新(status=2 反复来时只 launch 一次)。
+   * alpha.66/67:会话级 PO token 状态(holder,避免 data class [Entry] 加 var 破坏 equals)。
+   * [currentPoToken] 初始=[SabrSession.poToken];status=2 时由 [SabrMediaFetcher.media] **同步**重铸
+   * 换新(对齐 LibreTube,下个请求一定带新 token)。提升到会话级(非 fetcher 实例)——切清晰度重建
+   * fetcher 时新 fetcher 仍读已刷新的 token(修 alpha.65 fetcher-instance currentPoToken 重建即丢的
+   * 回归)。@Volatile 保证跨线程可见,单 ByteArray 引用读写无撕裂。
    */
   class PoTokenState(initialPoToken: ByteArray) {
     @Volatile var currentPoToken: ByteArray = initialPoToken
-    val inFlight = AtomicBoolean(false)
   }
 
   /** 一个 SABR 播放会话:SabrSession(会话参数)+ SabrClient(驱动器,持有 httpClient)+ 服务窗口起点。 */
@@ -61,15 +49,15 @@ internal object SabrStreamRegistry {
      */
     val windowStartMs: Long = 0L,
     /**
-     * alpha.65:STREAM_PROTECTION_STATUS status=2(Attestation pending)时重铸 PO token 的回调,
+     * alpha.65/67:STREAM_PROTECTION_STATUS status=2(Attestation pending)时重铸 PO token 的回调,
      * 对齐 LibreTube `SabrClient.generatePoToken`。由 [com.kirin.mt.core.youtube.YoutubePlaybackResolver]
      * 在 resolve 阶段注入(捕获进程级 [com.kirin.mt.core.youtube.YoutubeBotGuard])。
-     * null=alpha.64 行为(不刷新,~60s 后 status=3 terminal)。由 [SabrMediaFetcher] 取用。
+     * null=不刷新(~60s 后 status=3 terminal)。由 [SabrMediaFetcher.media] 同步取用——下个请求一定带新 token。
      */
     val refreshPoToken: (suspend () -> ByteArray?)? = null,
     /**
-     * alpha.66:会话级 PO token 状态([PoTokenState.currentPoToken] + [PoTokenState.inFlight])。
-     * 初始 PoTokenState(session.poToken);由 [maybeRefreshPoToken] 后台重铸换新。
+     * alpha.66/67:会话级 PO token 状态([PoTokenState.currentPoToken])。
+     * 初始 PoTokenState(session.poToken);status=2 时由 [SabrMediaFetcher.media] 同步重铸换新。
      * 提升 Entry 而非 fetcher 实例,修 alpha.65 切清晰度重建 fetcher 丢 token 的回归。
      */
     val poTokenState: PoTokenState = PoTokenState(session.poToken),
@@ -157,34 +145,6 @@ internal object SabrStreamRegistry {
   fun release(sessionId: String) {
     sessions.remove(sessionId)?.let {
       Log.i(tag, "release sid=$sessionId (active=${sessions.size})")
-    }
-  }
-
-  /**
-   * alpha.66:STREAM_PROTECTION_STATUS status=2(Attestation pending)时,后台异步重铸 PO token。
-   * **非阻塞**——只做 CAS + [refreshScope].launch 瞬间返回,把 BotGuard 重操作(~1s+)移出 ExoPlayer
-   * chunk load 阻塞路径(修 alpha.65 同步阻塞致 8s stall 看门狗 reload→cancel→evict 回归)。
-   *
-   * 对齐 LibreTube `processPart status==2 poToken = generatePoToken()`,但异步化(LibreTube 靠热 WebView+
-   * 无激进看门狗容忍同步,我们无法)。刷新写入 [Entry.poTokenState] (会话级),切清晰度重建 fetcher 仍读新 token。
-   * [PoTokenState.inFlight] CAS 防并发刷新;失败 finally 清位,下次 status=2 重试,无永久不刷新。
-   */
-  fun maybeRefreshPoToken(entry: Entry) {
-    if (!entry.poTokenState.inFlight.compareAndSet(false, true)) return
-    refreshScope.launch {
-      try {
-        val fresh = entry.refreshPoToken?.invoke()
-        if (fresh != null && fresh.isNotEmpty()) {
-          entry.poTokenState.currentPoToken = fresh
-          Log.i(tag, "PO token refreshed on status=2: ${fresh.size}B (async) → next request uses fresh token")
-        } else {
-          Log.w(tag, "PO token refresh null/empty on status=2 (refreshPoToken=${entry.refreshPoToken != null}) — keep stale")
-        }
-      } catch (e: Exception) {
-        Log.w(tag, "PO token refresh threw on status=2: ${e::class.simpleName} ${e.message}")
-      } finally {
-        entry.poTokenState.inFlight.set(false)
-      }
     }
   }
 }

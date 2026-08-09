@@ -63,10 +63,10 @@ import kotlin.math.min
 @OptIn(UnstableApi::class)
 internal class SabrMediaFetcher(
   /**
-   * alpha.66:整个会话 Entry(含 session/poTokenState/refreshPoToken)。改传 Entry 而非散参数,
+   * alpha.66/67:整个会话 Entry(含 session/poTokenState/refreshPoToken)。改传 Entry 而非散参数,
    * 因 [poTokenState] 提升到会话级——切清晰度重建 fetcher 时新 fetcher 仍读已刷新的 token
-   * (修 alpha.65 fetcher-instance currentPoToken 重建即丢的回归)。status=2 时调
-   * [SabrStreamRegistry.maybeRefreshPoToken] 后台异步刷新(不阻塞 load 路径)。
+   * (修 alpha.65 fetcher-instance currentPoToken 重建即丢的回归)。status=2 时在 [media] 的
+   * readParts 后**同步**重铸 PO token(对齐 LibreTube,下个请求一定带新 token → status=3 不再出现)。
    */
   private val entry: SabrStreamRegistry.Entry,
   private val httpClient: OkHttpClient,
@@ -97,6 +97,12 @@ internal class SabrMediaFetcher(
   @Volatile private var invalidPo = false
   @Volatile private var fatalError: String? = null
   @Volatile private var reloadPlayerDump: String? = null
+  /**
+   * alpha.67(对齐 LibreTube status=2 同步刷新):processPart 里 status=2 置位,media() 的 readParts
+   * 之后同步重铸 PO token(阻塞 loader 线程 ~1s)。下个请求一定带新 token → status=3 不再出现。
+   * 异步(alpha.66 maybeRefreshPoToken)有竞态:刷新晚一拍,请求带旧 token 撞 status=3 → 全量重载。
+   */
+  @Volatile private var needsPoTokenRefresh = false
 
   /** selectTracks 时间戳(由 [SabrMediaPeriod] 写,ClientAbrState timeSinceLast* 用)。 */
   @Volatile var lastSeekMs: Long? = null
@@ -170,9 +176,21 @@ internal class SabrMediaFetcher(
     val ump = UmpReader()
     ump.append(data)
     ump.readParts { type, payload -> processPart(type, payload) }
-    // alpha.66:status=2 的异步刷新在 [processPart] 里触发([SabrStreamRegistry.maybeRefreshPoToken],
-    // 后台 launch,不阻塞 load 路径)。这里不再同步等——alpha.65 同步等致 8s stall 看门狗 reload→
-    // cancel→evict 回归。readParts 后立即返回,fetch 数据入 initializedFormats 正常喂播放器。
+    // alpha.67(对齐 LibreTube processPart status==2 `poToken = generatePoToken()` 同步):status=2 在
+    // 本响应里出现 → 此处(下个请求发出前)同步重铸 PO token,下个请求一定带新 token → status=3 不再出现。
+    // 异步(alpha.66 maybeRefreshPoToken 后台 launch)有竞态:刷新需 ~550ms,下一段请求在此之前发出带旧 token
+    // → 撞 status=3 → evict → onPlayerError 全量重载 → 重播前 60s + 音频先出现。看门狗已取消(改动 3),
+    // 同步阻塞 loader 线程 ~1s 安全(前方 ~20s lookahead 缓冲兜底,LibreTube 同栈同做法)。
+    if (needsPoTokenRefresh) {
+      needsPoTokenRefresh = false
+      val fresh = entry.refreshPoToken?.invoke()
+      if (fresh != null && fresh.isNotEmpty()) {
+        entry.poTokenState.currentPoToken = fresh
+        Log.i(tag, "PO token refreshed on status=2: ${fresh.size}B (sync) → next request uses fresh token")
+      } else {
+        Log.w(tag, "PO token refresh null/empty on status=2 (refreshPoToken=${entry.refreshPoToken != null}) — keep stale")
+      }
+    }
   }
 
   /**
@@ -371,11 +389,11 @@ internal class SabrMediaFetcher(
         val status = SabrProto.decodeStreamProtectionStatus(payload)
         Log.w(tag, "STREAM_PROTECTION_STATUS status=$status")
         if (status == 3) invalidPo = true
-        // alpha.66:status=2(Attestation pending)=服务端预警 → 后台异步重铸 PO token(不阻塞 load 路径)。
-        // 对齐 LibreTube processPart status==2 `poToken = generatePoToken()`,但异步化(LibreTube 靠热
-        // WebView+无激进看门狗容忍同步,我们同步会致 8s stall→cancel→evict 回归)。写 entry.poTokenState(会话级)。
-        // alpha.64 只打 log(60s 过期 status=3 重启);alpha.65 同步阻塞(回归);alpha.66 异步(正解)。
-        else if (status == 2) SabrStreamRegistry.maybeRefreshPoToken(entry)
+        // alpha.67(对齐 LibreTube processPart status==2 `poToken = generatePoToken()` 同步):
+        // status=2(Attestation pending)= 服务端预警 → media() 的 readParts 后同步重铸 PO token
+        // (阻塞 loader 线程 ~1s,看门狗已取消无 8s cancel 风险)。下个请求一定带新 token → status=3
+        // 不再出现。异步(alpha.66 maybeRefreshPoToken)有竞态:刷新晚一拍撞 status=3 → 全量重载。
+        else if (status == 2) needsPoTokenRefresh = true
       }
       PART_RELOAD_PLAYER_RESPONSE -> {
         val diag = SabrProto.decodeReloadPlayerResponse(payload)

@@ -192,8 +192,9 @@ internal class SabrDashDataSource(
   private companion object {
     /** 单段请求的 backoff 重试上限(耗尽→null→open() evict+throw→播放器 error-retry 新 harvest)。 */
     const val BACKOFF_MAX_ATTEMPTS = 6
-    /** 单次 backoff 最大 sleep(ms)。服务端 backoff 常到 8.8s > MobilePlayer StallThresholdMs(8s),
-     *  长睡阻塞 loader → stall watchdog 先 cancel 在途 open() → 无限 re-harvest。封顶 <8s 让重试在 watchdog 前触发。 */
+    /** 单次 backoff 最大 sleep(ms)。服务端 backoff 常到 8.8s,长睡阻塞 loader 线程会卡住后续段拉取
+     *  影响播放连续性(alpha.68 stall 看门狗已取消,不再有 8s cancel 风险,但仍封顶 2.5s 避免单次请求
+     *  久占 loader → 段节奏断裂 → 缓冲耗尽 rebuffer)。 */
     const val MAX_BACKOFF_SLEEP_MS = 2_500
   }
 }
