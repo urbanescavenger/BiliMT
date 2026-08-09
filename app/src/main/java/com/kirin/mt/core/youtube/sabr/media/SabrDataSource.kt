@@ -51,7 +51,7 @@ internal class SabrDataSource(
       transferStarted(dataSpec)
       throw IOException("SABR terminal: ${e.message}")
     } catch (e: Exception) {
-      Log.w("YtSabr", "SabrDataSource open: seg=${req.segment} itag=${req.formatItag} exception: ${e.message} → evict sid=$sessionId")
+      Log.w("YtSabr", "SabrDataSource open: seg=${req.segment} itag=${req.formatItag} ${e::class.simpleName}: ${e.message} → evict sid=$sessionId")
       SabrStreamRegistry.evict(sessionId)
       transferStarted(dataSpec)
       throw IOException("SABR open failed: ${e.message}")

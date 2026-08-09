@@ -588,7 +588,7 @@ fun MobilePlayerScreen(
         if (sid == null || entry == null) {
           throw IllegalStateException("SABR single-stream session not found for ${sabrEffectiveInfo.bvid}")
         }
-        val fetcher = SabrMediaFetcher(entry.session, playbackHttpClient, entry.refreshPoToken)
+        val fetcher = SabrMediaFetcher(entry, playbackHttpClient)
         val manifest = SabrManifest.fromSession(entry.session, sabrEffectiveInfo)
         val sabrItem = androidx.media3.common.MediaItem.Builder()
           .setUri(manifest.sabrUrl)
