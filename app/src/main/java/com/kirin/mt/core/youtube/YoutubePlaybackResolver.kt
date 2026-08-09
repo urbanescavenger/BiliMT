@@ -83,25 +83,37 @@ class YoutubePlaybackResolver(
     // 的 contentPlaybackContext。缺它 WEB /player 可能被判"非真浏览器" → "The page needs to be reloaded"。
     val signatureTimestamp = resolveSignatureTimestamp(videoId)
 
-    // 收集 playable 客户端(WEB → WEB_EMBEDDED → ANDROID)的 streamingData 合并候选。
-    // 实测(§6.5):无有效 PO token 时各客户端都会剥光 adaptiveFormats 的 url(只剩 progressive 360p)。
-    // PO token 只能铸成 WEB 绑定(att/get 是 WEB challenge 通道,ANDROID att/get 不返回 bgChallenge)。
-    // FreeTubeAndroid 对 WEB 失败时回退 WEB_EMBEDDED(复用 WEB 的 visitorData + 同一个 WEB 绑定 token)，
-    // 该嵌入式客户端对 PO token 校验可能更宽容。故合并三客户端候选,统一选最高 adaptive,progressive 仅兜底。
+    // 收集 playable 客户端的 streamingData 候选。对齐 FreeTubeAndroid:主用 WEB(带 token,拿 SABR),
+    // 仅年龄限制回退 WEB_EMBEDDED;ANDROID 从 /player 链移除(FreeTubeAndroid 不用 ANDROID 客户端)。
     val allAdaptive = mutableListOf<ParsedFormat>()
     val allCombined = mutableListOf<ParsedFormat>()
     var durationMs = 0L
     YoutubeLoadProgress.emit(YoutubeLoadStep.ResolvePlayer)
-    for (client in listOf(InnerTubeClient.Client.WEB, InnerTubeClient.Client.WEB_EMBEDDED, InnerTubeClient.Client.ANDROID)) {
+    // 对齐 FreeTubeAndroid getLocalVideoInfo(§6.7 row 65):每视频只发 1 次 WEB /player(带 token)。
+    //  - LOGIN_REQUIRED(bot 检测)→ 立即短路,不回退(FreeTubeAndroid L517-519 直接 return)。
+    //    继续发 WEB_EMBEDDED/ANDROID 只会放大 bot 特征(日志:~36 次 /player 后服务端开始拒)。
+    //  - 年龄限制(reason='Sign in to confirm your age')→ 追加 WEB_EMBEDDED 回退(FreeTubeAndroid L476)。
+    //  - ANDROID 从 /player 链移除(FreeTubeAndroid 不用 ANDROID 客户端)。
+    val clients = mutableListOf(InnerTubeClient.Client.WEB)
+    var clientIdx = 0
+    while (clientIdx < clients.size) {
+      val client = clients[clientIdx]
+      clientIdx++
       val player = runCatching { postPlayer(videoId, client = client, poToken = poToken, signatureTimestamp = signatureTimestamp) }.getOrNull()
       if (!player.isPlayable()) {
-        lastError = player?.playabilityReason() ?: lastError
-        // 诊断:dump 完整 playabilityStatus(status/reason/errorScreen),定位 WEB "Video unavailable" 真因。
-        Log.w(
-          Tag,
-          "player $client not playable (videoId=$videoId status=${player?.obj("playabilityStatus")?.stringOrNull("status")} " +
-            "reason=${player?.playabilityReason()} ps=${player?.obj("playabilityStatus").toString().take(400)}); next client"
-        )
+        val status = player?.obj("playabilityStatus")?.stringOrNull("status")
+        val reason = player?.playabilityReason()
+        lastError = reason ?: lastError
+        // LOGIN_REQUIRED(bot 检测)→ 立即短路,不回退(对齐 FreeTubeAndroid L517-519)。
+        if (status == "LOGIN_REQUIRED") {
+          Log.w(Tag, "player $client LOGIN_REQUIRED (bot) → short-circuit, no fallback (videoId=$videoId reason=$reason)")
+          throw YoutubeApiException(0, "", "YouTube playback blocked: $reason")
+        }
+        // 年龄限制 → 追加 WEB_EMBEDDED 回退(对齐 FreeTubeAndroid L476 只认 'Sign in to confirm your age')。
+        if (client == InnerTubeClient.Client.WEB && reason == "Sign in to confirm your age") {
+          Log.i(Tag, "player WEB age-restricted → fall back to WEB_EMBEDDED (videoId=$videoId)")
+          clients += InnerTubeClient.Client.WEB_EMBEDDED
+        }
         continue
       }
       havePlayable = true
@@ -282,34 +294,8 @@ class YoutubePlaybackResolver(
         }
       }
     }
-    // 诊断:带/不带 token 对比——同一 videoId 再发一次无 token 的 WEB /player,对比 adaptive 条数/首条 url,
-    // 判断 token 是否真的起作用(§6.7 row 28)。若带/不带 token 响应完全一样(都剥空)→ token 无效;
-    // 若有差异 → token 在起作用但不够。走 WebView 原生栈与 with-token WEB 同路径,公平对比。
-    if (poToken != null) {
-      val noTokenPlayer = runCatching {
-        postPlayer(videoId, client = InnerTubeClient.Client.WEB, poToken = null, signatureTimestamp = signatureTimestamp)
-      }.getOrNull()
-      val noTokenSd = noTokenPlayer?.obj("streamingData")
-      val noTokenRaw = noTokenSd?.array("adaptiveFormats")
-      val noTokenFirst = noTokenRaw?.firstOrNull() as? JsonObject
-      val noTokenFirstUrl = noTokenFirst?.stringOrNull("url")
-      val noTokenSabr = noTokenSd?.stringOrNull("serverAbrStreamingUrl")
-      val noTokenUstreamerReq = noTokenPlayer?.obj("playerConfig")
-        ?.obj("mediaCommonConfig")
-        ?.obj("mediaUstreamerRequestConfig")
-      val noTokenUstreamer = noTokenUstreamerReq?.obj("videoPlaybackUstreamerConfig")
-      Log.i(
-        Tag,
-        "diag no-token WEB: playable=${noTokenPlayer?.obj("playabilityStatus")?.stringOrNull("status")} " +
-          "rawAdaptive=${noTokenRaw?.size ?: 0} " +
-          "firstUrl=${if (noTokenFirstUrl.isNullOrBlank()) "EMPTY" else "present(${noTokenFirstUrl.length}B)"} " +
-          "sabrUrl=${if (noTokenSabr.isNullOrBlank()) "ABSENT" else "present(${noTokenSabr.length}B)"} " +
-          "ustreamerReqCfg=${if (noTokenUstreamerReq == null) "ABSENT" else "present(${noTokenUstreamerReq.toString().length}B)"} " +
-          "ustreamerCfg=${if (noTokenUstreamer == null) "ABSENT" else "present(${noTokenUstreamer.toString().length}B)"} " +
-          "streamingData keys=${noTokenSd?.keys?.toList() ?: "NONE"} " +
-          "(对比 with-token WEB 见上方 diag)"
-      )
-    }
+    // 对齐 FreeTubeAndroid:不再发无 token 诊断探针(§6.7 row 65)——纯诊断,poToken != null 时必发,
+    // 直接翻倍 /player 请求量,放大 bot 特征。删掉后每视频只发 1 次 WEB /player(带 token)。
     if (!havePlayable) {
       throw YoutubeApiException(0, "", "YouTube playback blocked: ${lastError ?: "no streamingData"}")
     }

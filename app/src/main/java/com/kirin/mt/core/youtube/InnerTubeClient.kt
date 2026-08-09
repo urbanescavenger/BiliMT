@@ -33,6 +33,8 @@ class InnerTubeClient(
   private val httpClient: OkHttpClient,
   /** 可选：WEB /player 走 WebView 原生网络栈(Chromium)时注入（对齐 FreeTubeAndroid 主 WebView）。 */
   private val jsExecutor: YoutubeJsExecutor? = null,
+  /** 可选：真实浏览器会话 WebView（方案 A，对齐 FreeTubeAndroid 主 WebView）。/player 走它 + 用它的真实 visitorData/cookie。 */
+  private val browserSession: YoutubeBrowserSession? = null,
 ) {
   private val json = Json {
     ignoreUnknownKeys = true
@@ -105,8 +107,14 @@ class InnerTubeClient(
     // WEB/WEB_EMBEDDED /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView。
     // OkHttp 直连被拦("The page needs to be reloaded")、FreeTubeAndroid 能过的根因是请求没走
     // 真实浏览器网络栈。ANDROID 客户端保持 OkHttp 直连(作为回退)。
-    if (viaWebView && (client == Client.WEB || client == Client.WEB_EMBEDDED) && jsExecutor != null) {
-      val text = jsExecutor.fetchViaWebView(url, "POST", buildWebViewHeaders(client), body.toString())
+    // 方案 A：优先走真实浏览器会话 WebView（真实页上下文 + 真实 cookie/TLS），否则回退 jsExecutor 壳。
+    if (viaWebView && (client == Client.WEB || client == Client.WEB_EMBEDDED)) {
+      val text = if (browserSession != null) {
+        browserSession.fetchViaWebView(url, "POST", buildWebViewHeaders(client), body.toString())
+      } else {
+        jsExecutor?.fetchViaWebView(url, "POST", buildWebViewHeaders(client), body.toString())
+          ?: throw YoutubeApiException(0, "", "InnerTube $endpoint: no WebView available for viaWebView")
+      }
       return@withContext runCatching { json.parseToJsonElement(text).jsonObject }
         .getOrElse { throw YoutubeApiException(0, text, "InnerTube $endpoint returned invalid JSON") }
     }
@@ -451,11 +459,25 @@ class InnerTubeClient(
     if (realSessionData != null) return
     sessionMutex.withLock {
       if (realSessionData != null) return
+      // 方案 A：优先用真实浏览器会话的 visitorData + cookie（对齐 FreeTubeAndroid 主 WebView）。
+      // 先确保真实 YouTube 页面加载，读它的 VISITOR_INFO1_LIVE cookie 作 visitorData（cookie 值 ==
+      // visitorData proto，§6.7 row 31 确认）。失败回退 sw.js_data 的 visitorData。
+      val browserVisitor = browserSession?.let {
+        runCatching { it.ensureLoaded() }.getOrNull()
+        it.readVisitorData()
+      }
       val data = runCatching { fetchRealSessionData() }.getOrNull()
       if (data != null) {
-        realSessionData = data
-        visitorData = data.visitorData
-        Log.i(Tag, "real session data: visitorData=${data.visitorData.take(24)}... clientVersion=${data.clientVersion}")
+        val effectiveVisitor = browserVisitor ?: data.visitorData
+        val browserCookies = browserSession?.readCookies()
+        val effectiveCookies = if (browserCookies.isNullOrBlank()) data.sessionCookies else browserCookies
+        realSessionData = data.copy(visitorData = effectiveVisitor, sessionCookies = effectiveCookies)
+        visitorData = effectiveVisitor
+        Log.i(
+          Tag,
+          "real session data: visitorData=${effectiveVisitor.take(24)}... " +
+            "(browser=${browserVisitor != null}) clientVersion=${data.clientVersion}"
+        )
       } else {
         Log.w(Tag, "sw.js_data fetch failed; fallback to synthetic visitorData")
       }
