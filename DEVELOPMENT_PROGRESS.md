@@ -12,9 +12,9 @@
 
 ## 当前状态
 
-当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理/播放/多播放列表+播放器◀▶ 已实施，SABR 播放 alpha.59 已切合成 DASH MPD（SegmentTemplate + 每段 DataSource，DashMediaSource 按需逐段拉跨 60s + 原生 seek，彻底移除轮换）**；直播播放暂缓，后续单独评估。
+当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理/播放/多播放列表+播放器◀▶ 已实施，SABR 播放 alpha.59 已切合成 DASH MPD（SegmentTemplate + 每段 DataSource，DashMediaSource 按需逐段拉跨 60s + 原生 seek，彻底移除轮换）；alpha.59 方案A 网络栈根因修复——/player 走真实浏览器会话 WebView（真实页上下文 + 真实 cookie/TLS），用其真实 visitorData/cookie，对齐 FreeTubeAndroid 主 WebView，修 LOGIN_REQUIRED bot 拦截**；直播播放暂缓，后续单独评估。
 
-推荐下一项：**云编译验证 P11-14 alpha.59 Phase 2 合成 DASH 后真机手测**（DashMediaSource 按 SegmentTemplate 逐段拉,验证 FreeTube paced 模型:服务端能否不靠轮换持续发段跨过 60s + 原生 seek。真机验证点:①走 DASH 分支(日志出现 SabrDashDataSource 段请求);②cumulative 越过 60000→120000,播放跨 1min/2min,**无轮换、无 6-backoff EOF**;③seek 即时(原生 seekTo,不再重新起播)。若仍卡 60s:查段请求是否 paced(每 ~6-10s 一段,非 burst);若服务端仍按 cumulative 断崖,再评估段时长/会话复用。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
+推荐下一项：**云编译验证 P11-14 alpha.59 方案A 网络栈修复后真机手测**（/player 走真实浏览器会话 WebView + 真实 visitorData/cookie,验证能否消除 LOGIN_REQUIRED bot 拦截。真机验证点:①日志出现 `YtBrowserSession` 加载真实页 + `browser session visitorData=...`(方案A 生效);②/player 不再 `LOGIN_REQUIRED "Sign in to confirm you're not a bot"`,能正常取流播放;③连续播多视频不再 ~36 次后开始被拦(网络栈根因修复,非仅请求量削减)。若仍被拦:查 `YtBrowserSession` 是否加载到真实页(consent 墙/页面未完成)、visitorData 是否与 /player 配对。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
 
 ## P0 项目决策与规则
 
