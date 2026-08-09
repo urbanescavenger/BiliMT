@@ -12,9 +12,9 @@
 
 ## 当前状态
 
-当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理/播放/多播放列表+播放器◀▶ 已实施，SABR 播放 alpha.59 已切合成 DASH MPD（SegmentTemplate + 每段 DataSource，DashMediaSource 按需逐段拉跨 60s + 原生 seek，彻底移除轮换）；alpha.59 方案A 网络栈根因修复——/player 走真实浏览器会话 WebView（真实页上下文 + 真实 cookie/TLS），用其真实 visitorData/cookie，对齐 FreeTubeAndroid 主 WebView，修 LOGIN_REQUIRED bot 拦截**；直播播放暂缓，后续单独评估。
+当前阶段：真实二维码登录、首页、搜索、动态、历史、设置、点播播放器、字节跳动弹幕叠加层、空降助手、发布构建、TV 图标/横幅、主页主题、液态玻璃、设置重分组、搜索返回缓存、迷你进度条开关和关于展示面板均已接入；**YouTube 内容集成（P11）搜索/热门/动态/频道管理/播放/多播放列表+播放器◀▶ 已实施，SABR 播放 alpha.59 已切合成 DASH MPD（SegmentTemplate + 每段 DataSource，DashMediaSource 按需逐段拉跨 60s + 原生 seek，彻底移除轮换）；alpha.59 方案A 网络栈根因修复——/player 走真实浏览器会话 WebView（真实页上下文 + 真实 cookie/TLS），用其真实 visitorData/cookie，对齐 FreeTubeAndroid 主 WebView，修 LOGIN_REQUIRED bot 拦截；alpha.61 SABR n-decrypt/harvest 修复——harvest 用长期存活 WebView（首次懒建+加载真实首页建立浏览上下文，跨 harvest 复用），对齐 YoutubeBrowserSession 成功模式，避免 fresh WebView 被风控成空白页致 SABR POST 采不到**；直播播放暂缓，后续单独评估。
 
-推荐下一项：**云编译验证 P11-14 alpha.59 方案A 网络栈修复后真机手测**（/player 走真实浏览器会话 WebView + 真实 visitorData/cookie,验证能否消除 LOGIN_REQUIRED bot 拦截。真机验证点:①日志出现 `YtBrowserSession` 加载真实页 + `browser session visitorData=...`(方案A 生效);②/player 不再 `LOGIN_REQUIRED "Sign in to confirm you're not a bot"`,能正常取流播放;③连续播多视频不再 ~36 次后开始被拦(网络栈根因修复,非仅请求量削减)。若仍被拦:查 `YtBrowserSession` 是否加载到真实页(consent 墙/页面未完成)、visitorData 是否与 /player 配对。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
+推荐下一项：**云编译验证 P11-14 alpha.61 harvest 长期存活 WebView 后真机手测**（SABR n-decrypt/harvest 修复,验证能否真正起播。真机验证点:①日志出现 `harvest WebView initialized (long-lived)` + `YtBrowserSession` 加载真实页(长期存活上下文生效);②`onPageFinished` 真实触发、watch 页 `player=true` 非空白(不再 `body=NOBODY player=false`);③harvest 采到 SABR POST(googlevideo 请求 + transformed n + poToken)→ `buildSabrSessionFromCapture` 建会话 → DASH 段正常播放跨 1min/2min。若仍起不来:查 harvest WebView 是否仍空白(consent 墙/页面未完成)、n-decrypt 是否仍失败(plasma WASM)、/player 是否 playable=OK。不要恢复常驻播放器 HUD，性能排查优先使用 `gfxinfo`、`meminfo`、日志和可删除的临时 instrumentation。
 
 ## P0 项目决策与规则
 
