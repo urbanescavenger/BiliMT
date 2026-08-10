@@ -99,6 +99,20 @@ private const val DomDumpJs = """
 """
 
 /**
+ * 修复 CSS:passport-h5 短信登录页的协议文字 .explain-tips 是 position:absolute,
+ * 被固定定位到 y=291,叠在登录按钮(y=301)上。改成 static 回到正常文档流,排在按钮下方。
+ * 用 !important 压过 B站 页面样式。临时修复,若 B站 改版需复查。
+ */
+private const val FixCssJs = """
+  (function(){
+    var s = document.createElement('style');
+    s.id = 'bilitv-login-fix';
+    s.textContent = '.explain-tips { position: static !important; }';
+    document.head.appendChild(s);
+  })();
+"""
+
+/**
  * 短信登录(移动端唯一登录方式):WebView 托管 B站 登录页,用户在 B站 自己的页面完成
  * 手机号 + 极验滑块 + 短信;轮询 CookieManager 抓 SESSDATA/bili_jct 存进 SessionStore 并
  * 刷新用户资料,成功自动返回。另提供"完成登录"手动兜底按钮(B站"登录"无自动返回时点它)。
@@ -149,6 +163,8 @@ fun MobileSmsWebViewPanel(
         override fun onPageFinished(view: WebView?, url: String?) {
           super.onPageFinished(view, url)
           view?.evaluateJavascript(DomDumpJs, null)
+          // 修复:注入 CSS 把协议文字 .explain-tips 改 static,避免叠在登录按钮上。
+          view?.evaluateJavascript(FixCssJs, null)
         }
       }
       webChromeClient = object : WebChromeClient() {
