@@ -45,28 +45,42 @@ private const val ManualRetryIntervalMs = 400L
 private const val ManualRetryAttempts = 13 // ~5s @400ms
 
 /**
- * 诊断 JS:页面加载后把可见 DOM 结构(标题/按钮/勾选框/输入框/正文文本)dump 到 console,
- * 由 onConsoleMessage 打进日志,用于确认 passport-h5 真实布局(先拿证据再改)。
- * 临时诊断用,拿到真实布局后可移除。
+ * 诊断 JS:页面加载后 dump 可见 DOM 结构 + 关键元素(登录按钮/协议文字/获取验证码)的
+ * 精确位置(getBoundingClientRect)与定位方式(position/z-index),用于定位"协议文字盖住
+ * 登录按钮"的重叠根因。由 onConsoleMessage 打进日志。临时诊断用,拿到证据后可移除。
  */
 private const val DomDumpJs = """
   (function(){
     function vis(el){ return el && el.offsetParent !== null; }
     var out = [];
     out.push('TITLE=' + document.title);
+    out.push('VIEWPORT=' + window.innerWidth + 'x' + window.innerHeight + ' dpr=' + window.devicePixelRatio);
     var btns = Array.from(document.querySelectorAll('button, [role=button], a.btn, .btn'))
       .filter(vis).map(function(b){ return (b.innerText||b.textContent||'').trim().replace(/\s+/g,' ').slice(0,30); })
       .filter(Boolean);
     out.push('BUTTONS=' + JSON.stringify(btns));
-    var cbs = Array.from(document.querySelectorAll('input[type=checkbox], [role=checkbox]'));
-    out.push('CHECKBOXES=' + JSON.stringify(cbs.map(function(c){
-      var lbl = c.closest('label');
-      return { checked: c.checked, label: lbl ? (lbl.innerText||'').trim().replace(/\s+/g,' ').slice(0,30) : '' };
-    })));
     var ins = Array.from(document.querySelectorAll('input:not([type=hidden])'));
     out.push('INPUTS=' + JSON.stringify(ins.map(function(i){ return { type: i.type, placeholder: i.placeholder, name: i.name }; })));
     var bodyText = (document.body.innerText||'').trim().replace(/\s+/g,' ').slice(0,500);
     out.push('BODYTEXT=' + bodyText);
+    // 关键元素定位:按文本找元素,dump 其矩形与定位方式,判断谁叠在谁上面。
+    var keys = ['登录','获取验证码','我已阅读','用户协议','隐私政策','账号密码登录','手机号'];
+    var seen = [];
+    var all = document.querySelectorAll('*');
+    for (var i=0;i<all.length;i++){
+      var el = all[i];
+      var t = (el.innerText||el.textContent||'').trim().replace(/\s+/g,' ');
+      if (!t || t.length>40) continue;
+      for (var k=0;k<keys.length;k++){
+        if (t.indexOf(keys[k])>=0){
+          var r = el.getBoundingClientRect();
+          var cs = getComputedStyle(el);
+          seen.push(keys[k]+'|'+el.tagName+'.'+String(el.className).slice(0,40)+'|pos='+cs.position+'|z='+cs.zIndex+'|rect='+Math.round(r.left)+','+Math.round(r.top)+' '+Math.round(r.width)+'x'+Math.round(r.height));
+          break;
+        }
+      }
+    }
+    out.push('ELEMS=' + JSON.stringify(seen));
     console.log('BILI_DOM_DUMP ' + out.join(' | '));
   })();
 """
