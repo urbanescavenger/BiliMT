@@ -106,6 +106,8 @@ import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.VideoshotData
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.core.youtube.YoutubeHistoryStore
+import com.kirin.mt.core.youtube.YoutubeLoadProgress
+import com.kirin.mt.core.youtube.YoutubeLoadStep
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import com.kirin.mt.core.youtube.sabr.media.SabrManifest
@@ -228,6 +230,8 @@ fun PlayerScreen(
   var playerActuallyPlaying by remember { mutableStateOf(false) }
   /** 内存态诊断：launch 协程当前步骤，不依赖 logcat，PGC 卡死时叠层直接显示。 */
   var launchStep by remember { mutableStateOf("") }
+  // YouTube 加载步骤提示：收集 resolver 写入的全局 step，加载叠层显示当前阶段(对齐 MobilePlayerScreen)。
+  val youtubeLoadStep by YoutubeLoadProgress.step.collectAsState()
   var retryKey by remember { mutableLongStateOf(0L) }
   // stall 自动恢复:BUFFERING 且进度长时间不前进时,记当前位置并 bump retryKey 重载源续播。
   // autoResumePositionMs=-1L 表示无续播位(走 saved progress);>=0 时 launch effect 优先 seekTo 它。
@@ -1307,6 +1311,11 @@ fun PlayerScreen(
     }
   }
 
+  // YouTube 加载结束(就绪/失败)时清全局 step,避免 stale 残留;下次加载 resolver 会在 FetchPlayer 重新 emit。
+  LaunchedEffect(playerState) {
+    if (playerState !is PlayerScreenState.Loading) YoutubeLoadProgress.clear()
+  }
+
   LaunchedEffect(activeRequest, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
     val launchJob = coroutineContext[Job]
     playbackLaunchJob = launchJob
@@ -1950,7 +1959,10 @@ fun PlayerScreen(
     }
 
     when (val state = playerState) {
-      PlayerScreenState.Loading -> PlayerLoadingOverlay()
+      PlayerScreenState.Loading -> PlayerLoadingOverlay(
+        isYoutube = displayRequest.isYoutube,
+        step = youtubeLoadStep,
+      )
       is PlayerScreenState.Failed -> FeedStatusScreen(
         message = stringResource(R.string.player_failed_with_message, state.message),
         actionLabel = stringResource(R.string.action_retry),
@@ -2143,7 +2155,7 @@ private fun BoxScope.PlayerLogOverlay(
 }
 
 @Composable
-private fun PlayerLoadingOverlay() {
+private fun PlayerLoadingOverlay(isYoutube: Boolean, step: YoutubeLoadStep?) {
   Box(
     modifier = Modifier.fillMaxSize(),
     contentAlignment = Alignment.Center,
@@ -2154,7 +2166,9 @@ private fun PlayerLoadingOverlay() {
     ) {
       CircularProgressIndicator(color = BiliColors.BiliPink)
       Text(
-        text = stringResource(R.string.player_loading),
+        // YouTube 且 resolver 已 emit 当前步骤时显示阶段文字(随加载进度切换);
+        // 否则(早期 metadata 拉取 / B站)回退静态"正在加载播放地址..."。
+        text = if (isYoutube && step != null) step.label else stringResource(R.string.player_loading),
         color = BiliColors.TextPrimary,
         fontSize = BiliTypography.Body,
       )
