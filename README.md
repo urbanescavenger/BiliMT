@@ -2,7 +2,7 @@
 
 BiliMT 是一个原生 B 站 + YouTube 双平台客户端实验项目，基于 [BiliTVNative](https://github.com/Hyper-Beast/BiliTVNative) 1.0.0 开发，使用 Kotlin、Jetpack Compose 和 Media3 重写观看体验。同一个 APK 同时适配 Android TV 与安卓手机：TV 端用 Compose for TV 和遥控器焦点系统，手机端用触屏交互外壳，共享同一套网络、播放、账号、设置和存储引擎。
 
-内容覆盖 B 站（推荐/热门/分区、搜索、动态、历史、收藏、追番、直播）与 YouTube（搜索、热门、关注流、频道管理、多播放列表、高清播放），双平台均可播放。YouTube 部分基于 [LibreTube](https://github.com/libre-tube/libretube) 的取流与 SABR 播放方案（含其 NewPipeExtractor fork）独立重写实现。播放器基于 Media3 ExoPlayer，支持 DASH、弹幕、快进预览、空降助手、多语言配音音轨切换、默认画质与后台播放。
+内容覆盖 B 站（推荐/热门/分区、搜索、动态、历史、收藏、追番、直播）与 YouTube（搜索、热门、关注流、频道管理、多播放列表、高清播放），双平台均可播放。YouTube 部分基于 [LibreTube](https://github.com/libre-tube/libretube) 的取流与 SABR 播放方案（含其 NewPipeExtractor fork）独立重写实现。播放器基于 Media3 ExoPlayer，支持 DASH、弹幕、快进预览、空降助手、多语言配音音轨切换、默认画质、默认播放倍速、字幕与后台播放。
 
 电视端重点不是做一个极简壳，而是在电视设备上尽量平衡几个实际问题：播放稳定性、遥控器焦点可控性、弹幕性能、主页视觉质感，以及不同硬件档位下的流畅度。
 
@@ -31,7 +31,7 @@ BiliMT 是一个原生 B 站 + YouTube 双平台客户端实验项目，基于 [
 - 动态关注 feed、历史记录和账号登录（TV 二维码、手机短信 WebView）。
 - 手机端"动态"tab 四子 tab：动态关注 feed / 历史 / 收藏（收藏夹切换）/ 追番（番剧·影视 + 想看·在看·看过筛选）。
 - Media3 点播播放器，支持 DASH 播放、进度保存和返回焦点恢复。
-- 默认画质、解码器偏好、倍速、弹幕、快进预览雪碧图；YouTube 另有独立默认画质与多语言配音音轨切换。
+- 默认画质、解码器偏好、倍速、弹幕、快进预览雪碧图；YouTube 另有独立默认画质、默认播放倍速、字幕与多语言配音音轨切换。
 - CDN 自动测速择优：选择“自动”时会对 B 站返回的候选 CDN 并发测速（首字节时间 + 64 KB 下载吞吐），过滤 mcdn、szbdyd、裸 IP 等不良候选，并按区域缓存 5 分钟，避免每次播放都重复探测。
 - 设置内网络测速：以最后一次播放的视频测各 CDN 节点速度，弹窗列出首字节/速度排名并标记最快节点，便于手动挑选 CDN 线路。
 - 字节跳动 DanmakuRenderEngine 原生弹幕渲染，避免把高频弹幕做成 Compose 节点。
@@ -47,7 +47,7 @@ BiliMT 是一个原生 B 站 + YouTube 双平台客户端实验项目，基于 [
 - Android TV launcher 图标和 TV 横幅，手机与 TV 双桌面入口。
 - 应用内更新：从 GitHub Releases 手动检查、下载并安装新版 APK。
 - 直播：TV + 移动端直播播放（HLS/FLV 取流、画质切换、-352 风控）与直播分区浏览。
-- YouTube 内容：搜索/热门来源切换、动态关注流合并、频道管理、多播放列表、高清 SABR 播放（多档清晰度）、多语言配音音轨切换、YouTube 默认画质、播放历史续播、WebDAV 备份/还原。
+- YouTube 内容：搜索/热门来源切换、动态关注流合并、频道管理、多播放列表、高清 SABR 播放（多档清晰度）、多语言配音音轨切换、YouTube 默认画质、默认播放倍速、字幕、播放历史续播、WebDAV 备份/还原。
 
 ## UI 与视觉
 
@@ -88,7 +88,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 设置页按使用语义分成三组：
 
-- 播放设置：默认画质、解码器、快进预览、空降助手、退出确认、自动连播、自动推荐、播放完成退出、显示时间、迷你进度条。
+- 播放设置：默认画质、YouTube 默认画质、默认播放倍速、解码器、快进预览、空降助手、退出确认、自动连播、自动推荐、播放完成退出、显示时间、迷你进度条。
 - UI/UX：效果档位、液态玻璃、主页主题、切换时自动确认、切换时自动刷新。
 - 系统设置：清理缓存、语言、程序更新、WebDAV 备份、日志、关于。
 
@@ -135,6 +135,7 @@ v3.0.0 稳定版后的 patch 线 alpha。
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.1-alpha.2 | 对齐 LibreTube：TV 端「YouTube 默认画质」+「默认播放倍速」设置项补齐 + YouTube 字幕接入（WebVTT URL 直拉，PlayerView 渲染；字幕轨切换 UI 后续迭代） |
 | v3.0.1-alpha.1 | YouTube 频道页两处修复：首屏去重防 key 崩溃（loadFirst 补 distinctBy bvid，与翻页一致）+ 频道页头像补全（lockupViewModel 不带头像，从解析出的频道头像注入 ownerFace） |
 
 ### v3.0.0-alpha

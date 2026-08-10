@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.2
+
+**对齐 LibreTube:YouTube 三项设置补齐(测试 alpha)**:TV 端 YouTube 默认画质 + 默认播放倍速 + YouTube 字幕接入。
+
+### 新增
+- **TV 端「YouTube 默认画质」**:核心层 `youtubeDefaultQuality` 早已支持(移动端设置已有),但 TV 设置界面缺行、TV 播放链路恒走 Auto。设置页加「YouTube 默认画质」行(自动/2160/1440/1080/720/480 循环切换),`AppShell` 接线回调、`PlayerScreen` 透传,新开 YouTube 视频按所选画质上限起播。
+- **默认播放倍速**:TV 播放器倍速此前硬编码 `1.0f` 无持久化。新建 `DefaultPlaybackSpeed` enum(0.5~2.0 六档,对齐播放器倍速菜单),设置页加「默认播放倍速」行,起播按所选倍速初始化。
+- **YouTube 字幕接入(路线 A:WebVTT URL 直拉,不走 SABR 服务端)**:`PlaybackInfo` 加 `subtitleTracks` 槽位,`YoutubePlaybackResolver` 读 NewPipe `info.subtitles`(fork 实际类型 `SubtitlesStream`)映射成 WebVTT 轨(语言码用 `getLanguageTag()`);`PlayerScreen` 主源构建后用 `SubtitleExtractor` 转 MEDIA3_CUES 再 `MergingMediaSource` 合并,PlayerView 内置 SubtitleView 自动渲染字幕。字幕轨选择/语言切换 UI 后续迭代。
+
+### 技术
+- 字幕 fork 类型确认:`com.github.libre-tube:NewPipeExtractor`(`738c3d4`)的 `info.subtitles` 返回 `List<SubtitlesStream>`(非上游 `SubtitleInfo`),语言访问器为 `getLanguageTag()`(无 `getLanguageCode()`),`Stream.getUrl()` 返回 `String?` 需空安全。
+- Media3 1.10:默认 `DefaultExtractorsFactory` 不含字幕 Extractor,必须显式传 `ExtractorsFactory` + `SubtitleExtractor`(对齐 LibreTube `OnlinePlayerService`)。
+
 ## v3.0.1-alpha.1
 
 **YouTube 频道页两处修复(测试 alpha)**:首屏去重防 key 崩溃 + 频道头像补全。

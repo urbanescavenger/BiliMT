@@ -112,6 +112,16 @@ params 原样传，不额外 URL 编码。
 
 ---
 
+## 4.9 字幕（WebVTT URL 直拉，不走 SABR 服务端）
+
+YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕（服务端行为未验证）。实测用 NewPipe fork（`com.github.libre-tube:NewPipeExtractor` `738c3d4`）`StreamInfo.getInfo` 时 `info.subtitles` 直接给出可拉取的 WebVTT URL，播放器层合并渲染：
+
+- **fork 类型注意**：`info.subtitles` 返回 `List<SubtitlesStream>`（fork 改名，非上游 `SubtitleInfo`）。语言访问器是 **`getLanguageTag()`**（无 `getLanguageCode()`），`Stream.getUrl()` 返回 `String?`（`baseUrl` 赋值需 `orEmpty()`）。
+- **合并渲染**：media3 1.10 的默认 `DefaultExtractorsFactory` **不含字幕 Extractor**，必须显式传 `ExtractorsFactory { arrayOf(SubtitleExtractor(DefaultSubtitleParserFactory().create(format), format)) }`（对齐 LibreTube `OnlinePlayerService`），`ProgressiveMediaSource` 拉 WebVTT → `SubtitleExtractor` 转 MEDIA3_CUES → `MergingMediaSource` 合并进主源 → PlayerView 内置 SubtitleView 自动渲染。
+- `PlaybackInfo.subtitleTracks` 槽位（非 YouTube/无字幕为空）+ `PlaybackTrack.languageCode`（字幕轨用，A/V 轨 null）。字幕轨选择/语言切换 UI 后续迭代。
+
+---
+
 ## 5. 播放（Phase 2，未实现）
 
 完整播放需要：
