@@ -34,7 +34,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.input.key.Key
@@ -315,9 +314,7 @@ private fun YoutubeChannelHeader(
       YoutubeChannelFollowChip(
         followed = followed,
         followLoading = followLoading,
-        modifier = Modifier
-          .focusRequester(followFocusRequester)
-          .focusProperties { enter = { firstItemFocusRequester } },
+        modifier = Modifier.focusRequester(followFocusRequester),
         onActivate = onFollowClicked,
         onMoveDown = {
           runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
