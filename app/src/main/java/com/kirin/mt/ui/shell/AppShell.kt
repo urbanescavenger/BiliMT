@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import android.widget.Toast
 import androidx.annotation.StringRes
 import androidx.activity.compose.BackHandler
@@ -106,12 +107,14 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 
 private const val PlaybackFocusRestoreRetryCount = 8
-// 视频退出后焦点恢复的清理 backstop 帧数。必须 > TvGridRestoreFocusRetryCount(90),
-// 否则会在 TvVideoGrid 恢复 effect 重试途中提前清掉 playbackFocusRestoreDestination,
-// 令 restoreFocusRequestKeyFor 变 0 取消恢复 effect → 长视频后慢布局时焦点停在头像。
-// 正常路径恢复 effect 自己调 onRestoreFocusHandled 清 destination,本 backstop 仅作兜底。
-private const val PlaybackFocusRestoreCleanupFrameCount = 120
+// 视频退出后焦点恢复的清理 backstop 帧数。必须 > TvGridRestoreFocusRetryCount(90)
+// + TvGridRestoreFocusWaitLayoutFrames(90) = 180,否则会在 TvVideoGrid 恢复 effect
+// 「等布局 + 抢焦点」途中提前清掉 playbackFocusRestoreDestination,令 restoreFocusRequestKeyFor
+// 变 0 取消恢复 effect → 长视频后慢布局时焦点停在头像。正常路径恢复 effect 自己调
+// onRestoreFocusHandled 清 destination,本 backstop 仅作兜底。
+private const val PlaybackFocusRestoreCleanupFrameCount = 240
 private const val ExitConfirmWindowMs = 3_000L
+private const val FocusLogTag = "BiliMT:Focus"
 
 private fun isConstrainedTvUiDevice(): Boolean {
   val buildValues = listOf(
@@ -318,6 +321,7 @@ fun BiliTvApp(
   fun clearFocusRestoreRequest(destination: AppDestination, key: Int) {
     if (playbackFocusRestoreDestination == destination && key == playbackFocusRestoreRequestKey) {
       playbackFocusRestoreDestination = null
+      Log.d(FocusLogTag, "cleared by restore handled: dest=$destination key=$key suppress=off")
     }
     if (contentFocusRestoreDestination == destination && key == contentFocusRestoreRequestKey) {
       contentFocusRestoreDestination = null
@@ -501,6 +505,11 @@ fun BiliTvApp(
         }
         if (playbackFocusRestoreDestination == restoreDestination && playbackFocusRestoreRequestKey == restoreRequestKey) {
           playbackFocusRestoreDestination = null
+          Log.w(
+            FocusLogTag,
+            "backstop cleared restoreDest=$restoreDestination after $PlaybackFocusRestoreCleanupFrameCount frames " +
+              "(restore effect never confirmed focus → focus likely stayed on avatar)",
+          )
         }
       }
     }
@@ -1147,6 +1156,7 @@ fun BiliTvApp(
                 playbackFocusRestoreDestination = selectedDestination
                 playbackRequest = null
                 playbackFocusRestoreRequestKey += 1
+                Log.d(FocusLogTag, "live exit: restoreDest=$selectedDestination suppress=on restoreKey=$playbackFocusRestoreRequestKey")
               },
             )
           } else {
@@ -1177,10 +1187,12 @@ fun BiliTvApp(
                   // 从 UP 主页(内容来源)起播:返回时可见层是 UpSpace 网格,arm 它的 restore
                   playbackRequest = null
                   spaceFocusRestoreRequestKey += 1
+                  Log.d(FocusLogTag, "video exit via upSpace(content): spaceRestoreKey bumped, no playback restore")
                 } else {
                   playbackFocusRestoreDestination = selectedDestination
                   playbackRequest = null
                   playbackFocusRestoreRequestKey += 1
+                  Log.d(FocusLogTag, "video exit: restoreDest=$selectedDestination suppress=on restoreKey=$playbackFocusRestoreRequestKey")
                 }
               },
               onOpenUpSpace = { mid, ownerName, ownerFace ->

@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.shell
 
+import android.util.Log
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -59,6 +60,8 @@ import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
+
+private const val FocusLogTag = "BiliMT:Focus"
 
 @Composable
 internal fun AppSidebar(
@@ -223,7 +226,12 @@ private fun AccountNavItem(
       },
     onClick = onClick,
     onFocused = {
-      if (autoConfirmOnFocus && !selected && !suppressAutoConfirm) {
+      val shouldOpen = autoConfirmOnFocus && !selected && !suppressAutoConfirm
+      Log.d(
+        FocusLogTag,
+        "avatar focused: autoConfirm=$autoConfirmOnFocus suppress=$suppressAutoConfirm selected=$selected -> openMyPage=$shouldOpen",
+      )
+      if (shouldOpen) {
         onClick()
       }
     },

@@ -1,6 +1,7 @@
 package com.kirin.mt.ui.home
 
 import android.os.SystemClock
+import android.util.Log
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
@@ -73,10 +74,19 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 // 视频退出后把焦点拉回原卡片的最多重试帧数。长视频后主线程繁忙(图片缓存被挤占、
-// 播放器 teardown、GC)时目标卡片首帧布局可能延迟到 8 帧之后,8 次会提前放弃导致
-// 焦点停在头像。调大到 90 帧(60fps≈1.5s、30fps≈3s)覆盖慢布局;短视频首帧即就绪,
-// 重试随即 break 不会等满。配合 AppShell 的 PlaybackFocusRestoreCleanupFrameCount(>本值)。
+// 播放器 teardown、GC)时目标卡片首帧布局可能延迟,盲目 requestFocus 会连续失败,
+// 帧用完后 onRestoreFocusHandled 清掉 destination → suppress 关闭 → 焦点留在头像。
+// 调大到 90 帧(60fps≈1.5s、30fps≈3s)覆盖慢布局;短视频首帧即就绪,重试随即 break 不会等满。
+// 配合 AppShell 的 PlaybackFocusRestoreCleanupFrameCount(必须 > 本值 + TvGridRestoreFocusWaitLayoutFrames)。
 private const val TvGridRestoreFocusRetryCount = 90
+
+// 退出恢复时先等目标行真的进入 LazyList 视口布局再开始 requestFocus。退出卡顿
+// (ExoPlayer teardown + 首页重组 + 弹幕 draw 挤主线程)时目标行首帧可能晚若干帧才组合,
+// 此时 itemFocusRequester 尚未挂上任何节点,requestFocus 必失败——先等 visibleItemsInfo
+// 里出现目标行,再抢焦点,把"按帧数盲重试"改成"等布局就位再抢"。
+private const val TvGridRestoreFocusWaitLayoutFrames = 90
+
+internal const val TvFocusLogTag = "BiliMT:Focus"
 
 // Keys that confirm a card selection; holding one for this long opens the card's long-press action menu.
 private val VideoCardOwnerConfirmKeys = setOf(Key.DirectionCenter, Key.Enter, Key.NumPadEnter)
@@ -193,20 +203,55 @@ internal fun TvVideoGrid(
 
   LaunchedEffect(restoreFocusRequestKey, restoredFocusIndex, videos.size) {
     if (restoreFocusRequestKey <= 0 || videos.isEmpty()) {
+      if (restoreFocusRequestKey > 0) {
+        Log.d(
+          TvFocusLogTag,
+          "restore skipped: key=$restoreFocusRequestKey videos=${videos.size} restoredIndex=$restoredFocusIndex",
+        )
+      }
       return@LaunchedEffect
     }
     val targetIndex = restoredFocusIndex.coerceIn(0, videos.lastIndex)
-    scrollRow(targetIndex / columns, smoothScroll = false)
-    repeat(TvGridRestoreFocusRetryCount) {
+    val targetRow = targetIndex / columns
+    Log.d(
+      TvFocusLogTag,
+      "restore start: key=$restoreFocusRequestKey targetIndex=$targetIndex targetRow=$targetRow videos=${videos.size}",
+    )
+    scrollRow(targetRow, smoothScroll = false)
+    // 先等目标行进入视口布局(itemFocusRequester 才会挂上节点),再开始抢焦点。
+    // 退出卡顿时目标行首帧晚若干帧才组合,在此之前 requestFocus 必失败、白耗预算。
+    var waitedFrames = 0
+    while (
+      listState.layoutInfo.visibleItemsInfo.none { it.index == targetRow } &&
+      waitedFrames < TvGridRestoreFocusWaitLayoutFrames
+    ) {
+      withFrameNanos { }
+      waitedFrames += 1
+    }
+    val rowVisible = listState.layoutInfo.visibleItemsInfo.any { it.index == targetRow }
+    Log.d(
+      TvFocusLogTag,
+      "restore layout: rowVisible=$rowVisible waitedFrames=$waitedFrames/$TvGridRestoreFocusWaitLayoutFrames",
+    )
+    repeat(TvGridRestoreFocusRetryCount) { attempt ->
       withFrameNanos { }
       val focused = runCatching {
         itemFocusRequesters[targetIndex].requestFocus()
       }.getOrDefault(false)
       if (focused) {
+        Log.d(
+          TvFocusLogTag,
+          "restore success: key=$restoreFocusRequestKey attempt=$attempt rowVisible=$rowVisible",
+        )
         onRestoreFocusHandled(restoreFocusRequestKey)
         return@LaunchedEffect
       }
     }
+    Log.w(
+      TvFocusLogTag,
+      "restore failed: key=$restoreFocusRequestKey targetIndex=$targetIndex rowVisible=$rowVisible " +
+        "(focus likely stayed on avatar)",
+    )
     onRestoreFocusHandled(restoreFocusRequestKey)
   }
 
