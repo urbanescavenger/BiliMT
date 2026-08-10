@@ -1,5 +1,15 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.4
+
+**TV 搜索源 pill 点击当前源循环切换(测试 alpha)**:点 BILIBILI 直接切到 YOUTUBE,不再「没反应」。
+
+### 修复
+- 搜索源切换用双 pill(BILIBILI + YOUTUBE),`selectSource` 有 `source == newSource` 守卫——默认就在 BILIBILI 上时再点 BILIBILI 直接 return,界面毫无反应,用户困惑「点 B站 切不到 YouTube」。改为**点击已选中的源 pill 就循环切到另一个源**:点 BILIBILI 恒切到 YOUTUBE,点 YOUTUBE 恒切到 BILIBILI,与点另一源选中的效果一致(从任一源点任一 pill 都落到另一源)。
+
+### 技术
+- `SearchSourceToggle` 点击时算 `targetSource`:若点击的 pill 已是当前源,取另一个源(与 `SourceBili` 比较);否则取点击的 pill。改动仅 `onClick` 一行逻辑,不涉及布局/焦点。
+
 ## v3.0.1-alpha.3
 
 **TV 搜索初始界面接通 D-pad 焦点(测试 alpha)**:源切换按钮(B站/YouTube)+ 输入框可选中。
