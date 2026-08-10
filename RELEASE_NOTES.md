@@ -1,5 +1,20 @@
 # BiliMT 版本发布说明
 
+## v3.0.0-alpha.8
+
+**YouTube 搜索与动态加载优化(测试 alpha)**:对齐 LibreTube 参考实现,消除重复网络请求、首页与动态共享关注缓存、刷新时保留旧数据。
+
+### 优化
+- **首页共享关注缓存**:首页 YouTube 区块与动态 tab 共享同一份 `YoutubeFeedCacheStore`(10min TTL),进动态 tab 后回首页秒出缓存、不再重复拉全量频道。
+- **动态请求去重**:动态 tab 快速连点底栏/下拉刷新时不再并发重拉全量频道(已有拉取在进行则跳过)。
+- **保留旧数据后台刷新**:动态 tab 有旧数据时刷新不再闪 Loading,由下拉指示器提示,失败保留旧数据兜底。
+- **搜索请求去重/取消**:移动端搜索快速切 source/重复提交/重试时取消在途请求,不再竞态覆盖结果。
+
+### 技术
+- **共享缓存**:`MobileHomeScreen` 新增 `youtubeFeedCacheStore` 参数,`loadYoutubeTrending(forceRefresh)` 非强制刷新读缓存秒出、成功写回(对齐 LibreTube Home/Subscriptions 共享 feed 缓存)。
+- **请求去重**:`MobileDynamicScreen` 新增 `feedJob` 守卫(`refreshFeed` 活跃则跳过);`MobileSearchScreen` 新增 `searchJob`,`loadFirstPage`/`loadNextPage` 前取消在途请求(对齐 LibreTube mapLatest 取消旧请求)。
+- **保留旧数据**:`MobileDynamicScreen.loadFirstBody` 有旧 `Success` 时不置 Loading,由 `isRefreshing` 驱动下拉指示器,失败保留旧数据兜底。
+
 ## v3.0.0-alpha.7
 
 **UP 主页缓存机制(测试 alpha)**:从 B 站空间 / YouTube 频道点进视频,退出播放器回到主页时不再重新加载,页面内容与滚动位置保留。
