@@ -108,6 +108,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
@@ -257,6 +258,8 @@ fun MobilePlayerScreen(
   var autoRetryCount by remember { mutableIntStateOf(0) }
   var danmakuEntries by remember { mutableStateOf<List<com.kirin.mt.core.player.DanmakuEntry>>(emptyList()) }
   var fullscreen by rememberSaveable { mutableStateOf(false) }
+  // 听视频模式(音频-only):禁用视频轨,只播音频。顶栏右上角耳机按钮切换。
+  var audioOnly by rememberSaveable { mutableStateOf(false) }
   // 画质/分P 切换:activeRequest 驱动 load effect(镜像 TV),metadata 供选集,selectedQualityId 供画质高亮
   var activeRequest by remember(request) { mutableStateOf(request) }
   var metadata by remember { mutableStateOf<PlaybackVideoMetadata?>(null) }
@@ -387,6 +390,23 @@ fun MobilePlayerScreen(
     // 非全屏:栏常驻,不随播放/暂停变;全屏:对齐沉浸式,播放隐/暂停显。
     if (fullscreen) controlsVisible = !willPlay
     userPaused = !willPlay
+  }
+
+  // 听视频模式(音频-only)切换:禁用/启用视频轨。禁用后 ExoPlayer 不再下载/解码视频段,只播音频。
+  // 对三种源都成立:B站 DASH / PGC 合并流走标准 Media3 轨道选择;YouTube SABR 单流由
+  // SabrMediaPeriod 释放被禁用的视频流 + SabrMediaFetcher 退化为纯音频拉取。
+  fun toggleAudioOnly() {
+    audioOnly = !audioOnly
+    player.setTrackSelectionParameters(
+      player.trackSelectionParameters.buildUpon()
+        .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, audioOnly)
+        .build(),
+    )
+    Toast.makeText(
+      context,
+      if (audioOnly) "已开启听视频模式" else "已退出听视频模式",
+      Toast.LENGTH_SHORT,
+    ).show()
   }
 
   // 分享视频:bvid 优先,无 bvid 用 av{aid};文本=标题+换行+链接,走系统 share sheet。
@@ -631,6 +651,15 @@ fun MobilePlayerScreen(
       }
       player.setMediaSource(mediaSource)
       player.prepare()
+      // 听视频模式:新 MediaSource prepare 会重置轨道选择为全开,需重新禁用视频轨。
+      // 自动连播/切集/切画质都走 loadRequest,此处理覆盖所有重载路径,保证听视频模式持续生效。
+      if (audioOnly) {
+        player.setTrackSelectionParameters(
+          player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+            .build(),
+        )
+      }
       player.setPlaybackSpeed(playbackSpeed)
       if (startPositionMs > 0L) {
         // alpha.34:SABR 源(LENGTH_UNSET 不可 seek)跳过 seekTo——续播已由 startMs 透传进
@@ -957,6 +986,14 @@ fun MobilePlayerScreen(
               Text("UP", color = Color.White)
             }
           }
+          // 听视频模式(音频-only)切换:顶栏右上角耳机按钮,激活态粉色高亮。
+          IconButton(onClick = { toggleAudioOnly() }) {
+            Icon(
+              painter = painterResource(R.drawable.ic_player_audio),
+              contentDescription = if (audioOnly) "退出听视频" else "听视频",
+              tint = if (audioOnly) BiliColors.BiliPink else Color.White,
+            )
+          }
           TextButton(onClick = { settingsSheet = true }) {
             Icon(
               painter = painterResource(R.drawable.ic_nav_settings),
@@ -993,7 +1030,7 @@ fun MobilePlayerScreen(
             },
           )
 
-          if (danmakuSettings.enabled && playerState is MobilePlayerState.Ready) {
+          if (danmakuSettings.enabled && !audioOnly && playerState is MobilePlayerState.Ready) {
             PlayerDanmakuLayer(
               entries = danmakuEntries,
               settings = danmakuSettings,
@@ -1003,6 +1040,25 @@ fun MobilePlayerScreen(
               playbackSpeed = playbackSpeed,
               modifier = Modifier.fillMaxSize(),
             )
+          }
+
+          // 听视频模式:叠一层黑底 + 音频指示遮住画面(不销毁 PlayerView,避免 surface 重建黑闪)。
+          if (audioOnly) {
+            Box(
+              modifier = Modifier.fillMaxSize().background(Color.Black),
+              contentAlignment = Alignment.Center,
+            ) {
+              Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                  painter = painterResource(R.drawable.ic_player_audio),
+                  contentDescription = null,
+                  tint = Color.White,
+                  modifier = Modifier.size(48.dp),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("听视频模式", color = Color.White)
+              }
+            }
           }
 
           when (val s = playerState) {
