@@ -647,6 +647,38 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 
 **后续(可选)**:若要继续 TVHTML5 试验,需先实现 viaWebView session 隔离(TVHTML5 失败不污染 WEB 的 browserSession,或 WEB 用 fresh session),并调查 TVHTML5 `TypeError: Failed to fetch` 根因(Cobalt UA 指纹 / TVHTML5 body 字段触发 CORS preflight / WebView 网络栈)。**无 session 隔离则 TVHTML5 优先必破坏 WEB,不可启用。**
 
+## 6.14 4K60 VP9 黑屏:堆缓冲撑爆(2026-08,v3.0.1-alpha.11)
+
+**现象**:Sony BRAVIA 7 系(Google TV,MTK,硬解 h264/h265/av1 全支持,4K 120Hz 面板)播 YouTube 2160p VP9(itag315,4K60 ~26Mbps)切到 2160p 档后黑屏卡死;1080p(AVC itag137/299、VP9 itag303)正常。用户观察"其他 4K 视频能播"——能播的是 AV1/HEVC 4K 档(走 `c2.mtk.av1.decoder`/hevc,码率低、堆占用小),黑屏的是 VP9 4K(日志全程无 AV1/HEVC 4K 档被选,老视频只有 VP9 4K)。
+
+**真机日志**(`logs_live.log` 2026-08-10 23:14~00:08,Sony BRAVIA_AE2):
+- 取流正常:WEB client 拿到 itag315(2160p vp9),`SABR PlaybackInfo qualities=14 selected=itag315(2160p vp9)`,SABR 拉段 `MEDIA_END bytes=8026303/10927756/14879959` 持续到达。
+- VP9 硬解 `c2.mtk.vp9.decoder` 配置成 `raw.crop 3840x2160 / frame-rate=60` 成功(解码器接受 4K60),surface 走 SurfaceView 硬件直通(`SurfaceUtils connectToSurface` + `setting surface generation`),与 AVC 同路径。
+- **堆爆**:播 4~13s 后 `com.kirin.mt: ... 0% free, 170MB/170MB`、`163MB/163MB`、`140MB/140MB` 连续 blocking GC,主线程阻塞 70~240ms → `W BiliMT:Player: stall detected, auto-retry #1 @pos=4961ms buffered=0%` → `CCodecBufferChannel Stop output queue empty` → `player state=ENDED tracks=0 video=vp9`。itag315 选中 26 次,VP9 ENDED 18 次;偶尔进 READY 也撑不过十几秒(23:22:41 READY→23:22:54 ENDED)。
+- `Query output surface allocator returned 0 params => BAD_INDEX (6)` 在 AVC(`c2.mtk.avc.decoder#779/#118`)、HEVC(`#17/#116`)、VP9 解码器**都出现**,AVC/HEVC 照样能播 → 非 VP9 特有根因,是 MTK CCodec 通用行为。
+
+**根因**:`TvPlaybackLoadControl.MaxBufferMs = 50_000`(alpha.64 为规避 SABR 60s 断崖恢复的大缓冲,见 §6.11/alpha.58/64)× itag315 26Mbps ≈ **162MB 压缩数据缓冲**撑爆 app 默认堆(~170-256MB,manifest 无 `largeHeap`)。4K60 高码率下 50s 时长目标让 ExoPlayer 在 Java 堆/LOS 累积大量 VP9 压缩段(SABR 服务端驱动多段,一次响应连推 8~15MB 多段),GC 连续阻塞主线程,解码/渲染吞吐崩塌 → buffer=0% → stall 看门狗终止播放 → ENDED 黑屏。1080p AVC 4Mbps×50s≈25MB 不爆。**与编码无关,纯 4K 高码率 + 过大时长缓冲 + 堆不足。**
+
+**不是根因(排除)**:
+- 不是"TV 端被限 1080p":WEB client 正常下发 2160p itag315,`clientViewportHeight=1080`/`screenHeightPoints=1080` 硬编码没卡住 WEB 路径拿 4K。
+- 不是 VP9 硬解不支持:`c2.mtk.vp9.decoder` 接受 2160p60 配置且能进 READY 出帧,短时吞吐够。
+- 不是 surface 路径:`PlayerScreen` 用 `PlayerView`(media3 默认 `SURFACE_TYPE_SURFACE_VIEW`=SurfaceView 硬件直通),全仓无 TextureView;AVC/HEVC 同 `BAD_INDEX` 能播。
+- 不是 `codecKeySupported` VP9 放行致选错档:itag315 确实可解(配置成功),问题在运行时缓冲/堆,不在选档。
+
+**修复(v3.0.1-alpha.11)**:
+1. `AndroidManifest.xml` 加 `android:largeHeap="true"`:app 堆提至 512MB,给 4K60 VP9 的 50s 缓冲留空间。单行,不碰解码器/SABR 节奏/画质。
+2. `TvPlaybackLoadControl.MaxBufferMs 50_000→15_000`:15s×26Mbps≈48MB,默认堆都放得下,largeHeap 更绰绰有余。alpha.68 同步刷新 status=2 已解 60s 重启(见记忆 `sabr-status2-sync-refresh`),不再需 alpha.64 的 50s 大缓冲规避 60s 断崖;alpha.58 曾压到 10s 验证过小缓冲可行。
+
+**待真机验证**:装 alpha.11 测 itag315 是否还黑屏(堆不爆应能持续播过 60s)。若仍黑屏说明除堆外还有 4K60 VP9 实时解码吞吐瓶颈,再上:
+- `TvPlaybackLoadControl` 加 `setMaxBufferBytes`(字节上限,治标但更可控);
+- 选档 4K 优先 AV1/HEVC(`codecKeySupported` 对 vp9 一律放行不探——`YoutubePlaybackResolver.kt:969-978`;4K 选档 `buildSabrPlaybackInfo` `maxBy height` 不区分编码——§6.11),这台 av1/h265 硬解都支持且 AV1 4K 码率低于 VP9,有 AV1/HEVC 4K 档的视频优先走它们 → 真 4K 能播;
+- 或 `CodecCapabilityProbe` 补 VP9 分辨率/帧率探测(`VideoCapabilities.isSizeSupported(3840,2160)` + 帧率),理论支持但实际吞吐不行时探测未必拦得住(本机 VP9 4K60 配置成功即此)。
+
+**关联**:
+- `SabrClient.kt:293-294 clientViewportWidth=1920/clientViewportHeight=1080` 硬编码视口(LibreTube `SabrClient.kt` 用动态 `max(videoFormat?.stream?.height,360)`,§6.9.4),未卡 4K 但可后续对齐动态化。
+- `YoutubePlaybackResolver.kt:969-978 codecKeySupported`:vp9/vp8/other 一律放行不探测(HEVC/AV1 以 `CodecCapabilityProbe` 为准)。
+- `CodecCapabilityProbe.kt`:仅探 h264/h265/av01,不探 VP9。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

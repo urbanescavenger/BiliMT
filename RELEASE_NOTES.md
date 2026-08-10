@@ -1,5 +1,23 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.11
+
+**4K60 VP9 黑屏修复(largeHeap + 降缓冲,测试 alpha)**:Sony BRAVIA 7 系(Google TV,硬解 h264/h265/av1 全支持)播 YouTube 2160p VP9(itag315,4K60 ~26Mbps)切 2160p 后黑屏卡死,1080p 正常;用户观察"其他 4K 视频能播"(能播的是 AV1/HEVC 4K,黑屏的是 VP9 4K)。真机日志定位为 50s SABR 缓冲 × 26Mbps ≈ 162MB 撑爆 app 默认堆(~170MB,manifest 无 largeHeap)→ GC 连续阻塞主线程 70~240ms → 解码/渲染吞吐崩塌 → `stall detected buffered=0%` → `player state=ENDED tracks=0 video=vp9`。itag315 选中 26 次 ENDED 18 次。详见 `docs/youtube-hd-playback.md` §6.14。
+
+### 修复
+- **加 largeHeap**:`AndroidManifest.xml` 加 `android:largeHeap="true"`,堆提至 512MB 给 4K60 VP9 缓冲留空间。单行,不碰解码器/SABR/画质。
+- **降 SABR MaxBuffer 50s→15s**:`TvPlaybackLoadControl.MaxBufferMs` 50_000→15_000;15s×26Mbps≈48MB 默认堆都放得下,largeHeap 更绰绰有余。alpha.68 同步刷新 status=2 已解 60s 重启,不再需 alpha.64 的 50s 大缓冲规避 60s 断崖。
+
+### 待真机验证
+- 装 alpha.11 测 itag315 是否还黑屏(堆不爆应能持续播过 60s)。若仍黑屏说明除堆外还有 4K60 VP9 实时解码吞吐瓶颈,再上 `setMaxBufferBytes` 或选档 4K 优先 AV1/HEVC(`codecKeySupported` 对 vp9 一律放行不探,4K 选档 `maxBy height` 不区分编码,见 §6.11)。
+
+## v3.0.1-alpha.10
+
+**开放 gl/hl 为用户可调内容地区设置(TV+移动端,测试 alpha)**:YouTube 内容地区(gl)/语言(hl)此前不可调,现 TV+移动端设置页可调。
+
+### 新增
+- **内容地区设置**:新增 `YoutubeContentRegion`/`YoutubeContentLocale`,`InnerTubeClient` 按 gl/hl 请求,TV(`SettingsScreen`)+移动端(`MobileSettingsScreen`)设置页接入,`AppShell`/`MobileApp` 接线回调。
+
 ## v3.0.1-alpha.9
 
 **SABR 主路径应用默认画质上限(测试 alpha)**:`youtubeDefaultQuality` 设置项(自动/4K/2K/1080P/720P/480P)从 UI→DataStore→`resolve()` 形参全程接通,但 `resolve()` 内仅 DASH 兜底分支 `pickVideo` 消费 `maxHeight`;SABR 主路径(YouTube 实际取流方式)`buildSabrPlaybackInfo` 选档固定用会话首条 itag,完全不读 `maxHeight`,致默认画质设置存了没用(TV/移动端共用 resolver 故两端都不生效)。详见 `docs/youtube-hd-playback.md` §6.11。
