@@ -45,6 +45,7 @@ import com.kirin.mt.core.settings.AppVisualPerformanceMode
 import com.kirin.mt.core.settings.HomeThemeVariant
 import com.kirin.mt.core.update.UpdateUiState
 import com.kirin.mt.core.util.LogCatcherUtil
+import com.kirin.mt.core.webdav.WebDavBackupState
 import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
@@ -157,6 +158,7 @@ fun SettingsScreen(
   var focusSettingJob by remember { mutableStateOf<Job?>(null) }
   var rightPanel by remember { mutableStateOf(SettingsRightPanel.None) }
   var showWebDavDialog by remember { mutableStateOf(false) }
+  var webDavState by remember { mutableStateOf(WebDavBackupState.Idle) }
 
   fun focusSettingItem(itemIndex: Int, direction: Int = 0): Boolean {
     val lazyIndex = settingsItemToLazyIndex(itemIndex, updateState)
@@ -942,10 +944,11 @@ private fun SettingsBehaviorColumn(
       )
     }
     item(key = "webdav-backup") {
-      SettingsActionRow(
+      SettingsWebDavBackupRow(
         title = stringResource(R.string.settings_webdav_backup_row),
         description = stringResource(R.string.settings_webdav_backup_desc),
-        value = "",
+        isRestore = false,
+        state = webDavState,
         modifier = Modifier
           .focusRequester(focusRequesters.getValue(SettingsItemWebDavBackup))
           .settingsBoundaryKeys(
@@ -955,8 +958,11 @@ private fun SettingsBehaviorColumn(
           ),
         onFocused = { onSettingFocused(SettingsItemWebDavBackup) },
         onClick = {
+          if (webDavState is WebDavBackupState.Running) return@SettingsWebDavBackupRow
           coroutineScope.launch {
+            webDavState = WebDavBackupState.Running(isRestore = false)
             val result = onWebDavBackup(webDavConfig)
+            webDavState = WebDavBackupState.Idle
             val msg = result.fold(
               onSuccess = { context.getString(R.string.settings_webdav_backup_success) },
               onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
@@ -967,10 +973,11 @@ private fun SettingsBehaviorColumn(
       )
     }
     item(key = "webdav-restore") {
-      SettingsActionRow(
+      SettingsWebDavBackupRow(
         title = stringResource(R.string.settings_webdav_restore_row),
         description = stringResource(R.string.settings_webdav_restore_desc),
-        value = "",
+        isRestore = true,
+        state = webDavState,
         modifier = Modifier
           .focusRequester(focusRequesters.getValue(SettingsItemWebDavRestore))
           .settingsBoundaryKeys(
@@ -980,8 +987,11 @@ private fun SettingsBehaviorColumn(
           ),
         onFocused = { onSettingFocused(SettingsItemWebDavRestore) },
         onClick = {
+          if (webDavState is WebDavBackupState.Running) return@SettingsWebDavBackupRow
           coroutineScope.launch {
+            webDavState = WebDavBackupState.Running(isRestore = true)
             val result = onWebDavRestore(webDavConfig)
+            webDavState = WebDavBackupState.Idle
             val msg = result.fold(
               onSuccess = { count -> context.getString(R.string.settings_webdav_restore_success, count) },
               onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },

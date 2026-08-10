@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.widget.Toast
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +23,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -74,6 +76,7 @@ import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.InstallResult
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.update.UpdateUiState
+import com.kirin.mt.core.webdav.WebDavBackupState
 import com.kirin.mt.ui.settings.currentVersionText
 import com.kirin.mt.ui.settings.downloadProgressFraction
 import com.kirin.mt.ui.settings.isUpdateVersionActionEnabled
@@ -586,7 +589,7 @@ private fun MobileWebDavSection(
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   var showEditDialog by remember { mutableStateOf(false) }
-  var busy by remember { mutableStateOf(false) }
+  var webDavState by remember { mutableStateOf(WebDavBackupState.Idle) }
   var expanded by remember { mutableStateOf(false) }
   // 展开后自动滚动,让备份/还原按钮滚进可视区(区块在设置列表底部,默认在折叠线以下)。
   val bringIntoViewRequester = remember { BringIntoViewRequester() }
@@ -597,12 +600,14 @@ private fun MobileWebDavSection(
     }
   }
 
+  val busy = webDavState is WebDavBackupState.Running
+
   fun runBackup() {
     if (busy) return
-    busy = true
     scope.launch {
+      webDavState = WebDavBackupState.Running(isRestore = false)
       val result = onBackup(config)
-      busy = false
+      webDavState = WebDavBackupState.Idle
       val msg = result.fold(
         onSuccess = { context.getString(R.string.settings_webdav_backup_success) },
         onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
@@ -613,10 +618,10 @@ private fun MobileWebDavSection(
 
   fun runRestore() {
     if (busy) return
-    busy = true
     scope.launch {
+      webDavState = WebDavBackupState.Running(isRestore = true)
       val result = onRestore(config)
-      busy = false
+      webDavState = WebDavBackupState.Idle
       val msg = result.fold(
         onSuccess = { count -> context.getString(R.string.settings_webdav_restore_success, count) },
         onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
@@ -650,12 +655,18 @@ private fun MobileWebDavSection(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
       ) {
-        Button(onClick = ::runBackup, enabled = !busy, modifier = Modifier.weight(1f)) {
-          Text(stringResource(R.string.settings_webdav_backup))
-        }
-        Button(onClick = ::runRestore, enabled = !busy, modifier = Modifier.weight(1f)) {
-          Text(stringResource(R.string.settings_webdav_restore))
-        }
+        WebDavActionButton(
+          isRestore = false,
+          state = webDavState,
+          onClick = ::runBackup,
+          modifier = Modifier.weight(1f),
+        )
+        WebDavActionButton(
+          isRestore = true,
+          state = webDavState,
+          onClick = ::runRestore,
+          modifier = Modifier.weight(1f),
+        )
       }
     }
   }
@@ -669,6 +680,48 @@ private fun MobileWebDavSection(
       },
       onDismiss = { showEditDialog = false },
     )
+  }
+}
+
+/**
+ * 备份/还原按钮:空闲显示「备份/还原」文案;本按钮在运行中显示「旋转 spinner + 备份中…/还原中…」
+ * (用 [AnimatedContent] 淡入淡出);任一操作运行时两按钮都禁用,避免重复点击。
+ * 服务是单次 suspend 调用、无字节级进度,故用 indeterminate spinner。
+ */
+@Composable
+private fun WebDavActionButton(
+  isRestore: Boolean,
+  state: WebDavBackupState,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val running = state is WebDavBackupState.Running
+  val thisRunning = running && (state as WebDavBackupState.Running).isRestore == isRestore
+  Button(onClick = onClick, enabled = !running, modifier = modifier) {
+    AnimatedContent(
+      targetState = thisRunning,
+      label = "webdav-button",
+    ) { showRunning ->
+      if (showRunning) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+          CircularProgressIndicator(
+            modifier = Modifier.size(16.dp),
+            strokeWidth = 2.dp,
+          )
+          Text(
+            stringResource(
+              if (isRestore) R.string.settings_webdav_restore_running
+              else R.string.settings_webdav_backup_running,
+            ),
+          )
+        }
+      } else {
+        Text(stringResource(if (isRestore) R.string.settings_webdav_restore else R.string.settings_webdav_backup))
+      }
+    }
   }
 }
 

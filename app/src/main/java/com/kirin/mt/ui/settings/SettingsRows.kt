@@ -4,13 +4,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -23,6 +26,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
 import com.kirin.mt.core.i18n.ChineseTextVariant
 import com.kirin.mt.core.player.CodecCapability
@@ -30,6 +34,7 @@ import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
+import com.kirin.mt.core.webdav.WebDavBackupState
 import com.kirin.mt.core.settings.AppVisualPerformanceMode
 import com.kirin.mt.core.settings.HomeThemeVariant
 import com.kirin.mt.ui.focus.BiliFocusableSurface
@@ -114,6 +119,98 @@ internal fun SettingsActionRow(
     onFocused = onFocused,
     onClick = onClick,
   )
+}
+
+/**
+ * WebDAV 备份/还原行(镜像 [SettingsActionRow],右侧 value 槽在 [WebDavBackupState.Running]
+ * 时换成「旋转 spinner + 备份中…/还原中…」文案)。运行期间点击变 no-op,但整行仍可聚焦,
+ * 保持 D-pad 焦点连续性(与 [SettingsUpdateVersionRow] 一致)。服务是单次 suspend 调用、
+ * 无字节级进度,故用 indeterminate spinner,不做确定性进度条。
+ *
+ * @param isRestore 本行是否为「还原」行(决定 running 文案;非本行在运行时也禁用点击)。
+ * @param state 共享的备份/还原状态;两个 backup/restore 行共用同一个状态。
+ */
+@Composable
+internal fun SettingsWebDavBackupRow(
+  title: String,
+  description: String,
+  isRestore: Boolean,
+  state: WebDavBackupState,
+  modifier: Modifier = Modifier,
+  onFocused: () -> Unit = {},
+  onClick: () -> Unit,
+) {
+  val homeColors = LocalHomeColors.current
+  val running = state is WebDavBackupState.Running
+  // 本行正在运行:显示自己的 running 文案;另一行运行中:仅禁用点击、不显示 spinner。
+  val thisRowRunning = running && (state as WebDavBackupState.Running).isRestore == isRestore
+  BiliFocusableSurface(
+    scaleOnFocus = false,
+    shadowOnFocus = false,
+    shape = RoundedCornerShape(BiliRadius.Panel),
+    onClick = { if (!running) onClick() },
+    onFocused = onFocused,
+    modifier = modifier
+      .fillMaxWidth()
+      .height(BiliSizing.SettingsRowHeight),
+  ) {
+    Row(
+      modifier = Modifier
+        .fillMaxSize()
+        .padding(start = BiliSpacing.Lg, end = BiliSpacing.Xl),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = title,
+          color = homeColors.textPrimary,
+          fontSize = BiliTypography.Body,
+          fontWeight = FontWeight.Bold,
+        )
+        Text(
+          text = description,
+          color = homeColors.textSecondary,
+          fontSize = BiliTypography.BodySmall,
+          modifier = Modifier.padding(top = BiliSpacing.Xs),
+        )
+      }
+      // 右侧:运行时 spinner + 文案淡入;空闲时空白(保持与 value 行等宽对齐)。
+      Box(
+        contentAlignment = Alignment.CenterEnd,
+        modifier = Modifier
+          .padding(start = BiliSpacing.Lg)
+          .width(BiliSizing.SettingsCodecValueWidth),
+      ) {
+        AnimatedContent(
+          targetState = thisRowRunning,
+          label = "webdav-running",
+        ) { showRunning ->
+          if (showRunning) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Xs),
+            ) {
+              CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+              )
+              Text(
+                text = stringResource(
+                  if (isRestore) R.string.settings_webdav_restore_running
+                  else R.string.settings_webdav_backup_running,
+                ),
+                color = homeColors.accent,
+                fontSize = BiliTypography.BodySmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 /**

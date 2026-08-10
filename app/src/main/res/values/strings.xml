@@ -519,6 +519,8 @@
     <string name="settings_webdav_close">关闭</string>
     <string name="settings_webdav_backup">备份</string>
     <string name="settings_webdav_restore">还原</string>
+    <string name="settings_webdav_backup_running">备份中…</string>
+    <string name="settings_webdav_restore_running">还原中…</string>
     <string name="settings_webdav_backup_success">备份成功(含日志)</string>
     <string name="settings_webdav_restore_success">还原成功，共 %1$d 个频道</string>
     <string name="settings_webdav_failed">操作失败：%1$s</string>
