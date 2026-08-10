@@ -17,6 +17,9 @@
 - **功能**:移动端播放器顶栏右上角新增耳机按钮,开启后**只听音频**——禁用视频轨,不再下载/解码视频段,只保留音频(省流量 + 锁屏/后台只听)。开启时视频画面叠黑底 + "听视频模式"指示,弹幕隐藏;播放列表自动连播保留(下一集仍保持听视频模式)。
 - **技术**:`toggleAudioOnly` 用 `player.setTrackSelectionParameters(...setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, audioOnly))` 禁用/启用视频轨,不重新解析、不重建 MediaSource。对三种源均成立:B站 DASH / PGC 合并流走标准 Media3 轨道选择;YouTube SABR 单流由 `SabrMediaPeriod` 释放被禁用的视频流 + `SabrMediaFetcher` 退化为纯音频拉取。`loadRequest` 重载后重新应用视频轨禁用(覆盖切集/切画质/自动连播)。新增 `ic_player_audio` 耳机图标。
 
+### 多语言配音修复
+- **功能**:修复「中文视频误播英文配音」——根因是 YouTube multi-audio 下同一 itag 按语言重复出现、`pickAudio` 盲取第一条可能拿到配音轨;`pickAudio` 优先 `audioTrack.audioIsDefault=true`(原声轨)、SABR 路径优先 `AudioTrackType.ORIGINAL`。播放器控制栏加音轨切换按钮(仅 YouTube 多音轨视频显示),`availableAudioTracks` 暴露全部音轨、选中即 `preferredAudioTrackId` 重解析(经典+SABR 统一);设置加 YouTube 默认画质(`YoutubeDefaultQuality` 按 `maxHeight` 上限选档)。
+
 ## v3.0.0-alpha.1
 
 **UI 交互修复(测试 alpha)**:修复 WebDAV 弹窗按钮被系统键盘遮住、移动端 WebDAV 展开后备份/还原按钮需手动下滑、TV 搜索源切换箭头歧义三处交互问题。
