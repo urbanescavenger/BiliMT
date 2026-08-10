@@ -50,6 +50,7 @@ import com.kirin.mt.core.i18n.ChineseTextConverters
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.CdnSpeedTester
+import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.CodecCapabilityProbe
 import com.kirin.mt.core.player.LastPlayedStore
 import com.kirin.mt.core.player.PlaybackCdnPreference
@@ -649,6 +650,16 @@ fun BiliTvApp(
                     appSettingsStore.setPlaybackQualityPreference(preference)
                   }
                 },
+                onYoutubeDefaultQualityChange = { quality ->
+                  coroutineScope.launch {
+                    appSettingsStore.setYoutubeDefaultQuality(quality)
+                  }
+                },
+                onDefaultPlaybackSpeedChange = { speed ->
+                  coroutineScope.launch {
+                    appSettingsStore.setDefaultPlaybackSpeed(speed)
+                  }
+                },
                 onPlaybackCodecPreferenceChange = { preference ->
                   coroutineScope.launch {
                     appSettingsStore.setPlaybackCodecPreference(preference)
@@ -1149,6 +1160,8 @@ fun BiliTvApp(
               cdnSelector = cdnSelector,
               playbackCodecPreference = effectivePlaybackCodecPreference,
               playbackQualityPreference = settings.playbackQualityPreference,
+              youtubeDefaultQuality = settings.youtubeDefaultQuality,
+              defaultPlaybackSpeed = settings.defaultPlaybackSpeed,
               playbackCdnPreference = settings.playbackCdnPreference,
               seekPreviewSpritesEnabled = settings.seekPreviewSpritesEnabled,
               airJumpAssistantEnabled = settings.airJumpAssistantEnabled,

@@ -89,8 +89,10 @@ import com.kirin.mt.core.player.DanmakuSettings
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackCdnPreference
+import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
+import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.LastPlayedStore
@@ -137,6 +139,8 @@ fun PlayerScreen(
   cdnSelector: CdnSelector,
   playbackCodecPreference: PlaybackCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
+  youtubeDefaultQuality: YoutubeDefaultQuality,
+  defaultPlaybackSpeed: DefaultPlaybackSpeed,
   playbackCdnPreference: PlaybackCdnPreference,
   seekPreviewSpritesEnabled: Boolean,
   airJumpAssistantEnabled: Boolean,
@@ -210,7 +214,7 @@ fun PlayerScreen(
   var selectedQuality by remember { mutableStateOf<PlaybackQuality?>(null) }
   val storedDanmakuSettings by danmakuSettingsStore.settings.collectAsState(initial = DanmakuSettings())
   var danmakuSettings by remember { mutableStateOf(DanmakuSettings()) }
-  var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
+  var playbackSpeed by remember { mutableFloatStateOf(defaultPlaybackSpeed.value) }
   var previewPositionMs by remember { mutableStateOf<Long?>(null) }
   val playbackPositionState = remember { mutableLongStateOf(0L) }
   val playbackDurationState = remember { mutableLongStateOf(0L) }
@@ -1382,6 +1386,7 @@ fun PlayerScreen(
           request = resolvedRequest,
           codecPreference = playbackCodecPreference,
           qualityPreference = playbackQualityPreference,
+          youtubeDefaultQuality = youtubeDefaultQuality,
         )
       // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体)。
       if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive)) {

@@ -26,6 +26,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.kirin.mt.R
 import com.kirin.mt.core.i18n.ChineseTextVariant
 import com.kirin.mt.core.player.CodecCapability
+import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
@@ -344,4 +345,9 @@ internal fun PlaybackCdnPreference.cdnLabel(): String {
     PlaybackCdnPreference.Akamai -> stringResource(R.string.cdn_option_akamai)
     PlaybackCdnPreference.Hw -> stringResource(R.string.cdn_option_hw)
   }
+}
+
+@Composable
+internal fun DefaultPlaybackSpeed.speedLabel(): String {
+  return label
 }

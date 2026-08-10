@@ -163,6 +163,8 @@
     <string name="settings_playback_cdn_description">切换视频流的 CDN 节点。默认跟随 B 站自动分配,在晚高峰或跨网环境可手动指定更快的节点。</string>
     <string name="settings_youtube_default_quality_title">YouTube 默认画质</string>
     <string name="settings_youtube_default_quality_description">新开 YouTube 视频默认使用的画质上限。自动为最高可用画质。</string>
+    <string name="settings_default_speed_title">默认播放倍速</string>
+    <string name="settings_default_speed_description">新开视频起播时默认使用的播放倍速。播放中仍可在菜单里临时调整。</string>
     <string name="settings_speed_test_title">网络测速</string>
     <string name="settings_speed_test_description">使用最后一次播放的视频测试各 CDN 节点速度，便于挑选更快的线路。</string>
     <string name="settings_speed_test_running">测速中…</string>
