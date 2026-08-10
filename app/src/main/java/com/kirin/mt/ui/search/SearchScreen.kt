@@ -189,6 +189,8 @@ internal fun SearchScreen(
   var suggestions by remember { mutableStateOf<List<String>>(emptyList()) }
   var returnFocusToKeyboard by remember { mutableStateOf(false) }
   val screenFocusRequester = remember { FocusRequester() }
+  val sourceToggleFocusRequester = remember { FocusRequester() }
+  val inputFocusRequester = remember { FocusRequester() }
 
   LaunchedEffect(uiState.searchText) {
     if (uiState.searchText.isBlank()) {
@@ -230,6 +232,10 @@ internal fun SearchScreen(
           uiState.source = newSource
         }
       },
+      focusRequester = sourceToggleFocusRequester,
+      onMoveDown = {
+        runCatching { inputFocusRequester.requestFocus() }.isSuccess
+      },
       modifier = Modifier.padding(horizontal = BiliSizing.ContentPadding),
     )
     Box(
@@ -241,6 +247,10 @@ internal fun SearchScreen(
           suggestions = suggestions,
           searchHistory = searchHistory,
           keyboardFocusRequester = firstItemFocusRequester,
+          inputFocusRequester = inputFocusRequester,
+          onMoveUpToSourceToggle = {
+            runCatching { sourceToggleFocusRequester.requestFocus() }.isSuccess
+          },
           onMoveLeftToNav = onMoveLeftToNav,
           onTextChange = { nextText ->
             uiState.searchText = nextText
@@ -291,6 +301,8 @@ internal fun SearchScreen(
 private fun SearchSourceToggle(
   source: String,
   onSourceSelected: (String) -> Unit,
+  focusRequester: FocusRequester,
+  onMoveDown: () -> Boolean,
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
@@ -301,13 +313,22 @@ private fun SearchSourceToggle(
     listOf(
       SourceBili to stringResource(R.string.search_source_bili),
       SourceYoutube to stringResource(R.string.search_source_youtube),
-    ).forEach { (value, label) ->
+    ).forEachIndexed { index, (value, label) ->
       val selected = source == value
       BiliFocusableSurface(
         scaleOnFocus = false,
         shape = RoundedCornerShape(BiliRadius.Pill),
         onClick = { onSourceSelected(value) },
-        modifier = Modifier.height(BiliSizing.HomeSectionTabHeight),
+        modifier = Modifier
+          .height(BiliSizing.HomeSectionTabHeight)
+          .then(if (index == 0) Modifier.focusRequester(focusRequester) else Modifier)
+          .onPreviewKeyEvent { event ->
+            if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
+              onMoveDown()
+            } else {
+              false
+            }
+          },
       ) {
         Box(
           modifier = Modifier
@@ -333,6 +354,8 @@ private fun SearchKeyboardView(
   suggestions: List<String>,
   searchHistory: List<String>,
   keyboardFocusRequester: FocusRequester,
+  inputFocusRequester: FocusRequester,
+  onMoveUpToSourceToggle: () -> Boolean,
   onMoveLeftToNav: () -> Boolean,
   onTextChange: (String) -> Unit,
   onClearSearchHistory: () -> Unit,
@@ -353,7 +376,14 @@ private fun SearchKeyboardView(
           .fillMaxHeight(),
         verticalArrangement = Arrangement.Top,
       ) {
-        SearchInputText(searchText = searchText)
+        SearchInputText(
+          searchText = searchText,
+          focusRequester = inputFocusRequester,
+          onMoveUp = onMoveUpToSourceToggle,
+          onMoveDown = {
+            runCatching { keyboardFocusRequester.requestFocus() }.isSuccess
+          },
+        )
         Spacer(modifier = Modifier.height(BiliSpacing.Md))
         Row(
           horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
@@ -367,6 +397,9 @@ private fun SearchKeyboardView(
               .weight(1f)
               .focusRequester(keyboardFocusRequester),
             onMoveLeft = onMoveLeftToNav,
+            onMoveUp = {
+              runCatching { inputFocusRequester.requestFocus() }.isSuccess
+            },
             onClick = {
               onTextChange("")
             },
@@ -416,17 +449,36 @@ private fun SearchKeyboardView(
 }
 
 @Composable
-private fun SearchInputText(searchText: String) {
+private fun SearchInputText(
+  searchText: String,
+  focusRequester: FocusRequester,
+  onMoveUp: () -> Boolean,
+  onMoveDown: () -> Boolean,
+) {
   val homeColors = LocalHomeColors.current
   val placeholder = stringResource(R.string.search_input_placeholder)
   val displayText = if (searchText.isBlank()) placeholder else convertChineseText(searchText)
+  var focused by remember { mutableStateOf(false) }
+  val borderColor = if (focused) homeColors.accent else homeColors.glassBorder
+  val borderWidth = if (focused) BiliFocus.BorderWidth else BiliFocus.RestingBorderWidth
 
   Box(
     modifier = Modifier
       .fillMaxWidth()
       .height(BiliSizing.SearchInputHeight)
       .background(homeColors.glassSurfaceStrong, RoundedCornerShape(BiliRadius.Card))
-      .padding(horizontal = BiliSpacing.Lg),
+      .border(BorderStroke(borderWidth, borderColor), RoundedCornerShape(BiliRadius.Card))
+      .padding(horizontal = BiliSpacing.Lg)
+      .focusRequester(focusRequester)
+      .focusable()
+      .onFocusChanged { focusState -> focused = focusState.isFocused }
+      .onPreviewKeyEvent { event ->
+        when {
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> onMoveUp()
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
+          else -> false
+        }
+      },
     contentAlignment = Alignment.CenterStart,
   ) {
     Text(
@@ -477,6 +529,7 @@ private fun SearchKeyboardButton(
   modifier: Modifier = Modifier,
   action: Boolean = false,
   onMoveLeft: (() -> Boolean)? = null,
+  onMoveUp: (() -> Boolean)? = null,
   onClick: () -> Unit,
 ) {
   val homeColors = LocalHomeColors.current
@@ -486,10 +539,10 @@ private fun SearchKeyboardButton(
     onClick = onClick,
     modifier = modifier
       .onPreviewKeyEvent { event ->
-        if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft && onMoveLeft != null) {
-          onMoveLeft()
-        } else {
-          false
+        when {
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft && onMoveLeft != null -> onMoveLeft()
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp && onMoveUp != null -> onMoveUp()
+          else -> false
         }
       },
   ) {
