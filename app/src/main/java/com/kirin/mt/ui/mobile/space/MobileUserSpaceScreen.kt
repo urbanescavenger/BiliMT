@@ -54,7 +54,7 @@ import kotlinx.coroutines.launch
 private const val FirstPage = 1
 private const val PageSize = 30
 
-internal sealed interface SpaceState {
+sealed interface SpaceState {
   data object Loading : SpaceState
   data class Failed(val message: String) : SpaceState
   data class Success(

@@ -14,7 +14,7 @@ import com.kirin.mt.core.model.SpaceUserProfile
  * 守卫:profileLoadedMid 管资料/关注,videoLoadedMid+videoLoadedOrder 管投稿列表。
  */
 @Stable
-internal class MobileUpSpaceUiState {
+class MobileUpSpaceUiState {
   var order by mutableStateOf("pubdate")
   var profile by mutableStateOf<SpaceUserProfile?>(null)
   var followed by mutableStateOf(false)

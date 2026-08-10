@@ -13,7 +13,7 @@ import com.kirin.mt.core.model.VideoSummary
  * 守卫:loadedChannelId 管频道名解析 + 视频列表。
  */
 @Stable
-internal class MobileYoutubeChannelUiState {
+class MobileYoutubeChannelUiState {
   var name by mutableStateOf("")
   var followLoading by mutableStateOf(false)
   var items by mutableStateOf<List<VideoSummary>>(emptyList())
