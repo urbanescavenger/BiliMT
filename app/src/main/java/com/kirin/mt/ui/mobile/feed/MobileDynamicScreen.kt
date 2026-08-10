@@ -221,7 +221,8 @@ fun MobileDynamicScreen(
       modifier = Modifier.fillMaxSize(),
     ) {
       LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 160.dp),
+        // 动态 feed 单列:卡片占满整行,配 feedLayout 的 B 站动态样式(顶行作者块+缩略图+标题)。
+        columns = GridCells.Fixed(1),
         state = gridState,
         contentPadding = PaddingValues(12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
