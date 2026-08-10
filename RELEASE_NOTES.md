@@ -1,5 +1,17 @@
 # BiliMT 版本发布说明
 
+## v3.0.0-alpha.10
+
+**短信登录页两处重叠修复(测试 alpha)**:移动端短信登录页顶栏不再盖住网页顶部,网页内"我已阅读并同意用户协议"不再叠在登录按钮上。
+
+### 修复
+- **顶栏不再盖网页**:`MobileSmsWebViewPanel` 顶栏从 `Box`+`align(TopCenter)` 覆盖改成 `Column` 上下排,顶栏占自己高度,不再挡住 B站 登录页顶部(logo/tab 切换)。
+- **协议文字不再叠登录按钮**:诊断确认 passport-h5 短信登录页协议文字 `.explain-tips` 是 `position:absolute`,被固定定位到 y=291,叠在登录按钮(y=301-352)上重叠 ~29px。注入 CSS 把 `.explain-tips` 改 `position:static !important` 回到正常文档流,排在按钮下方。
+
+### 技术
+- **视口设置**:WebView 加 `setUseWideViewPort(true)` + `setLoadWithOverviewMode(true)` 按屏幕宽度渲染(对重叠 2 无效——根因是页面内部绝对定位,但保留无副作用)。
+- **诊断升级(临时)**:`BILI_DOM_DUMP` 诊断 JS 升级——dump 关键元素(登录按钮/协议文字/获取验证码)的 `getBoundingClientRect` + `position/z-index`,并加轮询等登录按钮有非零尺寸(最多 5s)再 dump,解决 SPA(Vant)异步渲染导致 rect 全 0 的问题。
+
 ## v3.0.0-alpha.9
 
 **YouTube UP 头像完整实现(测试 alpha)**:对齐 LibreTube,让 YouTube 频道头像在视频卡片、播放器简介页、评论、动态关注 tab 全部真实显示(此前数据层硬编码空串,UI 永远走占位圆)。
