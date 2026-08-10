@@ -281,6 +281,7 @@ fun MobileDynamicScreen(
                 onOpenOwner = onOpenOwner,
                 onLongPress = onLongPress,
                 showYoutubeBorder = true,
+                feedLayout = true,
               )
             }
             if (s.loadingMore) {
