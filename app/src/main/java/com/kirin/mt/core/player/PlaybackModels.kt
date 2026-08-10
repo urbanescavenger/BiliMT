@@ -18,6 +18,8 @@ data class PlaybackRequest(
   val danmakuCount: Int = 0,
   val pubdate: Long = 0L,
   val preferredQualityId: Int? = null,
+  /** YouTube 音轨切换:用户选中的音轨 id(audioTrack.id,如 "en.4")。null=默认(优先原声轨)。 */
+  val preferredAudioTrackId: String? = null,
   val forceStartPosition: Boolean = false,
   val historyPage: Int = 0,
   val advanceToNextHistoryEpisode: Boolean = false,
@@ -31,6 +33,8 @@ data class PlaybackRequest(
   val liveRoomId: Long = 0L,
   /** 内容来源：[SourceBili]（默认）/ [SourceYoutube]。YouTube 请求 bvid 字段承载 videoId。 */
   val source: String = SourceBili,
+  /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 请求填充，用于播放历史进频道主页；B 站为空串。 */
+  val channelId: String = "",
 ) {
   val isPgc: Boolean
     get() = epId > 0L || seasonId > 0L
@@ -77,6 +81,16 @@ data class PlaybackInfo(
   val videoTracks: List<PlaybackTrack>,
   val audioTracks: List<PlaybackTrack>,
   val headers: BiliPlaybackHeaders,
+  /** YouTube 多语言配音:全部可选音轨(供播放器音轨切换菜单)。非 YouTube/单音轨为空。 */
+  val availableAudioTracks: List<PlaybackAudioTrack> = emptyList(),
+)
+
+/** YouTube 一条可选音轨(多语言配音)。id 为 audioTrack.id(如 "en.4"),非 itag。 */
+data class PlaybackAudioTrack(
+  val id: String,
+  val languageCode: String?,
+  val displayName: String?,
+  val isDefault: Boolean,
 )
 
 data class PlaybackQuality(

@@ -27,19 +27,25 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.kirin.mt.R
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.model.SourceYoutube
+import com.kirin.mt.core.model.VideoCardRelativeText
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.model.pubdateText
 import com.kirin.mt.ui.theme.BiliColors
 
 /** YouTube 卡片绿框颜色(Material Green 600),动态页区分 YouTube 与 B 站内容。 */
 private val YoutubeBorderColor = Color(0xFF00C853)
 
-/** 移动端视频卡片:纯触屏(无焦点缩放),点击播放;长按加入/移除播放列表(仅 YouTube)。点头像/UP 名区域进 UP 主页。 */
+/** 移动端视频卡片:纯触屏(无焦点缩放),点击播放;长按加入/移除播放列表(仅 YouTube)。点头像/UP 名区域进 UP 主页。
+ *  [feedLayout]=true 用动态 feed 版布局(顶行作者块 + 缩略图 + 标题),默认紧凑布局(首页/搜索/空间等)。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MobileVideoCard(
@@ -49,17 +55,31 @@ fun MobileVideoCard(
   onOpenOwner: ((VideoSummary) -> Unit)? = null,
   onLongPress: ((VideoSummary) -> Unit)? = null,
   showYoutubeBorder: Boolean = false,
+  feedLayout: Boolean = false,
 ) {
   val youtubeBorder = showYoutubeBorder && video.source == SourceYoutube
-  Column(
-    modifier = modifier
-      .fillMaxWidth()
-      .then(if (youtubeBorder) Modifier.border(2.dp, YoutubeBorderColor, RoundedCornerShape(12.dp)) else Modifier)
-      .combinedClickable(
-        onClick = { onClick(video) },
-        onLongClick = onLongPress?.let { { it(video) } },
-      ),
-  ) {
+  val baseModifier = modifier
+    .fillMaxWidth()
+    .then(if (youtubeBorder) Modifier.border(2.dp, YoutubeBorderColor, RoundedCornerShape(12.dp)) else Modifier)
+    .combinedClickable(
+      onClick = { onClick(video) },
+      onLongClick = onLongPress?.let { { it(video) } },
+    )
+  if (feedLayout) {
+    FeedStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner)
+  } else {
+    CompactStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner)
+  }
+}
+
+/** 紧凑布局(默认):缩略图 → 标题 → 头像/UP名/播放量。首页/搜索/空间等使用。 */
+@Composable
+private fun CompactStyleCardContent(
+  video: VideoSummary,
+  modifier: Modifier,
+  onOpenOwner: ((VideoSummary) -> Unit)?,
+) {
+  Column(modifier = modifier) {
     Box(
       modifier = Modifier
         .fillMaxWidth()
@@ -132,6 +152,107 @@ fun MobileVideoCard(
   }
 }
 
+/** 动态 feed 布局(参考 B 站原版动态):顶行作者块(头像跨两行 + UP名/发布时间·播放量) → 缩略图独占整行 → 标题。 */
+@Composable
+private fun FeedStyleCardContent(
+  video: VideoSummary,
+  modifier: Modifier,
+  onOpenOwner: ((VideoSummary) -> Unit)?,
+) {
+  val relativeText = rememberVideoCardRelativeText()
+  val count = formatCount(if (video.view > 0) video.view else video.likeCount)
+  val pubdate = video.pubdateText(relativeText)
+  val meta = if (pubdate.isBlank()) count else "$pubdate · $count"
+  Column(modifier = modifier) {
+    // 顶行作者块:头像跨两行,右侧第一行 UP 名、第二行发布时间 + 播放量。整块可点进 UP 主页。
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(bottom = 6.dp)
+        .clip(RoundedCornerShape(4.dp))
+        .clickable(enabled = onOpenOwner != null && ownerClickable(video)) {
+          onOpenOwner?.invoke(video)
+        },
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      OwnerAvatar(face = video.ownerFace, isLive = video.isLive, size = 40.dp)
+      Spacer(modifier = Modifier.width(8.dp))
+      Column(modifier = Modifier.weight(1f, fill = false)) {
+        Text(
+          text = video.ownerName,
+          style = MaterialTheme.typography.labelMedium,
+          color = MaterialTheme.colorScheme.onSurface,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+        if (video.isLive) {
+          LiveOnlineCount(online = video.view, areaName = video.liveAreaName)
+        } else {
+          Text(
+            text = meta,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+      }
+    }
+    // 缩略图独占整行(16:10、直播角标、YouTube 绿框保留)。
+    Box(
+      modifier = Modifier
+        .fillMaxWidth()
+        .aspectRatio(16f / 10f)
+        .clip(RoundedCornerShape(12.dp)),
+    ) {
+      AsyncImage(
+        model = video.pic,
+        contentDescription = video.title,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.fillMaxWidth(),
+      )
+      if (video.isLive) {
+        LiveBadge(text = video.badge.ifBlank { "直播" }, modifier = Modifier.align(Alignment.TopStart))
+      } else if (video.badge.isNotEmpty()) {
+        Text(
+          text = video.badge,
+          style = MaterialTheme.typography.labelSmall,
+          color = Color.White,
+          modifier = Modifier
+            .align(Alignment.TopStart)
+            .padding(6.dp),
+        )
+      }
+    }
+    // 标题在底部。
+    Text(
+      text = video.title,
+      style = MaterialTheme.typography.bodyMedium,
+      maxLines = 2,
+      overflow = TextOverflow.Ellipsis,
+      modifier = Modifier.padding(top = 6.dp),
+    )
+  }
+}
+
+/** 相对时间文本(3分钟前/昨天/5天前等),复用 TV 同款字符串资源。 */
+@Composable
+private fun rememberVideoCardRelativeText(): VideoCardRelativeText {
+  val minutesAgoFormat = stringResource(R.string.video_relative_minutes_ago)
+  val hoursAgoFormat = stringResource(R.string.video_relative_hours_ago)
+  val yesterday = stringResource(R.string.video_relative_yesterday)
+  val daysAgoFormat = stringResource(R.string.video_relative_days_ago)
+  return remember(minutesAgoFormat, hoursAgoFormat, yesterday, daysAgoFormat) {
+    VideoCardRelativeText(
+      viewedSuffixFormat = "",
+      minutesAgoFormat = minutesAgoFormat,
+      hoursAgoFormat = hoursAgoFormat,
+      yesterday = yesterday,
+      daysAgoFormat = daysAgoFormat,
+    )
+  }
+}
+
 /** 直播角标:红色圆角 pill + 左侧白色小圆点 + "直播"文字,贴封面左上(调用处用 BoxScope.align 定位)。 */
 @Composable
 private fun LiveBadge(text: String, modifier: Modifier = Modifier) {
@@ -195,13 +316,14 @@ private fun LiveOnlineCount(online: Int, areaName: String, modifier: Modifier = 
   }
 }
 
-/** UP 主圆形头像:20dp,空 face 纯色占位;复用 buildOwnerAvatarRequest 带 Bili 头与 CDN 尺寸。 */
+/** UP 主圆形头像:默认 20dp(紧凑卡),动态 feed 用 40dp(跨两行);空 face 纯色占位。
+ *  复用 buildOwnerAvatarRequest 带 Bili 头与 CDN 尺寸。 */
 @Composable
-private fun OwnerAvatar(face: String, isLive: Boolean = false) {
+private fun OwnerAvatar(face: String, isLive: Boolean = false, size: Dp = 20.dp) {
   // 正直播的 UP 头像套红色环(BiliPink),作为"直播头像"视觉信号;20dp 太小不放"直播"文字,
   // 封面已有 LiveBadge 文字,头像用红环标识即可。
   val modifier = Modifier
-    .size(20.dp)
+    .size(size)
     .clip(CircleShape)
     .background(MaterialTheme.colorScheme.surfaceVariant)
     .then(if (isLive) Modifier.border(2.dp, BiliColors.BiliPink, CircleShape) else Modifier)

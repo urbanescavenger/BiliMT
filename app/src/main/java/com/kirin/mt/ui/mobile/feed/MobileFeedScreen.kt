@@ -28,7 +28,7 @@ import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import kotlinx.coroutines.launch
 
-/** 子 tab:动态 / 历史 / 收藏 / 追番 / 播放列表。YouTube 关注已并入动态(统一流)。 */
+/** 子 tab:动态 / 历史 / 收藏 / 追番 / 播放列表。YouTube 关注已并入动态(统一流),YouTube 历史已并入历史 tab。 */
 private val FeedTabs = listOf(
   R.string.nav_dynamic,
   R.string.nav_history,
@@ -40,10 +40,14 @@ private val FeedTabs = listOf(
 /** 播放列表 tab 下标(免登录)。 */
 private const val PlaylistTabIndex = 4
 
+/** 历史 tab 下标(免登录——本地 YouTube 历史未登录也可看)。 */
+private const val HistoryTabIndex = 1
+
 /**
  * 移动端"动态"底栏 tab 内容:5 个子 tab(动态/历史/收藏/追番/播放列表)+
  * HorizontalPager 左右滑动切换,镜像 MobileHomeScreen 的 PrimaryScrollableTabRow + Pager 范式。
- * YouTube 关注已并入动态(统一流);播放列表免登录,动态在有 YouTube 频道时也免登录。
+ * YouTube 关注已并入动态(统一流);YouTube 历史已并入历史 tab(本地,未登录也可看);
+ * 播放列表免登录,动态在有 YouTube 频道时也免登录。
  * 复用 MobileDynamicScreen(动态)与 MobileHistoryPage/MobileFavoritePage/MobileBangumiPage。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -53,7 +57,9 @@ fun MobileFeedScreen(
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   youtubePlaylistStore: YoutubePlaylistStore,
   youtubeFeedCacheStore: com.kirin.mt.core.youtube.YoutubeFeedCacheStore,
+  youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
   isLoggedIn: Boolean,
+  dynamicRefreshKey: Int = 0,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
   onSeasonSelected: (FollowingSeason) -> Unit,
@@ -66,8 +72,10 @@ fun MobileFeedScreen(
   val pagerState = rememberPagerState(pageCount = { FeedTabs.size }, initialPage = 0)
   val channels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
 
-  // 播放列表免登录;动态(合并 YouTube 关注)在有频道时也免登录;其余 tab 未登录时显示登录入口。
+  // 播放列表免登录;动态(合并 YouTube 关注)在有频道时也免登录;历史 tab 免登录(本地 YouTube 历史);
+  // 其余 tab 未登录时显示登录入口。
   if (!isLoggedIn && pagerState.currentPage != PlaylistTabIndex &&
+      pagerState.currentPage != HistoryTabIndex &&
       !(pagerState.currentPage == 0 && channels.isNotEmpty())) {
     Column(
       modifier = modifier.fillMaxSize().padding(24.dp),
@@ -107,6 +115,7 @@ fun MobileFeedScreen(
           videoRepository = videoRepository,
           youtubeFeedCacheStore = youtubeFeedCacheStore,
           isLoggedIn = true,
+          dynamicRefreshKey = dynamicRefreshKey,
           youtubeChannels = channels,
           onVideoSelected = onVideoSelected,
           onOpenOwner = onOpenOwner,
@@ -116,8 +125,11 @@ fun MobileFeedScreen(
         )
         1 -> MobileHistoryPage(
           videoRepository = videoRepository,
+          youtubeHistoryStore = youtubeHistoryStore,
+          isLoggedIn = isLoggedIn,
           onVideoSelected = onVideoSelected,
           onOpenOwner = onOpenOwner,
+          onLogin = onLogin,
           modifier = Modifier.fillMaxSize(),
         )
         2 -> MobileFavoritePage(

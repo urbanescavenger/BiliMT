@@ -563,6 +563,40 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 
 → SABR 数据三要素全齐(sabrUrl + ustreamerConfig bytes + adaptive 元数据),启动 Kotlin 移植有据。**Phase 1(二进制基础模块)已提交(513d9f3)**:UmpReader/CompositeBuffer/ProtoWire/SabrProto——纯逻辑、proto 字段号全量核对上游(见 §6.7 row 40)。**Phase 2a(协议引擎 + 诊断探针)本提交**:SabrClient + InnerTubeClient.sabrClientInfo() + YoutubePlaybackResolver 探针——仅诊断,验真机协议往返是否被服务端接受,据结果定 Phase 2b(Media3 DashMediaSource + sabr:// DataSource 接线)。
 
+## 6.11 多语言配音修复 + 音轨切换 + 默认画质(2026-08)
+
+**背景 bug**:中文视频有时播英文配音轨。根因**不是 App 翻译音频**,而是 YouTube 多语言配音(multi-audio)下,`adaptiveFormats` 里**同一个 itag(如 251/140)会按语言重复出现多次**(原声 + 各语言配音各一条)。App 的 `pickAudio()` 盲取「第一条 itag 251/140」,若英文配音轨排前就播英文。
+
+**可靠信号(已核实)**:
+- `/player` 每个 audio adaptive format 的 `audioTrack` 对象:`audioIsDefault`(true=原声/默认轨)、`id`(如 `"en.4"`,**不是** itag)、`displayName`;另有顶层 `language` 字段。
+- NewPipe `AudioStream`:`getAudioTrackId()`(同 `audioTrack.id`)、`getAudioTrackName()`、`getAudioLocale()`、`getAudioTrackType()`(`AudioTrackType.ORIGINAL/DUBBED/DESCRIPTIVE/SECONDARY`,来自 xtags `acont`)。
+- itag 范围**无法**区分原声/配音(pytubefix 证实 139/140/249/250/251/599/600 同时出现在德语/西语配音里)。
+
+**设计决策:音轨切换用「重解析 + preferredAudioTrackId」**——与现有清晰度切换(`preferredQualityId` 重跑 resolve)**完全一致**,经典路径与 SABR 路径统一:
+- `PlaybackInfo.availableAudioTracks` 暴露**全部**音轨(供 UI 列表);`audioTracks` 仍只含**选中**音轨(构建媒体源用,DASH manifest 只建一个音频 AdaptationSet,无需 DefaultTrackSelector)。
+- 切换 = `loadRequest(activeRequest.copy(preferredAudioTrackId = track.id))` 重跑 resolve。
+
+**实现**:
+1. **音频选择优先原声轨**(`YoutubePlaybackResolver.kt`):`parseFormat` 解析 `audioTrack.audioIsDefault/id/displayName` + 顶层 `language` 进 `ParsedFormat`;`pickAudio` 优先 `preferredAudioTrackId` 命中 → `audioIsDefault` 原声轨 → 251 → 140 → 最高码率。SABR 路径 `buildSabrSessionFromNewPipe` 的 `firstAudio` 优先 `AudioTrackType.ORIGINAL` → 非 DUBBED → 首条。
+2. **音轨切换**:`PlaybackRequest.preferredAudioTrackId` + `PlaybackInfo.availableAudioTracks` + `PlaybackAudioTrack(id, languageCode, displayName, isDefault)`。SABR 会话复用路径:按 id 命中 `session.audioTracks` 表 → `session.copy(audioFormatId = match.formatId)` + `SabrStreamRegistry.registerByVideoId` 重注册(更新缓存 entry,下个音频段请求用新 itag;poToken 会话级不绑 itag,无需重 harvest)。`SabrSession.audioTracks: List<SabrAudioTrack>`(含 `formatId`)。播放器控制栏加音轨按钮(仅 YouTube 且 `availableAudioTracks.size > 1` 显示),`DropdownMenu` 列出全部音轨,选中即重载。
+3. **默认画质**:`YoutubeDefaultQuality` 枚举(自动/4K/2K/1080P/720P/480P,`maxHeight` 上限);`pickVideo` 加 `preferredMaxHeight`——`preferredItag` 命中优先,否则 `height <= maxHeight` 的最高档,否则最大化分辨率。设置加 `MobileEnumPickerRow`。
+
+**去重关键**:单音轨视频有多个 itag(251/140)但 `audioTrackId` 均为 null → 折叠成 `"default"` 一条 + `.distinctBy { it.id }`,避免误显示多音轨菜单。
+
+## 6.12 播放历史 + 断电续播(2026-08)
+
+**背景**:YouTube 播放进度从未落盘——`PlaybackRequest` 的 `bvid` 承载 videoId、`cid` 恒为 0,而 `PlaybackProgressStore.saveProgress` 有 `cid <= 0L → return` 守卫,导致 YouTube 进度被静默丢弃,重开无法续播,也没有历史列表。
+
+**根因修复(断电续播)**:`PlaybackProgressStore.saveProgress` 守卫 `cid <= 0L` → `cid < 0L`(允许 cid=0)。安全性:cid=0 只可能来自 YouTube(bvid=videoId 唯一);B站视频 cid 恒 >0,且播放器仅在 Ready 态保存(B站要求 cid>0 才 Ready)。key `playback_${videoId}_0` 无冲突。TV(`PlayerScreen.saveProgressNow`)与移动端(`MobilePlayerScreen.saveAndReportProgress`)本就调用 `saveProgress`/`getSavedProgress`,放宽守卫后重开即经 `getSavedProgress(videoId, 0)` 续播。
+
+**完成阈值(内置)**:`VideoSummary.isWatchCompleted()` 把「进度 ≥ 时长-1秒」视为看完,`toPlaybackRequest` 据此不设 `startPositionMs` → 播完的视频重开从 0 起播,不会卡在结尾。
+
+**历史存储**:新建 `core/youtube/YoutubeHistoryStore.kt`,照抄 `YoutubeChannelStore` 的 DataStore 列表范式——`@Serializable YoutubeHistoryEntry(videoId/title/channelName/channelId/thumbnailUrl/durationMs/positionMs/lastPlayedAtMs)` + JSON 字符串 + `ListSerializer`,复用 `context.biliDataStore`,key `youtube_history`,cap 50 条按 `lastPlayedAtMs` 倒序。`recordPlay`(按 videoId 去重前置)/`updatePosition`/`remove`/`clear`。
+
+**记录时机**:TV 与移动端播放器起播(Ready)时 `recordPlay`(带频道/封面元数据),暂停/退出时 `updatePosition`。历史需要 channelId 供开频道 → `PlaybackRequest` 加 `channelId` 字段,`toPlaybackRequest` 从 `VideoSummary.channelId` 填入。
+
+**移动端 UI**:YouTube 历史并入「动态」底栏的「历史」子 tab(`MobileFeedScreen` → `MobileHistoryPage`):本地 `YoutubeHistoryStore` 数据与 B 站观看历史**混合,按播放时间倒序**(排序键统一为 epoch 秒——YouTube 取 `lastPlayedAtMs/1000`,B 站取 `viewAt`;两列表本已按该键倒序,新加载的 B 站分页恒更旧,合并后不重排已显示内容)。YouTube 卡片绿框区分(`showYoutubeBorder`)。历史 tab 放宽登录门槛,未登录只显示本地 YouTube 历史 + 登录提示(复用 `history_signed_out`),登录后 B 站历史并入。点击续播、点头像开频道。原独立「YouTube 历史」子 tab 已移除(`MobileYoutubeHistoryPage.kt` 删除,`toVideoSummary()` 移入 `MobileHistoryPage`)。**移动端卡片布局(v3.0.0-alpha.4)**:`MobileVideoCard` 加 `feedLayout` 参数(默认紧凑布局,首页/搜索/空间不变),动态 feed(`MobileDynamicScreen`)置 true 用 B 站动态样式新布局——顶行作者块(头像 40dp 跨两行 + UP 名一行 + 发布时间·播放量一行,发布时间相对时间复用 `video_relative_*` 字符串)→ 缩略图独占整行 → 标题;YouTube 卡片在动态页同样绿框区分。**单列(v3.0.0-alpha.5)**:`MobileDynamicScreen` 的 `LazyVerticalGrid` 改 `GridCells.Fixed(1)`,卡片占满整行全宽展示。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
@@ -574,6 +608,9 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 | `assets/youtube/bgutils.js` | 打包的 bgutils-js(MIT) |
 | `ui/player/PlayerScreen.kt:1390` / `:2038-2104` | 喂流分支 + MPD 构建(改 feed 路径即可复用) |
 | `core/player/CodecCapabilityProbe.kt` | 硬件过滤 |
+| `core/player/PlaybackProgressStore.kt` | 续播落盘(`saveProgress` 守卫放宽允许 cid=0,§6.12) |
+| `core/youtube/YoutubeHistoryStore.kt` | YouTube 播放历史 DataStore 列表存储(§6.12) |
+| `ui/mobile/feed/MobileHistoryPage.kt` | 移动端「历史」tab:YouTube 历史与 B 站历史混合、按播放时间倒序(§6.12) |
 
 ## 8. 参考来源
 - FreeTube 上游:`src/renderer/helpers/api/local.js`(InnerTube 封装)与 `formatUtils`(itag/adaptive 选择)

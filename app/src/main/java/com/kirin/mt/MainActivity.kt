@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity() {
             searchHistoryStore = appContainer.searchHistoryStore,
             sessionStore = appContainer.sessionStore,
             youtubeChannelStore = appContainer.youtubeChannelStore,
+            youtubeHistoryStore = appContainer.youtubeHistoryStore,
             youtubeRepository = appContainer.youtubeRepository,
             updateManager = appContainer.updateManager,
             apkInstaller = appContainer.apkInstaller,
@@ -63,6 +64,7 @@ class MainActivity : ComponentActivity() {
             youtubeRepository = appContainer.youtubeRepository,
             youtubePlaylistStore = appContainer.youtubePlaylistStore,
             youtubeFeedCacheStore = appContainer.youtubeFeedCacheStore,
+            youtubeHistoryStore = appContainer.youtubeHistoryStore,
             updateManager = appContainer.updateManager,
             apkInstaller = appContainer.apkInstaller,
           )

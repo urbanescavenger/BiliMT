@@ -5,12 +5,15 @@ import android.util.Log
 import com.kirin.mt.core.player.BiliPlaybackHeaders
 import com.kirin.mt.core.player.CodecCapability
 import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.PlaybackAudioTrack
 import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackSegmentBase
 import com.kirin.mt.core.player.PlaybackTrack
+import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.youtube.sabr.FormatId as SabrFormatId
+import com.kirin.mt.core.youtube.sabr.SabrAudioTrack
 import com.kirin.mt.core.youtube.sabr.SabrClient
 import com.kirin.mt.core.youtube.sabr.SabrFetchResult
 import com.kirin.mt.core.youtube.sabr.SabrSession
@@ -20,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -27,6 +31,7 @@ import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.VideoStream
 import java.util.Locale
@@ -65,6 +70,7 @@ class YoutubePlaybackResolver(
     request: PlaybackRequest,
     codecPreference: PlaybackCodecPreference,
     codecCapability: CodecCapability,
+    youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
   ): PlaybackInfo = withContext(Dispatchers.IO) {
     val videoId = request.bvid
     var lastError: String? = null
@@ -200,8 +206,23 @@ class YoutubePlaybackResolver(
           if (cachedSid != null) {
             val cachedEntry = SabrStreamRegistry.getEntryByVideoId(videoId)
             if (cachedEntry != null) {
+              var session = cachedEntry.session
+              // 音轨切换:preferredAudioTrackId 命中且与当前 audioFormatId 不同 → copy 换 audioFormatId 并重注册
+              // (更新缓存 entry,下个音频段请求用新 itag)。poToken 会话级不绑 itag,无需重 harvest。
+              if (request.preferredAudioTrackId != null) {
+                val match = session.audioTracks.firstOrNull { it.id == request.preferredAudioTrackId }
+                if (match != null && match.formatId.itag != session.audioFormatId.itag) {
+                  session = session.copy(audioFormatId = match.formatId)
+                  SabrStreamRegistry.registerByVideoId(
+                    videoId, session, cachedEntry.client,
+                    windowStartMs = cachedEntry.windowStartMs,
+                    refreshPoToken = cachedEntry.refreshPoToken,
+                  )
+                  Log.i(Tag, "SABR audio switch: videoId=$videoId track=${request.preferredAudioTrackId} → audio=itag${match.formatId.itag}")
+                }
+              }
               Log.i(Tag, "SABR session reuse: videoId=$videoId sid=$cachedSid → reuse (skip harvest/decipher), preferredQuality=${request.preferredQualityId}")
-              return@withContext buildSabrPlaybackInfo(request, videoId, durationMs, raws, cachedEntry.session, cachedSid)
+              return@withContext buildSabrPlaybackInfo(request, videoId, durationMs, raws, session, cachedSid)
             }
           }
           // alpha.29:同会话所有可播视频 itag 的 FormatId(从 /player adaptiveFormats 全收)。
@@ -303,9 +324,9 @@ class YoutubePlaybackResolver(
 
     // 优先：adaptive 高清视频+音频双轨。fMP4 分片喂 ProgressiveMediaSource 会解析失败，
     // 故走 DASH 分支（segmentBase 由 initRange/indexRange 填充），由合成 MPD 播放。
-    val adaptiveVideo = pickVideo(decodableVideos, codecPreference, request.preferredQualityId)
+    val adaptiveVideo = pickVideo(decodableVideos, codecPreference, request.preferredQualityId, youtubeDefaultQuality.maxHeight)
     if (adaptiveVideo != null) {
-      val audio = pickAudio(audioCandidates)
+      val audio = pickAudio(audioCandidates, request.preferredAudioTrackId)
       val videoUrl = resolveStreamUrl(adaptiveVideo, playerJsUrl)
       if (videoUrl.isNotBlank() && audio != null) {
         val audioUrl = resolveStreamUrl(audio, playerJsUrl)
@@ -319,6 +340,7 @@ class YoutubePlaybackResolver(
             videoUrl = videoUrl,
             audioUrl = audioUrl,
             allQualities = buildQualityList(decodableVideos),
+            allAudioTracks = audioCandidates,
           )
         }
       }
@@ -352,6 +374,7 @@ class YoutubePlaybackResolver(
     videoUrl: String,
     audioUrl: String,
     allQualities: List<PlaybackQuality>,
+    allAudioTracks: List<ParsedFormat> = emptyList(),
   ): PlaybackInfo {
     val selectedQuality = PlaybackQuality(id = videoFmt.itag, description = videoFmt.qualityLabel)
     // 清晰度面板列出全部可播(已硬件过滤)的 adaptive 档位；progressive 兜底只一项。
@@ -385,10 +408,22 @@ class YoutubePlaybackResolver(
       emptyList()
     }
     val kindLabel = if (audioFmt != null) "${videoFmt.qualityLabel} + audio" else "${videoFmt.qualityLabel} (progressive)"
+    // 多语言配音:全部可选音轨(供播放器音轨切换菜单)。按 audioTrack.id 去重——单音轨视频
+    // 多个 itag(251/140)audioTrackId 均为 null → 折叠成一条,避免误显示多音轨菜单。
+    val availableAudioTracks = allAudioTracks
+      .map {
+        PlaybackAudioTrack(
+          id = it.audioTrackId ?: "default",
+          languageCode = it.languageCode,
+          displayName = it.audioDisplayName ?: it.languageCode,
+          isDefault = it.audioIsDefault,
+        )
+      }
+      .distinctBy { it.id }
     Log.i(
       Tag,
       "resolve ok: $kindLabel itag=${videoFmt.itag}; nDecrypt=${if (videoUrl.contains("n=")) "left" else "applied"}; " +
-        "dash=${if (videoFmt.toSegmentBase() != null) "yes" else "no"}; qualities=${qualities.size}",
+        "dash=${if (videoFmt.toSegmentBase() != null) "yes" else "no"}; qualities=${qualities.size}; audioTracks=${availableAudioTracks.size}",
     )
     return PlaybackInfo(
       bvid = videoId,
@@ -400,6 +435,7 @@ class YoutubePlaybackResolver(
       videoTracks = listOf(videoTrack),
       audioTracks = audioTracks,
       headers = YoutubePlaybackHeaders,
+      availableAudioTracks = availableAudioTracks,
     )
   }
 
@@ -606,7 +642,11 @@ class YoutubePlaybackResolver(
     val videoStreams = info.videoOnlyStreams
     val audioStreams = info.audioStreams
     val firstVideo = videoStreams.firstOrNull { it.height > 0 } ?: videoStreams.firstOrNull()
-    val firstAudio = audioStreams.firstOrNull()
+    // 优先原声轨(getAudioTrackType()==ORIGINAL,来自 xtags acont=original),跳过配音/翻译轨。
+    // 多语言配音视频里同一 itag 会按语言重复出现,盲取第一条可能拿到配音轨。
+    val firstAudio = audioStreams.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
+      ?: audioStreams.firstOrNull { it.audioTrackType != AudioTrackType.DUBBED }
+      ?: audioStreams.firstOrNull()
     if (firstVideo == null || firstAudio == null) {
       Log.w(Tag, "NewPipe: missing streams (video=${firstVideo != null} audio=${firstAudio != null})")
       return null
@@ -614,6 +654,17 @@ class YoutubePlaybackResolver(
     val videoFormats = videoStreams.filter { it.height > 0 }.map { it.toSabrFormatId() }
     val vFmt = firstVideo.toSabrFormatId()
     val aFmt = firstAudio.toSabrFormatId()
+    // 全部可选音轨(供播放器音轨切换菜单)。id 用 getAudioTrackId()(audioTrack.id,如 "en.4");
+    // 单音轨视频多个 itag 的 audioTrackId 均为 null → 折叠成 "default" 一条,避免误显示多音轨菜单。
+    val sabrAudioTracks = audioStreams.map {
+      SabrAudioTrack(
+        id = it.getAudioTrackId() ?: "default",
+        languageCode = it.getAudioLocale()?.language,
+        displayName = it.getAudioTrackName() ?: it.getAudioLocale()?.getDisplayName(),
+        isDefault = it.audioTrackType == AudioTrackType.ORIGINAL,
+        formatId = it.toSabrFormatId(),
+      )
+    }
     // 优先 provider 缓存(getInfo 期间铸造的同一枚);否则 resolve() 顶部已铸的。同为 BotGuard 128B minter。
     val cachedPoToken = biliTvPoTokenProvider.cached()?.streamingDataPoToken
     val poTokenForSabr = cachedPoToken ?: poToken
@@ -640,6 +691,7 @@ class YoutubePlaybackResolver(
       cookieHeader = innerTubeClient.currentSessionCookies(),
       visitorData = innerTubeClient.currentVisitorData(),
       videoFormats = videoFormats,
+      audioTracks = sabrAudioTracks,
     )
     Log.i(
       Tag,
@@ -710,6 +762,17 @@ class YoutubePlaybackResolver(
     val aItag = sabrSession.audioFormatId.itag
     val aRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == aItag }
     val audioTrack = buildSabrTrack(aItag, aRaw, "audio", sid, videoId)
+    // 多语言配音:全部可选音轨(供播放器音轨切换菜单)。按 id 去重——单音轨会话多个 itag 折叠成一条。
+    val availableAudioTracks = sabrSession.audioTracks
+      .map {
+        PlaybackAudioTrack(
+          id = it.id,
+          languageCode = it.languageCode,
+          displayName = it.displayName,
+          isDefault = it.isDefault,
+        )
+      }
+      .distinctBy { it.id }
 
     // 全部视频 itag 作清晰度菜单;videoFormats 为空(classic 仅首条)则兜底默认 videoFormatId。
     val videoFmts = sabrSession.videoFormats.ifEmpty { listOf(sabrSession.videoFormatId) }
@@ -744,6 +807,7 @@ class YoutubePlaybackResolver(
       videoTracks = listOf(videoTrack),
       audioTracks = listOf(audioTrack),
       headers = YoutubePlaybackHeaders,
+      availableAudioTracks = availableAudioTracks,
     )
   }
 
@@ -807,13 +871,20 @@ class YoutubePlaybackResolver(
     candidates: List<ParsedFormat>,
     preference: PlaybackCodecPreference,
     preferredItag: Int?,
+    preferredMaxHeight: Int?,
   ): ParsedFormat? {
     // 用户在清晰度面板选中具体 itag（如 1080p/2K/4K）时，优先命中该档。
     if (preferredItag != null) {
       candidates.firstOrNull { it.itag == preferredItag }?.let { return it }
     }
+    // 默认画质上限(设置里 YouTube 默认画质):选 height <= 上限的最高档。null=自动(最大化分辨率)。
+    val pool = if (preferredMaxHeight != null) {
+      candidates.filter { it.height <= preferredMaxHeight }
+    } else {
+      candidates
+    }
     // 最大化分辨率，codec 偏好仅在同分辨率下打破平局。避免旧逻辑「avc 优先」压过更高的 vp9/av01。
-    return candidates.maxWithOrNull(
+    return pool.maxWithOrNull(
       compareBy<ParsedFormat> { it.height }
         .thenByDescending { codecRank(it.codecKey, preference) }
         .thenBy { it.bitrate },
@@ -831,8 +902,16 @@ class YoutubePlaybackResolver(
     return order.indexOf(codecKey).let { if (it < 0) order.size else it }
   }
 
-  private fun pickAudio(candidates: List<ParsedFormat>): ParsedFormat? {
-    // 优先 opus(251)，其次 m4a(140)，否则最高 bitrate。
+  private fun pickAudio(candidates: List<ParsedFormat>, preferredAudioTrackId: String?): ParsedFormat? {
+    // 用户显式选了音轨(audioTrack.id)时优先命中。
+    if (preferredAudioTrackId != null) {
+      candidates.firstOrNull { it.audioTrackId == preferredAudioTrackId }?.let { return it }
+    }
+    // 优先原声/默认轨(audioTrack.audioIsDefault=true),跳过配音/翻译轨。
+    // 多语言配音视频里同一 itag(如 251)会按语言重复出现,盲取第一条可能拿到配音轨。
+    val original = candidates.firstOrNull { it.audioIsDefault }
+    if (original != null) return original
+    // 兜底(非多音轨视频):按 opus(251)/m4a(140)/最高码率。
     val opus = candidates.firstOrNull { it.itag == 251 }
     if (opus != null) return opus
     val m4a = candidates.firstOrNull { it.itag == 140 }
@@ -858,6 +937,12 @@ class YoutubePlaybackResolver(
     // 净化 MIME：去掉 "; codecs=..." 尾缀，只留 "video/mp4"/"audio/mp4"/"video/webm"，
     // 否则 buildDashManifest 会把完整串写进 <AdaptationSet mimeType> 破坏 MPD 解析。
     val cleanMimeType = rawMimeType.substringBefore(";").trim()
+    // 多语言配音(multi-audio)元数据:同一 itag 会按语言重复出现,audioTrack.audioIsDefault=true 才是原声轨。
+    val audioTrack = node.obj("audioTrack")
+    val audioIsDefault = audioTrack?.get("audioIsDefault")?.jsonPrimitive?.booleanOrNull ?: false
+    val audioTrackId = audioTrack?.stringOrNull("id")
+    val audioDisplayName = audioTrack?.stringOrNull("displayName")
+    val languageCode = node.stringOrNull("language")
     return ParsedFormat(
       itag = itag,
       mimeType = cleanMimeType,
@@ -875,6 +960,10 @@ class YoutubePlaybackResolver(
       // 合并流(音视频一体，如 progressive itag 18)的 mimeType codecs 列表里含音频 codec(mp4a/opus)。
       // 注意 extractCodecs 只留第一个(视频)codec，故用原始 rawMimeType 判定。
       combined = rawMimeType.contains("mp4a", ignoreCase = true) || rawMimeType.contains("opus", ignoreCase = true),
+      audioIsDefault = audioIsDefault,
+      audioTrackId = audioTrackId,
+      audioDisplayName = audioDisplayName,
+      languageCode = languageCode,
     )
   }
 
@@ -974,6 +1063,14 @@ class YoutubePlaybackResolver(
     val indexRange: String,
     /** 是否合并流(音视频一体，progressive itag 18 等)。 */
     val combined: Boolean,
+    /** 是否默认/原声轨(audioTrack.audioIsDefault=true)。多语言配音视频里同一 itag 会按语言重复出现。 */
+    val audioIsDefault: Boolean = false,
+    /** 音轨 id(audioTrack.id,如 "en.4",非 itag)。多语言配音视频用它区分各语言轨。 */
+    val audioTrackId: String? = null,
+    /** 音轨显示名(audioTrack.displayName,如 "English (Original)"/"中文")。 */
+    val audioDisplayName: String? = null,
+    /** 语言代码(顶层 language 字段,如 "en"/"zh-Hans")。 */
+    val languageCode: String? = null,
     val kind: Kind = if (mimeType.startsWith("video/")) Kind.Video else Kind.Audio,
   )
 

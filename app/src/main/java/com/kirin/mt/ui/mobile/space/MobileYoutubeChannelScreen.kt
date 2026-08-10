@@ -13,7 +13,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -23,8 +22,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -54,6 +51,7 @@ import kotlinx.coroutines.launch
 fun MobileYoutubeChannelScreen(
   youtubeRepository: YoutubeRepository,
   youtubeChannelStore: YoutubeChannelStore,
+  uiState: MobileYoutubeChannelUiState,
   channelId: String,
   channelName: String,
   onVideoSelected: (VideoSummary) -> Unit,
@@ -64,64 +62,66 @@ fun MobileYoutubeChannelScreen(
   val scope = rememberCoroutineScope()
   val channels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   val followed = channels.any { it.channelId == channelId }
-  var name by remember { mutableStateOf(channelName) }
-  var followLoading by remember { mutableStateOf(false) }
-
-  // 频道视频分页状态
-  var items by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
-  var continuation by remember { mutableStateOf<String?>(null) }
-  var loading by remember { mutableStateOf(true) }
-  var loadingMore by remember { mutableStateOf(false) }
-  var endReached by remember { mutableStateOf(false) }
-  var failed by remember { mutableStateOf<String?>(null) }
-  val gridState = rememberLazyGridState()
+  val name = uiState.name
+  val items = uiState.items
+  val loading = uiState.loading
+  val loadingMore = uiState.loadingMore
+  val failed = uiState.failed
+  val gridState = uiState.gridState
 
   fun loadFirst() {
     scope.launch {
-      loading = true
-      failed = null
+      uiState.loading = true
+      uiState.failed = null
       try {
         val page = youtubeRepository.getChannelVideos(channelId)
-        items = page.items
-        continuation = page.continuation
-        endReached = page.continuation == null
+        uiState.items = page.items
+        uiState.continuation = page.continuation
+        uiState.endReached = page.continuation == null
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
-        failed = e.message.orEmpty().ifBlank { "加载失败" }
-        items = emptyList()
-        continuation = null
-        endReached = true
+        uiState.failed = e.message.orEmpty().ifBlank { "加载失败" }
+        uiState.items = emptyList()
+        uiState.continuation = null
+        uiState.endReached = true
       }
-      loading = false
+      uiState.loading = false
     }
   }
 
   fun loadNext() {
-    val token = continuation ?: return
-    if (loadingMore || endReached) return
-    loadingMore = true
+    val token = uiState.continuation ?: return
+    if (uiState.loadingMore || uiState.endReached) return
+    uiState.loadingMore = true
     scope.launch {
       try {
         val page = youtubeRepository.getChannelVideos(channelId, token)
-        val merged = (items + page.items).distinctBy { it.bvid }
-        items = merged
-        continuation = page.continuation
-        endReached = page.continuation == null || merged.size == items.size
+        val merged = (uiState.items + page.items).distinctBy { it.bvid }
+        uiState.items = merged
+        uiState.continuation = page.continuation
+        uiState.endReached = page.continuation == null || merged.size == uiState.items.size
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
         // 翻页失败保留已加载内容
       }
-      loadingMore = false
+      uiState.loadingMore = false
     }
   }
 
-  // 首屏:解析权威频道名(失败回退卡片名) + 拉第一页
+  // 首屏:解析权威频道名(失败回退卡片名) + 拉第一页(已加载过同 channelId 则跳过)。
   LaunchedEffect(channelId) {
-    name = runCatching { youtubeRepository.resolveChannel(channelId).name }
-      .getOrDefault(channelName).ifBlank { channelName }
-    loadFirst()
+    if (uiState.loadedChannelId != channelId) {
+      uiState.name = channelName
+      uiState.name = runCatching { youtubeRepository.resolveChannel(channelId).name }
+        .getOrDefault(channelName).ifBlank { channelName }
+      loadFirst()
+      uiState.loadedChannelId = channelId
+    } else {
+      // 从播放器返回同 channelId:清除可能卡住的翻页 loading 标志(scope 已随离开组合取消)。
+      uiState.loadingMore = false
+    }
   }
 
   // 滚到底自动翻页
@@ -175,18 +175,18 @@ fun MobileYoutubeChannelScreen(
             )
             Button(
               onClick = {
-                if (followLoading) return@Button
-                followLoading = true
+                if (uiState.followLoading) return@Button
+                uiState.followLoading = true
                 scope.launch {
                   if (followed) {
                     youtubeChannelStore.remove(channelId)
                   } else {
                     youtubeChannelStore.add(YoutubeChannel(channelId = channelId, name = name))
                   }
-                  followLoading = false
+                  uiState.followLoading = false
                 }
               },
-              enabled = !followLoading,
+              enabled = !uiState.followLoading,
             ) {
               Text(stringResource(if (followed) R.string.youtube_channel_following else R.string.youtube_channel_follow))
             }

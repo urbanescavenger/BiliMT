@@ -107,6 +107,8 @@
     <string name="settings_playback_codec_av1">AV1</string>
     <string name="settings_playback_cdn_title">CDN 線路</string>
     <string name="settings_playback_cdn_description">切換影片串流的 CDN 節點。預設跟隨 B 站自動分配,在尖峰時段或跨網環境可手動指定更快的節點。</string>
+    <string name="settings_youtube_default_quality_title">YouTube 預設畫質</string>
+    <string name="settings_youtube_default_quality_description">新開 YouTube 影片預設使用的畫質上限。自動為最高可用畫質。</string>
     <string name="settings_speed_test_title">網路測速</string>
     <string name="settings_speed_test_description">使用最後一次播放的影片測試各 CDN 節點速度，方便挑選更快的線路。</string>
     <string name="settings_speed_test_running">測速中…</string>

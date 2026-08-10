@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
@@ -59,6 +61,7 @@ import com.kirin.mt.core.image.BiliImageSizing
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.i18n.ChineseTextVariant
 import com.kirin.mt.core.player.PlaybackCdnPreference
+import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.settings.AppSettings
@@ -76,6 +79,7 @@ import com.kirin.mt.ui.settings.downloadProgressFraction
 import com.kirin.mt.ui.settings.isUpdateVersionActionEnabled
 import com.kirin.mt.ui.settings.latestVersionText
 import com.kirin.mt.ui.settings.updateVersionActionLabel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -181,6 +185,14 @@ fun MobileSettingsScreen(
       selectedLabel = cdnLabel(settings.playbackCdnPreference),
       options = enumOptions(PlaybackCdnPreference.entries) { cdnLabel(it) },
       onSelected = { scope.launch { appSettingsStore.setPlaybackCdnPreference(it) } },
+    )
+    MobileEnumPickerRow(
+      title = stringResource(R.string.settings_youtube_default_quality_title),
+      description = stringResource(R.string.settings_youtube_default_quality_description),
+      selected = settings.youtubeDefaultQuality,
+      selectedLabel = settings.youtubeDefaultQuality.label,
+      options = enumOptions(YoutubeDefaultQuality.entries) { it.label },
+      onSelected = { scope.launch { appSettingsStore.setYoutubeDefaultQuality(it) } },
     )
     MobileSwitchRow(
       title = stringResource(R.string.settings_seek_preview_sprites_title),
@@ -576,6 +588,14 @@ private fun MobileWebDavSection(
   var showEditDialog by remember { mutableStateOf(false) }
   var busy by remember { mutableStateOf(false) }
   var expanded by remember { mutableStateOf(false) }
+  // 展开后自动滚动,让备份/还原按钮滚进可视区(区块在设置列表底部,默认在折叠线以下)。
+  val bringIntoViewRequester = remember { BringIntoViewRequester() }
+  LaunchedEffect(expanded) {
+    if (expanded) {
+      delay(300) // 等展开动画(默认 300ms)把内容撑到完整高度再滚动
+      bringIntoViewRequester.bringIntoView()
+    }
+  }
 
   fun runBackup() {
     if (busy) return
@@ -617,7 +637,9 @@ private fun MobileWebDavSection(
     },
   )
   androidx.compose.animation.AnimatedVisibility(visible = expanded) {
-    Column {
+    Column(
+      modifier = Modifier.bringIntoViewRequester(bringIntoViewRequester),
+    ) {
       MobileSettingsRow(
         title = stringResource(R.string.settings_webdav_url_label),
         description = config.url.ifBlank { stringResource(R.string.settings_webdav_configure_hint) },

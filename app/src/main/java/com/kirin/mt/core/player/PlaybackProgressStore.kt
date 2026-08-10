@@ -52,7 +52,9 @@ class PlaybackProgressStore(private val context: Context) {
     positionMs: Long,
     durationMs: Long,
   ) {
-    if (bvid.isBlank() || cid <= 0L || positionMs < 0L) {
+    // cid=0 允许：YouTube 播放请求 bvid 承载 videoId、cid 恒为 0，靠 videoId 唯一续播。
+    // B站视频 cid 恒 >0，不受影响。
+    if (bvid.isBlank() || cid < 0L || positionMs < 0L) {
       return
     }
     val keyPrefix = keyPrefix(bvid, cid)

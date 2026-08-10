@@ -1,5 +1,78 @@
 # BiliMT 版本发布说明
 
+## v3.0.0-alpha.7
+
+**UP 主页缓存机制(测试 alpha)**:从 B 站空间 / YouTube 频道点进视频,退出播放器回到主页时不再重新加载,页面内容与滚动位置保留。
+
+### 修复
+- **UP 主页返回不重载**:此前从空间/频道起播后退出播放器,页面会重新拉取(网络重载)。根因是空间/频道页状态全在 composable 局部 `remember`,起播时显示门控把页面移出组合、局部状态销毁,返回时重组合重载。现把状态提升到 shell 层,返回时守卫命中跳过重载。
+
+### 技术
+- **状态提升**:新建 `MobileUpSpaceUiState`(B站空间)与 `MobileYoutubeChannelUiState`(YouTube 频道),在 `MobileApp.kt` shell 层 `remember`,离开组合仍存活;含 `LazyGridState` 保留滚动位置 + loaded 守卫(`profileLoadedMid`/`videoLoadedMid`/`videoLoadedOrder`/`loadedChannelId`)。
+- **守卫逻辑**:`LaunchedEffect` 仅当 mid/channelId 或 order 变化时才重载;从播放器返回同 mid+order 命中守卫跳过。切不同 UP/频道或排序切换仍正常重载。
+
+## v3.0.0-alpha.6
+
+**动态 tab 点击刷新修复(测试 alpha)**:点击底栏「动态」tab(含重复点击)现在会同时刷新 B 站动态 + YouTube 关注,不再只有下拉刷新才能两者一起更新。
+
+### 修复
+- **动态 tab 点击刷新**:此前点击底栏「动态」只刷新 B 站动态,YouTube 关注靠 10 分钟缓存 + 后台协程(切走即取消)易丢;新增 `dynamicRefreshKey`,每次点击「动态」tab 自增,驱动 `MobileDynamicScreen` 的 `LaunchedEffect(isLoggedIn, dynamicRefreshKey)` 重新 `loadFirstBody()`,同时刷新 B 站 + YouTube。
+
+### 技术
+- **刷新键**:`MobileApp.kt` 底栏点击对「动态」tab 自增 `dynamicRefreshKey`(镜像「推荐」的 `recommendRefreshKey` 与 TV 的 `dynamicManualRefreshKey`),经 `MobileFeedScreen` 传入 `MobileDynamicScreen`。
+
+## v3.0.0-alpha.5
+
+**动态 feed 卡片改单列(测试 alpha)**:动态页视频卡片从两列网格改为单列,卡片占满整行,配合 B 站动态样式(顶行作者块 + 缩略图独占整行 + 标题)全宽展示。
+
+### 功能
+- **动态 feed 单列**:`MobileDynamicScreen` 的 `LazyVerticalGrid` 用 `GridCells.Fixed(1)`,卡片占满整行宽度,不再分两列。
+
+## v3.0.0-alpha.4
+
+**后台播放自动连播修复 + 历史 tab 混合排序 + 动态 feed 卡片样式(测试 alpha)**:修复播放列表后台播放完不自动播下一集(实际是崩溃),历史 tab 改为 B 站与 YouTube 历史混合按播放时间倒序,动态 feed 卡片改 B 站原版动态样式并显示相对时间发布日期。
+
+### 功能
+- **动态 feed 卡片改版**:卡片改 B 站动态样式——顶行作者块(头像跨两行 + UP 名 + 发布时间·播放量)→ 缩略图独占整行 → 标题;发布时间用相对时间(3分钟前/昨天/5天前)。仅动态 feed 生效,首页/搜索/空间卡片不变。
+- **历史 tab 混合排序**:「动态」底栏「历史」子 tab 中 B 站观看历史与本地 YouTube 历史**混合、按播放时间倒序**(YouTube 卡片绿框),未登录仍显示本地 YouTube 历史。
+
+### 修复
+- **后台播放自动连播**:播放列表视频后台播放完不再崩溃断链——根因是 `STATE_ENDED` 时无条件 `stopService` 再重启触发 `ForegroundServiceStartNotAllowedException`(后台禁止启动前台服务);改为保持服务跨自动连播存活,仅列表播完才停止。
+
+### 技术
+- **卡片布局**:`MobileVideoCard` 加 `feedLayout` 参数(默认紧凑布局),动态页置 true 用新布局;相对时间复用现有 `video_relative_*` 字符串(3 种语言已齐)。
+- **混合排序**:`MobileHistoryPage` 的 `toVideoSummary` 给 YouTube 条目填 `viewAt=lastPlayedAtMs/1000`(epoch 秒),与 B 站历史 `viewAt` 同单位,合并后 `sortedByDescending` 渲染;两列表本已按该键倒序,新加载分页不重排已显示内容。
+- **自动连播**:`MobilePlayerScreen` 改安全 `startPlaybackService`(catch `IllegalStateException`)保服务存活。
+
+## v3.0.0-alpha.3
+
+**YouTube 播放历史 + 断电续播(测试 alpha)**:新增 YouTube 播放历史记录与断电续播。根因是 YouTube 播放请求 `cid` 恒为 0,被 `PlaybackProgressStore.saveProgress` 的 `cid <= 0L` 守卫拦截,进度从未落盘;放宽守卫后 TV/移动端播放器既有保存/读取逻辑即恢复续播。
+
+### 功能
+- **YouTube 断电续播**:播到中途退出 → 重开同一视频从上次位置续播;播完的视频重开从 0 起播(完成态不保存进度)。
+- **YouTube 播放历史**:移动端「动态」底栏新增「YouTube 历史」子 tab,网格展示最近播放的 50 条,点击续播、点头像进频道。
+
+### 技术
+- **根因修复**:`PlaybackProgressStore.saveProgress` 守卫 `cid <= 0L` → `cid < 0L`(允许 cid=0);B站视频 cid 恒 >0 不受影响。
+- **历史存储**:新建 `core/youtube/YoutubeHistoryStore.kt`(DataStore 列表存储,cap 50 按 `lastPlayedAtMs` 倒序),TV 与移动端播放器 Ready 时 `recordPlay`、暂停/退出时 `updatePosition`。
+- **`PlaybackRequest` 加 `channelId`**:供历史列表开频道;顺带修复 TV 播放器私有 `toPlaybackRequest` 未填 `source` 的缺口(YouTube 相关视频丢失来源)。
+
+### 听视频模式(音频-only)
+- **功能**:移动端播放器顶栏右上角新增耳机按钮,开启后**只听音频**——禁用视频轨,不再下载/解码视频段,只保留音频(省流量 + 锁屏/后台只听)。开启时视频画面叠黑底 + "听视频模式"指示,弹幕隐藏;播放列表自动连播保留(下一集仍保持听视频模式)。
+- **技术**:`toggleAudioOnly` 用 `player.setTrackSelectionParameters(...setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, audioOnly))` 禁用/启用视频轨,不重新解析、不重建 MediaSource。对三种源均成立:B站 DASH / PGC 合并流走标准 Media3 轨道选择;YouTube SABR 单流由 `SabrMediaPeriod` 释放被禁用的视频流 + `SabrMediaFetcher` 退化为纯音频拉取。`loadRequest` 重载后重新应用视频轨禁用(覆盖切集/切画质/自动连播)。新增 `ic_player_audio` 耳机图标。
+
+### 多语言配音修复
+- **功能**:修复「中文视频误播英文配音」——根因是 YouTube multi-audio 下同一 itag 按语言重复出现、`pickAudio` 盲取第一条可能拿到配音轨;`pickAudio` 优先 `audioTrack.audioIsDefault=true`(原声轨)、SABR 路径优先 `AudioTrackType.ORIGINAL`。播放器控制栏加音轨切换按钮(仅 YouTube 多音轨视频显示),`availableAudioTracks` 暴露全部音轨、选中即 `preferredAudioTrackId` 重解析(经典+SABR 统一);设置加 YouTube 默认画质(`YoutubeDefaultQuality` 按 `maxHeight` 上限选档)。
+
+## v3.0.0-alpha.1
+
+**UI 交互修复(测试 alpha)**:修复 WebDAV 弹窗按钮被系统键盘遮住、移动端 WebDAV 展开后备份/还原按钮需手动下滑、TV 搜索源切换箭头歧义三处交互问题。
+
+### 修复
+- **TV WebDAV 编辑弹窗按钮被键盘遮住**:弹窗内容加 `verticalScroll`,系统输入法弹出后 保存/取消 按钮可滚动到可见区(此前被 IME 顶出屏幕外看不到);第二按钮 关闭→取消,与移动端一致。
+- **移动端 WebDAV 展开自动上移**:展开后等动画完成再 `bringIntoView()`,备份/还原按钮自动滚进可视区(此前在折叠线以下需手动下滑)。
+- **TV 搜索源切换还原双 pill**:由单 pill ⇄ 循环改回 BILIBILI + YOUTUBE 两个 pill 同时显示、选中高亮,去掉左右箭头歧义。
+
 ## v2.0.10
 
 **YouTube SABR 高清播放完整落地(P12 系列)**:从 v2.0.9 的 PO token 高清取流进一步演进——YouTube 对 guest+token 会话不再给 legacy DASH 签名直链,拿流机制改为 **SABR(Server-Assisted Bandwidth Regulation)**。本版完整实现 SABR 协议引擎、WebView harvest 破 n-decrypt、NewPipeExtractor fork 取流层,并逐层修掉 60s 断崖/重启、黑屏、无声、全视频加载不出等真机问题,最终音视频稳定播放。

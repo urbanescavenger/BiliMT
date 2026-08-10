@@ -67,6 +67,7 @@ fun MobileDynamicScreen(
   videoRepository: VideoRepository,
   youtubeFeedCacheStore: YoutubeFeedCacheStore,
   isLoggedIn: Boolean,
+  dynamicRefreshKey: Int = 0,
   youtubeChannels: List<YoutubeChannel>,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
@@ -167,7 +168,8 @@ fun MobileDynamicScreen(
     }
   }
 
-  LaunchedEffect(isLoggedIn) {
+  // 首次进入 + 每次点击底栏"动态"tab(dynamicRefreshKey 自增)都刷新 B 站 + YouTube 关注。
+  LaunchedEffect(isLoggedIn, dynamicRefreshKey) {
     if (!isLoggedIn) return@LaunchedEffect
     loadFirstBody()
   }
@@ -221,7 +223,8 @@ fun MobileDynamicScreen(
       modifier = Modifier.fillMaxSize(),
     ) {
       LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 160.dp),
+        // 动态 feed 单列:卡片占满整行,配 feedLayout 的 B 站动态样式(顶行作者块+缩略图+标题)。
+        columns = GridCells.Fixed(1),
         state = gridState,
         contentPadding = PaddingValues(12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -281,6 +284,7 @@ fun MobileDynamicScreen(
                 onOpenOwner = onOpenOwner,
                 onLongPress = onLongPress,
                 showYoutubeBorder = true,
+                feedLayout = true,
               )
             }
             if (s.loadingMore) {

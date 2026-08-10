@@ -1,6 +1,7 @@
 package com.kirin.mt.ui.mobile.player
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.util.Log
@@ -108,6 +109,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
@@ -149,6 +151,7 @@ import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackEpisode
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.PlaybackRepository
+import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackService
 import com.kirin.mt.core.player.PlaybackVideoMetadata
@@ -179,6 +182,25 @@ private const val DanmakuSendLogTag = "BiliDanmakuSend"
  *  发送时 showAtMs=当前位置会被 start(currentPos≥该位置) 跳过,故向前加 1s 让其落在 set time 之后。 */
 private const val LocalDanmakuLeadMs = 1000L
 private const val MobilePlayerLogTag = "BiliMT:MobilePlayer"
+
+/**
+ * 安全启动后台保活前台服务。Android 12+ 禁止后台 startForegroundService,会抛
+ * ForegroundServiceStartNotAllowedException(extends IllegalStateException);Android 8-11 后台
+ * startService 抛 IllegalStateException。服务在播放开始时已在前台启动,后台连播时保持运行即可,
+ * 这里捕获异常避免崩溃;若服务已在运行,用普通 startService 刷新通知标题(已运行服务后台允许)。
+ */
+private fun startPlaybackService(context: Context) {
+  try {
+    ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
+  } catch (e: IllegalStateException) {
+    Log.w(MobilePlayerLogTag, "startForegroundService blocked in background: ${e.message}")
+    try {
+      context.startService(Intent(context, PlaybackService::class.java))
+    } catch (e2: IllegalStateException) {
+      Log.w(MobilePlayerLogTag, "startService also blocked in background: ${e2.message}")
+    }
+  }
+}
 /** alpha.67:单次播放会话内 error-retry 上限(onPlayerErrorChanged),超过则交用户手动重试,避免死循环。 */
 private const val MaxStallAutoRetry = 2
 // 空降助手阈值(镜像 TV PlayerScreen)
@@ -204,12 +226,14 @@ private sealed interface MobilePlayerState {
 fun MobilePlayerScreen(
   request: PlaybackRequest,
   playbackRepository: PlaybackRepository,
+  youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
   playbackCodecPreference: PlaybackCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
   playbackCdnPreference: PlaybackCdnPreference,
+  youtubeDefaultQuality: YoutubeDefaultQuality,
   airJumpAssistantEnabled: Boolean,
   videoRepository: VideoRepository,
   youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
@@ -254,6 +278,8 @@ fun MobilePlayerScreen(
   var autoRetryCount by remember { mutableIntStateOf(0) }
   var danmakuEntries by remember { mutableStateOf<List<com.kirin.mt.core.player.DanmakuEntry>>(emptyList()) }
   var fullscreen by rememberSaveable { mutableStateOf(false) }
+  // 听视频模式(音频-only):禁用视频轨,只播音频。顶栏右上角耳机按钮切换。
+  var audioOnly by rememberSaveable { mutableStateOf(false) }
   // 画质/分P 切换:activeRequest 驱动 load effect(镜像 TV),metadata 供选集,selectedQualityId 供画质高亮
   var activeRequest by remember(request) { mutableStateOf(request) }
   var metadata by remember { mutableStateOf<PlaybackVideoMetadata?>(null) }
@@ -265,6 +291,8 @@ fun MobilePlayerScreen(
   var settingsSheet by remember { mutableStateOf(false) }
   // 底栏画质下拉菜单(挂在 HD 图标按钮上)
   var showQualityMenu by remember { mutableStateOf(false) }
+  // 底栏音轨下拉菜单(挂在音轨图标按钮上,仅 YouTube 多音轨视频显示)
+  var showAudioMenu by remember { mutableStateOf(false) }
   // 发送弹幕:底栏内联输入栏开关 / 文本 / 发送中。发在当前播放位置(progress 毫秒)。
   var danmakuInputActive by remember { mutableStateOf(false) }
   var danmakuInputText by remember { mutableStateOf("") }
@@ -346,6 +374,16 @@ fun MobilePlayerScreen(
     scope.launch {
       // 本地进度保存保留（YouTube 按 videoId 也能续播）；B 站 heartbeat 仅 B 站视频上报。
       runCatching { playbackRepository.saveProgress(info.bvid, info.cid, positionMs, durationMs) }
+      // YouTube 播放历史：同步更新本地历史列表的进度（断电续播 + 历史 tab 展示）。
+      if (activeRequest.isYoutube) {
+        runCatching {
+          youtubeHistoryStore.updatePosition(
+            videoId = info.bvid,
+            positionMs = positionMs,
+            durationMs = durationMs,
+          )
+        }
+      }
       if (!activeRequest.isYoutube) {
         val progressSeconds = progressSecondsOverride
           ?: (positionMs / 1000L).toInt()
@@ -372,6 +410,23 @@ fun MobilePlayerScreen(
     // 非全屏:栏常驻,不随播放/暂停变;全屏:对齐沉浸式,播放隐/暂停显。
     if (fullscreen) controlsVisible = !willPlay
     userPaused = !willPlay
+  }
+
+  // 听视频模式(音频-only)切换:禁用/启用视频轨。禁用后 ExoPlayer 不再下载/解码视频段,只播音频。
+  // 对三种源都成立:B站 DASH / PGC 合并流走标准 Media3 轨道选择;YouTube SABR 单流由
+  // SabrMediaPeriod 释放被禁用的视频流 + SabrMediaFetcher 退化为纯音频拉取。
+  fun toggleAudioOnly() {
+    audioOnly = !audioOnly
+    player.setTrackSelectionParameters(
+      player.trackSelectionParameters.buildUpon()
+        .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, audioOnly)
+        .build(),
+    )
+    Toast.makeText(
+      context,
+      if (audioOnly) "已开启听视频模式" else "已退出听视频模式",
+      Toast.LENGTH_SHORT,
+    ).show()
   }
 
   // 分享视频:bvid 优先,无 bvid 用 av{aid};文本=标题+换行+链接,走系统 share sheet。
@@ -517,6 +572,7 @@ fun MobilePlayerScreen(
         request = resolvedRequest,
         codecPreference = playbackCodecPreference,
         qualityPreference = playbackQualityPreference,
+        youtubeDefaultQuality = youtubeDefaultQuality,
       )
       selectedQualityId = info.selectedQuality.id
       // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体)。
@@ -615,6 +671,15 @@ fun MobilePlayerScreen(
       }
       player.setMediaSource(mediaSource)
       player.prepare()
+      // 听视频模式:新 MediaSource prepare 会重置轨道选择为全开,需重新禁用视频轨。
+      // 自动连播/切集/切画质都走 loadRequest,此处理覆盖所有重载路径,保证听视频模式持续生效。
+      if (audioOnly) {
+        player.setTrackSelectionParameters(
+          player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+            .build(),
+        )
+      }
       player.setPlaybackSpeed(playbackSpeed)
       if (startPositionMs > 0L) {
         // alpha.34:SABR 源(LENGTH_UNSET 不可 seek)跳过 seekTo——续播已由 startMs 透传进
@@ -627,6 +692,23 @@ fun MobilePlayerScreen(
       playerState = MobilePlayerState.Ready(sabrEffectiveInfo)
       // alpha.49:播放就绪,隐藏加载步骤提示。
       YoutubeLoadProgress.clear()
+      // YouTube 起播即写入播放历史（含频道/封面元数据），供历史 tab 展示与续播。
+      if (isYoutube) {
+        runCatching {
+          youtubeHistoryStore.recordPlay(
+            com.kirin.mt.core.youtube.YoutubeHistoryEntry(
+              videoId = sabrEffectiveInfo.bvid,
+              title = sabrEffectiveInfo.title,
+              channelName = request.ownerName,
+              channelId = request.channelId,
+              thumbnailUrl = request.coverUrl,
+              durationMs = sabrEffectiveInfo.durationMs,
+              positionMs = startPositionMs,
+              lastPlayedAtMs = System.currentTimeMillis(),
+            ),
+          )
+        }
+      }
 
       // 弹幕
       if (danmakuSettings.enabled && cid > 0L) {
@@ -668,7 +750,6 @@ fun MobilePlayerScreen(
         if (playbackState == Player.STATE_ENDED && playerState is MobilePlayerState.Ready && player.mediaItemCount > 0 && !completionReported) {
           completionReported = true
           saveAndReportProgress(CompletedProgressSeconds)
-          context.stopService(Intent(context, PlaybackService::class.java))
           // 自动连播下一集:后台播放时帧时钟暂停、Compose 重组被推迟,LaunchedEffect(completionReported)
           // 不会重启,故在此用不依赖帧时钟的 scope 直接调度(镜像 TV scheduleCompletionAction)。
           scope.launch {
@@ -676,11 +757,17 @@ fun MobilePlayerScreen(
             val next = computeNextRequest()
             if (next != null) {
               loadRequest(next)
-              // 下一集加载成功并开始播放,重启后台保活服务(原 LaunchedEffect(isPlaying, displayTitle) 在后台被推迟)。
+              // 下一集加载成功并开始播放,刷新后台保活服务通知。
+              // 注意:不能 stop+restart——后台禁止 startForegroundService(Android 12+ 抛
+              // ForegroundServiceStartNotAllowedException,曾致连播崩溃)。服务在播放开始时已在前台
+              // 启动,这里保持运行、仅安全刷新;播放列表播完才在 else 分支停止。
               if (playerState is MobilePlayerState.Ready) {
                 PlayerHolder.title = displayTitle
-                ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
+                startPlaybackService(context)
               }
+            } else {
+              // 播放列表播完,停止后台保活服务。
+              context.stopService(Intent(context, PlaybackService::class.java))
             }
           }
         }
@@ -747,10 +834,12 @@ fun MobilePlayerScreen(
   }
 
   // 开始播放时启动后台保活服务(通知控件);标题变化时刷新。
+  // 用 startPlaybackService 安全启动:后台连播下一集时 isPlaying/displayTitle 变化会重跑本 effect,
+  // 直接 startForegroundService 会抛 ForegroundServiceStartNotAllowedException(Android 12+)崩溃。
   LaunchedEffect(isPlaying, displayTitle) {
     PlayerHolder.title = displayTitle
     if (isPlaying) {
-      ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
+      startPlaybackService(context)
     }
   }
 
@@ -924,6 +1013,14 @@ fun MobilePlayerScreen(
               Text("UP", color = Color.White)
             }
           }
+          // 听视频模式(音频-only)切换:顶栏右上角耳机按钮,激活态粉色高亮。
+          IconButton(onClick = { toggleAudioOnly() }) {
+            Icon(
+              painter = painterResource(R.drawable.ic_player_audio),
+              contentDescription = if (audioOnly) "退出听视频" else "听视频",
+              tint = if (audioOnly) BiliColors.BiliPink else Color.White,
+            )
+          }
           TextButton(onClick = { settingsSheet = true }) {
             Icon(
               painter = painterResource(R.drawable.ic_nav_settings),
@@ -960,7 +1057,7 @@ fun MobilePlayerScreen(
             },
           )
 
-          if (danmakuSettings.enabled && playerState is MobilePlayerState.Ready) {
+          if (danmakuSettings.enabled && !audioOnly && playerState is MobilePlayerState.Ready) {
             PlayerDanmakuLayer(
               entries = danmakuEntries,
               settings = danmakuSettings,
@@ -970,6 +1067,25 @@ fun MobilePlayerScreen(
               playbackSpeed = playbackSpeed,
               modifier = Modifier.fillMaxSize(),
             )
+          }
+
+          // 听视频模式:叠一层黑底 + 音频指示遮住画面(不销毁 PlayerView,避免 surface 重建黑闪)。
+          if (audioOnly) {
+            Box(
+              modifier = Modifier.fillMaxSize().background(Color.Black),
+              contentAlignment = Alignment.Center,
+            ) {
+              Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                  painter = painterResource(R.drawable.ic_player_audio),
+                  contentDescription = null,
+                  tint = Color.White,
+                  modifier = Modifier.size(48.dp),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("听视频模式", color = Color.White)
+              }
+            }
           }
 
           when (val s = playerState) {
@@ -1300,6 +1416,50 @@ fun MobilePlayerScreen(
                             startPositionMs = player.currentPosition.takeIf { it > 0L }
                               ?: playbackPositionState.longValue,
                             preferredQualityId = q.id,
+                          ))
+                        }
+                      },
+                    )
+                  }
+                }
+              }
+            }
+            // 音轨切换入口:仅 YouTube 多音轨(多语言配音)视频显示。列出全部可选音轨,选中即重载。
+            val audioTracks = readyInfo.availableAudioTracks
+            if (activeRequest.isYoutube && audioTracks.size > 1) {
+              Box {
+                MobilePlayerIconButton(
+                  iconRes = R.drawable.ic_player_audio_track,
+                  contentDescription = "音轨",
+                  tint = BiliColors.TextPrimary,
+                  onClick = { showAudioMenu = true },
+                )
+                DropdownMenu(
+                  expanded = showAudioMenu,
+                  onDismissRequest = { showAudioMenu = false },
+                  containerColor = Color(0xFF1A1A20),
+                ) {
+                  audioTracks.forEach { track ->
+                    // 未显式选轨时高亮默认/原声轨(isDefault);已选则高亮命中轨。
+                    val selected = if (activeRequest.preferredAudioTrackId != null) {
+                      track.id == activeRequest.preferredAudioTrackId
+                    } else {
+                      track.isDefault
+                    }
+                    DropdownMenuItem(
+                      text = {
+                        Text(
+                          text = track.displayName ?: track.languageCode ?: track.id,
+                          color = if (selected) Color(0xFFFB7299) else Color.White,
+                        )
+                      },
+                      onClick = {
+                        showAudioMenu = false
+                        scope.launch {
+                          loadRequest(activeRequest.copy(
+                            startPositionMs = player.currentPosition.takeIf { it > 0L }
+                              ?: playbackPositionState.longValue,
+                            preferredAudioTrackId = track.id,
                           ))
                         }
                       },
