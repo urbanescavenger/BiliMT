@@ -1,5 +1,15 @@
 # BiliMT 版本发布说明
 
+## v3.0.0-alpha.6
+
+**动态 tab 点击刷新修复(测试 alpha)**:点击底栏「动态」tab(含重复点击)现在会同时刷新 B 站动态 + YouTube 关注,不再只有下拉刷新才能两者一起更新。
+
+### 修复
+- **动态 tab 点击刷新**:此前点击底栏「动态」只刷新 B 站动态,YouTube 关注靠 10 分钟缓存 + 后台协程(切走即取消)易丢;新增 `dynamicRefreshKey`,每次点击「动态」tab 自增,驱动 `MobileDynamicScreen` 的 `LaunchedEffect(isLoggedIn, dynamicRefreshKey)` 重新 `loadFirstBody()`,同时刷新 B 站 + YouTube。
+
+### 技术
+- **刷新键**:`MobileApp.kt` 底栏点击对「动态」tab 自增 `dynamicRefreshKey`(镜像「推荐」的 `recommendRefreshKey` 与 TV 的 `dynamicManualRefreshKey`),经 `MobileFeedScreen` 传入 `MobileDynamicScreen`。
+
 ## v3.0.0-alpha.5
 
 **动态 feed 卡片改单列(测试 alpha)**:动态页视频卡片从两列网格改为单列,卡片占满整行,配合 B 站动态样式(顶行作者块 + 缩略图独占整行 + 标题)全宽展示。

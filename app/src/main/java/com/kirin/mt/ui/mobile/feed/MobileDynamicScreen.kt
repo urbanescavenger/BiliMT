@@ -67,6 +67,7 @@ fun MobileDynamicScreen(
   videoRepository: VideoRepository,
   youtubeFeedCacheStore: YoutubeFeedCacheStore,
   isLoggedIn: Boolean,
+  dynamicRefreshKey: Int = 0,
   youtubeChannels: List<YoutubeChannel>,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
@@ -167,7 +168,8 @@ fun MobileDynamicScreen(
     }
   }
 
-  LaunchedEffect(isLoggedIn) {
+  // 首次进入 + 每次点击底栏"动态"tab(dynamicRefreshKey 自增)都刷新 B 站 + YouTube 关注。
+  LaunchedEffect(isLoggedIn, dynamicRefreshKey) {
     if (!isLoggedIn) return@LaunchedEffect
     loadFirstBody()
   }

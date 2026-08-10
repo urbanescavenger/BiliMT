@@ -98,6 +98,9 @@ fun BiliMobileApp(
   val context = LocalContext.current
   var selected by rememberSaveable { mutableStateOf(AppDestination.Recommend) }
   var recommendRefreshKey by rememberSaveable { mutableStateOf(0) }
+  // 动态 tab 手动刷新键:每次点击底栏"动态"(含重复点击)自增,驱动 MobileDynamicScreen
+  // 同时刷新 B 站动态 + YouTube 关注(镜像 recommendRefreshKey 与 TV dynamicManualRefreshKey)。
+  var dynamicRefreshKey by rememberSaveable { mutableStateOf(0) }
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
   val session by sessionStore.session.collectAsState(initial = UserSession())
   var playbackRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
@@ -174,6 +177,10 @@ fun BiliMobileApp(
                 if (dest == AppDestination.Recommend && selected == dest) {
                   recommendRefreshKey++
                 }
+                // 点击"动态"tab(含重复点击) -> 触发动态刷新(B站 + YouTube 关注)
+                if (dest == AppDestination.Dynamic) {
+                  dynamicRefreshKey++
+                }
                 selected = dest
               }
             },
@@ -217,6 +224,7 @@ fun BiliMobileApp(
           youtubeFeedCacheStore = youtubeFeedCacheStore,
           youtubeHistoryStore = youtubeHistoryStore,
           isLoggedIn = session.isLoggedIn,
+          dynamicRefreshKey = dynamicRefreshKey,
           onVideoSelected = { video ->
             playQueue = emptyList()
             playbackRequest = video.toPlaybackRequest()
