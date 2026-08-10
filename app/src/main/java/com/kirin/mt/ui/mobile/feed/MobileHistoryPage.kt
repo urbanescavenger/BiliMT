@@ -58,10 +58,12 @@ private sealed interface HistoryState {
 }
 
 /**
- * 移动端"历史"子 tab:本地 YouTube 历史(绿框)置顶 + B 站观看历史(双游标 viewAt/max 分页)。
+ * 移动端"历史"子 tab:本地 YouTube 历史(绿框)与 B 站观看历史**混合,按播放时间倒序**。
  * YouTube 历史来自 [YoutubeHistoryStore](DataStore,免登录),未登录时也显示;B 站历史走
- * [VideoRepository.getHistoryPage] 需登录,未登录时跳过网络请求并显示登录提示。
- * 历史项 VideoSummary 已带 cid/progress/historyPage,toPlaybackRequest() 自动用 progress 续播。
+ * [VideoRepository.getHistoryPage](双游标 viewAt/max 分页)需登录,未登录时跳过网络请求并显示登录提示。
+ * 排序键:YouTube 用 lastPlayedAtMs/1000、B 站用 viewAt(秒),两列表都按该键倒序,新加载的 B 站分页
+ * 条目恒更旧,合并后不重排已显示内容。历史项 VideoSummary 已带 cid/progress/historyPage,
+ * toPlaybackRequest() 自动用 progress 续播。
  */
 @Composable
 fun MobileHistoryPage(
@@ -79,6 +81,11 @@ fun MobileHistoryPage(
   var nextMax by remember { mutableStateOf(0L) }
   val youtubeHistory by youtubeHistoryStore.history.collectAsState(initial = emptyList())
   val youtubeVideos = youtubeHistory.map { it.toVideoSummary() }
+  // 混合历史:YouTube(本地,viewAt=lastPlayedAtMs/1000)+ B站(网络,viewAt 秒),按播放时间倒序。
+  // 注意:B站分页按 viewAt 倒序加载,新页条目永远更旧,插入后不重排已显示内容,不会造成列表跳动。
+  val mergedVideos =
+    (youtubeVideos + (state as? HistoryState.Success)?.videos.orEmpty())
+      .sortedByDescending { it.viewAt }
 
   suspend fun loadFirstBody() {
     state = HistoryState.Loading
@@ -170,13 +177,13 @@ fun MobileHistoryPage(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = Modifier.fillMaxSize(),
       ) {
-        // 本地 YouTube 历史置顶,绿框区分。
-        items(youtubeVideos, key = { it.bvid }) { video ->
+        // 混合历史(YouTube 绿框 + B站),按播放时间倒序。
+        items(mergedVideos, key = { it.bvid }) { video ->
           MobileVideoCard(
             video = video,
             onClick = onVideoSelected,
             onOpenOwner = onOpenOwner,
-            showYoutubeBorder = true,
+            showYoutubeBorder = video.source == SourceYoutube,
           )
         }
         if (!isLoggedIn) {
@@ -199,13 +206,15 @@ fun MobileHistoryPage(
           }
         } else {
           when (val s = state) {
-            HistoryState.Loading -> item(span = { GridItemSpan(maxLineSpan) }) {
-              Box(
-                modifier = Modifier.fillMaxWidth().padding(32.dp),
-                contentAlignment = Alignment.Center,
-              ) { CircularProgressIndicator() }
+            HistoryState.Loading -> if (mergedVideos.isEmpty()) {
+              item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                  modifier = Modifier.fillMaxWidth().padding(32.dp),
+                  contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator() }
+              }
             }
-            HistoryState.Empty -> if (youtubeVideos.isEmpty()) {
+            HistoryState.Empty -> if (mergedVideos.isEmpty()) {
               item(span = { GridItemSpan(maxLineSpan) }) {
                 Box(
                   modifier = Modifier.fillMaxWidth().padding(32.dp),
@@ -234,17 +243,13 @@ fun MobileHistoryPage(
                 )
               }
             }
-            is HistoryState.Success -> {
-              items(s.videos, key = { it.bvid }) { video ->
-                MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner)
-              }
-              if (s.loadingMore) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                  Box(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    contentAlignment = Alignment.Center,
-                  ) { CircularProgressIndicator() }
-                }
+            // mergedVideos 已含 B 站历史,这里只处理加载更多的指示器。
+            is HistoryState.Success -> if (s.loadingMore) {
+              item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                  modifier = Modifier.fillMaxWidth().padding(16.dp),
+                  contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator() }
               }
             }
           }
@@ -254,7 +259,8 @@ fun MobileHistoryPage(
   }
 }
 
-/** 历史条目 → 卡片模型。progress 填秒数,toPlaybackRequest 据此续播;接近播完自动视为看完不续播。 */
+/** 历史条目 → 卡片模型。progress 填秒数,toPlaybackRequest 据此续播;接近播完自动视为看完不续播。
+ *  viewAt 填播放时间(秒),与 B 站历史 viewAt 同单位,供混合列表按播放时间排序。 */
 private fun YoutubeHistoryEntry.toVideoSummary(): VideoSummary {
   return VideoSummary(
     bvid = videoId,
@@ -269,6 +275,7 @@ private fun YoutubeHistoryEntry.toVideoSummary(): VideoSummary {
     pubdate = 0L,
     badge = "",
     progress = (positionMs / 1000L).toInt(),
+    viewAt = lastPlayedAtMs / 1000L,
     source = SourceYoutube,
     channelId = channelId,
   )

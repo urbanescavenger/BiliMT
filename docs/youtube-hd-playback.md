@@ -595,7 +595,7 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 
 **记录时机**:TV 与移动端播放器起播(Ready)时 `recordPlay`(带频道/封面元数据),暂停/退出时 `updatePosition`。历史需要 channelId 供开频道 → `PlaybackRequest` 加 `channelId` 字段,`toPlaybackRequest` 从 `VideoSummary.channelId` 填入。
 
-**移动端 UI**:YouTube 历史并入「动态」底栏的「历史」子 tab(`MobileFeedScreen` → `MobileHistoryPage`):本地 `YoutubeHistoryStore` 数据置顶(绿框区分 YouTube),下方 B 站历史分页不变;历史 tab 放宽登录门槛,未登录只显示本地 YouTube 历史 + 登录提示(复用 `history_signed_out`),登录后两者合并。点击续播、点头像开频道。原独立「YouTube 历史」子 tab 已移除(`MobileYoutubeHistoryPage.kt` 删除,`toVideoSummary()` 移入 `MobileHistoryPage`)。
+**移动端 UI**:YouTube 历史并入「动态」底栏的「历史」子 tab(`MobileFeedScreen` → `MobileHistoryPage`):本地 `YoutubeHistoryStore` 数据与 B 站观看历史**混合,按播放时间倒序**(排序键统一为 epoch 秒——YouTube 取 `lastPlayedAtMs/1000`,B 站取 `viewAt`;两列表本已按该键倒序,新加载的 B 站分页恒更旧,合并后不重排已显示内容)。YouTube 卡片绿框区分(`showYoutubeBorder`)。历史 tab 放宽登录门槛,未登录只显示本地 YouTube 历史 + 登录提示(复用 `history_signed_out`),登录后 B 站历史并入。点击续播、点头像开频道。原独立「YouTube 历史」子 tab 已移除(`MobileYoutubeHistoryPage.kt` 删除,`toVideoSummary()` 移入 `MobileHistoryPage`)。
 
 ## 7. 关键文件
 
@@ -610,7 +610,7 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 | `core/player/CodecCapabilityProbe.kt` | 硬件过滤 |
 | `core/player/PlaybackProgressStore.kt` | 续播落盘(`saveProgress` 守卫放宽允许 cid=0,§6.12) |
 | `core/youtube/YoutubeHistoryStore.kt` | YouTube 播放历史 DataStore 列表存储(§6.12) |
-| `ui/mobile/feed/MobileHistoryPage.kt` | 移动端「历史」tab:YouTube 历史置顶 + B 站历史分页(§6.12) |
+| `ui/mobile/feed/MobileHistoryPage.kt` | 移动端「历史」tab:YouTube 历史与 B 站历史混合、按播放时间倒序(§6.12) |
 
 ## 8. 参考来源
 - FreeTube 上游:`src/renderer/helpers/api/local.js`(InnerTube 封装)与 `formatUtils`(itag/adaptive 选择)
