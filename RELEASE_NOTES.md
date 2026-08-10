@@ -1,5 +1,12 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.12
+
+**TV 设置崩溃修复(测试 alpha)**:v3.0.1-alpha.10 开放 gl/hl 内容地区设置时,TV `SettingsScreen` 新增的「内容地区」循环行漏把 `SettingsItemYoutubeContentRegion` 加进 `settingFocusRequesters` 焦点表,该行 modifier 用 `Map.getValue()` 取焦点请求器时抛 `NoSuchElementException`。LazyColumn 预组合视口附近 item,往下滚到「关注管理」(youtube-channels) 时紧邻其下的内容地区行被拉进组合即崩。移动端用 `MobileEnumPickerRow` 无焦点表,不受影响。
+
+### 修复
+- **焦点表补 key**:`settingFocusRequesters` 加 `SettingsItemYoutubeContentRegion to FocusRequester()`,消除 `getValue` 崩溃。单行,不碰其它逻辑。
+
 ## v3.0.1-alpha.11
 
 **4K60 VP9 黑屏修复(largeHeap + 降缓冲,测试 alpha)**:Sony BRAVIA 7 系(Google TV,硬解 h264/h265/av1 全支持)播 YouTube 2160p VP9(itag315,4K60 ~26Mbps)切 2160p 后黑屏卡死,1080p 正常;用户观察"其他 4K 视频能播"(能播的是 AV1/HEVC 4K,黑屏的是 VP9 4K)。真机日志定位为 50s SABR 缓冲 × 26Mbps ≈ 162MB 撑爆 app 默认堆(~170MB,manifest 无 largeHeap)→ GC 连续阻塞主线程 70~240ms → 解码/渲染吞吐崩塌 → `stall detected buffered=0%` → `player state=ENDED tracks=0 video=vp9`。itag315 选中 26 次 ENDED 18 次。详见 `docs/youtube-hd-playback.md` §6.14。
