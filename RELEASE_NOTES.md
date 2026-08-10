@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.3
+
+**TV 搜索初始界面接通 D-pad 焦点(测试 alpha)**:源切换按钮(B站/YouTube)+ 输入框可选中。
+
+### 修复
+- **源切换按钮够不到**:源切换按钮(B站/YouTube)在搜索界面最顶部,但 D-pad 焦点路径没连到它——初始界面焦点落在「清空」按钮上,只有左键回导航栏,没有上键到源切换按钮的路径,遥控器永远够不到,自然切不了 B站/YouTube 搜索范围。给 `SearchSourceToggle` 加 `FocusRequester`,键盘顶部「上键 → 源切换按钮」,按钮「下键 → 输入框」。
+- **输入框无法选中**:输入框只是显示文本的 `Text`,没有 `focusable()`,焦点落不到它上面。给 `SearchInputText` 加 `focusable()` + 聚焦边框(聚焦时 accent 描边),上键回源切换按钮,下键回键盘。
+- **键盘「清空」按钮**:加 `onMoveUp` 支持,上键回输入框。
+
+### 技术
+- 焦点路径打通为:**源切换按钮 → 输入框 → 键盘(清空/字母键)→ 搜索按钮**,全程遥控器可导航。
+- `SearchKeyboardButton` 新增 `onMoveUp` 参数(与既有 `onMoveLeft` 并列),`onPreviewKeyEvent` 用 `when` 分支处理上键/左键。
+
 ## v3.0.1-alpha.2
 
 **对齐 LibreTube:YouTube 三项设置补齐(测试 alpha)**:TV 端 YouTube 默认画质 + 默认播放倍速 + YouTube 字幕接入。

@@ -135,6 +135,7 @@ v3.0.0 稳定版后的 patch 线 alpha。
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.1-alpha.3 | TV 搜索初始界面接通 D-pad 焦点：源切换按钮（B站/YouTube）+ 输入框可选中（源切换按钮加 FocusRequester、输入框加 focusable()+聚焦边框、键盘清空按钮加 onMoveUp） |
 | v3.0.1-alpha.2 | 对齐 LibreTube：TV 端「YouTube 默认画质」+「默认播放倍速」设置项补齐 + YouTube 字幕接入（WebVTT URL 直拉，PlayerView 渲染；字幕轨切换 UI 后续迭代） |
 | v3.0.1-alpha.1 | YouTube 频道页两处修复：首屏去重防 key 崩溃（loadFirst 补 distinctBy bvid，与翻页一致）+ 频道页头像补全（lockupViewModel 不带头像，从解析出的频道头像注入 ownerFace） |
 
