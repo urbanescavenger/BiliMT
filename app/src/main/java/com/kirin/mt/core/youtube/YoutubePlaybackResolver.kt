@@ -704,7 +704,7 @@ class YoutubePlaybackResolver(
     val subtitleTracks = info.subtitles.mapIndexed { index, subtitle: SubtitlesStream ->
       PlaybackTrack(
         id = index,
-        baseUrl = subtitle.url,
+        baseUrl = subtitle.url.orEmpty(),
         backupUrls = emptyList(),
         bandwidth = 0,
         codecs = "",
