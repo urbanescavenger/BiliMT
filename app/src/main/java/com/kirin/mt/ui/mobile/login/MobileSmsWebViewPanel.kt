@@ -45,6 +45,33 @@ private const val ManualRetryIntervalMs = 400L
 private const val ManualRetryAttempts = 13 // ~5s @400ms
 
 /**
+ * 诊断 JS:页面加载后把可见 DOM 结构(标题/按钮/勾选框/输入框/正文文本)dump 到 console,
+ * 由 onConsoleMessage 打进日志,用于确认 passport-h5 真实布局(先拿证据再改)。
+ * 临时诊断用,拿到真实布局后可移除。
+ */
+private const val DomDumpJs = """
+  (function(){
+    function vis(el){ return el && el.offsetParent !== null; }
+    var out = [];
+    out.push('TITLE=' + document.title);
+    var btns = Array.from(document.querySelectorAll('button, [role=button], a.btn, .btn'))
+      .filter(vis).map(function(b){ return (b.innerText||b.textContent||'').trim().replace(/\s+/g,' ').slice(0,30); })
+      .filter(Boolean);
+    out.push('BUTTONS=' + JSON.stringify(btns));
+    var cbs = Array.from(document.querySelectorAll('input[type=checkbox], [role=checkbox]'));
+    out.push('CHECKBOXES=' + JSON.stringify(cbs.map(function(c){
+      var lbl = c.closest('label');
+      return { checked: c.checked, label: lbl ? (lbl.innerText||'').trim().replace(/\s+/g,' ').slice(0,30) : '' };
+    })));
+    var ins = Array.from(document.querySelectorAll('input:not([type=hidden])'));
+    out.push('INPUTS=' + JSON.stringify(ins.map(function(i){ return { type: i.type, placeholder: i.placeholder, name: i.name }; })));
+    var bodyText = (document.body.innerText||'').trim().replace(/\s+/g,' ').slice(0,500);
+    out.push('BODYTEXT=' + bodyText);
+    console.log('BILI_DOM_DUMP ' + out.join(' | '));
+  })();
+"""
+
+/**
  * 短信登录(移动端唯一登录方式):WebView 托管 B站 登录页,用户在 B站 自己的页面完成
  * 手机号 + 极验滑块 + 短信;轮询 CookieManager 抓 SESSDATA/bili_jct 存进 SessionStore 并
  * 刷新用户资料,成功自动返回。另提供"完成登录"手动兜底按钮(B站"登录"无自动返回时点它)。
@@ -87,6 +114,11 @@ fun MobileSmsWebViewPanel(
       webViewClient = object : WebViewClient() {
         override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
           Log.e(Tag, "webview error: ${error?.description} (${request?.url})")
+        }
+        // 诊断:页面加载完成后注入 JS dump 可见 DOM 结构到 console(临时,拿真实布局后移除)。
+        override fun onPageFinished(view: WebView?, url: String?) {
+          super.onPageFinished(view, url)
+          view?.evaluateJavascript(DomDumpJs, null)
         }
       }
       webChromeClient = object : WebChromeClient() {
