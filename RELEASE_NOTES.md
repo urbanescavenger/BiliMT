@@ -13,6 +13,10 @@
 - **历史存储**:新建 `core/youtube/YoutubeHistoryStore.kt`(DataStore 列表存储,cap 50 按 `lastPlayedAtMs` 倒序),TV 与移动端播放器 Ready 时 `recordPlay`、暂停/退出时 `updatePosition`。
 - **`PlaybackRequest` 加 `channelId`**:供历史列表开频道;顺带修复 TV 播放器私有 `toPlaybackRequest` 未填 `source` 的缺口(YouTube 相关视频丢失来源)。
 
+### 听视频模式(音频-only)
+- **功能**:移动端播放器顶栏右上角新增耳机按钮,开启后**只听音频**——禁用视频轨,不再下载/解码视频段,只保留音频(省流量 + 锁屏/后台只听)。开启时视频画面叠黑底 + "听视频模式"指示,弹幕隐藏;播放列表自动连播保留(下一集仍保持听视频模式)。
+- **技术**:`toggleAudioOnly` 用 `player.setTrackSelectionParameters(...setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, audioOnly))` 禁用/启用视频轨,不重新解析、不重建 MediaSource。对三种源均成立:B站 DASH / PGC 合并流走标准 Media3 轨道选择;YouTube SABR 单流由 `SabrMediaPeriod` 释放被禁用的视频流 + `SabrMediaFetcher` 退化为纯音频拉取。`loadRequest` 重载后重新应用视频轨禁用(覆盖切集/切画质/自动连播)。新增 `ic_player_audio` 耳机图标。
+
 ## v3.0.0-alpha.1
 
 **UI 交互修复(测试 alpha)**:修复 WebDAV 弹窗按钮被系统键盘遮住、移动端 WebDAV 展开后备份/还原按钮需手动下滑、TV 搜索源切换箭头歧义三处交互问题。
