@@ -49,6 +49,7 @@ import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.youtube.YoutubeChannel
+import com.kirin.mt.core.youtube.YoutubeContentLocale
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.LoginActivity
@@ -102,6 +103,12 @@ fun BiliMobileApp(
   // 同时刷新 B 站动态 + YouTube 关注(镜像 recommendRefreshKey 与 TV dynamicManualRefreshKey)。
   var dynamicRefreshKey by rememberSaveable { mutableStateOf(0) }
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
+
+  // YouTube 内容地区(gl/hl)写进进程级 holder,InnerTubeClient.buildContext 每次请求读它,
+  // 让 gl/hl 跟随设置运行时变化(browse/search/player/SABR 全自动一致,免逐层透传)。
+  LaunchedEffect(settings.youtubeContentRegion) {
+    YoutubeContentLocale.current = settings.youtubeContentRegion
+  }
   val session by sessionStore.session.collectAsState(initial = UserSession())
   var playbackRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
   var spaceRequest by remember { mutableStateOf<com.kirin.mt.ui.space.UpSpaceRequest?>(null) }

@@ -40,6 +40,7 @@ import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.SpeedTestUiState
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppVisualPerformanceMode
 import com.kirin.mt.core.settings.HomeThemeVariant
@@ -70,6 +71,7 @@ fun SettingsScreen(
   onSeekPreviewSpritesEnabledChange: (Boolean) -> Unit,
   onPlaybackQualityPreferenceChange: (PlaybackQualityPreference) -> Unit,
   onYoutubeDefaultQualityChange: (YoutubeDefaultQuality) -> Unit,
+  onYoutubeContentRegionChange: (YoutubeContentRegion) -> Unit,
   onDefaultPlaybackSpeedChange: (DefaultPlaybackSpeed) -> Unit,
   onPlaybackCodecPreferenceChange: (PlaybackCodecPreference) -> Unit,
   onPlaybackCdnPreferenceChange: (PlaybackCdnPreference) -> Unit,
@@ -231,6 +233,7 @@ fun SettingsScreen(
         onSeekPreviewSpritesEnabledChange = onSeekPreviewSpritesEnabledChange,
         onPlaybackQualityPreferenceChange = onPlaybackQualityPreferenceChange,
         onYoutubeDefaultQualityChange = onYoutubeDefaultQualityChange,
+        onYoutubeContentRegionChange = onYoutubeContentRegionChange,
         onDefaultPlaybackSpeedChange = onDefaultPlaybackSpeedChange,
         onPlaybackCodecPreferenceChange = onPlaybackCodecPreferenceChange,
         onPlaybackCdnPreferenceChange = onPlaybackCdnPreferenceChange,
@@ -359,6 +362,7 @@ private fun SettingsBehaviorColumn(
   onSeekPreviewSpritesEnabledChange: (Boolean) -> Unit,
   onPlaybackQualityPreferenceChange: (PlaybackQualityPreference) -> Unit,
   onYoutubeDefaultQualityChange: (YoutubeDefaultQuality) -> Unit,
+  onYoutubeContentRegionChange: (YoutubeContentRegion) -> Unit,
   onDefaultPlaybackSpeedChange: (DefaultPlaybackSpeed) -> Unit,
   onPlaybackCodecPreferenceChange: (PlaybackCodecPreference) -> Unit,
   onPlaybackCdnPreferenceChange: (PlaybackCdnPreference) -> Unit,
@@ -927,6 +931,27 @@ private fun SettingsBehaviorColumn(
         onClick = onYoutubeChannelsSelected,
       )
     }
+    item(key = "youtube-content-region") {
+      val regionOptions = remember { YoutubeContentRegion.entries.toList() }
+      val effectiveRegion = settings.youtubeContentRegion
+      SettingsOptionRow(
+        title = stringResource(R.string.settings_youtube_content_region_title),
+        description = stringResource(R.string.settings_youtube_content_region_description),
+        value = effectiveRegion.label,
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemYoutubeContentRegion))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemYoutubeContentRegion,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemYoutubeContentRegion) },
+        onClick = {
+          val currentIndex = regionOptions.indexOf(effectiveRegion).takeIf { it >= 0 } ?: 0
+          onYoutubeContentRegionChange(regionOptions[(currentIndex + 1) % regionOptions.size])
+        },
+      )
+    }
     item(key = "webdav") {
       SettingsActionRow(
         title = stringResource(R.string.settings_webdav_title),
@@ -1103,6 +1128,7 @@ private const val SettingsItemLogs = 27
 private const val SettingsItemPlayerLogOverlay = 28
 private const val SettingsItemYoutubeChannels = 29
 private const val SettingsItemWebDav = 30
+private const val SettingsItemYoutubeContentRegion = 33
 private const val SettingsItemWebDavBackup = 31
 private const val SettingsItemWebDavRestore = 32
 
@@ -1134,6 +1160,7 @@ private val SettingsFocusableItems = listOf(
   SettingsItemChineseTextVariant,
   SettingsItemHomeSections,
   SettingsItemYoutubeChannels,
+  SettingsItemYoutubeContentRegion,
   SettingsItemWebDav,
   SettingsItemWebDavBackup,
   SettingsItemWebDavRestore,
@@ -1193,31 +1220,35 @@ private fun settingsItemToLazyIndex(
   }
   SettingsItemLogs -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    33 + updateExtraCount
+    34 + updateExtraCount
   }
   SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    34 + updateExtraCount
+    35 + updateExtraCount
   }
   SettingsItemPlayerLogOverlay -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    35 + updateExtraCount
+    36 + updateExtraCount
   }
   SettingsItemYoutubeChannels -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     29 + updateExtraCount
   }
-  SettingsItemWebDav -> {
+  SettingsItemYoutubeContentRegion -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     30 + updateExtraCount
   }
-  SettingsItemWebDavBackup -> {
+  SettingsItemWebDav -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     31 + updateExtraCount
   }
-  SettingsItemWebDavRestore -> {
+  SettingsItemWebDavBackup -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     32 + updateExtraCount
+  }
+  SettingsItemWebDavRestore -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    33 + updateExtraCount
   }
   else -> 0
 }

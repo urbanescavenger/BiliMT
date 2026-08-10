@@ -299,8 +299,8 @@ class InnerTubeClient(
             Client.WEB, Client.WEB_EMBEDDED -> {
               put("clientName", if (client == Client.WEB) YoutubeConstants.ClientName else YoutubeConstants.WebEmbeddedClientName)
               put("clientVersion", if (client == Client.WEB) currentClientVersion() else YoutubeConstants.WebEmbeddedClientVersion)
-              put("hl", YoutubeConstants.Hl)
-              put("gl", YoutubeConstants.Gl)
+              put("hl", YoutubeContentLocale.hl)
+              put("gl", YoutubeContentLocale.gl)
               // 对齐 youtubei.js 的 WEB context(反爬关键字段)。缺这些 WEB /player 会被判
               // "非真浏览器" → "The page needs to be reloaded"(playerErrorMessageRenderer)。
               put("platform", YoutubeConstants.WebPlatform)
@@ -339,8 +339,8 @@ class InnerTubeClient(
               put("clientName", "ANDROID")
               put("clientVersion", YoutubeConstants.AndroidClientVersion)
               put("androidSdkVersion", YoutubeConstants.AndroidSdkVersion)
-              put("hl", YoutubeConstants.Hl)
-              put("gl", YoutubeConstants.Gl)
+              put("hl", YoutubeContentLocale.hl)
+              put("gl", YoutubeContentLocale.gl)
             }
             // TVHTML5:YouTube 官方 TV 端 client(Cobalt 平台)。试验 TV 端取流,
             // 对齐 yt-dlp clientName=TVHTML5/clientNameId=7。context 比 WEB 简单(无浏览器指纹/
@@ -349,8 +349,8 @@ class InnerTubeClient(
             Client.TVHTML5 -> {
               put("clientName", YoutubeConstants.TvHtml5ClientName)
               put("clientVersion", YoutubeConstants.TvHtml5ClientVersion)
-              put("hl", YoutubeConstants.Hl)
-              put("gl", YoutubeConstants.Gl)
+              put("hl", YoutubeContentLocale.hl)
+              put("gl", YoutubeContentLocale.gl)
               put("platform", "TV")
               put("clientFormFactor", "UNKNOWN_FORM_FACTOR")
               put("userInterfaceTheme", YoutubeConstants.WebUserInterfaceTheme)
@@ -466,8 +466,8 @@ class InnerTubeClient(
       clientVersion = d?.clientVersion ?: YoutubeConstants.ClientVersion,
       osName = d?.osName,
       osVersion = d?.osVersion,
-      acceptLanguage = "${YoutubeConstants.Hl}-${YoutubeConstants.Gl}",
-      acceptRegion = YoutubeConstants.Gl,
+      acceptLanguage = "${YoutubeContentLocale.hl}-${YoutubeContentLocale.gl}",
+      acceptRegion = YoutubeContentLocale.gl,
       screenWidthPoints = 1920,
       screenHeightPoints = 1080,
       screenPixelDensity = 1,

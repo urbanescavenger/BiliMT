@@ -59,6 +59,7 @@ import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.SpeedTestUiState
+import com.kirin.mt.core.youtube.YoutubeContentLocale
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
@@ -266,6 +267,12 @@ fun BiliTvApp(
     if (!performancePolicy.imageMemoryCacheEnabled) {
       context.imageLoader.memoryCache?.clear()
     }
+  }
+
+  // YouTube 内容地区(gl/hl)写进进程级 holder,InnerTubeClient.buildContext 在每次请求时读它,
+  // 让 gl/hl 跟随设置运行时变化(browse/search/player/SABR 全自动一致,免逐层透传)。
+  LaunchedEffect(settings.youtubeContentRegion) {
+    YoutubeContentLocale.current = settings.youtubeContentRegion
   }
 
   // 一次性迁移:把本轮新增的 UGC 分区持久化为启用,之后显隐面板才能正常切换它们的开关。
@@ -672,6 +679,11 @@ fun BiliTvApp(
                 onYoutubeDefaultQualityChange = { quality ->
                   coroutineScope.launch {
                     appSettingsStore.setYoutubeDefaultQuality(quality)
+                  }
+                },
+                onYoutubeContentRegionChange = { region ->
+                  coroutineScope.launch {
+                    appSettingsStore.setYoutubeContentRegion(region)
                   }
                 },
                 onDefaultPlaybackSpeedChange = { speed ->

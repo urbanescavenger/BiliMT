@@ -210,6 +210,21 @@ fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', 
 - **youtubei.js `HTTPClient.ts #setupCommonHeaders` 的请求头**:`Accept:*/*`、`Accept-Language:*`、`X-Goog-Visitor-Id`、`X-Youtube-Client-Version`、`X-Youtube-Client-Name`、`User-Agent`(桌面 Chrome)、`Origin: request_url.origin`。
 - **纯 WEB 客户端不设 `thirdParty.embedUrl`**(HTTPClient.ts 里 WEB 走 `default` 分支;仅 TV_EMBEDDED/WEB_EMBEDDED 设)。**visitorData 也是本地生成的**(`ProtoUtils.encodeVisitorData(generateRandomString(11), now)`),与我们一致。
 
+#### gl/hl 开放为用户设置(v3.0.1-alpha.10)
+
+`gl`(国家/内容地区)+ `hl`(界面语言)原写死 `YoutubeConstants.Hl="en"`/`Gl="US"`(§6.8.3 上面 WEB context 的 `hl/gl`),因实测 `gl=CN`/`hl=zh-CN` 触发反爬(搜索返回 backgroundPromoRenderer)而刻意锁死 US/en。
+
+现开放为 YouTube 设置里的用户可调项,让挂不同地区 VPN 的用户使 `gl` 跟随出口 IP,避免"日本 IP + 美国 context"的地理不一致 bot 特征,并看对应地区热门/推荐:
+
+- **新枚举 `YoutubeContentRegion`**(`core/youtube/`):变体带 `gl`+`hl` 联动(选"日本"→ gl=JP,hl=ja),`key`/`label`/`fromKey` 对齐 `YoutubeDefaultQuality` 模式。变体:US/JP/HK/TW/KR/GB/DE。**不放 CN**(反爬)。默认 US。
+- **进程级 holder `YoutubeContentLocale`**:`@Volatile var current` + `gl`/`hl` getter。`InnerTubeClient.buildContext`(WEB/WEB_EMBEDDED/ANDROID/TVHTML5 全部)+ `sabrClientInfo()`(死代码,WEB harvest 退役后无调用方)读它,而非 `YoutubeConstants`。holder 是单一 app-wide 设置,全局可变在此可接受 —— **免把 gl/hl 逐层透传过 `YoutubeRepository`(browse/search)/`YoutubePlaybackResolver`(player)/SABR 的所有调用点**(那 blast radius 过大,与 `youtubeDefaultQuality` 只影响 /player 不同,gl/hl 影响全链路)。
+- **写入点**:`AppShell`(TV)+ `MobileApp`(移动)各一个 `LaunchedEffect(settings.youtubeContentRegion) { YoutubeContentLocale.current = it }`(幂等,值相同)。
+- **持久化**:`AppSettings.youtubeContentRegion` + `AppSettingsStore`(`stringPreferencesKey("youtube_content_region")` + `setYoutubeContentRegion`)。
+- **UI**:TV `SettingsScreen` YouTube 区块(`youtube-header` 下,`youtube-channels` 后)循环行 + 移动端 `MobileSettingsScreen` `MobileEnumPickerRow`,均用枚举自带 `label`。
+- **`visionOsSabrClientInfo()` 不动**:主 SABR 路径(NewPipe/visionOS)的 `ClientInfo` 逐字对齐 LibreTube,alpha.75 真机 WEB client info 被 RELOAD_PLAYER 全拒;给它加 `acceptLanguage`/`acceptRegion` 有被服务端拒的风险,且主 SABR 的 gl/hl 由 NewPipe 自己的 visionOS /player 决定(见下限制)。
+
+**已知限制**:主 SABR 路径的内容地区**不受此设置控制** —— `serverAbrStreamingUrl`+`ustreamerConfig` 来自 NewPipe `StreamInfo.getInfo` 内部的 visionOS /player,其 gl/hl 由 NewPipe 的 Localization 决定(`NewPipeHolder.init` 只传 downloader,用 NewPipe 默认 localization),且 `NewPipe.init` 是启动期一次性调用,运行时改设置无法热更新。本设置实际影响的是**我们的 WEB/TVHTML5 /player**(buildContext,SABR gate 检查 + adaptive 元数据 + DASH 兜底)。让 NewPipe 路径也跟随需另把 holder region 转成 NewPipe `Localization` 传进 `NewPipe.init` + 处理运行时 re-init(重启生效)—— 列为后续工作。
+
 ### 6.8.4 对我们实现的启示(alpha.23 结论)
 
 | 维度 | FreeTubeAndroid | 我们(alpha.23 前) | 修复 |

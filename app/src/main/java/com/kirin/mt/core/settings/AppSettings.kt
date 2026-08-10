@@ -7,6 +7,7 @@ import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.youtube.YoutubeContentRegion
 
 enum class AppVisualPerformanceMode(val key: String) {
   Smooth("smooth"),
@@ -42,6 +43,8 @@ data class AppSettings(
   val playbackCdnPreference: PlaybackCdnPreference = PlaybackCdnPreference.Auto,
   /** YouTube 默认画质(按分辨率上限选档)。 */
   val youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+  /** YouTube 内容地区(gl/hl 联动;默认美国,不放中国因 gl=CN 实测触发反爬)。 */
+  val youtubeContentRegion: YoutubeContentRegion = YoutubeContentRegion.US,
   /** 默认播放倍速(起播时初始化播放器 playbackSpeed)。 */
   val defaultPlaybackSpeed: DefaultPlaybackSpeed = DefaultPlaybackSpeed.X100,
   val seekPreviewSpritesEnabled: Boolean = true,
