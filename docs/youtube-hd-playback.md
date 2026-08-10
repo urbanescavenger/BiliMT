@@ -563,6 +563,26 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 
 → SABR 数据三要素全齐(sabrUrl + ustreamerConfig bytes + adaptive 元数据),启动 Kotlin 移植有据。**Phase 1(二进制基础模块)已提交(513d9f3)**:UmpReader/CompositeBuffer/ProtoWire/SabrProto——纯逻辑、proto 字段号全量核对上游(见 §6.7 row 40)。**Phase 2a(协议引擎 + 诊断探针)本提交**:SabrClient + InnerTubeClient.sabrClientInfo() + YoutubePlaybackResolver 探针——仅诊断,验真机协议往返是否被服务端接受,据结果定 Phase 2b(Media3 DashMediaSource + sabr:// DataSource 接线)。
 
+## 6.11 多语言配音修复 + 音轨切换 + 默认画质(2026-08)
+
+**背景 bug**:中文视频有时播英文配音轨。根因**不是 App 翻译音频**,而是 YouTube 多语言配音(multi-audio)下,`adaptiveFormats` 里**同一个 itag(如 251/140)会按语言重复出现多次**(原声 + 各语言配音各一条)。App 的 `pickAudio()` 盲取「第一条 itag 251/140」,若英文配音轨排前就播英文。
+
+**可靠信号(已核实)**:
+- `/player` 每个 audio adaptive format 的 `audioTrack` 对象:`audioIsDefault`(true=原声/默认轨)、`id`(如 `"en.4"`,**不是** itag)、`displayName`;另有顶层 `language` 字段。
+- NewPipe `AudioStream`:`getAudioTrackId()`(同 `audioTrack.id`)、`getAudioTrackName()`、`getAudioLocale()`、`getAudioTrackType()`(`AudioTrackType.ORIGINAL/DUBBED/DESCRIPTIVE/SECONDARY`,来自 xtags `acont`)。
+- itag 范围**无法**区分原声/配音(pytubefix 证实 139/140/249/250/251/599/600 同时出现在德语/西语配音里)。
+
+**设计决策:音轨切换用「重解析 + preferredAudioTrackId」**——与现有清晰度切换(`preferredQualityId` 重跑 resolve)**完全一致**,经典路径与 SABR 路径统一:
+- `PlaybackInfo.availableAudioTracks` 暴露**全部**音轨(供 UI 列表);`audioTracks` 仍只含**选中**音轨(构建媒体源用,DASH manifest 只建一个音频 AdaptationSet,无需 DefaultTrackSelector)。
+- 切换 = `loadRequest(activeRequest.copy(preferredAudioTrackId = track.id))` 重跑 resolve。
+
+**实现**:
+1. **音频选择优先原声轨**(`YoutubePlaybackResolver.kt`):`parseFormat` 解析 `audioTrack.audioIsDefault/id/displayName` + 顶层 `language` 进 `ParsedFormat`;`pickAudio` 优先 `preferredAudioTrackId` 命中 → `audioIsDefault` 原声轨 → 251 → 140 → 最高码率。SABR 路径 `buildSabrSessionFromNewPipe` 的 `firstAudio` 优先 `AudioTrackType.ORIGINAL` → 非 DUBBED → 首条。
+2. **音轨切换**:`PlaybackRequest.preferredAudioTrackId` + `PlaybackInfo.availableAudioTracks` + `PlaybackAudioTrack(id, languageCode, displayName, isDefault)`。SABR 会话复用路径:按 id 命中 `session.audioTracks` 表 → `session.copy(audioFormatId = match.formatId)` + `SabrStreamRegistry.registerByVideoId` 重注册(更新缓存 entry,下个音频段请求用新 itag;poToken 会话级不绑 itag,无需重 harvest)。`SabrSession.audioTracks: List<SabrAudioTrack>`(含 `formatId`)。播放器控制栏加音轨按钮(仅 YouTube 且 `availableAudioTracks.size > 1` 显示),`DropdownMenu` 列出全部音轨,选中即重载。
+3. **默认画质**:`YoutubeDefaultQuality` 枚举(自动/4K/2K/1080P/720P/480P,`maxHeight` 上限);`pickVideo` 加 `preferredMaxHeight`——`preferredItag` 命中优先,否则 `height <= maxHeight` 的最高档,否则最大化分辨率。设置加 `MobileEnumPickerRow`。
+
+**去重关键**:单音轨视频有多个 itag(251/140)但 `audioTrackId` 均为 null → 折叠成 `"default"` 一条 + `.distinctBy { it.id }`,避免误显示多音轨菜单。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
