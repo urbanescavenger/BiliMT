@@ -471,8 +471,6 @@
     <string name="home_section_youtube_trending">YouTube 热门</string>
     <string name="feed_tab_youtube">YouTube 关注</string>
     <string name="feed_tab_playlist">播放列表</string>
-    <string name="feed_tab_youtube_history">YouTube 历史</string>
-    <string name="youtube_history_empty">暂无播放历史，去播放一个 YouTube 视频吧</string>
     <string name="feed_youtube_empty">尚未配置 YouTube 频道，去设置里添加</string>
     <string name="playlist_empty">播放列表为空，长按视频卡片可加入</string>
     <string name="playlist_edit">编辑</string>
