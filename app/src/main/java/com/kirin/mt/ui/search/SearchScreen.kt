@@ -315,10 +315,16 @@ private fun SearchSourceToggle(
       SourceYoutube to stringResource(R.string.search_source_youtube),
     ).forEachIndexed { index, (value, label) ->
       val selected = source == value
+      // 点击已选中的源 pill 时循环切到另一个源(避免「点击当前源没反应」的困惑)。
+      val targetSource = if (selected) {
+        if (value == SourceBili) SourceYoutube else SourceBili
+      } else {
+        value
+      }
       BiliFocusableSurface(
         scaleOnFocus = false,
         shape = RoundedCornerShape(BiliRadius.Pill),
-        onClick = { onSourceSelected(value) },
+        onClick = { onSourceSelected(targetSource) },
         modifier = Modifier
           .height(BiliSizing.HomeSectionTabHeight)
           .then(if (index == 0) Modifier.focusRequester(focusRequester) else Modifier)
