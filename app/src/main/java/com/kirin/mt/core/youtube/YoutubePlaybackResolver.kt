@@ -273,6 +273,7 @@ class YoutubePlaybackResolver(
             return@withContext buildSabrPlaybackInfo(
               request, videoId, sabrDuration, sabrRaws, sabrSession, sid,
               subtitleTracks = npResult?.subtitleTracks.orEmpty(),
+              youtubeDefaultQuality = youtubeDefaultQuality,
             )
           }
         } else {
@@ -725,6 +726,7 @@ class YoutubePlaybackResolver(
     sabrSession: SabrSession,
     sid: String,
     subtitleTracks: List<PlaybackTrack> = emptyList(),
+    youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
   ): PlaybackInfo {
     val aItag = sabrSession.audioFormatId.itag
     val aRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == aItag }
@@ -752,10 +754,21 @@ class YoutubePlaybackResolver(
         description = (if (h > 0) "${h}p" else "itag ${fmt.itag}") + (if (codec.isNotEmpty()) " $codec" else ""),
       )
     }
-    // 选档:preferredQualityId 命中菜单用之;否则默认 videoFormatId(harvested/首条,服务端已验过)。
+    // 选档:preferredQualityId 命中菜单用之(播放中手动切清晰度优先);否则按默认画质设置选:
+    //  - maxHeight != null:height <= maxHeight 的最高 itag(全部超上限时取最低档保证可播);
+    //  - Auto:maxBy height(与 DASH 分支 pickVideo 的 Auto 语义一致——最大化分辨率;
+    //    现状用会话首条,NewPipe 顺序不保证降序,可能并非最高)。
+    //  同 sid 换 itag 即换清晰度(见上 alpha.29 注释),选非首条 itag 安全,无需重 harvest。
+    val maxHeight = youtubeDefaultQuality.maxHeight
+    val defaultItag = when {
+      maxHeight != null ->
+        videoFmts.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }?.itag
+          ?: videoFmts.minByOrNull { it.height }?.itag // 全部超过上限 → 取最低档
+      else -> videoFmts.maxByOrNull { it.height }?.itag // Auto → 最高可用
+    } ?: sabrSession.videoFormatId.itag
     val selectedItag = request.preferredQualityId
       ?.takeIf { pid -> videoFmts.any { it.itag == pid } }
-      ?: sabrSession.videoFormatId.itag
+      ?: defaultItag
     val selectedQuality = qualities.firstOrNull { it.id == selectedItag } ?: qualities.first()
     val vRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == selectedItag }
     val videoTrack = buildSabrTrack(selectedItag, vRaw, "video", sid, videoId)
