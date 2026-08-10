@@ -10,7 +10,7 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -107,6 +107,9 @@ fun MobileSmsWebViewPanel(
       settings.javaScriptEnabled = true
       settings.domStorageEnabled = true
       settings.javaScriptCanOpenWindowsAutomatically = true
+      // 视口:按屏幕宽度渲染,避免 B站 passport-h5 固定定位元素(登录按钮)错位叠到协议文字上。
+      settings.setUseWideViewPort(true)
+      settings.setLoadWithOverviewMode(true)
       settings.userAgentString =
         "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
       CookieManager.getInstance().setAcceptCookie(true)
@@ -181,14 +184,10 @@ fun MobileSmsWebViewPanel(
     }
   }
 
-  Box(modifier = modifier.fillMaxSize()) {
-    AndroidView(
-      factory = { webView },
-      modifier = Modifier.fillMaxSize(),
-    )
+  Column(modifier = modifier.fillMaxSize()) {
+    // 顶栏占自己高度,不再覆盖网页顶部(避免挡住 B站 登录页的 logo/tab 切换)。
     Row(
       modifier = Modifier
-        .align(Alignment.TopCenter)
         .fillMaxWidth()
         .background(Color(0xCC000000))
         .padding(horizontal = 8.dp, vertical = 6.dp),
@@ -208,6 +207,10 @@ fun MobileSmsWebViewPanel(
         Text(text = stringResource(R.string.login_sms_done), color = Color.White)
       }
     }
+    AndroidView(
+      factory = { webView },
+      modifier = Modifier.fillMaxSize(),
+    )
   }
 }
 
