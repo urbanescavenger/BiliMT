@@ -18,6 +18,8 @@ data class PlaybackRequest(
   val danmakuCount: Int = 0,
   val pubdate: Long = 0L,
   val preferredQualityId: Int? = null,
+  /** YouTube 音轨切换:用户选中的音轨 id(audioTrack.id,如 "en.4")。null=默认(优先原声轨)。 */
+  val preferredAudioTrackId: String? = null,
   val forceStartPosition: Boolean = false,
   val historyPage: Int = 0,
   val advanceToNextHistoryEpisode: Boolean = false,
@@ -77,6 +79,16 @@ data class PlaybackInfo(
   val videoTracks: List<PlaybackTrack>,
   val audioTracks: List<PlaybackTrack>,
   val headers: BiliPlaybackHeaders,
+  /** YouTube 多语言配音:全部可选音轨(供播放器音轨切换菜单)。非 YouTube/单音轨为空。 */
+  val availableAudioTracks: List<PlaybackAudioTrack> = emptyList(),
+)
+
+/** YouTube 一条可选音轨(多语言配音)。id 为 audioTrack.id(如 "en.4"),非 itag。 */
+data class PlaybackAudioTrack(
+  val id: String,
+  val languageCode: String?,
+  val displayName: String?,
+  val isDefault: Boolean,
 )
 
 data class PlaybackQuality(

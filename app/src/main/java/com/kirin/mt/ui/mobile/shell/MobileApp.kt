@@ -273,6 +273,7 @@ fun BiliMobileApp(
           playbackCodecPreference = effectiveCodecPreference,
           playbackQualityPreference = settings.playbackQualityPreference,
           playbackCdnPreference = settings.playbackCdnPreference,
+          youtubeDefaultQuality = settings.youtubeDefaultQuality,
           airJumpAssistantEnabled = settings.airJumpAssistantEnabled,
           videoRepository = videoRepository,
           youtubePlaylistStore = youtubePlaylistStore,

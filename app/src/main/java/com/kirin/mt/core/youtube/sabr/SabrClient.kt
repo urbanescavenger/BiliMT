@@ -48,6 +48,11 @@ internal data class SabrSession(
    * 填哪个 itag,服务端发对应流。`videoFormatId` 是默认(harvested/首条)兜底,本表查不到时回退它。
    */
   val videoFormats: List<FormatId> = emptyList(),
+  /**
+   * 多语言配音:全部可选音频轨(供播放器音轨切换菜单)。id 为 audioTrack.id(如 "en.4",非 itag)。
+   * 音轨切换 = 按 id 命中本表 → copy(audioFormatId = 对应 formatId) 换会话音频轨。
+   */
+  val audioTracks: List<SabrAudioTrack> = emptyList(),
   val userAgent: String,
   val cookieHeader: String,
   val visitorData: String,
@@ -78,6 +83,7 @@ internal data class SabrSession(
   val sabrContexts: MutableMap<Int, ByteArray> = ConcurrentHashMap(),
   val activeSabrContextTypes: MutableSet<Int> = ConcurrentHashMap.newKeySet(),
 ) {
+  /** alpha.29:按 itag 查多清晰度 FormatId;查不到回退默认 [videoFormatId](同 itag 时)。 */
   /** alpha.29:按 itag 查多清晰度 FormatId;查不到回退默认 [videoFormatId](同 itag 时)。 */
   fun videoFormat(itag: Int): FormatId? =
     videoFormats.firstOrNull { it.itag == itag } ?: videoFormatId.takeIf { it.itag == itag }
@@ -125,6 +131,8 @@ internal data class SabrSession(
        * 不绑 itag(FreeTube 证实)→ 多清晰度 = 请求体填哪个 itag。默认空(仅 [videoFormatId] 一档)。
        */
       videoFormats: List<FormatId> = emptyList(),
+      /** 多语言配音:全部可选音频轨(供播放器音轨切换菜单)。默认空(单音轨)。 */
+      audioTracks: List<SabrAudioTrack> = emptyList(),
     ): SabrSession {
       // sabrUrl 加 alr=yes + cpn(对齐 FreeTube Watch.js L1619-1620 + SabrSchemePlugin 追加 rn)。cpn = 16 随机字节 base64url
       val usedCpn = cpn ?: randomCpn()
@@ -133,8 +141,8 @@ internal data class SabrSession(
       // ustreamerConfig 是 YouTube 的 URL-safe base64(含 -/_),DEFAULT 解码会丢弃非法字符→损坏字节
       // → 服务端判 sabr.malformed_config(alpha.72 真机全黑)。对齐 LibreTube SabrManifest URL_SAFE 解码。
       val ustreamer = Base64.decode(ustreamerConfigB64, Base64.URL_SAFE)
-      Log.i(tag, "SabrSession: sabrUrl=${withParams.take(200)}... poToken=${po.size}B ustreamerCfg=${ustreamer.size}B cpn=$usedCpn audio=$audioFormatId video=$videoFormatId videoFormats=${videoFormats.size} ua=${userAgent.take(40)} cookie=${cookieHeader.length}B visitor=${visitorData.length}B")
-      return SabrSession(withParams, po, ustreamer, clientInfo, audioFormatId, videoFormatId, videoFormats, userAgent, cookieHeader, visitorData, usedCpn)
+      Log.i(tag, "SabrSession: sabrUrl=${withParams.take(200)}... poToken=${po.size}B ustreamerCfg=${ustreamer.size}B cpn=$usedCpn audio=$audioFormatId video=$videoFormatId videoFormats=${videoFormats.size} audioTracks=${audioTracks.size} ua=${userAgent.take(40)} cookie=${cookieHeader.length}B visitor=${visitorData.length}B")
+      return SabrSession(withParams, po, ustreamer, clientInfo, audioFormatId, videoFormatId, videoFormats, audioTracks, userAgent, cookieHeader, visitorData, usedCpn)
     }
 
     /** 16 字节随机 → base64url 无 padding(对齐 youtubei.js generateRandomString 16 位 cpn)。 */
@@ -151,6 +159,18 @@ internal data class SabrSession(
     }
   }
 }
+
+/**
+ * 一条可选音频轨(多语言配音)。id 为 audioTrack.id(如 "en.4",非 itag)。
+ * 音轨切换 = 按 id 命中本表 → copy(audioFormatId = [formatId]) 换会话音频轨。
+ */
+internal data class SabrAudioTrack(
+  val id: String,
+  val languageCode: String?,
+  val displayName: String?,
+  val isDefault: Boolean,
+  val formatId: FormatId,
+)
 
 internal enum class SabrStreamType { AUDIO, VIDEO }
 

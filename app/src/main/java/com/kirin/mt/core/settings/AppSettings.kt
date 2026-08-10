@@ -5,6 +5,7 @@ import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
+import com.kirin.mt.core.player.YoutubeDefaultQuality
 
 enum class AppVisualPerformanceMode(val key: String) {
   Smooth("smooth"),
@@ -38,6 +39,8 @@ data class AppSettings(
   val playbackQualityPreference: PlaybackQualityPreference = PlaybackQualityPreference.Highest,
   val playbackCodecPreference: PlaybackCodecPreference = PlaybackCodecPreference.Auto,
   val playbackCdnPreference: PlaybackCdnPreference = PlaybackCdnPreference.Auto,
+  /** YouTube 默认画质(按分辨率上限选档)。 */
+  val youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
   val seekPreviewSpritesEnabled: Boolean = true,
   val airJumpAssistantEnabled: Boolean = true,
   val confirmPlaybackExit: Boolean = true,

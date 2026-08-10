@@ -12,6 +12,7 @@ import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
+import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.storage.biliDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -68,6 +69,7 @@ class AppSettingsStore(private val context: Context) {
       playbackQualityPreference = PlaybackQualityPreference.fromKey(preferences[Keys.PlaybackQualityPreference]),
       playbackCodecPreference = PlaybackCodecPreference.fromKey(preferences[Keys.PlaybackCodecPreference]),
       playbackCdnPreference = PlaybackCdnPreference.fromKey(preferences[Keys.PlaybackCdnPreference]),
+      youtubeDefaultQuality = YoutubeDefaultQuality.fromKey(preferences[Keys.YoutubeDefaultQuality]),
       seekPreviewSpritesEnabled = preferences[Keys.SeekPreviewSpritesEnabled] ?: true,
       airJumpAssistantEnabled = preferences[Keys.AirJumpAssistantEnabled] ?: true,
       confirmPlaybackExit = preferences[Keys.ConfirmPlaybackExit] ?: true,
@@ -129,6 +131,12 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setPlaybackCdnPreference(preference: PlaybackCdnPreference) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.PlaybackCdnPreference] = preference.key
+    }
+  }
+
+  suspend fun setYoutubeDefaultQuality(quality: YoutubeDefaultQuality) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.YoutubeDefaultQuality] = quality.key
     }
   }
 
@@ -309,6 +317,7 @@ class AppSettingsStore(private val context: Context) {
     val PlaybackQualityPreference = stringPreferencesKey("playback_quality_preference")
     val PlaybackCodecPreference = stringPreferencesKey("playback_codec_preference")
     val PlaybackCdnPreference = stringPreferencesKey("playback_cdn_preference")
+    val YoutubeDefaultQuality = stringPreferencesKey("youtube_default_quality")
     val SeekPreviewSpritesEnabled = booleanPreferencesKey("seek_preview_sprites_enabled")
     val AirJumpAssistantEnabled = booleanPreferencesKey("air_jump_assistant_enabled")
     val ConfirmPlaybackExit = booleanPreferencesKey("confirm_playback_exit")

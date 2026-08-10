@@ -149,6 +149,7 @@ import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackEpisode
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.PlaybackRepository
+import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackService
 import com.kirin.mt.core.player.PlaybackVideoMetadata
@@ -210,6 +211,7 @@ fun MobilePlayerScreen(
   playbackCodecPreference: PlaybackCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
   playbackCdnPreference: PlaybackCdnPreference,
+  youtubeDefaultQuality: YoutubeDefaultQuality,
   airJumpAssistantEnabled: Boolean,
   videoRepository: VideoRepository,
   youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
@@ -265,6 +267,8 @@ fun MobilePlayerScreen(
   var settingsSheet by remember { mutableStateOf(false) }
   // 底栏画质下拉菜单(挂在 HD 图标按钮上)
   var showQualityMenu by remember { mutableStateOf(false) }
+  // 底栏音轨下拉菜单(挂在音轨图标按钮上,仅 YouTube 多音轨视频显示)
+  var showAudioMenu by remember { mutableStateOf(false) }
   // 发送弹幕:底栏内联输入栏开关 / 文本 / 发送中。发在当前播放位置(progress 毫秒)。
   var danmakuInputActive by remember { mutableStateOf(false) }
   var danmakuInputText by remember { mutableStateOf("") }
@@ -517,6 +521,7 @@ fun MobilePlayerScreen(
         request = resolvedRequest,
         codecPreference = playbackCodecPreference,
         qualityPreference = playbackQualityPreference,
+        youtubeDefaultQuality = youtubeDefaultQuality,
       )
       selectedQualityId = info.selectedQuality.id
       // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体)。
@@ -1300,6 +1305,50 @@ fun MobilePlayerScreen(
                             startPositionMs = player.currentPosition.takeIf { it > 0L }
                               ?: playbackPositionState.longValue,
                             preferredQualityId = q.id,
+                          ))
+                        }
+                      },
+                    )
+                  }
+                }
+              }
+            }
+            // 音轨切换入口:仅 YouTube 多音轨(多语言配音)视频显示。列出全部可选音轨,选中即重载。
+            val audioTracks = readyInfo.availableAudioTracks
+            if (activeRequest.isYoutube && audioTracks.size > 1) {
+              Box {
+                MobilePlayerIconButton(
+                  iconRes = R.drawable.ic_player_audio_track,
+                  contentDescription = "音轨",
+                  tint = BiliColors.TextPrimary,
+                  onClick = { showAudioMenu = true },
+                )
+                DropdownMenu(
+                  expanded = showAudioMenu,
+                  onDismissRequest = { showAudioMenu = false },
+                  containerColor = Color(0xFF1A1A20),
+                ) {
+                  audioTracks.forEach { track ->
+                    // 未显式选轨时高亮默认/原声轨(isDefault);已选则高亮命中轨。
+                    val selected = if (activeRequest.preferredAudioTrackId != null) {
+                      track.id == activeRequest.preferredAudioTrackId
+                    } else {
+                      track.isDefault
+                    }
+                    DropdownMenuItem(
+                      text = {
+                        Text(
+                          text = track.displayName ?: track.languageCode ?: track.id,
+                          color = if (selected) Color(0xFFFB7299) else Color.White,
+                        )
+                      },
+                      onClick = {
+                        showAudioMenu = false
+                        scope.launch {
+                          loadRequest(activeRequest.copy(
+                            startPositionMs = player.currentPosition.takeIf { it > 0L }
+                              ?: playbackPositionState.longValue,
+                            preferredAudioTrackId = track.id,
                           ))
                         }
                       },
