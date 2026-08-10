@@ -1,5 +1,14 @@
 # BiliMT 版本发布说明
 
+## v3.0.0-alpha.1
+
+**UI 交互修复(测试 alpha)**:修复 WebDAV 弹窗按钮被系统键盘遮住、移动端 WebDAV 展开后备份/还原按钮需手动下滑、TV 搜索源切换箭头歧义三处交互问题。
+
+### 修复
+- **TV WebDAV 编辑弹窗按钮被键盘遮住**:弹窗内容加 `verticalScroll`,系统输入法弹出后 保存/取消 按钮可滚动到可见区(此前被 IME 顶出屏幕外看不到);第二按钮 关闭→取消,与移动端一致。
+- **移动端 WebDAV 展开自动上移**:展开后等动画完成再 `bringIntoView()`,备份/还原按钮自动滚进可视区(此前在折叠线以下需手动下滑)。
+- **TV 搜索源切换还原双 pill**:由单 pill ⇄ 循环改回 BILIBILI + YOUTUBE 两个 pill 同时显示、选中高亮,去掉左右箭头歧义。
+
 ## v2.0.10
 
 **YouTube SABR 高清播放完整落地(P12 系列)**:从 v2.0.9 的 PO token 高清取流进一步演进——YouTube 对 guest+token 会话不再给 legacy DASH 签名直链,拿流机制改为 **SABR(Server-Assisted Bandwidth Regulation)**。本版完整实现 SABR 协议引擎、WebView harvest 破 n-decrypt、NewPipeExtractor fork 取流层,并逐层修掉 60s 断崖/重启、黑屏、无声、全视频加载不出等真机问题,最终音视频稳定播放。
