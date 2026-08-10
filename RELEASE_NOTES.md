@@ -1,5 +1,16 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.1
+
+**YouTube 频道页两处修复(测试 alpha)**:首屏去重防 key 崩溃 + 频道头像补全。
+
+### 修复
+- **频道页首屏去重防崩溃**:`MobileYoutubeChannelScreen.loadFirst()` 直接 `uiState.items = page.items` 不去重,而 `loadNext()` 翻页有 `distinctBy { it.bvid }`——不一致。当频道第一页返回同一视频 ID 两次(YouTube 推荐流里同一视频/短片重复出现很常见),`LazyVerticalGrid` 的 `key = { it.bvid }` 撞 key,Compose 抛 `IllegalArgumentException: Key "..." was already used` 崩溃。给 `loadFirst()` 也加 `distinctBy { it.bvid }`,与翻页一致。
+- **频道页头像补全**:频道页视频走 `parseLockupViewModel`(新格式),该 renderer **不携带 `channelAvatarUrl`**,卡片 `ownerFace` 恒空、头像永远走占位圆。`LaunchedEffect` 里 `resolveChannel` 已能解析出频道头像(`parseChannelInfo` 的 `avatarUrl`),但只用了 `.name`;改为把头像存进 `uiState.avatar`,在 `displayItems` 注入到视频 `ownerFace`(空时补本频道头像),与现有 channelId/ownerName 注入一致,一处覆盖首屏+翻页。
+
+### 技术
+- 崩溃 key 为 11 位 YouTube 视频 ID(非 B站 `BV`+10 位),日志确认崩溃发生在频道页网格。
+
 ## v3.0.0
 
 **稳定版**:YouTube 内容集成完整落地 + 移动端交互打磨。从 v2.0.10 稳定版后的 alpha 迭代线(alpha.1→alpha.10)正式发布。
