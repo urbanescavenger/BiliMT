@@ -1,5 +1,14 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.8
+
+**退役 classic SABR n-decrypt 兜底(测试 alpha)**:真机观察 YouTube 取流只有 Path C(NewPipe SABR)有效,classic(n-decrypt 兜底)会卡住——classic 用 resolve() 顶部铸的 poToken 与 SABR init minter 不一致致 status=3 60s 卡死,且 plasma player.js 把 n/sig 移进 WASM 致 `decipherSabrUrl` 正则结构性失效。退役 classic 分支,NewPipe 失败直接落 DASH 兜底。详见 `docs/youtube-hd-playback.md` 与 `DEVELOPMENT_PROGRESS.md` P11-21。
+
+### 修复
+- **退役 classic(Path 2)SABR n-decrypt 兜底**:`YoutubePlaybackResolver` SABR 闸门内删 classic `else if (nTransformed)` 分支及仅服务于它的局部变量(`videoFormats`/`sabrUrlDeciphered`/`nTransformed`/`vFmt`/`aFmt`)+ `DecipherN` 进度 emit;删死方法 `decipherSabrUrl`;ready 日志去掉 `source`/`nTransformed`。NewPipe 返回 null 时 `sabrSession` 保持 null → 直接落 DASH 兜底(日志 `SABR: NewPipe 无 SABR 数据 → 落 DASH 兜底(classic n-decrypt 已退役...)`)。
+- `nDecryptor` 保留(经典 DASH `resolveStreamUrl` 解 legacy 直链仍用);缓存复用、Path C 不动。
+- 副作用:画质菜单里偶现的 VP9/H264 字样(仅 classic 路径 raws 含 `codecs=` 才拼上)随之消失,正常播放统一纯 "1080p"。
+
 ## v3.0.1-alpha.7
 
 **TVHTML5 试验回退(测试 alpha)**:v3.0.1-alpha.6 TVHTML5 client 真机证伪——TVHTML5 viaWebView `TypeError: Failed to fetch`(没拿到 /player 响应),且污染共享 browserSession 致 WEB 回退也 Failed → 完全无法播放。回退 `PlayerScreen` TVHTML5 传入(`preferredYoutubeClient=null`→WEB-only),恢复 alpha.4 能播。TVHTML5 代码保留待修 session 隔离。详见 `docs/youtube-hd-playback.md` §6.13。
