@@ -25,10 +25,14 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +53,8 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.auth.AuthRepository
+import com.kirin.mt.core.cache.AppCacheManager
+import com.kirin.mt.core.cache.formatCacheSize
 import com.kirin.mt.core.image.BiliImageSizing
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.i18n.ChineseTextVariant
@@ -85,6 +91,7 @@ fun MobileSettingsScreen(
   onOpenLogs: () -> Unit,
   webdavConfigStore: com.kirin.mt.core.webdav.WebDavConfigStore,
   webdavBackupService: com.kirin.mt.core.webdav.WebDavBackupService,
+  appCacheManager: AppCacheManager,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -95,6 +102,10 @@ fun MobileSettingsScreen(
   val webDavConfig by webdavConfigStore.config.collectAsState(initial = com.kirin.mt.core.webdav.WebDavConfig())
   var showFollowSheet by remember { mutableStateOf(false) }
   var showLoginRequiredDialog by remember { mutableStateOf(false) }
+
+  // 缓存大小:进入页面时算一次,清理后再算一次;null 时显示「计算中」(镜像 TV AppShell)。
+  var cacheSizeBytes by remember { mutableStateOf<Long?>(null) }
+  LaunchedEffect(Unit) { cacheSizeBytes = appCacheManager.cacheSizeBytes() }
 
   // 安装已下载的 APK:弹系统安装 Intent,补未知来源授权兜底(镜像 TV AppShell)。
   fun installDownloadedApk() {
@@ -276,6 +287,29 @@ fun MobileSettingsScreen(
       title = stringResource(R.string.settings_logs_entry_title),
       description = stringResource(R.string.settings_logs_entry_description),
       onClick = onOpenLogs,
+    )
+    MobileSettingsRow(
+      title = stringResource(R.string.settings_clear_cache_title),
+      description = stringResource(R.string.settings_clear_cache_description),
+      trailing = {
+        Text(
+          text = cacheSizeBytes?.let(::formatCacheSize)
+            ?: stringResource(R.string.settings_clear_cache_calculating),
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      },
+      onClick = {
+        scope.launch {
+          val result = appCacheManager.clearCache()
+          cacheSizeBytes = appCacheManager.cacheSizeBytes()
+          Toast.makeText(
+            context,
+            context.getString(R.string.settings_clear_cache_done, formatCacheSize(result.clearedBytes)),
+            Toast.LENGTH_SHORT,
+          ).show()
+        }
+      },
     )
 
     // ===== WebDAV 备份 =====
@@ -541,6 +575,7 @@ private fun MobileWebDavSection(
   val scope = rememberCoroutineScope()
   var showEditDialog by remember { mutableStateOf(false) }
   var busy by remember { mutableStateOf(false) }
+  var expanded by remember { mutableStateOf(false) }
 
   fun runBackup() {
     if (busy) return
@@ -570,22 +605,36 @@ private fun MobileWebDavSection(
     }
   }
 
-  MobileSettingsSectionHeader(stringResource(R.string.settings_webdav_section))
-  MobileSettingsRow(
-    title = stringResource(R.string.settings_webdav_url_label),
-    description = config.url.ifBlank { stringResource(R.string.settings_webdav_configure_hint) },
-    onClick = { showEditDialog = true },
-    onLongClick = { showEditDialog = true },
+  MobileSettingsSectionHeader(
+    text = stringResource(R.string.settings_webdav_section),
+    onClick = { expanded = !expanded },
+    trailing = {
+      Icon(
+        imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.primary,
+      )
+    },
   )
-  Row(
-    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-    horizontalArrangement = Arrangement.spacedBy(12.dp),
-  ) {
-    Button(onClick = ::runBackup, enabled = !busy, modifier = Modifier.weight(1f)) {
-      Text(stringResource(R.string.settings_webdav_backup))
-    }
-    Button(onClick = ::runRestore, enabled = !busy, modifier = Modifier.weight(1f)) {
-      Text(stringResource(R.string.settings_webdav_restore))
+  androidx.compose.animation.AnimatedVisibility(visible = expanded) {
+    Column {
+      MobileSettingsRow(
+        title = stringResource(R.string.settings_webdav_url_label),
+        description = config.url.ifBlank { stringResource(R.string.settings_webdav_configure_hint) },
+        onClick = { showEditDialog = true },
+        onLongClick = { showEditDialog = true },
+      )
+      Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+      ) {
+        Button(onClick = ::runBackup, enabled = !busy, modifier = Modifier.weight(1f)) {
+          Text(stringResource(R.string.settings_webdav_backup))
+        }
+        Button(onClick = ::runRestore, enabled = !busy, modifier = Modifier.weight(1f)) {
+          Text(stringResource(R.string.settings_webdav_restore))
+        }
+      }
     }
   }
 

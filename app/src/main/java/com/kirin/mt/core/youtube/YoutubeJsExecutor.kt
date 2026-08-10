@@ -3,6 +3,7 @@ package com.kirin.mt.core.youtube
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
+import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -150,8 +151,19 @@ class YoutubeJsExecutor(context: Context) {
   ): String = withContext(Dispatchers.Main) {
     ensureWebView()
     awaitShellReady()
+    // Cookie 是 fetch 的 forbidden header,浏览器会静默忽略 → WebView 原生网络栈不带会话 cookie,
+    // /player 请求缺 VISITOR_INFO1_LIVE 配对 → token 无法绑定会话 → adaptive 被剥(§6.7 row 35)。
+    // 改为写入 WebView CookieManager,让原生网络栈自动携带(对齐 FreeTube 主 WebView 的真实浏览器 cookie)。
+    val cookie = headers["Cookie"]
+    if (!cookie.isNullOrBlank()) {
+      runCatching {
+        CookieManager.getInstance().setCookie("https://www.youtube.com", cookie)
+        CookieManager.getInstance().flush()
+      }.onFailure { Log.w(Tag, "setCookie failed: ${it.message}") }
+    }
+    val fetchHeaders = headers - "Cookie"
     eval("window.__webViewResp = null")
-    eval(buildFetchScript(url, method, headers, body))
+    eval(buildFetchScript(url, method, fetchHeaders, body))
     pollWebViewResponse()
   }
 
@@ -229,7 +241,9 @@ class YoutubeJsExecutor(context: Context) {
       // FreeTubeAndroid 用 loadDataWithBaseURL("https://www.youtube.com/", …) 让宿主页的
       // document origin = youtube.com(真浏览器页面环境),VM 的 origin/页内网络探测才能通过 → 产生 minter。
       // 这里同样把宿主页从 file:// 换成 youtube.com 同源基址(仍只承载 evaluateJavascript,不显示内容)。
-      settings.userAgentString = YoutubeConstants.UserAgent
+      // UA 用移动 Chrome(对齐 FreeTubeAndroid 原生 WebView 移动环境)而非桌面——我们此前硬成桌面 UA,
+      // 与真实 Android 设备不一致 → BotGuard VM 环境/context 自相矛盾 → token 判无效(§6.7 row 37)。
+      settings.userAgentString = YoutubeConstants.MobileUserAgent
       webViewClient = object : WebViewClient() {
         override fun onPageFinished(view: WebView?, url: String?) {
           deferred.complete(Unit)

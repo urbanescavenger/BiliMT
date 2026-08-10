@@ -3,7 +3,6 @@ package com.kirin.mt.ui.mobile.player
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.ActivityInfo
-import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
@@ -93,6 +92,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material3.darkColorScheme
 import androidx.lifecycle.Lifecycle
@@ -123,6 +123,8 @@ import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.youtube.YoutubeLoadProgress
+import com.kirin.mt.core.youtube.YoutubeLoadStep
 import com.kirin.mt.core.youtube.YoutubeVideoDetail
 import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
 import com.kirin.mt.core.network.FavoriteFolder
@@ -132,6 +134,11 @@ import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
+import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
+import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
+import com.kirin.mt.core.youtube.sabr.media.SabrManifest
+import com.kirin.mt.core.youtube.sabr.media.SabrMediaFetcher
+import com.kirin.mt.core.youtube.sabr.media.SabrMediaSource
 import com.kirin.mt.core.player.DanmakuEntry
 import com.kirin.mt.core.player.DanmakuMode
 import com.kirin.mt.core.player.DanmakuPostResult
@@ -148,7 +155,11 @@ import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.PlayerHolder
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.ui.player.PlayerDanmakuLayer
+import com.kirin.mt.ui.player.appendSabrStartMs
 import com.kirin.mt.ui.player.buildDashMediaItem
+import com.kirin.mt.ui.player.isSabrDash
+import com.kirin.mt.ui.player.isSabrProgressive
+import com.kirin.mt.ui.player.isSabrSingle
 import com.kirin.mt.ui.player.nextEpisodeCompletion
 import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.player.withResolvedMetadata
@@ -168,9 +179,7 @@ private const val DanmakuSendLogTag = "BiliDanmakuSend"
  *  发送时 showAtMs=当前位置会被 start(currentPos≥该位置) 跳过,故向前加 1s 让其落在 set time 之后。 */
 private const val LocalDanmakuLeadMs = 1000L
 private const val MobilePlayerLogTag = "BiliMT:MobilePlayer"
-/** BUFFERING 且进度不前进超过此阈值判定为 stall,触发自动重载续播。 */
-private const val StallThresholdMs = 8_000L
-/** 单次播放会话内 stall 自动重试上限,超过则交用户手动重试,避免死循环刷 CDN。 */
+/** alpha.67:单次播放会话内 error-retry 上限(onPlayerErrorChanged),超过则交用户手动重试,避免死循环。 */
 private const val MaxStallAutoRetry = 2
 // 空降助手阈值(镜像 TV PlayerScreen)
 private const val AirJumpWarningLeadMs = 3_500L
@@ -219,6 +228,9 @@ fun MobilePlayerScreen(
   )
 
   var playerState by remember { mutableStateOf<MobilePlayerState>(MobilePlayerState.Loading) }
+  // alpha.49:YouTube 加载步骤提示(resolver/harvester 经 YoutubeLoadProgress 写入当前步骤)。
+  // 独立于 playerState——初始加载、切画质/续播轮换都显示;播放就绪/失败时置 null 隐藏。
+  val youtubeLoadStep by YoutubeLoadProgress.step.collectAsState()
   var displayTitle by remember { mutableStateOf(request.title) }
   var controlsVisible by remember { mutableStateOf(true) }
   var isPlaying by remember { mutableStateOf(false) }
@@ -230,10 +242,15 @@ fun MobilePlayerScreen(
   val playbackPositionState = remember { mutableLongStateOf(0L) }
   val playbackDurationState = remember { mutableLongStateOf(0L) }
   var danmakuSyncToken by remember { mutableLongStateOf(0L) }
-  // stall 自动恢复:BUFFERING 且进度长时间不前进时,记当前位置并 bump retryKey 重载源续播。
+  // error-retry 续播:onPlayerErrorChanged 记卡住时位置 + bump retryKey 重载源续播(不回退到 saved progress)。
   // autoResumePositionMs=-1L 表示无续播位(走 saved progress);>=0 时 launch effect 优先 seekTo 它。
   var retryKey by remember { mutableLongStateOf(0L) }
   var autoResumePositionMs by remember { mutableLongStateOf(-1L) }
+  // alpha.52:SABR 源不可 seekTo(LENGTH_UNSET 双 init 崩)→ 中段 seek 走「重新起播」:记目标位置 + bump
+  // sabrSeekReloadKey 重跑 loadRequest(fresh MediaSource + startMs=target,窗口内复用会话/跨窗口新 harvest)。
+  // pendingSABRSeekMs 由 loadRequest 消费后置空,避免重复 seek。
+  var pendingSABRSeekMs by remember { mutableStateOf<Long?>(null) }
+  var sabrSeekReloadKey by remember { mutableIntStateOf(0) }
   var autoRetryCount by remember { mutableIntStateOf(0) }
   var danmakuEntries by remember { mutableStateOf<List<com.kirin.mt.core.player.DanmakuEntry>>(emptyList()) }
   var fullscreen by rememberSaveable { mutableStateOf(false) }
@@ -379,6 +396,24 @@ fun MobilePlayerScreen(
     runCatching { context.startActivity(Intent.createChooser(intent, "分享视频")) }
   }
 
+  /**
+   * alpha.52:SABR 源中段 seek 路由——progressive 直链 SABR 源 LENGTH_UNSET,Media3 原生 seekTo
+   * 会重开 DataSource 喂双 init 致 MatroskaExtractor "Multiple Segment elements not supported" 崩。
+   * 故 SABR seek 改走「重新起播」:记 pendingSABRSeekMs + bump sabrSeekReloadKey 重跑 loadRequest
+   * (fresh MediaSource → fresh extractor → 单 init;目标经 startMs 透传进 sabr:// URL,resolver 按
+   * 窗口锚定,窗口内复用会话/跨窗口新 harvest)。非 SABR(B站等)保持直接 player.seekTo。
+   */
+  fun routeSeek(targetMs: Long) {
+    val maxMs = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+    val clamped = targetMs.coerceIn(0L, maxMs)
+    if ((playerState as? MobilePlayerState.Ready)?.info?.isSabrProgressive() == true) {
+      pendingSABRSeekMs = clamped
+      sabrSeekReloadKey++
+    } else {
+      player.seekTo(clamped)
+    }
+  }
+
   // 空降助手:进度轮询每 tick 调用,命中段 seek 到段末,入段前预警,回退重置去重(镜像 TV)
   fun handleAirJumpPosition(currentPositionMs: Long) {
     if (!airJumpAssistantEnabled || seekPreviewMs != null || airJumpSegments.isEmpty()) {
@@ -411,7 +446,7 @@ fun MobilePlayerScreen(
       )
       skippedAirJumpIds = skippedAirJumpIds + hitSegment.id
       warnedAirJumpIds = warnedAirJumpIds + hitSegment.id
-      player.seekTo(targetPositionMs)
+      routeSeek(targetPositionMs)
       playbackPositionState.longValue = targetPositionMs
       danmakuSyncToken += 1L
       if (duration <= 0L || targetPositionMs < duration - AirJumpCompletionToastSuppressMs) {
@@ -499,12 +534,26 @@ fun MobilePlayerScreen(
         track.copy(baseUrl = sel.primaryUrl, backupUrls = sel.fallbackUrls)
       }
       val effectiveInfo = info.copy(videoTracks = resolvedVideo, audioTracks = resolvedAudio)
+      // alpha.52:SABR 中段 seek 目标优先(重跑 loadRequest),绕过 saved progress 避免回退到更旧位置。
+      val pendingSABRSeek = pendingSABRSeekMs
+      pendingSABRSeekMs = null
       val startPositionMs = when {
-        // stall 自动重试续播:优先用卡住时的当前位置,而非 saved progress(可能更旧)。
+        pendingSABRSeek != null -> pendingSABRSeek
+        // error-retry 续播:优先用卡住时的当前位置,而非 saved progress(可能更旧)。
         autoResumePositionMs >= 0L -> autoResumePositionMs.also { autoResumePositionMs = -1L }
         else -> playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
           ?: request.startPositionMs
       }
+      // alpha.34:SABR 源不可 seek(LENGTH_UNSET)。把续播点 startMs 透传进 sabr:// URL,
+      // 让 DataSource 首段按 playerTimeMs=startMs 从续播点发段(协议层续播),并在下方跳过
+      // ExoPlayer.seekTo(否则 seek 取消 fetch 重开 DataSource,init 喂两遍给 MatroskaExtractor
+      // → "Multiple Segment elements not supported" 崩)。
+      val sabrEffectiveInfo = if (startPositionMs > 0L && effectiveInfo.isSabrProgressive()) {
+        effectiveInfo.copy(
+          videoTracks = effectiveInfo.videoTracks.map { it.copy(baseUrl = appendSabrStartMs(it.baseUrl, startPositionMs)) },
+          audioTracks = effectiveInfo.audioTracks.map { it.copy(baseUrl = appendSabrStartMs(it.baseUrl, startPositionMs)) },
+        )
+      } else effectiveInfo
       // 后台播放 MediaStyle 通知封面:下载 coverUrl bytes(IO),失败忽略。
       val coverBytes = request.coverUrl.takeIf { it.isNotEmpty() }?.let { url ->
         runCatching {
@@ -519,26 +568,46 @@ fun MobilePlayerScreen(
         .setArtist(request.ownerName)
         .apply { if (coverBytes != null) setArtworkData(coverBytes, androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
         .build()
+      // alpha.27:包一层 SabrAwareDataSourceFactory——sabr:// URI(YouTube SABR 流)交 SabrStreamingDataSource
+      //(走 SabrStreamRegistry 查表 + SabrClient 驱动 init/seg),其余 http/https(B站 + YouTube 回退)走 OkHttp。
       val dataSourceFactory = DefaultDataSource.Factory(
         context,
-        BiliMediaDataSourceFactory(client = playbackHttpClient, headers = effectiveInfo.headers).create(),
+        SabrAwareDataSourceFactory(
+          BiliMediaDataSourceFactory(client = playbackHttpClient, headers = sabrEffectiveInfo.headers).create(),
+        ),
       )
-      val mediaSource: MediaSource = if (resolvedRequest.isPgc || effectiveInfo.videoTracks.first().isProgressive) {
+      // alpha.59(Phase 2 DASH):SABR 轨 isSabrDash=true(segmentBase 仍 null → isProgressive 为 true),
+      // 须排除走 DASH 分支(SegmentTemplate MPD + SabrDashDataSource 逐段拉),而非 progressive MergingMediaSource。
+      // alpha.64(单流移植):isSabrSingle=true → 走自定义 SabrMediaSource(单流,修 60s 断崖 + A/V 同步 + 后台音频)。
+      val mediaSource: MediaSource = if (sabrEffectiveInfo.isSabrSingle()) {
+        val sid = SabrStreamRegistry.getByVideoId(sabrEffectiveInfo.bvid)
+        val entry = SabrStreamRegistry.getEntryByVideoId(sabrEffectiveInfo.bvid)
+        if (sid == null || entry == null) {
+          throw IllegalStateException("SABR single-stream session not found for ${sabrEffectiveInfo.bvid}")
+        }
+        val fetcher = SabrMediaFetcher(entry, playbackHttpClient)
+        val manifest = SabrManifest.fromSession(entry.session, sabrEffectiveInfo)
+        val sabrItem = androidx.media3.common.MediaItem.Builder()
+          .setUri(manifest.sabrUrl)
+          .setMediaMetadata(metadata)
+          .build()
+        SabrMediaSource.Factory(manifest, fetcher, sid).createMediaSource(sabrItem)
+      } else if (resolvedRequest.isPgc || (sabrEffectiveInfo.videoTracks.first().isProgressive && !sabrEffectiveInfo.isSabrDash())) {
         val videoItem = androidx.media3.common.MediaItem.Builder()
-          .setUri(effectiveInfo.videoTracks.first().baseUrl)
+          .setUri(sabrEffectiveInfo.videoTracks.first().baseUrl)
           .setMediaMetadata(metadata)
           .build()
         val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
         // audioTracks 为空(YouTube 无 PO token 时回退单个合并流)时直接单轨播放。
-        if (effectiveInfo.audioTracks.isEmpty()) {
+        if (sabrEffectiveInfo.audioTracks.isEmpty()) {
           videoSource
         } else {
           val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-            .createMediaSource(androidx.media3.common.MediaItem.fromUri(effectiveInfo.audioTracks.first().baseUrl))
+            .createMediaSource(androidx.media3.common.MediaItem.fromUri(sabrEffectiveInfo.audioTracks.first().baseUrl))
           MergingMediaSource(videoSource, audioSource)
         }
       } else {
-        val dashItem = buildDashMediaItem(effectiveInfo, playbackCdnPreference)
+        val dashItem = buildDashMediaItem(sabrEffectiveInfo, playbackCdnPreference)
           .buildUpon()
           .setMediaMetadata(metadata)
           .build()
@@ -548,12 +617,16 @@ fun MobilePlayerScreen(
       player.prepare()
       player.setPlaybackSpeed(playbackSpeed)
       if (startPositionMs > 0L) {
-        player.seekTo(startPositionMs)
+        // alpha.34:SABR 源(LENGTH_UNSET 不可 seek)跳过 seekTo——续播已由 startMs 透传进
+        // sabr:// URL 协议层完成;seekTo 会重开 DataSource 喂双 init 致 MatroskaExtractor 崩。
+        if (!sabrEffectiveInfo.isSabrProgressive()) player.seekTo(startPositionMs)
         playbackPositionState.longValue = startPositionMs
         danmakuSyncToken += 1L
       }
       player.playWhenReady = true
-      playerState = MobilePlayerState.Ready(effectiveInfo)
+      playerState = MobilePlayerState.Ready(sabrEffectiveInfo)
+      // alpha.49:播放就绪,隐藏加载步骤提示。
+      YoutubeLoadProgress.clear()
 
       // 弹幕
       if (danmakuSettings.enabled && cid > 0L) {
@@ -563,21 +636,32 @@ fun MobilePlayerScreen(
       throw error
     } catch (error: Exception) {
       playerState = MobilePlayerState.Failed(error.message.orEmpty())
+      // alpha.49:加载失败,隐藏加载步骤提示。
+      YoutubeLoadProgress.clear()
     }
   }
 
   // ExoPlayer 监听 + 生命周期释放
   DisposableEffect(player) {
     val listener = object : Player.Listener {
+      override fun onRenderedFirstFrame() {
+        Log.i(MobilePlayerLogTag, "onRenderedFirstFrame (视频首帧已渲染)")
+      }
+
       override fun onIsPlayingChanged(playing: Boolean) {
         isPlaying = playing
         if (playing && autoRetryCount > 0) {
           autoRetryCount = 0
-          Log.i(MobilePlayerLogTag, "stall auto-retry recovered, counter reset")
+          Log.i(MobilePlayerLogTag, "playback error auto-retry recovered, counter reset")
         }
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {
+        // alpha.74 诊断:确认音频轨是否被选中(videoFormat/audioFormat)+ 播放器最终状态。
+        Log.i(
+          MobilePlayerLogTag,
+          "playerState=$playbackState pos=${player.currentPosition} videoFmt=${player.videoFormat} audioFmt=${player.audioFormat}",
+        )
         // 暴露缓冲态为可观察 state:STATE_BUFFERING→true,READY/ENDED/IDLE→false。
         // 原本仅命令式读 player.playbackState 做 stall 检测,UI 无法据此显加载图标/控制栏。
         isBuffering = playbackState == Player.STATE_BUFFERING
@@ -604,8 +688,24 @@ fun MobilePlayerScreen(
 
       override fun onPlayerErrorChanged(error: PlaybackException?) {
         if (error != null) {
-          playerState = MobilePlayerState.Failed(error.message.orEmpty())
-          context.stopService(Intent(context, PlaybackService::class.java))
+          // alpha.41/67:SABR RELOAD_PLAYER_RESPONSE / SABR_ERROR / init fetch 失败时 DataSource.open
+          // 抛 IOException → ExoPlayer 上报 source error。会话已被 evict,重 resolve 走新 harvest。
+          // bump retryKey → LaunchedEffect → loadRequest → getPlaybackInfo(cache miss → 新 harvest)。
+          // 记当前位置进 autoResumePositionMs,重载后续播点 = 卡住位置(不回退到 saved progress,
+          // 避免重播已看过的一段——status=3 已被同步刷新消除,此路径仅真终端错误偶发)。
+          // 计数上限(MaxStallAutoRetry)防不可恢复错误无限重试。同步刷新后 status=3 不再触发本路径。
+          if (autoRetryCount < MaxStallAutoRetry) {
+            autoRetryCount += 1
+            autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
+            Log.w(
+              MobilePlayerLogTag,
+              "playback error, auto-retry #${autoRetryCount} @pos=${autoResumePositionMs}ms: ${error.message}",
+            )
+            retryKey += 1L
+          } else {
+            playerState = MobilePlayerState.Failed(error.message.orEmpty())
+            context.stopService(Intent(context, PlaybackService::class.java))
+          }
         }
       }
     }
@@ -656,19 +756,16 @@ fun MobilePlayerScreen(
 
   // 加载(镜像 TV PlayerScreen 的 load 序列)。key 不含 activeRequest:自动连播/用户切集/切画质
   // 由显式 loadRequest 调用触发(见 ExoPlayer 监听器与各 onClick),避免后台重组被推迟时无法加载;
-  // 本 effect 只处理初始加载、新视频(request 变)、设置变更、stall 重试(retryKey 变)。
-  LaunchedEffect(request, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey) {
+  // 本 effect 只处理初始加载、新视频(request 变)、设置变更、error-retry(retryKey 变)。
+  LaunchedEffect(request, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
     loadRequest(activeRequest)
   }
 
   // 进度轮询
   LaunchedEffect(player, playerState) {
-    var stallBaselinePositionMs = 0L
-    var stallSinceMs = 0L
     while (true) {
       delay(ProgressUpdateMs)
       val ready = playerState as? MobilePlayerState.Ready ?: continue
-      val nowMs = SystemClock.elapsedRealtime()
       val currentPositionMs = player.currentPosition.coerceAtLeast(0L)
       if (seekPreviewMs == null) {
         playbackPositionState.longValue = currentPositionMs
@@ -677,35 +774,11 @@ fun MobilePlayerScreen(
       if (dur > 0L) playbackDurationState.longValue = dur
       // 空降助手:seekPreviewMs 期间 handleAirJumpPosition 内部早退,不与手动拖拽冲突
       handleAirJumpPosition(currentPositionMs)
-      // stall 检测:STATE_BUFFERING 且用户想播(playWhenReady)、进度连续 N 秒不前进 → 自动重载续播。
-      // 排除:已暂停(playWhenReady=false)、拖拽预览(seekPreviewMs!=null)、已结束、非 Ready 态。
-      val isStallBuffering = player.playbackState == Player.STATE_BUFFERING &&
-        player.playWhenReady &&
-        !completionReported &&
-        seekPreviewMs == null
-      if (isStallBuffering) {
-        if (currentPositionMs == stallBaselinePositionMs) {
-          if (stallSinceMs == 0L) {
-            stallSinceMs = nowMs
-          } else if (nowMs - stallSinceMs >= StallThresholdMs && autoRetryCount < MaxStallAutoRetry) {
-            autoResumePositionMs = currentPositionMs
-            autoRetryCount += 1
-            Log.w(
-              MobilePlayerLogTag,
-              "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
-            )
-            stallSinceMs = 0L
-            stallBaselinePositionMs = 0L
-            retryKey += 1L
-          }
-        } else {
-          stallBaselinePositionMs = currentPositionMs
-          stallSinceMs = 0L
-        }
-      } else {
-        stallBaselinePositionMs = currentPositionMs
-        stallSinceMs = 0L
-      }
+      // alpha.67:取消 8s stall 看门狗(原 STATE_BUFFERING + 进度连续 8s 不前进 → retryKey 重载)。
+      // 它是当初逼 alpha.66 把 status=2 PO token 刷新改异步(怕同步阻塞被看门狗 cancel→evict)的元凶;
+      // 异步又引入竞态(刷新晚一拍,请求带旧 token 撞 status=3 → 全量重载 → 重播前 60s + 音频先现)。
+      // 改回同步刷新(对齐 LibreTube,下个请求一定带新 token)+ 取消看门狗 = 正解。status=3 不再出现。
+      // 真终端错误(RELOAD_PLAYER/SABR_ERROR)由 onPlayerErrorChanged 的 error-retry 处理(非看门狗)。
     }
   }
 
@@ -915,6 +988,26 @@ fun MobilePlayerScreen(
             is MobilePlayerState.Ready -> Unit
           }
 
+          // alpha.49:YouTube 加载步骤提示——小转圈 + 单行当前步骤,独立于 playerState 常显于底部
+          //(初始加载、切画质/续播轮换都覆盖;resolver/harvester 经 YoutubeLoadProgress 写步骤,
+          // 播放就绪/失败时置 null 隐藏)。委托属性不能 smart cast,先取局部变量。
+          val step = youtubeLoadStep
+          if (step != null) {
+            Column(
+              modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp),
+              horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+              CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+              Spacer(Modifier.padding(top = 6.dp))
+              Text(
+                step.label,
+                color = Color.White.copy(alpha = 0.9f),
+                fontSize = 13.sp,
+                textAlign = TextAlign.Center,
+              )
+            }
+          }
+
           // 缓冲加载图标:seek 后/网络抖动进入 BUFFERING 时显示,区别于初始 Loading 态的 spinner。
           // 仅 Ready 且缓冲中才显;seekPreviewMs!=null(拖拽预览中)不显,避免与时间气泡争位。
           // 与中央暂停图标互斥:userPaused 时多为 STATE_IDLE,isBuffering=false,二者不并存。
@@ -1026,7 +1119,7 @@ fun MobilePlayerScreen(
                   onSeekEnd = {
                     dragSeekActive = false
                     seekPreviewMs?.let { target ->
-                      player.seekTo(target)
+                      routeSeek(target)
                       playbackPositionState.longValue = target
                       danmakuSyncToken += 1L
                     }
@@ -1133,7 +1226,7 @@ fun MobilePlayerScreen(
               },
               onValueChangeFinished = {
                 seekPreviewMs?.let { target ->
-                  player.seekTo(target)
+                  routeSeek(target)
                   playbackPositionState.longValue = target
                   danmakuSyncToken += 1L
                 }

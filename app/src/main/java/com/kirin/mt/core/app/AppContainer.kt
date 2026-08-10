@@ -15,6 +15,7 @@ import com.kirin.mt.core.network.SpaceHttpSupport
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.youtube.InnerTubeClient
 import com.kirin.mt.core.youtube.YoutubeBotGuard
+import com.kirin.mt.core.youtube.YoutubeBrowserSession
 import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeFeedCacheStore
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
@@ -23,6 +24,7 @@ import com.kirin.mt.core.youtube.YoutubeNDecryptor
 import com.kirin.mt.core.youtube.YoutubePlaybackResolver
 import com.kirin.mt.core.youtube.YoutubeSDecryptor
 import com.kirin.mt.core.youtube.YoutubeRepository
+import com.kirin.mt.core.youtube.newpipe.BiliTvPoTokenProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -89,6 +91,9 @@ class AppContainer(context: Context) {
   // 共享同一个 YouTube OkHttpClient（InnerTube 数据 + /player + base.js/watch 抓取复用连接池）。
   val youtubeHttpClient = httpClientFactory.createYoutubeClient()
   val youtubeJsExecutor: YoutubeJsExecutor = YoutubeJsExecutor(appContext)
+  // 真实浏览器会话 WebView（方案 A，对齐 FreeTubeAndroid 主 WebView）：长期存活加载真实 YouTube 页，
+  // /player 走它 + 用它的真实 visitorData/cookie（根因修复：隐藏壳合成 fetch 被判"非真浏览器"）。
+  val youtubeBrowserSession: YoutubeBrowserSession = YoutubeBrowserSession(appContext)
   // 共享同一个 InnerTubeClient：visitorData/realSessionData 必须跨 BotGuard(铸 token)与
   // PlaybackResolver(/player)一致，否则 token 绑定 A、/player 用 B → token 无效
   // → "The page needs to be reloaded"(alpha.26 实测：3 个独立实例各 fetch 不同 visitorData)。
@@ -96,13 +101,21 @@ class AppContainer(context: Context) {
     httpClient = youtubeHttpClient,
     // WEB /player 走 WebView 原生网络栈(Chromium)时用同一 executor（对齐 FreeTubeAndroid 主 WebView）。
     jsExecutor = youtubeJsExecutor,
+    // 方案 A：/player 优先走真实浏览器会话 WebView（真实页上下文 + 真实 cookie/TLS）。
+    browserSession = youtubeBrowserSession,
   )
   val youtubeBotGuard: YoutubeBotGuard = YoutubeBotGuard(
     executor = youtubeJsExecutor,
     httpClient = youtubeHttpClient,
     innerTubeClient = youtubeInnerTubeClient,
   )
-  val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(youtubeJsExecutor, youtubeHttpClient)
+  // path C:NewPipeExtractor fork 的 PoTokenProvider,由 BotGuard + InnerTubeClient 支撑。
+  // 铸造的 poToken 缓存供 SABR init 复用(init==extraction 同 minter)。
+  val biliTvPoTokenProvider: BiliTvPoTokenProvider = BiliTvPoTokenProvider(
+    botGuard = youtubeBotGuard,
+    innerTubeClient = youtubeInnerTubeClient,
+  )
+  val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(appContext, youtubeJsExecutor, youtubeHttpClient)
   val youtubeSDecryptor: YoutubeSDecryptor = YoutubeSDecryptor(youtubeJsExecutor, youtubeHttpClient)
   val youtubeRepository: YoutubeRepository = YoutubeRepository(
     client = youtubeInnerTubeClient,
@@ -113,6 +126,7 @@ class AppContainer(context: Context) {
     nDecryptor = youtubeNDecryptor,
     sDecryptor = youtubeSDecryptor,
     httpClient = youtubeHttpClient,
+    biliTvPoTokenProvider = biliTvPoTokenProvider,
   )
   val videoRepository: VideoRepository = VideoRepository(
     apiClient = apiClient,

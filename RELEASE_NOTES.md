@@ -1,5 +1,28 @@
 # BiliMT 版本发布说明
 
+## v2.0.10
+
+**YouTube SABR 高清播放完整落地(P12 系列)**:从 v2.0.9 的 PO token 高清取流进一步演进——YouTube 对 guest+token 会话不再给 legacy DASH 签名直链,拿流机制改为 **SABR(Server-Assisted Bandwidth Regulation)**。本版完整实现 SABR 协议引擎、WebView harvest 破 n-decrypt、NewPipeExtractor fork 取流层,并逐层修掉 60s 断崖/重启、黑屏、无声、全视频加载不出等真机问题,最终音视频稳定播放。
+
+### 功能
+- **SABR 取流**:YouTube 新拿流机制,替代 legacy DASH 直链;`server_abr_streaming_url` + `ustreamerConfig` 双闸驱动。
+- **多清晰度选择**:poToken 会话级不绑 itag,`sabr://` 带 itag + videoId 缓存复用免重 harvest。
+- **主动会话轮换**:服务端每会话 ~60s 服务量上限,到点主动开新会话锚定播放头无缝续播,破 60s 断崖。
+- **移动端**:WebDAV 备份区默认折叠、清理缓存功能、YouTube 加载步骤 UI 提示。
+- **debug 云编译发布到固定 release 'debug'**:固定 URL 覆盖更新,手机免登录下载最新 debug 包。
+
+### 技术
+- **SABR 协议引擎**:`UmpReader`(YouTube 自定义 varint + part 流)+ `CompositeBuffer` + `ProtoWire` + `SabrProto`(VideoPlaybackAbrRequest 全链编码,字段号严格对齐 googlevideo/protos)。
+- **WebView harvest 破 n-decrypt**:plasma WASM 把 n/sig 移进 WASM,正则方案结构性失效;用 WebView 嵌入采集器 harvest 浏览器已 transform 的 sabrUrl + body,彻底打破 n-decrypt 阻塞。
+- **path C:NewPipeExtractor fork 取流层**:引入 LibreTube 的 NewPipeExtractor fork(`738c3d4`)作为 SABR 取流唯一数据源,退役 harvest;取流完全对齐 LibreTube,根除跨 minter/会话绑定。
+- **SABR MediaSource 单流**:完整移植 LibreTube 自定义 SABR MediaSource 单流替换 DASH 双流,根治 60s 断崖。
+- **60s 重启根因修复**:跨 minter status=3(init=harvested 10B、refresh=128B 不同 minter)→ path A 统一 128B;status=2 同步刷新对齐 LibreTube;取消 stall 看门狗。
+- **黑屏/无声修复**:音频 codec 从 NewPipe `stream.codec` 读取(容器 MIME 非解码器 MIME),visionOS client info 对齐 LibreTube。
+
+### 说明
+- SABR 运行时正确性依赖真机验证;若某视频仍异常,看 logcat `YtSabr` 的 `fetch rn=`/`MEDIA_HEADER`/`STREAM_PROTECTION_STATUS` 行定位。
+- 真机日志目录固定 `Y:\download\bilitv\logs\logs_live.log`。
+
 ## v2.0.9
 
 **YouTube 全链路 + 高清播放(P11 系列)**:从数据层到播放器完整接入 YouTube,支持关注流/搜索/UP 主页/播放列表/评论/多档清晰度切换,并实现 PO token(jnn) 高清取流。另含 WebDAV 备份、移动端日志、空降段修复等。

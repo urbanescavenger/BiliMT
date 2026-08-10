@@ -45,6 +45,7 @@ import coil.imageLoader
 import com.kirin.mt.R
 import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.cache.AppCacheManager
+import com.kirin.mt.core.cache.formatCacheSize
 import com.kirin.mt.core.i18n.ChineseTextConverters
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.CdnSelector
@@ -1243,16 +1244,6 @@ private tailrec fun Context.findActivity(): Activity? {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
-  }
-}
-
-private fun formatCacheSize(bytes: Long): String {
-  val safeBytes = bytes.coerceAtLeast(0L)
-  val mb = safeBytes / (1024.0 * 1024.0)
-  return if (mb >= 1.0) {
-    String.format(Locale.US, "%.1f MB", mb)
-  } else {
-    String.format(Locale.US, "%.0f KB", safeBytes / 1024.0)
   }
 }
 

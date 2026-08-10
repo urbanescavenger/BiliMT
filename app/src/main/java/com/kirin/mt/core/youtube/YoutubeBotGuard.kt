@@ -110,6 +110,18 @@ class YoutubeBotGuard(
   // ---- WebView snapshot / mint ----
 
   private suspend fun runSnapshot(program: String, globalName: String, contentBinding: JsonObject): JsonObject? {
+    // 诊断:确认 js_shell.html 的桌面指纹 polyfill 在真机生效(VM 读到与 context 一致的桌面环境)。
+    // 含实际 navigator.userAgent(非 polyfill 覆盖的只读属性,由 settings.userAgentString 决定)与
+    // window.chrome 等强指纹信号——BotGuard VM 若探测到安卓 WebView 环境会铸出无效 token(§6.7 row 35)。
+    val fp = executor.eval(
+      "JSON.stringify({ua:navigator.userAgent, platform:navigator.platform, uaMobile:(navigator.userAgentData?navigator.userAgentData.mobile:'n/a'), " +
+        "uaPlatform:(navigator.userAgentData?navigator.userAgentData.platform:'n/a'), plugins:navigator.plugins.length, " +
+        "screenW:screen.width, screenH:screen.height, dpr:window.devicePixelRatio, " +
+        "touch:navigator.maxTouchPoints, webdriver:navigator.webdriver, mem:navigator.deviceMemory, cores:navigator.hardwareConcurrency, " +
+        "vendorSub:navigator.vendorSub, productSub:navigator.productSub, appCodeName:navigator.appCodeName, appName:navigator.appName, " +
+        "chrome:typeof window.chrome, docURL:document.URL, baseURI:document.baseURI})"
+    )
+    Log.i(Tag, "VM fingerprint=$fp")
     val script = "try { window.__runSnapshot(${jsonString(program)}, ${jsonString(globalName)}, ${contentBinding.toString()}) } " +
       "catch(e) { window.__poToken = { status: 'error', token: null, error: String(e && e.stack || e) }; }"
     val evalResult = executor.eval(script)
@@ -167,14 +179,26 @@ class YoutubeBotGuard(
   // ---- GenerateIT ----
 
   private suspend fun generateIntegrityToken(botguardResponse: String): String? = withContext(Dispatchers.IO) {
+    val genCookie = innerTubeClient.currentSessionCookies()
+    val genVisitor = innerTubeClient.currentVisitorData()
+    Log.i(Tag, "GenerateIT cookie=${genCookie.take(60)} visitor=${genVisitor.take(24)}")
     val body = "[\"$RequestKey\",${jsonString(botguardResponse)}]".toRequestBody(JsonProtobufMediaType)
     val request = Request.Builder()
-      .url("https://jnn-pa.googleapis.com/\$rpc/google.internal.waa.v1.Waa/GenerateIT")
+      // 对齐 FreeTube botGuardScript.js 的 buildURL('GenerateIT', true) = www.youtube.com/api/jnn/v1/GenerateIT。
+      // PR #6931 说明 youtube.com/api/jnn 是 jnn-pa.googleapis.com 的代理,但真机实测(§6.7 row 26)
+      // 用 jnn-pa 直连 mint 出的 token 被判无效,先切到 YouTube 托管端点重测。
+      .url("https://www.youtube.com/api/jnn/v1/GenerateIT")
       .post(body)
       .header("Content-Type", "application/json+protobuf")
       .header("x-goog-api-key", WaaApiKey)
       .header("x-user-agent", "grpc-web-javascript/0.1")
-      .header("User-Agent", YoutubeConstants.UserAgent)
+      .header("User-Agent", YoutubeConstants.MobileUserAgent)
+      // 对齐 FreeTube botGuardScript.js：GenerateIT 在 WebView 同源发，自动携带完整浏览器
+      // cookie(含 VISITOR_INFO1_LIVE) + visitorData。我们 OkHttp 直发必须显式带 Cookie +
+      // X-Goog-Visitor-Id，否则 integrityToken 未绑定到会话 → 最终 PO token 无效 → /player 拒签
+      // DASH 流(§6.7 row 34)。
+      .header("Cookie", innerTubeClient.currentSessionCookies())
+      .header("X-Goog-Visitor-Id", innerTubeClient.currentVisitorData())
       .build()
     var status = 0
     val text = runCatching {

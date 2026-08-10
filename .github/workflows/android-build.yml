@@ -123,6 +123,37 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: ./gradlew clean assembleDebug --no-daemon -PbilitvBuildRoot="$GITHUB_WORKSPACE/build"
 
+      - name: Upload debug APK
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: BiliMT-debug
+          path: ${{ github.workspace }}/build/app/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Publish debug APK to fixed release
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SRC="$GITHUB_WORKSPACE/build/app/outputs/apk/debug/app-debug.apk"
+          APK="$RUNNER_TEMP/BiliMT-debug.apk"
+          cp "$SRC" "$APK"
+          # 固定 tag/release 名 "debug"：每次 debug 云编译都覆盖这里，
+          # 手机用固定 URL 下载最新 debug 包（公开仓库，无需登录）。
+          # 固定 URL: https://github.com/urbanescavenger/BiliMT/releases/download/debug/BiliMT-debug.apk
+          if gh release view debug --json tagName >/dev/null 2>&1; then
+            gh release upload debug "$APK" --clobber
+          else
+            gh release create debug "$APK" \
+              --target "$GITHUB_SHA" \
+              --title "Debug Build" \
+              --notes "最新 mort_debug 分支 debug 构建，每次推送自动覆盖。固定下载地址见本 release asset。" \
+              --prerelease
+          fi
+
       - name: Build release APKs
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         run: |

@@ -12,6 +12,8 @@ dependencyResolutionManagement {
     mavenCentral()
     google()
     maven("https://artifact.bytedance.com/repository/releases/")
+    // NewPipeExtractor fork (libre-tube) 仅发布在 jitpack
+    maven("https://jitpack.io")
   }
 }
 

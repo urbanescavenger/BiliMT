@@ -75,6 +75,7 @@ class SettingsActivity : ComponentActivity() {
                 onOpenLogs = { showLogs = true },
                 webdavConfigStore = appContainer.webdavConfigStore,
                 webdavBackupService = appContainer.webdavBackupService,
+                appCacheManager = appContainer.appCacheManager,
                 modifier = Modifier.fillMaxWidth(),
               )
             } else {
