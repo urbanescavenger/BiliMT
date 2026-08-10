@@ -149,6 +149,7 @@ fun SettingsScreen(
       SettingsItemSpeedTest to FocusRequester(),
       SettingsItemHomeSections to FocusRequester(),
       SettingsItemYoutubeChannels to FocusRequester(),
+      SettingsItemYoutubeContentRegion to FocusRequester(),
       SettingsItemWebDav to FocusRequester(),
       SettingsItemWebDavBackup to FocusRequester(),
       SettingsItemWebDavRestore to FocusRequester(),
