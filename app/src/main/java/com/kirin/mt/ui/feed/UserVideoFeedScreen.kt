@@ -225,6 +225,7 @@ internal fun UserFeedScreen(
         feedState.dynamicVideo,
         "video",
         youtubeChannels,
+        youtubeChannelStore,
         forceRefresh = autoRefreshOnSwitch,
       )
       UserFeedTab.DynamicAll -> loadDynamicFirstPage(
@@ -233,6 +234,7 @@ internal fun UserFeedScreen(
         feedState.dynamicAll,
         "all",
         emptyList(),
+        youtubeChannelStore,
         forceRefresh = autoRefreshOnSwitch,
       )
       UserFeedTab.History -> loadHistoryFirstPage(
@@ -272,11 +274,11 @@ internal fun UserFeedScreen(
       when (selectedTab) {
         UserFeedTab.DynamicVideo -> {
           feedState.dynamicVideo.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, coroutineScope, feedState.dynamicVideo, "video", youtubeChannels, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, coroutineScope, feedState.dynamicVideo, "video", youtubeChannels, youtubeChannelStore, forceRefresh = true)
         }
         UserFeedTab.DynamicAll -> {
           feedState.dynamicAll.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, coroutineScope, feedState.dynamicAll, "all", emptyList(), forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, coroutineScope, feedState.dynamicAll, "all", emptyList(), youtubeChannelStore, forceRefresh = true)
         }
         UserFeedTab.History -> {
           feedState.history.handledManualRefreshKey = manualRefreshKey
@@ -519,6 +521,7 @@ private suspend fun loadDynamicFirstPage(
   state: DynamicFeedUiState,
   type: String,
   youtubeChannels: List<YoutubeChannel>,
+  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   forceRefresh: Boolean,
 ) {
   if (!forceRefresh && state.loadedOnce) {
@@ -559,7 +562,7 @@ private suspend fun loadDynamicFirstPage(
   if (type != "video" || youtubeChannels.isEmpty()) {
     return
   }
-  mergeYoutubeIntoDynamic(videoRepository, coroutineScope, state, youtubeChannels)
+  mergeYoutubeIntoDynamic(videoRepository, coroutineScope, state, youtubeChannels, youtubeChannelStore)
 }
 
 /** 后台拉取 YouTube 关注流(5s 兜底),就绪后与当前 B 站动态按发布时间合并重排。 */
@@ -568,11 +571,14 @@ private fun mergeYoutubeIntoDynamic(
   coroutineScope: CoroutineScope,
   state: DynamicFeedUiState,
   channels: List<YoutubeChannel>,
+  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
 ) {
   coroutineScope.launch {
     val yt = try {
       withTimeoutOrNull(YoutubeFeedTimeoutMs) {
-        videoRepository.youtubeSubscriptionsFeed(channels)
+        videoRepository.youtubeSubscriptionsFeed(channels) { channel ->
+          youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+        }
       }.orEmpty()
     } catch (error: CancellationException) {
       throw error
@@ -975,7 +981,7 @@ private fun DynamicFeedContent(
       },
       onRetry = {
         coroutineScope.launch {
-          loadDynamicFirstPage(videoRepository, coroutineScope, state, type, youtubeChannels, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, coroutineScope, state, type, youtubeChannels, youtubeChannelStore, forceRefresh = true)
         }
       },
       onLoadMore = { loadDynamicNextPage(videoRepository, coroutineScope, state, type) },

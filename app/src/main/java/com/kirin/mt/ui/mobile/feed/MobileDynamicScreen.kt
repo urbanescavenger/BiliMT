@@ -67,6 +67,7 @@ private sealed interface DynamicState {
 fun MobileDynamicScreen(
   videoRepository: VideoRepository,
   youtubeFeedCacheStore: YoutubeFeedCacheStore,
+  youtubeChannelStore: YoutubeChannelStore,
   isLoggedIn: Boolean,
   dynamicRefreshKey: Int = 0,
   youtubeChannels: List<YoutubeChannel>,
@@ -161,7 +162,9 @@ fun MobileDynamicScreen(
       scope.launch {
         val result = try {
           withTimeoutOrNull(youtubeFeedTimeoutMs(youtubeChannels.size)) {
-            videoRepository.youtubeSubscriptionsFeed(youtubeChannels)
+            videoRepository.youtubeSubscriptionsFeed(youtubeChannels) { channel ->
+              youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+            }
           }
         } catch (e: CancellationException) {
           throw e

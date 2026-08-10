@@ -47,34 +47,43 @@ internal object YoutubeParsers {
     return YoutubeFeedPage(items = videos, continuation = continuation)
   }
 
+  /** 频道页 header 解析结果。 */
+  data class ChannelInfo(val channelId: String, val name: String, val avatarUrl: String)
+
   /**
-   * 从频道页 /browse 响应解析频道 info，返回 (channelId, name)。
+   * 从频道页 /browse 响应解析频道 info，返回 [ChannelInfo]（含头像）。
    *
    * YouTube 频道页 header 有三种形态，任一命中即用：
-   *   1. header → c4TabbedHeaderRenderer → { channelId, title }
-   *   2. metadata → channelMetadataRenderer → { externalId, title }
-   *   3. microformat → microformatDataRenderer → { externalId, title }
+   *   1. header → c4TabbedHeaderRenderer → { channelId, title, avatar }
+   *   2. metadata → channelMetadataRenderer → { externalId, title, avatar }
+   *   3. microformat → microformatDataRenderer → { externalId, title }（无头像）
    *
-   * @return 解析出的 (channelId, name)；解析不到时返回 null（由调用方回退输入串）。
+   * @return 解析出的 [ChannelInfo]；解析不到时返回 null（由调用方回退输入串）。
    */
-  fun parseChannelInfo(root: JsonObject): Pair<String, String>? {
+  fun parseChannelInfo(root: JsonObject): ChannelInfo? {
     val c4Header = root.obj("header")?.obj("c4TabbedHeaderRenderer")
     if (c4Header != null) {
       val id = c4Header.stringOrNull("channelId")
       val name = c4Header.stringOrNull("title")
-      if (!id.isNullOrBlank()) return id to (name ?: "")
+      if (!id.isNullOrBlank()) {
+        val avatar = c4Header.obj("avatar")?.array("thumbnails")?.let(::pickBestThumbnailUrl).orEmpty()
+        return ChannelInfo(id, name ?: "", avatar)
+      }
     }
     val channelMetadata = root.obj("metadata")?.obj("channelMetadataRenderer")
     if (channelMetadata != null) {
       val id = channelMetadata.stringOrNull("externalId")
       val name = channelMetadata.stringOrNull("title")
-      if (!id.isNullOrBlank()) return id to (name ?: "")
+      if (!id.isNullOrBlank()) {
+        val avatar = channelMetadata.obj("avatar")?.array("thumbnails")?.let(::pickBestThumbnailUrl).orEmpty()
+        return ChannelInfo(id, name ?: "", avatar)
+      }
     }
     val microformat = root.obj("microformat")?.obj("microformatDataRenderer")
     if (microformat != null) {
       val id = microformat.stringOrNull("externalId")
       val name = microformat.stringOrNull("title")
-      if (!id.isNullOrBlank()) return id to (name ?: "")
+      if (!id.isNullOrBlank()) return ChannelInfo(id, name ?: "", "")
     }
     return null
   }
@@ -158,8 +167,7 @@ internal object YoutubeParsers {
     val authorName = runsText(node.obj("authorText")).ifBlank { simpleText(node.obj("authorText")) }
     val avatarUrl = node.obj("authorThumbnail")
       ?.array("thumbnails")
-      ?.mapNotNull { (it as? JsonObject)?.stringOrNull("url") }
-      ?.firstOrNull()
+      ?.let(::pickBestThumbnailUrl)
       .orEmpty()
     val content = runsText(node.obj("contentText")).ifBlank { simpleText(node.obj("contentText")) }
     val likeCount = parseCount(node.stringOrNull("likeCount"))
@@ -270,6 +278,18 @@ internal object YoutubeParsers {
       ?.let { (it as JsonObject).obj("navigationEndpoint")?.obj("browseEndpoint")?.stringOrNull("browseId") }
       .orEmpty()
 
+    // 频道头像:videoRenderer 在 channelThumbnail.thumbnails;部分客户端在
+    // channelThumbnailSupportedRenderers.channelThumbnailWithAvatarRenderer.avatar.thumbnails。
+    val channelAvatarUrl = node.obj("channelThumbnail")
+      ?.array("thumbnails")
+      ?.let(::pickBestThumbnailUrl)
+      ?: node.obj("channelThumbnailSupportedRenderers")
+        ?.obj("channelThumbnailWithAvatarRenderer")
+        ?.obj("avatar")
+        ?.array("thumbnails")
+        ?.let(::pickBestThumbnailUrl)
+      .orEmpty()
+
     val thumbnailUrl = node.obj("thumbnail")
       ?.array("thumbnails")
       ?.mapNotNull { (it as? JsonObject)?.stringOrNull("url") }
@@ -307,6 +327,7 @@ internal object YoutubeParsers {
       title = title,
       channelName = channelName,
       channelId = channelId,
+      channelAvatarUrl = channelAvatarUrl,
       thumbnailUrl = thumbnailUrl,
       viewCount = viewCount,
       durationSec = if (liveNow) null else parseDuration(lengthText),
@@ -318,6 +339,14 @@ internal object YoutubeParsers {
   }
 
   // ---- 文本辅助 ----
+
+  /** 从 thumbnails 数组选最高分辨率那张的 url(对齐 LibreTube `maxByOrNull { it.height }`)。 */
+  private fun pickBestThumbnailUrl(thumbnails: JsonArray): String? {
+    return thumbnails
+      .mapNotNull { it as? JsonObject }
+      .maxByOrNull { it.stringOrNull("height")?.toIntOrNull() ?: 0 }
+      ?.stringOrNull("url")
+  }
 
   private fun runsText(obj: JsonObject?): String {
     if (obj == null) return ""

@@ -138,7 +138,9 @@ fun MobileHomeScreen(
       }
     }
     val result = withTimeoutOrNull(youtubeFeedTimeoutMs(youtubeChannels.size)) {
-      videoRepository.youtubeSubscriptionsFeed(youtubeChannels)
+      videoRepository.youtubeSubscriptionsFeed(youtubeChannels) { channel ->
+        youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+      }
     }
     return when {
       result == null -> MobileSectionState.Failed("YouTube 关注加载超时")

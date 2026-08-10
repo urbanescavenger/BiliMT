@@ -20,6 +20,8 @@ data class YoutubeChannel(
   /** 频道 id（UC 开头）。 */
   val channelId: String,
   val name: String,
+  /** 频道头像 URL（yt3.ggpht.com）；旧数据/未解析时为空串。 */
+  val avatar: String = "",
 )
 
 class YoutubeChannelStore(private val context: Context) {
@@ -35,6 +37,18 @@ class YoutubeChannelStore(private val context: Context) {
       val current = decode(prefs[Keys.Channels]).orEmpty()
       val next = current.filterNot { it.channelId == channel.channelId } + channel
       prefs[Keys.Channels] = json.encodeToString(serializer, next)
+    }
+  }
+
+  /** 按 channelId 更新头像并回写 DataStore（用于旧频道懒解析后回填）。 */
+  suspend fun updateAvatar(channelId: String, avatar: String) {
+    if (avatar.isBlank()) return
+    context.biliDataStore.edit { prefs ->
+      val current = decode(prefs[Keys.Channels]).orEmpty()
+      val next = current.map { if (it.channelId == channelId) it.copy(avatar = avatar) else it }
+      if (next != current) {
+        prefs[Keys.Channels] = json.encodeToString(serializer, next)
+      }
     }
   }
 
