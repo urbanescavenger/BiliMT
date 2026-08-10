@@ -583,6 +583,20 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 
 **去重关键**:单音轨视频有多个 itag(251/140)但 `audioTrackId` 均为 null → 折叠成 `"default"` 一条 + `.distinctBy { it.id }`,避免误显示多音轨菜单。
 
+## 6.12 播放历史 + 断电续播(2026-08)
+
+**背景**:YouTube 播放进度从未落盘——`PlaybackRequest` 的 `bvid` 承载 videoId、`cid` 恒为 0,而 `PlaybackProgressStore.saveProgress` 有 `cid <= 0L → return` 守卫,导致 YouTube 进度被静默丢弃,重开无法续播,也没有历史列表。
+
+**根因修复(断电续播)**:`PlaybackProgressStore.saveProgress` 守卫 `cid <= 0L` → `cid < 0L`(允许 cid=0)。安全性:cid=0 只可能来自 YouTube(bvid=videoId 唯一);B站视频 cid 恒 >0,且播放器仅在 Ready 态保存(B站要求 cid>0 才 Ready)。key `playback_${videoId}_0` 无冲突。TV(`PlayerScreen.saveProgressNow`)与移动端(`MobilePlayerScreen.saveAndReportProgress`)本就调用 `saveProgress`/`getSavedProgress`,放宽守卫后重开即经 `getSavedProgress(videoId, 0)` 续播。
+
+**完成阈值(内置)**:`VideoSummary.isWatchCompleted()` 把「进度 ≥ 时长-1秒」视为看完,`toPlaybackRequest` 据此不设 `startPositionMs` → 播完的视频重开从 0 起播,不会卡在结尾。
+
+**历史存储**:新建 `core/youtube/YoutubeHistoryStore.kt`,照抄 `YoutubeChannelStore` 的 DataStore 列表范式——`@Serializable YoutubeHistoryEntry(videoId/title/channelName/channelId/thumbnailUrl/durationMs/positionMs/lastPlayedAtMs)` + JSON 字符串 + `ListSerializer`,复用 `context.biliDataStore`,key `youtube_history`,cap 50 条按 `lastPlayedAtMs` 倒序。`recordPlay`(按 videoId 去重前置)/`updatePosition`/`remove`/`clear`。
+
+**记录时机**:TV 与移动端播放器起播(Ready)时 `recordPlay`(带频道/封面元数据),暂停/退出时 `updatePosition`。历史需要 channelId 供开频道 → `PlaybackRequest` 加 `channelId` 字段,`toPlaybackRequest` 从 `VideoSummary.channelId` 填入。
+
+**移动端 UI**:「动态」底栏新增第 6 个「YouTube 历史」子 tab(`MobileFeedScreen`),新建 `ui/mobile/feed/MobileYoutubeHistoryPage.kt` 网格复用 `MobileVideoCard`(绿框区分 YouTube),点击续播、点头像开频道。三语文案(`feed_tab_youtube_history`/`youtube_history_empty`)。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
@@ -594,6 +608,9 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 | `assets/youtube/bgutils.js` | 打包的 bgutils-js(MIT) |
 | `ui/player/PlayerScreen.kt:1390` / `:2038-2104` | 喂流分支 + MPD 构建(改 feed 路径即可复用) |
 | `core/player/CodecCapabilityProbe.kt` | 硬件过滤 |
+| `core/player/PlaybackProgressStore.kt` | 续播落盘(`saveProgress` 守卫放宽允许 cid=0,§6.12) |
+| `core/youtube/YoutubeHistoryStore.kt` | YouTube 播放历史 DataStore 列表存储(§6.12) |
+| `ui/mobile/feed/MobileYoutubeHistoryPage.kt` | 移动端「YouTube 历史」子 tab 网格(§6.12) |
 
 ## 8. 参考来源
 - FreeTube 上游:`src/renderer/helpers/api/local.js`(InnerTube 封装)与 `formatUtils`(itag/adaptive 选择)

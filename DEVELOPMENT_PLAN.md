@@ -833,6 +833,8 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | P11-13 | 动态页统一流：B 站动态 + YouTube 关注合并（TV+移动，5s 兜底，移除独立 YouTube tab） | 实施中 |
 | P11-14 | YouTube 高清播放（Tier 1：`s` 解密 + adaptive 首选 + DASH 播放 + 硬件过滤 + 多档清晰度；Tier 2：PO token） | Pending（方案见 `docs/youtube-hd-playback.md`） |
 | P11-15 | WebDAV 备份/还原 YouTube 关注频道（跨设备复用关注列表） | 实施中（代码改完待云编译） |
+| P11-16 | YouTube 多语言配音修复 + 音轨切换 + 默认画质 | ✅ Done（云编译绿，详见 `docs/youtube-hd-playback.md` §6.11） |
+| P11-17 | YouTube 播放历史 + 断电续播（`PlaybackProgressStore` 守卫放宽 + `YoutubeHistoryStore` + 移动端历史子 tab） | ✅ Done（云编译绿，详见 `docs/youtube-hd-playback.md` §6.12） |
 
 ### 发布
 - 测试版 `v2.0.8-alpha.1/.2/.3` 已发布验证；搜索/热门可用。

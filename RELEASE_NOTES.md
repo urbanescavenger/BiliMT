@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v3.0.0-alpha.3
+
+**YouTube 播放历史 + 断电续播(测试 alpha)**:新增 YouTube 播放历史记录与断电续播。根因是 YouTube 播放请求 `cid` 恒为 0,被 `PlaybackProgressStore.saveProgress` 的 `cid <= 0L` 守卫拦截,进度从未落盘;放宽守卫后 TV/移动端播放器既有保存/读取逻辑即恢复续播。
+
+### 功能
+- **YouTube 断电续播**:播到中途退出 → 重开同一视频从上次位置续播;播完的视频重开从 0 起播(完成态不保存进度)。
+- **YouTube 播放历史**:移动端「动态」底栏新增「YouTube 历史」子 tab,网格展示最近播放的 50 条,点击续播、点头像进频道。
+
+### 技术
+- **根因修复**:`PlaybackProgressStore.saveProgress` 守卫 `cid <= 0L` → `cid < 0L`(允许 cid=0);B站视频 cid 恒 >0 不受影响。
+- **历史存储**:新建 `core/youtube/YoutubeHistoryStore.kt`(DataStore 列表存储,cap 50 按 `lastPlayedAtMs` 倒序),TV 与移动端播放器 Ready 时 `recordPlay`、暂停/退出时 `updatePosition`。
+- **`PlaybackRequest` 加 `channelId`**:供历史列表开频道;顺带修复 TV 播放器私有 `toPlaybackRequest` 未填 `source` 的缺口(YouTube 相关视频丢失来源)。
+
 ## v3.0.0-alpha.1
 
 **UI 交互修复(测试 alpha)**:修复 WebDAV 弹窗按钮被系统键盘遮住、移动端 WebDAV 展开后备份/还原按钮需手动下滑、TV 搜索源切换箭头歧义三处交互问题。

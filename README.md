@@ -1,10 +1,10 @@
 # BiliMT
 
-BiliMT 是一个原生 B 站客户端实验项目，基于 [BiliTVNative](https://github.com/Hyper-Beast/BiliTVNative) 1.0.0 开发，使用 Kotlin、Jetpack Compose 和 Media3 重写观看体验。同一个 APK 同时适配 Android TV 与安卓手机：TV 端用 Compose for TV 和遥控器焦点系统，手机端用触屏交互外壳，共享同一套网络、播放、账号、设置和存储引擎。
+BiliMT 是一个原生 B 站 + YouTube 双平台客户端实验项目，基于 [BiliTVNative](https://github.com/Hyper-Beast/BiliTVNative) 1.0.0 开发，使用 Kotlin、Jetpack Compose 和 Media3 重写观看体验。同一个 APK 同时适配 Android TV 与安卓手机：TV 端用 Compose for TV 和遥控器焦点系统，手机端用触屏交互外壳，共享同一套网络、播放、账号、设置和存储引擎。
+
+内容覆盖 B 站（推荐/热门/分区、搜索、动态、历史、收藏、追番、直播）与 YouTube（搜索、热门、关注流、频道管理、多播放列表、高清播放），双平台均可播放。YouTube 部分基于 [LibreTube](https://github.com/libre-tube/libretube) 的取流与 SABR 播放方案（含其 NewPipeExtractor fork）独立重写实现。播放器基于 Media3 ExoPlayer，支持 DASH、弹幕、快进预览、空降助手、多语言配音音轨切换、默认画质与后台播放。
 
 电视端重点不是做一个极简壳，而是在电视设备上尽量平衡几个实际问题：播放稳定性、遥控器焦点可控性、弹幕性能、主页视觉质感，以及不同硬件档位下的流畅度。
-
-直播暂缓，不在当前版本范围内。
 
 ## 截图
 
@@ -31,7 +31,7 @@ BiliMT 是一个原生 B 站客户端实验项目，基于 [BiliTVNative](https:
 - 动态关注 feed、历史记录和账号登录（TV 二维码、手机短信 WebView）。
 - 手机端"动态"tab 四子 tab：动态关注 feed / 历史 / 收藏（收藏夹切换）/ 追番（番剧·影视 + 想看·在看·看过筛选）。
 - Media3 点播播放器，支持 DASH 播放、进度保存和返回焦点恢复。
-- 默认画质、解码器偏好、倍速、弹幕、快进预览雪碧图。
+- 默认画质、解码器偏好、倍速、弹幕、快进预览雪碧图；YouTube 另有独立默认画质与多语言配音音轨切换。
 - CDN 自动测速择优：选择“自动”时会对 B 站返回的候选 CDN 并发测速（首字节时间 + 64 KB 下载吞吐），过滤 mcdn、szbdyd、裸 IP 等不良候选，并按区域缓存 5 分钟，避免每次播放都重复探测。
 - 设置内网络测速：以最后一次播放的视频测各 CDN 节点速度，弹窗列出首字节/速度排名并标记最快节点，便于手动挑选 CDN 线路。
 - 字节跳动 DanmakuRenderEngine 原生弹幕渲染，避免把高频弹幕做成 Compose 节点。
@@ -46,6 +46,8 @@ BiliMT 是一个原生 B 站客户端实验项目，基于 [BiliTVNative](https:
 - 简体中文、香港繁体、台湾繁体界面和动态标题转换。
 - Android TV launcher 图标和 TV 横幅，手机与 TV 双桌面入口。
 - 应用内更新：从 GitHub Releases 手动检查、下载并安装新版 APK。
+- 直播：TV + 移动端直播播放（HLS/FLV 取流、画质切换、-352 风控）与直播分区浏览。
+- YouTube 内容：搜索/热门来源切换、动态关注流合并、频道管理、多播放列表、高清 SABR 播放（多档清晰度）、多语言配音音轨切换、YouTube 默认画质、播放历史续播、WebDAV 备份/还原。
 
 ## UI 与视觉
 
@@ -88,7 +90,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 - 播放设置：默认画质、解码器、快进预览、空降助手、退出确认、自动连播、自动推荐、播放完成退出、显示时间、迷你进度条。
 - UI/UX：效果档位、液态玻璃、主页主题、切换时自动确认、切换时自动刷新。
-- 系统设置：清理缓存、语言。
+- 系统设置：清理缓存、语言、程序更新、WebDAV 备份、日志、关于。
 
 首页分区开关独立显示在右侧，至少保留一个分区。
 
@@ -96,7 +98,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 同一个 APK 同时适配 Android TV 和安卓手机，不拆包、不另起桌面入口。`MainActivity` 运行时用 `isTvUi()`（`UI_MODE_TYPE_TELEVISION` 或 `FEATURE_LEANBACK`）选择 `BiliTvApp`（TV，遥控器焦点）或 `BiliMobileApp`（手机，触屏外壳）。Manifest 同时挂 `LAUNCHER` 和 `LEANBACK_LAUNCHER`，一个包同时出现在手机桌面和 TV 桌面。`AppContainer` 和 DataStore（设置、登录、播放进度等）两端共享同一份；手机端 UI 放在 `ui/mobile/` 包，复用 `core/*` 全部引擎，触屏交互替换 TV 焦点机制。手机端 UI 参照 [BV](https://github.com/aaa1115910/bv) `feature/mobile` 的设计重新实现，属于设计移植而非代码拷贝。
 
-仍在开发中：PGC（影视）tab、评论、动态点赞/稍后再看、手机端深色主题统一。
+仍在开发中：PGC（影视）tab、动态点赞/稍后再看、手机端深色主题统一。
 
 
 
@@ -122,6 +124,47 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 第三方库遵循其各自许可证。
 
 ## 版本更新
+
+### v3.0.0-alpha
+
+v2.0.10 稳定版后的继续迭代线，主打 YouTube 多语言配音修复与交互打磨。
+
+| tag | 内容 |
+| --- | --- |
+| v3.0.0-alpha.1 | 修 WebDAV 弹窗按钮被系统键盘遮住、移动端 WebDAV 展开后备份/还原按钮自动上移、TV 搜索源切换还原双 pill |
+| v3.0.0-alpha.2 | 多语言配音修复（中文视频不再误播英文配音）+ 播放器音轨切换按钮 + YouTube 默认画质设置 |
+
+### v2.0.10
+
+稳定版：YouTube SABR 高清播放完整落地。YouTube 对 guest+token 会话不再给 legacy DASH 签名直链，拿流机制改为 SABR（Server-Assisted Bandwidth Regulation）。完整实现 SABR 协议引擎、WebView harvest 破 n-decrypt、NewPipeExtractor fork 取流层，并逐层修掉 60s 断崖/重启、黑屏、无声、全视频加载不出等真机问题，最终音视频稳定播放。
+
+- SABR 取流：`server_abr_streaming_url` + `ustreamerConfig` 双闸驱动，替代 legacy DASH 直链。
+- 多清晰度选择：poToken 会话级不绑 itag，`sabr://` 带 itag + videoId 缓存复用免重 harvest。
+- 主动会话轮换：服务端每会话 ~60s 服务量上限，到点主动开新会话锚定播放头无缝续播，破 60s 断崖。
+- SABR MediaSource 单流：完整移植 LibreTube 自定义 SABR MediaSource 单流替换 DASH 双流，根治 60s 断崖。
+- 移动端：WebDAV 备份区默认折叠、清理缓存功能、YouTube 加载步骤 UI 提示。
+- debug 云编译发布到固定 release 'debug'：固定 URL 覆盖更新，手机免登录下载最新 debug 包。
+
+### v2.0.9
+
+稳定版：YouTube 全链路 + 高清播放。从数据层到播放器完整接入 YouTube，支持关注流/搜索/UP 主页/播放列表/评论/多档清晰度切换，并实现 PO token（jnn）高清取流。另含 WebDAV 备份、移动端日志、空降段修复等。
+
+- YouTube 关注流：动态页 B站动态 + YouTube 关注合并为一条流（TV+移动），免登录，空频道回退热门。
+- YouTube 播放器：简介/评论 tab、多播放列表、◀▶/去弹幕/相关视频=列表后续、后台播放自动连播。
+- YouTube 高清播放：多档清晰度（1080P/2K/4K）实时切换，adaptive 高清首选，`s`/`n` 签名解密，DASH 播放，硬件能力过滤。
+- PO token（jnn）：bgutils-js 打包进隐藏 WebView 完整铸取流程，注入 /player 取高清；任一步失败降级 360p 不阻塞。
+- WebDAV 备份/还原：YouTube 关注频道 + 日志一起备份上传。
+- 移动端日志：设置页日志查看/导出。
+
+### v2.0.8
+
+稳定版：YouTube 内容集成。搜索/热门/动态关注/播放全链路接入 YouTube，移动端设置加账号与关注管理，动态页统一 B 站动态 + YouTube 关注为一条流，并优化关注流加载性能。
+
+- 搜索/热门来源切换：搜索与首页热门可看 YouTube 内容（独立实现 InnerTube 私有 API，guest 认证免登录）。
+- YouTube 播放：`POST /player`（WEB→ANDROID 回退）解析 `adaptiveFormats`/`formats`，含 `n` 参数解密 + PO token 结构 best-effort，默认 360p。
+- 频道管理：设置页可添加/移除关注频道（`resolveChannel` 解析 UC ID / @handle / 名称 / 完整 URL），TV + 移动双端面板。
+- 多播放列表：本地多命名播放列表（预置「默认」），长按加入、两层浏览、长按拖动排序、编辑删除；从播放列表起播后播放器出现 ◀▶ 连播。
+- 动态页统一关注流：B站动态 + YouTube 关注合并为一条流（TV + 移动），5s 兜底；关注流逐频道并行化 + 持久化缓存 + RSS 优先加载。
 
 ### v2.0.1-alpha
 
