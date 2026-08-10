@@ -618,13 +618,19 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 3. **viaWebView 指纹不一致**:Cobalt UA(body 字段)走 Chromium 网络栈(HTTP UA 是 Chromium),能否过反爬未知。
 4. TVHTML5 经典路径 adaptive url 大概率仍剥空(整个 §6.7 证明 WEB 也剥空)。
 
-**状态**:代码已合(v3.0.1-alpha.6),待真机验证。
+**状态**:v3.0.1-alpha.6 真机证伪,结局 A,已回退 WEB-only(v3.0.1-alpha.7)。
 
-**真机对照**(Sony XQ-EC72,日志目录 `Y:\download\bilitv\logs`,tag `YtResolver`):TV 播同一 YouTube 视频,看 `resolve clients=[TVHTML5, WEB]` + `TVHTML5 formats:`/`TVHTML5 diag:` 行:
-- **A. TVHTML5 被拦**(UNPLAYABLE)→ 回退 WEB SABR = 现状,无收益无损失,回退改动。
-- **B. TVHTML5 可 play 但 url 剥空** → 落 SABR = 现状,无收益,回退改动。
-- **C. TVHTML5 给带 url adaptive / 更多清晰度** → 收益,保留并照 `PlaybackCodecPreference` 模式做成 `YoutubeClientPreference` 设置项(Auto/TVHTML5/WEB)。
-移动端回归:移动端播 YouTube 应完全无变化(仍 WEB+SABR)。
+**真机结果**(Sony BRAVIA AE2,armeabi-v7a,2026-08-10 22:24 / 22:37 两次播放,日志 `logs_live.log`):
+- `YtResolver: resolve clients=[TVHTML5, WEB] preferred=TVHTML5` ✓ 诊断日志生效。
+- `YtBotGuard: postJson /player client=TVHTML5 viaWebView=true ... ctxOs=null ctxBrowser=null ctxMem=null bodyLen=1034B` → `YtBrowserSession: browser fetch network error: TypeError: Failed to fetch`(JS fetch 网络层失败,没拿到任何 /player 响应)。
+- **WEB 回退也失败**:紧跟 TVHTML5 后 `client=WEB viaWebView=true ... ctxOs=Android/13 ctxBrowser=Chrome Mobile ... bodyLen=1647B` → 同样 `TypeError: Failed to fetch`。
+- `E BiliMT:Player: playback launch failed: YouTube playback blocked: no streamingData`(两个 client 都没拿到 streamingData)→ ExoPlayer Release 模块 `media3.exoplayer.dash`(DASH 兜底,未走 sabr)。完全无法播放。
+
+**根因**:① TVHTML5 viaWebView fetch 本身 `TypeError: Failed to fetch`(Cobalt UA + WebView 网络栈 + YouTube 反爬,请求没发出或被浏览器拒),没拿到 /player 响应;② TVHTML5 与 WEB 共享同一 `browserSession`(InnerTubeClient 单例 WebView,`InnerTubeClient.kt:37/112-113`),TVHTML5 fetch 失败污染 session,致 WEB 回退也 Failed → 完全无法播放(严重回归,alpha.4 WEB viaWebView 本能成功)。
+
+**结论 A**:TVHTML5 viaWebView 当前实现不可用,无收益且破坏 WEB 回退。已回退 `PlayerScreen` 的 TVHTML5 传入(`preferredYoutubeClient=null`→WEB-only,恢复 alpha.4 能播)。TVHTML5 代码保留(`InnerTubeClient`/`YoutubePlaybackResolver`/`YoutubeConstants`/`PlaybackModels`),待修 viaWebView session 隔离后再启用。
+
+**后续(可选)**:若要继续 TVHTML5 试验,需先实现 viaWebView session 隔离(TVHTML5 失败不污染 WEB 的 browserSession,或 WEB 用 fresh session),并调查 TVHTML5 `TypeError: Failed to fetch` 根因(Cobalt UA 指纹 / TVHTML5 body 字段触发 CORS preflight / WebView 网络栈)。**无 session 隔离则 TVHTML5 优先必破坏 WEB,不可启用。**
 
 ## 7. 关键文件
 

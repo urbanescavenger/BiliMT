@@ -1381,8 +1381,11 @@ fun PlayerScreen(
       metadata = videoMetadata,
       cid = cid,
     ).let { if (pendingSABRSeek != null) it.copy(startPositionMs = pendingSABRSeek, forceStartPosition = true) else it }
-      // TV 端 YouTube 取流试验:用 TVHTML5 client(对齐 YouTube 官方 TV 端),失败自动回退 WEB 走 SABR。
-      .let { if (isYoutube) it.copy(preferredYoutubeClient = com.kirin.mt.core.youtube.InnerTubeClient.Client.TVHTML5) else it }
+      // TVHTML5 试验回退(v3.0.1-alpha.6 真机证伪):TVHTML5 viaWebView TypeError: Failed to fetch,
+      // 且污染共享 browserSession(单例 WebView)致 WEB 回退也 Failed → 完全无法播放。结局 A,
+      // 回退 WEB-only(preferredYoutubeClient=null=WEB)。TVHTML5 代码保留(InnerTubeClient/
+      // Resolver/Constants/PlaybackModels),待修 viaWebView session 隔离后再启用下行 .let。
+      // .let { if (isYoutube) it.copy(preferredYoutubeClient = com.kirin.mt.core.youtube.InnerTubeClient.Client.TVHTML5) else it }
     displayRequest = resolvedRequest
     playerState = try {
       withTimeoutOrNull(LaunchTimeoutMs) {

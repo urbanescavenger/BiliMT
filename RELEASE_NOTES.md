@@ -1,5 +1,13 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.7
+
+**TVHTML5 试验回退(测试 alpha)**:v3.0.1-alpha.6 TVHTML5 client 真机证伪——TVHTML5 viaWebView `TypeError: Failed to fetch`(没拿到 /player 响应),且污染共享 browserSession 致 WEB 回退也 Failed → 完全无法播放。回退 `PlayerScreen` TVHTML5 传入(`preferredYoutubeClient=null`→WEB-only),恢复 alpha.4 能播。TVHTML5 代码保留待修 session 隔离。详见 `docs/youtube-hd-playback.md` §6.13。
+
+### 修复
+- **回退 TV 端 YouTube TVHTML5 client**:`PlayerScreen` 去掉 `preferredYoutubeClient=TVHTML5` 传入,恢复默认 WEB-only(无 TVHTML5 前置污染,WEB viaWebView 恢复成功取流 + SABR)。
+- TVHTML5 代码(`InnerTubeClient.Client.TVHTML5` / `YoutubePlaybackResolver` clients 逻辑 / `YoutubeConstants` TVHTML5 常量 / `PlaybackModels.preferredYoutubeClient` 字段)全部保留,注释说明试验结论 A,待修 viaWebView session 隔离后再启用。
+
 ## v3.0.1-alpha.6
 
 **TV 端 YouTube 取流 TVHTML5 client 试验(测试 alpha)**:TV 端 YouTube /player 从 WEB 改试 TVHTML5 client(对齐 YouTube 官方 TV 端),失败/被拦自动回退 WEB 走现有 SABR,最坏=现状。移动端不变。
