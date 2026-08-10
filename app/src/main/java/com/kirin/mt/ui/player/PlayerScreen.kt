@@ -1381,6 +1381,8 @@ fun PlayerScreen(
       metadata = videoMetadata,
       cid = cid,
     ).let { if (pendingSABRSeek != null) it.copy(startPositionMs = pendingSABRSeek, forceStartPosition = true) else it }
+      // TV 端 YouTube 取流试验:用 TVHTML5 client(对齐 YouTube 官方 TV 端),失败自动回退 WEB 走 SABR。
+      .let { if (isYoutube) it.copy(preferredYoutubeClient = com.kirin.mt.core.youtube.InnerTubeClient.Client.TVHTML5) else it }
     displayRequest = resolvedRequest
     playerState = try {
       withTimeoutOrNull(LaunchTimeoutMs) {

@@ -46,6 +46,18 @@ object YoutubeConstants {
   const val WebEmbeddedClientName = "WEB_EMBEDDED_PLAYER"
   const val WebEmbeddedClientNameId = "56"
 
+  /**
+   * TVHTML5 客户端(TV 端取流试验,对齐 YouTube 官方 TV 端 client)。
+   * clientNameId=7,clientVersion 主版本号 7(yt-dlp/Metrolist 同款),Cobalt TV UA。
+   * 试验目的:看 TVHTML5 /player 对 TV 端视频格式/清晰度可用性是否比 WEB 更宽容。
+   * 风险:§6.5 实测无 token 时 TVHTML5 失败;带 token + viaWebView 能否过反爬未知(真机验证)。
+   */
+  const val TvHtml5ClientVersion = "7.20260707.07.00"
+  const val TvHtml5ClientName = "TVHTML5"
+  const val TvHtml5ClientNameId = "7"
+  const val TvHtml5UserAgent =
+    "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
+
   /** 桌面 Chrome UA（FreeTube getRandomUserAgent('desktop') 同源）。 */
   const val UserAgent =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"

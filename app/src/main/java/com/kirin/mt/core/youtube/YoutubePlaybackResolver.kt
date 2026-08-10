@@ -99,7 +99,16 @@ class YoutubePlaybackResolver(
     //    继续发 WEB_EMBEDDED/ANDROID 只会放大 bot 特征(日志:~36 次 /player 后服务端开始拒)。
     //  - 年龄限制(reason='Sign in to confirm your age')→ 追加 WEB_EMBEDDED 回退(FreeTubeAndroid L476)。
     //  - ANDROID 从 /player 链移除(FreeTubeAndroid 不用 ANDROID 客户端)。
-    val clients = mutableListOf(InnerTubeClient.Client.WEB)
+    // TV 端试验 TVHTML5 client(对齐 YouTube 官方 TV 端),失败/被拦自动回退 WEB 走现有 SABR。
+    // 移动端 preferredYoutubeClient=null → 默认 WEB(行为不变)。
+    val clients = mutableListOf<InnerTubeClient.Client>()
+    if (request.preferredYoutubeClient == InnerTubeClient.Client.TVHTML5) {
+      clients += InnerTubeClient.Client.TVHTML5
+      clients += InnerTubeClient.Client.WEB  // 兜底:TVHTML5 被拦/无 url 时回退 WEB 走 SABR
+    } else {
+      clients += (request.preferredYoutubeClient ?: InnerTubeClient.Client.WEB)
+    }
+    Log.i(Tag, "resolve clients=${clients.map { it.name }} preferred=${request.preferredYoutubeClient?.name ?: "null(default WEB)"} videoId=$videoId")
     var clientIdx = 0
     while (clientIdx < clients.size) {
       val client = clients[clientIdx]
@@ -195,7 +204,7 @@ class YoutubePlaybackResolver(
 
       // SABR 协议往返探针(§6.9):WEB 数据齐全时发一次 init 段请求,验证 encode→POST→UMP→MEDIA 全链。
       // 首版仅诊断——拿回字节即证明协议层通,再接 Media3 播放(Phase 2b)。
-      if (client == InnerTubeClient.Client.WEB && !sabrUrl.isNullOrBlank() && !ustreamerCfgStr.isNullOrBlank() && poToken != null) {
+      if ((client == InnerTubeClient.Client.WEB || client == InnerTubeClient.Client.TVHTML5) && !sabrUrl.isNullOrBlank() && !ustreamerCfgStr.isNullOrBlank() && poToken != null) {
         val raws = rawAdaptive.mapNotNull { it as? JsonObject }
         val firstVideo = raws.firstOrNull { (it.intOrNull("height") ?: 0) > 0 }
         val firstAudio = raws.firstOrNull { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
@@ -476,10 +485,10 @@ class YoutubePlaybackResolver(
       })
     }
     // WEB/WEB_EMBEDDED /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView；
-    // ANDROID 保持 OkHttp 直连(作为回退)。
+    // ANDROID 保持 OkHttp 直连(作为回退)。TVHTML5 也走 WebView(TV client OkHttp 直连大概率被拦)。
     return innerTubeClient.postJson(
       "/player", payload, client = client, poToken = poToken,
-      viaWebView = client == InnerTubeClient.Client.WEB || client == InnerTubeClient.Client.WEB_EMBEDDED,
+      viaWebView = client == InnerTubeClient.Client.WEB || client == InnerTubeClient.Client.WEB_EMBEDDED || client == InnerTubeClient.Client.TVHTML5,
     )
   }
 

@@ -108,7 +108,7 @@ class InnerTubeClient(
     // OkHttp 直连被拦("The page needs to be reloaded")、FreeTubeAndroid 能过的根因是请求没走
     // 真实浏览器网络栈。ANDROID 客户端保持 OkHttp 直连(作为回退)。
     // 方案 A：优先走真实浏览器会话 WebView（真实页上下文 + 真实 cookie/TLS），否则回退 jsExecutor 壳。
-    if (viaWebView && (client == Client.WEB || client == Client.WEB_EMBEDDED)) {
+    if (viaWebView && (client == Client.WEB || client == Client.WEB_EMBEDDED || client == Client.TVHTML5)) {
       val text = if (browserSession != null) {
         browserSession.fetchViaWebView(url, "POST", buildWebViewHeaders(client), body.toString())
       } else {
@@ -139,6 +139,15 @@ class InnerTubeClient(
         .header("Accept-Language", "*")
         // 对齐 FreeTubeAndroid shouldInterceptRequest 对 youtubei/ 注入的浏览器指纹头
         // (§6.8.1)。缺这些 WEB /player 更易被判"非真浏览器" → "The page needs to be reloaded"。
+        .header("Sec-Fetch-Site", "same-origin")
+        .header("Sec-Fetch-Mode", "cors")
+        .header("X-Youtube-Bootstrap-Logged-In", "false")
+      Client.TVHTML5 -> requestBuilder
+        .header("X-Youtube-Client-Version", YoutubeConstants.TvHtml5ClientVersion)
+        .header("X-Youtube-Client-Name", YoutubeConstants.TvHtml5ClientNameId)
+        .header("Origin", YoutubeConstants.Referer)
+        .header("Accept", "*/*")
+        .header("Accept-Language", "*")
         .header("Sec-Fetch-Site", "same-origin")
         .header("Sec-Fetch-Mode", "cors")
         .header("X-Youtube-Bootstrap-Logged-In", "false")
@@ -268,13 +277,16 @@ class InnerTubeClient(
   enum class Client {
     WEB,
     WEB_EMBEDDED,
-    ANDROID;
+    ANDROID,
+    TVHTML5;
 
     val userAgent: String
       get() = when (this) {
         // WEB/WEB_EMBEDDED 用移动 Chrome UA(对齐 FreeTubeAndroid,§6.7 row 37)。
         WEB, WEB_EMBEDDED -> YoutubeConstants.MobileUserAgent
         ANDROID -> YoutubeConstants.AndroidUserAgent
+        // TVHTML5 用 Cobalt TV UA(对齐 YouTube 官方 TV 端,试验)。
+        TVHTML5 -> YoutubeConstants.TvHtml5UserAgent
       }
   }
 
@@ -330,6 +342,26 @@ class InnerTubeClient(
               put("hl", YoutubeConstants.Hl)
               put("gl", YoutubeConstants.Gl)
             }
+            // TVHTML5:YouTube 官方 TV 端 client(Cobalt 平台)。试验 TV 端取流,
+            // 对齐 yt-dlp clientName=TVHTML5/clientNameId=7。context 比 WEB 简单(无浏览器指纹/
+            // mainAppWebInfo/clientScreen,TV 原生 client 不带这些)。visitorData 复用 WEB session
+            // (先试,真机看是否因 client version 7.x vs WEB 2.x 不配对被拒)。
+            Client.TVHTML5 -> {
+              put("clientName", YoutubeConstants.TvHtml5ClientName)
+              put("clientVersion", YoutubeConstants.TvHtml5ClientVersion)
+              put("hl", YoutubeConstants.Hl)
+              put("gl", YoutubeConstants.Gl)
+              put("platform", "TV")
+              put("clientFormFactor", "UNKNOWN_FORM_FACTOR")
+              put("userInterfaceTheme", YoutubeConstants.WebUserInterfaceTheme)
+              put("userAgent", YoutubeConstants.TvHtml5UserAgent)
+              put("screenWidthPoints", 1920)
+              put("screenHeightPoints", 1080)
+              put("screenPixelDensity", 1)
+              put("screenDensityFloat", 1)
+              put("utcOffsetMinutes", 0)
+              put("timeZone", realSessionData?.timeZone ?: "Asia/Shanghai")
+            }
           }
           put("visitorData", currentVisitorData())
         },
@@ -368,15 +400,17 @@ class InnerTubeClient(
       Client.WEB -> YoutubeConstants.ClientNameId
       Client.WEB_EMBEDDED -> YoutubeConstants.WebEmbeddedClientNameId
       Client.ANDROID -> "30"
+      Client.TVHTML5 -> YoutubeConstants.TvHtml5ClientNameId
     }
     val clientVersion = when (client) {
       Client.WEB -> currentClientVersion()
       Client.WEB_EMBEDDED -> YoutubeConstants.WebEmbeddedClientVersion
       Client.ANDROID -> YoutubeConstants.AndroidClientVersion
+      Client.TVHTML5 -> YoutubeConstants.TvHtml5ClientVersion
     }
     val headers = mutableMapOf(
       "Content-Type" to "application/json",
-      "User-Agent" to YoutubeConstants.MobileUserAgent,
+      "User-Agent" to client.userAgent,
       "Referer" to YoutubeConstants.Referer,
       "X-Goog-Visitor-Id" to currentVisitorData(),
       "X-Youtube-Client-Version" to clientVersion,

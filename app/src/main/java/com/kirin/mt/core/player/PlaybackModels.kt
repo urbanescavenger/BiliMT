@@ -2,6 +2,7 @@ package com.kirin.mt.core.player
 
 import com.kirin.mt.core.model.SourceBili
 import com.kirin.mt.core.model.SourceYoutube
+import com.kirin.mt.core.youtube.InnerTubeClient
 
 data class PlaybackRequest(
   val bvid: String,
@@ -35,6 +36,12 @@ data class PlaybackRequest(
   val source: String = SourceBili,
   /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 请求填充，用于播放历史进频道主页；B 站为空串。 */
   val channelId: String = "",
+  /**
+   * YouTube InnerTube /player 客户端偏好。null=默认 WEB(移动端行为)；
+   * TV 端调用点传 [InnerTubeClient.Client.TVHTML5] 试验 TV 专用 client(失败自动回退 WEB)。
+   * 仅 [SourceYoutube] 请求使用。参见 [YoutubePlaybackResolver.resolve] clients 列表构建。
+   */
+  val preferredYoutubeClient: InnerTubeClient.Client? = null,
 ) {
   val isPgc: Boolean
     get() = epId > 0L || seasonId > 0L
