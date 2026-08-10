@@ -18,6 +18,7 @@ import com.kirin.mt.core.youtube.YoutubeBotGuard
 import com.kirin.mt.core.youtube.YoutubeBrowserSession
 import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeFeedCacheStore
+import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.core.youtube.YoutubeJsExecutor
 import com.kirin.mt.core.youtube.YoutubeNDecryptor
