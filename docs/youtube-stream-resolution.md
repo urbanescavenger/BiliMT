@@ -151,7 +151,7 @@ SABR = fragmented MP4:`seq=0` init(ftyp+moov) → `seq=1,2,…` 每 ~6s(moof+mda
 ### 5.4 多清晰度(alpha.29)
 - `SabrSession.videoFormats: List<FormatId>`(从 /player adaptiveFormats 全收 `height>0` 视频 itag)+ `videoFormat(itag)` 查表。
 - `SabrFetchRequest.videoItag`(URL `&itag=` 解析)→ `fetch` 用 `videoFmt = req.videoItag?.let{session.videoFormat(it)} ?: videoFormatId`。
-- resolver `buildSabrPlaybackInfo`:`qualities`=videoFormats 按 height 降序(带 codec 标签 AV1/VP9/H264/HEVC),`videoTracks`=[仅选中 itag 一条 `sabr://youtube/<sid>?stream=video&itag=N`]。
+- resolver `buildSabrPlaybackInfo`:`qualities`=videoFormats 按 height 降序(带 codec 标签 AV1/VP9/H264/HEVC),`videoTracks`=[仅选中 itag 一条 `sabr://youtube/<sid>?stream=video&itag=N`]。`selectedItag`:`preferredQualityId` 命中优先(手动切清晰度),否则按 `youtubeDefaultQuality.maxHeight` 选(`height<=maxHeight` 最高 itag,全超上限取最低档;Auto 取 `maxBy height`),alpha.9 起生效(此前固定会话首条 itag,默认画质设置对 SABR 不生效)。
 - `SabrStreamRegistry.registerByVideoId`/`getByVideoId`:切清晰度重跑 resolve 时命中缓存→跳过 30s harvest 秒切(poToken/ustreamerConfig/cpn 会话级可复用 ~6h)。
 - 播放器切档机制:`preferredQualityId` → 重跑 `getPlaybackInfo` → 重建整个 MediaSource(progressive 分支只取 `videoTracks.first()`,多 progressive track 静默丢弃,故只返选中 itag 一条)。
 

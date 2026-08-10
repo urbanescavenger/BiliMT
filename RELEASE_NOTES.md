@@ -1,5 +1,12 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.9
+
+**SABR 主路径应用默认画质上限(测试 alpha)**:`youtubeDefaultQuality` 设置项(自动/4K/2K/1080P/720P/480P)从 UI→DataStore→`resolve()` 形参全程接通,但 `resolve()` 内仅 DASH 兜底分支 `pickVideo` 消费 `maxHeight`;SABR 主路径(YouTube 实际取流方式)`buildSabrPlaybackInfo` 选档固定用会话首条 itag,完全不读 `maxHeight`,致默认画质设置存了没用(TV/移动端共用 resolver 故两端都不生效)。详见 `docs/youtube-hd-playback.md` §6.11。
+
+### 修复
+- **SABR 选档按 `maxHeight` 选默认档**:`YoutubePlaybackResolver.buildSabrPlaybackInfo` 加 `youtubeDefaultQuality` 形参;选档逻辑 `preferredQualityId` 命中优先(播放中手动切清晰度行为不变),否则 `maxHeight!=null` 取 `height<=maxHeight` 最高 itag(全部超上限取最低档保证可播),Auto 取 `maxBy height`(对齐 DASH 分支 `pickVideo` 的 Auto 最大化语义);兜底会话首条 itag。`resolve()` 调用处透传。会话构建 `buildSabrSessionFromNewPipe` 不动(`videoFormats` 全量保留供清晰度菜单,同 sid 换 itag 即换清晰度,选非首条 itag 安全)。
+
 ## v3.0.1-alpha.8
 
 **退役 classic SABR n-decrypt 兜底(测试 alpha)**:真机观察 YouTube 取流只有 Path C(NewPipe SABR)有效,classic(n-decrypt 兜底)会卡住——classic 用 resolve() 顶部铸的 poToken 与 SABR init minter 不一致致 status=3 60s 卡死,且 plasma player.js 把 n/sig 移进 WASM 致 `decipherSabrUrl` 正则结构性失效。退役 classic 分支,NewPipe 失败直接落 DASH 兜底。详见 `docs/youtube-hd-playback.md` 与 `DEVELOPMENT_PROGRESS.md` P11-21。
