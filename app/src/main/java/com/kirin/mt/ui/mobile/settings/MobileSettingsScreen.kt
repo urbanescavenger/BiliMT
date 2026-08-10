@@ -589,7 +589,7 @@ private fun MobileWebDavSection(
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   var showEditDialog by remember { mutableStateOf(false) }
-  var webDavState by remember { mutableStateOf(WebDavBackupState.Idle) }
+  var webDavState by remember { mutableStateOf<WebDavBackupState>(WebDavBackupState.Idle) }
   var expanded by remember { mutableStateOf(false) }
   // 展开后自动滚动,让备份/还原按钮滚进可视区(区块在设置列表底部,默认在折叠线以下)。
   val bringIntoViewRequester = remember { BringIntoViewRequester() }
