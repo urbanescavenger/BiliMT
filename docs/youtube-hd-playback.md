@@ -422,7 +422,7 @@ fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', 
 
 **对齐价值**:取流用 NewPipe 自己发一次干净 /player(visionOS,无浏览器会话)拿到**未绑定任何特定 poToken 的 `serverAbrStreamingUrl`+`ustreamerConfig`**,再用我们 BotGuard 的 128B token 在 SABR init + status=2 refresh 一致接入——彻底消除跨 minter / 会话绑定不匹配。这就是 LibreTube 能拿到 status=1 ACCEPTED、而 alpha.70 path A 拿到纯 CONTEXT_UPDATE 的原因。
 
-**harvest 退役**:`YoutubeSabrHarvester.kt` 及 resolver 的 plasma harvest 分支删除,classic(n-decrypt)/DASH 保留作 NewPipe 返回 null 时的兜底。
+**harvest 退役**:`YoutubeSabrHarvester.kt` 及 resolver 的 plasma harvest 分支删除。alpha.76 进一步退役 classic(n-decrypt)兜底——plasma player.js 把 n/sig 移进 WASM 致 n-decrypt 结构性失效,且 classic 用 resolve() 顶部 `botGuard.generatePoToken` 铸的 poToken 与 SABR init minter 不一致 → status=3 60s 卡死(Path C 单一 minter 已根除此问题)。`decipherSabrUrl` 及 classic 专属局部变量(`videoFormats`/`vFmt`/`aFmt`/`nTransformed`)删除。NewPipe 返回 null 时直接落 DASH 兜底。
 
 ## 6.9 SABR 实现调研(FreeTubeAndroid 源码 + googlevideo proto + UMP 协议)
 

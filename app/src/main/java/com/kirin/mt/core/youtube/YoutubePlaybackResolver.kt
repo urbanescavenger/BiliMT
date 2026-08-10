@@ -235,41 +235,13 @@ class YoutubePlaybackResolver(
               return@withContext buildSabrPlaybackInfo(request, videoId, durationMs, raws, session, cachedSid)
             }
           }
-          // alpha.29:同会话所有可播视频 itag 的 FormatId(从 /player adaptiveFormats 全收)。
-          // poToken 会话级不绑 itag → 多清晰度 = 请求体 preferredVideoFormatIds 填哪个 itag(见 SabrClient.fetch)。
-          val videoFormats = raws.filter { (it.intOrNull("height") ?: 0) > 0 }.map {
-            SabrFormatId(
-              it.longOrNull("itag")?.toInt() ?: 0,
-              it.longOrNull("lastModified") ?: 0L,
-              it.stringOrNull("xtags"),
-              it.intOrNull("height") ?: 0,
-            )
-          }
-          // SABR URL 需 decipher(n-param transform)——对齐 googlevideo 示例
-          // `innertube.session.player.decipher(serverAbrStreamingUrl)`。googlevideo URL 带 `n` 签名参数,
-          // 未用 base.js transform 解出真值则返回 403 空体(alpha.18 实测 Server=gvs 1.0
-          // Content-Length=0,§6.7 row 41)。resolvePlayerJsUrl 内部缓存,此处与下游 resolveStreamUrl
-          // 共用同一份 playerJsUrl,不重复拉 watch 页。
-          YoutubeLoadProgress.emit(YoutubeLoadStep.DecipherN)
-          val sabrUrlDeciphered = decipherSabrUrl(sabrUrl, resolvePlayerJsUrl(videoId))
-          val nTransformed = sabrUrlDeciphered != sabrUrl
-          val vFmt = SabrFormatId(
-            firstVideo.longOrNull("itag")?.toInt() ?: 0,
-            firstVideo.longOrNull("lastModified") ?: 0L,
-            firstVideo.stringOrNull("xtags"),
-            firstVideo.intOrNull("height") ?: 0,
-          )
-          val aFmt = SabrFormatId(
-            firstAudio.longOrNull("itag")?.toInt() ?: 0,
-            firstAudio.longOrNull("lastModified") ?: 0L,
-            firstAudio.stringOrNull("xtags"),
-          )
-          // alpha.71(path C):NewPipeExtractor fork 作 SABR 取流主路径(visionOS 客户端,干净 /player,
+          // alpha.71(path C):NewPipeExtractor fork 作 SABR 取流唯一路径(visionOS 客户端,干净 /player,
           // 无浏览器会话绑定,网关 URL 无 n-param 需 decipher)。彻底退役 alpha.20-70 的 WebView harvest
           // 兜底(harvest 抓回的 serverAbrStreamingUrl+ustreamerConfig 绑浏览器会话 → 跨 minter status=3 /
           // alpha.70 纯 backoff 无 cookie)。NewPipe 自铸 poToken(getInfo 期间经 [BiliTvPoTokenProvider]),
           // 复用缓存供 SABR init → init==extraction 同 minter,根除 60s 重启。
-          // NewPipe 无 SABR 数据时降级 classic(n-decrypt 成功的非 plasma 视频作兜底),再落 DASH。
+          // alpha.76:classic n-decrypt 兜底已退役——plasma player.js 把 n/sig 移进 WASM 致 n-decrypt 结构性
+          // 失效,且 classic 用 resolve() 顶部 poToken 跨 minter → status=3 60s 卡死。NewPipe 无 SABR 数据直接落 DASH。
           var sabrSession: SabrSession? = null
           var sabrRaws: List<JsonObject> = raws
           var sabrDuration = durationMs
@@ -278,20 +250,8 @@ class YoutubePlaybackResolver(
             sabrSession = npResult.session
             sabrRaws = npResult.raws
             sabrDuration = npResult.durationMs
-          } else if (nTransformed) {
-            // classic 兜底:n-decrypt 成功(非 plasma)→ 用 /player 数据直接建会话。
-            // poToken 同 path C 做 websafe→UTF-8→standard-b64 编码(对齐 LibreTube streamingDataPoToken.toByteArray())。
-            Log.i(Tag, "SABR: NewPipe 无 SABR 数据 → classic n-decrypt 兜底")
-            val classicPoTokenB64 = Base64.encodeToString(poToken.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-            sabrSession = SabrSession.fromSabrData(
-              sabrUrlDeciphered, classicPoTokenB64, ustreamerCfgStr, innerTubeClient.sabrClientInfo(), aFmt, vFmt,
-              userAgent = client.userAgent,
-              cookieHeader = innerTubeClient.currentSessionCookies(),
-              visitorData = innerTubeClient.currentVisitorData(),
-              videoFormats = videoFormats,
-            )
           } else {
-            Log.w(Tag, "SABR: NewPipe 无数据 + classic n-decrypt 失败(plasma,harvest 已退役)→ 落 DASH 兜底")
+            Log.w(Tag, "SABR: NewPipe 无 SABR 数据 → 落 DASH 兜底(classic n-decrypt 已退役:plasma 失效 + 跨 minter 卡 60s)")
           }
           if (sabrSession != null) {
             YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
@@ -306,7 +266,7 @@ class YoutubePlaybackResolver(
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
             Log.i(
               Tag,
-              "SABR playback ready: sid=$sid source=${if (npResult != null) "NewPipe" else "classic"} nTransformed=$nTransformed " +
+              "SABR playback ready: sid=$sid source=NewPipe " +
                 "video=itag${sabrSession.videoFormatId.itag}(${sabrSession.videoFormatId.height}p) " +
                 "audio=itag${sabrSession.audioFormatId.itag} → sabr:// DASH tracks"
             )
@@ -575,31 +535,6 @@ class YoutubePlaybackResolver(
       }
     }
     return baseUrl
-  }
-
-  /**
-   * SABR `server_abr_streaming_url` 的 decipher——对齐 googlevideo 示例
-   * `innertube.session.player.decipher(serverAbrStreamingUrl)`。googlevideo URL 带 `n` 签名参数,
-   * 未用 base.js transform 解出真值则返回 403 空体(alpha.18 实测 Server=gvs 1.0 Content-Length=0)。
-   * 同时 dump 全量 param key + n/sig/s/pot 存在性——alpha.18 仅截 200 字看不到 n 是否在 URL 里,
-   * 此日志在 403 持续时定位是「n 未解」还是「poToken 绑定错」还是「URL 本无 n」。
-   * 无 `n` 或无 base.js 时原样返回(best-effort)。
-   */
-  private suspend fun decipherSabrUrl(url: String, playerJsUrl: String?): String {
-    val query = url.substringAfter("?", "")
-    val params = query.split("&").mapNotNull { e ->
-      val i = e.indexOf("=")
-      if (i < 0) e to "" else e.substring(0, i) to e.substring(i + 1)
-    }.toMap()
-    val hasN = params.containsKey("n")
-    val hasSig = params.containsKey("sig")
-    val hasS = params.containsKey("s")
-    val hasPot = params.containsKey("pot")
-    Log.i(Tag, "sabrUrl params: keys=${params.keys.toList()} n=$hasN sig=$hasSig s=$hasS pot=$hasPot playerJs=${playerJsUrl != null}")
-    if (!hasN || playerJsUrl == null) return url
-    val transformed = nDecryptor.decrypt(url, playerJsUrl)
-    Log.i(Tag, "sabrUrl n-decrypt: ${if (transformed == url) "NO-CHANGE(transform fail/no-op)" else "applied"}")
-    return transformed
   }
 
   private fun replaceParam(url: String, key: String, value: String): String {
