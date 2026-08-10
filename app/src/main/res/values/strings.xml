@@ -492,6 +492,8 @@
     <string name="playlist_section_related">相关视频</string>
     <string name="youtube_channel_follow">关注</string>
     <string name="youtube_channel_following">已关注</string>
+    <string name="youtube_channel_no_videos">该频道暂无视频</string>
+    <string name="youtube_channel_videos_failed">视频加载失败。%1$s</string>
     <string name="settings_youtube_channels">YouTube 频道</string>
     <string name="settings_youtube_section">YouTube 内容</string>
     <string name="settings_youtube_channels_desc">添加/删除要在动态页跟踪的 YouTube 频道，支持输入 @频道handle 或 UC... 频道ID</string>

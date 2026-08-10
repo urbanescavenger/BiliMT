@@ -63,6 +63,7 @@ import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
+import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.settings.AppPerformancePolicy
 import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppSettingsStore
@@ -89,6 +90,9 @@ import com.kirin.mt.ui.settings.SettingsScreen
 import com.kirin.mt.ui.space.UpSpaceRequest
 import com.kirin.mt.ui.space.UpSpaceScreen
 import com.kirin.mt.ui.space.UpSpaceUiState
+import com.kirin.mt.ui.space.YoutubeChannelRequest
+import com.kirin.mt.ui.space.YoutubeChannelScreen
+import com.kirin.mt.ui.space.YoutubeChannelUiState
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliMotion
@@ -246,6 +250,12 @@ fun BiliTvApp(
   var commentRequest by remember { mutableStateOf<com.kirin.mt.ui.feed.CommentRequest?>(null) }
   val upSpaceUiState = remember { UpSpaceUiState() }
   val spaceFocusRequester = remember { FocusRequester() }
+  var youtubeChannelRequest by remember { mutableStateOf<YoutubeChannelRequest?>(null) }
+  var channelOrigin by remember { mutableStateOf<SpaceOrigin?>(null) }
+  var channelPlaybackBehind by remember { mutableStateOf(false) }
+  var channelFocusRestoreRequestKey by remember { mutableIntStateOf(0) }
+  val youtubeChannelUiState = remember { YoutubeChannelUiState() }
+  val channelFocusRequester = remember { FocusRequester() }
   val pgcUiState = remember { com.kirin.mt.ui.pgc.PgcUiState() }
   var pgcSeasonRequest by remember { mutableStateOf<com.kirin.mt.ui.pgc.PgcSeasonRequest?>(null) }
   var pgcIndexRequest by remember { mutableStateOf<com.kirin.mt.core.model.PgcType?>(null) }
@@ -949,10 +959,21 @@ fun BiliTvApp(
                     playbackRequest = video.toPlaybackRequest()
                   },
                   onOwnerSelected = { video ->
-                    upSpaceUiState.reset()
-                    spaceOrigin = SpaceOrigin.Content
-                    spacePlaybackBehind = false
-                    spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+                    if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
+                      youtubeChannelUiState.reset()
+                      channelOrigin = SpaceOrigin.Content
+                      channelPlaybackBehind = false
+                      youtubeChannelRequest = YoutubeChannelRequest(
+                        channelId = video.channelId,
+                        channelName = video.ownerName,
+                        avatar = video.ownerFace,
+                      )
+                    } else {
+                      upSpaceUiState.reset()
+                      spaceOrigin = SpaceOrigin.Content
+                      spacePlaybackBehind = false
+                      spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+                    }
                   },
                 )
                 AppDestination.Search -> SearchScreen(
@@ -975,10 +996,21 @@ fun BiliTvApp(
                     playbackRequest = video.toPlaybackRequest()
                   },
                   onOwnerSelected = { video ->
-                    upSpaceUiState.reset()
-                    spaceOrigin = SpaceOrigin.Content
-                    spacePlaybackBehind = false
-                    spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+                    if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
+                      youtubeChannelUiState.reset()
+                      channelOrigin = SpaceOrigin.Content
+                      channelPlaybackBehind = false
+                      youtubeChannelRequest = YoutubeChannelRequest(
+                        channelId = video.channelId,
+                        channelName = video.ownerName,
+                        avatar = video.ownerFace,
+                      )
+                    } else {
+                      upSpaceUiState.reset()
+                      spaceOrigin = SpaceOrigin.Content
+                      spacePlaybackBehind = false
+                      spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+                    }
                   },
                 )
                 AppDestination.Dynamic -> UserFeedScreen(
@@ -1001,10 +1033,21 @@ fun BiliTvApp(
                     playbackRequest = video.toPlaybackRequest(forceStartPosition = forceStart)
                   },
                   onOwnerSelected = { video ->
-                    upSpaceUiState.reset()
-                    spaceOrigin = SpaceOrigin.Content
-                    spacePlaybackBehind = false
-                    spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+                    if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
+                      youtubeChannelUiState.reset()
+                      channelOrigin = SpaceOrigin.Content
+                      channelPlaybackBehind = false
+                      youtubeChannelRequest = YoutubeChannelRequest(
+                        channelId = video.channelId,
+                        channelName = video.ownerName,
+                        avatar = video.ownerFace,
+                      )
+                    } else {
+                      upSpaceUiState.reset()
+                      spaceOrigin = SpaceOrigin.Content
+                      spacePlaybackBehind = false
+                      spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+                    }
                   },
                   onCommentSelected = { video ->
                     commentRequest = com.kirin.mt.ui.feed.CommentRequest(
@@ -1188,6 +1231,11 @@ fun BiliTvApp(
                   playbackRequest = null
                   spaceFocusRestoreRequestKey += 1
                   Log.d(FocusLogTag, "video exit via upSpace(content): spaceRestoreKey bumped, no playback restore")
+                } else if (youtubeChannelRequest != null && channelOrigin == SpaceOrigin.Content) {
+                  // 从 YouTube 频道页(内容来源)起播:返回时可见层是频道网格,arm 它的 restore
+                  playbackRequest = null
+                  channelFocusRestoreRequestKey += 1
+                  Log.d(FocusLogTag, "video exit via youtubeChannel(content): channelRestoreKey bumped")
                 } else {
                   playbackFocusRestoreDestination = selectedDestination
                   playbackRequest = null
@@ -1239,6 +1287,44 @@ fun BiliTvApp(
             },
             onVideoSelected = { video ->
               spacePlaybackBehind = false
+              playbackRequest = video.toPlaybackRequest()
+            },
+          )
+        }
+      }
+      val displayedYoutubeChannelRequest = youtubeChannelRequest
+      if (displayedYoutubeChannelRequest != null &&
+        (visiblePlaybackRequest == null || (channelOrigin == SpaceOrigin.Player && channelPlaybackBehind))
+      ) {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(BiliColors.VideoBlack),
+        ) {
+          YoutubeChannelScreen(
+            request = displayedYoutubeChannelRequest,
+            youtubeRepository = youtubeRepository,
+            youtubeChannelStore = youtubeChannelStore,
+            uiState = youtubeChannelUiState,
+            firstItemFocusRequester = channelFocusRequester,
+            restoreFocusRequestKey = channelFocusRestoreRequestKey,
+            onRestoreFocusHandled = { key ->
+              if (key == channelFocusRestoreRequestKey) channelFocusRestoreRequestKey = 0
+            },
+            onBack = {
+              youtubeChannelRequest = null
+              val origin = channelOrigin
+              channelOrigin = null
+              channelPlaybackBehind = false
+              when (origin) {
+                SpaceOrigin.Player -> channelFocusRestoreRequestKey += 1
+                SpaceOrigin.Content -> requestContentFocusRestore(selectedDestination)
+                else -> Unit
+              }
+              true
+            },
+            onVideoSelected = { video ->
+              channelPlaybackBehind = false
               playbackRequest = video.toPlaybackRequest()
             },
           )
