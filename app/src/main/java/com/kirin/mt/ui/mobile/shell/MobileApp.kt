@@ -197,6 +197,7 @@ fun BiliMobileApp(
         AppDestination.Recommend -> MobileHomeScreen(
           videoRepository = videoRepository,
           youtubeChannelStore = youtubeChannelStore,
+          youtubeFeedCacheStore = youtubeFeedCacheStore,
           // 与 TV 共享同一份配置(AppSettings.homeSectionsOrder + enabledHomeSections):
           // 按用户排序筛掉隐藏分区,空兜底 Recommend。TV 端改顺序/显隐移动端即时同步。
           enabledSections = settings.homeSectionsOrder

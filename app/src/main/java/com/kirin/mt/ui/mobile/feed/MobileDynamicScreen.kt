@@ -42,6 +42,7 @@ import com.kirin.mt.core.youtube.YoutubeFeedCacheStore
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -97,6 +98,16 @@ fun MobileDynamicScreen(
   var nextOffset by remember { mutableStateOf("") }
   // YouTube 关注拉取超时/失败提示:true 时网格顶部显示提示条(区别于静默空)。
   var youtubeTimeoutNotice by remember { mutableStateOf(false) }
+  // 请求去重:已有拉取在进行则跳过,避免重复点击底栏/下拉并发重拉全量频道。
+  var feedJob by remember { mutableStateOf<Job?>(null) }
+  // 保留旧数据刷新时驱动下拉指示器(区别于初始 Loading 的网格内 spinner)。
+  var isRefreshing by remember { mutableStateOf(false) }
+
+  /** 去重入口:feedJob 活跃则跳过,否则启动一次完整刷新。 */
+  fun refreshFeed() {
+    if (feedJob?.isActive == true) return
+    feedJob = scope.launch { loadFirstBody() }
+  }
 
   /** 把 YouTube 流合并进当前 B 站动态(先去掉旧 YouTube 部分再合并,保证缓存秒出+网络刷新不重复)。 */
   fun mergeYoutube(yt: List<VideoSummary>) {
@@ -111,25 +122,36 @@ fun MobileDynamicScreen(
   }
 
   suspend fun loadFirstBody() {
-    state = DynamicState.Loading
+    // 保留旧数据后台刷新:有旧 Success 时不闪 Loading,由 isRefreshing 驱动下拉指示器;
+    // 无旧数据(首次进入)才显示网格内 Loading spinner。
+    val prev = state as? DynamicState.Success
+    if (prev == null) {
+      state = DynamicState.Loading
+    } else {
+      isRefreshing = true
+    }
     nextOffset = ""
     youtubeTimeoutNotice = false
-    state = try {
-      val page = videoRepository.getDynamicFeed(type = "video")
-      nextOffset = page.offset
-      if (page.videos.isEmpty()) {
-        DynamicState.Empty
-      } else {
-        DynamicState.Success(
-          videos = page.videos,
-          loadingMore = false,
-          endReached = !page.hasMore,
-        )
+    try {
+      state = try {
+        val page = videoRepository.getDynamicFeed(type = "video")
+        nextOffset = page.offset
+        when {
+          page.videos.isEmpty() -> prev ?: DynamicState.Empty
+          else -> DynamicState.Success(
+            videos = page.videos,
+            loadingMore = false,
+            endReached = !page.hasMore,
+          )
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        // 失败保留旧数据兜底,避免刷新失败清空列表。
+        prev ?: DynamicState.Failed(e.message.orEmpty().ifBlank { "加载失败" })
       }
-    } catch (e: CancellationException) {
-      throw e
-    } catch (e: Exception) {
-      DynamicState.Failed(e.message.orEmpty().ifBlank { "加载失败" })
+    } finally {
+      isRefreshing = false
     }
 
     // 合并 YouTube 关注:先读缓存秒出(10min 内),后台按频道数动态超时拉网络刷新并写回缓存;
@@ -171,11 +193,11 @@ fun MobileDynamicScreen(
   // 首次进入 + 每次点击底栏"动态"tab(dynamicRefreshKey 自增)都刷新 B 站 + YouTube 关注。
   LaunchedEffect(isLoggedIn, dynamicRefreshKey) {
     if (!isLoggedIn) return@LaunchedEffect
-    loadFirstBody()
+    refreshFeed()
   }
 
   fun reloadFirst() {
-    scope.launch { loadFirstBody() }
+    refreshFeed()
   }
 
   val gridState = rememberLazyGridState()
@@ -218,7 +240,7 @@ fun MobileDynamicScreen(
     // PullToRefreshLayout 提到 when 外,isRefreshing 顶层求值真值;刷新时 state→Loading 不再卸载容器,
     // 列表滚动位置与指示器保留,各状态内联为 grid item(照 MobileUserSpaceScreen 范式)。
     PullToRefreshLayout(
-      isRefreshing = state is DynamicState.Loading,
+      isRefreshing = isRefreshing,
       onRefresh = { reloadFirst() },
       modifier = Modifier.fillMaxSize(),
     ) {

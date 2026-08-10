@@ -56,6 +56,7 @@ import com.kirin.mt.core.storage.SearchHistoryStore
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -145,10 +146,14 @@ fun MobileSearchScreen(
   val history by searchHistoryStore.history.collectAsState(initial = emptyList())
   val gridState = rememberLazyGridState()
   val listState = rememberLazyListState()
+  // 请求去重/取消:新首屏加载或翻页前取消在途请求,避免快速切 source/重复提交/重试
+  // 并发重复请求竞态写 resultState(对齐 LibreTube mapLatest 取消旧请求)。
+  var searchJob by remember { mutableStateOf<Job?>(null) }
 
   fun loadFirstPage(query: String, order: String) {
+    searchJob?.cancel()
     uiState.resultState = SearchResultState.Loading
-    scope.launch {
+    searchJob = scope.launch {
       val state = try {
         if (uiState.source == SourceYoutube) {
           val page = videoRepository.youtubeSearch(query = query)
@@ -202,7 +207,8 @@ fun MobileSearchScreen(
     if (current.loadingMore || current.endReached) return
     val q = uiState.submittedQuery ?: return
     uiState.resultState = current.copy(loadingMore = true)
-    scope.launch {
+    searchJob?.cancel()
+    searchJob = scope.launch {
       val next = try {
         val more: List<VideoSummary>
         val nextContinuation: String?
