@@ -339,7 +339,7 @@ private fun SearchSourceToggle(
         Box(
           modifier = Modifier
             .padding(horizontal = BiliSpacing.Lg)
-            .fillMaxSize(),
+            .fillMaxHeight(),
           contentAlignment = Alignment.Center,
         ) {
           Text(
