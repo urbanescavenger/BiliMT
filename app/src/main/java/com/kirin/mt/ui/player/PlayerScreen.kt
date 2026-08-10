@@ -60,6 +60,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -69,6 +70,9 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.extractor.ExtractorsFactory
+import androidx.media3.extractor.text.DefaultSubtitleParserFactory
+import androidx.media3.extractor.text.SubtitleExtractor
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.kirin.mt.R
@@ -1487,7 +1491,27 @@ fun PlayerScreen(
           DashMediaSource.Factory(dataSourceFactory)
             .createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
         }
-        player.setMediaSource(mediaSource)
+        // 字幕合并(YouTube WebVTT URL 直拉,不走 SABR 服务端):每条字幕轨用 SubtitleExtractor 转
+        // MEDIA3_CUES(DefaultExtractorsFactory 不含字幕,必须显式传 ExtractorsFactory),再 MergingMediaSource
+        // 合并进主源。PlayerView 内置 SubtitleView 自动注册为 text output 渲染。无字幕轨时保持原主源。
+        val finalMediaSource = if (effectiveInfo.subtitleTracks.isNotEmpty()) {
+          val subtitleSources = effectiveInfo.subtitleTracks.map { track ->
+            val subtitleFormat = Format.Builder()
+              .setSampleMimeType(MimeTypes.TEXT_VTT)
+              .setLanguage(track.languageCode)
+              .build()
+            val subtitleParserFactory = DefaultSubtitleParserFactory()
+            val extractorsFactory = ExtractorsFactory {
+              arrayOf(SubtitleExtractor(subtitleParserFactory.create(subtitleFormat), subtitleFormat))
+            }
+            ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
+              .createMediaSource(MediaItem.fromUri(track.baseUrl))
+          }
+          MergingMediaSource(mediaSource, *subtitleSources.toTypedArray())
+        } else {
+          mediaSource
+        }
+        player.setMediaSource(finalMediaSource)
         launchStep = "prepare"
         Log.i(PlayerPlaybackLogTag, "launch step: prepare")
         player.prepare()

@@ -83,6 +83,8 @@ data class PlaybackInfo(
   val headers: BiliPlaybackHeaders,
   /** YouTube 多语言配音:全部可选音轨(供播放器音轨切换菜单)。非 YouTube/单音轨为空。 */
   val availableAudioTracks: List<PlaybackAudioTrack> = emptyList(),
+  /** YouTube 字幕轨(WebVTT URL,来自 NewPipe info.subtitles)。播放器用 MergingMediaSource 合并渲染。非 YouTube/无字幕为空。 */
+  val subtitleTracks: List<PlaybackTrack> = emptyList(),
 )
 
 /** YouTube 一条可选音轨(多语言配音)。id 为 audioTrack.id(如 "en.4"),非 itag。 */
@@ -168,6 +170,8 @@ data class PlaybackTrack(
    * 播放器分支判断须优先排除本标记(见 PlayerScreen/MobilePlayerScreen 的 `effectiveInfo.isSabrSingle()`)。
    */
   val isSabrSingle: Boolean = false,
+  /** 字幕轨语言码(YouTube WebVTT 字幕用,如 "zh-Hans"/"en")。A/V 轨为 null。 */
+  val languageCode: String? = null,
 ) {
   /** 是否为 progressive 直链（无 DASH SegmentBase），如 YouTube 流。 */
   val isProgressive: Boolean

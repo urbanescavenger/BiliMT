@@ -33,6 +33,7 @@ import okhttp3.Request
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.StreamInfo
+import org.schabi.newpipe.extractor.stream.SubtitlesStream
 import org.schabi.newpipe.extractor.stream.VideoStream
 import java.util.Locale
 
@@ -300,7 +301,10 @@ class YoutubePlaybackResolver(
                 "video=itag${sabrSession.videoFormatId.itag}(${sabrSession.videoFormatId.height}p) " +
                 "audio=itag${sabrSession.audioFormatId.itag} → sabr:// DASH tracks"
             )
-            return@withContext buildSabrPlaybackInfo(request, videoId, sabrDuration, sabrRaws, sabrSession, sid)
+            return@withContext buildSabrPlaybackInfo(
+              request, videoId, sabrDuration, sabrRaws, sabrSession, sid,
+              subtitleTracks = npResult?.subtitleTracks.orEmpty(),
+            )
           }
         } else {
           Log.w(Tag, "SABR init probe skipped: video=${firstVideo != null} audio=${firstAudio != null}")
@@ -607,11 +611,12 @@ class YoutubePlaybackResolver(
     return if (kept.isEmpty()) base else "$base?${kept.joinToString("&")}"
   }
 
-  /** path C:[StreamInfo.getInfo] 的结果包装——session + 供 buildSabrPlaybackInfo 的 raws + 时长。 */
+  /** path C:[StreamInfo.getInfo] 的结果包装——session + 供 buildSabrPlaybackInfo 的 raws + 时长 + 字幕。 */
   private data class NewPipeSabrResult(
     val session: SabrSession,
     val raws: List<JsonObject>,
     val durationMs: Long,
+    val subtitleTracks: List<PlaybackTrack>,
   )
 
   /**
@@ -693,13 +698,30 @@ class YoutubePlaybackResolver(
       videoFormats = videoFormats,
       audioTracks = sabrAudioTracks,
     )
+    // 字幕(WebVTT URL 直拉,不走 SABR 服务端):NewPipe SubtitleInfo 直接给可拉取的 WebVTT URL。
+    // mimeType 固定 text/vtt,Media3 SubtitleExtractor 转 MEDIA3_CUES 由 PlayerView 内置 SubtitleView 渲染。
+    // 无字幕时为空列表。id 用索引(非 itag),供字幕轨去重/切换。
+    val subtitleTracks = info.subtitles.mapIndexed { index, subtitle: SubtitlesStream ->
+      PlaybackTrack(
+        id = index,
+        baseUrl = subtitle.url,
+        backupUrls = emptyList(),
+        bandwidth = 0,
+        codecs = "",
+        width = 0,
+        height = 0,
+        mimeType = "text/vtt",
+        languageCode = subtitle.languageTag,
+      )
+    }
     Log.i(
       Tag,
       "NewPipe SABR session: sabrUrl=${sabrUrl.take(80)}... poToken=${poTokenForSabr!!.length}B" +
         "(${if (cachedPoToken != null) "provider-cached" else "resolve-minted"}) ustreamerCfg=${ustreamerCfgB64.length}B " +
-        "video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} videoFormats=${videoFormats.size} dur=${durationMs}ms"
+        "video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} videoFormats=${videoFormats.size} " +
+        "subtitles=${subtitleTracks.size} dur=${durationMs}ms"
     )
-    return NewPipeSabrResult(session, raws, durationMs)
+    return NewPipeSabrResult(session, raws, durationMs, subtitleTracks)
   }
 
   /** NewPipe [VideoStream] → SABR [SabrFormatId](itag/lastModified/xtags 来自 ItagItem,height 来自流)。 */
@@ -758,6 +780,7 @@ class YoutubePlaybackResolver(
     raws: List<JsonObject>,
     sabrSession: SabrSession,
     sid: String,
+    subtitleTracks: List<PlaybackTrack> = emptyList(),
   ): PlaybackInfo {
     val aItag = sabrSession.audioFormatId.itag
     val aRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == aItag }
@@ -808,6 +831,7 @@ class YoutubePlaybackResolver(
       audioTracks = listOf(audioTrack),
       headers = YoutubePlaybackHeaders,
       availableAudioTracks = availableAudioTracks,
+      subtitleTracks = subtitleTracks,
     )
   }
 
