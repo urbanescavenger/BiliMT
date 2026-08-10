@@ -595,7 +595,7 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 
 **记录时机**:TV 与移动端播放器起播(Ready)时 `recordPlay`(带频道/封面元数据),暂停/退出时 `updatePosition`。历史需要 channelId 供开频道 → `PlaybackRequest` 加 `channelId` 字段,`toPlaybackRequest` 从 `VideoSummary.channelId` 填入。
 
-**移动端 UI**:YouTube 历史并入「动态」底栏的「历史」子 tab(`MobileFeedScreen` → `MobileHistoryPage`):本地 `YoutubeHistoryStore` 数据与 B 站观看历史**混合,按播放时间倒序**(排序键统一为 epoch 秒——YouTube 取 `lastPlayedAtMs/1000`,B 站取 `viewAt`;两列表本已按该键倒序,新加载的 B 站分页恒更旧,合并后不重排已显示内容)。YouTube 卡片绿框区分(`showYoutubeBorder`)。历史 tab 放宽登录门槛,未登录只显示本地 YouTube 历史 + 登录提示(复用 `history_signed_out`),登录后 B 站历史并入。点击续播、点头像开频道。原独立「YouTube 历史」子 tab 已移除(`MobileYoutubeHistoryPage.kt` 删除,`toVideoSummary()` 移入 `MobileHistoryPage`)。**移动端卡片布局(v3.0.0-alpha.4)**:`MobileVideoCard` 加 `feedLayout` 参数(默认紧凑布局,首页/搜索/空间不变),动态 feed(`MobileDynamicScreen`)置 true 用 B 站动态样式新布局——顶行作者块(头像 40dp 跨两行 + UP 名一行 + 发布时间·播放量一行,发布时间相对时间复用 `video_relative_*` 字符串)→ 缩略图独占整行 → 标题;YouTube 卡片在动态页同样绿框区分。
+**移动端 UI**:YouTube 历史并入「动态」底栏的「历史」子 tab(`MobileFeedScreen` → `MobileHistoryPage`):本地 `YoutubeHistoryStore` 数据与 B 站观看历史**混合,按播放时间倒序**(排序键统一为 epoch 秒——YouTube 取 `lastPlayedAtMs/1000`,B 站取 `viewAt`;两列表本已按该键倒序,新加载的 B 站分页恒更旧,合并后不重排已显示内容)。YouTube 卡片绿框区分(`showYoutubeBorder`)。历史 tab 放宽登录门槛,未登录只显示本地 YouTube 历史 + 登录提示(复用 `history_signed_out`),登录后 B 站历史并入。点击续播、点头像开频道。原独立「YouTube 历史」子 tab 已移除(`MobileYoutubeHistoryPage.kt` 删除,`toVideoSummary()` 移入 `MobileHistoryPage`)。**移动端卡片布局(v3.0.0-alpha.4)**:`MobileVideoCard` 加 `feedLayout` 参数(默认紧凑布局,首页/搜索/空间不变),动态 feed(`MobileDynamicScreen`)置 true 用 B 站动态样式新布局——顶行作者块(头像 40dp 跨两行 + UP 名一行 + 发布时间·播放量一行,发布时间相对时间复用 `video_relative_*` 字符串)→ 缩略图独占整行 → 标题;YouTube 卡片在动态页同样绿框区分。**单列(v3.0.0-alpha.5)**:`MobileDynamicScreen` 的 `LazyVerticalGrid` 改 `GridCells.Fixed(1)`,卡片占满整行全宽展示。
 
 ## 7. 关键文件
 
