@@ -158,7 +158,6 @@ fun SettingsScreen(
   var focusSettingJob by remember { mutableStateOf<Job?>(null) }
   var rightPanel by remember { mutableStateOf(SettingsRightPanel.None) }
   var showWebDavDialog by remember { mutableStateOf(false) }
-  var webDavState by remember { mutableStateOf<WebDavBackupState>(WebDavBackupState.Idle) }
 
   fun focusSettingItem(itemIndex: Int, direction: Int = 0): Boolean {
     val lazyIndex = settingsItemToLazyIndex(itemIndex, updateState)
@@ -402,6 +401,7 @@ private fun SettingsBehaviorColumn(
 ) {
   val context = LocalContext.current
   val coroutineScope = rememberCoroutineScope()
+  var webDavState by remember { mutableStateOf<WebDavBackupState>(WebDavBackupState.Idle) }
   CompositionLocalProvider(LocalBringIntoViewSpec provides SettingsBringIntoViewSpec) {
     LazyColumn(
       state = listState,
