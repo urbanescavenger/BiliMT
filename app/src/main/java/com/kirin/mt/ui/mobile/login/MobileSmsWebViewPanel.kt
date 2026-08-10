@@ -52,36 +52,49 @@ private const val ManualRetryAttempts = 13 // ~5s @400ms
 private const val DomDumpJs = """
   (function(){
     function vis(el){ return el && el.offsetParent !== null; }
-    var out = [];
-    out.push('TITLE=' + document.title);
-    out.push('VIEWPORT=' + window.innerWidth + 'x' + window.innerHeight + ' dpr=' + window.devicePixelRatio);
-    var btns = Array.from(document.querySelectorAll('button, [role=button], a.btn, .btn'))
-      .filter(vis).map(function(b){ return (b.innerText||b.textContent||'').trim().replace(/\s+/g,' ').slice(0,30); })
-      .filter(Boolean);
-    out.push('BUTTONS=' + JSON.stringify(btns));
-    var ins = Array.from(document.querySelectorAll('input:not([type=hidden])'));
-    out.push('INPUTS=' + JSON.stringify(ins.map(function(i){ return { type: i.type, placeholder: i.placeholder, name: i.name }; })));
-    var bodyText = (document.body.innerText||'').trim().replace(/\s+/g,' ').slice(0,500);
-    out.push('BODYTEXT=' + bodyText);
-    // 关键元素定位:按文本找元素,dump 其矩形与定位方式,判断谁叠在谁上面。
-    var keys = ['登录','获取验证码','我已阅读','用户协议','隐私政策','账号密码登录','手机号'];
-    var seen = [];
-    var all = document.querySelectorAll('*');
-    for (var i=0;i<all.length;i++){
-      var el = all[i];
-      var t = (el.innerText||el.textContent||'').trim().replace(/\s+/g,' ');
-      if (!t || t.length>40) continue;
-      for (var k=0;k<keys.length;k++){
-        if (t.indexOf(keys[k])>=0){
-          var r = el.getBoundingClientRect();
-          var cs = getComputedStyle(el);
-          seen.push(keys[k]+'|'+el.tagName+'.'+String(el.className).slice(0,40)+'|pos='+cs.position+'|z='+cs.zIndex+'|rect='+Math.round(r.left)+','+Math.round(r.top)+' '+Math.round(r.width)+'x'+Math.round(r.height));
-          break;
+    function dump(){
+      var out = [];
+      out.push('TITLE=' + document.title);
+      out.push('VIEWPORT=' + window.innerWidth + 'x' + window.innerHeight + ' dpr=' + window.devicePixelRatio);
+      var btns = Array.from(document.querySelectorAll('button, [role=button], a.btn, .btn'))
+        .filter(vis).map(function(b){ return (b.innerText||b.textContent||'').trim().replace(/\s+/g,' ').slice(0,30); })
+        .filter(Boolean);
+      out.push('BUTTONS=' + JSON.stringify(btns));
+      var ins = Array.from(document.querySelectorAll('input:not([type=hidden])'));
+      out.push('INPUTS=' + JSON.stringify(ins.map(function(i){ return { type: i.type, placeholder: i.placeholder, name: i.name }; })));
+      var bodyText = (document.body.innerText||'').trim().replace(/\s+/g,' ').slice(0,500);
+      out.push('BODYTEXT=' + bodyText);
+      // 关键元素定位:按文本找元素,dump 其矩形与定位方式,判断谁叠在谁上面。
+      var keys = ['登录','获取验证码','我已阅读','用户协议','隐私政策','账号密码登录','手机号'];
+      var seen = [];
+      var all = document.querySelectorAll('*');
+      for (var i=0;i<all.length;i++){
+        var el = all[i];
+        var t = (el.innerText||el.textContent||'').trim().replace(/\s+/g,' ');
+        if (!t || t.length>40) continue;
+        for (var k=0;k<keys.length;k++){
+          if (t.indexOf(keys[k])>=0){
+            var r = el.getBoundingClientRect();
+            var cs = getComputedStyle(el);
+            seen.push(keys[k]+'|'+el.tagName+'.'+String(el.className).slice(0,40)+'|pos='+cs.position+'|z='+cs.zIndex+'|rect='+Math.round(r.left)+','+Math.round(r.top)+' '+Math.round(r.width)+'x'+Math.round(r.height));
+            break;
+          }
         }
       }
+      out.push('ELEMS=' + JSON.stringify(seen));
+      console.log('BILI_DOM_DUMP ' + out.join(' | '));
     }
-    out.push('ELEMS=' + JSON.stringify(seen));
-    console.log('BILI_DOM_DUMP ' + out.join(' | '));
+    // SPA(Vant)在 onPageFinished 后才异步渲染布局,轮询等登录按钮有非零尺寸再 dump,最多 5s。
+    var tries = 0;
+    var timer = setInterval(function(){
+      tries++;
+      var btn = document.querySelector('.login-btn, .form-btn, button');
+      var ready = btn && btn.getBoundingClientRect().width > 0;
+      if (ready || tries > 25) {
+        clearInterval(timer);
+        dump();
+      }
+    }, 200);
   })();
 """
 
