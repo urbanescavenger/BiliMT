@@ -1894,11 +1894,13 @@ private fun MobileYoutubeIntroTab(
         .size(40.dp)
         .clip(CircleShape)
         .background(MaterialTheme.colorScheme.surfaceVariant)
-      if (detail.channelAvatarUrl.isBlank()) {
+      // /player 无频道头像字段,回退卡片携带的 ownerFace(卡片已由数据层填 YouTube 头像)。
+      val avatarUrl = detail.channelAvatarUrl.ifBlank { request.ownerFace }
+      if (avatarUrl.isBlank()) {
         Box(modifier = avatarModifier)
       } else {
         AsyncImage(
-          model = detail.channelAvatarUrl,
+          model = avatarUrl,
           contentDescription = detail.channelName,
           contentScale = androidx.compose.ui.layout.ContentScale.Crop,
           modifier = avatarModifier,

@@ -75,9 +75,10 @@ class YoutubeRepository(
       val payload = buildJsonObject { put("browseId", query) }
       val root = client.postJson("/browse", payload)
       val resolved = YoutubeParsers.parseChannelInfo(root)
-      val channelId = resolved?.first?.takeIf { it.isNotBlank() } ?: query
-      val name = resolved?.second?.takeIf { it.isNotBlank() } ?: query
-      YoutubeChannel(channelId = channelId, name = name)
+      val channelId = resolved?.channelId?.takeIf { it.isNotBlank() } ?: query
+      val name = resolved?.name?.takeIf { it.isNotBlank() } ?: query
+      val avatar = resolved?.avatarUrl.orEmpty()
+      YoutubeChannel(channelId = channelId, name = name, avatar = avatar)
     } else {
       // handle / 频道名：/search 找 channelRenderer。
       val payload = buildJsonObject { put("query", query) }
@@ -186,6 +187,7 @@ class YoutubeRepository(
   suspend fun getSubscriptionsFeed(
     channels: List<YoutubeChannel>,
     perChannel: Int = 8,
+    onChannelAvatarResolved: suspend (YoutubeChannel) -> Unit = {},
   ): List<VideoSummary> {
     if (channels.isEmpty()) {
       // 未配置频道时回退显示热门,避免动态 tab 空白(设置里可添加频道)。
@@ -196,6 +198,20 @@ class YoutubeRepository(
     return coroutineScope {
       channels.map { channel ->
         async {
+          // 旧频道(无头像)懒解析一次并回写 store,供本次填充与后续复用,避免每次刷新重复 /browse。
+          var channelAvatar = channel.avatar
+          if (channelAvatar.isBlank()) {
+            val resolvedAvatar = innerTubeSemaphore.withPermit {
+              runCatching {
+                val payload = buildJsonObject { put("browseId", channel.channelId) }
+                YoutubeParsers.parseChannelInfo(client.postJson("/browse", payload))?.avatarUrl.orEmpty()
+              }.getOrDefault("")
+            }
+            if (resolvedAvatar.isNotBlank()) {
+              channelAvatar = resolvedAvatar
+              onChannelAvatarResolved(channel.copy(avatar = resolvedAvatar))
+            }
+          }
           val videos: List<YoutubeVideo> = rssSemaphore.withPermit {
             runCatching { getChannelRss(channel.channelId) }.getOrDefault(emptyList())
           }
@@ -210,11 +226,12 @@ class YoutubeRepository(
             videos.take(perChannel).map(::toVideoSummary)
           }
           // lockupViewModel 不重复频道名/频道id,给空作者名与空频道id的视频补上所属频道,
-          // 卡片作者行才有内容、点 UP 头像才能进本频道主页。
+          // 卡片作者行才有内容、点 UP 头像才能进本频道主页;头像同理补上所属频道头像。
           resolved.map { video ->
             video.copy(
               ownerName = if (video.ownerName.isBlank()) channel.name else video.ownerName,
               channelId = if (video.channelId.isBlank()) channel.channelId else video.channelId,
+              ownerFace = if (video.ownerFace.isBlank()) channelAvatar else video.ownerFace,
             )
           }
         }
@@ -235,7 +252,7 @@ class YoutubeRepository(
       title = video.title,
       pic = video.thumbnailUrl,
       ownerName = video.channelName,
-      ownerFace = "",
+      ownerFace = video.channelAvatarUrl,
       ownerMid = 0L,
       view = video.viewCount?.let { if (it > Int.MAX_VALUE) Int.MAX_VALUE else it.toInt() } ?: 0,
       danmaku = 0,

@@ -263,8 +263,11 @@ class VideoRepository(
     return youtubeRepository.getTrending(tab)
   }
 
-  suspend fun youtubeSubscriptionsFeed(channels: List<YoutubeChannel>): List<VideoSummary> {
-    return youtubeRepository.getSubscriptionsFeed(channels)
+  suspend fun youtubeSubscriptionsFeed(
+    channels: List<YoutubeChannel>,
+    onChannelAvatarResolved: suspend (YoutubeChannel) -> Unit = {},
+  ): List<VideoSummary> {
+    return youtubeRepository.getSubscriptionsFeed(channels, onChannelAvatarResolved = onChannelAvatarResolved)
   }
 
   /** YouTube 视频详情（简介 Tab）。 */

@@ -1,5 +1,69 @@
 # BiliMT 版本发布说明
 
+## v3.0.0
+
+**稳定版**:YouTube 内容集成完整落地 + 移动端交互打磨。从 v2.0.10 稳定版后的 alpha 迭代线(alpha.1→alpha.10)正式发布。
+
+### 主要功能
+- **YouTube 多语言配音修复**:中文视频不再误播英文配音,`pickAudio` 优先原声轨;播放器加音轨切换按钮(仅多音轨视频显示);设置加 YouTube 默认画质。
+- **YouTube 播放历史 + 断电续播**:修复 `cid=0` 守卫致进度不落盘,TV/移动端续播恢复;新建 `YoutubeHistoryStore`,移动端历史 tab 混合 B站+YouTube 按播放时间倒序。
+- **听视频模式(音频-only)**:移动端顶栏耳机按钮禁用视频轨只播音频,对 B站 DASH/PGC/YouTube SABR 均成立。
+- **YouTube UP 头像完整实现**:视频卡片/播放器简介页/评论/动态关注 tab 全部真实显示头像,评论头像选最高分辨率,动态关注旧频道懒解析回填。
+- **YouTube 搜索与动态加载优化**:首页与动态共享关注缓存、动态请求去重、保留旧数据后台刷新、搜索请求去重/取消。
+- **动态 feed 卡片 B站动态样式 + 单列**:顶行作者块 + 缩略图独占整行 + 标题,全宽展示。
+- **UP 主页缓存机制**:从空间/频道起播退出播放器回到主页不再重载,滚动位置保留。
+- **后台播放自动连播修复**:列表/播放列表后台播完自动播下一个不再崩溃。
+- **短信登录页两处重叠修复**:顶栏不再盖网页顶部;网页内"我已阅读并同意用户协议"不再叠登录按钮。
+
+### 技术
+- 对齐 LibreTube 参考实现:共享 feed 缓存、请求去重/取消、UP 头像解析、SABR 单流。
+- 移动端 UI 参照 BV `feature/mobile` 设计移植,复用 `core/*` 全部引擎。
+
+## v3.0.0-alpha.10
+
+**短信登录页两处重叠修复(测试 alpha)**:移动端短信登录页顶栏不再盖住网页顶部,网页内"我已阅读并同意用户协议"不再叠在登录按钮上。
+
+### 修复
+- **顶栏不再盖网页**:`MobileSmsWebViewPanel` 顶栏从 `Box`+`align(TopCenter)` 覆盖改成 `Column` 上下排,顶栏占自己高度,不再挡住 B站 登录页顶部(logo/tab 切换)。
+- **协议文字不再叠登录按钮**:诊断确认 passport-h5 短信登录页协议文字 `.explain-tips` 是 `position:absolute`,被固定定位到 y=291,叠在登录按钮(y=301-352)上重叠 ~29px。注入 CSS 把 `.explain-tips` 改 `position:static !important` 回到正常文档流,排在按钮下方。
+
+### 技术
+- **视口设置**:WebView 加 `setUseWideViewPort(true)` + `setLoadWithOverviewMode(true)` 按屏幕宽度渲染(对重叠 2 无效——根因是页面内部绝对定位,但保留无副作用)。
+- **诊断升级(临时)**:`BILI_DOM_DUMP` 诊断 JS 升级——dump 关键元素(登录按钮/协议文字/获取验证码)的 `getBoundingClientRect` + `position/z-index`,并加轮询等登录按钮有非零尺寸(最多 5s)再 dump,解决 SPA(Vant)异步渲染导致 rect 全 0 的问题。
+
+## v3.0.0-alpha.9
+
+**YouTube UP 头像完整实现(测试 alpha)**:对齐 LibreTube,让 YouTube 频道头像在视频卡片、播放器简介页、评论、动态关注 tab 全部真实显示(此前数据层硬编码空串,UI 永远走占位圆)。
+
+### 功能
+- **视频卡片 UP 头像**:`parseVideoRenderer` 解析 InnerTube `channelThumbnail`(含 `channelThumbnailWithAvatarRenderer` 回退),`toVideoSummary` 填入 `ownerFace`,搜索/热门/频道页卡片显示真实头像。
+- **播放器简介页频道头像**:`/player` 无频道头像字段,回退卡片携带的 `ownerFace`。
+- **评论作者头像清晰**:评论头像从取最小缩略图改为选最高分辨率(对齐 LibreTube `maxByOrNull { it.height }`)。
+- **动态关注 tab 头像**:`getSubscriptionsFeed` 对旧频道(无头像)懒解析一次 `/browse` 回填并持久化,新频道在 `resolveChannel` 时已带头像;卡片 `ownerFace` 为空时补所属频道头像。
+
+### 技术
+- **数据层**:`YoutubeVideo` 加 `channelAvatarUrl`;`parseChannelInfo` 返回类型扩展为 `ChannelInfo`(含 `avatarUrl`,从 `c4TabbedHeaderRenderer`/`channelMetadataRenderer` 取);`YoutubeChannel` 加 `avatar` 字段 + `updateAvatar`(DataStore 回写,`ignoreUnknownKeys` 保证旧数据反序列化安全)。
+- **图片加载**:`buildOwnerAvatarRequest` 识别 YouTube 头像 URL(`yt3.ggpht.com`/`yt3.googleusercontent.com`/含 `ggpht`)走裸 Coil 请求——不拼 B 站 CDN `@Nw.webp` 后缀、不加 B 站请求头(否则破坏 yt3 URL、B 站 Referer 被拒);B 站头像不受影响。
+- **动态关注回填**:`youtubeSubscriptionsFeed` 加 `onChannelAvatarResolved` 回调,经 `VideoRepository` 透传到移动端动态/首页、TV 动态,懒解析成功后 `updateAvatar` 回写。
+
+### 诊断(临时)
+- **短信登录页 DOM dump**:`MobileSmsWebViewPanel` 在 `onPageFinished` 注入 JS,把 passport-h5 可见 DOM 结构(标题/按钮/勾选框/输入框/正文文本)以 `BILI_DOM_DUMP` 前缀 dump 到 console,由 `onConsoleMessage` 打进日志——先拿真实布局证据再设计干净布局,拿到后可移除。
+
+## v3.0.0-alpha.8
+
+**YouTube 搜索与动态加载优化(测试 alpha)**:对齐 LibreTube 参考实现,消除重复网络请求、首页与动态共享关注缓存、刷新时保留旧数据。
+
+### 优化
+- **首页共享关注缓存**:首页 YouTube 区块与动态 tab 共享同一份 `YoutubeFeedCacheStore`(10min TTL),进动态 tab 后回首页秒出缓存、不再重复拉全量频道。
+- **动态请求去重**:动态 tab 快速连点底栏/下拉刷新时不再并发重拉全量频道(已有拉取在进行则跳过)。
+- **保留旧数据后台刷新**:动态 tab 有旧数据时刷新不再闪 Loading,由下拉指示器提示,失败保留旧数据兜底。
+- **搜索请求去重/取消**:移动端搜索快速切 source/重复提交/重试时取消在途请求,不再竞态覆盖结果。
+
+### 技术
+- **共享缓存**:`MobileHomeScreen` 新增 `youtubeFeedCacheStore` 参数,`loadYoutubeTrending(forceRefresh)` 非强制刷新读缓存秒出、成功写回(对齐 LibreTube Home/Subscriptions 共享 feed 缓存)。
+- **请求去重**:`MobileDynamicScreen` 新增 `feedJob` 守卫(`refreshFeed` 活跃则跳过);`MobileSearchScreen` 新增 `searchJob`,`loadFirstPage`/`loadNextPage` 前取消在途请求(对齐 LibreTube mapLatest 取消旧请求)。
+- **保留旧数据**:`MobileDynamicScreen.loadFirstBody` 有旧 `Success` 时不置 Loading,由 `isRefreshing` 驱动下拉指示器,失败保留旧数据兜底。
+
 ## v3.0.0-alpha.7
 
 **UP 主页缓存机制(测试 alpha)**:从 B 站空间 / YouTube 频道点进视频,退出播放器回到主页时不再重新加载,页面内容与滚动位置保留。

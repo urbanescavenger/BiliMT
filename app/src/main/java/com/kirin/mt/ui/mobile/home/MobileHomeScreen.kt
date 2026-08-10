@@ -39,8 +39,10 @@ import androidx.compose.ui.unit.dp
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.network.YoutubeFeedCacheTtlMs
 import com.kirin.mt.core.network.youtubeFeedTimeoutMs
 import com.kirin.mt.core.youtube.YoutubeChannelStore
+import com.kirin.mt.core.youtube.YoutubeFeedCacheStore
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -92,6 +94,7 @@ private class MobileHomeUiState {
 fun MobileHomeScreen(
   videoRepository: VideoRepository,
   youtubeChannelStore: YoutubeChannelStore,
+  youtubeFeedCacheStore: YoutubeFeedCacheStore,
   enabledSections: List<HomeSection>,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
@@ -114,22 +117,43 @@ fun MobileHomeScreen(
   fun gridStateFor(key: String): LazyGridState = gridStates.getOrPut(key) { LazyGridState() }
 
   /** 首页 YouTube 区块:加载关注流(单页),超时/未关注给明确提示而非静默空。 */
-  suspend fun loadYoutubeTrending(): MobileSectionState {
+  suspend fun loadYoutubeTrending(forceRefresh: Boolean): MobileSectionState {
     if (youtubeChannels.isEmpty()) {
       return MobileSectionState.Failed("未添加 YouTube 关注频道")
     }
+    // 与动态 tab 共享 YoutubeFeedCacheStore:非强制刷新时缓存新鲜(10min 内)直接秒出,
+    // 避免首页与动态两处重复拉全量频道(对齐 LibreTube Home/Subscriptions 共享 feed 缓存)。
+    val currentIds = youtubeChannels.map { it.channelId }
+    if (!forceRefresh) {
+      val cached = youtubeFeedCacheStore.read()
+      val cacheValid = cached != null && cached.channelIds == currentIds
+      val cacheFresh = cacheValid && System.currentTimeMillis() - cached.fetchedAt <= YoutubeFeedCacheTtlMs
+      if (cacheFresh && cached.videos.isNotEmpty()) {
+        return MobileSectionState.Success(
+          videos = cached.videos,
+          nextPage = FirstPage + 1,
+          loadingMore = false,
+          endReached = true, // 订阅流单页,不翻页
+        )
+      }
+    }
     val result = withTimeoutOrNull(youtubeFeedTimeoutMs(youtubeChannels.size)) {
-      videoRepository.youtubeSubscriptionsFeed(youtubeChannels)
+      videoRepository.youtubeSubscriptionsFeed(youtubeChannels) { channel ->
+        youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+      }
     }
     return when {
       result == null -> MobileSectionState.Failed("YouTube 关注加载超时")
       result.isEmpty() -> MobileSectionState.Failed("暂无内容")
-      else -> MobileSectionState.Success(
-        videos = result,
-        nextPage = FirstPage + 1,
-        loadingMore = false,
-        endReached = true, // 订阅流单页,不翻页
-      )
+      else -> {
+        youtubeFeedCacheStore.write(currentIds, result)
+        MobileSectionState.Success(
+          videos = result,
+          nextPage = FirstPage + 1,
+          loadingMore = false,
+          endReached = true, // 订阅流单页,不翻页
+        )
+      }
     }
   }
 
@@ -148,7 +172,7 @@ fun MobileHomeScreen(
     scope.launch {
       val state = try {
         if (section == HomeSection.YoutubeTrending) {
-          loadYoutubeTrending()
+          loadYoutubeTrending(forceRefresh)
         } else {
           val idx = if (section == HomeSection.Recommend) uiState.refreshKey(key) else 0
           val videos = videoRepository.getHomeSectionVideos(

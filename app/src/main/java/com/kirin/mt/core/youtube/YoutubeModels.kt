@@ -13,6 +13,8 @@ data class YoutubeVideo(
   val channelName: String,
   /** 频道 id（UC 开头）。 */
   val channelId: String,
+  /** 频道头像 URL（yt3.ggpht.com）；无则空串。 */
+  val channelAvatarUrl: String = "",
   /** 缩略图 URL（i.ytimg.com）。 */
   val thumbnailUrl: String,
   /** 观看数；未知为 null。 */

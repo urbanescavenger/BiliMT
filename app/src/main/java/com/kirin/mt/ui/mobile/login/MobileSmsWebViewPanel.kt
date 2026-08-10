@@ -10,7 +10,7 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -43,6 +43,74 @@ private const val BiliLoginUrl = "https://passport.bilibili.com/login"
 private const val CookiePollIntervalMs = 500L
 private const val ManualRetryIntervalMs = 400L
 private const val ManualRetryAttempts = 13 // ~5s @400ms
+
+/**
+ * 诊断 JS:页面加载后 dump 可见 DOM 结构 + 关键元素(登录按钮/协议文字/获取验证码)的
+ * 精确位置(getBoundingClientRect)与定位方式(position/z-index),用于定位"协议文字盖住
+ * 登录按钮"的重叠根因。由 onConsoleMessage 打进日志。临时诊断用,拿到证据后可移除。
+ */
+private const val DomDumpJs = """
+  (function(){
+    function vis(el){ return el && el.offsetParent !== null; }
+    function dump(){
+      var out = [];
+      out.push('TITLE=' + document.title);
+      out.push('VIEWPORT=' + window.innerWidth + 'x' + window.innerHeight + ' dpr=' + window.devicePixelRatio);
+      var btns = Array.from(document.querySelectorAll('button, [role=button], a.btn, .btn'))
+        .filter(vis).map(function(b){ return (b.innerText||b.textContent||'').trim().replace(/\s+/g,' ').slice(0,30); })
+        .filter(Boolean);
+      out.push('BUTTONS=' + JSON.stringify(btns));
+      var ins = Array.from(document.querySelectorAll('input:not([type=hidden])'));
+      out.push('INPUTS=' + JSON.stringify(ins.map(function(i){ return { type: i.type, placeholder: i.placeholder, name: i.name }; })));
+      var bodyText = (document.body.innerText||'').trim().replace(/\s+/g,' ').slice(0,500);
+      out.push('BODYTEXT=' + bodyText);
+      // 关键元素定位:按文本找元素,dump 其矩形与定位方式,判断谁叠在谁上面。
+      var keys = ['登录','获取验证码','我已阅读','用户协议','隐私政策','账号密码登录','手机号'];
+      var seen = [];
+      var all = document.querySelectorAll('*');
+      for (var i=0;i<all.length;i++){
+        var el = all[i];
+        var t = (el.innerText||el.textContent||'').trim().replace(/\s+/g,' ');
+        if (!t || t.length>40) continue;
+        for (var k=0;k<keys.length;k++){
+          if (t.indexOf(keys[k])>=0){
+            var r = el.getBoundingClientRect();
+            var cs = getComputedStyle(el);
+            seen.push(keys[k]+'|'+el.tagName+'.'+String(el.className).slice(0,40)+'|pos='+cs.position+'|z='+cs.zIndex+'|rect='+Math.round(r.left)+','+Math.round(r.top)+' '+Math.round(r.width)+'x'+Math.round(r.height));
+            break;
+          }
+        }
+      }
+      out.push('ELEMS=' + JSON.stringify(seen));
+      console.log('BILI_DOM_DUMP ' + out.join(' | '));
+    }
+    // SPA(Vant)在 onPageFinished 后才异步渲染布局,轮询等登录按钮有非零尺寸再 dump,最多 5s。
+    var tries = 0;
+    var timer = setInterval(function(){
+      tries++;
+      var btn = document.querySelector('.login-btn, .form-btn, button');
+      var ready = btn && btn.getBoundingClientRect().width > 0;
+      if (ready || tries > 25) {
+        clearInterval(timer);
+        dump();
+      }
+    }, 200);
+  })();
+"""
+
+/**
+ * 修复 CSS:passport-h5 短信登录页的协议文字 .explain-tips 是 position:absolute,
+ * 被固定定位到 y=291,叠在登录按钮(y=301)上。改成 static 回到正常文档流,排在按钮下方。
+ * 用 !important 压过 B站 页面样式。临时修复,若 B站 改版需复查。
+ */
+private const val FixCssJs = """
+  (function(){
+    var s = document.createElement('style');
+    s.id = 'bilitv-login-fix';
+    s.textContent = '.explain-tips { position: static !important; }';
+    document.head.appendChild(s);
+  })();
+"""
 
 /**
  * 短信登录(移动端唯一登录方式):WebView 托管 B站 登录页,用户在 B站 自己的页面完成
@@ -80,6 +148,9 @@ fun MobileSmsWebViewPanel(
       settings.javaScriptEnabled = true
       settings.domStorageEnabled = true
       settings.javaScriptCanOpenWindowsAutomatically = true
+      // 视口:按屏幕宽度渲染,避免 B站 passport-h5 固定定位元素(登录按钮)错位叠到协议文字上。
+      settings.setUseWideViewPort(true)
+      settings.setLoadWithOverviewMode(true)
       settings.userAgentString =
         "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
       CookieManager.getInstance().setAcceptCookie(true)
@@ -87,6 +158,13 @@ fun MobileSmsWebViewPanel(
       webViewClient = object : WebViewClient() {
         override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
           Log.e(Tag, "webview error: ${error?.description} (${request?.url})")
+        }
+        // 诊断:页面加载完成后注入 JS dump 可见 DOM 结构到 console(临时,拿真实布局后移除)。
+        override fun onPageFinished(view: WebView?, url: String?) {
+          super.onPageFinished(view, url)
+          view?.evaluateJavascript(DomDumpJs, null)
+          // 修复:注入 CSS 把协议文字 .explain-tips 改 static,避免叠在登录按钮上。
+          view?.evaluateJavascript(FixCssJs, null)
         }
       }
       webChromeClient = object : WebChromeClient() {
@@ -149,14 +227,10 @@ fun MobileSmsWebViewPanel(
     }
   }
 
-  Box(modifier = modifier.fillMaxSize()) {
-    AndroidView(
-      factory = { webView },
-      modifier = Modifier.fillMaxSize(),
-    )
+  Column(modifier = modifier.fillMaxSize()) {
+    // 顶栏占自己高度,不再覆盖网页顶部(避免挡住 B站 登录页的 logo/tab 切换)。
     Row(
       modifier = Modifier
-        .align(Alignment.TopCenter)
         .fillMaxWidth()
         .background(Color(0xCC000000))
         .padding(horizontal = 8.dp, vertical = 6.dp),
@@ -176,6 +250,10 @@ fun MobileSmsWebViewPanel(
         Text(text = stringResource(R.string.login_sms_done), color = Color.White)
       }
     }
+    AndroidView(
+      factory = { webView },
+      modifier = Modifier.fillMaxSize(),
+    )
   }
 }
 
