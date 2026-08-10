@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.5
+
+**TV 视频退出焦点恢复修复 + BiliMT:Focus 诊断日志(测试 alpha)**:退出视频后焦点不再停在侧栏头像,优先回到原视频卡片;并加 `BiliMT:Focus` 日志,下次退出可在实时日志直接看到焦点落点与失败原因。
+
+### 修复
+- **退出视频焦点停在头像**:退出时 Android TV 把默认焦点分配给侧栏第一个可聚焦项(头像),靠 `TvVideoGrid` 恢复 effect 抢回原视频卡片。原 effect 在目标卡片首帧布局完成前就盲重试 `requestFocus`,退出卡顿(实测 ExoPlayer teardown + 首页重组 + 弹幕 draw 挤主线程,734ms Davey + 33 dropped frames)时连续失败,90 帧用完后清掉 destination → suppress 关闭 → 焦点留在头像。改为**先等目标行进入 `visibleItemsInfo` 布局就位再 `requestFocus`**,把"按帧数盲重试"改成"等布局就位再抢"。
+- 兜底清理 `PlaybackFocusRestoreCleanupFrameCount` 120→240(必须 > 等 90 + 抢 90 = 180),避免兜底在恢复 effect 途中提前清 destination 致 suppress 关闭。
+
+### 技术
+- `TvVideoGrid` 恢复 effect 重构:先 `scrollRow` 到目标行,再 `while` 轮询 `listState.layoutInfo.visibleItemsInfo` 直到目标行出现(最多 `TvGridRestoreFocusWaitLayoutFrames=90` 帧),最后 `repeat(90)` 抢 `requestFocus`;成功/超时均调 `onRestoreFocusHandled`。
+- 新增 `BiliMT:Focus` 日志贯穿退出恢复链:`onBack` 设置 restore/suppress、恢复 start/layout(waitedFrames/rowVisible)/success(attempt)/failed、backstop 兜底清理、`AccountNavItem.onFocused`(含 autoConfirm/suppress/openMyPage 状态)。日志 tag 与 `BiliMT:Player` 同族,实时日志 `logs_live.log` 可直接 grep `BiliMT:Focus`。
+- 改动文件:`TvVideoGrid.kt`、`AppShell.kt`、`AppSidebar.kt`。不涉及布局/焦点路径,仅恢复 effect 时序与日志。
+
 ## v3.0.1-alpha.4
 
 **TV 搜索源 pill 点击当前源循环切换(测试 alpha)**:点 BILIBILI 直接切到 YOUTUBE,不再「没反应」。
