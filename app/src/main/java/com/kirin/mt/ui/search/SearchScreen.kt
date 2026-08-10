@@ -294,31 +294,35 @@ private fun SearchSourceToggle(
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
-  // 单 pill 循环切换:按确认(OK)在 B站↔YouTube 间切换,避免双 pill 时未选中态像「禁用」。
-  val label = stringResource(
-    if (source == SourceYoutube) R.string.search_source_youtube else R.string.search_source_bili,
-  )
-  val nextSource = if (source == SourceBili) SourceYoutube else SourceBili
-  BiliFocusableSurface(
-    scaleOnFocus = false,
-    shape = RoundedCornerShape(BiliRadius.Pill),
-    onClick = { onSourceSelected(nextSource) },
-    modifier = modifier.height(BiliSizing.HomeSectionTabHeight),
-    restingBackgroundColor = homeColors.accent.copy(alpha = BiliFocus.SettingsChipSelectedBackgroundAlpha),
-    focusedBackgroundColor = homeColors.cardFocusedSurface,
+  Row(
+    modifier = modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
   ) {
-    Box(
-      modifier = Modifier
-        .padding(horizontal = BiliSpacing.Lg)
-        .fillMaxSize(),
-      contentAlignment = Alignment.Center,
-    ) {
-      Text(
-        text = "$label ⇄",
-        color = homeColors.textPrimary,
-        fontSize = BiliTypography.HomeSectionTab,
-        fontWeight = FontWeight.Bold,
-      )
+    listOf(
+      SourceBili to stringResource(R.string.search_source_bili),
+      SourceYoutube to stringResource(R.string.search_source_youtube),
+    ).forEach { (value, label) ->
+      val selected = source == value
+      BiliFocusableSurface(
+        scaleOnFocus = false,
+        shape = RoundedCornerShape(BiliRadius.Pill),
+        onClick = { onSourceSelected(value) },
+        modifier = Modifier.height(BiliSizing.HomeSectionTabHeight),
+      ) {
+        Box(
+          modifier = Modifier
+            .padding(horizontal = BiliSpacing.Lg)
+            .fillMaxSize(),
+          contentAlignment = Alignment.Center,
+        ) {
+          Text(
+            text = label,
+            color = if (selected) homeColors.accent else homeColors.textSecondary,
+            fontSize = BiliTypography.HomeSectionTab,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+          )
+        }
+      }
     }
   }
 }

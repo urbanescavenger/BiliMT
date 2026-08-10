@@ -6,6 +6,8 @@ import android.content.ContextWrapper
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.BringIntoViewRequester
+import androidx.compose.foundation.gestures.bringIntoViewRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -76,6 +78,7 @@ import com.kirin.mt.ui.settings.downloadProgressFraction
 import com.kirin.mt.ui.settings.isUpdateVersionActionEnabled
 import com.kirin.mt.ui.settings.latestVersionText
 import com.kirin.mt.ui.settings.updateVersionActionLabel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -576,6 +579,14 @@ private fun MobileWebDavSection(
   var showEditDialog by remember { mutableStateOf(false) }
   var busy by remember { mutableStateOf(false) }
   var expanded by remember { mutableStateOf(false) }
+  // 展开后自动滚动,让备份/还原按钮滚进可视区(区块在设置列表底部,默认在折叠线以下)。
+  val bringIntoViewRequester = remember { BringIntoViewRequester() }
+  LaunchedEffect(expanded) {
+    if (expanded) {
+      delay(300) // 等展开动画(默认 300ms)把内容撑到完整高度再滚动
+      bringIntoViewRequester.bringIntoView()
+    }
+  }
 
   fun runBackup() {
     if (busy) return
@@ -617,7 +628,9 @@ private fun MobileWebDavSection(
     },
   )
   androidx.compose.animation.AnimatedVisibility(visible = expanded) {
-    Column {
+    Column(
+      modifier = Modifier.bringIntoViewRequester(bringIntoViewRequester),
+    ) {
       MobileSettingsRow(
         title = stringResource(R.string.settings_webdav_url_label),
         description = config.url.ifBlank { stringResource(R.string.settings_webdav_configure_hint) },

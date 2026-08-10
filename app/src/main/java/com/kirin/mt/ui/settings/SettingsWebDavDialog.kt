@@ -2,6 +2,8 @@ package com.kirin.mt.ui.settings
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -89,6 +91,7 @@ internal fun SettingsWebDavDialog(
       modifier = Modifier
         .width(720.dp)
         .heightIn(max = 680.dp)
+        .verticalScroll(rememberScrollState())
         .biliLiquidGlassSurface(
           enabled = performancePolicy.cinematicVisualEffectsEnabled &&
             performancePolicy.liquidGlassCardsEnabled,
@@ -143,7 +146,7 @@ internal fun SettingsWebDavDialog(
           .focusRequester(passwordFocusRequester),
       )
 
-      // 保存 / 关闭 行。
+      // 保存 / 取消 行。
       Row(
         horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
         modifier = Modifier.fillMaxWidth(),
@@ -157,7 +160,7 @@ internal fun SettingsWebDavDialog(
           onClick = ::save,
         )
         WebDavActionButton(
-          label = stringResource(R.string.settings_webdav_close),
+          label = stringResource(R.string.mobile_dialog_cancel),
           enabled = true,
           modifier = Modifier.weight(1f),
           onClick = onDismiss,
