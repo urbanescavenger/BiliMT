@@ -1,5 +1,16 @@
 # BiliMT 版本发布说明
 
+## v3.0.0-alpha.7
+
+**UP 主页缓存机制(测试 alpha)**:从 B 站空间 / YouTube 频道点进视频,退出播放器回到主页时不再重新加载,页面内容与滚动位置保留。
+
+### 修复
+- **UP 主页返回不重载**:此前从空间/频道起播后退出播放器,页面会重新拉取(网络重载)。根因是空间/频道页状态全在 composable 局部 `remember`,起播时显示门控把页面移出组合、局部状态销毁,返回时重组合重载。现把状态提升到 shell 层,返回时守卫命中跳过重载。
+
+### 技术
+- **状态提升**:新建 `MobileUpSpaceUiState`(B站空间)与 `MobileYoutubeChannelUiState`(YouTube 频道),在 `MobileApp.kt` shell 层 `remember`,离开组合仍存活;含 `LazyGridState` 保留滚动位置 + loaded 守卫(`profileLoadedMid`/`videoLoadedMid`/`videoLoadedOrder`/`loadedChannelId`)。
+- **守卫逻辑**:`LaunchedEffect` 仅当 mid/channelId 或 order 变化时才重载;从播放器返回同 mid+order 命中守卫跳过。切不同 UP/频道或排序切换仍正常重载。
+
 ## v3.0.0-alpha.6
 
 **动态 tab 点击刷新修复(测试 alpha)**:点击底栏「动态」tab(含重复点击)现在会同时刷新 B 站动态 + YouTube 关注,不再只有下拉刷新才能两者一起更新。

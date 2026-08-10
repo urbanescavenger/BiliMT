@@ -115,6 +115,9 @@ fun BiliMobileApp(
   // YouTube 频道主页(channelId + 名),镜像 space 的覆盖层范式。
   var youtubeChannelRequest by remember { mutableStateOf<YoutubeChannel?>(null) }
   var channelPlaybackBehind by remember { mutableStateOf(false) }
+  // 空间/频道页状态提升到 shell:从空间/频道起播后退出播放器回到页面时不重载(镜像 TV UpSpaceUiState)。
+  val upSpaceUiState = remember { com.kirin.mt.ui.mobile.space.MobileUpSpaceUiState() }
+  val youtubeChannelUiState = remember { com.kirin.mt.ui.mobile.space.MobileYoutubeChannelUiState() }
   // 播放列表连播队列:播放列表 tab 起播时快照当前播放列表;其它入口起播时置空。
   var playQueue by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
   // 长按视频卡片弹出操作菜单的视频;再点「加入播放列表」切换到播放列表选择弹窗。
@@ -323,6 +326,7 @@ fun BiliMobileApp(
         ) {
           com.kirin.mt.ui.mobile.space.MobileUserSpaceScreen(
             videoRepository = videoRepository,
+            uiState = upSpaceUiState,
             mid = space.mid,
             ownerName = space.ownerName,
             ownerFace = space.ownerFace,
@@ -362,6 +366,7 @@ fun BiliMobileApp(
           MobileYoutubeChannelScreen(
             youtubeRepository = youtubeRepository,
             youtubeChannelStore = youtubeChannelStore,
+            uiState = youtubeChannelUiState,
             channelId = channel.channelId,
             channelName = channel.name,
             onVideoSelected = { video ->

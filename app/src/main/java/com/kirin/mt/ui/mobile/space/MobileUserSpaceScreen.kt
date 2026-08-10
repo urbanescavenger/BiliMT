@@ -18,7 +18,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -30,8 +29,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -44,7 +41,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import com.kirin.mt.core.model.SpaceUserProfile
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
@@ -58,7 +54,7 @@ import kotlinx.coroutines.launch
 private const val FirstPage = 1
 private const val PageSize = 30
 
-private sealed interface SpaceState {
+internal sealed interface SpaceState {
   data object Loading : SpaceState
   data class Failed(val message: String) : SpaceState
   data class Success(
@@ -78,6 +74,7 @@ private sealed interface SpaceState {
 @Composable
 fun MobileUserSpaceScreen(
   videoRepository: VideoRepository,
+  uiState: MobileUpSpaceUiState,
   mid: Long,
   ownerName: String,
   ownerFace: String,
@@ -88,15 +85,12 @@ fun MobileUserSpaceScreen(
   modifier: Modifier = Modifier,
 ) {
   val scope = rememberCoroutineScope()
-  var profile by remember { mutableStateOf<SpaceUserProfile?>(null) }
-  var followed by remember { mutableStateOf(false) }
-  var followLoading by remember { mutableStateOf(false) }
-  var order by remember { mutableStateOf("pubdate") }
-  var state by remember { mutableStateOf<SpaceState>(SpaceState.Loading) }
-  val gridState = rememberLazyGridState()
+  val order = uiState.order
+  val state = uiState.state
+  val gridState = uiState.gridState
 
   fun loadFirst(orderKey: String) {
-    state = SpaceState.Loading
+    uiState.state = SpaceState.Loading
     scope.launch {
       val s = try {
         val videos = videoRepository.getSpaceVideos(mid = mid, page = FirstPage, order = orderKey)
@@ -110,14 +104,14 @@ fun MobileUserSpaceScreen(
       } catch (e: Exception) {
         SpaceState.Failed(e.message.orEmpty().ifBlank { "加载失败" })
       }
-      state = s
+      uiState.state = s
     }
   }
 
   fun loadNextPage() {
-    val current = state as? SpaceState.Success ?: return
+    val current = uiState.state as? SpaceState.Success ?: return
     if (current.loadingMore || current.endReached) return
-    state = current.copy(loadingMore = true)
+    uiState.state = current.copy(loadingMore = true)
     scope.launch {
       val next = try {
         val more = videoRepository.getSpaceVideos(mid = mid, page = current.nextPage, order = order)
@@ -133,20 +127,32 @@ fun MobileUserSpaceScreen(
       } catch (e: Exception) {
         current.copy(loadingMore = false)
       }
-      state = next
+      uiState.state = next
     }
   }
 
-  // 首屏:资料 + 关注状态 + 第一页投稿
+  // 资料 + 关注状态:仅 mid 变化时拉取(从播放器返回同 mid 跳过)。
   LaunchedEffect(mid) {
-    profile = runCatching { videoRepository.getSpaceUserProfile(mid) }.getOrNull()
-    followed = runCatching { videoRepository.checkFollowStatus(mid) }.getOrDefault(false)
-    loadFirst(order)
+    if (uiState.profileLoadedMid != mid) {
+      uiState.profile = runCatching { videoRepository.getSpaceUserProfile(mid) }.getOrNull()
+      uiState.followed = runCatching { videoRepository.checkFollowStatus(mid) }.getOrDefault(false)
+      uiState.profileLoadedMid = mid
+    }
   }
 
-  // 排序切换重载
-  LaunchedEffect(order) {
-    if (profile != null || state !is SpaceState.Loading) loadFirst(order)
+  // 投稿列表:mid 或 order 变化时拉取(从播放器返回同 mid+order 跳过)。
+  LaunchedEffect(mid, order) {
+    if (uiState.videoLoadedMid != mid || uiState.videoLoadedOrder != order) {
+      loadFirst(order)
+      uiState.videoLoadedMid = mid
+      uiState.videoLoadedOrder = order
+    } else {
+      // 从播放器返回同 mid+order:清除可能卡住的翻页 loading 标志(scope 已随离开组合取消)。
+      val cur = uiState.state as? SpaceState.Success
+      if (cur != null && cur.loadingMore) {
+        uiState.state = cur.copy(loadingMore = false)
+      }
+    }
   }
 
   // 滚到底自动翻页
@@ -184,7 +190,7 @@ fun MobileUserSpaceScreen(
         ) {
           OutlinedButton(onClick = onBack) { Text("‹") }
           Text(
-            text = profile?.name ?: ownerName,
+            text = uiState.profile?.name ?: ownerName,
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(start = 12.dp).weight(1f),
             maxLines = 1,
@@ -197,7 +203,7 @@ fun MobileUserSpaceScreen(
         ) {
           // 正直播的 UP:头像套红环 + 底部"直播"pill,且可点头像切到该直播间(onVideoSelected →
           // toPlaybackRequest 的 liveRoomId>0 分支 → LivePlayerScreen;返回键回到主页)。
-          val upLive = profile?.liveStatus == 1 && (profile?.liveRoomId ?: 0L) > 0L
+          val upLive = uiState.profile?.liveStatus == 1 && (uiState.profile?.liveRoomId ?: 0L) > 0L
           Box(
             modifier = Modifier
               .size(56.dp)
@@ -206,10 +212,10 @@ fun MobileUserSpaceScreen(
                 if (upLive) Modifier.clickable {
                   val liveSummary = VideoSummary(
                     bvid = "",
-                    title = profile?.liveTitle?.ifBlank { profile?.name ?: ownerName } ?: (profile?.name ?: ownerName),
-                    pic = profile?.liveCover?.ifBlank { profile?.face ?: ownerFace } ?: (profile?.face ?: ownerFace),
-                    ownerName = profile?.name ?: ownerName,
-                    ownerFace = profile?.face ?: ownerFace,
+                    title = uiState.profile?.liveTitle?.ifBlank { uiState.profile?.name ?: ownerName } ?: (uiState.profile?.name ?: ownerName),
+                    pic = uiState.profile?.liveCover?.ifBlank { uiState.profile?.face ?: ownerFace } ?: (uiState.profile?.face ?: ownerFace),
+                    ownerName = uiState.profile?.name ?: ownerName,
+                    ownerFace = uiState.profile?.face ?: ownerFace,
                     ownerMid = mid,
                     view = 0,
                     danmaku = 0,
@@ -217,7 +223,7 @@ fun MobileUserSpaceScreen(
                     pubdate = 0L,
                     badge = "直播",
                     isLive = true,
-                    liveRoomId = profile?.liveRoomId ?: 0L,
+                    liveRoomId = uiState.profile?.liveRoomId ?: 0L,
                   )
                   onVideoSelected(liveSummary)
                 } else Modifier,
@@ -225,7 +231,7 @@ fun MobileUserSpaceScreen(
             contentAlignment = Alignment.Center,
           ) {
             AsyncImage(
-              model = profile?.face ?: ownerFace,
+              model = uiState.profile?.face ?: ownerFace,
               contentDescription = null,
               contentScale = ContentScale.Crop,
               modifier = Modifier.size(56.dp).clip(CircleShape),
@@ -257,8 +263,8 @@ fun MobileUserSpaceScreen(
             }
           }
           Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
-            Text(profile?.name ?: ownerName, style = MaterialTheme.typography.titleSmall)
-            val sign = profile?.sign.orEmpty()
+            Text(uiState.profile?.name ?: ownerName, style = MaterialTheme.typography.titleSmall)
+            val sign = uiState.profile?.sign.orEmpty()
             if (sign.isNotEmpty()) {
               Text(
                 text = sign,
@@ -268,7 +274,7 @@ fun MobileUserSpaceScreen(
                 overflow = TextOverflow.Ellipsis,
               )
             }
-            val fans = profile?.fans ?: 0L
+            val fans = uiState.profile?.fans ?: 0L
             Text(
               text = "粉丝 ${formatCount(fans.toInt())}",
               style = MaterialTheme.typography.bodySmall,
@@ -277,28 +283,28 @@ fun MobileUserSpaceScreen(
           }
           Button(
             onClick = {
-              if (followLoading) return@Button
-              followLoading = true
+              if (uiState.followLoading) return@Button
+              uiState.followLoading = true
               scope.launch {
-                runCatching { videoRepository.setFollowStatus(mid, !followed) }
-                  .getOrNull()?.let { followed = it }
-                followLoading = false
+                runCatching { videoRepository.setFollowStatus(mid, !uiState.followed) }
+                  .getOrNull()?.let { uiState.followed = it }
+                uiState.followLoading = false
               }
             },
-            enabled = !followLoading,
+            enabled = !uiState.followLoading,
           ) {
-            Text(if (followed) "已关注" else "关注")
+            Text(if (uiState.followed) "已关注" else "关注")
           }
         }
         Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-          OutlinedButton(onClick = { order = "pubdate" }) {
+          OutlinedButton(onClick = { uiState.order = "pubdate" }) {
             Text(
               "最新",
               color = if (order == "pubdate") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             )
           }
           Spacer(Modifier.padding(start = 8.dp))
-          OutlinedButton(onClick = { order = "click" }) {
+          OutlinedButton(onClick = { uiState.order = "click" }) {
             Text(
               "最热",
               color = if (order == "click") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
