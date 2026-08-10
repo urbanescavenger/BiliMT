@@ -1,5 +1,23 @@
 # BiliMT 版本发布说明
 
+## v3.0.0-alpha.9
+
+**YouTube UP 头像完整实现(测试 alpha)**:对齐 LibreTube,让 YouTube 频道头像在视频卡片、播放器简介页、评论、动态关注 tab 全部真实显示(此前数据层硬编码空串,UI 永远走占位圆)。
+
+### 功能
+- **视频卡片 UP 头像**:`parseVideoRenderer` 解析 InnerTube `channelThumbnail`(含 `channelThumbnailWithAvatarRenderer` 回退),`toVideoSummary` 填入 `ownerFace`,搜索/热门/频道页卡片显示真实头像。
+- **播放器简介页频道头像**:`/player` 无频道头像字段,回退卡片携带的 `ownerFace`。
+- **评论作者头像清晰**:评论头像从取最小缩略图改为选最高分辨率(对齐 LibreTube `maxByOrNull { it.height }`)。
+- **动态关注 tab 头像**:`getSubscriptionsFeed` 对旧频道(无头像)懒解析一次 `/browse` 回填并持久化,新频道在 `resolveChannel` 时已带头像;卡片 `ownerFace` 为空时补所属频道头像。
+
+### 技术
+- **数据层**:`YoutubeVideo` 加 `channelAvatarUrl`;`parseChannelInfo` 返回类型扩展为 `ChannelInfo`(含 `avatarUrl`,从 `c4TabbedHeaderRenderer`/`channelMetadataRenderer` 取);`YoutubeChannel` 加 `avatar` 字段 + `updateAvatar`(DataStore 回写,`ignoreUnknownKeys` 保证旧数据反序列化安全)。
+- **图片加载**:`buildOwnerAvatarRequest` 识别 YouTube 头像 URL(`yt3.ggpht.com`/`yt3.googleusercontent.com`/含 `ggpht`)走裸 Coil 请求——不拼 B 站 CDN `@Nw.webp` 后缀、不加 B 站请求头(否则破坏 yt3 URL、B 站 Referer 被拒);B 站头像不受影响。
+- **动态关注回填**:`youtubeSubscriptionsFeed` 加 `onChannelAvatarResolved` 回调,经 `VideoRepository` 透传到移动端动态/首页、TV 动态,懒解析成功后 `updateAvatar` 回写。
+
+### 诊断(临时)
+- **短信登录页 DOM dump**:`MobileSmsWebViewPanel` 在 `onPageFinished` 注入 JS,把 passport-h5 可见 DOM 结构(标题/按钮/勾选框/输入框/正文文本)以 `BILI_DOM_DUMP` 前缀 dump 到 console,由 `onConsoleMessage` 打进日志——先拿真实布局证据再设计干净布局,拿到后可移除。
+
 ## v3.0.0-alpha.8
 
 **YouTube 搜索与动态加载优化(测试 alpha)**:对齐 LibreTube 参考实现,消除重复网络请求、首页与动态共享关注缓存、刷新时保留旧数据。
