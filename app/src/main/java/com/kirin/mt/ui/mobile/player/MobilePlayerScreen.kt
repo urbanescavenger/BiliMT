@@ -1,6 +1,7 @@
 package com.kirin.mt.ui.mobile.player
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.util.Log
@@ -181,6 +182,25 @@ private const val DanmakuSendLogTag = "BiliDanmakuSend"
  *  发送时 showAtMs=当前位置会被 start(currentPos≥该位置) 跳过,故向前加 1s 让其落在 set time 之后。 */
 private const val LocalDanmakuLeadMs = 1000L
 private const val MobilePlayerLogTag = "BiliMT:MobilePlayer"
+
+/**
+ * 安全启动后台保活前台服务。Android 12+ 禁止后台 startForegroundService,会抛
+ * ForegroundServiceStartNotAllowedException(extends IllegalStateException);Android 8-11 后台
+ * startService 抛 IllegalStateException。服务在播放开始时已在前台启动,后台连播时保持运行即可,
+ * 这里捕获异常避免崩溃;若服务已在运行,用普通 startService 刷新通知标题(已运行服务后台允许)。
+ */
+private fun startPlaybackService(context: Context) {
+  try {
+    ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
+  } catch (e: IllegalStateException) {
+    Log.w(MobilePlayerLogTag, "startForegroundService blocked in background: ${e.message}")
+    try {
+      context.startService(Intent(context, PlaybackService::class.java))
+    } catch (e2: IllegalStateException) {
+      Log.w(MobilePlayerLogTag, "startService also blocked in background: ${e2.message}")
+    }
+  }
+}
 /** alpha.67:单次播放会话内 error-retry 上限(onPlayerErrorChanged),超过则交用户手动重试,避免死循环。 */
 private const val MaxStallAutoRetry = 2
 // 空降助手阈值(镜像 TV PlayerScreen)
@@ -730,7 +750,6 @@ fun MobilePlayerScreen(
         if (playbackState == Player.STATE_ENDED && playerState is MobilePlayerState.Ready && player.mediaItemCount > 0 && !completionReported) {
           completionReported = true
           saveAndReportProgress(CompletedProgressSeconds)
-          context.stopService(Intent(context, PlaybackService::class.java))
           // 自动连播下一集:后台播放时帧时钟暂停、Compose 重组被推迟,LaunchedEffect(completionReported)
           // 不会重启,故在此用不依赖帧时钟的 scope 直接调度(镜像 TV scheduleCompletionAction)。
           scope.launch {
@@ -738,11 +757,17 @@ fun MobilePlayerScreen(
             val next = computeNextRequest()
             if (next != null) {
               loadRequest(next)
-              // 下一集加载成功并开始播放,重启后台保活服务(原 LaunchedEffect(isPlaying, displayTitle) 在后台被推迟)。
+              // 下一集加载成功并开始播放,刷新后台保活服务通知。
+              // 注意:不能 stop+restart——后台禁止 startForegroundService(Android 12+ 抛
+              // ForegroundServiceStartNotAllowedException,曾致连播崩溃)。服务在播放开始时已在前台
+              // 启动,这里保持运行、仅安全刷新;播放列表播完才在 else 分支停止。
               if (playerState is MobilePlayerState.Ready) {
                 PlayerHolder.title = displayTitle
-                ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
+                startPlaybackService(context)
               }
+            } else {
+              // 播放列表播完,停止后台保活服务。
+              context.stopService(Intent(context, PlaybackService::class.java))
             }
           }
         }
@@ -809,10 +834,12 @@ fun MobilePlayerScreen(
   }
 
   // 开始播放时启动后台保活服务(通知控件);标题变化时刷新。
+  // 用 startPlaybackService 安全启动:后台连播下一集时 isPlaying/displayTitle 变化会重跑本 effect,
+  // 直接 startForegroundService 会抛 ForegroundServiceStartNotAllowedException(Android 12+)崩溃。
   LaunchedEffect(isPlaying, displayTitle) {
     PlayerHolder.title = displayTitle
     if (isPlaying) {
-      ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
+      startPlaybackService(context)
     }
   }
 
