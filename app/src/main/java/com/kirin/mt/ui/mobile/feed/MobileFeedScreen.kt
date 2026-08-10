@@ -28,13 +28,14 @@ import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import kotlinx.coroutines.launch
 
-/** 子 tab:动态 / 历史 / 收藏 / 追番 / 播放列表。YouTube 关注已并入动态(统一流)。 */
+/** 子 tab:动态 / 历史 / 收藏 / 追番 / 播放列表 / YouTube 历史。YouTube 关注已并入动态(统一流)。 */
 private val FeedTabs = listOf(
   R.string.nav_dynamic,
   R.string.nav_history,
   R.string.nav_favorite,
   R.string.nav_bangumi,
   R.string.feed_tab_playlist,
+  R.string.feed_tab_youtube_history,
 )
 
 /** 播放列表 tab 下标(免登录)。 */
@@ -53,6 +54,7 @@ fun MobileFeedScreen(
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   youtubePlaylistStore: YoutubePlaylistStore,
   youtubeFeedCacheStore: com.kirin.mt.core.youtube.YoutubeFeedCacheStore,
+  youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
   isLoggedIn: Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
@@ -135,6 +137,12 @@ fun MobileFeedScreen(
           youtubePlaylistStore = youtubePlaylistStore,
           onVideoSelected = onVideoSelected,
           onStartPlaylist = onStartPlaylist,
+          modifier = Modifier.fillMaxSize(),
+        )
+        5 -> MobileYoutubeHistoryPage(
+          youtubeHistoryStore = youtubeHistoryStore,
+          onVideoSelected = onVideoSelected,
+          onOpenOwner = onOpenOwner,
           modifier = Modifier.fillMaxSize(),
         )
       }

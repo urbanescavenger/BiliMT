@@ -1,0 +1,103 @@
+package com.kirin.mt.core.youtube
+
+import android.content.Context
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import com.kirin.mt.core.storage.biliDataStore
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
+
+/**
+ * 一条 YouTube 播放历史。由播放器在起播/暂停/退出时写入,供移动端"YouTube 历史"tab
+ * 展示最近播放列表并续播。videoId 唯一,重复播放去重前置。
+ */
+@Serializable
+data class YoutubeHistoryEntry(
+  /** 视频 id（11 位）。 */
+  val videoId: String,
+  val title: String,
+  /** 频道名。 */
+  val channelName: String,
+  /** 频道 id（UC 开头），用于从历史进频道主页。 */
+  val channelId: String = "",
+  /** 缩略图 URL。 */
+  val thumbnailUrl: String = "",
+  val durationMs: Long = 0L,
+  /** 上次播放位置（毫秒）；播完/接近播完时为 0。 */
+  val positionMs: Long = 0L,
+  /** 最近播放时间（epoch 毫秒），用于排序。 */
+  val lastPlayedAtMs: Long = 0L,
+)
+
+/**
+ * YouTube 播放历史本地存储。用 DataStore 持久化，无需登录。
+ * 照抄 [YoutubeChannelStore] 的列表型 JSON 范式，复用 `context.biliDataStore`。
+ */
+class YoutubeHistoryStore(private val context: Context) {
+  private val json = Json { ignoreUnknownKeys = true }
+  private val serializer = ListSerializer(YoutubeHistoryEntry.serializer())
+
+  /** 最近播放列表，按 lastPlayedAtMs 倒序。 */
+  val history: Flow<List<YoutubeHistoryEntry>> = context.biliDataStore.data.map { prefs ->
+    prefs[Keys.History]?.let(::decode).orEmpty().sortedByDescending { it.lastPlayedAtMs }
+  }
+
+  /** 记录一次播放：按 videoId 去重前置，列表 cap 到 [MaxEntries]。 */
+  suspend fun recordPlay(entry: YoutubeHistoryEntry) {
+    if (entry.videoId.isBlank()) return
+    context.biliDataStore.edit { prefs ->
+      val current = decode(prefs[Keys.History]).orEmpty()
+      val next = (listOf(entry) + current.filterNot { it.videoId == entry.videoId })
+        .take(MaxEntries)
+      prefs[Keys.History] = json.encodeToString(serializer, next)
+    }
+  }
+
+  /** 更新某视频的播放位置/时长，并前置到列表头。 */
+  suspend fun updatePosition(videoId: String, positionMs: Long, durationMs: Long) {
+    if (videoId.isBlank()) return
+    context.biliDataStore.edit { prefs ->
+      val current = decode(prefs[Keys.History]).orEmpty()
+      val existing = current.firstOrNull { it.videoId == videoId } ?: return@edit
+      val updated = existing.copy(
+        positionMs = positionMs.coerceAtLeast(0L),
+        durationMs = durationMs.coerceAtLeast(0L),
+        lastPlayedAtMs = System.currentTimeMillis(),
+      )
+      val next = (listOf(updated) + current.filterNot { it.videoId == videoId }).take(MaxEntries)
+      prefs[Keys.History] = json.encodeToString(serializer, next)
+    }
+  }
+
+  suspend fun remove(videoId: String) {
+    context.biliDataStore.edit { prefs ->
+      val next = decode(prefs[Keys.History]).orEmpty().filterNot { it.videoId == videoId }
+      if (next.isEmpty()) {
+        prefs.remove(Keys.History)
+      } else {
+        prefs[Keys.History] = json.encodeToString(serializer, next)
+      }
+    }
+  }
+
+  suspend fun clear() {
+    context.biliDataStore.edit { prefs -> prefs.remove(Keys.History) }
+  }
+
+  private fun decode(raw: String?): List<YoutubeHistoryEntry> {
+    if (raw == null) return emptyList()
+    return runCatching { json.decodeFromString(serializer, raw) }.getOrDefault(emptyList())
+  }
+
+  private object Keys {
+    val History = stringPreferencesKey("youtube_history")
+  }
+
+  private companion object {
+    const val MaxEntries = 50
+  }
+}

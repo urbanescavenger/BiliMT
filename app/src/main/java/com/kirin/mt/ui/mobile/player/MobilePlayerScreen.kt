@@ -205,6 +205,7 @@ private sealed interface MobilePlayerState {
 fun MobilePlayerScreen(
   request: PlaybackRequest,
   playbackRepository: PlaybackRepository,
+  youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
@@ -350,6 +351,16 @@ fun MobilePlayerScreen(
     scope.launch {
       // 本地进度保存保留（YouTube 按 videoId 也能续播）；B 站 heartbeat 仅 B 站视频上报。
       runCatching { playbackRepository.saveProgress(info.bvid, info.cid, positionMs, durationMs) }
+      // YouTube 播放历史：同步更新本地历史列表的进度（断电续播 + 历史 tab 展示）。
+      if (activeRequest.isYoutube) {
+        runCatching {
+          youtubeHistoryStore.updatePosition(
+            videoId = info.bvid,
+            positionMs = positionMs,
+            durationMs = durationMs,
+          )
+        }
+      }
       if (!activeRequest.isYoutube) {
         val progressSeconds = progressSecondsOverride
           ?: (positionMs / 1000L).toInt()
@@ -632,6 +643,23 @@ fun MobilePlayerScreen(
       playerState = MobilePlayerState.Ready(sabrEffectiveInfo)
       // alpha.49:播放就绪,隐藏加载步骤提示。
       YoutubeLoadProgress.clear()
+      // YouTube 起播即写入播放历史（含频道/封面元数据），供历史 tab 展示与续播。
+      if (isYoutube) {
+        runCatching {
+          youtubeHistoryStore.recordPlay(
+            com.kirin.mt.core.youtube.YoutubeHistoryEntry(
+              videoId = sabrEffectiveInfo.bvid,
+              title = sabrEffectiveInfo.title,
+              channelName = request.ownerName,
+              channelId = request.channelId,
+              thumbnailUrl = request.coverUrl,
+              durationMs = sabrEffectiveInfo.durationMs,
+              positionMs = startPositionMs,
+              lastPlayedAtMs = System.currentTimeMillis(),
+            ),
+          )
+        }
+      }
 
       // 弹幕
       if (danmakuSettings.enabled && cid > 0L) {

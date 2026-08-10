@@ -3,6 +3,8 @@
     <string name="nav_recommend">推薦</string>
     <string name="nav_search">搜尋</string>
     <string name="nav_history">歷史</string>
+    <string name="feed_tab_youtube_history">YouTube 歷史</string>
+    <string name="youtube_history_empty">暫無播放歷史，去播放一個 YouTube 影片吧</string>
     <string name="nav_settings">設定</string>
     <string name="nav_pgc">影視</string>
     <string name="nav_live">直播</string>

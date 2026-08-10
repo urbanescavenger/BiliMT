@@ -214,6 +214,7 @@ fun BiliMobileApp(
           youtubeChannelStore = youtubeChannelStore,
           youtubePlaylistStore = youtubePlaylistStore,
           youtubeFeedCacheStore = youtubeFeedCacheStore,
+          youtubeHistoryStore = container.youtubeHistoryStore,
           isLoggedIn = session.isLoggedIn,
           onVideoSelected = { video ->
             playQueue = emptyList()
@@ -267,6 +268,7 @@ fun BiliMobileApp(
         MobilePlayerScreen(
           request = request,
           playbackRepository = playbackRepository,
+          youtubeHistoryStore = container.youtubeHistoryStore,
           danmakuSettingsStore = danmakuSettingsStore,
           playbackHttpClient = playbackHttpClient,
           cdnSelector = cdnSelector,

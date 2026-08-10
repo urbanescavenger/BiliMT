@@ -33,6 +33,8 @@ data class PlaybackRequest(
   val liveRoomId: Long = 0L,
   /** 内容来源：[SourceBili]（默认）/ [SourceYoutube]。YouTube 请求 bvid 字段承载 videoId。 */
   val source: String = SourceBili,
+  /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 请求填充，用于播放历史进频道主页；B 站为空串。 */
+  val channelId: String = "",
 ) {
   val isPgc: Boolean
     get() = epId > 0L || seasonId > 0L

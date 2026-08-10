@@ -99,6 +99,7 @@ import com.kirin.mt.core.player.PlaybackTrack
 import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.VideoshotData
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
+import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import com.kirin.mt.core.youtube.sabr.media.SabrManifest
@@ -130,6 +131,7 @@ fun PlayerScreen(
   request: PlaybackRequest,
   videoRepository: VideoRepository,
   playbackRepository: PlaybackRepository,
+  youtubeHistoryStore: YoutubeHistoryStore,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
@@ -493,6 +495,16 @@ fun PlayerScreen(
       positionMs = currentPositionMs,
       durationMs = currentDurationMs,
     )
+    // YouTube 播放历史：同步更新本地历史列表的进度（断电续播 + 历史 tab 展示）。
+    if (activeRequest.isYoutube) {
+      runCatching {
+        youtubeHistoryStore.updatePosition(
+          videoId = state.info.bvid,
+          positionMs = currentPositionMs,
+          durationMs = currentDurationMs,
+        )
+      }
+    }
   }
 
   suspend fun reportProgressNow(overrideProgressSeconds: Int? = null) {
@@ -1484,6 +1496,23 @@ fun PlayerScreen(
         }
         player.playWhenReady = true
         playbackPaused = false
+        // YouTube 起播即写入播放历史（含频道/封面元数据），供历史 tab 展示与续播。
+        if (isYoutube) {
+          runCatching {
+            youtubeHistoryStore.recordPlay(
+              com.kirin.mt.core.youtube.YoutubeHistoryEntry(
+                videoId = info.bvid,
+                title = info.title,
+                channelName = activeRequest.ownerName,
+                channelId = activeRequest.channelId,
+                thumbnailUrl = activeRequest.coverUrl,
+                durationMs = info.durationMs,
+                positionMs = startPositionMs,
+                lastPlayedAtMs = System.currentTimeMillis(),
+              ),
+            )
+          }
+        }
         PlayerScreenState.Ready(info)
       }
       } ?: PlayerScreenState.Failed(context.getString(R.string.player_error_launch_timeout))
@@ -2263,6 +2292,8 @@ private fun VideoSummary.toPlaybackRequest(): PlaybackRequest {
     pubdate = pubdate,
     historyPage = historyPage,
     advanceToNextHistoryEpisode = advanceToNextEpisode,
+    source = source,
+    channelId = channelId,
   )
 }
 

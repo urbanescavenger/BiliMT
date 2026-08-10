@@ -1142,6 +1142,7 @@ fun BiliTvApp(
               request = displayedPlaybackRequest,
               videoRepository = videoRepository,
               playbackRepository = playbackRepository,
+              youtubeHistoryStore = container.youtubeHistoryStore,
               danmakuSettingsStore = danmakuSettingsStore,
               playbackHttpClient = playbackHttpClient,
               cdnSelector = cdnSelector,
