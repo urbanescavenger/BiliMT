@@ -103,12 +103,6 @@ fun MobileDynamicScreen(
   // 保留旧数据刷新时驱动下拉指示器(区别于初始 Loading 的网格内 spinner)。
   var isRefreshing by remember { mutableStateOf(false) }
 
-  /** 去重入口:feedJob 活跃则跳过,否则启动一次完整刷新。 */
-  fun refreshFeed() {
-    if (feedJob?.isActive == true) return
-    feedJob = scope.launch { loadFirstBody() }
-  }
-
   /** 把 YouTube 流合并进当前 B 站动态(先去掉旧 YouTube 部分再合并,保证缓存秒出+网络刷新不重复)。 */
   fun mergeYoutube(yt: List<VideoSummary>) {
     when (val cur = state) {
@@ -188,6 +182,12 @@ fun MobileDynamicScreen(
         }
       }
     }
+  }
+
+  /** 去重入口:feedJob 活跃则跳过,否则启动一次完整刷新。 */
+  fun refreshFeed() {
+    if (feedJob?.isActive == true) return
+    feedJob = scope.launch { loadFirstBody() }
   }
 
   // 首次进入 + 每次点击底栏"动态"tab(dynamicRefreshKey 自增)都刷新 B 站 + YouTube 关注。
