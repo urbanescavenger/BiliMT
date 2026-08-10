@@ -22,6 +22,11 @@ fun buildVideoThumbnailRequest(
   allowRgb565: Boolean = false,
   memoryCacheEnabled: Boolean = true,
 ): ImageRequest {
+  // YouTube 缩略图(i.ytimg.com)走裸请求:不拼 B 站 CDN 尺寸后缀、不加 B 站请求头,
+  // 否则 `@480w_270h_1c.webp` 会破坏 i.ytimg URL、B 站 Referer 也会被 YouTube 拒绝。
+  if (url.isYoutubeImageUrl()) {
+    return buildYoutubeImageRequest(context, url, widthPx, heightPx, allowRgb565, memoryCacheEnabled)
+  }
   return ImageRequest.Builder(context)
     .data(url.biliCdnResizedImageUrl(widthPx, heightPx))
     .addBiliImageHeaders()
@@ -43,14 +48,7 @@ fun buildOwnerAvatarRequest(
   // YouTube 头像(yt3.ggpht.com 等)走裸请求:不拼 B 站 CDN 尺寸后缀、不加 B 站请求头,
   // 否则 `@Nw.webp` 会破坏 yt3 URL、B 站 Referer 也会被 yt3 拒绝。
   if (url.isYoutubeImageUrl()) {
-    return ImageRequest.Builder(context)
-      .data(url)
-      .size(sizePx, sizePx)
-      .precision(Precision.INEXACT)
-      .allowRgb565(allowRgb565)
-      .memoryCachePolicy(if (memoryCacheEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED)
-      .crossfade(false)
-      .build()
+    return buildYoutubeImageRequest(context, url, sizePx, sizePx, allowRgb565, memoryCacheEnabled)
   }
   return ImageRequest.Builder(context)
     .data(url.biliCdnResizedImageUrl(sizePx, sizePx))
@@ -63,12 +61,35 @@ fun buildOwnerAvatarRequest(
     .build()
 }
 
-/** YouTube 图片 URL(yt3.ggpht.com / yt3.googleusercontent.com / 含 ggpht)。 */
+/** YouTube 图片 URL(yt3.ggpht.com 头像 / i.ytimg.com 缩略图 / 含 ggpht)。 */
 private fun String.isYoutubeImageUrl(): Boolean {
   val lower = lowercase()
   return lower.contains("yt3.ggpht.com") ||
     lower.contains("yt3.googleusercontent.com") ||
-    lower.contains("ggpht")
+    lower.contains("ggpht") ||
+    lower.contains("ytimg.com")
+}
+
+/**
+ * YouTube 图片裸请求:不加 B 站 CDN 后缀与请求头,仅做协议归一化(`//` → `https:`),
+ * 避免 i.ytimg/yt3 无协议头 URL 被 coil 拒绝。供缩略图与头像的 YouTube 分支共用。
+ */
+private fun buildYoutubeImageRequest(
+  context: Context,
+  url: String,
+  widthPx: Int,
+  heightPx: Int,
+  allowRgb565: Boolean,
+  memoryCacheEnabled: Boolean,
+): ImageRequest {
+  return ImageRequest.Builder(context)
+    .data(url.normalizedBiliImageUrl())
+    .size(widthPx, heightPx)
+    .precision(Precision.INEXACT)
+    .allowRgb565(allowRgb565)
+    .memoryCachePolicy(if (memoryCacheEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED)
+    .crossfade(false)
+    .build()
 }
 
 fun String.biliCdnResizedImageUrl(
