@@ -15,6 +15,7 @@ import com.kirin.mt.core.model.VideoSummary
 @Stable
 class MobileYoutubeChannelUiState {
   var name by mutableStateOf("")
+  var avatar by mutableStateOf("")
   var followLoading by mutableStateOf(false)
   var items by mutableStateOf<List<VideoSummary>>(emptyList())
   var continuation by mutableStateOf<String?>(null)
