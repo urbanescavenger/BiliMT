@@ -1,5 +1,21 @@
 # BiliMT 版本发布说明
 
+## v3.0.0-alpha.4
+
+**后台播放自动连播修复 + 历史 tab 混合排序 + 动态 feed 卡片样式(测试 alpha)**:修复播放列表后台播放完不自动播下一集(实际是崩溃),历史 tab 改为 B 站与 YouTube 历史混合按播放时间倒序,动态 feed 卡片改 B 站原版动态样式并显示相对时间发布日期。
+
+### 功能
+- **动态 feed 卡片改版**:卡片改 B 站动态样式——顶行作者块(头像跨两行 + UP 名 + 发布时间·播放量)→ 缩略图独占整行 → 标题;发布时间用相对时间(3分钟前/昨天/5天前)。仅动态 feed 生效,首页/搜索/空间卡片不变。
+- **历史 tab 混合排序**:「动态」底栏「历史」子 tab 中 B 站观看历史与本地 YouTube 历史**混合、按播放时间倒序**(YouTube 卡片绿框),未登录仍显示本地 YouTube 历史。
+
+### 修复
+- **后台播放自动连播**:播放列表视频后台播放完不再崩溃断链——根因是 `STATE_ENDED` 时无条件 `stopService` 再重启触发 `ForegroundServiceStartNotAllowedException`(后台禁止启动前台服务);改为保持服务跨自动连播存活,仅列表播完才停止。
+
+### 技术
+- **卡片布局**:`MobileVideoCard` 加 `feedLayout` 参数(默认紧凑布局),动态页置 true 用新布局;相对时间复用现有 `video_relative_*` 字符串(3 种语言已齐)。
+- **混合排序**:`MobileHistoryPage` 的 `toVideoSummary` 给 YouTube 条目填 `viewAt=lastPlayedAtMs/1000`(epoch 秒),与 B 站历史 `viewAt` 同单位,合并后 `sortedByDescending` 渲染;两列表本已按该键倒序,新加载分页不重排已显示内容。
+- **自动连播**:`MobilePlayerScreen` 改安全 `startPlaybackService`(catch `IllegalStateException`)保服务存活。
+
 ## v3.0.0-alpha.3
 
 **YouTube 播放历史 + 断电续播(测试 alpha)**:新增 YouTube 播放历史记录与断电续播。根因是 YouTube 播放请求 `cid` 恒为 0,被 `PlaybackProgressStore.saveProgress` 的 `cid <= 0L` 守卫拦截,进度从未落盘;放宽守卫后 TV/移动端播放器既有保存/读取逻辑即恢复续播。
