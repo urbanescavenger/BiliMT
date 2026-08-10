@@ -597,6 +597,35 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 
 **移动端 UI**:YouTube 历史并入「动态」底栏的「历史」子 tab(`MobileFeedScreen` → `MobileHistoryPage`):本地 `YoutubeHistoryStore` 数据与 B 站观看历史**混合,按播放时间倒序**(排序键统一为 epoch 秒——YouTube 取 `lastPlayedAtMs/1000`,B 站取 `viewAt`;两列表本已按该键倒序,新加载的 B 站分页恒更旧,合并后不重排已显示内容)。YouTube 卡片绿框区分(`showYoutubeBorder`)。历史 tab 放宽登录门槛,未登录只显示本地 YouTube 历史 + 登录提示(复用 `history_signed_out`),登录后 B 站历史并入。点击续播、点头像开频道。原独立「YouTube 历史」子 tab 已移除(`MobileYoutubeHistoryPage.kt` 删除,`toVideoSummary()` 移入 `MobileHistoryPage`)。**移动端卡片布局(v3.0.0-alpha.4)**:`MobileVideoCard` 加 `feedLayout` 参数(默认紧凑布局,首页/搜索/空间不变),动态 feed(`MobileDynamicScreen`)置 true 用 B 站动态样式新布局——顶行作者块(头像 40dp 跨两行 + UP 名一行 + 发布时间·播放量一行,发布时间相对时间复用 `video_relative_*` 字符串)→ 缩略图独占整行 → 标题;YouTube 卡片在动态页同样绿框区分。**单列(v3.0.0-alpha.5)**:`MobileDynamicScreen` 的 `LazyVerticalGrid` 改 `GridCells.Fixed(1)`,卡片占满整行全宽展示。
 
+## 6.13 TV 端 YouTube 取流 TVHTML5 client 试验(2026-08,v3.0.1-alpha.6)
+
+**动机**:TV 端与移动端 YouTube 取流此前完全共用同一套 `WEB` client + SABR(NewPipe path C)链路,无端区分。YouTube 官方 TV 端用 `TVHTML5` client(clientName=TVHTML5/id=7/Cobalt UA),对某些视频的格式/清晰度可用性可能更宽容。试验 TV 端切 TVHTML5 client 看是否比 WEB 多给带 url adaptive / 更多清晰度。
+
+**方案:TVHTML5 优先 + WEB 兜底(安全可回退)**。TV 端 client 列表 `[TVHTML5, WEB]`:TVHTML5 优先,失败/被拦自动回退 WEB 走现有 SABR。移动端不变(默认 `[WEB]`)。最坏 = 现状。
+
+**改动点**:
+- `YoutubeConstants.kt`:加 `TvHtml5ClientName="TVHTML5"`/`TvHtml5ClientVersion="7.20260707.07.00"`/`TvHtml5ClientNameId="7"`/`TvHtml5UserAgent`(Cobalt UA)。
+- `InnerTubeClient.kt`:`Client` enum 加 `TVHTML5`;`userAgent` getter 加分支;请求头 `when(client)` 加 TVHTML5 分支(`X-Youtube-Client-Version`/`X-Youtube-Client-Name=7`/Origin/Accept/Sec-Fetch-*);`buildContext` 加 TVHTML5 分支(clientName/clientVersion/hl/gl/`platform="TV"`/clientFormFactor/userAgent/screenWidthPoints=1920/screenHeightPoints=1080/timeZone,visitorData 复用 `currentVisitorData()` 先试 WEB session,无 browser 指纹/mainAppWebInfo/clientScreen——TV 原生 client 无这些);viaWebView 条件含 TVHTML5;`buildWebViewHeaders` 用 `client.userAgent`。
+- `YoutubePlaybackResolver.kt`:clients 列表按 `request.preferredYoutubeClient` 构建(TVHTML5→`[TVHTML5, WEB]`,null/WEB→`[WEB]`);SABR 门控放宽 `client==WEB || client==TVHTML5`;`postPlayer` viaWebView 条件含 TVHTML5;加 `resolve clients=... preferred=...` Log.i 行。
+- `PlaybackModels.kt`:`PlaybackRequest` 加 `preferredYoutubeClient: InnerTubeClient.Client? = null`(默认 null=WEB,移动端不变)。
+- `PlayerScreen.kt`:TV YouTube 请求 `.copy(preferredYoutubeClient=TVHTML5)`(全限定名,不加 import)。`MobilePlayerScreen.kt` 不改。
+
+**关键事实**:SABR 取流(NewPipe path C,visionOS client,`buildSabrSessionFromNewPipe` `StreamInfo.getInfo` 内部走 visionOS)**独立于外层 /player client** → 切 TVHTML5 外层 /player 不影响 SABR 结果。故最可能"退回 SABR = 现状无变化"。
+
+**可行性风险(如实标注)**:
+1. §6.5 实测无 PO token TVHTML5 全部失败(但本次带 token + viaWebView,条件不同)。
+2. **visitorData 配对风险**:现有 `realSessionData` 从 `sw.js_data` 抓取,绑定 WEB client version(`2.20260805.01.00`);TVHTML5 client version `7.20260707.07.00` 完全不同。用 WEB visitorData 发 TVHTML5 /player 可能因不配对被拒(§6.7 row 19-22 证明 visitorData 配对至关重要)。
+3. **viaWebView 指纹不一致**:Cobalt UA(body 字段)走 Chromium 网络栈(HTTP UA 是 Chromium),能否过反爬未知。
+4. TVHTML5 经典路径 adaptive url 大概率仍剥空(整个 §6.7 证明 WEB 也剥空)。
+
+**状态**:代码已合(v3.0.1-alpha.6),待真机验证。
+
+**真机对照**(Sony XQ-EC72,日志目录 `Y:\download\bilitv\logs`,tag `YtResolver`):TV 播同一 YouTube 视频,看 `resolve clients=[TVHTML5, WEB]` + `TVHTML5 formats:`/`TVHTML5 diag:` 行:
+- **A. TVHTML5 被拦**(UNPLAYABLE)→ 回退 WEB SABR = 现状,无收益无损失,回退改动。
+- **B. TVHTML5 可 play 但 url 剥空** → 落 SABR = 现状,无收益,回退改动。
+- **C. TVHTML5 给带 url adaptive / 更多清晰度** → 收益,保留并照 `PlaybackCodecPreference` 模式做成 `YoutubeClientPreference` 设置项(Auto/TVHTML5/WEB)。
+移动端回归:移动端播 YouTube 应完全无变化(仍 WEB+SABR)。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

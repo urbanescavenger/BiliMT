@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.6
+
+**TV 端 YouTube 取流 TVHTML5 client 试验(测试 alpha)**:TV 端 YouTube /player 从 WEB 改试 TVHTML5 client(对齐 YouTube 官方 TV 端),失败/被拦自动回退 WEB 走现有 SABR,最坏=现状。移动端不变。
+
+### 试验
+- **TV 端 YouTube 切 TVHTML5 client**:`InnerTubeClient.Client` 加 TVHTML5(clientName=TVHTML5/id=7/Cobalt UA);TV `PlayerScreen` YouTube 请求传 `preferredYoutubeClient=TVHTML5`;resolver clients 列表 `[TVHTML5, WEB]`(失败回退 WEB);SABR 门控放宽含 TVHTML5;TVHTML5 走 viaWebView(Chromium 原生网络栈破拦截,OkHttp 直连大概率被拦)。
+- **加载日志**:TV 端播 YouTube 时 logcat tag `YtResolver` 打 `resolve clients=[TVHTML5, WEB] preferred=TVHTML5` + `TVHTML5 formats:`/`TVHTML5 diag:` 行,对照 WEB 看 TVHTML5 /player 是否给带 url adaptive / 更多清晰度。
+- 移动端 `MobilePlayerScreen` 不改(默认 WEB+SABR,行为不变)。
+
+### 风险/预期
+- §6.5 实测无 token TVHTML5 失败;visitorData 与 WEB session(2.x)不配对可能被拒;TVHTML5 经典路径 adaptive url 大概率仍剥空(整个 §6.7 证明 WEB 也剥空)→ 最可能退回 SABR 无收益,但安全可回退。详见 `docs/youtube-hd-playback.md` §6.13。
+- 改动文件:`YoutubeConstants.kt`、`InnerTubeClient.kt`、`YoutubePlaybackResolver.kt`、`PlaybackModels.kt`、`PlayerScreen.kt`。
+
 ## v3.0.1-alpha.5
 
 **TV 视频退出焦点恢复修复 + BiliMT:Focus 诊断日志(测试 alpha)**:退出视频后焦点不再停在侧栏头像,优先回到原视频卡片;并加 `BiliMT:Focus` 日志,下次退出可在实时日志直接看到焦点落点与失败原因。
