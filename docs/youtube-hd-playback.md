@@ -612,6 +612,8 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 
 **移动端 UI**:YouTube 历史并入「动态」底栏的「历史」子 tab(`MobileFeedScreen` → `MobileHistoryPage`):本地 `YoutubeHistoryStore` 数据与 B 站观看历史**混合,按播放时间倒序**(排序键统一为 epoch 秒——YouTube 取 `lastPlayedAtMs/1000`,B 站取 `viewAt`;两列表本已按该键倒序,新加载的 B 站分页恒更旧,合并后不重排已显示内容)。YouTube 卡片绿框区分(`showYoutubeBorder`)。历史 tab 放宽登录门槛,未登录只显示本地 YouTube 历史 + 登录提示(复用 `history_signed_out`),登录后 B 站历史并入。点击续播、点头像开频道。原独立「YouTube 历史」子 tab 已移除(`MobileYoutubeHistoryPage.kt` 删除,`toVideoSummary()` 移入 `MobileHistoryPage`)。**移动端卡片布局(v3.0.0-alpha.4)**:`MobileVideoCard` 加 `feedLayout` 参数(默认紧凑布局,首页/搜索/空间不变),动态 feed(`MobileDynamicScreen`)置 true 用 B 站动态样式新布局——顶行作者块(头像 40dp 跨两行 + UP 名一行 + 发布时间·播放量一行,发布时间相对时间复用 `video_relative_*` 字符串)→ 缩略图独占整行 → 标题;YouTube 卡片在动态页同样绿框区分。**单列(v3.0.0-alpha.5)**:`MobileDynamicScreen` 的 `LazyVerticalGrid` 改 `GridCells.Fixed(1)`,卡片占满整行全宽展示。
 
+**TV 端(v3.0.1-alpha.14)**:历史 tab 与移动端对齐——`UserVideoFeedScreen` 历史子 tab 合并本地 YouTube 历史(`youtubeHistoryStore`)与 B 站观看历史,按播放时间倒序(`mergeExtraVideos` 复用 `viewAt` 秒排序键);放宽登录门槛,未登录只显示本地 YouTube 历史 + 登录提示。TV 动态/历史子 tab 的 YouTube 卡片标绿框识别(`VideoCard` 对 `VideoCardMode.Dynamic/History` 且 `source==SourceYoutube` 加 2dp 绿框,颜色同移动端 `#00C853`),标准模式(首页/搜索/空间)不标以免整行泛绿。
+
 ## 6.13 TV 端 YouTube 取流 TVHTML5 client 试验(2026-08,v3.0.1-alpha.6)
 
 **动机**:TV 端与移动端 YouTube 取流此前完全共用同一套 `WEB` client + SABR(NewPipe path C)链路,无端区分。YouTube 官方 TV 端用 `TVHTML5` client(clientName=TVHTML5/id=7/Cobalt UA),对某些视频的格式/清晰度可用性可能更宽容。试验 TV 端切 TVHTML5 client 看是否比 WEB 多给带 url adaptive / 更多清晰度。

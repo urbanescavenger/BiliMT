@@ -135,6 +135,7 @@ v3.0.0 稳定版后的 patch 线 alpha。
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.1-alpha.14 | TV 历史 tab 合并本地 YouTube 历史（未登录也显示 + 登录后 B 站历史并入，按播放时间倒序）+ TV 动态/历史 YouTube 卡片标绿框识别 |
 | v3.0.1-alpha.5 | TV 视频退出焦点恢复修复：恢复 effect 先等目标行进入视口布局再 requestFocus（不再盲重试），兜底清理 120→240 帧；新增 BiliMT:Focus 诊断日志（onBack/恢复 start-layout-success-failed/backstop/头像 onFocused），退出卡顿（734ms Davey）时焦点不再停在头像 |
 | v3.0.1-alpha.4 | TV 搜索源 pill 点击当前源循环切换：点 BILIBILI 直接切到 YOUTUBE（点击已选中的源 pill 循环切到另一个源） |
 | v3.0.1-alpha.3 | TV 搜索初始界面接通 D-pad 焦点：源切换按钮（B站/YouTube）+ 输入框可选中（源切换按钮加 FocusRequester、输入框加 focusable()+聚焦边框、键盘清空按钮加 onMoveUp） |
