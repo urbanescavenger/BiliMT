@@ -64,7 +64,6 @@ internal fun SettingsYoutubeChannelsColumn(
   val coroutineScope = rememberCoroutineScope()
   val listState = rememberLazyListState()
   val firstKeyFocusRequester = remember { FocusRequester() }
-  val expandFocusRequester = remember { FocusRequester() }
   // 组合期预取提示文案(stringResource 只能在此调用,协程里直接用值)。
   val addedMsg = stringResource(R.string.youtube_channel_added)
   val parseFailedMsg = stringResource(R.string.youtube_channel_parse_failed)
@@ -75,11 +74,8 @@ internal fun SettingsYoutubeChannelsColumn(
   // 面板默认折叠,点击展开;展开后焦点落到「添加」按钮而非键盘。
   var expanded by remember { mutableStateOf(false) }
 
-  // 面板打开时(默认折叠)把焦点落到展开区,提供 D-pad 入口。
-  LaunchedEffect(Unit) {
-    runCatching { expandFocusRequester.requestFocus() }
-  }
-
+  // 面板打开时不抢焦点(与 HomeSections 等其它右面板一致):焦点留在左侧列表,
+  // 用户按右键才进入本面板;展开区头是面板内首个可聚焦项,D-pad 右键天然落到它。
   // 展开后把焦点落到「添加」按钮,不再自动切到字母键盘。
   LaunchedEffect(expanded) {
     if (expanded) {
@@ -154,9 +150,7 @@ internal fun SettingsYoutubeChannelsColumn(
       shadowOnFocus = false,
       shape = RoundedCornerShape(BiliRadius.Card),
       onClick = { expanded = !expanded },
-      modifier = Modifier
-        .fillMaxWidth()
-        .focusRequester(expandFocusRequester),
+      modifier = Modifier.fillMaxWidth(),
     ) {
       Row(
         modifier = Modifier
