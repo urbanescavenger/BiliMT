@@ -1187,7 +1187,6 @@ private val SettingsFocusableItems = listOf(
   SettingsItemAutoReturnHomeOnCompletion,
   SettingsItemShowClock,
   SettingsItemShowMiniProgressBar,
-  SettingsItemPlayerLogOverlay,
   SettingsItemVisualPerformanceMode,
   SettingsItemLiquidGlassCards,
   SettingsItemHomeThemeVariant,
@@ -1261,15 +1260,15 @@ private fun settingsItemToLazyIndex(
   }
   SettingsItemLogs -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    34 + updateExtraCount
+    35 + updateExtraCount
   }
   SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    35 + updateExtraCount
+    36 + updateExtraCount
   }
   SettingsItemPlayerLogOverlay -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    36 + updateExtraCount
+    37 + updateExtraCount
   }
   SettingsItemYoutubeChannels -> {
     val updateExtraCount = updateExtraItemCount(updateState)
