@@ -1,6 +1,6 @@
 # IPTV 纳入直播 —— 可行性研究
 
-> 状态:已确认可行,一期只做 TV 版。样例:`tmp/result.m3u`(fanmingming/live 类公开源,408 频道)。
+> 状态:**一期已实现并云编译通过**(TV 版)。样例:`tmp/result.m3u`(fanmingming/live 类公开源,408 频道)。
 
 ## 结论
 
@@ -103,6 +103,45 @@ val info = if (request.isIptv) {
 | `LivePlayerScreen` | IPTV 分支合成 `LivePlayInfo` + 裸数据源 + 3 guard + 自动切源 |
 | `LiveScreen`(TV) | 加 IPTV tab,按 group-title 分组,卡片复用 `TvVideoGrid` |
 | 设置页 | 加"IPTV 源 URL"输入(DataStore string key) |
+
+## 一期实现记录(已落地,云编译通过)
+
+### 设置:IPTV 源地址(URL + 账号 + 密码)
+
+- `AppSettings`/`AppSettingsStore` 加 `iptvSourceUrl`/`iptvSourceUsername`/`iptvSourcePassword`(DataStore string key)。
+- `SettingsScreen` 加「IPTV 源地址」行,未配置显示"未配置,点按编辑"占位,点击弹 `SettingsIptvDialog`。
+- `SettingsIptvDialog` 镜像 WebDAV 弹窗:URL/账号/密码三字段(密码掩码),保存/取消按钮。
+- **URL 自动补全**:`normalizeIptvUrl` 不带 `http://`/`https://` 时补 `https://`(优先加密)。
+- **连通性校验**:保存后 `IptvRepository.checkSourceReachable`(HEAD 探测,不支持再回退 GET,带 Basic Auth),Toast 提示"连接成功/连接失败"。
+
+### 数据模型
+
+- `VideoSummary` 加 `source`(新增 `SourceIptv = "iptv"`)+ `iptvUrls: List<String>`。
+- `PlaybackRequest` 加 `iptvUrls` + getter `isIptv`。
+- `IptvChannel.toVideoSummary()` 映射频道卡片(`pic`=logo,`ownerName`=group)。
+
+### 新 `IptvRepository` + m3u 解析器
+
+- `getChannels()`:拉配置的 m3u URL(带 Basic Auth)→ `parseM3u` → `List<IptvChannel>`。无 B站 API/WBI/cookie。
+- `parseM3u` 处理 4 坑:同名合并镜像 URL、跳伪频道(时间戳名)、滤 rtmp、保留 query 串。
+- `checkSourceReachable()`:连通性校验(HEAD + GET 回退)。
+
+### 播放:合成 LivePlayInfo + 裸数据源 + 3 guard + 自动切源
+
+- `LivePlayerScreen` IPTV 分支:`selectedQn` 当源索引,`qualities` 合成 `[线路1, 线路2, ...]` 复用清晰度面板切源,`headers` 置空。
+- **裸数据源**:IPTV 用 `DefaultDataSource.Factory(context)`,不走 `BiliMediaDataSourceFactory`(强制套 B站 UA/头)。
+- **3 guard**:`persistQuality` 跳过 IPTV(源索引每频道,不全局持久化);`initialResolved` 直接 true;`LaunchedEffect(roomId)` 读 store 加 `!request.isIptv`。
+- **自动切源**:`onPlayerError` 里 IPTV 且还有下一源时 `selectedQn++` 切下一镜像。
+
+### 入口:AppShell 路由 + LiveScreen IPTV tab
+
+- `AppShell`:`BiliTvApp` 注入 `iptvRepository`;本地 `toPlaybackRequest` 加 `source == SourceIptv` 分支;播放器挂载条件 `isLive || isIptv` → 走 `LivePlayerScreen`。
+- `LiveScreen`:加 `LiveSection.Iptv` tab(推荐后),一次拉全量无分页,未配置源显示"请先在设置中配置 IPTV 源地址"。
+- DI:`AppContainer` 建 `iptvRepository`,`MainActivity` 注入。
+
+### 真机验证源
+
+`https://cf.19961226.xyz/iptv/`(fanmingming/live 类,408 频道合并 288 个,含镜像源)。设置里填此地址 → 保存提示连接成功 → Live 页 IPTV tab 列频道 → 点频道起播线路1,清晰度面板切线路,断流自动切下一镜像。
 
 ## 二期(暂缓)
 

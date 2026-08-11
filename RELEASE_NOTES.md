@@ -1,5 +1,17 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.16
+
+**IPTV 纳入直播一期(TV 版,测试 alpha)**:直播页新增「IPTV」标签页,读取设置里配置的远程 m3u 播放列表,把 IPTV 频道当直播间播放。同名频道(多个镜像 URL)合并成一个直播间,播放器里用现成的清晰度面板当**源切换面板**(线路1/线路2/...),断流自动切下一镜像。
+
+### 新增
+- **设置 → IPTV 源地址**:URL/账号/密码三字段弹窗(镜像 WebDAV),URL 不带 `http://`/`https://` 自动补 `https://`,保存后校验连通性并 Toast 提示"连接成功/连接失败"。
+- **Live 页 IPTV tab**:一次拉全量频道(按 group-title 分组),未配置源显示"请先在设置中配置 IPTV 源地址"。
+- **IPTV 播放**:直链 m3u8 走直播播放器,清晰度面板切源,断流自动切下一镜像,不持久化源索引(每频道独立)。
+
+### 待真机验证
+- 设置填源地址(如 `https://cf.19961226.xyz/iptv/`)→ 保存提示连接成功 → Live 页 IPTV tab 列频道 → 点频道起播线路1 → 清晰度面板切线路 → 断流自动切下一镜像。
+
 ## v3.0.1-alpha.15
 
 **TV 长按 YouTube 视频进 UP 主页修复(测试 alpha)**:TV 端对 YouTube 视频长按确认键(OK/Enter)本应打开卡片操作菜单进入该 UP 主频道主页,但长按条件原要求 `video.ownerMid > 0L`——YouTube 视频无 B 站 mid(`ownerMid` 恒为 0),导致长按永远不触发,进不了 UP 主页(B 站视频正常)。改为 `ownerMid > 0L || (source == SourceYoutube && channelId.isNotBlank())`,YouTube 视频长按也能进频道页,B 站视频行为不变。
