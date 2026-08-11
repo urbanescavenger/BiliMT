@@ -95,6 +95,8 @@ internal fun IptvChannel.toVideoSummary(): VideoSummary {
     title = name,
     pic = logo,
     ownerName = group,
+    ownerFace = "",
+    ownerMid = 0L,
     view = 0,
     danmaku = 0,
     duration = 0,

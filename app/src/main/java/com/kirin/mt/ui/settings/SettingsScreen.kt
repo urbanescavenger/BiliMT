@@ -274,6 +274,7 @@ fun SettingsScreen(
         },
         onWebDavSelected = { showWebDavDialog = true },
         onIptvSourceUrlChange = onIptvSourceUrlChange,
+        onIptvSelected = { showIptvDialog = true },
         onLogsSelected = onLogsSelected,
         logFiles = logFiles,
         isRecordingLog = isRecordingLog,
@@ -418,6 +419,7 @@ private fun SettingsBehaviorColumn(
   onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
   onWebDavSelected: () -> Unit,
   onIptvSourceUrlChange: (String) -> Unit,
+  onIptvSelected: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -1056,7 +1058,7 @@ private fun SettingsBehaviorColumn(
             onMoveLeftToNav = onMoveLeftToNav,
           ),
         onFocused = { onSettingFocused(SettingsItemIptv) },
-        onClick = { showIptvDialog = true },
+        onClick = onIptvSelected,
       )
     }
     item(key = "logs") {
