@@ -370,7 +370,8 @@ fun BiliTvApp(
   }
 
   fun selectDestination(destination: AppDestination) {
-    if (selectedDestination == AppDestination.Search && destination != AppDestination.Search) {
+    // 选中「搜索」总是重置到初始搜索界面(键盘输入视图、清空状态)。
+    if (destination == AppDestination.Search) {
       searchUiState.clear()
     }
     accountSelected = false

@@ -226,6 +226,7 @@
     <string name="search_no_suggestions">暂无建议，按搜索键直接搜索</string>
     <string name="search_suggestions_title">搜索建议</string>
     <string name="search_results_title">搜索结果: %1$s</string>
+    <string name="search_back_to_edit_hint">按确认键重新搜索</string>
     <string name="search_sort_totalrank">综合排序</string>
     <string name="search_sort_click">最多播放</string>
     <string name="search_sort_pubdate">最新发布</string>
