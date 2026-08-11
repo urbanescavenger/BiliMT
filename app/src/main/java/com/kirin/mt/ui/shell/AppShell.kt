@@ -944,8 +944,12 @@ fun BiliTvApp(
                 },
                 onWebDavBackup = { cfg -> webdavBackupService.backup(cfg) },
                 onWebDavRestore = { cfg -> webdavBackupService.restore(cfg) },
-                onIptvSourceUrlChange = { url ->
-                  coroutineScope.launch { appSettingsStore.setIptvSourceUrl(url) }
+                onIptvSourceConfigChange = { url, username, password ->
+                  coroutineScope.launch {
+                    appSettingsStore.setIptvSourceUrl(url)
+                    appSettingsStore.setIptvSourceUsername(username)
+                    appSettingsStore.setIptvSourcePassword(password)
+                  }
                 },
               )
             }

@@ -518,6 +518,9 @@
     <string name="settings_iptv_title">IPTV 源地址</string>
     <string name="settings_iptv_description">远程 m3u 播放列表 URL，直播页 IPTV 标签页读取</string>
     <string name="settings_iptv_url_label">m3u 地址</string>
+    <string name="settings_iptv_username_label">账号</string>
+    <string name="settings_iptv_password_label">密码</string>
+    <string name="settings_iptv_configure_hint">未配置，点按编辑</string>
     <string name="settings_webdav_username_label">账号</string>
     <string name="settings_webdav_password_label">密码</string>
     <string name="settings_webdav_field_hint">未填写</string>

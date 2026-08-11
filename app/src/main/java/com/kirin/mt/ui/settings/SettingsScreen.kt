@@ -110,7 +110,7 @@ fun SettingsScreen(
   onWebDavConfigChange: (com.kirin.mt.core.webdav.WebDavConfig) -> Unit,
   onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
   onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
-  onIptvSourceUrlChange: (String) -> Unit,
+  onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
 ) {
   val settingsListState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
@@ -273,7 +273,7 @@ fun SettingsScreen(
           }
         },
         onWebDavSelected = { showWebDavDialog = true },
-        onIptvSourceUrlChange = onIptvSourceUrlChange,
+        onIptvSourceConfigChange = onIptvSourceConfigChange,
         onIptvSelected = { showIptvDialog = true },
         onLogsSelected = onLogsSelected,
         logFiles = logFiles,
@@ -348,8 +348,10 @@ fun SettingsScreen(
     if (showIptvDialog) {
       SettingsIptvDialog(
         url = settings.iptvSourceUrl,
-        onSave = { url ->
-          onIptvSourceUrlChange(url)
+        username = settings.iptvSourceUsername,
+        password = settings.iptvSourcePassword,
+        onSave = { url, username, password ->
+          onIptvSourceConfigChange(url, username, password)
           showIptvDialog = false
         },
         onDismiss = { showIptvDialog = false },
@@ -418,7 +420,7 @@ private fun SettingsBehaviorColumn(
   onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
   onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
   onWebDavSelected: () -> Unit,
-  onIptvSourceUrlChange: (String) -> Unit,
+  onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
   onIptvSelected: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -1049,7 +1051,9 @@ private fun SettingsBehaviorColumn(
       SettingsActionRow(
         title = stringResource(R.string.settings_iptv_title),
         description = stringResource(R.string.settings_iptv_description),
-        value = settings.iptvSourceUrl,
+        value = settings.iptvSourceUrl.ifBlank {
+          stringResource(R.string.settings_iptv_configure_hint)
+        },
         modifier = Modifier
           .focusRequester(focusRequesters.getValue(SettingsItemIptv))
           .settingsBoundaryKeys(

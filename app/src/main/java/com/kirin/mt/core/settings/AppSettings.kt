@@ -64,6 +64,10 @@ data class AppSettings(
   val homeSectionsOrder: List<HomeSection> = HomeSection.DefaultOrder,
   /** IPTV 源地址（远程 m3u 播放列表 URL）。空串表示未配置，Live 页 IPTV tab 显示引导。 */
   val iptvSourceUrl: String = "",
+  /** IPTV 源账号（可选，Basic Auth）。 */
+  val iptvSourceUsername: String = "",
+  /** IPTV 源密码（可选，Basic Auth）。 */
+  val iptvSourcePassword: String = "",
 ) {
   val lowSpecMode: Boolean
     get() = visualPerformanceMode == AppVisualPerformanceMode.Smooth

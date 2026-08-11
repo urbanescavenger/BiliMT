@@ -2,6 +2,8 @@ package com.kirin.mt.ui.settings
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,10 +11,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,6 +33,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
 import com.kirin.mt.ui.focus.BiliFocusableSurface
@@ -41,13 +47,16 @@ import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
 
 /**
- * IPTV 源地址编辑弹窗(居中叠层):单个 URL 字段,走系统输入法(OutlinedTextField 唤起 IME)。
- * 镜像 [SettingsWebDavDialog] 的 stateless 模式 —— 保存时把 URL 通过 [onSave] 回调上抛。
+ * IPTV 源编辑弹窗(居中叠层):URL/账号/密码三个字段,走系统输入法(OutlinedTextField 唤起 IME)。
+ * 镜像 [SettingsWebDavDialog] 的 stateless 模式 —— 保存时把 URL(自动补全 http/https)与账号密码
+ * 通过 [onSave] 回调上抛。
  */
 @Composable
 internal fun SettingsIptvDialog(
   url: String,
-  onSave: (String) -> Unit,
+  username: String,
+  password: String,
+  onSave: (url: String, username: String, password: String) -> Unit,
   onDismiss: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -56,7 +65,12 @@ internal fun SettingsIptvDialog(
   val performancePolicy = LocalBiliPerformancePolicy.current
 
   var urlValue by remember { mutableStateOf(url) }
+  var usernameValue by remember { mutableStateOf(username) }
+  var passwordValue by remember { mutableStateOf(password) }
+
   val urlFocusRequester = remember { FocusRequester() }
+  val usernameFocusRequester = remember { FocusRequester() }
+  val passwordFocusRequester = remember { FocusRequester() }
   val saveFocusRequester = remember { FocusRequester() }
 
   BackHandler { onDismiss() }
@@ -65,6 +79,8 @@ internal fun SettingsIptvDialog(
   LaunchedEffect(Unit) {
     runCatching { urlFocusRequester.requestFocus() }
   }
+
+  fun save() = onSave(normalizeIptvUrl(urlValue), usernameValue.trim(), passwordValue)
 
   Box(
     modifier = modifier
@@ -76,6 +92,8 @@ internal fun SettingsIptvDialog(
     Column(
       modifier = Modifier
         .width(720.dp)
+        .heightIn(max = 680.dp)
+        .verticalScroll(rememberScrollState())
         .biliLiquidGlassSurface(
           enabled = performancePolicy.cinematicVisualEffectsEnabled &&
             performancePolicy.liquidGlassCardsEnabled,
@@ -99,6 +117,7 @@ internal fun SettingsIptvDialog(
         fontSize = BiliTypography.BodySmall,
       )
 
+      // 三字段走系统输入法:聚焦 OutlinedTextField 自动唤起 IME。
       OutlinedTextField(
         value = urlValue,
         onValueChange = { urlValue = it },
@@ -108,7 +127,28 @@ internal fun SettingsIptvDialog(
           .fillMaxWidth()
           .focusRequester(urlFocusRequester),
       )
+      OutlinedTextField(
+        value = usernameValue,
+        onValueChange = { usernameValue = it },
+        label = { Text(stringResource(R.string.settings_iptv_username_label)) },
+        singleLine = true,
+        modifier = Modifier
+          .fillMaxWidth()
+          .focusRequester(usernameFocusRequester),
+      )
+      OutlinedTextField(
+        value = passwordValue,
+        onValueChange = { passwordValue = it },
+        label = { Text(stringResource(R.string.settings_iptv_password_label)) },
+        singleLine = true,
+        visualTransformation = PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        modifier = Modifier
+          .fillMaxWidth()
+          .focusRequester(passwordFocusRequester),
+      )
 
+      // 保存 / 取消 行(对照 WebDAV 弹窗)。
       Row(
         horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
         modifier = Modifier.fillMaxWidth(),
@@ -118,7 +158,7 @@ internal fun SettingsIptvDialog(
           modifier = Modifier
             .weight(1f)
             .focusRequester(saveFocusRequester),
-          onClick = { onSave(urlValue.trim()) },
+          onClick = ::save,
         )
         IptvActionButton(
           label = stringResource(R.string.mobile_dialog_cancel),
@@ -127,6 +167,20 @@ internal fun SettingsIptvDialog(
         )
       }
     }
+  }
+}
+
+/**
+ * 补全 IPTV 源 URL:不带 http:// 或 https:// 时自动补 http://。
+ * 空串原样返回(未配置)。
+ */
+internal fun normalizeIptvUrl(raw: String): String {
+  val trimmed = raw.trim()
+  if (trimmed.isEmpty()) return trimmed
+  return if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    trimmed
+  } else {
+    "http://$trimmed"
   }
 }
 

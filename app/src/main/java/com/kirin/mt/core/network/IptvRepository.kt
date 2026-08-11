@@ -2,6 +2,7 @@ package com.kirin.mt.core.network
 
 import com.kirin.mt.core.settings.AppSettingsStore
 import kotlinx.coroutines.flow.first
+import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -28,15 +29,21 @@ class IptvRepository(
   private val appSettingsStore: AppSettingsStore,
 ) {
   suspend fun getChannels(): List<IptvChannel> {
-    val url = appSettingsStore.settings.first().iptvSourceUrl
+    val settings = appSettingsStore.settings.first()
+    val url = settings.iptvSourceUrl
     if (url.isBlank()) return emptyList()
     val body = try {
-      client.newCall(
-        Request.Builder()
-          .url(url)
-          .header("User-Agent", BiliHeaders.UserAgent)
-          .build(),
-      ).execute().use { response ->
+      val requestBuilder = Request.Builder()
+        .url(url)
+        .header("User-Agent", BiliHeaders.UserAgent)
+      // 配置了账号则带 Basic Auth(密码可选)。
+      if (settings.iptvSourceUsername.isNotBlank()) {
+        requestBuilder.header(
+          "Authorization",
+          Credentials.basic(settings.iptvSourceUsername, settings.iptvSourcePassword),
+        )
+      }
+      client.newCall(requestBuilder.build()).execute().use { response ->
         if (!response.isSuccessful) return emptyList()
         response.body?.string() ?: return emptyList()
       }

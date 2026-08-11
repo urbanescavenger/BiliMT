@@ -89,6 +89,8 @@ class AppSettingsStore(private val context: Context) {
       enabledHomeSections = enabledSections,
       homeSectionsOrder = homeSectionsOrder,
       iptvSourceUrl = preferences[Keys.IptvSourceUrl] ?: "",
+      iptvSourceUsername = preferences[Keys.IptvSourceUsername] ?: "",
+      iptvSourcePassword = preferences[Keys.IptvSourcePassword] ?: "",
     )
   }
 
@@ -118,6 +120,18 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setIptvSourceUrl(url: String) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.IptvSourceUrl] = url
+    }
+  }
+
+  suspend fun setIptvSourceUsername(username: String) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.IptvSourceUsername] = username
+    }
+  }
+
+  suspend fun setIptvSourcePassword(password: String) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.IptvSourcePassword] = password
     }
   }
 
@@ -360,6 +374,8 @@ class AppSettingsStore(private val context: Context) {
     val HomeSectionsUgcMigrationV1 = booleanPreferencesKey("home_sections_ugc_migration_v1")
     val HomeSectionsYoutubeMigrationV1 = booleanPreferencesKey("home_sections_youtube_migration_v1")
     val IptvSourceUrl = stringPreferencesKey("iptv_source_url")
+    val IptvSourceUsername = stringPreferencesKey("iptv_source_username")
+    val IptvSourcePassword = stringPreferencesKey("iptv_source_password")
   }
 }
 
