@@ -681,6 +681,16 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 - `YoutubePlaybackResolver.kt:969-978 codecKeySupported`:vp9/vp8/other 一律放行不探测(HEVC/AV1 以 `CodecCapabilityProbe` 为准)。
 - `CodecCapabilityProbe.kt`:仅探 h264/h265/av01,不探 VP9。
 
+## 6.15 TV 长按 YouTube 视频进 UP 主页(2026-08,v3.0.1-alpha.15)
+
+**现象**:TV 端对 YouTube 视频长按确认键(OK/Enter)本应打开卡片操作菜单进入该 UP 主频道主页(`YoutubeChannelScreen`),但长按无反应;B 站视频长按正常。
+
+**根因**:`TvVideoGrid` 长按触发条件为 `video.ownerMid > 0L`。B 站视频有 `ownerMid`(UP 主 mid),但 YouTube 视频在 `YoutubeRepository.toVideoSummary` 里 `ownerMid = 0L`(YouTube 无 B 站 mid,只有 `channelId`)→ 长按条件恒不满足,`onCardLongPress` 永不触发,进不了 UP 主页。`onCardLongPress` 在 `RecommendScreen` 里是 `onOwnerSelected(video)`,后者对 `source == SourceYoutube && channelId.isNotBlank()` 的视频本就会进 `YoutubeChannelScreen`——只差长按判定这一道闸。
+
+**修复(v3.0.1-alpha.15)**:`TvVideoGrid` 长按条件扩展为 `ownerMid > 0L || (source == SourceYoutube && channelId.isNotBlank())`,YouTube 视频长按也能进 UP 主页,B 站视频行为不变。
+
+**待真机验证**:主页/搜索/动态对 YouTube 视频长按确认键约 0.5s 进入 UP 主页;B 站视频长按行为不变。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

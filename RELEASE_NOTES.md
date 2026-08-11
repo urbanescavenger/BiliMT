@@ -1,5 +1,15 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.15
+
+**TV 长按 YouTube 视频进 UP 主页修复(测试 alpha)**:TV 端对 YouTube 视频长按确认键(OK/Enter)本应打开卡片操作菜单进入该 UP 主频道主页,但长按条件原要求 `video.ownerMid > 0L`——YouTube 视频无 B 站 mid(`ownerMid` 恒为 0),导致长按永远不触发,进不了 UP 主页(B 站视频正常)。改为 `ownerMid > 0L || (source == SourceYoutube && channelId.isNotBlank())`,YouTube 视频长按也能进频道页,B 站视频行为不变。
+
+### 修复
+- **长按判定补 YouTube 分支**:`TvVideoGrid` 长按触发条件从 `ownerMid > 0L` 扩展为同时认 YouTube 的 `channelId`,YouTube 视频长按进 `YoutubeChannelScreen`(UP 主页)。
+
+### 待真机验证
+- 主页/搜索/动态对 YouTube 视频长按确认键约 0.5s 进入 UP 主页;B 站视频长按行为不变。
+
 ## v3.0.1-alpha.14
 
 **TV 历史合并本地 YouTube + YouTube 卡片绿框识别(测试 alpha)**:
