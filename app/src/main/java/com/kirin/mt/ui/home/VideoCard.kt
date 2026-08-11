@@ -39,6 +39,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
@@ -55,6 +56,7 @@ import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.image.buildVideoThumbnailRequest
+import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoCardRelativeText
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.durationText
@@ -83,6 +85,9 @@ enum class VideoCardMode {
   History,
   Bangumi,
 }
+
+/** YouTube 卡片识别绿框(与移动端 MobileVideoCard 一致)。 */
+private val YoutubeBorderColor = Color(0xFF00C853)
 
 @Composable
 fun VideoCard(
@@ -122,10 +127,21 @@ fun VideoCard(
   } else {
     if (focused) homeColors.textPrimary else homeColors.textSecondary
   }
+  // 动态/历史里的 YouTube 卡片标绿框识别(与移动端 MobileVideoCard 一致)。Favorite 虽用 Dynamic 模式
+  // 但只有 B 站内容(source != SourceYoutube),不会误标;Standard(首页/搜索/频道)不标。
+  val youtubeBorder =
+    (mode == VideoCardMode.Dynamic || mode == VideoCardMode.History) && video.source == SourceYoutube
 
   BiliFocusableSurface(
     modifier = modifier
       .fillMaxWidth()
+      .then(
+        if (youtubeBorder) {
+          Modifier.border(2.dp, YoutubeBorderColor, RoundedCornerShape(BiliRadius.Card))
+        } else {
+          Modifier
+        },
+      )
       .then(
         if (liquidGlassActive) {
           Modifier.padding(BiliFocus.LiquidGlassCardFocusPadding)
