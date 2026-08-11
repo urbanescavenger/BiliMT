@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.kirin.mt.R
+import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.ui.common.VideoThumbnailPrefetcher
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
@@ -494,7 +495,11 @@ internal fun TvVideoGrid(
                         KeyEventType.KeyUp -> {
                           val held = if (centerDownMs > 0L) SystemClock.uptimeMillis() - centerDownMs else 0L
                           centerDownMs = 0L
-                          if (held >= VideoCardOwnerLongPressMs && video.ownerMid > 0L) {
+                          // 长按打开卡片操作菜单(去 UP 主主页)。B 站视频以 ownerMid 判定;
+                          // YouTube 视频无 B 站 mid(ownerMid=0),改以 channelId 判定,否则长按永远不触发。
+                          val hasOwner = video.ownerMid > 0L ||
+                            (video.source == SourceYoutube && video.channelId.isNotBlank())
+                          if (held >= VideoCardOwnerLongPressMs && hasOwner) {
                             onCardLongPress(video)
                             true
                           } else {
