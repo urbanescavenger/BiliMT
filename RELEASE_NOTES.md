@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.17
+
+**TV 设置栏焦点导航乱序修复(测试 alpha)**:TV 端设置页 D-pad 上下移动焦点时顺序错乱——从「迷你进度条」往下按会一步跳到列表最末尾的「播放器日志叠层」,中间整片设置项全被跳过;且聚焦「日志/关于/播放器日志叠层」时滚动到错误行。根因是 `SettingsFocusableItems` 里 `SettingsItemPlayerLogOverlay` 重复出现(第 15 位 + 末尾各一次),以及加 IPTV 后 Logs/About/PlayerLogOverlay 三个 lazy 索引没同步 +1(与 Iptv 撞索引 34)。
+
+### 修复
+- **删重复焦点项**:`SettingsFocusableItems` 移除第 15 位的重复 `SettingsItemPlayerLogOverlay`,焦点顺序与渲染顺序重新对齐。
+- **索引补 +1**:`settingsItemToLazyIndex` 中 Logs/About/PlayerLogOverlay 分别从 34/35/36 修正为 35/36/37,不再与 Iptv 撞索引。
+
+### 待真机验证
+- 设置页 D-pad 上下移动,焦点按列表顺序逐项走(迷你进度条 → 视觉性能 → … → IPTV → 日志 → 关于 → 播放器日志叠层),不再跳项。
+
+---
+
 ## v3.0.1-alpha.16
 
 **IPTV 纳入直播一期(TV 版,测试 alpha)**:直播页新增「IPTV」标签页,读取设置里配置的远程 m3u 播放列表,把 IPTV 频道当直播间播放。同名频道(多个镜像 URL)合并成一个直播间,播放器里用现成的清晰度面板当**源切换面板**(线路1/线路2/...),断流自动切下一镜像。
