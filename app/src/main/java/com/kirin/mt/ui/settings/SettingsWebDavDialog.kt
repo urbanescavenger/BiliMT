@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.settings
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
@@ -24,6 +25,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,6 +33,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -46,39 +49,59 @@ import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
+import kotlinx.coroutines.launch
 
 /**
  * WebDAV 编辑弹窗(居中叠层):URL/账号/密码三个字段,走系统输入法(OutlinedTextField 唤起 IME)。
- * 保存/关闭回设置列。仅编辑配置,备份/还原在设置页单独按钮行。
+ * 保存前校验连通(https 优先、http 兜底),成功才落库并关闭;失败在弹窗内提示。备份/还原在设置页单独按钮行。
  */
 @Composable
 internal fun SettingsWebDavDialog(
   config: WebDavConfig,
-  onSave: (WebDavConfig) -> Unit,
+  onSave: suspend (WebDavConfig) -> Result<WebDavConfig>,
   onDismiss: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
   val panelShape = RoundedCornerShape(BiliRadius.Panel)
   val performancePolicy = LocalBiliPerformancePolicy.current
+  val context = LocalContext.current
+  val coroutineScope = rememberCoroutineScope()
 
   var url by remember { mutableStateOf(config.url) }
   var username by remember { mutableStateOf(config.username) }
   var password by remember { mutableStateOf(config.password) }
+  var saving by remember { mutableStateOf(false) }
+  var error by remember { mutableStateOf<String?>(null) }
 
   val urlFocusRequester = remember { FocusRequester() }
   val usernameFocusRequester = remember { FocusRequester() }
   val passwordFocusRequester = remember { FocusRequester() }
   val saveFocusRequester = remember { FocusRequester() }
 
-  BackHandler { onDismiss() }
+  BackHandler { if (!saving) onDismiss() }
 
   // 弹窗打开时把焦点落到 URL 字段,自动唤起系统 IME。
   LaunchedEffect(Unit) {
     runCatching { urlFocusRequester.requestFocus() }
   }
 
-  fun save() = onSave(WebDavConfig(url, username, password))
+  fun save() {
+    if (saving) return
+    saving = true
+    error = null
+    coroutineScope.launch {
+      val result = onSave(WebDavConfig(url, username, password))
+      saving = false
+      result.fold(
+        onSuccess = {
+          Toast.makeText(context, R.string.settings_webdav_connect_success, Toast.LENGTH_SHORT).show()
+          onDismiss()
+        },
+        onFailure = { error = it.message },
+      )
+    }
+  }
 
   Box(
     modifier = modifier
@@ -146,14 +169,28 @@ internal fun SettingsWebDavDialog(
           .focusRequester(passwordFocusRequester),
       )
 
+      // 校验失败提示(保持弹窗打开,不落库)。
+      error?.let { msg ->
+        Text(
+          text = msg,
+          color = homeColors.accent,
+          fontSize = BiliTypography.BodySmall,
+          fontWeight = FontWeight.Bold,
+        )
+      }
+
       // 保存 / 取消 行。
       Row(
         horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
         modifier = Modifier.fillMaxWidth(),
       ) {
         WebDavActionButton(
-          label = stringResource(R.string.settings_webdav_save),
-          enabled = true,
+          label = if (saving) {
+            stringResource(R.string.settings_webdav_validating)
+          } else {
+            stringResource(R.string.settings_webdav_save)
+          },
+          enabled = !saving,
           modifier = Modifier
             .weight(1f)
             .focusRequester(saveFocusRequester),
@@ -161,7 +198,7 @@ internal fun SettingsWebDavDialog(
         )
         WebDavActionButton(
           label = stringResource(R.string.mobile_dialog_cancel),
-          enabled = true,
+          enabled = !saving,
           modifier = Modifier.weight(1f),
           onClick = onDismiss,
         )

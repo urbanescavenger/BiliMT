@@ -339,7 +339,13 @@ fun MobileSettingsScreen(
     // ===== WebDAV 备份 =====
     MobileWebDavSection(
       config = webDavConfig,
-      onConfigChange = { cfg -> scope.launch { webdavConfigStore.setConfig(cfg) } },
+      onConfigChange = { cfg ->
+        com.kirin.mt.core.webdav.validateAndSaveWebDavConfig(
+          store = webdavConfigStore,
+          ping = { url -> webdavBackupService.ping(url, cfg.username, cfg.password) },
+          config = cfg,
+        )
+      },
       onBackup = { cfg -> webdavBackupService.backup(cfg) },
       onRestore = { cfg -> webdavBackupService.restore(cfg) },
     )
@@ -591,7 +597,7 @@ private fun Context.findActivity(): Activity? {
 @Composable
 private fun MobileWebDavSection(
   config: com.kirin.mt.core.webdav.WebDavConfig,
-  onConfigChange: (com.kirin.mt.core.webdav.WebDavConfig) -> Unit,
+  onConfigChange: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<com.kirin.mt.core.webdav.WebDavConfig>,
   onBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
   onRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
 ) {
@@ -683,10 +689,7 @@ private fun MobileWebDavSection(
   if (showEditDialog) {
     MobileWebDavEditDialog(
       config = config,
-      onSave = { cfg ->
-        onConfigChange(cfg)
-        showEditDialog = false
-      },
+      onSave = onConfigChange,
       onDismiss = { showEditDialog = false },
     )
   }
@@ -734,18 +737,40 @@ private fun WebDavActionButton(
   }
 }
 
-/** WebDAV 编辑弹窗:URL/账号/密码三个输入框 + 保存/取消。 */
+/** WebDAV 编辑弹窗:URL/账号/密码三个输入框 + 保存/取消。保存前校验连通,成功才关闭。 */
 @Composable
 private fun MobileWebDavEditDialog(
   config: com.kirin.mt.core.webdav.WebDavConfig,
-  onSave: (com.kirin.mt.core.webdav.WebDavConfig) -> Unit,
+  onSave: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<com.kirin.mt.core.webdav.WebDavConfig>,
   onDismiss: () -> Unit,
 ) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
   var url by remember { mutableStateOf(config.url) }
   var username by remember { mutableStateOf(config.username) }
   var password by remember { mutableStateOf(config.password) }
+  var saving by remember { mutableStateOf(false) }
+  var error by remember { mutableStateOf<String?>(null) }
+
+  fun save() {
+    if (saving) return
+    saving = true
+    error = null
+    scope.launch {
+      val result = onSave(com.kirin.mt.core.webdav.WebDavConfig(url, username, password))
+      saving = false
+      result.fold(
+        onSuccess = {
+          Toast.makeText(context, R.string.settings_webdav_connect_success, Toast.LENGTH_SHORT).show()
+          onDismiss()
+        },
+        onFailure = { error = it.message },
+      )
+    }
+  }
+
   AlertDialog(
-    onDismissRequest = onDismiss,
+    onDismissRequest = { if (!saving) onDismiss() },
     title = { Text(stringResource(R.string.settings_webdav_title)) },
     text = {
       Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -754,30 +779,44 @@ private fun MobileWebDavEditDialog(
           onValueChange = { url = it },
           label = { Text(stringResource(R.string.settings_webdav_url_label)) },
           singleLine = true,
+          enabled = !saving,
         )
         OutlinedTextField(
           value = username,
           onValueChange = { username = it },
           label = { Text(stringResource(R.string.settings_webdav_username_label)) },
           singleLine = true,
+          enabled = !saving,
         )
         OutlinedTextField(
           value = password,
           onValueChange = { password = it },
           label = { Text(stringResource(R.string.settings_webdav_password_label)) },
           singleLine = true,
+          enabled = !saving,
           visualTransformation = PasswordVisualTransformation(),
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
         )
+        error?.let { msg ->
+          Text(
+            text = msg,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+          )
+        }
       }
     },
     confirmButton = {
-      TextButton(onClick = { onSave(com.kirin.mt.core.webdav.WebDavConfig(url, username, password)) }) {
-        Text(stringResource(R.string.settings_webdav_save))
+      TextButton(onClick = ::save, enabled = !saving) {
+        Text(
+          stringResource(
+            if (saving) R.string.settings_webdav_validating else R.string.settings_webdav_save,
+          ),
+        )
       }
     },
     dismissButton = {
-      TextButton(onClick = onDismiss) {
+      TextButton(onClick = onDismiss, enabled = !saving) {
         Text(stringResource(R.string.mobile_dialog_cancel))
       }
     },

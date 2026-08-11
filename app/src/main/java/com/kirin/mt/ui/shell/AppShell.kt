@@ -940,7 +940,11 @@ fun BiliTvApp(
                 },
                 webDavConfig = webDavConfig,
                 onWebDavConfigChange = { cfg ->
-                  coroutineScope.launch { webdavConfigStore.setConfig(cfg) }
+                  com.kirin.mt.core.webdav.validateAndSaveWebDavConfig(
+                    store = webdavConfigStore,
+                    ping = { url -> webdavRepository.ping(url, cfg.username, cfg.password) },
+                    config = cfg,
+                  )
                 },
                 onWebDavBackup = { cfg -> webdavBackupService.backup(cfg) },
                 onWebDavRestore = { cfg -> webdavBackupService.restore(cfg) },

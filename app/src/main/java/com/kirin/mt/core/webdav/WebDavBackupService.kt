@@ -24,6 +24,10 @@ class WebDavBackupService(
 ) {
   private val serializer = ListSerializer(YoutubeChannel.serializer())
 
+  /** 连通性探测(委托 repository),供保存配置前校验服务器可达。 */
+  suspend fun ping(url: String, username: String, password: String): Boolean =
+    repository.ping(url, username, password)
+
   /** 备份目录名(相对 WebDAV 根)。 */
   private val backupDir = "bilitv"
   private val backupFileName = "youtube_channels.json"

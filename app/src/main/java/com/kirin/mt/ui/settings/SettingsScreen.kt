@@ -107,7 +107,7 @@ fun SettingsScreen(
   onAddYoutubeChannel: suspend (String) -> Boolean,
   onRemoveYoutubeChannel: suspend (String) -> Boolean,
   webDavConfig: com.kirin.mt.core.webdav.WebDavConfig,
-  onWebDavConfigChange: (com.kirin.mt.core.webdav.WebDavConfig) -> Unit,
+  onWebDavConfigChange: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<com.kirin.mt.core.webdav.WebDavConfig>,
   onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
   onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
   onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
