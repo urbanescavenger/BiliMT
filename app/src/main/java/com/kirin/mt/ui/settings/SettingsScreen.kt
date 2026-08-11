@@ -87,7 +87,6 @@ fun SettingsScreen(
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onHomeSectionEnabledChange: (HomeSection, Boolean) -> Unit,
   onHomeSectionsOrderChange: (List<HomeSection>) -> Unit,
-  onLogsSelected: () -> Unit,
   logFiles: List<LogCatcherUtil.LogFileInfo>,
   isRecordingLog: Boolean,
   viewingLogFile: java.io.File?,
@@ -217,14 +216,9 @@ fun SettingsScreen(
         listState = settingsListState,
         focusRequesters = settingFocusRequesters,
         onSettingFocused = { itemIndex ->
+          // 两层架构:聚焦只记录最近项(供返回焦点),不展开右侧二级菜单;
+          // 二级菜单只由对应行「点击」开合(见 onAboutSelected 等)。
           lastFocusedSettingItem = itemIndex
-          rightPanel = when (itemIndex) {
-            SettingsItemAbout -> SettingsRightPanel.About
-            SettingsItemHomeSections -> SettingsRightPanel.HomeSections
-            SettingsItemLogs -> SettingsRightPanel.Logs
-            SettingsItemYoutubeChannels -> SettingsRightPanel.YoutubeChannels
-            else -> SettingsRightPanel.None
-          }
         },
         onMoveSettingFocus = ::moveSettingFocus,
         onMoveLeftToNav = onMoveLeftToNav,
@@ -275,7 +269,13 @@ fun SettingsScreen(
         onWebDavSelected = { showWebDavDialog = true },
         onIptvSourceConfigChange = onIptvSourceConfigChange,
         onIptvSelected = { showIptvDialog = true },
-        onLogsSelected = onLogsSelected,
+        onLogsSelected = {
+          rightPanel = if (rightPanel == SettingsRightPanel.Logs) {
+            SettingsRightPanel.None
+          } else {
+            SettingsRightPanel.Logs
+          }
+        },
         logFiles = logFiles,
         isRecordingLog = isRecordingLog,
         viewingLogFile = viewingLogFile,

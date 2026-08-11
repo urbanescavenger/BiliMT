@@ -776,9 +776,6 @@ fun BiliTvApp(
                     appSettingsStore.setHomeSectionsOrder(order)
                   }
                 },
-                onLogsSelected = {
-                  // Toggle is handled inside SettingsScreen via rightPanel state.
-                },
                 logFiles = logFiles,
                 isRecordingLog = isRecordingLog,
                 viewingLogFile = viewingLogFile,
