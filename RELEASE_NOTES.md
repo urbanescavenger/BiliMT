@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.13
+
+**TV 搜索栏 5 项交互优化(测试 alpha)**:
+
+1. **顶栏源切换单按钮**:B站/YouTube 两个 pill 合并为单个占满居中的按钮,显示当前源(BILIBILI/YOUTUBE),点击循环切换。
+2. **键盘区自适应**:6×6 键盘区改 weight 弹性伸缩,输入框/清空退格/搜索按钮固定在顶部/底部,搜索按钮不再被挤出可视区(修复底部搜索按钮只显示一半)。
+3. **IME 中文输入**:输入框从只读 `Text` 换 `BasicTextField`,聚焦唤起系统 IME 可输入中文汉字;IME 激活时自绘键盘隐藏、焦点移开恢复;布局加 `imePadding` 避让 IME;聚焦加背景高亮反馈。
+4. **返回重新搜索**:结果标题改为可聚焦点击项,聚焦显示「按确认键重新搜索」提示,点击返回键盘重新搜索(Back 键仍保留)。
+5. **侧栏搜索重置**:侧栏选中「搜索」总是重置到初始搜索界面(清空上次查询/结果)。
+
+### 待真机验证
+- IME 唤起/自绘键盘隐藏与恢复、焦点流转(输入框 ↔ 建议面板 ↔ 键盘)需真机确认。
+
 ## v3.0.1-alpha.12
 
 **TV 设置崩溃修复(测试 alpha)**:v3.0.1-alpha.10 开放 gl/hl 内容地区设置时,TV `SettingsScreen` 新增的「内容地区」循环行漏把 `SettingsItemYoutubeContentRegion` 加进 `settingFocusRequesters` 焦点表,该行 modifier 用 `Map.getValue()` 取焦点请求器时抛 `NoSuchElementException`。LazyColumn 预组合视口附近 item,往下滚到「关注管理」(youtube-channels) 时紧邻其下的内容地区行被拉进组合即崩。移动端用 `MobileEnumPickerRow` 无焦点表,不受影响。
