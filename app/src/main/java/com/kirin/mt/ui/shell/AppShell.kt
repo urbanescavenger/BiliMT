@@ -942,7 +942,7 @@ fun BiliTvApp(
                 onWebDavConfigChange = { cfg ->
                   com.kirin.mt.core.webdav.validateAndSaveWebDavConfig(
                     store = webdavConfigStore,
-                    ping = { url -> webdavRepository.ping(url, cfg.username, cfg.password) },
+                    ping = { url -> webdavBackupService.ping(url, cfg.username, cfg.password) },
                     config = cfg,
                   )
                 },
