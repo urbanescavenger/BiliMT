@@ -949,6 +949,17 @@ fun BiliTvApp(
                     appSettingsStore.setIptvSourceUrl(url)
                     appSettingsStore.setIptvSourceUsername(username)
                     appSettingsStore.setIptvSourcePassword(password)
+                    // 保存后校验连通性,成功/失败都提示。
+                    val reachable = iptvRepository.checkSourceReachable(url, username, password)
+                    Toast.makeText(
+                      localizedContext,
+                      if (reachable) {
+                        R.string.settings_iptv_connect_success
+                      } else {
+                        R.string.settings_iptv_connect_failed
+                      },
+                      Toast.LENGTH_SHORT,
+                    ).show()
                   }
                 },
               )

@@ -521,6 +521,8 @@
     <string name="settings_iptv_username_label">账号</string>
     <string name="settings_iptv_password_label">密码</string>
     <string name="settings_iptv_configure_hint">未配置，点按编辑</string>
+    <string name="settings_iptv_connect_success">IPTV 源连接成功</string>
+    <string name="settings_iptv_connect_failed">IPTV 源连接失败</string>
     <string name="settings_webdav_username_label">账号</string>
     <string name="settings_webdav_password_label">密码</string>
     <string name="settings_webdav_field_hint">未填写</string>

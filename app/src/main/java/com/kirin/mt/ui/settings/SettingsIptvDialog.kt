@@ -171,7 +171,7 @@ internal fun SettingsIptvDialog(
 }
 
 /**
- * 补全 IPTV 源 URL:不带 http:// 或 https:// 时自动补 http://。
+ * 补全 IPTV 源 URL:不带 http:// 或 https:// 时自动补 https://(优先加密)。
  * 空串原样返回(未配置)。
  */
 internal fun normalizeIptvUrl(raw: String): String {
@@ -180,7 +180,7 @@ internal fun normalizeIptvUrl(raw: String): String {
   return if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
     trimmed
   } else {
-    "http://$trimmed"
+    "https://$trimmed"
   }
 }
 

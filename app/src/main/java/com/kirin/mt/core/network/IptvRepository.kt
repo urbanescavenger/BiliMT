@@ -54,6 +54,30 @@ class IptvRepository(
   }
 
   /**
+   * 校验 IPTV 源连通性(设置保存时调用):先 HEAD 轻量探测,不支持 HEAD(405/501)再回退 GET。
+   * 返回 true=可达(2xx),false=不可达/网络错误/未配置。
+   */
+  suspend fun checkSourceReachable(url: String, username: String, password: String): Boolean {
+    if (url.isBlank()) return false
+    val requestBuilder = Request.Builder()
+      .url(url)
+      .header("User-Agent", BiliHeaders.UserAgent)
+    if (username.isNotBlank()) {
+      requestBuilder.header("Authorization", Credentials.basic(username, password))
+    }
+    return try {
+      val headOk = client.newCall(requestBuilder.head().build()).execute().use { it.isSuccessful }
+      if (headOk) {
+        true
+      } else {
+        client.newCall(requestBuilder.get().build()).execute().use { it.isSuccessful }
+      }
+    } catch (error: Exception) {
+      false
+    }
+  }
+
+  /**
    * 解析 m3u 播放列表文本。处理样例（tmp/result.m3u）实测的坑：
    * 1. 同名频道多个镜像 URL → 合并成一个频道（urls 列表），非去重丢弃。
    * 2. 伪频道（名是时间戳，如 "2026-08-11 03:13:08"）→ 跳过。
