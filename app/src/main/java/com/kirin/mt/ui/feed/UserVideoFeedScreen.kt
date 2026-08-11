@@ -3,6 +3,7 @@ package com.kirin.mt.ui.feed
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -16,6 +17,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,8 +43,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import com.kirin.mt.R
+import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.youtube.YoutubeHistoryEntry
 import com.kirin.mt.core.network.FollowingSeason
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.network.YoutubeFeedTimeoutMs
@@ -183,6 +188,7 @@ private fun resetFeedTabFocus(feedState: UserFeedUiState, tab: UserFeedTab) {
 internal fun UserFeedScreen(
   videoRepository: VideoRepository,
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
+  youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
   isLoggedIn: Boolean,
   feedState: UserFeedUiState,
   autoRefreshOnSwitch: Boolean,
@@ -202,6 +208,9 @@ internal fun UserFeedScreen(
   val selectedTab = feedState.selectedTab
   var actionSheetVideo by remember { mutableStateOf<VideoSummary?>(null) }
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
+  // 本地 YouTube 播放历史(免登录):合并进 History tab,与 B 站历史按播放时间倒序混合。
+  val youtubeHistory by youtubeHistoryStore.history.collectAsState(initial = emptyList())
+  val youtubeHistoryVideos = youtubeHistory.map { it.toVideoSummary() }
 
   // 侧栏切回动态页时 screen 重组但未切子 tab → onSelect 不触发,当前子 tab 的旧
   // focusedVideoIndex 仍在,从 tab 按 Down 走 focusRestoredItemKey 会跳到旧深位置。
@@ -318,7 +327,9 @@ internal fun UserFeedScreen(
         true
       },
     )
-    if (!isLoggedIn && !(selectedTab == UserFeedTab.DynamicVideo && youtubeChannels.isNotEmpty())) {
+    // History tab 未登录也放行:本地 YouTube 历史免登录即可展示(与移动端一致);B 站历史仍要求登录。
+    val signedOutHistoryAllowed = selectedTab == UserFeedTab.History
+    if (!isLoggedIn && !signedOutHistoryAllowed && !(selectedTab == UserFeedTab.DynamicVideo && youtubeChannels.isNotEmpty())) {
       val message = stringResource(
        when (selectedTab) {
          UserFeedTab.History -> R.string.history_signed_out
@@ -369,8 +380,10 @@ internal fun UserFeedScreen(
             onOwnerSelected = onOwnerSelected,
             onCardLongPress = { video -> actionSheetVideo = video },
           )
-          UserFeedTab.History -> UserFeedContent(
+          UserFeedTab.History -> HistoryFeedContent(
             state = feedState.history.state,
+            youtubeVideos = youtubeHistoryVideos,
+            isLoggedIn = isLoggedIn,
             loadingMessage = stringResource(R.string.history_loading),
             emptyMessage = stringResource(R.string.history_empty),
             failedMessage = { message -> stringResource(R.string.history_failed_with_message, message) },
@@ -1182,6 +1195,104 @@ private fun List<com.kirin.mt.core.network.FollowingSeason>.resolveSeasonFocusIn
   return keyIndex.coerceAtLeast(0).coerceAtMost(lastIndex)
 }
 
+/**
+ * 历史 tab 内容:本地 YouTube 历史(免登录)+ B 站观看历史按播放时间倒序混合。
+ * 登录时 [state] 承载 B 站历史(含分页),未登录时只渲染 [youtubeVideos] 并附登录提示。
+ */
+@Composable
+private fun HistoryFeedContent(
+  state: UserFeedState,
+  youtubeVideos: List<VideoSummary>,
+  isLoggedIn: Boolean,
+  loadingMessage: String,
+  emptyMessage: String,
+  failedMessage: @Composable (String) -> String,
+  cardMode: VideoCardMode,
+  firstItemFocusRequester: FocusRequester,
+  restoredFocusIndex: Int,
+  restoredFocusKey: String,
+  restoreFocusRequestKey: Int,
+  onRestoreFocusHandled: (Int) -> Unit,
+  onFocusedIndexChange: (Int, VideoSummary) -> Unit,
+  onRetry: () -> Unit,
+  onLoadMore: () -> Unit,
+  onMoveUpFromFirstRow: () -> Boolean,
+  onMoveLeftToNav: () -> Boolean,
+  onVideoSelected: (VideoSummary) -> Unit,
+  onOwnerSelected: (VideoSummary) -> Unit = {},
+  onCardLongPress: (VideoSummary) -> Unit = {},
+  focusRestoredItemKey: Int = 0,
+) {
+  if (!isLoggedIn) {
+    // 未登录:跳过 B 站网络请求,只显示本地 YouTube 历史。
+    if (youtubeVideos.isEmpty()) {
+      FeedStatusScreen(message = stringResource(R.string.history_signed_out))
+      return
+    }
+    Column(modifier = Modifier.fillMaxSize()) {
+      Box(modifier = Modifier.weight(1f)) {
+        UserFeedContent(
+          state = UserFeedState.Success(
+            videos = emptyList(),
+            loadingMore = false,
+            endReached = true,
+            loadMoreError = "",
+          ),
+          extraVideos = youtubeVideos,
+          loadingMessage = loadingMessage,
+          emptyMessage = emptyMessage,
+          failedMessage = failedMessage,
+          cardMode = cardMode,
+          firstItemFocusRequester = firstItemFocusRequester,
+          restoredFocusIndex = restoredFocusIndex,
+          restoredFocusKey = restoredFocusKey,
+          restoreFocusRequestKey = restoreFocusRequestKey,
+          onRestoreFocusHandled = onRestoreFocusHandled,
+          onFocusedIndexChange = onFocusedIndexChange,
+          onRetry = onRetry,
+          onLoadMore = {},
+          onMoveUpFromFirstRow = onMoveUpFromFirstRow,
+          onMoveLeftToNav = onMoveLeftToNav,
+          onVideoSelected = onVideoSelected,
+          onOwnerSelected = onOwnerSelected,
+          onCardLongPress = onCardLongPress,
+          focusRestoredItemKey = focusRestoredItemKey,
+        )
+      }
+      Text(
+        text = stringResource(R.string.history_signed_out),
+        style = MaterialTheme.typography.bodyLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth().padding(24.dp),
+      )
+    }
+    return
+  }
+  UserFeedContent(
+    state = state,
+    extraVideos = youtubeVideos,
+    loadingMessage = loadingMessage,
+    emptyMessage = emptyMessage,
+    failedMessage = failedMessage,
+    cardMode = cardMode,
+    firstItemFocusRequester = firstItemFocusRequester,
+    restoredFocusIndex = restoredFocusIndex,
+    restoredFocusKey = restoredFocusKey,
+    restoreFocusRequestKey = restoreFocusRequestKey,
+    onRestoreFocusHandled = onRestoreFocusHandled,
+    onFocusedIndexChange = onFocusedIndexChange,
+    onRetry = onRetry,
+    onLoadMore = onLoadMore,
+    onMoveUpFromFirstRow = onMoveUpFromFirstRow,
+    onMoveLeftToNav = onMoveLeftToNav,
+    onVideoSelected = onVideoSelected,
+    onOwnerSelected = onOwnerSelected,
+    onCardLongPress = onCardLongPress,
+    focusRestoredItemKey = focusRestoredItemKey,
+  )
+}
+
 @Composable
 private fun UserFeedContent(
   state: UserFeedState,
@@ -1203,6 +1314,8 @@ private fun UserFeedContent(
   onOwnerSelected: (VideoSummary) -> Unit = {},
   onCardLongPress: (VideoSummary) -> Unit = {},
   focusRestoredItemKey: Int = 0,
+  /** 额外的本地条目(如 YouTube 历史),与 state.videos 按播放时间倒序合并展示。空则原样渲染。 */
+  extraVideos: List<VideoSummary> = emptyList(),
 ) {
   when (state) {
     UserFeedState.Loading -> VideoGridSkeleton()
@@ -1212,31 +1325,34 @@ private fun UserFeedContent(
       actionLabel = stringResource(R.string.action_retry),
       onAction = onRetry,
     )
-    is UserFeedState.Success -> UserFeedGrid(
-      videos = state.videos,
-      cardMode = cardMode,
-      firstItemFocusRequester = firstItemFocusRequester,
-      restoredFocusIndex = state.videos.resolveFocusIndex(
-        focusKey = restoredFocusKey,
-        fallbackIndex = restoredFocusIndex,
-      ),
-      restoreFocusRequestKey = restoreFocusRequestKey,
-      onRestoreFocusHandled = onRestoreFocusHandled,
-      onFocusedIndexChange = onFocusedIndexChange,
-      onLoadMore = onLoadMore,
-      onMoveUpFromFirstRow = onMoveUpFromFirstRow,
-      onMoveLeftToNav = onMoveLeftToNav,
-      onVideoSelected = onVideoSelected,
-      onOwnerSelected = onOwnerSelected,
-      onCardLongPress = onCardLongPress,
-      focusRestoredItemKey = focusRestoredItemKey,
-      footer = when {
-        state.loadMoreError.isNotBlank() -> GridFooterState.Error(state.loadMoreError)
-        state.loadingMore -> GridFooterState.Loading
-        state.endReached -> GridFooterState.EndReached
-        else -> GridFooterState.None
-      },
-    )
+    is UserFeedState.Success -> {
+      val displayVideos = mergeExtraVideos(state.videos, extraVideos)
+      UserFeedGrid(
+        videos = displayVideos,
+        cardMode = cardMode,
+        firstItemFocusRequester = firstItemFocusRequester,
+        restoredFocusIndex = displayVideos.resolveFocusIndex(
+          focusKey = restoredFocusKey,
+          fallbackIndex = restoredFocusIndex,
+        ),
+        restoreFocusRequestKey = restoreFocusRequestKey,
+        onRestoreFocusHandled = onRestoreFocusHandled,
+        onFocusedIndexChange = onFocusedIndexChange,
+        onLoadMore = onLoadMore,
+        onMoveUpFromFirstRow = onMoveUpFromFirstRow,
+        onMoveLeftToNav = onMoveLeftToNav,
+        onVideoSelected = onVideoSelected,
+        onOwnerSelected = onOwnerSelected,
+        onCardLongPress = onCardLongPress,
+        focusRestoredItemKey = focusRestoredItemKey,
+        footer = when {
+          state.loadMoreError.isNotBlank() -> GridFooterState.Error(state.loadMoreError)
+          state.loadingMore -> GridFooterState.Loading
+          state.endReached -> GridFooterState.EndReached
+          else -> GridFooterState.None
+        },
+      )
+    }
   }
 }
 
@@ -1426,6 +1542,34 @@ private fun List<VideoSummary>.appendUnique(nextVideos: List<VideoSummary>): Lis
   }
   val knownKeys = mapIndexedTo(mutableSetOf()) { index, video -> video.feedKey(index) }
   return this + nextVideos.filterIndexed { index, video -> knownKeys.add(video.feedKey(index)) }
+}
+
+/** 把额外的本地条目(YouTube 历史)与 [base](B 站历史)按播放时间倒序混合。extra 为空时原样返回 base。 */
+private fun mergeExtraVideos(base: List<VideoSummary>, extra: List<VideoSummary>): List<VideoSummary> {
+  if (extra.isEmpty()) return base
+  // 两者 viewAt 都是秒:YouTube=lastPlayedAtMs/1000,B站历史=viewAt(秒)。倒序排列,B站分页恒更旧,不重排已显示内容。
+  return (extra + base).sortedByDescending { it.viewAt }
+}
+
+/** YouTube 历史条目 → 卡片模型。progress 填秒数供续播;viewAt 填播放时间(秒)与 B 站历史同单位供混合排序。 */
+private fun YoutubeHistoryEntry.toVideoSummary(): VideoSummary {
+  return VideoSummary(
+    bvid = videoId,
+    title = title,
+    pic = thumbnailUrl,
+    ownerName = channelName,
+    ownerFace = "",
+    ownerMid = 0L,
+    view = 0,
+    danmaku = 0,
+    duration = (durationMs / 1000L).toInt(),
+    pubdate = 0L,
+    badge = "",
+    progress = (positionMs / 1000L).toInt(),
+    viewAt = lastPlayedAtMs / 1000L,
+    source = SourceYoutube,
+    channelId = channelId,
+  )
 }
 
 private fun List<VideoSummary>.resolveFocusIndex(focusKey: String, fallbackIndex: Int): Int {
