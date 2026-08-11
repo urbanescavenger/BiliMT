@@ -64,6 +64,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.kirin.mt.R
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
+import com.kirin.mt.core.player.BiliPlaybackHeaders
 import com.kirin.mt.core.player.LiveLoadErrorHandlingPolicy
 import com.kirin.mt.core.player.LivePlayInfo
 import com.kirin.mt.core.player.LiveQuality
@@ -146,7 +147,10 @@ fun LivePlayerScreen(
   val context = LocalContext.current
   val roomId = request.liveRoomId
   val scope = rememberCoroutineScope()
-  var selectedQn by remember(roomId) { mutableIntStateOf(request.preferredQualityId ?: LiveDefaultQn) }
+  // IPTV:selectedQn 当源索引,初值 0(第一个镜像源);B站直播才是清晰度 qn。
+  var selectedQn by remember(roomId) {
+    mutableIntStateOf(if (request.isIptv) 0 else (request.preferredQualityId ?: LiveDefaultQn))
+  }
   var loadState by remember(roomId) { mutableStateOf<LiveLoadState>(LiveLoadState.Loading) }
   var liveInfo by remember(roomId) { mutableStateOf<LivePlayInfo?>(null) }
   val isPlayingState = remember { mutableStateOf(false) }
@@ -160,7 +164,8 @@ fun LivePlayerScreen(
   var clockText by remember { mutableStateOf(currentClockText()) }
   // 直播画质持久化:首次进入从 store 读上次选择的 qn(若无显式 preferredQualityId)。
   // initialResolved 门控主加载,避免默认画质先加载一次再切存储值造成双加载/闪切。
-  var initialResolved by remember { mutableStateOf(request.preferredQualityId != null) }
+  // IPTV 无 store 画质可读,直接解锁主加载;B站直播才需先读 store。
+  var initialResolved by remember { mutableStateOf(request.isIptv || request.preferredQualityId != null) }
   var fullscreen by rememberSaveable { mutableStateOf(false) }
   // stall 自动恢复:缓冲卡住且进度不前进时自动重载源。
   var autoRetryCount by remember { mutableIntStateOf(0) }
@@ -195,6 +200,16 @@ fun LivePlayerScreen(
             "cause=${error.cause?.javaClass?.simpleName} message=${error.message}",
           error,
         )
+        // IPTV:断流时自动切下一个镜像源(selectedQn 当源索引),切完即重载。
+        // 与下方 retryKey 同机制:改 selectedQn 会触发主加载 LaunchedEffect 重跑。
+        if (request.isIptv && selectedQn < request.iptvUrls.lastIndex) {
+          selectedQn += 1
+          android.util.Log.w(
+            LivePlaybackLogTag,
+            "iptv source error, switch to source #${selectedQn + 1}/${request.iptvUrls.size}",
+          )
+          return
+        }
         // 自动重试一次;耗尽后展示错误 overlay 等用户手动重试。
         if (autoRetryCount < MaxLiveAutoRetry) {
           autoRetryCount += 1
@@ -222,8 +237,9 @@ fun LivePlayerScreen(
   }
 
   // 首次进入:若无显式 preferredQualityId,从 store 读上次直播画质选择,再解锁主加载。
+  // IPTV 源索引是每频道的,不读全局 store,直接跳过。
   LaunchedEffect(roomId) {
-    if (!initialResolved) {
+    if (!request.isIptv && !initialResolved) {
       val stored = runCatching { liveQualityPreferenceStore.quality.first() }.getOrDefault(LiveDefaultQn)
       if (stored > 0 && stored != selectedQn) selectedQn = stored
       initialResolved = true
@@ -236,13 +252,33 @@ fun LivePlayerScreen(
     playerErrorMsg.value = null
     player.clearMediaItems()
     try {
-      val info = playbackRepository.getLivePlayInfo(roomId, selectedQn)
+      // IPTV:直链 m3u8,selectedQn 当源索引,qualities 合成 [线路1, 线路2, ...] 供源切换面板。
+      // 不走 B站 getRoomPlayInfo,headers 置空(裸数据源,不套 B站 UA/头)。
+      val info = if (request.isIptv) {
+        val urls = request.iptvUrls
+        val idx = selectedQn.coerceIn(0, urls.lastIndex)
+        LivePlayInfo(
+          roomId = 0,
+          streamUrl = urls[idx],
+          isHls = true,
+          currentQn = idx,
+          qualities = urls.mapIndexed { i, _ -> LiveQuality(i, "线路${i + 1}") },
+          headers = BiliPlaybackHeaders(sessData = null, biliJct = null),
+        )
+      } else {
+        playbackRepository.getLivePlayInfo(roomId, selectedQn)
+      }
       liveInfo = info
       android.util.Log.i(LivePlaybackLogTag, "live playurl resolved room=$roomId qn=${info.currentQn} hls=${info.isHls}")
-      val dataSourceFactory = DefaultDataSource.Factory(
-        context,
-        BiliMediaDataSourceFactory(playbackHttpClient, info.headers).create(),
-      )
+      // IPTV 用裸数据源(不套 B站 UA/头);B站直播才走 BiliMediaDataSourceFactory。
+      val dataSourceFactory = if (request.isIptv) {
+        DefaultDataSource.Factory(context)
+      } else {
+        DefaultDataSource.Factory(
+          context,
+          BiliMediaDataSourceFactory(playbackHttpClient, info.headers).create(),
+        )
+      }
       val mediaSource = if (info.isHls) {
         HlsMediaSource.Factory(dataSourceFactory)
           .setLoadErrorHandlingPolicy(liveLoadErrorPolicy)
@@ -353,6 +389,8 @@ fun LivePlayerScreen(
   }
 
   fun persistQuality(qn: Int) {
+    // IPTV 的 selectedQn 是源索引(每频道),不能全局持久化,跳过。
+    if (request.isIptv) return
     scope.launch { runCatching { liveQualityPreferenceStore.setQuality(qn) } }
   }
 

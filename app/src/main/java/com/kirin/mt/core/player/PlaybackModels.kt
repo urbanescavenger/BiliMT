@@ -1,6 +1,7 @@
 package com.kirin.mt.core.player
 
 import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.youtube.InnerTubeClient
 
@@ -32,8 +33,10 @@ data class PlaybackRequest(
   val subType: Int = 0,
   /** 直播间 id;>0 表示这是直播播放请求,走 xlive/web-room/v2/index/getRoomPlayInfo,跳过 DASH playurl。 */
   val liveRoomId: Long = 0L,
-  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube]。YouTube 请求 bvid 字段承载 videoId。 */
+  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube] / [SourceIptv]。YouTube 请求 bvid 字段承载 videoId。 */
   val source: String = SourceBili,
+  /** IPTV 频道镜像源 URL 列表（仅 [SourceIptv] 请求填充）。播放器里按 selectedQn 当源索引切换。 */
+  val iptvUrls: List<String> = emptyList(),
   /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 请求填充，用于播放历史进频道主页；B 站为空串。 */
   val channelId: String = "",
   /**
@@ -48,6 +51,10 @@ data class PlaybackRequest(
 
   val isLive: Boolean
     get() = liveRoomId > 0L
+
+  /** 这是 IPTV 播放请求：直链 m3u8，跳过 B 站 getRoomPlayInfo。 */
+  val isIptv: Boolean
+    get() = source == SourceIptv
 
   /** 这是 YouTube 播放请求：走 InnerTube /player 解析 progressive 直链，跳过 B 站 DASH playurl。 */
   val isYoutube: Boolean

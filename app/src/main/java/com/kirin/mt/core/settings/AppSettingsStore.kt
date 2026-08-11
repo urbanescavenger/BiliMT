@@ -88,6 +88,7 @@ class AppSettingsStore(private val context: Context) {
       liquidGlassCardsEnabled = liquidGlassCardsEnabled,
       enabledHomeSections = enabledSections,
       homeSectionsOrder = homeSectionsOrder,
+      iptvSourceUrl = preferences[Keys.IptvSourceUrl] ?: "",
     )
   }
 
@@ -111,6 +112,12 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setChineseTextVariant(variant: ChineseTextVariant) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.ChineseTextVariant] = variant.key
+    }
+  }
+
+  suspend fun setIptvSourceUrl(url: String) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.IptvSourceUrl] = url
     }
   }
 
@@ -352,6 +359,7 @@ class AppSettingsStore(private val context: Context) {
     val HomeSectionsOrder = stringPreferencesKey("home_sections_order")
     val HomeSectionsUgcMigrationV1 = booleanPreferencesKey("home_sections_ugc_migration_v1")
     val HomeSectionsYoutubeMigrationV1 = booleanPreferencesKey("home_sections_youtube_migration_v1")
+    val IptvSourceUrl = stringPreferencesKey("iptv_source_url")
   }
 }
 

@@ -110,6 +110,7 @@ fun SettingsScreen(
   onWebDavConfigChange: (com.kirin.mt.core.webdav.WebDavConfig) -> Unit,
   onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
   onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
+  onIptvSourceUrlChange: (String) -> Unit,
 ) {
   val settingsListState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
@@ -153,6 +154,7 @@ fun SettingsScreen(
       SettingsItemWebDav to FocusRequester(),
       SettingsItemWebDavBackup to FocusRequester(),
       SettingsItemWebDavRestore to FocusRequester(),
+      SettingsItemIptv to FocusRequester(),
       SettingsItemLogs to FocusRequester(),
       SettingsItemAbout to FocusRequester(),
     )
@@ -161,6 +163,7 @@ fun SettingsScreen(
   var focusSettingJob by remember { mutableStateOf<Job?>(null) }
   var rightPanel by remember { mutableStateOf(SettingsRightPanel.None) }
   var showWebDavDialog by remember { mutableStateOf(false) }
+  var showIptvDialog by remember { mutableStateOf(false) }
 
   fun focusSettingItem(itemIndex: Int, direction: Int = 0): Boolean {
     val lazyIndex = settingsItemToLazyIndex(itemIndex, updateState)
@@ -270,6 +273,7 @@ fun SettingsScreen(
           }
         },
         onWebDavSelected = { showWebDavDialog = true },
+        onIptvSourceUrlChange = onIptvSourceUrlChange,
         onLogsSelected = onLogsSelected,
         logFiles = logFiles,
         isRecordingLog = isRecordingLog,
@@ -340,6 +344,17 @@ fun SettingsScreen(
         modifier = Modifier.align(Alignment.Center),
       )
     }
+    if (showIptvDialog) {
+      SettingsIptvDialog(
+        url = settings.iptvSourceUrl,
+        onSave = { url ->
+          onIptvSourceUrlChange(url)
+          showIptvDialog = false
+        },
+        onDismiss = { showIptvDialog = false },
+        modifier = Modifier.align(Alignment.Center),
+      )
+    }
   }
 }
 
@@ -402,6 +417,7 @@ private fun SettingsBehaviorColumn(
   onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
   onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
   onWebDavSelected: () -> Unit,
+  onIptvSourceUrlChange: (String) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -1027,6 +1043,22 @@ private fun SettingsBehaviorColumn(
         },
       )
     }
+    item(key = "iptv") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_iptv_title),
+        description = stringResource(R.string.settings_iptv_description),
+        value = settings.iptvSourceUrl,
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemIptv))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemIptv,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemIptv) },
+        onClick = { showIptvDialog = true },
+      )
+    }
     item(key = "logs") {
       SettingsActionRow(
         title = stringResource(R.string.settings_logs_entry_title),
@@ -1132,6 +1164,7 @@ private const val SettingsItemWebDav = 30
 private const val SettingsItemYoutubeContentRegion = 33
 private const val SettingsItemWebDavBackup = 31
 private const val SettingsItemWebDavRestore = 32
+private const val SettingsItemIptv = 34
 
 private val SettingsFocusableItems = listOf(
   SettingsItemPlaybackQuality,
@@ -1165,6 +1198,7 @@ private val SettingsFocusableItems = listOf(
   SettingsItemWebDav,
   SettingsItemWebDavBackup,
   SettingsItemWebDavRestore,
+  SettingsItemIptv,
   SettingsItemLogs,
   SettingsItemAbout,
   SettingsItemPlayerLogOverlay,
@@ -1250,6 +1284,10 @@ private fun settingsItemToLazyIndex(
   SettingsItemWebDavRestore -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     33 + updateExtraCount
+  }
+  SettingsItemIptv -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    34 + updateExtraCount
   }
   else -> 0
 }

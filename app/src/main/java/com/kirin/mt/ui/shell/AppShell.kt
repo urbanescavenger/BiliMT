@@ -64,6 +64,7 @@ import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
+import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.settings.AppPerformancePolicy
 import com.kirin.mt.core.settings.AppSettings
@@ -166,6 +167,7 @@ fun BiliTvApp(
   apkInstaller: ApkInstaller,
   webdavConfigStore: com.kirin.mt.core.webdav.WebDavConfigStore,
   webdavBackupService: com.kirin.mt.core.webdav.WebDavBackupService,
+  iptvRepository: com.kirin.mt.core.network.IptvRepository,
 ) {
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
@@ -408,6 +410,18 @@ fun BiliTvApp(
   }
 
   fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false): PlaybackRequest {
+    // IPTV 卡片:直链 m3u8,走直播播放器(LivePlayerScreen)的 IPTV 分支,带镜像源列表。
+    if (source == SourceIptv) {
+      return PlaybackRequest(
+        bvid = "",
+        cid = 0L,
+        title = title,
+        ownerName = ownerName,
+        coverUrl = pic,
+        source = SourceIptv,
+        iptvUrls = iptvUrls,
+      )
+    }
     // 直播卡片:走直播播放(独立 LivePlayerScreen),不带点播字段。
     if (liveRoomId > 0L) {
       return PlaybackRequest(
@@ -930,6 +944,9 @@ fun BiliTvApp(
                 },
                 onWebDavBackup = { cfg -> webdavBackupService.backup(cfg) },
                 onWebDavRestore = { cfg -> webdavBackupService.restore(cfg) },
+                onIptvSourceUrlChange = { url ->
+                  coroutineScope.launch { appSettingsStore.setIptvSourceUrl(url) }
+                },
               )
             }
             if (accountSelected) {
@@ -1106,6 +1123,7 @@ fun BiliTvApp(
                 )
                 AppDestination.Live -> com.kirin.mt.ui.live.LiveScreen(
                   liveRepository = liveRepository,
+                  iptvRepository = iptvRepository,
                   uiState = liveUiState,
                   firstItemFocusRequester = liveFocusRequester,
                   tabFocusRequester = liveTabFocusRequester,
@@ -1203,7 +1221,7 @@ fun BiliTvApp(
             .fillMaxSize()
             .background(BiliColors.VideoBlack),
         ) {
-          if (displayedPlaybackRequest.isLive) {
+          if (displayedPlaybackRequest.isLive || displayedPlaybackRequest.isIptv) {
             com.kirin.mt.ui.player.LivePlayerScreen(
               request = displayedPlaybackRequest,
               playbackRepository = playbackRepository,

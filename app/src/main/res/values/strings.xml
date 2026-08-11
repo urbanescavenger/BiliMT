@@ -67,6 +67,7 @@
     <string name="recommend_empty">推荐接口暂时没有返回视频。</string>
     <string name="recommend_failed_with_message">推荐加载失败。%1$s</string>
     <string name="live_empty">暂时没有正在直播的房间。</string>
+    <string name="live_iptv_empty">请先在设置中配置 IPTV 源地址。</string>
     <string name="live_failed_with_message">直播加载失败。%1$s</string>
     <string name="live_meta_online">%1$s 人气</string>
     <string name="live_quality">清晰度</string>
@@ -514,6 +515,9 @@
     <string name="settings_webdav_description">把 YouTube 关注频道备份到 WebDAV 服务器，换设备后还原</string>
     <string name="settings_webdav_configured">已配置</string>
     <string name="settings_webdav_url_label">服务器地址</string>
+    <string name="settings_iptv_title">IPTV 源地址</string>
+    <string name="settings_iptv_description">远程 m3u 播放列表 URL，直播页 IPTV 标签页读取</string>
+    <string name="settings_iptv_url_label">m3u 地址</string>
     <string name="settings_webdav_username_label">账号</string>
     <string name="settings_webdav_password_label">密码</string>
     <string name="settings_webdav_field_hint">未填写</string>

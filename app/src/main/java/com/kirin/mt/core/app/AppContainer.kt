@@ -10,6 +10,7 @@ import com.kirin.mt.core.cache.AppCacheManager
 import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliHttpClientFactory
+import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.core.network.SpaceHttpSupport
 import com.kirin.mt.core.network.VideoRepository
@@ -142,6 +143,10 @@ class AppContainer(context: Context) {
     wbiKeyRepository = wbiKeyRepository,
     wbiSigner = wbiSigner,
     sessionStore = sessionStore,
+  )
+  val iptvRepository: IptvRepository = IptvRepository(
+    client = downloadHttpClient,
+    appSettingsStore = appSettingsStore,
   )
   val playbackRepository: PlaybackRepository = PlaybackRepository(
     apiClient = apiClient,

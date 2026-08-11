@@ -62,6 +62,8 @@ data class AppSettings(
   val liquidGlassCardsEnabled: Boolean = false,
   val enabledHomeSections: Set<HomeSection> = HomeSection.DefaultOrder.toSet(),
   val homeSectionsOrder: List<HomeSection> = HomeSection.DefaultOrder,
+  /** IPTV 源地址（远程 m3u 播放列表 URL）。空串表示未配置，Live 页 IPTV tab 显示引导。 */
+  val iptvSourceUrl: String = "",
 ) {
   val lowSpecMode: Boolean
     get() = visualPerformanceMode == AppVisualPerformanceMode.Smooth

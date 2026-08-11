@@ -20,6 +20,7 @@ import androidx.compose.ui.res.stringResource
 import com.kirin.mt.R
 import com.kirin.mt.core.model.LiveAreaGroup
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.ui.common.BiliCapsuleTabRow
 import com.kirin.mt.ui.common.BiliPillTab
@@ -44,6 +45,12 @@ internal sealed interface LiveSection {
   data object Recommend : LiveSection {
     override val key = "recommend"
     override val label = "推荐"
+  }
+
+  /** IPTV 频道 tab:读配置的 m3u 源,无分页(一次拉全量)。 */
+  data object Iptv : LiveSection {
+    override val key = "iptv"
+    override val label = "IPTV"
   }
 
   data class Area(val group: LiveAreaGroup) : LiveSection {
@@ -99,6 +106,7 @@ internal data class LiveLoadRequest(
 @Composable
 internal fun LiveScreen(
   liveRepository: LiveRepository,
+  iptvRepository: IptvRepository,
   uiState: LiveUiState,
   firstItemFocusRequester: FocusRequester,
   tabFocusRequester: FocusRequester,
@@ -122,6 +130,7 @@ internal fun LiveScreen(
   val sections = remember(uiState.areaGroups) {
     buildList {
       add(LiveSection.Recommend)
+      add(LiveSection.Iptv)
       uiState.areaGroups.forEach { add(LiveSection.Area(it)) }
     }
   }
@@ -186,13 +195,28 @@ internal fun LiveScreen(
     val nextState = try {
       val page = when (sectionToLoad) {
         LiveSection.Recommend -> liveRepository.getLiveList(FirstPage)
+        LiveSection.Iptv -> null
         is LiveSection.Area -> liveRepository.getLiveListByArea(
           parentAreaId = sectionToLoad.group.id,
           areaId = 0,
           page = FirstPage,
         )
       }
-      if (page.items.isEmpty()) {
+      if (page == null) {
+        // IPTV:一次拉全量,无分页。未配置源时 getChannels 返回空 → 空态提示去设置。
+        val channels = iptvRepository.getChannels()
+        if (channels.isEmpty()) {
+          LiveState.Empty
+        } else {
+          LiveState.Success(
+            videos = channels.map { it.toVideoSummary() },
+            nextPage = 0,
+            loadingMore = false,
+            endReached = true,
+            loadMoreError = "",
+          )
+        }
+      } else if (page.items.isEmpty()) {
         LiveState.Empty
       } else {
         LiveState.Success(
@@ -228,6 +252,8 @@ internal fun LiveScreen(
       val nextState = try {
         val nextVideos = when (sectionToLoad) {
           LiveSection.Recommend -> liveRepository.getLiveList(pageToLoad)
+          // IPTV 无分页(endReached=true),loadNextPage 不会触发;占位保持编译穷尽。
+          LiveSection.Iptv -> return@launch
           is LiveSection.Area -> liveRepository.getLiveListByArea(
             parentAreaId = sectionToLoad.group.id,
             areaId = 0,
@@ -321,7 +347,11 @@ internal fun LiveScreen(
     ) {
       when (val currentState = state) {
         LiveState.Loading -> VideoGridSkeleton()
-        LiveState.Empty -> FeedStatusScreen(message = stringResource(R.string.live_empty))
+        LiveState.Empty -> FeedStatusScreen(
+          message = stringResource(
+            if (activeSection is LiveSection.Iptv) R.string.live_iptv_empty else R.string.live_empty,
+          ),
+        )
         is LiveState.Failed -> FeedStatusScreen(
           message = stringResource(R.string.live_failed_with_message, currentState.message),
           actionLabel = stringResource(R.string.action_retry),
