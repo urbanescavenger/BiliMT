@@ -341,7 +341,11 @@ fun SettingsScreen(
       SettingsWebDavDialog(
         config = webDavConfig,
         onSave = onWebDavConfigChange,
-        onDismiss = { showWebDavDialog = false },
+        onDismiss = {
+          showWebDavDialog = false
+          // 弹窗关闭后焦点回到打开它的 WebDAV 行,避免落到侧栏头像。
+          focusSettingItem(SettingsItemWebDav)
+        },
         modifier = Modifier.align(Alignment.Center),
       )
     }
@@ -353,8 +357,13 @@ fun SettingsScreen(
         onSave = { url, username, password ->
           onIptvSourceConfigChange(url, username, password)
           showIptvDialog = false
+          // 保存后焦点回到 IPTV 行(弹窗内 URL 字段随弹窗移除,不恢复会落到侧栏头像)。
+          focusSettingItem(SettingsItemIptv)
         },
-        onDismiss = { showIptvDialog = false },
+        onDismiss = {
+          showIptvDialog = false
+          focusSettingItem(SettingsItemIptv)
+        },
         modifier = Modifier.align(Alignment.Center),
       )
     }
