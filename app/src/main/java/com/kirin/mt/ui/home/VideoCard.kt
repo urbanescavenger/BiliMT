@@ -228,6 +228,7 @@ fun VideoCard(
           focused = focused,
           focusEffectsEnabled = focusEffectsEnabled,
           interactionPaused = interactionPaused,
+          coverOverride = coverOverride,
         )
         Column(
           modifier = Modifier
@@ -545,6 +546,7 @@ private fun VideoCover(
   focused: Boolean,
   focusEffectsEnabled: Boolean,
   interactionPaused: Boolean,
+  coverOverride: Any? = null,
 ) {
   val context = LocalContext.current
   val performancePolicy = LocalBiliPerformancePolicy.current

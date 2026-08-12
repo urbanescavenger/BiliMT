@@ -3,7 +3,7 @@ package com.kirin.mt.core.player
 import android.content.Context
 import android.graphics.Bitmap
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Semaphore
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 /**
