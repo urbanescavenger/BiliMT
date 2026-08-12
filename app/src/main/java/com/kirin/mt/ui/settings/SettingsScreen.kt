@@ -183,11 +183,20 @@ fun SettingsScreen(
 
   fun moveSettingFocus(itemIndex: Int, direction: Int): Boolean {
     val currentOrderIndex = SettingsFocusableItems.indexOf(itemIndex)
+    val size = SettingsFocusableItems.size
     var nextOrderIndex = currentOrderIndex + direction
-    while (nextOrderIndex in SettingsFocusableItems.indices) {
+    var wrapped = false
+    // 循环:越界从另一端继续找,实现首尾相接(最上按上→最底,最底按下→最上)。
+    // repeat(size) 兜底,避免全部项被跳过时死循环。
+    repeat(size) {
+      if (nextOrderIndex !in SettingsFocusableItems.indices) {
+        nextOrderIndex = ((nextOrderIndex % size) + size) % size
+        wrapped = true
+      }
       val targetItem = SettingsFocusableItems[nextOrderIndex]
       if (settingsItemToLazyIndex(targetItem, updateState) >= 0) {
-        return focusSettingItem(targetItem, direction)
+        // 循环跳转时滚动方向取反,把远端项滚进视口(上→底要往下滚,下→顶要往上滚)。
+        return focusSettingItem(targetItem, if (wrapped) -direction else direction)
       }
       nextOrderIndex += direction
     }
