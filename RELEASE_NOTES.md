@@ -1,5 +1,20 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.22
+
+**IPTV 播放黑屏修复 + TV 侧栏/设置页焦点循环导航(测试 alpha)**:两个独立改动——① IPTV 频道播放黑屏,根因是源 m3u8 302 重定向到 IPv6 节点,真机(Sony BRAVIA)常处"IPv6 已启用但不可路由"网络连不上,播放器一直 BUFFERING 0 轨道到不了 READY;② TV 侧栏与设置页在焦点边界要能循环(最上按上→最底,最底按下→最上)。
+
+### 修复
+- **IPTV 播放黑屏——数据源强制 IPv4**:实测源 `cf.19961226.xyz/iptv/` 的 m3u8 会 302 重定向,重定向目标按客户端 IP 族选择——走 IPv6 回 IPv6 字面量节点,走 IPv4 回 IPv4 节点。真机拿到 IPv6 重定向连不上 → HLS 内部重试一直 BUFFERING 不报错 → 黑屏。新增 `IptvDataSourceFactory`,用只返回 A 记录(过滤 AAAA)的 `Ipv4OnlyDns` 强制客户端走 IPv4,服务端即回 IPv4 节点;`LivePlayerScreen` IPTV 分支从裸 `DefaultDataSource` 换成它。B站直播不受影响(仍走 `BiliMediaDataSourceFactory`)。
+- **TV 侧栏焦点循环导航**:侧栏根 `Column` 加 `onPreviewKeyEvent`,仅在边界拦截——头像(最上)按上→跳到最底导航项(Live),最底 Live 按下→跳回头像;其余交给默认焦点遍历。`AccountNavItem`/`AppNavItem` 上报各自焦点 index。
+- **TV 设置页焦点循环导航**:`SettingsScreen.moveSettingFocus` 越界时取模回绕,首项按上→末项、末项按下→首项,跳过不可聚焦项,循环跳转时滚动方向取反把远端项滚进视口。
+
+### 待真机验证
+- Live → IPTV tab → 选频道能起播出画面(之前黑屏);源切换/断流自动切源正常。
+- 侧栏头像按上→Live、Live 按下→头像;设置页首项按上→末项、末项按下→首项;非边界上下移动仍正常;autoConfirm 聚焦选中行为不变。
+
+---
+
 ## v3.0.1-alpha.21
 
 **设置弹窗焦点恢复 + IPTV 主线程网络异常修复(测试 alpha)**:两个独立问题——① WebDAV/IPTV 编辑弹窗关闭后焦点丢失落到侧栏头像;② IPTV 的 `getChannels`/`checkSourceReachable` 在主线程协程里直接跑阻塞 `execute()`,抛 `NetworkOnMainThreadException`,导致 IPTV 频道加载不出、连通性探测永远失败(这也解释了 alpha.19/alpha.20 的探测超时改动在真机上没生效——探测根本没跑起来)。
