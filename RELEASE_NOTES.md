@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.24
+
+**IPTV 黑屏根因修复——动态放行 IPTV 源明文 HTTP(测试 alpha)**:alpha.23 真机日志(DNS 解析正常但 connectStart 从不触发、无 connectFailed、0 track 直接 ENDED)定位到真根因——IPTV 流 URL 是 `http://` 明文,而 app `targetSdk=36` 且 manifest 未开 `usesCleartextTraffic`,Android 9+ 默认禁明文 → OkHttp 在 `RealConnection.connect()` 开头、`connectStart` 之前抛 `CLEARTEXT communication not permitted` → 黑屏。TVBox 能播同一源,因其 manifest 开了明文。修:自定义 OkHttp `Platform` 只对 IPTV 源 host 动态放行明文,其余仍走系统 NetworkSecurityPolicy(不影响 B站 https)。
+
+### 修复
+- **动态放行 IPTV 源明文 HTTP**:新增 `IptvCleartextHosts`(线程安全 host 集合)+ `IptvCleartextPlatform`(子类化基类 `Platform`,把全部方法委托给替换前捕获的原始 `AndroidPlatform` 实例,仅重写 `isCleartextTrafficPermitted` 对已注册 host 放行明文)。`Ipv4OnlyDns.lookup()` 里注册 host——DNS 发生在 `findConnection`(先于 `connect()` 的明文检查),注册后即通过;302 重定向到新 host 时新 host 的 DNS 也会注册,天然覆盖。`BiliTvApplication.onCreate` 用 `Platform.resetForTests(IptvCleartextPlatform(Platform.get()))` 设置单例(OkHttp 4.12 唯一公开入口)。
+- **不能直接子类化 `AndroidPlatform`**:该类是 final,首版直接子类化编译失败,改委托方案。
+
+### 待真机验证
+- 真机装此版本播 IPTV,`Y:\download\bilitv\logs` 日志应出现 `connectStart ... family=v4`、`response`/`responseEnd`(alpha.23 完全没有),播放器应能到 READY 出画面(不再 0 track ENDED);B站直播/点播(https)回归不受影响。
+
+---
+
 ## v3.0.1-alpha.23
 
 **IPTV 黑屏网络诊断(测试 alpha)**:alpha.22 的数据源强制 IPv4 已在真机验证仍黑屏(ExoPlayer 模块列表已含 `media3.datasource.okhttp`,证明 `IptvDataSourceFactory` 已生效但 BUFFERING 依旧、0 轨道)。为定位真因,给 IPTV 的 OkHttpClient 加 `EventListener` + `Ipv4OnlyDns` 网络诊断日志,真机日志输出 DNS 解析族(过滤后 IPv4 数量)、连接实际走 v4/v6、连接失败与响应失败的具体异常、m3u8 302 重定向目标——用于判断黑屏是"没走到拉流"还是"走了但连不上"。
