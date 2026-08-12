@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.23
+
+**IPTV 黑屏网络诊断(测试 alpha)**:alpha.22 的数据源强制 IPv4 已在真机验证仍黑屏(ExoPlayer 模块列表已含 `media3.datasource.okhttp`,证明 `IptvDataSourceFactory` 已生效但 BUFFERING 依旧、0 轨道)。为定位真因,给 IPTV 的 OkHttpClient 加 `EventListener` + `Ipv4OnlyDns` 网络诊断日志,真机日志输出 DNS 解析族(过滤后 IPv4 数量)、连接实际走 v4/v6、连接失败与响应失败的具体异常、m3u8 302 重定向目标——用于判断黑屏是"没走到拉流"还是"走了但连不上"。
+
+### 变更
+- **IPTV 数据源加网络诊断日志**:`IptvDataSourceFactory` 的 OkHttpClient 挂 `IptvEventListener`,日志 tag `BiliMT:IptvNet`,记录 `dns lookup <host> -> <addrs> (filtered v6=... kept=N)`、`connectStart ... family=v4|v6`、`connectFailed`(协议+异常类名+消息)、`responseFailed`、`response`/`responseEnd`(含 302 `Location`)。若真机日志无任何 `BiliMT:IptvNet` 输出,则说明数据源没被走到,黑屏另有原因;若 `connectStart family=v6` 则 IPv4 强制未生效。
+- **修复 `connectFailed` override 签名缺 `proxy` 参数**:EventListener 的 `connectFailed` 必须带 `proxy: java.net.Proxy` 参数,上一版漏参导致编译失败(仅编译修复,无行为变化)。
+
+### 待真机验证
+- 真机装此版本播放 IPTV,`Y:\download\bilitv\logs` 日志中出现 `BiliMT:IptvNet` 系列输出,据其判断:是否走到了 `IptvDataSourceFactory`、连接走的 IP 族、失败的具体异常,据此定位黑屏根因。
+
+---
+
 ## v3.0.1-alpha.22
 
 **IPTV 播放黑屏修复 + TV 侧栏/设置页焦点循环导航(测试 alpha)**:两个独立改动——① IPTV 频道播放黑屏,根因是源 m3u8 302 重定向到 IPv6 节点,真机(Sony BRAVIA)常处"IPv6 已启用但不可路由"网络连不上,播放器一直 BUFFERING 0 轨道到不了 READY;② TV 侧栏与设置页在焦点边界要能循环(最上按上→最底,最底按下→最上)。
