@@ -3,7 +3,9 @@ package com.kirin.mt.core.network
 import android.util.Log
 import com.kirin.mt.core.settings.AppSettingsStore
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -37,28 +39,33 @@ class IptvRepository(
       Log.w(LogTag, "getChannels: url blank -> empty")
       return emptyList()
     }
-    val body = try {
-      val requestBuilder = Request.Builder()
-        .url(url)
-        .header("User-Agent", BiliHeaders.UserAgent)
-      // 配置了账号则带 Basic Auth(密码可选)。
-      if (settings.iptvSourceUsername.isNotBlank()) {
-        requestBuilder.header(
-          "Authorization",
-          Credentials.basic(settings.iptvSourceUsername, settings.iptvSourcePassword),
-        )
-      }
-      client.newCall(requestBuilder.build()).execute().use { response ->
-        if (!response.isSuccessful) {
-          Log.w(LogTag, "getChannels: url=$url http=${response.code} -> empty")
-          return emptyList()
+    // 阻塞 OkHttp 调用必须切 IO 线程,否则主线程协程(LaunchedEffect/rememberCoroutineScope)
+    // 直接 execute() 会抛 NetworkOnMainThreadException。
+    val body = withContext(Dispatchers.IO) {
+      try {
+        val requestBuilder = Request.Builder()
+          .url(url)
+          .header("User-Agent", BiliHeaders.UserAgent)
+        // 配置了账号则带 Basic Auth(密码可选)。
+        if (settings.iptvSourceUsername.isNotBlank()) {
+          requestBuilder.header(
+            "Authorization",
+            Credentials.basic(settings.iptvSourceUsername, settings.iptvSourcePassword),
+          )
         }
-        response.body?.string() ?: return emptyList()
+        client.newCall(requestBuilder.build()).execute().use { response ->
+          if (!response.isSuccessful) {
+            Log.w(LogTag, "getChannels: url=$url http=${response.code} -> empty")
+            null
+          } else {
+            response.body?.string()
+          }
+        }
+      } catch (error: Exception) {
+        Log.w(LogTag, "getChannels: url=$url failed: ${error.javaClass.simpleName}: ${error.message}")
+        null
       }
-    } catch (error: Exception) {
-      Log.w(LogTag, "getChannels: url=$url failed: ${error.javaClass.simpleName}: ${error.message}")
-      return emptyList()
-    }
+    } ?: return emptyList()
     val channels = parseM3u(body)
     Log.i(LogTag, "getChannels: url=$url body=${body.length} channels=${channels.size}")
     return channels
@@ -91,13 +98,16 @@ class IptvRepository(
       .readTimeout(probeTimeoutSeconds, TimeUnit.SECONDS)
       .writeTimeout(probeTimeoutSeconds, TimeUnit.SECONDS)
       .build()
-    return try {
-      val ok = probeClient.newCall(requestBuilder.get().build()).execute().use { it.isSuccessful }
-      Log.i(LogTag, "checkSourceReachable: url=$url reachable=$ok")
-      ok
-    } catch (error: Exception) {
-      Log.w(LogTag, "checkSourceReachable: url=$url failed: ${error.javaClass.simpleName}: ${error.message}")
-      false
+    // 阻塞 execute() 切 IO 线程,避免主线程协程抛 NetworkOnMainThreadException。
+    return withContext(Dispatchers.IO) {
+      try {
+        val ok = probeClient.newCall(requestBuilder.get().build()).execute().use { it.isSuccessful }
+        Log.i(LogTag, "checkSourceReachable: url=$url reachable=$ok")
+        ok
+      } catch (error: Exception) {
+        Log.w(LogTag, "checkSourceReachable: url=$url failed: ${error.javaClass.simpleName}: ${error.message}")
+        false
+      }
     }
   }
 
