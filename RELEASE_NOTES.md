@@ -1,5 +1,17 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.25
+
+**IPTV 黑屏修复续——302 重定向目标(IP 字面量)也放行明文(测试 alpha)**:alpha.24 真机日志确认明文放行已生效(`connectStart ott.mobaibox.com:80 family=v4`、`response`/`responseEnd code=302` 首次出现),但播放仍 0 track ENDED。日志显示 m3u8 302 重定向到 CDN 节点 `http://223.110.246.83:80/...`——重定向目标是 **IP 字面量**,不走 DNS,不触发 `Ipv4OnlyDns.lookup` 注册 → 明文检查仍拦 → 反复重试原 host 拿 302,永远到不了 CDN 节点。
+
+### 修复
+- **302 重定向目标也注册明文放行**:`IptvEventListener.responseHeadersEnd` 里,当响应是 3xx 且带 `Location` 时,解析 Location 的 host 注册进 `IptvCleartextHosts`。OkHttp 随后 follow 重定向时明文检查即通过。IP 字面量(如 `223.110.246.83`)与域名重定向目标都覆盖。
+
+### 待真机验证
+- 真机装此版本播 IPTV,日志应出现对重定向目标 `223.110.246.83:80` 的 `connectStart`(alpha.24 只有原 host 的 connectStart,重定向目标从未连上),播放器应能到 READY 出画面;B站直播/点播(https)回归不受影响。
+
+---
+
 ## v3.0.1-alpha.24
 
 **IPTV 黑屏根因修复——动态放行 IPTV 源明文 HTTP(测试 alpha)**:alpha.23 真机日志(DNS 解析正常但 connectStart 从不触发、无 connectFailed、0 track 直接 ENDED)定位到真根因——IPTV 流 URL 是 `http://` 明文,而 app `targetSdk=36` 且 manifest 未开 `usesCleartextTraffic`,Android 9+ 默认禁明文 → OkHttp 在 `RealConnection.connect()` 开头、`connectStart` 之前抛 `CLEARTEXT communication not permitted` → 黑屏。TVBox 能播同一源,因其 manifest 开了明文。修:自定义 OkHttp `Platform` 只对 IPTV 源 host 动态放行明文,其余仍走系统 NetworkSecurityPolicy(不影响 B站 https)。
