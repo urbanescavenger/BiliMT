@@ -1,5 +1,17 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.19
+
+**IPTV 源连通性校验修复(测试 alpha)**:设置里保存 IPTV 源地址时,`https://cf.19961226.xyz/iptv/` 这类源误报"连接失败"。根因是连通性探测复用了 download 的 300s read 超时 client,而该源服务器对 HEAD 请求直接挂起不响应——先 HEAD 再回退 GET 时,HEAD 要卡满 300s 才轮到 GET,保存像死掉一样,最终误报失败。
+
+### 修复
+- **连通性探测改独立短超时 GET**:`checkSourceReachable` 不再复用 download 的 300s read client,改用独立 10s 短超时 client 直接 GET(只判响应码不读 body,代价与 HEAD 相当)。对"只回 GET"的服务器一步到位,源不可达时 10s 内快速回吐,不再干等。
+
+### 待真机验证
+- 设置 → IPTV 源地址填 `https://cf.19961226.xyz/iptv/`(用户名/密码留空)→ 保存几秒内提示"连接成功" → Live 页 IPTV tab 列出频道。
+
+---
+
 ## v3.0.1-alpha.18
 
 **TV 设置页交互重构 + YouTube 频道面板崩溃修复(测试 alpha)**:设置页回归真正的两层架构——右侧二级菜单(关于/首页分区/YouTube 频道/日志)只由对应行**点击**开合,聚焦(仅把焦点移到该项)不再自动展开右侧面板;同时修复 YouTube 频道面板打开时自动抢焦点导致「点击展开后按方向键」崩溃。
