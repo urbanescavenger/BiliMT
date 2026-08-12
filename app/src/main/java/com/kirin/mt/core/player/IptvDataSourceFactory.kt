@@ -166,7 +166,15 @@ private object IptvEventListener : EventListener() {
   }
 
   override fun responseHeadersEnd(call: Call, response: okhttp3.Response) {
-    Log.i(IptvDataSourceFactoryLogTag, "responseEnd code=${response.code} url=${call.request().url} loc=${response.header("Location")}")
+    val loc = response.header("Location")
+    Log.i(IptvDataSourceFactoryLogTag, "responseEnd code=${response.code} url=${call.request().url} loc=$loc")
+    // 302 重定向目标常是 IP 字面量(如 http://223.110.246.83:80/...),IP 字面量不走 DNS,
+    // 不会触发 Ipv4OnlyDns.lookup 注册 → 明文检查仍拦。这里在拿到 302 时把 Location host
+    // 注册进明文放行集合,OkHttp 随后 follow 重定向时即通过。
+    if (response.code in 300..399 && loc != null) {
+      val target = runCatching { call.request().url.resolve(loc)?.host }.getOrNull()
+      if (target != null) IptvCleartextHosts.add(target)
+    }
   }
 }
 
