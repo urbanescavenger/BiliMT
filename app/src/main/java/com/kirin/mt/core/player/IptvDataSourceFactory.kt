@@ -88,6 +88,7 @@ private object IptvEventListener : EventListener() {
   override fun connectFailed(
     call: Call,
     inetSocketAddress: InetSocketAddress,
+    proxy: java.net.Proxy,
     protocol: Protocol?,
     ioe: IOException,
   ) {
