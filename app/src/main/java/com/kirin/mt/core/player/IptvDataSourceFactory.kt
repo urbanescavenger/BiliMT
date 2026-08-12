@@ -51,9 +51,34 @@ class IptvDataSourceFactory {
   }
 }
 
+/**
+ * 允许明文 HTTP 的 IPTV host 集合(动态注册)。
+ *
+ * IPTV 流 URL 是 http://(明文),而 app targetSdk=36 且 manifest 未开 usesCleartextTraffic,
+ * Android 9+ 默认禁明文 → OkHttp 在 connect() 开头、connectStart 之前抛
+ * "CLEARTEXT communication not permitted" → 黑屏。这里动态放行 IPTV 源里的 host,
+ * 其余 host 仍走系统 NetworkSecurityPolicy(不影响 B站 https 流量)。
+ */
+object IptvCleartextHosts {
+  private val hosts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+  fun add(host: String) {
+    hosts.add(host)
+  }
+  fun contains(host: String): Boolean = hosts.contains(host)
+}
+
+/** 只对已注册的 IPTV host 放行明文,其余委托系统 NetworkSecurityPolicy。 */
+class IptvCleartextPlatform : okhttp3.internal.platform.AndroidPlatform() {
+  override fun isCleartextTrafficPermitted(hostname: String): Boolean =
+    if (IptvCleartextHosts.contains(hostname)) true else super.isCleartextTrafficPermitted(hostname)
+}
+
 /** 只返回 IPv4(A 记录),过滤 IPv6(AAAA),强制客户端走 IPv4。 */
 private object Ipv4OnlyDns : Dns {
   override fun lookup(hostname: String): List<InetAddress> {
+    // 注册明文放行:DNS 发生在 findConnection(先于 connect() 的明文检查),注册后即通过。
+    // 302 重定向到新 host 时,新 host 的 DNS 也会注册,天然覆盖。
+    IptvCleartextHosts.add(hostname)
     val resolved = Dns.SYSTEM.lookup(hostname)
     val filtered = resolved.filter { it is Inet4Address }
     val hasV6 = resolved.any { it is Inet6Address }
