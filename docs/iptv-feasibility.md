@@ -112,7 +112,7 @@ val info = if (request.isIptv) {
 - `SettingsScreen` 加「IPTV 源地址」行,未配置显示"未配置,点按编辑"占位,点击弹 `SettingsIptvDialog`。
 - `SettingsIptvDialog` 镜像 WebDAV 弹窗:URL/账号/密码三字段(密码掩码),保存/取消按钮。
 - **URL 自动补全**:`normalizeIptvUrl` 不带 `http://`/`https://` 时补 `https://`(优先加密)。
-- **连通性校验**:保存后 `IptvRepository.checkSourceReachable`(独立 10s 短超时 client 直接 GET,带 Basic Auth),Toast 提示"连接成功/连接失败"。**坑**:源服务器(如 `cf.19961226.xyz/iptv/`)对 HEAD 直接挂起不响应,若复用 download 的 300s read 超时 client 先 HEAD 再回退,HEAD 会卡满 300s 才轮到 GET → 保存像死掉误报"连接失败";故探测不复用长超时 client,统一短超时 GET(只判响应码不读 body)。
+- **连通性校验**:保存后 `IptvRepository.checkSourceReachable`(独立 20s 超时 client 直接 GET,带 Basic Auth),Toast 提示"连接成功/连接失败"。**坑**:源服务器(如 `cf.19961226.xyz/iptv/`)对 HEAD 直接挂起不响应,若复用 download 的 300s read 超时 client 先 HEAD 再回退,HEAD 会卡满 300s 才轮到 GET → 保存像死掉误报"连接失败";故探测不复用长超时 client,统一短超时 GET(只判响应码不读 body)。**超时不能太短**:该源 TTFB 可达 9s+、偶发 SSL 失败,10s 超时在真机网络下误判,取 20s。
 
 ### 数据模型
 
@@ -124,7 +124,7 @@ val info = if (request.isIptv) {
 
 - `getChannels()`:拉配置的 m3u URL(带 Basic Auth)→ `parseM3u` → `List<IptvChannel>`。无 B站 API/WBI/cookie。
 - `parseM3u` 处理 4 坑:同名合并镜像 URL、跳伪频道(时间戳名)、滤 rtmp、保留 query 串。
-- `checkSourceReachable()`:连通性校验(独立短超时 client 直接 GET,不复用 download 300s read)。
+- `checkSourceReachable()`:连通性校验(独立 20s 超时 client 直接 GET,不复用 download 300s read)。
 
 ### 播放:合成 LivePlayInfo + 裸数据源 + 3 guard + 自动切源
 

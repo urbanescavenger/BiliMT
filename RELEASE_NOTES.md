@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.20
+
+**IPTV 源连通性探测超时修复(测试 alpha)**:alpha.19 把探测改成独立短超时 GET 后,`https://cf.19961226.xyz/iptv/` 这类源仍误报"连接失败"。实测该源服务器响应慢且不稳定——TTFB 可达 9s+、偶发 SSL 连接失败,10s 探测超时在真机网络下会超时误判。
+
+### 修复
+- **探测超时 10s→20s**:`checkSourceReachable` 的独立探测 client 超时从 10s 提到 20s,兼顾慢源与快速回吐。
+- **加诊断日志**:`IptvRepository` 加 `BiliMT:Iptv` 标签日志,记录 URL、HTTP 状态码、异常类型+消息、解析频道数,便于真机排查。
+
+### 待真机验证
+- 设置 → IPTV 源地址填 `https://cf.19961226.xyz/iptv/`(用户名/密码留空)→ 保存提示"连接成功" → Live 页 IPTV tab 列出频道。
+
+---
+
 ## v3.0.1-alpha.19
 
 **IPTV 源连通性校验修复(测试 alpha)**:设置里保存 IPTV 源地址时,`https://cf.19961226.xyz/iptv/` 这类源误报"连接失败"。根因是连通性探测复用了 download 的 300s read 超时 client,而该源服务器对 HEAD 请求直接挂起不响应——先 HEAD 再回退 GET 时,HEAD 要卡满 300s 才轮到 GET,保存像死掉一样,最终误报失败。
