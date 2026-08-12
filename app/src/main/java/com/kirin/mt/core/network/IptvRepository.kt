@@ -1,5 +1,6 @@
 package com.kirin.mt.core.network
 
+import android.util.Log
 import com.kirin.mt.core.settings.AppSettingsStore
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.first
@@ -32,7 +33,10 @@ class IptvRepository(
   suspend fun getChannels(): List<IptvChannel> {
     val settings = appSettingsStore.settings.first()
     val url = settings.iptvSourceUrl
-    if (url.isBlank()) return emptyList()
+    if (url.isBlank()) {
+      Log.w(LogTag, "getChannels: url blank -> empty")
+      return emptyList()
+    }
     val body = try {
       val requestBuilder = Request.Builder()
         .url(url)
@@ -45,13 +49,19 @@ class IptvRepository(
         )
       }
       client.newCall(requestBuilder.build()).execute().use { response ->
-        if (!response.isSuccessful) return emptyList()
+        if (!response.isSuccessful) {
+          Log.w(LogTag, "getChannels: url=$url http=${response.code} -> empty")
+          return emptyList()
+        }
         response.body?.string() ?: return emptyList()
       }
     } catch (error: Exception) {
+      Log.w(LogTag, "getChannels: url=$url failed: ${error.javaClass.simpleName}: ${error.message}")
       return emptyList()
     }
-    return parseM3u(body)
+    val channels = parseM3u(body)
+    Log.i(LogTag, "getChannels: url=$url body=${body.length} channels=${channels.size}")
+    return channels
   }
 
   /**
@@ -66,7 +76,10 @@ class IptvRepository(
    * 3. 短超时保证失败快速回吐,不会让设置页干等。
    */
   suspend fun checkSourceReachable(url: String, username: String, password: String): Boolean {
-    if (url.isBlank()) return false
+    if (url.isBlank()) {
+      Log.w(LogTag, "checkSourceReachable: url blank -> false")
+      return false
+    }
     val requestBuilder = Request.Builder()
       .url(url)
       .header("User-Agent", BiliHeaders.UserAgent)
@@ -78,9 +91,14 @@ class IptvRepository(
       .readTimeout(probeTimeoutSeconds, TimeUnit.SECONDS)
       .writeTimeout(probeTimeoutSeconds, TimeUnit.SECONDS)
       .build()
-    return runCatching {
-      probeClient.newCall(requestBuilder.get().build()).execute().use { it.isSuccessful }
-    }.getOrDefault(false)
+    return try {
+      val ok = probeClient.newCall(requestBuilder.get().build()).execute().use { it.isSuccessful }
+      Log.i(LogTag, "checkSourceReachable: url=$url reachable=$ok")
+      ok
+    } catch (error: Exception) {
+      Log.w(LogTag, "checkSourceReachable: url=$url failed: ${error.javaClass.simpleName}: ${error.message}")
+      false
+    }
   }
 
   /**
@@ -140,5 +158,6 @@ class IptvRepository(
   /** 连通性探测短超时(秒)：源不可达时快速回吐，不复用 download 的 300s read 超时。 */
   private companion object {
     const val probeTimeoutSeconds = 10L
+    const val LogTag = "BiliMT:Iptv"
   }
 }
