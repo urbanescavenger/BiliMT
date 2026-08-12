@@ -53,6 +53,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import coil.size.Precision
 import com.kirin.mt.R
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.image.buildVideoThumbnailRequest
@@ -98,6 +101,9 @@ fun VideoCard(
   onClick: () -> Unit = {},
   onFocused: () -> Unit = {},
   onOwnerTap: () -> Unit = {},
+  // 封面覆盖图(Coil data,可传 Bitmap)。IPTV 频道无 tvg-logo 时用拉流截帧的缩略图;
+  // 非空时优先于 video.pic 显示,空则走原 video.pic 封面。
+  coverOverride: Any? = null,
 ) {
   var focused by remember { mutableStateOf(false) }
   val performancePolicy = LocalBiliPerformancePolicy.current
@@ -546,19 +552,37 @@ private fun VideoCover(
   val request = remember(
     context,
     video.pic,
+    coverOverride,
     performancePolicy.videoThumbnailWidthPx,
     performancePolicy.videoThumbnailHeightPx,
     performancePolicy.videoThumbnailRgb565Enabled,
     performancePolicy.imageMemoryCacheEnabled,
   ) {
-    buildVideoThumbnailRequest(
-      context = context,
-      url = video.pic,
-      widthPx = performancePolicy.videoThumbnailWidthPx,
-      heightPx = performancePolicy.videoThumbnailHeightPx,
-      allowRgb565 = performancePolicy.videoThumbnailRgb565Enabled,
-      memoryCacheEnabled = performancePolicy.imageMemoryCacheEnabled,
-    )
+    if (coverOverride != null) {
+      // IPTV 截帧缩略图:直接以 Bitmap 为 Coil data,不走 B 站 CDN 尺寸后缀/请求头。
+      ImageRequest.Builder(context)
+        .data(coverOverride)
+        .size(
+          performancePolicy.videoThumbnailWidthPx,
+          performancePolicy.videoThumbnailHeightPx,
+        )
+        .precision(Precision.INEXACT)
+        .allowRgb565(performancePolicy.videoThumbnailRgb565Enabled)
+        .memoryCachePolicy(
+          if (performancePolicy.imageMemoryCacheEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED,
+        )
+        .crossfade(false)
+        .build()
+    } else {
+      buildVideoThumbnailRequest(
+        context = context,
+        url = video.pic,
+        widthPx = performancePolicy.videoThumbnailWidthPx,
+        heightPx = performancePolicy.videoThumbnailHeightPx,
+        allowRgb565 = performancePolicy.videoThumbnailRgb565Enabled,
+        memoryCacheEnabled = performancePolicy.imageMemoryCacheEnabled,
+      )
+    }
   }
   val title = convertChineseText(video.title)
   val badge = convertChineseText(video.badge)

@@ -1,10 +1,12 @@
 package com.kirin.mt.ui.live
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -16,12 +18,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import com.kirin.mt.R
 import com.kirin.mt.core.model.LiveAreaGroup
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.network.LiveRepository
+import com.kirin.mt.core.player.IptvThumbnailManager
 import com.kirin.mt.ui.common.BiliCapsuleTabRow
 import com.kirin.mt.ui.common.BiliPillTab
 import com.kirin.mt.ui.common.FeedStatusScreen
@@ -146,6 +150,18 @@ internal fun LiveScreen(
     ?: sections.first()
   val selectedSectionFocusRequester = tabFocusRequester
   val state = uiState.sectionStates[activeSection.key] ?: LiveState.Loading
+
+  // IPTV 频道缩略图:进 IPTV tab 自动后台截帧(拉流截一帧),只截当前可见频道(懒加载)。
+  // 会话级 manager(每次进 tab 新建,离开 clear 清缓存 → 下次进重新截,不永久磁盘缓存)。
+  val context = LocalContext.current
+  val isIptv = activeSection is LiveSection.Iptv
+  val thumbnailManager = remember(context, isIptv) {
+    if (isIptv) IptvThumbnailManager(context) else null
+  }
+  var iptvThumbnails by remember { mutableStateOf<Map<String, Bitmap>>(emptyMap()) }
+  DisposableEffect(thumbnailManager) {
+    onDispose { thumbnailManager?.clear() }
+  }
 
   fun requestSectionLoad(sectionKey: String, refreshKey: Int) {
     uiState.nextLoadRequestId += 1
@@ -388,6 +404,23 @@ internal fun LiveScreen(
             onOwnerSelected = { },
             onCardLongPress = { },
             keyFactory = { _, video -> video.liveRoomId },
+            // IPTV:封面用拉流截帧缩略图(懒加载,只截当前可见频道);非 IPTV 不传。
+            coverOverrides = if (isIptv) iptvThumbnails else null,
+            onVisibleRangeChange = if (isIptv) { first, last ->
+              coroutineScope.launch {
+                // 最后一行可能不满,clamp 到列表末尾避免 subList 越界。
+                val safeLast = last.coerceAtMost(currentState.videos.lastIndex)
+                if (first > safeLast) return@launch
+                val visible = currentState.videos.subList(first, safeLast + 1)
+                for (video in visible) {
+                  val url = video.iptvUrls.firstOrNull() ?: continue
+                  val bmp = thumbnailManager?.getThumbnail(url) ?: continue
+                  if (bmp != null) {
+                    iptvThumbnails = iptvThumbnails + (url to bmp)
+                  }
+                }
+              }
+            } else null,
             topPadding = BiliSizing.HomeVideoGridTopPadding + BiliSizing.HomeVideoGridTopBleed,
             topBleed = BiliSizing.HomeVideoGridTopBleed,
           )

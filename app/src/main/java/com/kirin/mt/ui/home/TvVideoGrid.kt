@@ -35,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,6 +71,7 @@ import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -142,6 +144,11 @@ internal fun TvVideoGrid(
   topPadding: Dp = BiliFocus.ScrollInset,
   topBleed: Dp = 0.dp,
   keyFactory: (Int, VideoSummary) -> Any = { _, video -> video.bvid },
+  // 封面覆盖图 map:key 用 video.iptvUrls.firstOrNull()(IPTV 频道 URL 唯一)。
+  // 非 IPTV 视频 iptvUrls 空 → key="" 不命中,不影响。IPTV 无 tvg-logo 时用拉流截帧缩略图。
+  coverOverrides: Map<String, Any?>? = null,
+  // 可见范围变化回调(视频 index 范围,含两端)。IPTV 懒加载截帧用:只截当前显示的频道。
+  onVisibleRangeChange: ((Int, Int) -> Unit)? = null,
 ) {
   val columns = BiliSizing.VideoGridColumns
   val rowCount = (videos.size + columns - 1) / columns
@@ -156,6 +163,20 @@ internal fun TvVideoGrid(
   val listState = rememberLazyListState(
     initialFirstVisibleItemIndex = if (restoreFocusRequestKey > 0) restoreTargetRow else 0,
   )
+  // 可见范围变化回调(懒加载截帧用):监听网格可见行 index 范围,distinctUntilChanged 后
+  // 回调视频 index 范围(含两端)。IPTV 分支据此只截当前显示的频道。
+  LaunchedEffect(listState, columns) {
+    snapshotFlow {
+      val info = listState.layoutInfo
+      val firstRow = info.visibleItemsInfo.firstOrNull()?.index ?: 0
+      val lastRow = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+      firstRow to lastRow
+    }
+      .distinctUntilChanged()
+      .collect { (firstRow, lastRow) ->
+        onVisibleRangeChange?.invoke(firstRow * columns, (lastRow + 1) * columns - 1)
+      }
+  }
   val coroutineScope = rememberCoroutineScope()
   var centerDownMs by remember { mutableLongStateOf(0L) }
   val performancePolicy = LocalBiliPerformancePolicy.current
@@ -477,6 +498,7 @@ internal fun TvVideoGrid(
                 video = video,
                 mode = cardMode,
                 interactionPaused = rowScrollActive,
+                coverOverride = coverOverrides?.get(video.iptvUrls.firstOrNull().orEmpty()),
                 modifier = Modifier
                   .weight(1f)
                   .focusRequester(itemFocusRequesters[index])
