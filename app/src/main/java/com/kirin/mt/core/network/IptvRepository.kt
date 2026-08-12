@@ -155,9 +155,13 @@ class IptvRepository(
   private fun isPseudoChannel(name: String): Boolean =
     name.matches(Regex("\\d{4}-\\d{2}-\\d{2}.*"))
 
-  /** 连通性探测短超时(秒)：源不可达时快速回吐，不复用 download 的 300s read 超时。 */
+  /**
+   * 连通性探测超时(秒)：源不可达时快速回吐，不复用 download 的 300s read 超时。
+   * 不能太短——实测 cf.19961226.xyz/iptv/ 这类源 TTFB 可达 9s+、偶发 SSL 连接失败，
+   * 10s 超时在真机网络下会误判"连接失败"。取 20s 兼顾慢源与快速回吐。
+   */
   private companion object {
-    const val probeTimeoutSeconds = 10L
+    const val probeTimeoutSeconds = 20L
     const val LogTag = "BiliMT:Iptv"
   }
 }
