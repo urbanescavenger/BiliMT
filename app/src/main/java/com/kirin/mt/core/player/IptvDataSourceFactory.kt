@@ -18,6 +18,7 @@ import okhttp3.Handshake
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
+import okhttp3.internal.platform.Platform
 
 /**
  * IPTV 流专用数据源工厂。
@@ -67,10 +68,40 @@ object IptvCleartextHosts {
   fun contains(host: String): Boolean = hosts.contains(host)
 }
 
-/** 只对已注册的 IPTV host 放行明文,其余委托系统 NetworkSecurityPolicy。 */
-class IptvCleartextPlatform : okhttp3.internal.platform.AndroidPlatform() {
+/**
+ * 只对已注册的 IPTV host 放行明文,其余委托原始 AndroidPlatform(保留系统 NetworkSecurityPolicy
+ * 与 Android 的 TLS/证书处理,不影响 B站 https)。
+ *
+ * 不能直接子类化 AndroidPlatform(它是 final),故子类化基类 Platform 并把所有方法委托给
+ * 替换前捕获的原始 Platform 实例,仅重写 isCleartextTrafficPermitted。
+ */
+class IptvCleartextPlatform(private val delegate: Platform) : Platform() {
   override fun isCleartextTrafficPermitted(hostname: String): Boolean =
-    if (IptvCleartextHosts.contains(hostname)) true else super.isCleartextTrafficPermitted(hostname)
+    if (IptvCleartextHosts.contains(hostname)) true else delegate.isCleartextTrafficPermitted(hostname)
+
+  override fun newSSLContext(): javax.net.ssl.SSLContext = delegate.newSSLContext()
+  override fun platformTrustManager(): javax.net.ssl.X509TrustManager = delegate.platformTrustManager()
+  override fun trustManager(sslSocketFactory: javax.net.ssl.SSLSocketFactory): javax.net.ssl.X509TrustManager? =
+    delegate.trustManager(sslSocketFactory)
+  override fun configureTlsExtensions(
+    sslSocket: javax.net.ssl.SSLSocket,
+    hostname: String?,
+    protocols: List<Protocol>,
+  ) = delegate.configureTlsExtensions(sslSocket, hostname, protocols)
+  override fun afterHandshake(sslSocket: javax.net.ssl.SSLSocket) = delegate.afterHandshake(sslSocket)
+  override fun getSelectedProtocol(sslSocket: javax.net.ssl.SSLSocket): String? =
+    delegate.getSelectedProtocol(sslSocket)
+  override fun connectSocket(socket: java.net.Socket, address: java.net.InetSocketAddress, connectTimeout: Int) =
+    delegate.connectSocket(socket, address, connectTimeout)
+  override fun log(message: String, level: Int, t: Throwable?) = delegate.log(message, level, t)
+  override fun getStackTraceForCloseable(closer: String): Any? = delegate.getStackTraceForCloseable(closer)
+  override fun logCloseableLeak(message: String, stackTrace: Any?) = delegate.logCloseableLeak(message, stackTrace)
+  override fun buildCertificateChainCleaner(trustManager: javax.net.ssl.X509TrustManager): okhttp3.internal.tls.CertificateChainCleaner =
+    delegate.buildCertificateChainCleaner(trustManager)
+  override fun buildTrustRootIndex(trustManager: javax.net.ssl.X509TrustManager): okhttp3.internal.tls.TrustRootIndex =
+    delegate.buildTrustRootIndex(trustManager)
+  override fun newSslSocketFactory(trustManager: javax.net.ssl.X509TrustManager): javax.net.ssl.SSLSocketFactory =
+    delegate.newSslSocketFactory(trustManager)
 }
 
 /** 只返回 IPv4(A 记录),过滤 IPv6(AAAA),强制客户端走 IPv4。 */
