@@ -1,6 +1,7 @@
 package com.kirin.mt.core.network
 
 import com.kirin.mt.core.settings.AppSettingsStore
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.first
 import okhttp3.Credentials
 import okhttp3.OkHttpClient
@@ -54,11 +55,15 @@ class IptvRepository(
   }
 
   /**
-   * 校验 IPTV 源连通性(设置保存时调用):先 HEAD 轻量探测,HEAD 失败/超时/非 2xx 都回退 GET。
+   * 校验 IPTV 源连通性(设置保存时调用)。
    * 返回 true=可达(2xx),false=不可达/网络错误/未配置。
    *
-   * 注意:有些源服务器(如 cf.19961226.xyz/iptv/)对 HEAD 直接挂起超时、只响应 GET。
-   * 因此 HEAD 的任何异常都不能当作连接失败,必须回退 GET 再判定。
+   * 探测统一走 GET + 短超时(独立 [probeTimeoutSeconds] 的临时 client,不复用
+   * download 的 300s read 超时)。原因:
+   * 1. 有些源服务器(如 cf.19961226.xyz/iptv/)对 HEAD 直接挂起不响应,只回 GET;
+   *    若先 HEAD 再回退,HEAD 会卡满 300s 才轮到 GET,保存像死掉 → 误报"连接失败"。
+   * 2. GET 只判响应码不读 body,代价与 HEAD 相当,且对"只回 GET"的服务器一步到位。
+   * 3. 短超时保证失败快速回吐,不会让设置页干等。
    */
   suspend fun checkSourceReachable(url: String, username: String, password: String): Boolean {
     if (url.isBlank()) return false
@@ -68,14 +73,13 @@ class IptvRepository(
     if (username.isNotBlank()) {
       requestBuilder.header("Authorization", Credentials.basic(username, password))
     }
-    // HEAD 轻量探测:异常/超时/非 2xx 均视为"不支持 HEAD",不致命,继续走 GET。
-    val headOk = runCatching {
-      client.newCall(requestBuilder.head().build()).execute().use { it.isSuccessful }
-    }.getOrDefault(false)
-    if (headOk) return true
-    // GET 回退:真实连通性判定(带 Basic Auth)。
+    val probeClient = client.newBuilder()
+      .connectTimeout(probeTimeoutSeconds, TimeUnit.SECONDS)
+      .readTimeout(probeTimeoutSeconds, TimeUnit.SECONDS)
+      .writeTimeout(probeTimeoutSeconds, TimeUnit.SECONDS)
+      .build()
     return runCatching {
-      client.newCall(requestBuilder.get().build()).execute().use { it.isSuccessful }
+      probeClient.newCall(requestBuilder.get().build()).execute().use { it.isSuccessful }
     }.getOrDefault(false)
   }
 
@@ -132,4 +136,9 @@ class IptvRepository(
   /** 伪频道：名是时间戳（如 "2026-08-11 03:13:08"），是源里的元数据行非真频道。 */
   private fun isPseudoChannel(name: String): Boolean =
     name.matches(Regex("\\d{4}-\\d{2}-\\d{2}.*"))
+
+  /** 连通性探测短超时(秒)：源不可达时快速回吐，不复用 download 的 300s read 超时。 */
+  private companion object {
+    const val probeTimeoutSeconds = 10L
+  }
 }
