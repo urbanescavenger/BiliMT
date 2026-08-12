@@ -65,6 +65,7 @@ import androidx.media3.ui.PlayerView
 import com.kirin.mt.R
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.BiliPlaybackHeaders
+import com.kirin.mt.core.player.IptvDataSourceFactory
 import com.kirin.mt.core.player.LiveLoadErrorHandlingPolicy
 import com.kirin.mt.core.player.LivePlayInfo
 import com.kirin.mt.core.player.LiveQuality
@@ -176,6 +177,9 @@ fun LivePlayerScreen(
   }
   val controlsFocusRequester = remember { FocusRequester() }
   val liveLoadErrorPolicy = remember { LiveLoadErrorHandlingPolicy() }
+  // IPTV 数据源:强制 IPv4(源 m3u8 302 重定向按客户端 IP 族选节点,IPv6 不可路由的真机会连不上 → 黑屏)。
+  // 复用同一 factory,避免每次重载源都新建 OkHttpClient。
+  val iptvDataSourceFactory = remember { IptvDataSourceFactory().create() }
 
   val qualities = liveInfo?.qualities.orEmpty()
   val qualityLabel = stringResource(R.string.live_quality)
@@ -270,9 +274,10 @@ fun LivePlayerScreen(
       }
       liveInfo = info
       android.util.Log.i(LivePlaybackLogTag, "live playurl resolved room=$roomId qn=${info.currentQn} hls=${info.isHls}")
-      // IPTV 用裸数据源(不套 B站 UA/头);B站直播才走 BiliMediaDataSourceFactory。
+      // IPTV 用独立数据源:强制 IPv4(见 IptvDataSourceFactory),不套 B站 UA/头;
+      // B站直播才走 BiliMediaDataSourceFactory。
       val dataSourceFactory = if (request.isIptv) {
-        DefaultDataSource.Factory(context)
+        iptvDataSourceFactory
       } else {
         DefaultDataSource.Factory(
           context,
