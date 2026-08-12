@@ -264,7 +264,7 @@ private fun AccountNavItem(
         }
       },
     onClick = onClick,
-    onFocusChanged = { if (it.isFocused) onSidebarItemFocused(0) },
+    onFocusChanged = { if (it) onSidebarItemFocused(0) },
     onFocused = {
       val shouldOpen = autoConfirmOnFocus && !selected && !suppressAutoConfirm
       Log.d(
@@ -419,7 +419,7 @@ private fun AppNavItem(
       },
     onFocusChanged = {
       focused = it
-      if (it.isFocused) onSidebarItemFocused(focusIndex)
+      if (it) onSidebarItemFocused(focusIndex)
     },
     onClick = onClick,
     onFocused = {
