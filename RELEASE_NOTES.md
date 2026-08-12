@@ -1,5 +1,19 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.21
+
+**设置弹窗焦点恢复 + IPTV 主线程网络异常修复(测试 alpha)**:两个独立问题——① WebDAV/IPTV 编辑弹窗关闭后焦点丢失落到侧栏头像;② IPTV 的 `getChannels`/`checkSourceReachable` 在主线程协程里直接跑阻塞 `execute()`,抛 `NetworkOnMainThreadException`,导致 IPTV 频道加载不出、连通性探测永远失败(这也解释了 alpha.19/alpha.20 的探测超时改动在真机上没生效——探测根本没跑起来)。
+
+### 修复
+- **设置弹窗关闭后焦点回到对应行**:WebDAV 编辑弹窗 `onDismiss`、IPTV 编辑弹窗 `onSave`/`onDismiss` 关闭后调用 `focusSettingItem` 把焦点恢复到打开它的设置行(WebDAV 行 / IPTV 行),不再落到侧栏头像。根因是弹窗内 URL 字段随弹窗移除,Compose 焦点回退到应用外壳第一个可聚焦项(头像)。
+- **IPTV 阻塞网络调用切 IO 线程**:`IptvRepository.getChannels`/`checkSourceReachable` 的阻塞 `client.newCall(...).execute()` 包进 `withContext(Dispatchers.IO)`(与 `WebDavRepository` 一致),修复主线程协程直接 `execute()` 抛 `NetworkOnMainThreadException`。
+
+### 待真机验证
+- 设置 → WebDAV 编辑弹窗保存/取消、IPTV 编辑弹窗保存/取消后,焦点回到对应设置行而非侧栏头像。
+- 设置 → IPTV 源地址填 `https://cf.19961226.xyz/iptv/`(用户名/密码留空)→ 保存提示"连接成功" → Live 页 IPTV tab 列出频道(之前主线程异常永远空/永远失败)。
+
+---
+
 ## v3.0.1-alpha.20
 
 **IPTV 源连通性探测超时修复(测试 alpha)**:alpha.19 把探测改成独立短超时 GET 后,`https://cf.19961226.xyz/iptv/` 这类源仍误报"连接失败"。实测该源服务器响应慢且不稳定——TTFB 可达 9s+、偶发 SSL 连接失败,10s 探测超时在真机网络下会超时误判。
