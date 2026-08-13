@@ -1,5 +1,21 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.26
+
+**IPTV 频道缩略图——拉流截帧(测试 alpha)**:IPTV 频道列表封面 = m3u 的 `tvg-logo`,很多源没 logo → 卡片显示纯色占位,观感差。新增:进 IPTV tab 自动后台对当前可见频道**拉直播流截一帧**做缩略图,懒加载(只截当前显示的频道,不一次性截几百个),会话级内存缓存(每次进列表重新截,不永久磁盘缓存)。
+
+### 变更
+- **`IptvThumbnailCapturer`**:单个频道截帧。复用 `IptvDataSourceFactory`(强制 IPv4 + 明文放行,保证能连上源)。media3 1.10 无 `getVideoFrameAtTime`,改用 `ImageReader` 作为 ExoPlayer 视频输出 Surface,播放到 READY 出画面后 `acquireLatestImage()` 截一帧转 Bitmap(处理 rowStride 行填充)。超时 15s 回吐 null,失败频道保持占位不阻塞列表。
+- **`IptvThumbnailManager`**:会话级(每次进 IPTV tab 新建,离开 clear 清缓存)。并发限 2 个 + inFlight 去重,避免快速滚动触发重复截帧。
+- **`VideoCard`/`TvVideoGrid`**:加 `coverOverride`/`coverOverrides` 参数,IPTV 分支传截帧 Bitmap 显示封面;`TvVideoGrid` 加 `onVisibleRangeChange` 回调(snapshotFlow 监听可见范围)驱动懒加载。
+- **`LiveScreen`**:IPTV 分支接入截帧——进 tab 自动后台截,只截当前可见频道,截完更新卡片封面。
+
+### 待真机验证
+- 真机装此版本进 IPTV tab:当前可见频道卡片应逐渐从占位变成直播画面缩略图;滚动到新频道也截帧;已截的滚动回来直接显示(内存缓存);离开 IPTV tab 再进重新截。日志 `BiliMT:IptvThumb` 输出截帧成功/失败。
+- 回归:B站直播/点播列表封面不受影响(coverOverrides 仅 IPTV 分支传,非 IPTV 视频 key 不命中)。
+
+---
+
 ## v3.0.1-alpha.25
 
 **IPTV 黑屏修复续——302 重定向目标(IP 字面量)也放行明文(测试 alpha)**:alpha.24 真机日志确认明文放行已生效(`connectStart ott.mobaibox.com:80 family=v4`、`response`/`responseEnd code=302` 首次出现),但播放仍 0 track ENDED。日志显示 m3u8 302 重定向到 CDN 节点 `http://223.110.246.83:80/...`——重定向目标是 **IP 字面量**,不走 DNS,不触发 `Ipv4OnlyDns.lookup` 注册 → 明文检查仍拦 → 反复重试原 host 拿 302,永远到不了 CDN 节点。
