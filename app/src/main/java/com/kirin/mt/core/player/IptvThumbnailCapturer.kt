@@ -13,6 +13,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -48,8 +49,12 @@ class IptvThumbnailCapturer(private val context: Context) {
       try {
         player.setVideoSurface(imageReader.surface)
         // 静音:截帧只要画面不要声音。若出声,进 IPTV 列表/退出直播时每个缩略图截帧都会
-        // 从扬声器放声(2 并发、最长 15s),用户会感觉"退出直播后还有音频在响"。
+        // 从扬声器放声(3 并发、最长 22s),用户会感觉"退出直播后还有音频在响"。
         player.setVolume(0f)
+        // 帧可用信号:ImageReader 真的收到一帧时置 true。ready 判断用它而非
+        // player.videoSize(某些源 videoSize 报 0,绑死它会让已 READY 的截帧一直空转到超时)。
+        val frameReady = AtomicBoolean(false)
+        imageReader.setOnImageAvailableListener({ frameReady.set(true) }, handler)
         // 与真实播放器(LivePlayerScreen)对齐:挂 LiveLoadErrorHandlingPolicy(重试 7 次 +
         // 指数退避)。IPTV 源首载常 403/404/断连,缺此策略则首载失败直接卡 BUFFERING。
         val mediaSource = HlsMediaSource.Factory(dataSourceFactory)
@@ -58,18 +63,21 @@ class IptvThumbnailCapturer(private val context: Context) {
         player.setMediaSource(mediaSource)
         player.prepare()
         player.play()
-        // 等 READY 且出画面(有视频尺寸),带超时——直播流可能几秒~十几秒才出画面。
-        // 与 LivePlayerScreen 的 stall 看门狗同机制:某些源卡 BUFFERING 且进度不前进但**不报错**
-        // (重试策略不触发),须主动重挂源拉活。被动等只会 15s 超时 → 缩略图回退台标
-        // (日志 mobaibox.com / 223.110.x.x 截帧超时即此因)。
+        // 等 READY 且真出了帧,带超时。慢源(尤其 mobaibox 这类)从请求到首帧常要
+        // 几秒~十几秒,是正常启动不是死源:启动宽限期 [StartupGraceMs] 内绝不判 stall、
+        // 绝不重挂——否则慢源还在连就一次次被 reload 打断,永远 READY 不了
+        // (日志整批 `stall 0% reload #1/2/3` → timeout 即此因,真机播放器同一源 1s 就 READY)。
+        // 宽限期后仍卡 BUFFERING 且进度不动,才是真 stall,才重挂源拉活。
         val ready = withTimeoutOrNull(CaptureTimeoutMs) {
           var stallPosition = player.currentPosition
           var stallSince = 0L
           var reloads = 0
-          while (player.playbackState != Player.STATE_READY || player.videoSize.width == 0) {
+          val startTime = System.currentTimeMillis()
+          while (player.playbackState != Player.STATE_READY || !frameReady.get()) {
             val now = System.currentTimeMillis()
             val pos = player.currentPosition
-            val stalled = player.playbackState == Player.STATE_BUFFERING && pos == stallPosition
+            val stalled = player.playbackState == Player.STATE_BUFFERING &&
+              pos == stallPosition && now - startTime >= StartupGraceMs
             if (stalled) {
               if (stallSince == 0L) {
                 stallSince = now
@@ -137,12 +145,15 @@ class IptvThumbnailCapturer(private val context: Context) {
     const val CaptureWidth = 640
     const val CaptureHeight = 360
     const val MaxImages = 2
-    const val CaptureTimeoutMs = 15_000L
+    /** 单次截帧总超时。慢源首帧要几秒~十几秒,15s 太紧,拉长给足启动时间。 */
+    const val CaptureTimeoutMs = 22_000L
     const val FrameSettleDelayMs = 300L
-    /** 卡 BUFFERING 且进度不前进超过此时长 → 判定 stall,重挂源拉活。 */
-    const val StallReloadMs = 3_000L
+    /** 启动宽限期:前 6s 不判 stall、不重挂——慢源正常启动期,reload 只会打断它。 */
+    const val StartupGraceMs = 6_000L
+    /** 宽限期后卡 BUFFERING 且进度不前进超过此时长 → 判定真 stall,重挂源拉活。 */
+    const val StallReloadMs = 4_000L
     /** 单次截帧最多重挂次数,超过仍不 READY 则超时回退台标。 */
-    const val MaxStallReloads = 3
+    const val MaxStallReloads = 2
     const val LogTag = "BiliMT:IptvThumb"
   }
 }

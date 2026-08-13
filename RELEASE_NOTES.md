@@ -1,5 +1,21 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.32
+
+**IPTV 缩略图截帧全失败根因修复——stall 看门狗误杀慢源(测试 alpha)**:真机日志 `logs_live.log` 实锤截帧 **3 次尝试 0 成功**,全是 `stall 0% reload #1/2/3` → `timeout (no ready frame)`。而真机播放器对 CCTV-4 源 1 秒内就到 `READY video=avc1.640028`——同一套 `IptvDataSourceFactory`,证明机制能连、是截帧逻辑自身 bug。
+
+根因:①**stall 看门狗阈值太激进(3s)**——mobaibox 这类慢源从请求到首帧要 ~8s(解码器 :08 才连上 surface),看门狗 3s 就判 stall 并 `clearMediaItems`+重挂,等于每次把还在正常启动的慢源**打断重来**,永远 READY 不了 → 15s 超时回退台标;②**ready 条件绑死 `player.videoSize.width`**——某些源 videoSize 报 0,即便已 READY 也会空转到超时。
+
+### 变更
+- **`IptvThumbnailCapturer` 启动宽限期**:`StartupGraceMs=6s` 内**绝不判 stall、绝不重挂**——慢源正常启动期 reload 只会打断它;宽限期后仍卡 BUFFERING 且进度不动才重挂源拉活(`StallReloadMs` 3s→4s、`MaxStallReloads` 3→2)。
+- **ready 判断改用帧可用信号**:加 `ImageReader.setOnImageAvailableListener` 置 `AtomicBoolean frameReady`,ready 条件从 `videoSize.width==0` 改成 `!frameReady`,拿到"真的出了帧"的信号而非依赖 videoSize。
+- **超时 15s → 22s**:给慢源足够启动时间。
+
+### 待真机验证
+- IPTV 列表缩略图能陆续出图(慢源最多 ~22s 内出,不死源能真正等到画面);死源仍超时回退台标但不阻塞整批。
+
+---
+
 ## v3.0.1-alpha.31
 
 **IPTV 缩略图截帧改并发(测试 alpha)**:真机观察"第一张缩略图失败/慢,后续都不出图"。排查发现消费循环是**串行 for**——每张 `getThumbnail` 挂起等上一张截完(单张最坏 15s 超时 + 3 次 stall 重挂 ≈ 20s+),死源把整批缩略图串行堵在身后,看起来像"第一张失败就全不生成"。实际每 URL 独立、失败不污染后续,只是并发没起来。
