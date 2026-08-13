@@ -41,6 +41,6 @@ class IptvThumbnailManager(private val context: Context) {
   }
 
   private companion object {
-    const val MaxConcurrent = 2
+    const val MaxConcurrent = 3
   }
 }

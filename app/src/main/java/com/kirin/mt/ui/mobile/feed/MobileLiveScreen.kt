@@ -60,6 +60,7 @@ import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.ui.player.toVideoSummary
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -179,11 +180,13 @@ fun MobileLiveScreen(
   fun captureVisibleIptv(videos: List<VideoSummary>) {
     val manager = thumbnailManager ?: return
     scope.launch {
-      for (video in videos) {
-        val url = video.iptvUrls.firstOrNull() ?: continue
-        val bmp = manager.getThumbnail(url) ?: continue
-        iptvThumbnails = iptvThumbnails + (url to bmp)
-      }
+      // 并发截帧:死源/慢源只占一个并发槽,不串行堵住整批(信号量限并发 3)。
+      videos.mapNotNull { it.iptvUrls.firstOrNull() }
+        .map { url -> async { url to manager.getThumbnail(url) } }
+        .forEach { deferred ->
+          val (url, bmp) = deferred.await()
+          if (bmp != null) iptvThumbnails = iptvThumbnails + (url to bmp)
+        }
     }
   }
 

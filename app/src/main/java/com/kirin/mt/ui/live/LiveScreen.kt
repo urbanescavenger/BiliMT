@@ -37,6 +37,7 @@ import com.kirin.mt.ui.player.toVideoSummary
 import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
 private const val FirstPage = 1
@@ -412,13 +413,13 @@ internal fun LiveScreen(
                 val safeLast = last.coerceAtMost(currentState.videos.lastIndex)
                 if (first > safeLast) return@launch
                 val visible = currentState.videos.subList(first, safeLast + 1)
-                for (video in visible) {
-                  val url = video.iptvUrls.firstOrNull() ?: continue
-                  val bmp = thumbnailManager?.getThumbnail(url) ?: continue
-                  if (bmp != null) {
-                    iptvThumbnails = iptvThumbnails + (url to bmp)
+                // 并发截帧:死源/慢源只占一个并发槽,不串行堵住整批(信号量限并发 3)。
+                visible.mapNotNull { it.iptvUrls.firstOrNull() }
+                  .map { url -> async { url to thumbnailManager?.getThumbnail(url) } }
+                  .forEach { deferred ->
+                    val (url, bmp) = deferred.await()
+                    if (bmp != null) iptvThumbnails = iptvThumbnails + (url to bmp)
                   }
-                }
               }
             } else null,
             topPadding = BiliSizing.HomeVideoGridTopPadding + BiliSizing.HomeVideoGridTopBleed,
