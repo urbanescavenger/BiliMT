@@ -135,6 +135,7 @@ v3.0.0 稳定版后的 patch 线 alpha。
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.1-alpha.33 | IPTV 缩略图截帧换方案：真机实锤 ImageReader 方案在本机不可行（codec 输出私有格式 0x7fa30c06 ≠ ImageReader 配置 RGBA_8888=0x1，抛 UnsupportedOperationException 全失败），切 SurfaceTexture+EGL 离屏 glReadPixels（IptvThumbnailCapturerEgl，不做格式协商），ImageReader 版保留对照 |
 | v3.0.1-alpha.32 | IPTV 缩略图截帧全失败根因修复：stall 看门狗加 6s 启动宽限期（不再误杀 mobaibox 这类首帧要 ~8s 的慢源）、ready 判断改 ImageReader 帧可用信号（不再绑死 videoSize）、超时 15s→22s |
 | v3.0.1-alpha.31 | IPTV 缩略图截帧改并发：信号量 2→3，TV/移动端消费循环串行 for 改 async 并发，死源/慢源不再串行堵住整批缩略图 |
 | v3.0.1-alpha.28 | IPTV 缩略图截帧崩溃修复：capture 改专用 HandlerThread（ExoPlayer 必须在带 Looper 的线程访问，IO 线程抛 wrong thread 崩溃） |

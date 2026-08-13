@@ -1,5 +1,24 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.33
+
+**IPTV 缩略图截帧换方案——ImageReader 在本机不可行,切 SurfaceTexture+EGL 离屏(测试 alpha)**:alpha.32 真机日志 `logs_live.log` 实锤另一层根因,10 个频道截帧全抛同一异常:
+```
+UnsupportedOperationException: The producer output buffer format 0x7fa30c06
+doesn't match the ImageReader's configured buffer format 0x1
+```
+`0x7fa30c06` = 这台电视硬件解码器的**私有/YUV 输出格式**,`0x1` = RGBA_8888(ImageReader 请求的)。解码器往 ImageReader 的 Surface 写帧时 codec 输出 buffer 格式必须与 ImageReader 配置格式一致,本机给的是私有格式 → 直接抛异常,0 成功。**不是 stall 看门狗、不是慢源、不是超时**——是 ImageReader 方案本身在这台设备从根上不可行,阈值再调也救不回。
+
+### 变更
+- **新增 `IptvThumbnailCapturerEgl`(方案一)**:`SurfaceTexture` 接解码器输出(不要求格式协商,接受私有格式)→ EGL 离屏 pbuffer surface + OES 外部纹理 + shader 画全屏 quad → `glFinish` → `glReadPixels` 读回 RGBA 转 Bitmap。这是 media3 播放器截帧的标准真离屏路径,格式问题在源头不存在。
+- **`IptvThumbnailManager` 切到 EGL capturer**(`IptvThumbnailCapturerEgl`);ImageReader 版 `IptvThumbnailCapturer` 保留对照不删。
+- **复用 alpha.32 全部修复**:`IptvDataSourceFactory` 强制 IPv4、`LiveLoadErrorHandlingPolicy` 重试 7 次、stall 看门狗 6s 启动宽限期 + 4s 真 stall 重挂(帧可用信号改 `OnFrameAvailableListener`)、22s 总超时、静音、专用 HandlerThread 同线程约束。
+
+### 待真机验证
+- IPTV 列表缩略图能陆续出图(EGL 离屏路径绕开 ImageReader 格式协商;慢源最多 ~22s 内出)。
+
+---
+
 ## v3.0.1-alpha.32
 
 **IPTV 缩略图截帧全失败根因修复——stall 看门狗误杀慢源(测试 alpha)**:真机日志 `logs_live.log` 实锤截帧 **3 次尝试 0 成功**,全是 `stall 0% reload #1/2/3` → `timeout (no ready frame)`。而真机播放器对 CCTV-4 源 1 秒内就到 `READY video=avc1.640028`——同一套 `IptvDataSourceFactory`,证明机制能连、是截帧逻辑自身 bug。
