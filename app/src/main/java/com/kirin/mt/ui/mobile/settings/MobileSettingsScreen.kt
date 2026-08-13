@@ -62,6 +62,7 @@ import com.kirin.mt.core.cache.formatCacheSize
 import com.kirin.mt.core.image.BiliImageSizing
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.i18n.ChineseTextVariant
+import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
@@ -82,6 +83,7 @@ import com.kirin.mt.ui.settings.currentVersionText
 import com.kirin.mt.ui.settings.downloadProgressFraction
 import com.kirin.mt.ui.settings.isUpdateVersionActionEnabled
 import com.kirin.mt.ui.settings.latestVersionText
+import com.kirin.mt.ui.settings.normalizeIptvUrl
 import com.kirin.mt.ui.settings.updateVersionActionLabel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -100,6 +102,7 @@ fun MobileSettingsScreen(
   webdavConfigStore: com.kirin.mt.core.webdav.WebDavConfigStore,
   webdavBackupService: com.kirin.mt.core.webdav.WebDavBackupService,
   appCacheManager: AppCacheManager,
+  iptvRepository: IptvRepository,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -348,6 +351,13 @@ fun MobileSettingsScreen(
       },
       onBackup = { cfg -> webdavBackupService.backup(cfg) },
       onRestore = { cfg -> webdavBackupService.restore(cfg) },
+    )
+
+    // ===== IPTV 源 =====
+    MobileIptvSection(
+      settings = settings,
+      appSettingsStore = appSettingsStore,
+      iptvRepository = iptvRepository,
     )
   }
 
@@ -817,6 +827,118 @@ private fun MobileWebDavEditDialog(
     },
     dismissButton = {
       TextButton(onClick = onDismiss, enabled = !saving) {
+        Text(stringResource(R.string.mobile_dialog_cancel))
+      }
+    },
+  )
+}
+
+/** IPTV 源配置区:地址行只显示 URL,点按/长按弹窗编辑网址/账号/密码,保存后校验连通性(成功/失败 Toast)。 */
+@Composable
+private fun MobileIptvSection(
+  settings: AppSettings,
+  appSettingsStore: AppSettingsStore,
+  iptvRepository: IptvRepository,
+) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+  var showEditDialog by remember { mutableStateOf(false) }
+  var expanded by remember { mutableStateOf(false) }
+
+  MobileSettingsSectionHeader(
+    text = stringResource(R.string.settings_iptv_title),
+    onClick = { expanded = !expanded },
+    trailing = {
+      Icon(
+        imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.primary,
+      )
+    },
+  )
+  androidx.compose.animation.AnimatedVisibility(visible = expanded) {
+    Column {
+      MobileSettingsRow(
+        title = stringResource(R.string.settings_iptv_url_label),
+        description = settings.iptvSourceUrl.ifBlank { stringResource(R.string.settings_iptv_configure_hint) },
+        onClick = { showEditDialog = true },
+        onLongClick = { showEditDialog = true },
+      )
+    }
+  }
+
+  if (showEditDialog) {
+    MobileIptvEditDialog(
+      url = settings.iptvSourceUrl,
+      username = settings.iptvSourceUsername,
+      password = settings.iptvSourcePassword,
+      onSave = { url, username, password ->
+        showEditDialog = false
+        scope.launch {
+          appSettingsStore.setIptvSourceUrl(url)
+          appSettingsStore.setIptvSourceUsername(username)
+          appSettingsStore.setIptvSourcePassword(password)
+          // 保存后校验连通性,成功/失败都提示(镜像 TV AppShell onIptvSourceConfigChange)。
+          val reachable = iptvRepository.checkSourceReachable(url, username, password)
+          Toast.makeText(
+            context,
+            if (reachable) R.string.settings_iptv_connect_success else R.string.settings_iptv_connect_failed,
+            Toast.LENGTH_SHORT,
+          ).show()
+        }
+      },
+      onDismiss = { showEditDialog = false },
+    )
+  }
+}
+
+/** IPTV 源编辑弹窗:URL/账号/密码三个输入框 + 保存/取消。保存时补全 URL 协议(镜像 TV SettingsIptvDialog)。 */
+@Composable
+private fun MobileIptvEditDialog(
+  url: String,
+  username: String,
+  password: String,
+  onSave: (url: String, username: String, password: String) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  var urlValue by remember { mutableStateOf(url) }
+  var usernameValue by remember { mutableStateOf(username) }
+  var passwordValue by remember { mutableStateOf(password) }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text(stringResource(R.string.settings_iptv_title)) },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+          value = urlValue,
+          onValueChange = { urlValue = it },
+          label = { Text(stringResource(R.string.settings_iptv_url_label)) },
+          singleLine = true,
+        )
+        OutlinedTextField(
+          value = usernameValue,
+          onValueChange = { usernameValue = it },
+          label = { Text(stringResource(R.string.settings_iptv_username_label)) },
+          singleLine = true,
+        )
+        OutlinedTextField(
+          value = passwordValue,
+          onValueChange = { passwordValue = it },
+          label = { Text(stringResource(R.string.settings_iptv_password_label)) },
+          singleLine = true,
+          visualTransformation = PasswordVisualTransformation(),
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        )
+      }
+    },
+    confirmButton = {
+      TextButton(onClick = { onSave(normalizeIptvUrl(urlValue), usernameValue.trim(), passwordValue) }) {
+        Text(stringResource(R.string.settings_webdav_save))
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
         Text(stringResource(R.string.mobile_dialog_cancel))
       }
     },

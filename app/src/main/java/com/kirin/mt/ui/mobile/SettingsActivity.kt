@@ -76,6 +76,7 @@ class SettingsActivity : ComponentActivity() {
                 webdavConfigStore = appContainer.webdavConfigStore,
                 webdavBackupService = appContainer.webdavBackupService,
                 appCacheManager = appContainer.appCacheManager,
+                iptvRepository = appContainer.iptvRepository,
                 modifier = Modifier.fillMaxWidth(),
               )
             } else {

@@ -32,6 +32,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.PlaybackCdnPreference
@@ -79,6 +80,7 @@ import okhttp3.OkHttpClient
 fun BiliMobileApp(
   videoRepository: VideoRepository,
   liveRepository: LiveRepository,
+  iptvRepository: IptvRepository,
   playbackRepository: PlaybackRepository,
   danmakuSettingsStore: DanmakuSettingsStore,
   liveQualityPreferenceStore: com.kirin.mt.core.player.LiveQualityPreferenceStore,
@@ -221,6 +223,7 @@ fun BiliMobileApp(
         )
         AppDestination.Live -> MobileLiveScreen(
           liveRepository = liveRepository,
+          iptvRepository = iptvRepository,
           onVideoSelected = { video ->
             playQueue = emptyList()
             playbackRequest = video.toPlaybackRequest()
@@ -275,7 +278,7 @@ fun BiliMobileApp(
         playbackRequest = null
       }
       Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        if (request.isLive) {
+        if (request.isLive || request.isIptv) {
           LivePlayerScreen(
             request = request,
             playbackRepository = playbackRepository,

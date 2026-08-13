@@ -52,6 +52,7 @@ class MainActivity : ComponentActivity() {
           BiliMobileApp(
             videoRepository = appContainer.videoRepository,
             liveRepository = appContainer.liveRepository,
+            iptvRepository = appContainer.iptvRepository,
             playbackRepository = appContainer.playbackRepository,
             danmakuSettingsStore = appContainer.danmakuSettingsStore,
             liveQualityPreferenceStore = appContainer.liveQualityPreferenceStore,
