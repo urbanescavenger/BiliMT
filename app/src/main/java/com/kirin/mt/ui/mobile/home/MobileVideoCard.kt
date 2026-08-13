@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
+import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoCardRelativeText
 import com.kirin.mt.core.model.VideoSummary
@@ -97,7 +98,7 @@ private fun CompactStyleCardContent(
       )
       if (video.isLive) {
         LiveBadge(text = video.badge.ifBlank { "直播" }, modifier = Modifier.align(Alignment.TopStart))
-      } else if (video.badge.isNotEmpty()) {
+      } else if (video.badge.isNotEmpty() && video.source != SourceIptv) {
         Text(
           text = video.badge,
           style = MaterialTheme.typography.labelSmall,
@@ -217,7 +218,7 @@ private fun FeedStyleCardContent(
       )
       if (video.isLive) {
         LiveBadge(text = video.badge.ifBlank { "直播" }, modifier = Modifier.align(Alignment.TopStart))
-      } else if (video.badge.isNotEmpty()) {
+      } else if (video.badge.isNotEmpty() && video.source != SourceIptv) {
         Text(
           text = video.badge,
           style = MaterialTheme.typography.labelSmall,
