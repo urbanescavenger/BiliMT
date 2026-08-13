@@ -430,7 +430,7 @@ private fun MobileLiveSectionPage(
         val visible = indices
           .filter { it in videos.indices }
           .map { videos[it] }
-        if (visible.isNotEmpty()) currentOnVisibleIptvChanged(visible)
+        if (visible.isNotEmpty()) currentOnVisibleIptvChanged?.invoke(visible)
       }
   }
 
