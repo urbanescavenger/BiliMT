@@ -5,12 +5,12 @@ import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.opengl.EGL14
+import android.opengl.EGLConfig
+import android.opengl.EGLContext
+import android.opengl.EGLDisplay
+import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
-import javax.microedition.khronos.egl.EGLConfig
-import javax.microedition.khronos.egl.EGLContext
-import javax.microedition.khronos.egl.EGLDisplay
-import javax.microedition.khronos.egl.EGLSurface
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -152,6 +152,9 @@ class IptvThumbnailCapturerEgl(private val context: Context) {
     private val display: EGLDisplay
     private val context: EGLContext
     private val pbuffer: EGLSurface
+    // 纹理 ID 自己保存:SurfaceTexture.getTextureId() 是 @hide API,SDK 编译期不可见,
+    // 不能调 surfaceTexture.textureId(Unresolved reference)。用创建时生成的 texIds[0]。
+    private val textureId: Int
 
     private var program = 0
 
@@ -212,6 +215,7 @@ class IptvThumbnailCapturerEgl(private val context: Context) {
       surfaceTexture = SurfaceTexture(texIds[0])
       surface = Surface(surfaceTexture)
       surfaceTexture.setDefaultBufferSize(CaptureWidth, CaptureHeight)
+      textureId = texIds[0]
 
       program = buildProgram()
     }
@@ -222,7 +226,7 @@ class IptvThumbnailCapturerEgl(private val context: Context) {
         .order(ByteOrder.nativeOrder())
       GLES20.glViewport(0, 0, CaptureWidth, CaptureHeight)
       GLES20.glUseProgram(program)
-      GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, surfaceTexture.textureId)
+      GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
       surfaceTexture.updateTexImage()
       drawQuad()
       GLES20.glFinish()
