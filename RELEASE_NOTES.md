@@ -1,5 +1,17 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.28
+
+**IPTV 缩略图截帧崩溃修复(测试 alpha)**:alpha.26 引入的 IPTV 频道缩略图拉流截帧在真机加载 IPTV 列表时崩溃——`IptvThumbnailCapturer.capture` 在 `Dispatchers.IO` 线程创建并访问 ExoPlayer,而 media3 要求 Player 的所有方法(含 `playbackState`/`videoSize` 读取)必须在**带 Looper 的同一线程**上调用,IO 线程无 Looper 直接抛 `IllegalStateException: Player is accessed on the wrong thread`,主线程 FATAL。
+
+### 变更
+- **`IptvThumbnailCapturer.capture` 改专用 HandlerThread**:每次截帧开一个 `HandlerThread("IptvThumbCapture")`,用 `handler.asCoroutineDispatcher()` 跑整个截帧流程,`ExoPlayer.Builder(context).setLooper(handlerThread.looper)` 显式绑定该 looper,创建/访问/`release()` 全在同一线程,`finally` 后 `quitSafely()` 收尾。既不上主线程阻塞 UI,又满足 media3 同线程约束。
+
+### 待真机验证
+- 真机移动端进 IPTV tab:频道卡片应正常显示拉流截帧缩略图,不再崩溃;滚动到新频道也截帧;已截的滚动回来直接显示(内存缓存)。日志 `BiliMT:IptvThumb` 输出截帧成功/失败。
+
+---
+
 ## v3.0.1-alpha.27
 
 **IPTV 同步移植到移动端(测试 alpha)**:TV 端 IPTV 功能(直播页 IPTV tab + 频道卡片 + 播放 + 设置源)此前只在 TV UI 上。核心逻辑(拉 m3u、解析、连通性校验、强制 IPv4 + 明文放行、拉流截帧)全在共享包,移动端直接复用,这次补的是移动端 UI 集成层,并把 IPTV 频道封面也做成**同步拉流截帧**(对齐 TV,而非仅用 m3u logo)。
