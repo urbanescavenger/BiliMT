@@ -5,13 +5,15 @@ import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.media.Image
 import android.media.ImageReader
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -31,45 +33,55 @@ class IptvThumbnailCapturer(private val context: Context) {
   /**
    * 截取 [url] 直播流当前画面。成功返回 Bitmap,失败/超时返回 null(不抛)。
    * 每次调用新建一个 ExoPlayer + ImageReader,截完即 release(截帧是低频后台任务,不复用)。
+   *
+   * media3 要求 Player 的所有方法(含 playbackState/videoSize 读取)必须在**带 Looper 的
+   * 同一线程**上调用;IO 线程无 Looper 会抛 `Player is accessed on the wrong thread`。
+   * 这里为每次截帧开一个专用 [HandlerThread],在其 looper dispatcher 里创建/访问/release
+   * player,既不上主线程阻塞 UI,又满足同线程约束。
    */
-  suspend fun capture(url: String): Bitmap? = withContext(Dispatchers.IO) {
-    val imageReader = ImageReader.newInstance(CaptureWidth, CaptureHeight, PixelFormat.RGBA_8888, MaxImages)
-    val player = ExoPlayer.Builder(context).build()
-    try {
-      player.setVideoSurface(imageReader.surface)
-      player.setMediaSource(
-        HlsMediaSource.Factory(dataSourceFactory).createMediaSource(MediaItem.fromUri(url)),
-      )
-      player.prepare()
-      player.play()
-      // 等 READY 且出画面(有视频尺寸),带超时——直播流可能几秒~十几秒才出画面。
-      val ready = withTimeoutOrNull(CaptureTimeoutMs) {
-        while (player.playbackState != Player.STATE_READY || player.videoSize.width == 0) {
-          delay(100)
+  suspend fun capture(url: String): Bitmap? {
+    val handlerThread = HandlerThread("IptvThumbCapture").apply { start() }
+    val handler = Handler(handlerThread.looper)
+    return withContext(handler.asCoroutineDispatcher()) {
+      val imageReader = ImageReader.newInstance(CaptureWidth, CaptureHeight, PixelFormat.RGBA_8888, MaxImages)
+      val player = ExoPlayer.Builder(context).setLooper(handlerThread.looper).build()
+      try {
+        player.setVideoSurface(imageReader.surface)
+        player.setMediaSource(
+          HlsMediaSource.Factory(dataSourceFactory).createMediaSource(MediaItem.fromUri(url)),
+        )
+        player.prepare()
+        player.play()
+        // 等 READY 且出画面(有视频尺寸),带超时——直播流可能几秒~十几秒才出画面。
+        val ready = withTimeoutOrNull(CaptureTimeoutMs) {
+          while (player.playbackState != Player.STATE_READY || player.videoSize.width == 0) {
+            delay(100)
+          }
         }
-      }
-      if (ready == null) {
-        Log.w(LogTag, "capture $url timeout (no ready frame)")
-        return@withContext null
-      }
-      // 等一帧真正渲染到 ImageReader,避免取到黑帧。
-      delay(FrameSettleDelayMs)
-      val image = imageReader.acquireLatestImage()
-        ?: run {
-          Log.w(LogTag, "capture $url no image acquired")
+        if (ready == null) {
+          Log.w(LogTag, "capture $url timeout (no ready frame)")
           return@withContext null
         }
-      val bitmap = image.toBitmap()
-      image.close()
-      Log.i(LogTag, "capture $url ok ${bitmap.width}x${bitmap.height}")
-      bitmap
-    } catch (error: Exception) {
-      Log.w(LogTag, "capture $url failed: ${error.javaClass.simpleName}: ${error.message}")
-      null
-    } finally {
-      player.release()
-      imageReader.close()
+        // 等一帧真正渲染到 ImageReader,避免取到黑帧。
+        delay(FrameSettleDelayMs)
+        val image = imageReader.acquireLatestImage()
+          ?: run {
+            Log.w(LogTag, "capture $url no image acquired")
+            return@withContext null
+          }
+        val bitmap = image.toBitmap()
+        image.close()
+        Log.i(LogTag, "capture $url ok ${bitmap.width}x${bitmap.height}")
+        bitmap
+      } catch (error: Exception) {
+        Log.w(LogTag, "capture $url failed: ${error.javaClass.simpleName}: ${error.message}")
+        null
+      } finally {
+        player.release()
+        imageReader.close()
+      }
     }
+    handlerThread.quitSafely()
   }
 
   /** Image → ARGB_8888 Bitmap,处理 rowStride 行填充(ImageReader 的 rowStride 可能 > width*4)。 */
