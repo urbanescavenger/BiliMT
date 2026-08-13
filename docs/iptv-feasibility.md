@@ -148,6 +148,14 @@ val info = if (request.isIptv) {
 - **裸 IP 源明文被拦**:CDN 节点多是 `IP:port` 直连(tsfile/gitv/cntv 的 `223.110.x.x`/`61.x`/`183.x`)。明文放行原只在 `Ipv4OnlyDns.lookup`(DNS 解析时)注册 host,而 OkHttp 对裸 IP 字面量**不查 Dns** → 永不注册 → `CLEARTEXT communication ... not permitted` → IPTV 黑屏。修复:`IptvCleartextPlatform.isCleartextTrafficPermitted` 对裸 IP 字面量直接放行(`isLiteralIp`)。**注意** 与 alpha.25 的 302 重定向放行互补:302 只覆盖重定向目标,直连 IP 源走本修复。
 - **缩略图截帧缺重试**:`IptvThumbnailCapturer` 的 HlsMediaSource 若不挂 `LiveLoadErrorHandlingPolicy`,域名源(如 mobaibox.com)首载 403/断连时无重试 → 卡 BUFFERING 到 15s 超时 → 缩略图回退台标。修复:与 `LivePlayerScreen` 对齐挂 `LiveLoadErrorHandlingPolicy`(重试 7 次 + 指数退避)。
 
+## 已知坑(alpha.30 修复)
+
+- **截帧器出声(退出直播后仍有音频)**:截帧器为拿画面真播一条流,此前未静音 → 每个截帧都从扬声器放声(2 并发、最长 15s)。进 IPTV 列表/退出直播后列表持续截帧,用户误以为"直播 player 没释放"。修复:`player.setVolume(0f)` 静音,截帧只取画面。
+- **截帧器仍超时(卡 BUFFERING 无重试可触发)**:加重试策略后,部分源仍卡满 15s `timeout (no ready frame)`——这些源卡 BUFFERING 且进度不前进但**不报错**(重试策略不触发),真实播放器靠 stall 看门狗主动重挂才到 READY,截帧器无此机制只能干等。修复:等 READY 循环内加同款 stall 检测(卡 3s → `clearMediaItems + setMediaSource + prepare` 重挂,最多 3 次)。
+
+- **裸 IP 源明文被拦**:CDN 节点多是 `IP:port` 直连(tsfile/gitv/cntv 的 `223.110.x.x`/`61.x`/`183.x`)。明文放行原只在 `Ipv4OnlyDns.lookup`(DNS 解析时)注册 host,而 OkHttp 对裸 IP 字面量**不查 Dns** → 永不注册 → `CLEARTEXT communication ... not permitted` → IPTV 黑屏。修复:`IptvCleartextPlatform.isCleartextTrafficPermitted` 对裸 IP 字面量直接放行(`isLiteralIp`)。**注意** 与 alpha.25 的 302 重定向放行互补:302 只覆盖重定向目标,直连 IP 源走本修复。
+- **缩略图截帧缺重试**:`IptvThumbnailCapturer` 的 HlsMediaSource 若不挂 `LiveLoadErrorHandlingPolicy`,域名源(如 mobaibox.com)首载 403/断连时无重试 → 卡 BUFFERING 到 15s 超时 → 缩略图回退台标。修复:与 `LivePlayerScreen` 对齐挂 `LiveLoadErrorHandlingPolicy`(重试 7 次 + 指数退避)。
+
 ## 二期(暂缓)
 
 - EPG 节目单(tvg-id + x-tvg-url)。
