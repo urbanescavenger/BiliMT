@@ -92,6 +92,30 @@ private fun buildYoutubeImageRequest(
     .build()
 }
 
+/**
+ * 外部图源裸请求:不拼 B 站 CDN 尺寸后缀、不加 B 站请求头,仅做协议归一化(`//` → `https:`、
+ * `http://` → `https://`)。供 YouTube 之外的第三方图源使用——如 IPTV 台标(tvg-logo),
+ * 其域名任意、不认识 B 站 `@Nw_Nh_1c.webp` 后缀、也会拒 B 站 Referer;若走 [buildVideoThumbnailRequest]
+ * 的 B 站分支会把台标 URL 拼坏并因防盗链加载失败(移动端裸 AsyncImage 无此问题)。
+ */
+fun buildExternalImageRequest(
+  context: Context,
+  url: String,
+  widthPx: Int,
+  heightPx: Int,
+  allowRgb565: Boolean = false,
+  memoryCacheEnabled: Boolean = true,
+): ImageRequest {
+  return ImageRequest.Builder(context)
+    .data(url.normalizedBiliImageUrl())
+    .size(widthPx, heightPx)
+    .precision(Precision.INEXACT)
+    .allowRgb565(allowRgb565)
+    .memoryCachePolicy(if (memoryCacheEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED)
+    .crossfade(false)
+    .build()
+}
+
 fun String.biliCdnResizedImageUrl(
   widthPx: Int,
   heightPx: Int? = null,
