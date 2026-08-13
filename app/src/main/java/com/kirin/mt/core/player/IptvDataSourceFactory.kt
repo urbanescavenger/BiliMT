@@ -77,7 +77,12 @@ object IptvCleartextHosts {
  */
 class IptvCleartextPlatform(private val delegate: Platform) : Platform() {
   override fun isCleartextTrafficPermitted(hostname: String): Boolean =
-    if (IptvCleartextHosts.contains(hostname)) true else delegate.isCleartextTrafficPermitted(hostname)
+    // ① 动态注册的 IPTV host(DNS 解析/302 重定向时注册)→ 放行;
+    // ② 裸 IP 字面量 → 直接放行。IPTV CDN 节点多是 "IP:port" 直连(如 tsfile/gitv/cntv 的
+    //    223.110.x.x / 61.x / 183.x),OkHttp 对 IP 字面量不查 Dns(不走 Ipv4OnlyDns.lookup,
+    //    永不触发注册)→ 不在此放行则 connect 前抛 CLEARTEXT 错误 → IPTV 黑屏/播放失败。
+    if (IptvCleartextHosts.contains(hostname) || isLiteralIp(hostname)) true
+    else delegate.isCleartextTrafficPermitted(hostname)
 
   override fun newSSLContext(): javax.net.ssl.SSLContext = delegate.newSSLContext()
   override fun platformTrustManager(): javax.net.ssl.X509TrustManager = delegate.platformTrustManager()
@@ -102,6 +107,21 @@ class IptvCleartextPlatform(private val delegate: Platform) : Platform() {
     delegate.buildTrustRootIndex(trustManager)
   override fun newSslSocketFactory(trustManager: javax.net.ssl.X509TrustManager): javax.net.ssl.SSLSocketFactory =
     delegate.newSslSocketFactory(trustManager)
+}
+
+/** 是否为裸 IP 字面量(IPv4 或 IPv6)。IPTV CDN 节点常是 "IP:port" 直连,须放行明文。 */
+private fun isLiteralIp(hostname: String): Boolean {
+  val host = hostname.removePrefix("[").removeSuffix("]")
+  if (host.isEmpty()) return false
+  if (host.contains(':')) {
+    // IPv6(含 IPv4-mapped),去掉 zone id 等仅凭字符集粗判即可(纯 IPv4 已在上分支处理)。
+    return Regex("""^[0-9a-fA-F:.]+$""").matches(host)
+  }
+  // IPv4:4 段点分十进制,每段 0-255。
+  val parts = host.split('.')
+  return parts.size == 4 && parts.all { part ->
+    part.isNotEmpty() && part.length <= 3 && part.all { it.isDigit() } && (part.toIntOrNull() ?: -1) in 0..255
+  }
 }
 
 /** 只返回 IPv4(A 记录),过滤 IPv6(AAAA),强制客户端走 IPv4。 */

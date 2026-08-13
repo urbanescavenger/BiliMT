@@ -47,8 +47,13 @@ class IptvThumbnailCapturer(private val context: Context) {
       val player = ExoPlayer.Builder(context).setLooper(handlerThread.looper).build()
       try {
         player.setVideoSurface(imageReader.surface)
+        // 与真实播放器(LivePlayerScreen)对齐:挂 LiveLoadErrorHandlingPolicy(重试 7 次 +
+        // 指数退避)。IPTV 源首载常 403/404/断连,缺此策略则首载失败直接卡 BUFFERING → 15s 超时
+        // → 缩略图回退台标(日志 mobaibox.com 等域名源超时即此因)。
         player.setMediaSource(
-          HlsMediaSource.Factory(dataSourceFactory).createMediaSource(MediaItem.fromUri(url)),
+          HlsMediaSource.Factory(dataSourceFactory)
+            .setLoadErrorHandlingPolicy(LiveLoadErrorHandlingPolicy())
+            .createMediaSource(MediaItem.fromUri(url)),
         )
         player.prepare()
         player.play()
