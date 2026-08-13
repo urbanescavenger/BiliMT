@@ -1,5 +1,19 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.29
+
+**IPTV 播放失败 + 缩略图全回退台标(测试 alpha)**:真机日志定位两处导致 IPTV 无法播放/缩略图失败的根因。
+
+### 变更
+- **裸 IP 源明文放行(修播放黑屏)**:IPTV CDN 节点(tsfile/gitv/cntv 的 `223.110.x.x`/`61.x`/`183.x`)多是 `IP:port` 直连。明文放行此前只在 DNS 解析(`Ipv4OnlyDns.lookup`)时注册 host,而 OkHttp 对**裸 IP 字面量不查 Dns** → 永不注册 → connect 前被系统网络安全策略拦(`CLEARTEXT communication to ... not permitted`)→ 移动端 IPTV 黑屏播放失败。`IptvCleartextPlatform.isCleartextTrafficPermitted` 现对裸 IP 字面量直接放行(`isLiteralIp` 判 IPv4/IPv6)。
+- **截帧器补重试策略(修缩略图回退台标)**:`IptvThumbnailCapturer` 的 `HlsMediaSource` 挂上 `LiveLoadErrorHandlingPolicy`(重试 7 次 + 指数退避),与真实播放器对齐。此前域名源(如 `mobaibox.com`)首载 403/断连时截帧器无重试 → 卡 BUFFERING 到 15s 超时 → 缩略图回退台标。
+
+### 待真机验证
+- 移动端/TV 端播 IPTV 裸 IP 源:不再黑屏,能到 READY 出画面。
+- IPTV 列表缩略图:IP 源(明文放行)与域名源(重试策略)截帧都应出实况图,不再全回退台标。
+
+---
+
 ## v3.0.1-alpha.28
 
 **IPTV 缩略图截帧崩溃修复(测试 alpha)**:alpha.26 引入的 IPTV 频道缩略图拉流截帧在真机加载 IPTV 列表时崩溃——`IptvThumbnailCapturer.capture` 在 `Dispatchers.IO` 线程创建并访问 ExoPlayer,而 media3 要求 Player 的所有方法(含 `playbackState`/`videoSize` 读取)必须在**带 Looper 的同一线程**上调用,IO 线程无 Looper 直接抛 `IllegalStateException: Player is accessed on the wrong thread`,主线程 FATAL。
