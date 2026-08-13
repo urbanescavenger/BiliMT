@@ -1,5 +1,21 @@
 # BiliMT 版本发布说明
 
+## v3.0.1-alpha.27
+
+**IPTV 同步移植到移动端(测试 alpha)**:TV 端 IPTV 功能(直播页 IPTV tab + 频道卡片 + 播放 + 设置源)此前只在 TV UI 上。核心逻辑(拉 m3u、解析、连通性校验、强制 IPv4 + 明文放行、拉流截帧)全在共享包,移动端直接复用,这次补的是移动端 UI 集成层,并把 IPTV 频道封面也做成**同步拉流截帧**(对齐 TV,而非仅用 m3u logo)。
+
+### 变更
+- **`MobileLiveScreen` 加 IPTV tab**:直播页 tab 在「推荐」后插入「IPTV」。该 tab 走 `iptvRepository.getChannels()` → `toVideoSummary()`,无分页;空列表显示 `live_iptv_empty`。频道卡片封面用 `IptvThumbnailManager` 对当前可见频道**拉流截帧**(懒加载、会话级缓存、离开 tab clear),复用 TV 的 `IptvThumbnailCapturer`(ImageReader 截帧)。
+- **`MobileVideoCard` 支持封面覆盖**:加 `coverOverride` 参数(镜像 TV `VideoCard`),IPTV 分支传截帧 Bitmap 作 Coil data,非 IPTV 视频不受影响。
+- **播放路由**:`MobileApp` 播放器路由从 `request.isLive` 改为 `request.isLive || request.isIptv`,IPTV 请求走共享 `LivePlayerScreen`(`isMobile=true` 已支持)。
+- **设置页 IPTV 源配置**:`MobileSettingsScreen` 加「IPTV 源」区块,URL/账号/密码编辑弹窗(复用 `normalizeIptvUrl` 补全),保存时 `checkSourceReachable` 弹 Toast 提示连通性。
+- 网格 key 修正:IPTV 频道 `liveRoomId` 全为 0,用 `iptvUrls.firstOrNull()` 作 key 避免重复 key 崩溃。
+
+### 待真机验证
+- 真机移动端:直播页出现 IPTV tab → 频道卡片显示截帧实时缩略图 → 点击能起播出画面(源切换/断流自动切源)→ 设置页配置 IPTV 源 → 保存后连通性 Toast。B站直播/点播回归不受影响。
+
+---
+
 ## v3.0.1-alpha.26
 
 **IPTV 频道缩略图——拉流截帧(测试 alpha)**:IPTV 频道列表封面 = m3u 的 `tvg-logo`,很多源没 logo → 卡片显示纯色占位,观感差。新增:进 IPTV tab 自动后台对当前可见频道**拉直播流截一帧**做缩略图,懒加载(只截当前显示的频道,不一次性截几百个),会话级内存缓存(每次进列表重新截,不永久磁盘缓存)。
