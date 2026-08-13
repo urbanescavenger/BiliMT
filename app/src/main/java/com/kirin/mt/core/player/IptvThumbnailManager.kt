@@ -14,7 +14,10 @@ import kotlinx.coroutines.sync.withPermit
  * [semaphore] 限并发 2 个,避免同时拉多个流占满网络/解码资源。
  */
 class IptvThumbnailManager(private val context: Context) {
-  private val capturer = IptvThumbnailCapturer(context)
+  // 截帧方案一(SurfaceTexture + EGL 离屏 glReadPixels):ImageReader 方案在部分设备/源的
+  // codec 输出格式(0x7fa30c06 YUV/PRIVATE)与 ImageReader 配置格式(RGBA_8888=0x1)不匹配,
+  // 抛 UnsupportedOperationException,整批截帧全失败。EGL 路径不做格式协商,兼容性更稳。
+  private val capturer = IptvThumbnailCapturerEgl(context)
   private val cache = ConcurrentHashMap<String, Bitmap>()
   private val inFlight = ConcurrentHashMap.newKeySet<String>()
   private val semaphore = Semaphore(MaxConcurrent)
