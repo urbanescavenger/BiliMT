@@ -135,6 +135,7 @@ v3.0.0 稳定版后的 patch 线 alpha。
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.1-alpha.31 | IPTV 缩略图截帧改并发：信号量 2→3，TV/移动端消费循环串行 for 改 async 并发，死源/慢源不再串行堵住整批缩略图 |
 | v3.0.1-alpha.28 | IPTV 缩略图截帧崩溃修复：capture 改专用 HandlerThread（ExoPlayer 必须在带 Looper 的线程访问，IO 线程抛 wrong thread 崩溃） |
 | v3.0.1-alpha.14 | TV 历史 tab 合并本地 YouTube 历史（未登录也显示 + 登录后 B 站历史并入，按播放时间倒序）+ TV 动态/历史 YouTube 卡片标绿框识别 |
 | v3.0.1-alpha.5 | TV 视频退出焦点恢复修复：恢复 effect 先等目标行进入视口布局再 requestFocus（不再盲重试），兜底清理 120→240 帧；新增 BiliMT:Focus 诊断日志（onBack/恢复 start-layout-success-failed/backstop/头像 onFocused），退出卡顿（734ms Davey）时焦点不再停在头像 |
