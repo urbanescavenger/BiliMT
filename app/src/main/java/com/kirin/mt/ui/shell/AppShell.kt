@@ -1243,6 +1243,7 @@ fun BiliTvApp(
               playbackRepository = playbackRepository,
               playbackHttpClient = playbackHttpClient,
               liveQualityPreferenceStore = liveQualityPreferenceStore,
+              iptvRepository = iptvRepository,
               onBack = {
                 playbackFocusRestoreDestination = selectedDestination
                 playbackRequest = null
