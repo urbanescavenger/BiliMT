@@ -7,6 +7,10 @@ import android.graphics.SurfaceTexture
 import android.opengl.EGL14
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import javax.microedition.khronos.egl.EGLConfig
+import javax.microedition.khronos.egl.EGLContext
+import javax.microedition.khronos.egl.EGLDisplay
+import javax.microedition.khronos.egl.EGLSurface
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -145,9 +149,9 @@ class IptvThumbnailCapturerEgl(private val context: Context) {
     val surfaceTexture: SurfaceTexture
     val surface: Surface
 
-    private val display: EGL14.EGLDisplay
-    private val context: EGL14.EGLContext
-    private val pbuffer: EGL14.EGLSurface
+    private val display: EGLDisplay
+    private val context: EGLContext
+    private val pbuffer: EGLSurface
 
     private var program = 0
 
@@ -279,47 +283,47 @@ class IptvThumbnailCapturerEgl(private val context: Context) {
       GLES20.glDisableVertexAttribArray(aPosition)
       GLES20.glDisableVertexAttribArray(aTexCoord)
     }
-  }
 
-  private fun buildProgram(): Int {
-    val vertexShader = compileShader(
-      GLES20.GL_VERTEX_SHADER,
-      """
-      attribute vec4 aPosition;
-      attribute vec2 aTexCoord;
-      varying vec2 vTexCoord;
-      void main() {
-        gl_Position = aPosition;
-        vTexCoord = aTexCoord;
-      }
-      """.trimIndent(),
-    )
-    val fragmentShader = compileShader(
-      GLES20.GL_FRAGMENT_SHADER,
-      """
-      #extension GL_OES_EGL_image_external : require
-      precision mediump float;
-      uniform samplerExternalOES uTexture;
-      varying vec2 vTexCoord;
-      void main() {
-        gl_FragColor = texture2D(uTexture, vTexCoord);
-      }
-      """.trimIndent(),
-    )
-    val program = GLES20.glCreateProgram()
-    GLES20.glAttachShader(program, vertexShader)
-    GLES20.glAttachShader(program, fragmentShader)
-    GLES20.glLinkProgram(program)
-    GLES20.glDeleteShader(vertexShader)
-    GLES20.glDeleteShader(fragmentShader)
-    return program
-  }
+    private fun buildProgram(): Int {
+      val vertexShader = compileShader(
+        GLES20.GL_VERTEX_SHADER,
+        """
+        attribute vec4 aPosition;
+        attribute vec2 aTexCoord;
+        varying vec2 vTexCoord;
+        void main() {
+          gl_Position = aPosition;
+          vTexCoord = aTexCoord;
+        }
+        """.trimIndent(),
+      )
+      val fragmentShader = compileShader(
+        GLES20.GL_FRAGMENT_SHADER,
+        """
+        #extension GL_OES_EGL_image_external : require
+        precision mediump float;
+        uniform samplerExternalOES uTexture;
+        varying vec2 vTexCoord;
+        void main() {
+          gl_FragColor = texture2D(uTexture, vTexCoord);
+        }
+        """.trimIndent(),
+      )
+      val program = GLES20.glCreateProgram()
+      GLES20.glAttachShader(program, vertexShader)
+      GLES20.glAttachShader(program, fragmentShader)
+      GLES20.glLinkProgram(program)
+      GLES20.glDeleteShader(vertexShader)
+      GLES20.glDeleteShader(fragmentShader)
+      return program
+    }
 
-  private fun compileShader(type: Int, source: String): Int {
-    val shader = GLES20.glCreateShader(type)
-    GLES20.glShaderSource(shader, source)
-    GLES20.glCompileShader(shader)
-    return shader
+    private fun compileShader(type: Int, source: String): Int {
+      val shader = GLES20.glCreateShader(type)
+      GLES20.glShaderSource(shader, source)
+      GLES20.glCompileShader(shader)
+      return shader
+    }
   }
 
   private companion object {
