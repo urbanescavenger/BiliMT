@@ -1,5 +1,11 @@
 # BiliMT 版本发布说明
 
+## v3.0.2-alpha.2
+
+**发布构建合并为单一 universal APK**:发布阶段不再按 ABI 拆成 `arm64-v8a`/`armeabi-v7a` 两个包,改产出一个同时含两个 ABI 的 `BiliMT-<版本>.apk`,一个包同时适配 TV、手机和两种盒子架构,免去用户挑 ABI、下错装不上。`app/build.gradle.kts` 的 `targetAbi` 本地单 ABI 调试参数保留,debug 构建本就是 universal 不受影响。
+
+---
+
 ## v3.0.1
 
 **稳定版:IPTV 完整接入 + TV 交互打磨**(v3.0.0 稳定版后的 patch 线提升为稳定版)。自 v3.0.0 起 100 个提交,核心是 IPTV 从零到完整落地(TV + 移动端双端),以及 TV 端搜索/历史/设置/焦点交互的系统性打磨。
