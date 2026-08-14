@@ -210,6 +210,21 @@ fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', 
 - **youtubei.js `HTTPClient.ts #setupCommonHeaders` 的请求头**:`Accept:*/*`、`Accept-Language:*`、`X-Goog-Visitor-Id`、`X-Youtube-Client-Version`、`X-Youtube-Client-Name`、`User-Agent`(桌面 Chrome)、`Origin: request_url.origin`。
 - **纯 WEB 客户端不设 `thirdParty.embedUrl`**(HTTPClient.ts 里 WEB 走 `default` 分支;仅 TV_EMBEDDED/WEB_EMBEDDED 设)。**visitorData 也是本地生成的**(`ProtoUtils.encodeVisitorData(generateRandomString(11), now)`),与我们一致。
 
+#### gl/hl 开放为用户设置(v3.0.1-alpha.10)
+
+`gl`(国家/内容地区)+ `hl`(界面语言)原写死 `YoutubeConstants.Hl="en"`/`Gl="US"`(§6.8.3 上面 WEB context 的 `hl/gl`),因实测 `gl=CN`/`hl=zh-CN` 触发反爬(搜索返回 backgroundPromoRenderer)而刻意锁死 US/en。
+
+现开放为 YouTube 设置里的用户可调项,让挂不同地区 VPN 的用户使 `gl` 跟随出口 IP,避免"日本 IP + 美国 context"的地理不一致 bot 特征,并看对应地区热门/推荐:
+
+- **新枚举 `YoutubeContentRegion`**(`core/youtube/`):变体带 `gl`+`hl` 联动(选"日本"→ gl=JP,hl=ja),`key`/`label`/`fromKey` 对齐 `YoutubeDefaultQuality` 模式。变体:US/JP/HK/TW/KR/GB/DE。**不放 CN**(反爬)。默认 US。
+- **进程级 holder `YoutubeContentLocale`**:`@Volatile var current` + `gl`/`hl` getter。`InnerTubeClient.buildContext`(WEB/WEB_EMBEDDED/ANDROID/TVHTML5 全部)+ `sabrClientInfo()`(死代码,WEB harvest 退役后无调用方)读它,而非 `YoutubeConstants`。holder 是单一 app-wide 设置,全局可变在此可接受 —— **免把 gl/hl 逐层透传过 `YoutubeRepository`(browse/search)/`YoutubePlaybackResolver`(player)/SABR 的所有调用点**(那 blast radius 过大,与 `youtubeDefaultQuality` 只影响 /player 不同,gl/hl 影响全链路)。
+- **写入点**:`AppShell`(TV)+ `MobileApp`(移动)各一个 `LaunchedEffect(settings.youtubeContentRegion) { YoutubeContentLocale.current = it }`(幂等,值相同)。
+- **持久化**:`AppSettings.youtubeContentRegion` + `AppSettingsStore`(`stringPreferencesKey("youtube_content_region")` + `setYoutubeContentRegion`)。
+- **UI**:TV `SettingsScreen` YouTube 区块(`youtube-header` 下,`youtube-channels` 后)循环行 + 移动端 `MobileSettingsScreen` `MobileEnumPickerRow`,均用枚举自带 `label`。
+- **`visionOsSabrClientInfo()` 不动**:主 SABR 路径(NewPipe/visionOS)的 `ClientInfo` 逐字对齐 LibreTube,alpha.75 真机 WEB client info 被 RELOAD_PLAYER 全拒;给它加 `acceptLanguage`/`acceptRegion` 有被服务端拒的风险,且主 SABR 的 gl/hl 由 NewPipe 自己的 visionOS /player 决定(见下限制)。
+
+**已知限制**:主 SABR 路径的内容地区**不受此设置控制** —— `serverAbrStreamingUrl`+`ustreamerConfig` 来自 NewPipe `StreamInfo.getInfo` 内部的 visionOS /player,其 gl/hl 由 NewPipe 的 Localization 决定(`NewPipeHolder.init` 只传 downloader,用 NewPipe 默认 localization),且 `NewPipe.init` 是启动期一次性调用,运行时改设置无法热更新。本设置实际影响的是**我们的 WEB/TVHTML5 /player**(buildContext,SABR gate 检查 + adaptive 元数据 + DASH 兜底)。让 NewPipe 路径也跟随需另把 holder region 转成 NewPipe `Localization` 传进 `NewPipe.init` + 处理运行时 re-init(重启生效)—— 列为后续工作。
+
 ### 6.8.4 对我们实现的启示(alpha.23 结论)
 
 | 维度 | FreeTubeAndroid | 我们(alpha.23 前) | 修复 |
@@ -422,7 +437,7 @@ fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', 
 
 **对齐价值**:取流用 NewPipe 自己发一次干净 /player(visionOS,无浏览器会话)拿到**未绑定任何特定 poToken 的 `serverAbrStreamingUrl`+`ustreamerConfig`**,再用我们 BotGuard 的 128B token 在 SABR init + status=2 refresh 一致接入——彻底消除跨 minter / 会话绑定不匹配。这就是 LibreTube 能拿到 status=1 ACCEPTED、而 alpha.70 path A 拿到纯 CONTEXT_UPDATE 的原因。
 
-**harvest 退役**:`YoutubeSabrHarvester.kt` 及 resolver 的 plasma harvest 分支删除,classic(n-decrypt)/DASH 保留作 NewPipe 返回 null 时的兜底。
+**harvest 退役**:`YoutubeSabrHarvester.kt` 及 resolver 的 plasma harvest 分支删除。alpha.76 进一步退役 classic(n-decrypt)兜底——plasma player.js 把 n/sig 移进 WASM 致 n-decrypt 结构性失效,且 classic 用 resolve() 顶部 `botGuard.generatePoToken` 铸的 poToken 与 SABR init minter 不一致 → status=3 60s 卡死(Path C 单一 minter 已根除此问题)。`decipherSabrUrl` 及 classic 专属局部变量(`videoFormats`/`vFmt`/`aFmt`/`nTransformed`)删除。NewPipe 返回 null 时直接落 DASH 兜底。
 
 ## 6.9 SABR 实现调研(FreeTubeAndroid 源码 + googlevideo proto + UMP 协议)
 
@@ -579,7 +594,7 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 **实现**:
 1. **音频选择优先原声轨**(`YoutubePlaybackResolver.kt`):`parseFormat` 解析 `audioTrack.audioIsDefault/id/displayName` + 顶层 `language` 进 `ParsedFormat`;`pickAudio` 优先 `preferredAudioTrackId` 命中 → `audioIsDefault` 原声轨 → 251 → 140 → 最高码率。SABR 路径 `buildSabrSessionFromNewPipe` 的 `firstAudio` 优先 `AudioTrackType.ORIGINAL` → 非 DUBBED → 首条。
 2. **音轨切换**:`PlaybackRequest.preferredAudioTrackId` + `PlaybackInfo.availableAudioTracks` + `PlaybackAudioTrack(id, languageCode, displayName, isDefault)`。SABR 会话复用路径:按 id 命中 `session.audioTracks` 表 → `session.copy(audioFormatId = match.formatId)` + `SabrStreamRegistry.registerByVideoId` 重注册(更新缓存 entry,下个音频段请求用新 itag;poToken 会话级不绑 itag,无需重 harvest)。`SabrSession.audioTracks: List<SabrAudioTrack>`(含 `formatId`)。播放器控制栏加音轨按钮(仅 YouTube 且 `availableAudioTracks.size > 1` 显示),`DropdownMenu` 列出全部音轨,选中即重载。
-3. **默认画质**:`YoutubeDefaultQuality` 枚举(自动/4K/2K/1080P/720P/480P,`maxHeight` 上限);`pickVideo` 加 `preferredMaxHeight`——`preferredItag` 命中优先,否则 `height <= maxHeight` 的最高档,否则最大化分辨率。设置加 `MobileEnumPickerRow`。
+3. **默认画质**:`YoutubeDefaultQuality` 枚举(自动/4K/2K/1080P/720P/480P,`maxHeight` 上限);`pickVideo` 加 `preferredMaxHeight`——`preferredItag` 命中优先,否则 `height <= maxHeight` 的最高档,否则最大化分辨率。设置加 `MobileEnumPickerRow`。**SABR 路径(v3.0.1-alpha.9 修复)**:`buildSabrPlaybackInfo` 加 `youtubeDefaultQuality` 形参,选档 `preferredQualityId` 命中优先(手动切清晰度不变),否则 `maxHeight!=null` 取 `height<=maxHeight` 最高 itag(全超上限取最低档),Auto 取 `maxBy height`(对齐 DASH `pickVideo` 语义)。此前 SABR 主路径固定用会话首条 itag 不读 `maxHeight`,致默认画质设置存了没用——仅 DASH 兜底分支 `pickVideo` 消费 `maxHeight`,而 YouTube 实际走 SABR 主路径,故 TV/移动端(共用 resolver)都不生效。
 
 **去重关键**:单音轨视频有多个 itag(251/140)但 `audioTrackId` 均为 null → 折叠成 `"default"` 一条 + `.distinctBy { it.id }`,避免误显示多音轨菜单。
 
@@ -596,6 +611,85 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 **记录时机**:TV 与移动端播放器起播(Ready)时 `recordPlay`(带频道/封面元数据),暂停/退出时 `updatePosition`。历史需要 channelId 供开频道 → `PlaybackRequest` 加 `channelId` 字段,`toPlaybackRequest` 从 `VideoSummary.channelId` 填入。
 
 **移动端 UI**:YouTube 历史并入「动态」底栏的「历史」子 tab(`MobileFeedScreen` → `MobileHistoryPage`):本地 `YoutubeHistoryStore` 数据与 B 站观看历史**混合,按播放时间倒序**(排序键统一为 epoch 秒——YouTube 取 `lastPlayedAtMs/1000`,B 站取 `viewAt`;两列表本已按该键倒序,新加载的 B 站分页恒更旧,合并后不重排已显示内容)。YouTube 卡片绿框区分(`showYoutubeBorder`)。历史 tab 放宽登录门槛,未登录只显示本地 YouTube 历史 + 登录提示(复用 `history_signed_out`),登录后 B 站历史并入。点击续播、点头像开频道。原独立「YouTube 历史」子 tab 已移除(`MobileYoutubeHistoryPage.kt` 删除,`toVideoSummary()` 移入 `MobileHistoryPage`)。**移动端卡片布局(v3.0.0-alpha.4)**:`MobileVideoCard` 加 `feedLayout` 参数(默认紧凑布局,首页/搜索/空间不变),动态 feed(`MobileDynamicScreen`)置 true 用 B 站动态样式新布局——顶行作者块(头像 40dp 跨两行 + UP 名一行 + 发布时间·播放量一行,发布时间相对时间复用 `video_relative_*` 字符串)→ 缩略图独占整行 → 标题;YouTube 卡片在动态页同样绿框区分。**单列(v3.0.0-alpha.5)**:`MobileDynamicScreen` 的 `LazyVerticalGrid` 改 `GridCells.Fixed(1)`,卡片占满整行全宽展示。
+
+**TV 端(v3.0.1-alpha.14)**:历史 tab 与移动端对齐——`UserVideoFeedScreen` 历史子 tab 合并本地 YouTube 历史(`youtubeHistoryStore`)与 B 站观看历史,按播放时间倒序(`mergeExtraVideos` 复用 `viewAt` 秒排序键);放宽登录门槛,未登录只显示本地 YouTube 历史 + 登录提示。TV 动态/历史子 tab 的 YouTube 卡片标绿框识别(`VideoCard` 对 `VideoCardMode.Dynamic/History` 且 `source==SourceYoutube` 加 2dp 绿框,颜色同移动端 `#00C853`),标准模式(首页/搜索/空间)不标以免整行泛绿。
+
+## 6.13 TV 端 YouTube 取流 TVHTML5 client 试验(2026-08,v3.0.1-alpha.6)
+
+**动机**:TV 端与移动端 YouTube 取流此前完全共用同一套 `WEB` client + SABR(NewPipe path C)链路,无端区分。YouTube 官方 TV 端用 `TVHTML5` client(clientName=TVHTML5/id=7/Cobalt UA),对某些视频的格式/清晰度可用性可能更宽容。试验 TV 端切 TVHTML5 client 看是否比 WEB 多给带 url adaptive / 更多清晰度。
+
+**方案:TVHTML5 优先 + WEB 兜底(安全可回退)**。TV 端 client 列表 `[TVHTML5, WEB]`:TVHTML5 优先,失败/被拦自动回退 WEB 走现有 SABR。移动端不变(默认 `[WEB]`)。最坏 = 现状。
+
+**改动点**:
+- `YoutubeConstants.kt`:加 `TvHtml5ClientName="TVHTML5"`/`TvHtml5ClientVersion="7.20260707.07.00"`/`TvHtml5ClientNameId="7"`/`TvHtml5UserAgent`(Cobalt UA)。
+- `InnerTubeClient.kt`:`Client` enum 加 `TVHTML5`;`userAgent` getter 加分支;请求头 `when(client)` 加 TVHTML5 分支(`X-Youtube-Client-Version`/`X-Youtube-Client-Name=7`/Origin/Accept/Sec-Fetch-*);`buildContext` 加 TVHTML5 分支(clientName/clientVersion/hl/gl/`platform="TV"`/clientFormFactor/userAgent/screenWidthPoints=1920/screenHeightPoints=1080/timeZone,visitorData 复用 `currentVisitorData()` 先试 WEB session,无 browser 指纹/mainAppWebInfo/clientScreen——TV 原生 client 无这些);viaWebView 条件含 TVHTML5;`buildWebViewHeaders` 用 `client.userAgent`。
+- `YoutubePlaybackResolver.kt`:clients 列表按 `request.preferredYoutubeClient` 构建(TVHTML5→`[TVHTML5, WEB]`,null/WEB→`[WEB]`);SABR 门控放宽 `client==WEB || client==TVHTML5`;`postPlayer` viaWebView 条件含 TVHTML5;加 `resolve clients=... preferred=...` Log.i 行。
+- `PlaybackModels.kt`:`PlaybackRequest` 加 `preferredYoutubeClient: InnerTubeClient.Client? = null`(默认 null=WEB,移动端不变)。
+- `PlayerScreen.kt`:TV YouTube 请求 `.copy(preferredYoutubeClient=TVHTML5)`(全限定名,不加 import)。`MobilePlayerScreen.kt` 不改。
+
+**关键事实**:SABR 取流(NewPipe path C,visionOS client,`buildSabrSessionFromNewPipe` `StreamInfo.getInfo` 内部走 visionOS)**独立于外层 /player client** → 切 TVHTML5 外层 /player 不影响 SABR 结果。故最可能"退回 SABR = 现状无变化"。
+
+**可行性风险(如实标注)**:
+1. §6.5 实测无 PO token TVHTML5 全部失败(但本次带 token + viaWebView,条件不同)。
+2. **visitorData 配对风险**:现有 `realSessionData` 从 `sw.js_data` 抓取,绑定 WEB client version(`2.20260805.01.00`);TVHTML5 client version `7.20260707.07.00` 完全不同。用 WEB visitorData 发 TVHTML5 /player 可能因不配对被拒(§6.7 row 19-22 证明 visitorData 配对至关重要)。
+3. **viaWebView 指纹不一致**:Cobalt UA(body 字段)走 Chromium 网络栈(HTTP UA 是 Chromium),能否过反爬未知。
+4. TVHTML5 经典路径 adaptive url 大概率仍剥空(整个 §6.7 证明 WEB 也剥空)。
+
+**状态**:v3.0.1-alpha.6 真机证伪,结局 A,已回退 WEB-only(v3.0.1-alpha.7)。
+
+**真机结果**(Sony BRAVIA AE2,armeabi-v7a,2026-08-10 22:24 / 22:37 两次播放,日志 `logs_live.log`):
+- `YtResolver: resolve clients=[TVHTML5, WEB] preferred=TVHTML5` ✓ 诊断日志生效。
+- `YtBotGuard: postJson /player client=TVHTML5 viaWebView=true ... ctxOs=null ctxBrowser=null ctxMem=null bodyLen=1034B` → `YtBrowserSession: browser fetch network error: TypeError: Failed to fetch`(JS fetch 网络层失败,没拿到任何 /player 响应)。
+- **WEB 回退也失败**:紧跟 TVHTML5 后 `client=WEB viaWebView=true ... ctxOs=Android/13 ctxBrowser=Chrome Mobile ... bodyLen=1647B` → 同样 `TypeError: Failed to fetch`。
+- `E BiliMT:Player: playback launch failed: YouTube playback blocked: no streamingData`(两个 client 都没拿到 streamingData)→ ExoPlayer Release 模块 `media3.exoplayer.dash`(DASH 兜底,未走 sabr)。完全无法播放。
+
+**根因**:① TVHTML5 viaWebView fetch 本身 `TypeError: Failed to fetch`(Cobalt UA + WebView 网络栈 + YouTube 反爬,请求没发出或被浏览器拒),没拿到 /player 响应;② TVHTML5 与 WEB 共享同一 `browserSession`(InnerTubeClient 单例 WebView,`InnerTubeClient.kt:37/112-113`),TVHTML5 fetch 失败污染 session,致 WEB 回退也 Failed → 完全无法播放(严重回归,alpha.4 WEB viaWebView 本能成功)。
+
+**结论 A**:TVHTML5 viaWebView 当前实现不可用,无收益且破坏 WEB 回退。已回退 `PlayerScreen` 的 TVHTML5 传入(`preferredYoutubeClient=null`→WEB-only,恢复 alpha.4 能播)。TVHTML5 代码保留(`InnerTubeClient`/`YoutubePlaybackResolver`/`YoutubeConstants`/`PlaybackModels`),待修 viaWebView session 隔离后再启用。
+
+**后续(可选)**:若要继续 TVHTML5 试验,需先实现 viaWebView session 隔离(TVHTML5 失败不污染 WEB 的 browserSession,或 WEB 用 fresh session),并调查 TVHTML5 `TypeError: Failed to fetch` 根因(Cobalt UA 指纹 / TVHTML5 body 字段触发 CORS preflight / WebView 网络栈)。**无 session 隔离则 TVHTML5 优先必破坏 WEB,不可启用。**
+
+## 6.14 4K60 VP9 黑屏:堆缓冲撑爆(2026-08,v3.0.1-alpha.11)
+
+**现象**:Sony BRAVIA 7 系(Google TV,MTK,硬解 h264/h265/av1 全支持,4K 120Hz 面板)播 YouTube 2160p VP9(itag315,4K60 ~26Mbps)切到 2160p 档后黑屏卡死;1080p(AVC itag137/299、VP9 itag303)正常。用户观察"其他 4K 视频能播"——能播的是 AV1/HEVC 4K 档(走 `c2.mtk.av1.decoder`/hevc,码率低、堆占用小),黑屏的是 VP9 4K(日志全程无 AV1/HEVC 4K 档被选,老视频只有 VP9 4K)。
+
+**真机日志**(`logs_live.log` 2026-08-10 23:14~00:08,Sony BRAVIA_AE2):
+- 取流正常:WEB client 拿到 itag315(2160p vp9),`SABR PlaybackInfo qualities=14 selected=itag315(2160p vp9)`,SABR 拉段 `MEDIA_END bytes=8026303/10927756/14879959` 持续到达。
+- VP9 硬解 `c2.mtk.vp9.decoder` 配置成 `raw.crop 3840x2160 / frame-rate=60` 成功(解码器接受 4K60),surface 走 SurfaceView 硬件直通(`SurfaceUtils connectToSurface` + `setting surface generation`),与 AVC 同路径。
+- **堆爆**:播 4~13s 后 `com.kirin.mt: ... 0% free, 170MB/170MB`、`163MB/163MB`、`140MB/140MB` 连续 blocking GC,主线程阻塞 70~240ms → `W BiliMT:Player: stall detected, auto-retry #1 @pos=4961ms buffered=0%` → `CCodecBufferChannel Stop output queue empty` → `player state=ENDED tracks=0 video=vp9`。itag315 选中 26 次,VP9 ENDED 18 次;偶尔进 READY 也撑不过十几秒(23:22:41 READY→23:22:54 ENDED)。
+- `Query output surface allocator returned 0 params => BAD_INDEX (6)` 在 AVC(`c2.mtk.avc.decoder#779/#118`)、HEVC(`#17/#116`)、VP9 解码器**都出现**,AVC/HEVC 照样能播 → 非 VP9 特有根因,是 MTK CCodec 通用行为。
+
+**根因**:`TvPlaybackLoadControl.MaxBufferMs = 50_000`(alpha.64 为规避 SABR 60s 断崖恢复的大缓冲,见 §6.11/alpha.58/64)× itag315 26Mbps ≈ **162MB 压缩数据缓冲**撑爆 app 默认堆(~170-256MB,manifest 无 `largeHeap`)。4K60 高码率下 50s 时长目标让 ExoPlayer 在 Java 堆/LOS 累积大量 VP9 压缩段(SABR 服务端驱动多段,一次响应连推 8~15MB 多段),GC 连续阻塞主线程,解码/渲染吞吐崩塌 → buffer=0% → stall 看门狗终止播放 → ENDED 黑屏。1080p AVC 4Mbps×50s≈25MB 不爆。**与编码无关,纯 4K 高码率 + 过大时长缓冲 + 堆不足。**
+
+**不是根因(排除)**:
+- 不是"TV 端被限 1080p":WEB client 正常下发 2160p itag315,`clientViewportHeight=1080`/`screenHeightPoints=1080` 硬编码没卡住 WEB 路径拿 4K。
+- 不是 VP9 硬解不支持:`c2.mtk.vp9.decoder` 接受 2160p60 配置且能进 READY 出帧,短时吞吐够。
+- 不是 surface 路径:`PlayerScreen` 用 `PlayerView`(media3 默认 `SURFACE_TYPE_SURFACE_VIEW`=SurfaceView 硬件直通),全仓无 TextureView;AVC/HEVC 同 `BAD_INDEX` 能播。
+- 不是 `codecKeySupported` VP9 放行致选错档:itag315 确实可解(配置成功),问题在运行时缓冲/堆,不在选档。
+
+**修复(v3.0.1-alpha.11)**:
+1. `AndroidManifest.xml` 加 `android:largeHeap="true"`:app 堆提至 512MB,给 4K60 VP9 的 50s 缓冲留空间。单行,不碰解码器/SABR 节奏/画质。
+2. `TvPlaybackLoadControl.MaxBufferMs 50_000→15_000`:15s×26Mbps≈48MB,默认堆都放得下,largeHeap 更绰绰有余。alpha.68 同步刷新 status=2 已解 60s 重启(见记忆 `sabr-status2-sync-refresh`),不再需 alpha.64 的 50s 大缓冲规避 60s 断崖;alpha.58 曾压到 10s 验证过小缓冲可行。
+
+**待真机验证**:装 alpha.11 测 itag315 是否还黑屏(堆不爆应能持续播过 60s)。若仍黑屏说明除堆外还有 4K60 VP9 实时解码吞吐瓶颈,再上:
+- `TvPlaybackLoadControl` 加 `setMaxBufferBytes`(字节上限,治标但更可控);
+- 选档 4K 优先 AV1/HEVC(`codecKeySupported` 对 vp9 一律放行不探——`YoutubePlaybackResolver.kt:969-978`;4K 选档 `buildSabrPlaybackInfo` `maxBy height` 不区分编码——§6.11),这台 av1/h265 硬解都支持且 AV1 4K 码率低于 VP9,有 AV1/HEVC 4K 档的视频优先走它们 → 真 4K 能播;
+- 或 `CodecCapabilityProbe` 补 VP9 分辨率/帧率探测(`VideoCapabilities.isSizeSupported(3840,2160)` + 帧率),理论支持但实际吞吐不行时探测未必拦得住(本机 VP9 4K60 配置成功即此)。
+
+**关联**:
+- `SabrClient.kt:293-294 clientViewportWidth=1920/clientViewportHeight=1080` 硬编码视口(LibreTube `SabrClient.kt` 用动态 `max(videoFormat?.stream?.height,360)`,§6.9.4),未卡 4K 但可后续对齐动态化。
+- `YoutubePlaybackResolver.kt:969-978 codecKeySupported`:vp9/vp8/other 一律放行不探测(HEVC/AV1 以 `CodecCapabilityProbe` 为准)。
+- `CodecCapabilityProbe.kt`:仅探 h264/h265/av01,不探 VP9。
+
+## 6.15 TV 长按 YouTube 视频进 UP 主页(2026-08,v3.0.1-alpha.15)
+
+**现象**:TV 端对 YouTube 视频长按确认键(OK/Enter)本应打开卡片操作菜单进入该 UP 主频道主页(`YoutubeChannelScreen`),但长按无反应;B 站视频长按正常。
+
+**根因**:`TvVideoGrid` 长按触发条件为 `video.ownerMid > 0L`。B 站视频有 `ownerMid`(UP 主 mid),但 YouTube 视频在 `YoutubeRepository.toVideoSummary` 里 `ownerMid = 0L`(YouTube 无 B 站 mid,只有 `channelId`)→ 长按条件恒不满足,`onCardLongPress` 永不触发,进不了 UP 主页。`onCardLongPress` 在 `RecommendScreen` 里是 `onOwnerSelected(video)`,后者对 `source == SourceYoutube && channelId.isNotBlank()` 的视频本就会进 `YoutubeChannelScreen`——只差长按判定这一道闸。
+
+**修复(v3.0.1-alpha.15)**:`TvVideoGrid` 长按条件扩展为 `ownerMid > 0L || (source == SourceYoutube && channelId.isNotBlank())`,YouTube 视频长按也能进 UP 主页,B 站视频行为不变。
+
+**待真机验证**:主页/搜索/动态对 YouTube 视频长按确认键约 0.5s 进入 UP 主页;B 站视频长按行为不变。
 
 ## 7. 关键文件
 

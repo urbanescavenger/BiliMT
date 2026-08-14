@@ -1,7 +1,9 @@
 package com.kirin.mt.core.player
 
 import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceYoutube
+import com.kirin.mt.core.youtube.InnerTubeClient
 
 data class PlaybackRequest(
   val bvid: String,
@@ -31,16 +33,28 @@ data class PlaybackRequest(
   val subType: Int = 0,
   /** 直播间 id;>0 表示这是直播播放请求,走 xlive/web-room/v2/index/getRoomPlayInfo,跳过 DASH playurl。 */
   val liveRoomId: Long = 0L,
-  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube]。YouTube 请求 bvid 字段承载 videoId。 */
+  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube] / [SourceIptv]。YouTube 请求 bvid 字段承载 videoId。 */
   val source: String = SourceBili,
+  /** IPTV 频道镜像源 URL 列表（仅 [SourceIptv] 请求填充）。播放器里按 selectedQn 当源索引切换。 */
+  val iptvUrls: List<String> = emptyList(),
   /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 请求填充，用于播放历史进频道主页；B 站为空串。 */
   val channelId: String = "",
+  /**
+   * YouTube InnerTube /player 客户端偏好。null=默认 WEB(移动端行为)；
+   * TV 端调用点传 [InnerTubeClient.Client.TVHTML5] 试验 TV 专用 client(失败自动回退 WEB)。
+   * 仅 [SourceYoutube] 请求使用。参见 [YoutubePlaybackResolver.resolve] clients 列表构建。
+   */
+  val preferredYoutubeClient: InnerTubeClient.Client? = null,
 ) {
   val isPgc: Boolean
     get() = epId > 0L || seasonId > 0L
 
   val isLive: Boolean
     get() = liveRoomId > 0L
+
+  /** 这是 IPTV 播放请求：直链 m3u8，跳过 B 站 getRoomPlayInfo。 */
+  val isIptv: Boolean
+    get() = source == SourceIptv
 
   /** 这是 YouTube 播放请求：走 InnerTube /player 解析 progressive 直链，跳过 B 站 DASH playurl。 */
   val isYoutube: Boolean
@@ -83,6 +97,8 @@ data class PlaybackInfo(
   val headers: BiliPlaybackHeaders,
   /** YouTube 多语言配音:全部可选音轨(供播放器音轨切换菜单)。非 YouTube/单音轨为空。 */
   val availableAudioTracks: List<PlaybackAudioTrack> = emptyList(),
+  /** YouTube 字幕轨(WebVTT URL,来自 NewPipe info.subtitles)。播放器用 MergingMediaSource 合并渲染。非 YouTube/无字幕为空。 */
+  val subtitleTracks: List<PlaybackTrack> = emptyList(),
 )
 
 /** YouTube 一条可选音轨(多语言配音)。id 为 audioTrack.id(如 "en.4"),非 itag。 */
@@ -168,6 +184,8 @@ data class PlaybackTrack(
    * 播放器分支判断须优先排除本标记(见 PlayerScreen/MobilePlayerScreen 的 `effectiveInfo.isSabrSingle()`)。
    */
   val isSabrSingle: Boolean = false,
+  /** 字幕轨语言码(YouTube WebVTT 字幕用,如 "zh-Hans"/"en")。A/V 轨为 null。 */
+  val languageCode: String? = null,
 ) {
   /** 是否为 progressive 直链（无 DASH SegmentBase），如 YouTube 流。 */
   val isProgressive: Boolean

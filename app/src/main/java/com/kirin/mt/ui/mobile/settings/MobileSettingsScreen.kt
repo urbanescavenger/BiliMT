@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.widget.Toast
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +23,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -60,8 +62,10 @@ import com.kirin.mt.core.cache.formatCacheSize
 import com.kirin.mt.core.image.BiliImageSizing
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.i18n.ChineseTextVariant
+import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.settings.AppSettings
@@ -74,10 +78,12 @@ import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.InstallResult
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.update.UpdateUiState
+import com.kirin.mt.core.webdav.WebDavBackupState
 import com.kirin.mt.ui.settings.currentVersionText
 import com.kirin.mt.ui.settings.downloadProgressFraction
 import com.kirin.mt.ui.settings.isUpdateVersionActionEnabled
 import com.kirin.mt.ui.settings.latestVersionText
+import com.kirin.mt.ui.settings.normalizeIptvUrl
 import com.kirin.mt.ui.settings.updateVersionActionLabel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -96,6 +102,7 @@ fun MobileSettingsScreen(
   webdavConfigStore: com.kirin.mt.core.webdav.WebDavConfigStore,
   webdavBackupService: com.kirin.mt.core.webdav.WebDavBackupService,
   appCacheManager: AppCacheManager,
+  iptvRepository: IptvRepository,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -193,6 +200,14 @@ fun MobileSettingsScreen(
       selectedLabel = settings.youtubeDefaultQuality.label,
       options = enumOptions(YoutubeDefaultQuality.entries) { it.label },
       onSelected = { scope.launch { appSettingsStore.setYoutubeDefaultQuality(it) } },
+    )
+    MobileEnumPickerRow(
+      title = stringResource(R.string.settings_youtube_content_region_title),
+      description = stringResource(R.string.settings_youtube_content_region_description),
+      selected = settings.youtubeContentRegion,
+      selectedLabel = settings.youtubeContentRegion.label,
+      options = enumOptions(YoutubeContentRegion.entries) { it.label },
+      onSelected = { scope.launch { appSettingsStore.setYoutubeContentRegion(it) } },
     )
     MobileSwitchRow(
       title = stringResource(R.string.settings_seek_preview_sprites_title),
@@ -327,9 +342,22 @@ fun MobileSettingsScreen(
     // ===== WebDAV 备份 =====
     MobileWebDavSection(
       config = webDavConfig,
-      onConfigChange = { cfg -> scope.launch { webdavConfigStore.setConfig(cfg) } },
+      onConfigChange = { cfg ->
+        com.kirin.mt.core.webdav.validateAndSaveWebDavConfig(
+          store = webdavConfigStore,
+          ping = { url -> webdavBackupService.ping(url, cfg.username, cfg.password) },
+          config = cfg,
+        )
+      },
       onBackup = { cfg -> webdavBackupService.backup(cfg) },
       onRestore = { cfg -> webdavBackupService.restore(cfg) },
+    )
+
+    // ===== IPTV 源 =====
+    MobileIptvSection(
+      settings = settings,
+      appSettingsStore = appSettingsStore,
+      iptvRepository = iptvRepository,
     )
   }
 
@@ -579,14 +607,14 @@ private fun Context.findActivity(): Activity? {
 @Composable
 private fun MobileWebDavSection(
   config: com.kirin.mt.core.webdav.WebDavConfig,
-  onConfigChange: (com.kirin.mt.core.webdav.WebDavConfig) -> Unit,
+  onConfigChange: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<com.kirin.mt.core.webdav.WebDavConfig>,
   onBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
   onRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   var showEditDialog by remember { mutableStateOf(false) }
-  var busy by remember { mutableStateOf(false) }
+  var webDavState by remember { mutableStateOf<WebDavBackupState>(WebDavBackupState.Idle) }
   var expanded by remember { mutableStateOf(false) }
   // 展开后自动滚动,让备份/还原按钮滚进可视区(区块在设置列表底部,默认在折叠线以下)。
   val bringIntoViewRequester = remember { BringIntoViewRequester() }
@@ -597,12 +625,14 @@ private fun MobileWebDavSection(
     }
   }
 
+  val busy = webDavState is WebDavBackupState.Running
+
   fun runBackup() {
     if (busy) return
-    busy = true
     scope.launch {
+      webDavState = WebDavBackupState.Running(isRestore = false)
       val result = onBackup(config)
-      busy = false
+      webDavState = WebDavBackupState.Idle
       val msg = result.fold(
         onSuccess = { context.getString(R.string.settings_webdav_backup_success) },
         onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
@@ -613,10 +643,10 @@ private fun MobileWebDavSection(
 
   fun runRestore() {
     if (busy) return
-    busy = true
     scope.launch {
+      webDavState = WebDavBackupState.Running(isRestore = true)
       val result = onRestore(config)
-      busy = false
+      webDavState = WebDavBackupState.Idle
       val msg = result.fold(
         onSuccess = { count -> context.getString(R.string.settings_webdav_restore_success, count) },
         onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
@@ -650,12 +680,18 @@ private fun MobileWebDavSection(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
       ) {
-        Button(onClick = ::runBackup, enabled = !busy, modifier = Modifier.weight(1f)) {
-          Text(stringResource(R.string.settings_webdav_backup))
-        }
-        Button(onClick = ::runRestore, enabled = !busy, modifier = Modifier.weight(1f)) {
-          Text(stringResource(R.string.settings_webdav_restore))
-        }
+        WebDavActionButton(
+          isRestore = false,
+          state = webDavState,
+          onClick = ::runBackup,
+          modifier = Modifier.weight(1f),
+        )
+        WebDavActionButton(
+          isRestore = true,
+          state = webDavState,
+          onClick = ::runRestore,
+          modifier = Modifier.weight(1f),
+        )
       }
     }
   }
@@ -663,27 +699,88 @@ private fun MobileWebDavSection(
   if (showEditDialog) {
     MobileWebDavEditDialog(
       config = config,
-      onSave = { cfg ->
-        onConfigChange(cfg)
-        showEditDialog = false
-      },
+      onSave = onConfigChange,
       onDismiss = { showEditDialog = false },
     )
   }
 }
 
-/** WebDAV 编辑弹窗:URL/账号/密码三个输入框 + 保存/取消。 */
+/**
+ * 备份/还原按钮:空闲显示「备份/还原」文案;本按钮在运行中显示「旋转 spinner + 备份中…/还原中…」
+ * (用 [AnimatedContent] 淡入淡出);任一操作运行时两按钮都禁用,避免重复点击。
+ * 服务是单次 suspend 调用、无字节级进度,故用 indeterminate spinner。
+ */
+@Composable
+private fun WebDavActionButton(
+  isRestore: Boolean,
+  state: WebDavBackupState,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val running = state is WebDavBackupState.Running
+  val thisRunning = running && (state as WebDavBackupState.Running).isRestore == isRestore
+  Button(onClick = onClick, enabled = !running, modifier = modifier) {
+    AnimatedContent(
+      targetState = thisRunning,
+      label = "webdav-button",
+    ) { showRunning ->
+      if (showRunning) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+          CircularProgressIndicator(
+            modifier = Modifier.size(16.dp),
+            strokeWidth = 2.dp,
+          )
+          Text(
+            stringResource(
+              if (isRestore) R.string.settings_webdav_restore_running
+              else R.string.settings_webdav_backup_running,
+            ),
+          )
+        }
+      } else {
+        Text(stringResource(if (isRestore) R.string.settings_webdav_restore else R.string.settings_webdav_backup))
+      }
+    }
+  }
+}
+
+/** WebDAV 编辑弹窗:URL/账号/密码三个输入框 + 保存/取消。保存前校验连通,成功才关闭。 */
 @Composable
 private fun MobileWebDavEditDialog(
   config: com.kirin.mt.core.webdav.WebDavConfig,
-  onSave: (com.kirin.mt.core.webdav.WebDavConfig) -> Unit,
+  onSave: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<com.kirin.mt.core.webdav.WebDavConfig>,
   onDismiss: () -> Unit,
 ) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
   var url by remember { mutableStateOf(config.url) }
   var username by remember { mutableStateOf(config.username) }
   var password by remember { mutableStateOf(config.password) }
+  var saving by remember { mutableStateOf(false) }
+  var error by remember { mutableStateOf<String?>(null) }
+
+  fun save() {
+    if (saving) return
+    saving = true
+    error = null
+    scope.launch {
+      val result = onSave(com.kirin.mt.core.webdav.WebDavConfig(url, username, password))
+      saving = false
+      result.fold(
+        onSuccess = {
+          Toast.makeText(context, R.string.settings_webdav_connect_success, Toast.LENGTH_SHORT).show()
+          onDismiss()
+        },
+        onFailure = { error = it.message },
+      )
+    }
+  }
+
   AlertDialog(
-    onDismissRequest = onDismiss,
+    onDismissRequest = { if (!saving) onDismiss() },
     title = { Text(stringResource(R.string.settings_webdav_title)) },
     text = {
       Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -692,17 +789,143 @@ private fun MobileWebDavEditDialog(
           onValueChange = { url = it },
           label = { Text(stringResource(R.string.settings_webdav_url_label)) },
           singleLine = true,
+          enabled = !saving,
         )
         OutlinedTextField(
           value = username,
           onValueChange = { username = it },
           label = { Text(stringResource(R.string.settings_webdav_username_label)) },
           singleLine = true,
+          enabled = !saving,
         )
         OutlinedTextField(
           value = password,
           onValueChange = { password = it },
           label = { Text(stringResource(R.string.settings_webdav_password_label)) },
+          singleLine = true,
+          enabled = !saving,
+          visualTransformation = PasswordVisualTransformation(),
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        )
+        error?.let { msg ->
+          Text(
+            text = msg,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+          )
+        }
+      }
+    },
+    confirmButton = {
+      TextButton(onClick = ::save, enabled = !saving) {
+        Text(
+          stringResource(
+            if (saving) R.string.settings_webdav_validating else R.string.settings_webdav_save,
+          ),
+        )
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss, enabled = !saving) {
+        Text(stringResource(R.string.mobile_dialog_cancel))
+      }
+    },
+  )
+}
+
+/** IPTV 源配置区:地址行只显示 URL,点按/长按弹窗编辑网址/账号/密码,保存后校验连通性(成功/失败 Toast)。 */
+@Composable
+private fun MobileIptvSection(
+  settings: AppSettings,
+  appSettingsStore: AppSettingsStore,
+  iptvRepository: IptvRepository,
+) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+  var showEditDialog by remember { mutableStateOf(false) }
+  var expanded by remember { mutableStateOf(false) }
+
+  MobileSettingsSectionHeader(
+    text = stringResource(R.string.settings_iptv_title),
+    onClick = { expanded = !expanded },
+    trailing = {
+      Icon(
+        imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.primary,
+      )
+    },
+  )
+  androidx.compose.animation.AnimatedVisibility(visible = expanded) {
+    Column {
+      MobileSettingsRow(
+        title = stringResource(R.string.settings_iptv_url_label),
+        description = settings.iptvSourceUrl.ifBlank { stringResource(R.string.settings_iptv_configure_hint) },
+        onClick = { showEditDialog = true },
+        onLongClick = { showEditDialog = true },
+      )
+    }
+  }
+
+  if (showEditDialog) {
+    MobileIptvEditDialog(
+      url = settings.iptvSourceUrl,
+      username = settings.iptvSourceUsername,
+      password = settings.iptvSourcePassword,
+      onSave = { url, username, password ->
+        showEditDialog = false
+        scope.launch {
+          appSettingsStore.setIptvSourceUrl(url)
+          appSettingsStore.setIptvSourceUsername(username)
+          appSettingsStore.setIptvSourcePassword(password)
+          // 保存后校验连通性,成功/失败都提示(镜像 TV AppShell onIptvSourceConfigChange)。
+          val reachable = iptvRepository.checkSourceReachable(url, username, password)
+          Toast.makeText(
+            context,
+            if (reachable) R.string.settings_iptv_connect_success else R.string.settings_iptv_connect_failed,
+            Toast.LENGTH_SHORT,
+          ).show()
+        }
+      },
+      onDismiss = { showEditDialog = false },
+    )
+  }
+}
+
+/** IPTV 源编辑弹窗:URL/账号/密码三个输入框 + 保存/取消。保存时补全 URL 协议(镜像 TV SettingsIptvDialog)。 */
+@Composable
+private fun MobileIptvEditDialog(
+  url: String,
+  username: String,
+  password: String,
+  onSave: (url: String, username: String, password: String) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  var urlValue by remember { mutableStateOf(url) }
+  var usernameValue by remember { mutableStateOf(username) }
+  var passwordValue by remember { mutableStateOf(password) }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text(stringResource(R.string.settings_iptv_title)) },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+          value = urlValue,
+          onValueChange = { urlValue = it },
+          label = { Text(stringResource(R.string.settings_iptv_url_label)) },
+          singleLine = true,
+        )
+        OutlinedTextField(
+          value = usernameValue,
+          onValueChange = { usernameValue = it },
+          label = { Text(stringResource(R.string.settings_iptv_username_label)) },
+          singleLine = true,
+        )
+        OutlinedTextField(
+          value = passwordValue,
+          onValueChange = { passwordValue = it },
+          label = { Text(stringResource(R.string.settings_iptv_password_label)) },
           singleLine = true,
           visualTransformation = PasswordVisualTransformation(),
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -710,7 +933,7 @@ private fun MobileWebDavEditDialog(
       }
     },
     confirmButton = {
-      TextButton(onClick = { onSave(com.kirin.mt.core.webdav.WebDavConfig(url, username, password)) }) {
+      TextButton(onClick = { onSave(normalizeIptvUrl(urlValue), usernameValue.trim(), passwordValue) }) {
         Text(stringResource(R.string.settings_webdav_save))
       }
     },

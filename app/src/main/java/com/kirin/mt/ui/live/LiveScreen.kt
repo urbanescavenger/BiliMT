@@ -1,10 +1,12 @@
 package com.kirin.mt.ui.live
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -16,11 +18,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import com.kirin.mt.R
 import com.kirin.mt.core.model.LiveAreaGroup
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.network.LiveRepository
+import com.kirin.mt.core.player.IptvThumbnailManager
 import com.kirin.mt.ui.common.BiliCapsuleTabRow
 import com.kirin.mt.ui.common.BiliPillTab
 import com.kirin.mt.ui.common.FeedStatusScreen
@@ -32,6 +37,7 @@ import com.kirin.mt.ui.player.toVideoSummary
 import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
 private const val FirstPage = 1
@@ -44,6 +50,12 @@ internal sealed interface LiveSection {
   data object Recommend : LiveSection {
     override val key = "recommend"
     override val label = "推荐"
+  }
+
+  /** IPTV 频道 tab:读配置的 m3u 源,无分页(一次拉全量)。 */
+  data object Iptv : LiveSection {
+    override val key = "iptv"
+    override val label = "IPTV"
   }
 
   data class Area(val group: LiveAreaGroup) : LiveSection {
@@ -99,6 +111,7 @@ internal data class LiveLoadRequest(
 @Composable
 internal fun LiveScreen(
   liveRepository: LiveRepository,
+  iptvRepository: IptvRepository,
   uiState: LiveUiState,
   firstItemFocusRequester: FocusRequester,
   tabFocusRequester: FocusRequester,
@@ -122,6 +135,7 @@ internal fun LiveScreen(
   val sections = remember(uiState.areaGroups) {
     buildList {
       add(LiveSection.Recommend)
+      add(LiveSection.Iptv)
       uiState.areaGroups.forEach { add(LiveSection.Area(it)) }
     }
   }
@@ -137,6 +151,18 @@ internal fun LiveScreen(
     ?: sections.first()
   val selectedSectionFocusRequester = tabFocusRequester
   val state = uiState.sectionStates[activeSection.key] ?: LiveState.Loading
+
+  // IPTV 频道缩略图:进 IPTV tab 自动后台截帧(拉流截一帧),只截当前可见频道(懒加载)。
+  // 会话级 manager(每次进 tab 新建,离开 clear 清缓存 → 下次进重新截,不永久磁盘缓存)。
+  val context = LocalContext.current
+  val isIptv = activeSection is LiveSection.Iptv
+  val thumbnailManager = remember(context, isIptv) {
+    if (isIptv) IptvThumbnailManager(context) else null
+  }
+  var iptvThumbnails by remember { mutableStateOf<Map<String, Bitmap>>(emptyMap()) }
+  DisposableEffect(thumbnailManager) {
+    onDispose { thumbnailManager?.clear() }
+  }
 
   fun requestSectionLoad(sectionKey: String, refreshKey: Int) {
     uiState.nextLoadRequestId += 1
@@ -186,13 +212,28 @@ internal fun LiveScreen(
     val nextState = try {
       val page = when (sectionToLoad) {
         LiveSection.Recommend -> liveRepository.getLiveList(FirstPage)
+        LiveSection.Iptv -> null
         is LiveSection.Area -> liveRepository.getLiveListByArea(
           parentAreaId = sectionToLoad.group.id,
           areaId = 0,
           page = FirstPage,
         )
       }
-      if (page.items.isEmpty()) {
+      if (page == null) {
+        // IPTV:一次拉全量,无分页。未配置源时 getChannels 返回空 → 空态提示去设置。
+        val channels = iptvRepository.getChannels()
+        if (channels.isEmpty()) {
+          LiveState.Empty
+        } else {
+          LiveState.Success(
+            videos = channels.map { it.toVideoSummary() },
+            nextPage = 0,
+            loadingMore = false,
+            endReached = true,
+            loadMoreError = "",
+          )
+        }
+      } else if (page.items.isEmpty()) {
         LiveState.Empty
       } else {
         LiveState.Success(
@@ -228,6 +269,8 @@ internal fun LiveScreen(
       val nextState = try {
         val nextVideos = when (sectionToLoad) {
           LiveSection.Recommend -> liveRepository.getLiveList(pageToLoad)
+          // IPTV 无分页(endReached=true),loadNextPage 不会触发;占位保持编译穷尽。
+          LiveSection.Iptv -> return@launch
           is LiveSection.Area -> liveRepository.getLiveListByArea(
             parentAreaId = sectionToLoad.group.id,
             areaId = 0,
@@ -321,7 +364,11 @@ internal fun LiveScreen(
     ) {
       when (val currentState = state) {
         LiveState.Loading -> VideoGridSkeleton()
-        LiveState.Empty -> FeedStatusScreen(message = stringResource(R.string.live_empty))
+        LiveState.Empty -> FeedStatusScreen(
+          message = stringResource(
+            if (activeSection is LiveSection.Iptv) R.string.live_iptv_empty else R.string.live_empty,
+          ),
+        )
         is LiveState.Failed -> FeedStatusScreen(
           message = stringResource(R.string.live_failed_with_message, currentState.message),
           actionLabel = stringResource(R.string.action_retry),
@@ -358,6 +405,23 @@ internal fun LiveScreen(
             onOwnerSelected = { },
             onCardLongPress = { },
             keyFactory = { _, video -> video.liveRoomId },
+            // IPTV:封面用拉流截帧缩略图(懒加载,只截当前可见频道);非 IPTV 不传。
+            coverOverrides = if (isIptv) iptvThumbnails else null,
+            onVisibleRangeChange = if (isIptv) { first, last ->
+              coroutineScope.launch {
+                // 最后一行可能不满,clamp 到列表末尾避免 subList 越界。
+                val safeLast = last.coerceAtMost(currentState.videos.lastIndex)
+                if (first > safeLast) return@launch
+                val visible = currentState.videos.subList(first, safeLast + 1)
+                // 并发截帧:死源/慢源只占一个并发槽,不串行堵住整批(信号量限并发 3)。
+                visible.mapNotNull { it.iptvUrls.firstOrNull() }
+                  .map { url -> async { url to thumbnailManager?.getThumbnail(url) } }
+                  .forEach { deferred ->
+                    val (url, bmp) = deferred.await()
+                    if (bmp != null) iptvThumbnails = iptvThumbnails + (url to bmp)
+                  }
+              }
+            } else null,
             topPadding = BiliSizing.HomeVideoGridTopPadding + BiliSizing.HomeVideoGridTopBleed,
             topBleed = BiliSizing.HomeVideoGridTopBleed,
           )

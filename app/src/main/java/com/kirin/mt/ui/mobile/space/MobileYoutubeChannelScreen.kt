@@ -63,6 +63,7 @@ fun MobileYoutubeChannelScreen(
   val channels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   val followed = channels.any { it.channelId == channelId }
   val name = uiState.name
+  val avatar = uiState.avatar
   val items = uiState.items
   val loading = uiState.loading
   val loadingMore = uiState.loadingMore
@@ -75,7 +76,7 @@ fun MobileYoutubeChannelScreen(
       uiState.failed = null
       try {
         val page = youtubeRepository.getChannelVideos(channelId)
-        uiState.items = page.items
+        uiState.items = page.items.distinctBy { it.bvid }
         uiState.continuation = page.continuation
         uiState.endReached = page.continuation == null
       } catch (e: CancellationException) {
@@ -110,12 +111,13 @@ fun MobileYoutubeChannelScreen(
     }
   }
 
-  // 首屏:解析权威频道名(失败回退卡片名) + 拉第一页(已加载过同 channelId 则跳过)。
+  // 首屏:解析权威频道名 + 头像(失败回退卡片名/空头像) + 拉第一页(已加载过同 channelId 则跳过)。
   LaunchedEffect(channelId) {
     if (uiState.loadedChannelId != channelId) {
       uiState.name = channelName
-      uiState.name = runCatching { youtubeRepository.resolveChannel(channelId).name }
-        .getOrDefault(channelName).ifBlank { channelName }
+      val resolved = runCatching { youtubeRepository.resolveChannel(channelId) }.getOrNull()
+      uiState.name = resolved?.name?.ifBlank { channelName } ?: channelName
+      uiState.avatar = resolved?.avatar.orEmpty()
       loadFirst()
       uiState.loadedChannelId = channelId
     } else {
@@ -135,11 +137,13 @@ fun MobileYoutubeChannelScreen(
       .collect { nearEnd -> if (nearEnd) loadNext() }
   }
 
-  // 频道页视频(channelId 为空)统一注入本频道 id + 名,保证卡片 owner 点击留在本频道。
+  // 频道页视频(channelId 为空)统一注入本频道 id + 名 + 头像,保证卡片 owner 点击留在本频道、
+  // 头像显示本频道头像(lockupViewModel 不带 channelAvatarUrl,需从解析出的频道信息补)。
   val displayItems = items.map { video ->
     video.copy(
       channelId = if (video.channelId.isBlank()) channelId else video.channelId,
       ownerName = if (video.ownerName.isBlank()) name else video.ownerName,
+      ownerFace = if (video.ownerFace.isBlank()) avatar else video.ownerFace,
     )
   }
 

@@ -19,9 +19,13 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -49,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
@@ -61,6 +66,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import com.kirin.mt.R
@@ -189,6 +195,8 @@ internal fun SearchScreen(
   var suggestions by remember { mutableStateOf<List<String>>(emptyList()) }
   var returnFocusToKeyboard by remember { mutableStateOf(false) }
   val screenFocusRequester = remember { FocusRequester() }
+  val sourceToggleFocusRequester = remember { FocusRequester() }
+  val inputFocusRequester = remember { FocusRequester() }
 
   LaunchedEffect(uiState.searchText) {
     if (uiState.searchText.isBlank()) {
@@ -230,6 +238,10 @@ internal fun SearchScreen(
           uiState.source = newSource
         }
       },
+      focusRequester = sourceToggleFocusRequester,
+      onMoveDown = {
+        runCatching { inputFocusRequester.requestFocus() }.isSuccess
+      },
       modifier = Modifier.padding(horizontal = BiliSizing.ContentPadding),
     )
     Box(
@@ -241,6 +253,10 @@ internal fun SearchScreen(
           suggestions = suggestions,
           searchHistory = searchHistory,
           keyboardFocusRequester = firstItemFocusRequester,
+          inputFocusRequester = inputFocusRequester,
+          onMoveUpToSourceToggle = {
+            runCatching { sourceToggleFocusRequester.requestFocus() }.isSuccess
+          },
           onMoveLeftToNav = onMoveLeftToNav,
           onTextChange = { nextText ->
             uiState.searchText = nextText
@@ -291,38 +307,40 @@ internal fun SearchScreen(
 private fun SearchSourceToggle(
   source: String,
   onSourceSelected: (String) -> Unit,
+  focusRequester: FocusRequester,
+  onMoveDown: () -> Boolean,
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
-  Row(
-    modifier = modifier.fillMaxWidth(),
-    horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
-  ) {
-    listOf(
-      SourceBili to stringResource(R.string.search_source_bili),
-      SourceYoutube to stringResource(R.string.search_source_youtube),
-    ).forEach { (value, label) ->
-      val selected = source == value
-      BiliFocusableSurface(
-        scaleOnFocus = false,
-        shape = RoundedCornerShape(BiliRadius.Pill),
-        onClick = { onSourceSelected(value) },
-        modifier = Modifier.height(BiliSizing.HomeSectionTabHeight),
-      ) {
-        Box(
-          modifier = Modifier
-            .padding(horizontal = BiliSpacing.Lg)
-            .fillMaxSize(),
-          contentAlignment = Alignment.Center,
-        ) {
-          Text(
-            text = label,
-            color = if (selected) homeColors.accent else homeColors.textSecondary,
-            fontSize = BiliTypography.HomeSectionTab,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-          )
+  // 单个按钮占满整行居中,显示当前源;点击循环切换到另一个源。
+  val label = if (source == SourceBili) "BILIBILI" else "YOUTUBE"
+  val targetSource = if (source == SourceBili) SourceYoutube else SourceBili
+  BiliFocusableSurface(
+    scaleOnFocus = false,
+    shape = RoundedCornerShape(BiliRadius.Pill),
+    onClick = { onSourceSelected(targetSource) },
+    modifier = modifier
+      .fillMaxWidth()
+      .height(BiliSizing.HomeSectionTabHeight)
+      .focusRequester(focusRequester)
+      .onPreviewKeyEvent { event ->
+        if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
+          onMoveDown()
+        } else {
+          false
         }
-      }
+      },
+  ) {
+    Box(
+      modifier = Modifier.fillMaxSize(),
+      contentAlignment = Alignment.Center,
+    ) {
+      Text(
+        text = label,
+        color = homeColors.accent,
+        fontSize = BiliTypography.HomeSectionTab,
+        fontWeight = FontWeight.Bold,
+      )
     }
   }
 }
@@ -333,15 +351,20 @@ private fun SearchKeyboardView(
   suggestions: List<String>,
   searchHistory: List<String>,
   keyboardFocusRequester: FocusRequester,
+  inputFocusRequester: FocusRequester,
+  onMoveUpToSourceToggle: () -> Boolean,
   onMoveLeftToNav: () -> Boolean,
   onTextChange: (String) -> Unit,
   onClearSearchHistory: () -> Unit,
   onSearch: (String) -> Unit,
 ) {
+  // 输入框聚焦时唤起系统 IME,自绘键盘隐藏;焦点移开时 IME 收起、自绘键盘恢复。
+  var inputFocused by remember { mutableStateOf(false) }
   Column(
     modifier = Modifier
       .fillMaxSize()
-      .padding(BiliSizing.ContentPadding),
+      .padding(BiliSizing.ContentPadding)
+      .imePadding(),
   ) {
     Row(
       modifier = Modifier.fillMaxSize(),
@@ -353,53 +376,76 @@ private fun SearchKeyboardView(
           .fillMaxHeight(),
         verticalArrangement = Arrangement.Top,
       ) {
-        SearchInputText(searchText = searchText)
-        Spacer(modifier = Modifier.height(BiliSpacing.Md))
-        Row(
-          horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
-          modifier = Modifier
-            .fillMaxWidth()
-            .height(BiliSizing.SearchKeyboardButtonHeight),
-        ) {
-          SearchKeyboardButton(
-            label = stringResource(R.string.search_action_clear),
-            modifier = Modifier
-              .weight(1f)
-              .focusRequester(keyboardFocusRequester),
-            onMoveLeft = onMoveLeftToNav,
-            onClick = {
-              onTextChange("")
-            },
-          )
-          SearchKeyboardButton(
-            label = stringResource(R.string.search_action_backspace),
-            modifier = Modifier.weight(1f),
-            onClick = {
-              if (searchText.isNotEmpty()) {
-                onTextChange(searchText.dropLast(1))
-              }
-            },
-          )
-        }
-        Spacer(modifier = Modifier.height(BiliSpacing.Md))
-        SearchKeyGrid(
-          onKeyClick = { key ->
-            onTextChange(searchText + key)
+        SearchInputText(
+          searchText = searchText,
+          onTextChange = onTextChange,
+          focusRequester = inputFocusRequester,
+          onFocusChanged = { inputFocused = it },
+          onMoveUp = onMoveUpToSourceToggle,
+          onMoveDown = {
+            // IME 激活、自绘键盘隐藏时,Down 交给默认焦点系统(移到右侧建议面板)。
+            if (inputFocused) {
+              false
+            } else {
+              runCatching { keyboardFocusRequester.requestFocus() }.isSuccess
+            }
           },
-          onMoveLeftToNav = onMoveLeftToNav,
-        )
-        Spacer(modifier = Modifier.height(BiliSpacing.Lg))
-        SearchKeyboardButton(
-          label = stringResource(R.string.search_action_search),
-          action = true,
-          modifier = Modifier
-            .fillMaxWidth()
-            .height(BiliSizing.SearchKeyboardButtonHeight),
-          onMoveLeft = onMoveLeftToNav,
-          onClick = {
+          onSearchSubmit = {
             onSearch(searchText)
           },
         )
+        if (!inputFocused) {
+          Spacer(modifier = Modifier.height(BiliSpacing.Md))
+          Row(
+            horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(BiliSizing.SearchKeyboardButtonHeight),
+          ) {
+            SearchKeyboardButton(
+              label = stringResource(R.string.search_action_clear),
+              modifier = Modifier
+                .weight(1f)
+                .focusRequester(keyboardFocusRequester),
+              onMoveLeft = onMoveLeftToNav,
+              onMoveUp = {
+                runCatching { inputFocusRequester.requestFocus() }.isSuccess
+              },
+              onClick = {
+                onTextChange("")
+              },
+            )
+            SearchKeyboardButton(
+              label = stringResource(R.string.search_action_backspace),
+              modifier = Modifier.weight(1f),
+              onClick = {
+                if (searchText.isNotEmpty()) {
+                  onTextChange(searchText.dropLast(1))
+                }
+              },
+            )
+          }
+          Spacer(modifier = Modifier.height(BiliSpacing.Md))
+          SearchKeyGrid(
+            onKeyClick = { key ->
+              onTextChange(searchText + key)
+            },
+            onMoveLeftToNav = onMoveLeftToNav,
+            modifier = Modifier.weight(1f),
+          )
+          Spacer(modifier = Modifier.height(BiliSpacing.Lg))
+          SearchKeyboardButton(
+            label = stringResource(R.string.search_action_search),
+            action = true,
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(BiliSizing.SearchKeyboardButtonHeight),
+            onMoveLeft = onMoveLeftToNav,
+            onClick = {
+              onSearch(searchText)
+            },
+          )
+        }
       }
       SearchSuggestionPanel(
         searchText = searchText,
@@ -416,26 +462,72 @@ private fun SearchKeyboardView(
 }
 
 @Composable
-private fun SearchInputText(searchText: String) {
+private fun SearchInputText(
+  searchText: String,
+  onTextChange: (String) -> Unit,
+  focusRequester: FocusRequester,
+  onFocusChanged: (Boolean) -> Unit,
+  onMoveUp: () -> Boolean,
+  onMoveDown: () -> Boolean,
+  onSearchSubmit: () -> Unit,
+) {
   val homeColors = LocalHomeColors.current
   val placeholder = stringResource(R.string.search_input_placeholder)
-  val displayText = if (searchText.isBlank()) placeholder else convertChineseText(searchText)
+  var focused by remember { mutableStateOf(false) }
+  val borderColor = if (focused) homeColors.accent else homeColors.glassBorder
+  val borderWidth = if (focused) BiliFocus.BorderWidth else BiliFocus.RestingBorderWidth
 
   Box(
     modifier = Modifier
       .fillMaxWidth()
       .height(BiliSizing.SearchInputHeight)
-      .background(homeColors.glassSurfaceStrong, RoundedCornerShape(BiliRadius.Card))
+      .background(
+        if (focused) homeColors.accent.copy(alpha = 0.12f) else homeColors.glassSurfaceStrong,
+        RoundedCornerShape(BiliRadius.Card),
+      )
+      .border(BorderStroke(borderWidth, borderColor), RoundedCornerShape(BiliRadius.Card))
       .padding(horizontal = BiliSpacing.Lg),
     contentAlignment = Alignment.CenterStart,
   ) {
-    Text(
-      text = displayText,
-      color = if (searchText.isBlank()) homeColors.textTertiary else homeColors.textPrimary,
-      fontSize = BiliTypography.SearchInput,
-      fontWeight = FontWeight.Bold,
-      maxLines = 1,
-      overflow = TextOverflow.Ellipsis,
+    BasicTextField(
+      value = searchText,
+      onValueChange = onTextChange,
+      singleLine = true,
+      textStyle = TextStyle(
+        color = if (searchText.isBlank()) homeColors.textTertiary else homeColors.textPrimary,
+        fontSize = BiliTypography.SearchInput,
+        fontWeight = FontWeight.Bold,
+      ),
+      cursorBrush = SolidColor(homeColors.accent),
+      keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+      keyboardActions = KeyboardActions(onSearch = { onSearchSubmit() }),
+      modifier = Modifier
+        .fillMaxWidth()
+        .focusRequester(focusRequester)
+        .onFocusChanged { focusState ->
+          focused = focusState.isFocused
+          onFocusChanged(focusState.isFocused)
+        }
+        .onPreviewKeyEvent { event ->
+          when {
+            event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> onMoveUp()
+            event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
+            else -> false
+          }
+        },
+      decorationBox = { innerTextField ->
+        if (searchText.isBlank()) {
+          Text(
+            text = placeholder,
+            color = homeColors.textTertiary,
+            fontSize = BiliTypography.SearchInput,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+        innerTextField()
+      },
     )
   }
 }
@@ -444,22 +536,26 @@ private fun SearchInputText(searchText: String) {
 private fun SearchKeyGrid(
   onKeyClick: (String) -> Unit,
   onMoveLeftToNav: () -> Boolean,
+  modifier: Modifier = Modifier,
 ) {
+  // 键盘区整体弹性:每行均分剩余高度,按键随屏幕高度自适应伸缩,避免底部搜索按钮被挤出可视区。
   Column(
     verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
-    modifier = Modifier.fillMaxWidth(),
+    modifier = modifier.fillMaxWidth(),
   ) {
     SearchKeyboardRows.forEach { row ->
       Row(
         horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+          .fillMaxWidth()
+          .weight(1f),
       ) {
         row.forEachIndexed { columnIndex, key ->
           SearchKeyboardButton(
             label = key,
             modifier = Modifier
               .weight(1f)
-              .height(BiliSizing.SearchKeyboardButtonHeight),
+              .fillMaxHeight(),
             onMoveLeft = if (columnIndex == 0) onMoveLeftToNav else null,
             onClick = {
               onKeyClick(key)
@@ -477,6 +573,7 @@ private fun SearchKeyboardButton(
   modifier: Modifier = Modifier,
   action: Boolean = false,
   onMoveLeft: (() -> Boolean)? = null,
+  onMoveUp: (() -> Boolean)? = null,
   onClick: () -> Unit,
 ) {
   val homeColors = LocalHomeColors.current
@@ -486,10 +583,10 @@ private fun SearchKeyboardButton(
     onClick = onClick,
     modifier = modifier
       .onPreviewKeyEvent { event ->
-        if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft && onMoveLeft != null) {
-          onMoveLeft()
-        } else {
-          false
+        when {
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft && onMoveLeft != null -> onMoveLeft()
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp && onMoveUp != null -> onMoveUp()
+          else -> false
         }
       },
   ) {
@@ -667,6 +764,7 @@ private fun SearchResultsView(
   val sortFocusRequesters = remember {
     SearchSortOptions.associate { option -> option.key to FocusRequester() }
   }
+  val titleFocusRequester = remember { FocusRequester() }
   val selectedOrderKey = uiState.selectedOrderKey
   val source = uiState.source
 
@@ -806,8 +904,10 @@ private fun SearchResultsView(
       source = source,
       selectedOrderKey = selectedOrderKey,
       sortFocusRequesters = sortFocusRequesters,
+      titleFocusRequester = titleFocusRequester,
       firstResultFocusRequester = firstResultFocusRequester,
       onMoveLeftToNav = onMoveLeftToNav,
+      onBackToKeyboard = onBackToKeyboard,
       onOrderSelected = { orderKey ->
         uiState.selectOrder(orderKey)
       },
@@ -831,6 +931,7 @@ private fun SearchResultsView(
           videos = currentState.videos,
           firstResultFocusRequester = firstResultFocusRequester,
           selectedSortFocusRequester = sortFocusRequesters.getValue(selectedOrderKey),
+          titleFocusRequester = titleFocusRequester,
           restoredFocusIndex = currentState.videos.resolveFocusIndex(
             focusKey = uiState.focusedResultKey,
             fallbackIndex = uiState.focusedResultIndex,
@@ -862,22 +963,62 @@ private fun SearchResultsHeader(
   source: String,
   selectedOrderKey: String,
   sortFocusRequesters: Map<String, FocusRequester>,
+  titleFocusRequester: FocusRequester,
   firstResultFocusRequester: FocusRequester,
   onMoveLeftToNav: () -> Boolean,
+  onBackToKeyboard: () -> Unit,
   onOrderSelected: (String) -> Unit,
 ) {
   val homeColors = LocalHomeColors.current
+  var titleFocused by remember { mutableStateOf(false) }
   Column(
     modifier = Modifier.fillMaxWidth(),
     verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
   ) {
-    Text(
-      text = stringResource(R.string.search_results_title, convertChineseText(query)),
-      color = homeColors.textPrimary,
-      fontSize = BiliTypography.SectionTitle,
-      fontWeight = FontWeight.Bold,
-      modifier = Modifier.padding(horizontal = BiliSizing.SearchVideoGridHorizontalPadding),
-    )
+    // 标题可聚焦:按确认键返回键盘重新搜索。
+    BiliFocusableSurface(
+      scaleOnFocus = false,
+      shape = RoundedCornerShape(BiliRadius.Card),
+      onClick = onBackToKeyboard,
+      modifier = Modifier
+        .fillMaxWidth()
+        .focusRequester(titleFocusRequester)
+        .onFocusChanged { titleFocused = it.isFocused }
+        .onPreviewKeyEvent { event ->
+          if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
+            if (source == SourceBili) {
+              runCatching { sortFocusRequesters.getValue(selectedOrderKey).requestFocus() }.isSuccess
+            } else {
+              runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
+            }
+          } else {
+            false
+          }
+        },
+    ) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = BiliSizing.SearchVideoGridHorizontalPadding)
+          .height(BiliSizing.HomeSectionTabHeight),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+      ) {
+        Text(
+          text = stringResource(R.string.search_results_title, convertChineseText(query)),
+          color = homeColors.textPrimary,
+          fontSize = BiliTypography.SectionTitle,
+          fontWeight = FontWeight.Bold,
+        )
+        if (titleFocused) {
+          Text(
+            text = stringResource(R.string.search_back_to_edit_hint),
+            color = homeColors.textTertiary,
+            fontSize = BiliTypography.BodySmall,
+          )
+        }
+      }
+    }
     if (source == SourceBili) {
       LazyRow(
         modifier = Modifier
@@ -895,6 +1036,9 @@ private fun SearchResultsHeader(
             selected = selected,
             modifier = Modifier.focusRequester(sortFocusRequesters.getValue(option.key)),
             onMoveLeftToNav = if (index == 0) onMoveLeftToNav else null,
+            onMoveUpToTitle = {
+              runCatching { titleFocusRequester.requestFocus() }.isSuccess
+            },
             onMoveDownToResults = {
               runCatching {
                 firstResultFocusRequester.requestFocus()
@@ -916,6 +1060,7 @@ private fun SearchSortButton(
   selected: Boolean,
   modifier: Modifier = Modifier,
   onMoveLeftToNav: (() -> Boolean)? = null,
+  onMoveUpToTitle: () -> Boolean,
   onMoveDownToResults: () -> Boolean,
   onSelected: () -> Unit,
 ) {
@@ -974,6 +1119,7 @@ private fun SearchSortButton(
         when {
           event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft ->
             if (onMoveLeftToNav != null) onMoveLeftToNav() else false
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> onMoveUpToTitle()
           event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDownToResults()
           event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
             onSelected()
@@ -1011,6 +1157,7 @@ private fun SearchResultGrid(
   videos: List<VideoSummary>,
   firstResultFocusRequester: FocusRequester,
   selectedSortFocusRequester: FocusRequester,
+  titleFocusRequester: FocusRequester,
   restoredFocusIndex: Int,
   restoreFocusRequestKey: Int,
   onRestoreFocusHandled: (Int) -> Unit,
@@ -1043,9 +1190,9 @@ private fun SearchResultGrid(
     onLoadMore = onLoadMore,
     onMoveLeftToNav = onMoveLeftToNav,
     onMoveUpFromFirstRow = {
-      runCatching {
-        selectedSortFocusRequester.requestFocus()
-      }.isSuccess
+      // B站优先回排序选项;YouTube 无排序选项时回标题(重新搜索)。
+      val moved = runCatching { selectedSortFocusRequester.requestFocus() }.getOrDefault(false)
+      if (moved) true else runCatching { titleFocusRequester.requestFocus() }.getOrDefault(false)
     },
     onBackKey = {
       onBackToKeyboard()

@@ -1,9 +1,11 @@
 package com.kirin.mt.ui.player
 
 import com.kirin.mt.core.model.LiveRoom
+import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
+import com.kirin.mt.core.network.IptvChannel
 import com.kirin.mt.core.player.PlaybackRequest
 
 /**
@@ -11,6 +13,18 @@ import com.kirin.mt.core.player.PlaybackRequest
  * 镜像 AppShell.kt 内的同名逻辑(后者为 BiliTvApp 局部函数,这里提供模块级 internal 版本)。
  */
 internal fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false): PlaybackRequest {
+  // IPTV 卡片:直链 m3u8,走直播播放器(LivePlayerScreen)的 IPTV 分支,带镜像源列表。
+  if (source == SourceIptv) {
+    return PlaybackRequest(
+      bvid = "",
+      cid = 0L,
+      title = title,
+      ownerName = ownerName,
+      coverUrl = pic,
+      source = SourceIptv,
+      iptvUrls = iptvUrls,
+    )
+  }
   // 直播卡片:走直播播放(独立 LivePlayerScreen),不带点播字段。
   if (liveRoomId > 0L) {
     return PlaybackRequest(
@@ -67,6 +81,29 @@ internal fun LiveRoom.toVideoSummary(): VideoSummary {
     isLive = true,
     liveRoomId = roomId,
     liveAreaName = areaName,
+  )
+}
+
+/**
+ * IPTV 频道 → 视频卡片模型,复用 VideoCard + TvVideoGrid 展示与焦点机制。
+ * [VideoSummary.source] 置为 [SourceIptv] + [VideoSummary.iptvUrls] 填充镜像源列表,
+ * [toPlaybackRequest] 据此走直播播放器的 IPTV 分支。
+ */
+internal fun IptvChannel.toVideoSummary(): VideoSummary {
+  return VideoSummary(
+    bvid = "",
+    title = name,
+    pic = logo,
+    ownerName = group,
+    ownerFace = "",
+    ownerMid = 0L,
+    view = 0,
+    danmaku = 0,
+    duration = 0,
+    pubdate = 0L,
+    badge = "IPTV",
+    source = SourceIptv,
+    iptvUrls = urls,
   )
 }
 

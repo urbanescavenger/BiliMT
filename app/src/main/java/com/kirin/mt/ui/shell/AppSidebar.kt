@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.shell
 
+import android.util.Log
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -21,6 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -59,6 +61,8 @@ import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
+
+private const val FocusLogTag = "BiliMT:Focus"
 
 @Composable
 internal fun AppSidebar(
@@ -108,11 +112,45 @@ internal fun AppSidebar(
   } else {
     homeColors.glassBorder
   }
+  // 侧栏可聚焦项顺序:头像(0) + 导航项(1..n,按 AppDestination 枚举序,Settings 已排除)。
+  // 用于循环导航:最上(头像)按上→最底,最底按下→最上。
+  val sidebarFocusOrder = remember(accountFocusRequester, navFocusRequesters) {
+    listOf(accountFocusRequester) + AppDestination.entries
+      .filter { it != AppDestination.Settings }
+      .map { navFocusRequesters.getValue(it) }
+  }
+  var focusedSidebarIndex by remember { mutableIntStateOf(-1) }
   Column(
     modifier = Modifier
       .width(BiliSizing.SidebarWidth)
       .fillMaxHeight()
       .clip(sidebarShape)
+      .onPreviewKeyEvent { event ->
+        // 循环导航:仅在边界拦截(最上按上→最底,最底按下→最上),其余交给默认焦点遍历。
+        if (event.type == KeyEventType.KeyDown && focusedSidebarIndex >= 0) {
+          when (event.key) {
+            Key.DirectionUp -> {
+              if (focusedSidebarIndex == 0) {
+                sidebarFocusOrder.last().requestFocus()
+                true
+              } else {
+                false
+              }
+            }
+            Key.DirectionDown -> {
+              if (focusedSidebarIndex == sidebarFocusOrder.lastIndex) {
+                sidebarFocusOrder.first().requestFocus()
+                true
+              } else {
+                false
+              }
+            }
+            else -> false
+          }
+        } else {
+          false
+        }
+      }
       .then(
         if (liquidGlassEnabled) {
           Modifier.biliLiquidGlassSurface(
@@ -142,6 +180,7 @@ internal fun AppSidebar(
       onMoveRight = {
         onMoveRight(selectedDestination)
       },
+      onSidebarItemFocused = { focusedSidebarIndex = it },
     )
     Spacer(modifier = Modifier.height(BiliSizing.SidebarNavGroupTopPadding))
     Column(
@@ -150,7 +189,7 @@ internal fun AppSidebar(
       verticalArrangement = Arrangement.spacedBy(BiliSizing.SidebarNavGroupSpacing),
     ) {
       // 「设置」已并入头像「我的」入口,侧栏不再单独渲染设置导航项。
-      AppDestination.entries.filter { it != AppDestination.Settings }.forEach { destination ->
+      AppDestination.entries.filter { it != AppDestination.Settings }.forEachIndexed { index, destination ->
         AppNavItem(
           destination = destination,
           selected = !accountSelected && selectedDestination == destination,
@@ -163,6 +202,8 @@ internal fun AppSidebar(
           onMoveRight = {
             onMoveRight(destination)
           },
+          focusIndex = index + 1,
+          onSidebarItemFocused = { focusedSidebarIndex = it },
         )
       }
     }
@@ -179,6 +220,7 @@ private fun AccountNavItem(
   modifier: Modifier,
   onClick: () -> Unit,
   onMoveRight: () -> Boolean,
+  onSidebarItemFocused: (Int) -> Unit,
 ) {
   val performancePolicy = LocalBiliPerformancePolicy.current
   val homeColors = LocalHomeColors.current
@@ -222,8 +264,14 @@ private fun AccountNavItem(
         }
       },
     onClick = onClick,
+    onFocusChanged = { if (it) onSidebarItemFocused(0) },
     onFocused = {
-      if (autoConfirmOnFocus && !selected && !suppressAutoConfirm) {
+      val shouldOpen = autoConfirmOnFocus && !selected && !suppressAutoConfirm
+      Log.d(
+        FocusLogTag,
+        "avatar focused: autoConfirm=$autoConfirmOnFocus suppress=$suppressAutoConfirm selected=$selected -> openMyPage=$shouldOpen",
+      )
+      if (shouldOpen) {
         onClick()
       }
     },
@@ -323,6 +371,8 @@ private fun AppNavItem(
   modifier: Modifier,
   onClick: () -> Unit,
   onMoveRight: () -> Boolean,
+  focusIndex: Int,
+  onSidebarItemFocused: (Int) -> Unit,
 ) {
   var focused by remember { mutableStateOf(false) }
   val homeColors = LocalHomeColors.current
@@ -367,7 +417,10 @@ private fun AppNavItem(
           false
         }
       },
-    onFocusChanged = { focused = it },
+    onFocusChanged = {
+      focused = it
+      if (it) onSidebarItemFocused(focusIndex)
+    },
     onClick = onClick,
     onFocused = {
       if (autoConfirmOnFocus && !selected) {

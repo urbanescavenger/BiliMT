@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
+import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoCardRelativeText
 import com.kirin.mt.core.model.VideoSummary
@@ -56,6 +57,8 @@ fun MobileVideoCard(
   onLongPress: ((VideoSummary) -> Unit)? = null,
   showYoutubeBorder: Boolean = false,
   feedLayout: Boolean = false,
+  // 封面覆盖图(Coil data,可传 Bitmap)。IPTV 频道用拉流截帧的缩略图覆盖 logo(镜像 TV VideoCard.coverOverride)。
+  coverOverride: Any? = null,
 ) {
   val youtubeBorder = showYoutubeBorder && video.source == SourceYoutube
   val baseModifier = modifier
@@ -66,9 +69,9 @@ fun MobileVideoCard(
       onLongClick = onLongPress?.let { { it(video) } },
     )
   if (feedLayout) {
-    FeedStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner)
+    FeedStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner, coverOverride = coverOverride)
   } else {
-    CompactStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner)
+    CompactStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner, coverOverride = coverOverride)
   }
 }
 
@@ -78,6 +81,7 @@ private fun CompactStyleCardContent(
   video: VideoSummary,
   modifier: Modifier,
   onOpenOwner: ((VideoSummary) -> Unit)?,
+  coverOverride: Any? = null,
 ) {
   Column(modifier = modifier) {
     Box(
@@ -87,14 +91,14 @@ private fun CompactStyleCardContent(
         .clip(RoundedCornerShape(12.dp)),
     ) {
       AsyncImage(
-        model = video.pic,
+        model = coverOverride ?: video.pic,
         contentDescription = video.title,
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxWidth(),
       )
       if (video.isLive) {
         LiveBadge(text = video.badge.ifBlank { "直播" }, modifier = Modifier.align(Alignment.TopStart))
-      } else if (video.badge.isNotEmpty()) {
+      } else if (video.badge.isNotEmpty() && video.source != SourceIptv) {
         Text(
           text = video.badge,
           style = MaterialTheme.typography.labelSmall,
@@ -158,6 +162,7 @@ private fun FeedStyleCardContent(
   video: VideoSummary,
   modifier: Modifier,
   onOpenOwner: ((VideoSummary) -> Unit)?,
+  coverOverride: Any? = null,
 ) {
   val relativeText = rememberVideoCardRelativeText()
   val count = formatCount(if (video.view > 0) video.view else video.likeCount)
@@ -206,14 +211,14 @@ private fun FeedStyleCardContent(
         .clip(RoundedCornerShape(12.dp)),
     ) {
       AsyncImage(
-        model = video.pic,
+        model = coverOverride ?: video.pic,
         contentDescription = video.title,
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxWidth(),
       )
       if (video.isLive) {
         LiveBadge(text = video.badge.ifBlank { "直播" }, modifier = Modifier.align(Alignment.TopStart))
-      } else if (video.badge.isNotEmpty()) {
+      } else if (video.badge.isNotEmpty() && video.source != SourceIptv) {
         Text(
           text = video.badge,
           style = MaterialTheme.typography.labelSmall,

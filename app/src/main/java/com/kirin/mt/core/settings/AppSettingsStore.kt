@@ -9,10 +9,12 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.kirin.mt.core.i18n.ChineseTextVariant
 import com.kirin.mt.core.model.HomeSection
+import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.storage.biliDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -70,6 +72,8 @@ class AppSettingsStore(private val context: Context) {
       playbackCodecPreference = PlaybackCodecPreference.fromKey(preferences[Keys.PlaybackCodecPreference]),
       playbackCdnPreference = PlaybackCdnPreference.fromKey(preferences[Keys.PlaybackCdnPreference]),
       youtubeDefaultQuality = YoutubeDefaultQuality.fromKey(preferences[Keys.YoutubeDefaultQuality]),
+      youtubeContentRegion = YoutubeContentRegion.fromKey(preferences[Keys.YoutubeContentRegion]),
+      defaultPlaybackSpeed = DefaultPlaybackSpeed.fromKey(preferences[Keys.DefaultPlaybackSpeed]),
       seekPreviewSpritesEnabled = preferences[Keys.SeekPreviewSpritesEnabled] ?: true,
       airJumpAssistantEnabled = preferences[Keys.AirJumpAssistantEnabled] ?: true,
       confirmPlaybackExit = preferences[Keys.ConfirmPlaybackExit] ?: true,
@@ -84,6 +88,9 @@ class AppSettingsStore(private val context: Context) {
       liquidGlassCardsEnabled = liquidGlassCardsEnabled,
       enabledHomeSections = enabledSections,
       homeSectionsOrder = homeSectionsOrder,
+      iptvSourceUrl = preferences[Keys.IptvSourceUrl] ?: "",
+      iptvSourceUsername = preferences[Keys.IptvSourceUsername] ?: "",
+      iptvSourcePassword = preferences[Keys.IptvSourcePassword] ?: "",
     )
   }
 
@@ -107,6 +114,24 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setChineseTextVariant(variant: ChineseTextVariant) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.ChineseTextVariant] = variant.key
+    }
+  }
+
+  suspend fun setIptvSourceUrl(url: String) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.IptvSourceUrl] = url
+    }
+  }
+
+  suspend fun setIptvSourceUsername(username: String) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.IptvSourceUsername] = username
+    }
+  }
+
+  suspend fun setIptvSourcePassword(password: String) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.IptvSourcePassword] = password
     }
   }
 
@@ -137,6 +162,18 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setYoutubeDefaultQuality(quality: YoutubeDefaultQuality) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.YoutubeDefaultQuality] = quality.key
+    }
+  }
+
+  suspend fun setYoutubeContentRegion(region: YoutubeContentRegion) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.YoutubeContentRegion] = region.key
+    }
+  }
+
+  suspend fun setDefaultPlaybackSpeed(speed: DefaultPlaybackSpeed) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.DefaultPlaybackSpeed] = speed.key
     }
   }
 
@@ -318,6 +355,8 @@ class AppSettingsStore(private val context: Context) {
     val PlaybackCodecPreference = stringPreferencesKey("playback_codec_preference")
     val PlaybackCdnPreference = stringPreferencesKey("playback_cdn_preference")
     val YoutubeDefaultQuality = stringPreferencesKey("youtube_default_quality")
+    val YoutubeContentRegion = stringPreferencesKey("youtube_content_region")
+    val DefaultPlaybackSpeed = stringPreferencesKey("default_playback_speed")
     val SeekPreviewSpritesEnabled = booleanPreferencesKey("seek_preview_sprites_enabled")
     val AirJumpAssistantEnabled = booleanPreferencesKey("air_jump_assistant_enabled")
     val ConfirmPlaybackExit = booleanPreferencesKey("confirm_playback_exit")
@@ -334,6 +373,9 @@ class AppSettingsStore(private val context: Context) {
     val HomeSectionsOrder = stringPreferencesKey("home_sections_order")
     val HomeSectionsUgcMigrationV1 = booleanPreferencesKey("home_sections_ugc_migration_v1")
     val HomeSectionsYoutubeMigrationV1 = booleanPreferencesKey("home_sections_youtube_migration_v1")
+    val IptvSourceUrl = stringPreferencesKey("iptv_source_url")
+    val IptvSourceUsername = stringPreferencesKey("iptv_source_username")
+    val IptvSourcePassword = stringPreferencesKey("iptv_source_password")
   }
 }
 

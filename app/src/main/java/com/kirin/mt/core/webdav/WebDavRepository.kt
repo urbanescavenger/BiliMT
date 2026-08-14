@@ -44,6 +44,24 @@ class WebDavRepository(private val client: OkHttpClient) {
     }
 
   /**
+   * 连通性探测:发 GET,仅 2xx 视为连通(401/403/404 等非 2xx 视为不通)。
+   * 网络异常(超时/DNS/拒连)返回 false。用于保存配置前校验服务器可达。
+   */
+  suspend fun ping(url: String, username: String, password: String): Boolean =
+    withContext(Dispatchers.IO) {
+      try {
+        val request = Request.Builder()
+          .url(url)
+          .get()
+          .header("Authorization", Credentials.basic(username, password))
+          .build()
+        client.newCall(request).execute().use { it.isSuccessful }
+      } catch (e: IOException) {
+        false
+      }
+    }
+
+  /**
    * MKCOL 建目录。目录已存在时服务器返回 405(Method Not Allowed),视为成功。
    * 网络/认证失败抛 [IOException],由调用方处理。
    */

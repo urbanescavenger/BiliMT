@@ -109,6 +109,8 @@
     <string name="settings_playback_cdn_description">切換影片串流的 CDN 節點。預設跟隨 B 站自動分配,在尖峰時段或跨網環境可手動指定更快的節點。</string>
     <string name="settings_youtube_default_quality_title">YouTube 預設畫質</string>
     <string name="settings_youtube_default_quality_description">新開 YouTube 影片預設使用的畫質上限。自動為最高可用畫質。</string>
+    <string name="settings_youtube_content_region_title">YouTube 內容地區</string>
+    <string name="settings_youtube_content_region_description">InnerTube 的內容地區/語言(gl/hl)。預設美國;不放中國(gl=CN 實測觸發反爬)。掛不同地區 VPN 時可讓 gl 跟隨,避免 IP 與地區不一致被判 bot,並看對應地區內容。註:主 SABR 路徑由 NewPipe 決定,此項主要影響 WEB /player 與 DASH 兜底。</string>
     <string name="settings_speed_test_title">網路測速</string>
     <string name="settings_speed_test_description">使用最後一次播放的影片測試各 CDN 節點速度，方便挑選更快的線路。</string>
     <string name="settings_speed_test_running">測速中…</string>

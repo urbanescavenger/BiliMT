@@ -71,10 +71,16 @@ internal fun SettingsYoutubeChannelsColumn(
   var inputText by remember { mutableStateOf("") }
   var message by remember { mutableStateOf<String?>(null) }
   var adding by remember { mutableStateOf(false) }
+  // 面板默认折叠,点击展开;展开后焦点落到「添加」按钮而非键盘。
+  var expanded by remember { mutableStateOf(false) }
 
-  // 面板打开时把焦点落到键盘第一个键,提供 D-pad 入口。
-  LaunchedEffect(Unit) {
-    runCatching { firstKeyFocusRequester.requestFocus() }
+  // 面板打开时不抢焦点(与 HomeSections 等其它右面板一致):焦点留在左侧列表,
+  // 用户按右键才进入本面板;展开区头是面板内首个可聚焦项,D-pad 右键天然落到它。
+  // 展开后把焦点落到「添加」按钮,不再自动切到字母键盘。
+  LaunchedEffect(expanded) {
+    if (expanded) {
+      runCatching { firstKeyFocusRequester.requestFocus() }
+    }
   }
 
   fun appendKey(key: String) {
@@ -138,91 +144,120 @@ internal fun SettingsYoutubeChannelsColumn(
       fontSize = BiliTypography.BodySmall,
     )
 
-    // 输入框(只读显示,焦点落在键盘/按钮)。
-    Box(
-      modifier = Modifier
-        .fillMaxWidth()
-        .height(BiliSizing.SearchInputHeight)
-        .clip(RoundedCornerShape(BiliRadius.Card))
-        .background(homeColors.glassSurfaceStrong)
-        .padding(horizontal = BiliSpacing.Lg),
-      contentAlignment = Alignment.CenterStart,
-    ) {
-      Text(
-        text = if (inputText.isBlank()) stringResource(R.string.youtube_channel_hint) else inputText,
-        color = if (inputText.isBlank()) homeColors.textTertiary else homeColors.textPrimary,
-        fontSize = BiliTypography.SearchInput,
-        fontWeight = FontWeight.Bold,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-      )
-    }
-
-    // 添加 / 清空 行。
-    Row(
-      horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+    // 展开/收起 区头(默认折叠,点击展开;展开后焦点落「添加」按钮而非键盘)。
+    BiliFocusableSurface(
+      scaleOnFocus = false,
+      shadowOnFocus = false,
+      shape = RoundedCornerShape(BiliRadius.Card),
+      onClick = { expanded = !expanded },
       modifier = Modifier.fillMaxWidth(),
     ) {
-      YoutubeChannelActionButton(
-        label = stringResource(R.string.youtube_add_channel),
-        enabled = !adding,
+      Row(
         modifier = Modifier
-          .weight(1f)
-          .focusRequester(firstKeyFocusRequester),
-        onClick = ::submit,
-      )
-      YoutubeChannelActionButton(
-        label = stringResource(R.string.youtube_clear_input),
-        enabled = !adding,
-        modifier = Modifier.weight(1f),
-        onClick = ::clearInput,
-      )
+          .fillMaxWidth()
+          .padding(horizontal = BiliSpacing.Lg, vertical = BiliSpacing.Md),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text(
+          text = stringResource(
+            if (expanded) R.string.youtube_channel_collapse else R.string.youtube_channel_expand,
+          ),
+          color = homeColors.accent,
+          fontSize = BiliTypography.Body,
+          fontWeight = FontWeight.Bold,
+        )
+      }
     }
 
-    // 键盘。
-    YoutubeChannelKeyboard(
-      onKey = ::appendKey,
-      onBackspace = ::backspace,
-    )
-
-    // 状态提示(添加成功/失败)。
-    message?.let { msg ->
-      Text(
-        text = msg,
-        color = homeColors.accent,
-        fontSize = BiliTypography.BodySmall,
-        fontWeight = FontWeight.Bold,
-      )
-    }
-
-    Text(
-      text = stringResource(R.string.youtube_channel_count, channels.size),
-      color = homeColors.textSecondary,
-      fontSize = BiliTypography.BodySmall,
-    )
-    LazyColumn(
-      state = listState,
-      modifier = Modifier
-        .fillMaxWidth()
-        .weight(1f),
-      verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
-    ) {
-      if (channels.isEmpty()) {
-        item(key = "youtube-empty") {
+    if (expanded) {
+      Column(verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md)) {
+        // 输入框(只读显示,焦点落在键盘/按钮)。
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(BiliSizing.SearchInputHeight)
+            .clip(RoundedCornerShape(BiliRadius.Card))
+            .background(homeColors.glassSurfaceStrong)
+            .padding(horizontal = BiliSpacing.Lg),
+          contentAlignment = Alignment.CenterStart,
+        ) {
           Text(
-            text = stringResource(R.string.youtube_channel_empty),
-            color = homeColors.textTertiary,
-            fontSize = BiliTypography.BodySmall,
+            text = if (inputText.isBlank()) stringResource(R.string.youtube_channel_hint) else inputText,
+            color = if (inputText.isBlank()) homeColors.textTertiary else homeColors.textPrimary,
+            fontSize = BiliTypography.SearchInput,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
           )
         }
-      } else {
-        itemsIndexed(channels, key = { _, c -> c.channelId }) { _, channel ->
-          YoutubeChannelRow(
-            channel = channel,
-            onRemove = {
-              coroutineScope.launch { onRemove(channel.channelId) }
-            },
+
+        // 添加 / 清空 行。
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          YoutubeChannelActionButton(
+            label = stringResource(R.string.youtube_add_channel),
+            enabled = !adding,
+            modifier = Modifier
+              .weight(1f)
+              .focusRequester(firstKeyFocusRequester),
+            onClick = ::submit,
           )
+          YoutubeChannelActionButton(
+            label = stringResource(R.string.youtube_clear_input),
+            enabled = !adding,
+            modifier = Modifier.weight(1f),
+            onClick = ::clearInput,
+          )
+        }
+
+        // 键盘。
+        YoutubeChannelKeyboard(
+          onKey = ::appendKey,
+          onBackspace = ::backspace,
+        )
+
+        // 状态提示(添加成功/失败)。
+        message?.let { msg ->
+          Text(
+            text = msg,
+            color = homeColors.accent,
+            fontSize = BiliTypography.BodySmall,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+
+        Text(
+          text = stringResource(R.string.youtube_channel_count, channels.size),
+          color = homeColors.textSecondary,
+          fontSize = BiliTypography.BodySmall,
+        )
+        LazyColumn(
+          state = listState,
+          modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f),
+          verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
+        ) {
+          if (channels.isEmpty()) {
+            item(key = "youtube-empty") {
+              Text(
+                text = stringResource(R.string.youtube_channel_empty),
+                color = homeColors.textTertiary,
+                fontSize = BiliTypography.BodySmall,
+              )
+            }
+          } else {
+            itemsIndexed(channels, key = { _, c -> c.channelId }) { _, channel ->
+              YoutubeChannelRow(
+                channel = channel,
+                onRemove = {
+                  coroutineScope.launch { onRemove(channel.channelId) }
+                },
+              )
+            }
+          }
         }
       }
     }

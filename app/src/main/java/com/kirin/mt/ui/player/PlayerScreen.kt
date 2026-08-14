@@ -60,6 +60,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -69,6 +70,9 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.extractor.ExtractorsFactory
+import androidx.media3.extractor.text.DefaultSubtitleParserFactory
+import androidx.media3.extractor.text.SubtitleExtractor
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.kirin.mt.R
@@ -89,8 +93,10 @@ import com.kirin.mt.core.player.DanmakuSettings
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackCdnPreference
+import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
+import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.LastPlayedStore
@@ -100,6 +106,8 @@ import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.VideoshotData
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.core.youtube.YoutubeHistoryStore
+import com.kirin.mt.core.youtube.YoutubeLoadProgress
+import com.kirin.mt.core.youtube.YoutubeLoadStep
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import com.kirin.mt.core.youtube.sabr.media.SabrManifest
@@ -137,6 +145,8 @@ fun PlayerScreen(
   cdnSelector: CdnSelector,
   playbackCodecPreference: PlaybackCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
+  youtubeDefaultQuality: YoutubeDefaultQuality,
+  defaultPlaybackSpeed: DefaultPlaybackSpeed,
   playbackCdnPreference: PlaybackCdnPreference,
   seekPreviewSpritesEnabled: Boolean,
   airJumpAssistantEnabled: Boolean,
@@ -210,7 +220,7 @@ fun PlayerScreen(
   var selectedQuality by remember { mutableStateOf<PlaybackQuality?>(null) }
   val storedDanmakuSettings by danmakuSettingsStore.settings.collectAsState(initial = DanmakuSettings())
   var danmakuSettings by remember { mutableStateOf(DanmakuSettings()) }
-  var playbackSpeed by remember { mutableFloatStateOf(1.0f) }
+  var playbackSpeed by remember { mutableFloatStateOf(defaultPlaybackSpeed.value) }
   var previewPositionMs by remember { mutableStateOf<Long?>(null) }
   val playbackPositionState = remember { mutableLongStateOf(0L) }
   val playbackDurationState = remember { mutableLongStateOf(0L) }
@@ -220,6 +230,8 @@ fun PlayerScreen(
   var playerActuallyPlaying by remember { mutableStateOf(false) }
   /** 内存态诊断：launch 协程当前步骤，不依赖 logcat，PGC 卡死时叠层直接显示。 */
   var launchStep by remember { mutableStateOf("") }
+  // YouTube 加载步骤提示：收集 resolver 写入的全局 step，加载叠层显示当前阶段(对齐 MobilePlayerScreen)。
+  val youtubeLoadStep by YoutubeLoadProgress.step.collectAsState()
   var retryKey by remember { mutableLongStateOf(0L) }
   // stall 自动恢复:BUFFERING 且进度长时间不前进时,记当前位置并 bump retryKey 重载源续播。
   // autoResumePositionMs=-1L 表示无续播位(走 saved progress);>=0 时 launch effect 优先 seekTo 它。
@@ -1299,6 +1311,11 @@ fun PlayerScreen(
     }
   }
 
+  // YouTube 加载结束(就绪/失败)时清全局 step,避免 stale 残留;下次加载 resolver 会在 FetchPlayer 重新 emit。
+  LaunchedEffect(playerState) {
+    if (playerState !is PlayerScreenState.Loading) YoutubeLoadProgress.clear()
+  }
+
   LaunchedEffect(activeRequest, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
     val launchJob = coroutineContext[Job]
     playbackLaunchJob = launchJob
@@ -1373,6 +1390,11 @@ fun PlayerScreen(
       metadata = videoMetadata,
       cid = cid,
     ).let { if (pendingSABRSeek != null) it.copy(startPositionMs = pendingSABRSeek, forceStartPosition = true) else it }
+      // TVHTML5 试验回退(v3.0.1-alpha.6 真机证伪):TVHTML5 viaWebView TypeError: Failed to fetch,
+      // 且污染共享 browserSession(单例 WebView)致 WEB 回退也 Failed → 完全无法播放。结局 A,
+      // 回退 WEB-only(preferredYoutubeClient=null=WEB)。TVHTML5 代码保留(InnerTubeClient/
+      // Resolver/Constants/PlaybackModels),待修 viaWebView session 隔离后再启用下行 .let。
+      // .let { if (isYoutube) it.copy(preferredYoutubeClient = com.kirin.mt.core.youtube.InnerTubeClient.Client.TVHTML5) else it }
     displayRequest = resolvedRequest
     playerState = try {
       withTimeoutOrNull(LaunchTimeoutMs) {
@@ -1382,6 +1404,7 @@ fun PlayerScreen(
           request = resolvedRequest,
           codecPreference = playbackCodecPreference,
           qualityPreference = playbackQualityPreference,
+          youtubeDefaultQuality = youtubeDefaultQuality,
         )
       // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体)。
       if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive)) {
@@ -1482,7 +1505,27 @@ fun PlayerScreen(
           DashMediaSource.Factory(dataSourceFactory)
             .createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
         }
-        player.setMediaSource(mediaSource)
+        // 字幕合并(YouTube WebVTT URL 直拉,不走 SABR 服务端):每条字幕轨用 SubtitleExtractor 转
+        // MEDIA3_CUES(DefaultExtractorsFactory 不含字幕,必须显式传 ExtractorsFactory),再 MergingMediaSource
+        // 合并进主源。PlayerView 内置 SubtitleView 自动注册为 text output 渲染。无字幕轨时保持原主源。
+        val finalMediaSource = if (effectiveInfo.subtitleTracks.isNotEmpty()) {
+          val subtitleSources = effectiveInfo.subtitleTracks.map { track ->
+            val subtitleFormat = Format.Builder()
+              .setSampleMimeType(MimeTypes.TEXT_VTT)
+              .setLanguage(track.languageCode)
+              .build()
+            val subtitleParserFactory = DefaultSubtitleParserFactory()
+            val extractorsFactory = ExtractorsFactory {
+              arrayOf(SubtitleExtractor(subtitleParserFactory.create(subtitleFormat), subtitleFormat))
+            }
+            ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
+              .createMediaSource(MediaItem.fromUri(track.baseUrl))
+          }
+          MergingMediaSource(mediaSource, *subtitleSources.toTypedArray())
+        } else {
+          mediaSource
+        }
+        player.setMediaSource(finalMediaSource)
         launchStep = "prepare"
         Log.i(PlayerPlaybackLogTag, "launch step: prepare")
         player.prepare()
@@ -1916,7 +1959,10 @@ fun PlayerScreen(
     }
 
     when (val state = playerState) {
-      PlayerScreenState.Loading -> PlayerLoadingOverlay()
+      PlayerScreenState.Loading -> PlayerLoadingOverlay(
+        isYoutube = displayRequest.isYoutube,
+        step = youtubeLoadStep,
+      )
       is PlayerScreenState.Failed -> FeedStatusScreen(
         message = stringResource(R.string.player_failed_with_message, state.message),
         actionLabel = stringResource(R.string.action_retry),
@@ -2109,7 +2155,7 @@ private fun BoxScope.PlayerLogOverlay(
 }
 
 @Composable
-private fun PlayerLoadingOverlay() {
+private fun PlayerLoadingOverlay(isYoutube: Boolean, step: YoutubeLoadStep?) {
   Box(
     modifier = Modifier.fillMaxSize(),
     contentAlignment = Alignment.Center,
@@ -2120,7 +2166,9 @@ private fun PlayerLoadingOverlay() {
     ) {
       CircularProgressIndicator(color = BiliColors.BiliPink)
       Text(
-        text = stringResource(R.string.player_loading),
+        // YouTube 且 resolver 已 emit 当前步骤时显示阶段文字(随加载进度切换);
+        // 否则(早期 metadata 拉取 / B站)回退静态"正在加载播放地址..."。
+        text = if (isYoutube && step != null) step.label else stringResource(R.string.player_loading),
         color = BiliColors.TextPrimary,
         fontSize = BiliTypography.Body,
       )

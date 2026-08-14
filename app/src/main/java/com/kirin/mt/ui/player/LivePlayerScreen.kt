@@ -4,12 +4,14 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -41,19 +44,26 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import coil.compose.AsyncImage
+import com.kirin.mt.core.network.IptvChannel
+import com.kirin.mt.core.network.IptvRepository
+import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -64,6 +74,8 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.kirin.mt.R
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
+import com.kirin.mt.core.player.BiliPlaybackHeaders
+import com.kirin.mt.core.player.IptvDataSourceFactory
 import com.kirin.mt.core.player.LiveLoadErrorHandlingPolicy
 import com.kirin.mt.core.player.LivePlayInfo
 import com.kirin.mt.core.player.LiveQuality
@@ -142,11 +154,15 @@ fun LivePlayerScreen(
   liveQualityPreferenceStore: LiveQualityPreferenceStore,
   onBack: () -> Unit,
   isMobile: Boolean = false,
+  iptvRepository: IptvRepository? = null,
 ) {
   val context = LocalContext.current
   val roomId = request.liveRoomId
   val scope = rememberCoroutineScope()
-  var selectedQn by remember(roomId) { mutableIntStateOf(request.preferredQualityId ?: LiveDefaultQn) }
+  // IPTV:selectedQn 当源索引,初值 0(第一个镜像源);B站直播才是清晰度 qn。
+  var selectedQn by remember(roomId) {
+    mutableIntStateOf(if (request.isIptv) 0 else (request.preferredQualityId ?: LiveDefaultQn))
+  }
   var loadState by remember(roomId) { mutableStateOf<LiveLoadState>(LiveLoadState.Loading) }
   var liveInfo by remember(roomId) { mutableStateOf<LivePlayInfo?>(null) }
   val isPlayingState = remember { mutableStateOf(false) }
@@ -160,17 +176,45 @@ fun LivePlayerScreen(
   var clockText by remember { mutableStateOf(currentClockText()) }
   // 直播画质持久化:首次进入从 store 读上次选择的 qn(若无显式 preferredQualityId)。
   // initialResolved 门控主加载,避免默认画质先加载一次再切存储值造成双加载/闪切。
-  var initialResolved by remember { mutableStateOf(request.preferredQualityId != null) }
+  // IPTV 无 store 画质可读,直接解锁主加载;B站直播才需先读 store。
+  var initialResolved by remember { mutableStateOf(request.isIptv || request.preferredQualityId != null) }
   var fullscreen by rememberSaveable { mutableStateOf(false) }
   // stall 自动恢复:缓冲卡住且进度不前进时自动重载源。
   var autoRetryCount by remember { mutableIntStateOf(0) }
   var autoResumePositionMs by remember { mutableLongStateOf(-1L) }
+
+  // IPTV 频道列表侧栏状态(TV only)。selectedChannelIndex=-1=列表未就绪(仍按原始 request 播)。
+  var selectedChannelIndex by remember(roomId) { mutableIntStateOf(-1) }
+  var focusedChannelIndex by remember(roomId) { mutableIntStateOf(0) }
+  var iptvChannels by remember(roomId) { mutableStateOf<List<IptvChannel>>(emptyList()) }
+  var iptvChannelLoading by remember { mutableStateOf(false) }
+  var showChannelPanel by remember { mutableStateOf(false) }
 
   val player = remember(roomId) {
     ExoPlayer.Builder(context).build()
   }
   val controlsFocusRequester = remember { FocusRequester() }
   val liveLoadErrorPolicy = remember { LiveLoadErrorHandlingPolicy() }
+  // IPTV 数据源:强制 IPv4(源 m3u8 302 重定向按客户端 IP 族选节点,IPv6 不可路由的真机会连不上 → 黑屏)。
+  // 复用同一 factory,避免每次重载源都新建 OkHttpClient。
+  val iptvDataSourceFactory = remember { IptvDataSourceFactory().create() }
+
+  // 当前播放频道(列表就绪后解析)与派生请求:顶栏标题/分组/封面/镜像源跟随当前频道。
+  // 列表未就绪时 activeIptvChannel=null → effectiveRequest==request,原台照播。
+  val activeIptvChannel = remember(iptvChannels, selectedChannelIndex) {
+    iptvChannels.getOrNull(selectedChannelIndex.coerceIn(0, iptvChannels.lastIndex.coerceAtLeast(0)))
+  }
+  val activeChannelUrls = remember(activeIptvChannel) { activeIptvChannel?.urls ?: request.iptvUrls }
+  val effectiveRequest = if (request.isIptv && activeIptvChannel != null) {
+    request.copy(
+      title = activeIptvChannel.name,
+      ownerName = activeIptvChannel.group,
+      coverUrl = activeIptvChannel.logo,
+      iptvUrls = activeChannelUrls,
+    )
+  } else request
+  // IPTV 专属 TV 路径:确认键开关频道面板,左/右切台,上/下切源。mobile 与 B 站直播不受影响。
+  val isIptvTv = request.isIptv && !isMobile
 
   val qualities = liveInfo?.qualities.orEmpty()
   val qualityLabel = stringResource(R.string.live_quality)
@@ -195,6 +239,22 @@ fun LivePlayerScreen(
             "cause=${error.cause?.javaClass?.simpleName} message=${error.message}",
           error,
         )
+        // IPTV:断流时自动切下一个镜像源(selectedQn 当源索引),切完即重载。
+        // 与下方 retryKey 同机制:改 selectedQn 会触发主加载 LaunchedEffect 重跑。
+        // 用 State 背书的当前频道 urls(监听器捕获的 request 是旧的),只在当前频道内切源,不跨台。
+        if (request.isIptv) {
+          val urls = iptvChannels
+            .getOrNull(selectedChannelIndex.coerceIn(0, iptvChannels.lastIndex.coerceAtLeast(0)))
+            ?.urls ?: request.iptvUrls
+          if (selectedQn < urls.lastIndex) {
+            selectedQn += 1
+            android.util.Log.w(
+              LivePlaybackLogTag,
+              "iptv source error, switch to source #${selectedQn + 1}/${urls.size}",
+            )
+            return
+          }
+        }
         // 自动重试一次;耗尽后展示错误 overlay 等用户手动重试。
         if (autoRetryCount < MaxLiveAutoRetry) {
           autoRetryCount += 1
@@ -222,27 +282,67 @@ fun LivePlayerScreen(
   }
 
   // 首次进入:若无显式 preferredQualityId,从 store 读上次直播画质选择,再解锁主加载。
+  // IPTV 源索引是每频道的,不读全局 store,直接跳过。
   LaunchedEffect(roomId) {
-    if (!initialResolved) {
+    if (!request.isIptv && !initialResolved) {
       val stored = runCatching { liveQualityPreferenceStore.quality.first() }.getOrDefault(LiveDefaultQn)
       if (stored > 0 && stored != selectedQn) selectedQn = stored
       initialResolved = true
     }
   }
 
-  LaunchedEffect(roomId, selectedQn, retryKey, initialResolved) {
+  // TV-only IPTV:拉取 m3u 频道列表一次,并解析进入时所在频道(优先名匹配,回退 URL 匹配,再回退 0)。
+  // 匹配台与原始 request 同源时 activeChannelUrls 结构相等 → 不触发多余重载(见主加载键)。
+  LaunchedEffect(roomId, request.isIptv) {
+    if (!request.isIptv || isMobile || iptvRepository == null) return@LaunchedEffect
+    iptvChannelLoading = true
+    val result = runCatching { iptvRepository.getChannels() }.getOrDefault(emptyList())
+    iptvChannels = result
+    iptvChannelLoading = false
+    if (result.isNotEmpty() && selectedChannelIndex < 0) {
+      selectedChannelIndex = result.indexOfFirst { it.name == request.title }
+        .takeIf { it >= 0 }
+        ?: result.indexOfFirst { it.urls == request.iptvUrls }
+        .takeIf { it >= 0 }
+        ?: 0
+      focusedChannelIndex = selectedChannelIndex
+    }
+  }
+
+  LaunchedEffect(roomId, activeChannelUrls, selectedQn, retryKey, initialResolved) {
     if (!initialResolved) return@LaunchedEffect
     loadState = LiveLoadState.Loading
     playerErrorMsg.value = null
     player.clearMediaItems()
     try {
-      val info = playbackRepository.getLivePlayInfo(roomId, selectedQn)
+      // IPTV:直链 m3u8,selectedQn 当源索引,qualities 合成 [线路1, 线路2, ...] 供源切换面板。
+      // 不走 B站 getRoomPlayInfo,headers 置空(裸数据源,不套 B站 UA/头)。
+      val info = if (request.isIptv) {
+        val urls = activeChannelUrls
+        val idx = selectedQn.coerceIn(0, urls.lastIndex)
+        LivePlayInfo(
+          roomId = 0,
+          streamUrl = urls[idx],
+          isHls = true,
+          currentQn = idx,
+          qualities = urls.mapIndexed { i, _ -> LiveQuality(i, "线路${i + 1}") },
+          headers = BiliPlaybackHeaders(sessData = null, biliJct = null),
+        )
+      } else {
+        playbackRepository.getLivePlayInfo(roomId, selectedQn)
+      }
       liveInfo = info
       android.util.Log.i(LivePlaybackLogTag, "live playurl resolved room=$roomId qn=${info.currentQn} hls=${info.isHls}")
-      val dataSourceFactory = DefaultDataSource.Factory(
-        context,
-        BiliMediaDataSourceFactory(playbackHttpClient, info.headers).create(),
-      )
+      // IPTV 用独立数据源:强制 IPv4(见 IptvDataSourceFactory),不套 B站 UA/头;
+      // B站直播才走 BiliMediaDataSourceFactory。
+      val dataSourceFactory = if (request.isIptv) {
+        iptvDataSourceFactory
+      } else {
+        DefaultDataSource.Factory(
+          context,
+          BiliMediaDataSourceFactory(playbackHttpClient, info.headers).create(),
+        )
+      }
       val mediaSource = if (info.isHls) {
         HlsMediaSource.Factory(dataSourceFactory)
           .setLoadErrorHandlingPolicy(liveLoadErrorPolicy)
@@ -353,6 +453,8 @@ fun LivePlayerScreen(
   }
 
   fun persistQuality(qn: Int) {
+    // IPTV 的 selectedQn 是源索引(每频道),不能全局持久化,跳过。
+    if (request.isIptv) return
     scope.launch { runCatching { liveQualityPreferenceStore.setQuality(qn) } }
   }
 
@@ -389,9 +491,52 @@ fun LivePlayerScreen(
     }
   }
 
-  // 层级关闭:清晰度面板→控件→退出。TV 遥控器返回键与移动端系统返回共用此函数。
+  fun openChannelPanel() {
+    if (iptvChannels.isEmpty()) return
+    focusedChannelIndex = selectedChannelIndex.coerceIn(0, iptvChannels.lastIndex)
+    showChannelPanel = true
+    controlsVisible = true
+  }
+
+  fun selectChannel(index: Int) {
+    if (index !in iptvChannels.indices) return
+    // 重选当前台:仅关闭面板,不重载。
+    if (index == selectedChannelIndex) { showChannelPanel = false; return }
+    selectedChannelIndex = index
+    selectedQn = 0 // 切台复位镜像源
+    showChannelPanel = false
+    showQualityPanel = false
+  }
+
+  fun zapChannel(delta: Int) { // 面板关闭:左/右切台
+    if (iptvChannels.isEmpty()) return
+    val size = iptvChannels.size
+    val current = selectedChannelIndex.coerceIn(0, iptvChannels.lastIndex)
+    val next = ((current + delta) % size + size) % size // 首尾环绕(tvbox 风格)
+    if (next != current) {
+      selectedChannelIndex = next
+      selectedQn = 0
+    }
+  }
+
+  fun switchSource(delta: Int) { // 面板关闭:上/下切线路
+    val urls = iptvChannels
+      .getOrNull(selectedChannelIndex.coerceIn(0, iptvChannels.lastIndex.coerceAtLeast(0)))
+      ?.urls ?: request.iptvUrls
+    if (urls.size <= 1) return // 单源台忽略
+    selectedQn = ((selectedQn + delta) % urls.size + urls.size) % urls.size
+    showQualityPanel = false
+  }
+
+  fun moveChannelFocus(delta: Int) { // 面板打开:上/下移焦点
+    if (iptvChannels.isEmpty()) return
+    focusedChannelIndex = ((focusedChannelIndex + delta) % iptvChannels.size + iptvChannels.size) % iptvChannels.size
+  }
+
+  // 层级关闭:频道面板→清晰度面板→控件→退出。TV 遥控器返回键与移动端系统返回共用此函数。
   fun closePanelOrControls() {
     when {
+      showChannelPanel -> showChannelPanel = false
       showQualityPanel -> showQualityPanel = false
       controlsVisible -> controlsVisible = false
       else -> onBack()
@@ -411,6 +556,9 @@ fun LivePlayerScreen(
         when (event.key) {
           Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
             when {
+              // IPTV TV:确认键开关频道面板 / 面板内确认选中切台。
+              isIptvTv && showChannelPanel && iptvChannels.isNotEmpty() -> selectChannel(focusedChannelIndex)
+              isIptvTv -> openChannelPanel()
               showQualityPanel && qualities.isNotEmpty() -> {
                 val qn = qualities[focusedQualityIndex].qn
                 selectedQn = qn
@@ -424,6 +572,8 @@ fun LivePlayerScreen(
           }
           Key.DirectionLeft -> {
             when {
+              isIptvTv && showChannelPanel -> { showChannelPanel = false; true } // 面板打开:左键关闭不切换
+              isIptvTv -> { zapChannel(-1); true } // 面板关闭:左键上一个台
               showQualityPanel -> true // 面板纵向滚动,左右消费避免原生焦点移入面板行
               controlsVisible -> { moveControl(-1); true }
               else -> { showControls(); true }
@@ -431,6 +581,8 @@ fun LivePlayerScreen(
           }
           Key.DirectionRight -> {
             when {
+              isIptvTv && showChannelPanel -> { showChannelPanel = false; true }
+              isIptvTv -> { zapChannel(1); true } // 面板关闭:右键下一个台
               showQualityPanel -> true
               controlsVisible -> { moveControl(1); true }
               else -> { showControls(); true }
@@ -438,12 +590,16 @@ fun LivePlayerScreen(
           }
           Key.DirectionUp -> {
             when {
+              isIptvTv && showChannelPanel -> { moveChannelFocus(-1); true } // 面板打开:上移焦点
+              isIptvTv -> { switchSource(-1); true } // 面板关闭:上键上一个线路
               showQualityPanel -> { changeQualityFocus(-1); true }
               else -> { showControls(); true }
             }
           }
           Key.DirectionDown -> {
             when {
+              isIptvTv && showChannelPanel -> { moveChannelFocus(1); true } // 面板打开:下移焦点
+              isIptvTv -> { switchSource(1); true } // 面板关闭:下键下一个线路
               showQualityPanel -> { changeQualityFocus(1); true }
               controlsVisible -> { controlsVisible = false; true }
               else -> { showControls(); true }
@@ -522,14 +678,15 @@ fun LivePlayerScreen(
 
     if (controlsVisible && loadState is LiveLoadState.Ready) {
       LiveTopOverlay(
-        request = request,
+        request = effectiveRequest,
         currentQualityDesc = qualities
           .firstOrNull { it.qn == selectedQn }?.description
           ?: qualities.firstOrNull()?.description
           ?: qualityLabel,
         focusedControlIndex = focusedControlIndex,
         clockText = clockText,
-        showQuality = !isMobile,
+        // IPTV TV 的线路切换已由上/下键承担,隐藏画质 chip 避免死控件。
+        showQuality = !isMobile && !request.isIptv,
         onBack = onBack,
         onOpenQuality = { openQualityPanel() },
       )
@@ -567,6 +724,19 @@ fun LivePlayerScreen(
           persistQuality(qn)
         },
         onDismiss = { showQualityPanel = false },
+      )
+    }
+
+    // IPTV TV:确认键弹出/隐藏的频道列表侧栏。独立于 controlsVisible,自动隐藏时不消失。
+    if (showChannelPanel) {
+      IptvChannelListPanel(
+        channels = iptvChannels,
+        selectedChannelIndex = selectedChannelIndex,
+        focusedChannelIndex = focusedChannelIndex,
+        loading = iptvChannelLoading,
+        onSelect = { selectChannel(it) },
+        onDismiss = { showChannelPanel = false },
+        modifier = Modifier.align(Alignment.CenterStart),
       )
     }
   }
@@ -809,6 +979,188 @@ private fun LoadingOverlay() {
     contentAlignment = Alignment.Center,
   ) {
     CircularProgressIndicator(color = BiliColors.BiliPink)
+  }
+}
+
+/**
+ * IPTV 频道列表侧栏(TVBox 风格,左侧)。确认键弹出/隐藏,上/下移焦点,确认选中切台。
+ * 左锚定玻璃面板,复用 [com.kirin.mt.ui.player.PlayerVideoListPanel] 的 scroll-to-focused 机制。
+ */
+@Composable
+private fun IptvChannelListPanel(
+  channels: List<IptvChannel>,
+  selectedChannelIndex: Int,
+  focusedChannelIndex: Int,
+  loading: Boolean,
+  onSelect: (Int) -> Unit,
+  onDismiss: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val listState = rememberLazyListState()
+  val performancePolicy = LocalBiliPerformancePolicy.current
+  val shape = RoundedCornerShape(topEnd = BiliRadius.Panel, bottomEnd = BiliRadius.Panel)
+  val scrollRevealPaddingPx = with(LocalDensity.current) { BiliSpacing.Sm.roundToPx() }
+  LaunchedEffect(focusedChannelIndex, channels.size, scrollRevealPaddingPx) {
+    if (channels.isNotEmpty() && focusedChannelIndex >= 0) {
+      val target = focusedChannelIndex.coerceIn(0, channels.lastIndex)
+      val layoutInfo = listState.layoutInfo
+      val targetItem = layoutInfo.visibleItemsInfo.firstOrNull { item -> item.index == target }
+      if (targetItem == null) {
+        if (performancePolicy.smoothScrollingEnabled) {
+          listState.animateScrollToItem(target)
+        } else {
+          listState.scrollToItem(target)
+        }
+      } else {
+        val viewportStart = layoutInfo.viewportStartOffset + scrollRevealPaddingPx
+        val viewportEnd = layoutInfo.viewportEndOffset - scrollRevealPaddingPx
+        val itemStart = targetItem.offset
+        val itemEnd = targetItem.offset + targetItem.size
+        val scrollDelta = when {
+          itemStart < viewportStart -> itemStart - viewportStart
+          itemEnd > viewportEnd -> itemEnd - viewportEnd
+          else -> 0
+        }
+        if (scrollDelta != 0) {
+          if (performancePolicy.smoothScrollingEnabled) {
+            listState.animateScrollBy(scrollDelta.toFloat())
+          } else {
+            listState.scroll { scrollBy(scrollDelta.toFloat()) }
+          }
+        }
+      }
+    }
+  }
+
+  Box(
+    modifier = modifier
+      .fillMaxSize()
+      .background(BiliColors.OverlayScrim)
+      .clickable(onClick = onDismiss),
+    contentAlignment = Alignment.CenterStart,
+  ) {
+    Column(
+      modifier = Modifier
+        .width(BiliSizing.PlayerContentPanelWidth)
+        .fillMaxHeight()
+        .clip(shape)
+        .playerLiquidGlassSurface(
+          shape = shape,
+          focused = false,
+          surfaceColor = BiliColors.PlayerPanel,
+        ),
+    ) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(BiliSizing.PlayerSettingsHeaderHeight)
+          .padding(horizontal = BiliSpacing.Xl),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text(
+          text = "频道列表",
+          color = BiliColors.TextPrimary,
+          fontSize = BiliTypography.PlayerPanelTitle,
+          fontWeight = FontWeight.Bold,
+          maxLines = 1,
+        )
+        Spacer(modifier = Modifier.weight(1f))
+        if (!loading && channels.isNotEmpty()) {
+          Text(
+            text = "${channels.size}",
+            color = BiliColors.TextSecondary,
+            fontSize = BiliTypography.PlayerMeta,
+          )
+        }
+      }
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(BiliSizing.PlayerSettingsDividerHeight)
+          .background(BiliColors.PlayerPanelDivider),
+      )
+      when {
+        loading && channels.isEmpty() -> Box(
+          modifier = Modifier.fillMaxSize(),
+          contentAlignment = Alignment.Center,
+        ) {
+          CircularProgressIndicator(color = BiliColors.BiliPink)
+        }
+        channels.isEmpty() -> Box(
+          modifier = Modifier.fillMaxSize(),
+          contentAlignment = Alignment.Center,
+        ) {
+          Text(
+            text = "暂无频道",
+            color = BiliColors.TextSecondary,
+            fontSize = BiliTypography.PlayerSettingValue,
+          )
+        }
+        else -> LazyColumn(
+          state = listState,
+          modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f),
+        ) {
+          itemsIndexed(channels, key = { _, channel -> channel.name }) { index, channel ->
+            val focused = index == focusedChannelIndex
+            val isCurrent = index == selectedChannelIndex
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .playerLiquidGlassSurface(
+                  shape = shape,
+                  focused = focused,
+                  surfaceColor = if (focused) BiliColors.PlayerControlFocused else BiliColors.PlayerPanel,
+                )
+                .clickable { onSelect(index) }
+                .padding(horizontal = BiliSpacing.Md, vertical = BiliSpacing.Sm),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              AsyncImage(
+                model = channel.logo,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                  .size(36.dp)
+                  .clip(RoundedCornerShape(BiliRadius.Card)),
+                error = ColorPainter(BiliColors.PlayerPanel),
+                placeholder = ColorPainter(BiliColors.PlayerPanel),
+              )
+              Spacer(modifier = Modifier.width(BiliSpacing.Md))
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  text = convertChineseText(channel.name),
+                  color = if (isCurrent) BiliColors.BiliPink else BiliColors.TextPrimary,
+                  fontSize = BiliTypography.PlayerSettingTitle,
+                  fontWeight = if (focused) FontWeight.Bold else FontWeight.Normal,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                )
+                if (channel.group.isNotBlank()) {
+                  Text(
+                    text = convertChineseText(channel.group),
+                    color = BiliColors.TextTertiary,
+                    fontSize = BiliTypography.PlayerMeta,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                }
+              }
+              if (isCurrent) {
+                Spacer(modifier = Modifier.width(BiliSpacing.Sm))
+                Icon(
+                  painter = painterResource(R.drawable.ic_player_check),
+                  contentDescription = null,
+                  tint = BiliColors.BiliPink,
+                  modifier = Modifier.size(20.dp),
+                )
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
 

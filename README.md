@@ -2,7 +2,7 @@
 
 BiliMT 是一个原生 B 站 + YouTube 双平台客户端实验项目，基于 [BiliTVNative](https://github.com/Hyper-Beast/BiliTVNative) 1.0.0 开发，使用 Kotlin、Jetpack Compose 和 Media3 重写观看体验。同一个 APK 同时适配 Android TV 与安卓手机：TV 端用 Compose for TV 和遥控器焦点系统，手机端用触屏交互外壳，共享同一套网络、播放、账号、设置和存储引擎。
 
-内容覆盖 B 站（推荐/热门/分区、搜索、动态、历史、收藏、追番、直播）与 YouTube（搜索、热门、关注流、频道管理、多播放列表、高清播放），双平台均可播放。YouTube 部分基于 [LibreTube](https://github.com/libre-tube/libretube) 的取流与 SABR 播放方案（含其 NewPipeExtractor fork）独立重写实现。播放器基于 Media3 ExoPlayer，支持 DASH、弹幕、快进预览、空降助手、多语言配音音轨切换、默认画质与后台播放。
+内容覆盖 B 站（推荐/热门/分区、搜索、动态、历史、收藏、追番、直播）与 YouTube（搜索、热门、关注流、频道管理、多播放列表、高清播放），双平台均可播放。YouTube 部分基于 [LibreTube](https://github.com/libre-tube/libretube) 的取流与 SABR 播放方案（含其 NewPipeExtractor fork）独立重写实现。播放器基于 Media3 ExoPlayer，支持 DASH、弹幕、快进预览、空降助手、多语言配音音轨切换、默认画质、默认播放倍速、字幕与后台播放。
 
 电视端重点不是做一个极简壳，而是在电视设备上尽量平衡几个实际问题：播放稳定性、遥控器焦点可控性、弹幕性能、主页视觉质感，以及不同硬件档位下的流畅度。
 
@@ -31,7 +31,7 @@ BiliMT 是一个原生 B 站 + YouTube 双平台客户端实验项目，基于 [
 - 动态关注 feed、历史记录和账号登录（TV 二维码、手机短信 WebView）。
 - 手机端"动态"tab 四子 tab：动态关注 feed / 历史 / 收藏（收藏夹切换）/ 追番（番剧·影视 + 想看·在看·看过筛选）。
 - Media3 点播播放器，支持 DASH 播放、进度保存和返回焦点恢复。
-- 默认画质、解码器偏好、倍速、弹幕、快进预览雪碧图；YouTube 另有独立默认画质与多语言配音音轨切换。
+- 默认画质、解码器偏好、倍速、弹幕、快进预览雪碧图；YouTube 另有独立默认画质、默认播放倍速、字幕与多语言配音音轨切换。
 - CDN 自动测速择优：选择“自动”时会对 B 站返回的候选 CDN 并发测速（首字节时间 + 64 KB 下载吞吐），过滤 mcdn、szbdyd、裸 IP 等不良候选，并按区域缓存 5 分钟，避免每次播放都重复探测。
 - 设置内网络测速：以最后一次播放的视频测各 CDN 节点速度，弹窗列出首字节/速度排名并标记最快节点，便于手动挑选 CDN 线路。
 - 字节跳动 DanmakuRenderEngine 原生弹幕渲染，避免把高频弹幕做成 Compose 节点。
@@ -47,7 +47,7 @@ BiliMT 是一个原生 B 站 + YouTube 双平台客户端实验项目，基于 [
 - Android TV launcher 图标和 TV 横幅，手机与 TV 双桌面入口。
 - 应用内更新：从 GitHub Releases 手动检查、下载并安装新版 APK。
 - 直播：TV + 移动端直播播放（HLS/FLV 取流、画质切换、-352 风控）与直播分区浏览。
-- YouTube 内容：搜索/热门来源切换、动态关注流合并、频道管理、多播放列表、高清 SABR 播放（多档清晰度）、多语言配音音轨切换、YouTube 默认画质、播放历史续播、WebDAV 备份/还原。
+- YouTube 内容：搜索/热门来源切换、动态关注流合并、频道管理、多播放列表、高清 SABR 播放（多档清晰度）、多语言配音音轨切换、YouTube 默认画质、默认播放倍速、字幕、播放历史续播、WebDAV 备份/还原。
 
 ## UI 与视觉
 
@@ -88,7 +88,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 设置页按使用语义分成三组：
 
-- 播放设置：默认画质、解码器、快进预览、空降助手、退出确认、自动连播、自动推荐、播放完成退出、显示时间、迷你进度条。
+- 播放设置：默认画质、YouTube 默认画质、默认播放倍速、解码器、快进预览、空降助手、退出确认、自动连播、自动推荐、播放完成退出、显示时间、迷你进度条。
 - UI/UX：效果档位、液态玻璃、主页主题、切换时自动确认、切换时自动刷新。
 - 系统设置：清理缓存、语言、程序更新、WebDAV 备份、日志、关于。
 
@@ -125,9 +125,30 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 ## 版本更新
 
+### v3.0.1
+
+稳定版：IPTV 完整接入 + TV 交互打磨。IPTV 从零到完整落地（TV + 移动端双端）：源配置（URL/账号/密码 + 连通性校验 + 自动补 https）、直播页 IPTV tab、TV 端 TVBox 式频道列表侧栏（确认键开关/左右切台/上下切线路）、断流自动切镜像源、强制 IPv4 明文数据源（302 重定向按 IP 族选节点，IPv6 不可路由真机黑屏根因）、频道缩略图拉流截帧（ImageReader→SurfaceTexture+EGL 离屏）。TV 搜索栏 5 项优化、TV 历史合并本地 YouTube + 卡片绿框、YouTube 字幕接入 + 默认画质/倍速设置 + gl/hl 地区设置、TV 设置焦点循环导航 + WebDAV 校验 + 视频退出焦点恢复。
+
 ### v3.0.0
 
 稳定版：YouTube 内容集成完整落地 + 移动端交互打磨。YouTube 多语言配音修复（中文视频不再误播英文配音 + 音轨切换 + 默认画质）、播放历史 + 断电续播、听视频模式（音频-only）、UP 头像完整实现、搜索与动态加载优化（对齐 LibreTube）、动态 feed 卡片 B站动态样式单列、UP 主页缓存、后台自动连播修复、短信登录页重叠修复。
+
+### v3.0.1-alpha
+
+v3.0.0 稳定版后的 patch 线 alpha。
+
+| tag | 内容 |
+| --- | --- |
+| v3.0.1-alpha.33 | IPTV 缩略图截帧换方案：真机实锤 ImageReader 方案在本机不可行（codec 输出私有格式 0x7fa30c06 ≠ ImageReader 配置 RGBA_8888=0x1，抛 UnsupportedOperationException 全失败），切 SurfaceTexture+EGL 离屏 glReadPixels（IptvThumbnailCapturerEgl，不做格式协商），ImageReader 版保留对照 |
+| v3.0.1-alpha.32 | IPTV 缩略图截帧全失败根因修复：stall 看门狗加 6s 启动宽限期（不再误杀 mobaibox 这类首帧要 ~8s 的慢源）、ready 判断改 ImageReader 帧可用信号（不再绑死 videoSize）、超时 15s→22s |
+| v3.0.1-alpha.31 | IPTV 缩略图截帧改并发：信号量 2→3，TV/移动端消费循环串行 for 改 async 并发，死源/慢源不再串行堵住整批缩略图 |
+| v3.0.1-alpha.28 | IPTV 缩略图截帧崩溃修复：capture 改专用 HandlerThread（ExoPlayer 必须在带 Looper 的线程访问，IO 线程抛 wrong thread 崩溃） |
+| v3.0.1-alpha.14 | TV 历史 tab 合并本地 YouTube 历史（未登录也显示 + 登录后 B 站历史并入，按播放时间倒序）+ TV 动态/历史 YouTube 卡片标绿框识别 |
+| v3.0.1-alpha.5 | TV 视频退出焦点恢复修复：恢复 effect 先等目标行进入视口布局再 requestFocus（不再盲重试），兜底清理 120→240 帧；新增 BiliMT:Focus 诊断日志（onBack/恢复 start-layout-success-failed/backstop/头像 onFocused），退出卡顿（734ms Davey）时焦点不再停在头像 |
+| v3.0.1-alpha.4 | TV 搜索源 pill 点击当前源循环切换：点 BILIBILI 直接切到 YOUTUBE（点击已选中的源 pill 循环切到另一个源） |
+| v3.0.1-alpha.3 | TV 搜索初始界面接通 D-pad 焦点：源切换按钮（B站/YouTube）+ 输入框可选中（源切换按钮加 FocusRequester、输入框加 focusable()+聚焦边框、键盘清空按钮加 onMoveUp） |
+| v3.0.1-alpha.2 | 对齐 LibreTube：TV 端「YouTube 默认画质」+「默认播放倍速」设置项补齐 + YouTube 字幕接入（WebVTT URL 直拉，PlayerView 渲染；字幕轨切换 UI 后续迭代） |
+| v3.0.1-alpha.1 | YouTube 频道页两处修复：首屏去重防 key 崩溃（loadFirst 补 distinctBy bvid，与翻页一致）+ 频道页头像补全（lockupViewModel 不带头像，从解析出的频道头像注入 ownerFace） |
 
 ### v3.0.0-alpha
 

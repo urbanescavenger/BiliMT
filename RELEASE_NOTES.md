@@ -1,5 +1,438 @@
 # BiliMT 版本发布说明
 
+## v3.0.1
+
+**稳定版:IPTV 完整接入 + TV 交互打磨**(v3.0.0 稳定版后的 patch 线提升为稳定版)。自 v3.0.0 起 100 个提交,核心是 IPTV 从零到完整落地(TV + 移动端双端),以及 TV 端搜索/历史/设置/焦点交互的系统性打磨。
+
+### 主要变更
+- **IPTV 完整接入(TV + 移动端)**:设置页源配置(URL/账号/密码 + 连通性校验 + 自动补 https)、直播页 IPTV tab、TV 端 TVBox 式频道列表侧栏(确认键开关/左右切台/上下切线路)、断流自动切镜像源、强制 IPv4 明文数据源(302 重定向按客户端 IP 族选节点,IPv6 不可路由真机黑屏根因)。
+- **IPTV 频道缩略图拉流截帧**:进 IPTV tab 懒加载截当前可见频道,会话级缓存每次进列表重截;截帧方案从 ImageReader(本机 codec 私有格式 0x7fa30c06 与 RGBA_8888 不匹配全失败)切到 SurfaceTexture+EGL 离屏 glReadPixels,并修掉 stall 看门狗误杀慢源(6s 启动宽限期)、并发截帧(信号量 3)、HandlerThread 同线程约束等。
+- **TV 搜索栏 5 项优化**:源切换单按钮循环、键盘自适应、IME 输入、返回重搜、侧栏重置。
+- **TV 历史合并本地 YouTube**(未登录也显示)+ YouTube 卡片绿框识别。
+- **YouTube 增强**:字幕接入(WebVTT 直拉)、TV 端默认画质/默认倍速设置、gl/hl 内容地区设置、TVHTML5 client 取流试验、退役 classic SABR n-decrypt 兜底。
+- **TV 设置/UI 打磨**:侧栏+设置页焦点循环导航、设置焦点乱序修复、WebDAV 保存前校验+自动补 scheme、备份还原动画、视频退出焦点恢复。
+
+---
+
+## v3.0.1-alpha.33
+
+**IPTV 缩略图截帧换方案——ImageReader 在本机不可行,切 SurfaceTexture+EGL 离屏(测试 alpha)**:alpha.32 真机日志 `logs_live.log` 实锤另一层根因,10 个频道截帧全抛同一异常:
+```
+UnsupportedOperationException: The producer output buffer format 0x7fa30c06
+doesn't match the ImageReader's configured buffer format 0x1
+```
+`0x7fa30c06` = 这台电视硬件解码器的**私有/YUV 输出格式**,`0x1` = RGBA_8888(ImageReader 请求的)。解码器往 ImageReader 的 Surface 写帧时 codec 输出 buffer 格式必须与 ImageReader 配置格式一致,本机给的是私有格式 → 直接抛异常,0 成功。**不是 stall 看门狗、不是慢源、不是超时**——是 ImageReader 方案本身在这台设备从根上不可行,阈值再调也救不回。
+
+### 变更
+- **新增 `IptvThumbnailCapturerEgl`(方案一)**:`SurfaceTexture` 接解码器输出(不要求格式协商,接受私有格式)→ EGL 离屏 pbuffer surface + OES 外部纹理 + shader 画全屏 quad → `glFinish` → `glReadPixels` 读回 RGBA 转 Bitmap。这是 media3 播放器截帧的标准真离屏路径,格式问题在源头不存在。
+- **`IptvThumbnailManager` 切到 EGL capturer**(`IptvThumbnailCapturerEgl`);ImageReader 版 `IptvThumbnailCapturer` 保留对照不删。
+- **复用 alpha.32 全部修复**:`IptvDataSourceFactory` 强制 IPv4、`LiveLoadErrorHandlingPolicy` 重试 7 次、stall 看门狗 6s 启动宽限期 + 4s 真 stall 重挂(帧可用信号改 `OnFrameAvailableListener`)、22s 总超时、静音、专用 HandlerThread 同线程约束。
+
+### 待真机验证
+- IPTV 列表缩略图能陆续出图(EGL 离屏路径绕开 ImageReader 格式协商;慢源最多 ~22s 内出)。
+
+---
+
+## v3.0.1-alpha.32
+
+**IPTV 缩略图截帧全失败根因修复——stall 看门狗误杀慢源(测试 alpha)**:真机日志 `logs_live.log` 实锤截帧 **3 次尝试 0 成功**,全是 `stall 0% reload #1/2/3` → `timeout (no ready frame)`。而真机播放器对 CCTV-4 源 1 秒内就到 `READY video=avc1.640028`——同一套 `IptvDataSourceFactory`,证明机制能连、是截帧逻辑自身 bug。
+
+根因:①**stall 看门狗阈值太激进(3s)**——mobaibox 这类慢源从请求到首帧要 ~8s(解码器 :08 才连上 surface),看门狗 3s 就判 stall 并 `clearMediaItems`+重挂,等于每次把还在正常启动的慢源**打断重来**,永远 READY 不了 → 15s 超时回退台标;②**ready 条件绑死 `player.videoSize.width`**——某些源 videoSize 报 0,即便已 READY 也会空转到超时。
+
+### 变更
+- **`IptvThumbnailCapturer` 启动宽限期**:`StartupGraceMs=6s` 内**绝不判 stall、绝不重挂**——慢源正常启动期 reload 只会打断它;宽限期后仍卡 BUFFERING 且进度不动才重挂源拉活(`StallReloadMs` 3s→4s、`MaxStallReloads` 3→2)。
+- **ready 判断改用帧可用信号**:加 `ImageReader.setOnImageAvailableListener` 置 `AtomicBoolean frameReady`,ready 条件从 `videoSize.width==0` 改成 `!frameReady`,拿到"真的出了帧"的信号而非依赖 videoSize。
+- **超时 15s → 22s**:给慢源足够启动时间。
+
+### 待真机验证
+- IPTV 列表缩略图能陆续出图(慢源最多 ~22s 内出,不死源能真正等到画面);死源仍超时回退台标但不阻塞整批。
+
+---
+
+## v3.0.1-alpha.31
+
+**IPTV 缩略图截帧改并发(测试 alpha)**:真机观察"第一张缩略图失败/慢,后续都不出图"。排查发现消费循环是**串行 for**——每张 `getThumbnail` 挂起等上一张截完(单张最坏 15s 超时 + 3 次 stall 重挂 ≈ 20s+),死源把整批缩略图串行堵在身后,看起来像"第一张失败就全不生成"。实际每 URL 独立、失败不污染后续,只是并发没起来。
+
+### 变更
+- **`IptvThumbnailManager` 并发上限 2 → 3**:`Semaphore(MaxConcurrent)` 提到 3,允许同时拉 3 个流截帧。
+- **TV `LiveScreen` + 移动端 `MobileLiveScreen` 消费循环改并发**:`onVisibleRangeChange`/`captureVisibleIptv` 的串行 for 改成 `async` 并发启动(先 `mapNotNull` 取 URL,再逐个 `await` 收结果)。死源/慢源只占一个并发槽,不再堵住整批;信号量 3 并发首次真正用满(此前串行恒为 1,信号量形同虚设)。
+
+### 待真机验证
+- IPTV 列表含死源/慢源(如 `mobaibox.com`/`223.110.x.x`):该频道缩略图可失败,其余频道应照常出图,不再等第一张截完才出下一张。
+
+---
+
+## v3.0.1-alpha.30
+
+**IPTV 缩略图截帧静音 + stall 自动重挂(测试 alpha)**:真机日志定位"退出直播后仍有音频"与"缩略图仍全回退台标"两处根因,均在截帧器。
+
+### 变更
+- **截帧器静音(修退出直播后仍有音频)**:`IptvThumbnailCapturer` 为拿画面会真播一条流,此前未静音 → 每个缩略图截帧都从扬声器放声(2 并发、最长 15s)。进 IPTV 列表/退出直播后列表仍在持续截帧,用户听到的"残留音频"其实是截帧器在放声,非直播 player 未释放。现 `player.setVolume(0f)` 静音,截帧只取画面。
+- **截帧器加 stall 自动重挂(修缩略图仍回退台标)**:日志显示截帧器仍每次卡满 15s `timeout (no ready frame)`——真实播放器能出画面靠的是其 stall 看门狗(卡 BUFFERING 且进度不前进但**不报错**,重试策略不触发时主动重挂源),截帧器此前无此机制只能被动干等。现等 READY 循环内加同款检测:卡 3s → `clearMediaItems + setMediaSource + prepare` 重挂,最多 3 次。
+
+### 待真机验证
+- IPTV 列表缩略图:卡 BUFFERING 的源(如 `mobaibox.com`/`223.110.x.x`)自动重挂后应出实况图,不再全回退台标。
+- 播放一条 IPTV 直播后退出:扬声器应静音,无残留截帧放声。
+
+---
+
+## v3.0.1-alpha.29
+
+**IPTV 播放失败 + 缩略图全回退台标(测试 alpha)**:真机日志定位两处导致 IPTV 无法播放/缩略图失败的根因。
+
+### 变更
+- **裸 IP 源明文放行(修播放黑屏)**:IPTV CDN 节点(tsfile/gitv/cntv 的 `223.110.x.x`/`61.x`/`183.x`)多是 `IP:port` 直连。明文放行此前只在 DNS 解析(`Ipv4OnlyDns.lookup`)时注册 host,而 OkHttp 对**裸 IP 字面量不查 Dns** → 永不注册 → connect 前被系统网络安全策略拦(`CLEARTEXT communication to ... not permitted`)→ 移动端 IPTV 黑屏播放失败。`IptvCleartextPlatform.isCleartextTrafficPermitted` 现对裸 IP 字面量直接放行(`isLiteralIp` 判 IPv4/IPv6)。
+- **截帧器补重试策略(修缩略图回退台标)**:`IptvThumbnailCapturer` 的 `HlsMediaSource` 挂上 `LiveLoadErrorHandlingPolicy`(重试 7 次 + 指数退避),与真实播放器对齐。此前域名源(如 `mobaibox.com`)首载 403/断连时截帧器无重试 → 卡 BUFFERING 到 15s 超时 → 缩略图回退台标。
+
+### 待真机验证
+- 移动端/TV 端播 IPTV 裸 IP 源:不再黑屏,能到 READY 出画面。
+- IPTV 列表缩略图:IP 源(明文放行)与域名源(重试策略)截帧都应出实况图,不再全回退台标。
+
+---
+
+## v3.0.1-alpha.28
+
+**IPTV 缩略图截帧崩溃修复(测试 alpha)**:alpha.26 引入的 IPTV 频道缩略图拉流截帧在真机加载 IPTV 列表时崩溃——`IptvThumbnailCapturer.capture` 在 `Dispatchers.IO` 线程创建并访问 ExoPlayer,而 media3 要求 Player 的所有方法(含 `playbackState`/`videoSize` 读取)必须在**带 Looper 的同一线程**上调用,IO 线程无 Looper 直接抛 `IllegalStateException: Player is accessed on the wrong thread`,主线程 FATAL。
+
+### 变更
+- **`IptvThumbnailCapturer.capture` 改专用 HandlerThread**:每次截帧开一个 `HandlerThread("IptvThumbCapture")`,用 `handler.asCoroutineDispatcher()` 跑整个截帧流程,`ExoPlayer.Builder(context).setLooper(handlerThread.looper)` 显式绑定该 looper,创建/访问/`release()` 全在同一线程,`finally` 后 `quitSafely()` 收尾。既不上主线程阻塞 UI,又满足 media3 同线程约束。
+
+### 待真机验证
+- 真机移动端进 IPTV tab:频道卡片应正常显示拉流截帧缩略图,不再崩溃;滚动到新频道也截帧;已截的滚动回来直接显示(内存缓存)。日志 `BiliMT:IptvThumb` 输出截帧成功/失败。
+
+---
+
+## v3.0.1-alpha.27
+
+**IPTV 同步移植到移动端(测试 alpha)**:TV 端 IPTV 功能(直播页 IPTV tab + 频道卡片 + 播放 + 设置源)此前只在 TV UI 上。核心逻辑(拉 m3u、解析、连通性校验、强制 IPv4 + 明文放行、拉流截帧)全在共享包,移动端直接复用,这次补的是移动端 UI 集成层,并把 IPTV 频道封面也做成**同步拉流截帧**(对齐 TV,而非仅用 m3u logo)。
+
+### 变更
+- **`MobileLiveScreen` 加 IPTV tab**:直播页 tab 在「推荐」后插入「IPTV」。该 tab 走 `iptvRepository.getChannels()` → `toVideoSummary()`,无分页;空列表显示 `live_iptv_empty`。频道卡片封面用 `IptvThumbnailManager` 对当前可见频道**拉流截帧**(懒加载、会话级缓存、离开 tab clear),复用 TV 的 `IptvThumbnailCapturer`(ImageReader 截帧)。
+- **`MobileVideoCard` 支持封面覆盖**:加 `coverOverride` 参数(镜像 TV `VideoCard`),IPTV 分支传截帧 Bitmap 作 Coil data,非 IPTV 视频不受影响。
+- **播放路由**:`MobileApp` 播放器路由从 `request.isLive` 改为 `request.isLive || request.isIptv`,IPTV 请求走共享 `LivePlayerScreen`(`isMobile=true` 已支持)。
+- **设置页 IPTV 源配置**:`MobileSettingsScreen` 加「IPTV 源」区块,URL/账号/密码编辑弹窗(复用 `normalizeIptvUrl` 补全),保存时 `checkSourceReachable` 弹 Toast 提示连通性。
+- 网格 key 修正:IPTV 频道 `liveRoomId` 全为 0,用 `iptvUrls.firstOrNull()` 作 key 避免重复 key 崩溃。
+
+### 待真机验证
+- 真机移动端:直播页出现 IPTV tab → 频道卡片显示截帧实时缩略图 → 点击能起播出画面(源切换/断流自动切源)→ 设置页配置 IPTV 源 → 保存后连通性 Toast。B站直播/点播回归不受影响。
+
+---
+
+## v3.0.1-alpha.26
+
+**IPTV 频道缩略图——拉流截帧(测试 alpha)**:IPTV 频道列表封面 = m3u 的 `tvg-logo`,很多源没 logo → 卡片显示纯色占位,观感差。新增:进 IPTV tab 自动后台对当前可见频道**拉直播流截一帧**做缩略图,懒加载(只截当前显示的频道,不一次性截几百个),会话级内存缓存(每次进列表重新截,不永久磁盘缓存)。
+
+### 变更
+- **`IptvThumbnailCapturer`**:单个频道截帧。复用 `IptvDataSourceFactory`(强制 IPv4 + 明文放行,保证能连上源)。media3 1.10 无 `getVideoFrameAtTime`,改用 `ImageReader` 作为 ExoPlayer 视频输出 Surface,播放到 READY 出画面后 `acquireLatestImage()` 截一帧转 Bitmap(处理 rowStride 行填充)。超时 15s 回吐 null,失败频道保持占位不阻塞列表。
+- **`IptvThumbnailManager`**:会话级(每次进 IPTV tab 新建,离开 clear 清缓存)。并发限 2 个 + inFlight 去重,避免快速滚动触发重复截帧。
+- **`VideoCard`/`TvVideoGrid`**:加 `coverOverride`/`coverOverrides` 参数,IPTV 分支传截帧 Bitmap 显示封面;`TvVideoGrid` 加 `onVisibleRangeChange` 回调(snapshotFlow 监听可见范围)驱动懒加载。
+- **`LiveScreen`**:IPTV 分支接入截帧——进 tab 自动后台截,只截当前可见频道,截完更新卡片封面。
+
+### 待真机验证
+- 真机装此版本进 IPTV tab:当前可见频道卡片应逐渐从占位变成直播画面缩略图;滚动到新频道也截帧;已截的滚动回来直接显示(内存缓存);离开 IPTV tab 再进重新截。日志 `BiliMT:IptvThumb` 输出截帧成功/失败。
+- 回归:B站直播/点播列表封面不受影响(coverOverrides 仅 IPTV 分支传,非 IPTV 视频 key 不命中)。
+
+---
+
+## v3.0.1-alpha.25
+
+**IPTV 黑屏修复续——302 重定向目标(IP 字面量)也放行明文(测试 alpha)**:alpha.24 真机日志确认明文放行已生效(`connectStart ott.mobaibox.com:80 family=v4`、`response`/`responseEnd code=302` 首次出现),但播放仍 0 track ENDED。日志显示 m3u8 302 重定向到 CDN 节点 `http://223.110.246.83:80/...`——重定向目标是 **IP 字面量**,不走 DNS,不触发 `Ipv4OnlyDns.lookup` 注册 → 明文检查仍拦 → 反复重试原 host 拿 302,永远到不了 CDN 节点。
+
+### 修复
+- **302 重定向目标也注册明文放行**:`IptvEventListener.responseHeadersEnd` 里,当响应是 3xx 且带 `Location` 时,解析 Location 的 host 注册进 `IptvCleartextHosts`。OkHttp 随后 follow 重定向时明文检查即通过。IP 字面量(如 `223.110.246.83`)与域名重定向目标都覆盖。
+
+### 待真机验证
+- 真机装此版本播 IPTV,日志应出现对重定向目标 `223.110.246.83:80` 的 `connectStart`(alpha.24 只有原 host 的 connectStart,重定向目标从未连上),播放器应能到 READY 出画面;B站直播/点播(https)回归不受影响。
+
+---
+
+## v3.0.1-alpha.24
+
+**IPTV 黑屏根因修复——动态放行 IPTV 源明文 HTTP(测试 alpha)**:alpha.23 真机日志(DNS 解析正常但 connectStart 从不触发、无 connectFailed、0 track 直接 ENDED)定位到真根因——IPTV 流 URL 是 `http://` 明文,而 app `targetSdk=36` 且 manifest 未开 `usesCleartextTraffic`,Android 9+ 默认禁明文 → OkHttp 在 `RealConnection.connect()` 开头、`connectStart` 之前抛 `CLEARTEXT communication not permitted` → 黑屏。TVBox 能播同一源,因其 manifest 开了明文。修:自定义 OkHttp `Platform` 只对 IPTV 源 host 动态放行明文,其余仍走系统 NetworkSecurityPolicy(不影响 B站 https)。
+
+### 修复
+- **动态放行 IPTV 源明文 HTTP**:新增 `IptvCleartextHosts`(线程安全 host 集合)+ `IptvCleartextPlatform`(子类化基类 `Platform`,把全部方法委托给替换前捕获的原始 `AndroidPlatform` 实例,仅重写 `isCleartextTrafficPermitted` 对已注册 host 放行明文)。`Ipv4OnlyDns.lookup()` 里注册 host——DNS 发生在 `findConnection`(先于 `connect()` 的明文检查),注册后即通过;302 重定向到新 host 时新 host 的 DNS 也会注册,天然覆盖。`BiliTvApplication.onCreate` 用 `Platform.resetForTests(IptvCleartextPlatform(Platform.get()))` 设置单例(OkHttp 4.12 唯一公开入口)。
+- **不能直接子类化 `AndroidPlatform`**:该类是 final,首版直接子类化编译失败,改委托方案。
+
+### 待真机验证
+- 真机装此版本播 IPTV,`Y:\download\bilitv\logs` 日志应出现 `connectStart ... family=v4`、`response`/`responseEnd`(alpha.23 完全没有),播放器应能到 READY 出画面(不再 0 track ENDED);B站直播/点播(https)回归不受影响。
+
+---
+
+## v3.0.1-alpha.23
+
+**IPTV 黑屏网络诊断(测试 alpha)**:alpha.22 的数据源强制 IPv4 已在真机验证仍黑屏(ExoPlayer 模块列表已含 `media3.datasource.okhttp`,证明 `IptvDataSourceFactory` 已生效但 BUFFERING 依旧、0 轨道)。为定位真因,给 IPTV 的 OkHttpClient 加 `EventListener` + `Ipv4OnlyDns` 网络诊断日志,真机日志输出 DNS 解析族(过滤后 IPv4 数量)、连接实际走 v4/v6、连接失败与响应失败的具体异常、m3u8 302 重定向目标——用于判断黑屏是"没走到拉流"还是"走了但连不上"。
+
+### 变更
+- **IPTV 数据源加网络诊断日志**:`IptvDataSourceFactory` 的 OkHttpClient 挂 `IptvEventListener`,日志 tag `BiliMT:IptvNet`,记录 `dns lookup <host> -> <addrs> (filtered v6=... kept=N)`、`connectStart ... family=v4|v6`、`connectFailed`(协议+异常类名+消息)、`responseFailed`、`response`/`responseEnd`(含 302 `Location`)。若真机日志无任何 `BiliMT:IptvNet` 输出,则说明数据源没被走到,黑屏另有原因;若 `connectStart family=v6` 则 IPv4 强制未生效。
+- **修复 `connectFailed` override 签名缺 `proxy` 参数**:EventListener 的 `connectFailed` 必须带 `proxy: java.net.Proxy` 参数,上一版漏参导致编译失败(仅编译修复,无行为变化)。
+
+### 待真机验证
+- 真机装此版本播放 IPTV,`Y:\download\bilitv\logs` 日志中出现 `BiliMT:IptvNet` 系列输出,据其判断:是否走到了 `IptvDataSourceFactory`、连接走的 IP 族、失败的具体异常,据此定位黑屏根因。
+
+---
+
+## v3.0.1-alpha.22
+
+**IPTV 播放黑屏修复 + TV 侧栏/设置页焦点循环导航(测试 alpha)**:两个独立改动——① IPTV 频道播放黑屏,根因是源 m3u8 302 重定向到 IPv6 节点,真机(Sony BRAVIA)常处"IPv6 已启用但不可路由"网络连不上,播放器一直 BUFFERING 0 轨道到不了 READY;② TV 侧栏与设置页在焦点边界要能循环(最上按上→最底,最底按下→最上)。
+
+### 修复
+- **IPTV 播放黑屏——数据源强制 IPv4**:实测源 `cf.19961226.xyz/iptv/` 的 m3u8 会 302 重定向,重定向目标按客户端 IP 族选择——走 IPv6 回 IPv6 字面量节点,走 IPv4 回 IPv4 节点。真机拿到 IPv6 重定向连不上 → HLS 内部重试一直 BUFFERING 不报错 → 黑屏。新增 `IptvDataSourceFactory`,用只返回 A 记录(过滤 AAAA)的 `Ipv4OnlyDns` 强制客户端走 IPv4,服务端即回 IPv4 节点;`LivePlayerScreen` IPTV 分支从裸 `DefaultDataSource` 换成它。B站直播不受影响(仍走 `BiliMediaDataSourceFactory`)。
+- **TV 侧栏焦点循环导航**:侧栏根 `Column` 加 `onPreviewKeyEvent`,仅在边界拦截——头像(最上)按上→跳到最底导航项(Live),最底 Live 按下→跳回头像;其余交给默认焦点遍历。`AccountNavItem`/`AppNavItem` 上报各自焦点 index。
+- **TV 设置页焦点循环导航**:`SettingsScreen.moveSettingFocus` 越界时取模回绕,首项按上→末项、末项按下→首项,跳过不可聚焦项,循环跳转时滚动方向取反把远端项滚进视口。
+
+### 待真机验证
+- Live → IPTV tab → 选频道能起播出画面(之前黑屏);源切换/断流自动切源正常。
+- 侧栏头像按上→Live、Live 按下→头像;设置页首项按上→末项、末项按下→首项;非边界上下移动仍正常;autoConfirm 聚焦选中行为不变。
+
+---
+
+## v3.0.1-alpha.21
+
+**设置弹窗焦点恢复 + IPTV 主线程网络异常修复(测试 alpha)**:两个独立问题——① WebDAV/IPTV 编辑弹窗关闭后焦点丢失落到侧栏头像;② IPTV 的 `getChannels`/`checkSourceReachable` 在主线程协程里直接跑阻塞 `execute()`,抛 `NetworkOnMainThreadException`,导致 IPTV 频道加载不出、连通性探测永远失败(这也解释了 alpha.19/alpha.20 的探测超时改动在真机上没生效——探测根本没跑起来)。
+
+### 修复
+- **设置弹窗关闭后焦点回到对应行**:WebDAV 编辑弹窗 `onDismiss`、IPTV 编辑弹窗 `onSave`/`onDismiss` 关闭后调用 `focusSettingItem` 把焦点恢复到打开它的设置行(WebDAV 行 / IPTV 行),不再落到侧栏头像。根因是弹窗内 URL 字段随弹窗移除,Compose 焦点回退到应用外壳第一个可聚焦项(头像)。
+- **IPTV 阻塞网络调用切 IO 线程**:`IptvRepository.getChannels`/`checkSourceReachable` 的阻塞 `client.newCall(...).execute()` 包进 `withContext(Dispatchers.IO)`(与 `WebDavRepository` 一致),修复主线程协程直接 `execute()` 抛 `NetworkOnMainThreadException`。
+
+### 待真机验证
+- 设置 → WebDAV 编辑弹窗保存/取消、IPTV 编辑弹窗保存/取消后,焦点回到对应设置行而非侧栏头像。
+- 设置 → IPTV 源地址填 `https://cf.19961226.xyz/iptv/`(用户名/密码留空)→ 保存提示"连接成功" → Live 页 IPTV tab 列出频道(之前主线程异常永远空/永远失败)。
+
+---
+
+## v3.0.1-alpha.20
+
+**IPTV 源连通性探测超时修复(测试 alpha)**:alpha.19 把探测改成独立短超时 GET 后,`https://cf.19961226.xyz/iptv/` 这类源仍误报"连接失败"。实测该源服务器响应慢且不稳定——TTFB 可达 9s+、偶发 SSL 连接失败,10s 探测超时在真机网络下会超时误判。
+
+### 修复
+- **探测超时 10s→20s**:`checkSourceReachable` 的独立探测 client 超时从 10s 提到 20s,兼顾慢源与快速回吐。
+- **加诊断日志**:`IptvRepository` 加 `BiliMT:Iptv` 标签日志,记录 URL、HTTP 状态码、异常类型+消息、解析频道数,便于真机排查。
+
+### 待真机验证
+- 设置 → IPTV 源地址填 `https://cf.19961226.xyz/iptv/`(用户名/密码留空)→ 保存提示"连接成功" → Live 页 IPTV tab 列出频道。
+
+---
+
+## v3.0.1-alpha.19
+
+**IPTV 源连通性校验修复(测试 alpha)**:设置里保存 IPTV 源地址时,`https://cf.19961226.xyz/iptv/` 这类源误报"连接失败"。根因是连通性探测复用了 download 的 300s read 超时 client,而该源服务器对 HEAD 请求直接挂起不响应——先 HEAD 再回退 GET 时,HEAD 要卡满 300s 才轮到 GET,保存像死掉一样,最终误报失败。
+
+### 修复
+- **连通性探测改独立短超时 GET**:`checkSourceReachable` 不再复用 download 的 300s read client,改用独立 10s 短超时 client 直接 GET(只判响应码不读 body,代价与 HEAD 相当)。对"只回 GET"的服务器一步到位,源不可达时 10s 内快速回吐,不再干等。
+
+### 待真机验证
+- 设置 → IPTV 源地址填 `https://cf.19961226.xyz/iptv/`(用户名/密码留空)→ 保存几秒内提示"连接成功" → Live 页 IPTV tab 列出频道。
+
+---
+
+## v3.0.1-alpha.18
+
+**TV 设置页交互重构 + YouTube 频道面板崩溃修复(测试 alpha)**:设置页回归真正的两层架构——右侧二级菜单(关于/首页分区/YouTube 频道/日志)只由对应行**点击**开合,聚焦(仅把焦点移到该项)不再自动展开右侧面板;同时修复 YouTube 频道面板打开时自动抢焦点导致「点击展开后按方向键」崩溃。
+
+### 修复
+- **设置两层架构**:`onSettingFocused` 聚焦只记录最近项(供面板返回焦点),不再设置 `rightPanel`;About/首页分区/YouTube 频道/日志 四个二级面板统一由点击 toggle(点开/再点收起/点其它项切换)。日志面板原来只靠聚焦展开、点击走空回调,现已正常点击开合。
+- **YouTube 频道面板不抢焦点**:移除面板打开时 `LaunchedEffect` 自动 `requestFocus`,与 HomeSections 等右面板一致(焦点留左侧列表,按右键进入面板);修点击展开后按方向键崩溃(焦点竞态)。
+
+### 待真机验证
+- 设置页左侧 D-pad 上下导航,右侧面板不再随聚焦弹出;点确认才开对应二级菜单,按右键进入,再点收起。
+- 设置 → YouTube 频道:点行开面板 → 右键进入 → 点展开 → 方向键上下遍历键盘/频道列表不崩。
+
+---
+
+## v3.0.1-alpha.17
+
+**TV 设置栏焦点导航乱序修复(测试 alpha)**:TV 端设置页 D-pad 上下移动焦点时顺序错乱——从「迷你进度条」往下按会一步跳到列表最末尾的「播放器日志叠层」,中间整片设置项全被跳过;且聚焦「日志/关于/播放器日志叠层」时滚动到错误行。根因是 `SettingsFocusableItems` 里 `SettingsItemPlayerLogOverlay` 重复出现(第 15 位 + 末尾各一次),以及加 IPTV 后 Logs/About/PlayerLogOverlay 三个 lazy 索引没同步 +1(与 Iptv 撞索引 34)。
+
+### 修复
+- **删重复焦点项**:`SettingsFocusableItems` 移除第 15 位的重复 `SettingsItemPlayerLogOverlay`,焦点顺序与渲染顺序重新对齐。
+- **索引补 +1**:`settingsItemToLazyIndex` 中 Logs/About/PlayerLogOverlay 分别从 34/35/36 修正为 35/36/37,不再与 Iptv 撞索引。
+
+### 待真机验证
+- 设置页 D-pad 上下移动,焦点按列表顺序逐项走(迷你进度条 → 视觉性能 → … → IPTV → 日志 → 关于 → 播放器日志叠层),不再跳项。
+
+---
+
+## v3.0.1-alpha.16
+
+**IPTV 纳入直播一期(TV 版,测试 alpha)**:直播页新增「IPTV」标签页,读取设置里配置的远程 m3u 播放列表,把 IPTV 频道当直播间播放。同名频道(多个镜像 URL)合并成一个直播间,播放器里用现成的清晰度面板当**源切换面板**(线路1/线路2/...),断流自动切下一镜像。
+
+### 新增
+- **设置 → IPTV 源地址**:URL/账号/密码三字段弹窗(镜像 WebDAV),URL 不带 `http://`/`https://` 自动补 `https://`,保存后校验连通性并 Toast 提示"连接成功/连接失败"。
+- **Live 页 IPTV tab**:一次拉全量频道(按 group-title 分组),未配置源显示"请先在设置中配置 IPTV 源地址"。
+- **IPTV 播放**:直链 m3u8 走直播播放器,清晰度面板切源,断流自动切下一镜像,不持久化源索引(每频道独立)。
+
+### 待真机验证
+- 设置填源地址(如 `https://cf.19961226.xyz/iptv/`)→ 保存提示连接成功 → Live 页 IPTV tab 列频道 → 点频道起播线路1 → 清晰度面板切线路 → 断流自动切下一镜像。
+
+---
+
+**设置区 3 项优化(测试 alpha)**:
+
+1. **WebDAV 保存前校验连通 + 自动补 scheme**:设置 → WebDAV 弹窗保存时先校验连通性,URL 不带 `http://`/`https://` 自动补全(https 优先、http 兜底),必须 2xx 才算连通(401/403/404 不算);连通才落库并 Toast"连接成功,已保存",两个候选都不通则弹窗内提示"无法连接服务器",不落库。移动端 WebDAV 编辑弹窗同步此逻辑。
+2. **TV YouTube 频道管理默认折叠**:设置 → YouTube 频道管理面板默认折叠,只显示标题/描述 + "点击展开"区头,点击才展开(焦点落「添加」按钮而非自动切到字母键盘),展开后显示"收起"可折叠。
+3. **TV 更新区常驻当前版本**:设置 → 程序更新「最新版本」行默认显示当前版本号,点「检查更新」再一起刷新最新版本;不再需要先下载最新更新才看到版本信息。
+
+### 待真机验证
+- WebDAV 填不带 scheme 的地址(如 `dav.example.com`)→ 保存自动补 https 并校验,连通提示成功、不通提示失败;填 `http://` 显式 scheme 只试该一个。
+- YouTube 频道管理面板默认折叠,点击展开后焦点落「添加」按钮,可输入 @handle/UC... 添加、确认键删除频道。
+- 更新区「最新版本」行默认显示当前版本,点「检查更新」后刷新为最新版本。
+
+## v3.0.1-alpha.15
+
+**TV 长按 YouTube 视频进 UP 主页修复(测试 alpha)**:TV 端对 YouTube 视频长按确认键(OK/Enter)本应打开卡片操作菜单进入该 UP 主频道主页,但长按条件原要求 `video.ownerMid > 0L`——YouTube 视频无 B 站 mid(`ownerMid` 恒为 0),导致长按永远不触发,进不了 UP 主页(B 站视频正常)。改为 `ownerMid > 0L || (source == SourceYoutube && channelId.isNotBlank())`,YouTube 视频长按也能进频道页,B 站视频行为不变。
+
+### 修复
+- **长按判定补 YouTube 分支**:`TvVideoGrid` 长按触发条件从 `ownerMid > 0L` 扩展为同时认 YouTube 的 `channelId`,YouTube 视频长按进 `YoutubeChannelScreen`(UP 主页)。
+
+### 待真机验证
+- 主页/搜索/动态对 YouTube 视频长按确认键约 0.5s 进入 UP 主页;B 站视频长按行为不变。
+
+## v3.0.1-alpha.14
+
+**TV 历史合并本地 YouTube + YouTube 卡片绿框识别(测试 alpha)**:
+
+1. **历史 tab 合并本地 YouTube 历史**:TV 动态页「历史」子 tab 与移动端对齐,把本地 `YoutubeHistoryStore`(免登录)数据与 B 站观看历史**混合,按播放时间倒序**显示。未登录时不再只显示 B 站登录提示,而是显示本地 YouTube 历史 + 登录提示;登录后 B 站历史并入。点击 YouTube 历史项自动续播。
+2. **YouTube 卡片标绿框识别**:TV 动态/历史子 tab 的 YouTube 内容卡片加绿色边框(同移动端 `#00C853`),一眼区分来源。首页/搜索/频道不标,避免整行泛绿。
+
+### 待真机验证
+- 历史混合排序(YouTube 与 B 站按播放时间倒序)、YouTube 卡片续播、绿框在动态/历史的渲染需真机确认。
+
+## v3.0.1-alpha.13
+
+**TV 搜索栏 5 项交互优化(测试 alpha)**:
+
+1. **顶栏源切换单按钮**:B站/YouTube 两个 pill 合并为单个占满居中的按钮,显示当前源(BILIBILI/YOUTUBE),点击循环切换。
+2. **键盘区自适应**:6×6 键盘区改 weight 弹性伸缩,输入框/清空退格/搜索按钮固定在顶部/底部,搜索按钮不再被挤出可视区(修复底部搜索按钮只显示一半)。
+3. **IME 中文输入**:输入框从只读 `Text` 换 `BasicTextField`,聚焦唤起系统 IME 可输入中文汉字;IME 激活时自绘键盘隐藏、焦点移开恢复;布局加 `imePadding` 避让 IME;聚焦加背景高亮反馈。
+4. **返回重新搜索**:结果标题改为可聚焦点击项,聚焦显示「按确认键重新搜索」提示,点击返回键盘重新搜索(Back 键仍保留)。
+5. **侧栏搜索重置**:侧栏选中「搜索」总是重置到初始搜索界面(清空上次查询/结果)。
+
+### 待真机验证
+- IME 唤起/自绘键盘隐藏与恢复、焦点流转(输入框 ↔ 建议面板 ↔ 键盘)需真机确认。
+
+## v3.0.1-alpha.12
+
+**TV 设置崩溃修复(测试 alpha)**:v3.0.1-alpha.10 开放 gl/hl 内容地区设置时,TV `SettingsScreen` 新增的「内容地区」循环行漏把 `SettingsItemYoutubeContentRegion` 加进 `settingFocusRequesters` 焦点表,该行 modifier 用 `Map.getValue()` 取焦点请求器时抛 `NoSuchElementException`。LazyColumn 预组合视口附近 item,往下滚到「关注管理」(youtube-channels) 时紧邻其下的内容地区行被拉进组合即崩。移动端用 `MobileEnumPickerRow` 无焦点表,不受影响。
+
+### 修复
+- **焦点表补 key**:`settingFocusRequesters` 加 `SettingsItemYoutubeContentRegion to FocusRequester()`,消除 `getValue` 崩溃。单行,不碰其它逻辑。
+
+## v3.0.1-alpha.11
+
+**4K60 VP9 黑屏修复(largeHeap + 降缓冲,测试 alpha)**:Sony BRAVIA 7 系(Google TV,硬解 h264/h265/av1 全支持)播 YouTube 2160p VP9(itag315,4K60 ~26Mbps)切 2160p 后黑屏卡死,1080p 正常;用户观察"其他 4K 视频能播"(能播的是 AV1/HEVC 4K,黑屏的是 VP9 4K)。真机日志定位为 50s SABR 缓冲 × 26Mbps ≈ 162MB 撑爆 app 默认堆(~170MB,manifest 无 largeHeap)→ GC 连续阻塞主线程 70~240ms → 解码/渲染吞吐崩塌 → `stall detected buffered=0%` → `player state=ENDED tracks=0 video=vp9`。itag315 选中 26 次 ENDED 18 次。详见 `docs/youtube-hd-playback.md` §6.14。
+
+### 修复
+- **加 largeHeap**:`AndroidManifest.xml` 加 `android:largeHeap="true"`,堆提至 512MB 给 4K60 VP9 缓冲留空间。单行,不碰解码器/SABR/画质。
+- **降 SABR MaxBuffer 50s→15s**:`TvPlaybackLoadControl.MaxBufferMs` 50_000→15_000;15s×26Mbps≈48MB 默认堆都放得下,largeHeap 更绰绰有余。alpha.68 同步刷新 status=2 已解 60s 重启,不再需 alpha.64 的 50s 大缓冲规避 60s 断崖。
+
+### 待真机验证
+- 装 alpha.11 测 itag315 是否还黑屏(堆不爆应能持续播过 60s)。若仍黑屏说明除堆外还有 4K60 VP9 实时解码吞吐瓶颈,再上 `setMaxBufferBytes` 或选档 4K 优先 AV1/HEVC(`codecKeySupported` 对 vp9 一律放行不探,4K 选档 `maxBy height` 不区分编码,见 §6.11)。
+
+## v3.0.1-alpha.10
+
+**开放 gl/hl 为用户可调内容地区设置(TV+移动端,测试 alpha)**:YouTube 内容地区(gl)/语言(hl)此前不可调,现 TV+移动端设置页可调。
+
+### 新增
+- **内容地区设置**:新增 `YoutubeContentRegion`/`YoutubeContentLocale`,`InnerTubeClient` 按 gl/hl 请求,TV(`SettingsScreen`)+移动端(`MobileSettingsScreen`)设置页接入,`AppShell`/`MobileApp` 接线回调。
+
+## v3.0.1-alpha.9
+
+**SABR 主路径应用默认画质上限(测试 alpha)**:`youtubeDefaultQuality` 设置项(自动/4K/2K/1080P/720P/480P)从 UI→DataStore→`resolve()` 形参全程接通,但 `resolve()` 内仅 DASH 兜底分支 `pickVideo` 消费 `maxHeight`;SABR 主路径(YouTube 实际取流方式)`buildSabrPlaybackInfo` 选档固定用会话首条 itag,完全不读 `maxHeight`,致默认画质设置存了没用(TV/移动端共用 resolver 故两端都不生效)。详见 `docs/youtube-hd-playback.md` §6.11。
+
+### 修复
+- **SABR 选档按 `maxHeight` 选默认档**:`YoutubePlaybackResolver.buildSabrPlaybackInfo` 加 `youtubeDefaultQuality` 形参;选档逻辑 `preferredQualityId` 命中优先(播放中手动切清晰度行为不变),否则 `maxHeight!=null` 取 `height<=maxHeight` 最高 itag(全部超上限取最低档保证可播),Auto 取 `maxBy height`(对齐 DASH 分支 `pickVideo` 的 Auto 最大化语义);兜底会话首条 itag。`resolve()` 调用处透传。会话构建 `buildSabrSessionFromNewPipe` 不动(`videoFormats` 全量保留供清晰度菜单,同 sid 换 itag 即换清晰度,选非首条 itag 安全)。
+
+## v3.0.1-alpha.8
+
+**退役 classic SABR n-decrypt 兜底(测试 alpha)**:真机观察 YouTube 取流只有 Path C(NewPipe SABR)有效,classic(n-decrypt 兜底)会卡住——classic 用 resolve() 顶部铸的 poToken 与 SABR init minter 不一致致 status=3 60s 卡死,且 plasma player.js 把 n/sig 移进 WASM 致 `decipherSabrUrl` 正则结构性失效。退役 classic 分支,NewPipe 失败直接落 DASH 兜底。详见 `docs/youtube-hd-playback.md` 与 `DEVELOPMENT_PROGRESS.md` P11-21。
+
+### 修复
+- **退役 classic(Path 2)SABR n-decrypt 兜底**:`YoutubePlaybackResolver` SABR 闸门内删 classic `else if (nTransformed)` 分支及仅服务于它的局部变量(`videoFormats`/`sabrUrlDeciphered`/`nTransformed`/`vFmt`/`aFmt`)+ `DecipherN` 进度 emit;删死方法 `decipherSabrUrl`;ready 日志去掉 `source`/`nTransformed`。NewPipe 返回 null 时 `sabrSession` 保持 null → 直接落 DASH 兜底(日志 `SABR: NewPipe 无 SABR 数据 → 落 DASH 兜底(classic n-decrypt 已退役...)`)。
+- `nDecryptor` 保留(经典 DASH `resolveStreamUrl` 解 legacy 直链仍用);缓存复用、Path C 不动。
+- 副作用:画质菜单里偶现的 VP9/H264 字样(仅 classic 路径 raws 含 `codecs=` 才拼上)随之消失,正常播放统一纯 "1080p"。
+
+## v3.0.1-alpha.7
+
+**TVHTML5 试验回退(测试 alpha)**:v3.0.1-alpha.6 TVHTML5 client 真机证伪——TVHTML5 viaWebView `TypeError: Failed to fetch`(没拿到 /player 响应),且污染共享 browserSession 致 WEB 回退也 Failed → 完全无法播放。回退 `PlayerScreen` TVHTML5 传入(`preferredYoutubeClient=null`→WEB-only),恢复 alpha.4 能播。TVHTML5 代码保留待修 session 隔离。详见 `docs/youtube-hd-playback.md` §6.13。
+
+### 修复
+- **回退 TV 端 YouTube TVHTML5 client**:`PlayerScreen` 去掉 `preferredYoutubeClient=TVHTML5` 传入,恢复默认 WEB-only(无 TVHTML5 前置污染,WEB viaWebView 恢复成功取流 + SABR)。
+- TVHTML5 代码(`InnerTubeClient.Client.TVHTML5` / `YoutubePlaybackResolver` clients 逻辑 / `YoutubeConstants` TVHTML5 常量 / `PlaybackModels.preferredYoutubeClient` 字段)全部保留,注释说明试验结论 A,待修 viaWebView session 隔离后再启用。
+
+## v3.0.1-alpha.6
+
+**TV 端 YouTube 取流 TVHTML5 client 试验(测试 alpha)**:TV 端 YouTube /player 从 WEB 改试 TVHTML5 client(对齐 YouTube 官方 TV 端),失败/被拦自动回退 WEB 走现有 SABR,最坏=现状。移动端不变。
+
+### 试验
+- **TV 端 YouTube 切 TVHTML5 client**:`InnerTubeClient.Client` 加 TVHTML5(clientName=TVHTML5/id=7/Cobalt UA);TV `PlayerScreen` YouTube 请求传 `preferredYoutubeClient=TVHTML5`;resolver clients 列表 `[TVHTML5, WEB]`(失败回退 WEB);SABR 门控放宽含 TVHTML5;TVHTML5 走 viaWebView(Chromium 原生网络栈破拦截,OkHttp 直连大概率被拦)。
+- **加载日志**:TV 端播 YouTube 时 logcat tag `YtResolver` 打 `resolve clients=[TVHTML5, WEB] preferred=TVHTML5` + `TVHTML5 formats:`/`TVHTML5 diag:` 行,对照 WEB 看 TVHTML5 /player 是否给带 url adaptive / 更多清晰度。
+- 移动端 `MobilePlayerScreen` 不改(默认 WEB+SABR,行为不变)。
+
+### 风险/预期
+- §6.5 实测无 token TVHTML5 失败;visitorData 与 WEB session(2.x)不配对可能被拒;TVHTML5 经典路径 adaptive url 大概率仍剥空(整个 §6.7 证明 WEB 也剥空)→ 最可能退回 SABR 无收益,但安全可回退。详见 `docs/youtube-hd-playback.md` §6.13。
+- 改动文件:`YoutubeConstants.kt`、`InnerTubeClient.kt`、`YoutubePlaybackResolver.kt`、`PlaybackModels.kt`、`PlayerScreen.kt`。
+
+## v3.0.1-alpha.5
+
+**TV 视频退出焦点恢复修复 + BiliMT:Focus 诊断日志(测试 alpha)**:退出视频后焦点不再停在侧栏头像,优先回到原视频卡片;并加 `BiliMT:Focus` 日志,下次退出可在实时日志直接看到焦点落点与失败原因。
+
+### 修复
+- **退出视频焦点停在头像**:退出时 Android TV 把默认焦点分配给侧栏第一个可聚焦项(头像),靠 `TvVideoGrid` 恢复 effect 抢回原视频卡片。原 effect 在目标卡片首帧布局完成前就盲重试 `requestFocus`,退出卡顿(实测 ExoPlayer teardown + 首页重组 + 弹幕 draw 挤主线程,734ms Davey + 33 dropped frames)时连续失败,90 帧用完后清掉 destination → suppress 关闭 → 焦点留在头像。改为**先等目标行进入 `visibleItemsInfo` 布局就位再 `requestFocus`**,把"按帧数盲重试"改成"等布局就位再抢"。
+- 兜底清理 `PlaybackFocusRestoreCleanupFrameCount` 120→240(必须 > 等 90 + 抢 90 = 180),避免兜底在恢复 effect 途中提前清 destination 致 suppress 关闭。
+
+### 技术
+- `TvVideoGrid` 恢复 effect 重构:先 `scrollRow` 到目标行,再 `while` 轮询 `listState.layoutInfo.visibleItemsInfo` 直到目标行出现(最多 `TvGridRestoreFocusWaitLayoutFrames=90` 帧),最后 `repeat(90)` 抢 `requestFocus`;成功/超时均调 `onRestoreFocusHandled`。
+- 新增 `BiliMT:Focus` 日志贯穿退出恢复链:`onBack` 设置 restore/suppress、恢复 start/layout(waitedFrames/rowVisible)/success(attempt)/failed、backstop 兜底清理、`AccountNavItem.onFocused`(含 autoConfirm/suppress/openMyPage 状态)。日志 tag 与 `BiliMT:Player` 同族,实时日志 `logs_live.log` 可直接 grep `BiliMT:Focus`。
+- 改动文件:`TvVideoGrid.kt`、`AppShell.kt`、`AppSidebar.kt`。不涉及布局/焦点路径,仅恢复 effect 时序与日志。
+
+## v3.0.1-alpha.4
+
+**TV 搜索源 pill 点击当前源循环切换(测试 alpha)**:点 BILIBILI 直接切到 YOUTUBE,不再「没反应」。
+
+### 修复
+- 搜索源切换用双 pill(BILIBILI + YOUTUBE),`selectSource` 有 `source == newSource` 守卫——默认就在 BILIBILI 上时再点 BILIBILI 直接 return,界面毫无反应,用户困惑「点 B站 切不到 YouTube」。改为**点击已选中的源 pill 就循环切到另一个源**:点 BILIBILI 恒切到 YOUTUBE,点 YOUTUBE 恒切到 BILIBILI,与点另一源选中的效果一致(从任一源点任一 pill 都落到另一源)。
+
+### 技术
+- `SearchSourceToggle` 点击时算 `targetSource`:若点击的 pill 已是当前源,取另一个源(与 `SourceBili` 比较);否则取点击的 pill。改动仅 `onClick` 一行逻辑,不涉及布局/焦点。
+
+## v3.0.1-alpha.3
+
+**TV 搜索初始界面接通 D-pad 焦点(测试 alpha)**:源切换按钮(B站/YouTube)+ 输入框可选中。
+
+### 修复
+- **源切换按钮够不到**:源切换按钮(B站/YouTube)在搜索界面最顶部,但 D-pad 焦点路径没连到它——初始界面焦点落在「清空」按钮上,只有左键回导航栏,没有上键到源切换按钮的路径,遥控器永远够不到,自然切不了 B站/YouTube 搜索范围。给 `SearchSourceToggle` 加 `FocusRequester`,键盘顶部「上键 → 源切换按钮」,按钮「下键 → 输入框」。
+- **输入框无法选中**:输入框只是显示文本的 `Text`,没有 `focusable()`,焦点落不到它上面。给 `SearchInputText` 加 `focusable()` + 聚焦边框(聚焦时 accent 描边),上键回源切换按钮,下键回键盘。
+- **键盘「清空」按钮**:加 `onMoveUp` 支持,上键回输入框。
+
+### 技术
+- 焦点路径打通为:**源切换按钮 → 输入框 → 键盘(清空/字母键)→ 搜索按钮**,全程遥控器可导航。
+- `SearchKeyboardButton` 新增 `onMoveUp` 参数(与既有 `onMoveLeft` 并列),`onPreviewKeyEvent` 用 `when` 分支处理上键/左键。
+
+## v3.0.1-alpha.2
+
+**对齐 LibreTube:YouTube 三项设置补齐(测试 alpha)**:TV 端 YouTube 默认画质 + 默认播放倍速 + YouTube 字幕接入。
+
+### 新增
+- **TV 端「YouTube 默认画质」**:核心层 `youtubeDefaultQuality` 早已支持(移动端设置已有),但 TV 设置界面缺行、TV 播放链路恒走 Auto。设置页加「YouTube 默认画质」行(自动/2160/1440/1080/720/480 循环切换),`AppShell` 接线回调、`PlayerScreen` 透传,新开 YouTube 视频按所选画质上限起播。
+- **默认播放倍速**:TV 播放器倍速此前硬编码 `1.0f` 无持久化。新建 `DefaultPlaybackSpeed` enum(0.5~2.0 六档,对齐播放器倍速菜单),设置页加「默认播放倍速」行,起播按所选倍速初始化。
+- **YouTube 字幕接入(路线 A:WebVTT URL 直拉,不走 SABR 服务端)**:`PlaybackInfo` 加 `subtitleTracks` 槽位,`YoutubePlaybackResolver` 读 NewPipe `info.subtitles`(fork 实际类型 `SubtitlesStream`)映射成 WebVTT 轨(语言码用 `getLanguageTag()`);`PlayerScreen` 主源构建后用 `SubtitleExtractor` 转 MEDIA3_CUES 再 `MergingMediaSource` 合并,PlayerView 内置 SubtitleView 自动渲染字幕。字幕轨选择/语言切换 UI 后续迭代。
+
+### 技术
+- 字幕 fork 类型确认:`com.github.libre-tube:NewPipeExtractor`(`738c3d4`)的 `info.subtitles` 返回 `List<SubtitlesStream>`(非上游 `SubtitleInfo`),语言访问器为 `getLanguageTag()`(无 `getLanguageCode()`),`Stream.getUrl()` 返回 `String?` 需空安全。
+- Media3 1.10:默认 `DefaultExtractorsFactory` 不含字幕 Extractor,必须显式传 `ExtractorsFactory` + `SubtitleExtractor`(对齐 LibreTube `OnlinePlayerService`)。
+
+## v3.0.1-alpha.1
+
+**YouTube 频道页两处修复(测试 alpha)**:首屏去重防 key 崩溃 + 频道头像补全。
+
+### 修复
+- **频道页首屏去重防崩溃**:`MobileYoutubeChannelScreen.loadFirst()` 直接 `uiState.items = page.items` 不去重,而 `loadNext()` 翻页有 `distinctBy { it.bvid }`——不一致。当频道第一页返回同一视频 ID 两次(YouTube 推荐流里同一视频/短片重复出现很常见),`LazyVerticalGrid` 的 `key = { it.bvid }` 撞 key,Compose 抛 `IllegalArgumentException: Key "..." was already used` 崩溃。给 `loadFirst()` 也加 `distinctBy { it.bvid }`,与翻页一致。
+- **频道页头像补全**:频道页视频走 `parseLockupViewModel`(新格式),该 renderer **不携带 `channelAvatarUrl`**,卡片 `ownerFace` 恒空、头像永远走占位圆。`LaunchedEffect` 里 `resolveChannel` 已能解析出频道头像(`parseChannelInfo` 的 `avatarUrl`),但只用了 `.name`;改为把头像存进 `uiState.avatar`,在 `displayItems` 注入到视频 `ownerFace`(空时补本频道头像),与现有 channelId/ownerName 注入一致,一处覆盖首屏+翻页。
+
+### 技术
+- 崩溃 key 为 11 位 YouTube 视频 ID(非 B站 `BV`+10 位),日志确认崩溃发生在频道页网格。
+
 ## v3.0.0
 
 **稳定版**:YouTube 内容集成完整落地 + 移动端交互打磨。从 v2.0.10 稳定版后的 alpha 迭代线(alpha.1→alpha.10)正式发布。

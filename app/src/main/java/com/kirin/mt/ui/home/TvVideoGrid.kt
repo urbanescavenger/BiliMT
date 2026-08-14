@@ -1,6 +1,7 @@
 package com.kirin.mt.ui.home
 
 import android.os.SystemClock
+import android.util.Log
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
@@ -34,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,6 +57,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.kirin.mt.R
+import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.ui.common.VideoThumbnailPrefetcher
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
@@ -68,15 +71,25 @@ import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
 // 视频退出后把焦点拉回原卡片的最多重试帧数。长视频后主线程繁忙(图片缓存被挤占、
-// 播放器 teardown、GC)时目标卡片首帧布局可能延迟到 8 帧之后,8 次会提前放弃导致
-// 焦点停在头像。调大到 90 帧(60fps≈1.5s、30fps≈3s)覆盖慢布局;短视频首帧即就绪,
-// 重试随即 break 不会等满。配合 AppShell 的 PlaybackFocusRestoreCleanupFrameCount(>本值)。
+// 播放器 teardown、GC)时目标卡片首帧布局可能延迟,盲目 requestFocus 会连续失败,
+// 帧用完后 onRestoreFocusHandled 清掉 destination → suppress 关闭 → 焦点留在头像。
+// 调大到 90 帧(60fps≈1.5s、30fps≈3s)覆盖慢布局;短视频首帧即就绪,重试随即 break 不会等满。
+// 配合 AppShell 的 PlaybackFocusRestoreCleanupFrameCount(必须 > 本值 + TvGridRestoreFocusWaitLayoutFrames)。
 private const val TvGridRestoreFocusRetryCount = 90
+
+// 退出恢复时先等目标行真的进入 LazyList 视口布局再开始 requestFocus。退出卡顿
+// (ExoPlayer teardown + 首页重组 + 弹幕 draw 挤主线程)时目标行首帧可能晚若干帧才组合,
+// 此时 itemFocusRequester 尚未挂上任何节点,requestFocus 必失败——先等 visibleItemsInfo
+// 里出现目标行,再抢焦点,把"按帧数盲重试"改成"等布局就位再抢"。
+private const val TvGridRestoreFocusWaitLayoutFrames = 90
+
+internal const val TvFocusLogTag = "BiliMT:Focus"
 
 // Keys that confirm a card selection; holding one for this long opens the card's long-press action menu.
 private val VideoCardOwnerConfirmKeys = setOf(Key.DirectionCenter, Key.Enter, Key.NumPadEnter)
@@ -131,6 +144,11 @@ internal fun TvVideoGrid(
   topPadding: Dp = BiliFocus.ScrollInset,
   topBleed: Dp = 0.dp,
   keyFactory: (Int, VideoSummary) -> Any = { _, video -> video.bvid },
+  // 封面覆盖图 map:key 用 video.iptvUrls.firstOrNull()(IPTV 频道 URL 唯一)。
+  // 非 IPTV 视频 iptvUrls 空 → key="" 不命中,不影响。IPTV 无 tvg-logo 时用拉流截帧缩略图。
+  coverOverrides: Map<String, Any?>? = null,
+  // 可见范围变化回调(视频 index 范围,含两端)。IPTV 懒加载截帧用:只截当前显示的频道。
+  onVisibleRangeChange: ((Int, Int) -> Unit)? = null,
 ) {
   val columns = BiliSizing.VideoGridColumns
   val rowCount = (videos.size + columns - 1) / columns
@@ -145,6 +163,20 @@ internal fun TvVideoGrid(
   val listState = rememberLazyListState(
     initialFirstVisibleItemIndex = if (restoreFocusRequestKey > 0) restoreTargetRow else 0,
   )
+  // 可见范围变化回调(懒加载截帧用):监听网格可见行 index 范围,distinctUntilChanged 后
+  // 回调视频 index 范围(含两端)。IPTV 分支据此只截当前显示的频道。
+  LaunchedEffect(listState, columns) {
+    snapshotFlow {
+      val info = listState.layoutInfo
+      val firstRow = info.visibleItemsInfo.firstOrNull()?.index ?: 0
+      val lastRow = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+      firstRow to lastRow
+    }
+      .distinctUntilChanged()
+      .collect { (firstRow, lastRow) ->
+        onVisibleRangeChange?.invoke(firstRow * columns, (lastRow + 1) * columns - 1)
+      }
+  }
   val coroutineScope = rememberCoroutineScope()
   var centerDownMs by remember { mutableLongStateOf(0L) }
   val performancePolicy = LocalBiliPerformancePolicy.current
@@ -193,20 +225,55 @@ internal fun TvVideoGrid(
 
   LaunchedEffect(restoreFocusRequestKey, restoredFocusIndex, videos.size) {
     if (restoreFocusRequestKey <= 0 || videos.isEmpty()) {
+      if (restoreFocusRequestKey > 0) {
+        Log.d(
+          TvFocusLogTag,
+          "restore skipped: key=$restoreFocusRequestKey videos=${videos.size} restoredIndex=$restoredFocusIndex",
+        )
+      }
       return@LaunchedEffect
     }
     val targetIndex = restoredFocusIndex.coerceIn(0, videos.lastIndex)
-    scrollRow(targetIndex / columns, smoothScroll = false)
-    repeat(TvGridRestoreFocusRetryCount) {
+    val targetRow = targetIndex / columns
+    Log.d(
+      TvFocusLogTag,
+      "restore start: key=$restoreFocusRequestKey targetIndex=$targetIndex targetRow=$targetRow videos=${videos.size}",
+    )
+    scrollRow(targetRow, smoothScroll = false)
+    // 先等目标行进入视口布局(itemFocusRequester 才会挂上节点),再开始抢焦点。
+    // 退出卡顿时目标行首帧晚若干帧才组合,在此之前 requestFocus 必失败、白耗预算。
+    var waitedFrames = 0
+    while (
+      listState.layoutInfo.visibleItemsInfo.none { it.index == targetRow } &&
+      waitedFrames < TvGridRestoreFocusWaitLayoutFrames
+    ) {
+      withFrameNanos { }
+      waitedFrames += 1
+    }
+    val rowVisible = listState.layoutInfo.visibleItemsInfo.any { it.index == targetRow }
+    Log.d(
+      TvFocusLogTag,
+      "restore layout: rowVisible=$rowVisible waitedFrames=$waitedFrames/$TvGridRestoreFocusWaitLayoutFrames",
+    )
+    repeat(TvGridRestoreFocusRetryCount) { attempt ->
       withFrameNanos { }
       val focused = runCatching {
         itemFocusRequesters[targetIndex].requestFocus()
       }.getOrDefault(false)
       if (focused) {
+        Log.d(
+          TvFocusLogTag,
+          "restore success: key=$restoreFocusRequestKey attempt=$attempt rowVisible=$rowVisible",
+        )
         onRestoreFocusHandled(restoreFocusRequestKey)
         return@LaunchedEffect
       }
     }
+    Log.w(
+      TvFocusLogTag,
+      "restore failed: key=$restoreFocusRequestKey targetIndex=$targetIndex rowVisible=$rowVisible " +
+        "(focus likely stayed on avatar)",
+    )
     onRestoreFocusHandled(restoreFocusRequestKey)
   }
 
@@ -431,6 +498,7 @@ internal fun TvVideoGrid(
                 video = video,
                 mode = cardMode,
                 interactionPaused = rowScrollActive,
+                coverOverride = coverOverrides?.get(video.iptvUrls.firstOrNull().orEmpty()),
                 modifier = Modifier
                   .weight(1f)
                   .focusRequester(itemFocusRequesters[index])
@@ -449,7 +517,11 @@ internal fun TvVideoGrid(
                         KeyEventType.KeyUp -> {
                           val held = if (centerDownMs > 0L) SystemClock.uptimeMillis() - centerDownMs else 0L
                           centerDownMs = 0L
-                          if (held >= VideoCardOwnerLongPressMs && video.ownerMid > 0L) {
+                          // 长按打开卡片操作菜单(去 UP 主主页)。B 站视频以 ownerMid 判定;
+                          // YouTube 视频无 B 站 mid(ownerMid=0),改以 channelId 判定,否则长按永远不触发。
+                          val hasOwner = video.ownerMid > 0L ||
+                            (video.source == SourceYoutube && video.channelId.isNotBlank())
+                          if (held >= VideoCardOwnerLongPressMs && hasOwner) {
                             onCardLongPress(video)
                             true
                           } else {

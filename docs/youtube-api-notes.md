@@ -108,7 +108,17 @@ params 原样传，不额外 URL 编码。
 ## 4. 解析实现建议
 
 - 用「递归收集指定 renderer key」的方式统一兼容 search/browse/continuation 三种容器结构，比按固定路径遍历更稳。
-- `lockupViewModel`（新格式，实测为频道视频 tab 唯一格式）实际结构：`contentId`（字符串=videoId）、`metadata.lockupMetadataViewModel.title.content`（标题）、`contentImage.thumbnailViewModel.image.sources[].url`（封面）、时长在 contentImage overlay 的 `thumbnailBadgeViewModel.text`（如 "13:09"）、播放量/发布时间在 `metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows[].metadataParts[].text.content`（如 "56K views"/"4 days ago"）；无频道名（订阅流给空作者名补频道名）。
+- `lockupViewModel`（新格式，实测为频道视频 tab 唯一格式）实际结构：`contentId`（字符串=videoId）、`metadata.lockupMetadataViewModel.title.content`（标题）、`contentImage.thumbnailViewModel.image.sources[].url`（封面）、时长在 contentImage overlay 的 `thumbnailBadgeViewModel.text`（如 "13:09"）、播放量/发布时间在 `metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows[].metadataParts[].text.content`（如 "56K views"/"4 days ago"）；无频道名（订阅流给空作者名补频道名）、**无频道头像**（`channelAvatarUrl` 恒空，频道页卡片头像需从 `parseChannelInfo` 解析出的频道头像注入 `ownerFace`）。
+
+---
+
+## 4.9 字幕（WebVTT URL 直拉，不走 SABR 服务端）
+
+YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕（服务端行为未验证）。实测用 NewPipe fork（`com.github.libre-tube:NewPipeExtractor` `738c3d4`）`StreamInfo.getInfo` 时 `info.subtitles` 直接给出可拉取的 WebVTT URL，播放器层合并渲染：
+
+- **fork 类型注意**：`info.subtitles` 返回 `List<SubtitlesStream>`（fork 改名，非上游 `SubtitleInfo`）。语言访问器是 **`getLanguageTag()`**（无 `getLanguageCode()`），`Stream.getUrl()` 返回 `String?`（`baseUrl` 赋值需 `orEmpty()`）。
+- **合并渲染**：media3 1.10 的默认 `DefaultExtractorsFactory` **不含字幕 Extractor**，必须显式传 `ExtractorsFactory { arrayOf(SubtitleExtractor(DefaultSubtitleParserFactory().create(format), format)) }`（对齐 LibreTube `OnlinePlayerService`），`ProgressiveMediaSource` 拉 WebVTT → `SubtitleExtractor` 转 MEDIA3_CUES → `MergingMediaSource` 合并进主源 → PlayerView 内置 SubtitleView 自动渲染。
+- `PlaybackInfo.subtitleTracks` 槽位（非 YouTube/无字幕为空）+ `PlaybackTrack.languageCode`（字幕轨用，A/V 轨 null）。字幕轨选择/语言切换 UI 后续迭代。
 
 ---
 

@@ -22,7 +22,8 @@ fun currentVersionText(state: UpdateUiState): String {
 @Composable
 fun latestVersionText(state: UpdateUiState): String {
   return when (val s = state.status) {
-    UpdateUiState.Status.Idle -> stringResource(R.string.settings_update_latest_version_value_unchecked)
+    // 未检查时「最新版本」行默认显示当前版本,点「检查更新」再一起刷新。
+    UpdateUiState.Status.Idle -> currentVersionText(state)
     UpdateUiState.Status.Checking -> stringResource(R.string.settings_update_checking)
     is UpdateUiState.Status.UpToDate -> stringResource(R.string.settings_update_latest_version_value_up_to_date)
     is UpdateUiState.Status.Available -> stringResource(

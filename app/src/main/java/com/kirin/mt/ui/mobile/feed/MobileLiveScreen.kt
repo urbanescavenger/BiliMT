@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.mobile.feed
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +31,7 @@ import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -38,28 +40,34 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
 import com.kirin.mt.core.model.LiveAreaGroup
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.network.LiveRepository
+import com.kirin.mt.core.player.IptvThumbnailManager
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.ui.player.toVideoSummary
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 private const val FirstPage = 1
 private const val SkeletonCount = 6
 private const val RecommendTabKey = "recommend"
+private const val IptvTabKey = "iptv"
 
 private sealed interface MobileLiveSectionState {
   data object Loading : MobileLiveSectionState
@@ -113,12 +121,14 @@ private class MobileLiveUiState {
 @Composable
 fun MobileLiveScreen(
   liveRepository: LiveRepository,
+  iptvRepository: IptvRepository,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val uiState = remember { MobileLiveUiState() }
   val scope = rememberCoroutineScope()
+  val context = LocalContext.current
 
   // 首次进入加载分区树;成功后默认显示"推荐"tab(仍在 pager 第 0 页)。
   LaunchedEffect(liveRepository) {
@@ -146,6 +156,7 @@ fun MobileLiveScreen(
   val tabs = remember(uiState.areaGroups) {
     buildList {
       add(LiveTab.Recommend)
+      add(LiveTab.Iptv)
       uiState.areaGroups.forEach { group ->
         add(LiveTab.Area(group = group))
       }
@@ -153,6 +164,31 @@ fun MobileLiveScreen(
   }
 
   val pagerState = rememberPagerState(pageCount = { tabs.size }, initialPage = 0)
+
+  // IPTV 频道缩略图:进 IPTV tab 自动后台截帧(拉流截一帧),只截当前可见频道(懒加载)。
+  // 会话级 manager(每次进 tab 新建,离开 clear 清缓存 → 下次进重新截,不永久磁盘缓存)。
+  val activeTab = tabs.getOrNull(pagerState.currentPage)
+  val isIptv = activeTab is LiveTab.Iptv
+  val thumbnailManager = remember(context, isIptv) {
+    if (isIptv) IptvThumbnailManager(context) else null
+  }
+  var iptvThumbnails by remember { mutableStateOf<Map<String, Bitmap>>(emptyMap()) }
+  DisposableEffect(thumbnailManager) {
+    onDispose { thumbnailManager?.clear() }
+  }
+
+  fun captureVisibleIptv(videos: List<VideoSummary>) {
+    val manager = thumbnailManager ?: return
+    scope.launch {
+      // 并发截帧:死源/慢源只占一个并发槽,不串行堵住整批(信号量限并发 3)。
+      videos.mapNotNull { it.iptvUrls.firstOrNull() }
+        .map { url -> async { url to manager.getThumbnail(url) } }
+        .forEach { deferred ->
+          val (url, bmp) = deferred.await()
+          if (bmp != null) iptvThumbnails = iptvThumbnails + (url to bmp)
+        }
+    }
+  }
 
   fun loadSection(key: String, forceRefresh: Boolean) {
     val hasLoaded = key in uiState.loadedKeys
@@ -163,24 +199,39 @@ fun MobileLiveScreen(
     uiState.setState(key, MobileLiveSectionState.Loading)
     scope.launch {
       val state = try {
-        val page = if (key == RecommendTabKey) {
-          liveRepository.getLiveList(FirstPage)
-        } else {
-          val group = tabs.find { it.key == key }?.groupOrNull()
-          if (group == null) {
-            MobileListPage.empty()
+        if (key == IptvTabKey) {
+          // IPTV:一次拉全量,无分页。未配置源时 getChannels 返回空 → 空态提示去设置。
+          val channels = iptvRepository.getChannels()
+          if (channels.isEmpty()) {
+            MobileLiveSectionState.Empty
           } else {
-            liveRepository.getLiveListByArea(group.id, areaId = 0, page = FirstPage)
+            MobileLiveSectionState.Success(
+              videos = channels.map { it.toVideoSummary() },
+              nextPage = FirstPage,
+              loadingMore = false,
+              endReached = true,
+            )
           }
-        }
-        when {
-          page.items.isEmpty() -> MobileLiveSectionState.Empty
-          else -> MobileLiveSectionState.Success(
-            videos = page.items.map { it.toVideoSummary() },
-            nextPage = page.nextPage,
-            loadingMore = false,
-            endReached = !page.hasMore,
-          )
+        } else {
+          val page = if (key == RecommendTabKey) {
+            liveRepository.getLiveList(FirstPage)
+          } else {
+            val group = tabs.find { it.key == key }?.groupOrNull()
+            if (group == null) {
+              MobileListPage.empty()
+            } else {
+              liveRepository.getLiveListByArea(group.id, areaId = 0, page = FirstPage)
+            }
+          }
+          when {
+            page.items.isEmpty() -> MobileLiveSectionState.Empty
+            else -> MobileLiveSectionState.Success(
+              videos = page.items.map { it.toVideoSummary() },
+              nextPage = page.nextPage,
+              loadingMore = false,
+              endReached = !page.hasMore,
+            )
+          }
         }
       } catch (error: CancellationException) {
         throw error
@@ -332,6 +383,10 @@ fun MobileLiveScreen(
           onLoadNext = { loadNextPage(tab.key) },
           onVideoSelected = onVideoSelected,
           onOpenOwner = onOpenOwner,
+          // IPTV:封面用拉流截帧缩略图(懒加载,只截当前可见频道);非 IPTV 不传。
+          coverOverrides = if (tab is LiveTab.Iptv) iptvThumbnails else null,
+          onVisibleIptvChanged = if (tab is LiveTab.Iptv) { videos -> captureVisibleIptv(videos) } else null,
+          emptyMessageRes = if (tab is LiveTab.Iptv) R.string.live_iptv_empty else R.string.live_empty,
           modifier = Modifier.fillMaxSize(),
         )
       }
@@ -349,6 +404,12 @@ private fun MobileLiveSectionPage(
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
   modifier: Modifier = Modifier,
+  // IPTV:封面覆盖图(拉流截帧缩略图,按 iptvUrls.firstOrNull() 键控);非 IPTV 为 null。
+  coverOverrides: Map<String, Any?>? = null,
+  // IPTV:当前可见频道上报,供屏幕层懒加载截帧;非 IPTV 为 null。
+  onVisibleIptvChanged: ((List<VideoSummary>) -> Unit)? = null,
+  // 空态文案:IPTV 用 live_iptv_empty(提示去设置),其它用 live_empty。
+  emptyMessageRes: Int = R.string.live_empty,
 ) {
   LaunchedEffect(gridState) {
     snapshotFlow {
@@ -358,6 +419,22 @@ private fun MobileLiveSectionPage(
     }
       .distinctUntilChanged()
       .collect { nearEnd -> if (nearEnd) onLoadNext() }
+  }
+
+  // IPTV:上报当前可见频道,供屏幕层懒加载截帧(镜像 TV LiveScreen onVisibleRangeChange)。
+  // rememberUpdatedState 避免回调 lambda 每次重组换身份导致 effect 反复重启。
+  val currentOnVisibleIptvChanged by rememberUpdatedState(onVisibleIptvChanged)
+  LaunchedEffect(gridState, state) {
+    if (currentOnVisibleIptvChanged == null) return@LaunchedEffect
+    snapshotFlow { gridState.layoutInfo.visibleItemsInfo.map { it.index } }
+      .distinctUntilChanged()
+      .collect { indices ->
+        val videos = (state as? MobileLiveSectionState.Success)?.videos.orEmpty()
+        val visible = indices
+          .filter { it in videos.indices }
+          .map { videos[it] }
+        if (visible.isNotEmpty()) currentOnVisibleIptvChanged?.invoke(visible)
+      }
   }
 
   PullToRefreshLayout(
@@ -381,7 +458,7 @@ private fun MobileLiveSectionPage(
           Box(
             modifier = Modifier.fillMaxWidth().padding(32.dp),
             contentAlignment = Alignment.Center,
-          ) { Text(stringResource(R.string.live_empty)) }
+          ) { Text(stringResource(emptyMessageRes)) }
         }
         is MobileLiveSectionState.Failed -> item(span = { GridItemSpan(maxLineSpan) }) {
           Column(
@@ -399,8 +476,14 @@ private fun MobileLiveSectionPage(
           }
         }
         is MobileLiveSectionState.Success -> {
-          items(state.videos, key = { it.liveRoomId }) { video ->
-            MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner)
+          // key:IPTV 频道 liveRoomId 全为 0(重复),用 iptvUrls 首 URL 作唯一键;B站直播用 liveRoomId。
+          items(state.videos, key = { it.iptvUrls.firstOrNull() ?: it.liveRoomId }) { video ->
+            MobileVideoCard(
+              video = video,
+              onClick = onVideoSelected,
+              onOpenOwner = onOpenOwner,
+              coverOverride = coverOverrides?.get(video.iptvUrls.firstOrNull().orEmpty()),
+            )
           }
           if (state.loadingMore) {
             item(span = { GridItemSpan(maxLineSpan) }) {
@@ -470,6 +553,12 @@ private sealed interface LiveTab {
   data object Recommend : LiveTab {
     override val key = RecommendTabKey
     override val label = "推荐"
+  }
+
+  /** IPTV 频道 tab:读配置的 m3u 源,无分页(一次拉全量)。 */
+  data object Iptv : LiveTab {
+    override val key = IptvTabKey
+    override val label = "IPTV"
   }
 
   data class Area(

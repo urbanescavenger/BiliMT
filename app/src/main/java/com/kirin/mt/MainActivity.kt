@@ -46,11 +46,13 @@ class MainActivity : ComponentActivity() {
             apkInstaller = appContainer.apkInstaller,
             webdavConfigStore = appContainer.webdavConfigStore,
             webdavBackupService = appContainer.webdavBackupService,
+            iptvRepository = appContainer.iptvRepository,
           )
         } else {
           BiliMobileApp(
             videoRepository = appContainer.videoRepository,
             liveRepository = appContainer.liveRepository,
+            iptvRepository = appContainer.iptvRepository,
             playbackRepository = appContainer.playbackRepository,
             danmakuSettingsStore = appContainer.danmakuSettingsStore,
             liveQualityPreferenceStore = appContainer.liveQualityPreferenceStore,

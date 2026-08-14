@@ -2,10 +2,12 @@ package com.kirin.mt.core.settings
 
 import com.kirin.mt.core.i18n.ChineseTextVariant
 import com.kirin.mt.core.model.HomeSection
+import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.youtube.YoutubeContentRegion
 
 enum class AppVisualPerformanceMode(val key: String) {
   Smooth("smooth"),
@@ -41,6 +43,10 @@ data class AppSettings(
   val playbackCdnPreference: PlaybackCdnPreference = PlaybackCdnPreference.Auto,
   /** YouTube 默认画质(按分辨率上限选档)。 */
   val youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+  /** YouTube 内容地区(gl/hl 联动;默认美国,不放中国因 gl=CN 实测触发反爬)。 */
+  val youtubeContentRegion: YoutubeContentRegion = YoutubeContentRegion.US,
+  /** 默认播放倍速(起播时初始化播放器 playbackSpeed)。 */
+  val defaultPlaybackSpeed: DefaultPlaybackSpeed = DefaultPlaybackSpeed.X100,
   val seekPreviewSpritesEnabled: Boolean = true,
   val airJumpAssistantEnabled: Boolean = true,
   val confirmPlaybackExit: Boolean = true,
@@ -56,6 +62,12 @@ data class AppSettings(
   val liquidGlassCardsEnabled: Boolean = false,
   val enabledHomeSections: Set<HomeSection> = HomeSection.DefaultOrder.toSet(),
   val homeSectionsOrder: List<HomeSection> = HomeSection.DefaultOrder,
+  /** IPTV 源地址（远程 m3u 播放列表 URL）。空串表示未配置，Live 页 IPTV tab 显示引导。 */
+  val iptvSourceUrl: String = "",
+  /** IPTV 源账号（可选，Basic Auth）。 */
+  val iptvSourceUsername: String = "",
+  /** IPTV 源密码（可选，Basic Auth）。 */
+  val iptvSourcePassword: String = "",
 ) {
   val lowSpecMode: Boolean
     get() = visualPerformanceMode == AppVisualPerformanceMode.Smooth

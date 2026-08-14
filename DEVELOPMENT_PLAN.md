@@ -836,6 +836,23 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | P11-16 | YouTube 多语言配音修复 + 音轨切换 + 默认画质 | ✅ Done（云编译绿，详见 `docs/youtube-hd-playback.md` §6.11） |
 | P11-17 | YouTube 播放历史 + 断电续播（`PlaybackProgressStore` 守卫放宽 + `YoutubeHistoryStore` + 移动端历史子 tab） | ✅ Done（云编译绿，详见 `docs/youtube-hd-playback.md` §6.12） |
 | P11-18 | YouTube 历史并入「历史」tab（本地历史与 B 站历史**混合按播放时间倒序**、YouTube 绿框，未登录也显示本地历史；移除独立「YouTube 历史」子 tab） | ✅ Done（云编译绿） |
+| P11-19 | TV 版 YouTube 功能补全（见下方「TV 版 vs 移动端 YouTube 功能差异待办」分项表） | 待办 |
+
+### TV 版 vs 移动端 YouTube 功能差异待办（P11-19）
+
+> 2026-08-10 对比 `ui/`（TV）与 `ui/mobile/`（移动端）的 YouTube 实现所得。**核心层（`YoutubeRepository` / `YoutubePlaybackResolver` / `SabrClient` / `InnerTubeClient` / `YoutubeBotGuard` 等 ~4000+ 行）两端 100% 共用，播放/协议能力完全对等（SABR DASH 4K、多语言音轨、WebVTT 字幕、倍速、续播、画质、PO Token、n/s 解密）。缺口全在 UI 交互层与"内容组织/发现"层。** 播放/设置核心项（默认画质、默认倍速、字幕、弹幕、空降助手）两端均已对齐 LibreTube 三项设置，无差异。
+
+按优先级排列的 TV 版补全待办：
+
+| 优先级 | 待办 | 移动端参照 | 说明 |
+| --- | --- | --- | --- |
+| 🔴 P0 | **YouTube 频道主页** | `MobileYoutubeChannelScreen.kt`（244 行）+ `MobileYoutubeChannelUiState.kt` | TV 版无专门频道页，无法浏览单频道视频/原地关注/看头像简介，仅能在设置页管列表 + 动态页看聚合流。复用 `YoutubeRepository.getChannelVideos` + `TvVideoGrid` + D-pad 焦点移植。 |
+| 🔴 P1 | **YouTube 播放列表管理** | `MobileYoutubePlaylistPage.kt`（378 行）+ `MobileYoutubePlaylistDialogs.kt`（239 行） | TV 版完全无播放列表概念（创建/编辑/拖动排序/连播队列）。`YoutubePlaylistStore` 核心层已存在但仅移动端消费。D-pad 模拟长按拖动重排可参照 `SettingsYoutubeChannelsColumn.kt` 的 `ReorderableLazyColumn`。 |
+| 🟡 P2 | **搜索联想 + 搜索历史** | `MobileSearchScreen.kt`（联想 250ms 防抖 + `SearchHistoryStore` 持久化） | TV 搜索（`SearchScreen.kt`，1279 行）用屏幕键盘 `TvKeyboardInput`，但无下拉联想、无历史记录入口。复用 `VideoRepository.getSearchSuggestions` + `SearchHistoryStore`。 |
+| 🟡 P2 | **队列/连播 + 听视频模式** | `MobilePlayerScreen.kt`（`onStartPlaylist` 整列表连播 + 顶栏耳机按钮禁视频轨） | TV 版 `PlayerScreen` 单视频播放，无播放队列；无音频-only 入口。连播可接 P1 播放列表落地后做。 |
+| 🟢 P3 | **首页 YouTube 热门挂载核实** | `HomeSection.YoutubeTrending` enum 已存在 | `HomeSection.YoutubeTrending` 已定义但需核实 `HomeScreen.kt` 是否真正渲染该 section；若未挂载则补齐（复用 `YoutubeRepository.getTrending(tab)`）。 |
+
+**说明**：以下差异为 TV/移动端形态必然产物，不算缺陷，不列入待办——屏幕键盘 vs 软键盘、D-pad 焦点 vs 触屏手势、`PlayerOverlay` 覆盖层 vs 底栏 DropdownMenu、发送弹幕内联输入（TV 无软键盘不便）。两端 YouTube 源均无排序选项，属一致缺失。
 
 ### 发布
 - 测试版 `v2.0.8-alpha.1/.2/.3` 已发布验证；搜索/热门可用。
