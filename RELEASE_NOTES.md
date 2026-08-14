@@ -1,5 +1,19 @@
 # BiliMT 版本发布说明
 
+## v3.0.1
+
+**稳定版:IPTV 完整接入 + TV 交互打磨**(v3.0.0 稳定版后的 patch 线提升为稳定版)。自 v3.0.0 起 100 个提交,核心是 IPTV 从零到完整落地(TV + 移动端双端),以及 TV 端搜索/历史/设置/焦点交互的系统性打磨。
+
+### 主要变更
+- **IPTV 完整接入(TV + 移动端)**:设置页源配置(URL/账号/密码 + 连通性校验 + 自动补 https)、直播页 IPTV tab、TV 端 TVBox 式频道列表侧栏(确认键开关/左右切台/上下切线路)、断流自动切镜像源、强制 IPv4 明文数据源(302 重定向按客户端 IP 族选节点,IPv6 不可路由真机黑屏根因)。
+- **IPTV 频道缩略图拉流截帧**:进 IPTV tab 懒加载截当前可见频道,会话级缓存每次进列表重截;截帧方案从 ImageReader(本机 codec 私有格式 0x7fa30c06 与 RGBA_8888 不匹配全失败)切到 SurfaceTexture+EGL 离屏 glReadPixels,并修掉 stall 看门狗误杀慢源(6s 启动宽限期)、并发截帧(信号量 3)、HandlerThread 同线程约束等。
+- **TV 搜索栏 5 项优化**:源切换单按钮循环、键盘自适应、IME 输入、返回重搜、侧栏重置。
+- **TV 历史合并本地 YouTube**(未登录也显示)+ YouTube 卡片绿框识别。
+- **YouTube 增强**:字幕接入(WebVTT 直拉)、TV 端默认画质/默认倍速设置、gl/hl 内容地区设置、TVHTML5 client 取流试验、退役 classic SABR n-decrypt 兜底。
+- **TV 设置/UI 打磨**:侧栏+设置页焦点循环导航、设置焦点乱序修复、WebDAV 保存前校验+自动补 scheme、备份还原动画、视频退出焦点恢复。
+
+---
+
 ## v3.0.1-alpha.33
 
 **IPTV 缩略图截帧换方案——ImageReader 在本机不可行,切 SurfaceTexture+EGL 离屏(测试 alpha)**:alpha.32 真机日志 `logs_live.log` 实锤另一层根因,10 个频道截帧全抛同一异常:
