@@ -137,6 +137,7 @@ class AppContainer(context: Context) {
     wbiSigner = wbiSigner,
     sessionStore = sessionStore,
     youtubeRepository = youtubeRepository,
+    youtubeChannelStore = youtubeChannelStore,
   )
   val liveRepository: LiveRepository = LiveRepository(
     apiClient = apiClient,

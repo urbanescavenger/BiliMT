@@ -1,5 +1,6 @@
 package com.kirin.mt.core.youtube
 
+import android.util.Log
 import android.util.Xml
 import org.xmlpull.v1.XmlPullParser
 import java.io.StringReader
@@ -21,7 +22,9 @@ internal object YoutubeRssParser {
 
   fun parse(xml: String): List<YoutubeVideo> {
     if (xml.isBlank()) return emptyList()
-    return runCatching { parseInternal(xml) }.getOrDefault(emptyList())
+    return runCatching { parseInternal(xml) }
+      .onFailure { Log.w("YoutubeRSS", "parse failed", it) }
+      .getOrDefault(emptyList())
   }
 
   private fun parseInternal(xml: String): List<YoutubeVideo> {
@@ -92,6 +95,8 @@ internal object YoutubeRssParser {
   /** ISO 8601(如 `2026-08-05T12:34:56+00:00`)→ epoch 秒;解析失败返回 null。 */
   private fun parsePublished(raw: String): Long? {
     if (raw.isBlank()) return null
-    return runCatching { publishedFormat.parse(raw)?.time?.div(1000L) }.getOrNull()
+    return runCatching { publishedFormat.parse(raw)?.time?.div(1000L) }
+      .onFailure { Log.w("YoutubeRSS", "date parse failed: $raw", it) }
+      .getOrNull()
   }
 }

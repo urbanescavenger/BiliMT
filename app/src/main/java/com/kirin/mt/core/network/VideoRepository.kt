@@ -14,13 +14,14 @@ import com.kirin.mt.core.model.UgcBannerItem
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.youtube.YoutubeChannel
+import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeCommentPage
-import com.kirin.mt.core.youtube.YoutubeConstants
 import com.kirin.mt.core.youtube.YoutubeMaxConcurrentChannelFetches
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.core.youtube.YoutubeVideoDetail
 import com.kirin.mt.core.youtube.YoutubeVideoPage
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 
 /** 统一动态流:YouTube 关注拉取的兜底超时(ms)。B 站秒出,YouTube 最多等这么久。 */
@@ -49,6 +50,7 @@ class VideoRepository(
   private val wbiSigner: WbiSigner,
   private val sessionStore: SessionStore,
   private val youtubeRepository: YoutubeRepository,
+  private val youtubeChannelStore: YoutubeChannelStore,
 ) {
   private val spaceVideoRepository = SpaceVideoRepository(
     apiClient = apiClient,
@@ -88,9 +90,17 @@ class VideoRepository(
     page: Int = 1,
     idx: Int = 0,
   ): List<VideoSummary> {
-    // YouTube 热门走独立 InnerTube 通道；分页忽略(热门为单页,滚动翻页 dedup 后自然到底)。
+    // YouTube 热门 tab 改用"关注动态":拉关注频道的订阅流(RSS+InnerTube 合并),与移动端
+    // 首页/动态一致。分页忽略(订阅流单页,滚动翻页 dedup 后自然到底);未关注/超时返回空。
     if (section == HomeSection.YoutubeTrending) {
-      return youtubeTrending(YoutubeConstants.TrendingTabs.keys.first())
+      val channels = youtubeChannelStore.channels.first()
+      if (channels.isEmpty()) return emptyList()
+      val result = withTimeoutOrNull(youtubeFeedTimeoutMs(channels.size)) {
+        youtubeSubscriptionsFeed(channels) { channel ->
+          youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+        }
+      }
+      return result.orEmpty()
     }
     return homeVideoRepository.getHomeSectionVideos(
       section = section,
@@ -255,12 +265,6 @@ class VideoRepository(
       items = feed.items.map(youtubeRepository::toVideoSummary),
       continuation = feed.continuation,
     )
-  }
-
-  suspend fun youtubeTrending(tabName: String): List<VideoSummary> {
-    val tab = YoutubeConstants.TrendingTabs[tabName]
-      ?: YoutubeConstants.TrendingTabs.values.first()
-    return youtubeRepository.getTrending(tab)
   }
 
   suspend fun youtubeSubscriptionsFeed(
