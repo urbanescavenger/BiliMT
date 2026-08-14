@@ -250,7 +250,7 @@ v2.0.0 稳定版后的继续迭代线（patch 线 alpha），单 APK 通吃 TV +
 - 新增应用内更新：设置页可手动检查 GitHub Releases、下载 APK、安装并重启。
 - 修复 prerelease tag 的版本解析，稳定版与 alpha 版均可正确判断新旧。
 - 改进应用内更新 UI：当前版本与检查操作分开显示，下载时展示实时进度。
-- CI 改为按 ABI 分别构建 release APK；发布稳定版时自动清理旧 prerelease，并只保留最近 10 次 workflow run。
+- CI 发布构建单一 universal release APK（同时含 arm64-v8a / armeabi-v7a）；发布稳定版时自动清理旧 prerelease，并只保留最近 10 次 workflow run。
 - 关于页面项目地址与简介切换到当前 `urbanescavenger/BiliMT` 仓库。
 
 ## 开发说明

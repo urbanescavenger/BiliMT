@@ -158,20 +158,19 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/release-apks"
-          for abi in arm64-v8a armeabi-v7a; do
-            ./gradlew clean assembleRelease --no-daemon \
-              -PbilitvBuildRoot="$GITHUB_WORKSPACE/build" \
-              -PbilitvVersionName="${{ github.ref_name }}" \
-              -PtargetAbi="$abi" \
-              -Pkey.store="$KEYSTORE_PATH" \
-              -Pkey.alias="$KEY_ALIAS" \
-              -Pkey.store.password="$STORE_PASSWORD" \
-              -Pkey.key.password="$KEY_PASSWORD"
-            SRC=$(find "$GITHUB_WORKSPACE/build" -name "*.apk" -type f | head -1)
-            DST="$GITHUB_WORKSPACE/release-apks/BiliMT-${{ github.ref_name }}-$abi.apk"
-            cp "$SRC" "$DST"
-            echo "Built $DST from $SRC"
-          done
+          # 单一 universal APK：不带 -PtargetAbi，默认同时打进 arm64-v8a / armeabi-v7a，
+          # 一个包同时适配 TV 和手机（含两种盒子架构），免去用户挑 ABI。
+          ./gradlew clean assembleRelease --no-daemon \
+            -PbilitvBuildRoot="$GITHUB_WORKSPACE/build" \
+            -PbilitvVersionName="${{ github.ref_name }}" \
+            -Pkey.store="$KEYSTORE_PATH" \
+            -Pkey.alias="$KEY_ALIAS" \
+            -Pkey.store.password="$STORE_PASSWORD" \
+            -Pkey.key.password="$KEY_PASSWORD"
+          SRC=$(find "$GITHUB_WORKSPACE/build" -name "*.apk" -type f | head -1)
+          DST="$GITHUB_WORKSPACE/release-apks/BiliMT-${{ github.ref_name }}.apk"
+          cp "$SRC" "$DST"
+          echo "Built $DST from $SRC"
 
       - name: Delete old prereleases
         if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
