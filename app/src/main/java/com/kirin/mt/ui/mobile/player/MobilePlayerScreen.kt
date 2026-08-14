@@ -194,11 +194,9 @@ private fun startPlaybackService(context: Context) {
     ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
   } catch (e: IllegalStateException) {
     Log.w(MobilePlayerLogTag, "startForegroundService blocked in background: ${e.message}")
-    try {
-      context.startService(Intent(context, PlaybackService::class.java))
-    } catch (e2: IllegalStateException) {
-      Log.w(MobilePlayerLogTag, "startService also blocked in background: ${e2.message}")
-    }
+    // 不 fallback 到 startService——后台 startService 虽入队成功,但 onStartCommand 里
+    // startForeground 仍会抛 ForegroundServiceStartNotAllowedException。
+    // PlaybackService 侧已 catch 该异常优雅停止,这里直接放弃启动即可。
   }
 }
 /** alpha.67:单次播放会话内 error-retry 上限(onPlayerErrorChanged),超过则交用户手动重试,避免死循环。 */
