@@ -1,5 +1,22 @@
 # BiliMT 版本发布说明
 
+## v3.0.2-alpha.3
+
+**YouTube 订阅流全面修复排序与完整性**(测试 alpha):移动端「动态」合并 YouTube 关注的排序不对 + 不全,根因 5 个,本版逐一修掉,并把 TV 首页「YouTube 热门」tab 对齐成关注动态。
+
+### 变更
+- **订阅流 RSS + InnerTube 并行拉取后按 videoId 合并**:每频道并发发轻量 RSS GET 与 InnerTube `/browse`,RSS 提供精确 `publishedAt`,InnerTube 补全 `duration`/`liveNow`/`isUpcoming`/`badge`/`viewCount`/头像。修复 RSS 优先策略丢弃 Shorts/直播/首映、duration 全为 0 的问题;任一路失败降级用另一路,互不影响。
+- **`perChannel` 8→15**:对齐 RSS 实际返回量,不再静默丢第 9-15 条。
+- **`pubdate` 兜底为当前时间**:直播/首映/解析异常视频不再沉底到 1970 年。
+- **可观测性**:RSS 拉取失败、InnerTube 失败、合并统计日志(`YoutubeFeed` tag);RSS 解析失败日志(`YoutubeRSS` tag)。
+- **TV 首页「YouTube 热门」tab 对齐关注动态**:`getHomeSectionVideos(YoutubeTrending)` 从拉 YouTube 热门改为拉关注频道订阅流,与移动端首页/动态一致;未关注/超时返回空。
+
+### 待真机验证
+- 移动端「动态」tab:YouTube 关注视频正常展示,无沉底 1970 年视频;直播/首映预告卡片出现;duration 正确;高产频道视频数比之前多。
+- TV 首页「YouTube 热门」tab:显示关注频道的订阅流。
+
+---
+
 ## v3.0.2-alpha.2
 
 **发布构建合并为单一 universal APK**:发布阶段不再按 ABI 拆成 `arm64-v8a`/`armeabi-v7a` 两个包,改产出一个同时含两个 ABI 的 `BiliMT-<版本>.apk`,一个包同时适配 TV、手机和两种盒子架构,免去用户挑 ABI、下错装不上。`app/build.gradle.kts` 的 `targetAbi` 本地单 ABI 调试参数保留,debug 构建本就是 universal 不受影响。

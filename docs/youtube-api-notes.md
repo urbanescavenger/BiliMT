@@ -122,6 +122,18 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 
 ---
 
+## 4.10 订阅流（关注动态）：RSS + InnerTube 并行合并
+
+关注频道的最新视频（移动端动态/首页、TV 首页热门 tab 共用）。单走任一来源都有缺陷，正确做法是**每频道并发拉 RSS 与 InnerTube `/browse`，按 `videoId` 合并**：
+
+- **RSS**（`/feeds/videos.xml?channel_id=UC...`）：轻量 GET，无 InnerTube 风控/不计配额；提供**精确 ISO 8601 `publishedAt`**。但**不含 duration/live/upcoming/badge/头像**，且直播/Shorts 覆盖不全。
+- **InnerTube** `/browse`（频道视频 tab）：提供 `duration`/`liveNow`/`isUpcoming`/`badge`/`viewCount`/头像，补 RSS 缺失字段；但 `publishedAt` 是相对时间反推（"4 days ago"），月/年用固定天数近似，刷新排序不稳定。
+- **合并规则**：以 RSS 为基底，`publishedAt` 优先 RSS（精确），`durationSec`/`viewCount`/`liveNow`/`isUpcoming`/`badge`/`channelAvatarUrl` 优先 InnerTube；仅单路有的直接保留。
+- **降级**：任一路失败用另一路（RSS 失败→InnerTube 近似时间；InnerTube 失败→RSS 无 duration/live，降级可用），两者都失败该频道返回空、不影响其它频道。
+- **并发**：RSS 用独立信号量放宽（8），InnerTube 仍受 4 限并发防风控；关注多时按批次放宽超时（`youtubeFeedTimeoutMs`，上限 10s）。
+
+---
+
 ## 5. 播放（Phase 2，未实现）
 
 完整播放需要：
