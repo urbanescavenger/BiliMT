@@ -32,6 +32,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -118,7 +119,7 @@ private const val PlaybackFocusRestoreRetryCount = 8
 // 「等布局 + 抢焦点」途中提前清掉 playbackFocusRestoreDestination,令 restoreFocusRequestKeyFor
 // 变 0 取消恢复 effect → 长视频后慢布局时焦点停在头像。正常路径恢复 effect 自己调
 // onRestoreFocusHandled 清 destination,本 backstop 仅作兜底。
-private const val PlaybackFocusRestoreCleanupFrameCount = 240
+private const val PlaybackFocusRestoreCleanupFrameCount = 600
 private const val ExitConfirmWindowMs = 3_000L
 private const val FocusLogTag = "BiliMT:Focus"
 
@@ -211,6 +212,19 @@ fun BiliTvApp(
   var selectedDestination by rememberSaveable { mutableStateOf(AppDestination.Recommend) }
   var visitedDestinationNames by rememberSaveable { mutableStateOf(setOf(AppDestination.Recommend.name)) }
   var accountSelected by rememberSaveable { mutableStateOf(false) }
+  // 播放期间保住各目的地网格的 LazyListState 滚动位置(见下方 SaveableStateProvider),
+  // 返回时精确还原、目标行第一帧就在视口,焦点恢复立即成功,根治长视频返回丢焦点。
+  val saveableStateHolder = rememberSaveableStateHolder()
+  var lastDestination by remember { mutableStateOf(selectedDestination) }
+  // 切 tab 时丢弃旧 tab 的滚动位置(保留「切 tab 回顶部」现状)。
+  // 放 LaunchedEffect 里:它在重组后运行,保证旧内容 onDispose 保存状态之后才 removeState。
+  // 播放期间 selectedDestination 不变 → 此 effect 不重跑 → 不误删滚动位置。
+  LaunchedEffect(selectedDestination) {
+    if (lastDestination != selectedDestination) {
+      saveableStateHolder.removeState(lastDestination.name)
+      lastDestination = selectedDestination
+    }
+  }
   val accountFocusRequester = remember { FocusRequester() }
   val navFocusRequesters = remember {
     AppDestination.entries.associateWith { FocusRequester() }
@@ -975,6 +989,10 @@ fun BiliTvApp(
                 settingsContent(Modifier.weight(1f))
               }
             } else {
+              // 播放期间保住各目的地网格滚动位置:SaveableStateProvider 在 app 层(holder 永不卸载),
+              // 内容因播放被卸载时滚动位置存进 saveableStateHolder,返回时精确还原,目标行第一帧
+              // 就在视口,焦点恢复立即成功,根治长视频返回丢焦点。when 主体缩进未重排(免巨型 diff)。
+              saveableStateHolder.SaveableStateProvider(selectedDestination.name) {
               when (selectedDestination) {
                 AppDestination.Recommend -> RecommendScreen(
                   videoRepository = videoRepository,
@@ -1163,6 +1181,7 @@ fun BiliTvApp(
                     playbackRequest = video.toPlaybackRequest()
                   },
                 )
+                } // SaveableStateProvider 闭
               }
             }
           }

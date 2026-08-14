@@ -87,7 +87,11 @@ private const val TvGridRestoreFocusRetryCount = 90
 // (ExoPlayer teardown + 首页重组 + 弹幕 draw 挤主线程)时目标行首帧可能晚若干帧才组合,
 // 此时 itemFocusRequester 尚未挂上任何节点,requestFocus 必失败——先等 visibleItemsInfo
 // 里出现目标行,再抢焦点,把"按帧数盲重试"改成"等布局就位再抢"。
-private const val TvGridRestoreFocusWaitLayoutFrames = 90
+// 帧数要大:长视频返回时网格以 initialFirstVisibleItemIndex=目标行 全新创建,受限设备上
+// 首帧要测量到该行的全部前置行,慢布局可能远超 90 帧(此前 90 帧到期仍没等到目标行就放弃,
+// destination 被清 → suppress 关 → 焦点留在头像)。列表本就定位在目标行,正常首帧即出现、
+// 循环即刻退出;360 帧(60fps≈6s、30fps≈12s)只在慢布局兜底,不拖累正常路径。
+private const val TvGridRestoreFocusWaitLayoutFrames = 360
 
 internal const val TvFocusLogTag = "BiliMT:Focus"
 
