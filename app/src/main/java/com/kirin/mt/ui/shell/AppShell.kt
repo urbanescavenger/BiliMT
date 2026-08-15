@@ -120,6 +120,12 @@ private const val PlaybackFocusRestoreRetryCount = 8
 // 变 0 取消恢复 effect → 长视频后慢布局时焦点停在头像。正常路径恢复 effect 自己调
 // onRestoreFocusHandled 清 destination,本 backstop 仅作兜底。
 private const val PlaybackFocusRestoreCleanupFrameCount = 600
+// 视频退出焦点恢复成功后,抑制侧栏可聚焦的保持时长。恢复 effect 成功把焦点拉回视频卡片后,
+// Compose 焦点系统在内容从 SaveableStateHolder 还原后还会做一次 ~250~300ms 的「延迟焦点回落」,
+// 把焦点落到侧栏第一个可聚焦节点(头像)。若恢复成功立即清 playbackFocusRestoreDestination,
+// suppressAccountAutoConfirm 变 false,回落发生时侧栏已可聚焦 → 头像抢焦点。故延迟 ~400ms 再清,
+// 让侧栏在回落窗口内保持不可聚焦,回落无处可落只能留在视频卡片。
+private const val PlaybackFocusRestoreSuppressHoldMs = 400L
 private const val ExitConfirmWindowMs = 3_000L
 private const val FocusLogTag = "BiliMT:Focus"
 
@@ -353,8 +359,16 @@ fun BiliTvApp(
 
   fun clearFocusRestoreRequest(destination: AppDestination, key: Int) {
     if (playbackFocusRestoreDestination == destination && key == playbackFocusRestoreRequestKey) {
-      playbackFocusRestoreDestination = null
-      Log.d(FocusLogTag, "cleared by restore handled: dest=$destination key=$key suppress=off")
+      // 延迟清:覆盖 ~250~300ms 的延迟焦点回落,让侧栏在回落窗口内保持不可聚焦。
+      // 延迟清不会让恢复 effect 重跑(restoreFocusRequestKeyFor 返回的 key 不变),
+      // backstop(600 帧 ≈ 10s)也远长于 400ms 不会误清。
+      coroutineScope.launch {
+        delay(PlaybackFocusRestoreSuppressHoldMs)
+        if (playbackFocusRestoreDestination == destination && key == playbackFocusRestoreRequestKey) {
+          playbackFocusRestoreDestination = null
+          Log.d(FocusLogTag, "cleared by restore handled (delayed ${PlaybackFocusRestoreSuppressHoldMs}ms): dest=$destination key=$key suppress=off")
+        }
+      }
     }
     if (contentFocusRestoreDestination == destination && key == contentFocusRestoreRequestKey) {
       contentFocusRestoreDestination = null

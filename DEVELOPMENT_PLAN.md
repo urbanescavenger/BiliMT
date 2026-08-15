@@ -945,6 +945,54 @@ Flutter 参考 app 继续保留在原项目中，用于行为对照和回退参�
   - 用 `runCatching`/`try-catch` 包裹下载，避免 SSL 异常冒泡到 UncaughtException。
 - **状态**：待修（与 YouTube 高清无关，独立问题）。
 
+### Y-01 YouTube SABR 播放 RELOAD_PLAYER_RESPONSE 终端失败（部分视频无法播放）
+
+- **现象**：部分 YouTube 视频（实测 2160p 的 `jNl6YkkzKxw`）起播即失败，播放器报 `ERROR_CODE_IO_UNSPECIFIED` / `Source error`，无法播放。
+- **复现环境**：v3.0.2-alpha.3，Sony BRAVIA 4K AE2（Android 14），播放 2160p YouTube 视频时。
+- **根因**：
+  1. WEB `/player` 返回的 38 个 adaptive format 全部被 PO token 锁死（`parsedAdaptive=0`、`firstUrl=EMPTY`、`firstCipher=none`），普通直链路径走不通 → 回退 SABR。
+  2. SABR 会话在第一段请求（seg=0）就收到 `RELOAD_PLAYER_RESPONSE`（part 46），video（itag=313）/audio（itag=139）两条流都收到。
+  3. 代码把 `RELOAD_PLAYER_RESPONSE` 当终端错误（`SabrMediaFetcher.kt:154` → `SabrDataSource.kt:49-52`）→ evict 会话 → 抛 `Source error`。
+  4. 播放器 `onPlayerError` 直接进 Failed 状态，无自动重试。
+- **修复方向**（治本）：
+  - `RELOAD_PLAYER_RESPONSE` 是 YouTube 明令「player response 过期，去重载 /player 拿新 formats/poToken/sabrUrl」的信号，**不是** backoff、也不该当 terminal 直接失败。
+  - 把 `RELOAD_PLAYER_RESPONSE` 从「terminal → evict → 失败」改成「触发一次 player response 重载（重新 harvest，拿新 poToken/sabrUrl/formats）后重试」。
+  - 这是 SABR 结构性改动，风险较高，需单独规划（涉及重新调 /player + 重建 SABR 会话 + 重试）。
+- **状态**：待修。
+
+### F-01 TV 视频退出后焦点被头像抢占（播放后焦点消失）
+
+- **现象**：退出视频后，焦点恢复 effect 成功把焦点拉回原视频卡片（`restore success`），但约 250~300ms 后头像又抢走焦点（`avatar focused ... openMyPage=true`），用户看到焦点环跳到头像/「我的」页 = 「焦点消失」。
+- **复现环境**：v3.0.2-alpha.3，Sony BRAVIA 4K AE2，每次退出视频稳定复现。
+- **根因**：
+  1. 恢复 effect 成功把焦点拉到视频卡片。
+  2. 恢复一成功，`clearFocusRestoreRequest` 立即把 `playbackFocusRestoreDestination` 置 null → `suppressAccountAutoConfirm` 变 false。
+  3. 但约 250~300ms 后，Compose 焦点系统在内容从 `SaveableStateHolder` 还原后做了一次「延迟焦点回落」，把焦点落到侧栏第一个可聚焦节点（头像）。
+  4. 此时抑制已撤，头像 `autoConfirmOnFocus=true` → 直接 `openMyPage=true`。
+  5. 关键：现有 `suppressAccountAutoConfirm` 只抑制了头像的 autoConfirm（不打开「我的」页），**没阻止头像「接收焦点」**，所以焦点环仍跳到头像。
+- **修复计划**（治本，两处改动，一次提交）：
+
+  **改动 1：`AppSidebar.kt` — 抑制时侧栏真正不可聚焦**
+  - `AppNavItem` 加 `suppressAutoConfirm: Boolean = false` 参数。
+  - `AppNavItem` 调用点（AppSidebar 内 193-207 行）传 `suppressAutoConfirm = suppressAccountAutoConfirm`（`AccountNavItem` 已传，见 177 行）。
+  - `AccountNavItem` 与 `AppNavItem` 的 `BiliFocusableSurface` modifier 链上，当 `suppressAutoConfirm` 为 true 时加 `Modifier.focusProperties { canFocus = false }`（需 import `androidx.compose.ui.focus.focusProperties`），让延迟焦点回落无处可落，只能留在视频卡片。
+
+  **改动 2：`AppShell.kt` — 延长抑制窗口覆盖延迟回落**
+  - 新增常量 `PlaybackFocusRestoreSuppressHoldMs = 400L`。
+  - `clearFocusRestoreRequest`（354-363 行）里，把立即清 `playbackFocusRestoreDestination = null` 改成延迟清：`coroutineScope.launch { delay(PlaybackFocusRestoreSuppressHoldMs); if (playbackFocusRestoreDestination == destination && key == playbackFocusRestoreRequestKey) playbackFocusRestoreDestination = null }`。
+  - 延迟清不会让恢复 effect 重跑（`restoreFocusRequestKeyFor` 返回的 key 不变），backstop（600 帧 ≈ 10s）也远长于 400ms 不会误清。
+
+- **实施步骤**：① 改 `AppShell.kt`（改动 2）→ ② 改 `AppSidebar.kt`（改动 1）→ ③ 云编译绿 → ④ 打测试 alpha tag → ⑤ 真机验证。
+
+- **验收标准**：
+  1. 真机日志每次 `restore success` 后不再出现 `avatar focused`。
+  2. 退出视频后焦点环稳定停在原视频卡片，不跳头像、不打开「我的」页。
+  3. 回归：正常侧栏导航（头像/导航项聚焦、autoConfirm 打开「我的」页）不受影响。
+
+- **验证方式**：云编译绿 → 打测试 alpha tag → 真机装 debug 版，退出视频后 grep `BiliMT:Focus` 确认无 `avatar focused`。
+
+- **状态**：待修。
+
 ## 实现原则
 
 - 先匹配 Flutter 行为，再改善架构。

@@ -204,6 +204,7 @@ internal fun AppSidebar(
           },
           focusIndex = index + 1,
           onSidebarItemFocused = { focusedSidebarIndex = it },
+          suppressAutoConfirm = suppressAccountAutoConfirm,
         )
       }
     }
@@ -263,6 +264,7 @@ private fun AccountNavItem(
           false
         }
       },
+    enabled = !suppressAutoConfirm,
     onClick = onClick,
     onFocusChanged = { if (it) onSidebarItemFocused(0) },
     onFocused = {
@@ -373,6 +375,7 @@ private fun AppNavItem(
   onMoveRight: () -> Boolean,
   focusIndex: Int,
   onSidebarItemFocused: (Int) -> Unit,
+  suppressAutoConfirm: Boolean = false,
 ) {
   var focused by remember { mutableStateOf(false) }
   val homeColors = LocalHomeColors.current
@@ -421,6 +424,7 @@ private fun AppNavItem(
       focused = it
       if (it) onSidebarItemFocused(focusIndex)
     },
+    enabled = !suppressAutoConfirm,
     onClick = onClick,
     onFocused = {
       if (autoConfirmOnFocus && !selected) {
