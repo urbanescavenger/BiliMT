@@ -212,34 +212,35 @@ class YoutubePlaybackResolver(
         // (整体 loop 已由播放器错误重试预算 MaxStallAutoRetry 兜底,本轮诊断不接完整 DASH 闭环)。
         val reloadToken = SabrStreamRegistry.consumeReloadToken(videoId)
         if (reloadToken != null) {
+          // alpha.8 教训:storeReloadToken 对每次 RELOAD part(rn=0..7,单次尝试约 8 个)都 +1,且从不重置,
+          // 到 resolve 重跑时 count 已远超 MAX → 诊断期的 reload 尝试永远被跳过、Phase 2 一次都没发过。
+          // consume 已是原子 one-shot-per-token(取走即不再重放),累积 count 对兜底 loop 冗余,
+          // 故这里每次 consume 到 token 就把 count 归零 → 每个 resolve 周期恰好尝试一次 reload。
+          SabrStreamRegistry.resetReloadCount(videoId)
           val reloadCount = SabrStreamRegistry.reloadCount(videoId)
-          if (reloadCount > SabrStreamRegistry.MAX_RELOADS) {
-            Log.w(Tag, "SABR reload cap exceeded (count=$reloadCount > MAX=${SabrStreamRegistry.MAX_RELOADS}) → 跳过 reload 尝试,走常规路径")
-          } else {
-            Log.i(Tag, "SABR reload path: videoId=$videoId reload#$reloadCount tokenLen=${reloadToken.length}")
-            val rp = runCatching { buildSabrSessionFromReloadPlayer(videoId, reloadToken, poToken) }.getOrNull()
-            if (rp != null) {
-              YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
-              val sabrClient = SabrClient(httpClient)
-              val sid = SabrStreamRegistry.registerByVideoId(
-                videoId, rp.session, sabrClient,
-                refreshPoToken = { botGuard.generatePoToken(videoId)?.toByteArray(Charsets.UTF_8) },
-              )
-              YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
-              Log.i(
-                Tag,
-                "SABR reload playback ready: sid=$sid reload#$reloadCount source=visionOS-reload " +
-                  "video=itag${rp.session.videoFormatId.itag}(${rp.session.videoFormatId.height}p) " +
-                  "audio=itag${rp.session.audioFormatId.itag} → sabr:// DASH"
-              )
-              return@withContext buildSabrPlaybackInfo(
-                request, videoId, rp.durationMs, rp.raws, rp.session, sid,
-                subtitleTracks = rp.subtitleTracks,
-                youtubeDefaultQuality = youtubeDefaultQuality,
-              )
-            }
-            Log.w(Tag, "SABR reload /player 未回 sabrUrl/ustreamerConfig → 落常规路径(NewPipe harvest)")
+          Log.i(Tag, "SABR reload path: videoId=$videoId reload#$reloadCount tokenLen=${reloadToken.length}")
+          val rp = runCatching { buildSabrSessionFromReloadPlayer(videoId, reloadToken, poToken) }.getOrNull()
+          if (rp != null) {
+            YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
+            val sabrClient = SabrClient(httpClient)
+            val sid = SabrStreamRegistry.registerByVideoId(
+              videoId, rp.session, sabrClient,
+              refreshPoToken = { botGuard.generatePoToken(videoId)?.toByteArray(Charsets.UTF_8) },
+            )
+            YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+            Log.i(
+              Tag,
+              "SABR reload playback ready: sid=$sid reload#$reloadCount source=visionOS-reload " +
+                "video=itag${rp.session.videoFormatId.itag}(${rp.session.videoFormatId.height}p) " +
+                "audio=itag${rp.session.audioFormatId.itag} → sabr:// DASH"
+            )
+            return@withContext buildSabrPlaybackInfo(
+              request, videoId, rp.durationMs, rp.raws, rp.session, sid,
+              subtitleTracks = rp.subtitleTracks,
+              youtubeDefaultQuality = youtubeDefaultQuality,
+            )
           }
+          Log.w(Tag, "SABR reload /player 未回 sabrUrl/ustreamerConfig → 落常规路径(NewPipe harvest)")
         }
         val raws = rawAdaptive.mapNotNull { it as? JsonObject }
         val firstVideo = raws.firstOrNull { (it.intOrNull("height") ?: 0) > 0 }
