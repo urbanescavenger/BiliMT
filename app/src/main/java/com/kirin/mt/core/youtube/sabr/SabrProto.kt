@@ -252,12 +252,15 @@ internal object SabrProto {
    * Phase 1(diag):结构化解码 RELOAD_PLAYER_RESPONSE(part 46)——比 [decodeReloadPlayerResponse] 多解一层。
    *
    * 日志坐实(jNl6YkkzKxw):payload 顶层 `{f1: {f1: <base64 串>}}`;内层 base64 解出 proto 含
-   * field4=videoId、field5=base64 token、field7=37B raw。服务端不是泛泛要「重打 /player」,而是
-   * **直接下发 videoId + 一枚新 token**(疑似待换入的 poToken)。本函数结构化提取这三者,
-   * 真机一次判定哪字段是可用的 poToken(能进 streamerContext.poToken),为 Fix A 定提取逻辑。
+   * field4=videoId、field5=base64 token。服务端不是泛泛要「重打 /player」,而是
+   * **直接下发 videoId + 一枚新 token**。本函数结构化提取,真机判哪字段是可用的 poToken。
    *
-   * base64 外层 URL-safe(含 `_`)+ `%3D`;首字节 `E`(0x45)可能是前缀标记,非 base64 内容——
-   * 解码时同时试「整串」与「去首字节」,优先取能解出 field4=videoId 的那个。
+   * alpha.5 真机:新格式把 f4/f5 **套在额外一层 field1 里**(`0a 3e {f2:{f1:1}, f4:videoId, f5:token}`),
+   * 旧格式在顶层;统一**递归下钻**找 f4/f5/f7。field7(旧格式 37B raw)新格式不再出现。
+   * f5 token 短(~34 字符 base64 → 27B),**远短于完整 poToken(~128B)**——疑似 visitorData/短 token,
+   * 非可直接换入的 poToken,Phase 2(Fix A)需据此重新评估。
+   *
+   * base64 外层 URL-safe(含 `_`)+ `%3D`;多候选解码,优先取能解出 field4=videoId 的。
    */
   data class ReloadPlayerInfo(
     val videoId: String?,
@@ -284,20 +287,16 @@ internal object SabrProto {
     var tokenDecodedHex: String? = null; var field7Hex: String? = null
     val decoded = base64DecodePickVideoId(b64)
     if (decoded != null) {
-      val r = ProtoReader(decoded)
-      while (true) {
-        val f = r.nextField() ?: break
-        if (f.wireType != ProtoWire.WIRE_LEN) continue
-        val b = f.value as ByteArray
-        when (f.fieldNumber) {
-          4 -> videoId = String(b, Charsets.UTF_8)
-          5 -> {
-            token = String(b, Charsets.UTF_8)
-            tokenDecodedHex = base64DecodeAny(String(b, Charsets.UTF_8))?.let { hexHead(it, 128) }
-          }
-          7 -> field7Hex = hexHead(b, 128)
-        }
+      // alpha.5 真机发现:视频 jNl6YkkzKxw 的 RELOAD 内层 base64 解出的 proto 把 videoId(f4)/token(f5)
+      // **套在额外的一层 field1 里**(`0a 3e 12 02 08 01 22 0b <videoId> 2a 24 <token>`),旧格式(E 前缀)则
+      // 在顶层。故这里**递归下钻** field1 找 f4/f5/f7,兼容两种嵌套。f5 token 短(~27B),非完整 poToken。
+      val f = reloadScanFields(decoded)
+      f["4"]?.let { videoId = String(it, Charsets.UTF_8) }
+      f["5"]?.let {
+        token = String(it, Charsets.UTF_8)
+        tokenDecodedHex = base64DecodeAny(String(it, Charsets.UTF_8))?.let { hexHead(it, 128) }
       }
+      f["7"]?.let { field7Hex = hexHead(it, 128) }
     }
     return ReloadPlayerInfo(
       videoId = videoId, token = token, tokenDecodedHex = tokenDecodedHex, field7Hex = field7Hex,
@@ -329,17 +328,39 @@ internal object SabrProto {
     return null
   }
 
-  /** field4 是否为 videoId(8-20 位字母数字)。 */
-  private fun hasVideoIdField4(bytes: ByteArray): Boolean {
+  /**
+   * 递归下钻消息字段,收集首次遇到的 field4/5/7(LEN)。RELOAD 内层 base64 解出的 proto 有时把
+   * videoId(f4)/token(f5) 套在额外一层 field1 里,故对任何 LEN 字段都尝试下钻一层找缺失项。
+   * @return map "4"/"5"/"7" → ByteArray(未找到则缺 key)
+   */
+  private fun reloadScanFields(bytes: ByteArray): Map<String, ByteArray> {
+    val out = HashMap<String, ByteArray>()
+    reloadScanFieldsInner(bytes, out, 0)
+    return out
+  }
+
+  private fun reloadScanFieldsInner(bytes: ByteArray, out: MutableMap<String, ByteArray>, depth: Int) {
+    if (depth > 6) return
     val r = ProtoReader(bytes)
     while (true) {
       val f = r.nextField() ?: break
-      if (f.fieldNumber == 4 && f.wireType == ProtoWire.WIRE_LEN) {
-        val s = String(f.value as ByteArray, Charsets.UTF_8)
-        return s.length in 8..20 && s.all { it.isLetterOrDigit() }
+      if (f.wireType != ProtoWire.WIRE_LEN) continue
+      val b = f.value as ByteArray
+      when (f.fieldNumber) {
+        4 -> if (!out.containsKey("4")) out["4"] = b
+        5 -> if (!out.containsKey("5")) out["5"] = b
+        7 -> if (!out.containsKey("7")) out["7"] = b
       }
+      // 下钻一层(嵌套消息里可能也有 f4/f5/f7)
+      if (out.size < 3) reloadScanFieldsInner(b, out, depth + 1)
     }
-    return false
+  }
+
+  /** field4 是否为 videoId(8-20 位字母数字)。递归下钻(RELOAD f4 可能在嵌套 field1 里)。 */
+  private fun hasVideoIdField4(bytes: ByteArray): Boolean {
+    val v = reloadScanFields(bytes)["4"] ?: return false
+    val s = String(v, Charsets.UTF_8)
+    return s.length in 8..20 && s.all { it.isLetterOrDigit() }
   }
 
   private fun wireName(w: Int): String = when (w) {
