@@ -1,5 +1,7 @@
 package com.kirin.mt.core.youtube.sabr
 
+import android.util.Base64
+
 /**
  * SABR 协议消息编码/解码——对 googlevideo/protos(video_streaming.* + misc.FormatId)的独立 Kotlin 实现。
  *
@@ -244,6 +246,100 @@ internal object SabrProto {
       }
     }
     return ReloadPlayerDiag(fieldsSummary = fields.toString(), hexDump = hexHead(payload, payload.size))
+  }
+
+  /**
+   * Phase 1(diag):结构化解码 RELOAD_PLAYER_RESPONSE(part 46)——比 [decodeReloadPlayerResponse] 多解一层。
+   *
+   * 日志坐实(jNl6YkkzKxw):payload 顶层 `{f1: {f1: <base64 串>}}`;内层 base64 解出 proto 含
+   * field4=videoId、field5=base64 token、field7=37B raw。服务端不是泛泛要「重打 /player」,而是
+   * **直接下发 videoId + 一枚新 token**(疑似待换入的 poToken)。本函数结构化提取这三者,
+   * 真机一次判定哪字段是可用的 poToken(能进 streamerContext.poToken),为 Fix A 定提取逻辑。
+   *
+   * base64 外层 URL-safe(含 `_`)+ `%3D`;首字节 `E`(0x45)可能是前缀标记,非 base64 内容——
+   * 解码时同时试「整串」与「去首字节」,优先取能解出 field4=videoId 的那个。
+   */
+  data class ReloadPlayerInfo(
+    val videoId: String?,
+    val token: String?,
+    val tokenDecodedHex: String?,
+    val field7Hex: String?,
+    val fieldsSummary: String,
+    val hexDump: String,
+  )
+
+  fun decodeReloadPlayer(payload: ByteArray): ReloadPlayerInfo {
+    // 顶层 field1(LEN) → 内层消息
+    val inner = ProtoReader(payload).let { r ->
+      while (true) { val f = r.nextField() ?: break; if (f.fieldNumber == 1 && f.wireType == ProtoWire.WIRE_LEN) return@let (f.value as ByteArray) }
+      ByteArray(0)
+    }
+    // 内层 field1(LEN) → base64 串
+    val b64Bytes = ProtoReader(inner).let { r ->
+      while (true) { val f = r.nextField() ?: break; if (f.fieldNumber == 1 && f.wireType == ProtoWire.WIRE_LEN) return@let (f.value as ByteArray) }
+      ByteArray(0)
+    }
+    val b64 = String(b64Bytes, Charsets.UTF_8)
+    var videoId: String? = null; var token: String? = null
+    var tokenDecodedHex: String? = null; var field7Hex: String? = null
+    val decoded = base64DecodePickVideoId(b64)
+    if (decoded != null) {
+      val r = ProtoReader(decoded)
+      while (true) {
+        val f = r.nextField() ?: break
+        if (f.wireType != ProtoWire.WIRE_LEN) continue
+        val b = f.value as ByteArray
+        when (f.fieldNumber) {
+          4 -> videoId = String(b, Charsets.UTF_8)
+          5 -> {
+            token = String(b, Charsets.UTF_8)
+            tokenDecodedHex = base64DecodeAny(String(b, Charsets.UTF_8))?.let { hexHead(it, 128) }
+          }
+          7 -> field7Hex = hexHead(b, 128)
+        }
+      }
+    }
+    return ReloadPlayerInfo(
+      videoId = videoId, token = token, tokenDecodedHex = tokenDecodedHex, field7Hex = field7Hex,
+      fieldsSummary = "payloadLen=${payload.size} innerLen=${inner.size} b64Len=${b64Bytes.size} b64Prefix=${if (b64Bytes.isEmpty()) "-" else "0x%02x".format(b64Bytes[0].toInt() and 0xFF)}",
+      hexDump = hexHead(payload, payload.size),
+    )
+  }
+
+  /** base64 解码(外层 URL-safe + `%3D`;首字节 `E` 可能是前缀)。多候选,优先取能解出 field4=videoId 的。 */
+  private fun base64DecodePickVideoId(s: String): ByteArray? {
+    val clean = s.trim().replace("%3D", "=")
+    val candidates = listOfNotNull(clean, clean.takeIf { it.length > 1 }?.drop(1))
+    var fallback: ByteArray? = null
+    for (cand in candidates) {
+      val bytes = base64DecodeAny(cand) ?: continue
+      if (hasVideoIdField4(bytes)) return bytes
+      if (fallback == null) fallback = bytes
+    }
+    return fallback
+  }
+
+  /** 尝试多种 base64 变体(NO_WRAP / URL_SAFE / DEFAULT);失败返回 null。 */
+  private fun base64DecodeAny(s: String): ByteArray? {
+    val clean = s.trim().replace("%3D", "=").replace(" ", "").replace("\n", "")
+    for (flags in intArrayOf(Base64.NO_WRAP, Base64.URL_SAFE or Base64.NO_WRAP, Base64.DEFAULT)) {
+      val bytes = try { Base64.decode(clean, flags) } catch (_: IllegalArgumentException) { null } ?: continue
+      return bytes
+    }
+    return null
+  }
+
+  /** field4 是否为 videoId(8-20 位字母数字)。 */
+  private fun hasVideoIdField4(bytes: ByteArray): Boolean {
+    val r = ProtoReader(bytes)
+    while (true) {
+      val f = r.nextField() ?: break
+      if (f.fieldNumber == 4 && f.wireType == ProtoWire.WIRE_LEN) {
+        val s = String(f.value as ByteArray, Charsets.UTF_8)
+        return s.length in 8..20 && s.all { it.isLetterOrDigit() }
+      }
+    }
+    return false
   }
 
   private fun wireName(w: Int): String = when (w) {

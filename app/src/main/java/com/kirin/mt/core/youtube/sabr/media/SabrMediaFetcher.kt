@@ -412,9 +412,12 @@ internal class SabrMediaFetcher(
         else if (status == 2) needsPoTokenRefresh = true
       }
       PART_RELOAD_PLAYER_RESPONSE -> {
-        val diag = SabrProto.decodeReloadPlayerResponse(payload)
-        reloadPlayerDump = "fields={${diag.fieldsSummary}} hex=${diag.hexDump}"
-        Log.w(tag, "RELOAD_PLAYER_RESPONSE payloadLen=${payload.size} $reloadPlayerDump")
+        // Phase 1(diag):结构化解析——服务端下发 videoId + 一枚新 token(field5 base64 再解一层) + field7。
+        // 真机判哪字段是可用的 poToken(能进 streamerContext.poToken),为 Fix A 定提取逻辑。不改播放行为。
+        val info = SabrProto.decodeReloadPlayer(payload)
+        reloadPlayerDump = "videoId=${info.videoId} token=\"${info.token}\" tokenDecodedHex=${info.tokenDecodedHex} " +
+          "field7Hex=${info.field7Hex} fields={${info.fieldsSummary}} hex=${info.hexDump}"
+        Log.w(tag, "RELOAD_PLAYER_RESPONSE $reloadPlayerDump")
       }
       PART_SABR_ERROR -> {
         val err = SabrProto.decodeSabrError(payload)
