@@ -1,5 +1,18 @@
 # BiliMT 版本发布说明
 
+## v3.0.2-alpha.9
+
+**SABR RELOAD 双线诊断 Phase 2 修复 + Fix T 取证定论**(测试 alpha,诊断不改默认播放行为):alpha.8 真机日志**一次 Phase 2 reload 尝试都没发过**——`storeReloadToken` 对每次 RELOAD part(rn=0..7,单次尝试约 8 个)都 +1 且从不重置,resolve 重跑时 count 已 16 > MAX=3,reload 尝试永远被 cap 跳过。本版修复该计数污染,**并** Fix T 取证一锤定音。
+
+### 变更
+- **reload cap 计数污染修复**(`YoutubePlaybackResolver`):每次 `consumeReloadToken` 到 token 就把 count 归零 → 每个 resolve 周期**恰好尝试一次** visionOS /player reload。consume 本就是原子 one-shot-per-token,累积 count 对 loop 兜底冗余,cap 只挡诊断不改行为。`MAX_RELOADS` 保留待完整闭环(DASH 落底)用。
+- **Fix T 取证定论**:`NewPipeHolder: PoTokenProvider set` 但整个日志 **`BiliTvPoToken` 零条入口日志**——`getWebClientPoToken`/`getIosClientPoToken` 一次没被调,而 NewPipe visionOS `getInfo` 明明跑了(建出 `NewPipe SABR session`)。→ **visionOS getInfo 完全绕开 `BiliTvPoTokenProvider`**,`cached` 恒空是必然。**根治方向改道**:不是修 provider cache,而是 resolver 自铸 token **注入 visionOS /player**(正与 Phase 2 回传同一件事)。若 Phase 2 回传成功则无需另做注入。
+
+### 待真机验证(播 `jNl6YkkzKxw`,读 `logs_live.log`)
+- **Phase 2**(`YtResolver`):这次应看到 `SABR reload path: videoId=jNl6YkkzKxw reload#0 tokenLen=138` → `SABR reload session: sabrUrl present=YES/NO` → YES 则 `SABR reload playback ready: sid=...` + `FORMAT_INITIALIZATION_METADATA`/`MEDIA_END` → **起播 = Phase 2 成立**;NO 则转 Fix T 注入方向。
+
+---
+
 ## v3.0.2-alpha.8
 
 **SABR RELOAD 双线诊断**(测试 alpha,诊断级不改默认播放行为):alpha.7 崩溃修复后 RELOAD 诊断稳定(reloadTokenLen=144 恒定)。本版并行取证两条修复路径——Fix T(根治 token 缓存链路)+ Phase 2(RELOAD 回传重打 visionOS /player),一轮云编译同时看两边真机日志。

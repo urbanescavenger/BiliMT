@@ -724,6 +724,10 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 - **Phase 2 取证**(RELOAD 回传,成功即试用):`SabrMediaFetcher.processPart` RELOAD 分支把 reloadToken 停车进 `SabrStreamRegistry.pendingReloads`(独立于 sessions,evict 不清,`MAX_RELOADS=3` 计数防死循环)→ `resolve()` 重进时 `consumeReloadToken` 取走 → `InnerTubeClient.postVisionOsPlayerReload`(新 VISION_OS client + GAPIS + body 镜像 NewPipe visionOS + `playbackContext.reloadPlaybackContext.reloadPlaybackParams.token`)**重打 /player** → `parseSabrData` 取新 serverAbrStreamingUrl+videoPlaybackUstreamerConfig → `buildSabrSessionFromReloadPlayer` 经 `fromSabrData`(仍用 visionOsSabrClientInfo)建新会话 → 成功即注册播放(证明 Phase 2 成立)。reloadToken 是 reload 凭证,**不是** poToken 替代(StreamerContext 仍用 provider-cached/resolve-minted 128B)。
 - 完整闭环(UI error-budget 解耦 + MAX_RELOADS 落 DASH)**留到诊断验证通过后**的下一 alpha。
 
+**alpha.9 补(Phase 2 cap 修复 + Fix T 取证定论)**:alpha.8 真机日志**一次 Phase 2 reload 尝试都没发过**——`storeReloadToken` 对每次 RELOAD part(rn=0..7,单次尝试约 8 个)都 +1 且从不重置,resolve 重跑时 count 已 16 > MAX=3,reload 尝试永远被 `cap exceeded` 跳过。
+- **cap 计数污染修复**:`consumeReloadToken` 原子 one-shot-per-token 本就保证每 token 一次,累积 count 对 loop 兜底冗余 → 每次 consume 到 token 就把 count 归零 → 每个 resolve 周期恰好试一次 visionOS /player reload。`MAX_RELOADS` 保留待完整闭环(DASH 落底)。
+- **Fix T 取证定论(根治方向改道)**:`NewPipeHolder: PoTokenProvider set` 但整个日志 **`BiliTvPoToken` 零条入口日志**——`getWebClientPoToken`/`getIosClientPoToken` 一次没被调,而 NewPipe visionOS `getInfo` 明明跑了(建出 `NewPipe SABR session`)。→ **visionOS getInfo 完全绕开 `BiliTvPoTokenProvider`**,`cached` 恒空是必然。根治方向**不是修 provider cache**,而是 resolver 自铸 token **注入 visionOS /player**(正与 Phase 2 回传同一件事;若 Phase 2 回传成功则无需另做注入)。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
