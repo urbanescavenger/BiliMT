@@ -699,6 +699,8 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 
 **Phase 1(本次,诊断不改播放行为)**:`SabrProto.decodeReloadPlayer(payload)` 结构化解析,提取 `ReloadPlaybackParams.token`(整串 base64,要回传 /player 的凭证)+ 内层解出的 videoId/子 token/field7(递归下钻兼容新旧嵌套);`SabrMediaFetcher` `PART_RELOAD_PLAYER_RESPONSE` 分支打全量 log(videoId/reloadTokenLen/innerToken)。RELOAD 仍按现逻辑 terminal,不引入回归。
 
+**alpha.6 补(诊断期崩溃修复)**:真机 `jNl6YkkzKxw` 每次 fetch 后 `SabrDataSource open: ... IndexOutOfBoundsException: toIndex (N) is greater than size (M)`(日志实证 N=279775/443615/5623/80、M=100/11,均为运行时变量)——根因=`decodeReloadPlayer` 的 `base64DecodePickVideoId`→`hasVideoIdField4`→`reloadScanFields` 对 base64 解出的**非 protobuf 字节**用 `ProtoReader` 遍历,读到越界 LEN 长度 → `ProtoReader.nextField`(`ProtoWire.kt:119`)`data.copyOfRange(s,s+len)` 抛 IndexOutOfBounds(项目仅此一处 copyOfRange 的 to 可 > size;其余 3 处 to 恒 = size/65536)。因 RELOAD payload 内容变化,有时解出成功打完整 dump、有时读错长度即崩(不稳定)。**已修**:①`ProtoReader` WIRE_LEN 分支加越界保护(`s+len>end` 时跳到结尾返回空字节,不 copyOfRange,通用防坏 proto);②`decodeReloadPlayer` 整体 try-catch,失败返回空 dump(processPart 仍打 RELOAD 日志)。崩溃消失、RELOAD 诊断稳定,仍按 Phase 1 evict。
+
 ### 联网研究(2026-08,LuanRT/googlevideo 权威 schema)——推翻「token-swap」Fix A
 
 **权威 proto**(`protos/video_streaming/reload_player_response.proto`):

@@ -115,8 +115,15 @@ internal class ProtoReader(private val data: ByteArray, private val start: Int =
       ProtoWire.WIRE_LEN -> {
         val len = readVarint().toInt()
         val s = pos
-        pos += len
-        data.copyOfRange(s, s + len)
+        if (s + len > end) {
+          // 越界 length(坏/截断 proto,如 RELOAD 内层 base64 解出的非 protobuf 字节):跳到结尾,
+          // 返回空字节,避免 copyOfRange 抛 IndexOutOfBounds(alpha.6 真机 toIndex(N)>size(M) 崩源)。
+          pos = end
+          ByteArray(0)
+        } else {
+          pos += len
+          data.copyOfRange(s, s + len)
+        }
       }
       ProtoWire.WIRE_32 -> readFixed32()
       else -> 0L

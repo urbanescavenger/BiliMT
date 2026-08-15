@@ -274,38 +274,47 @@ internal object SabrProto {
   )
 
   fun decodeReloadPlayer(payload: ByteArray): ReloadPlayerInfo {
-    // 顶层 field1(LEN) → ReloadPlaybackParams
-    val inner = ProtoReader(payload).let { r ->
-      while (true) { val f = r.nextField() ?: break; if (f.fieldNumber == 1 && f.wireType == ProtoWire.WIRE_LEN) return@let (f.value as ByteArray) }
-      ByteArray(0)
-    }
-    // field1(LEN) → ReloadPlaybackParams.token = 整串 base64(要回传 /player 的凭证)
-    val b64Bytes = ProtoReader(inner).let { r ->
-      while (true) { val f = r.nextField() ?: break; if (f.fieldNumber == 1 && f.wireType == ProtoWire.WIRE_LEN) return@let (f.value as ByteArray) }
-      ByteArray(0)
-    }
-    val reloadToken = String(b64Bytes, Charsets.UTF_8)
-    var videoId: String? = null; var innerToken: String? = null
-    var reloadTokenDecodedHex: String? = null; var innerTokenDecodedHex: String? = null
-    var field7Hex: String? = null
-    val decoded = base64DecodePickVideoId(reloadToken)
-    if (decoded != null) {
-      reloadTokenDecodedHex = hexHead(decoded, 160)
-      // 递归下钻找内层 f4=videoId / f5=子token / f7(兼容新旧两种嵌套)
-      val f = reloadScanFields(decoded)
-      f["4"]?.let { videoId = String(it, Charsets.UTF_8) }
-      f["5"]?.let {
-        innerToken = String(it, Charsets.UTF_8)
-        innerTokenDecodedHex = base64DecodeAny(String(it, Charsets.UTF_8))?.let { hexHead(it, 128) }
+    return try {
+      // 顶层 field1(LEN) → ReloadPlaybackParams
+      val inner = ProtoReader(payload).let { r ->
+        while (true) { val f = r.nextField() ?: break; if (f.fieldNumber == 1 && f.wireType == ProtoWire.WIRE_LEN) return@let (f.value as ByteArray) }
+        ByteArray(0)
       }
-      f["7"]?.let { field7Hex = hexHead(it, 128) }
+      // field1(LEN) → ReloadPlaybackParams.token = 整串 base64(要回传 /player 的凭证)
+      val b64Bytes = ProtoReader(inner).let { r ->
+        while (true) { val f = r.nextField() ?: break; if (f.fieldNumber == 1 && f.wireType == ProtoWire.WIRE_LEN) return@let (f.value as ByteArray) }
+        ByteArray(0)
+      }
+      val reloadToken = String(b64Bytes, Charsets.UTF_8)
+      var videoId: String? = null; var innerToken: String? = null
+      var reloadTokenDecodedHex: String? = null; var innerTokenDecodedHex: String? = null
+      var field7Hex: String? = null
+      val decoded = base64DecodePickVideoId(reloadToken)
+      if (decoded != null) {
+        reloadTokenDecodedHex = hexHead(decoded, 160)
+        // 递归下钻找内层 f4=videoId / f5=子token / f7(兼容新旧两种嵌套)
+        val f = reloadScanFields(decoded)
+        f["4"]?.let { videoId = String(it, Charsets.UTF_8) }
+        f["5"]?.let {
+          innerToken = String(it, Charsets.UTF_8)
+          innerTokenDecodedHex = base64DecodeAny(String(it, Charsets.UTF_8))?.let { hexHead(it, 128) }
+        }
+        f["7"]?.let { field7Hex = hexHead(it, 128) }
+      }
+      ReloadPlayerInfo(
+        videoId = videoId, reloadToken = reloadToken, reloadTokenDecodedHex = reloadTokenDecodedHex,
+        innerToken = innerToken, innerTokenDecodedHex = innerTokenDecodedHex, field7Hex = field7Hex,
+        fieldsSummary = "payloadLen=${payload.size} innerLen=${inner.size} b64Len=${b64Bytes.size} b64Prefix=${if (b64Bytes.isEmpty()) "-" else "0x%02x".format(b64Bytes[0].toInt() and 0xFF)}",
+        hexDump = hexHead(payload, payload.size),
+      )
+    } catch (e: Exception) {
+      // 诊断扫描容错:坏/截断 proto 不崩,返回空 dump(processPart 会打 RELOAD_PLAYER_RESPONSE 日志)。
+      ReloadPlayerInfo(
+        videoId = null, reloadToken = null, reloadTokenDecodedHex = null,
+        innerToken = null, innerTokenDecodedHex = null, field7Hex = null,
+        fieldsSummary = "decode failed: ${e.message}", hexDump = hexHead(payload, payload.size),
+      )
     }
-    return ReloadPlayerInfo(
-      videoId = videoId, reloadToken = reloadToken, reloadTokenDecodedHex = reloadTokenDecodedHex,
-      innerToken = innerToken, innerTokenDecodedHex = innerTokenDecodedHex, field7Hex = field7Hex,
-      fieldsSummary = "payloadLen=${payload.size} innerLen=${inner.size} b64Len=${b64Bytes.size} b64Prefix=${if (b64Bytes.isEmpty()) "-" else "0x%02x".format(b64Bytes[0].toInt() and 0xFF)}",
-      hexDump = hexHead(payload, payload.size),
-    )
   }
 
   /** base64 解码(外层 URL-safe + `%3D`;首字节 `E` 可能是前缀)。多候选,优先取能解出 field4=videoId 的。 */
