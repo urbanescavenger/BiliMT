@@ -219,7 +219,7 @@ class YoutubePlaybackResolver(
           SabrStreamRegistry.resetReloadCount(videoId)
           val reloadCount = SabrStreamRegistry.reloadCount(videoId)
           Log.i(Tag, "SABR reload path: videoId=$videoId reload#$reloadCount tokenLen=${reloadToken.length}")
-          val rp = runCatching { buildSabrSessionFromReloadPlayer(videoId, reloadToken, poToken) }.getOrNull()
+          val rp = runCatching { buildSabrSessionFromReloadPlayer(videoId, reloadToken, poToken, youtubeDefaultQuality) }.getOrNull()
           if (rp != null) {
             YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
             val sabrClient = SabrClient(httpClient)
@@ -282,7 +282,7 @@ class YoutubePlaybackResolver(
           var sabrSession: SabrSession? = null
           var sabrRaws: List<JsonObject> = raws
           var sabrDuration = durationMs
-          val npResult = buildSabrSessionFromNewPipe(videoId, poToken)
+          val npResult = buildSabrSessionFromNewPipe(videoId, poToken, youtubeDefaultQuality)
           if (npResult != null) {
             sabrSession = npResult.session
             sabrRaws = npResult.raws
@@ -612,7 +612,11 @@ class YoutubePlaybackResolver(
    *
    * 返回 null = 视频无 SABR / getInfo 失败 → 上层 classic(n-decrypt)或 DASH 兜底。
    */
-  private suspend fun buildSabrSessionFromNewPipe(videoId: String, poToken: String?): NewPipeSabrResult? {
+  private suspend fun buildSabrSessionFromNewPipe(
+    videoId: String,
+    poToken: String?,
+    youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+  ): NewPipeSabrResult? {
     val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
       .getOrElse {
         Log.w(Tag, "NewPipe getInfo failed: ${it.message}")
@@ -628,7 +632,22 @@ class YoutubePlaybackResolver(
     val sabrUrl = stripQueryParam(sabrUrlRaw, "cpn")
     val videoStreams = info.videoOnlyStreams
     val audioStreams = info.audioStreams
-    val firstVideo = videoStreams.firstOrNull { it.height > 0 } ?: videoStreams.firstOrNull()
+    val videoFormats = videoStreams.filter { it.height > 0 }.map { it.toSabrFormatId() }
+    // alpha.77:harvest 选轨必须与 buildSabrPlaybackInfo 的选档一致——否则会话绑定的 videoFormatId
+    // 与播放器实际请求的 itag 不一致(harvest 盲取最高分辨率首条 vs 播放按默认画质上限选档)
+    // → 服务端 RELOAD_PLAYER_RESPONSE 死循环(alpha.77 真机:itag313 会话 + itag136 请求)。
+    // 用 youtubeDefaultQuality 的 maxHeight 从全部视频流里选同一档,而非盲取最高分辨率首条。
+    val maxHeight = youtubeDefaultQuality.maxHeight
+    val defaultItag = when {
+      maxHeight != null ->
+        videoFormats.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }?.itag
+          ?: videoFormats.minByOrNull { it.height }?.itag // 全部超过上限 → 取最低档
+      else -> videoFormats.maxByOrNull { it.height }?.itag // Auto → 最高可用
+    }
+    val firstVideo = defaultItag?.let { target ->
+      videoStreams.firstOrNull { it.toSabrFormatId().itag == target }
+    } ?: videoStreams.firstOrNull { it.height > 0 } ?: videoStreams.firstOrNull()
+    Log.i(Tag, "NewPipe SABR harvest: videoFormats=${videoFormats.size} maxHeight=$maxHeight defaultItag=$defaultItag firstVideo=itag${firstVideo?.itag}(${firstVideo?.height}p)")
     // 优先原声轨(getAudioTrackType()==ORIGINAL,来自 xtags acont=original),跳过配音/翻译轨。
     // 多语言配音视频里同一 itag 会按语言重复出现,盲取第一条可能拿到配音轨。
     val firstAudio = audioStreams.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
@@ -638,7 +657,6 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "NewPipe: missing streams (video=${firstVideo != null} audio=${firstAudio != null})")
       return null
     }
-    val videoFormats = videoStreams.filter { it.height > 0 }.map { it.toSabrFormatId() }
     val vFmt = firstVideo.toSabrFormatId()
     val aFmt = firstAudio.toSabrFormatId()
     // 全部可选音轨(供播放器音轨切换菜单)。id 用 getAudioTrackId()(audioTrack.id,如 "en.4");
@@ -740,7 +758,12 @@ class YoutubePlaybackResolver(
    *
    * 返回 null = reload /player 未回 SABR 数据 / 失败 → resolve 落常规 NewPipe harvest。
    */
-  private suspend fun buildSabrSessionFromReloadPlayer(videoId: String, reloadToken: String, poToken: String?): NewPipeSabrResult? {
+  private suspend fun buildSabrSessionFromReloadPlayer(
+    videoId: String,
+    reloadToken: String,
+    poToken: String?,
+    youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+  ): NewPipeSabrResult? {
     val player = runCatching { innerTubeClient.postVisionOsPlayerReload(videoId, reloadToken) }
       .getOrElse {
         Log.w(Tag, "visionOS player reload failed: ${it.message} → fallback")
@@ -754,7 +777,19 @@ class YoutubePlaybackResolver(
     val raws = sd.raws
     val videoRaws = raws.filter { (it.intOrNull("height") ?: 0) > 0 }
     val audioRaws = raws.filter { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
-    val firstVideo = videoRaws.firstOrNull()
+    val videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) }
+    // alpha.77:同 NewPipe 路径——harvest 选轨与 buildSabrPlaybackInfo 选档一致,避免 itag 不匹配 RELOAD 死循环。
+    val maxHeight = youtubeDefaultQuality.maxHeight
+    val defaultItag = when {
+      maxHeight != null ->
+        videoFormats.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }?.itag
+          ?: videoFormats.minByOrNull { it.height }?.itag
+      else -> videoFormats.maxByOrNull { it.height }?.itag
+    }
+    val firstVideo = defaultItag?.let { target ->
+      videoRaws.firstOrNull { (it.intOrNull("itag") ?: 0) == target }
+    } ?: videoRaws.firstOrNull()
+    Log.i(Tag, "visionOS reload harvest: videoFormats=${videoFormats.size} maxHeight=$maxHeight defaultItag=$defaultItag firstVideo=itag${firstVideo?.intOrNull("itag")}(${firstVideo?.intOrNull("height")}p)")
     // 优先原声轨(xtags 含 acont=original);否则取第一条音频(诊断期 heuristic,后续按日志调)。
     val firstAudio = audioRaws.firstOrNull { (it.stringOrNull("xtags") ?: "").contains("acont=original") }
       ?: audioRaws.firstOrNull()
@@ -762,7 +797,6 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "visionOS reload: missing streams (video=${firstVideo != null} audio=${firstAudio != null}) → fallback")
       return null
     }
-    val videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) }
     val vFmt = rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
     val aFmt = rawToSabrFormatId(firstAudio, 0)
     // PO token:同 NewPipe 路径(provider 缓存 ?: resolve-minted)。reloadToken 是 reload 凭证,**不是** poToken 替代。
@@ -907,7 +941,8 @@ class YoutubePlaybackResolver(
     val videoTrack = buildSabrTrack(selectedItag, vRaw, "video", sid, videoId)
     Log.i(
       Tag,
-      "SABR PlaybackInfo: sid=$sid qualities=${qualities.size} selected=itag$selectedItag(${videoTrack.height}p ${videoTrack.codecs}) " +
+      "SABR PlaybackInfo: sid=$sid sessionVideo=itag${sabrSession.videoFormatId.itag}(${sabrSession.videoFormatId.height}p) " +
+        "qualities=${qualities.size} selected=itag$selectedItag(${videoTrack.height}p ${videoTrack.codecs}) " +
         "audio=itag$aItag(${audioTrack.codecs}) duration=${durationMs}ms → sabr:// DASH"
     )
     return PlaybackInfo(
