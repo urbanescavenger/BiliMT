@@ -691,6 +691,18 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 
 **待真机验证**:主页/搜索/动态对 YouTube 视频长按确认键约 0.5s 进入 UP 主页;B 站视频长按行为不变。
 
+## 6.16 SABR RELOAD_PLAYER_RESPONSE 结构化解析(2026-08,v3.0.2-alpha.5,Phase 1 诊断)
+
+**问题**:视频 `jNl6YkkzKxw` 无法播放。链路:WEB `/player` 全被 PO 锁死(38 个 adaptive 无 url)→ 回退 SABR → SABR 首段(seg=0)即收到 `RELOAD_PLAYER_RESPONSE` → 代码当 **terminal**(`SabrMediaFetcher.kt:154` → `SabrDataSource.kt:49-52` evict 会话)→ 抛 IOException → 播放器进 Failed,无自动重试。LibreTube 同样把 RELOAD 当致命(`SabrClient.kt:579-583` throw Exception,"rare edge-case"),但 LibreTube 用 WEB 客户端 getInfo 且 getInfo 期间铸+缓存了 poToken、SABR 复用同一枚,故对它们才「罕见」;我们日志 `poToken=128B(resolve-minted)`(非 `provider-cached`)→ NewPipe visionOS getInfo 未铸/缓存 token → resolver 回退用 resolve() 顶部 BotGuard 铸的 128B WEB token → 与 visionOS 会话不匹配 → 该 PO 锁死视频必现 RELOAD。
+
+**关键新发现**:解码日志里 144B RELOAD payload——顶层 `{field1:{field1:<base64>}}`,内层 base64 解出的 proto 含 **field4=videoId**、**field5=36 字符 base64 token** `5WJNURaccWQ5WgVITgT619T+n7UhAbLDF2Mn`、**field7=37B raw**。**服务端不是泛泛要「重打 /player」,而是直接下发 videoId + 一枚新 token**(疑似待换入的 poToken)。sabrUrl 是 googlevideo SABR 端点不绑特定 token;poToken 每请求经 streamerContext 传——故「把下发 token 换上、同 sabrUrl 重试」很可能就能过(Fix A,不需要真重打 /player 换新 sabrUrl)。
+
+**Phase 1(本次,诊断不改播放行为)**:`SabrProto.decodeReloadPlayer(payload)` 结构化解析(顶层 f1→f1→base64 再解一层,提取 field4 videoId / field5 token+再解码 hex / field7 hex,多 base64 变体候选优先取带 videoId 的);`SabrMediaFetcher` `PART_RELOAD_PLAYER_RESPONSE` 分支打全量 log(videoId/token/tokenDecodedHex/field7Hex)。RELOAD 仍按现逻辑 terminal,不引入回归。
+
+**待真机验证(Phase 1)**:播 `jNl6YkkzKxw` → 读 `logs_live.log` 判 field5 再解出的字节 vs field7 哪个是可用的 poToken(能进 `streamerContext.poToken`),据此定 Phase 2 提取字段。
+
+**Phase 2(待做,Fix A)**:RELOAD 不再 terminal——decodeReloadPlayer 拿 token 写回 `poTokenState.currentPoToken`(对齐 status=2 通路),清 `initializedFormats`+`partialSegments`+`reloadPlayerToken`,同 sabrUrl 重试(`MAX_RELOADS`≈3 上限,耗尽仍 RELOAD 才抛 `SabrTerminalException`)。**Fix T(根治)**:对齐 LibreTube 让 getInfo 铸并缓存同一 token,从源头避免 RELOAD。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

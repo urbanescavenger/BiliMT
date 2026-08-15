@@ -1,5 +1,19 @@
 # BiliMT 版本发布说明
 
+## v3.0.2-alpha.5
+
+**SABR RELOAD_PLAYER_RESPONSE 结构化解析(诊断,不改播放行为)**(测试 alpha):定位 YouTube 视频 `jNl6YkkzKxw` 无法播放的根因链路——WEB `/player` 全被 PO 锁死 → 回退 SABR → 首段即收到 RELOAD_PLAYER_RESPONSE → 代码当 terminal → 播放失败。本版新增结构化解析,证明服务端 RELOAD payload 内层 base64 解出的 proto 含 **videoId + 一枚新 token(field5) + field7 raw**,而非泛泛的「重打 /player」指令,为后续「token 换入同 sabrUrl 重试」(Fix A)铺路。
+
+### 变更
+- **`SabrProto.decodeReloadPlayer` 新增**:结构化解析 RELOAD payload(顶层 `f1{f1:base64}`,base64 再解一层),提取 `field4=videoId` / `field5=token`(+再解码 hex) / `field7=hex`,多 base64 变体候选优先取带 videoId 的。
+- **`SabrMediaFetcher` RELOAD 分支打全量 log**:`videoId`/`token`/`tokenDecodedHex`/`field7Hex`,真机一次判哪字段是可用的 poToken。
+- **不改播放行为**:RELOAD 仍按现逻辑 terminal,不引入回归。
+
+### 待真机验证
+- 播 `jNl6YkkzKxw`,读 `logs_live.log` 的 `RELOAD_PLAYER_RESPONSE` 行,确认 field5 再解出的字节 vs field7 哪个是可用的 poToken,据此定 Fix A 的 token 提取字段。
+
+---
+
 ## v3.0.2-alpha.4
 
 **TV 视频退出焦点被头像抢占根治**(测试 alpha):退出视频后焦点恢复 effect 成功把焦点拉回原视频卡片,但约 250~300ms 后 Compose 焦点系统在内容从 `SaveableStateHolder` 还原后做了一次「延迟焦点回落」,把焦点落到侧栏第一个可聚焦节点(头像),用户看到焦点环跳到头像/「我的」页 = 「焦点消失」。根因是现有 `suppressAccountAutoConfirm` 只抑制了头像的 autoConfirm(不打开「我的」页),**没阻止头像「接收焦点」**,且抑制在 `restore success` 那一刻就被撤掉,比延迟回落早。
