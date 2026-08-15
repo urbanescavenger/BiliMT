@@ -915,7 +915,13 @@ class YoutubePlaybackResolver(
     val qualities = videoFmts.sortedByDescending { it.height }.map { fmt ->
       val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == fmt.itag }
       val h = raw?.intOrNull("height") ?: fmt.height
-      val codec = shortCodec(extractCodecs(raw?.stringOrNull("mimeType") ?: ""))
+      // alpha.78:codec 兜底读 "codec" key(对齐 buildSabrTrack)——NewPipe 路径 mimeType 是纯
+      // "video/mp4" 不含 codecs=,但 newPipeVideoRaw 已把 stream.codec 写进 "codec" key;不兜底则
+      // 新建会话的画质菜单丢 codec(显示裸 "1440p"),复用会话(WEB raws 带 codecs=)却显示 "1440p VP9"。
+      val codec = shortCodec(
+        extractCodecs(raw?.stringOrNull("mimeType") ?: "")
+          .ifEmpty { raw?.stringOrNull("codec").orEmpty() }
+      )
       PlaybackQuality(
         id = fmt.itag,
         description = (if (h > 0) "${h}p" else "itag ${fmt.itag}") + (if (codec.isNotEmpty()) " $codec" else ""),
