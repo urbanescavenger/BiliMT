@@ -249,57 +249,60 @@ internal object SabrProto {
   }
 
   /**
-   * Phase 1(diag):结构化解码 RELOAD_PLAYER_RESPONSE(part 46)——比 [decodeReloadPlayerResponse] 多解一层。
+   * Phase 1(diag):结构化解码 RELOAD_PLAYER_RESPONSE(part 46)。
    *
-   * 日志坐实(jNl6YkkzKxw):payload 顶层 `{f1: {f1: <base64 串>}}`;内层 base64 解出 proto 含
-   * field4=videoId、field5=base64 token。服务端不是泛泛要「重打 /player」,而是
-   * **直接下发 videoId + 一枚新 token**。本函数结构化提取,真机判哪字段是可用的 poToken。
+   * 权威 schema(LuanRT/googlevideo `protos/video_streaming/reload_player_response.proto`):
+   *   ReloadPlaybackContext { field1 reload_playback_params: ReloadPlaybackParams }
+   *   ReloadPlaybackParams   { field1 token: string }
+   * 即 payload = `{f1: {f1: <base64 token>}}`,**那整串 base64 就是 ReloadPlaybackParams.token**,
+   * 是服务端下发的 reload 凭证,Phase 2 需**原样回传**进新 /player 请求的
+   * `playbackContext.reloadPlaybackContext`,换新 sabrUrl + ustreamerConfig(见 §6.16)。
    *
-   * alpha.5 真机:新格式把 f4/f5 **套在额外一层 field1 里**(`0a 3e {f2:{f1:1}, f4:videoId, f5:token}`),
-   * 旧格式在顶层;统一**递归下钻**找 f4/f5/f7。field7(旧格式 37B raw)新格式不再出现。
-   * f5 token 短(~34 字符 base64 → 27B),**远短于完整 poToken(~128B)**——疑似 visitorData/短 token,
-   * 非可直接换入的 poToken,Phase 2(Fix A)需据此重新评估。
-   *
-   * base64 外层 URL-safe(含 `_`)+ `%3D`;多候选解码,优先取能解出 field4=videoId 的。
+   * token 再 base64 解一层(诊断用)得到的 proto 含 videoId(f4) + 一个 27B 短 token(f5)——那个
+   * f5 是**内层子 token**,不是要回传的 reload 凭证。alpha.5 真机:新格式把 f4/f5 套在额外一层
+   * field1 里,旧格式在顶层;统一递归下钻找 f4/f5/f7。
    */
   data class ReloadPlayerInfo(
     val videoId: String?,
-    val token: String?,
-    val tokenDecodedHex: String?,
+    val reloadToken: String?,
+    val reloadTokenDecodedHex: String?,
+    val innerToken: String?,
+    val innerTokenDecodedHex: String?,
     val field7Hex: String?,
     val fieldsSummary: String,
     val hexDump: String,
   )
 
   fun decodeReloadPlayer(payload: ByteArray): ReloadPlayerInfo {
-    // 顶层 field1(LEN) → 内层消息
+    // 顶层 field1(LEN) → ReloadPlaybackParams
     val inner = ProtoReader(payload).let { r ->
       while (true) { val f = r.nextField() ?: break; if (f.fieldNumber == 1 && f.wireType == ProtoWire.WIRE_LEN) return@let (f.value as ByteArray) }
       ByteArray(0)
     }
-    // 内层 field1(LEN) → base64 串
+    // field1(LEN) → ReloadPlaybackParams.token = 整串 base64(要回传 /player 的凭证)
     val b64Bytes = ProtoReader(inner).let { r ->
       while (true) { val f = r.nextField() ?: break; if (f.fieldNumber == 1 && f.wireType == ProtoWire.WIRE_LEN) return@let (f.value as ByteArray) }
       ByteArray(0)
     }
-    val b64 = String(b64Bytes, Charsets.UTF_8)
-    var videoId: String? = null; var token: String? = null
-    var tokenDecodedHex: String? = null; var field7Hex: String? = null
-    val decoded = base64DecodePickVideoId(b64)
+    val reloadToken = String(b64Bytes, Charsets.UTF_8)
+    var videoId: String? = null; var innerToken: String? = null
+    var reloadTokenDecodedHex: String? = null; var innerTokenDecodedHex: String? = null
+    var field7Hex: String? = null
+    val decoded = base64DecodePickVideoId(reloadToken)
     if (decoded != null) {
-      // alpha.5 真机发现:视频 jNl6YkkzKxw 的 RELOAD 内层 base64 解出的 proto 把 videoId(f4)/token(f5)
-      // **套在额外的一层 field1 里**(`0a 3e 12 02 08 01 22 0b <videoId> 2a 24 <token>`),旧格式(E 前缀)则
-      // 在顶层。故这里**递归下钻** field1 找 f4/f5/f7,兼容两种嵌套。f5 token 短(~27B),非完整 poToken。
+      reloadTokenDecodedHex = hexHead(decoded, 160)
+      // 递归下钻找内层 f4=videoId / f5=子token / f7(兼容新旧两种嵌套)
       val f = reloadScanFields(decoded)
       f["4"]?.let { videoId = String(it, Charsets.UTF_8) }
       f["5"]?.let {
-        token = String(it, Charsets.UTF_8)
-        tokenDecodedHex = base64DecodeAny(String(it, Charsets.UTF_8))?.let { hexHead(it, 128) }
+        innerToken = String(it, Charsets.UTF_8)
+        innerTokenDecodedHex = base64DecodeAny(String(it, Charsets.UTF_8))?.let { hexHead(it, 128) }
       }
       f["7"]?.let { field7Hex = hexHead(it, 128) }
     }
     return ReloadPlayerInfo(
-      videoId = videoId, token = token, tokenDecodedHex = tokenDecodedHex, field7Hex = field7Hex,
+      videoId = videoId, reloadToken = reloadToken, reloadTokenDecodedHex = reloadTokenDecodedHex,
+      innerToken = innerToken, innerTokenDecodedHex = innerTokenDecodedHex, field7Hex = field7Hex,
       fieldsSummary = "payloadLen=${payload.size} innerLen=${inner.size} b64Len=${b64Bytes.size} b64Prefix=${if (b64Bytes.isEmpty()) "-" else "0x%02x".format(b64Bytes[0].toInt() and 0xFF)}",
       hexDump = hexHead(payload, payload.size),
     )

@@ -697,11 +697,25 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 
 **关键新发现**:解码日志里 144B RELOAD payload——顶层 `{field1:{field1:<base64>}}`,内层 base64 解出的 proto 含 **field4=videoId**、**field5=36 字符 base64 token** `5WJNURaccWQ5WgVITgT619T+n7UhAbLDF2Mn`、**field7=37B raw**。**服务端不是泛泛要「重打 /player」,而是直接下发 videoId + 一枚新 token**(疑似待换入的 poToken)。sabrUrl 是 googlevideo SABR 端点不绑特定 token;poToken 每请求经 streamerContext 传——故「把下发 token 换上、同 sabrUrl 重试」很可能就能过(Fix A,不需要真重打 /player 换新 sabrUrl)。
 
-**Phase 1(本次,诊断不改播放行为)**:`SabrProto.decodeReloadPlayer(payload)` 结构化解析(顶层 f1→f1→base64 再解一层,提取 field4 videoId / field5 token+再解码 hex / field7 hex,多 base64 变体候选优先取带 videoId 的);`SabrMediaFetcher` `PART_RELOAD_PLAYER_RESPONSE` 分支打全量 log(videoId/token/tokenDecodedHex/field7Hex)。RELOAD 仍按现逻辑 terminal,不引入回归。
+**Phase 1(本次,诊断不改播放行为)**:`SabrProto.decodeReloadPlayer(payload)` 结构化解析,提取 `ReloadPlaybackParams.token`(整串 base64,要回传 /player 的凭证)+ 内层解出的 videoId/子 token/field7(递归下钻兼容新旧嵌套);`SabrMediaFetcher` `PART_RELOAD_PLAYER_RESPONSE` 分支打全量 log(videoId/reloadTokenLen/innerToken)。RELOAD 仍按现逻辑 terminal,不引入回归。
 
-**待真机验证(Phase 1)**:播 `jNl6YkkzKxw` → 读 `logs_live.log` 判 field5 再解出的字节 vs field7 哪个是可用的 poToken(能进 `streamerContext.poToken`),据此定 Phase 2 提取字段。
+### 联网研究(2026-08,LuanRT/googlevideo 权威 schema)——推翻「token-swap」Fix A
 
-**Phase 2(待做,Fix A)**:RELOAD 不再 terminal——decodeReloadPlayer 拿 token 写回 `poTokenState.currentPoToken`(对齐 status=2 通路),清 `initializedFormats`+`partialSegments`+`reloadPlayerToken`,同 sabrUrl 重试(`MAX_RELOADS`≈3 上限,耗尽仍 RELOAD 才抛 `SabrTerminalException`)。**Fix T(根治)**:对齐 LibreTube 让 getInfo 铸并缓存同一 token,从源头避免 RELOAD。
+**权威 proto**(`protos/video_streaming/reload_player_response.proto`):
+```proto
+message ReloadPlaybackParams  { optional string token = 1; }
+message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_params = 1; }
+```
+即 payload = `ReloadPlaybackContext{ reload_playback_params: { token: <整串 base64> } }`。**那 144 字符 base64 本身就是 token**(ReloadPlaybackParams.token),是服务端下发的 **reload 凭证,不是 poToken**。base64 再解一层得到的 27B 短串是**内层子 token**,不是要用的凭证——之前误判。
+
+**权威处理**(`SabrStreamingAdapter.ts:564-568` + 消费方 `examples/.../sabr-stream-factory.ts:205-215`):
+1. 收到 RELOAD → 解码出 `ReloadPlaybackContext` → 存进 streamInfo → 回调消费方 → **`retry()`**。
+2. 消费方:**重打 /player**,把 `reloadPlaybackContext` 塞进请求 `playbackContext.reloadPlaybackContext`,拿**新 `server_abr_streaming_url` + 新 `video_playback_ustreamer_config`**。
+3. `setStreamingURL(新sabrUrl)` + `setUstreamerConfig(新config)` → 清 formats → 重试。
+
+**结论**:RELOAD 的正确修复 = **把 ReloadPlaybackContext 原样回传重打 /player → 换新 sabrUrl + ustreamerConfig → 清 formats 重试**(即原计划「备用升级路径」,原 Fix A token-swap 方向被证伪)。RELOAD context 里不含 sabrUrl,只有 token 凭证,必须重打 /player。⚠️ 注意 googlevideo#42:重载后可能撞 `sabr.no_audio_selected - 2`(xtags 新格式触发),需 `MAX_RELOADS` 上限兜底。
+
+**Phase 2(待做,修正方向)**:RELOAD 不再 terminal——`decodeReloadPlayer` 输出整个 `ReloadPlaybackContext` 字节 → 触发 visionOS /player 重打(NewPipe getInfo 不支持回传 reload context,需走我们自己的 InnerTubeClient 建 visionOS context 并注入 `playbackContext.reloadPlaybackContext`,原计划已评估改动大)→ 取新 sabrUrl+ustreamerConfig 更新 SABR 会话 → 清 `initializedFormats`/`partialSegments` → 重试(`MAX_RELOADS`≈3 兜底,耗尽仍 RELOAD 才抛 `SabrTerminalException`)。**Fix T(根治)**:对齐 LibreTube 让 getInfo 铸并缓存同一 token,从源头避免 RELOAD。
 
 ## 7. 关键文件
 
