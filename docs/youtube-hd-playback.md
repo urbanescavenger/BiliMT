@@ -719,6 +719,11 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 
 **Phase 2(待做,修正方向)**:RELOAD 不再 terminal——`decodeReloadPlayer` 输出整个 `ReloadPlaybackContext` 字节 → 触发 visionOS /player 重打(NewPipe getInfo 不支持回传 reload context,需走我们自己的 InnerTubeClient 建 visionOS context 并注入 `playbackContext.reloadPlaybackContext`,原计划已评估改动大)→ 取新 sabrUrl+ustreamerConfig 更新 SABR 会话 → 清 `initializedFormats`/`partialSegments` → 重试(`MAX_RELOADS`≈3 兜底,耗尽仍 RELOAD 才抛 `SabrTerminalException`)。**Fix T(根治)**:对齐 LibreTube 让 getInfo 铸并缓存同一 token,从源头避免 RELOAD。
 
+**alpha.8 补(Phase 2 诊断实现,双线取证)**:崩溃修复后(alpha.7)RELOAD 诊断稳定,reloadTokenLen=144 恒定。用户定「先诊断验证 + 双线并行」,本轮**全部诊断级、不改默认播放行为**:
+- **Fix T 取证**(纯日志):`BiliTvPoTokenProvider` 各 provider 方法加入口/结果日志——一锤定音 getInfo 期间到底哪个被调(visionOS 若走 `getIosClientPoToken` → 直接 null → 缓存恒空 → 回退 resolve-minted 128B **WEB** token 与 visionOS 绑定的 ustreamerConfig 不匹配 → RELOAD)。
+- **Phase 2 取证**(RELOAD 回传,成功即试用):`SabrMediaFetcher.processPart` RELOAD 分支把 reloadToken 停车进 `SabrStreamRegistry.pendingReloads`(独立于 sessions,evict 不清,`MAX_RELOADS=3` 计数防死循环)→ `resolve()` 重进时 `consumeReloadToken` 取走 → `InnerTubeClient.postVisionOsPlayerReload`(新 VISION_OS client + GAPIS + body 镜像 NewPipe visionOS + `playbackContext.reloadPlaybackContext.reloadPlaybackParams.token`)**重打 /player** → `parseSabrData` 取新 serverAbrStreamingUrl+videoPlaybackUstreamerConfig → `buildSabrSessionFromReloadPlayer` 经 `fromSabrData`(仍用 visionOsSabrClientInfo)建新会话 → 成功即注册播放(证明 Phase 2 成立)。reloadToken 是 reload 凭证,**不是** poToken 替代(StreamerContext 仍用 provider-cached/resolve-minted 128B)。
+- 完整闭环(UI error-budget 解耦 + MAX_RELOADS 落 DASH)**留到诊断验证通过后**的下一 alpha。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

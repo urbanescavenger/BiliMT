@@ -420,6 +420,14 @@ internal class SabrMediaFetcher(
           "reloadTokenDecodedHex=${info.reloadTokenDecodedHex} innerToken=\"${info.innerToken}\" " +
           "innerTokenDecodedHex=${info.innerTokenDecodedHex} field7Hex=${info.field7Hex} fields={${info.fieldsSummary}}"
         Log.w(tag, "RELOAD_PLAYER_RESPONSE $reloadPlayerDump")
+        // Phase 2(取证):成功 decode 时把 reloadToken 停车到进程级 registry(独立于 sessions,evict 不清),
+        // 供 resolve() 下次重进 consumeReloadToken 取走去重打 visionOS /player。仅当 token 非空且
+        // videoId 可解出才存(成功 decode 恒带 videoId;decode 失败时 token 也 null,自然跳过)。
+        val rt = info.reloadToken
+        val vid = info.videoId
+        if (vid != null && !rt.isNullOrBlank()) {
+          SabrStreamRegistry.storeReloadToken(vid, rt)
+        }
       }
       PART_SABR_ERROR -> {
         val err = SabrProto.decodeSabrError(payload)

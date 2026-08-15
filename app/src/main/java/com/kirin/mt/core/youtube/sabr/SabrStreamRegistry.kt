@@ -28,6 +28,35 @@ internal object SabrStreamRegistry {
   private val byVideoId = ConcurrentHashMap<String, String>()
 
   /**
+   * alpha.8 诊断(Phase 2 取证):RELOAD_PLAYER_RESPONSE 的 reloadToken(videoId → 144B base64,
+   * ReloadPlaybackParams.token)停车槽。独立于 [sessions]/[byVideoId],**evict 不清**——token 必须在
+   * evict 后仍存活,供 resolve() 下次重进时 [consumeReloadToken] 取走去重打 visionOS /player。
+   * [reloadCounts] 记录每 videoId 连续 RELOAD 次数,防诊断期回传失败死循环(超 [MAX_RELOADS] 落 DASH)。
+   */
+  const val MAX_RELOADS = 3
+  private val pendingReloads = ConcurrentHashMap<String, String>()
+  private val reloadCounts = ConcurrentHashMap<String, Int>()
+
+  /** 存 reloadToken 停车 + 递增连续 reload 计数。由 [SabrMediaFetcher.processPart] RELOAD 分支调用。 */
+  fun storeReloadToken(videoId: String, token: String) {
+    pendingReloads[videoId] = token
+    val count = (reloadCounts[videoId] ?: 0) + 1
+    reloadCounts[videoId] = count
+    Log.w(tag, "storeReloadToken videoId=$videoId count=$count tokenLen=${token.length} → evict+re-resolve 重打 /player")
+  }
+
+  /** 原子取出停车 token(消费一次)。resolve() 重进时用;已取走则返回 null。 */
+  fun consumeReloadToken(videoId: String): String? = pendingReloads.remove(videoId)
+
+  /** 当前连续 reload 次数。 */
+  fun reloadCount(videoId: String): Int = reloadCounts[videoId] ?: 0
+
+  /** 播放真正恢复(首个非 init MEDIA_END)后清零,打断 reload 链。 */
+  fun resetReloadCount(videoId: String) {
+    reloadCounts.remove(videoId)
+  }
+
+  /**
    * alpha.66/67:会话级 PO token 状态(holder,避免 data class [Entry] 加 var 破坏 equals)。
    * [currentPoToken] 初始=[SabrSession.poToken];status=2 时由 [SabrMediaFetcher.media] **同步**重铸
    * 换新(对齐 LibreTube,下个请求一定带新 token)。提升到会话级(非 fetcher 实例)——切清晰度重建

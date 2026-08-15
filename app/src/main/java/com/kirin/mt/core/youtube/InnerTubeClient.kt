@@ -3,6 +3,7 @@ package com.kirin.mt.core.youtube
 import android.util.Base64
 import android.util.Log
 import java.io.ByteArrayOutputStream
+import java.security.SecureRandom
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -155,6 +156,9 @@ class InnerTubeClient(
         .header("X-Goog-API-Format-Version", YoutubeConstants.AndroidGoogApiFormatVersion)
         .header("X-Youtube-Client-Version", YoutubeConstants.AndroidClientVersion)
         .header("X-Youtube-Client-Name", "30")
+      Client.VISION_OS -> requestBuilder
+        .header("X-Youtube-Client-Version", "1.02")
+        .header("X-Youtube-Client-Name", "95")
     }
 
     httpClient.newCall(requestBuilder.build()).execute().use { response ->
@@ -169,6 +173,75 @@ class InnerTubeClient(
       runCatching { json.parseToJsonElement(text).jsonObject }
         .getOrElse { throw YoutubeApiException(response.code, text, "InnerTube $endpoint returned invalid JSON") }
     }
+  }
+
+  /**
+   * Phase 2 取证:用 visionOS native client 重打 /player,**原样回传 reloadToken** 进
+   * `playbackContext.reloadPlaybackContext.reloadPlaybackParams.token`,换新
+   * `serverAbrStreamingUrl + videoPlaybackUstreamerConfig`(RELOAD 官方处理,对齐 FreeTube 消费方)。
+   *
+   * 走 GAPIS base + visionOS client(对齐 NewPipe getVisionOsPlayerResponse);body 镜像 NewPipe
+   * `prepareJsonBuilder`+`addVideoIdCpnAndOkChecks`,外加 reloadPlaybackContext;**无** contentPlaybackContext、
+   * 无 PO token(visionOS native 客户端不带)。OkHttp 直连(不走 WebView)。
+   *
+   * @return 响应根 JsonObject(调用方用 parseSabrData 读 serverAbrStreamingUrl/ustreamerConfig)。
+   */
+  suspend fun postVisionOsPlayerReload(videoId: String, reloadToken: String): JsonObject = withContext(Dispatchers.IO) {
+    ensureRealSessionData()
+    val cpn = randomCpn16()
+    val body = buildJsonObject {
+      put("videoId", videoId)
+      put("cpn", cpn)
+      put("contentCheckOk", true)
+      put("racyCheckOk", true)
+      put(
+        "playbackContext",
+        buildJsonObject {
+          put(
+            "reloadPlaybackContext",
+            buildJsonObject {
+              put(
+                "reloadPlaybackParams",
+                buildJsonObject { put("token", reloadToken) },
+              )
+            },
+          )
+        },
+      )
+      put("context", buildContext(client = Client.VISION_OS))
+    }
+    Log.i(
+      Tag,
+      "postVisionOsPlayerReload videoId=$videoId reloadTokenLen=${reloadToken.length} cpn=$cpn bodyLen=${body.toString().length}B"
+    )
+    val url = "${YoutubeConstants.InnerTubeGapisBase}/${YoutubeConstants.ApiVersion}/player" +
+      "?key=${YoutubeConstants.ApiKey}&prettyPrint=false&alt=json&id=$videoId"
+    val request = Request.Builder()
+      .url(url)
+      .post(body.toString().toRequestBody(JsonMediaType))
+      .header("Content-Type", "application/json")
+      .header("User-Agent", Client.VISION_OS.userAgent)
+      .header("X-Goog-Visitor-Id", currentVisitorData())
+      .build()
+    httpClient.newCall(request).execute().use { response ->
+      val text = response.body?.string().orEmpty()
+      if (!response.isSuccessful) {
+        throw YoutubeApiException(
+          statusCode = response.code,
+          responseBody = text,
+          message = "visionOS player reload failed with status ${response.code}",
+        )
+      }
+      runCatching { json.parseToJsonElement(text).jsonObject }
+        .getOrElse { throw YoutubeApiException(response.code, text, "visionOS player reload returned invalid JSON") }
+    }
+  }
+
+  /** 16 字节随机 → base64url 无 padding(对齐 youtubei.js 16 位 cpn / SabrClient.randomCpn)。 */
+  private fun randomCpn16(): String {
+    val bytes = ByteArray(16)
+    SecureRandom().nextBytes(bytes)
+    return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
   }
 
   /**
@@ -278,7 +351,9 @@ class InnerTubeClient(
     WEB,
     WEB_EMBEDDED,
     ANDROID,
-    TVHTML5;
+    TVHTML5,
+    // Phase 2 取证:visionOS native 客户端(NewPipe SABR getInfo 用的 client,对齐 ofVisionOsClient)。
+    VISION_OS;
 
     val userAgent: String
       get() = when (this) {
@@ -287,6 +362,8 @@ class InnerTubeClient(
         ANDROID -> YoutubeConstants.AndroidUserAgent
         // TVHTML5 用 Cobalt TV UA(对齐 YouTube 官方 TV 端,试验)。
         TVHTML5 -> YoutubeConstants.TvHtml5UserAgent
+        // visionOS native UA(对齐 NewPipe getVisionOsUserAgent())。
+        VISION_OS -> "com.google.visionos.youtube/1.02(RealityDevice14,1; U; CPU visionOS 25_6_0 like Mac OS X; ${YoutubeContentLocale.gl})"
       }
   }
 
@@ -362,6 +439,21 @@ class InnerTubeClient(
               put("utcOffsetMinutes", 0)
               put("timeZone", realSessionData?.timeZone ?: "Asia/Shanghai")
             }
+            // Phase 2 取证:visionOS native client(对齐 NewPipe ofVisionOsClient)。
+            // 无浏览器指纹/mainAppWebInfo/thirdParty——native 客户端不带这些。
+            Client.VISION_OS -> {
+              put("clientName", "VISIONOS")
+              put("clientVersion", "1.02")
+              put("hl", YoutubeContentLocale.hl)
+              put("gl", YoutubeContentLocale.gl)
+              put("platform", "MOBILE")
+              put("clientFormFactor", "UNKNOWN_FORM_FACTOR")
+              put("clientScreen", "WATCH")
+              put("deviceMake", "Apple")
+              put("deviceModel", "RealityDevice14,1")
+              put("osName", "visionOS")
+              put("osVersion", "25.6.0.23O471")
+            }
           }
           put("visitorData", currentVisitorData())
         },
@@ -401,12 +493,14 @@ class InnerTubeClient(
       Client.WEB_EMBEDDED -> YoutubeConstants.WebEmbeddedClientNameId
       Client.ANDROID -> "30"
       Client.TVHTML5 -> YoutubeConstants.TvHtml5ClientNameId
+      Client.VISION_OS -> "95"
     }
     val clientVersion = when (client) {
       Client.WEB -> currentClientVersion()
       Client.WEB_EMBEDDED -> YoutubeConstants.WebEmbeddedClientVersion
       Client.ANDROID -> YoutubeConstants.AndroidClientVersion
       Client.TVHTML5 -> YoutubeConstants.TvHtml5ClientVersion
+      Client.VISION_OS -> "1.02"
     }
     val headers = mutableMapOf(
       "Content-Type" to "application/json",
