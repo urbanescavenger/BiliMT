@@ -734,6 +734,13 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 - 两者不一致 → 服务端会话绑 313、客户端请求 136 → `RELOAD_PLAYER_RESPONSE`(part 46)。visionOS reload 重打 /player 后新会话**仍绑 313**,循环不止。第一个视频能播是因为其最高分辨率(itag137)恰好等于播放选轨,两者匹配。
 - **修复**:把 `youtubeDefaultQuality` 传进 `buildSabrSessionFromNewPipe` / `buildSabrSessionFromReloadPlayer`,用与 `buildSabrPlaybackInfo` 完全相同的 `maxHeight` 选档逻辑选会话 `videoFormatId`,而非盲取最高分辨率首条。两条 harvest 路径(NewPipe + visionOS reload)都修。补诊断日志(harvest 选轨 + PlaybackInfo 会话格式)确认匹配。
 
+**alpha.11 补(UA 与 visionOS clientInfo 不匹配 → RELOAD 全拒,独立于选轨不一致)**:alpha.10 后真机 2026-08-16 再次 `jNl6YkkzKxw` 无限 RELOAD(首 fetch 即 `RELOAD_PLAYER_RESPONSE`,count 1→…→8 死循环)。逐行对比两个视频日志定位**新增独立根因**在 [YoutubePlaybackResolver.kt](app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt) NewPipe 常规路径 `buildSabrSessionFromNewPipe`:
+- protobuf `ClientInfo` = **visionOS**(`visionOsSabrClientInfo()`:clientName=101/Apple/RealityDevice14,1/visionOS 25.6.0,逐字对齐 LibreTube `SabrClient.kt:398-405`),`ustreamerConfig` 也是 visionOS(NewPipe getInfo 返回)。
+- 但 `SabrSession.fromSabrData(...)` 的 **HTTP `User-Agent` 用了 `Client.WEB.userAgent`**(`Mozilla/5.0 (Linux; Android 13; Pixel 7)`),日志 473 行坐实 `ua=Mozilla/5.0 (Linux; Android 13; Pixel 7)`。
+- 服务端看到 protobuf 声明 visionOS 客户端、HTTP 头却是 Android Chrome → 判客户端标识不一致 → `RELOAD_PLAYER` 全拒。第一个视频 `qPR91wHXPvo` 能播是因为走 **SABR session reuse**(旧会话 UA 正确),没踩这条新路径。
+- 对照 visionOS reload 路径(`buildSabrSessionFromReloadPlayer`,`fromSabrData` 的 `userAgent = Client.VISION_OS.userAgent`)UA 已用对,本次只是重打 /player 失败(`no serverAbrStreamingUrl/ustreamerConfig → fallback`)没走到。LibreTube `SabrClient` 全组件 visionOS 一致(UA + ClientInfo + ustreamerConfig),故能播。
+- **修复**:NewPipe 路径 `userAgent = Client.WEB.userAgent` 改 `Client.VISION_OS.userAgent`,与 clientInfo/ustreamerConfig 对齐。保留 WEB cookie/visitor 作为对照基线;若真机仍 RELOAD,再摘 WEB cookie(对齐 LibreTube 不带 HTTP cookie,靠 protobuf playbackCookie)。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

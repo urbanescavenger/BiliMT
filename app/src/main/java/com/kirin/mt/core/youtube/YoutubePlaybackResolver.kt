@@ -692,7 +692,10 @@ class YoutubePlaybackResolver(
       innerTubeClient.visionOsSabrClientInfo(),
       aFmt,
       vFmt,
-      userAgent = InnerTubeClient.Client.WEB.userAgent,
+      // alpha.78:HTTP UA 必须与 clientInfo/ustreamerConfig 同为 visionOS。此前用 WEB UA(clientName=101
+      // visionOS 的 protobuf + Mozilla/5.0 Pixel 7 的 HTTP 头)被服务端判客户端不一致 → RELOAD_PLAYER 全拒
+      // (真机 2026-08-16:NewPipe 新会话首 fetch 即 RELOAD,死循环)。对齐 LibreTube SabrClient 全 visionOS。
+      userAgent = InnerTubeClient.Client.VISION_OS.userAgent,
       cookieHeader = innerTubeClient.currentSessionCookies(),
       visitorData = innerTubeClient.currentVisitorData(),
       videoFormats = videoFormats,
