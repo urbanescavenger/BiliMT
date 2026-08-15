@@ -1,5 +1,24 @@
 # BiliMT 版本发布说明
 
+## v3.0.2-alpha.8
+
+**SABR RELOAD 双线诊断**(测试 alpha,诊断级不改默认播放行为):alpha.7 崩溃修复后 RELOAD 诊断稳定(reloadTokenLen=144 恒定)。本版并行取证两条修复路径——Fix T(根治 token 缓存链路)+ Phase 2(RELOAD 回传重打 visionOS /player),一轮云编译同时看两边真机日志。
+
+### 变更
+- **Fix T 取证**(纯日志):`BiliTvPoTokenProvider` 各 provider 方法加入口/结果日志——定位 getInfo 期间到底哪个被调、缓存为何空(疑:visionOS 走 `getIosClientPoToken`→null→缓存恒空→回退 resolve-minted 128B **WEB** token 与 visionOS 绑定的 ustreamerConfig 不匹配→RELOAD)。
+- **Phase 2 取证**(RELOAD 回传,成功即试用):
+  - `SabrStreamRegistry`:新增 `pendingReloads`(reloadToken 停车,独立于 sessions,**evict 不清**)+ `reloadCounts`/`MAX_RELOADS=3` 计数防死循环。
+  - `SabrMediaFetcher.processPart` RELOAD 分支:把 reloadToken 停车进 registry。
+  - `InnerTubeClient`:新增 `Client.VISION_OS`(镜像 NewPipe visionOS client)+ `postVisionOsPlayerReload`(GAPIS + body + `playbackContext.reloadPlaybackContext.reloadPlaybackParams.token`)。
+  - `YoutubePlaybackResolver`:`parseSabrData` + `buildSabrSessionFromReloadPlayer` + resolve() 重进时 `consumeReloadToken` → 重打 visionOS /player 换新会话,成功即注册播放。reloadToken 是 reload 凭证,**不是** poToken 替代(StreamerContext 仍用 provider-cached/resolve-minted 128B)。
+- **不改默认播放行为**:RELOAD 仍 terminal → evict → 错误重试;仅当 reload 回传成功建会话时才试用新会话。完整闭环(UI error-budget 解耦 + MAX_RELOADS 落 DASH)留诊断通过后。
+
+### 待真机验证(播 `jNl6YkkzKxw`,读 `logs_live.log`)
+- **Fix T 侧**(`BiliTvPoToken`):getInfo 期间看到 `getIosClientPoToken → null`(或 visionOS provider 入口)→ 证实缓存为何空,定根治方向。
+- **Phase 2 侧**(`YtResolver`):`storeReloadToken ... tokenLen=144` → `SABR reload session: sabrUrl present=YES/NO` → YES 则 `SABR reload playback ready: sid=...` + 后续 `FORMAT_INITIALIZATION_METADATA`/`MEDIA_END` → **起播 = Phase 2 成立**;NO 则查 body 复刻或转 Fix T。
+
+---
+
 ## v3.0.2-alpha.7
 
 **RELOAD 解码崩溃修复**(测试 alpha):alpha.6 真机(`jNl6YkkzKxw`)每次 fetch 都抛 `IndexOutOfBoundsException: toIndex (N) is greater than size (M)`(N=279775/443615/5623/80,M=100/11),播放器 retry 3 次后放弃。根因=alpha.6 新增的 `decodeReloadPlayer` 对 base64 解出的**非 protobuf 字节**用 `ProtoReader` 遍历,读到越界 LEN 长度 → `ProtoWire.kt:119 data.copyOfRange(s,s+len)` 抛(项目唯一 to 可 > size 的 copyOfRange)。本版加两层防御:通用越界保护 + 诊断解析 try-catch,崩溃消失、RELOAD 诊断稳定。仍按 Phase 1 evict(诊断中间态,播放修复在 Phase 2 回传 reload context 重打 /player)。
