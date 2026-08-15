@@ -1,5 +1,20 @@
 # BiliMT 版本发布说明
 
+## v3.0.2-alpha.10
+
+**SABR 会话 videoFormatId 与播放轨道 itag 不匹配 → RELOAD 死循环修复**(测试 alpha):真机日志第一个视频 qPR91wHXPvo 能播、第二个 jNl6YkkzKxw 无限 `RELOAD_PLAYER_RESPONSE`。根因是**两次选轨不一致**——harvest 盲取最高分辨率首条作会话 `videoFormatId`(jNl6YkkzKxw → itag313 2160p VP9),`buildSabrPlaybackInfo` 按 `youtubeDefaultQuality.maxHeight` 上限选播放轨道(itag136 720p H.264)。服务端会话绑 313、客户端请求 136 → RELOAD 死循环;visionOS reload 重打 /player 后新会话仍绑 313,循环不止。第一个视频能播是因为其最高分辨率(itag137)恰好等于播放选轨。
+
+### 变更
+- **harvest 选轨对齐播放选档**(`YoutubePlaybackResolver`):把 `youtubeDefaultQuality` 传进 `buildSabrSessionFromNewPipe` / `buildSabrSessionFromReloadPlayer`,用与 `buildSabrPlaybackInfo` 完全相同的 `maxHeight` 选档逻辑选会话 `videoFormatId`,而非盲取最高分辨率首条。两条 harvest 路径(NewPipe + visionOS reload)都修。
+- **诊断日志**:harvest 选轨结果(`NewPipe SABR harvest: ... defaultItag=... firstVideo=itag...`)+ `buildSabrPlaybackInfo` 日志补 `sessionVideo=itag...`,真机确认会话格式与播放轨道匹配。
+
+### 待真机验证(播 `jNl6YkkzKxw`,读 `logs_live.log`)
+- `NewPipe SABR harvest: ... defaultItag=136 firstVideo=itag136(720p)` — harvest 选轨与播放一致。
+- `SABR PlaybackInfo: ... sessionVideo=itag136 selected=itag136` — 会话格式 == 播放轨道。
+- 不再出现 `RELOAD_PLAYER_RESPONSE` 死循环,视频正常出帧。
+
+---
+
 ## v3.0.2-alpha.9
 
 **SABR RELOAD 双线诊断 Phase 2 修复 + Fix T 取证定论**(测试 alpha,诊断不改默认播放行为):alpha.8 真机日志**一次 Phase 2 reload 尝试都没发过**——`storeReloadToken` 对每次 RELOAD part(rn=0..7,单次尝试约 8 个)都 +1 且从不重置,resolve 重跑时 count 已 16 > MAX=3,reload 尝试永远被 cap 跳过。本版修复该计数污染,**并** Fix T 取证一锤定音。

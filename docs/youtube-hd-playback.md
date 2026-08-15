@@ -728,6 +728,12 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 - **cap 计数污染修复**:`consumeReloadToken` 原子 one-shot-per-token 本就保证每 token 一次,累积 count 对 loop 兜底冗余 → 每次 consume 到 token 就把 count 归零 → 每个 resolve 周期恰好试一次 visionOS /player reload。`MAX_RELOADS` 保留待完整闭环(DASH 落底)。
 - **Fix T 取证定论(根治方向改道)**:`NewPipeHolder: PoTokenProvider set` 但整个日志 **`BiliTvPoToken` 零条入口日志**——`getWebClientPoToken`/`getIosClientPoToken` 一次没被调,而 NewPipe visionOS `getInfo` 明明跑了(建出 `NewPipe SABR session`)。→ **visionOS getInfo 完全绕开 `BiliTvPoTokenProvider`**,`cached` 恒空是必然。根治方向**不是修 provider cache**,而是 resolver 自铸 token **注入 visionOS /player**(正与 Phase 2 回传同一件事;若 Phase 2 回传成功则无需另做注入)。
 
+**alpha.10 补(RELOAD 死循环真因定论 + 修复)**:alpha.9 后真机日志**第一个视频 qPR91wHXPvo 能播、第二个 jNl6YkkzKxw 无限 RELOAD**。逐行对比两视频日志,定位真因是**两次选轨不一致**:
+- **Harvest 选轨**(会话格式):`buildSabrSessionFromNewPipe` 盲取最高分辨率首条视频流作会话 `videoFormatId`(jNl6YkkzKxw → itag313 2160p VP9)。服务端把会话绑定到这个格式。
+- **PlaybackInfo 选轨**(播放轨道):`buildSabrPlaybackInfo` 按 `youtubeDefaultQuality.maxHeight` 上限选实际播放 itag(jNl6YkkzKxw 无 1080p → 落 itag136 720p H.264)。
+- 两者不一致 → 服务端会话绑 313、客户端请求 136 → `RELOAD_PLAYER_RESPONSE`(part 46)。visionOS reload 重打 /player 后新会话**仍绑 313**,循环不止。第一个视频能播是因为其最高分辨率(itag137)恰好等于播放选轨,两者匹配。
+- **修复**:把 `youtubeDefaultQuality` 传进 `buildSabrSessionFromNewPipe` / `buildSabrSessionFromReloadPlayer`,用与 `buildSabrPlaybackInfo` 完全相同的 `maxHeight` 选档逻辑选会话 `videoFormatId`,而非盲取最高分辨率首条。两条 harvest 路径(NewPipe + visionOS reload)都修。补诊断日志(harvest 选轨 + PlaybackInfo 会话格式)确认匹配。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
