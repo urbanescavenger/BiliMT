@@ -1,5 +1,21 @@
 # BiliMT 版本发布说明
 
+## v3.0.2-alpha.6
+
+**RELOAD 解码对齐权威 schema + 定位正确修复方向**(测试 alpha,诊断不改播放行为):alpha.5 的 RELOAD 解析真机发现新格式把 videoId/token 套进额外一层 field1(原解析只看顶层→全 null),本版改**递归下钻**;并**联网查证 LuanRT/googlevideo 权威 proto**,坐实 `ReloadPlaybackParams.token` = 整串 base64(要回传新 /player 的凭证,非 poToken),纠正了「token-swap 重试」的错误方向——正确修复是回传 reload context 重打 /player 换新 sabrUrl。
+
+### 变更
+- **`SabrProto.decodeReloadPlayer` 递归下钻**:兼容新旧嵌套(新格式 f4/f5 套在额外 field1 里),输出 `reloadToken`(整串 base64,ReloadPlaybackParams.token)+ 再解一层的 `videoId`/`innerToken`/`field7`。
+- **对齐权威 schema**(`reload_player_response.proto`):`ReloadPlaybackContext{reload_playback_params:{token}}`。reloadToken 是服务端下发的 reload 凭证,**不是 poToken**;27B 短串是内层子 token,非凭证。
+- **`SabrMediaFetcher` log**:`reloadTokenLen`/`reloadTokenDecodedHex`/`innerToken`/`innerTokenDecodedHex`/`field7Hex`。
+- **不改播放行为**:RELOAD 仍按现逻辑 terminal,不引入回归。
+- **docs §6.16 补权威处理流程**:`SabrStreamingAdapter` 收到 RELOAD → 回调消费方 → 重打 /player(带 reloadPlaybackContext)换新 sabrUrl+ustreamerConfig → 清 formats 重试;Phase 2 改走此路径。
+
+### 待真机验证
+- 播 `jNl6YkkzKxw`,读 `logs_live.log` 的 `RELOAD_PLAYER_RESPONSE` 行,确认 `reloadToken` 长度/稳定性/含 videoId,为 Phase 2(visionOS /player 重打 + 回传 reload context)定实现。
+
+---
+
 ## v3.0.2-alpha.5
 
 **SABR RELOAD_PLAYER_RESPONSE 结构化解析(诊断,不改播放行为)**(测试 alpha):定位 YouTube 视频 `jNl6YkkzKxw` 无法播放的根因链路——WEB `/player` 全被 PO 锁死 → 回退 SABR → 首段即收到 RELOAD_PLAYER_RESPONSE → 代码当 terminal → 播放失败。本版新增结构化解析,证明服务端 RELOAD payload 内层 base64 解出的 proto 含 **videoId + 一枚新 token(field5) + field7 raw**,而非泛泛的「重打 /player」指令,为后续「token 换入同 sabrUrl 重试」(Fix A)铺路。
