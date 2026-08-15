@@ -1,5 +1,21 @@
 # BiliMT 版本发布说明
 
+## v3.0.2-alpha.4
+
+**TV 视频退出焦点被头像抢占根治**(测试 alpha):退出视频后焦点恢复 effect 成功把焦点拉回原视频卡片,但约 250~300ms 后 Compose 焦点系统在内容从 `SaveableStateHolder` 还原后做了一次「延迟焦点回落」,把焦点落到侧栏第一个可聚焦节点(头像),用户看到焦点环跳到头像/「我的」页 = 「焦点消失」。根因是现有 `suppressAccountAutoConfirm` 只抑制了头像的 autoConfirm(不打开「我的」页),**没阻止头像「接收焦点」**,且抑制在 `restore success` 那一刻就被撤掉,比延迟回落早。
+
+### 变更
+- **`BiliFocusableSurface` 加 `enabled` 参数**:false 时在 `focusable()`/`clickable()` 之后加 `focusProperties { canFocus = false }`,让节点真正不可聚焦(而非仅抑制 autoConfirm)。
+- **`AppSidebar` 抑制时侧栏不可聚焦**:视频退出恢复窗口内,头像 + 导航项传 `enabled = !suppressAccountAutoConfirm`,延迟焦点回落无处可落,只能留在视频卡片。
+- **`AppShell` 延长抑制窗口**:`clearFocusRestoreRequest` 从立即清 `playbackFocusRestoreDestination` 改成延迟 400ms 清(新增 `PlaybackFocusRestoreSuppressHoldMs`),覆盖 ~250~300ms 的延迟回落;延迟清不会让恢复 effect 重跑,backstop(600 帧 ≈ 10s)也远长于 400ms 不会误清。
+
+### 待真机验证
+- 退出视频后焦点稳定停在原视频卡片,不跳头像、不打开「我的」页。
+- 日志 grep `BiliMT:Focus` 确认 `restore success` 后不再出现 `avatar focused`。
+- 回归:正常侧栏导航(头像/导航项聚焦、autoConfirm 打开「我的」页)不受影响。
+
+---
+
 ## v3.0.2-alpha.3
 
 **YouTube 订阅流全面修复排序与完整性**(测试 alpha):移动端「动态」合并 YouTube 关注的排序不对 + 不全,根因 5 个,本版逐一修掉,并把 TV 首页「YouTube 热门」tab 对齐成关注动态。
