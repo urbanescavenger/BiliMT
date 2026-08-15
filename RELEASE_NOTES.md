@@ -1,5 +1,19 @@
 # BiliMT 版本发布说明
 
+## v3.0.2-alpha.7
+
+**RELOAD 解码崩溃修复**(测试 alpha):alpha.6 真机(`jNl6YkkzKxw`)每次 fetch 都抛 `IndexOutOfBoundsException: toIndex (N) is greater than size (M)`(N=279775/443615/5623/80,M=100/11),播放器 retry 3 次后放弃。根因=alpha.6 新增的 `decodeReloadPlayer` 对 base64 解出的**非 protobuf 字节**用 `ProtoReader` 遍历,读到越界 LEN 长度 → `ProtoWire.kt:119 data.copyOfRange(s,s+len)` 抛(项目唯一 to 可 > size 的 copyOfRange)。本版加两层防御:通用越界保护 + 诊断解析 try-catch,崩溃消失、RELOAD 诊断稳定。仍按 Phase 1 evict(诊断中间态,播放修复在 Phase 2 回传 reload context 重打 /player)。
+
+### 变更
+- **`ProtoReader` WIRE_LEN 越界保护**(`ProtoWire.kt`):`s+len>end` 时跳到结尾返回空字节,不 `copyOfRange`——通用防任何坏/截断 proto 崩(RELOAD 内层 base64 解出的非 protobuf 字节即触发源)。
+- **`decodeReloadPlayer` 整体 try-catch**(`SabrProto.kt`):解析失败返回空 dump 不抛,`processPart` 仍打 RELOAD 日志,诊断稳定。
+- **不改播放行为**:RELOAD 仍按现逻辑 terminal(Phase 1),Phase 2 才回传 reload context。
+
+### 待真机验证
+- 播 `jNl6YkkzKxw`,读 `logs_live.log`,确认**不再出现** `IndexOutOfBoundsException: toIndex`,且 `RELOAD_PLAYER_RESPONSE` 诊断行稳定(不因 payload 内容差异崩溃)。
+
+---
+
 ## v3.0.2-alpha.6
 
 **RELOAD 解码对齐权威 schema + 定位正确修复方向**(测试 alpha,诊断不改播放行为):alpha.5 的 RELOAD 解析真机发现新格式把 videoId/token 套进额外一层 field1(原解析只看顶层→全 null),本版改**递归下钻**;并**联网查证 LuanRT/googlevideo 权威 proto**,坐实 `ReloadPlaybackParams.token` = 整串 base64(要回传新 /player 的凭证,非 poToken),纠正了「token-swap 重试」的错误方向——正确修复是回传 reload context 重打 /player 换新 sabrUrl。
