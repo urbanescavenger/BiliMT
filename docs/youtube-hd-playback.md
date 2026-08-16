@@ -777,6 +777,13 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 
 **修复**:resolver 两条路径(NewPipe + visionOS reload)新增 `queryParam` 提取 `visionOsCpn` 传给 `fromSabrData` 的 `cpn` 参数,不再用随机 cpn。诊断:会话日志加 `cpn=${visionOsCpn ?: "random"}` 确认修复生效。**另发现唯一请求体差异** = `ClientAbrState.audioTrackId`(field69,LibreTube 设、BiliTV 未设),jNl6YkkzKxw 有 5 音轨,若 cpn 修复后仍 RELOAD 则补该字段。
 
+**alpha.16 补(推翻 alpha.15 定论——根因是 audioTrackId 缺失,不是 cpn)**:alpha.15 用 visionOsCpn 后真机 2026-08-16 同一视频 `jNl6YkkzKxw`(2160p itag313,5 音轨)**仍无限 RELOAD**(日志 `cpn=3JCKzaTn291g3g5n` 与 sabrUrl `&cpn=` 一致,坐实 cpn 修复已生效、无关),但 `3wO2mW3eylw`(1080p itag137)能播。逐层对比 LibreTube 与 BiliTV 的 SABR 请求体,唯一实质差异 = **`ClientAbrState.audio_track_id`(field69)**:
+- **LibreTube 设** [SabrClient.kt:375](e:/GITHUB/LibreTube/app/src/main/java/com/github/libretube/player/parser/SabrClient.kt#L375) `.setAudioTrackId(audioFormat?.stream?.audioTrackId.orEmpty())`——当前选中音轨 id(如 "en.4"),单音轨发空串。
+- **BiliTV 未设**:`ClientAbrStateInput` 无该字段、`encodeClientAbrState` 未编码 field69。多音轨视频服务端按会话音轨不匹配 RELOAD_PLAYER 全拒;1080p 不强制校验故能播(与 alpha.15 同模式)。
+- 权威 schema `client_abr_state.proto`:field69 `audio_track_id`(string)。
+
+**修复**:①`SabrProto.ClientAbrStateInput` 加 `audioTrackId`,`encodeClientAbrState` 编码 `w.string(69, it)`;②两条 fetch 路径(`SabrMediaFetcher` media3 实际播放路径 + `SabrClient`)按 itag 命中 `session.audioTracks` 当前音轨 id——单音轨 resolver 折叠成 `"default"`(audioTrackId null),对齐 LibreTube 发空串 `""`(非 `"default"`),多音轨发真实 id(如 `en.4`)。**连带修复**`ProtoReader.nextField`(ProtoWire.kt)对 malformed varint 负长度的越界——原只判 `s+len>end` 正溢出,负长度 `copyOfRange(s,s+len)` 抛 `IllegalArgumentException(from>to)`/`ArrayIndexOutOfBounds`(真机 RELOAD 间歇 `decode failed: 34 > -618552673` / `length=37; index=37`),补 `len<0` 判越界。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
