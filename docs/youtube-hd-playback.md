@@ -874,6 +874,15 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 
 **真机验证状态**:待测。alpha.84 默认全关,行为与 alpha.83 一致;手动开 `youtubeUsePiped` 后走 Piped 路径,预期 jNl6YkkzKxw(需 attestation)能播、D2kXTmSPUJo 仍能播。若 Piped 实例不可达/被限流,自动回退 NewPipe(不退化)。`sabrForceSessionVideoItag` 开后预期 NewPipe 路径仍 RELOAD(证伪 itag 红绯鱼)。
 
+**alpha.85(移动端设置页补 Piped 入口——alpha.84 验证受阻根因 + 修复)**:alpha.84 推送后真机仍"有的能播有的不行"(`logs_live.log` 2026-08-17 00:07 窗口:jNl6YkkzKxw 94 次 RELOAD,D2kXTmSPUJo/-GZatCruA8c 各 2 次能播)。排查定位**两个叠加问题**:
+
+1. **装的包是 Piped 代码之前的老包**:真机日志 `App Version: 3.0.2-alpha.19 (3002119)` → tag `v3.0.2-alpha.19` → commit `67d60ff`(8/16 21:45),而 Piped 修复在 `03d6e11`(8/16 23:49)。该包 resolve() **根本没有 Piped 分支**,整份日志零条 `source=Piped`/`Piped path` 行,全部 `source=NewPipe` → 自然仍是 alpha.83 的旧行为。
+2. **移动端设置页没有 Piped 开关入口**:alpha.84 的三行(启用 Piped / Piped 实例 / 锁定会话 itag)**只加到 TV 端 `ui/settings/SettingsScreen.kt`(L1024)**,移动端 `ui/mobile/settings/MobileSettingsScreen.kt` 漏了。用户在移动端无处开 `youtubeUsePiped` → 即便装含 Piped 代码的包也恒 false → 永远走 NewPipe 旧路径。这是用户报告"移动版里没有实例设置位置"的直接根因。
+
+**修复**(commit `22475dc`):照移动端已有 `MobileIptvSection` 折叠段模式,在 `MobileSettingsScreen.kt` 加 `MobileYoutubeSabrSection`(「YouTube SABR 实验」折叠段):启用 Piped 开关 → `setYoutubeUsePiped`、Piped 实例行(点按 `MobilePipedEditDialog` 编辑,`normalizeIptvUrl` 补协议,空串=默认 `DEFAULT_PIPED_INSTANCE`)→ `setPipedInstanceUrl`、锁定会话 itag 开关 → `setSabrForceSessionVideoItag`;新增段头字符串 `settings_youtube_sabr_section`。store setter / resolve() Piped 分支 / `PipedClient` 注入此前均已就位,本次仅补移动端 UI 入口。移动端设置页直接调 `appSettingsStore` setter(与其它移动端设置同款),无需穿 AppShell 回调。
+
+**真机验证状态**:待测(装新 debug 包后)。CI 已绿(debug 运行 `31957948314`,`BiliMT-debug.apk` 已更新到 'debug' release)。需装含本修复的新 debug 包(旧 `alpha.19` 包无 Piped 代码),进移动端「设置 → YouTube SABR 实验」段开「启用 Piped 后端」(实例留空=默认 `kavin.rocks`),再播 `jNl6YkkzKxw` 验证 Piped 路径修好 RELOAD,同时播 `D2kXTmSPUJo` 确认无回归。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
