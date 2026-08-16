@@ -864,6 +864,16 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 
 **§6.10 Path C 认识更正**:§6.10 / alpha.15-16「逐字对齐 LibreTube NewPipe」对比的是 LibreTube 的**可选 NewPipe 提取模式**,而非其**默认 Piped 路径**。LibreTube 能播 jNl6YkkzKxw 是 Piped 路径成果,不是 NewPipe。故「逐字对齐 LibreTube NewPipe SABR」对错了参照系——对齐的应是 LibreTube 的 **Piped 路径**(ustreamerConfig 来源),NewPipe 对齐只能保证下游协议层一致,修不到 attestation 根因。
 
+**alpha.84(接 Piped 后端 opt-in 修 RELOAD + itag 无关诊断 + 文档纠误)**:落地「alpha.83 更正」的修复方案——接 Piped 后端产出 SABR 会话,而非继续在 NewPipe/itag 上打转。实现:
+
+- **PipedClient/PipedModels**(`core/youtube/piped/`):`GET {instanceUrl}/streams/{videoId}`(对齐 LibreTube `PipedMediaServiceRepository`),拿已 attested 的 WEB-bound `serverAbrStreamingUrl` + `videoPlaybackUstreamerConfig`。模型全字段可空/默认,实例版本漂移不崩;HTTP/解析失败返回 null 由 resolver 回退 NewPipe。默认实例 `DEFAULT_PIPED_INSTANCE = https://pipedapi.kavin.rocks`(对齐 LibreTube 默认 kavin.rocks)。
+- **resolve() Piped opt-in 分支**(`YoutubePlaybackResolver`):`resolve()` 顶部(在 poToken mint 之前)读 `appSettingsStore.settings`,若 `youtubeUsePiped` 开 → 走 Piped 拿 SABR 数据 → `buildSabrSessionFromPiped` 把 `PipedStreams` 转成与 `newPipeVideoRaw`/`newPipeAudioRaw` **同形**的 `JsonObject` raws(复用现有 `buildSabrPlaybackInfo` + `buildSabrTrack`,免重复 ~80 行选轨逻辑)→ `registerByVideoId` 建会话返回。Piped 失败/无 SABR 数据自动回退 NewPipe(原路径不变)。Piped 首请求发**空 poToken**(对齐 LibreTube Piped:status=2 时才铸 WEB poToken 续命)。
+- **itag 无关诊断**(`sabrForceSessionVideoItag`):`SabrStreamRegistry.Entry` 加 `forceSessionVideoItag` 字段;`SabrMediaFetcher.fetchStreamData` 开启时强制 `videoFormat = session.videoFormatId`(跳过 `selectFormat` 按声明 itag 重选)——证伪「某 itag(如 itag313)是 RELOAD 根因」红绯鱼。锁死后仍 RELOAD → 根因在 ustreamerConfig 来源(已由 alpha.83 更正定论)。Piped 路径默认开此项(配合 Piped 已 attested config 验证 itag 确实无关);NewPipe 路径可手动开。
+- **设置项**:`youtubeUsePiped`(开关)/`pipedInstanceUrl`(实例 URL,空=默认)/`sabrForceSessionVideoItag`(诊断开关)三字段入 `AppSettings`/`AppSettingsStore`(DataStore 持久化);`SettingsScreen` YouTube 区加三行(`SettingsPipedDialog` 编辑实例 URL,两个 `SettingsToggleRow`),焦点索引体系扩 35/36/37 + `settingsItemToLazyIndex` 全量重算(webdav..player-log-overlay +3);`AppShell` 接三回调。默认全关(先走现有 NewPipe,RELOAD 卡死时手动开 Piped 作回退/诊断)。
+- **文档纠误**:已就地纠正 itag248=opus(实为 vp9 720p 视频)、RELOAD 真因=ustreamerConfig 来源(visionOS 未 attested,非 itag/poToken/ClientInfo)的错误认识,保留排查痕迹(⚠️ 推翻指针 + 「alpha.83 更正」权威块,不删调查历史)。
+
+**真机验证状态**:待测。alpha.84 默认全关,行为与 alpha.83 一致;手动开 `youtubeUsePiped` 后走 Piped 路径,预期 jNl6YkkzKxw(需 attestation)能播、D2kXTmSPUJo 仍能播。若 Piped 实例不可达/被限流,自动回退 NewPipe(不退化)。`sabrForceSessionVideoItag` 开后预期 NewPipe 路径仍 RELOAD(证伪 itag 红绯鱼)。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
