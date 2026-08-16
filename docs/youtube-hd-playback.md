@@ -784,6 +784,14 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 
 **修复**:①`SabrProto.ClientAbrStateInput` 加 `audioTrackId`,`encodeClientAbrState` 编码 `w.string(69, it)`;②两条 fetch 路径(`SabrMediaFetcher` media3 实际播放路径 + `SabrClient`)按 itag 命中 `session.audioTracks` 当前音轨 id——单音轨 resolver 折叠成 `"default"`(audioTrackId null),对齐 LibreTube 发空串 `""`(非 `"default"`),多音轨发真实 id(如 `en.4`)。**连带修复**`ProtoReader.nextField`(ProtoWire.kt)对 malformed varint 负长度的越界——原只判 `s+len>end` 正溢出,负长度 `copyOfRange(s,s+len)` 抛 `IllegalArgumentException(from>to)`/`ArrayIndexOutOfBounds`(真机 RELOAD 间歇 `decode failed: 34 > -618552673` / `length=37; index=37`),补 `len<0` 判越界。
 
+**alpha.81(复刻 LibreTube 多 Representation manifest——itag313 RELOAD 根因定论 + 修复)**:真机 2026-08-16(`logs_live.log` 19:35 窗口)坐实 **itag313(2160p VP9 25fps)被 RELOAD,itag315(2160p VP9 60fps)能播**——两者同为 SDR、audio xtags=null、audioTracks=5,真机是旧版本(无 audioTrackId 修复),音频配置完全一致(`audio=FormatId(itag=139, xtags=null)` 无 audioTrackId 字段)。对照:
+- **itag313 会话**(`Khsq-X3d9LJDmpMN0_g0Ag`,19:35:06):`video=FormatId(itag=313, xtags=null, height=2160)` → 19:35:07/08/11 连续 `RELOAD_PLAYER_RESPONSE` → evict → re-harvest 又选回 313 → **死循环,从未真正播放**。
+- **itag315 会话**(`K6ygr-1KklVlQV6QHMc31Q`,19:35:53):`video=FormatId(itag=315, xtags=null, height=2160)` → 日志尾部 `MEDIA_END itag=315 seq=4 chunks=679 bytes=22204473`(**实际下载 679 段 / 22MB**)→ 被 `InterruptedException` evict(用户主动停止),**非 RELOAD,正常播放**。
+
+**根因**:我们的 SABR resolver 在 harvest 时硬选一个 itag——`buildSabrSessionFromNewPipe` 用 `maxByOrNull { it.height }` 选列表里**第一个** 2160p(即 itag313),RELOAD 后 re-harvest 又选回 313 → 死循环。**LibreTube 的做法**:manifest 塞进**全部**视频流(按 mimeType 分组,`SabrManifest.kt` 的 `videoStreams.groupBy { it.mimeType }`),由 ExoPlayer 的 track selection 选——默认选轨"同分辨率选最高 bitrate"→ 选 itag315(60fps bitrate 高),绕开 313;选中后 `selectFormat()` 把该 itag 设为 `videoFormat`,请求体 `preferredVideoFormatIds` 带它。我们 `SabrMediaPeriod.selectTracks`→`selectFormat` 机制已通、`preferredVideoFormatIds` 已用选中 itag、`session.videoFormats` 已存全部 FormatId、harvest 的 `raws` 带全部视频流完整元数据——**缺的只是 manifest 只建了单视频 Representation**。
+
+**修复**(commit ab99413,run 31946273352):①`buildSabrPlaybackInfo` 建**全部视频轨** `videoTracks=allVideoTracks`(每个 itag 各一条,`buildSabrTrack` 按 itag 遍历,不再只建选中 itag 一条);②`SabrManifest.fromSession` 建**多视频 Representation** `videoReps`(每个 track 按 itag 查 FormatId 建 `Representation.fromTrack`),ExoPlayer 默认选轨选最高 bitrate 档绕开 313。**暂时去掉清晰度选择功能**:PlayerScreen Main 面板移除"清晰度"项(只剩弹幕/倍速,rowCount 3→2)、Quality 分支改死代码;MobilePlayerScreen 移除底栏 HD 画质按钮 + DropdownMenu + `showQualityMenu`。选轨/请求机制(`selectFormat`/`preferredVideoFormatIds`/`initializedFormats`)已支持多 Representation,未改。**待真机**:播 2160p 视频确认日志 `defaultItag=315`(而非 313)、无 RELOAD 死循环、能正常播放;若 ExoPlayer 选轨在某些视频仍选到 313,再评估 harvest 选 315 或 RELOAD 降级换 itag。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
