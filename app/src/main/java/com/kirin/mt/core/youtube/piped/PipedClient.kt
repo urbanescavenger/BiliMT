@@ -1,6 +1,7 @@
 package com.kirin.mt.core.youtube.piped
 
 import android.util.Log
+import com.kirin.mt.core.network.BiliHeaders
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -38,6 +39,9 @@ class PipedClient(
       .url(url)
       .get()
       .header("Accept", "application/json")
+      // 浏览器 UA:多数 Piped 实例(pipedapi.kavin.rocks 等)前置 Cloudflare,对 OkHttp 默认
+      // `okhttp/4.x` UA 直接 403。带 Chrome UA 才放行(真机日志 alpha.85 实测无 UA → 403 回退)。
+      .header("User-Agent", BiliHeaders.UserAgent)
       .build()
     try {
       httpClient.newCall(request).execute().use { response ->
