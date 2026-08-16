@@ -524,6 +524,7 @@
     <string name="settings_iptv_password_label">密码</string>
     <string name="settings_iptv_configure_hint">未配置，点按编辑</string>
     <!-- YouTube SABR 实验:Piped 后端 + itag 诊断(alpha.83) -->
+    <string name="settings_youtube_sabr_section">YouTube SABR 实验</string>
     <string name="settings_piped_title">Piped 实例</string>
     <string name="settings_piped_description">YouTube SABR 实验后端，走 Piped 拿已认证配置修 RELOAD 死循环。空串用默认实例</string>
     <string name="settings_piped_default_hint">默认实例，点按编辑</string>
