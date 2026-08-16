@@ -43,6 +43,12 @@ fun computeVersionCode(versionName: String): Int {
 
 val bilitvVersionCode = computeVersionCode(bilitvVersionName)
 
+// CI 的 debug 构建传 -PbilitvDebugRunNumber=$GITHUB_RUN_NUMBER,让 debug 版本 versionCode
+// 随构建号递增。否则每次 debug 云编译恒为 1000000(computeVersionCode("dev") 回退值),
+// 与已装旧 debug 包 versionCode 相同,Android 拒绝覆盖安装(同一 applicationId 内新包
+// versionCode 必须严格 > 已装)。release 不传此属性,为 0,不受影响。
+val debugRunNumber = providers.gradleProperty("bilitvDebugRunNumber").orNull?.toIntOrNull() ?: 0
+
 require(targetAbi == null || targetAbi in supportedAbis) {
   "Unsupported targetAbi=$targetAbi. Supported values: ${supportedAbis.joinToString()}"
 }
@@ -55,8 +61,8 @@ android {
     applicationId = "com.kirin.mt"
     minSdk = 23
     targetSdk = 36
-    versionCode = bilitvVersionCode
-    versionName = bilitvVersionName
+    versionCode = bilitvVersionCode + debugRunNumber
+    versionName = if (debugRunNumber > 0) "$bilitvVersionName.r$debugRunNumber" else bilitvVersionName
 
     ndk {
       abiFilters.clear()

@@ -121,7 +121,9 @@ jobs:
 
       - name: Build debug APK
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        run: ./gradlew clean assembleDebug --no-daemon -PbilitvBuildRoot="$GITHUB_WORKSPACE/build"
+        # 传 GITHUB_RUN_NUMBER 让 debug versionCode 随每次构建递增,避免恒为 1000000
+        # 导致 Android 拒绝覆盖安装(同一 applicationId 内 versionCode 必须严格 > 已装)。
+        run: ./gradlew clean assembleDebug --no-daemon -PbilitvBuildRoot="$GITHUB_WORKSPACE/build" -PbilitvDebugRunNumber="$GITHUB_RUN_NUMBER"
 
       - name: Upload debug APK
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
