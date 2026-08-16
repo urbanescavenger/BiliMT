@@ -739,7 +739,13 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 - 但 `SabrSession.fromSabrData(...)` 的 **HTTP `User-Agent` 用了 `Client.WEB.userAgent`**(`Mozilla/5.0 (Linux; Android 13; Pixel 7)`),日志 473 行坐实 `ua=Mozilla/5.0 (Linux; Android 13; Pixel 7)`。
 - 服务端看到 protobuf 声明 visionOS 客户端、HTTP 头却是 Android Chrome → 判客户端标识不一致 → `RELOAD_PLAYER` 全拒。第一个视频 `qPR91wHXPvo` 能播是因为走 **SABR session reuse**(旧会话 UA 正确),没踩这条新路径。
 - 对照 visionOS reload 路径(`buildSabrSessionFromReloadPlayer`,`fromSabrData` 的 `userAgent = Client.VISION_OS.userAgent`)UA 已用对,本次只是重打 /player 失败(`no serverAbrStreamingUrl/ustreamerConfig → fallback`)没走到。LibreTube `SabrClient` 全组件 visionOS 一致(UA + ClientInfo + ustreamerConfig),故能播。
-- **修复**:NewPipe 路径 `userAgent = Client.WEB.userAgent` 改 `Client.VISION_OS.userAgent`,与 clientInfo/ustreamerConfig 对齐。保留 WEB cookie/visitor 作为对照基线;若真机仍 RELOAD,再摘 WEB cookie(对齐 LibreTube 不带 HTTP cookie,靠 protobuf playbackCookie)。
+- **修复**:NewPipe 路径 `userAgent = Client.WEB.userAgent` 改 `Client.VISION_OS.userAgent`,与 clientInfo/ustreamerConfig 对齐。
+
+**alpha.79 补(UA 单独不够——还得摘 WEB cookie/visitor)**:真机 alpha.78 验证 UA 已对齐(`ua=com.google.visionos.youtube/1.02(Reality...`),但同一视频 `jNl6YkkzKxw` **仍无限 RELOAD**(count 1→6→evict→auto-retry)。坐实**第二处不一致**:HTTP 请求仍带 `Cookie=`(555B)+ `X-Goog-Visitor-Id=`(11B)的 **WEB(Android Chrome)会话头**,与 visionOS protobuf 身份冲突 → 服务端仍判客户端不一致 → RELOAD 全拒。LibreTube `SabrClient` **完全不带 HTTP cookie/visitor**,会话身份全靠 protobuf 请求体(poToken/ustreamerConfig/playbackCookie/sabrContext)。
+- **修复**:
+  - `YoutubePlaybackResolver.kt` 两条路径(NewPipe `buildSabrSessionFromNewPipe` + visionOS reload `buildSabrSessionFromReloadPlayer`)的 `cookieHeader`/`visitorData` 从 WEB cookie/visitor 改空串 `""`。
+  - `SabrClient.kt` fetch + `SabrMediaFetcher.kt` fetch 的 `Cookie`/`X-Goog-Visitor-Id` 头**条件化**——`isNotBlank()` 非空才带,空串不发送(否则空 Cookie 头仍可能被服务端误判)。
+  - 至此 SABR 请求 HTTP 层只剩 `User-Agent=visionOS` + `Origin/Referer=youtube`,与 LibreTube 全 visionOS 一致。
 
 ## 7. 关键文件
 

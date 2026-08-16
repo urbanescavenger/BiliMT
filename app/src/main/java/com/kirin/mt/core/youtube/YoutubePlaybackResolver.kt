@@ -696,8 +696,11 @@ class YoutubePlaybackResolver(
       // visionOS 的 protobuf + Mozilla/5.0 Pixel 7 的 HTTP 头)被服务端判客户端不一致 → RELOAD_PLAYER 全拒
       // (真机 2026-08-16:NewPipe 新会话首 fetch 即 RELOAD,死循环)。对齐 LibreTube SabrClient 全 visionOS。
       userAgent = InnerTubeClient.Client.VISION_OS.userAgent,
-      cookieHeader = innerTubeClient.currentSessionCookies(),
-      visitorData = innerTubeClient.currentVisitorData(),
+      // alpha.79:UA 对齐 visionOS 后仍 RELOAD(真机 alpha.78 UA 修复仍死循环)——因为 HTTP Cookie/
+      // X-Goog-Visitor-Id 仍带 WEB(Android Chrome)会话头,与 visionOS protobuf 不一致。彻底对齐
+      // LibreTube:完全不带 HTTP cookie/visitor,会话身份全靠 protobuf(poToken/ustreamerConfig/playbackCookie)。
+      cookieHeader = "",
+      visitorData = "",
       videoFormats = videoFormats,
       audioTracks = sabrAudioTracks,
     )
@@ -818,8 +821,9 @@ class YoutubePlaybackResolver(
       aFmt,
       vFmt,
       userAgent = InnerTubeClient.Client.VISION_OS.userAgent,
-      cookieHeader = innerTubeClient.currentSessionCookies(),
-      visitorData = innerTubeClient.currentVisitorData(),
+      // alpha.79:同 NewPipe 路径——去掉 WEB cookie/visitor,对齐 LibreTube 无 HTTP cookie。
+      cookieHeader = "",
+      visitorData = "",
       videoFormats = videoFormats,
     )
     Log.i(

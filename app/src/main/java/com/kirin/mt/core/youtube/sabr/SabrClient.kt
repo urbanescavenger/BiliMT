@@ -358,8 +358,11 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
         // 会话传输头(对齐 /player 同会话:UA + Cookie + X-Goog-Visitor-Id)——googlevideo SABR 端点
         // 拒绝无会话绑定的裸请求(alpha.17 实测 HTTP 403 空响应体)。
         .header("User-Agent", session.userAgent)
-        .header("Cookie", session.cookieHeader)
-        .header("X-Goog-Visitor-Id", session.visitorData)
+        // alpha.79:cookie/visitor 可空——空串=不带(对齐 LibreTube 无 HTTP cookie,靠 protobuf)。非空才带。
+        .apply {
+          if (session.cookieHeader.isNotBlank()) header("Cookie", session.cookieHeader)
+          if (session.visitorData.isNotBlank()) header("X-Goog-Visitor-Id", session.visitorData)
+        }
         .header("Origin", "https://www.youtube.com")
         .header("Referer", "https://www.youtube.com/")
         .build()

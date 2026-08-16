@@ -268,8 +268,11 @@ internal class SabrMediaFetcher(
       .header("accept-encoding", "identity")
       .header("accept", "application/vnd.yt-ump")
       .header("User-Agent", session.userAgent)
-      .header("Cookie", session.cookieHeader)
-      .header("X-Goog-Visitor-Id", session.visitorData)
+      // alpha.79:cookie/visitor 可空——空串=不带(对齐 LibreTube 无 HTTP cookie,靠 protobuf)。非空才带。
+      .apply {
+        if (session.cookieHeader.isNotBlank()) header("Cookie", session.cookieHeader)
+        if (session.visitorData.isNotBlank()) header("X-Goog-Visitor-Id", session.visitorData)
+      }
       .header("Origin", "https://www.youtube.com")
       .header("Referer", "https://www.youtube.com/")
       .build()
