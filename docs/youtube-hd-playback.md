@@ -883,6 +883,23 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 
 **真机验证状态**:待测(装新 debug 包后)。CI 已绿(debug 运行 `31957948314`,`BiliMT-debug.apk` 已更新到 'debug' release)。需装含本修复的新 debug 包(旧 `alpha.19` 包无 Piped 代码),进移动端「设置 → YouTube SABR 实验」段开「启用 Piped 后端」(实例留空=默认 `kavin.rocks`),再播 `jNl6YkkzKxw` 验证 Piped 路径修好 RELOAD,同时播 `D2kXTmSPUJo` 确认无回归。
 
+**alpha.85b(commit `354a979`,恢复 attested WEB /player 经典路径修 4K RELOAD——真机证伪 + 回退)**:在 22475dc(移动端 Piped UI)之后另推一个 alpha.85 提交,改走 attested WEB /player 经典路径作 SABR 主路径(`buildSabrSessionFromWebPlayer`),试图修 jNl6YkkzKxw 的 4K(itag313)RELOAD 死循环。前提假设是 docs §6.7 row 75「sabrUrl 网关端点无 n-param」也适用我们 WEB /player 的 sabrUrl。**真机证伪**(`logs_live.log` 2026-08-17,`App Version: dev.r1215`):RELOAD 死循环确实消失(attested config 不再被协议层拒),但所有 SABR fetch 返回 **HTTP 403**(Server=gvs 1.0,Content-Length=0)——alpha.18 同症状。根因:**WEB /player 的 `serverAbrStreamingUrl` 带 n-param**(与 fork visionOS sabrUrl 无 n 不同),plasma WASM 致 n-decrypt 结构性失效(§6.18 [[youtube-plasma-wasm-n-decrypt]]),OkHttp POST 未 transform 的 sabrUrl 被拒;且**连 ≤1080p 都回归 403**(n-param 对所有 itag 一视同仁)。**docs §6.7 row 75「sabrUrl 无 n-param」只适用 fork visionOS sabrUrl,不适用我们 WEB /player 的 sabrUrl**——此前认识错误。
+
+**git 历史补证(推翻「L756 一直写死空」误判)**:查 git 发现 alpha.80(`7d0ed49`)L687 `Base64.encodeToString(poTokenForSabr!!...)` **真把 poToken 接进了 fromSabrData 并真测过** visionOS config + WEB-visitor poToken(首请求带 token 尝试 upfront attestation)→ `RELOAD_PLAYER_RESPONSE`(visitor 不匹配,L767 注释「带 120B WEB-visitor poToken 被 visionOS 服务端按会话 visitor 不匹配 RELOAD 全拒」是对的)。alpha.14(`58d3ca1`)改空 → alpha.80 改回带 → 真测 RELOAD → 又改回空。此前以为「poToken 从未进 SABR 会话」是误判。
+
+**alpha.86(commit `e801402`,回退 alpha.85b + 4K 终态定论)**:回退 alpha.85b 的 WEB 经典主路径,恢复 alpha.84 的 NewPipe visionOS 主路径(`buildSabrSessionFromNewPipe`,n-free,≤1080p 走 status=2 刷新可播)= 回到 ≤1080p 已知可播状态。移除死代码 `buildSabrSessionFromWebPlayer` + `Base64` import。至此 **4K 两条 OkHttp 直连路全堵且真机证伪**:
+
+| 路径 | 失败 | 证伪于 |
+|---|---|---|
+| visionOS config + WEB-visitor poToken(首请求带 token) | RELOAD_PLAYER_RESPONSE(visitor 不匹配) | alpha.80 `7d0ed49` |
+| WEB config + WEB-visitor poToken(attested 经典路径) | HTTP 403(sabrUrl 带 n-param,plasma WASM 解不了) | alpha.85b `354a979` |
+
+4K 唯一曾跑通的是 alpha.20-25 **WebView harvest**(浏览器 WASM 做 n-transform + 浏览器全 WEB 一致 attested body,同时解决 n-param 和 attestation),alpha.71 退役(疑跨 minter 60s,但 [[sabr-status2-sync-refresh]] 显示 alpha.68 同步刷新已修 60s 竞态,「跨 minter 是否真致命」未干净验证)。
+
+**用户 2026-08-17 决定:接受 ≤1080p(与 LibreTube 同档,LibreTube 同 fork 也只到 1080p),放弃 4K。** alpha.86 即 4K 终态——≤1080p 可播,>1080p(2K/4K)RELOAD(需 upfront attestation,visionOS 未 attested 且无 visionOS-visitor poToken 可铸)。若未来重开 4K,唯一方向是恢复 WebView harvest(先调研能否选到 itag313 + 评估 60s 修复)或改 fork 让 visionOS /player 带 visionOS-visitor poToken(重活)。见 memory `youtube-4k-two-paths-dead-accept-1080p`。
+
+**真机验证状态**:待测(装 alpha.86 debug 包后)。预期 ≤1080p 回归 403 已修(= alpha.84 行为),D2kXTmSPUJo/-GZatCruA8c 仍能播,jNl6YkkzKxw 仍 RELOAD(>1080p,与 LibreTube 同档,已知接受)。装新包需先卸载 alpha.85b debug(签名不同:alpha.85b 装的是 354a979 即 7565f89 之前的随机 debug.keystore,alpha.86 装的是 7565f89 起的固定 release keystore,签名不一致无法覆盖)。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
