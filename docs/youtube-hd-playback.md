@@ -747,6 +747,20 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
   - `SabrClient.kt` fetch + `SabrMediaFetcher.kt` fetch 的 `Cookie`/`X-Goog-Visitor-Id` 头**条件化**——`isNotBlank()` 非空才带,空串不发送(否则空 Cookie 头仍可能被服务端误判)。
   - 至此 SABR 请求 HTTP 层只剩 `User-Agent=visionOS` + `Origin/Referer=youtube`,与 LibreTube 全 visionOS 一致。
 
+**alpha.13 补(移植 LibreTube 的 NewPipe 原生 PoTokenGenerator——RELOAD 根因定论 + 修复)**:alpha.79 后真机 2026-08-16 同一视频 `jNl6YkkzKxw` **仍无限 RELOAD**。UA + 摘 cookie/visitor 都对齐后,对 LibreTube 的 SABR 请求做**逐字段对比**,HTTP 头 + 请求体(ClientInfo 6 字段 / ClientAbrState / StreamerContext)+ sabrUrl **全部一致**,剩余唯一差异 = **poToken**:
+- **BiliTV**:poToken 是 **resolve-minted 的 BotGuard WEB token**(FreeTube bgutils-js),[YoutubeBotGuard.kt](app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L239) 的 `buildContentBinding` 是 **PLACEHOLDER 占位**(`b=PLACEHOLDER&hh=PLACEHOLDER`)。同一枚 token 对 WEB /player 能过,对 visionOS SABR 被拒(服务端按 contentBinding 严格校验)→ RELOAD 全拒。
+- **缓存恒空铁证**:NewPipe visionOS getInfo 调 `getIosClientPoToken` → 原 [BiliTvPoTokenProvider.kt:63](app/src/main/java/com/kirin/mt/core/youtube/newpipe/BiliTvPoTokenProvider.kt#L63) 返回 null → `cached()` 恒空 → resolver 回退 resolve-minted token(日志 `poToken=128B(resolve-minted)` 坐实)。
+- **LibreTube 能播**:其 `SabrClient` 显式用 NewPipe 原生 `PoTokenGenerator`(内部 `PoTokenWebView` + `po_token.html` BotGuard JS)铸 contentBinding **正确**的 WEB token。
+
+**修复(用户指定方向:移植 LibreTube 的 NewPipe 原生 PoTokenGenerator,两项目 fork 同 `738c3d4`)**:
+1. `assets/po_token.html` ← LibreTube 复制(4.5KB,NewPipe 自带 BotGuard JS)。
+2. 移植 [PoTokenWebView.kt](app/src/main/java/com/kirin/mt/core/youtube/newpipe/PoTokenWebView.kt):WebView 加载 po_token.html 执行 BotGuard JS(`downloadAndRunBotguard`→Create 拿 challenge→runBotGuard 铸 contentBinding 正确的 botguardResponse→GenerateIT→integrityToken→`obtainPoToken`)。网络用 BiliTV OkHttp 直发 jnn Create/GenerateIT,**头对齐 LibreTube `ExternalApi.botguardRequest` 的 5 头**(UA/Accept/Content-Type json+protobuf/x-goog-api-key/x-user-agent),**不带 Cookie / X-Goog-Visitor-Id**——实证 LibreTube 的 externalApi 是纯 OkHttpClient、无 cookie jar 桥接,GenerateIT 照样铸出正确 token;contentBinding 正确性来自 WebView 指纹 + challenge 数据,非 cookie。
+3. 移植 [NewPipePoTokenGenerator.kt](app/src/main/java/com/kirin/mt/core/youtube/newpipe/NewPipePoTokenGenerator.kt) 实现 `PoTokenProvider`(`getVisitorDataFromInnertube` + `InnertubeClientRequestInfo.ofWebClient` 铸 WEB token),**新增** `cached()` / `ensureWebToken(videoId)`,并**让 `getIosClientPoToken` 不再返回 null**——改走 `getWebClientPoToken` 同路径铸 WEB token 填缓存(NewPipe visionOS getInfo 也填缓存,resolver 不再回退 resolve-minted)。
+4. AppContainer / NewPipeInit / resolver 换用新 provider;resolver `buildSabrSessionFromNewPipe` 读 token 前先 `ensureWebToken(videoId)` 兜底。
+5. 旧 `YoutubeBotGuard` / `BiliTvPoTokenProvider` 保留不动(SABR 不再用,但 /player 等仍走 BotGuard)。
+
+至此 SABR 请求的 poToken 为 NewPipe 原生铸的 contentBinding 正确 token,与 visionOS 会话兼容,应根治 RELOAD 死循环。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

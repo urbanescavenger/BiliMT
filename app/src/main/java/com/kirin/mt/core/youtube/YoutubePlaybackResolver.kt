@@ -18,7 +18,7 @@ import com.kirin.mt.core.youtube.sabr.SabrClient
 import com.kirin.mt.core.youtube.sabr.SabrFetchResult
 import com.kirin.mt.core.youtube.sabr.SabrSession
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
-import com.kirin.mt.core.youtube.newpipe.BiliTvPoTokenProvider
+import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
@@ -58,7 +58,7 @@ class YoutubePlaybackResolver(
   private val nDecryptor: YoutubeNDecryptor,
   private val sDecryptor: YoutubeSDecryptor,
   private val httpClient: OkHttpClient,
-  private val biliTvPoTokenProvider: BiliTvPoTokenProvider,
+  private val biliTvPoTokenProvider: NewPipePoTokenGenerator,
 ) {
 
   /** 从 player base.js 提取的 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp）。 */
@@ -606,9 +606,10 @@ class YoutubePlaybackResolver(
    * 走 visionOS 客户端(不带 poToken)发干净 /player,拿到未绑定任何浏览器会话的
    * [StreamInfo.getServerAbrStreamingUrl](SABR 网关端点,无 n-param 需 decipher)+ [StreamInfo.getUstreamerConfig]。
    *
-   * poToken 取 [BiliTvPoTokenProvider.cached]——即 getInfo() 期间 NewPipe 经 PoTokenProvider 铸造并缓存
-   * 的同一枚(若 visionOS 路径未触发铸造则降级用 resolve() 顶部已铸的 poToken,同为 BotGuard 128B minter)。
-   * 这样 init poToken == extraction poToken(单一 minter),根除跨 minter status=3。
+   * poToken 取 [NewPipePoTokenGenerator.ensureWebToken]——即 getInfo() 期间 NewPipe 经 PoTokenProvider
+   * 铸造并缓存的同一枚(visionOS getInfo 走 getIosClientPoToken,现也铸 WEB token 填缓存);未缓存则强制铸一枚。
+   * 这样 init poToken == extraction poToken(单一 NewPipe minter,contentBinding 正确),根除跨 minter status=3
+   * 与 PLACEHOLDER contentBinding 致的 visionOS SABR RELOAD 死循环(alpha.80)。
    *
    * 返回 null = 视频无 SABR / getInfo 失败 → 上层 classic(n-decrypt)或 DASH 兜底。
    */
@@ -670,9 +671,12 @@ class YoutubePlaybackResolver(
         formatId = it.toSabrFormatId(),
       )
     }
-    // 优先 provider 缓存(getInfo 期间铸造的同一枚);否则 resolve() 顶部已铸的。同为 BotGuard 128B minter。
-    val cachedPoToken = biliTvPoTokenProvider.cached()?.streamingDataPoToken
-    val poTokenForSabr = cachedPoToken ?: poToken
+    // alpha.80:优先 NewPipe 原生 PoTokenGenerator 铸的 contentBinding 正确的 token。
+    // ensureWebToken(videoId):未缓存则强制铸一枚 WEB token 并缓存——修复根因(visionOS getInfo 走
+    // getIosClientPoToken 现在也铸 WEB token 填缓存,不再回退 resolve-minted PLACEHOLDER contentBinding token
+    // → visionOS SABR RELOAD 死循环,§6.17/alpha.79 定论)。若仍空(异常降级)回退 resolve() 顶部 BotGuard 铸的。
+    val npPoToken = biliTvPoTokenProvider.ensureWebToken(videoId)?.streamingDataPoToken
+    val poTokenForSabr = npPoToken ?: poToken
     if (poTokenForSabr.isNullOrEmpty()) {
       Log.w(Tag, "NewPipe SABR: no poToken (BotGuard null + provider cache empty) → fallback")
       return null

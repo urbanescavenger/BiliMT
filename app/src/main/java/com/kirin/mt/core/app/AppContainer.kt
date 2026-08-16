@@ -26,7 +26,7 @@ import com.kirin.mt.core.youtube.YoutubeNDecryptor
 import com.kirin.mt.core.youtube.YoutubePlaybackResolver
 import com.kirin.mt.core.youtube.YoutubeSDecryptor
 import com.kirin.mt.core.youtube.YoutubeRepository
-import com.kirin.mt.core.youtube.newpipe.BiliTvPoTokenProvider
+import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -112,11 +112,13 @@ class AppContainer(context: Context) {
     httpClient = youtubeHttpClient,
     innerTubeClient = youtubeInnerTubeClient,
   )
-  // path C:NewPipeExtractor fork 的 PoTokenProvider,由 BotGuard + InnerTubeClient 支撑。
-  // 铸造的 poToken 缓存供 SABR init 复用(init==extraction 同 minter)。
-  val biliTvPoTokenProvider: BiliTvPoTokenProvider = BiliTvPoTokenProvider(
-    botGuard = youtubeBotGuard,
-    innerTubeClient = youtubeInnerTubeClient,
+  // path C:NewPipeExtractor fork 的 PoTokenProvider,由移植的 NewPipe 原生 PoTokenGenerator 支撑。
+  // 铸造的 poToken 缓存供 SABR init 复用(init==extraction 同 minter)。内容绑定(contentBinding)正确,
+  // 修复 visionOS SABR RELOAD 死循环(§6.17/alpha.80)。旧 BiliTvPoTokenProvider/YoutubeBotGuard 保留,
+  // SABR 不再用,但 /player 等仍走 BotGuard。
+  val biliTvPoTokenProvider: NewPipePoTokenGenerator = NewPipePoTokenGenerator(
+    appContext = appContext,
+    httpClient = youtubeHttpClient,
   )
   val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(appContext, youtubeJsExecutor, youtubeHttpClient)
   val youtubeSDecryptor: YoutubeSDecryptor = YoutubeSDecryptor(youtubeJsExecutor, youtubeHttpClient)
