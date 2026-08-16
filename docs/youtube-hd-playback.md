@@ -792,6 +792,14 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 
 **修复**(commit ab99413,run 31946273352):①`buildSabrPlaybackInfo` 建**全部视频轨** `videoTracks=allVideoTracks`(每个 itag 各一条,`buildSabrTrack` 按 itag 遍历,不再只建选中 itag 一条);②`SabrManifest.fromSession` 建**多视频 Representation** `videoReps`(每个 track 按 itag 查 FormatId 建 `Representation.fromTrack`),ExoPlayer 默认选轨选最高 bitrate 档绕开 313。**暂时去掉清晰度选择功能**:PlayerScreen Main 面板移除"清晰度"项(只剩弹幕/倍速,rowCount 3→2)、Quality 分支改死代码;MobilePlayerScreen 移除底栏 HD 画质按钮 + DropdownMenu + `showQualityMenu`。选轨/请求机制(`selectFormat`/`preferredVideoFormatIds`/`initializedFormats`)已支持多 Representation,未改。**待真机**:播 2160p 视频确认日志 `defaultItag=315`(而非 313)、无 RELOAD 死循环、能正常播放;若 ExoPlayer 选轨在某些视频仍选到 313,再评估 harvest 选 315 或 RELOAD 降级换 itag。
 
+**alpha.82(多 Representation 修音频 itag 暴露成视频轨——itag248 RELOAD 根因定论 + 修复)**:alpha.81 多 Representation 生效后真机仍不能播。真机 2026-08-16(`logs_live.log` 20:26,视频 `jNl6YkkzKxw`):`SABR PlaybackInfo: ... videoTracks=14`(多 Representation 已生效,14 个视频轨),但 ExoPlayer 实际请求 **`itag=248` + `itag=139`**——**itag248 是 Opus 音频**(不是 itag313/315 等视频 itag)→ 服务端对 itag248 回 `RELOAD_PLAYER_RESPONSE` → evict → re-harvest → 死循环。
+
+**根因**:`SabrManifest.fromSession` 把 `videoFormats` 里**全部**条目都建成视频轨、塞进**同一个** video AdaptationSet;而 `videoFormats` 来自 `info.videoOnlyStreams`(NewPipe),**其中混入了音频 itag248**(NewPipe 把 Opus 流误分类进 videoOnlyStreams)。于是 itag248 被 `Representation.fromTrack(..., C.TRACK_TYPE_VIDEO)` **强制建成视频 Format**,ExoPlayer 在 video AdaptationSet 里选中 itag248 → 请求不存在的视频 itag → RELOAD。alpha.81 之前(单 Representation)只建选中 itag 一条轨,itag248 不被暴露,所以没这个问题;多 Representation 把混入的音频 itag 也暴露了。
+
+**LibreTube 对照**(已核对源码):LibreTube **不显式按 itag 过滤**,靠两个机制天然把音频隔开——①按 mimeType 分组(`SabrManifest.kt` 的 `videoStreams.groupBy { it.mimeType }`,每个 mimeType 一个独立 video AdaptationSet);②按实际 mimeType 建 Format(`Representation.kt` 的 `MimeTypes.isVideo(stream.mimeType)` 决定建 video 还是 audio Format)。所以即使音频 itag 混进 videoStreams,也被建成 audio Format,ExoPlayer 不当视频轨选。**我们的差异**:`Representation.fromTrack` 用 `trackType==C.TRACK_TYPE_VIDEO` 决定建视频 Format(无视实际 mimeType),且 `SabrManifest.fromSession` 把所有视频轨塞进同一个 AdaptationSet。
+
+**修复**(commit 9189726,run 31947665038):①`Representation.fromTrack` 建视频 Format 的判断从「仅按 trackType」改成「`trackType==C.TRACK_TYPE_VIDEO && MimeTypes.isVideo(track.mimeType)`」,否则走音频 Format(含 alpha.74 的 containerMimeType 兜底,音频路径不受影响)——真实视频轨(mimeType video/*)→ 视频 Format(不变),混入的音频 itag248(mimeType audio/webm)→ 音频 Format,音频轨(trackType=AUDIO)→ 音频 Format(不变);②`SabrManifest.fromSession` 视频轨按 `mimeType` 分组、每个 mimeType 一个 video AdaptationSet(对齐 LibreTube `groupBy { it.mimeType }`),音频保持单默认轨。**不改**:`buildSabrPlaybackInfo` 建全部视频轨(多 Representation 基础)、`SabrMediaPeriod`/`SabrMediaFetcher`/`SabrClient` 选轨与请求机制、清晰度选择功能(暂时去掉,ExoPlayer 自动选轨)。**待真机**:播 `jNl6YkkzKxw`(2160p,5 音轨)确认日志请求的是**视频 itag(315 或 313)而非 itag248**、无 RELOAD 死循环、能正常播放;确认清晰度菜单仍不可用(ExoPlayer 自动选轨)。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
