@@ -115,9 +115,11 @@ internal class ProtoReader(private val data: ByteArray, private val start: Int =
       ProtoWire.WIRE_LEN -> {
         val len = readVarint().toInt()
         val s = pos
-        if (s + len > end) {
-          // 越界 length(坏/截断 proto,如 RELOAD 内层 base64 解出的非 protobuf 字节):跳到结尾,
-          // 返回空字节,避免 copyOfRange 抛 IndexOutOfBounds(alpha.6 真机 toIndex(N)>size(M) 崩源)。
+        // alpha.16:补 `len < 0`——malformed varint 溢出成负 int 时,`s + len` 可能 < s(负),
+        // 原 `s + len > end` 判不中 → copyOfRange(s, s+len) 抛 IllegalArgumentException(from>to)
+        // / ArrayIndexOutOfBounds(真机 RELOAD 间歇 `decode failed: 34 > -618552673` / `length=37; index=37`)。
+        // 与正越界同处理:跳到结尾返回空字节,不 copyOfRange。
+        if (len < 0 || s + len > end) {
           pos = end
           ByteArray(0)
         } else {

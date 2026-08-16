@@ -224,6 +224,11 @@ internal class SabrMediaFetcher(
       unsentSabrContexts = unsentCtxTypes,
     )
     val vHeight = videoFormat?.height ?: 0
+    // alpha.16(对齐 LibreTube setAudioTrackId):当前选中音轨 id(audioTrack.id,如 "en.4")。
+    // 按 itag 命中 session.audioTracks 里当前音频格式那条;单音轨视频 resolver 折叠成 "default"(audioTrackId
+    // 为 null),对齐 LibreTube 发空串("" 而非 "default")——多音轨视频(如 jNl6YkkzKxw 5 音轨)发真实 id。
+    val audioTrackId = session.audioTracks.firstOrNull { it.formatId.itag == audioFormat?.itag }?.id
+      ?.takeIf { it != "default" } ?: ""
     val clientAbrState = ClientAbrStateInput(
       timeSinceLastManualFormatSelectionMs = lastManualFormatSelectionMs?.let { now - it } ?: 0L,
       lastManualSelectedResolution = max(vHeight, 360),
@@ -244,6 +249,7 @@ internal class SabrMediaFetcher(
       enabledTrackTypesBitfield = if (videoFormat == null) 1 else 0,
       drcEnabled = false,
       enableVoiceBoost = false,
+      audioTrackId = audioTrackId,
     )
     val input = SabrRequestInput(
       clientAbrState = clientAbrState,

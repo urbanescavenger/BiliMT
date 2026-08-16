@@ -58,6 +58,10 @@ internal object SabrProto {
     s.enabledTrackTypesBitfield?.let { w.int32(40, it) }
     s.drcEnabled?.let { w.bool(46, it) }
     s.enableVoiceBoost?.let { w.bool(76, it) }
+    // alpha.16(对齐 LibreTube client_abr_state.proto):audio_track_id=69,当前选中音轨 id(如 "en.4")。
+    // LibreTube setAudioTrackId(audioFormat.stream.audioTrackId);缺它多音轨视频(如 jNl6YkkzKxw 5 音轨)
+    // 服务端按会话音轨不匹配 RELOAD_PLAYER 全拒(alpha.15 预埋的下一步)。
+    s.audioTrackId?.let { w.string(69, it) }
     return w.bytes()
   }
 
@@ -659,6 +663,8 @@ internal data class ClientAbrStateInput(
   val enabledTrackTypesBitfield: Int? = null,
   val drcEnabled: Boolean? = null,
   val enableVoiceBoost: Boolean? = null,
+  /** alpha.16(对齐 LibreTube client_abr_state.proto):audio_track_id=69,当前选中音轨 id(如 "en.4")。 */
+  val audioTrackId: String? = null,
 )
 
 internal data class ClientInfoInput(
