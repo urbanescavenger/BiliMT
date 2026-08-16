@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
 import android.webkit.CookieManager
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
@@ -39,18 +41,45 @@ class YoutubeBrowserSession(context: Context) {
   private val appContext = context.applicationContext
   private var webView: WebView? = null
   private var ready: CompletableDeferred<Unit>? = null
+  /** alpha.89:主帧加载失败标记(onReceivedError / 错误页 onPageFinished 置位)。 */
+  @Volatile private var loadFailed = false
   private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
   /** 确保真实 YouTube 页面已加载(懒创建,长期存活)。 */
   suspend fun ensureLoaded() = withContext(Dispatchers.Main) {
-    if (webView != null) return@withContext
-    val deferred = CompletableDeferred<Unit>()
-    ready = deferred
-    val created = createWebView(deferred)
-    webView = created
-    withTimeoutOrNull(LoadTimeoutMs) { deferred.await() }
-    Log.i(Tag, "browser session loaded: ${webView?.url}")
+    // alpha.89:WebView 是长期单例,但 youtube.com 加载失败时会停在 chrome-error://chromewebdata
+    // (origin=null)——onPageFinished 对错误页也触发,旧实现据此判"已加载"→ fetch 从 origin=null 发
+    // → CORS 预检被拒 → 所有 YouTube 视频都播不了(真机 alpha.88 "现在都不能播放")。此处每次校验
+    // 当前 url 确在 youtube.com;不在则销毁重建(破除卡死单例),最多重试 [LoadRetries] 次。
+    if (webView != null && isOnYoutube(webView?.url)) return@withContext
+    if (webView != null) {
+      Log.w(Tag, "browser session not on youtube.com (url=${webView?.url}) → destroy + recreate (stuck-on-error-page recovery)")
+      webView?.destroy()
+      webView = null
+    }
+    repeat(LoadRetries) { attempt ->
+      val deferred = CompletableDeferred<Unit>()
+      ready = deferred
+      loadFailed = false
+      val created = createWebView(deferred)
+      webView = created
+      withTimeoutOrNull(LoadTimeoutMs) { deferred.await() }
+      val loadedUrl = webView?.url
+      Log.i(Tag, "browser session load attempt=${attempt + 1}/$LoadRetries url=$loadedUrl failed=$loadFailed")
+      if (isOnYoutube(loadedUrl)) return@withContext
+      // 仍在错误页/超时 → 销毁重建重试(非最后一次)
+      if (attempt < LoadRetries - 1) {
+        webView?.destroy()
+        webView = null
+      }
+    }
+    // 全部重试后仍不在 youtube.com → 留下最后一个 webView(可能停在错误页),fetchViaWebView 会拒绝
+    // 从 origin=null 发 fetch 并抛错,触发上层 postPlayer 回退 OkHttp(安全网)。
   }
+
+  /** 当前 WebView 是否停在真实 youtube.com 页(非错误页/空页)。 */
+  private fun isOnYoutube(url: String?): Boolean =
+    url != null && url.startsWith("https://www.youtube.com")
 
   @SuppressLint("SetJavaScriptEnabled")
   private fun createWebView(deferred: CompletableDeferred<Unit>): WebView {
@@ -64,7 +93,22 @@ class YoutubeBrowserSession(context: Context) {
       settings.userAgentString = YoutubeConstants.MobileUserAgent
       webViewClient = object : WebViewClient() {
         override fun onPageFinished(view: WebView?, url: String?) {
+          // alpha.89:错误页(chrome-error://chromewebdata)也会触发 onPageFinished,但此时 origin=null
+          // → 同源 fetch 变跨源 → CORS 预检被拒。只在真正落到 youtube.com 时完成 deferred;否则标记
+          // loadFailed,让 ensureLoaded 超时后销毁重建重试。
+          if (!isOnYoutube(url)) {
+            loadFailed = true
+            return
+          }
           if (deferred.isActive) deferred.complete(Unit)
+        }
+
+        override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+          // 主帧加载失败(youtube.com 拉不下来)→ 标记,不完成 deferred(让 ensureLoaded 重建重试)。
+          if (request?.isForMainFrame == true) {
+            loadFailed = true
+            Log.w(Tag, "browser session main-frame load error: ${error?.errorCode} ${error?.description}")
+          }
         }
       }
       // 真实 YouTube 页面 → 真实文档上下文 + 真实 cookie + 真实 TLS 会话(对齐 FreeTubeAndroid 主 WebView)。
@@ -97,6 +141,14 @@ class YoutubeBrowserSession(context: Context) {
     body: String? = null,
   ): String = withContext(Dispatchers.Main) {
     ensureLoaded()
+    // alpha.89:fetch 必须从 https://www.youtube.com 同源页发(InnerTubeBase=www.youtube.com/youtubei)。
+    // 若 WebView 仍停在错误页(origin=null),fetch 会 CORS 失败——直接抛错让上层 postPlayer 回退 OkHttp,
+    // 不要白等 20s fetch 超时。
+    val curUrl = webView?.url
+    if (!isOnYoutube(curUrl)) {
+      Log.w(Tag, "fetchViaWebView: not on youtube.com (url=$curUrl) → refuse fetch (would CORS-fail) → caller falls back to OkHttp")
+      throw YoutubeApiException(0, "", "browser session not on youtube.com (url=$curUrl); fetch would CORS-fail")
+    }
     // Cookie 是 fetch 的 forbidden header,浏览器静默忽略 → 真实页面的 cookie 由原生网络栈自动携带
     // (对齐 FreeTubeAndroid 主 WebView 的真实浏览器 cookie)。显式 Cookie 头剥掉。
     val fetchHeaders = headers - "Cookie"
@@ -179,6 +231,7 @@ class YoutubeBrowserSession(context: Context) {
   private companion object {
     const val Tag = "YtBrowserSession"
     const val LoadTimeoutMs = 15_000L
+    const val LoadRetries = 2
     const val FetchTimeoutMs = 20_000L
     const val FetchPollIntervalMs = 100L
   }

@@ -560,10 +560,19 @@ class YoutubePlaybackResolver(
     }
     // WEB/WEB_EMBEDDED /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView；
     // ANDROID 保持 OkHttp 直连(作为回退)。TVHTML5 也走 WebView(TV client OkHttp 直连大概率被拦)。
-    return innerTubeClient.postJson(
-      "/player", payload, client = client, poToken = poToken,
-      viaWebView = client == InnerTubeClient.Client.WEB || client == InnerTubeClient.Client.WEB_EMBEDDED || client == InnerTubeClient.Client.TVHTML5,
-    )
+    val useWebView = client == InnerTubeClient.Client.WEB || client == InnerTubeClient.Client.WEB_EMBEDDED || client == InnerTubeClient.Client.TVHTML5
+    // alpha.89:WebView fetch 安全网——若 browserSession 卡在错误页(origin=null)→ fetch CORS 失败抛错,
+    // 此前直接冒泡致 resolve "no decodable formats" 全视频播不了(真机 alpha.88 "现在都不能播放")。
+    // 捕获 viaWebView 异常 → 回退 OkHttp 直连(viaWebView=false)。OkHttp WEB /player 可能被判
+    // "The page needs to be reloaded"(unplayable),但至少返回结构化响应而非硬崩;部分视频仍可取流。
+    return runCatching {
+      innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = useWebView)
+    }.getOrElse { e ->
+      if (useWebView) {
+        Log.w(Tag, "postPlayer $client viaWebView failed (${e.message}) → fallback OkHttp viaWebView=false")
+        innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = false)
+      } else throw e
+    }
   }
 
   /** 从 watch 页 HTML 提取 base.js URL（用于 n/s 解密）。失败返回 null。结果缓存复用。 */
