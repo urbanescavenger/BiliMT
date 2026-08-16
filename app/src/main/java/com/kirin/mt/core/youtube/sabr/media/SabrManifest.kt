@@ -39,20 +39,23 @@ internal data class SabrManifest(
      */
     @androidx.annotation.OptIn(UnstableApi::class)
     fun fromSession(session: SabrSession, info: PlaybackInfo): SabrManifest {
-      val videoReps = info.videoTracks.map { track ->
-        val fmtId = session.videoFormat(track.id) ?: session.videoFormatId
-        Representation.fromTrack(track, fmtId, C.TRACK_TYPE_VIDEO)
-      }
-      val adaptationSets = if (info.audioTracks.isEmpty()) {
-        listOf(AdaptationSet(C.TRACK_TYPE_VIDEO, videoReps))
-      } else {
+      // alpha.82(对齐 LibreTube `SabrManifest.kt` groupBy):视频轨按 mimeType 分组,每个 mimeType 一个
+      // video AdaptationSet,不混。即使音频 itag(如 itag248 Opus)混进 videoOnlyStreams,也被按音频
+      // mimeType 分到单独的 AdaptationSet,并因 mimeType 非视频而在 Representation 里建成 audio Format,
+      // 不会当视频轨被 ExoPlayer 选中 → 不再请求不存在的视频 itag → 不再 RELOAD 死循环。
+      val videoAdaptationSets = info.videoTracks.groupBy { it.mimeType }
+        .map { (_, tracks) ->
+          AdaptationSet(C.TRACK_TYPE_VIDEO, tracks.map { track ->
+            val fmtId = session.videoFormat(track.id) ?: session.videoFormatId
+            Representation.fromTrack(track, fmtId, C.TRACK_TYPE_VIDEO)
+          })
+        }
+      val audioAdaptationSets = if (info.audioTracks.isEmpty()) emptyList() else {
         val audioTrack = info.audioTracks.first()
         val audioRep = Representation.fromTrack(audioTrack, session.audioFormatId, C.TRACK_TYPE_AUDIO)
-        listOf(
-          AdaptationSet(C.TRACK_TYPE_VIDEO, videoReps),
-          AdaptationSet(C.TRACK_TYPE_AUDIO, listOf(audioRep)),
-        )
+        listOf(AdaptationSet(C.TRACK_TYPE_AUDIO, listOf(audioRep)))
       }
+      val adaptationSets = videoAdaptationSets + audioAdaptationSets
       return SabrManifest(
         videoId = info.bvid,
         sabrUrl = session.sabrUrl,

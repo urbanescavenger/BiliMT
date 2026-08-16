@@ -32,7 +32,10 @@ internal data class Representation(
         .setContainerMimeType(track.mimeType)
         .setCodecs(track.codecs)
         .setAverageBitrate(if (track.bandwidth > 0) track.bandwidth else -1)
-      if (trackType == C.TRACK_TYPE_VIDEO) {
+      // alpha.82(对齐 LibreTube):建视频 Format 必须 trackType 为视频 **且** mimeType 真是视频。
+      // 否则 NewPipe 把音频 itag(如 itag248 Opus)误分类进 videoOnlyStreams 时,音频会被强制建成
+      // video Format,塞进 video AdaptationSet 被 ExoPlayer 当视频轨选 → 请求不存在的视频 itag → RELOAD 死循环。
+      if (trackType == C.TRACK_TYPE_VIDEO && MimeTypes.isVideo(track.mimeType)) {
         builder.setSampleMimeType(MimeTypes.getVideoMediaMimeType(track.codecs))
           .setWidth(if (track.width > 0) track.width else -1)
           .setHeight(if (track.height > 0) track.height else -1)
