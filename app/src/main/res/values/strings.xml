@@ -523,6 +523,15 @@
     <string name="settings_iptv_username_label">账号</string>
     <string name="settings_iptv_password_label">密码</string>
     <string name="settings_iptv_configure_hint">未配置，点按编辑</string>
+    <!-- YouTube SABR 实验:Piped 后端 + itag 诊断(alpha.83) -->
+    <string name="settings_piped_title">Piped 实例</string>
+    <string name="settings_piped_description">YouTube SABR 实验后端，走 Piped 拿已认证配置修 RELOAD 死循环。空串用默认实例</string>
+    <string name="settings_piped_default_hint">默认实例，点按编辑</string>
+    <string name="settings_piped_instance_label">Piped 实例 URL</string>
+    <string name="settings_youtube_use_piped_title">启用 Piped 后端</string>
+    <string name="settings_youtube_use_piped_description">YouTube 播放先走 Piped，失败回退 NewPipe。修 RELOAD_PLAYER_RESPONSE 死循环</string>
+    <string name="settings_sabr_force_itag_title">锁定会话视频轨</string>
+    <string name="settings_sabr_force_itag_description">SABR 诊断：强制用会话选中 itag，证伪某 itag 是 RELOAD 根因</string>
     <string name="settings_iptv_connect_success">IPTV 源连接成功</string>
     <string name="settings_iptv_connect_failed">IPTV 源连接失败</string>
     <string name="settings_webdav_username_label">账号</string>

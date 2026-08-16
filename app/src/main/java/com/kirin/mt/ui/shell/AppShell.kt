@@ -991,6 +991,21 @@ fun BiliTvApp(
                     ).show()
                   }
                 },
+                onPipedInstanceChange = { url ->
+                  coroutineScope.launch {
+                    appSettingsStore.setPipedInstanceUrl(url)
+                  }
+                },
+                onYoutubeUsePipedChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setYoutubeUsePiped(enabled)
+                  }
+                },
+                onSabrForceSessionVideoItagChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setSabrForceSessionVideoItag(enabled)
+                  }
+                },
               )
             }
             if (accountSelected) {

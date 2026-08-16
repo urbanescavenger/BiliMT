@@ -90,6 +90,14 @@ internal object SabrStreamRegistry {
      * 提升 Entry 而非 fetcher 实例,修 alpha.65 切清晰度重建 fetcher 丢 token 的回归。
      */
     val poTokenState: PoTokenState = PoTokenState(session.poToken),
+    /**
+     * alpha.83 诊断(实验):强制视频轨用**会话选中的** videoFormatId(`session.videoFormatId`),跳过
+     * [com.kirin.mt.core.youtube.sabr.media.SabrMediaFetcher] 的 selectFormat 按声明 itag 重选。
+     * 用于证伪"itag313(或别的 itag)是 RELOAD 根因"这一红绯鱼——强制锁会话选轨后若仍 RELOAD,说明根因
+     * 不在 itag 而在 ustreamerConfig 来源(见 Piped 后端方案)。Piped 路径默认 true;NewPipe 路径可手动开。
+     * false(默认)= 正常 selectFormat 选轨(旧行为)。
+     */
+    val forceSessionVideoItag: Boolean = false,
   ) {
     /**
      * alpha.62(Phase 2 DASH A/V 同步修复):每流已取 media 段的**实际**累计媒体时长(ms)。
@@ -123,16 +131,16 @@ internal object SabrStreamRegistry {
    * 若 [videoId] 已有缓存会话,复用其 sid + 覆盖更新 entry(会话参数可能因重 harvest 略变)。
    * alpha.59(Phase 2 DASH):无窗口锚点——DASH 会话服务整段视频,无 60s 轮换。
    */
-  fun registerByVideoId(videoId: String, session: SabrSession, client: SabrClient, windowStartMs: Long = 0L, refreshPoToken: (suspend () -> ByteArray?)? = null): String {
+  fun registerByVideoId(videoId: String, session: SabrSession, client: SabrClient, windowStartMs: Long = 0L, refreshPoToken: (suspend () -> ByteArray?)? = null, forceSessionVideoItag: Boolean = false): String {
     val existingSid = byVideoId[videoId]
     val sid = if (existingSid != null && sessions.containsKey(existingSid)) {
-      sessions[existingSid] = Entry(session, client, windowStartMs, refreshPoToken)
+      sessions[existingSid] = Entry(session, client, windowStartMs, refreshPoToken, forceSessionVideoItag = forceSessionVideoItag)
       existingSid
     } else {
       val bytes = ByteArray(16)
       SecureRandom().nextBytes(bytes)
       val newSid = Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
-      sessions[newSid] = Entry(session, client, windowStartMs, refreshPoToken)
+      sessions[newSid] = Entry(session, client, windowStartMs, refreshPoToken, forceSessionVideoItag = forceSessionVideoItag)
       byVideoId[videoId] = newSid
       newSid
     }

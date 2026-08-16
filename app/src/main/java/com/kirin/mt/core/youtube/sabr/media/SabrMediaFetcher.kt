@@ -211,6 +211,12 @@ internal class SabrMediaFetcher(
     val elapsed = if (lastMs > 0L) (now - lastMs).coerceAtLeast(0L) else 0L
 
     val playerTimeMs = req.segmentStartTimeMs
+    // alpha.83 诊断(forceSessionVideoItag):强制视频轨用**会话选中的** videoFormatId,跳过 selectFormat 按
+    // 声明 itag 重选——证伪"某 itag 是 RELOAD 根因"红绯鱼。锁死后若仍 RELOAD → 根因在 ustreamerConfig 来源
+    // 不在 itag(见 Piped 后端方案)。仅 Piped 路径默认开 / NewPipe 手动开;否则 videoFormat 由 selectFormat 设。
+    if (entry.forceSessionVideoItag && session.videoFormatId.itag != 0) {
+      videoFormat = session.videoFormatId
+    }
     val selected = initializedFormats.values.map { SabrProto.encodeFormatId(it.id.itag, it.id.lastModified, it.id.xtags) }
     val bufferedRanges = initializedFormats.values.flatMap { it.buildBufferedRanges() }
     val audioEnc = audioFormat?.let { SabrProto.encodeFormatId(it.itag, it.lastModified, it.xtags) }

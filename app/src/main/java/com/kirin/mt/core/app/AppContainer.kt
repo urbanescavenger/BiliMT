@@ -125,6 +125,8 @@ class AppContainer(context: Context) {
   val youtubeRepository: YoutubeRepository = YoutubeRepository(
     client = youtubeInnerTubeClient,
   )
+  val pipedClient: com.kirin.mt.core.youtube.piped.PipedClient =
+    com.kirin.mt.core.youtube.piped.PipedClient(httpClient = youtubeHttpClient, json = json)
   val youtubePlaybackResolver: YoutubePlaybackResolver = YoutubePlaybackResolver(
     innerTubeClient = youtubeInnerTubeClient,
     botGuard = youtubeBotGuard,
@@ -132,6 +134,8 @@ class AppContainer(context: Context) {
     sDecryptor = youtubeSDecryptor,
     httpClient = youtubeHttpClient,
     biliTvPoTokenProvider = biliTvPoTokenProvider,
+    pipedClient = pipedClient,
+    appSettingsStore = appSettingsStore,
   )
   val videoRepository: VideoRepository = VideoRepository(
     apiClient = apiClient,
