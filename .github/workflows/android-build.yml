@@ -101,7 +101,8 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Restore release keystore
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        # release 和 debug 构建都恢复固定 keystore:release 用它签正式包,
+        # debug 也用它签(复用同一 key 避免每次 CI 随机 debug.keystore 致签名不一致)。
         env:
           SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
@@ -123,7 +124,8 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         # 传 GITHUB_RUN_NUMBER 让 debug versionCode 随每次构建递增,避免恒为 1000000
         # 导致 Android 拒绝覆盖安装(同一 applicationId 内 versionCode 必须严格 > 已装)。
-        run: ./gradlew clean assembleDebug --no-daemon -PbilitvBuildRoot="$GITHUB_WORKSPACE/build" -PbilitvDebugRunNumber="$GITHUB_RUN_NUMBER"
+        # 传 key.* 属性用固定 release keystore 签名,避免每次随机 debug.keystore 致跨次签名不一致。
+        run: ./gradlew clean assembleDebug --no-daemon -PbilitvBuildRoot="$GITHUB_WORKSPACE/build" -PbilitvDebugRunNumber="$GITHUB_RUN_NUMBER" -Pkey.store="$KEYSTORE_PATH" -Pkey.alias="$KEY_ALIAS" -Pkey.store.password="$STORE_PASSWORD" -Pkey.key.password="$KEY_PASSWORD"
 
       - name: Upload debug APK
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}

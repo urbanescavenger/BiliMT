@@ -71,6 +71,20 @@ android {
 
   }
 
+  // 固定签名 key:CI 传 key.store 等属性时用 release keystore 给 release 和 debug 两个变体
+  // 签名,确保 CI 每次产物签名一致、可覆盖升级。debug 与 release 包名不同(.debug 后缀),
+  // 不会互相覆盖,各自独立升级链。本地无 key.store 属性时两者都回退默认 debug 签名。
+  signingConfigs {
+    if (project.hasProperty("key.store")) {
+      create("release") {
+        storeFile = file(project.property("key.store") as String)
+        storePassword = project.property("key.store.password") as String
+        keyAlias = project.property("key.alias") as String
+        keyPassword = project.property("key.key.password") as String
+      }
+    }
+  }
+
   buildTypes {
     debug {
       // 给 debug 变体独立的 applicationId 后缀,使其与 release (com.kirin.mt) 在系统层面
@@ -78,20 +92,14 @@ android {
       // 所有依赖 applicationId 的地方(FileProvider authority、AppInfo.packageName 等)
       // 均通过 ${applicationId} 占位符或 context.packageName 动态获取,会自动跟随此后缀。
       applicationIdSuffix = ".debug"
+      // CI 用固定 release keystore 签 debug,避免每次全新 runner 临时生成随机 debug.keystore
+      // 导致跨次签名不一致、Android 拒绝覆盖安装。本地无 key.store 时回退默认 debug 签名。
+      signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
       isMinifyEnabled = false
       isShrinkResources = false
     }
     release {
-      signingConfig = if (project.hasProperty("key.store")) {
-        signingConfigs.create("release") {
-          storeFile = file(project.property("key.store") as String)
-          storePassword = project.property("key.store.password") as String
-          keyAlias = project.property("key.alias") as String
-          keyPassword = project.property("key.key.password") as String
-        }
-      } else {
-        signingConfigs.getByName("debug")
-      }
+      signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(
