@@ -266,7 +266,7 @@ internal class SabrMediaFetcher(
     val rn = requestNumber.getAndIncrement()
     lastRequestMs.set(now)
     val url = "${session.sabrUrl}&rn=$rn"
-    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs bitfield=${if (videoFormat == null) 1 else 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} body=${body.size}B")
+    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs bitfield=${if (videoFormat == null) 1 else 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} audioTrackId=\"$audioTrackId\" body=${body.size}B")
 
     val request = Request.Builder()
       .url(url)
