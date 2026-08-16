@@ -278,7 +278,14 @@ internal object SabrProto {
   )
 
   fun decodeReloadPlayer(payload: ByteArray): ReloadPlayerInfo {
-    return try {
+    // alpha.88:拆两级 try——外层取 reloadToken(顶层 field1(LEN)→field1(LEN) = 要回传 /player 的凭证)
+    // 与内层诊断扫描(videoId/innerToken/field7)分离。内层扫描抛异常时**不再丢 reloadToken**——
+    // 真机 36B payload 经 ProtoReader 越界修复(alpha.88)后外层可正常取 token,但内层 base64/递归
+    // 扫描仍可能因结构异常抛;旧实现整体 catch 把 reloadToken 一起 null 化 → storeReloadToken 不存 →
+    // RELOAD 重载闭环(alpha.87)永远不触发。现在 reloadToken 一旦取出即保留,诊断字段单独容错。
+    val hexDump = hexHead(payload, payload.size)
+    // 外层:取 reloadToken。ProtoReader(alpha.88 已修越界)不再抛,但兜底 try 防 base64 之外异常。
+    val (reloadToken, innerLen, b64Len) = try {
       // 顶层 field1(LEN) → ReloadPlaybackParams
       val inner = ProtoReader(payload).let { r ->
         while (true) { val f = r.nextField() ?: break; if (f.fieldNumber == 1 && f.wireType == ProtoWire.WIRE_LEN) return@let (f.value as ByteArray) }
@@ -289,36 +296,46 @@ internal object SabrProto {
         while (true) { val f = r.nextField() ?: break; if (f.fieldNumber == 1 && f.wireType == ProtoWire.WIRE_LEN) return@let (f.value as ByteArray) }
         ByteArray(0)
       }
-      val reloadToken = String(b64Bytes, Charsets.UTF_8)
-      var videoId: String? = null; var innerToken: String? = null
-      var reloadTokenDecodedHex: String? = null; var innerTokenDecodedHex: String? = null
-      var field7Hex: String? = null
-      val decoded = base64DecodePickVideoId(reloadToken)
-      if (decoded != null) {
-        reloadTokenDecodedHex = hexHead(decoded, 160)
-        // 递归下钻找内层 f4=videoId / f5=子token / f7(兼容新旧两种嵌套)
-        val f = reloadScanFields(decoded)
-        f["4"]?.let { videoId = String(it, Charsets.UTF_8) }
-        f["5"]?.let {
-          innerToken = String(it, Charsets.UTF_8)
-          innerTokenDecodedHex = base64DecodeAny(String(it, Charsets.UTF_8))?.let { hexHead(it, 128) }
-        }
-        f["7"]?.let { field7Hex = hexHead(it, 128) }
-      }
-      ReloadPlayerInfo(
-        videoId = videoId, reloadToken = reloadToken, reloadTokenDecodedHex = reloadTokenDecodedHex,
-        innerToken = innerToken, innerTokenDecodedHex = innerTokenDecodedHex, field7Hex = field7Hex,
-        fieldsSummary = "payloadLen=${payload.size} innerLen=${inner.size} b64Len=${b64Bytes.size} b64Prefix=${if (b64Bytes.isEmpty()) "-" else "0x%02x".format(b64Bytes[0].toInt() and 0xFF)}",
-        hexDump = hexHead(payload, payload.size),
-      )
+      Triple(String(b64Bytes, Charsets.UTF_8), inner.size, b64Bytes.size)
     } catch (e: Exception) {
-      // 诊断扫描容错:坏/截断 proto 不崩,返回空 dump(processPart 会打 RELOAD_PLAYER_RESPONSE 日志)。
-      ReloadPlayerInfo(
-        videoId = null, reloadToken = null, reloadTokenDecodedHex = null,
-        innerToken = null, innerTokenDecodedHex = null, field7Hex = null,
-        fieldsSummary = "decode failed: ${e.message}", hexDump = hexHead(payload, payload.size),
-      )
+      Triple("", 0, 0)
     }
+    // 内层:诊断扫描 videoId/innerToken/field7。单独 try——失败不丢 reloadToken。
+    var videoId: String? = null; var innerToken: String? = null
+    var reloadTokenDecodedHex: String? = null; var innerTokenDecodedHex: String? = null
+    var field7Hex: String? = null
+    var diagNote: String? = null
+    if (reloadToken.isNotBlank()) {
+      try {
+        val decoded = base64DecodePickVideoId(reloadToken)
+        if (decoded != null) {
+          reloadTokenDecodedHex = hexHead(decoded, 160)
+          // 递归下钻找内层 f4=videoId / f5=子token / f7(兼容新旧两种嵌套)
+          val f = reloadScanFields(decoded)
+          f["4"]?.let { videoId = String(it, Charsets.UTF_8) }
+          f["5"]?.let {
+            innerToken = String(it, Charsets.UTF_8)
+            innerTokenDecodedHex = base64DecodeAny(String(it, Charsets.UTF_8))?.let { hexHead(it, 128) }
+          }
+          f["7"]?.let { field7Hex = hexHead(it, 128) }
+        } else {
+          diagNote = "base64DecodePickVideoId=null"
+        }
+      } catch (e: Exception) {
+        diagNote = "inner scan failed: ${e.message}"
+      }
+    }
+    val b64Prefix = if (b64Len == 0) "-" else "0x%02x".format(reloadToken.first().code and 0xFF)
+    val fieldsSummary = buildString {
+      append("payloadLen=${payload.size} innerLen=$innerLen b64Len=$b64Len b64Prefix=$b64Prefix")
+      if (diagNote != null) append(" $diagNote")
+    }
+    return ReloadPlayerInfo(
+      videoId = videoId, reloadToken = reloadToken, reloadTokenDecodedHex = reloadTokenDecodedHex,
+      innerToken = innerToken, innerTokenDecodedHex = innerTokenDecodedHex, field7Hex = field7Hex,
+      fieldsSummary = fieldsSummary,
+      hexDump = hexDump,
+    )
   }
 
   /** base64 解码(外层 URL-safe + `%3D`;首字节 `E` 可能是前缀)。多候选,优先取能解出 field4=videoId 的。 */

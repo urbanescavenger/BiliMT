@@ -134,6 +134,16 @@ internal class ProtoReader(private val data: ByteArray, private val start: Int =
   }
 
   private fun readFixed64(): Long {
+    // alpha.88:补越界保护(对齐 WIRE_LEN 的 L122 处理)。RELOAD_PLAYER_RESPONSE part 46 真机出现
+    // 36B payload,首字段 wireType=fixed64/fixed32 且剩余字节不足 8/4 → `data[pos+i]` 抛
+    // ArrayIndexOutOfBoundsException("length=36; index=36"),致 decodeReloadPlayer 整体 catch →
+    // reloadToken=null → storeReloadToken 不存 → consumeReloadToken 返回 null → RELOAD 重载闭环
+    // (alpha.87 buildSabrSessionFromReloadPlayer)永远不触发。截断时返回 0 并跳到结尾,不崩,
+    // 让上层遍历继续找 field1(LEN) token。
+    if (pos + 8 > end) {
+      pos = end
+      return 0L
+    }
     var v = 0L
     for (i in 0 until 8) v = v or ((data[pos + i].toInt() and 0xFF).toLong() shl (8 * i))
     pos += 8
@@ -141,6 +151,11 @@ internal class ProtoReader(private val data: ByteArray, private val start: Int =
   }
 
   private fun readFixed32(): Int {
+    // alpha.88:同 readFixed64 越界保护(见上)。
+    if (pos + 4 > end) {
+      pos = end
+      return 0
+    }
     var v = 0
     for (i in 0 until 4) v = v or ((data[pos + i].toInt() and 0xFF) shl (8 * i))
     pos += 4

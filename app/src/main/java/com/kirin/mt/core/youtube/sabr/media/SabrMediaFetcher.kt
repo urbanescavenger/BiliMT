@@ -431,18 +431,25 @@ internal class SabrMediaFetcher(
         // 是服务端下发的 reload 凭证,Phase 2 需原样回传进新 /player 的 playbackContext.reloadPlaybackContext。
         // 不改播放行为。真机看 reloadToken 是否稳定/含 videoId,为 Phase 2 定回传逻辑。
         val info = SabrProto.decodeReloadPlayer(payload)
+        // alpha.88:补通用逐字段扫描 + hexDump——36B 短变体经 ProtoReader 越界修复后结构化解析可能仍取不到
+        // token/videoId(若结构非 f1→f1),通用扫描 dump 每个顶层 field 的 number/wireType/值,一次真机即可
+        // 看清 36B 到底是什么结构(是否带 token / token 在哪个 field)。
+        val scan = SabrProto.decodeReloadPlayerResponse(payload)
         reloadPlayerDump = "videoId=${info.videoId} reloadTokenLen=${info.reloadToken?.length} " +
           "reloadTokenDecodedHex=${info.reloadTokenDecodedHex} innerToken=\"${info.innerToken}\" " +
           "innerTokenDecodedHex=${info.innerTokenDecodedHex} field7Hex=${info.field7Hex} " +
-          "potSent=${poTokenState.currentPoToken.size}B fields={${info.fieldsSummary}}"
+          "potSent=${poTokenState.currentPoToken.size}B fields={${info.fieldsSummary}} " +
+          "scan={${scan.fieldsSummary}} hex=${info.hexDump}"
         Log.w(tag, "RELOAD_PLAYER_RESPONSE $reloadPlayerDump")
-        // Phase 2(取证):成功 decode 时把 reloadToken 停车到进程级 registry(独立于 sessions,evict 不清),
-        // 供 resolve() 下次重进 consumeReloadToken 取走去重打 visionOS /player。仅当 token 非空且
-        // videoId 可解出才存(成功 decode 恒带 videoId;decode 失败时 token 也 null,自然跳过)。
+        // Phase 2(alpha.87 RELOAD 重载闭环):把 reloadToken 停车到进程级 registry(独立于 sessions,evict 不清),
+        // 供 resolve() 下次重进 consumeReloadTokenSlot 取走 → WEB attested /player 重打。
+        // alpha.88:改单槽存(视频无关)——36B 短变体可能无内层 videoId,旧 videoId-keyed 存不进。
+        // 只要 reloadToken 非空就存(videoId 可解出时顺带计数)。
         val rt = info.reloadToken
-        val vid = info.videoId
-        if (vid != null && !rt.isNullOrBlank()) {
-          SabrStreamRegistry.storeReloadToken(vid, rt)
+        if (!rt.isNullOrBlank()) {
+          SabrStreamRegistry.storeReloadTokenSlot(info.videoId, rt)
+        } else {
+          Log.w(tag, "RELOAD_PLAYER_RESPONSE: reloadToken 空(payloadLen=${payload.size}) → 闭环无 token 可回传,scan+hex 见上")
         }
       }
       PART_SABR_ERROR -> {

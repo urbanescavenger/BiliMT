@@ -99,6 +99,15 @@ data class PlaybackInfo(
   val availableAudioTracks: List<PlaybackAudioTrack> = emptyList(),
   /** YouTube 字幕轨(WebVTT URL,来自 NewPipe info.subtitles)。播放器用 MergingMediaSource 合并渲染。非 YouTube/无字幕为空。 */
   val subtitleTracks: List<PlaybackTrack> = emptyList(),
+  /**
+   * alpha.88:RELOAD 闭环兜底——远程 DASH manifest URL(NewPipe `StreamInfo.dashMpdUrl`,android streamingData)。
+   * 非空时播放器 [buildDashMediaItem] 直接用此 URL 喂 DashMediaSource(ExoPlayer 拉远程 MPD + 分段),
+   * 跳过合成 data: MPD。对齐 LibreTube SABR RELOAD 崩后落 `streams.dash`。RELOAD 闭环(WEB attested reload)
+   * 失败时由 [YoutubePlaybackResolver.buildDashFallbackFromNewPipe] 填,≤1080p。
+   * videoTracks 仅一条 dummy(segmentBase 非 null → isProgressive=false → 路由 DashMediaSource 分支),
+   * 真实轨由远程 MPD 定义。非兜底场景为 null。
+   */
+  val remoteDashManifestUrl: String? = null,
 )
 
 /** YouTube 一条可选音轨(多语言配音)。id 为 audioTrack.id(如 "en.4"),非 itag。 */

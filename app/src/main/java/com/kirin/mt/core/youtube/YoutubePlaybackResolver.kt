@@ -266,7 +266,7 @@ class YoutubePlaybackResolver(
         // resolve。这里 consume 取走 token → 重打 visionOS /player(回传 reloadPlaybackContext)换新会话;
         // 成功即试用(证明 Phase 2 成立);失败落常规 NewPipe harvest。reloadCount 超 MAX 只跳过 reload 尝试
         // (整体 loop 已由播放器错误重试预算 MaxStallAutoRetry 兜底,本轮诊断不接完整 DASH 闭环)。
-        val reloadToken = SabrStreamRegistry.consumeReloadToken(videoId)
+        val reloadToken = SabrStreamRegistry.consumeReloadTokenSlot()
         if (reloadToken != null) {
           // alpha.8 教训:storeReloadToken 对每次 RELOAD part(rn=0..7,单次尝试约 8 个)都 +1,且从不重置,
           // 到 resolve 重跑时 count 已远超 MAX → 诊断期的 reload 尝试永远被跳过、Phase 2 一次都没发过。
@@ -296,7 +296,17 @@ class YoutubePlaybackResolver(
               youtubeDefaultQuality = youtubeDefaultQuality,
             )
           }
-          Log.w(Tag, "SABR reload /player 未回 sabrUrl/ustreamerConfig → 落常规路径(NewPipe harvest)")
+          Log.w(Tag, "SABR reload 闭环未回 SABR(WEB/visionOS reload 均无 sabrUrl)→ 试 DASH 兜底")
+          // alpha.88:RELOAD 闭环兜底(对齐 LibreTube SABR RELOAD 崩后落 streams.dash)——用 NewPipe getInfo
+          // 的 dashMpdUrl(android streamingData manifest)直喂 DashMediaSource,≤1080p。dashMpdUrl 空(android
+          // 无 poToken 取不到 protected manifest)→ 落常规 NewPipe harvest(会 RELOAD,但无其它出口)。
+          val dashInfo = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request) }.getOrNull()
+          if (dashInfo != null) {
+            YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+            Log.i(Tag, "SABR reload → DASH 兜底 playback ready: videoId=$videoId dashMpdUrl=${dashInfo.remoteDashManifestUrl?.length}B → 远程 MPD")
+            return@withContext dashInfo
+          }
+          Log.w(Tag, "DASH 兜底 dashMpdUrl 空(android 无 manifest)→ 落常规 NewPipe harvest(会 RELOAD,但已无其它出口)")
         }
         val raws = rawAdaptive.mapNotNull { it as? JsonObject }
         val firstVideo = raws.firstOrNull { (it.intOrNull("height") ?: 0) > 0 }
@@ -1082,6 +1092,63 @@ class YoutubePlaybackResolver(
         "dur=${sabrData.durationMs}ms reloadTokenLen=${reloadToken.length}"
     )
     return NewPipeSabrResult(session, raws, sabrData.durationMs, emptyList())
+  }
+
+  /**
+   * alpha.88:RELOAD 闭环兜底——用 NewPipe [StreamInfo.getInfo] 的 **dashMpdUrl**(android streamingData
+   * manifest)直喂 [PlaybackInfo.remoteDashManifestUrl],播放器 [buildDashMediaItem] 拿到非空 remote URL
+   * 即走 DashMediaSource 拉远程 MPD + 分段(ExoPlayer 自管 A/V 轨/SegmentList),≤1080p。对齐 LibreTube
+   * SABR RELOAD 崩后落 `streams.dash`([NewPipeMediaServiceRepository.kt:312] `dash = resp.dashMpdUrl`)。
+   *
+   * 限制:NewPipe fork `getDashMpdUrl()` 仅读 **android** streamingData(L632 注释 "no DASH manifest with
+   * iOS and visionOS"),android 无 poToken 对受保护视频可能返 UNPLAYABLE → dashMpdUrl 空 → 返回 null,
+   * 上层落常规 NewPipe harvest(会 RELOAD,但无其它出口)。本兜底捕的是**非受保护** RELOAD 场景 + 受保护
+   * 但 android 仍下发 manifest 的情况,用以打断 RELOAD 死循环。返回的 PlaybackInfo 仅一条 dummy 视频轨
+   *(`segmentBase` 非 null → [PlaybackTrack.isProgressive]=false → 播放器走 DashMediaSource 分支,真实轨
+   * 由远程 MPD 定义),audioTracks 空(MPD 自带音频轨)。
+   */
+  private suspend fun buildDashFallbackFromNewPipe(
+    videoId: String,
+    durationMs: Long,
+    request: PlaybackRequest,
+  ): PlaybackInfo? {
+    val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
+      .getOrElse {
+        Log.w(Tag, "DASH 兜底: NewPipe getInfo failed: ${it.message}")
+        return null
+      }
+    val dashMpdUrl = info.dashMpdUrl
+    if (dashMpdUrl.isNullOrBlank()) {
+      Log.w(Tag, "DASH 兜底: dashMpdUrl 空(android streamingData 无 manifest,受保护视频 android 无 poToken 取不到)→ 返回 null")
+      return null
+    }
+    val resolvedDuration = if (durationMs > 0) durationMs else info.duration * 1000L
+    Log.i(Tag, "DASH 兜底: dashMpdUrl=${dashMpdUrl.length}B dur=${resolvedDuration}ms → 远程 MPD DashMediaSource")
+    // dummy 视频轨:segmentBase 非 null → isProgressive=false → 路由 DashMediaSource 分支(真实轨由远程 MPD 定义)。
+    val dummyTrack = PlaybackTrack(
+      id = 0,
+      baseUrl = dashMpdUrl,
+      backupUrls = emptyList(),
+      bandwidth = 0,
+      codecs = "video/mp4",
+      width = 0,
+      height = 480,
+      mimeType = "video/mp4",
+      segmentBase = PlaybackSegmentBase("0-0", "0-0"),
+    )
+    val quality = PlaybackQuality(0, "DASH 兜底")
+    return PlaybackInfo(
+      bvid = videoId,
+      cid = 0L,
+      title = request.title,
+      durationMs = resolvedDuration,
+      qualities = listOf(quality),
+      selectedQuality = quality,
+      videoTracks = listOf(dummyTrack),
+      audioTracks = emptyList(),
+      headers = YoutubePlaybackHeaders,
+      remoteDashManifestUrl = dashMpdUrl,
+    )
   }
 
   /** raw adaptive JSON → SABR [SabrFormatId](itag/lastModified/xtags 来自 raw 字段,height 显式传)。 */

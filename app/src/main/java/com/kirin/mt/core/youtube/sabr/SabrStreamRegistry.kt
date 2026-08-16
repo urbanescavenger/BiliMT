@@ -48,6 +48,40 @@ internal object SabrStreamRegistry {
   /** 原子取出停车 token(消费一次)。resolve() 重进时用;已取走则返回 null。 */
   fun consumeReloadToken(videoId: String): String? = pendingReloads.remove(videoId)
 
+  /**
+   * alpha.88:RELOAD **单槽**(视频无关)停车。真机 36B RELOAD payload 可能是较小变体,**不含**内层
+   * videoId(旧 144B 变体才有 f4=videoId)→ 旧 [storeReloadToken] 的 `vid != null` 存不进 →
+   * [consumeReloadToken] 恒返回 null → alpha.87 RELOAD 重载闭环永远不触发。单播放器同时只播一个视频,
+   * 单槽足够:fetcher 存(无论 videoId 能否解出),resolve() [consumeReloadTokenSlot] 取走。
+   * 仍顺带维护 videoId-keyed [pendingReloads]/[reloadCounts](诊断计数;vid 可解出时)。
+   */
+  @Volatile private var pendingReloadSlot: String? = null
+  @Volatile private var pendingReloadSlotVid: String? = null
+
+  /** 存 reloadToken 进单槽(+ vid 可解出时顺带 videoId-keyed 计数)。由 fetcher RELOAD 分支调用。 */
+  fun storeReloadTokenSlot(videoId: String?, token: String) {
+    pendingReloadSlot = token
+    pendingReloadSlotVid = videoId
+    if (videoId != null) {
+      val count = (reloadCounts[videoId] ?: 0) + 1
+      reloadCounts[videoId] = count
+      pendingReloads[videoId] = token
+      Log.w(tag, "storeReloadTokenSlot videoId=$videoId count=$count tokenLen=${token.length}")
+    } else {
+      Log.w(tag, "storeReloadTokenSlot videoId=null(短 RELOAD 变体?) tokenLen=${token.length} → 单槽存,resolve 走 slot")
+    }
+  }
+
+  /** 原子取走单槽 token(消费一次)。resolve() 重进 RELOAD 闭环时用;已取走则返回 null。 */
+  fun consumeReloadTokenSlot(): String? {
+    val t = pendingReloadSlot
+    pendingReloadSlot = null
+    val vid = pendingReloadSlotVid
+    pendingReloadSlotVid = null
+    if (t != null) Log.i(tag, "consumeReloadTokenSlot tokenLen=${t.length} vid=$vid")
+    return t
+  }
+
   /** 当前连续 reload 次数。 */
   fun reloadCount(videoId: String): Int = reloadCounts[videoId] ?: 0
 

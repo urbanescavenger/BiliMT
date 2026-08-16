@@ -2174,8 +2174,11 @@ private fun PlayerLoadingOverlay(isYoutube: Boolean, step: YoutubeLoadStep?) {
 }
 
 internal fun buildDashMediaItem(info: PlaybackInfo, cdnPreference: PlaybackCdnPreference): MediaItem {
+  // alpha.88:RELOAD 闭环兜底——非空时直接用远程 DASH manifest URL(NewPipe dashMpdUrl)喂 DashMediaSource,
+  // ExoPlayer 拉远程 MPD + 分段,跳过合成 data: MPD。对齐 LibreTube SABR 崩后落 streams.dash。
+  val uri = info.remoteDashManifestUrl ?: buildDashManifest(info, cdnPreference)
   return MediaItem.Builder()
-    .setUri(buildDashManifest(info, cdnPreference))
+    .setUri(uri)
     .setMimeType(MimeTypes.APPLICATION_MPD)
     .build()
 }
