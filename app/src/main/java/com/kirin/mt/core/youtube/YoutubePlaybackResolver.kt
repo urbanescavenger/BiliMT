@@ -723,6 +723,9 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "NewPipe: no serverAbrStreamingUrl/ustreamerConfig (video lacks SABR) → fallback")
       return null
     }
+    // Phase 0 诊断(DASH 兜底,见 docs/youtube-dash-fallback-plan.md):NewPipe 是否给 dashMpdUrl/hlsUrl。
+    // 不改播放行为,仅取证判断 DASH 兜底可走哪条(直拉 manifest vs 合成 MPD)。
+    Log.i(Tag, "NewPipe DASH diag: dashMpdUrl=${info.dashMpdUrl?.take(80)} hlsUrl=${info.hlsUrl?.take(60)}")
     // alpha.14:NewPipe 给网关 URL 追加了 &cpn=<visionOsCpn>,而 ustreamerConfig 绑定该 cpn。
     // 必须用 visionOsCpn(对齐 LibreTube 直接用原始 URL),不能用随机 cpn——否则服务端按 cpn 不匹配
     // 拒会话 → RELOAD_PLAYER_RESPONSE 死循环(alpha.14 真机:jNl6YkkzKxw 2160p 首 fetch 即 RELOAD,
@@ -765,6 +768,11 @@ class YoutubePlaybackResolver(
     }
     val vFmt = firstVideo.toSabrFormatId()
     val aFmt = firstAudio.toSabrFormatId()
+    // Phase 0 诊断(DASH 兜底,见 docs/youtube-dash-fallback-plan.md):首视频/音频流的已解密 URL
+    // (NewPipe 内部 n-decrypt)+ deliveryMethod + itagItem 字段(toString 暴露 init/index range 若有,
+    // 不假设字段名)。仅取证,不改播放行为。
+    Log.i(Tag, "NewPipe DASH diag: firstVideo itag=${firstVideo.itag} delivery=${firstVideo.deliveryMethod} url=${firstVideo.content?.take(90)} itagItem=${firstVideo.itagItem?.toString()?.take(140)}")
+    Log.i(Tag, "NewPipe DASH diag: firstAudio itag=${firstAudio.itag} delivery=${firstAudio.deliveryMethod} url=${firstAudio.content?.take(90)} itagItem=${firstAudio.itagItem?.toString()?.take(140)}")
     // 全部可选音轨(供播放器音轨切换菜单)。id 用 getAudioTrackId()(audioTrack.id,如 "en.4");
     // 单音轨视频多个 itag 的 audioTrackId 均为 null → 折叠成 "default" 一条,避免误显示多音轨菜单。
     val sabrAudioTracks = audioStreams.map {
