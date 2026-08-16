@@ -605,7 +605,7 @@ class YoutubePlaybackResolver(
    * 走 visionOS 客户端(不带 poToken)发干净 /player,拿到未绑定任何浏览器会话的
    * [StreamInfo.getServerAbrStreamingUrl](SABR 网关端点,无 n-param 需 decipher)+ [StreamInfo.getUstreamerConfig]。
    *
-   * alpha.81:visionOS SABR 请求**不带 poToken**(对齐 LibreTube,§6.18 定论)。上一轮 alpha.80 移植
+   * alpha.14:visionOS SABR 请求**不带 poToken**(对齐 LibreTube,§6.18 定论)。上一轮 alpha.80 移植
    * NewPipe 原生 PoTokenGenerator 后仍 RELOAD——真机日志坐实 LibreTube SabrClient 的
    * getCachedWebClientPoToken() 在 getInfo 期间恒空(getIosClientPoToken 返回 null),首请求 setPoToken(empty)
    * 不带 poToken 且能播;BiliTV 带 120B WEB-visitor 铸的 poToken 被服务端按会话 visitor 不匹配 RELOAD 全拒。
@@ -671,11 +671,11 @@ class YoutubePlaybackResolver(
         formatId = it.toSabrFormatId(),
       )
     }
-    // alpha.81:对齐 LibreTube——visionOS SABR 请求**不带 poToken**。
+    // alpha.14:对齐 LibreTube——visionOS SABR 请求**不带 poToken**。
     // 上一轮(alpha.80)移植 NewPipe 原生 PoTokenGenerator 后仍 RELOAD,真机日志坐实根因:
     // LibreTube SabrClient 的 getCachedWebClientPoToken() 在 getInfo 期间恒空(getIosClientPoToken 返回 null),
     // 首请求 setPoToken(empty) 不带 poToken 且能播;BiliTV 带 120B WEB-visitor 铸的 poToken 被 visionOS
-    // 服务端按会话 visitor 不匹配 RELOAD 全拒(§6.18/alpha.81 定论)。故 SABR 会话不再带 poToken。
+    // 服务端按会话 visitor 不匹配 RELOAD 全拒(§6.18/alpha.14 定论)。故 SABR 会话不再带 poToken。
     // getInfo 仍走 NewPipe 铸 token(供 iOS /player 请求),但 SABR 请求不依赖它——poToken 空也不回退。
     val poTokenB64 = "" // 对齐 LibreTube:不带 poToken
     val durationMs = info.duration * 1000L
@@ -802,7 +802,7 @@ class YoutubePlaybackResolver(
     }
     val vFmt = rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
     val aFmt = rawToSabrFormatId(firstAudio, 0)
-    // alpha.81:同 NewPipe 路径——visionOS SABR 请求**不带 poToken**(对齐 LibreTube,§6.18 定论)。
+    // alpha.14:同 NewPipe 路径——visionOS SABR 请求**不带 poToken**(对齐 LibreTube,§6.18 定论)。
     // reloadToken 是 reload 凭证,**不是** poToken 替代;poToken 空也不回退。
     val poTokenB64 = "" // 对齐 LibreTube:不带 poToken
     val session = SabrSession.fromSabrData(
