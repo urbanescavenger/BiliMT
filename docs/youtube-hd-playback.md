@@ -770,6 +770,13 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 
 **诊断(修复时加)**:①`SabrMediaFetcher` RELOAD 日志加 `potSent=${poTokenState.currentPoToken.size}B`——修复后若还 RELOAD,`potSent=0B` 直接证明不是 poToken 的锅;②resolver 会话日志显式 `poToken=0B(aligned-LibreTube-no-poToken)`;③复用 `SabrSession:` 日志 `poToken=0B` + fetch 日志 `pot=0B body=1728B`(比 1848B 小 ~120B)自动确认 poToken 已摘。
 
+**alpha.15 补(推翻 alpha.14 定论——根因是 cpn 不匹配,不是 poToken)**:alpha.14 摘 poToken 后真机 2026-08-16 同一视频 `jNl6YkkzKxw`(2160p itag313)**仍无限 RELOAD**(日志 `potSent=0B` 坐实 poToken 无关),但 `3wO2mW3eylw`(1080p itag137)能播;用户确认 **LibreTube 能播 jNl6YkkzKxw**。逐层对比 LibreTube 与 BiliTV 的 SABR 请求,唯一实质差异 = **cpn**:
+- **LibreTube 用 visionOsCpn**:直接用 NewPipe 原始 sabrUrl(保留 `&cpn=<visionOsCpn>`)。ustreamerConfig 来自同一 visionOS /player 响应、**绑定 visionOsCpn**——fork `YoutubeStreamExtractor.java:713-714` 把 `&cpn=` 追加到 serverAbrStreamingUrl。
+- **BiliTV 用随机 cpn**:resolver 把 cpn strip 掉、`fromSabrData` 生成随机 cpn → SABR 请求 cpn 与 ustreamerConfig 绑定不匹配 → 服务端拒会话 RELOAD。
+- **3wO2mW3eylw 能播**:服务端对 1080p 不强制校验 cpn,2160p 严格校验。
+
+**修复**:resolver 两条路径(NewPipe + visionOS reload)新增 `queryParam` 提取 `visionOsCpn` 传给 `fromSabrData` 的 `cpn` 参数,不再用随机 cpn。诊断:会话日志加 `cpn=${visionOsCpn ?: "random"}` 确认修复生效。**另发现唯一请求体差异** = `ClientAbrState.audioTrackId`(field69,LibreTube 设、BiliTV 未设),jNl6YkkzKxw 有 5 音轨,若 cpn 修复后仍 RELOAD 则补该字段。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
