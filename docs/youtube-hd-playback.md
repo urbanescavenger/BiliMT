@@ -800,6 +800,16 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 
 **修复**(commit 9189726,run 31947665038):①`Representation.fromTrack` 建视频 Format 的判断从「仅按 trackType」改成「`trackType==C.TRACK_TYPE_VIDEO && MimeTypes.isVideo(track.mimeType)`」,否则走音频 Format(含 alpha.74 的 containerMimeType 兜底,音频路径不受影响)——真实视频轨(mimeType video/*)→ 视频 Format(不变),混入的音频 itag248(mimeType audio/webm)→ 音频 Format,音频轨(trackType=AUDIO)→ 音频 Format(不变);②`SabrManifest.fromSession` 视频轨按 `mimeType` 分组、每个 mimeType 一个 video AdaptationSet(对齐 LibreTube `groupBy { it.mimeType }`),音频保持单默认轨。**不改**:`buildSabrPlaybackInfo` 建全部视频轨(多 Representation 基础)、`SabrMediaPeriod`/`SabrMediaFetcher`/`SabrClient` 选轨与请求机制、清晰度选择功能(暂时去掉,ExoPlayer 自动选轨)。**待真机**:播 `jNl6YkkzKxw`(2160p,5 音轨)确认日志请求的是**视频 itag(315 或 313)而非 itag248**、无 RELOAD 死循环、能正常播放;确认清晰度菜单仍不可用(ExoPlayer 自动选轨)。
 
+**alpha.83(修 itag248 被暴露成视频轨——alpha.82 mimeType 方案真机证伪,改按 codec 过滤)**:alpha.82 的 fix(9189726,按 mimeType 分组 + `MimeTypes.isVideo` 建视频 Format)**没修好**。真机 2026-08-16 21:04 日志(`logs_live.log`,视频 `jNl6YkkzKxw`)仍显示 ExoPlayer 请求 **itag248 + itag139**,itag248 是 Opus 音频却被当视频轨选 → 服务端每次回 `RELOAD_PLAYER_RESPONSE` → evict → re-harvest → 死循环 → 播放失败。
+
+**新根因(已核对 NewPipe 源码)**:itag248 在 NewPipe 的 `ItagItem` 表里被标成 `VIDEO_ONLY, WEBM, "1080p"`(上游 TeamNewPipe 和 LibreTube fork 都一样)。而 `MediaFormat.WEBM` 的 mimeType 是 `"video/webm"`。所以 NewPipe 给 itag248 的 mimeType 是 `video/webm`(错的,它实际是 Opus 音频)→ `MimeTypes.isVideo("video/webm")` 返回 true → **mimeType 过滤不掉 itag248**。alpha.82 的 mimeType 方案结构性失效。
+
+**可靠信号 = codec**:NewPipe 的 `VideoStream.codec` 来自原始 /player mimeType 的 codecs 参数(`YoutubeStreamExtractor.java:1352-1364`),不经过 ItagItem 误分类。itag248 原始 mimeType 是 `audio/webm; codecs="opus"` → codec = `"opus"`(音频 codec)。真视频 itag 的 codec 是 vp9/avc1/av01/vp8。
+
+**LibreTube 新认识**:LibreTube 的 SABR 用 **Piped API**(`streams.videoStreams` 服务端已正确分离音视频),不是 NewPipe extractor。所以它 `groupBy { it.mimeType }` 分组后全是真视频,没有 itag248 混入问题。alpha.82 文档的「LibreTube 对照」没提这一点,认识不完整。
+
+**修复方案(按 codec 过滤)**:`buildSabrSessionFromNewPipe` 建 `videoFormats` 时按 codec 过滤掉音频 codec(`it.height > 0 && !isAudioCodec(it.codec)`),新增 `isAudioCodec(codec: String?)` 判断 codec 是否以音频 codec 前缀开头(`opus`/`mp4a`/`ac-3`/`ec-3`/`flac` 等)。这样 itag248(opus)根本不会进 videoFormats → 不进 manifest 视频轨 → ExoPlayer 只能选真视频轨 → itag 与会话绑定一致 → 不再 RELOAD。**不改**:`SabrManifest.fromSession` 的 mimeType 分组(保留,无害)、`Representation.fromTrack` 的 isVideo 判断(保留,无害)、`buildSabrPlaybackInfo` 建全部视频轨。**诊断先行**:先推 codec dump 日志真机确认 itag248 的 codec 确实是 `opus`(而非空/其它),验证 codec 过滤前提成立,再改过滤逻辑。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

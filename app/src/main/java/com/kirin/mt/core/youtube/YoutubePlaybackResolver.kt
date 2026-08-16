@@ -661,6 +661,11 @@ class YoutubePlaybackResolver(
       videoStreams.firstOrNull { it.toSabrFormatId().itag == target }
     } ?: videoStreams.firstOrNull { it.height > 0 } ?: videoStreams.firstOrNull()
     Log.i(Tag, "NewPipe SABR harvest: videoFormats=${videoFormats.size} maxHeight=$maxHeight defaultItag=$defaultItag firstVideo=itag${firstVideo?.itag}(${firstVideo?.height}p)")
+    // alpha.83 诊断:dump 每个视频流 itag 的 codec,真机确认 itag248 的 codec 确实是 opus(而非空/其它),
+    // 验证「按 codec 过滤音频 itag」前提成立,再改过滤逻辑。
+    Log.i(Tag, "NewPipe videoFormats dump: " + videoStreams
+      .filter { it.height > 0 }
+      .joinToString { "${it.itag}=${it.codec}" })
     // 优先原声轨(getAudioTrackType()==ORIGINAL,来自 xtags acont=original),跳过配音/翻译轨。
     // 多语言配音视频里同一 itag 会按语言重复出现,盲取第一条可能拿到配音轨。
     val firstAudio = audioStreams.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
