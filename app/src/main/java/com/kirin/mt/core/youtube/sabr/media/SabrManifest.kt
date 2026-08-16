@@ -29,22 +29,27 @@ internal data class SabrManifest(
 ) {
   companion object {
     /**
-     * 从 [session] + [info] 建 manifest。video track = 选中 itag 的 Representation;
+     * 从 [session] + [info] 建 manifest。video track = 全部视频轨(多 Representation,由 ExoPlayer 选轨);
      * audio track = 会话默认音频 itag。FormatId 从 [SabrSession] 取(按 track.id 查 videoFormat,
      * audio 用 session.audioFormatId)。
+     *
+     * alpha.81(复刻 LibreTube):video AdaptationSet 建全部视频 Representation(不再只建选中 itag 一条),
+     * 由 ExoPlayer 默认选轨选最高 bitrate 档(绕开 itag313 RELOAD)。对齐 LibreTube `SabrManifest.kt`
+     * 的 `videoStreams.groupBy { it.mimeType }` 多 Representation 语义。
      */
     @androidx.annotation.OptIn(UnstableApi::class)
     fun fromSession(session: SabrSession, info: PlaybackInfo): SabrManifest {
-      val videoTrack = info.videoTracks.first()
-      val videoFmtId = session.videoFormat(videoTrack.id) ?: session.videoFormatId
-      val videoRep = Representation.fromTrack(videoTrack, videoFmtId, C.TRACK_TYPE_VIDEO)
+      val videoReps = info.videoTracks.map { track ->
+        val fmtId = session.videoFormat(track.id) ?: session.videoFormatId
+        Representation.fromTrack(track, fmtId, C.TRACK_TYPE_VIDEO)
+      }
       val adaptationSets = if (info.audioTracks.isEmpty()) {
-        listOf(AdaptationSet(C.TRACK_TYPE_VIDEO, listOf(videoRep)))
+        listOf(AdaptationSet(C.TRACK_TYPE_VIDEO, videoReps))
       } else {
         val audioTrack = info.audioTracks.first()
         val audioRep = Representation.fromTrack(audioTrack, session.audioFormatId, C.TRACK_TYPE_AUDIO)
         listOf(
-          AdaptationSet(C.TRACK_TYPE_VIDEO, listOf(videoRep)),
+          AdaptationSet(C.TRACK_TYPE_VIDEO, videoReps),
           AdaptationSet(C.TRACK_TYPE_AUDIO, listOf(audioRep)),
         )
       }

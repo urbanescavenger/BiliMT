@@ -287,8 +287,6 @@ fun MobilePlayerScreen(
   var selectedQualityId by remember { mutableStateOf<Int?>(null) }
   var playbackSpeed by remember { mutableFloatStateOf(1f) }
   var settingsSheet by remember { mutableStateOf(false) }
-  // 底栏画质下拉菜单(挂在 HD 图标按钮上)
-  var showQualityMenu by remember { mutableStateOf(false) }
   // 底栏音轨下拉菜单(挂在音轨图标按钮上,仅 YouTube 多音轨视频显示)
   var showAudioMenu by remember { mutableStateOf(false) }
   // 发送弹幕:底栏内联输入栏开关 / 文本 / 发送中。发在当前播放位置(progress 毫秒)。
@@ -1380,48 +1378,8 @@ fun MobilePlayerScreen(
                 },
               )
             }
-            // 画质快捷入口:HD 图标按钮 + DropdownMenu,放在进度条与全屏按钮之间。
-            // 切换逻辑与原设置弹窗 onQualitySelected 一致(改 selectedQualityId + activeRequest.preferredQualityId 重载)。
-            // 播放器页面未包 MaterialTheme,DropdownMenu 显式深色 containerColor,否则默认白底。
-            val qualities = readyInfo.qualities
-            if (qualities.isNotEmpty()) {
-              Box {
-                MobilePlayerIconButton(
-                  iconRes = R.drawable.ic_player_hd,
-                  contentDescription = "画质",
-                  tint = BiliColors.TextPrimary,
-                  onClick = { showQualityMenu = true },
-                )
-                DropdownMenu(
-                  expanded = showQualityMenu,
-                  onDismissRequest = { showQualityMenu = false },
-                  containerColor = Color(0xFF1A1A20),
-                ) {
-                  qualities.forEach { q ->
-                    val selected = q.id == selectedQualityId
-                    DropdownMenuItem(
-                      text = {
-                        Text(
-                          text = q.description,
-                          color = if (selected) Color(0xFFFB7299) else Color.White,
-                        )
-                      },
-                      onClick = {
-                        showQualityMenu = false
-                        selectedQualityId = q.id
-                        scope.launch {
-                          loadRequest(activeRequest.copy(
-                            startPositionMs = player.currentPosition.takeIf { it > 0L }
-                              ?: playbackPositionState.longValue,
-                            preferredQualityId = q.id,
-                          ))
-                        }
-                      },
-                    )
-                  }
-                }
-              }
-            }
+            // alpha.81(复刻 LibreTube):暂时去掉画质选择——ExoPlayer 自动选轨(多 Representation manifest)。
+            // 底栏 HD 画质按钮 + DropdownMenu 移除,画质由 ExoPlayer 默认选轨决定。
             // 音轨切换入口:仅 YouTube 多音轨(多语言配音)视频显示。列出全部可选音轨,选中即重载。
             val audioTracks = readyInfo.availableAudioTracks
             if (activeRequest.isYoutube && audioTracks.size > 1) {

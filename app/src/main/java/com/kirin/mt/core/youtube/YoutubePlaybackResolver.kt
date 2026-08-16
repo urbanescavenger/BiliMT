@@ -960,13 +960,17 @@ class YoutubePlaybackResolver(
       ?.takeIf { pid -> videoFmts.any { it.itag == pid } }
       ?: defaultItag
     val selectedQuality = qualities.firstOrNull { it.id == selectedItag } ?: qualities.first()
-    val vRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == selectedItag }
-    val videoTrack = buildSabrTrack(selectedItag, vRaw, "video", sid, videoId)
+    // alpha.81(复刻 LibreTube):manifest 塞全部视频轨,由 ExoPlayer 选轨(默认选最高 bitrate,
+    // 绕开 itag313 RELOAD)。videoTracks 不再只建选中 itag 一条,而是全部 itag 各一条。
+    val allVideoTracks = videoFmts.map { fmt ->
+      val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == fmt.itag }
+      buildSabrTrack(fmt.itag, raw, "video", sid, videoId)
+    }
     Log.i(
       Tag,
       "SABR PlaybackInfo: sid=$sid sessionVideo=itag${sabrSession.videoFormatId.itag}(${sabrSession.videoFormatId.height}p) " +
-        "qualities=${qualities.size} selected=itag$selectedItag(${videoTrack.height}p ${videoTrack.codecs}) " +
-        "audio=itag$aItag(${audioTrack.codecs}) duration=${durationMs}ms → sabr:// DASH"
+        "qualities=${qualities.size} selected=itag$selectedItag(${selectedQuality.description}) " +
+        "videoTracks=${allVideoTracks.size} audio=itag$aItag(${audioTrack.codecs}) duration=${durationMs}ms → sabr:// DASH"
     )
     return PlaybackInfo(
       bvid = videoId,
@@ -975,7 +979,7 @@ class YoutubePlaybackResolver(
       durationMs = durationMs,
       qualities = qualities,
       selectedQuality = selectedQuality,
-      videoTracks = listOf(videoTrack),
+      videoTracks = allVideoTracks,
       audioTracks = listOf(audioTrack),
       headers = YoutubePlaybackHeaders,
       availableAudioTracks = availableAudioTracks,
