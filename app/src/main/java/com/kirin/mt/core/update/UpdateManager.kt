@@ -1,5 +1,6 @@
 package com.kirin.mt.core.update
 
+import com.kirin.mt.BuildConfig
 import com.kirin.mt.core.app.AppInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,11 +30,16 @@ class UpdateManager(
   suspend fun refresh() {
     _state.update { it.copy(status = UpdateUiState.Status.Checking) }
     val installed = appInfo.current()
-    // 安装版本 versionName 含 '-'（如 1.1.1-alpha.1）= 预发布用户，允许收到更新的 alpha/稳定版；
-    // 稳定版/dev 构建只在稳定版里挑，避免把 alpha 推给稳定用户。
-    val includePrereleases = installed.versionName.contains("-")
     val info = try {
-      repository.checkLatest(includePrereleases)
+      if (BuildConfig.DEBUG) {
+        // debug 变体走固定 "debug" release 升级链,不查 v* releases(避免把 debug 用户
+        // 引导去装 release 稳定版;debug 与 release 是独立升级链)。
+        repository.checkDebugLatest()
+      } else {
+        // 安装版本 versionName 含 '-'（如 1.1.1-alpha.1）= 预发布用户，允许收到更新的 alpha/稳定版；
+        // 稳定版构建只在稳定版里挑，避免把 alpha 推给稳定用户。
+        repository.checkLatest(installed.versionName.contains("-"))
+      }
     } catch (e: Exception) {
       _state.update { it.copy(status = UpdateUiState.Status.Failed(e.message ?: e.javaClass.simpleName)) }
       return

@@ -148,13 +148,20 @@ jobs:
           # 固定 tag/release 名 "debug"：每次 debug 云编译都覆盖这里，
           # 手机用固定 URL 下载最新 debug 包（公开仓库，无需登录）。
           # 固定 URL: https://github.com/urbanescavenger/BiliMT/releases/download/debug/BiliMT-debug.apk
+          # notes 写入 versionName/versionCode，供 debug 变体 App 端「检查更新」解析对比，
+          # 实现 debug 只更新 debug（不走 v* release，避免把 debug 用户引向 release 稳定版）。
+          N="$GITHUB_RUN_NUMBER"
+          VC=$((1000000 + N))
+          VN="dev.r$N"
+          NOTES="最新 mort_debug 分支 debug 构建，每次推送自动覆盖。固定下载地址见本 release asset。"$'\n'"versionName=$VN"$'\n'"versionCode=$VC"
           if gh release view debug --json tagName >/dev/null 2>&1; then
+            gh release edit debug --notes "$NOTES"
             gh release upload debug "$APK" --clobber
           else
             gh release create debug "$APK" \
               --target "$GITHUB_SHA" \
               --title "Debug Build" \
-              --notes "最新 mort_debug 分支 debug 构建，每次推送自动覆盖。固定下载地址见本 release asset。" \
+              --notes "$NOTES" \
               --prerelease
           fi
 

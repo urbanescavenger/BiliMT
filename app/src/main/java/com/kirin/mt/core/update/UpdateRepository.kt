@@ -63,6 +63,42 @@ class UpdateRepository(
     return best ?: throw Exception("No eligible releases found")
   }
 
+  /**
+   * debug 变体专用:查固定 tag="debug" 的 release(每次 CI 推送覆盖),从 release notes
+   * 解析 versionCode/versionName,对比当前判断是否有新 debug 构建。debug 不走 v* releases,
+   * 避免把 debug 用户引导去装 release 稳定版(debug 与 release 是独立升级链)。
+   *
+   * CI 发布 debug release 时把 versionName=dev.rN / versionCode=1000000+N 写进 notes。
+   */
+  suspend fun checkDebugLatest(): UpdateInfo {
+    val url = "https://api.github.com/repos/$repoOwner/$repoName/releases/tags/debug"
+    val element = apiClient.getJsonWithHeaders(
+      url = url,
+      headers = mapOf(
+        "Accept" to "application/vnd.github+json",
+        "User-Agent" to "BiliMT-Android",
+      ),
+    )
+    val obj = element as? JsonObject ?: throw Exception("debug release not found")
+    val body = obj.stringOrNull("body").orEmpty()
+    val versionCode = Regex("""versionCode=(\d+)""").find(body)?.groupValues?.get(1)?.toLongOrNull()
+      ?: throw Exception("debug release notes missing versionCode")
+    val versionName = Regex("""versionName=(\S+)""").find(body)?.groupValues?.get(1)
+      ?: "dev"
+    val assets = obj["assets"]?.jsonArray?.toAssets().orEmpty()
+    val matchingAsset = assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
+      ?: assets.firstOrNull()
+    return UpdateInfo(
+      tagName = "debug",
+      versionName = versionName,
+      versionCode = versionCode,
+      releaseUrl = obj.stringOrNull("html_url").orEmpty(),
+      releaseNotes = body,
+      assets = assets,
+      matchingAsset = matchingAsset,
+    )
+  }
+
   private fun pickAssetForDevice(assets: List<UpdateAsset>): UpdateAsset? {
     if (assets.isEmpty()) return null
     val supported = Build.SUPPORTED_ABIS.toSet()
