@@ -237,6 +237,60 @@ class InnerTubeClient(
     }
   }
 
+  /**
+   * alpha.87:RELOAD 重载闭环——用 **WEB client + PoTokenWebView 铸的 WEB poToken** 重打 /player,
+   * 把服务端 [RELOAD_PLAYER_RESPONSE] 下发的 [reloadToken] 原样回传进
+   * `playbackContext.reloadPlaybackContext.reloadPlaybackParams.token`,换 attested
+   * serverAbrStreamingUrl + videoPlaybackUstreamerConfig。
+   *
+   * 区别于 [postVisionOsPlayerReload](visionOS 无 attestation,对受保护视频返回空 sabrUrl/ustreamerConfig):
+   * WEB client 走 [viaWebView] 原生浏览器网络栈 + 带 WEB poToken(`serviceIntegrityDimensions`),
+   * YouTube 认它是真浏览器会话 → 下发 attested SABR 数据。
+   *
+   * WEB-reload 的 sabrUrl/ustreamerConfig **绑 WEB client** → 回传给 SABR 的 session 须用
+   * [sabrClientInfo](WEB ClientInfo, clientName=1)+ [Client.WEB] 的 UA + 该 WEB poToken
+   * (注入 StreamerContext.field2),否则 visionOS/WEB 错配 → 再 RELOAD(alpha.80 旧疾)。
+   *
+   * **已知风险(用户已接受,待真机日志验证)**:WEB /player 回的 sabrUrl 可能带 `n` 参数 →
+   * SABR 端点 HTTP 403(alpha.85/86 旧疾;我们的 n-decrypt 已被 plasma WASM 废掉)。
+   * 带 reloadToken 的重打**可能**返回 n-free sabrUrl,但不确定——若 403,SabrClient 会打
+   * `fetch rn=$rn HTTP 403` 日志,据此再定方向(n-decrypt 或转 DASH 回退)。
+   *
+   * @param videoId      目标视频。
+   * @param reloadToken  RELOAD_PLAYER_RESPONSE part 46 dump 解出的服务端 reload 凭证。
+   * @param webPoToken   PoTokenWebView 铸的 WEB streamingDataPoToken(非空;空则不应调本方法)。
+   * @return /player 响应根 JsonObject。
+   */
+  suspend fun postWebPlayerReload(
+    videoId: String,
+    reloadToken: String,
+    webPoToken: String,
+  ): JsonObject {
+    ensureRealSessionData()
+    val cpn = randomCpn16()
+    val payload = buildJsonObject {
+      put("videoId", videoId)
+      put("cpn", cpn)
+      put("contentCheckOk", true)
+      put("racyCheckOk", true)
+      // RELOAD 官方处理:把服务端 reloadToken 回传进 reloadPlaybackContext.reloadPlaybackParams.token
+      // (对齐 FreeTube 消费方;proto reload_player_response.proto:ReloadPlaybackParams.token=field1)。
+      put("playbackContext", buildJsonObject {
+        put("reloadPlaybackContext", buildJsonObject {
+          put("reloadPlaybackParams", buildJsonObject { put("token", reloadToken) })
+        })
+      })
+    }
+    Log.i(
+      Tag,
+      "postWebPlayerReload videoId=$videoId reloadTokenLen=${reloadToken.length} webPoTokenLen=${webPoToken.length} cpn=$cpn"
+    )
+    // 复用 postJson 的 WEB viaWebView + 顶层 serviceIntegrityDimensions.poToken + WEB headers +
+    // visitor/cookie 全套逻辑(见 postJson L79-145)。endpoint 用标准 InnerTubeBase(/player,
+    // 非 GAPIS——visionOS reload 用 GAPIS 是 visionOS 专用,WEB /player 走标准 base)。
+    return postJson("/player", payload, client = Client.WEB, poToken = webPoToken, viaWebView = true)
+  }
+
   /** 16 字节随机 → base64url 无 padding(对齐 youtubei.js 16 位 cpn / SabrClient.randomCpn)。 */
   private fun randomCpn16(): String {
     val bytes = ByteArray(16)
