@@ -592,6 +592,14 @@ class YoutubePlaybackResolver(
     return if (kept.isEmpty()) base else "$base?${kept.joinToString("&")}"
   }
 
+  /** 取 URL query 里 key 的值(如 `&cpn=<value>` → value);无则 null。 */
+  private fun queryParam(url: String, key: String): String? {
+    val qIdx = url.indexOf("?")
+    if (qIdx < 0) return null
+    return url.substring(qIdx + 1).split("&")
+      .firstOrNull { it.startsWith("$key=") }?.substringAfter("=")
+  }
+
   /** path C:[StreamInfo.getInfo] 的结果包装——session + 供 buildSabrPlaybackInfo 的 raws + 时长 + 字幕。 */
   private data class NewPipeSabrResult(
     val session: SabrSession,
@@ -629,7 +637,11 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "NewPipe: no serverAbrStreamingUrl/ustreamerConfig (video lacks SABR) → fallback")
       return null
     }
-    // NewPipe 给网关 URL 追加了 &cpn=<cpn>;fromSabrData 会自建 cpn,strip 掉避免重复参数。
+    // alpha.14:NewPipe 给网关 URL 追加了 &cpn=<visionOsCpn>,而 ustreamerConfig 绑定该 cpn。
+    // 必须用 visionOsCpn(对齐 LibreTube 直接用原始 URL),不能用随机 cpn——否则服务端按 cpn 不匹配
+    // 拒会话 → RELOAD_PLAYER_RESPONSE 死循环(alpha.14 真机:jNl6YkkzKxw 2160p 首 fetch 即 RELOAD,
+    // 3wO2mW3eylw 1080p 能播;LibreTube 能播 jNl6YkkzKxw 因它保留 visionOsCpn)。strip 掉避免重复参数。
+    val visionOsCpn = queryParam(sabrUrlRaw, "cpn")
     val sabrUrl = stripQueryParam(sabrUrlRaw, "cpn")
     val videoStreams = info.videoOnlyStreams
     val audioStreams = info.audioStreams
@@ -698,6 +710,8 @@ class YoutubePlaybackResolver(
       // LibreTube:完全不带 HTTP cookie/visitor,会话身份全靠 protobuf(poToken/ustreamerConfig/playbackCookie)。
       cookieHeader = "",
       visitorData = "",
+      // alpha.14:cpn 用 visionOsCpn(NewPipe /player 的 cpn,绑定 ustreamerConfig),不用随机 cpn。
+      cpn = visionOsCpn,
       videoFormats = videoFormats,
       audioTracks = sabrAudioTracks,
     )
@@ -721,8 +735,8 @@ class YoutubePlaybackResolver(
       Tag,
       "NewPipe SABR session: sabrUrl=${sabrUrl.take(80)}... poToken=${poTokenB64.length}B" +
         "(aligned-LibreTube-no-poToken) ustreamerCfg=${ustreamerCfgB64.length}B " +
-        "video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} videoFormats=${videoFormats.size} " +
-        "subtitles=${subtitleTracks.size} dur=${durationMs}ms"
+        "cpn=${visionOsCpn ?: "random"} video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} " +
+        "videoFormats=${videoFormats.size} subtitles=${subtitleTracks.size} dur=${durationMs}ms"
     )
     return NewPipeSabrResult(session, raws, durationMs, subtitleTracks)
   }
@@ -776,6 +790,8 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "visionOS reload: no serverAbrStreamingUrl/ustreamerConfig → fallback")
       return null
     }
+    // alpha.14:同 NewPipe 路径——cpn 用 visionOS /player 的 cpn(绑定 ustreamerConfig),不用随机 cpn。
+    val visionOsCpn = queryParam(sd.sabrUrl, "cpn")
     val sabrUrl = stripQueryParam(sd.sabrUrl, "cpn")
     val raws = sd.raws
     val videoRaws = raws.filter { (it.intOrNull("height") ?: 0) > 0 }
@@ -816,6 +832,8 @@ class YoutubePlaybackResolver(
       // alpha.79:同 NewPipe 路径——去掉 WEB cookie/visitor,对齐 LibreTube 无 HTTP cookie。
       cookieHeader = "",
       visitorData = "",
+      // alpha.14:cpn 用 visionOsCpn(绑定 ustreamerConfig),不用随机 cpn。
+      cpn = visionOsCpn,
       videoFormats = videoFormats,
     )
     Log.i(
