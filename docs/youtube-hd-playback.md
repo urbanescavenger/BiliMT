@@ -761,6 +761,15 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 
 至此 SABR 请求的 poToken 为 NewPipe 原生铸的 contentBinding 正确 token,与 visionOS 会话兼容,应根治 RELOAD 死循环。
 
+**alpha.81 补(推翻 alpha.13 定论——visionOS SABR 请求**不带 poToken**,对齐 LibreTube)**:alpha.13 移植 NewPipe 原生 PoTokenGenerator 后真机 2026-08-16 同一视频 `jNl6YkkzKxw` **仍无限 RELOAD**(日志 `poToken=120B(newpipe-native)` 坐实新 token 已用上)。对 LibreTube 与 BiliTV 的 SABR 请求做**逐层对比**,唯一实质差异 = **poToken**:
+- **LibreTube 首请求不带 poToken**:其 [PoTokenGenerator.kt:114](e:/GITHUB/LibreTube/app/src/main/java/com/github/libretube/api/poToken/PoTokenGenerator.kt#L114) `getIosClientPoToken` 返回 **null**;NewPipe fork getInfo 只在 `fetchIosClient` 调 `getIosClientPoToken`(yse.java:879),`fetchVisionOsClient`/`fetchWebClientMetadataAndSetThumbnails` 都不铸 token → getInfo 期间缓存恒空 → [SabrClient.kt:178](e:/GITHUB/LibreTube/app/src/main/java/com/github/libretube/player/parser/SabrClient.kt#L178) `getCachedWebClientPoToken()` 返回 null → 请求 `setPoToken(ByteString.empty())` **不带 poToken 且能播**。
+- **BiliTV 带 120B token 被拒**:移植时把 `getIosClientPoToken` 改成铸 WEB token 填缓存,getInfo 期间缓存被填满,`ensureWebToken` 拿到 120B token 塞进 SABR 请求 → 服务端按会话 visitor 不匹配(WEB-visitor 铸的 poToken vs visionOS /player 会话)RELOAD 全拒。
+- **根因不是 contentBinding(alpha.13 定论错),而是任何 poToken 都不该发**。alpha.13 的「resolve-minted PLACEHOLDER contentBinding」只是表象——换成 NewPipe 原生 contentBinding 正确的 token 照样被拒,因为问题在「发了 poToken」本身。
+
+**修复**:resolver 两条路径(NewPipe + visionOS reload)`SabrSession.fromSabrData` 的 poToken 改空串,不再 `ensureWebToken`/回退 resolve-minted,poToken 空也不回退;getInfo 仍走 NewPipe 铸 token(供 iOS /player 请求),但 SABR 请求不依赖它。改动 [YoutubePlaybackResolver.kt](app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt) 两处 + 诊断。
+
+**诊断(修复时加)**:①`SabrMediaFetcher` RELOAD 日志加 `potSent=${poTokenState.currentPoToken.size}B`——修复后若还 RELOAD,`potSent=0B` 直接证明不是 poToken 的锅;②resolver 会话日志显式 `poToken=0B(aligned-LibreTube-no-poToken)`;③复用 `SabrSession:` 日志 `poToken=0B` + fetch 日志 `pot=0B body=1728B`(比 1848B 小 ~120B)自动确认 poToken 已摘。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

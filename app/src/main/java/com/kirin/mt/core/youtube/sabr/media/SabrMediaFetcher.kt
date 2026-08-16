@@ -421,7 +421,8 @@ internal class SabrMediaFetcher(
         val info = SabrProto.decodeReloadPlayer(payload)
         reloadPlayerDump = "videoId=${info.videoId} reloadTokenLen=${info.reloadToken?.length} " +
           "reloadTokenDecodedHex=${info.reloadTokenDecodedHex} innerToken=\"${info.innerToken}\" " +
-          "innerTokenDecodedHex=${info.innerTokenDecodedHex} field7Hex=${info.field7Hex} fields={${info.fieldsSummary}}"
+          "innerTokenDecodedHex=${info.innerTokenDecodedHex} field7Hex=${info.field7Hex} " +
+          "potSent=${poTokenState.currentPoToken.size}B fields={${info.fieldsSummary}}"
         Log.w(tag, "RELOAD_PLAYER_RESPONSE $reloadPlayerDump")
         // Phase 2(取证):成功 decode 时把 reloadToken 停车到进程级 registry(独立于 sessions,evict 不清),
         // 供 resolve() 下次重进 consumeReloadToken 取走去重打 visionOS /player。仅当 token 非空且
