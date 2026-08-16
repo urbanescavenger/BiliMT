@@ -35,7 +35,7 @@ import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper
  * 故 [runBlocking] 阻塞的是 IO 线程;[PoTokenWebView] 内部自管线程切换(WebView 走主线程)。
  */
 class NewPipePoTokenGenerator(
-    appContext: Context,
+    private val appContext: Context,
     private val httpClient: OkHttpClient,
 ) : PoTokenProvider {
     private val TAG = NewPipePoTokenGenerator::class.simpleName

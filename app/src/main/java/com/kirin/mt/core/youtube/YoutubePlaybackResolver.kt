@@ -727,7 +727,7 @@ class YoutubePlaybackResolver(
     Log.i(
       Tag,
       "NewPipe SABR session: sabrUrl=${sabrUrl.take(80)}... poToken=${poTokenForSabr!!.length}B" +
-        "(${if (cachedPoToken != null) "provider-cached" else "resolve-minted"}) ustreamerCfg=${ustreamerCfgB64.length}B " +
+        "(${if (npPoToken != null) "newpipe-native" else "resolve-minted"}) ustreamerCfg=${ustreamerCfgB64.length}B " +
         "video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} videoFormats=${videoFormats.size} " +
         "subtitles=${subtitleTracks.size} dur=${durationMs}ms"
     )
