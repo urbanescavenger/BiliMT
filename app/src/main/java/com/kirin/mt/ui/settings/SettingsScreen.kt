@@ -111,7 +111,6 @@ fun SettingsScreen(
   onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
   onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
   onPipedInstanceChange: (url: String) -> Unit,
-  onPipedSelected: () -> Unit,
   onYoutubeUsePipedChange: (Boolean) -> Unit,
   onSabrForceSessionVideoItagChange: (Boolean) -> Unit,
 ) {
