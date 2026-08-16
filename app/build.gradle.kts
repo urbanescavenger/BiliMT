@@ -67,6 +67,11 @@ android {
 
   buildTypes {
     debug {
+      // 给 debug 变体独立的 applicationId 后缀,使其与 release (com.kirin.mt) 在系统层面
+      // 完全分离,可在已安装 release 版本的设备上并存安装(签名不同也不会冲突覆盖)。
+      // 所有依赖 applicationId 的地方(FileProvider authority、AppInfo.packageName 等)
+      // 均通过 ${applicationId} 占位符或 context.packageName 动态获取,会自动跟随此后缀。
+      applicationIdSuffix = ".debug"
       isMinifyEnabled = false
       isShrinkResources = false
     }
