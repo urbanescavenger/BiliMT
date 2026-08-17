@@ -390,6 +390,15 @@ fun BiliTvApp(
     }
   }
 
+  // 内容覆盖层(UP 主页 / YouTube 频道主页)返回时精确恢复网格卡片焦点。复用 contentFocusRestore* 走
+  // restoreFocusRequestKey 网格恢复 effect:把焦点拉回进入覆盖层前的那张卡片。与 requestContentFocusRestore
+  // (侧栏右移切 tab 时落 tab)区分开——切 tab 要停在 tab,覆盖层返回要回到卡片。
+  fun requestContentGridRestore(destination: AppDestination) {
+    contentFocusRestoreDestination = destination
+    contentFocusRestoreRequestKey += 1
+    pendingContentFocusDestination = null
+  }
+
   fun requestManualRefresh(destination: AppDestination) {
     when (destination) {
       AppDestination.Recommend -> recommendManualRefreshKey += 1
@@ -623,7 +632,10 @@ fun BiliTvApp(
         ) {
           // 视频退出后恢复窗口内抑制头像 autoConfirm,避免焦点被头像抢占并打开「我的」页,
           // 让 TvVideoGrid 的网格恢复 effect 有机会把焦点拉回原视频卡片。
-          val suppressAccountAutoConfirm = playbackFocusRestoreDestination != null
+          // 内容覆盖层(UP 主页 / YouTube 频道)返回走网格恢复时同样抑制,防覆盖层关闭后的
+          // 延迟焦点回落把焦点丢到头像并 autoConfirm。
+          val suppressAccountAutoConfirm =
+            playbackFocusRestoreDestination != null || contentFocusRestoreDestination != null
           AppSidebar(
             selectedDestination = selectedDestination,
             accountSelected = accountSelected,
@@ -1379,7 +1391,7 @@ fun BiliTvApp(
               spacePlaybackBehind = false
               when (origin) {
                 SpaceOrigin.Player -> spaceFocusRestoreRequestKey += 1
-                SpaceOrigin.Content -> requestContentFocusRestore(selectedDestination)
+                SpaceOrigin.Content -> requestContentGridRestore(selectedDestination)
                 else -> Unit
               }
               true
@@ -1417,7 +1429,7 @@ fun BiliTvApp(
               channelPlaybackBehind = false
               when (origin) {
                 SpaceOrigin.Player -> channelFocusRestoreRequestKey += 1
-                SpaceOrigin.Content -> requestContentFocusRestore(selectedDestination)
+                SpaceOrigin.Content -> requestContentGridRestore(selectedDestination)
                 else -> Unit
               }
               true

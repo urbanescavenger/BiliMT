@@ -206,6 +206,9 @@ internal fun UserFeedScreen(
   val context = LocalContext.current
   val selectedTab = feedState.selectedTab
   var actionSheetVideo by remember { mutableStateOf<VideoSummary?>(null) }
+  // 长按菜单内选中了会跳转的项(评论 / 去 UP 主主页)时置 true,onDismiss 据此跳过网格焦点恢复,
+  // 避免焦点被抢到菜单底下隐藏的网格上;仅 Back / 点赞 / 稍后再看(留在网格)才恢复卡片焦点。
+  var actionSheetNavigating by remember { mutableStateOf(false) }
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   // 本地 YouTube 播放历史(免登录):合并进 History tab,与 B 站历史按播放时间倒序混合。
   val youtubeHistory by youtubeHistoryStore.history.collectAsState(initial = emptyList())
@@ -455,7 +458,10 @@ internal fun UserFeedScreen(
         BiliActionItem(
           label = commentLabel,
           enabled = video.aid > 0L || video.source == SourceYoutube,
-          onClick = { onCommentSelected(video) },
+          onClick = {
+            actionSheetNavigating = true
+            onCommentSelected(video)
+          },
         ),
         BiliActionItem(
           label = likeLabel,
@@ -490,10 +496,28 @@ internal fun UserFeedScreen(
         BiliActionItem(
           label = upspaceLabel,
           enabled = video.ownerMid > 0L,
-          onClick = { onOwnerSelected(video) },
+          onClick = {
+            actionSheetNavigating = true
+            onOwnerSelected(video)
+          },
         ),
       ),
-      onDismiss = { actionSheetVideo = null },
+      onDismiss = {
+        if (!actionSheetNavigating) {
+          // BiliActionSheet 是屏内覆盖层(非 Dialog),关闭时其聚焦节点被移除,Compose 不会自动把
+          // 焦点还给底下网格 → 焦点丢失。复用 focusRestoredItemKey 让网格 restore effect 把焦点
+          // 拉回刚长按的那张卡片。
+          when (feedState.selectedTab) {
+            UserFeedTab.DynamicVideo -> feedState.dynamicVideo.focusRestoredItemKey += 1
+            UserFeedTab.DynamicAll -> feedState.dynamicAll.focusRestoredItemKey += 1
+            UserFeedTab.History -> feedState.history.focusRestoredItemKey += 1
+            UserFeedTab.Favorite -> feedState.favorite.focusRestoredItemKey += 1
+            UserFeedTab.Bangumi -> feedState.bangumi.focusRestoredItemKey += 1
+          }
+        }
+        actionSheetNavigating = false
+        actionSheetVideo = null
+      },
     )
   }
 }
