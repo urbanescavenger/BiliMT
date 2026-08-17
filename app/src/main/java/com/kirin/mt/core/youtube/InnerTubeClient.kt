@@ -69,7 +69,9 @@ class InnerTubeClient(
     viaWebView: Boolean = false,
   ): JsonObject = withContext(Dispatchers.IO) {
     // 先拉真实 visitorData（WEB /player 用合成 visitorData 会被拦，见 ensureRealSessionData）。
-    ensureRealSessionData()
+    // 仅 /player 走 WebView 时强制浏览器会话引导；feed 的 /browse、/search 等走快路径，
+    // 避免冷启动 WebView 引导吃掉 feed 4s 预算（真机 alpha.94 feed 全超时根因）。
+    ensureRealSessionData(requireBrowserSession = viaWebView)
     val body = buildJsonObject {
       // 业务字段在前，context 在后（youtubei.js 的 ...payload 后接 context）
       payload.forEach { (key, value) -> put(key, value) }
@@ -187,7 +189,7 @@ class InnerTubeClient(
    * @return 响应根 JsonObject(调用方用 parseSabrData 读 serverAbrStreamingUrl/ustreamerConfig)。
    */
   suspend fun postVisionOsPlayerReload(videoId: String, reloadToken: String): JsonObject = withContext(Dispatchers.IO) {
-    ensureRealSessionData()
+    ensureRealSessionData(requireBrowserSession = true)
     val cpn = randomCpn16()
     val body = buildJsonObject {
       put("videoId", videoId)
@@ -266,7 +268,7 @@ class InnerTubeClient(
     reloadToken: String,
     webPoToken: String,
   ): JsonObject {
-    ensureRealSessionData()
+    ensureRealSessionData(requireBrowserSession = true)
     val cpn = randomCpn16()
     val payload = buildJsonObject {
       put("videoId", videoId)
@@ -335,7 +337,7 @@ class InnerTubeClient(
    */
   suspend fun fetchBotGuardChallenge(): BotGuardChallenge? = withContext(Dispatchers.IO) {
     // 先拉真实 visitorData，保证铸 token 与 /player 用同一真实 visitorData（token 绑定前提）。
-    ensureRealSessionData()
+    ensureRealSessionData(requireBrowserSession = true)
     val ctx = buildContext(Client.WEB)
     val ctxClient = ctx.obj("client")
     Log.i(
@@ -650,7 +652,17 @@ class InnerTubeClient(
    * `https://www.youtube.com/sw.js_data` 取真实 visitorData + 当前 client version。
    * 失败回退合成 visitorData（不阻塞主路径）。
    */
-  private suspend fun ensureRealSessionData() {
+  /**
+   * 确保已取到真实 visitorData + 会话 cookie。
+   *
+   * @param requireBrowserSession 是否强制等待真实浏览器会话 WebView 引导（[YoutubeBrowserSession.ensureLoaded]）。
+   *   只有 /player（铸 PO token / 走 WebView 网络栈）需要它——对齐 FreeTubeAndroid 主 WebView 才能拿到
+   *   配对 visitorData + cookie。feed 的 /browse、/search 等只取 visitorData 即可，走快的 sw.js_data 就够，
+   *   不要被 WebView 冷启动引导（alpha.89 回归时曾烧 2×15s 死循环）吃掉 feed 的 4s 预算（真机 alpha.94 冷启动
+   *   feed 全超时的根因：首请求串行等 ensureLoaded ~1.3s + sw.js_data + readCookies，4 频道堵一个 sessionMutex）。
+   *   非强制时只顺带读已热的浏览器 visitor（readVisitorData 非阻塞，未加载返回 null → 回退 sw.js_data）。
+   */
+  private suspend fun ensureRealSessionData(requireBrowserSession: Boolean) {
     // 双检锁：铸 token(BotGuard 线程)与 /player 并发调用时，保证只 fetch 一次，
     // 否则各自 fetch 到不同 visitorData → token 绑定 A、/player 用 B → token 无效
     // → "The page needs to be reloaded"(alpha.25 实测)。
@@ -660,8 +672,11 @@ class InnerTubeClient(
       // 方案 A：优先用真实浏览器会话的 visitorData + cookie（对齐 FreeTubeAndroid 主 WebView）。
       // 先确保真实 YouTube 页面加载，读它的 VISITOR_INFO1_LIVE cookie 作 visitorData（cookie 值 ==
       // visitorData proto，§6.7 row 31 确认）。失败回退 sw.js_data 的 visitorData。
+      // 非 /player 请求不强制引导（快路径），只读已热的浏览器 visitor（无则回退 sw.js_data）。
       val browserVisitor = browserSession?.let {
-        runCatching { it.ensureLoaded() }.getOrNull()
+        if (requireBrowserSession) {
+          runCatching { it.ensureLoaded() }.getOrNull()
+        }
         it.readVisitorData()
       }
       val data = runCatching { fetchRealSessionData() }.getOrNull()

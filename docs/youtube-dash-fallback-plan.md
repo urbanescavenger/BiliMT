@@ -178,3 +178,14 @@
   - **验证待真机**:feed 正常加载(RSS+InnerTube 合并出视频,不再 4s 超时)、无 `browser session not on
     youtube.com` 死循环、播放器 viaWebView 不再 27s 卡死(alpha.93 NewPipe-first 本已绕开,此修顺带救回 WEB
     last-resort)。
+- [x] **alpha.96:feed 冷启动超时根因再修——非 /player 请求不强制浏览器会话引导**(2026-08-17)
+  - **真机坐实(alpha.95 debug APK)**:不崩了(alpha.95 启动修复生效),但 feed 仍挂——所有频道 `/browse` 4s
+    预算内超时(`Timed out waiting for 4000 ms`),搜索正常、播放仍不行。
+  - **真根因(alpha.94 只修了一半)**:alpha.94 修好了 `isOnYoutube` 死循环(浏览器会话 10:48:27.080 一次成功),
+    但 `ensureRealSessionData` 仍**无条件** `browserSession.ensureLoaded()`(慢的 WebView 引导 ~1.3s)。feed 冷启动
+    第一个 `/browse` 串行等 WebView 引导 + sw.js_data + readCookies,4 频道全堵在同一个 sessionMutex,整条
+    coroutineScope 被外层 `youtubeFeedTimeoutMs`(5 频道=4000ms)取消 → 动态空白。搜索能出是因浏览器会话已热。
+  - **修复(单文件)**:`ensureRealSessionData` 加 `requireBrowserSession` 参数。feed 的 `/browse`/`/search` 只需
+    visitorData,走快的 sw.js_data(或已热浏览器 visitor)即可,不强制 WebView 引导;仅 `/player`(铸 PO token / 走
+    WebView)与 reload/BotGuard 传 `true`。`postJson` 按 `viaWebView` 传。
+  - **验证待真机**:动态正常加载(RSS+InnerTube 合并,不再 4s 超时)、播放不受影响(播放器路径仍强制引导)。
