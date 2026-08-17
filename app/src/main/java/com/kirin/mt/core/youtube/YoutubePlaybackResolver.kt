@@ -1212,7 +1212,7 @@ class YoutubePlaybackResolver(
       )
     }
     Log.w(Tag, "兜底: dashMpdUrl 与 hlsUrl 均空 → 返回 null(上层落常规 NewPipe harvest,会 RELOAD 但已无其它出口)")
-    null
+    return null
   }
 
   /** raw adaptive JSON → SABR [SabrFormatId](itag/lastModified/xtags 来自 raw 字段,height 显式传)。 */
