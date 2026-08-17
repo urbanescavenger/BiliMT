@@ -22,27 +22,28 @@
    路径"的表述基于旧版 LibreTube(Piped 时代),对当前 LibreTube 不成立。BiliTV 的 `buildSabrSessionFromPiped`
    是自创的实验 opt-in,LibreTube 并无对应物。
 
-3. **真正的代码差异只有三处(都在边缘,不在 SABR 引擎主体):**
-   - **RELOAD_PLAYER 处理**:LibreTube 致命抛 `"Server requested player reload"`(SabrClient.kt:583);
-     BiliTV 解码 reloadToken 停车到 `SabrStreamRegistry`,Phase-2 用 `buildSabrSessionFromReloadPlayer`
-     重打 visionOS /player 尝试续命(`MAX_RELOADS=3`)。**这是最大的行为分歧。**
-   - **status=2 刷新的 minter 实现**:LibreTube 用 `PoTokenGenerator.getWebClientPoToken`
-     (`PoTokenWebView`,NewPipe 栈);BiliTV 用 `YoutubeBotGuard`(bgutils-js,独立 WebView harness)。
-     都产 WEB BotGuard token、都同步,但实现不同。
-   - **PoTokenProvider 注册**:LibreTube `getIosClientPoToken` 返回 `null`;BiliTV 委派给
-     `getWebClientPoToken`(NewPipePoTokenGenerator.kt:145-148)。这导致 NewPipe visionOS /player 请求体里
-     一个带 WEB poToken、一个不带(见 §3.2)。
+3. **真正的代码差异曾有三处,但 alpha.91/97 已收敛掉大半**(2026-08-17 复核修正):
+   - **status=2 刷新的 minter 实现**:**alpha.91 已对齐**——BiliTV 从 `YoutubeBotGuard`(bgutils-js,PLACEHOLDER
+     脆弱 token)换成 `biliTvPoTokenProvider.getWebClientPoToken`(PoTokenWebView,NewPipe 栈),与 LibreTube 同 minter。
+   - **PoTokenProvider 注册**:**alpha.91 已对齐**——BiliTV `NewPipePoTokenGenerator.getIosClientPoToken` 已回退
+     `null`(与 LibreTube 同),visionOS /player 不再带 WEB poToken。
+   - **RELOAD_PLAYER 处理**(仍是主要分歧,alpha.97 已改向):LibreTube 致命抛 `"Server requested player reload"`
+     (SabrClient.kt:579-584)且**无任何兜底**(§8.5 复核:onPlayerError 只弹 toast);BiliTV alpha.97 起对 attestation
+     视频 RELOAD 后**直接落 ≤1080p DASH/HLS 兜底**(对齐 LibreTube 不循环 + 用户接受 ≤1080p),**比 LibreTube 更能播**。
 
 4. **4K / ≤1080p 的根因不是 itag 选择,也不是 SABR 引擎差异,而是 attestation。** 两边都用 visionOS
    (未 attested)ustreamerConfig;对需 attestation 的视频(多为 4K/HD)服务端直接 RELOAD,到不了 status=2。
-   BiliTV 的 Phase-2 reload 重打的还是同一个未 attested 的 visionOS 路径 → 必然再 RELOAD → `MAX_RELOADS`
-   耗尽放弃。**LibreTube 在这类视频上同样 RELOAD(代码路径相同),只是它直接崩溃不挣扎。** BiliTV 长期以为
-   "LibreTube 能播 4K",该判断对**当前** LibreTube 未经证实,大概率源自 Piped 时代旧记忆。
+   **alpha.97 修正**:BiliTV 对 RELOAD 后**不再重建**未 attested 的 visionOS 会话(那必再 RELOAD、曾无界循环
+   reloadCount 17→24),而是**直接落 ≤1080p DASH/HLS 兜底**。**LibreTube 在这类视频上同样 RELOAD(代码路径相同),
+   致命抛且无 DASH 兜底(§8.5 复核确认)**——attestation 4K 上 **LibreTube 也不播、BiliTV 至少能播 ≤1080p**。
+   "LibreTube 能播 4K"是对旧版(Piped 时代)的误记,当前版同样不行。
 
-5. **真正的 4K 分水岭在 SABR 之外的兜底**:LibreTube `setStreamSource` 有 DASH/HLS 兜底分支
-   (NewPipeExtractor 内部自带 n-decrypt);BiliTV 的非 SABR 兜底走自研 `YoutubeNDecryptor`/`YoutubeSDecryptor`,
-   在 plasma WASM player 上结构性失效(alpha.76 退役)→ 403。**这才是 BiliTV 4K 全死、LibreTube 可能靠 DASH
-   兜底存活**的实质(若 LibreTube 真能播 4K,靠的也不是 SABR,是 DASH 兜底)。
+5. **4K 兜底分水岭(§8.5 复核后修正)**:LibreTube `setStreamSource` 确有 DASH/HLS 分支,但那是**取流时就无 SABR
+   数据**才走;对 **SABR RELOAD/attestation 错误,LibreTube `onPlayerError` 只弹 toast、不回源、不降 DASH
+   (AbstractPlayerService L96-99 复核确认)**。BiliTV 的非 SABR 兜底走自研 `YoutubeNDecryptor`(plasma WASM
+   结构性失效,alpha.76 退役)→ 403;但 alpha.90-92 已建 `buildDashFallbackFromNewPipe`(自合成 DASH/HLS ≤1080p),
+   alpha.97 把它接到 SABR RELOAD 后。**结论:SABR 播不了的 attestation 视频,BiliTV 靠 DASH/HLS 兜底能播 ≤1080p,
+   LibreTube 只能报错停播——BiliTV 这条路径当前更完整。**
 
 ---
 
@@ -119,6 +120,10 @@ MediaSource      SabrMediaSource(移植) + MergingMediaSource  SabrMediaSource +
 ---
 
 ### 3.2 poToken 铸取与 PoTokenProvider 注册(★ 真实代码差异之一)
+
+> **2026-08-17 复核修正**:下表为 alpha.86 终态快照。**alpha.91 已将下方两处差异对齐 LibreTube**:
+> `getIosClientPoToken` 已回退 `null`(与 LibreTube 同)、status=2 minter 已换 PoTokenWebView(§3.6)。
+> 当前实际差异收敛到 §8.5 的 poToken 过期/重铸成熟度。
 
 这是两边少有的、在 SABR 上游有实质代码差异的环节。
 
@@ -214,6 +219,10 @@ SabrClient.kt:580-589 / `SabrStreamingDataSource` 55s 滑窗)是死代码,活跃
 ---
 
 ### 3.6 status=2 PO token 刷新(同步,但 minter 不同)
+
+> **2026-08-17 复核修正**:下表为 alpha.86 终态快照。**alpha.91 已把 minter 从 `YoutubeBotGuard` 换成
+> `biliTvPoTokenProvider.getWebClientPoToken`(PoTokenWebView,与 LibreTube 同 minter)**,下表 "minter" 行已过时。
+> 当前残余差异:PoTokenWebView 的过期/重铸机制成熟度(§8.5)。
 
 | | BiliTVNative | LibreTube |
 |---|---|---|
@@ -396,7 +405,7 @@ memory `youtube-4k-two-paths-dead-accept-1080p`:用户 2026-08-17 接受 ≤1080
 | NewPipe fork | `738c3d4` | `738c3d4` | ✅ | 逐字同 |
 | /player 客户端 | visionOS | visionOS | ✅ | |
 | 取流入口 | buildSabrSessionFromNewPipe | NewPipeMediaServiceRepository.getStreams | ✅ | 同 fork 同调用 |
-| **PoTokenProvider.getIosClientPoToken** | **委派 getWebClientPoToken** | **null** | ❌ | /player 请求带不带 poToken 不同 |
+| **PoTokenProvider.getIosClientPoToken** | **null(alpha.91 已对齐)** | **null** | ✅(已对齐) | alpha.91 回退委派 |
 | SABR 首请求 poToken | 空 | 空 | ✅ | |
 | SABR ClientInfo | visionOS(逐字同) | visionOS | ✅ | |
 | selectedFormatIds | 全部 initialized | 全部 initialized | ✅ | |
@@ -404,8 +413,8 @@ memory `youtube-4k-two-paths-dead-accept-1080p`:用户 2026-08-17 接受 ≤1080
 | bitfield | video→0/仅音频→1 | 同 | ✅ | |
 | playerTimeMs | segmentStartTimeMs | segmentStartTimeMs | ✅ | |
 | status=2 刷新 | 同步 | 同步 | ✅ | |
-| **status=2 minter** | **YoutubeBotGuard(bgutils-js,脆弱)** | **PoTokenWebView(NewPipe 栈)** | ❌ | |
-| **RELOAD_PLAYER** | **Phase-2 reloadToken 恢复(MAX_RELOADS=3)** | **致命抛** | ❌ | 最大分歧 |
+| **status=2 minter** | **PoTokenWebView(alpha.91 已对齐)** | **PoTokenWebView(NewPipe 栈)** | ✅(已对齐) | alpha.91 弃 YoutubeBotGuard |
+| **RELOAD_PLAYER** | **RELOAD 后落 ≤1080p DASH/HLS 兜底(alpha.97)** | **致命抛、无兜底** | ❌ | alpha.97 后 BiliTV 更能播 |
 | itag 选择 | 全量给 ExoPlayer | 全量给 ExoPlayer | ✅ | |
 | MediaSource | SabrMediaSource(移植) | SabrMediaSource | ✅ | |
 | 兜底 | legacy progressive/DASH + classic n-decrypt(退役) | DASH/HLS + NewPipe 内置 n-decrypt | ❌ | 4K 分水岭 |
@@ -507,22 +516,48 @@ memory `youtube-4k-two-paths-dead-accept-1080p`:用户 2026-08-17 接受 ≤1080
 
 > 静态分析能定论的已写明;以下需真机/抓包/动态验证。
 
-1. **visionOS /player 请求是否带 poToken 的实际影响**。BiliTV `getIosClientPoToken` 委派(带 WEB poToken)
-   vs LibreTube `null`(不带)。需抓包对比两边 /player 请求体,确认服务端返回的 ustreamerConfig 绑定属性
-   是否不同。若 BiliTV 因带 poToken 拿到 WEB-visitor 绑定的 config,而 SABR 发空 poToken → visitor 不匹配
-   → 这才是 BiliTV attestation RELOAD 的真因(而非纯 attestation)。验证方式:临时把 BiliTV
-   `getIosClientPoToken` 改回返回 null(对齐 LibreTube),真机看 attestation 视频是否仍 RELOAD。
+1. **[已解决,alpha.91]** visionOS /player 请求是否带 poToken 的实际影响。BiliTV `getIosClientPoToken`
+   已从委派回退 `null`(与 LibreTube 对齐),visionOS /player 不再带 WEB poToken。真机(alpha.91+)证实
+   attestation 视频仍 RELOAD(§4.2)——"带 WEB poToken 绑 visitor → RELOAD"非主因,attestation 本身才是。
 
-2. **LibreTube 对 attestation 4K 视频到底能不能播**。代码推演两边 SABR 都死。需在 LibreTube 真机实测
-   jNl6YkkzKxw 4K:若能播,走的是 SABR 还是 DASH 兜底(`OnlinePlayerService` error→DASH 回落逻辑未读);
-   若不能,则确认"LibreTube 能播 4K"是 Piped 时代旧记忆,当前版同样不行。
+2. **[已定论,commit 614829d 复核]** LibreTube 对 attestation 4K 视频**不能播**,且**无 DASH 兜底**。
+   `AbstractPlayerService.playerListener.onPlayerError`(L96-99)只弹 toast(`toastFromMainThread`),不回源、
+   不降 DASH;`OnlinePlayerService` 不 override `onPlayerError`;`setStreamSource` 每视频只调一次。SABR
+   RELOAD/attestation 错误 → 报错停播。"LibreTube 能播 4K"确为 Piped 时代旧记忆。
 
-3. **BiliTV status=2 minter(YoutubeBotGuard)产出的 token 是否有效**。若无效,同步刷新后下请求仍 status=3
-   → 终端。真机看 status=2 后是否出现 status=3。可对照换成 `NewPipePoTokenGenerator` minter 看是否改善。
+3. **[已解决,alpha.91]** BiliTV status=2 minter 已从 `YoutubeBotGuard`(PLACEHOLDER 脆弱 token)换成
+   `biliTvPoTokenProvider.getWebClientPoToken`(PoTokenWebView,与 LibreTube 同 minter),不再有跨 minter 的
+   弱 token 风险。残留:PoTokenWebView 的 token 过期/重铸机制(见 §8.5——LibreTube 已有 isExpired/forceRecreate,
+   BiliTV 移植是否带回待真机验证)。
 
 4. **Phase-2 reload 带 poToken 是否能过 attestation**。alpha.80 结论是"visionOS+WEB-poToken→RELOAD",
    但那是首请求带;Phase-2 reload 是服务端 RELOAD 后重打,语境不同。可真机试 `buildSabrSessionFromReloadPlayer`
-   带 NewPipe 铸的 WEB poToken,看是否突破 attestation(低优先,与用户 ≤1080p 决定相悖)。
+   带 NewPipe 铸的 WEB poToken,看是否突破 attestation(低优先,与用户 ≤1080p 决定相悖)。**alpha.97 后已降级**:
+   attestation 视频不再走该恢复(直接落 ≤1080p 兜底),此问题仅在 WEB last-resort 退化场景相关。
+
+### 8.5 LibreTube 源码复核记录(LibreTube commit `614829d`)
+
+> 2026-08-17 复核:本 doc 引用的 LibreTube `file:line` **逐条仍成立**(RELOAD L579-584 / status=2 L586-601 /
+> init L177-181 / setPoToken L396 / generatePoToken L621-624 / getWebClientPoToken L28-35 /
+> getIosClientPoToken=null L114 / fetchStreamData L351-432 / buildBufferedRanges L118-134 /
+> getStreams L287-366 / setStreamSource L232-328)。下列为 LibreTube 较本 doc 新增/演进、BiliTV 尚未对齐的点。
+
+- **poToken 缓存/过期成熟化**:`PoTokenGenerator.getWebClientPoToken` 已非 naive 懒建——含 WebView `isExpired()`
+  过期重建(L45)、生成失败 `forceRecreate=true` 重试(L86-98)、同步锁、每视频 visitor-data 缓存;`PoTokenWebView`
+  追踪 integrity-token `expirationInstant`(10 分钟安全余量)并暴露 `isExpired()`(L33/L142/L221-223)。提升
+  status=2 懒鉴权刷新可靠性。BiliTV `PoTokenWebView` 移植是否带回这套过期/重铸待核。
+- **新 UMP part 处理**:`SABR_REDIRECT`(L532-535,更新 URL 跟随服务端重定向)、`SABR_CONTEXT_UPDATE`(L537-552)、
+  `SABR_CONTEXT_SENDING_POLICY`(L554-577)。BiliTV `SabrMediaFetcher.processPart` 是否处理这三个未核;若缺则
+  少服务端重定向/上下文策略支持。
+- **多音轨 + 音轨角色标志**:`SabrManifest` 按 `mimeType + audioTrackId` 分组音频 AdaptationSet(L53),
+  `Representation` 从 Xtags/audioTrackLocale 映射 descriptive/original/dubbed/secondary 角色 + 语言(L45-57)。
+  BiliTV 音轨模型是否等同待核。
+- **getNextSegment 内存管理**:`retainAll` 保留 buffered 段(L305)、fetch 后清 stale downloaded(L314)、
+  `initializedFormats` 裁剪到选中 A/V 格式(L322)。
+- **无 itag/分辨率硬上限**:SABR/DASH 全量用 `resp.videoOnlyStreams`(合并 videoOnly 与注释掉的 videoStreams),
+  无 1080p cap(与 BiliTV 同,§3.8)。
+- **Piped 并未全库过时**(修正 TL;DR 第 2 条措辞):`PipedMediaServiceRepository`/`ProxyHelper`/feed/播放列表/
+  导入仍用 Piped;仅**取流元数据**不走 Piped(§3.1 成立)。"Piped 过时"应收窄为"取流不走 Piped"。
 
 ---
 
