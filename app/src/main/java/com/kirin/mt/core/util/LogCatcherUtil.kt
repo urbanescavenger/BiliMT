@@ -278,6 +278,15 @@ object LogCatcherUtil {
     logger.info { "live logging stopped" }
   }
 
+  /** 清空实时日志文件(用于安装新包后启动时)。若正在录制先停掉,再删文件。 */
+  fun clearLiveLog() {
+    if (isLiveLogging) stopLiveLogging()
+    val file = File(File(appContext.filesDir, LOG_DIR), LIVE_LOG_FILENAME)
+    if (file.exists() && !file.delete()) {
+      logger.warn { "clearLiveLog: delete failed" }
+    }
+  }
+
   /**
    * 裁剪日志文件：保留尾部 [LIVE_TRIM_KEEP_BYTES] 字节（跳到下一个换行按行对齐，
    * 丢弃首部不完整行），用临时文件替换原文件。调用方须保证此时无其它写者持有原文件 fd。
