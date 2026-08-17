@@ -346,7 +346,7 @@ class YoutubeRepository(
     var processed = 0
     for (batch in activeChannels.chunked(ChunkSize)) {
       val (batchVideos, batchContinuations) = coroutineScope {
-        val perChannelResults = batch.map { channel ->
+        batch.map { channel ->
           async {
             // 旧频道(无头像)懒解析一次并回写 store,供本次填充与后续复用,避免每次刷新重复 /browse。
             var channelAvatar = channel.avatar
