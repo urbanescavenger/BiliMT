@@ -164,6 +164,29 @@ internal object YoutubeParsers {
       "YoutubeComment",
       "parseCommentPage sections=$sectionCount renderers=$rendererCount parsed=${comments.size}",
     )
+    // 结构诊断：评论可能已移到 engagementPanels 或 contents 其它子树。
+    root.obj("contents")?.let { c ->
+      Log.d("YoutubeComment", "contents keys=${c.keys}")
+      c.obj("twoColumnWatchNextResults")?.let { t ->
+        Log.d("YoutubeComment", "twoColumnWatchNextResults keys=${t.keys}")
+        t.obj("results")?.let { r ->
+          Log.d("YoutubeComment", "watchNext results keys=${r.keys}")
+          r.array("results")?.forEachIndexed { i, item ->
+            val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
+            Log.d("YoutubeComment", "watchNext results[$i] renderer=$rendererKey")
+          }
+        }
+      }
+    }
+    root.obj("engagementPanels")?.let { ep ->
+      Log.d("YoutubeComment", "engagementPanels keys=${ep.keys}")
+      ep.array("engagementPanelSectionListRenderer")?.let { list ->
+        list.forEachIndexed { i, item ->
+          val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
+          Log.d("YoutubeComment", "engagementPanel[$i] renderer=$rendererKey")
+        }
+      }
+    }
     // 防御：无 commentSectionRenderer 容器时回退全根收集。
     if (comments.isEmpty() && token == null) {
       collectByKey(root, KEY_COMMENT_RENDERER) { node ->
@@ -212,6 +235,20 @@ internal object YoutubeParsers {
         "parsed=${videos.size} rootCompact=${rootCompact.size} token=${token != null} " +
         "keys=${root.keys.take(8)}"
     )
+    // 结构诊断：打印 twoColumnWatchNextResults 键树 + secondary results 每项 renderer 类型。
+    root.obj("contents")?.obj("twoColumnWatchNextResults")?.let { twoCol ->
+      Log.i("YtRelated", "twoCol keys=${twoCol.keys}")
+      twoCol.obj("secondaryResults")?.let { srOuter ->
+        Log.i("YtRelated", "secondaryResults(outer) keys=${srOuter.keys}")
+        srOuter.obj("secondaryResults")?.let { srInner ->
+          Log.i("YtRelated", "secondaryResults(inner) keys=${srInner.keys}")
+          srInner.array("results")?.forEachIndexed { i, item ->
+            val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
+            Log.i("YtRelated", "secondary results[$i] renderer=$rendererKey")
+          }
+        }
+      }
+    }
     return YoutubeFeedPage(items = videos, continuation = token)
   }
 
