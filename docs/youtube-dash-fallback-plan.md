@@ -212,3 +212,23 @@
     刷新时 session 已热秒回。
   - **修复**:`youtubeFeedTimeoutMs` 每批预算 1s→3s(6 频道=2 批→8s,上限 10s 不变),让多频道能分完批次。
   - **验证待真机**:第一次自动加载即出(不再需下拉刷新)。
+- [x] **alpha.98:关注流改分批增量拉取 + Room 逐频道缓存(几百频道可扩展,对齐 LibreTube LocalFeedRepository)**(2026-08-17)
+  - **背景**:alpha.96.1 的"动态超时预算"模型在几百频道下结构性必失败——`youtubeFeedTimeoutMs` 上限 10s,
+    几百频道(每频道 RSS+InnerTube)不可能在预算内完成,整批返回 null → 空白。用户要求"后续几百频道也正常"。
+  - **参考 LibreTube**:`LocalFeedRepository.refreshFeed` = Room(SQLite)逐频道缓存 + `channelIds.chunked(5)`
+    分批并发 + 每批写完 DB + 进度回调 + **无外层全局超时**(每频道独立 runCatching,慢的只丢自身);
+    每累计 50 频道 `delay(500..1500ms)` 防节流。
+  - **改动**:
+    ① **引入 Room+KSP**(Room 2.8.0 + KSP2 2.3.11):`YoutubeFeedEntity`(channelId PK, videosJson, fetchedAt)
+      + `YoutubeFeedDao`(逐频道 upsert / getAll / deleteChannelsNotIn) + `FeedDatabase`。
+      `YoutubeFeedCacheStore` 底层从 DataStore 单 key 全量 JSON 换 Room 逐频道行(几百频道增量写只写自身行,
+      不再每次全量序列化进 prefs),对外接口兼容,新增 `writeChannel` 单频道增量写。
+    ② **`getSubscriptionsFeed` 分批增量**:`channels.chunked(5)` 分批并发,每批就绪回调 `onChunkReady`
+      (调用方拉到一批 merge 一批),仍返回全量(缓存写);删 `youtubeFeedTimeoutMs` 外层全局超时。
+    ③ 调用方:动态 tab + TV **增量 merge**(onChunkReady 逐批 + 每批 writeChannel 写缓存);
+      home **只放宽超时**(per-channel 容错,一次性消费全量)。
+  - **关键编译坑**:`youtubeSubscriptionsFeed` 加 `onChunkReady` 尾参后,原尾随 lambda 绑定错位到
+    onChunkReady(须改具名 onChannelAvatarResolved);`awaitAll` import 勿删(批内仍用);onChunkReady 非挂起
+    回调不能直接调 suspend writeChannel(用 scope.launch 包);`return@onChunkReady` 非隐式标签(改 if 块)。
+  - **验证待真机**:几百频道模拟(设置加大量频道),动态/TV 拉到一批显示一批不空白、无整批超时;home 无缓存
+    出部分结果不整块 Failed;缓存跨启动秒出(进动态先秒出上次流再增量刷新);搜索/播放不回归。

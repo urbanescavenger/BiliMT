@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.2-alpha.29](#v302-alpha29)
 - [v3.0.2-alpha.26](#v302-alpha26)
 - [v3.0.2-alpha.25](#v302-alpha25)
 - [v3.0.2-alpha.10](#v302-alpha10)
@@ -178,6 +179,10 @@
 ## v3.0.2-alpha.26
 
 **NewPipe-first 主路径(alpha.93,解耦坏 WEB WebView 收割门卫)**:alpha.25 的自合成 DASH 因 resolve 仍先走 WEB+WebView harvest(该收割已坏——真机 ssl handshake failed / browser session load 两次失败)→ 被挡在门外**触达不到**。本版把 NewPipe 提为一级路径(对齐 LibreTube 直调 `StreamInfo.getInfo`):resolve() 在 signatureTimestamp 后、WEB client loop 前,先试 visionOS NewPipe SABR → 自合成 DASH/HLS 兜底,全失败才落 WEB /player last resort(classic reload-closure/DASH n-decrypt)。纯复用现有函数零新逻辑,播放器零改动。alpha.91 Fix A(status=2 用 PoTokenWebView 重铸)+ Fix B(getIosClientPoToken→null)在此主路径生效。SABR 播不了的 attestation/RELOAD 视频现在真正落到 alpha.92 自合成 DASH。详见 docs/youtube-dash-fallback-plan.md「alpha.93」。
+
+## v3.0.2-alpha.29
+
+**YouTube 关注流改分批增量拉取 + Room 逐频道缓存(对齐 LibreTube LocalFeedRepository,几百频道可扩展)**:旧模型一次性 async+awaitAll + 外层 withTimeoutOrNull 预算(动态 10s 上限/TV 固定 5s)在几百频道下结构性必超时整批空白。重构为:①`getSubscriptionsFeed` 按频道 `chunked(5)` 分批并发,每批就绪回调 `onChunkReady`(调用方拉到一批 merge 一批),每累计 50 频道 delay 500-1500ms 防节流,单频道独立容错**无外层全局超时**;②缓存从 DataStore 单 key 全量 JSON 换 **Room(SQLite)逐频道行**(`YoutubeFeedEntity`/`YoutubeFeedDao`/`FeedDatabase`,新增 KSP2 2.3.11 + Room 2.8.0),增量刷新只写当前频道行;③动态 tab + TV 增量 merge,home 放宽超时 per-channel 容错。详见 docs/youtube-dash-fallback-plan.md「alpha.98」。
 
 ## v3.0.2-alpha.10
 
