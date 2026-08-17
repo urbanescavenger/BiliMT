@@ -153,3 +153,28 @@
   - **验证待真机**:resolve 首行即 `NewPipe SABR harvest`(非 `viaWebView=true`),无 27s 卡顿;attestation 视频
     SABR 空 poToken → status=2 → PoTokenWebView 重铸 → 起播,无 RELOAD;≤1080p 无回归;若 SABR 仍 RELOAD 落自合成 DASH。
   - **不做/留后续**:不修 WebView harvest 本体、不移动复用块(缺 durationMs,留后续给 Registry Entry 加)。
+- [x] **alpha.94:修 alpha.89 回归——isOnYoutube 只认 www,误杀 m.youtube.com 重定向 → 共享 WebView 死循环**(2026-08-17)
+  - **真机坐实(alpha.25 APK)**:YouTube 本身可达(RSS 通、BiliWarmup 通),但 **feed 全挂**——所有频道 InnerTube
+    `/browse` 在 4s 预算内超时(`YoutubeFeed: InnerTube failed … Timed out waiting for 4000 ms`),同时播放器
+    仍 `viaWebView failed` 27s 卡死。用户:同机 YouTube 可达、原版可达 → 非网络,是回归。
+  - **真根因(推翻 alpha.93 的"WebView 收割脆弱"误读)**:YoutubeBrowserSession 用 **MobileUserAgent** 加载
+    `www.youtube.com/`,被重定向到 `https://m.youtube.com/`;alpha.89 加的 `isOnYoutube` **只认
+    `https://www.youtube.com`** → m.youtube.com 页加载成功也被判"不在 youtube.com" → `onPageFinished` 标
+    loadFailed、deferred 不完成 → 15s 超时 → 销毁重建 → 重定向又回 m → **每次 ensureLoaded 烧 2×15s 死循环**。
+    该 WebView 是**单例共享**(AppContainer L103-108),feed 与播放器都依赖:
+    - **feed**:ensureRealSessionData 每次 InnerTube 请求调 browserSession.ensureLoaded(sw.js_data 也失败、
+      realSessionData 恒空不缓存)→ 4 频道在 sessionMutex 排队做 30s 循环 → 超 4s 预算 → 动态空白。
+    - **播放器**:fetchViaWebView→ensureLoaded 烧 30s → "viaWebView failed"。alpha.93(NewPipe-first)绕开
+      它才绿,但 feed 没绕开 → 真机 feed 挂。
+  - **alpha.89 初衷**(修 CORS origin=null 错误页)正确,但把合法 m.youtube.com 页也误杀了。www/m 都是真
+    YouTube 页(移动 UA 重定向正常,预 alpha.89 就停在 m),只应拒 chrome-error:// 错误页。
+  - **修复(2 文件,纯判空/缓存逻辑)**:
+    - [YoutubeBrowserSession.kt](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBrowserSession.kt) `isOnYoutube`
+      改为同时认 `https://www.youtube.com` 与 `https://m.youtube.com`(fetchViaWebView 同函数,恢复预 alpha.89
+      的 m→www 跨源 fetch,YouTube 返 ACAO 本就可跨源)。
+    - [InnerTubeClient.kt](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt) `ensureRealSessionData`
+      sw.js_data 失败时**不再丢弃 browserVisitor**,用真实浏览器会话 visitorData 兜底缓存(否则每次请求重跑慢
+      引导 + 合成 visitorData 打 /browse 被限流)。
+  - **验证待真机**:feed 正常加载(RSS+InnerTube 合并出视频,不再 4s 超时)、无 `browser session not on
+    youtube.com` 死循环、播放器 viaWebView 不再 27s 卡死(alpha.93 NewPipe-first 本已绕开,此修顺带救回 WEB
+    last-resort)。

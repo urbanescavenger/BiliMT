@@ -77,9 +77,18 @@ class YoutubeBrowserSession(context: Context) {
     // 从 origin=null 发 fetch 并抛错,触发上层 postPlayer 回退 OkHttp(安全网)。
   }
 
-  /** 当前 WebView 是否停在真实 youtube.com 页(非错误页/空页)。 */
+  /**
+   * 当前 WebView 是否停在真实 YouTube 页(非错误页/空页)。
+   *
+   * alpha.94 修复:WebView 用 [MobileUserAgent] 加载 `www.youtube.com/` 会被重定向到
+   * `https://m.youtube.com/`。alpha.89 只认 `www.youtube.com` → m.youtube.com 页加载成功也被判
+   * "不在 youtube.com" → `ensureLoaded` 反复销毁重建(每次 2×15s),同时把共享单例 WebView 卡进
+   * 死循环 → feed 的 ensureRealSessionData 与播放器 fetchViaWebView 都起不来(真机 feed 4s 预算内
+   * 全超时 + 播放器 27s 卡死)。www/m 都是真实 YouTube 页(移动 UA 重定向是正常行为,预 alpha.89
+   * 就停在 m.youtube.com),只应拒绝 chrome-error:// 错误页(origin=null)。
+   */
   private fun isOnYoutube(url: String?): Boolean =
-    url != null && url.startsWith("https://www.youtube.com")
+    url != null && (url.startsWith("https://www.youtube.com") || url.startsWith("https://m.youtube.com"))
 
   @SuppressLint("SetJavaScriptEnabled")
   private fun createWebView(deferred: CompletableDeferred<Unit>): WebView {

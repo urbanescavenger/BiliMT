@@ -665,19 +665,36 @@ class InnerTubeClient(
         it.readVisitorData()
       }
       val data = runCatching { fetchRealSessionData() }.getOrNull()
-      if (data != null) {
-        val effectiveVisitor = browserVisitor ?: data.visitorData
+      // alpha.94:sw.js_data 失败时不再丢弃 browserVisitor——用真实浏览器会话的 visitorData 兜底缓存。
+      // 否则 realSessionData 恒空 → 每次 InnerTube 请求都重跑慢的 ensureLoaded(WebView 引导,alpha.89
+      // isOnYoutube 误杀 m.youtube.com 时烧 2×15s)+ 用合成 visitorData 打 /browse 被限流(feed 4s 预算
+      // 内起不来)。浏览器 visitor 与 sw.js_data 是同一 YouTube 会话(同 cookie 域),可安全作 visitorData。
+      val effectiveVisitor = browserVisitor ?: data?.visitorData
+      if (effectiveVisitor != null) {
         val browserCookies = browserSession?.readCookies()
-        val effectiveCookies = if (browserCookies.isNullOrBlank()) data.sessionCookies else browserCookies
-        realSessionData = data.copy(visitorData = effectiveVisitor, sessionCookies = effectiveCookies)
+        val effectiveCookies = if (browserCookies.isNullOrBlank()) data?.sessionCookies else browserCookies
+        realSessionData = RealSessionData(
+          visitorData = effectiveVisitor,
+          clientVersion = data?.clientVersion ?: YoutubeConstants.ClientVersion,
+          osName = data?.osName,
+          osVersion = data?.osVersion,
+          browserName = data?.browserName,
+          browserVersion = data?.browserVersion,
+          deviceMake = data?.deviceMake,
+          deviceModel = data?.deviceModel,
+          timeZone = data?.timeZone,
+          deviceExperimentId = data?.deviceExperimentId,
+          rolloutToken = data?.rolloutToken,
+          sessionCookies = effectiveCookies,
+        )
         visitorData = effectiveVisitor
         Log.i(
           Tag,
           "real session data: visitorData=${effectiveVisitor.take(24)}... " +
-            "(browser=${browserVisitor != null}) clientVersion=${data.clientVersion}"
+            "(browser=${browserVisitor != null} swData=${data != null}) clientVersion=${realSessionData?.clientVersion}"
         )
       } else {
-        Log.w(Tag, "sw.js_data fetch failed; fallback to synthetic visitorData")
+        Log.w(Tag, "session data fetch failed (sw.js_data + browser) → synthetic visitorData")
       }
     }
   }
