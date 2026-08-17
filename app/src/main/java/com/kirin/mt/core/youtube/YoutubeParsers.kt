@@ -463,10 +463,13 @@ internal object YoutubeParsers {
 
   private fun parseDuration(text: String): Int? {
     if (text.isBlank()) return null
+    // 只接受含冒号的真实时长格式 "MM:SS"/"HH:MM:SS"。单段纯数字(如 lockupViewModel 里被
+    // collectStrings 收成字符串的缩略图 width/height/backgroundColor 等数值)不是时长,必须拒绝;
+    // 否则首个匹配的固定数值会被当成时长,导致整个主页所有视频时长显示成同一个常量(实测 2:58)。
+    if (!text.contains(':')) return null
     val parts = text.split(':').mapNotNull { it.toIntOrNull() }
-    if (parts.isEmpty()) return null
+    if (parts.size < 2 || parts.last() !in 0..59) return null
     return when (parts.size) {
-      1 -> parts[0]
       2 -> parts[0] * 60 + parts[1]
       3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
       else -> null
