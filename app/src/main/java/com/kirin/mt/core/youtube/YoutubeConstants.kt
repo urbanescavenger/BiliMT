@@ -16,6 +16,9 @@ object YoutubeConstants {
   /** 数据接口 base（不含 version，endpoint 以 / 开头拼在后面）。 */
   const val InnerTubeBase = "https://www.youtube.com/youtubei"
 
+  /** native 客户端(visionOS) /player 用 GAPIS base(对齐 NewPipe YOUTUBEI_V1_GAPIS_URL)。 */
+  const val InnerTubeGapisBase = "https://www.googleapis.com/youtubei"
+
   /** 频道 RSS 订阅流 base（?channel_id=UC... 拼在后面）。轻量 GET，不计入 InnerTube 配额。 */
   const val RssFeedBase = "https://www.youtube.com/feeds/videos.xml"
 

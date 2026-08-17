@@ -68,6 +68,21 @@ data class AppSettings(
   val iptvSourceUsername: String = "",
   /** IPTV 源密码（可选，Basic Auth）。 */
   val iptvSourcePassword: String = "",
+  /**
+   * YouTube SABR 实验开关:走 Piped 后端 `/streams/{videoId}` 拿**已 attested 的 WEB-bound**
+   * ustreamerConfig(对齐 LibreTube 默认 Piped 路径),修 NewPipe visionOS 路径拿未 attested config 致
+   * RELOAD_PLAYER_RESPONSE 死循环。默认关——先走现有 NewPipe 路径,RELOAD 卡死时手动开作诊断/回退方案。
+   * 见 [com.kirin.mt.core.youtube.piped.PipedClient] 与 docs/youtube-hd-playback.md「alpha.83 更正」段。
+   */
+  val youtubeUsePiped: Boolean = false,
+  /** Piped 实例 URL(实验)。空串 = 用默认实例 [com.kirin.mt.core.youtube.YoutubePlaybackResolver.DEFAULT_PIPED_INSTANCE]。 */
+  val pipedInstanceUrl: String = "",
+  /**
+   * SABR itag 无关诊断开关:强制视频轨用会话选中的 videoFormatId,跳过 selectFormat 按声明 itag 重选。
+   * 证伪"某 itag(如 itag313)是 RELOAD 根因"——锁死后仍 RELOAD 则根因在 ustreamerConfig 来源。默认关。
+   * Piped 路径默认开此项(配合 Piped 已 attested config 验证 itag 确实无关)。
+   */
+  val sabrForceSessionVideoItag: Boolean = false,
 ) {
   val lowSpecMode: Boolean
     get() = visualPerformanceMode == AppVisualPerformanceMode.Smooth

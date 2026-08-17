@@ -279,6 +279,23 @@ object LogCatcherUtil {
   }
 
   /**
+   * 清空实时日志文件(用于安装新包后启动时)。若正在录制先停掉,再删文件。
+   *
+   * alpha.95 修复:此方法在 [install] 之前被 Application.onCreate 调用(须先清日志再建 live 进程),
+   * 但旧实现依赖 [appContext](lateinit,仅 install 赋值)→ 更新后首次启动 versionCode 变化触发
+   * 本方法 → 访问未初始化 lateinit 抛 UninitializedPropertyAccessException → Application.onCreate
+   * 崩溃(且发生在设 UncaughtExceptionHandler 之前,连崩溃日志都抓不到)→ 每次启动必崩、永久打不开。
+   * 改为显式接收 context,不再依赖 lateinit。
+   */
+  fun clearLiveLog(context: Context) {
+    if (isLiveLogging) stopLiveLogging()
+    val file = File(File(context.applicationContext.filesDir, LOG_DIR), LIVE_LOG_FILENAME)
+    if (file.exists() && !file.delete()) {
+      logger.warn { "clearLiveLog: delete failed" }
+    }
+  }
+
+  /**
    * 裁剪日志文件：保留尾部 [LIVE_TRIM_KEEP_BYTES] 字节（跳到下一个换行按行对齐，
    * 丢弃首部不完整行），用临时文件替换原文件。调用方须保证此时无其它写者持有原文件 fd。
    */

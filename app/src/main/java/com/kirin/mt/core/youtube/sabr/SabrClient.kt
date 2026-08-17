@@ -287,6 +287,11 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
     val lastMs = lastRequestMs.get()
     val elapsed = if (lastMs > 0L) (now - lastMs).coerceAtLeast(0L) else 0L
     lastRequestMs.set(now)
+    // alpha.16(对齐 LibreTube setAudioTrackId):当前选中音轨 id(audioTrack.id,如 "en.4")。
+    // 按 itag 命中 session.audioTracks 里当前音频格式那条;单音轨视频 resolver 折叠成 "default"(audioTrackId
+    // 为 null),对齐 LibreTube 发空串("" 而非 "default")——多音轨视频(如 jNl6YkkzKxw 5 音轨)发真实 id。
+    val audioTrackId = session.audioTracks.firstOrNull { it.formatId.itag == session.audioFormatId.itag }?.id
+      ?.takeIf { it != "default" } ?: ""
     val clientAbrState = ClientAbrStateInput(
       timeSinceLastManualFormatSelectionMs = if (req.streamType == SabrStreamType.VIDEO) 0L else null,
       lastManualSelectedResolution = resolution,
@@ -302,6 +307,7 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
       playbackRate = 1.0f,
       elapsedWallTimeMs = elapsed,
       timeSinceLastActionMs = 0L,
+      audioTrackId = audioTrackId,
       // alpha.40:回退 alpha.39 的 video=0(VIDEO_AND_AUDIO)。alpha.39 真机证伪——bitfield=0 让视频流
       // 请求声明「要音视频双轨」→ 服务端向 VIDEO 流灌 itag=251(audio) MEDIA_HEADER(matched=false,
       // wanted itag=video);itag401 靠 headerId=2 侥幸拿到 video 头,itag399 则几十次 backoff=0
@@ -358,8 +364,11 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
         // 会话传输头(对齐 /player 同会话:UA + Cookie + X-Goog-Visitor-Id)——googlevideo SABR 端点
         // 拒绝无会话绑定的裸请求(alpha.17 实测 HTTP 403 空响应体)。
         .header("User-Agent", session.userAgent)
-        .header("Cookie", session.cookieHeader)
-        .header("X-Goog-Visitor-Id", session.visitorData)
+        // alpha.79:cookie/visitor 可空——空串=不带(对齐 LibreTube 无 HTTP cookie,靠 protobuf)。非空才带。
+        .apply {
+          if (session.cookieHeader.isNotBlank()) header("Cookie", session.cookieHeader)
+          if (session.visitorData.isNotBlank()) header("X-Goog-Visitor-Id", session.visitorData)
+        }
         .header("Origin", "https://www.youtube.com")
         .header("Referer", "https://www.youtube.com/")
         .build()

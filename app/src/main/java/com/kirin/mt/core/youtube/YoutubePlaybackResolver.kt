@@ -1,6 +1,5 @@
 package com.kirin.mt.core.youtube
 
-import android.util.Base64
 import android.util.Log
 import com.kirin.mt.core.player.BiliPlaybackHeaders
 import com.kirin.mt.core.player.CodecCapability
@@ -18,8 +17,12 @@ import com.kirin.mt.core.youtube.sabr.SabrClient
 import com.kirin.mt.core.youtube.sabr.SabrFetchResult
 import com.kirin.mt.core.youtube.sabr.SabrSession
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
-import com.kirin.mt.core.youtube.newpipe.BiliTvPoTokenProvider
+import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
+import com.kirin.mt.core.youtube.piped.PipedClient
+import com.kirin.mt.core.youtube.piped.PipedStreams
+import com.kirin.mt.core.youtube.piped.PipedStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -58,7 +61,11 @@ class YoutubePlaybackResolver(
   private val nDecryptor: YoutubeNDecryptor,
   private val sDecryptor: YoutubeSDecryptor,
   private val httpClient: OkHttpClient,
-  private val biliTvPoTokenProvider: BiliTvPoTokenProvider,
+  private val biliTvPoTokenProvider: NewPipePoTokenGenerator,
+  /** Piped 后端客户端(可选,实验:对齐 LibreTube 默认 Piped 路径修 RELOAD)。null = 走 NewPipe(旧行为)。 */
+  private val pipedClient: PipedClient? = null,
+  /** 设置存储(读 youtubeUsePiped/pipedInstanceUrl/sabrForceSessionVideoItag)。null = 全 false/空(旧行为)。 */
+  private val appSettingsStore: com.kirin.mt.core.settings.AppSettingsStore? = null,
 ) {
 
   /** 从 player base.js 提取的 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp）。 */
@@ -77,6 +84,55 @@ class YoutubePlaybackResolver(
     var lastError: String? = null
     var havePlayable = false
 
+    // ── Piped 后端 opt-in（实验:对齐 LibreTube 默认 Piped 路径,修 RELOAD_PLAYER_RESPONSE 死循环）──
+    // 用户在设置开 youtubeUsePiped 后,先走 Piped `/streams/{videoId}`。Piped 实例自带 poToken 请求
+    // YouTube,回**已 attested 的 WEB-bound** ustreamerConfig(见 [docs/youtube-hd-playback.md]
+    // 「alpha.83 更正」段)——首请求发空 poToken,服务端回 status=2 时再铸 WEB poToken 续命,绕过
+    // NewPipe visionOS 路径拿未 attested config 致 RELOAD 的问题。Piped 失败/无 SABR 数据自动回退 NewPipe。
+    if (pipedClient != null && appSettingsStore != null) {
+      val cfg = appSettingsStore.settings.first()
+      if (cfg.youtubeUsePiped) {
+        val instance = cfg.pipedInstanceUrl.ifBlank { DEFAULT_PIPED_INSTANCE }
+        val piped = runCatching { pipedClient.fetchStreams(videoId, instance) }.getOrNull()
+        if (piped != null &&
+          !piped.serverAbrStreamingUrl.isNullOrBlank() &&
+          !piped.videoPlaybackUstreamerConfig.isNullOrBlank()
+        ) {
+          val r = buildSabrSessionFromPiped(videoId, piped, youtubeDefaultQuality)
+          if (r != null) {
+            YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
+            val sabrClient = SabrClient(httpClient)
+            val sid = SabrStreamRegistry.registerByVideoId(
+              videoId,
+              r.session,
+              sabrClient,
+              refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
+              forceSessionVideoItag = cfg.sabrForceSessionVideoItag,
+            )
+            YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+            Log.i(
+              Tag,
+              "SABR playback ready: sid=$sid source=Piped instance=$instance " +
+                "video=itag${r.session.videoFormatId.itag} audio=itag${r.session.audioFormatId.itag}"
+            )
+            return@withContext buildSabrPlaybackInfo(
+              request,
+              videoId,
+              r.durationMs,
+              r.raws,
+              r.session,
+              sid,
+              subtitleTracks = r.subtitleTracks,
+              youtubeDefaultQuality = youtubeDefaultQuality,
+            )
+          }
+          Log.w(Tag, "Piped path: buildSabrSessionFromPiped returned null (instance=$instance) → fall back to NewPipe")
+        } else {
+          Log.w(Tag, "Piped path: no SABR data from $instance (sabrUrl/ustreamerCfg absent) → fall back to NewPipe")
+        }
+      }
+    }
+
     // 生成视频 ID 绑定的 PO token（best-effort）。无 PO token 时 YouTube 剥掉 adaptive 高清 url
     // （只剩 progressive 360p）；有 token 才能拿高清直链。失败降级为无 token 直连。
     YoutubeLoadProgress.emit(YoutubeLoadStep.FetchPlayer)
@@ -87,6 +143,54 @@ class YoutubePlaybackResolver(
     // 提取 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp），注入 /player
     // 的 contentPlaybackContext。缺它 WEB /player 可能被判"非真浏览器" → "The page needs to be reloaded"。
     val signatureTimestamp = resolveSignatureTimestamp(videoId)
+
+    // ── NewPipe-first 主路径(alpha.93):对齐 LibreTube 直调 NewPipe getInfo,不依赖 WEB /player WebView harvest ──
+    // alpha.89 WebView harvest 坏(卡 m.youtube.com 错误页 27s)→ 先走自包含的 NewPipe(visonOS SABR → DASH 兜底)。
+    // ① visionOS NewPipe SABR(alpha.91 Fix A register+refreshPoToken 在此生效;Fix B 已使 getInfo 不带 WEB visitor
+    //    → status=2 懒鉴权,空 poToken 首请求)。buildSabrSessionFromNewPipe 内部 L806 poTokenB64="" 不用外部 poToken。
+    //
+    // alpha.9X:SABR 死循环守卫。attestation 视频(4K/HD)首次 RELOAD 后 reloadCount>0,重建空 poToken 会话
+    // 必再 RELOAD(alpha.93 NewPipe-first 早退使下方 consumeReloadTokenSlot/MAX_RELOADS 闸门不可达,曾 reloadCount
+    // 17→24 无界爬升直至 evict→Source error;对齐 LibreTube 对 RELOAD 直接失败不循环)。RELOAD 后跳过 SABR,
+    // 直接落 ② 的 DASH/HLS 兜底。注意:DASH 自合成兜底(NewPipe 已解密直链拼 MPD)不走 SABR attestation,
+    // 实测能出 4K(2160p VP9,见 docs youtube-hd-playback.md「alpha.9X」),不是只 ≤1080p。
+    val np = if (SabrStreamRegistry.reloadCount(videoId) > 0) {
+      Log.w(Tag, "SABR dead-loop guard: videoId=$videoId 已 RELOAD(reloadCount=${SabrStreamRegistry.reloadCount(videoId)})→ 跳过重建,直接 DASH/HLS 兜底")
+      null
+    } else {
+      buildSabrSessionFromNewPipe(videoId, poToken, youtubeDefaultQuality)
+    }
+    if (np != null) {
+      YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
+      val sabrClient = SabrClient(httpClient)
+      // alpha.65:注入 PO token 刷新回调——SABR status=2(Attestation pending)时用 PoTokenWebView 重铸
+      // streamingDataPoToken(alpha.91 Fix A:统一 minter,替 YoutubeBotGuard PLACEHOLDER),对齐 LibreTube。
+      val sid = SabrStreamRegistry.registerByVideoId(
+        videoId, np.session, sabrClient,
+        refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
+      )
+      YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+      Log.i(
+        Tag,
+        "SABR playback ready: sid=$sid source=NewPipe(primary) " +
+          "video=itag${np.session.videoFormatId.itag}(${np.session.videoFormatId.height}p) " +
+          "audio=itag${np.session.audioFormatId.itag} → sabr:// DASH"
+      )
+      return@withContext buildSabrPlaybackInfo(
+        request, videoId, np.durationMs, np.raws, np.session, sid,
+        subtitleTracks = np.subtitleTracks.orEmpty(),
+        youtubeDefaultQuality = youtubeDefaultQuality,
+      )
+    }
+    // ② NewPipe 无 SABR → DASH/HLS 兜底(alpha.92 自合成 DASH 为主,次 dashMpdUrl[恒空]/HLS)。durationMs 传 0
+    //    → buildDashFallbackFromNewPipe 内部用 info.duration 兜底。
+    val npDash = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality) }.getOrNull()
+    if (npDash != null) {
+      YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+      Log.i(Tag, "NewPipe-first → DASH/HLS 兜底 playback ready: videoId=$videoId → ${if (npDash.remoteHlsManifestUrl != null) "HLS" else "DASH"}")
+      return@withContext npDash
+    }
+    Log.w(Tag, "NewPipe-first 全空(SABR+DASH 兜底均失败)→ 落 WEB /player last resort(classic WEB SABR reload-closure / classic DASH)")
 
     // 收集 playable 客户端的 streamingData 候选。对齐 FreeTubeAndroid:主用 WEB(带 token,拿 SABR),
     // 仅年龄限制回退 WEB_EMBEDDED;ANDROID 从 /player 链移除(FreeTubeAndroid 不用 ANDROID 客户端)。
@@ -205,6 +309,55 @@ class YoutubePlaybackResolver(
       // SABR 协议往返探针(§6.9):WEB 数据齐全时发一次 init 段请求,验证 encode→POST→UMP→MEDIA 全链。
       // 首版仅诊断——拿回字节即证明协议层通,再接 Media3 播放(Phase 2b)。
       if ((client == InnerTubeClient.Client.WEB || client == InnerTubeClient.Client.TVHTML5) && !sabrUrl.isNullOrBlank() && !ustreamerCfgStr.isNullOrBlank() && poToken != null) {
+        // Phase 2 取证:RELOAD 回传。上次会话收到 RELOAD_PLAYER_RESPONSE 时 [SabrMediaFetcher.processPart]
+        // 已把 reloadToken 停车进 [SabrStreamRegistry](独立于 sessions,evict 不清);evict→播放器错误重试重进
+        // resolve。这里 consume 取走 token → 重打 visionOS /player(回传 reloadPlaybackContext)换新会话;
+        // 成功即试用(证明 Phase 2 成立);失败落常规 NewPipe harvest。reloadCount 超 MAX 只跳过 reload 尝试
+        // (整体 loop 已由播放器错误重试预算 MaxStallAutoRetry 兜底,本轮诊断不接完整 DASH 闭环)。
+        val reloadToken = SabrStreamRegistry.consumeReloadTokenSlot()
+        if (reloadToken != null) {
+          // alpha.8 教训:storeReloadToken 对每次 RELOAD part(rn=0..7,单次尝试约 8 个)都 +1,且从不重置,
+          // 到 resolve 重跑时 count 已远超 MAX → 诊断期的 reload 尝试永远被跳过、Phase 2 一次都没发过。
+          // consume 已是原子 one-shot-per-token(取走即不再重放),累积 count 对兜底 loop 冗余,
+          // 故这里每次 consume 到 token 就把 count 归零 → 每个 resolve 周期恰好尝试一次 reload。
+          SabrStreamRegistry.resetReloadCount(videoId)
+          val reloadCount = SabrStreamRegistry.reloadCount(videoId)
+          Log.i(Tag, "SABR reload path: videoId=$videoId reload#$reloadCount tokenLen=${reloadToken.length}")
+          val rp = runCatching { buildSabrSessionFromReloadPlayer(videoId, reloadToken, poToken, youtubeDefaultQuality) }.getOrNull()
+          if (rp != null) {
+            YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
+            val sabrClient = SabrClient(httpClient)
+            val sid = SabrStreamRegistry.registerByVideoId(
+              videoId, rp.session, sabrClient,
+              refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
+            )
+            YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+            Log.i(
+              Tag,
+              "SABR reload playback ready: sid=$sid reload#$reloadCount source=reload-closure " +
+                "video=itag${rp.session.videoFormatId.itag}(${rp.session.videoFormatId.height}p) " +
+                "audio=itag${rp.session.audioFormatId.itag} → sabr:// DASH"
+            )
+            return@withContext buildSabrPlaybackInfo(
+              request, videoId, rp.durationMs, rp.raws, rp.session, sid,
+              subtitleTracks = rp.subtitleTracks,
+              youtubeDefaultQuality = youtubeDefaultQuality,
+            )
+          }
+          Log.w(Tag, "SABR reload 闭环未回 SABR(WEB/visionOS reload 均无 sabrUrl)→ 试 DASH/HLS 兜底")
+          // alpha.88:RELOAD 闭环兜底(对齐 LibreTube SABR RELOAD 崩后落 streams.dash)——用 NewPipe getInfo
+          // 的 dashMpdUrl(android streamingData manifest)直喂 DashMediaSource,≤1080p。
+          // alpha.90:Phase 0 取证 dashMpdUrl 恒空 → 实际走 hlsUrl(visionOS Apple 平台原生 HLS)次选兜底。
+          val dashInfo = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request, youtubeDefaultQuality) }.getOrNull()
+          if (dashInfo != null) {
+            YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+            val kind = if (dashInfo.remoteHlsManifestUrl != null) "HLS" else "DASH"
+            val len = (dashInfo.remoteDashManifestUrl ?: dashInfo.remoteHlsManifestUrl)?.length
+            Log.i(Tag, "SABR reload → $kind 兜底 playback ready: videoId=$videoId manifest=${len}B → 远程 $kind")
+            return@withContext dashInfo
+          }
+          Log.w(Tag, "DASH/HLS 兜底均空(dashMpdUrl+hlsUrl 无 manifest)→ 落常规 NewPipe harvest(会 RELOAD,但已无其它出口)")
+        }
         val raws = rawAdaptive.mapNotNull { it as? JsonObject }
         val firstVideo = raws.firstOrNull { (it.intOrNull("height") ?: 0) > 0 }
         val firstAudio = raws.firstOrNull { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
@@ -235,6 +388,16 @@ class YoutubePlaybackResolver(
               return@withContext buildSabrPlaybackInfo(request, videoId, durationMs, raws, session, cachedSid)
             }
           }
+          // alpha.86:退回 NewPipe visionOS 作 SABR 主路径(对齐 LibreTube 完全本地模式)。alpha.85 试 attested
+          // WEB /player 经典路径作主路径修 4K RELOAD——RELOAD 确实消失(attested config 不再被协议层拒),但 WEB
+          // /player 的 serverAbrStreamingUrl **带 n-param**(与 fork visionOS sabrUrl 无 n 不同——docs §6.7 row 75
+          // 只适用 fork visionOS),plasma WASM 致 n-decrypt 结构性失效 [[youtube-plasma-wasm-n-decrypt]],OkHttp
+          // POST 未 transform 的 sabrUrl → 所有 fetch HTTP 403(Server=gvs 空体,§6.18 alpha.18 同症状),**连
+          // ≤1080p 都回归 403**。且 alpha.80 真机已证 visionOS config + WEB-visitor poToken(首请求带 token 尝试
+          // attestation)→ RELOAD(visitor 不匹配,§6.18)——故 4K 两条 OkHttp 路全堵(visionOS+WEB-poToken→RELOAD /
+          // WEB+WEB-poToken→403n),4K 唯一曾跑通的是 alpha.20-25 WebView harvest(浏览器 WASM 做 n-transform +
+          // 浏览器全 WEB 一致 attested body),alpha.71 退役(疑跨 minter 60s,但 [[sabr-status2-sync-refresh]]
+          // alpha.68 已同步修 60s 竞态,跨 minter 是否真致命待重测)。4K 另议,此处先修 ≤1080p 回归。
           // alpha.71(path C):NewPipeExtractor fork 作 SABR 取流唯一路径(visionOS 客户端,干净 /player,
           // 无浏览器会话绑定,网关 URL 无 n-param 需 decipher)。彻底退役 alpha.20-70 的 WebView harvest
           // 兜底(harvest 抓回的 serverAbrStreamingUrl+ustreamerConfig 绑浏览器会话 → 跨 minter status=3 /
@@ -245,13 +408,24 @@ class YoutubePlaybackResolver(
           var sabrSession: SabrSession? = null
           var sabrRaws: List<JsonObject> = raws
           var sabrDuration = durationMs
-          val npResult = buildSabrSessionFromNewPipe(videoId, poToken)
+          val npResult = buildSabrSessionFromNewPipe(videoId, poToken, youtubeDefaultQuality)
           if (npResult != null) {
             sabrSession = npResult.session
             sabrRaws = npResult.raws
             sabrDuration = npResult.durationMs
           } else {
-            Log.w(Tag, "SABR: NewPipe 无 SABR 数据 → 落 DASH 兜底(classic n-decrypt 已退役:plasma 失效 + 跨 minter 卡 60s)")
+            Log.w(Tag, "SABR: NewPipe 无 SABR 数据 → 试 DASH/HLS 兜底(classic n-decrypt 已退役:plasma 失效 + 跨 minter 卡 60s)")
+            // alpha.90:NewPipe 无 SABR 数据时,getInfo 仍可能给 hlsUrl(visionOS Apple 平台原生 HLS 交付)→ 走
+            // HLS 兜底,而非落已死的 classic n-decrypt(plasma WASM 致 n-decrypt 结构性失效)。复用 [buildDashFallbackFromNewPipe]
+            //(内部再 getInfo 取 dashMpdUrl/hlsUrl,优先 DASH、次选 HLS)。两路均空才落 L399 classic。
+            val noSabrFallback = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request, youtubeDefaultQuality) }.getOrNull()
+            if (noSabrFallback != null) {
+              YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+              val kind = if (noSabrFallback.remoteHlsManifestUrl != null) "HLS" else "DASH"
+              val len = (noSabrFallback.remoteDashManifestUrl ?: noSabrFallback.remoteHlsManifestUrl)?.length
+              Log.i(Tag, "无 SABR → $kind 兜底 playback ready: videoId=$videoId manifest=${len}B → 远程 $kind")
+              return@withContext noSabrFallback
+            }
           }
           if (sabrSession != null) {
             YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
@@ -261,7 +435,7 @@ class YoutubePlaybackResolver(
             // 对齐 LibreTube SabrClient.generatePoToken。botGuard 是 AppContainer 进程级单例,lambda 长生命周期安全。
             val sid = SabrStreamRegistry.registerByVideoId(
               videoId, sabrSession, sabrClient,
-              refreshPoToken = { botGuard.generatePoToken(videoId)?.toByteArray(Charsets.UTF_8) },
+              refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
             )
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
             Log.i(
@@ -447,10 +621,19 @@ class YoutubePlaybackResolver(
     }
     // WEB/WEB_EMBEDDED /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView；
     // ANDROID 保持 OkHttp 直连(作为回退)。TVHTML5 也走 WebView(TV client OkHttp 直连大概率被拦)。
-    return innerTubeClient.postJson(
-      "/player", payload, client = client, poToken = poToken,
-      viaWebView = client == InnerTubeClient.Client.WEB || client == InnerTubeClient.Client.WEB_EMBEDDED || client == InnerTubeClient.Client.TVHTML5,
-    )
+    val useWebView = client == InnerTubeClient.Client.WEB || client == InnerTubeClient.Client.WEB_EMBEDDED || client == InnerTubeClient.Client.TVHTML5
+    // alpha.89:WebView fetch 安全网——若 browserSession 卡在错误页(origin=null)→ fetch CORS 失败抛错,
+    // 此前直接冒泡致 resolve "no decodable formats" 全视频播不了(真机 alpha.88 "现在都不能播放")。
+    // 捕获 viaWebView 异常 → 回退 OkHttp 直连(viaWebView=false)。OkHttp WEB /player 可能被判
+    // "The page needs to be reloaded"(unplayable),但至少返回结构化响应而非硬崩;部分视频仍可取流。
+    return runCatching {
+      innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = useWebView)
+    }.getOrElse { e ->
+      if (useWebView) {
+        Log.w(Tag, "postPlayer $client viaWebView failed (${e.message}) → fallback OkHttp viaWebView=false")
+        innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = false)
+      } else throw e
+    }
   }
 
   /** 从 watch 页 HTML 提取 base.js URL（用于 n/s 解密）。失败返回 null。结果缓存复用。 */
@@ -556,6 +739,14 @@ class YoutubePlaybackResolver(
     return if (kept.isEmpty()) base else "$base?${kept.joinToString("&")}"
   }
 
+  /** 取 URL query 里 key 的值(如 `&cpn=<value>` → value);无则 null。 */
+  private fun queryParam(url: String, key: String): String? {
+    val qIdx = url.indexOf("?")
+    if (qIdx < 0) return null
+    return url.substring(qIdx + 1).split("&")
+      .firstOrNull { it.startsWith("$key=") }?.substringAfter("=")
+  }
+
   /** path C:[StreamInfo.getInfo] 的结果包装——session + 供 buildSabrPlaybackInfo 的 raws + 时长 + 字幕。 */
   private data class NewPipeSabrResult(
     val session: SabrSession,
@@ -569,13 +760,19 @@ class YoutubePlaybackResolver(
    * 走 visionOS 客户端(不带 poToken)发干净 /player,拿到未绑定任何浏览器会话的
    * [StreamInfo.getServerAbrStreamingUrl](SABR 网关端点,无 n-param 需 decipher)+ [StreamInfo.getUstreamerConfig]。
    *
-   * poToken 取 [BiliTvPoTokenProvider.cached]——即 getInfo() 期间 NewPipe 经 PoTokenProvider 铸造并缓存
-   * 的同一枚(若 visionOS 路径未触发铸造则降级用 resolve() 顶部已铸的 poToken,同为 BotGuard 128B minter)。
-   * 这样 init poToken == extraction poToken(单一 minter),根除跨 minter status=3。
+   * alpha.14:visionOS SABR 请求**不带 poToken**(对齐 LibreTube,§6.18 定论)。上一轮 alpha.80 移植
+   * NewPipe 原生 PoTokenGenerator 后仍 RELOAD——真机日志坐实 LibreTube SabrClient 的
+   * getCachedWebClientPoToken() 在 getInfo 期间恒空(getIosClientPoToken 返回 null),首请求 setPoToken(empty)
+   * 不带 poToken 且能播;BiliTV 带 120B WEB-visitor 铸的 poToken 被服务端按会话 visitor 不匹配 RELOAD 全拒。
+   * 故 SABR 会话不再带 poToken;getInfo 仍走 NewPipe 铸 token(供 iOS /player 请求),但 SABR 不依赖它。
    *
    * 返回 null = 视频无 SABR / getInfo 失败 → 上层 classic(n-decrypt)或 DASH 兜底。
    */
-  private suspend fun buildSabrSessionFromNewPipe(videoId: String, poToken: String?): NewPipeSabrResult? {
+  private suspend fun buildSabrSessionFromNewPipe(
+    videoId: String,
+    poToken: String?,
+    youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+  ): NewPipeSabrResult? {
     val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
       .getOrElse {
         Log.w(Tag, "NewPipe getInfo failed: ${it.message}")
@@ -587,11 +784,40 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "NewPipe: no serverAbrStreamingUrl/ustreamerConfig (video lacks SABR) → fallback")
       return null
     }
-    // NewPipe 给网关 URL 追加了 &cpn=<cpn>;fromSabrData 会自建 cpn,strip 掉避免重复参数。
+    // Phase 0 诊断(DASH 兜底,见 docs/youtube-dash-fallback-plan.md):NewPipe 是否给 dashMpdUrl/hlsUrl。
+    // 不改播放行为,仅取证判断 DASH 兜底可走哪条(直拉 manifest vs 合成 MPD)。
+    Log.i(Tag, "NewPipe DASH diag: dashMpdUrl=${info.dashMpdUrl?.take(80)} hlsUrl=${info.hlsUrl?.take(60)}")
+    // alpha.14:NewPipe 给网关 URL 追加了 &cpn=<visionOsCpn>,而 ustreamerConfig 绑定该 cpn。
+    // 必须用 visionOsCpn(对齐 LibreTube 直接用原始 URL),不能用随机 cpn——否则服务端按 cpn 不匹配
+    // 拒会话 → RELOAD_PLAYER_RESPONSE 死循环(alpha.14 真机:jNl6YkkzKxw 2160p 首 fetch 即 RELOAD,
+    // 3wO2mW3eylw 1080p 能播;LibreTube 能播 jNl6YkkzKxw 因它保留 visionOsCpn)。strip 掉避免重复参数。
+    val visionOsCpn = queryParam(sabrUrlRaw, "cpn")
     val sabrUrl = stripQueryParam(sabrUrlRaw, "cpn")
     val videoStreams = info.videoOnlyStreams
     val audioStreams = info.audioStreams
-    val firstVideo = videoStreams.firstOrNull { it.height > 0 } ?: videoStreams.firstOrNull()
+    val videoFormats = videoStreams.filter { it.height > 0 }.map { it.toSabrFormatId() }
+    // alpha.77:harvest 选轨必须与 buildSabrPlaybackInfo 的选档一致——否则会话绑定的 videoFormatId
+    // 与播放器实际请求的 itag 不一致(harvest 盲取最高分辨率首条 vs 播放按默认画质上限选档)
+    // → 服务端 RELOAD_PLAYER_RESPONSE 死循环(alpha.77 真机:itag313 会话 + itag136 请求)。
+    // 用 youtubeDefaultQuality 的 maxHeight 从全部视频流里选同一档,而非盲取最高分辨率首条。
+    val maxHeight = youtubeDefaultQuality.maxHeight
+    val defaultItag = when {
+      maxHeight != null ->
+        videoFormats.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }?.itag
+          ?: videoFormats.minByOrNull { it.height }?.itag // 全部超过上限 → 取最低档
+      else -> videoFormats.maxByOrNull { it.height }?.itag // Auto → 最高可用
+    }
+    val firstVideo = defaultItag?.let { target ->
+      videoStreams.firstOrNull { it.toSabrFormatId().itag == target }
+    } ?: videoStreams.firstOrNull { it.height > 0 } ?: videoStreams.firstOrNull()
+    Log.i(Tag, "NewPipe SABR harvest: videoFormats=${videoFormats.size} maxHeight=$maxHeight defaultItag=$defaultItag firstVideo=itag${firstVideo?.itag}(${firstVideo?.height}p)")
+    // alpha.83 诊断:dump 每个视频流 itag 的 codec。真机日志坐实 itag248=vp9(720p webm 视频),
+    // **不是** opus 音频——此前「itag248=opus 误分类成视频轨」的记录是误读(已推翻,见 docs/youtube-hd-playback.md
+    // 最新结论)。RELOAD 根因是 NewPipe visionOS 拿到未 attested 的 ustreamerConfig,与 itag 选择无关,
+    // 故「按 codec 过滤音频 itag」前提本就不成立,过滤逻辑不再需要。
+    Log.i(Tag, "NewPipe videoFormats dump: " + videoStreams
+      .filter { it.height > 0 }
+      .joinToString { "${it.itag}=${it.codec}" })
     // 优先原声轨(getAudioTrackType()==ORIGINAL,来自 xtags acont=original),跳过配音/翻译轨。
     // 多语言配音视频里同一 itag 会按语言重复出现,盲取第一条可能拿到配音轨。
     val firstAudio = audioStreams.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
@@ -601,9 +827,13 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "NewPipe: missing streams (video=${firstVideo != null} audio=${firstAudio != null})")
       return null
     }
-    val videoFormats = videoStreams.filter { it.height > 0 }.map { it.toSabrFormatId() }
     val vFmt = firstVideo.toSabrFormatId()
     val aFmt = firstAudio.toSabrFormatId()
+    // Phase 0 诊断(DASH 兜底,见 docs/youtube-dash-fallback-plan.md):首视频/音频流的已解密 URL
+    // (NewPipe 内部 n-decrypt)+ deliveryMethod + itagItem 字段(toString 暴露 init/index range 若有,
+    // 不假设字段名)。仅取证,不改播放行为。
+    Log.i(Tag, "NewPipe DASH diag: firstVideo itag=${firstVideo.itag} delivery=${firstVideo.deliveryMethod} url=${firstVideo.content?.take(90)} itagItem=${firstVideo.itagItem?.toString()?.take(140)}")
+    Log.i(Tag, "NewPipe DASH diag: firstAudio itag=${firstAudio.itag} delivery=${firstAudio.deliveryMethod} url=${firstAudio.content?.take(90)} itagItem=${firstAudio.itagItem?.toString()?.take(140)}")
     // 全部可选音轨(供播放器音轨切换菜单)。id 用 getAudioTrackId()(audioTrack.id,如 "en.4");
     // 单音轨视频多个 itag 的 audioTrackId 均为 null → 折叠成 "default" 一条,避免误显示多音轨菜单。
     val sabrAudioTracks = audioStreams.map {
@@ -615,17 +845,13 @@ class YoutubePlaybackResolver(
         formatId = it.toSabrFormatId(),
       )
     }
-    // 优先 provider 缓存(getInfo 期间铸造的同一枚);否则 resolve() 顶部已铸的。同为 BotGuard 128B minter。
-    val cachedPoToken = biliTvPoTokenProvider.cached()?.streamingDataPoToken
-    val poTokenForSabr = cachedPoToken ?: poToken
-    if (poTokenForSabr.isNullOrEmpty()) {
-      Log.w(Tag, "NewPipe SABR: no poToken (BotGuard null + provider cache empty) → fallback")
-      return null
-    }
-    // websafe mint 串 → UTF-8 字节 → standard-b64(对齐 LibreTube it.streamingDataPoToken.toByteArray(),
-    // StreamerContext.poToken 存 websafe 串的 UTF-8 字节;fromSabrData DEFAULT 解码还原)。
-    // poTokenForSabr 已 isNullOrEmpty 判空 return,此处 !! 安全。
-    val poTokenB64 = Base64.encodeToString(poTokenForSabr!!.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+    // alpha.14:对齐 LibreTube——visionOS SABR 请求**不带 poToken**。
+    // 上一轮(alpha.80)移植 NewPipe 原生 PoTokenGenerator 后仍 RELOAD,真机日志坐实根因:
+    // LibreTube SabrClient 的 getCachedWebClientPoToken() 在 getInfo 期间恒空(getIosClientPoToken 返回 null),
+    // 首请求 setPoToken(empty) 不带 poToken 且能播;BiliTV 带 120B WEB-visitor 铸的 poToken 被 visionOS
+    // 服务端按会话 visitor 不匹配 RELOAD 全拒(§6.18/alpha.14 定论)。故 SABR 会话不再带 poToken。
+    // getInfo 仍走 NewPipe 铸 token(供 iOS /player 请求),但 SABR 请求不依赖它——poToken 空也不回退。
+    val poTokenB64 = "" // 对齐 LibreTube:不带 poToken
     val durationMs = info.duration * 1000L
     val raws = videoStreams.map { newPipeVideoRaw(it) } + audioStreams.map { newPipeAudioRaw(it) }
     val session = SabrSession.fromSabrData(
@@ -637,9 +863,17 @@ class YoutubePlaybackResolver(
       innerTubeClient.visionOsSabrClientInfo(),
       aFmt,
       vFmt,
-      userAgent = InnerTubeClient.Client.WEB.userAgent,
-      cookieHeader = innerTubeClient.currentSessionCookies(),
-      visitorData = innerTubeClient.currentVisitorData(),
+      // alpha.78:HTTP UA 必须与 clientInfo/ustreamerConfig 同为 visionOS。此前用 WEB UA(clientName=101
+      // visionOS 的 protobuf + Mozilla/5.0 Pixel 7 的 HTTP 头)被服务端判客户端不一致 → RELOAD_PLAYER 全拒
+      // (真机 2026-08-16:NewPipe 新会话首 fetch 即 RELOAD,死循环)。对齐 LibreTube SabrClient 全 visionOS。
+      userAgent = InnerTubeClient.Client.VISION_OS.userAgent,
+      // alpha.79:UA 对齐 visionOS 后仍 RELOAD(真机 alpha.78 UA 修复仍死循环)——因为 HTTP Cookie/
+      // X-Goog-Visitor-Id 仍带 WEB(Android Chrome)会话头,与 visionOS protobuf 不一致。彻底对齐
+      // LibreTube:完全不带 HTTP cookie/visitor,会话身份全靠 protobuf(poToken/ustreamerConfig/playbackCookie)。
+      cookieHeader = "",
+      visitorData = "",
+      // alpha.14:cpn 用 visionOsCpn(NewPipe /player 的 cpn,绑定 ustreamerConfig),不用随机 cpn。
+      cpn = visionOsCpn,
       videoFormats = videoFormats,
       audioTracks = sabrAudioTracks,
     )
@@ -661,13 +895,469 @@ class YoutubePlaybackResolver(
     }
     Log.i(
       Tag,
-      "NewPipe SABR session: sabrUrl=${sabrUrl.take(80)}... poToken=${poTokenForSabr!!.length}B" +
-        "(${if (cachedPoToken != null) "provider-cached" else "resolve-minted"}) ustreamerCfg=${ustreamerCfgB64.length}B " +
-        "video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} videoFormats=${videoFormats.size} " +
-        "subtitles=${subtitleTracks.size} dur=${durationMs}ms"
+      "NewPipe SABR session: sabrUrl=${sabrUrl.take(80)}... poToken=${poTokenB64.length}B" +
+        "(aligned-LibreTube-no-poToken) ustreamerCfg=${ustreamerCfgB64.length}B " +
+        "cpn=${visionOsCpn ?: "random"} video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} " +
+        "videoFormats=${videoFormats.size} subtitles=${subtitleTracks.size} dur=${durationMs}ms"
     )
     return NewPipeSabrResult(session, raws, durationMs, subtitleTracks)
   }
+
+  /**
+   * alpha.84(对齐 LibreTube 默认 Piped 路径):用 Piped 后端 `/streams/{videoId}` 取 SABR 会话。
+   *
+   * 区别于 [buildSabrSessionFromNewPipe](NewPipe fork 的 getInfo 走 visionOS /player)——这里走 Piped
+   * 实例,Piped 自带 poToken 请求 YouTube,回**已 attested 的 WEB-bound** `serverAbrStreamingUrl` +
+   * `videoPlaybackUstreamerConfig`(见 [docs/youtube-hd-playback.md]「alpha.83 更正」段:NewPipe
+   * visionOS 拿未 attested 的 visionOS-bound config → 对需 attestation 的视频服务端直接 RELOAD 不可续命;
+   * Piped config 已 attested,首请求发空 poToken,服务端回 status=2 时才铸 WEB poToken 续命)。
+   *
+   * **复用下游**:返回与 NewPipe 路径同形的 [NewPipeSabrResult](session + raws + 时长 + 字幕),resolve
+   * 的 Piped 分支直接复用既有 `registerByVideoId` + [buildSabrPlaybackInfo],不另造 PlaybackInfo 构造。
+   * raws 由 [pipedVideoRaw]/[pipedAudioRaw] 把 [PipedStream] 转成与 [newPipeVideoRaw]/[newPipeAudioRaw]
+   * 同形的 JsonObject,使 [buildSabrTrack]/[buildSabrPlaybackInfo] 无需感知数据源差异。
+   *
+   * ClientInfo/UA 仍用 visionOS([innerTubeClient.visionOsSabrClientInfo] + VISION_OS UA)——对齐
+   * LibreTube `SabrClient`(Piped/NewPipe 通用硬编码 visionOS ClientInfo),差异只在 ustreamerConfig 来源。
+   * poToken 留空(对齐 LibreTube Piped 首请求,服务端 status=2 时由注入的 refreshPoToken 铸 WEB poToken)。
+   *
+   * 返回 null = Piped 无 SABR 数据(sabrUrl/ustreamerConfig 缺) / 缺音视频流 → resolve 回退 NewPipe。
+   */
+  private suspend fun buildSabrSessionFromPiped(
+    videoId: String,
+    piped: PipedStreams,
+    youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+  ): NewPipeSabrResult? {
+    val sabrUrlRaw = piped.serverAbrStreamingUrl
+    val ustreamerCfgB64 = piped.videoPlaybackUstreamerConfig
+    if (sabrUrlRaw.isNullOrBlank() || ustreamerCfgB64.isNullOrBlank()) {
+      Log.w(Tag, "Piped: no serverAbrStreamingUrl/ustreamerConfig (video lacks SABR) → fallback")
+      return null
+    }
+    // 同 NewPipe 路径:cpn 用 Piped URL 自带的 cpn(绑定 ustreamerConfig),strip 掉避免重复参数。
+    val cpn = queryParam(sabrUrlRaw, "cpn")
+    val sabrUrl = stripQueryParam(sabrUrlRaw, "cpn")
+    val videoStreams = piped.videoStreams.filter { (it.height ?: 0) > 0 }
+    val audioStreams = piped.audioStreams
+    val videoFormats = videoStreams.map { it.toSabrFormatId() }
+    // 同 NewPipe 路径:用 youtubeDefaultQuality.maxHeight 选档,与 buildSabrPlaybackInfo 选档一致。
+    val maxHeight = youtubeDefaultQuality.maxHeight
+    val defaultItag = when {
+      maxHeight != null ->
+        videoFormats.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }?.itag
+          ?: videoFormats.minByOrNull { it.height }?.itag
+      else -> videoFormats.maxByOrNull { it.height }?.itag
+    }
+    val firstVideo = defaultItag?.let { target ->
+      videoStreams.firstOrNull { it.itag == target }
+    } ?: videoStreams.firstOrNull()
+    Log.i(Tag, "Piped SABR harvest: videoFormats=${videoFormats.size} maxHeight=$maxHeight defaultItag=$defaultItag firstVideo=itag${firstVideo?.itag}(${firstVideo?.height}p)")
+    // 优先原声轨(audioTrackType=="ORIGINAL",对齐 NewPipe AudioTrackType.ORIGINAL),跳过配音/翻译轨。
+    val firstAudio = audioStreams.firstOrNull { it.audioTrackType == "ORIGINAL" }
+      ?: audioStreams.firstOrNull { it.audioTrackType != "DUBBED" }
+      ?: audioStreams.firstOrNull()
+    if (firstVideo == null || firstAudio == null) {
+      Log.w(Tag, "Piped: missing streams (video=${firstVideo != null} audio=${firstAudio != null})")
+      return null
+    }
+    val vFmt = firstVideo.toSabrFormatId()
+    val aFmt = firstAudio.toSabrFormatId()
+    // 全部可选音轨(供播放器音轨切换菜单)。id 用 audioTrackId;单音轨视频 audioTrackId 为 null → 折叠 "default"。
+    val sabrAudioTracks = audioStreams.map {
+      SabrAudioTrack(
+        id = it.audioTrackId ?: "default",
+        languageCode = it.audioTrackLocale,
+        displayName = it.audioTrackName,
+        isDefault = it.audioTrackType == "ORIGINAL",
+        formatId = it.toSabrFormatId(),
+      )
+    }
+    val poTokenB64 = "" // 对齐 LibreTube Piped 首请求:不带 poToken(status=2 时才铸)
+    val durationMs = piped.duration * 1000L
+    val raws = videoStreams.map { pipedVideoRaw(it) } + audioStreams.map { pipedAudioRaw(it) }
+    val session = SabrSession.fromSabrData(
+      sabrUrl,
+      poTokenB64,
+      ustreamerCfgB64,
+      // 同 NewPipe 路径:visionOS ClientInfo(LibreTube Piped/NewPipe 通用)。
+      innerTubeClient.visionOsSabrClientInfo(),
+      aFmt,
+      vFmt,
+      userAgent = InnerTubeClient.Client.VISION_OS.userAgent,
+      // 同 NewPipe 路径:完全不带 HTTP cookie/visitor,会话身份全靠 protobuf。
+      cookieHeader = "",
+      visitorData = "",
+      cpn = cpn,
+      videoFormats = videoFormats,
+      audioTracks = sabrAudioTracks,
+    )
+    Log.i(
+      Tag,
+      "Piped SABR session: sabrUrl=${sabrUrl.take(80)}... poToken=0B(aligned-LibreTube-no-poToken) " +
+        "ustreamerCfg=${ustreamerCfgB64.length}B cpn=${cpn ?: "random"} video=itag${vFmt.itag}(${vFmt.height}p) " +
+        "audio=itag${aFmt.itag} videoFormats=${videoFormats.size} dur=${durationMs}ms"
+    )
+    // Piped 暂不取字幕(模型未含;NewPipe 路径有,字幕非关键,留空)。
+    return NewPipeSabrResult(session, raws, durationMs, emptyList())
+  }
+
+  /** Phase 2 取证:从 visionOS reload /player 响应提取的 SABR 数据。 */
+  private data class ReloadSabrData(
+    val sabrUrl: String,
+    val ustreamerCfgB64: String,
+    val raws: List<JsonObject>,
+    val durationMs: Long,
+  )
+
+  /** 从 InnerTube /player 响应提取 SABR 数据(camelCase key,同 WEB diag L161-177)。缺 sabrUrl/ustreamerConfig 返回 null。 */
+  private fun parseSabrData(player: JsonObject): ReloadSabrData? {
+    val streamingData = player.obj("streamingData") ?: return null
+    val sabrUrlRaw = streamingData.stringOrNull("serverAbrStreamingUrl")
+    if (sabrUrlRaw.isNullOrBlank()) return null
+    val ustreamerCfgB64 = player
+      .obj("playerConfig")
+      ?.obj("mediaCommonConfig")
+      ?.obj("mediaUstreamerRequestConfig")
+      ?.stringOrNull("videoPlaybackUstreamerConfig")
+    if (ustreamerCfgB64.isNullOrBlank()) return null
+    val raws = streamingData.array("adaptiveFormats")?.mapNotNull { it as? JsonObject } ?: emptyList()
+    val durationMs = (player.obj("videoDetails")?.stringOrNull("lengthSeconds")?.toLongOrNull() ?: 0L) * 1000L
+    return ReloadSabrData(sabrUrlRaw, ustreamerCfgB64, raws, durationMs)
+  }
+
+  /**
+   * alpha.87:RELOAD 重载闭环——服务端 RELOAD_PLAYER_RESPONSE(part 46)下发 reloadToken 后,
+   * 用 **WEB client + PoTokenWebView 铸的 WEB poToken** 重打 /player([InnerTubeClient.postWebPlayerReload]),
+   * 换 attested sabrUrl + ustreamerConfig,重建 **WEB 一致** SABR session(WEB ClientInfo + WEB UA + WEB poToken)重试。
+   *
+   * 背景定论:
+   *  - alpha.86 用 visionOS 重打(无 attestation)→ 受保护视频返回空 sabrUrl/ustreamerConfig → 死循环。
+   *  - LibreTube 对受保护视频同样在 RELOAD 崩(L583 throw)后落 DASH——证明"对齐 LibreTube poToken"修不了,
+   *    唯一出路是真正消费 RELOAD:换能 attest 的 WEB client 重打。
+   *  - WEB-reload 数据绑 WEB client → SABR StreamerContext.ClientInfo 必须 WEB([sabrClientInfo] clientName=1)、
+   *    UA 必须 WEB、poToken 注入 StreamerContext.field2(对齐 LibreTube status=2 重铸 poToken 重试),否则
+   *    visionOS/WEB 错配 → 再 RELOAD(alpha.80 旧疾)。
+   *
+   * **已接受风险(待真机日志验证)**:WEB /player 回的 sabrUrl 可能带 `n` 参数 → SABR 端点 HTTP 403
+   * (alpha.85/86;n-decrypt 已被 plasma WASM 废)。带 reloadToken 的重打**可能**返回 n-free sabrUrl。
+   * 若 403,SabrClient 打 `fetch rn=$rn HTTP 403`,据此再定方向。
+   *
+   * WEB 失败 / 返回空 → visionOS reload 兜底(对受保护视频大概率也空,但保留作诊断对照)。
+   * 返回 null = 两路 reload 均未回 SABR 数据 → resolve 落常规 NewPipe harvest。
+   */
+  private suspend fun buildSabrSessionFromReloadPlayer(
+    videoId: String,
+    reloadToken: String,
+    poToken: String?,
+    youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+  ): NewPipeSabrResult? {
+    // 1) 铸 WEB poToken(PoTokenWebView)。ensureWebToken:有缓存用缓存,否则现场铸一枚。
+    val webPoToken: String? = runCatching { biliTvPoTokenProvider.ensureWebToken(videoId)?.streamingDataPoToken }
+      .getOrElse {
+        Log.w(Tag, "RELOAD reload: ensureWebToken failed: ${it.message} → visionOS fallback")
+        null
+      }
+    Log.i(Tag, "RELOAD reload: videoId=$videoId webPoToken=${webPoToken?.length ?: 0}B reloadTokenLen=${reloadToken.length}")
+
+    // 2) 优先 WEB attested reload。WEB /player 走 viaWebView 原生浏览器栈 + WEB poToken。
+    var sd: ReloadSabrData? = null
+    var usedWeb = false
+    if (webPoToken != null) {
+      val webPlayer = runCatching { innerTubeClient.postWebPlayerReload(videoId, reloadToken, webPoToken) }
+        .getOrElse {
+          Log.w(Tag, "WEB player reload failed: ${it.message} → visionOS fallback")
+          null
+        }
+      if (webPlayer != null) {
+        sd = parseSabrData(webPlayer)
+        if (sd != null) {
+          usedWeb = true
+          // 诊断:WEB-reload 的 sabrUrl 是否带 n 参数(决定会不会 SABR 端点 403)。
+          val sabrN = queryParam(sd!!.sabrUrl, "n")
+          Log.i(
+            Tag,
+            "WEB reload OK: sabrUrl=YES(${sd!!.sabrUrl.length}B) n-param=${if (sabrN.isNullOrBlank()) "ABSENT(n-free)" else "present(${sabrN.length}B)"} " +
+              "ustreamerCfg=${sd!!.ustreamerCfgB64.length}B raws=${sd!!.raws.size}"
+          )
+        } else {
+          Log.w(Tag, "WEB reload: no serverAbrStreamingUrl/ustreamerConfig → visionOS fallback")
+        }
+      }
+    }
+
+    // 3) WEB 失败/空 → visionOS reload 兜底(诊断对照;对受保护视频大概率也空)。
+    if (sd == null) {
+      val vp = runCatching { innerTubeClient.postVisionOsPlayerReload(videoId, reloadToken) }
+        .getOrElse {
+          Log.w(Tag, "visionOS player reload failed: ${it.message} → fallback")
+          return null
+        }
+      sd = parseSabrData(vp) ?: run {
+        Log.w(Tag, "visionOS reload: no serverAbrStreamingUrl/ustreamerConfig → fallback")
+        return null
+      }
+      Log.i(Tag, "visionOS reload OK(兜底): sabrUrl=${sd!!.sabrUrl.length}B ustreamerCfg=${sd!!.ustreamerCfgB64.length}B raws=${sd!!.raws.size}")
+    }
+
+    // 4) 选轨(同 NewPipe 路径——harvest 选轨与 buildSabrPlaybackInfo 选档一致,避免 itag 错配 RELOAD)。
+    val sabrData = sd!! // 走到这里 sd 必非空(WEB/visionOS 两路均空已 return null)
+    val cpn = queryParam(sabrData.sabrUrl, "cpn")
+    val sabrUrl = stripQueryParam(sabrData.sabrUrl, "cpn")
+    val raws = sabrData.raws
+    val videoRaws = raws.filter { (it.intOrNull("height") ?: 0) > 0 }
+    val audioRaws = raws.filter { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
+    val videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) }
+    val maxHeight = youtubeDefaultQuality.maxHeight
+    val defaultItag = when {
+      maxHeight != null ->
+        videoFormats.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }?.itag
+          ?: videoFormats.minByOrNull { it.height }?.itag
+      else -> videoFormats.maxByOrNull { it.height }?.itag
+    }
+    val firstVideo = defaultItag?.let { target ->
+      videoRaws.firstOrNull { (it.intOrNull("itag") ?: 0) == target }
+    } ?: videoRaws.firstOrNull()
+    Log.i(Tag, "reload harvest: source=${if (usedWeb) "WEB" else "visionOS"} videoFormats=${videoFormats.size} maxHeight=$maxHeight defaultItag=$defaultItag firstVideo=itag${firstVideo?.intOrNull("itag")}(${firstVideo?.intOrNull("height")}p)")
+    // 优先原声轨(xtags 含 acont=original);否则取第一条音频。
+    val firstAudio = audioRaws.firstOrNull { (it.stringOrNull("xtags") ?: "").contains("acont=original") }
+      ?: audioRaws.firstOrNull()
+    if (firstVideo == null || firstAudio == null) {
+      Log.w(Tag, "reload: missing streams (video=${firstVideo != null} audio=${firstAudio != null}) → fallback")
+      return null
+    }
+    val vFmt = rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
+    val aFmt = rawToSabrFormatId(firstAudio, 0)
+
+    // 5) 建 session:WEB attested → 全 WEB 一致;visionOS 兜底 → 沿用 alpha.86 visionOS session(空 poToken)。
+    val webPo = webPoToken // usedWeb=true 仅在 webPoToken!=null 时置位,该分支内 webPo 非空
+    val session = if (usedWeb && webPo != null) {
+      // WEB-reload 数据绑 WEB client → WEB ClientInfo + WEB UA + WEB poToken(注入 StreamerContext.field2)。
+      // 不带 HTTP cookie/visitor(对齐 alpha.79 无 HTTP cookie 靠 protobuf;WEB 若需 visitor 待真机日志验证)。
+      SabrSession.fromSabrData(
+        sabrUrl,
+        webPo,
+        sabrData.ustreamerCfgB64,
+        innerTubeClient.sabrClientInfo(),
+        aFmt,
+        vFmt,
+        userAgent = InnerTubeClient.Client.WEB.userAgent,
+        cookieHeader = "",
+        visitorData = "",
+        cpn = cpn,
+        videoFormats = videoFormats,
+      )
+    } else {
+      // visionOS 兜底:对齐 LibreTube,不带 poToken;ustreamerConfig 绑 visionOS → visionOS ClientInfo + UA。
+      SabrSession.fromSabrData(
+        sabrUrl,
+        "",
+        sabrData.ustreamerCfgB64,
+        innerTubeClient.visionOsSabrClientInfo(),
+        aFmt,
+        vFmt,
+        userAgent = InnerTubeClient.Client.VISION_OS.userAgent,
+        cookieHeader = "",
+        visitorData = "",
+        cpn = cpn,
+        videoFormats = videoFormats,
+      )
+    }
+    Log.i(
+      Tag,
+      "SABR reload session: source=${if (usedWeb) "WEB-attested" else "visionOS"} sabrUrl=YES(${sabrUrl.take(60)}...) " +
+        "poToken=${if (usedWeb && webPo != null) webPo.length else 0}B ustreamerCfg=${sabrData.ustreamerCfgB64.length}B " +
+        "video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} videoFormats=${videoFormats.size} " +
+        "dur=${sabrData.durationMs}ms reloadTokenLen=${reloadToken.length}"
+    )
+    return NewPipeSabrResult(session, raws, sabrData.durationMs, emptyList())
+  }
+
+  /**
+   * alpha.88:RELOAD 闭环兜底——用 NewPipe [StreamInfo.getInfo] 的 **dashMpdUrl**(android streamingData
+   * manifest)直喂 [PlaybackInfo.remoteDashManifestUrl],播放器 [buildDashMediaItem] 拿到非空 remote URL
+   * 即走 DashMediaSource 拉远程 MPD + 分段(ExoPlayer 自管 A/V 轨/SegmentList),≤1080p。对齐 LibreTube
+   * SABR RELOAD 崩后落 `streams.dash`([NewPipeMediaServiceRepository.kt:312] `dash = resp.dashMpdUrl`)。
+   *
+   * **alpha.90:HLS 次选**——Phase 0 真机取证坐实 visionOS getInfo 的 **dashMpdUrl 恒空**(fork getDashMpdUrl
+   * 仅读 android streamingData,android 无 poToken 对受保护视频取不到 manifest),故 alpha.88 DASH 分支实际
+   * 从不触发。同次取证发现 visionOS /player 的 **hlsUrl 非空**(`hls_variant` manifest)——visionOS 是 Apple
+   * 平台,YouTube 给 Apple 平台的 hlsUrl 是 AVPlayer 级原生 HLS 交付(非 web attestation 路径),作 dashMpdUrl
+   * 空时的次选兜底:填 [PlaybackInfo.remoteHlsManifestUrl],播放器走 [HlsMediaSource] 分支(HLS playlist 自带
+   * 多码率 + A/V,无需 init/index range 拼接,可原生 seek)。对齐 LibreTube `setStreamSource` 的 HLS last-resort 分支。
+   *
+   * 优先级:dashMpdUrl 非空 → DASH;否则 hlsUrl 非空 → HLS;否则 null(上层落常规 NewPipe harvest,会 RELOAD
+   * 但已无其它出口)。返回的 PlaybackInfo 仅一条 dummy 视频轨(audioTracks 空——manifest 自带 A/V 轨),
+   * 路由由 [PlaybackInfo.isHlsManifest]/[PlaybackInfo.hasRemoteManifest] 判定,非 dummy 轨字段。
+   */
+  private suspend fun buildDashFallbackFromNewPipe(
+    videoId: String,
+    durationMs: Long,
+    request: PlaybackRequest,
+    youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+  ): PlaybackInfo? {
+    val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
+      .getOrElse {
+        Log.w(Tag, "兜底: NewPipe getInfo failed: ${it.message}")
+        return null
+      }
+    val resolvedDuration = if (durationMs > 0) durationMs else info.duration * 1000L
+    // Phase 2 自合成 DASH(对齐 LibreTube `createDashSource`):NewPipe 流顶层暴露已解密 URL(content)
+    // + initStart/initEnd/indexStart/indexEnd(同一 fork 738c3d4,LibreTube `toPipedStream` 直读)。
+    // 用这些拼 <SegmentBase> 合成 MPD,提为主兜底(优先于 dashMpdUrl[已知恒空]/hlsUrl)。
+    // range 守卫:任一轨 content/initStart/indexStart 为空则不自合成,落回 dashMpdUrl → hlsUrl(零回归)。
+    // 诊断:打印候选流 range,真机确认 visionOS 流是否带 init/index range(验证可行性)。
+    val videoCandidates = info.videoOnlyStreams
+      .filter { !it.content.isNullOrBlank() && it.indexStart > 0 && it.height > 0 }
+    val audioCandidates = info.audioStreams
+      .filter { !it.content.isNullOrBlank() && it.indexStart > 0 }
+    Log.i(Tag, "自合成DASH diag: videoCandidates=${videoCandidates.size} audioCandidates=${audioCandidates.size} (全视频=${info.videoOnlyStreams.size} 全音频=${info.audioStreams.size})")
+    videoCandidates.take(3).forEach { v ->
+      Log.i(Tag, "自合成DASH diag: v itag=${v.itag} ${v.height}p url=${v.content?.length}B init=[${v.initStart}-${v.initEnd}] index=[${v.indexStart}-${v.indexEnd}] codec=${v.codec}")
+    }
+    audioCandidates.take(2).forEach { a ->
+      Log.i(Tag, "自合成DASH diag: a itag=${a.itag} url=${a.content?.length}B init=[${a.initStart}-${a.initEnd}] index=[${a.indexStart}-${a.indexEnd}] codec=${a.codec}")
+    }
+    val synthAudio = audioCandidates.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
+      ?: audioCandidates.firstOrNull { it.audioTrackType != AudioTrackType.DUBBED }
+      ?: audioCandidates.firstOrNull()
+    if (videoCandidates.isNotEmpty() && synthAudio != null) {
+      // alpha.9X:DASH 自合成支持多档清晰度——全部带 range 的视频流各构一条 PlaybackTrack + 一档 quality,
+      // 复用 alpha.81 多 Representation 机制(buildDashManifest 每条 track 生成一个 <Representation>,
+      // 塞进同一 <AdaptationSet>),ExoPlayer 自动选轨/手动选档,与 SABR allVideoTracks 同构。
+      // 每条流各自独立 URL + 独立 init/index range,本就是合法 DASH 多 Representation 结构。
+      val sortedVideos = videoCandidates.sortedByDescending { it.height }
+      // alpha.9X:对齐 LibreTube——清晰度菜单按分辨率去重(每个 height 一档,纯 "${height}p",不带 codec),
+      // codec 由 ExoPlayer 自动选(多 codec 变体保留在 videoTracks)。LibreTube getAvailableResolutions
+      // 从 currentTracks.groups 读 height 用 toSortedSet 去重,故 720p 只有一个选项(VP9/H264 不重复列)。
+      val distinctVideos = sortedVideos.distinctBy { it.height }
+      val qualities = distinctVideos.map { PlaybackQuality(id = it.itag, description = "${it.height}p") }
+      // 选档:preferredQualityId 命中菜单用之(手动切清晰度);否则按默认画质设置(与 SABR defaultItag 同语义)。
+      val maxHeight = youtubeDefaultQuality.maxHeight
+      val defaultVideo = when {
+        maxHeight != null -> distinctVideos.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }
+          ?: distinctVideos.minByOrNull { it.height }
+        else -> distinctVideos.maxByOrNull { it.height }
+      }
+      val selectedVideo = request.preferredQualityId
+        ?.takeIf { pid -> distinctVideos.any { it.itag == pid } }
+        ?.let { pid -> distinctVideos.first { it.itag == pid } }
+        ?: defaultVideo ?: return null
+      val selectedQuality = qualities.firstOrNull { it.id == selectedVideo.itag } ?: qualities.first()
+      fun buildVideoTrack(v: VideoStream): PlaybackTrack = PlaybackTrack(
+        // alpha.9X:多 codec 变体同分辨率时,id 必须唯一(用 itag,对齐 SABR 路径),否则 MPD 里多个
+        // <Representation id="0_0"> 重复 ID → ExoPlayer 切轨时加载错 init 段 → EOFException。
+        id = v.itag,
+        baseUrl = v.content!!, // filter 已保证 content 非空
+        backupUrls = emptyList(),
+        bandwidth = v.bitrate,
+        codecs = v.codec ?: "",
+        width = v.width,
+        height = v.height,
+        mimeType = v.format?.mimeType ?: "video/mp4",
+        segmentBase = PlaybackSegmentBase("${v.initStart}-${v.initEnd}", "${v.indexStart}-${v.indexEnd}"),
+      )
+      val aTrack = PlaybackTrack(
+        id = 0,
+        baseUrl = synthAudio.content!!, // filter 已保证 content 非空
+        backupUrls = emptyList(),
+        bandwidth = synthAudio.bitrate,
+        codecs = synthAudio.codec ?: "",
+        width = 0,
+        height = 0,
+        mimeType = synthAudio.format?.mimeType ?: "audio/mp4",
+        segmentBase = PlaybackSegmentBase("${synthAudio.initStart}-${synthAudio.initEnd}", "${synthAudio.indexStart}-${synthAudio.indexEnd}"),
+      )
+      // 手动选档:回该分辨率全部 codec 变体(ExoPlayer 在该分辨率内自动选 codec,对齐 LibreTube);
+      // 默认/Auto:回全部 → ExoPlayer 自动选轨。
+      val videoTracks = if (request.preferredQualityId != null) {
+        sortedVideos.filter { it.height == selectedVideo.height }.map { buildVideoTrack(it) }
+      } else {
+        sortedVideos.map { buildVideoTrack(it) }
+      }
+      Log.i(Tag, "兜底: 自合成 DASH from NewPipe(video itag${selectedVideo.itag} ${selectedVideo.height}p [${videoTracks.size}/${sortedVideos.size}轨 ${qualities.size}档] + audio itag${synthAudio.itag}) dur=${resolvedDuration}ms → buildDashManifest 合成 MPD DashMediaSource")
+      return PlaybackInfo(
+        bvid = videoId,
+        cid = 0L,
+        title = request.title,
+        durationMs = resolvedDuration,
+        qualities = qualities,
+        selectedQuality = selectedQuality,
+        videoTracks = videoTracks,
+        audioTracks = listOf(aTrack),
+        headers = YoutubePlaybackHeaders,
+      )
+    }
+    Log.i(Tag, "自合成DASH: 无 range 有效流(video=${videoCandidates.isNotEmpty()} audio=${synthAudio != null})→ 落 dashMpdUrl/HLS")
+    val dashMpdUrl = info.dashMpdUrl
+    if (!dashMpdUrl.isNullOrBlank()) {
+      Log.i(Tag, "兜底: dashMpdUrl=${dashMpdUrl.length}B dur=${resolvedDuration}ms → 远程 MPD DashMediaSource")
+      // dummy 视频轨:segmentBase 非 null → isProgressive=false → 路由 DashMediaSource 分支(真实轨由远程 MPD 定义)。
+      val dummyTrack = PlaybackTrack(
+        id = 0,
+        baseUrl = dashMpdUrl,
+        backupUrls = emptyList(),
+        bandwidth = 0,
+        codecs = "video/mp4",
+        width = 0,
+        height = 480,
+        mimeType = "video/mp4",
+        segmentBase = PlaybackSegmentBase("0-0", "0-0"),
+      )
+      val quality = PlaybackQuality(0, "DASH 兜底")
+      return PlaybackInfo(
+        bvid = videoId,
+        cid = 0L,
+        title = request.title,
+        durationMs = resolvedDuration,
+        qualities = listOf(quality),
+        selectedQuality = quality,
+        videoTracks = listOf(dummyTrack),
+        audioTracks = emptyList(),
+        headers = YoutubePlaybackHeaders,
+        remoteDashManifestUrl = dashMpdUrl,
+      )
+    }
+    // alpha.90:dashMpdUrl 空(android 无 manifest)→ 落 visionOS hlsUrl(Apple 平台原生 HLS 交付)。
+    val hlsUrl = info.hlsUrl
+    if (!hlsUrl.isNullOrBlank()) {
+      Log.i(Tag, "兜底: dashMpdUrl 空 → hlsUrl=${hlsUrl.length}B dur=${resolvedDuration}ms → 远程 HLS HlsMediaSource")
+      // dummy 视频轨:路由由 isHlsManifest()(remoteHlsManifestUrl!=null)判定,非轨字段;audioTracks 空(HLS playlist 自带 A/V)。
+      val dummyTrack = PlaybackTrack(
+        id = 0,
+        baseUrl = hlsUrl,
+        backupUrls = emptyList(),
+        bandwidth = 0,
+        codecs = "video/mp4",
+        width = 0,
+        height = 480,
+        mimeType = "video/mp4",
+        segmentBase = PlaybackSegmentBase("0-0", "0-0"),
+      )
+      val quality = PlaybackQuality(0, "HLS 兜底")
+      return PlaybackInfo(
+        bvid = videoId,
+        cid = 0L,
+        title = request.title,
+        durationMs = resolvedDuration,
+        qualities = listOf(quality),
+        selectedQuality = quality,
+        videoTracks = listOf(dummyTrack),
+        audioTracks = emptyList(),
+        headers = YoutubePlaybackHeaders,
+        remoteHlsManifestUrl = hlsUrl,
+      )
+    }
+    Log.w(Tag, "兜底: dashMpdUrl 与 hlsUrl 均空 → 返回 null(上层落常规 NewPipe harvest,会 RELOAD 但已无其它出口)")
+    return null
+  }
+
+  /** raw adaptive JSON → SABR [SabrFormatId](itag/lastModified/xtags 来自 raw 字段,height 显式传)。 */
+  private fun rawToSabrFormatId(raw: JsonObject, height: Int): SabrFormatId = SabrFormatId(
+    raw.intOrNull("itag") ?: 0,
+    raw.longOrNull("lastModified") ?: 0L,
+    raw.stringOrNull("xtags"),
+    height,
+  )
 
   /** NewPipe [VideoStream] → SABR [SabrFormatId](itag/lastModified/xtags 来自 ItagItem,height 来自流)。 */
   private fun VideoStream.toSabrFormatId(): SabrFormatId = SabrFormatId(
@@ -683,6 +1373,14 @@ class YoutubePlaybackResolver(
     itagItem?.lastModified ?: 0L,
     itagItem?.xtags,
     0,
+  )
+
+  /** Piped [PipedStream] → SABR [SabrFormatId](itag/lastModified/xtags 取 PipedStream,height 取流,音频 0)。 */
+  private fun PipedStream.toSabrFormatId(): SabrFormatId = SabrFormatId(
+    itag ?: 0,
+    lastModified ?: 0L,
+    xtags,
+    height ?: 0,
   )
 
   /** 把 NewPipe 视频流包装成 /player adaptive 风格的 JsonObject(供 buildSabrPlaybackInfo 取 codec/height/fps)。 */
@@ -702,6 +1400,25 @@ class YoutubePlaybackResolver(
     put("mimeType", stream.format?.mimeType ?: "")
     put("codec", stream.codec ?: "")
     put("bitrate", stream.bitrate)
+  }
+
+  /** 把 Piped 视频流包装成与 [newPipeVideoRaw] 同形的 JsonObject(供 [buildSabrTrack]/[buildSabrPlaybackInfo] 复用)。 */
+  private fun pipedVideoRaw(stream: PipedStream): JsonObject = buildJsonObject {
+    put("itag", (stream.itag ?: 0).toLong())
+    put("height", stream.height ?: 0)
+    put("width", stream.width ?: 0)
+    put("mimeType", stream.mimeType ?: "")
+    put("codec", stream.codec ?: "")
+    put("bitrate", stream.bitrate ?: 0)
+    put("fps", stream.fps ?: 0)
+  }
+
+  /** 把 Piped 音频流包装成与 [newPipeAudioRaw] 同形的 JsonObject。 */
+  private fun pipedAudioRaw(stream: PipedStream): JsonObject = buildJsonObject {
+    put("itag", (stream.itag ?: 0).toLong())
+    put("mimeType", stream.mimeType ?: "")
+    put("codec", stream.codec ?: "")
+    put("bitrate", stream.bitrate ?: 0)
   }
 
   /**
@@ -748,7 +1465,13 @@ class YoutubePlaybackResolver(
     val qualities = videoFmts.sortedByDescending { it.height }.map { fmt ->
       val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == fmt.itag }
       val h = raw?.intOrNull("height") ?: fmt.height
-      val codec = shortCodec(extractCodecs(raw?.stringOrNull("mimeType") ?: ""))
+      // alpha.78:codec 兜底读 "codec" key(对齐 buildSabrTrack)——NewPipe 路径 mimeType 是纯
+      // "video/mp4" 不含 codecs=,但 newPipeVideoRaw 已把 stream.codec 写进 "codec" key;不兜底则
+      // 新建会话的画质菜单丢 codec(显示裸 "1440p"),复用会话(WEB raws 带 codecs=)却显示 "1440p VP9"。
+      val codec = shortCodec(
+        extractCodecs(raw?.stringOrNull("mimeType") ?: "")
+          .ifEmpty { raw?.stringOrNull("codec").orEmpty() }
+      )
       PlaybackQuality(
         id = fmt.itag,
         description = (if (h > 0) "${h}p" else "itag ${fmt.itag}") + (if (codec.isNotEmpty()) " $codec" else ""),
@@ -770,12 +1493,26 @@ class YoutubePlaybackResolver(
       ?.takeIf { pid -> videoFmts.any { it.itag == pid } }
       ?: defaultItag
     val selectedQuality = qualities.firstOrNull { it.id == selectedItag } ?: qualities.first()
-    val vRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == selectedItag }
-    val videoTrack = buildSabrTrack(selectedItag, vRaw, "video", sid, videoId)
+    // alpha.81(复刻 LibreTube):manifest 塞全部视频轨,由 ExoPlayer 选轨(默认选最高 bitrate,
+    // 绕开 itag313 RELOAD)。videoTracks 不再只建选中 itag 一条,而是全部 itag 各一条。
+    val allVideoTracks = videoFmts.map { fmt ->
+      val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == fmt.itag }
+      buildSabrTrack(fmt.itag, raw, "video", sid, videoId)
+    }
+    // alpha.9X(恢复清晰度选择):手动选档(preferredQualityId != null)时 videoTracks 只建选中 itag 单条,
+    // ExoPlayer 只播该档(清晰度真正生效)。否则(默认/Auto)保持 alpha.81 全部轨 → ExoPlayer 自动选最高 bitrate。
+    // 手动选 4K(itag313)→ SABR 单轨 RELOAD → 兜底提前落 DASH 出 4K;选 ≤1080p → SABR 直接播该档(避开 RELOAD)。
+    val videoTracks = if (request.preferredQualityId != null) {
+      val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == selectedItag }
+      listOf(buildSabrTrack(selectedItag, raw, "video", sid, videoId))
+    } else {
+      allVideoTracks
+    }
     Log.i(
       Tag,
-      "SABR PlaybackInfo: sid=$sid qualities=${qualities.size} selected=itag$selectedItag(${videoTrack.height}p ${videoTrack.codecs}) " +
-        "audio=itag$aItag(${audioTrack.codecs}) duration=${durationMs}ms → sabr:// DASH"
+      "SABR PlaybackInfo: sid=$sid sessionVideo=itag${sabrSession.videoFormatId.itag}(${sabrSession.videoFormatId.height}p) " +
+        "qualities=${qualities.size} selected=itag$selectedItag(${selectedQuality.description}) " +
+        "videoTracks=${videoTracks.size}(all=${allVideoTracks.size}) audio=itag$aItag(${audioTrack.codecs}) duration=${durationMs}ms → sabr:// DASH"
     )
     return PlaybackInfo(
       bvid = videoId,
@@ -784,7 +1521,7 @@ class YoutubePlaybackResolver(
       durationMs = durationMs,
       qualities = qualities,
       selectedQuality = selectedQuality,
-      videoTracks = listOf(videoTrack),
+      videoTracks = videoTracks,
       audioTracks = listOf(audioTrack),
       headers = YoutubePlaybackHeaders,
       availableAudioTracks = availableAudioTracks,
@@ -1057,6 +1794,9 @@ class YoutubePlaybackResolver(
 
   private companion object {
     const val Tag = "YtResolver"
+
+    /** Piped 实例默认值(用户未填 pipedInstanceUrl 时用)。对齐 LibreTube 默认 kavin.rocks 公共实例。 */
+    const val DEFAULT_PIPED_INSTANCE = "https://pipedapi.kavin.rocks"
 
     /** googlevideo 直链无需 B 站 Cookie；仅带 youtube Referer/Origin。 */
     val YoutubePlaybackHeaders = BiliPlaybackHeaders(

@@ -1852,6 +1852,7 @@ private fun PlayerSettingsPanel(
     ) {
       when (activePanel) {
         PlayerPanel.Main -> {
+          // alpha.9X(恢复清晰度选择):Main 面板 index 0 加回「清晰度」项 → Quality 面板选档。
           item(key = "quality") {
             SettingsRow(
               iconRes = R.drawable.ic_player_hd,

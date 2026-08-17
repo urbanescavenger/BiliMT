@@ -2,10 +2,50 @@
 
 > 本文档是 BiliMT `core/youtube/` 实现 YouTube 高清(SABR)播放的**top-down 工程参考**,把「解析方案 / 实现细节 / 调试问题 / 样例日志 / 参考资料」汇于一处。按时间线堆叠的逐 alpha 调试记录见 [youtube-hd-playback.md](youtube-hd-playback.md) §6.7(row 1-53);本文是那条链的**结论提炼**。
 >
-- **状态(2026-08-08)**:SABR 协议层 + Media3 接线 + 多清晰度已跑通(alpha.17-37,跨 21 个 alpha);可出帧出音、可切清晰度,但 **60s 断崖仍未根除**。alpha.30 premature-EOF 三层修(cookie 回传 + 无-media→backoff 重试 + 对方 itag 标满缓冲)+ alpha.31 SABR 上下文握手(sabrContexts 回传)+ alpha.36/37 playerTimeMs 修(startMs 误读致 5s 断崖→回退 cumulative)均**未解 60s**。**alpha.37 真机重新排查(row 61)**证伪旧线索:① contexts=0/0 非病根——`ump_part_id.proto` 注释 `SABR_CONTEXT_UPDATE(57) usually used for ads`,普通播放服务端从不发 57,成功段也是 0/0;② part 47/52/53(PLAYBACK_START_POLICY/REQUEST_IDENTIFIER/REQUEST_CANCELLATION_POLICY)非病根——FreeTube switch 也无此三 case 却能跑 1080p+;③ cookie-clobber(§8 风险)大幅削弱——FreeTube 也是单共享 `sabrStreamState`(L644)共享一个 cookie 能跑。真因未锁,**alpha.38 上纯诊断叠层**(解全 NextRequestPolicy readahead 字段 + 逐流逐段 cookieHash + 发出 sentCookieHash,见 row 62)拿证据再定根修。
+- **状态(2026-08-16,alpha.84)**:落地 alpha.83 更正的修复方案——**接 Piped 后端 opt-in** 修 RELOAD 死循环。新增 `core/youtube/piped/PipedClient`+`PipedModels`(`GET {instanceUrl}/streams/{videoId}`,对齐 LibreTube 默认 Piped 路径,拿已 attested 的 WEB-bound `serverAbrStreamingUrl`+`videoPlaybackUstreamerConfig`);`YoutubePlaybackResolver.resolve()` 顶部加 Piped opt-in 分支(失败自动回退 NewPipe),`buildSabrSessionFromPiped` 把 PipedStreams 转成与 newPipe raws 同形 JsonObject 复用 `buildSabrPlaybackInfo`。设置项 `youtubeUsePiped`/`pipedInstanceUrl`/`sabrForceSessionVideoItag` 入 DataStore + SettingsScreen 三行 UI(默认全关)。`sabrForceSessionVideoItag` 诊断:强制视频轨用 `session.videoFormatId` 跳过 selectFormat,证伪「某 itag 是 RELOAD 根因」红绯鱼(Piped 路径默认开)。**真机待测**:默认全关行为同 alpha.83;手动开 `youtubeUsePiped` 后预期 jNl6YkkzKxw(需 attestation)能播。
+- **历史状态(2026-08-16,alpha.82,后更正)**:**itag248 归因已推翻**——alpha.82/83 一度认为「ExoPlayer 请求 itag248(Opus 音频)致 RELOAD」,但 alpha.83 真机 `videoFormats dump` 实际打印 `248=vp9`:itag248 是 **720p VP9 视频**(`video/webm`),**不是** Opus 音频。故「NewPipe 把音频 itag248 误分类进 videoOnlyStreams」「按 mimeType/codec 过滤音频 itag」整套归因是误读,RELOAD 与 itag 选择**无关**。**RELOAD 真因**(已定论,见 [youtube-hd-playback.md](youtube-hd-playback.md) §6.7 alpha.83 更正):我们走 NewPipe visionOS 客户端拿到**未 attested** 的 ustreamerConfig,对需要 attestation 的视频(jNl6YkkzKxw)服务端直接 RELOAD(不可续命,到不了 status=2);LibreTube **默认走 Piped 后端**(`/streams/{id}` 自带 poToken → 回已 attested 的 WEB-bound ustreamerConfig)故能播,差异**纯粹在 ustreamerConfig 来源**,与 itag 分类、visionOS ClientInfo 均无关。修复方向:接 Piped 后端(对齐 LibreTube 默认路径),而非继续在 NewPipe/itag 上打转。alpha.82 的 mimeType 分组 + isVideo 守卫保留(无害)。清晰度选择功能暂时去掉(ExoPlayer 自动选轨)。
+- **历史状态(2026-08-16,alpha.81)**:SABR 复刻 LibreTube 多 Representation manifest——`buildSabrPlaybackInfo` 建全部视频轨、`SabrManifest.fromSession` 建多视频 Representation,由 ExoPlayer 默认选轨选最高 bitrate 档(绕开 itag313 2160p 25fps RELOAD 死循环)。itag313 vs itag315 根因定论 + 修复记录见 [youtube-hd-playback.md](youtube-hd-playback.md) §6.7 alpha.81 补。清晰度选择功能暂时去掉(ExoPlayer 自动选轨)。
+- **历史状态(2026-08-08)**:SABR 协议层 + Media3 接线 + 多清晰度已跑通(alpha.17-37,跨 21 个 alpha);可出帧出音、可切清晰度,但 **60s 断崖仍未根除**。alpha.30 premature-EOF 三层修(cookie 回传 + 无-media→backoff 重试 + 对方 itag 标满缓冲)+ alpha.31 SABR 上下文握手(sabrContexts 回传)+ alpha.36/37 playerTimeMs 修(startMs 误读致 5s 断崖→回退 cumulative)均**未解 60s**。**alpha.37 真机重新排查(row 61)**证伪旧线索:① contexts=0/0 非病根——`ump_part_id.proto` 注释 `SABR_CONTEXT_UPDATE(57) usually used for ads`,普通播放服务端从不发 57,成功段也是 0/0;② part 47/52/53(PLAYBACK_START_POLICY/REQUEST_IDENTIFIER/REQUEST_CANCELLATION_POLICY)非病根——FreeTube switch 也无此三 case 却能跑 1080p+;③ cookie-clobber(§8 风险)大幅削弱——FreeTube 也是单共享 `sabrStreamState`(L644)共享一个 cookie 能跑。真因未锁,**alpha.38 上纯诊断叠层**(解全 NextRequestPolicy readahead 字段 + 逐流逐段 cookieHash + 发出 sentCookieHash,见 row 62)拿证据再定根修。
 - **参考实现**:FreeTube / FreeTubeAndroid(MarmadileManteater,MIT),youtubei.js(LuanRT),googlevideo npm(LuanRT,MIT,proto/UMP 协议源),bgutils-js(LuanRT,MIT)。
 
 ---
+
+## 目录
+
+- [1. 一句话方案](#1-一句话方案)
+- [2. 总体架构:videoId → 画面](#2-总体架构videoid--画面)
+- [3. 两个阻断点与突破路径](#3-两个阻断点与突破路径)
+  - [3.1 阻断点 A:PO token(BotGuard minter)](#31-阻断点-apo-tokenbotguard-minter)
+  - [3.2 阻断点 B:n-decrypt(plasma WASM)](#32-阻断点-bn-decryptplasma-wasm)
+- [4. SABR 协议方案](#4-sabr-协议方案)
+  - [4.1 数据三要素(全从 /player 响应取,alpha.15/16 真机坐实 present)](#41-数据三要素全从-player-响应取alpha1516-真机坐实-present)
+  - [4.2 poToken 是会话级,不绑 itag(alpha.29 调研结论)](#42-potoken-是会话级不绑-itagalpha29-调研结论)
+  - [4.3 请求/响应协议(对齐 googlevideo npm)](#43-请求响应协议对齐-googlevideo-npm)
+- [5. 实现细节(文件级)](#5-实现细节文件级)
+  - [5.1 文件清单](#51-文件清单)
+  - [5.2 关键代码契约(media3 1.10)](#52-关键代码契约media3-110)
+  - [5.3 SABR 段序列与 progressive 接线](#53-sabr-段序列与-progressive-接线)
+  - [5.4 多清晰度(alpha.29)](#54-多清晰度alpha29)
+- [6. 调试遇到的问题(按主题,非时间线)](#6-调试遇到的问题按主题非时间线)
+  - [6.1 BotGuard minter 不产(alpha.1-19,跨 19 个 alpha)](#61-botguard-minter-不产alpha1-19跨-19-个-alpha)
+  - [6.2 token 密码学无效(alpha.21-13)](#62-token-密码学无效alpha21-13)
+  - [6.3 n-decrypt 经典正则方案失效(plasma WASM)— alpha.32 URL 类方式已修](#63-n-decrypt-经典正则方案失效plasma-wasm-alpha32-url-类方式已修)
+  - [6.4 WebView harvest 采集器逐层修(alpha.20-25)](#64-webview-harvest-采集器逐层修alpha20-25)
+  - [6.5 premature-EOF 黑屏(alpha.27-28,问题;alpha.30 已实现修复,待真机验证)](#65-premature-eof-黑屏alpha27-28问题alpha30-已实现修复待真机验证)
+  - [6.6 字段名 camelCase 假阴性(alpha.13-14)](#66-字段名-camelcase-假阴性alpha13-14)
+  - [6.7 UMP varint 非标准 protobuf](#67-ump-varint-非标准-protobuf)
+- [7. 样例日志(真机 alpha.28,videoId Hmwo-47lSw8,56 分钟,itag 399 av01 1080p + 251 opus)](#7-样例日志真机-alpha28videoid-hmwo-47lsw856-分钟itag-399-av01-1080p--251-opus)
+  - [7.1 正常段推进(playerTimeMs 前移,证 alpha.28 协议层修生效)](#71-正常段推进playertimems-前移证-alpha28-协议层修生效)
+  - [7.2 premature-EOF 触发点(audio seq7 无 media)](#72-premature-eof-触发点audio-seq7-无-media)
+  - [7.3 video 被 audio EOF 连锁打断](#73-video-被-audio-eof-连锁打断)
+  - [7.4 SABR 驱动成功(alpha.26,自构 body)](#74-sabr-驱动成功alpha26自构-body)
+  - [7.5 完整 SABR 媒体响应(alpha.25,保 cpn)](#75-完整-sabr-媒体响应alpha25保-cpn)
+- [8. alpha.30 premature-EOF 修复方案(已实现,但 alpha.37 真机证 60s 断崖仍在——见 row 61)](#8-alpha30-premature-eof-修复方案已实现但-alpha37-真机证-60s-断崖仍在见-row-61)
+- [9. 关键参考资料](#9-关键参考资料)
+  - [9.1 参考实现仓库](#91-参考实现仓库)
+  - [9.2 关键源码 URL(raw.githubusercontent.com)](#92-关键源码-urlrawgithubusercontentcom)
+  - [9.3 FreeTube PR](#93-freetube-pr)
+  - [9.4 内部文档](#94-内部文档)
 
 ## 1. 一句话方案
 

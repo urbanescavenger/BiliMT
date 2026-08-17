@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.media3.common.util.UnstableApi
@@ -49,7 +50,15 @@ class PlaybackService : Service() {
         return START_NOT_STICKY
       }
     }
-    startForeground(NOTIF_ID, buildNotification())
+    // Android 14+ 禁止后台 startForeground,加载协商期用户切走 App 后到达此处会抛
+    // ForegroundServiceStartNotAllowedException。catch 后优雅停止,不崩溃。
+    try {
+      startForeground(NOTIF_ID, buildNotification())
+    } catch (e: RuntimeException) {
+      Log.w("PlaybackService", "startForeground failed: ${e.message}, stopping")
+      stopSelf()
+      return START_NOT_STICKY
+    }
     return START_NOT_STICKY
   }
 

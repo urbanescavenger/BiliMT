@@ -3,6 +3,7 @@ package com.kirin.mt.core.youtube
 import android.util.Base64
 import android.util.Log
 import java.io.ByteArrayOutputStream
+import java.security.SecureRandom
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -68,7 +69,9 @@ class InnerTubeClient(
     viaWebView: Boolean = false,
   ): JsonObject = withContext(Dispatchers.IO) {
     // 先拉真实 visitorData（WEB /player 用合成 visitorData 会被拦，见 ensureRealSessionData）。
-    ensureRealSessionData()
+    // 仅 /player 走 WebView 时强制浏览器会话引导；feed 的 /browse、/search 等走快路径，
+    // 避免冷启动 WebView 引导吃掉 feed 4s 预算（真机 alpha.94 feed 全超时根因）。
+    ensureRealSessionData(requireBrowserSession = viaWebView)
     val body = buildJsonObject {
       // 业务字段在前，context 在后（youtubei.js 的 ...payload 后接 context）
       payload.forEach { (key, value) -> put(key, value) }
@@ -155,6 +158,9 @@ class InnerTubeClient(
         .header("X-Goog-API-Format-Version", YoutubeConstants.AndroidGoogApiFormatVersion)
         .header("X-Youtube-Client-Version", YoutubeConstants.AndroidClientVersion)
         .header("X-Youtube-Client-Name", "30")
+      Client.VISION_OS -> requestBuilder
+        .header("X-Youtube-Client-Version", "1.02")
+        .header("X-Youtube-Client-Name", "95")
     }
 
     httpClient.newCall(requestBuilder.build()).execute().use { response ->
@@ -169,6 +175,129 @@ class InnerTubeClient(
       runCatching { json.parseToJsonElement(text).jsonObject }
         .getOrElse { throw YoutubeApiException(response.code, text, "InnerTube $endpoint returned invalid JSON") }
     }
+  }
+
+  /**
+   * Phase 2 取证:用 visionOS native client 重打 /player,**原样回传 reloadToken** 进
+   * `playbackContext.reloadPlaybackContext.reloadPlaybackParams.token`,换新
+   * `serverAbrStreamingUrl + videoPlaybackUstreamerConfig`(RELOAD 官方处理,对齐 FreeTube 消费方)。
+   *
+   * 走 GAPIS base + visionOS client(对齐 NewPipe getVisionOsPlayerResponse);body 镜像 NewPipe
+   * `prepareJsonBuilder`+`addVideoIdCpnAndOkChecks`,外加 reloadPlaybackContext;**无** contentPlaybackContext、
+   * 无 PO token(visionOS native 客户端不带)。OkHttp 直连(不走 WebView)。
+   *
+   * @return 响应根 JsonObject(调用方用 parseSabrData 读 serverAbrStreamingUrl/ustreamerConfig)。
+   */
+  suspend fun postVisionOsPlayerReload(videoId: String, reloadToken: String): JsonObject = withContext(Dispatchers.IO) {
+    ensureRealSessionData(requireBrowserSession = true)
+    val cpn = randomCpn16()
+    val body = buildJsonObject {
+      put("videoId", videoId)
+      put("cpn", cpn)
+      put("contentCheckOk", true)
+      put("racyCheckOk", true)
+      put(
+        "playbackContext",
+        buildJsonObject {
+          put(
+            "reloadPlaybackContext",
+            buildJsonObject {
+              put(
+                "reloadPlaybackParams",
+                buildJsonObject { put("token", reloadToken) },
+              )
+            },
+          )
+        },
+      )
+      put("context", buildContext(client = Client.VISION_OS))
+    }
+    Log.i(
+      Tag,
+      "postVisionOsPlayerReload videoId=$videoId reloadTokenLen=${reloadToken.length} cpn=$cpn bodyLen=${body.toString().length}B"
+    )
+    val url = "${YoutubeConstants.InnerTubeGapisBase}/${YoutubeConstants.ApiVersion}/player" +
+      "?key=${YoutubeConstants.ApiKey}&prettyPrint=false&alt=json&id=$videoId"
+    val request = Request.Builder()
+      .url(url)
+      .post(body.toString().toRequestBody(JsonMediaType))
+      .header("Content-Type", "application/json")
+      .header("User-Agent", Client.VISION_OS.userAgent)
+      .header("X-Goog-Visitor-Id", currentVisitorData())
+      .build()
+    httpClient.newCall(request).execute().use { response ->
+      val text = response.body?.string().orEmpty()
+      if (!response.isSuccessful) {
+        throw YoutubeApiException(
+          statusCode = response.code,
+          responseBody = text,
+          message = "visionOS player reload failed with status ${response.code}",
+        )
+      }
+      runCatching { json.parseToJsonElement(text).jsonObject }
+        .getOrElse { throw YoutubeApiException(response.code, text, "visionOS player reload returned invalid JSON") }
+    }
+  }
+
+  /**
+   * alpha.87:RELOAD 重载闭环——用 **WEB client + PoTokenWebView 铸的 WEB poToken** 重打 /player,
+   * 把服务端 [RELOAD_PLAYER_RESPONSE] 下发的 [reloadToken] 原样回传进
+   * `playbackContext.reloadPlaybackContext.reloadPlaybackParams.token`,换 attested
+   * serverAbrStreamingUrl + videoPlaybackUstreamerConfig。
+   *
+   * 区别于 [postVisionOsPlayerReload](visionOS 无 attestation,对受保护视频返回空 sabrUrl/ustreamerConfig):
+   * WEB client 走 [viaWebView] 原生浏览器网络栈 + 带 WEB poToken(`serviceIntegrityDimensions`),
+   * YouTube 认它是真浏览器会话 → 下发 attested SABR 数据。
+   *
+   * WEB-reload 的 sabrUrl/ustreamerConfig **绑 WEB client** → 回传给 SABR 的 session 须用
+   * [sabrClientInfo](WEB ClientInfo, clientName=1)+ [Client.WEB] 的 UA + 该 WEB poToken
+   * (注入 StreamerContext.field2),否则 visionOS/WEB 错配 → 再 RELOAD(alpha.80 旧疾)。
+   *
+   * **已知风险(用户已接受,待真机日志验证)**:WEB /player 回的 sabrUrl 可能带 `n` 参数 →
+   * SABR 端点 HTTP 403(alpha.85/86 旧疾;我们的 n-decrypt 已被 plasma WASM 废掉)。
+   * 带 reloadToken 的重打**可能**返回 n-free sabrUrl,但不确定——若 403,SabrClient 会打
+   * `fetch rn=$rn HTTP 403` 日志,据此再定方向(n-decrypt 或转 DASH 回退)。
+   *
+   * @param videoId      目标视频。
+   * @param reloadToken  RELOAD_PLAYER_RESPONSE part 46 dump 解出的服务端 reload 凭证。
+   * @param webPoToken   PoTokenWebView 铸的 WEB streamingDataPoToken(非空;空则不应调本方法)。
+   * @return /player 响应根 JsonObject。
+   */
+  suspend fun postWebPlayerReload(
+    videoId: String,
+    reloadToken: String,
+    webPoToken: String,
+  ): JsonObject {
+    ensureRealSessionData(requireBrowserSession = true)
+    val cpn = randomCpn16()
+    val payload = buildJsonObject {
+      put("videoId", videoId)
+      put("cpn", cpn)
+      put("contentCheckOk", true)
+      put("racyCheckOk", true)
+      // RELOAD 官方处理:把服务端 reloadToken 回传进 reloadPlaybackContext.reloadPlaybackParams.token
+      // (对齐 FreeTube 消费方;proto reload_player_response.proto:ReloadPlaybackParams.token=field1)。
+      put("playbackContext", buildJsonObject {
+        put("reloadPlaybackContext", buildJsonObject {
+          put("reloadPlaybackParams", buildJsonObject { put("token", reloadToken) })
+        })
+      })
+    }
+    Log.i(
+      Tag,
+      "postWebPlayerReload videoId=$videoId reloadTokenLen=${reloadToken.length} webPoTokenLen=${webPoToken.length} cpn=$cpn"
+    )
+    // 复用 postJson 的 WEB viaWebView + 顶层 serviceIntegrityDimensions.poToken + WEB headers +
+    // visitor/cookie 全套逻辑(见 postJson L79-145)。endpoint 用标准 InnerTubeBase(/player,
+    // 非 GAPIS——visionOS reload 用 GAPIS 是 visionOS 专用,WEB /player 走标准 base)。
+    return postJson("/player", payload, client = Client.WEB, poToken = webPoToken, viaWebView = true)
+  }
+
+  /** 16 字节随机 → base64url 无 padding(对齐 youtubei.js 16 位 cpn / SabrClient.randomCpn)。 */
+  private fun randomCpn16(): String {
+    val bytes = ByteArray(16)
+    SecureRandom().nextBytes(bytes)
+    return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
   }
 
   /**
@@ -208,7 +337,7 @@ class InnerTubeClient(
    */
   suspend fun fetchBotGuardChallenge(): BotGuardChallenge? = withContext(Dispatchers.IO) {
     // 先拉真实 visitorData，保证铸 token 与 /player 用同一真实 visitorData（token 绑定前提）。
-    ensureRealSessionData()
+    ensureRealSessionData(requireBrowserSession = true)
     val ctx = buildContext(Client.WEB)
     val ctxClient = ctx.obj("client")
     Log.i(
@@ -278,7 +407,9 @@ class InnerTubeClient(
     WEB,
     WEB_EMBEDDED,
     ANDROID,
-    TVHTML5;
+    TVHTML5,
+    // Phase 2 取证:visionOS native 客户端(NewPipe SABR getInfo 用的 client,对齐 ofVisionOsClient)。
+    VISION_OS;
 
     val userAgent: String
       get() = when (this) {
@@ -287,6 +418,8 @@ class InnerTubeClient(
         ANDROID -> YoutubeConstants.AndroidUserAgent
         // TVHTML5 用 Cobalt TV UA(对齐 YouTube 官方 TV 端,试验)。
         TVHTML5 -> YoutubeConstants.TvHtml5UserAgent
+        // visionOS native UA(对齐 NewPipe getVisionOsUserAgent())。
+        VISION_OS -> "com.google.visionos.youtube/1.02(RealityDevice14,1; U; CPU visionOS 25_6_0 like Mac OS X; ${YoutubeContentLocale.gl})"
       }
   }
 
@@ -362,6 +495,21 @@ class InnerTubeClient(
               put("utcOffsetMinutes", 0)
               put("timeZone", realSessionData?.timeZone ?: "Asia/Shanghai")
             }
+            // Phase 2 取证:visionOS native client(对齐 NewPipe ofVisionOsClient)。
+            // 无浏览器指纹/mainAppWebInfo/thirdParty——native 客户端不带这些。
+            Client.VISION_OS -> {
+              put("clientName", "VISIONOS")
+              put("clientVersion", "1.02")
+              put("hl", YoutubeContentLocale.hl)
+              put("gl", YoutubeContentLocale.gl)
+              put("platform", "MOBILE")
+              put("clientFormFactor", "UNKNOWN_FORM_FACTOR")
+              put("clientScreen", "WATCH")
+              put("deviceMake", "Apple")
+              put("deviceModel", "RealityDevice14,1")
+              put("osName", "visionOS")
+              put("osVersion", "25.6.0.23O471")
+            }
           }
           put("visitorData", currentVisitorData())
         },
@@ -401,12 +549,14 @@ class InnerTubeClient(
       Client.WEB_EMBEDDED -> YoutubeConstants.WebEmbeddedClientNameId
       Client.ANDROID -> "30"
       Client.TVHTML5 -> YoutubeConstants.TvHtml5ClientNameId
+      Client.VISION_OS -> "95"
     }
     val clientVersion = when (client) {
       Client.WEB -> currentClientVersion()
       Client.WEB_EMBEDDED -> YoutubeConstants.WebEmbeddedClientVersion
       Client.ANDROID -> YoutubeConstants.AndroidClientVersion
       Client.TVHTML5 -> YoutubeConstants.TvHtml5ClientVersion
+      Client.VISION_OS -> "1.02"
     }
     val headers = mutableMapOf(
       "Content-Type" to "application/json",
@@ -502,7 +652,17 @@ class InnerTubeClient(
    * `https://www.youtube.com/sw.js_data` 取真实 visitorData + 当前 client version。
    * 失败回退合成 visitorData（不阻塞主路径）。
    */
-  private suspend fun ensureRealSessionData() {
+  /**
+   * 确保已取到真实 visitorData + 会话 cookie。
+   *
+   * @param requireBrowserSession 是否强制等待真实浏览器会话 WebView 引导（[YoutubeBrowserSession.ensureLoaded]）。
+   *   只有 /player（铸 PO token / 走 WebView 网络栈）需要它——对齐 FreeTubeAndroid 主 WebView 才能拿到
+   *   配对 visitorData + cookie。feed 的 /browse、/search 等只取 visitorData 即可，走快的 sw.js_data 就够，
+   *   不要被 WebView 冷启动引导（alpha.89 回归时曾烧 2×15s 死循环）吃掉 feed 的 4s 预算（真机 alpha.94 冷启动
+   *   feed 全超时的根因：首请求串行等 ensureLoaded ~1.3s + sw.js_data + readCookies，4 频道堵一个 sessionMutex）。
+   *   非强制时只顺带读已热的浏览器 visitor（readVisitorData 非阻塞，未加载返回 null → 回退 sw.js_data）。
+   */
+  private suspend fun ensureRealSessionData(requireBrowserSession: Boolean) {
     // 双检锁：铸 token(BotGuard 线程)与 /player 并发调用时，保证只 fetch 一次，
     // 否则各自 fetch 到不同 visitorData → token 绑定 A、/player 用 B → token 无效
     // → "The page needs to be reloaded"(alpha.25 实测)。
@@ -512,24 +672,44 @@ class InnerTubeClient(
       // 方案 A：优先用真实浏览器会话的 visitorData + cookie（对齐 FreeTubeAndroid 主 WebView）。
       // 先确保真实 YouTube 页面加载，读它的 VISITOR_INFO1_LIVE cookie 作 visitorData（cookie 值 ==
       // visitorData proto，§6.7 row 31 确认）。失败回退 sw.js_data 的 visitorData。
+      // 非 /player 请求不强制引导（快路径），只读已热的浏览器 visitor（无则回退 sw.js_data）。
       val browserVisitor = browserSession?.let {
-        runCatching { it.ensureLoaded() }.getOrNull()
+        if (requireBrowserSession) {
+          runCatching { it.ensureLoaded() }.getOrNull()
+        }
         it.readVisitorData()
       }
       val data = runCatching { fetchRealSessionData() }.getOrNull()
-      if (data != null) {
-        val effectiveVisitor = browserVisitor ?: data.visitorData
+      // alpha.94:sw.js_data 失败时不再丢弃 browserVisitor——用真实浏览器会话的 visitorData 兜底缓存。
+      // 否则 realSessionData 恒空 → 每次 InnerTube 请求都重跑慢的 ensureLoaded(WebView 引导,alpha.89
+      // isOnYoutube 误杀 m.youtube.com 时烧 2×15s)+ 用合成 visitorData 打 /browse 被限流(feed 4s 预算
+      // 内起不来)。浏览器 visitor 与 sw.js_data 是同一 YouTube 会话(同 cookie 域),可安全作 visitorData。
+      val effectiveVisitor = browserVisitor ?: data?.visitorData
+      if (effectiveVisitor != null) {
         val browserCookies = browserSession?.readCookies()
-        val effectiveCookies = if (browserCookies.isNullOrBlank()) data.sessionCookies else browserCookies
-        realSessionData = data.copy(visitorData = effectiveVisitor, sessionCookies = effectiveCookies)
+        val effectiveCookies = if (browserCookies.isNullOrBlank()) data?.sessionCookies else browserCookies
+        realSessionData = RealSessionData(
+          visitorData = effectiveVisitor,
+          clientVersion = data?.clientVersion ?: YoutubeConstants.ClientVersion,
+          osName = data?.osName,
+          osVersion = data?.osVersion,
+          browserName = data?.browserName,
+          browserVersion = data?.browserVersion,
+          deviceMake = data?.deviceMake,
+          deviceModel = data?.deviceModel,
+          timeZone = data?.timeZone,
+          deviceExperimentId = data?.deviceExperimentId,
+          rolloutToken = data?.rolloutToken,
+          sessionCookies = effectiveCookies,
+        )
         visitorData = effectiveVisitor
         Log.i(
           Tag,
           "real session data: visitorData=${effectiveVisitor.take(24)}... " +
-            "(browser=${browserVisitor != null}) clientVersion=${data.clientVersion}"
+            "(browser=${browserVisitor != null} swData=${data != null}) clientVersion=${realSessionData?.clientVersion}"
         )
       } else {
-        Log.w(Tag, "sw.js_data fetch failed; fallback to synthetic visitorData")
+        Log.w(Tag, "session data fetch failed (sw.js_data + browser) → synthetic visitorData")
       }
     }
   }

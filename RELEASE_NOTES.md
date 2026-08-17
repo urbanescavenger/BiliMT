@@ -1,5 +1,367 @@
 # BiliMT 版本发布说明
 
+## 目录
+
+- [v3.0.2-alpha.32](#v302-alpha32)
+- [v3.0.2-alpha.31](#v302-alpha31)
+- [v3.0.2-alpha.30](#v302-alpha30)
+- [v3.0.2-alpha.29](#v302-alpha29)
+- [v3.0.2-alpha.26](#v302-alpha26)
+- [v3.0.2-alpha.25](#v302-alpha25)
+- [v3.0.2-alpha.10](#v302-alpha10)
+- [v3.0.2-alpha.9](#v302-alpha9)
+- [v3.0.2-alpha.8](#v302-alpha8)
+- [v3.0.2-alpha.7](#v302-alpha7)
+- [v3.0.2-alpha.6](#v302-alpha6)
+- [v3.0.2-alpha.5](#v302-alpha5)
+- [v3.0.2-alpha.4](#v302-alpha4)
+- [v3.0.2-alpha.3](#v302-alpha3)
+- [v3.0.2-alpha.2](#v302-alpha2)
+- [v3.0.1](#v301)
+- [v3.0.1-alpha.33](#v301-alpha33)
+- [v3.0.1-alpha.32](#v301-alpha32)
+- [v3.0.1-alpha.31](#v301-alpha31)
+- [v3.0.1-alpha.30](#v301-alpha30)
+- [v3.0.1-alpha.29](#v301-alpha29)
+- [v3.0.1-alpha.28](#v301-alpha28)
+- [v3.0.1-alpha.27](#v301-alpha27)
+- [v3.0.1-alpha.26](#v301-alpha26)
+- [v3.0.1-alpha.25](#v301-alpha25)
+- [v3.0.1-alpha.24](#v301-alpha24)
+- [v3.0.1-alpha.23](#v301-alpha23)
+- [v3.0.1-alpha.22](#v301-alpha22)
+- [v3.0.1-alpha.21](#v301-alpha21)
+- [v3.0.1-alpha.20](#v301-alpha20)
+- [v3.0.1-alpha.19](#v301-alpha19)
+- [v3.0.1-alpha.18](#v301-alpha18)
+- [v3.0.1-alpha.17](#v301-alpha17)
+- [v3.0.1-alpha.16](#v301-alpha16)
+- [v3.0.1-alpha.15](#v301-alpha15)
+- [v3.0.1-alpha.14](#v301-alpha14)
+- [v3.0.1-alpha.13](#v301-alpha13)
+- [v3.0.1-alpha.12](#v301-alpha12)
+- [v3.0.1-alpha.11](#v301-alpha11)
+- [v3.0.1-alpha.10](#v301-alpha10)
+- [v3.0.1-alpha.9](#v301-alpha9)
+- [v3.0.1-alpha.8](#v301-alpha8)
+- [v3.0.1-alpha.7](#v301-alpha7)
+- [v3.0.1-alpha.6](#v301-alpha6)
+- [v3.0.1-alpha.5](#v301-alpha5)
+- [v3.0.1-alpha.4](#v301-alpha4)
+- [v3.0.1-alpha.3](#v301-alpha3)
+- [v3.0.1-alpha.2](#v301-alpha2)
+- [v3.0.1-alpha.1](#v301-alpha1)
+- [v3.0.0](#v300)
+- [v3.0.0-alpha.10](#v300-alpha10)
+- [v3.0.0-alpha.9](#v300-alpha9)
+- [v3.0.0-alpha.8](#v300-alpha8)
+- [v3.0.0-alpha.7](#v300-alpha7)
+- [v3.0.0-alpha.6](#v300-alpha6)
+- [v3.0.0-alpha.5](#v300-alpha5)
+- [v3.0.0-alpha.4](#v300-alpha4)
+- [v3.0.0-alpha.3](#v300-alpha3)
+- [v3.0.0-alpha.1](#v300-alpha1)
+- [v2.0.10](#v2010)
+- [v2.0.9](#v209)
+- [v2.0.9-alpha.3](#v209-alpha3)
+- [v2.0.9-alpha.2](#v209-alpha2)
+- [v2.0.9-alpha.1](#v209-alpha1)
+- [v2.0.8](#v208)
+- [v2.0.8-alpha.13](#v208-alpha13)
+- [v2.0.8-alpha.12](#v208-alpha12)
+- [v2.0.8-alpha.11](#v208-alpha11)
+- [v2.0.8-alpha.9](#v208-alpha9)
+- [v2.0.8-alpha.7](#v208-alpha7)
+- [v2.0.8-alpha.6](#v208-alpha6)
+- [v2.0.7](#v207)
+- [v2.0.6](#v206)
+- [v2.0.5](#v205)
+- [v2.0.5-alpha.8](#v205-alpha8)
+- [v2.0.5-alpha.7](#v205-alpha7)
+- [v2.0.5-alpha.5](#v205-alpha5)
+- [v2.0.5-alpha.4](#v205-alpha4)
+- [v2.0.5-alpha.3](#v205-alpha3)
+- [v2.0.4](#v204)
+- [v2.0.3](#v203)
+- [v2.0.2](#v202)
+- [v2.0.1](#v201)
+- [v2.0.1-alpha.6](#v201-alpha6)
+- [v2.0.1-alpha.5](#v201-alpha5)
+- [v2.0.1-alpha.4](#v201-alpha4)
+- [v2.0.0](#v200)
+- [v2.0.0-alpha.23](#v200-alpha23)
+- [v2.0.0-alpha.22](#v200-alpha22)
+- [v2.0.0-alpha.21](#v200-alpha21)
+- [v2.0.0-alpha.20](#v200-alpha20)
+- [v2.0.0-alpha.19](#v200-alpha19)
+- [v2.0.0-alpha.18](#v200-alpha18)
+- [v2.0.0-alpha.16](#v200-alpha16)
+- [v2.0.0-alpha.15](#v200-alpha15)
+- [v2.0.0-alpha.14](#v200-alpha14)
+- [v2.0.0-alpha.13](#v200-alpha13)
+- [v2.0.0-alpha.12](#v200-alpha12)
+- [v2.0.0-alpha.11](#v200-alpha11)
+- [v2.0.0-alpha.10](#v200-alpha10)
+- [v2.0.0-alpha.9](#v200-alpha9)
+- [v2.0.0-alpha.8](#v200-alpha8)
+- [v2.0.0-alpha.7](#v200-alpha7)
+- [v2.0.0-alpha.6](#v200-alpha6)
+- [v2.0.0-alpha.5](#v200-alpha5)
+- [v2.0.0-alpha.4](#v200-alpha4)
+- [v2.0.0-alpha.3](#v200-alpha3)
+- [v2.0.0-alpha.2](#v200-alpha2)
+- [v2.0.0-alpha.1](#v200-alpha1)
+- [v1.1.2](#v112)
+- [v1.1.1-alpha.8](#v111-alpha8)
+- [v1.1.1-alpha.7](#v111-alpha7)
+- [v1.1.1-alpha.6](#v111-alpha6)
+- [v1.1.1-alpha.5](#v111-alpha5)
+- [v1.1.1-alpha.4](#v111-alpha4)
+- [v1.1.1-alpha.3](#v111-alpha3)
+- [v1.1.1-alpha.2](#v111-alpha2)
+- [v1.1.1-alpha.1](#v111-alpha1)
+- [v1.1.1](#v111)
+- [v1.1.0-alpha.6](#v110-alpha6)
+- [v1.1.0-alpha.5](#v110-alpha5)
+- [v1.1.0-alpha.2](#v110-alpha2)
+- [v1.1.0](#v110)
+- [v1.0.13-alpha.17](#v1013-alpha17)
+- [v1.0.13-alpha.16](#v1013-alpha16)
+- [v1.0.13-alpha.15](#v1013-alpha15)
+- [v1.0.13-alpha.14](#v1013-alpha14)
+- [v1.0.13-alpha.13](#v1013-alpha13)
+- [v1.0.13-alpha.12](#v1013-alpha12)
+- [v1.0.13-alpha.11](#v1013-alpha11)
+- [v1.0.13-alpha.10](#v1013-alpha10)
+- [v1.0.13-alpha.9](#v1013-alpha9)
+- [v1.0.13-alpha.8](#v1013-alpha8)
+- [v1.0.13-alpha.7](#v1013-alpha7)
+- [v1.0.13-alpha.6](#v1013-alpha6)
+- [v1.0.13-alpha.5](#v1013-alpha5)
+- [v1.0.13-alpha.4](#v1013-alpha4)
+- [v1.0.13-alpha.3](#v1013-alpha3)
+- [v1.0.13-alpha.2](#v1013-alpha2)
+- [v1.0.13-alpha.1](#v1013-alpha1)
+- [v1.0.13](#v1013)
+- [v1.0.12-alpha.19](#v1012-alpha19)
+- [v1.0.12-alpha.18](#v1012-alpha18)
+- [v1.0.12-alpha.17](#v1012-alpha17)
+- [v1.0.12-alpha.16](#v1012-alpha16)
+- [v1.0.12-alpha.15](#v1012-alpha15)
+- [v1.0.12-alpha.14](#v1012-alpha14)
+- [v1.0.12-alpha.13](#v1012-alpha13)
+- [v1.0.12-alpha.12](#v1012-alpha12)
+- [v1.0.12-alpha.11](#v1012-alpha11)
+- [v1.0.12-alpha.10](#v1012-alpha10)
+- [v1.0.12-alpha.9](#v1012-alpha9)
+- [v1.0.12-alpha.8](#v1012-alpha8)
+- [v1.0.12-alpha.7](#v1012-alpha7)
+- [v1.0.12-alpha.6](#v1012-alpha6)
+- [v1.0.12-alpha.5](#v1012-alpha5)
+- [v1.0.12-alpha.4](#v1012-alpha4)
+- [v1.0.12-alpha.3](#v1012-alpha3)
+- [v1.0.12-alpha.2](#v1012-alpha2)
+- [v1.0.12-alpha.1](#v1012-alpha1)
+- [v1.0.12](#v1012)
+- [v1.0.11-alpha.7](#v1011-alpha7)
+- [v1.0.11-alpha.6](#v1011-alpha6)
+- [v1.0.11-alpha.5](#v1011-alpha5)
+- [v1.0.11-alpha.4](#v1011-alpha4)
+- [v1.0.11-alpha.3](#v1011-alpha3)
+- [v1.0.11-alpha.2](#v1011-alpha2)
+- [v1.0.11-alpha.1](#v1011-alpha1)
+- [v1.0.10](#v1010)
+- [v1.0.9](#v109)
+- [v1.0.8](#v108)
+- [v1.0.7](#v107)
+
+## v3.0.2-alpha.25
+
+**复活自合成 DASH 主兜底(对齐 LibreTube createDashSource)**:SABR 播不了的 attestation/RELOAD 视频,改走自合成 DASH——从 NewPipe 流顶层读已解密 URL(content)+ init/index range 拼 `<SegmentBase>` 合成 MPD,提为主兜底(优先于 dashMpdUrl/HLS)。当初放弃基于诊断误判(itagItem.toString 看不出字段,实则在 stream 顶层,同 fork `738c3d4` 可读)。播放器零改动复用 buildDashManifest→DashMediaSource,带 range 守卫零回归。详见 docs/youtube-hd-playback.md row 100。
+
+## v3.0.2-alpha.26
+
+**NewPipe-first 主路径(alpha.93,解耦坏 WEB WebView 收割门卫)**:alpha.25 的自合成 DASH 因 resolve 仍先走 WEB+WebView harvest(该收割已坏——真机 ssl handshake failed / browser session load 两次失败)→ 被挡在门外**触达不到**。本版把 NewPipe 提为一级路径(对齐 LibreTube 直调 `StreamInfo.getInfo`):resolve() 在 signatureTimestamp 后、WEB client loop 前,先试 visionOS NewPipe SABR → 自合成 DASH/HLS 兜底,全失败才落 WEB /player last resort(classic reload-closure/DASH n-decrypt)。纯复用现有函数零新逻辑,播放器零改动。alpha.91 Fix A(status=2 用 PoTokenWebView 重铸)+ Fix B(getIosClientPoToken→null)在此主路径生效。SABR 播不了的 attestation/RELOAD 视频现在真正落到 alpha.92 自合成 DASH。详见 docs/youtube-dash-fallback-plan.md「alpha.93」。
+
+## v3.0.2-alpha.32
+
+**DASH 切清晰度 init 段 EOF 修复(自合成 MPD 混合容器塞同一 AdaptationSet)**:alpha.31 的 `id=v.itag` 修复已应用,但真机日志显示切到 1080p 时**初始 init 段加载就 EOF**(不是段边界切 codec)——能播 VP9 轨(`videoFmt=Format(0_243,...,video/webm,vp9)`),但切到 H264(MP4)轨 init 段就 `InitializationChunk.load` → `FragmentedMp4Extractor.readAtomPayload` → `java.io.EOFException`。根因是 `buildDashManifest` 把**全部视频轨(H264 MP4 + VP9 WebM 混合)塞进一个 `<AdaptationSet>`**,其 `mimeType` 取第一条轨(VP9→`video/webm`),ExoPlayer 按 AdaptationSet mimeType 选单一 extractor,加载 H264(MP4)轨 init 段时用 MatroskaExtractor 解析 MP4 → EOF。对照 LibreTube `DashHelper.createManifest` 按 `stream.mimeType` 分组建独立 AdaptationSet,修复为 `buildDashManifest` 视频轨按 mimeType 分组到独立 AdaptationSet(id 0,1,2…),audio 单独一个。详见 docs/youtube-dash-fallback-plan.md「alpha.98」。
+
+### 变更
+- **DASH 自合成 MPD 视频轨按容器分组**(`buildDashManifest`):`info.videoTracks.groupBy { it.mimeType }` 每组生成独立 `<AdaptationSet>`,H264 MP4 / VP9 WebM 各得正确 extractor,不再用错 extractor 解析 init 段。
+
+### 待真机验证(切清晰度,读 `logs_live.log`)
+- 切 1080p(VP9+AVC 两轨)后初始 init 段不再 `EOFException`,VP9/H264 轨各用正确 extractor 加载。
+- 回归:默认/Auto 多 Representation 自动选轨、4K(2160p VP9)仍可播。
+
+---
+
+## v3.0.2-alpha.31
+
+**DASH 切清晰度播放失败修复(自合成 MPD 多 codec 变体 Representation id 重复)**:真机日志实锤切到 1080p 后 MPD 有 VP9+AVC 两轨,ExoPlayer 段边界(~9.6s)自动切 codec 时 `InitializationChunk.load` → `FragmentedMp4Extractor.readAtomPayload` → `java.io.EOFException`,每次重试都在 pos=9644ms 确定性失败。根因是 `buildDashFallbackFromNewPipe` 的 `buildVideoTrack` 所有视频轨 `id=0`,MPD 里多个 `<Representation id="0_0">` 重复 ID——alpha.97 把手动选档从「单轨」改成「该分辨率全部 codec 变体」后,1080p 两轨都叫 `0_0`,ExoPlayer 切轨时加载错 init 段 → EOF。对照 LibreTube `DashHelper.createVideoRepresentation` 不给 `<Representation>` 设 `id`(ExoPlayer 自动分配唯一 ID),修复为 `buildVideoTrack` 改 `id=v.itag`(对齐 SABR 路径),保证每个 Representation ID 唯一。详见 docs/youtube-dash-fallback-plan.md「alpha.98」。
+
+### 变更
+- **DASH 自合成 Representation id 唯一化**(`buildDashFallbackFromNewPipe`):`buildVideoTrack` 的 `id` 从 `0` 改为 `v.itag`,多 codec 变体同分辨率时 MPD 不再有重复 `<Representation id="0_0">`,ExoPlayer 切轨加载正确 init 段。
+
+### 待真机验证(切清晰度,读 `logs_live.log`)
+- 切 1080p(VP9+AVC 两轨)后不再 `EOFException`,段边界 codec 切换正常,不再 pos=9644ms 反复重试。
+- 回归:默认/Auto 多 Representation 自动选轨、4K(2160p VP9)仍可播。
+
+---
+
+## v3.0.2-alpha.30
+
+**YouTube 4K 恢复 + 播放器清晰度选择(兜底提前 + DASH 多档,对齐 LibreTube)**:真机实锤 DASH 自合成兜底能出 4K(2160p VP9,推翻「4K 两路全堵/接受 ≤1080p」终态——alpha.86 那两路都是 SABR 协议路径,DASH 直链是第三条路绕开 attestation)。本版把 4K 可用性从「SABR 死循环 8 次 RELOAD 等 ~27s 才掉 DASH」提到「首次 RELOAD 即落」,并补回 alpha.81 移除的清晰度选择。
+
+### 变更
+- **兜底提前**(`SabrMediaFetcher`):`processPart` 的 `RELOAD_PLAYER_RESPONSE` 分支在 `storeReloadTokenSlot` 后**立即抛 `SabrTerminalException`**,不再等读完响应里 ~8 个 RELOAD part → 首次 RELOAD 即 evict → 重进 resolve 见 `reloadCount>0` → DASH 兜底出 4K。等待从 ~27s 降到一次 RELOAD。
+- **RELOAD 计数稳健化**(`SabrStreamRegistry`):`Entry` 加 `videoId`(registerByVideoId 填充),fetcher 计数改用**会话自己的 videoId**(恒可得),替代 payload 解码 `f4=videoId`(36B 短变体解出 null → 旧逻辑计数恒 0 → 死循环守卫永不触发隐患)。`videoId` 字段放 `Entry` 参数末尾(否则挤错 `windowStartMs` 位置实参编译失败)。
+- **SABR 清晰度选择恢复**:`buildSabrPlaybackInfo` 手动选档(`preferredQualityId != null`)时 `videoTracks` 只建选中 itag 单条(真正生效),默认/Auto 保持 alpha.81 多 Representation 自动选轨(不回归)。TV 端 Main 面板加回「清晰度」项 → Quality 面板各档切换;移动端底栏加回 HD 按钮 + 下拉菜单。
+- **DASH 自合成多档 + 按分辨率去重**(`buildDashFallbackFromNewPipe`):自合成分支从单档改全 `videoCandidates` 多 Representation(每条带 range 的视频流各构一条 `PlaybackTrack`,`buildDashManifest` 合成多 Representation MPD);**清晰度菜单按 `height` 去重**(对齐 LibreTube `getAvailableResolutions`,每分辨率一档纯 `"720p"`,codec 由 ExoPlayer 按设备硬解能力自动选);手动选档回该分辨率全部 codec 变体,默认/Auto 回全部自动选轨。原 `PlaybackQuality(0,"XXXp DASH 兜底")` 单档删除。
+
+### 待真机验证(播 `jNl6YkkzKxw`,读 `logs_live.log`)
+- 只一次 `RELOAD_PLAYER_RESPONSE`(count=1)即 `SABR dead-loop guard` → `自合成DASH` itag313 2160p,首帧出现时间明显早于之前。
+- 画质菜单:720p 只一个选项(不再 VP9/H264 重复);选 720p/1080p 实际播对应分辨率(SABR 路径),选 2160p → RELOAD 后落 DASH 出 4K;已落 DASH 的视频菜单列各分辨率可降档。
+- 回归 `D2kXTmSPUJo`(≤1080p 不需要 attestation)确认 SABR 正常播、无 RELOAD、清晰度菜单可选档。
+
+---
+
+## v3.0.2-alpha.29
+
+**YouTube 关注流改分批增量拉取 + Room 逐频道缓存(对齐 LibreTube LocalFeedRepository,几百频道可扩展)**:旧模型一次性 async+awaitAll + 外层 withTimeoutOrNull 预算(动态 10s 上限/TV 固定 5s)在几百频道下结构性必超时整批空白。重构为:①`getSubscriptionsFeed` 按频道 `chunked(5)` 分批并发,每批就绪回调 `onChunkReady`(调用方拉到一批 merge 一批),每累计 50 频道 delay 500-1500ms 防节流,单频道独立容错**无外层全局超时**;②缓存从 DataStore 单 key 全量 JSON 换 **Room(SQLite)逐频道行**(`YoutubeFeedEntity`/`YoutubeFeedDao`/`FeedDatabase`,新增 KSP2 2.3.11 + Room 2.8.0),增量刷新只写当前频道行;③动态 tab + TV 增量 merge,home 放宽超时 per-channel 容错。详见 docs/youtube-dash-fallback-plan.md「alpha.98」。
+
+## v3.0.2-alpha.10
+
+> ⚠️ **更正(已推翻)**:本条「两次选轨不一致致 RELOAD」的归因**已被推翻**——活动路径 `SabrMediaFetcher` 已把播放器选中的 videoFormat 编码进 `preferredVideoFormatIds` 发出,对齐 `session.videoFormatId` 是 no-op;RELOAD 真因是 NewPipe visionOS 拿到**未 attested 的 ustreamerConfig**(LibreTube 默认走 Piped 拿已 attested 的 WEB-bound config 故能播),与 itag 选择无关。详见 `docs/youtube-hd-playback.md`「alpha.83 更正」段。本条保留作历史排查记录,不再代表当前认识。
+
+**SABR 会话 videoFormatId 与播放轨道 itag 不匹配 → RELOAD 死循环修复**(测试 alpha):真机日志第一个视频 qPR91wHXPvo 能播、第二个 jNl6YkkzKxw 无限 `RELOAD_PLAYER_RESPONSE`。根因是**两次选轨不一致**——harvest 盲取最高分辨率首条作会话 `videoFormatId`(jNl6YkkzKxw → itag313 2160p VP9),`buildSabrPlaybackInfo` 按 `youtubeDefaultQuality.maxHeight` 上限选播放轨道(itag136 720p H.264)。服务端会话绑 313、客户端请求 136 → RELOAD 死循环;visionOS reload 重打 /player 后新会话仍绑 313,循环不止。第一个视频能播是因为其最高分辨率(itag137)恰好等于播放选轨。
+
+### 变更
+- **harvest 选轨对齐播放选档**(`YoutubePlaybackResolver`):把 `youtubeDefaultQuality` 传进 `buildSabrSessionFromNewPipe` / `buildSabrSessionFromReloadPlayer`,用与 `buildSabrPlaybackInfo` 完全相同的 `maxHeight` 选档逻辑选会话 `videoFormatId`,而非盲取最高分辨率首条。两条 harvest 路径(NewPipe + visionOS reload)都修。
+- **诊断日志**:harvest 选轨结果(`NewPipe SABR harvest: ... defaultItag=... firstVideo=itag...`)+ `buildSabrPlaybackInfo` 日志补 `sessionVideo=itag...`,真机确认会话格式与播放轨道匹配。
+
+### 待真机验证(播 `jNl6YkkzKxw`,读 `logs_live.log`)
+- `NewPipe SABR harvest: ... defaultItag=136 firstVideo=itag136(720p)` — harvest 选轨与播放一致。
+- `SABR PlaybackInfo: ... sessionVideo=itag136 selected=itag136` — 会话格式 == 播放轨道。
+- 不再出现 `RELOAD_PLAYER_RESPONSE` 死循环,视频正常出帧。
+
+---
+
+## v3.0.2-alpha.9
+
+**SABR RELOAD 双线诊断 Phase 2 修复 + Fix T 取证定论**(测试 alpha,诊断不改默认播放行为):alpha.8 真机日志**一次 Phase 2 reload 尝试都没发过**——`storeReloadToken` 对每次 RELOAD part(rn=0..7,单次尝试约 8 个)都 +1 且从不重置,resolve 重跑时 count 已 16 > MAX=3,reload 尝试永远被 cap 跳过。本版修复该计数污染,**并** Fix T 取证一锤定音。
+
+### 变更
+- **reload cap 计数污染修复**(`YoutubePlaybackResolver`):每次 `consumeReloadToken` 到 token 就把 count 归零 → 每个 resolve 周期**恰好尝试一次** visionOS /player reload。consume 本就是原子 one-shot-per-token,累积 count 对 loop 兜底冗余,cap 只挡诊断不改行为。`MAX_RELOADS` 保留待完整闭环(DASH 落底)用。
+- **Fix T 取证定论**:`NewPipeHolder: PoTokenProvider set` 但整个日志 **`BiliTvPoToken` 零条入口日志**——`getWebClientPoToken`/`getIosClientPoToken` 一次没被调,而 NewPipe visionOS `getInfo` 明明跑了(建出 `NewPipe SABR session`)。→ **visionOS getInfo 完全绕开 `BiliTvPoTokenProvider`**,`cached` 恒空是必然。**根治方向改道**:不是修 provider cache,而是 resolver 自铸 token **注入 visionOS /player**(正与 Phase 2 回传同一件事)。若 Phase 2 回传成功则无需另做注入。
+
+### 待真机验证(播 `jNl6YkkzKxw`,读 `logs_live.log`)
+- **Phase 2**(`YtResolver`):这次应看到 `SABR reload path: videoId=jNl6YkkzKxw reload#0 tokenLen=138` → `SABR reload session: sabrUrl present=YES/NO` → YES 则 `SABR reload playback ready: sid=...` + `FORMAT_INITIALIZATION_METADATA`/`MEDIA_END` → **起播 = Phase 2 成立**;NO 则转 Fix T 注入方向。
+
+---
+
+## v3.0.2-alpha.8
+
+**SABR RELOAD 双线诊断**(测试 alpha,诊断级不改默认播放行为):alpha.7 崩溃修复后 RELOAD 诊断稳定(reloadTokenLen=144 恒定)。本版并行取证两条修复路径——Fix T(根治 token 缓存链路)+ Phase 2(RELOAD 回传重打 visionOS /player),一轮云编译同时看两边真机日志。
+
+### 变更
+- **Fix T 取证**(纯日志):`BiliTvPoTokenProvider` 各 provider 方法加入口/结果日志——定位 getInfo 期间到底哪个被调、缓存为何空(疑:visionOS 走 `getIosClientPoToken`→null→缓存恒空→回退 resolve-minted 128B **WEB** token 与 visionOS 绑定的 ustreamerConfig 不匹配→RELOAD)。
+- **Phase 2 取证**(RELOAD 回传,成功即试用):
+  - `SabrStreamRegistry`:新增 `pendingReloads`(reloadToken 停车,独立于 sessions,**evict 不清**)+ `reloadCounts`/`MAX_RELOADS=3` 计数防死循环。
+  - `SabrMediaFetcher.processPart` RELOAD 分支:把 reloadToken 停车进 registry。
+  - `InnerTubeClient`:新增 `Client.VISION_OS`(镜像 NewPipe visionOS client)+ `postVisionOsPlayerReload`(GAPIS + body + `playbackContext.reloadPlaybackContext.reloadPlaybackParams.token`)。
+  - `YoutubePlaybackResolver`:`parseSabrData` + `buildSabrSessionFromReloadPlayer` + resolve() 重进时 `consumeReloadToken` → 重打 visionOS /player 换新会话,成功即注册播放。reloadToken 是 reload 凭证,**不是** poToken 替代(StreamerContext 仍用 provider-cached/resolve-minted 128B)。
+- **不改默认播放行为**:RELOAD 仍 terminal → evict → 错误重试;仅当 reload 回传成功建会话时才试用新会话。完整闭环(UI error-budget 解耦 + MAX_RELOADS 落 DASH)留诊断通过后。
+
+### 待真机验证(播 `jNl6YkkzKxw`,读 `logs_live.log`)
+- **Fix T 侧**(`BiliTvPoToken`):getInfo 期间看到 `getIosClientPoToken → null`(或 visionOS provider 入口)→ 证实缓存为何空,定根治方向。
+- **Phase 2 侧**(`YtResolver`):`storeReloadToken ... tokenLen=144` → `SABR reload session: sabrUrl present=YES/NO` → YES 则 `SABR reload playback ready: sid=...` + 后续 `FORMAT_INITIALIZATION_METADATA`/`MEDIA_END` → **起播 = Phase 2 成立**;NO 则查 body 复刻或转 Fix T。
+
+---
+
+## v3.0.2-alpha.7
+
+**RELOAD 解码崩溃修复**(测试 alpha):alpha.6 真机(`jNl6YkkzKxw`)每次 fetch 都抛 `IndexOutOfBoundsException: toIndex (N) is greater than size (M)`(N=279775/443615/5623/80,M=100/11),播放器 retry 3 次后放弃。根因=alpha.6 新增的 `decodeReloadPlayer` 对 base64 解出的**非 protobuf 字节**用 `ProtoReader` 遍历,读到越界 LEN 长度 → `ProtoWire.kt:119 data.copyOfRange(s,s+len)` 抛(项目唯一 to 可 > size 的 copyOfRange)。本版加两层防御:通用越界保护 + 诊断解析 try-catch,崩溃消失、RELOAD 诊断稳定。仍按 Phase 1 evict(诊断中间态,播放修复在 Phase 2 回传 reload context 重打 /player)。
+
+### 变更
+- **`ProtoReader` WIRE_LEN 越界保护**(`ProtoWire.kt`):`s+len>end` 时跳到结尾返回空字节,不 `copyOfRange`——通用防任何坏/截断 proto 崩(RELOAD 内层 base64 解出的非 protobuf 字节即触发源)。
+- **`decodeReloadPlayer` 整体 try-catch**(`SabrProto.kt`):解析失败返回空 dump 不抛,`processPart` 仍打 RELOAD 日志,诊断稳定。
+- **不改播放行为**:RELOAD 仍按现逻辑 terminal(Phase 1),Phase 2 才回传 reload context。
+
+### 待真机验证
+- 播 `jNl6YkkzKxw`,读 `logs_live.log`,确认**不再出现** `IndexOutOfBoundsException: toIndex`,且 `RELOAD_PLAYER_RESPONSE` 诊断行稳定(不因 payload 内容差异崩溃)。
+
+---
+
+## v3.0.2-alpha.6
+
+**RELOAD 解码对齐权威 schema + 定位正确修复方向**(测试 alpha,诊断不改播放行为):alpha.5 的 RELOAD 解析真机发现新格式把 videoId/token 套进额外一层 field1(原解析只看顶层→全 null),本版改**递归下钻**;并**联网查证 LuanRT/googlevideo 权威 proto**,坐实 `ReloadPlaybackParams.token` = 整串 base64(要回传新 /player 的凭证,非 poToken),纠正了「token-swap 重试」的错误方向——正确修复是回传 reload context 重打 /player 换新 sabrUrl。
+
+### 变更
+- **`SabrProto.decodeReloadPlayer` 递归下钻**:兼容新旧嵌套(新格式 f4/f5 套在额外 field1 里),输出 `reloadToken`(整串 base64,ReloadPlaybackParams.token)+ 再解一层的 `videoId`/`innerToken`/`field7`。
+- **对齐权威 schema**(`reload_player_response.proto`):`ReloadPlaybackContext{reload_playback_params:{token}}`。reloadToken 是服务端下发的 reload 凭证,**不是 poToken**;27B 短串是内层子 token,非凭证。
+- **`SabrMediaFetcher` log**:`reloadTokenLen`/`reloadTokenDecodedHex`/`innerToken`/`innerTokenDecodedHex`/`field7Hex`。
+- **不改播放行为**:RELOAD 仍按现逻辑 terminal,不引入回归。
+- **docs §6.16 补权威处理流程**:`SabrStreamingAdapter` 收到 RELOAD → 回调消费方 → 重打 /player(带 reloadPlaybackContext)换新 sabrUrl+ustreamerConfig → 清 formats 重试;Phase 2 改走此路径。
+
+### 待真机验证
+- 播 `jNl6YkkzKxw`,读 `logs_live.log` 的 `RELOAD_PLAYER_RESPONSE` 行,确认 `reloadToken` 长度/稳定性/含 videoId,为 Phase 2(visionOS /player 重打 + 回传 reload context)定实现。
+
+---
+
+## v3.0.2-alpha.5
+
+**SABR RELOAD_PLAYER_RESPONSE 结构化解析(诊断,不改播放行为)**(测试 alpha):定位 YouTube 视频 `jNl6YkkzKxw` 无法播放的根因链路——WEB `/player` 全被 PO 锁死 → 回退 SABR → 首段即收到 RELOAD_PLAYER_RESPONSE → 代码当 terminal → 播放失败。本版新增结构化解析,证明服务端 RELOAD payload 内层 base64 解出的 proto 含 **videoId + 一枚新 token(field5) + field7 raw**,而非泛泛的「重打 /player」指令,为后续「token 换入同 sabrUrl 重试」(Fix A)铺路。
+
+### 变更
+- **`SabrProto.decodeReloadPlayer` 新增**:结构化解析 RELOAD payload(顶层 `f1{f1:base64}`,base64 再解一层),提取 `field4=videoId` / `field5=token`(+再解码 hex) / `field7=hex`,多 base64 变体候选优先取带 videoId 的。
+- **`SabrMediaFetcher` RELOAD 分支打全量 log**:`videoId`/`token`/`tokenDecodedHex`/`field7Hex`,真机一次判哪字段是可用的 poToken。
+- **不改播放行为**:RELOAD 仍按现逻辑 terminal,不引入回归。
+
+### 待真机验证
+- 播 `jNl6YkkzKxw`,读 `logs_live.log` 的 `RELOAD_PLAYER_RESPONSE` 行,确认 field5 再解出的字节 vs field7 哪个是可用的 poToken,据此定 Fix A 的 token 提取字段。
+
+---
+
+## v3.0.2-alpha.4
+
+**TV 视频退出焦点被头像抢占根治**(测试 alpha):退出视频后焦点恢复 effect 成功把焦点拉回原视频卡片,但约 250~300ms 后 Compose 焦点系统在内容从 `SaveableStateHolder` 还原后做了一次「延迟焦点回落」,把焦点落到侧栏第一个可聚焦节点(头像),用户看到焦点环跳到头像/「我的」页 = 「焦点消失」。根因是现有 `suppressAccountAutoConfirm` 只抑制了头像的 autoConfirm(不打开「我的」页),**没阻止头像「接收焦点」**,且抑制在 `restore success` 那一刻就被撤掉,比延迟回落早。
+
+### 变更
+- **`BiliFocusableSurface` 加 `enabled` 参数**:false 时在 `focusable()`/`clickable()` 之后加 `focusProperties { canFocus = false }`,让节点真正不可聚焦(而非仅抑制 autoConfirm)。
+- **`AppSidebar` 抑制时侧栏不可聚焦**:视频退出恢复窗口内,头像 + 导航项传 `enabled = !suppressAccountAutoConfirm`,延迟焦点回落无处可落,只能留在视频卡片。
+- **`AppShell` 延长抑制窗口**:`clearFocusRestoreRequest` 从立即清 `playbackFocusRestoreDestination` 改成延迟 400ms 清(新增 `PlaybackFocusRestoreSuppressHoldMs`),覆盖 ~250~300ms 的延迟回落;延迟清不会让恢复 effect 重跑,backstop(600 帧 ≈ 10s)也远长于 400ms 不会误清。
+
+### 待真机验证
+- 退出视频后焦点稳定停在原视频卡片,不跳头像、不打开「我的」页。
+- 日志 grep `BiliMT:Focus` 确认 `restore success` 后不再出现 `avatar focused`。
+- 回归:正常侧栏导航(头像/导航项聚焦、autoConfirm 打开「我的」页)不受影响。
+
+---
+
+## v3.0.2-alpha.3
+
+**YouTube 订阅流全面修复排序与完整性**(测试 alpha):移动端「动态」合并 YouTube 关注的排序不对 + 不全,根因 5 个,本版逐一修掉,并把 TV 首页「YouTube 热门」tab 对齐成关注动态。
+
+### 变更
+- **订阅流 RSS + InnerTube 并行拉取后按 videoId 合并**:每频道并发发轻量 RSS GET 与 InnerTube `/browse`,RSS 提供精确 `publishedAt`,InnerTube 补全 `duration`/`liveNow`/`isUpcoming`/`badge`/`viewCount`/头像。修复 RSS 优先策略丢弃 Shorts/直播/首映、duration 全为 0 的问题;任一路失败降级用另一路,互不影响。
+- **`perChannel` 8→15**:对齐 RSS 实际返回量,不再静默丢第 9-15 条。
+- **`pubdate` 兜底为当前时间**:直播/首映/解析异常视频不再沉底到 1970 年。
+- **可观测性**:RSS 拉取失败、InnerTube 失败、合并统计日志(`YoutubeFeed` tag);RSS 解析失败日志(`YoutubeRSS` tag)。
+- **TV 首页「YouTube 热门」tab 对齐关注动态**:`getHomeSectionVideos(YoutubeTrending)` 从拉 YouTube 热门改为拉关注频道订阅流,与移动端首页/动态一致;未关注/超时返回空。
+
+### 待真机验证
+- 移动端「动态」tab:YouTube 关注视频正常展示,无沉底 1970 年视频;直播/首映预告卡片出现;duration 正确;高产频道视频数比之前多。
+- TV 首页「YouTube 热门」tab:显示关注频道的订阅流。
+
+---
+
+## v3.0.2-alpha.2
+
+**发布构建合并为单一 universal APK**:发布阶段不再按 ABI 拆成 `arm64-v8a`/`armeabi-v7a` 两个包,改产出一个同时含两个 ABI 的 `BiliMT-<版本>.apk`,一个包同时适配 TV、手机和两种盒子架构,免去用户挑 ABI、下错装不上。`app/build.gradle.kts` 的 `targetAbi` 本地单 ABI 调试参数保留,debug 构建本就是 universal 不受影响。
+
+---
+
 ## v3.0.1
 
 **稳定版:IPTV 完整接入 + TV 交互打磨**(v3.0.0 稳定版后的 patch 线提升为稳定版)。自 v3.0.0 起 100 个提交,核心是 IPTV 从零到完整落地(TV + 移动端双端),以及 TV 端搜索/历史/设置/焦点交互的系统性打磨。

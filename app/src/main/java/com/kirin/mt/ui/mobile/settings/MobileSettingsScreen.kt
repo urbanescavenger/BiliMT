@@ -359,6 +359,12 @@ fun MobileSettingsScreen(
       appSettingsStore = appSettingsStore,
       iptvRepository = iptvRepository,
     )
+
+    // ===== YouTube SABR 实验:Piped 后端 + itag 诊断(alpha.84,对齐 TV SettingsScreen) =====
+    MobileYoutubeSabrSection(
+      settings = settings,
+      appSettingsStore = appSettingsStore,
+    )
   }
 
     if (showFollowSheet) {
@@ -934,6 +940,109 @@ private fun MobileIptvEditDialog(
     },
     confirmButton = {
       TextButton(onClick = { onSave(normalizeIptvUrl(urlValue), usernameValue.trim(), passwordValue) }) {
+        Text(stringResource(R.string.settings_webdav_save))
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text(stringResource(R.string.mobile_dialog_cancel))
+      }
+    },
+  )
+}
+
+/**
+ * YouTube SABR 实验区(可折叠):启用 Piped 后端开关 + Piped 实例 URL 行(点按弹窗编辑)+
+ * 锁定会话视频轨诊断开关。镜像 [MobileIptvSection] 的折叠段结构,对齐 TV SettingsScreen
+ * 的三行 YouTube SABR 实验(alpha.84)。resolve() 读这三项:开 Piped 走 Piped 后端修
+ * RELOAD_PLAYER_RESPONSE 死循环,失败回退 NewPipe;空串实例用默认 [DEFAULT_PIPED_INSTANCE]。
+ */
+@Composable
+private fun MobileYoutubeSabrSection(
+  settings: AppSettings,
+  appSettingsStore: AppSettingsStore,
+) {
+  val scope = rememberCoroutineScope()
+  var showEditDialog by remember { mutableStateOf(false) }
+  var expanded by remember { mutableStateOf(false) }
+
+  MobileSettingsSectionHeader(
+    text = stringResource(R.string.settings_youtube_sabr_section),
+    onClick = { expanded = !expanded },
+    trailing = {
+      Icon(
+        imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.primary,
+      )
+    },
+  )
+  androidx.compose.animation.AnimatedVisibility(visible = expanded) {
+    Column {
+      MobileSwitchRow(
+        title = stringResource(R.string.settings_youtube_use_piped_title),
+        description = stringResource(R.string.settings_youtube_use_piped_description),
+        checked = settings.youtubeUsePiped,
+        onCheckedChange = { scope.launch { appSettingsStore.setYoutubeUsePiped(it) } },
+      )
+      MobileSettingsRow(
+        title = stringResource(R.string.settings_piped_title),
+        description = settings.pipedInstanceUrl.ifBlank {
+          stringResource(R.string.settings_piped_default_hint)
+        },
+        onClick = { showEditDialog = true },
+        onLongClick = { showEditDialog = true },
+      )
+      MobileSwitchRow(
+        title = stringResource(R.string.settings_sabr_force_itag_title),
+        description = stringResource(R.string.settings_sabr_force_itag_description),
+        checked = settings.sabrForceSessionVideoItag,
+        onCheckedChange = { scope.launch { appSettingsStore.setSabrForceSessionVideoItag(it) } },
+      )
+    }
+  }
+
+  if (showEditDialog) {
+    MobilePipedEditDialog(
+      url = settings.pipedInstanceUrl,
+      onSave = { url ->
+        showEditDialog = false
+        scope.launch { appSettingsStore.setPipedInstanceUrl(url) }
+      },
+      onDismiss = { showEditDialog = false },
+    )
+  }
+}
+
+/** Piped 实例编辑弹窗:单个 URL 字段 + 保存/取消。保存时补全协议(镜像 TV SettingsPipedDialog)。空串=用默认实例。 */
+@Composable
+private fun MobilePipedEditDialog(
+  url: String,
+  onSave: (url: String) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  var urlValue by remember { mutableStateOf(url) }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text(stringResource(R.string.settings_piped_title)) },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+          value = urlValue,
+          onValueChange = { urlValue = it },
+          label = { Text(stringResource(R.string.settings_piped_instance_label)) },
+          singleLine = true,
+        )
+        Text(
+          text = stringResource(R.string.settings_piped_description),
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+    },
+    confirmButton = {
+      TextButton(onClick = { onSave(normalizeIptvUrl(urlValue)) }) {
         Text(stringResource(R.string.settings_webdav_save))
       }
     },

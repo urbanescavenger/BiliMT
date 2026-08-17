@@ -2,6 +2,47 @@
 
 > 本文档记录 biliMT `core/youtube/` 实现 **YouTube 高清(1080P/2K/4K)播放** 的可行性分析、三个阻断点与实现方案。参考实现:FreeTube(本地/匿名,不登录——与 bilibili 主 App 登录策略一致,见 `docs/youtube-api-notes.md` §5)。数据来自代码实测(2026-08),协议来源 FreeTube / YouTube.js(MIT)。
 
+## 目录
+
+- [1. 现状:最高只有 720p,但数据其实已就绪](#1-现状最高只有-720p但数据其实已就绪)
+- [2. 阻断点 1:取流 URL(硬前置)](#2-阻断点-1取流-url硬前置)
+  - [2.1 无 PO token 时 adaptive url 常被剥离](#21-无-po-token-时-adaptive-url-常被剥离)
+  - [2.2 `s` 签名解密未实现](#22-s-签名解密未实现)
+- [3. 阻断点 2:选择策略](#3-阻断点-2选择策略)
+- [4. 阻断点 3:播放路径](#4-阻断点-3播放路径)
+- [5. 实现方案:三个环节闭环(可行性=高)](#5-实现方案三个环节闭环可行性高)
+  - [① `s` 签名解密(解锁高清 url)](#①-s-签名解密解锁高清-url)
+  - [② 高分辨 adaptive 设为首选](#②-高分辨-adaptive-设为首选)
+  - [③ 走 DASH 播放(用现有 MPD 构建器)](#③-走-dash-播放用现有-mpd-构建器)
+- [6. 分阶段](#6-分阶段)
+- [6.5 实测结论:高清唯一前置是 PO token(2026-08)](#65-实测结论高清唯一前置是-po-token2026-08)
+- [6.6 PO token 实现(跟随 bgutils-js, MIT)](#66-po-token-实现跟随-bgutils-js-mit)
+- [6.7 PO token 真机调试记录(2026-08,逐层推进)](#67-po-token-真机调试记录2026-08逐层推进)
+- [6.8 FreeTubeAndroid 核心实现参考(2026-08 核对源码)](#68-freetubeandroid-核心实现参考2026-08-核对源码)
+  - [6.8.1 架构:WebView 只跑 BotGuard,网络全走 Kotlin/原生](#681-架构webview-只跑-botguard网络全走-kotlin原生)
+  - [6.8.2 PO token 铸取流程(botGuardScript.js,对齐 bgutils-js)](#682-po-token-铸取流程botguardscriptjs对齐-bgutils-js)
+  - [6.8.3 /player 请求(web 侧 local.js + youtubei.js)](#683-player-请求web-侧-localjs--youtubeijs)
+  - [6.8.4 对我们实现的启示(alpha.23 结论)](#684-对我们实现的启示alpha23-结论)
+- [6.10 Path C: NewPipeExtractor 对齐(LibreTube fork 取流层)](#610-path-c-newpipeextractor-对齐libretube-fork-取流层)
+- [6.9 SABR 实现调研(FreeTubeAndroid 源码 + googlevideo proto + UMP 协议)](#69-sabr-实现调研freetubeandroid-源码--googlevideo-proto--ump-协议)
+  - [6.9.1 FreeTube 决策门(Watch.js L885-915)](#691-freetube-决策门watchjs-l885-915)
+  - [6.9.2 createLocalSabrManifest(Watch.js L1617)——/player 响应 → SABR manifest JSON](#692-createlocalsabrmanifestwatchjs-l1617player-响应--sabr-manifest-json)
+  - [6.9.3 SabrManifestParser(shaka 插件)——manifest JSON → shaka Manifest](#693-sabrmanifestparsershaka-插件manifest-json--shaka-manifest)
+  - [6.9.4 SabrSchemePlugin(shaka `sabr:` networking scheme)——核心协议引擎](#694-sabrschemepluginshaka-sabr-networking-scheme核心协议引擎)
+  - [6.9.5 protobuf schema(googlevideo/protos,移植 Kotlin 依据)](#695-protobuf-schemagooglevideoprotos移植-kotlin-依据)
+  - [6.9.6 UMP 二进制流容器(googlevideo/src/core/UmpReader.ts)](#696-ump-二进制流容器googlevideosrccoreumpreaderts)
+  - [6.9.7 Kotlin/Media3 移植评估](#697-kotlinmedia3-移植评估)
+  - [6.9.8 启动 SABR 移植的前置闸——已确认通过(alpha.15/16)](#698-启动-sabr-移植的前置闸已确认通过alpha1516)
+- [6.11 多语言配音修复 + 音轨切换 + 默认画质(2026-08)](#611-多语言配音修复--音轨切换--默认画质2026-08)
+- [6.12 播放历史 + 断电续播(2026-08)](#612-播放历史--断电续播2026-08)
+- [6.13 TV 端 YouTube 取流 TVHTML5 client 试验(2026-08,v3.0.1-alpha.6)](#613-tv-端-youtube-取流-tvhtml5-client-试验2026-08v301-alpha6)
+- [6.14 4K60 VP9 黑屏:堆缓冲撑爆(2026-08,v3.0.1-alpha.11)](#614-4k60-vp9-黑屏堆缓冲撑爆2026-08v301-alpha11)
+- [6.15 TV 长按 YouTube 视频进 UP 主页(2026-08,v3.0.1-alpha.15)](#615-tv-长按-youtube-视频进-up-主页2026-08v301-alpha15)
+- [6.16 SABR RELOAD_PLAYER_RESPONSE 结构化解析(2026-08,v3.0.2-alpha.5,Phase 1 诊断)](#616-sabr-reload_player_response-结构化解析2026-08v302-alpha5phase-1-诊断)
+  - [联网研究(2026-08,LuanRT/googlevideo 权威 schema)——推翻「token-swap」Fix A](#联网研究2026-08luanrtgooglevideo-权威-schema推翻token-swapfix-a)
+- [7. 关键文件](#7-关键文件)
+- [8. 参考来源](#8-参考来源)
+
 ## 1. 现状:最高只有 720p,但数据其实已就绪
 
 YouTube 播放已上线(P11-09),走 `POST /youtubei/v1/player`(WEB→ANDROID 回退)+ `n` 解密,产出 progressive `PlaybackInfo`。但**实际最高只到 720p**,原因不是缺数据:
@@ -427,6 +468,8 @@ fetch('https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json', 
 
 **§6.7 row 99(alpha.76——修真机全视频「加载不出」:NewPipe visionOS /player 的 ustreamerConfig 绑 visionOS 客户端,却配 WEB client info 被服务端 RELOAD_PLAYER 全拒)**:真机反馈**所有视频都无法播放/加载不出**(非个别)。`logs_live.log` 铁证:①全程 **63 次 `STREAM_PROTECTION_STATUS status=1`(OK,poToken 被接受)却全部跟 `RELOAD_PLAYER_RESPONSE`**(UMP part 46)→ 服务端要求重载 player → 本实现按 terminal 处理 → evict 会话 → 重新 getInfo → **无限循环**,`MEDIA_HEADER matched=true`(真正下到媒体)= **0 次**,一场都没播出来;②排除 alpha.75 回归(它只改 codec 提取,不动 session 构建,不可能导致 init 全拒);③**根因**:path C 起取流数据源是 NewPipe visionOS 客户端(见 §6.10),`getInfo` 走 visionOS `/player` 返回的 `ustreamerConfig`/`serverAbrStreamingUrl` **绑定 visionOS 客户端**(clientName=101),但代码发 SABR init 时却用 `sabrClientInfo()`=**WEB client info**(clientName=1,`ClientInfoInput`)→ 服务端校验「ustreamerConfig 声明 visionOS,请求头却是 WEB」→ 拒 → RELOAD_PLAYER。对照 LibreTube `SabrSession`/`StreamerContext`:它取流用 **visionOS client info**(`deviceMake="Apple"`/`deviceModel="RealityDevice14,1"`/`clientName=101`/`clientVersion="1.02"`/`osName="visionOS"`/`osVersion="25.6.0"`),与 NewPipe 的 ustreamerConfig 天然配对。**修复(本提交,两文件)**:①`InnerTubeClient.kt` 新增 `visionOsSabrClientInfo()`(返回 `ClientInfoInput(deviceMake="Apple", deviceModel="RealityDevice14,1", clientName=101, clientVersion="1.02", osName="visionOS", osVersion="25.6.0.23O471")`,字段对齐 LibreTube/`SabrProto.encodeClientInfo`:clientName=field16 int32);②`YoutubePlaybackResolver.kt` `buildSabrSessionFromNewPipe` 里 `innerTubeClient.sabrClientInfo()` → `innerTubeClient.visionOsSabrClientInfo()`。classic n-decrypt 分支不受影响(它走 WEB 取流,配 WEB client info 本就正确)。**注意(alpha.74 用 WEB client info 曾能播)**:说明服务端校验是渐严的(此前宽松接受、近期收紧),故本修复可能解决、也可能是环境性(IP/visitorData 限流,`visitor=pveHM6zYPXM` 全程复用)。**tag v2.0.10-alpha.76**(versionCode=2,010,176)。**待真机**(`logs_live.log`):①首 POST 响应 `STREAM_PROTECTION_STATUS status=1` **不再跟 `RELOAD_PLAYER_RESPONSE`**,改跟 `MEDIA_HEADER matched=true`(真正下媒体);②`SABR PlaybackInfo: ... nTransformed=...` + 能进 `playerState=3` + `onRenderedFirstFrame`;③一场持续播 >60s 无 evict/auto-retry/无限 getInfo 循环(对照 alpha.75 全程 63× status=1 + 0 次媒体)。若仍 RELOAD_PLAYER:`client info` 已对齐仍被拒 → 查是否 visitorData/IP 级限流(`visitor=...` 换新、换 IP 重试),或 NewPipe getInfo 的 visionOS `/player` 是否有附加绑定字段没带。
 
+**§6.7 row 100(alpha.92——复活自合成 DASH 主兜底:NewPipe 流顶层 content+init/index range 拼 SegmentBase,对齐 LibreTube createDashSource)**:SABR 主路径 alpha.91 复刻 LibreTube 懒鉴权 poToken 已修,但 attestation/RELOAD 视频仍可能落兜底;原兜底 `buildDashFallbackFromNewPipe` 优先级 dashMpdUrl(恒空)→ HLS → classic n-decrypt(已死)。调研 LibreTube 确认其 DASH 是 `PlayerHelper.createDashSource` → `DashHelper.createManifest` **自合成 MPD**(非拉 manifest),用 NewPipe 流 `content`(已解密 URL)+ `initStart/initEnd/indexStart/indexEnd` 拼 `<SegmentBase>`([DashHelper.kt:157-217](E:/GITHUB/LibreTube/app/src/main/java/com/github/libretube/helpers/DashHelper.kt#L157-L217))——正是我们计划的 Phase 2。当初放弃基于**诊断误判**:日志打印 `itagItem.toString()`(默认实现看不出字段),而 range 字段在 `VideoStream`/`AudioStream` **顶层**(LibreTube `toPipedStream` 直读,同一 fork `738c3d4`,我们也能读)。**修复(单文件 `YoutubePlaybackResolver.kt` `buildDashFallbackFromNewPipe`)**:优先级改自合成 DASH(range 非空)→ dashMpdUrl(恒空)→ HLS。自合成分支:`videoOnlyStreams` 按 `youtubeDefaultQuality.maxHeight` 过滤选档(对齐 SABR)+ `audioStreams` 首选 ORIGINAL 原声轨,各构 `PlaybackTrack(baseUrl=content, segmentBase=PlaybackSegmentBase("${initStart}-${initEnd}","${indexStart}-${indexEnd}"))`,返回真实轨 PlaybackInfo。**播放器零改动**(segmentBase 非 null → isProgressive=false → 走 `buildDashManifest` 合成 MPD → DashMediaSource,与 PGC 同路)。**range 守卫**:任一轨 content/initStart/indexStart 为空 → 不自合成,落回 dashMpdUrl → HLS(零回归)。加诊断日志打印候选流 range,真机验证 visionOS 流 range 是否有值。**待真机**(`logs_live.log`):①`自合成DASH diag` 显示候选流 `index=[...]` 有值(>0);②attestation 视频落 `自合成 DASH from NewPipe` 分支且起播(非 403/黑屏),A/V 同步可 seek;③若 range 空 → 守卫落 HLS(零回归),记 Phase 2 需改打 android getInfo 拿分段流。
+
 ## 6.10 Path C: NewPipeExtractor 对齐(LibreTube fork 取流层)
 
 引入 `com.github.libre-tube:NewPipeExtractor`(jitpack `738c3d4`)作为 SABR 取流唯一数据源,取流完全对齐 LibreTube——**不再 harvest 浏览器会话**,不再拖入跨 minter/会话绑定。核心原理三条(第二 Explore agent 结论):
@@ -690,6 +733,210 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 **修复(v3.0.1-alpha.15)**:`TvVideoGrid` 长按条件扩展为 `ownerMid > 0L || (source == SourceYoutube && channelId.isNotBlank())`,YouTube 视频长按也能进 UP 主页,B 站视频行为不变。
 
 **待真机验证**:主页/搜索/动态对 YouTube 视频长按确认键约 0.5s 进入 UP 主页;B 站视频长按行为不变。
+
+## 6.16 SABR RELOAD_PLAYER_RESPONSE 结构化解析(2026-08,v3.0.2-alpha.5,Phase 1 诊断)
+
+**问题**:视频 `jNl6YkkzKxw` 无法播放。链路:WEB `/player` 全被 PO 锁死(38 个 adaptive 无 url)→ 回退 SABR → SABR 首段(seg=0)即收到 `RELOAD_PLAYER_RESPONSE` → 代码当 **terminal**(`SabrMediaFetcher.kt:154` → `SabrDataSource.kt:49-52` evict 会话)→ 抛 IOException → 播放器进 Failed,无自动重试。LibreTube 同样把 RELOAD 当致命(`SabrClient.kt:579-583` throw Exception,"rare edge-case"),但 LibreTube 用 WEB 客户端 getInfo 且 getInfo 期间铸+缓存了 poToken、SABR 复用同一枚,故对它们才「罕见」;我们日志 `poToken=128B(resolve-minted)`(非 `provider-cached`)→ NewPipe visionOS getInfo 未铸/缓存 token → resolver 回退用 resolve() 顶部 BotGuard 铸的 128B WEB token → 与 visionOS 会话不匹配 → 该 PO 锁死视频必现 RELOAD。
+
+**关键新发现**:解码日志里 144B RELOAD payload——顶层 `{field1:{field1:<base64>}}`,内层 base64 解出的 proto 含 **field4=videoId**、**field5=36 字符 base64 token** `5WJNURaccWQ5WgVITgT619T+n7UhAbLDF2Mn`、**field7=37B raw**。**服务端不是泛泛要「重打 /player」,而是直接下发 videoId + 一枚新 token**(疑似待换入的 poToken)。sabrUrl 是 googlevideo SABR 端点不绑特定 token;poToken 每请求经 streamerContext 传——故「把下发 token 换上、同 sabrUrl 重试」很可能就能过(Fix A,不需要真重打 /player 换新 sabrUrl)。
+
+**Phase 1(本次,诊断不改播放行为)**:`SabrProto.decodeReloadPlayer(payload)` 结构化解析,提取 `ReloadPlaybackParams.token`(整串 base64,要回传 /player 的凭证)+ 内层解出的 videoId/子 token/field7(递归下钻兼容新旧嵌套);`SabrMediaFetcher` `PART_RELOAD_PLAYER_RESPONSE` 分支打全量 log(videoId/reloadTokenLen/innerToken)。RELOAD 仍按现逻辑 terminal,不引入回归。
+
+**alpha.6 补(诊断期崩溃修复)**:真机 `jNl6YkkzKxw` 每次 fetch 后 `SabrDataSource open: ... IndexOutOfBoundsException: toIndex (N) is greater than size (M)`(日志实证 N=279775/443615/5623/80、M=100/11,均为运行时变量)——根因=`decodeReloadPlayer` 的 `base64DecodePickVideoId`→`hasVideoIdField4`→`reloadScanFields` 对 base64 解出的**非 protobuf 字节**用 `ProtoReader` 遍历,读到越界 LEN 长度 → `ProtoReader.nextField`(`ProtoWire.kt:119`)`data.copyOfRange(s,s+len)` 抛 IndexOutOfBounds(项目仅此一处 copyOfRange 的 to 可 > size;其余 3 处 to 恒 = size/65536)。因 RELOAD payload 内容变化,有时解出成功打完整 dump、有时读错长度即崩(不稳定)。**已修**:①`ProtoReader` WIRE_LEN 分支加越界保护(`s+len>end` 时跳到结尾返回空字节,不 copyOfRange,通用防坏 proto);②`decodeReloadPlayer` 整体 try-catch,失败返回空 dump(processPart 仍打 RELOAD 日志)。崩溃消失、RELOAD 诊断稳定,仍按 Phase 1 evict。
+
+### 联网研究(2026-08,LuanRT/googlevideo 权威 schema)——推翻「token-swap」Fix A
+
+**权威 proto**(`protos/video_streaming/reload_player_response.proto`):
+```proto
+message ReloadPlaybackParams  { optional string token = 1; }
+message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_params = 1; }
+```
+即 payload = `ReloadPlaybackContext{ reload_playback_params: { token: <整串 base64> } }`。**那 144 字符 base64 本身就是 token**(ReloadPlaybackParams.token),是服务端下发的 **reload 凭证,不是 poToken**。base64 再解一层得到的 27B 短串是**内层子 token**,不是要用的凭证——之前误判。
+
+**权威处理**(`SabrStreamingAdapter.ts:564-568` + 消费方 `examples/.../sabr-stream-factory.ts:205-215`):
+1. 收到 RELOAD → 解码出 `ReloadPlaybackContext` → 存进 streamInfo → 回调消费方 → **`retry()`**。
+2. 消费方:**重打 /player**,把 `reloadPlaybackContext` 塞进请求 `playbackContext.reloadPlaybackContext`,拿**新 `server_abr_streaming_url` + 新 `video_playback_ustreamer_config`**。
+3. `setStreamingURL(新sabrUrl)` + `setUstreamerConfig(新config)` → 清 formats → 重试。
+
+**结论**:RELOAD 的正确修复 = **把 ReloadPlaybackContext 原样回传重打 /player → 换新 sabrUrl + ustreamerConfig → 清 formats 重试**(即原计划「备用升级路径」,原 Fix A token-swap 方向被证伪)。RELOAD context 里不含 sabrUrl,只有 token 凭证,必须重打 /player。⚠️ 注意 googlevideo#42:重载后可能撞 `sabr.no_audio_selected - 2`(xtags 新格式触发),需 `MAX_RELOADS` 上限兜底。
+
+**Phase 2(待做,修正方向)**:RELOAD 不再 terminal——`decodeReloadPlayer` 输出整个 `ReloadPlaybackContext` 字节 → 触发 visionOS /player 重打(NewPipe getInfo 不支持回传 reload context,需走我们自己的 InnerTubeClient 建 visionOS context 并注入 `playbackContext.reloadPlaybackContext`,原计划已评估改动大)→ 取新 sabrUrl+ustreamerConfig 更新 SABR 会话 → 清 `initializedFormats`/`partialSegments` → 重试(`MAX_RELOADS`≈3 兜底,耗尽仍 RELOAD 才抛 `SabrTerminalException`)。**Fix T(根治)**:对齐 LibreTube 让 getInfo 铸并缓存同一 token,从源头避免 RELOAD。
+
+**alpha.8 补(Phase 2 诊断实现,双线取证)**:崩溃修复后(alpha.7)RELOAD 诊断稳定,reloadTokenLen=144 恒定。用户定「先诊断验证 + 双线并行」,本轮**全部诊断级、不改默认播放行为**:
+- **Fix T 取证**(纯日志):`BiliTvPoTokenProvider` 各 provider 方法加入口/结果日志——一锤定音 getInfo 期间到底哪个被调(visionOS 若走 `getIosClientPoToken` → 直接 null → 缓存恒空 → 回退 resolve-minted 128B **WEB** token 与 visionOS 绑定的 ustreamerConfig 不匹配 → RELOAD)。
+- **Phase 2 取证**(RELOAD 回传,成功即试用):`SabrMediaFetcher.processPart` RELOAD 分支把 reloadToken 停车进 `SabrStreamRegistry.pendingReloads`(独立于 sessions,evict 不清,`MAX_RELOADS=3` 计数防死循环)→ `resolve()` 重进时 `consumeReloadToken` 取走 → `InnerTubeClient.postVisionOsPlayerReload`(新 VISION_OS client + GAPIS + body 镜像 NewPipe visionOS + `playbackContext.reloadPlaybackContext.reloadPlaybackParams.token`)**重打 /player** → `parseSabrData` 取新 serverAbrStreamingUrl+videoPlaybackUstreamerConfig → `buildSabrSessionFromReloadPlayer` 经 `fromSabrData`(仍用 visionOsSabrClientInfo)建新会话 → 成功即注册播放(证明 Phase 2 成立)。reloadToken 是 reload 凭证,**不是** poToken 替代(StreamerContext 仍用 provider-cached/resolve-minted 128B)。
+- 完整闭环(UI error-budget 解耦 + MAX_RELOADS 落 DASH)**留到诊断验证通过后**的下一 alpha。
+
+**alpha.9 补(Phase 2 cap 修复 + Fix T 取证定论)**:alpha.8 真机日志**一次 Phase 2 reload 尝试都没发过**——`storeReloadToken` 对每次 RELOAD part(rn=0..7,单次尝试约 8 个)都 +1 且从不重置,resolve 重跑时 count 已 16 > MAX=3,reload 尝试永远被 `cap exceeded` 跳过。
+- **cap 计数污染修复**:`consumeReloadToken` 原子 one-shot-per-token 本就保证每 token 一次,累积 count 对 loop 兜底冗余 → 每次 consume 到 token 就把 count 归零 → 每个 resolve 周期恰好试一次 visionOS /player reload。`MAX_RELOADS` 保留待完整闭环(DASH 落底)。
+- **Fix T 取证定论(根治方向改道)**:`NewPipeHolder: PoTokenProvider set` 但整个日志 **`BiliTvPoToken` 零条入口日志**——`getWebClientPoToken`/`getIosClientPoToken` 一次没被调,而 NewPipe visionOS `getInfo` 明明跑了(建出 `NewPipe SABR session`)。→ **visionOS getInfo 完全绕开 `BiliTvPoTokenProvider`**,`cached` 恒空是必然。根治方向**不是修 provider cache**,而是 resolver 自铸 token **注入 visionOS /player**(正与 Phase 2 回传同一件事;若 Phase 2 回传成功则无需另做注入)。
+
+**alpha.10 补(RELOAD 死循环真因定论 + 修复)**⚠️ *已推翻,见下文「alpha.83 更正」*:alpha.9 后真机日志**第一个视频 qPR91wHXPvo 能播、第二个 jNl6YkkzKxw 无限 RELOAD**。逐行对比两视频日志,定位真因是**两次选轨不一致**:
+- **Harvest 选轨**(会话格式):`buildSabrSessionFromNewPipe` 盲取最高分辨率首条视频流作会话 `videoFormatId`(jNl6YkkzKxw → itag313 2160p VP9)。服务端把会话绑定到这个格式。
+- **PlaybackInfo 选轨**(播放轨道):`buildSabrPlaybackInfo` 按 `youtubeDefaultQuality.maxHeight` 上限选实际播放 itag(jNl6YkkzKxw 无 1080p → 落 itag136 720p H.264)。
+- 两者不一致 → 服务端会话绑 313、客户端请求 136 → `RELOAD_PLAYER_RESPONSE`(part 46)。visionOS reload 重打 /player 后新会话**仍绑 313**,循环不止。第一个视频能播是因为其最高分辨率(itag137)恰好等于播放选轨,两者匹配。
+- **修复**:把 `youtubeDefaultQuality` 传进 `buildSabrSessionFromNewPipe` / `buildSabrSessionFromReloadPlayer`,用与 `buildSabrPlaybackInfo` 完全相同的 `maxHeight` 选档逻辑选会话 `videoFormatId`,而非盲取最高分辨率首条。两条 harvest 路径(NewPipe + visionOS reload)都修。补诊断日志(harvest 选轨 + PlaybackInfo 会话格式)确认匹配。
+
+**alpha.11 补(UA 与 visionOS clientInfo 不匹配 → RELOAD 全拒,独立于选轨不一致)**:alpha.10 后真机 2026-08-16 再次 `jNl6YkkzKxw` 无限 RELOAD(首 fetch 即 `RELOAD_PLAYER_RESPONSE`,count 1→…→8 死循环)。逐行对比两个视频日志定位**新增独立根因**在 [YoutubePlaybackResolver.kt](app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt) NewPipe 常规路径 `buildSabrSessionFromNewPipe`:
+- protobuf `ClientInfo` = **visionOS**(`visionOsSabrClientInfo()`:clientName=101/Apple/RealityDevice14,1/visionOS 25.6.0,逐字对齐 LibreTube `SabrClient.kt:398-405`),`ustreamerConfig` 也是 visionOS(NewPipe getInfo 返回)。
+- 但 `SabrSession.fromSabrData(...)` 的 **HTTP `User-Agent` 用了 `Client.WEB.userAgent`**(`Mozilla/5.0 (Linux; Android 13; Pixel 7)`),日志 473 行坐实 `ua=Mozilla/5.0 (Linux; Android 13; Pixel 7)`。
+- 服务端看到 protobuf 声明 visionOS 客户端、HTTP 头却是 Android Chrome → 判客户端标识不一致 → `RELOAD_PLAYER` 全拒。第一个视频 `qPR91wHXPvo` 能播是因为走 **SABR session reuse**(旧会话 UA 正确),没踩这条新路径。
+- 对照 visionOS reload 路径(`buildSabrSessionFromReloadPlayer`,`fromSabrData` 的 `userAgent = Client.VISION_OS.userAgent`)UA 已用对,本次只是重打 /player 失败(`no serverAbrStreamingUrl/ustreamerConfig → fallback`)没走到。LibreTube `SabrClient` 全组件 visionOS 一致(UA + ClientInfo + ustreamerConfig),故能播。
+- **修复**:NewPipe 路径 `userAgent = Client.WEB.userAgent` 改 `Client.VISION_OS.userAgent`,与 clientInfo/ustreamerConfig 对齐。
+
+**alpha.79 补(UA 单独不够——还得摘 WEB cookie/visitor)**:真机 alpha.78 验证 UA 已对齐(`ua=com.google.visionos.youtube/1.02(Reality...`),但同一视频 `jNl6YkkzKxw` **仍无限 RELOAD**(count 1→6→evict→auto-retry)。坐实**第二处不一致**:HTTP 请求仍带 `Cookie=`(555B)+ `X-Goog-Visitor-Id=`(11B)的 **WEB(Android Chrome)会话头**,与 visionOS protobuf 身份冲突 → 服务端仍判客户端不一致 → RELOAD 全拒。LibreTube `SabrClient` **完全不带 HTTP cookie/visitor**,会话身份全靠 protobuf 请求体(poToken/ustreamerConfig/playbackCookie/sabrContext)。
+- **修复**:
+  - `YoutubePlaybackResolver.kt` 两条路径(NewPipe `buildSabrSessionFromNewPipe` + visionOS reload `buildSabrSessionFromReloadPlayer`)的 `cookieHeader`/`visitorData` 从 WEB cookie/visitor 改空串 `""`。
+  - `SabrClient.kt` fetch + `SabrMediaFetcher.kt` fetch 的 `Cookie`/`X-Goog-Visitor-Id` 头**条件化**——`isNotBlank()` 非空才带,空串不发送(否则空 Cookie 头仍可能被服务端误判)。
+  - 至此 SABR 请求 HTTP 层只剩 `User-Agent=visionOS` + `Origin/Referer=youtube`,与 LibreTube 全 visionOS 一致。
+
+**alpha.13 补(移植 LibreTube 的 NewPipe 原生 PoTokenGenerator——RELOAD 根因定论 + 修复)**⚠️ *poToken/attestation 归因已推翻,见下文「alpha.83 更正」*:alpha.79 后真机 2026-08-16 同一视频 `jNl6YkkzKxw` **仍无限 RELOAD**。UA + 摘 cookie/visitor 都对齐后,对 LibreTube 的 SABR 请求做**逐字段对比**,HTTP 头 + 请求体(ClientInfo 6 字段 / ClientAbrState / StreamerContext)+ sabrUrl **全部一致**,剩余唯一差异 = **poToken**:
+- **BiliTV**:poToken 是 **resolve-minted 的 BotGuard WEB token**(FreeTube bgutils-js),[YoutubeBotGuard.kt](app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L239) 的 `buildContentBinding` 是 **PLACEHOLDER 占位**(`b=PLACEHOLDER&hh=PLACEHOLDER`)。同一枚 token 对 WEB /player 能过,对 visionOS SABR 被拒(服务端按 contentBinding 严格校验)→ RELOAD 全拒。
+- **缓存恒空铁证**:NewPipe visionOS getInfo 调 `getIosClientPoToken` → 原 [BiliTvPoTokenProvider.kt:63](app/src/main/java/com/kirin/mt/core/youtube/newpipe/BiliTvPoTokenProvider.kt#L63) 返回 null → `cached()` 恒空 → resolver 回退 resolve-minted token(日志 `poToken=128B(resolve-minted)` 坐实)。
+- **LibreTube 能播**:其 `SabrClient` 显式用 NewPipe 原生 `PoTokenGenerator`(内部 `PoTokenWebView` + `po_token.html` BotGuard JS)铸 contentBinding **正确**的 WEB token。
+
+**修复(用户指定方向:移植 LibreTube 的 NewPipe 原生 PoTokenGenerator,两项目 fork 同 `738c3d4`)**:
+1. `assets/po_token.html` ← LibreTube 复制(4.5KB,NewPipe 自带 BotGuard JS)。
+2. 移植 [PoTokenWebView.kt](app/src/main/java/com/kirin/mt/core/youtube/newpipe/PoTokenWebView.kt):WebView 加载 po_token.html 执行 BotGuard JS(`downloadAndRunBotguard`→Create 拿 challenge→runBotGuard 铸 contentBinding 正确的 botguardResponse→GenerateIT→integrityToken→`obtainPoToken`)。网络用 BiliTV OkHttp 直发 jnn Create/GenerateIT,**头对齐 LibreTube `ExternalApi.botguardRequest` 的 5 头**(UA/Accept/Content-Type json+protobuf/x-goog-api-key/x-user-agent),**不带 Cookie / X-Goog-Visitor-Id**——实证 LibreTube 的 externalApi 是纯 OkHttpClient、无 cookie jar 桥接,GenerateIT 照样铸出正确 token;contentBinding 正确性来自 WebView 指纹 + challenge 数据,非 cookie。
+3. 移植 [NewPipePoTokenGenerator.kt](app/src/main/java/com/kirin/mt/core/youtube/newpipe/NewPipePoTokenGenerator.kt) 实现 `PoTokenProvider`(`getVisitorDataFromInnertube` + `InnertubeClientRequestInfo.ofWebClient` 铸 WEB token),**新增** `cached()` / `ensureWebToken(videoId)`,并**让 `getIosClientPoToken` 不再返回 null**——改走 `getWebClientPoToken` 同路径铸 WEB token 填缓存(NewPipe visionOS getInfo 也填缓存,resolver 不再回退 resolve-minted)。
+4. AppContainer / NewPipeInit / resolver 换用新 provider;resolver `buildSabrSessionFromNewPipe` 读 token 前先 `ensureWebToken(videoId)` 兜底。
+5. 旧 `YoutubeBotGuard` / `BiliTvPoTokenProvider` 保留不动(SABR 不再用,但 /player 等仍走 BotGuard)。
+
+至此 SABR 请求的 poToken 为 NewPipe 原生铸的 contentBinding 正确 token,与 visionOS 会话兼容,应根治 RELOAD 死循环。
+
+**alpha.14 补(推翻 alpha.13 定论——visionOS SABR 请求**不带 poToken**,对齐 LibreTube)**:alpha.13 移植 NewPipe 原生 PoTokenGenerator 后真机 2026-08-16 同一视频 `jNl6YkkzKxw` **仍无限 RELOAD**(日志 `poToken=120B(newpipe-native)` 坐实新 token 已用上)。对 LibreTube 与 BiliTV 的 SABR 请求做**逐层对比**,唯一实质差异 = **poToken**:
+- **LibreTube 首请求不带 poToken**:其 [PoTokenGenerator.kt:114](e:/GITHUB/LibreTube/app/src/main/java/com/github/libretube/api/poToken/PoTokenGenerator.kt#L114) `getIosClientPoToken` 返回 **null**;NewPipe fork getInfo 只在 `fetchIosClient` 调 `getIosClientPoToken`(yse.java:879),`fetchVisionOsClient`/`fetchWebClientMetadataAndSetThumbnails` 都不铸 token → getInfo 期间缓存恒空 → [SabrClient.kt:178](e:/GITHUB/LibreTube/app/src/main/java/com/github/libretube/player/parser/SabrClient.kt#L178) `getCachedWebClientPoToken()` 返回 null → 请求 `setPoToken(ByteString.empty())` **不带 poToken 且能播**。
+- **BiliTV 带 120B token 被拒**:移植时把 `getIosClientPoToken` 改成铸 WEB token 填缓存,getInfo 期间缓存被填满,`ensureWebToken` 拿到 120B token 塞进 SABR 请求 → 服务端按会话 visitor 不匹配(WEB-visitor 铸的 poToken vs visionOS /player 会话)RELOAD 全拒。
+- **根因不是 contentBinding(alpha.13 定论错),而是任何 poToken 都不该发**。alpha.13 的「resolve-minted PLACEHOLDER contentBinding」只是表象——换成 NewPipe 原生 contentBinding 正确的 token 照样被拒,因为问题在「发了 poToken」本身。
+
+**修复**:resolver 两条路径(NewPipe + visionOS reload)`SabrSession.fromSabrData` 的 poToken 改空串,不再 `ensureWebToken`/回退 resolve-minted,poToken 空也不回退;getInfo 仍走 NewPipe 铸 token(供 iOS /player 请求),但 SABR 请求不依赖它。改动 [YoutubePlaybackResolver.kt](app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt) 两处 + 诊断。
+
+**诊断(修复时加)**:①`SabrMediaFetcher` RELOAD 日志加 `potSent=${poTokenState.currentPoToken.size}B`——修复后若还 RELOAD,`potSent=0B` 直接证明不是 poToken 的锅;②resolver 会话日志显式 `poToken=0B(aligned-LibreTube-no-poToken)`;③复用 `SabrSession:` 日志 `poToken=0B` + fetch 日志 `pot=0B body=1728B`(比 1848B 小 ~120B)自动确认 poToken 已摘。
+
+**alpha.15 补(推翻 alpha.14 定论——根因是 cpn 不匹配,不是 poToken)**:alpha.14 摘 poToken 后真机 2026-08-16 同一视频 `jNl6YkkzKxw`(2160p itag313)**仍无限 RELOAD**(日志 `potSent=0B` 坐实 poToken 无关),但 `3wO2mW3eylw`(1080p itag137)能播;用户确认 **LibreTube 能播 jNl6YkkzKxw**。逐层对比 LibreTube 与 BiliTV 的 SABR 请求,唯一实质差异 = **cpn**:
+- **LibreTube 用 visionOsCpn**:直接用 NewPipe 原始 sabrUrl(保留 `&cpn=<visionOsCpn>`)。ustreamerConfig 来自同一 visionOS /player 响应、**绑定 visionOsCpn**——fork `YoutubeStreamExtractor.java:713-714` 把 `&cpn=` 追加到 serverAbrStreamingUrl。
+- **BiliTV 用随机 cpn**:resolver 把 cpn strip 掉、`fromSabrData` 生成随机 cpn → SABR 请求 cpn 与 ustreamerConfig 绑定不匹配 → 服务端拒会话 RELOAD。
+- **3wO2mW3eylw 能播**:服务端对 1080p 不强制校验 cpn,2160p 严格校验。
+
+**修复**:resolver 两条路径(NewPipe + visionOS reload)新增 `queryParam` 提取 `visionOsCpn` 传给 `fromSabrData` 的 `cpn` 参数,不再用随机 cpn。诊断:会话日志加 `cpn=${visionOsCpn ?: "random"}` 确认修复生效。**另发现唯一请求体差异** = `ClientAbrState.audioTrackId`(field69,LibreTube 设、BiliTV 未设),jNl6YkkzKxw 有 5 音轨,若 cpn 修复后仍 RELOAD 则补该字段。
+
+**alpha.16 补(推翻 alpha.15 定论——根因是 audioTrackId 缺失,不是 cpn)**:alpha.15 用 visionOsCpn 后真机 2026-08-16 同一视频 `jNl6YkkzKxw`(2160p itag313,5 音轨)**仍无限 RELOAD**(日志 `cpn=3JCKzaTn291g3g5n` 与 sabrUrl `&cpn=` 一致,坐实 cpn 修复已生效、无关),但 `3wO2mW3eylw`(1080p itag137)能播。逐层对比 LibreTube 与 BiliTV 的 SABR 请求体,唯一实质差异 = **`ClientAbrState.audio_track_id`(field69)**:
+- **LibreTube 设** [SabrClient.kt:375](e:/GITHUB/LibreTube/app/src/main/java/com/github/libretube/player/parser/SabrClient.kt#L375) `.setAudioTrackId(audioFormat?.stream?.audioTrackId.orEmpty())`——当前选中音轨 id(如 "en.4"),单音轨发空串。
+- **BiliTV 未设**:`ClientAbrStateInput` 无该字段、`encodeClientAbrState` 未编码 field69。多音轨视频服务端按会话音轨不匹配 RELOAD_PLAYER 全拒;1080p 不强制校验故能播(与 alpha.15 同模式)。
+- 权威 schema `client_abr_state.proto`:field69 `audio_track_id`(string)。
+
+**修复**:①`SabrProto.ClientAbrStateInput` 加 `audioTrackId`,`encodeClientAbrState` 编码 `w.string(69, it)`;②两条 fetch 路径(`SabrMediaFetcher` media3 实际播放路径 + `SabrClient`)按 itag 命中 `session.audioTracks` 当前音轨 id——单音轨 resolver 折叠成 `"default"`(audioTrackId null),对齐 LibreTube 发空串 `""`(非 `"default"`),多音轨发真实 id(如 `en.4`)。**连带修复**`ProtoReader.nextField`(ProtoWire.kt)对 malformed varint 负长度的越界——原只判 `s+len>end` 正溢出,负长度 `copyOfRange(s,s+len)` 抛 `IllegalArgumentException(from>to)`/`ArrayIndexOutOfBounds`(真机 RELOAD 间歇 `decode failed: 34 > -618552673` / `length=37; index=37`),补 `len<0` 判越界。
+
+**alpha.81(复刻 LibreTube 多 Representation manifest——itag313 RELOAD 根因定论 + 修复)**:真机 2026-08-16(`logs_live.log` 19:35 窗口)坐实 **itag313(2160p VP9 25fps)被 RELOAD,itag315(2160p VP9 60fps)能播**——两者同为 SDR、audio xtags=null、audioTracks=5,真机是旧版本(无 audioTrackId 修复),音频配置完全一致(`audio=FormatId(itag=139, xtags=null)` 无 audioTrackId 字段)。对照:
+- **itag313 会话**(`Khsq-X3d9LJDmpMN0_g0Ag`,19:35:06):`video=FormatId(itag=313, xtags=null, height=2160)` → 19:35:07/08/11 连续 `RELOAD_PLAYER_RESPONSE` → evict → re-harvest 又选回 313 → **死循环,从未真正播放**。
+- **itag315 会话**(`K6ygr-1KklVlQV6QHMc31Q`,19:35:53):`video=FormatId(itag=315, xtags=null, height=2160)` → 日志尾部 `MEDIA_END itag=315 seq=4 chunks=679 bytes=22204473`(**实际下载 679 段 / 22MB**)→ 被 `InterruptedException` evict(用户主动停止),**非 RELOAD,正常播放**。
+
+**根因**:我们的 SABR resolver 在 harvest 时硬选一个 itag——`buildSabrSessionFromNewPipe` 用 `maxByOrNull { it.height }` 选列表里**第一个** 2160p(即 itag313),RELOAD 后 re-harvest 又选回 313 → 死循环。**LibreTube 的做法**:manifest 塞进**全部**视频流(按 mimeType 分组,`SabrManifest.kt` 的 `videoStreams.groupBy { it.mimeType }`),由 ExoPlayer 的 track selection 选——默认选轨"同分辨率选最高 bitrate"→ 选 itag315(60fps bitrate 高),绕开 313;选中后 `selectFormat()` 把该 itag 设为 `videoFormat`,请求体 `preferredVideoFormatIds` 带它。我们 `SabrMediaPeriod.selectTracks`→`selectFormat` 机制已通、`preferredVideoFormatIds` 已用选中 itag、`session.videoFormats` 已存全部 FormatId、harvest 的 `raws` 带全部视频流完整元数据——**缺的只是 manifest 只建了单视频 Representation**。
+
+**修复**(commit ab99413,run 31946273352):①`buildSabrPlaybackInfo` 建**全部视频轨** `videoTracks=allVideoTracks`(每个 itag 各一条,`buildSabrTrack` 按 itag 遍历,不再只建选中 itag 一条);②`SabrManifest.fromSession` 建**多视频 Representation** `videoReps`(每个 track 按 itag 查 FormatId 建 `Representation.fromTrack`),ExoPlayer 默认选轨选最高 bitrate 档绕开 313。**暂时去掉清晰度选择功能**:PlayerScreen Main 面板移除"清晰度"项(只剩弹幕/倍速,rowCount 3→2)、Quality 分支改死代码;MobilePlayerScreen 移除底栏 HD 画质按钮 + DropdownMenu + `showQualityMenu`。选轨/请求机制(`selectFormat`/`preferredVideoFormatIds`/`initializedFormats`)已支持多 Representation,未改。**待真机**:播 2160p 视频确认日志 `defaultItag=315`(而非 313)、无 RELOAD 死循环、能正常播放;若 ExoPlayer 选轨在某些视频仍选到 313,再评估 harvest 选 315 或 RELOAD 降级换 itag。
+
+**alpha.82(多 Representation 修音频 itag 暴露成视频轨——itag248 RELOAD 根因定论 + 修复)**⚠️ *itag 归因已推翻,见下文「alpha.83 更正」*:alpha.81 多 Representation 生效后真机仍不能播。真机 2026-08-16(`logs_live.log` 20:26,视频 `jNl6YkkzKxw`):`SABR PlaybackInfo: ... videoTracks=14`(多 Representation 已生效,14 个视频轨),但 ExoPlayer 实际请求 **`itag=248` + `itag=139`**——**当时判断 itag248 是 Opus 音频**(实际是 720p VP9 视频,见 alpha.83 更正)→ 服务端对 itag248 回 `RELOAD_PLAYER_RESPONSE` → evict → re-harvest → 死循环。
+
+**根因**:`SabrManifest.fromSession` 把 `videoFormats` 里**全部**条目都建成视频轨、塞进**同一个** video AdaptationSet;而 `videoFormats` 来自 `info.videoOnlyStreams`(NewPipe),**其中混入了音频 itag248**(NewPipe 把 Opus 流误分类进 videoOnlyStreams)。于是 itag248 被 `Representation.fromTrack(..., C.TRACK_TYPE_VIDEO)` **强制建成视频 Format**,ExoPlayer 在 video AdaptationSet 里选中 itag248 → 请求不存在的视频 itag → RELOAD。alpha.81 之前(单 Representation)只建选中 itag 一条轨,itag248 不被暴露,所以没这个问题;多 Representation 把混入的音频 itag 也暴露了。
+
+**LibreTube 对照**(已核对源码):LibreTube **不显式按 itag 过滤**,靠两个机制天然把音频隔开——①按 mimeType 分组(`SabrManifest.kt` 的 `videoStreams.groupBy { it.mimeType }`,每个 mimeType 一个独立 video AdaptationSet);②按实际 mimeType 建 Format(`Representation.kt` 的 `MimeTypes.isVideo(stream.mimeType)` 决定建 video 还是 audio Format)。所以即使音频 itag 混进 videoStreams,也被建成 audio Format,ExoPlayer 不当视频轨选。**我们的差异**:`Representation.fromTrack` 用 `trackType==C.TRACK_TYPE_VIDEO` 决定建视频 Format(无视实际 mimeType),且 `SabrManifest.fromSession` 把所有视频轨塞进同一个 AdaptationSet。
+
+**修复**(commit 9189726,run 31947665038):①`Representation.fromTrack` 建视频 Format 的判断从「仅按 trackType」改成「`trackType==C.TRACK_TYPE_VIDEO && MimeTypes.isVideo(track.mimeType)`」,否则走音频 Format(含 alpha.74 的 containerMimeType 兜底,音频路径不受影响)——真实视频轨(mimeType video/*)→ 视频 Format(不变),混入的音频 itag248(mimeType audio/webm)→ 音频 Format,音频轨(trackType=AUDIO)→ 音频 Format(不变);②`SabrManifest.fromSession` 视频轨按 `mimeType` 分组、每个 mimeType 一个 video AdaptationSet(对齐 LibreTube `groupBy { it.mimeType }`),音频保持单默认轨。**不改**:`buildSabrPlaybackInfo` 建全部视频轨(多 Representation 基础)、`SabrMediaPeriod`/`SabrMediaFetcher`/`SabrClient` 选轨与请求机制、清晰度选择功能(暂时去掉,ExoPlayer 自动选轨)。**待真机**:播 `jNl6YkkzKxw`(2160p,5 音轨)确认日志请求的是**视频 itag(315 或 313)而非 itag248**、无 RELOAD 死循环、能正常播放;确认清晰度菜单仍不可用(ExoPlayer 自动选轨)。
+
+**alpha.83(修 itag248 被暴露成视频轨——alpha.82 mimeType 方案真机证伪,改按 codec 过滤)**⚠️ *codec=opus 判断已被 alpha.83 自身推的 dump 推翻,见下文「alpha.83 更正」*:alpha.82 的 fix(9189726,按 mimeType 分组 + `MimeTypes.isVideo` 建视频 Format)**没修好**。真机 2026-08-16 21:04 日志(`logs_live.log`,视频 `jNl6YkkzKxw`)仍显示 ExoPlayer 请求 **itag248 + itag139**,当时判断 itag248 是 Opus 音频却被当视频轨选 → 服务端每次回 `RELOAD_PLAYER_RESPONSE` → evict → re-harvest → 死循环 → 播放失败。
+
+**新根因(已核对 NewPipe 源码)**:itag248 在 NewPipe 的 `ItagItem` 表里被标成 `VIDEO_ONLY, WEBM, "1080p"`(上游 TeamNewPipe 和 LibreTube fork 都一样)。而 `MediaFormat.WEBM` 的 mimeType 是 `"video/webm"`。所以 NewPipe 给 itag248 的 mimeType 是 `video/webm`(错的,它实际是 Opus 音频)→ `MimeTypes.isVideo("video/webm")` 返回 true → **mimeType 过滤不掉 itag248**。alpha.82 的 mimeType 方案结构性失效。
+
+**可靠信号 = codec**:NewPipe 的 `VideoStream.codec` 来自原始 /player mimeType 的 codecs 参数(`YoutubeStreamExtractor.java:1352-1364`),不经过 ItagItem 误分类。itag248 原始 mimeType 是 `audio/webm; codecs="opus"` → codec = `"opus"`(音频 codec)。真视频 itag 的 codec 是 vp9/avc1/av01/vp8。
+
+**LibreTube 新认识**:LibreTube 的 SABR 用 **Piped API**(`streams.videoStreams` 服务端已正确分离音视频),不是 NewPipe extractor。所以它 `groupBy { it.mimeType }` 分组后全是真视频,没有 itag248 混入问题。alpha.82 文档的「LibreTube 对照」没提这一点,认识不完整。
+
+**修复方案(按 codec 过滤)**:`buildSabrSessionFromNewPipe` 建 `videoFormats` 时按 codec 过滤掉音频 codec(`it.height > 0 && !isAudioCodec(it.codec)`),新增 `isAudioCodec(codec: String?)` 判断 codec 是否以音频 codec 前缀开头(`opus`/`mp4a`/`ac-3`/`ec-3`/`flac` 等)。这样 itag248(opus)根本不会进 videoFormats → 不进 manifest 视频轨 → ExoPlayer 只能选真视频轨 → itag 与会话绑定一致 → 不再 RELOAD。**不改**:`SabrManifest.fromSession` 的 mimeType 分组(保留,无害)、`Representation.fromTrack` 的 isVideo 判断(保留,无害)、`buildSabrPlaybackInfo` 建全部视频轨。**诊断先行**:先推 codec dump 日志真机确认 itag248 的 codec 确实是 `opus`(而非空/其它),验证 codec 过滤前提成立,再改过滤逻辑。
+
+**alpha.83 更正(诊断 dump 推翻 itag 归因——RELOAD 真因是 ustreamerConfig 来源)**:alpha.83 推的 codec dump 日志真机(2026-08-16 22:33,`logs_live.log`)打印 `NewPipe videoFormats dump: ... 248=vp9 ...`——**itag248 的 codec 是 `vp9`,不是 `opus`**。即 itag248 是 **720p VP9 视频**(`video/webm`),**根本不是 Opus 音频**。这推翻了 alpha.82/83 的整套 itag 归因:
+- 「NewPipe 把音频 itag248 误分类进 videoOnlyStreams」**不成立**——itag248 本就是视频流,NewPipe 分类正确。
+- 「按 mimeType/codec 过滤音频 itag 即可解 RELOAD」**前提不存在**——没有音频 itag 混入,过滤是 no-op。
+- alpha.82 的 mimeType 分组 + `Representation.fromTrack` isVideo 守卫、alpha.83 计划的 codec 过滤**都修不到 RELOAD**(RELOAD 与 itag 选择无关)。
+
+**RELOAD 真因定论(对齐 LibreTube 实际路径)**:LibreTube **默认走 Piped 后端**(`MediaServiceRepository: else -> PipedMediaServiceRepository()`,NewPipe 只是可选本地提取模式),其 `/streams/{id}` 带 poToken → YouTube 回**已 attested 的 WEB-bound** `serverAbrStreamingUrl` + `videoPlaybackUstreamerConfig`;首请求发空 poToken,服务端回 `status=2` 时才铸 WEB poToken 续命。我们走 NewPipe(visionOS 客户端 + 错配/空 poToken)→ 拿**未 attested 的 visionOS-bound** ustreamerConfig → 对需要 attestation 的视频(jNl6YkkzKxw)服务端直接 `RELOAD`(不可续命,到不了 status=2);不需要 attestation 的(D2kXTmSPUJo)放行。LibreTube `SabrClient` 硬编码 visionOS `ClientInfo`(Piped/NewPipe 通用),故 visionOS ClientInfo **不是**差异点,差异**纯粹在 ustreamerConfig 来源**。下游 SABR 机制(会话/manifest/registry/ExoPlayer 接线 + status=2 同步重铸 poToken)已与 LibreTube 对齐且可复用。**修复**:接 Piped 后端产出 SABR 会话(对齐 LibreTube 默认路径),而非继续在 NewPipe/itag 上打转。
+
+**关于「RELOAD=poToken/attestation 失败」的认识更正**:alpha.13-16/76 等把 RELOAD_PLAYER_RESPONSE 解读为「poToken/attestation 校验失败」是**不准确的**。LibreTube 源码注释明确 RELOAD_PLAYER_RESPONSE 语义是「streams expired or new config」——会话/配置被判无效需重取,attestation 走的是 `STREAM_PROTECTION_STATUS status=2/3` **另一通道**(status=2 续命重铸 poToken,status=3 terminal)。RELOAD 与 status 是两条独立的失败路径,不要混为一谈。
+
+**关于「两次选轨不一致」的认识更正**(alpha.10):alpha.10 把 RELOAD 归因于「harvest 盲取最高分辨率首条 vs 播放按默认画质选档 → 会话绑 313 请求 136」。但活动路径 `SabrMediaFetcher.fetchStreamData` 已把**播放器 `selectFormat` 选中的 videoFormat** 编码进 `preferredVideoFormatIds` 发出(见 [SabrMediaFetcher.kt:214/261](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt)),即请求发的是播放器实际选中的 itag,而非会话绑定的 `session.videoFormatId`。故「对齐 `session.videoFormatId` 与播放器选中 itag」是 **no-op**(本来就发选中 itag),RELOAD 真因仍是 ustreamerConfig 来源,非选轨不一致。
+
+**§6.10 Path C 认识更正**:§6.10 / alpha.15-16「逐字对齐 LibreTube NewPipe」对比的是 LibreTube 的**可选 NewPipe 提取模式**,而非其**默认 Piped 路径**。LibreTube 能播 jNl6YkkzKxw 是 Piped 路径成果,不是 NewPipe。故「逐字对齐 LibreTube NewPipe SABR」对错了参照系——对齐的应是 LibreTube 的 **Piped 路径**(ustreamerConfig 来源),NewPipe 对齐只能保证下游协议层一致,修不到 attestation 根因。
+
+**alpha.84(接 Piped 后端 opt-in 修 RELOAD + itag 无关诊断 + 文档纠误)**:落地「alpha.83 更正」的修复方案——接 Piped 后端产出 SABR 会话,而非继续在 NewPipe/itag 上打转。实现:
+
+- **PipedClient/PipedModels**(`core/youtube/piped/`):`GET {instanceUrl}/streams/{videoId}`(对齐 LibreTube `PipedMediaServiceRepository`),拿已 attested 的 WEB-bound `serverAbrStreamingUrl` + `videoPlaybackUstreamerConfig`。模型全字段可空/默认,实例版本漂移不崩;HTTP/解析失败返回 null 由 resolver 回退 NewPipe。默认实例 `DEFAULT_PIPED_INSTANCE = https://pipedapi.kavin.rocks`(对齐 LibreTube 默认 kavin.rocks)。
+- **resolve() Piped opt-in 分支**(`YoutubePlaybackResolver`):`resolve()` 顶部(在 poToken mint 之前)读 `appSettingsStore.settings`,若 `youtubeUsePiped` 开 → 走 Piped 拿 SABR 数据 → `buildSabrSessionFromPiped` 把 `PipedStreams` 转成与 `newPipeVideoRaw`/`newPipeAudioRaw` **同形**的 `JsonObject` raws(复用现有 `buildSabrPlaybackInfo` + `buildSabrTrack`,免重复 ~80 行选轨逻辑)→ `registerByVideoId` 建会话返回。Piped 失败/无 SABR 数据自动回退 NewPipe(原路径不变)。Piped 首请求发**空 poToken**(对齐 LibreTube Piped:status=2 时才铸 WEB poToken 续命)。
+- **itag 无关诊断**(`sabrForceSessionVideoItag`):`SabrStreamRegistry.Entry` 加 `forceSessionVideoItag` 字段;`SabrMediaFetcher.fetchStreamData` 开启时强制 `videoFormat = session.videoFormatId`(跳过 `selectFormat` 按声明 itag 重选)——证伪「某 itag(如 itag313)是 RELOAD 根因」红绯鱼。锁死后仍 RELOAD → 根因在 ustreamerConfig 来源(已由 alpha.83 更正定论)。Piped 路径默认开此项(配合 Piped 已 attested config 验证 itag 确实无关);NewPipe 路径可手动开。
+- **设置项**:`youtubeUsePiped`(开关)/`pipedInstanceUrl`(实例 URL,空=默认)/`sabrForceSessionVideoItag`(诊断开关)三字段入 `AppSettings`/`AppSettingsStore`(DataStore 持久化);`SettingsScreen` YouTube 区加三行(`SettingsPipedDialog` 编辑实例 URL,两个 `SettingsToggleRow`),焦点索引体系扩 35/36/37 + `settingsItemToLazyIndex` 全量重算(webdav..player-log-overlay +3);`AppShell` 接三回调。默认全关(先走现有 NewPipe,RELOAD 卡死时手动开 Piped 作回退/诊断)。
+- **文档纠误**:已就地纠正 itag248=opus(实为 vp9 720p 视频)、RELOAD 真因=ustreamerConfig 来源(visionOS 未 attested,非 itag/poToken/ClientInfo)的错误认识,保留排查痕迹(⚠️ 推翻指针 + 「alpha.83 更正」权威块,不删调查历史)。
+
+**真机验证状态**:待测。alpha.84 默认全关,行为与 alpha.83 一致;手动开 `youtubeUsePiped` 后走 Piped 路径,预期 jNl6YkkzKxw(需 attestation)能播、D2kXTmSPUJo 仍能播。若 Piped 实例不可达/被限流,自动回退 NewPipe(不退化)。`sabrForceSessionVideoItag` 开后预期 NewPipe 路径仍 RELOAD(证伪 itag 红绯鱼)。
+
+**alpha.85(移动端设置页补 Piped 入口——alpha.84 验证受阻根因 + 修复)**:alpha.84 推送后真机仍"有的能播有的不行"(`logs_live.log` 2026-08-17 00:07 窗口:jNl6YkkzKxw 94 次 RELOAD,D2kXTmSPUJo/-GZatCruA8c 各 2 次能播)。排查定位**两个叠加问题**:
+
+1. **装的包是 Piped 代码之前的老包**:真机日志 `App Version: 3.0.2-alpha.19 (3002119)` → tag `v3.0.2-alpha.19` → commit `67d60ff`(8/16 21:45),而 Piped 修复在 `03d6e11`(8/16 23:49)。该包 resolve() **根本没有 Piped 分支**,整份日志零条 `source=Piped`/`Piped path` 行,全部 `source=NewPipe` → 自然仍是 alpha.83 的旧行为。
+2. **移动端设置页没有 Piped 开关入口**:alpha.84 的三行(启用 Piped / Piped 实例 / 锁定会话 itag)**只加到 TV 端 `ui/settings/SettingsScreen.kt`(L1024)**,移动端 `ui/mobile/settings/MobileSettingsScreen.kt` 漏了。用户在移动端无处开 `youtubeUsePiped` → 即便装含 Piped 代码的包也恒 false → 永远走 NewPipe 旧路径。这是用户报告"移动版里没有实例设置位置"的直接根因。
+
+**修复**(commit `22475dc`):照移动端已有 `MobileIptvSection` 折叠段模式,在 `MobileSettingsScreen.kt` 加 `MobileYoutubeSabrSection`(「YouTube SABR 实验」折叠段):启用 Piped 开关 → `setYoutubeUsePiped`、Piped 实例行(点按 `MobilePipedEditDialog` 编辑,`normalizeIptvUrl` 补协议,空串=默认 `DEFAULT_PIPED_INSTANCE`)→ `setPipedInstanceUrl`、锁定会话 itag 开关 → `setSabrForceSessionVideoItag`;新增段头字符串 `settings_youtube_sabr_section`。store setter / resolve() Piped 分支 / `PipedClient` 注入此前均已就位,本次仅补移动端 UI 入口。移动端设置页直接调 `appSettingsStore` setter(与其它移动端设置同款),无需穿 AppShell 回调。
+
+**真机验证状态**:待测(装新 debug 包后)。CI 已绿(debug 运行 `31957948314`,`BiliMT-debug.apk` 已更新到 'debug' release)。需装含本修复的新 debug 包(旧 `alpha.19` 包无 Piped 代码),进移动端「设置 → YouTube SABR 实验」段开「启用 Piped 后端」(实例留空=默认 `kavin.rocks`),再播 `jNl6YkkzKxw` 验证 Piped 路径修好 RELOAD,同时播 `D2kXTmSPUJo` 确认无回归。
+
+**alpha.85b(commit `354a979`,恢复 attested WEB /player 经典路径修 4K RELOAD——真机证伪 + 回退)**:在 22475dc(移动端 Piped UI)之后另推一个 alpha.85 提交,改走 attested WEB /player 经典路径作 SABR 主路径(`buildSabrSessionFromWebPlayer`),试图修 jNl6YkkzKxw 的 4K(itag313)RELOAD 死循环。前提假设是 docs §6.7 row 75「sabrUrl 网关端点无 n-param」也适用我们 WEB /player 的 sabrUrl。**真机证伪**(`logs_live.log` 2026-08-17,`App Version: dev.r1215`):RELOAD 死循环确实消失(attested config 不再被协议层拒),但所有 SABR fetch 返回 **HTTP 403**(Server=gvs 1.0,Content-Length=0)——alpha.18 同症状。根因:**WEB /player 的 `serverAbrStreamingUrl` 带 n-param**(与 fork visionOS sabrUrl 无 n 不同),plasma WASM 致 n-decrypt 结构性失效(§6.18 [[youtube-plasma-wasm-n-decrypt]]),OkHttp POST 未 transform 的 sabrUrl 被拒;且**连 ≤1080p 都回归 403**(n-param 对所有 itag 一视同仁)。**docs §6.7 row 75「sabrUrl 无 n-param」只适用 fork visionOS sabrUrl,不适用我们 WEB /player 的 sabrUrl**——此前认识错误。
+
+**git 历史补证(推翻「L756 一直写死空」误判)**:查 git 发现 alpha.80(`7d0ed49`)L687 `Base64.encodeToString(poTokenForSabr!!...)` **真把 poToken 接进了 fromSabrData 并真测过** visionOS config + WEB-visitor poToken(首请求带 token 尝试 upfront attestation)→ `RELOAD_PLAYER_RESPONSE`(visitor 不匹配,L767 注释「带 120B WEB-visitor poToken 被 visionOS 服务端按会话 visitor 不匹配 RELOAD 全拒」是对的)。alpha.14(`58d3ca1`)改空 → alpha.80 改回带 → 真测 RELOAD → 又改回空。此前以为「poToken 从未进 SABR 会话」是误判。
+
+**alpha.86(commit `e801402`,回退 alpha.85b + 4K 终态定论)**:回退 alpha.85b 的 WEB 经典主路径,恢复 alpha.84 的 NewPipe visionOS 主路径(`buildSabrSessionFromNewPipe`,n-free,≤1080p 走 status=2 刷新可播)= 回到 ≤1080p 已知可播状态。移除死代码 `buildSabrSessionFromWebPlayer` + `Base64` import。至此 **4K 两条 OkHttp 直连路全堵且真机证伪**:
+
+| 路径 | 失败 | 证伪于 |
+|---|---|---|
+| visionOS config + WEB-visitor poToken(首请求带 token) | RELOAD_PLAYER_RESPONSE(visitor 不匹配) | alpha.80 `7d0ed49` |
+| WEB config + WEB-visitor poToken(attested 经典路径) | HTTP 403(sabrUrl 带 n-param,plasma WASM 解不了) | alpha.85b `354a979` |
+
+4K 唯一曾跑通的是 alpha.20-25 **WebView harvest**(浏览器 WASM 做 n-transform + 浏览器全 WEB 一致 attested body,同时解决 n-param 和 attestation),alpha.71 退役(疑跨 minter 60s,但 [[sabr-status2-sync-refresh]] 显示 alpha.68 同步刷新已修 60s 竞态,「跨 minter 是否真致命」未干净验证)。
+
+**用户 2026-08-17 决定:接受 ≤1080p(与 LibreTube 同档,LibreTube 同 fork 也只到 1080p),放弃 4K。** alpha.86 即 4K 终态——≤1080p 可播,>1080p(2K/4K)RELOAD(需 upfront attestation,visionOS 未 attested 且无 visionOS-visitor poToken 可铸)。若未来重开 4K,唯一方向是恢复 WebView harvest(先调研能否选到 itag313 + 评估 60s 修复)或改 fork 让 visionOS /player 带 visionOS-visitor poToken(重活)。见 memory `youtube-4k-two-paths-dead-accept-1080p`。
+
+**真机验证状态**:待测(装 alpha.86 debug 包后)。预期 ≤1080p 回归 403 已修(= alpha.84 行为),D2kXTmSPUJo/-GZatCruA8c 仍能播,jNl6YkkzKxw 仍 RELOAD(>1080p,与 LibreTube 同档,已知接受)。装新包需先卸载 alpha.85b debug(签名不同:alpha.85b 装的是 354a979 即 7565f89 之前的随机 debug.keystore,alpha.86 装的是 7565f89 起的固定 release keystore,签名不一致无法覆盖)。
+
+**alpha.9X(2026-08-17,DASH 兜底实测能出 4K——推翻「4K 两路全堵/接受 ≤1080p」终态)**:真机 `logs_live.log` 2026-08-17 11:20(`App Version: dev.r1215`),正是 alpha.86 判死、SABR 无限 RELOAD 的同一视频 `jNl6YkkzKxw`,本次**经 SABR 死循环守卫 + 自合成 DASH 兜底,实际播放出 2160p(4K)VP9**:
+
+```
+YtSabr  : NEXT_REQUEST_POLICY backoff=0ms ... maxTimeSinceReq=60000
+YtSabr  : SabrDataSource open: seg=0 itag=139 InterruptedException: null → evict sid=P90tPxAR4HiCq
+YtResolver: SABR dead-loop guard: videoId=jNl6YkkzKxw 已 RELOAD(reloadCount=8)→ 跳过重建,直接 DASH/HLS 兜底
+YtResolver: 自合成DASH diag: videoCandidates=14 audioCandidates=5
+YtResolver: 自合成DASH diag: v itag=313 2160p url=1110B init=[0-220] index=[221-4131] codec=vp9
+YtResolver: 自合成DASH diag: v itag=271 1440p ... codec=vp9
+YtResolver: 自合成DASH diag: v itag=137 1080p ... codec=avc1.640028
+YtResolver: 自合成DASH diag: a itag=139 ... codec=mp4a.40.5
+YtResolver: 兜底: 自合成 DASH from NewPipe(video itag313 2160p + audio itag139) → buildDashManifest 合成 MPD DashMediaSource
+YtResolver: NewPipe-first → DASH/HLS 兜底 playback ready: videoId=jNl6YkkzKxw → DASH
+BiliMT:MobilePlayer: onRenderedFirstFrame (视频首帧已渲染)
+BiliMT:MobilePlayer: videoFmt=...vp9... [3840, 2160] audioFmt=mp4a.40.5
+BiliMT:MobilePlayer: playerState=3 pos=184954 (稳定推进到 3 分钟,无 RELOAD/无错误)
+```
+
+**关键新发现——alpha.86 的「4K 两路全堵」漏了第三路**:
+- alpha.86 那张 4K 失败表列的**两路都是 SABR 协议路径**(visionOS config + WEB poToken → RELOAD;WEB config + WEB poToken → 403 n-param),结论「>1080p 需 upfront attestation」只对 SABR 成立。
+- 但 **DASH 自合成直链是第三条路**:NewPipe `videoOnlyStreams` 直接给**已解密的 `content` 直链 URL**(不含 n-param、不依赖 attestation),用这些拼 `<SegmentBase>` 合成 MPD `DashMediaSource` 播放——**绕开 SABR 的 attestation 要求,直接出 2160p VP9**。itag313 2160p 之所以被 NewPipe 解密,是因为 NewPipe 铸 token 时已过鉴权,直链是 attested 的。
+- 故「4K 两路全堵」**表述需修正为「4K 两条 SABR 路全堵,DASH 直链路可出 4K」**;「用户接受 ≤1080p」也**不再是终态**——DASH 兜底可恢复 4K。alpha.86 的 `youtube-4k-two-paths-dead-accept-1080p` memory 需更新。
+- **触发路径**:SABR 死循环守卫(reloadCount>0 → 跳过 SABR)是 DASH 兜底被走的唯一前置;若 SABR 死循环守卫不触发(RELOAD 前就正常),仍优先 SABR。当前 4K 可用性**依赖 SABR 先 RELOAD 8 次再掉 DASH**,等待约 27s 才出 4K——非理想,但比之前 4K 完全不可用强。
+
+**LibreTube 对照(2026-08-17 核源码)**:LibreTube `setStreamSource`([OnlinePlayerService.kt:235](e:/GITHUB/LibreTube/app/src/main/java/com/github/libretube/services/OnlinePlayerService.kt#L235))优先级与我们一致:SABR → DASH(`createDashSource` 用 `videoStreams` 已解密直链)→ HLS 兜底。其 DASH 合成逻辑与我们**自合成 DASH 完全同构**。差异只在死循环处理:LibreTube **一次 `StreamInfo.getInfo` 拿全部源、`setStreamSource` 一次选源、RELOAD 后不重建会话**(`SabrClient` 会话内续命,不 re-getInfo),天然无死循环;我们用死循环守卫「RELOAD 后放弃 SABR 掉 DASH」对齐其效果但多付 8 次 RELOAD 等待。**启示**:若能像 LibreTube 在既有会话内续命(而非重建),可免 27s 等待直接保 SABR 4K;否则当前「掉 DASH 出 4K」已是可接受收益。
+
+**alpha.97(2026-08-17,实施落地):兜底提前(首 RELOAD 即落 DASH)+ 恢复清晰度选择**。上面 alpha.9X 的 27s 等待/8 次 RELOAD 与 alpha.81 移除的清晰度菜单,本次一并解决:
+- **Part 1 兜底提前**:[SabrMediaFetcher.kt](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt) `processPart` 的 `PART_RELOAD_PLAYER_RESPONSE` 分支在 `storeReloadTokenSlot` 后**立即抛 `SabrTerminalException`**,不再等读完响应里 ~8 个 RELOAD part → 首次 RELOAD 即 evict → 播放器 error-retry → 重进 resolve 见 `reloadCount>0` → DASH 兜底出 4K。等待从 ~27s 降到一次 RELOAD。
+- **Part 1 计数稳健化**:[SabrStreamRegistry.kt](app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrStreamRegistry.kt) `Entry` 加 `videoId`(registerByVideoId 填充,register 用 null);fetcher RELOAD 计数改用**会话自己的 videoId**(恒可得),替代 payload 解码 `f4=videoId`(36B 短变体解出 null → 旧逻辑计数恒 0 → 死循环守卫永不触发隐患)。注意:`videoId` 字段必须放 `Entry` **参数末尾**,否则挤错 `windowStartMs` 位置实参编译失败(alpha.97 ac1b4c2 修)。
+- **Part 2 清晰度选择**:
+  - [YoutubePlaybackResolver.kt](app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt) `buildSabrPlaybackInfo`:`request.preferredQualityId != null`(用户手动选档)→ `videoTracks` 只建**选中 itag 单条**(ExoPlayer 只播该档,真正生效);默认/Auto → 保持 alpha.81 多 Representation 自动选轨(不回归)。
+  - TV 端 [PlayerOverlay.kt](app/src/main/java/com/kirin/mt/ui/player/PlayerOverlay.kt) + [PlayerScreen.kt](app/src/main/java/com/kirin/mt/ui/player/PlayerScreen.kt):Main 面板 index 0 加回「清晰度」项(`ic_player_hd`/`player_settings_quality`/value=当前清晰度+codec)→ Quality 面板各档切换,danmaku/speed 顺延;`settingsRowCount`/`panelItemCount` Main 2→3。
+  - 移动端 [MobilePlayerScreen.kt](app/src/main/java/com/kirin/mt/ui/mobile/player/MobilePlayerScreen.kt):底栏音轨菜单前加回 HD 按钮 + quality `DropdownMenu`,选档 `loadRequest(activeRequest.copy(preferredQualityId=q.id))` re-resolve。
+- **验证语义**:手动选 4K → SABR 单轨 313 → 首 RELOAD → DASH 兜底出 4K;手动选 1080p/720p → SABR 直接播对应分辨率(避开 RELOAD)。≤1080p 不需要 attestation 的视频(SABR 直接播、无 RELOAD)不受兜底提前影响。
+- **DASH 自合成也支持多档清晰度(用户要求补)**:`buildDashFallbackFromNewPipe` 自合成分支从单档改**全 `videoCandidates` 多 Representation**——每条带 range 的视频流各构一条 `PlaybackTrack`,`buildDashManifest` 合成多 Representation MPD(每条 track 一个 `<Representation>` 塞进同一 `<AdaptationSet>`,与 SABR `allVideoTracks` 同构)。**清晰度菜单按分辨率去重(对齐 LibreTube `getAvailableResolutions`)**:`distinctBy { it.height }` 每个 height 一档纯 `"${height}p"`(不带 codec),故 720p 只有一个选项(VP9/H264 变体不重复列);codec 由 ExoPlayer 自动选。`preferredQualityId != null` 手动选档时回**该分辨率全部 codec 变体**(`filter { it.height == selectedVideo.height }`,ExoPlayer 在该分辨率内自动选 codec),默认/Auto 回全部让 ExoPlayer 自动选轨。原 `PlaybackQuality(0,"XXXp DASH 兜底")` 单档删除。选档逻辑与 SABR `defaultItag` 同语义(`maxHeight` 或最高档)。这样已落 DASH 的 4K 视频画质菜单列各分辨率(2160p/1440p/1080p…),可手动降档。
 
 ## 7. 关键文件
 

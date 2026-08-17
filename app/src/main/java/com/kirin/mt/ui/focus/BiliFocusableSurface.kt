@@ -18,6 +18,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -57,6 +58,7 @@ fun BiliFocusableSurface(
   onClick: () -> Unit = {},
   onFocused: () -> Unit = {},
   onFocusChanged: (Boolean) -> Unit = {},
+  enabled: Boolean = true,
   content: @Composable () -> Unit,
 ) {
   var focused by remember { mutableStateOf(false) }
@@ -196,8 +198,10 @@ fun BiliFocusableSurface(
       .clickable(
         interactionSource = interactionSource,
         indication = null,
+        enabled = enabled,
         onClick = onClick,
-      ),
+      )
+      .focusProperties { canFocus = enabled },
   ) {
     Box(modifier = Modifier.clip(shape)) {
       content()

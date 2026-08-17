@@ -40,14 +40,12 @@ import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.network.YoutubeFeedCacheTtlMs
-import com.kirin.mt.core.network.youtubeFeedTimeoutMs
 import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeFeedCacheStore
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
 private const val FirstPage = 1
 // 与 API 实际每页量对齐(推荐/热门 ps=20、分区 request_cnt=20),且与 TV RecommendScreen 一致。
@@ -137,13 +135,12 @@ fun MobileHomeScreen(
         )
       }
     }
-    val result = withTimeoutOrNull(youtubeFeedTimeoutMs(youtubeChannels.size)) {
-      videoRepository.youtubeSubscriptionsFeed(youtubeChannels) { channel ->
-        youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-      }
-    }
+    // alpha.98:去 withTimeoutOrNull 全局超时(几百频道必超)。getSubscriptionsFeed 已分批增量 +
+    // 单频道独立容错,慢频道只丢自身;home 分区一次性消费全量,拉完返回(部分或全部)不整批 Failed。
+    val result = videoRepository.youtubeSubscriptionsFeed(youtubeChannels, onChannelAvatarResolved = { channel ->
+      youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+    })
     return when {
-      result == null -> MobileSectionState.Failed("YouTube 关注加载超时")
       result.isEmpty() -> MobileSectionState.Failed("暂无内容")
       else -> {
         youtubeFeedCacheStore.write(currentIds, result)

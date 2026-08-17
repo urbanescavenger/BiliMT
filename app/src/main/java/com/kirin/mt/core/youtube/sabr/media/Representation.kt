@@ -32,7 +32,12 @@ internal data class Representation(
         .setContainerMimeType(track.mimeType)
         .setCodecs(track.codecs)
         .setAverageBitrate(if (track.bandwidth > 0) track.bandwidth else -1)
-      if (trackType == C.TRACK_TYPE_VIDEO) {
+      // alpha.82(对齐 LibreTube):建视频 Format 必须 trackType 为视频 **且** mimeType 真是视频。
+      // 注意(已推翻,见 docs/youtube-hd-playback.md 最新结论):真机 dump 证实 itag248=vp9 720p 视频,
+      // **不是** opus 音频——此前「itag248=opus 误分类进 videoOnlyStreams 致 RELOAD」的归因是误读。
+      // RELOAD 根因是 NewPipe visionOS 未 attested 的 ustreamerConfig,与 itag 分类无关。本 guard 仅防
+      // NewPipe 真把音频 itag 误标成 video/webm 的极端情况(不针对 itag248),保留无害。
+      if (trackType == C.TRACK_TYPE_VIDEO && MimeTypes.isVideo(track.mimeType)) {
         builder.setSampleMimeType(MimeTypes.getVideoMediaMimeType(track.codecs))
           .setWidth(if (track.width > 0) track.width else -1)
           .setHeight(if (track.height > 0) track.height else -1)

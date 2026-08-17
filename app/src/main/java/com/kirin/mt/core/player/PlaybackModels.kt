@@ -99,6 +99,26 @@ data class PlaybackInfo(
   val availableAudioTracks: List<PlaybackAudioTrack> = emptyList(),
   /** YouTube 字幕轨(WebVTT URL,来自 NewPipe info.subtitles)。播放器用 MergingMediaSource 合并渲染。非 YouTube/无字幕为空。 */
   val subtitleTracks: List<PlaybackTrack> = emptyList(),
+  /**
+   * alpha.88:RELOAD 闭环兜底——远程 DASH manifest URL(NewPipe `StreamInfo.dashMpdUrl`,android streamingData)。
+   * 非空时播放器 [buildDashMediaItem] 直接用此 URL 喂 DashMediaSource(ExoPlayer 拉远程 MPD + 分段),
+   * 跳过合成 data: MPD。对齐 LibreTube SABR RELOAD 崩后落 `streams.dash`。RELOAD 闭环(WEB attested reload)
+   * 失败时由 [YoutubePlaybackResolver.buildDashFallbackFromNewPipe] 填,≤1080p。
+   * videoTracks 仅一条 dummy(segmentBase 非 null → isProgressive=false → 路由 DashMediaSource 分支),
+   * 真实轨由远程 MPD 定义。非兜底场景为 null。
+   */
+  val remoteDashManifestUrl: String? = null,
+  /**
+   * alpha.90:HLS 兜底——远程 HLS manifest URL(NewPipe `StreamInfo.hlsUrl`,visionOS /player 的
+   * `hls_variant` manifest)。alpha.88 的 [remoteDashManifestUrl] 依赖 android streamingData 的 dashMpdUrl,
+   * 但 Phase 0 真机取证坐实 visionOS getInfo 的 **dashMpdUrl 恒空**(android 无 poToken 取不到 protected
+   * manifest),故 alpha.88 DASH 兜底实际从不触发。visionOS 是 Apple 平台,YouTube 给 visionOS 的 hlsUrl 是
+   * Apple 平台原生 HLS 交付(AVPlayer 级),Phase 0 取证 hlsUrl **非空**——作 dashMpdUrl 空时的次选兜底,
+   * 喂 [androidx.media3.exoplayer.hls.HlsMediaSource](manifest 自带多码率 + A/V,无需 init/index range 拼接)。
+   * 非空时播放器走 HlsMediaSource 分支(优先于 DashMediaSource),真实轨由远程 HLS playlist 定义。
+   * 非兜底场景为 null。
+   */
+  val remoteHlsManifestUrl: String? = null,
 )
 
 /** YouTube 一条可选音轨(多语言配音)。id 为 audioTrack.id(如 "en.4"),非 itag。 */

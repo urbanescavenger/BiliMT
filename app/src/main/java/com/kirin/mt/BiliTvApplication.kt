@@ -6,6 +6,7 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.kirin.mt.core.app.AppContainer
+import com.kirin.mt.core.app.AppInfo
 import com.kirin.mt.core.player.IptvCleartextPlatform
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.core.youtube.newpipe.NewPipeHolder
@@ -19,6 +20,16 @@ class BiliTvApplication : Application(), ImageLoaderFactory {
   override fun onCreate() {
     super.onCreate()
     HandroidLoggerAdapter.DEBUG = BuildConfig.DEBUG
+    // 安装新 APK 后启动:比对上/上次 versionCode,不一致(更新了)则清空实时日志,
+    // 让每版真机日志从干净状态开始。手动/崩溃日志保留。须在 install() 之前执行,
+    // 之后 startLiveLogging() 会重建空文件并写全新日志头。
+    val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+    val lastCode = prefs.getLong(KEY_LAST_VERSION_CODE, -1L)
+    val curCode = AppInfo(this).current().versionCode
+    if (lastCode != -1L && curCode != lastCode) {
+      LogCatcherUtil.clearLiveLog(this)
+    }
+    prefs.edit().putLong(KEY_LAST_VERSION_CODE, curCode).apply()
     LogCatcherUtil.install(this)
     // 动态放行 IPTV 源的明文 HTTP(http:// 流):自定义 Platform 只对 IptvCleartextHosts
     // 里注册的 host 放行明文,其余委托原始 AndroidPlatform(保留系统 NetworkSecurityPolicy)。
@@ -53,5 +64,7 @@ class BiliTvApplication : Application(), ImageLoaderFactory {
     const val ImageMemoryCachePercent = 0.20
     const val ImageDiskCacheDirectory = "image_cache"
     const val ImageDiskCacheMaxBytes = 128L * 1024L * 1024L
+    const val PREFS_NAME = "app_meta"
+    const val KEY_LAST_VERSION_CODE = "last_version_code"
   }
 }

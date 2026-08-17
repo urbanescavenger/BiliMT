@@ -113,6 +113,7 @@ import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -160,6 +161,8 @@ import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.ui.player.PlayerDanmakuLayer
 import com.kirin.mt.ui.player.appendSabrStartMs
 import com.kirin.mt.ui.player.buildDashMediaItem
+import com.kirin.mt.ui.player.hasRemoteManifest
+import com.kirin.mt.ui.player.isHlsManifest
 import com.kirin.mt.ui.player.isSabrDash
 import com.kirin.mt.ui.player.isSabrProgressive
 import com.kirin.mt.ui.player.isSabrSingle
@@ -194,11 +197,9 @@ private fun startPlaybackService(context: Context) {
     ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
   } catch (e: IllegalStateException) {
     Log.w(MobilePlayerLogTag, "startForegroundService blocked in background: ${e.message}")
-    try {
-      context.startService(Intent(context, PlaybackService::class.java))
-    } catch (e2: IllegalStateException) {
-      Log.w(MobilePlayerLogTag, "startService also blocked in background: ${e2.message}")
-    }
+    // 不 fallback 到 startService——后台 startService 虽入队成功,但 onStartCommand 里
+    // startForeground 仍会抛 ForegroundServiceStartNotAllowedException。
+    // PlaybackService 侧已 catch 该异常优雅停止,这里直接放弃启动即可。
   }
 }
 /** alpha.67:单次播放会话内 error-retry 上限(onPlayerErrorChanged),超过则交用户手动重试,避免死循环。 */
@@ -289,7 +290,7 @@ fun MobilePlayerScreen(
   var selectedQualityId by remember { mutableStateOf<Int?>(null) }
   var playbackSpeed by remember { mutableFloatStateOf(1f) }
   var settingsSheet by remember { mutableStateOf(false) }
-  // 底栏画质下拉菜单(挂在 HD 图标按钮上)
+  // alpha.9X(恢复清晰度选择):底栏画质下拉菜单(挂在 HD 图标按钮上)
   var showQualityMenu by remember { mutableStateOf(false) }
   // 底栏音轨下拉菜单(挂在音轨图标按钮上,仅 YouTube 多音轨视频显示)
   var showAudioMenu by remember { mutableStateOf(false) }
@@ -575,8 +576,9 @@ fun MobilePlayerScreen(
         youtubeDefaultQuality = youtubeDefaultQuality,
       )
       selectedQualityId = info.selectedQuality.id
-      // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体)。
-      if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive)) {
+      // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体),
+      // 或远程 manifest 兜底(DASH/HLS manifest 自带 A/V 轨,dummy 视频轨非 progressive 但 audioTracks 合法为空)。
+      if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive && !info.hasRemoteManifest())) {
         playerState = MobilePlayerState.Failed(context.getString(R.string.player_error_empty_tracks))
         return
       }
@@ -648,6 +650,15 @@ fun MobilePlayerScreen(
           .setMediaMetadata(metadata)
           .build()
         SabrMediaSource.Factory(manifest, fetcher, sid).createMediaSource(sabrItem)
+      } else if (sabrEffectiveInfo.isHlsManifest()) {
+        // alpha.90:HLS 兜底——SABR RELOAD 闭环未回 SABR 且 dashMpdUrl 空(android 无 manifest)时,落 visionOS
+        // /player 的 hlsUrl(Apple 平台原生 HLS 交付,manifest 自带多码率 + A/V,无需 init/index range 拼接)。
+        val hlsItem = androidx.media3.common.MediaItem.Builder()
+          .setUri(sabrEffectiveInfo.remoteHlsManifestUrl)
+          .setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8)
+          .setMediaMetadata(metadata)
+          .build()
+        HlsMediaSource.Factory(dataSourceFactory).createMediaSource(hlsItem)
       } else if (resolvedRequest.isPgc || (sabrEffectiveInfo.videoTracks.first().isProgressive && !sabrEffectiveInfo.isSabrDash())) {
         val videoItem = androidx.media3.common.MediaItem.Builder()
           .setUri(sabrEffectiveInfo.videoTracks.first().baseUrl)
@@ -1382,8 +1393,7 @@ fun MobilePlayerScreen(
                 },
               )
             }
-            // 画质快捷入口:HD 图标按钮 + DropdownMenu,放在进度条与全屏按钮之间。
-            // 切换逻辑与原设置弹窗 onQualitySelected 一致(改 selectedQualityId + activeRequest.preferredQualityId 重载)。
+            // alpha.9X(恢复清晰度选择):HD 画质按钮 + DropdownMenu,列全部可播档位,选中即重载(preferredQualityId)。
             // 播放器页面未包 MaterialTheme,DropdownMenu 显式深色 containerColor,否则默认白底。
             val qualities = readyInfo.qualities
             if (qualities.isNotEmpty()) {

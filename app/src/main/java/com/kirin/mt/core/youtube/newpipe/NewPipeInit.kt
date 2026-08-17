@@ -21,8 +21,9 @@ import java.io.IOException
  * - [Downloader] 复用 AppContainer.youtubeHttpClient(共享连接池/超时/cookie),把 NewPipe 的
  *   [Request] 翻译成 OkHttp call。UA 先填桌面 Firefox 默认,再用 NewPipe 请求自带 headers 覆盖
  *   (对齐 LibreTube NewPipeDownloaderImpl)。
- * - [setPoTokenProvider] 注入 [BiliTvPoTokenProvider](由 BotGuard + InnerTubeClient 支撑),
- *   使 NewPipe 在 getInfo() 期间铸造的 poToken 与 SABR init 复用的是同一枚(单一 minter)。
+ * - [setPoTokenProvider] 注入 [NewPipePoTokenGenerator](移植 LibreTube 的 NewPipe 原生 PoTokenGenerator),
+ *   使 NewPipe 在 getInfo() 期间铸造的 poToken 与 SABR init 复用的是同一枚(单一 NewPipe minter,
+ *   contentBinding 正确 → 修 visionOS SABR RELOAD 死循环,alpha.80)。
  */
 object NewPipeHolder {
   private const val TAG = "NewPipeHolder"
@@ -39,14 +40,14 @@ object NewPipeHolder {
   }
 
   /**
-   * 最近一次 [BiliTvPoTokenProvider.getWebClientPoToken] 铸造并缓存的 PoToken 结果。
+   * 最近一次 [NewPipePoTokenGenerator.getWebClientPoToken] 铸造并缓存的 PoToken 结果。
    * resolver 取流时用它保证 SABR init poToken 与 getInfo() 期间铸造的是同一枚。
    */
-  @Volatile private var poTokenProvider: BiliTvPoTokenProvider? = null
+  @Volatile private var poTokenProvider: NewPipePoTokenGenerator? = null
 
-  fun cachedPoToken(): BiliTvPoTokenProvider? = poTokenProvider
+  fun cachedPoToken(): NewPipePoTokenGenerator? = poTokenProvider
 
-  fun init(httpClient: OkHttpClient, poTokenProvider: BiliTvPoTokenProvider) {
+  fun init(httpClient: OkHttpClient, poTokenProvider: NewPipePoTokenGenerator) {
     if (initialized) {
       Log.w(TAG, "init() already done, skip")
       return

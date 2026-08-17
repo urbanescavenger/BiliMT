@@ -36,7 +36,6 @@ import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.network.YoutubeFeedCacheTtlMs
 import com.kirin.mt.core.network.mergeByPubdate
-import com.kirin.mt.core.network.youtubeFeedTimeoutMs
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeFeedCacheStore
@@ -46,7 +45,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
 private sealed interface DynamicState {
   data object Loading : DynamicState
@@ -150,8 +148,8 @@ fun MobileDynamicScreen(
       isRefreshing = false
     }
 
-    // 合并 YouTube 关注:先读缓存秒出(10min 内),后台按频道数动态超时拉网络刷新并写回缓存;
-    // 网络失败/超时用缓存兜底(即使过期)。无频道时不产生额外加载。
+    // 合并 YouTube 关注:先读缓存秒出(10min 内),后台分批增量拉网络刷新并每批写缓存;
+    // 全部频道拉完仍空才用缓存兜底(即使过期)。无频道时不产生额外加载。
     if (youtubeChannels.isNotEmpty()) {
       val currentIds = youtubeChannels.map { it.channelId }
       val cached = youtubeFeedCacheStore.read()
@@ -161,28 +159,42 @@ fun MobileDynamicScreen(
         mergeYoutube(cached.videos) // 秒出
       }
       scope.launch {
-        val result = try {
-          withTimeoutOrNull(youtubeFeedTimeoutMs(youtubeChannels.size)) {
-            videoRepository.youtubeSubscriptionsFeed(youtubeChannels) { channel ->
+        val accumulator = mutableListOf<VideoSummary>()
+        try {
+          val result = videoRepository.youtubeSubscriptionsFeed(
+            youtubeChannels,
+            onChannelAvatarResolved = { channel ->
               youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-            }
+            },
+            onChunkReady = { chunk ->
+              // 增量:先累积再 merge 全量 accumulator——mergeYoutube 内部会 filterNot 掉 state 里所有旧
+              // YouTube 再合并传入列表,若传单批 chunk 则后批覆盖前批(二次覆盖 bug)。传累积全量才不丢。
+              // 缓存写是后台 IO(onChunkReady 是非挂起回调,不能直接 suspend;writeChannel 内部走 Room,
+              // 用独立协程异步写,不阻塞主线程 merge)。
+              if (chunk.isNotEmpty()) {
+                accumulator += chunk
+                mergeYoutube(accumulator)
+                chunk.groupBy { it.channelId }.forEach { (channelId, videos) ->
+                  scope.launch { youtubeFeedCacheStore.writeChannel(channelId, videos) }
+                }
+              }
+            },
+          )
+          if (accumulator.isEmpty()) {
+            // 全部频道拉完仍无内容 → 缓存兜底(即使过期)。
+            if (cacheValid && cached.videos.isNotEmpty()) mergeYoutube(cached.videos)
+          } else {
+            youtubeTimeoutNotice = false
+            // 每批已 writeChannel,收尾再写一次全量(保证读缓存时 channelIds 集合与当前列表一致,
+            // 且覆盖批次间去重后的最终列表)。
+            youtubeFeedCacheStore.write(currentIds, accumulator)
           }
         } catch (e: CancellationException) {
           throw e
         } catch (e: Exception) {
-          null
-        }
-        if (result == null) {
-          // 超时/失败:提示 + 缓存兜底(即使过期)。
+          // 意外失败:提示 + 缓存兜底(即使过期)。
           youtubeTimeoutNotice = true
           if (cacheValid && cached.videos.isNotEmpty()) mergeYoutube(cached.videos)
-        } else if (result.isNotEmpty()) {
-          youtubeTimeoutNotice = false
-          youtubeFeedCacheStore.write(currentIds, result)
-          mergeYoutube(result)
-        } else if (cacheValid && cached.videos.isNotEmpty()) {
-          // 空结果(无内容),缓存兜底。
-          mergeYoutube(cached.videos)
         }
       }
     }

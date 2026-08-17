@@ -211,6 +211,12 @@ internal class SabrMediaFetcher(
     val elapsed = if (lastMs > 0L) (now - lastMs).coerceAtLeast(0L) else 0L
 
     val playerTimeMs = req.segmentStartTimeMs
+    // alpha.83 诊断(forceSessionVideoItag):强制视频轨用**会话选中的** videoFormatId,跳过 selectFormat 按
+    // 声明 itag 重选——证伪"某 itag 是 RELOAD 根因"红绯鱼。锁死后若仍 RELOAD → 根因在 ustreamerConfig 来源
+    // 不在 itag(见 Piped 后端方案)。仅 Piped 路径默认开 / NewPipe 手动开;否则 videoFormat 由 selectFormat 设。
+    if (entry.forceSessionVideoItag && session.videoFormatId.itag != 0) {
+      videoFormat = session.videoFormatId
+    }
     val selected = initializedFormats.values.map { SabrProto.encodeFormatId(it.id.itag, it.id.lastModified, it.id.xtags) }
     val bufferedRanges = initializedFormats.values.flatMap { it.buildBufferedRanges() }
     val audioEnc = audioFormat?.let { SabrProto.encodeFormatId(it.itag, it.lastModified, it.xtags) }
@@ -224,6 +230,11 @@ internal class SabrMediaFetcher(
       unsentSabrContexts = unsentCtxTypes,
     )
     val vHeight = videoFormat?.height ?: 0
+    // alpha.16(对齐 LibreTube setAudioTrackId):当前选中音轨 id(audioTrack.id,如 "en.4")。
+    // 按 itag 命中 session.audioTracks 里当前音频格式那条;单音轨视频 resolver 折叠成 "default"(audioTrackId
+    // 为 null),对齐 LibreTube 发空串("" 而非 "default")——多音轨视频(如 jNl6YkkzKxw 5 音轨)发真实 id。
+    val audioTrackId = session.audioTracks.firstOrNull { it.formatId.itag == audioFormat?.itag }?.id
+      ?.takeIf { it != "default" } ?: ""
     val clientAbrState = ClientAbrStateInput(
       timeSinceLastManualFormatSelectionMs = lastManualFormatSelectionMs?.let { now - it } ?: 0L,
       lastManualSelectedResolution = max(vHeight, 360),
@@ -244,6 +255,7 @@ internal class SabrMediaFetcher(
       enabledTrackTypesBitfield = if (videoFormat == null) 1 else 0,
       drcEnabled = false,
       enableVoiceBoost = false,
+      audioTrackId = audioTrackId,
     )
     val input = SabrRequestInput(
       clientAbrState = clientAbrState,
@@ -260,7 +272,7 @@ internal class SabrMediaFetcher(
     val rn = requestNumber.getAndIncrement()
     lastRequestMs.set(now)
     val url = "${session.sabrUrl}&rn=$rn"
-    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs bitfield=${if (videoFormat == null) 1 else 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} body=${body.size}B")
+    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs bitfield=${if (videoFormat == null) 1 else 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} audioTrackId=\"$audioTrackId\" body=${body.size}B")
 
     val request = Request.Builder()
       .url(url)
@@ -268,8 +280,11 @@ internal class SabrMediaFetcher(
       .header("accept-encoding", "identity")
       .header("accept", "application/vnd.yt-ump")
       .header("User-Agent", session.userAgent)
-      .header("Cookie", session.cookieHeader)
-      .header("X-Goog-Visitor-Id", session.visitorData)
+      // alpha.79:cookie/visitor 可空——空串=不带(对齐 LibreTube 无 HTTP cookie,靠 protobuf)。非空才带。
+      .apply {
+        if (session.cookieHeader.isNotBlank()) header("Cookie", session.cookieHeader)
+        if (session.visitorData.isNotBlank()) header("X-Goog-Visitor-Id", session.visitorData)
+      }
       .header("Origin", "https://www.youtube.com")
       .header("Referer", "https://www.youtube.com/")
       .build()
@@ -412,9 +427,38 @@ internal class SabrMediaFetcher(
         else if (status == 2) needsPoTokenRefresh = true
       }
       PART_RELOAD_PLAYER_RESPONSE -> {
-        val diag = SabrProto.decodeReloadPlayerResponse(payload)
-        reloadPlayerDump = "fields={${diag.fieldsSummary}} hex=${diag.hexDump}"
-        Log.w(tag, "RELOAD_PLAYER_RESPONSE payloadLen=${payload.size} $reloadPlayerDump")
+        // Phase 1(diag):结构化解析。reloadToken = ReloadPlaybackParams.token(整串 base64),
+        // 是服务端下发的 reload 凭证,Phase 2 需原样回传进新 /player 的 playbackContext.reloadPlaybackContext。
+        // 不改播放行为。真机看 reloadToken 是否稳定/含 videoId,为 Phase 2 定回传逻辑。
+        val info = SabrProto.decodeReloadPlayer(payload)
+        // alpha.88:补通用逐字段扫描 + hexDump——36B 短变体经 ProtoReader 越界修复后结构化解析可能仍取不到
+        // token/videoId(若结构非 f1→f1),通用扫描 dump 每个顶层 field 的 number/wireType/值,一次真机即可
+        // 看清 36B 到底是什么结构(是否带 token / token 在哪个 field)。
+        val scan = SabrProto.decodeReloadPlayerResponse(payload)
+        reloadPlayerDump = "videoId=${info.videoId} reloadTokenLen=${info.reloadToken?.length} " +
+          "reloadTokenDecodedHex=${info.reloadTokenDecodedHex} innerToken=\"${info.innerToken}\" " +
+          "innerTokenDecodedHex=${info.innerTokenDecodedHex} field7Hex=${info.field7Hex} " +
+          "potSent=${poTokenState.currentPoToken.size}B fields={${info.fieldsSummary}} " +
+          "scan={${scan.fieldsSummary}} hex=${info.hexDump}"
+        Log.w(tag, "RELOAD_PLAYER_RESPONSE $reloadPlayerDump")
+        // Phase 2(alpha.87 RELOAD 重载闭环):把 reloadToken 停车到进程级 registry(独立于 sessions,evict 不清),
+        // 供 resolve() 下次重进 consumeReloadTokenSlot 取走 → WEB attested /player 重打。
+        // alpha.88:改单槽存(视频无关)——36B 短变体可能无内层 videoId,旧 videoId-keyed 存不进。
+        // 只要 reloadToken 非空就存(videoId 可解出时顺带计数)。
+        val rt = info.reloadToken
+        if (!rt.isNullOrBlank()) {
+          // alpha.9X:计数用会话自己的 videoId(恒可得),而非 payload 解码的 info.videoId——36B 短变体
+          // f4=videoId 解出 null 时旧逻辑计数恒 0 → 守卫永不触发 → 潜在无限 RELOAD 循环。
+          SabrStreamRegistry.storeReloadTokenSlot(entry.videoId ?: info.videoId, rt)
+        } else {
+          Log.w(tag, "RELOAD_PLAYER_RESPONSE: reloadToken 空(payloadLen=${payload.size}) → 闭环无 token 可回传,scan+hex 见上")
+        }
+        // alpha.9X(兜底提前):首次 RELOAD 即抛终端错,不再读完全部 RELOAD part。RELOAD 语义 = streams
+        // expired/new config(或 attestation 未过)——对 attestation 视频(4K/HD)SABR 必 RELOAD,继续读
+        // 只会白耗 ~8 part;对齐 LibreTube「RELOAD 直接失败不循环」+ 我们的死循环守卫。抛 SabrTerminalException
+        // → SabrDataSource.open evict → 播放器 error-retry → 重进 resolve 看到 reloadCount>0 → 直接落 DASH/HLS
+        // 兜底(自合成 DASH 实测能出 4K)。reloadToken 已先停车,reload-closure 若启用仍可回传。
+        throw SabrTerminalException("RELOAD_PLAYER_RESPONSE: $reloadPlayerDump")
       }
       PART_SABR_ERROR -> {
         val err = SabrProto.decodeSabrError(payload)

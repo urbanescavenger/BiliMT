@@ -1,5 +1,7 @@
 package com.kirin.mt.core.youtube.sabr
 
+import android.util.Base64
+
 /**
  * SABR 协议消息编码/解码——对 googlevideo/protos(video_streaming.* + misc.FormatId)的独立 Kotlin 实现。
  *
@@ -56,6 +58,10 @@ internal object SabrProto {
     s.enabledTrackTypesBitfield?.let { w.int32(40, it) }
     s.drcEnabled?.let { w.bool(46, it) }
     s.enableVoiceBoost?.let { w.bool(76, it) }
+    // alpha.16(对齐 LibreTube client_abr_state.proto):audio_track_id=69,当前选中音轨 id(如 "en.4")。
+    // LibreTube setAudioTrackId(audioFormat.stream.audioTrackId);缺它多音轨视频(如 jNl6YkkzKxw 5 音轨)
+    // 服务端按会话音轨不匹配 RELOAD_PLAYER 全拒(alpha.15 预埋的下一步)。
+    s.audioTrackId?.let { w.string(69, it) }
     return w.bytes()
   }
 
@@ -244,6 +250,150 @@ internal object SabrProto {
       }
     }
     return ReloadPlayerDiag(fieldsSummary = fields.toString(), hexDump = hexHead(payload, payload.size))
+  }
+
+  /**
+   * Phase 1(diag):结构化解码 RELOAD_PLAYER_RESPONSE(part 46)。
+   *
+   * 权威 schema(LuanRT/googlevideo `protos/video_streaming/reload_player_response.proto`):
+   *   ReloadPlaybackContext { field1 reload_playback_params: ReloadPlaybackParams }
+   *   ReloadPlaybackParams   { field1 token: string }
+   * 即 payload = `{f1: {f1: <base64 token>}}`,**那整串 base64 就是 ReloadPlaybackParams.token**,
+   * 是服务端下发的 reload 凭证,Phase 2 需**原样回传**进新 /player 请求的
+   * `playbackContext.reloadPlaybackContext`,换新 sabrUrl + ustreamerConfig(见 §6.16)。
+   *
+   * token 再 base64 解一层(诊断用)得到的 proto 含 videoId(f4) + 一个 27B 短 token(f5)——那个
+   * f5 是**内层子 token**,不是要回传的 reload 凭证。alpha.5 真机:新格式把 f4/f5 套在额外一层
+   * field1 里,旧格式在顶层;统一递归下钻找 f4/f5/f7。
+   */
+  data class ReloadPlayerInfo(
+    val videoId: String?,
+    val reloadToken: String?,
+    val reloadTokenDecodedHex: String?,
+    val innerToken: String?,
+    val innerTokenDecodedHex: String?,
+    val field7Hex: String?,
+    val fieldsSummary: String,
+    val hexDump: String,
+  )
+
+  fun decodeReloadPlayer(payload: ByteArray): ReloadPlayerInfo {
+    // alpha.88:拆两级 try——外层取 reloadToken(顶层 field1(LEN)→field1(LEN) = 要回传 /player 的凭证)
+    // 与内层诊断扫描(videoId/innerToken/field7)分离。内层扫描抛异常时**不再丢 reloadToken**——
+    // 真机 36B payload 经 ProtoReader 越界修复(alpha.88)后外层可正常取 token,但内层 base64/递归
+    // 扫描仍可能因结构异常抛;旧实现整体 catch 把 reloadToken 一起 null 化 → storeReloadToken 不存 →
+    // RELOAD 重载闭环(alpha.87)永远不触发。现在 reloadToken 一旦取出即保留,诊断字段单独容错。
+    val hexDump = hexHead(payload, payload.size)
+    // 外层:取 reloadToken。ProtoReader(alpha.88 已修越界)不再抛,但兜底 try 防 base64 之外异常。
+    val (reloadToken, innerLen, b64Len) = try {
+      // 顶层 field1(LEN) → ReloadPlaybackParams
+      val inner = ProtoReader(payload).let { r ->
+        while (true) { val f = r.nextField() ?: break; if (f.fieldNumber == 1 && f.wireType == ProtoWire.WIRE_LEN) return@let (f.value as ByteArray) }
+        ByteArray(0)
+      }
+      // field1(LEN) → ReloadPlaybackParams.token = 整串 base64(要回传 /player 的凭证)
+      val b64Bytes = ProtoReader(inner).let { r ->
+        while (true) { val f = r.nextField() ?: break; if (f.fieldNumber == 1 && f.wireType == ProtoWire.WIRE_LEN) return@let (f.value as ByteArray) }
+        ByteArray(0)
+      }
+      Triple(String(b64Bytes, Charsets.UTF_8), inner.size, b64Bytes.size)
+    } catch (e: Exception) {
+      Triple("", 0, 0)
+    }
+    // 内层:诊断扫描 videoId/innerToken/field7。单独 try——失败不丢 reloadToken。
+    var videoId: String? = null; var innerToken: String? = null
+    var reloadTokenDecodedHex: String? = null; var innerTokenDecodedHex: String? = null
+    var field7Hex: String? = null
+    var diagNote: String? = null
+    if (reloadToken.isNotBlank()) {
+      try {
+        val decoded = base64DecodePickVideoId(reloadToken)
+        if (decoded != null) {
+          reloadTokenDecodedHex = hexHead(decoded, 160)
+          // 递归下钻找内层 f4=videoId / f5=子token / f7(兼容新旧两种嵌套)
+          val f = reloadScanFields(decoded)
+          f["4"]?.let { videoId = String(it, Charsets.UTF_8) }
+          f["5"]?.let {
+            innerToken = String(it, Charsets.UTF_8)
+            innerTokenDecodedHex = base64DecodeAny(String(it, Charsets.UTF_8))?.let { hexHead(it, 128) }
+          }
+          f["7"]?.let { field7Hex = hexHead(it, 128) }
+        } else {
+          diagNote = "base64DecodePickVideoId=null"
+        }
+      } catch (e: Exception) {
+        diagNote = "inner scan failed: ${e.message}"
+      }
+    }
+    val b64Prefix = if (b64Len == 0) "-" else "0x%02x".format(reloadToken.first().code and 0xFF)
+    val fieldsSummary = buildString {
+      append("payloadLen=${payload.size} innerLen=$innerLen b64Len=$b64Len b64Prefix=$b64Prefix")
+      if (diagNote != null) append(" $diagNote")
+    }
+    return ReloadPlayerInfo(
+      videoId = videoId, reloadToken = reloadToken, reloadTokenDecodedHex = reloadTokenDecodedHex,
+      innerToken = innerToken, innerTokenDecodedHex = innerTokenDecodedHex, field7Hex = field7Hex,
+      fieldsSummary = fieldsSummary,
+      hexDump = hexDump,
+    )
+  }
+
+  /** base64 解码(外层 URL-safe + `%3D`;首字节 `E` 可能是前缀)。多候选,优先取能解出 field4=videoId 的。 */
+  private fun base64DecodePickVideoId(s: String): ByteArray? {
+    val clean = s.trim().replace("%3D", "=")
+    val candidates = listOfNotNull(clean, clean.takeIf { it.length > 1 }?.drop(1))
+    var fallback: ByteArray? = null
+    for (cand in candidates) {
+      val bytes = base64DecodeAny(cand) ?: continue
+      if (hasVideoIdField4(bytes)) return bytes
+      if (fallback == null) fallback = bytes
+    }
+    return fallback
+  }
+
+  /** 尝试多种 base64 变体(NO_WRAP / URL_SAFE / DEFAULT);失败返回 null。 */
+  private fun base64DecodeAny(s: String): ByteArray? {
+    val clean = s.trim().replace("%3D", "=").replace(" ", "").replace("\n", "")
+    for (flags in intArrayOf(Base64.NO_WRAP, Base64.URL_SAFE or Base64.NO_WRAP, Base64.DEFAULT)) {
+      val bytes = try { Base64.decode(clean, flags) } catch (_: IllegalArgumentException) { null } ?: continue
+      return bytes
+    }
+    return null
+  }
+
+  /**
+   * 递归下钻消息字段,收集首次遇到的 field4/5/7(LEN)。RELOAD 内层 base64 解出的 proto 有时把
+   * videoId(f4)/token(f5) 套在额外一层 field1 里,故对任何 LEN 字段都尝试下钻一层找缺失项。
+   * @return map "4"/"5"/"7" → ByteArray(未找到则缺 key)
+   */
+  private fun reloadScanFields(bytes: ByteArray): Map<String, ByteArray> {
+    val out = HashMap<String, ByteArray>()
+    reloadScanFieldsInner(bytes, out, 0)
+    return out
+  }
+
+  private fun reloadScanFieldsInner(bytes: ByteArray, out: MutableMap<String, ByteArray>, depth: Int) {
+    if (depth > 6) return
+    val r = ProtoReader(bytes)
+    while (true) {
+      val f = r.nextField() ?: break
+      if (f.wireType != ProtoWire.WIRE_LEN) continue
+      val b = f.value as ByteArray
+      when (f.fieldNumber) {
+        4 -> if (!out.containsKey("4")) out["4"] = b
+        5 -> if (!out.containsKey("5")) out["5"] = b
+        7 -> if (!out.containsKey("7")) out["7"] = b
+      }
+      // 下钻一层(嵌套消息里可能也有 f4/f5/f7)
+      if (out.size < 3) reloadScanFieldsInner(b, out, depth + 1)
+    }
+  }
+
+  /** field4 是否为 videoId(8-20 位字母数字)。递归下钻(RELOAD f4 可能在嵌套 field1 里)。 */
+  private fun hasVideoIdField4(bytes: ByteArray): Boolean {
+    val v = reloadScanFields(bytes)["4"] ?: return false
+    val s = String(v, Charsets.UTF_8)
+    return s.length in 8..20 && s.all { it.isLetterOrDigit() }
   }
 
   private fun wireName(w: Int): String = when (w) {
@@ -530,6 +680,8 @@ internal data class ClientAbrStateInput(
   val enabledTrackTypesBitfield: Int? = null,
   val drcEnabled: Boolean? = null,
   val enableVoiceBoost: Boolean? = null,
+  /** alpha.16(对齐 LibreTube client_abr_state.proto):audio_track_id=69,当前选中音轨 id(如 "en.4")。 */
+  val audioTrackId: String? = null,
 )
 
 internal data class ClientInfoInput(

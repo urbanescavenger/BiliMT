@@ -110,6 +110,9 @@ fun SettingsScreen(
   onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
   onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
   onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
+  onPipedInstanceChange: (url: String) -> Unit,
+  onYoutubeUsePipedChange: (Boolean) -> Unit,
+  onSabrForceSessionVideoItagChange: (Boolean) -> Unit,
 ) {
   val settingsListState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
@@ -150,6 +153,9 @@ fun SettingsScreen(
       SettingsItemHomeSections to FocusRequester(),
       SettingsItemYoutubeChannels to FocusRequester(),
       SettingsItemYoutubeContentRegion to FocusRequester(),
+      SettingsItemPiped to FocusRequester(),
+      SettingsItemYoutubeUsePiped to FocusRequester(),
+      SettingsItemSabrForceItag to FocusRequester(),
       SettingsItemWebDav to FocusRequester(),
       SettingsItemWebDavBackup to FocusRequester(),
       SettingsItemWebDavRestore to FocusRequester(),
@@ -163,6 +169,7 @@ fun SettingsScreen(
   var rightPanel by remember { mutableStateOf(SettingsRightPanel.None) }
   var showWebDavDialog by remember { mutableStateOf(false) }
   var showIptvDialog by remember { mutableStateOf(false) }
+  var showPipedDialog by remember { mutableStateOf(false) }
 
   fun focusSettingItem(itemIndex: Int, direction: Int = 0): Boolean {
     val lazyIndex = settingsItemToLazyIndex(itemIndex, updateState)
@@ -278,6 +285,10 @@ fun SettingsScreen(
         onWebDavSelected = { showWebDavDialog = true },
         onIptvSourceConfigChange = onIptvSourceConfigChange,
         onIptvSelected = { showIptvDialog = true },
+        onPipedInstanceChange = onPipedInstanceChange,
+        onPipedSelected = { showPipedDialog = true },
+        onYoutubeUsePipedChange = onYoutubeUsePipedChange,
+        onSabrForceSessionVideoItagChange = onSabrForceSessionVideoItagChange,
         onLogsSelected = {
           rightPanel = if (rightPanel == SettingsRightPanel.Logs) {
             SettingsRightPanel.None
@@ -376,6 +387,21 @@ fun SettingsScreen(
         modifier = Modifier.align(Alignment.Center),
       )
     }
+    if (showPipedDialog) {
+      SettingsPipedDialog(
+        url = settings.pipedInstanceUrl,
+        onSave = { url ->
+          onPipedInstanceChange(url)
+          showPipedDialog = false
+          focusSettingItem(SettingsItemPiped)
+        },
+        onDismiss = {
+          showPipedDialog = false
+          focusSettingItem(SettingsItemPiped)
+        },
+        modifier = Modifier.align(Alignment.Center),
+      )
+    }
   }
 }
 
@@ -440,6 +466,10 @@ private fun SettingsBehaviorColumn(
   onWebDavSelected: () -> Unit,
   onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
   onIptvSelected: () -> Unit,
+  onPipedInstanceChange: (url: String) -> Unit,
+  onPipedSelected: () -> Unit,
+  onYoutubeUsePipedChange: (Boolean) -> Unit,
+  onSabrForceSessionVideoItagChange: (Boolean) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -991,6 +1021,57 @@ private fun SettingsBehaviorColumn(
         },
       )
     }
+    // ── YouTube SABR 实验:Piped 后端 + itag 诊断(alpha.83)──
+    item(key = "youtube-piped") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_piped_title),
+        description = stringResource(R.string.settings_piped_description),
+        value = settings.pipedInstanceUrl.ifBlank {
+          stringResource(R.string.settings_piped_default_hint)
+        },
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemPiped))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemPiped,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemPiped) },
+        onClick = onPipedSelected,
+      )
+    }
+    item(key = "youtube-use-piped") {
+      SettingsToggleRow(
+        title = stringResource(R.string.settings_youtube_use_piped_title),
+        description = stringResource(R.string.settings_youtube_use_piped_description),
+        checked = settings.youtubeUsePiped,
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemYoutubeUsePiped))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemYoutubeUsePiped,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemYoutubeUsePiped) },
+        onCheckedChange = onYoutubeUsePipedChange,
+      )
+    }
+    item(key = "youtube-sabr-force-itag") {
+      SettingsToggleRow(
+        title = stringResource(R.string.settings_sabr_force_itag_title),
+        description = stringResource(R.string.settings_sabr_force_itag_description),
+        checked = settings.sabrForceSessionVideoItag,
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemSabrForceItag))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemSabrForceItag,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemSabrForceItag) },
+        onCheckedChange = onSabrForceSessionVideoItagChange,
+      )
+    }
     item(key = "webdav") {
       SettingsActionRow(
         title = stringResource(R.string.settings_webdav_title),
@@ -1189,6 +1270,9 @@ private const val SettingsItemYoutubeContentRegion = 33
 private const val SettingsItemWebDavBackup = 31
 private const val SettingsItemWebDavRestore = 32
 private const val SettingsItemIptv = 34
+private const val SettingsItemPiped = 35
+private const val SettingsItemYoutubeUsePiped = 36
+private const val SettingsItemSabrForceItag = 37
 
 private val SettingsFocusableItems = listOf(
   SettingsItemPlaybackQuality,
@@ -1218,6 +1302,9 @@ private val SettingsFocusableItems = listOf(
   SettingsItemHomeSections,
   SettingsItemYoutubeChannels,
   SettingsItemYoutubeContentRegion,
+  SettingsItemPiped,
+  SettingsItemYoutubeUsePiped,
+  SettingsItemSabrForceItag,
   SettingsItemWebDav,
   SettingsItemWebDavBackup,
   SettingsItemWebDavRestore,
@@ -1278,15 +1365,15 @@ private fun settingsItemToLazyIndex(
   }
   SettingsItemLogs -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    35 + updateExtraCount
+    38 + updateExtraCount
   }
   SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    36 + updateExtraCount
+    39 + updateExtraCount
   }
   SettingsItemPlayerLogOverlay -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    37 + updateExtraCount
+    40 + updateExtraCount
   }
   SettingsItemYoutubeChannels -> {
     val updateExtraCount = updateExtraItemCount(updateState)
@@ -1296,21 +1383,33 @@ private fun settingsItemToLazyIndex(
     val updateExtraCount = updateExtraItemCount(updateState)
     30 + updateExtraCount
   }
-  SettingsItemWebDav -> {
+  SettingsItemPiped -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     31 + updateExtraCount
   }
-  SettingsItemWebDavBackup -> {
+  SettingsItemYoutubeUsePiped -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     32 + updateExtraCount
   }
-  SettingsItemWebDavRestore -> {
+  SettingsItemSabrForceItag -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     33 + updateExtraCount
   }
-  SettingsItemIptv -> {
+  SettingsItemWebDav -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     34 + updateExtraCount
+  }
+  SettingsItemWebDavBackup -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    35 + updateExtraCount
+  }
+  SettingsItemWebDavRestore -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    36 + updateExtraCount
+  }
+  SettingsItemIptv -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    37 + updateExtraCount
   }
   else -> 0
 }

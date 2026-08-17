@@ -14,30 +14,21 @@ import com.kirin.mt.core.model.UgcBannerItem
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.youtube.YoutubeChannel
+import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeCommentPage
-import com.kirin.mt.core.youtube.YoutubeConstants
-import com.kirin.mt.core.youtube.YoutubeMaxConcurrentChannelFetches
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.core.youtube.YoutubeVideoDetail
 import com.kirin.mt.core.youtube.YoutubeVideoPage
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
 
-/** 统一动态流:YouTube 关注拉取的兜底超时(ms)。B 站秒出,YouTube 最多等这么久。 */
-const val YoutubeFeedTimeoutMs = 5_000L
-
-/** YouTube 关注流缓存的有效期(ms)。10 分钟内复用缓存秒出,超过则等网络刷新。 */
-const val YoutubeFeedCacheTtlMs = 10 * 60 * 1000L
-
 /**
- * 按关注频道数动态计算 YouTube 订阅流拉取超时(ms)。
- * 并行化后总耗时≈批次×单批耗时,关注多自动放宽;上限 10s 防长时间卡住。
+ * YouTube 关注流缓存的有效期(ms)。10 分钟内复用缓存秒出,超过则等网络刷新。
+ *
+ * alpha.98:删除 youtubeFeedTimeoutMs 外层全局超时。分批增量拉取([YoutubeRepository.getSubscriptionsFeed]
+ * 按频道分块 + onChunkReady 逐批回调)下,单频道独立容错、不整批失败,几百频道也不需外层预算。
  */
-fun youtubeFeedTimeoutMs(channelCount: Int): Long {
-  if (channelCount <= 0) return YoutubeFeedTimeoutMs
-  val batches = (channelCount + YoutubeMaxConcurrentChannelFetches - 1) / YoutubeMaxConcurrentChannelFetches
-  return (batches * 1_000L + 2_000L).coerceAtMost(10_000L)
-}
+const val YoutubeFeedCacheTtlMs = 10 * 60 * 1000L
 
 /** 把 B 站动态与 YouTube 关注流按发布时间倒序合并成统一流。 */
 fun mergeByPubdate(bili: List<VideoSummary>, youtube: List<VideoSummary>): List<VideoSummary> =
@@ -49,6 +40,7 @@ class VideoRepository(
   private val wbiSigner: WbiSigner,
   private val sessionStore: SessionStore,
   private val youtubeRepository: YoutubeRepository,
+  private val youtubeChannelStore: YoutubeChannelStore,
 ) {
   private val spaceVideoRepository = SpaceVideoRepository(
     apiClient = apiClient,
@@ -88,9 +80,16 @@ class VideoRepository(
     page: Int = 1,
     idx: Int = 0,
   ): List<VideoSummary> {
-    // YouTube 热门走独立 InnerTube 通道；分页忽略(热门为单页,滚动翻页 dedup 后自然到底)。
+    // YouTube 热门 tab 改用"关注动态":拉关注频道的订阅流(RSS+InnerTube 合并),与移动端
+    // 首页/动态一致。分页忽略(订阅流单页,滚动翻页 dedup 后自然到底);未关注/超时返回空。
+    // alpha.98:去 withTimeoutOrNull 全局超时——getSubscriptionsFeed 已分批增量 + 单频道独立容错,
+    // 慢频道只丢自身,不整批失败(几百频道不再因外层预算返回空)。
     if (section == HomeSection.YoutubeTrending) {
-      return youtubeTrending(YoutubeConstants.TrendingTabs.keys.first())
+      val channels = youtubeChannelStore.channels.first()
+      if (channels.isEmpty()) return emptyList()
+      return youtubeSubscriptionsFeed(channels, onChannelAvatarResolved = { channel ->
+        youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+      })
     }
     return homeVideoRepository.getHomeSectionVideos(
       section = section,
@@ -257,17 +256,16 @@ class VideoRepository(
     )
   }
 
-  suspend fun youtubeTrending(tabName: String): List<VideoSummary> {
-    val tab = YoutubeConstants.TrendingTabs[tabName]
-      ?: YoutubeConstants.TrendingTabs.values.first()
-    return youtubeRepository.getTrending(tab)
-  }
-
   suspend fun youtubeSubscriptionsFeed(
     channels: List<YoutubeChannel>,
     onChannelAvatarResolved: suspend (YoutubeChannel) -> Unit = {},
+    onChunkReady: (List<VideoSummary>) -> Unit = {},
   ): List<VideoSummary> {
-    return youtubeRepository.getSubscriptionsFeed(channels, onChannelAvatarResolved = onChannelAvatarResolved)
+    return youtubeRepository.getSubscriptionsFeed(
+      channels,
+      onChannelAvatarResolved = onChannelAvatarResolved,
+      onChunkReady = onChunkReady,
+    )
   }
 
   /** YouTube 视频详情（简介 Tab）。 */

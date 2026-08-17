@@ -37,21 +37,34 @@ class BiliTvPoTokenProvider(
   fun cached(): PoTokenResult? = cached
 
   override fun getWebClientPoToken(videoId: String): PoTokenResult? {
+    Log.i(tag, "getWebClientPoToken ENTRY videoId=$videoId → mint BotGuard token")
     val visitorData = innerTubeClient.currentVisitorData()
     val poToken = runBlocking { botGuard.generatePoToken(videoId) }
     if (poToken.isNullOrEmpty()) {
-      Log.w(tag, "getWebClientPoToken: BotGuard returned null/empty poToken for $videoId")
+      Log.w(tag, "getWebClientPoToken: BotGuard returned null/empty poToken for $videoId → null")
       return null
     }
     val result = PoTokenResult(visitorData, poToken, poToken)
     synchronized(lock) { cached = result }
-    Log.i(tag, "getWebClientPoToken: videoId=$videoId poToken=${poToken.length}B visitorData=${visitorData.length}B (cached)")
+    Log.i(tag, "getWebClientPoToken: videoId=$videoId poToken=${poToken.length}B visitorData=${visitorData.length}B (cached) → minted+cached")
     return result
   }
 
-  override fun getWebEmbedClientPoToken(videoId: String?): PoTokenResult? = null
+  override fun getWebEmbedClientPoToken(videoId: String?): PoTokenResult? {
+    Log.i(tag, "getWebEmbedClientPoToken ENTRY videoId=$videoId → null(未实现)")
+    return null
+  }
 
-  override fun getAndroidClientPoToken(videoId: String?): PoTokenResult? = null
+  override fun getAndroidClientPoToken(videoId: String?): PoTokenResult? {
+    Log.i(tag, "getAndroidClientPoToken ENTRY videoId=$videoId → null(未实现)")
+    return null
+  }
 
-  override fun getIosClientPoToken(videoId: String?): PoTokenResult? = null
+  override fun getIosClientPoToken(videoId: String?): PoTokenResult? {
+    // Fix T 取证:NewPipe visionOS getInfo 若走 iOS/visionOS provider 会调这里。当前直接 null
+    // → provider 缓存恒空 → buildSabrSessionFromNewPipe 回退 resolve-minted 128B WEB token
+    // (与 visionOS 绑定的 ustreamerConfig 不匹配 → RELOAD)。此日志一锤定音缓存为何空。
+    Log.i(tag, "getIosClientPoToken ENTRY videoId=$videoId → null(未实现;若被调则证实 visionOS 走此 provider,cache 恒空)")
+    return null
+  }
 }

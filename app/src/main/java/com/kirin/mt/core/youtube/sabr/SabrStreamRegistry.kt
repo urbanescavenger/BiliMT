@@ -28,6 +28,69 @@ internal object SabrStreamRegistry {
   private val byVideoId = ConcurrentHashMap<String, String>()
 
   /**
+   * alpha.8 诊断(Phase 2 取证):RELOAD_PLAYER_RESPONSE 的 reloadToken(videoId → 144B base64,
+   * ReloadPlaybackParams.token)停车槽。独立于 [sessions]/[byVideoId],**evict 不清**——token 必须在
+   * evict 后仍存活,供 resolve() 下次重进时 [consumeReloadToken] 取走去重打 visionOS /player。
+   * [reloadCounts] 记录每 videoId 连续 RELOAD 次数,防诊断期回传失败死循环(超 [MAX_RELOADS] 落 DASH)。
+   */
+  const val MAX_RELOADS = 3
+  private val pendingReloads = ConcurrentHashMap<String, String>()
+  private val reloadCounts = ConcurrentHashMap<String, Int>()
+
+  /** 存 reloadToken 停车 + 递增连续 reload 计数。由 [SabrMediaFetcher.processPart] RELOAD 分支调用。 */
+  fun storeReloadToken(videoId: String, token: String) {
+    pendingReloads[videoId] = token
+    val count = (reloadCounts[videoId] ?: 0) + 1
+    reloadCounts[videoId] = count
+    Log.w(tag, "storeReloadToken videoId=$videoId count=$count tokenLen=${token.length} → evict+re-resolve 重打 /player")
+  }
+
+  /** 原子取出停车 token(消费一次)。resolve() 重进时用;已取走则返回 null。 */
+  fun consumeReloadToken(videoId: String): String? = pendingReloads.remove(videoId)
+
+  /**
+   * alpha.88:RELOAD **单槽**(视频无关)停车。真机 36B RELOAD payload 可能是较小变体,**不含**内层
+   * videoId(旧 144B 变体才有 f4=videoId)→ 旧 [storeReloadToken] 的 `vid != null` 存不进 →
+   * [consumeReloadToken] 恒返回 null → alpha.87 RELOAD 重载闭环永远不触发。单播放器同时只播一个视频,
+   * 单槽足够:fetcher 存(无论 videoId 能否解出),resolve() [consumeReloadTokenSlot] 取走。
+   * 仍顺带维护 videoId-keyed [pendingReloads]/[reloadCounts](诊断计数;vid 可解出时)。
+   */
+  @Volatile private var pendingReloadSlot: String? = null
+  @Volatile private var pendingReloadSlotVid: String? = null
+
+  /** 存 reloadToken 进单槽(+ vid 可解出时顺带 videoId-keyed 计数)。由 fetcher RELOAD 分支调用。 */
+  fun storeReloadTokenSlot(videoId: String?, token: String) {
+    pendingReloadSlot = token
+    pendingReloadSlotVid = videoId
+    if (videoId != null) {
+      val count = (reloadCounts[videoId] ?: 0) + 1
+      reloadCounts[videoId] = count
+      pendingReloads[videoId] = token
+      Log.w(tag, "storeReloadTokenSlot videoId=$videoId count=$count tokenLen=${token.length}")
+    } else {
+      Log.w(tag, "storeReloadTokenSlot videoId=null(短 RELOAD 变体?) tokenLen=${token.length} → 单槽存,resolve 走 slot")
+    }
+  }
+
+  /** 原子取走单槽 token(消费一次)。resolve() 重进 RELOAD 闭环时用;已取走则返回 null。 */
+  fun consumeReloadTokenSlot(): String? {
+    val t = pendingReloadSlot
+    pendingReloadSlot = null
+    val vid = pendingReloadSlotVid
+    pendingReloadSlotVid = null
+    if (t != null) Log.i(tag, "consumeReloadTokenSlot tokenLen=${t.length} vid=$vid")
+    return t
+  }
+
+  /** 当前连续 reload 次数。 */
+  fun reloadCount(videoId: String): Int = reloadCounts[videoId] ?: 0
+
+  /** 播放真正恢复(首个非 init MEDIA_END)后清零,打断 reload 链。 */
+  fun resetReloadCount(videoId: String) {
+    reloadCounts.remove(videoId)
+  }
+
+  /**
    * alpha.66/67:会话级 PO token 状态(holder,避免 data class [Entry] 加 var 破坏 equals)。
    * [currentPoToken] 初始=[SabrSession.poToken];status=2 时由 [SabrMediaFetcher.media] **同步**重铸
    * 换新(对齐 LibreTube,下个请求一定带新 token)。提升到会话级(非 fetcher 实例)——切清晰度重建
@@ -61,6 +124,20 @@ internal object SabrStreamRegistry {
      * 提升 Entry 而非 fetcher 实例,修 alpha.65 切清晰度重建 fetcher 丢 token 的回归。
      */
     val poTokenState: PoTokenState = PoTokenState(session.poToken),
+    /**
+     * alpha.83 诊断(实验):强制视频轨用**会话选中的** videoFormatId(`session.videoFormatId`),跳过
+     * [com.kirin.mt.core.youtube.sabr.media.SabrMediaFetcher] 的 selectFormat 按声明 itag 重选。
+     * 用于证伪"itag313(或别的 itag)是 RELOAD 根因"这一红绯鱼——强制锁会话选轨后若仍 RELOAD,说明根因
+     * 不在 itag 而在 ustreamerConfig 来源(见 Piped 后端方案)。Piped 路径默认 true;NewPipe 路径可手动开。
+     * false(默认)= 正常 selectFormat 选轨(旧行为)。
+     */
+    val forceSessionVideoItag: Boolean = false,
+    /**
+     * alpha.9X:本会话绑定的 videoId(registerByVideoId 填充;register 无视频概念用 null)。
+     * 供 fetcher 在 RELOAD 时可靠计数——RELOAD payload 的 36B 短变体可能解不出内层 videoId
+     * (f4=null),用会话自己的 videoId 保证死循环守卫 [reloadCount] 总能递增、DASH 兜底可靠触发。
+     */
+    val videoId: String? = null,
   ) {
     /**
      * alpha.62(Phase 2 DASH A/V 同步修复):每流已取 media 段的**实际**累计媒体时长(ms)。
@@ -94,16 +171,16 @@ internal object SabrStreamRegistry {
    * 若 [videoId] 已有缓存会话,复用其 sid + 覆盖更新 entry(会话参数可能因重 harvest 略变)。
    * alpha.59(Phase 2 DASH):无窗口锚点——DASH 会话服务整段视频,无 60s 轮换。
    */
-  fun registerByVideoId(videoId: String, session: SabrSession, client: SabrClient, windowStartMs: Long = 0L, refreshPoToken: (suspend () -> ByteArray?)? = null): String {
+  fun registerByVideoId(videoId: String, session: SabrSession, client: SabrClient, windowStartMs: Long = 0L, refreshPoToken: (suspend () -> ByteArray?)? = null, forceSessionVideoItag: Boolean = false): String {
     val existingSid = byVideoId[videoId]
     val sid = if (existingSid != null && sessions.containsKey(existingSid)) {
-      sessions[existingSid] = Entry(session, client, windowStartMs, refreshPoToken)
+      sessions[existingSid] = Entry(session, client, windowStartMs, refreshPoToken, forceSessionVideoItag = forceSessionVideoItag, videoId = videoId)
       existingSid
     } else {
       val bytes = ByteArray(16)
       SecureRandom().nextBytes(bytes)
       val newSid = Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
-      sessions[newSid] = Entry(session, client, windowStartMs, refreshPoToken)
+      sessions[newSid] = Entry(session, client, windowStartMs, refreshPoToken, forceSessionVideoItag = forceSessionVideoItag, videoId = videoId)
       byVideoId[videoId] = newSid
       newSid
     }

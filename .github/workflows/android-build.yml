@@ -101,7 +101,8 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Restore release keystore
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        # release 和 debug 构建都恢复固定 keystore:release 用它签正式包,
+        # debug 也用它签(复用同一 key 避免每次 CI 随机 debug.keystore 致签名不一致)。
         env:
           SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
@@ -121,7 +122,10 @@ jobs:
 
       - name: Build debug APK
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        run: ./gradlew clean assembleDebug --no-daemon -PbilitvBuildRoot="$GITHUB_WORKSPACE/build"
+        # 传 GITHUB_RUN_NUMBER 让 debug versionCode 随每次构建递增,避免恒为 1000000
+        # 导致 Android 拒绝覆盖安装(同一 applicationId 内 versionCode 必须严格 > 已装)。
+        # 传 key.* 属性用固定 release keystore 签名,避免每次随机 debug.keystore 致跨次签名不一致。
+        run: ./gradlew clean assembleDebug --no-daemon -PbilitvBuildRoot="$GITHUB_WORKSPACE/build" -PbilitvDebugRunNumber="$GITHUB_RUN_NUMBER" -Pkey.store="$KEYSTORE_PATH" -Pkey.alias="$KEY_ALIAS" -Pkey.store.password="$STORE_PASSWORD" -Pkey.key.password="$KEY_PASSWORD"
 
       - name: Upload debug APK
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
@@ -144,13 +148,20 @@ jobs:
           # 固定 tag/release 名 "debug"：每次 debug 云编译都覆盖这里，
           # 手机用固定 URL 下载最新 debug 包（公开仓库，无需登录）。
           # 固定 URL: https://github.com/urbanescavenger/BiliMT/releases/download/debug/BiliMT-debug.apk
+          # notes 写入 versionName/versionCode，供 debug 变体 App 端「检查更新」解析对比，
+          # 实现 debug 只更新 debug（不走 v* release，避免把 debug 用户引向 release 稳定版）。
+          N="$GITHUB_RUN_NUMBER"
+          VC=$((1000000 + N))
+          VN="dev.r$N"
+          NOTES="最新 mort_debug 分支 debug 构建，每次推送自动覆盖。固定下载地址见本 release asset。"$'\n'"versionName=$VN"$'\n'"versionCode=$VC"
           if gh release view debug --json tagName >/dev/null 2>&1; then
+            gh release edit debug --notes "$NOTES"
             gh release upload debug "$APK" --clobber
           else
             gh release create debug "$APK" \
               --target "$GITHUB_SHA" \
               --title "Debug Build" \
-              --notes "最新 mort_debug 分支 debug 构建，每次推送自动覆盖。固定下载地址见本 release asset。" \
+              --notes "$NOTES" \
               --prerelease
           fi
 
@@ -158,20 +169,19 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/release-apks"
-          for abi in arm64-v8a armeabi-v7a; do
-            ./gradlew clean assembleRelease --no-daemon \
-              -PbilitvBuildRoot="$GITHUB_WORKSPACE/build" \
-              -PbilitvVersionName="${{ github.ref_name }}" \
-              -PtargetAbi="$abi" \
-              -Pkey.store="$KEYSTORE_PATH" \
-              -Pkey.alias="$KEY_ALIAS" \
-              -Pkey.store.password="$STORE_PASSWORD" \
-              -Pkey.key.password="$KEY_PASSWORD"
-            SRC=$(find "$GITHUB_WORKSPACE/build" -name "*.apk" -type f | head -1)
-            DST="$GITHUB_WORKSPACE/release-apks/BiliMT-${{ github.ref_name }}-$abi.apk"
-            cp "$SRC" "$DST"
-            echo "Built $DST from $SRC"
-          done
+          # 单一 universal APK：不带 -PtargetAbi，默认同时打进 arm64-v8a / armeabi-v7a，
+          # 一个包同时适配 TV 和手机（含两种盒子架构），免去用户挑 ABI。
+          ./gradlew clean assembleRelease --no-daemon \
+            -PbilitvBuildRoot="$GITHUB_WORKSPACE/build" \
+            -PbilitvVersionName="${{ github.ref_name }}" \
+            -Pkey.store="$KEYSTORE_PATH" \
+            -Pkey.alias="$KEY_ALIAS" \
+            -Pkey.store.password="$STORE_PASSWORD" \
+            -Pkey.key.password="$KEY_PASSWORD"
+          SRC=$(find "$GITHUB_WORKSPACE/build" -name "*.apk" -type f | head -1)
+          DST="$GITHUB_WORKSPACE/release-apks/BiliMT-${{ github.ref_name }}.apk"
+          cp "$SRC" "$DST"
+          echo "Built $DST from $SRC"
 
       - name: Delete old prereleases
         if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- debug 变体覆盖 app_name,使其在桌面与 release 版本区分(两者图标相同)。 -->
+    <string name="app_name">BiliMT (debug)</string>
+</resources>

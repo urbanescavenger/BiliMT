@@ -91,6 +91,9 @@ class AppSettingsStore(private val context: Context) {
       iptvSourceUrl = preferences[Keys.IptvSourceUrl] ?: "",
       iptvSourceUsername = preferences[Keys.IptvSourceUsername] ?: "",
       iptvSourcePassword = preferences[Keys.IptvSourcePassword] ?: "",
+      youtubeUsePiped = preferences[Keys.YoutubeUsePiped] ?: false,
+      pipedInstanceUrl = preferences[Keys.PipedInstanceUrl] ?: "",
+      sabrForceSessionVideoItag = preferences[Keys.SabrForceSessionVideoItag] ?: false,
     )
   }
 
@@ -132,6 +135,27 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setIptvSourcePassword(password: String) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.IptvSourcePassword] = password
+    }
+  }
+
+  /** YouTube SABR:启用 Piped 后端路径(实验,修 RELOAD_PLAYER_RESPONSE 死循环)。 */
+  suspend fun setYoutubeUsePiped(enabled: Boolean) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.YoutubeUsePiped] = enabled
+    }
+  }
+
+  /** YouTube SABR:Piped 实例 URL(空串=默认实例)。 */
+  suspend fun setPipedInstanceUrl(url: String) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.PipedInstanceUrl] = url
+    }
+  }
+
+  /** YouTube SABR:强制视频轨用会话选中 itag 诊断开关。 */
+  suspend fun setSabrForceSessionVideoItag(enabled: Boolean) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.SabrForceSessionVideoItag] = enabled
     }
   }
 
@@ -376,6 +400,9 @@ class AppSettingsStore(private val context: Context) {
     val IptvSourceUrl = stringPreferencesKey("iptv_source_url")
     val IptvSourceUsername = stringPreferencesKey("iptv_source_username")
     val IptvSourcePassword = stringPreferencesKey("iptv_source_password")
+    val YoutubeUsePiped = booleanPreferencesKey("youtube_use_piped")
+    val PipedInstanceUrl = stringPreferencesKey("piped_instance_url")
+    val SabrForceSessionVideoItag = booleanPreferencesKey("sabr_force_session_video_itag")
   }
 }
 
