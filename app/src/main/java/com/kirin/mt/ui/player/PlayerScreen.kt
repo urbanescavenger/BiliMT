@@ -2256,11 +2256,22 @@ internal const val SabrDashSegmentDurationMsAudio = 10_000L
 
 
 internal fun buildDashManifest(info: PlaybackInfo, cdnPreference: PlaybackCdnPreference): String {
-  val videoRepresentations = info.videoTracks.joinToString(separator = "\n") { track ->
-    track.toRepresentation(adaptationSetId = "0", contentType = "video", cdnPreference = cdnPreference)
-  }
+  // alpha.9X:对齐 LibreTube——视频轨按 mimeType(容器)分组到独立 <AdaptationSet>(H264 MP4 / VP9 WebM 分开)。
+  // 否则混合容器塞同一 AdaptationSet 时,ExoPlayer 用单一 extractor(按 AdaptationSet mimeType 选)解析
+  // 错容器的 init 段 → FragmentedMp4Extractor/MatroskaExtractor 解析失败 → InitializationChunk EOFException。
+  // LibreTube DashHelper 按 stream.mimeType 分组建 AdaptationSet,故 H264/VP9 各得正确 extractor。
+  val videoGroups = info.videoTracks.groupBy { it.mimeType.ifBlank { "video/mp4" } }
+  val videoAdaptationSets = videoGroups.entries.mapIndexed { index, (mimeType, tracks) ->
+    val reps = tracks.joinToString(separator = "\n") { track ->
+      track.toRepresentation(adaptationSetId = index.toString(), contentType = "video", cdnPreference = cdnPreference)
+    }
+    """<AdaptationSet id="$index" contentType="video" mimeType="$mimeType" segmentAlignment="true">
+      $reps
+    </AdaptationSet>"""
+  }.joinToString(separator = "\n")
+  val audioAdaptationSetId = videoGroups.size
   val audioRepresentations = info.audioTracks.joinToString(separator = "\n") { track ->
-    track.toRepresentation(adaptationSetId = "1", contentType = "audio", cdnPreference = cdnPreference)
+    track.toRepresentation(adaptationSetId = audioAdaptationSetId.toString(), contentType = "audio", cdnPreference = cdnPreference)
   }
   val durationSeconds = (info.durationMs / 1000L).coerceAtLeast(1L)
   // alpha.59(Phase 2 DASH):SABR 用 SegmentTemplate(逐段拉),需 live profile;PGC SegmentBase 用 on-demand。
@@ -2268,10 +2279,8 @@ internal fun buildDashManifest(info: PlaybackInfo, cdnPreference: PlaybackCdnPre
   return """
     <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT${durationSeconds}S" minBufferTime="PT1.5S" profiles="$profiles">
       <Period duration="PT${durationSeconds}S">
-        <AdaptationSet id="0" contentType="video" mimeType="${info.videoTracks.firstOrNull()?.mimeType.orEmpty().ifBlank { "video/mp4" }}" segmentAlignment="true">
-          $videoRepresentations
-        </AdaptationSet>
-        <AdaptationSet id="1" contentType="audio" mimeType="${info.audioTracks.firstOrNull()?.mimeType.orEmpty().ifBlank { "audio/mp4" }}" segmentAlignment="true">
+        $videoAdaptationSets
+        <AdaptationSet id="$audioAdaptationSetId" contentType="audio" mimeType="${info.audioTracks.firstOrNull()?.mimeType.orEmpty().ifBlank { "audio/mp4" }}" segmentAlignment="true">
           $audioRepresentations
         </AdaptationSet>
       </Period>
