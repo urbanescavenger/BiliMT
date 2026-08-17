@@ -310,15 +310,171 @@ class YoutubeRepository(
   }
 
   /**
-   * 拉取单频道"视频"tab 的原始 InnerTube 视频列表(未映射成卡片),供订阅流与 RSS 合并。
+   * 首页订阅流分页(首屏或续页),返回每频道独立续页 token。
+   *
+   * - **首屏(previousContinuation == null)**:每频道 RSS + InnerTube 第一页并行拉取合并([mergeByVideoId]),
+   *   `take(perChannel)` 映射成卡片,同时记录该频道 InnerTube 第一页的 continuation。
+   * - **续页**:只对 `previousContinuation` 中 token 非 null 的频道,调 [getChannelVideosRawPage] 拉更早一页
+   *   (RSS 无续页概念,续页仅走 InnerTube),`take(perChannel)` 映射,记录该频道下一 token。
+   *
+   * 分批并发 / 防节流 / 单频道失败降级均沿用 [getSubscriptionsFeed] 骨架。UI 负责跨页累积去重后按 pubdate 排序。
+   *
+   * @param perChannel 每频道每页最多取条数(默认 15)。
+   * @param previousContinuation null 表示首屏;否则 channelId -> 上一页留下的下一 token。
+   */
+  suspend fun getSubscriptionsPage(
+    channels: List<YoutubeChannel>,
+    perChannel: Int = 15,
+    previousContinuation: Map<String, String?>? = null,
+    onChannelAvatarResolved: suspend (YoutubeChannel) -> Unit = {},
+    onChunkReady: (List<VideoSummary>) -> Unit = {},
+  ): YoutubeSubscriptionsPage {
+    if (channels.isEmpty()) {
+      // 未配置频道时回退显示热门,避免首页空白(设置里可添加频道)。
+      return YoutubeSubscriptionsPage(getTrending(YoutubeConstants.TrendingTabs.values.first()), emptyMap())
+    }
+    val rssSemaphore = Semaphore(YoutubeMaxConcurrentRssFetches)
+    val innerTubeSemaphore = Semaphore(YoutubeMaxConcurrentChannelFetches)
+    // 首屏：全部频道；续页：仅 token 非 null 的频道。
+    val activeChannels = if (previousContinuation == null) {
+      channels
+    } else {
+      channels.filter { (previousContinuation[it.channelId] ?: return@filter false) != null }
+    }
+    val accumulator = mutableListOf<VideoSummary>()
+    val continuationAccumulator = mutableMapOf<String, String?>()
+    var processed = 0
+    for (batch in activeChannels.chunked(ChunkSize)) {
+      val (batchVideos, batchContinuations) = coroutineScope {
+        val perChannelResults = batch.map { channel ->
+          async {
+            // 旧频道(无头像)懒解析一次并回写 store,供本次填充与后续复用,避免每次刷新重复 /browse。
+            var channelAvatar = channel.avatar
+            if (channelAvatar.isBlank()) {
+              val resolvedAvatar = innerTubeSemaphore.withPermit {
+                runCatching {
+                  val payload = buildJsonObject { put("browseId", channel.channelId) }
+                  YoutubeParsers.parseChannelInfo(client.postJson("/browse", payload))?.avatarUrl.orEmpty()
+                }.getOrDefault("")
+              }
+              if (resolvedAvatar.isNotBlank()) {
+                channelAvatar = resolvedAvatar
+                onChannelAvatarResolved(channel.copy(avatar = resolvedAvatar))
+              }
+            }
+            if (previousContinuation == null) {
+              // 首屏：RSS 与 InnerTube 第一页并行拉取合并，并记录 InnerTube 第一页的续页 token。
+              val rssDeferred = async {
+                rssSemaphore.withPermit {
+                  runCatching { getChannelRss(channel.channelId) }
+                    .onFailure { Log.w("YoutubeFeed", "RSS failed for ${channel.channelId}", it) }
+                    .getOrDefault(emptyList())
+                }
+              }
+              val innerTubeDeferred = async {
+                innerTubeSemaphore.withPermit {
+                  runCatching { getChannelVideosRawPage(channel.channelId) }
+                    .onFailure { Log.w("YoutubeFeed", "InnerTube failed for ${channel.channelId}", it) }
+                    .getOrDefault(YoutubeFeedPage(emptyList(), null))
+                }
+              }
+              val rssVideos = rssDeferred.await()
+              val innerTubePage = innerTubeDeferred.await()
+              val merged = mergeByVideoId(rssVideos, innerTubePage.items)
+              Log.d(
+                "YoutubeFeed",
+                "${channel.channelId}: RSS ${rssVideos.size} + InnerTube ${innerTubePage.items.size} → merged ${merged.size}",
+              )
+              val resolved: List<VideoSummary> = merged.take(perChannel).map(::toVideoSummary)
+                .map { fillChannelInfo(it, channel, channelAvatar) }
+              Triple(resolved, channel.channelId, innerTubePage.continuation)
+            } else {
+              // 续页：只拉 InnerTube 更早一页（RSS 无续页），取该频道下一 token。
+              val token = previousContinuation[channel.channelId]
+              val innerTubeDeferred = async {
+                innerTubeSemaphore.withPermit {
+                  runCatching { getChannelVideosRawPage(channel.channelId, token) }
+                    .onFailure { Log.w("YoutubeFeed", "InnerTube next failed for ${channel.channelId}", it) }
+                    .getOrDefault(YoutubeFeedPage(emptyList(), null))
+                }
+              }
+              val innerTubePage = innerTubeDeferred.await()
+              Log.d(
+                "YoutubeFeed",
+                "${channel.channelId}: next page → ${innerTubePage.items.size} (next=${innerTubePage.continuation?.take(12) ?: "null"})",
+              )
+              val resolved: List<VideoSummary> = innerTubePage.items.take(perChannel).map(::toVideoSummary)
+                .map { fillChannelInfo(it, channel, channelAvatar) }
+              Triple(resolved, channel.channelId, innerTubePage.continuation)
+            }
+          }
+        }.awaitAll()
+      }.let { results ->
+        results.fold(Pair(mutableListOf<VideoSummary>(), mutableMapOf<String, String?>())) { (vs, cs), r ->
+          if (r != null) {
+            vs += r.first
+            cs[r.second] = r.third
+          }
+          vs to cs
+        }
+      }
+      // 每批就绪即回调(增量 merge / 增量写缓存),不等待全部频道。
+      onChunkReady(batchVideos)
+      accumulator += batchVideos
+      // 首屏未拉到的频道(如头像解析失败)不在此批,续页 map 只含本批频道,其余继承 previousContinuation。
+      if (previousContinuation != null) continuationAccumulator.putAll(previousContinuation)
+      continuationAccumulator.putAll(batchContinuations)
+      processed += batch.size
+      // 防节流(对齐 LibreTube CHANNEL_BATCH_DELAY):每累计 BatchSize 频道暂停随机 500-1500ms。
+      if (processed % BatchSize == 0) {
+        delay(Random.nextLong(BatchDelayMs.first, BatchDelayMs.last + 1))
+      }
+    }
+    return YoutubeSubscriptionsPage(
+      videos = accumulator.sortedByDescending { it.pubdate },
+      perChannelContinuation = continuationAccumulator,
+    )
+  }
+
+  /** 给订阅流卡片补上所属频道名/频道 id/头像(lockupViewModel 恒空,见 youtube-api-notes)。 */
+  private fun fillChannelInfo(
+    video: VideoSummary,
+    channel: YoutubeChannel,
+    channelAvatar: String,
+  ): VideoSummary {
+    return video.copy(
+      ownerName = if (video.ownerName.isBlank()) channel.name else video.ownerName,
+      channelId = if (video.channelId.isBlank()) channel.channelId else video.channelId,
+      ownerFace = if (video.ownerFace.isBlank()) channelAvatar else video.ownerFace,
+    )
+  }
+
+  /**
+   * 拉取单频道"视频"tab 一页的原始 InnerTube 内容,带续页 token。
+   * 首屏发 browseId+params,续页发 continuation(对齐 [getChannelVideos])。
    * 失败抛异常,由调用方降级。
    */
-  private suspend fun getChannelVideosRaw(channelId: String): List<YoutubeVideo> {
+  private suspend fun getChannelVideosRawPage(
+    channelId: String,
+    continuation: String? = null,
+  ): YoutubeFeedPage {
     val payload = buildJsonObject {
-      put("browseId", channelId)
-      put("params", YoutubeConstants.ChannelVideosParams)
+      if (continuation != null) {
+        put("continuation", continuation)
+      } else {
+        put("browseId", channelId)
+        put("params", YoutubeConstants.ChannelVideosParams)
+      }
     }
-    return client.postJson("/browse", payload).let(YoutubeParsers::parseFeedPage).items
+    return client.postJson("/browse", payload).let(YoutubeParsers::parseFeedPage)
+  }
+
+  /**
+   * 拉取单频道"视频"tab 的原始 InnerTube 视频列表(未映射成卡片),供订阅流与 RSS 合并。
+   * 仅取第一页,续页 token 丢弃(单次拉最新一批场景)。失败抛异常,由调用方降级。
+   */
+  private suspend fun getChannelVideosRaw(channelId: String): List<YoutubeVideo> {
+    return getChannelVideosRawPage(channelId).items
   }
 
   /**

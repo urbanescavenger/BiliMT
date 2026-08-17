@@ -1,5 +1,7 @@
 package com.kirin.mt.core.youtube
 
+import com.kirin.mt.core.model.VideoSummary
+
 /**
  * YouTube 内容模型。对齐 FreeTube `parseLocalListVideo` 输出的字段结构（协议层面的
  * 形状），供 [YoutubeParsers] 填充、[com.kirin.mt.core.network.VideoRepository] 映射成
@@ -35,6 +37,17 @@ data class YoutubeFeedPage(
   /** 续页 token；null 表示没有下一页。 */
   val continuation: String?,
 )
+
+/** 一页首页订阅流（首屏或续页）。UI 负责跨页累积+去重+按 pubdate 排序。 */
+data class YoutubeSubscriptionsPage(
+  /** 本页新拉到的视频（每频道已 cap 到 perChannel，频道内已合并 RSS+InnerTube）。 */
+  val videos: List<VideoSummary>,
+  /** channelId -> 该频道下一 continuation token；null = 该频道到底。 */
+  val perChannelContinuation: Map<String, String?>,
+) {
+  /** 所有频道都到底（无任一续页 token）即为全部加载完。 */
+  val endReached: Boolean get() = perChannelContinuation.values.all { it == null }
+}
 
 /** YouTube 视频详情（简介 Tab）。由 /player 响应 videoDetails + microformat 填充。 */
 data class YoutubeVideoDetail(

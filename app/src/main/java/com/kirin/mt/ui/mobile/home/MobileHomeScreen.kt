@@ -60,6 +60,8 @@ private sealed interface MobileSectionState {
     val nextPage: Int,
     val loadingMore: Boolean,
     val endReached: Boolean,
+    /** 首页订阅流(YouTube 热门)续页 token：channelId -> 下一 token；非 YouTube 分区为 null。 */
+    val youtubeContinuation: Map<String, String?>? = null,
   ) : MobileSectionState
   data class Failed(val message: String) : MobileSectionState
 }
@@ -135,20 +137,20 @@ fun MobileHomeScreen(
         )
       }
     }
-    // alpha.98:去 withTimeoutOrNull 全局超时(几百频道必超)。getSubscriptionsFeed 已分批增量 +
+    // alpha.98:去 withTimeoutOrNull 全局超时(几百频道必超)。getSubscriptionsPage 已分批增量 +
     // 单频道独立容错,慢频道只丢自身;home 分区一次性消费全量,拉完返回(部分或全部)不整批 Failed。
-    val result = videoRepository.youtubeSubscriptionsFeed(youtubeChannels, onChannelAvatarResolved = { channel ->
-      youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-    })
+    // 首屏返回每频道续页 token,滚动到底可继续翻更早视频(头像回写由 youtubeHomeFeedPage 内部处理)。
+    val page = videoRepository.youtubeHomeFeedPage()
     return when {
-      result.isEmpty() -> MobileSectionState.Failed("暂无内容")
+      page.videos.isEmpty() -> MobileSectionState.Failed("暂无内容")
       else -> {
-        youtubeFeedCacheStore.write(currentIds, result)
+        youtubeFeedCacheStore.write(currentIds, page.videos)
         MobileSectionState.Success(
-          videos = result,
+          videos = page.videos,
           nextPage = FirstPage + 1,
           loadingMore = false,
-          endReached = true, // 订阅流单页,不翻页
+          endReached = page.endReached,
+          youtubeContinuation = page.perChannelContinuation,
         )
       }
     }
@@ -205,21 +207,35 @@ fun MobileHomeScreen(
     uiState.setState(key, current.copy(loadingMore = true))
     scope.launch {
       val next = try {
-        val idx = if (section == HomeSection.Recommend) {
-          uiState.refreshKey(key) + current.nextPage - FirstPage
-        } else 0
-        val more = videoRepository.getHomeSectionVideos(
-          section = section,
-          page = current.nextPage,
-          idx = idx,
-        )
-        val merged = (current.videos + more).distinctBy { it.bvid }
-        current.copy(
-          videos = merged,
-          nextPage = current.nextPage + 1,
-          loadingMore = false,
-          endReached = more.size < PageSize || merged.size == current.videos.size,
-        )
+        if (section == HomeSection.YoutubeTrending) {
+          // 首页订阅流续页：用每频道 continuation 拉更早一页，累积去重后按 pubdate 排序。
+          val cont = current.youtubeContinuation ?: return@launch
+          val page = videoRepository.youtubeHomeFeedPage(previousContinuation = cont)
+          val merged = (current.videos + page.videos).distinctBy { it.bvid }
+            .sortedByDescending { it.pubdate }
+          current.copy(
+            videos = merged,
+            loadingMore = false,
+            endReached = page.endReached,
+            youtubeContinuation = page.perChannelContinuation,
+          )
+        } else {
+          val idx = if (section == HomeSection.Recommend) {
+            uiState.refreshKey(key) + current.nextPage - FirstPage
+          } else 0
+          val more = videoRepository.getHomeSectionVideos(
+            section = section,
+            page = current.nextPage,
+            idx = idx,
+          )
+          val merged = (current.videos + more).distinctBy { it.bvid }
+          current.copy(
+            videos = merged,
+            nextPage = current.nextPage + 1,
+            loadingMore = false,
+            endReached = more.size < PageSize || merged.size == current.videos.size,
+          )
+        }
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {

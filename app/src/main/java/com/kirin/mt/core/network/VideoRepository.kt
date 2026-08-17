@@ -17,6 +17,7 @@ import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeCommentPage
 import com.kirin.mt.core.youtube.YoutubeRepository
+import com.kirin.mt.core.youtube.YoutubeSubscriptionsPage
 import com.kirin.mt.core.youtube.YoutubeVideoDetail
 import com.kirin.mt.core.youtube.YoutubeVideoPage
 import kotlinx.coroutines.flow.first
@@ -264,6 +265,27 @@ class VideoRepository(
     return youtubeRepository.getSubscriptionsFeed(
       channels,
       onChannelAvatarResolved = onChannelAvatarResolved,
+      onChunkReady = onChunkReady,
+    )
+  }
+
+  /**
+   * 首页订阅流分页：读取当前关注频道，previousContinuation=null 首屏，否则续页。
+   * 返回带每频道续页 token 的页，UI 负责累积去重 + 按 pubdate 排序。
+   * 头像回写 store 在此处理（本类持有 [youtubeChannelStore]），UI 无需感知。
+   */
+  suspend fun youtubeHomeFeedPage(
+    previousContinuation: Map<String, String?>? = null,
+    onChunkReady: (List<VideoSummary>) -> Unit = {},
+  ): YoutubeSubscriptionsPage {
+    val channels = youtubeChannelStore.channels.first()
+    if (channels.isEmpty()) return YoutubeSubscriptionsPage(emptyList(), emptyMap())
+    return youtubeRepository.getSubscriptionsPage(
+      channels,
+      previousContinuation = previousContinuation,
+      onChannelAvatarResolved = { channel ->
+        youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+      },
       onChunkReady = onChunkReady,
     )
   }
