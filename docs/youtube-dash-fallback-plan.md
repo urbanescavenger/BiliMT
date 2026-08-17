@@ -218,6 +218,20 @@
   - **参考 LibreTube**:`LocalFeedRepository.refreshFeed` = Room(SQLite)逐频道缓存 + `channelIds.chunked(5)`
     分批并发 + 每批写完 DB + 进度回调 + **无外层全局超时**(每频道独立 runCatching,慢的只丢自身);
     每累计 50 频道 `delay(500..1500ms)` 防节流。
+  - **LibreTube 关键理解(2026-08-17 核源码,修正"进度回调=增量 merge"的误读)**:
+    `LocalFeedRepository.getFeed`([LocalFeedRepository.kt:48-73](e:/GITHUB/LibreTube/app/src/main/java/com/github/libretube/repo/LocalFeedRepository.kt#L48-L73))
+    的 `onProgressUpdate` **只驱动进度条,不 merge 数据**——`refreshFeed` 逐批拉取**写进 DB**,每批回调
+    `onProgressUpdate` → 仅更新 `feedProgress` LiveData → UI 显示 "current/total" 进度条
+    ([SubscriptionsViewModel.kt:35-47](e:/GITHUB/LibreTube/app/src/main/java/com/github/libretube/ui/models/SubscriptionsViewModel.kt#L35-L47))。
+    **数据不增量 merge**:等 `getFeed` 返回**完整 `List<StreamItem>`** 后一次性 `videoFeed.postValue(videoFeed)`
+    替换整个列表;数据一致性由 DB 保证(逐批写 DB,最后 `getAll()` 读全量)。故 LibreTube **没有"把一批
+    merge 进已有列表"的操作**,一次性替换完整列表,天然无后批覆盖前批问题。
+  - **我们的差异与二次覆盖修复**:我们把 `onChunkReady` 当"增量 merge 到 UI"通道(拉到一批显示一批),引入
+    merge 语义——`mergeYoutube` 内部 `filterNot` 掉 state 里所有旧 YouTube 再合并传入列表,原传**单批 chunk**
+    致后批覆盖前批(动态先后出现、二次覆盖)。修复:onChunkReady 先 `accumulator += chunk` 再
+    `mergeYoutube(accumulator)`(累积全量),每批基于完整已拉列表合并,不丢不覆盖。若想完全对齐 LibreTube
+    (进度条 + 一次性替换),onChunkReady 只更新进度提示、UI 等全量返回后一次性 setState——当前保留增量 merge
+    体验,已修覆盖。
   - **改动**:
     ① **引入 Room+KSP**(Room 2.8.0 + KSP2 2.3.11):`YoutubeFeedEntity`(channelId PK, videosJson, fetchedAt)
       + `YoutubeFeedDao`(逐频道 upsert / getAll / deleteChannelsNotIn) + `FeedDatabase`。
