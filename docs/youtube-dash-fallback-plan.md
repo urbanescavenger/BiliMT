@@ -189,3 +189,26 @@
     visitorData,走快的 sw.js_data(或已热浏览器 visitor)即可,不强制 WebView 引导;仅 `/player`(铸 PO token / 走
     WebView)与 reload/BotGuard 传 `true`。`postJson` 按 `viaWebView` 传。
   - **验证待真机**:动态正常加载(RSS+InnerTube 合并,不再 4s 超时)、播放不受影响(播放器路径仍强制引导)。
+- [x] **alpha.97:SABR 死循环守卫——attestation 视频 RELOAD 后直接落 ≤1080p DASH/HLS 兜底**(2026-08-17,对照 LibreTube)
+  - **真机坐实(alpha.95/96 APK)**:visionOS NewPipe SABR 会话建起(itag313 4K / itag139),每段请求
+    RELOAD_PLAYER_RESPONSE,`reloadCount` 17→24 无界爬升,最终 `evict sid` → `ExoPlayerImplInternal: Source error`。
+  - **真根因(两层,对照 LibreTube 逐行)**:① 视频 attestation-gated——visionOS 空 poToken + 未 attested config
+    被服务端直接 RELOAD(不给 status=2);LibreTube 同样崩(`SabrClient.processPart` RELOAD 致命抛,不循环)。
+    ② **alpha.93 NewPipe-first 早退回归**——`resolve()` L151-173 对非 null SABR 立即 return,使真正消费 reload
+    token 的 `consumeReloadTokenSlot` + `MAX_RELOADS=3` 闸门**永远不可达** → reloadCount 无界递增(比 alpha.86
+    文档 §4.2 所述「MAX_RELOADS=3 耗尽」更糟,闸门已失效)。每次 error-retry 重进又建同一空 poToken 会话 → 死循环。
+  - **修复(单点守卫,对齐 LibreTube 不循环)**:`resolve()` NewPipe-first 块建 SABR 前查
+    `SabrStreamRegistry.reloadCount(videoId)>0`;RELOAD 后跳过空 poToken 会话重建,直接落
+    `buildDashFallbackFromNewPipe`(自合成 DASH→HLS,≤1080p)。循环收敛到 1 次 SABR 尝试。
+  - **不做**(用户已接受 ≤1080p):不重启 4K 直连;保留 WEB reload-closure/`buildSabrSessionFromReloadPlayer` 作
+    退化场景 WEB-attested 最后手段(主守卫已收敛,不误伤非 attestation 视频——其 reloadCount 恒 0)。
+  - **验证待真机**:attestation 视频日志出现一次 `SABR dead-loop guard` + `DASH/HLS 兜底 playback ready`,
+    reloadCount 不再 17→24;SABR 可播视频回归无 RELOAD、不走兜底。
+- [x] **alpha.96.1:第一次加载空白根因——多频道并发批次预算不足**(2026-08-17)
+  - **真机坐实(alpha.28 APK)**:修复生效(动态能加载了),但**第一次自动加载空白、下拉刷新才出**。
+  - **根因**:频道数 6 > InnerTube 并发上限 4 → 分 2 批。`youtubeFeedTimeoutMs(6)=ceil(6/4)=2批×1000+2000=4000ms`,
+    **每批只给 1s**。冷启动第一批(含一次性浏览器会话建立 27.6→30.3)实测 ~3.5s,烧掉大半预算;第二批 2 频道
+    还在 semaphore 排队就被外层 4000ms 取消 → 整条 coroutineScope 取消 → `result==null` → 空白 + 提示。
+    刷新时 session 已热秒回。
+  - **修复**:`youtubeFeedTimeoutMs` 每批预算 1s→3s(6 频道=2 批→8s,上限 10s 不变),让多频道能分完批次。
+  - **验证待真机**:第一次自动加载即出(不再需下拉刷新)。
