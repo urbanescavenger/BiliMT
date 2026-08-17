@@ -167,12 +167,14 @@ fun MobileDynamicScreen(
               youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
             },
             onChunkReady = { chunk ->
-              // 增量:拉到一批 merge 一批(mergeYoutube 先去旧 YouTube 再合并去重),并逐频道增量写缓存。
+              // 增量:拉到一批 merge 一批(mergeYoutube 先去旧 YouTube 再合并去重)。
+              // 缓存写是后台 IO(onChunkReady 是非挂起回调,不能直接 suspend;writeChannel 内部走 Room,
+              // 用独立协程异步写,不阻塞主线程 merge)。
               if (chunk.isNotEmpty()) {
                 mergeYoutube(chunk)
                 accumulator += chunk
                 chunk.groupBy { it.channelId }.forEach { (channelId, videos) ->
-                  youtubeFeedCacheStore.writeChannel(channelId, videos)
+                  scope.launch { youtubeFeedCacheStore.writeChannel(channelId, videos) }
                 }
               }
             },

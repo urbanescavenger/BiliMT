@@ -137,9 +137,9 @@ fun MobileHomeScreen(
     }
     // alpha.98:去 withTimeoutOrNull 全局超时(几百频道必超)。getSubscriptionsFeed 已分批增量 +
     // 单频道独立容错,慢频道只丢自身;home 分区一次性消费全量,拉完返回(部分或全部)不整批 Failed。
-    val result = videoRepository.youtubeSubscriptionsFeed(youtubeChannels) { channel ->
+    val result = videoRepository.youtubeSubscriptionsFeed(youtubeChannels, onChannelAvatarResolved = { channel ->
       youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-    }
+    })
     return when {
       result.isEmpty() -> MobileSectionState.Failed("暂无内容")
       else -> {

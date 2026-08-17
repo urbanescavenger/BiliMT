@@ -599,23 +599,24 @@ private fun mergeYoutubeIntoDynamic(
           youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
         },
         onChunkReady = { chunk ->
-          if (chunk.isEmpty()) return@onChunkReady
-          when (val cur = state.state) {
-            is UserFeedState.Success -> {
-              val merged = mergeByPubdate(cur.videos, chunk)
-              if (merged.size > cur.videos.size) state.hasLoadedContent = true
-              state.state = cur.copy(videos = merged)
+          if (chunk.isNotEmpty()) {
+            when (val cur = state.state) {
+              is UserFeedState.Success -> {
+                val merged = mergeByPubdate(cur.videos, chunk)
+                if (merged.size > cur.videos.size) state.hasLoadedContent = true
+                state.state = cur.copy(videos = merged)
+              }
+              is UserFeedState.Empty -> {
+                state.hasLoadedContent = true
+                state.state = UserFeedState.Success(
+                  videos = chunk,
+                  loadingMore = false,
+                  endReached = true,
+                  loadMoreError = "",
+                )
+              }
+              else -> {} // Failed / Loading 保持原样
             }
-            is UserFeedState.Empty -> {
-              state.hasLoadedContent = true
-              state.state = UserFeedState.Success(
-                videos = chunk,
-                loadingMore = false,
-                endReached = true,
-                loadMoreError = "",
-              )
-            }
-            else -> {} // Failed / Loading 保持原样
           }
         },
       )

@@ -87,9 +87,9 @@ class VideoRepository(
     if (section == HomeSection.YoutubeTrending) {
       val channels = youtubeChannelStore.channels.first()
       if (channels.isEmpty()) return emptyList()
-      return youtubeSubscriptionsFeed(channels) { channel ->
+      return youtubeSubscriptionsFeed(channels, onChannelAvatarResolved = { channel ->
         youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-      }
+      })
     }
     return homeVideoRepository.getHomeSectionVideos(
       section = section,
