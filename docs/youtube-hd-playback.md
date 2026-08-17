@@ -936,7 +936,7 @@ BiliMT:MobilePlayer: playerState=3 pos=184954 (稳定推进到 3 分钟,无 RELO
   - TV 端 [PlayerOverlay.kt](app/src/main/java/com/kirin/mt/ui/player/PlayerOverlay.kt) + [PlayerScreen.kt](app/src/main/java/com/kirin/mt/ui/player/PlayerScreen.kt):Main 面板 index 0 加回「清晰度」项(`ic_player_hd`/`player_settings_quality`/value=当前清晰度+codec)→ Quality 面板各档切换,danmaku/speed 顺延;`settingsRowCount`/`panelItemCount` Main 2→3。
   - 移动端 [MobilePlayerScreen.kt](app/src/main/java/com/kirin/mt/ui/mobile/player/MobilePlayerScreen.kt):底栏音轨菜单前加回 HD 按钮 + quality `DropdownMenu`,选档 `loadRequest(activeRequest.copy(preferredQualityId=q.id))` re-resolve。
 - **验证语义**:手动选 4K → SABR 单轨 313 → 首 RELOAD → DASH 兜底出 4K;手动选 1080p/720p → SABR 直接播对应分辨率(避开 RELOAD)。≤1080p 不需要 attestation 的视频(SABR 直接播、无 RELOAD)不受兜底提前影响。
-- **已知边界(不做,记录)**:DASH 兜底路径只合成单档 `PlaybackQuality(0,"2160p DASH 兜底")`,已落 DASH 的 4K 视频画质菜单只有该档;清晰度多档选择主要作用于 SABR 路径。要在 DASH 路径也提供多档需另改 `buildDashFallbackFromNewPipe`,不在本次范围。
+- **DASH 自合成也支持多档清晰度(用户要求补)**:`buildDashFallbackFromNewPipe` 自合成分支从单档改**全 `videoCandidates` 多 Representation**——每条带 range 的视频流各构一条 `PlaybackTrack` + 一档 `PlaybackQuality(id=itag, "${height}p VP9/AV1/H264")`,`buildDashManifest` 合成多 Representation MPD(每条 track 一个 `<Representation>` 塞进同一 `<AdaptationSet>`,与 SABR `allVideoTracks` 同构);`preferredQualityId != null` 手动选档时只回选中 itag 单轨(真正生效),默认/Auto 回全部让 ExoPlayer 自动选轨。原 `PlaybackQuality(0,"XXXp DASH 兜底")` 单档删除。选档逻辑与 SABR `defaultItag` 同语义(`maxHeight` 或最高档)。这样已落 DASH 的 4K 视频画质菜单也列全档,可手动降到 1080p 等。
 
 ## 7. 关键文件
 

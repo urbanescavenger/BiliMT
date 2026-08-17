@@ -1217,27 +1217,41 @@ class YoutubePlaybackResolver(
     audioCandidates.take(2).forEach { a ->
       Log.i(Tag, "自合成DASH diag: a itag=${a.itag} url=${a.content?.length}B init=[${a.initStart}-${a.initEnd}] index=[${a.indexStart}-${a.indexEnd}] codec=${a.codec}")
     }
-    val synthMaxHeight = youtubeDefaultQuality.maxHeight
-    val synthVideo = when {
-      synthMaxHeight != null -> videoCandidates.filter { it.height in 1..synthMaxHeight }.maxByOrNull { it.height }
-        ?: videoCandidates.minByOrNull { it.height }
-      else -> videoCandidates.maxByOrNull { it.height }
-    }
     val synthAudio = audioCandidates.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
       ?: audioCandidates.firstOrNull { it.audioTrackType != AudioTrackType.DUBBED }
       ?: audioCandidates.firstOrNull()
-    if (synthVideo != null && synthAudio != null) {
-      Log.i(Tag, "兜底: 自合成 DASH from NewPipe(video itag${synthVideo.itag} ${synthVideo.height}p + audio itag${synthAudio.itag}) dur=${resolvedDuration}ms → buildDashManifest 合成 MPD DashMediaSource")
-      val vTrack = PlaybackTrack(
+    if (videoCandidates.isNotEmpty() && synthAudio != null) {
+      // alpha.9X:DASH 自合成支持多档清晰度——全部带 range 的视频流各构一条 PlaybackTrack + 一档 quality,
+      // 复用 alpha.81 多 Representation 机制(buildDashManifest 每条 track 生成一个 <Representation>,
+      // 塞进同一 <AdaptationSet>),ExoPlayer 自动选轨/手动选档,与 SABR allVideoTracks 同构。
+      // 每条流各自独立 URL + 独立 init/index range,本就是合法 DASH 多 Representation 结构。
+      val sortedVideos = videoCandidates.sortedByDescending { it.height }
+      val qualities = sortedVideos.map { v ->
+        val codec = shortCodec(v.codec.orEmpty())
+        PlaybackQuality(id = v.itag, description = "${v.height}p" + (if (codec.isNotEmpty()) " $codec" else ""))
+      }
+      // 选档:preferredQualityId 命中菜单用之(手动切清晰度);否则按默认画质设置(与 SABR defaultItag 同语义)。
+      val maxHeight = youtubeDefaultQuality.maxHeight
+      val defaultVideo = when {
+        maxHeight != null -> sortedVideos.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }
+          ?: sortedVideos.minByOrNull { it.height }
+        else -> sortedVideos.maxByOrNull { it.height }
+      }
+      val selectedVideo = request.preferredQualityId
+        ?.takeIf { pid -> sortedVideos.any { it.itag == pid } }
+        ?.let { pid -> sortedVideos.first { it.itag == pid } }
+        ?: defaultVideo ?: return null
+      val selectedQuality = qualities.firstOrNull { it.id == selectedVideo.itag } ?: qualities.first()
+      fun buildVideoTrack(v: VideoStream): PlaybackTrack = PlaybackTrack(
         id = 0,
-        baseUrl = synthVideo.content!!, // filter 已保证 content 非空
+        baseUrl = v.content!!, // filter 已保证 content 非空
         backupUrls = emptyList(),
-        bandwidth = synthVideo.bitrate,
-        codecs = synthVideo.codec ?: "",
-        width = synthVideo.width,
-        height = synthVideo.height,
-        mimeType = synthVideo.format?.mimeType ?: "video/mp4",
-        segmentBase = PlaybackSegmentBase("${synthVideo.initStart}-${synthVideo.initEnd}", "${synthVideo.indexStart}-${synthVideo.indexEnd}"),
+        bandwidth = v.bitrate,
+        codecs = v.codec ?: "",
+        width = v.width,
+        height = v.height,
+        mimeType = v.format?.mimeType ?: "video/mp4",
+        segmentBase = PlaybackSegmentBase("${v.initStart}-${v.initEnd}", "${v.indexStart}-${v.indexEnd}"),
       )
       val aTrack = PlaybackTrack(
         id = 0,
@@ -1250,15 +1264,17 @@ class YoutubePlaybackResolver(
         mimeType = synthAudio.format?.mimeType ?: "audio/mp4",
         segmentBase = PlaybackSegmentBase("${synthAudio.initStart}-${synthAudio.initEnd}", "${synthAudio.indexStart}-${synthAudio.indexEnd}"),
       )
-      val quality = PlaybackQuality(0, "${synthVideo.height}p DASH 兜底")
+      // 手动选档时只回选中单轨(清晰度真正生效);默认/Auto 回全部 → ExoPlayer 自动选轨(对齐 SABR)。
+      val videoTracks = if (request.preferredQualityId != null) listOf(buildVideoTrack(selectedVideo)) else sortedVideos.map { buildVideoTrack(it) }
+      Log.i(Tag, "兜底: 自合成 DASH from NewPipe(video itag${selectedVideo.itag} ${selectedVideo.height}p [${videoTracks.size}/${sortedVideos.size}档] + audio itag${synthAudio.itag}) dur=${resolvedDuration}ms → buildDashManifest 合成 MPD DashMediaSource")
       return PlaybackInfo(
         bvid = videoId,
         cid = 0L,
         title = request.title,
         durationMs = resolvedDuration,
-        qualities = listOf(quality),
-        selectedQuality = quality,
-        videoTracks = listOf(vTrack),
+        qualities = qualities,
+        selectedQuality = selectedQuality,
+        videoTracks = videoTracks,
         audioTracks = listOf(aTrack),
         headers = YoutubePlaybackHeaders,
       )
