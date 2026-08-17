@@ -138,3 +138,18 @@
   - **验证闭环**:空 init → 服务端 status=2(非 RELOAD)→ PoTokenWebView 重铸 attested token → SABR 起播。
     真机盯:status=2 出现 + refresh 走 PoTokenWebView(非 YoutubeBotGuard)+ 无 RELOAD_PLAYER_RESPONSE。≤1080p 无 status=2 不回归。
   - **对齐点**(不动):`poTokenB64=""`(init 空,L806)、visionOS SABR client/UA/空 visitorData/`cpn=visionOsCpn`。
+- [x] **alpha.93:NewPipe-first 主路径(解耦坏 WEB WebView 收割门卫)**(2026-08-17,commit 330fc11)
+  - **真机坐实(alpha.91/90 APK,13590 运行)**:resolve() 卡死在 `postPlayer(WEB)` 的 **viaWebView harvest**
+    (m.youtube.com 错误页 27s,SSL/coroutine scope left composition),**从未到达 buildSabrSessionFromNewPipe(visonOS
+    NewPipe SABR)与 DASH 兜底**——alpha.91/92 的 SABR/DASH 修复全被挡在门内。
+  - **根因(对照 LibreTube)**:LibreTube 取流主路径就是 `StreamInfo.getInfo`(visionOS),**从不走 WEB /player、无
+    WebView 收割**(其 WebView 只是 BotGuard token 生成器)。BiliTV 历史遗留:NewPipe(alpha.71 定为 SABR 唯一路径)
+    仍被锁在 postPlayer(WEB) 成功之后;alpha.89 又给 WEB /player 加 viaWebView 收割,该收割脆弱(依赖长活 WebView
+    浏览器会话),一坏全堵。
+  - **修复(单文件 +37 行,零新逻辑)**:resolve() 在 signatureTimestamp 后、WEB client loop 前插 NewPipe-first 块:
+    ① buildSabrSessionFromNewPipe(SABR,复用现有 register+refreshPoToken[alpha.91 Fix A])→ return;
+    ② buildDashFallbackFromNewPipe(alpha.92 自合成 DASH→dashMpdUrl[恒空]→HLS)→ return;
+    ③ 全失败才落 WEB /player last resort(classic reload-closure/DASH n-decrypt)。
+  - **验证待真机**:resolve 首行即 `NewPipe SABR harvest`(非 `viaWebView=true`),无 27s 卡顿;attestation 视频
+    SABR 空 poToken → status=2 → PoTokenWebView 重铸 → 起播,无 RELOAD;≤1080p 无回归;若 SABR 仍 RELOAD 落自合成 DASH。
+  - **不做/留后续**:不修 WebView harvest 本体、不移动复用块(缺 durationMs,留后续给 Registry Entry 加)。

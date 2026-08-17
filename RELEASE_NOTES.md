@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.2-alpha.26](#v302-alpha26)
 - [v3.0.2-alpha.25](#v302-alpha25)
 - [v3.0.2-alpha.10](#v302-alpha10)
 - [v3.0.2-alpha.9](#v302-alpha9)
@@ -173,6 +174,10 @@
 ## v3.0.2-alpha.25
 
 **复活自合成 DASH 主兜底(对齐 LibreTube createDashSource)**:SABR 播不了的 attestation/RELOAD 视频,改走自合成 DASH——从 NewPipe 流顶层读已解密 URL(content)+ init/index range 拼 `<SegmentBase>` 合成 MPD,提为主兜底(优先于 dashMpdUrl/HLS)。当初放弃基于诊断误判(itagItem.toString 看不出字段,实则在 stream 顶层,同 fork `738c3d4` 可读)。播放器零改动复用 buildDashManifest→DashMediaSource,带 range 守卫零回归。详见 docs/youtube-hd-playback.md row 100。
+
+## v3.0.2-alpha.26
+
+**NewPipe-first 主路径(alpha.93,解耦坏 WEB WebView 收割门卫)**:alpha.25 的自合成 DASH 因 resolve 仍先走 WEB+WebView harvest(该收割已坏——真机 ssl handshake failed / browser session load 两次失败)→ 被挡在门外**触达不到**。本版把 NewPipe 提为一级路径(对齐 LibreTube 直调 `StreamInfo.getInfo`):resolve() 在 signatureTimestamp 后、WEB client loop 前,先试 visionOS NewPipe SABR → 自合成 DASH/HLS 兜底,全失败才落 WEB /player last resort(classic reload-closure/DASH n-decrypt)。纯复用现有函数零新逻辑,播放器零改动。alpha.91 Fix A(status=2 用 PoTokenWebView 重铸)+ Fix B(getIosClientPoToken→null)在此主路径生效。SABR 播不了的 attestation/RELOAD 视频现在真正落到 alpha.92 自合成 DASH。详见 docs/youtube-dash-fallback-plan.md「alpha.93」。
 
 ## v3.0.2-alpha.10
 
