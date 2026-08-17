@@ -300,7 +300,7 @@ class YoutubePlaybackResolver(
           // alpha.88:RELOAD 闭环兜底(对齐 LibreTube SABR RELOAD 崩后落 streams.dash)——用 NewPipe getInfo
           // 的 dashMpdUrl(android streamingData manifest)直喂 DashMediaSource,≤1080p。
           // alpha.90:Phase 0 取证 dashMpdUrl 恒空 → 实际走 hlsUrl(visionOS Apple 平台原生 HLS)次选兜底。
-          val dashInfo = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request) }.getOrNull()
+          val dashInfo = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request, youtubeDefaultQuality) }.getOrNull()
           if (dashInfo != null) {
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
             val kind = if (dashInfo.remoteHlsManifestUrl != null) "HLS" else "DASH"
@@ -370,7 +370,7 @@ class YoutubePlaybackResolver(
             // alpha.90:NewPipe 无 SABR 数据时,getInfo 仍可能给 hlsUrl(visionOS Apple 平台原生 HLS 交付)→ 走
             // HLS 兜底,而非落已死的 classic n-decrypt(plasma WASM 致 n-decrypt 结构性失效)。复用 [buildDashFallbackFromNewPipe]
             //(内部再 getInfo 取 dashMpdUrl/hlsUrl,优先 DASH、次选 HLS)。两路均空才落 L399 classic。
-            val noSabrFallback = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request) }.getOrNull()
+            val noSabrFallback = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request, youtubeDefaultQuality) }.getOrNull()
             if (noSabrFallback != null) {
               YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
               val kind = if (noSabrFallback.remoteHlsManifestUrl != null) "HLS" else "DASH"
@@ -1145,6 +1145,7 @@ class YoutubePlaybackResolver(
     videoId: String,
     durationMs: Long,
     request: PlaybackRequest,
+    youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
   ): PlaybackInfo? {
     val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
       .getOrElse {
