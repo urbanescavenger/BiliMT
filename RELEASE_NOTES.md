@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.2-alpha.31](#v302-alpha31)
 - [v3.0.2-alpha.30](#v302-alpha30)
 - [v3.0.2-alpha.29](#v302-alpha29)
 - [v3.0.2-alpha.26](#v302-alpha26)
@@ -180,6 +181,19 @@
 ## v3.0.2-alpha.26
 
 **NewPipe-first 主路径(alpha.93,解耦坏 WEB WebView 收割门卫)**:alpha.25 的自合成 DASH 因 resolve 仍先走 WEB+WebView harvest(该收割已坏——真机 ssl handshake failed / browser session load 两次失败)→ 被挡在门外**触达不到**。本版把 NewPipe 提为一级路径(对齐 LibreTube 直调 `StreamInfo.getInfo`):resolve() 在 signatureTimestamp 后、WEB client loop 前,先试 visionOS NewPipe SABR → 自合成 DASH/HLS 兜底,全失败才落 WEB /player last resort(classic reload-closure/DASH n-decrypt)。纯复用现有函数零新逻辑,播放器零改动。alpha.91 Fix A(status=2 用 PoTokenWebView 重铸)+ Fix B(getIosClientPoToken→null)在此主路径生效。SABR 播不了的 attestation/RELOAD 视频现在真正落到 alpha.92 自合成 DASH。详见 docs/youtube-dash-fallback-plan.md「alpha.93」。
+
+## v3.0.2-alpha.31
+
+**DASH 切清晰度播放失败修复(自合成 MPD 多 codec 变体 Representation id 重复)**:真机日志实锤切到 1080p 后 MPD 有 VP9+AVC 两轨,ExoPlayer 段边界(~9.6s)自动切 codec 时 `InitializationChunk.load` → `FragmentedMp4Extractor.readAtomPayload` → `java.io.EOFException`,每次重试都在 pos=9644ms 确定性失败。根因是 `buildDashFallbackFromNewPipe` 的 `buildVideoTrack` 所有视频轨 `id=0`,MPD 里多个 `<Representation id="0_0">` 重复 ID——alpha.97 把手动选档从「单轨」改成「该分辨率全部 codec 变体」后,1080p 两轨都叫 `0_0`,ExoPlayer 切轨时加载错 init 段 → EOF。对照 LibreTube `DashHelper.createVideoRepresentation` 不给 `<Representation>` 设 `id`(ExoPlayer 自动分配唯一 ID),修复为 `buildVideoTrack` 改 `id=v.itag`(对齐 SABR 路径),保证每个 Representation ID 唯一。详见 docs/youtube-dash-fallback-plan.md「alpha.98」。
+
+### 变更
+- **DASH 自合成 Representation id 唯一化**(`buildDashFallbackFromNewPipe`):`buildVideoTrack` 的 `id` 从 `0` 改为 `v.itag`,多 codec 变体同分辨率时 MPD 不再有重复 `<Representation id="0_0">`,ExoPlayer 切轨加载正确 init 段。
+
+### 待真机验证(切清晰度,读 `logs_live.log`)
+- 切 1080p(VP9+AVC 两轨)后不再 `EOFException`,段边界 codec 切换正常,不再 pos=9644ms 反复重试。
+- 回归:默认/Auto 多 Representation 自动选轨、4K(2160p VP9)仍可播。
+
+---
 
 ## v3.0.2-alpha.30
 

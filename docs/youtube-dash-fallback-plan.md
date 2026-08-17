@@ -204,6 +204,18 @@
     退化场景 WEB-attested 最后手段(主守卫已收敛,不误伤非 attestation 视频——其 reloadCount 恒 0)。
   - **验证待真机**:attestation 视频日志出现一次 `SABR dead-loop guard` + `DASH/HLS 兜底 playback ready`,
     reloadCount 不再 17→24;SABR 可播视频回归无 RELOAD、不走兜底。
+- [x] **alpha.98:DASH 切清晰度播放失败——自合成 MPD 多 codec 变体 Representation id 重复**(2026-08-17,对照 LibreTube)
+  - **真机坐实(logs_live.log,0bgp9jdth7w)**:切到 1080p 后 MPD 有 2 轨(VP9+AVC),ExoPlayer 段边界(~9.6s)
+    自动切 codec 时 `InitializationChunk.load` → `FragmentedMp4Extractor.readAtomPayload` → `java.io.EOFException`,
+    每次重试都在 pos=9644ms 确定性失败。
+  - **真根因**:`buildDashFallbackFromNewPipe` 的 `buildVideoTrack` 所有视频轨 `id=0` → MPD 里多个
+    `<Representation id="0_0">` **重复 ID**。alpha.97 把手动选档从「单轨」改成「该分辨率全部 codec 变体」后,
+    1080p 两轨都叫 `0_0`,ExoPlayer 切轨时加载错 init 段 → EOF。alpha.97 之前单轨无重复 → 正常;SABR 路径
+    一直用 `id=videoFmt.itag`(唯一)所以没这问题。
+  - **对照 LibreTube**:`DashHelper.createVideoRepresentation` **不给 `<Representation>` 设 `id`**,ExoPlayer
+    自动分配唯一 ID;选清晰度用 track selector `setMinVideoSize`/`setMaxVideoSize` 按 height 约束,不删轨。
+  - **修复**:`buildVideoTrack` 改 `id=v.itag`(对齐 SABR 路径),保证每个 Representation ID 唯一。
+  - **验证待真机**:切清晰度后不再 EOF,段边界 codec 切换正常。
 - [x] **alpha.96.1:第一次加载空白根因——多频道并发批次预算不足**(2026-08-17)
   - **真机坐实(alpha.28 APK)**:修复生效(动态能加载了),但**第一次自动加载空白、下拉刷新才出**。
   - **根因**:频道数 6 > InnerTube 并发上限 4 → 分 2 批。`youtubeFeedTimeoutMs(6)=ceil(6/4)=2批×1000+2000=4000ms`,
