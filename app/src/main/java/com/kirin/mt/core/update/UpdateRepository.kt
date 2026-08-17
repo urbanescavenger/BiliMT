@@ -2,9 +2,11 @@ package com.kirin.mt.core.update
 
 import android.os.Build
 import com.kirin.mt.core.network.BiliApiClient
+import com.kirin.mt.core.network.BiliNetworkException
 import java.io.IOException
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
