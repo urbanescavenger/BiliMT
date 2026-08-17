@@ -144,6 +144,43 @@ class YoutubePlaybackResolver(
     // 的 contentPlaybackContext。缺它 WEB /player 可能被判"非真浏览器" → "The page needs to be reloaded"。
     val signatureTimestamp = resolveSignatureTimestamp(videoId)
 
+    // ── NewPipe-first 主路径(alpha.93):对齐 LibreTube 直调 NewPipe getInfo,不依赖 WEB /player WebView harvest ──
+    // alpha.89 WebView harvest 坏(卡 m.youtube.com 错误页 27s)→ 先走自包含的 NewPipe(visonOS SABR → DASH 兜底)。
+    // ① visionOS NewPipe SABR(alpha.91 Fix A register+refreshPoToken 在此生效;Fix B 已使 getInfo 不带 WEB visitor
+    //    → status=2 懒鉴权,空 poToken 首请求)。buildSabrSessionFromNewPipe 内部 L806 poTokenB64="" 不用外部 poToken。
+    val np = buildSabrSessionFromNewPipe(videoId, poToken, youtubeDefaultQuality)
+    if (np != null) {
+      YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
+      val sabrClient = SabrClient(httpClient)
+      // alpha.65:注入 PO token 刷新回调——SABR status=2(Attestation pending)时用 PoTokenWebView 重铸
+      // streamingDataPoToken(alpha.91 Fix A:统一 minter,替 YoutubeBotGuard PLACEHOLDER),对齐 LibreTube。
+      val sid = SabrStreamRegistry.registerByVideoId(
+        videoId, np.session, sabrClient,
+        refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
+      )
+      YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+      Log.i(
+        Tag,
+        "SABR playback ready: sid=$sid source=NewPipe(primary) " +
+          "video=itag${np.session.videoFormatId.itag}(${np.session.videoFormatId.height}p) " +
+          "audio=itag${np.session.audioFormatId.itag} → sabr:// DASH"
+      )
+      return@withContext buildSabrPlaybackInfo(
+        request, videoId, np.durationMs, np.raws, np.session, sid,
+        subtitleTracks = np.subtitleTracks.orEmpty(),
+        youtubeDefaultQuality = youtubeDefaultQuality,
+      )
+    }
+    // ② NewPipe 无 SABR → DASH/HLS 兜底(alpha.92 自合成 DASH 为主,次 dashMpdUrl[恒空]/HLS)。durationMs 传 0
+    //    → buildDashFallbackFromNewPipe 内部用 info.duration 兜底。
+    val npDash = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality) }.getOrNull()
+    if (npDash != null) {
+      YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+      Log.i(Tag, "NewPipe-first → DASH/HLS 兜底 playback ready: videoId=$videoId → ${if (npDash.remoteHlsManifestUrl != null) "HLS" else "DASH"}")
+      return@withContext npDash
+    }
+    Log.w(Tag, "NewPipe-first 全空(SABR+DASH 兜底均失败)→ 落 WEB /player last resort(classic WEB SABR reload-closure / classic DASH)")
+
     // 收集 playable 客户端的 streamingData 候选。对齐 FreeTubeAndroid:主用 WEB(带 token,拿 SABR),
     // 仅年龄限制回退 WEB_EMBEDDED;ANDROID 从 /player 链移除(FreeTubeAndroid 不用 ANDROID 客户端)。
     val allAdaptive = mutableListOf<ParsedFormat>()
