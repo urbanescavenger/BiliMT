@@ -125,6 +125,10 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 ## 版本更新
 
+### v3.0.2
+
+稳定版：YouTube 播放链路加固 + 关注流可扩展。YouTube 播放器清晰度选择恢复（DASH 自合成兜底多档清晰度 + 按分辨率去重菜单）、DASH 切清晰度播放失败修复（自合成 MPD 多 codec 变体 Representation id 唯一化 + 视频轨按 mimeType 分组独立 AdaptationSet，ExoPlayer 各用正确 extractor）、SABR RELOAD 死循环守卫（attestation 视频直接落 ≤1080p DASH/HLS 兜底）、NewPipe-first 主路径（解耦坏 WEB WebView 收割门卫）、关注流改分批增量拉取 + Room 逐频道缓存（几百频道可扩展，对齐 LibreTube LocalFeedRepository）、在线更新装旧缓存 APK 修复、更新后启动清空实时日志。
+
 ### v3.0.1
 
 稳定版：IPTV 完整接入 + TV 交互打磨。IPTV 从零到完整落地（TV + 移动端双端）：源配置（URL/账号/密码 + 连通性校验 + 自动补 https）、直播页 IPTV tab、TV 端 TVBox 式频道列表侧栏（确认键开关/左右切台/上下切线路）、断流自动切镜像源、强制 IPv4 明文数据源（302 重定向按 IP 族选节点，IPv6 不可路由真机黑屏根因）、频道缩略图拉流截帧（ImageReader→SurfaceTexture+EGL 离屏）。TV 搜索栏 5 项优化、TV 历史合并本地 YouTube + 卡片绿框、YouTube 字幕接入 + 默认画质/倍速设置 + gl/hl 地区设置、TV 设置焦点循环导航 + WebDAV 校验 + 视频退出焦点恢复。

@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.2](#v302)
 - [v3.0.2-alpha.32](#v302-alpha32)
 - [v3.0.2-alpha.31](#v302-alpha31)
 - [v3.0.2-alpha.30](#v302-alpha30)
@@ -182,6 +183,24 @@
 ## v3.0.2-alpha.26
 
 **NewPipe-first 主路径(alpha.93,解耦坏 WEB WebView 收割门卫)**:alpha.25 的自合成 DASH 因 resolve 仍先走 WEB+WebView harvest(该收割已坏——真机 ssl handshake failed / browser session load 两次失败)→ 被挡在门外**触达不到**。本版把 NewPipe 提为一级路径(对齐 LibreTube 直调 `StreamInfo.getInfo`):resolve() 在 signatureTimestamp 后、WEB client loop 前,先试 visionOS NewPipe SABR → 自合成 DASH/HLS 兜底,全失败才落 WEB /player last resort(classic reload-closure/DASH n-decrypt)。纯复用现有函数零新逻辑,播放器零改动。alpha.91 Fix A(status=2 用 PoTokenWebView 重铸)+ Fix B(getIosClientPoToken→null)在此主路径生效。SABR 播不了的 attestation/RELOAD 视频现在真正落到 alpha.92 自合成 DASH。详见 docs/youtube-dash-fallback-plan.md「alpha.93」。
+
+## v3.0.2
+
+**稳定版**:YouTube 播放链路加固 + 关注流可扩展。自 v3.0.1 稳定版后的全部 alpha 修复与功能(alpha.1–alpha.32)合入。
+
+### 主要变更
+- **YouTube 播放器清晰度选择恢复**:DASH 自合成兜底支持多档清晰度(全 videoCandidates 多 Representation + 手动选档),清晰度菜单按分辨率去重(每 height 一档,对齐 LibreTube getAvailableResolutions)。
+- **DASH 切清晰度播放失败修复**(两个独立失败点):①自合成 MPD 多 codec 变体 Representation id 重复(全 `0_0`)→ `buildVideoTrack` 改 `id=v.itag`;②混合容器(H264 MP4 + VP9 WebM)塞同一 AdaptationSet 致 ExoPlayer 用错 extractor 解析 init 段 EOF → `buildDashManifest` 视频轨按 mimeType 分组独立 AdaptationSet。
+- **SABR RELOAD 死循环守卫**:attestation 视频 RELOAD 后直接落 ≤1080p DASH/HLS 兜底,不再死循环。
+- **NewPipe-first 主路径**:resolve 先走 visionOS NewPipe SABR→DASH 兜底,解耦坏 WEB WebView 收割门卫。
+- **关注流分批增量拉取 + Room 逐频道缓存**:几百频道可扩展,对齐 LibreTube LocalFeedRepository。
+- **在线更新装旧缓存 APK 修复** + **更新后启动清空实时日志**。
+
+### 待真机验证
+- 切清晰度(1080p VP9+AVC 两轨)后不再 EOF,VP9/H264 各用正确 extractor。
+- 回归:默认/Auto 多 Representation 自动选轨、4K(2160p VP9)仍可播、关注流几百频道不空白。
+
+---
 
 ## v3.0.2-alpha.32
 
