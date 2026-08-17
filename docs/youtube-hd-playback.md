@@ -928,6 +928,16 @@ BiliMT:MobilePlayer: playerState=3 pos=184954 (稳定推进到 3 分钟,无 RELO
 
 **LibreTube 对照(2026-08-17 核源码)**:LibreTube `setStreamSource`([OnlinePlayerService.kt:235](e:/GITHUB/LibreTube/app/src/main/java/com/github/libretube/services/OnlinePlayerService.kt#L235))优先级与我们一致:SABR → DASH(`createDashSource` 用 `videoStreams` 已解密直链)→ HLS 兜底。其 DASH 合成逻辑与我们**自合成 DASH 完全同构**。差异只在死循环处理:LibreTube **一次 `StreamInfo.getInfo` 拿全部源、`setStreamSource` 一次选源、RELOAD 后不重建会话**(`SabrClient` 会话内续命,不 re-getInfo),天然无死循环;我们用死循环守卫「RELOAD 后放弃 SABR 掉 DASH」对齐其效果但多付 8 次 RELOAD 等待。**启示**:若能像 LibreTube 在既有会话内续命(而非重建),可免 27s 等待直接保 SABR 4K;否则当前「掉 DASH 出 4K」已是可接受收益。
 
+**alpha.97(2026-08-17,实施落地):兜底提前(首 RELOAD 即落 DASH)+ 恢复清晰度选择**。上面 alpha.9X 的 27s 等待/8 次 RELOAD 与 alpha.81 移除的清晰度菜单,本次一并解决:
+- **Part 1 兜底提前**:[SabrMediaFetcher.kt](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt) `processPart` 的 `PART_RELOAD_PLAYER_RESPONSE` 分支在 `storeReloadTokenSlot` 后**立即抛 `SabrTerminalException`**,不再等读完响应里 ~8 个 RELOAD part → 首次 RELOAD 即 evict → 播放器 error-retry → 重进 resolve 见 `reloadCount>0` → DASH 兜底出 4K。等待从 ~27s 降到一次 RELOAD。
+- **Part 1 计数稳健化**:[SabrStreamRegistry.kt](app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrStreamRegistry.kt) `Entry` 加 `videoId`(registerByVideoId 填充,register 用 null);fetcher RELOAD 计数改用**会话自己的 videoId**(恒可得),替代 payload 解码 `f4=videoId`(36B 短变体解出 null → 旧逻辑计数恒 0 → 死循环守卫永不触发隐患)。注意:`videoId` 字段必须放 `Entry` **参数末尾**,否则挤错 `windowStartMs` 位置实参编译失败(alpha.97 ac1b4c2 修)。
+- **Part 2 清晰度选择**:
+  - [YoutubePlaybackResolver.kt](app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt) `buildSabrPlaybackInfo`:`request.preferredQualityId != null`(用户手动选档)→ `videoTracks` 只建**选中 itag 单条**(ExoPlayer 只播该档,真正生效);默认/Auto → 保持 alpha.81 多 Representation 自动选轨(不回归)。
+  - TV 端 [PlayerOverlay.kt](app/src/main/java/com/kirin/mt/ui/player/PlayerOverlay.kt) + [PlayerScreen.kt](app/src/main/java/com/kirin/mt/ui/player/PlayerScreen.kt):Main 面板 index 0 加回「清晰度」项(`ic_player_hd`/`player_settings_quality`/value=当前清晰度+codec)→ Quality 面板各档切换,danmaku/speed 顺延;`settingsRowCount`/`panelItemCount` Main 2→3。
+  - 移动端 [MobilePlayerScreen.kt](app/src/main/java/com/kirin/mt/ui/mobile/player/MobilePlayerScreen.kt):底栏音轨菜单前加回 HD 按钮 + quality `DropdownMenu`,选档 `loadRequest(activeRequest.copy(preferredQualityId=q.id))` re-resolve。
+- **验证语义**:手动选 4K → SABR 单轨 313 → 首 RELOAD → DASH 兜底出 4K;手动选 1080p/720p → SABR 直接播对应分辨率(避开 RELOAD)。≤1080p 不需要 attestation 的视频(SABR 直接播、无 RELOAD)不受兜底提前影响。
+- **已知边界(不做,记录)**:DASH 兜底路径只合成单档 `PlaybackQuality(0,"2160p DASH 兜底")`,已落 DASH 的 4K 视频画质菜单只有该档;清晰度多档选择主要作用于 SABR 路径。要在 DASH 路径也提供多档需另改 `buildDashFallbackFromNewPipe`,不在本次范围。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
