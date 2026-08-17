@@ -278,6 +278,12 @@ class VideoRepository(
     return youtubeRepository.getComments(videoId, continuation)
   }
 
+  /** YouTube 相关视频（/next secondaryResults，对齐 LibreTube）。 */
+  suspend fun getYoutubeRelatedVideos(videoId: String, continuation: String? = null): List<VideoSummary> {
+    val page = youtubeRepository.getRelatedVideos(videoId, continuation)
+    return page.items.map(youtubeRepository::toVideoSummary)
+  }
+
   suspend fun getDynamicFeed(offset: String = "", type: String = "video"): DynamicFeedPage {
     return userFeedRepository.getDynamicFeed(offset = offset, type = type)
   }

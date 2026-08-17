@@ -185,7 +185,31 @@ class YoutubeRepository(
       put("videoId", videoId)
       if (!continuation.isNullOrBlank()) put("continuation", continuation)
     }
-    return client.postJson("/next", payload).let(YoutubeParsers::parseCommentPage)
+    Log.d("YoutubeComment", "getComments videoId=$videoId continuation=${continuation?.take(16) ?: "null"}")
+    val response = client.postJson("/next", payload)
+    Log.d("YoutubeComment", "getComments videoId=$videoId topKeys=${response.keys}")
+    val page = YoutubeParsers.parseCommentPage(response)
+    Log.d(
+      "YoutubeComment",
+      "getComments videoId=$videoId items=${page.items.size} " +
+        "continuation=${page.continuation?.take(16) ?: "null"}",
+    )
+    return page
+  }
+
+  /**
+   * 相关视频（/next）：与评论同端点，取 secondaryResults 里的 compactVideoRenderer（对齐 LibreTube）。
+   * 首屏 payload 只带 videoId；续页带 continuation token。返回一页 [YoutubeVideo] + 续页 token。
+   */
+  suspend fun getRelatedVideos(
+    videoId: String,
+    continuation: String? = null,
+  ): YoutubeFeedPage {
+    val payload = buildJsonObject {
+      put("videoId", videoId)
+      if (!continuation.isNullOrBlank()) put("continuation", continuation)
+    }
+    return client.postJson("/next", payload).let(YoutubeParsers::parseRelatedVideos)
   }
 
   /**

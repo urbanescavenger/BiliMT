@@ -2,7 +2,11 @@ package com.kirin.mt.core.update
 
 import android.os.Build
 import com.kirin.mt.core.network.BiliApiClient
+import com.kirin.mt.core.network.BiliNetworkException
+import java.io.IOException
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
@@ -26,15 +30,10 @@ class UpdateRepository(
    *   既能收到更新的 alpha，也能在有更新稳定版时毕业到稳定版。
    */
   suspend fun checkLatest(includePrereleases: Boolean): UpdateInfo {
-    val url = "https://api.github.com/repos/$repoOwner/$repoName/releases?per_page=100"
-    val element = apiClient.getJsonWithHeaders(
-      url = url,
-      headers = mapOf(
-        "Accept" to "application/vnd.github+json",
-        "User-Agent" to "BiliMT-Android",
-      ),
-    )
-    val releases = element.jsonArray
+    // GitHub /releases 一次拉满(per_page=100,本仓库 ~60 个 release 各带多 APK asset)会间歇性
+    // 返回 504 网关超时(后端序列化超时)。改 per_page=30 分页拉,小响应稳定得多;再对 5xx/网络错
+    // 做指数退避重试,单次抖动不致命。语义不变(仍读真实 prerelease 字段)。
+    val releases = fetchAllReleases()
     var best: UpdateInfo? = null
     for (entry in releases) {
       val obj = entry as? JsonObject ?: continue
@@ -71,14 +70,7 @@ class UpdateRepository(
    * CI 发布 debug release 时把 versionName=dev.rN / versionCode=1000000+N 写进 notes。
    */
   suspend fun checkDebugLatest(): UpdateInfo {
-    val url = "https://api.github.com/repos/$repoOwner/$repoName/releases/tags/debug"
-    val element = apiClient.getJsonWithHeaders(
-      url = url,
-      headers = mapOf(
-        "Accept" to "application/vnd.github+json",
-        "User-Agent" to "BiliMT-Android",
-      ),
-    )
+    val element = githubRequest("https://api.github.com/repos/$repoOwner/$repoName/releases/tags/debug")
     val obj = element as? JsonObject ?: throw Exception("debug release not found")
     val body = obj.stringOrNull("body").orEmpty()
     val versionCode = Regex("""versionCode=(\d+)""").find(body)?.groupValues?.get(1)?.toLongOrNull()
@@ -97,6 +89,44 @@ class UpdateRepository(
       assets = assets,
       matchingAsset = matchingAsset,
     )
+  }
+
+  /** 分页拉全部 releases:小 per_page(30)避免 GitHub 大响应间歇性 504。 */
+  private suspend fun fetchAllReleases(): List<JsonElement> {
+    val all = mutableListOf<JsonElement>()
+    var page = 1
+    while (true) {
+      val url = "https://api.github.com/repos/$repoOwner/$repoName/releases?per_page=$RELEASES_PER_PAGE&page=$page"
+      val arr = githubRequest(url).jsonArray
+      if (arr.isEmpty()) break
+      all.addAll(arr)
+      if (arr.size < RELEASES_PER_PAGE) break
+      page++
+    }
+    return all
+  }
+
+  /** GitHub 请求带重试:对 5xx(含 504 网关超时)/网络错做指数退避,最多 [MAX_RELEASE_FETCH_ATTEMPTS] 次。 */
+  private suspend fun githubRequest(url: String): JsonElement {
+    var attempt = 0
+    while (true) {
+      attempt++
+      try {
+        return apiClient.getJsonWithHeaders(url = url, headers = RELEASES_HEADERS)
+      } catch (e: BiliNetworkException) {
+        if (e.statusCode in 500..599 && attempt < MAX_RELEASE_FETCH_ATTEMPTS) {
+          delay(GITHUB_RETRY_DELAY_MS * attempt)
+          continue
+        }
+        throw e
+      } catch (e: IOException) {
+        if (attempt < MAX_RELEASE_FETCH_ATTEMPTS) {
+          delay(GITHUB_RETRY_DELAY_MS * attempt)
+          continue
+        }
+        throw e
+      }
+    }
   }
 
   private fun pickAssetForDevice(assets: List<UpdateAsset>): UpdateAsset? {
@@ -161,6 +191,13 @@ class UpdateRepository(
 
   private companion object {
     private const val APK_CONTENT_TYPE = "application/vnd.android.package-archive"
+    private const val RELEASES_PER_PAGE = 30
+    private const val MAX_RELEASE_FETCH_ATTEMPTS = 3
+    private const val GITHUB_RETRY_DELAY_MS = 800L
+    private val RELEASES_HEADERS = mapOf(
+      "Accept" to "application/vnd.github+json",
+      "User-Agent" to "BiliMT-Android",
+    )
     private val VERSION_REGEX = Regex("""(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z]+)\.(\d+))?""")
   }
 }

@@ -52,7 +52,7 @@ data class YoutubeVideoDetail(
   val publishedAt: Long?,
 )
 
-/** 一条 YouTube 评论。 */
+/** 一条 YouTube 评论。字段对齐 LibreTube `Comment`（NewPipe CommentsInfoItem）。 */
 data class YoutubeComment(
   val commentId: String,
   val authorName: String,
@@ -61,6 +61,20 @@ data class YoutubeComment(
   val likeCount: Long?,
   /** 发布时间（epoch 秒，相对时间反推）；未知为 null。 */
   val publishedAt: Long?,
+  /** 作者已认证（authorCommentBadge 存在）。 */
+  val verified: Boolean = false,
+  /** 置顶评论（pinnedCommentBadge 存在）。 */
+  val pinned: Boolean = false,
+  /** 作者点赞（actionButtons.commentActionButtonsRenderer.creatorHeart 存在）。 */
+  val hearted: Boolean = false,
+  /** 回复数（replyCount）。 */
+  val replyCount: Int = 0,
+  /** 楼中楼续页 token（replies.commentRepliesRenderer 内 continuation）；null 表示无回复。 */
+  val repliesPage: String? = null,
+  /** 作者是频道主（authorIsChannelOwner）。 */
+  val channelOwner: Boolean = false,
+  /** 作者回复过（replies.commentRepliesRenderer.viewRepliesCreatorThumbnail 存在）。 */
+  val creatorReplied: Boolean = false,
 )
 
 /** 一页 YouTube 评论（/next 响应），带续页 token。 */

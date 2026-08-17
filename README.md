@@ -125,6 +125,10 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 ## 版本更新
 
+### v3.0.3
+
+稳定版：YouTube 评论/相关视频接入 + TV 焦点打磨 + 更新稳定性。对齐 LibreTube 补全 YouTube 评论区（TV + 移动端双端展示）与相关视频；TV 动态长按操作菜单改屏内覆盖层 + 显式焦点陷阱，修 D-pad 上下键丢焦点；修 YouTube 主页视频时长误读固定值（统一显示 2:58）；GitHub 在线更新 `/releases` 大响应间歇性 504（分页 + 退避重试）；WebDAV 备份/还原新增 Piped 配置。
+
 ### v3.0.2
 
 稳定版：YouTube 播放链路加固 + 关注流可扩展。YouTube 播放器清晰度选择恢复（DASH 自合成兜底多档清晰度 + 按分辨率去重菜单）、DASH 切清晰度播放失败修复（自合成 MPD 多 codec 变体 Representation id 唯一化 + 视频轨按 mimeType 分组独立 AdaptationSet，ExoPlayer 各用正确 extractor）、SABR RELOAD 死循环守卫（attestation 视频直接落 ≤1080p DASH/HLS 兜底）、NewPipe-first 主路径（解耦坏 WEB WebView 收割门卫）、关注流改分批增量拉取 + Room 逐频道缓存（几百频道可扩展，对齐 LibreTube LocalFeedRepository）、在线更新装旧缓存 APK 修复、更新后启动清空实时日志。

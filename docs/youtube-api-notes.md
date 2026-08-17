@@ -99,6 +99,7 @@ params 原样传，不额外 URL 编码。
 - `videoRenderer`：`lengthText.simpleText`（如 "1:22"）
 - `gridVideoRenderer`：**无 lengthText**，时长在 `thumbnailOverlayTimeStatusRenderer.text.simpleText`（如 "1:22"）
 - `parseVideoRenderer` 需回退读取 overlay。
+- `lockupViewModel` 时长在 `contentImage.thumbnailViewModel.overlays[].thumbnailOverlayBadgeViewModel.thumbnailBadges[].thumbnailBadgeViewModel.text`（如 "13:09"）。⚠️ 若用「递归收集 contentImage 全部字符串再取第一个像时长的」方式，`collectStrings` 会把缩略图 `width`/`height`/`backgroundColor` 等**纯数字**也收进来，而 `parseDuration` 若把单段纯数字当秒，就会误匹配到同一响应里所有卡片一致的缩略图尺寸数值 → 整个主页所有视频时长显示成同一个常量（实测 2:58）。**`parseDuration` 必须只接受含冒号的真实时长格式（`MM:SS`/`HH:MM:SS`）并校验秒位 0..59，拒绝单段纯数字**（v3.0.3-alpha.3 修复）。
 
 ### 续页 continuation
 响应末尾 `continuationItemRenderer.continuationEndpoint.continuationCommand.token`（取最后一个）。续页请求 body 用 `{ "continuation": "...", context }`。

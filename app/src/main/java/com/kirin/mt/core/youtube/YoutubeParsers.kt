@@ -1,5 +1,6 @@
 package com.kirin.mt.core.youtube
 
+import android.util.Log
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -146,11 +147,45 @@ internal object YoutubeParsers {
   fun parseCommentPage(root: JsonObject): YoutubeCommentPage {
     val comments = mutableListOf<YoutubeComment>()
     var token: String? = null
+    var sectionCount = 0
+    var rendererCount = 0
     collectByKey(root, KEY_COMMENT_SECTION_RENDERER) { section ->
+      sectionCount++
+      if (sectionCount == 1) {
+        Log.d("YoutubeComment", "parseCommentPage section keys=${section.keys}")
+      }
       collectByKey(section, KEY_COMMENT_RENDERER) { node ->
+        rendererCount++
         parseCommentRenderer(node)?.let { comments.add(it) }
       }
       if (token == null) token = findContinuation(section)
+    }
+    Log.d(
+      "YoutubeComment",
+      "parseCommentPage sections=$sectionCount renderers=$rendererCount parsed=${comments.size}",
+    )
+    // 结构诊断：评论可能已移到 engagementPanels 或 contents 其它子树。
+    root.obj("contents")?.let { c ->
+      Log.d("YoutubeComment", "contents keys=${c.keys}")
+      c.obj("twoColumnWatchNextResults")?.let { t ->
+        Log.d("YoutubeComment", "twoColumnWatchNextResults keys=${t.keys}")
+        t.obj("results")?.let { r ->
+          Log.d("YoutubeComment", "watchNext results keys=${r.keys}")
+          r.array("results")?.forEachIndexed { i, item ->
+            val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
+            Log.d("YoutubeComment", "watchNext results[$i] renderer=$rendererKey")
+          }
+        }
+      }
+    }
+    root.obj("engagementPanels")?.let { ep ->
+      Log.d("YoutubeComment", "engagementPanels keys=${ep.keys}")
+      ep.array("engagementPanelSectionListRenderer")?.let { list ->
+        list.forEachIndexed { i, item ->
+          val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
+          Log.d("YoutubeComment", "engagementPanel[$i] renderer=$rendererKey")
+        }
+      }
     }
     // 防御：无 commentSectionRenderer 容器时回退全根收集。
     if (comments.isEmpty() && token == null) {
@@ -160,6 +195,61 @@ internal object YoutubeParsers {
       token = findContinuation(root)
     }
     return YoutubeCommentPage(items = comments, continuation = token)
+  }
+
+  /**
+   * 从 /next 响应解析相关视频（对齐 LibreTube/NewPipe：secondaryResults 里的 compactVideoRenderer）。
+   *
+   * 相关视频 rail 在 `contents.twoColumnWatchNextResults.secondaryResults.secondaryResults.results[]`，
+   * 每项是 compactVideoRenderer（或 compactPlaylistRenderer/compactRadioRenderer，跳过）；续页 token
+   * 从该 section 内的 continuationItemRenderer 取。防御：无 secondaryResults 容器时回退全根收集。
+   */
+  fun parseRelatedVideos(root: JsonObject): YoutubeFeedPage {
+    val videos = mutableListOf<YoutubeVideo>()
+    var token: String? = null
+    val secondary = root.obj("contents")
+      ?.obj("twoColumnWatchNextResults")
+      ?.obj("secondaryResults")
+      ?.obj("secondaryResults")
+    if (secondary != null) {
+      collectByKey(secondary, KEY_COMPACT_VIDEO_RENDERER) { node ->
+        parseVideoRenderer(node)?.let { videos.add(it) }
+      }
+      token = findContinuation(secondary)
+    }
+    // 防御：无 secondaryResults 容器时回退全根收集。
+    if (videos.isEmpty() && token == null) {
+      collectByKey(root, KEY_COMPACT_VIDEO_RENDERER) { node ->
+        parseVideoRenderer(node)?.let { videos.add(it) }
+      }
+      token = findContinuation(root)
+    }
+    // 诊断：确认 /next 响应里相关视频 rail 的真实结构（真机相关视频区为空时定位）。
+    val hasTwoCol = root.obj("contents")?.obj("twoColumnWatchNextResults") != null
+    val hasSecondary = secondary != null
+    val rootCompact = mutableListOf<JsonObject>()
+    collectByKey(root, KEY_COMPACT_VIDEO_RENDERER) { rootCompact.add(it) }
+    Log.i(
+      "YtRelated",
+      "parseRelatedVideos: twoCol=$hasTwoCol secondary=$hasSecondary " +
+        "parsed=${videos.size} rootCompact=${rootCompact.size} token=${token != null} " +
+        "keys=${root.keys.take(8)}"
+    )
+    // 结构诊断：打印 twoColumnWatchNextResults 键树 + secondary results 每项 renderer 类型。
+    root.obj("contents")?.obj("twoColumnWatchNextResults")?.let { twoCol ->
+      Log.i("YtRelated", "twoCol keys=${twoCol.keys}")
+      twoCol.obj("secondaryResults")?.let { srOuter ->
+        Log.i("YtRelated", "secondaryResults(outer) keys=${srOuter.keys}")
+        srOuter.obj("secondaryResults")?.let { srInner ->
+          Log.i("YtRelated", "secondaryResults(inner) keys=${srInner.keys}")
+          srInner.array("results")?.forEachIndexed { i, item ->
+            val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
+            Log.i("YtRelated", "secondary results[$i] renderer=$rendererKey")
+          }
+        }
+      }
+    }
+    return YoutubeFeedPage(items = videos, continuation = token)
   }
 
   private fun parseCommentRenderer(node: JsonObject): YoutubeComment? {
@@ -174,6 +264,8 @@ internal object YoutubeParsers {
     val publishedAt = node.obj("publishedTimeText")?.let { pt ->
       parsePublished(simpleText(pt).ifBlank { runsText(pt) }, liveNow = false, isUpcoming = false)
     }
+    // 对齐 LibreTube/NewPipe 的评论字段：认证/置顶/作者点赞/回复数/楼中楼/频道主/作者回复。
+    val repliesSubtree = node.obj("replies")?.obj("commentRepliesRenderer")
     return YoutubeComment(
       commentId = commentId,
       authorName = authorName,
@@ -181,6 +273,15 @@ internal object YoutubeParsers {
       content = content,
       likeCount = likeCount,
       publishedAt = publishedAt,
+      verified = node.obj("authorCommentBadge") != null,
+      pinned = node.obj("pinnedCommentBadge") != null,
+      hearted = node.obj("actionButtons")
+        ?.obj("commentActionButtonsRenderer")
+        ?.obj("creatorHeart") != null,
+      replyCount = node.stringOrNull("replyCount")?.toIntOrNull() ?: 0,
+      repliesPage = repliesSubtree?.let(::findContinuation),
+      channelOwner = node.booleanOrNull("authorIsChannelOwner") ?: false,
+      creatorReplied = repliesSubtree?.obj("viewRepliesCreatorThumbnail") != null,
     )
   }
 
@@ -362,10 +463,13 @@ internal object YoutubeParsers {
 
   private fun parseDuration(text: String): Int? {
     if (text.isBlank()) return null
+    // 只接受含冒号的真实时长格式 "MM:SS"/"HH:MM:SS"。单段纯数字(如 lockupViewModel 里被
+    // collectStrings 收成字符串的缩略图 width/height/backgroundColor 等数值)不是时长,必须拒绝;
+    // 否则首个匹配的固定数值会被当成时长,导致整个主页所有视频时长显示成同一个常量(实测 2:58)。
+    if (!text.contains(':')) return null
     val parts = text.split(':').mapNotNull { it.toIntOrNull() }
-    if (parts.isEmpty()) return null
+    if (parts.size < 2 || parts.last() !in 0..59) return null
     return when (parts.size) {
-      1 -> parts[0]
       2 -> parts[0] * 60 + parts[1]
       3 -> parts[0] * 3600 + parts[1] * 60 + parts[2]
       else -> null

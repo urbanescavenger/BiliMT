@@ -2,6 +2,10 @@
 
 ## 目录
 
+- [v3.0.3](#v303)
+- [v3.0.3-alpha.3](#v303-alpha3)
+- [v3.0.3-alpha.2](#v303-alpha2)
+- [v3.0.3-alpha.1](#v303-alpha1)
 - [v3.0.2](#v302)
 - [v3.0.2-alpha.32](#v302-alpha32)
 - [v3.0.2-alpha.31](#v302-alpha31)
@@ -175,6 +179,58 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.3
+
+**稳定版:YouTube 评论/相关视频接入 + TV 焦点打磨 + 更新稳定性。** 对齐 LibreTube 补全 YouTube 评论区(TV + 移动端双端展示)与相关视频(`/next` secondaryResults 的 `compactVideoRenderer`);TV 动态长按操作菜单从 `Dialog` 改屏内覆盖层并加显式焦点陷阱,修 D-pad 上下键丢焦点逃逸到网格;修 YouTube 主页视频时长误读固定值(主页全部视频统一显示 2:58——`parseDuration` 把缩略图宽高等单段纯数字当秒,现收紧为只接受含冒号的真实时长);GitHub 在线更新 `/releases` 大响应间歇性 504(改 `per_page=30` 分页 + 5xx/网络错指数退避重试);WebDAV 备份/还原新增 Piped 配置(`piped_config.json`,含 `youtubeUsePiped` 开关 + 实例 URL)。
+
+### 变更
+- **YouTube 评论展示**(TV + 移动端):对齐 LibreTube `/next` 评论区解析渲染。
+- **YouTube 相关视频**(TV + 移动端):`/next` secondaryResults 的 `compactVideoRenderer`。
+- **TV 动态长按菜单焦点修复**:`BiliActionSheet` 改屏内覆盖层 + 显式焦点陷阱,修 D-pad 上下键丢焦点。
+- **YouTube 主页时长误读修复**:`parseDuration` 只接受含冒号的真实时长,拒绝缩略图宽高等单段纯数字,修全部视频显示 2:58。
+- **GitHub 更新 504 修复**:`/releases` 改 `per_page=30` 分页 + 5xx/网络错指数退避重试。
+- **WebDAV 备份/还原含 Piped 配置**:新增 `piped_config.json`,旧备份缺文件静默跳过。
+
+---
+
+## v3.0.3-alpha.3
+
+**YouTube 主页视频时长误读固定值**:YouTube 主页(热门→关注动态)卡片时长走 `parseLockupViewModel`,用 `collectStrings` 把整个封面子树所有字符串叶子(含缩略图 `width`/`height`/`backgroundColor` 等**纯数字**)都扫一遍,再取第一个"像时长"的字符串。而 `parseDuration` 把单段纯数字直接当成秒,于是首个匹配到的是同一响应里所有卡片都一致的缩略图尺寸数值,导致整个主页所有视频时长都显示成同一个常量 `2:58`(178 秒),真实时长角标 `thumbnailBadgeViewModel.text` 根本没被读到。本版 `parseDuration` 改为只接受**含冒号**的真实时长格式(`MM:SS`/`HH:MM:SS`)并校验秒位在 0..59,单段纯数字一律拒绝,各卡片时长恢复各自真实值。
+
+### 变更
+- **`parseDuration` 收紧**:必须含冒号 + 秒位 0..59,拒绝缩略图宽高等单段纯数字,修 YouTube 主页全部视频时长统一显示 2:58。
+
+### 待真机验证
+- YouTube 主页各卡片时长是否各显示各的真实值(不再统一 2:58)。
+
+---
+
+## v3.0.3-alpha.2
+
+**TV 动态长按操作菜单显式焦点陷阱(续修)**:alpha.1 把 `BiliActionSheet` 改成屏内覆盖层后,D-pad 上下键会把焦点逃逸到弹窗背后的网格卡片——覆盖层只在首/末项拦截方向键,中间项放行给 Compose 默认焦点遍历,而遍历会解析到背后网格,一按上下高亮即消失(丢焦点)。本版改为显式焦点陷阱:每项各自持有 `FocusRequester`,上下/左右键全部消费并手动在启用项间移焦(越过禁用项、到边界即停),Back 交回外层 `BackHandler`,焦点永远锁在菜单内,不再依赖默认遍历。
+
+### 变更
+- **`BiliActionSheet` 显式焦点陷阱**:每项独立 `FocusRequester` + 方向键全消费手动移焦,修上下键丢焦点逃逸到背后网格。
+
+### 待真机验证
+- 动态长按菜单:弹出后 D-pad 上下在「查看评论/点赞/稍后再看/UP主空间」间移动不再丢焦点,OK 触发,Back 关闭。
+
+---
+
+## v3.0.3-alpha.1
+
+**TV 动态长按操作菜单焦点修复**:动态页长按卡片弹出的操作菜单(`BiliActionSheet`)原用 `Dialog` 独立窗口,TV 上窗口焦点不切过去,D-pad 下键被背后网格的 `onPreviewKeyEvent` 拦截,焦点一直卡在首项「查看评论」无法选其它项。改为屏内覆盖层(Box 蒙层 + `BackHandler`),对齐 `SpeedTestDialog` 等 TV 弹窗模式,焦点回到同一窗口内,D-pad 上下可在菜单项间正常移动。
+
+**YouTube 相关视频解析(诊断中)**:相关视频解析 `root.keys` 是属性非函数,改 `root.keys.take(8)` 修编译错误;加诊断日志定位评论区/相关视频区解析为 0(parseCommentPage 打 section/renderer 计数、parseRelatedVideos 打 twoCol/secondary/parsed/rootCompact 计数)。
+
+### 变更
+- **TV 动态长按菜单改屏内覆盖层**(`BiliActionSheet`):`Dialog` → Box 覆盖层 + `BackHandler`,修 D-pad 焦点卡首项无法移动。
+
+### 待真机验证
+- 动态长按菜单:弹出后 D-pad 上下可在「查看评论/点赞/稍后再看/UP主空间」间移动,OK 触发,Back 关闭。
+
+---
 
 ## v3.0.2-alpha.25
 

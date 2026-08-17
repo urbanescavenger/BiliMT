@@ -896,13 +896,19 @@ fun MobilePlayerScreen(
     }.getOrDefault(emptyList())
   }
 
-  // 相关视频:B站按 bvid 拉 related;YouTube 无该接口,用播放列表(playQueue)当前视频之后的项。
+  // 相关视频:B站按 bvid 拉 related;YouTube 走 /next secondaryResults(对齐 LibreTube),失败回退播放列表后续。
   LaunchedEffect(activeRequest.bvid) {
     relatedVideos = emptyList()
     if (activeRequest.bvid.isBlank()) return@LaunchedEffect
     if (activeRequest.isYoutube) {
-      val curIndex = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
-      if (curIndex >= 0) relatedVideos = playQueue.drop(curIndex + 1)
+      relatedVideos = runCatching {
+        videoRepository.getYoutubeRelatedVideos(activeRequest.bvid)
+      }.onSuccess { Log.i("YtRelated", "mobile related ok: ${it.size} for ${activeRequest.bvid}") }
+        .onFailure { Log.w("YtRelated", "mobile related failed for ${activeRequest.bvid}", it) }
+        .getOrElse {
+          val curIndex = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
+          if (curIndex >= 0) playQueue.drop(curIndex + 1) else emptyList()
+        }
       return@LaunchedEffect
     }
     relatedVideos = runCatching {

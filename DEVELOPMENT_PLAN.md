@@ -894,6 +894,7 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | P11-17 | YouTube 播放历史 + 断电续播（`PlaybackProgressStore` 守卫放宽 + `YoutubeHistoryStore` + 移动端历史子 tab） | ✅ Done（云编译绿，详见 `docs/youtube-hd-playback.md` §6.12） |
 | P11-18 | YouTube 历史并入「历史」tab（本地历史与 B 站历史**混合按播放时间倒序**、YouTube 绿框，未登录也显示本地历史；移除独立「YouTube 历史」子 tab） | ✅ Done（云编译绿） |
 | P11-19 | TV 版 YouTube 功能补全（见下方「TV 版 vs 移动端 YouTube 功能差异待办」分项表） | 待办 |
+| P11-20 | YouTube 相关视频（对齐 LibreTube：`/next` secondaryResults 的 compactVideoRenderer，TV 相关视频面板 + 移动简介 tab 相关视频区 + 播完自动连播） | 实施中（代码改完待云编译，运行时待真机） |
 
 ### TV 版 vs 移动端 YouTube 功能差异待办（P11-19）
 

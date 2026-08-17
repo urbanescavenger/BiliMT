@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.common
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -36,8 +37,6 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliRadius
 import com.kirin.mt.ui.theme.BiliSpacing
@@ -55,7 +54,13 @@ data class BiliActionItem(
 
 /**
  * TV 遥控器友好的模态操作菜单:居中卡片 + 半透蒙层。D-pad 上下在菜单项间移动,
- * OK 确认并关闭,Back 关闭。首项自动获取焦点。点击蒙层外区域也关闭。
+ * OK 确认并关闭,Back 关闭。首项自动获取焦点。
+ *
+ * 屏内覆盖层(非 Dialog 独立窗口):TV 上 Dialog 窗口焦点不切过去,D-pad 会被背后
+ * 网格拦截,导致焦点卡在首项无法移动。对齐 SpeedTestDialog 等屏内覆盖层模式。
+ *
+ * 焦点陷阱:每项各自持有 FocusRequester,方向键全部消费并手动在启用项间移焦,
+ * 不依赖 Compose 默认焦点遍历——否则焦点会逃逸到背后网格,上下键一按就丢焦点。
  */
 @Composable
 fun BiliActionSheet(
@@ -65,62 +70,81 @@ fun BiliActionSheet(
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
-  val firstFocusRequester = remember { FocusRequester() }
   val shape = RoundedCornerShape(BiliRadius.Card)
+  val focusRequesters = remember(items.size) {
+    List(items.size) { FocusRequester() }
+  }
 
-  Dialog(
-    onDismissRequest = onDismiss,
-    properties = DialogProperties(
-      usePlatformDefaultWidth = false,
-      decorFitsSystemWindows = false,
-      dismissOnBackPress = true,
-      dismissOnClickOutside = true,
-    ),
+  BackHandler(onBack = onDismiss)
+
+  Box(
+    modifier = modifier
+      .fillMaxSize()
+      .background(BiliColors.OverlayScrim.copy(alpha = 0.6f)),
+    contentAlignment = Alignment.Center,
   ) {
-    Box(
-      modifier = modifier
-        .fillMaxSize()
-        .background(BiliColors.OverlayScrim.copy(alpha = 0.6f)),
-      contentAlignment = Alignment.Center,
-    ) {
-      Column(
-        modifier = Modifier
-          .widthIn(max = 420.dp)
-          .clip(shape)
-          .background(homeColors.cardSurface)
-          .border(
-            width = 1.dp,
-            color = homeColors.textPrimary.copy(alpha = 0.15f),
-            shape = shape,
-          )
-          .padding(BiliSpacing.Lg),
-      ) {
-        Text(
-          text = title,
-          color = homeColors.textPrimary,
-          fontSize = BiliTypography.CardTitle,
-          fontWeight = FontWeight.Bold,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.fillMaxWidth(),
+    Column(
+      modifier = Modifier
+        .widthIn(max = 420.dp)
+        .clip(shape)
+        .background(homeColors.cardSurface)
+        .border(
+          width = 1.dp,
+          color = homeColors.textPrimary.copy(alpha = 0.15f),
+          shape = shape,
         )
-        Spacer(modifier = Modifier.height(BiliSpacing.Md))
-        items.forEachIndexed { index, item ->
-          BiliActionSheetItem(
-            item = item,
-            isFirst = index == 0,
-            isLast = index == items.lastIndex,
-            focusRequester = if (index == 0) firstFocusRequester else null,
-            onDismiss = onDismiss,
-          )
-        }
+        .padding(BiliSpacing.Lg),
+    ) {
+      Text(
+        text = title,
+        color = homeColors.textPrimary,
+        fontSize = BiliTypography.CardTitle,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.fillMaxWidth(),
+      )
+      Spacer(modifier = Modifier.height(BiliSpacing.Md))
+      items.forEachIndexed { index, item ->
+        BiliActionSheetItem(
+          item = item,
+          focusRequester = focusRequesters[index],
+          onDismiss = onDismiss,
+          onMoveFocus = { direction ->
+            moveSheetFocus(items, index, direction, focusRequesters)
+          },
+        )
       }
     }
   }
 
   LaunchedEffect(items) {
     if (items.isNotEmpty()) {
-      runCatching { firstFocusRequester.requestFocus() }
+      val firstEnabled = items.indexOfFirst { it.enabled }
+      if (firstEnabled >= 0) {
+        runCatching { focusRequesters[firstEnabled].requestFocus() }
+      }
+    }
+  }
+}
+
+/**
+ * 在菜单内按方向键手动移动焦点,只落到可用的(enabled)项,越过禁用项。
+ * 全部返回 true 消费按键,杜绝 Compose 默认焦点遍历把焦点逃逸到背后网格。
+ */
+private fun moveSheetFocus(
+  items: List<BiliActionItem>,
+  fromIndex: Int,
+  direction: Int, // -1 = 上, +1 = 下
+  focusRequesters: List<FocusRequester>,
+) {
+  var next = fromIndex
+  repeat(items.size) {
+    next += direction
+    if (next !in items.indices) return // 菜单边界
+    if (items[next].enabled) {
+      runCatching { focusRequesters[next].requestFocus() }
+      return
     }
   }
 }
@@ -128,10 +152,9 @@ fun BiliActionSheet(
 @Composable
 private fun BiliActionSheetItem(
   item: BiliActionItem,
-  isFirst: Boolean,
-  isLast: Boolean,
-  focusRequester: FocusRequester?,
+  focusRequester: FocusRequester,
   onDismiss: () -> Unit,
+  onMoveFocus: (Int) -> Unit,
 ) {
   val homeColors = LocalHomeColors.current
   var focused by remember { mutableStateOf(false) }
@@ -140,7 +163,7 @@ private fun BiliActionSheetItem(
     .fillMaxWidth()
     .height(52.dp)
     .clip(itemShape)
-    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+    .focusRequester(focusRequester)
     .onFocusChanged { focused = it.isFocused }
     .onPreviewKeyEvent { event ->
       if (event.type != KeyEventType.KeyDown) {
@@ -156,9 +179,17 @@ private fun BiliActionSheetItem(
         }
       } else {
         when (event.key) {
-          // 在菜单边界消费上下方向,避免焦点逃逸到背后网格。
-          Key.DirectionUp -> isFirst
-          Key.DirectionDown -> isLast
+          // 方向键全部消费并手动移焦:默认遍历会逃逸到背后网格,导致焦点丢失。
+          // Back 交给外层 BackHandler 统一处理。
+          Key.DirectionUp -> {
+            onMoveFocus(-1)
+            true
+          }
+          Key.DirectionDown -> {
+            onMoveFocus(+1)
+            true
+          }
+          Key.DirectionLeft, Key.DirectionRight -> true
           else -> false
         }
       }

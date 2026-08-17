@@ -972,8 +972,12 @@ fun PlayerScreen(
 
         if (autoPlayRelatedVideo) {
           val relatedVideo = runCatching {
-            videoRepository.getRelatedVideos(displayRequest.bvid)
-              .firstCompletionRelatedVideo(displayRequest.bvid)
+            val related = if (displayRequest.isYoutube) {
+              videoRepository.getYoutubeRelatedVideos(displayRequest.bvid)
+            } else {
+              videoRepository.getRelatedVideos(displayRequest.bvid)
+            }
+            related.firstCompletionRelatedVideo(displayRequest.bvid)
           }.getOrNull()
           if (completionActionToken != actionToken || !completionReported) return@launch
           if (relatedVideo != null) {
@@ -1184,7 +1188,11 @@ fun PlayerScreen(
           panel = PlayerPanel.RelatedVideos,
           defaultFocusedIndex = 0,
         ) {
-          videoRepository.getRelatedVideos(displayRequest.bvid)
+          if (displayRequest.isYoutube) {
+            videoRepository.getYoutubeRelatedVideos(displayRequest.bvid)
+          } else {
+            videoRepository.getRelatedVideos(displayRequest.bvid)
+          }
         }
       }
       PlayerControl.Like -> doLike()

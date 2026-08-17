@@ -389,10 +389,10 @@ private fun loadCommentNextPage(
 
 // ---- YouTube 评论 ----
 
-/** YouTube 评论列表状态（/next + continuation 续页）。评论映射成 B 站 [Comment] 复用渲染。 */
+/** YouTube 评论列表状态（/next + continuation 续页）。直接持有 [YoutubeComment] 渲染增强字段。 */
 @Stable
 internal class MobileYoutubeCommentListState {
-  var comments by mutableStateOf<List<Comment>>(emptyList())
+  var comments by mutableStateOf<List<YoutubeComment>>(emptyList())
   var loading by mutableStateOf(true)
   var loadingMore by mutableStateOf(false)
   var error by mutableStateOf("")
@@ -458,8 +458,8 @@ internal fun MobileYoutubeCommentList(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
       ) {
-        items(state.comments, key = { it.id }) { comment ->
-          CommentItem(comment)
+        items(state.comments, key = { it.commentId }) { comment ->
+          YoutubeCommentItem(comment)
         }
         item {
           YoutubeCommentFooter(state = state)
@@ -496,18 +496,88 @@ private fun YoutubeCommentFooter(state: MobileYoutubeCommentListState) {
   }
 }
 
-/** 把 [YoutubeComment] 映射成 B 站 [Comment] 复用渲染；YouTube 无 mid/replyCount，用 0 占位。 */
-private fun mapYoutubeComment(c: YoutubeComment): Comment {
-  return Comment(
-    id = c.commentId.hashCode().toLong(),
-    uname = c.authorName,
-    avatar = c.authorAvatarUrl,
-    mid = 0L,
-    content = c.content,
-    likeCount = (c.likeCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-    replyCount = 0,
-    ctime = c.publishedAt ?: 0L,
-  )
+/** 移动端 YouTube 评论项：直接渲染 [YoutubeComment]，显示认证✓/置顶📌/作者点赞❤/回复数。 */
+@Composable
+private fun YoutubeCommentItem(comment: YoutubeComment) {
+  Row(modifier = Modifier.fillMaxWidth()) {
+    AsyncImage(
+      model = comment.authorAvatarUrl,
+      contentDescription = null,
+      modifier = Modifier
+        .size(40.dp)
+        .clip(CircleShape),
+      contentScale = ContentScale.Crop,
+    )
+    Spacer(Modifier.size(10.dp))
+    Column(modifier = Modifier.fillMaxWidth()) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Row(
+          modifier = Modifier.weight(1f, fill = false),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(
+            text = comment.authorName.ifBlank { stringResource(R.string.comment_anonymous) },
+            color = if (comment.channelOwner) BiliColors.BiliPink else CommentColor.TextPrimary,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+          if (comment.verified) {
+            Spacer(Modifier.size(4.dp))
+            Text("✓", color = BiliColors.BiliPink, style = MaterialTheme.typography.bodySmall)
+          }
+          if (comment.pinned) {
+            Spacer(Modifier.size(4.dp))
+            Text("📌", color = CommentColor.TextSecondary, style = MaterialTheme.typography.bodySmall)
+          }
+          if (comment.hearted) {
+            Spacer(Modifier.size(4.dp))
+            Text("❤", color = BiliColors.BiliPink, style = MaterialTheme.typography.bodySmall)
+          }
+        }
+        Text(
+          text = formatCommentRelativeTime(comment.publishedAt ?: 0L),
+          color = CommentColor.TextSecondary,
+          style = MaterialTheme.typography.bodySmall,
+        )
+      }
+      Spacer(Modifier.size(4.dp))
+      Text(
+        text = comment.content.ifBlank { stringResource(R.string.comment_empty_content) },
+        color = CommentColor.TextPrimary,
+        style = MaterialTheme.typography.bodyMedium,
+        overflow = TextOverflow.Ellipsis,
+      )
+      Spacer(Modifier.size(6.dp))
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+      ) {
+        if ((comment.likeCount ?: 0L) > 0L) {
+          Text(
+            text = stringResource(
+              R.string.comment_like_count,
+              (comment.likeCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+            ),
+            color = CommentColor.TextSecondary,
+            style = MaterialTheme.typography.bodySmall,
+          )
+        }
+        if (comment.replyCount > 0) {
+          Text(
+            text = stringResource(R.string.comment_reply_count, comment.replyCount),
+            color = CommentColor.TextSecondary,
+            style = MaterialTheme.typography.bodySmall,
+          )
+        }
+      }
+    }
+  }
 }
 
 private suspend fun loadYoutubeCommentFirstPage(
@@ -523,7 +593,7 @@ private suspend fun loadYoutubeCommentFirstPage(
   state.comments = emptyList()
   try {
     val page = videoRepository.getYoutubeComments(videoId, null)
-    state.comments = page.items.map(::mapYoutubeComment)
+    state.comments = page.items
     state.continuation = page.continuation
     state.endReached = page.continuation == null || page.items.isEmpty()
   } catch (error: CancellationException) {
@@ -549,8 +619,8 @@ private fun loadYoutubeCommentNextPage(
     try {
       val page = videoRepository.getYoutubeComments(videoId, token)
       state.continuation = page.continuation
-      val known = state.comments.mapTo(mutableSetOf()) { it.id }
-      val fresh = page.items.map(::mapYoutubeComment).filter { known.add(it.id) }
+      val known = state.comments.mapTo(mutableSetOf()) { it.commentId }
+      val fresh = page.items.filter { known.add(it.commentId) }
       state.comments = state.comments + fresh
       state.endReached = page.continuation == null || fresh.isEmpty()
     } catch (error: CancellationException) {

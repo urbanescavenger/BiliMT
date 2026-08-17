@@ -191,6 +191,7 @@ class AppContainer(context: Context) {
     channelStore = youtubeChannelStore,
     repository = webdavRepository,
     json = json,
+    settingsStore = appSettingsStore,
   )
 
   /**
