@@ -174,6 +174,8 @@ internal object YoutubeParsers {
     val publishedAt = node.obj("publishedTimeText")?.let { pt ->
       parsePublished(simpleText(pt).ifBlank { runsText(pt) }, liveNow = false, isUpcoming = false)
     }
+    // 对齐 LibreTube/NewPipe 的评论字段：认证/置顶/作者点赞/回复数/楼中楼/频道主/作者回复。
+    val repliesSubtree = node.obj("replies")?.obj("commentRepliesRenderer")
     return YoutubeComment(
       commentId = commentId,
       authorName = authorName,
@@ -181,6 +183,15 @@ internal object YoutubeParsers {
       content = content,
       likeCount = likeCount,
       publishedAt = publishedAt,
+      verified = node.obj("authorCommentBadge") != null,
+      pinned = node.obj("pinnedCommentBadge") != null,
+      hearted = node.obj("actionButtons")
+        ?.obj("commentActionButtonsRenderer")
+        ?.obj("creatorHeart") != null,
+      replyCount = node.stringOrNull("replyCount")?.toIntOrNull() ?: 0,
+      repliesPage = repliesSubtree?.let(::findContinuation),
+      channelOwner = node.booleanOrNull("authorIsChannelOwner") ?: false,
+      creatorReplied = repliesSubtree?.obj("viewRepliesCreatorThumbnail") != null,
     )
   }
 

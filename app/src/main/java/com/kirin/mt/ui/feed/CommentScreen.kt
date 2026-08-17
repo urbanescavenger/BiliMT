@@ -50,7 +50,10 @@ import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.Comment
+import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.youtube.YoutubeComment
 import com.kirin.mt.ui.common.BiliCapsuleTabRow
 import com.kirin.mt.ui.common.BiliPillTab
 import com.kirin.mt.ui.common.FeedStatusScreen
@@ -79,30 +82,40 @@ internal class CommentUiState {
 internal data class CommentRequest(
   val aid: Long,
   val title: String,
+  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube]。 */
+  val source: String = SourceBili,
+  /** YouTube 视频 id（仅 [SourceYoutube] 填充，bvid 字段承载）。 */
+  val videoId: String = "",
 )
 
 /**
- * 视频/动态评论页(TV)。从长按菜单「查看评论」进入,oid=aid、type=1。
- * Dialog 全屏:Back 关闭;顶部热门/最新排序 pill;列表焦点驱动翻页;楼中楼本期不展开。
+ * 视频/动态评论页(TV)。从长按菜单「查看评论」进入。
+ * B 站走 oid=aid、type=1;YouTube 走 /next + continuation 续页(对齐 LibreTube)。
+ * Dialog 全屏:Back 关闭;顶部热门/最新排序 pill(B 站);列表焦点驱动翻页;楼中楼本期不展开。
  */
 @Composable
 internal fun CommentScreen(
-  aid: Long,
-  title: String,
+  request: CommentRequest,
   videoRepository: VideoRepository,
   onDismiss: () -> Unit,
 ) {
+  val isYoutube = request.source == SourceYoutube
   val state = remember { CommentUiState() }
+  val youtubeState = remember { YoutubeCommentUiState() }
   val coroutineScope = rememberCoroutineScope()
   val sortFocusRequester = remember { FocusRequester() }
 
-  LaunchedEffect(aid, state.sort) {
-    loadCommentsFirstPage(videoRepository, state, aid)
+  LaunchedEffect(request.aid, state.sort) {
+    if (!isYoutube) loadCommentsFirstPage(videoRepository, state, request.aid)
+  }
+
+  LaunchedEffect(request.videoId) {
+    if (isYoutube) loadYoutubeCommentFirstPage(videoRepository, youtubeState, request.videoId)
   }
 
   LaunchedEffect(state.sort) {
-    // 切换排序或首次打开后,焦点落到排序行选中项。
-    runCatching { sortFocusRequester.requestFocus() }
+    // 切换排序或首次打开后,焦点落到排序行选中项(B 站)。
+    if (!isYoutube) runCatching { sortFocusRequester.requestFocus() }
   }
 
   Dialog(
@@ -119,31 +132,46 @@ internal fun CommentScreen(
         .fillMaxSize()
         .background(BiliColors.OverlayScrim.copy(alpha = 0.9f)),
     ) {
-      CommentHeader(
-        title = title,
-        state = state,
-        sortFocusRequester = sortFocusRequester,
-        onSortChange = { sort ->
-          if (sort != state.sort) {
-            state.sort = sort
-          }
-        },
-      )
+      if (isYoutube) {
+        YoutubeCommentHeader(title = request.title)
+      } else {
+        CommentHeader(
+          title = request.title,
+          state = state,
+          sortFocusRequester = sortFocusRequester,
+          onSortChange = { sort ->
+            if (sort != state.sort) {
+              state.sort = sort
+            }
+          },
+        )
+      }
       when {
+        isYoutube -> YoutubeCommentList(
+          state = youtubeState,
+          onRetry = {
+            coroutineScope.launch {
+              loadYoutubeCommentFirstPage(videoRepository, youtubeState, request.videoId)
+            }
+          },
+          onLoadMore = {
+            loadYoutubeCommentNextPage(videoRepository, coroutineScope, youtubeState, request.videoId)
+          },
+        )
         state.loading -> FeedStatusScreen(message = stringResource(R.string.comment_loading))
         state.error.isNotBlank() -> FeedStatusScreen(
           message = stringResource(R.string.comment_failed_with_message, state.error),
           actionLabel = stringResource(R.string.action_retry),
           onAction = {
             coroutineScope.launch {
-              loadCommentsFirstPage(videoRepository, state, aid)
+              loadCommentsFirstPage(videoRepository, state, request.aid)
             }
           },
         )
         state.comments.isEmpty() -> FeedStatusScreen(message = stringResource(R.string.comment_empty))
         else -> CommentList(
           state = state,
-          onLoadMore = { loadCommentsNextPage(videoRepository, coroutineScope, state, aid) },
+          onLoadMore = { loadCommentsNextPage(videoRepository, coroutineScope, state, request.aid) },
         )
       }
     }
@@ -452,6 +480,264 @@ private fun loadCommentsNextPage(
       val fresh = page.comments.filter { known.add(it.id) }
       state.comments = state.comments + fresh
       state.endReached = !page.hasMore || fresh.isEmpty()
+    } catch (error: CancellationException) {
+      throw error
+    } catch (error: Exception) {
+      state.loadMoreError = error.message.orEmpty()
+    } finally {
+      state.loadingMore = false
+    }
+  }
+}
+
+// ---- YouTube 评论 ----
+
+/** YouTube 评论列表状态（/next + continuation 续页）。 */
+@Stable
+internal class YoutubeCommentUiState {
+  var comments by mutableStateOf<List<YoutubeComment>>(emptyList())
+  var loading by mutableStateOf(true)
+  var loadingMore by mutableStateOf(false)
+  var error by mutableStateOf("")
+  var loadMoreError by mutableStateOf("")
+  var endReached by mutableStateOf(false)
+  /** 下一页 continuation token；null 表示到底。 */
+  var continuation: String? = null
+}
+
+@Composable
+private fun YoutubeCommentHeader(title: String) {
+  val homeColors = LocalHomeColors.current
+  Column(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(horizontal = BiliSpacing.Lg, vertical = BiliSpacing.Md),
+  ) {
+    Text(
+      text = title.ifBlank { stringResource(R.string.nav_comment) },
+      color = homeColors.textPrimary,
+      fontSize = BiliTypography.SectionTitle,
+      fontWeight = FontWeight.Bold,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+    )
+  }
+}
+
+@Composable
+private fun YoutubeCommentList(
+  state: YoutubeCommentUiState,
+  onRetry: () -> Unit,
+  onLoadMore: () -> Unit,
+) {
+  when {
+    state.loading && state.comments.isEmpty() -> FeedStatusScreen(
+      message = stringResource(R.string.comment_loading),
+    )
+    state.error.isNotBlank() && state.comments.isEmpty() -> FeedStatusScreen(
+      message = stringResource(R.string.comment_failed_with_message, state.error),
+      actionLabel = stringResource(R.string.action_retry),
+      onAction = onRetry,
+    )
+    state.comments.isEmpty() -> FeedStatusScreen(message = stringResource(R.string.comment_empty))
+    else -> LazyColumn(
+      modifier = Modifier
+        .fillMaxSize()
+        .padding(horizontal = BiliSpacing.Lg),
+      verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
+    ) {
+      itemsIndexed(state.comments, key = { _, c -> c.commentId }) { index, comment ->
+        YoutubeCommentItem(
+          comment = comment,
+          onFocused = {
+            if (index >= state.comments.size - 3) {
+              onLoadMore()
+            }
+          },
+        )
+      }
+      item(key = "youtube-comment-footer") {
+        YoutubeCommentFooter(state = state, onRetry = onLoadMore)
+      }
+    }
+  }
+}
+
+@Composable
+private fun YoutubeCommentItem(
+  comment: YoutubeComment,
+  onFocused: () -> Unit,
+) {
+  val homeColors = LocalHomeColors.current
+  var focused by remember { mutableStateOf(false) }
+  val shape = RoundedCornerShape(BiliRadius.Card)
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .clip(shape)
+      .background(if (focused) homeColors.textPrimary.copy(alpha = 0.08f) else Color.Transparent)
+      .border(
+        width = if (focused) BiliSpacing.Xxs else 0.dp,
+        color = if (focused) homeColors.accent.copy(alpha = 0.4f) else Color.Transparent,
+        shape = shape,
+      )
+      .onFocusChanged { focusState ->
+        focused = focusState.isFocused
+        if (focusState.isFocused) {
+          onFocused()
+        }
+      }
+      .onPreviewKeyEvent { event ->
+        // 评论项只读:消费确认键避免触发任何默认行为。
+        if (event.type == KeyEventType.KeyUp && event.key.isCommentConfirmKey()) {
+          true
+        } else {
+          false
+        }
+      }
+      .focusable()
+      .padding(BiliSpacing.Md),
+    verticalAlignment = Alignment.Top,
+  ) {
+    CommentAvatar(url = comment.authorAvatarUrl)
+    Spacer(modifier = Modifier.width(BiliSpacing.Md))
+    Column(modifier = Modifier.weight(1f)) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+          text = comment.authorName.ifBlank { stringResource(R.string.comment_anonymous) },
+          color = if (comment.channelOwner) homeColors.accent else homeColors.textPrimary,
+          fontSize = BiliTypography.CardMeta,
+          fontWeight = FontWeight.Bold,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.weight(1f, fill = false),
+        )
+        if (comment.verified) {
+          Spacer(modifier = Modifier.width(BiliSpacing.Xs))
+          Text("✓", color = homeColors.accent, fontSize = BiliTypography.CardBadge)
+        }
+        if (comment.pinned) {
+          Spacer(modifier = Modifier.width(BiliSpacing.Xs))
+          Text("📌", color = homeColors.textSecondary, fontSize = BiliTypography.CardBadge)
+        }
+        if (comment.hearted) {
+          Spacer(modifier = Modifier.width(BiliSpacing.Xs))
+          Text("❤", color = BiliColors.BiliPink, fontSize = BiliTypography.CardBadge)
+        }
+        Spacer(modifier = Modifier.width(BiliSpacing.Sm))
+        Text(
+          text = formatCommentRelativeTime(comment.publishedAt ?: 0L),
+          color = homeColors.textTertiary,
+          fontSize = BiliTypography.CardBadge,
+          maxLines = 1,
+        )
+      }
+      Spacer(modifier = Modifier.height(BiliSpacing.Xs))
+      Text(
+        text = comment.content.ifBlank { stringResource(R.string.comment_empty_content) },
+        color = homeColors.textPrimary,
+        fontSize = BiliTypography.BodySmall,
+        overflow = TextOverflow.Visible,
+      )
+      Spacer(modifier = Modifier.height(BiliSpacing.Xs))
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        if ((comment.likeCount ?: 0L) > 0L) {
+          Text(
+            text = stringResource(
+              R.string.comment_like_count,
+              (comment.likeCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+            ),
+            color = homeColors.textSecondary,
+            fontSize = BiliTypography.CardBadge,
+          )
+          Spacer(modifier = Modifier.width(BiliSpacing.Md))
+        }
+        if (comment.replyCount > 0) {
+          Text(
+            text = stringResource(R.string.comment_reply_count, comment.replyCount),
+            color = homeColors.textSecondary,
+            fontSize = BiliTypography.CardBadge,
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun YoutubeCommentFooter(state: YoutubeCommentUiState, onRetry: () -> Unit) {
+  val homeColors = LocalHomeColors.current
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(vertical = BiliSpacing.Md),
+    horizontalArrangement = Arrangement.Center,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    val text = when {
+      state.loadMoreError.isNotBlank() -> stringResource(R.string.feed_footer_failed)
+      state.loadingMore -> stringResource(R.string.feed_footer_loading)
+      state.endReached -> stringResource(R.string.feed_footer_end)
+      else -> ""
+    }
+    if (text.isNotBlank()) {
+      Text(
+        text = text,
+        color = homeColors.textTertiary,
+        fontSize = BiliTypography.CardMeta,
+        maxLines = 1,
+      )
+    }
+    if (state.loadMoreError.isNotBlank()) {
+      Spacer(modifier = Modifier.width(BiliSpacing.Sm))
+      CommentRetryButton(onRetry = onRetry)
+    }
+  }
+}
+
+private suspend fun loadYoutubeCommentFirstPage(
+  videoRepository: VideoRepository,
+  state: YoutubeCommentUiState,
+  videoId: String,
+) {
+  state.loading = true
+  state.error = ""
+  state.loadMoreError = ""
+  state.endReached = false
+  state.continuation = null
+  state.comments = emptyList()
+  try {
+    val page = videoRepository.getYoutubeComments(videoId, null)
+    state.comments = page.items
+    state.continuation = page.continuation
+    state.endReached = page.continuation == null || page.items.isEmpty()
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    state.error = error.message.orEmpty()
+  } finally {
+    state.loading = false
+  }
+}
+
+private fun loadYoutubeCommentNextPage(
+  videoRepository: VideoRepository,
+  coroutineScope: CoroutineScope,
+  state: YoutubeCommentUiState,
+  videoId: String,
+) {
+  if (state.loadingMore || state.endReached || state.loading) return
+  val token = state.continuation ?: return
+  state.loadingMore = true
+  state.loadMoreError = ""
+  coroutineScope.launch {
+    try {
+      val page = videoRepository.getYoutubeComments(videoId, token)
+      state.continuation = page.continuation
+      val known = state.comments.mapTo(mutableSetOf()) { it.commentId }
+      val fresh = page.items.filter { known.add(it.commentId) }
+      state.comments = state.comments + fresh
+      state.endReached = page.continuation == null || fresh.isEmpty()
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {

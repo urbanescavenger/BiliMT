@@ -454,7 +454,7 @@ internal fun UserFeedScreen(
       items = listOf(
         BiliActionItem(
           label = commentLabel,
-          enabled = video.aid > 0L,
+          enabled = video.aid > 0L || video.source == SourceYoutube,
           onClick = { onCommentSelected(video) },
         ),
         BiliActionItem(

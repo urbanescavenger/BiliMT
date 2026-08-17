@@ -1147,6 +1147,8 @@ fun BiliTvApp(
                     commentRequest = com.kirin.mt.ui.feed.CommentRequest(
                       aid = video.aid,
                       title = video.title,
+                      source = video.source,
+                      videoId = video.bvid,
                     )
                   },
                   onSeasonSelected = { season ->
@@ -1437,8 +1439,7 @@ fun BiliTvApp(
 
       commentRequest?.let { request ->
         com.kirin.mt.ui.feed.CommentScreen(
-          aid = request.aid,
-          title = request.title,
+          request = request,
           videoRepository = videoRepository,
           onDismiss = { commentRequest = null },
         )
