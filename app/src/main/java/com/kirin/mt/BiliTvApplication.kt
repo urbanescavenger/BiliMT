@@ -27,7 +27,7 @@ class BiliTvApplication : Application(), ImageLoaderFactory {
     val lastCode = prefs.getLong(KEY_LAST_VERSION_CODE, -1L)
     val curCode = AppInfo(this).current().versionCode
     if (lastCode != -1L && curCode != lastCode) {
-      LogCatcherUtil.clearLiveLog()
+      LogCatcherUtil.clearLiveLog(this)
     }
     prefs.edit().putLong(KEY_LAST_VERSION_CODE, curCode).apply()
     LogCatcherUtil.install(this)
