@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.2-alpha.25](#v302-alpha25)
 - [v3.0.2-alpha.10](#v302-alpha10)
 - [v3.0.2-alpha.9](#v302-alpha9)
 - [v3.0.2-alpha.8](#v302-alpha8)
@@ -168,6 +169,10 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.2-alpha.25
+
+**复活自合成 DASH 主兜底(对齐 LibreTube createDashSource)**:SABR 播不了的 attestation/RELOAD 视频,改走自合成 DASH——从 NewPipe 流顶层读已解密 URL(content)+ init/index range 拼 `<SegmentBase>` 合成 MPD,提为主兜底(优先于 dashMpdUrl/HLS)。当初放弃基于诊断误判(itagItem.toString 看不出字段,实则在 stream 顶层,同 fork `738c3d4` 可读)。播放器零改动复用 buildDashManifest→DashMediaSource,带 range 守卫零回归。详见 docs/youtube-hd-playback.md row 100。
 
 ## v3.0.2-alpha.10
 
