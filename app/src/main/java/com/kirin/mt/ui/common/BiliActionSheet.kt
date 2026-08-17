@@ -58,6 +58,9 @@ data class BiliActionItem(
  *
  * 屏内覆盖层(非 Dialog 独立窗口):TV 上 Dialog 窗口焦点不切过去,D-pad 会被背后
  * 网格拦截,导致焦点卡在首项无法移动。对齐 SpeedTestDialog 等屏内覆盖层模式。
+ *
+ * 焦点陷阱:每项各自持有 FocusRequester,方向键全部消费并手动在启用项间移焦,
+ * 不依赖 Compose 默认焦点遍历——否则焦点会逃逸到背后网格,上下键一按就丢焦点。
  */
 @Composable
 fun BiliActionSheet(
@@ -67,8 +70,10 @@ fun BiliActionSheet(
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
-  val firstFocusRequester = remember { FocusRequester() }
   val shape = RoundedCornerShape(BiliRadius.Card)
+  val focusRequesters = remember(items.size) {
+    List(items.size) { FocusRequester() }
+  }
 
   BackHandler(onBack = onDismiss)
 
@@ -103,10 +108,11 @@ fun BiliActionSheet(
       items.forEachIndexed { index, item ->
         BiliActionSheetItem(
           item = item,
-          isFirst = index == 0,
-          isLast = index == items.lastIndex,
-          focusRequester = if (index == 0) firstFocusRequester else null,
+          focusRequester = focusRequesters[index],
           onDismiss = onDismiss,
+          onMoveFocus = { direction ->
+            moveSheetFocus(items, index, direction, focusRequesters)
+          },
         )
       }
     }
@@ -114,7 +120,31 @@ fun BiliActionSheet(
 
   LaunchedEffect(items) {
     if (items.isNotEmpty()) {
-      runCatching { firstFocusRequester.requestFocus() }
+      val firstEnabled = items.indexOfFirst { it.enabled }
+      if (firstEnabled >= 0) {
+        runCatching { focusRequesters[firstEnabled].requestFocus() }
+      }
+    }
+  }
+}
+
+/**
+ * 在菜单内按方向键手动移动焦点,只落到可用的(enabled)项,越过禁用项。
+ * 全部返回 true 消费按键,杜绝 Compose 默认焦点遍历把焦点逃逸到背后网格。
+ */
+private fun moveSheetFocus(
+  items: List<BiliActionItem>,
+  fromIndex: Int,
+  direction: Int, // -1 = 上, +1 = 下
+  focusRequesters: List<FocusRequester>,
+) {
+  var next = fromIndex
+  repeat(items.size) {
+    next += direction
+    if (next !in items.indices) return // 菜单边界
+    if (items[next].enabled) {
+      runCatching { focusRequesters[next].requestFocus() }
+      return
     }
   }
 }
@@ -122,10 +152,9 @@ fun BiliActionSheet(
 @Composable
 private fun BiliActionSheetItem(
   item: BiliActionItem,
-  isFirst: Boolean,
-  isLast: Boolean,
-  focusRequester: FocusRequester?,
+  focusRequester: FocusRequester,
   onDismiss: () -> Unit,
+  onMoveFocus: (Int) -> Unit,
 ) {
   val homeColors = LocalHomeColors.current
   var focused by remember { mutableStateOf(false) }
@@ -134,7 +163,7 @@ private fun BiliActionSheetItem(
     .fillMaxWidth()
     .height(52.dp)
     .clip(itemShape)
-    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+    .focusRequester(focusRequester)
     .onFocusChanged { focused = it.isFocused }
     .onPreviewKeyEvent { event ->
       if (event.type != KeyEventType.KeyDown) {
@@ -150,9 +179,17 @@ private fun BiliActionSheetItem(
         }
       } else {
         when (event.key) {
-          // 在菜单边界消费上下方向,避免焦点逃逸到背后网格。
-          Key.DirectionUp -> isFirst
-          Key.DirectionDown -> isLast
+          // 方向键全部消费并手动移焦:默认遍历会逃逸到背后网格,导致焦点丢失。
+          // Back 交给外层 BackHandler 统一处理。
+          Key.DirectionUp -> {
+            onMoveFocus(-1)
+            true
+          }
+          Key.DirectionDown -> {
+            onMoveFocus(+1)
+            true
+          }
+          Key.DirectionLeft, Key.DirectionRight -> true
           else -> false
         }
       }
