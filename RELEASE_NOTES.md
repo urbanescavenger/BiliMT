@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.2-alpha.30](#v302-alpha30)
 - [v3.0.2-alpha.29](#v302-alpha29)
 - [v3.0.2-alpha.26](#v302-alpha26)
 - [v3.0.2-alpha.25](#v302-alpha25)
@@ -179,6 +180,23 @@
 ## v3.0.2-alpha.26
 
 **NewPipe-first 主路径(alpha.93,解耦坏 WEB WebView 收割门卫)**:alpha.25 的自合成 DASH 因 resolve 仍先走 WEB+WebView harvest(该收割已坏——真机 ssl handshake failed / browser session load 两次失败)→ 被挡在门外**触达不到**。本版把 NewPipe 提为一级路径(对齐 LibreTube 直调 `StreamInfo.getInfo`):resolve() 在 signatureTimestamp 后、WEB client loop 前,先试 visionOS NewPipe SABR → 自合成 DASH/HLS 兜底,全失败才落 WEB /player last resort(classic reload-closure/DASH n-decrypt)。纯复用现有函数零新逻辑,播放器零改动。alpha.91 Fix A(status=2 用 PoTokenWebView 重铸)+ Fix B(getIosClientPoToken→null)在此主路径生效。SABR 播不了的 attestation/RELOAD 视频现在真正落到 alpha.92 自合成 DASH。详见 docs/youtube-dash-fallback-plan.md「alpha.93」。
+
+## v3.0.2-alpha.30
+
+**YouTube 4K 恢复 + 播放器清晰度选择(兜底提前 + DASH 多档,对齐 LibreTube)**:真机实锤 DASH 自合成兜底能出 4K(2160p VP9,推翻「4K 两路全堵/接受 ≤1080p」终态——alpha.86 那两路都是 SABR 协议路径,DASH 直链是第三条路绕开 attestation)。本版把 4K 可用性从「SABR 死循环 8 次 RELOAD 等 ~27s 才掉 DASH」提到「首次 RELOAD 即落」,并补回 alpha.81 移除的清晰度选择。
+
+### 变更
+- **兜底提前**(`SabrMediaFetcher`):`processPart` 的 `RELOAD_PLAYER_RESPONSE` 分支在 `storeReloadTokenSlot` 后**立即抛 `SabrTerminalException`**,不再等读完响应里 ~8 个 RELOAD part → 首次 RELOAD 即 evict → 重进 resolve 见 `reloadCount>0` → DASH 兜底出 4K。等待从 ~27s 降到一次 RELOAD。
+- **RELOAD 计数稳健化**(`SabrStreamRegistry`):`Entry` 加 `videoId`(registerByVideoId 填充),fetcher 计数改用**会话自己的 videoId**(恒可得),替代 payload 解码 `f4=videoId`(36B 短变体解出 null → 旧逻辑计数恒 0 → 死循环守卫永不触发隐患)。`videoId` 字段放 `Entry` 参数末尾(否则挤错 `windowStartMs` 位置实参编译失败)。
+- **SABR 清晰度选择恢复**:`buildSabrPlaybackInfo` 手动选档(`preferredQualityId != null`)时 `videoTracks` 只建选中 itag 单条(真正生效),默认/Auto 保持 alpha.81 多 Representation 自动选轨(不回归)。TV 端 Main 面板加回「清晰度」项 → Quality 面板各档切换;移动端底栏加回 HD 按钮 + 下拉菜单。
+- **DASH 自合成多档 + 按分辨率去重**(`buildDashFallbackFromNewPipe`):自合成分支从单档改全 `videoCandidates` 多 Representation(每条带 range 的视频流各构一条 `PlaybackTrack`,`buildDashManifest` 合成多 Representation MPD);**清晰度菜单按 `height` 去重**(对齐 LibreTube `getAvailableResolutions`,每分辨率一档纯 `"720p"`,codec 由 ExoPlayer 按设备硬解能力自动选);手动选档回该分辨率全部 codec 变体,默认/Auto 回全部自动选轨。原 `PlaybackQuality(0,"XXXp DASH 兜底")` 单档删除。
+
+### 待真机验证(播 `jNl6YkkzKxw`,读 `logs_live.log`)
+- 只一次 `RELOAD_PLAYER_RESPONSE`(count=1)即 `SABR dead-loop guard` → `自合成DASH` itag313 2160p,首帧出现时间明显早于之前。
+- 画质菜单:720p 只一个选项(不再 VP9/H264 重复);选 720p/1080p 实际播对应分辨率(SABR 路径),选 2160p → RELOAD 后落 DASH 出 4K;已落 DASH 的视频菜单列各分辨率可降档。
+- 回归 `D2kXTmSPUJo`(≤1080p 不需要 attestation)确认 SABR 正常播、无 RELOAD、清晰度菜单可选档。
+
+---
 
 ## v3.0.2-alpha.29
 
