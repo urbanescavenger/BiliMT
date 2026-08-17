@@ -363,6 +363,13 @@ alpha.83 更正、memory `youtube-4k-two-paths-dead-accept-1080p`)。
 
 **结论**:对 attestation 4K 视频,SABR 路径两边都死。差异在 BiliTV 多跑 3 遍无效恢复后死,LibreTube 立刻死。
 
+**alpha.93 后更糟(§4.2 补充,2026-08-17)**:alpha.93 NewPipe-first 主路径在 `resolve()` L151-173 对非 null 的
+`buildSabrSessionFromNewPipe` **立即早退 return**,使真正消费 reload token 的 `consumeReloadTokenSlot()` +
+`MAX_RELOADS=3` 闸门(上述步骤 3 的"3 遍")**永远不可达**。于是每次 error-retry 重进 resolve 又建**同一空 poToken
+visionOS 会话** → 又 RELOAD → evict → **无界循环**(reloadCount 17→24),连"3 遍后放弃"都到不了,直到 sid 被清 →
+Source error。**alpha.97 修复**:`resolve()` NewPipe-first 块加 `reloadCount(videoId)>0` 守卫,RELOAD 后跳过重建,
+直接落 ≤1080p DASH/HLS 兜底(对齐 LibreTube 不循环,见 [youtube-dash-fallback-plan.md](youtube-dash-fallback-plan.md) alpha.97)。
+
 ### 4.3 真正可能的 4K 分水岭:SABR 之外的兜底
 
 - **LibreTube**:`setStreamSource`(OnlinePlayerService.kt:232-328)有 DASH 分支(直播或无 SABR 时)+

@@ -148,7 +148,17 @@ class YoutubePlaybackResolver(
     // alpha.89 WebView harvest 坏(卡 m.youtube.com 错误页 27s)→ 先走自包含的 NewPipe(visonOS SABR → DASH 兜底)。
     // ① visionOS NewPipe SABR(alpha.91 Fix A register+refreshPoToken 在此生效;Fix B 已使 getInfo 不带 WEB visitor
     //    → status=2 懒鉴权,空 poToken 首请求)。buildSabrSessionFromNewPipe 内部 L806 poTokenB64="" 不用外部 poToken。
-    val np = buildSabrSessionFromNewPipe(videoId, poToken, youtubeDefaultQuality)
+    //
+    // alpha.9X:SABR 死循环守卫。attestation 视频(4K/HD)首次 RELOAD 后 reloadCount>0,重建空 poToken 会话
+    // 必再 RELOAD(alpha.93 NewPipe-first 早退使下方 consumeReloadTokenSlot/MAX_RELOADS 闸门不可达,曾 reloadCount
+    // 17→24 无界爬升直至 evict→Source error;对齐 LibreTube 对 RELOAD 直接失败不循环)。RELOAD 后跳过 SABR,
+    // 直接落 ② 的 ≤1080p DASH/HLS 兜底(用户已接受 ≤1080p)。
+    val np = if (SabrStreamRegistry.reloadCount(videoId) > 0) {
+      Log.w(Tag, "SABR dead-loop guard: videoId=$videoId 已 RELOAD(reloadCount=${SabrStreamRegistry.reloadCount(videoId)})→ 跳过重建,直接 DASH/HLS 兜底")
+      null
+    } else {
+      buildSabrSessionFromNewPipe(videoId, poToken, youtubeDefaultQuality)
+    }
     if (np != null) {
       YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
       val sabrClient = SabrClient(httpClient)
