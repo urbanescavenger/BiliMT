@@ -110,6 +110,7 @@ fun BiliActionSheet(
         )
       }
     }
+  }
 
   LaunchedEffect(items) {
     if (items.isNotEmpty()) {
