@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.3-alpha.1](#v303-alpha1)
 - [v3.0.2-alpha.32](#v302-alpha32)
 - [v3.0.2-alpha.31](#v302-alpha31)
 - [v3.0.2-alpha.30](#v302-alpha30)
@@ -174,6 +175,20 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.3-alpha.1
+
+**TV 动态长按操作菜单焦点修复**:动态页长按卡片弹出的操作菜单(`BiliActionSheet`)原用 `Dialog` 独立窗口,TV 上窗口焦点不切过去,D-pad 下键被背后网格的 `onPreviewKeyEvent` 拦截,焦点一直卡在首项「查看评论」无法选其它项。改为屏内覆盖层(Box 蒙层 + `BackHandler`),对齐 `SpeedTestDialog` 等 TV 弹窗模式,焦点回到同一窗口内,D-pad 上下可在菜单项间正常移动。
+
+**YouTube 相关视频解析(诊断中)**:相关视频解析 `root.keys` 是属性非函数,改 `root.keys.take(8)` 修编译错误;加诊断日志定位评论区/相关视频区解析为 0(parseCommentPage 打 section/renderer 计数、parseRelatedVideos 打 twoCol/secondary/parsed/rootCompact 计数)。
+
+### 变更
+- **TV 动态长按菜单改屏内覆盖层**(`BiliActionSheet`):`Dialog` → Box 覆盖层 + `BackHandler`,修 D-pad 焦点卡首项无法移动。
+
+### 待真机验证
+- 动态长按菜单:弹出后 D-pad 上下可在「查看评论/点赞/稍后再看/UP主空间」间移动,OK 触发,Back 关闭。
+
+---
 
 ## v3.0.2-alpha.25
 
