@@ -199,7 +199,7 @@ internal object YoutubeParsers {
       "YtRelated",
       "parseRelatedVideos: twoCol=$hasTwoCol secondary=$hasSecondary " +
         "parsed=${videos.size} rootCompact=${rootCompact.size} token=${token != null} " +
-        "keys=${root.keys().take(8)}"
+        "keys=${root.keys.take(8)}"
     )
     return YoutubeFeedPage(items = videos, continuation = token)
   }
