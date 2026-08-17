@@ -51,7 +51,6 @@ import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.YoutubeHistoryEntry
 import com.kirin.mt.core.network.FollowingSeason
 import com.kirin.mt.core.network.VideoRepository
-import com.kirin.mt.core.network.YoutubeFeedTimeoutMs
 import com.kirin.mt.core.network.mergeByPubdate
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.ui.common.BiliActionItem
@@ -77,7 +76,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToInt
 
 internal enum class UserFeedTab { DynamicVideo, DynamicAll, History, Favorite, Bangumi }
@@ -581,7 +579,11 @@ private suspend fun loadDynamicFirstPage(
   mergeYoutubeIntoDynamic(videoRepository, coroutineScope, state, youtubeChannels, youtubeChannelStore)
 }
 
-/** 后台拉取 YouTube 关注流(5s 兜底),就绪后与当前 B 站动态按发布时间合并重排。 */
+/**
+ * 后台分批增量拉取 YouTube 关注流,每批就绪即与当前 B 站动态按发布时间合并重排。
+ * alpha.98:去 5s 固定超时(几百频道必超)——getSubscriptionsFeed 已分批 + 单频道独立容错,
+ * 靠 onChunkReady 增量 merge,不再等全量后一次性合并。
+ */
 private fun mergeYoutubeIntoDynamic(
   videoRepository: VideoRepository,
   coroutineScope: CoroutineScope,
@@ -590,34 +592,37 @@ private fun mergeYoutubeIntoDynamic(
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
 ) {
   coroutineScope.launch {
-    val yt = try {
-      withTimeoutOrNull(YoutubeFeedTimeoutMs) {
-        videoRepository.youtubeSubscriptionsFeed(channels) { channel ->
+    try {
+      videoRepository.youtubeSubscriptionsFeed(
+        channels,
+        onChannelAvatarResolved = { channel ->
           youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-        }
-      }.orEmpty()
+        },
+        onChunkReady = { chunk ->
+          if (chunk.isEmpty()) return@onChunkReady
+          when (val cur = state.state) {
+            is UserFeedState.Success -> {
+              val merged = mergeByPubdate(cur.videos, chunk)
+              if (merged.size > cur.videos.size) state.hasLoadedContent = true
+              state.state = cur.copy(videos = merged)
+            }
+            is UserFeedState.Empty -> {
+              state.hasLoadedContent = true
+              state.state = UserFeedState.Success(
+                videos = chunk,
+                loadingMore = false,
+                endReached = true,
+                loadMoreError = "",
+              )
+            }
+            else -> {} // Failed / Loading 保持原样
+          }
+        },
+      )
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {
-      emptyList()
-    }
-    if (yt.isEmpty()) return@launch
-    when (val cur = state.state) {
-      is UserFeedState.Success -> {
-        val merged = mergeByPubdate(cur.videos, yt)
-        if (merged.size > cur.videos.size) state.hasLoadedContent = true
-        state.state = cur.copy(videos = merged)
-      }
-      is UserFeedState.Empty -> {
-        state.hasLoadedContent = true
-        state.state = UserFeedState.Success(
-          videos = yt,
-          loadingMore = false,
-          endReached = true,
-          loadMoreError = "",
-        )
-      }
-      else -> {} // Failed / Loading 保持原样
+      // 单频道已容错,仅意外整批异常到此;保持原样,不阻塞动态。
     }
   }
 }
