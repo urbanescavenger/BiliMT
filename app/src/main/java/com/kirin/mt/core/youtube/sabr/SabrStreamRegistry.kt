@@ -106,12 +106,6 @@ internal object SabrStreamRegistry {
     val session: SabrSession,
     val client: SabrClient,
     /**
-     * alpha.9X:本会话绑定的 videoId(registerByVideoId 填充;register 无视频概念用 null)。
-     * 供 fetcher 在 RELOAD 时可靠计数——RELOAD payload 的 36B 短变体可能解不出内层 videoId
-     * (f4=null),用会话自己的 videoId 保证死循环守卫 [reloadCount] 总能递增、DASH 兜底可靠触发。
-     */
-    val videoId: String? = null,
-    /**
      * alpha.52:本会话服务的 60s 窗口起点(anchor)。服务端对每会话服务量上限 [anchor..anchor+60s],
      * 由 harvest 的 `&t=`(watch 起播位置)决定。DataSource 用 `sessionAnchorMs` 判断窗口耗尽、seek
      * 用「目标窗口 == 当前窗口」判断是否可复用会话。
@@ -138,6 +132,12 @@ internal object SabrStreamRegistry {
      * false(默认)= 正常 selectFormat 选轨(旧行为)。
      */
     val forceSessionVideoItag: Boolean = false,
+    /**
+     * alpha.9X:本会话绑定的 videoId(registerByVideoId 填充;register 无视频概念用 null)。
+     * 供 fetcher 在 RELOAD 时可靠计数——RELOAD payload 的 36B 短变体可能解不出内层 videoId
+     * (f4=null),用会话自己的 videoId 保证死循环守卫 [reloadCount] 总能递增、DASH 兜底可靠触发。
+     */
+    val videoId: String? = null,
   ) {
     /**
      * alpha.62(Phase 2 DASH A/V 同步修复):每流已取 media 段的**实际**累计媒体时长(ms)。
