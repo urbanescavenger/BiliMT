@@ -2,6 +2,7 @@ plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.kotlin.serialization)
+  alias(libs.plugins.ksp)
 }
 
 val supportedAbis = setOf("armeabi-v7a", "arm64-v8a")
@@ -173,6 +174,12 @@ dependencies {
   implementation(libs.slf4j.android.mvysny)
   implementation(libs.tv.material)
   implementation(libs.zxing.core)
+  implementation(libs.room.runtime)
+  ksp(libs.room.compiler)
 
   debugImplementation(libs.compose.ui.tooling)
+}
+
+ksp {
+  arg("room.generateKotlin", "true")
 }
