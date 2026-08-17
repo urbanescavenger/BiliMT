@@ -1244,7 +1244,9 @@ class YoutubePlaybackResolver(
         ?: defaultVideo ?: return null
       val selectedQuality = qualities.firstOrNull { it.id == selectedVideo.itag } ?: qualities.first()
       fun buildVideoTrack(v: VideoStream): PlaybackTrack = PlaybackTrack(
-        id = 0,
+        // alpha.9X:多 codec 变体同分辨率时,id 必须唯一(用 itag,对齐 SABR 路径),否则 MPD 里多个
+        // <Representation id="0_0"> 重复 ID → ExoPlayer 切轨时加载错 init 段 → EOFException。
+        id = v.itag,
         baseUrl = v.content!!, // filter 已保证 content 非空
         backupUrls = emptyList(),
         bandwidth = v.bitrate,
