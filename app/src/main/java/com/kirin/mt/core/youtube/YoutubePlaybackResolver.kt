@@ -1152,6 +1152,69 @@ class YoutubePlaybackResolver(
         return null
       }
     val resolvedDuration = if (durationMs > 0) durationMs else info.duration * 1000L
+    // Phase 2 自合成 DASH(对齐 LibreTube `createDashSource`):NewPipe 流顶层暴露已解密 URL(content)
+    // + initStart/initEnd/indexStart/indexEnd(同一 fork 738c3d4,LibreTube `toPipedStream` 直读)。
+    // 用这些拼 <SegmentBase> 合成 MPD,提为主兜底(优先于 dashMpdUrl[已知恒空]/hlsUrl)。
+    // range 守卫:任一轨 content/initStart/indexStart 为空则不自合成,落回 dashMpdUrl → hlsUrl(零回归)。
+    // 诊断:打印候选流 range,真机确认 visionOS 流是否带 init/index range(验证可行性)。
+    val videoCandidates = info.videoOnlyStreams
+      .filter { !it.content.isNullOrBlank() && it.indexStart > 0 && it.height > 0 }
+    val audioCandidates = info.audioStreams
+      .filter { !it.content.isNullOrBlank() && it.indexStart > 0 }
+    Log.i(Tag, "自合成DASH diag: videoCandidates=${videoCandidates.size} audioCandidates=${audioCandidates.size} (全视频=${info.videoOnlyStreams.size} 全音频=${info.audioStreams.size})")
+    videoCandidates.take(3).forEach { v ->
+      Log.i(Tag, "自合成DASH diag: v itag=${v.itag} ${v.height}p url=${v.content?.length}B init=[${v.initStart}-${v.initEnd}] index=[${v.indexStart}-${v.indexEnd}] codec=${v.codec}")
+    }
+    audioCandidates.take(2).forEach { a ->
+      Log.i(Tag, "自合成DASH diag: a itag=${a.itag} url=${a.content?.length}B init=[${a.initStart}-${a.initEnd}] index=[${a.indexStart}-${a.indexEnd}] codec=${a.codec}")
+    }
+    val synthMaxHeight = youtubeDefaultQuality.maxHeight
+    val synthVideo = when {
+      synthMaxHeight != null -> videoCandidates.filter { it.height in 1..synthMaxHeight }.maxByOrNull { it.height }
+        ?: videoCandidates.minByOrNull { it.height }
+      else -> videoCandidates.maxByOrNull { it.height }
+    }
+    val synthAudio = audioCandidates.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
+      ?: audioCandidates.firstOrNull { it.audioTrackType != AudioTrackType.DUBBED }
+      ?: audioCandidates.firstOrNull()
+    if (synthVideo != null && synthAudio != null) {
+      Log.i(Tag, "兜底: 自合成 DASH from NewPipe(video itag${synthVideo.itag} ${synthVideo.height}p + audio itag${synthAudio.itag}) dur=${resolvedDuration}ms → buildDashManifest 合成 MPD DashMediaSource")
+      val vTrack = PlaybackTrack(
+        id = 0,
+        baseUrl = synthVideo.content!!, // filter 已保证 content 非空
+        backupUrls = emptyList(),
+        bandwidth = synthVideo.bitrate,
+        codecs = synthVideo.codec ?: "",
+        width = synthVideo.width,
+        height = synthVideo.height,
+        mimeType = synthVideo.format?.mimeType ?: "video/mp4",
+        segmentBase = PlaybackSegmentBase("${synthVideo.initStart}-${synthVideo.initEnd}", "${synthVideo.indexStart}-${synthVideo.indexEnd}"),
+      )
+      val aTrack = PlaybackTrack(
+        id = 0,
+        baseUrl = synthAudio.content!!, // filter 已保证 content 非空
+        backupUrls = emptyList(),
+        bandwidth = synthAudio.bitrate,
+        codecs = synthAudio.codec ?: "",
+        width = 0,
+        height = 0,
+        mimeType = synthAudio.format?.mimeType ?: "audio/mp4",
+        segmentBase = PlaybackSegmentBase("${synthAudio.initStart}-${synthAudio.initEnd}", "${synthAudio.indexStart}-${synthAudio.indexEnd}"),
+      )
+      val quality = PlaybackQuality(0, "${synthVideo.height}p DASH 兜底")
+      return PlaybackInfo(
+        bvid = videoId,
+        cid = 0L,
+        title = request.title,
+        durationMs = resolvedDuration,
+        qualities = listOf(quality),
+        selectedQuality = quality,
+        videoTracks = listOf(vTrack),
+        audioTracks = listOf(aTrack),
+        headers = YoutubePlaybackHeaders,
+      )
+    }
+    Log.i(Tag, "自合成DASH: 无 range 有效流(video=${synthVideo != null} audio=${synthAudio != null})→ 落 dashMpdUrl/HLS")
     val dashMpdUrl = info.dashMpdUrl
     if (!dashMpdUrl.isNullOrBlank()) {
       Log.i(Tag, "兜底: dashMpdUrl=${dashMpdUrl.length}B dur=${resolvedDuration}ms → 远程 MPD DashMediaSource")

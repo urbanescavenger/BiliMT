@@ -98,8 +98,10 @@
     streamingData,android 无 poToken 取不到 protected manifest)。**Phase 1(直拉 manifest)不可行**。
   - **hlsUrl 非空** — visionOS /player 返 `hls_variant` manifest(`https://manifest.googlevideo.com/api/manifest/hls_variant/...`)。
     visionOS 是 Apple 平台,YouTube 给 Apple 平台的 hlsUrl 是 AVPlayer 级原生 HLS 交付(非 web attestation 路径)。
-  - NewPipe firstVideo/firstAudio 为 **PROGRESSIVE_HTTP 已解密直链**(itag313 4K 在列),但 itagItem 为默认
-    `Object.toString`(init/index range 字段未暴露)→ Phase 2 合成 DASH 需另探 ItagItem 字段名。
+  - NewPipe firstVideo/firstAudio 为 **PROGRESSIVE_HTTP 已解密直链**(itag313 4K 在列)。**更正误判(alpha.92)**:
+    range 字段不在 `itagItem`(其 toString 是默认实现看不出),而在 `VideoStream`/`AudioStream` **顶层**——
+    `content`(已解密 URL)/`initStart`/`initEnd`/`indexStart`/`indexEnd`,同一 fork `738c3d4`,
+    LibreTube `toPipedStream` 直读。当初"需另探 ItagItem 字段名"是打错对象(itagItem.toString)。
   - itag313(4K)SABR 仍 RELOAD(attestation),`potSent=0B`——坐实 ≤1080p 限制根因是 attestation 非 itag。
 - [x] Phase 1(HLS 接替,alpha.90):dashMpdUrl 空时落 **hlsUrl** → HlsMediaSource
   - `PlaybackInfo.remoteHlsManifestUrl`(新增) + `isHlsManifest()`/`hasRemoteManifest()` helper。
@@ -109,7 +111,11 @@
     dummy 轨的潜在 empty-tracks 误判,此前因 dashMpdUrl 空从未触发)。
   - 两处耗尽点接 HLS:① RELOAD 闭环未回 SABR(L303);② NewPipe 无 SABR 数据(L366,替代已死的 classic n-decrypt)。
 - [ ] Phase 1 真机验证:HLS 是否可播 / 是否 attestation 堵 / 多码率上限
-- [ ] Phase 2(次选):若 HLS 也 attestation 堵,合成 DASH from NewPipe adaptive(需显式探 ItagItem init/index range 字段名)
+- [x] **Phase 2(自合成 DASH 复活,alpha.92):从 NewPipe 流顶层 `content`+init/index range 自合成 MPD,提为主兜底**
+  (对齐 LibreTube `createDashSource`;更正"itagItem 字段未暴露"误判——字段在 stream 顶层,同 fork 可读)。
+  `buildDashFallbackFromNewPipe` 优先级改为:自合成 DASH(range 非空)→ dashMpdUrl(恒空)→ HLS。
+  播放器零改动(复用 `buildDashManifest` → `DashMediaSource`,segmentBase 非 null 即合成)。
+  **待真机验证**:visionOS getInfo 流 range 是否有值 + 自合成 MPD 能否起播(见下方 Phase 2 真机验证)。
 - [ ] Phase 3:RELOAD 耗尽自动降级已由 alpha.87/88 闭环 + alpha.90 HLS 兜底覆盖;设置项 `youtubeDashFallback`
   (两屏)待加(当前兜底自动生效,设置项为可选开关)
 - [x] **alpha.91:真根因推翻 HLS 兜底——复刻 LibreTube 懒鉴权 poToken**(2026-08-17,双 agent 对照 LibreTube)
