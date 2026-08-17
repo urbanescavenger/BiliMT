@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.common
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -36,8 +37,6 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliRadius
 import com.kirin.mt.ui.theme.BiliSpacing
@@ -55,7 +54,10 @@ data class BiliActionItem(
 
 /**
  * TV 遥控器友好的模态操作菜单:居中卡片 + 半透蒙层。D-pad 上下在菜单项间移动,
- * OK 确认并关闭,Back 关闭。首项自动获取焦点。点击蒙层外区域也关闭。
+ * OK 确认并关闭,Back 关闭。首项自动获取焦点。
+ *
+ * 屏内覆盖层(非 Dialog 独立窗口):TV 上 Dialog 窗口焦点不切过去,D-pad 会被背后
+ * 网格拦截,导致焦点卡在首项无法移动。对齐 SpeedTestDialog 等屏内覆盖层模式。
  */
 @Composable
 fun BiliActionSheet(
@@ -68,55 +70,46 @@ fun BiliActionSheet(
   val firstFocusRequester = remember { FocusRequester() }
   val shape = RoundedCornerShape(BiliRadius.Card)
 
-  Dialog(
-    onDismissRequest = onDismiss,
-    properties = DialogProperties(
-      usePlatformDefaultWidth = false,
-      decorFitsSystemWindows = false,
-      dismissOnBackPress = true,
-      dismissOnClickOutside = true,
-    ),
+  BackHandler(onBack = onDismiss)
+
+  Box(
+    modifier = modifier
+      .fillMaxSize()
+      .background(BiliColors.OverlayScrim.copy(alpha = 0.6f)),
+    contentAlignment = Alignment.Center,
   ) {
-    Box(
-      modifier = modifier
-        .fillMaxSize()
-        .background(BiliColors.OverlayScrim.copy(alpha = 0.6f)),
-      contentAlignment = Alignment.Center,
-    ) {
-      Column(
-        modifier = Modifier
-          .widthIn(max = 420.dp)
-          .clip(shape)
-          .background(homeColors.cardSurface)
-          .border(
-            width = 1.dp,
-            color = homeColors.textPrimary.copy(alpha = 0.15f),
-            shape = shape,
-          )
-          .padding(BiliSpacing.Lg),
-      ) {
-        Text(
-          text = title,
-          color = homeColors.textPrimary,
-          fontSize = BiliTypography.CardTitle,
-          fontWeight = FontWeight.Bold,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-          modifier = Modifier.fillMaxWidth(),
+    Column(
+      modifier = Modifier
+        .widthIn(max = 420.dp)
+        .clip(shape)
+        .background(homeColors.cardSurface)
+        .border(
+          width = 1.dp,
+          color = homeColors.textPrimary.copy(alpha = 0.15f),
+          shape = shape,
         )
-        Spacer(modifier = Modifier.height(BiliSpacing.Md))
-        items.forEachIndexed { index, item ->
-          BiliActionSheetItem(
-            item = item,
-            isFirst = index == 0,
-            isLast = index == items.lastIndex,
-            focusRequester = if (index == 0) firstFocusRequester else null,
-            onDismiss = onDismiss,
-          )
-        }
+        .padding(BiliSpacing.Lg),
+    ) {
+      Text(
+        text = title,
+        color = homeColors.textPrimary,
+        fontSize = BiliTypography.CardTitle,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.fillMaxWidth(),
+      )
+      Spacer(modifier = Modifier.height(BiliSpacing.Md))
+      items.forEachIndexed { index, item ->
+        BiliActionSheetItem(
+          item = item,
+          isFirst = index == 0,
+          isLast = index == items.lastIndex,
+          focusRequester = if (index == 0) firstFocusRequester else null,
+          onDismiss = onDismiss,
+        )
       }
     }
-  }
 
   LaunchedEffect(items) {
     if (items.isNotEmpty()) {
