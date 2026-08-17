@@ -68,6 +68,7 @@ import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.extractor.ExtractorsFactory
@@ -1403,8 +1404,9 @@ fun PlayerScreen(
           qualityPreference = playbackQualityPreference,
           youtubeDefaultQuality = youtubeDefaultQuality,
         )
-      // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体)。
-      if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive)) {
+      // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体),
+      // 或远程 manifest 兜底(DASH/HLS manifest 自带 A/V 轨,dummy 视频轨非 progressive 但 audioTracks 合法为空)。
+      if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive && !info.hasRemoteManifest())) {
         PlayerScreenState.Failed(context.getString(R.string.player_error_empty_tracks))
       } else {
         coroutineScope.launch { lastPlayedStore.save(info.bvid, info.cid) }
@@ -1481,6 +1483,15 @@ fun PlayerScreen(
           Log.i(PlayerPlaybackLogTag, "SABR single-stream: sid=$sid qualities=${effectiveInfo.qualities.size} duration=${effectiveInfo.durationMs}ms")
           SabrMediaSource.Factory(manifest, fetcher, sid)
             .createMediaSource(MediaItem.fromUri(manifest.sabrUrl))
+        } else if (effectiveInfo.isHlsManifest()) {
+          // alpha.90:HLS 兜底——SABR RELOAD 闭环未回 SABR 且 dashMpdUrl 空(android 无 manifest)时,落 visionOS
+          // /player 的 hlsUrl(Apple 平台原生 HLS 交付,manifest 自带多码率 + A/V,无需 init/index range 拼接)。
+          // HlsMediaSource 拉远程 playlist 自管分段/seek;字幕仍走下方 MergingMediaSource 合并 WebVTT。
+          val hlsItem = MediaItem.Builder()
+            .setUri(effectiveInfo.remoteHlsManifestUrl)
+            .setMimeType(MimeTypes.APPLICATION_M3U8)
+            .build()
+          HlsMediaSource.Factory(dataSourceFactory).createMediaSource(hlsItem)
         } else if (resolvedRequest.isPgc || (effectiveInfo.videoTracks.first().isProgressive && !effectiveInfo.isSabrDash())) {
           // 对齐 BV：PGC 用 MergingMediaSource(ProgressiveMediaSource×2)，直接喂视频+音频两条
           // progressive fMP4 流，绕开合成 DASH MPD 的 SegmentBase/indexRange/Initialization 拼接风险
@@ -2216,6 +2227,16 @@ internal fun PlaybackInfo.isSabrDash(): Boolean =
  *  A/V 两 ChunkSampleStream 共享一个 SabrMediaFetcher(单流 POST,修 60s 断崖 + A/V 同步 + 后台音频)。 */
 internal fun PlaybackInfo.isSabrSingle(): Boolean =
   videoTracks.firstOrNull()?.isSabrSingle == true
+
+/** alpha.90:HLS 兜底——远程 HLS manifest 非空(visionOS /player 的 hls_variant)→ 走 [HlsMediaSource] 分支。
+ *  优先级高于 DashMediaSource(alpha.88 dashMpdUrl 恒空,HLS 是实际生效的兜底)。 */
+internal fun PlaybackInfo.isHlsManifest(): Boolean =
+  remoteHlsManifestUrl != null
+
+/** alpha.90:远程 manifest(DASH 或 HLS)非空——manifest 自带 A/V 轨,PlaybackInfo 的 audioTracks 可为空,
+ *  播放器空轨守卫须据此放行(否则 audioTracks 空 + dummy 轨非 progressive 被误判 empty tracks)。 */
+internal fun PlaybackInfo.hasRemoteManifest(): Boolean =
+  remoteDashManifestUrl != null || remoteHlsManifestUrl != null
 
 /**
  * alpha.62:SABR 合成 DASH 的 MPD 段时长(ms)。video 服务端实际段可变(~3067-5934,均值 ~4360),

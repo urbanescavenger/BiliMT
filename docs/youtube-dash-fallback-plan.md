@@ -93,7 +93,22 @@
 
 ## 6. 进度
 
-- [ ] Phase 0:诊断日志 + 真机验证 dashMpdUrl / NewPipe stream 字段 / attestation
-- [ ] Phase 1:NewPipe dashMpdUrl 直拉 DASH
-- [ ] Phase 2:合成 DASH from NewPipe adaptive
-- [ ] Phase 3:RELOAD 耗尽自动降级 + 设置项
+- [x] Phase 0:诊断日志 + 真机验证(b28e50c)
+  - **dashMpdUrl 恒空** — visionOS `StreamInfo.getInfo` 不返 DASH manifest(fork `getDashMpdUrl` 仅读 android
+    streamingData,android 无 poToken 取不到 protected manifest)。**Phase 1(直拉 manifest)不可行**。
+  - **hlsUrl 非空** — visionOS /player 返 `hls_variant` manifest(`https://manifest.googlevideo.com/api/manifest/hls_variant/...`)。
+    visionOS 是 Apple 平台,YouTube 给 Apple 平台的 hlsUrl 是 AVPlayer 级原生 HLS 交付(非 web attestation 路径)。
+  - NewPipe firstVideo/firstAudio 为 **PROGRESSIVE_HTTP 已解密直链**(itag313 4K 在列),但 itagItem 为默认
+    `Object.toString`(init/index range 字段未暴露)→ Phase 2 合成 DASH 需另探 ItagItem 字段名。
+  - itag313(4K)SABR 仍 RELOAD(attestation),`potSent=0B`——坐实 ≤1080p 限制根因是 attestation 非 itag。
+- [x] Phase 1(HLS 接替,alpha.90):dashMpdUrl 空时落 **hlsUrl** → HlsMediaSource
+  - `PlaybackInfo.remoteHlsManifestUrl`(新增) + `isHlsManifest()`/`hasRemoteManifest()` helper。
+  - `buildDashFallbackFromNewPipe` 扩展:dashMpdUrl 非空→DASH;否则 hlsUrl 非空→HLS;否则 null。
+  - 两屏(TV `PlayerScreen` / Mobile `MobilePlayerScreen`)加 `HlsMediaSource` 分支(优先于 DashMediaSource)。
+  - 两屏空轨守卫放宽:`audioTracks.isEmpty() && !isProgressive && !hasRemoteManifest()`(顺带修 alpha.88 DASH
+    dummy 轨的潜在 empty-tracks 误判,此前因 dashMpdUrl 空从未触发)。
+  - 两处耗尽点接 HLS:① RELOAD 闭环未回 SABR(L303);② NewPipe 无 SABR 数据(L366,替代已死的 classic n-decrypt)。
+- [ ] Phase 1 真机验证:HLS 是否可播 / 是否 attestation 堵 / 多码率上限
+- [ ] Phase 2(次选):若 HLS 也 attestation 堵,合成 DASH from NewPipe adaptive(需显式探 ItagItem init/index range 字段名)
+- [ ] Phase 3:RELOAD 耗尽自动降级已由 alpha.87/88 闭环 + alpha.90 HLS 兜底覆盖;设置项 `youtubeDashFallback`
+  (两屏)待加(当前兜底自动生效,设置项为可选开关)

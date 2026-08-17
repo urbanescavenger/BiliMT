@@ -296,17 +296,19 @@ class YoutubePlaybackResolver(
               youtubeDefaultQuality = youtubeDefaultQuality,
             )
           }
-          Log.w(Tag, "SABR reload 闭环未回 SABR(WEB/visionOS reload 均无 sabrUrl)→ 试 DASH 兜底")
+          Log.w(Tag, "SABR reload 闭环未回 SABR(WEB/visionOS reload 均无 sabrUrl)→ 试 DASH/HLS 兜底")
           // alpha.88:RELOAD 闭环兜底(对齐 LibreTube SABR RELOAD 崩后落 streams.dash)——用 NewPipe getInfo
-          // 的 dashMpdUrl(android streamingData manifest)直喂 DashMediaSource,≤1080p。dashMpdUrl 空(android
-          // 无 poToken 取不到 protected manifest)→ 落常规 NewPipe harvest(会 RELOAD,但无其它出口)。
+          // 的 dashMpdUrl(android streamingData manifest)直喂 DashMediaSource,≤1080p。
+          // alpha.90:Phase 0 取证 dashMpdUrl 恒空 → 实际走 hlsUrl(visionOS Apple 平台原生 HLS)次选兜底。
           val dashInfo = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request) }.getOrNull()
           if (dashInfo != null) {
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
-            Log.i(Tag, "SABR reload → DASH 兜底 playback ready: videoId=$videoId dashMpdUrl=${dashInfo.remoteDashManifestUrl?.length}B → 远程 MPD")
+            val kind = if (dashInfo.remoteHlsManifestUrl != null) "HLS" else "DASH"
+            val len = (dashInfo.remoteDashManifestUrl ?: dashInfo.remoteHlsManifestUrl)?.length
+            Log.i(Tag, "SABR reload → $kind 兜底 playback ready: videoId=$videoId manifest=${len}B → 远程 $kind")
             return@withContext dashInfo
           }
-          Log.w(Tag, "DASH 兜底 dashMpdUrl 空(android 无 manifest)→ 落常规 NewPipe harvest(会 RELOAD,但已无其它出口)")
+          Log.w(Tag, "DASH/HLS 兜底均空(dashMpdUrl+hlsUrl 无 manifest)→ 落常规 NewPipe harvest(会 RELOAD,但已无其它出口)")
         }
         val raws = rawAdaptive.mapNotNull { it as? JsonObject }
         val firstVideo = raws.firstOrNull { (it.intOrNull("height") ?: 0) > 0 }
@@ -364,7 +366,18 @@ class YoutubePlaybackResolver(
             sabrRaws = npResult.raws
             sabrDuration = npResult.durationMs
           } else {
-            Log.w(Tag, "SABR: NewPipe 无 SABR 数据 → 落 DASH 兜底(classic n-decrypt 已退役:plasma 失效 + 跨 minter 卡 60s)")
+            Log.w(Tag, "SABR: NewPipe 无 SABR 数据 → 试 DASH/HLS 兜底(classic n-decrypt 已退役:plasma 失效 + 跨 minter 卡 60s)")
+            // alpha.90:NewPipe 无 SABR 数据时,getInfo 仍可能给 hlsUrl(visionOS Apple 平台原生 HLS 交付)→ 走
+            // HLS 兜底,而非落已死的 classic n-decrypt(plasma WASM 致 n-decrypt 结构性失效)。复用 [buildDashFallbackFromNewPipe]
+            //(内部再 getInfo 取 dashMpdUrl/hlsUrl,优先 DASH、次选 HLS)。两路均空才落 L399 classic。
+            val noSabrFallback = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request) }.getOrNull()
+            if (noSabrFallback != null) {
+              YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+              val kind = if (noSabrFallback.remoteHlsManifestUrl != null) "HLS" else "DASH"
+              val len = (noSabrFallback.remoteDashManifestUrl ?: noSabrFallback.remoteHlsManifestUrl)?.length
+              Log.i(Tag, "无 SABR → $kind 兜底 playback ready: videoId=$videoId manifest=${len}B → 远程 $kind")
+              return@withContext noSabrFallback
+            }
           }
           if (sabrSession != null) {
             YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
@@ -1117,12 +1130,16 @@ class YoutubePlaybackResolver(
    * 即走 DashMediaSource 拉远程 MPD + 分段(ExoPlayer 自管 A/V 轨/SegmentList),≤1080p。对齐 LibreTube
    * SABR RELOAD 崩后落 `streams.dash`([NewPipeMediaServiceRepository.kt:312] `dash = resp.dashMpdUrl`)。
    *
-   * 限制:NewPipe fork `getDashMpdUrl()` 仅读 **android** streamingData(L632 注释 "no DASH manifest with
-   * iOS and visionOS"),android 无 poToken 对受保护视频可能返 UNPLAYABLE → dashMpdUrl 空 → 返回 null,
-   * 上层落常规 NewPipe harvest(会 RELOAD,但无其它出口)。本兜底捕的是**非受保护** RELOAD 场景 + 受保护
-   * 但 android 仍下发 manifest 的情况,用以打断 RELOAD 死循环。返回的 PlaybackInfo 仅一条 dummy 视频轨
-   *(`segmentBase` 非 null → [PlaybackTrack.isProgressive]=false → 播放器走 DashMediaSource 分支,真实轨
-   * 由远程 MPD 定义),audioTracks 空(MPD 自带音频轨)。
+   * **alpha.90:HLS 次选**——Phase 0 真机取证坐实 visionOS getInfo 的 **dashMpdUrl 恒空**(fork getDashMpdUrl
+   * 仅读 android streamingData,android 无 poToken 对受保护视频取不到 manifest),故 alpha.88 DASH 分支实际
+   * 从不触发。同次取证发现 visionOS /player 的 **hlsUrl 非空**(`hls_variant` manifest)——visionOS 是 Apple
+   * 平台,YouTube 给 Apple 平台的 hlsUrl 是 AVPlayer 级原生 HLS 交付(非 web attestation 路径),作 dashMpdUrl
+   * 空时的次选兜底:填 [PlaybackInfo.remoteHlsManifestUrl],播放器走 [HlsMediaSource] 分支(HLS playlist 自带
+   * 多码率 + A/V,无需 init/index range 拼接,可原生 seek)。对齐 LibreTube `setStreamSource` 的 HLS last-resort 分支。
+   *
+   * 优先级:dashMpdUrl 非空 → DASH;否则 hlsUrl 非空 → HLS;否则 null(上层落常规 NewPipe harvest,会 RELOAD
+   * 但已无其它出口)。返回的 PlaybackInfo 仅一条 dummy 视频轨(audioTracks 空——manifest 自带 A/V 轨),
+   * 路由由 [PlaybackInfo.isHlsManifest]/[PlaybackInfo.hasRemoteManifest] 判定,非 dummy 轨字段。
    */
   private suspend fun buildDashFallbackFromNewPipe(
     videoId: String,
@@ -1131,41 +1148,71 @@ class YoutubePlaybackResolver(
   ): PlaybackInfo? {
     val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
       .getOrElse {
-        Log.w(Tag, "DASH 兜底: NewPipe getInfo failed: ${it.message}")
+        Log.w(Tag, "兜底: NewPipe getInfo failed: ${it.message}")
         return null
       }
-    val dashMpdUrl = info.dashMpdUrl
-    if (dashMpdUrl.isNullOrBlank()) {
-      Log.w(Tag, "DASH 兜底: dashMpdUrl 空(android streamingData 无 manifest,受保护视频 android 无 poToken 取不到)→ 返回 null")
-      return null
-    }
     val resolvedDuration = if (durationMs > 0) durationMs else info.duration * 1000L
-    Log.i(Tag, "DASH 兜底: dashMpdUrl=${dashMpdUrl.length}B dur=${resolvedDuration}ms → 远程 MPD DashMediaSource")
-    // dummy 视频轨:segmentBase 非 null → isProgressive=false → 路由 DashMediaSource 分支(真实轨由远程 MPD 定义)。
-    val dummyTrack = PlaybackTrack(
-      id = 0,
-      baseUrl = dashMpdUrl,
-      backupUrls = emptyList(),
-      bandwidth = 0,
-      codecs = "video/mp4",
-      width = 0,
-      height = 480,
-      mimeType = "video/mp4",
-      segmentBase = PlaybackSegmentBase("0-0", "0-0"),
-    )
-    val quality = PlaybackQuality(0, "DASH 兜底")
-    return PlaybackInfo(
-      bvid = videoId,
-      cid = 0L,
-      title = request.title,
-      durationMs = resolvedDuration,
-      qualities = listOf(quality),
-      selectedQuality = quality,
-      videoTracks = listOf(dummyTrack),
-      audioTracks = emptyList(),
-      headers = YoutubePlaybackHeaders,
-      remoteDashManifestUrl = dashMpdUrl,
-    )
+    val dashMpdUrl = info.dashMpdUrl
+    if (!dashMpdUrl.isNullOrBlank()) {
+      Log.i(Tag, "兜底: dashMpdUrl=${dashMpdUrl.length}B dur=${resolvedDuration}ms → 远程 MPD DashMediaSource")
+      // dummy 视频轨:segmentBase 非 null → isProgressive=false → 路由 DashMediaSource 分支(真实轨由远程 MPD 定义)。
+      val dummyTrack = PlaybackTrack(
+        id = 0,
+        baseUrl = dashMpdUrl,
+        backupUrls = emptyList(),
+        bandwidth = 0,
+        codecs = "video/mp4",
+        width = 0,
+        height = 480,
+        mimeType = "video/mp4",
+        segmentBase = PlaybackSegmentBase("0-0", "0-0"),
+      )
+      val quality = PlaybackQuality(0, "DASH 兜底")
+      return PlaybackInfo(
+        bvid = videoId,
+        cid = 0L,
+        title = request.title,
+        durationMs = resolvedDuration,
+        qualities = listOf(quality),
+        selectedQuality = quality,
+        videoTracks = listOf(dummyTrack),
+        audioTracks = emptyList(),
+        headers = YoutubePlaybackHeaders,
+        remoteDashManifestUrl = dashMpdUrl,
+      )
+    }
+    // alpha.90:dashMpdUrl 空(android 无 manifest)→ 落 visionOS hlsUrl(Apple 平台原生 HLS 交付)。
+    val hlsUrl = info.hlsUrl
+    if (!hlsUrl.isNullOrBlank()) {
+      Log.i(Tag, "兜底: dashMpdUrl 空 → hlsUrl=${hlsUrl.length}B dur=${resolvedDuration}ms → 远程 HLS HlsMediaSource")
+      // dummy 视频轨:路由由 isHlsManifest()(remoteHlsManifestUrl!=null)判定,非轨字段;audioTracks 空(HLS playlist 自带 A/V)。
+      val dummyTrack = PlaybackTrack(
+        id = 0,
+        baseUrl = hlsUrl,
+        backupUrls = emptyList(),
+        bandwidth = 0,
+        codecs = "video/mp4",
+        width = 0,
+        height = 480,
+        mimeType = "video/mp4",
+        segmentBase = PlaybackSegmentBase("0-0", "0-0"),
+      )
+      val quality = PlaybackQuality(0, "HLS 兜底")
+      return PlaybackInfo(
+        bvid = videoId,
+        cid = 0L,
+        title = request.title,
+        durationMs = resolvedDuration,
+        qualities = listOf(quality),
+        selectedQuality = quality,
+        videoTracks = listOf(dummyTrack),
+        audioTracks = emptyList(),
+        headers = YoutubePlaybackHeaders,
+        remoteHlsManifestUrl = hlsUrl,
+      )
+    }
+    Log.w(Tag, "兜底: dashMpdUrl 与 hlsUrl 均空 → 返回 null(上层落常规 NewPipe harvest,会 RELOAD 但已无其它出口)")
+    null
   }
 
   /** raw adaptive JSON → SABR [SabrFormatId](itag/lastModified/xtags 来自 raw 字段,height 显式传)。 */

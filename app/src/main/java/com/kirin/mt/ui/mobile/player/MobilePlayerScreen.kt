@@ -113,6 +113,7 @@ import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -160,6 +161,8 @@ import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.ui.player.PlayerDanmakuLayer
 import com.kirin.mt.ui.player.appendSabrStartMs
 import com.kirin.mt.ui.player.buildDashMediaItem
+import com.kirin.mt.ui.player.hasRemoteManifest
+import com.kirin.mt.ui.player.isHlsManifest
 import com.kirin.mt.ui.player.isSabrDash
 import com.kirin.mt.ui.player.isSabrProgressive
 import com.kirin.mt.ui.player.isSabrSingle
@@ -571,8 +574,9 @@ fun MobilePlayerScreen(
         youtubeDefaultQuality = youtubeDefaultQuality,
       )
       selectedQualityId = info.selectedQuality.id
-      // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体)。
-      if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive)) {
+      // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体),
+      // 或远程 manifest 兜底(DASH/HLS manifest 自带 A/V 轨,dummy 视频轨非 progressive 但 audioTracks 合法为空)。
+      if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive && !info.hasRemoteManifest())) {
         playerState = MobilePlayerState.Failed(context.getString(R.string.player_error_empty_tracks))
         return
       }
@@ -644,6 +648,15 @@ fun MobilePlayerScreen(
           .setMediaMetadata(metadata)
           .build()
         SabrMediaSource.Factory(manifest, fetcher, sid).createMediaSource(sabrItem)
+      } else if (sabrEffectiveInfo.isHlsManifest()) {
+        // alpha.90:HLS 兜底——SABR RELOAD 闭环未回 SABR 且 dashMpdUrl 空(android 无 manifest)时,落 visionOS
+        // /player 的 hlsUrl(Apple 平台原生 HLS 交付,manifest 自带多码率 + A/V,无需 init/index range 拼接)。
+        val hlsItem = androidx.media3.common.MediaItem.Builder()
+          .setUri(sabrEffectiveInfo.remoteHlsManifestUrl)
+          .setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8)
+          .setMediaMetadata(metadata)
+          .build()
+        HlsMediaSource.Factory(dataSourceFactory).createMediaSource(hlsItem)
       } else if (resolvedRequest.isPgc || (sabrEffectiveInfo.videoTracks.first().isProgressive && !sabrEffectiveInfo.isSabrDash())) {
         val videoItem = androidx.media3.common.MediaItem.Builder()
           .setUri(sabrEffectiveInfo.videoTracks.first().baseUrl)
