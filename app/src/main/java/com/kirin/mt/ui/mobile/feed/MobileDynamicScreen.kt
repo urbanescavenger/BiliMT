@@ -167,12 +167,13 @@ fun MobileDynamicScreen(
               youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
             },
             onChunkReady = { chunk ->
-              // 增量:拉到一批 merge 一批(mergeYoutube 先去旧 YouTube 再合并去重)。
+              // 增量:先累积再 merge 全量 accumulator——mergeYoutube 内部会 filterNot 掉 state 里所有旧
+              // YouTube 再合并传入列表,若传单批 chunk 则后批覆盖前批(二次覆盖 bug)。传累积全量才不丢。
               // 缓存写是后台 IO(onChunkReady 是非挂起回调,不能直接 suspend;writeChannel 内部走 Room,
               // 用独立协程异步写,不阻塞主线程 merge)。
               if (chunk.isNotEmpty()) {
-                mergeYoutube(chunk)
                 accumulator += chunk
+                mergeYoutube(accumulator)
                 chunk.groupBy { it.channelId }.forEach { (channelId, videos) ->
                   scope.launch { youtubeFeedCacheStore.writeChannel(channelId, videos) }
                 }
