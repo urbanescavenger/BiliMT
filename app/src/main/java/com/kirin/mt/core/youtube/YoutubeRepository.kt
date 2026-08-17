@@ -185,7 +185,14 @@ class YoutubeRepository(
       put("videoId", videoId)
       if (!continuation.isNullOrBlank()) put("continuation", continuation)
     }
-    return client.postJson("/next", payload).let(YoutubeParsers::parseCommentPage)
+    Log.d("YoutubeComment", "getComments videoId=$videoId continuation=${continuation?.take(16) ?: "null"}")
+    val page = client.postJson("/next", payload).let(YoutubeParsers::parseCommentPage)
+    Log.d(
+      "YoutubeComment",
+      "getComments videoId=$videoId items=${page.items.size} " +
+        "continuation=${page.continuation?.take(16) ?: "null"}",
+    )
+    return page
   }
 
   /**
