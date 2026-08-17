@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.3](#v303)
 - [v3.0.3-alpha.3](#v303-alpha3)
 - [v3.0.3-alpha.2](#v303-alpha2)
 - [v3.0.3-alpha.1](#v303-alpha1)
@@ -177,6 +178,20 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.3
+
+**稳定版:YouTube 评论/相关视频接入 + TV 焦点打磨 + 更新稳定性。** 对齐 LibreTube 补全 YouTube 评论区(TV + 移动端双端展示)与相关视频(`/next` secondaryResults 的 `compactVideoRenderer`);TV 动态长按操作菜单从 `Dialog` 改屏内覆盖层并加显式焦点陷阱,修 D-pad 上下键丢焦点逃逸到网格;修 YouTube 主页视频时长误读固定值(主页全部视频统一显示 2:58——`parseDuration` 把缩略图宽高等单段纯数字当秒,现收紧为只接受含冒号的真实时长);GitHub 在线更新 `/releases` 大响应间歇性 504(改 `per_page=30` 分页 + 5xx/网络错指数退避重试);WebDAV 备份/还原新增 Piped 配置(`piped_config.json`,含 `youtubeUsePiped` 开关 + 实例 URL)。
+
+### 变更
+- **YouTube 评论展示**(TV + 移动端):对齐 LibreTube `/next` 评论区解析渲染。
+- **YouTube 相关视频**(TV + 移动端):`/next` secondaryResults 的 `compactVideoRenderer`。
+- **TV 动态长按菜单焦点修复**:`BiliActionSheet` 改屏内覆盖层 + 显式焦点陷阱,修 D-pad 上下键丢焦点。
+- **YouTube 主页时长误读修复**:`parseDuration` 只接受含冒号的真实时长,拒绝缩略图宽高等单段纯数字,修全部视频显示 2:58。
+- **GitHub 更新 504 修复**:`/releases` 改 `per_page=30` 分页 + 5xx/网络错指数退避重试。
+- **WebDAV 备份/还原含 Piped 配置**:新增 `piped_config.json`,旧备份缺文件静默跳过。
+
+---
 
 ## v3.0.3-alpha.3
 
