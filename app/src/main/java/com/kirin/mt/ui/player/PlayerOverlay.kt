@@ -1852,14 +1852,22 @@ private fun PlayerSettingsPanel(
     ) {
       when (activePanel) {
         PlayerPanel.Main -> {
-          // alpha.81(复刻 LibreTube):暂时去掉清晰度选择——ExoPlayer 自动选轨(多 Representation manifest)。
-          // 清晰度项从 Main 面板移除,Quality 面板代码留作死代码(用户无法导航到它)。
+          // alpha.9X(恢复清晰度选择):Main 面板 index 0 加回「清晰度」项 → Quality 面板选档。
+          item(key = "quality") {
+            SettingsRow(
+              iconRes = R.drawable.ic_player_hd,
+              title = stringResource(R.string.player_settings_quality),
+              value = info.selectedQuality.description.withCodecLabel(currentCodecText),
+              focused = focusedIndex == 0,
+              trailingChevron = true,
+            )
+          }
           item(key = "danmaku") {
             SettingsRow(
               iconRes = R.drawable.ic_player_subtitles,
               title = stringResource(R.string.player_settings_danmaku),
               value = if (danmakuSettings.enabled) stringResource(R.string.player_value_on) else stringResource(R.string.player_value_off),
-              focused = focusedIndex == 0,
+              focused = focusedIndex == 1,
               trailingChevron = true,
             )
           }
@@ -1868,7 +1876,7 @@ private fun PlayerSettingsPanel(
               iconRes = R.drawable.ic_player_speed,
               title = stringResource(R.string.player_settings_speed),
               value = playbackSpeed.speedText(),
-              focused = focusedIndex == 1,
+              focused = focusedIndex == 2,
               trailingChevron = true,
             )
           }
@@ -1921,7 +1929,7 @@ private fun PlayerSettingsPanel(
 
 private fun PlayerPanel.settingsRowCount(info: PlaybackInfo): Int {
   return when (this) {
-    PlayerPanel.Main -> 2
+    PlayerPanel.Main -> 3
     PlayerPanel.Quality -> info.qualities.size.coerceAtLeast(1)
     PlayerPanel.Danmaku -> DanmakuSettingsRowCount
     PlayerPanel.Speed -> PlayerSpeedOptions.size

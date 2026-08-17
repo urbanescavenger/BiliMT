@@ -1021,7 +1021,7 @@ fun PlayerScreen(
   fun panelItemCount(): Int {
     val info = (playerState as? PlayerScreenState.Ready)?.info
     return when (activePanel) {
-      PlayerPanel.Main -> 2
+      PlayerPanel.Main -> 3
       PlayerPanel.Quality -> info?.qualities?.size?.coerceAtLeast(1) ?: 1
       PlayerPanel.Danmaku -> 8
       PlayerPanel.Speed -> PlayerSpeedOptions.size
@@ -1051,17 +1051,23 @@ fun PlayerScreen(
   }
 
   fun activateFocusedPanelItem() {
-    // alpha.81:清晰度选择去掉后本函数不再用 info,仅作 Ready 态 guard。
-    if ((playerState as? PlayerScreenState.Ready)?.info == null) return
+    // alpha.9X(恢复清晰度选择):恢复本地 info(供 Quality 分支取 qualities)。
+    val info = (playerState as? PlayerScreenState.Ready)?.info ?: return
     when (activePanel) {
       PlayerPanel.Main -> when (focusedPanelIndex) {
-        // alpha.81(复刻 LibreTube):暂时去掉清晰度选择——ExoPlayer 自动选轨。Main 面板只剩弹幕/倍速。
-        0 -> openPanel(PlayerPanel.Danmaku)
-        1 -> openPanel(PlayerPanel.Speed)
+        // alpha.9X(恢复清晰度选择):Main 面板 index 0 = 清晰度 → Quality 面板;1 = 弹幕;2 = 倍速。
+        0 -> openPanel(PlayerPanel.Quality)
+        1 -> openPanel(PlayerPanel.Danmaku)
+        2 -> openPanel(PlayerPanel.Speed)
       }
       PlayerPanel.Quality -> {
-        // alpha.81:清晰度选择暂时去掉(Main 面板无入口),此分支为死代码。
-        Unit
+        // alpha.9X(恢复清晰度选择):选中 Quality 面板某档 → 更新 selectedQuality + 用 preferredQualityId 重跑 resolve。
+        val quality = info.qualities.getOrNull(focusedPanelIndex) ?: return
+        selectedQuality = quality
+        activeRequest = activeRequest.copy(
+          startPositionMs = player.currentPosition.takeIf { it > 0L } ?: playbackPositionState.longValue,
+          preferredQualityId = quality.id,
+        )
       }
       PlayerPanel.Danmaku -> {
         when (focusedPanelIndex) {

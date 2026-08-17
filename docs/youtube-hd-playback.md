@@ -902,6 +902,32 @@ message ReloadPlaybackContext { optional ReloadPlaybackParams reload_playback_pa
 
 **真机验证状态**:待测(装 alpha.86 debug 包后)。预期 ≤1080p 回归 403 已修(= alpha.84 行为),D2kXTmSPUJo/-GZatCruA8c 仍能播,jNl6YkkzKxw 仍 RELOAD(>1080p,与 LibreTube 同档,已知接受)。装新包需先卸载 alpha.85b debug(签名不同:alpha.85b 装的是 354a979 即 7565f89 之前的随机 debug.keystore,alpha.86 装的是 7565f89 起的固定 release keystore,签名不一致无法覆盖)。
 
+**alpha.9X(2026-08-17,DASH 兜底实测能出 4K——推翻「4K 两路全堵/接受 ≤1080p」终态)**:真机 `logs_live.log` 2026-08-17 11:20(`App Version: dev.r1215`),正是 alpha.86 判死、SABR 无限 RELOAD 的同一视频 `jNl6YkkzKxw`,本次**经 SABR 死循环守卫 + 自合成 DASH 兜底,实际播放出 2160p(4K)VP9**:
+
+```
+YtSabr  : NEXT_REQUEST_POLICY backoff=0ms ... maxTimeSinceReq=60000
+YtSabr  : SabrDataSource open: seg=0 itag=139 InterruptedException: null → evict sid=P90tPxAR4HiCq
+YtResolver: SABR dead-loop guard: videoId=jNl6YkkzKxw 已 RELOAD(reloadCount=8)→ 跳过重建,直接 DASH/HLS 兜底
+YtResolver: 自合成DASH diag: videoCandidates=14 audioCandidates=5
+YtResolver: 自合成DASH diag: v itag=313 2160p url=1110B init=[0-220] index=[221-4131] codec=vp9
+YtResolver: 自合成DASH diag: v itag=271 1440p ... codec=vp9
+YtResolver: 自合成DASH diag: v itag=137 1080p ... codec=avc1.640028
+YtResolver: 自合成DASH diag: a itag=139 ... codec=mp4a.40.5
+YtResolver: 兜底: 自合成 DASH from NewPipe(video itag313 2160p + audio itag139) → buildDashManifest 合成 MPD DashMediaSource
+YtResolver: NewPipe-first → DASH/HLS 兜底 playback ready: videoId=jNl6YkkzKxw → DASH
+BiliMT:MobilePlayer: onRenderedFirstFrame (视频首帧已渲染)
+BiliMT:MobilePlayer: videoFmt=...vp9... [3840, 2160] audioFmt=mp4a.40.5
+BiliMT:MobilePlayer: playerState=3 pos=184954 (稳定推进到 3 分钟,无 RELOAD/无错误)
+```
+
+**关键新发现——alpha.86 的「4K 两路全堵」漏了第三路**:
+- alpha.86 那张 4K 失败表列的**两路都是 SABR 协议路径**(visionOS config + WEB poToken → RELOAD;WEB config + WEB poToken → 403 n-param),结论「>1080p 需 upfront attestation」只对 SABR 成立。
+- 但 **DASH 自合成直链是第三条路**:NewPipe `videoOnlyStreams` 直接给**已解密的 `content` 直链 URL**(不含 n-param、不依赖 attestation),用这些拼 `<SegmentBase>` 合成 MPD `DashMediaSource` 播放——**绕开 SABR 的 attestation 要求,直接出 2160p VP9**。itag313 2160p 之所以被 NewPipe 解密,是因为 NewPipe 铸 token 时已过鉴权,直链是 attested 的。
+- 故「4K 两路全堵」**表述需修正为「4K 两条 SABR 路全堵,DASH 直链路可出 4K」**;「用户接受 ≤1080p」也**不再是终态**——DASH 兜底可恢复 4K。alpha.86 的 `youtube-4k-two-paths-dead-accept-1080p` memory 需更新。
+- **触发路径**:SABR 死循环守卫(reloadCount>0 → 跳过 SABR)是 DASH 兜底被走的唯一前置;若 SABR 死循环守卫不触发(RELOAD 前就正常),仍优先 SABR。当前 4K 可用性**依赖 SABR 先 RELOAD 8 次再掉 DASH**,等待约 27s 才出 4K——非理想,但比之前 4K 完全不可用强。
+
+**LibreTube 对照(2026-08-17 核源码)**:LibreTube `setStreamSource`([OnlinePlayerService.kt:235](e:/GITHUB/LibreTube/app/src/main/java/com/github/libretube/services/OnlinePlayerService.kt#L235))优先级与我们一致:SABR → DASH(`createDashSource` 用 `videoStreams` 已解密直链)→ HLS 兜底。其 DASH 合成逻辑与我们**自合成 DASH 完全同构**。差异只在死循环处理:LibreTube **一次 `StreamInfo.getInfo` 拿全部源、`setStreamSource` 一次选源、RELOAD 后不重建会话**(`SabrClient` 会话内续命,不 re-getInfo),天然无死循环;我们用死循环守卫「RELOAD 后放弃 SABR 掉 DASH」对齐其效果但多付 8 次 RELOAD 等待。**启示**:若能像 LibreTube 在既有会话内续命(而非重建),可免 27s 等待直接保 SABR 4K;否则当前「掉 DASH 出 4K」已是可接受收益。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

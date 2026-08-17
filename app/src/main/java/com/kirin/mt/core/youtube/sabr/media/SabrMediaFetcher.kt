@@ -447,10 +447,18 @@ internal class SabrMediaFetcher(
         // 只要 reloadToken 非空就存(videoId 可解出时顺带计数)。
         val rt = info.reloadToken
         if (!rt.isNullOrBlank()) {
-          SabrStreamRegistry.storeReloadTokenSlot(info.videoId, rt)
+          // alpha.9X:计数用会话自己的 videoId(恒可得),而非 payload 解码的 info.videoId——36B 短变体
+          // f4=videoId 解出 null 时旧逻辑计数恒 0 → 守卫永不触发 → 潜在无限 RELOAD 循环。
+          SabrStreamRegistry.storeReloadTokenSlot(entry.videoId ?: info.videoId, rt)
         } else {
           Log.w(tag, "RELOAD_PLAYER_RESPONSE: reloadToken 空(payloadLen=${payload.size}) → 闭环无 token 可回传,scan+hex 见上")
         }
+        // alpha.9X(兜底提前):首次 RELOAD 即抛终端错,不再读完全部 RELOAD part。RELOAD 语义 = streams
+        // expired/new config(或 attestation 未过)——对 attestation 视频(4K/HD)SABR 必 RELOAD,继续读
+        // 只会白耗 ~8 part;对齐 LibreTube「RELOAD 直接失败不循环」+ 我们的死循环守卫。抛 SabrTerminalException
+        // → SabrDataSource.open evict → 播放器 error-retry → 重进 resolve 看到 reloadCount>0 → 直接落 DASH/HLS
+        // 兜底(自合成 DASH 实测能出 4K)。reloadToken 已先停车,reload-closure 若启用仍可回传。
+        throw SabrTerminalException("RELOAD_PLAYER_RESPONSE: $reloadPlayerDump")
       }
       PART_SABR_ERROR -> {
         val err = SabrProto.decodeSabrError(payload)

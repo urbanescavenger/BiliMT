@@ -106,6 +106,12 @@ internal object SabrStreamRegistry {
     val session: SabrSession,
     val client: SabrClient,
     /**
+     * alpha.9X:本会话绑定的 videoId(registerByVideoId 填充;register 无视频概念用 null)。
+     * 供 fetcher 在 RELOAD 时可靠计数——RELOAD payload 的 36B 短变体可能解不出内层 videoId
+     * (f4=null),用会话自己的 videoId 保证死循环守卫 [reloadCount] 总能递增、DASH 兜底可靠触发。
+     */
+    val videoId: String? = null,
+    /**
      * alpha.52:本会话服务的 60s 窗口起点(anchor)。服务端对每会话服务量上限 [anchor..anchor+60s],
      * 由 harvest 的 `&t=`(watch 起播位置)决定。DataSource 用 `sessionAnchorMs` 判断窗口耗尽、seek
      * 用「目标窗口 == 当前窗口」判断是否可复用会话。
@@ -168,13 +174,13 @@ internal object SabrStreamRegistry {
   fun registerByVideoId(videoId: String, session: SabrSession, client: SabrClient, windowStartMs: Long = 0L, refreshPoToken: (suspend () -> ByteArray?)? = null, forceSessionVideoItag: Boolean = false): String {
     val existingSid = byVideoId[videoId]
     val sid = if (existingSid != null && sessions.containsKey(existingSid)) {
-      sessions[existingSid] = Entry(session, client, windowStartMs, refreshPoToken, forceSessionVideoItag = forceSessionVideoItag)
+      sessions[existingSid] = Entry(session, client, windowStartMs, refreshPoToken, forceSessionVideoItag = forceSessionVideoItag, videoId = videoId)
       existingSid
     } else {
       val bytes = ByteArray(16)
       SecureRandom().nextBytes(bytes)
       val newSid = Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
-      sessions[newSid] = Entry(session, client, windowStartMs, refreshPoToken, forceSessionVideoItag = forceSessionVideoItag)
+      sessions[newSid] = Entry(session, client, windowStartMs, refreshPoToken, forceSessionVideoItag = forceSessionVideoItag, videoId = videoId)
       byVideoId[videoId] = newSid
       newSid
     }

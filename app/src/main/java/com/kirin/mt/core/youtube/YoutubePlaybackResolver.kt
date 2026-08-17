@@ -152,7 +152,8 @@ class YoutubePlaybackResolver(
     // alpha.9X:SABR 死循环守卫。attestation 视频(4K/HD)首次 RELOAD 后 reloadCount>0,重建空 poToken 会话
     // 必再 RELOAD(alpha.93 NewPipe-first 早退使下方 consumeReloadTokenSlot/MAX_RELOADS 闸门不可达,曾 reloadCount
     // 17→24 无界爬升直至 evict→Source error;对齐 LibreTube 对 RELOAD 直接失败不循环)。RELOAD 后跳过 SABR,
-    // 直接落 ② 的 ≤1080p DASH/HLS 兜底(用户已接受 ≤1080p)。
+    // 直接落 ② 的 DASH/HLS 兜底。注意:DASH 自合成兜底(NewPipe 已解密直链拼 MPD)不走 SABR attestation,
+    // 实测能出 4K(2160p VP9,见 docs youtube-hd-playback.md「alpha.9X」),不是只 ≤1080p。
     val np = if (SabrStreamRegistry.reloadCount(videoId) > 0) {
       Log.w(Tag, "SABR dead-loop guard: videoId=$videoId 已 RELOAD(reloadCount=${SabrStreamRegistry.reloadCount(videoId)})→ 跳过重建,直接 DASH/HLS 兜底")
       null
@@ -1474,11 +1475,20 @@ class YoutubePlaybackResolver(
       val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == fmt.itag }
       buildSabrTrack(fmt.itag, raw, "video", sid, videoId)
     }
+    // alpha.9X(恢复清晰度选择):手动选档(preferredQualityId != null)时 videoTracks 只建选中 itag 单条,
+    // ExoPlayer 只播该档(清晰度真正生效)。否则(默认/Auto)保持 alpha.81 全部轨 → ExoPlayer 自动选最高 bitrate。
+    // 手动选 4K(itag313)→ SABR 单轨 RELOAD → 兜底提前落 DASH 出 4K;选 ≤1080p → SABR 直接播该档(避开 RELOAD)。
+    val videoTracks = if (request.preferredQualityId != null) {
+      val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == selectedItag }
+      listOf(buildSabrTrack(selectedItag, raw, "video", sid, videoId))
+    } else {
+      allVideoTracks
+    }
     Log.i(
       Tag,
       "SABR PlaybackInfo: sid=$sid sessionVideo=itag${sabrSession.videoFormatId.itag}(${sabrSession.videoFormatId.height}p) " +
         "qualities=${qualities.size} selected=itag$selectedItag(${selectedQuality.description}) " +
-        "videoTracks=${allVideoTracks.size} audio=itag$aItag(${audioTrack.codecs}) duration=${durationMs}ms → sabr:// DASH"
+        "videoTracks=${videoTracks.size}(all=${allVideoTracks.size}) audio=itag$aItag(${audioTrack.codecs}) duration=${durationMs}ms → sabr:// DASH"
     )
     return PlaybackInfo(
       bvid = videoId,
@@ -1487,7 +1497,7 @@ class YoutubePlaybackResolver(
       durationMs = durationMs,
       qualities = qualities,
       selectedQuality = selectedQuality,
-      videoTracks = allVideoTracks,
+      videoTracks = videoTracks,
       audioTracks = listOf(audioTrack),
       headers = YoutubePlaybackHeaders,
       availableAudioTracks = availableAudioTracks,
