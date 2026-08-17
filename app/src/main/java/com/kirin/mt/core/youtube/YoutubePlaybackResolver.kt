@@ -1279,7 +1279,7 @@ class YoutubePlaybackResolver(
         headers = YoutubePlaybackHeaders,
       )
     }
-    Log.i(Tag, "自合成DASH: 无 range 有效流(video=${synthVideo != null} audio=${synthAudio != null})→ 落 dashMpdUrl/HLS")
+    Log.i(Tag, "自合成DASH: 无 range 有效流(video=${videoCandidates.isNotEmpty()} audio=${synthAudio != null})→ 落 dashMpdUrl/HLS")
     val dashMpdUrl = info.dashMpdUrl
     if (!dashMpdUrl.isNullOrBlank()) {
       Log.i(Tag, "兜底: dashMpdUrl=${dashMpdUrl.length}B dur=${resolvedDuration}ms → 远程 MPD DashMediaSource")
