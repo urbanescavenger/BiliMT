@@ -147,12 +147,23 @@ internal object YoutubeParsers {
   fun parseCommentPage(root: JsonObject): YoutubeCommentPage {
     val comments = mutableListOf<YoutubeComment>()
     var token: String? = null
+    var sectionCount = 0
+    var rendererCount = 0
     collectByKey(root, KEY_COMMENT_SECTION_RENDERER) { section ->
+      sectionCount++
+      if (sectionCount == 1) {
+        Log.d("YoutubeComment", "parseCommentPage section keys=${section.keys}")
+      }
       collectByKey(section, KEY_COMMENT_RENDERER) { node ->
+        rendererCount++
         parseCommentRenderer(node)?.let { comments.add(it) }
       }
       if (token == null) token = findContinuation(section)
     }
+    Log.d(
+      "YoutubeComment",
+      "parseCommentPage sections=$sectionCount renderers=$rendererCount parsed=${comments.size}",
+    )
     // 防御：无 commentSectionRenderer 容器时回退全根收集。
     if (comments.isEmpty() && token == null) {
       collectByKey(root, KEY_COMMENT_RENDERER) { node ->
