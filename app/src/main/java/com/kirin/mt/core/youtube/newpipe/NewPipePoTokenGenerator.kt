@@ -143,7 +143,11 @@ class NewPipePoTokenGenerator(
     override fun getAndroidClientPoToken(videoId: String?): PoTokenResult? = null
 
     override fun getIosClientPoToken(videoId: String?): PoTokenResult? =
-        // 对齐 WEB 路径铸一枚 contentBinding 正确的 WEB token 并缓存(不再 null)。
-        // NewPipe visionOS getInfo 调这里 → 填缓存 → resolver 不再回退 resolve-minted PLACEHOLDER token。
-        videoId?.let { getWebClientPoToken(it) }
+        // alpha.91:回退 null,对齐 LibreTube PoTokenGenerator.getIosClientPoToken(返回 null)。
+        // 此前委托 getWebClientPoToken 铸 WEB token 填缓存——但缓存 SABR init 不用(poTokenB64=""),
+        // 只让 visionOS /player 带 WEB poToken → ustreamerConfig 被绑 WEB visitor → 与 visionOS SABR
+        // 会话不匹配 → init 即 RELOAD(alpha.80 真根因,误诊为 visitor mismatch)。null → visionOS getInfo
+        // 不带 poToken → ustreamerConfig visitor 不绑定 → SABR 空 poToken 首请求走 status=2 懒鉴权(对齐
+        // LibreTube),缓存改由 resolver 的 ensureWebToken 按需铸。见 docs/youtube-dash-fallback-plan.md。
+        null
 }

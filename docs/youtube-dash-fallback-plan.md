@@ -112,3 +112,23 @@
 - [ ] Phase 2(次选):若 HLS 也 attestation 堵,合成 DASH from NewPipe adaptive(需显式探 ItagItem init/index range 字段名)
 - [ ] Phase 3:RELOAD 耗尽自动降级已由 alpha.87/88 闭环 + alpha.90 HLS 兜底覆盖;设置项 `youtubeDashFallback`
   (两屏)待加(当前兜底自动生效,设置项为可选开关)
+- [x] **alpha.91:真根因推翻 HLS 兜底——复刻 LibreTube 懒鉴权 poToken**(2026-08-17,双 agent 对照 LibreTube)
+  - **真机坐实**:4K/Auto attestation 视频(jNl6YkkzKxw)SABR 每 part RELOAD,alpha.90 的 HLS 兜底挂 L303/L366 到不了
+    (首 resolve 返 SABR → RELOAD → re-resolve 钻坏 WebView harvest)。用户决定:不走 RELOAD→HLS workaround,**复刻
+    LibreTube,保证 SABR/DASH 可用**。
+  - **真根因(推翻"visitor mismatch"误诊)**:
+    ① **minter split**:SABR `status=2` 刷新用 `YoutubeBotGuard`(contentBinding=PLACEHOLDER 弱 token)→ 服务端拒 →
+       status=3/RELOAD。LibreTube 用 `PoTokenWebView`(真 BotGuard-attested web `streamingDataPoToken`)。BiliTV 已有
+       [PoTokenWebView.kt](../app/src/main/java/com/kirin/mt/core/youtube/newpipe/PoTokenWebView.kt)(LibreTube 直移植),
+       但从没喂给 SABR refresh。
+    ② **iOS delegation**:[NewPipePoTokenGenerator.kt:145-148](../app/src/main/java/com/kirin/mt/core/youtube/newpipe/NewPipePoTokenGenerator.kt#L145-L148)
+       `getIosClientPoToken` 委托铸 WEB token → visionOS `/player` 带 WEB poToken → ustreamerConfig 被绑 WEB visitor
+       → 与 visionOS SABR 会话不匹配 → init 即 RELOAD(alpha.80 真因)。LibreTube 返 null。
+  - **修复(4 行/2 文件)**:
+    - [YoutubePlaybackResolver.kt](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt) L109/L284/L390 三处
+      `refreshPoToken` → `biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(UTF_8)`(统一 PoTokenWebView minter)。
+    - [NewPipePoTokenGenerator.kt:145-148](../app/src/main/java/com/kirin/mt/core/youtube/newpipe/NewPipePoTokenGenerator.kt#L145-L148)
+      `getIosClientPoToken` 回退 `null`(visionOS getInfo 不带 poToken → ustreamerConfig visitor 不绑定)。
+  - **验证闭环**:空 init → 服务端 status=2(非 RELOAD)→ PoTokenWebView 重铸 attested token → SABR 起播。
+    真机盯:status=2 出现 + refresh 走 PoTokenWebView(非 YoutubeBotGuard)+ 无 RELOAD_PLAYER_RESPONSE。≤1080p 无 status=2 不回归。
+  - **对齐点**(不动):`poTokenB64=""`(init 空,L806)、visionOS SABR client/UA/空 visitorData/`cpn=visionOsCpn`。

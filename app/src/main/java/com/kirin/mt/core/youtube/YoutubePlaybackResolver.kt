@@ -106,7 +106,7 @@ class YoutubePlaybackResolver(
               videoId,
               r.session,
               sabrClient,
-              refreshPoToken = { botGuard.generatePoToken(videoId)?.toByteArray(Charsets.UTF_8) },
+              refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
               forceSessionVideoItag = cfg.sabrForceSessionVideoItag,
             )
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
@@ -281,7 +281,7 @@ class YoutubePlaybackResolver(
             val sabrClient = SabrClient(httpClient)
             val sid = SabrStreamRegistry.registerByVideoId(
               videoId, rp.session, sabrClient,
-              refreshPoToken = { botGuard.generatePoToken(videoId)?.toByteArray(Charsets.UTF_8) },
+              refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
             )
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
             Log.i(
@@ -387,7 +387,7 @@ class YoutubePlaybackResolver(
             // 对齐 LibreTube SabrClient.generatePoToken。botGuard 是 AppContainer 进程级单例,lambda 长生命周期安全。
             val sid = SabrStreamRegistry.registerByVideoId(
               videoId, sabrSession, sabrClient,
-              refreshPoToken = { botGuard.generatePoToken(videoId)?.toByteArray(Charsets.UTF_8) },
+              refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
             )
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
             Log.i(
