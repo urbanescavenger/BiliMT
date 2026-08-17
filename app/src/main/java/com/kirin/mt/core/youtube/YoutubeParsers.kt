@@ -162,6 +162,36 @@ internal object YoutubeParsers {
     return YoutubeCommentPage(items = comments, continuation = token)
   }
 
+  /**
+   * 从 /next 响应解析相关视频（对齐 LibreTube/NewPipe：secondaryResults 里的 compactVideoRenderer）。
+   *
+   * 相关视频 rail 在 `contents.twoColumnWatchNextResults.secondaryResults.secondaryResults.results[]`，
+   * 每项是 compactVideoRenderer（或 compactPlaylistRenderer/compactRadioRenderer，跳过）；续页 token
+   * 从该 section 内的 continuationItemRenderer 取。防御：无 secondaryResults 容器时回退全根收集。
+   */
+  fun parseRelatedVideos(root: JsonObject): YoutubeFeedPage {
+    val videos = mutableListOf<YoutubeVideo>()
+    var token: String? = null
+    val secondary = root.obj("contents")
+      ?.obj("twoColumnWatchNextResults")
+      ?.obj("secondaryResults")
+      ?.obj("secondaryResults")
+    if (secondary != null) {
+      collectByKey(secondary, KEY_COMPACT_VIDEO_RENDERER) { node ->
+        parseVideoRenderer(node)?.let { videos.add(it) }
+      }
+      token = findContinuation(secondary)
+    }
+    // 防御：无 secondaryResults 容器时回退全根收集。
+    if (videos.isEmpty() && token == null) {
+      collectByKey(root, KEY_COMPACT_VIDEO_RENDERER) { node ->
+        parseVideoRenderer(node)?.let { videos.add(it) }
+      }
+      token = findContinuation(root)
+    }
+    return YoutubeFeedPage(items = videos, continuation = token)
+  }
+
   private fun parseCommentRenderer(node: JsonObject): YoutubeComment? {
     val commentId = node.stringOrNull("commentId") ?: return null
     val authorName = runsText(node.obj("authorText")).ifBlank { simpleText(node.obj("authorText")) }

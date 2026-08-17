@@ -189,6 +189,21 @@ class YoutubeRepository(
   }
 
   /**
+   * 相关视频（/next）：与评论同端点，取 secondaryResults 里的 compactVideoRenderer（对齐 LibreTube）。
+   * 首屏 payload 只带 videoId；续页带 continuation token。返回一页 [YoutubeVideo] + 续页 token。
+   */
+  suspend fun getRelatedVideos(
+    videoId: String,
+    continuation: String? = null,
+  ): YoutubeFeedPage {
+    val payload = buildJsonObject {
+      put("videoId", videoId)
+      if (!continuation.isNullOrBlank()) put("continuation", continuation)
+    }
+    return client.postJson("/next", payload).let(YoutubeParsers::parseRelatedVideos)
+  }
+
+  /**
    * 动态页"YouTube 关注"流：遍历配置的频道取各自最新视频，按发布时间倒序合并。
    * 对齐 LibreTube `LocalFeedRepository.refreshFeed` 的**分批增量**模型（独立实现）。
    *
