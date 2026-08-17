@@ -1,5 +1,6 @@
 package com.kirin.mt.core.youtube
 
+import android.util.Log
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -189,6 +190,17 @@ internal object YoutubeParsers {
       }
       token = findContinuation(root)
     }
+    // 诊断：确认 /next 响应里相关视频 rail 的真实结构（真机相关视频区为空时定位）。
+    val hasTwoCol = root.obj("contents")?.obj("twoColumnWatchNextResults") != null
+    val hasSecondary = secondary != null
+    val rootCompact = mutableListOf<JsonObject>()
+    collectByKey(root, KEY_COMPACT_VIDEO_RENDERER) { rootCompact.add(it) }
+    Log.i(
+      "YtRelated",
+      "parseRelatedVideos: twoCol=$hasTwoCol secondary=$hasSecondary " +
+        "parsed=${videos.size} rootCompact=${rootCompact.size} token=${token != null} " +
+        "keys=${root.keys().take(8)}"
+    )
     return YoutubeFeedPage(items = videos, continuation = token)
   }
 

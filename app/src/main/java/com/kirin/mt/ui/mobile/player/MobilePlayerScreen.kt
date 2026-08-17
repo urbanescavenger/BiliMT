@@ -903,10 +903,12 @@ fun MobilePlayerScreen(
     if (activeRequest.isYoutube) {
       relatedVideos = runCatching {
         videoRepository.getYoutubeRelatedVideos(activeRequest.bvid)
-      }.getOrElse {
-        val curIndex = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
-        if (curIndex >= 0) playQueue.drop(curIndex + 1) else emptyList()
-      }
+      }.onSuccess { Log.i("YtRelated", "mobile related ok: ${it.size} for ${activeRequest.bvid}") }
+        .onFailure { Log.w("YtRelated", "mobile related failed for ${activeRequest.bvid}", it) }
+        .getOrElse {
+          val curIndex = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
+          if (curIndex >= 0) playQueue.drop(curIndex + 1) else emptyList()
+        }
       return@LaunchedEffect
     }
     relatedVideos = runCatching {
