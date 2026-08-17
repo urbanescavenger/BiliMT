@@ -410,13 +410,15 @@ class YoutubeRepository(
           }
         }.awaitAll()
       }.let { results ->
-        results.fold(Pair(mutableListOf<VideoSummary>(), mutableMapOf<String, String?>())) { (vs, cs), r ->
+        val batchVideos = mutableListOf<VideoSummary>()
+        val batchContinuations = mutableMapOf<String, String?>()
+        for (r in results) {
           if (r != null) {
-            vs += r.first
-            cs[r.second] = r.third
+            batchVideos += r.first
+            batchContinuations[r.second] = r.third
           }
-          vs to cs
         }
+        batchVideos to batchContinuations
       }
       // 每批就绪即回调(增量 merge / 增量写缓存),不等待全部频道。
       onChunkReady(batchVideos)
