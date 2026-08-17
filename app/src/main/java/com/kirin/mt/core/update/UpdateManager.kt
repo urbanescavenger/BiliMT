@@ -53,7 +53,10 @@ class UpdateManager(
       _state.update { it.copy(status = UpdateUiState.Status.Available(info)) }
       return
     }
-    if (downloader.isDownloaded(asset.name)) {
+    // 缓存文件必须与远端 asset 大小一致才算已下载：debug 的固定 asset 名（BiliMT-debug.apk）
+    // 会残留旧包，只按存在性判断会让后续更新一直装旧缓存 APK 而版本号不变。大小不一致走
+    // Available，download() 会因 size 不同重新拉新包。
+    if (downloader.isDownloaded(asset.name) && downloader.downloadedFileSize(asset.name) == asset.size) {
       _state.update { it.copy(status = UpdateUiState.Status.Downloaded(info)) }
     } else {
       _state.update { it.copy(status = UpdateUiState.Status.Available(info)) }

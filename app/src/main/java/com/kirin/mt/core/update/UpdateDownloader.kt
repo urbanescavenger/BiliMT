@@ -75,6 +75,17 @@ class UpdateDownloader(
     return f.exists() && f.length() > 0
   }
 
+  /**
+   * 缓存文件大小，不存在返回 -1。
+   * 用于 refresh() 时校验缓存是否与远端 asset 一致：debug/release 都复用固定 asset 名
+   * （如 BiliMT-debug.apk），旧包残留在 cache 里会让 isDownloaded() 恒真，导致每次都
+   * 安装旧缓存 APK 而不重新下载新包（更新后版本号不变）。只有大小匹配才视为已是最新包。
+   */
+  fun downloadedFileSize(fileName: String): Long {
+    val f = File(File(appContext.cacheDir, "updates"), sanitizeFileName(fileName))
+    return if (f.exists()) f.length() else -1L
+  }
+
   fun downloadedFile(fileName: String): File =
     File(File(appContext.cacheDir, "updates"), sanitizeFileName(fileName))
 
