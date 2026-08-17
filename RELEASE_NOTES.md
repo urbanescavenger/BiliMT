@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.2-alpha.32](#v302-alpha32)
 - [v3.0.2-alpha.31](#v302-alpha31)
 - [v3.0.2-alpha.30](#v302-alpha30)
 - [v3.0.2-alpha.29](#v302-alpha29)
@@ -181,6 +182,19 @@
 ## v3.0.2-alpha.26
 
 **NewPipe-first 主路径(alpha.93,解耦坏 WEB WebView 收割门卫)**:alpha.25 的自合成 DASH 因 resolve 仍先走 WEB+WebView harvest(该收割已坏——真机 ssl handshake failed / browser session load 两次失败)→ 被挡在门外**触达不到**。本版把 NewPipe 提为一级路径(对齐 LibreTube 直调 `StreamInfo.getInfo`):resolve() 在 signatureTimestamp 后、WEB client loop 前,先试 visionOS NewPipe SABR → 自合成 DASH/HLS 兜底,全失败才落 WEB /player last resort(classic reload-closure/DASH n-decrypt)。纯复用现有函数零新逻辑,播放器零改动。alpha.91 Fix A(status=2 用 PoTokenWebView 重铸)+ Fix B(getIosClientPoToken→null)在此主路径生效。SABR 播不了的 attestation/RELOAD 视频现在真正落到 alpha.92 自合成 DASH。详见 docs/youtube-dash-fallback-plan.md「alpha.93」。
+
+## v3.0.2-alpha.32
+
+**DASH 切清晰度 init 段 EOF 修复(自合成 MPD 混合容器塞同一 AdaptationSet)**:alpha.31 的 `id=v.itag` 修复已应用,但真机日志显示切到 1080p 时**初始 init 段加载就 EOF**(不是段边界切 codec)——能播 VP9 轨(`videoFmt=Format(0_243,...,video/webm,vp9)`),但切到 H264(MP4)轨 init 段就 `InitializationChunk.load` → `FragmentedMp4Extractor.readAtomPayload` → `java.io.EOFException`。根因是 `buildDashManifest` 把**全部视频轨(H264 MP4 + VP9 WebM 混合)塞进一个 `<AdaptationSet>`**,其 `mimeType` 取第一条轨(VP9→`video/webm`),ExoPlayer 按 AdaptationSet mimeType 选单一 extractor,加载 H264(MP4)轨 init 段时用 MatroskaExtractor 解析 MP4 → EOF。对照 LibreTube `DashHelper.createManifest` 按 `stream.mimeType` 分组建独立 AdaptationSet,修复为 `buildDashManifest` 视频轨按 mimeType 分组到独立 AdaptationSet(id 0,1,2…),audio 单独一个。详见 docs/youtube-dash-fallback-plan.md「alpha.98」。
+
+### 变更
+- **DASH 自合成 MPD 视频轨按容器分组**(`buildDashManifest`):`info.videoTracks.groupBy { it.mimeType }` 每组生成独立 `<AdaptationSet>`,H264 MP4 / VP9 WebM 各得正确 extractor,不再用错 extractor 解析 init 段。
+
+### 待真机验证(切清晰度,读 `logs_live.log`)
+- 切 1080p(VP9+AVC 两轨)后初始 init 段不再 `EOFException`,VP9/H264 轨各用正确 extractor 加载。
+- 回归:默认/Auto 多 Representation 自动选轨、4K(2160p VP9)仍可播。
+
+---
 
 ## v3.0.2-alpha.31
 
