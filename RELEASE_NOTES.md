@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.4-alpha.2](#v304-alpha2)
 - [v3.0.4-alpha.1](#v304-alpha1)
 - [v3.0.3](#v303)
 - [v3.0.3-alpha.3](#v303-alpha3)
@@ -179,6 +180,24 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.4-alpha.2
+
+**YouTube 首页订阅流接真实 continuation 分页**:此前「YouTube 首页/热门 tab」实际是**关注频道订阅流**（RSS + InnerTube `/browse` 按 `videoId` 合并），但只有**单页**——每频道合并后硬截断 `take(perChannel)`（默认 15 条），且 `/browse` 第一页的 **continuation token 被丢弃**，更早/最早的视频结构性不可达。对照 LibreTube 也无订阅流续页可抄（它用「30 天时间窗 + 每频道只拉各 tab 第一页 + `cleanUpOlderThan` 清库」解决）。现自己给聚合流加真 continuation 分页，滚动到底可逐页逼近最早视频。
+
+### 变更
+- **数据层**：新增 `YoutubeSubscriptionsPage(videos, perChannelContinuation)`（`endReached = 所有频道 token 皆 null`）；`YoutubeRepository.getSubscriptionsPage` 首屏沿用 RSS+InnerTube 合并但**记录每频道 InnerTube 首屏 continuation**，续页只对 token 非 null 的频道拉更早一页；抽 `getChannelVideosRawPage`（首屏 browseId+params / 续页 continuation）与 `fillChannelInfo`（补频道名/id/头像）复用。
+- **转发层**：`VideoRepository.youtubeHomeFeedPage(previousContinuation)` 读关注频道、空→空页；头像回写 store 在此处理，UI 无感知。
+- **UI（TV `RecommendScreen` + 移动 `HomeScreen` 共用）**：`Success.youtubeContinuation` 字段；首屏 `endReached=page.endReached`；续页 `(current+page).distinctBy{it.bvid}.sortedByDescending{it.pubdate}`、`endReached=page.endReached`。滚动到底连续追加更早视频。
+- **缓存保持简单**：Room 缓存只存首屏快照、**不落盘 continuation**；10min 内 cache 命中视为单页到底不续翻（现状不变）。
+- **CI 稳健性**：`android-build.yml` debug 发布步骤（`gh release edit/upload`）加退避重试，不再被 GitHub API 偶发 503/EOF 标红。
+
+### 待真机验证
+- TV 首页 YouTube 热门 tab：下滑触底后**每次到底追加一批更早视频**，能逐页逼近最早，`endReached` 不再误判。
+- 移动端首页 YouTube 分区：下滑触底连续翻页；切走再切回保留续页状态。
+- 缓存路径：10min 内冷启动显示缓存快照、单页到底（不变）；动态 tab 关注流仍正常合并进 B 站动态。
+
+---
 
 ## v3.0.4-alpha.1
 

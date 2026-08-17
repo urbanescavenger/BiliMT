@@ -133,6 +133,22 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 - **降级**：任一路失败用另一路（RSS 失败→InnerTube 近似时间；InnerTube 失败→RSS 无 duration/live，降级可用），两者都失败该频道返回空、不影响其它频道。
 - **并发**：RSS 用独立信号量放宽（8），InnerTube 仍受 4 限并发防风控；关注多时按批次放宽超时（`youtubeFeedTimeoutMs`，上限 10s）。
 
+### 4.10.1 首页订阅流 continuation 分页（2026-08-18，alpha.94+）
+
+§4.10 描述的是**单页**合并：每频道 RSS + InnerTube `/browse` 第一页合并后 `take(perChannel)`（默认 **15 条**），更早的视频被结构性截断，且 `parseFeedPage().continuation` 被丢弃——**最早视频永远拉不到**。对照 LibreTube：它对订阅流**同样不翻页**，用「最近 30 天时间窗 + 每频道各 tab 只拉第一页 + `cleanUpOlderThan` 清库」解决，即 **LibreTube 没有可抄的订阅流续页方案**。要翻到最早必须自己给聚合流加 continuation。
+
+**新增分页（`YoutubeRepository.getSubscriptionsPage` / `getChannelVideosRawPage` / `fillChannelInfo`）：**
+- 首屏（`previousContinuation==null`）：沿用 §4.10 每频道 RSS + InnerTube 第一页并行合并、`take(perChannel)`，但**记录该频道 InnerTube `/browse` 第一页的 continuation**。
+- 续页：只对 `perChannelContinuation` 中 token **非 null** 的频道，调 `getChannelVideosRawPage(channelId, token)` 拉**更早一页** → `take(perChannel)` 映射；RSS 无续页概念，续页仅走 InnerTube。每批 `onChunkReady`、每 `BatchSize` 随机 delay 防节流、单频道 `runCatching` 降级空——沿用 §4.10 骨架。
+- 返回模型 `YoutubeSubscriptionsPage(videos, perChannelContinuation)`，`endReached = perChannelContinuation.values.all { it == null }`（所有频道到底即全部加载完）。续页视频同样走「补频道名/id/头像」（`fillChannelInfo`，复用原 :290-296 逻辑）。
+
+**转发层** `VideoRepository.youtubeHomeFeedPage(previousContinuation)` 读 `youtubeChannelStore.channels`，空→空页；头像回写 store 在此处理，UI 无感知。
+
+**UI 消费（TV `RecommendScreen` + 移动 `HomeScreen`，共用）**：
+- `Success.youtubeContinuation: Map<String,String?>?`（仅 YoutubeTrending 用；非 YouTube 分区为 null）。
+- 首屏 `endReached=page.endReached`、`youtubeContinuation=page.perChannelContinuation`；续页 `(current+page).distinctBy{it.bvid}.sortedByDescending{it.pubdate}`、`endReached=page.endReached`。
+- **缓存只存首屏快照、不落盘 continuation**（`YoutubeFeedCacheStore` 零改动）：10min 内 cache 命中视为单页到底（`endReached=true`），不续翻。
+
 ---
 
 ## 5. 播放（Phase 2，未实现）
