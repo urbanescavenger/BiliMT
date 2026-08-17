@@ -1226,20 +1226,21 @@ class YoutubePlaybackResolver(
       // 塞进同一 <AdaptationSet>),ExoPlayer 自动选轨/手动选档,与 SABR allVideoTracks 同构。
       // 每条流各自独立 URL + 独立 init/index range,本就是合法 DASH 多 Representation 结构。
       val sortedVideos = videoCandidates.sortedByDescending { it.height }
-      val qualities = sortedVideos.map { v ->
-        val codec = shortCodec(v.codec.orEmpty())
-        PlaybackQuality(id = v.itag, description = "${v.height}p" + (if (codec.isNotEmpty()) " $codec" else ""))
-      }
+      // alpha.9X:对齐 LibreTube——清晰度菜单按分辨率去重(每个 height 一档,纯 "${height}p",不带 codec),
+      // codec 由 ExoPlayer 自动选(多 codec 变体保留在 videoTracks)。LibreTube getAvailableResolutions
+      // 从 currentTracks.groups 读 height 用 toSortedSet 去重,故 720p 只有一个选项(VP9/H264 不重复列)。
+      val distinctVideos = sortedVideos.distinctBy { it.height }
+      val qualities = distinctVideos.map { PlaybackQuality(id = it.itag, description = "${it.height}p") }
       // 选档:preferredQualityId 命中菜单用之(手动切清晰度);否则按默认画质设置(与 SABR defaultItag 同语义)。
       val maxHeight = youtubeDefaultQuality.maxHeight
       val defaultVideo = when {
-        maxHeight != null -> sortedVideos.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }
-          ?: sortedVideos.minByOrNull { it.height }
-        else -> sortedVideos.maxByOrNull { it.height }
+        maxHeight != null -> distinctVideos.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }
+          ?: distinctVideos.minByOrNull { it.height }
+        else -> distinctVideos.maxByOrNull { it.height }
       }
       val selectedVideo = request.preferredQualityId
-        ?.takeIf { pid -> sortedVideos.any { it.itag == pid } }
-        ?.let { pid -> sortedVideos.first { it.itag == pid } }
+        ?.takeIf { pid -> distinctVideos.any { it.itag == pid } }
+        ?.let { pid -> distinctVideos.first { it.itag == pid } }
         ?: defaultVideo ?: return null
       val selectedQuality = qualities.firstOrNull { it.id == selectedVideo.itag } ?: qualities.first()
       fun buildVideoTrack(v: VideoStream): PlaybackTrack = PlaybackTrack(
@@ -1264,9 +1265,14 @@ class YoutubePlaybackResolver(
         mimeType = synthAudio.format?.mimeType ?: "audio/mp4",
         segmentBase = PlaybackSegmentBase("${synthAudio.initStart}-${synthAudio.initEnd}", "${synthAudio.indexStart}-${synthAudio.indexEnd}"),
       )
-      // 手动选档时只回选中单轨(清晰度真正生效);默认/Auto 回全部 → ExoPlayer 自动选轨(对齐 SABR)。
-      val videoTracks = if (request.preferredQualityId != null) listOf(buildVideoTrack(selectedVideo)) else sortedVideos.map { buildVideoTrack(it) }
-      Log.i(Tag, "兜底: 自合成 DASH from NewPipe(video itag${selectedVideo.itag} ${selectedVideo.height}p [${videoTracks.size}/${sortedVideos.size}档] + audio itag${synthAudio.itag}) dur=${resolvedDuration}ms → buildDashManifest 合成 MPD DashMediaSource")
+      // 手动选档:回该分辨率全部 codec 变体(ExoPlayer 在该分辨率内自动选 codec,对齐 LibreTube);
+      // 默认/Auto:回全部 → ExoPlayer 自动选轨。
+      val videoTracks = if (request.preferredQualityId != null) {
+        sortedVideos.filter { it.height == selectedVideo.height }.map { buildVideoTrack(it) }
+      } else {
+        sortedVideos.map { buildVideoTrack(it) }
+      }
+      Log.i(Tag, "兜底: 自合成 DASH from NewPipe(video itag${selectedVideo.itag} ${selectedVideo.height}p [${videoTracks.size}/${sortedVideos.size}轨 ${qualities.size}档] + audio itag${synthAudio.itag}) dur=${resolvedDuration}ms → buildDashManifest 合成 MPD DashMediaSource")
       return PlaybackInfo(
         bvid = videoId,
         cid = 0L,
