@@ -4,6 +4,7 @@ import android.util.Log
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.Calendar
@@ -149,39 +150,114 @@ internal object YoutubeParsers {
    */
   fun parseCommentPage(root: JsonObject): YoutubeCommentPage {
     val comments = mutableListOf<YoutubeComment>()
-    var token: String? = null
-    collectByKey(root, KEY_COMMENT_SECTION_RENDERER) { section ->
-      collectByKey(section, KEY_COMMENT_RENDERER) { node ->
-        parseCommentRenderer(node)?.let { comments.add(it) }
-      }
-      if (token == null) token = findContinuation(section)
+    // 新布局(EUVM)：commentThreadRenderer → commentViewModel，实际数据在
+    // frameworkUpdates.entityBatchUpdate.mutations（按 commentKey/toolbarStateKey 匹配 entityKey）。
+    val mutations = root.obj("frameworkUpdates")
+      ?.obj("entityBatchUpdate")
+      ?.array("mutations")
+    collectByKey(root, KEY_COMMENT_THREAD_RENDERER) { thread ->
+      parseCommentThread(thread, mutations)?.let { comments.add(it) }
     }
-    // 防御：无 commentSectionRenderer 容器时回退全根收集（续页响应直接是 commentThreadRenderer）。
-    if (comments.isEmpty() && token == null) {
+    // 旧布局：commentSectionRenderer → commentRenderer。
+    if (comments.isEmpty()) {
+      collectByKey(root, KEY_COMMENT_SECTION_RENDERER) { section ->
+        collectByKey(section, KEY_COMMENT_RENDERER) { node ->
+          parseCommentRenderer(node)?.let { comments.add(it) }
+        }
+      }
+    }
+    // 防御：无容器时回退全根收集。
+    if (comments.isEmpty()) {
       collectByKey(root, KEY_COMMENT_RENDERER) { node ->
         parseCommentRenderer(node)?.let { comments.add(it) }
       }
-      token = findContinuation(root)
     }
+    // 续页 token：评论续页响应取 reloadContinuationItemsCommand.continuationItems 里最后一个
+    // continuationItemRenderer（对齐 NewPipe 取末尾，避免取到楼中楼 replies 的 token）。
+    val token = commentPageContinuation(root) ?: findContinuation(root)
     return YoutubeCommentPage(items = comments, continuation = token)
   }
 
-  /** 诊断:dump 评论响应布局,确认旧 commentRenderer vs 新 commentViewModel+mutations。 */
-  fun dumpCommentStructure(root: JsonObject) {
-    var section = 0; var thread = 0; var vm = 0; var renderer = 0
-    collectByKey(root, "commentSectionRenderer") { section++ }
-    collectByKey(root, "commentThreadRenderer") { thread++ }
-    collectByKey(root, "commentViewModel") { vm++ }
-    collectByKey(root, "commentRenderer") { renderer++ }
-    Log.d(
-      "YoutubeComment",
-      "dumpCommentStructure mutations=${root["mutations"] != null} " +
-        "commentSection=$section commentThread=$thread commentViewModel=$vm commentRenderer=$renderer",
-    )
-    collectByKey(root, "commentThreadRenderer") { t ->
-      Log.d("YoutubeComment", "dumpCommentStructure thread keys=${t.keys} head=${t.toString().take(1200)}")
-      return@collectByKey
+  /**
+   * 解析一条新布局(EUVM)评论线程。commentThreadRenderer 里只有 commentViewModel(commentKey/
+   * toolbarStateKey/commentId)，作者/内容/点赞等实体数据在 mutations 里按 entityKey 匹配。
+   * 兼容旧布局：thread.comment.commentRenderer。
+   */
+  private fun parseCommentThread(thread: JsonObject, mutations: JsonArray?): YoutubeComment? {
+    val vm = thread.obj("commentViewModel")?.obj("commentViewModel")
+    if (vm != null) {
+      val commentKey = vm.stringOrNull("commentKey")
+      val toolbarStateKey = vm.stringOrNull("toolbarStateKey")
+      val entity = mutations?.let { findMutationPayload(it, commentKey) }
+      val toolbar = mutations?.let { findMutationPayload(it, toolbarStateKey) }
+      val author = entity?.obj("author")
+      val properties = entity?.obj("properties")
+      val toolbarObj = entity?.obj("toolbar")
+      val replies = thread.obj("replies")?.obj("commentRepliesRenderer")
+      val id = properties?.stringOrNull("commentId") ?: vm.stringOrNull("commentId") ?: return null
+      return YoutubeComment(
+        commentId = id,
+        authorName = author?.stringOrNull("displayName").orEmpty(),
+        authorAvatarUrl = entity?.obj("avatar")?.obj("image")?.array("sources")
+          ?.let(::pickBestThumbnailUrl).orEmpty(),
+        content = attributedText(properties?.get("content")),
+        likeCount = parseCount(toolbarObj?.stringOrNull("likeCountNotliked")),
+        publishedAt = parsePublished(
+          properties?.stringOrNull("publishedTime"),
+          liveNow = false,
+          isUpcoming = false,
+        ),
+        verified = author?.booleanOrNull("isVerified") == true || author?.booleanOrNull("isArtist") == true,
+        pinned = vm.obj("pinnedText") != null,
+        hearted = toolbar?.stringOrNull("heartState") == "TOOLBAR_HEART_STATE_HEARTED",
+        replyCount = toolbarObj?.stringOrNull("replyCount")?.toIntOrNull() ?: 0,
+        repliesPage = replies?.array("contents")?.let { firstContinuationToken(it) },
+        channelOwner = author?.booleanOrNull("isCreator") == true,
+        creatorReplied = replies?.obj("viewRepliesCreatorThumbnail") != null,
+      )
     }
+    // 旧布局：comment.commentRenderer。
+    return thread.obj("comment")?.obj(KEY_COMMENT_RENDERER)?.let { parseCommentRenderer(it) }
+  }
+
+  /** 在 mutations 数组里按 entityKey 匹配，返回 payload。 */
+  private fun findMutationPayload(mutations: JsonArray, key: String?): JsonObject? {
+    if (key.isNullOrBlank()) return null
+    for (m in mutations) {
+      val obj = m as? JsonObject ?: continue
+      if (obj.stringOrNull("entityKey") == key) return obj.obj("payload")
+    }
+    return null
+  }
+
+  /** 解析 attributed description(properties.content)：可能是 {content:"text"} 或 {runs:[...]} 或纯字符串。 */
+  private fun attributedText(obj: JsonElement?): String {
+    if (obj == null) return ""
+    if (obj is JsonPrimitive) return obj.contentOrNull.orEmpty()
+    val o = obj as? JsonObject ?: return ""
+    o.stringOrNull("content")?.let { if (it.isNotBlank()) return it }
+    runsText(o).let { if (it.isNotBlank()) return it }
+    return o.stringOrNull("simpleText").orEmpty()
+  }
+
+  /** 评论续页 token：reloadContinuationItemsCommand.continuationItems 里最后一个 continuationItemRenderer（对齐 NewPipe 取末尾）。 */
+  private fun commentPageContinuation(root: JsonObject): String? {
+    val endpoints = root["onResponseReceivedEndpoints"] as? JsonArray ?: return null
+    for (i in endpoints.indices.reversed()) {
+      val obj = endpoints[i] as? JsonObject ?: continue
+      val items = obj.obj("reloadContinuationItemsCommand")?.array("continuationItems")
+        ?: obj.obj("appendContinuationItemsAction")?.array("continuationItems")
+        ?: continue
+      for (j in items.indices.reversed()) {
+        val node = items[j] as? JsonObject ?: continue
+        val token = node.obj("continuationItemRenderer")
+          ?.obj("continuationEndpoint")?.obj("continuationCommand")?.stringOrNull("token")
+          ?: node.obj("continuationItemRenderer")?.obj("button")?.obj("buttonRenderer")?.obj("command")
+            ?.obj("continuationCommand")?.stringOrNull("token")
+        if (!token.isNullOrBlank()) return token
+      }
+    }
+    return null
   }
 
   /**
@@ -202,9 +278,6 @@ internal object YoutubeParsers {
       for (panel in panels) {
         val section = (panel as? JsonObject)?.obj("engagementPanelSectionListRenderer") ?: continue
         if (section.stringOrNull("panelIdentifier") == "engagement-panel-comments-section") {
-          // 诊断:dump 完整 comments panel,确认 content 里有没有真 token/评论。
-          Log.d("YoutubeComment", "findInitialCommentsToken panel keys=${section.keys}")
-          Log.d("YoutubeComment", "findInitialCommentsToken panel RAW head=${section.toString().take(2000)}")
           // token 在排序菜单 subMenuItems[].serviceEndpoint.continuationCommand.token。
           val subMenu = section.obj("header")
             ?.obj("engagementPanelTitleHeaderRenderer")
@@ -227,12 +300,6 @@ internal object YoutubeParsers {
       ?.obj("results")
       ?.obj("results")
       ?.array("contents")
-    // 诊断:dump 主内容结构,确认 itemSectionRenderer targetId=comments-section 是否存在。
-    Log.d(
-      "YoutubeComment",
-      "findInitialCommentsToken mainContents=${contents?.size} " +
-        "targetIds=${contents?.mapNotNull { (it as? JsonObject)?.obj("itemSectionRenderer")?.stringOrNull("targetId") }}",
-    )
     if (contents != null) {
       for (item in contents) {
         val section = (item as? JsonObject)?.obj("itemSectionRenderer") ?: continue
@@ -757,4 +824,5 @@ internal object YoutubeParsers {
   private const val KEY_CHANNEL_RENDERER = "channelRenderer"
   private const val KEY_COMMENT_RENDERER = "commentRenderer"
   private const val KEY_COMMENT_SECTION_RENDERER = "commentSectionRenderer"
+  private const val KEY_COMMENT_THREAD_RENDERER = "commentThreadRenderer"
 }

@@ -204,10 +204,6 @@ class YoutubeRepository(
           put("continuation", initialToken)
         }
         response = client.postJson("/next", secondPayload)
-        // 诊断:dump 第二次响应结构,确认 token 是否触发真评论加载。
-        Log.d("YoutubeComment", "getComments 2nd topKeys=${response.keys}")
-        Log.d("YoutubeComment", "getComments 2nd RAW len=${response.toString().length} head=${response.toString().take(1200)}")
-        YoutubeParsers.dumpCommentStructure(response)
       }
     }
     val page = YoutubeParsers.parseCommentPage(response)
