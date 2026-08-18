@@ -342,6 +342,10 @@ internal object YoutubeParsers {
   private fun parseLockupViewModel(node: JsonObject): YoutubeVideo? {
     val videoId = node.stringOrNull("contentId")
     if (videoId.isNullOrBlank()) return null
+    // 诊断:dump lockupViewModel 的 badges 数组 + 顶层键,定位会员专属视频真实结构。
+    node.array("badges")?.let { b ->
+      Log.d("YtBadge", "lockup videoId=$videoId badges=${b.toString().take(400)}")
+    }
     // 会员专属视频(频道会员专属,非会员无法播放)直接过滤,不进 feed。
     if (isMembersOnly(node)) return null
     val title = node.obj("metadata")
@@ -396,6 +400,10 @@ internal object YoutubeParsers {
 
   private fun parseVideoRenderer(node: JsonObject): YoutubeVideo? {
     val videoId = node.stringOrNull("videoId") ?: return null
+    // 诊断:dump 每个视频的 badges 数组,定位会员专属视频真实结构。
+    node.array("badges")?.let { b ->
+      Log.d("YtBadge", "videoId=$videoId badges=${b.toString().take(400)}")
+    }
     // 会员专属视频(频道会员专属,非会员无法播放)直接过滤,不进 feed。
     if (isMembersOnly(node)) return null
 
