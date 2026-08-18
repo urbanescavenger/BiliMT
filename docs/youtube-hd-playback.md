@@ -948,11 +948,29 @@ TV 端 `TvVideoGrid`(首页/UP 主页/频道页/动态共用)的焦点在两类�
 
 **③ 全局焦点诊断日志**(`22c87ca`):`FocusDiagnostics.kt` 新增 `Modifier.focusDiag(label)` 区域级焦点进出日志——按 `hasFocus` 跳变打 `GAINED/LOST [label]`,日志序列即焦点落点轨迹。`AppShell` 根(root,`hasFocus=false` 即整个焦点树彻底无焦点)/侧栏(sidebar)/覆盖层(action-sheet)加;视频网格加 `debugLabel` 参数,UP 主页(space-grid)/频道页(channel-grid)/动态(dynamic-grid)传区分 label,定位播放/长按弹窗/UP 主页/频道页返回后焦点丢到哪。
 
+## 6.18 播放优先级设置: SABR 优先 / DASH 优先(2026-08, v3.0.4-alpha.5)
+
+**背景**:真机日志确认一次视频播放中断——SABR 首段在慢服务器(`rr5---sn-3pm76nes`)上 ~11s 才送达,而 PlayerScreen 的 stall 看门狗阈值 8s 无启动宽限,在首段刚到前 4s 误判 → 触发**完整 teardown + 重建会话**,用户看到「卡住→重新加载视频」。与已知 `iptv-thumb-stall-watchdog-kills-slow-sources` 同一类「看门狗误杀慢源」。
+
+**方案**:加一个手动逃生通道——播放优先级设置,默认 **SABR 优先**(行为完全不变,非破坏),选 **DASH 优先** 时先走 DASH 自合成兜底(NewPipe 已解密直链拼 MPD,实测能出 4K VP9,§6.16),避免慢 SABR 首段被看门狗误杀。
+
+### 变更
+- **枚举 `core/player/YoutubeDeliveryPriority.kt`**(新增,镜像 `YoutubeContentRegion` 的 `fromKey` 模式):`Sabr("sabr")` / `Dash("dash")`。
+- **`AppSettings` + `AppSettingsStore`**:字段 `youtubeDeliveryPriority`(默认 Sabr);DataStore Key `youtube_delivery_priority` + 读侧 `fromKey` + setter `setYoutubeDeliveryPriority`。
+- **`YoutubePlaybackResolver.resolve()`**:顶部读 `dashFirst`;Piped 块(`&& !dashFirst`)与 NewPipe-first 路径按优先级重排——DASH 优先时先 `buildDashFallbackFromNewPipe` 成功直接 return,再走 SABR;SABR 优先时才在 SABR 失败后走 DASH 兜底(保留 reloadCount 死循环守卫)。
+- **TV `SettingsScreen` + 移动 `MobileSettingsScreen`**:各加一个两态循环选择器(SABR 优先 ⇄ DASH 优先);TV 侧走枚举焦点系统(新常量 `SettingsItemYoutubeDeliveryPriority = 38`,索引 when 块整链后移)。
+
+### 待真机验证
+- 设置页 TV/移动各切一次「DASH 优先」:能存能读,播放走 `NewPipe-first(DASH 优先) → DASH/HLS playback ready`。
+- 切回「SABR 优先」:行为与现在一致(日志 `source=NewPipe(primary)`),慢源首段仍可能被看门狗误杀(根因修复=启动宽限/auto-retry 不 teardown,另议,本设置只是逃生通道)。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
 | --- | --- |
-| `core/youtube/YoutubePlaybackResolver.kt` | `parseFormat`/`signatureCipherUrl`/`resolve`/`pickVideo`/`buildInfo` + PO token 注入 |
+| `core/youtube/YoutubePlaybackResolver.kt` | `parseFormat`/`signatureCipherUrl`/`resolve`/`pickVideo`/`buildInfo` + PO token 注入 + 播放优先级分派(§6.18) |
+| `core/player/YoutubeDeliveryPriority.kt` | 播放优先级枚举 SABR/DASH(§6.18) |
+| `core/settings/AppSettingsStore.kt` | `youtubeDeliveryPriority` DataStore 持久化(§6.18) |
 | `core/youtube/YoutubeSDecryptor.kt` | `s` 签名解密 |
 | `core/youtube/YoutubeBotGuard.kt` | PO token 生成(challenge/snapshot/GenerateIT/mint) |
 | `core/youtube/YoutubeJsExecutor.kt` | WebView JS 引擎 + `loadBgUtilsBundle` |

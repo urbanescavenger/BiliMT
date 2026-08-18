@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.4-alpha.5](#v304-alpha5)
 - [v3.0.4-alpha.2](#v304-alpha2)
 - [v3.0.4-alpha.1](#v304-alpha1)
 - [v3.0.3](#v303)
@@ -180,6 +181,19 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.4-alpha.5
+
+**YouTube 播放优先级设置(SABR 优先 / DASH 优先)**:真机日志确认一次视频播放中断——SABR 首段在慢服务器上 ~11s 才送达,而播放器 stall 看门狗阈值 8s 无启动宽限,首段刚到前误判 → 完整 teardown+重建会话(「卡住→重新加载视频」)。新增手动逃生通道:默认 **SABR 优先**(行为完全不变),切 **DASH 优先** 先走 DASH 自合成兜底(NewPipe 已解密直链拼 MPD,能出 4K VP9),避开慢 SABR 首段被看门狗误杀。根因修复(启动宽限 / auto-retry 不 teardown)另议。
+
+### 变更
+- **新设置项「播放优先级」**(TV + 移动端两态循环选择器):SABR 优先(默认)⇄ DASH 优先。
+- **`YoutubePlaybackResolver` 按优先级分派**:DASH 优先时先 `buildDashFallbackFromNewPipe` 成功直接 return;SABR 优先时保留原路径(SABR 失败才走 DASH 兜底)。
+
+### 待真机验证
+- 切 DASH 优先播放走 `NewPipe-first(DASH 优先) → DASH/HLS playback ready`;切回 SABR 优先日志 `source=NewPipe(primary)` 不变。
+
+---
 
 ## v3.0.4-alpha.2
 
