@@ -150,13 +150,26 @@ internal object YoutubeParsers {
    */
   fun parseCommentPage(root: JsonObject): YoutubeCommentPage {
     val comments = mutableListOf<YoutubeComment>()
-    // 新布局(EUVM)：commentThreadRenderer → commentViewModel，实际数据在
-    // frameworkUpdates.entityBatchUpdate.mutations（按 commentKey/toolbarStateKey 匹配 entityKey）。
+    // 新布局(EUVM)：评论在 onResponseReceivedEndpoints[last].reloadContinuationItemsCommand/
+    // appendContinuationItemsAction.continuationItems，每项 commentThreadRenderer → commentViewModel，
+    // 实际数据在 frameworkUpdates.entityBatchUpdate.mutations（按 commentKey/toolbarStateKey 匹配 entityKey）。
+    // 只从 continuationItems 解析（对齐 NewPipe），避免扫全树把 engagementPanels 等无 mutations 的
+    // commentThreadRenderer 也收进来（那些会解析出空作者/内容）。
     val mutations = root.obj("frameworkUpdates")
       ?.obj("entityBatchUpdate")
       ?.array("mutations")
-    collectByKey(root, KEY_COMMENT_THREAD_RENDERER) { thread ->
-      parseCommentThread(thread, mutations)?.let { comments.add(it) }
+    val items = commentContinuationItems(root)
+    if (items != null) {
+      // 去掉末尾的 continuationItemRenderer（下一页 token）。
+      val commentItems = if ((items.lastOrNull() as? JsonObject)?.obj("continuationItemRenderer") != null) {
+        items.dropLast(1)
+      } else {
+        items
+      }
+      for (item in commentItems) {
+        val thread = (item as? JsonObject)?.obj("commentThreadRenderer") ?: continue
+        parseCommentThread(thread, mutations)?.let { comments.add(it) }
+      }
     }
     // 旧布局：commentSectionRenderer → commentRenderer。
     if (comments.isEmpty()) {
@@ -176,6 +189,17 @@ internal object YoutubeParsers {
     // continuationItemRenderer（对齐 NewPipe 取末尾，避免取到楼中楼 replies 的 token）。
     val token = commentPageContinuation(root) ?: findContinuation(root)
     return YoutubeCommentPage(items = comments, continuation = token)
+  }
+
+  /** 评论续页响应容器：onResponseReceivedEndpoints 里最后一个 reloadContinuationItemsCommand / appendContinuationItemsAction 的 continuationItems。 */
+  private fun commentContinuationItems(root: JsonObject): JsonArray? {
+    val endpoints = root["onResponseReceivedEndpoints"] as? JsonArray ?: return null
+    for (i in endpoints.indices.reversed()) {
+      val obj = endpoints[i] as? JsonObject ?: continue
+      obj.obj("reloadContinuationItemsCommand")?.array("continuationItems")?.let { return it }
+      obj.obj("appendContinuationItemsAction")?.array("continuationItems")?.let { return it }
+    }
+    return null
   }
 
   /**
@@ -198,10 +222,10 @@ internal object YoutubeParsers {
       return YoutubeComment(
         commentId = id,
         authorName = author?.stringOrNull("displayName").orEmpty(),
-        authorAvatarUrl = entity?.obj("avatar")?.obj("image")?.array("sources")
-          ?.let(::pickBestThumbnailUrl).orEmpty(),
+        authorAvatarUrl = author?.stringOrNull("avatarThumbnailUrl")
+          ?: entity?.obj("avatar")?.obj("image")?.array("sources")?.let(::pickBestThumbnailUrl).orEmpty(),
         content = attributedText(properties?.get("content")),
-        likeCount = parseCount(toolbarObj?.stringOrNull("likeCountNotliked")),
+        likeCount = parseCount(toolbarObj?.stringOrNull("likeCountNotliked")?.trim()),
         publishedAt = parsePublished(
           properties?.stringOrNull("publishedTime"),
           liveNow = false,
@@ -210,7 +234,7 @@ internal object YoutubeParsers {
         verified = author?.booleanOrNull("isVerified") == true || author?.booleanOrNull("isArtist") == true,
         pinned = vm.obj("pinnedText") != null,
         hearted = toolbar?.stringOrNull("heartState") == "TOOLBAR_HEART_STATE_HEARTED",
-        replyCount = toolbarObj?.stringOrNull("replyCount")?.toIntOrNull() ?: 0,
+        replyCount = toolbarObj?.stringOrNull("replyCount")?.trim()?.toIntOrNull() ?: 0,
         repliesPage = replies?.array("contents")?.let { firstContinuationToken(it) },
         channelOwner = author?.booleanOrNull("isCreator") == true,
         creatorReplied = replies?.obj("viewRepliesCreatorThumbnail") != null,
