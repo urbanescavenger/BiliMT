@@ -110,6 +110,7 @@ params 原样传，不额外 URL 编码。
 
 - 用「递归收集指定 renderer key」的方式统一兼容 search/browse/continuation 三种容器结构，比按固定路径遍历更稳。
 - `lockupViewModel`（新格式，实测为频道视频 tab 唯一格式）实际结构：`contentId`（字符串=videoId）、`metadata.lockupMetadataViewModel.title.content`（标题）、`contentImage.thumbnailViewModel.image.sources[].url`（封面）、时长在 contentImage overlay 的 `thumbnailBadgeViewModel.text`（如 "13:09"）、播放量/发布时间在 `metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows[].metadataParts[].text.content`（如 "56K views"/"4 days ago"）；无频道名（订阅流给空作者名补频道名）、**无频道头像**（`channelAvatarUrl` 恒空，频道页卡片头像需从 `parseChannelInfo` 解析出的频道头像注入 `ownerFace`）。
+- **会员专属视频角标（lockupViewModel，2026-08-18 实测）**：⚠️ 不在顶层 `badges`（videoRenderer 旧格式才有），而是嵌套在 `metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows[].badges[].badgeViewModel`，字段 `badgeStyle == "BADGE_MEMBERS_ONLY"`（`badgeText`="Members only"、`iconName`="SPONSORSHIP_STAR"）。对齐 NewPipe PR #1503。过滤逻辑 `isMembersOnly` 必须同时查两种结构：videoRenderer 顶层 `badges[].metadataBadgeRenderer.style == BADGE_STYLE_TYPE_MEMBERS_ONLY` + lockupViewModel 嵌套 `metadataRows[].badges[].badgeViewModel.badgeStyle == BADGE_MEMBERS_ONLY`。曾因只查顶层 badges 导致频道页/订阅流会员视频过滤不掉（诊断 `YtBadge` 只 dump 顶层 badges 也打不出）。
 
 ---
 

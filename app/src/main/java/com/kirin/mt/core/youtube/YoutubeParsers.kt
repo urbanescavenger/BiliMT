@@ -436,9 +436,16 @@ internal object YoutubeParsers {
   private fun parseLockupViewModel(node: JsonObject): YoutubeVideo? {
     val videoId = node.stringOrNull("contentId")
     if (videoId.isNullOrBlank()) return null
-    // 诊断:dump lockupViewModel 的 badges 数组 + 顶层键,定位会员专属视频真实结构。
-    node.array("badges")?.let { b ->
-      Log.d("YtBadge", "lockup videoId=$videoId badges=${b.toString().take(400)}")
+    // 诊断:dump lockupViewModel 的 metadataRows badges(会员角标真实位置),定位会员专属视频结构。
+    val lockupBadges = node.obj("metadata")
+      ?.obj("lockupMetadataViewModel")
+      ?.obj("metadata")
+      ?.obj("contentMetadataViewModel")
+      ?.array("metadataRows")
+    if (lockupBadges != null) {
+      Log.d("YtBadge", "lockup videoId=$videoId metadataRows=${lockupBadges.toString().take(600)}")
+    } else {
+      Log.d("YtBadge", "lockup videoId=$videoId metadataRows=null topKeys=${node.keys.joinToString(",")}")
     }
     // 会员专属视频(频道会员专属,非会员无法播放)直接过滤,不进 feed。
     if (isMembersOnly(node)) return null
@@ -577,13 +584,29 @@ internal object YoutubeParsers {
 
   /**
    * 会员专属视频(频道会员专属,非会员无法播放)。对齐 NewPipe `YoutubeStreamInfoItemExtractor`:
-   * 检查 badges[] 里是否有 `metadataBadgeRenderer.style == BADGE_STYLE_TYPE_MEMBERS_ONLY`。
-   * 命中即过滤,避免展示无法播放的视频。
+   * 命中即过滤,避免展示无法播放的视频。两种 renderer 结构不同:
+   *  - videoRenderer:顶层 `badges[].metadataBadgeRenderer.style == BADGE_STYLE_TYPE_MEMBERS_ONLY`
+   *  - lockupViewModel(频道页新格式):角标嵌套在
+   *    `metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows[].badges[].badgeViewModel`,
+   *    `badgeStyle == BADGE_MEMBERS_ONLY`(实测 2026-08,对齐 NewPipe PR #1503)。
    */
   private fun isMembersOnly(node: JsonObject): Boolean {
-    return node.array("badges")
-      ?.any { (it as? JsonObject)?.obj("metadataBadgeRenderer")?.stringOrNull("style") == "BADGE_STYLE_TYPE_MEMBERS_ONLY" }
-      ?: false
+    // videoRenderer 旧格式:顶层 badges。
+    if (node.array("badges")?.any {
+        (it as? JsonObject)?.obj("metadataBadgeRenderer")?.stringOrNull("style") == "BADGE_STYLE_TYPE_MEMBERS_ONLY"
+      } == true
+    ) return true
+    // lockupViewModel 新格式:metadataRows[].badges[].badgeViewModel.badgeStyle。
+    return node.obj("metadata")
+      ?.obj("lockupMetadataViewModel")
+      ?.obj("metadata")
+      ?.obj("contentMetadataViewModel")
+      ?.array("metadataRows")
+      ?.any { row ->
+        (row as? JsonObject)?.array("badges")?.any { badge ->
+          (badge as? JsonObject)?.obj("badgeViewModel")?.stringOrNull("badgeStyle") == "BADGE_MEMBERS_ONLY"
+        } == true
+      } == true
   }
 
   // ---- 文本辅助 ----
