@@ -101,6 +101,31 @@ fun MobileDynamicScreen(
   // 保留旧数据刷新时驱动下拉指示器(区别于初始 Loading 的网格内 spinner)。
   var isRefreshing by remember { mutableStateOf(false) }
 
+  /** 全量拉取 YouTube 关注流(等全部查完),失败用缓存兜底。 */
+  suspend fun fetchYoutubeAll(): List<VideoSummary> {
+    val currentIds = youtubeChannels.map { it.channelId }
+    val cached = youtubeFeedCacheStore.read()
+    val cacheValid = cached != null && cached.channelIds == currentIds
+    return try {
+      val result = videoRepository.youtubeSubscriptionsFeed(
+        youtubeChannels,
+        onChannelAvatarResolved = { channel ->
+          youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+        },
+      )
+      if (result.isNotEmpty()) {
+        youtubeTimeoutNotice = false
+        youtubeFeedCacheStore.write(currentIds, result)
+      }
+      result
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      youtubeTimeoutNotice = true
+      if (cacheValid && cached.videos.isNotEmpty()) cached.videos else emptyList()
+    }
+  }
+
   suspend fun loadFirstBody() {
     // 保留旧数据后台刷新:有旧 Success 时不闪 Loading,由 isRefreshing 驱动下拉指示器;
     // 无旧数据(首次进入)才显示网格内 Loading spinner。
@@ -148,31 +173,6 @@ fun MobileDynamicScreen(
       }
     } finally {
       isRefreshing = false
-    }
-  }
-
-  /** 全量拉取 YouTube 关注流(等全部查完),失败用缓存兜底。 */
-  suspend fun fetchYoutubeAll(): List<VideoSummary> {
-    val currentIds = youtubeChannels.map { it.channelId }
-    val cached = youtubeFeedCacheStore.read()
-    val cacheValid = cached != null && cached.channelIds == currentIds
-    return try {
-      val result = videoRepository.youtubeSubscriptionsFeed(
-        youtubeChannels,
-        onChannelAvatarResolved = { channel ->
-          youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-        },
-      )
-      if (result.isNotEmpty()) {
-        youtubeTimeoutNotice = false
-        youtubeFeedCacheStore.write(currentIds, result)
-      }
-      result
-    } catch (e: CancellationException) {
-      throw e
-    } catch (e: Exception) {
-      youtubeTimeoutNotice = true
-      if (cacheValid && cached.videos.isNotEmpty()) cached.videos else emptyList()
     }
   }
 
