@@ -133,6 +133,7 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 - **合并规则**：以 RSS 为基底，`publishedAt` 优先 RSS（精确），`durationSec`/`viewCount`/`liveNow`/`isUpcoming`/`badge`/`channelAvatarUrl` 优先 InnerTube；仅单路有的直接保留。
 - **降级**：任一路失败用另一路（RSS 失败→InnerTube 近似时间；InnerTube 失败→RSS 无 duration/live，降级可用），两者都失败该频道返回空、不影响其它频道。
 - **并发**：RSS 用独立信号量放宽（8），InnerTube 仍受 4 限并发防风控；关注多时按批次放宽超时（`youtubeFeedTimeoutMs`，上限 10s）。
+- **合并时序（2026-08-18）**：动态 tab 等 YouTube 关注**全量查完再与 B 站一次性合并**，去掉 `onChunkReady` 分批增量叠加（避免二次重排导致顺序抖动）。
 
 ### 4.10.1 首页订阅流 continuation 分页（2026-08-18，alpha.94+）
 
@@ -169,6 +170,23 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 2. **endReached 去重比较拿错列表**：`loadNext` 里先 `uiState.items = merged` 再算 `endReached = merged.size == uiState.items.size`，拿 merged 和自己比恒真 → 第二页后 `endReached=true` 永远停。**先存 `oldItems` 再比较 `merged.size == oldItems.size`**（对齐 TV 版 `latest.videos` 旧列表比较）。日志佐证：`next items=30 next=4qmFsgK9FRIY`（token 非 null）却 `endReached=true`。
 
 数据层 `getChannelVideos` 首屏/续页都正确捕获 continuation（`first items=30 next=...` / `next items=30 next=...`），问题纯在 UI 触发/状态逻辑。修复后 `loadNext merged old=30 new=30 merged=60 endReached=false` 连续翻多页。
+
+### 4.11 评论解析（EUVM 新布局，2026-08-18）
+
+评论走 `/next`：**首屏从 `engagementPanels` 提取初始评论 token 再发第二次 `/next`**（对齐 NewPipe 两步拉取），续页解析 `reloadContinuationItemsCommand`。`YoutubeParsers.parseCommentPage` 三段式：新布局 → 旧布局 → 全根防御。
+
+**新布局（EUVM）**：
+- 评论在 `onResponseReceivedEndpoints[last].reloadContinuationItemsCommand` / `appendContinuationItemsAction` 的 `continuationItems`，每项 `commentThreadRenderer` → `commentViewModel.commentViewModel`（**只有 `commentKey`/`toolbarStateKey`/`commentId`**，作者/内容/点赞等实体数据不在这里）。
+- 实际数据在 `frameworkUpdates.entityBatchUpdate.mutations`，按 `entityKey` 匹配：评论实体包在 `payload.commentEntityPayload`，工具栏状态包在 `payload.engagementToolbarStateEntityPayload`（**需先解包再取字段**）。
+- **只从 continuationItems 解析**（对齐 NewPipe），避免扫全树把 `engagementPanels` 等**无 mutations 的 commentThreadRenderer** 也收进来（那些会解析出空作者/内容）。
+- 头像读 `author.avatarThumbnailUrl` **字符串**（不是 `image.sources` 数组）；`likeCount`/`replyCount` 需 `trim()` 空格。
+- 续页 token 取 continuationItems **末尾**的 continuationItemRenderer（对齐 NewPipe 取末尾，避免取到楼中楼 replies 的 token）。
+
+**旧布局**：`commentSectionRenderer` → `commentRenderer`（`parseCommentRenderer`）。
+
+### 4.12 相关视频 rail（lockupViewModel 新格式，2026-08-18）
+
+相关视频 rail 在 `contents.twoColumnWatchNextResults.secondaryResults.secondaryResults.results[]`。**实测每项是 `lockupViewModel`（非 compactVideoRenderer，与频道页新格式一致）**，曾因只 collectByKey `compactVideoRenderer` 导致相关视频解析 0 根因。`parseRelatedVideos` 需**同时** collectByKey `compactVideoRenderer` + `lockupViewModel`（`parseLockupViewModel`）。续页 token 从该 section 内 continuationItemRenderer 取；防御：无 secondaryResults 容器时回退全根收集。
 
 ---
 
