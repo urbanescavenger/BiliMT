@@ -1590,7 +1590,7 @@ fun PlayerScreen(
         if (selectedBitrate != null) {
           player.setTrackSelectionParameters(
             player.trackSelectionParameters.buildUpon()
-              .setInitialBitrate(selectedBitrate)
+              .setInitialVideoBitrate(selectedBitrate)
               .build(),
           )
         }
