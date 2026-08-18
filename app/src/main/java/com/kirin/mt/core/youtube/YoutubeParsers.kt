@@ -326,6 +326,8 @@ internal object YoutubeParsers {
   private fun parseLockupViewModel(node: JsonObject): YoutubeVideo? {
     val videoId = node.stringOrNull("contentId")
     if (videoId.isNullOrBlank()) return null
+    // 会员专属视频(频道会员专属,非会员无法播放)直接过滤,不进 feed。
+    if (isMembersOnly(node)) return null
     val title = node.obj("metadata")
       ?.obj("lockupMetadataViewModel")
       ?.obj("title")
@@ -378,6 +380,8 @@ internal object YoutubeParsers {
 
   private fun parseVideoRenderer(node: JsonObject): YoutubeVideo? {
     val videoId = node.stringOrNull("videoId") ?: return null
+    // 会员专属视频(频道会员专属,非会员无法播放)直接过滤,不进 feed。
+    if (isMembersOnly(node)) return null
 
     val title = runsText(node.obj("title")).ifBlank { simpleText(node.obj("title")) }
 
@@ -451,6 +455,17 @@ internal object YoutubeParsers {
       isUpcoming = isUpcoming,
       badge = badge,
     )
+  }
+
+  /**
+   * 会员专属视频(频道会员专属,非会员无法播放)。对齐 NewPipe `YoutubeStreamInfoItemExtractor`:
+   * 检查 badges[] 里是否有 `metadataBadgeRenderer.style == BADGE_STYLE_TYPE_MEMBERS_ONLY`。
+   * 命中即过滤,避免展示无法播放的视频。
+   */
+  private fun isMembersOnly(node: JsonObject): Boolean {
+    return node.array("badges")
+      ?.any { (it as? JsonObject)?.obj("metadataBadgeRenderer")?.stringOrNull("style") == "BADGE_STYLE_TYPE_MEMBERS_ONLY" }
+      ?: false
   }
 
   // ---- 文本辅助 ----
