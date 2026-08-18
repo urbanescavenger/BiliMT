@@ -160,6 +160,7 @@ fun PlayerScreen(
   playerLogOverlayEnabled: Boolean,
   onBack: () -> Unit,
   onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit = { _, _, _ -> },
+  onOpenYoutubeChannel: (channelId: String, channelName: String, avatar: String) -> Unit = { _, _, _ -> },
   spaceReturnKey: Int = 0,
 ) {
   val context = LocalContext.current
@@ -1113,10 +1114,19 @@ fun PlayerScreen(
             }
           }
           UpFocusHome -> {
-            val ownerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
-            if (ownerMid > 0L) {
+            if (displayRequest.isYoutube && displayRequest.channelId.isNotBlank()) {
               player.pause()
-              onOpenUpSpace(ownerMid, displayRequest.ownerName, displayRequest.ownerFace)
+              onOpenYoutubeChannel(
+                displayRequest.channelId,
+                displayRequest.ownerName,
+                displayRequest.ownerFace,
+              )
+            } else {
+              val ownerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
+              if (ownerMid > 0L) {
+                player.pause()
+                onOpenUpSpace(ownerMid, displayRequest.ownerName, displayRequest.ownerFace)
+              }
             }
           }
           else -> {

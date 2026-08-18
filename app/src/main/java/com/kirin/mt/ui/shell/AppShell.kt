@@ -1362,6 +1362,16 @@ fun BiliTvApp(
                 spacePlaybackBehind = true
                 spaceRequest = UpSpaceRequest(mid, ownerName, ownerFace)
               },
+              onOpenYoutubeChannel = { channelId, channelName, avatar ->
+                youtubeChannelUiState.reset()
+                channelOrigin = SpaceOrigin.Player
+                channelPlaybackBehind = true
+                youtubeChannelRequest = YoutubeChannelRequest(
+                  channelId = channelId,
+                  channelName = channelName,
+                  avatar = avatar,
+                )
+              },
               spaceReturnKey = spaceFocusRestoreRequestKey,
             )
           }

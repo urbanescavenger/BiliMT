@@ -494,7 +494,8 @@ internal fun UserFeedScreen(
         ),
         BiliActionItem(
           label = upspaceLabel,
-          enabled = video.ownerMid > 0L,
+          enabled = video.ownerMid > 0L ||
+            (video.source == SourceYoutube && video.channelId.isNotBlank()),
           onClick = {
             actionSheetNavigating = true
             onOwnerSelected(video)
