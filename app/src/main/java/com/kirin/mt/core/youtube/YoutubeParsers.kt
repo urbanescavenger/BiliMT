@@ -178,11 +178,16 @@ internal object YoutubeParsers {
             val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
             Log.d("YoutubeComment", "watchNext results[$i] renderer=$rendererKey")
           }
+          // 诊断:dump 主内容 results 数组原始 JSON(确认评论是否在 itemSectionRenderer 里)。
+          r.array("results")?.let { arr ->
+            Log.d("YoutubeComment", "watchNext results RAW len=${arr.toString().length} head=${arr.toString().take(1200)}")
+          }
         }
       }
     }
     root.obj("engagementPanels")?.let { ep ->
       Log.d("YoutubeComment", "engagementPanels keys=${ep.keys}")
+      Log.d("YoutubeComment", "engagementPanels RAW head=${ep.toString().take(1200)}")
       ep.array("engagementPanelSectionListRenderer")?.let { list ->
         list.forEachIndexed { i, item ->
           val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }

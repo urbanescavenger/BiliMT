@@ -193,6 +193,9 @@ class YoutubeRepository(
     Log.d("YoutubeComment", "getComments videoId=$videoId continuation=${continuation?.take(16) ?: "null"}")
     val response = client.postJson("/next", payload)
     Log.d("YoutubeComment", "getComments videoId=$videoId topKeys=${response.keys}")
+    // 诊断:dump 原始响应,确认评论到底在哪个子树(engagementPanels? contents? 还是 bot-check 页)。
+    val raw = response.toString()
+    Log.d("YoutubeComment", "getComments RAW len=${raw.length} head=${raw.take(1500)}")
     val page = YoutubeParsers.parseCommentPage(response)
     Log.d(
       "YoutubeComment",
