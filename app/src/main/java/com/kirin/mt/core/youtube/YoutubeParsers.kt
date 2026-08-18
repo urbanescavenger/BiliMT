@@ -253,6 +253,12 @@ internal object YoutubeParsers {
           srInner.array("results")?.forEachIndexed { i, item ->
             val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
             Log.i("YtRelated", "secondary results[$i] renderer=$rendererKey")
+            // 诊断：dump 前几项完整原始 JSON，定位真实 renderer 结构（当前全 null 根因）。
+            if (i < 3) {
+              val raw = item.toString()
+              Log.i("YtRelated", "secondary results[$i] raw=${raw.take(600)}")
+              Log.i("YtRelated", "secondary results[$i] allKeys=${(item as? JsonObject)?.keys}")
+            }
           }
         }
       }
