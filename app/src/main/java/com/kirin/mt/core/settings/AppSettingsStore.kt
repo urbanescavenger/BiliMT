@@ -14,6 +14,7 @@ import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.storage.biliDataStore
 import kotlinx.coroutines.flow.Flow
@@ -73,6 +74,7 @@ class AppSettingsStore(private val context: Context) {
       playbackCdnPreference = PlaybackCdnPreference.fromKey(preferences[Keys.PlaybackCdnPreference]),
       youtubeDefaultQuality = YoutubeDefaultQuality.fromKey(preferences[Keys.YoutubeDefaultQuality]),
       youtubeContentRegion = YoutubeContentRegion.fromKey(preferences[Keys.YoutubeContentRegion]),
+      youtubeDeliveryPriority = YoutubeDeliveryPriority.fromKey(preferences[Keys.YoutubeDeliveryPriority]),
       defaultPlaybackSpeed = DefaultPlaybackSpeed.fromKey(preferences[Keys.DefaultPlaybackSpeed]),
       seekPreviewSpritesEnabled = preferences[Keys.SeekPreviewSpritesEnabled] ?: true,
       airJumpAssistantEnabled = preferences[Keys.AirJumpAssistantEnabled] ?: true,
@@ -192,6 +194,12 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setYoutubeContentRegion(region: YoutubeContentRegion) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.YoutubeContentRegion] = region.key
+    }
+  }
+
+  suspend fun setYoutubeDeliveryPriority(priority: YoutubeDeliveryPriority) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.YoutubeDeliveryPriority] = priority.key
     }
   }
 
@@ -380,6 +388,7 @@ class AppSettingsStore(private val context: Context) {
     val PlaybackCdnPreference = stringPreferencesKey("playback_cdn_preference")
     val YoutubeDefaultQuality = stringPreferencesKey("youtube_default_quality")
     val YoutubeContentRegion = stringPreferencesKey("youtube_content_region")
+    val YoutubeDeliveryPriority = stringPreferencesKey("youtube_delivery_priority")
     val DefaultPlaybackSpeed = stringPreferencesKey("default_playback_speed")
     val SeekPreviewSpritesEnabled = booleanPreferencesKey("seek_preview_sprites_enabled")
     val AirJumpAssistantEnabled = booleanPreferencesKey("air_jump_assistant_enabled")

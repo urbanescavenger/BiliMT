@@ -11,6 +11,7 @@ import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackSegmentBase
 import com.kirin.mt.core.player.PlaybackTrack
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.youtube.sabr.FormatId as SabrFormatId
 import com.kirin.mt.core.youtube.sabr.SabrAudioTrack
 import com.kirin.mt.core.youtube.sabr.SabrClient
@@ -84,12 +85,15 @@ class YoutubePlaybackResolver(
     var lastError: String? = null
     var havePlayable = false
 
+    // 播放路径优先级:true = DASH 自合成优先(慢 SABR 首段被 stall 看门狗误杀场景的逃生通道,见 youtube-hd-playback.md)。
+    val dashFirst = appSettingsStore?.settings?.first()?.youtubeDeliveryPriority == YoutubeDeliveryPriority.Dash
+
     // ── Piped 后端 opt-in（实验:对齐 LibreTube 默认 Piped 路径,修 RELOAD_PLAYER_RESPONSE 死循环）──
     // 用户在设置开 youtubeUsePiped 后,先走 Piped `/streams/{videoId}`。Piped 实例自带 poToken 请求
     // YouTube,回**已 attested 的 WEB-bound** ustreamerConfig(见 [docs/youtube-hd-playback.md]
     // 「alpha.83 更正」段)——首请求发空 poToken,服务端回 status=2 时再铸 WEB poToken 续命,绕过
     // NewPipe visionOS 路径拿未 attested config 致 RELOAD 的问题。Piped 失败/无 SABR 数据自动回退 NewPipe。
-    if (pipedClient != null && appSettingsStore != null) {
+    if (pipedClient != null && appSettingsStore != null && !dashFirst) {
       val cfg = appSettingsStore.settings.first()
       if (cfg.youtubeUsePiped) {
         val instance = cfg.pipedInstanceUrl.ifBlank { DEFAULT_PIPED_INSTANCE }
@@ -154,6 +158,17 @@ class YoutubePlaybackResolver(
     // 17→24 无界爬升直至 evict→Source error;对齐 LibreTube 对 RELOAD 直接失败不循环)。RELOAD 后跳过 SABR,
     // 直接落 ② 的 DASH/HLS 兜底。注意:DASH 自合成兜底(NewPipe 已解密直链拼 MPD)不走 SABR attestation,
     // 实测能出 4K(2160p VP9,见 docs youtube-hd-playback.md「alpha.9X」),不是只 ≤1080p。
+    //
+    // youtubeDeliveryPriority=Dash(用户设「DASH 优先」):先走 DASH 自合成兜底,成功直接返回;失败才落 SABR。
+    // 逃生通道——慢 SABR 首段(googlevideo 服务器 >10s 才送首段)会被 8s stall 看门狗误判完整重建。
+    if (dashFirst) {
+      val dashFirstRes = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality) }.getOrNull()
+      if (dashFirstRes != null) {
+        YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+        Log.i(Tag, "NewPipe-first(DASH 优先) → DASH/HLS playback ready: videoId=$videoId → ${if (dashFirstRes.remoteHlsManifestUrl != null) "HLS" else "DASH"}")
+        return@withContext dashFirstRes
+      }
+    }
     val np = if (SabrStreamRegistry.reloadCount(videoId) > 0) {
       Log.w(Tag, "SABR dead-loop guard: videoId=$videoId 已 RELOAD(reloadCount=${SabrStreamRegistry.reloadCount(videoId)})→ 跳过重建,直接 DASH/HLS 兜底")
       null
@@ -183,12 +198,14 @@ class YoutubePlaybackResolver(
       )
     }
     // ② NewPipe 无 SABR → DASH/HLS 兜底(alpha.92 自合成 DASH 为主,次 dashMpdUrl[恒空]/HLS)。durationMs 传 0
-    //    → buildDashFallbackFromNewPipe 内部用 info.duration 兜底。
-    val npDash = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality) }.getOrNull()
-    if (npDash != null) {
-      YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
-      Log.i(Tag, "NewPipe-first → DASH/HLS 兜底 playback ready: videoId=$videoId → ${if (npDash.remoteHlsManifestUrl != null) "HLS" else "DASH"}")
-      return@withContext npDash
+    //    → buildDashFallbackFromNewPipe 内部用 info.duration 兜底。dashFirst 时 DASH 已先试过,跳过。
+    if (!dashFirst) {
+      val npDash = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality) }.getOrNull()
+      if (npDash != null) {
+        YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+        Log.i(Tag, "NewPipe-first → DASH/HLS 兜底 playback ready: videoId=$videoId → ${if (npDash.remoteHlsManifestUrl != null) "HLS" else "DASH"}")
+        return@withContext npDash
+      }
     }
     Log.w(Tag, "NewPipe-first 全空(SABR+DASH 兜底均失败)→ 落 WEB /player last resort(classic WEB SABR reload-closure / classic DASH)")
 

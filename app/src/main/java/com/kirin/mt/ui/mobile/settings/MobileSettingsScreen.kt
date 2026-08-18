@@ -65,6 +65,7 @@ import com.kirin.mt.core.i18n.ChineseTextVariant
 import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
@@ -998,6 +999,14 @@ private fun MobileYoutubeSabrSection(
         description = stringResource(R.string.settings_sabr_force_itag_description),
         checked = settings.sabrForceSessionVideoItag,
         onCheckedChange = { scope.launch { appSettingsStore.setSabrForceSessionVideoItag(it) } },
+      )
+      MobileEnumPickerRow(
+        title = stringResource(R.string.settings_youtube_delivery_priority_title),
+        description = stringResource(R.string.settings_youtube_delivery_priority_description),
+        selected = settings.youtubeDeliveryPriority,
+        selectedLabel = settings.youtubeDeliveryPriority.label,
+        options = enumOptions(YoutubeDeliveryPriority.entries) { it.label },
+        onSelected = { scope.launch { appSettingsStore.setYoutubeDeliveryPriority(it) } },
       )
     }
   }

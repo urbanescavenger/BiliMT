@@ -533,6 +533,8 @@
     <string name="settings_youtube_use_piped_description">YouTube 播放先走 Piped，失败回退 NewPipe。修 RELOAD_PLAYER_RESPONSE 死循环</string>
     <string name="settings_sabr_force_itag_title">锁定会话视频轨</string>
     <string name="settings_sabr_force_itag_description">SABR 诊断：强制用会话选中 itag，证伪某 itag 是 RELOAD 根因</string>
+    <string name="settings_youtube_delivery_priority_title">播放优先级</string>
+    <string name="settings_youtube_delivery_priority_description">SABR 优先（默认）；卡顿/慢源可切 DASH 自合成优先，能出 4K</string>
     <string name="settings_iptv_connect_success">IPTV 源连接成功</string>
     <string name="settings_iptv_connect_failed">IPTV 源连接失败</string>
     <string name="settings_webdav_username_label">账号</string>

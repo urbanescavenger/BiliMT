@@ -40,6 +40,7 @@ import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.SpeedTestUiState
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppVisualPerformanceMode
@@ -113,6 +114,7 @@ fun SettingsScreen(
   onPipedInstanceChange: (url: String) -> Unit,
   onYoutubeUsePipedChange: (Boolean) -> Unit,
   onSabrForceSessionVideoItagChange: (Boolean) -> Unit,
+  onYoutubeDeliveryPriorityChange: (YoutubeDeliveryPriority) -> Unit,
 ) {
   val settingsListState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
@@ -156,6 +158,7 @@ fun SettingsScreen(
       SettingsItemPiped to FocusRequester(),
       SettingsItemYoutubeUsePiped to FocusRequester(),
       SettingsItemSabrForceItag to FocusRequester(),
+      SettingsItemYoutubeDeliveryPriority to FocusRequester(),
       SettingsItemWebDav to FocusRequester(),
       SettingsItemWebDavBackup to FocusRequester(),
       SettingsItemWebDavRestore to FocusRequester(),
@@ -289,6 +292,7 @@ fun SettingsScreen(
         onPipedSelected = { showPipedDialog = true },
         onYoutubeUsePipedChange = onYoutubeUsePipedChange,
         onSabrForceSessionVideoItagChange = onSabrForceSessionVideoItagChange,
+        onYoutubeDeliveryPriorityChange = onYoutubeDeliveryPriorityChange,
         onLogsSelected = {
           rightPanel = if (rightPanel == SettingsRightPanel.Logs) {
             SettingsRightPanel.None
@@ -470,6 +474,7 @@ private fun SettingsBehaviorColumn(
   onPipedSelected: () -> Unit,
   onYoutubeUsePipedChange: (Boolean) -> Unit,
   onSabrForceSessionVideoItagChange: (Boolean) -> Unit,
+  onYoutubeDeliveryPriorityChange: (YoutubeDeliveryPriority) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -1072,6 +1077,27 @@ private fun SettingsBehaviorColumn(
         onCheckedChange = onSabrForceSessionVideoItagChange,
       )
     }
+    item(key = "youtube-delivery-priority") {
+      val priorityOptions = remember { YoutubeDeliveryPriority.entries.toList() }
+      val effectivePriority = settings.youtubeDeliveryPriority
+      SettingsOptionRow(
+        title = stringResource(R.string.settings_youtube_delivery_priority_title),
+        description = stringResource(R.string.settings_youtube_delivery_priority_description),
+        value = effectivePriority.label,
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemYoutubeDeliveryPriority))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemYoutubeDeliveryPriority,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemYoutubeDeliveryPriority) },
+        onClick = {
+          val currentIndex = priorityOptions.indexOf(effectivePriority).takeIf { it >= 0 } ?: 0
+          onYoutubeDeliveryPriorityChange(priorityOptions[(currentIndex + 1) % priorityOptions.size])
+        },
+      )
+    }
     item(key = "webdav") {
       SettingsActionRow(
         title = stringResource(R.string.settings_webdav_title),
@@ -1273,6 +1299,7 @@ private const val SettingsItemIptv = 34
 private const val SettingsItemPiped = 35
 private const val SettingsItemYoutubeUsePiped = 36
 private const val SettingsItemSabrForceItag = 37
+private const val SettingsItemYoutubeDeliveryPriority = 38
 
 private val SettingsFocusableItems = listOf(
   SettingsItemPlaybackQuality,
@@ -1305,6 +1332,7 @@ private val SettingsFocusableItems = listOf(
   SettingsItemPiped,
   SettingsItemYoutubeUsePiped,
   SettingsItemSabrForceItag,
+  SettingsItemYoutubeDeliveryPriority,
   SettingsItemWebDav,
   SettingsItemWebDavBackup,
   SettingsItemWebDavRestore,
@@ -1365,15 +1393,15 @@ private fun settingsItemToLazyIndex(
   }
   SettingsItemLogs -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    38 + updateExtraCount
+    39 + updateExtraCount
   }
   SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    39 + updateExtraCount
+    40 + updateExtraCount
   }
   SettingsItemPlayerLogOverlay -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    40 + updateExtraCount
+    41 + updateExtraCount
   }
   SettingsItemYoutubeChannels -> {
     val updateExtraCount = updateExtraItemCount(updateState)
@@ -1395,21 +1423,25 @@ private fun settingsItemToLazyIndex(
     val updateExtraCount = updateExtraItemCount(updateState)
     33 + updateExtraCount
   }
-  SettingsItemWebDav -> {
+  SettingsItemYoutubeDeliveryPriority -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     34 + updateExtraCount
   }
-  SettingsItemWebDavBackup -> {
+  SettingsItemWebDav -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     35 + updateExtraCount
   }
-  SettingsItemWebDavRestore -> {
+  SettingsItemWebDavBackup -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     36 + updateExtraCount
   }
-  SettingsItemIptv -> {
+  SettingsItemWebDavRestore -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     37 + updateExtraCount
+  }
+  SettingsItemIptv -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    38 + updateExtraCount
   }
   else -> 0
 }
