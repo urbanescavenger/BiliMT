@@ -230,7 +230,7 @@ class DownloadManager(
     if (paused.get()) return
     val parent = dao.getById(item.downloadId)
     val parentStatus = parent?.status
-    if (parentStatus != null && parentStatus != DownloadStatus.RUNNING.key && parentStatus != DownloadStatus.QUEUED.key) return
+    if (parentStatus != null && parentStatus != DownloadStatus.RUNNING && parentStatus != DownloadStatus.QUEUED) return
     dao.updateItemStatus(item.id, DownloadStatus.RUNNING.key)
     val headers = headersFor(parent?.download)
     val file = File(item.localPath)
@@ -258,11 +258,11 @@ class DownloadManager(
         dao.updateItemStatus(item.id, DownloadStatus.COMPLETED.key, initDone = true)
       }
       // 父行暂停 → 分件标记 PAUSED。
-      currentParent == DownloadStatus.PAUSED.key -> {
+      currentParent == DownloadStatus.PAUSED -> {
         dao.updateItemStatus(item.id, DownloadStatus.PAUSED.key, initDone = result.initDone)
       }
       // 父行取消 → 分件 CANCELLED。
-      currentParent == DownloadStatus.CANCELLED.key -> {
+      currentParent == DownloadStatus.CANCELLED -> {
         dao.updateItemStatus(item.id, DownloadStatus.CANCELLED.key, initDone = result.initDone)
       }
       else -> {

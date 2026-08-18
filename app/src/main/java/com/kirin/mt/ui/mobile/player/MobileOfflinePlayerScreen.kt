@@ -34,8 +34,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
-import androidx.media3.datasource.file.FileDataSource
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -80,12 +81,13 @@ fun MobileOfflinePlayerScreen(
         AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),
         /* handleAudioFocus = */ true,
       )
-      val dataSourceFactory = FileDataSource.Factory()
+      // DefaultDataSource 同时支持本地文件与网络;本地文件内部走 FileDataSource。
+      val dataSourceFactory = DefaultDataSource.Factory(context)
       val videoUri = Uri.fromFile(videoFile)
-      val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoUri)
+      val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(MediaItem.fromUri(videoUri))
       val source = if (audioFile != null) {
         val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-          .createMediaSource(Uri.fromFile(audioFile))
+          .createMediaSource(MediaItem.fromUri(Uri.fromFile(audioFile)))
         MergingMediaSource(videoSource, audioSource)
       } else {
         videoSource

@@ -67,12 +67,15 @@ class DownloadEngine(
     val initStart = part.initRange?.substringBefore("-")?.toLongOrNull()
     val initEnd = part.initRange?.substringAfter("-")?.toLongOrNull()
     val hasDash = initStart != null && initEnd != null
+    // hasDash 保证 initStart/initEnd 非空;Kotlin 不透过 hasDash 智能转换,这里显式断言。
+    val dashInitStart = initStart ?: 0L
+    val dashInitEnd = initEnd ?: 0L
 
     // 1) DASH init 段:必须占据文件开头 [0..b],需 initStart==0(标准 on-demand DASH 恒为 0)。
     var initDone = part.initDone
-    if (hasDash && initStart == 0L) {
-      if (file.length() < initEnd + 1) {
-        val ok = downloadRange(part, headers, start = initStart, end = initEnd, file = file, append = false, onProgress = onProgress, shouldPause = shouldPause)
+    if (hasDash && dashInitStart == 0L) {
+      if (file.length() < dashInitEnd + 1) {
+        val ok = downloadRange(part, headers, start = dashInitStart, end = dashInitEnd, file = file, append = false, onProgress = onProgress, shouldPause = shouldPause)
         if (!ok) return@withContext PartDownloadResult(completed = false, initDone = false, error = null)
         initDone = true
       } else {
@@ -82,7 +85,7 @@ class DownloadEngine(
 
     // 2) 媒体段:续传偏移 = 目标起始 + 已下媒体字节。
     val fileLen = file.length()
-    val mediaStart = part.mediaStartOffset + max(0L, fileLen - (initEnd + 1))
+    val mediaStart = part.mediaStartOffset + max(0L, fileLen - (dashInitEnd + 1))
     val ok = downloadOpenRange(part, headers, start = mediaStart, file = file, onProgress = onProgress, shouldPause = shouldPause)
     val finalLen = file.length()
     val total = part.totalSize
@@ -131,7 +134,7 @@ class DownloadEngine(
       client.newCall(request).execute().use { response ->
         if (response.code != 200 && response.code != 206) return false
         val body = response.body ?: return false
-        file.outputStream(append).buffered().use { output ->
+        java.io.FileOutputStream(file, append).buffered().use { output ->
           body.byteStream().use { input ->
             val buffer = ByteArray(bufferSize)
             while (true) {

@@ -1456,7 +1456,7 @@ class YoutubePlaybackResolver(
         width = video.width,
         height = video.height,
         initRange = "${video.initStart}-${video.initEnd}",
-        mediaStartOffset = video.indexStart,
+        mediaStartOffset = video.indexStart.toLong(),
       ),
       audio = ResolvedPart(
         url = audio.content!!,
@@ -1465,7 +1465,7 @@ class YoutubePlaybackResolver(
         width = 0,
         height = 0,
         initRange = "${audio.initStart}-${audio.initEnd}",
-        mediaStartOffset = audio.indexStart,
+        mediaStartOffset = audio.indexStart.toLong(),
       ),
       headers = headers,
     )
