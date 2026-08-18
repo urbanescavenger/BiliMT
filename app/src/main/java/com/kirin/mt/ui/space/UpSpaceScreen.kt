@@ -262,6 +262,7 @@ internal fun UpSpaceScreen(
           )
           is SpaceVideoState.Success -> TvVideoGrid(
             videos = state.videos,
+            debugLabel = "space-grid",
             firstItemFocusRequester = firstItemFocusRequester,
             restoredFocusIndex = state.videos.resolveFocusIndex(uiState.focusedVideoKey, uiState.focusedVideoIndex),
             restoreFocusRequestKey = restoreFocusRequestKey,

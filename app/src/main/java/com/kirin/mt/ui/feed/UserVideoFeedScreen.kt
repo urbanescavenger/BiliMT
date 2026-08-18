@@ -1407,7 +1407,7 @@ private fun UserFeedGrid(
 ) {
   TvVideoGrid(
     videos = videos,
-    cardMode = cardMode,
+    debugLabel = "dynamic-grid",
     firstItemFocusRequester = firstItemFocusRequester,
     restoredFocusIndex = restoredFocusIndex,
     restoreFocusRequestKey = restoreFocusRequestKey,

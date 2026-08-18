@@ -231,6 +231,7 @@ internal fun YoutubeChannelScreen(
             }
             TvVideoGrid(
               videos = displayItems,
+              debugLabel = "channel-grid",
               firstItemFocusRequester = firstItemFocusRequester,
               restoredFocusIndex = displayItems.resolveFocusIndex(uiState.focusedVideoKey, uiState.focusedVideoIndex),
               restoreFocusRequestKey = restoreFocusRequestKey,

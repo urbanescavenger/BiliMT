@@ -43,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import com.kirin.mt.ui.focus.focusDiag
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -132,6 +133,9 @@ internal fun TvVideoGrid(
   onOwnerSelected: (VideoSummary) -> Unit = {},
   onCardLongPress: (VideoSummary) -> Unit = {},
   modifier: Modifier = Modifier,
+  // 焦点诊断区域标识(见 Modifier.focusDiag)。UP主页/频道页/动态等复用本网格的调用方
+  // 可传自己的 label,默认 "video-grid";诊断时可借此区分焦点落在哪个内容网格。
+  debugLabel: String = "video-grid",
   cardMode: VideoCardMode = VideoCardMode.Standard,
   footer: GridFooterState = GridFooterState.None,
   requestInitialFocus: Boolean = false,
@@ -441,6 +445,7 @@ internal fun TvVideoGrid(
       state = listState,
       modifier = modifier
         .fillMaxSize()
+        .focusDiag(debugLabel)
         .layout { measurable, constraints ->
           if (topBleedPx <= 0) {
             val placeable = measurable.measure(constraints)

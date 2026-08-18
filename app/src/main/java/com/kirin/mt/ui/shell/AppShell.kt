@@ -78,6 +78,7 @@ import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.feed.UserFeedScreen
+import com.kirin.mt.ui.focus.focusDiag
 import com.kirin.mt.ui.feed.UserFeedUiState
 import com.kirin.mt.ui.home.RecommendScreen
 import com.kirin.mt.ui.home.RecommendUiState
@@ -597,7 +598,7 @@ fun BiliTvApp(
       }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize().focusDiag("root")) {
       if (visiblePlaybackRequest == null) {
         Box(modifier = Modifier.fillMaxSize()) {
         Box(
