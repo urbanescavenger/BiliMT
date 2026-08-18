@@ -174,26 +174,18 @@ internal object YoutubeParsers {
         Log.d("YoutubeComment", "twoColumnWatchNextResults keys=${t.keys}")
         t.obj("results")?.let { r ->
           Log.d("YoutubeComment", "watchNext results keys=${r.keys}")
+          // 诊断:r["results"] 可能不是数组(结构变了),dump 原始 JSON 看真实形态。
+          val rr = r["results"]
+          Log.d("YoutubeComment", "watchNext results[results] type=${rr?.let { it::class.simpleName }} raw=${rr?.toString()?.take(1500)}")
           r.array("results")?.forEachIndexed { i, item ->
             val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
             Log.d("YoutubeComment", "watchNext results[$i] renderer=$rendererKey")
           }
-          // 诊断:dump 主内容 results 数组原始 JSON(确认评论是否在 itemSectionRenderer 里)。
-          r.array("results")?.let { arr ->
-            Log.d("YoutubeComment", "watchNext results RAW len=${arr.toString().length} head=${arr.toString().take(1200)}")
-          }
         }
       }
     }
-    root.obj("engagementPanels")?.let { ep ->
-      Log.d("YoutubeComment", "engagementPanels keys=${ep.keys}")
-      Log.d("YoutubeComment", "engagementPanels RAW head=${ep.toString().take(1200)}")
-      ep.array("engagementPanelSectionListRenderer")?.let { list ->
-        list.forEachIndexed { i, item ->
-          val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
-          Log.d("YoutubeComment", "engagementPanel[$i] renderer=$rendererKey")
-        }
-      }
+    root["engagementPanels"]?.let { ep ->
+      Log.d("YoutubeComment", "engagementPanels type=${ep::class.simpleName} raw=${ep.toString().take(1500)}")
     }
     // 防御：无 commentSectionRenderer 容器时回退全根收集。
     if (comments.isEmpty() && token == null) {
