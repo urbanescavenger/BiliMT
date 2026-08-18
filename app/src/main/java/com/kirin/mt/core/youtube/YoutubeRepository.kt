@@ -191,11 +191,21 @@ class YoutubeRepository(
       if (!continuation.isNullOrBlank()) put("continuation", continuation)
     }
     Log.d("YoutubeComment", "getComments videoId=$videoId continuation=${continuation?.take(16) ?: "null"}")
-    val response = client.postJson("/next", payload)
-    Log.d("YoutubeComment", "getComments videoId=$videoId topKeys=${response.keys}")
-    // 诊断:dump 原始响应,确认评论到底在哪个子树(engagementPanels? contents? 还是 bot-check 页)。
-    val raw = response.toString()
-    Log.d("YoutubeComment", "getComments RAW len=${raw.length} head=${raw.take(1500)}")
+    var response = client.postJson("/next", payload)
+    // 首屏:先拿初始评论 token,再发第二次 /next 拉真评论(对齐 NewPipe 两步)。
+    // 首屏 /next 响应里评论在 engagementPanels 数组(panelIdentifier=engagement-panel-comments-section),
+    // 只有 token 没有实际评论;必须带 token 再发一次才返回 commentThreadRenderer。
+    if (continuation.isNullOrBlank()) {
+      val initialToken = YoutubeParsers.findInitialCommentsToken(response)
+      if (initialToken != null) {
+        Log.d("YoutubeComment", "getComments videoId=$videoId initialToken=${initialToken.take(16)}")
+        val secondPayload = buildJsonObject {
+          put("videoId", videoId)
+          put("continuation", initialToken)
+        }
+        response = client.postJson("/next", secondPayload)
+      }
+    }
     val page = YoutubeParsers.parseCommentPage(response)
     Log.d(
       "YoutubeComment",

@@ -143,51 +143,20 @@ internal object YoutubeParsers {
   /**
    * 从 /next 响应解析一页评论 + 续页 token。
    *
-   * 评论实体散落在 commentSectionRenderer 子树里（commentThreadRenderer → comment.commentRenderer），
-   * 用 collectByKey 递归收集；续页 token 优先取评论 section 子树内的 continuation（避免把相关视频等
-   * 其它 section 的 token 误当评论续页），取不到再回退到全局最后一个 continuation。
+   * 评论实体散落在 commentThreadRenderer → comment.commentRenderer 子树里，用 collectByKey 递归收集；
+   * 续页 token 优先取评论 section 子树内的 continuation（避免把相关视频等其它 section 的 token 误当
+   * 评论续页），取不到再回退到全局最后一个 continuation。
    */
   fun parseCommentPage(root: JsonObject): YoutubeCommentPage {
     val comments = mutableListOf<YoutubeComment>()
     var token: String? = null
-    var sectionCount = 0
-    var rendererCount = 0
     collectByKey(root, KEY_COMMENT_SECTION_RENDERER) { section ->
-      sectionCount++
-      if (sectionCount == 1) {
-        Log.d("YoutubeComment", "parseCommentPage section keys=${section.keys}")
-      }
       collectByKey(section, KEY_COMMENT_RENDERER) { node ->
-        rendererCount++
         parseCommentRenderer(node)?.let { comments.add(it) }
       }
       if (token == null) token = findContinuation(section)
     }
-    Log.d(
-      "YoutubeComment",
-      "parseCommentPage sections=$sectionCount renderers=$rendererCount parsed=${comments.size}",
-    )
-    // 结构诊断：评论可能已移到 engagementPanels 或 contents 其它子树。
-    root.obj("contents")?.let { c ->
-      Log.d("YoutubeComment", "contents keys=${c.keys}")
-      c.obj("twoColumnWatchNextResults")?.let { t ->
-        Log.d("YoutubeComment", "twoColumnWatchNextResults keys=${t.keys}")
-        t.obj("results")?.let { r ->
-          Log.d("YoutubeComment", "watchNext results keys=${r.keys}")
-          // 诊断:r["results"] 可能不是数组(结构变了),dump 原始 JSON 看真实形态。
-          val rr = r["results"]
-          Log.d("YoutubeComment", "watchNext results[results] type=${rr?.let { it::class.simpleName }} raw=${rr?.toString()?.take(1500)}")
-          r.array("results")?.forEachIndexed { i, item ->
-            val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
-            Log.d("YoutubeComment", "watchNext results[$i] renderer=$rendererKey")
-          }
-        }
-      }
-    }
-    root["engagementPanels"]?.let { ep ->
-      Log.d("YoutubeComment", "engagementPanels type=${ep::class.simpleName} raw=${ep.toString().take(1500)}")
-    }
-    // 防御：无 commentSectionRenderer 容器时回退全根收集。
+    // 防御：无 commentSectionRenderer 容器时回退全根收集（续页响应直接是 commentThreadRenderer）。
     if (comments.isEmpty() && token == null) {
       collectByKey(root, KEY_COMMENT_RENDERER) { node ->
         parseCommentRenderer(node)?.let { comments.add(it) }
@@ -195,6 +164,59 @@ internal object YoutubeParsers {
       token = findContinuation(root)
     }
     return YoutubeCommentPage(items = comments, continuation = token)
+  }
+
+  /**
+   * 从首屏 /next 响应提取初始评论 continuation token（对齐 NewPipe YoutubeCommentsExtractor）。
+   *
+   * 首屏响应里评论不在 contents 主内容里，而在 `engagementPanels` 数组的
+   * `engagementPanelSectionListRenderer`（panelIdentifier=engagement-panel-comments-section），
+   * 只有 token 没有实际评论；必须带 token 再发一次 /next 才返回 commentThreadRenderer。
+   * 兼容旧布局：contents.twoColumnWatchNextResults.results.results.contents 里
+   * itemSectionRenderer.targetId=comments-section 的 continuationItemRenderer。
+   *
+   * @return 初始评论 token；取不到返回 null（评论禁用或结构未知）。
+   */
+  fun findInitialCommentsToken(root: JsonObject): String? {
+    // 1. 新布局：engagementPanels 数组里的 comments panel。
+    val panels = root["engagementPanels"] as? JsonArray
+    if (panels != null) {
+      for (panel in panels) {
+        val section = (panel as? JsonObject)?.obj("engagementPanelSectionListRenderer") ?: continue
+        if (section.stringOrNull("panelIdentifier") == "engagement-panel-comments-section") {
+          // token 在排序菜单 subMenuItems[].serviceEndpoint.continuationCommand.token。
+          val subMenu = section.obj("header")
+            ?.obj("engagementPanelTitleHeaderRenderer")
+            ?.obj("menu")
+            ?.obj("sortFilterSubMenuRenderer")
+          subMenu?.array("subMenuItems")?.forEach { item ->
+            val candidate = (item as? JsonObject)?.obj("serviceEndpoint")
+              ?.obj("continuationCommand")
+              ?.stringOrNull("token")
+            if (!candidate.isNullOrBlank()) return candidate
+          }
+          // 回退：content 里的 continuationItemRenderer。
+          findContinuation(section)?.let { return it }
+        }
+      }
+    }
+    // 2. 旧布局：contents 主内容里 itemSectionRenderer.targetId=comments-section。
+    val contents = root.obj("contents")
+      ?.obj("twoColumnWatchNextResults")
+      ?.obj("results")
+      ?.obj("results")
+      ?.array("contents")
+    if (contents != null) {
+      for (item in contents) {
+        val section = (item as? JsonObject)?.obj("itemSectionRenderer") ?: continue
+        if (section.stringOrNull("targetId") == "comments-section") {
+          section.array("contents")?.let { arr ->
+            firstContinuationToken(arr)?.let { return it }
+          }
+        }
+      }
+    }
+    return null
   }
 
   /**
@@ -598,6 +620,7 @@ internal object YoutubeParsers {
    */
   private fun findContinuation(root: JsonObject): String? {
     appendContinuationItems(root)?.let { return firstContinuationToken(it) }
+    reloadContinuationItems(root)?.let { return firstContinuationToken(it) }
     videoGridItems(root)?.let { return firstContinuationToken(it) }
     return firstContinuationTokenRoot(root)
   }
@@ -608,6 +631,17 @@ internal object YoutubeParsers {
     for (action in actions) {
       val append = (action as? JsonObject)?.obj("appendContinuationItemsAction") ?: continue
       return append.array("continuationItems")
+    }
+    return null
+  }
+
+  /** 评论续页响应容器：onResponseReceivedEndpoints 里最后一个 reloadContinuationItemsCommand / appendContinuationItemsAction 的 continuationItems（对齐 NewPipe 取末尾）。 */
+  private fun reloadContinuationItems(root: JsonObject): JsonArray? {
+    val endpoints = root["onResponseReceivedEndpoints"] as? JsonArray ?: return null
+    for (i in endpoints.indices.reversed()) {
+      val obj = endpoints[i] as? JsonObject ?: continue
+      obj.obj("reloadContinuationItemsCommand")?.array("continuationItems")?.let { return it }
+      obj.obj("appendContinuationItemsAction")?.array("continuationItems")?.let { return it }
     }
     return null
   }
@@ -632,13 +666,15 @@ internal object YoutubeParsers {
     return null
   }
 
-  /** 在指定 items 数组里取第一个非空 continuationItemRenderer token。 */
+  /** 在指定 items 数组里取第一个非空 continuationItemRenderer token（兼容 continuationEndpoint 与 button 两种结构）。 */
   private fun firstContinuationToken(items: JsonArray): String? {
     var token: String? = null
     collectByKey(items, KEY_CONTINUATION_ITEM_RENDERER) { node ->
       val candidate = node.obj("continuationEndpoint")
         ?.obj("continuationCommand")
         ?.stringOrNull("token")
+        ?: node.obj("button")?.obj("buttonRenderer")?.obj("command")
+          ?.obj("continuationCommand")?.stringOrNull("token")
       if (token == null && !candidate.isNullOrBlank()) token = candidate
     }
     return token
@@ -652,6 +688,8 @@ internal object YoutubeParsers {
         val candidate = node.obj("continuationEndpoint")
           ?.obj("continuationCommand")
           ?.stringOrNull("token")
+          ?: node.obj("button")?.obj("buttonRenderer")?.obj("command")
+            ?.obj("continuationCommand")?.stringOrNull("token")
         if (!candidate.isNullOrBlank()) token = candidate
       }
     }
