@@ -1398,6 +1398,8 @@ class YoutubePlaybackResolver(
       origin = "https://www.youtube.com",
     ).asMap()
 
+    // 简单下载:优先 progressive muxed 单文件;现代 YouTube 基本无 progressive 流(仅 video-only+audio),
+    // 无则退化为 video-only+audio 两文件(≤720p,对齐 LibreTube 始终两文件 mux 的下载模型)。
     if (preferMuxed) {
       val muxed = (info.videoStreams)
         .filter { !it.content.isNullOrBlank() && it.height > 0 }
@@ -1405,31 +1407,41 @@ class YoutubePlaybackResolver(
           list.filter { maxHeight == null || it.height <= maxHeight }.maxByOrNull { it.height }
             ?: list.minByOrNull { it.height }
         }
-      if (muxed == null) {
-        Log.w(Tag, "resolveForDownload: 无可用 muxed progressive 流")
-        return null
+      if (muxed != null) {
+        return ResolvedDownload(
+          videoId = videoId,
+          cid = 0L,
+          title = request.title,
+          coverUrl = request.coverUrl,
+          durationMs = info.duration * 1000L,
+          qualityLabel = "${muxed.height}p",
+          muxed = ResolvedPart(
+            url = muxed.content!!,
+            mimeType = muxed.format?.mimeType ?: "video/mp4",
+            codecs = muxed.codec ?: "",
+            width = muxed.width,
+            height = muxed.height,
+            initRange = null,
+            mediaStartOffset = 0L,
+          ),
+          headers = headers,
+        )
       }
-      return ResolvedDownload(
-        videoId = videoId,
-        cid = 0L,
-        title = request.title,
-        coverUrl = request.coverUrl,
-        durationMs = info.duration * 1000L,
-        qualityLabel = "${muxed.height}p",
-        muxed = ResolvedPart(
-          url = muxed.content!!,
-          mimeType = muxed.format?.mimeType ?: "video/mp4",
-          codecs = muxed.codec ?: "",
-          width = muxed.width,
-          height = muxed.height,
-          initRange = null,
-          mediaStartOffset = 0L,
-        ),
-        headers = headers,
-      )
+      Log.w(Tag, "resolveForDownload: 无 progressive muxed 流,退化为 video-only+audio(≤720p)")
+      return buildSeparateParts(info, videoId, request, headers, maxHeight = maxHeight ?: 720)
     }
 
-    // 分文件:video-only(带 range) + audio。
+    return buildSeparateParts(info, videoId, request, headers, maxHeight)
+  }
+
+  /** 分文件下载:video-only(带 range) + audio,两文件由离线播放器现场 mux(对齐 LibreTube)。 */
+  private fun buildSeparateParts(
+    info: StreamInfo,
+    videoId: String,
+    request: PlaybackRequest,
+    headers: Map<String, String>,
+    maxHeight: Int?,
+  ): ResolvedDownload? {
     val videoCandidates = info.videoOnlyStreams
       .filter { !it.content.isNullOrBlank() && it.indexStart > 0 && it.height > 0 }
     val video = videoCandidates

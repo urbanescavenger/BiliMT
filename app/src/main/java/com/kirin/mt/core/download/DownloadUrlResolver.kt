@@ -1,5 +1,6 @@
 package com.kirin.mt.core.download
 
+import android.util.Log
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.PlaybackRepository
@@ -60,7 +61,7 @@ class DownloadUrlResolver(
         audio = audio.toResolvedPart(),
         headers = resolved.headers.asMap(),
       )
-    }
+    }.onFailure { Log.w(Tag, "resolveBili 失败: ${it.message}") }
   }
 
   private suspend fun resolveYoutube(request: PlaybackRequest, choice: DownloadQualityChoice): Result<ResolvedDownload> {
@@ -70,7 +71,11 @@ class DownloadUrlResolver(
         preferMuxed = choice.youTubePreferMuxed,
         maxHeight = choice.youTubeMaxHeight,
       ) ?: error("YouTube 解析失败(无可用直链)")
-    }
+    }.onFailure { Log.w(Tag, "resolveYoutube 失败: ${it.message}") }
+  }
+
+  private companion object {
+    const val Tag = "DownloadUrlResolver"
   }
 
   private fun PlaybackTrack.toResolvedPart(): ResolvedPart = ResolvedPart(
