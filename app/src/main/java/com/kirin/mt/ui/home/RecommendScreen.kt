@@ -267,7 +267,8 @@ internal fun RecommendScreen(
           latestState.copy(
             videos = mergedVideos,
             loadingMore = false,
-            endReached = page.endReached,
+            // 续页未新增视频也视为到底,防 token 不推进(返回相同/空)时死循环。
+            endReached = page.endReached || mergedVideos.size == latestState.videos.size,
             loadMoreError = "",
             youtubeContinuation = page.perChannelContinuation,
           )

@@ -146,8 +146,19 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 
 **UI 消费（TV `RecommendScreen` + 移动 `HomeScreen`，共用）**：
 - `Success.youtubeContinuation: Map<String,String?>?`（仅 YoutubeTrending 用；非 YouTube 分区为 null）。
-- 首屏 `endReached=page.endReached`、`youtubeContinuation=page.perChannelContinuation`；续页 `(current+page).distinctBy{it.bvid}.sortedByDescending{it.pubdate}`、`endReached=page.endReached`。
+- 首屏 `endReached=page.endReached`、`youtubeContinuation=page.perChannelContinuation`；续页 `(current+page).distinctBy{it.bvid}.sortedByDescending{it.pubdate}`、`endReached = page.endReached || merged.size == current.videos.size`（**续页未新增视频也视为到底**，防 token 不推进时死循环）。
 - **缓存只存首屏快照、不落盘 continuation**（`YoutubeFeedCacheStore` 零改动）：10min 内 cache 命中视为单页到底（`endReached=true`），不续翻。
+
+### 4.10.2 续页 token 提取对齐 NewPipe（2026-08-18，debug 分支）
+
+**症状**：订阅流滑到底要么卡在 ~50 条（跨频道去重后首屏量，续页没补上更早的），要么死循环。根因在 `YoutubeParsers.findContinuation`：**全树 `collectByKey` 扫 + 取最后一个 continuationItemRenderer**。频道视频 tab 的 `/browse` 响应里可能夹带 shorts/相关频道等其它 section 的 continuation，取错后拿它续页返回的还是首屏那批 → `appendUniqueByBvid` 去重成零新增 → 不推进。
+
+**对照 LibreTube/NewPipe**（`E:\GITHUB\NewPipeExtractor` `YoutubeChannelTabExtractor.java`）：LibreTube 订阅流本身**单页快照不翻页**（§4.10.1 已记），真正"能一直加载到几年前"的是**单频道视频 tab**，靠 NewPipe 每次从新响应里正确提取推进中的 token：
+- 续页响应只读 `onResponseReceivedActions[].appendContinuationItemsAction.continuationItems`；
+- 首屏只定位视频网格 `gridRenderer.items` / `richGridRenderer.contents`；
+- 都取**第一个** continuation，不是最后一个。
+
+**本次改动**：`YoutubeParsers.findContinuation` 改为三段式——①续页走 `appendContinuationItemsAction`；②首屏定位视频网格取第一个；③搜索等无网格容器回退全树第一个。同时 `RecommendScreen` 与移动 `HomeScreen` 的 YoutubeTrending 续页补 `merged.size == current.videos.size` 护栏。这样每频道 token 每次从新响应重新提取、能真正推进到更早（对齐 NewPipe 机制），且 token 一旦不推进立即到底不循环。
 
 ---
 

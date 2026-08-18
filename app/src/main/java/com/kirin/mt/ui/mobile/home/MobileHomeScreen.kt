@@ -216,7 +216,8 @@ fun MobileHomeScreen(
           current.copy(
             videos = merged,
             loadingMore = false,
-            endReached = page.endReached,
+            // 续页未新增视频也视为到底,防 token 不推进(返回相同/空)时死循环。
+            endReached = page.endReached || merged.size == current.videos.size,
             youtubeContinuation = page.perChannelContinuation,
           )
         } else {

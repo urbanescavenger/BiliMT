@@ -20,7 +20,10 @@ import java.util.Calendar
  *    richItemRenderer → videoRenderer
  *
  * 采用"递归收集所有 videoRenderer 子对象"的方式统一处理，天然兼容以上所有形态；
- * 续页 token 从最后一个 continuationItemRenderer 里取。
+ * 续页 token 对齐 NewPipe YoutubeChannelTabExtractor：续页响应取
+ * appendContinuationItemsAction.continuationItems 里的第一个；首屏定位视频网格
+ * grid/richGrid 取第一个（不再全树扫+取最后一个，防止抓到 shorts/相关频道等其它 section 的 token，
+ * 导致续页返回首屏相同视频而无法推进到更早视频）。
  */
 internal object YoutubeParsers {
 
@@ -565,14 +568,72 @@ internal object YoutubeParsers {
     }
   }
 
-  /** 找最后一个 continuationItemRenderer 里的 token。 */
+  /**
+   * 提取续页 token（对齐 NewPipe YoutubeChannelTabExtractor，避免取到非视频网格的 token）：
+   *   1. 续页响应：token 在 onResponseReceivedActions → appendContinuationItemsAction → continuationItems；
+   *   2. 首屏：定位视频网格/richGrid 的 items 数组，取第一个 continuation；
+   *   3. 回退（搜索等无网格容器）：全树第一个 continuationItemRenderer。
+   * 之前是全树扫+取最后一个，频道视频 tab 响应里可能夹带 shorts/相关频道等其它 section 的 token，
+   * 取错会导致续页返回首屏相同视频（去重后零新增 → ~50 到底 / 死循环）。
+   */
   private fun findContinuation(root: JsonObject): String? {
+    appendContinuationItems(root)?.let { return firstContinuationToken(it) }
+    videoGridItems(root)?.let { return firstContinuationToken(it) }
+    return firstContinuationTokenRoot(root)
+  }
+
+  /** 续页响应容器：onResponseReceivedActions 里第一个 appendContinuationItemsAction.continuationItems。 */
+  private fun appendContinuationItems(root: JsonObject): JsonArray? {
+    val actions = root["onResponseReceivedActions"] as? JsonArray ?: return null
+    for (action in actions) {
+      val append = (action as? JsonObject)?.obj("appendContinuationItemsAction") ?: continue
+      return append.array("continuationItems")
+    }
+    return null
+  }
+
+  /** 首屏：递归找第一个视频网格容器（gridRenderer.items 或 richGridRenderer.contents）。 */
+  private fun videoGridItems(element: JsonElement): JsonArray? {
+    when (element) {
+      is JsonObject -> {
+        element.obj("gridRenderer")?.array("items")?.let { return it }
+        element.obj("richGridRenderer")?.array("contents")?.let { return it }
+        for ((_, value) in element) {
+          videoGridItems(value)?.let { return it }
+        }
+      }
+      is JsonArray -> {
+        for (item in element) {
+          videoGridItems(item)?.let { return it }
+        }
+      }
+      else -> Unit
+    }
+    return null
+  }
+
+  /** 在指定 items 数组里取第一个非空 continuationItemRenderer token。 */
+  private fun firstContinuationToken(items: JsonArray): String? {
     var token: String? = null
-    collectByKey(root, KEY_CONTINUATION_ITEM_RENDERER) { node ->
+    collectByKey(items, KEY_CONTINUATION_ITEM_RENDERER) { node ->
       val candidate = node.obj("continuationEndpoint")
         ?.obj("continuationCommand")
         ?.stringOrNull("token")
-      if (!candidate.isNullOrBlank()) token = candidate
+      if (token == null && !candidate.isNullOrBlank()) token = candidate
+    }
+    return token
+  }
+
+  /** 全树第一个非空 continuationItemRenderer token（搜索等无网格容器回退用）。 */
+  private fun firstContinuationTokenRoot(root: JsonElement): String? {
+    var token: String? = null
+    collectByKey(root, KEY_CONTINUATION_ITEM_RENDERER) { node ->
+      if (token == null) {
+        val candidate = node.obj("continuationEndpoint")
+          ?.obj("continuationCommand")
+          ?.stringOrNull("token")
+        if (!candidate.isNullOrBlank()) token = candidate
+      }
     }
     return token
   }
