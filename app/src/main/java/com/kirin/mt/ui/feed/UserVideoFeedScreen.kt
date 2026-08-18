@@ -201,6 +201,7 @@ internal fun UserFeedScreen(
  onOwnerSelected: (VideoSummary) -> Unit = {},
  onCommentSelected: (VideoSummary) -> Unit = {},
  onSeasonSelected: (com.kirin.mt.core.network.FollowingSeason) -> Unit = {},
+ onActionSheetDismissed: () -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
   val context = LocalContext.current
@@ -503,15 +504,10 @@ internal fun UserFeedScreen(
       onDismiss = {
         if (!actionSheetNavigating) {
           // BiliActionSheet 是屏内覆盖层(非 Dialog),关闭时其聚焦节点被移除,Compose 不会自动把
-          // 焦点还给底下网格 → 焦点丢失。复用 focusRestoredItemKey 让网格 restore effect 把焦点
-          // 拉回刚长按的那张卡片。
-          when (feedState.selectedTab) {
-            UserFeedTab.DynamicVideo -> feedState.dynamicVideo.focusRestoredItemKey += 1
-            UserFeedTab.DynamicAll -> feedState.dynamicAll.focusRestoredItemKey += 1
-            UserFeedTab.History -> feedState.history.focusRestoredItemKey += 1
-            UserFeedTab.Favorite -> feedState.favorite.focusRestoredItemKey += 1
-            UserFeedTab.Bangumi -> feedState.bangumi.focusRestoredItemKey += 1
-          }
+          // 焦点还给底下网格 → 焦点会落到侧栏头像并 autoConfirm 打开「我的」页(焦点丢失)。
+          // 走 AppShell 的 contentFocusRestore 机制:置 contentFocusRestoreDestination 抑制头像
+          // autoConfirm,并让网格 restore effect 把焦点拉回刚长按的那张卡片。
+          onActionSheetDismissed()
         }
         actionSheetNavigating = false
         actionSheetVideo = null

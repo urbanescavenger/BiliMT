@@ -1131,6 +1131,7 @@ fun BiliTvApp(
                   tabFocusRequester = feedTabFocusRequester,
                   restoreFocusRequestKey = restoreFocusRequestKeyFor(AppDestination.Dynamic),
                   onRestoreFocusHandled = { key -> clearFocusRestoreRequest(AppDestination.Dynamic, key) },
+                  onActionSheetDismissed = { requestContentGridRestore(selectedDestination) },
                   onMoveLeftToNav = {
                     runCatching {
                       navFocusRequesters.getValue(selectedDestination).requestFocus()
