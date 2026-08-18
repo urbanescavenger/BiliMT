@@ -184,6 +184,9 @@ internal object YoutubeParsers {
       for (panel in panels) {
         val section = (panel as? JsonObject)?.obj("engagementPanelSectionListRenderer") ?: continue
         if (section.stringOrNull("panelIdentifier") == "engagement-panel-comments-section") {
+          // 诊断:dump 完整 comments panel,确认 content 里有没有真 token/评论。
+          Log.d("YoutubeComment", "findInitialCommentsToken panel keys=${section.keys}")
+          Log.d("YoutubeComment", "findInitialCommentsToken panel RAW head=${section.toString().take(2000)}")
           // token 在排序菜单 subMenuItems[].serviceEndpoint.continuationCommand.token。
           val subMenu = section.obj("header")
             ?.obj("engagementPanelTitleHeaderRenderer")
