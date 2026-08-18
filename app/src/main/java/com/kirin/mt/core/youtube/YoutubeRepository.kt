@@ -383,7 +383,8 @@ class YoutubeRepository(
               val merged = mergeByVideoId(rssVideos, innerTubePage.items)
               Log.d(
                 "YoutubeFeed",
-                "${channel.channelId}: RSS ${rssVideos.size} + InnerTube ${innerTubePage.items.size} → merged ${merged.size}",
+                "${channel.channelId}: RSS ${rssVideos.size} + InnerTube ${innerTubePage.items.size} → merged ${merged.size} " +
+                  "firstToken=${innerTubePage.continuation?.take(12) ?: "null"}",
               )
               val resolved: List<VideoSummary> = merged.take(perChannel).map(::toVideoSummary)
                 .map { fillChannelInfo(it, channel, channelAvatar) }
@@ -432,6 +433,11 @@ class YoutubeRepository(
         delay(Random.nextLong(BatchDelayMs.first, BatchDelayMs.last + 1))
       }
     }
+    Log.d(
+      "YoutubeFeed",
+      "page ${if (previousContinuation == null) "first" else "next"} done: total=${accumulator.size} " +
+        "channelsWithToken=${continuationAccumulator.values.count { it != null }}",
+    )
     return YoutubeSubscriptionsPage(
       videos = accumulator.sortedByDescending { it.pubdate },
       perChannelContinuation = continuationAccumulator,
