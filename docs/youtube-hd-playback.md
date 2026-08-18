@@ -938,6 +938,16 @@ BiliMT:MobilePlayer: playerState=3 pos=184954 (稳定推进到 3 分钟,无 RELO
 - **验证语义**:手动选 4K → SABR 单轨 313 → 首 RELOAD → DASH 兜底出 4K;手动选 1080p/720p → SABR 直接播对应分辨率(避开 RELOAD)。≤1080p 不需要 attestation 的视频(SABR 直接播、无 RELOAD)不受兜底提前影响。
 - **DASH 自合成也支持多档清晰度(用户要求补)**:`buildDashFallbackFromNewPipe` 自合成分支从单档改**全 `videoCandidates` 多 Representation**——每条带 range 的视频流各构一条 `PlaybackTrack`,`buildDashManifest` 合成多 Representation MPD(每条 track 一个 `<Representation>` 塞进同一 `<AdaptationSet>`,与 SABR `allVideoTracks` 同构)。**清晰度菜单按分辨率去重(对齐 LibreTube `getAvailableResolutions`)**:`distinctBy { it.height }` 每个 height 一档纯 `"${height}p"`(不带 codec),故 720p 只有一个选项(VP9/H264 变体不重复列);codec 由 ExoPlayer 自动选。`preferredQualityId != null` 手动选档时回**该分辨率全部 codec 变体**(`filter { it.height == selectedVideo.height }`,ExoPlayer 在该分辨率内自动选 codec),默认/Auto 回全部让 ExoPlayer 自动选轨。原 `PlaybackQuality(0,"XXXp DASH 兜底")` 单档删除。选档逻辑与 SABR `defaultItag` 同语义(`maxHeight` 或最高档)。这样已落 DASH 的 4K 视频画质菜单列各分辨率(2160p/1440p/1080p…),可手动降档。
 
+## 6.17 TV 视频网格焦点恢复(2026-08,v3.0.4-alpha.3)
+
+TV 端 `TvVideoGrid`(首页/UP 主页/频道页/动态共用)的焦点在两类场景会丢,本次补三层机制:
+
+**① 动态增量合并重排后焦点跟同一视频走**(`c1c6a9e`):动态页先渲染 B 站动态,YouTube 关注流随后分批按 pubdate 插入中间重排(`mergeByPubdate`),改动行 key → `LazyColumn` 销毁重建聚焦行 → 焦点丢回侧栏/根。`TvVideoGrid` 记录当前聚焦卡片稳定 key(bvid),新增 `LaunchedEffect(videos)`:聚焦视频仍在列表但换了 index 时,滚到新位置并重新抢焦点,让焦点跟着同一视频走。append 加载更多(聚焦项 index 不变)与用户翻页(`rowScrollActive`)不触发。
+
+**② focusRestorer 兜底**(`5f06c4d`):`LazyColumn` 挂 `focusRestorer(restoredItemFocusRequester)`——进入覆盖层/播放器前最后聚焦的目标卡在焦点树重建后由 Compose 自动恢复,比手写 restore effect 更快更稳。仅目标卡已组合(视口内)时生效;目标卡不在视口仍由手写 effect scroll+等布局+requestFocus 兜底。两者恢复目标一致(同一 requester),不冲突;不干扰首次进入/切 tab(requester 从未被聚焦则无恢复)。
+
+**③ 全局焦点诊断日志**(`22c87ca`):`FocusDiagnostics.kt` 新增 `Modifier.focusDiag(label)` 区域级焦点进出日志——按 `hasFocus` 跳变打 `GAINED/LOST [label]`,日志序列即焦点落点轨迹。`AppShell` 根(root,`hasFocus=false` 即整个焦点树彻底无焦点)/侧栏(sidebar)/覆盖层(action-sheet)加;视频网格加 `debugLabel` 参数,UP 主页(space-grid)/频道页(channel-grid)/动态(dynamic-grid)传区分 label,定位播放/长按弹窗/UP 主页/频道页返回后焦点丢到哪。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
