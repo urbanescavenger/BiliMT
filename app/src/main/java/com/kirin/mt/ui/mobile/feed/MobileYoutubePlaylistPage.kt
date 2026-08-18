@@ -213,10 +213,13 @@ private fun PlaylistDetailScreen(
   var items by remember { mutableStateOf(playlist.videos) }
   LaunchedEffect(playlist.videos) { items = playlist.videos }
 
-  // 拖动状态:拖动的视频 id + 其在 items 中的实时位置 + 垂直位移。
+  // 拖动状态:拖动的视频 id + 其在 items 中的实时位置 + 初始 offset + 累计位移。
+  // 对齐 Google LazyColumnDragAndDropDemo:拖拽项视觉位移 = initialOffset + delta - item.offset,
+  // 自动补偿 item 重排后的 offset 变化,避免手动调整出错致重影。
   var draggingBvid by remember { mutableStateOf<String?>(null) }
   var draggingIndex by remember { mutableIntStateOf(-1) }
-  var draggingOffsetY by remember { mutableFloatStateOf(0f) }
+  var draggingInitialOffset by remember { mutableFloatStateOf(0f) }
+  var draggingDelta by remember { mutableFloatStateOf(0f) }
 
   fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
 
@@ -261,7 +264,15 @@ private fun PlaylistDetailScreen(
           modifier = itemModifier
             .fillMaxWidth()
             .zIndex(if (isDragging) 1f else 0f)
-            .graphicsLayer { if (isDragging) translationY = draggingOffsetY }
+            .graphicsLayer {
+              if (isDragging) {
+                // 拖拽项视觉位移 = 初始 offset + 累计 delta - item 当前 offset。
+                // item 重排后 offset 变化被自动减掉,拖拽项始终钉在手指下,不重影。
+                val info = listState.layoutInfo.visibleItemsInfo
+                  .firstOrNull { it.index == draggingIndex }
+                translationY = if (info != null) draggingInitialOffset + draggingDelta - info.offset else 0f
+              }
+            }
             .background(
               if (isDragging) Color(0xFF2A2A32) else Color.Transparent,
               RoundedCornerShape(10.dp),
@@ -277,18 +288,21 @@ private fun PlaylistDetailScreen(
                 onDragStart = {
                   draggingBvid = video.bvid
                   draggingIndex = index
-                  draggingOffsetY = 0f
+                  draggingInitialOffset = listState.layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.index == index }?.offset?.toFloat() ?: 0f
+                  draggingDelta = 0f
                 },
                 onDrag = { change, dragAmount ->
                   change.consume()
-                  draggingOffsetY += dragAmount.y
+                  draggingDelta += dragAmount.y
                   val from = draggingIndex
                   if (from < 0) return@detectDragGesturesAfterLongPress
                   val layoutInfo = listState.layoutInfo
                   val draggingInfo = layoutInfo.visibleItemsInfo
                     .firstOrNull { it.index == from }
                     ?: return@detectDragGesturesAfterLongPress
-                  val draggedCenter = draggingInfo.offset + draggingInfo.size / 2f + draggingOffsetY
+                  // 拖拽项中心 = 初始 offset + 累计 delta(固定,不依赖 item 当前 offset,不漂移)。
+                  val draggedCenter = draggingInitialOffset + draggingInfo.size / 2f + draggingDelta
                   val target = layoutInfo.visibleItemsInfo
                     .filter { it.index != from }
                     .minByOrNull { kotlin.math.abs(it.offset + it.size / 2f - draggedCenter) }
@@ -297,25 +311,19 @@ private fun PlaylistDetailScreen(
                     val item = newItems.removeAt(from)
                     newItems.add(target.index, item)
                     items = newItems
-                    // 交换后拖拽项落到 target.index,其基准 offset 变化了 delta;
-                    // 同步把 draggingOffsetY 减去 delta,让拖拽项视觉始终跟手。
-                    // 否则 draggedCenter 随列表位置漂移,误判 target 让拖拽项连跳多个视频(误触)。
-                    val newBase = layoutInfo.visibleItemsInfo
-                      .firstOrNull { it.index == target.index }?.offset ?: draggingInfo.offset
-                    draggingOffsetY -= (newBase - draggingInfo.offset)
                     draggingIndex = target.index
                   }
                 },
                 onDragEnd = {
                   draggingBvid = null
                   draggingIndex = -1
-                  draggingOffsetY = 0f
+                  draggingDelta = 0f
                   scope.launch { youtubePlaylistStore.replaceVideos(playlist.name, items) }
                 },
                 onDragCancel = {
                   draggingBvid = null
                   draggingIndex = -1
-                  draggingOffsetY = 0f
+                  draggingDelta = 0f
                 },
               )
             },
