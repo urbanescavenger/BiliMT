@@ -1581,19 +1581,6 @@ fun PlayerScreen(
           mediaSource
         }
         player.setMediaSource(finalMediaSource)
-        // 强制初始选轨到选中档(修 Auto 假 4K):把自适应初始 bitrate 设成选中档 bitrate,
-        // ExoPlayer 初始选轨即选中该档(而非最低 240p),同时保留自适应降档能力。
-        // 对所有源生效(每个源按自己的选中档设置,避免 YouTube 4K 的初始 bitrate 残留到 B 站)。
-        val selectedBitrate = effectiveInfo.videoTracks
-          .firstOrNull { it.id == effectiveInfo.selectedQuality.id }?.bandwidth
-          ?.takeIf { it > 0 }
-        if (selectedBitrate != null) {
-          player.setTrackSelectionParameters(
-            player.trackSelectionParameters.buildUpon()
-              .setInitialVideoBitrate(selectedBitrate)
-              .build(),
-          )
-        }
         launchStep = "prepare"
         Log.i(PlayerPlaybackLogTag, "launch step: prepare")
         player.prepare()
