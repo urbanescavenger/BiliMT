@@ -111,6 +111,11 @@ fun MobileYoutubeChannelScreen(
         uiState.items = merged
         uiState.continuation = page.continuation
         uiState.endReached = page.continuation == null || merged.size == oldItems.size
+        Log.d(
+          "YoutubeChannel",
+          "loadNext merged old=${oldItems.size} new=${page.items.size} merged=${merged.size} " +
+            "endReached=${uiState.endReached}",
+        )
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
