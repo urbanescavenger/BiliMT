@@ -282,11 +282,12 @@ private fun PlaylistDetailScreen(
                   draggingOffsetY += dragAmount.y
                   val from = draggingIndex
                   if (from < 0) return@detectDragGesturesAfterLongPress
-                  val draggingInfo = listState.layoutInfo.visibleItemsInfo
+                  val layoutInfo = listState.layoutInfo
+                  val draggingInfo = layoutInfo.visibleItemsInfo
                     .firstOrNull { it.index == from }
                     ?: return@detectDragGesturesAfterLongPress
                   val draggedCenter = draggingInfo.offset + draggingInfo.size / 2f + draggingOffsetY
-                  val target = listState.layoutInfo.visibleItemsInfo
+                  val target = layoutInfo.visibleItemsInfo
                     .filter { it.index != from }
                     .minByOrNull { kotlin.math.abs(it.offset + it.size / 2f - draggedCenter) }
                   if (target != null && target.index != from) {
@@ -294,6 +295,12 @@ private fun PlaylistDetailScreen(
                     val item = newItems.removeAt(from)
                     newItems.add(target.index, item)
                     items = newItems
+                    // 交换后拖拽项落到 target.index,其基准 offset 变化了 delta;
+                    // 同步把 draggingOffsetY 减去 delta,让拖拽项视觉始终跟手。
+                    // 否则 draggedCenter 随列表位置漂移,误判 target 让拖拽项连跳多个视频(误触)。
+                    val newBase = layoutInfo.visibleItemsInfo
+                      .firstOrNull { it.index == target.index }?.offset ?: draggingInfo.offset
+                    draggingOffsetY -= (newBase - draggingInfo.offset)
                     draggingIndex = target.index
                   }
                 },
