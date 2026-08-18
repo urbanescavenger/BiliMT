@@ -693,18 +693,16 @@ fun MobilePlayerScreen(
       player.setMediaSource(mediaSource)
       // 强制初始选轨到选中档(修 Auto 假 4K):把自适应初始 bitrate 设成选中档 bitrate,
       // ExoPlayer 初始选轨即选中该档(而非最低 240p),同时保留自适应降档能力。
-      // 仅 YouTube 生效——B 站标准 DASH 源带宽估计正常,自适应能自行爬升,无需干预。
-      if (isYoutube) {
-        val selectedBitrate = effectiveInfo.videoTracks
-          .firstOrNull { it.id == effectiveInfo.selectedQuality.id }?.bandwidth
-          ?.takeIf { it > 0 }
-        if (selectedBitrate != null) {
-          player.setTrackSelectionParameters(
-            player.trackSelectionParameters.buildUpon()
-              .setInitialBitrate(selectedBitrate)
-              .build(),
-          )
-        }
+      // 对所有源生效(每个源按自己的选中档设置,避免 YouTube 4K 的初始 bitrate 残留到 B 站)。
+      val selectedBitrate = effectiveInfo.videoTracks
+        .firstOrNull { it.id == effectiveInfo.selectedQuality.id }?.bandwidth
+        ?.takeIf { it > 0 }
+      if (selectedBitrate != null) {
+        player.setTrackSelectionParameters(
+          player.trackSelectionParameters.buildUpon()
+            .setInitialBitrate(selectedBitrate)
+            .build(),
+        )
       }
       player.prepare()
       // 听视频模式:新 MediaSource prepare 会重置轨道选择为全开,需重新禁用视频轨。
@@ -769,13 +767,13 @@ fun MobilePlayerScreen(
       override fun onVideoSizeChanged(videoSize: VideoSize) {
         // 显示=实际播放:按实际解码高度更新画质菜单高亮。自适应降档时显示跟随实际档位,
         // 不再停留在请求档(修 Auto 假 4K 的「显示2160实际240p」)。
+        // 用 track.height 匹配(而非 quality.description)——B 站 description 是 "1080P"/"4K" 非 "${h}p"。
         val h = videoSize.height
         if (h > 0) {
           val info = (playerState as? MobilePlayerState.Ready)?.info
-          val match = info?.qualities?.minByOrNull { q ->
-            val qh = q.description.removeSuffix("p").toIntOrNull() ?: Int.MAX_VALUE
-            kotlin.math.abs(qh - h)
-          }
+          val match = info?.videoTracks
+            ?.minByOrNull { kotlin.math.abs(it.height - h) }
+            ?.let { track -> info.qualities.firstOrNull { it.id == track.id } }
           if (match != null) actualQualityId = match.id
         }
       }

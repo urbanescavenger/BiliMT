@@ -65,6 +65,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
@@ -220,6 +222,10 @@ fun PlayerScreen(
   var activePanel by remember { mutableStateOf(PlayerPanel.None) }
   var focusedPanelIndex by remember { mutableIntStateOf(0) }
   var selectedQuality by remember { mutableStateOf<PlaybackQuality?>(null) }
+  // 实际播放档位(随 onVideoSizeChanged 更新),用于画质面板高亮——保证「显示=实际播放」。
+  // 与 selectedQuality(请求档,供重载 preferredQualityId)分离:Auto 自适应降档时显示跟随实际,
+  // 但重载仍按请求档起播。
+  var actualQuality by remember { mutableStateOf<PlaybackQuality?>(null) }
   val storedDanmakuSettings by danmakuSettingsStore.settings.collectAsState(initial = DanmakuSettings())
   var danmakuSettings by remember { mutableStateOf(DanmakuSettings()) }
   var playbackSpeed by remember { mutableFloatStateOf(defaultPlaybackSpeed.value) }
@@ -614,7 +620,7 @@ fun PlayerScreen(
     }
     activePanel = panel
     focusedPanelIndex = when (panel) {
-      PlayerPanel.Quality -> selectedQuality?.let { quality ->
+      PlayerPanel.Quality -> actualQuality?.let { quality ->
         (playerState as? PlayerScreenState.Ready)?.info?.qualities?.indexOfFirst { it.id == quality.id }
       }?.takeIf { it >= 0 } ?: 0
       PlayerPanel.Speed -> PlayerSpeedOptions.indexOf(playbackSpeed).takeIf { it >= 0 } ?: 2
@@ -939,6 +945,7 @@ fun PlayerScreen(
     previewPositionMs = null
     completionReported = false
     selectedQuality = if (nextRequest.preferredQualityId == null) null else selectedQuality
+    actualQuality = if (nextRequest.preferredQualityId == null) null else actualQuality
     activeRequest = nextRequest
     displayRequest = nextRequest
     controlsVisible = false
@@ -1069,6 +1076,7 @@ fun PlayerScreen(
         // alpha.9X(恢复清晰度选择):选中 Quality 面板某档 → 更新 selectedQuality + 用 preferredQualityId 重跑 resolve。
         val quality = info.qualities.getOrNull(focusedPanelIndex) ?: return
         selectedQuality = quality
+        actualQuality = quality
         activeRequest = activeRequest.copy(
           startPositionMs = player.currentPosition.takeIf { it > 0L } ?: playbackPositionState.longValue,
           preferredQualityId = quality.id,
@@ -1267,6 +1275,20 @@ fun PlayerScreen(
         Log.d(PlayerPlaybackLogTag, "player isLoading=$isLoading state=${player.playbackState}")
       }
 
+      override fun onVideoSizeChanged(videoSize: VideoSize) {
+        // 显示=实际播放:按实际解码高度更新画质面板高亮。自适应降档时显示跟随实际档位,
+        // 不再停留在请求档(修 Auto 假 4K 的「显示2160实际240p」)。
+        // 用 track.height 匹配(而非 quality.description)——B 站 description 是 "1080P"/"4K" 非 "${h}p"。
+        val h = videoSize.height
+        if (h > 0) {
+          val info = (playerState as? PlayerScreenState.Ready)?.info
+          val match = info?.videoTracks
+            ?.minByOrNull { kotlin.math.abs(it.height - h) }
+            ?.let { track -> info.qualities.firstOrNull { it.id == track.id } }
+          if (match != null) actualQuality = match
+        }
+      }
+
       override fun onIsPlayingChanged(isPlaying: Boolean) {
         playerActuallyPlaying = isPlaying
         val pausedByUser = !isPlaying && !player.playWhenReady && player.playbackState != Player.STATE_ENDED
@@ -1435,6 +1457,7 @@ fun PlayerScreen(
       } else {
         coroutineScope.launch { lastPlayedStore.save(info.bvid, info.cid) }
         selectedQuality = info.selectedQuality
+        actualQuality = info.selectedQuality
         currentCodecText = info.videoTracks.firstOrNull()?.codecLabel().orEmpty()
         launchStep = "cdn"
         Log.i(PlayerPlaybackLogTag, "launch step: cdn")
@@ -1558,6 +1581,19 @@ fun PlayerScreen(
           mediaSource
         }
         player.setMediaSource(finalMediaSource)
+        // 强制初始选轨到选中档(修 Auto 假 4K):把自适应初始 bitrate 设成选中档 bitrate,
+        // ExoPlayer 初始选轨即选中该档(而非最低 240p),同时保留自适应降档能力。
+        // 对所有源生效(每个源按自己的选中档设置,避免 YouTube 4K 的初始 bitrate 残留到 B 站)。
+        val selectedBitrate = effectiveInfo.videoTracks
+          .firstOrNull { it.id == effectiveInfo.selectedQuality.id }?.bandwidth
+          ?.takeIf { it > 0 }
+        if (selectedBitrate != null) {
+          player.setTrackSelectionParameters(
+            player.trackSelectionParameters.buildUpon()
+              .setInitialBitrate(selectedBitrate)
+              .build(),
+          )
+        }
         launchStep = "prepare"
         Log.i(PlayerPlaybackLogTag, "launch step: prepare")
         player.prepare()
