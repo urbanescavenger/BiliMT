@@ -104,10 +104,13 @@ fun MobileYoutubeChannelScreen(
     scope.launch {
       try {
         val page = youtubeRepository.getChannelVideos(channelId, token)
-        val merged = (uiState.items + page.items).distinctBy { it.bvid }
+        // 先存旧列表再比较:若先赋 uiState.items=merged,merged.size==uiState.items.size 恒真,
+        // endReached 永远变 true,续页只翻一页就停(对齐 TV 版 latest.videos 旧列表比较)。
+        val oldItems = uiState.items
+        val merged = (oldItems + page.items).distinctBy { it.bvid }
         uiState.items = merged
         uiState.continuation = page.continuation
-        uiState.endReached = page.continuation == null || merged.size == uiState.items.size
+        uiState.endReached = page.continuation == null || merged.size == oldItems.size
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
