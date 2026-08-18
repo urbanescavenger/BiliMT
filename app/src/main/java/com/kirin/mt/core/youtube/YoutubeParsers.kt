@@ -166,6 +166,24 @@ internal object YoutubeParsers {
     return YoutubeCommentPage(items = comments, continuation = token)
   }
 
+  /** 诊断:dump 评论响应布局,确认旧 commentRenderer vs 新 commentViewModel+mutations。 */
+  fun dumpCommentStructure(root: JsonObject) {
+    var section = 0; var thread = 0; var vm = 0; var renderer = 0
+    collectByKey(root, "commentSectionRenderer") { section++ }
+    collectByKey(root, "commentThreadRenderer") { thread++ }
+    collectByKey(root, "commentViewModel") { vm++ }
+    collectByKey(root, "commentRenderer") { renderer++ }
+    Log.d(
+      "YoutubeComment",
+      "dumpCommentStructure mutations=${root["mutations"] != null} " +
+        "commentSection=$section commentThread=$thread commentViewModel=$vm commentRenderer=$renderer",
+    )
+    collectByKey(root, "commentThreadRenderer") { t ->
+      Log.d("YoutubeComment", "dumpCommentStructure thread keys=${t.keys} head=${t.toString().take(1200)}")
+      return@collectByKey
+    }
+  }
+
   /**
    * 从首屏 /next 响应提取初始评论 continuation token（对齐 NewPipe YoutubeCommentsExtractor）。
    *
@@ -209,6 +227,12 @@ internal object YoutubeParsers {
       ?.obj("results")
       ?.obj("results")
       ?.array("contents")
+    // 诊断:dump 主内容结构,确认 itemSectionRenderer targetId=comments-section 是否存在。
+    Log.d(
+      "YoutubeComment",
+      "findInitialCommentsToken mainContents=${contents?.size} " +
+        "targetIds=${contents?.mapNotNull { (it as? JsonObject)?.obj("itemSectionRenderer")?.stringOrNull("targetId") }}",
+    )
     if (contents != null) {
       for (item in contents) {
         val section = (item as? JsonObject)?.obj("itemSectionRenderer") ?: continue
