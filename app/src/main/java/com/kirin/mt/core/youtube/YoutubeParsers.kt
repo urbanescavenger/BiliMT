@@ -220,6 +220,22 @@ internal object YoutubeParsers {
     return thread.obj("comment")?.obj(KEY_COMMENT_RENDERER)?.let { parseCommentRenderer(it) }
   }
 
+  /** 诊断:dump 第一条评论的 entity payload 原始结构,确认 commentEntityPayload 字段。 */
+  fun dumpCommentEntity(root: JsonObject) {
+    val mutations = root.obj("frameworkUpdates")?.obj("entityBatchUpdate")?.array("mutations")
+    Log.d("YoutubeComment", "dumpCommentEntity mutations=${mutations?.size}")
+    mutations?.firstOrNull()?.let { m ->
+      Log.d("YoutubeComment", "dumpCommentEntity firstMutation entityKey=${(m as? JsonObject)?.stringOrNull("entityKey")?.take(30)} payload=${(m as? JsonObject)?.obj("payload")?.toString()?.take(1200)}")
+    }
+    collectByKey(root, KEY_COMMENT_THREAD_RENDERER) { thread ->
+      val vm = thread.obj("commentViewModel")?.obj("commentViewModel") ?: return@collectByKey
+      val key = vm.stringOrNull("commentKey")
+      val entity = mutations?.let { findMutationPayload(it, key) }
+      Log.d("YoutubeComment", "dumpCommentEntity commentKey=${key?.take(20)} entity=${entity?.toString()?.take(1500)}")
+      return@collectByKey
+    }
+  }
+
   /** 在 mutations 数组里按 entityKey 匹配，返回 payload。 */
   private fun findMutationPayload(mutations: JsonArray, key: String?): JsonObject? {
     if (key.isNullOrBlank()) return null

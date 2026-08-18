@@ -212,6 +212,15 @@ class YoutubeRepository(
       "getComments videoId=$videoId items=${page.items.size} " +
         "continuation=${page.continuation?.take(16) ?: "null"}",
     )
+    // 诊断:dump 第一条评论字段,确认 EUVM 是否提取到作者/内容。
+    page.items.firstOrNull()?.let { c ->
+      Log.d(
+        "YoutubeComment",
+        "getComments firstComment id=${c.commentId.take(16)} author=${c.authorName.take(20)} " +
+          "content=${c.content.take(40)} likes=${c.likeCount} replies=${c.replyCount}",
+      )
+    }
+    YoutubeParsers.dumpCommentEntity(response)
     return page
   }
 
