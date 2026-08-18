@@ -215,12 +215,20 @@ internal object YoutubeParsers {
       collectByKey(secondary, KEY_COMPACT_VIDEO_RENDERER) { node ->
         parseVideoRenderer(node)?.let { videos.add(it) }
       }
+      // 相关视频 rail 新格式 lockupViewModel(实测 2026-08-18:secondaryResults 每项是
+      // {"lockupViewModel":{...}},非 compactVideoRenderer,与频道页新格式一致)。
+      collectByKey(secondary, KEY_LOCKUP_VIEW_MODEL) { node ->
+        parseLockupViewModel(node)?.let { videos.add(it) }
+      }
       token = findContinuation(secondary)
     }
     // 防御：无 secondaryResults 容器时回退全根收集。
     if (videos.isEmpty() && token == null) {
       collectByKey(root, KEY_COMPACT_VIDEO_RENDERER) { node ->
         parseVideoRenderer(node)?.let { videos.add(it) }
+      }
+      collectByKey(root, KEY_LOCKUP_VIEW_MODEL) { node ->
+        parseLockupViewModel(node)?.let { videos.add(it) }
       }
       token = findContinuation(root)
     }
@@ -245,12 +253,6 @@ internal object YoutubeParsers {
           srInner.array("results")?.forEachIndexed { i, item ->
             val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
             Log.i("YtRelated", "secondary results[$i] renderer=$rendererKey")
-            // 诊断：dump 前几项完整原始 JSON，定位真实 renderer 结构（当前全 null 根因）。
-            if (i < 3) {
-              val raw = item.toString()
-              Log.i("YtRelated", "secondary results[$i] raw=${raw.take(600)}")
-              Log.i("YtRelated", "secondary results[$i] allKeys=${(item as? JsonObject)?.keys}")
-            }
           }
         }
       }
