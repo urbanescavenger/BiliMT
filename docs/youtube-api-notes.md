@@ -160,6 +160,15 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 
 **本次改动**：`YoutubeParsers.findContinuation` 改为三段式——①续页走 `appendContinuationItemsAction`；②首屏定位视频网格取第一个；③搜索等无网格容器回退全树第一个。同时 `RecommendScreen` 与移动 `HomeScreen` 的 YoutubeTrending 续页补 `merged.size == current.videos.size` 护栏。这样每频道 token 每次从新响应重新提取、能真正推进到更早（对齐 NewPipe 机制），且 token 一旦不推进立即到底不循环。
 
+### 4.10.3 移动端频道页续页 UI 层（2026-08-18，v3.0.4-alpha.3）
+
+§4.10.2 修的是**数据层** token 提取；移动端**单频道页**（`MobileYoutubeChannelScreen`，`getChannelVideos` 直拉 `/browse`）续页还叠了两个 **UI 层** bug，导致滑到底只翻一页就停：
+
+1. **近底触发被布尔去重吞掉**：`snapshotFlow { 近底布尔 }.distinctUntilChanged()` 只在布尔翻转时发射一次。首屏 loading 时（continuation 仍 null，`loadNext` 早退）把唯一的 `true` 消耗掉；短列表近底后值不再变、不再发射 → 续页永不触发。**改发射 `(last, total)` 对**去重，任何滚动/加载导致 last 或 total 变化都重新求值。
+2. **endReached 去重比较拿错列表**：`loadNext` 里先 `uiState.items = merged` 再算 `endReached = merged.size == uiState.items.size`，拿 merged 和自己比恒真 → 第二页后 `endReached=true` 永远停。**先存 `oldItems` 再比较 `merged.size == oldItems.size`**（对齐 TV 版 `latest.videos` 旧列表比较）。日志佐证：`next items=30 next=4qmFsgK9FRIY`（token 非 null）却 `endReached=true`。
+
+数据层 `getChannelVideos` 首屏/续页都正确捕获 continuation（`first items=30 next=...` / `next items=30 next=...`），问题纯在 UI 触发/状态逻辑。修复后 `loadNext merged old=30 new=30 merged=60 endReached=false` 连续翻多页。
+
 ---
 
 ## 5. 播放（Phase 2，未实现）
