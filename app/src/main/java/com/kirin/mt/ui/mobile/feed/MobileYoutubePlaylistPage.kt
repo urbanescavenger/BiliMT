@@ -254,10 +254,12 @@ private fun PlaylistDetailScreen(
     LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
       itemsIndexed(items, key = { _, v -> v.bvid }) { index, video ->
         val isDragging = video.bvid == draggingBvid
+        // 拖拽项禁用 animateItem:交换后布局位置立即跳变,由 graphicsLayer 的 translationY 补偿,
+        // 视觉连续跟手;若拖拽项也走 animateItem,交换后位置动画与 translationY 叠加会漂移出重影。
+        val itemModifier = if (isDragging) Modifier else Modifier.animateItem()
         Row(
-          modifier = Modifier
+          modifier = itemModifier
             .fillMaxWidth()
-            .animateItem()
             .zIndex(if (isDragging) 1f else 0f)
             .graphicsLayer { if (isDragging) translationY = draggingOffsetY }
             .background(
