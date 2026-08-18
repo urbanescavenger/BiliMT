@@ -69,6 +69,7 @@ class MainActivity : ComponentActivity() {
             youtubeHistoryStore = appContainer.youtubeHistoryStore,
             updateManager = appContainer.updateManager,
             apkInstaller = appContainer.apkInstaller,
+            downloadManager = appContainer.downloadManager,
           )
         }
       }

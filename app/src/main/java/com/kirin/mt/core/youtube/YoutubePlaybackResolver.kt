@@ -1,6 +1,8 @@
 package com.kirin.mt.core.youtube
 
 import android.util.Log
+import com.kirin.mt.core.download.ResolvedDownload
+import com.kirin.mt.core.download.ResolvedPart
 import com.kirin.mt.core.player.BiliPlaybackHeaders
 import com.kirin.mt.core.player.CodecCapability
 import com.kirin.mt.core.player.PlaybackCodecPreference
@@ -1366,6 +1368,107 @@ class YoutubePlaybackResolver(
     }
     Log.w(Tag, "兜底: dashMpdUrl 与 hlsUrl 均空 → 返回 null(上层落常规 NewPipe harvest,会 RELOAD 但已无其它出口)")
     return null
+  }
+
+  /**
+   * 下载专用解析:用 NewPipe [StreamInfo.getInfo] 取**已解密直链**(非 SABR `sabr://`),供离线下载。
+   *
+   * 播放 [resolve] 优先 SABR,产出的轨是 `sabr://` 协议不可直接下载字节;这里独立走 NewPipe 直链路径
+   * (content 已 n/s 解密,同 [buildDashFallbackFromNewPipe])。
+   *
+   * @param preferMuxed true=音视频一体 progressive 单文件(≤720p itag 18/22);false=video-only + audio 分文件。
+   * @param maxHeight 视频最大高度(null=最高)。video-only 高清常见 VP9/AV1,设备需支持硬解。
+   */
+  suspend fun resolveForDownload(
+    request: PlaybackRequest,
+    preferMuxed: Boolean,
+    maxHeight: Int?,
+  ): ResolvedDownload? {
+    val videoId = request.bvid
+    val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
+      .getOrElse {
+        Log.w(Tag, "resolveForDownload: NewPipe getInfo failed: ${it.message}")
+        return null
+      }
+    val headers = BiliPlaybackHeaders(
+      sessData = null,
+      biliJct = null,
+      mid = null,
+      referer = "https://www.youtube.com",
+      origin = "https://www.youtube.com",
+    ).asMap()
+
+    if (preferMuxed) {
+      val muxed = (info.videoStreams)
+        .filter { !it.content.isNullOrBlank() && it.height > 0 }
+        .let { list ->
+          list.filter { maxHeight == null || it.height <= maxHeight }.maxByOrNull { it.height }
+            ?: list.minByOrNull { it.height }
+        }
+      if (muxed == null) {
+        Log.w(Tag, "resolveForDownload: 无可用 muxed progressive 流")
+        return null
+      }
+      return ResolvedDownload(
+        videoId = videoId,
+        cid = 0L,
+        title = request.title,
+        coverUrl = request.coverUrl,
+        durationMs = info.duration * 1000L,
+        qualityLabel = "${muxed.height}p",
+        muxed = ResolvedPart(
+          url = muxed.content!!,
+          mimeType = muxed.format?.mimeType ?: "video/mp4",
+          codecs = muxed.codec ?: "",
+          width = muxed.width,
+          height = muxed.height,
+          initRange = null,
+          mediaStartOffset = 0L,
+        ),
+        headers = headers,
+      )
+    }
+
+    // 分文件:video-only(带 range) + audio。
+    val videoCandidates = info.videoOnlyStreams
+      .filter { !it.content.isNullOrBlank() && it.indexStart > 0 && it.height > 0 }
+    val video = videoCandidates
+      .let { list -> list.filter { maxHeight == null || it.height <= maxHeight }.maxByOrNull { it.height } ?: list.maxByOrNull { it.height } }
+    val audioCandidates = info.audioStreams.filter { !it.content.isNullOrBlank() && it.indexStart > 0 }
+    val audio = audioCandidates.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
+      ?: audioCandidates.firstOrNull { it.audioTrackType != AudioTrackType.DUBBED }
+      ?: audioCandidates.firstOrNull()
+    if (video == null || audio == null) {
+      Log.w(Tag, "resolveForDownload: 无 video-only/audio 分件(video=${video != null} audio=${audio != null})")
+      return null
+    }
+    return ResolvedDownload(
+      videoId = videoId,
+      cid = 0L,
+      title = request.title,
+      coverUrl = request.coverUrl,
+      durationMs = info.duration * 1000L,
+      qualityLabel = "${video.height}p",
+      video = ResolvedPart(
+        url = video.content!!,
+        mimeType = video.format?.mimeType ?: "video/mp4",
+        codecs = video.codec ?: "",
+        width = video.width,
+        height = video.height,
+        initRange = "${video.initStart}-${video.initEnd}",
+        mediaStartOffset = video.indexStart,
+      ),
+      audio = ResolvedPart(
+        url = audio.content!!,
+        mimeType = audio.format?.mimeType ?: "audio/mp4",
+        codecs = audio.codec ?: "",
+        width = 0,
+        height = 0,
+        initRange = "${audio.initStart}-${audio.initEnd}",
+        mediaStartOffset = audio.indexStart,
+      ),
+      headers = headers,
+    )
   }
 
   /** raw adaptive JSON → SABR [SabrFormatId](itag/lastModified/xtags 来自 raw 字段,height 显式传)。 */

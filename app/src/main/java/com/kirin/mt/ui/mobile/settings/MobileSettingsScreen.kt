@@ -100,6 +100,7 @@ fun MobileSettingsScreen(
   onOpenFollows: (FollowManageKind) -> Unit,
   onLogin: () -> Unit,
   onOpenLogs: () -> Unit,
+  onOpenDownloads: () -> Unit,
   webdavConfigStore: com.kirin.mt.core.webdav.WebDavConfigStore,
   webdavBackupService: com.kirin.mt.core.webdav.WebDavBackupService,
   appCacheManager: AppCacheManager,
@@ -315,6 +316,11 @@ fun MobileSettingsScreen(
       title = stringResource(R.string.settings_logs_entry_title),
       description = stringResource(R.string.settings_logs_entry_description),
       onClick = onOpenLogs,
+    )
+    MobileSettingsRow(
+      title = stringResource(R.string.downloads_settings_title),
+      description = stringResource(R.string.downloads_settings_description),
+      onClick = onOpenDownloads,
     )
     MobileSettingsRow(
       title = stringResource(R.string.settings_clear_cache_title),

@@ -97,6 +97,7 @@ fun BiliMobileApp(
   youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
+  downloadManager: com.kirin.mt.core.download.DownloadManager,
 ) {
   val context = LocalContext.current
   var selected by rememberSaveable { mutableStateOf(AppDestination.Recommend) }
@@ -302,6 +303,7 @@ fun BiliMobileApp(
           airJumpAssistantEnabled = settings.airJumpAssistantEnabled,
           videoRepository = videoRepository,
           youtubePlaylistStore = youtubePlaylistStore,
+          downloadManager = downloadManager,
           playQueue = playQueue,
           onPlayVideo = { video ->
             playQueue = emptyList()

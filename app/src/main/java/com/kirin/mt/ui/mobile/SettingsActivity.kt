@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.kirin.mt.BiliTvApplication
 import com.kirin.mt.R
 import com.kirin.mt.core.storage.UserSession
+import com.kirin.mt.ui.mobile.downloads.MobileDownloadsScreen
 import com.kirin.mt.ui.mobile.settings.FollowManageKind
 import com.kirin.mt.ui.mobile.settings.MobileFollowManageScreen
 import com.kirin.mt.ui.mobile.settings.MobileLogsScreen
@@ -48,9 +49,21 @@ class SettingsActivity : ComponentActivity() {
           val session by appContainer.sessionStore.session.collectAsState(initial = UserSession())
           var followScreen by remember { mutableStateOf<FollowManageKind?>(null) }
           var showLogs by remember { mutableStateOf(false) }
+          var showDownloads by remember { mutableStateOf(false) }
+          var playingDownloadId by remember { mutableStateOf<Long?>(null) }
           Column(modifier = Modifier.fillMaxSize()) {
             val kind = followScreen
-            if (showLogs) {
+            if (showDownloads) {
+              SettingsTopBar(
+                title = stringResource(R.string.downloads_screen_title),
+                onBack = { showDownloads = false },
+              )
+              MobileDownloadsScreen(
+                downloadManager = appContainer.downloadManager,
+                onPlayDownload = { playingDownloadId = it },
+                modifier = Modifier.fillMaxWidth(),
+              )
+            } else if (showLogs) {
               SettingsTopBar(
                 title = stringResource(R.string.settings_logs_entry_title),
                 onBack = { showLogs = false },
@@ -73,6 +86,7 @@ class SettingsActivity : ComponentActivity() {
                 onOpenFollows = { followScreen = it },
                 onLogin = { startActivity(android.content.Intent(this@SettingsActivity, LoginActivity::class.java)) },
                 onOpenLogs = { showLogs = true },
+                onOpenDownloads = { showDownloads = true },
                 webdavConfigStore = appContainer.webdavConfigStore,
                 webdavBackupService = appContainer.webdavBackupService,
                 appCacheManager = appContainer.appCacheManager,
@@ -96,6 +110,16 @@ class SettingsActivity : ComponentActivity() {
                 modifier = Modifier.fillMaxWidth(),
               )
             }
+          }
+          // 离线播放器覆盖层:从下载库点「播放」时全屏盖在设置页之上。
+          val playingId = playingDownloadId
+          if (playingId != null) {
+            com.kirin.mt.ui.mobile.player.MobileOfflinePlayerScreen(
+              downloadId = playingId,
+              downloadManager = appContainer.downloadManager,
+              onBack = { playingDownloadId = null },
+              modifier = Modifier.fillMaxSize(),
+            )
           }
         }
       }

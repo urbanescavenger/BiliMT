@@ -110,6 +110,7 @@ import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
@@ -130,6 +131,7 @@ import com.kirin.mt.core.youtube.YoutubeLoadProgress
 import com.kirin.mt.core.youtube.YoutubeLoadStep
 import com.kirin.mt.core.youtube.YoutubeVideoDetail
 import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
+import com.kirin.mt.ui.mobile.downloads.MobileDownloadQualityDialog
 import com.kirin.mt.core.network.FavoriteFolder
 import com.kirin.mt.core.network.BiliApiCodeException
 import com.kirin.mt.core.network.BiliNetworkException
@@ -238,6 +240,7 @@ fun MobilePlayerScreen(
   airJumpAssistantEnabled: Boolean,
   videoRepository: VideoRepository,
   youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
+  downloadManager: com.kirin.mt.core.download.DownloadManager,
   playQueue: List<VideoSummary> = emptyList(),
   onPlayVideo: (VideoSummary) -> Unit = {},
   onBack: () -> Unit,
@@ -288,12 +291,18 @@ fun MobilePlayerScreen(
   var youtubeDetail by remember { mutableStateOf<YoutubeVideoDetail?>(null) }
   var youtubeDetailLoading by remember { mutableStateOf(false) }
   var selectedQualityId by remember { mutableStateOf<Int?>(null) }
+  // 实际播放档位(随 onVideoSizeChanged 更新),用于画质菜单高亮——保证「显示=实际播放」。
+  // 与 selectedQualityId(请求档,供重载 preferredQualityId)分离:Auto 自适应降档时显示跟随实际,
+  // 但重载仍按请求档起播。
+  var actualQualityId by remember { mutableStateOf<Int?>(null) }
   var playbackSpeed by remember { mutableFloatStateOf(1f) }
   var settingsSheet by remember { mutableStateOf(false) }
   // alpha.9X(恢复清晰度选择):底栏画质下拉菜单(挂在 HD 图标按钮上)
   var showQualityMenu by remember { mutableStateOf(false) }
   // 底栏音轨下拉菜单(挂在音轨图标按钮上,仅 YouTube 多音轨视频显示)
   var showAudioMenu by remember { mutableStateOf(false) }
+  // 下载清晰度选择对话框(底栏下载按钮打开)
+  var showDownloadDialog by remember { mutableStateOf(false) }
   // 发送弹幕:底栏内联输入栏开关 / 文本 / 发送中。发在当前播放位置(progress 毫秒)。
   var danmakuInputActive by remember { mutableStateOf(false) }
   var danmakuInputText by remember { mutableStateOf("") }
@@ -576,6 +585,7 @@ fun MobilePlayerScreen(
         youtubeDefaultQuality = youtubeDefaultQuality,
       )
       selectedQualityId = info.selectedQuality.id
+      actualQualityId = info.selectedQuality.id
       // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体),
       // 或远程 manifest 兜底(DASH/HLS manifest 自带 A/V 轨,dummy 视频轨非 progressive 但 audioTracks 合法为空)。
       if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive && !info.hasRemoteManifest())) {
@@ -681,6 +691,21 @@ fun MobilePlayerScreen(
         DashMediaSource.Factory(dataSourceFactory).createMediaSource(dashItem)
       }
       player.setMediaSource(mediaSource)
+      // 强制初始选轨到选中档(修 Auto 假 4K):把自适应初始 bitrate 设成选中档 bitrate,
+      // ExoPlayer 初始选轨即选中该档(而非最低 240p),同时保留自适应降档能力。
+      // 仅 YouTube 生效——B 站标准 DASH 源带宽估计正常,自适应能自行爬升,无需干预。
+      if (isYoutube) {
+        val selectedBitrate = effectiveInfo.videoTracks
+          .firstOrNull { it.id == effectiveInfo.selectedQuality.id }?.bandwidth
+          ?.takeIf { it > 0 }
+        if (selectedBitrate != null) {
+          player.setTrackSelectionParameters(
+            player.trackSelectionParameters.buildUpon()
+              .setInitialBitrate(selectedBitrate)
+              .build(),
+          )
+        }
+      }
       player.prepare()
       // 听视频模式:新 MediaSource prepare 会重置轨道选择为全开,需重新禁用视频轨。
       // 自动连播/切集/切画质都走 loadRequest,此处理覆盖所有重载路径,保证听视频模式持续生效。
@@ -739,6 +764,20 @@ fun MobilePlayerScreen(
     val listener = object : Player.Listener {
       override fun onRenderedFirstFrame() {
         Log.i(MobilePlayerLogTag, "onRenderedFirstFrame (视频首帧已渲染)")
+      }
+
+      override fun onVideoSizeChanged(videoSize: VideoSize) {
+        // 显示=实际播放:按实际解码高度更新画质菜单高亮。自适应降档时显示跟随实际档位,
+        // 不再停留在请求档(修 Auto 假 4K 的「显示2160实际240p」)。
+        val h = videoSize.height
+        if (h > 0) {
+          val info = (playerState as? MobilePlayerState.Ready)?.info
+          val match = info?.qualities?.minByOrNull { q ->
+            val qh = q.description.removeSuffix("p").toIntOrNull() ?: Int.MAX_VALUE
+            kotlin.math.abs(qh - h)
+          }
+          if (match != null) actualQualityId = match.id
+        }
       }
 
       override fun onIsPlayingChanged(playing: Boolean) {
@@ -1416,7 +1455,7 @@ fun MobilePlayerScreen(
                   containerColor = Color(0xFF1A1A20),
                 ) {
                   qualities.forEach { q ->
-                    val selected = q.id == selectedQualityId
+                    val selected = q.id == actualQualityId
                     DropdownMenuItem(
                       text = {
                         Text(
@@ -1427,6 +1466,7 @@ fun MobilePlayerScreen(
                       onClick = {
                         showQualityMenu = false
                         selectedQualityId = q.id
+                        actualQualityId = q.id
                         scope.launch {
                           loadRequest(activeRequest.copy(
                             startPositionMs = player.currentPosition.takeIf { it > 0L }
@@ -1495,6 +1535,15 @@ fun MobilePlayerScreen(
                 onClick = { danmakuInputActive = !danmakuInputActive },
               )
             }
+            // 下载入口:打开清晰度选择对话框,确认后入队下载。直播/IPTV 不可下载。
+            if (!activeRequest.isLive && !activeRequest.isIptv) {
+              MobilePlayerIconButton(
+                iconRes = R.drawable.ic_player_download,
+                contentDescription = "下载",
+                tint = BiliColors.TextPrimary,
+                onClick = { showDownloadDialog = true },
+              )
+            }
             // 手动沉浸式全屏入口(强制方向 + 隐藏系统栏);所有视频都显示。居中播放由播放/暂停驱动,与此独立。
             MobilePlayerIconButton(
               iconRes = if (fullscreen) R.drawable.ic_player_fullscreen_exit else R.drawable.ic_player_fullscreen,
@@ -1535,6 +1584,28 @@ fun MobilePlayerScreen(
             },
           )
         }
+      }
+
+      // 下载清晰度选择对话框:确认后入队下载(Toast 反馈)。
+      if (showDownloadDialog) {
+        val readyInfo = (playerState as? MobilePlayerState.Ready)?.info
+        MobileDownloadQualityDialog(
+          isYoutube = activeRequest.isYoutube,
+          biliQualities = readyInfo?.qualities ?: emptyList(),
+          onDismiss = { showDownloadDialog = false },
+          onConfirm = { choice ->
+            showDownloadDialog = false
+            scope.launch {
+              downloadManager.enqueue(activeRequest, choice)
+                .onSuccess {
+                  Toast.makeText(context, context.getString(R.string.downloads_enqueued), Toast.LENGTH_SHORT).show()
+                }
+                .onFailure { e ->
+                  Toast.makeText(context, e.message ?: context.getString(R.string.downloads_enqueue_failed), Toast.LENGTH_LONG).show()
+                }
+            }
+          },
+        )
       }
 
       // 播放态:简介/评论 Tab 分栏填底(weight 1f,视频居中+底栏之后),复用暂停态同款 Tab。
