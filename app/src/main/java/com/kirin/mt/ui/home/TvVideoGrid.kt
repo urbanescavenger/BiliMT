@@ -40,8 +40,10 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
 import com.kirin.mt.ui.focus.focusDiag
 import androidx.compose.ui.input.key.Key
@@ -118,7 +120,7 @@ private val TvGridBringIntoViewSpec = object : BringIntoViewSpec {
   }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 internal fun TvVideoGrid(
   videos: List<VideoSummary>,
@@ -479,6 +481,13 @@ internal fun TvVideoGrid(
       modifier = modifier
         .fillMaxSize()
         .focusDiag(debugLabel)
+        // focusRestorer 兜底:恢复目标卡(restoredItemFocusRequester,即进入覆盖层/播放器前
+        // 最后聚焦的那张卡)在焦点树重建后由 Compose 自动恢复焦点,比下方手写 restore effect
+        // 更快更稳。仅当目标卡已组合(在视口内)时生效——焦点曾在它上面且节点被移除过才会触发,
+        // 不干扰首次进入/切 tab(此时该 requester 从未被聚焦,无恢复动作)。
+        // 目标卡不在视口(滚动到深处返回)时 focusRestorer 无节点可恢复,仍由手写 effect
+        // scroll+等布局+requestFocus 兜底。两者目标一致,不冲突。
+        .focusRestorer(restoredItemFocusRequester)
         .layout { measurable, constraints ->
           if (topBleedPx <= 0) {
             val placeable = measurable.measure(constraints)
