@@ -212,8 +212,10 @@ internal object YoutubeParsers {
     if (vm != null) {
       val commentKey = vm.stringOrNull("commentKey")
       val toolbarStateKey = vm.stringOrNull("toolbarStateKey")
-      val entity = mutations?.let { findMutationPayload(it, commentKey) }
-      val toolbar = mutations?.let { findMutationPayload(it, toolbarStateKey) }
+      // mutations 的 payload 是包装对象：评论实体包在 commentEntityPayload 里，
+      // 工具栏状态包在 engagementToolbarStateEntityPayload 里，需先解包再取字段。
+      val entity = mutations?.let { findMutationPayload(it, commentKey) }?.obj("commentEntityPayload")
+      val toolbar = mutations?.let { findMutationPayload(it, toolbarStateKey) }?.obj("engagementToolbarStateEntityPayload")
       val author = entity?.obj("author")
       val properties = entity?.obj("properties")
       val toolbarObj = entity?.obj("toolbar")
