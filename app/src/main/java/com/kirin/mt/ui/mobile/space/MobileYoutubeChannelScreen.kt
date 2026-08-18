@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.mobile.space
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -92,6 +93,11 @@ fun MobileYoutubeChannelScreen(
   }
 
   fun loadNext() {
+    Log.d(
+      "YoutubeChannel",
+      "loadNext called continuation=${uiState.continuation?.take(12) ?: "null"} " +
+        "loadingMore=${uiState.loadingMore} endReached=${uiState.endReached}",
+    )
     val token = uiState.continuation ?: return
     if (uiState.loadingMore || uiState.endReached) return
     uiState.loadingMore = true
@@ -126,15 +132,19 @@ fun MobileYoutubeChannelScreen(
     }
   }
 
-  // 滚到底自动翻页
+  // 滚到底自动翻页。发射 (last, total) 对而非布尔值:布尔去重会在首屏 loading 时把唯一的
+  // true 消耗掉(此时 continuation 仍 null,loadNext 早退),且短列表近底时值不变不再发射,
+  // 导致续页永不触发。对 pair 去重则任何滚动/加载导致 last 或 total 变化都会重新求值。
   LaunchedEffect(Unit) {
     snapshotFlow {
       val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
       val total = gridState.layoutInfo.totalItemsCount
-      total > 0 && last >= total - 6
+      last to total
     }
       .distinctUntilChanged()
-      .collect { nearEnd -> if (nearEnd) loadNext() }
+      .collect { (last, total) ->
+        if (total > 0 && last >= total - 6) loadNext()
+      }
   }
 
   // 频道页视频(channelId 为空)统一注入本频道 id + 名 + 头像,保证卡片 owner 点击留在本频道、

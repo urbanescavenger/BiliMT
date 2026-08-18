@@ -151,6 +151,11 @@ class YoutubeRepository(
       }
     }
     val feed = client.postJson("/browse", payload).let(YoutubeParsers::parseFeedPage)
+    Log.d(
+      "YoutubeChannel",
+      "getChannelVideos channelId=$channelId ${if (continuation == null) "first" else "next"} " +
+        "items=${feed.items.size} next=${feed.continuation?.take(12) ?: "null"}",
+    )
     return YoutubeVideoPage(
       items = feed.items.map(::toVideoSummary),
       continuation = feed.continuation,
