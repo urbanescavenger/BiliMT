@@ -62,6 +62,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
@@ -358,8 +359,8 @@ private fun SearchKeyboardView(
   onClearSearchHistory: () -> Unit,
   onSearch: (String) -> Unit,
 ) {
-  // 输入框聚焦时唤起系统 IME,自绘键盘隐藏;焦点移开时 IME 收起、自绘键盘恢复。
-  var inputFocused by remember { mutableStateOf(false) }
+  // 输入框聚焦不自动弹 IME,按确认键才进入 IME 输入态(自绘键盘隐藏);焦点移开时退出输入态、自绘键盘恢复。
+  var imeActive by remember { mutableStateOf(false) }
   Column(
     modifier = Modifier
       .fillMaxSize()
@@ -380,11 +381,12 @@ private fun SearchKeyboardView(
           searchText = searchText,
           onTextChange = onTextChange,
           focusRequester = inputFocusRequester,
-          onFocusChanged = { inputFocused = it },
+          imeActive = imeActive,
+          onImeActiveChange = { imeActive = it },
           onMoveUp = onMoveUpToSourceToggle,
           onMoveDown = {
             // IME 激活、自绘键盘隐藏时,Down 交给默认焦点系统(移到右侧建议面板)。
-            if (inputFocused) {
+            if (imeActive) {
               false
             } else {
               runCatching { keyboardFocusRequester.requestFocus() }.isSuccess
@@ -394,7 +396,7 @@ private fun SearchKeyboardView(
             onSearch(searchText)
           },
         )
-        if (!inputFocused) {
+        if (!imeActive) {
           Spacer(modifier = Modifier.height(BiliSpacing.Md))
           Row(
             horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
@@ -466,16 +468,25 @@ private fun SearchInputText(
   searchText: String,
   onTextChange: (String) -> Unit,
   focusRequester: FocusRequester,
-  onFocusChanged: (Boolean) -> Unit,
+  imeActive: Boolean,
+  onImeActiveChange: (Boolean) -> Unit,
   onMoveUp: () -> Boolean,
   onMoveDown: () -> Boolean,
   onSearchSubmit: () -> Unit,
 ) {
   val homeColors = LocalHomeColors.current
   val placeholder = stringResource(R.string.search_input_placeholder)
+  val keyboardController = LocalSoftwareKeyboardController.current
   var focused by remember { mutableStateOf(false) }
   val borderColor = if (focused) homeColors.accent else homeColors.glassBorder
   val borderWidth = if (focused) BiliFocus.BorderWidth else BiliFocus.RestingBorderWidth
+
+  // 兜底:焦点帧后系统仍可能自动弹 IME,再压一次确保「仅聚焦不弹、确认才进输入态」。
+  LaunchedEffect(focused, imeActive) {
+    if (focused && !imeActive) {
+      keyboardController?.hide()
+    }
+  }
 
   Box(
     modifier = Modifier
@@ -506,12 +517,26 @@ private fun SearchInputText(
         .focusRequester(focusRequester)
         .onFocusChanged { focusState ->
           focused = focusState.isFocused
-          onFocusChanged(focusState.isFocused)
+          if (!focusState.isFocused) {
+            // 焦点移开:退出 IME 输入态,自绘键盘恢复。
+            if (imeActive) {
+              onImeActiveChange(false)
+            }
+          } else if (!imeActive) {
+            // 仅聚焦不自动弹系统 IME,等按确认键再进入输入态。
+            keyboardController?.hide()
+          }
         }
         .onPreviewKeyEvent { event ->
           when {
             event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> onMoveUp()
             event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
+            event.type == KeyEventType.KeyDown && event.key.isConfirmKey() && !imeActive -> {
+              // 未进入输入态时按确认键:唤起 IME、隐藏自绘键盘。
+              onImeActiveChange(true)
+              keyboardController?.show()
+              true
+            }
             else -> false
           }
         },
