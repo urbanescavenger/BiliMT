@@ -232,7 +232,6 @@ internal fun UserFeedScreen(
     when (selectedTab) {
       UserFeedTab.DynamicVideo -> loadDynamicFirstPage(
         videoRepository,
-        coroutineScope,
         feedState.dynamicVideo,
         "video",
         youtubeChannels,
@@ -241,7 +240,6 @@ internal fun UserFeedScreen(
       )
       UserFeedTab.DynamicAll -> loadDynamicFirstPage(
         videoRepository,
-        coroutineScope,
         feedState.dynamicAll,
         "all",
         emptyList(),
@@ -285,11 +283,11 @@ internal fun UserFeedScreen(
       when (selectedTab) {
         UserFeedTab.DynamicVideo -> {
           feedState.dynamicVideo.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, coroutineScope, feedState.dynamicVideo, "video", youtubeChannels, youtubeChannelStore, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, feedState.dynamicVideo, "video", youtubeChannels, youtubeChannelStore, forceRefresh = true)
         }
         UserFeedTab.DynamicAll -> {
           feedState.dynamicAll.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, coroutineScope, feedState.dynamicAll, "all", emptyList(), youtubeChannelStore, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, feedState.dynamicAll, "all", emptyList(), youtubeChannelStore, forceRefresh = true)
         }
         UserFeedTab.History -> {
           feedState.history.handledManualRefreshKey = manualRefreshKey
@@ -555,7 +553,6 @@ private fun UserFeedTabRow(
 
 private suspend fun loadDynamicFirstPage(
   videoRepository: VideoRepository,
-  coroutineScope: CoroutineScope,
   state: DynamicFeedUiState,
   type: String,
   youtubeChannels: List<YoutubeChannel>,
@@ -574,81 +571,64 @@ private suspend fun loadDynamicFirstPage(
     state.focusedVideoKey = ""
   }
   state.nextOffset = ""
-  state.state = try {
+  // 1. 拉 B 站动态
+  var biliEndReached = true
+  var biliError: String? = null
+  val biliVideos = try {
     val page = videoRepository.getDynamicFeed(type = type)
     state.nextOffset = page.offset
     state.loadedOnce = true
-    if (page.videos.isEmpty()) {
-      UserFeedState.Empty
-    } else {
-      state.hasLoadedContent = true
-      UserFeedState.Success(
-        videos = page.videos,
-        loadingMore = false,
-        endReached = !page.hasMore,
-        loadMoreError = "",
-      )
-    }
+    biliEndReached = !page.hasMore
+    page.videos
   } catch (error: CancellationException) {
     throw error
   } catch (error: Exception) {
     state.loadedOnce = true
-    UserFeedState.Failed(error.message.orEmpty())
+    biliError = error.message.orEmpty()
+    null
   }
 
-  // 仅「动态(视频)」合并 YouTube 关注;无频道或 type="all" 时不产生额外加载。
-  if (type != "video" || youtubeChannels.isEmpty()) {
-    return
+  // 2. 拉 YouTube 关注(仅「动态(视频)」,等查完再一次性合并,不再分批增量叠加)
+  val youtubeVideos = if (type == "video" && youtubeChannels.isNotEmpty()) {
+    fetchYoutubeAll(videoRepository, youtubeChannels, youtubeChannelStore)
+  } else {
+    emptyList()
   }
-  mergeYoutubeIntoDynamic(videoRepository, coroutineScope, state, youtubeChannels, youtubeChannelStore)
+
+  // 3. 合并一次
+  val merged = mergeByPubdate(biliVideos.orEmpty(), youtubeVideos)
+  state.state = when {
+    merged.isEmpty() && biliError != null -> UserFeedState.Failed(biliError)
+    merged.isEmpty() -> UserFeedState.Empty
+    else -> {
+      state.hasLoadedContent = true
+      UserFeedState.Success(
+        videos = merged,
+        loadingMore = false,
+        endReached = biliEndReached,
+        loadMoreError = "",
+      )
+    }
+  }
 }
 
-/**
- * 后台分批增量拉取 YouTube 关注流,每批就绪即与当前 B 站动态按发布时间合并重排。
- * alpha.98:去 5s 固定超时(几百频道必超)——getSubscriptionsFeed 已分批 + 单频道独立容错,
- * 靠 onChunkReady 增量 merge,不再等全量后一次性合并。
- */
-private fun mergeYoutubeIntoDynamic(
+/** 全量拉取 YouTube 关注流(等全部查完),失败返回空(单频道已容错)。 */
+private suspend fun fetchYoutubeAll(
   videoRepository: VideoRepository,
-  coroutineScope: CoroutineScope,
-  state: DynamicFeedUiState,
   channels: List<YoutubeChannel>,
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
-) {
-  coroutineScope.launch {
-    try {
-      videoRepository.youtubeSubscriptionsFeed(
-        channels,
-        onChannelAvatarResolved = { channel ->
-          youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-        },
-        onChunkReady = { chunk ->
-          if (chunk.isNotEmpty()) {
-            when (val cur = state.state) {
-              is UserFeedState.Success -> {
-                val merged = mergeByPubdate(cur.videos, chunk)
-                if (merged.size > cur.videos.size) state.hasLoadedContent = true
-                state.state = cur.copy(videos = merged)
-              }
-              is UserFeedState.Empty -> {
-                state.hasLoadedContent = true
-                state.state = UserFeedState.Success(
-                  videos = chunk,
-                  loadingMore = false,
-                  endReached = true,
-                  loadMoreError = "",
-                )
-              }
-              else -> {} // Failed / Loading 保持原样
-            }
-          }
-        },
-      )
-    } catch (error: CancellationException) {
-      throw error
-    } catch (error: Exception) {
-      // 单频道已容错,仅意外整批异常到此;保持原样,不阻塞动态。
-    }
+): List<VideoSummary> {
+  return try {
+    videoRepository.youtubeSubscriptionsFeed(
+      channels,
+      onChannelAvatarResolved = { channel ->
+        youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+      },
+    )
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    emptyList()
   }
 }
 
@@ -1028,7 +1008,7 @@ private fun DynamicFeedContent(
       },
       onRetry = {
         coroutineScope.launch {
-          loadDynamicFirstPage(videoRepository, coroutineScope, state, type, youtubeChannels, youtubeChannelStore, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, state, type, youtubeChannels, youtubeChannelStore, forceRefresh = true)
         }
       },
       onLoadMore = { loadDynamicNextPage(videoRepository, coroutineScope, state, type) },

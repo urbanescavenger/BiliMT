@@ -31,10 +31,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
-import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
-import com.kirin.mt.core.network.YoutubeFeedCacheTtlMs
 import com.kirin.mt.core.network.mergeByPubdate
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeChannelStore
@@ -103,18 +101,6 @@ fun MobileDynamicScreen(
   // 保留旧数据刷新时驱动下拉指示器(区别于初始 Loading 的网格内 spinner)。
   var isRefreshing by remember { mutableStateOf(false) }
 
-  /** 把 YouTube 流合并进当前 B 站动态(先去掉旧 YouTube 部分再合并,保证缓存秒出+网络刷新不重复)。 */
-  fun mergeYoutube(yt: List<VideoSummary>) {
-    when (val cur = state) {
-      is DynamicState.Success -> {
-        val biliOnly = cur.videos.filterNot { it.source == SourceYoutube }
-        state = cur.copy(videos = mergeByPubdate(biliOnly, yt))
-      }
-      is DynamicState.Empty -> state = DynamicState.Success(yt, loadingMore = false, endReached = true)
-      else -> {} // Failed / Loading 保持原样
-    }
-  }
-
   suspend fun loadFirstBody() {
     // 保留旧数据后台刷新:有旧 Success 时不闪 Loading,由 isRefreshing 驱动下拉指示器;
     // 无旧数据(首次进入)才显示网格内 Loading spinner。
@@ -127,76 +113,66 @@ fun MobileDynamicScreen(
     nextOffset = ""
     youtubeTimeoutNotice = false
     try {
-      state = try {
+      // 1. 拉 B 站动态
+      var biliEndReached = true
+      var biliError: String? = null
+      val biliVideos = try {
         val page = videoRepository.getDynamicFeed(type = "video")
         nextOffset = page.offset
-        when {
-          page.videos.isEmpty() -> prev ?: DynamicState.Empty
-          else -> DynamicState.Success(
-            videos = page.videos,
-            loadingMore = false,
-            endReached = !page.hasMore,
-          )
-        }
+        biliEndReached = !page.hasMore
+        page.videos
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
-        // 失败保留旧数据兜底,避免刷新失败清空列表。
-        prev ?: DynamicState.Failed(e.message.orEmpty().ifBlank { "加载失败" })
+        biliError = e.message.orEmpty().ifBlank { "加载失败" }
+        null
+      }
+
+      // 2. 拉 YouTube 关注(全量,等查完再一次性合并,不再分批增量叠加)
+      val youtubeVideos = if (youtubeChannels.isNotEmpty()) {
+        fetchYoutubeAll()
+      } else {
+        emptyList()
+      }
+
+      // 3. 合并一次
+      val merged = mergeByPubdate(biliVideos.orEmpty(), youtubeVideos)
+      state = when {
+        merged.isEmpty() && biliError != null -> prev ?: DynamicState.Failed(biliError)
+        merged.isEmpty() -> prev ?: DynamicState.Empty
+        else -> DynamicState.Success(
+          videos = merged,
+          loadingMore = false,
+          endReached = biliEndReached,
+        )
       }
     } finally {
       isRefreshing = false
     }
+  }
 
-    // 合并 YouTube 关注:先读缓存秒出(10min 内),后台分批增量拉网络刷新并每批写缓存;
-    // 全部频道拉完仍空才用缓存兜底(即使过期)。无频道时不产生额外加载。
-    if (youtubeChannels.isNotEmpty()) {
-      val currentIds = youtubeChannels.map { it.channelId }
-      val cached = youtubeFeedCacheStore.read()
-      val cacheValid = cached != null && cached.channelIds == currentIds
-      val cacheFresh = cacheValid && System.currentTimeMillis() - cached.fetchedAt <= YoutubeFeedCacheTtlMs
-      if (cacheFresh && cached.videos.isNotEmpty()) {
-        mergeYoutube(cached.videos) // 秒出
+  /** 全量拉取 YouTube 关注流(等全部查完),失败用缓存兜底。 */
+  suspend fun fetchYoutubeAll(): List<VideoSummary> {
+    val currentIds = youtubeChannels.map { it.channelId }
+    val cached = youtubeFeedCacheStore.read()
+    val cacheValid = cached != null && cached.channelIds == currentIds
+    return try {
+      val result = videoRepository.youtubeSubscriptionsFeed(
+        youtubeChannels,
+        onChannelAvatarResolved = { channel ->
+          youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+        },
+      )
+      if (result.isNotEmpty()) {
+        youtubeTimeoutNotice = false
+        youtubeFeedCacheStore.write(currentIds, result)
       }
-      scope.launch {
-        val accumulator = mutableListOf<VideoSummary>()
-        try {
-          val result = videoRepository.youtubeSubscriptionsFeed(
-            youtubeChannels,
-            onChannelAvatarResolved = { channel ->
-              youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-            },
-            onChunkReady = { chunk ->
-              // 增量:先累积再 merge 全量 accumulator——mergeYoutube 内部会 filterNot 掉 state 里所有旧
-              // YouTube 再合并传入列表,若传单批 chunk 则后批覆盖前批(二次覆盖 bug)。传累积全量才不丢。
-              // 缓存写是后台 IO(onChunkReady 是非挂起回调,不能直接 suspend;writeChannel 内部走 Room,
-              // 用独立协程异步写,不阻塞主线程 merge)。
-              if (chunk.isNotEmpty()) {
-                accumulator += chunk
-                mergeYoutube(accumulator)
-                chunk.groupBy { it.channelId }.forEach { (channelId, videos) ->
-                  scope.launch { youtubeFeedCacheStore.writeChannel(channelId, videos) }
-                }
-              }
-            },
-          )
-          if (accumulator.isEmpty()) {
-            // 全部频道拉完仍无内容 → 缓存兜底(即使过期)。
-            if (cacheValid && cached.videos.isNotEmpty()) mergeYoutube(cached.videos)
-          } else {
-            youtubeTimeoutNotice = false
-            // 每批已 writeChannel,收尾再写一次全量(保证读缓存时 channelIds 集合与当前列表一致,
-            // 且覆盖批次间去重后的最终列表)。
-            youtubeFeedCacheStore.write(currentIds, accumulator)
-          }
-        } catch (e: CancellationException) {
-          throw e
-        } catch (e: Exception) {
-          // 意外失败:提示 + 缓存兜底(即使过期)。
-          youtubeTimeoutNotice = true
-          if (cacheValid && cached.videos.isNotEmpty()) mergeYoutube(cached.videos)
-        }
-      }
+      result
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      youtubeTimeoutNotice = true
+      if (cacheValid && cached.videos.isNotEmpty()) cached.videos else emptyList()
     }
   }
 
