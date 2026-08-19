@@ -37,17 +37,23 @@ class DownloadUrlResolver(
       val codecPref = settings.playbackCodecPreference
       val qualityPref = settings.playbackQualityPreference
       val qn = choice.biliQn
-      val resolved = if (qn != null) {
-        playbackRepository.getPlaybackInfo(
-          request.copy(preferredQualityId = qn),
-          codecPref,
-          qualityPref,
-        )
+      val targetHeight = biliQualityHeight(choice.biliQualityLabel)
+      // 下载不强制用户所选 qn 去请求 playurl：B站对「fourk=1 + 低 qn」的不一致组合会返回
+      // code -400(请求错误),而 qn=127(Highest,与播放路径一致)实测稳定返回全部轨。故用最高 qn
+      // 取全量轨,再按用户所选清晰度的高度挑「不超过目标高度」的带宽最高轨,既绕过 -400 又尊重选择。
+      val resolved = playbackRepository.getPlaybackInfo(
+        request.copy(preferredQualityId = PlaybackQualityPreference.Highest.requestedQualityId),
+        codecPref,
+        qualityPref,
+      )
+      val video = if (targetHeight != null) {
+        resolved.videoTracks
+          .filter { it.height > 0 && it.height <= targetHeight }
+          .maxByOrNull { it.bandwidth }
+          ?: resolved.videoTracks.maxByOrNull { it.bandwidth }
       } else {
-        playbackRepository.getPlaybackInfo(request, codecPref, qualityPref)
-      }
-      val video = resolved.videoTracks.maxByOrNull { it.bandwidth }
-        ?: error("B站 DASH 无视频轨")
+        resolved.videoTracks.maxByOrNull { it.bandwidth }
+      } ?: error("B站 DASH 无视频轨")
       val audio = resolved.audioTracks.maxByOrNull { it.bandwidth }
         ?: error("B站 DASH 无音频轨")
       ResolvedDownload(
@@ -61,7 +67,14 @@ class DownloadUrlResolver(
         audio = audio.toResolvedPart(),
         headers = resolved.headers.asMap(),
       )
-    }.onFailure { Log.w(Tag, "resolveBili 失败: ${it.message}") }
+    }.onFailure { Log.w(Tag, "resolveBili 失败(bvid=${request.bvid} cid=${request.cid} qn=$qn): ${it.message}") }
+  }
+
+  /** 从清晰度描述解析目标高度(px):"1080P 高清"→1080、"4K 超清"→2160;解析不到返回 null(取最高轨)。 */
+  private fun biliQualityHeight(label: String): Int? {
+    Regex("""(\d+)\s*P""", RegexOption.IGNORE_CASE).find(label)?.groupValues?.get(1)?.toIntOrNull()?.let { return it }
+    if (Regex("""4K""", RegexOption.IGNORE_CASE).containsMatchIn(label)) return 2160
+    return null
   }
 
   private suspend fun resolveYoutube(request: PlaybackRequest, choice: DownloadQualityChoice): Result<ResolvedDownload> {
