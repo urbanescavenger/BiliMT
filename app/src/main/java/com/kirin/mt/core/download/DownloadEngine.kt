@@ -29,6 +29,10 @@ class DownloadEngine(
 ) {
   private val bufferSize = 64 * 1024
 
+  /** 进度上报最小间隔(ms)。对齐 LibreTube 非逐 buffer 上报:逐块回调会让调用方(前台通知 +
+   * Room 查询)占满共享 IO 线程池,饿死实际网络读——本地测试下载远慢于播放即此因。 */
+  private val emitIntervalMs = 120L
+
   /** 探测 URL 总字节数:`Range: bytes=0-0`,解析 `Content-Range: bytes 0-0/<TOTAL>`。失败返回 -1。 */
   suspend fun probeLength(url: String, headers: Map<String, String>): Long = withContext(Dispatchers.IO) {
     val request = Request.Builder()
@@ -150,8 +154,11 @@ class DownloadEngine(
         java.io.FileOutputStream(file, append).buffered().use { output ->
           body.byteStream().use { input ->
             val buffer = ByteArray(bufferSize)
-            // 逐块读估算瞬时速率(bytes/s):用单调时钟算 delta,避免 display 显示跳变。
-            var lastBytes = file.length()
+            // 本地字节计数累加,避免逐块调 file.length()(每次 stat 系统调用)。
+            // 进度/速率按 emitIntervalMs 聚合上报,而非逐 64KB——高频 onProgress 会带起调用方
+            // 的 Room 查询 + 前台通知 binder 调用,占满共享 IO 线程池饿死实际网络读(对齐 LibreTube)。
+            var written = file.length()
+            var lastEmitBytes = written
             var lastEmit = SystemClock.elapsedRealtime()
             while (true) {
               if (shouldPause()) return false
@@ -159,14 +166,21 @@ class DownloadEngine(
               if (read == -1) break
               output.write(buffer, 0, read)
               output.flush()
-              val nowBytes = file.length()
+              written += read
               val now = SystemClock.elapsedRealtime()
               val dt = now - lastEmit
-              val speed = if (dt > 0) ((nowBytes - lastBytes).toDouble() / dt * 1000).toLong().coerceAtLeast(0L) else 0L
-              lastBytes = nowBytes
-              lastEmit = now
-              onProgress(DownloadProgress(part.downloadId, part.id, nowBytes, reportTotal, speed))
+              if (dt >= emitIntervalMs) {
+                val speed = if (dt > 0) ((written - lastEmitBytes).toDouble() / dt * 1000).toLong().coerceAtLeast(0L) else 0L
+                lastEmitBytes = written
+                lastEmit = now
+                onProgress(DownloadProgress(part.downloadId, part.id, written, reportTotal, speed))
+              }
             }
+            // 流结束补发一次,保证末尾字节/速率也上报(进度条到 100%)。
+            val endNow = SystemClock.elapsedRealtime()
+            val endDt = endNow - lastEmit
+            val endSpeed = if (endDt > 0) ((written - lastEmitBytes).toDouble() / endDt * 1000).toLong().coerceAtLeast(0L) else 0L
+            onProgress(DownloadProgress(part.downloadId, part.id, written, reportTotal, endSpeed))
           }
         }
         true

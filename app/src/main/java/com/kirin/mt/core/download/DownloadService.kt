@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -29,6 +30,7 @@ class DownloadService : Service() {
   private var queueJob: Job? = null
   private var currentTitle: String = ""
   private var currentFraction: Float = 0f
+  private var lastNotifyAt = 0L
 
   private val manager: DownloadManager
     get() = (application as BiliTvApplication).appContainer.downloadManager
@@ -66,6 +68,11 @@ class DownloadService : Service() {
 
   private fun onProgress(p: DownloadProgress) {
     manager.reportProgress(p)
+    // 前台通知 + Room 查询只按限流间隔刷(引擎已聚合,但服务端再兜一层)。若逐事件 Room 查询 +
+    // binder notify 会在共享 Dispatchers.IO 上跟实际网络读抢线程,拖慢下载(对齐 LibreTube 低频刷新)。
+    val now = SystemClock.elapsedRealtime()
+    if (now - lastNotifyAt < NOTIFY_INTERVAL_MS) return
+    lastNotifyAt = now
     scope.launch {
       val group = manager.downloads.first().firstOrNull { it.download.id == p.downloadId }
       currentTitle = group?.download?.title ?: currentTitle
@@ -142,6 +149,7 @@ class DownloadService : Service() {
     const val EXTRA_ID = "download_id"
     private const val CHANNEL_ID = "bili_download"
     private const val NOTIF_ID = 2001
+    private const val NOTIFY_INTERVAL_MS = 250L
     private const val Tag = "DownloadSvc"
   }
 }
