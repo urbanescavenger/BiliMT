@@ -334,37 +334,43 @@ fun MobileOfflinePlayerScreen(
       .background(Color.Black),
   ) {
     Column(Modifier.fillMaxSize()) {
-      // 视频区:全屏 weight(1f) 占满;非全屏 16:9 顶部(留状态栏高度,全屏沉浸式 inset=0 自动不留)。
+      // 视频区:全屏/非全屏均 weight(1f) 占满剩余(全屏铺满整屏,非全屏占上半、下方列表占下半)。
+      // 非全屏留状态栏高度(全屏沉浸式 inset=0 自动不留)。
       Box(
         modifier = Modifier
           .fillMaxWidth()
-          .then(if (fullscreen) Modifier.weight(1f) else Modifier.aspectRatio(16f / 9f))
+          .weight(1f)
           .then(if (!fullscreen) Modifier.statusBarsPadding() else Modifier),
       ) {
-        AndroidView(
-          modifier = Modifier.fillMaxSize(),
-          factory = { ctx ->
-            PlayerView(ctx).apply { useController = false }
-          },
-          // player 随 currentDownloadId 切换重建时,update 重新绑定,避免 PlayerView 仍指向旧 player。
-          update = { view -> view.player = player },
-        )
+        // 视频画面区:全屏铺满;非全屏 16:9 垂直居中(上下黑边,对齐在线播放器)。
+        val videoFrameModifier = if (fullscreen) Modifier.fillMaxSize()
+          else Modifier.fillMaxSize().aspectRatio(16f / 9f).align(Alignment.Center)
+        Box(modifier = videoFrameModifier) {
+          AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+              PlayerView(ctx).apply { useController = false }
+            },
+            // player 随 currentDownloadId 切换重建时,update 重新绑定,避免 PlayerView 仍指向旧 player。
+            update = { view -> view.player = player },
+          )
 
-        // 听视频模式:叠一层黑底 + 音频指示遮住画面(不销毁 PlayerView,避免 surface 重建黑闪)。
-        if (audioOnly) {
-          Box(
-            modifier = Modifier.fillMaxSize().background(Color.Black),
-            contentAlignment = Alignment.Center,
-          ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-              Icon(
-                painter = painterResource(R.drawable.ic_player_audio),
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(48.dp),
-              )
-              Spacer(Modifier.height(8.dp))
-              Text("听视频模式", color = Color.White)
+          // 听视频模式:叠一层黑底 + 音频指示遮住画面(不销毁 PlayerView,避免 surface 重建黑闪)。
+          if (audioOnly) {
+            Box(
+              modifier = Modifier.fillMaxSize().background(Color.Black),
+              contentAlignment = Alignment.Center,
+            ) {
+              Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                  painter = painterResource(R.drawable.ic_player_audio),
+                  contentDescription = null,
+                  tint = Color.White,
+                  modifier = Modifier.size(48.dp),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("听视频模式", color = Color.White)
+              }
             }
           }
         }
