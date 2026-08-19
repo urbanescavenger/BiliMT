@@ -91,7 +91,9 @@ fun MobileDownloadsScreen(
       var groupTotal = 0L
       var totalKnown = false
       for (item in group.items) {
-        val t = maxOf(livePartTotal[did to item.id] ?: -1L, item.totalSize)
+        // 优先用 progress 流实时 reportTotal(DASH 折算后的实际应下文件长度,已 emit 即准确);
+        // 未开始下载的分件无 progress 时才 fallback Room item.totalSize。
+        val t = livePartTotal[did to item.id] ?: item.totalSize
         if (t > 0L) {
           groupTotal += t
           totalKnown = true

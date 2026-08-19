@@ -72,11 +72,21 @@ class DownloadEngine(
     val dashInitStart = initStart ?: 0L
     val dashInitEnd = initEnd ?: 0L
 
-    // 1) DASH init 段:必须占据文件开头 [0..b],需 initStart==0(标准 on-demand DASH 恒为 0)。
+    // 分件下载完成后的目标文件长度(对齐 LibreTube 的 fileSize>=downloadSize 口径)。
+    // DASH:init 段(0..initEnd)+ 媒体段(mediaStartOffset..EOF)拼成一个文件;progressive:整资源。
+    // probe 的 part.totalSize 是整资源 Content-Length,DASH 只下其中一部分,需折算成实际应下文件长度,
+    // 否则 completed 判定 finalLen>=total 永远不满足、进度条剩余显示「减不完」的残值。
+    val targetTotal = if (hasDash && part.totalSize > 0L && part.totalSize > part.mediaStartOffset) {
+      (dashInitEnd + 1L) + (part.totalSize - part.mediaStartOffset)
+    } else {
+      part.totalSize
+    }
+
+    // 1) DASH init 段:必须占据文件开头 [0, b],需 init==0(标准 on-demand DASH 恒为 0)。
     var initDone = part.initDone
     if (hasDash && dashInitStart == 0L) {
       if (file.length() < dashInitEnd + 1) {
-        val ok = downloadRange(part, headers, start = dashInitStart, end = dashInitEnd, file = file, append = false, onProgress = onProgress, shouldPause = shouldPause)
+        val ok = downloadRange(part, headers, start = dashInitStart, end = dashInitEnd, file = file, append = false, reportTotal = targetTotal, onProgress = onProgress, shouldPause = shouldPause)
         if (!ok) return@withContext PartDownloadResult(completed = false, initDone = false, error = null)
         initDone = true
       } else {
@@ -87,10 +97,9 @@ class DownloadEngine(
     // 2) 媒体段:续传偏移 = 目标起始 + 已下媒体字节。
     val fileLen = file.length()
     val mediaStart = part.mediaStartOffset + max(0L, fileLen - (dashInitEnd + 1))
-    val ok = downloadOpenRange(part, headers, start = mediaStart, file = file, onProgress = onProgress, shouldPause = shouldPause)
+    val ok = downloadOpenRange(part, headers, start = mediaStart, file = file, reportTotal = targetTotal, onProgress = onProgress, shouldPause = shouldPause)
     val finalLen = file.length()
-    val total = part.totalSize
-    val completed = ok && (total <= 0L || finalLen >= total)
+    val completed = ok && (targetTotal <= 0L || finalLen >= targetTotal)
     PartDownloadResult(completed = completed, initDone = initDone, error = if (ok) null else "interrupted")
   }
 
@@ -102,9 +111,10 @@ class DownloadEngine(
     end: Long,
     file: File,
     append: Boolean,
+    reportTotal: Long,
     onProgress: (DownloadProgress) -> Unit,
     shouldPause: () -> Boolean,
-  ): Boolean = streamBody(part, headers, range = "bytes=$start-$end", file = file, append = append, onProgress = onProgress, shouldPause = shouldPause)
+  ): Boolean = streamBody(part, headers, range = "bytes=$start-$end", file = file, append = append, reportTotal = reportTotal, onProgress = onProgress, shouldPause = shouldPause)
 
   /** 下载 [start] 起到 EOF 的开区间,追加到 [file] 末尾。返回 true=完整读完。 */
   private suspend fun downloadOpenRange(
@@ -112,9 +122,10 @@ class DownloadEngine(
     headers: Map<String, String>,
     start: Long,
     file: File,
+    reportTotal: Long,
     onProgress: (DownloadProgress) -> Unit,
     shouldPause: () -> Boolean,
-  ): Boolean = streamBody(part, headers, range = "bytes=$start-", file = file, append = true, onProgress = onProgress, shouldPause = shouldPause)
+  ): Boolean = streamBody(part, headers, range = "bytes=$start-", file = file, append = true, reportTotal = reportTotal, onProgress = onProgress, shouldPause = shouldPause)
 
   private suspend fun streamBody(
     part: DownloadItemEntity,
@@ -122,6 +133,7 @@ class DownloadEngine(
     range: String,
     file: File,
     append: Boolean,
+    reportTotal: Long,
     onProgress: (DownloadProgress) -> Unit,
     shouldPause: () -> Boolean,
   ): Boolean {
@@ -153,7 +165,7 @@ class DownloadEngine(
               val speed = if (dt > 0) ((nowBytes - lastBytes).toDouble() / dt * 1000).toLong().coerceAtLeast(0L) else 0L
               lastBytes = nowBytes
               lastEmit = now
-              onProgress(DownloadProgress(part.downloadId, part.id, nowBytes, part.totalSize, speed))
+              onProgress(DownloadProgress(part.downloadId, part.id, nowBytes, reportTotal, speed))
             }
           }
         }
