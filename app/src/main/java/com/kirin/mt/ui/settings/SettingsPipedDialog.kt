@@ -66,7 +66,7 @@ internal fun SettingsPipedDialog(
 
   BackHandler { onDismiss() }
 
-  // 弹窗打开时把焦点落到 URL 字段,自动唤起系统 IME。
+  // 弹窗打开时焦点先落到 URL 字段(仅高亮不弹 IME),按确认键才唤起系统输入法。
   LaunchedEffect(Unit) {
     runCatching { urlFocusRequester.requestFocus() }
   }
@@ -108,7 +108,7 @@ internal fun SettingsPipedDialog(
         fontSize = BiliTypography.BodySmall,
       )
 
-      // 单字段走系统输入法:聚焦 OutlinedTextField 自动唤起 IME。空串=用默认实例。
+      // 单字段参照搜索框:聚焦只高亮,按确认键才唤起 IME。空串=用默认实例。
       OutlinedTextField(
         value = urlValue,
         onValueChange = { urlValue = it },
@@ -116,7 +116,7 @@ internal fun SettingsPipedDialog(
         singleLine = true,
         modifier = Modifier
           .fillMaxWidth()
-          .focusRequester(urlFocusRequester),
+          .then(confirmImeModifier(urlFocusRequester)),
       )
 
       // 保存 / 取消 行(对照 IPTV 弹窗)。

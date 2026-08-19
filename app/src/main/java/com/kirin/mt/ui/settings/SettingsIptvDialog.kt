@@ -75,7 +75,7 @@ internal fun SettingsIptvDialog(
 
   BackHandler { onDismiss() }
 
-  // 弹窗打开时把焦点落到 URL 字段,自动唤起系统 IME。
+  // 弹窗打开时焦点先落到 URL 字段(仅高亮不弹 IME),按确认键才唤起系统输入法。
   LaunchedEffect(Unit) {
     runCatching { urlFocusRequester.requestFocus() }
   }
@@ -117,7 +117,7 @@ internal fun SettingsIptvDialog(
         fontSize = BiliTypography.BodySmall,
       )
 
-      // 三字段走系统输入法:聚焦 OutlinedTextField 自动唤起 IME。
+      // 三字段参照搜索框:聚焦只高亮,按确认键才唤起 IME。
       OutlinedTextField(
         value = urlValue,
         onValueChange = { urlValue = it },
@@ -125,7 +125,7 @@ internal fun SettingsIptvDialog(
         singleLine = true,
         modifier = Modifier
           .fillMaxWidth()
-          .focusRequester(urlFocusRequester),
+          .then(confirmImeModifier(urlFocusRequester)),
       )
       OutlinedTextField(
         value = usernameValue,
@@ -134,7 +134,7 @@ internal fun SettingsIptvDialog(
         singleLine = true,
         modifier = Modifier
           .fillMaxWidth()
-          .focusRequester(usernameFocusRequester),
+          .then(confirmImeModifier(usernameFocusRequester)),
       )
       OutlinedTextField(
         value = passwordValue,
@@ -145,7 +145,7 @@ internal fun SettingsIptvDialog(
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
         modifier = Modifier
           .fillMaxWidth()
-          .focusRequester(passwordFocusRequester),
+          .then(confirmImeModifier(passwordFocusRequester)),
       )
 
       // 保存 / 取消 行(对照 WebDAV 弹窗)。
