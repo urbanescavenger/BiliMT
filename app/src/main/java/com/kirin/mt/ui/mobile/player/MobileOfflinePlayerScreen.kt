@@ -232,7 +232,11 @@ fun MobileOfflinePlayerScreen(
           onValueChange = { seekPreviewMs = it.toLong() },
           onValueChangeFinished = {
             seekPreviewMs.takeIf { it >= 0L }?.let { target ->
-              player.seekTo(target.coerceIn(0L, durationMs))
+              val clamped = target.coerceIn(0L, durationMs)
+              player.seekTo(clamped)
+              // 对齐 LibreTube:seek 后立即同步本地 position,不等 LaunchedEffect 轮询,
+              // 避免松手瞬间 thumb 闪回旧位置。
+              positionMs = clamped
             }
             seekPreviewMs = -1L
           },
