@@ -561,6 +561,10 @@ fun MobilePlayerScreen(
         return
       }
       val resolvedRequest = request.withResolvedMetadata(metadata = videoMetadata, cid = cid)
+      // 用解析后的真实 cid 回写 activeRequest:下载/相关/分享等复用 activeRequest 的地方都要带 cid,
+      // 否则 activeRequest 停留在原始 request(cid=0),下载对话框把它带进 playurl 会 -400 请求错误。
+      // (播放内部走 resolvedRequest 所以能播;下载走 activeRequest 就一直带 cid=0。对齐 BV:官方恒用已解析 cid)
+      activeRequest = resolvedRequest
       displayTitle = resolvedRequest.title.ifBlank { request.title }
       val info = playbackRepository.getPlaybackInfo(
         request = resolvedRequest,
