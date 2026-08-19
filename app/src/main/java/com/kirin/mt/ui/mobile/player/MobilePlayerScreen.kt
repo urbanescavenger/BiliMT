@@ -119,7 +119,6 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
-import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kirin.mt.R
@@ -157,6 +156,7 @@ import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackService
+import com.kirin.mt.core.player.startPlaybackService
 import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.PlayerHolder
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
@@ -188,22 +188,6 @@ private const val DanmakuSendLogTag = "BiliDanmakuSend"
 private const val LocalDanmakuLeadMs = 1000L
 private const val MobilePlayerLogTag = "BiliMT:MobilePlayer"
 
-/**
- * 安全启动后台保活前台服务。Android 12+ 禁止后台 startForegroundService,会抛
- * ForegroundServiceStartNotAllowedException(extends IllegalStateException);Android 8-11 后台
- * startService 抛 IllegalStateException。服务在播放开始时已在前台启动,后台连播时保持运行即可,
- * 这里捕获异常避免崩溃;若服务已在运行,用普通 startService 刷新通知标题(已运行服务后台允许)。
- */
-private fun startPlaybackService(context: Context) {
-  try {
-    ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
-  } catch (e: IllegalStateException) {
-    Log.w(MobilePlayerLogTag, "startForegroundService blocked in background: ${e.message}")
-    // 不 fallback 到 startService——后台 startService 虽入队成功,但 onStartCommand 里
-    // startForeground 仍会抛 ForegroundServiceStartNotAllowedException。
-    // PlaybackService 侧已 catch 该异常优雅停止,这里直接放弃启动即可。
-  }
-}
 /** alpha.67:单次播放会话内 error-retry 上限(onPlayerErrorChanged),超过则交用户手动重试,避免死循环。 */
 private const val MaxStallAutoRetry = 2
 // 空降助手阈值(镜像 TV PlayerScreen)

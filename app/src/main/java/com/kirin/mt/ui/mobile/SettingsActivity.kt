@@ -117,6 +117,7 @@ class SettingsActivity : ComponentActivity() {
             com.kirin.mt.ui.mobile.player.MobileOfflinePlayerScreen(
               downloadId = playingId,
               downloadManager = appContainer.downloadManager,
+              playbackRepository = appContainer.playbackRepository,
               onBack = { playingDownloadId = null },
               modifier = Modifier.fillMaxSize(),
             )
