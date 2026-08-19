@@ -102,9 +102,17 @@ fun MobileDownloadsScreen(
       }
       val downloaded = group.items.sumOf { livePartBytes[did to it.id] ?: 0L }
       val remainingBytes = if (totalKnown) (groupTotal - downloaded).coerceAtLeast(0L) else null
-      // 组级总速度 = 所有并发分件瞬时速度之和。
+      // 组级总速度 = 还在下载(未下完)的并发分件瞬时速度之和。
+      // 已完成分件不再 emit,但其瞬时速度残留在 liveSpeedParts——必须排除,
+      // 否则视频已下完(残留 7M)+ 音频慢速(65k)会错误显示 7M。
       val totalSpeed = liveSpeedParts.entries
         .filter { it.key.first == did }
+        .filter { (key, _) ->
+          val total = livePartTotal[key]
+          val done = livePartBytes[key] ?: 0L
+          // 总量未知或还没下完 → 仍在活跃下载,计入;已下完(done>=total) → 排除残留。
+          total == null || total <= 0L || done < total
+        }
         .sumOf { it.value }
       DownloadCard(
         group = group,
