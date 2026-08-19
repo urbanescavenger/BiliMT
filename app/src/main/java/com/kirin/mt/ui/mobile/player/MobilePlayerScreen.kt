@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.net.Uri
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
@@ -151,8 +152,11 @@ import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackEpisode
+import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.PlaybackRepository
+import com.kirin.mt.core.player.BiliPlaybackHeaders
+import com.kirin.mt.core.download.DownloadWithItems
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackService
@@ -174,6 +178,7 @@ import com.kirin.mt.ui.player.withResolvedMetadata
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -200,6 +205,67 @@ private sealed interface MobilePlayerState {
   data object Loading : MobilePlayerState
   data class Ready(val info: PlaybackInfo) : MobilePlayerState
   data class Failed(val message: String) : MobilePlayerState
+}
+
+/**
+ * 在线播放器缓存命中:按 bvid(YouTube 为 videoId)+ cid(分P)在下载库找「已可播」的下载项。
+ * 仅匹配 isPlayable(媒体分件全 COMPLETED);部分下载/未完成回落在线。
+ * cid 匹配避免多 P 视频误用其它分P的缓存文件(下载存的是解析后真实 cid)。
+ */
+private suspend fun findCachedPlayable(
+  downloadManager: com.kirin.mt.core.download.DownloadManager,
+  bvid: String,
+  cid: Long,
+): DownloadWithItems? {
+  return downloadManager.downloads.first()
+    .firstOrNull { it.download.videoId == bvid && it.download.cid == cid && it.isPlayable }
+}
+
+/**
+ * 为缓存命中构造合成 [PlaybackInfo]:qualities 只含缓存清晰度(只读),tracks 空(本地源不走网络轨)。
+ * bvid/cid/durationMs 正确,供 saveProgress/画质高亮/后台播放复用。
+ */
+private fun buildCachedPlaybackInfo(cached: DownloadWithItems, cid: Long, title: String): PlaybackInfo {
+  val qualityLabel = cached.download.qualityLabel.ifBlank { "已缓存" }
+  val quality = PlaybackQuality(id = -1, description = qualityLabel)
+  return PlaybackInfo(
+    bvid = cached.download.videoId,
+    cid = cid,
+    title = title,
+    durationMs = cached.download.durationMs,
+    qualities = listOf(quality),
+    selectedQuality = quality,
+    videoTracks = emptyList(),
+    audioTracks = emptyList(),
+    headers = BiliPlaybackHeaders(sessData = null, biliJct = null),
+  )
+}
+
+/**
+ * 用本地已下载文件构建 MediaSource(镜像离线播放器):单文件(muxed)→ ProgressiveMediaSource,
+ * 视频+音频两文件 → MergingMediaSource 现场 mux。DefaultDataSource 走本地文件,无网络 headers。
+ */
+private fun buildLocalMediaSource(
+  context: Context,
+  downloadManager: com.kirin.mt.core.download.DownloadManager,
+  cached: DownloadWithItems,
+  mediaMetadata: androidx.media3.common.MediaMetadata,
+): MediaSource {
+  val (videoFile, audioFile) = downloadManager.playbackFiles(cached.download.id)
+  if (videoFile == null) throw IllegalStateException("缓存文件缺失")
+  val dataSourceFactory = DefaultDataSource.Factory(context)
+  val videoItem = androidx.media3.common.MediaItem.Builder()
+    .setUri(Uri.fromFile(videoFile))
+    .setMediaMetadata(mediaMetadata)
+    .build()
+  val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
+  return if (audioFile != null) {
+    val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+      .createMediaSource(androidx.media3.common.MediaItem.fromUri(Uri.fromFile(audioFile)))
+    MergingMediaSource(videoSource, audioSource)
+  } else {
+    videoSource
+  }
 }
 
 /**
@@ -287,6 +353,9 @@ fun MobilePlayerScreen(
   var showAudioMenu by remember { mutableStateOf(false) }
   // 下载清晰度选择对话框(底栏下载按钮打开)
   var showDownloadDialog by remember { mutableStateOf(false) }
+  // 缓存命中:当前播放源是本地已下载文件(在线播放器命中缓存)。命中时跳过网络取流、
+  // 清晰度只读、隐藏下载入口;简介/评论/弹幕仍走在线。
+  var usingCachedPlayback by remember { mutableStateOf(false) }
   // 发送弹幕:底栏内联输入栏开关 / 文本 / 发送中。发在当前播放位置(progress 毫秒)。
   var danmakuInputActive by remember { mutableStateOf(false) }
   var danmakuInputText by remember { mutableStateOf("") }
@@ -566,6 +635,75 @@ fun MobilePlayerScreen(
       // (播放内部走 resolvedRequest 所以能播;下载走 activeRequest 就一直带 cid=0。对齐 BV:官方恒用已解析 cid)
       activeRequest = resolvedRequest
       displayTitle = resolvedRequest.title.ifBlank { request.title }
+      // 缓存命中:在线播放器命中已下载视频 → 视频区播本地文件,跳过网络取流(getPlaybackInfo)。
+      // 简介/评论/弹幕仍走在线(上方已加载 metadata/youtubeDetail,下方弹幕照常),与在线播放一致。
+      val cachedPlayback = findCachedPlayable(downloadManager, request.bvid, cid)
+      if (cachedPlayback != null) {
+        usingCachedPlayback = true
+        val cachedInfo = buildCachedPlaybackInfo(cachedPlayback, cid, displayTitle)
+        selectedQualityId = cachedInfo.selectedQuality.id
+        actualQualityId = cachedInfo.selectedQuality.id
+        val startPositionMs = playbackRepository.getSavedProgress(cachedInfo.bvid, cachedInfo.cid)?.positionMs
+          ?: request.startPositionMs
+        // 后台播放 MediaStyle 通知封面:下载 coverUrl bytes(IO),失败忽略。
+        val coverBytes = request.coverUrl.takeIf { it.isNotEmpty() }?.let { url ->
+          runCatching {
+            withContext(Dispatchers.IO) {
+              playbackHttpClient.newCall(okhttp3.Request.Builder().url(url).build()).execute()
+                .use { resp -> resp.body?.bytes() }
+            }
+          }.getOrNull()
+        }
+        val mediaMetadata = androidx.media3.common.MediaMetadata.Builder()
+          .setTitle(displayTitle)
+          .setArtist(request.ownerName)
+          .apply { if (coverBytes != null) setArtworkData(coverBytes, androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
+          .build()
+        val localSource = buildLocalMediaSource(context, downloadManager, cachedPlayback, mediaMetadata)
+        player.setMediaSource(localSource)
+        player.prepare()
+        // 听视频模式:新 MediaSource prepare 会重置轨道选择为全开,需重新禁用视频轨。
+        if (audioOnly) {
+          player.setTrackSelectionParameters(
+            player.trackSelectionParameters.buildUpon()
+              .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+              .build(),
+          )
+        }
+        player.setPlaybackSpeed(playbackSpeed)
+        if (startPositionMs > 0L) {
+          player.seekTo(startPositionMs)
+          playbackPositionState.longValue = startPositionMs
+          danmakuSyncToken += 1L
+        }
+        player.playWhenReady = true
+        playerState = MobilePlayerState.Ready(cachedInfo)
+        // alpha.49:播放就绪,隐藏加载步骤提示。
+        YoutubeLoadProgress.clear()
+        // YouTube 起播即写入播放历史(与在线路径一致)。
+        if (isYoutube) {
+          runCatching {
+            youtubeHistoryStore.recordPlay(
+              com.kirin.mt.core.youtube.YoutubeHistoryEntry(
+                videoId = cachedInfo.bvid,
+                title = cachedInfo.title,
+                channelName = request.ownerName,
+                channelId = request.channelId,
+                thumbnailUrl = request.coverUrl,
+                durationMs = cachedInfo.durationMs,
+                positionMs = startPositionMs,
+                lastPlayedAtMs = System.currentTimeMillis(),
+              ),
+            )
+          }
+        }
+        // 弹幕(与在线路径一致)。
+        if (danmakuSettings.enabled && cid > 0L) {
+          danmakuEntries = runCatching { playbackRepository.getDanmaku(cid) }.getOrDefault(emptyList())
+        }
+        return
+      }
+      usingCachedPlayback = false
       val info = playbackRepository.getPlaybackInfo(
         request = resolvedRequest,
         codecPreference = playbackCodecPreference,
@@ -1413,8 +1551,16 @@ fun MobilePlayerScreen(
             }
             // alpha.9X(恢复清晰度选择):HD 画质按钮 + DropdownMenu,列全部可播档位,选中即重载(preferredQualityId)。
             // 播放器页面未包 MaterialTheme,DropdownMenu 显式深色 containerColor,否则默认白底。
+            // 缓存命中:清晰度只读——显示缓存清晰度静态文字,不可切换(本地源无多轨)。
             val qualities = readyInfo.qualities
-            if (qualities.isNotEmpty()) {
+            if (usingCachedPlayback) {
+              Text(
+                text = readyInfo.selectedQuality.description,
+                color = BiliColors.TextPrimary,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(horizontal = 8.dp),
+              )
+            } else if (qualities.isNotEmpty()) {
               Box {
                 MobilePlayerIconButton(
                   iconRes = R.drawable.ic_player_hd,
@@ -1508,8 +1654,8 @@ fun MobilePlayerScreen(
                 onClick = { danmakuInputActive = !danmakuInputActive },
               )
             }
-            // 下载入口:打开清晰度选择对话框,确认后入队下载。直播/IPTV 不可下载。
-            if (!activeRequest.isLive && !activeRequest.isIptv) {
+            // 下载入口:打开清晰度选择对话框,确认后入队下载。直播/IPTV 不可下载;已缓存(命中本地源)隐藏。
+            if (!activeRequest.isLive && !activeRequest.isIptv && !usingCachedPlayback) {
               MobilePlayerIconButton(
                 iconRes = R.drawable.ic_player_download,
                 contentDescription = "下载",
