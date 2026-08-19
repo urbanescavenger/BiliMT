@@ -50,18 +50,19 @@ fun MobileDownloadsScreen(
 ) {
   val scope = rememberCoroutineScope()
   val downloads by downloadManager.downloads.collectAsState(initial = emptyList())
-  // 实时字节进度:downloadId → fraction。Room 的 totalDownloadedBytes 是文件长度,服务回吐更及时。
+  // 实时字节进度:downloadId → fraction。Download 的 totalDownloadedBytes 是文件长度,服务回吐更及时。
   var liveProgress by remember { mutableStateOf<Map<Long, Float>>(emptyMap()) }
-  // 实时速率:downloadId → bytesPerSecond(由 DownloadEngine 逐块读估算)。
-  var liveSpeed by remember { mutableStateOf<Map<Long, Long>>(emptyMap()) }
-  // 实时已下载字节:(downloadId, partId) → downloadedBytes，用于组级剩余大小实时累加。
+  // 实时速率按分件记:(downloadId, partId) → bytesPerSecond;组级显示需对这些并发分件求和,
+  // 否则同一下载的视频+音频两分件各自报速度,只取最后一个会「速度不对」。
+  var liveSpeedParts by remember { mutableStateOf<Map<Pair<Long, Int>, Long>>(emptyMap()) }
+  // 实时已下载字节:(downloadId, partId) → downloadedBytes，用于进度汇报实时累加。
   var livePartBytes by remember { mutableStateOf<Map<Pair<Long, Int>, Long>>(emptyMap()) }
-  // 实时分件总量:(downloadId, partId) → totalBytes(由 progress 流回传探测后的真实大小)。
+  // 实时分件总量:(downloadId, partId) → totalBytes(由 progress 报告探测后的真实大小)。
   var livePartTotal by remember { mutableStateOf<Map<Pair<Long, Int>, Long>>(emptyMap()) }
   LaunchedEffect(Unit) {
     downloadManager.progress.collect { p ->
       liveProgress = liveProgress + (p.downloadId to p.fraction)
-      if (p.bytesPerSecond > 0L) liveSpeed = liveSpeed + (p.downloadId to p.bytesPerSecond)
+      if (p.bytesPerSecond > 0L) liveSpeedParts = liveSpeedParts + ((p.downloadId to p.partId) to p.bytesPerSecond)
       livePartBytes = livePartBytes + ((p.downloadId to p.partId) to p.downloadedBytes)
       if (p.totalBytes > 0L) livePartTotal = livePartTotal + ((p.downloadId to p.partId) to p.totalBytes)
     }
@@ -101,10 +102,14 @@ fun MobileDownloadsScreen(
       }
       val downloaded = group.items.sumOf { livePartBytes[did to it.id] ?: 0L }
       val remainingBytes = if (totalKnown) (groupTotal - downloaded).coerceAtLeast(0L) else null
+      // 组级总速度 = 所有并发分件瞬时速度之和。
+      val totalSpeed = liveSpeedParts.entries
+        .filter { it.key.first == did }
+        .sumOf { it.value }
       DownloadCard(
         group = group,
         liveFraction = liveProgress[group.download.id],
-        liveSpeedBps = liveSpeed[group.download.id],
+        liveSpeedBps = totalSpeed.takeIf { it > 0L },
         remainingBytes = remainingBytes,
         onPlay = { onPlayDownload(group.download.id) },
         onPause = { scope.launch { downloadManager.pause(group.download.id) } },
