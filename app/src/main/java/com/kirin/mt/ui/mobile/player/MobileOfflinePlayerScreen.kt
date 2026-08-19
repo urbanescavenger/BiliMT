@@ -7,9 +7,7 @@ import android.content.pm.ActivityInfo
 import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -457,27 +455,6 @@ fun MobileOfflinePlayerScreen(
                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
               )
               Text(formatMs(durationMs), color = Color.White)
-            }
-            Row(
-              modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-              horizontalArrangement = Arrangement.Center,
-              verticalAlignment = Alignment.CenterVertically,
-            ) {
-              Box(
-                modifier = Modifier
-                  .size(48.dp)
-                  .clickable {
-                    if (player.isPlaying) player.pause() else player.play()
-                  },
-                contentAlignment = Alignment.Center,
-              ) {
-                Icon(
-                  painter = painterResource(if (isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play),
-                  contentDescription = if (isPlaying) "暂停" else "播放",
-                  tint = Color.White,
-                  modifier = Modifier.size(32.dp),
-                )
-              }
             }
           }
         }
