@@ -1,20 +1,23 @@
 package com.kirin.mt.ui.mobile.player
 
 import android.net.Uri
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -26,7 +29,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -102,6 +110,18 @@ fun MobileOfflinePlayerScreen(
   var positionMs by remember { mutableLongStateOf(0L) }
   var durationMs by remember { mutableLongStateOf(0L) }
   var title by remember { mutableStateOf<String?>(null) }
+  var audioOnly by remember { mutableStateOf(false) }
+  var seekPreviewMs by remember { mutableLongStateOf(-1L) }
+
+  // 听视频模式(音频-only):禁用视频轨,只留音频。与在线播放器 MobilePlayerScreen.toggleAudioOnly 一致。
+  val toggleAudioOnly: () -> Unit = {
+    audioOnly = !audioOnly
+    player.setTrackSelectionParameters(
+      player.trackSelectionParameters.buildUpon()
+        .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, audioOnly)
+        .build(),
+    )
+  }
 
   LaunchedEffect(player) {
     while (true) {
@@ -139,6 +159,25 @@ fun MobileOfflinePlayerScreen(
       },
     )
 
+    // 听视频模式:叠一层黑底 + 音频指示遮住画面(不销毁 PlayerView,避免 surface 重建黑闪)。与在线播放器一致。
+    if (audioOnly) {
+      Box(
+        modifier = Modifier.fillMaxSize().background(Color.Black),
+        contentAlignment = Alignment.Center,
+      ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+          Icon(
+            painter = painterResource(R.drawable.ic_player_audio),
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(48.dp),
+          )
+          Spacer(Modifier.height(8.dp))
+          Text("听视频模式", color = Color.White)
+        }
+      }
+    }
+
     // 顶栏:返回 + 标题(取文件父行标题)。
     Row(
       modifier = Modifier
@@ -161,6 +200,14 @@ fun MobileOfflinePlayerScreen(
         maxLines = 1,
         modifier = Modifier.weight(1f),
       )
+      // 听视频模式(音频-only)切换:顶栏右侧耳机按钮,激活态粉色高亮。与在线播放器一致。
+      IconButton(onClick = toggleAudioOnly) {
+        Icon(
+          painter = painterResource(R.drawable.ic_player_audio),
+          contentDescription = if (audioOnly) "退出听视频" else "听视频",
+          tint = if (audioOnly) BiliColors.BiliPink else Color.White,
+        )
+      }
     }
 
     // 底部:进度条 + 播放/暂停。
@@ -172,22 +219,32 @@ fun MobileOfflinePlayerScreen(
         .padding(horizontal = 12.dp, vertical = 8.dp),
       horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-      LinearProgressIndicator(
-        progress = { if (durationMs > 0L) positionMs.toFloat() / durationMs else 0f },
-        modifier = Modifier.fillMaxWidth(),
-        color = BiliColors.BiliPink,
-        trackColor = Color(0x33FFFFFF),
-      )
+      // 可拖拽 seek 滑块:拖动实时预览,松手 seekTo。与在线播放器 SlimSeekSlider 交互一致。
       Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Text(
-          text = "${formatMs(positionMs)} / ${formatMs(durationMs)}",
-          color = Color.White,
-          style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+        Text(formatMs(if (seekPreviewMs >= 0L) seekPreviewMs else positionMs), color = Color.White)
+        SlimSeekSlider(
+          value = (if (seekPreviewMs >= 0L) seekPreviewMs else positionMs).toFloat()
+            .coerceIn(0f, durationMs.toFloat()),
+          valueRange = 0f..durationMs.toFloat(),
+          onValueChange = { seekPreviewMs = it.toLong() },
+          onValueChangeFinished = {
+            seekPreviewMs.takeIf { it >= 0L }?.let { target ->
+              player.seekTo(target.coerceIn(0L, durationMs))
+            }
+            seekPreviewMs = -1L
+          },
+          modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
         )
+        Text(formatMs(durationMs), color = Color.White)
+      }
+      Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
         Box(
           modifier = Modifier
             .size(48.dp)
@@ -204,6 +261,74 @@ fun MobileOfflinePlayerScreen(
           )
         }
       }
+    }
+  }
+}
+
+/**
+ * 瘦身 seek 滑块:Canvas 自绘细轨道(3dp)+ 小拇指(5dp 半径),总高约 20dp,
+ * 替代 Material3 Slider(~48dp)以解决"进度条上下太厚"。seek 逻辑由调用方经
+ * onValueChange/onValueChangeFinished 复用。与在线播放器 MobilePlayerScreen.SlimSeekSlider 一致。
+ */
+@Composable
+private fun SlimSeekSlider(
+  value: Float,
+  valueRange: ClosedFloatingPointRange<Float>,
+  onValueChange: (Float) -> Unit,
+  onValueChangeFinished: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(0f)
+  val fraction = if (span > 0f) ((value - valueRange.start) / span).coerceIn(0f, 1f) else 0f
+  var widthPx by remember { mutableStateOf(1f) }
+  var dragFraction by remember { mutableStateOf<Float?>(null) }
+  val current = dragFraction ?: fraction
+  Box(
+    modifier
+      .height(20.dp)
+      .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
+      .pointerInput(valueRange) {
+        detectHorizontalDragGestures(
+          onDragStart = { offset ->
+            val f = (offset.x / widthPx).coerceIn(0f, 1f)
+            dragFraction = f
+            onValueChange(f * span + valueRange.start)
+          },
+          onHorizontalDrag = { change, _ ->
+            val f = (change.position.x / widthPx).coerceIn(0f, 1f)
+            dragFraction = f
+            onValueChange(f * span + valueRange.start)
+          },
+          onDragEnd = {
+            onValueChangeFinished()
+            dragFraction = null
+          },
+          onDragCancel = { dragFraction = null },
+        )
+      },
+  ) {
+    Canvas(Modifier.fillMaxSize()) {
+      val trackPx = 3.dp.toPx()
+      val thumbPx = 5.dp.toPx()
+      val cy = size.height / 2f
+      val corner = CornerRadius(trackPx / 2f, trackPx / 2f)
+      drawRoundRect(
+        color = Color(0x66FFFFFF),
+        topLeft = Offset(0f, cy - trackPx / 2f),
+        size = Size(size.width, trackPx),
+        cornerRadius = corner,
+      )
+      drawRoundRect(
+        color = BiliColors.BiliPink,
+        topLeft = Offset(0f, cy - trackPx / 2f),
+        size = Size(size.width * current, trackPx),
+        cornerRadius = corner,
+      )
+      drawCircle(
+        color = Color.White,
+        radius = thumbPx,
+        center = Offset(size.width * current, cy),
+      )
     }
   }
 }
