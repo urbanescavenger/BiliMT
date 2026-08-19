@@ -1387,7 +1387,8 @@ class YoutubePlaybackResolver(
     val videoId = request.bvid
     val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
       .getOrElse {
-        Log.w(Tag, "resolveForDownload: NewPipe getInfo failed: ${it.message}")
+        // 只打 message 会漏(某些异常 message 为 null,曾被误报成「无直链」)——带上异常类 + 首个堆栈帧。
+        Log.w(Tag, "resolveForDownload: NewPipe getInfo failed: ${it.javaClass.simpleName}: ${it.message}", it)
         return null
       }
     val headers = BiliPlaybackHeaders(

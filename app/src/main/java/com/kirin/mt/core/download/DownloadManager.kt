@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -52,6 +53,15 @@ class DownloadManager(
   private val pauseFlags = ConcurrentHashMap<Long, AtomicBoolean>()
 
   suspend fun enqueue(request: PlaybackRequest, choice: DownloadQualityChoice): Result<Long> {
+    // 网络解析(NewPipe getInfo / B站 playurl)必须离开主线程:MobilePlayer 的 enqueue 调用方跑在
+    // Main,而 NewPipe 的 StreamInfo.getInfo 内部同步走 PoTokenProvider(WebView),设计要求在
+    // Dispatchers.IO 调——主线程上抛的异常 message 为 null → UI 报「无直链」。
+    return withContext(Dispatchers.IO) {
+      enqueueOnIo(request, choice)
+    }
+  }
+
+  private suspend fun enqueueOnIo(request: PlaybackRequest, choice: DownloadQualityChoice): Result<Long> {
     if (dao.existsActive(request.bvid, choice.source.key)) {
       return Result.failure(IllegalStateException("该视频已在下载队列中"))
     }

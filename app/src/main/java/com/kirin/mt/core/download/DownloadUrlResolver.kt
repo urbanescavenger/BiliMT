@@ -71,7 +71,7 @@ class DownloadUrlResolver(
         preferMuxed = choice.youTubePreferMuxed,
         maxHeight = choice.youTubeMaxHeight,
       ) ?: error("YouTube 解析失败(无可用直链)")
-    }.onFailure { Log.w(Tag, "resolveYoutube 失败: ${it.message}") }
+    }.onFailure { Log.w(Tag, "resolveYoutube 失败: ${it.javaClass.simpleName}: ${it.message}", it) }
   }
 
   private companion object {
