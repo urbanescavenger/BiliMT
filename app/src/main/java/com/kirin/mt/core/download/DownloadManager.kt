@@ -178,6 +178,13 @@ class DownloadManager(
       return false
     }
     activeDownloadId.value = active.first().download.id
+    // 下载实际开始即把父行置 RUNNING:此前父行只在 finalizeGroup(全部 join 完成后)才从 QUEUED
+    // 转 RUNNING,导致 UI 整段下载期读 group.status 一直显示「排队中」——内容/日志在更新但界面不刷。
+    active.forEach { group ->
+      if (DownloadStatus.fromKey(group.download.status) == DownloadStatus.QUEUED) {
+        dao.updateStatus(group.download.id, DownloadStatus.RUNNING.key)
+      }
+    }
     val parts = active.flatMap { it.items }
       .filter { item ->
         val s = DownloadStatus.fromKey(item.status)
