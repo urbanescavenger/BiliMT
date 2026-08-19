@@ -836,6 +836,26 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 3. 失败/重试打日志，成功打条数日志。
 4. TV `PlayerScreen` 与移动 `MobilePlayerScreen` 共用 repository 重试+缓存，拉段仍组合即启动（与拉流并行）。
 
+### 待做：在线播放器命中缓存播放本地源（手机端）
+
+**目标**：在线刷到已下载/缓存的视频，点进去视频区直接播本地缓存文件，简介/评论/弹幕仍走在线，与在线播放完全一致。B 站 + YouTube 都合并。
+
+**方案**：`MobilePlayerScreen.loadRequest` 在 `getPlaybackInfo` 网络解析前查缓存命中（`downloadManager.downloads.first()` 按 `videoId==request.bvid && isPlayable` 匹配）。命中 → 自包含早返回块：用 `playbackFiles(id)` 建本地 `Progressive/MergingMediaSource`（镜像离线页），跳过网络取流；元数据/简介/评论/弹幕照常在线加载。缓存不命中 → 原网络路径零改动。
+
+**决策**（用户已定）：
+- 只做手机端；TV 无下载功能不涉及。
+- 命中缓存即跳过网络解析，直接本地播。
+- 清晰度只读：命中缓存时 HD 按钮+菜单换成静态文字（显示缓存 `qualityLabel`），不可切换。
+- 已缓存即隐藏下载入口按钮。
+
+**改动点**（全在 `MobilePlayerScreen.kt`）：
+1. 新增状态 `usingCachedPlayback` / `cachedDownloadId`。
+2. `loadRequest` 加缓存命中早返回块（合成 `PlaybackInfo`：qualities=[缓存清晰度]、tracks 空；本地 MediaSource）。
+3. 清晰度菜单块（1416 行）命中缓存时渲染静态文字。
+4. 下载按钮（1512 行）加 `&& !usingCachedPlayback`。
+
+**边界**：只匹配 `isPlayable`（媒体分件全 COMPLETED）；部分下载回落在线；进度续播复用 `saveProgress/getSavedProgress`（bvid/cid 正确，与在线互通）。缓存命中按 `videoId + cid` 双匹配——多 P 视频只命中已下载的那个分P，其它分P正常走在线。
+
 ### 工程约束（移动端专用）
 
 - 本地无 Android SDK，走云编译闭环；`mobile` 分支 push 不触发 CI（只有 main/master/mort_debug + tag 触发），先 push 再打 alpha tag 验证。
