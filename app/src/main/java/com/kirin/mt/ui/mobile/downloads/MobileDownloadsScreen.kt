@@ -54,13 +54,16 @@ fun MobileDownloadsScreen(
   var liveProgress by remember { mutableStateOf<Map<Long, Float>>(emptyMap()) }
   // 实时速率:downloadId → bytesPerSecond(由 DownloadEngine 逐块读估算)。
   var liveSpeed by remember { mutableStateOf<Map<Long, Long>>(emptyMap()) }
-  // 实时已下载字节:(downloadId, partId) → downloadedBytes,用于组级剩余大小实时累加。
+  // 实时已下载字节:(downloadId, partId) → downloadedBytes，用于组级剩余大小实时累加。
   var livePartBytes by remember { mutableStateOf<Map<Pair<Long, Int>, Long>>(emptyMap()) }
+  // 实时分件总量:(downloadId, partId) → totalBytes(由 progress 流回传探测后的真实大小)。
+  var livePartTotal by remember { mutableStateOf<Map<Pair<Long, Int>, Long>>(emptyMap()) }
   LaunchedEffect(Unit) {
     downloadManager.progress.collect { p ->
       liveProgress = liveProgress + (p.downloadId to p.fraction)
       if (p.bytesPerSecond > 0L) liveSpeed = liveSpeed + (p.downloadId to p.bytesPerSecond)
       livePartBytes = livePartBytes + ((p.downloadId to p.partId) to p.downloadedBytes)
+      if (p.totalBytes > 0L) livePartTotal = livePartTotal + ((p.downloadId to p.partId) to p.totalBytes)
     }
   }
 
@@ -81,11 +84,21 @@ fun MobileDownloadsScreen(
     verticalArrangement = Arrangement.spacedBy(10.dp),
   ) {
     items(downloads, key = { it.download.id }) { group ->
-      // 组级剩余待下载:总量 - 各已知分件实时已下载字节和。总量未知(-1)时为 null。
-      val liveDownloaded = group.items
-        .filter { it.totalSize > 0L }
-        .sumOf { livePartBytes[group.download.id to it.id] ?: 0L }
-      val remainingBytes = if (group.totalSize > 0L) (group.totalSize - liveDownloaded).coerceAtLeast(0L) else null
+      // 组级剩余待下载:Σ(各分件已知总量 - 实时已下载字节)。
+      // 总量取 progress 流实时 totalBytes(探测后)优先、Room 快照兜底——避免分件 totalSize
+      // 在 DB 里仍为 -1 时被 filter 排除导致「速度在涨但剩余不减」。
+      val did = group.download.id
+      var groupTotal = 0L
+      var totalKnown = false
+      for (item in group.items) {
+        val t = maxOf(livePartTotal[did to item.id] ?: -1L, item.totalSize)
+        if (t > 0L) {
+          groupTotal += t
+          totalKnown = true
+        }
+      }
+      val downloaded = group.items.sumOf { livePartBytes[did to it.id] ?: 0L }
+      val remainingBytes = if (totalKnown) (groupTotal - downloaded).coerceAtLeast(0L) else null
       DownloadCard(
         group = group,
         liveFraction = liveProgress[group.download.id],
