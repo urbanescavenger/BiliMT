@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
@@ -89,6 +90,7 @@ import kotlinx.coroutines.launch
  * 倍速、画面点击暂停/拖拽 seek、全屏/非全屏两种布局、相关视频=已下载视频列表。
  * 数据源仍是本地文件(DefaultDataSource),无网络 headers/DRM/SABR(合理差异)。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MobileOfflinePlayerScreen(
   downloadId: Long,
