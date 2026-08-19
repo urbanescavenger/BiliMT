@@ -54,10 +54,13 @@ fun MobileDownloadsScreen(
   var liveProgress by remember { mutableStateOf<Map<Long, Float>>(emptyMap()) }
   // 实时速率:downloadId → bytesPerSecond(由 DownloadEngine 逐块读估算)。
   var liveSpeed by remember { mutableStateOf<Map<Long, Long>>(emptyMap()) }
+  // 实时已下载字节:(downloadId, partId) → downloadedBytes,用于组级剩余大小实时累加。
+  var livePartBytes by remember { mutableStateOf<Map<Pair<Long, Int>, Long>>(emptyMap()) }
   LaunchedEffect(Unit) {
     downloadManager.progress.collect { p ->
       liveProgress = liveProgress + (p.downloadId to p.fraction)
       if (p.bytesPerSecond > 0L) liveSpeed = liveSpeed + (p.downloadId to p.bytesPerSecond)
+      livePartBytes = livePartBytes + ((p.downloadId to p.partId) to p.downloadedBytes)
     }
   }
 
@@ -78,10 +81,16 @@ fun MobileDownloadsScreen(
     verticalArrangement = Arrangement.spacedBy(10.dp),
   ) {
     items(downloads, key = { it.download.id }) { group ->
+      // 组级剩余待下载:总量 - 各已知分件实时已下载字节和。总量未知(-1)时为 null。
+      val liveDownloaded = group.items
+        .filter { it.totalSize > 0L }
+        .sumOf { livePartBytes[group.download.id to it.id] ?: 0L }
+      val remainingBytes = if (group.totalSize > 0L) (group.totalSize - liveDownloaded).coerceAtLeast(0L) else null
       DownloadCard(
         group = group,
         liveFraction = liveProgress[group.download.id],
         liveSpeedBps = liveSpeed[group.download.id],
+        remainingBytes = remainingBytes,
         onPlay = { onPlayDownload(group.download.id) },
         onPause = { scope.launch { downloadManager.pause(group.download.id) } },
         onResume = { scope.launch { downloadManager.resume(group.download.id) } },
@@ -97,6 +106,7 @@ private fun DownloadCard(
   group: DownloadWithItems,
   liveFraction: Float?,
   liveSpeedBps: Long?,
+  remainingBytes: Long?,
   onPlay: () -> Unit,
   onPause: () -> Unit,
   onResume: () -> Unit,
@@ -146,6 +156,14 @@ private fun DownloadCard(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
         }
+        // 剩余待下载大小:totalSize - 实时已下载字节(总量未知时为 null 跳过)。
+        if ((status == DownloadStatus.RUNNING || status == DownloadStatus.QUEUED) && remainingBytes != null) {
+          Text(
+            text = "  ·  剩余 ${formatBytes(remainingBytes)}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
       }
       if (status == DownloadStatus.RUNNING || status == DownloadStatus.QUEUED) {
         LinearProgressIndicator(
@@ -184,6 +202,15 @@ private fun formatSpeed(bytesPerSecond: Long): String {
     String.format(java.util.Locale.US, "%.1f MB/s", bytesPerSecond / (1024.0 * 1024.0))
   } else {
     "${bytesPerSecond / 1024} KB/s"
+  }
+}
+
+/** 格式化剩余大小:≥1MB 显示 MB(1 位小数),否则 KB。 */
+private fun formatBytes(bytes: Long): String {
+  return if (bytes >= 1024 * 1024) {
+    String.format(java.util.Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0))
+  } else {
+    "${bytes / 1024} KB"
   }
 }
 
