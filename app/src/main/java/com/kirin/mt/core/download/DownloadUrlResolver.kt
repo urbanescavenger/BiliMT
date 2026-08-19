@@ -32,11 +32,11 @@ class DownloadUrlResolver(
   }
 
   private suspend fun resolveBili(request: PlaybackRequest, choice: DownloadQualityChoice): Result<ResolvedDownload> {
+    val qn = choice.biliQn
     return runCatching {
       val settings = appSettingsStore.settings.first()
       val codecPref = settings.playbackCodecPreference
       val qualityPref = settings.playbackQualityPreference
-      val qn = choice.biliQn
       val targetHeight = biliQualityHeight(choice.biliQualityLabel)
       // 下载不强制用户所选 qn 去请求 playurl：B站对「fourk=1 + 低 qn」的不一致组合会返回
       // code -400(请求错误),而 qn=127(Highest,与播放路径一致)实测稳定返回全部轨。故用最高 qn
