@@ -4,6 +4,7 @@ import android.os.SystemClock
 import java.io.File
 import java.io.IOException
 import kotlin.math.max
+import kotlin.math.min
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -33,6 +34,10 @@ class DownloadEngine(
    * Room 查询)占满共享 IO 线程池,饿死实际网络读——本地测试下载远慢于播放即此因。 */
   private val emitIntervalMs = 120L
 
+  /** 分片下载块大小:媒体段按此拆多个 Range 短连接逐块写。对齐 LibreTube 分片下载——B站 CDN
+   * 对长单连接限速(实测 ~60KB/s),播放走分片短连接拿满速;下载也分片绕开。 */
+  private val chunkSize = 2L * 1024 * 1024
+
   /** 探测 URL 总字节数:`Range: bytes=0-0`,解析 `Content-Range: bytes 0-0/<TOTAL>`。失败返回 -1。 */
   suspend fun probeLength(url: String, headers: Map<String, String>): Long = withContext(Dispatchers.IO) {
     val request = Request.Builder()
@@ -55,8 +60,8 @@ class DownloadEngine(
   /**
    * 下载一个分件到 [file]。续传逻辑:
    * - DASH([part.initRange] 非空):先确保 init 段写入(不足则整段重下,init 小),再媒体段从
-   *   `mediaStartOffset + (已下媒体字节)` 起流到 EOF。
-   * - Progressive:从 `file.length()` 起流到 EOF。
+   *   `mediaStartOffset + (已下媒体字节)` 起按 [chunkSize] 分片下载(每块一个 Range 短连接)。
+   * - Progressive:从 `file.length()` 起分片下载整资源。
    *
    * 进度经 [onProgress] 回调(带真实 partId/total)。未完成时:暂停(经 [shouldPause])→ error=null;
    * 中断/失败 → error 非空。
@@ -90,24 +95,64 @@ class DownloadEngine(
     var initDone = part.initDone
     if (hasDash && dashInitStart == 0L) {
       if (file.length() < dashInitEnd + 1) {
-        val ok = downloadRange(part, headers, start = dashInitStart, end = dashInitEnd, file = file, append = false, reportTotal = targetTotal, onProgress = onProgress, shouldPause = shouldPause)
-        if (!ok) return@withContext PartDownloadResult(completed = false, initDone = false, error = null)
+        val written = downloadRange(part, headers, start = dashInitStart, end = dashInitEnd, file = file, append = false, reportTotal = targetTotal, onProgress = onProgress, shouldPause = shouldPause)
+        if (written != (dashInitEnd - dashInitStart + 1)) return@withContext PartDownloadResult(completed = false, initDone = false, error = null)
         initDone = true
       } else {
         initDone = true
       }
     }
 
-    // 2) 媒体段:续传偏移 = 目标起始 + 已下媒体字节。
+    // 2) 媒体段:对齐 LibreTube 分片下载——按 chunkSize 拆多个 Range 短连接逐块追加写,绕开
+    //    B站 CDN 对长单连接的限速(播放分片短连接拿满速,下载也分片)。块间复用 OkHttp 连接池。
     val fileLen = file.length()
-    val mediaStart = part.mediaStartOffset + max(0L, fileLen - (dashInitEnd + 1))
-    val ok = downloadOpenRange(part, headers, start = mediaStart, file = file, reportTotal = targetTotal, onProgress = onProgress, shouldPause = shouldPause)
+    val mediaStart: Long
+    val mediaTotal: Long
+    if (hasDash) {
+      mediaStart = part.mediaStartOffset + max(0L, fileLen - (dashInitEnd + 1))
+      mediaTotal = (part.totalSize - part.mediaStartOffset).coerceAtLeast(0L)
+    } else {
+      // progressive:整资源,续传从文件末尾起。
+      mediaStart = fileLen
+      mediaTotal = (part.totalSize - fileLen).coerceAtLeast(0L)
+    }
+    val ok = if (part.totalSize > 0L && mediaTotal > 0L) {
+      downloadMediaChunked(part, headers, mediaStart, mediaTotal, file, targetTotal, onProgress, shouldPause)
+    } else {
+      // totalSize 未知(probe 失败)→ 回退开区间读到 EOF。
+      downloadOpenRange(part, headers, start = mediaStart, file = file, reportTotal = targetTotal, onProgress = onProgress, shouldPause = shouldPause) >= 0L
+    }
     val finalLen = file.length()
     val completed = ok && (targetTotal <= 0L || finalLen >= targetTotal)
     PartDownloadResult(completed = completed, initDone = initDone, error = if (ok) null else "interrupted")
   }
 
-  /** 下载闭区间 [start,end] 到 [file]。append=false 清空文件(用于 init)。返回 true=完整写完。 */
+  /** 分片下载媒体段:从 [start] 起共 [totalBytes] 字节,按 [chunkSize] 拆多个 Range 短连接逐块追加写。
+   *  返回 true=全部块完整写完;任一块截断/失败返回 false(保留已写字节供续传)。 */
+  private suspend fun downloadMediaChunked(
+    part: DownloadItemEntity,
+    headers: Map<String, String>,
+    start: Long,
+    totalBytes: Long,
+    file: File,
+    reportTotal: Long,
+    onProgress: (DownloadProgress) -> Unit,
+    shouldPause: () -> Boolean,
+  ): Boolean {
+    var offset = start
+    val endExclusive = start + totalBytes
+    while (offset < endExclusive) {
+      if (shouldPause()) return false
+      val chunkEnd = min(offset + chunkSize - 1, endExclusive - 1)
+      val expected = chunkEnd - offset + 1
+      val written = downloadRange(part, headers, start = offset, end = chunkEnd, file = file, append = true, reportTotal = reportTotal, onProgress = onProgress, shouldPause = shouldPause)
+      if (written != expected) return false
+      offset = chunkEnd + 1
+    }
+    return true
+  }
+
+  /** 下载闭区间 [start,end] 到 [file]。append=false 清空文件(用于 init)。返回本次实际写入字节数。 */
   private suspend fun downloadRange(
     part: DownloadItemEntity,
     headers: Map<String, String>,
@@ -118,9 +163,9 @@ class DownloadEngine(
     reportTotal: Long,
     onProgress: (DownloadProgress) -> Unit,
     shouldPause: () -> Boolean,
-  ): Boolean = streamBody(part, headers, range = "bytes=$start-$end", file = file, append = append, reportTotal = reportTotal, onProgress = onProgress, shouldPause = shouldPause)
+  ): Long = streamBody(part, headers, range = "bytes=$start-$end", file = file, append = append, reportTotal = reportTotal, onProgress = onProgress, shouldPause = shouldPause)
 
-  /** 下载 [start] 起到 EOF 的开区间,追加到 [file] 末尾。返回 true=完整读完。 */
+  /** 下载 [start] 起到 EOF 的开区间,追加到 [file] 末尾。返回本次实际写入字节数。 */
   private suspend fun downloadOpenRange(
     part: DownloadItemEntity,
     headers: Map<String, String>,
@@ -129,7 +174,7 @@ class DownloadEngine(
     reportTotal: Long,
     onProgress: (DownloadProgress) -> Unit,
     shouldPause: () -> Boolean,
-  ): Boolean = streamBody(part, headers, range = "bytes=$start-", file = file, append = true, reportTotal = reportTotal, onProgress = onProgress, shouldPause = shouldPause)
+  ): Long = streamBody(part, headers, range = "bytes=$start-", file = file, append = true, reportTotal = reportTotal, onProgress = onProgress, shouldPause = shouldPause)
 
   private suspend fun streamBody(
     part: DownloadItemEntity,
@@ -140,7 +185,7 @@ class DownloadEngine(
     reportTotal: Long,
     onProgress: (DownloadProgress) -> Unit,
     shouldPause: () -> Boolean,
-  ): Boolean {
+  ): Long {
     val request = Request.Builder()
       .url(part.url)
       .apply { headers.forEach { (k, v) -> header(k, v) } }
@@ -149,19 +194,20 @@ class DownloadEngine(
       .build()
     return try {
       client.newCall(request).execute().use { response ->
-        if (response.code != 200 && response.code != 206) return false
-        val body = response.body ?: return false
+        if (response.code != 200 && response.code != 206) return -1L
+        val body = response.body ?: return -1L
         java.io.FileOutputStream(file, append).buffered().use { output ->
           body.byteStream().use { input ->
             val buffer = ByteArray(bufferSize)
+            val startLen = file.length()
             // 本地字节计数累加,避免逐块调 file.length()(每次 stat 系统调用)。
             // 进度/速率按 emitIntervalMs 聚合上报,而非逐 64KB——高频 onProgress 会带起调用方
             // 的 Room 查询 + 前台通知 binder 调用,占满共享 IO 线程池饿死实际网络读(对齐 LibreTube)。
-            var written = file.length()
+            var written = startLen
             var lastEmitBytes = written
             var lastEmit = SystemClock.elapsedRealtime()
             while (true) {
-              if (shouldPause()) return false
+              if (shouldPause()) return -1L
               val read = input.read(buffer)
               if (read == -1) break
               output.write(buffer, 0, read)
@@ -181,12 +227,13 @@ class DownloadEngine(
             val endDt = endNow - lastEmit
             val endSpeed = if (endDt > 0) ((written - lastEmitBytes).toDouble() / endDt * 1000).toLong().coerceAtLeast(0L) else 0L
             onProgress(DownloadProgress(part.downloadId, part.id, written, reportTotal, endSpeed))
+            // 本次实际写入字节数(供调用方校验块完整性)。
+            written - startLen
           }
         }
-        true
       }
     } catch (_: IOException) {
-      false
+      -1L
     }
   }
 }

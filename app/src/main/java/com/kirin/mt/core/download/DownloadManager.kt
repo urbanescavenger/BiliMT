@@ -318,6 +318,8 @@ class DownloadManager(
   }
 
   private companion object {
-    const val MAX_CONCURRENT = 2
+    // 对齐 LibreTube MAX_CONCURRENT_DOWNLOADS=6:多分件/多任务并发堆带宽。单视频仅视频+音频两分件,
+    // 但多任务排队时能并行下,避免串行。
+    const val MAX_CONCURRENT = 6
   }
 }
