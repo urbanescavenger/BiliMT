@@ -27,8 +27,8 @@ import com.kirin.mt.core.download.DownloadSource
 import com.kirin.mt.core.player.PlaybackQuality
 
 /**
- * 下载清晰度选择对话框。
- * - B站:列出全部可播清晰度,点选即确认。
+ * 下载清晰度选择对话框(选中 → 「开始下载」确认):
+ * - B站:列出全部可播清晰度,默认选中最高,RadioButton 仅选中,「开始下载」提交。
  * - YouTube:「简单下载(音视频一体,≤720p)」vs「高清(视频+音频)」+ 高度选择器。
  */
 @Composable
@@ -51,9 +51,11 @@ private fun BiliQualityDialog(
   onDismiss: () -> Unit,
   onConfirm: (DownloadQualityChoice) -> Unit,
 ) {
+  // 默认选中最高清晰度(列表首个),用户改选后「开始下载」提交。
+  var selectedQn by remember { mutableStateOf<Int?>(qualities.firstOrNull()?.id) }
   AlertDialog(
     onDismissRequest = onDismiss,
-    title = { Text(stringResource(R.string.downloads_quality_title)) },
+    title = { Text(text = stringResource(R.string.downloads_quality_title)) },
     text = {
       Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -65,16 +67,8 @@ private fun BiliQualityDialog(
             verticalAlignment = Alignment.CenterVertically,
           ) {
             RadioButton(
-              selected = false,
-              onClick = {
-                onConfirm(
-                  DownloadQualityChoice(
-                    source = DownloadSource.BILI,
-                    biliQn = q.id,
-                    biliQualityLabel = q.description,
-                  ),
-                )
-              },
+              selected = selectedQn == q.id,
+              onClick = { selectedQn = q.id },
             )
             Text(
               text = q.description,
@@ -86,6 +80,22 @@ private fun BiliQualityDialog(
       }
     },
     confirmButton = {
+      TextButton(
+        onClick = {
+          selectedQn?.let { qn ->
+            val q = qualities.firstOrNull { it.id == qn }
+            onConfirm(
+              DownloadQualityChoice(
+                source = DownloadSource.BILI,
+                biliQn = qn,
+                biliQualityLabel = q?.description ?: "",
+              ),
+            )
+          }
+        },
+      ) { Text(stringResource(R.string.downloads_confirm)) }
+    },
+    dismissButton = {
       TextButton(onClick = onDismiss) { Text(stringResource(R.string.mobile_dialog_cancel)) }
     },
   )
@@ -96,7 +106,7 @@ private fun YoutubeQualityDialog(
   onDismiss: () -> Unit,
   onConfirm: (DownloadQualityChoice) -> Unit,
 ) {
-  // 高清高度选择:null=最高(不限制)。
+  // 高清高度选择:null=简单下载(音视频一体,≤720p);非 null=高清该高度(视频+音频分件)。
   val heights = listOf(2160, 1440, 1080, 720)
   var selectedHeight by remember { mutableStateOf<Int?>(null) }
   AlertDialog(
@@ -114,16 +124,7 @@ private fun YoutubeQualityDialog(
         ) {
           RadioButton(
             selected = selectedHeight == null,
-            onClick = {
-              selectedHeight = null
-              onConfirm(
-                DownloadQualityChoice(
-                  source = DownloadSource.YOUTUBE,
-                  youTubePreferMuxed = true,
-                  youTubeMaxHeight = null,
-                ),
-              )
-            },
+            onClick = { selectedHeight = null },
           )
           Text(
             text = stringResource(R.string.downloads_quality_simple),
@@ -144,16 +145,7 @@ private fun YoutubeQualityDialog(
           ) {
             RadioButton(
               selected = selectedHeight == h,
-              onClick = {
-                selectedHeight = h
-                onConfirm(
-                  DownloadQualityChoice(
-                    source = DownloadSource.YOUTUBE,
-                    youTubePreferMuxed = false,
-                    youTubeMaxHeight = h,
-                  ),
-                )
-              },
+              onClick = { selectedHeight = h },
             )
             Text(
               text = "${h}p",
@@ -165,6 +157,20 @@ private fun YoutubeQualityDialog(
       }
     },
     confirmButton = {
+      TextButton(
+        onClick = {
+          val maxHeight = selectedHeight
+          onConfirm(
+            DownloadQualityChoice(
+              source = DownloadSource.YOUTUBE,
+              youTubePreferMuxed = maxHeight == null,
+              youTubeMaxHeight = maxHeight,
+            ),
+          )
+        },
+      ) { Text(stringResource(R.string.downloads_confirm)) }
+    },
+    dismissButton = {
       TextButton(onClick = onDismiss) { Text(stringResource(R.string.mobile_dialog_cancel)) }
     },
   )

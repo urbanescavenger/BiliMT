@@ -136,6 +136,7 @@
     <string name="downloads_quality_title">&#x9009;&#x62E9;&#x4E0B;&#x8F7D;&#x6E05;&#x6670;&#x5EA6;</string>
     <string name="downloads_quality_simple">&#x7B80;&#x5355;&#x4E0B;&#x8F7D;(&#x97F3;&#x89C6;&#x9891;&#x4E00;&#x4F53;,&#x2264;720p)</string>
     <string name="downloads_quality_hd">&#x9AD8;&#x6E05;(&#x89C6;&#x9891;+&#x97F3;&#x9891;)</string>
+    <string name="downloads_confirm">&#x5F00;&#x59CB;&#x4E0B;&#x8F7D;</string>
     <string name="downloads_enqueued">&#x5DF2;&#x52A0;&#x5165;&#x4E0B;&#x8F7D;&#x961F;&#x5217;</string>
     <string name="downloads_enqueue_failed">&#x4E0B;&#x8F7D;&#x5165;&#x961F;&#x5931;&#x8D25;</string>
     <string name="downloads_notification_title">&#x6B63;&#x5728;&#x4E0B;&#x8F7D;</string>

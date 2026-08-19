@@ -89,6 +89,7 @@
     <string name="downloads_quality_title">選擇下載畫質</string>
     <string name="downloads_quality_simple">簡單下載(影音一體,≤720p)</string>
     <string name="downloads_quality_hd">高畫質(影片+音訊)</string>
+    <string name="downloads_confirm">開始下載</string>
     <string name="downloads_enqueued">已加入下載佇列</string>
     <string name="downloads_enqueue_failed">下載入佇失敗</string>
     <string name="downloads_notification_title">正在下載</string>
