@@ -52,9 +52,12 @@ fun MobileDownloadsScreen(
   val downloads by downloadManager.downloads.collectAsState(initial = emptyList())
   // 实时字节进度:downloadId → fraction。Room 的 totalDownloadedBytes 是文件长度,服务回吐更及时。
   var liveProgress by remember { mutableStateOf<Map<Long, Float>>(emptyMap()) }
+  // 实时速率:downloadId → bytesPerSecond(由 DownloadEngine 逐块读估算)。
+  var liveSpeed by remember { mutableStateOf<Map<Long, Long>>(emptyMap()) }
   LaunchedEffect(Unit) {
     downloadManager.progress.collect { p ->
       liveProgress = liveProgress + (p.downloadId to p.fraction)
+      if (p.bytesPerSecond > 0L) liveSpeed = liveSpeed + (p.downloadId to p.bytesPerSecond)
     }
   }
 
@@ -78,6 +81,7 @@ fun MobileDownloadsScreen(
       DownloadCard(
         group = group,
         liveFraction = liveProgress[group.download.id],
+        liveSpeedBps = liveSpeed[group.download.id],
         onPlay = { onPlayDownload(group.download.id) },
         onPause = { scope.launch { downloadManager.pause(group.download.id) } },
         onResume = { scope.launch { downloadManager.resume(group.download.id) } },
@@ -92,6 +96,7 @@ fun MobileDownloadsScreen(
 private fun DownloadCard(
   group: DownloadWithItems,
   liveFraction: Float?,
+  liveSpeedBps: Long?,
   onPlay: () -> Unit,
   onPause: () -> Unit,
   onResume: () -> Unit,
@@ -128,11 +133,20 @@ private fun DownloadCard(
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
       )
-      Text(
-        text = statusLabel(status),
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+          text = statusLabel(status),
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (status == DownloadStatus.RUNNING && liveSpeedBps != null && liveSpeedBps > 0L) {
+          Text(
+            text = "  ·  ${formatSpeed(liveSpeedBps)}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+      }
       if (status == DownloadStatus.RUNNING || status == DownloadStatus.QUEUED) {
         LinearProgressIndicator(
           progress = { fraction },
@@ -161,6 +175,15 @@ private fun DownloadCard(
         }
       }
     }
+  }
+}
+
+/** 格式化下载速率:≥1MB/s 显示 MB/s,否则 KB/s。 */
+private fun formatSpeed(bytesPerSecond: Long): String {
+  return if (bytesPerSecond >= 1024 * 1024) {
+    String.format(java.util.Locale.US, "%.1f MB/s", bytesPerSecond / (1024.0 * 1024.0))
+  } else {
+    "${bytesPerSecond / 1024} KB/s"
   }
 }
 

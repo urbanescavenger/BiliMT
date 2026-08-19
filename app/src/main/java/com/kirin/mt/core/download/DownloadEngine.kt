@@ -1,5 +1,6 @@
 package com.kirin.mt.core.download
 
+import android.os.SystemClock
 import java.io.File
 import java.io.IOException
 import kotlin.math.max
@@ -137,13 +138,22 @@ class DownloadEngine(
         java.io.FileOutputStream(file, append).buffered().use { output ->
           body.byteStream().use { input ->
             val buffer = ByteArray(bufferSize)
+            // 逐块读估算瞬时速率(bytes/s):用单调时钟算 delta,避免 display 显示跳变。
+            var lastBytes = file.length()
+            var lastEmit = SystemClock.elapsedRealtime()
             while (true) {
               if (shouldPause()) return false
               val read = input.read(buffer)
               if (read == -1) break
               output.write(buffer, 0, read)
               output.flush()
-              onProgress(DownloadProgress(part.downloadId, part.id, file.length(), part.totalSize))
+              val nowBytes = file.length()
+              val now = SystemClock.elapsedRealtime()
+              val dt = now - lastEmit
+              val speed = if (dt > 0) ((nowBytes - lastBytes).toDouble() / dt * 1000).toLong().coerceAtLeast(0L) else 0L
+              lastBytes = nowBytes
+              lastEmit = now
+              onProgress(DownloadProgress(part.downloadId, part.id, nowBytes, part.totalSize, speed))
             }
           }
         }

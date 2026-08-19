@@ -49,6 +49,8 @@ data class DownloadProgress(
   val partId: Int,
   val downloadedBytes: Long,
   val totalBytes: Long,
+  /** 近端瞬时下载速率(字节/秒),由 [DownloadEngine] 在逐块读循环里估算;未测到/暂停为 0。 */
+  val bytesPerSecond: Long = 0L,
 ) {
   val fraction: Float
     get() = if (totalBytes > 0L) (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
