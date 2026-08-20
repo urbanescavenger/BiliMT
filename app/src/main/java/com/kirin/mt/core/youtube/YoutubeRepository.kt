@@ -150,12 +150,24 @@ class YoutubeRepository(
         put("params", YoutubeConstants.ChannelVideosParams)
       }
     }
-    val feed = client.postJson("/browse", payload).let(YoutubeParsers::parseFeedPage)
-    Log.d(
-      "YoutubeChannel",
-      "getChannelVideos channelId=$channelId ${if (continuation == null) "first" else "next"} " +
-        "items=${feed.items.size} next=${feed.continuation?.take(12) ?: "null"}",
-    )
+    val root = client.postJson("/browse", payload)
+    val feed = YoutubeParsers.parseFeedPage(root)
+    // 诊断:频道视频 0 条时,打印 channelId + 空响应根因(alert / 缺 contents)。排除「频道不存在」/
+    // 风控空响应 vs 真实无视频 两分支,定位 TV 头像进频道全空问题。
+    if (feed.items.isEmpty() && continuation == null) {
+      val reason = YoutubeParsers.diagnosticEmptyReason(root)
+      Log.w(
+        "YoutubeChannel",
+        "getChannelVideos EMPTY channelId=[$channelId] ${if (continuation == null) "first" else "next"} " +
+          "reason=${reason ?: "no-reason(parse ok,真无视频)"}",
+      )
+    } else {
+      Log.d(
+        "YoutubeChannel",
+        "getChannelVideos channelId=$channelId ${if (continuation == null) "first" else "next"} " +
+          "items=${feed.items.size} next=${feed.continuation?.take(12) ?: "null"}",
+      )
+    }
     return YoutubeVideoPage(
       items = feed.items.map(::toVideoSummary),
       continuation = feed.continuation,

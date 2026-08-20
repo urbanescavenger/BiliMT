@@ -52,6 +52,31 @@ internal object YoutubeParsers {
     return YoutubeFeedPage(items = videos, continuation = continuation)
   }
 
+  /**
+   * 诊断:频道视频 /browse 返回 0 条时,抽根因提示。优先读 `alerts[].alertRenderer.text`(如
+   * "This channel does not exist."),其次是顶层键缺失 contents 的事实。返回可打印字符串,无则为 null。
+   */
+  fun diagnosticEmptyReason(root: JsonObject): String? {
+    val alerts = root["alerts"] as? JsonArray
+    if (alerts != null) {
+      for (alert in alerts) {
+        val text = (alert as? JsonObject)?.obj("alertRenderer")?.obj("text")
+        val simple = text?.stringOrNull("simpleText")
+        if (!simple.isNullOrBlank()) return "alerts: $simple"
+        val runs = text?.array("runs")
+        if (runs != null) {
+          val joined = runs.mapNotNull { (it as? JsonObject)?.stringOrNull("text") }.joinToString("")
+          if (joined.isNotBlank()) return "alerts: $joined"
+        }
+      }
+      return "alerts-present-but-no-text: ${alerts.toString().take(300)}"
+    }
+    if (root["contents"] == null) {
+      return "no-contents topKeys=${root.keys.joinToString(",")}"
+    }
+    return null
+  }
+
   /** 频道页 header 解析结果。 */
   data class ChannelInfo(val channelId: String, val name: String, val avatarUrl: String)
 

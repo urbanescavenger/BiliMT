@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.space
 
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -116,6 +117,13 @@ internal fun YoutubeChannelScreen(
     val resolved = runCatching { youtubeRepository.resolveChannel(channelId) }.getOrNull()
     uiState.name = resolved?.name?.takeIf { it.isNotBlank() } ?: request.channelName
     uiState.avatar = resolved?.avatar?.takeIf { it.isNotBlank() } ?: request.avatar
+    // 诊断:确认频道页实际用的 channelId + resolveChannel 是否成功(成功→header 来自权威解析,
+    // 失败→header 回退 request 值,可据此判断 channelId 是否合法)。
+    Log.d(
+      "YoutubeChannel",
+      "channel open channelId=[$channelId] reqName=[${request.channelName}] " +
+        "resolved=${resolved?.let { "ok name=${it.name}" } ?: "FAILED"}",
+    )
     uiState.focusedVideoIndex = 0
     uiState.focusedVideoKey = ""
     uiState.videoState = ChannelVideoState.Loading
