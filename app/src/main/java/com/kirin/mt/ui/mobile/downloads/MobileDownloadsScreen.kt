@@ -1,21 +1,32 @@
 package com.kirin.mt.ui.mobile.downloads
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -27,29 +38,43 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.download.DownloadManager
+import com.kirin.mt.core.download.DownloadSource
 import com.kirin.mt.core.download.DownloadStatus
 import com.kirin.mt.core.download.DownloadWithItems
+import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceYoutube
+import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.youtube.YoutubePlaylistStore
+import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
+import com.kirin.mt.ui.theme.BiliColors
 import kotlinx.coroutines.launch
 
 /**
  * 下载管理库:列出全部下载任务(Room 事实源),卡片显示封面/标题/状态/进度,
  * 按状态给 play/pause/resume/cancel/delete。进度条由实时 [DownloadManager.progress] 驱动。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MobileDownloadsScreen(
   downloadManager: DownloadManager,
+  youtubePlaylistStore: YoutubePlaylistStore,
   onPlayDownload: (Long) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val scope = rememberCoroutineScope()
   val downloads by downloadManager.downloads.collectAsState(initial = emptyList())
+  // 长按卡片弹出的操作弹窗目标;再点「加入播放列表」切到列表选择弹窗。
+  var longPressGroup by remember { mutableStateOf<DownloadWithItems?>(null) }
+  var showPlaylistPicker by remember { mutableStateOf(false) }
   // 实时字节进度:downloadId → fraction。Download 的 totalDownloadedBytes 是文件长度,服务回吐更及时。
   var liveProgress by remember { mutableStateOf<Map<Long, Float>>(emptyMap()) }
   // 实时速率按分件记:(downloadId, partId) → bytesPerSecond;组级显示需对这些并发分件求和,
@@ -123,12 +148,45 @@ fun MobileDownloadsScreen(
         onPause = { scope.launch { downloadManager.pause(group.download.id) } },
         onResume = { scope.launch { downloadManager.resume(group.download.id) } },
         onCancel = { scope.launch { downloadManager.cancel(group.download.id) } },
-        onDelete = { scope.launch { downloadManager.delete(group.download.id) } },
+        onLongPress = {
+          longPressGroup = group
+          showPlaylistPicker = false
+        },
+      )
+    }
+  }
+
+  // 长按卡片:底部操作菜单(加入播放列表 → 列表选择/删除)。
+  longPressGroup?.let { group ->
+    if (showPlaylistPicker) {
+      MobilePlaylistPickerDialog(
+        video = group.toVideoSummary(),
+        youtubePlaylistStore = youtubePlaylistStore,
+        onDismiss = {
+          showPlaylistPicker = false
+          longPressGroup = null
+        },
+      )
+    } else {
+      DownloadActionsSheet(
+        group = group,
+        onPickPlaylist = { showPlaylistPicker = true },
+        onDelete = {
+          scope.launch {
+            downloadManager.delete(group.download.id)
+            longPressGroup = null
+          }
+        },
+        onDismiss = {
+          showPlaylistPicker = false
+          longPressGroup = null
+        },
       )
     }
   }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DownloadCard(
   group: DownloadWithItems,
@@ -139,18 +197,23 @@ private fun DownloadCard(
   onPause: () -> Unit,
   onResume: () -> Unit,
   onCancel: () -> Unit,
-  onDelete: () -> Unit,
+  onLongPress: () -> Unit,
 ) {
   val d = group.download
   val status = group.status
   val fraction = liveFraction ?: group.fraction
   val coverModel = d.coverPath ?: d.coverUrl
 
+  // 对齐其它卡片页:单击播放(可播时),长按弹操作菜单(加入播放列表/删除)。
   Row(
     modifier = Modifier
       .fillMaxWidth()
       .clip(RoundedCornerShape(12.dp))
       .background(MaterialTheme.colorScheme.surfaceVariant)
+      .combinedClickable(
+        onClick = { if (group.isPlayable) onPlay() },
+        onLongClick = onLongPress,
+      )
       .padding(8.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
@@ -200,10 +263,8 @@ private fun DownloadCard(
         )
       }
     }
+    // 右侧按钮列只保留下载控制;播放走单击,删除走长按菜单。
     Column(horizontalAlignment = Alignment.End) {
-      if (group.isPlayable) {
-        TextButton(onClick = onPlay) { Text(stringResource(R.string.downloads_action_play)) }
-      }
       when (status) {
         DownloadStatus.RUNNING, DownloadStatus.QUEUED -> {
           TextButton(onClick = onPause) { Text(stringResource(R.string.downloads_action_pause)) }
@@ -211,13 +272,9 @@ private fun DownloadCard(
         }
         DownloadStatus.PAUSED, DownloadStatus.FAILED -> {
           TextButton(onClick = onResume) { Text(stringResource(R.string.downloads_action_resume)) }
-          TextButton(onClick = onDelete) { Text(stringResource(R.string.downloads_action_delete)) }
         }
-        DownloadStatus.COMPLETED -> {
-          TextButton(onClick = onDelete) { Text(stringResource(R.string.downloads_action_delete)) }
-        }
-        DownloadStatus.CANCELLED -> {
-          TextButton(onClick = onDelete) { Text(stringResource(R.string.downloads_action_delete)) }
+        DownloadStatus.COMPLETED, DownloadStatus.CANCELLED -> {
+          // 无按钮:单击播放 / 长按删除
         }
       }
     }
@@ -250,4 +307,88 @@ private fun statusLabel(status: DownloadStatus): String = when (status) {
   DownloadStatus.COMPLETED -> stringResource(R.string.downloads_status_completed)
   DownloadStatus.FAILED -> stringResource(R.string.downloads_status_failed)
   DownloadStatus.CANCELLED -> stringResource(R.string.downloads_status_cancelled)
+}
+
+/** 长按下载卡片弹出的底部操作菜单:加入播放列表(仅 YouTube)+ 删除。样式对齐 MobileYoutubeLongPressSheet。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DownloadActionsSheet(
+  group: DownloadWithItems,
+  onPickPlaylist: () -> Unit,
+  onDelete: () -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val d = group.download
+  ModalBottomSheet(
+    onDismissRequest = onDismiss,
+    containerColor = Color(0xFF1A1A20),
+  ) {
+    MaterialTheme(colorScheme = darkColorScheme()) {
+      Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text(
+          text = d.title,
+          color = Color.White,
+          style = MaterialTheme.typography.titleMedium,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.padding(top = 8.dp))
+        if (group.source == DownloadSource.YOUTUBE) {
+          SheetActionRow(
+            icon = painterResource(R.drawable.ic_player_playlist),
+            text = stringResource(R.string.add_to_playlist),
+            onClick = onPickPlaylist,
+          )
+        }
+        SheetActionRow(
+          icon = Icons.Filled.Delete,
+          text = stringResource(R.string.downloads_action_delete),
+          onClick = onDelete,
+        )
+        Spacer(Modifier.padding(bottom = 8.dp))
+      }
+    }
+  }
+}
+
+/** 底部操作菜单的一行:图标 + 文字。 */
+@Composable
+private fun SheetActionRow(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, onClick: () -> Unit) {
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .clip(RoundedCornerShape(10.dp))
+      .clickable(onClick = onClick)
+      .padding(vertical = 12.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Icon(
+      imageVector = icon,
+      contentDescription = null,
+      tint = BiliColors.BiliPink,
+      modifier = Modifier.size(24.dp),
+    )
+    Spacer(Modifier.width(12.dp))
+    Text(text, color = Color.White)
+  }
+}
+
+/** 下载任务 → 播放列表可用的 VideoSummary(仿离线播放器相关视频构造;仅 metadata,不落盘)。 */
+private fun DownloadWithItems.toVideoSummary(): VideoSummary {
+  val d = download
+  return VideoSummary(
+    bvid = d.videoId,
+    title = d.title,
+    pic = d.coverUrl,
+    ownerName = "",
+    ownerFace = "",
+    ownerMid = 0L,
+    view = 0,
+    danmaku = 0,
+    duration = (d.durationMs / 1000).toInt(),
+    pubdate = 0L,
+    badge = "",
+    cid = d.cid,
+    source = if (source == DownloadSource.YOUTUBE) SourceYoutube else SourceBili,
+  )
 }

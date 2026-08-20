@@ -791,8 +791,9 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | v2.0.1-alpha.3 | 首页内容区左右滑动切顶部 tab |
 | v2.0.1-alpha.4 | 动态 tab 补 历史/收藏/追番 子 tab + 追番进季详情选集 |
 | （当前分支，未打 tag） | **离线下载播放器对齐在线播放器**：`MobileOfflinePlayerScreen` 从极简裸 ExoPlayer 升级为功能对齐在线——后台播放通知（PlayerHolder+PlaybackService，抽公共 `startPlaybackService` 到 `core/player/PlaybackServiceHelper.kt`）、进度保存/续播（复用 Room `playbackRepository`，在线/离线互通）、倍速（ModalBottomSheet 七档）、画面点击暂停/拖拽 seek（`detectPlayerGestures`）、全屏/非全屏两种布局（沉浸+方向）、相关视频=已下载视频列表（2 列 `MobileVideoCard` 点击切换）、ExoPlayer 配置对齐（`createTvPlaybackLoadControl` + `setHandleAudioBecomingNoisy` + AudioAttributes）。数据源仍本地文件（合理差异）。 |
+| （当前分支，未打 tag） | **离线下载列表交互对齐卡片页**：`MobileDownloadsScreen` 卡片主体 `combinedClickable`——**单击播放**（可播时）、**长按弹底部操作菜单**（YouTube「加入播放列表」复用 `MobilePlaylistPickerDialog` + 全部源「删除」）；右侧按钮列瘦身只保留下载控制（下载中/排队→暂停/取消，暂停/失败→续传，完成/取消→无按钮），播放/删除改走单击/长按。 |
 
-当前移动端能力：首页分区网格、**动态 tab 四子 tab（动态关注 feed / 历史 / 收藏（切夹）/ 追番（番剧·影视 + 想看·在看·看过筛选））**、搜索（历史/联想/排序/结果网格）、卡片式设置、短信登录、触屏播放器（播放/暂停/seek/弹幕开关/返回 + **全屏横屏沉浸** + **画质/倍速/弹幕设置弹窗** + **分P选集侧栏** + **自动连播下一集** + **UP 空间入口** + **空降助手** + **推荐视频切播** + **手势**）、**追番进季详情选集（`MobilePgcSeasonScreen`：封面/简介/同系列季切换/正片+花絮分集 → PGC PlaybackRequest）**、**后台播放（主流 MediaStyle 通知:封面+播放/暂停+锁屏控件,显式 startForeground 保活）**、**离线下载播放器（对齐在线：后台播放通知/进度续播互通/倍速/画面手势/全屏/已下载视频列表切换）**、状态栏透明浅色图标、底栏重复点推荐刷新、内容页下拉刷新。底栏 PGC 仍为"开发中"占位（搜索已取代其位置）。
+当前移动端能力：首页分区网格、**动态 tab 四子 tab（动态关注 feed / 历史 / 收藏（切夹）/ 追番（番剧·影视 + 想看·在看·看过筛选））**、搜索（历史/联想/排序/结果网格）、卡片式设置、短信登录、触屏播放器（播放/暂停/seek/弹幕开关/返回 + **全屏横屏沉浸** + **画质/倍速/弹幕设置弹窗** + **分P选集侧栏** + **自动连播下一集** + **UP 空间入口** + **空降助手** + **推荐视频切播** + **手势**）、**追番进季详情选集（`MobilePgcSeasonScreen`：封面/简介/同系列季切换/正片+花絮分集 → PGC PlaybackRequest）**、**后台播放（主流 MediaStyle 通知:封面+播放/暂停+锁屏控件,显式 startForeground 保活）**、**离线下载播放器（本地源,对齐在线：后台播放通知/进度续播互通/倍速/画面手势/全屏/已下载视频列表切换）**、**离线下载列表（卡片单击播放、长按加播放列表/删除,下载控制按钮居右）**、状态栏透明浅色图标、底栏重复点推荐刷新、内容页下拉刷新。底栏 PGC 仍为"开发中"占位（搜索已取代其位置）。
 
 ### 后续路线图（按优先级）
 

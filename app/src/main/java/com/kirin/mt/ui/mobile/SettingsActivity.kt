@@ -60,6 +60,7 @@ class SettingsActivity : ComponentActivity() {
               )
               MobileDownloadsScreen(
                 downloadManager = appContainer.downloadManager,
+                youtubePlaylistStore = appContainer.youtubePlaylistStore,
                 onPlayDownload = { playingDownloadId = it },
                 modifier = Modifier.fillMaxWidth(),
               )
