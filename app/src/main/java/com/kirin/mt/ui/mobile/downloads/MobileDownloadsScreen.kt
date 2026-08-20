@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -341,7 +342,7 @@ private fun DownloadActionsSheet(
           )
         }
         SheetActionRow(
-          icon = Icons.Filled.Delete,
+          icon = rememberVectorPainter(Icons.Filled.Delete),
           text = stringResource(R.string.downloads_action_delete),
           onClick = onDelete,
         )
@@ -353,7 +354,7 @@ private fun DownloadActionsSheet(
 
 /** 底部操作菜单的一行:图标 + 文字。 */
 @Composable
-private fun SheetActionRow(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, onClick: () -> Unit) {
+private fun SheetActionRow(icon: androidx.compose.ui.graphics.painter.Painter, text: String, onClick: () -> Unit) {
   Row(
     modifier = Modifier
       .fillMaxWidth()
@@ -363,7 +364,7 @@ private fun SheetActionRow(icon: androidx.compose.ui.graphics.vector.ImageVector
     verticalAlignment = Alignment.CenterVertically,
   ) {
     Icon(
-      imageVector = icon,
+      painter = icon,
       contentDescription = null,
       tint = BiliColors.BiliPink,
       modifier = Modifier.size(24.dp),
