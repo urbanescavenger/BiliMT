@@ -1634,12 +1634,19 @@ fun PlayerScreen(
         // YouTube 起播即写入播放历史（含频道/封面元数据），供历史 tab 展示与续播。
         if (isYoutube) {
           runCatching {
+            // 历史条目必须带权威 channelId,否则历史卡片长按"进频道"在 TvVideoGrid hasOwner 判定
+            // (channelId 非空)为 false,长按被当普通点击直接播视频。activeRequest.channelId 从
+            // 历史/搜索等路径起播时常为空,需从 /player 权威 videoDetails 解析一次,打破历史条目
+            // channelId 永久为空的死循环。
+            val historyChannelId = activeRequest.channelId
+              .takeIf { it.isNotBlank() }
+              ?: youtubeRepository.getVideoDetail(info.bvid)?.channelId.orEmpty()
             youtubeHistoryStore.recordPlay(
               com.kirin.mt.core.youtube.YoutubeHistoryEntry(
                 videoId = info.bvid,
                 title = info.title,
                 channelName = activeRequest.ownerName,
-                channelId = activeRequest.channelId,
+                channelId = historyChannelId,
                 thumbnailUrl = activeRequest.coverUrl,
                 durationMs = info.durationMs,
                 positionMs = startPositionMs,

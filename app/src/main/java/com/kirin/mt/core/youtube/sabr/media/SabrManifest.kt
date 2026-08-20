@@ -40,6 +40,14 @@ internal data class SabrManifest(
      */
     @androidx.annotation.OptIn(UnstableApi::class)
     fun fromSession(session: SabrSession, info: PlaybackInfo): SabrManifest {
+      // alpha.9X 决定性诊断:打印过滤后真视频轨数与 itag,分辨「旧缓存包(manifest 仍按 mime 拆组)」vs
+      // 「MimeTypes.isVideo 过滤吞轨」。缺此日志无法判断部署包是否带 6062dab 单组修复。
+      val diagVideoTracks = info.videoTracks.filter { MimeTypes.isVideo(it.mimeType) }
+      android.util.Log.i(
+        "YtSabrManifest",
+        "fromSession: rawVideoTracks=${info.videoTracks.size} isVideo=${diagVideoTracks.size} " +
+          "itags=[${diagVideoTracks.joinToString { it.id }}] mimes=[${diagVideoTracks.joinToString { it.mimeType }}]"
+      )
       // alpha.82(对齐 LibreTube `SabrManifest.kt` groupBy):视频轨按 mimeType 分组,每个 mimeType 一个
       // video AdaptationSet,不混。即使音频 itag(如 itag248 Opus)混进 videoOnlyStreams,也被按音频
       // mimeType 分到单独的 AdaptationSet,并因 mimeType 非视频而在 Representation 里建成 audio Format,

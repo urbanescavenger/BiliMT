@@ -109,6 +109,22 @@ internal class DefaultSabrChunkSource(
         ),
       )
     }.toMutableList()
+    // alpha.9X 决定性诊断:打印 manifest adaptation set 结构(每 set 的 itag 数)+ trackSelection.length()。
+    // 判定「旧缓存包(manifest 仍按 mime 拆组 → 视频被拆成多个单轨组)」还是「单组 5 轨但 DefaultTrackSelector
+    // 仍只选 1 轨」。fmts= 一行即可见:若视频组是 [243] 一个,是旧包;若 [243 244 …] 多个但仍 sel=1,是选轨器问题。
+    Log.i(
+      "YtSabrChunk",
+      "init trackType=$trackType trackSelLen=${trackSelection.length()} sets=${
+        manifest.adaptationSets.mapIndexed { si, set ->
+          "set$si[${set.trackType}]=" + set.representations.joinToString { it.formatId.itag }
+        }
+      } selected=[${
+        (0..<trackSelection.length()).joinToString { i ->
+          val idx = trackSelection.getIndexInTrackGroup(i)
+          "${trackSelection.getFormat(i).id}($idx)b=${trackSelection.getFormat(i).bitrate}"
+        }
+      }]"
+    )
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {
