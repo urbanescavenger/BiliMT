@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -69,6 +71,11 @@ fun MobileDownloadsScreen(
   downloadManager: DownloadManager,
   youtubePlaylistStore: YoutubePlaylistStore,
   onPlayDownload: (Long) -> Unit,
+  batchMode: Boolean = false,
+  selectedIds: Set<Long> = emptySet(),
+  onToggleSelection: (Long) -> Unit = {},
+  onSetSelection: (Set<Long>) -> Unit = {},
+  onDeleteSelected: () -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val scope = rememberCoroutineScope()
@@ -76,6 +83,8 @@ fun MobileDownloadsScreen(
   // 长按卡片弹出的操作弹窗目标;再点「加入播放列表」切到列表选择弹窗。
   var longPressGroup by remember { mutableStateOf<DownloadWithItems?>(null) }
   var showPlaylistPicker by remember { mutableStateOf(false) }
+  // 批量删除二次确认弹窗。
+  var showDeleteConfirm by remember { mutableStateOf(false) }
   // 实时字节进度:downloadId → fraction。Download 的 totalDownloadedBytes 是文件长度,服务回吐更及时。
   var liveProgress by remember { mutableStateOf<Map<Long, Float>>(emptyMap()) }
   // 实时速率按分件记:(downloadId, partId) → bytesPerSecond;组级显示需对这些并发分件求和,
@@ -94,66 +103,80 @@ fun MobileDownloadsScreen(
     }
   }
 
-  if (downloads.isEmpty()) {
-    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-      Text(
-        text = stringResource(R.string.downloads_empty),
-        style = MaterialTheme.typography.bodyLarge,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
-    }
-    return
-  }
-
-  LazyColumn(
-    modifier = modifier.fillMaxSize(),
-    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-    verticalArrangement = Arrangement.spacedBy(10.dp),
-  ) {
-    items(downloads, key = { it.download.id }) { group ->
-      // 组级剩余待下载:Σ(各分件已知总量 - 实时已下载字节)。
-      // 总量取 progress 流实时 totalBytes(探测后)优先、Room 快照兜底——避免分件 totalSize
-      // 在 DB 里仍为 -1 时被 filter 排除导致「速度在涨但剩余不减」。
-      val did = group.download.id
-      var groupTotal = 0L
-      var totalKnown = false
-      for (item in group.items) {
-        // 优先用 progress 流实时 reportTotal(DASH 折算后的实际应下文件长度,已 emit 即准确);
-        // 未开始下载的分件无 progress 时才 fallback Room item.totalSize。
-        val t = livePartTotal[did to item.id] ?: item.totalSize
-        if (t > 0L) {
-          groupTotal += t
-          totalKnown = true
+  Column(modifier = modifier.fillMaxSize()) {
+    if (downloads.isEmpty()) {
+      Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Text(
+          text = stringResource(R.string.downloads_empty),
+          style = MaterialTheme.typography.bodyLarge,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+    } else {
+      LazyColumn(
+        modifier = Modifier.weight(1f).fillMaxWidth(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
+        items(downloads, key = { it.download.id }) { group ->
+          // 组级剩余待下载:Σ(各分件已知总量 - 实时已下载字节)。
+          // 总量取 progress 流实时 totalBytes(探测后)优先、Room 快照兜底——避免分件 totalSize
+          // 在 DB 里仍为 -1 时被 filter 排除导致「速度在涨但剩余不减」。
+          val did = group.download.id
+          var groupTotal = 0L
+          var totalKnown = false
+          for (item in group.items) {
+            // 优先用 progress 流实时 reportTotal(DASH 折算后的实际字节,已 emit 即准确);
+            // 未开始下载的分件无 progress 时才 fallback Room item.totalSize。
+            val t = livePartTotal[did to item.id] ?: item.totalSize
+            if (t > 0L) {
+              groupTotal += t
+              totalKnown = true
+            }
+          }
+          val downloaded = group.items.sumOf { livePartBytes[did to it.id] ?: 0L }
+          val remainingBytes = if (totalKnown) (groupTotal - downloaded).coerceAtLeast(0L) else null
+          // 组级总速度 = 还在下载(未下完)的并发分件瞬时速度之和。
+          // 已完成分件不再 emit,但其瞬时速度残留在 liveSpeedParts——必须排除,
+          // 否则视频已下完(残留 7M)+ 音频慢速(65k)会错误显示 7M。
+          val totalSpeed = liveSpeedParts.entries
+            .filter { it.key.first == did }
+            .filter { (key, _) ->
+              val total = livePartTotal[key]
+              val done = livePartBytes[key] ?: 0L
+              // 总量未知或还没下完 → 仍在活跃下载,计入;已下完(done>=total) → 排除残留。
+              total == null || total <= 0L || done < total
+            }
+            .sumOf { it.value }
+          DownloadCard(
+            group = group,
+            liveFraction = liveProgress[group.download.id],
+            liveSpeedBps = totalSpeed.takeIf { it > 0L },
+            remainingBytes = remainingBytes,
+            batchMode = batchMode,
+            selected = group.download.id in selectedIds,
+            onSelect = { onToggleSelection(group.download.id) },
+            onPlay = { onPlayDownload(group.download.id) },
+            onPause = { scope.launch { downloadManager.pause(group.download.id) } },
+            onResume = { scope.launch { downloadManager.resume(group.download.id) } },
+            onCancel = { scope.launch { downloadManager.cancel(group.download.id) } },
+            onLongPress = {
+              longPressGroup = group
+              showPlaylistPicker = false
+            },
+          )
         }
       }
-      val downloaded = group.items.sumOf { livePartBytes[did to it.id] ?: 0L }
-      val remainingBytes = if (totalKnown) (groupTotal - downloaded).coerceAtLeast(0L) else null
-      // 组级总速度 = 还在下载(未下完)的并发分件瞬时速度之和。
-      // 已完成分件不再 emit,但其瞬时速度残留在 liveSpeedParts——必须排除,
-      // 否则视频已下完(残留 7M)+ 音频慢速(65k)会错误显示 7M。
-      val totalSpeed = liveSpeedParts.entries
-        .filter { it.key.first == did }
-        .filter { (key, _) ->
-          val total = livePartTotal[key]
-          val done = livePartBytes[key] ?: 0L
-          // 总量未知或还没下完 → 仍在活跃下载,计入;已下完(done>=total) → 排除残留。
-          total == null || total <= 0L || done < total
-        }
-        .sumOf { it.value }
-      DownloadCard(
-        group = group,
-        liveFraction = liveProgress[group.download.id],
-        liveSpeedBps = totalSpeed.takeIf { it > 0L },
-        remainingBytes = remainingBytes,
-        onPlay = { onPlayDownload(group.download.id) },
-        onPause = { scope.launch { downloadManager.pause(group.download.id) } },
-        onResume = { scope.launch { downloadManager.resume(group.download.id) } },
-        onCancel = { scope.launch { downloadManager.cancel(group.download.id) } },
-        onLongPress = {
-          longPressGroup = group
-          showPlaylistPicker = false
-        },
-      )
+      if (batchMode) {
+        val allSelected = downloads.all { it.download.id in selectedIds }
+        DownloadBatchBar(
+          selectedCount = selectedIds.size,
+          onToggleAll = {
+            onSetSelection(if (allSelected) emptySet() else downloads.map { it.download.id }.toSet())
+          },
+          onDelete = { showDeleteConfirm = true },
+        )
+      }
     }
   }
 
@@ -185,6 +208,31 @@ fun MobileDownloadsScreen(
       )
     }
   }
+
+  // 批量删除二次确认。
+  if (showDeleteConfirm) {
+    AlertDialog(
+      onDismissRequest = { showDeleteConfirm = false },
+      title = { Text(stringResource(R.string.downloads_batch_confirm_title)) },
+      text = {
+        Text(
+          stringResource(R.string.downloads_batch_confirm_message, selectedIds.size),
+          style = MaterialTheme.typography.bodyMedium,
+        )
+      },
+      confirmButton = {
+        TextButton(onClick = {
+          showDeleteConfirm = false
+          onDeleteSelected()
+        }) { Text(stringResource(R.string.downloads_action_delete)) }
+      },
+      dismissButton = {
+        TextButton(onClick = { showDeleteConfirm = false }) {
+          Text(stringResource(R.string.playlist_cancel))
+        }
+      },
+    )
+  }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -194,6 +242,9 @@ private fun DownloadCard(
   liveFraction: Float?,
   liveSpeedBps: Long?,
   remainingBytes: Long?,
+  batchMode: Boolean = false,
+  selected: Boolean = false,
+  onSelect: () -> Unit = {},
   onPlay: () -> Unit,
   onPause: () -> Unit,
   onResume: () -> Unit,
@@ -205,19 +256,25 @@ private fun DownloadCard(
   val fraction = liveFraction ?: group.fraction
   val coverModel = d.coverPath ?: d.coverUrl
 
-  // 对齐其它卡片页:单击播放(可播时),长按弹操作菜单(加入播放列表/删除)。
+  // 批量模式:点卡片=勾选/取消,关闭长按;普通模式:单击播放(可播时),长按弹操作菜单。
   Row(
     modifier = Modifier
       .fillMaxWidth()
       .clip(RoundedCornerShape(12.dp))
       .background(MaterialTheme.colorScheme.surfaceVariant)
       .combinedClickable(
-        onClick = { if (group.isPlayable) onPlay() },
-        onLongClick = onLongPress,
+        onClick = if (batchMode) onSelect else { if (group.isPlayable) onPlay() },
+        onLongClick = if (batchMode) null else onLongPress,
       )
       .padding(8.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
+    if (batchMode) {
+      Checkbox(
+        checked = selected,
+        onCheckedChange = { onSelect() },
+      )
+    }
     AsyncImage(
       model = coverModel,
       contentDescription = d.title,
@@ -308,6 +365,40 @@ private fun statusLabel(status: DownloadStatus): String = when (status) {
   DownloadStatus.COMPLETED -> stringResource(R.string.downloads_status_completed)
   DownloadStatus.FAILED -> stringResource(R.string.downloads_status_failed)
   DownloadStatus.CANCELLED -> stringResource(R.string.downloads_status_cancelled)
+}
+
+/** 批量管理模式底部操作栏:已选计数 + 全选切换 + 删除所选。 */
+@Composable
+private fun DownloadBatchBar(
+  selectedCount: Int,
+  onToggleAll: () -> Unit,
+  onDelete: () -> Unit,
+) {
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .background(MaterialTheme.colorScheme.surfaceVariant)
+      .padding(horizontal = 16.dp, vertical = 4.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(
+      text = stringResource(R.string.downloads_batch_selected, selectedCount),
+      style = MaterialTheme.typography.bodyMedium,
+      modifier = Modifier.weight(1f),
+    )
+    TextButton(onClick = onToggleAll) {
+      Text(stringResource(R.string.downloads_batch_select_all))
+    }
+    TextButton(
+      onClick = onDelete,
+      enabled = selectedCount > 0,
+    ) {
+      Text(
+        text = stringResource(R.string.downloads_batch_delete),
+        color = if (selectedCount > 0) BiliColors.BiliPink else MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+  }
 }
 
 /** 长按下载卡片弹出的底部操作菜单:加入播放列表(仅 YouTube)+ 删除。样式对齐 MobileYoutubeLongPressSheet。 */

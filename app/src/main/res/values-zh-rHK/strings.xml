@@ -95,6 +95,12 @@
     <string name="downloads_notification_title">正在下載</string>
     <string name="downloads_notification_channel">影片下載</string>
     <string name="downloads_offline_player_title">離線播放</string>
+    <string name="downloads_batch_done">完成</string>
+    <string name="downloads_batch_selected">已選 %d 項</string>
+    <string name="downloads_batch_select_all">全選</string>
+    <string name="downloads_batch_delete">刪除所選</string>
+    <string name="downloads_batch_confirm_title">刪除所選下載</string>
+    <string name="downloads_batch_confirm_message">將刪除選中的 %d 項下載任務及本機檔案，不可復原。</string>
     <string name="settings_language_title">語言</string>
     <string name="settings_language_description">切換介面文字，香港同台灣會同時轉換標題、彈幕同 UP 主名稱。</string>
     <string name="settings_language_simplified">简体</string>

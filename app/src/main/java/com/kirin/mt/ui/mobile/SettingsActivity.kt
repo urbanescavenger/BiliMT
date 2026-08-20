@@ -12,6 +12,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -21,6 +25,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -34,6 +39,7 @@ import com.kirin.mt.ui.mobile.settings.MobileFollowManageScreen
 import com.kirin.mt.ui.mobile.settings.MobileLogsScreen
 import com.kirin.mt.ui.mobile.settings.MobileSettingsScreen
 import com.kirin.mt.ui.theme.BiliTvTheme
+import kotlinx.coroutines.launch
 
 class SettingsActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,17 +57,60 @@ class SettingsActivity : ComponentActivity() {
           var showLogs by remember { mutableStateOf(false) }
           var showDownloads by remember { mutableStateOf(false) }
           var playingDownloadId by remember { mutableStateOf<Long?>(null) }
+          val scope = rememberCoroutineScope()
+          // 下载批量删除:管理模式开关 + 已勾选任务 id。
+          var downloadsBatchMode by remember { mutableStateOf(false) }
+          var selectedDownloadIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
           Column(modifier = Modifier.fillMaxSize()) {
             val kind = followScreen
             if (showDownloads) {
               SettingsTopBar(
                 title = stringResource(R.string.downloads_screen_title),
-                onBack = { showDownloads = false },
+                onBack = {
+                  if (downloadsBatchMode) {
+                    downloadsBatchMode = false
+                    selectedDownloadIds = emptySet()
+                  } else {
+                    showDownloads = false
+                  }
+                },
+                trailing = {
+                  if (downloadsBatchMode) {
+                    TextButton(onClick = {
+                      downloadsBatchMode = false
+                      selectedDownloadIds = emptySet()
+                    }) { Text(stringResource(R.string.downloads_batch_done)) }
+                  } else {
+                    IconButton(onClick = {
+                      downloadsBatchMode = true
+                      selectedDownloadIds = emptySet()
+                    }) {
+                      Icon(
+                        imageVector = Icons.Filled.MoreVert,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface,
+                      )
+                    }
+                  }
+                },
               )
               MobileDownloadsScreen(
                 downloadManager = appContainer.downloadManager,
                 youtubePlaylistStore = appContainer.youtubePlaylistStore,
                 onPlayDownload = { playingDownloadId = it },
+                batchMode = downloadsBatchMode,
+                selectedIds = selectedDownloadIds,
+                onToggleSelection = { id ->
+                  selectedDownloadIds = if (id in selectedDownloadIds) selectedDownloadIds - id else selectedDownloadIds + id
+                },
+                onSetSelection = { ids -> selectedDownloadIds = ids },
+                onDeleteSelected = {
+                  scope.launch {
+                    selectedDownloadIds.forEach { appContainer.downloadManager.delete(it) }
+                    selectedDownloadIds = emptySet()
+                    downloadsBatchMode = false
+                  }
+                },
                 modifier = Modifier.fillMaxWidth(),
               )
             } else if (showLogs) {
@@ -130,7 +179,11 @@ class SettingsActivity : ComponentActivity() {
 }
 
 @Composable
-private fun SettingsTopBar(title: String, onBack: () -> Unit) {
+private fun SettingsTopBar(
+  title: String,
+  onBack: () -> Unit,
+  trailing: (@Composable () -> Unit)? = null,
+) {
   Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp)) {
     TextButton(onClick = onBack, modifier = Modifier.align(androidx.compose.ui.Alignment.CenterStart)) {
       Text(stringResource(R.string.mobile_back))
@@ -140,5 +193,8 @@ private fun SettingsTopBar(title: String, onBack: () -> Unit) {
       style = MaterialTheme.typography.titleLarge,
       modifier = Modifier.align(androidx.compose.ui.Alignment.Center),
     )
+    Box(modifier = Modifier.align(androidx.compose.ui.Alignment.CenterEnd)) {
+      trailing?.invoke()
+    }
   }
 }
