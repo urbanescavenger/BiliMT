@@ -440,6 +440,13 @@ fun BiliTvApp(
       requestContentFocusRestore(destination)
       return true
     }
+    // 搜索结果网格无 tab,searchFocusRequester 绑定的就是第一张卡;滚动后首卡被虚拟化卸载,
+    // 直接 requestFocus 会落空(焦点卡在侧栏回不来)。统一走网格恢复,回到上次聚焦的那张卡。
+    // 键盘输入视图(无活跃查询)仍走 requestDestinationFocus(clear 键恒定在树里)。
+    if (destination == AppDestination.Search && searchUiState.activeQuery != null) {
+      requestContentGridRestore(destination)
+      return true
+    }
     val focused = requestDestinationFocus(destination)
     if (!focused) {
       requestContentFocusRestore(destination)
