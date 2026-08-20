@@ -2075,6 +2075,7 @@ fun PlayerScreen(
         PlayerOverlay(
           request = displayRequest,
           info = state.info,
+          actualQuality = actualQuality,
           metadata = metadata,
           sidePanelVideos = sidePanelVideos,
           sidePanelLoading = sidePanelLoading,

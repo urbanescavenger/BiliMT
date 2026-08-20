@@ -112,6 +112,7 @@ internal enum class PlayerPanel {
 internal fun BoxScope.PlayerOverlay(
   request: PlaybackRequest,
   info: PlaybackInfo,
+  actualQuality: PlaybackQuality?,
   metadata: PlaybackVideoMetadata?,
   sidePanelVideos: List<VideoSummary>,
   sidePanelLoading: Boolean,
@@ -227,6 +228,7 @@ internal fun BoxScope.PlayerOverlay(
         activePanel = activePanel,
         focusedIndex = focusedPanelIndex,
         info = info,
+        actualQuality = actualQuality,
         currentCodecText = currentCodecText,
         playbackSpeed = playbackSpeed,
         danmakuSettings = danmakuSettings,
@@ -541,6 +543,7 @@ private fun PlayerBottomOverlay(
       PlayerStatusTexts(
         request = request,
         info = info,
+        actualQuality = actualQuality,
         danmakuSettings = danmakuSettings,
         onlineCountText = onlineCountText,
         currentCodecText = currentCodecText,
@@ -666,6 +669,7 @@ internal fun Modifier.playerFocusedLiquidGlassSurface(
 private fun PlayerStatusTexts(
   request: PlaybackRequest,
   info: PlaybackInfo,
+  actualQuality: PlaybackQuality?,
   danmakuSettings: DanmakuSettings,
   onlineCountText: String,
   currentCodecText: String,
@@ -697,7 +701,7 @@ private fun PlayerStatusTexts(
       maxLines = 1,
     )
     Text(
-      text = info.selectedQuality.description.withCodecLabel(currentCodecText),
+      text = (actualQuality ?: info.selectedQuality).description.withCodecLabel(currentCodecText),
       color = BiliColors.TextSecondary,
       fontSize = BiliTypography.PlayerStatus,
       maxLines = 1,
@@ -1786,6 +1790,7 @@ private fun PlayerSettingsPanel(
   activePanel: PlayerPanel,
   focusedIndex: Int,
   info: PlaybackInfo,
+  actualQuality: PlaybackQuality?,
   currentCodecText: String,
   playbackSpeed: Float,
   danmakuSettings: DanmakuSettings,
@@ -1857,7 +1862,7 @@ private fun PlayerSettingsPanel(
             SettingsRow(
               iconRes = R.drawable.ic_player_hd,
               title = stringResource(R.string.player_settings_quality),
-              value = info.selectedQuality.description.withCodecLabel(currentCodecText),
+              value = (actualQuality ?: info.selectedQuality).description.withCodecLabel(currentCodecText),
               focused = focusedIndex == 0,
               trailingChevron = true,
             )
@@ -1883,13 +1888,16 @@ private fun PlayerSettingsPanel(
         }
         PlayerPanel.Quality -> {
           val qualities = info.qualities.ifEmpty { listOf(info.selectedQuality) }
+          // 高亮/「当前」标实际播放档(actualQuality):Auto 自适应时随 onVideoSizeChanged 更新,
+          // 与请求档(info.selectedQuality)分离——修「显示2160实际低」。actualQuality 为空(未首帧)回落请求档。
+          val currentQuality = actualQuality ?: info.selectedQuality
           itemsIndexed(qualities, key = { _, quality -> quality.id }) { index, quality ->
             SettingsRow(
               iconRes = R.drawable.ic_player_hd,
               title = convertChineseText(quality.description),
-              value = if (quality.id == info.selectedQuality.id) stringResource(R.string.player_value_current) else "",
+              value = if (quality.id == currentQuality.id) stringResource(R.string.player_value_current) else "",
               focused = focusedIndex == index,
-              trailingCheck = quality.id == info.selectedQuality.id,
+              trailingCheck = quality.id == currentQuality.id,
             )
           }
         }
