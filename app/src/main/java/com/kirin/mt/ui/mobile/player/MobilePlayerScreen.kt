@@ -109,6 +109,7 @@ import java.util.Locale
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.Format
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.VideoSize
@@ -879,17 +880,34 @@ fun MobilePlayerScreen(
       }
 
       override fun onVideoSizeChanged(videoSize: VideoSize) {
-        // 显示=实际播放:按实际解码高度更新画质菜单高亮。自适应降档时显示跟随实际档位,
-        // 不再停留在请求档(修 Auto 假 4K 的「显示2160实际240p」)。
-        // 用 track.height 匹配(而非 quality.description)——B 站 description 是 "1080P"/"4K" 非 "${h}p"。
+        // 显示=实际播放:按实际解码高度更新画质菜单高亮。解码器切换时显示跟随实际档位,
+        // 不再停留在请求档(修「显示2160实际360p」)。
+        // 用高度匹配(而非 quality.description)——B 站 description 是 "1080P"/"4K" 非 "${h}p"。
         val h = videoSize.height
         if (h > 0) {
           val info = (playerState as? MobilePlayerState.Ready)?.info
-          val match = info?.videoTracks
-            ?.minByOrNull { kotlin.math.abs(it.height - h) }
-            ?.let { track -> info.qualities.firstOrNull { it.id == track.id } }
+          // 按高度就近匹配画质档:qualities 按高度去重、id 是各分辨率代表 itag,而实际解码轨可能是
+          // 同分辨率下的另一 codec 变体(不同 itag),精确 id 匹配会 miss → 高亮停在请求档。故取各档
+          // 代表轨高度与 h 最近的档位,保证「显示=实际播放」。
+          val match = info?.let { i ->
+            i.qualities.minByOrNull { q ->
+              val qHeight = i.videoTracks.firstOrNull { it.id == q.id }?.height ?: Int.MAX_VALUE
+              kotlin.math.abs(qHeight - h)
+            }
+          }
           if (match != null) actualQualityId = match.id
         }
+      }
+
+      // alpha.9X 诊断:解码器每次切换新视频格式都打日志(videoFmt 分辨率+位率),用于观察自适应
+      // 选轨爬升轨迹(首帧 480p → 逐步升到 1080/2160)。onPlaybackStateChanged 只在状态切换时打,
+      // READY 状态下自适应换档不会触发,故加此回调坐实实际渲染档随时间怎么变。
+      override fun onVideoInputFormatChanged(videoFormat: Format) {
+        Log.i(
+          MobilePlayerLogTag,
+          "onVideoInputFormatChanged video id=${videoFormat.id} mime=${videoFormat.sampleMimeType} " +
+            "res=${videoFormat.width}x${videoFormat.height}@${videoFormat.frameRate} bitrate=${videoFormat.bitrate}",
+        )
       }
 
       override fun onIsPlayingChanged(playing: Boolean) {

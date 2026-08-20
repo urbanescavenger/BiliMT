@@ -1296,15 +1296,21 @@ fun PlayerScreen(
       }
 
       override fun onVideoSizeChanged(videoSize: VideoSize) {
-        // 显示=实际播放:按实际解码高度更新画质面板高亮。自适应降档时显示跟随实际档位,
-        // 不再停留在请求档(修 Auto 假 4K 的「显示2160实际240p」)。
-        // 用 track.height 匹配(而非 quality.description)——B 站 description 是 "1080P"/"4K" 非 "${h}p"。
+        // 显示=实际播放:按实际解码高度更新画质面板高亮。解码器切换时显示跟随实际档位,
+        // 不再停留在"请求档"(修 Auto「显示2160实际360p」)。
+        // 用高度匹配(而非 quality.description)——B 站 description 是 "1080P"/"4K" 非 "${h}p"。
         val h = videoSize.height
         if (h > 0) {
           val info = (playerState as? PlayerScreenState.Ready)?.info
-          val match = info?.videoTracks
-            ?.minByOrNull { kotlin.math.abs(it.height - h) }
-            ?.let { track -> info.qualities.firstOrNull { it.id == track.id } }
+          // 按高度就近匹配画质档:qualities 按高度去重、id 是各分辨率代表 itag,而实际解码轨可能是
+          // 同分辨率下的另一 codec 变体(不同 itag),精确 id 匹配会 miss → 高亮停在请求档。故取各档
+          // 代表轨高度与 h 最近的档位,保证「显示=实际播放」。
+          val match = info?.let { i ->
+            i.qualities.minByOrNull { q ->
+              val qHeight = i.videoTracks.firstOrNull { it.id == q.id }?.height ?: Int.MAX_VALUE
+              kotlin.math.abs(qHeight - h)
+            }
+          }
           if (match != null) actualQuality = match
         }
       }

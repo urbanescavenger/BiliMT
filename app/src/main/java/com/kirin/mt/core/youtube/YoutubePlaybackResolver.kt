@@ -1286,13 +1286,11 @@ class YoutubePlaybackResolver(
         mimeType = synthAudio.format?.mimeType ?: "audio/mp4",
         segmentBase = PlaybackSegmentBase("${synthAudio.initStart}-${synthAudio.initEnd}", "${synthAudio.indexStart}-${synthAudio.indexEnd}"),
       )
-      // 手动选档:回该分辨率全部 codec 变体(ExoPlayer 在该分辨率内自动选 codec,对齐 LibreTube);
-      // 默认/Auto:回全部 → ExoPlayer 自动选轨。
-      val videoTracks = if (request.preferredQualityId != null) {
-        sortedVideos.filter { it.height == selectedVideo.height }.map { buildVideoTrack(it) }
-      } else {
-        sortedVideos.map { buildVideoTrack(it) }
-      }
+      // 手动选档与默认/Auto 统一:只回 selectedVideo(手动档或 Auto 默认/最高档)所在分辨率的全部
+      // codec 变体(ExoPlayer 在该分辨率内自动选 codec,对齐 LibreTube),不再全轨喂 ExoPlayer 自适应。
+      // 自合成 DASH 是 on-demand(SegmentBase),ExoPlayer 自适应按初始带宽(~1Mbps)从 360/480p 起步
+      // 且不爬升(真机卡 360p/480p,显示却标 1080/2160);确定性从请求档起播与手动选档行为一致。
+      val videoTracks = sortedVideos.filter { it.height == selectedVideo.height }.map { buildVideoTrack(it) }
       Log.i(Tag, "兜底: 自合成 DASH from NewPipe(video itag${selectedVideo.itag} ${selectedVideo.height}p [${videoTracks.size}/${sortedVideos.size}轨 ${qualities.size}档] + audio itag${synthAudio.itag}) dur=${resolvedDuration}ms → buildDashManifest 合成 MPD DashMediaSource")
       return PlaybackInfo(
         bvid = videoId,
