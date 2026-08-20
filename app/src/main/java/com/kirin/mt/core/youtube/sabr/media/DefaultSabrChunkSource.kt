@@ -1,6 +1,7 @@
 package com.kirin.mt.core.youtube.sabr.media
 
 import android.os.SystemClock
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.C.TrackType
@@ -179,6 +180,18 @@ internal class DefaultSabrChunkSource(
         .filter { trackSelection.getFormat(it).bitrate in 1 until currentBitrate }
         .maxByOrNull { trackSelection.getFormat(it).bitrate }
     } else null
+    // alpha.9X 诊断:ABR 门控与候选,定位「Auto 起播低档后不升档」。bitrate=-1(Format 未设)则 currentBitrate<=0
+    // → up/down 恒 null → 未下载轨全 EMPTY → 退化成老 bug(钉死起始档)。fmts 逐个标真实 bitrate。
+    Log.i(
+      "YtSabrAbr",
+      "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate chunkIndex=${representationHolder.chunkIndex != null} " +
+        "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
+          (0..<trackSelection.length()).joinToString { i ->
+            val f = trackSelection.getFormat(i)
+            "${representationHolders[i].representation.formatId.itag}[${if (f.bitrate > 0) f.bitrate else "NA"}]"
+          }
+        }"
+    )
     trackSelection.updateSelectedTrack(
       playbackPositionUs,
       bufferedDurationUs,
