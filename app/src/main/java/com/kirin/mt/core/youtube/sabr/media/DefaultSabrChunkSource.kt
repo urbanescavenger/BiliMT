@@ -160,19 +160,24 @@ internal class DefaultSabrChunkSource(
 
     val representationHolder = representationHolders[trackSelection.selectedIndex]
     fetcher.selectFormat(representationHolder.representation)
-    // 增量升档(alpha.9X,修「Auto 起步低档后永不升档」):Auto 全轨自适应原把所有未下载轨的 iterator
+    // 增量升/降档(alpha.9X,修「Auto 起播低档后永不升档」):Auto 全轨自适应原把所有未下载轨的 iterator
     // 填 MediaChunkIterator.EMPTY,AdaptiveTrackSelection 看不到任何备选数据 → selectedIndex 冻结在低档
-    // (默认带宽估计 ~1Mbps 起步如 itag244=480p),带宽涨了也无轨可切。这里只给「当前档的下一高码率档」
-    // 喂一个**基于当前档 chunkIndex 的合成 iterator**——YouTube 同视频各 itag 段网格时间对齐,段时序可复用,
-    // 让 AdaptiveTrackSelection 判定该档可切;带宽涨时逐档升。切到新档后其 init 才按需加载(chunkIndex 变真),
-    // 下一轮再给再下一档喂合成 iterator。其余档仍 EMPTY(不参与切轨)→ 一次只升一档、不越级、不预拉多轨 init。
-    val upgradeCandidateIndex = if (representationHolder.chunkIndex != null) {
-      val currentBitrate = trackSelection.getFormat(trackSelection.selectedIndex).bitrate
-      if (currentBitrate > 0) {
-        (0..<trackSelection.length())
-          .filter { trackSelection.getFormat(it).bitrate > currentBitrate }
-          .minByOrNull { trackSelection.getFormat(it).bitrate }
-      } else null
+    // (默认带宽估计 ~1Mbps 起步如 itag244=480p),带宽涨了也无新轨可切。这里只给「当前档的下一高码率档」
+    // (upgrade,升档)与「下一低码率档」(downgrade,网络崩时降档自救)各喂一个**基于当前档 chunkIndex 的
+    // 合成 iterator**——YouTube 同视频各 itag 段网格时间对齐,段时序可复用,让 ABR 判定该档可切。
+    // 切到该档后其 init 才按需加载(chunkIndex 变真),下一轮再给再下一档喂合成 iterator;已下载档保留真
+    // iterator(可降回)。其余档仍 EMPTY(不参与切轨)→ 一次只升降一档、不越级、不预拉多轨 init。
+    val currentBitrate =
+      if (representationHolder.chunkIndex != null) trackSelection.getFormat(trackSelection.selectedIndex).bitrate else -1
+    val upgradeCandidateIndex = if (currentBitrate > 0) {
+      (0..<trackSelection.length())
+        .filter { trackSelection.getFormat(it).bitrate > currentBitrate }
+        .minByOrNull { trackSelection.getFormat(it).bitrate }
+    } else null
+    val downgradeCandidateIndex = if (currentBitrate > 0) {
+      (0..<trackSelection.length())
+        .filter { trackSelection.getFormat(it).bitrate in 1 until currentBitrate }
+        .maxByOrNull { trackSelection.getFormat(it).bitrate }
     } else null
     trackSelection.updateSelectedTrack(
       playbackPositionUs,
@@ -182,8 +187,9 @@ internal class DefaultSabrChunkSource(
       Array(representationHolders.size) { i ->
         val holder = representationHolders[i]
         val timing = when {
-          holder.chunkIndex != null -> holder          // 已下载轨:真 iterator(含当前档,供降档用)
-          i == upgradeCandidateIndex -> representationHolder  // 下一高码率档:复用当前档时序的合成 iterator
+          holder.chunkIndex != null -> holder                 // 已下载轨:真 iterator(含当前档,可降回)
+          i == upgradeCandidateIndex -> representationHolder   // 下一高码率档:合成(升档)
+          i == downgradeCandidateIndex -> representationHolder // 下一低码率档:合成(网络崩时降档)
           else -> null
         }
         if (timing == null) MediaChunkIterator.EMPTY
