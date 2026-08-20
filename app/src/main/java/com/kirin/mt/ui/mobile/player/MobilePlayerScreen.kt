@@ -109,7 +109,6 @@ import java.util.Locale
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
-import androidx.media3.common.Format
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.VideoSize
@@ -897,17 +896,6 @@ fun MobilePlayerScreen(
           }
           if (match != null) actualQualityId = match.id
         }
-      }
-
-      // alpha.9X 诊断:解码器每次切换新视频格式都打日志(videoFmt 分辨率+位率),用于观察自适应
-      // 选轨爬升轨迹(首帧 480p → 逐步升到 1080/2160)。onPlaybackStateChanged 只在状态切换时打,
-      // READY 状态下自适应换档不会触发,故加此回调坐实实际渲染档随时间怎么变。
-      override fun onVideoInputFormatChanged(videoFormat: Format) {
-        Log.i(
-          MobilePlayerLogTag,
-          "onVideoInputFormatChanged video id=${videoFormat.id} mime=${videoFormat.sampleMimeType} " +
-            "res=${videoFormat.width}x${videoFormat.height}@${videoFormat.frameRate} bitrate=${videoFormat.bitrate}",
-        )
       }
 
       override fun onIsPlayingChanged(playing: Boolean) {
