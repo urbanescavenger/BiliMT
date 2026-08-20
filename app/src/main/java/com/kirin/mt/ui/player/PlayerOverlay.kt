@@ -166,6 +166,7 @@ internal fun BoxScope.PlayerOverlay(
     PlayerBottomOverlay(
       request = request,
       info = info,
+      actualQuality = actualQuality,
       availableControls = availableControls,
       focusedControl = focusedControl,
       progressFocused = progressFocused,
@@ -438,6 +439,7 @@ internal fun PlayerMetaItem(
 private fun PlayerBottomOverlay(
   request: PlaybackRequest,
   info: PlaybackInfo,
+  actualQuality: PlaybackQuality?,
   availableControls: List<PlayerControl>,
   focusedControl: PlayerControl,
   progressFocused: Boolean,
