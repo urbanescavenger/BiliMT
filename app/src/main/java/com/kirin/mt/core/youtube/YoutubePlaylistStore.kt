@@ -80,6 +80,17 @@ class YoutubePlaylistStore(private val context: Context) {
     }
   }
 
+  /** 批量移除：从指定播放列表一次性过滤掉多个 videoId(bvid)，单次写盘。 */
+  suspend fun removeVideos(playlistName: String, videoIds: Set<String>) {
+    if (videoIds.isEmpty()) return
+    editPlaylists { list ->
+      list.map { pl ->
+        if (pl.name == playlistName) pl.copy(videos = pl.videos.filterNot { it.bvid in videoIds })
+        else pl
+      }
+    }
+  }
+
   /** 新建空播放列表；重名返回 false。 */
   suspend fun createPlaylist(name: String): Boolean {
     var created = false

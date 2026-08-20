@@ -514,6 +514,11 @@
     <string name="playlist_remove">移除</string>
     <string name="playlist_added">已加入播放列表</string>
     <string name="playlist_removed">已从播放列表移除</string>
+    <string name="playlist_batch_selected">已选 %d 项</string>
+    <string name="playlist_batch_select_all">全选</string>
+    <string name="playlist_batch_delete">删除所选</string>
+    <string name="playlist_batch_confirm_title">批量移除视频</string>
+    <string name="playlist_batch_confirm_message">将把选中的 %d 个视频从该播放列表移除。</string>
     <string name="add_to_playlist">加入播放列表</string>
     <string name="in_playlist">已加入</string>
     <string name="playlist_add_title">加入播放列表</string>

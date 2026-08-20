@@ -20,6 +20,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -209,6 +211,10 @@ private fun PlaylistDetailScreen(
   val scope = rememberCoroutineScope()
   val listState = rememberLazyListState()
   var editMode by remember { mutableStateOf(false) }
+  // 批量移除选中集(编辑模式下勾选的 bvid);「完成」或单移除时清掉。
+  var selectedBvids by remember { mutableStateOf<Set<String>>(emptySet()) }
+  // 批量移除二次确认弹窗。
+  var showRemoveConfirm by remember { mutableStateOf(false) }
   // 本地可重排列表(拖动用);playlist.videos 变化(外部/持久化)时同步。
   var items by remember { mutableStateOf(playlist.videos) }
   LaunchedEffect(playlist.videos) { items = playlist.videos }
@@ -236,7 +242,10 @@ private fun PlaylistDetailScreen(
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
       )
-      OutlinedButton(onClick = { editMode = !editMode }) {
+      OutlinedButton(onClick = {
+        editMode = !editMode
+        selectedBvids = emptySet()
+      }) {
         Text(stringResource(if (editMode) R.string.playlist_done else R.string.playlist_edit))
       }
     }
@@ -254,7 +263,7 @@ private fun PlaylistDetailScreen(
       return@Column
     }
 
-    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+    LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth()) {
       itemsIndexed(items, key = { _, v -> v.bvid }) { index, video ->
         val isDragging = video.bvid == draggingBvid
         // 拖拽项禁用 animateItem:交换后布局位置立即跳变,由 graphicsLayer 的 translationY 补偿,
@@ -277,10 +286,16 @@ private fun PlaylistDetailScreen(
               if (isDragging) Color(0xFF2A2A32) else Color.Transparent,
               RoundedCornerShape(10.dp),
             )
-            .clickable(enabled = !editMode) {
-              // 先起播(外层 onVideoSelected 清连播队列),再设置队列快照,保证播放器用该列表连播。
-              onVideoSelected(video)
-              onStartPlaylist(items)
+            .clickable {
+              if (editMode) {
+                // 编辑模式:点卡勾选/取消(批量移除),不触发播放/拖动。
+                selectedBvids = if (video.bvid in selectedBvids) selectedBvids - video.bvid
+                else selectedBvids + video.bvid
+              } else {
+                // 先起播(外层 onVideoSelected 清连播队列),再设置队列快照,保证播放器用该列表连播。
+                onVideoSelected(video)
+                onStartPlaylist(items)
+              }
             }
             .pointerInput(video.bvid, editMode) {
               if (editMode) return@pointerInput
@@ -329,6 +344,15 @@ private fun PlaylistDetailScreen(
             },
           verticalAlignment = Alignment.CenterVertically,
         ) {
+          // 编辑模式:行首复选框勾选/取消;点卡也能切,复选框自身消费点击不触发父行。
+          if (editMode) {
+            Checkbox(
+              checked = video.bvid in selectedBvids,
+              onCheckedChange = { checked ->
+                selectedBvids = if (checked) selectedBvids + video.bvid else selectedBvids - video.bvid
+              },
+            )
+          }
           Box {
             AsyncImage(
               model = video.pic,
@@ -378,6 +402,7 @@ private fun PlaylistDetailScreen(
             TextButton(onClick = {
               scope.launch {
                 youtubePlaylistStore.removeVideo(playlist.name, video.bvid)
+                selectedBvids = selectedBvids - video.bvid
                 toast(context.getString(R.string.playlist_removed))
               }
             }) {
@@ -390,6 +415,81 @@ private fun PlaylistDetailScreen(
           color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
         )
       }
+    }
+
+    // 编辑模式:底部固定全局批量操作栏(已选 N/全选/删除所选),对齐下载批量删除。
+    if (editMode) {
+      val allSelected = items.isNotEmpty() && items.all { it.bvid in selectedBvids }
+      PlaylistBatchBar(
+        selectedCount = selectedBvids.size,
+        onToggleAll = {
+          selectedBvids = if (allSelected) emptySet() else items.map { it.bvid }.toSet()
+        },
+        onDelete = { showRemoveConfirm = true },
+      )
+    }
+
+    // 批量移除二次确认。
+    if (showRemoveConfirm) {
+      AlertDialog(
+        onDismissRequest = { showRemoveConfirm = false },
+        title = { Text(stringResource(R.string.playlist_batch_confirm_title)) },
+        text = {
+          Text(
+            stringResource(R.string.playlist_batch_confirm_message, selectedBvids.size),
+            style = MaterialTheme.typography.bodyMedium,
+          )
+        },
+        confirmButton = {
+          TextButton(onClick = {
+            scope.launch {
+              youtubePlaylistStore.removeVideos(playlist.name, selectedBvids)
+              toast(context.getString(R.string.playlist_removed))
+              selectedBvids = emptySet()
+            }
+            showRemoveConfirm = false
+          }) { Text(stringResource(R.string.playlist_batch_delete)) }
+        },
+        dismissButton = {
+          TextButton(onClick = { showRemoveConfirm = false }) {
+            Text(stringResource(R.string.playlist_cancel))
+          }
+        },
+      )
+    }
+  }
+}
+
+/** 编辑模式底部批量操作栏:已选计数 + 全选切换 + 删除所选。样式对齐下载批量栏。 */
+@Composable
+private fun PlaylistBatchBar(
+  selectedCount: Int,
+  onToggleAll: () -> Unit,
+  onDelete: () -> Unit,
+) {
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .background(MaterialTheme.colorScheme.surfaceVariant)
+      .padding(horizontal = 16.dp, vertical = 4.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(
+      text = stringResource(R.string.playlist_batch_selected, selectedCount),
+      style = MaterialTheme.typography.bodyMedium,
+      modifier = Modifier.weight(1f),
+    )
+    TextButton(onClick = onToggleAll) {
+      Text(stringResource(R.string.playlist_batch_select_all))
+    }
+    TextButton(
+      onClick = onDelete,
+      enabled = selectedCount > 0,
+    ) {
+      Text(
+        text = stringResource(R.string.playlist_batch_delete),
+        color = if (selectedCount > 0) BiliColors.BiliPink else MaterialTheme.colorScheme.onSurfaceVariant,
+      )
     }
   }
 }
