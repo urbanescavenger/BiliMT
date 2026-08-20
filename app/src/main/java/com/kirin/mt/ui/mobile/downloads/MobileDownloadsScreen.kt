@@ -263,7 +263,9 @@ private fun DownloadCard(
       .clip(RoundedCornerShape(12.dp))
       .background(MaterialTheme.colorScheme.surfaceVariant)
       .combinedClickable(
-        onClick = if (batchMode) onSelect else { if (group.isPlayable) onPlay() },
+        onClick = {
+          if (batchMode) onSelect() else if (group.isPlayable) onPlay()
+        },
         onLongClick = if (batchMode) null else onLongPress,
       )
       .padding(8.dp),
