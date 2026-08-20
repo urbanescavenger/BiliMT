@@ -1350,6 +1350,24 @@ fun PlayerScreen(
         if (playbackState == Player.STATE_ENDED && playerState is PlayerScreenState.Ready && player.mediaItemCount > 0) {
           reportPlaybackCompleted()
         }
+        // alpha.9X 决定性诊断(renderer 支持判定真相):READY 时 dump currentTracks 每轨 isSupported/isAdaptive/
+        // isSelected。DefaultTrackSelector 按 renderer 支持判定建组,此直接暴露 4 条 H264 是被判不支持还是
+        // 混合 mime 关闭导致只组 1 轨。isSupported=false → renderer 拒载(H264 字段问题);isSupported=true 但
+        // isAdaptive=false → renderer 单轨可播但不可自适应切轨(混合 mime/自适应能力)。
+        if (playbackState == Player.STATE_READY) {
+          val g = player.currentTracks.groups
+          Log.i(
+            "YtSabrTracks",
+            "groups=${g.size} " + g.mapIndexed { gi, gr ->
+              "g$gi[${gr.trackType}]=" + (0..<gr.length).joinToString { ti ->
+                val f = gr.getTrackFormat(ti)
+                "${f.id?.takeIf { it.isNotBlank() } ?: f.codecs}(${f.width}x${f.height})" +
+                  "support=${gr.getTrackSupport(ti)} sup=${gr.isTrackSupported(ti)} " +
+                  "ada=${gr.isTrackAdaptive(ti)} sel=${gr.isTrackSelected(ti)}"
+              }
+            }
+          )
+        }
       }
     }
     player.addListener(listener)
