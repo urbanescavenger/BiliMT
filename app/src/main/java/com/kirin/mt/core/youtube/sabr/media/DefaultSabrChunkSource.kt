@@ -184,7 +184,9 @@ internal class DefaultSabrChunkSource(
     // → up/down 恒 null → 未下载轨全 EMPTY → 退化成老 bug(钉死起始档)。fmts 逐个标真实 bitrate。
     Log.i(
       "YtSabrAbr",
-      "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate chunkIndex=${representationHolder.chunkIndex != null} " +
+      "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
+        bufferedDurationUs % 1_000_000 / 100_000
+      } chunkIndex=${representationHolder.chunkIndex != null} " +
         "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
           (0..<trackSelection.length()).joinToString { i ->
             val f = trackSelection.getFormat(i)

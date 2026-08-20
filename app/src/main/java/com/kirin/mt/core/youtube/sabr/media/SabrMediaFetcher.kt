@@ -1,5 +1,6 @@
 package com.kirin.mt.core.youtube.sabr.media
 
+import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
@@ -289,7 +290,8 @@ internal class SabrMediaFetcher(
       .header("Referer", "https://www.youtube.com/")
       .build()
     return try {
-      httpClient.newCall(request).execute().use { response ->
+      val t0 = SystemClock.elapsedRealtime()
+      val resp = httpClient.newCall(request).execute().use { response ->
         val code = response.code
         if (code != 200) {
           val hdrs = response.headers.joinToString("; ") { "${it.first}=${it.second.take(80)}" }
@@ -298,6 +300,10 @@ internal class SabrMediaFetcher(
         }
         response.body?.bytes() ?: throw IOException("SABR empty body")
       }
+      val elapsed = SystemClock.elapsedRealtime() - t0
+      val mbps = if (elapsed > 0) resp.size.toLong() * 8 / (elapsed * 1000L) else -1L
+      Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps")
+      resp
     } catch (e: SabrTerminalException) {
       throw e
     } catch (e: Exception) {
