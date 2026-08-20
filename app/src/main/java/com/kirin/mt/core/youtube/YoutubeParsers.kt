@@ -541,11 +541,20 @@ internal object YoutubeParsers {
         isUpcoming
     }
 
-    // metadata 子树里的文本:播放量 / 发布时间 / 角标。
+    // metadata 里的文本:播放量 / 发布时间 / 角标。只取 contentMetadataViewModel.metadataRows 里的
+    // text.content(对齐注释里的真实结构),不再 collectStrings 全树扫——全树扫会把标题/缩略图尺寸/
+    // trackingParams 里的数字也收进来,firstNotNullOfOrNull 可能误取成播放量(实测最热排序播放数被污染)。
     val metaTexts = mutableListOf<String>()
-    collectStrings(node.obj("metadata"), metaTexts)
+    lockupBadges?.forEach { row ->
+      (row as? JsonObject)?.array("metadataParts")?.forEach { part ->
+        (part as? JsonObject)?.obj("text")?.stringOrNull("content")?.let { metaTexts.add(it) }
+      }
+    }
     val viewCount = metaTexts.firstNotNullOfOrNull { parseCount(it) }
     val publishedAt = metaTexts.firstNotNullOfOrNull { parsePublished(it, liveNow, isUpcoming) }
+    // 诊断:确认最热排序(英文 lockup)解析出的播放量/时间。
+    Log.d("YtBadge", "lockup videoId=$videoId viewCount=$viewCount publishedAt=$publishedAt " +
+      "metaTexts=$metaTexts")
     val badge = metaTexts.firstOrNull {
       it.contains("LIVE", ignoreCase = true) ||
         it.contains("Premieres", ignoreCase = true)
@@ -730,6 +739,12 @@ internal object YoutubeParsers {
    */
   private fun parseCount(text: String?): Long? {
     if (text.isNullOrBlank()) return null
+    // 拒绝时间类文本:parseLockupViewModel 用 collectStrings 全树扫 metadata,发布时间
+    // ("11 days ago"/"5 個月前"/"13:09")也会混进 metaTexts;不拦的话 "11 days ago" 会被
+    // 误解析成 11 当作播放量。含 ago/前(相对时间)或冒号(时长)的一律不算播放量。
+    if (text.contains(" ago", ignoreCase = true) || text.contains("前", ignoreCase = true) || text.contains(':')) {
+      return null
+    }
     // 先把说明性前缀/后缀与全角符号剥掉，只留"数字+单位"。
     val cleaned = text
       .replace(",", "")
