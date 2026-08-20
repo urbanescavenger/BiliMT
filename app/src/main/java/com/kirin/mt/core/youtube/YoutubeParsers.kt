@@ -715,22 +715,39 @@ internal object YoutubeParsers {
     }
   }
 
-  /** 解析 "1,234,567 views" / "1.2M views" / "No views" / "1.4K watching"。 */
+  /**
+   * 解析播放数/观看数。英文 "1,234,567 views" / "1.2M views" / "No views" / "1.4K watching"，
+   * 中文/繁体 "觀看次數：49萬次" / "观看次数:49万次" / "1.2亿次播放"（频道页 lockupViewModel
+   * 实测返回繁体 zh-TW 文案）。
+   */
   private fun parseCount(text: String?): Long? {
     if (text.isNullOrBlank()) return null
-    if (text.startsWith("No views", ignoreCase = true)) return 0L
+    // 先把说明性前缀/后缀与全角符号剥掉，只留"数字+单位"。
     val cleaned = text
       .replace(",", "")
       .replace(" views", "", ignoreCase = true)
       .replace(" watching", "", ignoreCase = true)
+      .replace("觀看次數", "", ignoreCase = true)
+      .replace("观看次数", "", ignoreCase = true)
+      .replace("次观看", "", ignoreCase = true)
+      .replace("次播放", "", ignoreCase = true)
+      .replace("次", "", ignoreCase = true)
+      .replace("：", "")
+      .replace(":", "")
       .trim()
+    if (cleaned.startsWith("No views", ignoreCase = true) || cleaned.equals("No", ignoreCase = true)) return 0L
     val multiplier = when {
+      cleaned.contains("亿") -> 100_000_000L
+      cleaned.contains("萬") || cleaned.contains("万") -> 10_000L
       cleaned.endsWith("M", ignoreCase = true) -> 1_000_000L
       cleaned.endsWith("K", ignoreCase = true) -> 1_000L
       cleaned.endsWith("B", ignoreCase = true) -> 1_000_000_000L
       else -> 1L
     }
     val numberPart = cleaned
+      .replace("亿", "")
+      .replace("萬", "")
+      .replace("万", "")
       .substringBefore(' ')
       .trimEnd('M', 'm', 'K', 'k', 'B', 'b')
     val number = numberPart.toDoubleOrNull() ?: return null
@@ -738,8 +755,9 @@ internal object YoutubeParsers {
   }
 
   /**
-   * 把相对时间文案转成 epoch 秒。InnerTube 返回 "3 hours ago"/"1 day ago"/"5 weeks ago" 等，
-   * 无法精确定位，按当前时间反推近似值。live/upcoming 返回 null。
+   * 把相对时间文案转成 epoch 秒。InnerTube 返回 "3 hours ago"/"1 day ago"/"5 weeks ago"，
+   * 频道页 lockupViewModel 返回繁体 "5 個月前"/"2 週前"/"1 年前"（实测 zh-TW）。无法精确定位，
+   * 按当前时间反推近似值。live/upcoming 返回 null。
    */
   private fun parsePublished(text: String?, liveNow: Boolean, isUpcoming: Boolean): Long? {
     if (text.isNullOrBlank() || liveNow || isUpcoming) return null
@@ -759,10 +777,26 @@ internal object YoutubeParsers {
     return nowSec - seconds
   }
 
+  /** 英文 "5 weeks ago" / 中文及繁体 "5 週前"/"3 小时前"/"1 个月前"。 */
   private fun parseRelative(lower: String): Pair<Long, String>? {
-    val match = Regex("""(\d+)\s+([a-z]+)""").find(lower) ?: return null
-    val amount = match.groupValues[1].toLongOrNull() ?: return null
-    return amount to match.groupValues[2]
+    Regex("""(\d+)\s+([a-z]+)""").find(lower)?.let { m ->
+      val amount = m.groupValues[1].toLongOrNull() ?: return null
+      return amount to m.groupValues[2]
+    }
+    // 中文/繁体单位，统一映射成英文单位供 parsePublished 换算。
+    val zh = Regex("""(\d+)\s*([秒分時时天周週月年]+)前""").find(lower) ?: return null
+    val amount = zh.groupValues[1].toLongOrNull() ?: return null
+    val unit = when (zh.groupValues[2]) {
+      "秒" -> "second"
+      "分" -> "minute"
+      "時", "时" -> "hour"
+      "天" -> "day"
+      "周", "週" -> "week"
+      "月" -> "month"
+      "年" -> "year"
+      else -> return null
+    }
+    return amount to unit
   }
 
   // ---- 递归收集 videoRenderer / continuation ----
