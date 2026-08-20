@@ -1624,14 +1624,17 @@ class YoutubePlaybackResolver(
       ?.takeIf { pid -> videoFmts.any { it.itag == pid } }
       ?: defaultItag
     val selectedQuality = qualities.firstOrNull { it.id == selectedItag } ?: qualities.first()
-    // alpha.81(复刻 LibreTube):manifest 塞全部视频轨,由 ExoPlayer 选轨(默认选最高 bitrate,
-    // 绕开 itag313 RELOAD)。videoTracks 不再只建选中 itag 一条,而是全部 itag 各一条。
+    // alpha.81(复刻 LibreTube):manifest 塞全部视频轨,由 ExoPlayer 选轨。⚠️ 注意:AdaptiveTrackSelection
+    // 按初始带宽估计(~1Mbps)起步,默认**不是**选最高 bitrate(旧注释误读),而是从低档起、带宽涨后爬档;
+    // 且 SABR 单流 fetcher 下未下载轨 iterator=EMPTY,原生爬档被堵死。alpha.9X 已在 DefaultSabrChunkSource
+    // 用「下一高码率档合成 iterator」解锁逐档升(见该文件 getNextChunk)。这里仍暴露全部轨供 ExoPlayer 选轨。
     val allVideoTracks = videoFmts.map { fmt ->
       val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == fmt.itag }
       buildSabrTrack(fmt.itag, raw, "video", sid, videoId)
     }
     // alpha.9X(恢复清晰度选择):手动选档(preferredQualityId != null)时 videoTracks 只建选中 itag 单条,
-    // ExoPlayer 只播该档(清晰度真正生效)。否则(默认/Auto)保持 alpha.81 全部轨 → ExoPlayer 自动选最高 bitrate。
+    // ExoPlayer 只播该档(清晰度真正生效,锁单轨是刻意设计)。否则(默认/Auto)保持 alpha.81 全部轨 → 由
+    // ExoPlayer 自适应选轨(默认带宽估计从低档起步,经 DefaultSabrChunkSource 合成 iterator 逐档爬升)。
     // 手动选 4K(itag313)→ SABR 单轨 RELOAD → 兜底提前落 DASH 出 4K;选 ≤1080p → SABR 直接播该档(避开 RELOAD)。
     val videoTracks = if (request.preferredQualityId != null) {
       val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == selectedItag }
