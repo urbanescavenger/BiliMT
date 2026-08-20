@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.youtube.YoutubeConstants
 
 /**
  * YouTube 频道主页视频态。镜像 [SpaceVideoState]，但用 InnerTube continuation token 翻页，
@@ -28,14 +29,16 @@ internal sealed interface ChannelVideoState {
  * TV 版 YouTube 频道主页状态持有器。合并 [UpSpaceUiState] 的 TV 焦点恢复守卫字段与
  * 移动端 [com.kirin.mt.ui.mobile.space.MobileYoutubeChannelUiState] 的 continuation 分页模型。
  *
- * 与 [UpSpaceUiState] 的差异：无排序（YouTube 频道页无 order 维度）、无取关二次确认
- * （本地 DataStore 写入无副作用）、`continuation: String?` 替代 `nextPage: Int`。
+ * 与 [UpSpaceUiState] 的差异：排序为"最新/最热"双档（[YoutubeConstants.ChannelVideoOrder]，
+ * 对齐 B站 UP 空间；非 B站整数 order 维度）、无取关二次确认（本地 DataStore 写入无副作用）、
+ * `continuation: String?` 替代 `nextPage: Int`。
  */
 @Stable
 internal class YoutubeChannelUiState {
   var name by mutableStateOf("")
   var avatar by mutableStateOf("")
   var videoState by mutableStateOf<ChannelVideoState>(ChannelVideoState.Loading)
+  var order by mutableStateOf(YoutubeConstants.ChannelVideoOrder.Latest)
   var followed by mutableStateOf(false)
   var followLoading by mutableStateOf(false)
   var focusedVideoIndex by mutableIntStateOf(0)
@@ -43,9 +46,11 @@ internal class YoutubeChannelUiState {
   var retryKey by mutableIntStateOf(0)
   var focusFirstVideo by mutableStateOf(true)
 
-  // 守卫：已加载的频道 id + retryKey，防止同 channelId 重复解析/重载（从播放器返回复用列表）。
+  // 守卫：已加载的频道 id + retryKey + 排序，防止同 channelId+order 重复解析/重载
+  //（从播放器返回复用列表；切排序强制重拉）。
   var loadedChannelId by mutableStateOf("")
   var loadedRetryKey by mutableIntStateOf(-1)
+  var loadedOrder by mutableStateOf(YoutubeConstants.ChannelVideoOrder.Latest)
 
   fun reset() {
     name = ""
@@ -58,5 +63,7 @@ internal class YoutubeChannelUiState {
     focusFirstVideo = true
     loadedChannelId = ""
     loadedRetryKey = -1
+    loadedOrder = YoutubeConstants.ChannelVideoOrder.Latest
+    order = YoutubeConstants.ChannelVideoOrder.Latest
   }
 }

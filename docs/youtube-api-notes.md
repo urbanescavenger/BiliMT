@@ -188,6 +188,16 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 
 相关视频 rail 在 `contents.twoColumnWatchNextResults.secondaryResults.secondaryResults.results[]`。**实测每项是 `lockupViewModel`（非 compactVideoRenderer，与频道页新格式一致）**，曾因只 collectByKey `compactVideoRenderer` 导致相关视频解析 0 根因。`parseRelatedVideos` 需**同时** collectByKey `compactVideoRenderer` + `lockupViewModel`（`parseLockupViewModel`）。续页 token 从该 section 内 continuationItemRenderer 取；防御：无 secondaryResults 容器时回退全根收集。
 
+### 4.13 频道页「最新 / 最热」排序（2026-08-20）
+
+频道页视频 tab 支持 **Newest（最新）/ Popular（最热）** 双档排序，对齐 B站 UP 空间。两排序共用 `/browse + browseId`，**仅初始 `params` 不同**：
+- 最新：`EgZ2aWRlb3PyBgQKAjoA`（`ChannelVideosParams`，项目原用值）
+- 最热：`EgZwb3B1bGFy`（`ChannelPopularParams`，解码 field1=`"popular"`，来源 rustypipe/invidious 文档）
+
+**continuation 翻页与排序无关**（续页只带 continuation token 即保持当前排序），故排序差异收敛到初始 `params` 一个点。`YoutubeRepository.getChannelVideos` 增 `params: String = ChannelVideosParams` 参数；TV（`YoutubeChannelScreen` sort chips）与移动端（`MobileYoutubeChannelScreen` 两个 OutlinedButton）频道页各加「最新发布 / 最热门」切换，切排序**强制重拉第一页**（`loadedOrder` 守卫，镜像 B站 `UpSpaceUiState.videoLoadedOrder`）。`PlayerSidePanelLoader` 仍用默认最新。
+
+**风险**：`EgZwb3B1bGFy` 未在本仓库实测，若真机首屏不按播放量排序，需改用「构造带 sort 的 order continuation token」（protobuf `80226972` 包装，对齐 rustypipe `order_ctoken`），项目暂无此代码需新写。
+
 ---
 
 ## 5. 播放（Phase 2，未实现）

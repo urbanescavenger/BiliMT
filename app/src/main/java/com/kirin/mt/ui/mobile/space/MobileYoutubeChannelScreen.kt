@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -36,6 +37,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeChannelStore
+import com.kirin.mt.core.youtube.YoutubeConstants
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
@@ -76,7 +78,7 @@ fun MobileYoutubeChannelScreen(
       uiState.loading = true
       uiState.failed = null
       try {
-        val page = youtubeRepository.getChannelVideos(channelId)
+        val page = youtubeRepository.getChannelVideos(channelId, params = uiState.order.params)
         uiState.items = page.items.distinctBy { it.bvid }
         uiState.continuation = page.continuation
         uiState.endReached = page.continuation == null
@@ -103,7 +105,7 @@ fun MobileYoutubeChannelScreen(
     uiState.loadingMore = true
     scope.launch {
       try {
-        val page = youtubeRepository.getChannelVideos(channelId, token)
+        val page = youtubeRepository.getChannelVideos(channelId, token, params = uiState.order.params)
         // 先存旧列表再比较:若先赋 uiState.items=merged,merged.size==uiState.items.size 恒真,
         // endReached 永远变 true,续页只翻一页就停(对齐 TV 版 latest.videos 旧列表比较)。
         val oldItems = uiState.items
@@ -125,17 +127,19 @@ fun MobileYoutubeChannelScreen(
     }
   }
 
-  // 首屏:解析权威频道名 + 头像(失败回退卡片名/空头像) + 拉第一页(已加载过同 channelId 则跳过)。
-  LaunchedEffect(channelId) {
-    if (uiState.loadedChannelId != channelId) {
+  // 首屏:解析权威频道名 + 头像(失败回退卡片名/空头像) + 拉第一页。
+  // 已加载过同 channelId + 排序则跳过;切排序(order)强制重拉。
+  LaunchedEffect(channelId, order) {
+    if (uiState.loadedChannelId != channelId || uiState.loadedOrder != order) {
       uiState.name = channelName
       val resolved = runCatching { youtubeRepository.resolveChannel(channelId) }.getOrNull()
       uiState.name = resolved?.name?.ifBlank { channelName } ?: channelName
       uiState.avatar = resolved?.avatar.orEmpty()
       loadFirst()
       uiState.loadedChannelId = channelId
+      uiState.loadedOrder = order
     } else {
-      // 从播放器返回同 channelId:清除可能卡住的翻页 loading 标志(scope 已随离开组合取消)。
+      // 从播放器返回同 channelId+order:清除可能卡住的翻页 loading 标志(scope 已随离开组合取消)。
       uiState.loadingMore = false
     }
   }
@@ -211,6 +215,22 @@ fun MobileYoutubeChannelScreen(
               enabled = !uiState.followLoading,
             ) {
               Text(stringResource(if (followed) R.string.youtube_channel_following else R.string.youtube_channel_follow))
+            }
+          }
+          // 排序栏:最新 / 最热(对齐 B站 UP 空间)。
+          Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            OutlinedButton(onClick = { uiState.order = YoutubeConstants.ChannelVideoOrder.Latest }) {
+              Text(
+                stringResource(R.string.player_up_sort_latest),
+                color = if (uiState.order == YoutubeConstants.ChannelVideoOrder.Latest) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+              )
+            }
+            Spacer(Modifier.padding(start = 8.dp))
+            OutlinedButton(onClick = { uiState.order = YoutubeConstants.ChannelVideoOrder.Popular }) {
+              Text(
+                stringResource(R.string.player_up_sort_hot),
+                color = if (uiState.order == YoutubeConstants.ChannelVideoOrder.Popular) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+              )
             }
           }
         }

@@ -137,17 +137,22 @@ class YoutubeRepository(
     val BatchDelayMs = 500L..1500L
   }
 
-  /** 频道"视频"tab 的最新视频，返回映射后的卡片 + 续页 token。 */
+  /**
+   * 频道"视频"tab 的最新视频，返回映射后的卡片 + 续页 token。
+   * [params] 决定排序（[YoutubeConstants.ChannelVideoOrder.Latest] 最新 /
+   * [YoutubeConstants.ChannelVideoOrder.Popular] 最热）；翻页 continuation 与排序无关。
+   */
   suspend fun getChannelVideos(
     channelId: String,
     continuation: String? = null,
+    params: String = YoutubeConstants.ChannelVideosParams,
   ): YoutubeVideoPage {
     val payload = buildJsonObject {
       if (continuation != null) {
         put("continuation", continuation)
       } else {
         put("browseId", channelId)
-        put("params", YoutubeConstants.ChannelVideosParams)
+        put("params", params)
       }
     }
     val root = client.postJson("/browse", payload)

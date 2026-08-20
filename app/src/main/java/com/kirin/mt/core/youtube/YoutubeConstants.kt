@@ -117,8 +117,21 @@ object YoutubeConstants {
   /** 频道"视频"tab 的 protobuf 参数（YouTube 实际使用的值，去掉会失效）。 */
   const val ChannelVideosParams = "EgZ2aWRlb3PyBgQKAjoA"
 
+  /** 频道"最热"排序的 protobuf 参数（解码 field1="popular"，来源 rustypipe/invidious
+   *  文档。若实测首屏不按播放量排序，需改用带 sort 的 continuation token 方案）。 */
+  const val ChannelPopularParams = "EgZwb3B1bGFy"
+
   /** 频道"直播"tab 的 protobuf 参数。 */
   const val ChannelLiveParams = "EgdzdHJlYW1z8gYECgJ6AA%3D%3D"
+
+  /**
+   * 频道"视频"排序（对齐 B站 UP 空间最新/最热）。两排序共用 /browse + browseId，
+   * 仅初始 params 不同；continuation 翻页与排序无关，各自独立。
+   */
+  enum class ChannelVideoOrder(val params: String) {
+    Latest(ChannelVideosParams),
+    Popular(ChannelPopularParams),
+  }
 
   /**
    * 热门页各子 tab 的 browseId + 参数。

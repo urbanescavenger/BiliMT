@@ -55,6 +55,7 @@ import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeChannelStore
+import com.kirin.mt.core.youtube.YoutubeConstants
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.VideoGridSkeleton
@@ -99,14 +100,18 @@ internal fun YoutubeChannelScreen(
   val channels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   val followed = channels.any { it.channelId == channelId }
   val followFocusRequester = remember { FocusRequester() }
+  val sortFocusRequesters = remember {
+    YoutubeConstants.ChannelVideoOrder.entries.associateWith { FocusRequester() }
+  }
 
   BackHandler { onBack() }
 
   // 首屏：解析权威频道名 + 头像（失败回退 request 值）+ 拉第一页。
-  // 同 channelId + retryKey 已加载过则跳过（从播放器返回复用列表，仅清可能卡住的 loadingMore）。
-  LaunchedEffect(channelId, uiState.retryKey) {
+  // 同 channelId + retryKey + 排序 已加载过则跳过（从播放器返回复用列表，仅清可能卡住的
+  // loadingMore）；切排序（order 变化）强制重拉。
+  LaunchedEffect(channelId, uiState.order, uiState.retryKey) {
     if (uiState.loadedChannelId == channelId && uiState.loadedRetryKey == uiState.retryKey &&
-      uiState.videoState !is ChannelVideoState.Loading
+      uiState.loadedOrder == uiState.order && uiState.videoState !is ChannelVideoState.Loading
     ) {
       val success = uiState.videoState as? ChannelVideoState.Success
       if (success != null) uiState.videoState = success.copy(loadingMore = false)
@@ -128,7 +133,7 @@ internal fun YoutubeChannelScreen(
     uiState.focusedVideoKey = ""
     uiState.videoState = ChannelVideoState.Loading
     uiState.videoState = try {
-      val page = youtubeRepository.getChannelVideos(channelId)
+      val page = youtubeRepository.getChannelVideos(channelId, params = uiState.order.params)
       if (page.items.isEmpty()) {
         ChannelVideoState.Empty
       } else {
@@ -147,6 +152,7 @@ internal fun YoutubeChannelScreen(
     }
     uiState.loadedChannelId = channelId
     uiState.loadedRetryKey = uiState.retryKey
+    uiState.loadedOrder = uiState.order
   }
 
   // 首屏到达后自动聚焦第一个视频卡片（仅初次打开）。
@@ -166,7 +172,7 @@ internal fun YoutubeChannelScreen(
     uiState.videoState = current.copy(loadingMore = true, loadMoreError = "")
     coroutineScope.launch {
       uiState.videoState = try {
-        val page = youtubeRepository.getChannelVideos(channelId, token)
+        val page = youtubeRepository.getChannelVideos(channelId, token, params = uiState.order.params)
         val latest = uiState.videoState as? ChannelVideoState.Success ?: return@launch
         val merged = latest.videos.appendUniqueByBvid(page.items)
         latest.copy(
@@ -212,6 +218,9 @@ internal fun YoutubeChannelScreen(
         followLoading = uiState.followLoading,
         followFocusRequester = followFocusRequester,
         firstItemFocusRequester = firstItemFocusRequester,
+        order = uiState.order,
+        sortFocusRequesters = sortFocusRequesters,
+        onOrderSelected = { uiState.order = it },
         onFollowClicked = ::toggleFollow,
       )
       Box(
@@ -251,7 +260,7 @@ internal fun YoutubeChannelScreen(
               onLoadMore = ::loadMore,
               onMoveLeftToNav = { true },
               onMoveUpFromFirstRow = {
-                runCatching { followFocusRequester.requestFocus() }.isSuccess
+                runCatching { sortFocusRequesters.getValue(uiState.order).requestFocus() }.isSuccess
               },
               onBackKey = { onBack() },
               onVideoSelected = onVideoSelected,
@@ -280,6 +289,9 @@ private fun YoutubeChannelHeader(
   followLoading: Boolean,
   followFocusRequester: FocusRequester,
   firstItemFocusRequester: FocusRequester,
+  order: YoutubeConstants.ChannelVideoOrder,
+  sortFocusRequesters: Map<YoutubeConstants.ChannelVideoOrder, FocusRequester>,
+  onOrderSelected: (YoutubeConstants.ChannelVideoOrder) -> Unit,
   onFollowClicked: () -> Unit,
 ) {
   val homeColors = LocalHomeColors.current
@@ -326,10 +338,33 @@ private fun YoutubeChannelHeader(
         modifier = Modifier.focusRequester(followFocusRequester),
         onActivate = onFollowClicked,
         onMoveDown = {
-          runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
+          runCatching { sortFocusRequesters.getValue(order).requestFocus() }.isSuccess
         },
         onMoveLeft = { false },
       )
+    }
+    // 排序栏:最新 / 最热（对齐 B站 UP 空间）。聚焦选中即切换,切排序重新拉取。
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
+    ) {
+      YoutubeConstants.ChannelVideoOrder.entries.forEach { option ->
+        val selected = order == option
+        val titleRes = when (option) {
+          YoutubeConstants.ChannelVideoOrder.Latest -> R.string.player_up_sort_latest
+          YoutubeConstants.ChannelVideoOrder.Popular -> R.string.player_up_sort_hot
+        }
+        YoutubeChannelSortChip(
+          text = stringResource(titleRes),
+          selected = selected,
+          modifier = Modifier.focusRequester(sortFocusRequesters.getValue(option)),
+          onActivate = { onOrderSelected(option) },
+          onFocused = { if (!selected) onOrderSelected(option) },
+          onMoveDown = {
+            runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
+          },
+        )
+      }
     }
   }
 }
@@ -387,6 +422,62 @@ private fun YoutubeChannelFollowChip(
       fontSize = BiliTypography.HomeSectionTab,
       lineHeight = BiliTypography.HomeSectionTabLineHeight,
       fontWeight = if (followed || focused) FontWeight.Bold else FontWeight.Medium,
+      textAlign = TextAlign.Center,
+      maxLines = 1,
+    )
+  }
+}
+
+@Composable
+private fun YoutubeChannelSortChip(
+  text: String,
+  selected: Boolean,
+  modifier: Modifier = Modifier,
+  onActivate: () -> Unit,
+  onFocused: () -> Unit,
+  onMoveDown: () -> Boolean,
+) {
+  var focused by remember { mutableStateOf(false) }
+  val homeColors = LocalHomeColors.current
+  val shape = RoundedCornerShape(BiliRadius.Pill)
+  val borderColor = if (focused) homeColors.accent else BiliColors.Transparent
+  val textColor = when {
+    selected -> homeColors.accent
+    focused -> homeColors.textPrimary
+    else -> homeColors.textSecondary
+  }
+  val interactionSource = remember { MutableInteractionSource() }
+  Box(
+    modifier = modifier
+      .height(BiliSizing.HomeSectionTabHeight)
+      .widthIn(min = BiliSizing.HomeSectionTabCompactMinWidth)
+      .clip(shape)
+      .border(BorderStroke(BiliFocus.BorderWidth, borderColor), shape)
+      .onFocusChanged { state ->
+        focused = state.isFocused
+        if (state.isFocused) onFocused()
+      }
+      .onPreviewKeyEvent { event ->
+        when {
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
+          event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
+            onActivate()
+            true
+          }
+          else -> false
+        }
+      }
+      .focusable(interactionSource = interactionSource)
+      .clickable(interactionSource = interactionSource, indication = null, onClick = onActivate)
+      .padding(horizontal = BiliSpacing.Sm),
+    contentAlignment = Alignment.Center,
+  ) {
+    Text(
+      text = text,
+      color = textColor,
+      fontSize = BiliTypography.HomeSectionTab,
+      lineHeight = BiliTypography.HomeSectionTabLineHeight,
+      fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium,
       textAlign = TextAlign.Center,
       maxLines = 1,
     )
