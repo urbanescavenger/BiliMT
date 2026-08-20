@@ -699,12 +699,22 @@ fun PlayerScreen(
   fun openUpVideos(order: String = UpVideoOrderLatest) {
     val loadToken = ++sidePanelLoadToken
     val knownOwnerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
-    val cachedVideos = upVideoCache[upVideoCacheKey(knownOwnerMid, order)].orEmpty()
+    // YouTube：缓存按频道隔离，避免读到 B 站 "0:order" 旧键里的残留列表（曾误显示上一频道）。
+    // channelId 缺失时走无频道键（暂空→skeleton），由 loader 从 /player 解析后填真值。
+    val isYoutubeRequest = displayRequest.isYoutube
+    val cacheKey = if (isYoutubeRequest && displayRequest.channelId.isNotBlank()) {
+      "youtube:${displayRequest.channelId}:$order"
+    } else if (isYoutubeRequest) {
+      "youtube::$order"
+    } else {
+      upVideoCacheKey(knownOwnerMid, order)
+    }
+    val cachedVideos = upVideoCache[cacheKey].orEmpty()
       .withoutCurrentVideo(displayRequest)
     Log.i(
       PlayerUpVideosLogTag,
       "open start token=$loadToken bvid=${displayRequest.bvid} cid=${displayRequest.cid} order=$order " +
-        "knownMid=$knownOwnerMid cache=${cachedVideos.size}",
+        "knownMid=$knownOwnerMid youtube=$isYoutubeRequest cacheKey=$cacheKey cache=${cachedVideos.size}",
     )
     upVideoOrder = order
     openPanel(PlayerPanel.UpVideos)
@@ -716,6 +726,7 @@ fun PlayerScreen(
       order = order,
       initialRequest = displayRequest,
       videoRepository = videoRepository,
+      youtubeRepository = youtubeRepository,
       resolveDisplayMetadata = ::resolveDisplayMetadata,
       currentRequest = { displayRequest },
       isCurrentUpVideosLoad = { token -> sidePanelLoadToken == token && activePanel == PlayerPanel.UpVideos },
