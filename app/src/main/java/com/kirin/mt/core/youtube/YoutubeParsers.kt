@@ -625,12 +625,20 @@ internal object YoutubeParsers {
       ?.firstNotNullOfOrNull { (it as? JsonObject)?.obj("metadataBadgeRenderer")?.stringOrNull("label") }
       .orEmpty()
 
-    val viewCount = parseCount(
-      node.obj("viewCountText")?.stringOrNull("simpleText"),
+    // 诊断:打印 videoRenderer 的 viewCountText/publishedTimeText 原始结构,定位"最热"排序下
+    // 播放数/发布时间解析失败(返回 videoRenderer 而非 lockup 时,旧日志看不到这两字段结构)。
+    val vct = node.obj("viewCountText")
+    val ptt = node.obj("publishedTimeText")
+    Log.d(
+      "YtBadge",
+      "videoRenderer videoId=$videoId viewCountText=${vct?.toString().orEmpty().take(200)} " +
+        "publishedTimeText=${ptt?.toString().orEmpty().take(200)}",
     )
 
+    val viewCount = parseCount(vct?.stringOrNull("simpleText"))
+
     val publishedAt = parsePublished(
-      node.obj("publishedTimeText")?.stringOrNull("simpleText"),
+      ptt?.stringOrNull("simpleText"),
       liveNow,
       isUpcoming,
     )
