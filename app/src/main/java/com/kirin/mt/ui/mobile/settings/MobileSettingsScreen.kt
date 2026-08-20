@@ -63,6 +63,7 @@ import com.kirin.mt.core.image.BiliImageSizing
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.i18n.ChineseTextVariant
 import com.kirin.mt.core.network.IptvRepository
+import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.YoutubeDeliveryPriority
@@ -202,6 +203,14 @@ fun MobileSettingsScreen(
       selectedLabel = settings.youtubeDefaultQuality.label,
       options = enumOptions(YoutubeDefaultQuality.entries) { it.label },
       onSelected = { scope.launch { appSettingsStore.setYoutubeDefaultQuality(it) } },
+    )
+    MobileEnumPickerRow(
+      title = stringResource(R.string.settings_playback_buffer_title),
+      description = stringResource(R.string.settings_playback_buffer_description),
+      selected = settings.bufferMax,
+      selectedLabel = settings.bufferMax.label,
+      options = enumOptions(PlaybackBufferMax.entries) { it.label },
+      onSelected = { scope.launch { appSettingsStore.setPlaybackBufferMax(it) } },
     )
     MobileEnumPickerRow(
       title = stringResource(R.string.settings_youtube_content_region_title),

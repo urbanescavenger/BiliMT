@@ -53,6 +53,7 @@ import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.CdnSpeedTester
 import com.kirin.mt.core.player.DefaultPlaybackSpeed
+import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.CodecCapabilityProbe
 import com.kirin.mt.core.player.LastPlayedStore
 import com.kirin.mt.core.player.PlaybackCdnPreference
@@ -754,6 +755,11 @@ fun BiliTvApp(
                     appSettingsStore.setDefaultPlaybackSpeed(speed)
                   }
                 },
+                onPlaybackBufferMaxChange = { bufferMax ->
+                  coroutineScope.launch {
+                    appSettingsStore.setPlaybackBufferMax(bufferMax)
+                  }
+                },
                 onPlaybackCodecPreferenceChange = { preference ->
                   coroutineScope.launch {
                     appSettingsStore.setPlaybackCodecPreference(preference)
@@ -1340,6 +1346,7 @@ fun BiliTvApp(
               playbackQualityPreference = settings.playbackQualityPreference,
               youtubeDefaultQuality = settings.youtubeDefaultQuality,
               defaultPlaybackSpeed = settings.defaultPlaybackSpeed,
+              bufferMaxMs = settings.bufferMax.ms,
               playbackCdnPreference = settings.playbackCdnPreference,
               seekPreviewSpritesEnabled = settings.seekPreviewSpritesEnabled,
               airJumpAssistantEnabled = settings.airJumpAssistantEnabled,

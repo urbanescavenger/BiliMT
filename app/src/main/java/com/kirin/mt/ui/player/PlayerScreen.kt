@@ -150,6 +150,7 @@ fun PlayerScreen(
   playbackQualityPreference: PlaybackQualityPreference,
   youtubeDefaultQuality: YoutubeDefaultQuality,
   defaultPlaybackSpeed: DefaultPlaybackSpeed,
+  bufferMaxMs: Int,
   playbackCdnPreference: PlaybackCdnPreference,
   seekPreviewSpritesEnabled: Boolean,
   airJumpAssistantEnabled: Boolean,
@@ -259,9 +260,9 @@ fun PlayerScreen(
   var completionActionToken by remember { mutableLongStateOf(0L) }
   var completionActionJob by remember { mutableStateOf<Job?>(null) }
   val controlsFocusRequester = remember { FocusRequester() }
-  val player = remember {
+  val player = remember(bufferMaxMs) {
     ExoPlayer.Builder(context)
-      .setLoadControl(createTvPlaybackLoadControl())
+      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
       .build()
   }
   val playbackWakeLock = remember(context) {

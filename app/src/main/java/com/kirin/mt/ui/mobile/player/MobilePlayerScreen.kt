@@ -287,6 +287,7 @@ fun MobilePlayerScreen(
   playbackQualityPreference: PlaybackQualityPreference,
   playbackCdnPreference: PlaybackCdnPreference,
   youtubeDefaultQuality: YoutubeDefaultQuality,
+  bufferMaxMs: Int,
   airJumpAssistantEnabled: Boolean,
   videoRepository: VideoRepository,
   youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
@@ -412,9 +413,9 @@ fun MobilePlayerScreen(
     }
   }
 
-  val player = remember {
+  val player = remember(bufferMaxMs) {
     ExoPlayer.Builder(context)
-      .setLoadControl(createTvPlaybackLoadControl())
+      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
       // 后台播放优化:别的应用抢音频焦点→自动暂停,焦点回来→自动续播;
       // 耳机/蓝牙音频设备断开(AUDIO_BECOMING_NOISY)→自动暂停。Media3 内部管理焦点
       // 请求/放弃与 becoming-noisy receiver 的注册/反注册(随 player release 自动清理)。

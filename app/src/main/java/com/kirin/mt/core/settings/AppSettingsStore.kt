@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.kirin.mt.core.i18n.ChineseTextVariant
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.player.DefaultPlaybackSpeed
+import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
@@ -76,6 +77,7 @@ class AppSettingsStore(private val context: Context) {
       youtubeContentRegion = YoutubeContentRegion.fromKey(preferences[Keys.YoutubeContentRegion]),
       youtubeDeliveryPriority = YoutubeDeliveryPriority.fromKey(preferences[Keys.YoutubeDeliveryPriority]),
       defaultPlaybackSpeed = DefaultPlaybackSpeed.fromKey(preferences[Keys.DefaultPlaybackSpeed]),
+      bufferMax = PlaybackBufferMax.fromKey(preferences[Keys.PlaybackBufferMax]),
       seekPreviewSpritesEnabled = preferences[Keys.SeekPreviewSpritesEnabled] ?: true,
       airJumpAssistantEnabled = preferences[Keys.AirJumpAssistantEnabled] ?: true,
       confirmPlaybackExit = preferences[Keys.ConfirmPlaybackExit] ?: true,
@@ -206,6 +208,12 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setDefaultPlaybackSpeed(speed: DefaultPlaybackSpeed) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.DefaultPlaybackSpeed] = speed.key
+    }
+  }
+
+  suspend fun setPlaybackBufferMax(bufferMax: PlaybackBufferMax) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.PlaybackBufferMax] = bufferMax.key
     }
   }
 
@@ -390,6 +398,7 @@ class AppSettingsStore(private val context: Context) {
     val YoutubeContentRegion = stringPreferencesKey("youtube_content_region")
     val YoutubeDeliveryPriority = stringPreferencesKey("youtube_delivery_priority")
     val DefaultPlaybackSpeed = stringPreferencesKey("default_playback_speed")
+    val PlaybackBufferMax = stringPreferencesKey("playback_buffer_max")
     val SeekPreviewSpritesEnabled = booleanPreferencesKey("seek_preview_sprites_enabled")
     val AirJumpAssistantEnabled = booleanPreferencesKey("air_jump_assistant_enabled")
     val ConfirmPlaybackExit = booleanPreferencesKey("confirm_playback_exit")

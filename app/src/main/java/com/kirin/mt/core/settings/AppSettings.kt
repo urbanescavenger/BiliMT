@@ -6,6 +6,7 @@ import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
+import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.youtube.YoutubeContentRegion
@@ -48,6 +49,8 @@ data class AppSettings(
   val youtubeContentRegion: YoutubeContentRegion = YoutubeContentRegion.US,
   /** 默认播放倍速(起播时初始化播放器 playbackSpeed)。 */
   val defaultPlaybackSpeed: DefaultPlaybackSpeed = DefaultPlaybackSpeed.X100,
+  /** 播放缓冲时长上限(maxBuffer)。网络波动时缓冲池顶住不卡的时间;默认 50s 对齐 LibreTube。 */
+  val bufferMax: PlaybackBufferMax = PlaybackBufferMax.Standard,
   val seekPreviewSpritesEnabled: Boolean = true,
   val airJumpAssistantEnabled: Boolean = true,
   val confirmPlaybackExit: Boolean = true,
