@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.4-alpha.9](#v304-alpha9)
 - [v3.0.4-alpha.8](#v304-alpha8)
 - [v3.0.4-alpha.7](#v304-alpha7)
 - [v3.0.4-alpha.6](#v304-alpha6)
@@ -184,6 +185,21 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.4-alpha.9
+
+**YouTube 频道页「最新 / 最热」排序**:对齐 B站 UP 空间,频道页视频 tab 支持最新/最热双档切换。
+
+### 变更
+- **数据层**:`YoutubeConstants` 加 `ChannelPopularParams = "EgZwb3B1bGFy"`(最热,解码 field1="popular")与 `ChannelVideoOrder` 枚举(Latest/Popular);`YoutubeRepository.getChannelVideos` 参数化 `params`(默认最新,翻页 continuation 与排序无关)。
+- **TV 端**:`YoutubeChannelScreen` header 加「最新发布 / 最热门」sort chips,聚焦即切换、`loadedOrder` 守卫切排序强制重拉第一页。
+- **移动端**:`MobileYoutubeChannelScreen` header 加两个 OutlinedButton 切换,`loadedOrder` 守卫同 TV。
+
+### 待真机验证
+- 频道页 header 出现「最新发布 / 最热门」;切「最热门」列表按播放量排序、续页正常;TV D-pad 能聚焦排序 chips 并下移网格。
+- 最热参数 `EgZwb3B1bGFy` 来自 rustypipe/invidious 文档、未实测,若首屏不按播放量排序需改用 order continuation token 方案。
+
+---
 
 ## v3.0.4-alpha.8
 
