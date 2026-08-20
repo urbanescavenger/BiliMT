@@ -116,7 +116,7 @@ internal class DefaultSabrChunkSource(
       "YtSabrChunk",
       "init trackType=$trackType trackSelLen=${trackSelection.length()} sets=${
         manifest.adaptationSets.mapIndexed { si, set ->
-          "set$si[${set.trackType}]=" + set.representations.joinToString { it.formatId.itag }
+          "set$si[${set.type}]=" + set.representations.joinToString { it.formatId.itag.toString() }
         }
       } selected=[${
         (0..<trackSelection.length()).joinToString { i ->
