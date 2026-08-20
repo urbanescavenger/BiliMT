@@ -142,6 +142,7 @@ fun PlayerScreen(
   request: PlaybackRequest,
   videoRepository: VideoRepository,
   playbackRepository: PlaybackRepository,
+  youtubeRepository: com.kirin.mt.core.youtube.YoutubeRepository,
   youtubeHistoryStore: YoutubeHistoryStore,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
@@ -1123,13 +1124,31 @@ fun PlayerScreen(
             }
           }
           UpFocusHome -> {
-            if (displayRequest.isYoutube && displayRequest.channelId.isNotBlank()) {
+            if (displayRequest.isYoutube) {
               player.pause()
-              onOpenYoutubeChannel(
-                displayRequest.channelId,
-                displayRequest.ownerName,
-                displayRequest.ownerFace,
-              )
+              if (displayRequest.channelId.isNotBlank()) {
+                onOpenYoutubeChannel(
+                  displayRequest.channelId,
+                  displayRequest.ownerName,
+                  displayRequest.ownerFace,
+                )
+              } else {
+                // 播放器 videoId 常不带 channelId(搜索/历史等路径),从 /player 权威 videoDetails 解析。
+                val videoId = displayRequest.bvid
+                coroutineScope.launch {
+                  val detail = youtubeRepository.getVideoDetail(videoId)
+                  val resolvedId = detail?.channelId?.takeIf { it.isNotBlank() }
+                  if (resolvedId != null) {
+                    onOpenYoutubeChannel(
+                      resolvedId,
+                      detail.channelName.ifBlank { displayRequest.ownerName },
+                      displayRequest.ownerFace,
+                    )
+                  } else {
+                    Log.w("YoutubeChannel", "open channel from player failed to resolve channelId videoId=$videoId")
+                  }
+                }
+              }
             } else {
               val ownerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
               if (ownerMid > 0L) {

@@ -57,6 +57,8 @@ data class YoutubeVideoDetail(
   val description: String,
   /** 频道名。 */
   val channelName: String,
+  /** 频道 id（UC 开头）。来自 videoDetails.channelId；无则空串。 */
+  val channelId: String = "",
   /** 频道头像 URL；无则空串。 */
   val channelAvatarUrl: String,
   /** 观看数；未知为 null。 */

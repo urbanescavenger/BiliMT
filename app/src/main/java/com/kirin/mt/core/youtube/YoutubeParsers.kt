@@ -150,6 +150,7 @@ internal object YoutubeParsers {
     if (title.isBlank()) return null
     val description = vd.stringOrNull("shortDescription").orEmpty()
     val channelName = vd.stringOrNull("author").orEmpty()
+    val channelId = vd.stringOrNull("channelId").orEmpty()
     val viewCount = parseCount(vd.stringOrNull("viewCount"))
     val publishedAt = playerJson.obj("microformat")
       ?.obj("playerMicroformatRenderer")
@@ -160,6 +161,7 @@ internal object YoutubeParsers {
       title = title,
       description = description,
       channelName = channelName,
+      channelId = channelId,
       channelAvatarUrl = "",
       viewCount = viewCount,
       publishedAt = publishedAt,
