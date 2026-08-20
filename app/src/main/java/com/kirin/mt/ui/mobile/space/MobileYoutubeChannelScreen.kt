@@ -68,6 +68,7 @@ fun MobileYoutubeChannelScreen(
   val name = uiState.name
   val avatar = uiState.avatar
   val items = uiState.items
+  val order = uiState.order
   val loading = uiState.loading
   val loadingMore = uiState.loadingMore
   val failed = uiState.failed
