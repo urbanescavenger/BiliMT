@@ -46,7 +46,10 @@ internal data class SabrManifest(
       android.util.Log.i(
         "YtSabrManifest",
         "fromSession: rawVideoTracks=${info.videoTracks.size} isVideo=${diagVideoTracks.size} " +
-          "itags=[${diagVideoTracks.joinToString { it.id.toString() }}] mimes=[${diagVideoTracks.joinToString { it.mimeType }}]"
+          "itags=[${diagVideoTracks.joinToString { it.id.toString() }}] mimes=[${diagVideoTracks.joinToString { it.mimeType }}] " +
+          "codecs=[${diagVideoTracks.joinToString { it.codecs.ifBlank { "EMPTY" } }}] " +
+          "sampleMime=[${diagVideoTracks.joinToString { MimeTypes.getVideoMediaMimeType(it.codecs) ?: "null" }}] " +
+          "wh=[${diagVideoTracks.joinToString { "${it.width}x${it.height}" }}]"
       )
       // alpha.82(对齐 LibreTube `SabrManifest.kt` groupBy):视频轨按 mimeType 分组,每个 mimeType 一个
       // video AdaptationSet,不混。即使音频 itag(如 itag248 Opus)混进 videoOnlyStreams,也被按音频
