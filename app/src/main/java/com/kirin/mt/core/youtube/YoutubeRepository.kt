@@ -204,7 +204,7 @@ class YoutubeRepository(
         Log.i("YoutubeDetail", "getVideoDetail newpipe videoId=$videoId uploadDateClass=${d?.javaClass?.simpleName ?: "null"} uploadDate=$d")
         d?.offsetDateTime()?.toEpochSecond()?.takeIf { it > 0L }
       }.getOrElse {
-        Log.w("YoutubeDetail", "getVideoDetail newpipe failed videoId=$videoId: ${it.message}")
+        Log.w("YoutubeDetail", "getVideoDetail newpipe failed videoId=$videoId: ${it::class.simpleName}: ${it.message}\n${it.stackTraceToString().take(1200)}")
         null
       }
       if (npUpload != null) return detail.copy(publishedAt = npUpload)
