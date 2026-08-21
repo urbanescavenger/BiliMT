@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlin.random.Random
+import org.schabi.newpipe.extractor.stream.StreamInfo
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -185,14 +186,23 @@ class YoutubeRepository(
    */
   suspend fun getVideoDetail(videoId: String): YoutubeVideoDetail? {
     if (videoId.isBlank()) return null
-    return runCatching {
+    val detail = runCatching {
       val payload = buildJsonObject {
         put("videoId", videoId)
         put("contentCheckOk", true)
         put("racyCheckOk", true)
       }
       client.postJson("/player", payload).let(YoutubeParsers::parseVideoDetail)
-    }.getOrNull()
+    }.getOrNull() ?: return null
+    // /player 的 microformat.publishDate 实测恒 null。对齐 LibreTube:缺省时用 NewPipe getInfo 的
+    // uploadDate(与入口路径无关)兜底,保证简介 Tab 恒有发布时间(历史/播放列表/相关视频统一)。
+    if (detail.publishedAt == null) {
+      val npUpload = runCatching {
+        StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId").uploadDate?.time?.takeIf { it > 0L }?.div(1000L)
+      }.getOrNull()
+      if (npUpload != null) return detail.copy(publishedAt = npUpload)
+    }
+    return detail
   }
 
   /**
