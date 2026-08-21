@@ -198,12 +198,15 @@ class YoutubeRepository(
     // uploadDate(与入口路径无关)兜底,保证简介 Tab 恒有发布时间(历史/播放列表/相关视频统一)。
     if (detail.publishedAt == null) {
       val npUpload = runCatching {
-        StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId")
-          .uploadDate
-          ?.offsetDateTime()
-          ?.toEpochSecond()
-          ?.takeIf { it > 0L }
-      }.getOrNull()
+        val info = StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId")
+        val d = info.uploadDate
+        // 诊断:NewPipe 兜底源与值(确认 getInfo 是否成功、uploadDate 是否非空)。
+        Log.i("YoutubeDetail", "getVideoDetail newpipe videoId=$videoId uploadDateClass=${d?.javaClass?.simpleName ?: "null"} uploadDate=$d")
+        d?.offsetDateTime()?.toEpochSecond()?.takeIf { it > 0L }
+      }.getOrElse {
+        Log.w("YoutubeDetail", "getVideoDetail newpipe failed videoId=$videoId: ${it.message}")
+        null
+      }
       if (npUpload != null) return detail.copy(publishedAt = npUpload)
     }
     return detail
