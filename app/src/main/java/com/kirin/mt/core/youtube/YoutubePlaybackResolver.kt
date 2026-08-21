@@ -1628,7 +1628,16 @@ class YoutubePlaybackResolver(
     // 按初始带宽估计(~1Mbps)起步,默认**不是**选最高 bitrate(旧注释误读),而是从低档起、带宽涨后爬档;
     // 且 SABR 单流 fetcher 下未下载轨 iterator=EMPTY,原生爬档被堵死。alpha.9X 已在 DefaultSabrChunkSource
     // 用「下一高码率档合成 iterator」解锁逐档升(见该文件 getNextChunk)。这里仍暴露全部轨供 ExoPlayer 选轨。
-    val allVideoTracks = videoFmts.map { fmt ->
+    // alpha.9X(修「SABR Auto 爬档超预设默认画质」):清单按 youtubeDefaultQuality 上限过滤——只放
+    // height <= maxHeight 的档,ExoPlayer ABR 只能在预设上限内爬升,不会超过默认画质。qualities 菜单仍
+    // 保留全量(手动切更高档不受限,见下方手动分支)。全部档都超上限时兜底最低档保证可播。
+    val cappedVideoFmts = if (maxHeight != null) {
+      videoFmts.filter { it.height in 1..maxHeight }
+        .ifEmpty { listOf(videoFmts.minByOrNull { it.height } ?: videoFmts.first()) }
+    } else {
+      videoFmts
+    }
+    val allVideoTracks = cappedVideoFmts.map { fmt ->
       val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == fmt.itag }
       buildSabrTrack(fmt.itag, raw, "video", sid, videoId)
     }
