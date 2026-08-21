@@ -2149,6 +2149,8 @@ private fun MobileYoutubeIntroTab(
     } else {
       ""
     }
+    // 诊断:数据行最终渲染的发布时间来源与值(真机确认「非全屏简介」发布时间是否补上)。
+    Log.i(MobilePlayerLogTag, "youtubeIntro pubdate publishedAt=${detail.publishedAt} request=${request.pubdate} effective=${effectivePubdate} rendered='$pubdateText' videoId=${detail.videoId}")
     // formatCount 只收 Int，YouTube 的 viewCount 是 Long，先收敛到 Int。
     val viewCountInt = (detail.viewCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     val metaParts = buildList {
