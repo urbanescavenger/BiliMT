@@ -428,6 +428,16 @@ fun MobilePlayerScreen(
       )
       .setHandleAudioBecomingNoisy(true)
       .build()
+      // alpha.9X(对齐 PlayerScreen):YouTube SABR Auto 升档——开混合 mime + 多自适应,让 H264+VP9 混合
+      // TrackGroup 正确组进一条 adaptive selection 供 ABR 爬升(默认关闭会坍缩成 1 轨永不升档)。
+      .also { p ->
+        p.setTrackSelectionParameters(
+          p.trackSelectionParameters.buildUpon()
+            .setAllowMixedMimeTypesAdaptiveness(true)
+            .setAllowMultipleAdaptiveSelections(true)
+            .build()
+        )
+      }
   }
 
   fun saveAndReportProgress(progressSecondsOverride: Int? = null) {

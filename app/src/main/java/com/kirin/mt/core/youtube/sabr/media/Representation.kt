@@ -29,6 +29,9 @@ internal data class Representation(
     @androidx.annotation.OptIn(UnstableApi::class)
     fun fromTrack(track: PlaybackTrack, formatId: FormatId, trackType: Int): Representation {
       val builder = Format.Builder()
+        // alpha.9X:每条轨必须 set id(itag)再建表。此前 id=null——DefaultTrackSelector 的 Format
+        // 去重/选轨 override 依赖 id,5 条轨 id 全 null 会破坏自适应组构建(实测 selection 坍缩成 1 轨)。
+        .setId(formatId.itag.toString())
         .setContainerMimeType(track.mimeType)
         .setCodecs(track.codecs)
         .setAverageBitrate(if (track.bandwidth > 0) track.bandwidth else -1)

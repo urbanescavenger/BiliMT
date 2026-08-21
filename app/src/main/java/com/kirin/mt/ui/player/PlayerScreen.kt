@@ -265,6 +265,18 @@ fun PlayerScreen(
     ExoPlayer.Builder(context)
       .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
       .build()
+      // alpha.9X:YouTube SABR Auto 升档——视频 TrackGroup 是 H264+VP9 混合 mime 组,DefaultTrackSelector
+      // 默认 allowMixedMimeTypesAdaptiveness=false,把 selection 锁在选定轨的 mime 上(选定 VP9 就只剩 1 轨,
+      // 永不升档)。开混合 mime + 多自适应,让选择器把 5 档正确组进一条 adaptive selection 供 ABR 爬升。
+      //(B站 DASH 同组多 codec 也受益,无副作用;单选组/单轨不受影响。)
+      .also { p ->
+        p.setTrackSelectionParameters(
+          p.trackSelectionParameters.buildUpon()
+            .setAllowMixedMimeTypesAdaptiveness(true)
+            .setAllowMultipleAdaptiveSelections(true)
+            .build()
+        )
+      }
   }
   val playbackWakeLock = remember(context) {
     context.applicationContext.createPlayerWakeLock()
