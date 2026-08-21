@@ -987,13 +987,20 @@ TV 端 `TvVideoGrid`(首页/UP 主页/频道页/动态共用)的焦点在两类�
 
 **结论**:Auto 全轨自适应已打通,起播低档→带宽足逐档爬升。本修复同时惠及 B站 DASH 同组多 codec(混合 mime 正确处理),单轨组不受影响。
 
-## 6.20 移动端 YouTube 详情补发布时间:回退卡片 pubdate(2026-08,v3.0.5)
+## 6.20 移动端 YouTube 详情补发布时间:卡片 pubdate 链路 + microformat ISO 解析修复(2026-08,v3.0.5-alpha.2)
 
-**症状**:移动端 YouTube 简介 Tab 数据行「播放 X · 发布时间」在部分视频**整行只显示播放量、无日期**,而 B站恒显示;LibreTube 该场景显示正常。
+**症状**:移动端 YouTube 简介 Tab 数据行·播放 X · 发布时间在**历史页进入**的视频**整行无日期**,而 B站恒显示;LibreTube 该场景显示正常。
 
-**根因**:`MobileYoutubeIntroTab` 的发布时间只读 `detail.publishedAt`(来自 `/player` 响应的 `microformat.playerMicroformatRenderer.publishDate`)。该字段对受限视频/解析失败等场景为 **null** 时,整个 pubdate 分支为空,`metaParts` 不拼日期 → 数据行无发布时间。而B站数据行恒用**卡片**的 `metadata.pubdate`(始终存在),故对齐 B 站后 YouTube 也应对齐卡片。
+**根因(三处叠加,缺一不可)**:
+1. **`/player` microformat 解析坏了**——`parsePublishDate` 对 `publishDate`/`uploadDate` 做 `date.split('-')` 期望纯 `yyyy-MM-dd`,但 YouTube 这两个字段是 **ISO-8601**(如 `2023-01-15T00:00:00-08:00`),`T` 与 `-08:00` 使 `toIntOrNull()` 失败 → 恒 null。**字段明明在,解析成 null**(诊断 `getVideoDetail mf` 坐实 renderer 存在、`publishDate` 非空,但 `publishedAt` 解析为 null)。
+2. **历史页丢弃 pubdate**——`MobileHistoryPage` 的 `YoutubeHistoryEntry.toVideoSummary()` 硬编码 `pubdate=0`,`YoutubeHistoryEntry` 数据类原本**没有 pubdate 字段**,`recordPlay` 也没存 → 历史进入的视频 `request.pubdate=0`。
+3. `MobileYoutubeIntroTab` 只读 `detail.publishedAt`,且历史条目的旧记录(修复前写入)pubdate 仍为 0。
 
-**修复**(`MobilePlayerScreen.kt` `MobileYoutubeIntroTab`):发布时间优先 `/player` 的 `publishedAt`;为 `null`/`≤0` 时回退 `request.pubdate`(卡片 `VideoSummary.pubdate` 经 `toPlaybackRequest` 带入),保证发布时间恒显示,与 B 站 data 行行为一致。
+**修复(三层,从源头到 UI)**:
+1. **`YoutubeParsers.kt` `parsePublishDate`**:先 `date.trim().take(10)` 只取前 10 字符 `yyyy-MM-dd` 再切,兼容 ISO-8601;`parseVideoDetail` 在 `publishDate` 缺时读 `uploadDate` 兜底(部分客户端只给 `uploadDate`)。
+2. **历史 pubdate 链路** — `YoutubeHistoryEntry` 加 `pubdate` 字段;`MobilePlayerScreen` 两处 `recordPlay` 填 `request.pubdate`(TV `PlayerScreen` 同步);`MobileHistoryPage.toVideoSummary()` 由 `0` 改 `pubdate`。新记录的历史项自带发布时间,不再依赖第二手解析。
+3. **`MobileYoutubeIntroTab`**:优先 `/player` 的 `publishedAt`;为 `null`/`≤0` 时回退 `request.pubdate`(卡片 `VideoSummary.pubdate` 经 `toPlaybackRequest` 带入),保证发布时间恒显示,与 B 站 data 行行为一致。
+4. 曾试 NewPipe `StreamInfo.getInfo` 兜底(对齐 LibreTube)——解析器修好后该兜底已非必需,`getVideoDetail` 直接从已有 `/player` 响应取日期,不引入二次 getInfo 的脆弱性(真机证伪:历史页 getInfo 抛 null-message 异常)。
 
 ## 7. 关键文件
 
