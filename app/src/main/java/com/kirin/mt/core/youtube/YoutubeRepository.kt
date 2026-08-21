@@ -198,7 +198,11 @@ class YoutubeRepository(
     // uploadDate(与入口路径无关)兜底,保证简介 Tab 恒有发布时间(历史/播放列表/相关视频统一)。
     if (detail.publishedAt == null) {
       val npUpload = runCatching {
-        StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId").uploadDate?.time?.takeIf { it > 0L }?.div(1000L)
+        StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId")
+          .uploadDate
+          ?.offsetDateTime()
+          ?.toEpochSecond()
+          ?.takeIf { it > 0L }
       }.getOrNull()
       if (npUpload != null) return detail.copy(publishedAt = npUpload)
     }
