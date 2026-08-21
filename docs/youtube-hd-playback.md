@@ -964,6 +964,29 @@ TV 端 `TvVideoGrid`(首页/UP 主页/频道页/动态共用)的焦点在两类�
 - 设置页 TV/移动各切一次「DASH 优先」:能存能读,播放走 `NewPipe-first(DASH 优先) → DASH/HLS playback ready`。
 - 切回「SABR 优先」:行为与现在一致(日志 `source=NewPipe(primary)`),慢源首段仍可能被看门狗误杀(根因修复=启动宽限/auto-retry 不 teardown,另议,本设置只是逃生通道)。
 
+## 6.19 SABR Auto 升档修复:混合 mime 组坍缩成单轨(2026-08,v3.0.5-alpha.1)
+
+**症状**:YouTube SABR `Auto` 档起播 360p(选中 itag243)后,即使带宽充足(实测 14-19Mbps)、缓冲涨到 40s+,也**永不升档**;手动切 720p(H264 itag136)却能播。
+
+**根因**:不是带宽估计、不是缓冲门控、不是手动锁档。是 **DefaultTrackSelector 默认 `allowMixedMimeTypesAdaptiveness=false`**,而视频 TrackGroup 是 **H264+VP9 混合 mime 组**(itags `[137,136,134,243,160]`,其中 243 是唯一 VP9/`video/webm`)。
+- 混合组默认不进同一条 adaptive selection,选择器把 selection 锁在**选定轨的 mime 上**——选定 VP9 243 后 selection 就只剩 `{243}` 单轨 → `AdaptiveTrackSelection.length()==1`,没有任何别的轨可切 → 带宽/缓冲再足也永不升档。
+- 手动 720p 能播是因为手动是**单个单轨 selection 强切**(重建 manifest 只含选中 itag),绕开 DefaultTrackSelector 的混合 mime 组逻辑,与 Auto 失效不矛盾。
+
+**诊断证据**(决定性日志,`YtSabrManifest`/`YtSabrChunk`):
+- manifest 元数据全对:`codecs=[avc1.640028,...]`、`sampleMime=[video/avc,...]`、`wh=[1920x1080,...]`,5 轨分辨率齐全,排除缺字段。
+- `YtSabrChunk` 起播 `trackSelLen=1 sets=[set0[2]=137,136,134,243,160] selected=[243(3)b=471990]` ——单组 5 轨却只选中 VP9 243。
+- 排除播放器手动 override(两套播放器均无 `TrackSelectionParameters` 钉轨)。
+
+**修复**(3 处,缺一不可):
+1. **`Representation.fromTrack`**:给每条轨 `Format.Builder().setId(formatId.itag.toString())`——此前 5 轨 `Format.id` 全 `null`,破坏 DefaultTrackSelector 的选轨/去重/override 依赖。
+2. **播放器显式 `DefaultTrackSelector`**(TV `PlayerScreen` + 移动 `MobilePlayerScreen` 各建实例):`Parameters.Builder().setAllowVideoMixedMimeTypeAdaptiveness(true).setAllowVideoNonSeamlessAdaptiveness(true).setAllowMultipleAdaptiveSelections(true)`(混合 mime 方法在 `DefaultTrackSelector.Parameters.Builder`,不在通用 `TrackSelectionParameters`;外层无 `DefaultTrackSelector.Builder`,用 `DefaultTrackSelector(context)+setParameters()` 直构)。
+
+**真机验证(v3.0.5-alpha.1,2026-08-21)**:
+- `YtSabrChunk trackSelLen=5 selected=[137(0),136(1),134(2),243(3),160(4)]`——5 轨全部组进 adaptive selection。
+- `YtSabrAbr` 升档轨迹(8 秒内):`sel=4`(160=144p 起播)→ `sel=2`(134=480p)→ `sel=0`(137=1080p 到顶),缓冲 29→49s 稳定驻留,`up=`/`down=` 候选恢复(此前恒 null)。
+
+**结论**:Auto 全轨自适应已打通,起播低档→带宽足逐档爬升。本修复同时惠及 B站 DASH 同组多 codec(混合 mime 正确处理),单轨组不受影响。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

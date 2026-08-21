@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.5-alpha.1](#v305-alpha1)
 - [v3.0.4-alpha.9](#v304-alpha9)
 - [v3.0.4-alpha.8](#v304-alpha8)
 - [v3.0.4-alpha.7](#v304-alpha7)
@@ -186,9 +187,24 @@
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
 
+## v3.0.5-alpha.1
+
+**YouTube SABR 自动档位升不上去修复**:自动模式此前卡在最低档(360p/itag243)不升档,手动切档正常;根因是媒体源自合成的 DASH 清单里 H264 + VP9 混合 mime 组被 `DefaultTrackSelector` 默认策略坍缩成单轨,自适应组只剩一条轨,无档可升。现在 TV/移动端播放器显式启用混合 mime 自适应,自动档可逐步升到 1080p。
+
+### 变更
+- **`Representation.fromTrack`**:每条轨 `Format.Builder().setId(formatId.itag)`——此前 id 全 null,破坏轨身份导致自适应组构建坍缩成单轨。
+- **`PlayerScreen` / `MobilePlayerScreen`**:ExoPlayer 显式挂 `DefaultTrackSelector`,开 `setAllowVideoMixedMimeTypeAdaptiveness(true)` + `setAllowVideoNonSeamlessAdaptiveness(true)` + `setAllowMultipleAdaptiveSelections(true)`,让混合 H264/VP9 组可自适应选轨升档。
+- **诊断叠层**(真机验证后保留,仅日志):`YtSabrManifest`(清单轨数)、`YtSabrChunk`(选中轨 itag/bitrate)、`YtSabrAbr`(升档轨迹)、`YtSabrTracks`(每轨 support/selected)。
+
+### 待真机验证
+- 自动档:播放器 **自动** 从 360p 起步,~8s 内逐步升到 1080p(实测 `trackSelLen=5`,完整 144p→480p→1080p 升档)。
+- 手动切 720p/1080p 精准锁档不受影响。
+
+---
+
 ## v3.0.4-alpha.9
 
-**YouTube 频道页「最新 / 最热」排序**:对齐 B站 UP 空间,频道页视频 tab 支持最新/最热双档切换。
+**YouTube 频道页「最新 / 最热」排序**:对齐 B 站 UP 空间,频道页视频 tab 支持最新/最热双档切换。
 
 ### 变更
 - **数据层**:`YoutubeConstants` 加 `ChannelPopularParams = "EgZwb3B1bGFy"`(最热,解码 field1="popular")与 `ChannelVideoOrder` 枚举(Latest/Popular);`YoutubeRepository.getChannelVideos` 参数化 `params`(默认最新,翻页 continuation 与排序无关)。
