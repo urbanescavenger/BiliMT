@@ -68,6 +68,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -262,21 +263,23 @@ fun PlayerScreen(
   var completionActionJob by remember { mutableStateOf<Job?>(null) }
   val controlsFocusRequester = remember { FocusRequester() }
   val player = remember(bufferMaxMs) {
+    // alpha.9X:YouTube SABR Auto 升档——视频 TrackGroup 是 H264+VP9 混合 mime 组,DefaultTrackSelector
+    // 默认不允许混合 mime 进同一条 adaptive selection,把选组锁在选定轨的 mime 上(选定 VP9 就只剩 1 轨,
+    // 永不升档)。显式 DefaultTrackSelector 开视频混合 mime + 非无缝自适应 + 多自适应,让选择器把 5 档
+    // 正确组进 adaptive selection 供 ABR 爬升。(B站 DASH 同组多 codec 也正确处理,无副作用;单轨组不受影响。)
+    val trackSelector = DefaultTrackSelector.Builder(context)
+      .setParameters(
+        DefaultTrackSelector.Parameters.Builder()
+          .setAllowVideoMixedMimeTypeAdaptiveness(true)
+          .setAllowVideoNonSeamlessAdaptiveness(true)
+          .setAllowMultipleAdaptiveSelections(true)
+          .build()
+      )
+      .build()
     ExoPlayer.Builder(context)
       .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
+      .setTrackSelector(trackSelector)
       .build()
-      // alpha.9X:YouTube SABR Auto 升档——视频 TrackGroup 是 H264+VP9 混合 mime 组,DefaultTrackSelector
-      // 默认 allowMixedMimeTypesAdaptiveness=false,把 selection 锁在选定轨的 mime 上(选定 VP9 就只剩 1 轨,
-      // 永不升档)。开混合 mime + 多自适应,让选择器把 5 档正确组进一条 adaptive selection 供 ABR 爬升。
-      //(B站 DASH 同组多 codec 也受益,无副作用;单选组/单轨不受影响。)
-      .also { p ->
-        p.setTrackSelectionParameters(
-          p.trackSelectionParameters.buildUpon()
-            .setAllowMixedMimeTypesAdaptiveness(true)
-            .setAllowMultipleAdaptiveSelections(true)
-            .build()
-        )
-      }
   }
   val playbackWakeLock = remember(context) {
     context.applicationContext.createPlayerWakeLock()

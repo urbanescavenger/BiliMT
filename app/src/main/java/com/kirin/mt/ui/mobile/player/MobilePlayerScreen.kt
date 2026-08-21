@@ -111,6 +111,7 @@ import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -414,9 +415,20 @@ fun MobilePlayerScreen(
   }
 
   val player = remember(bufferMaxMs) {
+    // alpha.9X(对齐 PlayerScreen):YouTube SABR Auto 升档——H264+VP9 混合 TrackGroup 默认不进一条
+    // adaptive selection(坍缩成 1 轨永不升档)。显式 DefaultTrackSelector 开视频混合 mime + 非无缝 + 多自适应。
+    val trackSelector = DefaultTrackSelector.Builder(context)
+      .setParameters(
+        DefaultTrackSelector.Parameters.Builder()
+          .setAllowVideoMixedMimeTypeAdaptiveness(true)
+          .setAllowVideoNonSeamlessAdaptiveness(true)
+          .setAllowMultipleAdaptiveSelections(true)
+          .build()
+      )
+      .build()
     ExoPlayer.Builder(context)
       .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
-      // 后台播放优化:别的应用抢音频焦点→自动暂停,焦点回来→自动续播;
+      // 后台播放优化: 别的应用抢音频资源抢自动暂停,焦点回来→自动续播;
       // 耳机/蓝牙音频设备断开(AUDIO_BECOMING_NOISY)→自动暂停。Media3 内部管理焦点
       // 请求/放弃与 becoming-noisy receiver 的注册/反注册(随 player release 自动清理)。
       .setAudioAttributes(
@@ -427,17 +439,8 @@ fun MobilePlayerScreen(
         /* handleAudioFocus = */ true,
       )
       .setHandleAudioBecomingNoisy(true)
+      .setTrackSelector(trackSelector)
       .build()
-      // alpha.9X(对齐 PlayerScreen):YouTube SABR Auto 升档——开混合 mime + 多自适应,让 H264+VP9 混合
-      // TrackGroup 正确组进一条 adaptive selection 供 ABR 爬升(默认关闭会坍缩成 1 轨永不升档)。
-      .also { p ->
-        p.setTrackSelectionParameters(
-          p.trackSelectionParameters.buildUpon()
-            .setAllowMixedMimeTypesAdaptiveness(true)
-            .setAllowMultipleAdaptiveSelections(true)
-            .build()
-        )
-      }
   }
 
   fun saveAndReportProgress(progressSecondsOverride: Int? = null) {
