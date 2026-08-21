@@ -2140,10 +2140,15 @@ private fun MobileYoutubeIntroTab(
         overflow = TextOverflow.Ellipsis,
       )
     }
-    // 数据行:观看 · 发布时间(pubdate 为秒,转 yyyy-MM-dd)
-    val pubdateText = detail.publishedAt?.let { t ->
-      if (t <= 0L) "" else SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(t * 1000L))
-    }.orEmpty()
+    // 数据行:观看 · 发布时间(pubdate 为秒,转 yyyy-MM-dd)。
+    // 优先 /player 的 publishDate;缺省(受限/解析失败等 microformat 无 publishDate)回退卡片携带的
+    // request.pubdate(对齐 B 站 data 行,后者恒用卡片 pubdate,保证发布时间恒显示)。
+    val effectivePubdate = detail.publishedAt?.takeIf { it > 0L } ?: request.pubdate
+    val pubdateText = if (effectivePubdate > 0L) {
+      SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(effectivePubdate * 1000L))
+    } else {
+      ""
+    }
     // formatCount 只收 Int，YouTube 的 viewCount 是 Long，先收敛到 Int。
     val viewCountInt = (detail.viewCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     val metaParts = buildList {

@@ -987,6 +987,14 @@ TV 端 `TvVideoGrid`(首页/UP 主页/频道页/动态共用)的焦点在两类�
 
 **结论**:Auto 全轨自适应已打通,起播低档→带宽足逐档爬升。本修复同时惠及 B站 DASH 同组多 codec(混合 mime 正确处理),单轨组不受影响。
 
+## 6.20 移动端 YouTube 详情补发布时间:回退卡片 pubdate(2026-08,v3.0.5)
+
+**症状**:移动端 YouTube 简介 Tab 数据行「播放 X · 发布时间」在部分视频**整行只显示播放量、无日期**,而 B站恒显示;LibreTube 该场景显示正常。
+
+**根因**:`MobileYoutubeIntroTab` 的发布时间只读 `detail.publishedAt`(来自 `/player` 响应的 `microformat.playerMicroformatRenderer.publishDate`)。该字段对受限视频/解析失败等场景为 **null** 时,整个 pubdate 分支为空,`metaParts` 不拼日期 → 数据行无发布时间。而B站数据行恒用**卡片**的 `metadata.pubdate`(始终存在),故对齐 B 站后 YouTube 也应对齐卡片。
+
+**修复**(`MobilePlayerScreen.kt` `MobileYoutubeIntroTab`):发布时间优先 `/player` 的 `publishedAt`;为 `null`/`≤0` 时回退 `request.pubdate`(卡片 `VideoSummary.pubdate` 经 `toPlaybackRequest` 带入),保证发布时间恒显示,与 B 站 data 行行为一致。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
