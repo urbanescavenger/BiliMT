@@ -1359,11 +1359,11 @@ fun PlayerScreen(
           Log.i(
             "YtSabrTracks",
             "groups=${g.size} " + g.mapIndexed { gi, gr ->
-              "g$gi[${gr.trackType}]=" + (0..<gr.length).joinToString { ti ->
+              "g$gi=" + (0..<gr.length).joinToString { ti ->
                 val f = gr.getTrackFormat(ti)
                 "${f.id?.takeIf { it.isNotBlank() } ?: f.codecs}(${f.width}x${f.height})" +
                   "support=${gr.getTrackSupport(ti)} sup=${gr.isTrackSupported(ti)} " +
-                  "ada=${gr.isTrackAdaptive(ti)} sel=${gr.isTrackSelected(ti)}"
+                  "sel=${gr.isTrackSelected(ti)}"
               }
             }
           )
