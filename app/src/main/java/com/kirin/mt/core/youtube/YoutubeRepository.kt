@@ -12,6 +12,8 @@ import kotlinx.coroutines.sync.withPermit
 import kotlin.random.Random
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /** 已映射成 [VideoSummary] 的一页 YouTube 内容，带续页 token。 */
@@ -196,8 +198,10 @@ class YoutubeRepository(
       // 诊断:直接看 microformat.playerMicroformatRenderer 到底有哪些日期字段(确认 publishDate
       // 是否真缺,或只是 parser 读了错字段)。不改播放行为。
       runCatching {
-        val mf = playerJson.obj("microformat")?.obj("playerMicroformatRenderer")
-        Log.i("YoutubeDetail", "getVideoDetail mf videoId=$videoId renderer=${mf != null} keys=${mf?.keySet()?.toList()?.filter { it.contains("Date", true) } ?: "N/A"} publishDate=${mf?.stringOrNull("publishDate")} uploadDate=${mf?.stringOrNull("uploadDate")}")
+        val mf = playerJson["microformat"]?.jsonObject?.get("playerMicroformatRenderer")?.jsonObject
+        val pub = mf?.get("publishDate")?.jsonPrimitive?.contentOrNull
+        val up = mf?.get("uploadDate")?.jsonPrimitive?.contentOrNull
+        Log.i("YoutubeDetail", "getVideoDetail mf videoId=$videoId renderer=${mf != null} keys=${mf?.keys ?: "N/A"} publishDate=$pub uploadDate=$up")
       }
       YoutubeParsers.parseVideoDetail(playerJson)
     }.getOrNull() ?: return null
