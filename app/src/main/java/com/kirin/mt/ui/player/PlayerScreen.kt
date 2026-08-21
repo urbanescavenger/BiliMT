@@ -1683,6 +1683,7 @@ fun PlayerScreen(
                 durationMs = info.durationMs,
                 positionMs = startPositionMs,
                 lastPlayedAtMs = System.currentTimeMillis(),
+                pubdate = activeRequest.pubdate,
               ),
             )
           }

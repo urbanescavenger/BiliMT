@@ -706,6 +706,7 @@ fun MobilePlayerScreen(
                 durationMs = cachedInfo.durationMs,
                 positionMs = startPositionMs,
                 lastPlayedAtMs = System.currentTimeMillis(),
+                pubdate = request.pubdate,
               ),
             )
           }
@@ -865,6 +866,7 @@ fun MobilePlayerScreen(
               durationMs = sabrEffectiveInfo.durationMs,
               positionMs = startPositionMs,
               lastPlayedAtMs = System.currentTimeMillis(),
+              pubdate = request.pubdate,
             ),
           )
         }

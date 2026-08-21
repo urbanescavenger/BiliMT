@@ -27,6 +27,8 @@ data class YoutubeHistoryEntry(
   /** 缩略图 URL。 */
   val thumbnailUrl: String = "",
   val durationMs: Long = 0L,
+  /** 发布时间(epoch 秒)。供历史进播放器简介 Tab 显示;卡片重建 toVideoSummary 时回填。 */
+  val pubdate: Long = 0L,
   /** 上次播放位置（毫秒）；播完/接近播完时为 0。 */
   val positionMs: Long = 0L,
   /** 最近播放时间（epoch 毫秒），用于排序。 */
