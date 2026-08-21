@@ -267,15 +267,14 @@ fun PlayerScreen(
     // 默认不允许混合 mime 进同一条 adaptive selection,把选组锁在选定轨的 mime 上(选定 VP9 就只剩 1 轨,
     // 永不升档)。显式 DefaultTrackSelector 开视频混合 mime + 非无缝自适应 + 多自适应,让选择器把 5 档
     // 正确组进 adaptive selection 供 ABR 爬升。(B站 DASH 同组多 codec 也正确处理,无副作用;单轨组不受影响。)
-    val trackSelector = DefaultTrackSelector.Builder(context)
-      .setParameters(
-        DefaultTrackSelector.Parameters.Builder()
-          .setAllowVideoMixedMimeTypeAdaptiveness(true)
-          .setAllowVideoNonSeamlessAdaptiveness(true)
-          .setAllowMultipleAdaptiveSelections(true)
-          .build()
-      )
-      .build()
+    val trackSelector = DefaultTrackSelector(context)
+    trackSelector.setParameters(
+      DefaultTrackSelector.Parameters.Builder()
+        .setAllowVideoMixedMimeTypeAdaptiveness(true)
+        .setAllowVideoNonSeamlessAdaptiveness(true)
+        .setAllowMultipleAdaptiveSelections(true)
+        .build()
+    )
     ExoPlayer.Builder(context)
       .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
       .setTrackSelector(trackSelector)

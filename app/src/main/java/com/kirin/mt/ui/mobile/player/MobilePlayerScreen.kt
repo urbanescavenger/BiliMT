@@ -417,15 +417,14 @@ fun MobilePlayerScreen(
   val player = remember(bufferMaxMs) {
     // alpha.9X(对齐 PlayerScreen):YouTube SABR Auto 升档——H264+VP9 混合 TrackGroup 默认不进一条
     // adaptive selection(坍缩成 1 轨永不升档)。显式 DefaultTrackSelector 开视频混合 mime + 非无缝 + 多自适应。
-    val trackSelector = DefaultTrackSelector.Builder(context)
-      .setParameters(
-        DefaultTrackSelector.Parameters.Builder()
-          .setAllowVideoMixedMimeTypeAdaptiveness(true)
-          .setAllowVideoNonSeamlessAdaptiveness(true)
-          .setAllowMultipleAdaptiveSelections(true)
-          .build()
-      )
-      .build()
+    val trackSelector = DefaultTrackSelector(context)
+    trackSelector.setParameters(
+      DefaultTrackSelector.Parameters.Builder()
+        .setAllowVideoMixedMimeTypeAdaptiveness(true)
+        .setAllowVideoNonSeamlessAdaptiveness(true)
+        .setAllowMultipleAdaptiveSelections(true)
+        .build()
+    )
     ExoPlayer.Builder(context)
       .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
       // 后台播放优化: 别的应用抢音频资源抢自动暂停,焦点回来→自动续播;
