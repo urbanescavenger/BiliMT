@@ -152,10 +152,10 @@ internal object YoutubeParsers {
     val channelName = vd.stringOrNull("author").orEmpty()
     val channelId = vd.stringOrNull("channelId").orEmpty()
     val viewCount = parseCount(vd.stringOrNull("viewCount"))
-    val publishedAt = playerJson.obj("microformat")
-      ?.obj("playerMicroformatRenderer")
-      ?.stringOrNull("publishDate")
-      ?.let { parsePublishDate(it) }
+    // publishDate / uploadDate 任一存在即用(实测 /player 部分客户端缺 publishDate 但给 uploadDate)。
+    val mf = playerJson.obj("microformat")?.obj("playerMicroformatRenderer")
+    val publishedAt = listOfNotNull(mf?.stringOrNull("publishDate"), mf?.stringOrNull("uploadDate"))
+      .firstNotNullOfOrNull { parsePublishDate(it) }
     return YoutubeVideoDetail(
       videoId = videoId,
       title = title,
@@ -480,7 +480,10 @@ internal object YoutubeParsers {
 
   /** "YYYY-MM-DD" → epoch 秒；解析失败返回 null。 */
   private fun parsePublishDate(date: String): Long? {
-    val parts = date.split('-').mapNotNull { it.toIntOrNull() }
+    // YouTube publishDate/uploadDate 是 ISO-8601,如 "2023-01-15T00:00:00-08:00" 或 "2023-01-15"。
+    // 只取日期部分(前 10 字符 yyyy-MM-dd)再切,否则 split('-') 会吃到 T 和冒号返回 null。
+    val d = date.trim().take(10)
+    val parts = d.split('-').mapNotNull { it.toIntOrNull() }
     if (parts.size != 3) return null
     val cal = Calendar.getInstance().apply {
       clear()

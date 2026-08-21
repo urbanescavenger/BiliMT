@@ -192,7 +192,14 @@ class YoutubeRepository(
         put("contentCheckOk", true)
         put("racyCheckOk", true)
       }
-      client.postJson("/player", payload).let(YoutubeParsers::parseVideoDetail)
+      val playerJson = client.postJson("/player", payload)
+      // 诊断:直接看 microformat.playerMicroformatRenderer 到底有哪些日期字段(确认 publishDate
+      // 是否真缺,或只是 parser 读了错字段)。不改播放行为。
+      runCatching {
+        val mf = playerJson.obj("microformat")?.obj("playerMicroformatRenderer")
+        Log.i("YoutubeDetail", "getVideoDetail mf videoId=$videoId renderer=${mf != null} keys=${mf?.keySet()?.toList()?.filter { it.contains("Date", true) } ?: "N/A"} publishDate=${mf?.stringOrNull("publishDate")} uploadDate=${mf?.stringOrNull("uploadDate")}")
+      }
+      YoutubeParsers.parseVideoDetail(playerJson)
     }.getOrNull() ?: return null
     // /player 的 microformat.publishDate 实测恒 null。对齐 LibreTube:缺省时用 NewPipe getInfo 的
     // uploadDate(与入口路径无关)兜底,保证简介 Tab 恒有发布时间(历史/播放列表/相关视频统一)。
