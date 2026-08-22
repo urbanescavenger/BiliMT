@@ -72,6 +72,7 @@ import com.kirin.mt.ui.pgc.PgcSeasonRequest
 import com.kirin.mt.ui.player.LivePlayerScreen
 import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.shell.AppDestination
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
 /**
