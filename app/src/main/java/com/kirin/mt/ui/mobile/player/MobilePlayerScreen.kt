@@ -1175,7 +1175,8 @@ fun MobilePlayerScreen(
             .onSizeChanged { topBarHeightDp = with(density) { it.height.toDp() } },
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          IconButton(onClick = onBack) {
+          // 全屏时左上角返回键只退出全屏;非全屏返回才退出视频。
+          IconButton(onClick = { if (fullscreen) fullscreen = false else onBack() }) {
             Icon(
               painter = painterResource(R.drawable.ic_player_chevron_left),
               contentDescription = "返回",
