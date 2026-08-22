@@ -47,13 +47,15 @@ import com.kirin.mt.ui.theme.BiliColors
 import kotlinx.coroutines.launch
 
 /**
- * 长按视频卡片弹出的底部操作菜单。当前只放「加入播放列表」一项；
- * 点击后由 [onPickPlaylist] 交给外层弹出 [MobilePlaylistPickerDialog]。
+ * 长按视频卡片弹出的底部操作菜单。当前放「下载」+「加入播放列表」两项；
+ * 下载由 [onDownload] 交给外层弹清晰度选择框,加入播放列表由 [onPickPlaylist]
+ * 交给外层弹出 [MobilePlaylistPickerDialog]。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MobileYoutubeLongPressSheet(
   video: VideoSummary,
+  onDownload: () -> Unit,
   onPickPlaylist: () -> Unit,
   onDismiss: () -> Unit,
 ) {
@@ -71,6 +73,23 @@ fun MobileYoutubeLongPressSheet(
         overflow = TextOverflow.Ellipsis,
       )
       Spacer(Modifier.padding(top = 8.dp))
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .clip(RoundedCornerShape(10.dp))
+          .clickable(onClick = onDownload)
+          .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Icon(
+          painter = painterResource(R.drawable.ic_player_download),
+          contentDescription = null,
+          tint = BiliColors.BiliPink,
+          modifier = Modifier.size(24.dp),
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(stringResource(R.string.downloads_menu_download), color = Color.White)
+      }
       Row(
         modifier = Modifier
           .fillMaxWidth()

@@ -2,6 +2,7 @@ package com.kirin.mt.ui.mobile.shell
 
 import android.Manifest
 import android.content.Intent
+import android.widget.Toast
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.BackHandler
@@ -21,6 +22,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -56,6 +58,7 @@ import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.LoginActivity
 import com.kirin.mt.ui.mobile.SettingsActivity
 import com.kirin.mt.ui.mobile.common.DevelopingTipContent
+import com.kirin.mt.ui.mobile.downloads.MobileDownloadQualityDialog
 import com.kirin.mt.ui.mobile.feed.MobileFeedScreen
 import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
 import com.kirin.mt.ui.mobile.feed.MobileYoutubeLongPressSheet
@@ -130,15 +133,19 @@ fun BiliMobileApp(
   val youtubeChannelUiState = remember { com.kirin.mt.ui.mobile.space.MobileYoutubeChannelUiState() }
   // 播放列表连播队列:播放列表 tab 起播时快照当前播放列表;其它入口起播时置空。
   var playQueue by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
-  // 长按视频卡片弹出操作菜单的视频;再点「加入播放列表」切换到播放列表选择弹窗。
+  // 长按视频卡片弹出操作菜单的视频;再点「下载」/「加入播放列表」切换到对应弹窗。
   var longPressVideo by remember { mutableStateOf<VideoSummary?>(null) }
   var showPlaylistPicker by remember { mutableStateOf(false) }
+  // 长按菜单里点「下载」→ 弹清晰度选择对话框;确认后入队下载。
+  var showDownloadDialog by remember { mutableStateOf(false) }
+  val scope = rememberCoroutineScope()
 
-  // 卡片长按:仅 YouTube 弹操作菜单(加入播放列表→选列表/新建),不再直接 toggle。
+  // 卡片长按:仅 YouTube 弹操作菜单(下载/加入播放列表),不再直接 toggle。
   val onLongPress: (VideoSummary) -> Unit = { video ->
     if (video.source == SourceYoutube) {
       longPressVideo = video
       showPlaylistPicker = false
+      showDownloadDialog = false
     }
   }
 
@@ -446,26 +453,53 @@ fun BiliMobileApp(
       }
     }
 
-    // 长按 YouTube 卡片:底部操作菜单 →「加入播放列表」→ 列表选择/新建弹窗。
+    // 长按 YouTube 卡片:底部操作菜单 →「下载」弹清晰度对话框 /「加入播放列表」选列表。
     longPressVideo?.let { video ->
-      if (showPlaylistPicker) {
-        MobilePlaylistPickerDialog(
-          video = video,
-          youtubePlaylistStore = youtubePlaylistStore,
-          onDismiss = {
-            showPlaylistPicker = false
-            longPressVideo = null
-          },
-        )
-      } else {
-        MobileYoutubeLongPressSheet(
-          video = video,
-          onPickPlaylist = { showPlaylistPicker = true },
-          onDismiss = {
-            showPlaylistPicker = false
-            longPressVideo = null
-          },
-        )
+      when {
+        // 清晰度选择对话框(模态,盖在操作菜单上)。取消只关对话框回到菜单;
+        // 确认后入队下载并收起整套菜单。
+        showDownloadDialog -> {
+          MobileDownloadQualityDialog(
+            isYoutube = true,
+            biliQualities = emptyList(),
+            onDismiss = { showDownloadDialog = false },
+            onConfirm = { choice ->
+              showDownloadDialog = false
+              scope.launch {
+                downloadManager.enqueue(video.toPlaybackRequest(), choice)
+                  .onSuccess {
+                    longPressVideo = null
+                    Toast.makeText(context, context.getString(R.string.downloads_enqueued), Toast.LENGTH_SHORT).show()
+                  }
+                  .onFailure { e ->
+                    Toast.makeText(context, e.message ?: context.getString(R.string.downloads_enqueue_failed), Toast.LENGTH_LONG).show()
+                  }
+              }
+            },
+          )
+        }
+        showPlaylistPicker -> {
+          MobilePlaylistPickerDialog(
+            video = video,
+            youtubePlaylistStore = youtubePlaylistStore,
+            onDismiss = {
+              showPlaylistPicker = false
+              longPressVideo = null
+            },
+          )
+        }
+        else -> {
+          MobileYoutubeLongPressSheet(
+            video = video,
+            onDownload = { showDownloadDialog = true },
+            onPickPlaylist = { showPlaylistPicker = true },
+            onDismiss = {
+              showPlaylistPicker = false
+              showDownloadDialog = false
+              longPressVideo = null
+            },
+          )
+        }
       }
     }
   }
