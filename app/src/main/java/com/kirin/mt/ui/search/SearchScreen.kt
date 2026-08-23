@@ -789,8 +789,8 @@ private fun SearchResultsView(
   onOwnerSelected: (VideoSummary) -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
-  val sortFocusRequesters = remember(source) {
-    sortOptionsFor(source).associate { option -> option.key to FocusRequester() }
+  val sortFocusRequesters = remember(uiState.source) {
+    sortOptionsFor(uiState.source).associate { option -> option.key to FocusRequester() }
   }
   val titleFocusRequester = remember { FocusRequester() }
   val selectedOrderKey = uiState.selectedOrderKey
