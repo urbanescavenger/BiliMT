@@ -185,7 +185,8 @@ internal class DefaultSabrChunkSource(
     val bufferedDurationUs = loadPositionUs - playbackPositionUs
     val previousChunk = queue.lastOrNull()
 
-    val representationHolder = representationHolders[trackSelection.selectedIndex]
+    val selectedIndex = trackSelection.selectedIndex
+    var representationHolder = representationHolders[selectedIndex]
     fetcher.selectFormat(representationHolder.representation)
     // alpha.9X(封顶内自适应,修「Auto 起播低档永不升档」+「爬最高被看门狗整段重载」):Auto 全轨自适应原把
     // 未下载轨的 iterator 全填 EMPTY → selectedIndex 冻结在低档永不升档。现在把**封顶内所有轨道**都喂「基于
@@ -207,12 +208,36 @@ internal class DefaultSabrChunkSource(
     // 「爬 2160p → 撑不起 → 看门狗整段重载 → 新会话又爬回」死循环。日志铁证:ceiling=271 却 sel=0 2160p,
     // 说明靠 synthetic 候选的 ceiling 挡不住已加载轨回爬,必须从 iterator 层面断掉。
     val bwBps = SabrMediaFetcher.sharedBandwidthBps
-    val capBps = if (bwBps > 0) ceilingBitrate.toLong().coerceAtMost((bwBps * 115) / 100).toInt() else ceilingBitrate
+    val unprovenCap = if (trackSelection.length() == 0) 0 else {
+      val target = (0..<trackSelection.length()).minByOrNull {
+        val h = representationHolders[it].representation.format.height
+        if (h > 0) Math.abs(h - 480) else Int.MAX_VALUE
+      }
+      if (target != null) trackSelection.getFormat(target).bitrate else 0
+    }
+    val capBps = if (bwBps > 0) ceilingBitrate.toLong().coerceAtMost((bwBps * 115) / 100).toInt()
+      else ceilingBitrate.coerceAtMost(unprovenCap)
     val isWithinCap = { i: Int -> trackSelection.getFormat(i).bitrate in 1..capBps }
     val capIndex = (0..<trackSelection.length()).firstOrNull { trackSelection.getFormat(it).bitrate >= capBps }
+    // alpha.9X(硬钳制取档,修「起播/回爬 2160p 超大段 → 慢段拖死 → 看门狗整段重载」):AdaptiveTrackSelection 按
+    // bitrate 选轨(DefaultTrackSelector 内部按码率重排,EMPTY iterator 挡不住停在已选高码率轨)→ 每次会话直接从
+    // 最高档起播。这里**钳制实际取档**:selectedIndex 超 cap 时强制取 cap 内最高档,并用该档 representation 作 chunk
+    // trackFormat(见下方 chunk 构建,indexOf 可回查)。带宽未实测(首会话)用起步档(默认 480P)保守 seed——首段小、
+    // 起播快,实测后逐档爬,杜绝一上来取 22MB 2160p 首段拖死。
+    val fetchIndex = if (isWithinCap(selectedIndex)) selectedIndex
+    else (0..<trackSelection.length()).filter { isWithinCap(it) }.maxByOrNull { trackSelection.getFormat(it).bitrate }
+      ?: selectedIndex
+    representationHolder = representationHolders[fetchIndex]
+    fetcher.selectFormat(representationHolder.representation)
+    val clampedBitrate = trackSelection.getFormat(fetchIndex).bitrate
+    // 降档记忆在钳制档上重算:钳制后取档比上一轮低 → 封顶到当前档(后续升档不超过它,防降档后缓冲回满又冲回顶)。
+    if (clampedBitrate > 0 && lastSelectedBitrate > 0 && clampedBitrate < lastSelectedBitrate) {
+      ceilingBitrate = clampedBitrate
+    }
+    if (clampedBitrate > 0) lastSelectedBitrate = clampedBitrate
     Log.i(
       "YtSabrAbr",
-      "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
+      "sel=$fetchIndex(origin=${trackSelection.selectedIndex}) bitrate=$clampedBitrate bufS=${bufferedDurationUs / 1_000_000}.${
         bufferedDurationUs % 1_000_000 / 100_000
       } chunkIndex=${representationHolder.chunkIndex != null} bw=${bwBps / 1_000_000}.${bwBps % 1_000_000 / 100_000}Mbps " +
         "cap=${capIndex?.let { representationHolders[it].representation.formatId.itag } ?: "N"} fmts=${
@@ -261,7 +286,7 @@ internal class DefaultSabrChunkSource(
       out.chunk = InitializationChunk(
         dataSource,
         dataSpec,
-        trackSelection.selectedFormat,
+        representationHolder.representation.format,
         trackSelection.selectionReason,
         trackSelection.selectionData,
         representationHolder.chunkExtractor,
@@ -309,7 +334,7 @@ internal class DefaultSabrChunkSource(
     out.chunk = ContainerMediaChunk(
       dataSource,
       dataSpec,
-      trackSelection.selectedFormat,
+      representationHolder.representation.format,
       trackSelection.selectionReason,
       trackSelection.selectionData,
       startTimeUs,
