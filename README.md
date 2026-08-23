@@ -135,6 +135,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.5-alpha.8 | YouTube 起始挡位设置生效：设置「起播挡位」此前无效（media3 1.10.0 `AdaptiveTrackSelection` 初始选轨纯带宽驱动 + `BaseTrackSelection` 内部按码率降序重排，resolver 挪 index0 无效）。改 `DefaultBandwidthMeter.setInitialBitrateEstimate` seed 到目标挡码率/0.7（TV+移动两 player），首段落目标挡后带宽实测自然爬升 |
 | v3.0.5-alpha.7 | YouTube 点赞数显示修复：点赞数改从 `/player` `microformat.likeCount` 直接取（原靠另发 `/next` 取 videoActions 工具栏，真机取不到致移动端简介点赞行缺失），更快更稳；`/next` 保留作兜底 |
 | v3.0.5-alpha.6 | TV 备份/还原选择弹窗崩溃修复（`SettingsWebDavSelectionDialog` `verticalScroll` 缺有限 max 高，弹窗无限高约束下测量滚动容器抛异常）+ 日志分享面板加「备份」单文件上传 + YouTube 搜索排序对齐 B 站 4 项（综合/最多播放/最新发布/评分，TV+移动端）+ 暂停状态 5s 无操作控制栏自动隐藏（TV 与移动全屏同步） |
 | v3.0.5-alpha.5 | S905X5M 等 Amlogic 盒子解码器误判仅 H264 修复：`CodecCapabilityProbe` 改用 `ALL_CODECS` + `isHardwareAccelerated || !isSoftwareOnly` 判定（厂商 AV1/HEVC 硬解组件不置 `isHardwareAccelerated` 被漏判），修复后解码器出现 Auto/AV1/H265/H264 四项 |

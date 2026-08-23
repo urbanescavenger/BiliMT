@@ -1022,6 +1022,24 @@ TV 端 `TvVideoGrid`(首页/UP 主页/频道页/动态共用)的焦点在两类�
 
 **结论/教训**:**永远不要拆开 chunk 实际取档与 `trackSelection.selectedFormat`**——renderer 按 selection 的选中轨配置解码器,chunk 数据必须与之一致,否则视频轨不激活(tracks=0)、sample 不喂解码器(frameIndex=0)、永不 READY。若以后还要修「起播爬 4K 撑不起」卡顿,正确方向是**降低 DefaultTrackSelector 起播档**(让选中轨本身就是低档,§6.19 的 `599fced` 升序让 index0=低档是这条路),**而不是硬钳制 chunk 取档位**。
 
+## 6.22 起始挡位设置生效:seed 带宽估计而非挪 index0(2026-08,v3.0.5-alpha.8)
+
+**症状**:设置项「YouTube 起播挡位(youtubeStartQuality)」无效——无论设 480P/720P 还是 Auto,起播首段总停在同档,设置形同虚设。
+
+**根因(media3 1.10.0,核对 androidx/media 1.10.0 源码)**:
+- `BaseTrackSelection` 构造器**内部强制按码率降序重排**轨道(`Arrays.sort(formats, (a,b) -> b.bitrate - a.bitrate)`),resolver 把目标档挪到 index0 的顺序对选轨**完全无效**。
+- `AdaptiveTrackSelection` **没有 `getInitialSelection` 覆盖**(旧版本钩子已移除)。初始选轨发生在**第一次 `updateSelectedTrack`**:`selectedIndex = determineIdealSelectedIndex(...)`,而 `determineIdealSelectedIndex` = **「≤ 带宽估计×0.7 的最高码率档」**(`getAllocatedBandwidth` = `bandwidthMeter.getBitrateEstimate() * bandwidthFraction`,默认 `bandwidthFraction=0.7`)。
+- 结论:初始选轨**纯带宽驱动**,与轨道顺序/起播挡设置完全无关。冷启动(默认估计~1Mbps→effective~0.7M)首段恒落 240p/360p;快网络(估计涨)首段直接顶最高档。resolver 挪 index0 那段排序(`cappedVideoFmts`)是死代码。
+
+**修复(方案=§6.21 结论的正确方向「降低起播档」,但用 seed 而非排序)**:
+- `YoutubeStartQuality.seedBps()`(新增):把每个起始挡映射到「目标挡典型码率 / 0.7」的初始带宽估计 seed(Auto/144→250k、240→500k、360→900k、480→1.8M、720→3.5M 有效码率)。因初始选轨=「≤seed×0.7 的最高码率挡」,seed 到目标挡码率后**首段正好落在目标挡**。
+- TV+移动两 player(`PlayerScreen` / `MobilePlayerScreen`)建 `ExoPlayer` 时 `DefaultBandwidthMeter.Builder(context).setInitialBitrateEstimate(youtubeStartQuality.seedBps()).build()` 并 `.setBandwidthMeter(...)`。首段按 seed 落目标挡,之后带宽实测自然爬升/收敛,seed 只影响首次选轨。
+- 关键包路径:**`DefaultBandwidthMeter` 在 `androidx.media3.exoplayer.upstream`**(media3-exoplayer 模块),不在 `androidx.media3.datasource`(同包只有 `DefaultDataSource` 等;初版误 import datasource → 云编译 `Unresolved reference`,commit `d5ad7b8` 修正)。
+
+**注意**:seed 只影响 player 每次重建后的首次选轨;player 每次进视频重建,故每场都用当前设置。中途改设置需重新进播放。手动选档(preferredQualityId)走单轨分支不受影响。
+
+**结论**:1.10.0 起,想让 ABR 从某挡起播,正确做法是 **seed 初始带宽估计到该挡码率**(或降低起播挡),**不是**挪 index0(内部降序重排会打乱)也不是硬钳制 chunk 取档(§6.21 黑屏教训)。真实挡码率随 codec/内容浮动,近似 seed 允许 ±一挡偏差,首段后 ABR 收敛。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

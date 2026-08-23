@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.5-alpha.8](#v305-alpha8)
 - [v3.0.5-alpha.7](#v305-alpha7)
 - [v3.0.5-alpha.6](#v305-alpha6)
 - [v3.0.5-alpha.5](#v305-alpha5)
@@ -191,6 +192,20 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.5-alpha.8
+
+**YouTube 起始挡位设置生效**:设置项「YouTube 起播挡位(youtubeStartQuality)」此前无效——无论设 480P/720P 还是 Auto,起播首段总停在同一挡。根因是 media3 1.10.0 的 `AdaptiveTrackSelection` 初始选轨**纯带宽驱动**且 `BaseTrackSelection` 构造器**内部强制按码率降序重排**轨道——resolver 把目标挡挪到 index0 的顺序对选轨完全无效;初始选轨实际由 `determineIdealSelectedIndex`(「≤带宽估计×0.7 的最高码率挡」)决定。修复:在 `YoutubeStartQuality` 新增 `seedBps()`,把每个起始挡映射到「目标挡典型码率/0.7」的初始带宽估计,TV+移动两 player 建 `ExoPlayer` 时用 `DefaultBandwidthMeter.setInitialBitrateEstimate(...)` seed——首段正好落在目标挡,之后带宽实测自然爬升。这是 §6.21 结论的正确方向(降低起播挡而非硬钳制 chunk 取档)。
+
+### 变更
+- **`YoutubeStartQuality.kt`**:新增 `seedBps()`(Auto/144→250k、240→500k、360→900k、480→1.8M、720→3.5M 有效码率,seed 再÷0.7)。
+- **`PlayerScreen.kt` / `MobilePlayerScreen.kt`**:建 player 时 `DefaultBandwidthMeter.Builder(context).setInitialBitrateEstimate(youtubeStartQuality.seedBps()).build()` 并 `.setBandwidthMeter(...)`。
+- **`YoutubePlaybackResolver.kt`**:修正过时注释(index0 重排对 1.10.0 选轨无效,仅作轨道呈现)。
+
+### 待真机验证
+- 设 480P/720P 后,YouTube 起播首段落在目标挡(而非恒 240p/360p 或直接顶最高档)。
+
+---
 
 ## v3.0.5-alpha.7
 
