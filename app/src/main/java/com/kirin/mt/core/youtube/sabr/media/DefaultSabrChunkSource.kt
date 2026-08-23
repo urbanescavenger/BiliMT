@@ -91,6 +91,16 @@ internal class DefaultSabrChunkSource(
 
   private val representationHolders: MutableList<RepresentationHolder>
 
+  /**
+   * 降档后记忆的升档上限 bitrate(初始 [Int.MAX_VALUE] = 不限制,允许爬到清单最高档)。
+   * 一旦因带宽/stall 发生降档(selectedIndex 往低码率走),把上限收紧到「刚降到的档」——
+   * 后续升档不再超过它,防止降档后缓冲回满又冲回最高档无限震荡。想上更高档需手动选。
+   */
+  private var ceilingBitrate: Int = Int.MAX_VALUE
+
+  /** 上一轮 getNextChunk 的 selectedIndex 对应 bitrate,用于检测降档跳变。 */
+  private var lastSelectedBitrate: Int = -1
+
   init {
     val representations =
       adaptationSetIndices.flatMap { manifest.adaptationSets[it].representations }.toList()
@@ -186,9 +196,20 @@ internal class DefaultSabrChunkSource(
     // iterator(可降回)。其余档仍 EMPTY(不参与切轨)→ 一次只升降一档、不越级、不预拉多轨 init。
     val currentBitrate =
       if (representationHolder.chunkIndex != null) trackSelection.getFormat(trackSelection.selectedIndex).bitrate else -1
+    // alpha.9X(降档后记忆封顶):顶配档(如 itag313 2160p 17.8Mbps)常因网络/解码扛不住——升上去就 stall→
+    // 降档→缓冲回满又升,无限震荡(真机 19:17 日志 sel 在 2160↔1080 间反复跳)。修法不在「从一开始就不升
+    // 最高」,而是**降档后记忆**:初始允许爬到清单最高档;一旦检测到降档(selectedIndex 比上一轮往低码率走),
+    // 把升档上限收紧到刚降到的档,后续升档不再超过它 → 停在网络能撑的档、不再冲回顶。想上更高档需手动选。
+    if (currentBitrate > 0 && lastSelectedBitrate > 0 && currentBitrate < lastSelectedBitrate) {
+      ceilingBitrate = currentBitrate // 降档:封顶到当前(降档后的)档
+    }
+    if (currentBitrate > 0) lastSelectedBitrate = currentBitrate
     val upgradeCandidateIndex = if (currentBitrate > 0) {
       (0..<trackSelection.length())
-        .filter { trackSelection.getFormat(it).bitrate > currentBitrate }
+        .filter { i ->
+          val b = trackSelection.getFormat(i).bitrate
+          b in (currentBitrate + 1)..ceilingBitrate // 升档候选不超降档记忆上限
+        }
         .minByOrNull { trackSelection.getFormat(it).bitrate }
     } else null
     val downgradeCandidateIndex = if (currentBitrate > 0) {
@@ -197,13 +218,17 @@ internal class DefaultSabrChunkSource(
         .maxByOrNull { trackSelection.getFormat(it).bitrate }
     } else null
     // alpha.9X 诊断:ABR 门控与候选,定位「Auto 起播低档后不升档」。bitrate=-1(Format 未设)则 currentBitrate<=0
-    // → up/down 恒 null → 未下载轨全 EMPTY → 退化成老 bug(钉死起始档)。fmts 逐个标真实 bitrate。
+    // → up/down 恒 null → 选通道全退化为可能钉死起始档。fmts 逐个标真实 bitrate;ceiling 显示降档封顶档。
+    val capBitrate = ceilingBitrate
+    val capIndex = (0..<trackSelection.length()).firstOrNull { trackSelection.getFormat(it).bitrate == capBitrate }
     Log.i(
       "YtSabrAbr",
       "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
         bufferedDurationUs % 1_000_000 / 100_000
       } chunkIndex=${representationHolder.chunkIndex != null} " +
-        "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
+        "up=$upgradeCandidateIndex down=$downgradeCandidateIndex ceiling=${
+          if (capIndex != null) representationHolders[capIndex].representation.formatId.itag else "unlimited"
+        } fmts=${
           (0..<trackSelection.length()).joinToString { i ->
             val f = trackSelection.getFormat(i)
             "${representationHolders[i].representation.formatId.itag}[${if (f.bitrate > 0) f.bitrate else "NA"}]"
