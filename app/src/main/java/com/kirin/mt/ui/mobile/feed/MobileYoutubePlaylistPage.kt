@@ -211,7 +211,7 @@ private fun PlaylistDetailScreen(
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val listState = rememberLazyListState()
-  // 「下载」是下载自动存档列表:完全映射离线下载,只读——不提供编辑/移除/拖动,只能播放。
+  // 「下载」是下载自动存档列表:完全映射离线下载——不提供编辑/移除,但可长按拖动排序。
   val autoArchive = playlist.name == DOWNLOAD_PLAYLIST_NAME
   var editMode by remember { mutableStateOf(false) }
   // 批量勾选选中集(编辑模式下勾选的 bvid);「完成」或单点移除时清掉。
@@ -310,7 +310,8 @@ private fun PlaylistDetailScreen(
               }
             }
             .pointerInput(video.bvid, editMode, autoArchive) {
-              if (editMode || autoArchive) return@pointerInput
+              // 「下载」列表允许长按拖动排序(编辑/移除仍禁用);其它列表编辑模式下禁拖。
+              if (editMode) return@pointerInput
               detectDragGesturesAfterLongPress(
                 onDragStart = {
                   draggingBvid = video.bvid
