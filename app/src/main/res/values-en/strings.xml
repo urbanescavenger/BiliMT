@@ -194,7 +194,7 @@
     <string name="settings_playback_codec_h265">H.265</string>
     <string name="settings_playback_codec_av1">AV1</string>
     <string name="settings_playback_cdn_title">CDN route</string>
-    <string name="settings_playback_cdn_description">Switch the CDN node for video streams. Defaults to Bilibili's auto allocation; you can manually pick a faster node in peak hours or across networks.</string>
+    <string name="settings_playback_cdn_description">Switch the CDN node for video streams. Defaults to Bilibili\'s auto allocation; you can manually pick a faster node in peak hours or across networks.</string>
     <string name="settings_youtube_default_quality_title">YouTube default quality</string>
     <string name="settings_youtube_default_quality_description">The quality cap used for new YouTube videos. Auto uses the highest available.</string>
     <string name="settings_youtube_content_region_title">YouTube content region</string>
@@ -437,7 +437,7 @@
     <string name="up_space_following">Following: %1$s</string>
     <string name="up_space_level">LV%1$d</string>
     <string name="up_space_sign_label">Signature</string>
-    <string name="up_space_sign_empty">This UP hasn't written anything.</string>
+    <string name="up_space_sign_empty">This UP hasn\'t written anything.</string>
     <string name="up_space_not_logged_in_follow">Sign in to follow</string>
     <string name="player_up_view_home">View home page</string>
     <string name="player_danmaku_count_status">Danmaku: %1$s</string>
@@ -503,8 +503,8 @@
     <string name="settings_update_install_action">Install and restart</string>
     <string name="settings_update_release_notes_action">View release notes</string>
     <string name="settings_update_release_notes_action_description">Opens the GitHub Release page in a browser.</string>
-    <string name="settings_update_no_release_url">This device's ABI has no matching release asset.</string>
-    <string name="settings_update_no_matching_asset">This release has no APK matching this device's ABI.</string>
+    <string name="settings_update_no_release_url">This device\'s ABI has no matching release asset.</string>
+    <string name="settings_update_no_matching_asset">This release has no APK matching this device\'s ABI.</string>
     <string name="settings_update_failed_with_message">Update check failed. %1$s</string>
     <string name="settings_update_download_failed_with_message">Failed to download update. %1$s</string>
     <string name="settings_update_install_unknown_sources_required">Allow installing from unknown sources in system settings first.</string>
