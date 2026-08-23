@@ -210,8 +210,9 @@ internal class DefaultSabrChunkSource(
       }
     }
     lastIndex = currentIndex
-    if (ceilingIndex != null) {
-      val targetIndex = ceilingIndex - 1
+    val ceiling = ceilingIndex
+    if (ceiling != null) {
+      val targetIndex = ceiling - 1
       if (targetIndex >= 0) {
         val targetBps = trackSelection.getFormat(targetIndex).bitrate
         if (targetBps > 0) {
@@ -250,7 +251,8 @@ internal class DefaultSabrChunkSource(
     } else null
     // alpha.9X(ceiling):升档被 ceiling 挡住(index < ceilingIndex = 更高码率)→ 置 null → 该档 EMPTY,ABR
     // 爬不回被排除的高档。降档后不空回高挡,只等带宽持续达标(上面 bufferMaxMs/2 观察窗)才放回一档。
-    if (upgradeCandidateIndex != null && ceilingIndex != null && upgradeCandidateIndex < ceilingIndex) {
+    val ceilingAfterRelax = ceilingIndex
+    if (upgradeCandidateIndex != null && ceilingAfterRelax != null && upgradeCandidateIndex < ceilingAfterRelax) {
       upgradeCandidateIndex = null
     }
     // alpha.9X 诊断:ABR 门控与候选,定位「Auto 起播低档后不升档」。bitrate=-1(Format 未设)则 currentBitrate<=0
