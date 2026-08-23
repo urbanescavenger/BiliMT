@@ -286,7 +286,10 @@ internal class DefaultSabrChunkSource(
       out.chunk = InitializationChunk(
         dataSource,
         dataSpec,
-        representationHolder.representation.format,
+        // 用 trackSelection.getFormat(fetchIndex) 而非 representation.format:后者可能与 selection 里的
+        // Format 不相等,onChunkLoadCompleted 的 trackSelection.indexOf(trackFormat) 回查 -1 → representationHolders[-1]
+        // IndexOutOfBounds 崩溃(真机坐实:每个会话首 chunk Source error,index -1 out of bounds for length 1)。
+        trackSelection.getFormat(fetchIndex),
         trackSelection.selectionReason,
         trackSelection.selectionData,
         representationHolder.chunkExtractor,
@@ -334,7 +337,8 @@ internal class DefaultSabrChunkSource(
     out.chunk = ContainerMediaChunk(
       dataSource,
       dataSpec,
-      representationHolder.representation.format,
+      // 同 init chunk:用 selection 内格式,保证 indexOf(trackFormat) 能回查到钳制档(repres格式可能不相等)。
+      trackSelection.getFormat(fetchIndex),
       trackSelection.selectionReason,
       trackSelection.selectionData,
       startTimeUs,
