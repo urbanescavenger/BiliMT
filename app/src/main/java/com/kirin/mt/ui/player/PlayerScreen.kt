@@ -269,6 +269,13 @@ fun PlayerScreen(
   var completionActionToken by remember { mutableLongStateOf(0L) }
   var completionActionJob by remember { mutableStateOf<Job?>(null) }
   val controlsFocusRequester = remember { FocusRequester() }
+  // alpha.9X(ceiling 滞回):抽成命名实例——既给 ExoPlayer 做带宽计(ABR 选轨),又传给 SabrMediaSource.
+  // Factory 让 DefaultSabrChunkSource 读带宽估计判定「待放宽档位是否持续达标」。
+  val bandwidthMeter = remember {
+    DefaultBandwidthMeter.Builder(context)
+      .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
+      .build()
+  }
   val player = remember(bufferMaxMs) {
     // alpha.9X:YouTube SABR Auto 升档——视频 TrackGroup 是 H264+VP9 混合 mime 组,DefaultTrackSelector
     // 默认不允许混合 mime 进同一条 adaptive selection,把选组锁在选定轨的 mime 上(选定 VP9 就只剩 1 轨,
@@ -285,13 +292,10 @@ fun PlayerScreen(
     ExoPlayer.Builder(context)
       .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
       .setTrackSelector(trackSelector)
-      // 起始挡位:seed 初始带宽估计到目标档码率/0.7 → AdaptiveTrackSelection 首段落在起始档,
-      // 之后带宽实测自然爬升(media3 1.10.0 初始选轨纯带宽驱动,resolver 挪 index0 无效)。
-      .setBandwidthMeter(
-        DefaultBandwidthMeter.Builder(context)
-          .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
-          .build()
-      )
+      // 起始挡位:seed 初始带宽估计到目标档码率/0.7 → 目标挡命中起始档,之后带宽实测自然爬升。
+      // (media3 1.10.0 初始选轨纯带宽驱动,resolver 挪 index0 无效;同一 [bandwidthMeter] 实例复用给
+      // SabrMediaSource.Factory 读带宽估计做 ceiling 放宽判定。)
+      .setBandwidthMeter(bandwidthMeter)
       .build()
   }
   val playbackWakeLock = remember(context) {
@@ -1616,7 +1620,7 @@ fun PlayerScreen(
           val fetcher = SabrMediaFetcher(entry, playbackHttpClient)
           val manifest = SabrManifest.fromSession(entry.session, effectiveInfo)
           Log.i(PlayerPlaybackLogTag, "SABR single-stream: sid=$sid qualities=${effectiveInfo.qualities.size} duration=${effectiveInfo.durationMs}ms")
-          SabrMediaSource.Factory(manifest, fetcher, sid)
+          SabrMediaSource.Factory(manifest, fetcher, sid, bufferMaxMs.toLong(), bandwidthMeter)
             .createMediaSource(MediaItem.fromUri(manifest.sabrUrl))
         } else if (effectiveInfo.isHlsManifest()) {
           // alpha.90:HLS 兜底——SABR RELOAD 闭环未回 SABR 且 dashMpdUrl 空(android 无 manifest)时,落 visionOS

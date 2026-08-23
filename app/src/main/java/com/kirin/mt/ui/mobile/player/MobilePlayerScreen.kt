@@ -425,6 +425,13 @@ fun MobilePlayerScreen(
     }
   }
 
+  // alpha.9X(ceiling 滞回):抽成命名实例——既给 ExoPlayer 做带宽计(ABR 选轨),又传给 SabrMediaSource.
+  // Factory 让 DefaultSabrChunkSource 读带宽估计判定「待放宽档位是否持续达标」。
+  val bandwidthMeter = remember {
+    DefaultBandwidthMeter.Builder(context)
+      .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
+      .build()
+  }
   val player = remember(bufferMaxMs) {
     // alpha.9X(对齐 PlayerScreen):YouTube SABR Auto 升档——H264+VP9 混合 TrackGroup 默认不进一条
     // adaptive selection(坍缩成 1 轨永不升档)。显式 DefaultTrackSelector 开视频混合 mime + 非无缝 + 多自适应。
@@ -450,13 +457,10 @@ fun MobilePlayerScreen(
       )
       .setHandleAudioBecomingNoisy(true)
       .setTrackSelector(trackSelector)
-      // 起始挡位:seed 初始带宽估计到目标档码率/0.7 → AdaptiveTrackSelection 首段落在起始档,
-      // 之后带宽实测自然爬升(media3 1.10.0 初始选轨纯带宽驱动,resolver 挪 index0 无效)。
-      .setBandwidthMeter(
-        DefaultBandwidthMeter.Builder(context)
-          .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
-          .build()
-      )
+      // 起始挡位:seed 初始带宽估计到目标档码率/0.7 → 目标挡命中起始档,之后带宽实测自然爬升。
+      // (media3 1.10.0 初始选轨纯带宽驱动,resolver 挪 index0 无效;同一 [bandwidthMeter] 实例复用给
+      // SabrMediaSource.Factory 读带宽估计做 ceiling 放宽判定。)
+      .setBandwidthMeter(bandwidthMeter)
       .build()
   }
 
@@ -819,7 +823,8 @@ fun MobilePlayerScreen(
           .setUri(manifest.sabrUrl)
           .setMediaMetadata(metadata)
           .build()
-        SabrMediaSource.Factory(manifest, fetcher, sid).createMediaSource(sabrItem)
+        SabrMediaSource.Factory(manifest, fetcher, sid, bufferMaxMs.toLong(), bandwidthMeter)
+          .createMediaSource(sabrItem)
       } else if (sabrEffectiveInfo.isHlsManifest()) {
         // alpha.90:HLS 兜底——SABR RELOAD 闭环未回 SABR 且 dashMpdUrl 空(android 无 manifest)时,落 visionOS
         // /player 的 hlsUrl(Apple 平台原生 HLS 交付,manifest 自带多码率 + A/V,无需 init/index range 拼接)。

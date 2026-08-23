@@ -22,6 +22,7 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MediaSource.MediaPeriodId
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.Allocator
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 
 /**
@@ -56,6 +57,8 @@ internal class SabrMediaSource(
     private val manifest: SabrManifest,
     private val fetcher: SabrMediaFetcher,
     private val sessionId: String,
+    private val bufferMaxMs: Long,
+    private val bandwidthMeter: DefaultBandwidthMeter,
   ) : MediaSource.Factory {
     private val compositeSequenceableLoaderFactory = DefaultCompositeSequenceableLoaderFactory()
     private var drmSessionManagerProvider: DrmSessionManagerProvider = DefaultDrmSessionManagerProvider()
@@ -74,7 +77,9 @@ internal class SabrMediaSource(
         manifest,
         fetcher,
         sessionId,
-        DefaultSabrChunkSource.Factory(SabrDataSource.Factory(fetcher, sessionId)),
+        DefaultSabrChunkSource.Factory(
+          SabrDataSource.Factory(fetcher, sessionId), bufferMaxMs, bandwidthMeter,
+        ),
         compositeSequenceableLoaderFactory,
         drmSessionManagerProvider,
         loadErrorHandlingPolicy,

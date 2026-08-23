@@ -26,6 +26,7 @@ import androidx.media3.exoplayer.source.chunk.MediaChunk
 import androidx.media3.exoplayer.source.chunk.MediaChunkIterator
 import androidx.media3.exoplayer.trackselection.ExoTrackSelection
 import androidx.media3.exoplayer.upstream.CmcdConfiguration
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.FallbackOptions
 import androidx.media3.extractor.ChunkIndex
@@ -52,11 +53,15 @@ internal class DefaultSabrChunkSource(
   private val trackType: @TrackType Int,
   private val dataSource: DataSource,
   private val playerId: PlayerId,
+  private val bufferMaxMs: Long,
+  private val bandwidthMeter: DefaultBandwidthMeter,
 ) : SabrChunkSource {
 
   /** [SabrChunkSource.Factory] for [DefaultSabrChunkSource]。 */
   class Factory(
     private val dataSourceFactory: DataSource.Factory,
+    private val bufferMaxMs: Long,
+    private val bandwidthMeter: DefaultBandwidthMeter,
   ) : SabrChunkSource.Factory {
     private val chunkExtractorFactory = BundledChunkExtractor.Factory()
 
@@ -82,6 +87,8 @@ internal class DefaultSabrChunkSource(
         trackType,
         dataSource,
         playerId,
+        bufferMaxMs,
+        bandwidthMeter,
       )
     }
 
@@ -125,6 +132,20 @@ internal class DefaultSabrChunkSource(
         }
       }]"
     )
+  }
+
+  // alpha.9X(ceiling 滞回,修「不稳定网络反复升降档 → 看门狗整段重载」):trackSelection 按码率**降序**重排
+  // (index0=最高码率),降档 = selectedIndex **增大**(移到更低码率的更高 index)。检测到降档就把源档及
+  // 以上(更低 index)从候选集排除(ceilingIndex = 当前档,只允许 [ceilingIndex..N-1])——ABR 不再爬回刚
+  // 降掉的高挡,避免「爬上去又降下来」的震荡。带宽实测持续超「待放宽挡位」所需码率(bufferMaxMs/2 时长)
+  // 才放回一档,撑不住就清零重等,自愈不震荡。
+  private var lastIndex: Int? = null
+  private var ceilingIndex: Int? = null
+  private var bandwidthGoodSinceMs: Long = 0L
+
+  /** ABR 选轨门槛系数:选「≤ 带宽估计×[BANDWIDTH_FRACTION] 的最高码率档」(对齐 seedBps 的 /0.7)。 */
+  private companion object {
+    const val BANDWIDTH_FRACTION = 0.7f
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {
@@ -177,6 +198,37 @@ internal class DefaultSabrChunkSource(
 
     val representationHolder = representationHolders[trackSelection.selectedIndex]
     fetcher.selectFormat(representationHolder.representation)
+    // alpha.9X(ceiling 滞回):降档检测 = selectedIndex 增大(降序排列下 index 高=码率低)。一旦降档就把
+    // ceilingIndex 收到当前档(源档及以上排除),ABR 不再爬回刚降掉的高档 → 消除「反复升降档→看门狗整段重载」。
+    // 带宽实测持续超「待放宽档位(ceiling-1=下一高码率档)」所需带宽(门槛 bitrate/0.7,复用缓冲设置时长
+    // bufferMaxMs/2 作观察窗)才放回一档;撑不下去清零重等,自愈不震荡。
+    val currentIndex = trackSelection.selectedIndex
+    lastIndex?.let { prev ->
+      if (currentIndex > prev) {
+        ceilingIndex = currentIndex
+        bandwidthGoodSinceMs = 0L
+      }
+    }
+    lastIndex = currentIndex
+    if (ceilingIndex != null) {
+      val targetIndex = ceilingIndex - 1
+      if (targetIndex >= 0) {
+        val targetBps = trackSelection.getFormat(targetIndex).bitrate
+        if (targetBps > 0) {
+          val nowMs = SystemClock.elapsedRealtime()
+          val thresholdBps = (targetBps / BANDWIDTH_FRACTION).toLong()
+          if (bandwidthMeter.getBitrateEstimate() >= thresholdBps) {
+            if (bandwidthGoodSinceMs == 0L) bandwidthGoodSinceMs = nowMs
+            if (nowMs - bandwidthGoodSinceMs >= bufferMaxMs / 2) {
+              ceilingIndex = targetIndex
+              bandwidthGoodSinceMs = 0L
+            }
+          } else {
+            bandwidthGoodSinceMs = 0L
+          }
+        }
+      }
+    }
     // 增量升/降档(alpha.9X,修「Auto 起播低档后永不升档」):Auto 全轨自适应原把所有未下载轨的 iterator
     // 填 MediaChunkIterator.EMPTY,AdaptiveTrackSelection 看不到任何备选数据 → selectedIndex 冻结在低档
     // (默认带宽估计 ~1Mbps 起步如 itag244=480p),带宽涨了也无新轨可切。这里只给「当前档的下一高码率档」
@@ -186,7 +238,7 @@ internal class DefaultSabrChunkSource(
     // iterator(可降回)。其余档仍 EMPTY(不参与切轨)→ 一次只升降一档、不越级、不预拉多轨 init。
     val currentBitrate =
       if (representationHolder.chunkIndex != null) trackSelection.getFormat(trackSelection.selectedIndex).bitrate else -1
-    val upgradeCandidateIndex = if (currentBitrate > 0) {
+    var upgradeCandidateIndex = if (currentBitrate > 0) {
       (0..<trackSelection.length())
         .filter { trackSelection.getFormat(it).bitrate > currentBitrate }
         .minByOrNull { trackSelection.getFormat(it).bitrate }
@@ -196,13 +248,18 @@ internal class DefaultSabrChunkSource(
         .filter { trackSelection.getFormat(it).bitrate in 1 until currentBitrate }
         .maxByOrNull { trackSelection.getFormat(it).bitrate }
     } else null
+    // alpha.9X(ceiling):升档被 ceiling 挡住(index < ceilingIndex = 更高码率)→ 置 null → 该档 EMPTY,ABR
+    // 爬不回被排除的高档。降档后不空回高挡,只等带宽持续达标(上面 bufferMaxMs/2 观察窗)才放回一档。
+    if (upgradeCandidateIndex != null && ceilingIndex != null && upgradeCandidateIndex < ceilingIndex) {
+      upgradeCandidateIndex = null
+    }
     // alpha.9X 诊断:ABR 门控与候选,定位「Auto 起播低档后不升档」。bitrate=-1(Format 未设)则 currentBitrate<=0
     // → up/down 恒 null → 未下载轨全 EMPTY → 退化成老 bug(钉死起始档)。fmts 逐个标真实 bitrate。
     Log.i(
       "YtSabrAbr",
       "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
         bufferedDurationUs % 1_000_000 / 100_000
-      } chunkIndex=${representationHolder.chunkIndex != null} " +
+      } chunkIndex=${representationHolder.chunkIndex != null} ceiling=$ceilingIndex goodMs=${bandwidthGoodSinceMs} " +
         "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
           (0..<trackSelection.length()).joinToString { i ->
             val f = trackSelection.getFormat(i)
