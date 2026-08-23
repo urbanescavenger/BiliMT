@@ -65,6 +65,7 @@ internal fun SettingsWebDavSelectionDialog(
   val allFocusRequester = remember { FocusRequester() }
   val startFocusRequester = remember { FocusRequester() }
 
+  @Composable
   fun itemLabel(item: WebDavBackupItem): String = when (item) {
     WebDavBackupItem.Channels -> stringResource(R.string.settings_webdav_item_channels)
     WebDavBackupItem.Piped -> stringResource(R.string.settings_webdav_item_piped)

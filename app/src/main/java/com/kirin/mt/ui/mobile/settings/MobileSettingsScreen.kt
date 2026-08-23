@@ -832,6 +832,7 @@ private fun MobileWebDavSelectionDialog(
   }
   var selected by remember { mutableStateOf(items.toSet()) }
 
+  @Composable
   fun itemLabel(item: com.kirin.mt.core.webdav.WebDavBackupItem): String = when (item) {
     com.kirin.mt.core.webdav.WebDavBackupItem.Channels -> stringResource(R.string.settings_webdav_item_channels)
     com.kirin.mt.core.webdav.WebDavBackupItem.Piped -> stringResource(R.string.settings_webdav_item_piped)

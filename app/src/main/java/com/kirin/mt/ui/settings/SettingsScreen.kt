@@ -120,6 +120,7 @@ fun SettingsScreen(
 ) {
   val settingsListState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
+  val context = LocalContext.current
   val density = LocalDensity.current
   val settingsRowFallbackHeightPx = with(density) {
     (BiliSizing.SettingsRowHeight + BiliSpacing.Md).roundToPx()
