@@ -3,7 +3,9 @@ package com.kirin.mt.ui.mobile.settings
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.util.Log
 import android.widget.Toast
+import java.util.Locale
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -300,9 +302,19 @@ fun MobileSettingsScreen(
         scope.launch { appSettingsStore.setChineseTextVariant(variant) }
         // 用新语言弹 toast 确认切换(状态异步落盘,这里按新 variant 构造 locale 上下文取值)。
         val switchedCtx = context.localizedContext(variant)
+        val resolved = switchedCtx.getString(R.string.settings_language_switched)
+        val defRes = runCatching {
+          context.getString(R.string.settings_language_switched)
+        }.getOrElse { "<err>" }
+        Log.d(
+          "BiliMT:i18n",
+          "variant=${variant.name} | baseCtx=${context.resources.configuration.locales[0]} " +
+            "| switchedCtx=${switchedCtx.resources.configuration.locales[0]} | " +
+            "resolved='$resolved' | defaultCtx='$defRes' | appLocale=${Locale.getDefault()}",
+        )
         Toast.makeText(
           switchedCtx,
-          switchedCtx.getString(R.string.settings_language_switched),
+          resolved,
           Toast.LENGTH_SHORT,
         ).show()
       },
