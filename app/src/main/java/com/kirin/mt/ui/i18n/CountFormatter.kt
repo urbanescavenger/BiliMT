@@ -39,10 +39,12 @@ fun formatCompactCount(count: Int, locale: Locale): String = formatCompactCount(
 @Composable
 fun currentUiLocale(): Locale {
   val configuration: Configuration = LocalContext.current.resources.configuration
-  return configuration.locales.getOrElse(0) { Locale.SIMPLIFIED_CHINESE }
+  val locales = configuration.locales
+  return if (locales.isEmpty()) Locale.SIMPLIFIED_CHINESE else locales[0]
 }
 
 /** 从 Resources 读当前配置 locale;供非 composable 上下文(已持有 resources)使用。 */
 fun localeFromResources(resources: Resources): Locale {
-  return resources.configuration.locales.getOrElse(0) { Locale.SIMPLIFIED_CHINESE }
+  val locales = resources.configuration.locales
+  return if (locales.isEmpty()) Locale.SIMPLIFIED_CHINESE else locales[0]
 }
