@@ -109,6 +109,7 @@
     <string name="settings_language_english">English</string>
     <string name="settings_language_spanish">Español</string>
     <string name="settings_language_portuguese">Português</string>
+    <string name="settings_language_switched">&#x8BED;&#x8A00;&#x5DF2;&#x5207;&#x6362;</string>
     <string name="settings_about_title">&#x5173;&#x4E8E;</string>
     <string name="settings_about_description">&#x67E5;&#x770B;&#x9879;&#x76EE;&#x4ECB;&#x7ECD;&#x3001;&#x9879;&#x76EE;&#x5730;&#x5740;&#x548C;&#x4E3B;&#x8981;&#x5F00;&#x6E90;&#x5E93;&#x3002;</string>
     <string name="settings_about_project_name">BiliMT</string>

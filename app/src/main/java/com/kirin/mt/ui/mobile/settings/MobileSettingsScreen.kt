@@ -85,6 +85,7 @@ import com.kirin.mt.ui.settings.currentVersionText
 import com.kirin.mt.ui.settings.downloadProgressFraction
 import com.kirin.mt.ui.settings.isUpdateVersionActionEnabled
 import com.kirin.mt.ui.settings.latestVersionText
+import com.kirin.mt.ui.i18n.localizedContext
 import com.kirin.mt.ui.settings.normalizeIptvUrl
 import com.kirin.mt.ui.settings.updateVersionActionLabel
 import kotlinx.coroutines.delay
@@ -293,7 +294,16 @@ fun MobileSettingsScreen(
       selected = settings.chineseTextVariant,
       selectedLabel = languageLabel(settings.chineseTextVariant),
       options = enumOptions(ChineseTextVariant.entries) { languageLabel(it) },
-      onSelected = { scope.launch { appSettingsStore.setChineseTextVariant(it) } },
+      onSelected = { variant ->
+        scope.launch { appSettingsStore.setChineseTextVariant(variant) }
+        // 用新语言弹 toast 确认切换(状态异步落盘,这里按新 variant 构造 locale 上下文取值)。
+        val switchedCtx = context.localizedContext(variant)
+        Toast.makeText(
+          switchedCtx,
+          switchedCtx.getString(R.string.settings_language_switched),
+          Toast.LENGTH_SHORT,
+        ).show()
+      },
     )
 
     // ===== 首页分区(与 TV 同一份配置,排序+显示隐藏;默认折叠,点标题展开) =====

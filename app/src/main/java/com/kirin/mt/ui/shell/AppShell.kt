@@ -717,6 +717,13 @@ fun BiliTvApp(
                   coroutineScope.launch {
                     appSettingsStore.setChineseTextVariant(variant)
                   }
+                  // 用新语言弹 toast 确认切换(状态异步落盘,这里按新 variant 构造 locale 上下文取值)。
+                  val switchedCtx = context.localizedContext(variant)
+                  Toast.makeText(
+                    switchedCtx,
+                    switchedCtx.getString(R.string.settings_language_switched),
+                    Toast.LENGTH_SHORT,
+                  ).show()
                 },
                 onClearCache = {
                   coroutineScope.launch {

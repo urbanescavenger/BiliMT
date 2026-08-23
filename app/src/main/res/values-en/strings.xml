@@ -109,6 +109,7 @@
     <string name="settings_language_english">English</string>
     <string name="settings_language_spanish">Español</string>
     <string name="settings_language_portuguese">Português</string>
+    <string name="settings_language_switched">Language switched</string>
     <string name="settings_about_title">About</string>
     <string name="settings_about_description">Project intro, project URL, and key open-source libraries.</string>
     <string name="settings_about_project_name">BiliMT</string>

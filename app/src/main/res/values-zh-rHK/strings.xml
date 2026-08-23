@@ -106,6 +106,7 @@
     <string name="settings_language_simplified">简体</string>
     <string name="settings_language_hong_kong">香港</string>
     <string name="settings_language_taiwan">台湾</string>
+    <string name="settings_language_switched">語言已切換</string>
     <string name="settings_about_title">&#x95DC;&#x65BC;</string>
     <string name="settings_about_description">&#x67E5;&#x770B;&#x9805;&#x76EE;&#x4ECB;&#x7D39;&#x3001;&#x9805;&#x76EE;&#x5730;&#x5740;&#x548C;&#x4E3B;&#x8981;&#x958B;&#x6E90;&#x5EAB;&#x3002;</string>
     <string name="settings_about_project_name">BiliMT</string>
