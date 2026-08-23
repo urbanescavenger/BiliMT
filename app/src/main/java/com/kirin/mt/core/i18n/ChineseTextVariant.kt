@@ -3,7 +3,10 @@ package com.kirin.mt.core.i18n
 enum class ChineseTextVariant(val key: String) {
   Simplified("simplified"),
   HongKong("hong_kong"),
-  Taiwan("taiwan");
+  Taiwan("taiwan"),
+  English("english"),
+  Spanish("spanish"),
+  Portuguese("portuguese");
 
   companion object {
     fun fromKey(key: String?): ChineseTextVariant {

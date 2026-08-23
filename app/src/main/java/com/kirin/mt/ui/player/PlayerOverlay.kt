@@ -72,6 +72,8 @@ import com.kirin.mt.core.player.VideoshotFrame
 import com.kirin.mt.ui.common.ClockOverlay
 import com.kirin.mt.ui.glass.biliLiquidGlassSurface
 import com.kirin.mt.ui.i18n.convertChineseText
+import com.kirin.mt.ui.i18n.currentUiLocale
+import com.kirin.mt.ui.i18n.formatCompactCount
 import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
@@ -594,6 +596,7 @@ private fun PlayerActionButton(
   focused: Boolean,
 ) {
   val shape = RoundedCornerShape(BiliRadius.Card)
+  val context = LocalContext.current
   val tint = if (active) BiliColors.BiliPink else BiliColors.TextPrimary
   Column(
     modifier = Modifier
@@ -617,7 +620,7 @@ private fun PlayerActionButton(
     )
     Spacer(modifier = Modifier.height(BiliSpacing.Xxs))
     Text(
-      text = formatCount(count),
+      text = formatCount(count, context.resources),
       color = tint,
       fontSize = 11.sp,
       fontWeight = if (active || focused) FontWeight.Bold else FontWeight.Normal,
@@ -2280,11 +2283,7 @@ private fun PlaybackRequest.formatPubdate(): String? {
 
 @Composable
 internal fun Int.formatCompactCountText(): String {
-  return when {
-    this >= 100_000_000 -> stringResource(R.string.player_count_yi, this / 100_000_000.0)
-    this >= 10_000 -> stringResource(R.string.player_count_wan, this / 10_000.0)
-    else -> toString()
-  }
+  return formatCompactCount(this, currentUiLocale())
 }
 
 @Composable

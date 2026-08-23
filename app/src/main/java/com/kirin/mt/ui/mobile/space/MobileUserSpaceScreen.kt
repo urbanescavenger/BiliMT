@@ -37,10 +37,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
@@ -85,6 +88,7 @@ fun MobileUserSpaceScreen(
   modifier: Modifier = Modifier,
 ) {
   val scope = rememberCoroutineScope()
+  val context = LocalContext.current
   val order = uiState.order
   val state = uiState.state
   val gridState = uiState.gridState
@@ -102,7 +106,7 @@ fun MobileUserSpaceScreen(
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
-        SpaceState.Failed(e.message.orEmpty().ifBlank { "加载失败" })
+        SpaceState.Failed(e.message.orEmpty().ifBlank { context.getString(R.string.mobile_load_failed) })
       }
       uiState.state = s
     }
@@ -253,7 +257,7 @@ fun MobileUserSpaceScreen(
                 )
                 Spacer(modifier = Modifier.width(2.dp))
                 Text(
-                  text = "直播",
+                  text = stringResource(R.string.mobile_live),
                   style = MaterialTheme.typography.labelSmall,
                   color = Color.White,
                   fontWeight = FontWeight.Bold,
@@ -276,7 +280,7 @@ fun MobileUserSpaceScreen(
             }
             val fans = uiState.profile?.fans ?: 0L
             Text(
-              text = "粉丝 ${formatCount(fans.toInt())}",
+              text = stringResource(R.string.mobile_fans, formatCount(fans.toInt(), context.resources)),
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -293,20 +297,23 @@ fun MobileUserSpaceScreen(
             },
             enabled = !uiState.followLoading,
           ) {
-            Text(if (uiState.followed) "已关注" else "关注")
+            Text(
+              if (uiState.followed) stringResource(R.string.youtube_channel_following)
+              else stringResource(R.string.youtube_channel_follow),
+            )
           }
         }
         Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
           OutlinedButton(onClick = { uiState.order = "pubdate" }) {
             Text(
-              "最新",
+              stringResource(R.string.mobile_sort_latest),
               color = if (order == "pubdate") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             )
           }
           Spacer(Modifier.padding(start = 8.dp))
           OutlinedButton(onClick = { uiState.order = "click" }) {
             Text(
-              "最热",
+              stringResource(R.string.mobile_sort_hot),
               color = if (order == "click") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             )
           }
@@ -326,7 +333,7 @@ fun MobileUserSpaceScreen(
       is SpaceState.Success -> {
         if (s.videos.isEmpty()) {
           item(span = { GridItemSpan(maxLineSpan) }) {
-            Text("暂无投稿", modifier = Modifier.padding(16.dp))
+            Text(stringResource(R.string.mobile_no_videos), modifier = Modifier.padding(16.dp))
           }
         } else {
           items(s.videos, key = { it.bvid }) { video ->

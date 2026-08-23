@@ -401,7 +401,7 @@ private fun PlaylistDetailScreen(
                 if (video.ownerName.isNotBlank()) append(video.ownerName)
                 if (video.view > 0) {
                   if (isNotEmpty()) append(" · ")
-                  append(formatCount(video.view))
+                  append(formatCount(video.view, context.resources))
                 }
               },
               color = MaterialTheme.colorScheme.onSurfaceVariant,

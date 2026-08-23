@@ -19,6 +19,11 @@ object ChineseTextConverters {
       ChineseTextVariant.Taiwan -> ChineseTextConverter { text ->
         if (text.isBlank()) text else ZhTwConverterUtil.toTraditional(text)
       }
+      // 非中文界面语言:动态中文内容(标题/UP 名等)保持简体原样,不做转换
+      ChineseTextVariant.English,
+      ChineseTextVariant.Spanish,
+      ChineseTextVariant.Portuguese,
+      -> Simplified
     }
   }
 }

@@ -17,6 +17,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -31,7 +32,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.kirin.mt.R
+import com.kirin.mt.core.i18n.ChineseTextConverters
 import com.kirin.mt.core.model.HomeSection
+import com.kirin.mt.ui.i18n.LocalChineseTextConverter
+import com.kirin.mt.ui.i18n.localizedContext
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.IptvRepository
@@ -104,12 +108,20 @@ fun BiliMobileApp(
   downloadManager: com.kirin.mt.core.download.DownloadManager,
 ) {
   val context = LocalContext.current
+  val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
+  // 语言设置:与 TV AppShell 一致,把 LocalContext 整体换成所选 locale 的 context,
+  // 使 stringResource(R.string.*) 命中对应 values-<locale> 资源。
+  val localizedContext = remember(context, settings.chineseTextVariant) {
+    context.localizedContext(settings.chineseTextVariant)
+  }
+  val textConverter = remember(settings.chineseTextVariant) {
+    ChineseTextConverters.forVariant(settings.chineseTextVariant)
+  }
   var selected by rememberSaveable { mutableStateOf(AppDestination.Recommend) }
   var recommendRefreshKey by rememberSaveable { mutableStateOf(0) }
-  // 动态 tab 手动刷新键:每次点击底栏"动态"(含重复点击)自增,驱动 MobileDynamicScreen
+  // 动态 tab 手动刷新键:每次点击底栏"动态"(含重复点击)自增,驱动 DynamicScreen
   // 同时刷新 B 站动态 + YouTube 关注(镜像 recommendRefreshKey 与 TV dynamicManualRefreshKey)。
   var dynamicRefreshKey by rememberSaveable { mutableStateOf(0) }
-  val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
 
   // YouTube 内容地区(gl/hl)写进进程级 holder,InnerTubeClient.buildContext 每次请求读它,
   // 让 gl/hl 跟随设置运行时变化(browse/search/player/SABR 全自动一致,免逐层透传)。
@@ -183,7 +195,11 @@ fun BiliMobileApp(
     AppDestination.Settings,
   )
 
-  Box(modifier = Modifier.fillMaxSize()) {
+  CompositionLocalProvider(
+    LocalContext provides localizedContext,
+    LocalChineseTextConverter provides textConverter,
+  ) {
+    Box(modifier = Modifier.fillMaxSize()) {
     NavigationSuiteScaffold(
       modifier = Modifier.statusBarsPadding(),
       navigationSuiteItems = {
@@ -503,5 +519,6 @@ fun BiliMobileApp(
         }
       }
     }
+  }
   }
 }

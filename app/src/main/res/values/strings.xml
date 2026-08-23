@@ -106,6 +106,9 @@
     <string name="settings_language_simplified">&#x7B80;&#x4F53;</string>
     <string name="settings_language_hong_kong">&#x9999;&#x6E2F;</string>
     <string name="settings_language_taiwan">&#x53F0;&#x6E7E;</string>
+    <string name="settings_language_english">English</string>
+    <string name="settings_language_spanish">Español</string>
+    <string name="settings_language_portuguese">Português</string>
     <string name="settings_about_title">&#x5173;&#x4E8E;</string>
     <string name="settings_about_description">&#x67E5;&#x770B;&#x9879;&#x76EE;&#x4ECB;&#x7ECD;&#x3001;&#x9879;&#x76EE;&#x5730;&#x5740;&#x548C;&#x4E3B;&#x8981;&#x5F00;&#x6E90;&#x5E93;&#x3002;</string>
     <string name="settings_about_project_name">BiliMT</string>
@@ -597,4 +600,64 @@
     <string name="settings_webdav_restore_row">从 WebDAV 还原</string>
     <string name="settings_webdav_backup_desc">把 YouTube 关注频道、Piped 配置和日志上传到 WebDAV 服务器，备份后删除本地日志</string>
     <string name="settings_webdav_restore_desc">从 WebDAV 服务器下载并覆盖本地频道列表与 Piped 配置</string>
+    <!-- 硬编码 UI 中文收口：相对时间 -->
+    <string name="video_relative_just_now">刚刚</string>
+    <string name="video_relative_months_ago">%1$d个月前</string>
+    <!-- 移动播放器 -->
+    <string name="mobile_player_cached">已缓存</string>
+    <string name="player_error_cache_missing">缓存文件缺失</string>
+    <string name="player_listen_mode_on">已开启听视频模式</string>
+    <string name="player_listen_mode_off">已退出听视频模式</string>
+    <string name="share_video">分享视频</string>
+    <string name="player_listen_exit">退出听视频</string>
+    <string name="player_listen">听视频</string>
+    <string name="player_listen_mode">听视频模式</string>
+    <string name="player_error_failed">播放失败</string>
+    <string name="player_paused_tap_play">已暂停,点击播放</string>
+    <string name="danmaku_send">发送弹幕</string>
+    <string name="danmaku_empty_content">弹幕内容不能为空</string>
+    <string name="danmaku_sent">弹幕已发送</string>
+    <string name="player_fullscreen_exit">退出全屏</string>
+    <string name="player_fullscreen">全屏</string>
+    <string name="player_share">分享</string>
+    <string name="player_desc_unavailable">简介暂不可用</string>
+    <string name="player_view_count_format">播放 %1$s</string>
+    <string name="player_danmaku_count_format">弹幕 %1$s</string>
+    <!-- 直播播放器 -->
+    <string name="live_play_error">播放出错</string>
+    <string name="live_line">线路 %1$d</string>
+    <string name="live_load_failed">直播加载失败</string>
+    <string name="live_show_controls">显示控件/切换播放</string>
+    <string name="live_channel_list">频道列表</string>
+    <string name="live_no_channels">暂无频道</string>
+    <!-- TV 播放器 -->
+    <string name="player_action_failed_login">操作失败,请检查登录或稍后重试</string>
+    <string name="player_like_cancelled">已取消点赞</string>
+    <string name="player_coin_success">投币成功</string>
+    <string name="player_favorite_select_first">请先选择收藏夹</string>
+    <string name="player_favorited">已收藏</string>
+    <string name="player_enter_channel">进频道</string>
+    <string name="player_value_none">无</string>
+    <!-- 移动用户空间/卡片/首页 -->
+    <string name="mobile_load_failed">加载失败</string>
+    <string name="mobile_live">直播</string>
+    <string name="mobile_fans">粉丝 %1$s</string>
+    <string name="mobile_sort_latest">最新</string>
+    <string name="mobile_sort_hot">最热</string>
+    <string name="mobile_no_videos">暂无投稿</string>
+    <string name="mobile_no_youtube_channels">未添加 YouTube 关注频道</string>
+    <!-- 移动播放器收口:弹幕输入/音频轨/分栏 Tab/弹窗 -->
+    <string name="danmaku_input_hint">发个弹幕…</string>
+    <string name="danmaku_sending">发送中</string>
+    <string name="danmaku_submit">发送</string>
+    <string name="danmaku_send_requires_login">发送失败(未登录或参数异常)</string>
+    <string name="danmaku_api_error">弹幕%1$d:%2$s</string>
+    <string name="danmaku_network_error">网络错误 HTTP %1$d</string>
+    <string name="danmaku_send_failed">发送失败:%1$s</string>
+    <string name="player_audio_track">音轨</string>
+    <string name="player_tab_intro">简介</string>
+    <string name="player_comment_count_format">评论 %1$s</string>
+    <string name="player_confirm">确认</string>
+    <string name="player_no_related_videos">暂无相关视频</string>
+    <string name="player_action_failed">操作失败,请稍后重试</string>
 </resources>

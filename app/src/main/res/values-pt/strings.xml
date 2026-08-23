@@ -1,0 +1,11 @@
+<resources>
+    <!-- 葡萄牙语骨架：本期仅接通，翻译内容后续填充。缺 key 时回落默认中文。 -->
+    <string name="app_name">BiliMT</string>
+    <string name="settings_language_title">Idioma</string>
+    <string name="settings_language_simplified">简体</string>
+    <string name="settings_language_hong_kong">香港</string>
+    <string name="settings_language_taiwan">台湾</string>
+    <string name="settings_language_english">English</string>
+    <string name="settings_language_spanish">Español</string>
+    <string name="settings_language_portuguese">Português</string>
+</resources>

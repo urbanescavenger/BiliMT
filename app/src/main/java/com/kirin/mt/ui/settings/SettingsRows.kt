@@ -391,6 +391,9 @@ internal fun ChineseTextVariant.languageLabel(): String {
     ChineseTextVariant.Simplified -> stringResource(R.string.settings_language_simplified)
     ChineseTextVariant.HongKong -> stringResource(R.string.settings_language_hong_kong)
     ChineseTextVariant.Taiwan -> stringResource(R.string.settings_language_taiwan)
+    ChineseTextVariant.English -> stringResource(R.string.settings_language_english)
+    ChineseTextVariant.Spanish -> stringResource(R.string.settings_language_spanish)
+    ChineseTextVariant.Portuguese -> stringResource(R.string.settings_language_portuguese)
   }
 }
 

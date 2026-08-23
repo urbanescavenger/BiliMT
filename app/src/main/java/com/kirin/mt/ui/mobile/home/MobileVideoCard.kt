@@ -40,6 +40,8 @@ import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoCardRelativeText
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.pubdateText
+import com.kirin.mt.ui.i18n.formatCompactCount
+import com.kirin.mt.ui.i18n.localeFromResources
 import com.kirin.mt.ui.theme.BiliColors
 
 /** YouTube 卡片绿框颜色(Material Green 600),动态页区分 YouTube 与 B 站内容。 */
@@ -97,7 +99,7 @@ private fun CompactStyleCardContent(
         modifier = Modifier.fillMaxWidth(),
       )
       if (video.isLive) {
-        LiveBadge(text = video.badge.ifBlank { "直播" }, modifier = Modifier.align(Alignment.TopStart))
+        LiveBadge(text = video.badge.ifBlank { stringResource(R.string.mobile_live) }, modifier = Modifier.align(Alignment.TopStart))
       } else if (video.badge.isNotEmpty() && video.source != SourceIptv) {
         Text(
           text = video.badge,
@@ -147,7 +149,7 @@ private fun CompactStyleCardContent(
         LiveOnlineCount(online = video.view, areaName = video.liveAreaName)
       } else {
         Text(
-          text = formatCount(if (video.view > 0) video.view else video.likeCount),
+          text = formatCount(if (video.view > 0) video.view else video.likeCount, LocalContext.current.resources),
           style = MaterialTheme.typography.labelSmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -165,7 +167,7 @@ private fun FeedStyleCardContent(
   coverOverride: Any? = null,
 ) {
   val relativeText = rememberVideoCardRelativeText()
-  val count = formatCount(if (video.view > 0) video.view else video.likeCount)
+  val count = formatCount(if (video.view > 0) video.view else video.likeCount, LocalContext.current.resources)
   val pubdate = video.pubdateText(relativeText)
   val meta = if (pubdate.isBlank()) count else "$pubdate · $count"
   Column(modifier = modifier) {
@@ -217,7 +219,7 @@ private fun FeedStyleCardContent(
         modifier = Modifier.fillMaxWidth(),
       )
       if (video.isLive) {
-        LiveBadge(text = video.badge.ifBlank { "直播" }, modifier = Modifier.align(Alignment.TopStart))
+        LiveBadge(text = video.badge.ifBlank { stringResource(R.string.mobile_live) }, modifier = Modifier.align(Alignment.TopStart))
       } else if (video.badge.isNotEmpty() && video.source != SourceIptv) {
         Text(
           text = video.badge,
@@ -302,7 +304,7 @@ private fun LiveOnlineCount(online: Int, areaName: String, modifier: Modifier = 
     Spacer(modifier = Modifier.width(3.dp))
     if (online > 0) {
       Text(
-        text = formatCount(online),
+        text = formatCount(online, LocalContext.current.resources),
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         maxLines = 1,
@@ -345,11 +347,9 @@ private fun OwnerAvatar(face: String, isLive: Boolean = false, size: Dp = 20.dp)
   )
 }
 
-/** 播放量/弹幕数等计数格式化:万以上用"万"。 */
-fun formatCount(count: Int): String {
-  if (count < 10_000) return count.toString()
-  val wan = count / 10_000.0
-  return if (wan >= 100) "${wan.toInt()}万" else "${"%.1f".format(wan)}万"
+/** 播放量/弹幕数等计数格式化:按当前界面 locale 用「万/亿」或「K/M/B」。 */
+fun formatCount(count: Int, resources: android.content.res.Resources): String {
+  return formatCompactCount(count.toLong(), localeFromResources(resources))
 }
 
 /** 是否可点 UP 头像进主页:B站 ownerMid>0,YouTube 需带 channelId。 */

@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.kirin.mt.R
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
@@ -119,7 +120,7 @@ fun MobileHomeScreen(
   /** 首页 YouTube 区块:加载关注流(单页),超时/未关注给明确提示而非静默空。 */
   suspend fun loadYoutubeTrending(forceRefresh: Boolean): MobileSectionState {
     if (youtubeChannels.isEmpty()) {
-      return MobileSectionState.Failed("未添加 YouTube 关注频道")
+      return MobileSectionState.Failed(context.getString(R.string.mobile_no_youtube_channels))
     }
     // 与动态 tab 共享 YoutubeFeedCacheStore:非强制刷新时缓存新鲜(10min 内)直接秒出,
     // 避免首页与动态两处重复拉全量频道(对齐 LibreTube Home/Subscriptions 共享 feed 缓存)。
@@ -142,7 +143,7 @@ fun MobileHomeScreen(
     // 首屏返回每频道续页 token,滚动到底可继续翻更早视频(头像回写由 youtubeHomeFeedPage 内部处理)。
     val page = videoRepository.youtubeHomeFeedPage()
     return when {
-      page.videos.isEmpty() -> MobileSectionState.Failed("暂无内容")
+      page.videos.isEmpty() -> MobileSectionState.Failed(context.getString(R.string.player_panel_empty))
       else -> {
         youtubeFeedCacheStore.write(currentIds, page.videos)
         MobileSectionState.Success(
@@ -180,7 +181,7 @@ fun MobileHomeScreen(
             idx = idx,
           )
           if (videos.isEmpty()) {
-            MobileSectionState.Failed("暂无内容")
+            MobileSectionState.Failed(context.getString(R.string.player_panel_empty))
           } else {
             MobileSectionState.Success(
               videos = videos,
@@ -193,7 +194,7 @@ fun MobileHomeScreen(
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
-        MobileSectionState.Failed(e.message.orEmpty().ifEmpty { "加载失败" })
+        MobileSectionState.Failed(e.message.orEmpty().ifEmpty { context.getString(R.string.feed_footer_failed) })
       }
       uiState.markLoaded(key)
       uiState.setState(key, state)

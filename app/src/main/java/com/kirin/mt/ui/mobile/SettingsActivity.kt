@@ -21,6 +21,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,10 +29,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.BiliTvApplication
 import com.kirin.mt.R
+import com.kirin.mt.core.i18n.ChineseTextConverters
+import com.kirin.mt.ui.i18n.LocalChineseTextConverter
+import com.kirin.mt.ui.i18n.localizedContext
 import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.ui.mobile.downloads.MobileDownloadsScreen
 import com.kirin.mt.ui.mobile.settings.FollowManageKind
@@ -51,6 +56,18 @@ class SettingsActivity : ComponentActivity() {
     val appContainer = (application as BiliTvApplication).appContainer
     setContent {
       BiliTvTheme {
+        val context = LocalContext.current
+        val appSettings by appContainer.appSettingsStore.settings.collectAsState(initial = com.kirin.mt.core.settings.AppSettings())
+        val localizedContext = remember(context, appSettings.chineseTextVariant) {
+          context.localizedContext(appSettings.chineseTextVariant)
+        }
+        val textConverter = remember(appSettings.chineseTextVariant) {
+          ChineseTextConverters.forVariant(appSettings.chineseTextVariant)
+        }
+        CompositionLocalProvider(
+          LocalContext provides localizedContext,
+          LocalChineseTextConverter provides textConverter,
+        ) {
         Surface(modifier = Modifier.fillMaxSize().statusBarsPadding(), color = MaterialTheme.colorScheme.background) {
           val session by appContainer.sessionStore.session.collectAsState(initial = UserSession())
           var followScreen by remember { mutableStateOf<FollowManageKind?>(null) }
@@ -172,6 +189,7 @@ class SettingsActivity : ComponentActivity() {
               modifier = Modifier.fillMaxSize(),
             )
           }
+        }
         }
       }
     }

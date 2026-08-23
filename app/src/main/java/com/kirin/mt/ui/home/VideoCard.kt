@@ -73,6 +73,8 @@ import com.kirin.mt.core.model.watchProgressText
 import com.kirin.mt.ui.focus.BiliFocusableSurface
 import com.kirin.mt.ui.glass.LocalLiquidGlassBackdrop
 import com.kirin.mt.ui.i18n.convertChineseText
+import com.kirin.mt.ui.i18n.currentUiLocale
+import com.kirin.mt.ui.i18n.formatCompactCount
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
@@ -971,9 +973,5 @@ private fun rememberVideoCardRelativeText(): VideoCardRelativeText {
 
 @Composable
 private fun Int.formatCompactCountText(): String {
-  return when {
-    this >= 100_000_000 -> stringResource(R.string.video_count_yi, this / 100_000_000.0)
-    this >= 10_000 -> stringResource(R.string.video_count_wan, this / 10_000.0)
-    else -> toString()
-  }
+  return formatCompactCount(this, currentUiLocale())
 }

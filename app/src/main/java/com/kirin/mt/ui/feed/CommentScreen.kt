@@ -1,6 +1,9 @@
 package com.kirin.mt.ui.feed
 
+import android.content.res.Resources
+
 import androidx.compose.foundation.background
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -295,7 +298,7 @@ private fun CommentItem(
         )
         Spacer(modifier = Modifier.width(BiliSpacing.Sm))
         Text(
-          text = formatCommentRelativeTime(comment.ctime),
+          text = formatCommentRelativeTime(comment.ctime, LocalContext.current.resources),
           color = homeColors.textTertiary,
           fontSize = BiliTypography.CardBadge,
           maxLines = 1,
@@ -421,16 +424,16 @@ private fun Key.isCommentConfirmKey(): Boolean {
   return this == Key.Enter || this == Key.NumPadEnter || this == Key.DirectionCenter
 }
 
-private fun formatCommentRelativeTime(ctimeSeconds: Long): String {
+private fun formatCommentRelativeTime(ctimeSeconds: Long, resources: Resources): String {
   if (ctimeSeconds <= 0L) return ""
   val nowSeconds = System.currentTimeMillis() / 1000L
   val diff = nowSeconds - ctimeSeconds
   return when {
-    diff < 60 -> "刚刚"
-    diff < 3600 -> "${diff / 60}分钟前"
-    diff < 86_400 -> "${diff / 3600}小时前"
-    diff < 2_592_000 -> "${diff / 86_400}天前"
-    else -> "${diff / 2_592_000}个月前"
+    diff < 60 -> resources.getString(R.string.video_relative_just_now)
+    diff < 3600 -> resources.getString(R.string.video_relative_minutes_ago, diff / 60)
+    diff < 86_400 -> resources.getString(R.string.video_relative_hours_ago, diff / 3600)
+    diff < 2_592_000 -> resources.getString(R.string.video_relative_days_ago, diff / 86_400)
+    else -> resources.getString(R.string.video_relative_months_ago, diff / 2_592_000)
   }
 }
 
@@ -626,7 +629,7 @@ private fun YoutubeCommentItem(
         }
         Spacer(modifier = Modifier.width(BiliSpacing.Sm))
         Text(
-          text = formatCommentRelativeTime(comment.publishedAt ?: 0L),
+          text = formatCommentRelativeTime(comment.publishedAt ?: 0L, LocalContext.current.resources),
           color = homeColors.textTertiary,
           fontSize = BiliTypography.CardBadge,
           maxLines = 1,

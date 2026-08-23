@@ -807,9 +807,9 @@ fun PlayerScreen(
       !ok && error != null -> {
         (error as? BiliApiCodeException)?.biliMessage
           ?.takeIf { it.isNotBlank() }
-          ?: "操作失败,请检查登录或稍后重试"
+          ?: context.getString(R.string.player_action_failed_login)
       }
-      !ok -> "操作失败,请检查登录或稍后重试"
+      !ok -> context.getString(R.string.player_action_failed_login)
       else -> successMsg
     }
     interactionToast?.cancel()
@@ -826,7 +826,10 @@ fun PlayerScreen(
       if (ok) {
         liked = !liked
         likeCount = (likeCount + if (liked) 1 else -1).coerceAtLeast(0)
-        showInteractionToast(true, if (liked) "已点赞" else "已取消点赞")
+        showInteractionToast(
+          true,
+          if (liked) context.getString(R.string.feed_action_like_done) else context.getString(R.string.player_like_cancelled),
+        )
       } else {
         showInteractionToast(false, "", result.exceptionOrNull())
       }
@@ -848,7 +851,7 @@ fun PlayerScreen(
       if (ok) {
         coined = true
         coinCount += multiply
-        showInteractionToast(true, "投币成功")
+        showInteractionToast(true, context.getString(R.string.player_coin_success))
       } else {
         showInteractionToast(false, "", result.exceptionOrNull())
       }
@@ -897,7 +900,7 @@ fun PlayerScreen(
     val adds = favSelectedIds.toList()
     if (aid <= 0L || interactionBusy) return
     if (adds.isEmpty()) {
-      showInteractionToast(false, "请先选择收藏夹")
+      showInteractionToast(false, context.getString(R.string.player_favorite_select_first))
       showControls()
       return
     }
@@ -913,7 +916,7 @@ fun PlayerScreen(
         }
         faved = true
         openPanel(PlayerPanel.None)
-        showInteractionToast(true, "已收藏")
+        showInteractionToast(true, context.getString(R.string.player_favorited))
       } else {
         showInteractionToast(false, "", result.exceptionOrNull())
       }
