@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.5-alpha.5](#v305-alpha5)
 - [v3.0.5-alpha.4](#v305-alpha4)
 - [v3.0.5-alpha.3](#v305-alpha3)
 - [v3.0.5-alpha.1](#v305-alpha1)
@@ -188,6 +189,18 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.5-alpha.5
+
+**S905X5M 等 Amlogic 盒子解码器误判仅 H264 修复**:用户在 X96M200(S905X5M 芯片)上发现「设置→解码器」固定为 H264 无法切换,该芯片支持 HEVC/AV1 硬解且隔壁 BV 可正常播 AV1,用 H264 看 4K 高码率很卡。根因 `CodecCapabilityProbe` 用 `MediaCodecList.REGULAR_CODECS` + `isHardwareAccelerated` 过滤硬件解码器,但 Amlogic 厂商 AV1/HEVC 硬解组件(`c2.aml.*`)常不置 `isHardwareAccelerated` 或被排除出 REGULAR 列表,导致 `supportsAv1/supportsH265` 误判 false → 选项列表只剩 `[Auto, H264]`。修复:改用 `ALL_CODECS` 枚举 + Q+ 硬件判定放宽为 `isHardwareAccelerated || !isSoftwareOnly`(对齐 BV 的 `!isSoftwareOnly` 判定);真正软解(dav1d/c2.android.*)`isSoftwareOnly=true` 仍被排除,无回归。修复后解码器出现 Auto/AV1/H265/H264 四项,播放链路 `buildFnval`/`isPlayable` 随之正确请求并过滤 AV1/HEVC。
+
+### 变更
+- **根因修复 `CodecCapabilityProbe.kt`**:`decoderMimeTypes()` 的 `MediaCodecList(REGULAR_CODECS)` → `ALL_CODECS`;`isHardwareDecoderInfo()` Q+ 分支 `return info.isHardwareAccelerated` → `info.isHardwareAccelerated || !info.isSoftwareOnly`,预-Q 名称判定不变。
+
+### 待真机验证
+- S905X5M 上设置→解码器显示 Auto/AV1/H265/H264,切 AV1 后 4K 高码率硬解不再卡;`BiliMT:Codec` 日志 `h264/h265/av1` 三标志全 true。
+
+---
 
 ## v3.0.5-alpha.4
 
