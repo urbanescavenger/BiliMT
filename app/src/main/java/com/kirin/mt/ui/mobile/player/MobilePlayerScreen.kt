@@ -855,6 +855,19 @@ fun MobilePlayerScreen(
           .build()
         DashMediaSource.Factory(dataSourceFactory).createMediaSource(dashItem)
       }
+      // 起始挡位:起播阶段用 selector maxHeight 临时卡在起始档(SABR 专属,非 SABR 不卡),保证
+      // 首段落在起始档(不靠带宽);首帧渲染后 onRenderedFirstFrame 松开,ABR 爬到默认画质上限。
+      startQualityRelaxed = false
+      val startQualityHeight = if (effectiveInfo.isSabrSingle()) youtubeStartQuality.startHeight else null
+      if (startQualityHeight != null) {
+        // 在现有参数基础上叠加高度 cap,保留其它配置(mixed-mime/non-seamless/audioOnly 禁用视频轨等)。
+        val cur = player.trackSelectionParameters
+        if (cur is DefaultTrackSelector.Parameters) {
+          player.setTrackSelectionParameters(
+            cur.buildUpon().setMaxVideoSize(Int.MAX_VALUE, startQualityHeight).build()
+          )
+        }
+      }
       player.setMediaSource(mediaSource)
       player.prepare()
       // 听视频模式:新 MediaSource prepare 会重置轨道选择为全开,需重新禁用视频轨。
@@ -910,11 +923,23 @@ fun MobilePlayerScreen(
     }
   }
 
+  // 起始挡位(alpha.9X):起播阶段用 selector maxVideoSize 把 ABR 临时卡在起始档,首帧渲染
+  // (onRenderedFirstFrame)后松开,ABR 在「默认画质上限」的轨道组里爬到默认画质。仅 SABR 应用。
+  var startQualityRelaxed by remember { mutableStateOf(false) }
+
   // ExoPlayer 监听 + 生命周期释放
   DisposableEffect(player) {
     val listener = object : Player.Listener {
       override fun onRenderedFirstFrame() {
         Log.i(MobilePlayerLogTag, "onRenderedFirstFrame (视频首帧已渲染)")
+        // 起始挡位:首帧已渲染 = 实际运行起来,松开 selector 高度 cap,让 ABR 爬回默认画质上限。
+        if (!startQualityRelaxed) {
+          startQualityRelaxed = true
+          val cur = player.trackSelectionParameters
+          if (cur is DefaultTrackSelector.Parameters) {
+            player.setTrackSelectionParameters(cur.buildUpon().clearVideoSizeConstraints().build())
+          }
+        }
       }
 
       override fun onVideoSizeChanged(videoSize: VideoSize) {
