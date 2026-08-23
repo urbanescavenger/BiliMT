@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.5](#v305)
 - [v3.0.5-alpha.9](#v305-alpha9)
 - [v3.0.5-alpha.8](#v305-alpha8)
 - [v3.0.5-alpha.7](#v305-alpha7)
@@ -194,6 +195,23 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.5
+
+**稳定版:多语言 6 档落地 + YouTube SABR 升降档控制 + 真机兼容性打磨。** 3.0.5 alpha 线合入稳定版。多语言从仅中文扩展到 6 档语言(简中/港繁/台繁 + English / Español / Português),数字与相对时间本地化(中文 万/亿,拉丁 K/M/B),并修复 localeFilters 剪包真因(原只列 zh 变体把 `values-en/es/pt` 整个剪掉,补全后拉丁资源真正进包,ES/PT 骨架补为全量翻译);YouTube SABR 自动档位升级修复(混合 H264/VP9 不再坍缩成单轨,自动档可从 360p 逐步升到 1080p)与起始挡位设置生效(`setMaxVideoSize` 起播 cap + 首帧后 `clearVideoSizeConstraints` 松开,公开 API 绕开 `selectedIndex` private 难点,alpha.8 seed 方案真机失效后替代)+ ceiling 降档滞回防震荡(ceiling 门控对 media3 1.10.0 失效,待改 `excludeTrack`);YouTube 点赞数改从 `/player` `microformat.likeCount` 直取;S905X5M 等 Amlogic 盒子解码器误判仅 H264 修复(`ALL_CODECS` + `isHardwareAccelerated || !isSoftwareOnly`);TV 备份/还原选择弹窗崩溃修复 + 日志分享加备份单文件上传 + YouTube 搜索排序对齐 B 站 4 项。
+
+### 变更
+- **多语言 6 档**(简中/港繁/台繁/English/Español/Português):界面骨架文案可切拉丁语,中文动态内容保持原样;`CountFormatter` 数字本地化(中文 万/亿,拉丁 K/M/B);localeFilters 补 `en/es/pt` 修拉丁资源剪包真因。
+- **YouTube SABR 升降档**:混合 H264/VP9 显式开自适应修自动档坍缩;起始挡位改 `setMaxVideoSize` + `onRenderedFirstFrame` 松开(seed 方案真机失效替代);ceiling 降档滞回(降档排除源档及以上候选,relax 窗口 `bufferMaxMs/2`)。
+- **YouTube 点赞数**:改从 `/player` `microformat.likeCount` 直取(原 `/next` 真机取不到),`/next` 保留兜底。
+- **解码器兼容**:`CodecCapabilityProbe` 改 `ALL_CODECS` + `isHardwareAccelerated || !isSoftwareOnly`,修 Amlogic 盒子厂商 AV1/HEVC 硬解组件漏判。
+- **备份/搜索**:TV 备份/还原弹窗崩溃修复;日志分享加备份上传;YouTube 搜索排序对齐 B 站 4 项(综合/最多播放/最新发布/评分)。
+- **3.0.4 线并入**:YouTube 订阅流 continuation 分页、频道最新/最热排序、下载批量删除、播放列表批量移除、在线播放命中缓存播本地源、YouTube 播放优先级(SABR/DASH)、TV 覆盖层/长按弹窗返回焦点恢复。
+
+### 已知遗留
+- ceiling 门控(迭代器塞 EMPTY)对 media3 1.10.0 失效,待改 `trackSelection.excludeTrack`(见 docs/youtube-hd-playback.md §6.23.2)。
+
+---
 
 ## v3.0.5-alpha.9
 

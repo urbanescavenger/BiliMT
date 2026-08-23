@@ -129,6 +129,10 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 ## 版本更新
 
+### v3.0.5
+
+稳定版:多语言 6 档落地 + YouTube SABR 升降档控制 + 真机兼容性打磨。多语言从仅中文扩展到 6 档语言(简中/港繁/台繁 + English / Español / Português)并修复 localeFilters 剪包真因(补 `en/es/pt` 后拉丁资源真正进包);YouTube SABR 自动档位升级修复(混合 H264/VP9 不再坍缩成单轨)+ 起始挡位设置生效(`setMaxVideoSize` 起播 cap + 首帧后松开)+ ceiling 降档滞回防震荡;YouTube 点赞数改从 `/player` `microformat.likeCount` 直取;S905X5M 等 Amlogic 盒子解码器误判仅 H264 修复;TV 备份/还原弹窗崩溃修复 + 日志分享加备份上传 + YouTube 搜索排序对齐 B 站 4 项。
+
 ### v3.0.5-alpha
 
 多语言线：界面从仅中文字体扩展为 6 档语言（简中/港繁/台繁 + English / Español / Português），数字与相对时间本地化，并修复 localeFilters 剪包真因。
