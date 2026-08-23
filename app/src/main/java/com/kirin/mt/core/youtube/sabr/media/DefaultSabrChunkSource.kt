@@ -175,45 +175,35 @@ internal class DefaultSabrChunkSource(
     val bufferedDurationUs = loadPositionUs - playbackPositionUs
     val previousChunk = queue.lastOrNull()
 
-    val selectedIndex = trackSelection.selectedIndex
-    var representationHolder = representationHolders[selectedIndex]
+    val representationHolder = representationHolders[trackSelection.selectedIndex]
     fetcher.selectFormat(representationHolder.representation)
-    // alpha.9X(封顶内自适应):Auto 全轨自适应原把未下载档的 iterator 全填 EMPTY → selectedIndex 冻结在低档
-    // 永不升档。现在把**封顶内所有轨道**都喂「基于当前档 chunkIndex 的合成 iterator」(YouTube 同视频各 itag
-    // 段网格时间一致,段时序可复用),让 ABR 在封顶内自由升/降;**超封顶轨喂 EMPTY → AdaptiveTrackSelection 永远
-    // 选不到 → 不回爬最高档**。已下载档保留真 iterator(可回退);切到未下载档后其 init 才按需加载。
-    // alpha.9X(带宽封顶,硬约束):cap = 实测带宽 × 1.15。**高于 cap 的档一律不暴露 iterator(含已加载轨,喂
-    // EMPTY)**——挡住「爬 2160p → 撑不起 → 看门狗整段重载 → 新会话又回爬」死循环。带宽未实测(首会话/无 ≥100KB
-    // 媒体段)用起步档 seed(默认 480P)保守起播,实测后随带宽逐档爬。注意:不做「降档后记忆封顶」——那会把 cap
-    // 永久锁死在一次瞬态钳制压低的档(日志铁证 cap≈96k 锁死 278 不升档),带宽是唯一且自恢复的封顶依据。
-    val bwBps = SabrMediaFetcher.sharedBandwidthBps
-    val unprovenCap = if (trackSelection.length() == 0) 0 else {
-      val target = (0..<trackSelection.length()).minByOrNull {
-        val h = representationHolders[it].representation.format.height
-        if (h > 0) Math.abs(h - 480) else Int.MAX_VALUE
-      }
-      if (target != null) trackSelection.getFormat(target).bitrate else 0
-    }
-    val capBps = if (bwBps > 0) ((bwBps * 115) / 100).toInt() else unprovenCap
-    val isWithinCap = { i: Int -> trackSelection.getFormat(i).bitrate in 1..capBps }
-    val capIndex = (0..<trackSelection.length()).firstOrNull { trackSelection.getFormat(it).bitrate >= capBps }
-    // alpha.9X(硬钳制取档,修「起播/回爬 2160p 超大段 → 慢段拖死 → 看门狗整段重载」):AdaptiveTrackSelection 按
-    // bitrate 选轨(DefaultTrackSelector 内部按码率重排,EMPTY iterator 挡不住停在已选高码率轨)→ 每次会话直接从
-    // 最高档起播。这里**钳制实际取档**:selectedIndex 超 cap 时强制取 cap 内最高档,并用该档 representation 作 chunk
-    // trackFormat(见下方 chunk 构建,indexOf 可回查)。带宽未实测(首会话)用起步档(默认 480P)保守 seed——首段小、
-    // 起播快,实测后逐档爬,杜绝一上来取 22MB 2160p 首段拖死。
-    val fetchIndex = if (isWithinCap(selectedIndex)) selectedIndex
-    else (0..<trackSelection.length()).filter { isWithinCap(it) }.maxByOrNull { trackSelection.getFormat(it).bitrate }
-      ?: selectedIndex
-    representationHolder = representationHolders[fetchIndex]
-    fetcher.selectFormat(representationHolder.representation)
-    val clampedBitrate = trackSelection.getFormat(fetchIndex).bitrate
+    // 增量升/降档(alpha.9X,修「Auto 起播低档后永不升档」):Auto 全轨自适应原把所有未下载轨的 iterator
+    // 填 MediaChunkIterator.EMPTY,AdaptiveTrackSelection 看不到任何备选数据 → selectedIndex 冻结在低档
+    // (默认带宽估计 ~1Mbps 起步如 itag244=480p),带宽涨了也无新轨可切。这里只给「当前档的下一高码率档」
+    // (upgrade,升档)与「下一低码率档」(downgrade,网络崩时降档自救)各喂一个**基于当前档 chunkIndex 的
+    // 合成 iterator**——YouTube 同视频各 itag 段网格时间对齐,段时序可复用,让 ABR 判定该档可切。
+    // 切到该档后其 init 才按需加载(chunkIndex 变真),下一轮再给再下一档喂合成 iterator;已下载档保留真
+    // iterator(可降回)。其余档仍 EMPTY(不参与切轨)→ 一次只升降一档、不越级、不预拉多轨 init。
+    val currentBitrate =
+      if (representationHolder.chunkIndex != null) trackSelection.getFormat(trackSelection.selectedIndex).bitrate else -1
+    val upgradeCandidateIndex = if (currentBitrate > 0) {
+      (0..<trackSelection.length())
+        .filter { trackSelection.getFormat(it).bitrate > currentBitrate }
+        .minByOrNull { trackSelection.getFormat(it).bitrate }
+    } else null
+    val downgradeCandidateIndex = if (currentBitrate > 0) {
+      (0..<trackSelection.length())
+        .filter { trackSelection.getFormat(it).bitrate in 1 until currentBitrate }
+        .maxByOrNull { trackSelection.getFormat(it).bitrate }
+    } else null
+    // alpha.9X 诊断:ABR 门控与候选,定位「Auto 起播低档后不升档」。bitrate=-1(Format 未设)则 currentBitrate<=0
+    // → up/down 恒 null → 未下载轨全 EMPTY → 退化成老 bug(钉死起始档)。fmts 逐个标真实 bitrate。
     Log.i(
       "YtSabrAbr",
-      "sel=$fetchIndex(origin=${trackSelection.selectedIndex}) bitrate=$clampedBitrate bufS=${bufferedDurationUs / 1_000_000}.${
+      "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
         bufferedDurationUs % 1_000_000 / 100_000
-      } chunkIndex=${representationHolder.chunkIndex != null} bw=${bwBps / 1_000_000}.${bwBps % 1_000_000 / 100_000}Mbps " +
-        "cap=${capIndex?.let { representationHolders[it].representation.formatId.itag } ?: "N"} fmts=${
+      } chunkIndex=${representationHolder.chunkIndex != null} " +
+        "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
           (0..<trackSelection.length()).joinToString { i ->
             val f = trackSelection.getFormat(i)
             "${representationHolders[i].representation.formatId.itag}[${if (f.bitrate > 0) f.bitrate else "NA"}]"
@@ -228,9 +218,9 @@ internal class DefaultSabrChunkSource(
       Array(representationHolders.size) { i ->
         val holder = representationHolders[i]
         val timing = when {
-          !isWithinCap(i) -> null                                  // 超带宽封顶:不暴露 → 永不选中(不回爬)
-          holder.chunkIndex != null -> holder                       // ≤cap 已下载轨:真 iterator(当前档/可降回)
-          representationHolder.chunkIndex != null -> representationHolder // ≤cap 未下载:合成(封顶内自适应)
+          holder.chunkIndex != null -> holder                 // 已下载轨:真 iterator(含当前档,可降回)
+          i == upgradeCandidateIndex -> representationHolder   // 下一高码率档:合成(升档)
+          i == downgradeCandidateIndex -> representationHolder // 下一低码率档:合成(网络崩时降档)
           else -> null
         }
         if (timing == null) MediaChunkIterator.EMPTY
@@ -259,10 +249,7 @@ internal class DefaultSabrChunkSource(
       out.chunk = InitializationChunk(
         dataSource,
         dataSpec,
-        // 用 trackSelection.getFormat(fetchIndex) 而非 representation.format:后者可能与 selection 里的
-        // Format 不相等,onChunkLoadCompleted 的 trackSelection.indexOf(trackFormat) 回查 -1 → representationHolders[-1]
-        // IndexOutOfBounds 崩溃(真机坐实:每个会话首 chunk Source error,index -1 out of bounds for length 1)。
-        trackSelection.getFormat(fetchIndex),
+        trackSelection.selectedFormat,
         trackSelection.selectionReason,
         trackSelection.selectionData,
         representationHolder.chunkExtractor,
@@ -310,8 +297,7 @@ internal class DefaultSabrChunkSource(
     out.chunk = ContainerMediaChunk(
       dataSource,
       dataSpec,
-      // 同 init chunk:用 selection 内格式,保证 indexOf(trackFormat) 能回查到钳制档(repres格式可能不相等)。
-      trackSelection.getFormat(fetchIndex),
+      trackSelection.selectedFormat,
       trackSelection.selectionReason,
       trackSelection.selectionData,
       startTimeUs,
