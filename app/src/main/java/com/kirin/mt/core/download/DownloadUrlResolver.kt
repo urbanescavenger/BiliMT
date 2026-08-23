@@ -46,6 +46,22 @@ class DownloadUrlResolver(
         codecPref,
         qualityPref,
       )
+      val audio = resolved.audioTracks.maxByOrNull { it.bandwidth }
+        ?: error("B站 DASH 无音频轨")
+      // 音频-only:只下音频轨,video=null 使 enqueueOnIo 只插 AUDIO 分件,不插 VIDEO。
+      if (choice.biliAudioOnly) {
+        return@runCatching ResolvedDownload(
+          videoId = request.bvid,
+          cid = request.cid,
+          title = request.title,
+          coverUrl = request.coverUrl,
+          durationMs = resolved.durationMs,
+          qualityLabel = choice.biliQualityLabel.ifBlank { "音频" },
+          video = null,
+          audio = audio.toResolvedPart(),
+          headers = resolved.headers.asMap(),
+        )
+      }
       val video = if (targetHeight != null) {
         resolved.videoTracks
           .filter { it.height > 0 && it.height <= targetHeight }
@@ -54,8 +70,6 @@ class DownloadUrlResolver(
       } else {
         resolved.videoTracks.maxByOrNull { it.bandwidth }
       } ?: error("B站 DASH 无视频轨")
-      val audio = resolved.audioTracks.maxByOrNull { it.bandwidth }
-        ?: error("B站 DASH 无音频轨")
       ResolvedDownload(
         videoId = request.bvid,
         cid = request.cid,
@@ -83,6 +97,7 @@ class DownloadUrlResolver(
         request = request,
         preferMuxed = choice.youTubePreferMuxed,
         maxHeight = choice.youTubeMaxHeight,
+        audioOnly = choice.youTubeAudioOnly,
       ) ?: error("YouTube 解析失败(无可用直链)")
     }.onFailure { Log.w(Tag, "resolveYoutube 失败: ${it.javaClass.simpleName}: ${it.message}", it) }
   }

@@ -1381,6 +1381,7 @@ class YoutubePlaybackResolver(
     request: PlaybackRequest,
     preferMuxed: Boolean,
     maxHeight: Int?,
+    audioOnly: Boolean = false,
   ): ResolvedDownload? {
     val videoId = request.bvid
     val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
@@ -1396,6 +1397,34 @@ class YoutubePlaybackResolver(
       referer = "https://www.youtube.com",
       origin = "https://www.youtube.com",
     ).asMap()
+
+    // 音频-only:只下音频轨,video=null 使 enqueueOnIo 只插 AUDIO 分件。挑最佳(最大)音频流。
+    if (audioOnly) {
+      val audioCandidates = info.audioStreams.filter { !it.content.isNullOrBlank() && it.indexStart > 0 }
+      val audio = audioCandidates.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
+        ?: audioCandidates.firstOrNull { it.audioTrackType != AudioTrackType.DUBBED }
+        ?: audioCandidates.firstOrNull()
+        ?: return null
+      return ResolvedDownload(
+        videoId = videoId,
+        cid = 0L,
+        title = request.title,
+        coverUrl = request.coverUrl,
+        durationMs = info.duration * 1000L,
+        qualityLabel = "音频",
+        video = null,
+        audio = ResolvedPart(
+          url = audio.content!!,
+          mimeType = audio.format?.mimeType ?: "audio/mp4",
+          codecs = audio.codec ?: "",
+          width = 0,
+          height = 0,
+          initRange = "${audio.initStart}-${audio.initEnd}",
+          mediaStartOffset = audio.indexStart.toLong(),
+        ),
+        headers = headers,
+      )
+    }
 
     // 简单下载:优先 progressive muxed 单文件;现代 YouTube 基本无 progressive 流(仅 video-only+audio),
     // 无则退化为 video-only+audio 两文件(≤720p,对齐 LibreTube 始终两文件 mux 的下载模型)。

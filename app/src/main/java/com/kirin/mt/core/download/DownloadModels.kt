@@ -61,15 +61,19 @@ data class DownloadProgress(
  *
  * @param biliQn B站目标 qn(PlaybackQuality.id);非 B站为 null。
  * @param biliQualityLabel B站清晰度显示名,存父行 qualityLabel。
+ * @param biliAudioOnly B站:true=仅下载音频轨(不下载视频);false=视频+音频。
  * @param youTubePreferMuxed YouTube:true=音视频一体单文件(≤720p);false=视频+音频分文件。
  * @param youTubeMaxHeight YouTube:视频最大高度(null=最高)。
+ * @param youTubeAudioOnly YouTube:true=仅下载音频轨(不下载视频);false=视频+音频。
  */
 data class DownloadQualityChoice(
   val source: DownloadSource,
   val biliQn: Int? = null,
   val biliQualityLabel: String = "",
+  val biliAudioOnly: Boolean = false,
   val youTubePreferMuxed: Boolean = false,
   val youTubeMaxHeight: Int? = null,
+  val youTubeAudioOnly: Boolean = false,
 )
 
 /** 一个可下载分件(已解析出直链 + DASH range 信息)。 */

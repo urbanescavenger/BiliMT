@@ -89,6 +89,7 @@
     <string name="downloads_quality_title">選擇下載清晰度</string>
     <string name="downloads_quality_simple">簡單下載(音視頻一體,≤720p)</string>
     <string name="downloads_quality_hd">高清(視頻+音頻)</string>
+    <string name="downloads_quality_audio">僅音頻(不下載視頻)</string>
     <string name="downloads_confirm">開始下載</string>
     <string name="downloads_enqueued">已加入下載隊列</string>
     <string name="downloads_enqueue_failed">下載入隊失敗</string>

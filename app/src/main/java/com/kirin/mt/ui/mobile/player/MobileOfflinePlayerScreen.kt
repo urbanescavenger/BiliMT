@@ -117,7 +117,8 @@ fun MobileOfflinePlayerScreen(
   val (videoFile, audioFile) = remember(currentDownloadId) { downloadManager.playbackFiles(currentDownloadId) }
 
   // 文件缺失(被删除/未完成)时兜底,避免 Uri.fromFile(null) 崩溃。
-  if (videoFile == null) {
+  // 纯音频下载只有 audioFile(videoFile=null):此时照常进入播放,仅播音频轨。
+  if (videoFile == null && audioFile == null) {
     Box(
       modifier = modifier.fillMaxSize().background(Color.Black).statusBarsPadding(),
       contentAlignment = Alignment.Center,
@@ -179,19 +180,30 @@ fun MobileOfflinePlayerScreen(
       .setHandleAudioBecomingNoisy(true)
       .build().apply {
         // DefaultDataSource 同时支持本地文件与网络;本地文件内部走 FileDataSource。
+        // 纯音频下载只有 audioFile(videoFile=null):只播音频轨。否则 video+audio 合并播。
         val dataSourceFactory = DefaultDataSource.Factory(context)
-        val videoUri = Uri.fromFile(videoFile)
-        val videoItem = MediaItem.Builder()
-          .setUri(videoUri)
-          .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
-          .build()
-        val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
-        val source = if (audioFile != null) {
-          val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-            .createMediaSource(MediaItem.fromUri(Uri.fromFile(audioFile)))
-          MergingMediaSource(videoSource, audioSource)
+        val source = if (videoFile == null) {
+          ProgressiveMediaSource.Factory(dataSourceFactory)
+            .createMediaSource(
+              MediaItem.Builder()
+                .setUri(Uri.fromFile(audioFile!!))
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
+                .build(),
+            )
         } else {
-          videoSource
+          val videoUri = Uri.fromFile(videoFile)
+          val videoItem = MediaItem.Builder()
+            .setUri(videoUri)
+            .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
+            .build()
+          val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
+          if (audioFile != null) {
+            val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+              .createMediaSource(MediaItem.fromUri(Uri.fromFile(audioFile)))
+            MergingMediaSource(videoSource, audioSource)
+          } else {
+            videoSource
+          }
         }
         setMediaSource(source)
         prepare()

@@ -210,8 +210,9 @@ private sealed interface MobilePlayerState {
 
 /**
  * 在线播放器缓存命中:按 bvid(YouTube 为 videoId)+ cid(分P)在下载库找「已可播」的下载项。
- * 仅匹配 isPlayable(媒体分件全 COMPLETED);部分下载/未完成回落在线。
- * cid 匹配避免多 P 视频误用其它分P的缓存文件(下载存的是解析后真实 cid)。
+ * 仅匹配 isPlayable(媒体分件全 COMPLETED)且有视频分件(video/muxed)的缓存——纯音频下载
+ * (audio-only)不命中,在线播该视频回落完整网络流,避免本地纯音频替代完整视频;
+ * 部分下载/未完成回落在线。cid 匹配避免多 P 视频误用其它分P的缓存文件(下载存的是解析后真实 cid)。
  */
 private suspend fun findCachedPlayable(
   downloadManager: com.kirin.mt.core.download.DownloadManager,
@@ -219,7 +220,10 @@ private suspend fun findCachedPlayable(
   cid: Long,
 ): DownloadWithItems? {
   return downloadManager.downloads.first()
-    .firstOrNull { it.download.videoId == bvid && it.download.cid == cid && it.isPlayable }
+    .firstOrNull {
+      it.download.videoId == bvid && it.download.cid == cid && it.isPlayable &&
+        (it.videoPart != null || it.muxedPart != null)
+    }
 }
 
 /**
