@@ -156,6 +156,9 @@ fun BiliMobileApp(
   var showDownloadDialog by remember { mutableStateOf(false) }
   // B站下载弹窗的清晰度列表:经 getPlaybackInfo 拉取后缓存,再开对话框。
   var biliDownloadQualities by remember { mutableStateOf<List<PlaybackQuality>>(emptyList()) }
+  // B站下载确认入队用的请求:拉清晰度时已解析 cid,enqueue 复用避免 playurl 用 cid=0 返 -400
+  // (对齐播放器 activeRequest 回写 resolvedRequest,见 MobilePlayerScreen loadRequest)。
+  var biliDownloadRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
   val scope = rememberCoroutineScope()
 
   // 卡片长按:B站/YouTube 弹操作菜单(下载/加入播放列表),不再直接 toggle。
@@ -486,13 +489,16 @@ fun BiliMobileApp(
           MobileDownloadQualityDialog(
             isYoutube = video.source == SourceYoutube,
             biliQualities = biliDownloadQualities,
-            onDismiss = { showDownloadDialog = false },
+            onDismiss = { showDownloadDialog = false; biliDownloadRequest = null },
             onConfirm = { choice ->
               showDownloadDialog = false
+              // B站用拉清晰度时已解析 cid 的 request(卡片 cid=0 直接入队会 -400);YouTube 走卡片原请求。
+              val request = biliDownloadRequest ?: video.toPlaybackRequest()
               scope.launch {
-                downloadManager.enqueue(video.toPlaybackRequest(), choice)
+                downloadManager.enqueue(request, choice)
                   .onSuccess {
                     longPressVideo = null
+                    biliDownloadRequest = null
                     Toast.makeText(context, context.getString(R.string.downloads_enqueued), Toast.LENGTH_SHORT).show()
                   }
                   .onFailure { e ->
@@ -519,12 +525,23 @@ fun BiliMobileApp(
               // YouTube 直接弹分档对话框;B站先经 playurl 拉可播清晰度列表再弹。
               // 复用播放器同款 getPlaybackInfo,清晰度与在线播放一致。
               if (video.source == SourceYoutube) {
+                // YouTube 无 cid 依赖,直接用卡片请求;清掉上次 B站解析残留的 biliDownloadRequest,
+                // 避免 enqueue 误复用 B站 request。
+                biliDownloadRequest = null
                 showDownloadDialog = true
               } else {
                 scope.launch {
                   runCatching {
+                    // 卡片 cid 常为 0(列表接口只给 bvid),播放路径会先 resolveCid;下载同样先解析,
+                    // 否则 getPlaybackInfo 用 cid=0 拼 playurl 返回 -400(对齐播放器 loadRequest)。
+                    val req = video.toPlaybackRequest()
+                    val cid = req.cid.takeIf { it > 0L }
+                      ?: playbackRepository.resolveCid(req.bvid)
+                    if (cid <= 0L) error(context.getString(R.string.downloads_enqueue_failed))
+                    val resolved = req.copy(cid = cid)
+                    biliDownloadRequest = resolved
                     playbackRepository.getPlaybackInfo(
-                      video.toPlaybackRequest(),
+                      resolved,
                       effectiveCodecPreference,
                       settings.playbackQualityPreference,
                     ).qualities
@@ -535,6 +552,7 @@ fun BiliMobileApp(
                     }
                     .onFailure { e ->
                       longPressVideo = null
+                      biliDownloadRequest = null
                       Toast.makeText(context, e.message ?: context.getString(R.string.downloads_enqueue_failed), Toast.LENGTH_LONG).show()
                     }
                 }
@@ -544,6 +562,7 @@ fun BiliMobileApp(
             onDismiss = {
               showPlaylistPicker = false
               showDownloadDialog = false
+              biliDownloadRequest = null
               longPressVideo = null
             },
           )
