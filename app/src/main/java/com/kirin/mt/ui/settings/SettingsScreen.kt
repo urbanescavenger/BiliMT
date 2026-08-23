@@ -110,8 +110,8 @@ fun SettingsScreen(
   onRemoveYoutubeChannel: suspend (String) -> Boolean,
   webDavConfig: com.kirin.mt.core.webdav.WebDavConfig,
   onWebDavConfigChange: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<com.kirin.mt.core.webdav.WebDavConfig>,
-  onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
-  onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
+  onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Unit>,
+  onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Int>,
   onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
   onPipedInstanceChange: (url: String) -> Unit,
   onYoutubeUsePipedChange: (Boolean) -> Unit,
@@ -176,6 +176,9 @@ fun SettingsScreen(
   var showWebDavDialog by remember { mutableStateOf(false) }
   var showIptvDialog by remember { mutableStateOf(false) }
   var showPipedDialog by remember { mutableStateOf(false) }
+  var showBackupDialog by remember { mutableStateOf(false) }
+  var showRestoreDialog by remember { mutableStateOf(false) }
+  var webDavState by remember { mutableStateOf<WebDavBackupState>(WebDavBackupState.Idle) }
 
   fun focusSettingItem(itemIndex: Int, direction: Int = 0): Boolean {
     val lazyIndex = settingsItemToLazyIndex(itemIndex, updateState)
@@ -290,6 +293,9 @@ fun SettingsScreen(
           }
         },
         onWebDavSelected = { showWebDavDialog = true },
+        onBackupSelected = { showBackupDialog = true },
+        onRestoreSelected = { showRestoreDialog = true },
+        webDavState = webDavState,
         onIptvSourceConfigChange = onIptvSourceConfigChange,
         onIptvSelected = { showIptvDialog = true },
         onPipedInstanceChange = onPipedInstanceChange,
@@ -410,6 +416,54 @@ fun SettingsScreen(
         modifier = Modifier.align(Alignment.Center),
       )
     }
+    if (showBackupDialog) {
+      SettingsWebDavSelectionDialog(
+        isRestore = false,
+        onConfirm = { items ->
+          showBackupDialog = false
+          coroutineScope.launch {
+            webDavState = WebDavBackupState.Running(isRestore = false)
+            val result = onWebDavBackup(webDavConfig, items)
+            webDavState = WebDavBackupState.Idle
+            val msg = result.fold(
+              onSuccess = { context.getString(R.string.settings_webdav_backup_success) },
+              onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
+            )
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+          }
+          focusSettingItem(SettingsItemWebDavBackup)
+        },
+        onDismiss = {
+          showBackupDialog = false
+          focusSettingItem(SettingsItemWebDavBackup)
+        },
+        modifier = Modifier.align(Alignment.Center),
+      )
+    }
+    if (showRestoreDialog) {
+      SettingsWebDavSelectionDialog(
+        isRestore = true,
+        onConfirm = { items ->
+          showRestoreDialog = false
+          coroutineScope.launch {
+            webDavState = WebDavBackupState.Running(isRestore = true)
+            val result = onWebDavRestore(webDavConfig, items)
+            webDavState = WebDavBackupState.Idle
+            val msg = result.fold(
+              onSuccess = { count -> context.getString(R.string.settings_webdav_restore_success, count) },
+              onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
+            )
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+          }
+          focusSettingItem(SettingsItemWebDavRestore)
+        },
+        onDismiss = {
+          showRestoreDialog = false
+          focusSettingItem(SettingsItemWebDavRestore)
+        },
+        modifier = Modifier.align(Alignment.Center),
+      )
+    }
   }
 }
 
@@ -470,9 +524,12 @@ private fun SettingsBehaviorColumn(
   onRemoveYoutubeChannel: suspend (String) -> Boolean,
   onYoutubeChannelsSelected: () -> Unit,
   webDavConfig: com.kirin.mt.core.webdav.WebDavConfig,
-  onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
-  onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
+  onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Unit>,
+  onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Int>,
   onWebDavSelected: () -> Unit,
+  onBackupSelected: () -> Unit,
+  onRestoreSelected: () -> Unit,
+  webDavState: WebDavBackupState,
   onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
   onIptvSelected: () -> Unit,
   onPipedInstanceChange: (url: String) -> Unit,
@@ -484,7 +541,6 @@ private fun SettingsBehaviorColumn(
 ) {
   val context = LocalContext.current
   val coroutineScope = rememberCoroutineScope()
-  var webDavState by remember { mutableStateOf<WebDavBackupState>(WebDavBackupState.Idle) }
   CompositionLocalProvider(LocalBringIntoViewSpec provides SettingsBringIntoViewSpec) {
     LazyColumn(
       state = listState,
@@ -1156,16 +1212,7 @@ private fun SettingsBehaviorColumn(
         onFocused = { onSettingFocused(SettingsItemWebDavBackup) },
         onClick = {
           if (webDavState is WebDavBackupState.Running) return@SettingsWebDavBackupRow
-          coroutineScope.launch {
-            webDavState = WebDavBackupState.Running(isRestore = false)
-            val result = onWebDavBackup(webDavConfig)
-            webDavState = WebDavBackupState.Idle
-            val msg = result.fold(
-              onSuccess = { context.getString(R.string.settings_webdav_backup_success) },
-              onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
-            )
-            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-          }
+          onBackupSelected()
         },
       )
     }
@@ -1185,16 +1232,7 @@ private fun SettingsBehaviorColumn(
         onFocused = { onSettingFocused(SettingsItemWebDavRestore) },
         onClick = {
           if (webDavState is WebDavBackupState.Running) return@SettingsWebDavBackupRow
-          coroutineScope.launch {
-            webDavState = WebDavBackupState.Running(isRestore = true)
-            val result = onWebDavRestore(webDavConfig)
-            webDavState = WebDavBackupState.Idle
-            val msg = result.fold(
-              onSuccess = { count -> context.getString(R.string.settings_webdav_restore_success, count) },
-              onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
-            )
-            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-          }
+          onRestoreSelected()
         },
       )
     }

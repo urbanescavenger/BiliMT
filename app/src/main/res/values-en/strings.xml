@@ -595,14 +595,22 @@
     <string name="settings_webdav_restore">Restore</string>
     <string name="settings_webdav_backup_running">Backing up…</string>
     <string name="settings_webdav_restore_running">Restoring…</string>
-    <string name="settings_webdav_backup_success">Backup succeeded (channels + Piped + logs)</string>
+    <string name="settings_webdav_backup_success">Backup succeeded</string>
     <string name="settings_webdav_restore_success">Restored %1$d channels (incl. Piped config)</string>
     <string name="settings_webdav_failed">Operation failed: %1$s</string>
     <string name="settings_webdav_section">WebDAV backup</string>
     <string name="settings_webdav_backup_row">Back up to WebDAV</string>
     <string name="settings_webdav_restore_row">Restore from WebDAV</string>
-    <string name="settings_webdav_backup_desc">Upload followed YouTube channels, Piped config, and logs to a WebDAV server; local logs are deleted after backup.</string>
-    <string name="settings_webdav_restore_desc">Download and overwrite local channel list and Piped config from the WebDAV server.</string>
+    <string name="settings_webdav_backup_desc">Choose followed YouTube channels, Piped config, and logs to upload to a WebDAV server; local logs are deleted after backup.</string>
+    <string name="settings_webdav_restore_desc">Choose YouTube channels and Piped config to download and overwrite locally from the WebDAV server.</string>
+    <string name="settings_webdav_select_title">Select items to back up</string>
+    <string name="settings_webdav_restore_select_title">Select items to restore</string>
+    <string name="settings_webdav_select_all">Select all</string>
+    <string name="settings_webdav_item_channels">YouTube followed channels</string>
+    <string name="settings_webdav_item_piped">Piped config</string>
+    <string name="settings_webdav_item_logs">Logs</string>
+    <string name="settings_webdav_start_backup">Start backup</string>
+    <string name="settings_webdav_start_restore">Start restore</string>
     <!-- 硬编码 UI 中文收口：移动播放器 -->
     <string name="mobile_player_cached">Cached</string>
     <string name="player_error_cache_missing">Cache file missing</string>

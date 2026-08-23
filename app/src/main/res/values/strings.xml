@@ -594,14 +594,22 @@
     <string name="settings_webdav_restore">还原</string>
     <string name="settings_webdav_backup_running">备份中…</string>
     <string name="settings_webdav_restore_running">还原中…</string>
-    <string name="settings_webdav_backup_success">备份成功(频道+Piped+日志)</string>
+    <string name="settings_webdav_backup_success">备份成功</string>
     <string name="settings_webdav_restore_success">还原成功，共 %1$d 个频道(含 Piped 配置)</string>
     <string name="settings_webdav_failed">操作失败：%1$s</string>
     <string name="settings_webdav_section">WebDAV 备份</string>
     <string name="settings_webdav_backup_row">备份到 WebDAV</string>
     <string name="settings_webdav_restore_row">从 WebDAV 还原</string>
-    <string name="settings_webdav_backup_desc">把 YouTube 关注频道、Piped 配置和日志上传到 WebDAV 服务器，备份后删除本地日志</string>
-    <string name="settings_webdav_restore_desc">从 WebDAV 服务器下载并覆盖本地频道列表与 Piped 配置</string>
+    <string name="settings_webdav_backup_desc">选择要备份的 YouTube 关注频道、Piped 配置和日志，上传到 WebDAV 服务器，备份后删除本地日志</string>
+    <string name="settings_webdav_restore_desc">选择要还原的 YouTube 关注频道与 Piped 配置，从 WebDAV 服务器下载并覆盖本地</string>
+    <string name="settings_webdav_select_title">选择备份项目</string>
+    <string name="settings_webdav_restore_select_title">选择还原项目</string>
+    <string name="settings_webdav_select_all">全选</string>
+    <string name="settings_webdav_item_channels">YouTube 关注频道</string>
+    <string name="settings_webdav_item_piped">Piped 配置</string>
+    <string name="settings_webdav_item_logs">日志</string>
+    <string name="settings_webdav_start_backup">开始备份</string>
+    <string name="settings_webdav_start_restore">开始还原</string>
     <!-- 硬编码 UI 中文收口：相对时间 -->
     <string name="video_relative_just_now">刚刚</string>
     <string name="video_relative_months_ago">%1$d个月前</string>

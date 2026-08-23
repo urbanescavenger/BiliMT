@@ -18,11 +18,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -375,8 +377,8 @@ fun MobileSettingsScreen(
           config = cfg,
         )
       },
-      onBackup = { cfg -> webdavBackupService.backup(cfg) },
-      onRestore = { cfg -> webdavBackupService.restore(cfg) },
+      onBackup = { cfg, items -> webdavBackupService.backup(cfg, items) },
+      onRestore = { cfg, items -> webdavBackupService.restore(cfg, items) },
     )
 
     // ===== IPTV 源 =====
@@ -643,12 +645,14 @@ private fun Context.findActivity(): Activity? {
 private fun MobileWebDavSection(
   config: com.kirin.mt.core.webdav.WebDavConfig,
   onConfigChange: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<com.kirin.mt.core.webdav.WebDavConfig>,
-  onBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
-  onRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
+  onBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Unit>,
+  onRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Int>,
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   var showEditDialog by remember { mutableStateOf(false) }
+  var showBackupDialog by remember { mutableStateOf(false) }
+  var showRestoreDialog by remember { mutableStateOf(false) }
   var webDavState by remember { mutableStateOf<WebDavBackupState>(WebDavBackupState.Idle) }
   var expanded by remember { mutableStateOf(false) }
   // 展开后自动滚动,让备份/还原按钮滚进可视区(区块在设置列表底部,默认在折叠线以下)。
@@ -662,11 +666,11 @@ private fun MobileWebDavSection(
 
   val busy = webDavState is WebDavBackupState.Running
 
-  fun runBackup() {
+  fun runBackup(items: Set<com.kirin.mt.core.webdav.WebDavBackupItem>) {
     if (busy) return
     scope.launch {
       webDavState = WebDavBackupState.Running(isRestore = false)
-      val result = onBackup(config)
+      val result = onBackup(config, items)
       webDavState = WebDavBackupState.Idle
       val msg = result.fold(
         onSuccess = { context.getString(R.string.settings_webdav_backup_success) },
@@ -676,11 +680,11 @@ private fun MobileWebDavSection(
     }
   }
 
-  fun runRestore() {
+  fun runRestore(items: Set<com.kirin.mt.core.webdav.WebDavBackupItem>) {
     if (busy) return
     scope.launch {
       webDavState = WebDavBackupState.Running(isRestore = true)
-      val result = onRestore(config)
+      val result = onRestore(config, items)
       webDavState = WebDavBackupState.Idle
       val msg = result.fold(
         onSuccess = { count -> context.getString(R.string.settings_webdav_restore_success, count) },
@@ -718,13 +722,13 @@ private fun MobileWebDavSection(
         WebDavActionButton(
           isRestore = false,
           state = webDavState,
-          onClick = ::runBackup,
+          onClick = { if (!busy) showBackupDialog = true },
           modifier = Modifier.weight(1f),
         )
         WebDavActionButton(
           isRestore = true,
           state = webDavState,
-          onClick = ::runRestore,
+          onClick = { if (!busy) showRestoreDialog = true },
           modifier = Modifier.weight(1f),
         )
       }
@@ -736,6 +740,26 @@ private fun MobileWebDavSection(
       config = config,
       onSave = onConfigChange,
       onDismiss = { showEditDialog = false },
+    )
+  }
+  if (showBackupDialog) {
+    MobileWebDavSelectionDialog(
+      isRestore = false,
+      onConfirm = { items ->
+        showBackupDialog = false
+        runBackup(items)
+      },
+      onDismiss = { showBackupDialog = false },
+    )
+  }
+  if (showRestoreDialog) {
+    MobileWebDavSelectionDialog(
+      isRestore = true,
+      onConfirm = { items ->
+        showRestoreDialog = false
+        runRestore(items)
+      },
+      onDismiss = { showRestoreDialog = false },
     )
   }
 }
@@ -780,6 +804,82 @@ private fun WebDavActionButton(
       }
     }
   }
+}
+
+/** WebDAV 备份/还原选择弹窗:「全选」复选框 + 各项复选框(isRestore 时只列频道+Piped,日志只备份不还原)。 */
+@Composable
+private fun MobileWebDavSelectionDialog(
+  isRestore: Boolean,
+  onConfirm: (Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  val items = if (isRestore) {
+    listOf(com.kirin.mt.core.webdav.WebDavBackupItem.Channels, com.kirin.mt.core.webdav.WebDavBackupItem.Piped)
+  } else {
+    com.kirin.mt.core.webdav.WebDavBackupItem.entries
+  }
+  var selected by remember { mutableStateOf(items.toSet()) }
+
+  fun itemLabel(item: com.kirin.mt.core.webdav.WebDavBackupItem): String = when (item) {
+    com.kirin.mt.core.webdav.WebDavBackupItem.Channels -> stringResource(R.string.settings_webdav_item_channels)
+    com.kirin.mt.core.webdav.WebDavBackupItem.Piped -> stringResource(R.string.settings_webdav_item_piped)
+    com.kirin.mt.core.webdav.WebDavBackupItem.Logs -> stringResource(R.string.settings_webdav_item_logs)
+  }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text(stringResource(
+      if (isRestore) R.string.settings_webdav_restore_select_title else R.string.settings_webdav_select_title,
+    )) },
+    text = {
+      Column {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { selected = if (selected.size == items.size) emptySet() else items.toSet() }
+            .padding(vertical = 4.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Checkbox(
+            checked = selected.size == items.size,
+            onCheckedChange = { selected = if (it) items.toSet() else emptySet() },
+          )
+          Text(stringResource(R.string.settings_webdav_select_all))
+        }
+        items.forEach { item ->
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(8.dp))
+              .clickable { selected = if (item in selected) selected - item else selected + item }
+              .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Checkbox(
+              checked = item in selected,
+              onCheckedChange = { selected = if (it) selected + item else selected - item },
+            )
+            Text(itemLabel(item))
+          }
+        }
+      }
+    },
+    confirmButton = {
+      TextButton(onClick = {
+        if (selected.isNotEmpty()) onConfirm(selected)
+      }) {
+        Text(stringResource(
+          if (isRestore) R.string.settings_webdav_start_restore else R.string.settings_webdav_start_backup,
+        ))
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text(stringResource(R.string.mobile_dialog_cancel))
+      }
+    },
+  )
 }
 
 /** WebDAV 编辑弹窗:URL/账号/密码三个输入框 + 保存/取消。保存前校验连通,成功才关闭。 */
