@@ -41,6 +41,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import coil.imageLoader
@@ -537,6 +538,7 @@ fun BiliTvApp(
 
   CompositionLocalProvider(
     LocalContext provides localizedContext,
+    LocalResources provides localizedContext.resources,
     LocalBiliPerformancePolicy provides performancePolicy,
     LocalChineseTextConverter provides textConverter,
     LocalHomeColors provides homeColors,

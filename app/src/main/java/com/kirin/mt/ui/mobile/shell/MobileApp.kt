@@ -29,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.kirin.mt.R
@@ -202,6 +203,7 @@ fun BiliMobileApp(
 
   CompositionLocalProvider(
     LocalContext provides localizedContext,
+    LocalResources provides localizedContext.resources,
     LocalChineseTextConverter provides textConverter,
   ) {
     Box(modifier = Modifier.fillMaxSize()) {

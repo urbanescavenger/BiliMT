@@ -30,6 +30,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.BiliTvApplication
@@ -66,6 +67,7 @@ class SettingsActivity : ComponentActivity() {
         }
         CompositionLocalProvider(
           LocalContext provides localizedContext,
+          LocalResources provides localizedContext.resources,
           LocalChineseTextConverter provides textConverter,
         ) {
         Surface(modifier = Modifier.fillMaxSize().statusBarsPadding(), color = MaterialTheme.colorScheme.background) {

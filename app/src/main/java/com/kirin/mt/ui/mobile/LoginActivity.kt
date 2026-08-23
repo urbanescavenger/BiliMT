@@ -13,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import com.kirin.mt.BiliTvApplication
 import com.kirin.mt.core.i18n.ChineseTextConverters
 import com.kirin.mt.core.settings.AppSettings
@@ -41,6 +42,7 @@ class LoginActivity : ComponentActivity() {
         }
         CompositionLocalProvider(
           LocalContext provides localizedContext,
+          LocalResources provides localizedContext.resources,
           LocalChineseTextConverter provides textConverter,
         ) {
           MobileLoginScreen(
