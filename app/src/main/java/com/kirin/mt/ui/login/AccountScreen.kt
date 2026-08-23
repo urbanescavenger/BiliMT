@@ -1,15 +1,19 @@
 package com.kirin.mt.ui.login
 
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,9 +25,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -247,3 +253,97 @@ private sealed interface QrLoginState {
 
 private const val LoginPollIntervalMs = 2_000L
 private const val QrCodeSizePx = 360
+
+/**
+ * TV 二维码登录弹窗:复用 [TvQrLoginPanel](生成/轮询/过期刷新)包一层 scrim + BackHandler。
+ * 「我的」页把账号信息并进设置列表首行后,未登录时由账号行点击唤起此弹窗,避免独立大块占屏。
+ */
+@Composable
+fun TvQrLoginDialog(
+  authRepository: AuthRepository,
+  onDismiss: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  BackHandler { onDismiss() }
+  Box(
+    modifier = modifier
+      .fillMaxSize()
+      .background(Color.Black.copy(alpha = 0.55f)),
+    contentAlignment = Alignment.Center,
+  ) {
+    TvQrLoginPanel(authRepository = authRepository, modifier = Modifier)
+  }
+}
+
+/**
+ * TV 账号操作弹窗:登录态点账号行弹出,提供退出登录确认(镜像移动端 MobileFollowSheet 的登出)。
+ */
+@Composable
+fun TvAccountSettingsDialog(
+  onLogout: () -> Unit,
+  onDismiss: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  BackHandler { onDismiss() }
+  Box(
+    modifier = modifier
+      .fillMaxSize()
+      .background(Color.Black.copy(alpha = 0.55f)),
+    contentAlignment = Alignment.Center,
+  ) {
+    Column(
+      modifier = Modifier
+        .width(440.dp)
+        .background(BiliColors.SurfaceElevated, RoundedCornerShape(BiliRadius.Panel))
+        .padding(BiliSpacing.Xl),
+      verticalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
+      horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+      Text(
+        text = stringResource(R.string.account_logout),
+        color = BiliColors.TextPrimary,
+        fontSize = BiliTypography.SectionTitle,
+        fontWeight = FontWeight.Bold,
+      )
+      Text(
+        text = stringResource(R.string.account_logout_confirm),
+        color = BiliColors.TextSecondary,
+        fontSize = BiliTypography.Body,
+      )
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(
+          BiliSpacing.Md,
+          Alignment.CenterHorizontally,
+        ),
+      ) {
+        BiliFocusableSurface(
+          scaleOnFocus = false,
+          shape = RoundedCornerShape(BiliRadius.Pill),
+          onClick = onDismiss,
+        ) {
+          Text(
+            text = stringResource(R.string.account_logout_cancel),
+            color = BiliColors.TextSecondary,
+            fontSize = BiliTypography.Body,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = BiliSpacing.Xl, vertical = BiliSpacing.Md),
+          )
+        }
+        BiliFocusableSurface(
+          scaleOnFocus = false,
+          shape = RoundedCornerShape(BiliRadius.Pill),
+          onClick = onLogout,
+        ) {
+          Text(
+            text = stringResource(R.string.account_logout),
+            color = BiliColors.BiliPink,
+            fontSize = BiliTypography.Body,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = BiliSpacing.Xl, vertical = BiliSpacing.Md),
+          )
+        }
+      }
+    }
+  }
+}

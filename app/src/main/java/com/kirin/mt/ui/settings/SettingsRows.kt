@@ -19,6 +19,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusProperties
@@ -27,6 +28,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.painter.ColorPainter
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import coil.compose.AsyncImage
+import com.kirin.mt.core.image.BiliImageSizing
+import com.kirin.mt.core.image.buildOwnerAvatarRequest
+import com.kirin.mt.core.storage.UserSession
+import com.kirin.mt.ui.i18n.convertChineseText
+import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.R
 import com.kirin.mt.core.i18n.ChineseTextVariant
 import com.kirin.mt.core.player.CodecCapability
@@ -450,4 +466,156 @@ internal fun PlaybackCdnPreference.cdnLabel(): String {
 @Composable
 internal fun DefaultPlaybackSpeed.speedLabel(): String {
   return label
+}
+
+/**
+ * 设置列表顶部账号/会员行(镜像移动端 MobileAccountHeader):头像(登录态 VIP 带角标)+
+ * 昵称 + 次行(登录显 UID,未登录显登录提示)+ 右箭头。点击由上层决定——登录态开账号
+ * 操作菜单、未登录开二维码登录,避免独立账号大卡把设置列表压成半屏。
+ */
+@Composable
+internal fun SettingsAccountRow(
+  userSession: UserSession,
+  modifier: Modifier = Modifier,
+  onFocused: () -> Unit = {},
+  onClick: () -> Unit,
+) {
+  val homeColors = LocalHomeColors.current
+  BiliFocusableSurface(
+    scaleOnFocus = false,
+    shadowOnFocus = false,
+    shape = RoundedCornerShape(BiliRadius.Panel),
+    onClick = onClick,
+    onFocused = onFocused,
+    modifier = modifier
+      .fillMaxWidth()
+      .height(BiliSizing.SettingsAccountRowHeight),
+  ) {
+    Row(
+      modifier = Modifier
+        .fillMaxSize()
+        .padding(horizontal = BiliSpacing.Lg),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
+    ) {
+      SettingsAccountRowAvatar(userSession = userSession)
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = if (userSession.isLoggedIn) {
+            userSession.uname?.let { name -> convertChineseText(name) }
+              ?: userSession.mid?.let { stringResource(R.string.account_logged_in_default) }
+              ?: stringResource(R.string.account_profile_fallback)
+          } else {
+            stringResource(R.string.settings_login_status_signed_out)
+          },
+          color = homeColors.textPrimary,
+          fontSize = BiliTypography.Body,
+          fontWeight = FontWeight.Bold,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+          text = if (userSession.isLoggedIn) {
+            stringResource(R.string.account_uid, userSession.mid?.toString().orEmpty())
+          } else {
+            stringResource(R.string.settings_account_login_hint)
+          },
+          color = if (userSession.isLoggedIn && userSession.isVip) homeColors.accent else homeColors.textSecondary,
+          fontSize = BiliTypography.BodySmall,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
+      Image(
+        painter = painterResource(R.drawable.ic_player_chevron_right),
+        contentDescription = null,
+        colorFilter = ColorFilter.tint(homeColors.textTertiary),
+        modifier = Modifier.size(BiliSizing.SettingsAccountChevronSize),
+      )
+    }
+  }
+}
+
+@Composable
+private fun SettingsAccountRowAvatar(userSession: UserSession) {
+  val context = LocalContext.current
+  val performancePolicy = LocalBiliPerformancePolicy.current
+  val homeColors = LocalHomeColors.current
+  val avatarSizePx = if (performancePolicy.lowSpecMode) {
+    performancePolicy.ownerAvatarSizePx
+  } else {
+    BiliImageSizing.AccountAvatarSizePx
+  }
+  val fallbackPainter = ColorPainter(BiliColors.SurfaceElevated)
+  val face = userSession.face.orEmpty()
+
+  Box(
+    modifier = Modifier.size(BiliSizing.AccountAvatarContainerSize),
+    contentAlignment = Alignment.Center,
+  ) {
+    if (userSession.isLoggedIn && face.isNotBlank()) {
+      val request = remember(
+        context,
+        face,
+        avatarSizePx,
+        performancePolicy.ownerAvatarRgb565Enabled,
+        performancePolicy.imageMemoryCacheEnabled,
+      ) {
+        buildOwnerAvatarRequest(
+          context = context,
+          url = face,
+          sizePx = avatarSizePx,
+          allowRgb565 = performancePolicy.ownerAvatarRgb565Enabled,
+          memoryCacheEnabled = performancePolicy.imageMemoryCacheEnabled,
+        )
+      }
+      AsyncImage(
+        model = request,
+        contentDescription = userSession.uname?.let { name -> convertChineseText(name) }
+          ?: stringResource(R.string.account_logged_in_default),
+        contentScale = ContentScale.Crop,
+        placeholder = fallbackPainter,
+        error = fallbackPainter,
+        modifier = Modifier
+          .size(BiliSizing.AccountAvatarSize)
+          .clip(CircleShape)
+          .background(BiliColors.SurfaceElevated),
+      )
+    } else {
+      Box(
+        modifier = Modifier
+          .size(BiliSizing.AccountAvatarSize)
+          .clip(CircleShape)
+          .background(BiliColors.Surface),
+        contentAlignment = Alignment.Center,
+      ) {
+        Image(
+          painter = painterResource(R.drawable.ic_nav_account),
+          contentDescription = stringResource(R.string.settings_login_status_signed_out),
+          colorFilter = ColorFilter.tint(homeColors.accent),
+          modifier = Modifier.size(BiliSizing.AccountAvatarSize),
+        )
+      }
+    }
+
+    if (userSession.isLoggedIn && userSession.isVip) {
+      Box(
+        modifier = Modifier
+          .align(Alignment.BottomEnd)
+          .size(BiliSizing.AccountVipBadgeSize)
+          .clip(CircleShape)
+          .background(BiliColors.BiliPink),
+        contentAlignment = Alignment.Center,
+      ) {
+        Text(
+          text = stringResource(R.string.account_vip_badge),
+          color = BiliColors.TextPrimary,
+          fontSize = BiliTypography.AccountProfileVipBadge,
+          lineHeight = BiliTypography.AccountProfileVipBadgeLineHeight,
+          fontWeight = FontWeight.Bold,
+          textAlign = TextAlign.Center,
+        )
+      }
+    }
+  }
 }

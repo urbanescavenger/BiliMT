@@ -87,7 +87,8 @@ import com.kirin.mt.ui.home.RecommendUiState
 import com.kirin.mt.ui.glass.LocalLiquidGlassBackdrop
 import com.kirin.mt.ui.i18n.LocalChineseTextConverter
 import com.kirin.mt.ui.i18n.localizedContext
-import com.kirin.mt.ui.login.AccountScreen
+import com.kirin.mt.ui.login.TvAccountSettingsDialog
+import com.kirin.mt.ui.login.TvQrLoginDialog
 import com.kirin.mt.ui.player.PlayerScreen
 import com.kirin.mt.ui.search.SearchScreen
 import com.kirin.mt.ui.search.SearchUiState
@@ -221,6 +222,9 @@ fun BiliTvApp(
   var selectedDestination by rememberSaveable { mutableStateOf(AppDestination.Recommend) }
   var visitedDestinationNames by rememberSaveable { mutableStateOf(setOf(AppDestination.Recommend.name)) }
   var accountSelected by rememberSaveable { mutableStateOf(false) }
+  // 「我的」页账号行触发的弹窗:已登录→账号操作菜单(退出登录);未登录→二维码登录。
+  var showAccountMenu by remember { mutableStateOf(false) }
+  var showTvLoginDialog by remember { mutableStateOf(false) }
   // 播放期间保住各目的地网格的 LazyListState 滚动位置(见下方 SaveableStateProvider),
   // 返回时精确还原、目标行第一帧就在视口,焦点恢复立即成功,根治长视频返回丢焦点。
   val saveableStateHolder = rememberSaveableStateHolder()
@@ -690,6 +694,14 @@ fun BiliTvApp(
                 cacheSizeText = cacheSizeBytes?.let(::formatCacheSize) ?: stringResource(R.string.settings_clear_cache_calculating),
                 codecCapability = codecCapability,
                 firstItemFocusRequester = settingsFocusRequester,
+                userSession = userSession,
+                onAccountClick = {
+                  if (userSession.isLoggedIn) {
+                    showAccountMenu = true
+                  } else {
+                    showTvLoginDialog = true
+                  }
+                },
                 onMoveLeftToNav = {
                   runCatching {
                     if (accountSelected) {
@@ -1064,14 +1076,9 @@ fun BiliTvApp(
               )
             }
             if (accountSelected) {
-              Column(Modifier.fillMaxSize()) {
-                AccountScreen(
-                  userSession = userSession,
-                  authRepository = authRepository,
-                  modifier = Modifier.fillMaxWidth(),
-                )
-                settingsContent(Modifier.weight(1f))
-              }
+              // 「我的」页 = 设置整页占满;账号/会员信息已并入设置列表首行(SettingsAccountRow),
+              // 登录/登出入口由该行点击唤起弹窗(见 AppShell 底部 showAccountMenu/showTvLoginDialog)。
+              settingsContent(Modifier.fillMaxSize())
             } else {
               // 播放期间保住各目的地网格滚动位置:SaveableStateProvider 在 app 层(holder 永不卸载),
               // 内容因播放被卸载时滚动位置存进 saveableStateHolder,返回时精确还原,目标行第一帧
@@ -1511,6 +1518,24 @@ fun BiliTvApp(
           request = request,
           videoRepository = videoRepository,
           onDismiss = { commentRequest = null },
+        )
+      }
+
+      if (showAccountMenu) {
+        TvAccountSettingsDialog(
+          onLogout = {
+            showAccountMenu = false
+            coroutineScope.launch { authRepository.clearSession() }
+          },
+          onDismiss = { showAccountMenu = false },
+          modifier = Modifier.align(Alignment.Center),
+        )
+      }
+      if (showTvLoginDialog) {
+        TvQrLoginDialog(
+          authRepository = authRepository,
+          onDismiss = { showTvLoginDialog = false },
+          modifier = Modifier.align(Alignment.Center),
         )
       }
     }

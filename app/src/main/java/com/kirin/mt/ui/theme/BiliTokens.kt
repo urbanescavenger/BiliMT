@@ -127,6 +127,8 @@ object BiliSizing {
   val AccountProfilePanelHeight = 180.dp
   val AccountVipBadgeSize = 20.dp
   val AccountProfileVipBadgeSize = 34.dp
+  val SettingsAccountRowHeight = 72.dp
+  val SettingsAccountChevronSize = 24.dp
   val ContentPadding = 16.dp
   val VideoCardWidth = 248.dp
   const val VideoGridColumns = 4

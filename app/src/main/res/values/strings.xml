@@ -274,6 +274,7 @@
     <string name="search_sort_click">最多播放</string>
     <string name="search_sort_pubdate">最新发布</string>
     <string name="search_sort_dm">最多弹幕</string>
+    <string name="search_sort_rating">评分</string>
     <string name="search_loading">正在搜索...</string>
     <string name="search_empty">未找到相关视频</string>
     <string name="search_failed_with_message">搜索失败。%1$s</string>
@@ -366,6 +367,7 @@
     <string name="settings_login_title">&#30331;&#24405; B &#31449;</string>
     <string name="settings_login_description">&#21518;&#32493;&#25509;&#20837;&#20108;&#32500;&#30721;&#30331;&#24405;&#12289;&#21382;&#21490;&#21644;&#25910;&#34255;&#21516;&#27493;&#12290;</string>
     <string name="settings_login_status_signed_out">&#26410;&#30331;&#24405;</string>
+    <string name="settings_account_login_hint">&#28857;&#20987;&#25184;&#30721;&#30331;&#24405;</string>
     <string name="account_login_placeholder">&#20108;&#32500;&#30721;&#30331;&#24405;&#20250;&#22312;&#21518;&#32493;&#25509;&#20837;&#12290;</string>
     <string name="account_logged_in_default">&#24050;&#30331;&#24405;</string>
     <string name="account_uid">UID: %1$s</string>
@@ -374,6 +376,8 @@
     <string name="account_vip_status">大会员</string>
     <string name="account_normal_status">普通会员</string>
     <string name="account_logout">退出登录</string>
+    <string name="account_logout_confirm">&#30830;&#23450;&#36864;&#20986;&#30331;&#24405;&#65311;</string>
+    <string name="account_logout_cancel">&#21462;&#28040;</string>
     <string name="login_tv_title">TV 扫码登录</string>
     <string name="login_status_loading">正在加载二维码...</string>
     <string name="login_status_waiting">请使用哔哩哔哩手机客户端扫码</string>

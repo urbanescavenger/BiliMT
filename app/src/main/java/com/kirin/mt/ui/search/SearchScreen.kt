@@ -1390,7 +1390,7 @@ private val YoutubeSearchSortOptions = listOf(
   SearchSortOption(YoutubeSearchParams.Relevance, R.string.search_sort_totalrank),
   SearchSortOption(YoutubeSearchParams.ViewCount, R.string.search_sort_click),
   SearchSortOption(YoutubeSearchParams.UploadDate, R.string.search_sort_pubdate),
-  SearchSortOption(YoutubeSearchParams.Rating, R.string.search_sort_dm),
+  SearchSortOption(YoutubeSearchParams.Rating, R.string.search_sort_rating),
 )
 
 /** 按来源返回排序选项(两源都有一套,对齐 B站 4 项)。 */

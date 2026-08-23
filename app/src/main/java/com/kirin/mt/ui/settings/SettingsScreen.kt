@@ -46,6 +46,7 @@ import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppVisualPerformanceMode
+import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.core.settings.HomeThemeVariant
 import com.kirin.mt.core.update.UpdateUiState
 import com.kirin.mt.core.util.LogCatcherUtil
@@ -64,6 +65,8 @@ fun SettingsScreen(
   codecCapability: CodecCapability,
   modifier: Modifier = Modifier,
   firstItemFocusRequester: FocusRequester,
+  userSession: UserSession,
+  onAccountClick: () -> Unit,
   onMoveLeftToNav: () -> Boolean,
   onVisualPerformanceModeChange: (AppVisualPerformanceMode) -> Unit,
   liquidGlassCardsSupported: Boolean,
@@ -133,6 +136,7 @@ fun SettingsScreen(
   }
   val settingFocusRequesters = remember {
     mapOf(
+      SettingsItemAccount to FocusRequester(),
       SettingsItemPlaybackQuality to FocusRequester(),
       SettingsItemYoutubeDefaultQuality to FocusRequester(),
       SettingsItemYoutubeStartQuality to FocusRequester(),
@@ -175,7 +179,7 @@ fun SettingsScreen(
       SettingsItemAbout to FocusRequester(),
     )
   }
-  var lastFocusedSettingItem by remember { mutableIntStateOf(SettingsItemPlaybackQuality) }
+  var lastFocusedSettingItem by remember { mutableIntStateOf(SettingsItemAccount) }
   var focusSettingJob by remember { mutableStateOf<Job?>(null) }
   var rightPanel by remember { mutableStateOf(SettingsRightPanel.None) }
   var showWebDavDialog by remember { mutableStateOf(false) }
@@ -245,6 +249,8 @@ fun SettingsScreen(
         codecCapability = codecCapability,
         listState = settingsListState,
         focusRequesters = settingFocusRequesters,
+        userSession = userSession,
+        onAccountClick = onAccountClick,
         onSettingFocused = { itemIndex ->
           // 两层架构:聚焦只记录最近项(供返回焦点),不展开右侧二级菜单;
           // 二级菜单只由对应行「点击」开合(见 onAboutSelected 等)。
@@ -483,6 +489,8 @@ private fun SettingsBehaviorColumn(
   codecCapability: CodecCapability,
   listState: LazyListState,
   focusRequesters: Map<Int, FocusRequester>,
+  userSession: UserSession,
+  onAccountClick: () -> Unit,
   onSettingFocused: (Int) -> Unit,
   onMoveSettingFocus: (Int, Int) -> Boolean,
   onMoveLeftToNav: () -> Boolean,
@@ -558,6 +566,20 @@ private fun SettingsBehaviorColumn(
       contentPadding = PaddingValues(bottom = BiliSpacing.Xxl),
       verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
     ) {
+      item(key = "account") {
+        SettingsAccountRow(
+          userSession = userSession,
+          onFocused = { onSettingFocused(SettingsItemAccount) },
+          onClick = onAccountClick,
+          modifier = Modifier
+            .focusRequester(focusRequesters.getValue(SettingsItemAccount))
+            .settingsBoundaryKeys(
+              itemIndex = SettingsItemAccount,
+              onMoveSettingFocus = onMoveSettingFocus,
+              onMoveLeftToNav = onMoveLeftToNav,
+            ),
+        )
+      }
       item(key = "playback-header") {
         SettingsSectionTitle(text = stringResource(R.string.settings_playback_section))
       }
@@ -1356,6 +1378,7 @@ private fun SettingsSectionTitle(
   )
 }
 
+private const val SettingsItemAccount = 41
 private const val SettingsItemPlaybackHeader = 0
 private const val SettingsItemPlaybackQuality = 1
 private const val SettingsItemPlaybackCodec = 2
@@ -1399,6 +1422,7 @@ private const val SettingsItemSabrForceItag = 37
 private const val SettingsItemYoutubeDeliveryPriority = 38
 
 private val SettingsFocusableItems = listOf(
+  SettingsItemAccount,
   SettingsItemPlaybackQuality,
   SettingsItemYoutubeDefaultQuality,
   SettingsItemYoutubeStartQuality,
@@ -1453,96 +1477,97 @@ private fun settingsItemToLazyIndex(
   itemIndex: Int,
   updateState: UpdateUiState,
 ): Int = when (itemIndex) {
-  SettingsItemPlaybackHeader -> 0
-  SettingsItemPlaybackQuality -> 1
-  SettingsItemYoutubeDefaultQuality -> 2
-  SettingsItemYoutubeStartQuality -> 3
-  SettingsItemDefaultSpeed -> 4
-  SettingsItemPlaybackBufferMax -> 5
-  SettingsItemPlaybackCodec -> 6
-  SettingsItemPlaybackCdn -> 7
-  SettingsItemSpeedTest -> 8
-  SettingsItemSeekPreviewSprites -> 9
-  SettingsItemAirJumpAssistant -> 10
-  SettingsItemConfirmPlaybackExit -> 11
-  SettingsItemAutoPlayNextEpisode -> 12
-  SettingsItemAutoPlayRelatedVideo -> 13
-  SettingsItemAutoReturnHomeOnCompletion -> 14
-  SettingsItemShowClock -> 15
-  SettingsItemShowMiniProgressBar -> 16
-  // 17 = "ui-header" section title in LazyColumn
-  SettingsItemVisualPerformanceMode -> 18
-  SettingsItemLiquidGlassCards -> 19
-  SettingsItemHomeThemeVariant -> 20
-  SettingsItemAutoConfirmOnFocus -> 21
-  SettingsItemAutoRefreshOnSwitch -> 22
-  // 23 = "update-header" section title in LazyColumn
-  SettingsItemUpdateCurrentVersion -> 24
-  SettingsItemUpdateDownloadOrInstall -> 25
-  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 26 else -1
+  SettingsItemAccount -> 0
+  SettingsItemPlaybackHeader -> 1
+  SettingsItemPlaybackQuality -> 2
+  SettingsItemYoutubeDefaultQuality -> 3
+  SettingsItemYoutubeStartQuality -> 4
+  SettingsItemDefaultSpeed -> 5
+  SettingsItemPlaybackBufferMax -> 6
+  SettingsItemPlaybackCodec -> 7
+  SettingsItemPlaybackCdn -> 8
+  SettingsItemSpeedTest -> 9
+  SettingsItemSeekPreviewSprites -> 10
+  SettingsItemAirJumpAssistant -> 11
+  SettingsItemConfirmPlaybackExit -> 12
+  SettingsItemAutoPlayNextEpisode -> 13
+  SettingsItemAutoPlayRelatedVideo -> 14
+  SettingsItemAutoReturnHomeOnCompletion -> 15
+  SettingsItemShowClock -> 16
+  SettingsItemShowMiniProgressBar -> 17
+  // 18 = "ui-header" section title in LazyColumn
+  SettingsItemVisualPerformanceMode -> 19
+  SettingsItemLiquidGlassCards -> 20
+  SettingsItemHomeThemeVariant -> 21
+  SettingsItemAutoConfirmOnFocus -> 22
+  SettingsItemAutoRefreshOnSwitch -> 23
+  // 24 = "update-header" section title in LazyColumn
+  SettingsItemUpdateCurrentVersion -> 25
+  SettingsItemUpdateDownloadOrInstall -> 26
+  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 27 else -1
   SettingsItemClearCache -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    27 + updateExtraCount
-  }
-  SettingsItemChineseTextVariant -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     28 + updateExtraCount
   }
-  SettingsItemHomeSections -> {
+  SettingsItemChineseTextVariant -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     29 + updateExtraCount
   }
-  SettingsItemLogs -> {
+  SettingsItemHomeSections -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    41 + updateExtraCount
+    30 + updateExtraCount
   }
-  SettingsItemAbout -> {
+  SettingsItemLogs -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     42 + updateExtraCount
   }
-  SettingsItemPlayerLogOverlay -> {
+  SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     43 + updateExtraCount
   }
-  SettingsItemYoutubeChannels -> {
+  SettingsItemPlayerLogOverlay -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    31 + updateExtraCount
+    44 + updateExtraCount
   }
-  SettingsItemYoutubeContentRegion -> {
+  SettingsItemYoutubeChannels -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     32 + updateExtraCount
   }
-  SettingsItemPiped -> {
+  SettingsItemYoutubeContentRegion -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     33 + updateExtraCount
   }
-  SettingsItemYoutubeUsePiped -> {
+  SettingsItemPiped -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     34 + updateExtraCount
   }
-  SettingsItemSabrForceItag -> {
+  SettingsItemYoutubeUsePiped -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     35 + updateExtraCount
   }
-  SettingsItemYoutubeDeliveryPriority -> {
+  SettingsItemSabrForceItag -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     36 + updateExtraCount
   }
-  SettingsItemWebDav -> {
+  SettingsItemYoutubeDeliveryPriority -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     37 + updateExtraCount
   }
-  SettingsItemWebDavBackup -> {
+  SettingsItemWebDav -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     38 + updateExtraCount
   }
-  SettingsItemWebDavRestore -> {
+  SettingsItemWebDavBackup -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     39 + updateExtraCount
   }
-  SettingsItemIptv -> {
+  SettingsItemWebDavRestore -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     40 + updateExtraCount
+  }
+  SettingsItemIptv -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    41 + updateExtraCount
   }
   else -> 0
 }
