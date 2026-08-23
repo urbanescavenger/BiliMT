@@ -149,6 +149,22 @@ class WebDavBackupService(
     LogCatcherUtil.updateLogFiles()
   }
 
+  /**
+   * 备份单个日志文件到 `{url}/bilitv/logs/<name>`(同名覆盖)。日志分享面板「备份」按钮用:
+   * 只上传不删本地(区别于全量备份 [backup] 的备份后删除),便于逐条备份某个 crash/manual 日志。
+   */
+  suspend fun backupLogFile(config: WebDavConfig, info: LogCatcherUtil.LogFileInfo): Result<Unit> {
+    if (!config.isConfigured) {
+      return Result.failure(IllegalStateException("WebDAV 未配置"))
+    }
+    return runCatching {
+      repository.mkcol(logsDirUrl(config), config.username, config.password)
+      val bytes = withContext(Dispatchers.IO) { info.file.readBytes() }
+      val ok = repository.put(logFileUrl(config, info.file.name), config.username, config.password, bytes)
+      if (!ok) throw IOException("日志上传失败:${info.file.name}")
+    }
+  }
+
   private fun dirUrl(config: WebDavConfig): String = "${trimTrailingSlash(config.url)}/$backupDir"
 
   private fun fileUrl(config: WebDavConfig): String = "${dirUrl(config)}/$backupFileName"

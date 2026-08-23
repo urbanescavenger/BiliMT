@@ -157,6 +157,9 @@
     <string name="settings_logs_description">&#x5D29;&#x6E83;&#x65F6;&#x4F1A;&#x81EA;&#x52A8;&#x4FDD;&#x5B58;&#x65E5;&#x5FD7;&#xFF0C;&#x4E5F;&#x53EF;&#x624B;&#x52A8;&#x5BFC;&#x51FA;&#x5F53;&#x524D; logcat&#x3002;</string>
     <string name="settings_logs_export">&#x5BFC;&#x51FA;&#x5F53;&#x524D;&#x65E5;&#x5FD7;</string>
     <string name="settings_logs_share">&#x5206;&#x4EAB;</string>
+    <string name="settings_logs_backup">&#x5907;&#x4EFD;</string>
+    <string name="settings_logs_backup_success">&#x65E5;&#x5FD7;&#x5DF2;&#x5907;&#x4EFD;</string>
+    <string name="settings_logs_backup_failed">&#x5907;&#x4EFD;&#x5931;&#x8D25;&#xFF1A;%1$s</string>
     <string name="settings_logs_close">&#x5173;&#x95ED;</string>
     <string name="settings_logs_type_crash">&#x5D29;&#x6E83;</string>
     <string name="settings_logs_type_manual">&#x624B;&#x52A8;</string>
@@ -632,6 +635,7 @@
     <string name="player_share">分享</string>
     <string name="player_desc_unavailable">简介暂不可用</string>
     <string name="player_view_count_format">播放 %1$s</string>
+    <string name="player_like_count_format">点赞 %1$s</string>
     <string name="player_danmaku_count_format">弹幕 %1$s</string>
     <!-- 直播播放器 -->
     <string name="live_play_error">播放出错</string>

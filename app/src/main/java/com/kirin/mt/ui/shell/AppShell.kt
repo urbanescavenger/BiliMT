@@ -851,6 +851,16 @@ fun BiliTvApp(
                 onShareLog = { info ->
                   LogCatcherUtil.shareLogFile(context, info.file)
                 },
+                onBackupLog = { info ->
+                  coroutineScope.launch {
+                    val result = webdavBackupService.backupLogFile(webDavConfig, info)
+                    val msg = result.fold(
+                      onSuccess = { localizedContext.getString(R.string.settings_logs_backup_success) },
+                      onFailure = { localizedContext.getString(R.string.settings_logs_backup_failed, it.message ?: "") },
+                    )
+                    Toast.makeText(localizedContext, msg, Toast.LENGTH_SHORT).show()
+                  }
+                },
                 onToggleLogRecording = {
                   coroutineScope.launch {
                     if (LogCatcherUtil.isRecording) {
