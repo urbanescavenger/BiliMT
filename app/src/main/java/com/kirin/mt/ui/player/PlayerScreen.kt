@@ -1874,12 +1874,15 @@ fun PlayerScreen(
     runCatching { controlsFocusRequester.requestFocus() }
   }
 
-  LaunchedEffect(controlsVisible, playerState, activePanel, previewPositionMs, playbackPaused, showCoinDialog) {
+  LaunchedEffect(controlsVisible, playerState, activePanel, previewPositionMs, playbackPaused, completionReported, showCoinDialog, pauseInteractionToken) {
     if (controlsVisible && playerState is PlayerScreenState.Ready) {
       runCatching { controlsFocusRequester.requestFocus() }
-      if (!playbackPaused && !showCoinDialog) {
-        delay(BiliMotion.PlayerControlsAutoHideMs)
-        if (activePanel == PlayerPanel.None && previewPositionMs == null && !playbackPaused && !showCoinDialog) {
+      // 播放中 4s 自动隐藏;用户暂停 5s 无操作也隐藏控制栏(与中央暂停标志同频)。
+      // 播放结束(completionReported)保持控制栏常显,供「重播/下一集」操作,不随暂停计时隐藏。
+      if (!showCoinDialog && !(playbackPaused && completionReported)) {
+        val delayMs = if (playbackPaused) BiliMotion.PlayerPauseIndicatorAutoHideMs else BiliMotion.PlayerControlsAutoHideMs
+        delay(delayMs)
+        if (activePanel == PlayerPanel.None && previewPositionMs == null && !showCoinDialog && !(playbackPaused && completionReported)) {
           controlsVisible = false
         }
       }

@@ -1105,11 +1105,11 @@ fun MobilePlayerScreen(
     }
   }
 
-  // 控件自动隐藏:仅手动全屏(沉浸式)下,播放中 4s 后自动隐(对齐 TV PlayerControlsAutoHideMs)。
-  // 非全屏播放栏常驻,不自动隐;暂停 isPlaying=false 不触发,全屏控件保持可见。
-  LaunchedEffect(controlsVisible, isPlaying, fullscreen) {
-    if (controlsVisible && isPlaying && fullscreen) {
-      delay(4000)
+  // 控件自动隐藏:仅手动全屏(沉浸式)下,播放中 4s 后自动隐(对齐 TV PlayerControlsAutoHideMs);
+  // 暂停 5s 无操作也隐藏(与中央暂停图标同频),手势操作重置计时。非全屏播放栏常驻,不自动隐。
+  LaunchedEffect(controlsVisible, isPlaying, fullscreen, pauseInteractionToken) {
+    if (controlsVisible && fullscreen) {
+      delay(if (isPlaying) 4000 else 5000)
       controlsVisible = false
     }
   }
