@@ -66,6 +66,8 @@ import com.kirin.mt.ui.common.focusRestoreKey
 import com.kirin.mt.ui.common.resolveFocusIndex
 import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.i18n.convertChineseText
+import com.kirin.mt.ui.i18n.formatCompactCount
+import com.kirin.mt.ui.i18n.localeFromResources
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
@@ -262,6 +264,7 @@ internal fun UpSpaceScreen(
           )
           is SpaceVideoState.Success -> TvVideoGrid(
             videos = state.videos,
+            debugLabel = "space-grid",
             firstItemFocusRequester = firstItemFocusRequester,
             restoredFocusIndex = state.videos.resolveFocusIndex(uiState.focusedVideoKey, uiState.focusedVideoIndex),
             restoreFocusRequestKey = restoreFocusRequestKey,
@@ -407,12 +410,12 @@ private fun UpSpaceHeader(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg)) {
           Text(
-            text = stringResource(R.string.up_space_fans, formatSpaceCount(fans)),
+            text = stringResource(R.string.up_space_fans, formatSpaceCount(fans, LocalContext.current.resources)),
             color = BiliColors.TextSecondary,
             fontSize = BiliTypography.Body,
           )
           Text(
-            text = stringResource(R.string.up_space_following, formatSpaceCount(followingCount)),
+            text = stringResource(R.string.up_space_following, formatSpaceCount(followingCount, LocalContext.current.resources)),
             color = BiliColors.TextSecondary,
             fontSize = BiliTypography.Body,
           )
@@ -861,10 +864,6 @@ private fun Key.isConfirmKey(): Boolean {
   return this == Key.Enter || this == Key.NumPadEnter || this == Key.DirectionCenter
 }
 
-private fun formatSpaceCount(count: Long): String {
-  return when {
-    count >= 100_000_000L -> "%.1f亿".format(count / 100_000_000.0)
-    count >= 10_000L -> "%.1f万".format(count / 10_000.0)
-    else -> count.toString()
-  }
+private fun formatSpaceCount(count: Long, resources: android.content.res.Resources): String {
+  return formatCompactCount(count, localeFromResources(resources))
 }

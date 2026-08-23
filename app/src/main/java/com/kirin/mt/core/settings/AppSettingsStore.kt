@@ -10,10 +10,13 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.kirin.mt.core.i18n.ChineseTextVariant
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.player.DefaultPlaybackSpeed
+import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeDeliveryPriority
+import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.storage.biliDataStore
 import kotlinx.coroutines.flow.Flow
@@ -72,8 +75,11 @@ class AppSettingsStore(private val context: Context) {
       playbackCodecPreference = PlaybackCodecPreference.fromKey(preferences[Keys.PlaybackCodecPreference]),
       playbackCdnPreference = PlaybackCdnPreference.fromKey(preferences[Keys.PlaybackCdnPreference]),
       youtubeDefaultQuality = YoutubeDefaultQuality.fromKey(preferences[Keys.YoutubeDefaultQuality]),
+      youtubeStartQuality = YoutubeStartQuality.fromKey(preferences[Keys.YoutubeStartQuality]),
       youtubeContentRegion = YoutubeContentRegion.fromKey(preferences[Keys.YoutubeContentRegion]),
+      youtubeDeliveryPriority = YoutubeDeliveryPriority.fromKey(preferences[Keys.YoutubeDeliveryPriority]),
       defaultPlaybackSpeed = DefaultPlaybackSpeed.fromKey(preferences[Keys.DefaultPlaybackSpeed]),
+      bufferMax = PlaybackBufferMax.fromKey(preferences[Keys.PlaybackBufferMax]),
       seekPreviewSpritesEnabled = preferences[Keys.SeekPreviewSpritesEnabled] ?: true,
       airJumpAssistantEnabled = preferences[Keys.AirJumpAssistantEnabled] ?: true,
       confirmPlaybackExit = preferences[Keys.ConfirmPlaybackExit] ?: true,
@@ -189,15 +195,34 @@ class AppSettingsStore(private val context: Context) {
     }
   }
 
+  /** YouTube SABR 自适应起播档。 */
+  suspend fun setYoutubeStartQuality(quality: YoutubeStartQuality) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.YoutubeStartQuality] = quality.key
+    }
+  }
+
   suspend fun setYoutubeContentRegion(region: YoutubeContentRegion) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.YoutubeContentRegion] = region.key
     }
   }
 
+  suspend fun setYoutubeDeliveryPriority(priority: YoutubeDeliveryPriority) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.YoutubeDeliveryPriority] = priority.key
+    }
+  }
+
   suspend fun setDefaultPlaybackSpeed(speed: DefaultPlaybackSpeed) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.DefaultPlaybackSpeed] = speed.key
+    }
+  }
+
+  suspend fun setPlaybackBufferMax(bufferMax: PlaybackBufferMax) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.PlaybackBufferMax] = bufferMax.key
     }
   }
 
@@ -379,8 +404,11 @@ class AppSettingsStore(private val context: Context) {
     val PlaybackCodecPreference = stringPreferencesKey("playback_codec_preference")
     val PlaybackCdnPreference = stringPreferencesKey("playback_cdn_preference")
     val YoutubeDefaultQuality = stringPreferencesKey("youtube_default_quality")
+    val YoutubeStartQuality = stringPreferencesKey("youtube_start_quality")
     val YoutubeContentRegion = stringPreferencesKey("youtube_content_region")
+    val YoutubeDeliveryPriority = stringPreferencesKey("youtube_delivery_priority")
     val DefaultPlaybackSpeed = stringPreferencesKey("default_playback_speed")
+    val PlaybackBufferMax = stringPreferencesKey("playback_buffer_max")
     val SeekPreviewSpritesEnabled = booleanPreferencesKey("seek_preview_sprites_enabled")
     val AirJumpAssistantEnabled = booleanPreferencesKey("air_jump_assistant_enabled")
     val ConfirmPlaybackExit = booleanPreferencesKey("confirm_playback_exit")

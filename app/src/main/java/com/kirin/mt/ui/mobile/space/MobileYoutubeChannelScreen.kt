@@ -1,11 +1,13 @@
 package com.kirin.mt.ui.mobile.space
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -35,6 +37,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeChannelStore
+import com.kirin.mt.core.youtube.YoutubeConstants
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
@@ -65,6 +68,7 @@ fun MobileYoutubeChannelScreen(
   val name = uiState.name
   val avatar = uiState.avatar
   val items = uiState.items
+  val order = uiState.order
   val loading = uiState.loading
   val loadingMore = uiState.loadingMore
   val failed = uiState.failed
@@ -75,7 +79,7 @@ fun MobileYoutubeChannelScreen(
       uiState.loading = true
       uiState.failed = null
       try {
-        val page = youtubeRepository.getChannelVideos(channelId)
+        val page = youtubeRepository.getChannelVideos(channelId, params = uiState.order.params)
         uiState.items = page.items.distinctBy { it.bvid }
         uiState.continuation = page.continuation
         uiState.endReached = page.continuation == null
@@ -92,16 +96,29 @@ fun MobileYoutubeChannelScreen(
   }
 
   fun loadNext() {
+    Log.d(
+      "YoutubeChannel",
+      "loadNext called continuation=${uiState.continuation?.take(12) ?: "null"} " +
+        "loadingMore=${uiState.loadingMore} endReached=${uiState.endReached}",
+    )
     val token = uiState.continuation ?: return
     if (uiState.loadingMore || uiState.endReached) return
     uiState.loadingMore = true
     scope.launch {
       try {
-        val page = youtubeRepository.getChannelVideos(channelId, token)
-        val merged = (uiState.items + page.items).distinctBy { it.bvid }
+        val page = youtubeRepository.getChannelVideos(channelId, token, params = uiState.order.params)
+        // 先存旧列表再比较:若先赋 uiState.items=merged,merged.size==uiState.items.size 恒真,
+        // endReached 永远变 true,续页只翻一页就停(对齐 TV 版 latest.videos 旧列表比较)。
+        val oldItems = uiState.items
+        val merged = (oldItems + page.items).distinctBy { it.bvid }
         uiState.items = merged
         uiState.continuation = page.continuation
-        uiState.endReached = page.continuation == null || merged.size == uiState.items.size
+        uiState.endReached = page.continuation == null || merged.size == oldItems.size
+        Log.d(
+          "YoutubeChannel",
+          "loadNext merged old=${oldItems.size} new=${page.items.size} merged=${merged.size} " +
+            "endReached=${uiState.endReached}",
+        )
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
@@ -111,30 +128,36 @@ fun MobileYoutubeChannelScreen(
     }
   }
 
-  // 首屏:解析权威频道名 + 头像(失败回退卡片名/空头像) + 拉第一页(已加载过同 channelId 则跳过)。
-  LaunchedEffect(channelId) {
-    if (uiState.loadedChannelId != channelId) {
+  // 首屏:解析权威频道名 + 头像(失败回退卡片名/空头像) + 拉第一页。
+  // 已加载过同 channelId + 排序则跳过;切排序(order)强制重拉。
+  LaunchedEffect(channelId, order) {
+    if (uiState.loadedChannelId != channelId || uiState.loadedOrder != order) {
       uiState.name = channelName
       val resolved = runCatching { youtubeRepository.resolveChannel(channelId) }.getOrNull()
       uiState.name = resolved?.name?.ifBlank { channelName } ?: channelName
       uiState.avatar = resolved?.avatar.orEmpty()
       loadFirst()
       uiState.loadedChannelId = channelId
+      uiState.loadedOrder = order
     } else {
-      // 从播放器返回同 channelId:清除可能卡住的翻页 loading 标志(scope 已随离开组合取消)。
+      // 从播放器返回同 channelId+order:清除可能卡住的翻页 loading 标志(scope 已随离开组合取消)。
       uiState.loadingMore = false
     }
   }
 
-  // 滚到底自动翻页
+  // 滚到底自动翻页。发射 (last, total) 对而非布尔值:布尔去重会在首屏 loading 时把唯一的
+  // true 消耗掉(此时 continuation 仍 null,loadNext 早退),且短列表近底时值不变不再发射,
+  // 导致续页永不触发。对 pair 去重则任何滚动/加载导致 last 或 total 变化都会重新求值。
   LaunchedEffect(Unit) {
     snapshotFlow {
       val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
       val total = gridState.layoutInfo.totalItemsCount
-      total > 0 && last >= total - 6
+      last to total
     }
       .distinctUntilChanged()
-      .collect { nearEnd -> if (nearEnd) loadNext() }
+      .collect { (last, total) ->
+        if (total > 0 && last >= total - 6) loadNext()
+      }
   }
 
   // 频道页视频(channelId 为空)统一注入本频道 id + 名 + 头像,保证卡片 owner 点击留在本频道、
@@ -193,6 +216,22 @@ fun MobileYoutubeChannelScreen(
               enabled = !uiState.followLoading,
             ) {
               Text(stringResource(if (followed) R.string.youtube_channel_following else R.string.youtube_channel_follow))
+            }
+          }
+          // 排序栏:最新 / 最热(对齐 B站 UP 空间)。
+          Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            OutlinedButton(onClick = { uiState.order = YoutubeConstants.ChannelVideoOrder.Latest }) {
+              Text(
+                stringResource(R.string.player_up_sort_latest),
+                color = if (uiState.order == YoutubeConstants.ChannelVideoOrder.Latest) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+              )
+            }
+            Spacer(Modifier.padding(start = 8.dp))
+            OutlinedButton(onClick = { uiState.order = YoutubeConstants.ChannelVideoOrder.Popular }) {
+              Text(
+                stringResource(R.string.player_up_sort_hot),
+                color = if (uiState.order == YoutubeConstants.ChannelVideoOrder.Popular) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+              )
             }
           }
         }

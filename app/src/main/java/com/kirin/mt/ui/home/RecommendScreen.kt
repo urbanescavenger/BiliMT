@@ -186,21 +186,39 @@ internal fun RecommendScreen(
       uiState.focusedVideoKey = ""
     }
     val nextState = try {
-      val videos = videoRepository.getHomeSectionVideos(
-        section = sectionToLoad,
-        page = FirstPage,
-        idx = if (sectionToLoad == HomeSection.Recommend) request.refreshKey else 0,
-      )
-      if (videos.isEmpty()) {
-        RecommendState.Empty
+      if (sectionToLoad == HomeSection.YoutubeTrending) {
+        // 首页订阅流首屏：返回每频道续页 token，滚动到底可继续翻更早视频。
+        // 头像回写由 youtubeHomeFeedPage 内部处理(持有 youtubeChannelStore)。
+        val page = videoRepository.youtubeHomeFeedPage()
+        if (page.videos.isEmpty()) {
+          RecommendState.Empty
+        } else {
+          RecommendState.Success(
+            videos = page.videos,
+            nextPage = FirstPage + 1,
+            loadingMore = false,
+            endReached = page.endReached,
+            loadMoreError = "",
+            youtubeContinuation = page.perChannelContinuation,
+          )
+        }
       } else {
-        RecommendState.Success(
-          videos = videos,
-          nextPage = FirstPage + 1,
-          loadingMore = false,
-          endReached = videos.size < PageSize,
-          loadMoreError = "",
+        val videos = videoRepository.getHomeSectionVideos(
+          section = sectionToLoad,
+          page = FirstPage,
+          idx = if (sectionToLoad == HomeSection.Recommend) request.refreshKey else 0,
         )
+        if (videos.isEmpty()) {
+          RecommendState.Empty
+        } else {
+          RecommendState.Success(
+            videos = videos,
+            nextPage = FirstPage + 1,
+            loadingMore = false,
+            endReached = videos.size < PageSize,
+            loadMoreError = "",
+          )
+        }
       }
     } catch (error: CancellationException) {
       throw error
@@ -239,25 +257,42 @@ internal fun RecommendScreen(
 
     coroutineScope.launch {
       val nextState = try {
-        val nextVideos = videoRepository.getHomeSectionVideos(
-          section = sectionToLoad,
-          page = pageToLoad,
-          idx = if (sectionToLoad == HomeSection.Recommend) {
-            refreshKeyToLoad + pageToLoad - FirstPage
-          } else {
-            0
-          },
-        )
-        val latestState = uiState.sectionStates[sectionKeyToLoad] as? RecommendState.Success ?: return@launch
-        val mergedVideos = latestState.videos.appendUniqueByBvid(nextVideos)
-        latestState.copy(
-          videos = mergedVideos,
-          nextPage = pageToLoad + 1,
-          loadingMore = false,
-          endReached = nextVideos.size < PageSize ||
-            mergedVideos.size == latestState.videos.size,
-          loadMoreError = "",
-        )
+        if (sectionToLoad == HomeSection.YoutubeTrending) {
+          // 首页订阅流续页：用每频道 continuation 拉更早一页，累积去重后按 pubdate 排序。
+          val latestState = uiState.sectionStates[sectionKeyToLoad] as? RecommendState.Success ?: return@launch
+          val cont = latestState.youtubeContinuation ?: return@launch
+          val page = videoRepository.youtubeHomeFeedPage(previousContinuation = cont)
+          val mergedVideos = latestState.videos.appendUniqueByBvid(page.videos)
+            .sortedByDescending { it.pubdate }
+          latestState.copy(
+            videos = mergedVideos,
+            loadingMore = false,
+            // 续页未新增视频也视为到底,防 token 不推进(返回相同/空)时死循环。
+            endReached = page.endReached || mergedVideos.size == latestState.videos.size,
+            loadMoreError = "",
+            youtubeContinuation = page.perChannelContinuation,
+          )
+        } else {
+          val nextVideos = videoRepository.getHomeSectionVideos(
+            section = sectionToLoad,
+            page = pageToLoad,
+            idx = if (sectionToLoad == HomeSection.Recommend) {
+              refreshKeyToLoad + pageToLoad - FirstPage
+            } else {
+              0
+            },
+          )
+          val latestState = uiState.sectionStates[sectionKeyToLoad] as? RecommendState.Success ?: return@launch
+          val mergedVideos = latestState.videos.appendUniqueByBvid(nextVideos)
+          latestState.copy(
+            videos = mergedVideos,
+            nextPage = pageToLoad + 1,
+            loadingMore = false,
+            endReached = nextVideos.size < PageSize ||
+              mergedVideos.size == latestState.videos.size,
+            loadMoreError = "",
+          )
+        }
       } catch (error: CancellationException) {
         throw error
       } catch (error: Exception) {
@@ -664,6 +699,8 @@ internal sealed interface RecommendState {
     val loadingMore: Boolean,
     val endReached: Boolean,
     val loadMoreError: String,
+    /** 首页订阅流(YouTube 热门)续页 token：channelId -> 下一 token；非 YouTube 分区为 null。 */
+    val youtubeContinuation: Map<String, String?>? = null,
   ) : RecommendState
   data class Failed(val message: String) : RecommendState
 }

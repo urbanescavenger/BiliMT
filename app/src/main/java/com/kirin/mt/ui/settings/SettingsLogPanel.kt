@@ -58,6 +58,7 @@ internal fun SettingsLogsColumn(
   onView: (LogCatcherUtil.LogFileInfo) -> Unit,
   onBackFromView: () -> Unit,
   onShare: (LogCatcherUtil.LogFileInfo) -> Unit,
+  onBackupLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onToggleRecording: () -> Unit,
   onMoveLeftToSettings: () -> Boolean,
   modifier: Modifier = Modifier,
@@ -79,6 +80,7 @@ internal fun SettingsLogsColumn(
         isRecording = isRecording,
         onView = onView,
         onShare = onShare,
+        onBackupLog = onBackupLog,
         onToggleRecording = onToggleRecording,
         onMoveLeftToSettings = onMoveLeftToSettings,
         modifier = Modifier.fillMaxSize(),
@@ -93,6 +95,7 @@ private fun LogListPanel(
   isRecording: Boolean,
   onView: (LogCatcherUtil.LogFileInfo) -> Unit,
   onShare: (LogCatcherUtil.LogFileInfo) -> Unit,
+  onBackupLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onToggleRecording: () -> Unit,
   onMoveLeftToSettings: () -> Boolean,
   modifier: Modifier = Modifier,
@@ -156,6 +159,7 @@ private fun LogListPanel(
           info = info,
           onView = { onView(info) },
           onShare = { onShare(info) },
+          onBackup = { onBackupLog(info) },
           onMoveLeftToSettings = onMoveLeftToSettings,
         )
       }
@@ -396,6 +400,7 @@ private fun LogFileRow(
   info: LogCatcherUtil.LogFileInfo,
   onView: () -> Unit,
   onShare: () -> Unit,
+  onBackup: () -> Unit,
   onMoveLeftToSettings: () -> Boolean,
   modifier: Modifier = Modifier,
 ) {
@@ -478,6 +483,27 @@ private fun LogFileRow(
         Text(
           text = stringResource(R.string.settings_logs_share),
           color = homeColors.textPrimary,
+          fontSize = BiliTypography.BodySmall,
+          fontWeight = FontWeight.Bold,
+        )
+      }
+    }
+    BiliFocusableSurface(
+      scaleOnFocus = false,
+      shadowOnFocus = false,
+      shape = RoundedCornerShape(BiliRadius.Pill),
+      onClick = onBackup,
+      modifier = Modifier.width(BiliSizing.SettingsMoveButtonSize),
+    ) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(horizontal = BiliSpacing.Md, vertical = BiliSpacing.Sm),
+        contentAlignment = Alignment.Center,
+      ) {
+        Text(
+          text = stringResource(R.string.settings_logs_backup),
+          color = homeColors.accent,
           fontSize = BiliTypography.BodySmall,
           fontWeight = FontWeight.Bold,
         )

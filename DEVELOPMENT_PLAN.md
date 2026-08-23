@@ -790,8 +790,13 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | v2.0.1-alpha.2 | 修加载列表时两个圈（顶部静止圈 + 居中转圈） |
 | v2.0.1-alpha.3 | 首页内容区左右滑动切顶部 tab |
 | v2.0.1-alpha.4 | 动态 tab 补 历史/收藏/追番 子 tab + 追番进季详情选集 |
+| （当前分支，未打 tag） | **离线下载播放器对齐在线播放器**：`MobileOfflinePlayerScreen` 从极简裸 ExoPlayer 升级为功能对齐在线——后台播放通知（PlayerHolder+PlaybackService，抽公共 `startPlaybackService` 到 `core/player/PlaybackServiceHelper.kt`）、进度保存/续播（复用 Room `playbackRepository`，在线/离线互通）、倍速（ModalBottomSheet 七档）、画面点击暂停/拖拽 seek（`detectPlayerGestures`）、全屏/非全屏两种布局（沉浸+方向）、相关视频=已下载视频列表（2 列 `MobileVideoCard` 点击切换）、ExoPlayer 配置对齐（`createTvPlaybackLoadControl` + `setHandleAudioBecomingNoisy` + AudioAttributes）。数据源仍本地文件（合理差异）。 |
+| （当前分支，未打 tag） | **离线下载列表交互对齐卡片页**：`MobileDownloadsScreen` 卡片主体 `combinedClickable`——**单击播放**（可播时）、**长按弹底部操作菜单**（YouTube「加入播放列表」复用 `MobilePlaylistPickerDialog` + 全部源「删除」）；右侧按钮列瘦身只保留下载控制（下载中/排队→暂停/取消，暂停/失败→续传，完成/取消→无按钮），播放/删除改走单击/长按。 |
+| （当前分支，未打 tag） | **下载管理批量删除**：`SettingsTopBar` 加可选 `trailing` 槽；下载管理右上角**三点 `⋮`**（`Icons.Filled.MoreVert`）进入批量模式——列表项复选框、点卡勾选/取消、底部栏「已选 N/全选/删除所选」、删除二次确认后逐条 `downloadManager.delete`；顶部三点变「完成」退出。`SettingsActivity` 持有 `downloadsBatchMode`+`selectedDownloadIds`，注入 `MobileDownloadsScreen`。 |
+| v3.0.5-alpha.3 | **多语言支持**：语言设置 3→6 档，新增 English / Español / Português。`ChineseTextVariant` 泛化（拉丁语系 identity，简繁只对中文变体）；`localizedContext()` locale 映射；两套设置页语言项；**移动端三入口补 LocalContext 包裹**（此前移动端 stringResource 走系统 locale，设置不生效）；数字本地化 `CountFormatter`（万/亿↔K/M/B，除数差异是代码逻辑）；`values-en` 全量英文翻译 654 key + `values-es`/`values-pt` 骨架；硬编码 UI 中文收口（UI 标签抽 stringResource，日志/来源数据保留中文） |
+| （当前分支，未打 tag） | **播放列表详情批量移除**：`PlaylistDetailScreen` 编辑模式（顶栏「编辑/完成」）升级为批量移除——每卡前置复选框、点卡勾选/取消、底部栏「已选 N/全选/删除所选」、二次确认后 `store.removeVideos` 一次性过滤移除；**保留**卡片右侧单「移除」按钮（单选即时删，同时从选中集剔除）。选中集/确认弹窗局部状态持有；`YoutubePlaylistStore` 加批量 `removeVideos(playlistName, ids)`。批量字符串沿用简体（playlist 现有串本来只在 values）。 |
 
-当前移动端能力：首页分区网格、**动态 tab 四子 tab（动态关注 feed / 历史 / 收藏（切夹）/ 追番（番剧·影视 + 想看·在看·看过筛选））**、搜索（历史/联想/排序/结果网格）、卡片式设置、短信登录、触屏播放器（播放/暂停/seek/弹幕开关/返回 + **全屏横屏沉浸** + **画质/倍速/弹幕设置弹窗** + **分P选集侧栏** + **自动连播下一集** + **UP 空间入口** + **空降助手** + **推荐视频切播** + **手势**）、**追番进季详情选集（`MobilePgcSeasonScreen`：封面/简介/同系列季切换/正片+花絮分集 → PGC PlaybackRequest）**、**后台播放（主流 MediaStyle 通知:封面+播放/暂停+锁屏控件,显式 startForeground 保活）**、状态栏透明浅色图标、底栏重复点推荐刷新、内容页下拉刷新。底栏 PGC 仍为"开发中"占位（搜索已取代其位置）。
+当前移动端能力：首页分区网格、**动态 tab 四子 tab（动态关注 feed / 历史 / 收藏（切夹）/ 追番（番剧·影视 + 想看·在看·看过筛选））**、搜索（历史/联想/排序/结果网格）、卡片式设置、短信登录、触屏播放器（播放/暂停/seek/弹幕开关/返回 + **全屏横屏沉浸** + **画质/倍速/弹幕设置弹窗** + **分P选集侧栏** + **自动连播下一集** + **UP 空间入口** + **空降助手** + **推荐视频切播** + **手势**）、**追番进季详情选集（`MobilePgcSeasonScreen`：封面/简介/同系列季切换/正片+花絮分集 → PGC PlaybackRequest）**、**后台播放（主流 MediaStyle 通知:封面+播放/暂停+锁屏控件,显式 startForeground 保活）**、**离线下载播放器（本地源,对齐在线：后台播放通知/进度续播互通/倍速/画面手势/全屏/已下载视频列表切换）**、**离线下载列表（卡片单击播放、长按加播放列表/删除,下载控制按钮居右,右上角三点批量删除）**、**播放列表详情（编辑模式批量移除：复选框+底部栏「已选 N/全选/删除所选」+单移除按钮保留）**、状态栏透明浅色图标、底栏重复点推荐刷新、内容页下拉刷新。底栏 PGC 仍为"开发中"占位（搜索已取代其位置）。
 
 ### 后续路线图（按优先级）
 
@@ -834,6 +839,26 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 2. 按 bvid 内存缓存，成功（含真无段 404）才缓存 → 再次进入秒回；冷连接首击靠重试保证成功，等效「预取+热连接」。
 3. 失败/重试打日志，成功打条数日志。
 4. TV `PlayerScreen` 与移动 `MobilePlayerScreen` 共用 repository 重试+缓存，拉段仍组合即启动（与拉流并行）。
+
+### 待做：在线播放器命中缓存播放本地源（手机端）
+
+**目标**：在线刷到已下载/缓存的视频，点进去视频区直接播本地缓存文件，简介/评论/弹幕仍走在线，与在线播放完全一致。B 站 + YouTube 都合并。
+
+**方案**：`MobilePlayerScreen.loadRequest` 在 `getPlaybackInfo` 网络解析前查缓存命中（`downloadManager.downloads.first()` 按 `videoId==request.bvid && isPlayable` 匹配）。命中 → 自包含早返回块：用 `playbackFiles(id)` 建本地 `Progressive/MergingMediaSource`（镜像离线页），跳过网络取流；元数据/简介/评论/弹幕照常在线加载。缓存不命中 → 原网络路径零改动。
+
+**决策**（用户已定）：
+- 只做手机端；TV 无下载功能不涉及。
+- 命中缓存即跳过网络解析，直接本地播。
+- 清晰度只读：命中缓存时 HD 按钮+菜单换成静态文字（显示缓存 `qualityLabel`），不可切换。
+- 已缓存即隐藏下载入口按钮。
+
+**改动点**（全在 `MobilePlayerScreen.kt`）：
+1. 新增状态 `usingCachedPlayback` / `cachedDownloadId`。
+2. `loadRequest` 加缓存命中早返回块（合成 `PlaybackInfo`：qualities=[缓存清晰度]、tracks 空；本地 MediaSource）。
+3. 清晰度菜单块（1416 行）命中缓存时渲染静态文字。
+4. 下载按钮（1512 行）加 `&& !usingCachedPlayback`。
+
+**边界**：只匹配 `isPlayable`（媒体分件全 COMPLETED）；部分下载回落在线；进度续播复用 `saveProgress/getSavedProgress`（bvid/cid 正确，与在线互通）。缓存命中按 `videoId + cid` 双匹配——多 P 视频只命中已下载的那个分P，其它分P正常走在线。
 
 ### 工程约束（移动端专用）
 
@@ -895,6 +920,7 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | P11-18 | YouTube 历史并入「历史」tab（本地历史与 B 站历史**混合按播放时间倒序**、YouTube 绿框，未登录也显示本地历史；移除独立「YouTube 历史」子 tab） | ✅ Done（云编译绿） |
 | P11-19 | TV 版 YouTube 功能补全（见下方「TV 版 vs 移动端 YouTube 功能差异待办」分项表） | 待办 |
 | P11-20 | YouTube 相关视频（对齐 LibreTube：`/next` secondaryResults 的 compactVideoRenderer，TV 相关视频面板 + 移动简介 tab 相关视频区 + 播完自动连播） | 实施中（代码改完待云编译，运行时待真机） |
+| P11-21 | YouTube 搜索排序对齐 B 站 4 项（综合/最多播放/最新发布/评分，key 复用 `YoutubeSearchParams`，TV+移动两端排序条放开到 YouTube 源，切源重置默认「综合」） | 实施中（代码改完待云编译，运行时待真机） |
 
 ### TV 版 vs 移动端 YouTube 功能差异待办（P11-19）
 
@@ -910,7 +936,7 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | 🟡 P2 | **队列/连播 + 听视频模式** | `MobilePlayerScreen.kt`（`onStartPlaylist` 整列表连播 + 顶栏耳机按钮禁视频轨） | TV 版 `PlayerScreen` 单视频播放，无播放队列；无音频-only 入口。连播可接 P1 播放列表落地后做。 |
 | 🟢 P3 | **首页 YouTube 热门挂载核实** | `HomeSection.YoutubeTrending` enum 已存在 | `HomeSection.YoutubeTrending` 已定义但需核实 `HomeScreen.kt` 是否真正渲染该 section；若未挂载则补齐（复用 `YoutubeRepository.getTrending(tab)`）。 |
 
-**说明**：以下差异为 TV/移动端形态必然产物，不算缺陷，不列入待办——屏幕键盘 vs 软键盘、D-pad 焦点 vs 触屏手势、`PlayerOverlay` 覆盖层 vs 底栏 DropdownMenu、发送弹幕内联输入（TV 无软键盘不便）。两端 YouTube 源均无排序选项，属一致缺失。
+**说明**：以下差异为 TV/移动端形态必然产物，不算缺陷，不列入待办——屏幕键盘 vs 软键盘、D-pad 焦点 vs 触屏手势、`PlayerOverlay` 覆盖层 vs 底栏 DropdownMenu、发送弹幕内联输入（TV 无软键盘不便）。两端 YouTube 源排序已由 P11-21 对齐 B 站（综合/最多播放/最新发布/评分）。
 
 ### 发布
 - 测试版 `v2.0.8-alpha.1/.2/.3` 已发布验证；搜索/热门可用。

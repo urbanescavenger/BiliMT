@@ -81,7 +81,7 @@ internal fun SettingsWebDavDialog(
 
   BackHandler { if (!saving) onDismiss() }
 
-  // 弹窗打开时把焦点落到 URL 字段,自动唤起系统 IME。
+  // 弹窗打开时焦点先落到 URL 字段(仅高亮不弹 IME),按确认键才唤起系统输入法。
   LaunchedEffect(Unit) {
     runCatching { urlFocusRequester.requestFocus() }
   }
@@ -138,7 +138,7 @@ internal fun SettingsWebDavDialog(
         fontSize = BiliTypography.BodySmall,
       )
 
-      // 三字段走系统输入法:聚焦 OutlinedTextField 自动唤起 IME。
+      // 三字段参照搜索框:聚焦只高亮,按确认键才唤起 IME。
       OutlinedTextField(
         value = url,
         onValueChange = { url = it },
@@ -146,7 +146,7 @@ internal fun SettingsWebDavDialog(
         singleLine = true,
         modifier = Modifier
           .fillMaxWidth()
-          .focusRequester(urlFocusRequester),
+          .then(confirmImeModifier(urlFocusRequester)),
       )
       OutlinedTextField(
         value = username,
@@ -155,7 +155,7 @@ internal fun SettingsWebDavDialog(
         singleLine = true,
         modifier = Modifier
           .fillMaxWidth()
-          .focusRequester(usernameFocusRequester),
+          .then(confirmImeModifier(usernameFocusRequester)),
       )
       OutlinedTextField(
         value = password,
@@ -166,7 +166,7 @@ internal fun SettingsWebDavDialog(
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
         modifier = Modifier
           .fillMaxWidth()
-          .focusRequester(passwordFocusRequester),
+          .then(confirmImeModifier(passwordFocusRequester)),
       )
 
       // 校验失败提示(保持弹窗打开,不落库)。

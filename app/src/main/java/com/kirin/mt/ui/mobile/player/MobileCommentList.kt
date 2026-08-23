@@ -1,6 +1,9 @@
 package com.kirin.mt.ui.mobile.player
 
+import android.content.res.Resources
+
 import androidx.compose.foundation.background
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -248,7 +251,7 @@ private fun CommentListFooter(state: MobileCommentListState) {
         style = MaterialTheme.typography.bodySmall,
       )
       state.endReached -> Text(
-        text = "没有更多了",
+        text = stringResource(R.string.feed_footer_end),
         color = CommentColor.TextSecondary,
         style = MaterialTheme.typography.bodySmall,
       )
@@ -284,7 +287,7 @@ private fun CommentItem(comment: Comment) {
           modifier = Modifier.weight(1f, fill = false),
         )
         Text(
-          text = formatCommentRelativeTime(comment.ctime),
+          text = formatRelativeTime(comment.ctime, LocalContext.current.resources),
           color = CommentColor.TextSecondary,
           style = MaterialTheme.typography.bodySmall,
         )
@@ -318,16 +321,16 @@ private fun CommentItem(comment: Comment) {
   }
 }
 
-private fun formatCommentRelativeTime(ctimeSeconds: Long): String {
+private fun formatRelativeTime(ctimeSeconds: Long, resources: Resources): String {
   if (ctimeSeconds <= 0L) return ""
   val nowSeconds = System.currentTimeMillis() / 1000L
   val diff = nowSeconds - ctimeSeconds
   return when {
-    diff < 60 -> "刚刚"
-    diff < 3600 -> "${diff / 60}分钟前"
-    diff < 86_400 -> "${diff / 3600}小时前"
-    diff < 2_592_000 -> "${diff / 86_400}天前"
-    else -> "${diff / 2_592_000}个月前"
+    diff < 60 -> resources.getString(R.string.video_relative_just_now)
+    diff < 3600 -> resources.getString(R.string.video_relative_minutes_ago, diff / 60)
+    diff < 86_400 -> resources.getString(R.string.video_relative_hours_ago, diff / 3600)
+    diff < 2_592_000 -> resources.getString(R.string.video_relative_days_ago, diff / 86_400)
+    else -> resources.getString(R.string.video_relative_months_ago, diff / 2_592_000)
   }
 }
 
@@ -488,7 +491,7 @@ private fun YoutubeCommentFooter(state: MobileYoutubeCommentListState) {
         style = MaterialTheme.typography.bodySmall,
       )
       state.endReached -> Text(
-        text = "没有更多了",
+        text = stringResource(R.string.feed_footer_end),
         color = CommentColor.TextSecondary,
         style = MaterialTheme.typography.bodySmall,
       )
@@ -541,7 +544,7 @@ private fun YoutubeCommentItem(comment: YoutubeComment) {
           }
         }
         Text(
-          text = formatCommentRelativeTime(comment.publishedAt ?: 0L),
+          text = formatRelativeTime(comment.publishedAt ?: 0L, LocalContext.current.resources),
           color = CommentColor.TextSecondary,
           style = MaterialTheme.typography.bodySmall,
         )

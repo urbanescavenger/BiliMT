@@ -40,9 +40,12 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
+import com.kirin.mt.ui.focus.focusDiag
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -117,7 +120,7 @@ private val TvGridBringIntoViewSpec = object : BringIntoViewSpec {
   }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 internal fun TvVideoGrid(
   videos: List<VideoSummary>,
@@ -132,6 +135,9 @@ internal fun TvVideoGrid(
   onOwnerSelected: (VideoSummary) -> Unit = {},
   onCardLongPress: (VideoSummary) -> Unit = {},
   modifier: Modifier = Modifier,
+  // 焦点诊断区域标识(见 Modifier.focusDiag)。UP主页/频道页/动态等复用本网格的调用方
+  // 可传自己的 label,默认 "video-grid";诊断时可借此区分焦点落在哪个内容网格。
+  debugLabel: String = "video-grid",
   cardMode: VideoCardMode = VideoCardMode.Standard,
   footer: GridFooterState = GridFooterState.None,
   requestInitialFocus: Boolean = false,
@@ -201,6 +207,10 @@ internal fun TvVideoGrid(
   }
   var focusScrollJob by remember { mutableStateOf<Job?>(null) }
   var focusedIndex by remember { mutableIntStateOf(-1) }
+  // 当前聚焦卡片的稳定标识(keyFactory(index, video) 输出,动态流里即 bvid/videoId)。
+  // 供「异步增量合并重排」时把焦点拉回同一视频的新 index:只监听显式聚焦写入,
+  // 不随 videos 变化自更新,否则重排后就不知道原本聚焦的是谁了。
+  var focusedKey by remember { mutableStateOf<Any?>(null) }
   var rowScrollActive by remember { mutableStateOf(false) }
   var rowScrollGeneration by remember { mutableIntStateOf(0) }
   val focusScale = when {
@@ -288,6 +298,35 @@ internal fun TvVideoGrid(
         firstItemFocusRequester.requestFocus()
       }
       onInitialFocusRequested()
+    }
+  }
+
+  // 异步增量合并重排时保焦点:动态(视频)把 B 站动态先渲染出来,YouTube 关注流随后分批
+  // 按 pubdate 插入中间重排(mergeByPubdate),改动了行 key → LazyColumn 销毁重建聚焦行 → 焦点丢。
+  // 这里监听 videos 变化:若聚焦视频仍在列表但换了 index(被新条目顶到别处),滚到新位置并重新
+  // 抢焦点,让焦点跟着同一视频走而不是掉回侧栏/根。
+  // 与 focusFirstItemKey / focusRestoredItemKey 不同,这里正是需要在「列表内容被外部刷新」时
+  // 主动把焦点拉回,而不是等显式 key 触发;append 加载更多(聚焦项 index 不变)不触发。
+  LaunchedEffect(videos) {
+    val key = focusedKey ?: return@LaunchedEffect
+    if (videos.isEmpty()) return@LaunchedEffect
+    val oldIndex = focusedIndex
+    if (oldIndex < 0) return@LaunchedEffect
+    val newIndex = videos.indices.firstOrNull { i -> keyFactory(i, videos[i]) == key }
+    if (newIndex == null || newIndex == oldIndex) return@LaunchedEffect
+    // 用户正在做纵向翻页(滚到别行)时让位,避免跟用户的移动抢焦点;
+    // 空闲时(YouTube 增量合并落地)才把焦点拉回。
+    if (rowScrollActive) return@LaunchedEffect
+    val targetRow = newIndex / columns
+    scrollRow(targetRow, smoothScroll = false)
+    repeat(TvGridRestoreFocusRetryCount) {
+      withFrameNanos { }
+      val focused = runCatching {
+        itemFocusRequesters[newIndex].requestFocus()
+      }.getOrDefault(false)
+      if (focused) {
+        return@LaunchedEffect
+      }
     }
   }
 
@@ -441,6 +480,14 @@ internal fun TvVideoGrid(
       state = listState,
       modifier = modifier
         .fillMaxSize()
+        .focusDiag(debugLabel)
+        // focusRestorer 兜底:恢复目标卡(restoredItemFocusRequester,即进入覆盖层/播放器前
+        // 最后聚焦的那张卡)在焦点树重建后由 Compose 自动恢复焦点,比下方手写 restore effect
+        // 更快更稳。仅当目标卡已组合(在视口内)时生效——焦点曾在它上面且节点被移除过才会触发,
+        // 不干扰首次进入/切 tab(此时该 requester 从未被聚焦,无恢复动作)。
+        // 目标卡不在视口(滚动到深处返回)时 focusRestorer 无节点可恢复,仍由手写 effect
+        // scroll+等布局+requestFocus 兜底。两者目标一致,不冲突。
+        .focusRestorer(restoredItemFocusRequester)
         .layout { measurable, constraints ->
           if (topBleedPx <= 0) {
             val placeable = measurable.measure(constraints)
@@ -549,6 +596,7 @@ internal fun TvVideoGrid(
                 },
                 onFocused = {
                   focusedIndex = index
+                  focusedKey = keyFactory(index, video)
                   centerDownMs = 0L
                   commitFocusedItem(index)
                   if (index.shouldLoadMore(

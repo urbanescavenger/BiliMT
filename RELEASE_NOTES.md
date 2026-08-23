@@ -2,6 +2,21 @@
 
 ## 目录
 
+- [v3.0.5-alpha.9](#v305-alpha9)
+- [v3.0.5-alpha.8](#v305-alpha8)
+- [v3.0.5-alpha.7](#v305-alpha7)
+- [v3.0.5-alpha.6](#v305-alpha6)
+- [v3.0.5-alpha.5](#v305-alpha5)
+- [v3.0.5-alpha.4](#v305-alpha4)
+- [v3.0.5-alpha.3](#v305-alpha3)
+- [v3.0.5-alpha.1](#v305-alpha1)
+- [v3.0.4-alpha.9](#v304-alpha9)
+- [v3.0.4-alpha.8](#v304-alpha8)
+- [v3.0.4-alpha.7](#v304-alpha7)
+- [v3.0.4-alpha.6](#v304-alpha6)
+- [v3.0.4-alpha.5](#v304-alpha5)
+- [v3.0.4-alpha.2](#v304-alpha2)
+- [v3.0.4-alpha.1](#v304-alpha1)
 - [v3.0.3](#v303)
 - [v3.0.3-alpha.3](#v303-alpha3)
 - [v3.0.3-alpha.2](#v303-alpha2)
@@ -179,6 +194,230 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.5-alpha.9
+
+**SABR 升降档控制**:不稳定网络下反复升降档 → 看门狗整段重载黑屏。两点改进:
+1. **起始挡位改用公开 API**:alpha.8 的 seed 方案真机失效(首段仍恒最高档,重新 resolve 出 4K 后首段直接拉 4K)。改用 `DefaultTrackSelector.Parameters.setMaxVideoSize(Int.MAX_VALUE, startHeight)` 在起播阶段把 ABR 视频高度临时 cap 在起始挡,`Player.Listener.onRenderedFirstFrame()` 首帧渲染后 `clearVideoSizeConstraints()` 松开——首段**必落起始挡**(不靠带宽估计),公开 API 绕开 `AdaptiveTrackSelection.selectedIndex` private 无法强制起始档的难点。
+2. **ceiling 降档滞回(部分,待修)**:检测到降档把源档及以上升档候选 iterator 置 EMPTY,relax 窗口 `bufferMaxMs/2`=25s;但真机日志证实 `sel` 无视 ceiling 爬满 4K(ceiling=4 时 sel=0 itag299 被选中并下载),根因 media3 `AdaptiveTrackSelection` 选档=「≤带宽估计×0.7 的最高码率挡」不依赖喂的 iterator。待改用 `trackSelection.excludeTrack` 排除。
+
+### 变更
+- **`PlayerScreen.kt` / `MobilePlayerScreen.kt`**:起播阶段 `setMaxVideoSize(Int.MAX_VALUE, startHeight)` 卡起始挡 + `onRenderedFirstFrame` 后 `clearVideoSizeConstraints()` 松开;带宽计抽命名 `val bandwidthMeter` 复用(既给 ExoPlayer 又传 `SabrMediaSource.Factory`)。
+- **`DefaultSabrChunkSource.kt`**:新增 ceiling 降档滞回(降档排除源挡及以上候选、带宽持续达标 `bufferMaxMs/2` 放回一挡)。
+- **`SabrMediaSource.kt`**:Factory 透传 `bufferMaxMs` + `bandwidthMeter`。
+
+### 待真机验证
+- 弱网下降档后不再秒回高挡震荡(ceiling 生效,修 excludeTrack 后);稳定网起播首段落起始挡后爬到默认画质。
+
+### 已知遗留
+- ceiling 门控(迭代器塞 EMPTY)对 media3 1.10.0 失效,待改 `trackSelection.excludeTrack`(见 docs/youtube-hd-playback.md §6.23.2)。
+
+---
+
+## v3.0.5-alpha.8
+
+**YouTube 起始挡位设置生效**:设置项「YouTube 起播挡位(youtubeStartQuality)」此前无效——无论设 480P/720P 还是 Auto,起播首段总停在同一挡。根因是 media3 1.10.0 的 `AdaptiveTrackSelection` 初始选轨**纯带宽驱动**且 `BaseTrackSelection` 构造器**内部强制按码率降序重排**轨道——resolver 把目标挡挪到 index0 的顺序对选轨完全无效;初始选轨实际由 `determineIdealSelectedIndex`(「≤带宽估计×0.7 的最高码率挡」)决定。修复:在 `YoutubeStartQuality` 新增 `seedBps()`,把每个起始挡映射到「目标挡典型码率/0.7」的初始带宽估计,TV+移动两 player 建 `ExoPlayer` 时用 `DefaultBandwidthMeter.setInitialBitrateEstimate(...)` seed——首段正好落在目标挡,之后带宽实测自然爬升。这是 §6.21 结论的正确方向(降低起播挡而非硬钳制 chunk 取档)。
+
+### 变更
+- **`YoutubeStartQuality.kt`**:新增 `seedBps()`(Auto/144→250k、240→500k、360→900k、480→1.8M、720→3.5M 有效码率,seed 再÷0.7)。
+- **`PlayerScreen.kt` / `MobilePlayerScreen.kt`**:建 player 时 `DefaultBandwidthMeter.Builder(context).setInitialBitrateEstimate(youtubeStartQuality.seedBps()).build()` 并 `.setBandwidthMeter(...)`。
+- **`YoutubePlaybackResolver.kt`**:修正过时注释(index0 重排对 1.10.0 选轨无效,仅作轨道呈现)。
+
+### 待真机验证
+- 设 480P/720P 后,YouTube 起播首段落在目标挡(而非恒 240p/360p 或直接顶最高档)。
+
+---
+
+## v3.0.5-alpha.7
+
+**YouTube 点赞数显示修复**:真机 YouTube 视频简介区只有「观看 · 时间」没有「点赞」。点赞数原靠 `getVideoDetail` 在 `/player` 之外另发一次 `/next` 从 `videoActions` 工具栏解析回写,但该 `/next` 路径真机取不到(诊断日志 `likes videoId=` 不出现),`detail.likeCount` 恒 null,UI 的 `likeCountInt > 0` 判断把点赞段丢弃。实测 `/player` 的 `microformat` 本身就带 `likeCount` 字段(keys 含该字段,原始数字串),修复改为在 `parseVideoDetail` 里直接用 `parseCount(mf.likeCount)` 读取,免去不稳定往返、更快更稳;`/next` 仍保留作兜底(真能取到则覆盖)。
+
+### 变更
+- **`YoutubeParsers.parseVideoDetail`**:新增 `likeCount = mf?.stringOrNull("likeCount")?.let(::parseCount)` 并在返回的 `YoutubeVideoDetail` 里带上,不再恒留 null。
+
+### 待真机验证
+- 移动端 YouTube 视频简介区显示「观看 · 点赞 · 时间」;点赞数与 B 站客户端一致。
+
+---
+
+## v3.0.5-alpha.6
+
+**TV 备份/还原选择弹窗崩溃修复 + 日志分享面板加备份 + YouTube 搜索排序对齐 + 暂停控制栏自动隐藏**:真机「设置→备份」一点就崩、弹窗未弹、无日志,崩溃日志定位到 Compose 布局异常 `Vertically scrollable component was measured with an infinity maximum height constraints`——`SettingsWebDavSelectionDialog` 的 Column 带 `verticalScroll` 却没给有限 max 高度,弹窗在无限高约束下测量滚动容器直接抛 `IllegalStateException`。修复:在 `verticalScroll` 前补 `.heightIn(max=680.dp)`,与正常工作的 WebDav 配置弹窗一致。随行按用户要求给 TV 日志分享面板补「备份」按钮(单文件上传 WebDAV bilitv/logs,只上传不删本地);另含 YouTube 搜索排序对齐 B 站 4 项(综合/最多播放/最新发布/评分,TV+移动端)、暂停状态 5s 无操作控制栏也自动隐藏(TV 与移动全屏同步)。
+
+### 变更
+- **根因修复 `SettingsWebDavSelectionDialog.kt`**:`Column` modifier 由 `.width(600.dp).verticalScroll(...)` 改为 `.width(600.dp).heightIn(max=680.dp).verticalScroll(...)`,滚动容器受有限 max 高约束,弹窗不再崩溃。
+- **日志备份 `backupLogFile`**:`WebDavBackupService` 新增单文件日志上传(先 `mkcol bilitv/logs` 再 `put`,只上传不删本地);`SettingsLogPanel`/`SettingsScreen`/`AppShell` 接线,每个日志文件行新增「备份」按钮。
+- **搜索排序对齐 B 站 4 项**:综合/最多播放/最新发布/评分,TV+移动端。
+- **暂停控制栏自动隐藏**:暂停状态 5s 无操作控制栏也隐藏,播放结束保持常显供重播/下一集。
+
+### 待真机验证
+- 索尼 7 系:设置→备份弹窗正常弹出、可勾选并执行备份/还原不再崩溃;日志面板每个文件行「备份」单文件上传成功。
+- YouTube 搜索排序 4 项可切换并返回对应结果;暂停后 5s 控制栏自动隐藏。
+
+---
+
+## v3.0.5-alpha.5
+
+**S905X5M 等 Amlogic 盒子解码器误判仅 H264 修复**:用户在 X96M200(S905X5M 芯片)上发现「设置→解码器」固定为 H264 无法切换,该芯片支持 HEVC/AV1 硬解且隔壁 BV 可正常播 AV1,用 H264 看 4K 高码率很卡。根因 `CodecCapabilityProbe` 用 `MediaCodecList.REGULAR_CODECS` + `isHardwareAccelerated` 过滤硬件解码器,但 Amlogic 厂商 AV1/HEVC 硬解组件(`c2.aml.*`)常不置 `isHardwareAccelerated` 或被排除出 REGULAR 列表,导致 `supportsAv1/supportsH265` 误判 false → 选项列表只剩 `[Auto, H264]`。修复:改用 `ALL_CODECS` 枚举 + Q+ 硬件判定放宽为 `isHardwareAccelerated || !isSoftwareOnly`(对齐 BV 的 `!isSoftwareOnly` 判定);真正软解(dav1d/c2.android.*)`isSoftwareOnly=true` 仍被排除,无回归。修复后解码器出现 Auto/AV1/H265/H264 四项,播放链路 `buildFnval`/`isPlayable` 随之正确请求并过滤 AV1/HEVC。
+
+### 变更
+- **根因修复 `CodecCapabilityProbe.kt`**:`decoderMimeTypes()` 的 `MediaCodecList(REGULAR_CODECS)` → `ALL_CODECS`;`isHardwareDecoderInfo()` Q+ 分支 `return info.isHardwareAccelerated` → `info.isHardwareAccelerated || !info.isSoftwareOnly`,预-Q 名称判定不变。
+
+### 待真机验证
+- S905X5M 上设置→解码器显示 Auto/AV1/H265/H264,切 AV1 后 4K 高码率硬解不再卡;`BiliMT:Codec` 日志 `h264/h265/av1` 三标志全 true。
+
+---
+
+## v3.0.5-alpha.4
+
+**多语言三语补齐 + localeFilters 剪包真因修复**:上一版 alpha.3 的英文真机始终不切——真因**不是** Compose/Context,而是 `build.gradle.kts` `androidResources.localeFilters` 原只列 `zh/zh-rHK/zh-rTW` 三个值,把 `values-en/es/pt` 从 APK 里**整个剪掉**(APK `resources.arsc` 字节搜索证实只含默认+zh-rTW/zh-HK 的串,英文设置永远回落默认中文)。补 `en/es/pt` 进 filter 后英文真机切换生效。ES/PT 由骨架补为**全量 664 key 翻译**,三语(默认/en/es/pt)key 集合零缺失零多余、占位符逐一核对零错位、无裸 `%`/`&`/悬空 `%`,aapt 安全。清掉语言切换 toast 的运行时诊断日志。
+
+### 变更
+- **根因修复 `build.gradle.kts`**:`androidResources.localeFilters` 由 `zh/zh-rHK/zh-rTW` 补为 `zh/zh-rHK/zh-rTW/en/es/pt`,拉丁资源真正进包。
+- **`values-es`/`values-pt` 全量翻译**:各 664 key,相对时间 → "hace %1$d días"/"%1$d dias atrás",数字走 K/M/B(由 locale 感知 `CountFormatter` 分发)。
+- **清理**:移除 `MobileSettingsScreen` 语言切换 toast 的 `BiliMT:i18n` 诊断日志与 `Log`/`Locale` import。
+
+### 待真机验证
+- 切 Español / Português 抽查首页/搜索/设置/播放器/下载,标签应为西语/葡语;相对时间本地化(hace %d días / %d dias atrás);数字 "1.2M"。
+
+---
+
+## v3.0.5-alpha.3
+
+**多语言支持(EN 全量 + ES/PT 骨架 + 硬编码中文收口 + 数字本地化)**:语言设置从仅简体/港繁/台繁扩展为 6 档,新增 **English / Español / Português**。界面骨架文案(导航、设置、播放器、动态、评论、下载等)可切为拉丁语言,中文动态内容(视频标题、UP 名)保持原样。EN 全量翻译 654 条;ES/PT 本期建骨架并接通(缺 key 落默认中文,翻译后补)。
+
+### 变更
+- **`ChineseTextVariant` 枚举泛化**:新增 `English/Spanish/Portuguese` 三值;`ChineseTextConverter.forVariant` 对拉丁语系返回 identity(原样返回,简繁转换只对中文变体生效)。
+- **`localizedContext()` locale 映射**:English→`Locale.ENGLISH`,Spanish→`Locale("es")`,Portuguese→`Locale("pt")`,`stringResource` 自动命中对应 `values-<locale>`。
+- **两套设置页语言项**:TV `SettingsScreen` 与移动 `MobileSettingsScreen` 各加 3 个语言自名选项(`settings_language_english/spanish/portuguese`, 显示 "English"/"Español"/"Português")。
+- **移动端 LocalContext 包裹**:`MobileApp`/`SettingsActivity`/`LoginActivity` 三个入口补 `localizedContext()` + `LocalChineseTextConverter` 包裹(此前移动端 `stringResource` 走系统 locale,语言设置不生效)。
+- **数字本地化 `CountFormatter`**:统一 4 处分散的紧凑计数格式化为一个 locale 感知函数——中文变体 `万/亿`(除 1e4/1e8),拉丁变体 `K/M/B`(除 1e3/1e6/1e9);除数差异是代码逻辑,无法靠翻译字符串表达。
+- **`values-en/strings.xml` 全量英文翻译**:654 key 与默认 key 完全对齐,保留 `%1$s/%d` 占位符;相对时间 → "3 days ago",数字 → "1.2M/120M"。
+- **`values-es`/`values-pt` 骨架**:先放关键自名文案,其余缺 key 落默认中文。
+- **硬编码 UI 中文收口**:扫描 ~671 处 CJK 字面量,按用途甄别——UI 标签抽进 `stringResource`(纳入翻译),日志/诊断文案与来源数据(分区名、B 站数据)保留中文。
+
+### 待真机验证
+- 切英文设置后抽查首页/搜索/设置/播放器/下载的标签为英文;视频标题、UP 名仍为中文原样;相对时间显示 "3 days ago";数字 "1.2M"。
+- 中文变体(简/繁)回归不受影响;ES/PT 切后多数界面落中文属预期(后续填翻译)。
+
+---
+
+## v3.0.5-alpha.1
+
+**YouTube SABR 自动档位升级不上去修复**:自动模式此前卡在最低档(360p/itag243)不升档,手动切档正常;根因是媒体源自合成的 DASH 清单里 H264 + VP9 混合 mime 组被 `DefaultTrackSelector` 默认策略坍缩成单轨,自适应组只剩一条轨,无档可升。现在 TV/移动端播放器显式启用混合 mime 自适应,自动档可逐步升到 1080p。
+
+### 变更
+- **`Representation.fromTrack`**:每条轨 `Format.Builder().setId(formatId.itag)`——此前 id 全 null,破坏轨身份导致自适应组构建坍缩成单轨。
+- **`PlayerScreen` / `MobilePlayerScreen`**:ExoPlayer 显式挂 `DefaultTrackSelector`,开 `setAllowVideoMixedMimeTypeAdaptiveness(true)` + `setAllowVideoNonSeamlessAdaptiveness(true)` + `setAllowMultipleAdaptiveSelections(true)`,让混合 H264/VP9 组可自适应选轨升档。
+- **诊断叠层**(真机验证后保留,仅日志):`YtSabrManifest`(清单轨数)、`YtSabrChunk`(选中轨 itag/bitrate)、`YtSabrAbr`(升档轨迹)、`YtSabrTracks`(每轨 support/selected)。
+
+### 待真机验证
+- 自动档:播放器 **自动** 从 360p 起步,~8s 内逐步升到 1080p(实测 `trackSelLen=5`,完整 144p→480p→1080p 升档)。
+- 手动切 720p/1080p 精准锁档不受影响。
+
+---
+
+## v3.0.4-alpha.9
+
+**YouTube 频道页「最新 / 最热」排序**:对齐 B 站 UP 空间,频道页视频 tab 支持最新/最热双档切换。
+
+### 变更
+- **数据层**:`YoutubeConstants` 加 `ChannelPopularParams = "EgZwb3B1bGFy"`(最热,解码 field1="popular")与 `ChannelVideoOrder` 枚举(Latest/Popular);`YoutubeRepository.getChannelVideos` 参数化 `params`(默认最新,翻页 continuation 与排序无关)。
+- **TV 端**:`YoutubeChannelScreen` header 加「最新发布 / 最热门」sort chips,聚焦即切换、`loadedOrder` 守卫切排序强制重拉第一页。
+- **移动端**:`MobileYoutubeChannelScreen` header 加两个 OutlinedButton 切换,`loadedOrder` 守卫同 TV。
+
+### 待真机验证
+- 频道页 header 出现「最新发布 / 最热门」;切「最热门」列表按播放量排序、续页正常;TV D-pad 能聚焦排序 chips 并下移网格。
+- 最热参数 `EgZwb3B1bGFy` 来自 rustypipe/invidious 文档、未实测,若首屏不按播放量排序需改用 order continuation token 方案。
+
+---
+
+## v3.0.4-alpha.8
+
+**下载管理批量删除 + 播放列表批量移除**:下载管理右上角三点进入批量模式,播放列表编辑模式升级为批量移除,一次清理多个任务/视频。
+
+### 变更
+- **下载管理批量删除**:右上角三点 `⋮` 进入批量模式——卡片前复选框、点卡勾选/取消、底部栏「已选 N/全选/删除所选」、删除二次确认后逐条 `downloadManager.delete`(删本地文件+DB 行)并退出模式;顶部三点变「完成」。
+- **播放列表详情批量移除**:编辑模式(顶栏「编辑/完成」)升级为批量移除——每卡前置复选框、点卡勾选/取消、底部栏「已选 N/全选/删除所选」、二次确认后 `store.removeVideos` 一次性过滤移除;保留卡片右侧单「移除」按钮(单选即时删,同步从选中集剔除);「完成」退出清空选中。
+- **`YoutubePlaylistStore` 加批量 `removeVideos(playlistName, ids)`**:单次写盘过滤多个 bvid。
+
+### 待真机验证
+- 下载管理:三点进批量模式,勾选/全选/删除所选(含本地文件),完成/Back 退出;非批量单击播放/长按菜单不受影响。
+- 播放列表:编辑模式复选框勾选、底部栏批量移除、单「移除」保留;长按拖动排序不受影响。
+
+---
+
+## v3.0.4-alpha.7
+
+**在线播放器命中缓存播本地源**:在线刷到已下载/缓存的视频,点进去视频区直接播本地缓存文件,简介/评论/弹幕仍走在线,与在线播放完全一致。B站 + YouTube 都合并。
+
+### 变更
+- **`MobilePlayerScreen` 缓存命中分支**:`loadRequest` 在 `getPlaybackInfo` 网络解析前查缓存(`videoId + cid` 双匹配 + `isPlayable`),命中 → 用 `playbackFiles` 建本地 `Progressive/MergingMediaSource`(镜像离线播放器),跳过网络取流;元数据/简介/评论/弹幕照常在线加载。
+- **清晰度只读**:命中缓存时 HD 画质按钮+菜单换成静态文字(显示缓存 `qualityLabel`),不可切换(本地源无多轨)。
+- **隐藏下载入口**:已缓存(命中本地源)时不再显示下载按钮。
+- **多 P 安全**:`videoId + cid` 双匹配,只命中已下载的那个分P,其它分P正常走在线。
+- **进度续播**:复用 `saveProgress/getSavedProgress`,与在线互通。
+
+### 待真机验证
+- 在线刷到已下载视频,点进去视频区播本地文件、简介/评论/弹幕仍在线;清晰度只读、无下载按钮;切到未缓存视频恢复正常在线播放。
+
+---
+
+## v3.0.4-alpha.6
+
+**离线播放器底栏对齐在线播放器**:去掉进度条下方独立的播放/暂停按钮,底栏收敛为单行(时间 + 进度条 + 时长),与在线播放器 MobilePlayerScreen 一致。播放/暂停仍通过点击视频画面中央触发(与在线一致)。
+
+### 变更
+- **`MobileOfflinePlayerScreen` 底栏**:删除进度条下方居中的播放/暂停图标按钮行,底栏改为单行布局(时间 + SlimSeekSlider + 时长)。
+- 清理随之不再使用的 `Arrangement` / `clickable` 导入。
+
+---
+
+## v3.0.4-alpha.5
+
+**YouTube 播放优先级设置(SABR 优先 / DASH 优先)**:真机日志确认一次视频播放中断——SABR 首段在慢服务器上 ~11s 才送达,而播放器 stall 看门狗阈值 8s 无启动宽限,首段刚到前误判 → 完整 teardown+重建会话(「卡住→重新加载视频」)。新增手动逃生通道:默认 **SABR 优先**(行为完全不变),切 **DASH 优先** 先走 DASH 自合成兜底(NewPipe 已解密直链拼 MPD,能出 4K VP9),避开慢 SABR 首段被看门狗误杀。根因修复(启动宽限 / auto-retry 不 teardown)另议。
+
+### 变更
+- **新设置项「播放优先级」**(TV + 移动端两态循环选择器):SABR 优先(默认)⇄ DASH 优先。
+- **`YoutubePlaybackResolver` 按优先级分派**:DASH 优先时先 `buildDashFallbackFromNewPipe` 成功直接 return;SABR 优先时保留原路径(SABR 失败才走 DASH 兜底)。
+
+### 待真机验证
+- 切 DASH 优先播放走 `NewPipe-first(DASH 优先) → DASH/HLS playback ready`;切回 SABR 优先日志 `source=NewPipe(primary)` 不变。
+
+---
+
+## v3.0.4-alpha.2
+
+**YouTube 首页订阅流接真实 continuation 分页**:此前「YouTube 首页/热门 tab」实际是**关注频道订阅流**（RSS + InnerTube `/browse` 按 `videoId` 合并），但只有**单页**——每频道合并后硬截断 `take(perChannel)`（默认 15 条），且 `/browse` 第一页的 **continuation token 被丢弃**，更早/最早的视频结构性不可达。对照 LibreTube 也无订阅流续页可抄（它用「30 天时间窗 + 每频道只拉各 tab 第一页 + `cleanUpOlderThan` 清库」解决）。现自己给聚合流加真 continuation 分页，滚动到底可逐页逼近最早视频。
+
+### 变更
+- **数据层**：新增 `YoutubeSubscriptionsPage(videos, perChannelContinuation)`（`endReached = 所有频道 token 皆 null`）；`YoutubeRepository.getSubscriptionsPage` 首屏沿用 RSS+InnerTube 合并但**记录每频道 InnerTube 首屏 continuation**，续页只对 token 非 null 的频道拉更早一页；抽 `getChannelVideosRawPage`（首屏 browseId+params / 续页 continuation）与 `fillChannelInfo`（补频道名/id/头像）复用。
+- **转发层**：`VideoRepository.youtubeHomeFeedPage(previousContinuation)` 读关注频道、空→空页；头像回写 store 在此处理，UI 无感知。
+- **UI（TV `RecommendScreen` + 移动 `HomeScreen` 共用）**：`Success.youtubeContinuation` 字段；首屏 `endReached=page.endReached`；续页 `(current+page).distinctBy{it.bvid}.sortedByDescending{it.pubdate}`、`endReached=page.endReached`。滚动到底连续追加更早视频。
+- **缓存保持简单**：Room 缓存只存首屏快照、**不落盘 continuation**；10min 内 cache 命中视为单页到底不续翻（现状不变）。
+- **CI 稳健性**：`android-build.yml` debug 发布步骤（`gh release edit/upload`）加退避重试，不再被 GitHub API 偶发 503/EOF 标红。
+
+### 待真机验证
+- TV 首页 YouTube 热门 tab：下滑触底后**每次到底追加一批更早视频**，能逐页逼近最早，`endReached` 不再误判。
+- 移动端首页 YouTube 分区：下滑触底连续翻页；切走再切回保留续页状态。
+- 缓存路径：10min 内冷启动显示缓存快照、单页到底（不变）；动态 tab 关注流仍正常合并进 B 站动态。
+
+---
+
+## v3.0.4-alpha.1
+
+**TV 覆盖层/长按弹窗返回焦点恢复**:UP 主页、YouTube 频道主页(内容来源)返回与动态长按操作菜单(`BiliActionSheet`)关闭后,焦点不再丢失。这两处都是**屏内覆盖层**(非 `Dialog`),关闭时聚焦节点被移除,Compose 不会自动把焦点还给底下网格 → 返回后焦点停在空白处(侧栏头像)。现统一走网格 `restoreFocusRequestKey` 恢复,精确拉回进入覆盖层前的那张卡片。
+
+### 变更
+- **UP 主页 / YouTube 频道主页返回恢复卡片焦点**:新增 `requestContentGridRestore`,内容来源覆盖层返回走网格恢复(而非落 tab 后被延迟焦点回落清掉),焦点回到进入前的卡片。
+- **动态长按操作菜单关闭恢复卡片焦点**:`BiliActionSheet` 关闭(Back / 点赞 / 稍后再看)复用 `focusRestoredItemKey` 拉回刚长按的卡片;选中会跳转的项(评论 / 去 UP 主页)置 navigating 跳过恢复,避免焦点被抢到菜单底下隐藏的网格上。
+- **覆盖层返回期间抑制侧栏头像 autoConfirm**:防覆盖层关闭后的延迟焦点回落把焦点丢到头像并 autoConfirm 打开「我的」页。
+
+### 待真机验证
+- TV 从 YouTube 频道主页返回后,焦点是否落在进入前那张卡片。
+- 动态长按弹窗按 Back 关闭后,焦点是否回到刚长按的卡片。
+
+---
 
 ## v3.0.3
 

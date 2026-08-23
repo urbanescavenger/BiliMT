@@ -2,11 +2,17 @@ package com.kirin.mt.core.app
 
 import android.content.Context
 import android.util.Log
+import androidx.room.Room
 import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.auth.TvLoginSigner
 import com.kirin.mt.core.auth.WbiKeyRepository
 import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.cache.AppCacheManager
+import com.kirin.mt.core.download.DownloadDatabase
+import com.kirin.mt.core.download.DownloadEngine
+import com.kirin.mt.core.download.DownloadManager
+import com.kirin.mt.core.download.DownloadStorage
+import com.kirin.mt.core.download.DownloadUrlResolver
 import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliHttpClientFactory
@@ -192,6 +198,31 @@ class AppContainer(context: Context) {
     repository = webdavRepository,
     json = json,
     settingsStore = appSettingsStore,
+  )
+
+  // ── 视频下载管理器(离线播放) ──────────────────────────────────────────────
+  val downloadDatabase: DownloadDatabase = Room.databaseBuilder(
+    appContext,
+    DownloadDatabase::class.java,
+    "download.db",
+  ).addMigrations(DownloadDatabase.MIGRATION_2_1).build()
+  val downloadStorage: DownloadStorage = DownloadStorage(appContext)
+  val downloadEngine: DownloadEngine = DownloadEngine(downloadHttpClient)
+  val downloadUrlResolver: DownloadUrlResolver = DownloadUrlResolver(
+    playbackRepository = playbackRepository,
+    youtubePlaybackResolver = youtubePlaybackResolver,
+    appSettingsStore = appSettingsStore,
+  )
+  val downloadManager: DownloadManager = DownloadManager(
+    appContext = appContext,
+    dao = downloadDatabase.downloadDao(),
+    storage = downloadStorage,
+    urlResolver = downloadUrlResolver,
+    engine = downloadEngine,
+    thumbnailClient = downloadHttpClient,
+    json = json,
+    // 下载完成自动存档进「下载」播放列表(见 DownloadManager.finalizeGroup)。
+    playlistStore = youtubePlaylistStore,
   )
 
   /**

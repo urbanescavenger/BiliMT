@@ -6,11 +6,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.youtube.YoutubeConstants
 
 /**
  * 移动端 YouTube 频道主页状态持有器:在 shell 层(MobileApp.kt)remember,离开组合仍存活,
  * 从频道起播后退出播放器回到频道时不重载(镜像 MobileUpSpaceUiState)。
- * 守卫:loadedChannelId 管频道名解析 + 视频列表。
+ * 守卫:loadedChannelId 管频道名解析;loadedOrder 管排序(最新/最热,切排序重拉)。
  */
 @Stable
 class MobileYoutubeChannelUiState {
@@ -25,4 +26,6 @@ class MobileYoutubeChannelUiState {
   var failed by mutableStateOf<String?>(null)
   val gridState = LazyGridState()
   var loadedChannelId by mutableStateOf("")
+  var order by mutableStateOf(YoutubeConstants.ChannelVideoOrder.Latest)
+  var loadedOrder by mutableStateOf(YoutubeConstants.ChannelVideoOrder.Latest)
 }

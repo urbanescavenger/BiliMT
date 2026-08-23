@@ -6,7 +6,10 @@ import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
+import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeDeliveryPriority
+import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 
 enum class AppVisualPerformanceMode(val key: String) {
@@ -43,10 +46,14 @@ data class AppSettings(
   val playbackCdnPreference: PlaybackCdnPreference = PlaybackCdnPreference.Auto,
   /** YouTube 默认画质(按分辨率上限选档)。 */
   val youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+  /** YouTube SABR 自适应起播档(初始选轨分辨率)。Auto 自适应时由该档起播再逐档爬升。 */
+  val youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
   /** YouTube 内容地区(gl/hl 联动;默认美国,不放中国因 gl=CN 实测触发反爬)。 */
   val youtubeContentRegion: YoutubeContentRegion = YoutubeContentRegion.US,
   /** 默认播放倍速(起播时初始化播放器 playbackSpeed)。 */
   val defaultPlaybackSpeed: DefaultPlaybackSpeed = DefaultPlaybackSpeed.X100,
+  /** 播放缓冲时长上限(maxBuffer)。网络波动时缓冲池顶住不卡的时间;默认 50s 对齐 LibreTube。 */
+  val bufferMax: PlaybackBufferMax = PlaybackBufferMax.Standard,
   val seekPreviewSpritesEnabled: Boolean = true,
   val airJumpAssistantEnabled: Boolean = true,
   val confirmPlaybackExit: Boolean = true,
@@ -83,6 +90,13 @@ data class AppSettings(
    * Piped 路径默认开此项(配合 Piped 已 attested config 验证 itag 确实无关)。
    */
   val sabrForceSessionVideoItag: Boolean = false,
+  /**
+   * YouTube 播放路径优先级:主路径先走 SABR 还是 DASH 自合成兜底。默认 [com.kirin.mt.core.player.YoutubeDeliveryPriority.Sabr]
+   * ——保持历史行为(NewPipe SABR 主路径 → DASH 兜底)。[com.kirin.mt.core.player.YoutubeDeliveryPriority.Dash]
+   * 用于慢源/卡顿场景:慢 SABR 首段会被 8s stall 看门狗误杀触发完整重建,切 Dash 让 DASH 自合成优先
+   * (NewPipe 已解密直链拼 MPD,实测能出 4K VP9)。见 docs/youtube-hd-playback.md。
+   */
+  val youtubeDeliveryPriority: YoutubeDeliveryPriority = YoutubeDeliveryPriority.Sabr,
 ) {
   val lowSpecMode: Boolean
     get() = visualPerformanceMode == AppVisualPerformanceMode.Smooth

@@ -36,13 +36,17 @@ import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.player.CodecCapability
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.DefaultPlaybackSpeed
+import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.SpeedTestUiState
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeDeliveryPriority
+import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppVisualPerformanceMode
+import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.core.settings.HomeThemeVariant
 import com.kirin.mt.core.update.UpdateUiState
 import com.kirin.mt.core.util.LogCatcherUtil
@@ -61,6 +65,8 @@ fun SettingsScreen(
   codecCapability: CodecCapability,
   modifier: Modifier = Modifier,
   firstItemFocusRequester: FocusRequester,
+  userSession: UserSession,
+  onAccountClick: () -> Unit,
   onMoveLeftToNav: () -> Boolean,
   onVisualPerformanceModeChange: (AppVisualPerformanceMode) -> Unit,
   liquidGlassCardsSupported: Boolean,
@@ -71,8 +77,10 @@ fun SettingsScreen(
   onSeekPreviewSpritesEnabledChange: (Boolean) -> Unit,
   onPlaybackQualityPreferenceChange: (PlaybackQualityPreference) -> Unit,
   onYoutubeDefaultQualityChange: (YoutubeDefaultQuality) -> Unit,
+  onYoutubeStartQualityChange: (YoutubeStartQuality) -> Unit,
   onYoutubeContentRegionChange: (YoutubeContentRegion) -> Unit,
   onDefaultPlaybackSpeedChange: (DefaultPlaybackSpeed) -> Unit,
+  onPlaybackBufferMaxChange: (PlaybackBufferMax) -> Unit,
   onPlaybackCodecPreferenceChange: (PlaybackCodecPreference) -> Unit,
   onPlaybackCdnPreferenceChange: (PlaybackCdnPreference) -> Unit,
   onAirJumpAssistantEnabledChange: (Boolean) -> Unit,
@@ -93,6 +101,7 @@ fun SettingsScreen(
   onViewLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onBackFromLogView: () -> Unit,
   onShareLog: (LogCatcherUtil.LogFileInfo) -> Unit,
+  onBackupLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onToggleLogRecording: () -> Unit,
   updateState: UpdateUiState,
   onCheckUpdate: () -> Unit,
@@ -107,15 +116,17 @@ fun SettingsScreen(
   onRemoveYoutubeChannel: suspend (String) -> Boolean,
   webDavConfig: com.kirin.mt.core.webdav.WebDavConfig,
   onWebDavConfigChange: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<com.kirin.mt.core.webdav.WebDavConfig>,
-  onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
-  onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
+  onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Unit>,
+  onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Int>,
   onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
   onPipedInstanceChange: (url: String) -> Unit,
   onYoutubeUsePipedChange: (Boolean) -> Unit,
   onSabrForceSessionVideoItagChange: (Boolean) -> Unit,
+  onYoutubeDeliveryPriorityChange: (YoutubeDeliveryPriority) -> Unit,
 ) {
   val settingsListState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
+  val context = LocalContext.current
   val density = LocalDensity.current
   val settingsRowFallbackHeightPx = with(density) {
     (BiliSizing.SettingsRowHeight + BiliSpacing.Md).roundToPx()
@@ -125,9 +136,12 @@ fun SettingsScreen(
   }
   val settingFocusRequesters = remember {
     mapOf(
+      SettingsItemAccount to FocusRequester(),
       SettingsItemPlaybackQuality to FocusRequester(),
       SettingsItemYoutubeDefaultQuality to FocusRequester(),
+      SettingsItemYoutubeStartQuality to FocusRequester(),
       SettingsItemDefaultSpeed to FocusRequester(),
+      SettingsItemPlaybackBufferMax to FocusRequester(),
       SettingsItemChineseTextVariant to FocusRequester(),
       SettingsItemClearCache to FocusRequester(),
       SettingsItemPlaybackCodec to FocusRequester(),
@@ -156,6 +170,7 @@ fun SettingsScreen(
       SettingsItemPiped to FocusRequester(),
       SettingsItemYoutubeUsePiped to FocusRequester(),
       SettingsItemSabrForceItag to FocusRequester(),
+      SettingsItemYoutubeDeliveryPriority to FocusRequester(),
       SettingsItemWebDav to FocusRequester(),
       SettingsItemWebDavBackup to FocusRequester(),
       SettingsItemWebDavRestore to FocusRequester(),
@@ -164,12 +179,15 @@ fun SettingsScreen(
       SettingsItemAbout to FocusRequester(),
     )
   }
-  var lastFocusedSettingItem by remember { mutableIntStateOf(SettingsItemPlaybackQuality) }
+  var lastFocusedSettingItem by remember { mutableIntStateOf(SettingsItemAccount) }
   var focusSettingJob by remember { mutableStateOf<Job?>(null) }
   var rightPanel by remember { mutableStateOf(SettingsRightPanel.None) }
   var showWebDavDialog by remember { mutableStateOf(false) }
   var showIptvDialog by remember { mutableStateOf(false) }
   var showPipedDialog by remember { mutableStateOf(false) }
+  var showBackupDialog by remember { mutableStateOf(false) }
+  var showRestoreDialog by remember { mutableStateOf(false) }
+  var webDavState by remember { mutableStateOf<WebDavBackupState>(WebDavBackupState.Idle) }
 
   fun focusSettingItem(itemIndex: Int, direction: Int = 0): Boolean {
     val lazyIndex = settingsItemToLazyIndex(itemIndex, updateState)
@@ -231,6 +249,8 @@ fun SettingsScreen(
         codecCapability = codecCapability,
         listState = settingsListState,
         focusRequesters = settingFocusRequesters,
+        userSession = userSession,
+        onAccountClick = onAccountClick,
         onSettingFocused = { itemIndex ->
           // 两层架构:聚焦只记录最近项(供返回焦点),不展开右侧二级菜单;
           // 二级菜单只由对应行「点击」开合(见 onAboutSelected 等)。
@@ -247,8 +267,10 @@ fun SettingsScreen(
         onSeekPreviewSpritesEnabledChange = onSeekPreviewSpritesEnabledChange,
         onPlaybackQualityPreferenceChange = onPlaybackQualityPreferenceChange,
         onYoutubeDefaultQualityChange = onYoutubeDefaultQualityChange,
+        onYoutubeStartQualityChange = onYoutubeStartQualityChange,
         onYoutubeContentRegionChange = onYoutubeContentRegionChange,
         onDefaultPlaybackSpeedChange = onDefaultPlaybackSpeedChange,
+        onPlaybackBufferMaxChange = onPlaybackBufferMaxChange,
         onPlaybackCodecPreferenceChange = onPlaybackCodecPreferenceChange,
         onPlaybackCdnPreferenceChange = onPlaybackCdnPreferenceChange,
         onAirJumpAssistantEnabledChange = onAirJumpAssistantEnabledChange,
@@ -283,12 +305,16 @@ fun SettingsScreen(
           }
         },
         onWebDavSelected = { showWebDavDialog = true },
+        onBackupSelected = { showBackupDialog = true },
+        onRestoreSelected = { showRestoreDialog = true },
+        webDavState = webDavState,
         onIptvSourceConfigChange = onIptvSourceConfigChange,
         onIptvSelected = { showIptvDialog = true },
         onPipedInstanceChange = onPipedInstanceChange,
         onPipedSelected = { showPipedDialog = true },
         onYoutubeUsePipedChange = onYoutubeUsePipedChange,
         onSabrForceSessionVideoItagChange = onSabrForceSessionVideoItagChange,
+        onYoutubeDeliveryPriorityChange = onYoutubeDeliveryPriorityChange,
         onLogsSelected = {
           rightPanel = if (rightPanel == SettingsRightPanel.Logs) {
             SettingsRightPanel.None
@@ -302,6 +328,7 @@ fun SettingsScreen(
         onViewLog = onViewLog,
         onBackFromLogView = onBackFromLogView,
         onShareLog = onShareLog,
+        onBackupLog = onBackupLog,
         onToggleLogRecording = onToggleLogRecording,
         updateState = updateState,
         onCheckUpdate = onCheckUpdate,
@@ -334,6 +361,7 @@ fun SettingsScreen(
           onView = onViewLog,
           onBackFromView = onBackFromLogView,
           onShare = onShareLog,
+          onBackupLog = onBackupLog,
           onToggleRecording = onToggleLogRecording,
           onMoveLeftToSettings = { focusSettingItem(lastFocusedSettingItem) },
           modifier = Modifier.weight(1f),
@@ -402,6 +430,54 @@ fun SettingsScreen(
         modifier = Modifier.align(Alignment.Center),
       )
     }
+    if (showBackupDialog) {
+      SettingsWebDavSelectionDialog(
+        isRestore = false,
+        onConfirm = { items ->
+          showBackupDialog = false
+          coroutineScope.launch {
+            webDavState = WebDavBackupState.Running(isRestore = false)
+            val result = onWebDavBackup(webDavConfig, items)
+            webDavState = WebDavBackupState.Idle
+            val msg = result.fold(
+              onSuccess = { context.getString(R.string.settings_webdav_backup_success) },
+              onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
+            )
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+          }
+          focusSettingItem(SettingsItemWebDavBackup)
+        },
+        onDismiss = {
+          showBackupDialog = false
+          focusSettingItem(SettingsItemWebDavBackup)
+        },
+        modifier = Modifier.align(Alignment.Center),
+      )
+    }
+    if (showRestoreDialog) {
+      SettingsWebDavSelectionDialog(
+        isRestore = true,
+        onConfirm = { items ->
+          showRestoreDialog = false
+          coroutineScope.launch {
+            webDavState = WebDavBackupState.Running(isRestore = true)
+            val result = onWebDavRestore(webDavConfig, items)
+            webDavState = WebDavBackupState.Idle
+            val msg = result.fold(
+              onSuccess = { count -> context.getString(R.string.settings_webdav_restore_success, count) },
+              onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
+            )
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+          }
+          focusSettingItem(SettingsItemWebDavRestore)
+        },
+        onDismiss = {
+          showRestoreDialog = false
+          focusSettingItem(SettingsItemWebDavRestore)
+        },
+        modifier = Modifier.align(Alignment.Center),
+      )
+    }
   }
 }
 
@@ -413,6 +489,8 @@ private fun SettingsBehaviorColumn(
   codecCapability: CodecCapability,
   listState: LazyListState,
   focusRequesters: Map<Int, FocusRequester>,
+  userSession: UserSession,
+  onAccountClick: () -> Unit,
   onSettingFocused: (Int) -> Unit,
   onMoveSettingFocus: (Int, Int) -> Boolean,
   onMoveLeftToNav: () -> Boolean,
@@ -425,8 +503,10 @@ private fun SettingsBehaviorColumn(
   onSeekPreviewSpritesEnabledChange: (Boolean) -> Unit,
   onPlaybackQualityPreferenceChange: (PlaybackQualityPreference) -> Unit,
   onYoutubeDefaultQualityChange: (YoutubeDefaultQuality) -> Unit,
+  onYoutubeStartQualityChange: (YoutubeStartQuality) -> Unit,
   onYoutubeContentRegionChange: (YoutubeContentRegion) -> Unit,
   onDefaultPlaybackSpeedChange: (DefaultPlaybackSpeed) -> Unit,
+  onPlaybackBufferMaxChange: (PlaybackBufferMax) -> Unit,
   onPlaybackCodecPreferenceChange: (PlaybackCodecPreference) -> Unit,
   onPlaybackCdnPreferenceChange: (PlaybackCdnPreference) -> Unit,
   onAirJumpAssistantEnabledChange: (Boolean) -> Unit,
@@ -448,6 +528,7 @@ private fun SettingsBehaviorColumn(
   onViewLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onBackFromLogView: () -> Unit,
   onShareLog: (LogCatcherUtil.LogFileInfo) -> Unit,
+  onBackupLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onToggleLogRecording: () -> Unit,
   updateState: UpdateUiState,
   onCheckUpdate: () -> Unit,
@@ -461,20 +542,23 @@ private fun SettingsBehaviorColumn(
   onRemoveYoutubeChannel: suspend (String) -> Boolean,
   onYoutubeChannelsSelected: () -> Unit,
   webDavConfig: com.kirin.mt.core.webdav.WebDavConfig,
-  onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Unit>,
-  onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig) -> Result<Int>,
+  onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Unit>,
+  onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Int>,
   onWebDavSelected: () -> Unit,
+  onBackupSelected: () -> Unit,
+  onRestoreSelected: () -> Unit,
+  webDavState: WebDavBackupState,
   onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
   onIptvSelected: () -> Unit,
   onPipedInstanceChange: (url: String) -> Unit,
   onPipedSelected: () -> Unit,
   onYoutubeUsePipedChange: (Boolean) -> Unit,
   onSabrForceSessionVideoItagChange: (Boolean) -> Unit,
+  onYoutubeDeliveryPriorityChange: (YoutubeDeliveryPriority) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
   val coroutineScope = rememberCoroutineScope()
-  var webDavState by remember { mutableStateOf<WebDavBackupState>(WebDavBackupState.Idle) }
   CompositionLocalProvider(LocalBringIntoViewSpec provides SettingsBringIntoViewSpec) {
     LazyColumn(
       state = listState,
@@ -482,6 +566,20 @@ private fun SettingsBehaviorColumn(
       contentPadding = PaddingValues(bottom = BiliSpacing.Xxl),
       verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
     ) {
+      item(key = "account") {
+        SettingsAccountRow(
+          userSession = userSession,
+          onFocused = { onSettingFocused(SettingsItemAccount) },
+          onClick = onAccountClick,
+          modifier = Modifier
+            .focusRequester(focusRequesters.getValue(SettingsItemAccount))
+            .settingsBoundaryKeys(
+              itemIndex = SettingsItemAccount,
+              onMoveSettingFocus = onMoveSettingFocus,
+              onMoveLeftToNav = onMoveLeftToNav,
+            ),
+        )
+      }
       item(key = "playback-header") {
         SettingsSectionTitle(text = stringResource(R.string.settings_playback_section))
       }
@@ -527,6 +625,27 @@ private fun SettingsBehaviorColumn(
           },
         )
       }
+      item(key = "youtube-start-quality") {
+        val startQualityOptions = remember { YoutubeStartQuality.entries.toList() }
+        val effectiveStartQuality = settings.youtubeStartQuality
+        SettingsOptionRow(
+          title = stringResource(R.string.settings_youtube_start_quality_title),
+          description = stringResource(R.string.settings_youtube_start_quality_description),
+          value = effectiveStartQuality.label,
+          modifier = Modifier
+            .focusRequester(focusRequesters.getValue(SettingsItemYoutubeStartQuality))
+            .settingsBoundaryKeys(
+              itemIndex = SettingsItemYoutubeStartQuality,
+              onMoveSettingFocus = onMoveSettingFocus,
+              onMoveLeftToNav = onMoveLeftToNav,
+            ),
+          onFocused = { onSettingFocused(SettingsItemYoutubeStartQuality) },
+          onClick = {
+            val currentIndex = startQualityOptions.indexOf(effectiveStartQuality).takeIf { it >= 0 } ?: 0
+            onYoutubeStartQualityChange(startQualityOptions[(currentIndex + 1) % startQualityOptions.size])
+          },
+        )
+      }
       item(key = "default-playback-speed") {
         val speedOptions = remember { DefaultPlaybackSpeed.entries.toList() }
         val effectiveSpeed = settings.defaultPlaybackSpeed
@@ -545,6 +664,27 @@ private fun SettingsBehaviorColumn(
           onClick = {
             val currentIndex = speedOptions.indexOf(effectiveSpeed).takeIf { it >= 0 } ?: 0
             onDefaultPlaybackSpeedChange(speedOptions[(currentIndex + 1) % speedOptions.size])
+          },
+        )
+      }
+      item(key = "playback-buffer-max") {
+        val bufferOptions = remember { PlaybackBufferMax.entries.toList() }
+        val effectiveBuffer = settings.bufferMax
+        SettingsOptionRow(
+          title = stringResource(R.string.settings_playback_buffer_title),
+          description = stringResource(R.string.settings_playback_buffer_description),
+          value = effectiveBuffer.label,
+          modifier = Modifier
+            .focusRequester(focusRequesters.getValue(SettingsItemPlaybackBufferMax))
+            .settingsBoundaryKeys(
+              itemIndex = SettingsItemPlaybackBufferMax,
+              onMoveSettingFocus = onMoveSettingFocus,
+              onMoveLeftToNav = onMoveLeftToNav,
+            ),
+          onFocused = { onSettingFocused(SettingsItemPlaybackBufferMax) },
+          onClick = {
+            val currentIndex = bufferOptions.indexOf(effectiveBuffer).takeIf { it >= 0 } ?: 0
+            onPlaybackBufferMaxChange(bufferOptions[(currentIndex + 1) % bufferOptions.size])
           },
         )
       }
@@ -1072,6 +1212,27 @@ private fun SettingsBehaviorColumn(
         onCheckedChange = onSabrForceSessionVideoItagChange,
       )
     }
+    item(key = "youtube-delivery-priority") {
+      val priorityOptions = remember { YoutubeDeliveryPriority.entries.toList() }
+      val effectivePriority = settings.youtubeDeliveryPriority
+      SettingsOptionRow(
+        title = stringResource(R.string.settings_youtube_delivery_priority_title),
+        description = stringResource(R.string.settings_youtube_delivery_priority_description),
+        value = effectivePriority.label,
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemYoutubeDeliveryPriority))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemYoutubeDeliveryPriority,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemYoutubeDeliveryPriority) },
+        onClick = {
+          val currentIndex = priorityOptions.indexOf(effectivePriority).takeIf { it >= 0 } ?: 0
+          onYoutubeDeliveryPriorityChange(priorityOptions[(currentIndex + 1) % priorityOptions.size])
+        },
+      )
+    }
     item(key = "webdav") {
       SettingsActionRow(
         title = stringResource(R.string.settings_webdav_title),
@@ -1104,16 +1265,7 @@ private fun SettingsBehaviorColumn(
         onFocused = { onSettingFocused(SettingsItemWebDavBackup) },
         onClick = {
           if (webDavState is WebDavBackupState.Running) return@SettingsWebDavBackupRow
-          coroutineScope.launch {
-            webDavState = WebDavBackupState.Running(isRestore = false)
-            val result = onWebDavBackup(webDavConfig)
-            webDavState = WebDavBackupState.Idle
-            val msg = result.fold(
-              onSuccess = { context.getString(R.string.settings_webdav_backup_success) },
-              onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
-            )
-            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-          }
+          onBackupSelected()
         },
       )
     }
@@ -1133,16 +1285,7 @@ private fun SettingsBehaviorColumn(
         onFocused = { onSettingFocused(SettingsItemWebDavRestore) },
         onClick = {
           if (webDavState is WebDavBackupState.Running) return@SettingsWebDavBackupRow
-          coroutineScope.launch {
-            webDavState = WebDavBackupState.Running(isRestore = true)
-            val result = onWebDavRestore(webDavConfig)
-            webDavState = WebDavBackupState.Idle
-            val msg = result.fold(
-              onSuccess = { count -> context.getString(R.string.settings_webdav_restore_success, count) },
-              onFailure = { context.getString(R.string.settings_webdav_failed, it.message ?: "") },
-            )
-            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-          }
+          onRestoreSelected()
         },
       )
     }
@@ -1235,6 +1378,7 @@ private fun SettingsSectionTitle(
   )
 }
 
+private const val SettingsItemAccount = 41
 private const val SettingsItemPlaybackHeader = 0
 private const val SettingsItemPlaybackQuality = 1
 private const val SettingsItemPlaybackCodec = 2
@@ -1253,7 +1397,9 @@ private const val SettingsItemHomeThemeVariant = 14
 private const val SettingsItemAutoConfirmOnFocus = 15
 private const val SettingsItemAutoRefreshOnSwitch = 16
 private const val SettingsItemYoutubeDefaultQuality = 17
+private const val SettingsItemYoutubeStartQuality = 40
 private const val SettingsItemDefaultSpeed = 23
+private const val SettingsItemPlaybackBufferMax = 39
 private const val SettingsItemClearCache = 18
 private const val SettingsItemChineseTextVariant = 19
 private const val SettingsItemAbout = 20
@@ -1273,11 +1419,15 @@ private const val SettingsItemIptv = 34
 private const val SettingsItemPiped = 35
 private const val SettingsItemYoutubeUsePiped = 36
 private const val SettingsItemSabrForceItag = 37
+private const val SettingsItemYoutubeDeliveryPriority = 38
 
 private val SettingsFocusableItems = listOf(
+  SettingsItemAccount,
   SettingsItemPlaybackQuality,
   SettingsItemYoutubeDefaultQuality,
+  SettingsItemYoutubeStartQuality,
   SettingsItemDefaultSpeed,
+  SettingsItemPlaybackBufferMax,
   SettingsItemPlaybackCodec,
   SettingsItemPlaybackCdn,
   SettingsItemSpeedTest,
@@ -1305,6 +1455,7 @@ private val SettingsFocusableItems = listOf(
   SettingsItemPiped,
   SettingsItemYoutubeUsePiped,
   SettingsItemSabrForceItag,
+  SettingsItemYoutubeDeliveryPriority,
   SettingsItemWebDav,
   SettingsItemWebDavBackup,
   SettingsItemWebDavRestore,
@@ -1326,90 +1477,97 @@ private fun settingsItemToLazyIndex(
   itemIndex: Int,
   updateState: UpdateUiState,
 ): Int = when (itemIndex) {
-  SettingsItemPlaybackHeader -> 0
-  SettingsItemPlaybackQuality -> 1
-  SettingsItemYoutubeDefaultQuality -> 2
-  SettingsItemDefaultSpeed -> 3
-  SettingsItemPlaybackCodec -> 4
-  SettingsItemPlaybackCdn -> 5
-  SettingsItemSpeedTest -> 6
-  SettingsItemSeekPreviewSprites -> 7
-  SettingsItemAirJumpAssistant -> 8
-  SettingsItemConfirmPlaybackExit -> 9
-  SettingsItemAutoPlayNextEpisode -> 10
-  SettingsItemAutoPlayRelatedVideo -> 11
-  SettingsItemAutoReturnHomeOnCompletion -> 12
-  SettingsItemShowClock -> 13
-  SettingsItemShowMiniProgressBar -> 14
-  // 15 = "ui-header" section title in LazyColumn
-  SettingsItemVisualPerformanceMode -> 16
-  SettingsItemLiquidGlassCards -> 17
-  SettingsItemHomeThemeVariant -> 18
-  SettingsItemAutoConfirmOnFocus -> 19
-  SettingsItemAutoRefreshOnSwitch -> 20
-  // 21 = "update-header" section title in LazyColumn
-  SettingsItemUpdateCurrentVersion -> 22
-  SettingsItemUpdateDownloadOrInstall -> 23
-  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 24 else -1
+  SettingsItemAccount -> 0
+  SettingsItemPlaybackHeader -> 1
+  SettingsItemPlaybackQuality -> 2
+  SettingsItemYoutubeDefaultQuality -> 3
+  SettingsItemYoutubeStartQuality -> 4
+  SettingsItemDefaultSpeed -> 5
+  SettingsItemPlaybackBufferMax -> 6
+  SettingsItemPlaybackCodec -> 7
+  SettingsItemPlaybackCdn -> 8
+  SettingsItemSpeedTest -> 9
+  SettingsItemSeekPreviewSprites -> 10
+  SettingsItemAirJumpAssistant -> 11
+  SettingsItemConfirmPlaybackExit -> 12
+  SettingsItemAutoPlayNextEpisode -> 13
+  SettingsItemAutoPlayRelatedVideo -> 14
+  SettingsItemAutoReturnHomeOnCompletion -> 15
+  SettingsItemShowClock -> 16
+  SettingsItemShowMiniProgressBar -> 17
+  // 18 = "ui-header" section title in LazyColumn
+  SettingsItemVisualPerformanceMode -> 19
+  SettingsItemLiquidGlassCards -> 20
+  SettingsItemHomeThemeVariant -> 21
+  SettingsItemAutoConfirmOnFocus -> 22
+  SettingsItemAutoRefreshOnSwitch -> 23
+  // 24 = "update-header" section title in LazyColumn
+  SettingsItemUpdateCurrentVersion -> 25
+  SettingsItemUpdateDownloadOrInstall -> 26
+  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 27 else -1
   SettingsItemClearCache -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    25 + updateExtraCount
+    28 + updateExtraCount
   }
   SettingsItemChineseTextVariant -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    26 + updateExtraCount
+    29 + updateExtraCount
   }
   SettingsItemHomeSections -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    27 + updateExtraCount
+    30 + updateExtraCount
   }
   SettingsItemLogs -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    38 + updateExtraCount
+    42 + updateExtraCount
   }
   SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    39 + updateExtraCount
+    43 + updateExtraCount
   }
   SettingsItemPlayerLogOverlay -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    40 + updateExtraCount
+    44 + updateExtraCount
   }
   SettingsItemYoutubeChannels -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    29 + updateExtraCount
+    32 + updateExtraCount
   }
   SettingsItemYoutubeContentRegion -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    30 + updateExtraCount
+    33 + updateExtraCount
   }
   SettingsItemPiped -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    31 + updateExtraCount
+    34 + updateExtraCount
   }
   SettingsItemYoutubeUsePiped -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    32 + updateExtraCount
+    35 + updateExtraCount
   }
   SettingsItemSabrForceItag -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    33 + updateExtraCount
+    36 + updateExtraCount
+  }
+  SettingsItemYoutubeDeliveryPriority -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    37 + updateExtraCount
   }
   SettingsItemWebDav -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    34 + updateExtraCount
+    38 + updateExtraCount
   }
   SettingsItemWebDavBackup -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    35 + updateExtraCount
+    39 + updateExtraCount
   }
   SettingsItemWebDavRestore -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    36 + updateExtraCount
+    40 + updateExtraCount
   }
   SettingsItemIptv -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    37 + updateExtraCount
+    41 + updateExtraCount
   }
   else -> 0
 }

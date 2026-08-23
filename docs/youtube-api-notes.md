@@ -110,6 +110,7 @@ params 原样传，不额外 URL 编码。
 
 - 用「递归收集指定 renderer key」的方式统一兼容 search/browse/continuation 三种容器结构，比按固定路径遍历更稳。
 - `lockupViewModel`（新格式，实测为频道视频 tab 唯一格式）实际结构：`contentId`（字符串=videoId）、`metadata.lockupMetadataViewModel.title.content`（标题）、`contentImage.thumbnailViewModel.image.sources[].url`（封面）、时长在 contentImage overlay 的 `thumbnailBadgeViewModel.text`（如 "13:09"）、播放量/发布时间在 `metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows[].metadataParts[].text.content`（如 "56K views"/"4 days ago"）；无频道名（订阅流给空作者名补频道名）、**无频道头像**（`channelAvatarUrl` 恒空，频道页卡片头像需从 `parseChannelInfo` 解析出的频道头像注入 `ownerFace`）。
+- **会员专属视频角标（lockupViewModel，2026-08-18 实测）**：⚠️ 不在顶层 `badges`（videoRenderer 旧格式才有），而是嵌套在 `metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows[].badges[].badgeViewModel`，字段 `badgeStyle == "BADGE_MEMBERS_ONLY"`（`badgeText`="Members only"、`iconName`="SPONSORSHIP_STAR"）。对齐 NewPipe PR #1503。过滤逻辑 `isMembersOnly` 必须同时查两种结构：videoRenderer 顶层 `badges[].metadataBadgeRenderer.style == BADGE_STYLE_TYPE_MEMBERS_ONLY` + lockupViewModel 嵌套 `metadataRows[].badges[].badgeViewModel.badgeStyle == BADGE_MEMBERS_ONLY`。曾因只查顶层 badges 导致频道页/订阅流会员视频过滤不掉（诊断 `YtBadge` 只 dump 顶层 badges 也打不出）。
 
 ---
 
@@ -132,6 +133,76 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 - **合并规则**：以 RSS 为基底，`publishedAt` 优先 RSS（精确），`durationSec`/`viewCount`/`liveNow`/`isUpcoming`/`badge`/`channelAvatarUrl` 优先 InnerTube；仅单路有的直接保留。
 - **降级**：任一路失败用另一路（RSS 失败→InnerTube 近似时间；InnerTube 失败→RSS 无 duration/live，降级可用），两者都失败该频道返回空、不影响其它频道。
 - **并发**：RSS 用独立信号量放宽（8），InnerTube 仍受 4 限并发防风控；关注多时按批次放宽超时（`youtubeFeedTimeoutMs`，上限 10s）。
+- **合并时序（2026-08-18）**：动态 tab 等 YouTube 关注**全量查完再与 B 站一次性合并**，去掉 `onChunkReady` 分批增量叠加（避免二次重排导致顺序抖动）。
+
+### 4.10.1 首页订阅流 continuation 分页（2026-08-18，alpha.94+）
+
+§4.10 描述的是**单页**合并：每频道 RSS + InnerTube `/browse` 第一页合并后 `take(perChannel)`（默认 **15 条**），更早的视频被结构性截断，且 `parseFeedPage().continuation` 被丢弃——**最早视频永远拉不到**。对照 LibreTube：它对订阅流**同样不翻页**，用「最近 30 天时间窗 + 每频道各 tab 只拉第一页 + `cleanUpOlderThan` 清库」解决，即 **LibreTube 没有可抄的订阅流续页方案**。要翻到最早必须自己给聚合流加 continuation。
+
+**新增分页（`YoutubeRepository.getSubscriptionsPage` / `getChannelVideosRawPage` / `fillChannelInfo`）：**
+- 首屏（`previousContinuation==null`）：沿用 §4.10 每频道 RSS + InnerTube 第一页并行合并、`take(perChannel)`，但**记录该频道 InnerTube `/browse` 第一页的 continuation**。
+- 续页：只对 `perChannelContinuation` 中 token **非 null** 的频道，调 `getChannelVideosRawPage(channelId, token)` 拉**更早一页** → `take(perChannel)` 映射；RSS 无续页概念，续页仅走 InnerTube。每批 `onChunkReady`、每 `BatchSize` 随机 delay 防节流、单频道 `runCatching` 降级空——沿用 §4.10 骨架。
+- 返回模型 `YoutubeSubscriptionsPage(videos, perChannelContinuation)`，`endReached = perChannelContinuation.values.all { it == null }`（所有频道到底即全部加载完）。续页视频同样走「补频道名/id/头像」（`fillChannelInfo`，复用原 :290-296 逻辑）。
+
+**转发层** `VideoRepository.youtubeHomeFeedPage(previousContinuation)` 读 `youtubeChannelStore.channels`，空→空页；头像回写 store 在此处理，UI 无感知。
+
+**UI 消费（TV `RecommendScreen` + 移动 `HomeScreen`，共用）**：
+- `Success.youtubeContinuation: Map<String,String?>?`（仅 YoutubeTrending 用；非 YouTube 分区为 null）。
+- 首屏 `endReached=page.endReached`、`youtubeContinuation=page.perChannelContinuation`；续页 `(current+page).distinctBy{it.bvid}.sortedByDescending{it.pubdate}`、`endReached = page.endReached || merged.size == current.videos.size`（**续页未新增视频也视为到底**，防 token 不推进时死循环）。
+- **缓存只存首屏快照、不落盘 continuation**（`YoutubeFeedCacheStore` 零改动）：10min 内 cache 命中视为单页到底（`endReached=true`），不续翻。
+
+### 4.10.2 续页 token 提取对齐 NewPipe（2026-08-18，debug 分支）
+
+**症状**：订阅流滑到底要么卡在 ~50 条（跨频道去重后首屏量，续页没补上更早的），要么死循环。根因在 `YoutubeParsers.findContinuation`：**全树 `collectByKey` 扫 + 取最后一个 continuationItemRenderer**。频道视频 tab 的 `/browse` 响应里可能夹带 shorts/相关频道等其它 section 的 continuation，取错后拿它续页返回的还是首屏那批 → `appendUniqueByBvid` 去重成零新增 → 不推进。
+
+**对照 LibreTube/NewPipe**（`E:\GITHUB\NewPipeExtractor` `YoutubeChannelTabExtractor.java`）：LibreTube 订阅流本身**单页快照不翻页**（§4.10.1 已记），真正"能一直加载到几年前"的是**单频道视频 tab**，靠 NewPipe 每次从新响应里正确提取推进中的 token：
+- 续页响应只读 `onResponseReceivedActions[].appendContinuationItemsAction.continuationItems`；
+- 首屏只定位视频网格 `gridRenderer.items` / `richGridRenderer.contents`；
+- 都取**第一个** continuation，不是最后一个。
+
+**本次改动**：`YoutubeParsers.findContinuation` 改为三段式——①续页走 `appendContinuationItemsAction`；②首屏定位视频网格取第一个；③搜索等无网格容器回退全树第一个。同时 `RecommendScreen` 与移动 `HomeScreen` 的 YoutubeTrending 续页补 `merged.size == current.videos.size` 护栏。这样每频道 token 每次从新响应重新提取、能真正推进到更早（对齐 NewPipe 机制），且 token 一旦不推进立即到底不循环。
+
+### 4.10.3 移动端频道页续页 UI 层（2026-08-18，v3.0.4-alpha.3）
+
+§4.10.2 修的是**数据层** token 提取；移动端**单频道页**（`MobileYoutubeChannelScreen`，`getChannelVideos` 直拉 `/browse`）续页还叠了两个 **UI 层** bug，导致滑到底只翻一页就停：
+
+1. **近底触发被布尔去重吞掉**：`snapshotFlow { 近底布尔 }.distinctUntilChanged()` 只在布尔翻转时发射一次。首屏 loading 时（continuation 仍 null，`loadNext` 早退）把唯一的 `true` 消耗掉；短列表近底后值不再变、不再发射 → 续页永不触发。**改发射 `(last, total)` 对**去重，任何滚动/加载导致 last 或 total 变化都重新求值。
+2. **endReached 去重比较拿错列表**：`loadNext` 里先 `uiState.items = merged` 再算 `endReached = merged.size == uiState.items.size`，拿 merged 和自己比恒真 → 第二页后 `endReached=true` 永远停。**先存 `oldItems` 再比较 `merged.size == oldItems.size`**（对齐 TV 版 `latest.videos` 旧列表比较）。日志佐证：`next items=30 next=4qmFsgK9FRIY`（token 非 null）却 `endReached=true`。
+
+数据层 `getChannelVideos` 首屏/续页都正确捕获 continuation（`first items=30 next=...` / `next items=30 next=...`），问题纯在 UI 触发/状态逻辑。修复后 `loadNext merged old=30 new=30 merged=60 endReached=false` 连续翻多页。
+
+### 4.11 评论解析（EUVM 新布局，2026-08-18）
+
+评论走 `/next`：**首屏从 `engagementPanels` 提取初始评论 token 再发第二次 `/next`**（对齐 NewPipe 两步拉取），续页解析 `reloadContinuationItemsCommand`。`YoutubeParsers.parseCommentPage` 三段式：新布局 → 旧布局 → 全根防御。
+
+**新布局（EUVM）**：
+- 评论在 `onResponseReceivedEndpoints[last].reloadContinuationItemsCommand` / `appendContinuationItemsAction` 的 `continuationItems`，每项 `commentThreadRenderer` → `commentViewModel.commentViewModel`（**只有 `commentKey`/`toolbarStateKey`/`commentId`**，作者/内容/点赞等实体数据不在这里）。
+- 实际数据在 `frameworkUpdates.entityBatchUpdate.mutations`，按 `entityKey` 匹配：评论实体包在 `payload.commentEntityPayload`，工具栏状态包在 `payload.engagementToolbarStateEntityPayload`（**需先解包再取字段**）。
+- **只从 continuationItems 解析**（对齐 NewPipe），避免扫全树把 `engagementPanels` 等**无 mutations 的 commentThreadRenderer** 也收进来（那些会解析出空作者/内容）。
+- 头像读 `author.avatarThumbnailUrl` **字符串**（不是 `image.sources` 数组）；`likeCount`/`replyCount` 需 `trim()` 空格。
+- 续页 token 取 continuationItems **末尾**的 continuationItemRenderer（对齐 NewPipe 取末尾，避免取到楼中楼 replies 的 token）。
+
+**旧布局**：`commentSectionRenderer` → `commentRenderer`（`parseCommentRenderer`）。
+
+### 4.12 相关视频 rail（lockupViewModel 新格式，2026-08-18）
+
+相关视频 rail 在 `contents.twoColumnWatchNextResults.secondaryResults.secondaryResults.results[]`。**实测每项是 `lockupViewModel`（非 compactVideoRenderer，与频道页新格式一致）**，曾因只 collectByKey `compactVideoRenderer` 导致相关视频解析 0 根因。`parseRelatedVideos` 需**同时** collectByKey `compactVideoRenderer` + `lockupViewModel`（`parseLockupViewModel`）。续页 token 从该 section 内 continuationItemRenderer 取；防御：无 secondaryResults 容器时回退全根收集。
+
+### 4.13 频道页「最新 / 最热」排序（2026-08-20）
+
+频道页视频 tab 支持 **Newest（最新）/ Popular（最热）** 双档排序，对齐 B站 UP 空间。两排序共用 `/browse + browseId`，**仅初始 `params` 不同**：
+- 最新：`EgZ2aWRlb3PyBgQKAjoA`（`ChannelVideosParams`，项目原用值）
+- 最热：`EgZwb3B1bGFy`（`ChannelPopularParams`，解码 field1=`"popular"`，来源 rustypipe/invidious 文档）
+
+**continuation 翻页与排序无关**（续页只带 continuation token 即保持当前排序），故排序差异收敛到初始 `params` 一个点。`YoutubeRepository.getChannelVideos` 增 `params: String = ChannelVideosParams` 参数；TV（`YoutubeChannelScreen` sort chips）与移动端（`MobileYoutubeChannelScreen` 两个 OutlinedButton）频道页各加「最新发布 / 最热门」切换，切排序**强制重拉第一页**（`loadedOrder` 守卫，镜像 B站 `UpSpaceUiState.videoLoadedOrder`）。`PlayerSidePanelLoader` 仍用默认最新。
+
+**风险**：`EgZwb3B1bGFy` 未在本仓库实测，若真机首屏不按播放量排序，需改用「构造带 sort 的 order continuation token」（protobuf `80226972` 包装，对齐 rustypipe `order_ctoken`），项目暂无此代码需新写。
+
+### 4.14 视频点赞数主源 `/player microformat.likeCount`（2026-08-23，v3.0.5-alpha.7）
+
+点赞数原靠 `getVideoDetail` 在 `/player` 之外**另发 `/next`** 从 `videoPrimaryInfoRenderer.videoActions` 工具栏解析回写（对齐 NewPipe `getLikeCount`），但真机**该 `/next` 取不到**（诊断日志 `likes videoId=` 不出现），`detail.likeCount` 恒 null → 移动端简介「点赞」段被 `likeCountInt > 0` 丢弃，只显示「观看 · 时间」。
+
+实测 **`/player` 的 `microformat.playerMicroformatRenderer` 本身就带 `likeCount` 键**（keys 含该字段，值为原始数字串如 `"123456"`）。修复：`parseVideoDetail` 直接 `parseCount(mf.likeCount)` 作主源，**免去二次 `/next` 往返、更快更稳**；`/next` videoActions 仍保留作兜底（真能取到则覆盖）。取不到保持 null（UI 不显示点赞行）。
 
 ---
 

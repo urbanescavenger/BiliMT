@@ -37,6 +37,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.kirin.mt.ui.focus.focusDiag
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliRadius
 import com.kirin.mt.ui.theme.BiliSpacing
@@ -80,6 +81,7 @@ fun BiliActionSheet(
   Box(
     modifier = modifier
       .fillMaxSize()
+      .focusDiag("action-sheet")
       .background(BiliColors.OverlayScrim.copy(alpha = 0.6f)),
     contentAlignment = Alignment.Center,
   ) {

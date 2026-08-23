@@ -2,6 +2,7 @@ package com.kirin.mt.ui.mobile.shell
 
 import android.Manifest
 import android.content.Intent
+import android.widget.Toast
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.BackHandler
@@ -16,20 +17,27 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import com.kirin.mt.R
+import com.kirin.mt.core.i18n.ChineseTextConverters
 import com.kirin.mt.core.model.HomeSection
+import com.kirin.mt.ui.i18n.LocalChineseTextConverter
+import com.kirin.mt.ui.i18n.localizedContext
+import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.IptvRepository
@@ -37,6 +45,7 @@ import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.CdnSelector
@@ -56,6 +65,7 @@ import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.LoginActivity
 import com.kirin.mt.ui.mobile.SettingsActivity
 import com.kirin.mt.ui.mobile.common.DevelopingTipContent
+import com.kirin.mt.ui.mobile.downloads.MobileDownloadQualityDialog
 import com.kirin.mt.ui.mobile.feed.MobileFeedScreen
 import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
 import com.kirin.mt.ui.mobile.feed.MobileYoutubeLongPressSheet
@@ -69,6 +79,7 @@ import com.kirin.mt.ui.pgc.PgcSeasonRequest
 import com.kirin.mt.ui.player.LivePlayerScreen
 import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.shell.AppDestination
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
 /**
@@ -97,14 +108,23 @@ fun BiliMobileApp(
   youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
+  downloadManager: com.kirin.mt.core.download.DownloadManager,
 ) {
   val context = LocalContext.current
+  val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
+  // 语言设置:与 TV AppShell 一致,把 LocalContext 整体换成所选 locale 的 context,
+  // 使 stringResource(R.string.*) 命中对应 values-<locale> 资源。
+  val localizedContext = remember(context, settings.chineseTextVariant) {
+    context.localizedContext(settings.chineseTextVariant)
+  }
+  val textConverter = remember(settings.chineseTextVariant) {
+    ChineseTextConverters.forVariant(settings.chineseTextVariant)
+  }
   var selected by rememberSaveable { mutableStateOf(AppDestination.Recommend) }
   var recommendRefreshKey by rememberSaveable { mutableStateOf(0) }
-  // 动态 tab 手动刷新键:每次点击底栏"动态"(含重复点击)自增,驱动 MobileDynamicScreen
+  // 动态 tab 手动刷新键:每次点击底栏"动态"(含重复点击)自增,驱动 DynamicScreen
   // 同时刷新 B 站动态 + YouTube 关注(镜像 recommendRefreshKey 与 TV dynamicManualRefreshKey)。
   var dynamicRefreshKey by rememberSaveable { mutableStateOf(0) }
-  val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
 
   // YouTube 内容地区(gl/hl)写进进程级 holder,InnerTubeClient.buildContext 每次请求读它,
   // 让 gl/hl 跟随设置运行时变化(browse/search/player/SABR 全自动一致,免逐层透传)。
@@ -129,15 +149,25 @@ fun BiliMobileApp(
   val youtubeChannelUiState = remember { com.kirin.mt.ui.mobile.space.MobileYoutubeChannelUiState() }
   // 播放列表连播队列:播放列表 tab 起播时快照当前播放列表;其它入口起播时置空。
   var playQueue by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
-  // 长按视频卡片弹出操作菜单的视频;再点「加入播放列表」切换到播放列表选择弹窗。
+  // 长按视频卡片弹出操作菜单的视频;再点「下载」/「加入播放列表」切换到对应弹窗。
   var longPressVideo by remember { mutableStateOf<VideoSummary?>(null) }
   var showPlaylistPicker by remember { mutableStateOf(false) }
+  // 长按菜单里点「下载」→ 弹清晰度选择对话框;确认后入队下载。
+  var showDownloadDialog by remember { mutableStateOf(false) }
+  // B站下载弹窗的清晰度列表:经 getPlaybackInfo 拉取后缓存,再开对话框。
+  var biliDownloadQualities by remember { mutableStateOf<List<PlaybackQuality>>(emptyList()) }
+  // B站下载确认入队用的请求:拉清晰度时已解析 cid,enqueue 复用避免 playurl 用 cid=0 返 -400
+  // (对齐播放器 activeRequest 回写 resolvedRequest,见 MobilePlayerScreen loadRequest)。
+  var biliDownloadRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
+  val scope = rememberCoroutineScope()
 
-  // 卡片长按:仅 YouTube 弹操作菜单(加入播放列表→选列表/新建),不再直接 toggle。
+  // 卡片长按:B站/YouTube 弹操作菜单(下载/加入播放列表),不再直接 toggle。
+  // IPTV 直播卡除外:直播无下载、加播放列表无意义。
   val onLongPress: (VideoSummary) -> Unit = { video ->
-    if (video.source == SourceYoutube) {
+    if (video.source != SourceIptv) {
       longPressVideo = video
       showPlaylistPicker = false
+      showDownloadDialog = false
     }
   }
 
@@ -174,7 +204,12 @@ fun BiliMobileApp(
     AppDestination.Settings,
   )
 
-  Box(modifier = Modifier.fillMaxSize()) {
+  CompositionLocalProvider(
+    LocalContext provides localizedContext,
+    LocalResources provides localizedContext.resources,
+    LocalChineseTextConverter provides textConverter,
+  ) {
+    Box(modifier = Modifier.fillMaxSize()) {
     NavigationSuiteScaffold(
       modifier = Modifier.statusBarsPadding(),
       navigationSuiteItems = {
@@ -299,9 +334,12 @@ fun BiliMobileApp(
           playbackQualityPreference = settings.playbackQualityPreference,
           playbackCdnPreference = settings.playbackCdnPreference,
           youtubeDefaultQuality = settings.youtubeDefaultQuality,
+          youtubeStartQuality = settings.youtubeStartQuality,
+          bufferMaxMs = settings.bufferMax.ms,
           airJumpAssistantEnabled = settings.airJumpAssistantEnabled,
           videoRepository = videoRepository,
           youtubePlaylistStore = youtubePlaylistStore,
+          downloadManager = downloadManager,
           playQueue = playQueue,
           onPlayVideo = { video ->
             playQueue = emptyList()
@@ -443,27 +481,102 @@ fun BiliMobileApp(
       }
     }
 
-    // 长按 YouTube 卡片:底部操作菜单 →「加入播放列表」→ 列表选择/新建弹窗。
+    // 长按 B站/YouTube 卡片:底部操作菜单 →「下载」弹清晰度对话框 /「加入播放列表」选列表。
     longPressVideo?.let { video ->
-      if (showPlaylistPicker) {
-        MobilePlaylistPickerDialog(
-          video = video,
-          youtubePlaylistStore = youtubePlaylistStore,
-          onDismiss = {
-            showPlaylistPicker = false
-            longPressVideo = null
-          },
-        )
-      } else {
-        MobileYoutubeLongPressSheet(
-          video = video,
-          onPickPlaylist = { showPlaylistPicker = true },
-          onDismiss = {
-            showPlaylistPicker = false
-            longPressVideo = null
-          },
-        )
+      when {
+        // 清晰度选择对话框(模态,盖在操作菜单上)。取消只关对话框回到菜单;
+        // 确认后入队下载并收起整套菜单。B站走可播清晰度列表,YouTube 走简单/高清分档。
+        showDownloadDialog -> {
+          MobileDownloadQualityDialog(
+            isYoutube = video.source == SourceYoutube,
+            biliQualities = biliDownloadQualities,
+            onDismiss = { showDownloadDialog = false; biliDownloadRequest = null },
+            onConfirm = { choice ->
+              showDownloadDialog = false
+              // B站用拉清晰度时已解析 cid 的 request(卡片 cid=0 直接入队会 -400);YouTube 走卡片原请求。
+              val request = biliDownloadRequest ?: video.toPlaybackRequest()
+              scope.launch {
+                downloadManager.enqueue(request, choice)
+                  .onSuccess {
+                    longPressVideo = null
+                    biliDownloadRequest = null
+                    Toast.makeText(context, context.getString(R.string.downloads_enqueued), Toast.LENGTH_SHORT).show()
+                  }
+                  .onFailure { e ->
+                    Toast.makeText(context, e.message ?: context.getString(R.string.downloads_enqueue_failed), Toast.LENGTH_LONG).show()
+                  }
+              }
+            },
+          )
+        }
+        showPlaylistPicker -> {
+          MobilePlaylistPickerDialog(
+            video = video,
+            youtubePlaylistStore = youtubePlaylistStore,
+            onDismiss = {
+              showPlaylistPicker = false
+              longPressVideo = null
+            },
+          )
+        }
+        else -> {
+          // 已下载(可播)的视频隐藏「下载」入口,避免重复下载。
+          val downloads by downloadManager.downloads.collectAsState(initial = emptyList())
+          val isDownloaded = downloads.any {
+            it.download.videoId == video.bvid && it.isPlayable &&
+              (it.videoPart != null || it.muxedPart != null)
+          }
+          MobileYoutubeLongPressSheet(
+            video = video,
+            isDownloaded = isDownloaded,
+            onDownload = {
+              // YouTube 直接弹分档对话框;B站先经 playurl 拉可播清晰度列表再弹。
+              // 复用播放器同款 getPlaybackInfo,清晰度与在线播放一致。
+              if (video.source == SourceYoutube) {
+                // YouTube 无 cid 依赖,直接用卡片请求;清掉上次 B站解析残留的 biliDownloadRequest,
+                // 避免 enqueue 误复用 B站 request。
+                biliDownloadRequest = null
+                showDownloadDialog = true
+              } else {
+                scope.launch {
+                  runCatching {
+                    // 卡片 cid 常为 0(列表接口只给 bvid),播放路径会先 resolveCid;下载同样先解析,
+                    // 否则 getPlaybackInfo 用 cid=0 拼 playurl 返回 -400(对齐播放器 loadRequest)。
+                    val req = video.toPlaybackRequest()
+                    val cid = req.cid.takeIf { it > 0L }
+                      ?: playbackRepository.resolveCid(req.bvid)
+                    if (cid <= 0L) error(context.getString(R.string.downloads_enqueue_failed))
+                    val resolved = req.copy(cid = cid)
+                    biliDownloadRequest = resolved
+                    playbackRepository.getPlaybackInfo(
+                      resolved,
+                      effectiveCodecPreference,
+                      settings.playbackQualityPreference,
+                    ).qualities
+                  }
+                    .onSuccess { qs ->
+                      biliDownloadQualities = qs
+                      showDownloadDialog = true
+                    }
+                    .onFailure { e ->
+                      longPressVideo = null
+                      biliDownloadRequest = null
+                      Toast.makeText(context, e.message ?: context.getString(R.string.downloads_enqueue_failed), Toast.LENGTH_LONG).show()
+                    }
+                }
+              }
+            },
+            onPickPlaylist = { showPlaylistPicker = true },
+            onDismiss = {
+              showPlaylistPicker = false
+              showDownloadDialog = false
+              biliDownloadRequest = null
+              longPressVideo = null
+            },
+          )
+        }
       }
     }
+  }
   }
 }

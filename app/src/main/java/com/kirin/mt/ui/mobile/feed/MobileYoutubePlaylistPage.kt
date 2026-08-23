@@ -20,6 +20,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +55,7 @@ import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.youtube.DOWNLOAD_PLAYLIST_NAME
 import com.kirin.mt.core.youtube.YoutubePlaylist
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.ui.mobile.home.formatCount
@@ -208,15 +211,24 @@ private fun PlaylistDetailScreen(
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val listState = rememberLazyListState()
+  // 「下载」是下载自动存档列表:完全映射离线下载——不提供编辑/移除,但可长按拖动排序。
+  val autoArchive = playlist.name == DOWNLOAD_PLAYLIST_NAME
   var editMode by remember { mutableStateOf(false) }
+  // 批量勾选选中集(编辑模式下勾选的 bvid);「完成」或单点移除时清掉。
+  var selectedBvids by remember { mutableStateOf<Set<String>>(emptySet()) }
+  // 批量移除二次确认弹窗。
+  var showRemoveConfirm by remember { mutableStateOf(false) }
   // 本地可重排列表(拖动用);playlist.videos 变化(外部/持久化)时同步。
   var items by remember { mutableStateOf(playlist.videos) }
   LaunchedEffect(playlist.videos) { items = playlist.videos }
 
-  // 拖动状态:拖动的视频 id + 其在 items 中的实时位置 + 垂直位移。
+  // 拖动状态:拖动的视频 id + 其在 items 中的实时位置 + 初始 offset + 累计位移。
+  // 对齐 Google LazyColumnDragAndDropDemo:拖拽项视觉位移 = initialOffset + delta - item.offset,
+  // 自动补偿 item 重排后的 offset 变化,避免手动调整出错致重影。
   var draggingBvid by remember { mutableStateOf<String?>(null) }
   var draggingIndex by remember { mutableIntStateOf(-1) }
-  var draggingOffsetY by remember { mutableFloatStateOf(0f) }
+  var draggingInitialOffset by remember { mutableFloatStateOf(0f) }
+  var draggingDelta by remember { mutableFloatStateOf(0f) }
 
   fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
 
@@ -233,8 +245,20 @@ private fun PlaylistDetailScreen(
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
       )
-      OutlinedButton(onClick = { editMode = !editMode }) {
-        Text(stringResource(if (editMode) R.string.playlist_done else R.string.playlist_edit))
+      if (autoArchive) {
+        // 下载自动存档列表:只读镜像,不提供编辑/移除。
+        Text(
+          text = stringResource(R.string.playlist_auto_managed),
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          style = MaterialTheme.typography.labelMedium,
+        )
+      } else {
+        OutlinedButton(onClick = {
+          editMode = !editMode
+          selectedBvids = emptySet()
+        }) {
+          Text(stringResource(if (editMode) R.string.playlist_done else R.string.playlist_edit))
+        }
       }
     }
 
@@ -251,42 +275,63 @@ private fun PlaylistDetailScreen(
       return@Column
     }
 
-    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+    LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth()) {
       itemsIndexed(items, key = { _, v -> v.bvid }) { index, video ->
         val isDragging = video.bvid == draggingBvid
+        // 拖拽项禁用 animateItem:交换后布局位置立即跳变,由 graphicsLayer 的 translationY 补偿,
+        // 视觉连续跟手;若拖拽项也走 animateItem,交换后位置动画与 translationY 叠加会漂移出重影。
+        val itemModifier = if (isDragging) Modifier else Modifier.animateItem()
         Row(
-          modifier = Modifier
+          modifier = itemModifier
             .fillMaxWidth()
-            .animateItem()
             .zIndex(if (isDragging) 1f else 0f)
-            .graphicsLayer { if (isDragging) translationY = draggingOffsetY }
+            .graphicsLayer {
+              if (isDragging) {
+                // 拖拽项视觉位移 = 初始 offset + 累计 delta - item 当前 offset。
+                // item 重排后 offset 变化被自动减掉,拖拽项始终钉在手指下,不重影。
+                val info = listState.layoutInfo.visibleItemsInfo
+                  .firstOrNull { it.index == draggingIndex }
+                translationY = if (info != null) draggingInitialOffset + draggingDelta - info.offset else 0f
+              }
+            }
             .background(
               if (isDragging) Color(0xFF2A2A32) else Color.Transparent,
               RoundedCornerShape(10.dp),
             )
-            .clickable(enabled = !editMode) {
-              // 先起播(外层 onVideoSelected 清连播队列),再设置队列快照,保证播放器用该列表连播。
-              onVideoSelected(video)
-              onStartPlaylist(items)
+            .clickable {
+              if (editMode) {
+                // 编辑模式:点卡勾选/取消(批量移除),不触发播放/拖动。
+                selectedBvids = if (video.bvid in selectedBvids) selectedBvids - video.bvid
+                else selectedBvids + video.bvid
+              } else {
+                // 先起播(外层 onVideoSelected 清连播队列),再设置队列快照,保证播放器用该列表连播。
+                onVideoSelected(video)
+                onStartPlaylist(items)
+              }
             }
-            .pointerInput(video.bvid, editMode) {
+            .pointerInput(video.bvid, editMode, autoArchive) {
+              // 「下载」列表允许长按拖动排序(编辑/移除仍禁用);其它列表编辑模式下禁拖。
               if (editMode) return@pointerInput
               detectDragGesturesAfterLongPress(
                 onDragStart = {
                   draggingBvid = video.bvid
                   draggingIndex = index
-                  draggingOffsetY = 0f
+                  draggingInitialOffset = listState.layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.index == index }?.offset?.toFloat() ?: 0f
+                  draggingDelta = 0f
                 },
                 onDrag = { change, dragAmount ->
                   change.consume()
-                  draggingOffsetY += dragAmount.y
+                  draggingDelta += dragAmount.y
                   val from = draggingIndex
                   if (from < 0) return@detectDragGesturesAfterLongPress
-                  val draggingInfo = listState.layoutInfo.visibleItemsInfo
+                  val layoutInfo = listState.layoutInfo
+                  val draggingInfo = layoutInfo.visibleItemsInfo
                     .firstOrNull { it.index == from }
                     ?: return@detectDragGesturesAfterLongPress
-                  val draggedCenter = draggingInfo.offset + draggingInfo.size / 2f + draggingOffsetY
-                  val target = listState.layoutInfo.visibleItemsInfo
+                  // 拖拽项中心 = 初始 offset + 累计 delta(固定,不依赖 item 当前 offset,不漂移)。
+                  val draggedCenter = draggingInitialOffset + draggingInfo.size / 2f + draggingDelta
+                  val target = layoutInfo.visibleItemsInfo
                     .filter { it.index != from }
                     .minByOrNull { kotlin.math.abs(it.offset + it.size / 2f - draggedCenter) }
                   if (target != null && target.index != from) {
@@ -300,18 +345,27 @@ private fun PlaylistDetailScreen(
                 onDragEnd = {
                   draggingBvid = null
                   draggingIndex = -1
-                  draggingOffsetY = 0f
+                  draggingDelta = 0f
                   scope.launch { youtubePlaylistStore.replaceVideos(playlist.name, items) }
                 },
                 onDragCancel = {
                   draggingBvid = null
                   draggingIndex = -1
-                  draggingOffsetY = 0f
+                  draggingDelta = 0f
                 },
               )
             },
           verticalAlignment = Alignment.CenterVertically,
         ) {
+          // 编辑模式:行首复选框勾选/取消;点卡也能切,复选框自身消费点击不触发父行。
+          if (editMode) {
+            Checkbox(
+              checked = video.bvid in selectedBvids,
+              onCheckedChange = { checked ->
+                selectedBvids = if (checked) selectedBvids + video.bvid else selectedBvids - video.bvid
+              },
+            )
+          }
           Box {
             AsyncImage(
               model = video.pic,
@@ -348,7 +402,7 @@ private fun PlaylistDetailScreen(
                 if (video.ownerName.isNotBlank()) append(video.ownerName)
                 if (video.view > 0) {
                   if (isNotEmpty()) append(" · ")
-                  append(formatCount(video.view))
+                  append(formatCount(video.view, context.resources))
                 }
               },
               color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -361,6 +415,7 @@ private fun PlaylistDetailScreen(
             TextButton(onClick = {
               scope.launch {
                 youtubePlaylistStore.removeVideo(playlist.name, video.bvid)
+                selectedBvids = selectedBvids - video.bvid
                 toast(context.getString(R.string.playlist_removed))
               }
             }) {
@@ -373,6 +428,81 @@ private fun PlaylistDetailScreen(
           color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
         )
       }
+    }
+
+    // 编辑模式:底部固定全局批量操作栏(已选 N/全选/删除所选),对齐下载批量删除。
+    if (editMode) {
+      val allSelected = items.isNotEmpty() && items.all { it.bvid in selectedBvids }
+      PlaylistBatchBar(
+        selectedCount = selectedBvids.size,
+        onToggleAll = {
+          selectedBvids = if (allSelected) emptySet() else items.map { it.bvid }.toSet()
+        },
+        onDelete = { showRemoveConfirm = true },
+      )
+    }
+
+    // 批量移除二次确认。
+    if (showRemoveConfirm) {
+      AlertDialog(
+        onDismissRequest = { showRemoveConfirm = false },
+        title = { Text(stringResource(R.string.playlist_batch_confirm_title)) },
+        text = {
+          Text(
+            stringResource(R.string.playlist_batch_confirm_message, selectedBvids.size),
+            style = MaterialTheme.typography.bodyMedium,
+          )
+        },
+        confirmButton = {
+          TextButton(onClick = {
+            scope.launch {
+              youtubePlaylistStore.removeVideos(playlist.name, selectedBvids)
+              toast(context.getString(R.string.playlist_removed))
+              selectedBvids = emptySet()
+            }
+            showRemoveConfirm = false
+          }) { Text(stringResource(R.string.playlist_batch_delete)) }
+        },
+        dismissButton = {
+          TextButton(onClick = { showRemoveConfirm = false }) {
+            Text(stringResource(R.string.playlist_cancel))
+          }
+        },
+      )
+    }
+  }
+}
+
+/** 编辑模式底部批量操作栏:已选计数 + 全选切换 + 删除所选。样式对齐下载批量栏。 */
+@Composable
+private fun PlaylistBatchBar(
+  selectedCount: Int,
+  onToggleAll: () -> Unit,
+  onDelete: () -> Unit,
+) {
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .background(MaterialTheme.colorScheme.surfaceVariant)
+      .padding(horizontal = 16.dp, vertical = 4.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(
+      text = stringResource(R.string.playlist_batch_selected, selectedCount),
+      style = MaterialTheme.typography.bodyMedium,
+      modifier = Modifier.weight(1f),
+    )
+    TextButton(onClick = onToggleAll) {
+      Text(stringResource(R.string.playlist_batch_select_all))
+    }
+    TextButton(
+      onClick = onDelete,
+      enabled = selectedCount > 0,
+    ) {
+      Text(
+        text = stringResource(R.string.playlist_batch_delete),
+        color = if (selectedCount > 0) BiliColors.BiliPink else MaterialTheme.colorScheme.onSurfaceVariant,
+      )
     }
   }
 }

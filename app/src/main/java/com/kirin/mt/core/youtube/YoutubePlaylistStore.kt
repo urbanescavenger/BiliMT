@@ -14,6 +14,9 @@ import kotlinx.serialization.json.Json
 /** 默认播放列表名：首次使用预置,保证播放列表 tab 至少有一个可加入的列表。 */
 const val DEFAULT_PLAYLIST_NAME = "默认"
 
+/** 下载自动存档列表名：下载完成自动入列,只读镜像离线列表(禁止手动编辑)。 */
+const val DOWNLOAD_PLAYLIST_NAME = "下载"
+
 /**
  * 一个命名 YouTube 播放列表。免登录，DataStore 持久化。
  */
@@ -33,10 +36,17 @@ class YoutubePlaylistStore(private val context: Context) {
   private val serializer = ListSerializer(YoutubePlaylist.serializer())
   private val legacySerializer = ListSerializer(VideoSummary.serializer())
 
-  /** 全部命名播放列表；存储为空时返回一个空"默认"列表。 */
+  /** 全部命名播放列表；始终常驻「默认」「下载」两条(缺则补空),外加用户自建列表。 */
   val playlists: Flow<List<YoutubePlaylist>> = context.biliDataStore.data.map { prefs ->
     val list = prefs[Keys.Playlists]?.let(::decode).orEmpty()
-    if (list.isEmpty()) listOf(YoutubePlaylist(DEFAULT_PLAYLIST_NAME)) else list
+    val names = list.map { it.name }.toSet()
+    buildList {
+      // 「默认」通用手动词列表:缺则补空。
+      if (DEFAULT_PLAYLIST_NAME !in names) add(YoutubePlaylist(DEFAULT_PLAYLIST_NAME))
+      // 「下载」自动存档列表:缺则补空,保证离线列表一进就能看到。
+      if (DOWNLOAD_PLAYLIST_NAME !in names) add(YoutubePlaylist(DOWNLOAD_PLAYLIST_NAME))
+      addAll(list)
+    }
   }
 
   /** 首次迁移旧版单扁平列表(旧 key youtube_playlist)进"默认"列表，避免丢既有数据。 */
@@ -80,11 +90,23 @@ class YoutubePlaylistStore(private val context: Context) {
     }
   }
 
-  /** 新建空播放列表；重名返回 false。 */
+  /** 批量移除：从指定播放列表一次性过滤掉多个 videoId(bvid)，单次写盘。 */
+  suspend fun removeVideos(playlistName: String, videoIds: Set<String>) {
+    if (videoIds.isEmpty()) return
+    editPlaylists { list ->
+      list.map { pl ->
+        if (pl.name == playlistName) pl.copy(videos = pl.videos.filterNot { it.bvid in videoIds })
+        else pl
+      }
+    }
+  }
+
+  /** 新建空播放列表；重名返回 false。预留「默认」「下载」两条内置列表名不可新建。 */
   suspend fun createPlaylist(name: String): Boolean {
     var created = false
     editPlaylists { list ->
-      if (name.isBlank() || list.any { it.name == name }) {
+      val reserved = name == DEFAULT_PLAYLIST_NAME || name == DOWNLOAD_PLAYLIST_NAME
+      if (name.isBlank() || reserved || list.any { it.name == name }) {
         list
       } else {
         created = true

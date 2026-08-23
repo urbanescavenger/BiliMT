@@ -54,11 +54,12 @@ class PlaybackRepository(
     codecPreference: PlaybackCodecPreference,
     qualityPreference: PlaybackQualityPreference,
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+    youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
   ): PlaybackInfo {
     // YouTube 播放：走 InnerTube /player（PO token + n/s 解密），不走 B 站 DASH playurl。
     // 传 codecCapability 让 resolver 过滤设备解不了的高清轨道（4K VP9/AV1 无硬解时回退）。
     if (request.isYoutube) {
-      return youtubePlaybackResolver.resolve(request, codecPreference, codecCapabilityProbe.probe(), youtubeDefaultQuality)
+      return youtubePlaybackResolver.resolve(request, codecPreference, codecCapabilityProbe.probe(), youtubeDefaultQuality, youtubeStartQuality)
     }
     val requestedQualityId = request.preferredQualityId ?: qualityPreference.requestedQualityId
     val cacheKey = PlaybackCacheKey(

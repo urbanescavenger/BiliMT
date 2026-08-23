@@ -2,7 +2,7 @@
 
 BiliMT 是一个原生 B 站 + YouTube 双平台客户端实验项目，基于 [BiliTVNative](https://github.com/Hyper-Beast/BiliTVNative) 1.0.0 开发，使用 Kotlin、Jetpack Compose 和 Media3 重写观看体验。同一个 APK 同时适配 Android TV 与安卓手机：TV 端用 Compose for TV 和遥控器焦点系统，手机端用触屏交互外壳，共享同一套网络、播放、账号、设置和存储引擎。
 
-内容覆盖 B 站（推荐/热门/分区、搜索、动态、历史、收藏、追番、直播）与 YouTube（搜索、热门、关注流、频道管理、多播放列表、高清播放），双平台均可播放。YouTube 部分基于 [LibreTube](https://github.com/libre-tube/libretube) 的取流与 SABR 播放方案（含其 NewPipeExtractor fork）独立重写实现。播放器基于 Media3 ExoPlayer，支持 DASH、弹幕、快进预览、空降助手、多语言配音音轨切换、默认画质、默认播放倍速、字幕与后台播放。
+内容覆盖 B 站（推荐/热门/分区、搜索、动态、历史、收藏、追番、直播、下载、IPTV）与 YouTube（搜索、热门、关注流、频道、多播放列表、高清 SABR 播放、评论、相关视频），双平台均可播放。YouTube 部分基于 [LibreTube](https://github.com/libre-tube/libretube) 的取流与 SABR 播放方案（含其 NewPipeExtractor fork）独立重写实现。播放器基于 Media3 ExoPlayer，支持 DASH、弹幕、快进预览、空降助手、多语言配音音轨切换、默认画质、默认播放倍速、字幕与后台播放。界面支持 6 档语言（简中 / 港繁 / 台繁 / English / Español / Português），拉丁语系数字本地化（K/M/B）与相对时间。
 
 电视端重点不是做一个极简壳，而是在电视设备上尽量平衡几个实际问题：播放稳定性、遥控器焦点可控性、弹幕性能、主页视觉质感，以及不同硬件档位下的流畅度。
 
@@ -47,7 +47,11 @@ BiliMT 是一个原生 B 站 + YouTube 双平台客户端实验项目，基于 [
 - Android TV launcher 图标和 TV 横幅，手机与 TV 双桌面入口。
 - 应用内更新：从 GitHub Releases 手动检查、下载并安装新版 APK。
 - 直播：TV + 移动端直播播放（HLS/FLV 取流、画质切换、-352 风控）与直播分区浏览。
-- YouTube 内容：搜索/热门来源切换、动态关注流合并、频道管理、多播放列表、高清 SABR 播放（多档清晰度）、多语言配音音轨切换、YouTube 默认画质、默认播放倍速、字幕、播放历史续播、WebDAV 备份/还原。
+- IPTV：设置页源配置（URL/账号/密码 + 连通性校验 + 自动补 https）、直播页 IPTV tab、TV 端 TVBox 式频道列表侧栏（确认键开关/左右切台/上下切线路）、断流自动切镜像源、强制 IPv4 明文数据源（302 重定向按客户端 IP 族选节点）、频道缩略图拉流截帧（SurfaceTexture+EGL 离屏，懒加载 + 会话级缓存）。TV + 移动端双端。
+- 多语言：界面 6 档语言（简中 / 港繁 / 台繁 / English / Español / Português），拉丁语系数字本地化（K/M/B）与相对时间本地化；播放器/下载等硬编码中文已收口进翻译。
+- 下载管理：B 站视频下载 + 下载任务管理（批量删除）。
+- YouTube 内容：搜索/热门来源切换、动态关注流合并（真 continuation 分页逐页逼近最早）、频道管理、频道页最新/最热排序、多播放列表（批量移除）、高清 SABR 播放（多档清晰度）、播放优先级设置（SABR 优先 / DASH 优先）、多语言配音音轨切换、YouTube 默认画质、默认播放倍速、字幕、评论、相关视频、播放历史续播、WebDAV 备份/还原。
+- 在线播放命中缓存播本地源：在线刷到已下载/缓存的视频直接播本地文件（简介/评论/弹幕仍走在线），清晰度只读、进度与在线互通，B 站 + YouTube 均适用。
 
 ## UI 与视觉
 
@@ -88,9 +92,9 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 设置页按使用语义分成三组：
 
-- 播放设置：默认画质、YouTube 默认画质、默认播放倍速、解码器、快进预览、空降助手、退出确认、自动连播、自动推荐、播放完成退出、显示时间、迷你进度条。
+- 播放设置：默认画质、YouTube 默认画质、默认播放倍速、播放优先级（SABR 优先 / DASH 优先）、解码器、快进预览、空降助手、退出确认、自动连播、自动推荐、播放完成退出、显示时间、迷你进度条。
 - UI/UX：效果档位、液态玻璃、主页主题、切换时自动确认、切换时自动刷新。
-- 系统设置：清理缓存、语言、程序更新、WebDAV 备份、日志、关于。
+- 系统设置：清理缓存、语言（6 档，含英/西/葡）、程序更新、WebDAV 备份、日志、关于。
 
 首页分区开关独立显示在右侧，至少保留一个分区。
 
@@ -124,6 +128,29 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 第三方库遵循其各自许可证。
 
 ## 版本更新
+
+### v3.0.5-alpha
+
+多语言线：界面从仅中文字体扩展为 6 档语言（简中/港繁/台繁 + English / Español / Português），数字与相对时间本地化，并修复 localeFilters 剪包真因。
+
+| tag | 内容 |
+| --- | --- |
+| v3.0.5-alpha.9 | SABR 升降档控制：起始挡位改公开 API（`DefaultTrackSelector.setMaxVideoSize` 起播卡起始挡 + 首帧后 `clearVideoSizeConstraints` 松开，alpha.8 的 seed 方案真机失效首段仍恒最高档）；ceiling 降档滞回（降档排除源挡及以上候选，relax 窗口 bufferMaxMs/2；真机证实迭代器门控对 AdaptiveTrackSelection 失效，待改 excludeTrack） |
+| v3.0.5-alpha.8 | YouTube 起始挡位设置生效：设置「起播挡位」此前无效（media3 1.10.0 `AdaptiveTrackSelection` 初始选轨纯带宽驱动 + `BaseTrackSelection` 内部按码率降序重排，resolver 挪 index0 无效）。改 `DefaultBandwidthMeter.setInitialBitrateEstimate` seed 到目标挡码率/0.7（TV+移动两 player），首段落目标挡后带宽实测自然爬升 |
+| v3.0.5-alpha.7 | YouTube 点赞数显示修复：点赞数改从 `/player` `microformat.likeCount` 直接取（原靠另发 `/next` 取 videoActions 工具栏，真机取不到致移动端简介点赞行缺失），更快更稳；`/next` 保留作兜底 |
+| v3.0.5-alpha.6 | TV 备份/还原选择弹窗崩溃修复（`SettingsWebDavSelectionDialog` `verticalScroll` 缺有限 max 高，弹窗无限高约束下测量滚动容器抛异常）+ 日志分享面板加「备份」单文件上传 + YouTube 搜索排序对齐 B 站 4 项（综合/最多播放/最新发布/评分，TV+移动端）+ 暂停状态 5s 无操作控制栏自动隐藏（TV 与移动全屏同步） |
+| v3.0.5-alpha.5 | S905X5M 等 Amlogic 盒子解码器误判仅 H264 修复：`CodecCapabilityProbe` 改用 `ALL_CODECS` + `isHardwareAccelerated || !isSoftwareOnly` 判定（厂商 AV1/HEVC 硬解组件不置 `isHardwareAccelerated` 被漏判），修复后解码器出现 Auto/AV1/H265/H264 四项 |
+| v3.0.5-alpha.4 | 多语言三语补齐 + localeFilters 剪包真因修复：`build.gradle.kts` `androidResources.localeFilters` 原只列 zh 变体把 `values-en/es/pt` 整个剪掉（APK arsc 字节搜索证实英文设置永远回落中文），补 `en/es/pt` 后拉丁资源真正进包；ES/PT 由骨架补为全量 664 key 翻译，占位符零错位；清掉语言切换 toast 诊断日志 |
+| v3.0.5-alpha.3 | 多语言支持：语言设置扩展为 6 档（新增 English / Español / Português）。界面骨架文案可切拉丁语，中文动态内容保持原样；`localizedContext()` locale 映射、两套设置页语言项、移动端入口包裹；数字本地化 `CountFormatter`（中文 万/亿，拉丁 K/M/B）；`values-en` 全量 654 key 翻译；硬编码 UI 中文收口进 `stringResource` |
+| v3.0.5-alpha.1 | YouTube SABR 自动档位升级修复：混合 H264/VP9 被默认轨道选择策略坍缩成单轨（`Representation.id` 全 null），显式开混合 mime 自适应后自动档可从 360p 逐步升到 1080p |
+
+### v3.0.4-alpha.2
+
+YouTube 首页订阅流接真实 continuation 分页：滚动到底可逐页逼近最早视频（此前每频道合并后硬截断 + 丢弃 continuation token）。YouTube 频道页「最新 / 最热」排序（对齐 B 站 UP 空间）；下载管理批量删除 + 播放列表批量移除（三点进批量模式、勾选/全选/删除所选）；在线播放命中缓存播本地源（已下载视频直接播本地文件，简介/评论/弹幕仍走在线，清晰度只读）；YouTube 播放优先级设置（SABR 优先 / DASH 优先，DASH 优先先走自合成兜底出 4K）。
+
+### v3.0.4-alpha.1
+
+TV 覆盖层/长按弹窗返回焦点恢复：UP 主页、YouTube 频道主页返回与动态长按操作菜单关闭后焦点不再丢失，统一走网格恢复精确回到进入前那张卡片，并抑制返回期间侧栏头像 autoConfirm。
 
 ### v3.0.3
 

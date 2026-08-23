@@ -201,11 +201,15 @@ internal fun UserFeedScreen(
  onOwnerSelected: (VideoSummary) -> Unit = {},
  onCommentSelected: (VideoSummary) -> Unit = {},
  onSeasonSelected: (com.kirin.mt.core.network.FollowingSeason) -> Unit = {},
+ onActionSheetDismissed: () -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
   val context = LocalContext.current
   val selectedTab = feedState.selectedTab
   var actionSheetVideo by remember { mutableStateOf<VideoSummary?>(null) }
+  // 长按菜单内选中了会跳转的项(评论 / 去 UP 主主页)时置 true,onDismiss 据此跳过网格焦点恢复,
+  // 避免焦点被抢到菜单底下隐藏的网格上;仅 Back / 点赞 / 稍后再看(留在网格)才恢复卡片焦点。
+  var actionSheetNavigating by remember { mutableStateOf(false) }
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   // 本地 YouTube 播放历史(免登录):合并进 History tab,与 B 站历史按播放时间倒序混合。
   val youtubeHistory by youtubeHistoryStore.history.collectAsState(initial = emptyList())
@@ -229,7 +233,6 @@ internal fun UserFeedScreen(
     when (selectedTab) {
       UserFeedTab.DynamicVideo -> loadDynamicFirstPage(
         videoRepository,
-        coroutineScope,
         feedState.dynamicVideo,
         "video",
         youtubeChannels,
@@ -238,7 +241,6 @@ internal fun UserFeedScreen(
       )
       UserFeedTab.DynamicAll -> loadDynamicFirstPage(
         videoRepository,
-        coroutineScope,
         feedState.dynamicAll,
         "all",
         emptyList(),
@@ -282,11 +284,11 @@ internal fun UserFeedScreen(
       when (selectedTab) {
         UserFeedTab.DynamicVideo -> {
           feedState.dynamicVideo.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, coroutineScope, feedState.dynamicVideo, "video", youtubeChannels, youtubeChannelStore, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, feedState.dynamicVideo, "video", youtubeChannels, youtubeChannelStore, forceRefresh = true)
         }
         UserFeedTab.DynamicAll -> {
           feedState.dynamicAll.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, coroutineScope, feedState.dynamicAll, "all", emptyList(), youtubeChannelStore, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, feedState.dynamicAll, "all", emptyList(), youtubeChannelStore, forceRefresh = true)
         }
         UserFeedTab.History -> {
           feedState.history.handledManualRefreshKey = manualRefreshKey
@@ -455,7 +457,10 @@ internal fun UserFeedScreen(
         BiliActionItem(
           label = commentLabel,
           enabled = video.aid > 0L || video.source == SourceYoutube,
-          onClick = { onCommentSelected(video) },
+          onClick = {
+            actionSheetNavigating = true
+            onCommentSelected(video)
+          },
         ),
         BiliActionItem(
           label = likeLabel,
@@ -489,11 +494,25 @@ internal fun UserFeedScreen(
         ),
         BiliActionItem(
           label = upspaceLabel,
-          enabled = video.ownerMid > 0L,
-          onClick = { onOwnerSelected(video) },
+          enabled = video.ownerMid > 0L ||
+            (video.source == SourceYoutube && video.channelId.isNotBlank()),
+          onClick = {
+            actionSheetNavigating = true
+            onOwnerSelected(video)
+          },
         ),
       ),
-      onDismiss = { actionSheetVideo = null },
+      onDismiss = {
+        if (!actionSheetNavigating) {
+          // BiliActionSheet 是屏内覆盖层(非 Dialog),关闭时其聚焦节点被移除,Compose 不会自动把
+          // 焦点还给底下网格 → 焦点会落到侧栏头像并 autoConfirm 打开「我的」页(焦点丢失)。
+          // 走 AppShell 的 contentFocusRestore 机制:置 contentFocusRestoreDestination 抑制头像
+          // autoConfirm,并让网格 restore effect 把焦点拉回刚长按的那张卡片。
+          onActionSheetDismissed()
+        }
+        actionSheetNavigating = false
+        actionSheetVideo = null
+      },
     )
   }
 }
@@ -531,7 +550,6 @@ private fun UserFeedTabRow(
 
 private suspend fun loadDynamicFirstPage(
   videoRepository: VideoRepository,
-  coroutineScope: CoroutineScope,
   state: DynamicFeedUiState,
   type: String,
   youtubeChannels: List<YoutubeChannel>,
@@ -550,81 +568,64 @@ private suspend fun loadDynamicFirstPage(
     state.focusedVideoKey = ""
   }
   state.nextOffset = ""
-  state.state = try {
+  // 1. 拉 B 站动态
+  var biliEndReached = true
+  var biliError: String? = null
+  val biliVideos = try {
     val page = videoRepository.getDynamicFeed(type = type)
     state.nextOffset = page.offset
     state.loadedOnce = true
-    if (page.videos.isEmpty()) {
-      UserFeedState.Empty
-    } else {
-      state.hasLoadedContent = true
-      UserFeedState.Success(
-        videos = page.videos,
-        loadingMore = false,
-        endReached = !page.hasMore,
-        loadMoreError = "",
-      )
-    }
+    biliEndReached = !page.hasMore
+    page.videos
   } catch (error: CancellationException) {
     throw error
   } catch (error: Exception) {
     state.loadedOnce = true
-    UserFeedState.Failed(error.message.orEmpty())
+    biliError = error.message.orEmpty()
+    null
   }
 
-  // 仅「动态(视频)」合并 YouTube 关注;无频道或 type="all" 时不产生额外加载。
-  if (type != "video" || youtubeChannels.isEmpty()) {
-    return
+  // 2. 拉 YouTube 关注(仅「动态(视频)」,等查完再一次性合并,不再分批增量叠加)
+  val youtubeVideos = if (type == "video" && youtubeChannels.isNotEmpty()) {
+    fetchYoutubeAll(videoRepository, youtubeChannels, youtubeChannelStore)
+  } else {
+    emptyList()
   }
-  mergeYoutubeIntoDynamic(videoRepository, coroutineScope, state, youtubeChannels, youtubeChannelStore)
+
+  // 3. 合并一次
+  val merged = mergeByPubdate(biliVideos.orEmpty(), youtubeVideos)
+  state.state = when {
+    merged.isEmpty() && biliError != null -> UserFeedState.Failed(biliError)
+    merged.isEmpty() -> UserFeedState.Empty
+    else -> {
+      state.hasLoadedContent = true
+      UserFeedState.Success(
+        videos = merged,
+        loadingMore = false,
+        endReached = biliEndReached,
+        loadMoreError = "",
+      )
+    }
+  }
 }
 
-/**
- * 后台分批增量拉取 YouTube 关注流,每批就绪即与当前 B 站动态按发布时间合并重排。
- * alpha.98:去 5s 固定超时(几百频道必超)——getSubscriptionsFeed 已分批 + 单频道独立容错,
- * 靠 onChunkReady 增量 merge,不再等全量后一次性合并。
- */
-private fun mergeYoutubeIntoDynamic(
+/** 全量拉取 YouTube 关注流(等全部查完),失败返回空(单频道已容错)。 */
+private suspend fun fetchYoutubeAll(
   videoRepository: VideoRepository,
-  coroutineScope: CoroutineScope,
-  state: DynamicFeedUiState,
   channels: List<YoutubeChannel>,
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
-) {
-  coroutineScope.launch {
-    try {
-      videoRepository.youtubeSubscriptionsFeed(
-        channels,
-        onChannelAvatarResolved = { channel ->
-          youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-        },
-        onChunkReady = { chunk ->
-          if (chunk.isNotEmpty()) {
-            when (val cur = state.state) {
-              is UserFeedState.Success -> {
-                val merged = mergeByPubdate(cur.videos, chunk)
-                if (merged.size > cur.videos.size) state.hasLoadedContent = true
-                state.state = cur.copy(videos = merged)
-              }
-              is UserFeedState.Empty -> {
-                state.hasLoadedContent = true
-                state.state = UserFeedState.Success(
-                  videos = chunk,
-                  loadingMore = false,
-                  endReached = true,
-                  loadMoreError = "",
-                )
-              }
-              else -> {} // Failed / Loading 保持原样
-            }
-          }
-        },
-      )
-    } catch (error: CancellationException) {
-      throw error
-    } catch (error: Exception) {
-      // 单频道已容错,仅意外整批异常到此;保持原样,不阻塞动态。
-    }
+): List<VideoSummary> {
+  return try {
+    videoRepository.youtubeSubscriptionsFeed(
+      channels,
+      onChannelAvatarResolved = { channel ->
+        youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+      },
+    )
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    emptyList()
   }
 }
 
@@ -1004,7 +1005,7 @@ private fun DynamicFeedContent(
       },
       onRetry = {
         coroutineScope.launch {
-          loadDynamicFirstPage(videoRepository, coroutineScope, state, type, youtubeChannels, youtubeChannelStore, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, state, type, youtubeChannels, youtubeChannelStore, forceRefresh = true)
         }
       },
       onLoadMore = { loadDynamicNextPage(videoRepository, coroutineScope, state, type) },
@@ -1383,7 +1384,7 @@ private fun UserFeedGrid(
 ) {
   TvVideoGrid(
     videos = videos,
-    cardMode = cardMode,
+    debugLabel = "dynamic-grid",
     firstItemFocusRequester = firstItemFocusRequester,
     restoredFocusIndex = restoredFocusIndex,
     restoreFocusRequestKey = restoreFocusRequestKey,

@@ -41,6 +41,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import coil.imageLoader
@@ -53,6 +54,7 @@ import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.CdnSpeedTester
 import com.kirin.mt.core.player.DefaultPlaybackSpeed
+import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.CodecCapabilityProbe
 import com.kirin.mt.core.player.LastPlayedStore
 import com.kirin.mt.core.player.PlaybackCdnPreference
@@ -78,13 +80,15 @@ import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.feed.UserFeedScreen
+import com.kirin.mt.ui.focus.focusDiag
 import com.kirin.mt.ui.feed.UserFeedUiState
 import com.kirin.mt.ui.home.RecommendScreen
 import com.kirin.mt.ui.home.RecommendUiState
 import com.kirin.mt.ui.glass.LocalLiquidGlassBackdrop
 import com.kirin.mt.ui.i18n.LocalChineseTextConverter
 import com.kirin.mt.ui.i18n.localizedContext
-import com.kirin.mt.ui.login.AccountScreen
+import com.kirin.mt.ui.login.TvAccountSettingsDialog
+import com.kirin.mt.ui.login.TvQrLoginDialog
 import com.kirin.mt.ui.player.PlayerScreen
 import com.kirin.mt.ui.search.SearchScreen
 import com.kirin.mt.ui.search.SearchUiState
@@ -218,6 +222,9 @@ fun BiliTvApp(
   var selectedDestination by rememberSaveable { mutableStateOf(AppDestination.Recommend) }
   var visitedDestinationNames by rememberSaveable { mutableStateOf(setOf(AppDestination.Recommend.name)) }
   var accountSelected by rememberSaveable { mutableStateOf(false) }
+  // 「我的」页账号行触发的弹窗:已登录→账号操作菜单(退出登录);未登录→二维码登录。
+  var showAccountMenu by remember { mutableStateOf(false) }
+  var showTvLoginDialog by remember { mutableStateOf(false) }
   // 播放期间保住各目的地网格的 LazyListState 滚动位置(见下方 SaveableStateProvider),
   // 返回时精确还原、目标行第一帧就在视口,焦点恢复立即成功,根治长视频返回丢焦点。
   val saveableStateHolder = rememberSaveableStateHolder()
@@ -390,6 +397,15 @@ fun BiliTvApp(
     }
   }
 
+  // 内容覆盖层(UP 主页 / YouTube 频道主页)返回时精确恢复网格卡片焦点。复用 contentFocusRestore* 走
+  // restoreFocusRequestKey 网格恢复 effect:把焦点拉回进入覆盖层前的那张卡片。与 requestContentFocusRestore
+  // (侧栏右移切 tab 时落 tab)区分开——切 tab 要停在 tab,覆盖层返回要回到卡片。
+  fun requestContentGridRestore(destination: AppDestination) {
+    contentFocusRestoreDestination = destination
+    contentFocusRestoreRequestKey += 1
+    pendingContentFocusDestination = null
+  }
+
   fun requestManualRefresh(destination: AppDestination) {
     when (destination) {
       AppDestination.Recommend -> recommendManualRefreshKey += 1
@@ -428,6 +444,13 @@ fun BiliTvApp(
     if (selectedDestination != destination) {
       selectDestination(destination)
       requestContentFocusRestore(destination)
+      return true
+    }
+    // 搜索结果网格无 tab,searchFocusRequester 绑定的就是第一张卡;滚动后首卡被虚拟化卸载,
+    // 直接 requestFocus 会落空(焦点卡在侧栏回不来)。统一走网格恢复,回到上次聚焦的那张卡。
+    // 键盘输入视图(无活跃查询)仍走 requestDestinationFocus(clear 键恒定在树里)。
+    if (destination == AppDestination.Search && searchUiState.activeQuery != null) {
+      requestContentGridRestore(destination)
       return true
     }
     val focused = requestDestinationFocus(destination)
@@ -519,6 +542,7 @@ fun BiliTvApp(
 
   CompositionLocalProvider(
     LocalContext provides localizedContext,
+    LocalResources provides localizedContext.resources,
     LocalBiliPerformancePolicy provides performancePolicy,
     LocalChineseTextConverter provides textConverter,
     LocalHomeColors provides homeColors,
@@ -588,7 +612,7 @@ fun BiliTvApp(
       }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize().focusDiag("root")) {
       if (visiblePlaybackRequest == null) {
         Box(modifier = Modifier.fillMaxSize()) {
         Box(
@@ -623,7 +647,10 @@ fun BiliTvApp(
         ) {
           // 视频退出后恢复窗口内抑制头像 autoConfirm,避免焦点被头像抢占并打开「我的」页,
           // 让 TvVideoGrid 的网格恢复 effect 有机会把焦点拉回原视频卡片。
-          val suppressAccountAutoConfirm = playbackFocusRestoreDestination != null
+          // 内容覆盖层(UP 主页 / YouTube 频道)返回走网格恢复时同样抑制,防覆盖层关闭后的
+          // 延迟焦点回落把焦点丢到头像并 autoConfirm。
+          val suppressAccountAutoConfirm =
+            playbackFocusRestoreDestination != null || contentFocusRestoreDestination != null
           AppSidebar(
             selectedDestination = selectedDestination,
             accountSelected = accountSelected,
@@ -667,6 +694,14 @@ fun BiliTvApp(
                 cacheSizeText = cacheSizeBytes?.let(::formatCacheSize) ?: stringResource(R.string.settings_clear_cache_calculating),
                 codecCapability = codecCapability,
                 firstItemFocusRequester = settingsFocusRequester,
+                userSession = userSession,
+                onAccountClick = {
+                  if (userSession.isLoggedIn) {
+                    showAccountMenu = true
+                  } else {
+                    showTvLoginDialog = true
+                  }
+                },
                 onMoveLeftToNav = {
                   runCatching {
                     if (accountSelected) {
@@ -696,6 +731,13 @@ fun BiliTvApp(
                   coroutineScope.launch {
                     appSettingsStore.setChineseTextVariant(variant)
                   }
+                  // 用新语言弹 toast 确认切换(状态异步落盘,这里按新 variant 构造 locale 上下文取值)。
+                  val switchedCtx = context.localizedContext(variant)
+                  Toast.makeText(
+                    switchedCtx,
+                    switchedCtx.getString(R.string.settings_language_switched),
+                    Toast.LENGTH_SHORT,
+                  ).show()
                 },
                 onClearCache = {
                   coroutineScope.launch {
@@ -724,6 +766,11 @@ fun BiliTvApp(
                     appSettingsStore.setYoutubeDefaultQuality(quality)
                   }
                 },
+                onYoutubeStartQualityChange = { quality ->
+                  coroutineScope.launch {
+                    appSettingsStore.setYoutubeStartQuality(quality)
+                  }
+                },
                 onYoutubeContentRegionChange = { region ->
                   coroutineScope.launch {
                     appSettingsStore.setYoutubeContentRegion(region)
@@ -732,6 +779,11 @@ fun BiliTvApp(
                 onDefaultPlaybackSpeedChange = { speed ->
                   coroutineScope.launch {
                     appSettingsStore.setDefaultPlaybackSpeed(speed)
+                  }
+                },
+                onPlaybackBufferMaxChange = { bufferMax ->
+                  coroutineScope.launch {
+                    appSettingsStore.setPlaybackBufferMax(bufferMax)
                   }
                 },
                 onPlaybackCodecPreferenceChange = { preference ->
@@ -815,6 +867,16 @@ fun BiliTvApp(
                 },
                 onShareLog = { info ->
                   LogCatcherUtil.shareLogFile(context, info.file)
+                },
+                onBackupLog = { info ->
+                  coroutineScope.launch {
+                    val result = webdavBackupService.backupLogFile(webDavConfig, info)
+                    val msg = result.fold(
+                      onSuccess = { localizedContext.getString(R.string.settings_logs_backup_success) },
+                      onFailure = { localizedContext.getString(R.string.settings_logs_backup_failed, it.message ?: "") },
+                    )
+                    Toast.makeText(localizedContext, msg, Toast.LENGTH_SHORT).show()
+                  }
                 },
                 onToggleLogRecording = {
                   coroutineScope.launch {
@@ -971,8 +1033,8 @@ fun BiliTvApp(
                     config = cfg,
                   )
                 },
-                onWebDavBackup = { cfg -> webdavBackupService.backup(cfg) },
-                onWebDavRestore = { cfg -> webdavBackupService.restore(cfg) },
+                onWebDavBackup = { cfg, items -> webdavBackupService.backup(cfg, items) },
+                onWebDavRestore = { cfg, items -> webdavBackupService.restore(cfg, items) },
                 onIptvSourceConfigChange = { url, username, password ->
                   coroutineScope.launch {
                     appSettingsStore.setIptvSourceUrl(url)
@@ -1006,17 +1068,17 @@ fun BiliTvApp(
                     appSettingsStore.setSabrForceSessionVideoItag(enabled)
                   }
                 },
+                onYoutubeDeliveryPriorityChange = { priority ->
+                  coroutineScope.launch {
+                    appSettingsStore.setYoutubeDeliveryPriority(priority)
+                  }
+                },
               )
             }
             if (accountSelected) {
-              Column(Modifier.fillMaxSize()) {
-                AccountScreen(
-                  userSession = userSession,
-                  authRepository = authRepository,
-                  modifier = Modifier.fillMaxWidth(),
-                )
-                settingsContent(Modifier.weight(1f))
-              }
+              // 「我的」页 = 设置整页占满;账号/会员信息已并入设置列表首行(SettingsAccountRow),
+              // 登录/登出入口由该行点击唤起弹窗(见 AppShell 底部 showAccountMenu/showTvLoginDialog)。
+              settingsContent(Modifier.fillMaxSize())
             } else {
               // 播放期间保住各目的地网格滚动位置:SaveableStateProvider 在 app 层(holder 永不卸载),
               // 内容因播放被卸载时滚动位置存进 saveableStateHolder,返回时精确还原,目标行第一帧
@@ -1118,6 +1180,7 @@ fun BiliTvApp(
                   tabFocusRequester = feedTabFocusRequester,
                   restoreFocusRequestKey = restoreFocusRequestKeyFor(AppDestination.Dynamic),
                   onRestoreFocusHandled = { key -> clearFocusRestoreRequest(AppDestination.Dynamic, key) },
+                  onActionSheetDismissed = { requestContentGridRestore(selectedDestination) },
                   onMoveLeftToNav = {
                     runCatching {
                       navFocusRequesters.getValue(selectedDestination).requestFocus()
@@ -1306,6 +1369,7 @@ fun BiliTvApp(
               request = displayedPlaybackRequest,
               videoRepository = videoRepository,
               playbackRepository = playbackRepository,
+              youtubeRepository = youtubeRepository,
               youtubeHistoryStore = youtubeHistoryStore,
               danmakuSettingsStore = danmakuSettingsStore,
               playbackHttpClient = playbackHttpClient,
@@ -1313,7 +1377,9 @@ fun BiliTvApp(
               playbackCodecPreference = effectivePlaybackCodecPreference,
               playbackQualityPreference = settings.playbackQualityPreference,
               youtubeDefaultQuality = settings.youtubeDefaultQuality,
+              youtubeStartQuality = settings.youtubeStartQuality,
               defaultPlaybackSpeed = settings.defaultPlaybackSpeed,
+              bufferMaxMs = settings.bufferMax.ms,
               playbackCdnPreference = settings.playbackCdnPreference,
               seekPreviewSpritesEnabled = settings.seekPreviewSpritesEnabled,
               airJumpAssistantEnabled = settings.airJumpAssistantEnabled,
@@ -1348,6 +1414,16 @@ fun BiliTvApp(
                 spacePlaybackBehind = true
                 spaceRequest = UpSpaceRequest(mid, ownerName, ownerFace)
               },
+              onOpenYoutubeChannel = { channelId, channelName, avatar ->
+                youtubeChannelUiState.reset()
+                channelOrigin = SpaceOrigin.Player
+                channelPlaybackBehind = true
+                youtubeChannelRequest = YoutubeChannelRequest(
+                  channelId = channelId,
+                  channelName = channelName,
+                  avatar = avatar,
+                )
+              },
               spaceReturnKey = spaceFocusRestoreRequestKey,
             )
           }
@@ -1379,7 +1455,7 @@ fun BiliTvApp(
               spacePlaybackBehind = false
               when (origin) {
                 SpaceOrigin.Player -> spaceFocusRestoreRequestKey += 1
-                SpaceOrigin.Content -> requestContentFocusRestore(selectedDestination)
+                SpaceOrigin.Content -> requestContentGridRestore(selectedDestination)
                 else -> Unit
               }
               true
@@ -1417,7 +1493,7 @@ fun BiliTvApp(
               channelPlaybackBehind = false
               when (origin) {
                 SpaceOrigin.Player -> channelFocusRestoreRequestKey += 1
-                SpaceOrigin.Content -> requestContentFocusRestore(selectedDestination)
+                SpaceOrigin.Content -> requestContentGridRestore(selectedDestination)
                 else -> Unit
               }
               true
@@ -1442,6 +1518,24 @@ fun BiliTvApp(
           request = request,
           videoRepository = videoRepository,
           onDismiss = { commentRequest = null },
+        )
+      }
+
+      if (showAccountMenu) {
+        TvAccountSettingsDialog(
+          onLogout = {
+            showAccountMenu = false
+            coroutineScope.launch { authRepository.clearSession() }
+          },
+          onDismiss = { showAccountMenu = false },
+          modifier = Modifier.align(Alignment.Center),
+        )
+      }
+      if (showTvLoginDialog) {
+        TvQrLoginDialog(
+          authRepository = authRepository,
+          onDismiss = { showTvLoginDialog = false },
+          modifier = Modifier.align(Alignment.Center),
         )
       }
     }

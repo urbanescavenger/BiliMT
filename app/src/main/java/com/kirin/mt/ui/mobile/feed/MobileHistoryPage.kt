@@ -272,7 +272,7 @@ private fun YoutubeHistoryEntry.toVideoSummary(): VideoSummary {
     view = 0,
     danmaku = 0,
     duration = (durationMs / 1000L).toInt(),
-    pubdate = 0L,
+    pubdate = pubdate,
     badge = "",
     progress = (positionMs / 1000L).toInt(),
     viewAt = lastPlayedAtMs / 1000L,

@@ -5,6 +5,7 @@ import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.SpaceVideoRetryMode
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.PlaybackRequest
+import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.core.player.PlaybackVideoMetadata
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -33,6 +34,7 @@ internal fun CoroutineScope.launchUpVideosPanelLoad(
   order: String,
   initialRequest: PlaybackRequest,
   videoRepository: VideoRepository,
+  youtubeRepository: YoutubeRepository,
   resolveDisplayMetadata: suspend () -> PlaybackVideoMetadata?,
   currentRequest: () -> PlaybackRequest,
   isCurrentUpVideosLoad: (Long) -> Boolean,
@@ -46,25 +48,46 @@ internal fun CoroutineScope.launchUpVideosPanelLoad(
 ): Job = launch {
   val resolvedMetadata = resolveDisplayMetadata()
   val resolvedRequest = currentRequest()
+  val isYoutube = resolvedRequest.isYoutube
   val ownerMid = resolvedRequest.ownerMid.takeIf { it > 0L } ?: resolvedMetadata?.ownerMid ?: 0L
-  val cacheKey = upVideoCacheKey(ownerMid, order)
+  // YouTube 视频：UP 面板用频道主页最新视频填充（复用 getChannelVideos）。channelId 缺失时
+  // 从 /player 权威 videoDetails 解析（同播放器头像 UpFocusHome 分支）。
+  val channelId = if (isYoutube) {
+    resolvedRequest.channelId.takeIf { it.isNotBlank() }
+      ?: runCatching { youtubeRepository.getVideoDetail(resolvedRequest.bvid)?.channelId }
+        .getOrNull()?.takeIf { it.isNotBlank() }
+  } else {
+    null
+  }
+  val cacheKey = when {
+    channelId != null -> "youtube:$channelId:$order"
+    isYoutube -> "youtube::$order"
+    else -> upVideoCacheKey(ownerMid, order)
+  }
   val resolvedCachedVideos = readCachedVideos(cacheKey)
     .withoutCurrentVideo(resolvedRequest)
   Log.i(
     PlayerUpVideosLogTag,
-    "resolved token=$loadToken bvid=${initialRequest.bvid} order=$order ownerMid=$ownerMid " +
-      "metadataMid=${resolvedMetadata?.ownerMid ?: 0L} cache=${resolvedCachedVideos.size}",
+    "resolved token=$loadToken bvid=${initialRequest.bvid} order=$order youtube=$isYoutube " +
+      "channelId=${channelId ?: "-"} ownerMid=$ownerMid metadataMid=${resolvedMetadata?.ownerMid ?: 0L} cache=${resolvedCachedVideos.size}",
   )
   if (isCurrentUpVideosLoad(loadToken) && resolvedCachedVideos.isNotEmpty()) {
     applyResolvedCachedVideos(resolvedCachedVideos)
     showControls()
   }
 
-  val networkResult = if (ownerMid <= 0L) {
-    Log.w(PlayerUpVideosLogTag, "skip network token=$loadToken bvid=${initialRequest.bvid} order=$order: ownerMid=0")
-    Result.success(emptyList())
-  } else {
-    runCatching {
+  val networkResult = when {
+    channelId != null -> runCatching {
+      youtubeRepository.getChannelVideos(channelId).items
+    }
+    ownerMid <= 0L -> {
+      Log.w(
+        PlayerUpVideosLogTag,
+        "skip network token=$loadToken bvid=${initialRequest.bvid} order=$order: no channelId/ownerMid",
+      )
+      Result.success(emptyList())
+    }
+    else -> runCatching {
       videoRepository.getSpaceVideos(
         mid = ownerMid,
         order = order,
@@ -75,7 +98,8 @@ internal fun CoroutineScope.launchUpVideosPanelLoad(
   val videos = networkResult.onFailure { error ->
     Log.w(
       PlayerUpVideosLogTag,
-      "network failed token=$loadToken mid=$ownerMid order=$order bvid=${initialRequest.bvid}: ${error.toLogBrief()}",
+      "network failed token=$loadToken mid=$ownerMid channelId=${channelId ?: "-"} order=$order " +
+        "bvid=${initialRequest.bvid}: ${error.toLogBrief()}",
     )
   }.getOrDefault(emptyList())
   if (!isCurrentUpVideosLoad(loadToken)) {
@@ -93,8 +117,8 @@ internal fun CoroutineScope.launchUpVideosPanelLoad(
   }
   Log.i(
     PlayerUpVideosLogTag,
-    "apply token=$loadToken mid=$ownerMid order=$order network=${videos.size} next=${nextVideos.size} " +
-      "usedCacheFallback=${videos.isEmpty() && nextVideos.isNotEmpty()}",
+    "apply token=$loadToken mid=$ownerMid channelId=${channelId ?: "-"} order=$order network=${videos.size} " +
+      "next=${nextVideos.size} usedCacheFallback=${videos.isEmpty() && nextVideos.isNotEmpty()}",
   )
   applyLoadedVideos(nextVideos)
   showControls()
@@ -135,11 +159,16 @@ internal fun CoroutineScope.launchUpVideosPanelLoad(
     }
   }
 
-  val followed = runCatching {
-    videoRepository.checkFollowStatus(ownerMid)
-  }.onFailure { error ->
-    Log.w(PlayerUpVideosLogTag, "follow check failed token=$loadToken mid=$ownerMid: ${error.toLogBrief()}")
-  }.getOrDefault(false)
+  // 关注仅对 B 站 UP(ownerMid>0)有意义;YouTube 关注走 YoutubeChannelStore,这里不回查。
+  val followed = if (ownerMid > 0L) {
+    runCatching {
+      videoRepository.checkFollowStatus(ownerMid)
+    }.onFailure { error ->
+      Log.w(PlayerUpVideosLogTag, "follow check failed token=$loadToken mid=$ownerMid: ${error.toLogBrief()}")
+    }.getOrDefault(false)
+  } else {
+    false
+  }
   if (!isCurrentUpVideosLoad(loadToken)) {
     return@launch
   }

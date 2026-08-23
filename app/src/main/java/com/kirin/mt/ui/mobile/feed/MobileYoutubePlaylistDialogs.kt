@@ -42,20 +42,24 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.youtube.DOWNLOAD_PLAYLIST_NAME
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.ui.theme.BiliColors
 import kotlinx.coroutines.launch
 
 /**
- * 长按视频卡片弹出的底部操作菜单。当前只放「加入播放列表」一项；
- * 点击后由 [onPickPlaylist] 交给外层弹出 [MobilePlaylistPickerDialog]。
+ * 长按视频卡片弹出的底部操作菜单。当前放「下载」+「加入播放列表」两项；
+ * 下载由 [onDownload] 交给外层弹清晰度选择框,加入播放列表由 [onPickPlaylist]
+ * 交给外层弹出 [MobilePlaylistPickerDialog]。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MobileYoutubeLongPressSheet(
   video: VideoSummary,
+  onDownload: () -> Unit,
   onPickPlaylist: () -> Unit,
   onDismiss: () -> Unit,
+  isDownloaded: Boolean = false,
 ) {
   ModalBottomSheet(
     onDismissRequest = onDismiss,
@@ -71,6 +75,26 @@ fun MobileYoutubeLongPressSheet(
         overflow = TextOverflow.Ellipsis,
       )
       Spacer(Modifier.padding(top = 8.dp))
+      // 已下载/缓存的视频不再提供下载入口(避免重复下载)。
+      if (!isDownloaded) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onDownload)
+            .padding(vertical = 12.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(
+            painter = painterResource(R.drawable.ic_player_download),
+            contentDescription = null,
+            tint = BiliColors.BiliPink,
+            modifier = Modifier.size(24.dp),
+          )
+          Spacer(Modifier.width(12.dp))
+          Text(stringResource(R.string.downloads_menu_download), color = Color.White)
+        }
+      }
       Row(
         modifier = Modifier
           .fillMaxWidth()
@@ -130,22 +154,39 @@ fun MobilePlaylistPickerDialog(
         ) {
           playlists.forEach { pl ->
             val checked = pending[pl.name] ?: false
+            // 「下载」是下载自动存档列表:只能取消勾选移除存档,禁止手动勾选加入。
+            val autoArchive = pl.name == DOWNLOAD_PLAYLIST_NAME
             Row(
               modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(8.dp))
-                .clickable { pending[pl.name] = !checked }
+                .clickable {
+                  // 自动存档列表只允许取消(移除),点中仍勾着时给一次去掉机会;未勾则不可加入。
+                  if (autoArchive) { if (checked) pending[pl.name] = false }
+                  else pending[pl.name] = !checked
+                }
                 .padding(vertical = 4.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
               Checkbox(
                 checked = checked,
-                onCheckedChange = { pending[pl.name] = it },
+                // 禁用手动加入(勾选);但已入列时点击行/勾选框仍可取消(移除)。
+                enabled = !autoArchive,
+                onCheckedChange = {
+                  if (autoArchive) { if (!it) pending[pl.name] = false }
+                  else pending[pl.name] = it
+                },
               )
-              Text(pl.name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+              Text(
+                pl.name,
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
               Spacer(Modifier.weight(1f))
               Text(
-                text = "${pl.videos.size} 个",
+                text = if (autoArchive) stringResource(R.string.playlist_auto_archive)
+                  else "${pl.videos.size} 个",
                 color = BiliColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
               )

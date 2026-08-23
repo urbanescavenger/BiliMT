@@ -43,24 +43,26 @@ internal class SabrDataSource(
     val req = dataSpec.customData as? SabrSegmentRequest
       ?: throw IOException("SABR DataSpec.customData is not SabrSegmentRequest")
     transferInitializing(dataSpec)
+    // alpha.9X(对齐 LibreTube `SabrDataSource.open`):transferStarted 移到 getNextSegment **之前**,让
+    // DefaultBandwidthMeter 把真实网络 POST 耗时计入带宽样本(否则只在 POST 之后才开始传输窗口,只量到内存
+    // 瞬时读 → 带宽估计失真 → AdaptiveTrackSelection 升档判定错误)。getNextSegment 失败时 transferStarted 已
+    // 调用、未收尾,交给 chunk load error 通路兜底(对齐 LibreTube)。
+    transferStarted(dataSpec)
     val segment = try {
       fetcher.getNextSegment(req)
     } catch (e: SabrTerminalException) {
       Log.w("YtSabr", "SabrDataSource open: terminal seg=${req.segment} itag=${req.formatItag}: ${e.message} → evict sid=$sessionId")
       SabrStreamRegistry.evict(sessionId)
-      transferStarted(dataSpec)
       throw IOException("SABR terminal: ${e.message}")
     } catch (e: Exception) {
       Log.w("YtSabr", "SabrDataSource open: seg=${req.segment} itag=${req.formatItag} ${e::class.simpleName}: ${e.message} → evict sid=$sessionId")
       SabrStreamRegistry.evict(sessionId)
-      transferStarted(dataSpec)
       throw IOException("SABR open failed: ${e.message}")
     }
     // 拍平段字节(多 MEDIA part 块 → 单连续流),喂 ChunkExtractor
     data = if (segment.data.size == 1) segment.data[0]
     else segment.data.fold(ByteArray(0)) { acc, c -> acc + c }
     position = 0
-    transferStarted(dataSpec)
     return data.size.toLong()
   }
 

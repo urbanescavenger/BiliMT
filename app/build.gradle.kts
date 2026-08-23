@@ -116,7 +116,7 @@ android {
   }
 
   androidResources {
-    localeFilters += listOf("zh", "zh-rHK", "zh-rTW")
+    localeFilters += listOf("zh", "zh-rHK", "zh-rTW", "en", "es", "pt")
   }
 
   compileOptions {

@@ -1,6 +1,7 @@
 package com.kirin.mt.core.youtube.sabr.media
 
 import androidx.media3.common.C
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.youtube.sabr.SabrSession
@@ -39,17 +40,39 @@ internal data class SabrManifest(
      */
     @androidx.annotation.OptIn(UnstableApi::class)
     fun fromSession(session: SabrSession, info: PlaybackInfo): SabrManifest {
+      // alpha.9X 决定性诊断:打印过滤后真视频轨数与 itag,分辨「旧缓存包(manifest 仍按 mime 拆组)」vs
+      // 「MimeTypes.isVideo 过滤吞轨」。缺此日志无法判断部署包是否带 6062dab 单组修复。
+      val diagVideoTracks = info.videoTracks.filter { MimeTypes.isVideo(it.mimeType) }
+      android.util.Log.i(
+        "YtSabrManifest",
+        "fromSession: rawVideoTracks=${info.videoTracks.size} isVideo=${diagVideoTracks.size} " +
+          "itags=[${diagVideoTracks.joinToString { it.id.toString() }}] mimes=[${diagVideoTracks.joinToString { it.mimeType }}] " +
+          "codecs=[${diagVideoTracks.joinToString { it.codecs.ifBlank { "EMPTY" } }}] " +
+          "sampleMime=[${diagVideoTracks.joinToString { MimeTypes.getVideoMediaMimeType(it.codecs) ?: "null" }}] " +
+          "wh=[${diagVideoTracks.joinToString { "${it.width}x${it.height}" }}]"
+      )
       // alpha.82(对齐 LibreTube `SabrManifest.kt` groupBy):视频轨按 mimeType 分组,每个 mimeType 一个
       // video AdaptationSet,不混。即使音频 itag(如 itag248 Opus)混进 videoOnlyStreams,也被按音频
       // mimeType 分到单独的 AdaptationSet,并因 mimeType 非视频而在 Representation 里建成 audio Format,
       // 不会当视频轨被 ExoPlayer 选中 → 不再请求不存在的视频 itag → 不再 RELOAD 死循环。
-      val videoAdaptationSets = info.videoTracks.groupBy { it.mimeType }
-        .map { (_, tracks) ->
-          AdaptationSet(C.TRACK_TYPE_VIDEO, tracks.map { track ->
-            val fmtId = session.videoFormat(track.id) ?: session.videoFormatId
-            Representation.fromTrack(track, fmtId, C.TRACK_TYPE_VIDEO)
-          })
-        }
+      //
+      // alpha.9X(修「Auto 起播低档后永不升档」):上述 groupBy 把视频拆成多个 AdaptationSet(如 H264 组 +
+      // VP9 组),而 [SabrMediaPeriod.getGroupedAdaptationSetIndices] 每个 set 独立成 TrackGroup →
+      // DefaultTrackSelector 只选中其中一个(实测选中了 VP9 单轨组 itag243)→ AdaptiveTrackSelection 的
+      // trackSelection.length()==1,没有任何别的轨可切 → 带宽/缓冲再足也永不升档。这里改成**单个** video
+      // AdaptationSet 装全部**真视频轨**(用 MimeTypes.isVideo 过滤掉音频误分类 itag,既保住 alpha.82 防
+      // itag248 RELOAD 的意图,又让 ExoPlayer 拿到全部视频轨在一个组里自适应升档)。
+      val videoAdaptationSets = listOf(
+        AdaptationSet(
+          C.TRACK_TYPE_VIDEO,
+          info.videoTracks
+            .filter { MimeTypes.isVideo(it.mimeType) }
+            .map { track ->
+              val fmtId = session.videoFormat(track.id) ?: session.videoFormatId
+              Representation.fromTrack(track, fmtId, C.TRACK_TYPE_VIDEO)
+            }
+        )
+      )
       val audioAdaptationSets = if (info.audioTracks.isEmpty()) emptyList() else {
         val audioTrack = info.audioTracks.first()
         val audioRep = Representation.fromTrack(audioTrack, session.audioFormatId, C.TRACK_TYPE_AUDIO)

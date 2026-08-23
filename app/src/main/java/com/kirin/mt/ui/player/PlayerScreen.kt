@@ -65,7 +65,11 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -98,6 +102,7 @@ import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.LastPlayedStore
@@ -140,6 +145,7 @@ fun PlayerScreen(
   request: PlaybackRequest,
   videoRepository: VideoRepository,
   playbackRepository: PlaybackRepository,
+  youtubeRepository: com.kirin.mt.core.youtube.YoutubeRepository,
   youtubeHistoryStore: YoutubeHistoryStore,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
@@ -147,7 +153,9 @@ fun PlayerScreen(
   playbackCodecPreference: PlaybackCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
   youtubeDefaultQuality: YoutubeDefaultQuality,
+  youtubeStartQuality: YoutubeStartQuality,
   defaultPlaybackSpeed: DefaultPlaybackSpeed,
+  bufferMaxMs: Int,
   playbackCdnPreference: PlaybackCdnPreference,
   seekPreviewSpritesEnabled: Boolean,
   airJumpAssistantEnabled: Boolean,
@@ -160,6 +168,7 @@ fun PlayerScreen(
   playerLogOverlayEnabled: Boolean,
   onBack: () -> Unit,
   onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit = { _, _, _ -> },
+  onOpenYoutubeChannel: (channelId: String, channelName: String, avatar: String) -> Unit = { _, _, _ -> },
   spaceReturnKey: Int = 0,
 ) {
   val context = LocalContext.current
@@ -219,6 +228,10 @@ fun PlayerScreen(
   var activePanel by remember { mutableStateOf(PlayerPanel.None) }
   var focusedPanelIndex by remember { mutableIntStateOf(0) }
   var selectedQuality by remember { mutableStateOf<PlaybackQuality?>(null) }
+  // 实际播放档位(随 onVideoSizeChanged 更新),用于画质面板高亮——保证「显示=实际播放」。
+  // 与 selectedQuality(请求档,供重载 preferredQualityId)分离:Auto 自适应降档时显示跟随实际,
+  // 但重载仍按请求档起播。
+  var actualQuality by remember { mutableStateOf<PlaybackQuality?>(null) }
   val storedDanmakuSettings by danmakuSettingsStore.settings.collectAsState(initial = DanmakuSettings())
   var danmakuSettings by remember { mutableStateOf(DanmakuSettings()) }
   var playbackSpeed by remember { mutableFloatStateOf(defaultPlaybackSpeed.value) }
@@ -228,6 +241,10 @@ fun PlayerScreen(
   val playbackBufferedPercentageState = remember { mutableLongStateOf(0L) }
   var danmakuSyncToken by remember { mutableLongStateOf(0L) }
   var playbackPaused by remember { mutableStateOf(false) }
+  /** 中央暂停标志可见性:暂停时显示,5s 无操作自动隐藏(见 pauseIndicatorEffect)。 */
+  var showPauseIndicator by remember { mutableStateOf(false) }
+  /** 用户操作计数:每次 showControls() 递增,重启暂停标志隐藏计时。 */
+  var pauseInteractionToken by remember { mutableIntStateOf(0) }
   var playerActuallyPlaying by remember { mutableStateOf(false) }
   /** 内存态诊断：launch 协程当前步骤，不依赖 logcat，PGC 卡死时叠层直接显示。 */
   var launchStep by remember { mutableStateOf("") }
@@ -252,9 +269,33 @@ fun PlayerScreen(
   var completionActionToken by remember { mutableLongStateOf(0L) }
   var completionActionJob by remember { mutableStateOf<Job?>(null) }
   val controlsFocusRequester = remember { FocusRequester() }
-  val player = remember {
+  // alpha.9X(ceiling 滞回):抽成命名实例——既给 ExoPlayer 做带宽计(ABR 选轨),又传给 SabrMediaSource.
+  // Factory 让 DefaultSabrChunkSource 读带宽估计判定「待放宽档位是否持续达标」。
+  val bandwidthMeter = remember {
+    DefaultBandwidthMeter.Builder(context)
+      .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
+      .build()
+  }
+  val player = remember(bufferMaxMs) {
+    // alpha.9X:YouTube SABR Auto 升档——视频 TrackGroup 是 H264+VP9 混合 mime 组,DefaultTrackSelector
+    // 默认不允许混合 mime 进同一条 adaptive selection,把选组锁在选定轨的 mime 上(选定 VP9 就只剩 1 轨,
+    // 永不升档)。显式 DefaultTrackSelector 开视频混合 mime + 非无缝自适应 + 多自适应,让选择器把 5 档
+    // 正确组进 adaptive selection 供 ABR 爬升。(B站 DASH 同组多 codec 也正确处理,无副作用;单轨组不受影响。)
+    val trackSelector = DefaultTrackSelector(context)
+    trackSelector.setParameters(
+      DefaultTrackSelector.Parameters.Builder()
+        .setAllowVideoMixedMimeTypeAdaptiveness(true)
+        .setAllowVideoNonSeamlessAdaptiveness(true)
+        .setAllowMultipleAdaptiveSelections(true)
+        .build()
+    )
     ExoPlayer.Builder(context)
-      .setLoadControl(createTvPlaybackLoadControl())
+      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
+      .setTrackSelector(trackSelector)
+      // 起始挡位:seed 初始带宽估计到目标档码率/0.7 → 目标挡命中起始档,之后带宽实测自然爬升。
+      // (media3 1.10.0 初始选轨纯带宽驱动,resolver 挪 index0 无效;同一 [bandwidthMeter] 实例复用给
+      // SabrMediaSource.Factory 读带宽估计做 ceiling 放宽判定。)
+      .setBandwidthMeter(bandwidthMeter)
       .build()
   }
   val playbackWakeLock = remember(context) {
@@ -341,6 +382,7 @@ fun PlayerScreen(
       progressFocused = false
     }
     controlsVisible = true
+    pauseInteractionToken++
     runCatching { controlsFocusRequester.requestFocus() }
   }
 
@@ -613,7 +655,7 @@ fun PlayerScreen(
     }
     activePanel = panel
     focusedPanelIndex = when (panel) {
-      PlayerPanel.Quality -> selectedQuality?.let { quality ->
+      PlayerPanel.Quality -> actualQuality?.let { quality ->
         (playerState as? PlayerScreenState.Ready)?.info?.qualities?.indexOfFirst { it.id == quality.id }
       }?.takeIf { it >= 0 } ?: 0
       PlayerPanel.Speed -> PlayerSpeedOptions.indexOf(playbackSpeed).takeIf { it >= 0 } ?: 2
@@ -690,12 +732,22 @@ fun PlayerScreen(
   fun openUpVideos(order: String = UpVideoOrderLatest) {
     val loadToken = ++sidePanelLoadToken
     val knownOwnerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
-    val cachedVideos = upVideoCache[upVideoCacheKey(knownOwnerMid, order)].orEmpty()
+    // YouTube：缓存按频道隔离，避免读到 B 站 "0:order" 旧键里的残留列表（曾误显示上一频道）。
+    // channelId 缺失时走无频道键（暂空→skeleton），由 loader 从 /player 解析后填真值。
+    val isYoutubeRequest = displayRequest.isYoutube
+    val cacheKey = if (isYoutubeRequest && displayRequest.channelId.isNotBlank()) {
+      "youtube:${displayRequest.channelId}:$order"
+    } else if (isYoutubeRequest) {
+      "youtube::$order"
+    } else {
+      upVideoCacheKey(knownOwnerMid, order)
+    }
+    val cachedVideos = upVideoCache[cacheKey].orEmpty()
       .withoutCurrentVideo(displayRequest)
     Log.i(
       PlayerUpVideosLogTag,
       "open start token=$loadToken bvid=${displayRequest.bvid} cid=${displayRequest.cid} order=$order " +
-        "knownMid=$knownOwnerMid cache=${cachedVideos.size}",
+        "knownMid=$knownOwnerMid youtube=$isYoutubeRequest cacheKey=$cacheKey cache=${cachedVideos.size}",
     )
     upVideoOrder = order
     openPanel(PlayerPanel.UpVideos)
@@ -707,6 +759,7 @@ fun PlayerScreen(
       order = order,
       initialRequest = displayRequest,
       videoRepository = videoRepository,
+      youtubeRepository = youtubeRepository,
       resolveDisplayMetadata = ::resolveDisplayMetadata,
       currentRequest = { displayRequest },
       isCurrentUpVideosLoad = { token -> sidePanelLoadToken == token && activePanel == PlayerPanel.UpVideos },
@@ -773,9 +826,9 @@ fun PlayerScreen(
       !ok && error != null -> {
         (error as? BiliApiCodeException)?.biliMessage
           ?.takeIf { it.isNotBlank() }
-          ?: "操作失败,请检查登录或稍后重试"
+          ?: context.getString(R.string.player_action_failed_login)
       }
-      !ok -> "操作失败,请检查登录或稍后重试"
+      !ok -> context.getString(R.string.player_action_failed_login)
       else -> successMsg
     }
     interactionToast?.cancel()
@@ -792,7 +845,10 @@ fun PlayerScreen(
       if (ok) {
         liked = !liked
         likeCount = (likeCount + if (liked) 1 else -1).coerceAtLeast(0)
-        showInteractionToast(true, if (liked) "已点赞" else "已取消点赞")
+        showInteractionToast(
+          true,
+          if (liked) context.getString(R.string.feed_action_like_done) else context.getString(R.string.player_like_cancelled),
+        )
       } else {
         showInteractionToast(false, "", result.exceptionOrNull())
       }
@@ -814,7 +870,7 @@ fun PlayerScreen(
       if (ok) {
         coined = true
         coinCount += multiply
-        showInteractionToast(true, "投币成功")
+        showInteractionToast(true, context.getString(R.string.player_coin_success))
       } else {
         showInteractionToast(false, "", result.exceptionOrNull())
       }
@@ -863,7 +919,7 @@ fun PlayerScreen(
     val adds = favSelectedIds.toList()
     if (aid <= 0L || interactionBusy) return
     if (adds.isEmpty()) {
-      showInteractionToast(false, "请先选择收藏夹")
+      showInteractionToast(false, context.getString(R.string.player_favorite_select_first))
       showControls()
       return
     }
@@ -879,7 +935,7 @@ fun PlayerScreen(
         }
         faved = true
         openPanel(PlayerPanel.None)
-        showInteractionToast(true, "已收藏")
+        showInteractionToast(true, context.getString(R.string.player_favorited))
       } else {
         showInteractionToast(false, "", result.exceptionOrNull())
       }
@@ -938,6 +994,7 @@ fun PlayerScreen(
     previewPositionMs = null
     completionReported = false
     selectedQuality = if (nextRequest.preferredQualityId == null) null else selectedQuality
+    actualQuality = if (nextRequest.preferredQualityId == null) null else actualQuality
     activeRequest = nextRequest
     displayRequest = nextRequest
     controlsVisible = false
@@ -1068,6 +1125,7 @@ fun PlayerScreen(
         // alpha.9X(恢复清晰度选择):选中 Quality 面板某档 → 更新 selectedQuality + 用 preferredQualityId 重跑 resolve。
         val quality = info.qualities.getOrNull(focusedPanelIndex) ?: return
         selectedQuality = quality
+        actualQuality = quality
         activeRequest = activeRequest.copy(
           startPositionMs = player.currentPosition.takeIf { it > 0L } ?: playbackPositionState.longValue,
           preferredQualityId = quality.id,
@@ -1113,10 +1171,37 @@ fun PlayerScreen(
             }
           }
           UpFocusHome -> {
-            val ownerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
-            if (ownerMid > 0L) {
+            if (displayRequest.isYoutube) {
               player.pause()
-              onOpenUpSpace(ownerMid, displayRequest.ownerName, displayRequest.ownerFace)
+              if (displayRequest.channelId.isNotBlank()) {
+                onOpenYoutubeChannel(
+                  displayRequest.channelId,
+                  displayRequest.ownerName,
+                  displayRequest.ownerFace,
+                )
+              } else {
+                // 播放器 videoId 常不带 channelId(搜索/历史等路径),从 /player 权威 videoDetails 解析。
+                val videoId = displayRequest.bvid
+                coroutineScope.launch {
+                  val detail = youtubeRepository.getVideoDetail(videoId)
+                  val resolvedId = detail?.channelId?.takeIf { it.isNotBlank() }
+                  if (resolvedId != null) {
+                    onOpenYoutubeChannel(
+                      resolvedId,
+                      detail.channelName.ifBlank { displayRequest.ownerName },
+                      displayRequest.ownerFace,
+                    )
+                  } else {
+                    Log.w("YoutubeChannel", "open channel from player failed to resolve channelId videoId=$videoId")
+                  }
+                }
+              }
+            } else {
+              val ownerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
+              if (ownerMid > 0L) {
+                player.pause()
+                onOpenUpSpace(ownerMid, displayRequest.ownerName, displayRequest.ownerFace)
+              }
             }
           }
           else -> {
@@ -1232,6 +1317,10 @@ fun PlayerScreen(
     }
   }
 
+  // 起始挡位(alpha.9X):起播阶段用 selector maxVideoSize 把 ABR 临时卡在起始档,首帧渲染
+  // (onRenderedFirstFrame)后松开,ABR 在「默认画质上限」的轨道组里爬到默认画质。仅 SABR 应用。
+  var startQualityRelaxed by remember { mutableStateOf(false) }
+
   DisposableEffect(player) {
     val listener = object : Player.Listener {
       override fun onPlayerError(error: PlaybackException) {
@@ -1257,6 +1346,37 @@ fun PlayerScreen(
         Log.d(PlayerPlaybackLogTag, "player isLoading=$isLoading state=${player.playbackState}")
       }
 
+      override fun onVideoSizeChanged(videoSize: VideoSize) {
+        // 显示=实际播放:按实际解码高度更新画质面板高亮。解码器切换时显示跟随实际档位,
+        // 不再停留在"请求档"(修 Auto「显示2160实际360p」)。
+        // 用高度匹配(而非 quality.description)——B 站 description 是 "1080P"/"4K" 非 "${h}p"。
+        val h = videoSize.height
+        if (h > 0) {
+          val info = (playerState as? PlayerScreenState.Ready)?.info
+          // 按高度就近匹配画质档:qualities 按高度去重、id 是各分辨率代表 itag,而实际解码轨可能是
+          // 同分辨率下的另一 codec 变体(不同 itag),精确 id 匹配会 miss → 高亮停在请求档。故取各档
+          // 代表轨高度与 h 最近的档位,保证「显示=实际播放」。
+          val match = info?.let { i ->
+            i.qualities.minByOrNull { q ->
+              val qHeight = i.videoTracks.firstOrNull { it.id == q.id }?.height ?: Int.MAX_VALUE
+              kotlin.math.abs(qHeight - h)
+            }
+          }
+          if (match != null) actualQuality = match
+        }
+      }
+
+      override fun onRenderedFirstFrame() {
+        // 起始挡位:首帧已渲染 = 实际运行起来,松开 selector 高度 cap,让 ABR 爬回默认画质上限。
+        if (!startQualityRelaxed) {
+          startQualityRelaxed = true
+          val cur = player.trackSelectionParameters
+          if (cur is DefaultTrackSelector.Parameters) {
+            player.setTrackSelectionParameters(cur.buildUpon().clearVideoSizeConstraints().build())
+          }
+        }
+      }
+
       override fun onIsPlayingChanged(isPlaying: Boolean) {
         playerActuallyPlaying = isPlaying
         val pausedByUser = !isPlaying && !player.playWhenReady && player.playbackState != Player.STATE_ENDED
@@ -1280,6 +1400,24 @@ fun PlayerScreen(
         )
         if (playbackState == Player.STATE_ENDED && playerState is PlayerScreenState.Ready && player.mediaItemCount > 0) {
           reportPlaybackCompleted()
+        }
+        // alpha.9X 决定性诊断(renderer 支持判定真相):READY 时 dump currentTracks 每轨 isSupported/isAdaptive/
+        // isSelected。DefaultTrackSelector 按 renderer 支持判定建组,此直接暴露 4 条 H264 是被判不支持还是
+        // 混合 mime 关闭导致只组 1 轨。isSupported=false → renderer 拒载(H264 字段问题);isSupported=true 但
+        // isAdaptive=false → renderer 单轨可播但不可自适应切轨(混合 mime/自适应能力)。
+        if (playbackState == Player.STATE_READY) {
+          val g = player.currentTracks.groups
+          Log.i(
+            "YtSabrTracks",
+            "groups=${g.size} " + g.mapIndexed { gi, gr ->
+              "g$gi=" + (0..<gr.length).joinToString { ti ->
+                val f = gr.getTrackFormat(ti)
+                "${f.id?.takeIf { it.isNotBlank() } ?: f.codecs}(${f.width}x${f.height})" +
+                  "support=${gr.getTrackSupport(ti)} sup=${gr.isTrackSupported(ti)} " +
+                  "sel=${gr.isTrackSelected(ti)}"
+              }
+            }
+          )
         }
       }
     }
@@ -1417,6 +1555,7 @@ fun PlayerScreen(
           codecPreference = playbackCodecPreference,
           qualityPreference = playbackQualityPreference,
           youtubeDefaultQuality = youtubeDefaultQuality,
+          youtubeStartQuality = youtubeStartQuality,
         )
       // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体),
       // 或远程 manifest 兜底(DASH/HLS manifest 自带 A/V 轨,dummy 视频轨非 progressive 但 audioTracks 合法为空)。
@@ -1425,6 +1564,7 @@ fun PlayerScreen(
       } else {
         coroutineScope.launch { lastPlayedStore.save(info.bvid, info.cid) }
         selectedQuality = info.selectedQuality
+        actualQuality = info.selectedQuality
         currentCodecText = info.videoTracks.firstOrNull()?.codecLabel().orEmpty()
         launchStep = "cdn"
         Log.i(PlayerPlaybackLogTag, "launch step: cdn")
@@ -1495,7 +1635,7 @@ fun PlayerScreen(
           val fetcher = SabrMediaFetcher(entry, playbackHttpClient)
           val manifest = SabrManifest.fromSession(entry.session, effectiveInfo)
           Log.i(PlayerPlaybackLogTag, "SABR single-stream: sid=$sid qualities=${effectiveInfo.qualities.size} duration=${effectiveInfo.durationMs}ms")
-          SabrMediaSource.Factory(manifest, fetcher, sid)
+          SabrMediaSource.Factory(manifest, fetcher, sid, bufferMaxMs.toLong(), bandwidthMeter)
             .createMediaSource(MediaItem.fromUri(manifest.sabrUrl))
         } else if (effectiveInfo.isHlsManifest()) {
           // alpha.90:HLS 兜底——SABR RELOAD 闭环未回 SABR 且 dashMpdUrl 空(android 无 manifest)时,落 visionOS
@@ -1547,6 +1687,19 @@ fun PlayerScreen(
         } else {
           mediaSource
         }
+        // 起始挡位:起播阶段用 selector maxHeight 临时卡在起始档(SABR 专属,非 SABR 不卡),保证
+        // 首段落在起始档(不靠带宽);首帧渲染后 onRenderedFirstFrame 松开,ABR 爬到默认画质上限。
+        startQualityRelaxed = false
+        val startQualityHeight = if (effectiveInfo.isSabrSingle()) youtubeStartQuality.startHeight else null
+        if (startQualityHeight != null) {
+          // 在现有参数基础上叠加高度 cap,保留其它配置(mixed-mime/non-seamless 等)。
+          val cur = player.trackSelectionParameters
+          if (cur is DefaultTrackSelector.Parameters) {
+            player.setTrackSelectionParameters(
+              cur.buildUpon().setMaxVideoSize(Int.MAX_VALUE, startQualityHeight).build()
+            )
+          }
+        }
         player.setMediaSource(finalMediaSource)
         launchStep = "prepare"
         Log.i(PlayerPlaybackLogTag, "launch step: prepare")
@@ -1564,16 +1717,24 @@ fun PlayerScreen(
         // YouTube 起播即写入播放历史（含频道/封面元数据），供历史 tab 展示与续播。
         if (isYoutube) {
           runCatching {
+            // 历史条目必须带权威 channelId,否则历史卡片长按"进频道"在 TvVideoGrid hasOwner 判定
+            // (channelId 非空)为 false,长按被当普通点击直接播视频。activeRequest.channelId 从
+            // 历史/搜索等路径起播时常为空,需从 /player 权威 videoDetails 解析一次,打破历史条目
+            // channelId 永久为空的死循环。
+            val historyChannelId = activeRequest.channelId
+              .takeIf { it.isNotBlank() }
+              ?: youtubeRepository.getVideoDetail(info.bvid)?.channelId.orEmpty()
             youtubeHistoryStore.recordPlay(
               com.kirin.mt.core.youtube.YoutubeHistoryEntry(
                 videoId = info.bvid,
                 title = info.title,
                 channelName = activeRequest.ownerName,
-                channelId = activeRequest.channelId,
+                channelId = historyChannelId,
                 thumbnailUrl = activeRequest.coverUrl,
                 durationMs = info.durationMs,
                 positionMs = startPositionMs,
                 lastPlayedAtMs = System.currentTimeMillis(),
+                pubdate = activeRequest.pubdate,
               ),
             )
           }
@@ -1756,12 +1917,15 @@ fun PlayerScreen(
     runCatching { controlsFocusRequester.requestFocus() }
   }
 
-  LaunchedEffect(controlsVisible, playerState, activePanel, previewPositionMs, playbackPaused, showCoinDialog) {
+  LaunchedEffect(controlsVisible, playerState, activePanel, previewPositionMs, playbackPaused, completionReported, showCoinDialog, pauseInteractionToken) {
     if (controlsVisible && playerState is PlayerScreenState.Ready) {
       runCatching { controlsFocusRequester.requestFocus() }
-      if (!playbackPaused && !showCoinDialog) {
-        delay(BiliMotion.PlayerControlsAutoHideMs)
-        if (activePanel == PlayerPanel.None && previewPositionMs == null && !playbackPaused && !showCoinDialog) {
+      // 播放中 4s 自动隐藏;用户暂停 5s 无操作也隐藏控制栏(与中央暂停标志同频)。
+      // 播放结束(completionReported)保持控制栏常显,供「重播/下一集」操作,不随暂停计时隐藏。
+      if (!showCoinDialog && !(playbackPaused && completionReported)) {
+        val delayMs = if (playbackPaused) BiliMotion.PlayerPauseIndicatorAutoHideMs else BiliMotion.PlayerControlsAutoHideMs
+        delay(delayMs)
+        if (activePanel == PlayerPanel.None && previewPositionMs == null && !showCoinDialog && !(playbackPaused && completionReported)) {
           controlsVisible = false
         }
       }
@@ -1772,6 +1936,15 @@ fun PlayerScreen(
     if (previewPositionMs != null && !seekPreviewSpritesEnabled) {
       delay(BiliMotion.PlayerSeekPreviewAutoCommitMs)
       commitPreviewSeek()
+    }
+  }
+
+  // 中央暂停标志:暂停(或进入暂停)即显示,每次用户操作(showControls)重置,5s 无操作自动隐藏。
+  LaunchedEffect(playbackPaused, pauseInteractionToken) {
+    showPauseIndicator = true
+    if (playbackPaused) {
+      delay(BiliMotion.PlayerPauseIndicatorAutoHideMs)
+      showPauseIndicator = false
     }
   }
 
@@ -2005,6 +2178,7 @@ fun PlayerScreen(
         PlayerOverlay(
           request = displayRequest,
           info = state.info,
+          actualQuality = actualQuality,
           metadata = metadata,
           sidePanelVideos = sidePanelVideos,
           sidePanelLoading = sidePanelLoading,
@@ -2012,6 +2186,7 @@ fun PlayerScreen(
           upFollowed = upFollowed,
           upFollowLoading = upFollowLoading,
           playbackPaused = playbackPaused,
+          showPauseIndicator = showPauseIndicator,
           seekPreviewSpritesEnabled = seekPreviewSpritesEnabled,
           videoshotData = videoshotData,
           videoshotSprites = videoshotSprites,

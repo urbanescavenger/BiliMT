@@ -154,11 +154,25 @@ jobs:
           VC=$((1000000 + N))
           VN="dev.r$N"
           NOTES="最新 mort_debug 分支 debug 构建，每次推送自动覆盖。固定下载地址见本 release asset。"$'\n'"versionName=$VN"$'\n'"versionCode=$VC"
+          # GitHub API 偶发 503/EOF:给 release 发布命令加退避重试(最多 6 次),
+          # 避免编译已绿却因临时 API 故障把整个构建标红(2026-08 多次在此步 503)。
+          retry_cmd() {
+            local n=0
+            while ! "$@"; do
+              n=$((n + 1))
+              if [ "$n" -ge 6 ]; then
+                echo "::error::GitHub API 命令重试 6 次仍失败: $*" >&2
+                return 1
+              fi
+              echo "::warning::GitHub API 临时故障,重试 $n/6: $*"
+              sleep "$((n * 15))"
+            done
+          }
           if gh release view debug --json tagName >/dev/null 2>&1; then
-            gh release edit debug --notes "$NOTES"
-            gh release upload debug "$APK" --clobber
+            retry_cmd gh release edit debug --notes "$NOTES"
+            retry_cmd gh release upload debug "$APK" --clobber
           else
-            gh release create debug "$APK" \
+            retry_cmd gh release create debug "$APK" \
               --target "$GITHUB_SHA" \
               --title "Debug Build" \
               --notes "$NOTES" \

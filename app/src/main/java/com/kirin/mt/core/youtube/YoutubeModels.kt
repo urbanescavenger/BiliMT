@@ -1,5 +1,7 @@
 package com.kirin.mt.core.youtube
 
+import com.kirin.mt.core.model.VideoSummary
+
 /**
  * YouTube 内容模型。对齐 FreeTube `parseLocalListVideo` 输出的字段结构（协议层面的
  * 形状），供 [YoutubeParsers] 填充、[com.kirin.mt.core.network.VideoRepository] 映射成
@@ -36,6 +38,17 @@ data class YoutubeFeedPage(
   val continuation: String?,
 )
 
+/** 一页首页订阅流（首屏或续页）。UI 负责跨页累积+去重+按 pubdate 排序。 */
+data class YoutubeSubscriptionsPage(
+  /** 本页新拉到的视频（每频道已 cap 到 perChannel，频道内已合并 RSS+InnerTube）。 */
+  val videos: List<VideoSummary>,
+  /** channelId -> 该频道下一 continuation token；null = 该频道到底。 */
+  val perChannelContinuation: Map<String, String?>,
+) {
+  /** 所有频道都到底（无任一续页 token）即为全部加载完。 */
+  val endReached: Boolean get() = perChannelContinuation.values.all { it == null }
+}
+
 /** YouTube 视频详情（简介 Tab）。由 /player 响应 videoDetails + microformat 填充。 */
 data class YoutubeVideoDetail(
   val videoId: String,
@@ -44,12 +57,16 @@ data class YoutubeVideoDetail(
   val description: String,
   /** 频道名。 */
   val channelName: String,
+  /** 频道 id（UC 开头）。来自 videoDetails.channelId；无则空串。 */
+  val channelId: String = "",
   /** 频道头像 URL；无则空串。 */
   val channelAvatarUrl: String,
   /** 观看数；未知为 null。 */
   val viewCount: Long?,
   /** 发布时间（epoch 秒）；未知为 null。 */
   val publishedAt: Long?,
+  /** 点赞数（/next videoPrimaryInfoRenderer.videoActions 工具栏解析）；未知为 null。 */
+  val likeCount: Long? = null,
 )
 
 /** 一条 YouTube 评论。字段对齐 LibreTube `Comment`（NewPipe CommentsInfoItem）。 */

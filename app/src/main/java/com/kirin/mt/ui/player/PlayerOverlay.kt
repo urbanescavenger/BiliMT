@@ -72,6 +72,8 @@ import com.kirin.mt.core.player.VideoshotFrame
 import com.kirin.mt.ui.common.ClockOverlay
 import com.kirin.mt.ui.glass.biliLiquidGlassSurface
 import com.kirin.mt.ui.i18n.convertChineseText
+import com.kirin.mt.ui.i18n.currentUiLocale
+import com.kirin.mt.ui.i18n.formatCompactCount
 import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
@@ -112,6 +114,7 @@ internal enum class PlayerPanel {
 internal fun BoxScope.PlayerOverlay(
   request: PlaybackRequest,
   info: PlaybackInfo,
+  actualQuality: PlaybackQuality?,
   metadata: PlaybackVideoMetadata?,
   sidePanelVideos: List<VideoSummary>,
   sidePanelLoading: Boolean,
@@ -119,6 +122,7 @@ internal fun BoxScope.PlayerOverlay(
   upFollowed: Boolean,
   upFollowLoading: Boolean,
   playbackPaused: Boolean,
+  showPauseIndicator: Boolean,
   seekPreviewSpritesEnabled: Boolean,
   videoshotData: VideoshotData?,
   videoshotSprites: Map<String, ImageBitmap>,
@@ -165,6 +169,7 @@ internal fun BoxScope.PlayerOverlay(
     PlayerBottomOverlay(
       request = request,
       info = info,
+      actualQuality = actualQuality,
       availableControls = availableControls,
       focusedControl = focusedControl,
       progressFocused = progressFocused,
@@ -214,7 +219,7 @@ internal fun BoxScope.PlayerOverlay(
       videoshotSprites = videoshotSprites,
       modifier = Modifier.align(Alignment.Center),
     )
-  } else if (playbackPaused) {
+  } else if (playbackPaused && showPauseIndicator) {
     PauseIndicatorOverlay(modifier = Modifier.align(Alignment.Center))
   }
 
@@ -227,6 +232,7 @@ internal fun BoxScope.PlayerOverlay(
         activePanel = activePanel,
         focusedIndex = focusedPanelIndex,
         info = info,
+        actualQuality = actualQuality,
         currentCodecText = currentCodecText,
         playbackSpeed = playbackSpeed,
         danmakuSettings = danmakuSettings,
@@ -436,6 +442,7 @@ internal fun PlayerMetaItem(
 private fun PlayerBottomOverlay(
   request: PlaybackRequest,
   info: PlaybackInfo,
+  actualQuality: PlaybackQuality?,
   availableControls: List<PlayerControl>,
   focusedControl: PlayerControl,
   progressFocused: Boolean,
@@ -541,6 +548,7 @@ private fun PlayerBottomOverlay(
       PlayerStatusTexts(
         request = request,
         info = info,
+        actualQuality = actualQuality,
         danmakuSettings = danmakuSettings,
         onlineCountText = onlineCountText,
         currentCodecText = currentCodecText,
@@ -589,6 +597,7 @@ private fun PlayerActionButton(
   focused: Boolean,
 ) {
   val shape = RoundedCornerShape(BiliRadius.Card)
+  val context = LocalContext.current
   val tint = if (active) BiliColors.BiliPink else BiliColors.TextPrimary
   Column(
     modifier = Modifier
@@ -612,7 +621,7 @@ private fun PlayerActionButton(
     )
     Spacer(modifier = Modifier.height(BiliSpacing.Xxs))
     Text(
-      text = formatCount(count),
+      text = formatCount(count, context.resources),
       color = tint,
       fontSize = 11.sp,
       fontWeight = if (active || focused) FontWeight.Bold else FontWeight.Normal,
@@ -666,6 +675,7 @@ internal fun Modifier.playerFocusedLiquidGlassSurface(
 private fun PlayerStatusTexts(
   request: PlaybackRequest,
   info: PlaybackInfo,
+  actualQuality: PlaybackQuality?,
   danmakuSettings: DanmakuSettings,
   onlineCountText: String,
   currentCodecText: String,
@@ -697,7 +707,7 @@ private fun PlayerStatusTexts(
       maxLines = 1,
     )
     Text(
-      text = info.selectedQuality.description.withCodecLabel(currentCodecText),
+      text = (actualQuality ?: info.selectedQuality).description.withCodecLabel(currentCodecText),
       color = BiliColors.TextSecondary,
       fontSize = BiliTypography.PlayerStatus,
       maxLines = 1,
@@ -1786,6 +1796,7 @@ private fun PlayerSettingsPanel(
   activePanel: PlayerPanel,
   focusedIndex: Int,
   info: PlaybackInfo,
+  actualQuality: PlaybackQuality?,
   currentCodecText: String,
   playbackSpeed: Float,
   danmakuSettings: DanmakuSettings,
@@ -1857,7 +1868,7 @@ private fun PlayerSettingsPanel(
             SettingsRow(
               iconRes = R.drawable.ic_player_hd,
               title = stringResource(R.string.player_settings_quality),
-              value = info.selectedQuality.description.withCodecLabel(currentCodecText),
+              value = (actualQuality ?: info.selectedQuality).description.withCodecLabel(currentCodecText),
               focused = focusedIndex == 0,
               trailingChevron = true,
             )
@@ -1883,13 +1894,16 @@ private fun PlayerSettingsPanel(
         }
         PlayerPanel.Quality -> {
           val qualities = info.qualities.ifEmpty { listOf(info.selectedQuality) }
+          // 高亮/「当前」标实际播放档(actualQuality):Auto 自适应时随 onVideoSizeChanged 更新,
+          // 与请求档(info.selectedQuality)分离——修「显示2160实际低」。actualQuality 为空(未首帧)回落请求档。
+          val currentQuality = actualQuality ?: info.selectedQuality
           itemsIndexed(qualities, key = { _, quality -> quality.id }) { index, quality ->
             SettingsRow(
               iconRes = R.drawable.ic_player_hd,
               title = convertChineseText(quality.description),
-              value = if (quality.id == info.selectedQuality.id) stringResource(R.string.player_value_current) else "",
+              value = if (quality.id == currentQuality.id) stringResource(R.string.player_value_current) else "",
               focused = focusedIndex == index,
-              trailingCheck = quality.id == info.selectedQuality.id,
+              trailingCheck = quality.id == currentQuality.id,
             )
           }
         }
@@ -2270,11 +2284,7 @@ private fun PlaybackRequest.formatPubdate(): String? {
 
 @Composable
 internal fun Int.formatCompactCountText(): String {
-  return when {
-    this >= 100_000_000 -> stringResource(R.string.player_count_yi, this / 100_000_000.0)
-    this >= 10_000 -> stringResource(R.string.player_count_wan, this / 10_000.0)
-    else -> toString()
-  }
+  return formatCompactCount(this, currentUiLocale())
 }
 
 @Composable

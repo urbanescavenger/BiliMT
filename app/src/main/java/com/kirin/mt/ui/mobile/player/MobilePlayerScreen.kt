@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.net.Uri
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
@@ -110,7 +111,10 @@ import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -118,7 +122,6 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
-import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kirin.mt.R
@@ -130,6 +133,7 @@ import com.kirin.mt.core.youtube.YoutubeLoadProgress
 import com.kirin.mt.core.youtube.YoutubeLoadStep
 import com.kirin.mt.core.youtube.YoutubeVideoDetail
 import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
+import com.kirin.mt.ui.mobile.downloads.MobileDownloadQualityDialog
 import com.kirin.mt.core.network.FavoriteFolder
 import com.kirin.mt.core.network.BiliApiCodeException
 import com.kirin.mt.core.network.BiliNetworkException
@@ -150,11 +154,16 @@ import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackEpisode
+import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.PlaybackRepository
+import com.kirin.mt.core.player.BiliPlaybackHeaders
+import com.kirin.mt.core.download.DownloadWithItems
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackService
+import com.kirin.mt.core.player.startPlaybackService
 import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.PlayerHolder
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
@@ -172,6 +181,7 @@ import com.kirin.mt.ui.player.withResolvedMetadata
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -186,22 +196,6 @@ private const val DanmakuSendLogTag = "BiliDanmakuSend"
 private const val LocalDanmakuLeadMs = 1000L
 private const val MobilePlayerLogTag = "BiliMT:MobilePlayer"
 
-/**
- * 安全启动后台保活前台服务。Android 12+ 禁止后台 startForegroundService,会抛
- * ForegroundServiceStartNotAllowedException(extends IllegalStateException);Android 8-11 后台
- * startService 抛 IllegalStateException。服务在播放开始时已在前台启动,后台连播时保持运行即可,
- * 这里捕获异常避免崩溃;若服务已在运行,用普通 startService 刷新通知标题(已运行服务后台允许)。
- */
-private fun startPlaybackService(context: Context) {
-  try {
-    ContextCompat.startForegroundService(context, Intent(context, PlaybackService::class.java))
-  } catch (e: IllegalStateException) {
-    Log.w(MobilePlayerLogTag, "startForegroundService blocked in background: ${e.message}")
-    // 不 fallback 到 startService——后台 startService 虽入队成功,但 onStartCommand 里
-    // startForeground 仍会抛 ForegroundServiceStartNotAllowedException。
-    // PlaybackService 侧已 catch 该异常优雅停止,这里直接放弃启动即可。
-  }
-}
 /** alpha.67:单次播放会话内 error-retry 上限(onPlayerErrorChanged),超过则交用户手动重试,避免死循环。 */
 private const val MaxStallAutoRetry = 2
 // 空降助手阈值(镜像 TV PlayerScreen)
@@ -214,6 +208,71 @@ private sealed interface MobilePlayerState {
   data object Loading : MobilePlayerState
   data class Ready(val info: PlaybackInfo) : MobilePlayerState
   data class Failed(val message: String) : MobilePlayerState
+}
+
+/**
+ * 在线播放器缓存命中:按 bvid(YouTube 为 videoId)+ cid(分P)在下载库找「已可播」的下载项。
+ * 仅匹配 isPlayable(媒体分件全 COMPLETED)且有视频分件(video/muxed)的缓存——纯音频下载
+ * (audio-only)不命中,在线播该视频回落完整网络流,避免本地纯音频替代完整视频;
+ * 部分下载/未完成回落在线。cid 匹配避免多 P 视频误用其它分P的缓存文件(下载存的是解析后真实 cid)。
+ */
+private suspend fun findCachedPlayable(
+  downloadManager: com.kirin.mt.core.download.DownloadManager,
+  bvid: String,
+  cid: Long,
+): DownloadWithItems? {
+  return downloadManager.downloads.first()
+    .firstOrNull {
+      it.download.videoId == bvid && it.download.cid == cid && it.isPlayable &&
+        (it.videoPart != null || it.muxedPart != null)
+    }
+}
+
+/**
+ * 为缓存命中构造合成 [PlaybackInfo]:qualities 只含缓存清晰度(只读),tracks 空(本地源不走网络轨)。
+ * bvid/cid/durationMs 正确,供 saveProgress/画质高亮/后台播放复用。
+ */
+private fun buildCachedPlaybackInfo(cached: DownloadWithItems, cid: Long, title: String, context: Context): PlaybackInfo {
+  val qualityLabel = cached.download.qualityLabel.ifBlank { context.getString(R.string.mobile_player_cached) }
+  val quality = PlaybackQuality(id = -1, description = qualityLabel)
+  return PlaybackInfo(
+    bvid = cached.download.videoId,
+    cid = cid,
+    title = title,
+    durationMs = cached.download.durationMs,
+    qualities = listOf(quality),
+    selectedQuality = quality,
+    videoTracks = emptyList(),
+    audioTracks = emptyList(),
+    headers = BiliPlaybackHeaders(sessData = null, biliJct = null),
+  )
+}
+
+/**
+ * 用本地已下载文件构建 MediaSource(镜像离线播放器):单文件(muxed)→ ProgressiveMediaSource,
+ * 视频+音频两文件 → MergingMediaSource 现场 mux。DefaultDataSource 走本地文件,无网络 headers。
+ */
+private fun buildLocalMediaSource(
+  context: Context,
+  downloadManager: com.kirin.mt.core.download.DownloadManager,
+  cached: DownloadWithItems,
+  mediaMetadata: androidx.media3.common.MediaMetadata,
+): MediaSource {
+  val (videoFile, audioFile) = downloadManager.playbackFiles(cached.download.id)
+  if (videoFile == null) throw IllegalStateException(context.getString(R.string.player_error_cache_missing))
+  val dataSourceFactory = DefaultDataSource.Factory(context)
+  val videoItem = androidx.media3.common.MediaItem.Builder()
+    .setUri(Uri.fromFile(videoFile))
+    .setMediaMetadata(mediaMetadata)
+    .build()
+  val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
+  return if (audioFile != null) {
+    val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+      .createMediaSource(androidx.media3.common.MediaItem.fromUri(Uri.fromFile(audioFile)))
+    MergingMediaSource(videoSource, audioSource)
+  } else {
+    videoSource
+  }
 }
 
 /**
@@ -235,9 +294,12 @@ fun MobilePlayerScreen(
   playbackQualityPreference: PlaybackQualityPreference,
   playbackCdnPreference: PlaybackCdnPreference,
   youtubeDefaultQuality: YoutubeDefaultQuality,
+  youtubeStartQuality: YoutubeStartQuality,
+  bufferMaxMs: Int,
   airJumpAssistantEnabled: Boolean,
   videoRepository: VideoRepository,
   youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
+  downloadManager: com.kirin.mt.core.download.DownloadManager,
   playQueue: List<VideoSummary> = emptyList(),
   onPlayVideo: (VideoSummary) -> Unit = {},
   onBack: () -> Unit,
@@ -288,12 +350,21 @@ fun MobilePlayerScreen(
   var youtubeDetail by remember { mutableStateOf<YoutubeVideoDetail?>(null) }
   var youtubeDetailLoading by remember { mutableStateOf(false) }
   var selectedQualityId by remember { mutableStateOf<Int?>(null) }
+  // 实际播放档位(随 onVideoSizeChanged 更新),用于画质菜单高亮——保证「显示=实际播放」。
+  // 与 selectedQualityId(请求档,供重载 preferredQualityId)分离:Auto 自适应降档时显示跟随实际,
+  // 但重载仍按请求档起播。
+  var actualQualityId by remember { mutableStateOf<Int?>(null) }
   var playbackSpeed by remember { mutableFloatStateOf(1f) }
   var settingsSheet by remember { mutableStateOf(false) }
   // alpha.9X(恢复清晰度选择):底栏画质下拉菜单(挂在 HD 图标按钮上)
   var showQualityMenu by remember { mutableStateOf(false) }
   // 底栏音轨下拉菜单(挂在音轨图标按钮上,仅 YouTube 多音轨视频显示)
   var showAudioMenu by remember { mutableStateOf(false) }
+  // 下载清晰度选择对话框(底栏下载按钮打开)
+  var showDownloadDialog by remember { mutableStateOf(false) }
+  // 缓存命中:当前播放源是本地已下载文件(在线播放器命中缓存)。命中时跳过网络取流、
+  // 清晰度只读、隐藏下载入口;简介/评论/弹幕仍走在线。
+  var usingCachedPlayback by remember { mutableStateOf(false) }
   // 发送弹幕:底栏内联输入栏开关 / 文本 / 发送中。发在当前播放位置(progress 毫秒)。
   var danmakuInputActive by remember { mutableStateOf(false) }
   var danmakuInputText by remember { mutableStateOf("") }
@@ -303,6 +374,10 @@ fun MobilePlayerScreen(
   var speedBoostActive by remember { mutableStateOf(false) }
   // 用户主动暂停标志:驱动中央常驻暂停图标(区别于缓冲中/播放结束 isPlaying=false)
   var userPaused by remember { mutableStateOf(false) }
+  // 中央暂停图标可见性:用户暂停时显示,5s 无操作自动隐藏(见 pauseIndicatorEffect)。
+  var showPauseIndicator by remember { mutableStateOf(false) }
+  // 用户操作计数:每次手势(点击/拖动/长按)递增,重启暂停图标隐藏计时。
+  var pauseInteractionToken by remember { mutableIntStateOf(0) }
   // 拖拽 seek 起点记录的播放意图:松手 seek 后若之前在播放则恢复,避免拖拽后意外暂停
   var wasPlayingBeforeSeek by remember { mutableStateOf(false) }
   // 空降助手(AirJump):SponsorBlock 风格自动跳过广告/片头/片尾段,镜像 TV PlayerScreen
@@ -350,10 +425,27 @@ fun MobilePlayerScreen(
     }
   }
 
-  val player = remember {
+  // alpha.9X(ceiling 滞回):抽成命名实例——既给 ExoPlayer 做带宽计(ABR 选轨),又传给 SabrMediaSource.
+  // Factory 让 DefaultSabrChunkSource 读带宽估计判定「待放宽档位是否持续达标」。
+  val bandwidthMeter = remember {
+    DefaultBandwidthMeter.Builder(context)
+      .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
+      .build()
+  }
+  val player = remember(bufferMaxMs) {
+    // alpha.9X(对齐 PlayerScreen):YouTube SABR Auto 升档——H264+VP9 混合 TrackGroup 默认不进一条
+    // adaptive selection(坍缩成 1 轨永不升档)。显式 DefaultTrackSelector 开视频混合 mime + 非无缝 + 多自适应。
+    val trackSelector = DefaultTrackSelector(context)
+    trackSelector.setParameters(
+      DefaultTrackSelector.Parameters.Builder()
+        .setAllowVideoMixedMimeTypeAdaptiveness(true)
+        .setAllowVideoNonSeamlessAdaptiveness(true)
+        .setAllowMultipleAdaptiveSelections(true)
+        .build()
+    )
     ExoPlayer.Builder(context)
-      .setLoadControl(createTvPlaybackLoadControl())
-      // 后台播放优化:别的应用抢音频焦点→自动暂停,焦点回来→自动续播;
+      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
+      // 后台播放优化: 别的应用抢音频资源抢自动暂停,焦点回来→自动续播;
       // 耳机/蓝牙音频设备断开(AUDIO_BECOMING_NOISY)→自动暂停。Media3 内部管理焦点
       // 请求/放弃与 becoming-noisy receiver 的注册/反注册(随 player release 自动清理)。
       .setAudioAttributes(
@@ -364,6 +456,11 @@ fun MobilePlayerScreen(
         /* handleAudioFocus = */ true,
       )
       .setHandleAudioBecomingNoisy(true)
+      .setTrackSelector(trackSelector)
+      // 起始挡位:seed 初始带宽估计到目标档码率/0.7 → 目标挡命中起始档,之后带宽实测自然爬升。
+      // (media3 1.10.0 初始选轨纯带宽驱动,resolver 挪 index0 无效;同一 [bandwidthMeter] 实例复用给
+      // SabrMediaSource.Factory 读带宽估计做 ceiling 放宽判定。)
+      .setBandwidthMeter(bandwidthMeter)
       .build()
   }
 
@@ -425,7 +522,8 @@ fun MobilePlayerScreen(
     )
     Toast.makeText(
       context,
-      if (audioOnly) "已开启听视频模式" else "已退出听视频模式",
+      if (audioOnly) context.getString(R.string.player_listen_mode_on)
+      else context.getString(R.string.player_listen_mode_off),
       Toast.LENGTH_SHORT,
     ).show()
   }
@@ -449,7 +547,7 @@ fun MobilePlayerScreen(
       type = "text/plain"
       putExtra(Intent.EXTRA_TEXT, shareText)
     }
-    runCatching { context.startActivity(Intent.createChooser(intent, "分享视频")) }
+    runCatching { context.startActivity(Intent.createChooser(intent, context.getString(R.string.share_video))) }
   }
 
   /**
@@ -534,6 +632,11 @@ fun MobilePlayerScreen(
       ?: activeRequest.nextEpisodeCompletion(metadata, selectedQualityId)?.request
   }
 
+  // 起始挡位(alpha.9X):起播阶段用 selector maxVideoSize 把 ABR 临时卡在起始档,首帧渲染
+  // (onRenderedFirstFrame)后松开,ABR 在「默认画质上限」的轨道组里爬到默认画质。仅 SABR 应用。
+  // 声明须在 loadRequest(其 prepare 卡档处引用)之前。
+  var startQualityRelaxed by remember { mutableStateOf(false) }
+
   // 加载(镜像 TV PlayerScreen 的 load 序列)。抽成独立 suspend 函数,使自动连播/用户切集/切画质
   // 都能在"不依赖 Compose 重组"的协程作用域里直接调用——后台播放时帧时钟暂停、重组被推迟,
   // 若仍靠 LaunchedEffect(activeRequest) 触发加载,后台播完当前视频后下一集永远不会加载。
@@ -568,14 +671,90 @@ fun MobilePlayerScreen(
         return
       }
       val resolvedRequest = request.withResolvedMetadata(metadata = videoMetadata, cid = cid)
+      // 用解析后的真实 cid 回写 activeRequest:下载/相关/分享等复用 activeRequest 的地方都要带 cid,
+      // 否则 activeRequest 停留在原始 request(cid=0),下载对话框把它带进 playurl 会 -400 请求错误。
+      // (播放内部走 resolvedRequest 所以能播;下载走 activeRequest 就一直带 cid=0。对齐 BV:官方恒用已解析 cid)
+      activeRequest = resolvedRequest
       displayTitle = resolvedRequest.title.ifBlank { request.title }
+      // 缓存命中:在线播放器命中已下载视频 → 视频区播本地文件,跳过网络取流(getPlaybackInfo)。
+      // 简介/评论/弹幕仍走在线(上方已加载 metadata/youtubeDetail,下方弹幕照常),与在线播放一致。
+      val cachedPlayback = findCachedPlayable(downloadManager, request.bvid, cid)
+      if (cachedPlayback != null) {
+        usingCachedPlayback = true
+        val cachedInfo = buildCachedPlaybackInfo(cachedPlayback, cid, displayTitle, context)
+        selectedQualityId = cachedInfo.selectedQuality.id
+        actualQualityId = cachedInfo.selectedQuality.id
+        val startPositionMs = playbackRepository.getSavedProgress(cachedInfo.bvid, cachedInfo.cid)?.positionMs
+          ?: request.startPositionMs
+        // 后台播放 MediaStyle 通知封面:下载 coverUrl bytes(IO),失败忽略。
+        val coverBytes = request.coverUrl.takeIf { it.isNotEmpty() }?.let { url ->
+          runCatching {
+            withContext(Dispatchers.IO) {
+              playbackHttpClient.newCall(okhttp3.Request.Builder().url(url).build()).execute()
+                .use { resp -> resp.body?.bytes() }
+            }
+          }.getOrNull()
+        }
+        val mediaMetadata = androidx.media3.common.MediaMetadata.Builder()
+          .setTitle(displayTitle)
+          .setArtist(request.ownerName)
+          .apply { if (coverBytes != null) setArtworkData(coverBytes, androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
+          .build()
+        val localSource = buildLocalMediaSource(context, downloadManager, cachedPlayback, mediaMetadata)
+        player.setMediaSource(localSource)
+        player.prepare()
+        // 听视频模式:新 MediaSource prepare 会重置轨道选择为全开,需重新禁用视频轨。
+        if (audioOnly) {
+          player.setTrackSelectionParameters(
+            player.trackSelectionParameters.buildUpon()
+              .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+              .build(),
+          )
+        }
+        player.setPlaybackSpeed(playbackSpeed)
+        if (startPositionMs > 0L) {
+          player.seekTo(startPositionMs)
+          playbackPositionState.longValue = startPositionMs
+          danmakuSyncToken += 1L
+        }
+        player.playWhenReady = true
+        playerState = MobilePlayerState.Ready(cachedInfo)
+        // alpha.49:播放就绪,隐藏加载步骤提示。
+        YoutubeLoadProgress.clear()
+        // YouTube 起播即写入播放历史(与在线路径一致)。
+        if (isYoutube) {
+          runCatching {
+            youtubeHistoryStore.recordPlay(
+              com.kirin.mt.core.youtube.YoutubeHistoryEntry(
+                videoId = cachedInfo.bvid,
+                title = cachedInfo.title,
+                channelName = request.ownerName,
+                channelId = request.channelId,
+                thumbnailUrl = request.coverUrl,
+                durationMs = cachedInfo.durationMs,
+                positionMs = startPositionMs,
+                lastPlayedAtMs = System.currentTimeMillis(),
+                pubdate = request.pubdate,
+              ),
+            )
+          }
+        }
+        // 弹幕(与在线路径一致)。
+        if (danmakuSettings.enabled && cid > 0L) {
+          danmakuEntries = runCatching { playbackRepository.getDanmaku(cid) }.getOrDefault(emptyList())
+        }
+        return
+      }
+      usingCachedPlayback = false
       val info = playbackRepository.getPlaybackInfo(
         request = resolvedRequest,
         codecPreference = playbackCodecPreference,
         qualityPreference = playbackQualityPreference,
         youtubeDefaultQuality = youtubeDefaultQuality,
+        youtubeStartQuality = youtubeStartQuality,
       )
       selectedQualityId = info.selectedQuality.id
+      actualQualityId = info.selectedQuality.id
       // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体),
       // 或远程 manifest 兜底(DASH/HLS manifest 自带 A/V 轨,dummy 视频轨非 progressive 但 audioTracks 合法为空)。
       if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive && !info.hasRemoteManifest())) {
@@ -649,7 +828,8 @@ fun MobilePlayerScreen(
           .setUri(manifest.sabrUrl)
           .setMediaMetadata(metadata)
           .build()
-        SabrMediaSource.Factory(manifest, fetcher, sid).createMediaSource(sabrItem)
+        SabrMediaSource.Factory(manifest, fetcher, sid, bufferMaxMs.toLong(), bandwidthMeter)
+          .createMediaSource(sabrItem)
       } else if (sabrEffectiveInfo.isHlsManifest()) {
         // alpha.90:HLS 兜底——SABR RELOAD 闭环未回 SABR 且 dashMpdUrl 空(android 无 manifest)时,落 visionOS
         // /player 的 hlsUrl(Apple 平台原生 HLS 交付,manifest 自带多码率 + A/V,无需 init/index range 拼接)。
@@ -679,6 +859,19 @@ fun MobilePlayerScreen(
           .setMediaMetadata(metadata)
           .build()
         DashMediaSource.Factory(dataSourceFactory).createMediaSource(dashItem)
+      }
+      // 起始挡位:起播阶段用 selector maxHeight 临时卡在起始档(SABR 专属,非 SABR 不卡),保证
+      // 首段落在起始档(不靠带宽);首帧渲染后 onRenderedFirstFrame 松开,ABR 爬到默认画质上限。
+      startQualityRelaxed = false
+      val startQualityHeight = if (effectiveInfo.isSabrSingle()) youtubeStartQuality.startHeight else null
+      if (startQualityHeight != null) {
+        // 在现有参数基础上叠加高度 cap,保留其它配置(mixed-mime/non-seamless/audioOnly 禁用视频轨等)。
+        val cur = player.trackSelectionParameters
+        if (cur is DefaultTrackSelector.Parameters) {
+          player.setTrackSelectionParameters(
+            cur.buildUpon().setMaxVideoSize(Int.MAX_VALUE, startQualityHeight).build()
+          )
+        }
       }
       player.setMediaSource(mediaSource)
       player.prepare()
@@ -716,6 +909,7 @@ fun MobilePlayerScreen(
               durationMs = sabrEffectiveInfo.durationMs,
               positionMs = startPositionMs,
               lastPlayedAtMs = System.currentTimeMillis(),
+              pubdate = request.pubdate,
             ),
           )
         }
@@ -739,6 +933,34 @@ fun MobilePlayerScreen(
     val listener = object : Player.Listener {
       override fun onRenderedFirstFrame() {
         Log.i(MobilePlayerLogTag, "onRenderedFirstFrame (视频首帧已渲染)")
+        // 起始挡位:首帧已渲染 = 实际运行起来,松开 selector 高度 cap,让 ABR 爬回默认画质上限。
+        if (!startQualityRelaxed) {
+          startQualityRelaxed = true
+          val cur = player.trackSelectionParameters
+          if (cur is DefaultTrackSelector.Parameters) {
+            player.setTrackSelectionParameters(cur.buildUpon().clearVideoSizeConstraints().build())
+          }
+        }
+      }
+
+      override fun onVideoSizeChanged(videoSize: VideoSize) {
+        // 显示=实际播放:按实际解码高度更新画质菜单高亮。解码器切换时显示跟随实际档位,
+        // 不再停留在请求档(修「显示2160实际360p」)。
+        // 用高度匹配(而非 quality.description)——B 站 description 是 "1080P"/"4K" 非 "${h}p"。
+        val h = videoSize.height
+        if (h > 0) {
+          val info = (playerState as? MobilePlayerState.Ready)?.info
+          // 按高度就近匹配画质档:qualities 按高度去重、id 是各分辨率代表 itag,而实际解码轨可能是
+          // 同分辨率下的另一 codec 变体(不同 itag),精确 id 匹配会 miss → 高亮停在请求档。故取各档
+          // 代表轨高度与 h 最近的档位,保证「显示=实际播放」。
+          val match = info?.let { i ->
+            i.qualities.minByOrNull { q ->
+              val qHeight = i.videoTracks.firstOrNull { it.id == q.id }?.height ?: Int.MAX_VALUE
+              kotlin.math.abs(qHeight - h)
+            }
+          }
+          if (match != null) actualQualityId = match.id
+        }
       }
 
       override fun onIsPlayingChanged(playing: Boolean) {
@@ -925,12 +1147,21 @@ fun MobilePlayerScreen(
     }
   }
 
-  // 控件自动隐藏:仅手动全屏(沉浸式)下,播放中 4s 后自动隐(对齐 TV PlayerControlsAutoHideMs)。
-  // 非全屏播放栏常驻,不自动隐;暂停 isPlaying=false 不触发,全屏控件保持可见。
-  LaunchedEffect(controlsVisible, isPlaying, fullscreen) {
-    if (controlsVisible && isPlaying && fullscreen) {
-      delay(4000)
+  // 控件自动隐藏:仅手动全屏(沉浸式)下,播放中 4s 后自动隐(对齐 TV PlayerControlsAutoHideMs);
+  // 暂停 5s 无操作也隐藏(与中央暂停图标同频),手势操作重置计时。非全屏播放栏常驻,不自动隐。
+  LaunchedEffect(controlsVisible, isPlaying, fullscreen, pauseInteractionToken) {
+    if (controlsVisible && fullscreen) {
+      delay(if (isPlaying) 4000 else 5000)
       controlsVisible = false
+    }
+  }
+
+  // 中央暂停图标:用户暂停(或进入暂停)即显示,每次手势操作重置,5s 无操作自动隐藏。
+  LaunchedEffect(userPaused, pauseInteractionToken) {
+    showPauseIndicator = true
+    if (userPaused) {
+      delay(5000)
+      showPauseIndicator = false
     }
   }
 
@@ -1004,10 +1235,11 @@ fun MobilePlayerScreen(
             .onSizeChanged { topBarHeightDp = with(density) { it.height.toDp() } },
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          IconButton(onClick = onBack) {
+          // 全屏时左上角返回键只退出全屏;非全屏返回才退出视频。
+          IconButton(onClick = { if (fullscreen) fullscreen = false else onBack() }) {
             Icon(
               painter = painterResource(R.drawable.ic_player_chevron_left),
-              contentDescription = "返回",
+              contentDescription = stringResource(R.string.mobile_back),
               tint = Color.White,
               modifier = Modifier.size(32.dp),
             )
@@ -1034,14 +1266,15 @@ fun MobilePlayerScreen(
           IconButton(onClick = { toggleAudioOnly() }) {
             Icon(
               painter = painterResource(R.drawable.ic_player_audio),
-              contentDescription = if (audioOnly) "退出听视频" else "听视频",
+              contentDescription = if (audioOnly) stringResource(R.string.player_listen_exit)
+              else stringResource(R.string.player_listen),
               tint = if (audioOnly) BiliColors.BiliPink else Color.White,
             )
           }
           TextButton(onClick = { settingsSheet = true }) {
             Icon(
               painter = painterResource(R.drawable.ic_nav_settings),
-              contentDescription = "设置",
+              contentDescription = stringResource(R.string.nav_settings),
               tint = Color.White,
             )
           }
@@ -1100,7 +1333,7 @@ fun MobilePlayerScreen(
                   modifier = Modifier.size(48.dp),
                 )
                 Spacer(Modifier.height(8.dp))
-                Text("听视频模式", color = Color.White)
+                Text(stringResource(R.string.player_listen_mode), color = Color.White)
               }
             }
           }
@@ -1114,9 +1347,9 @@ fun MobilePlayerScreen(
               modifier = Modifier.align(Alignment.Center).padding(24.dp),
               horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-              Text(s.message.ifBlank { "播放失败" }, color = Color.White, textAlign = TextAlign.Center)
+              Text(s.message.ifBlank { stringResource(R.string.player_error_failed) }, color = Color.White, textAlign = TextAlign.Center)
               Spacer(Modifier.padding(top = 12.dp))
-              TextButton(onClick = onBack) { Text("返回", color = Color.White) }
+              TextButton(onClick = onBack) { Text(stringResource(R.string.mobile_back), color = Color.White) }
             }
             is MobilePlayerState.Ready -> Unit
           }
@@ -1158,7 +1391,7 @@ fun MobilePlayerScreen(
           // 用 userPaused 而非 !isPlaying,避免缓冲中/播放结束时误显;叠层无 clickable,点击透传到
           // 视频 Box 的 detectPlayerGestures.onCenterTap → togglePlayback() 恢复播放。
           androidx.compose.animation.AnimatedVisibility(
-            visible = userPaused && playerState is MobilePlayerState.Ready,
+            visible = userPaused && playerState is MobilePlayerState.Ready && showPauseIndicator,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.Center),
@@ -1172,7 +1405,7 @@ fun MobilePlayerScreen(
             ) {
               Icon(
                 painter = painterResource(R.drawable.ic_player_pause),
-                contentDescription = "已暂停,点击播放",
+                contentDescription = stringResource(R.string.player_paused_tap_play),
                 tint = Color.White,
                 modifier = Modifier.size(36.dp),
               )
@@ -1223,9 +1456,16 @@ fun MobilePlayerScreen(
               .fillMaxSize()
               .pointerInput(resumeTick) {
                 detectPlayerGestures(
-                  onCenterTap = { togglePlayback() },
-                  onEdgeTap = { controlsVisible = !controlsVisible },
+                  onCenterTap = {
+                    pauseInteractionToken++
+                    togglePlayback()
+                  },
+                  onEdgeTap = {
+                    pauseInteractionToken++
+                    controlsVisible = !controlsVisible
+                  },
                   onLongPressStart = {
+                    pauseInteractionToken++
                     speedBoostActive = true
                     player.setPlaybackSpeed(2f)
                   },
@@ -1236,6 +1476,7 @@ fun MobilePlayerScreen(
                     }
                   },
                   onSeekStart = {
+                    pauseInteractionToken++
                     dragSeekActive = true
                     wasPlayingBeforeSeek = player.playWhenReady
                   },
@@ -1291,7 +1532,7 @@ fun MobilePlayerScreen(
                 val msg = danmakuInputText.trim()
                 Log.i(DanmakuSendLogTag, "onSend triggered msg=${msg.length}c cid=${readyInfo.cid} bvid=${readyInfo.bvid}")
                 if (msg.isBlank()) {
-                  Toast.makeText(context, "弹幕内容不能为空", Toast.LENGTH_SHORT).show()
+                  Toast.makeText(context, context.getString(R.string.danmaku_empty_content), Toast.LENGTH_SHORT).show()
                 } else {
                   val progressMs = playbackPositionState.longValue
                   danmakuSending = true
@@ -1324,19 +1565,19 @@ fun MobilePlayerScreen(
                           danmakuInputText = ""
                           danmakuInputActive = false
                           keyboardController?.hide()
-                          Toast.makeText(context, "弹幕已发送", Toast.LENGTH_SHORT).show()
+                          Toast.makeText(context, context.getString(R.string.danmaku_sent), Toast.LENGTH_SHORT).show()
                         } else {
                           // sendDanmaku 对未登录/参数非法返回 null(未抛)。
-                          Toast.makeText(context, "发送失败(未登录或参数异常)", Toast.LENGTH_LONG).show()
+                          Toast.makeText(context, context.getString(R.string.danmaku_send_requires_login), Toast.LENGTH_LONG).show()
                         }
                       }
                       .onFailure { error ->
                         if (error is CancellationException) throw error
                         Log.w(DanmakuSendLogTag, "send danmaku failed", error)
                         val message = when (error) {
-                          is BiliApiCodeException -> "弹幕${error.code}:${error.biliMessage}"
-                          is BiliNetworkException -> "网络错误 HTTP ${error.statusCode}"
-                          else -> "发送失败:${error.localizedMessage ?: error::class.simpleName}"
+                          is BiliApiCodeException -> context.getString(R.string.danmaku_api_error, error.code, error.biliMessage)
+                          is BiliNetworkException -> context.getString(R.string.danmaku_network_error, error.statusCode)
+                          else -> context.getString(R.string.danmaku_send_failed, error.localizedMessage ?: error::class.simpleName)
                         }
                         Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                       }
@@ -1401,12 +1642,20 @@ fun MobilePlayerScreen(
             }
             // alpha.9X(恢复清晰度选择):HD 画质按钮 + DropdownMenu,列全部可播档位,选中即重载(preferredQualityId)。
             // 播放器页面未包 MaterialTheme,DropdownMenu 显式深色 containerColor,否则默认白底。
+            // 缓存命中:清晰度只读——显示缓存清晰度静态文字,不可切换(本地源无多轨)。
             val qualities = readyInfo.qualities
-            if (qualities.isNotEmpty()) {
+            if (usingCachedPlayback) {
+              Text(
+                text = readyInfo.selectedQuality.description,
+                color = BiliColors.TextPrimary,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(horizontal = 8.dp),
+              )
+            } else if (qualities.isNotEmpty()) {
               Box {
                 MobilePlayerIconButton(
                   iconRes = R.drawable.ic_player_hd,
-                  contentDescription = "画质",
+                  contentDescription = stringResource(R.string.player_settings_quality),
                   tint = BiliColors.TextPrimary,
                   onClick = { showQualityMenu = true },
                 )
@@ -1416,7 +1665,7 @@ fun MobilePlayerScreen(
                   containerColor = Color(0xFF1A1A20),
                 ) {
                   qualities.forEach { q ->
-                    val selected = q.id == selectedQualityId
+                    val selected = q.id == actualQualityId
                     DropdownMenuItem(
                       text = {
                         Text(
@@ -1427,6 +1676,7 @@ fun MobilePlayerScreen(
                       onClick = {
                         showQualityMenu = false
                         selectedQualityId = q.id
+                        actualQualityId = q.id
                         scope.launch {
                           loadRequest(activeRequest.copy(
                             startPositionMs = player.currentPosition.takeIf { it > 0L }
@@ -1446,7 +1696,7 @@ fun MobilePlayerScreen(
               Box {
                 MobilePlayerIconButton(
                   iconRes = R.drawable.ic_player_audio_track,
-                  contentDescription = "音轨",
+                  contentDescription = stringResource(R.string.player_audio_track),
                   tint = BiliColors.TextPrimary,
                   onClick = { showAudioMenu = true },
                 )
@@ -1490,15 +1740,25 @@ fun MobilePlayerScreen(
             if (!activeRequest.isYoutube) {
               MobilePlayerIconButton(
                 iconRes = R.drawable.ic_player_subtitles,
-                contentDescription = "发送弹幕",
+                contentDescription = stringResource(R.string.danmaku_send),
                 tint = if (danmakuInputActive) BiliColors.BiliPink else BiliColors.TextPrimary,
                 onClick = { danmakuInputActive = !danmakuInputActive },
+              )
+            }
+            // 下载入口:打开清晰度选择对话框,确认后入队下载。直播/IPTV 不可下载;已缓存(命中本地源)隐藏。
+            if (!activeRequest.isLive && !activeRequest.isIptv && !usingCachedPlayback) {
+              MobilePlayerIconButton(
+                iconRes = R.drawable.ic_player_download,
+                contentDescription = stringResource(R.string.downloads_menu_download),
+                tint = BiliColors.TextPrimary,
+                onClick = { showDownloadDialog = true },
               )
             }
             // 手动沉浸式全屏入口(强制方向 + 隐藏系统栏);所有视频都显示。居中播放由播放/暂停驱动,与此独立。
             MobilePlayerIconButton(
               iconRes = if (fullscreen) R.drawable.ic_player_fullscreen_exit else R.drawable.ic_player_fullscreen,
-              contentDescription = if (fullscreen) "退出全屏" else "全屏",
+              contentDescription = if (fullscreen) stringResource(R.string.player_fullscreen_exit)
+              else stringResource(R.string.player_fullscreen),
               tint = BiliColors.TextPrimary,
               onClick = { fullscreen = !fullscreen },
             )
@@ -1535,6 +1795,28 @@ fun MobilePlayerScreen(
             },
           )
         }
+      }
+
+      // 下载清晰度选择对话框:确认后入队下载(Toast 反馈)。
+      if (showDownloadDialog) {
+        val readyInfo = (playerState as? MobilePlayerState.Ready)?.info
+        MobileDownloadQualityDialog(
+          isYoutube = activeRequest.isYoutube,
+          biliQualities = readyInfo?.qualities ?: emptyList(),
+          onDismiss = { showDownloadDialog = false },
+          onConfirm = { choice ->
+            showDownloadDialog = false
+            scope.launch {
+              downloadManager.enqueue(activeRequest, choice)
+                .onSuccess {
+                  Toast.makeText(context, context.getString(R.string.downloads_enqueued), Toast.LENGTH_SHORT).show()
+                }
+                .onFailure { e ->
+                  Toast.makeText(context, e.message ?: context.getString(R.string.downloads_enqueue_failed), Toast.LENGTH_LONG).show()
+                }
+            }
+          },
+        )
       }
 
       // 播放态:简介/评论 Tab 分栏填底(weight 1f,视频居中+底栏之后),复用暂停态同款 Tab。
@@ -1706,7 +1988,7 @@ private fun PlayerSettingsSheet(
       .verticalScroll(rememberScrollState())
       .padding(horizontal = 16.dp, vertical = 8.dp),
   ) {
-    SectionTitle("倍速")
+    SectionTitle(stringResource(R.string.player_settings_speed))
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
       PlaybackSpeedOptions.forEach { rate ->
         val selected = rate == playbackSpeed
@@ -1719,21 +2001,21 @@ private fun PlayerSettingsSheet(
       }
     }
 
-    SectionTitle("弹幕")
-    SettingRow("弹幕开关") {
+    SectionTitle(stringResource(R.string.player_settings_danmaku))
+    SettingRow(stringResource(R.string.player_settings_danmaku_toggle)) {
       Switch(checked = danmakuSettings.enabled, onCheckedChange = onDanmakuEnabled)
     }
-    SliderRow("不透明度", danmakuSettings.opacity, 0.1f..1f) { onDanmakuOpacity(it) }
-    SliderRow("字号", danmakuSettings.fontSize.toFloat(), 16f..36f) { onDanmakuFontSize(it.toInt()) }
-    SliderRow("显示区域", danmakuSettings.area, 0.25f..1f) { onDanmakuArea(it) }
-    SliderRow("速度", danmakuSettings.speed.toFloat(), 3f..7f, steps = 3) { onDanmakuSpeed(it.toInt()) }
-    SettingRow("顶部弹幕") {
+    SliderRow(stringResource(R.string.player_settings_danmaku_opacity), danmakuSettings.opacity, 0.1f..1f) { onDanmakuOpacity(it) }
+    SliderRow(stringResource(R.string.player_settings_danmaku_font_size), danmakuSettings.fontSize.toFloat(), 16f..36f) { onDanmakuFontSize(it.toInt()) }
+    SliderRow(stringResource(R.string.player_settings_danmaku_area), danmakuSettings.area, 0.25f..1f) { onDanmakuArea(it) }
+    SliderRow(stringResource(R.string.player_settings_danmaku_speed), danmakuSettings.speed.toFloat(), 3f..7f, steps = 3) { onDanmakuSpeed(it.toInt()) }
+    SettingRow(stringResource(R.string.player_settings_danmaku_top)) {
       Switch(checked = danmakuSettings.allowTop, onCheckedChange = onDanmakuAllowTop)
     }
-    SettingRow("底部弹幕") {
+    SettingRow(stringResource(R.string.player_settings_danmaku_bottom)) {
       Switch(checked = danmakuSettings.allowBottom, onCheckedChange = onDanmakuAllowBottom)
     }
-    SettingRow("弹幕数量") {
+    SettingRow(stringResource(R.string.player_settings_danmaku_capacity)) {
       Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         com.kirin.mt.core.player.DanmakuCapacity.entries.forEach { c ->
           val selected = c == danmakuSettings.capacity
@@ -1747,10 +2029,10 @@ private fun PlayerSettingsSheet(
       }
     }
 
-    SectionTitle("分享")
-    SettingRow("分享视频") {
+    SectionTitle(stringResource(R.string.player_share))
+    SettingRow(stringResource(R.string.share_video)) {
       TextButton(onClick = onShare) {
-        Text("分享", color = Color(0xFFFB7299))
+        Text(stringResource(R.string.player_share), color = Color(0xFFFB7299))
       }
     }
     Spacer(Modifier.padding(top = 8.dp))
@@ -1824,8 +2106,8 @@ private fun MobilePlayerIntroHeader(
         SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(metadata.pubdate * 1000L))
     }
     val metaParts = buildList {
-      if (metadata.viewCount > 0) add("播放 ${formatCount(metadata.viewCount)}")
-      if (metadata.danmakuCount > 0) add("弹幕 ${formatCount(metadata.danmakuCount)}")
+      if (metadata.viewCount > 0) add(context.getString(R.string.player_view_count_format, formatCount(metadata.viewCount, context.resources)))
+      if (metadata.danmakuCount > 0) add(context.getString(R.string.player_danmaku_count_format, formatCount(metadata.danmakuCount, context.resources)))
       if (pubdateText.isNotBlank()) add(pubdateText)
     }
     if (metaParts.isNotEmpty()) {
@@ -1850,9 +2132,9 @@ private fun MobilePlayerIntroHeader(
 }
 
 /**
- * YouTube 简介 Tab:标题 / 频道行(头像+名) / 数据行(观看·发布时间) / 简介 desc。
- * YouTube 无 B 站 view 元数据,由 /player videoDetails 填充;youtubeDetail 未就绪时居中加载圈。
- * 无 B 站互动(点赞/投币)行;简介可能很长,可纵向滚动。
+ * YouTube 简介 Tab:标题 / 频道行(头像+名) / 数据行(观看·点赞·发布时间) / 简介 desc。
+ * YouTube 无 B 站 view 元数据,由 /player videoDetails + /next 工具栏填充;youtubeDetail 未就绪时居中加载圈。
+ * 无 B 站投币行;简介可能很长,可纵向滚动。
  */
 @Composable
 private fun MobileYoutubeIntroTab(
@@ -1865,6 +2147,7 @@ private fun MobileYoutubeIntroTab(
   modifier: Modifier = Modifier,
 ) {
   val detail = youtubeDetail
+  val context = LocalContext.current
   // hooks 规则:collectAsState 等必须在早期 return 之前无条件调用。
   var showPlaylistPicker by remember { mutableStateOf(false) }
   if (detail == null) {
@@ -1877,7 +2160,7 @@ private fun MobileYoutubeIntroTab(
         CircularProgressIndicator()
       } else {
         Text(
-          text = "简介暂不可用",
+          text = stringResource(R.string.player_desc_unavailable),
           color = BiliColors.TextSecondary,
           style = MaterialTheme.typography.bodyMedium,
         )
@@ -1931,14 +2214,23 @@ private fun MobileYoutubeIntroTab(
         overflow = TextOverflow.Ellipsis,
       )
     }
-    // 数据行:观看 · 发布时间(pubdate 为秒,转 yyyy-MM-dd)
-    val pubdateText = detail.publishedAt?.let { t ->
-      if (t <= 0L) "" else SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(t * 1000L))
-    }.orEmpty()
-    // formatCount 只收 Int，YouTube 的 viewCount 是 Long，先收敛到 Int。
+    // 数据行:观看 · 发布时间(pubdate 为秒,转 yyyy-MM-dd)。
+    // 优先 /player 的 publishDate;缺省(受限/解析失败等 microformat 无 publishDate)回退卡片携带的
+    // request.pubdate(对齐 B 站 data 行,后者恒用卡片 pubdate,保证发布时间恒显示)。
+    val effectivePubdate = detail.publishedAt?.takeIf { it > 0L } ?: request.pubdate
+    val pubdateText = if (effectivePubdate > 0L) {
+      SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(effectivePubdate * 1000L))
+    } else {
+      ""
+    }
+    // 诊断:数据行最终渲染的发布时间来源与值(真机确认「非全屏简介」发布时间是否补上)。
+    Log.i(MobilePlayerLogTag, "youtubeIntro pubdate publishedAt=${detail.publishedAt} request=${request.pubdate} effective=${effectivePubdate} rendered='$pubdateText' videoId=${detail.videoId}")
+    // formatCount 只收 Int，YouTube 的 viewCount/likeCount 是 Long，先收敛到 Int。
     val viewCountInt = (detail.viewCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    val likeCountInt = (detail.likeCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     val metaParts = buildList {
-      if (viewCountInt > 0) add("播放 ${formatCount(viewCountInt)}")
+      if (viewCountInt > 0) add(context.getString(R.string.player_view_count_format, formatCount(viewCountInt, context.resources)))
+      if (likeCountInt > 0) add(context.getString(R.string.player_like_count_format, formatCount(likeCountInt, context.resources)))
       if (pubdateText.isNotBlank()) add(pubdateText)
     }
     if (metaParts.isNotEmpty()) {
@@ -2006,7 +2298,7 @@ private fun MobileYoutubeIntroTab(
                 if (v.ownerName.isNotBlank()) append(v.ownerName)
                 if (v.view > 0) {
                   if (isNotEmpty()) append(" · ")
-                  append(formatCount(v.view))
+                  append(formatCount(v.view, context.resources))
                 }
               },
               color = BiliColors.TextSecondary,
@@ -2069,6 +2361,7 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
   modifier: Modifier = Modifier,
 ) {
   val scope = rememberCoroutineScope()
+  val context = LocalContext.current
   val tabPagerState = rememberPagerState(pageCount = { 2 })
   var commentTotalCount by remember { mutableIntStateOf(0) }
   LaunchedEffect(metadata?.aid) { commentTotalCount = 0 }
@@ -2087,12 +2380,13 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
       Tab(
         selected = tabPagerState.currentPage == 0,
         onClick = { scope.launch { tabPagerState.animateScrollToPage(0) } },
-        text = { Text("简介") },
+        text = { Text(stringResource(R.string.player_tab_intro)) },
       )
       Tab(
         selected = tabPagerState.currentPage == 1,
         onClick = { scope.launch { tabPagerState.animateScrollToPage(1) } },
-        text = { Text(if (commentTotalCount > 0) "评论 ${formatCount(commentTotalCount)}" else "评论") },
+        text = { Text(if (commentTotalCount > 0) context.getString(R.string.player_comment_count_format, formatCount(commentTotalCount, context.resources))
+          else context.getString(R.string.nav_comment)) },
       )
     }
     HorizontalPager(
@@ -2197,7 +2491,7 @@ private fun MobilePlayerIntroTab(
   fun toast(ok: Boolean, successMsg: String) {
     Toast.makeText(
       context,
-      if (ok) successMsg else "操作失败,请检查登录或稍后重试",
+      if (ok) successMsg else context.getString(R.string.player_action_failed_login),
       Toast.LENGTH_SHORT,
     ).show()
   }
@@ -2205,7 +2499,7 @@ private fun MobilePlayerIntroTab(
   // 透出 B站业务错误:如「硬币不足」「你已经对该视频投过币了」「请求错误」等,便于区分代码 bug 与业务失败。
   fun toastError(e: Throwable) {
     val msg = (e as? BiliApiCodeException)?.biliMessage?.takeIf { it.isNotBlank() }
-      ?: "操作失败,请稍后重试"
+      ?: context.getString(R.string.player_action_failed)
     Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
   }
 
@@ -2219,7 +2513,7 @@ private fun MobilePlayerIntroTab(
         if (ok) {
           coined = true
           coinCount += multiply
-          toast(true, "投币成功")
+          toast(true, context.getString(R.string.player_coin_success))
         } else {
           toast(false, "")
         }
@@ -2252,8 +2546,8 @@ private fun MobilePlayerIntroTab(
         ) {
           IntroActionButton(
             iconRes = R.drawable.ic_player_like,
-            label = "点赞",
-            count = formatCount(likeCount),
+            label = stringResource(R.string.player_control_like),
+            count = formatCount(likeCount, context.resources),
             active = liked,
             enabled = !busy,
             onClick = {
@@ -2265,7 +2559,8 @@ private fun MobilePlayerIntroTab(
                   if (ok) {
                     liked = !liked
                     likeCount = (likeCount + if (liked) 1 else -1).coerceAtLeast(0)
-                    toast(true, if (liked) "已点赞" else "已取消点赞")
+                    toast(true, if (liked) context.getString(R.string.feed_action_like_done)
+                    else context.getString(R.string.player_like_cancelled))
                   } else {
                     toast(false, "")
                   }
@@ -2280,16 +2575,16 @@ private fun MobilePlayerIntroTab(
           )
           IntroActionButton(
             iconRes = R.drawable.ic_player_coin,
-            label = "投币",
-            count = formatCount(coinCount),
+            label = stringResource(R.string.player_control_coin),
+            count = formatCount(coinCount, context.resources),
             active = coined,
             enabled = !busy,
             onClick = { if (!busy) showCoinDialog = true },
           )
           IntroActionButton(
             iconRes = R.drawable.ic_player_favorite,
-            label = "收藏",
-            count = formatCount(favCount),
+            label = stringResource(R.string.player_control_favorite),
+            count = formatCount(favCount, context.resources),
             active = faved,
             enabled = !busy,
             onClick = {
@@ -2309,8 +2604,8 @@ private fun MobilePlayerIntroTab(
           )
           IntroActionButton(
             iconRes = R.drawable.ic_player_share,
-            label = "分享",
-            count = formatCount(metadata.shareCount),
+            label = stringResource(R.string.player_share),
+            count = formatCount(metadata.shareCount, context.resources),
             active = false,
             enabled = true,
             onClick = onShare,
@@ -2320,7 +2615,7 @@ private fun MobilePlayerIntroTab(
 
       // 多分P:在此处展示选集(替代相关视频);单P:保持相关视频列表。
       if (metadata.pages.size > 1) {
-        SectionTitle("选集")
+        SectionTitle(stringResource(R.string.player_control_episodes))
         metadata.pages.forEach { ep ->
           val selected = ep.cid == request.cid ||
             (ep.epId > 0L && ep.epId == request.epId)
@@ -2336,10 +2631,10 @@ private fun MobilePlayerIntroTab(
         }
       } else {
         // 相关视频:2 列 chunked Row,复用 MobileVideoCard,点击切播 / 进 UP 主页。
-        SectionTitle("相关视频")
+        SectionTitle(stringResource(R.string.playlist_section_related))
         if (relatedVideos.isEmpty()) {
           Text(
-            text = "暂无相关视频",
+            text = stringResource(R.string.player_no_related_videos),
             color = BiliColors.TextSecondary,
             modifier = Modifier.padding(vertical = 12.dp),
           )
@@ -2367,21 +2662,21 @@ private fun MobilePlayerIntroTab(
     if (showCoinDialog) {
       AlertDialog(
         onDismissRequest = { showCoinDialog = false },
-        title = { Text("投币") },
+        title = { Text(stringResource(R.string.player_coin_title)) },
         text = {
           Column {
             TextButton(
               onClick = { doCoin(1) },
               modifier = Modifier.fillMaxWidth(),
-            ) { Text("投 1 枚", modifier = Modifier.fillMaxWidth()) }
+            ) { Text(stringResource(R.string.player_coin_one), modifier = Modifier.fillMaxWidth()) }
             TextButton(
               onClick = { doCoin(2) },
               modifier = Modifier.fillMaxWidth(),
-            ) { Text("投 2 枚", modifier = Modifier.fillMaxWidth()) }
+            ) { Text(stringResource(R.string.player_coin_two), modifier = Modifier.fillMaxWidth()) }
           }
         },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = { showCoinDialog = false }) { Text("取消") } },
+        dismissButton = { TextButton(onClick = { showCoinDialog = false }) { Text(stringResource(R.string.mobile_dialog_cancel)) } },
       )
     }
 
@@ -2389,7 +2684,7 @@ private fun MobilePlayerIntroTab(
     if (showFavDialog) {
       AlertDialog(
         onDismissRequest = { showFavDialog = false },
-        title = { Text("收藏到收藏夹") },
+        title = { Text(stringResource(R.string.player_panel_favorite)) },
         text = {
           if (favLoading) {
             Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
@@ -2397,7 +2692,7 @@ private fun MobilePlayerIntroTab(
             }
           } else if (favFolders.isEmpty()) {
             Text(
-              "暂无收藏夹",
+              stringResource(R.string.player_favorite_empty),
               color = BiliColors.TextSecondary,
               modifier = Modifier.padding(16.dp),
             )
@@ -2431,7 +2726,7 @@ private fun MobilePlayerIntroTab(
                   )
                   Column {
                     Text(folder.title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${folder.mediaCount} 个内容", color = BiliColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+                    Text(context.getString(R.string.player_favorite_count, folder.mediaCount), color = BiliColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
                   }
                 }
               }
@@ -2452,7 +2747,7 @@ private fun MobilePlayerIntroTab(
                   if (ok) {
                     if (!faved) favCount += 1
                     faved = true
-                    toast(true, "已收藏")
+                    toast(true, context.getString(R.string.player_favorited))
                   } else {
                     toast(false, "")
                   }
@@ -2464,9 +2759,9 @@ private fun MobilePlayerIntroTab(
                 busy = false
               }
             },
-          ) { Text("确认") }
+          ) { Text(stringResource(R.string.player_confirm)) }
         },
-        dismissButton = { TextButton(onClick = { showFavDialog = false }) { Text("取消") } },
+        dismissButton = { TextButton(onClick = { showFavDialog = false }) { Text(stringResource(R.string.mobile_dialog_cancel)) } },
       )
     }
   }
@@ -2617,7 +2912,7 @@ private fun DanmakuInputBar(
       onValueChange = onTextChange,
       modifier = Modifier.weight(1f),
       singleLine = true,
-      placeholder = { Text("发个弹幕…", color = Color(0xFF8A8A95)) },
+      placeholder = { Text(stringResource(R.string.danmaku_input_hint), color = Color(0xFF8A8A95)) },
       textStyle = TextStyle(color = Color.White),
       trailingIcon = {
         Text("${text.length}/100", color = Color(0xFF8A8A95))
@@ -2639,7 +2934,7 @@ private fun DanmakuInputBar(
       enabled = !sending && text.isNotBlank(),
     ) {
       Text(
-        if (sending) "发送中" else "发送",
+        if (sending) stringResource(R.string.danmaku_sending) else stringResource(R.string.danmaku_submit),
         color = if (sending || text.isBlank()) Color(0xFF8A8A95) else BiliColors.BiliPink,
       )
     }

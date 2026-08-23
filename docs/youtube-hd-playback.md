@@ -938,11 +938,140 @@ BiliMT:MobilePlayer: playerState=3 pos=184954 (稳定推进到 3 分钟,无 RELO
 - **验证语义**:手动选 4K → SABR 单轨 313 → 首 RELOAD → DASH 兜底出 4K;手动选 1080p/720p → SABR 直接播对应分辨率(避开 RELOAD)。≤1080p 不需要 attestation 的视频(SABR 直接播、无 RELOAD)不受兜底提前影响。
 - **DASH 自合成也支持多档清晰度(用户要求补)**:`buildDashFallbackFromNewPipe` 自合成分支从单档改**全 `videoCandidates` 多 Representation**——每条带 range 的视频流各构一条 `PlaybackTrack`,`buildDashManifest` 合成多 Representation MPD(每条 track 一个 `<Representation>` 塞进同一 `<AdaptationSet>`,与 SABR `allVideoTracks` 同构)。**清晰度菜单按分辨率去重(对齐 LibreTube `getAvailableResolutions`)**:`distinctBy { it.height }` 每个 height 一档纯 `"${height}p"`(不带 codec),故 720p 只有一个选项(VP9/H264 变体不重复列);codec 由 ExoPlayer 自动选。`preferredQualityId != null` 手动选档时回**该分辨率全部 codec 变体**(`filter { it.height == selectedVideo.height }`,ExoPlayer 在该分辨率内自动选 codec),默认/Auto 回全部让 ExoPlayer 自动选轨。原 `PlaybackQuality(0,"XXXp DASH 兜底")` 单档删除。选档逻辑与 SABR `defaultItag` 同语义(`maxHeight` 或最高档)。这样已落 DASH 的 4K 视频画质菜单列各分辨率(2160p/1440p/1080p…),可手动降档。
 
+## 6.17 TV 视频网格焦点恢复(2026-08,v3.0.4-alpha.3)
+
+TV 端 `TvVideoGrid`(首页/UP 主页/频道页/动态共用)的焦点在两类场景会丢,本次补三层机制:
+
+**① 动态增量合并重排后焦点跟同一视频走**(`c1c6a9e`):动态页先渲染 B 站动态,YouTube 关注流随后分批按 pubdate 插入中间重排(`mergeByPubdate`),改动行 key → `LazyColumn` 销毁重建聚焦行 → 焦点丢回侧栏/根。`TvVideoGrid` 记录当前聚焦卡片稳定 key(bvid),新增 `LaunchedEffect(videos)`:聚焦视频仍在列表但换了 index 时,滚到新位置并重新抢焦点,让焦点跟着同一视频走。append 加载更多(聚焦项 index 不变)与用户翻页(`rowScrollActive`)不触发。
+
+**② focusRestorer 兜底**(`5f06c4d`):`LazyColumn` 挂 `focusRestorer(restoredItemFocusRequester)`——进入覆盖层/播放器前最后聚焦的目标卡在焦点树重建后由 Compose 自动恢复,比手写 restore effect 更快更稳。仅目标卡已组合(视口内)时生效;目标卡不在视口仍由手写 effect scroll+等布局+requestFocus 兜底。两者恢复目标一致(同一 requester),不冲突;不干扰首次进入/切 tab(requester 从未被聚焦则无恢复)。
+
+**③ 全局焦点诊断日志**(`22c87ca`):`FocusDiagnostics.kt` 新增 `Modifier.focusDiag(label)` 区域级焦点进出日志——按 `hasFocus` 跳变打 `GAINED/LOST [label]`,日志序列即焦点落点轨迹。`AppShell` 根(root,`hasFocus=false` 即整个焦点树彻底无焦点)/侧栏(sidebar)/覆盖层(action-sheet)加;视频网格加 `debugLabel` 参数,UP 主页(space-grid)/频道页(channel-grid)/动态(dynamic-grid)传区分 label,定位播放/长按弹窗/UP 主页/频道页返回后焦点丢到哪。
+
+## 6.18 播放优先级设置: SABR 优先 / DASH 优先(2026-08, v3.0.4-alpha.5)
+
+**背景**:真机日志确认一次视频播放中断——SABR 首段在慢服务器(`rr5---sn-3pm76nes`)上 ~11s 才送达,而 PlayerScreen 的 stall 看门狗阈值 8s 无启动宽限,在首段刚到前 4s 误判 → 触发**完整 teardown + 重建会话**,用户看到「卡住→重新加载视频」。与已知 `iptv-thumb-stall-watchdog-kills-slow-sources` 同一类「看门狗误杀慢源」。
+
+**方案**:加一个手动逃生通道——播放优先级设置,默认 **SABR 优先**(行为完全不变,非破坏),选 **DASH 优先** 时先走 DASH 自合成兜底(NewPipe 已解密直链拼 MPD,实测能出 4K VP9,§6.16),避免慢 SABR 首段被看门狗误杀。
+
+### 变更
+- **枚举 `core/player/YoutubeDeliveryPriority.kt`**(新增,镜像 `YoutubeContentRegion` 的 `fromKey` 模式):`Sabr("sabr")` / `Dash("dash")`。
+- **`AppSettings` + `AppSettingsStore`**:字段 `youtubeDeliveryPriority`(默认 Sabr);DataStore Key `youtube_delivery_priority` + 读侧 `fromKey` + setter `setYoutubeDeliveryPriority`。
+- **`YoutubePlaybackResolver.resolve()`**:顶部读 `dashFirst`;Piped 块(`&& !dashFirst`)与 NewPipe-first 路径按优先级重排——DASH 优先时先 `buildDashFallbackFromNewPipe` 成功直接 return,再走 SABR;SABR 优先时才在 SABR 失败后走 DASH 兜底(保留 reloadCount 死循环守卫)。
+- **TV `SettingsScreen` + 移动 `MobileSettingsScreen`**:各加一个两态循环选择器(SABR 优先 ⇄ DASH 优先);TV 侧走枚举焦点系统(新常量 `SettingsItemYoutubeDeliveryPriority = 38`,索引 when 块整链后移)。
+
+### 待真机验证
+- 设置页 TV/移动各切一次「DASH 优先」:能存能读,播放走 `NewPipe-first(DASH 优先) → DASH/HLS playback ready`。
+- 切回「SABR 优先」:行为与现在一致(日志 `source=NewPipe(primary)`),慢源首段仍可能被看门狗误杀(根因修复=启动宽限/auto-retry 不 teardown,另议,本设置只是逃生通道)。
+
+## 6.19 SABR Auto 升档修复:混合 mime 组坍缩成单轨(2026-08,v3.0.5-alpha.1)
+
+**症状**:YouTube SABR `Auto` 档起播 360p(选中 itag243)后,即使带宽充足(实测 14-19Mbps)、缓冲涨到 40s+,也**永不升档**;手动切 720p(H264 itag136)却能播。
+
+**根因**:不是带宽估计、不是缓冲门控、不是手动锁档。是 **DefaultTrackSelector 默认 `allowMixedMimeTypesAdaptiveness=false`**,而视频 TrackGroup 是 **H264+VP9 混合 mime 组**(itags `[137,136,134,243,160]`,其中 243 是唯一 VP9/`video/webm`)。
+- 混合组默认不进同一条 adaptive selection,选择器把 selection 锁在**选定轨的 mime 上**——选定 VP9 243 后 selection 就只剩 `{243}` 单轨 → `AdaptiveTrackSelection.length()==1`,没有任何别的轨可切 → 带宽/缓冲再足也永不升档。
+- 手动 720p 能播是因为手动是**单个单轨 selection 强切**(重建 manifest 只含选中 itag),绕开 DefaultTrackSelector 的混合 mime 组逻辑,与 Auto 失效不矛盾。
+
+**诊断证据**(决定性日志,`YtSabrManifest`/`YtSabrChunk`):
+- manifest 元数据全对:`codecs=[avc1.640028,...]`、`sampleMime=[video/avc,...]`、`wh=[1920x1080,...]`,5 轨分辨率齐全,排除缺字段。
+- `YtSabrChunk` 起播 `trackSelLen=1 sets=[set0[2]=137,136,134,243,160] selected=[243(3)b=471990]` ——单组 5 轨却只选中 VP9 243。
+- 排除播放器手动 override(两套播放器均无 `TrackSelectionParameters` 钉轨)。
+
+**修复**(3 处,缺一不可):
+1. **`Representation.fromTrack`**:给每条轨 `Format.Builder().setId(formatId.itag.toString())`——此前 5 轨 `Format.id` 全 `null`,破坏 DefaultTrackSelector 的选轨/去重/override 依赖。
+2. **播放器显式 `DefaultTrackSelector`**(TV `PlayerScreen` + 移动 `MobilePlayerScreen` 各建实例):`Parameters.Builder().setAllowVideoMixedMimeTypeAdaptiveness(true).setAllowVideoNonSeamlessAdaptiveness(true).setAllowMultipleAdaptiveSelections(true)`(混合 mime 方法在 `DefaultTrackSelector.Parameters.Builder`,不在通用 `TrackSelectionParameters`;外层无 `DefaultTrackSelector.Builder`,用 `DefaultTrackSelector(context)+setParameters()` 直构)。
+
+**真机验证(v3.0.5-alpha.1,2026-08-21)**:
+- `YtSabrChunk trackSelLen=5 selected=[137(0),136(1),134(2),243(3),160(4)]`——5 轨全部组进 adaptive selection。
+- `YtSabrAbr` 升档轨迹(8 秒内):`sel=4`(160=144p 起播)→ `sel=2`(134=480p)→ `sel=0`(137=1080p 到顶),缓冲 29→49s 稳定驻留,`up=`/`down=` 候选恢复(此前恒 null)。
+
+**结论**:Auto 全轨自适应已打通,起播低档→带宽足逐档爬升。本修复同时惠及 B站 DASH 同组多 codec(混合 mime 正确处理),单轨组不受影响。
+
+## 6.20 移动端 YouTube 详情补发布时间:卡片 pubdate 链路 + microformat ISO 解析修复(2026-08,v3.0.5-alpha.2)
+
+**症状**:移动端 YouTube 简介 Tab 数据行·播放 X · 发布时间在**历史页进入**的视频**整行无日期**,而 B站恒显示;LibreTube 该场景显示正常。
+
+**根因(三处叠加,缺一不可)**:
+1. **`/player` microformat 解析坏了**——`parsePublishDate` 对 `publishDate`/`uploadDate` 做 `date.split('-')` 期望纯 `yyyy-MM-dd`,但 YouTube 这两个字段是 **ISO-8601**(如 `2023-01-15T00:00:00-08:00`),`T` 与 `-08:00` 使 `toIntOrNull()` 失败 → 恒 null。**字段明明在,解析成 null**(诊断 `getVideoDetail mf` 坐实 renderer 存在、`publishDate` 非空,但 `publishedAt` 解析为 null)。
+2. **历史页丢弃 pubdate**——`MobileHistoryPage` 的 `YoutubeHistoryEntry.toVideoSummary()` 硬编码 `pubdate=0`,`YoutubeHistoryEntry` 数据类原本**没有 pubdate 字段**,`recordPlay` 也没存 → 历史进入的视频 `request.pubdate=0`。
+3. `MobileYoutubeIntroTab` 只读 `detail.publishedAt`,且历史条目的旧记录(修复前写入)pubdate 仍为 0。
+
+**修复(三层,从源头到 UI)**:
+1. **`YoutubeParsers.kt` `parsePublishDate`**:先 `date.trim().take(10)` 只取前 10 字符 `yyyy-MM-dd` 再切,兼容 ISO-8601;`parseVideoDetail` 在 `publishDate` 缺时读 `uploadDate` 兜底(部分客户端只给 `uploadDate`)。
+2. **历史 pubdate 链路** — `YoutubeHistoryEntry` 加 `pubdate` 字段;`MobilePlayerScreen` 两处 `recordPlay` 填 `request.pubdate`(TV `PlayerScreen` 同步);`MobileHistoryPage.toVideoSummary()` 由 `0` 改 `pubdate`。新记录的历史项自带发布时间,不再依赖第二手解析。
+3. **`MobileYoutubeIntroTab`**:优先 `/player` 的 `publishedAt`;为 `null`/`≤0` 时回退 `request.pubdate`(卡片 `VideoSummary.pubdate` 经 `toPlaybackRequest` 带入),保证发布时间恒显示,与 B 站 data 行行为一致。
+4. 曾试 NewPipe `StreamInfo.getInfo` 兜底(对齐 LibreTube)——解析器修好后该兜底已非必需,`getVideoDetail` 直接从已有 `/player` 响应取日期,不引入二次 getInfo 的脆弱性(真机证伪:历史页 getInfo 抛 null-message 异常)。
+
+## 6.21 SABR 带宽封顶/硬钳制取档黑屏回归:取档与选轨拆开的教训(2026-08,回退 v3.0.5-alpha.6 之后)
+
+**症状**:`v3.0.5-alpha.6` 之后的 6 个 SABR 提交(`ae5481f` 实测带宽硬封顶、`c08438d` 硬钳制取档、`67e2116`/`829886b`/`acb1092`/`c2e4b3d` 配套)引入真机**永久黑屏**:打开任意 YouTube 视频永不 READY,8s 看门狗无限 auto-retry。上个 tag(`be24f18`)能播。
+
+**根因**:`c08438d` 为了修「起播直接爬 2160p → 超大段撑不起 → 看门狗整段重载」,把 **chunk 实际取档(itag)与 `trackSelection.selectedFormat` 拆开**——在 `getNextChunk` 里按带宽 `capBps` 钳制 `fetchIndex`,chunk 用 `trackSelection.getFormat(fetchIndex)`(钳制档),但 AdaptiveTrackSelection 的 `selectedIndex` 仍是**未钳制的最高档**。renderer 期望选中轨格式,收到的是钳制档格式 → 视频轨不激活。
+
+**诊断证据**(真机日志,全部会话 `tracks=0`、0 次 READY):
+- `YtSabrAbr` 起播 `sel=6(origin=0)`——`origin=0`(trackSelection 选中 itag313 VP9 4K)但实际 `fetchIndex=6`(itag135 AVC 480p seed),chunk 数据与 renderer 期望轨格式不一致。
+- `DMCodecAdapterFactory` 创建视频解码器成功(VP9/AVC)但 `CCodecBufferChannel ... Ignoring stale input buffer done callback ... frameIndex=0`——视频 sample **从未喂给解码器**,renderer 未激活视频轨。
+- `stall detected @pos=258000 buffered=29%`——数据缓冲正常(29%),但视频轨没激活,永不 READY → 8s 看门狗无限重载。
+- 第三次会话(带宽已实测 76Mbps、`cap=N`、无钳制、chunk 与 selection 一致)仍 `frameIndex=0` 黑屏——根因不止首会话 seed 钳制,`updateSelectedTrack` 的 iterator 喂法(封顶内全部轨喂合成 iterator vs 旧增量 up/down)也改变 AdaptiveTrackSelection 在 14 轨混合组的选择行为,视频轨不激活。
+
+**修复(回退,commit `7701f3e`)**:`DefaultSabrChunkSource` + `SabrMediaFetcher` 整体回退到 `be24f18`(上个 tag 能播版本)。恢复:
+- `representationHolders[trackSelection.selectedIndex]` + chunk `trackSelection.selectedFormat`——chunk 格式**始终与 renderer 选中轨一致**,格式不拆开。
+- 增量升/降档 iterator(只喂当前档的 `upgradeCandidateIndex`/`downgradeCandidateIndex` 合成 iterator,其余 EMPTY)。
+- 删除 `sharedBandwidthBps` 带宽封顶(全仓库无残留引用,无编译断链)。
+- 云编译 run 32648943155 → success;真机验证恢复播放。
+
+**结论/教训**:**永远不要拆开 chunk 实际取档与 `trackSelection.selectedFormat`**——renderer 按 selection 的选中轨配置解码器,chunk 数据必须与之一致,否则视频轨不激活(tracks=0)、sample 不喂解码器(frameIndex=0)、永不 READY。若以后还要修「起播爬 4K 撑不起」卡顿,正确方向是**降低 DefaultTrackSelector 起播档**(让选中轨本身就是低档,§6.19 的 `599fced` 升序让 index0=低档是这条路),**而不是硬钳制 chunk 取档位**。
+
+## 6.22 起始挡位设置生效:seed 带宽估计而非挪 index0(2026-08,v3.0.5-alpha.8)
+
+**症状**:设置项「YouTube 起播挡位(youtubeStartQuality)」无效——无论设 480P/720P 还是 Auto,起播首段总停在同档,设置形同虚设。
+
+**根因(media3 1.10.0,核对 androidx/media 1.10.0 源码)**:
+- `BaseTrackSelection` 构造器**内部强制按码率降序重排**轨道(`Arrays.sort(formats, (a,b) -> b.bitrate - a.bitrate)`),resolver 把目标档挪到 index0 的顺序对选轨**完全无效**。
+- `AdaptiveTrackSelection` **没有 `getInitialSelection` 覆盖**(旧版本钩子已移除)。初始选轨发生在**第一次 `updateSelectedTrack`**:`selectedIndex = determineIdealSelectedIndex(...)`,而 `determineIdealSelectedIndex` = **「≤ 带宽估计×0.7 的最高码率档」**(`getAllocatedBandwidth` = `bandwidthMeter.getBitrateEstimate() * bandwidthFraction`,默认 `bandwidthFraction=0.7`)。
+- 结论:初始选轨**纯带宽驱动**,与轨道顺序/起播挡设置完全无关。冷启动(默认估计~1Mbps→effective~0.7M)首段恒落 240p/360p;快网络(估计涨)首段直接顶最高档。resolver 挪 index0 那段排序(`cappedVideoFmts`)是死代码。
+
+**修复(方案=§6.21 结论的正确方向「降低起播档」,但用 seed 而非排序)**:
+- `YoutubeStartQuality.seedBps()`(新增):把每个起始挡映射到「目标挡典型码率 / 0.7」的初始带宽估计 seed(Auto/144→250k、240→500k、360→900k、480→1.8M、720→3.5M 有效码率)。因初始选轨=「≤seed×0.7 的最高码率挡」,seed 到目标挡码率后**首段正好落在目标挡**。
+- TV+移动两 player(`PlayerScreen` / `MobilePlayerScreen`)建 `ExoPlayer` 时 `DefaultBandwidthMeter.Builder(context).setInitialBitrateEstimate(youtubeStartQuality.seedBps()).build()` 并 `.setBandwidthMeter(...)`。首段按 seed 落目标挡,之后带宽实测自然爬升/收敛,seed 只影响首次选轨。
+- 关键包路径:**`DefaultBandwidthMeter` 在 `androidx.media3.exoplayer.upstream`**(media3-exoplayer 模块),不在 `androidx.media3.datasource`(同包只有 `DefaultDataSource` 等;初版误 import datasource → 云编译 `Unresolved reference`,commit `d5ad7b8` 修正)。
+
+**注意**:seed 只影响 player 每次重建后的首次选轨;player 每次进视频重建,故每场都用当前设置。中途改设置需重新进播放。手动选档(preferredQualityId)走单轨分支不受影响。
+
+**结论**:1.10.0 起,想让 ABR 从某挡起播,正确做法是 **seed 初始带宽估计到该挡码率**(或降低起播挡),**不是**挪 index0(内部降序重排会打乱)也不是硬钳制 chunk 取档(§6.21 黑屏教训)。真实挡码率随 codec/内容浮动,近似 seed 允许 ±一挡偏差,首段后 ABR 收敛。
+
+## 6.23 SABR 升降档控制:起始挡 maxVideoSize 卡档 + ceiling 迭代器门控失效(excludeTrack 待修)(2026-08,v3.0.5-alpha.9)
+
+**问题背景**:不稳定网络下反复升降档 → 看门狗整段重载黑屏。控制点有两个:①**起始挡**(每个 session 首段钉哪档);②**降档滞回**(降档后不应秒回高挡震荡)。
+
+### 6.23.1 起始挡位:§6.22 的 seed 真机失效 → 换 selector maxVideoSize 起播卡档 + 首帧后松开(a2b38bf/d921ac6)
+
+**真机证据**(`logs_live.log` 01:20-01:21):§6.22 的 seed 方案首段仍恒最高档——Stream A(8 档无 4K)首段 `sel=0`=itag135(1080p);重新 resolve 出 4K 后 Stream B(12 档)首段 `sel=0 bitrate=-1 chunk=false ceiling=null` 直接拉 **itag299 4K**。seed 只在「player 重建后首次选轨」生效,重新 resolve/RELOAD 产生新 chunk source 时 seed 不再参与,首段按当时带宽估计顶最高档。
+
+**修复(a2b38bf,替换 seed)**:用公开 API `DefaultTrackSelector.Parameters.Builder.setMaxVideoSize(Int.MAX_VALUE, startHeight)` 在 `loadRequest` 起播阶段把 ABR 视频**高度 cap 在起始档**(`startHeight = if (isSabrSingle()) youtubeStartQuality.startHeight else null`;非 SABR 不卡),使首段**必落起始档**(不靠带宽估计);`Player.Listener.onRenderedFirstFrame()` 首帧渲染后 `clearVideoSizeConstraints()` 松开,ABR 接着在默认画质上限的轨道组里爬升。TV+移动两 player 均有此实现。这用公开 API 绕开 §6.22 提到「media3 1.10.0 `AdaptiveTrackSelection.selectedIndex` 为 private、无法子类强制起始档」的难点(起始档原本因此搁置,现用 maxHeight 约束达成)。
+
+### 6.23.2 ceiling 降档滞回:迭代器塞 EMPTY 对 AdaptiveTrackSelection 失效(待修,方向 excludeTrack)
+
+**已实施(9977043/f373a2b)**:`DefaultSabrChunkSource` 加 ceiling 滞回——检测到降档(`selectedIndex` 增大;降序排列下 index 高=码率低)把 `ceilingIndex` 收到当前档,源档及以上「升档候选」iterator 置 EMPTY(升档候选置 null);relax 窗口 `bufferMaxMs/2`(PlaybackBufferMax 默认 50s → 25s),带宽实测持续超「ceiling-1 待放宽档」码率÷0.7 满该窗口才放回一档,否则清零重等。TV+移动带宽计抽成命名 `val` 传 `SabrMediaSource.Factory`→`DefaultSabrChunkSource.Factory` 读 `getBitrateEstimate()`。
+
+**真机证据(失效)**:`YtSabrAbr` 日志显示 `sel` **无视 ceiling** 直接爬满 4K:
+- `01:21:09.466 sel=6(→跳跃) ceiling=6` —— ceiling=6 时直接从 6 跳到 0(4K itag299)。
+- `01:21:17.511 sel=0 bitrate=6203838 chunk=true ceiling=4` —— ceiling=4 时 4K 被选中并下载。
+- `up=null` 都正确置空(升档候选被过滤),但 ABR 照样选上比 ceiling 更高的档。
+
+**根因**:media3 1.10.0 `AdaptiveTrackSelection.updateSelectedTrack` 选档核心是 `determineIdealSelectedIndex` = 「≤ 带宽估计×0.7 的最高码率档」(直接按各轨 bitrate + 带宽估计算目标),**不依赖喂给它的 iterator**;iterator 为 EMPTY 只表示「该轨当前无已排队缓冲数据」,并不阻止它被选为下一个档(与 §6.19「喂合成 iterator 才能升」观察不矛盾——那是判断「下一档已缓冲可无缝切」的证据,EMPTY 挡不了带宽估计把高 bitrate 轨选为新目标)。所以「升档候选 iterator 塞 EMPTY」挡不住高档选择,ceiling 形同虚设。
+
+**修法(待实施)**:改用 `trackSelection.excludeTrack(index, exclusionDurationMs)`(media3 原语,`onChunkLoadError` 已用)把 ceiling 档及以上**排除出选轨**——排除后 ABR 的 `length()` 里没有这些轨,不管带宽估计多高都选不到;带宽持续达标再解除排除。relax 窗口 `bufferMaxMs/2` 保留,但只在排除真正生效后才有意义(当前失效时该窗口不参与实际选轨)。
+
+**relax 窗口**:设计为缓冲设置时长的一半 `bufferMaxMs/2`(TvPlaybackLoadControl 的 PlaybackBufferMax,默认 50s→25s),复用同一值不新增常量。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
 | --- | --- |
-| `core/youtube/YoutubePlaybackResolver.kt` | `parseFormat`/`signatureCipherUrl`/`resolve`/`pickVideo`/`buildInfo` + PO token 注入 |
+| `core/youtube/YoutubePlaybackResolver.kt` | `parseFormat`/`signatureCipherUrl`/`resolve`/`pickVideo`/`buildInfo` + PO token 注入 + 播放优先级分派(§6.18) |
+| `core/player/YoutubeDeliveryPriority.kt` | 播放优先级枚举 SABR/DASH(§6.18) |
+| `core/settings/AppSettingsStore.kt` | `youtubeDeliveryPriority` DataStore 持久化(§6.18) |
 | `core/youtube/YoutubeSDecryptor.kt` | `s` 签名解密 |
 | `core/youtube/YoutubeBotGuard.kt` | PO token 生成(challenge/snapshot/GenerateIT/mint) |
 | `core/youtube/YoutubeJsExecutor.kt` | WebView JS 引擎 + `loadBgUtilsBundle` |

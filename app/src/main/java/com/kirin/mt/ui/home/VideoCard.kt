@@ -73,6 +73,8 @@ import com.kirin.mt.core.model.watchProgressText
 import com.kirin.mt.ui.focus.BiliFocusableSurface
 import com.kirin.mt.ui.glass.LocalLiquidGlassBackdrop
 import com.kirin.mt.ui.i18n.convertChineseText
+import com.kirin.mt.ui.i18n.currentUiLocale
+import com.kirin.mt.ui.i18n.formatCompactCount
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
@@ -658,12 +660,12 @@ private fun VideoCover(
     AsyncImage(
       model = request,
       contentDescription = title,
-      // The cover URL carries a B 站 CDN `1c` suffix that forces the served
-      // image to the exact requested aspect ratio (16:9), matching the card's
-      // aspectRatio. FillBounds stretches the decoded bitmap to fit the box
-      // exactly, so no edges are cropped (matches the BV reference app). Crop
-      // here would cut off top/bottom of non-16:9 source covers.
-      contentScale = ContentScale.FillBounds,
+      // 用 Crop(与移动端 MobileVideoCard、LibreTube 一致)而非 FillBounds。
+      // B站 CDN `@Nw_Nh_1c.webp` 后缀强制 16:9 → Crop 进 16:9 盒子零裁剪零变形;
+      // YouTube 缩略图不保证 16:9(hqdefault 480×360/sddefault 640×480 是 4:3),
+      // FillBounds 会把非 16:9 图硬拉伸进盒子 → 内容横向压扁/高度变矮(实测 TV 端
+      // YouTube 卡比例不对)。Crop 对任意源比例都只裁上下、不变形,与 LibreTube 对齐。
+      contentScale = ContentScale.Crop,
       placeholder = fallbackPainter,
       error = fallbackPainter,
       modifier = Modifier.fillMaxSize(),
@@ -971,9 +973,5 @@ private fun rememberVideoCardRelativeText(): VideoCardRelativeText {
 
 @Composable
 private fun Int.formatCompactCountText(): String {
-  return when {
-    this >= 100_000_000 -> stringResource(R.string.video_count_yi, this / 100_000_000.0)
-    this >= 10_000 -> stringResource(R.string.video_count_wan, this / 10_000.0)
-    else -> toString()
-  }
+  return formatCompactCount(this, currentUiLocale())
 }

@@ -50,6 +50,7 @@ import com.kirin.mt.core.image.BiliImageSizing
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.ui.focus.BiliFocusableSurface
+import com.kirin.mt.ui.focus.focusDiag
 import com.kirin.mt.ui.glass.LocalLiquidGlassBackdrop
 import com.kirin.mt.ui.glass.biliLiquidGlassSurface
 import com.kirin.mt.ui.i18n.convertChineseText
@@ -124,6 +125,7 @@ internal fun AppSidebar(
     modifier = Modifier
       .width(BiliSizing.SidebarWidth)
       .fillMaxHeight()
+      .focusDiag("sidebar")
       .clip(sidebarShape)
       .onPreviewKeyEvent { event ->
         // 循环导航:仅在边界拦截(最上按上→最底,最底按下→最上),其余交给默认焦点遍历。

@@ -38,7 +38,7 @@ class CodecCapabilityProbe {
 
   private fun decoderMimeTypes(): Set<String> {
     val codecInfos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-      MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.asSequence()
+      MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.asSequence()
     } else {
       @Suppress("DEPRECATION")
       (0 until MediaCodecList.getCodecCount()).asSequence().map { index ->
@@ -57,7 +57,9 @@ class CodecCapabilityProbe {
 
   private fun isHardwareDecoderInfo(info: MediaCodecInfo): Boolean {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      return info.isHardwareAccelerated
+      // 部分厂商(Amlogic S905X5M 等)硬件解码器(AV1/HEVC)不置 isHardwareAccelerated，
+      // 但 isSoftwareOnly=false 可靠表示非软解。参照 BV: 非纯软即按硬件能力处理。
+      return info.isHardwareAccelerated || !info.isSoftwareOnly
     }
     val codecName = info.name.lowercase(Locale.US)
     return !codecName.startsWith("omx.google.") &&

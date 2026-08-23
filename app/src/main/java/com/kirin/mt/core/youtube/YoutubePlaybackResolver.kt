@@ -1,6 +1,8 @@
 package com.kirin.mt.core.youtube
 
 import android.util.Log
+import com.kirin.mt.core.download.ResolvedDownload
+import com.kirin.mt.core.download.ResolvedPart
 import com.kirin.mt.core.player.BiliPlaybackHeaders
 import com.kirin.mt.core.player.CodecCapability
 import com.kirin.mt.core.player.PlaybackCodecPreference
@@ -11,6 +13,8 @@ import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackSegmentBase
 import com.kirin.mt.core.player.PlaybackTrack
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeDeliveryPriority
+import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.sabr.FormatId as SabrFormatId
 import com.kirin.mt.core.youtube.sabr.SabrAudioTrack
 import com.kirin.mt.core.youtube.sabr.SabrClient
@@ -79,17 +83,21 @@ class YoutubePlaybackResolver(
     codecPreference: PlaybackCodecPreference,
     codecCapability: CodecCapability,
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+    youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
   ): PlaybackInfo = withContext(Dispatchers.IO) {
     val videoId = request.bvid
     var lastError: String? = null
     var havePlayable = false
+
+    // 播放路径优先级:true = DASH 自合成优先(慢 SABR 首段被 stall 看门狗误杀场景的逃生通道,见 youtube-hd-playback.md)。
+    val dashFirst = appSettingsStore?.settings?.first()?.youtubeDeliveryPriority == YoutubeDeliveryPriority.Dash
 
     // ── Piped 后端 opt-in（实验:对齐 LibreTube 默认 Piped 路径,修 RELOAD_PLAYER_RESPONSE 死循环）──
     // 用户在设置开 youtubeUsePiped 后,先走 Piped `/streams/{videoId}`。Piped 实例自带 poToken 请求
     // YouTube,回**已 attested 的 WEB-bound** ustreamerConfig(见 [docs/youtube-hd-playback.md]
     // 「alpha.83 更正」段)——首请求发空 poToken,服务端回 status=2 时再铸 WEB poToken 续命,绕过
     // NewPipe visionOS 路径拿未 attested config 致 RELOAD 的问题。Piped 失败/无 SABR 数据自动回退 NewPipe。
-    if (pipedClient != null && appSettingsStore != null) {
+    if (pipedClient != null && appSettingsStore != null && !dashFirst) {
       val cfg = appSettingsStore.settings.first()
       if (cfg.youtubeUsePiped) {
         val instance = cfg.pipedInstanceUrl.ifBlank { DEFAULT_PIPED_INSTANCE }
@@ -124,6 +132,7 @@ class YoutubePlaybackResolver(
               sid,
               subtitleTracks = r.subtitleTracks,
               youtubeDefaultQuality = youtubeDefaultQuality,
+              youtubeStartQuality = youtubeStartQuality,
             )
           }
           Log.w(Tag, "Piped path: buildSabrSessionFromPiped returned null (instance=$instance) → fall back to NewPipe")
@@ -154,6 +163,17 @@ class YoutubePlaybackResolver(
     // 17→24 无界爬升直至 evict→Source error;对齐 LibreTube 对 RELOAD 直接失败不循环)。RELOAD 后跳过 SABR,
     // 直接落 ② 的 DASH/HLS 兜底。注意:DASH 自合成兜底(NewPipe 已解密直链拼 MPD)不走 SABR attestation,
     // 实测能出 4K(2160p VP9,见 docs youtube-hd-playback.md「alpha.9X」),不是只 ≤1080p。
+    //
+    // youtubeDeliveryPriority=Dash(用户设「DASH 优先」):先走 DASH 自合成兜底,成功直接返回;失败才落 SABR。
+    // 逃生通道——慢 SABR 首段(googlevideo 服务器 >10s 才送首段)会被 8s stall 看门狗误判完整重建。
+    if (dashFirst) {
+      val dashFirstRes = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality) }.getOrNull()
+      if (dashFirstRes != null) {
+        YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+        Log.i(Tag, "NewPipe-first(DASH 优先) → DASH/HLS playback ready: videoId=$videoId → ${if (dashFirstRes.remoteHlsManifestUrl != null) "HLS" else "DASH"}")
+        return@withContext dashFirstRes
+      }
+    }
     val np = if (SabrStreamRegistry.reloadCount(videoId) > 0) {
       Log.w(Tag, "SABR dead-loop guard: videoId=$videoId 已 RELOAD(reloadCount=${SabrStreamRegistry.reloadCount(videoId)})→ 跳过重建,直接 DASH/HLS 兜底")
       null
@@ -180,15 +200,18 @@ class YoutubePlaybackResolver(
         request, videoId, np.durationMs, np.raws, np.session, sid,
         subtitleTracks = np.subtitleTracks.orEmpty(),
         youtubeDefaultQuality = youtubeDefaultQuality,
+        youtubeStartQuality = youtubeStartQuality,
       )
     }
     // ② NewPipe 无 SABR → DASH/HLS 兜底(alpha.92 自合成 DASH 为主,次 dashMpdUrl[恒空]/HLS)。durationMs 传 0
-    //    → buildDashFallbackFromNewPipe 内部用 info.duration 兜底。
-    val npDash = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality) }.getOrNull()
-    if (npDash != null) {
-      YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
-      Log.i(Tag, "NewPipe-first → DASH/HLS 兜底 playback ready: videoId=$videoId → ${if (npDash.remoteHlsManifestUrl != null) "HLS" else "DASH"}")
-      return@withContext npDash
+    //    → buildDashFallbackFromNewPipe 内部用 info.duration 兜底。dashFirst 时 DASH 已先试过,跳过。
+    if (!dashFirst) {
+      val npDash = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality) }.getOrNull()
+      if (npDash != null) {
+        YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+        Log.i(Tag, "NewPipe-first → DASH/HLS 兜底 playback ready: videoId=$videoId → ${if (npDash.remoteHlsManifestUrl != null) "HLS" else "DASH"}")
+        return@withContext npDash
+      }
     }
     Log.w(Tag, "NewPipe-first 全空(SABR+DASH 兜底均失败)→ 落 WEB /player last resort(classic WEB SABR reload-closure / classic DASH)")
 
@@ -1267,13 +1290,11 @@ class YoutubePlaybackResolver(
         mimeType = synthAudio.format?.mimeType ?: "audio/mp4",
         segmentBase = PlaybackSegmentBase("${synthAudio.initStart}-${synthAudio.initEnd}", "${synthAudio.indexStart}-${synthAudio.indexEnd}"),
       )
-      // 手动选档:回该分辨率全部 codec 变体(ExoPlayer 在该分辨率内自动选 codec,对齐 LibreTube);
-      // 默认/Auto:回全部 → ExoPlayer 自动选轨。
-      val videoTracks = if (request.preferredQualityId != null) {
-        sortedVideos.filter { it.height == selectedVideo.height }.map { buildVideoTrack(it) }
-      } else {
-        sortedVideos.map { buildVideoTrack(it) }
-      }
+      // 手动选档与默认/Auto 统一:只回 selectedVideo(手动档或 Auto 默认/最高档)所在分辨率的全部
+      // codec 变体(ExoPlayer 在该分辨率内自动选 codec,对齐 LibreTube),不再全轨喂 ExoPlayer 自适应。
+      // 自合成 DASH 是 on-demand(SegmentBase),ExoPlayer 自适应按初始带宽(~1Mbps)从 360/480p 起步
+      // 且不爬升(真机卡 360p/480p,显示却标 1080/2160);确定性从请求档起播与手动选档行为一致。
+      val videoTracks = sortedVideos.filter { it.height == selectedVideo.height }.map { buildVideoTrack(it) }
       Log.i(Tag, "兜底: 自合成 DASH from NewPipe(video itag${selectedVideo.itag} ${selectedVideo.height}p [${videoTracks.size}/${sortedVideos.size}轨 ${qualities.size}档] + audio itag${synthAudio.itag}) dur=${resolvedDuration}ms → buildDashManifest 合成 MPD DashMediaSource")
       return PlaybackInfo(
         bvid = videoId,
@@ -1349,6 +1370,149 @@ class YoutubePlaybackResolver(
     }
     Log.w(Tag, "兜底: dashMpdUrl 与 hlsUrl 均空 → 返回 null(上层落常规 NewPipe harvest,会 RELOAD 但已无其它出口)")
     return null
+  }
+
+  /**
+   * 下载专用解析:用 NewPipe [StreamInfo.getInfo] 取**已解密直链**(非 SABR `sabr://`),供离线下载。
+   *
+   * 播放 [resolve] 优先 SABR,产出的轨是 `sabr://` 协议不可直接下载字节;这里独立走 NewPipe 直链路径
+   * (content 已 n/s 解密,同 [buildDashFallbackFromNewPipe])。
+   *
+   * @param preferMuxed true=音视频一体 progressive 单文件(≤720p itag 18/22);false=video-only + audio 分文件。
+   * @param maxHeight 视频最大高度(null=最高)。video-only 高清常见 VP9/AV1,设备需支持硬解。
+   */
+  suspend fun resolveForDownload(
+    request: PlaybackRequest,
+    preferMuxed: Boolean,
+    maxHeight: Int?,
+    audioOnly: Boolean = false,
+  ): ResolvedDownload? {
+    val videoId = request.bvid
+    val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
+      .getOrElse {
+        // 只打 message 会漏(某些异常 message 为 null,曾被误报成「无直链」)——带上异常类 + 首个堆栈帧。
+        Log.w(Tag, "resolveForDownload: NewPipe getInfo failed: ${it.javaClass.simpleName}: ${it.message}", it)
+        return null
+      }
+    val headers = BiliPlaybackHeaders(
+      sessData = null,
+      biliJct = null,
+      mid = null,
+      referer = "https://www.youtube.com",
+      origin = "https://www.youtube.com",
+    ).asMap()
+
+    // 音频-only:只下音频轨,video=null 使 enqueueOnIo 只插 AUDIO 分件。挑最佳(最大)音频流。
+    if (audioOnly) {
+      val audioCandidates = info.audioStreams.filter { !it.content.isNullOrBlank() && it.indexStart > 0 }
+      val audio = audioCandidates.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
+        ?: audioCandidates.firstOrNull { it.audioTrackType != AudioTrackType.DUBBED }
+        ?: audioCandidates.firstOrNull()
+        ?: return null
+      return ResolvedDownload(
+        videoId = videoId,
+        cid = 0L,
+        title = request.title,
+        coverUrl = request.coverUrl,
+        durationMs = info.duration * 1000L,
+        qualityLabel = "音频",
+        video = null,
+        audio = ResolvedPart(
+          url = audio.content!!,
+          mimeType = audio.format?.mimeType ?: "audio/mp4",
+          codecs = audio.codec ?: "",
+          width = 0,
+          height = 0,
+          initRange = "${audio.initStart}-${audio.initEnd}",
+          mediaStartOffset = audio.indexStart.toLong(),
+        ),
+        headers = headers,
+      )
+    }
+
+    // 简单下载:优先 progressive muxed 单文件;现代 YouTube 基本无 progressive 流(仅 video-only+audio),
+    // 无则退化为 video-only+audio 两文件(≤720p,对齐 LibreTube 始终两文件 mux 的下载模型)。
+    if (preferMuxed) {
+      val muxed = (info.videoStreams)
+        .filter { !it.content.isNullOrBlank() && it.height > 0 }
+        .let { list ->
+          list.filter { maxHeight == null || it.height <= maxHeight }.maxByOrNull { it.height }
+            ?: list.minByOrNull { it.height }
+        }
+      if (muxed != null) {
+        return ResolvedDownload(
+          videoId = videoId,
+          cid = 0L,
+          title = request.title,
+          coverUrl = request.coverUrl,
+          durationMs = info.duration * 1000L,
+          qualityLabel = "${muxed.height}p",
+          muxed = ResolvedPart(
+            url = muxed.content!!,
+            mimeType = muxed.format?.mimeType ?: "video/mp4",
+            codecs = muxed.codec ?: "",
+            width = muxed.width,
+            height = muxed.height,
+            initRange = null,
+            mediaStartOffset = 0L,
+          ),
+          headers = headers,
+        )
+      }
+      Log.w(Tag, "resolveForDownload: 无 progressive muxed 流,退化为 video-only+audio(≤720p)")
+      return buildSeparateParts(info, videoId, request, headers, maxHeight = maxHeight ?: 720)
+    }
+
+    return buildSeparateParts(info, videoId, request, headers, maxHeight)
+  }
+
+  /** 分文件下载:video-only(带 range) + audio,两文件由离线播放器现场 mux(对齐 LibreTube)。 */
+  private fun buildSeparateParts(
+    info: StreamInfo,
+    videoId: String,
+    request: PlaybackRequest,
+    headers: Map<String, String>,
+    maxHeight: Int?,
+  ): ResolvedDownload? {
+    val videoCandidates = info.videoOnlyStreams
+      .filter { !it.content.isNullOrBlank() && it.indexStart > 0 && it.height > 0 }
+    val video = videoCandidates
+      .let { list -> list.filter { maxHeight == null || it.height <= maxHeight }.maxByOrNull { it.height } ?: list.maxByOrNull { it.height } }
+    val audioCandidates = info.audioStreams.filter { !it.content.isNullOrBlank() && it.indexStart > 0 }
+    val audio = audioCandidates.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
+      ?: audioCandidates.firstOrNull { it.audioTrackType != AudioTrackType.DUBBED }
+      ?: audioCandidates.firstOrNull()
+    if (video == null || audio == null) {
+      Log.w(Tag, "resolveForDownload: 无 video-only/audio 分件(video=${video != null} audio=${audio != null})")
+      return null
+    }
+    return ResolvedDownload(
+      videoId = videoId,
+      cid = 0L,
+      title = request.title,
+      coverUrl = request.coverUrl,
+      durationMs = info.duration * 1000L,
+      qualityLabel = "${video.height}p",
+      video = ResolvedPart(
+        url = video.content!!,
+        mimeType = video.format?.mimeType ?: "video/mp4",
+        codecs = video.codec ?: "",
+        width = video.width,
+        height = video.height,
+        initRange = "${video.initStart}-${video.initEnd}",
+        mediaStartOffset = video.indexStart.toLong(),
+      ),
+      audio = ResolvedPart(
+        url = audio.content!!,
+        mimeType = audio.format?.mimeType ?: "audio/mp4",
+        codecs = audio.codec ?: "",
+        width = 0,
+        height = 0,
+        initRange = "${audio.initStart}-${audio.initEnd}",
+        mediaStartOffset = audio.indexStart.toLong(),
+      ),
+      headers = headers,
+    )
   }
 
   /** raw adaptive JSON → SABR [SabrFormatId](itag/lastModified/xtags 来自 raw 字段,height 显式传)。 */
@@ -1444,6 +1608,7 @@ class YoutubePlaybackResolver(
     sid: String,
     subtitleTracks: List<PlaybackTrack> = emptyList(),
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+    youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
   ): PlaybackInfo {
     val aItag = sabrSession.audioFormatId.itag
     val aRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == aItag }
@@ -1493,14 +1658,39 @@ class YoutubePlaybackResolver(
       ?.takeIf { pid -> videoFmts.any { it.itag == pid } }
       ?: defaultItag
     val selectedQuality = qualities.firstOrNull { it.id == selectedItag } ?: qualities.first()
-    // alpha.81(复刻 LibreTube):manifest 塞全部视频轨,由 ExoPlayer 选轨(默认选最高 bitrate,
-    // 绕开 itag313 RELOAD)。videoTracks 不再只建选中 itag 一条,而是全部 itag 各一条。
-    val allVideoTracks = videoFmts.map { fmt ->
+    // alpha.81(复刻 LibreTube):manifest 塞全部视频轨,由 ExoPlayer 选轨。⚠️ 注意:AdaptiveTrackSelection
+    // 按初始带宽估计(~1Mbps)起步,默认**不是**选最高 bitrate(旧注释误读),而是从低档起、带宽涨后爬档;
+    // 且 SABR 单流 fetcher 下未下载轨 iterator=EMPTY,原生爬档被堵死。alpha.9X 已在 DefaultSabrChunkSource
+    // 用「下一高码率档合成 iterator」解锁逐档升(见该文件 getNextChunk)。这里仍暴露全部轨供 ExoPlayer 选轨。
+    // alpha.9X(修「SABR Auto 爬档超预设默认画质」):清单按 youtubeDefaultQuality 上限过滤——只放
+    // height <= maxHeight 的档,ExoPlayer ABR 只能在预设上限内爬升,不会超过默认画质。qualities 菜单仍
+    // 保留全量(手动切更高档不受限,见下方手动分支)。全部档都超上限时兜底最低档保证可播。
+    // alpha.9X(修「Auto 起播直接顶最高」):轨道组按 height 升序——否则 NewPipe 的 videoOnlyStreams 是
+    // **最高在前**(2160p 在 index 0),AdaptiveTrackSelection 初始选轨命中 index 0 → 首段直接 itag313(2160p),
+    // 网络扛不住就 stall+auto-retry,ABR 再从顶砸回最低,不是"从低爬上去"。升序后 index 0 = 最低档 → 首段小、
+    // 起播快,网络实测后由 DefaultSabrChunkSource 合成 iterator 逐档升。即使视频档>预设也兜底最低档可播。
+    val sortedVideoFmts = if (maxHeight != null) {
+      videoFmts.filter { it.height in 1..maxHeight }
+        .ifEmpty { listOf(videoFmts.minByOrNull { it.height } ?: videoFmts.first()) }
+    } else {
+      videoFmts
+    }.sortedBy { it.height }
+    // ⚠️ 起步档已改由「带宽 seed」实现(YoutubeStartQuality.seedBps → PlayerScreen/MobilePlayerScreen 的
+    // DefaultBandwidthMeter.setInitialBitrateEstimate),本块排序对 media3 1.10.0 初始选轨无效
+    // (BaseTrackSelection 构造器内部强制按码率降序重排,AdaptiveTrackSelection 初始选轨=≤带宽估计×0.7的
+    // 最高码率档,纯带宽驱动、不看 index0)。保留排序仅作轨道顺序呈现,勿再依赖它控制起播档。
+    val startHeight = youtubeStartQuality.startHeight
+    val cappedVideoFmts = if (startHeight == null) sortedVideoFmts
+    else sortedVideoFmts.firstOrNull { it.height >= startHeight }
+      ?.let { start -> listOf(start) + sortedVideoFmts.filterNot { it === start } }
+      ?: sortedVideoFmts
+    val allVideoTracks = cappedVideoFmts.map { fmt ->
       val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == fmt.itag }
       buildSabrTrack(fmt.itag, raw, "video", sid, videoId)
     }
     // alpha.9X(恢复清晰度选择):手动选档(preferredQualityId != null)时 videoTracks 只建选中 itag 单条,
-    // ExoPlayer 只播该档(清晰度真正生效)。否则(默认/Auto)保持 alpha.81 全部轨 → ExoPlayer 自动选最高 bitrate。
+    // ExoPlayer 只播该档(清晰度真正生效,锁单轨是刻意设计)。否则(默认/Auto)保持 alpha.81 全部轨 → 由
+    // ExoPlayer 自适应选轨(默认带宽估计从低档起步,经 DefaultSabrChunkSource 合成 iterator 逐档爬升)。
     // 手动选 4K(itag313)→ SABR 单轨 RELOAD → 兜底提前落 DASH 出 4K;选 ≤1080p → SABR 直接播该档(避开 RELOAD)。
     val videoTracks = if (request.preferredQualityId != null) {
       val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == selectedItag }

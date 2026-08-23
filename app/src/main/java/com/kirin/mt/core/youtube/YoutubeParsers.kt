@@ -4,6 +4,7 @@ import android.util.Log
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.Calendar
@@ -20,7 +21,10 @@ import java.util.Calendar
  *    richItemRenderer → videoRenderer
  *
  * 采用"递归收集所有 videoRenderer 子对象"的方式统一处理，天然兼容以上所有形态；
- * 续页 token 从最后一个 continuationItemRenderer 里取。
+ * 续页 token 对齐 NewPipe YoutubeChannelTabExtractor：续页响应取
+ * appendContinuationItemsAction.continuationItems 里的第一个；首屏定位视频网格
+ * grid/richGrid 取第一个（不再全树扫+取最后一个，防止抓到 shorts/相关频道等其它 section 的 token，
+ * 导致续页返回首屏相同视频而无法推进到更早视频）。
  */
 internal object YoutubeParsers {
 
@@ -46,6 +50,31 @@ internal object YoutubeParsers {
     }
     val continuation = findContinuation(root)
     return YoutubeFeedPage(items = videos, continuation = continuation)
+  }
+
+  /**
+   * 诊断:频道视频 /browse 返回 0 条时,抽根因提示。优先读 `alerts[].alertRenderer.text`(如
+   * "This channel does not exist."),其次是顶层键缺失 contents 的事实。返回可打印字符串,无则为 null。
+   */
+  fun diagnosticEmptyReason(root: JsonObject): String? {
+    val alerts = root["alerts"] as? JsonArray
+    if (alerts != null) {
+      for (alert in alerts) {
+        val text = (alert as? JsonObject)?.obj("alertRenderer")?.obj("text")
+        val simple = text?.stringOrNull("simpleText")
+        if (!simple.isNullOrBlank()) return "alerts: $simple"
+        val runs = text?.array("runs")
+        if (runs != null) {
+          val joined = runs.mapNotNull { (it as? JsonObject)?.stringOrNull("text") }.joinToString("")
+          if (joined.isNotBlank()) return "alerts: $joined"
+        }
+      }
+      return "alerts-present-but-no-text: ${alerts.toString().take(300)}"
+    }
+    if (root["contents"] == null) {
+      return "no-contents topKeys=${root.keys.joinToString(",")}"
+    }
+    return null
   }
 
   /** 频道页 header 解析结果。 */
@@ -121,80 +150,279 @@ internal object YoutubeParsers {
     if (title.isBlank()) return null
     val description = vd.stringOrNull("shortDescription").orEmpty()
     val channelName = vd.stringOrNull("author").orEmpty()
+    val channelId = vd.stringOrNull("channelId").orEmpty()
     val viewCount = parseCount(vd.stringOrNull("viewCount"))
-    val publishedAt = playerJson.obj("microformat")
-      ?.obj("playerMicroformatRenderer")
-      ?.stringOrNull("publishDate")
-      ?.let { parsePublishDate(it) }
+    // publishDate / uploadDate 任一存在即用(实测 /player 部分客户端缺 publishDate 但给 uploadDate)。
+    val mf = playerJson.obj("microformat")?.obj("playerMicroformatRenderer")
+    val publishedAt = listOfNotNull(mf?.stringOrNull("publishDate"), mf?.stringOrNull("uploadDate"))
+      .firstNotNullOfOrNull { parsePublishDate(it) }
+    // 点赞数主源取 /player microformat 的 likeCount(实测该字段存在,形如 "123456" 原始数字串)。
+    // 相比另发 /next 取 videoActions 工具栏(那路径真机常取不到,致简介区点赞行缺失)更快更稳;
+    // 取不到保持 null,由调用方 getVideoDetail 的 /next 兜底回写。
+    val likeCount = mf?.stringOrNull("likeCount")?.let(::parseCount)
     return YoutubeVideoDetail(
       videoId = videoId,
       title = title,
       description = description,
       channelName = channelName,
+      channelId = channelId,
       channelAvatarUrl = "",
       viewCount = viewCount,
       publishedAt = publishedAt,
+      likeCount = likeCount,
     )
+  }
+
+  /**
+   * 从 /next 响应解析视频点赞数（对齐 NewPipe YoutubeStreamExtractor.getLikeCount）。
+   *
+   * 点赞数不在 /player 的 videoDetails，而在 /next 首屏的
+   * `contents.twoColumnWatchNextResults.results.results.contents[]`（带 videoPrimaryInfoRenderer 的那项）
+   * 的 `videoActions.menuRenderer.topLevelButtons`。优先新布局 segmentedLikeDislikeButtonViewModel
+   * （buttonViewModel.accessibilityText），回退旧布局 segmentedLikeDislikeButtonRenderer
+   * （toggleButtonRenderer 的 accessibilityData/accessibility/defaultText 三处 label）。
+   * 两种都取不到返回 null（UI 不显示点赞行）。label/accessibilityText 形如 "1,234 likes" / "1.2M likes"。
+   */
+  fun parseLikeCount(root: JsonObject): Long? {
+    val contents = root.obj("contents")
+      ?.obj("twoColumnWatchNextResults")?.obj("results")?.obj("results")
+      ?.array("contents")
+      ?: return null
+    val primary = contents.firstNotNullOfOrNull { (it as? JsonObject)?.obj("videoPrimaryInfoRenderer") }
+      ?: return null
+    val topButtons = primary.obj("videoActions")?.obj("menuRenderer")?.array("topLevelButtons")
+      ?: return null
+    for (element in topButtons) {
+      val button = element as? JsonObject ?: continue
+      // 新布局：segmentedLikeDislikeButtonViewModel 里 accessibilityText 带计数。
+      val buttonViewModel = button.obj("segmentedLikeDislikeButtonViewModel")
+        ?.obj("likeButtonViewModel")?.obj("likeButtonViewModel")
+        ?.obj("toggleButtonViewModel")?.obj("toggleButtonViewModel")
+        ?.obj("defaultButtonViewModel")?.obj("buttonViewModel")
+      buttonViewModel?.stringOrNull("accessibilityText")?.let { parseCount(it)?.let { c -> if (c >= 0) return c } }
+      // 旧布局：segmentedLikeDislikeButtonRenderer.likeButton.toggleButtonRenderer 三处 label 兜底。
+      val likeToggle = button.obj("segmentedLikeDislikeButtonRenderer")
+        ?.obj("likeButton")?.obj("toggleButtonRenderer") ?: continue
+      val label = likeToggle.obj("accessibilityData")?.obj("accessibilityData")?.stringOrNull("label")
+        ?: likeToggle.obj("accessibility")?.stringOrNull("label")
+        ?: likeToggle.obj("defaultText")?.obj("accessibility")?.obj("accessibilityData")?.stringOrNull("label")
+      if (!label.isNullOrBlank()) parseCount(label)?.let { c -> if (c >= 0) return c }
+    }
+    return null
   }
 
   /**
    * 从 /next 响应解析一页评论 + 续页 token。
    *
-   * 评论实体散落在 commentSectionRenderer 子树里（commentThreadRenderer → comment.commentRenderer），
-   * 用 collectByKey 递归收集；续页 token 优先取评论 section 子树内的 continuation（避免把相关视频等
-   * 其它 section 的 token 误当评论续页），取不到再回退到全局最后一个 continuation。
+   * 评论实体散落在 commentThreadRenderer → comment.commentRenderer 子树里，用 collectByKey 递归收集；
+   * 续页 token 优先取评论 section 子树内的 continuation（避免把相关视频等其它 section 的 token 误当
+   * 评论续页），取不到再回退到全局最后一个 continuation。
    */
   fun parseCommentPage(root: JsonObject): YoutubeCommentPage {
     val comments = mutableListOf<YoutubeComment>()
-    var token: String? = null
-    var sectionCount = 0
-    var rendererCount = 0
-    collectByKey(root, KEY_COMMENT_SECTION_RENDERER) { section ->
-      sectionCount++
-      if (sectionCount == 1) {
-        Log.d("YoutubeComment", "parseCommentPage section keys=${section.keys}")
+    // 新布局(EUVM)：评论在 onResponseReceivedEndpoints[last].reloadContinuationItemsCommand/
+    // appendContinuationItemsAction.continuationItems，每项 commentThreadRenderer → commentViewModel，
+    // 实际数据在 frameworkUpdates.entityBatchUpdate.mutations（按 commentKey/toolbarStateKey 匹配 entityKey）。
+    // 只从 continuationItems 解析（对齐 NewPipe），避免扫全树把 engagementPanels 等无 mutations 的
+    // commentThreadRenderer 也收进来（那些会解析出空作者/内容）。
+    val mutations = root.obj("frameworkUpdates")
+      ?.obj("entityBatchUpdate")
+      ?.array("mutations")
+    val items = commentContinuationItems(root)
+    if (items != null) {
+      // 去掉末尾的 continuationItemRenderer（下一页 token）。
+      val commentItems = if ((items.lastOrNull() as? JsonObject)?.obj("continuationItemRenderer") != null) {
+        items.dropLast(1)
+      } else {
+        items
       }
-      collectByKey(section, KEY_COMMENT_RENDERER) { node ->
-        rendererCount++
+      for (item in commentItems) {
+        val thread = (item as? JsonObject)?.obj("commentThreadRenderer") ?: continue
+        parseCommentThread(thread, mutations)?.let { comments.add(it) }
+      }
+    }
+    // 旧布局：commentSectionRenderer → commentRenderer。
+    if (comments.isEmpty()) {
+      collectByKey(root, KEY_COMMENT_SECTION_RENDERER) { section ->
+        collectByKey(section, KEY_COMMENT_RENDERER) { node ->
+          parseCommentRenderer(node)?.let { comments.add(it) }
+        }
+      }
+    }
+    // 防御：无容器时回退全根收集。
+    if (comments.isEmpty()) {
+      collectByKey(root, KEY_COMMENT_RENDERER) { node ->
         parseCommentRenderer(node)?.let { comments.add(it) }
       }
-      if (token == null) token = findContinuation(section)
     }
-    Log.d(
-      "YoutubeComment",
-      "parseCommentPage sections=$sectionCount renderers=$rendererCount parsed=${comments.size}",
-    )
-    // 结构诊断：评论可能已移到 engagementPanels 或 contents 其它子树。
-    root.obj("contents")?.let { c ->
-      Log.d("YoutubeComment", "contents keys=${c.keys}")
-      c.obj("twoColumnWatchNextResults")?.let { t ->
-        Log.d("YoutubeComment", "twoColumnWatchNextResults keys=${t.keys}")
-        t.obj("results")?.let { r ->
-          Log.d("YoutubeComment", "watchNext results keys=${r.keys}")
-          r.array("results")?.forEachIndexed { i, item ->
-            val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
-            Log.d("YoutubeComment", "watchNext results[$i] renderer=$rendererKey")
+    // 续页 token：评论续页响应取 reloadContinuationItemsCommand.continuationItems 里最后一个
+    // continuationItemRenderer（对齐 NewPipe 取末尾，避免取到楼中楼 replies 的 token）。
+    val token = commentPageContinuation(root) ?: findContinuation(root)
+    return YoutubeCommentPage(items = comments, continuation = token)
+  }
+
+  /** 评论续页响应容器：onResponseReceivedEndpoints 里最后一个 reloadContinuationItemsCommand / appendContinuationItemsAction 的 continuationItems。 */
+  private fun commentContinuationItems(root: JsonObject): JsonArray? {
+    val endpoints = root["onResponseReceivedEndpoints"] as? JsonArray ?: return null
+    for (i in endpoints.indices.reversed()) {
+      val obj = endpoints[i] as? JsonObject ?: continue
+      obj.obj("reloadContinuationItemsCommand")?.array("continuationItems")?.let { return it }
+      obj.obj("appendContinuationItemsAction")?.array("continuationItems")?.let { return it }
+    }
+    return null
+  }
+
+  /**
+   * 解析一条新布局(EUVM)评论线程。commentThreadRenderer 里只有 commentViewModel(commentKey/
+   * toolbarStateKey/commentId)，作者/内容/点赞等实体数据在 mutations 里按 entityKey 匹配。
+   * 兼容旧布局：thread.comment.commentRenderer。
+   */
+  private fun parseCommentThread(thread: JsonObject, mutations: JsonArray?): YoutubeComment? {
+    val vm = thread.obj("commentViewModel")?.obj("commentViewModel")
+    if (vm != null) {
+      val commentKey = vm.stringOrNull("commentKey")
+      val toolbarStateKey = vm.stringOrNull("toolbarStateKey")
+      // mutations 的 payload 是包装对象：评论实体包在 commentEntityPayload 里，
+      // 工具栏状态包在 engagementToolbarStateEntityPayload 里，需先解包再取字段。
+      val entity = mutations?.let { findMutationPayload(it, commentKey) }?.obj("commentEntityPayload")
+      val toolbar = mutations?.let { findMutationPayload(it, toolbarStateKey) }?.obj("engagementToolbarStateEntityPayload")
+      val author = entity?.obj("author")
+      val properties = entity?.obj("properties")
+      val toolbarObj = entity?.obj("toolbar")
+      val replies = thread.obj("replies")?.obj("commentRepliesRenderer")
+      val id = properties?.stringOrNull("commentId") ?: vm.stringOrNull("commentId") ?: return null
+      return YoutubeComment(
+        commentId = id,
+        authorName = author?.stringOrNull("displayName").orEmpty(),
+        authorAvatarUrl = author?.stringOrNull("avatarThumbnailUrl")
+          ?: entity?.obj("avatar")?.obj("image")?.array("sources")?.let(::pickBestThumbnailUrl).orEmpty(),
+        content = attributedText(properties?.get("content")),
+        likeCount = parseCount(toolbarObj?.stringOrNull("likeCountNotliked")?.trim()),
+        publishedAt = parsePublished(
+          properties?.stringOrNull("publishedTime"),
+          liveNow = false,
+          isUpcoming = false,
+        ),
+        verified = author?.booleanOrNull("isVerified") == true || author?.booleanOrNull("isArtist") == true,
+        pinned = vm.obj("pinnedText") != null,
+        hearted = toolbar?.stringOrNull("heartState") == "TOOLBAR_HEART_STATE_HEARTED",
+        replyCount = toolbarObj?.stringOrNull("replyCount")?.trim()?.toIntOrNull() ?: 0,
+        repliesPage = replies?.array("contents")?.let { firstContinuationToken(it) },
+        channelOwner = author?.booleanOrNull("isCreator") == true,
+        creatorReplied = replies?.obj("viewRepliesCreatorThumbnail") != null,
+      )
+    }
+    // 旧布局：comment.commentRenderer。
+    return thread.obj("comment")?.obj(KEY_COMMENT_RENDERER)?.let { parseCommentRenderer(it) }
+  }
+
+  /** 诊断:dump 第一条评论的 entity payload 原始结构,确认 commentEntityPayload 字段。 */
+  fun dumpCommentEntity(root: JsonObject) {
+    val mutations = root.obj("frameworkUpdates")?.obj("entityBatchUpdate")?.array("mutations")
+    Log.d("YoutubeComment", "dumpCommentEntity mutations=${mutations?.size}")
+    mutations?.firstOrNull()?.let { m ->
+      Log.d("YoutubeComment", "dumpCommentEntity firstMutation entityKey=${(m as? JsonObject)?.stringOrNull("entityKey")?.take(30)} payload=${(m as? JsonObject)?.obj("payload")?.toString()?.take(1200)}")
+    }
+    collectByKey(root, KEY_COMMENT_THREAD_RENDERER) { thread ->
+      val vm = thread.obj("commentViewModel")?.obj("commentViewModel") ?: return@collectByKey
+      val key = vm.stringOrNull("commentKey")
+      val entity = mutations?.let { findMutationPayload(it, key) }
+      Log.d("YoutubeComment", "dumpCommentEntity commentKey=${key?.take(20)} entity=${entity?.toString()?.take(1500)}")
+      return@collectByKey
+    }
+  }
+
+  /** 在 mutations 数组里按 entityKey 匹配，返回 payload。 */
+  private fun findMutationPayload(mutations: JsonArray, key: String?): JsonObject? {
+    if (key.isNullOrBlank()) return null
+    for (m in mutations) {
+      val obj = m as? JsonObject ?: continue
+      if (obj.stringOrNull("entityKey") == key) return obj.obj("payload")
+    }
+    return null
+  }
+
+  /** 解析 attributed description(properties.content)：可能是 {content:"text"} 或 {runs:[...]} 或纯字符串。 */
+  private fun attributedText(obj: JsonElement?): String {
+    if (obj == null) return ""
+    if (obj is JsonPrimitive) return obj.contentOrNull.orEmpty()
+    val o = obj as? JsonObject ?: return ""
+    o.stringOrNull("content")?.let { if (it.isNotBlank()) return it }
+    runsText(o).let { if (it.isNotBlank()) return it }
+    return o.stringOrNull("simpleText").orEmpty()
+  }
+
+  /** 评论续页 token：reloadContinuationItemsCommand.continuationItems 里最后一个 continuationItemRenderer（对齐 NewPipe 取末尾）。 */
+  private fun commentPageContinuation(root: JsonObject): String? {
+    val endpoints = root["onResponseReceivedEndpoints"] as? JsonArray ?: return null
+    for (i in endpoints.indices.reversed()) {
+      val obj = endpoints[i] as? JsonObject ?: continue
+      val items = obj.obj("reloadContinuationItemsCommand")?.array("continuationItems")
+        ?: obj.obj("appendContinuationItemsAction")?.array("continuationItems")
+        ?: continue
+      for (j in items.indices.reversed()) {
+        val node = items[j] as? JsonObject ?: continue
+        val token = node.obj("continuationItemRenderer")
+          ?.obj("continuationEndpoint")?.obj("continuationCommand")?.stringOrNull("token")
+          ?: node.obj("continuationItemRenderer")?.obj("button")?.obj("buttonRenderer")?.obj("command")
+            ?.obj("continuationCommand")?.stringOrNull("token")
+        if (!token.isNullOrBlank()) return token
+      }
+    }
+    return null
+  }
+
+  /**
+   * 从首屏 /next 响应提取初始评论 continuation token（对齐 NewPipe YoutubeCommentsExtractor）。
+   *
+   * 首屏响应里评论不在 contents 主内容里，而在 `engagementPanels` 数组的
+   * `engagementPanelSectionListRenderer`（panelIdentifier=engagement-panel-comments-section），
+   * 只有 token 没有实际评论；必须带 token 再发一次 /next 才返回 commentThreadRenderer。
+   * 兼容旧布局：contents.twoColumnWatchNextResults.results.results.contents 里
+   * itemSectionRenderer.targetId=comments-section 的 continuationItemRenderer。
+   *
+   * @return 初始评论 token；取不到返回 null（评论禁用或结构未知）。
+   */
+  fun findInitialCommentsToken(root: JsonObject): String? {
+    // 1. 新布局：engagementPanels 数组里的 comments panel。
+    val panels = root["engagementPanels"] as? JsonArray
+    if (panels != null) {
+      for (panel in panels) {
+        val section = (panel as? JsonObject)?.obj("engagementPanelSectionListRenderer") ?: continue
+        if (section.stringOrNull("panelIdentifier") == "engagement-panel-comments-section") {
+          // token 在排序菜单 subMenuItems[].serviceEndpoint.continuationCommand.token。
+          val subMenu = section.obj("header")
+            ?.obj("engagementPanelTitleHeaderRenderer")
+            ?.obj("menu")
+            ?.obj("sortFilterSubMenuRenderer")
+          subMenu?.array("subMenuItems")?.forEach { item ->
+            val candidate = (item as? JsonObject)?.obj("serviceEndpoint")
+              ?.obj("continuationCommand")
+              ?.stringOrNull("token")
+            if (!candidate.isNullOrBlank()) return candidate
+          }
+          // 回退：content 里的 continuationItemRenderer。
+          findContinuation(section)?.let { return it }
+        }
+      }
+    }
+    // 2. 旧布局：contents 主内容里 itemSectionRenderer.targetId=comments-section。
+    val contents = root.obj("contents")
+      ?.obj("twoColumnWatchNextResults")
+      ?.obj("results")
+      ?.obj("results")
+      ?.array("contents")
+    if (contents != null) {
+      for (item in contents) {
+        val section = (item as? JsonObject)?.obj("itemSectionRenderer") ?: continue
+        if (section.stringOrNull("targetId") == "comments-section") {
+          section.array("contents")?.let { arr ->
+            firstContinuationToken(arr)?.let { return it }
           }
         }
       }
     }
-    root.obj("engagementPanels")?.let { ep ->
-      Log.d("YoutubeComment", "engagementPanels keys=${ep.keys}")
-      ep.array("engagementPanelSectionListRenderer")?.let { list ->
-        list.forEachIndexed { i, item ->
-          val rendererKey = (item as? JsonObject)?.keys?.firstOrNull { it.endsWith("Renderer") }
-          Log.d("YoutubeComment", "engagementPanel[$i] renderer=$rendererKey")
-        }
-      }
-    }
-    // 防御：无 commentSectionRenderer 容器时回退全根收集。
-    if (comments.isEmpty() && token == null) {
-      collectByKey(root, KEY_COMMENT_RENDERER) { node ->
-        parseCommentRenderer(node)?.let { comments.add(it) }
-      }
-      token = findContinuation(root)
-    }
-    return YoutubeCommentPage(items = comments, continuation = token)
+    return null
   }
 
   /**
@@ -215,12 +443,20 @@ internal object YoutubeParsers {
       collectByKey(secondary, KEY_COMPACT_VIDEO_RENDERER) { node ->
         parseVideoRenderer(node)?.let { videos.add(it) }
       }
+      // 相关视频 rail 新格式 lockupViewModel(实测 2026-08-18:secondaryResults 每项是
+      // {"lockupViewModel":{...}},非 compactVideoRenderer,与频道页新格式一致)。
+      collectByKey(secondary, KEY_LOCKUP_VIEW_MODEL) { node ->
+        parseLockupViewModel(node)?.let { videos.add(it) }
+      }
       token = findContinuation(secondary)
     }
     // 防御：无 secondaryResults 容器时回退全根收集。
     if (videos.isEmpty() && token == null) {
       collectByKey(root, KEY_COMPACT_VIDEO_RENDERER) { node ->
         parseVideoRenderer(node)?.let { videos.add(it) }
+      }
+      collectByKey(root, KEY_LOCKUP_VIEW_MODEL) { node ->
+        parseLockupViewModel(node)?.let { videos.add(it) }
       }
       token = findContinuation(root)
     }
@@ -287,7 +523,10 @@ internal object YoutubeParsers {
 
   /** "YYYY-MM-DD" → epoch 秒；解析失败返回 null。 */
   private fun parsePublishDate(date: String): Long? {
-    val parts = date.split('-').mapNotNull { it.toIntOrNull() }
+    // YouTube publishDate/uploadDate 是 ISO-8601,如 "2023-01-15T00:00:00-08:00" 或 "2023-01-15"。
+    // 只取日期部分(前 10 字符 yyyy-MM-dd)再切,否则 split('-') 会吃到 T 和冒号返回 null。
+    val d = date.trim().take(10)
+    val parts = d.split('-').mapNotNull { it.toIntOrNull() }
     if (parts.size != 3) return null
     val cal = Calendar.getInstance().apply {
       clear()
@@ -312,6 +551,19 @@ internal object YoutubeParsers {
   private fun parseLockupViewModel(node: JsonObject): YoutubeVideo? {
     val videoId = node.stringOrNull("contentId")
     if (videoId.isNullOrBlank()) return null
+    // 诊断:dump lockupViewModel 的 metadataRows badges(会员角标真实位置),定位会员专属视频结构。
+    val lockupBadges = node.obj("metadata")
+      ?.obj("lockupMetadataViewModel")
+      ?.obj("metadata")
+      ?.obj("contentMetadataViewModel")
+      ?.array("metadataRows")
+    if (lockupBadges != null) {
+      Log.d("YtBadge", "lockup videoId=$videoId metadataRows=${lockupBadges.toString().take(600)}")
+    } else {
+      Log.d("YtBadge", "lockup videoId=$videoId metadataRows=null topKeys=${node.keys.joinToString(",")}")
+    }
+    // 会员专属视频(频道会员专属,非会员无法播放)直接过滤,不进 feed。
+    if (isMembersOnly(node)) return null
     val title = node.obj("metadata")
       ?.obj("lockupMetadataViewModel")
       ?.obj("title")
@@ -335,11 +587,20 @@ internal object YoutubeParsers {
         isUpcoming
     }
 
-    // metadata 子树里的文本:播放量 / 发布时间 / 角标。
+    // metadata 里的文本:播放量 / 发布时间 / 角标。只取 contentMetadataViewModel.metadataRows 里的
+    // text.content(对齐注释里的真实结构),不再 collectStrings 全树扫——全树扫会把标题/缩略图尺寸/
+    // trackingParams 里的数字也收进来,firstNotNullOfOrNull 可能误取成播放量(实测最热排序播放数被污染)。
     val metaTexts = mutableListOf<String>()
-    collectStrings(node.obj("metadata"), metaTexts)
+    lockupBadges?.forEach { row ->
+      (row as? JsonObject)?.array("metadataParts")?.forEach { part ->
+        (part as? JsonObject)?.obj("text")?.stringOrNull("content")?.let { metaTexts.add(it) }
+      }
+    }
     val viewCount = metaTexts.firstNotNullOfOrNull { parseCount(it) }
     val publishedAt = metaTexts.firstNotNullOfOrNull { parsePublished(it, liveNow, isUpcoming) }
+    // 诊断:确认最热排序(英文 lockup)解析出的播放量/时间。
+    Log.d("YtBadge", "lockup videoId=$videoId viewCount=$viewCount publishedAt=$publishedAt " +
+      "metaTexts=$metaTexts")
     val badge = metaTexts.firstOrNull {
       it.contains("LIVE", ignoreCase = true) ||
         it.contains("Premieres", ignoreCase = true)
@@ -364,6 +625,12 @@ internal object YoutubeParsers {
 
   private fun parseVideoRenderer(node: JsonObject): YoutubeVideo? {
     val videoId = node.stringOrNull("videoId") ?: return null
+    // 诊断:dump 每个视频的 badges 数组,定位会员专属视频真实结构。
+    node.array("badges")?.let { b ->
+      Log.d("YtBadge", "videoId=$videoId badges=${b.toString().take(400)}")
+    }
+    // 会员专属视频(频道会员专属,非会员无法播放)直接过滤,不进 feed。
+    if (isMembersOnly(node)) return null
 
     val title = runsText(node.obj("title")).ifBlank { simpleText(node.obj("title")) }
 
@@ -413,12 +680,20 @@ internal object YoutubeParsers {
       ?.firstNotNullOfOrNull { (it as? JsonObject)?.obj("metadataBadgeRenderer")?.stringOrNull("label") }
       .orEmpty()
 
-    val viewCount = parseCount(
-      node.obj("viewCountText")?.stringOrNull("simpleText"),
+    // 诊断:打印 videoRenderer 的 viewCountText/publishedTimeText 原始结构,定位"最热"排序下
+    // 播放数/发布时间解析失败(返回 videoRenderer 而非 lockup 时,旧日志看不到这两字段结构)。
+    val vct = node.obj("viewCountText")
+    val ptt = node.obj("publishedTimeText")
+    Log.d(
+      "YtBadge",
+      "videoRenderer videoId=$videoId viewCountText=${vct?.toString().orEmpty().take(200)} " +
+        "publishedTimeText=${ptt?.toString().orEmpty().take(200)}",
     )
 
+    val viewCount = parseCount(vct?.stringOrNull("simpleText"))
+
     val publishedAt = parsePublished(
-      node.obj("publishedTimeText")?.stringOrNull("simpleText"),
+      ptt?.stringOrNull("simpleText"),
       liveNow,
       isUpcoming,
     )
@@ -437,6 +712,33 @@ internal object YoutubeParsers {
       isUpcoming = isUpcoming,
       badge = badge,
     )
+  }
+
+  /**
+   * 会员专属视频(频道会员专属,非会员无法播放)。对齐 NewPipe `YoutubeStreamInfoItemExtractor`:
+   * 命中即过滤,避免展示无法播放的视频。两种 renderer 结构不同:
+   *  - videoRenderer:顶层 `badges[].metadataBadgeRenderer.style == BADGE_STYLE_TYPE_MEMBERS_ONLY`
+   *  - lockupViewModel(频道页新格式):角标嵌套在
+   *    `metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows[].badges[].badgeViewModel`,
+   *    `badgeStyle == BADGE_MEMBERS_ONLY`(实测 2026-08,对齐 NewPipe PR #1503)。
+   */
+  private fun isMembersOnly(node: JsonObject): Boolean {
+    // videoRenderer 旧格式:顶层 badges。
+    if (node.array("badges")?.any {
+        (it as? JsonObject)?.obj("metadataBadgeRenderer")?.stringOrNull("style") == "BADGE_STYLE_TYPE_MEMBERS_ONLY"
+      } == true
+    ) return true
+    // lockupViewModel 新格式:metadataRows[].badges[].badgeViewModel.badgeStyle。
+    return node.obj("metadata")
+      ?.obj("lockupMetadataViewModel")
+      ?.obj("metadata")
+      ?.obj("contentMetadataViewModel")
+      ?.array("metadataRows")
+      ?.any { row ->
+        (row as? JsonObject)?.array("badges")?.any { badge ->
+          (badge as? JsonObject)?.obj("badgeViewModel")?.stringOrNull("badgeStyle") == "BADGE_MEMBERS_ONLY"
+        } == true
+      } == true
   }
 
   // ---- 文本辅助 ----
@@ -476,22 +778,49 @@ internal object YoutubeParsers {
     }
   }
 
-  /** 解析 "1,234,567 views" / "1.2M views" / "No views" / "1.4K watching"。 */
+  /**
+   * 解析播放数/观看数。英文 "1,234,567 views" / "1.2M views" / "No views" / "1.4K watching"，
+   * 中文/繁体 "觀看次數：49萬次" / "观看次数:49万次" / "1.2亿次播放"（频道页 lockupViewModel
+   * 实测返回繁体 zh-TW 文案）。
+   */
   private fun parseCount(text: String?): Long? {
     if (text.isNullOrBlank()) return null
-    if (text.startsWith("No views", ignoreCase = true)) return 0L
+    // 拒绝时间类文本:parseLockupViewModel 用 collectStrings 全树扫 metadata,发布时间
+    // ("11 days ago"/"5 個月前"/"13:09")也会混进 metaTexts;不拦的话 "11 days ago" 会被
+    // 误解析成 11 当作播放量。含 ago/前(相对时间)或冒号(时长)的一律不算播放量。
+    if (text.contains(" ago", ignoreCase = true) || text.contains("前", ignoreCase = true) || text.contains(':')) {
+      return null
+    }
+    // 先把说明性前缀/后缀与全角符号剥掉，只留"数字+单位"。
     val cleaned = text
       .replace(",", "")
       .replace(" views", "", ignoreCase = true)
+      .replace(" likes", "", ignoreCase = true)
       .replace(" watching", "", ignoreCase = true)
+      .replace("觀看次數", "", ignoreCase = true)
+      .replace("观看次数", "", ignoreCase = true)
+      .replace("次观看", "", ignoreCase = true)
+      .replace("次播放", "", ignoreCase = true)
+      .replace("次點讚", "", ignoreCase = true)
+      .replace("次点赞", "", ignoreCase = true)
+      .replace("次赞", "", ignoreCase = true)
+      .replace("次", "", ignoreCase = true)
+      .replace("：", "")
+      .replace(":", "")
       .trim()
+    if (cleaned.startsWith("No views", ignoreCase = true) || cleaned.equals("No", ignoreCase = true)) return 0L
     val multiplier = when {
+      cleaned.contains("亿") -> 100_000_000L
+      cleaned.contains("萬") || cleaned.contains("万") -> 10_000L
       cleaned.endsWith("M", ignoreCase = true) -> 1_000_000L
       cleaned.endsWith("K", ignoreCase = true) -> 1_000L
       cleaned.endsWith("B", ignoreCase = true) -> 1_000_000_000L
       else -> 1L
     }
     val numberPart = cleaned
+      .replace("亿", "")
+      .replace("萬", "")
+      .replace("万", "")
       .substringBefore(' ')
       .trimEnd('M', 'm', 'K', 'k', 'B', 'b')
     val number = numberPart.toDoubleOrNull() ?: return null
@@ -499,8 +828,9 @@ internal object YoutubeParsers {
   }
 
   /**
-   * 把相对时间文案转成 epoch 秒。InnerTube 返回 "3 hours ago"/"1 day ago"/"5 weeks ago" 等，
-   * 无法精确定位，按当前时间反推近似值。live/upcoming 返回 null。
+   * 把相对时间文案转成 epoch 秒。InnerTube 返回 "3 hours ago"/"1 day ago"/"5 weeks ago"，
+   * 频道页 lockupViewModel 返回繁体 "5 個月前"/"2 週前"/"1 年前"（实测 zh-TW）。无法精确定位，
+   * 按当前时间反推近似值。live/upcoming 返回 null。
    */
   private fun parsePublished(text: String?, liveNow: Boolean, isUpcoming: Boolean): Long? {
     if (text.isNullOrBlank() || liveNow || isUpcoming) return null
@@ -520,10 +850,26 @@ internal object YoutubeParsers {
     return nowSec - seconds
   }
 
+  /** 英文 "5 weeks ago" / 中文及繁体 "5 週前"/"3 小时前"/"1 个月前"。 */
   private fun parseRelative(lower: String): Pair<Long, String>? {
-    val match = Regex("""(\d+)\s+([a-z]+)""").find(lower) ?: return null
-    val amount = match.groupValues[1].toLongOrNull() ?: return null
-    return amount to match.groupValues[2]
+    Regex("""(\d+)\s+([a-z]+)""").find(lower)?.let { m ->
+      val amount = m.groupValues[1].toLongOrNull() ?: return null
+      return amount to m.groupValues[2]
+    }
+    // 中文/繁体单位，统一映射成英文单位供 parsePublished 换算。
+    val zh = Regex("""(\d+)\s*([秒分時时天周週月年]+)前""").find(lower) ?: return null
+    val amount = zh.groupValues[1].toLongOrNull() ?: return null
+    val unit = when (zh.groupValues[2]) {
+      "秒" -> "second"
+      "分" -> "minute"
+      "時", "时" -> "hour"
+      "天" -> "day"
+      "周", "週" -> "week"
+      "月" -> "month"
+      "年" -> "year"
+      else -> return null
+    }
+    return amount to unit
   }
 
   // ---- 递归收集 videoRenderer / continuation ----
@@ -565,14 +911,88 @@ internal object YoutubeParsers {
     }
   }
 
-  /** 找最后一个 continuationItemRenderer 里的 token。 */
+  /**
+   * 提取续页 token（对齐 NewPipe YoutubeChannelTabExtractor，避免取到非视频网格的 token）：
+   *   1. 续页响应：token 在 onResponseReceivedActions → appendContinuationItemsAction → continuationItems；
+   *   2. 首屏：定位视频网格/richGrid 的 items 数组，取第一个 continuation；
+   *   3. 回退（搜索等无网格容器）：全树第一个 continuationItemRenderer。
+   * 之前是全树扫+取最后一个，频道视频 tab 响应里可能夹带 shorts/相关频道等其它 section 的 token，
+   * 取错会导致续页返回首屏相同视频（去重后零新增 → ~50 到底 / 死循环）。
+   */
   private fun findContinuation(root: JsonObject): String? {
+    appendContinuationItems(root)?.let { return firstContinuationToken(it) }
+    reloadContinuationItems(root)?.let { return firstContinuationToken(it) }
+    videoGridItems(root)?.let { return firstContinuationToken(it) }
+    return firstContinuationTokenRoot(root)
+  }
+
+  /** 续页响应容器：onResponseReceivedActions 里第一个 appendContinuationItemsAction.continuationItems。 */
+  private fun appendContinuationItems(root: JsonObject): JsonArray? {
+    val actions = root["onResponseReceivedActions"] as? JsonArray ?: return null
+    for (action in actions) {
+      val append = (action as? JsonObject)?.obj("appendContinuationItemsAction") ?: continue
+      return append.array("continuationItems")
+    }
+    return null
+  }
+
+  /** 评论续页响应容器：onResponseReceivedEndpoints 里最后一个 reloadContinuationItemsCommand / appendContinuationItemsAction 的 continuationItems（对齐 NewPipe 取末尾）。 */
+  private fun reloadContinuationItems(root: JsonObject): JsonArray? {
+    val endpoints = root["onResponseReceivedEndpoints"] as? JsonArray ?: return null
+    for (i in endpoints.indices.reversed()) {
+      val obj = endpoints[i] as? JsonObject ?: continue
+      obj.obj("reloadContinuationItemsCommand")?.array("continuationItems")?.let { return it }
+      obj.obj("appendContinuationItemsAction")?.array("continuationItems")?.let { return it }
+    }
+    return null
+  }
+
+  /** 首屏：递归找第一个视频网格容器（gridRenderer.items 或 richGridRenderer.contents）。 */
+  private fun videoGridItems(element: JsonElement): JsonArray? {
+    when (element) {
+      is JsonObject -> {
+        element.obj("gridRenderer")?.array("items")?.let { return it }
+        element.obj("richGridRenderer")?.array("contents")?.let { return it }
+        for ((_, value) in element) {
+          videoGridItems(value)?.let { return it }
+        }
+      }
+      is JsonArray -> {
+        for (item in element) {
+          videoGridItems(item)?.let { return it }
+        }
+      }
+      else -> Unit
+    }
+    return null
+  }
+
+  /** 在指定 items 数组里取第一个非空 continuationItemRenderer token（兼容 continuationEndpoint 与 button 两种结构）。 */
+  private fun firstContinuationToken(items: JsonArray): String? {
     var token: String? = null
-    collectByKey(root, KEY_CONTINUATION_ITEM_RENDERER) { node ->
+    collectByKey(items, KEY_CONTINUATION_ITEM_RENDERER) { node ->
       val candidate = node.obj("continuationEndpoint")
         ?.obj("continuationCommand")
         ?.stringOrNull("token")
-      if (!candidate.isNullOrBlank()) token = candidate
+        ?: node.obj("button")?.obj("buttonRenderer")?.obj("command")
+          ?.obj("continuationCommand")?.stringOrNull("token")
+      if (token == null && !candidate.isNullOrBlank()) token = candidate
+    }
+    return token
+  }
+
+  /** 全树第一个非空 continuationItemRenderer token（搜索等无网格容器回退用）。 */
+  private fun firstContinuationTokenRoot(root: JsonElement): String? {
+    var token: String? = null
+    collectByKey(root, KEY_CONTINUATION_ITEM_RENDERER) { node ->
+      if (token == null) {
+        val candidate = node.obj("continuationEndpoint")
+          ?.obj("continuationCommand")
+          ?.stringOrNull("token")
+          ?: node.obj("button")?.obj("buttonRenderer")?.obj("command")
+            ?.obj("continuationCommand")?.stringOrNull("token")
+        if (!candidate.isNullOrBlank()) token = candidate
+      }
     }
     return token
   }
@@ -603,4 +1023,5 @@ internal object YoutubeParsers {
   private const val KEY_CHANNEL_RENDERER = "channelRenderer"
   private const val KEY_COMMENT_RENDERER = "commentRenderer"
   private const val KEY_COMMENT_SECTION_RENDERER = "commentSectionRenderer"
+  private const val KEY_COMMENT_THREAD_RENDERER = "commentThreadRenderer"
 }

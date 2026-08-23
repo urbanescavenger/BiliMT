@@ -265,7 +265,7 @@ fun LivePlayerScreen(
           )
           retryKey += 1
         } else {
-          playerErrorMsg.value = error.message.orEmpty().ifBlank { "播放出错" }
+          playerErrorMsg.value = error.message.orEmpty().ifBlank { context.getString(R.string.live_play_error) }
         }
       }
 
@@ -325,7 +325,7 @@ fun LivePlayerScreen(
           streamUrl = urls[idx],
           isHls = true,
           currentQn = idx,
-          qualities = urls.mapIndexed { i, _ -> LiveQuality(i, "线路${i + 1}") },
+          qualities = urls.mapIndexed { i, _ -> LiveQuality(i, context.getString(R.string.live_line, i + 1)) },
           headers = BiliPlaybackHeaders(sessData = null, biliJct = null),
         )
       } else {
@@ -364,7 +364,7 @@ fun LivePlayerScreen(
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {
-      loadState = LiveLoadState.Failed(error.message.orEmpty().ifBlank { "直播加载失败" })
+      loadState = LiveLoadState.Failed(error.message.orEmpty().ifBlank { context.getString(R.string.live_load_failed) })
     }
   }
 
@@ -655,7 +655,7 @@ fun LivePlayerScreen(
         // onPlayerError(取流 403 等)或加载失败都走这里,重试清错误 + 重载。
         FeedStatusScreen(
           message = errorMsg,
-          actionLabel = "重试",
+          actionLabel = stringResource(R.string.action_retry),
           onAction = {
             playerErrorMsg.value = null
             retryKey++
@@ -669,7 +669,7 @@ fun LivePlayerScreen(
       ) {
         FeedStatusScreen(
           message = (loadState as LiveLoadState.Failed).message,
-          actionLabel = "重试",
+          actionLabel = stringResource(R.string.action_retry),
           onAction = { retryKey++ },
         )
       }
@@ -1058,7 +1058,7 @@ private fun IptvChannelListPanel(
         verticalAlignment = Alignment.CenterVertically,
       ) {
         Text(
-          text = "频道列表",
+          text = stringResource(R.string.live_channel_list),
           color = BiliColors.TextPrimary,
           fontSize = BiliTypography.PlayerPanelTitle,
           fontWeight = FontWeight.Bold,
@@ -1091,7 +1091,7 @@ private fun IptvChannelListPanel(
           contentAlignment = Alignment.Center,
         ) {
           Text(
-            text = "暂无频道",
+            text = stringResource(R.string.live_no_channels),
             color = BiliColors.TextSecondary,
             fontSize = BiliTypography.PlayerSettingValue,
           )
@@ -1237,7 +1237,7 @@ private fun LiveBottomBar(
       // 预留弹幕输入按钮:直播 WebSocket 弹幕未实现,点击提示"暂未开放"占位。
       MobilePlayerIconButton(
         iconRes = R.drawable.ic_player_subtitles,
-        contentDescription = "弹幕",
+        contentDescription = stringResource(R.string.player_settings_danmaku),
         tint = BiliColors.TextPrimary,
         onClick = onDanmaku,
       )
@@ -1245,7 +1245,7 @@ private fun LiveBottomBar(
       // 全屏:强制横屏 + 沉浸(由 LivePlayerScreen 的 DisposableEffect 处理),此按钮只 toggle 状态。
       MobilePlayerIconButton(
         iconRes = if (fullscreen) R.drawable.ic_player_fullscreen_exit else R.drawable.ic_player_fullscreen,
-        contentDescription = if (fullscreen) "退出全屏" else "全屏",
+        contentDescription = if (fullscreen) stringResource(R.string.player_fullscreen_exit) else stringResource(R.string.player_fullscreen),
         tint = BiliColors.TextPrimary,
         onClick = onToggleFullscreen,
       )

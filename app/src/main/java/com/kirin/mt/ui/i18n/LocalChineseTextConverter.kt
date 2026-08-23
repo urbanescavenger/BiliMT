@@ -25,6 +25,9 @@ fun Context.localizedContext(variant: ChineseTextVariant): Context {
     ChineseTextVariant.Simplified -> Locale.SIMPLIFIED_CHINESE
     ChineseTextVariant.HongKong -> Locale("zh", "HK")
     ChineseTextVariant.Taiwan -> Locale.TRADITIONAL_CHINESE
+    ChineseTextVariant.English -> Locale.ENGLISH
+    ChineseTextVariant.Spanish -> Locale("es")
+    ChineseTextVariant.Portuguese -> Locale("pt")
   }
   val configuration = Configuration(resources.configuration)
   configuration.setLocale(locale)
