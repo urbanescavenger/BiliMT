@@ -32,7 +32,7 @@
     <string name="nav_search">Search</string>
     <string name="nav_history">History</string>
     <string name="nav_settings">Settings</string>
-    <string name="nav_pgc">PG&C</string>
+    <string name="nav_pgc">PG&amp;C</string>
     <string name="nav_live">Live</string>
     <string name="pgc_type_anime">Anime</string>
     <string name="pgc_type_guochuang">Domestic</string>
