@@ -519,8 +519,15 @@ fun BiliMobileApp(
           )
         }
         else -> {
+          // 已下载(可播)的视频隐藏「下载」入口,避免重复下载。
+          val downloads by downloadManager.downloads.collectAsState(initial = emptyList())
+          val isDownloaded = downloads.any {
+            it.download.videoId == video.bvid && it.isPlayable &&
+              (it.videoPart != null || it.muxedPart != null)
+          }
           MobileYoutubeLongPressSheet(
             video = video,
+            isDownloaded = isDownloaded,
             onDownload = {
               // YouTube 直接弹分档对话框;B站先经 playurl 拉可播清晰度列表再弹。
               // 复用播放器同款 getPlaybackInfo,清晰度与在线播放一致。

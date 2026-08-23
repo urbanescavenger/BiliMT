@@ -59,6 +59,7 @@ fun MobileYoutubeLongPressSheet(
   onDownload: () -> Unit,
   onPickPlaylist: () -> Unit,
   onDismiss: () -> Unit,
+  isDownloaded: Boolean = false,
 ) {
   ModalBottomSheet(
     onDismissRequest = onDismiss,
@@ -74,22 +75,25 @@ fun MobileYoutubeLongPressSheet(
         overflow = TextOverflow.Ellipsis,
       )
       Spacer(Modifier.padding(top = 8.dp))
-      Row(
-        modifier = Modifier
-          .fillMaxWidth()
-          .clip(RoundedCornerShape(10.dp))
-          .clickable(onClick = onDownload)
-          .padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Icon(
-          painter = painterResource(R.drawable.ic_player_download),
-          contentDescription = null,
-          tint = BiliColors.BiliPink,
-          modifier = Modifier.size(24.dp),
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(stringResource(R.string.downloads_menu_download), color = Color.White)
+      // 已下载/缓存的视频不再提供下载入口(避免重复下载)。
+      if (!isDownloaded) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onDownload)
+            .padding(vertical = 12.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(
+            painter = painterResource(R.drawable.ic_player_download),
+            contentDescription = null,
+            tint = BiliColors.BiliPink,
+            modifier = Modifier.size(24.dp),
+          )
+          Spacer(Modifier.width(12.dp))
+          Text(stringResource(R.string.downloads_menu_download), color = Color.White)
+        }
       }
       Row(
         modifier = Modifier
