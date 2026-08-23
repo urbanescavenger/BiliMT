@@ -221,6 +221,8 @@ class AppContainer(context: Context) {
     engine = downloadEngine,
     thumbnailClient = downloadHttpClient,
     json = json,
+    // 下载完成自动存档进「默认」播放列表(见 DownloadManager.finalizeGroup)。
+    playlistStore = youtubePlaylistStore,
   )
 
   /**

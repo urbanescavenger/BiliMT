@@ -524,6 +524,8 @@
     <string name="add_to_playlist">加入播放列表</string>
     <string name="downloads_menu_download">下载</string>
     <string name="in_playlist">已加入</string>
+    <string name="playlist_auto_archive">自动存档</string>
+    <string name="playlist_auto_managed">由下载自动管理</string>
     <string name="playlist_add_title">加入播放列表</string>
     <string name="playlist_new_list">新建列表</string>
     <string name="playlist_name_hint">列表名称</string>

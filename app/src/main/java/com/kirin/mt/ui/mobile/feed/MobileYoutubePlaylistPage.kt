@@ -55,6 +55,7 @@ import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.youtube.DEFAULT_PLAYLIST_NAME
 import com.kirin.mt.core.youtube.YoutubePlaylist
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.ui.mobile.home.formatCount
@@ -210,8 +211,10 @@ private fun PlaylistDetailScreen(
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val listState = rememberLazyListState()
+  // 「默认」是下载自动存档列表:完全映射离线下载,只读——不提供编辑/移除/拖动,只能播放。
+  val autoArchive = playlist.name == DEFAULT_PLAYLIST_NAME
   var editMode by remember { mutableStateOf(false) }
-  // 批量移除选中集(编辑模式下勾选的 bvid);「完成」或单移除时清掉。
+  // 批量勾选选中集(编辑模式下勾选的 bvid);「完成」或单点移除时清掉。
   var selectedBvids by remember { mutableStateOf<Set<String>>(emptySet()) }
   // 批量移除二次确认弹窗。
   var showRemoveConfirm by remember { mutableStateOf(false) }
@@ -242,11 +245,20 @@ private fun PlaylistDetailScreen(
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
       )
-      OutlinedButton(onClick = {
-        editMode = !editMode
-        selectedBvids = emptySet()
-      }) {
-        Text(stringResource(if (editMode) R.string.playlist_done else R.string.playlist_edit))
+      if (autoArchive) {
+        // 下载自动存档列表:只读镜像,不提供编辑/移除。
+        Text(
+          text = stringResource(R.string.playlist_auto_managed),
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          style = MaterialTheme.typography.labelMedium,
+        )
+      } else {
+        OutlinedButton(onClick = {
+          editMode = !editMode
+          selectedBvids = emptySet()
+        }) {
+          Text(stringResource(if (editMode) R.string.playlist_done else R.string.playlist_edit))
+        }
       }
     }
 
@@ -297,8 +309,8 @@ private fun PlaylistDetailScreen(
                 onStartPlaylist(items)
               }
             }
-            .pointerInput(video.bvid, editMode) {
-              if (editMode) return@pointerInput
+            .pointerInput(video.bvid, editMode, autoArchive) {
+              if (editMode || autoArchive) return@pointerInput
               detectDragGesturesAfterLongPress(
                 onDragStart = {
                   draggingBvid = video.bvid
