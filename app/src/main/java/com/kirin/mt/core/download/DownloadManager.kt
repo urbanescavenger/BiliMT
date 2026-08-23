@@ -8,7 +8,7 @@ import com.kirin.mt.core.model.SourceBili
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.player.PlaybackRequest
-import com.kirin.mt.core.youtube.DEFAULT_PLAYLIST_NAME
+import com.kirin.mt.core.youtube.DOWNLOAD_PLAYLIST_NAME
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -150,16 +150,16 @@ class DownloadManager(
     dao.updateStatus(id, DownloadStatus.CANCELLED.key)
   }
 
-  /** 删除任务:取消 + 删文件 + 删库行(CASCADE 删分件);并从「默认」存档播放列表移除该视频。 */
+  /** 删除任务:取消 + 删文件 + 删库行(CASCADE 删分件);并从「下载」存档播放列表移除该视频。 */
   suspend fun delete(id: Long) {
     val videoId = dao.getById(id)?.download?.videoId
     cancel(id)
     storage.deleteAll(id)
     dao.delete(id)
-    // 离线列表删下载 → 同步移除默认播放列表里的存档,避免残留孤卡。
+    // 离线列表删下载 → 同步移除「下载」播放列表里的存档,避免残留孤卡。
     if (videoId != null) {
-      runCatching { playlistStore.removeVideo(DEFAULT_PLAYLIST_NAME, videoId) }
-        .onFailure { Log.w(logTag, "删除下载后从默认播放列表移除失败: ${it.message}") }
+      runCatching { playlistStore.removeVideo(DOWNLOAD_PLAYLIST_NAME, videoId) }
+        .onFailure { Log.w(logTag, "删除下载后从下载播放列表移除失败: ${it.message}") }
     }
   }
 
@@ -235,10 +235,10 @@ class DownloadManager(
       statuses.all { it == DownloadStatus.COMPLETED } -> {
         dao.updateStatus(group.download.id, DownloadStatus.COMPLETED.key)
         pauseFlags.remove(group.download.id)
-        // 下载完成自动存档进「默认」播放列表,方便离线统一回看。
+        // 下载完成自动存档进「下载」播放列表,方便离线统一回看。
         // addVideo 按 bvid(videoId) 去重,重复下载/续传不会重复入列。
-        runCatching { playlistStore.addVideo(DEFAULT_PLAYLIST_NAME, group.download.toVideoSummary()) }
-          .onFailure { Log.w(logTag, "下载完成写入默认播放列表失败: ${it.message}") }
+        runCatching { playlistStore.addVideo(DOWNLOAD_PLAYLIST_NAME, group.download.toVideoSummary()) }
+          .onFailure { Log.w(logTag, "下载完成写入下载播放列表失败: ${it.message}") }
       }
       statuses.all { it == DownloadStatus.CANCELLED } -> {
         dao.updateStatus(group.download.id, DownloadStatus.CANCELLED.key)

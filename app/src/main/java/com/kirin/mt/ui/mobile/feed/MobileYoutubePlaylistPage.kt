@@ -55,7 +55,7 @@ import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
-import com.kirin.mt.core.youtube.DEFAULT_PLAYLIST_NAME
+import com.kirin.mt.core.youtube.DOWNLOAD_PLAYLIST_NAME
 import com.kirin.mt.core.youtube.YoutubePlaylist
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.ui.mobile.home.formatCount
@@ -211,8 +211,8 @@ private fun PlaylistDetailScreen(
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val listState = rememberLazyListState()
-  // 「默认」是下载自动存档列表:完全映射离线下载,只读——不提供编辑/移除/拖动,只能播放。
-  val autoArchive = playlist.name == DEFAULT_PLAYLIST_NAME
+  // 「下载」是下载自动存档列表:完全映射离线下载,只读——不提供编辑/移除/拖动,只能播放。
+  val autoArchive = playlist.name == DOWNLOAD_PLAYLIST_NAME
   var editMode by remember { mutableStateOf(false) }
   // 批量勾选选中集(编辑模式下勾选的 bvid);「完成」或单点移除时清掉。
   var selectedBvids by remember { mutableStateOf<Set<String>>(emptySet()) }

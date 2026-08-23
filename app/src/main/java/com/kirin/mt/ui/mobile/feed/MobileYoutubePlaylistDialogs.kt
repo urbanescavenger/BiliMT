@@ -42,7 +42,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
-import com.kirin.mt.core.youtube.DEFAULT_PLAYLIST_NAME
+import com.kirin.mt.core.youtube.DOWNLOAD_PLAYLIST_NAME
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.ui.theme.BiliColors
 import kotlinx.coroutines.launch
@@ -150,8 +150,8 @@ fun MobilePlaylistPickerDialog(
         ) {
           playlists.forEach { pl ->
             val checked = pending[pl.name] ?: false
-            // 「默认」是下载自动存档列表:只能取消勾选移除存档,禁止手动勾选加入。
-            val autoArchive = pl.name == DEFAULT_PLAYLIST_NAME
+            // 「下载」是下载自动存档列表:只能取消勾选移除存档,禁止手动勾选加入。
+            val autoArchive = pl.name == DOWNLOAD_PLAYLIST_NAME
             Row(
               modifier = Modifier
                 .fillMaxWidth()
