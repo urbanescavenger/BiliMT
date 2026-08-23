@@ -205,7 +205,7 @@ class AppContainer(context: Context) {
     appContext,
     DownloadDatabase::class.java,
     "download.db",
-  ).build()
+  ).addMigrations(DownloadDatabase.MIGRATION_2_1).build()
   val downloadStorage: DownloadStorage = DownloadStorage(appContext)
   val downloadEngine: DownloadEngine = DownloadEngine(downloadHttpClient)
   val downloadUrlResolver: DownloadUrlResolver = DownloadUrlResolver(
