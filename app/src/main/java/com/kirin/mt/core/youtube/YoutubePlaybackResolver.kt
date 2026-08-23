@@ -1675,10 +1675,10 @@ class YoutubePlaybackResolver(
     } else {
       videoFmts
     }.sortedBy { it.height }
-    // alpha.9X(起步档设置化):index 0 = 初始选轨档。按 youtubeStartQuality.startHeight 把首个 >= 该高度的档
-    // 挪到最前 → 起播该档(够清晰、单段起播快),带宽够了再升;更低档仍留在 ABR 降档链(网络崩可降)。
-    // startHeight == null(自动-最低档)→ 纯升序,index 0 = 最低档起播。视频无该档(如设 720 但只有 360p)
-    // 回退最低档。手动选档(preferredQualityId)走下方单轨分支,不受此排序影响。
+    // ⚠️ 起步档已改由「带宽 seed」实现(YoutubeStartQuality.seedBps → PlayerScreen/MobilePlayerScreen 的
+    // DefaultBandwidthMeter.setInitialBitrateEstimate),本块排序对 media3 1.10.0 初始选轨无效
+    // (BaseTrackSelection 构造器内部强制按码率降序重排,AdaptiveTrackSelection 初始选轨=≤带宽估计×0.7的
+    // 最高码率档,纯带宽驱动、不看 index0)。保留排序仅作轨道顺序呈现,勿再依赖它控制起播档。
     val startHeight = youtubeStartQuality.startHeight
     val cappedVideoFmts = if (startHeight == null) sortedVideoFmts
     else sortedVideoFmts.firstOrNull { it.height >= startHeight }

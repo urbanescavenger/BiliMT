@@ -67,6 +67,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.VideoSize
+import androidx.media3.datasource.DefaultBandwidthMeter
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.exoplayer.ExoPlayer
@@ -284,6 +285,13 @@ fun PlayerScreen(
     ExoPlayer.Builder(context)
       .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
       .setTrackSelector(trackSelector)
+      // 起始挡位:seed 初始带宽估计到目标档码率/0.7 → AdaptiveTrackSelection 首段落在起始档,
+      // 之后带宽实测自然爬升(media3 1.10.0 初始选轨纯带宽驱动,resolver 挪 index0 无效)。
+      .setBandwidthMeter(
+        DefaultBandwidthMeter.Builder(context)
+          .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
+          .build()
+      )
       .build()
   }
   val playbackWakeLock = remember(context) {
