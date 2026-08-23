@@ -156,6 +156,10 @@ internal object YoutubeParsers {
     val mf = playerJson.obj("microformat")?.obj("playerMicroformatRenderer")
     val publishedAt = listOfNotNull(mf?.stringOrNull("publishDate"), mf?.stringOrNull("uploadDate"))
       .firstNotNullOfOrNull { parsePublishDate(it) }
+    // 点赞数主源取 /player microformat 的 likeCount(实测该字段存在,形如 "123456" 原始数字串)。
+    // 相比另发 /next 取 videoActions 工具栏(那路径真机常取不到,致简介区点赞行缺失)更快更稳;
+    // 取不到保持 null,由调用方 getVideoDetail 的 /next 兜底回写。
+    val likeCount = mf?.stringOrNull("likeCount")?.let(::parseCount)
     return YoutubeVideoDetail(
       videoId = videoId,
       title = title,
@@ -165,6 +169,7 @@ internal object YoutubeParsers {
       channelAvatarUrl = "",
       viewCount = viewCount,
       publishedAt = publishedAt,
+      likeCount = likeCount,
     )
   }
 
