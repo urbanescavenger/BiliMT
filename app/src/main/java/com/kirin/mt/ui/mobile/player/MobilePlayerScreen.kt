@@ -632,6 +632,11 @@ fun MobilePlayerScreen(
       ?: activeRequest.nextEpisodeCompletion(metadata, selectedQualityId)?.request
   }
 
+  // 起始挡位(alpha.9X):起播阶段用 selector maxVideoSize 把 ABR 临时卡在起始档,首帧渲染
+  // (onRenderedFirstFrame)后松开,ABR 在「默认画质上限」的轨道组里爬到默认画质。仅 SABR 应用。
+  // 声明须在 loadRequest(其 prepare 卡档处引用)之前。
+  var startQualityRelaxed by remember { mutableStateOf(false) }
+
   // 加载(镜像 TV PlayerScreen 的 load 序列)。抽成独立 suspend 函数,使自动连播/用户切集/切画质
   // 都能在"不依赖 Compose 重组"的协程作用域里直接调用——后台播放时帧时钟暂停、重组被推迟,
   // 若仍靠 LaunchedEffect(activeRequest) 触发加载,后台播完当前视频后下一集永远不会加载。
@@ -922,10 +927,6 @@ fun MobilePlayerScreen(
       YoutubeLoadProgress.clear()
     }
   }
-
-  // 起始挡位(alpha.9X):起播阶段用 selector maxVideoSize 把 ABR 临时卡在起始档,首帧渲染
-  // (onRenderedFirstFrame)后松开,ABR 在「默认画质上限」的轨道组里爬到默认画质。仅 SABR 应用。
-  var startQualityRelaxed by remember { mutableStateOf(false) }
 
   // ExoPlayer 监听 + 生命周期释放
   DisposableEffect(player) {
