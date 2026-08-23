@@ -36,6 +36,7 @@ import com.kirin.mt.core.i18n.ChineseTextConverters
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.ui.i18n.LocalChineseTextConverter
 import com.kirin.mt.ui.i18n.localizedContext
+import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.IptvRepository
@@ -43,6 +44,7 @@ import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.CdnSelector
@@ -151,11 +153,14 @@ fun BiliMobileApp(
   var showPlaylistPicker by remember { mutableStateOf(false) }
   // 长按菜单里点「下载」→ 弹清晰度选择对话框;确认后入队下载。
   var showDownloadDialog by remember { mutableStateOf(false) }
+  // B站下载弹窗的清晰度列表:经 getPlaybackInfo 拉取后缓存,再开对话框。
+  var biliDownloadQualities by remember { mutableStateOf<List<PlaybackQuality>>(emptyList()) }
   val scope = rememberCoroutineScope()
 
-  // 卡片长按:仅 YouTube 弹操作菜单(下载/加入播放列表),不再直接 toggle。
+  // 卡片长按:B站/YouTube 弹操作菜单(下载/加入播放列表),不再直接 toggle。
+  // IPTV 直播卡除外:直播无下载、加播放列表无意义。
   val onLongPress: (VideoSummary) -> Unit = { video ->
-    if (video.source == SourceYoutube) {
+    if (video.source != SourceIptv) {
       longPressVideo = video
       showPlaylistPicker = false
       showDownloadDialog = false
@@ -470,15 +475,15 @@ fun BiliMobileApp(
       }
     }
 
-    // 长按 YouTube 卡片:底部操作菜单 →「下载」弹清晰度对话框 /「加入播放列表」选列表。
+    // 长按 B站/YouTube 卡片:底部操作菜单 →「下载」弹清晰度对话框 /「加入播放列表」选列表。
     longPressVideo?.let { video ->
       when {
         // 清晰度选择对话框(模态,盖在操作菜单上)。取消只关对话框回到菜单;
-        // 确认后入队下载并收起整套菜单。
+        // 确认后入队下载并收起整套菜单。B站走可播清晰度列表,YouTube 走简单/高清分档。
         showDownloadDialog -> {
           MobileDownloadQualityDialog(
-            isYoutube = true,
-            biliQualities = emptyList(),
+            isYoutube = video.source == SourceYoutube,
+            biliQualities = biliDownloadQualities,
             onDismiss = { showDownloadDialog = false },
             onConfirm = { choice ->
               showDownloadDialog = false
@@ -508,7 +513,31 @@ fun BiliMobileApp(
         else -> {
           MobileYoutubeLongPressSheet(
             video = video,
-            onDownload = { showDownloadDialog = true },
+            onDownload = {
+              // YouTube 直接弹分档对话框;B站先经 playurl 拉可播清晰度列表再弹。
+              // 复用播放器同款 getPlaybackInfo,清晰度与在线播放一致。
+              if (video.source == SourceYoutube) {
+                showDownloadDialog = true
+              } else {
+                scope.launch {
+                  runCatching {
+                    playbackRepository.getPlaybackInfo(
+                      video.toPlaybackRequest(),
+                      effectiveCodecPreference,
+                      settings.playbackQualityPreference,
+                    ).qualities
+                  }
+                    .onSuccess { qs ->
+                      biliDownloadQualities = qs
+                      showDownloadDialog = true
+                    }
+                    .onFailure { e ->
+                      longPressVideo = null
+                      Toast.makeText(context, e.message ?: context.getString(R.string.downloads_enqueue_failed), Toast.LENGTH_LONG).show()
+                    }
+                }
+              }
+            },
             onPickPlaylist = { showPlaylistPicker = true },
             onDismiss = {
               showPlaylistPicker = false
