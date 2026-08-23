@@ -1002,6 +1002,26 @@ TV 端 `TvVideoGrid`(首页/UP 主页/频道页/动态共用)的焦点在两类�
 3. **`MobileYoutubeIntroTab`**:优先 `/player` 的 `publishedAt`;为 `null`/`≤0` 时回退 `request.pubdate`(卡片 `VideoSummary.pubdate` 经 `toPlaybackRequest` 带入),保证发布时间恒显示,与 B 站 data 行行为一致。
 4. 曾试 NewPipe `StreamInfo.getInfo` 兜底(对齐 LibreTube)——解析器修好后该兜底已非必需,`getVideoDetail` 直接从已有 `/player` 响应取日期,不引入二次 getInfo 的脆弱性(真机证伪:历史页 getInfo 抛 null-message 异常)。
 
+## 6.21 SABR 带宽封顶/硬钳制取档黑屏回归:取档与选轨拆开的教训(2026-08,回退 v3.0.5-alpha.6 之后)
+
+**症状**:`v3.0.5-alpha.6` 之后的 6 个 SABR 提交(`ae5481f` 实测带宽硬封顶、`c08438d` 硬钳制取档、`67e2116`/`829886b`/`acb1092`/`c2e4b3d` 配套)引入真机**永久黑屏**:打开任意 YouTube 视频永不 READY,8s 看门狗无限 auto-retry。上个 tag(`be24f18`)能播。
+
+**根因**:`c08438d` 为了修「起播直接爬 2160p → 超大段撑不起 → 看门狗整段重载」,把 **chunk 实际取档(itag)与 `trackSelection.selectedFormat` 拆开**——在 `getNextChunk` 里按带宽 `capBps` 钳制 `fetchIndex`,chunk 用 `trackSelection.getFormat(fetchIndex)`(钳制档),但 AdaptiveTrackSelection 的 `selectedIndex` 仍是**未钳制的最高档**。renderer 期望选中轨格式,收到的是钳制档格式 → 视频轨不激活。
+
+**诊断证据**(真机日志,全部会话 `tracks=0`、0 次 READY):
+- `YtSabrAbr` 起播 `sel=6(origin=0)`——`origin=0`(trackSelection 选中 itag313 VP9 4K)但实际 `fetchIndex=6`(itag135 AVC 480p seed),chunk 数据与 renderer 期望轨格式不一致。
+- `DMCodecAdapterFactory` 创建视频解码器成功(VP9/AVC)但 `CCodecBufferChannel ... Ignoring stale input buffer done callback ... frameIndex=0`——视频 sample **从未喂给解码器**,renderer 未激活视频轨。
+- `stall detected @pos=258000 buffered=29%`——数据缓冲正常(29%),但视频轨没激活,永不 READY → 8s 看门狗无限重载。
+- 第三次会话(带宽已实测 76Mbps、`cap=N`、无钳制、chunk 与 selection 一致)仍 `frameIndex=0` 黑屏——根因不止首会话 seed 钳制,`updateSelectedTrack` 的 iterator 喂法(封顶内全部轨喂合成 iterator vs 旧增量 up/down)也改变 AdaptiveTrackSelection 在 14 轨混合组的选择行为,视频轨不激活。
+
+**修复(回退,commit `7701f3e`)**:`DefaultSabrChunkSource` + `SabrMediaFetcher` 整体回退到 `be24f18`(上个 tag 能播版本)。恢复:
+- `representationHolders[trackSelection.selectedIndex]` + chunk `trackSelection.selectedFormat`——chunk 格式**始终与 renderer 选中轨一致**,格式不拆开。
+- 增量升/降档 iterator(只喂当前档的 `upgradeCandidateIndex`/`downgradeCandidateIndex` 合成 iterator,其余 EMPTY)。
+- 删除 `sharedBandwidthBps` 带宽封顶(全仓库无残留引用,无编译断链)。
+- 云编译 run 32648943155 → success;真机验证恢复播放。
+
+**结论/教训**:**永远不要拆开 chunk 实际取档与 `trackSelection.selectedFormat`**——renderer 按 selection 的选中轨配置解码器,chunk 数据必须与之一致,否则视频轨不激活(tracks=0)、sample 不喂解码器(frameIndex=0)、永不 READY。若以后还要修「起播爬 4K 撑不起」卡顿,正确方向是**降低 DefaultTrackSelector 起播档**(让选中轨本身就是低档,§6.19 的 `599fced` 升序让 index0=低档是这条路),**而不是硬钳制 chunk 取档位**。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
