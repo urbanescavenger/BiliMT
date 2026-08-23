@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.Flow
 /** 下载元数据 DAO。Room 为唯一事实源(进程死/界面重建后仍在)。 */
 @Dao
 interface DownloadDao {
-  @Query("SELECT * FROM download ORDER BY createdAtMs DESC")
+  @Query("SELECT * FROM download ORDER BY sortOrder ASC, createdAtMs DESC")
   @Transaction
   fun observeAll(): Flow<List<DownloadWithItems>>
 
@@ -32,6 +32,10 @@ interface DownloadDao {
 
   @Query("UPDATE download SET coverPath = :coverPath WHERE id = :id")
   suspend fun updateCoverPath(id: Long, coverPath: String?)
+
+  /** 列表拖动排序:重写单个任务的显示顺序。 */
+  @Query("UPDATE download SET sortOrder = :sortOrder WHERE id = :id")
+  suspend fun updateSortOrder(id: Long, sortOrder: Long)
 
   @Query("UPDATE downloadItem SET status = :status, error = :error, initDone = :initDone WHERE id = :id")
   suspend fun updateItemStatus(id: Int, status: String, error: String? = null, initDone: Boolean = false)

@@ -31,4 +31,6 @@ data class DownloadEntity(
   /** 下载所需 HTTP 头(Cookie/Referer/Origin/UA)的 JSON,供续传复用。 */
   val headersJson: String = "{}",
   val createdAtMs: Long,
+  /** 列表显示顺序(ASC)。新任务取负 id 置顶;拖动排序时整列重写 0..n-1。 */
+  val sortOrder: Long = 0L,
 )
