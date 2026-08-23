@@ -318,9 +318,16 @@ class DownloadManager(
     bvid = videoId,
     title = title,
     pic = coverUrl,
+    // 下载时不存作者/计数,显式给空值/0(编译器不支持跳过中间默认参数)。
+    ownerName = "",
+    ownerFace = "",
+    ownerMid = 0L,
+    view = 0,
+    danmaku = 0,
     duration = (durationMs / 1000L).toInt(),
-    cid = cid,
+    pubdate = 0L,
     badge = qualityLabel,
+    cid = cid,
     source = if (source == DownloadSource.YOUTUBE.key) SourceYoutube else SourceBili,
   )
 
