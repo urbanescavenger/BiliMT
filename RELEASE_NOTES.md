@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.5-alpha.7](#v305-alpha7)
 - [v3.0.5-alpha.6](#v305-alpha6)
 - [v3.0.5-alpha.5](#v305-alpha5)
 - [v3.0.5-alpha.4](#v305-alpha4)
@@ -190,6 +191,18 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.5-alpha.7
+
+**YouTube 点赞数显示修复**:真机 YouTube 视频简介区只有「观看 · 时间」没有「点赞」。点赞数原靠 `getVideoDetail` 在 `/player` 之外另发一次 `/next` 从 `videoActions` 工具栏解析回写,但该 `/next` 路径真机取不到(诊断日志 `likes videoId=` 不出现),`detail.likeCount` 恒 null,UI 的 `likeCountInt > 0` 判断把点赞段丢弃。实测 `/player` 的 `microformat` 本身就带 `likeCount` 字段(keys 含该字段,原始数字串),修复改为在 `parseVideoDetail` 里直接用 `parseCount(mf.likeCount)` 读取,免去不稳定往返、更快更稳;`/next` 仍保留作兜底(真能取到则覆盖)。
+
+### 变更
+- **`YoutubeParsers.parseVideoDetail`**:新增 `likeCount = mf?.stringOrNull("likeCount")?.let(::parseCount)` 并在返回的 `YoutubeVideoDetail` 里带上,不再恒留 null。
+
+### 待真机验证
+- 移动端 YouTube 视频简介区显示「观看 · 点赞 · 时间」;点赞数与 B 站客户端一致。
+
+---
 
 ## v3.0.5-alpha.6
 

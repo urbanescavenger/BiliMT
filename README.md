@@ -135,6 +135,9 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.5-alpha.7 | YouTube 点赞数显示修复：点赞数改从 `/player` `microformat.likeCount` 直接取（原靠另发 `/next` 取 videoActions 工具栏，真机取不到致移动端简介点赞行缺失），更快更稳；`/next` 保留作兜底 |
+| v3.0.5-alpha.6 | TV 备份/还原选择弹窗崩溃修复（`SettingsWebDavSelectionDialog` `verticalScroll` 缺有限 max 高，弹窗无限高约束下测量滚动容器抛异常）+ 日志分享面板加「备份」单文件上传 + YouTube 搜索排序对齐 B 站 4 项（综合/最多播放/最新发布/评分，TV+移动端）+ 暂停状态 5s 无操作控制栏自动隐藏（TV 与移动全屏同步） |
+| v3.0.5-alpha.5 | S905X5M 等 Amlogic 盒子解码器误判仅 H264 修复：`CodecCapabilityProbe` 改用 `ALL_CODECS` + `isHardwareAccelerated || !isSoftwareOnly` 判定（厂商 AV1/HEVC 硬解组件不置 `isHardwareAccelerated` 被漏判），修复后解码器出现 Auto/AV1/H265/H264 四项 |
 | v3.0.5-alpha.4 | 多语言三语补齐 + localeFilters 剪包真因修复：`build.gradle.kts` `androidResources.localeFilters` 原只列 zh 变体把 `values-en/es/pt` 整个剪掉（APK arsc 字节搜索证实英文设置永远回落中文），补 `en/es/pt` 后拉丁资源真正进包；ES/PT 由骨架补为全量 664 key 翻译，占位符零错位；清掉语言切换 toast 诊断日志 |
 | v3.0.5-alpha.3 | 多语言支持：语言设置扩展为 6 档（新增 English / Español / Português）。界面骨架文案可切拉丁语，中文动态内容保持原样；`localizedContext()` locale 映射、两套设置页语言项、移动端入口包裹；数字本地化 `CountFormatter`（中文 万/亿，拉丁 K/M/B）；`values-en` 全量 654 key 翻译；硬编码 UI 中文收口进 `stringResource` |
 | v3.0.5-alpha.1 | YouTube SABR 自动档位升级修复：混合 H264/VP9 被默认轨道选择策略坍缩成单轨（`Representation.id` 全 null），显式开混合 mime 自适应后自动档可从 360p 逐步升到 1080p |

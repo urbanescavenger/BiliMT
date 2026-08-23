@@ -198,6 +198,12 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 
 **风险**：`EgZwb3B1bGFy` 未在本仓库实测，若真机首屏不按播放量排序，需改用「构造带 sort 的 order continuation token」（protobuf `80226972` 包装，对齐 rustypipe `order_ctoken`），项目暂无此代码需新写。
 
+### 4.14 视频点赞数主源 `/player microformat.likeCount`（2026-08-23，v3.0.5-alpha.7）
+
+点赞数原靠 `getVideoDetail` 在 `/player` 之外**另发 `/next`** 从 `videoPrimaryInfoRenderer.videoActions` 工具栏解析回写（对齐 NewPipe `getLikeCount`），但真机**该 `/next` 取不到**（诊断日志 `likes videoId=` 不出现），`detail.likeCount` 恒 null → 移动端简介「点赞」段被 `likeCountInt > 0` 丢弃，只显示「观看 · 时间」。
+
+实测 **`/player` 的 `microformat.playerMicroformatRenderer` 本身就带 `likeCount` 键**（keys 含该字段，值为原始数字串如 `"123456"`）。修复：`parseVideoDetail` 直接 `parseCount(mf.likeCount)` 作主源，**免去二次 `/next` 往返、更快更稳**；`/next` videoActions 仍保留作兜底（真能取到则覆盖）。取不到保持 null（UI 不显示点赞行）。
+
 ---
 
 ## 5. 播放（Phase 2，未实现）
