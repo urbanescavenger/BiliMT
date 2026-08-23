@@ -91,16 +91,6 @@ internal class DefaultSabrChunkSource(
 
   private val representationHolders: MutableList<RepresentationHolder>
 
-  /**
-   * 降档后记忆的升档上限 bitrate(初始 [Int.MAX_VALUE] = 不限制,允许爬到清单最高档)。
-   * 一旦因带宽/stall 发生降档(selectedIndex 往低码率走),把上限收紧到「刚降到的档」——
-   * 后续升档不再超过它,防止降档后缓冲回满又冲回最高档无限震荡。想上更高档需手动选。
-   */
-  private var ceilingBitrate: Int = Int.MAX_VALUE
-
-  /** 上一轮 getNextChunk 的 selectedIndex 对应 bitrate,用于检测降档跳变。 */
-  private var lastSelectedBitrate: Int = -1
-
   init {
     val representations =
       adaptationSetIndices.flatMap { manifest.adaptationSets[it].representations }.toList()
@@ -188,25 +178,14 @@ internal class DefaultSabrChunkSource(
     val selectedIndex = trackSelection.selectedIndex
     var representationHolder = representationHolders[selectedIndex]
     fetcher.selectFormat(representationHolder.representation)
-    // alpha.9X(封顶内自适应,修「Auto 起播低档永不升档」+「爬最高被看门狗整段重载」):Auto 全轨自适应原把
-    // 未下载轨的 iterator 全填 EMPTY → selectedIndex 冻结在低档永不升档。现在把**封顶内所有轨道**都喂「基于
-    // 当前档 chunkIndex 的合成 iterator」(YouTube 同视频各 itag 段网格时间对齐,段时序可复用),让 ABR 在封顶内
-    // 自由升/降;封顶 = 实测带宽 × 1.15(见下),**超封顶轨喂 EMPTY → AdaptiveTrackSelection 永远选不到 → 不回
-    // 爬最高档**。已下载档保留真 iterator(可降回);切到未下载档后其 init 才按需加载。
-    val currentBitrate =
-      if (representationHolder.chunkIndex != null) trackSelection.getFormat(trackSelection.selectedIndex).bitrate else -1
-    // alpha.9X(降档后记忆封顶):顶配档(如 itag313 2160p 17.8Mbps)常因网络/解码扛不住——升上去就 stall→
-    // 降档→缓冲回满又升,无限震荡(真机 19:17 日志 sel 在 2160↔1080 间反复跳)。修法不在「从一开始就不升
-    // 最高」,而是**降档后记忆**:初始允许爬到清单最高档;一旦检测到降档(selectedIndex 比上一轮往低码率走),
-    // 把升档上限收紧到刚降到的档,后续升档不再超过它 → 停在网络能撑的档、不再冲回顶。想上更高档需手动选。
-    if (currentBitrate > 0 && lastSelectedBitrate > 0 && currentBitrate < lastSelectedBitrate) {
-      ceilingBitrate = currentBitrate // 降档:封顶到当前(降档后的)档
-    }
-    if (currentBitrate > 0) lastSelectedBitrate = currentBitrate
-    // alpha.9X(带宽封顶,硬约束):实测带宽 × 1.15 与降档记忆封顶(ceilingBitrate)取小作 cap。**高于 cap 的轨
-    // 一律不暴露 iterator 给 AdaptiveTrackSelection(含已加载轨,喂 EMPTY)——它选不到就死锁在最高档,杜绝
-    // 「爬 2160p → 撑不起 → 看门狗整段重载 → 新会话又爬回」死循环。日志铁证:ceiling=271 却 sel=0 2160p,
-    // 说明靠 synthetic 候选的 ceiling 挡不住已加载轨回爬,必须从 iterator 层面断掉。
+    // alpha.9X(封顶内自适应):Auto 全轨自适应原把未下载档的 iterator 全填 EMPTY → selectedIndex 冻结在低档
+    // 永不升档。现在把**封顶内所有轨道**都喂「基于当前档 chunkIndex 的合成 iterator」(YouTube 同视频各 itag
+    // 段网格时间一致,段时序可复用),让 ABR 在封顶内自由升/降;**超封顶轨喂 EMPTY → AdaptiveTrackSelection 永远
+    // 选不到 → 不回爬最高档**。已下载档保留真 iterator(可回退);切到未下载档后其 init 才按需加载。
+    // alpha.9X(带宽封顶,硬约束):cap = 实测带宽 × 1.15。**高于 cap 的档一律不暴露 iterator(含已加载轨,喂
+    // EMPTY)**——挡住「爬 2160p → 撑不起 → 看门狗整段重载 → 新会话又回爬」死循环。带宽未实测(首会话/无 ≥100KB
+    // 媒体段)用起步档 seed(默认 480P)保守起播,实测后随带宽逐档爬。注意:不做「降档后记忆封顶」——那会把 cap
+    // 永久锁死在一次瞬态钳制压低的档(日志铁证 cap≈96k 锁死 278 不升档),带宽是唯一且自恢复的封顶依据。
     val bwBps = SabrMediaFetcher.sharedBandwidthBps
     val unprovenCap = if (trackSelection.length() == 0) 0 else {
       val target = (0..<trackSelection.length()).minByOrNull {
@@ -215,8 +194,7 @@ internal class DefaultSabrChunkSource(
       }
       if (target != null) trackSelection.getFormat(target).bitrate else 0
     }
-    val capBps = if (bwBps > 0) ceilingBitrate.toLong().coerceAtMost((bwBps * 115) / 100).toInt()
-      else ceilingBitrate.coerceAtMost(unprovenCap)
+    val capBps = if (bwBps > 0) (bwBps * 115) / 100 else unprovenCap
     val isWithinCap = { i: Int -> trackSelection.getFormat(i).bitrate in 1..capBps }
     val capIndex = (0..<trackSelection.length()).firstOrNull { trackSelection.getFormat(it).bitrate >= capBps }
     // alpha.9X(硬钳制取档,修「起播/回爬 2160p 超大段 → 慢段拖死 → 看门狗整段重载」):AdaptiveTrackSelection 按
@@ -230,11 +208,6 @@ internal class DefaultSabrChunkSource(
     representationHolder = representationHolders[fetchIndex]
     fetcher.selectFormat(representationHolder.representation)
     val clampedBitrate = trackSelection.getFormat(fetchIndex).bitrate
-    // 降档记忆在钳制档上重算:钳制后取档比上一轮低 → 封顶到当前档(后续升档不超过它,防降档后缓冲回满又冲回顶)。
-    if (clampedBitrate > 0 && lastSelectedBitrate > 0 && clampedBitrate < lastSelectedBitrate) {
-      ceilingBitrate = clampedBitrate
-    }
-    if (clampedBitrate > 0) lastSelectedBitrate = clampedBitrate
     Log.i(
       "YtSabrAbr",
       "sel=$fetchIndex(origin=${trackSelection.selectedIndex}) bitrate=$clampedBitrate bufS=${bufferedDurationUs / 1_000_000}.${
