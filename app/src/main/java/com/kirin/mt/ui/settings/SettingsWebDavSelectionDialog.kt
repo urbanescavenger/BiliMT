@@ -1,7 +1,9 @@
 package com.kirin.mt.ui.settings
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,11 +12,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,6 +30,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -172,7 +178,7 @@ private fun CheckboxRow(
         .padding(horizontal = BiliSpacing.Md),
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      Checkbox(checked = checked, onCheckedChange = { onToggle() })
+      CheckIndicator(checked = checked, accentColor = homeColors.accent, borderColor = homeColors.glassBorder)
       Text(
         text = label,
         color = homeColors.textPrimary,
@@ -180,6 +186,48 @@ private fun CheckboxRow(
         fontWeight = FontWeight.Bold,
         modifier = Modifier.padding(start = BiliSpacing.Sm),
       )
+    }
+  }
+}
+
+/**
+ * 手绘勾选指示:方形外框 + 选中时 accent 填充 + 白色对勾。
+ * 刻意不用 material3 Checkbox——在 TV 的 BiliFocusableSurface+玻璃渲染路径下,
+ * material3 Checkbox 会触发原生渲染崩溃(无 Java crash log),手绘绘制避开该路径。
+ * 视觉对齐 material3 Checkbox(20dp 方形、圆角、对勾)。
+ */
+@Composable
+private fun CheckIndicator(
+  checked: Boolean,
+  accentColor: Color,
+  borderColor: Color,
+) {
+  val indicatorShape = RoundedCornerShape(4.dp)
+  Box(
+    modifier = Modifier
+      .size(20.dp)
+      .clip(indicatorShape)
+      .background(if (checked) accentColor else Color.Transparent)
+      .border(
+        width = 1.dp,
+        color = if (checked) accentColor else borderColor,
+        shape = indicatorShape,
+      ),
+    contentAlignment = Alignment.Center,
+  ) {
+    if (checked) {
+      Canvas(modifier = Modifier.fillMaxSize().padding(4.dp)) {
+        val path = Path().apply {
+          moveTo(size.width * 0.20f, size.height * 0.52f)
+          lineTo(size.width * 0.44f, size.height * 0.74f)
+          lineTo(size.width * 0.82f, size.height * 0.26f)
+        }
+        drawPath(
+          path = path,
+          color = Color.White,
+          style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+        )
+      }
     }
   }
 }
