@@ -97,6 +97,15 @@ internal class SabrMediaFetcher(
   @Volatile private var redirectUrl: String? = null
   @Volatile private var invalidPo = false
   @Volatile private var fatalError: String? = null
+
+  /**
+   * 实测带宽平滑估计(bps,EWMA 0.6/0.4)。存 **companion 级**而非实例——会话内重载/切清晰度重建 fetcher 时
+   * 保留,避免重载后清零又爬回最高档(否则「爬 2160p → 撑不起 → 看门狗整段重载 → 新会话又爬回」死循环)。
+   * [DefaultSabrChunkSource] 据此对档位封顶,超带宽的轨不暴露给 AdaptiveTrackSelection。
+   */
+  companion object {
+    @Volatile var sharedBandwidthBps: Long = 0L
+  }
   @Volatile private var reloadPlayerDump: String? = null
   /**
    * alpha.67(对齐 LibreTube status=2 同步刷新):processPart 里 status=2 置位,media() 的 readParts
@@ -302,6 +311,13 @@ internal class SabrMediaFetcher(
       }
       val elapsed = SystemClock.elapsedRealtime() - t0
       val mbps = if (elapsed > 0) resp.size.toLong() * 8 / (elapsed * 1000L) else -1L
+      // 带宽实测(bps,EWMA 0.6/0.4),存共享 companion 供 chunk source 封顶。只计媒体段(resp>=100KB);
+      // init/控制响应体量小、耗时极短 → instBps 虚高,混入会把封顶撑大 → 又爬回撑不起的档。
+      if (elapsed > 0 && resp.size >= 100_000) {
+        val instBps = resp.size.toLong() * 8L * 1000L / elapsed
+        val prev = sharedBandwidthBps
+        sharedBandwidthBps = if (prev <= 0) instBps else (prev * 6 + instBps * 4) / 10
+      }
       Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps")
       resp
     } catch (e: SabrTerminalException) {
