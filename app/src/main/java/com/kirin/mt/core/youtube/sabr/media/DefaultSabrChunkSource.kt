@@ -194,7 +194,7 @@ internal class DefaultSabrChunkSource(
       }
       if (target != null) trackSelection.getFormat(target).bitrate else 0
     }
-    val capBps = if (bwBps > 0) (bwBps * 115) / 100 else unprovenCap
+    val capBps = if (bwBps > 0) ((bwBps * 115) / 100).toInt() else unprovenCap
     val isWithinCap = { i: Int -> trackSelection.getFormat(i).bitrate in 1..capBps }
     val capIndex = (0..<trackSelection.length()).firstOrNull { trackSelection.getFormat(it).bitrate >= capBps }
     // alpha.9X(硬钳制取档,修「起播/回爬 2160p 超大段 → 慢段拖死 → 看门狗整段重载」):AdaptiveTrackSelection 按
