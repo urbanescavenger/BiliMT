@@ -97,15 +97,6 @@ internal class SabrMediaFetcher(
   @Volatile private var redirectUrl: String? = null
   @Volatile private var invalidPo = false
   @Volatile private var fatalError: String? = null
-
-  /**
-   * 实测带宽平滑估计(bps,EWMA 0.6/0.4)。存 **companion 级**而非实例——会话内重载/切清晰度重建 fetcher 时
-   * 保留,避免重载后清零又爬回最高档(否则「爬 2160p → 撑不起 → 看门狗整段重载 → 新会话又爬回」死循环)。
-   * [DefaultSabrChunkSource] 据此对档位封顶,超带宽的轨不暴露给 AdaptiveTrackSelection。
-   */
-  companion object {
-    @Volatile var sharedBandwidthBps: Long = 0L
-  }
   @Volatile private var reloadPlayerDump: String? = null
   /**
    * alpha.67(对齐 LibreTube status=2 同步刷新):processPart 里 status=2 置位,media() 的 readParts
@@ -524,11 +515,17 @@ internal class SabrMediaFetcher(
     return value to byteLength
   }
 
-  private companion object {
+  companion object {
     /** transient 重试上限(耗尽→SabrTerminalException→evict)。对齐旧 SabrDashDataSource BACKOFF_MAX_ATTEMPTS。 */
     const val MAX_ATTEMPTS = 6
     /** 单次 backoff 最大 sleep(ms,<8s stall watchdog)。对齐旧 MAX_BACKOFF_SLEEP_MS。 */
     const val MAX_BACKOFF_SLEEP_MS = 2_500L
+    /**
+     * 实测带宽平滑估计(bps,EWMA 0.6/0.4)。存 **companion 级**而非实例——会话内重载/切清晰度重建 fetcher 时
+     * 保留,避免重载后清零又爬回最高档(否则「爬 2160p → 撑不起 → 看门狗整段重载 → 新会话又爬回」死循环)。
+     * [DefaultSabrChunkSource] 据此对档位封顶,超带宽的轨不暴露给 AdaptiveTrackSelection。
+     */
+    @Volatile var sharedBandwidthBps: Long = 0L
   }
 }
 
