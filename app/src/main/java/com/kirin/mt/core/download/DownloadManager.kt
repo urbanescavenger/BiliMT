@@ -94,8 +94,6 @@ class DownloadManager(
         createdAtMs = System.currentTimeMillis(),
       ),
     )
-    // 新下载置顶:sortOrder 取负 id(单调递减、唯一),升序排在最前;已拖动的 0..n-1 均在其后。
-    dao.updateSortOrder(id, -id)
     if (resolved.muxed != null) {
       insertPart(id, PartKind.MUXED, resolved.muxed, storage.videoFile(id))
     } else {
@@ -163,11 +161,6 @@ class DownloadManager(
       runCatching { playlistStore.removeVideo(DOWNLOAD_PLAYLIST_NAME, videoId) }
         .onFailure { Log.w(logTag, "删除下载后从下载播放列表移除失败: ${it.message}") }
     }
-  }
-
-  /** 列表拖动排序:按最终显示顺序 [orderedIds] 整列重写 sortOrder 0..n-1。 */
-  suspend fun reorder(orderedIds: List<Long>) {
-    orderedIds.forEachIndexed { i, id -> dao.updateSortOrder(id, i.toLong()) }
   }
 
   /** 返回可播文件(video/muxed,audio 可选)。未完成返回对应 null。 */

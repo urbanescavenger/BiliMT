@@ -4,7 +4,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,8 +16,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -32,13 +29,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -47,15 +41,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.download.DownloadManager
@@ -103,19 +94,6 @@ fun MobileDownloadsScreen(
   var livePartBytes by remember { mutableStateOf<Map<Pair<Long, Int>, Long>>(emptyMap()) }
   // 实时分件总量:(downloadId, partId) → totalBytes(由 progress 报告探测后的真实大小)。
   var livePartTotal by remember { mutableStateOf<Map<Pair<Long, Int>, Long>>(emptyMap()) }
-
-  // ── 列表拖动排序(对齐播放列表长按拖动) ────────────────────────────────────
-  // 显示顺序本地快照:拖动期间允许就地重排,落下后写回 DownloadManager.reorder。
-  // 平时跟随 downloads 流;拖拽中暂停同步,避免状态/进度变化打断拖动。
-  var items by remember { mutableStateOf<List<DownloadWithItems>>(emptyList()) }
-  var dragging by remember { mutableStateOf(false) }
-  var draggingId by remember { mutableStateOf<Long?>(null) }
-  var draggingIndex by remember { mutableIntStateOf(-1) }
-  var draggingInitialOffset by remember { mutableFloatStateOf(0f) }
-  var draggingDelta by remember { mutableFloatStateOf(0f) }
-  val listState = rememberLazyListState()
-  LaunchedEffect(downloads) { if (!dragging) items = downloads }
-
   LaunchedEffect(Unit) {
     downloadManager.progress.collect { p ->
       liveProgress = liveProgress + (p.downloadId to p.fraction)
@@ -126,7 +104,7 @@ fun MobileDownloadsScreen(
   }
 
   Column(modifier = modifier.fillMaxSize()) {
-    if (items.isEmpty()) {
+    if (downloads.isEmpty()) {
       Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
         Text(
           text = stringResource(R.string.downloads_empty),
@@ -136,65 +114,11 @@ fun MobileDownloadsScreen(
       }
     } else {
       LazyColumn(
-        state = listState,
         modifier = Modifier.weight(1f).fillMaxWidth(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
       ) {
-        itemsIndexed(items, key = { _, g -> g.download.id }) { index, group ->
-          val isDragging = group.download.id == draggingId
-          // 拖拽项禁用 animateItem:交换后布局位置立即跳变,由 graphicsLayer 的 translationY 补偿,
-          // 视觉连续跟手;若拖拽项也走 animateItem,交换后位置动画与 translationY 叠加会漂移出重影。
-          val itemModifier = if (isDragging) Modifier else Modifier.animateItem()
-          // 排序手柄手势:即时拖动(非长按,避免与卡片本体的长按操作菜单冲突)。
-          // 轻点/长按手柄与点卡片本体一致(播放/弹菜单),仅拖动触发排序。
-          val dragHandleModifier = if (batchMode) Modifier
-          else Modifier.pointerInput(group.download.id) {
-            detectDragGestures(
-              onDragStart = {
-                draggingId = group.download.id
-                draggingIndex = index
-                dragging = true
-                draggingInitialOffset = listState.layoutInfo.visibleItemsInfo
-                  .firstOrNull { it.index == index }?.offset?.toFloat() ?: 0f
-                draggingDelta = 0f
-              },
-              onDrag = { change, dragAmount ->
-                change.consume()
-                draggingDelta += dragAmount.y
-                val from = draggingIndex
-                if (from < 0) return@detectDragGestures
-                val layoutInfo = listState.layoutInfo
-                val draggingInfo = layoutInfo.visibleItemsInfo.firstOrNull { it.index == from }
-                  ?: return@detectDragGestures
-                // 拖拽项中心 = 初始 offset + 累计 delta(固定,不依赖 item 当前 offset,不漂移)。
-                val draggedCenter = draggingInitialOffset + draggingInfo.size / 2f + draggingDelta
-                val target = layoutInfo.visibleItemsInfo
-                  .filter { it.index != from }
-                  .minByOrNull { kotlin.math.abs(it.offset + it.size / 2f - draggedCenter) }
-                if (target != null && target.index != from) {
-                  val newItems = items.toMutableList()
-                  val item = newItems.removeAt(from)
-                  newItems.add(target.index, item)
-                  items = newItems
-                  draggingIndex = target.index
-                }
-              },
-              onDragEnd = {
-                draggingId = null
-                draggingIndex = -1
-                dragging = false
-                draggingDelta = 0f
-                scope.launch { downloadManager.reorder(items.map { it.download.id }) }
-              },
-              onDragCancel = {
-                draggingId = null
-                draggingIndex = -1
-                dragging = false
-                draggingDelta = 0f
-              },
-            )
-          }
+        items(downloads, key = { it.download.id }) { group ->
           // 组级剩余待下载:Σ(各分件已知总量 - 实时已下载字节)。
           // 总量取 progress 流实时 totalBytes(探测后)优先、Room 快照兜底——避免分件 totalSize
           // 在 DB 里仍为 -1 时被 filter 排除导致「速度在涨但剩余不减」。
@@ -203,7 +127,7 @@ fun MobileDownloadsScreen(
           var totalKnown = false
           for (item in group.items) {
             // 优先用 progress 流实时 reportTotal(DASH 折算后的实际字节,已 emit 即准确);
-            // 未开始下载的分件无 progress → fallback Room item.totalSize。
+            // 未开始下载的分件无 progress 时才 fallback Room item.totalSize。
             val t = livePartTotal[did to item.id] ?: item.totalSize
             if (t > 0L) {
               groupTotal += t
@@ -225,18 +149,6 @@ fun MobileDownloadsScreen(
             }
             .sumOf { it.value }
           DownloadCard(
-            modifier = itemModifier
-              .zIndex(if (isDragging) 1f else 0f)
-              .graphicsLayer {
-                if (isDragging) {
-                  // 拖拽项视觉位移 = 初始 offset + 累计 delta - item 当前 offset。
-                  // item 重排后 offset 变化被自动减掉,拖拽项始终钉在手指下,不重影。
-                  val info = listState.layoutInfo.visibleItemsInfo
-                    .firstOrNull { it.index == draggingIndex }
-                  translationY = if (info != null) draggingInitialOffset + draggingDelta - info.offset else 0f
-                }
-              },
-            dragHandleModifier = dragHandleModifier,
             group = group,
             liveFraction = liveProgress[group.download.id],
             liveSpeedBps = totalSpeed.takeIf { it > 0L },
@@ -256,11 +168,11 @@ fun MobileDownloadsScreen(
         }
       }
       if (batchMode) {
-        val allSelected = items.all { it.download.id in selectedIds }
+        val allSelected = downloads.all { it.download.id in selectedIds }
         DownloadBatchBar(
           selectedCount = selectedIds.size,
           onToggleAll = {
-            onSetSelection(if (allSelected) emptySet() else items.map { it.download.id }.toSet())
+            onSetSelection(if (allSelected) emptySet() else downloads.map { it.download.id }.toSet())
           },
           onDelete = { showDeleteConfirm = true },
         )
@@ -330,8 +242,6 @@ private fun DownloadCard(
   liveFraction: Float?,
   liveSpeedBps: Long?,
   remainingBytes: Long?,
-  modifier: Modifier = Modifier,
-  dragHandleModifier: Modifier = Modifier,
   batchMode: Boolean = false,
   selected: Boolean = false,
   onSelect: () -> Unit = {},
@@ -346,9 +256,9 @@ private fun DownloadCard(
   val fraction = liveFraction ?: group.fraction
   val coverModel = d.coverPath ?: d.coverUrl
 
-  // 批量模式:点卡片=选中/取消,关闭长按;普通模式:单击播放(可播时),长按弹操作菜单。
+  // 批量模式:点卡片=勾选/取消,关闭长按;普通模式:单击播放(可播时),长按弹操作菜单。
   Row(
-    modifier = modifier
+    modifier = Modifier
       .fillMaxWidth()
       .clip(RoundedCornerShape(12.dp))
       .background(MaterialTheme.colorScheme.surfaceVariant)
@@ -426,18 +336,6 @@ private fun DownloadCard(
         DownloadStatus.COMPLETED, DownloadStatus.CANCELLED -> {
           // 无按钮:单击播放 / 长按删除
         }
-      }
-      // 排序手柄(普通模式;批量模式不排序)。手势已由父层 pointerInput 附上。
-      if (!batchMode) {
-        Icon(
-          imageVector = Icons.Filled.Menu,
-          contentDescription = stringResource(R.string.downloads_action_reorder),
-          tint = MaterialTheme.colorScheme.onSurfaceVariant,
-          modifier = Modifier
-            .size(24.dp)
-            .padding(top = 4.dp)
-            .then(dragHandleModifier),
-        )
       }
     }
   }
