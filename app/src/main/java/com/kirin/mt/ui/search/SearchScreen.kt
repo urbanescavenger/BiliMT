@@ -73,6 +73,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.kirin.mt.R
 import com.kirin.mt.core.model.SourceBili
 import com.kirin.mt.core.model.SourceYoutube
+import com.kirin.mt.core.youtube.YoutubeSearchParams
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.storage.SearchHistoryStore
@@ -105,7 +106,7 @@ internal class SearchUiState {
   var searchText by mutableStateOf("")
   var activeQuery by mutableStateOf<String?>(null)
   var source by mutableStateOf(SourceBili)
-  var selectedOrderKey by mutableStateOf(SearchSortOptions.first().key)
+  var selectedOrderKey by mutableStateOf(BiliSearchSortOptions.first().key)
   var focusFirstResult by mutableStateOf(true)
   var focusedResultIndex by mutableIntStateOf(0)
   var focusedResultKey by mutableStateOf("")
@@ -129,6 +130,8 @@ internal class SearchUiState {
       return
     }
     source = newSource
+    // 排序 key 与来源耦合(B站 totalrank/click…,YouTube params 串),切源重置为该源默认「综合」。
+    selectedOrderKey = defaultOrderKey(newSource)
     focusFirstResult = true
     focusedResultIndex = 0
     focusedResultKey = ""
@@ -166,7 +169,7 @@ internal class SearchUiState {
   }
 
   private fun resetResultsForQuery(query: String) {
-    selectedOrderKey = SearchSortOptions.first().key
+    selectedOrderKey = defaultOrderKey(source)
     focusFirstResult = true
     focusedResultIndex = 0
     focusedResultKey = ""
@@ -786,8 +789,8 @@ private fun SearchResultsView(
   onOwnerSelected: (VideoSummary) -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
-  val sortFocusRequesters = remember {
-    SearchSortOptions.associate { option -> option.key to FocusRequester() }
+  val sortFocusRequesters = remember(source) {
+    sortOptionsFor(source).associate { option -> option.key to FocusRequester() }
   }
   val titleFocusRequester = remember { FocusRequester() }
   val selectedOrderKey = uiState.selectedOrderKey
@@ -809,7 +812,7 @@ private fun SearchResultsView(
     uiState.focusedResultKey = ""
     val nextState = try {
       if (source == SourceYoutube) {
-        val page = videoRepository.youtubeSearch(query = query)
+        val page = videoRepository.youtubeSearch(query = query, params = selectedOrderKey)
         if (page.items.isEmpty()) {
           SearchResultState.Empty
         } else {
@@ -1011,7 +1014,7 @@ private fun SearchResultsHeader(
         .onFocusChanged { titleFocused = it.isFocused }
         .onPreviewKeyEvent { event ->
           if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
-            if (source == SourceBili) {
+            if (sortOptionsFor(source).isNotEmpty()) {
               runCatching { sortFocusRequesters.getValue(selectedOrderKey).requestFocus() }.isSuccess
             } else {
               runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
@@ -1044,7 +1047,8 @@ private fun SearchResultsHeader(
         }
       }
     }
-    if (source == SourceBili) {
+    val sortOptions = sortOptionsFor(source)
+    if (sortOptions.isNotEmpty()) {
       LazyRow(
         modifier = Modifier
           .padding(horizontal = BiliSizing.SearchVideoGridHorizontalPadding)
@@ -1054,7 +1058,7 @@ private fun SearchResultsHeader(
         horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
         contentPadding = PaddingValues(horizontal = BiliSpacing.Xs),
       ) {
-        itemsIndexed(SearchSortOptions, key = { _, option -> option.key }) { index, option ->
+        itemsIndexed(sortOptions, key = { _, option -> option.key }) { index, option ->
           val selected = selectedOrderKey == option.key
           SearchSortButton(
             option = option,
@@ -1374,12 +1378,27 @@ private const val RestoreFocusRetryCount = 8
 private const val FirstPage = 1
 private const val PageSize = 20
 
-private val SearchSortOptions = listOf(
+private val BiliSearchSortOptions = listOf(
   SearchSortOption("totalrank", R.string.search_sort_totalrank),
   SearchSortOption("click", R.string.search_sort_click),
   SearchSortOption("pubdate", R.string.search_sort_pubdate),
   SearchSortOption("dm", R.string.search_sort_dm),
 )
+
+/** YouTube 排序:key 即 InnerTube search params(Relevance 为空串→默认综合)。对齐 B站 4 项。 */
+private val YoutubeSearchSortOptions = listOf(
+  SearchSortOption(YoutubeSearchParams.Relevance, R.string.search_sort_totalrank),
+  SearchSortOption(YoutubeSearchParams.ViewCount, R.string.search_sort_click),
+  SearchSortOption(YoutubeSearchParams.UploadDate, R.string.search_sort_pubdate),
+  SearchSortOption(YoutubeSearchParams.Rating, R.string.search_sort_dm),
+)
+
+/** 按来源返回排序选项(两源都有一套,对齐 B站 4 项)。 */
+private fun sortOptionsFor(source: String): List<SearchSortOption> =
+  if (source == SourceYoutube) YoutubeSearchSortOptions else BiliSearchSortOptions
+
+/** 各来源默认排序(综合)的 key,切换来源时用于重置选中项。 */
+private fun defaultOrderKey(source: String): String = sortOptionsFor(source).first().key
 
 private val SearchKeyboardRows = listOf(
   listOf("A", "B", "C", "D", "E", "F"),

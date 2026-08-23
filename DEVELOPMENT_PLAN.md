@@ -920,6 +920,7 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | P11-18 | YouTube 历史并入「历史」tab（本地历史与 B 站历史**混合按播放时间倒序**、YouTube 绿框，未登录也显示本地历史；移除独立「YouTube 历史」子 tab） | ✅ Done（云编译绿） |
 | P11-19 | TV 版 YouTube 功能补全（见下方「TV 版 vs 移动端 YouTube 功能差异待办」分项表） | 待办 |
 | P11-20 | YouTube 相关视频（对齐 LibreTube：`/next` secondaryResults 的 compactVideoRenderer，TV 相关视频面板 + 移动简介 tab 相关视频区 + 播完自动连播） | 实施中（代码改完待云编译，运行时待真机） |
+| P11-21 | YouTube 搜索排序对齐 B 站 4 项（综合/最多播放/最新发布/评分，key 复用 `YoutubeSearchParams`，TV+移动两端排序条放开到 YouTube 源，切源重置默认「综合」） | 实施中（代码改完待云编译，运行时待真机） |
 
 ### TV 版 vs 移动端 YouTube 功能差异待办（P11-19）
 
@@ -935,7 +936,7 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 | 🟡 P2 | **队列/连播 + 听视频模式** | `MobilePlayerScreen.kt`（`onStartPlaylist` 整列表连播 + 顶栏耳机按钮禁视频轨） | TV 版 `PlayerScreen` 单视频播放，无播放队列；无音频-only 入口。连播可接 P1 播放列表落地后做。 |
 | 🟢 P3 | **首页 YouTube 热门挂载核实** | `HomeSection.YoutubeTrending` enum 已存在 | `HomeSection.YoutubeTrending` 已定义但需核实 `HomeScreen.kt` 是否真正渲染该 section；若未挂载则补齐（复用 `YoutubeRepository.getTrending(tab)`）。 |
 
-**说明**：以下差异为 TV/移动端形态必然产物，不算缺陷，不列入待办——屏幕键盘 vs 软键盘、D-pad 焦点 vs 触屏手势、`PlayerOverlay` 覆盖层 vs 底栏 DropdownMenu、发送弹幕内联输入（TV 无软键盘不便）。两端 YouTube 源均无排序选项，属一致缺失。
+**说明**：以下差异为 TV/移动端形态必然产物，不算缺陷，不列入待办——屏幕键盘 vs 软键盘、D-pad 焦点 vs 触屏手势、`PlayerOverlay` 覆盖层 vs 底栏 DropdownMenu、发送弹幕内联输入（TV 无软键盘不便）。两端 YouTube 源排序已由 P11-21 对齐 B 站（综合/最多播放/最新发布/评分）。
 
 ### 发布
 - 测试版 `v2.0.8-alpha.1/.2/.3` 已发布验证；搜索/热门可用。

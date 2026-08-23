@@ -52,6 +52,7 @@ import com.kirin.mt.core.model.SourceBili
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.youtube.YoutubeSearchParams
 import com.kirin.mt.core.storage.SearchHistoryStore
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
@@ -85,19 +86,34 @@ private data class SearchSortOption(
   val titleRes: Int,
 )
 
-private val SearchSortOptions = listOf(
+private val BiliSearchSortOptions = listOf(
   SearchSortOption("totalrank", R.string.search_sort_totalrank),
   SearchSortOption("click", R.string.search_sort_click),
   SearchSortOption("pubdate", R.string.search_sort_pubdate),
   SearchSortOption("dm", R.string.search_sort_dm),
 )
 
+/** YouTube 排序:key 即 InnerTube search params(Relevance 为空串→默认综合)。对齐 B站 4 项。 */
+private val YoutubeSearchSortOptions = listOf(
+  SearchSortOption(YoutubeSearchParams.Relevance, R.string.search_sort_totalrank),
+  SearchSortOption(YoutubeSearchParams.ViewCount, R.string.search_sort_click),
+  SearchSortOption(YoutubeSearchParams.UploadDate, R.string.search_sort_pubdate),
+  SearchSortOption(YoutubeSearchParams.Rating, R.string.search_sort_dm),
+)
+
+/** 按来源返回排序选项(两源都有一套,对齐 B站 4 项)。 */
+private fun sortOptionsFor(source: String): List<SearchSortOption> =
+  if (source == SourceYoutube) YoutubeSearchSortOptions else BiliSearchSortOptions
+
+/** 各来源默认排序(综合)的 key,切换来源时用于重置选中项。 */
+private fun defaultOrderKey(source: String): String = sortOptionsFor(source).first().key
+
 @Stable
 private class MobileSearchUiState {
   var query by mutableStateOf("")
   var submittedQuery by mutableStateOf<String?>(null)
   var source by mutableStateOf(SourceBili)
-  var orderKey by mutableStateOf(SearchSortOptions.first().key)
+  var orderKey by mutableStateOf(BiliSearchSortOptions.first().key)
   var suggestions by mutableStateOf<List<String>>(emptyList())
   var resultState by mutableStateOf<SearchResultState>(SearchResultState.Loading)
 
@@ -121,6 +137,8 @@ private class MobileSearchUiState {
   fun selectSource(newSource: String) {
     if (source == newSource) return
     source = newSource
+    // 排序 key 与来源耦合(B站 totalrank/click…,YouTube params 串),切源重置为该源默认「综合」。
+    orderKey = defaultOrderKey(newSource)
     resultState = SearchResultState.Loading
   }
 }
@@ -156,7 +174,7 @@ fun MobileSearchScreen(
     searchJob = scope.launch {
       val state = try {
         if (uiState.source == SourceYoutube) {
-          val page = videoRepository.youtubeSearch(query = query)
+          val page = videoRepository.youtubeSearch(query = query, params = order)
           if (page.items.isEmpty()) SearchResultState.Empty
           else SearchResultState.Success(
             videos = page.items,
@@ -348,13 +366,14 @@ fun MobileSearchScreen(
         )
       }
     } else {
-      // 结果态:排序 chip(B站) + 结果网格。YouTube 无排序选项。
-      if (uiState.source == SourceBili) {
+      // 结果态:排序 chip(B站/YouTube 各一套,对齐 B站 4 项)。
+      val sortOptions = sortOptionsFor(uiState.source)
+      if (sortOptions.isNotEmpty()) {
         Row(
           modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
           horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-          SearchSortOptions.forEach { opt ->
+          sortOptions.forEach { opt ->
             FilterChip(
               selected = uiState.orderKey == opt.key,
               onClick = { selectOrder(opt.key) },
