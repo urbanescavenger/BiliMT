@@ -257,6 +257,7 @@ object BiliMotion {
   const val FocusSpringDampingRatio = 0.86f
   const val FocusSpringStiffness = 560f
   const val PlayerControlsAutoHideMs = 4_000L
+  const val PlayerPauseIndicatorAutoHideMs = 5_000L
   const val PlayerProgressUpdateMs = 500L
   const val PlayerHeartbeatIntervalMs = 15_000L
   const val PlayerSeekPreviewAutoCommitMs = 1_200L

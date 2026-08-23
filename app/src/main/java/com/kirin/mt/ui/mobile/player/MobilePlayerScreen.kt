@@ -371,6 +371,10 @@ fun MobilePlayerScreen(
   var speedBoostActive by remember { mutableStateOf(false) }
   // 用户主动暂停标志:驱动中央常驻暂停图标(区别于缓冲中/播放结束 isPlaying=false)
   var userPaused by remember { mutableStateOf(false) }
+  // 中央暂停图标可见性:用户暂停时显示,5s 无操作自动隐藏(见 pauseIndicatorEffect)。
+  var showPauseIndicator by remember { mutableStateOf(false) }
+  // 用户操作计数:每次手势(点击/拖动/长按)递增,重启暂停图标隐藏计时。
+  var pauseInteractionToken by remember { mutableIntStateOf(0) }
   // 拖拽 seek 起点记录的播放意图:松手 seek 后若之前在播放则恢复,避免拖拽后意外暂停
   var wasPlayingBeforeSeek by remember { mutableStateOf(false) }
   // 空降助手(AirJump):SponsorBlock 风格自动跳过广告/片头/片尾段,镜像 TV PlayerScreen
@@ -1110,6 +1114,15 @@ fun MobilePlayerScreen(
     }
   }
 
+  // 中央暂停图标:用户暂停(或进入暂停)即显示,每次手势操作重置,5s 无操作自动隐藏。
+  LaunchedEffect(userPaused, pauseInteractionToken) {
+    showPauseIndicator = true
+    if (userPaused) {
+      delay(5000)
+      showPauseIndicator = false
+    }
+  }
+
   // 缓冲(含 seek 后重载、网络抖动)强制显示控制栏,避免全屏黑屏"什么都控制不了"。
   // 缓冲期 isPlaying=false,上面自动隐藏 effect 不触发,栏保持可见;播放恢复后照常 4s 自动隐藏。
   // 非全屏栏本就常驻,强制 true 无副作用;初始 Loading 态栏受 Ready 守卫不渲染,亦无副作用。
@@ -1336,7 +1349,7 @@ fun MobilePlayerScreen(
           // 用 userPaused 而非 !isPlaying,避免缓冲中/播放结束时误显;叠层无 clickable,点击透传到
           // 视频 Box 的 detectPlayerGestures.onCenterTap → togglePlayback() 恢复播放。
           androidx.compose.animation.AnimatedVisibility(
-            visible = userPaused && playerState is MobilePlayerState.Ready,
+            visible = userPaused && playerState is MobilePlayerState.Ready && showPauseIndicator,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.Center),
@@ -1401,9 +1414,16 @@ fun MobilePlayerScreen(
               .fillMaxSize()
               .pointerInput(resumeTick) {
                 detectPlayerGestures(
-                  onCenterTap = { togglePlayback() },
-                  onEdgeTap = { controlsVisible = !controlsVisible },
+                  onCenterTap = {
+                    pauseInteractionToken++
+                    togglePlayback()
+                  },
+                  onEdgeTap = {
+                    pauseInteractionToken++
+                    controlsVisible = !controlsVisible
+                  },
                   onLongPressStart = {
+                    pauseInteractionToken++
                     speedBoostActive = true
                     player.setPlaybackSpeed(2f)
                   },
@@ -1414,6 +1434,7 @@ fun MobilePlayerScreen(
                     }
                   },
                   onSeekStart = {
+                    pauseInteractionToken++
                     dragSeekActive = true
                     wasPlayingBeforeSeek = player.playWhenReady
                   },

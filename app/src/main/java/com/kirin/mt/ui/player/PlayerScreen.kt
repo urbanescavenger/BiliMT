@@ -238,6 +238,10 @@ fun PlayerScreen(
   val playbackBufferedPercentageState = remember { mutableLongStateOf(0L) }
   var danmakuSyncToken by remember { mutableLongStateOf(0L) }
   var playbackPaused by remember { mutableStateOf(false) }
+  /** 中央暂停标志可见性:暂停时显示,5s 无操作自动隐藏(见 pauseIndicatorEffect)。 */
+  var showPauseIndicator by remember { mutableStateOf(false) }
+  /** 用户操作计数:每次 showControls() 递增,重启暂停标志隐藏计时。 */
+  var pauseInteractionToken by remember { mutableIntStateOf(0) }
   var playerActuallyPlaying by remember { mutableStateOf(false) }
   /** 内存态诊断：launch 协程当前步骤，不依赖 logcat，PGC 卡死时叠层直接显示。 */
   var launchStep by remember { mutableStateOf("") }
@@ -364,6 +368,7 @@ fun PlayerScreen(
       progressFocused = false
     }
     controlsVisible = true
+    pauseInteractionToken++
     runCatching { controlsFocusRequester.requestFocus() }
   }
 
@@ -1888,6 +1893,15 @@ fun PlayerScreen(
     }
   }
 
+  // 中央暂停标志:暂停(或进入暂停)即显示,每次用户操作(showControls)重置,5s 无操作自动隐藏。
+  LaunchedEffect(playbackPaused, pauseInteractionToken) {
+    showPauseIndicator = true
+    if (playbackPaused) {
+      delay(BiliMotion.PlayerPauseIndicatorAutoHideMs)
+      showPauseIndicator = false
+    }
+  }
+
   Box(
     modifier = Modifier
       .fillMaxSize()
@@ -2126,6 +2140,7 @@ fun PlayerScreen(
           upFollowed = upFollowed,
           upFollowLoading = upFollowLoading,
           playbackPaused = playbackPaused,
+          showPauseIndicator = showPauseIndicator,
           seekPreviewSpritesEnabled = seekPreviewSpritesEnabled,
           videoshotData = videoshotData,
           videoshotSprites = videoshotSprites,

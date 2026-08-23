@@ -122,6 +122,7 @@ internal fun BoxScope.PlayerOverlay(
   upFollowed: Boolean,
   upFollowLoading: Boolean,
   playbackPaused: Boolean,
+  showPauseIndicator: Boolean,
   seekPreviewSpritesEnabled: Boolean,
   videoshotData: VideoshotData?,
   videoshotSprites: Map<String, ImageBitmap>,
@@ -218,7 +219,7 @@ internal fun BoxScope.PlayerOverlay(
       videoshotSprites = videoshotSprites,
       modifier = Modifier.align(Alignment.Center),
     )
-  } else if (playbackPaused) {
+  } else if (playbackPaused && showPauseIndicator) {
     PauseIndicatorOverlay(modifier = Modifier.align(Alignment.Center))
   }
 
