@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.5-alpha.3](#v305-alpha3)
 - [v3.0.5-alpha.1](#v305-alpha1)
 - [v3.0.4-alpha.9](#v304-alpha9)
 - [v3.0.4-alpha.8](#v304-alpha8)
@@ -187,9 +188,29 @@
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
 
+## v3.0.5-alpha.3
+
+**多语言支持(EN 全量 + ES/PT 骨架 + 硬编码中文收口 + 数字本地化)**:语言设置从仅简体/港繁/台繁扩展为 6 档,新增 **English / Español / Português**。界面骨架文案(导航、设置、播放器、动态、评论、下载等)可切为拉丁语言,中文动态内容(视频标题、UP 名)保持原样。EN 全量翻译 654 条;ES/PT 本期建骨架并接通(缺 key 落默认中文,翻译后补)。
+
+### 变更
+- **`ChineseTextVariant` 枚举泛化**:新增 `English/Spanish/Portuguese` 三值;`ChineseTextConverter.forVariant` 对拉丁语系返回 identity(原样返回,简繁转换只对中文变体生效)。
+- **`localizedContext()` locale 映射**:English→`Locale.ENGLISH`,Spanish→`Locale("es")`,Portuguese→`Locale("pt")`,`stringResource` 自动命中对应 `values-<locale>`。
+- **两套设置页语言项**:TV `SettingsScreen` 与移动 `MobileSettingsScreen` 各加 3 个语言自名选项(`settings_language_english/spanish/portuguese`, 显示 "English"/"Español"/"Português")。
+- **移动端 LocalContext 包裹**:`MobileApp`/`SettingsActivity`/`LoginActivity` 三个入口补 `localizedContext()` + `LocalChineseTextConverter` 包裹(此前移动端 `stringResource` 走系统 locale,语言设置不生效)。
+- **数字本地化 `CountFormatter`**:统一 4 处分散的紧凑计数格式化为一个 locale 感知函数——中文变体 `万/亿`(除 1e4/1e8),拉丁变体 `K/M/B`(除 1e3/1e6/1e9);除数差异是代码逻辑,无法靠翻译字符串表达。
+- **`values-en/strings.xml` 全量英文翻译**:654 key 与默认 key 完全对齐,保留 `%1$s/%d` 占位符;相对时间 → "3 days ago",数字 → "1.2M/120M"。
+- **`values-es`/`values-pt` 骨架**:先放关键自名文案,其余缺 key 落默认中文。
+- **硬编码 UI 中文收口**:扫描 ~671 处 CJK 字面量,按用途甄别——UI 标签抽进 `stringResource`(纳入翻译),日志/诊断文案与来源数据(分区名、B 站数据)保留中文。
+
+### 待真机验证
+- 切英文设置后抽查首页/搜索/设置/播放器/下载的标签为英文;视频标题、UP 名仍为中文原样;相对时间显示 "3 days ago";数字 "1.2M"。
+- 中文变体(简/繁)回归不受影响;ES/PT 切后多数界面落中文属预期(后续填翻译)。
+
+---
+
 ## v3.0.5-alpha.1
 
-**YouTube SABR 自动档位升不上去修复**:自动模式此前卡在最低档(360p/itag243)不升档,手动切档正常;根因是媒体源自合成的 DASH 清单里 H264 + VP9 混合 mime 组被 `DefaultTrackSelector` 默认策略坍缩成单轨,自适应组只剩一条轨,无档可升。现在 TV/移动端播放器显式启用混合 mime 自适应,自动档可逐步升到 1080p。
+**YouTube SABR 自动档位升级不上去修复**:自动模式此前卡在最低档(360p/itag243)不升档,手动切档正常;根因是媒体源自合成的 DASH 清单里 H264 + VP9 混合 mime 组被 `DefaultTrackSelector` 默认策略坍缩成单轨,自适应组只剩一条轨,无档可升。现在 TV/移动端播放器显式启用混合 mime 自适应,自动档可逐步升到 1080p。
 
 ### 变更
 - **`Representation.fromTrack`**:每条轨 `Format.Builder().setId(formatId.itag)`——此前 id 全 null,破坏轨身份导致自适应组构建坍缩成单轨。
