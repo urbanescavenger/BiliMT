@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.5-alpha.6](#v305-alpha6)
 - [v3.0.5-alpha.5](#v305-alpha5)
 - [v3.0.5-alpha.4](#v305-alpha4)
 - [v3.0.5-alpha.3](#v305-alpha3)
@@ -189,6 +190,22 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.5-alpha.6
+
+**TV 备份/还原选择弹窗崩溃修复 + 日志分享面板加备份 + YouTube 搜索排序对齐 + 暂停控制栏自动隐藏**:真机「设置→备份」一点就崩、弹窗未弹、无日志,崩溃日志定位到 Compose 布局异常 `Vertically scrollable component was measured with an infinity maximum height constraints`——`SettingsWebDavSelectionDialog` 的 Column 带 `verticalScroll` 却没给有限 max 高度,弹窗在无限高约束下测量滚动容器直接抛 `IllegalStateException`。修复:在 `verticalScroll` 前补 `.heightIn(max=680.dp)`,与正常工作的 WebDav 配置弹窗一致。随行按用户要求给 TV 日志分享面板补「备份」按钮(单文件上传 WebDAV bilitv/logs,只上传不删本地);另含 YouTube 搜索排序对齐 B 站 4 项(综合/最多播放/最新发布/评分,TV+移动端)、暂停状态 5s 无操作控制栏也自动隐藏(TV 与移动全屏同步)。
+
+### 变更
+- **根因修复 `SettingsWebDavSelectionDialog.kt`**:`Column` modifier 由 `.width(600.dp).verticalScroll(...)` 改为 `.width(600.dp).heightIn(max=680.dp).verticalScroll(...)`,滚动容器受有限 max 高约束,弹窗不再崩溃。
+- **日志备份 `backupLogFile`**:`WebDavBackupService` 新增单文件日志上传(先 `mkcol bilitv/logs` 再 `put`,只上传不删本地);`SettingsLogPanel`/`SettingsScreen`/`AppShell` 接线,每个日志文件行新增「备份」按钮。
+- **搜索排序对齐 B 站 4 项**:综合/最多播放/最新发布/评分,TV+移动端。
+- **暂停控制栏自动隐藏**:暂停状态 5s 无操作控制栏也隐藏,播放结束保持常显供重播/下一集。
+
+### 待真机验证
+- 索尼 7 系:设置→备份弹窗正常弹出、可勾选并执行备份/还原不再崩溃;日志面板每个文件行「备份」单文件上传成功。
+- YouTube 搜索排序 4 项可切换并返回对应结果;暂停后 5s 控制栏自动隐藏。
+
+---
 
 ## v3.0.5-alpha.5
 
