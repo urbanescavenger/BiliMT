@@ -14,6 +14,7 @@ import com.kirin.mt.core.player.PlaybackSegmentBase
 import com.kirin.mt.core.player.PlaybackTrack
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.YoutubeDeliveryPriority
+import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.sabr.FormatId as SabrFormatId
 import com.kirin.mt.core.youtube.sabr.SabrAudioTrack
 import com.kirin.mt.core.youtube.sabr.SabrClient
@@ -82,6 +83,7 @@ class YoutubePlaybackResolver(
     codecPreference: PlaybackCodecPreference,
     codecCapability: CodecCapability,
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+    youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
   ): PlaybackInfo = withContext(Dispatchers.IO) {
     val videoId = request.bvid
     var lastError: String? = null
@@ -130,6 +132,7 @@ class YoutubePlaybackResolver(
               sid,
               subtitleTracks = r.subtitleTracks,
               youtubeDefaultQuality = youtubeDefaultQuality,
+              youtubeStartQuality = youtubeStartQuality,
             )
           }
           Log.w(Tag, "Piped path: buildSabrSessionFromPiped returned null (instance=$instance) → fall back to NewPipe")
@@ -197,6 +200,7 @@ class YoutubePlaybackResolver(
         request, videoId, np.durationMs, np.raws, np.session, sid,
         subtitleTracks = np.subtitleTracks.orEmpty(),
         youtubeDefaultQuality = youtubeDefaultQuality,
+        youtubeStartQuality = youtubeStartQuality,
       )
     }
     // ② NewPipe 无 SABR → DASH/HLS 兜底(alpha.92 自合成 DASH 为主,次 dashMpdUrl[恒空]/HLS)。durationMs 传 0
@@ -1604,6 +1608,7 @@ class YoutubePlaybackResolver(
     sid: String,
     subtitleTracks: List<PlaybackTrack> = emptyList(),
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+    youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
   ): PlaybackInfo {
     val aItag = sabrSession.audioFormatId.itag
     val aRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == aItag }
@@ -1670,10 +1675,13 @@ class YoutubePlaybackResolver(
     } else {
       videoFmts
     }.sortedBy { it.height }
-    // alpha.9X(起步档 480p):index 0 = 初始选轨档。把首个 >=480p 的档挪到最前 → 起播 480p(够清晰、单段
-    // 起播快),带宽够了再爬升;144/240 仍留在 ABR 降档链(网络崩可降)。视频无 480p(如纯 360p)回退最低档。
-    // 手动选档(preferredQualityId)走下方单轨分支,不受此排序影响。
-    val cappedVideoFmts = sortedVideoFmts.firstOrNull { it.height >= 480 }
+    // alpha.9X(起步档设置化):index 0 = 初始选轨档。按 youtubeStartQuality.startHeight 把首个 >= 该高度的档
+    // 挪到最前 → 起播该档(够清晰、单段起播快),带宽够了再升;更低档仍留在 ABR 降档链(网络崩可降)。
+    // startHeight == null(自动-最低档)→ 纯升序,index 0 = 最低档起播。视频无该档(如设 720 但只有 360p)
+    // 回退最低档。手动选档(preferredQualityId)走下方单轨分支,不受此排序影响。
+    val startHeight = youtubeStartQuality.startHeight
+    val cappedVideoFmts = if (startHeight == null) sortedVideoFmts
+    else sortedVideoFmts.firstOrNull { it.height >= startHeight }
       ?.let { start -> listOf(start) + sortedVideoFmts.filterNot { it === start } }
       ?: sortedVideoFmts
     val allVideoTracks = cappedVideoFmts.map { fmt ->

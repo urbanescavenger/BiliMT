@@ -169,6 +169,44 @@ internal object YoutubeParsers {
   }
 
   /**
+   * 从 /next 响应解析视频点赞数（对齐 NewPipe YoutubeStreamExtractor.getLikeCount）。
+   *
+   * 点赞数不在 /player 的 videoDetails，而在 /next 首屏的
+   * `contents.twoColumnWatchNextResults.results.results.contents[]`（带 videoPrimaryInfoRenderer 的那项）
+   * 的 `videoActions.menuRenderer.topLevelButtons`。优先新布局 segmentedLikeDislikeButtonViewModel
+   * （buttonViewModel.accessibilityText），回退旧布局 segmentedLikeDislikeButtonRenderer
+   * （toggleButtonRenderer 的 accessibilityData/accessibility/defaultText 三处 label）。
+   * 两种都取不到返回 null（UI 不显示点赞行）。label/accessibilityText 形如 "1,234 likes" / "1.2M likes"。
+   */
+  fun parseLikeCount(root: JsonObject): Long? {
+    val contents = root.obj("contents")
+      ?.obj("twoColumnWatchNextResults")?.obj("results")?.obj("results")
+      ?.array("contents")
+      ?: return null
+    val primary = contents.firstNotNullOfOrNull { (it as? JsonObject)?.obj("videoPrimaryInfoRenderer") }
+      ?: return null
+    val topButtons = primary.obj("videoActions")?.obj("menuRenderer")?.array("topLevelButtons")
+      ?: return null
+    for (element in topButtons) {
+      val button = element as? JsonObject ?: continue
+      // 新布局：segmentedLikeDislikeButtonViewModel 里 accessibilityText 带计数。
+      val buttonViewModel = button.obj("segmentedLikeDislikeButtonViewModel")
+        ?.obj("likeButtonViewModel")?.obj("likeButtonViewModel")
+        ?.obj("toggleButtonViewModel")?.obj("toggleButtonViewModel")
+        ?.obj("defaultButtonViewModel")?.obj("buttonViewModel")
+      buttonViewModel?.stringOrNull("accessibilityText")?.let { parseCount(it)?.let { c -> if (c >= 0) return c } }
+      // 旧布局：segmentedLikeDislikeButtonRenderer.likeButton.toggleButtonRenderer 三处 label 兜底。
+      val likeToggle = button.obj("segmentedLikeDislikeButtonRenderer")
+        ?.obj("likeButton")?.obj("toggleButtonRenderer") ?: continue
+      val label = likeToggle.obj("accessibilityData")?.obj("accessibilityData")?.stringOrNull("label")
+        ?: likeToggle.obj("accessibility")?.stringOrNull("label")
+        ?: likeToggle.obj("defaultText")?.obj("accessibility")?.obj("accessibilityData")?.stringOrNull("label")
+      if (!label.isNullOrBlank()) parseCount(label)?.let { c -> if (c >= 0) return c }
+    }
+    return null
+  }
+
+  /**
    * 从 /next 响应解析一页评论 + 续页 token。
    *
    * 评论实体散落在 commentThreadRenderer → comment.commentRenderer 子树里，用 collectByKey 递归收集；
@@ -752,11 +790,15 @@ internal object YoutubeParsers {
     val cleaned = text
       .replace(",", "")
       .replace(" views", "", ignoreCase = true)
+      .replace(" likes", "", ignoreCase = true)
       .replace(" watching", "", ignoreCase = true)
       .replace("觀看次數", "", ignoreCase = true)
       .replace("观看次数", "", ignoreCase = true)
       .replace("次观看", "", ignoreCase = true)
       .replace("次播放", "", ignoreCase = true)
+      .replace("次點讚", "", ignoreCase = true)
+      .replace("次点赞", "", ignoreCase = true)
+      .replace("次赞", "", ignoreCase = true)
       .replace("次", "", ignoreCase = true)
       .replace("：", "")
       .replace(":", "")

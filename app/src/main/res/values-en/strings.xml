@@ -199,6 +199,8 @@
     <string name="settings_playback_cdn_description">Switch the CDN node for video streams. Defaults to Bilibili\'s auto allocation; you can manually pick a faster node in peak hours or across networks.</string>
     <string name="settings_youtube_default_quality_title">YouTube default quality</string>
     <string name="settings_youtube_default_quality_description">The quality cap used for new YouTube videos. Auto uses the highest available.</string>
+    <string name="settings_youtube_start_quality_title">YouTube start quality</string>
+    <string name="settings_youtube_start_quality_description">The lowest quality at which an Auto video starts. It then climbs up to the default quality as bandwidth allows. Auto starts at the lowest tier.</string>
     <string name="settings_youtube_content_region_title">YouTube content region</string>
     <string name="settings_youtube_content_region_description">InnerTube content region/language (gl/hl). Defaults to the US; do not set to China (gl=CN triggers anti-bot). When on a VPN for a different region, let gl follow to avoid IP/region mismatch being flagged as a bot, and see region-local content. Note: the primary SABR path is decided by NewPipe; this mainly affects WEB /player and DASH fallback.</string>
     <string name="settings_default_speed_title">Default playback speed</string>
@@ -630,6 +632,7 @@
     <string name="player_share">Share</string>
     <string name="player_desc_unavailable">Description unavailable</string>
     <string name="player_view_count_format">Played %1$s</string>
+    <string name="player_like_count_format">Likes %1$s</string>
     <string name="player_danmaku_count_format">Danmaku %1$s</string>
     <!-- 直播播放器 -->
     <string name="live_play_error">Playback error</string>

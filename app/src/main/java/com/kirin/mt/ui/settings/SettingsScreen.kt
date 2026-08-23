@@ -42,6 +42,7 @@ import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.SpeedTestUiState
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.YoutubeDeliveryPriority
+import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppVisualPerformanceMode
@@ -73,6 +74,7 @@ fun SettingsScreen(
   onSeekPreviewSpritesEnabledChange: (Boolean) -> Unit,
   onPlaybackQualityPreferenceChange: (PlaybackQualityPreference) -> Unit,
   onYoutubeDefaultQualityChange: (YoutubeDefaultQuality) -> Unit,
+  onYoutubeStartQualityChange: (YoutubeStartQuality) -> Unit,
   onYoutubeContentRegionChange: (YoutubeContentRegion) -> Unit,
   onDefaultPlaybackSpeedChange: (DefaultPlaybackSpeed) -> Unit,
   onPlaybackBufferMaxChange: (PlaybackBufferMax) -> Unit,
@@ -133,6 +135,7 @@ fun SettingsScreen(
     mapOf(
       SettingsItemPlaybackQuality to FocusRequester(),
       SettingsItemYoutubeDefaultQuality to FocusRequester(),
+      SettingsItemYoutubeStartQuality to FocusRequester(),
       SettingsItemDefaultSpeed to FocusRequester(),
       SettingsItemPlaybackBufferMax to FocusRequester(),
       SettingsItemChineseTextVariant to FocusRequester(),
@@ -258,6 +261,7 @@ fun SettingsScreen(
         onSeekPreviewSpritesEnabledChange = onSeekPreviewSpritesEnabledChange,
         onPlaybackQualityPreferenceChange = onPlaybackQualityPreferenceChange,
         onYoutubeDefaultQualityChange = onYoutubeDefaultQualityChange,
+        onYoutubeStartQualityChange = onYoutubeStartQualityChange,
         onYoutubeContentRegionChange = onYoutubeContentRegionChange,
         onDefaultPlaybackSpeedChange = onDefaultPlaybackSpeedChange,
         onPlaybackBufferMaxChange = onPlaybackBufferMaxChange,
@@ -491,6 +495,7 @@ private fun SettingsBehaviorColumn(
   onSeekPreviewSpritesEnabledChange: (Boolean) -> Unit,
   onPlaybackQualityPreferenceChange: (PlaybackQualityPreference) -> Unit,
   onYoutubeDefaultQualityChange: (YoutubeDefaultQuality) -> Unit,
+  onYoutubeStartQualityChange: (YoutubeStartQuality) -> Unit,
   onYoutubeContentRegionChange: (YoutubeContentRegion) -> Unit,
   onDefaultPlaybackSpeedChange: (DefaultPlaybackSpeed) -> Unit,
   onPlaybackBufferMaxChange: (PlaybackBufferMax) -> Unit,
@@ -595,6 +600,27 @@ private fun SettingsBehaviorColumn(
           onClick = {
             val currentIndex = qualityOptions.indexOf(effectiveQuality).takeIf { it >= 0 } ?: 0
             onYoutubeDefaultQualityChange(qualityOptions[(currentIndex + 1) % qualityOptions.size])
+          },
+        )
+      }
+      item(key = "youtube-start-quality") {
+        val startQualityOptions = remember { YoutubeStartQuality.entries.toList() }
+        val effectiveStartQuality = settings.youtubeStartQuality
+        SettingsOptionRow(
+          title = stringResource(R.string.settings_youtube_start_quality_title),
+          description = stringResource(R.string.settings_youtube_start_quality_description),
+          value = effectiveStartQuality.label,
+          modifier = Modifier
+            .focusRequester(focusRequesters.getValue(SettingsItemYoutubeStartQuality))
+            .settingsBoundaryKeys(
+              itemIndex = SettingsItemYoutubeStartQuality,
+              onMoveSettingFocus = onMoveSettingFocus,
+              onMoveLeftToNav = onMoveLeftToNav,
+            ),
+          onFocused = { onSettingFocused(SettingsItemYoutubeStartQuality) },
+          onClick = {
+            val currentIndex = startQualityOptions.indexOf(effectiveStartQuality).takeIf { it >= 0 } ?: 0
+            onYoutubeStartQualityChange(startQualityOptions[(currentIndex + 1) % startQualityOptions.size])
           },
         )
       }
@@ -1348,6 +1374,7 @@ private const val SettingsItemHomeThemeVariant = 14
 private const val SettingsItemAutoConfirmOnFocus = 15
 private const val SettingsItemAutoRefreshOnSwitch = 16
 private const val SettingsItemYoutubeDefaultQuality = 17
+private const val SettingsItemYoutubeStartQuality = 40
 private const val SettingsItemDefaultSpeed = 23
 private const val SettingsItemPlaybackBufferMax = 39
 private const val SettingsItemClearCache = 18
@@ -1374,6 +1401,7 @@ private const val SettingsItemYoutubeDeliveryPriority = 38
 private val SettingsFocusableItems = listOf(
   SettingsItemPlaybackQuality,
   SettingsItemYoutubeDefaultQuality,
+  SettingsItemYoutubeStartQuality,
   SettingsItemDefaultSpeed,
   SettingsItemPlaybackBufferMax,
   SettingsItemPlaybackCodec,
@@ -1428,92 +1456,93 @@ private fun settingsItemToLazyIndex(
   SettingsItemPlaybackHeader -> 0
   SettingsItemPlaybackQuality -> 1
   SettingsItemYoutubeDefaultQuality -> 2
-  SettingsItemDefaultSpeed -> 3
-  SettingsItemPlaybackBufferMax -> 4
-  SettingsItemPlaybackCodec -> 5
-  SettingsItemPlaybackCdn -> 6
-  SettingsItemSpeedTest -> 7
-  SettingsItemSeekPreviewSprites -> 8
-  SettingsItemAirJumpAssistant -> 9
-  SettingsItemConfirmPlaybackExit -> 10
-  SettingsItemAutoPlayNextEpisode -> 11
-  SettingsItemAutoPlayRelatedVideo -> 12
-  SettingsItemAutoReturnHomeOnCompletion -> 13
-  SettingsItemShowClock -> 14
-  SettingsItemShowMiniProgressBar -> 15
-  // 16 = "ui-header" section title in LazyColumn
-  SettingsItemVisualPerformanceMode -> 17
-  SettingsItemLiquidGlassCards -> 18
-  SettingsItemHomeThemeVariant -> 19
-  SettingsItemAutoConfirmOnFocus -> 20
-  SettingsItemAutoRefreshOnSwitch -> 21
-  // 22 = "update-header" section title in LazyColumn
-  SettingsItemUpdateCurrentVersion -> 23
-  SettingsItemUpdateDownloadOrInstall -> 24
-  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 25 else -1
+  SettingsItemYoutubeStartQuality -> 3
+  SettingsItemDefaultSpeed -> 4
+  SettingsItemPlaybackBufferMax -> 5
+  SettingsItemPlaybackCodec -> 6
+  SettingsItemPlaybackCdn -> 7
+  SettingsItemSpeedTest -> 8
+  SettingsItemSeekPreviewSprites -> 9
+  SettingsItemAirJumpAssistant -> 10
+  SettingsItemConfirmPlaybackExit -> 11
+  SettingsItemAutoPlayNextEpisode -> 12
+  SettingsItemAutoPlayRelatedVideo -> 13
+  SettingsItemAutoReturnHomeOnCompletion -> 14
+  SettingsItemShowClock -> 15
+  SettingsItemShowMiniProgressBar -> 16
+  // 17 = "ui-header" section title in LazyColumn
+  SettingsItemVisualPerformanceMode -> 18
+  SettingsItemLiquidGlassCards -> 19
+  SettingsItemHomeThemeVariant -> 20
+  SettingsItemAutoConfirmOnFocus -> 21
+  SettingsItemAutoRefreshOnSwitch -> 22
+  // 23 = "update-header" section title in LazyColumn
+  SettingsItemUpdateCurrentVersion -> 24
+  SettingsItemUpdateDownloadOrInstall -> 25
+  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 26 else -1
   SettingsItemClearCache -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    26 + updateExtraCount
-  }
-  SettingsItemChineseTextVariant -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     27 + updateExtraCount
   }
-  SettingsItemHomeSections -> {
+  SettingsItemChineseTextVariant -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     28 + updateExtraCount
   }
-  SettingsItemLogs -> {
+  SettingsItemHomeSections -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    40 + updateExtraCount
+    29 + updateExtraCount
   }
-  SettingsItemAbout -> {
+  SettingsItemLogs -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     41 + updateExtraCount
   }
-  SettingsItemPlayerLogOverlay -> {
+  SettingsItemAbout -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     42 + updateExtraCount
   }
-  SettingsItemYoutubeChannels -> {
+  SettingsItemPlayerLogOverlay -> {
     val updateExtraCount = updateExtraItemCount(updateState)
-    30 + updateExtraCount
+    43 + updateExtraCount
   }
-  SettingsItemYoutubeContentRegion -> {
+  SettingsItemYoutubeChannels -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     31 + updateExtraCount
   }
-  SettingsItemPiped -> {
+  SettingsItemYoutubeContentRegion -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     32 + updateExtraCount
   }
-  SettingsItemYoutubeUsePiped -> {
+  SettingsItemPiped -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     33 + updateExtraCount
   }
-  SettingsItemSabrForceItag -> {
+  SettingsItemYoutubeUsePiped -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     34 + updateExtraCount
   }
-  SettingsItemYoutubeDeliveryPriority -> {
+  SettingsItemSabrForceItag -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     35 + updateExtraCount
   }
-  SettingsItemWebDav -> {
+  SettingsItemYoutubeDeliveryPriority -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     36 + updateExtraCount
   }
-  SettingsItemWebDavBackup -> {
+  SettingsItemWebDav -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     37 + updateExtraCount
   }
-  SettingsItemWebDavRestore -> {
+  SettingsItemWebDavBackup -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     38 + updateExtraCount
   }
-  SettingsItemIptv -> {
+  SettingsItemWebDavRestore -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     39 + updateExtraCount
+  }
+  SettingsItemIptv -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    40 + updateExtraCount
   }
   else -> 0
 }

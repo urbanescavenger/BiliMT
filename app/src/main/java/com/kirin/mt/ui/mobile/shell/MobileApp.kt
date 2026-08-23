@@ -334,6 +334,7 @@ fun BiliMobileApp(
           playbackQualityPreference = settings.playbackQualityPreference,
           playbackCdnPreference = settings.playbackCdnPreference,
           youtubeDefaultQuality = settings.youtubeDefaultQuality,
+          youtubeStartQuality = settings.youtubeStartQuality,
           bufferMaxMs = settings.bufferMax.ms,
           airJumpAssistantEnabled = settings.airJumpAssistantEnabled,
           videoRepository = videoRepository,

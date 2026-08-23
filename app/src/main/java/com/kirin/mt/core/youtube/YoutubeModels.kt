@@ -65,6 +65,8 @@ data class YoutubeVideoDetail(
   val viewCount: Long?,
   /** 发布时间（epoch 秒）；未知为 null。 */
   val publishedAt: Long?,
+  /** 点赞数（/next videoPrimaryInfoRenderer.videoActions 工具栏解析）；未知为 null。 */
+  val likeCount: Long? = null,
 )
 
 /** 一条 YouTube 评论。字段对齐 LibreTube `Comment`（NewPipe CommentsInfoItem）。 */

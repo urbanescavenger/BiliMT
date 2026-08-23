@@ -16,6 +16,7 @@ import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.YoutubeDeliveryPriority
+import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.storage.biliDataStore
 import kotlinx.coroutines.flow.Flow
@@ -74,6 +75,7 @@ class AppSettingsStore(private val context: Context) {
       playbackCodecPreference = PlaybackCodecPreference.fromKey(preferences[Keys.PlaybackCodecPreference]),
       playbackCdnPreference = PlaybackCdnPreference.fromKey(preferences[Keys.PlaybackCdnPreference]),
       youtubeDefaultQuality = YoutubeDefaultQuality.fromKey(preferences[Keys.YoutubeDefaultQuality]),
+      youtubeStartQuality = YoutubeStartQuality.fromKey(preferences[Keys.YoutubeStartQuality]),
       youtubeContentRegion = YoutubeContentRegion.fromKey(preferences[Keys.YoutubeContentRegion]),
       youtubeDeliveryPriority = YoutubeDeliveryPriority.fromKey(preferences[Keys.YoutubeDeliveryPriority]),
       defaultPlaybackSpeed = DefaultPlaybackSpeed.fromKey(preferences[Keys.DefaultPlaybackSpeed]),
@@ -190,6 +192,13 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setYoutubeDefaultQuality(quality: YoutubeDefaultQuality) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.YoutubeDefaultQuality] = quality.key
+    }
+  }
+
+  /** YouTube SABR 自适应起播档。 */
+  suspend fun setYoutubeStartQuality(quality: YoutubeStartQuality) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.YoutubeStartQuality] = quality.key
     }
   }
 
@@ -395,6 +404,7 @@ class AppSettingsStore(private val context: Context) {
     val PlaybackCodecPreference = stringPreferencesKey("playback_codec_preference")
     val PlaybackCdnPreference = stringPreferencesKey("playback_cdn_preference")
     val YoutubeDefaultQuality = stringPreferencesKey("youtube_default_quality")
+    val YoutubeStartQuality = stringPreferencesKey("youtube_start_quality")
     val YoutubeContentRegion = stringPreferencesKey("youtube_content_region")
     val YoutubeDeliveryPriority = stringPreferencesKey("youtube_delivery_priority")
     val DefaultPlaybackSpeed = stringPreferencesKey("default_playback_speed")

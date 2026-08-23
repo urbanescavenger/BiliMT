@@ -69,6 +69,7 @@ import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.YoutubeDeliveryPriority
+import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
@@ -206,6 +207,14 @@ fun MobileSettingsScreen(
       selectedLabel = settings.youtubeDefaultQuality.label,
       options = enumOptions(YoutubeDefaultQuality.entries) { it.label },
       onSelected = { scope.launch { appSettingsStore.setYoutubeDefaultQuality(it) } },
+    )
+    MobileEnumPickerRow(
+      title = stringResource(R.string.settings_youtube_start_quality_title),
+      description = stringResource(R.string.settings_youtube_start_quality_description),
+      selected = settings.youtubeStartQuality,
+      selectedLabel = settings.youtubeStartQuality.label,
+      options = enumOptions(YoutubeStartQuality.entries) { it.label },
+      onSelected = { scope.launch { appSettingsStore.setYoutubeStartQuality(it) } },
     )
     MobileEnumPickerRow(
       title = stringResource(R.string.settings_playback_buffer_title),

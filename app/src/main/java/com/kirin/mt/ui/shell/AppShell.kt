@@ -754,6 +754,11 @@ fun BiliTvApp(
                     appSettingsStore.setYoutubeDefaultQuality(quality)
                   }
                 },
+                onYoutubeStartQualityChange = { quality ->
+                  coroutineScope.launch {
+                    appSettingsStore.setYoutubeStartQuality(quality)
+                  }
+                },
                 onYoutubeContentRegionChange = { region ->
                   coroutineScope.launch {
                     appSettingsStore.setYoutubeContentRegion(region)
@@ -1365,6 +1370,7 @@ fun BiliTvApp(
               playbackCodecPreference = effectivePlaybackCodecPreference,
               playbackQualityPreference = settings.playbackQualityPreference,
               youtubeDefaultQuality = settings.youtubeDefaultQuality,
+              youtubeStartQuality = settings.youtubeStartQuality,
               defaultPlaybackSpeed = settings.defaultPlaybackSpeed,
               bufferMaxMs = settings.bufferMax.ms,
               playbackCdnPreference = settings.playbackCdnPreference,

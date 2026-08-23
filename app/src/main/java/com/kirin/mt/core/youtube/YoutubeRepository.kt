@@ -206,9 +206,20 @@ class YoutubeRepository(
       }
       YoutubeParsers.parseVideoDetail(playerJson)
     }.getOrNull() ?: return null
+    // 点赞数不在 /player 的 videoDetails,在 /next 首屏 videoPrimaryInfoRenderer.videoActions 工具栏
+    // (对齐 NewPipe getLikeCount)。发一次 /next 取点赞并回写;失败保持 null(UI 不显示点赞行)。
+    val withLikes = runCatching {
+      val nextPayload = buildJsonObject { put("videoId", videoId) }
+      val likeCount = YoutubeParsers.parseLikeCount(client.postJson("/next", nextPayload))
+      Log.i("YoutubeDetail", "getVideoDetail likes videoId=$videoId likeCount=$likeCount")
+      if (likeCount != null) detail.copy(likeCount = likeCount) else detail
+    }.getOrElse {
+      Log.w("YoutubeDetail", "getVideoDetail likes failed videoId=$videoId: ${it::class.simpleName}: ${it.message}")
+      detail
+    }
     // /player 的 microformat.publishDate 实测恒 null。对齐 LibreTube:缺省时用 NewPipe getInfo 的
     // uploadDate(与入口路径无关)兜底,保证简介 Tab 恒有发布时间(历史/播放列表/相关视频统一)。
-    if (detail.publishedAt == null) {
+    if (withLikes.publishedAt == null) {
       val npUpload = runCatching {
         val info = StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId")
         val d = info.uploadDate
@@ -219,9 +230,9 @@ class YoutubeRepository(
         Log.w("YoutubeDetail", "getVideoDetail newpipe failed videoId=$videoId: ${it::class.simpleName}: ${it.message}\n${it.stackTraceToString().take(1200)}")
         null
       }
-      if (npUpload != null) return detail.copy(publishedAt = npUpload)
+      if (npUpload != null) return withLikes.copy(publishedAt = npUpload)
     }
-    return detail
+    return withLikes
   }
 
   /**

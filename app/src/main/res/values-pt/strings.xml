@@ -200,6 +200,8 @@
     <string name="settings_playback_cdn_description">Altera o nó CDN do fluxo de vídeo. Por padrão segue a atribuição automática da Bilibili; nas horas de ponta ou em redes intercâneas pode indicar manualmente um nó mais rápido.</string>
     <string name="settings_youtube_default_quality_title">Qualidade padrão do YouTube</string>
     <string name="settings_youtube_default_quality_description">Limite de qualidade utilizado por padrão nos novos vídeos do YouTube. Automático é a qualidade mais alta disponível.</string>
+    <string name="settings_youtube_start_quality_title">Qualidade inicial do YouTube</string>
+    <string name="settings_youtube_start_quality_description">Qualidade mínima em que um vídeo Automático inicia. Depois sobe gradualmente até a qualidade padrão. Automático inicia no nível mais baixo.</string>
     <string name="settings_youtube_content_region_title">Região de conteúdo do YouTube</string>
     <string name="settings_youtube_content_region_description">Região/idioma do conteúdo do InnerTube (gl/hl). Padrão: EUA; não definir China (gl=CN testado como anti-scraper). Com VPN de outra região pode deixar o gl acompanhar, para evitar que o bot seja detetado por IP e região incompatíveis, e ver o conteúdo da região correspondente. Nota: o caminho principal SABR é decidido pelo NewPipe; esta opção afeta principalmente o WEB /player e o fallback DASH.</string>
     <string name="settings_default_speed_title">Velocidade de reprodução padrão</string>
@@ -633,6 +635,7 @@
     <string name="player_share">Partilhar</string>
     <string name="player_desc_unavailable">Descrição indisponível</string>
     <string name="player_view_count_format">Reproduções %1$s</string>
+    <string name="player_like_count_format">Likes %1$s</string>
     <string name="player_danmaku_count_format">Danmaku %1$s</string>
     <!-- Leitor de direto -->
     <string name="live_play_error">Erro de reprodução</string>

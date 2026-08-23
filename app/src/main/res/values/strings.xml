@@ -202,6 +202,8 @@
     <string name="settings_playback_cdn_description">切换视频流的 CDN 节点。默认跟随 B 站自动分配,在晚高峰或跨网环境可手动指定更快的节点。</string>
     <string name="settings_youtube_default_quality_title">YouTube 默认画质</string>
     <string name="settings_youtube_default_quality_description">新开 YouTube 视频默认使用的画质上限。自动为最高可用画质。</string>
+    <string name="settings_youtube_start_quality_title">YouTube 起步画质</string>
+    <string name="settings_youtube_start_quality_description">自动画质时视频起播的最低清晰度档,网络实测后会逐档爬升到默认画质。自动为最低档起播。</string>
     <string name="settings_youtube_content_region_title">YouTube 内容地区</string>
     <string name="settings_youtube_content_region_description">InnerTube 的内容地区/语言(gl/hl)。默认美国;不放中国(gl=CN 实测触发反爬)。挂不同地区 VPN 时可让 gl 跟随,避免 IP 与地区不一致被判 bot,并看对应地区内容。注:主 SABR 路径由 NewPipe 决定,此项主要影响 WEB /player 与 DASH 兜底。</string>
     <string name="settings_default_speed_title">默认播放倍速</string>

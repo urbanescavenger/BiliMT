@@ -101,6 +101,7 @@ import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.LastPlayedStore
@@ -151,6 +152,7 @@ fun PlayerScreen(
   playbackCodecPreference: PlaybackCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
   youtubeDefaultQuality: YoutubeDefaultQuality,
+  youtubeStartQuality: YoutubeStartQuality,
   defaultPlaybackSpeed: DefaultPlaybackSpeed,
   bufferMaxMs: Int,
   playbackCdnPreference: PlaybackCdnPreference,
@@ -1526,6 +1528,7 @@ fun PlayerScreen(
           codecPreference = playbackCodecPreference,
           qualityPreference = playbackQualityPreference,
           youtubeDefaultQuality = youtubeDefaultQuality,
+          youtubeStartQuality = youtubeStartQuality,
         )
       // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体),
       // 或远程 manifest 兜底(DASH/HLS manifest 自带 A/V 轨,dummy 视频轨非 progressive 但 audioTracks 合法为空)。

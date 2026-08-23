@@ -159,6 +159,7 @@ import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.BiliPlaybackHeaders
 import com.kirin.mt.core.download.DownloadWithItems
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackService
 import com.kirin.mt.core.player.startPlaybackService
@@ -292,6 +293,7 @@ fun MobilePlayerScreen(
   playbackQualityPreference: PlaybackQualityPreference,
   playbackCdnPreference: PlaybackCdnPreference,
   youtubeDefaultQuality: YoutubeDefaultQuality,
+  youtubeStartQuality: YoutubeStartQuality,
   bufferMaxMs: Int,
   airJumpAssistantEnabled: Boolean,
   videoRepository: VideoRepository,
@@ -732,6 +734,7 @@ fun MobilePlayerScreen(
         codecPreference = playbackCodecPreference,
         qualityPreference = playbackQualityPreference,
         youtubeDefaultQuality = youtubeDefaultQuality,
+        youtubeStartQuality = youtubeStartQuality,
       )
       selectedQualityId = info.selectedQuality.id
       actualQualityId = info.selectedQuality.id
@@ -2090,9 +2093,9 @@ private fun MobilePlayerIntroHeader(
 }
 
 /**
- * YouTube 简介 Tab:标题 / 频道行(头像+名) / 数据行(观看·发布时间) / 简介 desc。
- * YouTube 无 B 站 view 元数据,由 /player videoDetails 填充;youtubeDetail 未就绪时居中加载圈。
- * 无 B 站互动(点赞/投币)行;简介可能很长,可纵向滚动。
+ * YouTube 简介 Tab:标题 / 频道行(头像+名) / 数据行(观看·点赞·发布时间) / 简介 desc。
+ * YouTube 无 B 站 view 元数据,由 /player videoDetails + /next 工具栏填充;youtubeDetail 未就绪时居中加载圈。
+ * 无 B 站投币行;简介可能很长,可纵向滚动。
  */
 @Composable
 private fun MobileYoutubeIntroTab(
@@ -2183,10 +2186,12 @@ private fun MobileYoutubeIntroTab(
     }
     // 诊断:数据行最终渲染的发布时间来源与值(真机确认「非全屏简介」发布时间是否补上)。
     Log.i(MobilePlayerLogTag, "youtubeIntro pubdate publishedAt=${detail.publishedAt} request=${request.pubdate} effective=${effectivePubdate} rendered='$pubdateText' videoId=${detail.videoId}")
-    // formatCount 只收 Int，YouTube 的 viewCount 是 Long，先收敛到 Int。
+    // formatCount 只收 Int，YouTube 的 viewCount/likeCount 是 Long，先收敛到 Int。
     val viewCountInt = (detail.viewCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    val likeCountInt = (detail.likeCount ?: 0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     val metaParts = buildList {
       if (viewCountInt > 0) add(context.getString(R.string.player_view_count_format, formatCount(viewCountInt, context.resources)))
+      if (likeCountInt > 0) add(context.getString(R.string.player_like_count_format, formatCount(likeCountInt, context.resources)))
       if (pubdateText.isNotBlank()) add(pubdateText)
     }
     if (metaParts.isNotEmpty()) {
