@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.5-alpha.4](#v305-alpha4)
 - [v3.0.5-alpha.3](#v305-alpha3)
 - [v3.0.5-alpha.1](#v305-alpha1)
 - [v3.0.4-alpha.9](#v304-alpha9)
@@ -187,6 +188,20 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.5-alpha.4
+
+**多语言三语补齐 + localeFilters 剪包真因修复**:上一版 alpha.3 的英文真机始终不切——真因**不是** Compose/Context,而是 `build.gradle.kts` `androidResources.localeFilters` 原只列 `zh/zh-rHK/zh-rTW` 三个值,把 `values-en/es/pt` 从 APK 里**整个剪掉**(APK `resources.arsc` 字节搜索证实只含默认+zh-rTW/zh-HK 的串,英文设置永远回落默认中文)。补 `en/es/pt` 进 filter 后英文真机切换生效。ES/PT 由骨架补为**全量 664 key 翻译**,三语(默认/en/es/pt)key 集合零缺失零多余、占位符逐一核对零错位、无裸 `%`/`&`/悬空 `%`,aapt 安全。清掉语言切换 toast 的运行时诊断日志。
+
+### 变更
+- **根因修复 `build.gradle.kts`**:`androidResources.localeFilters` 由 `zh/zh-rHK/zh-rTW` 补为 `zh/zh-rHK/zh-rTW/en/es/pt`,拉丁资源真正进包。
+- **`values-es`/`values-pt` 全量翻译**:各 664 key,相对时间 → "hace %1$d días"/"%1$d dias atrás",数字走 K/M/B(由 locale 感知 `CountFormatter` 分发)。
+- **清理**:移除 `MobileSettingsScreen` 语言切换 toast 的 `BiliMT:i18n` 诊断日志与 `Log`/`Locale` import。
+
+### 待真机验证
+- 切 Español / Português 抽查首页/搜索/设置/播放器/下载,标签应为西语/葡语;相对时间本地化(hace %d días / %d dias atrás);数字 "1.2M"。
+
+---
 
 ## v3.0.5-alpha.3
 
