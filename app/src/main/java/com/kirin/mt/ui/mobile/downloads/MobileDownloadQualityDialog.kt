@@ -63,6 +63,8 @@ private fun BiliQualityDialog(
   }
   var selectedQn by remember { mutableStateOf<Int?>(qualityOptions.firstOrNull()?.id) }
   var audioOnly by remember { mutableStateOf(false) }
+  // 提前取字符串(onClick 非 @Composable 上下文,不能直接调 stringResource)。
+  val audioLabel = stringResource(R.string.downloads_quality_audio)
   AlertDialog(
     onDismissRequest = onDismiss,
     title = { Text(text = stringResource(R.string.downloads_quality_title)) },
@@ -97,7 +99,7 @@ private fun BiliQualityDialog(
             onClick = { audioOnly = true },
           )
           Text(
-            text = stringResource(R.string.downloads_quality_audio),
+            text = audioLabel,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(start = 4.dp),
           )
@@ -112,7 +114,7 @@ private fun BiliQualityDialog(
               DownloadQualityChoice(
                 source = DownloadSource.BILI,
                 biliAudioOnly = true,
-                biliQualityLabel = stringResource(R.string.downloads_quality_audio),
+                biliQualityLabel = audioLabel,
               ),
             )
           } else {
