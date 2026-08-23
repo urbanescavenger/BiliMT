@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.5-alpha.9](#v305-alpha9)
 - [v3.0.5-alpha.8](#v305-alpha8)
 - [v3.0.5-alpha.7](#v305-alpha7)
 - [v3.0.5-alpha.6](#v305-alpha6)
@@ -192,6 +193,25 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.5-alpha.9
+
+**SABR 升降档控制**:不稳定网络下反复升降档 → 看门狗整段重载黑屏。两点改进:
+1. **起始挡位改用公开 API**:alpha.8 的 seed 方案真机失效(首段仍恒最高档,重新 resolve 出 4K 后首段直接拉 4K)。改用 `DefaultTrackSelector.Parameters.setMaxVideoSize(Int.MAX_VALUE, startHeight)` 在起播阶段把 ABR 视频高度临时 cap 在起始挡,`Player.Listener.onRenderedFirstFrame()` 首帧渲染后 `clearVideoSizeConstraints()` 松开——首段**必落起始挡**(不靠带宽估计),公开 API 绕开 `AdaptiveTrackSelection.selectedIndex` private 无法强制起始档的难点。
+2. **ceiling 降档滞回(部分,待修)**:检测到降档把源档及以上升档候选 iterator 置 EMPTY,relax 窗口 `bufferMaxMs/2`=25s;但真机日志证实 `sel` 无视 ceiling 爬满 4K(ceiling=4 时 sel=0 itag299 被选中并下载),根因 media3 `AdaptiveTrackSelection` 选档=「≤带宽估计×0.7 的最高码率挡」不依赖喂的 iterator。待改用 `trackSelection.excludeTrack` 排除。
+
+### 变更
+- **`PlayerScreen.kt` / `MobilePlayerScreen.kt`**:起播阶段 `setMaxVideoSize(Int.MAX_VALUE, startHeight)` 卡起始挡 + `onRenderedFirstFrame` 后 `clearVideoSizeConstraints()` 松开;带宽计抽命名 `val bandwidthMeter` 复用(既给 ExoPlayer 又传 `SabrMediaSource.Factory`)。
+- **`DefaultSabrChunkSource.kt`**:新增 ceiling 降档滞回(降档排除源挡及以上候选、带宽持续达标 `bufferMaxMs/2` 放回一挡)。
+- **`SabrMediaSource.kt`**:Factory 透传 `bufferMaxMs` + `bandwidthMeter`。
+
+### 待真机验证
+- 弱网下降档后不再秒回高挡震荡(ceiling 生效,修 excludeTrack 后);稳定网起播首段落起始挡后爬到默认画质。
+
+### 已知遗留
+- ceiling 门控(迭代器塞 EMPTY)对 media3 1.10.0 失效,待改 `trackSelection.excludeTrack`(见 docs/youtube-hd-playback.md §6.23.2)。
+
+---
 
 ## v3.0.5-alpha.8
 

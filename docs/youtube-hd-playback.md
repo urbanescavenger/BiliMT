@@ -1040,6 +1040,31 @@ TV 端 `TvVideoGrid`(首页/UP 主页/频道页/动态共用)的焦点在两类�
 
 **结论**:1.10.0 起,想让 ABR 从某挡起播,正确做法是 **seed 初始带宽估计到该挡码率**(或降低起播挡),**不是**挪 index0(内部降序重排会打乱)也不是硬钳制 chunk 取档(§6.21 黑屏教训)。真实挡码率随 codec/内容浮动,近似 seed 允许 ±一挡偏差,首段后 ABR 收敛。
 
+## 6.23 SABR 升降档控制:起始挡 maxVideoSize 卡档 + ceiling 迭代器门控失效(excludeTrack 待修)(2026-08,v3.0.5-alpha.9)
+
+**问题背景**:不稳定网络下反复升降档 → 看门狗整段重载黑屏。控制点有两个:①**起始挡**(每个 session 首段钉哪档);②**降档滞回**(降档后不应秒回高挡震荡)。
+
+### 6.23.1 起始挡位:§6.22 的 seed 真机失效 → 换 selector maxVideoSize 起播卡档 + 首帧后松开(a2b38bf/d921ac6)
+
+**真机证据**(`logs_live.log` 01:20-01:21):§6.22 的 seed 方案首段仍恒最高档——Stream A(8 档无 4K)首段 `sel=0`=itag135(1080p);重新 resolve 出 4K 后 Stream B(12 档)首段 `sel=0 bitrate=-1 chunk=false ceiling=null` 直接拉 **itag299 4K**。seed 只在「player 重建后首次选轨」生效,重新 resolve/RELOAD 产生新 chunk source 时 seed 不再参与,首段按当时带宽估计顶最高档。
+
+**修复(a2b38bf,替换 seed)**:用公开 API `DefaultTrackSelector.Parameters.Builder.setMaxVideoSize(Int.MAX_VALUE, startHeight)` 在 `loadRequest` 起播阶段把 ABR 视频**高度 cap 在起始档**(`startHeight = if (isSabrSingle()) youtubeStartQuality.startHeight else null`;非 SABR 不卡),使首段**必落起始档**(不靠带宽估计);`Player.Listener.onRenderedFirstFrame()` 首帧渲染后 `clearVideoSizeConstraints()` 松开,ABR 接着在默认画质上限的轨道组里爬升。TV+移动两 player 均有此实现。这用公开 API 绕开 §6.22 提到「media3 1.10.0 `AdaptiveTrackSelection.selectedIndex` 为 private、无法子类强制起始档」的难点(起始档原本因此搁置,现用 maxHeight 约束达成)。
+
+### 6.23.2 ceiling 降档滞回:迭代器塞 EMPTY 对 AdaptiveTrackSelection 失效(待修,方向 excludeTrack)
+
+**已实施(9977043/f373a2b)**:`DefaultSabrChunkSource` 加 ceiling 滞回——检测到降档(`selectedIndex` 增大;降序排列下 index 高=码率低)把 `ceilingIndex` 收到当前档,源档及以上「升档候选」iterator 置 EMPTY(升档候选置 null);relax 窗口 `bufferMaxMs/2`(PlaybackBufferMax 默认 50s → 25s),带宽实测持续超「ceiling-1 待放宽档」码率÷0.7 满该窗口才放回一档,否则清零重等。TV+移动带宽计抽成命名 `val` 传 `SabrMediaSource.Factory`→`DefaultSabrChunkSource.Factory` 读 `getBitrateEstimate()`。
+
+**真机证据(失效)**:`YtSabrAbr` 日志显示 `sel` **无视 ceiling** 直接爬满 4K:
+- `01:21:09.466 sel=6(→跳跃) ceiling=6` —— ceiling=6 时直接从 6 跳到 0(4K itag299)。
+- `01:21:17.511 sel=0 bitrate=6203838 chunk=true ceiling=4` —— ceiling=4 时 4K 被选中并下载。
+- `up=null` 都正确置空(升档候选被过滤),但 ABR 照样选上比 ceiling 更高的档。
+
+**根因**:media3 1.10.0 `AdaptiveTrackSelection.updateSelectedTrack` 选档核心是 `determineIdealSelectedIndex` = 「≤ 带宽估计×0.7 的最高码率档」(直接按各轨 bitrate + 带宽估计算目标),**不依赖喂给它的 iterator**;iterator 为 EMPTY 只表示「该轨当前无已排队缓冲数据」,并不阻止它被选为下一个档(与 §6.19「喂合成 iterator 才能升」观察不矛盾——那是判断「下一档已缓冲可无缝切」的证据,EMPTY 挡不了带宽估计把高 bitrate 轨选为新目标)。所以「升档候选 iterator 塞 EMPTY」挡不住高档选择,ceiling 形同虚设。
+
+**修法(待实施)**:改用 `trackSelection.excludeTrack(index, exclusionDurationMs)`(media3 原语,`onChunkLoadError` 已用)把 ceiling 档及以上**排除出选轨**——排除后 ABR 的 `length()` 里没有这些轨,不管带宽估计多高都选不到;带宽持续达标再解除排除。relax 窗口 `bufferMaxMs/2` 保留,但只在排除真正生效后才有意义(当前失效时该窗口不参与实际选轨)。
+
+**relax 窗口**:设计为缓冲设置时长的一半 `bufferMaxMs/2`(TvPlaybackLoadControl 的 PlaybackBufferMax,默认 50s→25s),复用同一值不新增常量。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
