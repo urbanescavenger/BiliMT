@@ -212,11 +212,15 @@ internal class DefaultSabrChunkSource(
         }
         .minByOrNull { trackSelection.getFormat(it).bitrate }
     } else null
-    val downgradeCandidateIndex = if (currentBitrate > 0) {
+    // 降档目标 = **所有低于当前档的轨**(合成 iterator)。原先只喂相邻一档,在「相邻档仍高于真实带宽」时
+    // (实测网络 5Mbps vs 相邻 8.9Mbps)AdaptiveTrackSelection 看不到任何够得着的降档目标 → 钉死最高档 →
+    // 缓冲掉底被外部 stall 看门狗整段重载(日志:sel=0 2160p 直到 buf=7% 才 auto-retry)。全量放开低档让 ABR
+    // 一步落到带宽可撑的档(如 itag137 4.4Mbps),升档仍只喂相邻一档(单步渐进,不破坏升档修复)。
+    val downshiftTargets = if (currentBitrate > 0) {
       (0..<trackSelection.length())
         .filter { trackSelection.getFormat(it).bitrate in 1 until currentBitrate }
-        .maxByOrNull { trackSelection.getFormat(it).bitrate }
-    } else null
+        .toSet()
+    } else emptySet()
     // alpha.9X 诊断:ABR 门控与候选,定位「Auto 起播低档后不升档」。bitrate=-1(Format 未设)则 currentBitrate<=0
     // → up/down 恒 null → 选通道全退化为可能钉死起始档。fmts 逐个标真实 bitrate;ceiling 显示降档封顶档。
     val capBitrate = ceilingBitrate
@@ -226,7 +230,7 @@ internal class DefaultSabrChunkSource(
       "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
         bufferedDurationUs % 1_000_000 / 100_000
       } chunkIndex=${representationHolder.chunkIndex != null} " +
-        "up=$upgradeCandidateIndex down=$downgradeCandidateIndex ceiling=${
+        "up=$upgradeCandidateIndex downN=${downshiftTargets.size} ceiling=${
           if (capIndex != null) representationHolders[capIndex].representation.formatId.itag else "unlimited"
         } fmts=${
           (0..<trackSelection.length()).joinToString { i ->
@@ -244,8 +248,8 @@ internal class DefaultSabrChunkSource(
         val holder = representationHolders[i]
         val timing = when {
           holder.chunkIndex != null -> holder                 // 已下载轨:真 iterator(含当前档,可降回)
-          i == upgradeCandidateIndex -> representationHolder   // 下一高码率档:合成(升档)
-          i == downgradeCandidateIndex -> representationHolder // 下一低码率档:合成(网络崩时降档)
+          i == upgradeCandidateIndex -> representationHolder   // 下一高码率档:合成(升档,单步渐进)
+          i in downshiftTargets -> representationHolder        // 所有低于当前档:合成(降档,一步落到位)
           else -> null
         }
         if (timing == null) MediaChunkIterator.EMPTY
