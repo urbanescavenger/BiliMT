@@ -362,6 +362,7 @@
     <string name="player_seek_preview">快轉預覽</string>
     <string name="player_air_jump_will_skip">即將跳過廣告</string>
     <string name="player_air_jump_skipped">已跳過廣告</string>
+    <string name="player_auto_delete_watched_cache">已睇完，已自動刪除該影片嘅下載快取</string>
     <string name="player_completion_next_episode_toast">播放完成，即將播放下一 P：%1$s</string>
     <string name="player_completion_related_toast">播放完成，即將播放推薦影片：%1$s</string>
     <string name="player_completion_home_toast">播放完成，即將退出播放</string>

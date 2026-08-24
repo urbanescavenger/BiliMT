@@ -165,14 +165,15 @@ class DownloadManager(
 
   /**
    * 按视频 id(bvid/videoId)删除该视频的所有下载任务(含分集多档)。供「已看完自动删除缓存」用:
-   * 播放到结尾时调用,清掉该视频的下载文件与存档。未下载则空操作。
+   * 播放到结尾时调用,清掉该视频的下载文件与存档。未下载则空操作。返回实际删除的任务数。
    */
-  suspend fun deleteByVideoId(videoId: String) {
-    if (videoId.isBlank()) return
+  suspend fun deleteByVideoId(videoId: String): Int {
+    if (videoId.isBlank()) return 0
     val ids = dao.observeAll().first()
       .filter { it.download.videoId == videoId }
       .map { it.download.id }
     ids.forEach { delete(it) }
+    return ids.size
   }
 
   /** 返回可播文件(video/muxed,audio 可选)。未完成返回对应 null。 */

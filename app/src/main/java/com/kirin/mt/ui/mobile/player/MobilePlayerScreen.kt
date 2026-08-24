@@ -478,8 +478,13 @@ fun MobilePlayerScreen(
     scope.launch {
       if (reachedEnd) {
         runCatching { watchedStore.markCompleted(info.bvid) }
-        // 已看完自动删除缓存:删该视频的下载文件。开关仅移动端。
-        if (autoDeleteWatchedCache) runCatching { downloadManager.deleteByVideoId(info.bvid) }
+        // 已看完自动删除缓存:删该视频的下载文件。开关仅移动端。实际删了才 Toast 反馈。
+        if (autoDeleteWatchedCache) {
+          val deleted = runCatching { downloadManager.deleteByVideoId(info.bvid) }.getOrDefault(0)
+          if (deleted > 0) {
+            Toast.makeText(context, context.getString(R.string.player_auto_delete_watched_cache), Toast.LENGTH_SHORT).show()
+          }
+        }
       }
       // 本地进度保存保留（B 站按 videoId 也能续播）；B 站 heartbeat 仅 B 站视频上报。
       runCatching { playbackRepository.saveProgress(info.bvid, info.cid, positionMs, durationMs) }

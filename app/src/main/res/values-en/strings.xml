@@ -479,6 +479,7 @@
     <string name="player_seek_preview">Seek preview</string>
     <string name="player_air_jump_will_skip">Skipping ad</string>
     <string name="player_air_jump_skipped">Skipped ad</string>
+    <string name="player_auto_delete_watched_cache">Watched — auto-deleted this video\'s download cache</string>
     <string name="player_completion_next_episode_toast">Playback finished. Playing the next part: %1$s</string>
     <string name="player_completion_related_toast">Playback finished. Playing a recommended video: %1$s</string>
     <string name="player_completion_home_toast">Playback finished. Exiting playback.</string>

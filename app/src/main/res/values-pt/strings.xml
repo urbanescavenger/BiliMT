@@ -478,6 +478,7 @@
     <string name="player_seek_preview">Pré-visualização de avanço</string>
     <string name="player_air_jump_will_skip">Vai saltar o anúncio</string>
     <string name="player_air_jump_skipped">Anúncio saltado</string>
+    <string name="player_auto_delete_watched_cache">Visto — cache de download deste vídeo eliminada automaticamente</string>
     <string name="player_completion_next_episode_toast">Reprodução concluída, vai reproduzir o próximo P: %1$s</string>
     <string name="player_completion_related_toast">Reprodução concluída, vai reproduzir o vídeo recomendado: %1$s</string>
     <string name="player_completion_home_toast">Reprodução concluída, vai sair da reprodução</string>
