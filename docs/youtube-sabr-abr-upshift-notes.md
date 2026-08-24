@@ -79,7 +79,8 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 |---|---|---|---|
 | 2026-08-24 | 升降档改 excludeTrack 真正排除(方案B),替代失效的「EMPTY iterator 门控」 | DefaultSabrChunkSource.kt `applyCeilingExclusions` | 已落地 |
 | 2026-08-24 | 起始档 maxHeight 单边 cap 改 min+max 精确锁(对齐 LibreTube) | PlayerScreen / MobilePlayerScreen | 已落地 |
-| 2026-08-24 | **加带宽计诊断日志 `bw=`(getBitrateEstimate)到 YtSabrAbr 行** | DefaultSabrChunkSource.kt | 本次新增,待真机复测 |
+| 2026-08-24 | 加带宽计诊断日志 `bw=`(getBitrateEstimate)到 YtSabrAbr 行 | DefaultSabrChunkSource.kt | 本次新增,待真机复测 |
+| 2026-08-24 | **建立真实带宽机制**:SabrMediaFetcher 从实际段下载(bytes/elapsed)记录样本,取最近 8 个中位数 `getRealBitrateEstimate()`;relax 放档判定改用真实带宽(替代不可信的媒体3 带宽计)。诊断行同时打 `bw=`(媒体3计)与 `realBw=`(真实)对照 | SabrMediaFetcher.kt / DefaultSabrChunkSource.kt | 本次新增,待真机复测 |
 
 ---
 
@@ -107,6 +108,6 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 
 ## 8. 未决问题清单
 
-- [ ] 带宽计 getBitrateEstimate() 是否低估?(待 §5 日志真机复测)
+- [ ] **带宽计不可靠已坐实,已建真实带宽绕行**(§5 末行):媒体3 `getBitrateEstimate()` 真机 1M↔437M 1000 倍跳变,effectiveBitrate 不可信;改为 SabrMediaFetcher 实际段下载测真实带宽(中位数)驱动 relax 放档。待真机复测 `realBw=` 稳定后,下一步做**排除式强制升档**:relax 时排除当前低档,逼媒体3 `determineIdealSelectedIndex` fallback 返回唯一非排除高档,绕开不可信的 effectiveBitrate
 - [ ] re-resolve 掉档后如何不长期停留低档
-- [ ] relax 强制升档方案是否采用(fallback 绕行,需评估 rebuffer 风险)
+- [ ] relax 强制升档方案是否采用(fallback 绕行,需评估 rebuffer 风险)→ **已定采用**,基于真实带宽机制,待实现

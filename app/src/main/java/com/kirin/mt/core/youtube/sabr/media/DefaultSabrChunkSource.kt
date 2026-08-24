@@ -229,7 +229,12 @@ internal class DefaultSabrChunkSource(
         if (targetBps > 0) {
           val nowMs = SystemClock.elapsedRealtime()
           val thresholdBps = (targetBps / BANDWIDTH_FRACTION).toLong()
-          if (bandwidthMeter.getBitrateEstimate() >= thresholdBps) {
+          // alpha.9X(真实带宽):relax 判定改用 SabrMediaFetcher 从实际段下载测的真实带宽。媒体3
+          // DefaultBandwidthMeter 从 SabrDataSource 上报的样本波动离谱(真机 bw= 1M↔437M 1000 倍跳变),
+          // effectiveBitrate 不可信 → 用它判 relax 会误判「带宽够」却升不上去(见 youtube-sabr-abr-upshift-notes.md)。
+          // 真实带宽(中位数,稳定 8-13M)充足才放回一档。
+          val realBw = fetcher.getRealBitrateEstimate()
+          if (realBw > 0 && realBw >= thresholdBps) {
             if (bandwidthGoodSinceMs == 0L) bandwidthGoodSinceMs = nowMs
             if (nowMs - bandwidthGoodSinceMs >= bufferMaxMs / 2) {
               ceilingIndex = targetIndex
@@ -273,7 +278,7 @@ internal class DefaultSabrChunkSource(
       } chunkIndex=${representationHolder.chunkIndex != null} ceiling=$ceilingIndex goodMs=${bandwidthGoodSinceMs} " +
         // alpha.6b+ 诊断:带宽计原始估计(Kbps)。对照 YtSabr fetch 实际吞吐(8-13M),定位媒体3 带宽计是否严重低估
         // (真机 2026-08-24:ceiling=4 解除 1080p 排除后仍 sel=5,疑 effectiveBitrate 只估到 ~1M 实际 8-13M)。
-        "bw=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
+        "bw=${bandwidthMeter.getBitrateEstimate() / 1000}K realBw=${fetcher.getRealBitrateEstimate() / 1000}K " +
         "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
           (0..<trackSelection.length()).joinToString { i ->
             val f = trackSelection.getFormat(i)

@@ -32,6 +32,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
+import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
@@ -111,6 +112,42 @@ internal class SabrMediaFetcher(
   @Volatile var lastActionMs: Long? = null
 
   private val dispatcher = Dispatchers.IO.limitedParallelism(1)
+
+  // alpha.9X(真实带宽判断机制):媒体3 DefaultBandwidthMeter 从 SabrDataSource 上报的样本波动离谱
+  // (2026-08-24 真机 bw= 在 1M↔437M 之间 1000 倍跳变),effectiveBitrate 不可信 → AdaptiveTrackSelection 升档
+  // 判定错误(掉档后回不来)。这里直接从实际段下载(resp.size/elapsed)采集真实吞吐,过滤 init/retry 小样本
+  // (几十 KB),取最近 [REAL_BW_MAX_SAMPLES] 个样本的中位数(对稳定 8-13M 段稳,抗偶发慢样本),供
+  // [DefaultSabrChunkSource] 的 relax/ceiling 判定用。锁保护跨线程读写(getNextSegment 在 IO 线程、chunk
+  // source 在主 loader 线程)。
+  private val realBandwidthSamples = ArrayDeque<Long>()
+  private val realBandwidthLock = Any()
+
+  companion object {
+    /** 过滤阈值:小于此字节数的样本视为 init/retry/非媒体段,不进真实带宽统计(真实媒体段 ≥ ~300KB)。 */
+    const val REAL_BW_MIN_BYTES = 100_000L
+    /** 中位数滑动窗口样本数。 */
+    const val REAL_BW_MAX_SAMPLES = 8
+  }
+
+  /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。小样本/无效时长丢弃。 */
+  fun recordRealBandwidthSample(bytes: Long, elapsedMs: Long) {
+    if (bytes < REAL_BW_MIN_BYTES || elapsedMs <= 0) return
+    val bps = bytes * 8L * 1000L / elapsedMs
+    synchronized(realBandwidthLock) {
+      realBandwidthSamples.addLast(bps)
+      while (realBandwidthSamples.size > REAL_BW_MAX_SAMPLES) realBandwidthSamples.removeFirst()
+    }
+  }
+
+  /** 真实带宽估计(bps),最近 [REAL_BW_MAX_SAMPLES] 个样本中位数;无样本返回 -1。 */
+  fun getRealBitrateEstimate(): Long {
+    val sorted: List<Long>
+    synchronized(realBandwidthLock) {
+      if (realBandwidthSamples.isEmpty()) return -1L
+      sorted = realBandwidthSamples.sorted()
+    }
+    return sorted[sorted.size / 2]
+  }
 
   /**
    * 由 [SabrMediaPeriod] 选轨时调用,按 mimeType 分 audio/video(对齐 LibreTube selectFormat)。
@@ -302,7 +339,8 @@ internal class SabrMediaFetcher(
       }
       val elapsed = SystemClock.elapsedRealtime() - t0
       val mbps = if (elapsed > 0) resp.size.toLong() * 8 / (elapsed * 1000L) else -1L
-      Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps")
+      recordRealBandwidthSample(resp.size.toLong(), elapsed)
+      Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps est=${getRealBitrateEstimate() / 1000L}K")
       resp
     } catch (e: SabrTerminalException) {
       throw e
