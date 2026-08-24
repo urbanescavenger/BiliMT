@@ -18,18 +18,22 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -48,6 +52,7 @@ import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
+import kotlinx.coroutines.launch
 
 /**
  * WebDAV 备份/还原选择弹窗(居中叠层):「全选」复选框行 + 各项复选框行,均用 [BiliFocusableSurface]
@@ -63,6 +68,7 @@ internal fun SettingsWebDavSelectionDialog(
 ) {
   val homeColors = LocalHomeColors.current
   val panelShape = RoundedCornerShape(BiliRadius.Panel)
+  val coroutineScope = rememberCoroutineScope()
   val items = if (isRestore) {
     listOf(WebDavBackupItem.Channels, WebDavBackupItem.Piped, WebDavBackupItem.Watched)
   } else {
@@ -71,6 +77,8 @@ internal fun SettingsWebDavSelectionDialog(
   var selected by remember { mutableStateOf(items.toSet()) }
   val allFocusRequester = remember { FocusRequester() }
   val startFocusRequester = remember { FocusRequester() }
+  // D-pad 把焦点移到「开始」时,若按钮在滚动区下方不可见,滚动把它带进可视区。
+  val startBringIntoViewRequester = remember { BringIntoViewRequester() }
 
   @Composable
   fun itemLabel(item: WebDavBackupItem): String = when (item) {
@@ -88,7 +96,9 @@ internal fun SettingsWebDavSelectionDialog(
   Box(
     modifier = modifier
       .fillMaxSize()
-      .background(Color.Black.copy(alpha = 0.55f)),
+      .background(Color.Black.copy(alpha = 0.55f))
+      // 内缩留边,内容超高时滚动区也不会贴到屏幕上下边界。
+      .padding(BiliSpacing.Xl),
     contentAlignment = Alignment.Center,
   ) {
     Column(
@@ -143,7 +153,13 @@ internal fun SettingsWebDavSelectionDialog(
           ),
           modifier = Modifier
             .weight(1f)
-            .focusRequester(startFocusRequester),
+            .focusRequester(startFocusRequester)
+            .bringIntoViewRequester(startBringIntoViewRequester)
+            .onFocusChanged { focusState ->
+              if (focusState.isFocused) {
+                coroutineScope.launch { startBringIntoViewRequester.bringIntoView() }
+              }
+            },
           onClick = { if (selected.isNotEmpty()) onConfirm(selected) },
         )
         PipedActionButton(

@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -23,12 +25,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -42,6 +46,7 @@ import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
+import kotlinx.coroutines.launch
 
 /**
  * Piped 实例编辑弹窗(居中叠层):单个 URL 字段,走系统输入法。镜像 [SettingsIptvDialog] 的 stateless
@@ -58,11 +63,14 @@ internal fun SettingsPipedDialog(
   val homeColors = LocalHomeColors.current
   val panelShape = RoundedCornerShape(BiliRadius.Panel)
   val performancePolicy = LocalBiliPerformancePolicy.current
+  val coroutineScope = rememberCoroutineScope()
 
   var urlValue by remember { mutableStateOf(url) }
 
   val urlFocusRequester = remember { FocusRequester() }
   val saveFocusRequester = remember { FocusRequester() }
+  // D-pad 把焦点移到「保存」时,若按钮在滚动区下方不可见,滚动把它带进可视区。
+  val saveBringIntoViewRequester = remember { BringIntoViewRequester() }
 
   BackHandler { onDismiss() }
 
@@ -77,7 +85,9 @@ internal fun SettingsPipedDialog(
     modifier = modifier
       .fillMaxSize()
       .imePadding()
-      .background(Color.Black.copy(alpha = 0.55f)),
+      .background(Color.Black.copy(alpha = 0.55f))
+      // 内缩留边,内容超高时滚动区也不会贴到屏幕上下边界。
+      .padding(BiliSpacing.Xl),
     contentAlignment = Alignment.Center,
   ) {
     Column(
@@ -128,7 +138,13 @@ internal fun SettingsPipedDialog(
           label = stringResource(R.string.settings_webdav_save),
           modifier = Modifier
             .weight(1f)
-            .focusRequester(saveFocusRequester),
+            .focusRequester(saveFocusRequester)
+            .bringIntoViewRequester(saveBringIntoViewRequester)
+            .onFocusChanged { focusState ->
+              if (focusState.isFocused) {
+                coroutineScope.launch { saveBringIntoViewRequester.bringIntoView() }
+              }
+            },
           onClick = ::save,
         )
         PipedActionButton(

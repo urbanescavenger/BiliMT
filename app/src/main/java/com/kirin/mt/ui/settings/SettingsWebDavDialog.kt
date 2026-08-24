@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
@@ -32,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -78,6 +81,8 @@ internal fun SettingsWebDavDialog(
   val usernameFocusRequester = remember { FocusRequester() }
   val passwordFocusRequester = remember { FocusRequester() }
   val saveFocusRequester = remember { FocusRequester() }
+  // D-pad 把焦点移到「保存」时,若按钮在滚动区下方不可见,滚动把它带进可视区。
+  val saveBringIntoViewRequester = remember { BringIntoViewRequester() }
 
   BackHandler { if (!saving) onDismiss() }
 
@@ -107,7 +112,9 @@ internal fun SettingsWebDavDialog(
     modifier = modifier
       .fillMaxSize()
       .imePadding()
-      .background(Color.Black.copy(alpha = 0.55f)),
+      .background(Color.Black.copy(alpha = 0.55f))
+      // 内缩留边,内容超高时滚动区也不会贴到屏幕上下边界。
+      .padding(BiliSpacing.Xl),
     contentAlignment = Alignment.Center,
   ) {
     Column(
@@ -193,7 +200,13 @@ internal fun SettingsWebDavDialog(
           enabled = !saving,
           modifier = Modifier
             .weight(1f)
-            .focusRequester(saveFocusRequester),
+            .focusRequester(saveFocusRequester)
+            .bringIntoViewRequester(saveBringIntoViewRequester)
+            .onFocusChanged { focusState ->
+              if (focusState.isFocused) {
+                coroutineScope.launch { saveBringIntoViewRequester.bringIntoView() }
+              }
+            },
           onClick = ::save,
         )
         WebDavActionButton(
