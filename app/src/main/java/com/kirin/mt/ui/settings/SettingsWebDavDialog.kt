@@ -33,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusGroup
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -111,6 +112,8 @@ internal fun SettingsWebDavDialog(
   Box(
     modifier = modifier
       .fillMaxSize()
+      // 焦点组:把 D-pad 遍历限定在弹窗内,顶部再按上键不会跑到背后设置行。
+      .focusGroup()
       .imePadding()
       .background(Color.Black.copy(alpha = 0.55f))
       // 内缩留边,内容超高时滚动区也不会贴到屏幕上下边界。
