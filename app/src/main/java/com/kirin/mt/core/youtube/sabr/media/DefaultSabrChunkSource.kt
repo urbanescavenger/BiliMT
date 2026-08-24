@@ -271,6 +271,9 @@ internal class DefaultSabrChunkSource(
       "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
         bufferedDurationUs % 1_000_000 / 100_000
       } chunkIndex=${representationHolder.chunkIndex != null} ceiling=$ceilingIndex goodMs=${bandwidthGoodSinceMs} " +
+        // alpha.6b+ 诊断:带宽计原始估计(Kbps)。对照 YtSabr fetch 实际吞吐(8-13M),定位媒体3 带宽计是否严重低估
+        // (真机 2026-08-24:ceiling=4 解除 1080p 排除后仍 sel=5,疑 effectiveBitrate 只估到 ~1M 实际 8-13M)。
+        "bw=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
         "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
           (0..<trackSelection.length()).joinToString { i ->
             val f = trackSelection.getFormat(i)
