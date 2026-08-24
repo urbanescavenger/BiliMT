@@ -47,7 +47,7 @@ class WatchedStore(private val context: Context) {
   }
 
   /** 全部已看完 id（备份用，顺序为最近先）。 */
-  suspend fun all(): List<String> = watched.first()
+  suspend fun all(): List<String> = watched.first().toList()
 
   /** 整体重建（还原用，清空旧列表再写入）。空列表删键。 */
   suspend fun replaceAll(ids: List<String>) {

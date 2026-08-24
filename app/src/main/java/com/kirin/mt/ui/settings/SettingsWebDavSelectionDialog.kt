@@ -64,7 +64,7 @@ internal fun SettingsWebDavSelectionDialog(
   val homeColors = LocalHomeColors.current
   val panelShape = RoundedCornerShape(BiliRadius.Panel)
   val items = if (isRestore) {
-    listOf(WebDavBackupItem.Channels, WebDavBackupItem.Piped)
+    listOf(WebDavBackupItem.Channels, WebDavBackupItem.Piped, WebDavBackupItem.Watched)
   } else {
     WebDavBackupItem.entries
   }
@@ -76,6 +76,7 @@ internal fun SettingsWebDavSelectionDialog(
   fun itemLabel(item: WebDavBackupItem): String = when (item) {
     WebDavBackupItem.Channels -> stringResource(R.string.settings_webdav_item_channels)
     WebDavBackupItem.Piped -> stringResource(R.string.settings_webdav_item_piped)
+    WebDavBackupItem.Watched -> stringResource(R.string.settings_webdav_item_watched)
     WebDavBackupItem.Logs -> stringResource(R.string.settings_webdav_item_logs)
   }
 
