@@ -116,6 +116,7 @@ import com.kirin.mt.core.youtube.YoutubeLoadProgress
 import com.kirin.mt.core.youtube.YoutubeLoadStep
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
+import com.kirin.mt.core.youtube.sabr.media.HeightAwareAdaptiveTrackSelectionFactory
 import com.kirin.mt.core.youtube.sabr.media.SabrBandwidthMeter
 import com.kirin.mt.core.youtube.sabr.media.SabrManifest
 import com.kirin.mt.core.youtube.sabr.media.SabrMediaFetcher
@@ -287,7 +288,10 @@ fun PlayerScreen(
     // 默认不允许混合 mime 进同一条 adaptive selection,把选组锁在选定轨的 mime 上(选定 VP9 就只剩 1 轨,
     // 永不升档)。显式 DefaultTrackSelector 开视频混合 mime + 非无缝自适应 + 多自适应,让选择器把 5 档
     // 正确组进 adaptive selection 供 ABR 爬升。(B站 DASH 同组多 codec 也正确处理,无副作用;单轨组不受影响。)
-    val trackSelector = DefaultTrackSelector(context)
+    // alpha.9Y(分辨率优先选档):媒体3 原生按 bitrate 选档会被 YouTube bitrate/height 错位卡在
+    // 1080p 不升(1440p 声明 13.9M < 1080p 14.4M)。注入按 height 选档的自定义 selection(见
+    // HeightAwareAdaptiveTrackSelection),带宽只当门槛。混合 mime 组走自定义,音频等退化父类。
+    val trackSelector = DefaultTrackSelector(context, HeightAwareAdaptiveTrackSelectionFactory())
     trackSelector.setParameters(
       DefaultTrackSelector.Parameters.Builder()
         .setAllowVideoMixedMimeTypeAdaptiveness(true)
