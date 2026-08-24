@@ -103,3 +103,12 @@ class YoutubeHistoryStore(private val context: Context) {
     const val MaxEntries = 50
   }
 }
+
+/**
+ * 历史条目缩略图 URL：优先已存的 [YoutubeHistoryEntry.thumbnailUrl]；为空时回退到
+ * 确定性 ytimg 缩略图 `https://i.ytimg.com/vi/{videoId}/hqdefault.jpg`。
+ * 老版本可能在起播时未填 coverUrl 而存下空 thumbnailUrl，导致历史卡封面加载失败(YT ERR)，
+ * 卡片渲染统一走这里，旧条目无需重播即修复。
+ */
+fun YoutubeHistoryEntry.resolveThumbnailUrl(): String =
+  thumbnailUrl.ifBlank { "https://i.ytimg.com/vi/$videoId/hqdefault.jpg" }

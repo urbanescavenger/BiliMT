@@ -35,6 +35,7 @@ import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.youtube.YoutubeHistoryEntry
+import com.kirin.mt.core.youtube.resolveThumbnailUrl
 import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
@@ -265,7 +266,7 @@ private fun YoutubeHistoryEntry.toVideoSummary(): VideoSummary {
   return VideoSummary(
     bvid = videoId,
     title = title,
-    pic = thumbnailUrl,
+    pic = resolveThumbnailUrl(),
     ownerName = channelName,
     ownerFace = "",
     ownerMid = 0L,
