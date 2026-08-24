@@ -122,13 +122,6 @@ internal class SabrMediaFetcher(
   private val realBandwidthSamples = ArrayDeque<Long>()
   private val realBandwidthLock = Any()
 
-  companion object {
-    /** 过滤阈值:小于此字节数的样本视为 init/retry/非媒体段,不进真实带宽统计(真实媒体段 ≥ ~300KB)。 */
-    const val REAL_BW_MIN_BYTES = 100_000L
-    /** 中位数滑动窗口样本数。 */
-    const val REAL_BW_MAX_SAMPLES = 8
-  }
-
   /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。小样本/无效时长丢弃。 */
   fun recordRealBandwidthSample(bytes: Long, elapsedMs: Long) {
     if (bytes < REAL_BW_MIN_BYTES || elapsedMs <= 0) return
@@ -551,6 +544,10 @@ internal class SabrMediaFetcher(
     const val MAX_ATTEMPTS = 6
     /** 单次 backoff 最大 sleep(ms,<8s stall watchdog)。对齐旧 MAX_BACKOFF_SLEEP_MS。 */
     const val MAX_BACKOFF_SLEEP_MS = 2_500L
+    /** 过滤阈值:小于此字节数的样本视为 init/retry/非媒体段,不进真实带宽统计(真实媒体段 ≥ ~300KB)。 */
+    const val REAL_BW_MIN_BYTES = 100_000L
+    /** 中位数滑动窗口样本数。 */
+    const val REAL_BW_MAX_SAMPLES = 8
   }
 }
 
