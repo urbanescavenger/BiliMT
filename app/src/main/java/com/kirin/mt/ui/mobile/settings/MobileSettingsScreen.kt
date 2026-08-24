@@ -148,26 +148,21 @@ fun MobileSettingsScreen(
     }
   }
 
-  // 最新版本 row 的动作分派(已并入「检查更新」):Available 且未重新检查 → 重新检查,
+  // 最新版本 row 的动作分派(已与「检查更新」):Available 且未重新检查 → 重新检查,
   // Available 且已重新检查仍是最新 → 下载;Downloaded → 安装;Idle/UpToDate/Failed → 检查更新;
   // Checking/Downloading → 不可点。
-  // 注意:分支必须是单层 lambda(如 { scope.launch { ... } }),不能写成 { { ... } } 双层——
-  // 双层时外层 lambda 的 body 是另一个 lambda 字面量,被求值后丢弃(Unit 返回),内层永不执行。
+  // 动作必须先定义为显式 () -> Unit 变量:scope.launch 返回 Job,直接写 { scope.launch { ... } }
+  // 会让 lambda 推断成 () -> Job,放入 when/if 分支期期望类型传不进、when 被推断成 Any? 编译失败。
+  // 末尾补 Unit 强制成 () -> Unit;且不可用双层 lambda({ { ... } })——外层 body 是内层 lambda 字面量,
+  // 被求值后丢弃,内层永不执行。
+  val checkAction: () -> Unit = { scope.launch { updateManager.refresh() }; Unit }
+  val downloadAction: () -> Unit = { scope.launch { updateManager.download() }; Unit }
+  val installAction: () -> Unit = { installDownloadedApk() }
   val updateVersionOnClick: (() -> Unit)? = when (val s = updateState.status) {
-    // 显式标注 action 类型:scope.launch 返回 Job,若直接放 if 分支会被推断成 () -> Job,
-    // 期望类型 (() -> Unit)? 传不进 if 分支,整个 when 变 Any? 编译失败。
-    is UpdateUiState.Status.Available -> {
-      val action: (() -> Unit)? = if (s.rechecked) {
-        { scope.launch { updateManager.download() } }
-      } else {
-        { scope.launch { updateManager.refresh() } }
-      }
-      action
-    }
-    is UpdateUiState.Status.Downloaded -> { installDownloadedApk() }
+    is UpdateUiState.Status.Available -> if (s.rechecked) downloadAction else checkAction
+    is UpdateUiState.Status.Downloaded -> installAction
     is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> null
-    // scope.launch 返回 Job,末尾补 Unit 让 lambda 显式 () -> Unit,否则 when 推断成 Any?。
-    else -> { scope.launch { updateManager.refresh() }; Unit }
+    else -> checkAction
   }
 
   Column(
