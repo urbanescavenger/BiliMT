@@ -110,6 +110,6 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 
 ## 8. 未决问题清单
 
-- [x] **带宽计不可靠已坐实,最终用「带宽驱动选档」根治**(§5 末行):媒体3 `getBitrateEstimate()` 真机 1M↔437M 跳变 → 新建 `SabrBandwidthMeter` 让带宽计返回真实带宽(中位数),媒体3 原生 ABR 按可信带宽选档,删除 exclude/force 补丁。**2026-08-24 日志**:realBw 稳定 7-9M、relax 放回高档(ceiling 4→3)但媒体3 sel 钉死 1080p,force-climb 钉档后又反致掉 480p → 补丁路不干净,回退改带宽计。**待真机复测**:bw= 稳定、sel 随真实带宽自然升降、无 4K 震荡/黑屏
+- [x] **带宽计不可靠已坐实,最终用「带宽驱动选档」根治**(§5 末行):媒体3 `getBitrateEstimate()` 真机 1M↔437M 跳变 → 新建 `SabrBandwidthMeter` 让带宽计返回真实带宽(中位数),媒体3 原生 ABR 按可信带宽选档,删除 exclude/force 补丁。**2026-08-24 复测通过**:`bw=` 稳定平滑(912K→12M→25M,不再 27K↔232M 狂跳);会话1 真实带宽 12-28M 直接选到顶档 4K(299@6.2M)稳定钉住;会话2 带宽 886K→6M→9.7M→11M 时 **1080p→1440p→4K 自然爬升**,无震荡、无黑屏、无看门狗重载。**「没升」问题根治,媒体3 原生 ABR 按真实带宽选最高可负担档,升降全自动,无需任何 exclude/force 补丁**
 - [ ] re-resolve 掉档后如何从 480p 回档(4K 重新 resolve 重建 selection 清起始锁 → ABR 回落到真实带宽档,一般已够;待复测确认)
 - [x] relax 强制抬升 → **已废弃**,改带宽驱动(上一条)

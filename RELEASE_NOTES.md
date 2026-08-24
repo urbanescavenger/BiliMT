@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.6-alpha.2](#v306-alpha2)
 - [v3.0.6-alpha.1](#v306-alpha1)
 - [v3.0.5-alpha.9](#v305-alpha9)
 - [v3.0.5-alpha.8](#v305-alpha8)
@@ -194,6 +195,18 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.6-alpha.2
+
+**SABR 带宽驱动选档根治升降档**:媒体3 带宽计被 SabrDataSource 内存读样本污染(`getBitrateEstimate` 真机 1M↔437M 1000 倍跳变)致 effectiveBitrate 不可信、ABR 钉死低档不升;新建 `SabrBandwidthMeter` 让带宽计返回 SabrMediaFetcher 实测真实带宽(中位数),媒体3 原生 ABR 按可信带宽自动选最高可负担档,升降全自动。真机复测 1080p→1440p→4K 自然爬升,无震荡、无黑屏、无看门狗重载。
+
+### 变更
+- **`SabrBandwidthMeter.kt`(新)**:包装 `DefaultBandwidthMeter` 的 `BandwidthMeter`,`getBitrateEstimate()` 返回 SabrMediaFetcher 实测真实带宽(中位数);无真实样本时回落 delegate。TV+移动端播放器用 wrapper 建带宽计,注入 ExoPlayer 与 `SabrMediaSource`。
+- **`DefaultSabrChunkSource.kt`**:删除 ceiling/force-climb exclude 补丁(force-climb 真机反致掉 480p,exclude 路不干净),改向带宽计注入真实带宽来源,让媒体3 原生 ABR 选档;保留相邻档合成 iterator 供 ABR 看到备选轨。
+- **`SabrMediaSource.kt`**:Factory 带宽计类型 `DefaultBandwidthMeter`→`BandwidthMeter`。
+- **`PlayerScreen.kt` / `MobilePlayerScreen.kt`**:`SabrBandwidthMeter(DefaultBandwidthMeter...)` 建带宽计,取流、初始档锁、升降档两端实现完全一致。
+- **`SabrMediaFetcher.kt`**:实测真实带宽(段下载字节/时长,最近 8 样本中位数,100KB 起样本)。
+- **真机验证**(2026-08-24):`bw=` 稳定平滑(912K→12M→25M,不再 27K↔232M 狂跳);会话1 真实带宽 12-28M 直接选顶档 4K(299@6.2M)稳定钉住;会话2 带宽 886K→6M→9.7M→11M 时 1080p→1440p→4K 自然爬升。详见 [docs/youtube-sabr-abr-upshift-notes.md](docs/youtube-sabr-abr-upshift-notes.md) §8。
 
 ## v3.0.6-alpha.1
 
