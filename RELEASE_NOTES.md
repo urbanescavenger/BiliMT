@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.6-alpha.3](#v306-alpha3)
 - [v3.0.6-alpha.2](#v306-alpha2)
 - [v3.0.6-alpha.1](#v306-alpha1)
 - [v3.0.5-alpha.9](#v305-alpha9)
@@ -195,6 +196,16 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.6-alpha.3
+
+**SABR 可持续带宽 + 分辨率优先选档根治两处选档问题**:①带宽样本计入段间等待,根治「8K 缓冲掉不降档」(瞬时吞吐高估可持续带宽);②Auto 选档改按分辨率(height)优先、bitrate 只当带宽门槛,根治「Auto 卡 1080p 不升」(YouTube 声明 bitrate 与 height 错位)。
+
+### 变更
+- **`SabrMediaFetcher.kt`**:带宽样本计入段间等待——`bps = bytes/(elapsed + gapSinceLastFetchEnd)`,根治「8K 缓冲掉不降档」。此前 `bytes/elapsed` 只计下载耗时,漏掉段间 gap(8K 段 4.6s 下载后等 23-30s 才拉下一段,瞬时吞吐 84M vs 可持续 ~15M),媒体3 拿高估带宽误判 8K 可负担、缓冲耗尽仍不降档。加 `lastFetchEndRealtimeMs` 墙钟锚点。
+- **`HeightAwareAdaptiveTrackSelection.kt`(新)**:Auto 选档按 height 优先、bitrate 只当带宽门槛。media3 `AdaptiveTrackSelection` 按 bitrate 降序选档(bitrate 兼当画质顺序+带宽门槛),而 YouTube 声明 bitrate 与 height 错位(308 1440p 13.9M < 303 1080p 14.4M),带宽够也停在 1080p。本类 override public `updateSelectedTrack` 自算 `effective=getBitrateEstimate()`(可持续中位数,不再乘 0.7)+ 按 height 选最高可负担档,override public `getSelectedIndex()` 写回(父类选档全 private 不可复用);`HeightAwareAdaptiveTrackSelectionFactory` override protected `createAdaptiveTrackSelection`(5 参)注入,音频等无 height 组退化父类按码率选档。
+- **`PlayerScreen.kt` / `MobilePlayerScreen.kt`**:`DefaultTrackSelector(context)` → `DefaultTrackSelector(context, HeightAwareAdaptiveTrackSelectionFactory())`。
+- **待真机复测**:Auto 从 1080p 自然升 1440p/4K、带宽不足能降档、无黑屏无看门狗重载;8K 起播即降到可负担档、缓冲掉能降档。详见 [docs/youtube-sabr-abr-upshift-notes.md](docs/youtube-sabr-abr-upshift-notes.md) §5/§8。
 
 ## v3.0.6-alpha.2
 
