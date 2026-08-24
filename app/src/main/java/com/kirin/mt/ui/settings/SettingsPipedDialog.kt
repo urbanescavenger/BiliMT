@@ -1,6 +1,5 @@
 package com.kirin.mt.ui.settings
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -18,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.window.Dialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,10 +31,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -73,8 +72,6 @@ internal fun SettingsPipedDialog(
   // D-pad 把焦点移到「保存」时,若按钮在滚动区下方不可见,滚动把它带进可视区。
   val saveBringIntoViewRequester = remember { BringIntoViewRequester() }
 
-  BackHandler { onDismiss() }
-
   // 弹窗打开时焦点先落到 URL 字段(仅高亮不弹 IME),按确认键才唤起系统输入法。
   LaunchedEffect(Unit) {
     runCatching { urlFocusRequester.requestFocus() }
@@ -82,18 +79,20 @@ internal fun SettingsPipedDialog(
 
   fun save() = onSave(normalizeIptvUrl(urlValue))
 
-  Box(
-    modifier = modifier
-      .fillMaxSize()
-      // 焦点组:把 D-pad 遍历限定在弹窗内,顶部再按上键不会跑到背后设置行。
-      .focusGroup()
-      .imePadding()
-      .background(Color.Black.copy(alpha = 0.55f))
-      // 内缩留边,内容超高时滚动区也不会贴到屏幕上下边界。
-      .padding(BiliSpacing.Xl),
-    contentAlignment = Alignment.Center,
+  // 真 Dialog 窗口:独立 window 自带焦点根,D-pad 遍历不会逃到背后的设置页。
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false),
   ) {
-    Column(
+    Box(
+      modifier = modifier
+        .fillMaxSize()
+        .imePadding()
+        // 内缩留边,内容超高时滚动区也不会贴到屏幕上下边界。
+        .padding(BiliSpacing.Xl),
+      contentAlignment = Alignment.Center,
+    ) {
+      Column(
       modifier = Modifier
         .width(720.dp)
         .heightIn(max = 680.dp)
@@ -156,6 +155,7 @@ internal fun SettingsPipedDialog(
           onClick = onDismiss,
         )
       }
+    }
     }
   }
 }

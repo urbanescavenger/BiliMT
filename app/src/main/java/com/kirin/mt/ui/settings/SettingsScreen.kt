@@ -394,7 +394,6 @@ fun SettingsScreen(
           // 弹窗关闭后焦点回到打开它的 WebDAV 行,避免落到侧栏头像。
           focusSettingItem(SettingsItemWebDav)
         },
-        modifier = Modifier.align(Alignment.Center),
       )
     }
     if (showIptvDialog) {
@@ -412,7 +411,6 @@ fun SettingsScreen(
           showIptvDialog = false
           focusSettingItem(SettingsItemIptv)
         },
-        modifier = Modifier.align(Alignment.Center),
       )
     }
     if (showPipedDialog) {
@@ -427,7 +425,6 @@ fun SettingsScreen(
           showPipedDialog = false
           focusSettingItem(SettingsItemPiped)
         },
-        modifier = Modifier.align(Alignment.Center),
       )
     }
     if (showBackupDialog) {
@@ -451,7 +448,6 @@ fun SettingsScreen(
           showBackupDialog = false
           focusSettingItem(SettingsItemWebDavBackup)
         },
-        modifier = Modifier.align(Alignment.Center),
       )
     }
     if (showRestoreDialog) {
@@ -475,7 +471,6 @@ fun SettingsScreen(
           showRestoreDialog = false
           focusSettingItem(SettingsItemWebDavRestore)
         },
-        modifier = Modifier.align(Alignment.Center),
       )
     }
   }

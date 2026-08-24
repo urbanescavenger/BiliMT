@@ -1,6 +1,5 @@
 package com.kirin.mt.ui.settings
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -19,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,7 +32,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -41,6 +40,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
@@ -89,22 +89,22 @@ internal fun SettingsWebDavSelectionDialog(
     WebDavBackupItem.Logs -> stringResource(R.string.settings_webdav_item_logs)
   }
 
-  BackHandler { onDismiss() }
-
   // 打开时焦点先落到「全选」行,按确认切换全选,D-pad 下移逐项单选。
   LaunchedEffect(Unit) { runCatching { allFocusRequester.requestFocus() } }
 
-  Box(
-    modifier = modifier
-      .fillMaxSize()
-      // 焦点组:把 D-pad 遍历限定在弹窗内,顶部再按上键不会跑到背后设置行。
-      .focusGroup()
-      .background(Color.Black.copy(alpha = 0.55f))
-      // 内缩留边,内容超高时滚动区也不会贴到屏幕上下边界。
-      .padding(BiliSpacing.Xl),
-    contentAlignment = Alignment.Center,
+  // 真 Dialog 窗口:独立 window 自带焦点根,D-pad 遍历不会逃到背后的设置页。
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false),
   ) {
-    Column(
+    Box(
+      modifier = modifier
+        .fillMaxSize()
+        // 内缩留边,内容超高时滚动区也不会贴到屏幕上下边界。
+        .padding(BiliSpacing.Xl),
+      contentAlignment = Alignment.Center,
+    ) {
+      Column(
       modifier = Modifier
         .width(600.dp)
         .heightIn(max = 680.dp)
@@ -171,6 +171,7 @@ internal fun SettingsWebDavSelectionDialog(
           onClick = onDismiss,
         )
       }
+    }
     }
   }
 }
