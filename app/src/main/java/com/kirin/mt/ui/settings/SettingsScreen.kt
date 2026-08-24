@@ -1027,8 +1027,9 @@ private fun SettingsBehaviorColumn(
           ),
         onFocused = { onSettingFocused(SettingsItemUpdateDownloadOrInstall) },
         onClick = {
-          when (updateState.status) {
-            is UpdateUiState.Status.Available -> onDownloadUpdate()
+          when (val s = updateState.status) {
+            // 刚检查到更新先重新检查(可能已有更新版本),确认仍是最新才下载。
+            is UpdateUiState.Status.Available -> if (s.rechecked) onDownloadUpdate() else onCheckUpdate()
             is UpdateUiState.Status.Downloaded -> onInstallUpdate()
             is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> {}
             else -> onCheckUpdate()

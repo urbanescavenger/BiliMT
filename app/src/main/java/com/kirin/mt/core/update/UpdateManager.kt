@@ -28,6 +28,9 @@ class UpdateManager(
   }
 
   suspend fun refresh() {
+    // 从 Available 状态发起的刷新 = 用户主动「重新检查」,确认后仍是最新则转可下载(rechecked=true);
+    // 从 Idle/UpToDate/Failed 发起的 = 首次检查,rechecked=false。
+    val wasAvailable = _state.value.status is UpdateUiState.Status.Available
     _state.update { it.copy(status = UpdateUiState.Status.Checking) }
     val installed = appInfo.current()
     val info = try {
@@ -50,7 +53,7 @@ class UpdateManager(
     }
     val asset = info.matchingAsset
     if (asset == null) {
-      _state.update { it.copy(status = UpdateUiState.Status.Available(info)) }
+      _state.update { it.copy(status = UpdateUiState.Status.Available(info, rechecked = wasAvailable)) }
       return
     }
     // 缓存文件必须与远端 asset 大小一致才算已下载：debug 的固定 asset 名（BiliMT-debug.apk）
@@ -59,7 +62,7 @@ class UpdateManager(
     if (downloader.isDownloaded(asset.name) && downloader.downloadedFileSize(asset.name) == asset.size) {
       _state.update { it.copy(status = UpdateUiState.Status.Downloaded(info)) }
     } else {
-      _state.update { it.copy(status = UpdateUiState.Status.Available(info)) }
+      _state.update { it.copy(status = UpdateUiState.Status.Available(info, rechecked = wasAvailable)) }
     }
   }
 
@@ -82,7 +85,8 @@ class UpdateManager(
       _state.update { it.copy(status = UpdateUiState.Status.Downloaded(info)) }
       file
     } catch (e: Exception) {
-      _state.update { it.copy(status = UpdateUiState.Status.Available(info)) }
+      // 下载失败回到 Available 且 rechecked=true,让按钮保持「下载更新」,再点可重试下载而非重新检查。
+      _state.update { it.copy(status = UpdateUiState.Status.Available(info, rechecked = true)) }
       throw e
     }
   }

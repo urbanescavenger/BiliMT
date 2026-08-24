@@ -148,13 +148,20 @@ fun MobileSettingsScreen(
     }
   }
 
-  // 最新版本 row 的动作分派(已并入「检查更新」):Available → 下载,Downloaded → 安装,
-  // Idle/UpToDate/Failed → 检查更新,Checking/Downloading → 不可点。
-  val updateVersionOnClick: (() -> Unit)? = when (updateState.status) {
-    is UpdateUiState.Status.Available -> { { scope.launch { updateManager.download() } } }
-    is UpdateUiState.Status.Downloaded -> { { installDownloadedApk() } }
+  // 最新版本 row 的动作分派(已并入「检查更新」):Available 且未重新检查 → 重新检查,
+  // Available 且已重新检查仍是最新 → 下载;Downloaded → 安装;Idle/UpToDate/Failed → 检查更新;
+  // Checking/Downloading → 不可点。
+  // 注意:分支必须是单层 lambda(如 { scope.launch { ... } }),不能写成 { { ... } } 双层——
+  // 双层时外层 lambda 的 body 是另一个 lambda 字面量,被求值后丢弃(Unit 返回),内层永不执行。
+  val updateVersionOnClick: (() -> Unit)? = when (val s = updateState.status) {
+    is UpdateUiState.Status.Available -> if (s.rechecked) {
+      { scope.launch { updateManager.download() } }
+    } else {
+      { scope.launch { updateManager.refresh() } }
+    }
+    is UpdateUiState.Status.Downloaded -> { installDownloadedApk() }
     is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> null
-    else -> { { scope.launch { updateManager.refresh() } } }
+    else -> { scope.launch { updateManager.refresh() } }
   }
 
   Column(
