@@ -754,8 +754,11 @@ fun MobilePlayerScreen(
                 title = cachedInfo.title,
                 channelName = request.ownerName,
                 channelId = request.channelId,
-                // 对齐 LibreTube + TV:头像取权威 activeRequest.ownerFace(已被 withResolvedMetadata 从 /player 填过)
-                channelAvatarUrl = activeRequest.ownerFace.ifBlank { request.ownerFace },
+                // 对齐 LibreTube + TV:头像取权威源。YouTube 的 activeRequest.ownerFace 恒空
+                // (withResolvedMetadata 对 YouTube metadata=null 填不了),权威头像在
+                // youtubeDetail.channelAvatarUrl(/player→NewPipe uploaderAvatars 已填);B站走 activeRequest。
+                channelAvatarUrl = youtubeDetail?.channelAvatarUrl?.takeIf { it.isNotBlank() }
+                  ?: activeRequest.ownerFace.ifBlank { request.ownerFace },
                 thumbnailUrl = request.coverUrl,
                 durationMs = cachedInfo.durationMs,
                 positionMs = startPositionMs,
@@ -935,8 +938,11 @@ fun MobilePlayerScreen(
               title = sabrEffectiveInfo.title,
               channelName = request.ownerName,
               channelId = request.channelId,
-              // 对齐 LibreTube + TV:头像取权威 activeRequest.ownerFace(已被 withResolvedMetadata 从 /player 填过)
-              channelAvatarUrl = activeRequest.ownerFace.ifBlank { request.ownerFace },
+              // 对齐 LibreTube + TV:头像取权威源。YouTube 的 activeRequest.ownerFace 恒空
+              // (withResolvedMetadata 对 YouTube metadata=null 填不了),权威头像在
+              // youtubeDetail.channelAvatarUrl(/player→NewPipe uploaderAvatars 已填);B站走 activeRequest。
+              channelAvatarUrl = youtubeDetail?.channelAvatarUrl?.takeIf { it.isNotBlank() }
+                ?: activeRequest.ownerFace.ifBlank { request.ownerFace },
               thumbnailUrl = request.coverUrl,
               durationMs = sabrEffectiveInfo.durationMs,
               positionMs = startPositionMs,

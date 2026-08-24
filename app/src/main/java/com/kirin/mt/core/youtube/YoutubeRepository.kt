@@ -220,18 +220,30 @@ class YoutubeRepository(
     }
     // /player 的 microformat.publishDate 实测恒 null。对齐 LibreTube:缺省时用 NewPipe getInfo 的
     // uploadDate(与入口路径无关)兜底,保证简介 Tab 恒有发布时间(历史/播放列表/相关视频统一)。
-    if (withLikes.publishedAt == null) {
-      val npUpload = runCatching {
+    // 频道头像同源:parseVideoDetail 的 /player videoDetails 无作者头像字段(channelAvatarUrl 恒空),
+    // 不补则历史条目/简介 Tab 频道行头像一片空白。复用同一次 getInfo 的 uploaderAvatars 提权威头像
+    // (对齐 LibreTube Streams.uploaderAvatar = uploaderAvatars.maxBy { height }),零额外网络往返。
+    if (withLikes.publishedAt == null || withLikes.channelAvatarUrl.isBlank()) {
+      val np = runCatching {
         val info = StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId")
         val d = info.uploadDate
-        // 诊断:NewPipe 兜底源与值(确认 getInfo 是否成功、uploadDate 是否非空)。
-        Log.i("YoutubeDetail", "getVideoDetail newpipe videoId=$videoId uploadDateClass=${d?.javaClass?.simpleName ?: "null"} uploadDate=$d")
-        d?.offsetDateTime()?.toEpochSecond()?.takeIf { it > 0L }
+        // 诊断:NewPipe 兜底源与值(确认 getInfo 是否成功、uploadDate 是否非空、头像数)。
+        Log.i("YoutubeDetail", "getVideoDetail newpipe videoId=$videoId uploadDateClass=${d?.javaClass?.simpleName ?: "null"} uploadDate=$d avatars=${info.uploaderAvatars.size}")
+        Triple(
+          d?.offsetDateTime()?.toEpochSecond()?.takeIf { it > 0L },
+          info.uploaderAvatars.maxByOrNull { it.height }?.url.orEmpty(),
+        )
       }.getOrElse {
         Log.w("YoutubeDetail", "getVideoDetail newpipe failed videoId=$videoId: ${it::class.simpleName}: ${it.message}\n${it.stackTraceToString().take(1200)}")
         null
       }
-      if (npUpload != null) return withLikes.copy(publishedAt = npUpload)
+      if (np != null) {
+        val (npUpload, npAvatar) = np
+        return withLikes.copy(
+          publishedAt = withLikes.publishedAt ?: npUpload,
+          channelAvatarUrl = withLikes.channelAvatarUrl.ifBlank { npAvatar },
+        )
+      }
     }
     return withLikes
   }
