@@ -80,7 +80,8 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 | 2026-08-24 | 升降档改 excludeTrack 真正排除(方案B),替代失效的「EMPTY iterator 门控」 | DefaultSabrChunkSource.kt `applyCeilingExclusions` | 已落地 |
 | 2026-08-24 | 起始档 maxHeight 单边 cap 改 min+max 精确锁(对齐 LibreTube) | PlayerScreen / MobilePlayerScreen | 已落地 |
 | 2026-08-24 | 加带宽计诊断日志 `bw=`(getBitrateEstimate)到 YtSabrAbr 行 | DefaultSabrChunkSource.kt | 本次新增,待真机复测 |
-| 2026-08-24 | **建立真实带宽机制**:SabrMediaFetcher 从实际段下载(bytes/elapsed)记录样本,取最近 8 个中位数 `getRealBitrateEstimate()`;relax 放档判定改用真实带宽(替代不可信的媒体3 带宽计)。诊断行同时打 `bw=`(媒体3计)与 `realBw=`(真实)对照 | SabrMediaFetcher.kt / DefaultSabrChunkSource.kt | 本次新增,待真机复测 |
+| 2026-08-24 | **建立真实带宽机制**:SabrMediaFetcher 从实际段下载(bytes/elapsed)记录样本,取最近 8 个中位数 `getRealBitrateEstimate()`;relax 放档判定改用真实带宽(替代不可信的媒体3 带宽计)。诊断行同时打 `bw=`(媒体3计)与 `realBw=`(真实)对照 | SabrMediaFetcher.kt / DefaultSabrChunkSource.kt | 已落地 |
+| 2026-08-24 | **force-climb 钉档(排除式强制升档)**:relax 确认下一档真实带宽充足后,把 [forceFloor, top](更低码率档)一并排除,只留 ceiling==forceFloor 单轨,逼媒体3 `determineIdealSelectedIndex` 兜底选到该档(媒体3 effectiveBitrate 不可信,放回高档也不主动选);当前钉档真实带宽撑不住或媒体3 主动降档时松开 force | DefaultSabrChunkSource.kt `applyExclusions` | 本次新增,待真机复测 |
 
 ---
 
@@ -108,6 +109,6 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 
 ## 8. 未决问题清单
 
-- [ ] **带宽计不可靠已坐实,已建真实带宽绕行**(§5 末行):媒体3 `getBitrateEstimate()` 真机 1M↔437M 1000 倍跳变,effectiveBitrate 不可信;改为 SabrMediaFetcher 实际段下载测真实带宽(中位数)驱动 relax 放档。待真机复测 `realBw=` 稳定后,下一步做**排除式强制升档**:relax 时排除当前低档,逼媒体3 `determineIdealSelectedIndex` fallback 返回唯一非排除高档,绕开不可信的 effectiveBitrate
+- [ ] **带宽计不可靠已坐实,真实带宽绕行已落地**(§5 末三行):媒体3 `getBitrateEstimate()` 真机 1M↔437M 1000 倍跳变,effectiveBitrate 不可信 → 已改 SabrMediaFetcher 实际段下载测真实带宽(中位数)驱动 relax 放档,**并已实现排除式强制升档(force-climb)**:relax 时排除当前低档(forceFloor),只留目标档单轨,逼媒体3 fallback 返回它,绕开不可信 effectiveBitrate。**2026-08-24 日志坐实了必须 force-climb**:realBw 稳定 7-9M、relax 放回高档(ceiling 4→3)但媒体3 sel 钉死 1080p 不动 → 释放 ceiling 只让高档「可选」,媒体3 不主动选。待真机复测 force= 生效
 - [ ] re-resolve 掉档后如何不长期停留低档
-- [ ] relax 强制升档方案是否采用(fallback 绕行,需评估 rebuffer 风险)→ **已定采用**,基于真实带宽机制,待实现
+- [ ] relax 强制升档 → **已实现 force-climb**,待真机复测 rebuffer 风险(bail-out:当前钉档真实带宽 < bitrate/0.7 松开 force)

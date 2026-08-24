@@ -144,8 +144,17 @@ internal class DefaultSabrChunkSource(
   private var lastIndex: Int? = null
   private var ceilingIndex: Int? = null
   private var bandwidthGoodSinceMs: Long = 0L
-  /** 上轮被排除的档位数(排除 index [0..lastExcludedCount-1]);relax 放回一档时对新放出的 index 调 excludeTrack(i,0) 即刻恢复。 */
+  /** 上轮被排除的高码率档位数(排除 index [0..lastExcludedCount-1]);relax 放回一档时对新放出的 index 调 excludeTrack(i,0) 即刻恢复。 */
   private var lastExcludedCount: Int? = null
+  /**
+   * force-climb 钉档(alpha.9X,修「relax 放回高档但媒体3 sel 钉死不动」):媒体3 effectiveBitrate 不可信
+   * (bw= 1M↔437M 跳变),放回高档它也不主动选。relax 确认下一档真实带宽充足后,把 [forceFloorIndex, top]
+   * (更低码率档)一并排除,只留 ceiling==forceFloorIndex 单轨 → 媒体3 `determineIdealSelectedIndex` 兜底
+   * (last non-excluded)必选该档。降档(selectedIndex 增大)或当前钉档真实带宽撑不住时置 null 松开。
+   */
+  private var forceFloorIndex: Int? = null
+  /** 上轮被 force 排除的低码率档位数(排除 index [len-lastForceCount, len));松开时对新放出的 index 调 excludeTrack(i,0) 恢复。 */
+  private var lastForceCount: Int? = null
 
   /** ABR 带宽门槛:选「≤ 带宽估计×[BANDWIDTH_FRACTION] 的最高码率档」(对齐 seedBps 的 /0.7)。 */
   private companion object {
@@ -173,8 +182,10 @@ internal class DefaultSabrChunkSource(
   override fun updateTrackSelection(trackSelection: ExoTrackSelection) {
     this.trackSelection = trackSelection
     // selection 重建(手动切档/重选)→ 旧排除状态指向旧 selection 的 index,失效,重置。
-    // (new selection 若为单轨,applyCeilingExclusions 会因 length()<2 直接跳过。)
+    // (new selection 若为单轨,applyExclusions 会因 length()<2 直接跳过。)
     lastExcludedCount = null
+    lastForceCount = null
+    forceFloorIndex = null
     ceilingIndex = null
     bandwidthGoodSinceMs = 0L
   }
@@ -216,32 +227,48 @@ internal class DefaultSabrChunkSource(
     val currentIndex = trackSelection.selectedIndex
     lastIndex?.let { prev ->
       if (currentIndex > prev) {
+        // 媒体3 主动降档(selectedIndex 增大=码率降低)→ 收 ceiling 到新档,并松开 force 钉档放低档回来自适应。
         ceilingIndex = currentIndex
+        forceFloorIndex = null
         bandwidthGoodSinceMs = 0L
       }
     }
     lastIndex = currentIndex
     val ceiling = ceilingIndex
     if (ceiling != null) {
-      val targetIndex = ceiling - 1
-      if (targetIndex >= 0) {
-        val targetBps = trackSelection.getFormat(targetIndex).bitrate
-        if (targetBps > 0) {
-          val nowMs = SystemClock.elapsedRealtime()
-          val thresholdBps = (targetBps / BANDWIDTH_FRACTION).toLong()
+      val realBw = fetcher.getRealBitrateEstimate()
+      // alpha.9X(force 保释):当前钉档(ceiling,force 锁单轨时=当前档)真实带宽撑不住(realBw < bitrate/0.7)
+      // → 松开 force 钉档(forceFloorIndex=null),让媒体3 可降档;否则钉着不放会 rebuffer。未钉档时本检查等价于
+      // 原「撑不下去清零重等」。
+      val currentBps = trackSelection.getFormat(ceiling).bitrate
+      if (currentBps > 0) {
+        val currentThreshold = (currentBps / BANDWIDTH_FRACTION).toLong()
+        if (realBw > 0 && realBw < currentThreshold) {
+          forceFloorIndex = null
+          bandwidthGoodSinceMs = 0L
+        } else {
           // alpha.9X(真实带宽):relax 判定改用 SabrMediaFetcher 从实际段下载测的真实带宽。媒体3
           // DefaultBandwidthMeter 从 SabrDataSource 上报的样本波动离谱(真机 bw= 1M↔437M 1000 倍跳变),
           // effectiveBitrate 不可信 → 用它判 relax 会误判「带宽够」却升不上去(见 youtube-sabr-abr-upshift-notes.md)。
           // 真实带宽(中位数,稳定 8-13M)充足才放回一档。
-          val realBw = fetcher.getRealBitrateEstimate()
-          if (realBw > 0 && realBw >= thresholdBps) {
-            if (bandwidthGoodSinceMs == 0L) bandwidthGoodSinceMs = nowMs
-            if (nowMs - bandwidthGoodSinceMs >= bufferMaxMs / 2) {
-              ceilingIndex = targetIndex
-              bandwidthGoodSinceMs = 0L
+          val targetIndex = ceiling - 1
+          if (targetIndex >= 0) {
+            val targetBps = trackSelection.getFormat(targetIndex).bitrate
+            if (targetBps > 0) {
+              val nowMs = SystemClock.elapsedRealtime()
+              val thresholdBps = (targetBps / BANDWIDTH_FRACTION).toLong()
+              if (realBw >= thresholdBps) {
+                if (bandwidthGoodSinceMs == 0L) bandwidthGoodSinceMs = nowMs
+                if (nowMs - bandwidthGoodSinceMs >= bufferMaxMs / 2) {
+                  ceilingIndex = targetIndex
+                  // force-climb 钉档:只留 targetIndex 单轨,逼媒体3 兜底选它(见字段注释)。
+                  forceFloorIndex = targetIndex
+                  bandwidthGoodSinceMs = 0L
+                }
+              } else {
+                bandwidthGoodSinceMs = 0L
+              }
             }
-          } else {
-            bandwidthGoodSinceMs = 0L
           }
         }
       }
@@ -268,14 +295,14 @@ internal class DefaultSabrChunkSource(
     // alpha.9X(excludeTrack 门控):把 ceiling 档及以上真正排除出选轨(原「塞 EMPTY iterator」在 media3 1.10.0
     // 失效,真机 sel 无视 ceiling 直接爬满 4K)。excludeTrack 让这些档从 AdaptiveTrackSelection 候选里消失,
     // 带宽多高都选不到;relax 放回一档时对新放出的 index 调 excludeTrack(i,0) 即刻恢复。
-    applyCeilingExclusions(ceilingIndex)
+    applyExclusions(ceilingIndex, forceFloorIndex)
     // alpha.9X 诊断:ABR 门控与候选,定位「Auto 起播低档后不升档」。bitrate=-1(Format 未设)则 currentBitrate<=0
     // → up/down 恒 null → 未下载轨全 EMPTY → 退化成老 bug(钉死起始档)。fmts 逐个标真实 bitrate。
     Log.i(
       "YtSabrAbr",
       "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
         bufferedDurationUs % 1_000_000 / 100_000
-      } chunkIndex=${representationHolder.chunkIndex != null} ceiling=$ceilingIndex goodMs=${bandwidthGoodSinceMs} " +
+      } chunkIndex=${representationHolder.chunkIndex != null} ceiling=$ceilingIndex force=$forceFloorIndex goodMs=${bandwidthGoodSinceMs} " +
         // alpha.6b+ 诊断:带宽计原始估计(Kbps)。对照 YtSabr fetch 实际吞吐(8-13M),定位媒体3 带宽计是否严重低估
         // (真机 2026-08-24:ceiling=4 解除 1080p 排除后仍 sel=5,疑 effectiveBitrate 只估到 ~1M 实际 8-13M)。
         "bw=${bandwidthMeter.getBitrateEstimate() / 1000}K realBw=${fetcher.getRealBitrateEstimate() / 1000}K " +
@@ -388,14 +415,19 @@ internal class DefaultSabrChunkSource(
   }
 
   /**
-   * 把 ceiling 档及以上(index ∈ [0, ceiling))真正排除出 AdaptiveTrackSelection 的候选池。原「塞 EMPTY iterator」
-   * 门控在 media3 1.10.0 失效(真机 sel 无视 ceiling 直接爬满 4K),改用 excludeTrack 让这些档对 ABR 不可见,
-   * 带宽多高都选不到;relax 放回一档时对新放出的 index 调 excludeTrack(i, 0) 即刻恢复(无 unExclude,0 时长即释放)。
+   * 双区间排除 AdaptiveTrackSelection 候选池,控制「窗口 [ceiling, forceFloor]」:
+   * - ceiling 高码率区间:排除 index ∈ [0, ceiling),ceiling 越高允许越低码率档(降档);relax 放回一档对新放出的
+   *   index 调 excludeTrack(i, 0) 即刻恢复(无 unExclude,0 时长即释放)。原「塞 EMPTY iterator」门控在 media3 1.10.0
+   *   失效(真机 sel 无视 ceiling 直接爬满 4K),改用 excludeTrack 让这些档对 ABR 不可见。
+   * - forceFloor 低码率区间:force-climb 钉档时排除 index ∈ (forceFloor, len),只留 ceiling==forceFloor 单轨,
+   *   逼媒体3 `determineIdealSelectedIndex` 兜底(last non-excluded)选到该档(媒体3 effectiveBitrate 不可信,
+   *   否则放回高档它也不主动选,见字段注释)。两区间不重叠(forceFloor ≥ ceiling 时保持)。
    * [CeilingExclusionMs] 远大于档位滞回窗口,期间带宽骤降仍可 downshift(候选池始终保底最低档,排除不会清空选轨)。
    */
-  private fun applyCeilingExclusions(ceiling: Int?) {
+  private fun applyExclusions(ceiling: Int?, forceFloor: Int?) {
     val len = trackSelection.length()
     if (len < 2) return
+    // 高码率区间 [0, newCeiling)
     val newCount = (ceiling ?: 0).coerceAtMost(len - 1)
     for (i in 0 until newCount) {
       trackSelection.excludeTrack(i, CeilingExclusionMs)
@@ -406,6 +438,22 @@ internal class DefaultSabrChunkSource(
       }
     }
     lastExcludedCount = newCount
+    // 低码率区间 (forceFloor, len) → 排除底部 newForceCount 个 index [len-newForceCount, len)
+    val newForceCount = if (forceFloor != null && forceFloor < len) {
+      len - (forceFloor + 1)
+    } else 0
+    for (i in (len - newForceCount) until len) {
+      trackSelection.excludeTrack(i, CeilingExclusionMs)
+    }
+    lastForceCount?.let { prev ->
+      // 松开:新排除数比上轮少,把多排除的底部 index 释放掉(只涉及 force 区间,不与高码率区间重叠)
+      if (newForceCount < prev) {
+        for (i in (len - prev) until (len - newForceCount)) {
+          trackSelection.excludeTrack(i, 0L)
+        }
+      }
+    }
+    lastForceCount = newForceCount
   }
 
   override fun onChunkLoadCompleted(chunk: Chunk) {
