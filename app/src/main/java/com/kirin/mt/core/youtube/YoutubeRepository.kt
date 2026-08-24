@@ -229,10 +229,8 @@ class YoutubeRepository(
         val d = info.uploadDate
         // 诊断:NewPipe 兜底源与值(确认 getInfo 是否成功、uploadDate 是否非空、头像数)。
         Log.i("YoutubeDetail", "getVideoDetail newpipe videoId=$videoId uploadDateClass=${d?.javaClass?.simpleName ?: "null"} uploadDate=$d avatars=${info.uploaderAvatars.size}")
-        Triple(
-          d?.offsetDateTime()?.toEpochSecond()?.takeIf { it > 0L },
-          info.uploaderAvatars.maxByOrNull { it.height }?.url.orEmpty(),
-        )
+        d?.offsetDateTime()?.toEpochSecond()?.takeIf { it > 0L } to
+          info.uploaderAvatars.maxByOrNull { it.height }?.url.orEmpty()
       }.getOrElse {
         Log.w("YoutubeDetail", "getVideoDetail newpipe failed videoId=$videoId: ${it::class.simpleName}: ${it.message}\n${it.stackTraceToString().take(1200)}")
         null
