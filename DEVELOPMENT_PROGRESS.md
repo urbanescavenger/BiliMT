@@ -296,6 +296,7 @@
 | P10-02 | 修复 CDN 焦点跳到 LazyList 末尾的 bug | Done | `SettingsItemPlaybackCdn = 21` 与 LazyList 真实索引 3 不匹配，`scrollItemIntoComfortableView(index = 21)` 被 clamp 到 `totalItems - 1`，导致按一次下方向键焦点跳到"关于"。新增 `settingsItemToLazyIndex()` 映射函数统一 `SettingsItem*` → LazyList index。已知 follow-up：当 `update-download-or-install` / `update-release-notes` 条件性 item 渲染/隐藏时，ClearCache/ChineseTextVariant/About 的真实索引会变 1-2；当前仅在"无可用更新"状态下做了对齐。`assembleDebug` 通过 |
 | P10-03 | v1.0.7 发布与合入 main | Done | 整理 v1.0.6 至 v1.0.7 间的应用内更新、CI 和 About 页面变更；更新 `README.md`、`RELEASE_NOTES.md` 和本文件；打 tag `v1.0.7` 并推送；从 `mort_debug` 发起 PR 合到 `main` |
 | P10-04 | v1.0.9 发布与合入 main | Done | 整理 v1.0.8 稳定版后的 1.0.8-alpha 周期变更（设置内网络测速、CdnSpeedTester 探测策略优化、搜索/动态/历史 onOwnerSelected 回调补全、UP 主取消关注对话框焦点修复、CI 发布说明改用 gh release create）；更新 `README.md`、`RELEASE_NOTES.md` 和本文件；打 tag `v1.0.9` 并推送；从 `mort_debug` 合到 `main` |
+| P10-05 | 检查更新不保存状态,每次进设置自动重检 | In Progress | 用户反馈:检查一次未下载后一直显示旧更新、且需点两次才到下载。改为**不保存检查结果**,TV/移动端 `SettingsScreen`/`MobileSettingsScreen` 各自 `LaunchedEffect(Unit)` 进页自动 `refresh()`;发现更新直接显示「下载更新」(不再有中间「重新检查」态),废弃 `Available.rechecked` 两击流;`downloadOrInstallLabel`/onClick 回退到 `Available → 下载更新` |
 
 ## 移动端 UI 与直播（v2.0.x 里程碑）
 

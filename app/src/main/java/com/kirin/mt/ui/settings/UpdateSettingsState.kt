@@ -69,12 +69,7 @@ fun isCheckActionEnabled(state: UpdateUiState): Boolean = when (state.status) {
 
 @Composable
 fun downloadOrInstallLabel(state: UpdateUiState): String? = when (val s = state.status) {
-  // 刚检查到更新(rechecked=false)时动作是「重新检查」,确认仍是最新(rechecked=true)才转「下载更新」。
-  is UpdateUiState.Status.Available -> if (s.rechecked) {
-    stringResource(R.string.settings_update_download_action)
-  } else {
-    stringResource(R.string.settings_update_check_action)
-  }
+  is UpdateUiState.Status.Available -> stringResource(R.string.settings_update_download_action)
   is UpdateUiState.Status.Failed -> null
   is UpdateUiState.Status.Downloading -> stringResource(R.string.settings_update_downloading)
   is UpdateUiState.Status.Downloaded -> stringResource(R.string.settings_update_install_action)
@@ -89,8 +84,8 @@ fun isDownloadOrInstallActionEnabled(state: UpdateUiState): Boolean = when (stat
 
 /**
  * 合并「最新版本」行的动作文案:有下载/安装动作时取之,否则取检查动作文案。
- * Idle/UpToDate/Failed → 检查更新;Checking → 检查中…;Available 未重新检查 → 检查更新,
- * Available 已重新检查仍是最新 → 下载更新;Downloading → 下载中…;Downloaded → 安装并重新启动。
+ * Idle/UpToDate/Failed → 检查更新;Checking → 检查中…;Available → 下载更新;
+ * Downloading → 下载中…;Downloaded → 安装并重新启动。
  */
 @Composable
 fun updateVersionActionLabel(state: UpdateUiState): String =

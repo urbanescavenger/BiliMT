@@ -125,6 +125,9 @@ fun MobileSettingsScreen(
   var cacheSizeBytes by remember { mutableStateOf<Long?>(null) }
   LaunchedEffect(Unit) { cacheSizeBytes = appCacheManager.cacheSizeBytes() }
 
+  // 每次进入设置页自动重新检查更新(不保存上次检查结果,发现更新自然进「下载更新」态)。
+  LaunchedEffect(Unit) { updateManager.refresh() }
+
   // 安装已下载的 APK:弹系统安装 Intent,补未知来源授权兜底(镜像 TV AppShell)。
   fun installDownloadedApk() {
     val activity = context.findActivity()
@@ -148,9 +151,8 @@ fun MobileSettingsScreen(
     }
   }
 
-  // 最新版本 row 的动作分派(已与「检查更新」):Available 且未重新检查 → 重新检查,
-  // Available 且已重新检查仍是最新 → 下载;Downloaded → 安装;Idle/UpToDate/Failed → 检查更新;
-  // Checking/Downloading → 不可点。
+  // 最新版本 row 的动作分派:Available → 下载;Downloaded → 安装;Idle/UpToDate/Failed → 检查更新;
+  // Checking/Downloading → 不可点。每次进入设置页会重新检查(见 LaunchedEffect),发现更新自然进下载态。
   // 动作必须先定义为显式 () -> Unit 变量:scope.launch 返回 Job,直接写 { scope.launch { ... } }
   // 会让 lambda 推断成 () -> Job,放入 when/if 分支期期望类型传不进、when 被推断成 Any? 编译失败。
   // 末尾补 Unit 强制成 () -> Unit;且不可用双层 lambda({ { ... } })——外层 body 是内层 lambda 字面量,
@@ -159,7 +161,7 @@ fun MobileSettingsScreen(
   val downloadAction: () -> Unit = { scope.launch { updateManager.download() }; Unit }
   val installAction: () -> Unit = { installDownloadedApk() }
   val updateVersionOnClick: (() -> Unit)? = when (val s = updateState.status) {
-    is UpdateUiState.Status.Available -> if (s.rechecked) downloadAction else checkAction
+    is UpdateUiState.Status.Available -> downloadAction
     is UpdateUiState.Status.Downloaded -> installAction
     is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> null
     else -> checkAction

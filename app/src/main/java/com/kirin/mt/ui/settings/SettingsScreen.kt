@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -127,6 +128,8 @@ fun SettingsScreen(
   val settingsListState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
   val context = LocalContext.current
+  // 每次进入设置页自动重新检查更新(不保存上次检查结果,发现更新自然进「下载更新」态)。
+  LaunchedEffect(Unit) { onCheckUpdate() }
   val density = LocalDensity.current
   val settingsRowFallbackHeightPx = with(density) {
     (BiliSizing.SettingsRowHeight + BiliSpacing.Md).roundToPx()
@@ -1027,9 +1030,8 @@ private fun SettingsBehaviorColumn(
           ),
         onFocused = { onSettingFocused(SettingsItemUpdateDownloadOrInstall) },
         onClick = {
-          when (val s = updateState.status) {
-            // 刚检查到更新先重新检查(可能已有更新版本),确认仍是最新才下载。
-            is UpdateUiState.Status.Available -> if (s.rechecked) onDownloadUpdate() else onCheckUpdate()
+          when (updateState.status) {
+            is UpdateUiState.Status.Available -> onDownloadUpdate()
             is UpdateUiState.Status.Downloaded -> onInstallUpdate()
             is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> {}
             else -> onCheckUpdate()
