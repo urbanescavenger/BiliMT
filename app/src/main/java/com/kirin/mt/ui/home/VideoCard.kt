@@ -672,7 +672,10 @@ private fun VideoCover(
       contentScale = ContentScale.Crop,
       placeholder = fallbackPainter,
       error = fallbackPainter,
-      onState = { coverLoadState = it },
+      // onState 与 placeholder/error 在 AsyncImage 不同重载里不能混用,用 onLoading/onSuccess/onError。
+      onLoading = { coverLoadState = it },
+      onSuccess = { coverLoadState = it },
+      onError = { coverLoadState = it },
       modifier = Modifier.fillMaxSize(),
     )
 
