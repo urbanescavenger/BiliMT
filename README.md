@@ -129,6 +129,14 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 ## 版本更新
 
+### v3.0.6-alpha
+
+移动端「已看完」闭环：看完的视频卡片右下角标角标（本地 WatchedStore 跟踪），并纳入 WebDAV 备份/还原；新增「已看完自动删除缓存」开关，看完自动清掉该视频下载文件。
+
+| tag | 内容 |
+| --- | --- |
+| v3.0.6-alpha.1 | 已看完闭环：① WebDAV 备份/还原新增「已看完列表」项（`bilitv/watched.json`，移动端+TV 弹窗都加，还原可选）；② 设置「播放」节新增「已看完自动删除缓存」开关（仅移动端），播放到结尾自动删该视频下载文件（`DownloadManager.deleteByVideoId`，含分件+「下载」播放列表存档），实际删了才弹 Toast 反馈；③ 视频卡片右下角「已看完」角标（`WatchedStore` + CompositionLocal，B站 bvid/YouTube videoId 统一承载） |
+
 ### v3.0.5-alpha
 
 多语言线：界面从仅中文字体扩展为 6 档语言（简中/港繁/台繁 + English / Español / Português），数字与相对时间本地化，并修复 localeFilters 剪包真因。

@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.6-alpha.1](#v306-alpha1)
 - [v3.0.5-alpha.9](#v305-alpha9)
 - [v3.0.5-alpha.8](#v305-alpha8)
 - [v3.0.5-alpha.7](#v305-alpha7)
@@ -193,6 +194,25 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.6-alpha.1
+
+**移动端「已看完」闭环**:看完的视频卡片右下角标「已看完」角标,并纳入 WebDAV 备份/还原;新增「已看完自动删除缓存」开关,看完自动清掉该视频下载文件。
+
+### 变更
+- **`WatchedStore.kt`(新)**:DataStore 存已看完视频 id 集合(B站 bvid / YouTube videoId 统一承载),`markCompleted` 幂等写入、cap 300;`all()`/`replaceAll()` 供备份/还原全量读写。
+- **`MobileVideoCard.kt`**:`LocalWatchedIds` CompositionLocal 下发已看完集合,卡片缩略图右下角渲染「已看完」角标(直播/IPTV 不标)。
+- **`WebDavBackupService.kt`**:`WebDavBackupItem` 加 `Watched`,备份/还原 `bilitv/watched.json`;移动端+TV 备份弹窗都加「已看完列表」项(还原可选,日志仍只备份不还原)。
+- **`AppSettings`/`AppSettingsStore`**:加 `autoDeleteWatchedCache`(key `auto_delete_watched_cache`,默认关)。
+- **`DownloadManager.kt`**:加 `deleteByVideoId(videoId)`,按 bvid/videoId 删该视频所有下载(含分件+「下载」播放列表存档),返回实际删除任务数。
+- **`MobilePlayerScreen.kt`**:播放到结尾且开关开时自动删该视频下载,实际删了才弹 Toast「已看完,已自动删除该视频的下载缓存」。
+- **`MobileSettingsScreen.kt`**:设置「播放」节加「已看完自动删除缓存」开关(仅移动端)。
+
+### 待真机验证
+- WebDAV 备份勾选「已看完列表」→ 还原到新设备,「已看完」角标恢复。
+- 下载某视频 → 开开关 → 播到结尾 → 该下载从「下载」列表消失、文件释放 + Toast;关开关则看完不删。直播/IPTV 不触发。
+
+---
 
 ## v3.0.5-alpha.9
 
