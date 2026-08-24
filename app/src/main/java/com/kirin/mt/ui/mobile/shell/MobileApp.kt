@@ -112,12 +112,15 @@ fun BiliMobileApp(
   youtubePlaylistStore: YoutubePlaylistStore,
   youtubeFeedCacheStore: com.kirin.mt.core.youtube.YoutubeFeedCacheStore,
   youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
+  watchedStore: com.kirin.mt.core.storage.WatchedStore,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
   downloadManager: com.kirin.mt.core.download.DownloadManager,
 ) {
   val context = LocalContext.current
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
+  // 已看完的视频 id 集合:经 CompositionLocal 下发,卡片右下角据此标「已看完」。
+  val watchedIds by watchedStore.watched.collectAsState(initial = emptySet())
   // 语言设置:与 TV AppShell 一致,把 LocalContext 整体换成所选 locale 的 context,
   // 使 stringResource(R.string.*) 命中对应 values-<locale> 资源。
   val localizedContext = remember(context, settings.chineseTextVariant) {
@@ -216,6 +219,7 @@ fun BiliMobileApp(
     LocalContext provides localizedContext,
     LocalResources provides localizedContext.resources,
     LocalChineseTextConverter provides textConverter,
+    com.kirin.mt.ui.mobile.home.LocalWatchedIds provides watchedIds,
   ) {
     Box(modifier = Modifier.fillMaxSize()) {
     NavigationSuiteScaffold(
@@ -335,6 +339,7 @@ fun BiliMobileApp(
           request = request,
           playbackRepository = playbackRepository,
           youtubeHistoryStore = youtubeHistoryStore,
+          watchedStore = watchedStore,
           danmakuSettingsStore = danmakuSettingsStore,
           playbackHttpClient = playbackHttpClient,
           cdnSelector = cdnSelector,

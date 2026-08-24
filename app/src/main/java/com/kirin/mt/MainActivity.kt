@@ -67,6 +67,7 @@ class MainActivity : ComponentActivity() {
             youtubePlaylistStore = appContainer.youtubePlaylistStore,
             youtubeFeedCacheStore = appContainer.youtubeFeedCacheStore,
             youtubeHistoryStore = appContainer.youtubeHistoryStore,
+            watchedStore = appContainer.watchedStore,
             updateManager = appContainer.updateManager,
             apkInstaller = appContainer.apkInstaller,
             downloadManager = appContainer.downloadManager,

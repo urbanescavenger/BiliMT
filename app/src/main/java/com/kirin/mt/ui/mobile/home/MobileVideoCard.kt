@@ -21,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,6 +48,13 @@ import com.kirin.mt.ui.theme.BiliColors
 /** YouTube 卡片绿框颜色(Material Green 600),动态页区分 YouTube 与 B 站内容。 */
 private val YoutubeBorderColor = Color(0xFF00C853)
 
+/**
+ * 已看完的视频 id 集合(B站 bvid / YouTube videoId,统一用 VideoSummary.bvid)。
+ * 由 BiliMobileApp 收集 WatchedStore 后经 CompositionLocal 下发,卡片据此在缩略图右下角
+ * 渲染「已看完」角标;默认空集(未提供时不显示)。
+ */
+val LocalWatchedIds = staticCompositionLocalOf<Set<String>> { emptySet() }
+
 /** 移动端视频卡片:纯触屏(无焦点缩放),点击播放;长按加入/移除播放列表(仅 YouTube)。点头像/UP 名区域进 UP 主页。
  *  [feedLayout]=true 用动态 feed 版布局(顶行作者块 + 缩略图 + 标题),默认紧凑布局(首页/搜索/空间等)。 */
 @OptIn(ExperimentalFoundationApi::class)
@@ -63,6 +71,8 @@ fun MobileVideoCard(
   coverOverride: Any? = null,
 ) {
   val youtubeBorder = showYoutubeBorder && video.source == SourceYoutube
+  // 已看完(播放到结尾):bvid/videoId 命中本地 watched 集合;直播/IPTV 不标。
+  val completed = !video.isLive && video.bvid in LocalWatchedIds.current
   val baseModifier = modifier
     .fillMaxWidth()
     .then(if (youtubeBorder) Modifier.border(2.dp, YoutubeBorderColor, RoundedCornerShape(12.dp)) else Modifier)
@@ -71,9 +81,9 @@ fun MobileVideoCard(
       onLongClick = onLongPress?.let { { it(video) } },
     )
   if (feedLayout) {
-    FeedStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner, coverOverride = coverOverride)
+    FeedStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner, coverOverride = coverOverride, completed = completed)
   } else {
-    CompactStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner, coverOverride = coverOverride)
+    CompactStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner, coverOverride = coverOverride, completed = completed)
   }
 }
 
@@ -84,6 +94,7 @@ private fun CompactStyleCardContent(
   modifier: Modifier,
   onOpenOwner: ((VideoSummary) -> Unit)?,
   coverOverride: Any? = null,
+  completed: Boolean = false,
 ) {
   Column(modifier = modifier) {
     Box(
@@ -109,6 +120,9 @@ private fun CompactStyleCardContent(
             .align(Alignment.TopStart)
             .padding(6.dp),
         )
+      }
+      if (completed) {
+        CompletedBadge(modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
       }
     }
     Text(
@@ -165,6 +179,7 @@ private fun FeedStyleCardContent(
   modifier: Modifier,
   onOpenOwner: ((VideoSummary) -> Unit)?,
   coverOverride: Any? = null,
+  completed: Boolean = false,
 ) {
   val relativeText = rememberVideoCardRelativeText()
   val count = formatCount(if (video.view > 0) video.view else video.likeCount, LocalContext.current.resources)
@@ -230,6 +245,9 @@ private fun FeedStyleCardContent(
             .padding(6.dp),
         )
       }
+      if (completed) {
+        CompletedBadge(modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
+      }
     }
     // 标题在底部。
     Text(
@@ -288,7 +306,27 @@ private fun LiveBadge(text: String, modifier: Modifier = Modifier) {
   }
 }
 
-/** 直播在线人数:红色小圆点 + 在线数(万以上用"万")+ 可选分区名。 */
+/** 「已看完」角标:深色半透明圆角 pill + 白色文字,贴缩略图右下(调用处用 BoxScope.align 定位)。 */
+@Composable
+private fun CompletedBadge(modifier: Modifier = Modifier) {
+  Row(
+    modifier = modifier
+      .clip(RoundedCornerShape(4.dp))
+      .background(Color.Black.copy(alpha = 0.6f))
+      .padding(horizontal = 5.dp, vertical = 2.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(
+      text = stringResource(R.string.video_watch_completed),
+      style = MaterialTheme.typography.labelSmall,
+      color = Color.White,
+      fontWeight = FontWeight.Bold,
+      maxLines = 1,
+    )
+  }
+}
+
+/** 直播在线人数:红色小圆点 + 在线数(万用"万")+ 可选分区名。 */
 @Composable
 private fun LiveOnlineCount(online: Int, areaName: String, modifier: Modifier = Modifier) {
   Row(

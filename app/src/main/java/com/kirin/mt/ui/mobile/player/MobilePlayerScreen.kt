@@ -287,6 +287,7 @@ fun MobilePlayerScreen(
   request: PlaybackRequest,
   playbackRepository: PlaybackRepository,
   youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
+  watchedStore: com.kirin.mt.core.storage.WatchedStore,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
@@ -469,8 +470,13 @@ fun MobilePlayerScreen(
     val info = ready.info
     val positionMs = player.currentPosition.coerceAtLeast(0L)
     val durationMs = player.duration.takeIf { it > 0 } ?: info.durationMs
+    // 播放到结尾(距末尾 2s 内)视为「已看完」,写入本地 watched 集合供卡片右下角标角标。
+    // 直播/IPTV 时长语义不同,不标记。幂等写入。
+    val reachedEnd = !activeRequest.isLive && !activeRequest.isIptv &&
+      durationMs > 0 && positionMs >= durationMs - 2000L
     scope.launch {
-      // 本地进度保存保留（YouTube 按 videoId 也能续播）；B 站 heartbeat 仅 B 站视频上报。
+      if (reachedEnd) runCatching { watchedStore.markCompleted(info.bvid) }
+      // 本地进度保存保留（B 站按 videoId 也能续播）；B 站 heartbeat 仅 B 站视频上报。
       runCatching { playbackRepository.saveProgress(info.bvid, info.cid, positionMs, durationMs) }
       // YouTube 播放历史：同步更新本地历史列表的进度（断电续播 + 历史 tab 展示）。
       if (activeRequest.isYoutube) {

@@ -48,6 +48,7 @@ import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.settings.AppSettingsStore
 import com.kirin.mt.core.storage.SearchHistoryStore
 import com.kirin.mt.core.storage.SessionStore
+import com.kirin.mt.core.storage.WatchedStore
 import com.kirin.mt.core.storage.WbiKeyStore
 import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateDownloader
@@ -78,6 +79,7 @@ class AppContainer(context: Context) {
   val searchHistoryStore: SearchHistoryStore = SearchHistoryStore(appContext)
   val sessionStore: SessionStore = SessionStore(appContext)
   val wbiKeyStore: WbiKeyStore = WbiKeyStore(appContext)
+  val watchedStore: WatchedStore = WatchedStore(appContext)
   val httpClientFactory: BiliHttpClientFactory = BiliHttpClientFactory()
   val codecCapabilityProbe: CodecCapabilityProbe = CodecCapabilityProbe()
   val playbackHttpClient = httpClientFactory.createPlaybackClient()
