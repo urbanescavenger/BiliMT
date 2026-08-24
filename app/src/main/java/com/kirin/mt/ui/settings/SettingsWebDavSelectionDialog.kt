@@ -116,8 +116,9 @@ internal fun SettingsWebDavSelectionDialog(
           borderColor = homeColors.glassBorder,
           borderWidth = BiliFocus.RestingBorderWidth,
         )
-        .padding(BiliSpacing.Xl),
-      verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+        .padding(BiliSpacing.Lg),
+      // 紧凑间距:备份 5 行+按钮在 TV 窗口内不超出,否则底部按钮被裁剪、焦点不可见。
+      verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
     ) {
       Text(
         text = stringResource(
@@ -192,7 +193,8 @@ private fun CheckboxRow(
     onClick = onToggle,
     modifier = Modifier
       .fillMaxWidth()
-      .height(BiliSizing.SettingsRowHeight)
+      // 比设置页行(96dp)紧凑:备份 5 行+按钮才放得进 TV 窗口,否则底部按钮被裁剪。
+      .height(72.dp)
       .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier),
   ) {
     Row(
