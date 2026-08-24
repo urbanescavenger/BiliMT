@@ -61,11 +61,14 @@ fun buildOwnerAvatarRequest(
     .build()
 }
 
-/** YouTube 图片 URL(yt3.ggpht.com 头像 / i.ytimg.com 缩略图 / 含 ggpht)。 */
+/** YouTube/Google 图片 URL(yt3.ggpht.com / yt3.googleusercontent.com / lh3.googleusercontent.com 头像、
+ *  i.ytimg.com 缩略图 / 含 ggpht)。lh3.googleusercontent.com 是 Google 头像迁移后的常见宿主
+ *  (搜索/播放器里部分频道头像用它,parseChannelInfo 仍给 yt3.ggpht.com),不识别会被当 B 站图拼
+ *  `@Nw.webp` 后缀破坏 → 头像加载失败(频道主页能显、搜索/播放器空白),故一并走裸请求。 */
 private fun String.isYoutubeImageUrl(): Boolean {
   val lower = lowercase()
-  return lower.contains("yt3.ggpht.com") ||
-    lower.contains("yt3.googleusercontent.com") ||
+  return lower.contains("googleusercontent.com") ||
+    lower.contains("yt3.ggpht.com") ||
     lower.contains("ggpht") ||
     lower.contains("ytimg.com")
 }

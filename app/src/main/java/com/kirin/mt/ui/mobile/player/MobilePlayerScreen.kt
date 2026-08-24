@@ -2224,12 +2224,14 @@ private fun MobileYoutubeIntroTab(
         .clip(CircleShape)
         .background(MaterialTheme.colorScheme.surfaceVariant)
       // /player 无频道头像字段,回退卡片携带的 ownerFace(卡片已由数据层填 YouTube 头像)。
+      // 走 buildOwnerAvatarRequest:归一化协议相对 `//yt3...` 且识别 googleusercontent 裸请求,
+      // 否则协议相对 URL 直接加载失败 → 播放器头像空白(频道主页正常)。
       val avatarUrl = detail.channelAvatarUrl.ifBlank { request.ownerFace }
       if (avatarUrl.isBlank()) {
         Box(modifier = avatarModifier)
       } else {
         AsyncImage(
-          model = avatarUrl,
+          model = remember(context, avatarUrl) { buildOwnerAvatarRequest(context, avatarUrl) },
           contentDescription = detail.channelName,
           contentScale = androidx.compose.ui.layout.ContentScale.Crop,
           modifier = avatarModifier,
