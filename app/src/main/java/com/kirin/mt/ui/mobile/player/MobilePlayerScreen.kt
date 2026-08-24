@@ -754,7 +754,8 @@ fun MobilePlayerScreen(
                 title = cachedInfo.title,
                 channelName = request.ownerName,
                 channelId = request.channelId,
-                channelAvatarUrl = request.ownerFace,
+                // 对齐 LibreTube + TV:头像取权威 activeRequest.ownerFace(已被 withResolvedMetadata 从 /player 填过)
+                channelAvatarUrl = activeRequest.ownerFace.ifBlank { request.ownerFace },
                 thumbnailUrl = request.coverUrl,
                 durationMs = cachedInfo.durationMs,
                 positionMs = startPositionMs,
@@ -934,7 +935,8 @@ fun MobilePlayerScreen(
               title = sabrEffectiveInfo.title,
               channelName = request.ownerName,
               channelId = request.channelId,
-              channelAvatarUrl = request.ownerFace,
+              // 对齐 LibreTube + TV:头像取权威 activeRequest.ownerFace(已被 withResolvedMetadata 从 /player 填过)
+              channelAvatarUrl = activeRequest.ownerFace.ifBlank { request.ownerFace },
               thumbnailUrl = request.coverUrl,
               durationMs = sabrEffectiveInfo.durationMs,
               positionMs = startPositionMs,

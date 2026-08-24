@@ -1744,7 +1744,10 @@ fun PlayerScreen(
                 title = info.title,
                 channelName = activeRequest.ownerName,
                 channelId = historyChannelId,
-                channelAvatarUrl = activeRequest.ownerFace,
+                // 对齐 LibreTube:头像取权威 displayRequest.ownerFace(withResolvedMetadata 已从 /player
+                // 权威 videoDetails 填过),而非原始卡片字段 activeRequest.ownerFace——播放历史条目时卡片
+                // ownerFace 为空,重录会再存空,store 回退只能补显示修不了数据。权威源保证新条目自愈。
+                channelAvatarUrl = displayRequest.ownerFace.ifBlank { activeRequest.ownerFace },
                 thumbnailUrl = activeRequest.coverUrl,
                 durationMs = info.durationMs,
                 positionMs = startPositionMs,
