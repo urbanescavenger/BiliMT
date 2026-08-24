@@ -3,6 +3,7 @@ package com.kirin.mt.core.youtube
 import android.util.Log
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -297,6 +298,27 @@ class YoutubeRepository(
   }
 
   /**
+   * 订阅流单频道拉取的容错包装：网络/解析失败记日志并降级用 [default]（丢该频道自身），
+   * **但必须透传 [CancellationException]**——`runCatching` 会吞掉取消异常（含
+   * `LeftCompositionCancellationException`：composition scope 离开组合时抛的取消），
+   * 把"协程被取消"误判成"网络失败"→ 整批返回空 → 首页卡片全 ERR。取消必须向上传播，
+   * 让外层 `LaunchedEffect` 感知到并允许重试，而不是当成一次真实的失败降级。
+   */
+  private suspend fun <T> feedCatching(
+    default: T,
+    failKind: String,
+    channelId: String,
+    block: suspend () -> T,
+  ): T = try {
+    block()
+  } catch (e: CancellationException) {
+    throw e
+  } catch (e: Exception) {
+    Log.w("YoutubeFeed", "$failKind failed for $channelId", e)
+    default
+  }
+
+  /**
    * 动态页"YouTube 关注"流：遍历配置的频道取各自最新视频，按发布时间倒序合并。
    * 对齐 LibreTube `LocalFeedRepository.refreshFeed` 的**分批增量**模型（独立实现）。
    *
@@ -336,10 +358,10 @@ class YoutubeRepository(
             var channelAvatar = channel.avatar
             if (channelAvatar.isBlank()) {
               val resolvedAvatar = innerTubeSemaphore.withPermit {
-                runCatching {
+                feedCatching("", "avatar", channel.channelId) {
                   val payload = buildJsonObject { put("browseId", channel.channelId) }
                   YoutubeParsers.parseChannelInfo(client.postJson("/browse", payload))?.avatarUrl.orEmpty()
-                }.getOrDefault("")
+                }
               }
               if (resolvedAvatar.isNotBlank()) {
                 channelAvatar = resolvedAvatar
@@ -349,16 +371,12 @@ class YoutubeRepository(
             // RSS 与 InnerTube 并行拉取。RSS 提供精确发布时间,InnerTube 补全 duration/live 等字段。
             val rssDeferred = async {
               rssSemaphore.withPermit {
-                runCatching { getChannelRss(channel.channelId) }
-                  .onFailure { Log.w("YoutubeFeed", "RSS failed for ${channel.channelId}", it) }
-                  .getOrDefault(emptyList())
+                feedCatching(emptyList(), "RSS", channel.channelId) { getChannelRss(channel.channelId) }
               }
             }
             val innerTubeDeferred = async {
               innerTubeSemaphore.withPermit {
-                runCatching { getChannelVideosRaw(channel.channelId) }
-                  .onFailure { Log.w("YoutubeFeed", "InnerTube failed for ${channel.channelId}", it) }
-                  .getOrDefault(emptyList())
+                feedCatching(emptyList(), "InnerTube", channel.channelId) { getChannelVideosRaw(channel.channelId) }
               }
             }
             val rssVideos = rssDeferred.await()
@@ -436,10 +454,10 @@ class YoutubeRepository(
             var channelAvatar = channel.avatar
             if (channelAvatar.isBlank()) {
               val resolvedAvatar = innerTubeSemaphore.withPermit {
-                runCatching {
+                feedCatching("", "avatar", channel.channelId) {
                   val payload = buildJsonObject { put("browseId", channel.channelId) }
                   YoutubeParsers.parseChannelInfo(client.postJson("/browse", payload))?.avatarUrl.orEmpty()
-                }.getOrDefault("")
+                }
               }
               if (resolvedAvatar.isNotBlank()) {
                 channelAvatar = resolvedAvatar
@@ -450,16 +468,16 @@ class YoutubeRepository(
               // 首屏：RSS 与 InnerTube 第一页并行拉取合并，并记录 InnerTube 第一页的续页 token。
               val rssDeferred = async {
                 rssSemaphore.withPermit {
-                  runCatching { getChannelRss(channel.channelId) }
-                    .onFailure { Log.w("YoutubeFeed", "RSS failed for ${channel.channelId}", it) }
-                    .getOrDefault(emptyList())
+                  feedCatching(emptyList(), "RSS", channel.channelId) { getChannelRss(channel.channelId) }
                 }
               }
               val innerTubeDeferred = async {
                 innerTubeSemaphore.withPermit {
-                  runCatching { getChannelVideosRawPage(channel.channelId) }
-                    .onFailure { Log.w("YoutubeFeed", "InnerTube failed for ${channel.channelId}", it) }
-                    .getOrDefault(YoutubeFeedPage(emptyList(), null))
+                  feedCatching(
+                    YoutubeFeedPage(emptyList(), null),
+                    "InnerTube",
+                    channel.channelId,
+                  ) { getChannelVideosRawPage(channel.channelId) }
                 }
               }
               val rssVideos = rssDeferred.await()
@@ -478,9 +496,11 @@ class YoutubeRepository(
               val token = previousContinuation[channel.channelId]
               val innerTubeDeferred = async {
                 innerTubeSemaphore.withPermit {
-                  runCatching { getChannelVideosRawPage(channel.channelId, token) }
-                    .onFailure { Log.w("YoutubeFeed", "InnerTube next failed for ${channel.channelId}", it) }
-                    .getOrDefault(YoutubeFeedPage(emptyList(), null))
+                  feedCatching(
+                    YoutubeFeedPage(emptyList(), null),
+                    "InnerTube next",
+                    channel.channelId,
+                  ) { getChannelVideosRawPage(channel.channelId, token) }
                 }
               }
               val innerTubePage = innerTubeDeferred.await()

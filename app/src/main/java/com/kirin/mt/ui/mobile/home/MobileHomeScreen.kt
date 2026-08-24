@@ -239,6 +239,8 @@ fun MobileHomeScreen(
           )
         }
       } catch (e: CancellationException) {
+        // 取消(composition 离开)：松开 loadingMore,否则重进首页后 loadNextPage 因 loadingMore=true 拒发新请求,续页卡死。
+        uiState.setState(key, current.copy(loadingMore = false))
         throw e
       } catch (e: Exception) {
         current.copy(loadingMore = false)
