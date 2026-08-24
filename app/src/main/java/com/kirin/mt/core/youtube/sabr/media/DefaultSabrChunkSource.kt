@@ -134,18 +134,24 @@ internal class DefaultSabrChunkSource(
     )
   }
 
-  // alpha.9X(ceiling 滞回,修「不稳定网络反复升降档 → 看门狗整段重载」):trackSelection 按码率**降序**重排
-  // (index0=最高码率),降档 = selectedIndex **增大**(移到更低码率的更高 index)。检测到降档就把源档及
-  // 以上(更低 index)从候选集排除(ceilingIndex = 当前档,只允许 [ceilingIndex..N-1])——ABR 不再爬回刚
-  // 降掉的高挡,避免「爬上去又降下来」的震荡。带宽实测持续超「待放宽挡位」所需码率(bufferMaxMs/2 时长)
-  // 才放回一档,撑不住就清零重等,自愈不震荡。
+  // alpha.9X(ceiling 滞回,excludeTrack 门控):trackSelection 按码率**降序**重排(index0=最高码率),
+  // 降档 = selectedIndex **增大**(移到更低码率的更高 index)。检测到降档就把 ceiling 档及以上(更低
+  // index、更高码率)用 media3 原生 `excludeTrack(index, duration)` **真正排除出选轨**——排除后
+  // AdaptiveTrackSelection 无论带宽估计多高都选不到它们(原「塞 EMPTY iterator」在 media3 1.10.0 失效,
+  // 真机 `YtSabrAbr` sel 无视 ceiling 直接爬满 4K)。带宽实测持续超「待放宽档位」所需码率
+  // (bufferMaxMs/2 时长)才对该档 `excludeTrack(i,0)` 放回一档(media3 无 unExclude,时长 0 = 即刻恢复);
+  // 撑不住清零重计,自愈不震荡。
   private var lastIndex: Int? = null
   private var ceilingIndex: Int? = null
   private var bandwidthGoodSinceMs: Long = 0L
+  /** 上轮被排除的档位数(排除 index [0..lastExcludedCount-1]);relax 放回一档时对新放出的 index 调 excludeTrack(i,0) 即刻恢复。 */
+  private var lastExcludedCount: Int? = null
 
-  /** ABR 选轨门槛系数:选「≤ 带宽估计×[BANDWIDTH_FRACTION] 的最高码率档」(对齐 seedBps 的 /0.7)。 */
+  /** ABR 带宽门槛:选「≤ 带宽估计×[BANDWIDTH_FRACTION] 的最高码率档」(对齐 seedBps 的 /0.7)。 */
   private companion object {
     const val BANDWIDTH_FRACTION = 0.7f
+    /** ceiling 档排除时长(ms)。每轮 getNextChunk 都刷新,故设足够长防缓冲间隙掉出排除;relax 靠 excludeTrack(i,0) 主动放回。 */
+    const val CeilingExclusionMs = 600_000L
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {
@@ -166,6 +172,11 @@ internal class DefaultSabrChunkSource(
 
   override fun updateTrackSelection(trackSelection: ExoTrackSelection) {
     this.trackSelection = trackSelection
+    // selection 重建(手动切档/重选)→ 旧排除状态指向旧 selection 的 index,失效,重置。
+    // (new selection 若为单轨,applyCeilingExclusions 会因 length()<2 直接跳过。)
+    lastExcludedCount = null
+    ceilingIndex = null
+    bandwidthGoodSinceMs = 0L
   }
 
   override fun maybeThrowError() {
@@ -249,12 +260,10 @@ internal class DefaultSabrChunkSource(
         .filter { trackSelection.getFormat(it).bitrate in 1 until currentBitrate }
         .maxByOrNull { trackSelection.getFormat(it).bitrate }
     } else null
-    // alpha.9X(ceiling):升档被 ceiling 挡住(index < ceilingIndex = 更高码率)→ 置 null → 该档 EMPTY,ABR
-    // 爬不回被排除的高档。降档后不空回高挡,只等带宽持续达标(上面 bufferMaxMs/2 观察窗)才放回一档。
-    val ceilingAfterRelax = ceilingIndex
-    if (upgradeCandidateIndex != null && ceilingAfterRelax != null && upgradeCandidateIndex < ceilingAfterRelax) {
-      upgradeCandidateIndex = null
-    }
+    // alpha.9X(excludeTrack 门控):把 ceiling 档及以上真正排除出选轨(原「塞 EMPTY iterator」在 media3 1.10.0
+    // 失效,真机 sel 无视 ceiling 直接爬满 4K)。excludeTrack 让这些档从 AdaptiveTrackSelection 候选里消失,
+    // 带宽多高都选不到;relax 放回一档时对新放出的 index 调 excludeTrack(i,0) 即刻恢复。
+    applyCeilingExclusions(ceilingIndex)
     // alpha.9X 诊断:ABR 门控与候选,定位「Auto 起播低档后不升档」。bitrate=-1(Format 未设)则 currentBitrate<=0
     // → up/down 恒 null → 未下载轨全 EMPTY → 退化成老 bug(钉死起始档)。fmts 逐个标真实 bitrate。
     Log.i(
@@ -368,6 +377,27 @@ internal class DefaultSabrChunkSource(
       0,
       representationHolder.chunkExtractor!!,
     )
+  }
+
+  /**
+   * 把 ceiling 档及以上(index ∈ [0, ceiling))真正排除出 AdaptiveTrackSelection 的候选池。原「塞 EMPTY iterator」
+   * 门控在 media3 1.10.0 失效(真机 sel 无视 ceiling 直接爬满 4K),改用 excludeTrack 让这些档对 ABR 不可见,
+   * 带宽多高都选不到;relax 放回一档时对新放出的 index 调 excludeTrack(i, 0) 即刻恢复(无 unExclude,0 时长即释放)。
+   * [CeilingExclusionMs] 远大于档位滞回窗口,期间带宽骤降仍可 downshift(候选池始终保底最低档,排除不会清空选轨)。
+   */
+  private fun applyCeilingExclusions(ceiling: Int?) {
+    val len = trackSelection.length()
+    if (len < 2) return
+    val newCount = (ceiling ?: 0).coerceAtMost(len - 1)
+    for (i in 0 until newCount) {
+      trackSelection.excludeTrack(i, CeilingExclusionMs)
+    }
+    lastExcludedCount?.let { prev ->
+      for (i in newCount until prev) {
+        trackSelection.excludeTrack(i, 0L)
+      }
+    }
+    lastExcludedCount = newCount
   }
 
   override fun onChunkLoadCompleted(chunk: Chunk) {

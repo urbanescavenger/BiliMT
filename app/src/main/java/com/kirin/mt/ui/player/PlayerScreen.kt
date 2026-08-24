@@ -1687,16 +1687,20 @@ fun PlayerScreen(
         } else {
           mediaSource
         }
-        // 起始挡位:起播阶段用 selector maxHeight 临时卡在起始档(SABR 专属,非 SABR 不卡),保证
-        // 首段落在起始档(不靠带宽);首帧渲染后 onRenderedFirstFrame 松开,ABR 爬到默认画质上限。
+        // 起始挡位:起播阶段用 min+max 精确锁在起始档(SABR 专属,非 SABR 不卡),保证首段落在起始档
+        // (不靠带宽,对齐 LibreTube AbstractPlayerService setMinVideoSize+setMaxVideoSize 锁法,比原 maxHeight
+        // 上限更精确,杜绝"起播即顶满 4K");首帧渲染后 onRenderedFirstFrame 松开,升降档交给 ABR+excludeTrack。
         startQualityRelaxed = false
         val startQualityHeight = if (effectiveInfo.isSabrSingle()) youtubeStartQuality.startHeight else null
         if (startQualityHeight != null) {
-          // 在现有参数基础上叠加高度 cap,保留其它配置(mixed-mime/non-seamless 等)。
+          // 在现有参数基础上叠加高度 min+max cap,保留其它配置(mixed-mime/non-seamless 等)。
           val cur = player.trackSelectionParameters
           if (cur is DefaultTrackSelector.Parameters) {
             player.setTrackSelectionParameters(
-              cur.buildUpon().setMaxVideoSize(Int.MAX_VALUE, startQualityHeight).build()
+              cur.buildUpon()
+                .setMinVideoSize(Int.MIN_VALUE, startQualityHeight)
+                .setMaxVideoSize(Int.MAX_VALUE, startQualityHeight)
+                .build()
             )
           }
         }
