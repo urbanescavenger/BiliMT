@@ -34,6 +34,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeHistoryEntry
 import com.kirin.mt.core.youtube.resolveChannelAvatarUrl
 import com.kirin.mt.core.youtube.resolveThumbnailUrl
@@ -72,6 +73,7 @@ fun MobileHistoryPage(
   videoRepository: VideoRepository,
   youtubeHistoryStore: YoutubeHistoryStore,
   isLoggedIn: Boolean,
+  channels: List<YoutubeChannel> = emptyList(),
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
   onLogin: () -> Unit,
@@ -82,7 +84,10 @@ fun MobileHistoryPage(
   var nextViewAt by remember { mutableStateOf(0L) }
   var nextMax by remember { mutableStateOf(0L) }
   val youtubeHistory by youtubeHistoryStore.history.collectAsState(initial = emptyList())
-  val youtubeVideos = youtubeHistory.map { it.toVideoSummary() }
+  // 历史条目 channelAvatarUrl 可能为空(旧条目起播时未填),按 channelId 从关注频道 store 查头像兜底,
+  // 对齐 TV UserVideoFeedScreen 的 avatarFallback,否则 ownerFace 空 → 头像一片空白/占位人形。
+  val avatarByChannelId = remember(channels) { channels.associate { it.channelId to it.avatar } }
+  val youtubeVideos = youtubeHistory.map { it.toVideoSummary(avatarFallback = avatarByChannelId[it.channelId].orEmpty()) }
   // 混合历史:YouTube(本地,viewAt=lastPlayedAtMs/1000)+ B站(网络,viewAt 秒),按播放时间倒序。
   // 注意:B站分页按 viewAt 倒序加载,新页条目永远更旧,插入后不重排已显示内容,不会造成列表跳动。
   val mergedVideos =
