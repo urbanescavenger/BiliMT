@@ -154,10 +154,15 @@ fun MobileSettingsScreen(
   // 注意:分支必须是单层 lambda(如 { scope.launch { ... } }),不能写成 { { ... } } 双层——
   // 双层时外层 lambda 的 body 是另一个 lambda 字面量,被求值后丢弃(Unit 返回),内层永不执行。
   val updateVersionOnClick: (() -> Unit)? = when (val s = updateState.status) {
-    is UpdateUiState.Status.Available -> if (s.rechecked) {
-      { scope.launch { updateManager.download() } }
-    } else {
-      { scope.launch { updateManager.refresh() } }
+    // 显式标注 action 类型:scope.launch 返回 Job,若直接放 if 分支会被推断成 () -> Job,
+    // 期望类型 (() -> Unit)? 传不进 if 分支,整个 when 变 Any? 编译失败。
+    is UpdateUiState.Status.Available -> {
+      val action: (() -> Unit)? = if (s.rechecked) {
+        { scope.launch { updateManager.download() } }
+      } else {
+        { scope.launch { updateManager.refresh() } }
+      }
+      action
     }
     is UpdateUiState.Status.Downloaded -> { installDownloadedApk() }
     is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> null
