@@ -121,6 +121,8 @@ internal class SabrMediaFetcher(
   // source 在主 loader 线程)。
   private val realBandwidthSamples = ArrayDeque<Long>()
   private val realBandwidthLock = Any()
+  /** 上次 fetch 下载结束的实时墙钟(elapsedRealtime,0=首),算「段间等待」入带宽样本。 */
+  @Volatile private var lastFetchEndRealtimeMs = 0L
 
   /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。小样本/无效时长丢弃。 */
   fun recordRealBandwidthSample(bytes: Long, elapsedMs: Long) {
@@ -331,9 +333,16 @@ internal class SabrMediaFetcher(
         response.body?.bytes() ?: throw IOException("SABR empty body")
       }
       val elapsed = SystemClock.elapsedRealtime() - t0
+      // alpha.9X(带宽驱动,可持续带宽):elapsed 只计下载耗时,漏掉段间 gap(如 8K 段 4.6s 下载后等
+      // 23-30s 才拉下一段),瞬时吞吐 84M 高估可持续带宽 → ABR 误判 8K 可负担、缓冲掉不降档。样本
+      // 计入「距上次下载结束的等待」:bps = bytes/(elapsed+gap),反映真实可持续带宽,让媒体3 选档降档。
+      val endRealtime = SystemClock.elapsedRealtime()
+      val gapMs = if (lastFetchEndRealtimeMs > 0L) (t0 - lastFetchEndRealtimeMs).coerceAtLeast(0L) else 0L
+      lastFetchEndRealtimeMs = endRealtime
+      val totalMs = elapsed + gapMs
       val mbps = if (elapsed > 0) resp.size.toLong() * 8 / (elapsed * 1000L) else -1L
-      recordRealBandwidthSample(resp.size.toLong(), elapsed)
-      Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps est=${getRealBitrateEstimate() / 1000L}K")
+      recordRealBandwidthSample(resp.size.toLong(), totalMs)
+      Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms+gap${gapMs}ms → ${mbps}Mbps est=${getRealBitrateEstimate() / 1000L}K")
       resp
     } catch (e: SabrTerminalException) {
       throw e
