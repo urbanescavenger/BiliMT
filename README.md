@@ -135,6 +135,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.6-alpha.4 | 设置弹窗 D-pad 焦点根治：WebDAV 编辑/IPTV/Piped 三个弹窗由内联叠层改真 `Dialog` 窗口（独立 window 自带焦点根，D-pad 不再逃到背后设置页）；备份/还原选择弹窗重构「固定顶底+滚动中段」——顶部全选与底部开始/取消锁定常显、中间选项 `LazyColumn` 随焦点滚动滚到底才进底部按钮，根治更多选项下底部按钮被裁剪焦点不可见 |
 | v3.0.6-alpha.3 | SABR 可持续带宽 + 分辨率优先选档：①带宽样本计入段间等待根治「8K 缓冲掉不降档」；②Auto 选档改按 height 优先、bitrate 只当带宽门槛（`HeightAwareAdaptiveTrackSelection`），根治「Auto 卡 1080p 不升」（YouTube 声明 bitrate 与 height 错位） |
 | v3.0.6-alpha.2 | SABR 带宽驱动选档根治升降档：媒体3 带宽计被 SabrDataSource 内存读样本污染（1M↔437M 跳变）致 ABR 钉死低档；新建 `SabrBandwidthMeter` 返回 SabrMediaFetcher 实测真实带宽（中位数），媒体3 原生 ABR 按可信带宽自动选最高可负担档，删 ceiling/force-climb 补丁。真机复测 1080p→1440p→4K 自然爬升，无震荡无黑屏 |
 | v3.0.6-alpha.1 | 已看完闭环：① WebDAV 备份/还原新增「已看完列表」项（`bilitv/watched.json`，移动端+TV 弹窗都加，还原可选）；② 设置「播放」节新增「已看完自动删除缓存」开关（仅移动端），播放到结尾自动删该视频下载文件（`DownloadManager.deleteByVideoId`，含分件+「下载」播放列表存档），实际删了才弹 Toast 反馈；③ 视频卡片右下角「已看完」角标（`WatchedStore` + CompositionLocal，B站 bvid/YouTube videoId 统一承载） |

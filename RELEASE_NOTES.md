@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.6-alpha.4](#v306-alpha4)
 - [v3.0.6-alpha.3](#v306-alpha3)
 - [v3.0.6-alpha.2](#v306-alpha2)
 - [v3.0.6-alpha.1](#v306-alpha1)
@@ -196,6 +197,14 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.6-alpha.4
+
+**设置弹窗 D-pad 焦点根治**:WebDAV 编辑/IPTV/Piped 三个弹窗由内联叠层改为真 `Dialog` 窗口(独立 window 自带焦点根),备份/还原选择弹窗重构为「固定顶底 + 滚动中段」——顶部全选与底部开始/取消锁定常显,中间选项随焦点滚动,滚到底才进底部按钮。
+
+### 变更
+- **`SettingsWebDavDialog.kt` / `SettingsIptvDialog.kt` / `SettingsPipedDialog.kt`**:内联叠层 → 真 `Dialog`(独立 window 自带焦点根),根治 D-pad 上键/左键焦点逃出到弹窗背后的设置页。WebDAV 保留保存前连通校验。
+- **`SettingsWebDavSelectionDialog.kt`(备份/还原)**:重构为固定顶底+滚动中段——顶部「标题+全选」与底部「开始/取消」锁定常显,中间选项列表改 `LazyColumn`(`weight(1f, fill=false)` 内容自适应/填满滚动),随焦点移动滚到底才进底部按钮。根治更多选项下底部按钮被裁出窗口、焦点高亮不可见。
 
 ## v3.0.6-alpha.3
 
