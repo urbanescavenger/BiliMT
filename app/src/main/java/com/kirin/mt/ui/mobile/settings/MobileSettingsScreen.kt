@@ -166,7 +166,8 @@ fun MobileSettingsScreen(
     }
     is UpdateUiState.Status.Downloaded -> { installDownloadedApk() }
     is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> null
-    else -> { scope.launch { updateManager.refresh() } }
+    // scope.launch 返回 Job,末尾补 Unit 让 lambda 显式 () -> Unit,否则 when 推断成 Any?。
+    else -> { scope.launch { updateManager.refresh() }; Unit }
   }
 
   Column(
