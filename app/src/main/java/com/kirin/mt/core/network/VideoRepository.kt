@@ -145,6 +145,27 @@ class VideoRepository(
     return spaceProfileRepository.getSpaceUserProfile(mid)
   }
 
+  /**
+   * 从视频 bvid 解析 UP 主身份(mid/名/头像)。供卡片 `ownerMid` 缺失(首页/动态推荐流里的
+   * 广告/直播等特殊卡不带 owner 对象)时,点击 owner 行按需解析出 mid 再进空间,对齐搜索结果的
+   * 数据完整性。解析失败返回 null。
+   */
+  suspend fun resolveBiliOwner(bvid: String): Triple<Long, String, String>? {
+    if (bvid.isBlank()) return null
+    return runCatching {
+      val root = apiClient.getJson(
+        url = BiliApiEndpoints.View,
+        params = mapOf("bvid" to bvid),
+        sessData = sessionStore.sessData.first(),
+      ).rootObject()
+      root.requireBiliCodeOk("view owner")
+      val owner = root.obj("data")?.obj("owner") ?: return@runCatching null
+      val mid = owner.long("mid") ?: 0L
+      if (mid <= 0L) return@runCatching null
+      Triple(mid, owner.string("name").orEmpty(), owner.string("face").orEmpty())
+    }.getOrNull()
+  }
+
   suspend fun checkFollowStatus(mid: Long): Boolean {
     if (mid <= 0L) return false
 

@@ -183,13 +183,40 @@ fun BiliMobileApp(
   }
 
   // 打开 UP 主页:按来源分流——YouTube 带 channelId 进频道主页,否则 B 站空间。
+  // 卡片身份数据缺失(首页/动态特殊卡无 owner、搜索 YouTube 无 channelId)时,点击按需解析补齐。
   fun openOwner(video: VideoSummary) {
-    if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
-      youtubeChannelRequest = YoutubeChannel(video.channelId, video.ownerName)
-      channelPlaybackBehind = false
+    if (video.source == SourceYoutube) {
+      if (video.channelId.isNotBlank()) {
+        youtubeChannelRequest = YoutubeChannel(video.channelId, video.ownerName)
+        channelPlaybackBehind = false
+      } else if (video.ownerName.isNotBlank()) {
+        // channelId 缺失:按频道名解析出 channelId 再进频道主页。
+        scope.launch {
+          val resolved = runCatching { youtubeRepository.resolveChannel(video.ownerName) }.getOrNull()
+          if (resolved != null && resolved.channelId.isNotBlank()) {
+            youtubeChannelRequest = YoutubeChannel(resolved.channelId, resolved.name.ifBlank { video.ownerName })
+            channelPlaybackBehind = false
+          }
+        }
+      }
     } else {
-      spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
-      spacePlaybackBehind = false
+      if (video.ownerMid > 0L) {
+        spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+        spacePlaybackBehind = false
+      } else if (video.bvid.isNotBlank()) {
+        // ownerMid 缺失:按 bvid 解析出 UP 主身份再进空间。
+        scope.launch {
+          val owner = runCatching { videoRepository.resolveBiliOwner(video.bvid) }.getOrNull()
+          if (owner != null) {
+            spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(
+              owner.first,
+              owner.second.ifBlank { video.ownerName },
+              owner.third.ifBlank { video.ownerFace },
+            )
+            spacePlaybackBehind = false
+          }
+        }
+      }
     }
   }
 

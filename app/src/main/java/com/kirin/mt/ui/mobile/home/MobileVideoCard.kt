@@ -11,12 +11,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -361,7 +365,7 @@ private fun LiveOnlineCount(online: Int, areaName: String, modifier: Modifier = 
   }
 }
 
-/** UP 主圆形头像:默认 20dp(紧凑卡),动态 feed 用 40dp(跨两行);空 face 纯色占位。
+/** UP 主圆形头像:默认 20dp(紧凑卡),动态 feed 用 40dp(跨两行);空 face 或加载失败显示默认人形占位。
  *  复用 buildOwnerAvatarRequest 带 Bili 头与 CDN 尺寸。 */
 @Composable
 private fun OwnerAvatar(face: String, isLive: Boolean = false, size: Dp = 20.dp) {
@@ -372,17 +376,24 @@ private fun OwnerAvatar(face: String, isLive: Boolean = false, size: Dp = 20.dp)
     .clip(CircleShape)
     .background(MaterialTheme.colorScheme.surfaceVariant)
     .then(if (isLive) Modifier.border(2.dp, BiliColors.BiliPink, CircleShape) else Modifier)
-  if (face.isBlank()) {
-    Box(modifier = modifier)
-    return
+  Box(modifier = modifier, contentAlignment = Alignment.Center) {
+    // 占位:头像缺失或加载失败时显示默认人形图标,避免一片空白(AsyncImage 失败时不绘制,图标透出)。
+    Icon(
+      imageVector = Icons.Filled.Person,
+      contentDescription = null,
+      tint = MaterialTheme.colorScheme.onSurfaceVariant,
+      modifier = Modifier.size(size * 0.6f),
+    )
+    if (face.isNotBlank()) {
+      val context = LocalContext.current
+      AsyncImage(
+        model = remember(context, face) { buildOwnerAvatarRequest(context, face) },
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.fillMaxSize(),
+      )
+    }
   }
-  val context = LocalContext.current
-  AsyncImage(
-    model = remember(context, face) { buildOwnerAvatarRequest(context, face) },
-    contentDescription = null,
-    contentScale = ContentScale.Crop,
-    modifier = modifier,
-  )
 }
 
 /** 播放量/弹幕数等计数格式化:按当前界面 locale 用「万/亿」或「K/M/B」。 */
@@ -390,7 +401,7 @@ fun formatCount(count: Int, resources: android.content.res.Resources): String {
   return formatCompactCount(count.toLong(), localeFromResources(resources))
 }
 
-/** 是否可点 UP 头像进主页:B站 ownerMid>0,YouTube 需带 channelId。 */
+/** 是否可点 UP 头像进主页:有 ownerMid(B站)或带频道名/频道 id(缺失身份时点击按需解析)。 */
 private fun ownerClickable(video: VideoSummary): Boolean {
-  return video.ownerMid > 0L || (video.source == SourceYoutube && video.channelId.isNotBlank())
+  return video.ownerMid > 0L || video.ownerName.isNotBlank() || video.channelId.isNotBlank()
 }
