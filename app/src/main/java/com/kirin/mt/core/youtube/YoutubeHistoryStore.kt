@@ -24,6 +24,8 @@ data class YoutubeHistoryEntry(
   val channelName: String,
   /** 频道 id（UC 开头），用于从历史进频道主页。 */
   val channelId: String = "",
+  /** 频道头像 URL（yt3.ggpht.com）。起播时从卡片 ownerFace 记录；旧条目为空，渲染时按 channelId 回退查 YoutubeChannelStore。 */
+  val channelAvatarUrl: String = "",
   /** 缩略图 URL。 */
   val thumbnailUrl: String = "",
   val durationMs: Long = 0L,
@@ -112,3 +114,10 @@ class YoutubeHistoryStore(private val context: Context) {
  */
 fun YoutubeHistoryEntry.resolveThumbnailUrl(): String =
   thumbnailUrl.ifBlank { "https://i.ytimg.com/vi/$videoId/hqdefault.jpg" }
+
+/**
+ * 历史条目头像 URL：优先条目已存的 [YoutubeHistoryEntry.channelAvatarUrl]；为空时回退到
+ * 外部提供的 [fallback]（调用方传 YoutubeChannelStore 按 channelId 查出的头像，修旧条目）。
+ */
+fun YoutubeHistoryEntry.resolveChannelAvatarUrl(fallback: String): String =
+  channelAvatarUrl.ifBlank { fallback }

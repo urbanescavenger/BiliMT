@@ -1744,6 +1744,7 @@ fun PlayerScreen(
                 title = info.title,
                 channelName = activeRequest.ownerName,
                 channelId = historyChannelId,
+                channelAvatarUrl = activeRequest.ownerFace,
                 thumbnailUrl = activeRequest.coverUrl,
                 durationMs = info.durationMs,
                 positionMs = startPositionMs,

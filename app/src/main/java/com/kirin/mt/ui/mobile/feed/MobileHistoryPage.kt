@@ -35,6 +35,7 @@ import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.youtube.YoutubeHistoryEntry
+import com.kirin.mt.core.youtube.resolveChannelAvatarUrl
 import com.kirin.mt.core.youtube.resolveThumbnailUrl
 import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
@@ -262,13 +263,13 @@ fun MobileHistoryPage(
 
 /** 历史条目 → 卡片模型。progress 填秒数,toPlaybackRequest 据此续播;接近播完自动视为看完不续播。
  *  viewAt 填播放时间(秒),与 B 站历史 viewAt 同单位,供混合列表按播放时间排序。 */
-private fun YoutubeHistoryEntry.toVideoSummary(): VideoSummary {
+private fun YoutubeHistoryEntry.toVideoSummary(avatarFallback: String = ""): VideoSummary {
   return VideoSummary(
     bvid = videoId,
     title = title,
     pic = resolveThumbnailUrl(),
     ownerName = channelName,
-    ownerFace = "",
+    ownerFace = resolveChannelAvatarUrl(avatarFallback),
     ownerMid = 0L,
     view = 0,
     danmaku = 0,

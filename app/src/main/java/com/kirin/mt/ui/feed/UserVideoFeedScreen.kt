@@ -49,6 +49,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.YoutubeHistoryEntry
+import com.kirin.mt.core.youtube.resolveChannelAvatarUrl
 import com.kirin.mt.core.youtube.resolveThumbnailUrl
 import com.kirin.mt.core.network.FollowingSeason
 import com.kirin.mt.core.network.VideoRepository
@@ -214,7 +215,13 @@ internal fun UserFeedScreen(
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   // 本地 YouTube 播放历史(免登录):合并进 History tab,与 B 站历史按播放时间倒序混合。
   val youtubeHistory by youtubeHistoryStore.history.collectAsState(initial = emptyList())
-  val youtubeHistoryVideos = youtubeHistory.map { it.toVideoSummary() }
+  // 频道头像回退:旧历史条目 channelAvatarUrl 为空,按 channelId 从 YoutubeChannelStore 补(动态 feed 已缓存)。
+  val avatarByChannelId = remember(youtubeChannels) {
+    youtubeChannels.associate { it.channelId to it.avatar }
+  }
+  val youtubeHistoryVideos = youtubeHistory.map {
+    it.toVideoSummary(avatarFallback = avatarByChannelId[it.channelId].orEmpty())
+  }
 
   // 侧栏切回动态页时 screen 重组但未切子 tab → onSelect 不触发,当前子 tab 的旧
   // focusedVideoIndex 仍在,从 tab 按 Down 走 focusRestoredItemKey 会跳到旧深位置。
@@ -1561,13 +1568,13 @@ private fun mergeExtraVideos(base: List<VideoSummary>, extra: List<VideoSummary>
 }
 
 /** YouTube 历史条目 → 卡片模型。progress 填秒数供续播;viewAt 填播放时间(秒)与 B 站历史同单位供混合排序。 */
-private fun YoutubeHistoryEntry.toVideoSummary(): VideoSummary {
+private fun YoutubeHistoryEntry.toVideoSummary(avatarFallback: String = ""): VideoSummary {
   return VideoSummary(
     bvid = videoId,
     title = title,
     pic = resolveThumbnailUrl(),
     ownerName = channelName,
-    ownerFace = "",
+    ownerFace = resolveChannelAvatarUrl(avatarFallback),
     ownerMid = 0L,
     view = 0,
     danmaku = 0,
