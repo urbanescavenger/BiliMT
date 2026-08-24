@@ -143,6 +143,7 @@ import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
+import com.kirin.mt.core.youtube.sabr.media.SabrBandwidthMeter
 import com.kirin.mt.core.youtube.sabr.media.SabrManifest
 import com.kirin.mt.core.youtube.sabr.media.SabrMediaFetcher
 import com.kirin.mt.core.youtube.sabr.media.SabrMediaSource
@@ -428,11 +429,15 @@ fun MobilePlayerScreen(
   }
 
   // alpha.9X(ceiling 滞回):抽成命名实例——既给 ExoPlayer 做带宽计(ABR 选轨),又传给 SabrMediaSource.
-  // Factory 让 DefaultSabrChunkSource 读带宽估计判定「待放宽档位是否持续达标」。
+  // alpha.9X(带宽驱动选档,对齐 PlayerScreen):包装成 SabrBandwidthMeter,getBitrateEstimate 返回
+  // SabrMediaFetcher 实测真实带宽(中位数)——DefaultBandwidthMeter 被 SabrDataSource 内存读样本污染不可信,
+  // 媒体3 原生 ABR 拿到可信带宽才能按真实网速升降档(不再需要 exclude/force 补丁)。
   val bandwidthMeter = remember {
-    DefaultBandwidthMeter.Builder(context)
-      .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
-      .build()
+    SabrBandwidthMeter(
+      DefaultBandwidthMeter.Builder(context)
+        .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
+        .build()
+    )
   }
   val player = remember(bufferMaxMs) {
     // alpha.9X(对齐 PlayerScreen):YouTube SABR Auto 升档——H264+VP9 混合 TrackGroup 默认不进一条
