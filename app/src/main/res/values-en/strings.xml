@@ -143,6 +143,7 @@
     <string name="downloads_quality_audio">Audio only (no video)</string>
     <string name="downloads_confirm">Start download</string>
     <string name="downloads_enqueued">Added to download queue</string>
+    <string name="downloads_enqueueing">Adding to download queue…</string>
     <string name="downloads_enqueue_failed">Failed to add to queue</string>
     <string name="downloads_notification_title">Downloading</string>
     <string name="downloads_notification_channel">Video downloads</string>

@@ -144,6 +144,7 @@
     <string name="downloads_quality_audio">Solo audio (sin descargar video)</string>
     <string name="downloads_confirm">Iniciar descarga</string>
     <string name="downloads_enqueued">Añadido a la cola de descargas</string>
+    <string name="downloads_enqueueing">Añadiendo a la cola de descargas…</string>
     <string name="downloads_enqueue_failed">Fallo al poner en cola la descarga</string>
     <string name="downloads_notification_title">Descargando</string>
     <string name="downloads_notification_channel">Descargas de video</string>

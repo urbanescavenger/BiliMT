@@ -92,6 +92,7 @@
     <string name="downloads_quality_audio">僅音訊(不下載影片)</string>
     <string name="downloads_confirm">開始下載</string>
     <string name="downloads_enqueued">已加入下載佇列</string>
+    <string name="downloads_enqueueing">正在加入下載佇列...</string>
     <string name="downloads_enqueue_failed">下載入佇失敗</string>
     <string name="downloads_notification_title">正在下載</string>
     <string name="downloads_notification_channel">影片下載</string>

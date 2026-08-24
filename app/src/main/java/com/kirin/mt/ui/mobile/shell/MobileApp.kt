@@ -11,7 +11,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -27,6 +31,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
@@ -154,6 +159,8 @@ fun BiliMobileApp(
   var showPlaylistPicker by remember { mutableStateOf(false) }
   // 长按菜单里点「下载」→ 弹清晰度选择对话框;确认后入队下载。
   var showDownloadDialog by remember { mutableStateOf(false) }
+  // 确认清晰度后入队下载期间弹加载动画(遮罩转圈),入队完成/失败即收起。
+  var downloadEnqueueing by remember { mutableStateOf(false) }
   // B站下载弹窗的清晰度列表:经 getPlaybackInfo 拉取后缓存,再开对话框。
   var biliDownloadQualities by remember { mutableStateOf<List<PlaybackQuality>>(emptyList()) }
   // B站下载确认入队用的请求:拉清晰度时已解析 cid,enqueue 复用避免 playurl 用 cid=0 返 -400
@@ -492,17 +499,22 @@ fun BiliMobileApp(
             biliQualities = biliDownloadQualities,
             onDismiss = { showDownloadDialog = false; biliDownloadRequest = null },
             onConfirm = { choice ->
+              // 确认下载即收起整套长按菜单(不必等入队结果),避免 dialog 关闭后长按弹窗又冒出来/残留。
               showDownloadDialog = false
+              longPressVideo = null
               // B站用拉清晰度时已解析 cid 的 request(卡片 cid=0 直接入队会 -400);YouTube 走卡片原请求。
               val request = biliDownloadRequest ?: video.toPlaybackRequest()
+              biliDownloadRequest = null
+              // 入队期间弹加载动画给反馈,完成/失败再收起。
+              downloadEnqueueing = true
               scope.launch {
                 downloadManager.enqueue(request, choice)
                   .onSuccess {
-                    longPressVideo = null
-                    biliDownloadRequest = null
+                    downloadEnqueueing = false
                     Toast.makeText(context, context.getString(R.string.downloads_enqueued), Toast.LENGTH_SHORT).show()
                   }
                   .onFailure { e ->
+                    downloadEnqueueing = false
                     Toast.makeText(context, e.message ?: context.getString(R.string.downloads_enqueue_failed), Toast.LENGTH_LONG).show()
                   }
               }
@@ -577,6 +589,29 @@ fun BiliMobileApp(
         }
       }
     }
+
+    // 入队下载期间:模态加载动画(转圈),给"正在入队"的过程反馈;完成/失败由 onConfirm 收起。
+    if (downloadEnqueueing) {
+      MobileEnqueueingDialog()
+    }
   }
   }
+}
+
+/** 入队下载期间的加载动画:模态遮罩 + 转圈 + 文案。入队通常很快,仅作过程反馈,不可手动取消。 */
+@Composable
+private fun MobileEnqueueingDialog() {
+  AlertDialog(
+    onDismissRequest = { /* 不可取消,入队完成/失败自动收起 */ },
+    confirmButton = {},
+    title = { Text(stringResource(R.string.downloads_enqueueing)) },
+    text = {
+      Box(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+        contentAlignment = Alignment.Center,
+      ) {
+        CircularProgressIndicator()
+      }
+    },
+  )
 }
