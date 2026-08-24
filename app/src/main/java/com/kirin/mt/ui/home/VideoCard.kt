@@ -52,7 +52,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Precision
@@ -607,6 +609,8 @@ private fun VideoCover(
   val coverBackground = homeColors.glassSurfaceStrong
   val fallbackPainter = ColorPainter(coverBackground)
   var blurFocused by remember { mutableStateOf(false) }
+  // 诊断叠层:追踪封面加载状态,仅 YouTube 卡片在左上角显示「状态+URL」,供真机排查缩略图空白。
+  var coverLoadState by remember { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
   LaunchedEffect(
     focused,
     focusEffectsEnabled,
@@ -668,6 +672,7 @@ private fun VideoCover(
       contentScale = ContentScale.Crop,
       placeholder = fallbackPainter,
       error = fallbackPainter,
+      onState = { coverLoadState = it },
       modifier = Modifier.fillMaxSize(),
     )
 
@@ -723,6 +728,34 @@ private fun VideoCover(
         video = video,
         modifier = Modifier.align(Alignment.BottomCenter),
       )
+    }
+
+    // 诊断叠层(临时):仅 YouTube 卡片,左上角显示封面加载状态 + 截断 URL。
+    // 真机开历史/动态,看 YT ok=修复生效,ERR=仍失败(把 ERR 那卡 URL 记下来)。
+    if (video.source == SourceYoutube) {
+      val stateLabel = when (coverLoadState) {
+        AsyncImagePainter.State.Empty -> "empty"
+        is AsyncImagePainter.State.Loading -> "loading"
+        is AsyncImagePainter.State.Success -> "ok"
+        is AsyncImagePainter.State.Error -> "ERR"
+      }
+      Box(
+        modifier = Modifier
+          .align(Alignment.TopStart)
+          .background(Color(0xCC000000))
+          .padding(horizontal = 3.dp, vertical = 1.dp),
+      ) {
+        Text(
+          text = "YT $stateLabel ${video.pic.take(26)}",
+          fontSize = 11.sp,
+          color = if (coverLoadState is AsyncImagePainter.State.Error) {
+            Color(0xFFFF5252)
+          } else {
+            Color(0xFF69F0AE)
+          },
+          maxLines = 1,
+        )
+      }
     }
   }
 }
