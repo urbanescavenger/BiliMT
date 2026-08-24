@@ -269,6 +269,12 @@ fun MobileSettingsScreen(
       onCheckedChange = { scope.launch { appSettingsStore.setAutoReturnHomeOnCompletion(it) } },
     )
     MobileSwitchRow(
+      title = stringResource(R.string.settings_auto_delete_watched_title),
+      description = stringResource(R.string.settings_auto_delete_watched_description),
+      checked = settings.autoDeleteWatchedCache,
+      onCheckedChange = { scope.launch { appSettingsStore.setAutoDeleteWatchedCache(it) } },
+    )
+    MobileSwitchRow(
       title = stringResource(R.string.settings_show_clock_title),
       description = stringResource(R.string.settings_show_clock_description),
       checked = settings.showClock,
@@ -823,7 +829,11 @@ private fun MobileWebDavSelectionDialog(
   onDismiss: () -> Unit,
 ) {
   val items = if (isRestore) {
-    listOf(com.kirin.mt.core.webdav.WebDavBackupItem.Channels, com.kirin.mt.core.webdav.WebDavBackupItem.Piped)
+    listOf(
+      com.kirin.mt.core.webdav.WebDavBackupItem.Channels,
+      com.kirin.mt.core.webdav.WebDavBackupItem.Piped,
+      com.kirin.mt.core.webdav.WebDavBackupItem.Watched,
+    )
   } else {
     com.kirin.mt.core.webdav.WebDavBackupItem.entries
   }
@@ -833,6 +843,7 @@ private fun MobileWebDavSelectionDialog(
   fun itemLabel(item: com.kirin.mt.core.webdav.WebDavBackupItem): String = when (item) {
     com.kirin.mt.core.webdav.WebDavBackupItem.Channels -> stringResource(R.string.settings_webdav_item_channels)
     com.kirin.mt.core.webdav.WebDavBackupItem.Piped -> stringResource(R.string.settings_webdav_item_piped)
+    com.kirin.mt.core.webdav.WebDavBackupItem.Watched -> stringResource(R.string.settings_webdav_item_watched)
     com.kirin.mt.core.webdav.WebDavBackupItem.Logs -> stringResource(R.string.settings_webdav_item_logs)
   }
 

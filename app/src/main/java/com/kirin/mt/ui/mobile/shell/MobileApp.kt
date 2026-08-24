@@ -340,6 +340,7 @@ fun BiliMobileApp(
           playbackRepository = playbackRepository,
           youtubeHistoryStore = youtubeHistoryStore,
           watchedStore = watchedStore,
+          autoDeleteWatchedCache = settings.autoDeleteWatchedCache,
           danmakuSettingsStore = danmakuSettingsStore,
           playbackHttpClient = playbackHttpClient,
           cdnSelector = cdnSelector,

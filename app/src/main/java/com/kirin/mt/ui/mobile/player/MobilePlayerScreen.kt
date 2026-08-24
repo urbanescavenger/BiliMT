@@ -288,6 +288,7 @@ fun MobilePlayerScreen(
   playbackRepository: PlaybackRepository,
   youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
   watchedStore: com.kirin.mt.core.storage.WatchedStore,
+  autoDeleteWatchedCache: Boolean,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
@@ -475,7 +476,11 @@ fun MobilePlayerScreen(
     val reachedEnd = !activeRequest.isLive && !activeRequest.isIptv &&
       durationMs > 0 && positionMs >= durationMs - 2000L
     scope.launch {
-      if (reachedEnd) runCatching { watchedStore.markCompleted(info.bvid) }
+      if (reachedEnd) {
+        runCatching { watchedStore.markCompleted(info.bvid) }
+        // 已看完自动删除缓存:删该视频的下载文件。开关仅移动端。
+        if (autoDeleteWatchedCache) runCatching { downloadManager.deleteByVideoId(info.bvid) }
+      }
       // 本地进度保存保留（B 站按 videoId 也能续播）；B 站 heartbeat 仅 B 站视频上报。
       runCatching { playbackRepository.saveProgress(info.bvid, info.cid, positionMs, durationMs) }
       // YouTube 播放历史：同步更新本地历史列表的进度（断电续播 + 历史 tab 展示）。

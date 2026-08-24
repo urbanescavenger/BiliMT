@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
@@ -41,6 +42,20 @@ class WatchedStore(private val context: Context) {
         prefs.remove(Keys.Watched)
       } else {
         prefs[Keys.Watched] = json.encodeToString(serializer, next)
+      }
+    }
+  }
+
+  /** 全部已看完 id（备份用，顺序为最近先）。 */
+  suspend fun all(): List<String> = watched.first()
+
+  /** 整体重建（还原用，清空旧列表再写入）。空列表删键。 */
+  suspend fun replaceAll(ids: List<String>) {
+    context.biliDataStore.edit { prefs ->
+      if (ids.isEmpty()) {
+        prefs.remove(Keys.Watched)
+      } else {
+        prefs[Keys.Watched] = json.encodeToString(serializer, ids.take(MaxEntries))
       }
     }
   }

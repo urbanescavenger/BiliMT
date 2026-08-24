@@ -241,6 +241,8 @@
     <string name="settings_auto_play_related_video_description">Cuando no hay una siguiente parte disponible, reproduce el primer video de los recomendados relacionados.</string>
     <string name="settings_auto_return_home_on_completion_title">Salir de la reproducción al terminar</string>
     <string name="settings_auto_return_home_on_completion_description">Si no hay siguiente contenido, al terminar vuelve a la página original y restaura el foco del video.</string>
+    <string name="settings_auto_delete_watched_title">Borrar caché automáticamente al terminar</string>
+    <string name="settings_auto_delete_watched_description">Borra automáticamente los archivos de descarga de los videos ya vistos para liberar espacio de almacenamiento.</string>
     <string name="settings_interaction_section">UI/UX</string>
     <string name="settings_show_clock_title">Mostrar hora</string>
     <string name="settings_show_clock_description">Muestra la hora actual en la esquina superior derecha de la pantalla de reproducción.</string>
@@ -611,6 +613,7 @@
     <string name="settings_webdav_select_all">Seleccionar todo</string>
     <string name="settings_webdav_item_channels">Canales seguidos de YouTube</string>
     <string name="settings_webdav_item_piped">Configuración de Piped</string>
+    <string name="settings_webdav_item_watched">Lista de vistos</string>
     <string name="settings_webdav_item_logs">Registro</string>
     <string name="settings_webdav_start_backup">Iniciar copia</string>
     <string name="settings_webdav_start_restore">Iniciar restauración</string>

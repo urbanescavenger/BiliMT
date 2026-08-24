@@ -197,6 +197,7 @@ class AppContainer(context: Context) {
   val webdavRepository: WebDavRepository = WebDavRepository(downloadHttpClient)
   val webdavBackupService: WebDavBackupService = WebDavBackupService(
     channelStore = youtubeChannelStore,
+    watchedStore = watchedStore,
     repository = webdavRepository,
     json = json,
     settingsStore = appSettingsStore,

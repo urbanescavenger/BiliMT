@@ -240,6 +240,8 @@
     <string name="settings_auto_play_related_video_description">When there is no next part, plays the first recommended video.</string>
     <string name="settings_auto_return_home_on_completion_title">Exit playback when done</string>
     <string name="settings_auto_return_home_on_completion_description">When there is nothing left to play, returns to the previous page and restores video focus.</string>
+    <string name="settings_auto_delete_watched_title">Auto-delete cache after watching</string>
+    <string name="settings_auto_delete_watched_description">Automatically deletes the downloaded files of watched videos to free up storage space.</string>
     <string name="settings_interaction_section">UI/UX</string>
     <string name="settings_show_clock_title">Show clock</string>
     <string name="settings_show_clock_description">Shows the current time in the top-right of the player.</string>
@@ -611,6 +613,7 @@
     <string name="settings_webdav_select_all">Select all</string>
     <string name="settings_webdav_item_channels">YouTube followed channels</string>
     <string name="settings_webdav_item_piped">Piped config</string>
+    <string name="settings_webdav_item_watched">Watched list</string>
     <string name="settings_webdav_item_logs">Logs</string>
     <string name="settings_webdav_start_backup">Start backup</string>
     <string name="settings_webdav_start_restore">Start restore</string>

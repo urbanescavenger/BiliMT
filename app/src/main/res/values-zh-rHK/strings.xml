@@ -176,6 +176,8 @@
     <string name="settings_auto_play_related_video_description">冇可連播嘅下一 P 時，播放相關推薦嘅第一個影片。</string>
     <string name="settings_auto_return_home_on_completion_title">播完自動退出播放</string>
     <string name="settings_auto_return_home_on_completion_description">冇可播嘅下一個內容時，播完後返回原本嘅頁面並恢復影片焦點。</string>
+    <string name="settings_auto_delete_watched_title">已睇完自動刪除快取</string>
+    <string name="settings_auto_delete_watched_description">睇完嘅影片自動刪除佢嘅下載檔案，釋放儲存空間。</string>
     <string name="settings_interaction_section">UI/UX</string>
     <string name="settings_show_clock_title">顯示時間</string>
     <string name="settings_show_clock_description">&#x55BA;&#x64AD;&#x653E;&#x4ECB;&#x9762;&#x53F3;&#x4E0A;&#x89D2;&#x986F;&#x793A;&#x76EE;&#x524D;&#x6642;&#x9593;&#x3002;</string>
