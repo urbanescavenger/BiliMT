@@ -310,9 +310,10 @@ private fun LiveBadge(text: String, modifier: Modifier = Modifier) {
   }
 }
 
-/** 「已看完」角标:深色半透明圆角 pill + 白色文字,贴缩略图右下(调用处用 BoxScope.align 定位)。 */
+/** 「已看完」角标:深色半透明圆角 pill + 白色文字,贴缩略图右下(调用处用 BoxScope.align 定位)。
+ *  internal 供播放列表/离线下载列表复用。 */
 @Composable
-private fun CompletedBadge(modifier: Modifier = Modifier) {
+internal fun CompletedBadge(modifier: Modifier = Modifier) {
   Row(
     modifier = modifier
       .clip(RoundedCornerShape(4.dp))

@@ -58,6 +58,8 @@ import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
+import com.kirin.mt.ui.mobile.home.CompletedBadge
+import com.kirin.mt.ui.mobile.home.LocalWatchedIds
 import com.kirin.mt.ui.theme.BiliColors
 import kotlinx.coroutines.launch
 
@@ -277,14 +279,20 @@ private fun DownloadCard(
         onCheckedChange = { onSelect() },
       )
     }
-    AsyncImage(
-      model = coverModel,
-      contentDescription = d.title,
-      contentScale = ContentScale.Crop,
-      modifier = Modifier
-        .size(width = 96.dp, height = 60.dp)
-        .clip(RoundedCornerShape(8.dp)),
-    )
+    Box {
+      AsyncImage(
+        model = coverModel,
+        contentDescription = d.title,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier
+          .size(width = 96.dp, height = 60.dp)
+          .clip(RoundedCornerShape(8.dp)),
+      )
+      // 已看完角标:命中本地 watched 集合(videoId/bvid)时贴缩略图右下。
+      if (d.videoId in LocalWatchedIds.current) {
+        CompletedBadge(modifier = Modifier.align(Alignment.BottomEnd).padding(2.dp))
+      }
+    }
     Column(
       modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
     ) {
@@ -314,6 +322,17 @@ private fun DownloadCard(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
+        }
+        // 已下载完成:显示缓存视频大小(优先声明总量,缺失时按实际文件长度兜底)。
+        if (status == DownloadStatus.COMPLETED) {
+          val size = group.totalSize.takeIf { it > 0L } ?: group.totalDownloadedBytes
+          if (size > 0L) {
+            Text(
+              text = "  ·  ${formatBytes(size)}",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
         }
       }
       if (status == DownloadStatus.RUNNING || status == DownloadStatus.QUEUED) {

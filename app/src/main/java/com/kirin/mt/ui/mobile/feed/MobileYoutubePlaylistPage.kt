@@ -58,6 +58,8 @@ import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.DOWNLOAD_PLAYLIST_NAME
 import com.kirin.mt.core.youtube.YoutubePlaylist
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
+import com.kirin.mt.ui.mobile.home.CompletedBadge
+import com.kirin.mt.ui.mobile.home.LocalWatchedIds
 import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.theme.BiliColors
 import kotlinx.coroutines.launch
@@ -387,6 +389,10 @@ private fun PlaylistDetailScreen(
                   .background(MaterialTheme.colorScheme.error, RoundedCornerShape(4.dp))
                   .padding(horizontal = 4.dp, vertical = 1.dp),
               )
+            }
+            // 已看完角标:命中本地 watched 集合(bvid/videoId)时贴缩略图右下。
+            if (video.bvid in LocalWatchedIds.current) {
+              CompletedBadge(modifier = Modifier.align(Alignment.BottomEnd).padding(2.dp))
             }
           }
           Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
