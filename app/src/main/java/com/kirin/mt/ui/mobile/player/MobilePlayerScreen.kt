@@ -214,8 +214,8 @@ private sealed interface MobilePlayerState {
 
 /**
  * 在线播放器缓存命中:按 bvid(YouTube 为 videoId)+ cid(分P)在下载库找「已可播」的下载项。
- * 仅匹配 isPlayable(媒体分件全 COMPLETED)且有视频分件(video/muxed)的缓存——纯音频下载
- * (audio-only)不命中,在线播该视频回落完整网络流,避免本地纯音频替代完整视频;
+ * 匹配 isPlayable(媒体分件全 COMPLETED)的缓存,含纯音频下载(audio-only,video/muxed 均无):
+ * 命中后由 buildLocalMediaSource 据 videoFile 是否为空决定播视频+音频或仅音频,不回落网络。
  * 部分下载/未完成回落在线。cid 匹配避免多 P 视频误用其它分P的缓存文件(下载存的是解析后真实 cid)。
  */
 private suspend fun findCachedPlayable(
@@ -227,8 +227,7 @@ private suspend fun findCachedPlayable(
   // 诊断:缓存未命中时,把查询参数与下载库实际内容打出来,定位是 videoId/cid 不匹配、
   // 状态未完成还是分件缺失。真机确认后删除(见记忆「先诊断拿证据再改」)。
   val hit = all.firstOrNull {
-    it.download.videoId == bvid && it.download.cid == cid && it.isPlayable &&
-      (it.videoPart != null || it.muxedPart != null)
+    it.download.videoId == bvid && it.download.cid == cid && it.isPlayable
   }
   if (hit == null && all.isNotEmpty()) {
     Log.i(MobilePlayerLogTag, "缓存未命中 query[bvid=$bvid cid=$cid] downloads=${all.size}: " +
@@ -262,7 +261,8 @@ private fun buildCachedPlaybackInfo(cached: DownloadWithItems, cid: Long, title:
 
 /**
  * 用本地已下载文件构建 MediaSource(镜像离线播放器):单文件(muxed)→ ProgressiveMediaSource,
- * 视频+音频两文件 → MergingMediaSource 现场 mux。DefaultDataSource 走本地文件,无网络 headers。
+ * 视频+音频两文件 → MergingMediaSource 现场 mux;纯音频下载(videoFile==null)→ 只播音频轨。
+ * DefaultDataSource 走本地文件,无网络 headers。
  */
 private fun buildLocalMediaSource(
   context: Context,
@@ -271,8 +271,18 @@ private fun buildLocalMediaSource(
   mediaMetadata: androidx.media3.common.MediaMetadata,
 ): MediaSource {
   val (videoFile, audioFile) = downloadManager.playbackFiles(cached.download.id)
-  if (videoFile == null) throw IllegalStateException(context.getString(R.string.player_error_cache_missing))
   val dataSourceFactory = DefaultDataSource.Factory(context)
+  // 纯音频下载只有 audioFile:只播音频轨(镜像离线播放器 MobileOfflinePlayerScreen)。
+  if (videoFile == null) {
+    if (audioFile == null) throw IllegalStateException(context.getString(R.string.player_error_cache_missing))
+    return ProgressiveMediaSource.Factory(dataSourceFactory)
+      .createMediaSource(
+        androidx.media3.common.MediaItem.Builder()
+          .setUri(Uri.fromFile(audioFile))
+          .setMediaMetadata(mediaMetadata)
+          .build(),
+      )
+  }
   val videoItem = androidx.media3.common.MediaItem.Builder()
     .setUri(Uri.fromFile(videoFile))
     .setMediaMetadata(mediaMetadata)
