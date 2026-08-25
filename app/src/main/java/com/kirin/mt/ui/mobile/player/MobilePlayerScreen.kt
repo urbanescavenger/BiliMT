@@ -1241,7 +1241,7 @@ fun MobilePlayerScreen(
   val positionMs = seekPreviewMs ?: playbackPositionState.longValue
   val durationMs = playbackDurationState.longValue.coerceAtLeast(1L)
 
-  // 播放列表内点相关/后续视频:就地切换 activeRequest(保留 playQueue 上下文,◀▶ 与相关视频持续可用);
+  // 播放列表内点相关/后续视频:就地切换 activeRequest(保留 playQueue 上下文,◀▶ 已移除,相关视频入口仍可用);
   // 非列表视频回退外层 onPlayVideo(会清队列)。
   val playPlaylistVideo: (VideoSummary) -> Unit = { video ->
     val idx = playQueue.indexOfFirst { it.bvid == video.bvid }
@@ -1669,36 +1669,8 @@ fun MobilePlayerScreen(
               modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
             )
             Text(formatMs(durationMs), color = Color.White)
-            // 播放列表内:上一个 / 下一个视频按钮(◀ ▶)。非播放列表(curQueueIndex==-1)不显示。
-            val curQueueIndex = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
-            if (curQueueIndex >= 0) {
-              MobilePlayerIconButton(
-                iconRes = R.drawable.ic_player_chevron_left,
-                contentDescription = stringResource(R.string.player_previous),
-                tint = if (curQueueIndex > 0) BiliColors.TextPrimary else BiliColors.TextTertiary,
-                onClick = {
-                  if (curQueueIndex > 0) {
-                    scope.launch {
-                      loadRequest(playQueue[curQueueIndex - 1].toPlaybackRequest()
-                        .copy(preferredQualityId = selectedQualityId))
-                    }
-                  }
-                },
-              )
-              MobilePlayerIconButton(
-                iconRes = R.drawable.ic_player_chevron_right,
-                contentDescription = stringResource(R.string.player_next),
-                tint = if (curQueueIndex < playQueue.lastIndex) BiliColors.TextPrimary else BiliColors.TextTertiary,
-                onClick = {
-                  if (curQueueIndex < playQueue.lastIndex) {
-                    scope.launch {
-                      loadRequest(playQueue[curQueueIndex + 1].toPlaybackRequest()
-                        .copy(preferredQualityId = selectedQualityId))
-                    }
-                  }
-                },
-              )
-            }
+            // 上一个/下一个(◀▶)按钮已移除:播放列表里紧挨缓存清晰度静态文字,点"清晰度"易误触切下一集。
+            // 与在线播放器对齐,进度条行只保留清晰度/音轨入口。
             // alpha.9X(恢复清晰度选择):HD 画质按钮 + DropdownMenu,列全部可播档位,选中即重载(preferredQualityId)。
             // 播放器页面未包 MaterialTheme,DropdownMenu 显式深色 containerColor,否则默认白底。
             // 缓存命中:清晰度只读——显示缓存清晰度静态文字,不可切换(本地源无多轨)。
