@@ -603,7 +603,14 @@ fun MobilePlayerScreen(
    */
   fun routeSeek(targetMs: Long) {
     val maxMs = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
-    val clamped = targetMs.coerceIn(0L, maxMs)
+    // 进度条末端误触防护:目标落在末尾 3s 内退到结束前 3s,避免 seekTo(末尾)→STATE_ENDED 误触发自动连播切下一集
+    // (播放列表场景误触进度条最末会跳到下一集)。SABR 中段 seek 照常,仅末端寻址受限。
+    val clamped = if (maxMs > 0L && maxMs != Long.MAX_VALUE) {
+      val upper = (maxMs - 3000L).coerceAtLeast(0L)
+      targetMs.coerceIn(0L, upper)
+    } else {
+      targetMs
+    }
     if ((playerState as? MobilePlayerState.Ready)?.info?.isSabrProgressive() == true) {
       pendingSABRSeekMs = clamped
       sabrSeekReloadKey++
@@ -1177,24 +1184,31 @@ fun MobilePlayerScreen(
     }.getOrDefault(emptyList())
   }
 
-  // 相关视频:B站按 bvid 拉 related;YouTube 走 /next secondaryResults(对齐 LibreTube),失败回退播放列表后续。
+  // 相关视频:播放列表场景相关 = 播放列表后续(与自动连播 computeNextRequest 同源同序,不依赖在线接口成败);
+  // 历史/动态/搜索等单视频(playQueue 无后续)播放 → 走在线相关(B站按 bvid 拉 related;YouTube 走 /next secondaryResults)。
   LaunchedEffect(activeRequest.bvid) {
     relatedVideos = emptyList()
     if (activeRequest.bvid.isBlank()) return@LaunchedEffect
+    // 播放列表播放:相关视频 = 播放列表后续,与自动连播一致。
+    if (playQueue.size > 1) {
+      val cur = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
+      if (cur >= 0 && cur < playQueue.lastIndex) {
+        relatedVideos = playQueue.drop(cur + 1)
+        return@LaunchedEffect
+      }
+    }
+    // 非播放列表(或已在列表末):走在线相关。
     if (activeRequest.isYoutube) {
       relatedVideos = runCatching {
         videoRepository.getYoutubeRelatedVideos(activeRequest.bvid)
       }.onSuccess { Log.i("YtRelated", "mobile related ok: ${it.size} for ${activeRequest.bvid}") }
         .onFailure { Log.w("YtRelated", "mobile related failed for ${activeRequest.bvid}", it) }
-        .getOrElse {
-          val curIndex = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
-          if (curIndex >= 0) playQueue.drop(curIndex + 1) else emptyList()
-        }
-      return@LaunchedEffect
+        .getOrDefault(emptyList())
+    } else {
+      relatedVideos = runCatching {
+        videoRepository.getRelatedVideos(activeRequest.bvid)
+      }.getOrDefault(emptyList())
     }
-    relatedVideos = runCatching {
-      videoRepository.getRelatedVideos(activeRequest.bvid)
-    }.getOrDefault(emptyList())
   }
 
   // 心跳上报
