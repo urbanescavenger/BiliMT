@@ -726,6 +726,7 @@ fun MobilePlayerScreen(
       if (cachedPlayback != null) {
         usingCachedPlayback = true
         val cachedInfo = buildCachedPlaybackInfo(cachedPlayback, cid, displayTitle, context)
+        Log.i(MobilePlayerLogTag, "缓存命中: videoId=${cachedInfo.bvid} cid=$cid quality='${cachedInfo.selectedQuality.description}' qualities=${cachedInfo.qualities.size}")
         selectedQualityId = cachedInfo.selectedQuality.id
         actualQualityId = cachedInfo.selectedQuality.id
         val startPositionMs = playbackRepository.getSavedProgress(cachedInfo.bvid, cachedInfo.cid)?.positionMs
@@ -1733,6 +1734,7 @@ fun MobilePlayerScreen(
                       },
                       onClick = {
                         showQualityMenu = false
+                        Log.i(MobilePlayerLogTag, "点清晰度: usingCachedPlayback=$usingCachedPlayback 点=${q.id} '${q.description}' 现播档=$actualQualityId 菜单档数=${qualities.size} bvid=${activeRequest.bvid} cid=${activeRequest.cid}")
                         selectedQualityId = q.id
                         actualQualityId = q.id
                         scope.launch {
