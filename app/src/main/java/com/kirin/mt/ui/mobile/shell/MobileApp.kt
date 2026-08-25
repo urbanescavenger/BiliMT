@@ -32,6 +32,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.pointer.awaitPointerEventScope
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
@@ -252,11 +255,10 @@ fun BiliMobileApp(
     NavigationSuiteScaffold(
       modifier = Modifier.statusBarsPadding(),
       navigationSuiteItems = {
-        // 播放器打开时不渲染底部导航栏:播放器内嵌在 Scaffold 内容区,底栏若仍在会露在播放器
-        // 下方可点——点播放器底部"清晰度位置"会误触最右侧"设置"tab 打开设置页。
-        if (playbackRequest == null) {
-          bottomNav.forEach { dest ->
-            item(
+        // 底部导航始终渲染。播放器是全屏不透明层(见下),盖住底栏并吞噬其下所有指针事件,
+        // 播放时底栏不可达,无需在此隐藏——将来底下新增任何内容也一样被盖住。
+        bottomNav.forEach { dest ->
+          item(
             selected = selected == dest,
             onClick = {
               if (dest == AppDestination.Settings) {
@@ -276,7 +278,6 @@ fun BiliMobileApp(
             icon = { Icon(painterResource(dest.iconRes), contentDescription = null) },
             label = { Text(stringResource(dest.titleRes)) },
           )
-          }
         }
       },
     ) {
@@ -356,6 +357,11 @@ fun BiliMobileApp(
         playbackRequest = null
       }
       Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        // 全屏消费层:吞噬整个播放器区域的所有指针事件,盖住并屏蔽其下任何层(底部导航/页面/空间等)。
+        // background 只画不吞事件——缓存视频里"清晰度位置"是无 onClick 的静态 Text,点击会落穿到
+        // 背后的"设置"tab 打开设置页。此层让播放器无点击目标处也吞掉指针,播放器控件叠在其上仍正常响应;
+        // 将来底下新增别的内容也一样被盖住。
+        Box(Modifier.fillMaxSize().pointerInput(Unit) { consumeAllGestures() })
         if (request.isLive || request.isIptv) {
           LivePlayerScreen(
             request = request,
@@ -637,6 +643,19 @@ fun BiliMobileApp(
 }
 
 /** 入队下载期间的加载动画:模态遮罩 + 转圈 + 文案。入队通常很快,仅作过程反馈,不可手动取消。 */
+/**
+ * 全屏吞噬所有指针事件:使该层成为不透明遮挡,吞掉点/滑动,阻止事件落到它之下的任何组件
+ * (底部导航、页面、空间等)。播放器控件叠于其上,事件先由顶层控件消费,不受影响。
+ */
+private suspend fun PointerInputScope.consumeAllGestures() {
+  awaitPointerEventScope {
+    while (true) {
+      val event = awaitPointerEvent()
+      event.changes.forEach { it.consume() }
+    }
+  }
+}
+
 @Composable
 private fun MobileEnqueueingDialog() {
   AlertDialog(
