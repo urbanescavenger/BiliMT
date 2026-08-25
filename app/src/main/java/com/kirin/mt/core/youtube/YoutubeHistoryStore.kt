@@ -77,6 +77,26 @@ class YoutubeHistoryStore(private val context: Context) {
     }
   }
 
+  /**
+   * 回填某条目的频道字段（channelId/channelAvatarUrl）。**不改变列表位置**（区别于 recordPlay 会前置）。
+   * 历史列表懒加载时，对旧条目空白头像按频道解析一次后写回，避免逐个重播才愈合。
+   * 只填空白位，不覆盖已有值（保持首次解析结果优先）。
+   */
+  suspend fun updateChannel(videoId: String, channelId: String, channelAvatarUrl: String) {
+    if (videoId.isBlank()) return
+    context.biliDataStore.edit { prefs ->
+      val current = decode(prefs[Keys.History]).orEmpty()
+      if (current.none { it.videoId == videoId }) return@edit
+      val next = current.map { entry ->
+        if (entry.videoId != videoId) entry else entry.copy(
+          channelId = entry.channelId.ifBlank { channelId },
+          channelAvatarUrl = entry.channelAvatarUrl.ifBlank { channelAvatarUrl },
+        )
+      }
+      prefs[Keys.History] = json.encodeToString(serializer, next)
+    }
+  }
+
   suspend fun remove(videoId: String) {
     context.biliDataStore.edit { prefs ->
       val next = decode(prefs[Keys.History]).orEmpty().filterNot { it.videoId == videoId }

@@ -88,6 +88,30 @@ fun MobileHistoryPage(
   // 对齐 TV UserVideoFeedScreen 的 avatarFallback,否则 ownerFace 空 → 头像一片空白/占位人形。
   val avatarByChannelId = remember(channels) { channels.associate { it.channelId to it.avatar } }
   val youtubeVideos = youtubeHistory.map { it.toVideoSummary(avatarFallback = avatarByChannelId[it.channelId].orEmpty()) }
+
+  // 历史列表旧条目的 channelAvatarUrl 可能为空(旧版本起播时未填),光看列表不重播不愈合,
+  // 且关注频道 fallback 只覆盖已关注的频道。这里后台按频道分组,每组只解析一次权威头像
+  // (videoRepository.getYoutubeVideoDetail,内部 /player→NewPipe uploaderAvatars 已填),原地
+  // 回填该组所有空白条目(channelAvatarUrl/channelId),不改列表位置。已处理过的 videoId 记进
+  // backfilledIds,避免每次进历史页重复解析。解析失败也标记为已处理,防止反复重试打爆网络。
+  val backfilledIds = remember { mutableStateOf(setOf<String>()) }
+  LaunchedEffect(youtubeHistory) {
+    val pending = youtubeHistory.filter { it.channelAvatarUrl.isBlank() && it.videoId !in backfilledIds.value }
+    if (pending.isEmpty()) return@LaunchedEffect
+    backfilledIds.value = backfilledIds.value + pending.map { it.videoId }
+    val byChannel = pending.groupBy { it.channelId.ifBlank { it.channelName } }
+    for ((_, entries) in byChannel) {
+      val detail = runCatching { videoRepository.getYoutubeVideoDetail(entries.first().videoId) }.getOrNull()
+      val avatar = detail?.channelAvatarUrl
+      if (avatar.isNullOrBlank()) continue
+      for (e in entries) {
+        if (e.channelAvatarUrl.isBlank()) {
+          youtubeHistoryStore.updateChannel(e.videoId, detail?.channelId.orEmpty(), avatar)
+        }
+      }
+    }
+  }
+
   // 混合历史:YouTube(本地,viewAt=lastPlayedAtMs/1000)+ B站(网络,viewAt 秒),按播放时间倒序。
   // 注意:B站分页按 viewAt 倒序加载,新页条目永远更旧,插入后不重排已显示内容,不会造成列表跳动。
   val mergedVideos =
