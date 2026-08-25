@@ -51,6 +51,7 @@ import com.kirin.mt.core.cache.AppCacheManager
 import com.kirin.mt.core.cache.formatCacheSize
 import com.kirin.mt.core.i18n.ChineseTextConverters
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.network.mergeByPubdate
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.CdnSpeedTester
 import com.kirin.mt.core.player.DefaultPlaybackSpeed
@@ -67,6 +68,7 @@ import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
+import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.settings.AppPerformancePolicy
@@ -81,8 +83,10 @@ import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.feed.UserFeedScreen
 import com.kirin.mt.ui.focus.focusDiag
+import com.kirin.mt.ui.feed.UserFeedState
 import com.kirin.mt.ui.feed.UserFeedUiState
 import com.kirin.mt.ui.home.RecommendScreen
+import com.kirin.mt.ui.home.RecommendState
 import com.kirin.mt.ui.home.RecommendUiState
 import com.kirin.mt.ui.glass.LocalLiquidGlassBackdrop
 import com.kirin.mt.ui.i18n.LocalChineseTextConverter
@@ -112,6 +116,7 @@ import com.kirin.mt.ui.theme.LocalHomeColors
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -312,6 +317,97 @@ fun BiliTvApp(
   // 每次重启检测排序:显示的(enabled)分区排前、隐藏的排后。
   LaunchedEffect(Unit) {
     appSettingsStore.ensureEnabledSectionsFirst()
+  }
+
+  // 启动后台预加载:首页推荐 + 动态(视频)提前拉好,切到对应 tab 时数据已就绪,免二次点击。
+  // 推荐免登录可拉;动态需登录(未登录时跳过,登录后本 effect 因 isLoggedIn 变化重跑补拉)。
+  // 预加载只写「屏幕尚未自行加载」的状态,避免与屏幕自身 LaunchedEffect 并发加载互相覆盖。
+  LaunchedEffect(userSession.isLoggedIn) {
+    // 1. 首页推荐
+    if (recommendUiState.sectionStates[HomeSection.Recommend.key] == null) {
+      // 本 effect 以 isLoggedIn 为 key,登录态变化(启动时 session 从磁盘加载)会取消重跑;
+      // 取消必须向上抛,否则 runCatching 吞掉 CancellationException 会误写 Empty 卡死推荐。
+      val videos = try {
+        videoRepository.getHomeSectionVideos(section = HomeSection.Recommend, page = 1, idx = 0)
+      } catch (error: CancellationException) {
+        throw error
+      } catch (error: Exception) {
+        emptyList()
+      }
+      // 拉取期间屏幕可能已自行加载,非 null 则不覆盖。
+      if (recommendUiState.sectionStates[HomeSection.Recommend.key] == null) {
+        val nextState = when {
+          videos.isEmpty() -> RecommendState.Empty
+          else -> RecommendState.Success(
+            videos = videos,
+            nextPage = 2,
+            loadingMore = false,
+            endReached = videos.size < 20,
+            loadMoreError = "",
+          )
+        }
+        recommendUiState.sectionStates =
+          recommendUiState.sectionStates + (HomeSection.Recommend.key to nextState)
+        recommendUiState.loadedSectionKeys =
+          recommendUiState.loadedSectionKeys + HomeSection.Recommend.key
+      }
+    }
+
+    // 2. 动态(视频):B 站 + YouTube 关注合并,复用 loadDynamicFirstPage 同款逻辑。
+    if (userSession.isLoggedIn && !userFeedState.dynamicVideo.loadedOnce) {
+      val dynamicState = userFeedState.dynamicVideo
+      var biliEndReached = true
+      var biliError: String? = null
+      val biliVideos = try {
+        val page = videoRepository.getDynamicFeed(type = "video")
+        dynamicState.nextOffset = page.offset
+        dynamicState.loadedOnce = true
+        biliEndReached = !page.hasMore
+        page.videos
+      } catch (error: CancellationException) {
+        throw error
+      } catch (error: Exception) {
+        dynamicState.loadedOnce = true
+        biliError = error.message.orEmpty()
+        null
+      }
+      val youtubeVideos = if (youtubeChannels.isNotEmpty()) {
+        try {
+          videoRepository.youtubeSubscriptionsFeed(
+            youtubeChannels,
+            onChannelAvatarResolved = { channel ->
+              youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
+            },
+          )
+        } catch (error: CancellationException) {
+          throw error
+        } catch (error: Exception) {
+          emptyList()
+        }
+      } else {
+        emptyList()
+      }
+      val merged = mergeByPubdate(biliVideos.orEmpty(), youtubeVideos)
+      if (youtubeChannels.isNotEmpty()) {
+        dynamicState.youtubeMerged = true
+      }
+      // 屏幕已自行加载(非 Loading)则不覆盖。
+      if (dynamicState.state is UserFeedState.Loading) {
+        dynamicState.state = when {
+          merged.isEmpty() && biliError != null -> UserFeedState.Failed(biliError)
+          merged.isEmpty() -> UserFeedState.Empty
+          else -> {
+            dynamicState.hasLoadedContent = true
+            UserFeedState.Success(
+              videos = merged,
+              loadingMore = false,
+              endReached = biliEndReached,
+              loadMoreError = "",
+            )
+          }
+        }
+      }
+    }
   }
 
   DisposableEffect(Unit) {
