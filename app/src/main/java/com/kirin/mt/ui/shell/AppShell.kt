@@ -137,6 +137,7 @@ private const val PlaybackFocusRestoreCleanupFrameCount = 600
 private const val PlaybackFocusRestoreSuppressHoldMs = 400L
 private const val ExitConfirmWindowMs = 3_000L
 private const val FocusLogTag = "BiliMT:Focus"
+private const val PreloadLogTag = "BiliMT:Preload"
 
 private fun isConstrainedTvUiDevice(): Boolean {
   val buildValues = listOf(
@@ -323,6 +324,7 @@ fun BiliTvApp(
   // 推荐免登录可拉;动态需登录(未登录时跳过,登录后本 effect 因 isLoggedIn 变化重跑补拉)。
   // 预加载只写「屏幕尚未自行加载」的状态,避免与屏幕自身 LaunchedEffect 并发加载互相覆盖。
   LaunchedEffect(userSession.isLoggedIn) {
+    Log.d(PreloadLogTag, "start isLoggedIn=${userSession.isLoggedIn} channels=${youtubeChannels.size}")
     // 1. 首页推荐
     if (recommendUiState.sectionStates[HomeSection.Recommend.key] == null) {
       // 本 effect 以 isLoggedIn 为 key,登录态变化(启动时 session 从磁盘加载)会取消重跑;
@@ -332,6 +334,7 @@ fun BiliTvApp(
       } catch (error: CancellationException) {
         throw error
       } catch (error: Exception) {
+        Log.e(PreloadLogTag, "recommend fetch failed: ${error.message}")
         emptyList()
       }
       // 拉取期间屏幕可能已自行加载,非 null 则不覆盖。
@@ -346,11 +349,16 @@ fun BiliTvApp(
             loadMoreError = "",
           )
         }
+        Log.d(PreloadLogTag, "recommend preloaded: ${videos.size} videos -> ${nextState::class.simpleName}")
         recommendUiState.sectionStates =
           recommendUiState.sectionStates + (HomeSection.Recommend.key to nextState)
         recommendUiState.loadedSectionKeys =
           recommendUiState.loadedSectionKeys + HomeSection.Recommend.key
+      } else {
+        Log.d(PreloadLogTag, "recommend already loaded by screen, skip write")
       }
+    } else {
+      Log.d(PreloadLogTag, "recommend already present, skip")
     }
 
     // 2. 动态(视频):B 站 + YouTube 关注合并,复用 loadDynamicFirstPage 同款逻辑。
@@ -369,6 +377,7 @@ fun BiliTvApp(
       } catch (error: Exception) {
         dynamicState.loadedOnce = true
         biliError = error.message.orEmpty()
+        Log.e(PreloadLogTag, "dynamic bili fetch failed: ${error.message}")
         null
       }
       val youtubeVideos = if (youtubeChannels.isNotEmpty()) {
@@ -382,6 +391,7 @@ fun BiliTvApp(
         } catch (error: CancellationException) {
           throw error
         } catch (error: Exception) {
+          Log.e(PreloadLogTag, "dynamic youtube fetch failed: ${error.message}")
           emptyList()
         }
       } else {
@@ -406,7 +416,12 @@ fun BiliTvApp(
             )
           }
         }
+        Log.d(PreloadLogTag, "dynamic preloaded: ${merged.size} videos -> ${dynamicState.state::class.simpleName}")
+      } else {
+        Log.d(PreloadLogTag, "dynamic already loaded by screen, skip write")
       }
+    } else {
+      Log.d(PreloadLogTag, "dynamic skip (isLoggedIn=${userSession.isLoggedIn} loadedOnce=${userFeedState.dynamicVideo.loadedOnce})")
     }
   }
 
