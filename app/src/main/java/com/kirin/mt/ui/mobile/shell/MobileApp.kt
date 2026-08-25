@@ -252,8 +252,11 @@ fun BiliMobileApp(
     NavigationSuiteScaffold(
       modifier = Modifier.statusBarsPadding(),
       navigationSuiteItems = {
-        bottomNav.forEach { dest ->
-          item(
+        // 播放器打开时不渲染底部导航栏:播放器内嵌在 Scaffold 内容区,底栏若仍在会露在播放器
+        // 下方可点——点播放器底部"清晰度位置"会误触最右侧"设置"tab 打开设置页。
+        if (playbackRequest == null) {
+          bottomNav.forEach { dest ->
+            item(
             selected = selected == dest,
             onClick = {
               if (dest == AppDestination.Settings) {
@@ -273,6 +276,7 @@ fun BiliMobileApp(
             icon = { Icon(painterResource(dest.iconRes), contentDescription = null) },
             label = { Text(stringResource(dest.titleRes)) },
           )
+          }
         }
       },
     ) {
