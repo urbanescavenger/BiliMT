@@ -15,7 +15,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -128,8 +127,6 @@ fun SettingsScreen(
   val settingsListState = rememberLazyListState()
   val coroutineScope = rememberCoroutineScope()
   val context = LocalContext.current
-  // 每次进入设置页自动重新检查更新(不保存上次检查结果,发现更新自然进「下载更新」态)。
-  LaunchedEffect(Unit) { onCheckUpdate() }
   val density = LocalDensity.current
   val settingsRowFallbackHeightPx = with(density) {
     (BiliSizing.SettingsRowHeight + BiliSpacing.Md).roundToPx()
