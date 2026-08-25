@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.6-alpha.5](#v306-alpha5)
 - [v3.0.6-alpha.4](#v306-alpha4)
 - [v3.0.6-alpha.3](#v306-alpha3)
 - [v3.0.6-alpha.2](#v306-alpha2)
@@ -197,6 +198,16 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.6-alpha.5
+
+**YouTube 历史/简介频道头像恒空修复(对齐 LibreTube)**:根因是 YouTube `/player` 接口不返回作者头像字段,导致历史卡片与播放器简介 Tab 的频道头像恒为空白(需重播才愈合,或压根不显示)。现已对齐 LibreTube 用 NewPipe `StreamInfo` 的权威频道头像 `uploaderAvatars` 作为数据源,起播即存入历史库;旧的历史空白条目在打开历史页时后台自动回填,无需逐个重播。
+
+### 变更
+- **`YoutubeRepository.getVideoDetail`**:复用 NewPipe `StreamInfo.getInfo` 的 `uploaderAvatars.maxBy { it.height }.url` 填 `channelAvatarUrl`(LibreTube 同源同 API)。`getInfo` 是同步阻塞网络调用,改在 `Dispatchers.IO` 线程执行,修复此前主线程抛 `NetworkOnMainThreadException` 致头像兜底恒失败的隐患。
+- **移动端 `recordPlay`**:YouTube 条目头像改取权威 `youtubeDetail.channelAvatarUrl`(原取 `activeRequest.ownerFace`,因 YouTube 无 B 站 metadata 恒空填不了)。
+- **`YoutubeHistoryStore.updateChannel`**:新增原地回填(只填空白位、不改列表位置)。
+- **移动端历史页后台回填**:打开历史页时把头像为空的条目按频道分组,每组解析一次权威头像,回填该组全部空白条目,不重播即愈合;已处理条目记录在案,避免重复请求。
 
 ## v3.0.6-alpha.4
 
