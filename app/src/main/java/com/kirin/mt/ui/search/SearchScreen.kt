@@ -201,6 +201,8 @@ internal fun SearchScreen(
   val screenFocusRequester = remember { FocusRequester() }
   val sourceToggleFocusRequester = remember { FocusRequester() }
   val inputFocusRequester = remember { FocusRequester() }
+  // 结果视图的标题「返回重新搜索」:结果模式下 SourceToggle 的 Down 落到这里(键盘模式的 Down 落输入框)。
+  val resultsTitleFocusRequester = remember { FocusRequester() }
 
   LaunchedEffect(uiState.searchText) {
     if (uiState.searchText.isBlank()) {
@@ -244,7 +246,13 @@ internal fun SearchScreen(
       },
       focusRequester = sourceToggleFocusRequester,
       onMoveDown = {
-        runCatching { inputFocusRequester.requestFocus() }.isSuccess
+        // 键盘模式 Down→输入框;结果模式输入框未挂载,Down→结果标题(返回重新搜索),否则焦点卡在 pill 上。
+        val target = if (uiState.activeQuery == null) {
+          inputFocusRequester
+        } else {
+          resultsTitleFocusRequester
+        }
+        runCatching { target.requestFocus() }.isSuccess
       },
       modifier = Modifier.padding(horizontal = BiliSizing.ContentPadding),
     )
@@ -292,6 +300,7 @@ internal fun SearchScreen(
           videoRepository = videoRepository,
           uiState = uiState,
           firstResultFocusRequester = firstItemFocusRequester,
+          titleFocusRequester = resultsTitleFocusRequester,
           restoreFocusRequestKey = restoreFocusRequestKey,
           onRestoreFocusHandled = onRestoreFocusHandled,
           onMoveLeftToNav = onMoveLeftToNav,
@@ -781,6 +790,7 @@ private fun SearchResultsView(
   videoRepository: VideoRepository,
   uiState: SearchUiState,
   firstResultFocusRequester: FocusRequester,
+  titleFocusRequester: FocusRequester,
   restoreFocusRequestKey: Int,
   onRestoreFocusHandled: (Int) -> Unit,
   onMoveLeftToNav: () -> Boolean,
@@ -792,7 +802,6 @@ private fun SearchResultsView(
   val sortFocusRequesters = remember(uiState.source) {
     sortOptionsFor(uiState.source).associate { option -> option.key to FocusRequester() }
   }
-  val titleFocusRequester = remember { FocusRequester() }
   val selectedOrderKey = uiState.selectedOrderKey
   val source = uiState.source
 
