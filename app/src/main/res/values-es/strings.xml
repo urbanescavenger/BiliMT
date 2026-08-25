@@ -615,6 +615,7 @@
     <string name="settings_webdav_item_channels">Canales seguidos de YouTube</string>
     <string name="settings_webdav_item_piped">Configuración de Piped</string>
     <string name="settings_webdav_item_watched">Lista de vistos</string>
+    <string name="settings_webdav_item_biliaccount">Cuenta de Bilibili</string>
     <string name="settings_webdav_item_logs">Registro</string>
     <string name="settings_webdav_start_backup">Iniciar copia</string>
     <string name="settings_webdav_start_restore">Iniciar restauración</string>

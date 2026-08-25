@@ -66,11 +66,23 @@ internal fun SettingsWebDavSelectionDialog(
   val homeColors = LocalHomeColors.current
   val panelShape = RoundedCornerShape(BiliRadius.Panel)
   val items = if (isRestore) {
-    listOf(WebDavBackupItem.Channels, WebDavBackupItem.Piped, WebDavBackupItem.Watched)
+    listOf(
+      WebDavBackupItem.Channels,
+      WebDavBackupItem.Piped,
+      WebDavBackupItem.Watched,
+      WebDavBackupItem.BiliAccount,
+    )
   } else {
     WebDavBackupItem.entries
   }
-  var selected by remember { mutableStateOf(items.toSet()) }
+  // 备份默认只勾选日志;B站账号登录态默认不选。
+  // 还原默认勾选除 B站账号外的各项(登录态还原较敏感,需显式勾选)。
+  val defaultSelected = if (isRestore) {
+    items.filter { it != WebDavBackupItem.BiliAccount }
+  } else {
+    items.filter { it == WebDavBackupItem.Logs }
+  }
+  var selected by remember { mutableStateOf(defaultSelected.toSet()) }
   val allFocusRequester = remember { FocusRequester() }
   // 中部选项列表滚动状态:随焦点移动,滚到底才进底部按钮。
   val listState = rememberLazyListState()
@@ -80,6 +92,7 @@ internal fun SettingsWebDavSelectionDialog(
     WebDavBackupItem.Channels -> stringResource(R.string.settings_webdav_item_channels)
     WebDavBackupItem.Piped -> stringResource(R.string.settings_webdav_item_piped)
     WebDavBackupItem.Watched -> stringResource(R.string.settings_webdav_item_watched)
+    WebDavBackupItem.BiliAccount -> stringResource(R.string.settings_webdav_item_biliaccount)
     WebDavBackupItem.Logs -> stringResource(R.string.settings_webdav_item_logs)
   }
 

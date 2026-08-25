@@ -201,6 +201,7 @@ class AppContainer(context: Context) {
     repository = webdavRepository,
     json = json,
     settingsStore = appSettingsStore,
+    sessionStore = sessionStore,
   )
 
   // ── 视频下载管理器(离线播放) ──────────────────────────────────────────────

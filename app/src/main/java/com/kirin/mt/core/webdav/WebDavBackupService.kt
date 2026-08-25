@@ -1,6 +1,7 @@
 package com.kirin.mt.core.webdav
 
 import com.kirin.mt.core.settings.AppSettingsStore
+import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.storage.WatchedStore
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.core.youtube.YoutubeChannel
@@ -21,8 +22,21 @@ data class PipedBackupData(
   val pipedInstanceUrl: String = "",
 )
 
-/** 备份/还原可选项:YouTube 关注频道、Piped 配置、已看完列表、日志。还原不支持日志(诊断产物只上传不还原)。 */
-enum class WebDavBackupItem { Channels, Piped, Watched, Logs }
+/** 备份/还原可选项:YouTube 关注频道、Piped 配置、已看完列表、B站账号、日志。还原不支持日志(诊断产物只上传不还原)。 */
+enum class WebDavBackupItem { Channels, Piped, Watched, BiliAccount, Logs }
+
+/** B站账号登录态备份载荷:SESSDATA/bili_jct/buvid/mid 及资料(face/uname/isVip)。含登录凭证,还原即恢复登录态。 */
+@Serializable
+data class BiliSessionBackupData(
+  val sessData: String? = null,
+  val biliJct: String? = null,
+  val buvid3: String? = null,
+  val buvid4: String? = null,
+  val mid: Long? = null,
+  val face: String? = null,
+  val uname: String? = null,
+  val isVip: Boolean = false,
+)
 
 /**
  * WebDAV 备份/还原编排:把 YouTube 关注频道列表序列化成单个 JSON 文件,
@@ -39,6 +53,7 @@ class WebDavBackupService(
   private val repository: WebDavRepository,
   private val json: Json,
   private val settingsStore: AppSettingsStore,
+  private val sessionStore: SessionStore,
 ) {
   private val serializer = ListSerializer(YoutubeChannel.serializer())
   private val watchedSerializer = ListSerializer(String.serializer())
@@ -54,6 +69,8 @@ class WebDavBackupService(
   private val pipedConfigFileName = "piped_config.json"
   /** 已看完列表备份文件名。 */
   private val watchedFileName = "watched.json"
+  /** B站账号登录态备份文件名。 */
+  private val biliSessionFileName = "session.json"
   /** 日志备份子目录。 */
   private val logsDir = "logs"
 
@@ -76,6 +93,7 @@ class WebDavBackupService(
       }
       if (WebDavBackupItem.Piped in items) backupPipedConfig(config)
       if (WebDavBackupItem.Watched in items) backupWatched(config)
+      if (WebDavBackupItem.BiliAccount in items) backupBiliAccount(config)
       if (WebDavBackupItem.Logs in items) backupLogs(config)
     }
   }
@@ -100,6 +118,7 @@ class WebDavBackupService(
       }
       if (WebDavBackupItem.Piped in items) restorePipedConfig(config)
       if (WebDavBackupItem.Watched in items) restoreWatched(config)
+      if (WebDavBackupItem.BiliAccount in items) restoreBiliAccount(config)
       count
     }
   }
@@ -141,6 +160,35 @@ class WebDavBackupService(
       json.decodeFromString(watchedSerializer, bytes.decodeToString())
     }.getOrNull() ?: return
     watchedStore.replaceAll(ids)
+  }
+
+  /** 备份 B站账号登录态(sessdata/bili_jct/buvid/mid/资料)到 `{url}/bilitv/session.json`(覆盖)。未登录则序列化空账号。失败即抛,让整体备份失败。 */
+  private suspend fun backupBiliAccount(config: WebDavConfig) {
+    val session = sessionStore.session.first()
+    val data = BiliSessionBackupData(
+      sessData = session.sessData,
+      biliJct = session.biliJct,
+      buvid3 = session.buvid3,
+      buvid4 = session.buvid4,
+      mid = session.mid,
+      face = session.face,
+      uname = session.uname,
+      isVip = session.isVip,
+    )
+    val body = json.encodeToString(BiliSessionBackupData.serializer(), data).toByteArray()
+    val ok = repository.put(biliSessionUrl(config), config.username, config.password, body)
+    if (!ok) throw IOException("B站账号上传失败:服务器返回非 2xx")
+  }
+
+  /** 还原 B站账号登录态。备份文件缺失或解析失败时跳过,不使整体还原失败。 */
+  private suspend fun restoreBiliAccount(config: WebDavConfig) {
+    val bytes = repository.get(biliSessionUrl(config), config.username, config.password) ?: return
+    val data = runCatching {
+      json.decodeFromString(BiliSessionBackupData.serializer(), bytes.decodeToString())
+    }.getOrNull() ?: return
+    sessionStore.saveSession(data.sessData, data.biliJct)
+    sessionStore.saveDeviceCookies(data.buvid3, data.buvid4)
+    sessionStore.saveUserProfile(data.mid, data.face, data.uname, data.isVip)
   }
 
   /**
@@ -197,6 +245,8 @@ class WebDavBackupService(
   private fun pipedConfigUrl(config: WebDavConfig): String = "${dirUrl(config)}/$pipedConfigFileName"
 
   private fun watchedUrl(config: WebDavConfig): String = "${dirUrl(config)}/$watchedFileName"
+
+  private fun biliSessionUrl(config: WebDavConfig): String = "${dirUrl(config)}/$biliSessionFileName"
 
   private fun logsDirUrl(config: WebDavConfig): String = "${dirUrl(config)}/$logsDir"
 

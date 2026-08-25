@@ -621,6 +621,7 @@
     <string name="settings_webdav_item_channels">YouTube 关注频道</string>
     <string name="settings_webdav_item_piped">Piped 配置</string>
     <string name="settings_webdav_item_watched">已看完列表</string>
+    <string name="settings_webdav_item_biliaccount">B站账号</string>
     <string name="settings_webdav_item_logs">日志</string>
     <string name="settings_webdav_start_backup">开始备份</string>
     <string name="settings_webdav_start_restore">开始还原</string>

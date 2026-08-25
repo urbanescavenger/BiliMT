@@ -840,17 +840,26 @@ private fun MobileWebDavSelectionDialog(
       com.kirin.mt.core.webdav.WebDavBackupItem.Channels,
       com.kirin.mt.core.webdav.WebDavBackupItem.Piped,
       com.kirin.mt.core.webdav.WebDavBackupItem.Watched,
+      com.kirin.mt.core.webdav.WebDavBackupItem.BiliAccount,
     )
   } else {
     com.kirin.mt.core.webdav.WebDavBackupItem.entries
   }
-  var selected by remember { mutableStateOf(items.toSet()) }
+  // 备份默认只勾选日志;B站账号登录态默认不选。
+  // 还原默认勾选除 B站账号外的各项(登录态还原较敏感,需显式勾选)。
+  val defaultSelected = if (isRestore) {
+    items.filter { it != com.kirin.mt.core.webdav.WebDavBackupItem.BiliAccount }
+  } else {
+    items.filter { it == com.kirin.mt.core.webdav.WebDavBackupItem.Logs }
+  }
+  var selected by remember { mutableStateOf(defaultSelected.toSet()) }
 
   @Composable
   fun itemLabel(item: com.kirin.mt.core.webdav.WebDavBackupItem): String = when (item) {
     com.kirin.mt.core.webdav.WebDavBackupItem.Channels -> stringResource(R.string.settings_webdav_item_channels)
     com.kirin.mt.core.webdav.WebDavBackupItem.Piped -> stringResource(R.string.settings_webdav_item_piped)
     com.kirin.mt.core.webdav.WebDavBackupItem.Watched -> stringResource(R.string.settings_webdav_item_watched)
+    com.kirin.mt.core.webdav.WebDavBackupItem.BiliAccount -> stringResource(R.string.settings_webdav_item_biliaccount)
     com.kirin.mt.core.webdav.WebDavBackupItem.Logs -> stringResource(R.string.settings_webdav_item_logs)
   }
 
