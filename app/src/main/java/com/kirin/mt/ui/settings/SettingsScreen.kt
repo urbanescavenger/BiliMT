@@ -255,6 +255,11 @@ fun SettingsScreen(
           // 两层架构:聚焦只记录最近项(供返回焦点),不展开右侧二级菜单;
           // 二级菜单只由对应行「点击」开合(见 onAboutSelected 等)。
           lastFocusedSettingItem = itemIndex
+          // 二级菜单只在其归属一级项仍持有焦点时显示;焦点移到其它一级项(不统属)即隐藏。
+          val owner = rightPanel.ownerItem()
+          if (owner != null && owner != itemIndex) {
+            rightPanel = SettingsRightPanel.None
+          }
         },
         onMoveSettingFocus = ::moveSettingFocus,
         onMoveLeftToNav = onMoveLeftToNav,
@@ -1466,6 +1471,15 @@ private enum class SettingsRightPanel {
   Logs,
   About,
   YoutubeChannels,
+}
+
+// 每个二级菜单(右侧面板)归属的一级菜单项。焦点移到其它一级项时,面板应隐藏(不统属)。
+private fun SettingsRightPanel.ownerItem(): Int? = when (this) {
+  SettingsRightPanel.None -> null
+  SettingsRightPanel.HomeSections -> SettingsItemHomeSections
+  SettingsRightPanel.Logs -> SettingsItemLogs
+  SettingsRightPanel.About -> SettingsItemAbout
+  SettingsRightPanel.YoutubeChannels -> SettingsItemYoutubeChannels
 }
 
 private fun settingsItemToLazyIndex(
