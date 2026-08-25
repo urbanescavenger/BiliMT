@@ -223,11 +223,21 @@ private suspend fun findCachedPlayable(
   bvid: String,
   cid: Long,
 ): DownloadWithItems? {
-  return downloadManager.downloads.first()
-    .firstOrNull {
-      it.download.videoId == bvid && it.download.cid == cid && it.isPlayable &&
-        (it.videoPart != null || it.muxedPart != null)
-    }
+  val all = downloadManager.downloads.first()
+  // 诊断:缓存未命中时,把查询参数与下载库实际内容打出来,定位是 videoId/cid 不匹配、
+  // 状态未完成还是分件缺失。真机确认后删除(见记忆「先诊断拿证据再改」)。
+  val hit = all.firstOrNull {
+    it.download.videoId == bvid && it.download.cid == cid && it.isPlayable &&
+      (it.videoPart != null || it.muxedPart != null)
+  }
+  if (hit == null && all.isNotEmpty()) {
+    Log.i(MobilePlayerLogTag, "缓存未命中 query[bvid=$bvid cid=$cid] downloads=${all.size}: " +
+      all.joinToString(" | ") { d ->
+        "videoId=${d.download.videoId} cid=${d.download.cid} status=${d.status.key} " +
+          "playable=${d.isPlayable} video=${d.videoPart != null} muxed=${d.muxedPart != null}"
+      })
+  }
+  return hit
 }
 
 /**
