@@ -404,6 +404,8 @@ fun MobilePlayerScreen(
   var pauseInteractionToken by remember { mutableIntStateOf(0) }
   // 拖拽 seek 起点记录的播放意图:松手 seek 后若之前在播放则恢复,避免拖拽后意外暂停
   var wasPlayingBeforeSeek by remember { mutableStateOf(false) }
+  // 诊断:最近一次 routeSeek 的时间戳(毫秒),用于 ENDED 时区分"自然播完"还是"seek 到末尾误触"
+  var lastSeekAtMs by remember { mutableLongStateOf(0L) }
   // 空降助手(AirJump):SponsorBlock 风格自动跳过广告/片头/片尾段,镜像 TV PlayerScreen
   var airJumpSegments by remember { mutableStateOf<List<AirJumpSegment>>(emptyList()) }
   var warnedAirJumpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -611,6 +613,8 @@ fun MobilePlayerScreen(
     } else {
       targetMs
     }
+    lastSeekAtMs = System.currentTimeMillis()
+    Log.i(MobilePlayerLogTag, "routeSeek target=$targetMs maxMs=$maxMs clamped=$clamped")
     if ((playerState as? MobilePlayerState.Ready)?.info?.isSabrProgressive() == true) {
       pendingSABRSeekMs = clamped
       sabrSeekReloadKey++
@@ -679,8 +683,13 @@ fun MobilePlayerScreen(
       val cur = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
       if (cur in 0 until playQueue.lastIndex) playQueue[cur + 1] else null
     } else null
-    return queueNext?.toPlaybackRequest()
+    val next = queueNext?.toPlaybackRequest()
       ?: activeRequest.nextEpisodeCompletion(metadata, selectedQualityId)?.request
+    Log.i(
+      MobilePlayerLogTag,
+      "computeNextRequest playQueue.size=${playQueue.size} curBvid=${activeRequest.bvid} queueNext=${queueNext?.bvid} next=${next?.bvid}",
+    )
+    return next
   }
 
   // 起始挡位(alpha.9X):起播阶段用 selector maxVideoSize 把 ABR 临时卡在起始档,首帧渲染
@@ -692,6 +701,10 @@ fun MobilePlayerScreen(
   // 都能在"不依赖 Compose 重组"的协程作用域里直接调用——后台播放时帧时钟暂停、重组被推迟,
   // 若仍靠 LaunchedEffect(activeRequest) 触发加载,后台播完当前视频后下一集永远不会加载。
   suspend fun loadRequest(request: PlaybackRequest) {
+    Log.i(
+      MobilePlayerLogTag,
+      "loadRequest bvid=${request.bvid} cid=${request.cid} quality=${request.preferredQualityId} startPos=${request.startPositionMs}",
+    )
     playerState = MobilePlayerState.Loading
     completionReported = false
     userPaused = false
@@ -1047,6 +1060,12 @@ fun MobilePlayerScreen(
         // 原本仅命令式读 player.playbackState 做 stall 检测,UI 无法据此显加载图标/控制栏。
         isBuffering = playbackState == Player.STATE_BUFFERING
         if (playbackState == Player.STATE_ENDED && playerState is MobilePlayerState.Ready && player.mediaItemCount > 0 && !completionReported) {
+          // 诊断:ENDED 时区分"自然播完"还是"seek 到末尾误触"。recentSeek=true 说明 2s 内有过 routeSeek。
+          val recentSeek = System.currentTimeMillis() - lastSeekAtMs < 2000L
+          Log.i(
+            MobilePlayerLogTag,
+            "ENDED pos=${player.currentPosition} dur=${player.duration} recentSeek=$recentSeek lastSeekAtMs=$lastSeekAtMs",
+          )
           completionReported = true
           saveAndReportProgress(CompletedProgressSeconds)
           // 自动连播下一集:后台播放时帧时钟暂停、Compose 重组被推迟,LaunchedEffect(completionReported)
@@ -1194,9 +1213,11 @@ fun MobilePlayerScreen(
       val cur = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
       if (cur >= 0 && cur < playQueue.lastIndex) {
         relatedVideos = playQueue.drop(cur + 1)
+        Log.i(MobilePlayerLogTag, "related source=playlist size=${playQueue.size} cur=$cur bvid=${activeRequest.bvid}")
         return@LaunchedEffect
       }
     }
+    Log.i(MobilePlayerLogTag, "related source=online playQueue.size=${playQueue.size} bvid=${activeRequest.bvid}")
     // 非播放列表(或已在列表末):走在线相关。
     if (activeRequest.isYoutube) {
       relatedVideos = runCatching {
