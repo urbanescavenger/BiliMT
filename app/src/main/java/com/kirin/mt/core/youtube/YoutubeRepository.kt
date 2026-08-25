@@ -7,7 +7,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlin.random.Random
@@ -225,12 +227,16 @@ class YoutubeRepository(
     // (对齐 LibreTube Streams.uploaderAvatar = uploaderAvatars.maxBy { height }),零额外网络往返。
     if (withLikes.publishedAt == null || withLikes.channelAvatarUrl.isBlank()) {
       val np = runCatching {
-        val info = StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId")
-        val d = info.uploadDate
-        // 诊断:NewPipe 兜底源与值(确认 getInfo 是否成功、uploadDate 是否非空、头像数)。
-        Log.i("YoutubeDetail", "getVideoDetail newpipe videoId=$videoId uploadDateClass=${d?.javaClass?.simpleName ?: "null"} uploadDate=$d avatars=${info.uploaderAvatars.size}")
-        d?.offsetDateTime()?.toEpochSecond()?.takeIf { it > 0L } to
-          info.uploaderAvatars.maxByOrNull { it.height }?.url.orEmpty()
+        // NewPipe getInfo 是同步阻塞网络调用,必须在 IO 线程(对齐 LibreTube getStreams 的
+        // withContext(Dispatchers.IO));直接在主线程跑抛 NetworkOnMainThreadException → 头像恒空。
+        withContext(Dispatchers.IO) {
+          val info = StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId")
+          val d = info.uploadDate
+          // 诊断:NewPipe 兜底源与值(确认 getInfo 是否成功、uploadDate 是否非空、头像数)。
+          Log.i("YoutubeDetail", "getVideoDetail newpipe videoId=$videoId uploadDateClass=${d?.javaClass?.simpleName ?: "null"} uploadDate=$d avatars=${info.uploaderAvatars.size}")
+          d?.offsetDateTime()?.toEpochSecond()?.takeIf { it > 0L } to
+            info.uploaderAvatars.maxByOrNull { it.height }?.url.orEmpty()
+        }
       }.getOrElse {
         Log.w("YoutubeDetail", "getVideoDetail newpipe failed videoId=$videoId: ${it::class.simpleName}: ${it.message}\n${it.stackTraceToString().take(1200)}")
         null
