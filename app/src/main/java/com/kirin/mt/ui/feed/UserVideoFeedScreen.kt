@@ -116,6 +116,10 @@ internal class DynamicFeedUiState {
   var focusedVideoKey by mutableStateOf("")
   var hasLoadedContent by mutableStateOf(false)
   var loadedOnce by mutableStateOf(false)
+  // 首次进入时 youtubeChannels 还是 emptyList(store 未发),首载只拉 B 站并置 loadedOnce=true;
+  // 等频道发出来后再重启 LaunchedEffect 时,loadedOnce 会挡住 YouTube 合并 → 初始空、手动刷新才出。
+  // 用该标志区分「频道首次就绪需补拉 YouTube」与「后续头像回填等频道变化(不应重载)」。
+  var youtubeMerged by mutableStateOf(false)
   var handledManualRefreshKey by mutableIntStateOf(0)
   var focusRestoredItemKey by mutableIntStateOf(0)
 }
@@ -233,7 +237,11 @@ internal fun UserFeedScreen(
     }
   }
 
-  LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab, youtubeChannels) {
+  // key 用稳定 channelId 列表而非 youtubeChannels 全量:YouTube 拉取中 updateAvatar 回填会改
+  // youtubeChannels(头像字段),若 key 用全量会重启 LaunchedEffect 取消在途拉取 → 无限重启循环。
+  // channelId 不变则 key 稳定,头像回填不触发重启。
+  val youtubeChannelIds = youtubeChannels.map { it.channelId }
+  LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab, youtubeChannelIds) {
     // 统一动态「动态(视频)」合并了 YouTube 关注(免登录,手动配置频道);其余 tab 需要登录。
     if (!isLoggedIn && !(selectedTab == UserFeedTab.DynamicVideo && youtubeChannels.isNotEmpty())) {
       return@LaunchedEffect
@@ -245,7 +253,10 @@ internal fun UserFeedScreen(
         "video",
         youtubeChannels,
         youtubeChannelStore,
-        forceRefresh = autoRefreshOnSwitch,
+        // 频道首次就绪(非空且尚未合并 YouTube)时强制补拉,把 YouTube 关注并进首载;
+        // 之后频道变化(头像回填)不再强制,靠 loadedOnce 去重。
+        forceRefresh = autoRefreshOnSwitch ||
+          (youtubeChannels.isNotEmpty() && !feedState.dynamicVideo.youtubeMerged),
       )
       UserFeedTab.DynamicAll -> loadDynamicFirstPage(
         videoRepository,
@@ -602,6 +613,10 @@ private suspend fun loadDynamicFirstPage(
 
   // 3. 合并一次
   val merged = mergeByPubdate(biliVideos.orEmpty(), youtubeVideos)
+  // 频道非空即视为已尝试合并 YouTube(含拉取失败返回空),置位后不再因频道变化强制补拉。
+  if (type == "video" && youtubeChannels.isNotEmpty()) {
+    state.youtubeMerged = true
+  }
   state.state = when {
     merged.isEmpty() && biliError != null -> UserFeedState.Failed(biliError)
     merged.isEmpty() -> UserFeedState.Empty
