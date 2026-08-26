@@ -1274,6 +1274,23 @@ fun BiliTvApp(
                       spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
                     }
                   },
+                  onUserSelected = { user ->
+                    if (user.source == SourceYoutube && user.channelId.isNotBlank()) {
+                      youtubeChannelUiState.reset()
+                      channelOrigin = SpaceOrigin.Content
+                      channelPlaybackBehind = false
+                      youtubeChannelRequest = YoutubeChannelRequest(
+                        channelId = user.channelId,
+                        channelName = user.name,
+                        avatar = user.face,
+                      )
+                    } else {
+                      upSpaceUiState.reset()
+                      spaceOrigin = SpaceOrigin.Content
+                      spacePlaybackBehind = false
+                      spaceRequest = UpSpaceRequest(user.mid, user.name, user.face)
+                    }
+                  },
                 )
                 AppDestination.Dynamic -> UserFeedScreen(
                   videoRepository = videoRepository,
@@ -1311,23 +1328,6 @@ fun BiliTvApp(
                       spaceOrigin = SpaceOrigin.Content
                       spacePlaybackBehind = false
                       spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
-                    }
-                  },
-                  onUserSelected = { user ->
-                    if (user.source == SourceYoutube && user.channelId.isNotBlank()) {
-                      youtubeChannelUiState.reset()
-                      channelOrigin = SpaceOrigin.Content
-                      channelPlaybackBehind = false
-                      youtubeChannelRequest = YoutubeChannelRequest(
-                        channelId = user.channelId,
-                        channelName = user.name,
-                        avatar = user.face,
-                      )
-                    } else {
-                      upSpaceUiState.reset()
-                      spaceOrigin = SpaceOrigin.Content
-                      spacePlaybackBehind = false
-                      spaceRequest = UpSpaceRequest(user.mid, user.name, user.face)
                     }
                   },
                   onCommentSelected = { video ->
