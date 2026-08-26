@@ -48,14 +48,15 @@ internal object YoutubeParsers {
     collectByKey(root, KEY_LOCKUP_VIEW_MODEL) { node ->
       parseLockupViewModel(node)?.let { videos.add(it) }
     }
-    // 频道页 Shorts tab:shortsLockupViewModel(与 lockupViewModel 共享 lockupMetadataViewModel
-    // 形状,parseLockupViewModel 可直接复用;Live tab 走 videoRenderer 已被上面收集)。
+    // 频道页 Shorts tab:shortsLockupViewModel。⚠️ 实测(2026-08-27)它是 reel 风格,不是
+    // lockupViewModel 形状:无 contentId,视频ID 在 onTap.innertubeCommand.reelWatchEndpoint.videoId,
+    // 标题/播放量在顶层 accessibilityText("标题, X views - play Short")。走专属 parseShortsLockupViewModel。
     var shortsDumpDone = false
     collectByKey(root, KEY_SHORTS_LOCKUP_VIEW_MODEL) { node ->
-      val v = parseLockupViewModel(node)
+      val v = parseShortsLockupViewModel(node)
       if (v != null) videos.add(v)
       else if (!shortsDumpDone) {
-        // 诊断:shortsLockupViewModel 解析失败(contentId 缺?)。只 dump 首个失败节点结构。
+        // 诊断:parseShortsLockupViewModel 也失败时 dump 首个失败节点结构。
         shortsDumpDone = true
         Log.w("YtShorts", "shorts node keys=[${node.keys.joinToString(",")}] " +
           "contentId=${node.stringOrNull("contentId")} top=${node.toString().take(600)}")
@@ -424,6 +425,52 @@ internal object YoutubeParsers {
       channelId = "",
       thumbnailUrl = thumbnail,
       viewCount = null,
+      durationSec = null,
+      publishedAt = null,
+      liveNow = false,
+      isUpcoming = false,
+      badge = "Shorts",
+    )
+  }
+
+  /**
+   * 频道 Shorts tab 的 shortsLockupViewModel(reel 风格条目)。
+   *
+   * 实测结构(2026-08-27,真机日志 dump):
+   *  - 无 contentId!视频ID 在 `onTap.innertubeCommand.reelWatchEndpoint.videoId`
+   *  - 标题 + 播放量在顶层 `accessibilityText`(形如 "标题, 2.4 thousand views - play Short")
+   *  - 封面 `thumbnailViewModel.image.sources[].url`(取最大),失败回退 mqdefault
+   * 拿不到 videoId 就跳过。防御式,不抛错。
+   */
+  private fun parseShortsLockupViewModel(node: JsonObject): YoutubeVideo? {
+    val videoId = node.obj("onTap")?.obj("innertubeCommand")
+      ?.obj("reelWatchEndpoint")?.stringOrNull("videoId")
+    if (videoId.isNullOrBlank()) return null
+
+    // accessibilityText 形如 "标题, 2.4 thousand views - play Short"。标题取逗号前,剩余部分找播放量。
+    // 播放量片段含 " - play Short" 后缀与英文单位词(parseCount 只认 K/M/B 后缀),先清洗成数字串。
+    val a11y = node.stringOrNull("accessibilityText").orEmpty()
+    val title = a11y.substringBefore(", ").trim().ifBlank { "Short" }
+    val viewsText = a11y.substringAfter(", ", "")
+      .substringBefore(" - play").substringBefore(" - view")
+      .replace("thousand", "K", ignoreCase = true)
+      .replace("million", "M", ignoreCase = true)
+      .replace("billion", "B", ignoreCase = true)
+    val viewCount = parseCount(viewsText)
+
+    val thumbnailUrl = node.obj("thumbnailViewModel")?.obj("image")
+      ?.array("sources")?.let(::pickBestThumbnailUrl)
+      ?: node.obj("contentImage")?.obj("thumbnailViewModel")?.obj("image")
+        ?.array("sources")?.let(::pickBestThumbnailUrl)
+      ?: "https://i.ytimg.com/vi/$videoId/mqdefault.jpg"
+
+    return YoutubeVideo(
+      videoId = videoId,
+      title = title,
+      channelName = "",
+      channelId = "",
+      thumbnailUrl = thumbnailUrl,
+      viewCount = viewCount,
       durationSec = null,
       publishedAt = null,
       liveNow = false,
