@@ -204,7 +204,22 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 
 点赞数原靠 `getVideoDetail` 在 `/player` 之外**另发 `/next`** 从 `videoPrimaryInfoRenderer.videoActions` 工具栏解析回写（对齐 NewPipe `getLikeCount`），但真机**该 `/next` 取不到**（诊断日志 `likes videoId=` 不出现），`detail.likeCount` 恒 null → 移动端简介「点赞」段被 `likeCountInt > 0` 丢弃，只显示「观看 · 时间」。
 
-实测 **`/player` 的 `microformat.playerMicroformatRenderer` 本身就带 `likeCount` 键**（keys 含该字段，值为原始数字串如 `"123456"`）。修复：`parseVideoDetail` 直接 `parseCount(mf.likeCount)` 作主源，**免去二次 `/next` 往返、更快更稳**；`/next` videoActions 仍保留作兜底（真能取到则覆盖）。取不到保持 null（UI 不显示点赞行）。
+实测 **`/player` 的 `microformat.playerMicroformatRenderer` 本身就带 `likeCount` 键**（keys 含该字段，值为原始数字串如 `"123456"`）。修复：`parseVideoDetail` 直接 `parseCount(mf.likeCount)` 作主源，**免去二次 `/next` 往返、更快更稳**；`/next` videoActions 仍保留作兜底（真能取到则覆盖）。UI 取不到保持 null（UI 不显示点赞行）。
+
+### 4.15 频道页 tab：Video/Shorts/Live/Playlists 解析（2026-08-27，v3.0.7-alpha.3）
+
+移动端频道页四大 tab 全走 `getChannelVideos`/`getChannelPlaylists`（InnerTube `/browse`）。**关键：系统播放列表 browseId 已弃用，统一用 channelId + 服务端 tab params。**
+
+- **channelBrowseId 恒 null**（放弃 UUSH/UULV 系统播放列表）：真机诊断日志抓到 Shorts(UUSH)/Live(UULV) `/browse` 直接 **400**。改用 `channelId + params`（与 Videos/Playlists 同路径）后 200。Shorts/Live 的 params 来自 `parseChannelTabs` 反解的**服务端 tab params**（硬编码 `EgZzaG9ydHPy` / `EgdzdHJlYW1z8gYECAAJ6AA%3D%3D` 作兜底）。
+- **Video tab** 走 `lockupViewModel`（新格式）：`contentId`=videoId（§开头 lockup 结构）。
+- **Shorts tab 是 `shortsLockupViewModel`，reel 风格，非 lockup 形状！** 真机日志 dump 出 keys：`entityId,accessibilityText,onTap,menuOnTap,...` **没有 `contentId`**，直接套 `parseLockupViewModel` 首行 `contentId` 检查就 return null → items=0（空 tab 的真因）。
+  - 视频 ID 在 `onTap.innertubeCommand.reelWatchEndpoint.videoId`
+  - 标题 + 播放量在顶层 `accessibilityText`（形如 `"标题, 2.4 thousand views - play Short"`）
+  - 封面 `thumbnailViewModel.image.sources[].url`（取最大），失败回退 `https://i.ytimg.com/vi/<id>/mqdefault.jpg`
+  - 播放量片段含 ` - play Short` 后缀 + 英文单位词（thousand/million/billion），需先转成 K/M/B 再 `parseCount`
+  - 修复：专属 `parseShortsLockupViewModel`；同时仍收集 `reelItemRenderer`（部分频道 Shorts tab 用经典条目）双保险。
+- **Live tab** 走 `videoRenderer`（`liveNow` 标识，被通用收集覆盖），无需额外解析。
+- **Playlists 卡**（新布局）用 `lockupViewModel`（`contentType=PLAYLIST`）而非旧 `playlistRenderer`：`diagnosticPlaylistShape` 实测 15 个 `LOCKUP_CONTENT_TYPE_PLAYLIST` 但 `playlistRenderer=0`。播放列表详情 `/browse` 的 browseId **必须带 `VL` 前缀**（裸 `PL...` 返 400，`normalizePlaylistBrowseId` 自动补 `VL`）。
 
 ---
 

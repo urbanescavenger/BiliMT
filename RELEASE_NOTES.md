@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.7-alpha.3](#v307-alpha3)
 - [v3.0.7-alpha.2](#v307-alpha2)
 - [v3.0.7-alpha.1](#v307-alpha1)
 - [v3.0.6-alpha.11](#v306-alpha11)
@@ -204,6 +205,16 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.7-alpha.3
+
+**频道页 Shorts 空修复 + 普通卡片显示真实观看进度条**。
+
+### 变更
+- **修复移动端频道页 Shorts tab 空**(shortsLockupViewModel reel 风格):真机日志 dump 出短视频节点无 `contentId`,视频 ID 在 `onTap.innertubeCommand.reelWatchEndpoint.videoId`,直接套 `parseLockupViewModel` 首行就 return null 致空。新增专属 `parseShortsLockupViewModel`(取 videoId/标题/播放量/封面,播放量词单位 thousand/million/billion 转 K/M/B),Shorts tab 不再空。
+- **频道页 tab 统一用 channelId + 服务端 params**:放弃 UUSH/UULV 系统播放列表 browseId(真机返 400),Shorts/Live 走 `parseChannelTabs` 反解的服务端 tab params。
+- **普通卡片显示真实观看进度条**:本地 `PlaybackProgressStore` 按 bvid 存最近 position,`VideoRepository` 仅在无进度数据(`ProgressUnset`)时填进 progress(秒),历史/稍后再看已填服务端进度与直播跳过;套在首页/推荐/搜索/频道/动态/稍后再看/收藏/相关视频 + YouTube 订阅/搜索。看过→真实比例,没看过→不显示条。
+- **修复无进度数据卡片误显满条进度条**:`progress=-1`(未设进度默认)被当已看完致所有普通卡满条;普通卡默认 `progressUnsetIsCompleted=false` 无数据返回 0,History 卡保留 B站 -1=已看完 语义。
 
 ## v3.0.7-alpha.2
 
