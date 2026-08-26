@@ -69,6 +69,7 @@ import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeContentLocale
+import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.LoginActivity
@@ -76,6 +77,7 @@ import com.kirin.mt.ui.mobile.SettingsActivity
 import com.kirin.mt.ui.mobile.common.DevelopingTipContent
 import com.kirin.mt.ui.mobile.downloads.MobileDownloadQualityDialog
 import com.kirin.mt.ui.mobile.feed.MobileFeedScreen
+import com.kirin.mt.ui.mobile.feed.MobileYoutubePlaylistDetailScreen
 import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
 import com.kirin.mt.ui.mobile.feed.MobileYoutubeLongPressSheet
 import com.kirin.mt.ui.mobile.space.MobileYoutubeChannelScreen
@@ -157,6 +159,9 @@ fun BiliMobileApp(
   // YouTube 频道主页(channelId + 名),镜像 space 的覆盖层范式。
   var youtubeChannelRequest by remember { mutableStateOf<YoutubeChannel?>(null) }
   var channelPlaybackBehind by remember { mutableStateOf(false) }
+  // YouTube 播放列表详情页:点频道页播放列表卡进入(覆盖在频道页之上),先列视频再选播。
+  var youtubePlaylistRequest by remember { mutableStateOf<YoutubeParsers.YoutubePlaylist?>(null) }
+  var playlistPlaybackBehind by remember { mutableStateOf(false) }
   // 空间/频道页状态提升到 shell:从空间/频道起播后退出播放器回到页面时不重载(镜像 TV UpSpaceUiState)。
   val upSpaceUiState = remember { com.kirin.mt.ui.mobile.space.MobileUpSpaceUiState() }
   val youtubeChannelUiState = remember { com.kirin.mt.ui.mobile.space.MobileYoutubeChannelUiState() }
@@ -486,10 +491,45 @@ fun BiliMobileApp(
               playbackRequest = video.toPlaybackRequest()
             },
             onLongPress = onLongPress,
-            onStartPlaylist = { queue -> playQueue = queue },
+            onOpenPlaylist = { playlist ->
+              youtubePlaylistRequest = playlist
+              playlistPlaybackBehind = false
+            },
             onBack = {
               youtubeChannelRequest = null
               channelPlaybackBehind = false
+            },
+            modifier = Modifier.fillMaxSize(),
+          )
+        }
+      }
+    }
+
+    // YouTube 播放列表详情页:点频道页播放列表卡进入,覆盖在频道页之上,先列视频再选播。
+    val playlistRequest = youtubePlaylistRequest
+    if (playlistRequest != null) {
+      BackHandler(enabled = playbackRequest == null || playlistPlaybackBehind) {
+        youtubePlaylistRequest = null
+        playlistPlaybackBehind = false
+      }
+      if (playbackRequest == null || playlistPlaybackBehind) {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        ) {
+          MobileYoutubePlaylistDetailScreen(
+            youtubeRepository = youtubeRepository,
+            playlist = playlistRequest,
+            onStartSelected = { video, queue ->
+              playQueue = queue
+              playlistPlaybackBehind = false
+              playbackRequest = video.toPlaybackRequest()
+            },
+            onLongPress = onLongPress,
+            onBack = {
+              youtubePlaylistRequest = null
+              playlistPlaybackBehind = false
             },
             modifier = Modifier.fillMaxSize(),
           )

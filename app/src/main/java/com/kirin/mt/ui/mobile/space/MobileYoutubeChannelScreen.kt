@@ -70,7 +70,7 @@ internal fun MobileYoutubeChannelScreen(
   channelName: String,
   onVideoSelected: (VideoSummary) -> Unit,
   onLongPress: ((VideoSummary) -> Unit)? = null,
-  onStartPlaylist: (List<VideoSummary>) -> Unit,
+  onOpenPlaylist: (YoutubeParsers.YoutubePlaylist) -> Unit,
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -448,7 +448,7 @@ internal fun MobileYoutubeChannelScreen(
             items(uiState.playlists, key = { it.id }) { playlist ->
               ChannelPlaylistCard(
                 playlist = playlist,
-                onClick = { openPlaylist(playlist, onStartPlaylist, scope, youtubeRepository) },
+                onClick = { onOpenPlaylist(playlist) },
               )
             }
           } else {
@@ -476,19 +476,7 @@ internal fun MobileYoutubeChannelScreen(
   }
 }
 
-/** 点击播放列表卡:拉该播放列表首屏视频,作为连播队列起播(onStartPlaylist)。 */
-private fun openPlaylist(playlist: YoutubeParsers.YoutubePlaylist, onStartPlaylist: (List<VideoSummary>) -> Unit, scope: kotlinx.coroutines.CoroutineScope, youtubeRepository: YoutubeRepository) {
-  if (playlist.browseId.isBlank()) return
-  scope.launch {
-    runCatching { youtubeRepository.getPlaylistVideos(playlist.browseId) }
-      .getOrNull()
-      ?.items
-      ?.takeIf { it.isNotEmpty() }
-      ?.let { onStartPlaylist(it) }
-  }
-}
-
-/** 频道播放列表卡:封面 + 标题(2行) + 视频数。点击打开该播放列表。 */
+/** 频道播放列表卡:封面 + 标题(2行) + 视频数。点击打开该播放列表详情页。 */
 @Composable
 private fun ChannelPlaylistCard(
   playlist: YoutubeParsers.YoutubePlaylist,
