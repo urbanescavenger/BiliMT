@@ -37,9 +37,27 @@ enum class HomeThemeVariant(val key: String) {
   }
 }
 
+/**
+ * 移动端明/暗模式(叠加在 [HomeThemeVariant] 之上):
+ * Dark/Light 手动指定;Auto 跟随系统。TV 端用 LocalHomeColors 渲染,不消费此字段。
+ */
+enum class AppAppearanceMode(val key: String) {
+  Dark("dark"),
+  Light("light"),
+  Auto("auto");
+
+  companion object {
+    fun fromKey(key: String?): AppAppearanceMode {
+      return entries.firstOrNull { mode -> mode.key == key } ?: Dark
+    }
+  }
+}
+
 data class AppSettings(
   val visualPerformanceMode: AppVisualPerformanceMode = AppVisualPerformanceMode.Balanced,
   val homeThemeVariant: HomeThemeVariant = HomeThemeVariant.Pink,
+  /** 移动端明/暗模式(Dark/Light 手动,Auto 跟随系统)。TV 端不消费。 */
+  val appearanceMode: AppAppearanceMode = AppAppearanceMode.Dark,
   val chineseTextVariant: ChineseTextVariant = ChineseTextVariant.Simplified,
   val playbackQualityPreference: PlaybackQualityPreference = PlaybackQualityPreference.Highest,
   val playbackCodecPreference: PlaybackCodecPreference = PlaybackCodecPreference.Auto,

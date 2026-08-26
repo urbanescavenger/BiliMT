@@ -818,14 +818,14 @@ Compose 项目冷启动和首屏性能受类加载、Compose 运行时和主路�
 
 **P3 —— 打磨与发布**
 
-8. 主题（深色/跟随系统、首页 `HomeThemes` 适配手机）、失败重试、横屏/平板、启动闪屏、应用图标。**（待做；当前内容页实为浅色主题——`BiliTVNative` 无 MaterialTheme,`NavigationSuiteScaffold` 用默认 light scheme,播放器为显式黑底白字）**
+8. 主题（深色/跟随系统、首页 `HomeThemes` 适配手机）、失败重试、横屏/平板、启动闪屏、应用图标。**（部分完成:移动端已接入 4 套暗色主题 + 独立明/暗模式 Dark/Light/Auto,把 HomeThemes 映射成 Material 深浅 scheme;失败重试/横屏/平板/闪屏/图标待做——播放器为显式黑底白字）**
 9. 2.0.0 稳定后按"大版本才合 main"规则合 `mobile` → `main`（届时打 `v2.0.0` 稳定 tag，二次确认后推）。**（当前 mobile 已合并到 mort_debug;main 待 2.0.0 稳定）**
 
 ### 已知问题 / 后续待修
 
 - 后台播放通知样式已主流化（alpha.16），真机需确认已授予通知权限。
 - PGC tab 仍占位（底栏已换成搜索,影视入口待 P0 补）。
-- 内容页浅色主题未统一为深色（无 MaterialTheme 包装）,P3 主题阶段处理。
+- 内容页浅色主题未统一为深色（无 MaterialTheme 包装）,P3 主题阶段处理。**（已解决:移动端加 BiliMobileTheme 包装,映射成 Material 深浅 scheme）**
 - 在线人数未做（P1 可选项；空降助手已做）。
 
 ### 待修：空降助手首次进入识别不到广告段

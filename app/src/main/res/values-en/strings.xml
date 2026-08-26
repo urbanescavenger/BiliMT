@@ -96,6 +96,11 @@
     <string name="settings_home_theme_black">Deep black</string>
     <string name="settings_home_theme_gray">Advanced gray</string>
     <string name="settings_home_theme_blue_gray">Blue gray</string>
+    <string name="settings_appearance_title">Appearance</string>
+    <string name="settings_appearance_description">Light/dark mode, layered on top of the home theme; follow system switches automatically.</string>
+    <string name="settings_appearance_dark">Dark</string>
+    <string name="settings_appearance_light">Light</string>
+    <string name="settings_appearance_auto">Follow system</string>
     <string name="settings_clear_cache_title">Clear cache</string>
     <string name="settings_clear_cache_description">Clears cover images, temporary files, downloaded update packages, and logs. Does not delete sign-in, settings, or playback progress.</string>
     <string name="settings_clear_cache_action">Clear</string>

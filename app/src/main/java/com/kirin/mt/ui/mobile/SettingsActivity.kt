@@ -74,7 +74,7 @@ class SettingsActivity : ComponentActivity() {
           LocalChineseTextConverter provides textConverter,
           com.kirin.mt.ui.mobile.home.LocalWatchedIds provides watchedIds,
         ) {
-        BiliMobileTheme(appSettings.homeThemeVariant) {
+        BiliMobileTheme(appSettings.homeThemeVariant, appSettings.appearanceMode) {
         Surface(modifier = Modifier.fillMaxSize().statusBarsPadding(), color = MaterialTheme.colorScheme.background) {
           val session by appContainer.sessionStore.session.collectAsState(initial = UserSession())
           var followScreen by remember { mutableStateOf<FollowManageKind?>(null) }

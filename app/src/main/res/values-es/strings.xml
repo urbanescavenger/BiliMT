@@ -97,6 +97,11 @@
     <string name="settings_home_theme_black">Negro profundo</string>
     <string name="settings_home_theme_gray">Gris avanzado</string>
     <string name="settings_home_theme_blue_gray">Azul grisáceo</string>
+    <string name="settings_appearance_title">Apariencia</string>
+    <string name="settings_appearance_description">Modo claro/oscuro, superpuesto al tema del inicio; seguir el sistema cambia automáticamente.</string>
+    <string name="settings_appearance_dark">Oscuro</string>
+    <string name="settings_appearance_light">Claro</string>
+    <string name="settings_appearance_auto">Seguir el sistema</string>
     <string name="settings_clear_cache_title">Limpiar caché</string>
     <string name="settings_clear_cache_description">Limpia portadas, archivos temporales, paquetes de actualización descargados y registros; no elimina la sesión, los ajustes ni el progreso de reproducción.</string>
     <string name="settings_clear_cache_action">Limpiar</string>

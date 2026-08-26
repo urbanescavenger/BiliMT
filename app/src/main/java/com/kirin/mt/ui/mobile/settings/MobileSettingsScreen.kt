@@ -73,6 +73,7 @@ import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
+import com.kirin.mt.core.settings.AppAppearanceMode
 import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppSettingsStore
 import com.kirin.mt.core.settings.AppVisualPerformanceMode
@@ -311,6 +312,14 @@ fun MobileSettingsScreen(
       selectedLabel = themeLabel(settings.homeThemeVariant),
       options = enumOptions(HomeThemeVariant.entries) { themeLabel(it) },
       onSelected = { scope.launch { appSettingsStore.setHomeThemeVariant(it) } },
+    )
+    MobileEnumPickerRow(
+      title = stringResource(R.string.settings_appearance_title),
+      description = stringResource(R.string.settings_appearance_description),
+      selected = settings.appearanceMode,
+      selectedLabel = appearanceLabel(settings.appearanceMode),
+      options = enumOptions(AppAppearanceMode.entries) { appearanceLabel(it) },
+      onSelected = { scope.launch { appSettingsStore.setAppearanceMode(it) } },
     )
     MobileEnumPickerRow(
       title = stringResource(R.string.settings_language_title),
@@ -638,6 +647,15 @@ private fun themeLabel(t: HomeThemeVariant): String = stringResource(
     HomeThemeVariant.Black -> R.string.settings_home_theme_black
     HomeThemeVariant.Gray -> R.string.settings_home_theme_gray
     HomeThemeVariant.BlueGray -> R.string.settings_home_theme_blue_gray
+  }
+)
+
+@Composable
+private fun appearanceLabel(m: AppAppearanceMode): String = stringResource(
+  when (m) {
+    AppAppearanceMode.Dark -> R.string.settings_appearance_dark
+    AppAppearanceMode.Light -> R.string.settings_appearance_light
+    AppAppearanceMode.Auto -> R.string.settings_appearance_auto
   }
 )
 

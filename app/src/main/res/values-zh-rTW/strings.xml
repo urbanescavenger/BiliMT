@@ -66,6 +66,11 @@
     <string name="settings_home_theme_black">深黑</string>
     <string name="settings_home_theme_gray">高級灰</string>
     <string name="settings_home_theme_blue_gray">藍灰</string>
+    <string name="settings_appearance_title">外觀</string>
+    <string name="settings_appearance_description">明/暗模式，疊加在首頁主題之上；跟隨系統就自動切換。</string>
+    <string name="settings_appearance_dark">深色</string>
+    <string name="settings_appearance_light">淺色</string>
+    <string name="settings_appearance_auto">跟隨系統</string>
     <string name="settings_clear_cache_title">清除快取</string>
     <string name="settings_clear_cache_description">清理封面圖片和暫存檔，不會刪除登入、設定和播放進度。</string>
     <string name="settings_clear_cache_action">清理</string>

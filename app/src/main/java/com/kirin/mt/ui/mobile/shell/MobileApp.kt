@@ -251,7 +251,7 @@ fun BiliMobileApp(
     LocalChineseTextConverter provides textConverter,
     com.kirin.mt.ui.mobile.home.LocalWatchedIds provides watchedIds,
   ) {
-    BiliMobileTheme(settings.homeThemeVariant) {
+    BiliMobileTheme(settings.homeThemeVariant, settings.appearanceMode) {
     Box(modifier = Modifier.fillMaxSize()) {
     NavigationSuiteScaffold(
       modifier = Modifier.statusBarsPadding(),

@@ -97,6 +97,11 @@
     <string name="settings_home_theme_black">Preto profundo</string>
     <string name="settings_home_theme_gray">Cinzento avançado</string>
     <string name="settings_home_theme_blue_gray">Azul-acinzentado</string>
+    <string name="settings_appearance_title">Aparência</string>
+    <string name="settings_appearance_description">Modo claro/escuro, sobreposto ao tema da página inicial; seguir o sistema alterna automaticamente.</string>
+    <string name="settings_appearance_dark">Escuro</string>
+    <string name="settings_appearance_light">Claro</string>
+    <string name="settings_appearance_auto">Seguir o sistema</string>
     <string name="settings_clear_cache_title">Limpar cache</string>
     <string name="settings_clear_cache_description">Limpa imagens de capa, ficheiros temporários, pacotes de atualização transferidos e registos; não apaga o início de sessão, as definições nem o progresso de reprodução.</string>
     <string name="settings_clear_cache_action">Limpar</string>

@@ -1,6 +1,6 @@
 # BiliMT 开发进度
 
-最后更新：2026-08-25
+最后更新：2026-08-26
 
 ## 目录
 
@@ -317,7 +317,8 @@
 | v2.0.6 | 移动端体验 + 首页分区同步 + 设置折叠 | Done | 正直播 UP 头像；缓冲期加载图标+控制栏；全屏跟随设备方向（SENSOR）；移动端首页分区配置与 TV 双向同步；设置面板折叠 |
 | v2.0.7 | 非全屏三态布局 + 控制栏修复 + 直播兜底 | Done | 移动端播放器非全屏三态统一（顶栏贴顶+视频底部对齐中线+简介/评论 Tab 占下半）；全屏/暂停控制栏修复；直播间无播放地址 durl 兜底；TV 焦点/选中态打磨 |
 | v2.0.9-alpha.4 | 移动端设置页补日志查看/导出 | Done（编译绿，运行时待真机） | 新增 `MobileLogsScreen`（触屏版日志列表+内容查看+分享导出+手动开始/停止录制），`MobileSettingsScreen` 加「系统设置/日志」入口，`SettingsActivity` 接 `showLogs` 导航；复用共享 `LogCatcherUtil`，镜像 TV `SettingsLogsColumn` 但去掉 D-pad 焦点逻辑。**运行时待真机**：列表显示实时/崩溃/手动文件、点开查看、分享、录制开关 |
-| 稍后再看（移动端闭环） | 动态分页加列表 tab + 播放器添加入口 | Done（编译绿，运行时待真机） | 对照 BV ToView 仅读列表范式：①**列表 tab**：`MobileFeedScreen` 动态分页新增第 2 位"稍后再看"（动态/历史/稍后再看/收藏/追番/播放列表），新建 `MobileToViewPage`（仿 `MobileFavoritePage`：下拉刷新 + viewAt/max 双游标分页 + 空/错态），`UserFeedRepository.getToViewPage` GET `/x/v2/history/toview`；②**添加入口**：B站播放器互动行（点赞/投币/收藏/分享后）加"稍后再看"按钮 `addToView(aid)`；③**修 addToView URL bug**：原 POST 指向列表接口 `/x/v2/history/toview`，改为 `/add` 并补 buvid3/4 风控指纹；④新增 `ic_player_toview.xml` 时钟图标与 `nav_toview`/`toview_*`/`player_control_toview` 文案。云编译 `d4242dc` 绿（首轮 `fromToViewItem` 漏 `VideoSummary` 必填 view/danmaku/pubdate/badge 编译错已修）。**真机待验证**：播放器加"稍后再看"→ 动态 tab 稍后再看列表 → 点击续播 |
+| 稍后再看（移动端闭环） | 动态分页加列表 tab + 播放器添加入口 | Done（编译绿，运行时待真机） | 对照 BV ToView 仅读列表范式：①**列表 tab**：`MobileFeedScreen` 动态分页新增第 2 位"稍后再看"（动态/历史/稍后再看/收藏/追番/播放列表），新建 `MobileToViewPage`（仿 `MobileFavoritePage`：下拉刷新 + viewAt/max 双游标分页 + 空/错态），`UserFeedRepository.getToViewPage` GET `/x/v2/history/toview`；②**添加入口**：B站播放器互动行（赞/投币/分享后）加"稍后再看"按钮 `addToView(aid)`；③**修 addToView URL bug**：原 POST 指向列表接口 `/x/v2/history/toview`，改为 `/add` 并补 buvid3/4 风控指纹；④新增 `ic_player_toview.xml` 时钟图标与 `nav_toview`/`toview_*`/`player_control_toview` 文案。云编译 `d4242dc` 绿（首轮 `fromToViewItem` 漏 `VideoSummary` 必填 view/danmaku/pubdate/badge 编译错已修）。**真机待验证**：播放器加"稍后再看"→ 动态 tab 稍后再看列表 → 点击续播 |
+| 移动端主题（4套暗色 + 明/暗模式） | 移动端接入 homeThemeVariant；再叠加独立明/暗模式 | 完成（编译绿，运行时待真机） | ①此前移动端不读 `LocalHomeColors`、`BiliTvTheme` 是 no-op，切主题仅存值不生效——MobileApp/SettingsActivity 包 `BiliMobileTheme`，把 TV 同源 HomeThemes 映射成 Material 深色 scheme；②加 `AppAppearanceMode`（Dark/Light/Auto）独立于 4 套主题，`HomeThemes.lightFromVariant` 亮色底（中性浅底 + 各 variant 加深一档 accent 保证对比 ≥4.5:1，见 `tmp/light-theme-palette.html`），`homeToMaterialScheme(colors,isDark)` 分支 dark/lightColorScheme；③设置页「界面与交互」加「外观」枚举行；6 语言补 `settings_appearance_*`。TV 端走 LocalHomeColors 不消费 appearance。**真机待验证**：移动端切「浅色」整页变亮、切「跟随系统」随系统主题切换 |
 
 ## P11 YouTube 内容集成（InnerTube）
 

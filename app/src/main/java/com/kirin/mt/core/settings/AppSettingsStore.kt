@@ -70,6 +70,7 @@ class AppSettingsStore(private val context: Context) {
     AppSettings(
       visualPerformanceMode = visualPerformanceMode,
       homeThemeVariant = HomeThemeVariant.fromKey(preferences[Keys.HomeThemeVariant]),
+      appearanceMode = AppAppearanceMode.fromKey(preferences[Keys.AppearanceMode]),
       chineseTextVariant = ChineseTextVariant.fromKey(preferences[Keys.ChineseTextVariant]),
       playbackQualityPreference = PlaybackQualityPreference.fromKey(preferences[Keys.PlaybackQualityPreference]),
       playbackCodecPreference = PlaybackCodecPreference.fromKey(preferences[Keys.PlaybackCodecPreference]),
@@ -118,6 +119,12 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setHomeThemeVariant(variant: HomeThemeVariant) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.HomeThemeVariant] = variant.key
+    }
+  }
+
+  suspend fun setAppearanceMode(mode: AppAppearanceMode) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.AppearanceMode] = mode.key
     }
   }
 
@@ -406,6 +413,7 @@ class AppSettingsStore(private val context: Context) {
     val LowSpecMode = booleanPreferencesKey("low_spec_mode")
     val VisualPerformanceMode = stringPreferencesKey("visual_performance_mode")
     val HomeThemeVariant = stringPreferencesKey("home_theme_variant")
+    val AppearanceMode = stringPreferencesKey("appearance_mode")
     val ChineseTextVariant = stringPreferencesKey("chinese_text_variant")
     val PlaybackQualityPreference = stringPreferencesKey("playback_quality_preference")
     val PlaybackCodecPreference = stringPreferencesKey("playback_codec_preference")
