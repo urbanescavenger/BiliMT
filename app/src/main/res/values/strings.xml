@@ -571,6 +571,10 @@
     <string name="playlist_section_related">相关视频</string>
     <string name="youtube_channel_follow">关注</string>
     <string name="youtube_channel_following">已关注</string>
+    <string name="youtube_channel_subscribers">%1$s 订阅</string>
+    <string name="youtube_channel_tab_videos">视频</string>
+    <string name="youtube_channel_tab_shorts">Shorts</string>
+    <string name="youtube_channel_tab_live">直播</string>
     <string name="youtube_channel_no_videos">该频道暂无视频</string>
     <string name="youtube_channel_videos_failed">视频加载失败。%1$s</string>
     <string name="settings_youtube_channels">YouTube 频道</string>

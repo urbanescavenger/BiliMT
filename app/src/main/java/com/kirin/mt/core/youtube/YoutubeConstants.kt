@@ -124,13 +124,26 @@ object YoutubeConstants {
   /** 频道"直播"tab 的 protobuf 参数。 */
   const val ChannelLiveParams = "EgdzdHJlYW1z8gYECgJ6AA%3D%3D"
 
+  /** 频道"Shorts"tab 的 protobuf 参数（base64 "EgZzaG9ydHM=" → field1 "shorts"）。 */
+  const val ChannelShortsParams = "EgZzaG9ydHM%3D"
+
   /**
-   * 频道"视频"排序（对齐 B站 UP 空间最新/最热）。两排序共用 /browse + browseId，
+   * 频道"视频"排序（对齐 B站 UP 最新/最热）。两排序共用 /browse + browseId，
    * 仅初始 params 不同；continuation 翻页与排序无关，各自独立。
    */
   enum class ChannelVideoOrder(val params: String) {
     Latest(ChannelVideosParams),
     Popular(ChannelPopularParams),
+  }
+
+  /**
+   * 频道内容 Tab（对齐 LibreTube 频道页 Videos/Shorts/Livestreams）。各 Tab 用不同
+   * protobuf params 请求 /browse；Videos 额外有最新/最热排序([ChannelVideoOrder])。
+   */
+  enum class ChannelContentTab(val params: String, val hasSort: Boolean) {
+    Videos(ChannelVideosParams, true),
+    Shorts(ChannelShortsParams, false),
+    Live(ChannelLiveParams, false),
   }
 
   /**

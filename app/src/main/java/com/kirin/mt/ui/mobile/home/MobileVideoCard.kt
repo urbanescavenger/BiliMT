@@ -74,6 +74,8 @@ fun MobileVideoCard(
   onLongPress: ((VideoSummary) -> Unit)? = null,
   showYoutubeBorder: Boolean = false,
   feedLayout: Boolean = false,
+  // 紧凑卡底部是否显示「上传时间 · 播放量」(仅频道页传 true;首页/搜索等保持纯播放量)。
+  showPubdate: Boolean = false,
   // 封面覆盖图(Coil data,可传 Bitmap)。IPTV 频道用拉流截帧的缩略图覆盖 logo(镜像 TV VideoCard.coverOverride)。
   coverOverride: Any? = null,
 ) {
@@ -90,7 +92,7 @@ fun MobileVideoCard(
   if (feedLayout) {
     FeedStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner, coverOverride = coverOverride, completed = completed)
   } else {
-    CompactStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner, coverOverride = coverOverride, completed = completed)
+    CompactStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner, coverOverride = coverOverride, completed = completed, showPubdate = showPubdate)
   }
 }
 
@@ -102,6 +104,7 @@ private fun CompactStyleCardContent(
   onOpenOwner: ((VideoSummary) -> Unit)?,
   coverOverride: Any? = null,
   completed: Boolean = false,
+  showPubdate: Boolean = false,
 ) {
   Column(modifier = modifier) {
     Box(
@@ -169,6 +172,16 @@ private fun CompactStyleCardContent(
       }
       if (video.isLive) {
         LiveOnlineCount(online = video.view, areaName = video.liveAreaName)
+      } else if (showPubdate) {
+        // 频道页:显示「上传时间 · 播放量」,镜像 FeedStyleCardContent 的相对时间逻辑。
+        val relativeText = rememberVideoCardRelativeText()
+        val count = formatCount(if (video.view > 0) video.view else video.likeCount, LocalContext.current.resources)
+        val pubdate = video.pubdateText(relativeText)
+        Text(
+          text = if (pubdate.isBlank()) count else "$pubdate · $count",
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
       } else {
         Text(
           text = formatCount(if (video.view > 0) video.view else video.likeCount, LocalContext.current.resources),

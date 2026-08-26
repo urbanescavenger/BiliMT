@@ -11,10 +11,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -29,10 +31,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.YoutubeChannel
@@ -63,6 +69,7 @@ fun MobileYoutubeChannelScreen(
   modifier: Modifier = Modifier,
 ) {
   val scope = rememberCoroutineScope()
+  val context = LocalContext.current
   val channels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   val followed = channels.any { it.channelId == channelId }
   val name = uiState.name
@@ -74,12 +81,15 @@ fun MobileYoutubeChannelScreen(
   val failed = uiState.failed
   val gridState = uiState.gridState
 
+  // 当前内容的 /browse params:Videos Tab 用排序(最新/最热)params,Shorts/直播用各自 tab params。
+  fun channelParams(): String = if (uiState.tab.hasSort) uiState.order.params else uiState.tab.params
+
   fun loadFirst() {
     scope.launch {
       uiState.loading = true
       uiState.failed = null
       try {
-        val page = youtubeRepository.getChannelVideos(channelId, params = uiState.order.params)
+        val page = youtubeRepository.getChannelVideos(channelId, params = channelParams())
         uiState.items = page.items.distinctBy { it.bvid }
         uiState.continuation = page.continuation
         uiState.endReached = page.continuation == null
@@ -106,7 +116,7 @@ fun MobileYoutubeChannelScreen(
     uiState.loadingMore = true
     scope.launch {
       try {
-        val page = youtubeRepository.getChannelVideos(channelId, token, params = uiState.order.params)
+        val page = youtubeRepository.getChannelVideos(channelId, token, params = channelParams())
         // 先存旧列表再比较:若先赋 uiState.items=merged,merged.size==uiState.items.size 恒真,
         // endReached 永远变 true,续页只翻一页就停(对齐 TV 版 latest.videos 旧列表比较)。
         val oldItems = uiState.items
@@ -128,19 +138,36 @@ fun MobileYoutubeChannelScreen(
     }
   }
 
-  // 首屏:解析权威频道名 + 头像(失败回退卡片名/空头像) + 拉第一页。
-  // 已加载过同 channelId + 排序则跳过;切排序(order)强制重拉。
-  LaunchedEffect(channelId, order) {
-    if (uiState.loadedChannelId != channelId || uiState.loadedOrder != order) {
-      uiState.name = channelName
+  // 头部信息(订阅数/banner/简介/权威名+头像):仅 channelId 变化时解析,失败回退卡片名/空头像。
+  LaunchedEffect(channelId) {
+    uiState.name = channelName
+    val header = runCatching { youtubeRepository.getChannelHeader(channelId) }.getOrNull()
+    if (header != null) {
+      uiState.name = header.name.ifBlank { channelName }
+      uiState.avatar = header.avatarUrl
+      uiState.subscriberCount = header.subscriberCount
+      uiState.description = header.description
+      uiState.bannerUrl = header.bannerUrl
+    } else {
       val resolved = runCatching { youtubeRepository.resolveChannel(channelId) }.getOrNull()
       uiState.name = resolved?.name?.ifBlank { channelName } ?: channelName
       uiState.avatar = resolved?.avatar.orEmpty()
+      uiState.subscriberCount = null
+      uiState.description = ""
+      uiState.bannerUrl = ""
+    }
+  }
+
+  // 首屏/切排序/切 Tab:拉对应内容。已加载过同 channelId+order+tab 跳过(从播放器返回复用列表,
+  // 仅清可能卡住的翻页 loading);切排序/切 Tab 强制重拉。
+  LaunchedEffect(channelId, order, tab) {
+    if (uiState.loadedChannelId != channelId || uiState.loadedOrder != order || uiState.loadedTab != tab) {
       loadFirst()
       uiState.loadedChannelId = channelId
       uiState.loadedOrder = order
+      uiState.loadedTab = tab
     } else {
-      // 从播放器返回同 channelId+order:清除可能卡住的翻页 loading 标志(scope 已随离开组合取消)。
+      // 从播放器返回同 channelId+order+tab:清除可能卡住的翻页 loading 标志(scope 已随离开组合取消)。
       uiState.loadingMore = false
     }
   }
@@ -185,7 +212,7 @@ fun MobileYoutubeChannelScreen(
       verticalArrangement = Arrangement.spacedBy(12.dp),
       modifier = Modifier.fillMaxSize(),
     ) {
-      // 头部:返回 + 频道名 + 关注按钮(跨整行)
+      // 头部:返回 + 头像/频道名/订阅数/关注(镜像 B站 UP 页三列布局) + 排序(跨整行)
       item(span = { GridItemSpan(maxLineSpan) }) {
         Column(modifier = Modifier.fillMaxWidth()) {
           Row(
@@ -193,13 +220,39 @@ fun MobileYoutubeChannelScreen(
             verticalAlignment = Alignment.CenterVertically,
           ) {
             OutlinedButton(onClick = onBack) { Text("‹") }
-            Text(
-              text = name.ifBlank { channelName },
-              style = MaterialTheme.typography.titleMedium,
-              modifier = Modifier.padding(start = 12.dp).weight(1f),
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
+          }
+          // 三列:左头像(跨两行) | 中(频道名 + 订阅数) | 右关注按钮
+          Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            AsyncImage(
+              model = avatar,
+              contentDescription = null,
+              contentScale = ContentScale.Crop,
+              modifier = Modifier
+                .size(56.dp)
+                .clip(CircleShape),
             )
+            Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
+              Text(
+                text = name.ifBlank { channelName },
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+              val subs = uiState.subscriberCount
+              if (subs != null) {
+                Text(
+                  text = stringResource(
+                    R.string.youtube_channel_subscribers,
+                    formatCount(subs.toInt(), context.resources),
+                  ),
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+            }
             Button(
               onClick = {
                 if (uiState.followLoading) return@Button
@@ -218,20 +271,51 @@ fun MobileYoutubeChannelScreen(
               Text(stringResource(if (followed) R.string.youtube_channel_following else R.string.youtube_channel_follow))
             }
           }
-          // 排序栏:最新 / 最热(对齐 B站 UP 空间)。
-          Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-            OutlinedButton(onClick = { uiState.order = YoutubeConstants.ChannelVideoOrder.Latest }) {
-              Text(
-                stringResource(R.string.player_up_sort_latest),
-                color = if (uiState.order == YoutubeConstants.ChannelVideoOrder.Latest) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-              )
+          // 简介:整行放三列下方,2 行省略(可选)。
+          if (uiState.description.isNotBlank()) {
+            Text(
+              text = uiState.description,
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            )
+          }
+          // 内容 Tab 行:视频 / Shorts / 直播。
+          Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            YoutubeConstants.ChannelContentTab.entries.forEach { t ->
+              OutlinedButton(onClick = { uiState.tab = t }) {
+                Text(
+                  text = when (t) {
+                    YoutubeConstants.ChannelContentTab.Videos -> stringResource(R.string.youtube_channel_tab_videos)
+                    YoutubeConstants.ChannelContentTab.Shorts -> stringResource(R.string.youtube_channel_tab_shorts)
+                    YoutubeConstants.ChannelContentTab.Live -> stringResource(R.string.youtube_channel_tab_live)
+                  },
+                  color = if (uiState.tab == t) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                )
+              }
             }
-            Spacer(Modifier.padding(start = 8.dp))
-            OutlinedButton(onClick = { uiState.order = YoutubeConstants.ChannelVideoOrder.Popular }) {
-              Text(
-                stringResource(R.string.player_up_sort_hot),
-                color = if (uiState.order == YoutubeConstants.ChannelVideoOrder.Popular) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-              )
+          }
+          // 排序栏:最新 / 最热(对齐 B站 UP 排行)。仅 Videos Tab 显示。
+          if (uiState.tab.hasSort) {
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+              OutlinedButton(onClick = { uiState.order = YoutubeConstants.ChannelVideoOrder.Latest }) {
+                Text(
+                  stringResource(R.string.player_up_sort_latest),
+                  color = if (uiState.order == YoutubeConstants.ChannelVideoOrder.Latest) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                )
+              }
+              Spacer(Modifier.padding(start = 8.dp))
+              OutlinedButton(onClick = { uiState.order = YoutubeConstants.ChannelVideoOrder.Popular }) {
+                Text(
+                  stringResource(R.string.player_up_sort_hot),
+                  color = if (uiState.order == YoutubeConstants.ChannelVideoOrder.Popular) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                )
+              }
             }
           }
         }
@@ -267,6 +351,8 @@ fun MobileYoutubeChannelScreen(
               onClick = onVideoSelected,
               onOpenOwner = null,
               onLongPress = onLongPress,
+              // 频道页卡片显示「上传时间 · 播放量」。
+              showPubdate = true,
             )
           }
           if (loadingMore) {

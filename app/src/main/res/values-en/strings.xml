@@ -560,6 +560,10 @@
     <string name="playlist_section_related">Related videos</string>
     <string name="youtube_channel_follow">Follow</string>
     <string name="youtube_channel_following">Following</string>
+    <string name="youtube_channel_subscribers">%1$s subscribers</string>
+    <string name="youtube_channel_tab_videos">Videos</string>
+    <string name="youtube_channel_tab_shorts">Shorts</string>
+    <string name="youtube_channel_tab_live">Live</string>
     <string name="youtube_channel_no_videos">This channel has no videos</string>
     <string name="youtube_channel_videos_failed">Failed to load videos. %1$s</string>
     <string name="settings_youtube_channels">YouTube channels</string>

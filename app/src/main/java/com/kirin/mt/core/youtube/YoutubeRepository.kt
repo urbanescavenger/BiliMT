@@ -120,6 +120,18 @@ class YoutubeRepository(
   }
 
   /**
+   * 频道页头部全量信息（名称/头像/订阅数/banner/简介/认证）。UC 频道 ID 走 /browse，
+   * 返回 [YoutubeParsers.ChannelInfo]；解析失败或非 UC ID 返回 null（调用方回退 request 值）。
+   */
+  suspend fun getChannelHeader(channelId: String): YoutubeParsers.ChannelInfo? {
+    if (!channelId.matches(ChannelIdRegex)) return null
+    return runCatching {
+      val payload = buildJsonObject { put("browseId", channelId) }
+      YoutubeParsers.parseChannelInfo(client.postJson("/browse", payload))
+    }.getOrNull()
+  }
+
+  /**
    * 从搜索候选里挑最佳匹配：优先名称精确匹配(忽略大小写)，
    * 其次第一个含 query 的候选，最后退回到首个候选。实测对 `@handle` 搜索首条即目标频道。
    */

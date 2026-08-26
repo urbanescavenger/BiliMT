@@ -559,6 +559,10 @@
     <string name="playlist_section_related">Vídeos relacionados</string>
     <string name="youtube_channel_follow">Seguir</string>
     <string name="youtube_channel_following">A seguir</string>
+    <string name="youtube_channel_subscribers">%1$s inscritos</string>
+    <string name="youtube_channel_tab_videos">Vídeos</string>
+    <string name="youtube_channel_tab_shorts">Shorts</string>
+    <string name="youtube_channel_tab_live">Ao vivo</string>
     <string name="youtube_channel_no_videos">Este canal ainda não tem vídeos</string>
     <string name="youtube_channel_videos_failed">Falha ao carregar os vídeos. %1$s</string>
     <string name="settings_youtube_channels">Canais do YouTube</string>

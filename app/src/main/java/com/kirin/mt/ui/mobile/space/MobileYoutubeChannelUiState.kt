@@ -17,6 +17,12 @@ import com.kirin.mt.core.youtube.YoutubeConstants
 class MobileYoutubeChannelUiState {
   var name by mutableStateOf("")
   var avatar by mutableStateOf("")
+  /** 订阅数；未知为 null。 */
+  var subscriberCount by mutableStateOf<Long?>(null)
+  /** 频道简介；无则空串。 */
+  var description by mutableStateOf("")
+  /** banner 图 URL；无则空串。 */
+  var bannerUrl by mutableStateOf("")
   var followLoading by mutableStateOf(false)
   var items by mutableStateOf<List<VideoSummary>>(emptyList())
   var continuation by mutableStateOf<String?>(null)
@@ -28,4 +34,8 @@ class MobileYoutubeChannelUiState {
   var loadedChannelId by mutableStateOf("")
   var order by mutableStateOf(YoutubeConstants.ChannelVideoOrder.Latest)
   var loadedOrder by mutableStateOf(YoutubeConstants.ChannelVideoOrder.Latest)
+  /** 当前内容 Tab(视频/Shorts/直播)。 */
+  var tab by mutableStateOf(YoutubeConstants.ChannelContentTab.Videos)
+  /** 已加载的 Tab 守卫:切 Tab 强制重拉。 */
+  var loadedTab by mutableStateOf(YoutubeConstants.ChannelContentTab.Videos)
 }

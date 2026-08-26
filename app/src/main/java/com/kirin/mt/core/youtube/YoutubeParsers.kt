@@ -48,6 +48,11 @@ internal object YoutubeParsers {
     collectByKey(root, KEY_LOCKUP_VIEW_MODEL) { node ->
       parseLockupViewModel(node)?.let { videos.add(it) }
     }
+    // 频道页 Shorts tab:shortsLockupViewModel(与 lockupViewModel 共享 lockupMetadataViewModel
+    // 形状,parseLockupViewModel 可直接复用;Live tab 走 videoRenderer 已被上面收集)。
+    collectByKey(root, KEY_SHORTS_LOCKUP_VIEW_MODEL) { node ->
+      parseLockupViewModel(node)?.let { videos.add(it) }
+    }
     val continuation = findContinuation(root)
     return YoutubeFeedPage(items = videos, continuation = continuation)
   }
@@ -77,45 +82,101 @@ internal object YoutubeParsers {
     return null
   }
 
-  /** 频道页 header 解析结果。 */
-  data class ChannelInfo(val channelId: String, val name: String, val avatarUrl: String)
+  /**
+   * 频道页 header 解析结果。含订阅数/banner/简介/认证，供频道页头部展示
+   *（对齐 LibreTube `ChannelResponse` 的 subscriberCount/banner/description/verified）。
+   */
+  data class ChannelInfo(
+    val channelId: String,
+    val name: String,
+    val avatarUrl: String,
+    /** 订阅数；未知为 null。 */
+    val subscriberCount: Long? = null,
+    /** banner 图 URL；无则空串。 */
+    val bannerUrl: String = "",
+    /** 频道简介；无则空串。 */
+    val description: String = "",
+    /** 认证频道（badges 含 VERIFIED）。 */
+    val verified: Boolean = false,
+  )
 
   /**
-   * 从频道页 /browse 响应解析频道 info，返回 [ChannelInfo]（含头像）。
+   * 从频道页 /browse 响应解析频道 info，返回 [ChannelInfo]。
    *
-   * YouTube 频道页 header 有三种形态，任一命中即用：
-   *   1. header → c4TabbedHeaderRenderer → { channelId, title, avatar }
-   *   2. metadata → channelMetadataRenderer → { externalId, title, avatar }
-   *   3. microformat → microformatDataRenderer → { externalId, title }（无头像）
+   * YouTube 频道页 header 有三种形态，字段分散在不同形态，合并收集：
+   *   1. header → c4TabbedHeaderRenderer → { channelId, title, avatar, subscriberCountText,
+   *      banner, description, badges(VERIFIED) }
+   *   2. metadata → channelMetadataRenderer → { externalId, title, avatar, description }
+   *   3. microformat → microformatDataRenderer → { externalId, title, description }
+   * 先命中 c4Header 的完整字段，缺的用 metadata/microformat 补齐。
    *
-   * @return 解析出的 [ChannelInfo]；解析不到时返回 null（由调用方回退输入串）。
+   * @return 解析出的 [ChannelInfo]；解析不到 channelId 时返回 null（由调用方回退输入串）。
    */
   fun parseChannelInfo(root: JsonObject): ChannelInfo? {
+    var id: String? = null
+    var name = ""
+    var avatar = ""
+    var subscriberCount: Long? = null
+    var banner = ""
+    var desc = ""
+    var verified = false
+
     val c4Header = root.obj("header")?.obj("c4TabbedHeaderRenderer")
     if (c4Header != null) {
-      val id = c4Header.stringOrNull("channelId")
-      val name = c4Header.stringOrNull("title")
-      if (!id.isNullOrBlank()) {
-        val avatar = c4Header.obj("avatar")?.array("thumbnails")?.let(::pickBestThumbnailUrl).orEmpty()
-        return ChannelInfo(id, name ?: "", avatar)
+      val c4Id = c4Header.stringOrNull("channelId")
+      if (!c4Id.isNullOrBlank()) {
+        id = c4Id
+        name = c4Header.stringOrNull("title").orEmpty()
+        avatar = c4Header.obj("avatar")?.array("thumbnails")?.let(::pickBestThumbnailUrl).orEmpty()
+        subscriberCount = parseCount(
+          runsText(c4Header.obj("subscriberCountText")).ifBlank { simpleText(c4Header.obj("subscriberCountText")) },
+        )
+        banner = c4Header.obj("banner")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+          ?: c4Header.obj("mobileBanner")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+          .orEmpty()
+        desc = c4Header.obj("description")?.let { runsText(it).ifBlank { simpleText(it) } }.orEmpty()
+        verified = c4Header.array("badges")?.any {
+          val badge = (it as? JsonObject)
+          val renderer = badge?.obj("badgeRenderer") ?: badge?.obj("metadataBadgeRenderer")
+          renderer?.stringOrNull("style")?.contains("VERIFIED", ignoreCase = true) == true ||
+            renderer?.stringOrNull("styleId")?.contains("VERIFIED", ignoreCase = true) == true
+        } == true
       }
     }
+
     val channelMetadata = root.obj("metadata")?.obj("channelMetadataRenderer")
     if (channelMetadata != null) {
-      val id = channelMetadata.stringOrNull("externalId")
-      val name = channelMetadata.stringOrNull("title")
-      if (!id.isNullOrBlank()) {
-        val avatar = channelMetadata.obj("avatar")?.array("thumbnails")?.let(::pickBestThumbnailUrl).orEmpty()
-        return ChannelInfo(id, name ?: "", avatar)
+      val metaId = channelMetadata.stringOrNull("externalId")
+      if (!metaId.isNullOrBlank()) {
+        if (id == null) id = metaId
+        if (name.isBlank()) name = channelMetadata.stringOrNull("title").orEmpty()
+        if (avatar.isBlank()) {
+          avatar = channelMetadata.obj("avatar")?.array("thumbnails")?.let(::pickBestThumbnailUrl).orEmpty()
+        }
+        if (desc.isBlank()) desc = channelMetadata.stringOrNull("description").orEmpty()
       }
     }
+
     val microformat = root.obj("microformat")?.obj("microformatDataRenderer")
     if (microformat != null) {
-      val id = microformat.stringOrNull("externalId")
-      val name = microformat.stringOrNull("title")
-      if (!id.isNullOrBlank()) return ChannelInfo(id, name ?: "", "")
+      val mfId = microformat.stringOrNull("externalId")
+      if (!mfId.isNullOrBlank()) {
+        if (id == null) id = mfId
+        if (name.isBlank()) name = microformat.stringOrNull("title").orEmpty()
+        if (desc.isBlank()) desc = microformat.stringOrNull("description").orEmpty()
+      }
     }
-    return null
+
+    if (id == null) return null
+    return ChannelInfo(
+      channelId = id,
+      name = name,
+      avatarUrl = avatar,
+      subscriberCount = subscriberCount,
+      bannerUrl = banner,
+      description = desc,
+      verified = verified,
+    )
   }
 
   /**
@@ -1052,6 +1113,7 @@ internal object YoutubeParsers {
   private const val KEY_GRID_VIDEO_RENDERER = "gridVideoRenderer"
   private const val KEY_COMPACT_VIDEO_RENDERER = "compactVideoRenderer"
   private const val KEY_LOCKUP_VIEW_MODEL = "lockupViewModel"
+  private const val KEY_SHORTS_LOCKUP_VIEW_MODEL = "shortsLockupViewModel"
   private const val KEY_CONTINUATION_ITEM_RENDERER = "continuationItemRenderer"
   private const val KEY_CHANNEL_RENDERER = "channelRenderer"
   private const val KEY_COMMENT_RENDERER = "commentRenderer"
