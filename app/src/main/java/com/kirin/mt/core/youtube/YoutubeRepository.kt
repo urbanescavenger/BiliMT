@@ -1,5 +1,6 @@
 package com.kirin.mt.core.youtube
 
+import android.os.SystemClock
 import android.util.Log
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
@@ -26,8 +27,9 @@ data class YoutubeVideoPage(
   val continuation: String?,
 )
 
-/** 订阅流逐频道拉取的并发上限。并发太高易触发 InnerTube 风控，4 是实测安全值。 */
-const val YoutubeMaxConcurrentChannelFetches = 4
+/** 订阅流逐频道拉取的并发上限。对齐 LibreTube CHANNEL_CHUNK_SIZE=5：批次串行、每批 ≤5 频道，
+ * 并发 5 让整批 1 轮 RTT 跑完（旧 4 会让每批 5 个频道空转一轮排队）。峰值并发仍由 ChunkSize 限到 5。 */
+const val YoutubeMaxConcurrentChannelFetches = 5
 
 /** RSS 订阅流并发上限。RSS 是轻量 GET、无 InnerTube 风控，可放宽到 8。 */
 const val YoutubeMaxConcurrentRssFetches = 8
@@ -362,6 +364,7 @@ class YoutubeRepository(
       // 未配置频道时回退显示热门,避免动态 tab 空白(设置里可添加频道)。
       return getTrending(YoutubeConstants.TrendingTabs.values.first())
     }
+    val startMs = SystemClock.elapsedRealtime()
     val rssSemaphore = Semaphore(YoutubeMaxConcurrentRssFetches)
     val innerTubeSemaphore = Semaphore(YoutubeMaxConcurrentChannelFetches)
     val accumulator = mutableListOf<VideoSummary>()
@@ -420,10 +423,17 @@ class YoutubeRepository(
       accumulator += batchResult
       processed += batch.size
       // 防节流(对齐 LibreTube CHANNEL_BATCH_DELAY):每累计 BatchSize 频道暂停随机 500-1500ms。
-      if (processed % BatchSize == 0) {
+      // 用 >= 而非 % == 0:ChunkSize 不整除 BatchSize 时 % 永不触发(如 ChunkSize=4 时 50 不整除)。
+      if (processed >= BatchSize) {
         delay(Random.nextLong(BatchDelayMs.first, BatchDelayMs.last + 1))
+        processed = 0
       }
     }
+    val elapsedMs = SystemClock.elapsedRealtime() - startMs
+    Log.i(
+      "YoutubeFeed",
+      "getSubscriptionsFeed done: channels=${channels.size} total=${accumulator.size} elapsed=${elapsedMs}ms",
+    )
     return accumulator.sortedByDescending { it.pubdate }
   }
 
@@ -451,6 +461,7 @@ class YoutubeRepository(
       // 未配置频道时回退显示热门,避免首页空白(设置里可添加频道)。
       return YoutubeSubscriptionsPage(getTrending(YoutubeConstants.TrendingTabs.values.first()), emptyMap())
     }
+    val startMs = SystemClock.elapsedRealtime()
     val rssSemaphore = Semaphore(YoutubeMaxConcurrentRssFetches)
     val innerTubeSemaphore = Semaphore(YoutubeMaxConcurrentChannelFetches)
     // 首屏：全部频道；续页：仅 token 非 null 的频道。
@@ -549,14 +560,18 @@ class YoutubeRepository(
       continuationAccumulator.putAll(batchContinuations)
       processed += batch.size
       // 防节流(对齐 LibreTube CHANNEL_BATCH_DELAY):每累计 BatchSize 频道暂停随机 500-1500ms。
-      if (processed % BatchSize == 0) {
+      // 用 >= 而非 % == 0:ChunkSize 不整除 BatchSize 时 % 永不触发(如 ChunkSize=4 时 50 不整除)。
+      if (processed >= BatchSize) {
         delay(Random.nextLong(BatchDelayMs.first, BatchDelayMs.last + 1))
+        processed = 0
       }
     }
-    Log.d(
+    val elapsedMs = SystemClock.elapsedRealtime() - startMs
+    Log.i(
       "YoutubeFeed",
-      "page ${if (previousContinuation == null) "first" else "next"} done: total=${accumulator.size} " +
-        "channelsWithToken=${continuationAccumulator.values.count { it != null }}",
+      "getSubscriptionsPage ${if (previousContinuation == null) "first" else "next"} done: " +
+        "channels=${activeChannels.size} total=${accumulator.size} " +
+        "channelsWithToken=${continuationAccumulator.values.count { it != null }} elapsed=${elapsedMs}ms",
     )
     return YoutubeSubscriptionsPage(
       videos = accumulator.sortedByDescending { it.pubdate },
