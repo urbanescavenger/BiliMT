@@ -263,7 +263,8 @@ class YoutubeRepository(
     val items = YoutubeParsers.parseChannelPlaylists(root)
     // 诊断:确认播放列表 Tab 是否真的请求到 playlistRenderer 内容(空=服务端可能无视 params 回落成普通视频)。
     Log.d("Ytabs", "getChannelPlaylists channelId=$channelId continuation=${continuation != null} " +
-      "params=${if (continuation == null) params.take(8) else "cont"} items=${items.size}")
+      "params=${if (continuation == null) params.take(8) else "cont"} items=${items.size} " +
+      "shape=${if (items.isEmpty()) YoutubeParsers.diagnosticPlaylistShape(root) else "ok"}")
     return YoutubePlaylistsPage(
       items = items,
       continuation = YoutubeParsers.findContinuation(root),

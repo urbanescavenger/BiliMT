@@ -113,6 +113,12 @@ internal fun MobileYoutubeChannelScreen(
   }
 
   fun loadFirst() {
+    // 同步清零翻页状态:切 Tab 后旧 continuation 必须立即作废,否则滚动触发的 loadNext 会用
+    // 旧 tab 的 token + 当前 tab 的 browseId 发错配请求(UUSH browseId + videos continuation)。
+    uiState.continuation = null
+    uiState.playlistContinuation = null
+    uiState.loadingMore = false
+    uiState.endReached = false
     scope.launch {
       uiState.loading = true
       uiState.failed = null
@@ -150,23 +156,36 @@ internal fun MobileYoutubeChannelScreen(
       "loadNext called continuation=${uiState.continuation?.take(12) ?: "null"} " +
         "loadingMore=${uiState.loadingMore} endReached=${uiState.endReached}",
     )
-    val isPlaylists = uiState.tab == YoutubeConstants.ChannelContentTab.Playlists
+    val tab = uiState.tab
+    val isPlaylists = tab == YoutubeConstants.ChannelContentTab.Playlists
     val token = if (isPlaylists) uiState.playlistContinuation else uiState.continuation
     if (token == null) return
     if (uiState.loadingMore || uiState.endReached) return
+    // 与 token 同步捕获当前 tab 的 params/browseId:协程执行时若 tab 已切换,用旧 tab 的
+    // browseId(而非读新 tab)才不把旧列表内容混进新 tab;返回后再校验 tab 未变才合并。
+    val params = channelParams()
+    val browseId = channelBrowseId()
     uiState.loadingMore = true
     scope.launch {
       try {
         if (isPlaylists) {
           // 播放列表卡续页:先存旧列表再比较,避免 endReached 恒真只翻一页。
-          val page = youtubeRepository.getChannelPlaylists(channelId, token, params = channelParams())
+          val page = youtubeRepository.getChannelPlaylists(channelId, token, params = params)
+          if (uiState.tab != tab || uiState.loading) {
+            uiState.loadingMore = false
+            return@launch
+          }
           val old = uiState.playlists
           val merged = (old + page.items).distinctBy { it.id }
           uiState.playlists = merged
           uiState.playlistContinuation = page.continuation
           uiState.endReached = page.continuation == null || merged.size == old.size
         } else {
-          val page = youtubeRepository.getChannelVideos(channelId, token, params = channelParams(), browseId = channelBrowseId())
+          val page = youtubeRepository.getChannelVideos(channelId, token, params = params, browseId = browseId)
+          if (uiState.tab != tab || uiState.loading) {
+            uiState.loadingMore = false
+            return@launch
+          }
           // 先存旧列表再比较:若先置 uiState.items=merged,merged.size==uiState.items.size 恒真,
           // endReached 永远变 true,续页只翻一页就停(对齐 TV 版 latest.videos 旧列表比较)。
           val oldItems = uiState.items

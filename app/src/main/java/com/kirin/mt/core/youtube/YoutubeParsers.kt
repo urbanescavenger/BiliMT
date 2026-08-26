@@ -93,6 +93,23 @@ internal object YoutubeParsers {
   }
 
   /**
+   * 播放列表 Tab 空响应诊断:报响应里出现的 lockupViewModel contentType 分布 + 顶层键。
+   * 新布局频道播放列表卡可能是 lockupViewModel(contentType=PLAYLIST)而非旧 playlistRenderer,
+   * 用它确认 parseChannelPlaylists 漏收集的 renderer 形状,再决定要不要加收集分支。
+   */
+  fun diagnosticPlaylistShape(root: JsonObject): String {
+    val lockup = mutableListOf<String>()
+    collectByKey(root, "lockupViewModel") { node ->
+      lockup.add(node.stringOrNull("contentType") ?: "?")
+    }
+    val playlists = arrayOf("playlistRenderer", "playlistCardRenderer").count { k ->
+      root.toString().contains("\"$k\"")
+    }
+    return "topKeys=${root.keys.joinToString(",")} " +
+      "lockup=[${lockup.joinToString(",")}] playlistRenderers=$playlists"
+  }
+
+  /**
    * 频道页 header 解析结果。含订阅数/banner/简介/认证，供频道页头部展示
    *（对齐 LibreTube `ChannelResponse` 的 subscriberCount/banner/description/verified）。
    */
