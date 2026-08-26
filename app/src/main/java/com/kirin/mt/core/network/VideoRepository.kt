@@ -3,6 +3,7 @@ package com.kirin.mt.core.network
 import com.kirin.mt.core.auth.WbiKeyRepository
 import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.model.HomeSection
+import com.kirin.mt.core.model.ProgressUnset
 import com.kirin.mt.core.model.PgcFeedPage
 import com.kirin.mt.core.model.PgcIndexFilters
 import com.kirin.mt.core.model.PgcIndexPage
@@ -13,6 +14,7 @@ import com.kirin.mt.core.model.SpaceUserProfile
 import com.kirin.mt.core.model.UgcBannerItem
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.player.PlaybackProgressStore
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeChannelSearchPage
@@ -44,6 +46,7 @@ class VideoRepository(
   private val sessionStore: SessionStore,
   private val youtubeRepository: YoutubeRepository,
   private val youtubeChannelStore: YoutubeChannelStore,
+  private val progressStore: PlaybackProgressStore,
 ) {
   private val spaceVideoRepository = SpaceVideoRepository(
     apiClient = apiClient,
@@ -78,6 +81,27 @@ class VideoRepository(
     sessionStore = sessionStore,
   )
 
+  /**
+   * 给普通卡片合入本地观看进度:对 [ProgressUnset](无进度数据)的卡片,读 [progressStore] 里
+   * 最近一次播放进度(positionMs)填进 `progress`(秒),让首页/搜索/频道/动态/收藏等卡片显示真实
+   * 观看进度条(对照 LibreTube/历史页)。已填服务端进度(历史/稍后再看)与直播跳过,不被覆盖。
+   */
+  private suspend fun List<VideoSummary>.withLocalProgress(): List<VideoSummary> {
+    if (isEmpty()) return this
+    val bvids = asSequence()
+      .filter { it.progress == ProgressUnset && it.bvid.isNotBlank() && !it.isLive }
+      .map { it.bvid }
+      .toSet()
+    if (bvids.isEmpty()) return this
+    val progress = progressStore.getLatestProgressMap(bvids)
+    if (progress.isEmpty()) return this
+    return map { v ->
+      val p = progress[v.bvid] ?: return@map v
+      val seconds = (p.positionMs / 1000L).toInt()
+      if (seconds <= 0 || v.duration <= 0) v else v.copy(progress = seconds)
+    }
+  }
+
   suspend fun getHomeSectionVideos(
     section: HomeSection,
     page: Int = 1,
@@ -92,13 +116,13 @@ class VideoRepository(
       if (channels.isEmpty()) return emptyList()
       return youtubeSubscriptionsFeed(channels, onChannelAvatarResolved = { channel ->
         youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-      })
+      }).withLocalProgress()
     }
     return homeVideoRepository.getHomeSectionVideos(
       section = section,
       page = page,
       idx = idx,
-    )
+    ).withLocalProgress()
   }
 
   suspend fun getRegionBanner(tid: Int): List<UgcBannerItem> {
@@ -106,11 +130,11 @@ class VideoRepository(
   }
 
   suspend fun getRecommendVideos(idx: Int = 0): List<VideoSummary> {
-    return homeVideoRepository.getRecommendVideos(idx)
+    return homeVideoRepository.getRecommendVideos(idx).withLocalProgress()
   }
 
   suspend fun getRelatedVideos(bvid: String): List<VideoSummary> {
-    return homeVideoRepository.getRelatedVideos(bvid)
+    return homeVideoRepository.getRelatedVideos(bvid).withLocalProgress()
   }
 
   suspend fun getPgcFeed(pgcType: PgcType, cursor: Int): PgcFeedPage {
@@ -140,7 +164,7 @@ class VideoRepository(
       page = page,
       order = order,
       retryMode = retryMode,
-    )
+    ).withLocalProgress()
   }
 
   suspend fun getSpaceUserProfile(mid: Long): SpaceUserProfile {
@@ -255,7 +279,7 @@ class VideoRepository(
       keyword = keyword,
       page = page,
       order = order,
-    )
+    ).withLocalProgress()
   }
 
   suspend fun getSearchSuggestions(keyword: String): List<String> {
@@ -297,7 +321,7 @@ class VideoRepository(
       continuation = continuation,
     )
     return YoutubeVideoPage(
-      items = feed.items.map(youtubeRepository::toVideoSummary),
+      items = feed.items.map(youtubeRepository::toVideoSummary).withLocalProgress(),
       continuation = feed.continuation,
     )
   }
@@ -313,7 +337,7 @@ class VideoRepository(
       onChannelAvatarResolved = onChannelAvatarResolved,
       onChunkReady = onChunkReady,
       cachedLatestByChannel = cachedLatestByChannel,
-    )
+    ).withLocalProgress()
   }
 
   /**
@@ -327,7 +351,7 @@ class VideoRepository(
   ): YoutubeSubscriptionsPage {
     val channels = youtubeChannelStore.channels.first()
     if (channels.isEmpty()) return YoutubeSubscriptionsPage(emptyList(), emptyMap())
-    return youtubeRepository.getSubscriptionsPage(
+    val page = youtubeRepository.getSubscriptionsPage(
       channels,
       previousContinuation = previousContinuation,
       onChannelAvatarResolved = { channel ->
@@ -335,6 +359,7 @@ class VideoRepository(
       },
       onChunkReady = onChunkReady,
     )
+    return page.copy(videos = page.videos.withLocalProgress())
   }
 
   /** YouTube 视频详情（简介 Tab）。 */
@@ -350,11 +375,12 @@ class VideoRepository(
   /** YouTube 相关视频（/next secondaryResults，对齐 LibreTube）。 */
   suspend fun getYoutubeRelatedVideos(videoId: String, continuation: String? = null): List<VideoSummary> {
     val page = youtubeRepository.getRelatedVideos(videoId, continuation)
-    return page.items.map(youtubeRepository::toVideoSummary)
+    return page.items.map(youtubeRepository::toVideoSummary).withLocalProgress()
   }
 
   suspend fun getDynamicFeed(offset: String = "", type: String = "video"): DynamicFeedPage {
-    return userFeedRepository.getDynamicFeed(offset = offset, type = type)
+    val page = userFeedRepository.getDynamicFeed(offset = offset, type = type)
+    return page.copy(videos = page.videos.withLocalProgress())
   }
 
   suspend fun getDynamicUnread(): Int {
@@ -406,11 +432,12 @@ class VideoRepository(
     viewAt: Long = 0L,
     max: Long = 0L,
   ): ToViewPage {
-    return userFeedRepository.getToViewPage(
+    val page = userFeedRepository.getToViewPage(
       pageSize = pageSize,
       viewAt = viewAt,
       max = max,
     )
+    return page.copy(videos = page.videos.withLocalProgress())
   }
 
   suspend fun getFavoriteFolders(mid: Long): List<FavoriteFolder> {
@@ -427,12 +454,13 @@ class VideoRepository(
     pageSize: Int = FavoriteFolderPageSize,
     order: String = "mtime",
   ): FavoriteFolderPage {
-    return userFeedRepository.getFavoriteFolderVideos(
+    val page = userFeedRepository.getFavoriteFolderVideos(
       mediaId = mediaId,
       page = page,
       pageSize = pageSize,
       order = order,
     )
+    return page.copy(videos = page.videos.withLocalProgress())
   }
 
   suspend fun getFollowingSeasons(

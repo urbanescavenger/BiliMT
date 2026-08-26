@@ -46,6 +46,24 @@ class PlaybackProgressStore(private val context: Context) {
     )
   }
 
+  /**
+   * 一次 DataStore 读取批量取多个视频的最近进度(供卡片列表合入观看进度用,避免逐条
+   * [getLatestProgress] 的 N 次读取)。无该 bvid 记录的不进结果。
+   */
+  suspend fun getLatestProgressMap(bvids: Set<String>): Map<String, PlaybackProgress> {
+    if (bvids.isEmpty()) return emptyMap()
+    val preferences = context.biliDataStore.data.first()
+    return bvids.mapNotNull { bvid ->
+      if (bvid.isBlank()) return@mapNotNull null
+      val prefix = latestKeyPrefix(bvid)
+      val positionMs = preferences[longPreferencesKey("${prefix}_position_ms")] ?: return@mapNotNull null
+      val cid = preferences[longPreferencesKey("${prefix}_cid")] ?: 0L
+      val durationMs = preferences[longPreferencesKey("${prefix}_duration_ms")] ?: 0L
+      val updatedAtMs = preferences[longPreferencesKey("${prefix}_updated_at_ms")] ?: 0L
+      bvid to PlaybackProgress(cid, positionMs, durationMs, updatedAtMs)
+    }.toMap()
+  }
+
   suspend fun saveProgress(
     bvid: String,
     cid: Long,

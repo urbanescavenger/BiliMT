@@ -145,6 +145,8 @@ class AppContainer(context: Context) {
     pipedClient = pipedClient,
     appSettingsStore = appSettingsStore,
   )
+  // 播放进度本地存储:VideoRepository 用它给普通卡片合入观看进度条,PlaybackRepository 用它续播。
+  val playbackProgressStore: PlaybackProgressStore = PlaybackProgressStore(appContext)
   val videoRepository: VideoRepository = VideoRepository(
     apiClient = apiClient,
     wbiKeyRepository = wbiKeyRepository,
@@ -152,6 +154,7 @@ class AppContainer(context: Context) {
     sessionStore = sessionStore,
     youtubeRepository = youtubeRepository,
     youtubeChannelStore = youtubeChannelStore,
+    progressStore = playbackProgressStore,
   )
   val liveRepository: LiveRepository = LiveRepository(
     apiClient = apiClient,
@@ -169,7 +172,7 @@ class AppContainer(context: Context) {
     wbiSigner = wbiSigner,
     sessionStore = sessionStore,
     codecCapabilityProbe = codecCapabilityProbe,
-    progressStore = PlaybackProgressStore(appContext),
+    progressStore = playbackProgressStore,
     youtubePlaybackResolver = youtubePlaybackResolver,
   )
   val danmakuSettingsStore: DanmakuSettingsStore = DanmakuSettingsStore(appContext)
