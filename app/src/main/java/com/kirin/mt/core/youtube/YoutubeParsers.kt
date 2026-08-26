@@ -248,12 +248,22 @@ internal object YoutubeParsers {
   /** 递归收集响应里所有去重后的 key 名,打印出来看真实 schema(定位内容 Tab 条所在节点)。 */
   private fun dumpSchemaKeys(root: JsonObject) {
     val keys = java.util.TreeSet<String>()
+    val tabHits = StringBuilder()
+    val tabPath = ArrayList<String>()
     fun walk(node: JsonElement?) {
       when (node) {
         is JsonObject -> {
+          for (k in node.keys) keys.add(k)
+          // 定向:任何含 tab 相关 key 的节点,记下它的路径 + 子 key,直接锁定 tab 条位置。
+          val hasTab = node.keys.any { it.contains("tab", ignoreCase = true) }
+          if (hasTab) {
+            tabHits.append("\n  [").append(tabPath.joinToString(" > ")).append("] -> ")
+              .append(node.keys.sorted().joinToString(","))
+          }
           for (k in node.keys) {
-            keys.add(k)
+            tabPath.add(k)
             walk(node.get(k))
+            tabPath.removeAt(tabPath.size - 1)
           }
         }
         is JsonArray -> node.forEach { walk(it) }
@@ -262,6 +272,7 @@ internal object YoutubeParsers {
     }
     walk(root)
     Log.d("Ytabs", "SCHEMA(size=${keys.size}): ${keys.joinToString(",")}")
+    Log.d("Ytabs", "TABHITS(带路径):$tabHits")
   }
 
   /**
