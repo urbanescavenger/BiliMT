@@ -454,31 +454,20 @@ fun MobileSearchScreen(
         )
       }
     } else {
-      // 结果态:类型 chip(视频/UP主) + 排序 chip(仅视频类型,B站/YouTube 各一套)。
+      // 结果态:排序 chip(仅视频类型,B站/YouTube 各一套) + 类型 chip(视频/UP主) 合并成一行,
+      // 类型 chip 恒在排序之后(UP/频道 类型时排序隐藏,只剩类型 chip)。
       val typeOptions = listOf(
         SearchTypeVideo to stringResource(R.string.search_type_video),
         SearchTypeUser to stringResource(
           if (uiState.source == SourceYoutube) R.string.search_type_user_youtube else R.string.search_type_user_bili
         ),
       )
+      val sortOptions = sortOptionsFor(uiState.source)
       Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        typeOptions.forEach { (value, label) ->
-          FilterChip(
-            selected = uiState.searchType == value,
-            onClick = { uiState.selectType(value) },
-            label = { Text(label) },
-          )
-        }
-      }
-      val sortOptions = sortOptionsFor(uiState.source)
-      if (uiState.searchType == SearchTypeVideo && sortOptions.isNotEmpty()) {
-        Row(
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        if (uiState.searchType == SearchTypeVideo && sortOptions.isNotEmpty()) {
           sortOptions.forEach { opt ->
             FilterChip(
               selected = uiState.orderKey == opt.key,
@@ -486,6 +475,13 @@ fun MobileSearchScreen(
               label = { Text(stringResource(opt.titleRes)) },
             )
           }
+        }
+        typeOptions.forEach { (value, label) ->
+          FilterChip(
+            selected = uiState.searchType == value,
+            onClick = { uiState.selectType(value) },
+            label = { Text(label) },
+          )
         }
       }
 
