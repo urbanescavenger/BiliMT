@@ -5,6 +5,7 @@ import android.util.Log
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -397,7 +398,7 @@ class YoutubeRepository(
                 feedCatching(emptyList(), "RSS", channel.channelId) { getChannelRss(channel.channelId) }
               }
             }
-            val innerTubeDeferred = if (cachedLatest == null) {
+            val innerTubeDeferred: Deferred<List<YoutubeVideo>>? = if (cachedLatest == null) {
               async {
                 innerTubeSemaphore.withPermit {
                   feedCatching(emptyList(), "InnerTube", channel.channelId) { getChannelVideosRaw(channel.channelId) }
