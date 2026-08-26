@@ -413,7 +413,9 @@ class YoutubeRepository(
             } else {
               val rssLatest = rssVideos.maxOfOrNull { it.publishedAt ?: 0L } ?: 0L
               // innerTubeDeferred==null ⟹ cachedLatest!=null,!! 安全。
-              if (rssLatest > cachedLatest!!) {
+              // RSS 空/失败(rssLatest=0,如 YouTube RSS 404)时不能门控跳过——404 不代表无新内容,
+              // 必须拉 InnerTube 兜底(否则动态页全空);仅 RSS 正常返回且最新≤缓存最新才跳过。
+              if (rssVideos.isEmpty() || rssLatest > cachedLatest!!) {
                 innerTubeSemaphore.withPermit {
                   feedCatching(emptyList(), "InnerTube", channel.channelId) { getChannelVideosRaw(channel.channelId) }
                 }
