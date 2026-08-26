@@ -282,6 +282,12 @@
     <string name="search_sort_dm">Mais danmaku</string>
     <string name="search_loading">A pesquisar...</string>
     <string name="search_empty">Nenhum vídeo relevante encontrado</string>
+    <string name="search_empty_user">Nenhum criador/canal encontrado</string>
+    <string name="search_type_video">Vídeos</string>
+    <string name="search_type_user_bili">Criadores</string>
+    <string name="search_type_user_youtube">Canais</string>
+    <string name="search_user_fans">%1$s seguidores</string>
+    <string name="search_user_videos">%1$s vídeos</string>
     <string name="search_failed_with_message">Falha na pesquisa. %1$s</string>
     <string name="dynamic_loading">A carregar as atualizações...</string>
     <string name="dynamic_empty">Sem atualizações</string>

@@ -65,6 +65,7 @@ import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.SpeedTestUiState
 import com.kirin.mt.core.youtube.YoutubeContentLocale
 import com.kirin.mt.core.player.DanmakuSettingsStore
+import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
@@ -1310,6 +1311,23 @@ fun BiliTvApp(
                       spaceOrigin = SpaceOrigin.Content
                       spacePlaybackBehind = false
                       spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+                    }
+                  },
+                  onUserSelected = { user ->
+                    if (user.source == SourceYoutube && user.channelId.isNotBlank()) {
+                      youtubeChannelUiState.reset()
+                      channelOrigin = SpaceOrigin.Content
+                      channelPlaybackBehind = false
+                      youtubeChannelRequest = YoutubeChannelRequest(
+                        channelId = user.channelId,
+                        channelName = user.name,
+                        avatar = user.face,
+                      )
+                    } else {
+                      upSpaceUiState.reset()
+                      spaceOrigin = SpaceOrigin.Content
+                      spacePlaybackBehind = false
+                      spaceRequest = UpSpaceRequest(user.mid, user.name, user.face)
                     }
                   },
                   onCommentSelected = { video ->

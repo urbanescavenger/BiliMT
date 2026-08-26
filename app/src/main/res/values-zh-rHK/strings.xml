@@ -214,6 +214,12 @@
     <string name="search_sort_dm">最多彈幕</string>
     <string name="search_loading">正在搜尋...</string>
     <string name="search_empty">未找到相關影片</string>
+    <string name="search_empty_user">未找到相關UP主/頻道</string>
+    <string name="search_type_video">影片</string>
+    <string name="search_type_user_bili">UP主</string>
+    <string name="search_type_user_youtube">頻道</string>
+    <string name="search_user_fans">粉絲 %1$s</string>
+    <string name="search_user_videos">影片 %1$s</string>
     <string name="search_failed_with_message">搜尋失敗。%1$s</string>
     <string name="dynamic_loading">正在載入動態...</string>
     <string name="dynamic_empty">暫無動態</string>

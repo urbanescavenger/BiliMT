@@ -137,6 +137,39 @@ internal object YoutubeParsers {
   }
 
   /**
+   * 解析一页频道搜索结果（/search + params=TypeChannel），返回频道列表 + 续页 token。
+   * 复用 [parseChannelCandidates] 的 channelRenderer 收集，但提取更全字段（头像/订阅/视频数/简介）。
+   */
+  fun parseChannelSearchPage(root: JsonObject): YoutubeChannelSearchPage {
+    val channels = mutableListOf<YoutubeChannelSearchResult>()
+    collectByKey(root, KEY_CHANNEL_RENDERER) { node ->
+      val id = node.stringOrNull("channelId")
+      if (!id.isNullOrBlank()) {
+        val title = runsText(node.obj("title")).ifBlank { simpleText(node.obj("title")) }
+        val avatar = node.obj("thumbnail")?.array("thumbnails")?.let(::pickBestThumbnailUrl).orEmpty()
+        val subscribers = parseCount(
+          runsText(node.obj("subscriberCountText")).ifBlank { simpleText(node.obj("subscriberCountText")) },
+        )
+        val videos = parseCount(
+          runsText(node.obj("videoCountText")).ifBlank { simpleText(node.obj("videoCountText")) },
+        )
+        val desc = runsText(node.obj("descriptionSnippet")).ifBlank { simpleText(node.obj("descriptionSnippet")) }
+        channels.add(
+          YoutubeChannelSearchResult(
+            channelId = id,
+            name = title,
+            avatarUrl = avatar,
+            subscriberCount = subscribers,
+            videoCount = videos,
+            description = desc,
+          ),
+        )
+      }
+    }
+    return YoutubeChannelSearchPage(items = channels, continuation = findContinuation(root))
+  }
+
+  /**
    * 从 /player 响应解析视频详情（简介 Tab）。
    *
    * 取 `videoDetails`（title / author 频道名 / shortDescription 简介 / viewCount）+ `microformat`

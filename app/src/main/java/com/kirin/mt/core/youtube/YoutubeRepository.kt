@@ -61,6 +61,22 @@ class YoutubeRepository(
     return client.postJson("/search", payload).let(YoutubeParsers::parseFeedPage)
   }
 
+  /** 频道搜索（params=TypeChannel），返回原始频道模型 + 续页 token。 */
+  suspend fun searchChannels(
+    query: String,
+    continuation: String? = null,
+  ): YoutubeChannelSearchPage {
+    val payload = buildJsonObject {
+      if (continuation != null) {
+        put("continuation", continuation)
+      } else {
+        put("query", query)
+        put("params", YoutubeSearchParams.TypeChannel)
+      }
+    }
+    return client.postJson("/search", payload).let(YoutubeParsers::parseChannelSearchPage)
+  }
+
   /** 热门(趋势)，返回映射后的卡片。 */
   suspend fun getTrending(tab: YoutubeConstants.TrendingTab): List<VideoSummary> {
     val payload = buildJsonObject {

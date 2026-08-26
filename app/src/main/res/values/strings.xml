@@ -286,6 +286,12 @@
     <string name="search_sort_rating">评分</string>
     <string name="search_loading">正在搜索...</string>
     <string name="search_empty">未找到相关视频</string>
+    <string name="search_empty_user">未找到相关UP主/频道</string>
+    <string name="search_type_video">视频</string>
+    <string name="search_type_user_bili">UP主</string>
+    <string name="search_type_user_youtube">频道</string>
+    <string name="search_user_fans">粉丝 %1$s</string>
+    <string name="search_user_videos">视频 %1$s</string>
     <string name="search_failed_with_message">搜索失败。%1$s</string>
     <string name="dynamic_loading">正在加载动态...</string>
     <string name="dynamic_empty">暂无动态</string>

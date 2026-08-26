@@ -11,9 +11,11 @@ import com.kirin.mt.core.model.PgcSeason
 import com.kirin.mt.core.model.PgcType
 import com.kirin.mt.core.model.SpaceUserProfile
 import com.kirin.mt.core.model.UgcBannerItem
+import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.youtube.YoutubeChannel
+import com.kirin.mt.core.youtube.YoutubeChannelSearchPage
 import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeCommentPage
 import com.kirin.mt.core.youtube.YoutubeRepository
@@ -258,6 +260,28 @@ class VideoRepository(
 
   suspend fun getSearchSuggestions(keyword: String): List<String> {
     return searchVideoRepository.getSearchSuggestions(keyword)
+  }
+
+  /** 搜索 UP主（B站 search_type=user）。 */
+  suspend fun searchUsers(
+    keyword: String,
+    page: Int = 1,
+  ): List<UserSummary> {
+    return searchVideoRepository.searchUsers(
+      keyword = keyword,
+      page = page,
+    )
+  }
+
+  /** 搜索 YouTube 频道（InnerTube /search + params=TypeChannel）。 */
+  suspend fun youtubeSearchChannels(
+    query: String,
+    continuation: String? = null,
+  ): YoutubeChannelSearchPage {
+    return youtubeRepository.searchChannels(
+      query = query,
+      continuation = continuation,
+    )
   }
 
   // ---- YouTube（来源切换：搜索/热门/动态关注） ----

@@ -281,6 +281,12 @@
     <string name="search_sort_dm">Most danmaku</string>
     <string name="search_loading">Searching…</string>
     <string name="search_empty">No videos found</string>
+    <string name="search_empty_user">No matching creators/channels</string>
+    <string name="search_type_video">Videos</string>
+    <string name="search_type_user_bili">Creators</string>
+    <string name="search_type_user_youtube">Channels</string>
+    <string name="search_user_fans">%1$s fans</string>
+    <string name="search_user_videos">%1$s videos</string>
     <string name="search_failed_with_message">Search failed. %1$s</string>
     <string name="dynamic_loading">Loading moments…</string>
     <string name="dynamic_empty">No moments yet</string>

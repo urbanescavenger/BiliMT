@@ -1,6 +1,8 @@
 package com.kirin.mt.core.network
 
 import com.kirin.mt.core.model.Comment
+import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -184,6 +186,22 @@ internal object VideoSummaryMappers {
       duration = BiliNumberParser.parseDuration(json["duration"]),
       pubdate = json.long("pubdate"),
       badge = filterBadge(json.string("badge")),
+    )
+  }
+
+  /** 搜索 UP主（search_type=user）结果映射。字段：mid / uname / upic / usign / fans / videos / level / official_verify。 */
+  fun fromSearchUser(json: JsonObject): UserSummary {
+    return UserSummary(
+      mid = json.long("mid"),
+      channelId = "",
+      name = json.string("uname"),
+      face = fixPicUrl(json.string("upic")),
+      sign = json.string("usign"),
+      fans = BiliNumberParser.toInt(json["fans"]),
+      videos = BiliNumberParser.toInt(json["videos"]),
+      level = json.int("level"),
+      officialVerify = json.obj("official_verify")?.string("title").orEmpty(),
+      source = SourceBili,
     )
   }
 

@@ -1,5 +1,7 @@
 package com.kirin.mt.core.youtube
 
+import com.kirin.mt.core.model.SourceYoutube
+import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
 
 /**
@@ -132,4 +134,45 @@ object YoutubeSearchParams {
 
   /** 类型：视频。 */
   const val TypeVideo = "EgIQAQ%3D%3D"
+
+  /** 类型：频道。 */
+  const val TypeChannel = "EgIQAg%3D%3D"
+}
+
+/** 一条 YouTube 频道搜索结果（channelRenderer）。 */
+data class YoutubeChannelSearchResult(
+  /** 频道 id（UC 开头）。 */
+  val channelId: String,
+  val name: String,
+  /** 频道头像 URL（yt3.ggpht.com）；无则空串。 */
+  val avatarUrl: String = "",
+  /** 订阅数；未知为 null。 */
+  val subscriberCount: Long? = null,
+  /** 视频数；未知为 null。 */
+  val videoCount: Long? = null,
+  /** 频道简介；无则空串。 */
+  val description: String = "",
+)
+
+/** 一页 YouTube 频道搜索结果，带续页 token。 */
+data class YoutubeChannelSearchPage(
+  val items: List<YoutubeChannelSearchResult>,
+  /** 续页 token；null 表示没有下一页。 */
+  val continuation: String?,
+)
+
+/** 把 YouTube 频道搜索结果映射成统一的 [UserSummary]（mid 恒 0、level 恒 0，source=YouTube）。 */
+fun YoutubeChannelSearchResult.toUserSummary(): UserSummary {
+  return UserSummary(
+    mid = 0L,
+    channelId = channelId,
+    name = name,
+    face = avatarUrl,
+    sign = description,
+    fans = subscriberCount?.toInt() ?: 0,
+    videos = videoCount?.toInt() ?: 0,
+    level = 0,
+    officialVerify = "",
+    source = SourceYoutube,
+  )
 }

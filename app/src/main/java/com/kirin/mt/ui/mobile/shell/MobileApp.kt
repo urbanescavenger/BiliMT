@@ -47,6 +47,7 @@ import com.kirin.mt.ui.i18n.LocalChineseTextConverter
 import com.kirin.mt.ui.i18n.localizedContext
 import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceYoutube
+import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.network.LiveRepository
@@ -343,6 +344,15 @@ fun BiliMobileApp(
           },
           onOpenOwner = { video -> openOwner(video) },
           onLongPress = onLongPress,
+          onUserSelected = { user ->
+            if (user.source == SourceYoutube && user.channelId.isNotBlank()) {
+              youtubeChannelRequest = YoutubeChannel(user.channelId, user.name)
+              channelPlaybackBehind = false
+            } else {
+              spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(user.mid, user.name, user.face)
+              spacePlaybackBehind = false
+            }
+          },
           modifier = Modifier.fillMaxSize(),
         )
         AppDestination.Settings -> DevelopingTipContent()
