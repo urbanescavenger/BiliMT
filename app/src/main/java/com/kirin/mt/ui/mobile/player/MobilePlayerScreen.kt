@@ -581,6 +581,22 @@ fun MobilePlayerScreen(
     ).show()
   }
 
+  // 下载封面到 cache/share/cover_<bvid|aid>.jpg,失败或无封面返回 null(调用方回退纯文本)。
+  // 注意:局部函数不能前向引用,须声明在 shareVideo 之前。
+  suspend fun downloadShareCover(): File? {
+    val coverUrl = activeRequest.coverUrl
+    if (coverUrl.isBlank()) return null
+    return runCatching {
+      val result = context.imageLoader.execute(buildVideoThumbnailRequest(context, coverUrl, 480, 270))
+      val bitmap = (result.drawable as? BitmapDrawable)?.bitmap ?: return null
+      val dir = File(context.cacheDir, "share").apply { mkdirs() }
+      val name = "cover_${activeRequest.bvid.ifBlank { activeRequest.aid.toString() }}.jpg"
+      val file = File(dir, name)
+      FileOutputStream(file).use { out -> bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out) }
+      file
+    }.getOrNull()
+  }
+
   // 分享视频:bvid 优先,无 bvid 用 av{aid};文本=标题+换行+链接。
   // 封面图经 Coil 下载到 cache/share/ 后以 image/* 分享(微信/QQ 等显示缩略图预览,对齐 B 站官方);
   // 封面下载失败或无封面则回退纯文本分享。
@@ -616,21 +632,6 @@ fun MobilePlayerScreen(
       }
       runCatching { context.startActivity(Intent.createChooser(intent, context.getString(R.string.share_video))) }
     }
-  }
-
-  // 下载封面到 cache/share/cover_<bvid|aid>.jpg,失败或无封面返回 null(调用方回退纯文本)。
-  suspend fun downloadShareCover(): File? {
-    val coverUrl = activeRequest.coverUrl
-    if (coverUrl.isBlank()) return null
-    return runCatching {
-      val result = context.imageLoader.execute(buildVideoThumbnailRequest(context, coverUrl, 480, 270))
-      val bitmap = (result.drawable as? BitmapDrawable)?.bitmap ?: return null
-      val dir = File(context.cacheDir, "share").apply { mkdirs() }
-      val name = "cover_${activeRequest.bvid.ifBlank { activeRequest.aid.toString() }}.jpg"
-      val file = File(dir, name)
-      FileOutputStream(file).use { out -> bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out) }
-      file
-    }.getOrNull()
   }
 
   /**
