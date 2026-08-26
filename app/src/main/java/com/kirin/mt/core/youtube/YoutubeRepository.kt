@@ -359,6 +359,7 @@ class YoutubeRepository(
     perChannel: Int = 15,
     onChannelAvatarResolved: suspend (YoutubeChannel) -> Unit = {},
     onChunkReady: (List<VideoSummary>) -> Unit = {},
+    cachedLatestByChannel: Map<String, Long> = emptyMap(),
   ): List<VideoSummary> {
     if (channels.isEmpty()) {
       // 未配置频道时回退显示热门,避免动态 tab 空白(设置里可添加频道)。
@@ -387,19 +388,38 @@ class YoutubeRepository(
                 onChannelAvatarResolved(channel.copy(avatar = resolvedAvatar))
               }
             }
-            // RSS 与 InnerTube 并行拉取。RSS 提供精确发布时间,InnerTube 补全 duration/live 等字段。
+            // RSS 与 InnerTube 拉取。RSS 提供精确发布时间,InnerTube 补全 duration/live 等字段。
+            // 门控(对齐 LibreTube hasNewerUploads):有缓存时先拉 RSS,若 RSS 最新视频 ≤ 缓存最新
+            // 则跳过 InnerTube 只付 RSS 成本;无缓存(首次)则 RSS+InnerTube 并行拉全保正确性。
+            val cachedLatest = cachedLatestByChannel[channel.channelId]
             val rssDeferred = async {
               rssSemaphore.withPermit {
                 feedCatching(emptyList(), "RSS", channel.channelId) { getChannelRss(channel.channelId) }
               }
             }
-            val innerTubeDeferred = async {
-              innerTubeSemaphore.withPermit {
-                feedCatching(emptyList(), "InnerTube", channel.channelId) { getChannelVideosRaw(channel.channelId) }
+            val innerTubeDeferred = if (cachedLatest == null) {
+              async {
+                innerTubeSemaphore.withPermit {
+                  feedCatching(emptyList(), "InnerTube", channel.channelId) { getChannelVideosRaw(channel.channelId) }
+                }
               }
+            } else {
+              null
             }
             val rssVideos = rssDeferred.await()
-            val innerTubeVideos = innerTubeDeferred.await()
+            val innerTubeVideos = if (innerTubeDeferred != null) {
+              innerTubeDeferred.await()
+            } else {
+              val rssLatest = rssVideos.maxOfOrNull { it.publishedAt ?: 0L } ?: 0L
+              // innerTubeDeferred==null ⟹ cachedLatest!=null,!! 安全。
+              if (rssLatest > cachedLatest!!) {
+                innerTubeSemaphore.withPermit {
+                  feedCatching(emptyList(), "InnerTube", channel.channelId) { getChannelVideosRaw(channel.channelId) }
+                }
+              } else {
+                emptyList()
+              }
+            }
             val merged = mergeByVideoId(rssVideos, innerTubeVideos)
             Log.d(
               "YoutubeFeed",

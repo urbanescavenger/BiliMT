@@ -106,12 +106,20 @@ fun MobileDynamicScreen(
     val currentIds = youtubeChannels.map { it.channelId }
     val cached = youtubeFeedCacheStore.read()
     val cacheValid = cached != null && cached.channelIds == currentIds
+    // 门控:用缓存每频道最新 pubdate 判断 RSS 有无新内容,无则跳过 InnerTube(对齐 LibreTube)。
+    // 仅缓存有效时传,避免用错频道集合的旧缓存做门控。
+    val cachedLatestByChannel = if (cacheValid) {
+      cached!!.videos.groupBy { it.channelId }.mapValues { (_, vs) -> vs.maxOf { it.pubdate } }
+    } else {
+      emptyMap()
+    }
     return try {
       val result = videoRepository.youtubeSubscriptionsFeed(
         youtubeChannels,
         onChannelAvatarResolved = { channel ->
           youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
         },
+        cachedLatestByChannel = cachedLatestByChannel,
       )
       if (result.isNotEmpty()) {
         youtubeTimeoutNotice = false

@@ -282,11 +282,13 @@ class VideoRepository(
     channels: List<YoutubeChannel>,
     onChannelAvatarResolved: suspend (YoutubeChannel) -> Unit = {},
     onChunkReady: (List<VideoSummary>) -> Unit = {},
+    cachedLatestByChannel: Map<String, Long> = emptyMap(),
   ): List<VideoSummary> {
     return youtubeRepository.getSubscriptionsFeed(
       channels,
       onChannelAvatarResolved = onChannelAvatarResolved,
       onChunkReady = onChunkReady,
+      cachedLatestByChannel = cachedLatestByChannel,
     )
   }
 
