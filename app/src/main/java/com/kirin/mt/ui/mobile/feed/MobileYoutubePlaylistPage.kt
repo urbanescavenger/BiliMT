@@ -62,6 +62,7 @@ import com.kirin.mt.ui.mobile.home.CompletedBadge
 import com.kirin.mt.ui.mobile.home.LocalWatchedIds
 import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.theme.BiliColors
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
@@ -314,6 +315,8 @@ private fun PlaylistDetailScreen(
             .pointerInput(video.bvid, editMode, autoArchive) {
               // 「下载」列表允许长按拖动排序(编辑/移除仍禁用);其它列表编辑模式下禁拖。
               if (editMode) return@pointerInput
+              // 边缘 auto-scroll 任务,复用单个 job 防滚动堆叠。
+              var overscrollJob: Job? = null
               detectDragGesturesAfterLongPress(
                 onDragStart = {
                   draggingBvid = video.bvid
@@ -343,14 +346,38 @@ private fun PlaylistDetailScreen(
                     items = newItems
                     draggingIndex = target.index
                   }
+                  // 边缘 auto-scroll:拖拽带(初始 offset + 累计位移,viewport 固定坐标)越出
+                  // 视口顶/底 → scrollBy,越界量自纠回到 0 即停;scrollBy 自带首/末项边界 clamp。
+                  // 列表在拖拽项底下滚,拖拽项钉在手指下(center 固定),滚入项 center 扫过手指继续重排。
+                  val bandStart = draggingInitialOffset + draggingDelta
+                  val bandEnd = bandStart + draggingInfo.size
+                  val overscroll = when {
+                    draggingDelta < 0f ->
+                      (bandStart - layoutInfo.viewportStartOffset).takeIf { it < 0f } ?: 0f
+                    draggingDelta > 0f ->
+                      (bandEnd - layoutInfo.viewportEndOffset).takeIf { it > 0f } ?: 0f
+                    else -> 0f
+                  }
+                  if (overscroll != 0f) {
+                    if (overscrollJob?.isActive != true) {
+                      overscrollJob = scope.launch { listState.scrollBy(overscroll) }
+                    }
+                  } else {
+                    overscrollJob?.cancel()
+                    overscrollJob = null
+                  }
                 },
                 onDragEnd = {
+                  overscrollJob?.cancel()
+                  overscrollJob = null
                   draggingBvid = null
                   draggingIndex = -1
                   draggingDelta = 0f
                   scope.launch { youtubePlaylistStore.replaceVideos(playlist.name, items) }
                 },
                 onDragCancel = {
+                  overscrollJob?.cancel()
+                  overscrollJob = null
                   draggingBvid = null
                   draggingIndex = -1
                   draggingDelta = 0f
