@@ -62,7 +62,7 @@ import kotlinx.coroutines.launch
  * 卡片 owner 点击留在本频道。头部信息为"基础"档(名称 + 关注),不做头像/签名。
  */
 @Composable
-fun MobileYoutubeChannelScreen(
+internal fun MobileYoutubeChannelScreen(
   youtubeRepository: YoutubeRepository,
   youtubeChannelStore: YoutubeChannelStore,
   uiState: MobileYoutubeChannelUiState,

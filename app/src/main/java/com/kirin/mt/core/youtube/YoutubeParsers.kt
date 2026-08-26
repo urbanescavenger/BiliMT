@@ -1136,7 +1136,7 @@ internal object YoutubeParsers {
    * 之前是全树扫+取最后一个，频道视频 tab 响应里可能夹带 shorts/相关频道等其它 section 的 token，
    * 取错会导致续页返回首屏相同视频（去重后零新增 → ~50 到底 / 死循环）。
    */
-  private fun findContinuation(root: JsonObject): String? {
+  fun findContinuation(root: JsonObject): String? {
     appendContinuationItems(root)?.let { return firstContinuationToken(it) }
     reloadContinuationItems(root)?.let { return firstContinuationToken(it) }
     videoGridItems(root)?.let { return firstContinuationToken(it) }
