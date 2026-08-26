@@ -369,8 +369,15 @@ internal fun MobileYoutubeChannelScreen(
       }
 
       val isPlaylists = uiState.tab == YoutubeConstants.ChannelContentTab.Playlists
-      // 空判定依 Tab:播放列表 Tab 看 playlists,视频/Shorts/直播看 displayItems(两者互斥)。
+      // 空判定依 Tab:播放列表 Tab 看 playlists,其余 Tab 看 displayItems(两者互斥)。
       val emptyItems = if (isPlaylists) uiState.playlists.isEmpty() else displayItems.isEmpty()
+      // 各 Tab 空态文案对齐(没内容就明确显示空,不串其它内容)。
+      val emptyText = when (uiState.tab) {
+        YoutubeConstants.ChannelContentTab.Videos -> "暂无视频"
+        YoutubeConstants.ChannelContentTab.Shorts -> "暂无短视频"
+        YoutubeConstants.ChannelContentTab.Live -> "暂无直播"
+        YoutubeConstants.ChannelContentTab.Playlists -> "暂无播放列表"
+      }
       when {
         failed != null -> item(span = { GridItemSpan(maxLineSpan) }) {
           Text(
@@ -387,7 +394,7 @@ internal fun MobileYoutubeChannelScreen(
         }
         emptyItems -> item(span = { GridItemSpan(maxLineSpan) }) {
           Text(
-            text = if (isPlaylists) "暂无播放列表" else "暂无视频",
+            text = emptyText,
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
