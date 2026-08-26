@@ -674,9 +674,17 @@ class YoutubeRepository(
     return byId.values.toList()
   }
 
-  /** 拉取单频道 RSS 订阅流并解析成 [YoutubeVideo]。失败抛异常，由调用方回退。 */
+  /**
+   * 拉取单频道 RSS 订阅流并解析成 [YoutubeVideo]。失败抛异常，由调用方回退。
+   *
+   * 用 **UULF playlist_id 变体**而非 channel_id:YouTube 的 `feeds/videos.xml?channel_id=` 自
+   * 2025-12 起大面积间歇性 404/500(YouTube 侧问题,见 youtube-api-notes),而 uploads 播放列表
+   * feed(`playlist_id=UULF<后缀>`)走不同后端、更稳、更新近实时。channelId 形如 `UC`+22 位,
+   * UULF 变体把 `UC` 换成 `UULF`(uploads 播放列表 id)。
+   */
   private suspend fun getChannelRss(channelId: String): List<YoutubeVideo> {
-    val xml = client.getText("${YoutubeConstants.RssFeedBase}?channel_id=$channelId")
+    val playlistId = "UULF" + channelId.removePrefix("UC")
+    val xml = client.getText("${YoutubeConstants.RssFeedBase}?playlist_id=$playlistId")
     return YoutubeRssParser.parse(xml)
   }
 

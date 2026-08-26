@@ -128,7 +128,7 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 
 关注频道的最新视频（移动端动态/首页、TV 首页热门 tab 共用）。单走任一来源都有缺陷，正确做法是**每频道并发拉 RSS 与 InnerTube `/browse`，按 `videoId` 合并**：
 
-- **RSS**（`/feeds/videos.xml?channel_id=UC...`）：轻量 GET，无 InnerTube 风控/不计配额；提供**精确 ISO 8601 `publishedAt`**。但**不含 duration/live/upcoming/badge/头像**，且直播/Shorts 覆盖不全。
+- **RSS**（`/feeds/videos.xml?playlist_id=UULF<后缀>`，2026-08-26 起用 UULF 变体）：轻量 GET，无 InnerTube 风控/不计配额；提供**精确 ISO 8601 `publishedAt`**。但**不含 duration/live/upcoming/badge/头像**，且直播/Shorts 覆盖不全。**注意**：`channel_id=UC...` 变体自 2025-12 起 YouTube 侧大面积间歇性 404/500（社区 Miniflux/FreshRSS 均报，根因在 YouTube 不在客户端），uploads 播放列表 feed（`playlist_id=UULF`，把 `UC` 换 `UULF`）走不同后端更稳、更新近实时，故改用 UULF。
 - **InnerTube** `/browse`（频道视频 tab）：提供 `duration`/`liveNow`/`isUpcoming`/`badge`/`viewCount`/头像，补 RSS 缺失字段；但 `publishedAt` 是相对时间反推（"4 days ago"），月/年用固定天数近似，刷新排序不稳定。
 - **合并规则**：以 RSS 为基底，`publishedAt` 优先 RSS（精确），`durationSec`/`viewCount`/`liveNow`/`isUpcoming`/`badge`/`channelAvatarUrl` 优先 InnerTube；仅单路有的直接保留。
 - **降级**：任一路失败用另一路（RSS 失败→InnerTube 近似时间；InnerTube 失败→RSS 无 duration/live，降级可用），两者都失败该频道返回空、不影响其它频道。
