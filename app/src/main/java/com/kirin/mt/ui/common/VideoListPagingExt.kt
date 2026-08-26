@@ -35,15 +35,6 @@ internal fun UserSummary.dedupKey(): String {
 /** 用户列表的焦点恢复键（与去重键一致）。 */
 internal fun UserSummary.focusRestoreKey(): String = dedupKey()
 
-/** 从 [focusKey] 解析用户列表的焦点恢复索引（或回退 [fallbackIndex]）。 */
-internal fun List<UserSummary>.resolveFocusIndex(focusKey: String, fallbackIndex: Int): Int {
-  val keyIndex = focusKey
-    .takeIf { key -> key.isNotBlank() }
-    ?.let { key -> indexOfFirst { user -> user.dedupKey() == key } }
-    ?.takeIf { index -> index >= 0 }
-  return keyIndex ?: fallbackIndex.coerceIn(0, lastIndex)
-}
-
 /** Resolves the focus-restore index from a [focusKey] (or falls back to [fallbackIndex]). */
 internal fun List<VideoSummary>.resolveFocusIndex(focusKey: String, fallbackIndex: Int): Int {
   val keyIndex = focusKey
