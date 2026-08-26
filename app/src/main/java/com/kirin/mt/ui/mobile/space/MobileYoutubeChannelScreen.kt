@@ -47,6 +47,7 @@ import com.kirin.mt.core.youtube.YoutubeConstants
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
+import com.kirin.mt.ui.mobile.home.formatCount
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -76,6 +77,7 @@ fun MobileYoutubeChannelScreen(
   val avatar = uiState.avatar
   val items = uiState.items
   val order = uiState.order
+  val tab = uiState.tab
   val loading = uiState.loading
   val loadingMore = uiState.loadingMore
   val failed = uiState.failed

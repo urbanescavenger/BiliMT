@@ -123,7 +123,7 @@ class YoutubeRepository(
    * 频道页头部全量信息（名称/头像/订阅数/banner/简介/认证）。UC 频道 ID 走 /browse，
    * 返回 [YoutubeParsers.ChannelInfo]；解析失败或非 UC ID 返回 null（调用方回退 request 值）。
    */
-  suspend fun getChannelHeader(channelId: String): YoutubeParsers.ChannelInfo? {
+  suspend internal fun getChannelHeader(channelId: String): YoutubeParsers.ChannelInfo? {
     if (!channelId.matches(ChannelIdRegex)) return null
     return runCatching {
       val payload = buildJsonObject { put("browseId", channelId) }
