@@ -240,7 +240,28 @@ internal object YoutubeParsers {
     }
     // 诊断:打印解析到的 tab 名字 + params 前缀,便于真机核验服务端 tab params 是否取到。
     Log.d("Ytabs", "parseChannelTabs found=${result.map { "${it.name}:${it.params.take(8)}" }}")
+    // 诊断:递归 dump 响应全部 key,定位 tab 条真实节点(此前猜的固定位置/tabRenderer 都抓不到)。
+    dumpSchemaKeys(root)
     return result
+  }
+
+  /** 递归收集响应里所有去重后的 key 名,打印出来看真实 schema(定位内容 Tab 条所在节点)。 */
+  private fun dumpSchemaKeys(root: JsonObject) {
+    val keys = java.util.TreeSet<String>()
+    fun walk(node: JsonElement?) {
+      when (node) {
+        is JsonObject -> {
+          for (k in node.keySet()) {
+            keys.add(k)
+            walk(node.get(k))
+          }
+        }
+        is JsonArray -> node.forEach { walk(it) }
+        else -> {}
+      }
+    }
+    walk(root)
+    Log.d("Ytabs", "SCHEMA(size=${keys.size}): ${keys.joinToString(",")}")
   }
 
   /**
