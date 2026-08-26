@@ -240,60 +240,22 @@ fun MobileSettingsScreen(
       options = enumOptions(YoutubeContentRegion.entries) { it.label },
       onSelected = { scope.launch { appSettingsStore.setYoutubeContentRegion(it) } },
     )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_seek_preview_sprites_title),
-      description = stringResource(R.string.settings_seek_preview_sprites_description),
-      checked = settings.seekPreviewSpritesEnabled,
-      onCheckedChange = { scope.launch { appSettingsStore.setSeekPreviewSpritesEnabled(it) } },
-    )
+    // NOTE: seekPreviewSpritesEnabled 为 TV 播放器专属(TV 才有 seek preview 缩略图),移动端不生效,已隐藏。
     MobileSwitchRow(
       title = stringResource(R.string.settings_air_jump_assistant_title),
       description = stringResource(R.string.settings_air_jump_assistant_description),
       checked = settings.airJumpAssistantEnabled,
       onCheckedChange = { scope.launch { appSettingsStore.setAirJumpAssistantEnabled(it) } },
     )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_confirm_playback_exit_title),
-      description = stringResource(R.string.settings_confirm_playback_exit_description),
-      checked = settings.confirmPlaybackExit,
-      onCheckedChange = { scope.launch { appSettingsStore.setConfirmPlaybackExit(it) } },
-    )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_auto_play_next_episode_title),
-      description = stringResource(R.string.settings_auto_play_next_episode_description),
-      checked = settings.autoPlayNextEpisode,
-      onCheckedChange = { scope.launch { appSettingsStore.setAutoPlayNextEpisode(it) } },
-    )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_auto_play_related_video_title),
-      description = stringResource(R.string.settings_auto_play_related_video_description),
-      checked = settings.autoPlayRelatedVideo,
-      onCheckedChange = { scope.launch { appSettingsStore.setAutoPlayRelatedVideo(it) } },
-    )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_auto_return_home_on_completion_title),
-      description = stringResource(R.string.settings_auto_return_home_on_completion_description),
-      checked = settings.autoReturnHomeOnCompletion,
-      onCheckedChange = { scope.launch { appSettingsStore.setAutoReturnHomeOnCompletion(it) } },
-    )
+    // NOTE: 以下 4 项为 TV 播放器专属(移动端不消费),已隐藏移动端设置页。字段/逻辑保留。
+    //   confirmPlaybackExit / autoPlayNextEpisode / autoPlayRelatedVideo / autoReturnHomeOnCompletion
     MobileSwitchRow(
       title = stringResource(R.string.settings_auto_delete_watched_title),
       description = stringResource(R.string.settings_auto_delete_watched_description),
       checked = settings.autoDeleteWatchedCache,
       onCheckedChange = { scope.launch { appSettingsStore.setAutoDeleteWatchedCache(it) } },
     )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_show_clock_title),
-      description = stringResource(R.string.settings_show_clock_description),
-      checked = settings.showClock,
-      onCheckedChange = { scope.launch { appSettingsStore.setShowClock(it) } },
-    )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_show_mini_progress_bar_title),
-      description = stringResource(R.string.settings_show_mini_progress_bar_description),
-      checked = settings.showMiniProgressBar,
-      onCheckedChange = { scope.launch { appSettingsStore.setShowMiniProgressBar(it) } },
-    )
+    // NOTE: showClock / showMiniProgressBar 为 TV 播放器专属(移动端不消费),已隐藏移动端设置页。字段/逻辑保留。
 
     // ===== 界面与交互 =====
     MobileSettingsSectionHeader(stringResource(R.string.settings_interaction_section))
@@ -1177,12 +1139,8 @@ private fun MobileYoutubeSabrSection(
         onClick = { showEditDialog = true },
         onLongClick = { showEditDialog = true },
       )
-      MobileSwitchRow(
-        title = stringResource(R.string.settings_sabr_force_itag_title),
-        description = stringResource(R.string.settings_sabr_force_itag_description),
-        checked = settings.sabrForceSessionVideoItag,
-        onCheckedChange = { scope.launch { appSettingsStore.setSabrForceSessionVideoItag(it) } },
-      )
+      // NOTE: sabrForceSessionVideoItag("锁定会话视频轨")诊断开关已隐藏(alpha.83 使命完成,
+      // 证伪 itag 是 RELOAD 根因)。字段/逻辑保留,如需再作诊断可恢复此 MobileSwitchRow。
       MobileEnumPickerRow(
         title = stringResource(R.string.settings_youtube_delivery_priority_title),
         description = stringResource(R.string.settings_youtube_delivery_priority_description),

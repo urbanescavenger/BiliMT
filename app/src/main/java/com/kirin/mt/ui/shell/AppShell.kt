@@ -1174,11 +1174,6 @@ fun BiliTvApp(
                     appSettingsStore.setYoutubeUsePiped(enabled)
                   }
                 },
-                onSabrForceSessionVideoItagChange = { enabled ->
-                  coroutineScope.launch {
-                    appSettingsStore.setSabrForceSessionVideoItag(enabled)
-                  }
-                },
                 onYoutubeDeliveryPriorityChange = { priority ->
                   coroutineScope.launch {
                     appSettingsStore.setYoutubeDeliveryPriority(priority)
