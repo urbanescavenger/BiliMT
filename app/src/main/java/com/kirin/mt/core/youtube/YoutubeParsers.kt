@@ -110,6 +110,37 @@ internal object YoutubeParsers {
   }
 
   /**
+   * 诊断:频道视频(Shorts 等)/browse 返回 0 条时的响应形状。报顶层键、contents 首节点下的
+   * renderer 键,以及各种已知 renderer 键出现的次数——确认短视频响应是「真无内容」还是
+   * 「用了解析器漏收集的 renderer 形状」。
+   */
+  fun diagnosticFeedShape(root: JsonObject): String {
+    val counts = LinkedHashMap<String, Int>()
+    val known = arrayOf(
+      "videoRenderer", "gridVideoRenderer", "compactVideoRenderer", "lockupViewModel",
+      "shortsLockupViewModel", "reelItemRenderer", "playlistVideoRenderer", "richItemRenderer",
+      "shelfRenderer", "radioRenderer", "playlistRenderer", "alertRenderer", "messageRenderer",
+    )
+    fun scan(e: JsonElement) {
+      when (e) {
+        is JsonObject -> {
+          for (k in e.keys) {
+            if (known.contains(k)) counts[k] = (counts[k] ?: 0) + 1
+          }
+          for ((_, v) in e) scan(v)
+        }
+        is JsonArray -> for (item in e) scan(item)
+        else -> Unit
+      }
+    }
+    scan(root)
+    val contentKeys = (root["contents"] as? JsonObject)?.keys?.joinToString(",") ?: "null"
+    val sections = counts.entries.filter { it.value > 0 }
+      .joinToString(",") { "${it.key}=${it.value}" }
+    return "top=${root.keys.joinToString(",")} contentsKeys=[$contentKeys] renderers=[${sections.ifBlank { "none" }}]"
+  }
+
+  /**
    * 频道页 header 解析结果。含订阅数/banner/简介/认证，供频道页头部展示
    *（对齐 LibreTube `ChannelResponse` 的 subscriberCount/banner/description/verified）。
    */

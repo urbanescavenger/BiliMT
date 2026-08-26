@@ -226,7 +226,8 @@ class YoutubeRepository(
       Log.w(
         "YoutubeChannel",
         "getChannelVideos EMPTY channelId=[$channelId] ${if (continuation == null) "first" else "next"} " +
-          "reason=${reason ?: "no-reason(parse ok,真无视频)"}",
+          "reason=${reason ?: "no-reason(parse ok,真无视频)"} " +
+          "shape=${YoutubeParsers.diagnosticFeedShape(root)}",
       )
     } else {
       Log.d(
@@ -281,7 +282,7 @@ class YoutubeRepository(
   ): YoutubeVideoPage {
     val payload = buildJsonObject {
       if (continuation != null) put("continuation", continuation)
-      else put("browseId", playlistBrowseId)
+      else put("browseId", normalizePlaylistBrowseId(playlistBrowseId))
     }
     val root = client.postJson("/browse", payload)
     val feed = YoutubeParsers.parseFeedPage(root)
@@ -290,6 +291,11 @@ class YoutubeRepository(
       continuation = feed.continuation,
     )
   }
+
+  /** 打开播放列表的 /browse 需要 `VL` + 播放列表 id(如 VLPL...)。lockupViewModel 卡片提取的
+   *  browseId 可能是裸 PL... 或已 VL 前缀;非 VL 前缀一律补 VL,否则 /browse 返回 400。 */
+  private fun normalizePlaylistBrowseId(id: String): String =
+    if (id.startsWith("VL")) id else "VL$id"
 
   /**
    * 视频详情（简介 Tab）：POST /player 取 videoDetails（title/author/shortDescription/viewCount）
