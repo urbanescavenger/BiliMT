@@ -122,6 +122,9 @@ internal fun MobileYoutubeChannelScreen(
     scope.launch {
       uiState.loading = true
       uiState.failed = null
+      // 诊断:请求发起前打印要拉的内容,区分「hang 住(无此后的 first/FAILED)」vs「抛异常(有 FAILED)」。
+      Log.d("Ytabs", "loadFirst START tab=${uiState.tab} " +
+        "browseId=${channelBrowseId() ?: "channel"} params=${channelParams().take(12)}")
       try {
         if (uiState.tab == YoutubeConstants.ChannelContentTab.Playlists) {
           // 播放列表 Tab:拉播放列表卡。
@@ -139,6 +142,10 @@ internal fun MobileYoutubeChannelScreen(
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
+        // 诊断:打请求失败的真实异常。此前 catch 静默吞掉,Shorts/直播 UUSH/UULV 首屏 browse
+        // 若在 postJson/解析抛错,UI 只显示失败但日志无任何痕迹(连 getChannelVideos 的 first 行都没有)。
+        Log.w("Ytabs", "loadFirst FAILED tab=${uiState.tab} browseId=${channelBrowseId()} " +
+          "params=${channelParams().take(12)} err=${e.message}", e)
         uiState.failed = e.message.orEmpty().ifBlank { "加载失败" }
         uiState.items = emptyList()
         uiState.playlists = emptyList()
