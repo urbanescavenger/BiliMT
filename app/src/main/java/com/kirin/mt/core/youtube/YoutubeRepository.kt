@@ -28,6 +28,12 @@ data class YoutubeVideoPage(
   val continuation: String?,
 )
 
+/** 频道"播放列表"Tab 的一页播放列表卡，带续页 token。internal 因含 [YoutubeParsers.YoutubePlaylist]。 */
+internal data class YoutubePlaylistsPage(
+  val items: List<YoutubeParsers.YoutubePlaylist>,
+  val continuation: String?,
+)
+
 /** 订阅流逐频道拉取的并发上限。对齐 LibreTube CHANNEL_CHUNK_SIZE=5：批次串行、每批 ≤5 频道，
  * 并发 5 让整批 1 轮 RTT 跑完（旧 4 会让每批 5 个频道空转一轮排队）。峰值并发仍由 ChunkSize 限到 5。 */
 const val YoutubeMaxConcurrentChannelFetches = 5
@@ -211,6 +217,50 @@ class YoutubeRepository(
           "params=${if (continuation == null) params else "continuation"} items=${feed.items.size} next=${feed.continuation?.take(12) ?: "null"}",
       )
     }
+    return YoutubeVideoPage(
+      items = feed.items.map(::toVideoSummary),
+      continuation = feed.continuation,
+    )
+  }
+
+  /**
+   * 频道"播放列表"Tab 的播放列表卡列表。首屏发 browseId+params,续页发 continuation
+   *（对齐 [getChannelVideos]）。[params] 优先用服务端提供的 playlists tab params。
+   */
+  suspend internal fun getChannelPlaylists(
+    channelId: String,
+    continuation: String? = null,
+    params: String = YoutubeConstants.ChannelPlaylistsParams,
+  ): YoutubePlaylistsPage {
+    val payload = buildJsonObject {
+      if (continuation != null) {
+        put("continuation", continuation)
+      } else {
+        put("browseId", channelId)
+        put("params", params)
+      }
+    }
+    val root = client.postJson("/browse", payload)
+    return YoutubePlaylistsPage(
+      items = YoutubeParsers.parseChannelPlaylists(root),
+      continuation = YoutubeParsers.findContinuation(root),
+    )
+  }
+
+  /**
+   * 打开一个播放列表:按播放列表 browseId（形如 VL...，来自 [YoutubeParsers.YoutubePlaylist.browseId]）
+   * 拉首屏视频列表，翻页发 continuation。对齐 [getChannelVideos] 解析视频。
+   */
+  suspend fun getPlaylistVideos(
+    playlistBrowseId: String,
+    continuation: String? = null,
+  ): YoutubeVideoPage {
+    val payload = buildJsonObject {
+      if (continuation != null) put("continuation", continuation)
+      else put("browseId", playlistBrowseId)
+    }
+    val root = client.postJson("/browse", payload)
+    val feed = YoutubeParsers.parseFeedPage(root)
     return YoutubeVideoPage(
       items = feed.items.map(::toVideoSummary),
       continuation = feed.continuation,

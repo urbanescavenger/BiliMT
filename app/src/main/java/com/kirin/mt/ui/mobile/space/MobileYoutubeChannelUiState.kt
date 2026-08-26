@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.YoutubeConstants
+import com.kirin.mt.core.youtube.YoutubeParsers
 
 /**
  * 移动端 YouTube 频道主页状态持有器:在 shell 层(MobileApp.kt)remember,离开组合仍存活,
@@ -14,7 +15,7 @@ import com.kirin.mt.core.youtube.YoutubeConstants
  * 守卫:loadedChannelId 管频道名解析;loadedOrder 管排序(最新/最热,切排序重拉)。
  */
 @Stable
-class MobileYoutubeChannelUiState {
+internal class MobileYoutubeChannelUiState {
   var name by mutableStateOf("")
   var avatar by mutableStateOf("")
   /** 订阅数；未知为 null。 */
@@ -28,6 +29,9 @@ class MobileYoutubeChannelUiState {
   var followLoading by mutableStateOf(false)
   var items by mutableStateOf<List<VideoSummary>>(emptyList())
   var continuation by mutableStateOf<String?>(null)
+  /** 播放列表 Tab 的播放列表卡列表(与 items 互斥,依 tab 而定)。 */
+  var playlists by mutableStateOf<List<YoutubeParsers.YoutubePlaylist>>(emptyList())
+  var playlistContinuation by mutableStateOf<String?>(null)
   var loading by mutableStateOf(true)
   var loadingMore by mutableStateOf(false)
   var endReached by mutableStateOf(false)

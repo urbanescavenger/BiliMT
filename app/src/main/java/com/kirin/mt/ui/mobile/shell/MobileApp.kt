@@ -486,6 +486,7 @@ fun BiliMobileApp(
               playbackRequest = video.toPlaybackRequest()
             },
             onLongPress = onLongPress,
+            onStartPlaylist = { queue -> playQueue = queue },
             onBack = {
               youtubeChannelRequest = null
               channelPlaybackBehind = false

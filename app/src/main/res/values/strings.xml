@@ -575,6 +575,7 @@
     <string name="youtube_channel_tab_videos">视频</string>
     <string name="youtube_channel_tab_shorts">Shorts</string>
     <string name="youtube_channel_tab_live">直播</string>
+    <string name="youtube_channel_tab_playlists">播放列表</string>
     <string name="youtube_channel_no_videos">该频道暂无视频</string>
     <string name="youtube_channel_videos_failed">视频加载失败。%1$s</string>
     <string name="settings_youtube_channels">YouTube 频道</string>

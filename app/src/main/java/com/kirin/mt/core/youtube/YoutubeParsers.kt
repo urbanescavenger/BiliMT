@@ -53,6 +53,11 @@ internal object YoutubeParsers {
     collectByKey(root, KEY_SHORTS_LOCKUP_VIEW_MODEL) { node ->
       parseLockupViewModel(node)?.let { videos.add(it) }
     }
+    // 播放列表详情页(open playlist)条目 playlistVideoRenderer,与 videoRenderer 共享
+    // videoId/thumbnail/title/lengthText 形状,parseVideoRenderer 可直接复用。
+    collectByKey(root, KEY_PLAYLIST_VIDEO_RENDERER) { node ->
+      parseVideoRenderer(node)?.let { videos.add(it) }
+    }
     val continuation = findContinuation(root)
     return YoutubeFeedPage(items = videos, continuation = continuation)
   }
@@ -112,6 +117,21 @@ internal object YoutubeParsers {
   data class ChannelTab(
     val name: String,
     val params: String,
+  )
+
+  /**
+   * 频道"播放列表"Tab 的一张播放列表卡(playlistRenderer)。供频道页 Playlists Tab 展示;
+   * 点击用 [browseId] 打开播放列表详情。
+   */
+  data class YoutubePlaylist(
+    val id: String,
+    val title: String,
+    /** 封面图 URL;无则空串。 */
+    val thumbnail: String,
+    /** 视频数文案(如 "20 videos");无则空串。 */
+    val videoCount: String,
+    /** 打开播放列表的 browseId(playlistRenderer.navigationEndpoint.browseEndpoint.browseId,形如 VL...)。 */
+    val browseId: String,
   )
 
   /**
@@ -214,6 +234,34 @@ internal object YoutubeParsers {
         ?: renderer.obj("title")?.stringOrNull("simpleText").orEmpty()
       if (name.isBlank()) continue
       result.add(ChannelTab(name = name, params = params))
+    }
+    return result
+  }
+
+  /**
+   * 从频道"播放列表"Tab 的 /browse 响应解析播放列表卡列表。条目在
+   * richItemRenderer.content.playlistRenderer,递归收集所有 playlistRenderer。
+   */
+  fun parseChannelPlaylists(root: JsonObject): List<YoutubePlaylist> {
+    val result = mutableListOf<YoutubePlaylist>()
+    collectByKey(root, KEY_PLAYLIST_RENDERER) { node ->
+      val id = node.stringOrNull("playlistId") ?: return@collectByKey
+      val title = runsText(node.obj("title")).ifBlank { simpleText(node.obj("title")) }
+      val thumbnail = node.obj("thumbnailRenderer")?.obj("thumbnail")
+        ?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+        .orEmpty()
+      val count = runsText(node.obj("videoCountText")).ifBlank { simpleText(node.obj("videoCountText")) }
+      val browseId = node.obj("navigationEndpoint")?.obj("browseEndpoint")
+        ?.stringOrNull("browseId").orEmpty()
+      result.add(
+        YoutubePlaylist(
+          id = id,
+          title = title,
+          thumbnail = thumbnail,
+          videoCount = count,
+          browseId = browseId,
+        ),
+      )
     }
     return result
   }
@@ -1153,6 +1201,8 @@ internal object YoutubeParsers {
   private const val KEY_COMPACT_VIDEO_RENDERER = "compactVideoRenderer"
   private const val KEY_LOCKUP_VIEW_MODEL = "lockupViewModel"
   private const val KEY_SHORTS_LOCKUP_VIEW_MODEL = "shortsLockupViewModel"
+  private const val KEY_PLAYLIST_RENDERER = "playlistRenderer"
+  private const val KEY_PLAYLIST_VIDEO_RENDERER = "playlistVideoRenderer"
   private const val KEY_CONTINUATION_ITEM_RENDERER = "continuationItemRenderer"
   private const val KEY_CHANNEL_RENDERER = "channelRenderer"
   private const val KEY_COMMENT_RENDERER = "commentRenderer"

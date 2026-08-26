@@ -563,6 +563,7 @@
     <string name="youtube_channel_tab_videos">Vídeos</string>
     <string name="youtube_channel_tab_shorts">Shorts</string>
     <string name="youtube_channel_tab_live">En vivo</string>
+    <string name="youtube_channel_tab_playlists">Listas de reproducción</string>
     <string name="youtube_channel_no_videos">Este canal no tiene videos</string>
     <string name="youtube_channel_videos_failed">Fallo al cargar los videos. %1$s</string>
     <string name="settings_youtube_channels">Canales de YouTube</string>

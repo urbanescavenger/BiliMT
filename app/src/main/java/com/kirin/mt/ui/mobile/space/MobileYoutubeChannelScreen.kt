@@ -2,12 +2,14 @@ package com.kirin.mt.ui.mobile.space
 
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -17,6 +19,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +47,7 @@ import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeConstants
+import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
@@ -66,6 +70,7 @@ fun MobileYoutubeChannelScreen(
   channelName: String,
   onVideoSelected: (VideoSummary) -> Unit,
   onLongPress: ((VideoSummary) -> Unit)? = null,
+  onStartPlaylist: (List<VideoSummary>) -> Unit,
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -91,6 +96,7 @@ fun MobileYoutubeChannelScreen(
       YoutubeConstants.ChannelContentTab.Videos -> listOf("videos")
       YoutubeConstants.ChannelContentTab.Shorts -> listOf("shorts")
       YoutubeConstants.ChannelContentTab.Live -> listOf("streams", "live")
+      YoutubeConstants.ChannelContentTab.Playlists -> listOf("playlists")
     }
     return keys.firstNotNullOfOrNull { uiState.serverTabParams[it] } ?: uiState.tab.params
   }
@@ -100,16 +106,27 @@ fun MobileYoutubeChannelScreen(
       uiState.loading = true
       uiState.failed = null
       try {
-        val page = youtubeRepository.getChannelVideos(channelId, params = channelParams())
-        uiState.items = page.items.distinctBy { it.bvid }
-        uiState.continuation = page.continuation
-        uiState.endReached = page.continuation == null
+        if (uiState.tab == YoutubeConstants.ChannelContentTab.Playlists) {
+          // 播放列表 Tab:拉播放列表卡。
+          val page = youtubeRepository.getChannelPlaylists(channelId, params = channelParams())
+          uiState.playlists = page.items
+          uiState.playlistContinuation = page.continuation
+          uiState.endReached = page.continuation == null
+        } else {
+          // 视频/Shorts/直播:拉视频列表。
+          val page = youtubeRepository.getChannelVideos(channelId, params = channelParams())
+          uiState.items = page.items.distinctBy { it.bvid }
+          uiState.continuation = page.continuation
+          uiState.endReached = page.continuation == null
+        }
       } catch (e: CancellationException) {
         throw e
       } catch (e: Exception) {
         uiState.failed = e.message.orEmpty().ifBlank { "加载失败" }
         uiState.items = emptyList()
+        uiState.playlists = emptyList()
         uiState.continuation = null
+        uiState.playlistContinuation = null
         uiState.endReached = true
       }
       uiState.loading = false
@@ -122,23 +139,36 @@ fun MobileYoutubeChannelScreen(
       "loadNext called continuation=${uiState.continuation?.take(12) ?: "null"} " +
         "loadingMore=${uiState.loadingMore} endReached=${uiState.endReached}",
     )
-    val token = uiState.continuation ?: return
+    val isPlaylists = uiState.tab == YoutubeConstants.ChannelContentTab.Playlists
+    val token = if (isPlaylists) uiState.playlistContinuation else uiState.continuation
+    if (token == null) return
     if (uiState.loadingMore || uiState.endReached) return
     uiState.loadingMore = true
     scope.launch {
       try {
-        val page = youtubeRepository.getChannelVideos(channelId, token, params = channelParams())
-        // 先存旧列表再比较:若先赋 uiState.items=merged,merged.size==uiState.items.size 恒真,
-        // endReached 永远变 true,续页只翻一页就停(对齐 TV 版 latest.videos 旧列表比较)。
-        val oldItems = uiState.items
-        val merged = (oldItems + page.items).distinctBy { it.bvid }
-        uiState.items = merged
-        uiState.continuation = page.continuation
-        uiState.endReached = page.continuation == null || merged.size == oldItems.size
+        if (isPlaylists) {
+          // 播放列表卡续页:先存旧列表再比较,避免 endReached 恒真只翻一页。
+          val page = youtubeRepository.getChannelPlaylists(channelId, token, params = channelParams())
+          val old = uiState.playlists
+          val merged = (old + page.items).distinctBy { it.id }
+          uiState.playlists = merged
+          uiState.playlistContinuation = page.continuation
+          uiState.endReached = page.continuation == null || merged.size == old.size
+        } else {
+          val page = youtubeRepository.getChannelVideos(channelId, token, params = channelParams())
+          // 先存旧列表再比较:若先置 uiState.items=merged,merged.size==uiState.items.size 恒真,
+          // endReached 永远变 true,续页只翻一页就停(对齐 TV 版 latest.videos 旧列表比较)。
+          val oldItems = uiState.items
+          val merged = (oldItems + page.items).distinctBy { it.bvid }
+          uiState.items = merged
+          uiState.continuation = page.continuation
+          uiState.endReached = page.continuation == null || merged.size == oldItems.size
+        }
         Log.d(
           "YoutubeChannel",
-          "loadNext merged old=${oldItems.size} new=${page.items.size} merged=${merged.size} " +
-            "endReached=${uiState.endReached}",
+          "loadNext merged old=${uiState.items.size} new=${
+            if (isPlaylists) uiState.playlists.size else uiState.items.size
+          } endReached=${uiState.endReached}",
         )
       } catch (e: CancellationException) {
         throw e
@@ -308,6 +338,7 @@ fun MobileYoutubeChannelScreen(
                     YoutubeConstants.ChannelContentTab.Videos -> stringResource(R.string.youtube_channel_tab_videos)
                     YoutubeConstants.ChannelContentTab.Shorts -> stringResource(R.string.youtube_channel_tab_shorts)
                     YoutubeConstants.ChannelContentTab.Live -> stringResource(R.string.youtube_channel_tab_live)
+                    YoutubeConstants.ChannelContentTab.Playlists -> stringResource(R.string.youtube_channel_tab_playlists)
                   },
                   color = if (uiState.tab == t) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                 )
@@ -335,6 +366,9 @@ fun MobileYoutubeChannelScreen(
         }
       }
 
+      val isPlaylists = uiState.tab == YoutubeConstants.ChannelContentTab.Playlists
+      // 空判定依 Tab:播放列表 Tab 看 playlists,视频/Shorts/直播看 displayItems(两者互斥)。
+      val emptyItems = if (isPlaylists) uiState.playlists.isEmpty() else displayItems.isEmpty()
       when {
         failed != null -> item(span = { GridItemSpan(maxLineSpan) }) {
           Text(
@@ -349,9 +383,9 @@ fun MobileYoutubeChannelScreen(
             CircularProgressIndicator()
           }
         }
-        displayItems.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+        emptyItems -> item(span = { GridItemSpan(maxLineSpan) }) {
           Text(
-            text = "暂无视频",
+            text = if (isPlaylists) "暂无播放列表" else "暂无视频",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -359,15 +393,24 @@ fun MobileYoutubeChannelScreen(
           )
         }
         else -> {
-          items(displayItems, key = { it.bvid }) { video ->
-            MobileVideoCard(
-              video = video,
-              onClick = onVideoSelected,
-              onOpenOwner = null,
-              onLongPress = onLongPress,
-              // 频道页卡片显示「上传时间 · 播放量」。
-              showPubdate = true,
-            )
+          if (isPlaylists) {
+            items(uiState.playlists, key = { it.id }) { playlist ->
+              ChannelPlaylistCard(
+                playlist = playlist,
+                onClick = { openPlaylist(playlist, onStartPlaylist, scope, youtubeRepository) },
+              )
+            }
+          } else {
+            items(displayItems, key = { it.bvid }) { video ->
+              MobileVideoCard(
+                video = video,
+                onClick = onVideoSelected,
+                onOpenOwner = null,
+                onLongPress = onLongPress,
+                // 频道页卡片显示「上传时间 · 播放量」。
+                showPubdate = true,
+              )
+            }
           }
           if (loadingMore) {
             item(span = { GridItemSpan(maxLineSpan) }) {
@@ -378,6 +421,73 @@ fun MobileYoutubeChannelScreen(
           }
         }
       }
+    }
+  }
+}
+
+/** 点击播放列表卡:拉该播放列表首屏视频,作为连播队列起播(onStartPlaylist)。 */
+private fun openPlaylist(playlist: YoutubeParsers.YoutubePlaylist, onStartPlaylist: (List<VideoSummary>) -> Unit, scope: kotlinx.coroutines.CoroutineScope, youtubeRepository: YoutubeRepository) {
+  if (playlist.browseId.isBlank()) return
+  scope.launch {
+    runCatching { youtubeRepository.getPlaylistVideos(playlist.browseId) }
+      .getOrNull()
+      ?.items
+      ?.takeIf { it.isNotEmpty() }
+      ?.let { onStartPlaylist(it) }
+  }
+}
+
+/** 频道播放列表卡:封面 + 标题(2行) + 视频数。点击打开该播放列表。 */
+@Composable
+private fun ChannelPlaylistCard(
+  playlist: YoutubeParsers.YoutubePlaylist,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  Column(
+    modifier = modifier
+      .fillMaxWidth()
+      .clip(RoundedCornerShape(12.dp))
+      .clickable(onClick = onClick),
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxWidth()
+        .aspectRatio(16f / 9f)
+        .clip(RoundedCornerShape(12.dp)),
+    ) {
+      if (playlist.thumbnail.isNotBlank()) {
+        AsyncImage(
+          model = playlist.thumbnail,
+          contentDescription = playlist.title,
+          contentScale = ContentScale.Crop,
+          modifier = Modifier.fillMaxSize(),
+        )
+      } else {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+          contentAlignment = Alignment.Center,
+        ) {
+          Text("▶", style = MaterialTheme.typography.headlineSmall)
+        }
+      }
+    }
+    Text(
+      text = playlist.title,
+      style = MaterialTheme.typography.bodyMedium,
+      maxLines = 2,
+      overflow = TextOverflow.Ellipsis,
+      modifier = Modifier.padding(top = 6.dp),
+    )
+    if (playlist.videoCount.isNotBlank()) {
+      Text(
+        text = playlist.videoCount,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 2.dp),
+      )
     }
   }
 }

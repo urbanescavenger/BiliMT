@@ -124,8 +124,11 @@ object YoutubeConstants {
   /** 频道"直播"tab 的 protobuf 参数。 */
   const val ChannelLiveParams = "EgdzdHJlYW1z8gYECgJ6AA%3D%3D"
 
-  /** 频道"Shorts"tab 的 protobuf 参数（base64 "EgZzaG9ydHM=" → field1 "shorts"）。 */
+  /** 频道"Shorts"tab 的 protobuf 参数（base64: "EgZzaG9ydHM=" → field1 "shorts"）。 */
   const val ChannelShortsParams = "EgZzaG9ydHM%3D"
+
+  /** 频道"播放列表"tab 的 protobuf 参数（base64: field1 "playlists"）。 */
+  const val ChannelPlaylistsParams = "EgZwbGF5bGlzdHM%3D"
 
   /**
    * 频道"视频"排序（对齐 B站 UP 最新/最热）。两排序共用 /browse + browseId，
@@ -137,13 +140,16 @@ object YoutubeConstants {
   }
 
   /**
-   * 频道内容 Tab（对齐 LibreTube 频道页 Videos/Shorts/Livestreams）。各 Tab 用不同
+   * 频道内容 Tab（对齐 LibreTube 频道页 Videos/Shorts/Livestreams/Playlists）。各 Tab 用不同
    * protobuf params 请求 /browse；Videos 额外有最新/最热排序([ChannelVideoOrder])。
+   * 注意:实际切换 Tab 时优先用服务端返回的 params([YoutubeParsers.parseChannelTabs]),
+   * 硬编码值仅在服务端缺该 Tab 时回退(见 MobileYoutubeChannelScreen.channelParams)。
    */
   enum class ChannelContentTab(val params: String, val hasSort: Boolean) {
     Videos(ChannelVideosParams, true),
     Shorts(ChannelShortsParams, false),
     Live(ChannelLiveParams, false),
+    Playlists(ChannelPlaylistsParams, false),
   }
 
   /**
