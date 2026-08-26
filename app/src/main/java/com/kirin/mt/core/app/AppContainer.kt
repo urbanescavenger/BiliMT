@@ -256,6 +256,12 @@ class AppContainer(context: Context) {
           Log.i(LogTag, "buvid warmup ok: hasBuvid3=${!buvid3.isNullOrBlank()} hasBuvid4=${!buvid4.isNullOrBlank()}")
         }
         .onFailure { error -> Log.w(LogTag, "buvid warmup failed: ${error.message}") }
+
+      // 预热 YouTube 真实会话(sw.js_data + 首页 cookie):feed 首屏 /browse 不再阻塞 ~3s 会话建立
+      // (冷启动 RSS 全 404 时这段在动态关键路径上)。fire-and-forget,失败静默(下次请求仍会惰性建立)。
+      runCatching { youtubeInnerTubeClient.warmupSession() }
+        .onSuccess { Log.i(LogTag, "youtube session warmup ok") }
+        .onFailure { error -> Log.w(LogTag, "youtube session warmup failed: ${error.message}") }
     }
   }
 

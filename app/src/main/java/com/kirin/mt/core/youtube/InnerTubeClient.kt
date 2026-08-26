@@ -714,6 +714,16 @@ class InnerTubeClient(
     }
   }
 
+  /**
+   * 预热真实会话数据(sw.js_data + 首页 cookie):启动后后台跑一次,把 [realSessionData] 提前缓存,
+   * 之后 feed 首屏 /browse 不再阻塞 ~3s 的会话建立(冷启动动态 6.8s 里 RSS 全 404 时这段在关键路径上)。
+   * 只走快路径(requireBrowserSession=false,不引导 WebView 页面),避免 alpha.89 WebView 冷启动
+   * 死循环风险;WebView 页面留给 /player 惰性加载。fire-and-forget,失败静默(下次请求仍会惰性建立)。
+   */
+  suspend fun warmupSession() {
+    ensureRealSessionData(requireBrowserSession = false)
+  }
+
   private suspend fun fetchRealSessionData(): RealSessionData? = withContext(Dispatchers.IO) {
     // 不注入随机 VISITOR_INFO1_LIVE：响应 body 的 device_info[13] 才是 YouTube 为本会话生成的真实
     // visitorData，用它本身作 /player 的配对 cookie（见 buildWebViewHeaders / postJson Cookie 头）。
