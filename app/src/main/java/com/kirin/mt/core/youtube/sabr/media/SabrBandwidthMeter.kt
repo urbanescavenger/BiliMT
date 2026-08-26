@@ -12,7 +12,7 @@ import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
  * 内存瞬时读样本污染(bw= 真机 1M↔437M 1000 倍跳变),effectiveBitrate 不可信 → AdaptiveTrackSelection 升档
  * 判据失真。本类是 [BandwidthMeter] 包装:一切委托给底层 [DefaultBandwidthMeter](保留 TransferListener 传递、
  * 初始带宽 seed、事件分发),仅覆盖 [getBitrateEstimate] 返回 SabrMediaFetcher 从实际段下载测的真实带宽
- * (最近样本中位数,稳定)。真实带宽充足时媒体3 原生 ABR 自然选最高可负担档、升降档全自动,不再需要
+ * (滑动窗口累计量/累计耗时,含失败段计时,断流时自动下探)。真实带宽充足时 media3 原生 ABR 自然选最高可负担档、升降档全自动,不再需要
  * force-climb/exclude 补丁。
  *
  * 真实带宽提供者由 [DefaultSabrChunkSource] 在拿到 fetcher 后注入(`setRealBandwidthProvider`);未提供或
