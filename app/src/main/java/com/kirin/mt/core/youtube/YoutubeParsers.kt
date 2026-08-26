@@ -251,7 +251,7 @@ internal object YoutubeParsers {
     fun walk(node: JsonElement?) {
       when (node) {
         is JsonObject -> {
-          for (k in node.keySet()) {
+          for (k in node.keys) {
             keys.add(k)
             walk(node.get(k))
           }
