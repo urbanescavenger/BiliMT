@@ -189,7 +189,7 @@ fun MobileYoutubeChannelScreen(
       uiState.subscriberCount = header.subscriberCount
       uiState.description = header.description
       uiState.bannerUrl = header.bannerUrl
-      // 记录服务端内容 Tab params(小写标识 → params),切 Shorts/直播用服务端 params。
+      // 记录服务端内容 Tab params(小写标识 → params),切 Shorts/直播/播放列表用服务端 params。
       uiState.serverTabParams = header.tabs.map { it.name.lowercase() to it.params }.toMap()
     } else {
       val resolved = runCatching { youtubeRepository.resolveChannel(channelId) }.getOrNull()
@@ -198,7 +198,9 @@ fun MobileYoutubeChannelScreen(
       uiState.subscriberCount = null
       uiState.description = ""
       uiState.bannerUrl = ""
-      uiState.serverTabParams = emptyMap()
+      // 头部 info 解析失败也要拿 tab params,否则切 Shorts/直播回退硬编码(服务端不认)。
+      uiState.serverTabParams = runCatching { youtubeRepository.getChannelTabs(channelId) }
+        .getOrDefault(emptyMap())
     }
   }
 

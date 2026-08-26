@@ -138,6 +138,21 @@ class YoutubeRepository(
   }
 
   /**
+   * 频道内容 Tab 的服务端 params（小写标识 → params）。与 [getChannelHeader] 独立：
+   * 即使头部 info 解析失败（getChannelHeader 返 null），仍要拿到 tab params 才能切
+   * Shorts/直播/播放列表。UC 频道 ID 走 /browse；失败或非 UC ID 返回空 map。
+   */
+  suspend internal fun getChannelTabs(channelId: String): Map<String, String> {
+    if (!channelId.matches(ChannelIdRegex)) return emptyMap()
+    return runCatching {
+      val payload = buildJsonObject { put("browseId", channelId) }
+      YoutubeParsers.parseChannelTabs(client.postJson("/browse", payload))
+        .map { it.name.lowercase() to it.params }
+        .toMap()
+    }.getOrDefault(emptyMap())
+  }
+
+  /**
    * 从搜索候选里挑最佳匹配：优先名称精确匹配(忽略大小写)，
    * 其次第一个含 query 的候选，最后退回到首个候选。实测对 `@handle` 搜索首条即目标频道。
    */

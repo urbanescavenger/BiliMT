@@ -58,6 +58,11 @@ internal object YoutubeParsers {
     collectByKey(root, KEY_PLAYLIST_VIDEO_RENDERER) { node ->
       parseVideoRenderer(node)?.let { videos.add(it) }
     }
+    // 频道 Shorts tab 经典条目 reelItemRenderer(短剧网格)。shortsLockupViewModel 已在上方收集,
+    // 部分频道 Shorts tab 用 reelItemRenderer,两者都收集保证不空。
+    collectByKey(root, KEY_REEL_ITEM_RENDERER) { node ->
+      parseReelItemRenderer(node)?.let { videos.add(it) }
+    }
     val continuation = findContinuation(root)
     return YoutubeFeedPage(items = videos, continuation = continuation)
   }
@@ -215,26 +220,32 @@ internal object YoutubeParsers {
   }
 
   /**
-   * 从频道页 /browse 响应解析内容 Tab 栏(视频/Shorts/直播/播放列表等)。Tab 条在
-   * contents.twoColumnBrowseResultsRenderer.tabs[],每个 tabRenderer 带 stable tabIdentifier
-   * + endpoint.browseEndpoint.params。取「有 params 的 tab」组成 (name, params) 列表,供频道页
-   * 切 Shorts/直播时用服务端 params(而非硬编码)。无 Tab 条返回空列表。
+   * 从频道页 /browse 响应解析内容 Tab 栏(视频/Shorts/直播/播放列表等)。Tab 条可能出现在
+   * 三处(依频道 header 新旧布局):header.c4TabbedHeaderRenderer.tabs、header.pageHeaderViewModel
+   * .pageHeaderRenderer.tabs、contents.twoColumnBrowseResultsRenderer.tabs。每个 tabRenderer 带
+   * stable tabIdentifier + endpoint.browseEndpoint.params。取「有 params 的 tab」组成 (name, params)
+   * 列表(按名字去重,先到先得),供频道页切 Shorts/直播时用服务端 params(而非硬编码)。
    */
   fun parseChannelTabs(root: JsonObject): List<ChannelTab> {
     val result = mutableListOf<ChannelTab>()
-    val tabsArray = root.obj("contents")
-      ?.obj("twoColumnBrowseResultsRenderer")
-      ?.array("tabs")
-      ?: return result
-    for (tab in tabsArray) {
-      val renderer = (tab as? JsonObject)?.obj("tabRenderer") ?: continue
-      val params = renderer.obj("endpoint")?.obj("browseEndpoint")?.stringOrNull("params")
-      if (params.isNullOrBlank()) continue
-      val name = renderer.stringOrNull("tabIdentifier")
-        ?: renderer.obj("title")?.stringOrNull("simpleText").orEmpty()
-      if (name.isBlank()) continue
-      result.add(ChannelTab(name = name, params = params))
+    val seen = HashSet<String>()
+    fun collect(tabsArray: JsonArray?) {
+      tabsArray ?: return
+      for (tab in tabsArray) {
+        val renderer = (tab as? JsonObject)?.obj("tabRenderer") ?: continue
+        val params = renderer.obj("endpoint")?.obj("browseEndpoint")?.stringOrNull("params")
+        if (params.isNullOrBlank()) continue
+        val name = renderer.stringOrNull("tabIdentifier")
+          ?: renderer.obj("title")?.stringOrNull("simpleText").orEmpty()
+        if (name.isBlank()) continue
+        if (seen.add(name.lowercase())) result.add(ChannelTab(name = name, params = params))
+      }
     }
+    collect(root.obj("header")?.obj("c4TabbedHeaderRenderer")?.array("tabs"))
+    collect(root.obj("header")?.obj("pageHeaderViewModel")?.obj("pageHeaderRenderer")?.array("tabs"))
+    collect(root.obj("contents")?.obj("twoColumnBrowseResultsRenderer")?.array("tabs"))
+    // 诊断:打印解析到的 tab 名字 + params 前缀,便于真机核验服务端 tab params 是否取到。
+    Log.d("Ytabs", "parseChannelTabs found=${result.map { "${it.name}:${it.params.take(8)}" }}")
     return result
   }
 
@@ -264,6 +275,31 @@ internal object YoutubeParsers {
       )
     }
     return result
+  }
+
+  /**
+   * 频道 Shorts tab 的 reelItemRenderer(短剧网格条目)。形状:videoId + headline(title, runs 或
+   * simpleText)+ thumbnail.thumbnails。频道/UP 名等缺省由频道页注入。
+   */
+  private fun parseReelItemRenderer(node: JsonObject): YoutubeVideo? {
+    val videoId = node.stringOrNull("videoId") ?: return null
+    val title = runsText(node.obj("headline")).ifBlank { simpleText(node.obj("headline")) }
+    val thumbnail = node.obj("thumbnail")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+      ?: node.obj("thumbnailRenderer")?.obj("thumbnail")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+      ?: "https://i.ytimg.com/vi/$videoId/mqdefault.jpg"
+    return YoutubeVideo(
+      videoId = videoId,
+      title = title,
+      channelName = "",
+      channelId = "",
+      thumbnailUrl = thumbnail,
+      viewCount = null,
+      durationSec = null,
+      publishedAt = null,
+      liveNow = false,
+      isUpcoming = false,
+      badge = "Shorts",
+    )
   }
 
   /**
@@ -1203,6 +1239,7 @@ internal object YoutubeParsers {
   private const val KEY_SHORTS_LOCKUP_VIEW_MODEL = "shortsLockupViewModel"
   private const val KEY_PLAYLIST_RENDERER = "playlistRenderer"
   private const val KEY_PLAYLIST_VIDEO_RENDERER = "playlistVideoRenderer"
+  private const val KEY_REEL_ITEM_RENDERER = "reelItemRenderer"
   private const val KEY_CONTINUATION_ITEM_RENDERER = "continuationItemRenderer"
   private const val KEY_CHANNEL_RENDERER = "channelRenderer"
   private const val KEY_COMMENT_RENDERER = "commentRenderer"
