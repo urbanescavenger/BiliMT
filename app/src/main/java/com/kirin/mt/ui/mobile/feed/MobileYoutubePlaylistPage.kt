@@ -335,28 +335,38 @@ private fun PlaylistDetailScreen(
                   val draggingInfo = layoutInfo.visibleItemsInfo
                     .firstOrNull { it.index == from }
                     ?: return@detectDragGesturesAfterLongPress
-                  // 拖拽项中心 = 初始 offset + 累计 delta(固定,不依赖 item 当前 offset,不漂移)。
-                  val draggedCenter = draggingInitialOffset + draggingInfo.size / 2f + draggingDelta
-                  val target = layoutInfo.visibleItemsInfo
-                    .filter { it.index != from }
-                    .minByOrNull { kotlin.math.abs(it.offset + it.size / 2f - draggedCenter) }
-                  if (target != null && target.index != from) {
+                  // 拖拽带上下沿(viewport 固定坐标 = 初始 offset + 累计位移,不依赖 item 当前 offset)。
+                  val startOffset = draggingInitialOffset + draggingDelta
+                  val endOffset = startOffset + draggingInfo.size
+                  val draggedCenter = startOffset + draggingInfo.size / 2f
+                  // 目标卡选择:只取拖拽方向的相邻槽位(from±1),拖过其中心才换一格。
+                  // 不用最近中心/双向重叠——顶部拖拽时手指还没离开原槽,最近中心会把目标钉回原槽,
+                  // 致最上面视频刚换一格就被弹回拖不下去;方向邻位判定单调、反向不弹回,顶/底都能逐格拖。
+                  val targetIndex = when {
+                    draggingDelta > 0f && from + 1 < items.size -> from + 1
+                    draggingDelta < 0f && from - 1 >= 0 -> from - 1
+                    else -> null
+                  }
+                  val target = targetIndex?.let { ti ->
+                    layoutInfo.visibleItemsInfo.firstOrNull { it.index == ti }?.takeIf { neighbor ->
+                      if (draggingDelta > 0f) draggedCenter > neighbor.offset + neighbor.size / 2f
+                      else draggedCenter < neighbor.offset + neighbor.size / 2f
+                    }
+                  }
+                  if (target != null) {
                     val newItems = items.toMutableList()
                     val item = newItems.removeAt(from)
                     newItems.add(target.index, item)
                     items = newItems
                     draggingIndex = target.index
                   }
-                  // 边缘 auto-scroll:拖拽带(初始 offset + 累计位移,viewport 固定坐标)越出
-                  // 视口顶/底 → scrollBy,越界量自纠回到 0 即停;scrollBy 自带首/末项边界 clamp。
-                  // 列表在拖拽项底下滚,拖拽项钉在手指下(center 固定),滚入项 center 扫过手指继续重排。
-                  val bandStart = draggingInitialOffset + draggingDelta
-                  val bandEnd = bandStart + draggingInfo.size
+                  // 边缘 auto-scroll:拖拽带越出视口顶/底 → scrollBy,越界量自纠回到 0 即停;
+                  // scrollBy 自带首/末项边界 clamp。列表在拖拽项下滚动,拖拽项钉在手指下。
                   val overscroll = when {
                     draggingDelta < 0f ->
-                      (bandStart - layoutInfo.viewportStartOffset).takeIf { it < 0f } ?: 0f
+                      (startOffset - layoutInfo.viewportStartOffset).takeIf { it < 0f } ?: 0f
                     draggingDelta > 0f ->
-                      (bandEnd - layoutInfo.viewportEndOffset).takeIf { it > 0f } ?: 0f
+                      (endOffset - layoutInfo.viewportEndOffset).takeIf { it > 0f } ?: 0f
                     else -> 0f
                   }
                   if (overscroll != 0f) {
