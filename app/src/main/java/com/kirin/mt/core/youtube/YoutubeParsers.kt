@@ -222,91 +222,66 @@ internal object YoutubeParsers {
   /**
    * 从频道页 /browse 响应解析内容 Tab 栏(视频/Shorts/直播/播放列表等)。
    *
-   * 新版频道页(WEB guest)不再用旧布局的 `tabRenderer`(SCHEMA 已证无 twoColumnBrowseResults /
-   * tabs / tabRenderer),改用 `expandableTabRenderer`(可展开 tab,点「更多」露出直播/播放列表)。
-   * 两种 renderer 都递归收集:tab 条无论放哪都能抓到;每个带 endpoint.browseEndpoint.params,
-   * 取「有 params 的 tab」按名去重组成 (name, params) 列表,供切 Tab 用服务端 params(而非硬编码)。
+   * 频道布局依 client 版本/频道而变:部分返回旧 `tabRenderer`(真机 UCTu_hTa 有 featured/videos/
+   * shorts/podcast/playlists/posts 6 个),部分新布局只给 `expandableTabRenderer`(搜索)。两种都递归
+   * 收集。名字不靠 title(新格式 title.simpleText/content/tabIdentifier 常为空),而是从 params 解码
+   * protobuf field1 取稳定标识(videos/shorts/streams/playlists/featured/podcast/posts)。取「有 params
+   * 的 tab」按名去重组成 (name, params) 列表,供切 Tab 用服务端 params(而非硬编码)。
    */
   fun parseChannelTabs(root: JsonObject): List<ChannelTab> {
     val result = mutableListOf<ChannelTab>()
     val seen = HashSet<String>()
     collectByKey(root, KEY_TAB_RENDERER) { renderer -> collectTab(renderer, seen, result) }
     collectByKey(root, KEY_EXPANDABLE_TAB_RENDERER) { renderer -> collectTab(renderer, seen, result) }
-    // 诊断:新布局「更多(More)」下拉 = menuRenderer / menuNavigationItemRenderer,项带
-    // text + navigationEndpoint.browseEndpoint.params(直播/播放列表/关于)。dump 形状定位。
-    dumpNodeShapes(root)
     // 诊断:打印解析到的 tab 名字 + params 前缀,便于真机核验服务端 tab params 是否取到。
-    Log.d("Ytabs", "parseChannelTabs found=${result.map { "${it.name}:${it.params.take(8)}" }}")
-    // 诊断:递归 dump 响应全部 key,定位内容 Tab 条真实节点。
-    dumpSchemaKeys(root)
+    Log.d("Ytabs", "parseChannelTabs found=${result.map { "${it.name}:${it.params.take(10)}" }}")
     return result
   }
 
-  /** 诊断:dump 若干候选渲染器节点的形状(keys + 文本字段 + browse endpoint params),定位 tab/更多菜单。 */
-  private fun dumpNodeShapes(root: JsonObject) {
-    val targets = listOf(
-      "tabRenderer", "expandableTabRenderer", "menuNavigationItemRenderer",
-      "buttonRenderer", "chipRenderer", "horizontalCardListRenderer",
-    )
-    for (key in targets) {
-      val count = intArrayOf(0)
-      collectByKey(root, key) { node ->
-        val ep = node.obj("navigationEndpoint")?.obj("browseEndpoint")
-          ?: node.obj("endpoint")?.obj("browseEndpoint")
-        val txt = node.stringOrNull("simpleText")
-          ?: node.obj("text")?.stringOrNull("simpleText")
-          ?: node.obj("title")?.stringOrNull("simpleText")
-          ?: node.obj("title")?.stringOrNull("content")
-        if (count[0] < 6) {
-          Log.d("Ytabs", "SHAPE $key#${count[0]} keys=${node.keys.joinToString(",")} " +
-            "text=$txt params=${ep?.stringOrNull("params")?.take(8)}")
-        }
-        count[0]++
-      }
-      Log.d("Ytabs", "SHAPE $key count=${count[0]}")
-    }
-  }
-
-  /** 从单个 tab(旧 tabRenderer 或新 expandableTabRenderer)取 name + params。 */
+  /**
+   * 从单个 tab(旧 tabRenderer 或新 expandableTabRenderer)取 name + params。
+   *
+   * 名字优先从 params 解码的 protobuf field1 取(如 "videos"/"shorts"/"streams"/"playlists"/
+   * "featured"/"posts"),因为新布局 tab 的 title 结构多变(simpleText/content/tabIdentifier 常为
+   * 空,真机 SHAPE 全 text=null),而 params 里的 field1 字符串是稳定标识。取不到再回退 title。
+   */
   private fun collectTab(renderer: JsonObject, seen: MutableSet<String>, out: MutableList<ChannelTab>) {
     val params = renderer.obj("endpoint")?.obj("browseEndpoint")?.stringOrNull("params")
     if (params.isNullOrBlank()) return
     val title = renderer.obj("title")
-    val name = renderer.stringOrNull("tabIdentifier")
+    val name = decodeTabName(params)
+      ?: renderer.stringOrNull("tabIdentifier")
       ?: title?.stringOrNull("simpleText")
       ?: title?.stringOrNull("content").orEmpty()
     if (name.isBlank()) return
     if (seen.add(name.lowercase())) out.add(ChannelTab(name = name, params = params))
   }
 
-  /** 递归收集响应里所有去重后的 key 名,打印出来看真实 schema(定位内容 Tab 条所在节点)。 */
-  private fun dumpSchemaKeys(root: JsonObject) {
-    val keys = java.util.TreeSet<String>()
-    val tabHits = StringBuilder()
-    val tabPath = ArrayList<String>()
-    fun walk(node: JsonElement?) {
-      when (node) {
-        is JsonObject -> {
-          for (k in node.keys) keys.add(k)
-          // 定向:任何含 tab 相关 key 的节点,记下它的路径 + 子 key,直接锁定 tab 条位置。
-          val hasTab = node.keys.any { it.contains("tab", ignoreCase = true) }
-          if (hasTab) {
-            tabHits.append("\n  [").append(tabPath.joinToString(" > ")).append("] -> ")
-              .append(node.keys.sorted().joinToString(","))
-          }
-          for (k in node.keys) {
-            tabPath.add(k)
-            walk(node.get(k))
-            tabPath.removeAt(tabPath.size - 1)
-          }
-        }
-        is JsonArray -> node.forEach { walk(it) }
-        else -> {}
-      }
+  /**
+   * 从 /browse tab 的 params(URL 编码 base64 的 protobuf)解析第一个字符串字段(field1),
+   * 得到 tab 类型标识:视频=videos / 短视频=shorts / 直播=streams / 播放列表=playlists /
+   * 精选=featured / 播客=podcast / 帖子=posts。解析失败返回 null。
+   */
+  private fun decodeTabName(params: String): String? {
+    val urlDecoded = try { java.net.URLDecoder.decode(params, "UTF-8") } catch (e: Exception) { params }
+    val bytes = try { android.util.Base64.decode(urlDecoded, android.util.Base64.DEFAULT) }
+    catch (e: Exception) { return null }
+    if (bytes.size < 2) return null
+    // protobuf 首字段:key varint(field1 + wire2 = 0x0A),再长度 varint,再字符串字节。
+    if ((bytes[0].toInt() and 0x7F) != 0x0A) return null
+    var idx = 1
+    var len = 0
+    var shift = 0
+    while (idx < bytes.size) {
+      val b = bytes[idx].toInt()
+      len = len or ((b and 0x7F) shl shift)
+      idx++
+      if (b and 0x80 == 0) break
+      shift += 7
+      if (shift > 28) return null
     }
-    walk(root)
-    Log.d("Ytabs", "SCHEMA(size=${keys.size}): ${keys.joinToString(",")}")
-    Log.d("Ytabs", "TABHITS(带路径):$tabHits")
+    if (len <= 0 || idx + len > bytes.size) return null
+    return String(bytes, idx, len, Charsets.UTF_8)
   }
 
   /**
