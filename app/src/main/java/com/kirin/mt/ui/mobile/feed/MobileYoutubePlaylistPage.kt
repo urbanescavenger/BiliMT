@@ -5,6 +5,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -58,8 +59,11 @@ import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.DOWNLOAD_PLAYLIST_NAME
 import com.kirin.mt.core.youtube.YoutubePlaylist
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
+import com.kirin.mt.ui.mobile.home.CompletedBadge
+import com.kirin.mt.ui.mobile.home.LocalWatchedIds
 import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.theme.BiliColors
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
@@ -312,6 +316,8 @@ private fun PlaylistDetailScreen(
             .pointerInput(video.bvid, editMode, autoArchive) {
               // 「下载」列表允许长按拖动排序(编辑/移除仍禁用);其它列表编辑模式下禁拖。
               if (editMode) return@pointerInput
+              // 边缘 auto-scroll 任务,复用单个 job 防滚动堆叠。
+              var overscrollJob: Job? = null
               detectDragGesturesAfterLongPress(
                 onDragStart = {
                   draggingBvid = video.bvid
@@ -329,26 +335,60 @@ private fun PlaylistDetailScreen(
                   val draggingInfo = layoutInfo.visibleItemsInfo
                     .firstOrNull { it.index == from }
                     ?: return@detectDragGesturesAfterLongPress
-                  // 拖拽项中心 = 初始 offset + 累计 delta(固定,不依赖 item 当前 offset,不漂移)。
-                  val draggedCenter = draggingInitialOffset + draggingInfo.size / 2f + draggingDelta
-                  val target = layoutInfo.visibleItemsInfo
-                    .filter { it.index != from }
-                    .minByOrNull { kotlin.math.abs(it.offset + it.size / 2f - draggedCenter) }
-                  if (target != null && target.index != from) {
+                  // 拖拽带上下沿(viewport 固定坐标 = 初始 offset + 累计位移,不依赖 item 当前 offset)。
+                  val startOffset = draggingInitialOffset + draggingDelta
+                  val endOffset = startOffset + draggingInfo.size
+                  val draggedCenter = startOffset + draggingInfo.size / 2f
+                  // 目标卡选择:只取拖拽方向的相邻槽位(from±1),拖过其中心才换一格。
+                  // 不用最近中心/双向重叠——顶部拖拽时手指还没离开原槽,最近中心会把目标钉回原槽,
+                  // 致最上面视频刚换一格就被弹回拖不下去;方向邻位判定单调、反向不弹回,顶/底都能逐格拖。
+                  val targetIndex = when {
+                    draggingDelta > 0f && from + 1 < items.size -> from + 1
+                    draggingDelta < 0f && from - 1 >= 0 -> from - 1
+                    else -> null
+                  }
+                  val target = targetIndex?.let { ti ->
+                    layoutInfo.visibleItemsInfo.firstOrNull { it.index == ti }?.takeIf { neighbor ->
+                      if (draggingDelta > 0f) draggedCenter > neighbor.offset + neighbor.size / 2f
+                      else draggedCenter < neighbor.offset + neighbor.size / 2f
+                    }
+                  }
+                  if (target != null) {
                     val newItems = items.toMutableList()
                     val item = newItems.removeAt(from)
                     newItems.add(target.index, item)
                     items = newItems
                     draggingIndex = target.index
                   }
+                  // 边缘 auto-scroll:拖拽带越出视口顶/底 → scrollBy,越界量自纠回到 0 即停;
+                  // scrollBy 自带首/末项边界 clamp。列表在拖拽项下滚动,拖拽项钉在手指下。
+                  val overscroll = when {
+                    draggingDelta < 0f ->
+                      (startOffset - layoutInfo.viewportStartOffset).takeIf { it < 0f } ?: 0f
+                    draggingDelta > 0f ->
+                      (endOffset - layoutInfo.viewportEndOffset).takeIf { it > 0f } ?: 0f
+                    else -> 0f
+                  }
+                  if (overscroll != 0f) {
+                    if (overscrollJob?.isActive != true) {
+                      overscrollJob = scope.launch { listState.scrollBy(overscroll) }
+                    }
+                  } else {
+                    overscrollJob?.cancel()
+                    overscrollJob = null
+                  }
                 },
                 onDragEnd = {
+                  overscrollJob?.cancel()
+                  overscrollJob = null
                   draggingBvid = null
                   draggingIndex = -1
                   draggingDelta = 0f
                   scope.launch { youtubePlaylistStore.replaceVideos(playlist.name, items) }
                 },
                 onDragCancel = {
+                  overscrollJob?.cancel()
+                  overscrollJob = null
                   draggingBvid = null
                   draggingIndex = -1
                   draggingDelta = 0f
@@ -387,6 +427,10 @@ private fun PlaylistDetailScreen(
                   .background(MaterialTheme.colorScheme.error, RoundedCornerShape(4.dp))
                   .padding(horizontal = 4.dp, vertical = 1.dp),
               )
+            }
+            // 已看完角标:命中本地 watched 集合(bvid/videoId)时贴缩略图右下。
+            if (video.bvid in LocalWatchedIds.current) {
+              CompletedBadge(modifier = Modifier.align(Alignment.BottomEnd).padding(2.dp))
             }
           }
           Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {

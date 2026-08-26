@@ -2,6 +2,18 @@
 
 ## 目录
 
+- [v3.0.6](#v306)
+- [v3.0.6-alpha.13](#v306-alpha13)
+- [v3.0.6-alpha.12](#v306-alpha12)
+- [v3.0.6-alpha.11](#v306-alpha11)
+- [v3.0.6-alpha.8](#v306-alpha8)
+- [v3.0.6-alpha.7](#v306-alpha7)
+- [v3.0.6-alpha.6](#v306-alpha6)
+- [v3.0.6-alpha.5](#v306-alpha5)
+- [v3.0.6-alpha.4](#v306-alpha4)
+- [v3.0.6-alpha.3](#v306-alpha3)
+- [v3.0.6-alpha.2](#v306-alpha2)
+- [v3.0.6-alpha.1](#v306-alpha1)
 - [v3.0.5](#v305)
 - [v3.0.5-alpha.9](#v305-alpha9)
 - [v3.0.5-alpha.8](#v305-alpha8)
@@ -196,6 +208,131 @@
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
 
+## v3.0.6
+
+**稳定版:移动端「已看完」闭环 + YouTube SABR 带宽驱动升降档 + 播放器/交互修复聚合。** 3.0.6 alpha 线合入稳定版。移动端看完的视频卡片标「已看完」角标并纳入 WebDAV 备份/还原,新增「已看完自动删除缓存」开关看完自动清下载;YouTube SABR 双修(带宽样本计入段间等待根治「8K 缓冲掉不降档」、Auto 选档改按 height 优先根治「卡 1080p 不升」),真机 1080p→1440p→4K 自然爬升;播放列表长按拖动排序修复(边缘自动滚动 + 方向相邻槽位,根治拖到顶/底无法换位);播放列表相关视频恒为列表后续 + 进度条末端误触防护;播放器加全屏吞噬层点缓存清晰度不再误开设置页;启动后台预加载首页推荐+动态免二次点击;YouTube 历史/简介频道头像对齐 LibreTube 权威源回填;设置弹窗 D-pad 焦点根治(真 Dialog 窗口);WebDAV 备份/还原新增已看完列表 + B 站账号项。
+
+### 变更
+- **「已看完」闭环**:移动端视频卡片右下角「已看完」角标(`WatchedStore` + CompositionLocal,B站 bvid/YouTube videoId 统一承载),纳入 WebDAV 备份/还原(`bilitv/watched.json`,移动端+TV 弹窗都加,还原可选);新增「已看完自动删除缓存」开关(设置→播放),播放到结尾自动删该视频下载(`DownloadManager.deleteByVideoId`,含分件+「下载」播放列表存档),实际删了才弹 Toast。
+- **YouTube SABR 带宽驱动选档**:新建 `SabrBandwidthMeter` 返回 SabrMediaFetcher 实测真实带宽(中位数),根治媒体3带宽计被 SabrDataSource 内存读样本污染(1M↔437M 跳变)致 ABR 钉死低档;带宽样本计入段间等待,根治「8K 缓冲掉不降档」;Auto 选档改按 height 优先、bitrate 只当带宽门槛(`HeightAwareAdaptiveTrackSelection`),根治「Auto 卡 1080p 不升」。
+- **播放器/交互**:播放器全屏吞噬层 `consumeAllGestures()` 盖住底栏,点缓存「清晰度位置」不再误开设置页;播放列表长按拖动排序边缘自动滚动+方向相邻槽位(顶/底都能逐格拖);播放列表相关视频=列表后续 + 进度条末端误触防误连播;启动后台加载首页推荐+动态免二次点击。
+- **YouTube 头像**:历史/简介频道头像对齐 LibreTube 权威 `uploaderAvatars` 源回填,不再恒空。
+
+### 已知遗留
+- ceiling 门控迭代器对 media3 1.10.0 失效,待改 `trackSelection.excludeTrack`(见 docs/youtube-hd-playback.md §6.23.2),稳定版先带出。
+## v3.0.6-alpha.13
+
+**播放列表长按拖动排序修复:根治「上移到当前可见前两行自动填入」与「最上面视频无法下拖」**。
+
+### 变更
+- **边缘自动滚动**:拖拽带(`startOffset+size`,viewport 固定坐标)越出视口顶/底时 `scrollBy` 自动滚动,列表在拖拽项底下滚动,不再卡在当前可见前两行自动填入顶槽。
+- **目标方向邻位判定**:选目标卡只取拖拽方向的相邻相邻(from+1 下拖 / from-1 上拖,拖过相邻中心才换格)。原「最近中心」算法在手指未离原槽时把目标钉回原槽,致最上面视频拖不下去被弹回;方向判定单调反向不弹回,顶/底都能逐格拖。
+- 编译坑:拖拽列表 `scrollBy` 是 `ScrollableState` 扩展需 import `androidx.compose.foundation.gestures.scrollBy`。
+
+## v3.0.6-alpha.12
+
+**启动后台加载首页推荐+动态 + 动态初始加载空修复 + 移动端「已看完」角标补全**。
+
+### 变更
+- **启动后台加载**:AppShell 启动即拉首页推荐(`getHomeSectionVideos(Recommend)`)与动态(B站 `getDynamicFeed`+YouTube `youtubeSubscriptionsFeed` 合并)写入 state,切到对应 tab 数据已就绪免二次点击;推荐免登录可拉、动态需登录(未登录跳过,登录后 effect 因 `isLoggedIn` 变化重跑补拉);取消必须向上抛(runCatching 吞 CancellationException 误写 Empty 卡死推荐);诊断日志 `BiliMT:Preload` 打 start/成功/失败/跳过。
+- **动态初始加载空修复**:首载时 `youtubeChannels` 还是 emptyList 只拉 B 站并置 `loadedOnce`,频道发出来后 `loadedOnce` 挡住 YouTube 合并→初始空;加 `youtubeMerged` 标志区分「频道首次就绪需补拉 YouTube」与「后续头像回填等频道变化(不应重载)」,TV `LaunchedEffect` key 改稳定 `channelId` 列表(头像回填不触发重启)+`youtubeMerged=false` 时补拉合并。
+- **移动端角标补全**:播放列表/离线管理列表补「已看完」角标(`CompletedBadge` 改 internal 复用),离线列表显示缓存大小(`totalSize`)。
+
+### 其它
+- TV 设置二级菜单只在其归属一级项持有焦点时显示;TV 搜索结果模式顶部 source pill 的 Down 落结果标题(原落未挂载输入框致焦点卡死)。
+## v3.0.6-alpha.11
+
+**播放器加全屏吞噬层盖住底栏——点缓存"清晰度位置"不再误开设置页**。
+
+### 根因
+播放器全屏 Box 是 Scaffold 的兄弟节点,`fillMaxSize().background(Black)` 已铺满全窗(含底栏区域),但 `background` **只画不吞指针事件**。缓存视频的"清晰度位置"是无 `onClick` 的静态文字,该处播放器无点击目标 → 点击**穿透**黑底命中底下 Scaffold 的"设置"tab → 打开设置页(非全屏同样存在,非 debug/release 差异)。
+
+### 变更
+- 播放器 Box 内新增一层 `fillMaxSize` 的 `consumeAllGestures()` 吞噬层,把整个播放器区域的**所有指针事件全部吞掉**,盖住并屏蔽其下任何层(底部导航/页面/空间/未来新增)。播放器控件叠于其上仍正常响应;无点击目标处(如缓存清晰度文案)的点击被吞、不落穿。
+- 回退此前的"播放时隐藏底栏"方案——隐藏只处理已知的底栏,不鲁棒;覆盖(吞掉指针)才对任何背后内容都生效。
+
+## v3.0.6-alpha.8
+
+**播放列表相关视频恒为列表后续 + 进度条末端误触不再误连播**。
+
+### 变更
+- **播放列表相关视频=列表后续**：播放列表(含下载播放列表)播放时,简介 Tab「相关视频」原走在线 `/next` 优先、在线失败才回退播放队列——在线通(debug)显示在线相关、在线断(release)碰巧显示列表,与自动连播(`computeNextRequest`,恒走 `playQueue`)不一致,行为随网络飘。现改为:播放列表场景相关视频恒取 `playQueue.drop(cur+1)`(与自动连播同源同序,不依赖在线接口);历史/动态/搜索等单视频入口仍走在线相关(YouTube `/next` / B站 related)。
+- **进度条末端误触防护**：缓存视频清晰度为静态文字、紧贴进度条右侧,点"清晰度"实际落到进度条末端 → seek 到末尾 → `STATE_ENDED` → 误触发自动连播切下一集(缓存 360p 误成 480p)。`routeSeek` 加末端钳制,目标落在末尾 3s 内退到结束前 3s,点到最末不再进 `STATE_ENDED`、不再误连播(SABR 中段 seek 不受影响)。
+
+## v3.0.6-alpha.7
+
+**移动端移除播放列表「上一个/下一个」按钮,根治缓存视频点清晰度误触切下一集**。
+
+### 变更
+- **移除播放列表 ◀▶ 按钮**：播放列表(含下载播放列表)里「下一个(▶)」紧挨缓存清晰度静态文字,点"清晰度"位置易误触 ▶ 切到下一集(缓存 360p 点成 480p,且无「点清晰度」日志、走 AirJump 加载下一个)。现移除 ◀▶,进度条行只留清晰度/音轨入口,与在线播放器对齐。`playQueue` 自动连播/相关视频切换逻辑保留(非按钮触发)。
+- 根因:非 debug/release 差异,而是**单视频(无 ▶)vs 播放列表队列(有 ▶)**上下文差异;日志证明缓存命中后清晰度为静态文字、无重载、无点清晰度事件。
+- ⚠️ 本 tag 仍含 alpha.6 的 2 处临时诊断日志(缓存命中日志、点清晰度瞬间日志),定位完成后移除。
+
+## v3.0.6-alpha.6
+
+**移动端纯音频缓存也命中在线播放器 + 进设置不再自动检查更新**。
+
+### 变更
+- **纯音频缓存命中在线播放器**：`MobilePlayerScreen.findCachedPlayable` 原排除纯音频下载(audio-only,video/muxed 均无),导致已缓存的仅音频视频打开时不走缓存、回落网络完整流,且带可点的清晰度菜单、点击重载。现已放开:只要 `isPlayable`(媒体分件全 COMPLETED)即命中;`buildLocalMediaSource` 支持 `videoFile==null` 时只播本地音频轨(镜像离线播放器)。
+- **进设置不再自动检查更新**：改回仅手动点击「检查更新」才发起检查(保留发现更新直接出下载)。
+- ⚠️ 本 tag 含 **2 处临时诊断日志**(缓存命中日志、点清晰度瞬间日志),为排查「已缓存视频点清晰度重载」保留,确认后移除。
+
+## v3.0.6-alpha.5
+
+**YouTube 历史/简介频道头像恒空修复(对齐 LibreTube)**:根因是 YouTube `/player` 接口不返回作者头像字段,导致历史卡片与播放器简介 Tab 的频道头像恒为空白(需重播才愈合,或压根不显示)。现已对齐 LibreTube 用 NewPipe `StreamInfo` 的权威频道头像 `uploaderAvatars` 作为数据源,起播即存入历史库;旧的历史空白条目在打开历史页时后台自动回填,无需逐个重播。
+
+### 变更
+- **`YoutubeRepository.getVideoDetail`**:复用 NewPipe `StreamInfo.getInfo` 的 `uploaderAvatars.maxBy { it.height }.url` 填 `channelAvatarUrl`(LibreTube 同源同 API)。`getInfo` 是同步阻塞网络调用,改在 `Dispatchers.IO` 线程执行,修复此前主线程抛 `NetworkOnMainThreadException` 致头像兜底恒失败的隐患。
+- **移动端 `recordPlay`**:YouTube 条目头像改取权威 `youtubeDetail.channelAvatarUrl`(原取 `activeRequest.ownerFace`,因 YouTube 无 B 站 metadata 恒空填不了)。
+- **`YoutubeHistoryStore.updateChannel`**:新增原地回填(只填空白位、不改列表位置)。
+- **移动端历史页后台回填**:打开历史页时把头像为空的条目按频道分组,每组解析一次权威头像,回填该组全部空白条目,不重播即愈合;已处理条目记录在案,避免重复请求。
+
+## v3.0.6-alpha.4
+
+**设置弹窗 D-pad 焦点根治**:WebDAV 编辑/IPTV/Piped 三个弹窗由内联叠层改为真 `Dialog` 窗口(独立 window 自带焦点根),备份/还原选择弹窗重构为「固定顶底 + 滚动中段」——顶部全选与底部开始/取消锁定常显,中间选项随焦点滚动,滚到底才进底部按钮。
+
+### 变更
+- **`SettingsWebDavDialog.kt` / `SettingsIptvDialog.kt` / `SettingsPipedDialog.kt`**:内联叠层 → 真 `Dialog`(独立 window 自带焦点根),根治 D-pad 上键/左键焦点逃出到弹窗背后的设置页。WebDAV 保留保存前连通校验。
+- **`SettingsWebDavSelectionDialog.kt`(备份/还原)**:重构为固定顶底+滚动中段——顶部「标题+全选」与底部「开始/取消」锁定常显,中间选项列表改 `LazyColumn`(`weight(1f, fill=false)` 内容自适应/填满滚动),随焦点移动滚到底才进底部按钮。根治更多选项下底部按钮被裁出窗口、焦点高亮不可见。
+
+## v3.0.6-alpha.3
+
+**SABR 可持续带宽 + 分辨率优先选档根治两处选档问题**:①带宽样本计入段间等待,根治「8K 缓冲掉不降档」(瞬时吞吐高估可持续带宽);②Auto 选档改按分辨率(height)优先、bitrate 只当带宽门槛,根治「Auto 卡 1080p 不升」(YouTube 声明 bitrate 与 height 错位)。
+
+### 变更
+- **`SabrMediaFetcher.kt`**:带宽样本计入段间等待——`bps = bytes/(elapsed + gapSinceLastFetchEnd)`,根治「8K 缓冲掉不降档」。此前 `bytes/elapsed` 只计下载耗时,漏掉段间 gap(8K 段 4.6s 下载后等 23-30s 才拉下一段,瞬时吞吐 84M vs 可持续 ~15M),媒体3 拿高估带宽误判 8K 可负担、缓冲耗尽仍不降档。加 `lastFetchEndRealtimeMs` 墙钟锚点。
+- **`HeightAwareAdaptiveTrackSelection.kt`(新)**:Auto 选档按 height 优先、bitrate 只当带宽门槛。media3 `AdaptiveTrackSelection` 按 bitrate 降序选档(bitrate 兼当画质顺序+带宽门槛),而 YouTube 声明 bitrate 与 height 错位(308 1440p 13.9M < 303 1080p 14.4M),带宽够也停在 1080p。本类 override public `updateSelectedTrack` 自算 `effective=getBitrateEstimate()`(可持续中位数,不再乘 0.7)+ 按 height 选最高可负担档,override public `getSelectedIndex()` 写回(父类选档全 private 不可复用);`HeightAwareAdaptiveTrackSelectionFactory` override protected `createAdaptiveTrackSelection`(5 参)注入,音频等无 height 组退化父类按码率选档。
+- **`PlayerScreen.kt` / `MobilePlayerScreen.kt`**:`DefaultTrackSelector(context)` → `DefaultTrackSelector(context, HeightAwareAdaptiveTrackSelectionFactory())`。
+- **待真机复测**:Auto 从 1080p 自然升 1440p/4K、带宽不足能降档、无黑屏无看门狗重载;8K 起播即降到可负担档、缓冲掉能降档。详见 [docs/youtube-sabr-abr-upshift-notes.md](docs/youtube-sabr-abr-upshift-notes.md) §5/§8。
+
+## v3.0.6-alpha.2
+
+**SABR 带宽驱动选档根治升降档**:媒体3 带宽计被 SabrDataSource 内存读样本污染(`getBitrateEstimate` 真机 1M↔437M 1000 倍跳变)致 effectiveBitrate 不可信、ABR 钉死低档不升;新建 `SabrBandwidthMeter` 让带宽计返回 SabrMediaFetcher 实测真实带宽(中位数),媒体3 原生 ABR 按可信带宽自动选最高可负担档,升降全自动。真机复测 1080p→1440p→4K 自然爬升,无震荡、无黑屏、无看门狗重载。
+
+### 变更
+- **`SabrBandwidthMeter.kt`(新)**:包装 `DefaultBandwidthMeter` 的 `BandwidthMeter`,`getBitrateEstimate()` 返回 SabrMediaFetcher 实测真实带宽(中位数);无真实样本时回落 delegate。TV+移动端播放器用 wrapper 建带宽计,注入 ExoPlayer 与 `SabrMediaSource`。
+- **`DefaultSabrChunkSource.kt`**:删除 ceiling/force-climb exclude 补丁(force-climb 真机反致掉 480p,exclude 路不干净),改向带宽计注入真实带宽来源,让媒体3 原生 ABR 选档;保留相邻档合成 iterator 供 ABR 看到备选轨。
+- **`SabrMediaSource.kt`**:Factory 带宽计类型 `DefaultBandwidthMeter`→`BandwidthMeter`。
+- **`PlayerScreen.kt` / `MobilePlayerScreen.kt`**:`SabrBandwidthMeter(DefaultBandwidthMeter...)` 建带宽计,取流、初始档锁、升降档两端实现完全一致。
+- **`SabrMediaFetcher.kt`**:实测真实带宽(段下载字节/时长,最近 8 样本中位数,100KB 起样本)。
+- **真机验证**(2026-08-24):`bw=` 稳定平滑(912K→12M→25M,不再 27K↔232M 狂跳);会话1 真实带宽 12-28M 直接选顶档 4K(299@6.2M)稳定钉住;会话2 带宽 886K→6M→9.7M→11M 时 1080p→1440p→4K 自然爬升。详见 [docs/youtube-sabr-abr-upshift-notes.md](docs/youtube-sabr-abr-upshift-notes.md) §8。
+
+## v3.0.6-alpha.1
+
+**移动端「已看完」闭环**:看完的视频卡片右下角标「已看完」角标,并纳入 WebDAV 备份/还原;新增「已看完自动删除缓存」开关,看完自动清掉该视频下载文件。
+
+### 变更
+- **`WatchedStore.kt`(新)**:DataStore 存已看完视频 id 集合(B站 bvid / YouTube videoId 统一承载),`markCompleted` 幂等写入、cap 300;`all()`/`replaceAll()` 供备份/还原全量读写。
+- **`MobileVideoCard.kt`**:`LocalWatchedIds` CompositionLocal 下发已看完集合,卡片缩略图右下角渲染「已看完」角标(直播/IPTV 不标)。
+- **`WebDavBackupService.kt`**:`WebDavBackupItem` 加 `Watched`,备份/还原 `bilitv/watched.json`;移动端+TV 备份弹窗都加「已看完列表」项(还原可选,日志仍只备份不还原)。
+- **`AppSettings`/`AppSettingsStore`**:加 `autoDeleteWatchedCache`(key `auto_delete_watched_cache`,默认关)。
+- **`DownloadManager.kt`**:加 `deleteByVideoId(videoId)`,按 bvid/videoId 删该视频所有下载(含分件+「下载」播放列表存档),返回实际删除任务数。
+- **`MobilePlayerScreen.kt`**:播放到结尾且开关开时自动删该视频下载,实际删了才弹 Toast「已看完,已自动删除该视频的下载缓存」。
+- **`MobileSettingsScreen.kt`**:设置「播放」节加「已看完自动删除缓存」开关(仅移动端)。
+
+### 待真机验证
+- WebDAV 备份勾选「已看完列表」→ 还原到新设备,「已看完」角标恢复。
+- 下载某视频 → 开开关 → 播到结尾 → 该下载从「下载」列表消失、文件释放 + Toast;关开关则看完不删。直播/IPTV 不触发。
 ## v3.0.5
 
 **稳定版:多语言 6 档落地 + YouTube SABR 升降档控制 + 真机兼容性打磨。** 3.0.5 alpha 线合入稳定版。多语言从仅中文扩展到 6 档语言(简中/港繁/台繁 + English / Español / Português),数字与相对时间本地化(中文 万/亿,拉丁 K/M/B),并修复 localeFilters 剪包真因(原只列 zh 变体把 `values-en/es/pt` 整个剪掉,补全后拉丁资源真正进包,ES/PT 骨架补为全量翻译);YouTube SABR 自动档位升级修复(混合 H264/VP9 不再坍缩成单轨,自动档可从 360p 逐步升到 1080p)与起始挡位设置生效(`setMaxVideoSize` 起播 cap + 首帧后 `clearVideoSizeConstraints` 松开,公开 API 绕开 `selectedIndex` private 难点,alpha.8 seed 方案真机失效后替代)+ ceiling 降档滞回防震荡(ceiling 门控对 media3 1.10.0 失效,待改 `excludeTrack`);YouTube 点赞数改从 `/player` `microformat.likeCount` 直取;S905X5M 等 Amlogic 盒子解码器误判仅 H264 修复(`ALL_CODECS` + `isHardwareAccelerated || !isSoftwareOnly`);TV 备份/还原选择弹窗崩溃修复 + 日志分享加备份单文件上传 + YouTube 搜索排序对齐 B 站 4 项。

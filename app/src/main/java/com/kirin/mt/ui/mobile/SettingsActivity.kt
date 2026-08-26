@@ -65,10 +65,13 @@ class SettingsActivity : ComponentActivity() {
         val textConverter = remember(appSettings.chineseTextVariant) {
           ChineseTextConverters.forVariant(appSettings.chineseTextVariant)
         }
+        // 已看完 id 集合:本 Activity 独立于 MobileApp,需自行收集并下发,供离线下载列表标「已看完」。
+        val watchedIds by appContainer.watchedStore.watched.collectAsState(initial = emptySet())
         CompositionLocalProvider(
           LocalContext provides localizedContext,
           LocalResources provides localizedContext.resources,
           LocalChineseTextConverter provides textConverter,
+          com.kirin.mt.ui.mobile.home.LocalWatchedIds provides watchedIds,
         ) {
         Surface(modifier = Modifier.fillMaxSize().statusBarsPadding(), color = MaterialTheme.colorScheme.background) {
           val session by appContainer.sessionStore.session.collectAsState(initial = UserSession())

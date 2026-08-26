@@ -92,6 +92,7 @@
     <string name="downloads_quality_audio">僅音頻(不下載視頻)</string>
     <string name="downloads_confirm">開始下載</string>
     <string name="downloads_enqueued">已加入下載隊列</string>
+    <string name="downloads_enqueueing">正在加入下載隊列...</string>
     <string name="downloads_enqueue_failed">下載入隊失敗</string>
     <string name="downloads_notification_title">正在下載</string>
     <string name="downloads_notification_channel">影片下載</string>
@@ -175,6 +176,8 @@
     <string name="settings_auto_play_related_video_description">冇可連播嘅下一 P 時，播放相關推薦嘅第一個影片。</string>
     <string name="settings_auto_return_home_on_completion_title">播完自動退出播放</string>
     <string name="settings_auto_return_home_on_completion_description">冇可播嘅下一個內容時，播完後返回原本嘅頁面並恢復影片焦點。</string>
+    <string name="settings_auto_delete_watched_title">已睇完自動刪除快取</string>
+    <string name="settings_auto_delete_watched_description">睇完嘅影片自動刪除佢嘅下載檔案，釋放儲存空間。</string>
     <string name="settings_interaction_section">UI/UX</string>
     <string name="settings_show_clock_title">顯示時間</string>
     <string name="settings_show_clock_description">&#x55BA;&#x64AD;&#x653E;&#x4ECB;&#x9762;&#x53F3;&#x4E0A;&#x89D2;&#x986F;&#x793A;&#x76EE;&#x524D;&#x6642;&#x9593;&#x3002;</string>
@@ -359,6 +362,7 @@
     <string name="player_seek_preview">快轉預覽</string>
     <string name="player_air_jump_will_skip">即將跳過廣告</string>
     <string name="player_air_jump_skipped">已跳過廣告</string>
+    <string name="player_auto_delete_watched_cache">已睇完，已自動刪除該影片嘅下載快取</string>
     <string name="player_completion_next_episode_toast">播放完成，即將播放下一 P：%1$s</string>
     <string name="player_completion_related_toast">播放完成，即將播放推薦影片：%1$s</string>
     <string name="player_completion_home_toast">播放完成，即將退出播放</string>

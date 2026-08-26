@@ -148,13 +148,20 @@ fun MobileSettingsScreen(
     }
   }
 
-  // 最新版本 row 的动作分派(已并入「检查更新」):Available → 下载,Downloaded → 安装,
-  // Idle/UpToDate/Failed → 检查更新,Checking/Downloading → 不可点。
-  val updateVersionOnClick: (() -> Unit)? = when (updateState.status) {
-    is UpdateUiState.Status.Available -> { { scope.launch { updateManager.download() } } }
-    is UpdateUiState.Status.Downloaded -> { { installDownloadedApk() } }
+  // 最新版本 row 的动作分派:Available → 下载;Downloaded → 安装;Idle/UpToDate/Failed → 检查更新;
+  // Checking/Downloading → 不可点。检查更新仅手动点击触发,发现更新自然进「下载更新」态(不保存状态、不两击)。
+  // 动作必须先定义为显式 () -> Unit 变量:scope.launch 返回 Job,直接写 { scope.launch { ... } }
+  // 会让 lambda 推断成 () -> Job,放入 when/if 分支期期望类型传不进、when 被推断成 Any? 编译失败。
+  // 末尾补 Unit 强制成 () -> Unit;且不可用双层 lambda({ { ... } })——外层 body 是内层 lambda 字面量,
+  // 被求值后丢弃,内层永不执行。
+  val checkAction: () -> Unit = { scope.launch { updateManager.refresh() }; Unit }
+  val downloadAction: () -> Unit = { scope.launch { updateManager.download() }; Unit }
+  val installAction: () -> Unit = { installDownloadedApk() }
+  val updateVersionOnClick: (() -> Unit)? = when (val s = updateState.status) {
+    is UpdateUiState.Status.Available -> downloadAction
+    is UpdateUiState.Status.Downloaded -> installAction
     is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> null
-    else -> { { scope.launch { updateManager.refresh() } } }
+    else -> checkAction
   }
 
   Column(
@@ -267,6 +274,12 @@ fun MobileSettingsScreen(
       description = stringResource(R.string.settings_auto_return_home_on_completion_description),
       checked = settings.autoReturnHomeOnCompletion,
       onCheckedChange = { scope.launch { appSettingsStore.setAutoReturnHomeOnCompletion(it) } },
+    )
+    MobileSwitchRow(
+      title = stringResource(R.string.settings_auto_delete_watched_title),
+      description = stringResource(R.string.settings_auto_delete_watched_description),
+      checked = settings.autoDeleteWatchedCache,
+      onCheckedChange = { scope.launch { appSettingsStore.setAutoDeleteWatchedCache(it) } },
     )
     MobileSwitchRow(
       title = stringResource(R.string.settings_show_clock_title),
@@ -823,16 +836,30 @@ private fun MobileWebDavSelectionDialog(
   onDismiss: () -> Unit,
 ) {
   val items = if (isRestore) {
-    listOf(com.kirin.mt.core.webdav.WebDavBackupItem.Channels, com.kirin.mt.core.webdav.WebDavBackupItem.Piped)
+    listOf(
+      com.kirin.mt.core.webdav.WebDavBackupItem.Channels,
+      com.kirin.mt.core.webdav.WebDavBackupItem.Piped,
+      com.kirin.mt.core.webdav.WebDavBackupItem.Watched,
+      com.kirin.mt.core.webdav.WebDavBackupItem.BiliAccount,
+    )
   } else {
     com.kirin.mt.core.webdav.WebDavBackupItem.entries
   }
-  var selected by remember { mutableStateOf(items.toSet()) }
+  // 备份默认只勾选日志;B站账号登录态默认不选。
+  // 还原默认勾选除 B站账号外的各项(登录态还原较敏感,需显式勾选)。
+  val defaultSelected = if (isRestore) {
+    items.filter { it != com.kirin.mt.core.webdav.WebDavBackupItem.BiliAccount }
+  } else {
+    items.filter { it == com.kirin.mt.core.webdav.WebDavBackupItem.Logs }
+  }
+  var selected by remember { mutableStateOf(defaultSelected.toSet()) }
 
   @Composable
   fun itemLabel(item: com.kirin.mt.core.webdav.WebDavBackupItem): String = when (item) {
     com.kirin.mt.core.webdav.WebDavBackupItem.Channels -> stringResource(R.string.settings_webdav_item_channels)
     com.kirin.mt.core.webdav.WebDavBackupItem.Piped -> stringResource(R.string.settings_webdav_item_piped)
+    com.kirin.mt.core.webdav.WebDavBackupItem.Watched -> stringResource(R.string.settings_webdav_item_watched)
+    com.kirin.mt.core.webdav.WebDavBackupItem.BiliAccount -> stringResource(R.string.settings_webdav_item_biliaccount)
     com.kirin.mt.core.webdav.WebDavBackupItem.Logs -> stringResource(R.string.settings_webdav_item_logs)
   }
 

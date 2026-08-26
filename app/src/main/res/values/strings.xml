@@ -143,6 +143,7 @@
     <string name="downloads_quality_audio">&#x4EC5;&#x97F3;&#x9891;(&#x4E0D;&#x4E0B;&#x8F7D;&#x89C6;&#x9891;)</string>
     <string name="downloads_confirm">&#x5F00;&#x59CB;&#x4E0B;&#x8F7D;</string>
     <string name="downloads_enqueued">&#x5DF2;&#x52A0;&#x5165;&#x4E0B;&#x8F7D;&#x961F;&#x5217;</string>
+    <string name="downloads_enqueueing">&#x6B63;&#x5728;&#x52A0;&#x5165;&#x4E0B;&#x8F7D;&#x961F;&#x5217;...</string>
     <string name="downloads_enqueue_failed">&#x4E0B;&#x8F7D;&#x5165;&#x961F;&#x5931;&#x8D25;</string>
     <string name="downloads_notification_title">&#x6B63;&#x5728;&#x4E0B;&#x8F7D;</string>
     <string name="downloads_notification_channel">&#x89C6;&#x9891;&#x4E0B;&#x8F7D;</string>
@@ -242,6 +243,8 @@
     <string name="settings_auto_play_related_video_description">&#x6CA1;&#x6709;&#x53EF;&#x8FDE;&#x64AD;&#x7684;&#x4E0B;&#x4E00; P &#x65F6;&#xFF0C;&#x64AD;&#x653E;&#x76F8;&#x5173;&#x63A8;&#x8350;&#x7684;&#x7B2C;&#x4E00;&#x4E2A;&#x89C6;&#x9891;&#x3002;</string>
     <string name="settings_auto_return_home_on_completion_title">&#x64AD;&#x5B8C;&#x81EA;&#x52A8;&#x9000;&#x51FA;&#x64AD;&#x653E;</string>
     <string name="settings_auto_return_home_on_completion_description">&#x6CA1;&#x6709;&#x53EF;&#x64AD;&#x7684;&#x4E0B;&#x4E00;&#x4E2A;&#x5185;&#x5BB9;&#x65F6;&#xFF0C;&#x64AD;&#x5B8C;&#x540E;&#x8FD4;&#x56DE;&#x539F;&#x6765;&#x7684;&#x9875;&#x9762;&#x5E76;&#x6062;&#x590D;&#x89C6;&#x9891;&#x7126;&#x70B9;&#x3002;</string>
+    <string name="settings_auto_delete_watched_title">&#x5DF2;&#x770B;&#x5B8C;&#x81EA;&#x52A8;&#x5220;&#x9664;&#x7F13;&#x5B58;</string>
+    <string name="settings_auto_delete_watched_description">&#x770B;&#x5B8C;&#x7684;&#x89C6;&#x9891;&#x81EA;&#x52A8;&#x5220;&#x9664;&#x5176;&#x4E0B;&#x8F7D;&#x6587;&#x4EF6;&#xFF0C;&#x91CA;&#x653E;&#x5B58;&#x50A8;&#x7A7A;&#x95F4;&#x3002;</string>
     <string name="settings_interaction_section">UI/UX</string>
     <string name="settings_show_clock_title">&#x663E;&#x793A;&#x65F6;&#x95F4;</string>
     <string name="settings_show_clock_description">&#x5728;&#x64AD;&#x653E;&#x754C;&#x9762;&#x53F3;&#x4E0A;&#x89D2;&#x663E;&#x793A;&#x5F53;&#x524D;&#x65F6;&#x95F4;&#x3002;</string>
@@ -481,6 +484,7 @@
     <string name="player_seek_preview">&#x5FEB;&#x8FDB;&#x9884;&#x89C8;</string>
     <string name="player_air_jump_will_skip">&#x5373;&#x5C06;&#x8DF3;&#x8FC7;&#x5E7F;&#x544A;</string>
     <string name="player_air_jump_skipped">&#x5DF2;&#x8DF3;&#x8FC7;&#x5E7F;&#x544A;</string>
+    <string name="player_auto_delete_watched_cache">&#x5DF2;&#x770B;&#x5B8C;&#xFF0C;&#x5DF2;&#x81EA;&#x52A8;&#x5220;&#x9664;&#x8BE5;&#x89C6;&#x9891;&#x7684;&#x4E0B;&#x8F7D;&#x7F13;&#x5B58;</string>
     <string name="player_completion_next_episode_toast">&#x64AD;&#x653E;&#x5B8C;&#x6210;&#xFF0C;&#x5373;&#x5C06;&#x64AD;&#x653E;&#x4E0B;&#x4E00; P&#xFF1A;%1$s</string>
     <string name="player_completion_related_toast">&#x64AD;&#x653E;&#x5B8C;&#x6210;&#xFF0C;&#x5373;&#x5C06;&#x64AD;&#x653E;&#x63A8;&#x8350;&#x89C6;&#x9891;&#xFF1A;%1$s</string>
     <string name="player_completion_home_toast">&#x64AD;&#x653E;&#x5B8C;&#x6210;&#xFF0C;&#x5373;&#x5C06;&#x9000;&#x51FA;&#x64AD;&#x653E;</string>
@@ -616,6 +620,8 @@
     <string name="settings_webdav_select_all">全选</string>
     <string name="settings_webdav_item_channels">YouTube 关注频道</string>
     <string name="settings_webdav_item_piped">Piped 配置</string>
+    <string name="settings_webdav_item_watched">已看完列表</string>
+    <string name="settings_webdav_item_biliaccount">B站账号</string>
     <string name="settings_webdav_item_logs">日志</string>
     <string name="settings_webdav_start_backup">开始备份</string>
     <string name="settings_webdav_start_restore">开始还原</string>

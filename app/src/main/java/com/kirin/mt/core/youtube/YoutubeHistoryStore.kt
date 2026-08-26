@@ -24,6 +24,8 @@ data class YoutubeHistoryEntry(
   val channelName: String,
   /** 频道 id（UC 开头），用于从历史进频道主页。 */
   val channelId: String = "",
+  /** 频道头像 URL（yt3.ggpht.com）。起播时从卡片 ownerFace 记录；旧条目为空，渲染时按 channelId 回退查 YoutubeChannelStore。 */
+  val channelAvatarUrl: String = "",
   /** 缩略图 URL。 */
   val thumbnailUrl: String = "",
   val durationMs: Long = 0L,
@@ -75,6 +77,26 @@ class YoutubeHistoryStore(private val context: Context) {
     }
   }
 
+  /**
+   * 回填某条目的频道字段（channelId/channelAvatarUrl）。**不改变列表位置**（区别于 recordPlay 会前置）。
+   * 历史列表懒加载时，对旧条目空白头像按频道解析一次后写回，避免逐个重播才愈合。
+   * 只填空白位，不覆盖已有值（保持首次解析结果优先）。
+   */
+  suspend fun updateChannel(videoId: String, channelId: String, channelAvatarUrl: String) {
+    if (videoId.isBlank()) return
+    context.biliDataStore.edit { prefs ->
+      val current = decode(prefs[Keys.History]).orEmpty()
+      if (current.none { it.videoId == videoId }) return@edit
+      val next = current.map { entry ->
+        if (entry.videoId != videoId) entry else entry.copy(
+          channelId = entry.channelId.ifBlank { channelId },
+          channelAvatarUrl = entry.channelAvatarUrl.ifBlank { channelAvatarUrl },
+        )
+      }
+      prefs[Keys.History] = json.encodeToString(serializer, next)
+    }
+  }
+
   suspend fun remove(videoId: String) {
     context.biliDataStore.edit { prefs ->
       val next = decode(prefs[Keys.History]).orEmpty().filterNot { it.videoId == videoId }
@@ -103,3 +125,19 @@ class YoutubeHistoryStore(private val context: Context) {
     const val MaxEntries = 50
   }
 }
+
+/**
+ * 历史条目缩略图 URL：优先已存的 [YoutubeHistoryEntry.thumbnailUrl]；为空时回退到
+ * 确定性 ytimg 缩略图 `https://i.ytimg.com/vi/{videoId}/hqdefault.jpg`。
+ * 老版本可能在起播时未填 coverUrl 而存下空 thumbnailUrl，导致历史卡封面加载失败(YT ERR)，
+ * 卡片渲染统一走这里，旧条目无需重播即修复。
+ */
+fun YoutubeHistoryEntry.resolveThumbnailUrl(): String =
+  thumbnailUrl.ifBlank { "https://i.ytimg.com/vi/$videoId/hqdefault.jpg" }
+
+/**
+ * 历史条目头像 URL：优先条目已存的 [YoutubeHistoryEntry.channelAvatarUrl]；为空时回退到
+ * 外部提供的 [fallback]（调用方传 YoutubeChannelStore 按 channelId 查出的头像，修旧条目）。
+ */
+fun YoutubeHistoryEntry.resolveChannelAvatarUrl(fallback: String): String =
+  channelAvatarUrl.ifBlank { fallback }

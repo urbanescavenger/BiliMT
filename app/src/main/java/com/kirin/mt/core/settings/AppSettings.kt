@@ -60,6 +60,8 @@ data class AppSettings(
   val autoPlayNextEpisode: Boolean = false,
   val autoPlayRelatedVideo: Boolean = false,
   val autoReturnHomeOnCompletion: Boolean = false,
+  /** 已看完自动删除该视频的下载文件(移动端;仅本地有下载时生效)。 */
+  val autoDeleteWatchedCache: Boolean = false,
   val showClock: Boolean = true,
   val showMiniProgressBar: Boolean = true,
   /** PGC 黑屏时把实时日志盖在画面上，便于直接排查。仅诊断用，默认关。 */

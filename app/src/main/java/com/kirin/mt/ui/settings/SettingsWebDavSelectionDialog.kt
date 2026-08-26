@@ -1,6 +1,5 @@
 package com.kirin.mt.ui.settings
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -15,9 +14,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -36,6 +36,8 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
@@ -64,37 +66,55 @@ internal fun SettingsWebDavSelectionDialog(
   val homeColors = LocalHomeColors.current
   val panelShape = RoundedCornerShape(BiliRadius.Panel)
   val items = if (isRestore) {
-    listOf(WebDavBackupItem.Channels, WebDavBackupItem.Piped)
+    listOf(
+      WebDavBackupItem.Channels,
+      WebDavBackupItem.Piped,
+      WebDavBackupItem.Watched,
+      WebDavBackupItem.BiliAccount,
+    )
   } else {
     WebDavBackupItem.entries
   }
-  var selected by remember { mutableStateOf(items.toSet()) }
+  // 备份默认只勾选日志;B站账号登录态默认不选。
+  // 还原默认勾选除 B站账号外的各项(登录态还原较敏感,需显式勾选)。
+  val defaultSelected = if (isRestore) {
+    items.filter { it != WebDavBackupItem.BiliAccount }
+  } else {
+    items.filter { it == WebDavBackupItem.Logs }
+  }
+  var selected by remember { mutableStateOf(defaultSelected.toSet()) }
   val allFocusRequester = remember { FocusRequester() }
-  val startFocusRequester = remember { FocusRequester() }
+  // 中部选项列表滚动状态:随焦点移动,滚到底才进底部按钮。
+  val listState = rememberLazyListState()
 
   @Composable
   fun itemLabel(item: WebDavBackupItem): String = when (item) {
     WebDavBackupItem.Channels -> stringResource(R.string.settings_webdav_item_channels)
     WebDavBackupItem.Piped -> stringResource(R.string.settings_webdav_item_piped)
+    WebDavBackupItem.Watched -> stringResource(R.string.settings_webdav_item_watched)
+    WebDavBackupItem.BiliAccount -> stringResource(R.string.settings_webdav_item_biliaccount)
     WebDavBackupItem.Logs -> stringResource(R.string.settings_webdav_item_logs)
   }
-
-  BackHandler { onDismiss() }
 
   // 打开时焦点先落到「全选」行,按确认切换全选,D-pad 下移逐项单选。
   LaunchedEffect(Unit) { runCatching { allFocusRequester.requestFocus() } }
 
-  Box(
-    modifier = modifier
-      .fillMaxSize()
-      .background(Color.Black.copy(alpha = 0.55f)),
-    contentAlignment = Alignment.Center,
+  // 真 Dialog 窗口:独立 window 自带焦点根,D-pad 遍历不会逃到背后的设置页。
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false),
   ) {
-    Column(
+    Box(
+      modifier = modifier
+        .fillMaxSize()
+        // 内缩留边,内容超高时滚动区也不会贴到屏幕上下边界。
+        .padding(BiliSpacing.Xl),
+      contentAlignment = Alignment.Center,
+    ) {
+      Column(
       modifier = Modifier
         .width(600.dp)
-        .heightIn(max = 680.dp)
-        .verticalScroll(rememberScrollState())
+        .heightIn(max = 640.dp)
         .biliLiquidGlassSurface(
           enabled = true,
           shape = panelShape,
@@ -102,9 +122,10 @@ internal fun SettingsWebDavSelectionDialog(
           borderColor = homeColors.glassBorder,
           borderWidth = BiliFocus.RestingBorderWidth,
         )
-        .padding(BiliSpacing.Xl),
-      verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
+        .padding(BiliSpacing.Lg),
+      verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
     ) {
+      // 顶部锁定:标题 + 全选(不随中间滚动)。
       Text(
         text = stringResource(
           if (isRestore) R.string.settings_webdav_restore_select_title
@@ -123,14 +144,26 @@ internal fun SettingsWebDavSelectionDialog(
           selected = if (selected.size == items.size) emptySet() else items.toSet()
         },
       )
-      items.forEach { item ->
-        CheckboxRow(
-          label = itemLabel(item),
-          checked = item in selected,
-          onToggle = { selected = if (item in selected) selected - item else selected + item },
-        )
+
+      // 中部可滚动选项:随焦点移动自动滚动,滚到底才进底部按钮。
+      // weight(fill=false) —— 选项少时卡片自适应高度,多时占满剩余空间并滚动。
+      LazyColumn(
+        modifier = Modifier
+          .fillMaxWidth()
+          .weight(1f, fill = false),
+        state = listState,
+        verticalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
+      ) {
+        items(items) { item ->
+          CheckboxRow(
+            label = itemLabel(item),
+            checked = item in selected,
+            onToggle = { selected = if (item in selected) selected - item else selected + item },
+          )
+        }
       }
 
+      // 底部锁定:开始/取消(始终可见,不受中间滚动影响)。
       Row(
         horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
         modifier = Modifier.fillMaxWidth(),
@@ -140,9 +173,7 @@ internal fun SettingsWebDavSelectionDialog(
             if (isRestore) R.string.settings_webdav_start_restore
             else R.string.settings_webdav_start_backup,
           ),
-          modifier = Modifier
-            .weight(1f)
-            .focusRequester(startFocusRequester),
+          modifier = Modifier.weight(1f),
           onClick = { if (selected.isNotEmpty()) onConfirm(selected) },
         )
         PipedActionButton(
@@ -151,6 +182,7 @@ internal fun SettingsWebDavSelectionDialog(
           onClick = onDismiss,
         )
       }
+    }
     }
   }
 }
@@ -171,7 +203,8 @@ private fun CheckboxRow(
     onClick = onToggle,
     modifier = Modifier
       .fillMaxWidth()
-      .height(BiliSizing.SettingsRowHeight)
+      // 比设置页行(96dp)紧凑:备份 5 行+按钮才放得进 TV 窗口,否则底部按钮被裁剪。
+      .height(72.dp)
       .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier),
   ) {
     Row(

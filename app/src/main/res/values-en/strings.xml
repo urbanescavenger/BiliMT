@@ -143,6 +143,7 @@
     <string name="downloads_quality_audio">Audio only (no video)</string>
     <string name="downloads_confirm">Start download</string>
     <string name="downloads_enqueued">Added to download queue</string>
+    <string name="downloads_enqueueing">Adding to download queue…</string>
     <string name="downloads_enqueue_failed">Failed to add to queue</string>
     <string name="downloads_notification_title">Downloading</string>
     <string name="downloads_notification_channel">Video downloads</string>
@@ -239,6 +240,8 @@
     <string name="settings_auto_play_related_video_description">When there is no next part, plays the first recommended video.</string>
     <string name="settings_auto_return_home_on_completion_title">Exit playback when done</string>
     <string name="settings_auto_return_home_on_completion_description">When there is nothing left to play, returns to the previous page and restores video focus.</string>
+    <string name="settings_auto_delete_watched_title">Auto-delete cache after watching</string>
+    <string name="settings_auto_delete_watched_description">Automatically deletes the downloaded files of watched videos to free up storage space.</string>
     <string name="settings_interaction_section">UI/UX</string>
     <string name="settings_show_clock_title">Show clock</string>
     <string name="settings_show_clock_description">Shows the current time in the top-right of the player.</string>
@@ -476,6 +479,7 @@
     <string name="player_seek_preview">Seek preview</string>
     <string name="player_air_jump_will_skip">Skipping ad</string>
     <string name="player_air_jump_skipped">Skipped ad</string>
+    <string name="player_auto_delete_watched_cache">Watched — auto-deleted this video\'s download cache</string>
     <string name="player_completion_next_episode_toast">Playback finished. Playing the next part: %1$s</string>
     <string name="player_completion_related_toast">Playback finished. Playing a recommended video: %1$s</string>
     <string name="player_completion_home_toast">Playback finished. Exiting playback.</string>
@@ -610,6 +614,8 @@
     <string name="settings_webdav_select_all">Select all</string>
     <string name="settings_webdav_item_channels">YouTube followed channels</string>
     <string name="settings_webdav_item_piped">Piped config</string>
+    <string name="settings_webdav_item_watched">Watched list</string>
+    <string name="settings_webdav_item_biliaccount">Bilibili account</string>
     <string name="settings_webdav_item_logs">Logs</string>
     <string name="settings_webdav_start_backup">Start backup</string>
     <string name="settings_webdav_start_restore">Start restore</string>

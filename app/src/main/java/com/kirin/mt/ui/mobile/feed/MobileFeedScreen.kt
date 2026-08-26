@@ -128,6 +128,7 @@ fun MobileFeedScreen(
           videoRepository = videoRepository,
           youtubeHistoryStore = youtubeHistoryStore,
           isLoggedIn = isLoggedIn,
+          channels = channels,
           onVideoSelected = onVideoSelected,
           onOpenOwner = onOpenOwner,
           onLogin = onLogin,

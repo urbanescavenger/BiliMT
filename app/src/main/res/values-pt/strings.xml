@@ -144,6 +144,7 @@
     <string name="downloads_quality_audio">Só áudio (sem transferir o vídeo)</string>
     <string name="downloads_confirm">Iniciar transferência</string>
     <string name="downloads_enqueued">Adicionado à fila de transferências</string>
+    <string name="downloads_enqueueing">A adicionar à fila de transferências…</string>
     <string name="downloads_enqueue_failed">Falha ao colocar na fila de transferências</string>
     <string name="downloads_notification_title">A transferir</string>
     <string name="downloads_notification_channel">Transferências de vídeo</string>
@@ -240,6 +241,8 @@
     <string name="settings_auto_play_related_video_description">Quando não há próximo P para reproduzir, reproduz o primeiro vídeo dos recomendados relacionados.</string>
     <string name="settings_auto_return_home_on_completion_title">Sair automaticamente da reprodução ao terminar</string>
     <string name="settings_auto_return_home_on_completion_description">Quando não há conteúdo seguinte para reproduzir, volta à página original e restaura o foco do vídeo.</string>
+    <string name="settings_auto_delete_watched_title">Apagar automaticamente a cache após ver</string>
+    <string name="settings_auto_delete_watched_description">Elimina automaticamente os ficheiros de download dos vídeos já vistos para libertar espaço de armazenamento.</string>
     <string name="settings_interaction_section">UI/UX</string>
     <string name="settings_show_clock_title">Mostrar hora</string>
     <string name="settings_show_clock_description">Mostra a hora atual no canto superior direito do ecrã de reprodução.</string>
@@ -475,6 +478,7 @@
     <string name="player_seek_preview">Pré-visualização de avanço</string>
     <string name="player_air_jump_will_skip">Vai saltar o anúncio</string>
     <string name="player_air_jump_skipped">Anúncio saltado</string>
+    <string name="player_auto_delete_watched_cache">Visto — cache de download deste vídeo eliminada automaticamente</string>
     <string name="player_completion_next_episode_toast">Reprodução concluída, vai reproduzir o próximo P: %1$s</string>
     <string name="player_completion_related_toast">Reprodução concluída, vai reproduzir o vídeo recomendado: %1$s</string>
     <string name="player_completion_home_toast">Reprodução concluída, vai sair da reprodução</string>
@@ -610,6 +614,8 @@
     <string name="settings_webdav_select_all">Selecionar tudo</string>
     <string name="settings_webdav_item_channels">Canais do YouTube seguidos</string>
     <string name="settings_webdav_item_piped">Configuração Piped</string>
+    <string name="settings_webdav_item_watched">Lista de já vistos</string>
+    <string name="settings_webdav_item_biliaccount">Conta Bilibili</string>
     <string name="settings_webdav_item_logs">Registos</string>
     <string name="settings_webdav_start_backup">Iniciar cópia de segurança</string>
     <string name="settings_webdav_start_restore">Iniciar restauração</string>

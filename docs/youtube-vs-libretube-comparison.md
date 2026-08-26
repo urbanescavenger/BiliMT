@@ -117,9 +117,29 @@ MediaSource      SabrMediaSource(移植) + MergingMediaSource  SabrMediaSource +
 
 **结论**:取流元数据层两边等价。
 
+### 3.1.1 频道头像与播放历史(★ 曾因 /player 无头像字段而空白)
+
+> **2026-08-25 修复(alpha.92 前)**:历史/简介头像空白根因是 `/player` 接口不返回作者头像,`parseVideoDetail`
+> 的 `channelAvatarUrl` 恒设为 `""`。对齐 LibreTube 的权威头像链路后修复,三方一致。
+
+| | BiliTVNative | LibreTube |
+|---|---|---|
+| 历史存储 | DataStore JSON 列表(`YoutubeHistoryStore`) | Room `watchHistoryItem` 表 |
+| 权威头像源 | `StreamInfo.getInfo().uploaderAvatars.maxBy { it.height }.url`(NewPipe fork) | 同(`getStreams` L302) |
+| 起播写入 | `recordPlay` 存 `youtubeDetail.channelAvatarUrl`(YoutubeRepository `getVideoDetail` 复用 NewPipe) | `StreamItem.toWatchHistoryItem()` 存 `uploaderAvatar` |
+| 旧空条目愈合 | 历史页按频道分组后台回填 `updateChannel`,不重播即愈合 | 无需(源从不为空) |
+
+**差异背景**:LibreTube 头像从 NewPipe `StreamInfo` 取,起播即落库,继续观看列表永非空;我们曾解析
+`/player`(无头像字段)导致 `channelAvatarUrl=""` 存空。修复:①`getVideoDetail` 用 `withContext(Dispatchers.IO)`
+调 `StreamInfo.getInfo`(同步阻塞,主线程抛 `NetworkOnMainThreadException`),取 `uploaderAvatars.maxBy { it.height }.url`;
+②`recordPlay` 对 YouTube 取权威 `youtubeDetail.channelAvatarUrl`;③移动端历史页 `MobileHistoryPage` 后台按频道
+分组解析一次,`YoutubeHistoryStore.updateChannel` 原地回填空白条目(不改列表位置)。
+
+**结论**:头像链路已与 LibreTube 同源(NewPipe uploaderAvatars),老空条目由回填一次性迁移。
+
 ---
 
-### 3.2 poToken 铸取与 PoTokenProvider 注册(★ 真实代码差异之一)
+### 3.2 poToken 铸造与 PoTokenProvider 注册(★ 真实代码差异之一)
 
 > **2026-08-17 复核修正**:下表为 alpha.86 终态快照。**alpha.91 已将下方两处差异对齐 LibreTube**:
 > `getIosClientPoToken` 已回退 `null`(与 LibreTube 同)、status=2 minter 已换 PoTokenWebView(§3.6)。

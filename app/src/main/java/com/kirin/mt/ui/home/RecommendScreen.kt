@@ -221,6 +221,14 @@ internal fun RecommendScreen(
         }
       }
     } catch (error: CancellationException) {
+      // 取消(composition 离开,LaunchedEffect 被系统取消)：还原 loadRequest 与 section 状态,
+      // 让下一次进入组合时 LaunchedEffect(sections) 重新发加载请求——否则状态停在 Loading/Empty
+      // 且 reload 守卫只看 null,重进首页不重拉,卡片一直 ERR/骨架。
+      if (uiState.loadRequest?.id == request.id) {
+        uiState.loadRequest = null
+      }
+      uiState.sectionStates = uiState.sectionStates - sectionToLoad.key
+      uiState.loadedSectionKeys = uiState.loadedSectionKeys - sectionToLoad.key
       throw error
     } catch (error: Exception) {
       RecommendState.Failed(error.message.orEmpty())
@@ -294,6 +302,11 @@ internal fun RecommendScreen(
           )
         }
       } catch (error: CancellationException) {
+        // 取消(composition 离开)：松开 loadingMore,否则重进首页后 loadNextPage 因 loadingMore=true 拒发新请求,续页卡死。
+        val latestState = uiState.sectionStates[sectionKeyToLoad] as? RecommendState.Success
+        if (latestState != null) {
+          uiState.sectionStates = uiState.sectionStates + (sectionKeyToLoad to latestState.copy(loadingMore = false))
+        }
         throw error
       } catch (error: Exception) {
         val latestState = uiState.sectionStates[sectionKeyToLoad] as? RecommendState.Success ?: return@launch

@@ -183,7 +183,10 @@ fun MobileDynamicScreen(
   }
 
   // 首次进入 + 每次点击底栏"动态"tab(dynamicRefreshKey 自增)都刷新 B 站 + YouTube 关注。
-  LaunchedEffect(isLoggedIn, dynamicRefreshKey) {
+  // key 加稳定 channelId 列表:首次进入时 youtubeChannels 还是 emptyList(store 未发),首载只拉 B 站;
+  // 频道发出来后 key 变化 → 重跑 loadFirstBody 把 YouTube 并进首载(头像回填不改 ID,不触发重启)。
+  val youtubeChannelIds = youtubeChannels.map { it.channelId }
+  LaunchedEffect(isLoggedIn, dynamicRefreshKey, youtubeChannelIds) {
     if (!isLoggedIn) return@LaunchedEffect
     refreshFeed()
   }

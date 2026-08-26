@@ -143,6 +143,8 @@ import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
+import com.kirin.mt.core.youtube.sabr.media.HeightAwareAdaptiveTrackSelectionFactory
+import com.kirin.mt.core.youtube.sabr.media.SabrBandwidthMeter
 import com.kirin.mt.core.youtube.sabr.media.SabrManifest
 import com.kirin.mt.core.youtube.sabr.media.SabrMediaFetcher
 import com.kirin.mt.core.youtube.sabr.media.SabrMediaSource
@@ -212,8 +214,8 @@ private sealed interface MobilePlayerState {
 
 /**
  * 在线播放器缓存命中:按 bvid(YouTube 为 videoId)+ cid(分P)在下载库找「已可播」的下载项。
- * 仅匹配 isPlayable(媒体分件全 COMPLETED)且有视频分件(video/muxed)的缓存——纯音频下载
- * (audio-only)不命中,在线播该视频回落完整网络流,避免本地纯音频替代完整视频;
+ * 匹配 isPlayable(媒体分件全 COMPLETED)的缓存,含纯音频下载(audio-only,video/muxed 均无):
+ * 命中后由 buildLocalMediaSource 据 videoFile 是否为空决定播视频+音频或仅音频,不回落网络。
  * 部分下载/未完成回落在线。cid 匹配避免多 P 视频误用其它分P的缓存文件(下载存的是解析后真实 cid)。
  */
 private suspend fun findCachedPlayable(
@@ -221,11 +223,20 @@ private suspend fun findCachedPlayable(
   bvid: String,
   cid: Long,
 ): DownloadWithItems? {
-  return downloadManager.downloads.first()
-    .firstOrNull {
-      it.download.videoId == bvid && it.download.cid == cid && it.isPlayable &&
-        (it.videoPart != null || it.muxedPart != null)
-    }
+  val all = downloadManager.downloads.first()
+  // 诊断:缓存未命中时,把查询参数与下载库实际内容打出来,定位是 videoId/cid 不匹配、
+  // 状态未完成还是分件缺失。真机确认后删除(见记忆「先诊断拿证据再改」)。
+  val hit = all.firstOrNull {
+    it.download.videoId == bvid && it.download.cid == cid && it.isPlayable
+  }
+  if (hit == null && all.isNotEmpty()) {
+    Log.i(MobilePlayerLogTag, "缓存未命中 query[bvid=$bvid cid=$cid] downloads=${all.size}: " +
+      all.joinToString(" | ") { d ->
+        "videoId=${d.download.videoId} cid=${d.download.cid} status=${d.status.key} " +
+          "playable=${d.isPlayable} video=${d.videoPart != null} muxed=${d.muxedPart != null}"
+      })
+  }
+  return hit
 }
 
 /**
@@ -250,7 +261,8 @@ private fun buildCachedPlaybackInfo(cached: DownloadWithItems, cid: Long, title:
 
 /**
  * 用本地已下载文件构建 MediaSource(镜像离线播放器):单文件(muxed)→ ProgressiveMediaSource,
- * 视频+音频两文件 → MergingMediaSource 现场 mux。DefaultDataSource 走本地文件,无网络 headers。
+ * 视频+音频两文件 → MergingMediaSource 现场 mux;纯音频下载(videoFile==null)→ 只播音频轨。
+ * DefaultDataSource 走本地文件,无网络 headers。
  */
 private fun buildLocalMediaSource(
   context: Context,
@@ -259,8 +271,18 @@ private fun buildLocalMediaSource(
   mediaMetadata: androidx.media3.common.MediaMetadata,
 ): MediaSource {
   val (videoFile, audioFile) = downloadManager.playbackFiles(cached.download.id)
-  if (videoFile == null) throw IllegalStateException(context.getString(R.string.player_error_cache_missing))
   val dataSourceFactory = DefaultDataSource.Factory(context)
+  // 纯音频下载只有 audioFile:只播音频轨(镜像离线播放器 MobileOfflinePlayerScreen)。
+  if (videoFile == null) {
+    if (audioFile == null) throw IllegalStateException(context.getString(R.string.player_error_cache_missing))
+    return ProgressiveMediaSource.Factory(dataSourceFactory)
+      .createMediaSource(
+        androidx.media3.common.MediaItem.Builder()
+          .setUri(Uri.fromFile(audioFile))
+          .setMediaMetadata(mediaMetadata)
+          .build(),
+      )
+  }
   val videoItem = androidx.media3.common.MediaItem.Builder()
     .setUri(Uri.fromFile(videoFile))
     .setMediaMetadata(mediaMetadata)
@@ -287,6 +309,8 @@ fun MobilePlayerScreen(
   request: PlaybackRequest,
   playbackRepository: PlaybackRepository,
   youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
+  watchedStore: com.kirin.mt.core.storage.WatchedStore,
+  autoDeleteWatchedCache: Boolean,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
@@ -380,6 +404,8 @@ fun MobilePlayerScreen(
   var pauseInteractionToken by remember { mutableIntStateOf(0) }
   // 拖拽 seek 起点记录的播放意图:松手 seek 后若之前在播放则恢复,避免拖拽后意外暂停
   var wasPlayingBeforeSeek by remember { mutableStateOf(false) }
+  // 诊断:最近一次 routeSeek 的时间戳(毫秒),用于 ENDED 时区分"自然播完"还是"seek 到末尾误触"
+  var lastSeekAtMs by remember { mutableLongStateOf(0L) }
   // 空降助手(AirJump):SponsorBlock 风格自动跳过广告/片头/片尾段,镜像 TV PlayerScreen
   var airJumpSegments by remember { mutableStateOf<List<AirJumpSegment>>(emptyList()) }
   var warnedAirJumpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -426,16 +452,22 @@ fun MobilePlayerScreen(
   }
 
   // alpha.9X(ceiling 滞回):抽成命名实例——既给 ExoPlayer 做带宽计(ABR 选轨),又传给 SabrMediaSource.
-  // Factory 让 DefaultSabrChunkSource 读带宽估计判定「待放宽档位是否持续达标」。
+  // alpha.9X(带宽驱动选档,对齐 PlayerScreen):包装成 SabrBandwidthMeter,getBitrateEstimate 返回
+  // SabrMediaFetcher 实测真实带宽(中位数)——DefaultBandwidthMeter 被 SabrDataSource 内存读样本污染不可信,
+  // 媒体3 原生 ABR 拿到可信带宽才能按真实网速升降档(不再需要 exclude/force 补丁)。
   val bandwidthMeter = remember {
-    DefaultBandwidthMeter.Builder(context)
-      .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
-      .build()
+    SabrBandwidthMeter(
+      DefaultBandwidthMeter.Builder(context)
+        .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
+        .build()
+    )
   }
   val player = remember(bufferMaxMs) {
     // alpha.9X(对齐 PlayerScreen):YouTube SABR Auto 升档——H264+VP9 混合 TrackGroup 默认不进一条
     // adaptive selection(坍缩成 1 轨永不升档)。显式 DefaultTrackSelector 开视频混合 mime + 非无缝 + 多自适应。
-    val trackSelector = DefaultTrackSelector(context)
+    // alpha.9Y(分辨率优先选档,对齐 PlayerScreen):媒体3 原生按 bitrate 选档会被 YouTube bitrate/height
+    // 错位卡在 1080p 不升。注入按 height 选档的自定义 selection,带宽只当门槛。
+    val trackSelector = DefaultTrackSelector(context, HeightAwareAdaptiveTrackSelectionFactory())
     trackSelector.setParameters(
       DefaultTrackSelector.Parameters.Builder()
         .setAllowVideoMixedMimeTypeAdaptiveness(true)
@@ -469,8 +501,22 @@ fun MobilePlayerScreen(
     val info = ready.info
     val positionMs = player.currentPosition.coerceAtLeast(0L)
     val durationMs = player.duration.takeIf { it > 0 } ?: info.durationMs
+    // 播放到结尾(距末尾 2s 内)视为「已看完」,写入本地 watched 集合供卡片右下角标角标。
+    // 直播/IPTV 时长语义不同,不标记。幂等写入。
+    val reachedEnd = !activeRequest.isLive && !activeRequest.isIptv &&
+      durationMs > 0 && positionMs >= durationMs - 2000L
     scope.launch {
-      // 本地进度保存保留（YouTube 按 videoId 也能续播）；B 站 heartbeat 仅 B 站视频上报。
+      if (reachedEnd) {
+        runCatching { watchedStore.markCompleted(info.bvid) }
+        // 已看完自动删除缓存:删该视频的下载文件。开关仅移动端。实际删了才 Toast 反馈。
+        if (autoDeleteWatchedCache) {
+          val deleted = runCatching { downloadManager.deleteByVideoId(info.bvid) }.getOrDefault(0)
+          if (deleted > 0) {
+            Toast.makeText(context, context.getString(R.string.player_auto_delete_watched_cache), Toast.LENGTH_SHORT).show()
+          }
+        }
+      }
+      // 本地进度保存保留（B 站按 videoId 也能续播）；B 站 heartbeat 仅 B 站视频上报。
       runCatching { playbackRepository.saveProgress(info.bvid, info.cid, positionMs, durationMs) }
       // YouTube 播放历史：同步更新本地历史列表的进度（断电续播 + 历史 tab 展示）。
       if (activeRequest.isYoutube) {
@@ -559,7 +605,16 @@ fun MobilePlayerScreen(
    */
   fun routeSeek(targetMs: Long) {
     val maxMs = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
-    val clamped = targetMs.coerceIn(0L, maxMs)
+    // 进度条末端误触防护:目标落在末尾 3s 内退到结束前 3s,避免 seekTo(末尾)→STATE_ENDED 误触发自动连播切下一集
+    // (播放列表场景误触进度条最末会跳到下一集)。SABR 中段 seek 照常,仅末端寻址受限。
+    val clamped = if (maxMs > 0L && maxMs != Long.MAX_VALUE) {
+      val upper = (maxMs - 3000L).coerceAtLeast(0L)
+      targetMs.coerceIn(0L, upper)
+    } else {
+      targetMs
+    }
+    lastSeekAtMs = System.currentTimeMillis()
+    Log.i(MobilePlayerLogTag, "routeSeek target=$targetMs maxMs=$maxMs clamped=$clamped")
     if ((playerState as? MobilePlayerState.Ready)?.info?.isSabrProgressive() == true) {
       pendingSABRSeekMs = clamped
       sabrSeekReloadKey++
@@ -628,8 +683,13 @@ fun MobilePlayerScreen(
       val cur = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
       if (cur in 0 until playQueue.lastIndex) playQueue[cur + 1] else null
     } else null
-    return queueNext?.toPlaybackRequest()
+    val next = queueNext?.toPlaybackRequest()
       ?: activeRequest.nextEpisodeCompletion(metadata, selectedQualityId)?.request
+    Log.i(
+      MobilePlayerLogTag,
+      "computeNextRequest playQueue.size=${playQueue.size} curBvid=${activeRequest.bvid} queueNext=${queueNext?.bvid} next=${next?.bvid}",
+    )
+    return next
   }
 
   // 起始挡位(alpha.9X):起播阶段用 selector maxVideoSize 把 ABR 临时卡在起始档,首帧渲染
@@ -641,6 +701,10 @@ fun MobilePlayerScreen(
   // 都能在"不依赖 Compose 重组"的协程作用域里直接调用——后台播放时帧时钟暂停、重组被推迟,
   // 若仍靠 LaunchedEffect(activeRequest) 触发加载,后台播完当前视频后下一集永远不会加载。
   suspend fun loadRequest(request: PlaybackRequest) {
+    Log.i(
+      MobilePlayerLogTag,
+      "loadRequest bvid=${request.bvid} cid=${request.cid} quality=${request.preferredQualityId} startPos=${request.startPositionMs}",
+    )
     playerState = MobilePlayerState.Loading
     completionReported = false
     userPaused = false
@@ -682,6 +746,7 @@ fun MobilePlayerScreen(
       if (cachedPlayback != null) {
         usingCachedPlayback = true
         val cachedInfo = buildCachedPlaybackInfo(cachedPlayback, cid, displayTitle, context)
+        Log.i(MobilePlayerLogTag, "缓存命中: videoId=${cachedInfo.bvid} cid=$cid quality='${cachedInfo.selectedQuality.description}' qualities=${cachedInfo.qualities.size}")
         selectedQualityId = cachedInfo.selectedQuality.id
         actualQualityId = cachedInfo.selectedQuality.id
         val startPositionMs = playbackRepository.getSavedProgress(cachedInfo.bvid, cachedInfo.cid)?.positionMs
@@ -730,6 +795,11 @@ fun MobilePlayerScreen(
                 title = cachedInfo.title,
                 channelName = request.ownerName,
                 channelId = request.channelId,
+                // 对齐 LibreTube + TV:头像取权威源。YouTube 的 activeRequest.ownerFace 恒空
+                // (withResolvedMetadata 对 YouTube metadata=null 填不了),权威头像在
+                // youtubeDetail.channelAvatarUrl(/player→NewPipe uploaderAvatars 已填);B站走 activeRequest。
+                channelAvatarUrl = youtubeDetail?.channelAvatarUrl?.takeIf { it.isNotBlank() }
+                  ?: activeRequest.ownerFace.ifBlank { request.ownerFace },
                 thumbnailUrl = request.coverUrl,
                 durationMs = cachedInfo.durationMs,
                 positionMs = startPositionMs,
@@ -860,16 +930,20 @@ fun MobilePlayerScreen(
           .build()
         DashMediaSource.Factory(dataSourceFactory).createMediaSource(dashItem)
       }
-      // 起始挡位:起播阶段用 selector maxHeight 临时卡在起始档(SABR 专属,非 SABR 不卡),保证
-      // 首段落在起始档(不靠带宽);首帧渲染后 onRenderedFirstFrame 松开,ABR 爬到默认画质上限。
+      // 起始挡位:起播阶段用 min+max 精确锁在起始档(SABR 专属,非 SABR 不卡),保证首段落在起始档
+      // (不靠带宽,对齐 LibreTube AbstractPlayerService setMinVideoSize+setMaxVideoSize 锁法,比原 maxHeight
+      // 上限更精确,杜绝"起播即顶满 4K");首帧渲染后 onRenderedFirstFrame 松开,升降档交给 ABR+excludeTrack。
       startQualityRelaxed = false
       val startQualityHeight = if (effectiveInfo.isSabrSingle()) youtubeStartQuality.startHeight else null
       if (startQualityHeight != null) {
-        // 在现有参数基础上叠加高度 cap,保留其它配置(mixed-mime/non-seamless/audioOnly 禁用视频轨等)。
+        // 在现有参数基础上叠加高度 min+max cap,保留其它配置(mixed-mime/non-seamless/audioOnly 禁用视频轨等)。
         val cur = player.trackSelectionParameters
         if (cur is DefaultTrackSelector.Parameters) {
           player.setTrackSelectionParameters(
-            cur.buildUpon().setMaxVideoSize(Int.MAX_VALUE, startQualityHeight).build()
+            cur.buildUpon()
+              .setMinVideoSize(Int.MIN_VALUE, startQualityHeight)
+              .setMaxVideoSize(Int.MAX_VALUE, startQualityHeight)
+              .build()
           )
         }
       }
@@ -905,6 +979,11 @@ fun MobilePlayerScreen(
               title = sabrEffectiveInfo.title,
               channelName = request.ownerName,
               channelId = request.channelId,
+              // 对齐 LibreTube + TV:头像取权威源。YouTube 的 activeRequest.ownerFace 恒空
+              // (withResolvedMetadata 对 YouTube metadata=null 填不了),权威头像在
+              // youtubeDetail.channelAvatarUrl(/player→NewPipe uploaderAvatars 已填);B站走 activeRequest。
+              channelAvatarUrl = youtubeDetail?.channelAvatarUrl?.takeIf { it.isNotBlank() }
+                ?: activeRequest.ownerFace.ifBlank { request.ownerFace },
               thumbnailUrl = request.coverUrl,
               durationMs = sabrEffectiveInfo.durationMs,
               positionMs = startPositionMs,
@@ -981,6 +1060,12 @@ fun MobilePlayerScreen(
         // 原本仅命令式读 player.playbackState 做 stall 检测,UI 无法据此显加载图标/控制栏。
         isBuffering = playbackState == Player.STATE_BUFFERING
         if (playbackState == Player.STATE_ENDED && playerState is MobilePlayerState.Ready && player.mediaItemCount > 0 && !completionReported) {
+          // 诊断:ENDED 时区分"自然播完"还是"seek 到末尾误触"。recentSeek=true 说明 2s 内有过 routeSeek。
+          val recentSeek = System.currentTimeMillis() - lastSeekAtMs < 2000L
+          Log.i(
+            MobilePlayerLogTag,
+            "ENDED pos=${player.currentPosition} dur=${player.duration} recentSeek=$recentSeek lastSeekAtMs=$lastSeekAtMs",
+          )
           completionReported = true
           saveAndReportProgress(CompletedProgressSeconds)
           // 自动连播下一集:后台播放时帧时钟暂停、Compose 重组被推迟,LaunchedEffect(completionReported)
@@ -1118,24 +1203,33 @@ fun MobilePlayerScreen(
     }.getOrDefault(emptyList())
   }
 
-  // 相关视频:B站按 bvid 拉 related;YouTube 走 /next secondaryResults(对齐 LibreTube),失败回退播放列表后续。
+  // 相关视频:播放列表场景相关 = 播放列表后续(与自动连播 computeNextRequest 同源同序,不依赖在线接口成败);
+  // 历史/动态/搜索等单视频(playQueue 无后续)播放 → 走在线相关(B站按 bvid 拉 related;YouTube 走 /next secondaryResults)。
   LaunchedEffect(activeRequest.bvid) {
     relatedVideos = emptyList()
     if (activeRequest.bvid.isBlank()) return@LaunchedEffect
+    // 播放列表播放:相关视频 = 播放列表后续,与自动连播一致。
+    if (playQueue.size > 1) {
+      val cur = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
+      if (cur >= 0 && cur < playQueue.lastIndex) {
+        relatedVideos = playQueue.drop(cur + 1)
+        Log.i(MobilePlayerLogTag, "related source=playlist size=${playQueue.size} cur=$cur bvid=${activeRequest.bvid}")
+        return@LaunchedEffect
+      }
+    }
+    Log.i(MobilePlayerLogTag, "related source=online playQueue.size=${playQueue.size} bvid=${activeRequest.bvid}")
+    // 非播放列表(或已在列表末):走在线相关。
     if (activeRequest.isYoutube) {
       relatedVideos = runCatching {
         videoRepository.getYoutubeRelatedVideos(activeRequest.bvid)
       }.onSuccess { Log.i("YtRelated", "mobile related ok: ${it.size} for ${activeRequest.bvid}") }
         .onFailure { Log.w("YtRelated", "mobile related failed for ${activeRequest.bvid}", it) }
-        .getOrElse {
-          val curIndex = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
-          if (curIndex >= 0) playQueue.drop(curIndex + 1) else emptyList()
-        }
-      return@LaunchedEffect
+        .getOrDefault(emptyList())
+    } else {
+      relatedVideos = runCatching {
+        videoRepository.getRelatedVideos(activeRequest.bvid)
+      }.getOrDefault(emptyList())
     }
-    relatedVideos = runCatching {
-      videoRepository.getRelatedVideos(activeRequest.bvid)
-    }.getOrDefault(emptyList())
   }
 
   // 心跳上报
@@ -1182,7 +1276,7 @@ fun MobilePlayerScreen(
   val positionMs = seekPreviewMs ?: playbackPositionState.longValue
   val durationMs = playbackDurationState.longValue.coerceAtLeast(1L)
 
-  // 播放列表内点相关/后续视频:就地切换 activeRequest(保留 playQueue 上下文,◀▶ 与相关视频持续可用);
+  // 播放列表内点相关/后续视频:就地切换 activeRequest(保留 playQueue 上下文,◀▶ 已移除,相关视频入口仍可用);
   // 非列表视频回退外层 onPlayVideo(会清队列)。
   val playPlaylistVideo: (VideoSummary) -> Unit = { video ->
     val idx = playQueue.indexOfFirst { it.bvid == video.bvid }
@@ -1610,36 +1704,8 @@ fun MobilePlayerScreen(
               modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
             )
             Text(formatMs(durationMs), color = Color.White)
-            // 播放列表内:上一个 / 下一个视频按钮(◀ ▶)。非播放列表(curQueueIndex==-1)不显示。
-            val curQueueIndex = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
-            if (curQueueIndex >= 0) {
-              MobilePlayerIconButton(
-                iconRes = R.drawable.ic_player_chevron_left,
-                contentDescription = stringResource(R.string.player_previous),
-                tint = if (curQueueIndex > 0) BiliColors.TextPrimary else BiliColors.TextTertiary,
-                onClick = {
-                  if (curQueueIndex > 0) {
-                    scope.launch {
-                      loadRequest(playQueue[curQueueIndex - 1].toPlaybackRequest()
-                        .copy(preferredQualityId = selectedQualityId))
-                    }
-                  }
-                },
-              )
-              MobilePlayerIconButton(
-                iconRes = R.drawable.ic_player_chevron_right,
-                contentDescription = stringResource(R.string.player_next),
-                tint = if (curQueueIndex < playQueue.lastIndex) BiliColors.TextPrimary else BiliColors.TextTertiary,
-                onClick = {
-                  if (curQueueIndex < playQueue.lastIndex) {
-                    scope.launch {
-                      loadRequest(playQueue[curQueueIndex + 1].toPlaybackRequest()
-                        .copy(preferredQualityId = selectedQualityId))
-                    }
-                  }
-                },
-              )
-            }
+            // 上一个/下一个(◀▶)按钮已移除:播放列表里紧挨缓存清晰度静态文字,点"清晰度"易误触切下一集。
+            // 与在线播放器对齐,进度条行只保留清晰度/音轨入口。
             // alpha.9X(恢复清晰度选择):HD 画质按钮 + DropdownMenu,列全部可播档位,选中即重载(preferredQualityId)。
             // 播放器页面未包 MaterialTheme,DropdownMenu 显式深色 containerColor,否则默认白底。
             // 缓存命中:清晰度只读——显示缓存清晰度静态文字,不可切换(本地源无多轨)。
@@ -1675,6 +1741,7 @@ fun MobilePlayerScreen(
                       },
                       onClick = {
                         showQualityMenu = false
+                        Log.i(MobilePlayerLogTag, "点清晰度: usingCachedPlayback=$usingCachedPlayback 点=${q.id} '${q.description}' 现播档=$actualQualityId 菜单档数=${qualities.size} bvid=${activeRequest.bvid} cid=${activeRequest.cid}")
                         selectedQualityId = q.id
                         actualQualityId = q.id
                         scope.launch {
@@ -2194,12 +2261,14 @@ private fun MobileYoutubeIntroTab(
         .clip(CircleShape)
         .background(MaterialTheme.colorScheme.surfaceVariant)
       // /player 无频道头像字段,回退卡片携带的 ownerFace(卡片已由数据层填 YouTube 头像)。
+      // 走 buildOwnerAvatarRequest:归一化协议相对 `//yt3...` 且识别 googleusercontent 裸请求,
+      // 否则协议相对 URL 直接加载失败 → 播放器头像空白(频道主页正常)。
       val avatarUrl = detail.channelAvatarUrl.ifBlank { request.ownerFace }
       if (avatarUrl.isBlank()) {
         Box(modifier = avatarModifier)
       } else {
         AsyncImage(
-          model = avatarUrl,
+          model = remember(context, avatarUrl) { buildOwnerAvatarRequest(context, avatarUrl) },
           contentDescription = detail.channelName,
           contentScale = androidx.compose.ui.layout.ContentScale.Crop,
           modifier = avatarModifier,

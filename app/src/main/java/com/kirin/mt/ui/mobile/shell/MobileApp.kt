@@ -11,7 +11,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -27,10 +31,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import com.kirin.mt.R
 import com.kirin.mt.core.i18n.ChineseTextConverters
@@ -106,12 +114,15 @@ fun BiliMobileApp(
   youtubePlaylistStore: YoutubePlaylistStore,
   youtubeFeedCacheStore: com.kirin.mt.core.youtube.YoutubeFeedCacheStore,
   youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
+  watchedStore: com.kirin.mt.core.storage.WatchedStore,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
   downloadManager: com.kirin.mt.core.download.DownloadManager,
 ) {
   val context = LocalContext.current
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
+  // 已看完的视频 id 集合:经 CompositionLocal 下发,卡片右下角据此标「已看完」。
+  val watchedIds by watchedStore.watched.collectAsState(initial = emptySet())
   // 语言设置:与 TV AppShell 一致,把 LocalContext 整体换成所选 locale 的 context,
   // 使 stringResource(R.string.*) 命中对应 values-<locale> 资源。
   val localizedContext = remember(context, settings.chineseTextVariant) {
@@ -154,6 +165,8 @@ fun BiliMobileApp(
   var showPlaylistPicker by remember { mutableStateOf(false) }
   // 长按菜单里点「下载」→ 弹清晰度选择对话框;确认后入队下载。
   var showDownloadDialog by remember { mutableStateOf(false) }
+  // 确认清晰度后入队下载期间弹加载动画(遮罩转圈),入队完成/失败即收起。
+  var downloadEnqueueing by remember { mutableStateOf(false) }
   // B站下载弹窗的清晰度列表:经 getPlaybackInfo 拉取后缓存,再开对话框。
   var biliDownloadQualities by remember { mutableStateOf<List<PlaybackQuality>>(emptyList()) }
   // B站下载确认入队用的请求:拉清晰度时已解析 cid,enqueue 复用避免 playurl 用 cid=0 返 -400
@@ -172,13 +185,40 @@ fun BiliMobileApp(
   }
 
   // 打开 UP 主页:按来源分流——YouTube 带 channelId 进频道主页,否则 B 站空间。
+  // 卡片身份数据缺失(首页/动态特殊卡无 owner、搜索 YouTube 无 channelId)时,点击按需解析补齐。
   fun openOwner(video: VideoSummary) {
-    if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
-      youtubeChannelRequest = YoutubeChannel(video.channelId, video.ownerName)
-      channelPlaybackBehind = false
+    if (video.source == SourceYoutube) {
+      if (video.channelId.isNotBlank()) {
+        youtubeChannelRequest = YoutubeChannel(video.channelId, video.ownerName)
+        channelPlaybackBehind = false
+      } else if (video.ownerName.isNotBlank()) {
+        // channelId 缺失:按频道名解析出 channelId 再进频道主页。
+        scope.launch {
+          val resolved = runCatching { youtubeRepository.resolveChannel(video.ownerName) }.getOrNull()
+          if (resolved != null && resolved.channelId.isNotBlank()) {
+            youtubeChannelRequest = YoutubeChannel(resolved.channelId, resolved.name.ifBlank { video.ownerName })
+            channelPlaybackBehind = false
+          }
+        }
+      }
     } else {
-      spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
-      spacePlaybackBehind = false
+      if (video.ownerMid > 0L) {
+        spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+        spacePlaybackBehind = false
+      } else if (video.bvid.isNotBlank()) {
+        // ownerMid 缺失:按 bvid 解析出 UP 主身份再进空间。
+        scope.launch {
+          val owner = runCatching { videoRepository.resolveBiliOwner(video.bvid) }.getOrNull()
+          if (owner != null) {
+            spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(
+              owner.first,
+              owner.second.ifBlank { video.ownerName },
+              owner.third.ifBlank { video.ownerFace },
+            )
+            spacePlaybackBehind = false
+          }
+        }
+      }
     }
   }
 
@@ -208,11 +248,14 @@ fun BiliMobileApp(
     LocalContext provides localizedContext,
     LocalResources provides localizedContext.resources,
     LocalChineseTextConverter provides textConverter,
+    com.kirin.mt.ui.mobile.home.LocalWatchedIds provides watchedIds,
   ) {
     Box(modifier = Modifier.fillMaxSize()) {
     NavigationSuiteScaffold(
       modifier = Modifier.statusBarsPadding(),
       navigationSuiteItems = {
+        // 底部导航始终渲染。播放器是全屏不透明层(见下),盖住底栏并吞噬其下所有指针事件,
+        // 播放时底栏不可达,无需在此隐藏——将来底下新增任何内容也一样被盖住。
         bottomNav.forEach { dest ->
           item(
             selected = selected == dest,
@@ -313,6 +356,11 @@ fun BiliMobileApp(
         playbackRequest = null
       }
       Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        // 全屏消费层:吞噬整个播放器区域的所有指针事件,盖住并屏蔽其下任何层(底部导航/页面/空间等)。
+        // background 只画不吞事件——缓存视频里"清晰度位置"是无 onClick 的静态 Text,点击会落穿到
+        // 背后的"设置"tab 打开设置页。此层让播放器无点击目标处也吞掉指针,播放器控件叠在其上仍正常响应;
+        // 将来底下新增别的内容也一样被盖住。
+        Box(Modifier.fillMaxSize().pointerInput(Unit) { consumeAllGestures() })
         if (request.isLive || request.isIptv) {
           LivePlayerScreen(
             request = request,
@@ -327,6 +375,8 @@ fun BiliMobileApp(
           request = request,
           playbackRepository = playbackRepository,
           youtubeHistoryStore = youtubeHistoryStore,
+          watchedStore = watchedStore,
+          autoDeleteWatchedCache = settings.autoDeleteWatchedCache,
           danmakuSettingsStore = danmakuSettingsStore,
           playbackHttpClient = playbackHttpClient,
           cdnSelector = cdnSelector,
@@ -492,17 +542,22 @@ fun BiliMobileApp(
             biliQualities = biliDownloadQualities,
             onDismiss = { showDownloadDialog = false; biliDownloadRequest = null },
             onConfirm = { choice ->
+              // 确认下载即收起整套长按菜单(不必等入队结果),避免 dialog 关闭后长按弹窗又冒出来/残留。
               showDownloadDialog = false
+              longPressVideo = null
               // B站用拉清晰度时已解析 cid 的 request(卡片 cid=0 直接入队会 -400);YouTube 走卡片原请求。
               val request = biliDownloadRequest ?: video.toPlaybackRequest()
+              biliDownloadRequest = null
+              // 入队期间弹加载动画给反馈,完成/失败再收起。
+              downloadEnqueueing = true
               scope.launch {
                 downloadManager.enqueue(request, choice)
                   .onSuccess {
-                    longPressVideo = null
-                    biliDownloadRequest = null
+                    downloadEnqueueing = false
                     Toast.makeText(context, context.getString(R.string.downloads_enqueued), Toast.LENGTH_SHORT).show()
                   }
                   .onFailure { e ->
+                    downloadEnqueueing = false
                     Toast.makeText(context, e.message ?: context.getString(R.string.downloads_enqueue_failed), Toast.LENGTH_LONG).show()
                   }
               }
@@ -577,6 +632,42 @@ fun BiliMobileApp(
         }
       }
     }
+
+    // 入队下载期间:模态加载动画(转圈),给"正在入队"的过程反馈;完成/失败由 onConfirm 收起。
+    if (downloadEnqueueing) {
+      MobileEnqueueingDialog()
+    }
   }
   }
+}
+
+/** 入队下载期间的加载动画:模态遮罩 + 转圈 + 文案。入队通常很快,仅作过程反馈,不可手动取消。 */
+/**
+ * 全屏吞噬所有指针事件:使该层成为不透明遮挡,吞掉点/滑动,阻止事件落到它之下的任何组件
+ * (底部导航、页面、空间等)。播放器控件叠于其上,事件先由顶层控件消费,不受影响。
+ */
+private suspend fun PointerInputScope.consumeAllGestures() {
+  awaitPointerEventScope {
+    while (true) {
+      val event = awaitPointerEvent()
+      event.changes.forEach { it.consume() }
+    }
+  }
+}
+
+@Composable
+private fun MobileEnqueueingDialog() {
+  AlertDialog(
+    onDismissRequest = { /* 不可取消,入队完成/失败自动收起 */ },
+    confirmButton = {},
+    title = { Text(stringResource(R.string.downloads_enqueueing)) },
+    text = {
+      Box(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+        contentAlignment = Alignment.Center,
+      ) {
+        CircularProgressIndicator()
+      }
+    },
+  )
 }

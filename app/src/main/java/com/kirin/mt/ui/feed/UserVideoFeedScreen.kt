@@ -49,6 +49,8 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.YoutubeHistoryEntry
+import com.kirin.mt.core.youtube.resolveChannelAvatarUrl
+import com.kirin.mt.core.youtube.resolveThumbnailUrl
 import com.kirin.mt.core.network.FollowingSeason
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.network.mergeByPubdate
@@ -114,6 +116,10 @@ internal class DynamicFeedUiState {
   var focusedVideoKey by mutableStateOf("")
   var hasLoadedContent by mutableStateOf(false)
   var loadedOnce by mutableStateOf(false)
+  // 首次进入时 youtubeChannels 还是 emptyList(store 未发),首载只拉 B 站并置 loadedOnce=true;
+  // 等频道发出来后再重启 LaunchedEffect 时,loadedOnce 会挡住 YouTube 合并 → 初始空、手动刷新才出。
+  // 用该标志区分「频道首次就绪需补拉 YouTube」与「后续头像回填等频道变化(不应重载)」。
+  var youtubeMerged by mutableStateOf(false)
   var handledManualRefreshKey by mutableIntStateOf(0)
   var focusRestoredItemKey by mutableIntStateOf(0)
 }
@@ -213,7 +219,13 @@ internal fun UserFeedScreen(
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   // 本地 YouTube 播放历史(免登录):合并进 History tab,与 B 站历史按播放时间倒序混合。
   val youtubeHistory by youtubeHistoryStore.history.collectAsState(initial = emptyList())
-  val youtubeHistoryVideos = youtubeHistory.map { it.toVideoSummary() }
+  // 频道头像回退:旧历史条目 channelAvatarUrl 为空,按 channelId 从 YoutubeChannelStore 补(动态 feed 已缓存)。
+  val avatarByChannelId = remember(youtubeChannels) {
+    youtubeChannels.associate { it.channelId to it.avatar }
+  }
+  val youtubeHistoryVideos = youtubeHistory.map {
+    it.toVideoSummary(avatarFallback = avatarByChannelId[it.channelId].orEmpty())
+  }
 
   // 侧栏切回动态页时 screen 重组但未切子 tab → onSelect 不触发,当前子 tab 的旧
   // focusedVideoIndex 仍在,从 tab 按 Down 走 focusRestoredItemKey 会跳到旧深位置。
@@ -225,7 +237,11 @@ internal fun UserFeedScreen(
     }
   }
 
-  LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab, youtubeChannels) {
+  // key 用稳定 channelId 列表而非 youtubeChannels 全量:YouTube 拉取中 updateAvatar 回填会改
+  // youtubeChannels(头像字段),若 key 用全量会重启 LaunchedEffect 取消在途拉取 → 无限重启循环。
+  // channelId 不变则 key 稳定,头像回填不触发重启。
+  val youtubeChannelIds = youtubeChannels.map { it.channelId }
+  LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab, youtubeChannelIds) {
     // 统一动态「动态(视频)」合并了 YouTube 关注(免登录,手动配置频道);其余 tab 需要登录。
     if (!isLoggedIn && !(selectedTab == UserFeedTab.DynamicVideo && youtubeChannels.isNotEmpty())) {
       return@LaunchedEffect
@@ -237,7 +253,10 @@ internal fun UserFeedScreen(
         "video",
         youtubeChannels,
         youtubeChannelStore,
-        forceRefresh = autoRefreshOnSwitch,
+        // 频道首次就绪(非空且尚未合并 YouTube)时强制补拉,把 YouTube 关注并进首载;
+        // 之后频道变化(头像回填)不再强制,靠 loadedOnce 去重。
+        forceRefresh = autoRefreshOnSwitch ||
+          (youtubeChannels.isNotEmpty() && !feedState.dynamicVideo.youtubeMerged),
       )
       UserFeedTab.DynamicAll -> loadDynamicFirstPage(
         videoRepository,
@@ -594,6 +613,10 @@ private suspend fun loadDynamicFirstPage(
 
   // 3. 合并一次
   val merged = mergeByPubdate(biliVideos.orEmpty(), youtubeVideos)
+  // 频道非空即视为已尝试合并 YouTube(含拉取失败返回空),置位后不再因频道变化强制补拉。
+  if (type == "video" && youtubeChannels.isNotEmpty()) {
+    state.youtubeMerged = true
+  }
   state.state = when {
     merged.isEmpty() && biliError != null -> UserFeedState.Failed(biliError)
     merged.isEmpty() -> UserFeedState.Empty
@@ -1560,13 +1583,13 @@ private fun mergeExtraVideos(base: List<VideoSummary>, extra: List<VideoSummary>
 }
 
 /** YouTube 历史条目 → 卡片模型。progress 填秒数供续播;viewAt 填播放时间(秒)与 B 站历史同单位供混合排序。 */
-private fun YoutubeHistoryEntry.toVideoSummary(): VideoSummary {
+private fun YoutubeHistoryEntry.toVideoSummary(avatarFallback: String = ""): VideoSummary {
   return VideoSummary(
     bvid = videoId,
     title = title,
-    pic = thumbnailUrl,
+    pic = resolveThumbnailUrl(),
     ownerName = channelName,
-    ownerFace = "",
+    ownerFace = resolveChannelAvatarUrl(avatarFallback),
     ownerMid = 0L,
     view = 0,
     danmaku = 0,

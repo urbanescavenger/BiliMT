@@ -61,11 +61,14 @@ fun buildOwnerAvatarRequest(
     .build()
 }
 
-/** YouTube 图片 URL(yt3.ggpht.com 头像 / i.ytimg.com 缩略图 / 含 ggpht)。 */
+/** YouTube/Google 图片 URL(yt3.ggpht.com / yt3.googleusercontent.com / lh3.googleusercontent.com 头像、
+ *  i.ytimg.com 缩略图 / 含 ggpht)。lh3.googleusercontent.com 是 Google 头像迁移后的常见宿主
+ *  (搜索/播放器里部分频道头像用它,parseChannelInfo 仍给 yt3.ggpht.com),不识别会被当 B 站图拼
+ *  `@Nw.webp` 后缀破坏 → 头像加载失败(频道主页能显、搜索/播放器空白),故一并走裸请求。 */
 private fun String.isYoutubeImageUrl(): Boolean {
   val lower = lowercase()
-  return lower.contains("yt3.ggpht.com") ||
-    lower.contains("yt3.googleusercontent.com") ||
+  return lower.contains("googleusercontent.com") ||
+    lower.contains("yt3.ggpht.com") ||
     lower.contains("ggpht") ||
     lower.contains("ytimg.com")
 }
@@ -73,6 +76,11 @@ private fun String.isYoutubeImageUrl(): Boolean {
 /**
  * YouTube 图片裸请求:不加 B 站 CDN 后缀与请求头,仅做协议归一化(`//` → `https:`),
  * 避免 i.ytimg/yt3 无协议头 URL 被 coil 拒绝。供缩略图与头像的 YouTube 分支共用。
+ *
+ * 不设 `.size()` / `Precision` / `allowRgb565`:对齐移动端裸 `AsyncImage(model=url)`(能正常显示),
+ * 让 Coil 按布局尺寸解码。曾强加 `.size(480,270)` + `Precision.INEXACT` + `allowRgb565`,在部分
+ * Amlogic 盒子上对 YouTube 原始尺寸/格式图解码失败 → 历史/动态卡片缩略图一片空白(B站走 CDN 强制
+ * `@480w_270h_1c.webp` 不受影响),故回退为裸请求。
  */
 private fun buildYoutubeImageRequest(
   context: Context,
@@ -84,9 +92,6 @@ private fun buildYoutubeImageRequest(
 ): ImageRequest {
   return ImageRequest.Builder(context)
     .data(url.normalizedBiliImageUrl())
-    .size(widthPx, heightPx)
-    .precision(Precision.INEXACT)
-    .allowRgb565(allowRgb565)
     .memoryCachePolicy(if (memoryCacheEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED)
     .crossfade(false)
     .build()

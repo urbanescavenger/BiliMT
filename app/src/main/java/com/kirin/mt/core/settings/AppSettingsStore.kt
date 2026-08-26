@@ -86,6 +86,7 @@ class AppSettingsStore(private val context: Context) {
       autoPlayNextEpisode = preferences[Keys.AutoPlayNextEpisode] ?: false,
       autoPlayRelatedVideo = preferences[Keys.AutoPlayRelatedVideo] ?: false,
       autoReturnHomeOnCompletion = preferences[Keys.AutoReturnHomeOnCompletion] ?: false,
+      autoDeleteWatchedCache = preferences[Keys.AutoDeleteWatchedCache] ?: false,
       showClock = preferences[Keys.ShowClock] ?: true,
       showMiniProgressBar = preferences[Keys.ShowMiniProgressBar] ?: true,
       playerLogOverlayEnabled = preferences[Keys.PlayerLogOverlayEnabled] ?: false,
@@ -256,6 +257,12 @@ class AppSettingsStore(private val context: Context) {
     }
   }
 
+  suspend fun setAutoDeleteWatchedCache(enabled: Boolean) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.AutoDeleteWatchedCache] = enabled
+    }
+  }
+
   suspend fun setShowClock(enabled: Boolean) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.ShowClock] = enabled
@@ -415,6 +422,7 @@ class AppSettingsStore(private val context: Context) {
     val AutoPlayNextEpisode = booleanPreferencesKey("auto_play_next_episode")
     val AutoPlayRelatedVideo = booleanPreferencesKey("auto_play_related_video")
     val AutoReturnHomeOnCompletion = booleanPreferencesKey("auto_return_home_on_completion")
+    val AutoDeleteWatchedCache = booleanPreferencesKey("auto_delete_watched_cache")
     val ShowClock = booleanPreferencesKey("show_clock")
     val ShowMiniProgressBar = booleanPreferencesKey("show_mini_progress_bar")
     val PlayerLogOverlayEnabled = booleanPreferencesKey("player_log_overlay_enabled")

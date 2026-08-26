@@ -3,10 +3,13 @@ package com.kirin.mt.core.youtube
 import android.util.Log
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlin.random.Random
@@ -219,18 +222,32 @@ class YoutubeRepository(
     }
     // /player 的 microformat.publishDate 实测恒 null。对齐 LibreTube:缺省时用 NewPipe getInfo 的
     // uploadDate(与入口路径无关)兜底,保证简介 Tab 恒有发布时间(历史/播放列表/相关视频统一)。
-    if (withLikes.publishedAt == null) {
-      val npUpload = runCatching {
-        val info = StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId")
-        val d = info.uploadDate
-        // 诊断:NewPipe 兜底源与值(确认 getInfo 是否成功、uploadDate 是否非空)。
-        Log.i("YoutubeDetail", "getVideoDetail newpipe videoId=$videoId uploadDateClass=${d?.javaClass?.simpleName ?: "null"} uploadDate=$d")
-        d?.offsetDateTime()?.toEpochSecond()?.takeIf { it > 0L }
+    // 频道头像同源:parseVideoDetail 的 /player videoDetails 无作者头像字段(channelAvatarUrl 恒空),
+    // 不补则历史条目/简介 Tab 频道行头像一片空白。复用同一次 getInfo 的 uploaderAvatars 提权威头像
+    // (对齐 LibreTube Streams.uploaderAvatar = uploaderAvatars.maxBy { height }),零额外网络往返。
+    if (withLikes.publishedAt == null || withLikes.channelAvatarUrl.isBlank()) {
+      val np = runCatching {
+        // NewPipe getInfo 是同步阻塞网络调用,必须在 IO 线程(对齐 LibreTube getStreams 的
+        // withContext(Dispatchers.IO));直接在主线程跑抛 NetworkOnMainThreadException → 头像恒空。
+        withContext(Dispatchers.IO) {
+          val info = StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId")
+          val d = info.uploadDate
+          // 诊断:NewPipe 兜底源与值(确认 getInfo 是否成功、uploadDate 是否非空、头像数)。
+          Log.i("YoutubeDetail", "getVideoDetail newpipe videoId=$videoId uploadDateClass=${d?.javaClass?.simpleName ?: "null"} uploadDate=$d avatars=${info.uploaderAvatars.size}")
+          d?.offsetDateTime()?.toEpochSecond()?.takeIf { it > 0L } to
+            info.uploaderAvatars.maxByOrNull { it.height }?.url.orEmpty()
+        }
       }.getOrElse {
         Log.w("YoutubeDetail", "getVideoDetail newpipe failed videoId=$videoId: ${it::class.simpleName}: ${it.message}\n${it.stackTraceToString().take(1200)}")
         null
       }
-      if (npUpload != null) return withLikes.copy(publishedAt = npUpload)
+      if (np != null) {
+        val (npUpload, npAvatar) = np
+        return withLikes.copy(
+          publishedAt = withLikes.publishedAt ?: npUpload,
+          channelAvatarUrl = withLikes.channelAvatarUrl.ifBlank { npAvatar },
+        )
+      }
     }
     return withLikes
   }
@@ -297,6 +314,27 @@ class YoutubeRepository(
   }
 
   /**
+   * 订阅流单频道拉取的容错包装：网络/解析失败记日志并降级用 [default]（丢该频道自身），
+   * **但必须透传 [CancellationException]**——`runCatching` 会吞掉取消异常（含
+   * `LeftCompositionCancellationException`：composition scope 离开组合时抛的取消），
+   * 把"协程被取消"误判成"网络失败"→ 整批返回空 → 首页卡片全 ERR。取消必须向上传播，
+   * 让外层 `LaunchedEffect` 感知到并允许重试，而不是当成一次真实的失败降级。
+   */
+  private suspend fun <T> feedCatching(
+    default: T,
+    failKind: String,
+    channelId: String,
+    block: suspend () -> T,
+  ): T = try {
+    block()
+  } catch (e: CancellationException) {
+    throw e
+  } catch (e: Exception) {
+    Log.w("YoutubeFeed", "$failKind failed for $channelId", e)
+    default
+  }
+
+  /**
    * 动态页"YouTube 关注"流：遍历配置的频道取各自最新视频，按发布时间倒序合并。
    * 对齐 LibreTube `LocalFeedRepository.refreshFeed` 的**分批增量**模型（独立实现）。
    *
@@ -336,10 +374,10 @@ class YoutubeRepository(
             var channelAvatar = channel.avatar
             if (channelAvatar.isBlank()) {
               val resolvedAvatar = innerTubeSemaphore.withPermit {
-                runCatching {
+                feedCatching("", "avatar", channel.channelId) {
                   val payload = buildJsonObject { put("browseId", channel.channelId) }
                   YoutubeParsers.parseChannelInfo(client.postJson("/browse", payload))?.avatarUrl.orEmpty()
-                }.getOrDefault("")
+                }
               }
               if (resolvedAvatar.isNotBlank()) {
                 channelAvatar = resolvedAvatar
@@ -349,16 +387,12 @@ class YoutubeRepository(
             // RSS 与 InnerTube 并行拉取。RSS 提供精确发布时间,InnerTube 补全 duration/live 等字段。
             val rssDeferred = async {
               rssSemaphore.withPermit {
-                runCatching { getChannelRss(channel.channelId) }
-                  .onFailure { Log.w("YoutubeFeed", "RSS failed for ${channel.channelId}", it) }
-                  .getOrDefault(emptyList())
+                feedCatching(emptyList(), "RSS", channel.channelId) { getChannelRss(channel.channelId) }
               }
             }
             val innerTubeDeferred = async {
               innerTubeSemaphore.withPermit {
-                runCatching { getChannelVideosRaw(channel.channelId) }
-                  .onFailure { Log.w("YoutubeFeed", "InnerTube failed for ${channel.channelId}", it) }
-                  .getOrDefault(emptyList())
+                feedCatching(emptyList(), "InnerTube", channel.channelId) { getChannelVideosRaw(channel.channelId) }
               }
             }
             val rssVideos = rssDeferred.await()
@@ -436,10 +470,10 @@ class YoutubeRepository(
             var channelAvatar = channel.avatar
             if (channelAvatar.isBlank()) {
               val resolvedAvatar = innerTubeSemaphore.withPermit {
-                runCatching {
+                feedCatching("", "avatar", channel.channelId) {
                   val payload = buildJsonObject { put("browseId", channel.channelId) }
                   YoutubeParsers.parseChannelInfo(client.postJson("/browse", payload))?.avatarUrl.orEmpty()
-                }.getOrDefault("")
+                }
               }
               if (resolvedAvatar.isNotBlank()) {
                 channelAvatar = resolvedAvatar
@@ -450,16 +484,16 @@ class YoutubeRepository(
               // 首屏：RSS 与 InnerTube 第一页并行拉取合并，并记录 InnerTube 第一页的续页 token。
               val rssDeferred = async {
                 rssSemaphore.withPermit {
-                  runCatching { getChannelRss(channel.channelId) }
-                    .onFailure { Log.w("YoutubeFeed", "RSS failed for ${channel.channelId}", it) }
-                    .getOrDefault(emptyList())
+                  feedCatching(emptyList(), "RSS", channel.channelId) { getChannelRss(channel.channelId) }
                 }
               }
               val innerTubeDeferred = async {
                 innerTubeSemaphore.withPermit {
-                  runCatching { getChannelVideosRawPage(channel.channelId) }
-                    .onFailure { Log.w("YoutubeFeed", "InnerTube failed for ${channel.channelId}", it) }
-                    .getOrDefault(YoutubeFeedPage(emptyList(), null))
+                  feedCatching(
+                    YoutubeFeedPage(emptyList(), null),
+                    "InnerTube",
+                    channel.channelId,
+                  ) { getChannelVideosRawPage(channel.channelId) }
                 }
               }
               val rssVideos = rssDeferred.await()
@@ -478,9 +512,11 @@ class YoutubeRepository(
               val token = previousContinuation[channel.channelId]
               val innerTubeDeferred = async {
                 innerTubeSemaphore.withPermit {
-                  runCatching { getChannelVideosRawPage(channel.channelId, token) }
-                    .onFailure { Log.w("YoutubeFeed", "InnerTube next failed for ${channel.channelId}", it) }
-                    .getOrDefault(YoutubeFeedPage(emptyList(), null))
+                  feedCatching(
+                    YoutubeFeedPage(emptyList(), null),
+                    "InnerTube next",
+                    channel.channelId,
+                  ) { getChannelVideosRawPage(channel.channelId, token) }
                 }
               }
               val innerTubePage = innerTubeDeferred.await()

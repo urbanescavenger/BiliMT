@@ -1,7 +1,6 @@
 package com.kirin.mt.ui.settings
 
 import android.widget.Toast
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -16,8 +15,11 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.window.Dialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,7 +34,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -78,8 +81,8 @@ internal fun SettingsWebDavDialog(
   val usernameFocusRequester = remember { FocusRequester() }
   val passwordFocusRequester = remember { FocusRequester() }
   val saveFocusRequester = remember { FocusRequester() }
-
-  BackHandler { if (!saving) onDismiss() }
+  // D-pad 把焦点移到「保存」时,若按钮在滚动区下方不可见,滚动把它带进可视区。
+  val saveBringIntoViewRequester = remember { BringIntoViewRequester() }
 
   // 弹窗打开时焦点先落到 URL 字段(仅高亮不弹 IME),按确认键才唤起系统输入法。
   LaunchedEffect(Unit) {
@@ -103,14 +106,20 @@ internal fun SettingsWebDavDialog(
     }
   }
 
-  Box(
-    modifier = modifier
-      .fillMaxSize()
-      .imePadding()
-      .background(Color.Black.copy(alpha = 0.55f)),
-    contentAlignment = Alignment.Center,
+  // 真 Dialog 窗口:独立 window 自带焦点根,D-pad 遍历不会逃到背后的设置页。
+  Dialog(
+    onDismissRequest = { if (!saving) onDismiss() },
+    properties = DialogProperties(usePlatformDefaultWidth = false),
   ) {
-    Column(
+    Box(
+      modifier = modifier
+        .fillMaxSize()
+        .imePadding()
+        // 内缩留边,内容超高时滚动区也不会贴到屏幕上下边界。
+        .padding(BiliSpacing.Xl),
+      contentAlignment = Alignment.Center,
+    ) {
+      Column(
       modifier = Modifier
         .width(720.dp)
         .heightIn(max = 680.dp)
@@ -193,7 +202,13 @@ internal fun SettingsWebDavDialog(
           enabled = !saving,
           modifier = Modifier
             .weight(1f)
-            .focusRequester(saveFocusRequester),
+            .focusRequester(saveFocusRequester)
+            .bringIntoViewRequester(saveBringIntoViewRequester)
+            .onFocusChanged { focusState ->
+              if (focusState.isFocused) {
+                coroutineScope.launch { saveBringIntoViewRequester.bringIntoView() }
+              }
+            },
           onClick = ::save,
         )
         WebDavActionButton(
@@ -203,6 +218,7 @@ internal fun SettingsWebDavDialog(
           onClick = onDismiss,
         )
       }
+    }
     }
   }
 }

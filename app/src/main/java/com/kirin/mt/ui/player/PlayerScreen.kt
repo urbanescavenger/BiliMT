@@ -116,6 +116,8 @@ import com.kirin.mt.core.youtube.YoutubeLoadProgress
 import com.kirin.mt.core.youtube.YoutubeLoadStep
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
+import com.kirin.mt.core.youtube.sabr.media.HeightAwareAdaptiveTrackSelectionFactory
+import com.kirin.mt.core.youtube.sabr.media.SabrBandwidthMeter
 import com.kirin.mt.core.youtube.sabr.media.SabrManifest
 import com.kirin.mt.core.youtube.sabr.media.SabrMediaFetcher
 import com.kirin.mt.core.youtube.sabr.media.SabrMediaSource
@@ -272,16 +274,24 @@ fun PlayerScreen(
   // alpha.9X(ceiling 滞回):抽成命名实例——既给 ExoPlayer 做带宽计(ABR 选轨),又传给 SabrMediaSource.
   // Factory 让 DefaultSabrChunkSource 读带宽估计判定「待放宽档位是否持续达标」。
   val bandwidthMeter = remember {
-    DefaultBandwidthMeter.Builder(context)
-      .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
-      .build()
+    // alpha.9X(带宽驱动选档):包装成 SabrBandwidthMeter,getBitrateEstimate 返回 SabrMediaFetcher 实测真实带宽
+    // (中位数)——DefaultBandwidthMeter 被 SabrDataSource 的内存瞬时读样本污染(bw= 1M↔437M 跳变)不可信,
+    // 媒体3 原生 ABR 拿到可信带宽才能按真实网速升降档(不再需要 exclude/force 补丁,见 youtube-sabr-abr-upshift-notes.md)。
+    SabrBandwidthMeter(
+      DefaultBandwidthMeter.Builder(context)
+        .setInitialBitrateEstimate(youtubeStartQuality.seedBps())
+        .build()
+    )
   }
   val player = remember(bufferMaxMs) {
     // alpha.9X:YouTube SABR Auto 升档——视频 TrackGroup 是 H264+VP9 混合 mime 组,DefaultTrackSelector
     // 默认不允许混合 mime 进同一条 adaptive selection,把选组锁在选定轨的 mime 上(选定 VP9 就只剩 1 轨,
     // 永不升档)。显式 DefaultTrackSelector 开视频混合 mime + 非无缝自适应 + 多自适应,让选择器把 5 档
     // 正确组进 adaptive selection 供 ABR 爬升。(B站 DASH 同组多 codec 也正确处理,无副作用;单轨组不受影响。)
-    val trackSelector = DefaultTrackSelector(context)
+    // alpha.9Y(分辨率优先选档):媒体3 原生按 bitrate 选档会被 YouTube bitrate/height 错位卡在
+    // 1080p 不升(1440p 声明 13.9M < 1080p 14.4M)。注入按 height 选档的自定义 selection(见
+    // HeightAwareAdaptiveTrackSelection),带宽只当门槛。混合 mime 组走自定义,音频等退化父类。
+    val trackSelector = DefaultTrackSelector(context, HeightAwareAdaptiveTrackSelectionFactory())
     trackSelector.setParameters(
       DefaultTrackSelector.Parameters.Builder()
         .setAllowVideoMixedMimeTypeAdaptiveness(true)
@@ -1687,16 +1697,20 @@ fun PlayerScreen(
         } else {
           mediaSource
         }
-        // 起始挡位:起播阶段用 selector maxHeight 临时卡在起始档(SABR 专属,非 SABR 不卡),保证
-        // 首段落在起始档(不靠带宽);首帧渲染后 onRenderedFirstFrame 松开,ABR 爬到默认画质上限。
+        // 起始挡位:起播阶段用 min+max 精确锁在起始档(SABR 专属,非 SABR 不卡),保证首段落在起始档
+        // (不靠带宽,对齐 LibreTube AbstractPlayerService setMinVideoSize+setMaxVideoSize 锁法,比原 maxHeight
+        // 上限更精确,杜绝"起播即顶满 4K");首帧渲染后 onRenderedFirstFrame 松开,升降档交给 ABR+excludeTrack。
         startQualityRelaxed = false
         val startQualityHeight = if (effectiveInfo.isSabrSingle()) youtubeStartQuality.startHeight else null
         if (startQualityHeight != null) {
-          // 在现有参数基础上叠加高度 cap,保留其它配置(mixed-mime/non-seamless 等)。
+          // 在现有参数基础上叠加高度 min+max cap,保留其它配置(mixed-mime/non-seamless 等)。
           val cur = player.trackSelectionParameters
           if (cur is DefaultTrackSelector.Parameters) {
             player.setTrackSelectionParameters(
-              cur.buildUpon().setMaxVideoSize(Int.MAX_VALUE, startQualityHeight).build()
+              cur.buildUpon()
+                .setMinVideoSize(Int.MIN_VALUE, startQualityHeight)
+                .setMaxVideoSize(Int.MAX_VALUE, startQualityHeight)
+                .build()
             )
           }
         }
@@ -1730,6 +1744,10 @@ fun PlayerScreen(
                 title = info.title,
                 channelName = activeRequest.ownerName,
                 channelId = historyChannelId,
+                // 对齐 LibreTube:头像取权威 displayRequest.ownerFace(withResolvedMetadata 已从 /player
+                // 权威 videoDetails 填过),而非原始卡片字段 activeRequest.ownerFace——播放历史条目时卡片
+                // ownerFace 为空,重录会再存空,store 回退只能补显示修不了数据。权威源保证新条目自愈。
+                channelAvatarUrl = displayRequest.ownerFace.ifBlank { activeRequest.ownerFace },
                 thumbnailUrl = activeRequest.coverUrl,
                 durationMs = info.durationMs,
                 positionMs = startPositionMs,
