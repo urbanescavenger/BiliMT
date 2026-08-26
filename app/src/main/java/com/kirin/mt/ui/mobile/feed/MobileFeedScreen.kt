@@ -28,17 +28,18 @@ import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import kotlinx.coroutines.launch
 
-/** 子 tab:动态 / 历史 / 收藏 / 追番 / 播放列表。YouTube 关注已并入动态(统一流),YouTube 历史已并入历史 tab。 */
+/** 子 tab:动态 / 历史 / 稍后再看 / 收藏 / 追番 / 播放列表。YouTube 关注已并入动态(统一流),YouTube 历史已并入历史 tab。 */
 private val FeedTabs = listOf(
   R.string.nav_dynamic,
   R.string.nav_history,
+  R.string.nav_toview,
   R.string.nav_favorite,
   R.string.nav_bangumi,
   R.string.feed_tab_playlist,
 )
 
 /** 播放列表 tab 下标(免登录)。 */
-private const val PlaylistTabIndex = 4
+private const val PlaylistTabIndex = 5
 
 /** 历史 tab 下标(免登录——本地 YouTube 历史未登录也可看)。 */
 private const val HistoryTabIndex = 1
@@ -134,18 +135,24 @@ fun MobileFeedScreen(
           onLogin = onLogin,
           modifier = Modifier.fillMaxSize(),
         )
-        2 -> MobileFavoritePage(
+        2 -> MobileToViewPage(
           videoRepository = videoRepository,
           onVideoSelected = onVideoSelected,
           onOpenOwner = onOpenOwner,
           modifier = Modifier.fillMaxSize(),
         )
-        3 -> MobileBangumiPage(
+        3 -> MobileFavoritePage(
+          videoRepository = videoRepository,
+          onVideoSelected = onVideoSelected,
+          onOpenOwner = onOpenOwner,
+          modifier = Modifier.fillMaxSize(),
+        )
+        4 -> MobileBangumiPage(
           videoRepository = videoRepository,
           onSeasonSelected = onSeasonSelected,
           modifier = Modifier.fillMaxSize(),
         )
-        4 -> MobileYoutubePlaylistPage(
+        5 -> MobileYoutubePlaylistPage(
           youtubePlaylistStore = youtubePlaylistStore,
           onVideoSelected = onVideoSelected,
           onStartPlaylist = onStartPlaylist,

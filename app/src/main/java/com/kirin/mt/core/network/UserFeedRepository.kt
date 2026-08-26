@@ -82,6 +82,7 @@ internal class UserFeedRepository(
     val sessData = sessionStore.sessData.first()
     val biliJct = sessionStore.biliJct.first()
     if (sessData.isNullOrBlank() || biliJct.isNullOrBlank()) return false
+    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
 
     val root = apiClient.postFormJson(
       url = BiliApiEndpoints.ToviewAdd,
@@ -91,9 +92,54 @@ internal class UserFeedRepository(
       ),
       sessData = sessData,
       biliJct = biliJct,
+      buvid3 = buvid3,
+      buvid4 = buvid4,
     ).rootObject()
     root.requireBiliCodeOk("toview add")
     return true
+  }
+
+  // 读取稍后再看列表:GET /x/v2/history/toview,带 SESSDATA Cookie;与观看历史同用 viewAt/max 双游标分页。
+  // 仅解析 UGC 条目(owner/bvid/cid/aid 齐全),无分页时不返回 hasMore。
+  suspend fun getToViewPage(
+    pageSize: Int,
+    viewAt: Long = 0L,
+    max: Long = 0L,
+  ): ToViewPage {
+    val sessData = sessionStore.sessData.first()
+    if (sessData.isNullOrBlank()) {
+      return ToViewPage(videos = emptyList(), nextViewAt = 0L, nextMax = 0L, hasMore = false)
+    }
+
+    val root = apiClient.getJson(
+      url = BiliApiEndpoints.ToviewList,
+      params = buildMap {
+        put("ps", pageSize.toString())
+        if (viewAt > 0L) {
+          put("view_at", viewAt.toString())
+        }
+        if (max > 0L) {
+          put("max", max.toString())
+        }
+      },
+      sessData = sessData,
+    ).rootObject()
+    root.requireBiliCodeOk("toview")
+
+    val data = root.obj("data") ?: return ToViewPage(videos = emptyList(), nextViewAt = 0L, nextMax = 0L, hasMore = false)
+    val list = data["list"] as? JsonArray ?: return ToViewPage(videos = emptyList(), nextViewAt = 0L, nextMax = 0L, hasMore = false)
+    val videos = list
+      .mapNotNull { it.asObjectOrNull() }
+      .map(VideoSummaryMappers::fromToViewItem)
+      .filter { it.bvid.isNotBlank() }
+
+    val cursor = data.obj("cursor")
+    return ToViewPage(
+      videos = videos,
+      nextViewAt = cursor?.long("view_at") ?: 0L,
+      nextMax = cursor?.long("max") ?: 0L,
+      hasMore = videos.isNotEmpty() && cursor != null,
+    )
   }
 
   // 点赞视频(UGC archive):/x/web-interface/archive/like,form POST + csrf。aid 为视频 aid。
@@ -367,6 +413,13 @@ data class DynamicFeedPage(
 )
 
 data class HistoryFeedPage(
+  val videos: List<VideoSummary>,
+  val nextViewAt: Long,
+  val nextMax: Long,
+  val hasMore: Boolean,
+)
+
+data class ToViewPage(
   val videos: List<VideoSummary>,
   val nextViewAt: Long,
   val nextMax: Long,

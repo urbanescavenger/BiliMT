@@ -375,6 +375,18 @@ class VideoRepository(
     )
   }
 
+  suspend fun getToViewPage(
+    pageSize: Int = HistoryPageSize,
+    viewAt: Long = 0L,
+    max: Long = 0L,
+  ): ToViewPage {
+    return userFeedRepository.getToViewPage(
+      pageSize = pageSize,
+      viewAt = viewAt,
+      max = max,
+    )
+  }
+
   suspend fun getFavoriteFolders(mid: Long): List<FavoriteFolder> {
     return userFeedRepository.getFavoriteFolders(mid)
   }

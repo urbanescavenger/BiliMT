@@ -148,6 +148,25 @@ internal object VideoSummaryMappers {
     )
   }
 
+  // 稍后再看列表项:/x/v2/history/toview 的 data.list[]。仅 UGC 条目(带 bvid/aid/owner)。
+  // progress 为秒数(与历史一致,未观看为 -1),toPlaybackRequest() 自动续播。
+  fun fromToViewItem(json: JsonObject): VideoSummary {
+    val owner = json.obj("owner")
+    return VideoSummary(
+      bvid = json.string("bvid"),
+      title = json.string("title"),
+      pic = fixPicUrl(json.string("pic")),
+      ownerName = owner?.string("name").orEmpty(),
+      ownerFace = "",
+      ownerMid = 0L,
+      duration = BiliNumberParser.parseDuration(json["duration"]),
+      progress = json.int("progress"),
+      cid = json.long("cid"),
+      historyVideos = json.int("videos"),
+      aid = json.long("aid"),
+    )
+  }
+
   fun fromSearch(json: JsonObject): VideoSummary {
     return VideoSummary(
       bvid = json.string("bvid"),

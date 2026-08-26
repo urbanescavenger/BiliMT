@@ -2672,6 +2672,27 @@ private fun MobilePlayerIntroTab(
             },
           )
           IntroActionButton(
+            iconRes = R.drawable.ic_player_toview,
+            label = stringResource(R.string.player_control_toview),
+            count = "",
+            active = false,
+            enabled = !busy,
+            onClick = {
+              if (busy) return@IntroActionButton
+              scope.launch {
+                busy = true
+                try {
+                  val ok = videoRepository.addToView(metadata.aid)
+                  toast(true, if (ok) context.getString(R.string.feed_action_toview_done)
+                  else context.getString(R.string.feed_action_toview_failed))
+                } catch (e: Exception) {
+                  toast(false, "")
+                }
+                busy = false
+              }
+            },
+          )
+          IntroActionButton(
             iconRes = R.drawable.ic_player_share,
             label = stringResource(R.string.player_share),
             count = formatCount(metadata.shareCount, context.resources),

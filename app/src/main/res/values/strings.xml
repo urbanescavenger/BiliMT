@@ -31,6 +31,7 @@
     <string name="nav_recommend">推荐</string>
     <string name="nav_search">搜索</string>
     <string name="nav_history">历史</string>
+    <string name="nav_toview">稍后再看</string>
     <string name="nav_settings">设置</string>
     <string name="nav_pgc">影视</string>
     <string name="nav_live">直播</string>
@@ -289,6 +290,10 @@
     <string name="history_empty">暂无观看历史</string>
     <string name="history_failed_with_message">历史记录加载失败。%1$s</string>
     <string name="history_signed_out">请先登录，登录后可查看观看历史。</string>
+    <string name="toview_loading">正在加载稍后再看...</string>
+    <string name="toview_empty">稍后再看列表为空</string>
+    <string name="toview_failed_with_message">稍后再看加载失败。%1$s</string>
+    <string name="toview_signed_out">请先登录。登录后可查看稍后再看。</string>
     <string name="favorite_loading">正在加载收藏夹...</string>
     <string name="favorite_empty">收藏夹为空</string>
     <string name="favorite_failed_with_message">收藏夹加载失败。%1$s</string>
@@ -417,6 +422,7 @@
     <string name="player_control_like">&#x70B9;&#x8D5E;</string>
     <string name="player_control_coin">&#x6295;&#x5E01;</string>
     <string name="player_control_favorite">&#x6536;&#x85CF;</string>
+    <string name="player_control_toview">稍后再看</string>
     <string name="player_panel_favorite">&#x6536;&#x85CF;&#x5230;&#x6536;&#x85CF;&#x5939;</string>
     <string name="player_favorite_confirm">&#x786E;&#x8BA4;&#x6536;&#x85CF;</string>
     <string name="player_favorite_empty">&#x6682;&#x65E0;&#x6536;&#x85CF;&#x5939;</string>
