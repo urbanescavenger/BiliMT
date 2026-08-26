@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -45,6 +47,7 @@ import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoCardRelativeText
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.pubdateText
+import com.kirin.mt.core.model.watchProgressRatio
 import com.kirin.mt.ui.i18n.formatCompactCount
 import com.kirin.mt.ui.i18n.localeFromResources
 import com.kirin.mt.ui.theme.BiliColors
@@ -128,6 +131,7 @@ private fun CompactStyleCardContent(
       if (completed) {
         CompletedBadge(modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
       }
+      MobileWatchProgress(video = video, modifier = Modifier.align(Alignment.BottomCenter))
     }
     Text(
       text = video.title,
@@ -252,6 +256,7 @@ private fun FeedStyleCardContent(
       if (completed) {
         CompletedBadge(modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
       }
+      MobileWatchProgress(video = video, modifier = Modifier.align(Alignment.BottomCenter))
     }
     // 标题在底部。
     Text(
@@ -306,6 +311,28 @@ private fun LiveBadge(text: String, modifier: Modifier = Modifier) {
       color = Color.White,
       fontWeight = FontWeight.Bold,
       maxLines = 1,
+    )
+  }
+}
+
+/** 缩略图底部已播放进度细条(对照 LibreTube watch_progress)。直播/无进度时不显示;宽 = progress/duration。
+ *  移动端用 MaterialTheme primary 填充 + 半透明黑轨道,与 TV VideoCard 的 accent 版本保持同一语义。 */
+@Composable
+private fun MobileWatchProgress(video: VideoSummary, modifier: Modifier = Modifier) {
+  if (video.isLive) return
+  val ratio = video.watchProgressRatio()
+  if (ratio <= 0f) return
+  Box(
+    modifier = modifier
+      .fillMaxWidth()
+      .height(4.dp)
+      .background(Color.Black.copy(alpha = 0.35f)),
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxHeight()
+        .fillMaxWidth(ratio.coerceIn(0f, 1f))
+        .background(MaterialTheme.colorScheme.primary),
     )
   }
 }

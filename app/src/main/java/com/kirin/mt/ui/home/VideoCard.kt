@@ -710,6 +710,20 @@ private fun VideoCover(
 
     BottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
 
+    // 已播放进度条(对照 LibreTube watch_progress):叠缩略图底部的细条,宽 = progress/duration。
+    // History 模式已有 HistoryCoverMetadata 自带的进度条(带 P 页 + 时间文本),不在此重复。
+    if (mode != VideoCardMode.History && !video.isLive) {
+      val ratio = video.watchProgressRatio()
+      if (ratio > 0f) {
+        VideoWatchProgressBar(
+          ratio = ratio,
+          modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .padding(horizontal = BiliSpacing.Sm),
+        )
+      }
+    }
+
     when (mode) {
       VideoCardMode.Standard,
       VideoCardMode.Dynamic,
@@ -922,6 +936,25 @@ private fun HistoryCoverMetadata(video: VideoSummary, modifier: Modifier = Modif
           .background(homeColors.accent),
       )
     }
+  }
+}
+
+/** 缩略图底部已播放进度细条(对照 LibreTube watch_progress)。宽 = ratio,薄轨道 + accent 填充。 */
+@Composable
+private fun VideoWatchProgressBar(ratio: Float, modifier: Modifier = Modifier) {
+  val homeColors = LocalHomeColors.current
+  Box(
+    modifier = modifier
+      .fillMaxWidth()
+      .height(BiliSizing.VideoProgressBarHeight)
+      .background(BiliColors.ProgressTrack),
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxHeight()
+        .fillMaxWidth(ratio.coerceIn(0f, 1f))
+        .background(homeColors.accent),
+    )
   }
 }
 
