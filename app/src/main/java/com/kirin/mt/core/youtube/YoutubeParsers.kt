@@ -231,20 +231,40 @@ internal object YoutubeParsers {
     val result = mutableListOf<ChannelTab>()
     val seen = HashSet<String>()
     collectByKey(root, KEY_TAB_RENDERER) { renderer -> collectTab(renderer, seen, result) }
-    collectByKey(root, KEY_EXPANDABLE_TAB_RENDERER) { renderer ->
-      // 诊断:确认 expandableTabRenderer 真实形状(标题用 content 还是 simpleText、endpoint 路径)。
-      val ep = renderer.obj("endpoint")?.obj("browseEndpoint")
-      val t = renderer.obj("title")
-      Log.d("Ytabs", "EXPAND keys=${renderer.keys.joinToString(",")} titleKeys=${t?.keys ?: "null"} " +
-        "title.simpleText=${t?.stringOrNull("simpleText")} title.content=${t?.stringOrNull("content")} " +
-        "params=${ep?.stringOrNull("params")?.take(8)}")
-      collectTab(renderer, seen, result)
-    }
+    collectByKey(root, KEY_EXPANDABLE_TAB_RENDERER) { renderer -> collectTab(renderer, seen, result) }
+    // 诊断:新布局「更多(More)」下拉 = menuRenderer / menuNavigationItemRenderer,项带
+    // text + navigationEndpoint.browseEndpoint.params(直播/播放列表/关于)。dump 形状定位。
+    dumpNodeShapes(root)
     // 诊断:打印解析到的 tab 名字 + params 前缀,便于真机核验服务端 tab params 是否取到。
     Log.d("Ytabs", "parseChannelTabs found=${result.map { "${it.name}:${it.params.take(8)}" }}")
     // 诊断:递归 dump 响应全部 key,定位内容 Tab 条真实节点。
     dumpSchemaKeys(root)
     return result
+  }
+
+  /** 诊断:dump 若干候选渲染器节点的形状(keys + 文本字段 + browse endpoint params),定位 tab/更多菜单。 */
+  private fun dumpNodeShapes(root: JsonObject) {
+    val targets = listOf(
+      "tabRenderer", "expandableTabRenderer", "menuNavigationItemRenderer",
+      "buttonRenderer", "chipRenderer", "horizontalCardListRenderer",
+    )
+    for (key in targets) {
+      val count = intArrayOf(0)
+      collectByKey(root, key) { node ->
+        val ep = node.obj("navigationEndpoint")?.obj("browseEndpoint")
+          ?: node.obj("endpoint")?.obj("browseEndpoint")
+        val txt = node.stringOrNull("simpleText")
+          ?: node.obj("text")?.stringOrNull("simpleText")
+          ?: node.obj("title")?.stringOrNull("simpleText")
+          ?: node.obj("title")?.stringOrNull("content")
+        if (count[0] < 6) {
+          Log.d("Ytabs", "SHAPE $key#${count[0]} keys=${node.keys.joinToString(",")} " +
+            "text=$txt params=${ep?.stringOrNull("params")?.take(8)}")
+        }
+        count[0]++
+      }
+      Log.d("Ytabs", "SHAPE $key count=${count[0]}")
+    }
   }
 
   /** 从单个 tab(旧 tabRenderer 或新 expandableTabRenderer)取 name + params。 */
