@@ -58,7 +58,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.graphics.ColorPainter
+import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.focus.focusRequester
@@ -95,6 +95,7 @@ import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.VideoGridSkeleton
 import com.kirin.mt.ui.common.appendUniqueByBvid
 import com.kirin.mt.ui.common.appendUniqueByMid
+import com.kirin.mt.ui.common.dedupKey
 import com.kirin.mt.ui.common.focusRestoreKey
 import com.kirin.mt.ui.common.resolveFocusIndex
 import com.kirin.mt.ui.focus.BiliFocusableSurface
@@ -1739,7 +1740,7 @@ internal sealed interface SearchResultState {
   data object Empty : SearchResultState
   data class Failed(val message: String) : SearchResultState
   data class Success(
-    val videos: List<VideoSummary>,
+    val videos: List<VideoSummary> = emptyList(),
     /** UP主/频道搜索结果；视频类型恒空。 */
     val users: List<UserSummary> = emptyList(),
     val nextPage: Int,

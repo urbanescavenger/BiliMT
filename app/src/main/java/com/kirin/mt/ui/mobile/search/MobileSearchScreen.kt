@@ -46,7 +46,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.ColorPainter
+import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -69,6 +69,7 @@ import com.kirin.mt.core.youtube.YoutubeSearchParams
 import com.kirin.mt.core.youtube.toUserSummary
 import com.kirin.mt.core.storage.SearchHistoryStore
 import com.kirin.mt.ui.common.appendUniqueByMid
+import com.kirin.mt.ui.common.dedupKey
 import com.kirin.mt.ui.i18n.currentUiLocale
 import com.kirin.mt.ui.i18n.formatCompactCount
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
@@ -93,7 +94,7 @@ private sealed interface SearchResultState {
   data object Empty : SearchResultState
   data class Failed(val message: String) : SearchResultState
   data class Success(
-    val videos: List<VideoSummary>,
+    val videos: List<VideoSummary> = emptyList(),
     /** 用户(UP主/频道)搜索结果;type==user 时填充,否则恒空。 */
     val users: List<UserSummary> = emptyList(),
     val nextPage: Int,
