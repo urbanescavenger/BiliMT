@@ -932,7 +932,7 @@ private fun HistoryCoverMetadata(video: VideoSummary, modifier: Modifier = Modif
       Box(
         modifier = Modifier
           .fillMaxHeight()
-          .fillMaxWidth(video.watchProgressRatio())
+          .fillMaxWidth(video.watchProgressRatio(progressUnsetIsCompleted = true))
           .background(homeColors.accent),
       )
     }

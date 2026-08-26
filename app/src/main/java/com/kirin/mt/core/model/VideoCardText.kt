@@ -48,7 +48,17 @@ fun VideoSummary.watchProgressText(completedText: String): String {
   }
 }
 
-fun VideoSummary.watchProgressRatio(): Float {
+/**
+ * 观看进度比例(0..1),供卡片缩略图底部进度条用。
+ * [progressUnsetIsCompleted] 控制 `progress == ProgressUnset(-1)` 的语义:
+ * - History 卡片:progress=-1 是 B 站历史接口"已看完"的标志 → 满条(传 true);
+ * - 首页/搜索/频道/动态及移动端普通卡片:progress 未设置(-1)= 无真实进度数据 → 不显示条(默认 false,
+ *   否则所有普通卡片都被误判成"已看完"而显示满条)。
+ */
+fun VideoSummary.watchProgressRatio(progressUnsetIsCompleted: Boolean = false): Float {
+  if (progress == ProgressUnset) {
+    return if (progressUnsetIsCompleted) 1f else 0f
+  }
   return when {
     isWatchCompleted() || isCompletedHistoryPart() -> 1f
     duration <= 0 || progress <= 0 -> 0f
