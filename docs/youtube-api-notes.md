@@ -146,6 +146,8 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 
 **转发层** `VideoRepository.youtubeHomeFeedPage(previousContinuation)` 读 `youtubeChannelStore.channels`，空→空页；头像回写 store 在此处理，UI 无感知。
 
+**会话预热（2026-08-26，v3.0.7-alpha.1）**：冷启动 RSS 全 404 时，首个 InnerTube `/browse` 的 `ensureRealSessionData`（sw.js_data fetch + `captureSessionCookies` 首页 GET，~3s）在 feed 关键路径上，动态冷启动 ~6.8s。新增 `InnerTubeClient.warmupSession()`（`requireBrowserSession=false` 快路径，不引导 WebView 页面），在 `AppContainer.warmupApiConnection` app 启动时 fire-and-forget 预热 `realSessionData` → feed 首屏 `/browse` 直接命中缓存跳过 ~3s，实测 `getSubscriptionsFeed` 6.8s→2.8s。⚠️ 预热只用快路径不用 `requireBrowserSession=true`：WebView 页面引导会持 `sessionMutex` 最长 15s（alpha.89 死循环风险），阻塞 feed 首请求；WebView 页面留给 /player 惰性加载。实测确认 feed 路径从未真正 load WebView 页面（日志里的 WebViewFactory 加载只是 CookieManager 类 init，~30ms，非页面加载）。
+
 **UI 消费（TV `RecommendScreen` + 移动 `HomeScreen`，共用）**：
 - `Success.youtubeContinuation: Map<String,String?>?`（仅 YoutubeTrending 用；非 YouTube 分区为 null）。
 - 首屏 `endReached=page.endReached`、`youtubeContinuation=page.perChannelContinuation`；续页 `(current+page).distinctBy{it.bvid}.sortedByDescending{it.pubdate}`、`endReached = page.endReached || merged.size == current.videos.size`（**续页未新增视频也视为到底**，防 token 不推进时死循环）。

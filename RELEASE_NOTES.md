@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.7-alpha.1](#v307-alpha1)
 - [v3.0.6-alpha.11](#v306-alpha11)
 - [v3.0.6-alpha.8](#v306-alpha8)
 - [v3.0.6-alpha.7](#v306-alpha7)
@@ -202,6 +203,20 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.7-alpha.1
+
+**YouTube 动态订阅流大幅提速 + 首刷新收敛为一次合并 + 视频卡片已播放进度条**。
+
+### 变更
+- **YouTube 动态订阅流提速(~6.8s→~2.8s 冷启动)**：
+  - **会话预热**：app 启动后台跑一次 sw.js_data + 首页 cookie 建立真实会话,feed 首屏 `/browse` 不再阻塞 ~3s 会话建立(冷启动 RSS 全 404 走 InnerTube 兜底时这段在关键路径上)。
+  - **RSS 改 UULF**：`feeds/videos.xml` 的 `channel_id=UC...` 变体自 2025-12 起 YouTube 侧大面积间歇性 404/500,改用 uploads 播放列表 feed `playlist_id=UULF<后缀>`,走不同后端更稳、更新近实时。
+  - **RSS 门控跳过 InnerTube**：有缓存时先拉 RSS,若 RSS 最新视频 ≤ 缓存最新则跳过 InnerTube 只付 RSS 成本(对齐 LibreTube `hasNewerUploads`);无缓存首次仍并行拉全保正确性。修复门控在 RSS 空/失败时误跳过 InnerTube 致动态全空的 bug。
+  - **并发与防节流对齐 LibreTube**：InnerTube 并发 4→5 消除每批空转一轮(约快 33-37%),防节流改 `>=50`+重置。
+- **移动端动态首刷新收敛**：冷启动先空频道只拉 B 站、频道到位再重拉 B 站+YouTube 造成双拉;改 nullable `channelsState` 传 `channelsReady`,等 store 发出首值才触发一次合并两源。
+- **视频卡片已播放进度条**：TV VideoCover 非 History 模式 + 移动端 Compact/Feed 布局,缩略图底部叠细条宽=progress/duration;直播/无进度不显示,看完铺满。
+- **移动端稍后再看闭环**：动态分页加列表 tab + 播放器添加入口,修 `addToView` 指向 `/add` 补 buvid。
 
 ## v3.0.6-alpha.11
 
