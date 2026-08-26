@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import android.util.Log
 import android.view.WindowManager
@@ -101,8 +103,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
+import coil.imageLoader
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
+import com.kirin.mt.core.image.buildVideoThumbnailRequest
 import com.kirin.mt.ui.mobile.home.formatCount
+import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -122,6 +128,7 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kirin.mt.R
@@ -574,7 +581,9 @@ fun MobilePlayerScreen(
     ).show()
   }
 
-  // 分享视频:bvid 优先,无 bvid 用 av{aid};文本=标题+换行+链接,走系统 share sheet。
+  // 分享视频:bvid 优先,无 bvid 用 av{aid};文本=标题+换行+链接。
+  // 封面图经 Coil 下载到 cache/share/ 后以 image/* 分享(微信/QQ 等显示缩略图预览,对齐 B 站官方);
+  // 封面下载失败或无封面则回退纯文本分享。
   fun shareVideo() {
     val bvid = activeRequest.bvid
     val url = when {
@@ -589,11 +598,39 @@ fun MobilePlayerScreen(
       }
       append(url)
     }
-    val intent = Intent(Intent.ACTION_SEND).apply {
-      type = "text/plain"
-      putExtra(Intent.EXTRA_TEXT, shareText)
+    scope.launch {
+      val coverFile = withContext(Dispatchers.IO) { downloadShareCover() }
+      val intent = Intent(Intent.ACTION_SEND).apply {
+        if (coverFile != null) {
+          type = "image/*"
+          putExtra(
+            Intent.EXTRA_STREAM,
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", coverFile),
+          )
+          putExtra(Intent.EXTRA_TEXT, shareText)
+          addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } else {
+          type = "text/plain"
+          putExtra(Intent.EXTRA_TEXT, shareText)
+        }
+      }
+      runCatching { context.startActivity(Intent.createChooser(intent, context.getString(R.string.share_video))) }
     }
-    runCatching { context.startActivity(Intent.createChooser(intent, context.getString(R.string.share_video))) }
+  }
+
+  // 下载封面到 cache/share/cover_<bvid|aid>.jpg,失败或无封面返回 null(调用方回退纯文本)。
+  suspend fun downloadShareCover(): File? {
+    val coverUrl = activeRequest.coverUrl
+    if (coverUrl.isBlank()) return null
+    return runCatching {
+      val result = context.imageLoader.execute(buildVideoThumbnailRequest(context, coverUrl, 480, 270))
+      val bitmap = (result.drawable as? BitmapDrawable)?.bitmap ?: return null
+      val dir = File(context.cacheDir, "share").apply { mkdirs() }
+      val name = "cover_${activeRequest.bvid.ifBlank { activeRequest.aid.toString() }}.jpg"
+      val file = File(dir, name)
+      FileOutputStream(file).use { out -> bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out) }
+      file
+    }.getOrNull()
   }
 
   /**

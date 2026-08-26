@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="updates" path="updates/" />
+    <cache-path name="share" path="share/" />
     <files-path name="crash_logs" path="crash_logs/" />
 </paths>
