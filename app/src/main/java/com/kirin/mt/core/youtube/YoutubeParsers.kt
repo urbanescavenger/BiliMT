@@ -309,8 +309,12 @@ internal object YoutubeParsers {
   }
 
   /**
-   * 从频道"播放列表"Tab 的 /browse 响应解析播放列表卡列表。条目在
-   * richItemRenderer.content.playlistRenderer,递归收集所有 playlistRenderer。
+   * 从频道"播放列表"Tab 的 /browse 响应解析播放列表卡列表。兼容两种形状：
+   *  - 旧布局:richItemRenderer.content.playlistRenderer(递归收集所有 playlistRenderer)
+   *  - 新布局:lockupViewModel + contentType=LOCKUP_CONTENT_TYPE_PLAYLIST(实测 2026-08,
+   *    纯 playlistRenderer 收集返回 0,lockup 才是新布局播放列表卡;视频 tab 的 lockup 是
+   *    contentType=VIDEO,按 contentType 过滤互不串)。
+   * 递归收集两种 renderer,按序追加。
    */
   fun parseChannelPlaylists(root: JsonObject): List<YoutubePlaylist> {
     val result = mutableListOf<YoutubePlaylist>()
@@ -332,6 +336,34 @@ internal object YoutubeParsers {
           browseId = browseId,
         ),
       )
+    }
+    // 新布局 lockupViewModel 播放列表卡。
+    collectByKey(root, "lockupViewModel") { node ->
+      val ct = node.stringOrNull("contentType")
+      if (ct == null || !ct.contains("PLAYLIST")) return@collectByKey
+      val id = node.stringOrNull("contentId") ?: return@collectByKey
+      val title = node.obj("metadata")?.obj("lockupMetadataViewModel")?.obj("title")
+        ?.stringOrNull("content")
+        ?: return@collectByKey
+      val thumbnail = node.obj("contentImage")?.obj("thumbnailViewModel")?.obj("image")
+        ?.array("sources")?.lastOrNull()
+        ?.let { (it as? JsonObject)?.stringOrNull("url") }.orEmpty()
+      // 视频数文案(如 "20 videos")在 metadataRows 的 text.content;播放量等数字也在这,
+      // 但播放列表卡只此一条文字,取首个非空即可。
+      val countTexts = mutableListOf<String>()
+      node.obj("metadata")?.obj("lockupMetadataViewModel")?.obj("metadata")
+        ?.obj("contentMetadataViewModel")?.array("metadataRows")?.forEach { row ->
+          (row as? JsonObject)?.array("metadataParts")?.forEach { part ->
+            (part as? JsonObject)?.obj("text")?.stringOrNull("content")?.let { countTexts.add(it) }
+          }
+        }
+      val count = countTexts.firstOrNull().orEmpty()
+      // 打开播放列表的 browseId:onTap/navigationEndpoint 的 browseEndpoint 优先,回退 contentId。
+      val browseId = node.obj("onTap")?.obj("navigationEndpoint")?.obj("browseEndpoint")
+        ?.stringOrNull("browseId")
+        ?: node.obj("navigationEndpoint")?.obj("browseEndpoint")?.stringOrNull("browseId")
+        ?: id
+      result.add(YoutubePlaylist(id = id, title = title, thumbnail = thumbnail, videoCount = count, browseId = browseId))
     }
     return result
   }
