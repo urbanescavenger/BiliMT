@@ -50,8 +50,16 @@ internal object YoutubeParsers {
     }
     // 频道页 Shorts tab:shortsLockupViewModel(与 lockupViewModel 共享 lockupMetadataViewModel
     // 形状,parseLockupViewModel 可直接复用;Live tab 走 videoRenderer 已被上面收集)。
+    var shortsDumpDone = false
     collectByKey(root, KEY_SHORTS_LOCKUP_VIEW_MODEL) { node ->
-      parseLockupViewModel(node)?.let { videos.add(it) }
+      val v = parseLockupViewModel(node)
+      if (v != null) videos.add(v)
+      else if (!shortsDumpDone) {
+        // 诊断:shortsLockupViewModel 解析失败(contentId 缺?)。只 dump 首个失败节点结构。
+        shortsDumpDone = true
+        Log.w("YtShorts", "shorts node keys=[${node.keys.joinToString(",")}] " +
+          "contentId=${node.stringOrNull("contentId")} top=${node.toString().take(600)}")
+      }
     }
     // 播放列表详情页(open playlist)条目 playlistVideoRenderer,与 videoRenderer 共享
     // videoId/thumbnail/title/lengthText 形状,parseVideoRenderer 可直接复用。
