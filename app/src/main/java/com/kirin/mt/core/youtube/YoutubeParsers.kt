@@ -258,18 +258,25 @@ internal object YoutubeParsers {
   }
 
   /**
-   * 从 /browse tab 的 params(URL 编码 base64 的 protobuf)解析第一个字符串字段(field1),
+   * 从 /browse tab 的 params(URL 编码 base64 的 protobuf)解析第一个 length-delimited 字符串字段,
    * 得到 tab 类型标识:视频=videos / 短视频=shorts / 直播=streams / 播放列表=playlists /
-   * 精选=featured / 播客=podcast / 帖子=posts。解析失败返回 null。
+   * 精选=featured / 播客=podcast / 帖子=posts。InnerTube 的 tab 选择器在 field2(wire2,首字节
+   * 0x12 而非 0x0A),所以不限定字段号,通用读首个 wire-type-2 字段。解析失败返回 null。
    */
   private fun decodeTabName(params: String): String? {
     val urlDecoded = try { java.net.URLDecoder.decode(params, "UTF-8") } catch (e: Exception) { params }
     val bytes = try { android.util.Base64.decode(urlDecoded, android.util.Base64.DEFAULT) }
     catch (e: Exception) { return null }
     if (bytes.size < 2) return null
-    // protobuf 首字段:key varint(field1 + wire2 = 0x0A),再长度 varint,再字符串字节。
-    if ((bytes[0].toInt() and 0x7F) != 0x0A) return null
-    var idx = 1
+    var idx = 0
+    // 读 key varint(不限字段号,但要求 wire type 2 = 低3位是 010)。
+    val wire = bytes[0].toInt() and 0x07
+    if (wire != 2) return null
+    do {
+      idx++
+      if (idx >= bytes.size) return null
+    } while (bytes[idx - 1].toInt() and 0x80 != 0)
+    // 读长度 varint。
     var len = 0
     var shift = 0
     while (idx < bytes.size) {

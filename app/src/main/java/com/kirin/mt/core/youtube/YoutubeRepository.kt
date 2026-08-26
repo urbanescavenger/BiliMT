@@ -200,18 +200,21 @@ class YoutubeRepository(
    * 频道"视频"tab 的最新视频，返回映射后的卡片 + 续页 token。
    * [params] 决定排序（[YoutubeConstants.ChannelVideoOrder.Latest] 最新 /
    * [YoutubeConstants.ChannelVideoOrder.Popular] 最热）；翻页 continuation 与排序无关。
+   * [browseId] 非空时覆盖 [channelId] 作为 browseId 且不发 params——供 Shorts/直播走系统生成
+   * 播放列表(UUSH=Shorts / UULV=直播,布局无关、全频道可靠,新布局频道初始响应无这些 tab)。
    */
   suspend fun getChannelVideos(
     channelId: String,
     continuation: String? = null,
     params: String = YoutubeConstants.ChannelVideosParams,
+    browseId: String? = null,
   ): YoutubeVideoPage {
     val payload = buildJsonObject {
       if (continuation != null) {
         put("continuation", continuation)
       } else {
-        put("browseId", channelId)
-        put("params", params)
+        put("browseId", browseId ?: channelId)
+        if (browseId == null) put("params", params)
       }
     }
     val root = client.postJson("/browse", payload)
@@ -229,7 +232,8 @@ class YoutubeRepository(
       Log.d(
         "YoutubeChannel",
         "getChannelVideos channelId=$channelId ${if (continuation == null) "first" else "next"} " +
-          "params=${if (continuation == null) params else "continuation"} items=${feed.items.size} next=${feed.continuation?.take(12) ?: "null"}",
+          "params=${if (continuation == null) params else "continuation"} " +
+          "browseId=${browseId ?: "channel"} items=${feed.items.size} next=${feed.continuation?.take(12) ?: "null"}",
       )
     }
     return YoutubeVideoPage(

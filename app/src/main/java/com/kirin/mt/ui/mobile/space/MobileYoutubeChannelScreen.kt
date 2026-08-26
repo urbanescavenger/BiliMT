@@ -101,6 +101,17 @@ internal fun MobileYoutubeChannelScreen(
     return keys.firstNotNullOfOrNull { uiState.serverTabParams[it] } ?: uiState.tab.params
   }
 
+  // Shorts/直播走系统生成播放列表 browseId(UUSH/UULV,布局无关、全频道可靠)。新布局频道页
+  // 初始响应无这些 tab(懒加载),服务端 tab params 取不到时硬编码又失效,直接 browse 系统播放列表
+  // 拿到对应内容(修「Shorts 显示热门视频/直播空」)。视频/播放列表仍用 channelId + params。
+  fun channelBrowseId(): String? = when (uiState.tab) {
+    YoutubeConstants.ChannelContentTab.Shorts ->
+      YoutubeConstants.channelSystemBrowseId(channelId, YoutubeConstants.ChannelShortsSystemPlaylistPrefix)
+    YoutubeConstants.ChannelContentTab.Live ->
+      YoutubeConstants.channelSystemBrowseId(channelId, YoutubeConstants.ChannelLiveSystemPlaylistPrefix)
+    else -> null
+  }
+
   fun loadFirst() {
     scope.launch {
       uiState.loading = true
@@ -113,8 +124,8 @@ internal fun MobileYoutubeChannelScreen(
           uiState.playlistContinuation = page.continuation
           uiState.endReached = page.continuation == null
         } else {
-          // 视频/Shorts/直播:拉视频列表。
-          val page = youtubeRepository.getChannelVideos(channelId, params = channelParams())
+          // 视频/Shorts/直播:拉视频列表(Shorts/直播走系统播放列表 browseId)。
+          val page = youtubeRepository.getChannelVideos(channelId, params = channelParams(), browseId = channelBrowseId())
           uiState.items = page.items.distinctBy { it.bvid }
           uiState.continuation = page.continuation
           uiState.endReached = page.continuation == null
@@ -155,7 +166,7 @@ internal fun MobileYoutubeChannelScreen(
           uiState.playlistContinuation = page.continuation
           uiState.endReached = page.continuation == null || merged.size == old.size
         } else {
-          val page = youtubeRepository.getChannelVideos(channelId, token, params = channelParams())
+          val page = youtubeRepository.getChannelVideos(channelId, token, params = channelParams(), browseId = channelBrowseId())
           // 先存旧列表再比较:若先置 uiState.items=merged,merged.size==uiState.items.size 恒真,
           // endReached 永远变 true,续页只翻一页就停(对齐 TV 版 latest.videos 旧列表比较)。
           val oldItems = uiState.items

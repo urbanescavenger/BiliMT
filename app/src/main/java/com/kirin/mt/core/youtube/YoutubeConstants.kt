@@ -153,6 +153,18 @@ object YoutubeConstants {
   }
 
   /**
+   * 频道系统生成播放列表 browseId（布局无关、全频道可靠）：channelId 去掉 "UC" 前缀拼上类型前缀。
+   * 新布局频道页初始 /browse 响应里 Shorts/直播 tab 不存在(懒加载),服务端 tab params 取不到,
+   * 直接 browse 这些系统播放列表即可拿到对应内容。前缀:长视频=UULF / Shorts=UUSH / 直播=UULV /
+   * 热门=UULP。无对应系统播放列表的(如播放列表 tab)返回 null。
+   */
+  fun channelSystemBrowseId(channelId: String, prefix: String): String? =
+    if (channelId.startsWith("UC") && channelId.length > 2) prefix + channelId.substring(2) else null
+
+  const val ChannelShortsSystemPlaylistPrefix = "UUSH"
+  const val ChannelLiveSystemPlaylistPrefix = "UULV"
+
+  /**
    * 热门页各子 tab 的 browseId + 参数。
    *
    * 注意:通用 `FEtrending` 已于 2025-03 被 YouTube 废弃(400 invalid argument,
