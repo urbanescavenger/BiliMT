@@ -200,8 +200,8 @@ class YoutubeRepository(
    * 频道"视频"tab 的最新视频，返回映射后的卡片 + 续页 token。
    * [params] 决定排序（[YoutubeConstants.ChannelVideoOrder.Latest] 最新 /
    * [YoutubeConstants.ChannelVideoOrder.Popular] 最热）；翻页 continuation 与排序无关。
-   * [browseId] 非空时覆盖 [channelId] 作为 browseId 且不发 params——供 Shorts/直播走系统生成
-   * 播放列表(UUSH=Shorts / UULV=直播,布局无关、全频道可靠,新布局频道初始响应无这些 tab)。
+   * [browseId] 非空时覆盖 [channelId] 作为 browseId 且不发 params。Shorts/直播统一用
+   * channelId + 服务端 tab params（系统播放列表 UUSH/UULV 实测 /browse 返回 400，已废弃）。
    */
   suspend fun getChannelVideos(
     channelId: String,

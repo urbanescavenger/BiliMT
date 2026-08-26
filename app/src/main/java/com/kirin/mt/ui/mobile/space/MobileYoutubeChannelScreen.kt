@@ -101,16 +101,10 @@ internal fun MobileYoutubeChannelScreen(
     return keys.firstNotNullOfOrNull { uiState.serverTabParams[it] } ?: uiState.tab.params
   }
 
-  // Shorts/直播走系统生成播放列表 browseId(UUSH/UULV,布局无关、全频道可靠)。新布局频道页
-  // 初始响应无这些 tab(懒加载),服务端 tab params 取不到时硬编码又失效,直接 browse 系统播放列表
-  // 拿到对应内容(修「Shorts 显示热门视频/直播空」)。视频/播放列表仍用 channelId + params。
-  fun channelBrowseId(): String? = when (uiState.tab) {
-    YoutubeConstants.ChannelContentTab.Shorts ->
-      YoutubeConstants.channelSystemBrowseId(channelId, YoutubeConstants.ChannelShortsSystemPlaylistPrefix)
-    YoutubeConstants.ChannelContentTab.Live ->
-      YoutubeConstants.channelSystemBrowseId(channelId, YoutubeConstants.ChannelLiveSystemPlaylistPrefix)
-    else -> null
-  }
+  // 所有 Tab 统一用 channelId + params(Shorts/直播用服务端 tab params,见 channelParams)。
+  // 此前 Shorts/直播走系统生成播放列表 browseId(UUSH/UULV)实测 /browse 返回 400(InnerTube
+  // 不认该 browseId),且服务端 tab params 已能取到(parseChannelTabs 反解),故废弃系统播放列表方案。
+  fun channelBrowseId(): String? = null
 
   fun loadFirst() {
     // 同步清零翻页状态:切 Tab 后旧 continuation 必须立即作废,否则滚动触发的 loadNext 会用
