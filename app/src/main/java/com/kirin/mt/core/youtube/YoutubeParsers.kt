@@ -222,27 +222,41 @@ internal object YoutubeParsers {
   /**
    * 从频道页 /browse 响应解析内容 Tab 栏(视频/Shorts/直播/播放列表等)。
    *
-   * 不猜固定位置:递归收集响应里所有 `tabRenderer` 节点(频道 tab 条无论 c4TabbedHeader /
-   * pageHeaderViewModel / twoColumnBrowseResults 哪种布局,tab 都在这些节点里),每个带 stable
-   * tabIdentifier + endpoint.browseEndpoint.params。取「有 params 的 tab」按名去重组成
-   * (name, params) 列表,供频道页切 Shorts/直播/播放列表用服务端 params(而非硬编码)。
+   * 新版频道页(WEB guest)不再用旧布局的 `tabRenderer`(SCHEMA 已证无 twoColumnBrowseResults /
+   * tabs / tabRenderer),改用 `expandableTabRenderer`(可展开 tab,点「更多」露出直播/播放列表)。
+   * 两种 renderer 都递归收集:tab 条无论放哪都能抓到;每个带 endpoint.browseEndpoint.params,
+   * 取「有 params 的 tab」按名去重组成 (name, params) 列表,供切 Tab 用服务端 params(而非硬编码)。
    */
   fun parseChannelTabs(root: JsonObject): List<ChannelTab> {
     val result = mutableListOf<ChannelTab>()
     val seen = HashSet<String>()
-    collectByKey(root, KEY_TAB_RENDERER) { renderer ->
-      val params = renderer.obj("endpoint")?.obj("browseEndpoint")?.stringOrNull("params")
-      if (params.isNullOrBlank()) return@collectByKey
-      val name = renderer.stringOrNull("tabIdentifier")
-        ?: renderer.obj("title")?.stringOrNull("simpleText").orEmpty()
-      if (name.isBlank()) return@collectByKey
-      if (seen.add(name.lowercase())) result.add(ChannelTab(name = name, params = params))
+    collectByKey(root, KEY_TAB_RENDERER) { renderer -> collectTab(renderer, seen, result) }
+    collectByKey(root, KEY_EXPANDABLE_TAB_RENDERER) { renderer ->
+      // 诊断:确认 expandableTabRenderer 真实形状(标题用 content 还是 simpleText、endpoint 路径)。
+      val ep = renderer.obj("endpoint")?.obj("browseEndpoint")
+      val t = renderer.obj("title")
+      Log.d("Ytabs", "EXPAND keys=${renderer.keys.joinToString(",")} titleKeys=${t?.keys ?: "null"} " +
+        "title.simpleText=${t?.stringOrNull("simpleText")} title.content=${t?.stringOrNull("content")} " +
+        "params=${ep?.stringOrNull("params")?.take(8)}")
+      collectTab(renderer, seen, result)
     }
     // 诊断:打印解析到的 tab 名字 + params 前缀,便于真机核验服务端 tab params 是否取到。
     Log.d("Ytabs", "parseChannelTabs found=${result.map { "${it.name}:${it.params.take(8)}" }}")
-    // 诊断:递归 dump 响应全部 key,定位 tab 条真实节点(此前猜的固定位置/tabRenderer 都抓不到)。
+    // 诊断:递归 dump 响应全部 key,定位内容 Tab 条真实节点。
     dumpSchemaKeys(root)
     return result
+  }
+
+  /** 从单个 tab(旧 tabRenderer 或新 expandableTabRenderer)取 name + params。 */
+  private fun collectTab(renderer: JsonObject, seen: MutableSet<String>, out: MutableList<ChannelTab>) {
+    val params = renderer.obj("endpoint")?.obj("browseEndpoint")?.stringOrNull("params")
+    if (params.isNullOrBlank()) return
+    val title = renderer.obj("title")
+    val name = renderer.stringOrNull("tabIdentifier")
+      ?: title?.stringOrNull("simpleText")
+      ?: title?.stringOrNull("content").orEmpty()
+    if (name.isBlank()) return
+    if (seen.add(name.lowercase())) out.add(ChannelTab(name = name, params = params))
   }
 
   /** 递归收集响应里所有去重后的 key 名,打印出来看真实 schema(定位内容 Tab 条所在节点)。 */
@@ -1269,6 +1283,7 @@ internal object YoutubeParsers {
   private const val KEY_CONTINUATION_ITEM_RENDERER = "continuationItemRenderer"
   private const val KEY_CHANNEL_RENDERER = "channelRenderer"
   private const val KEY_TAB_RENDERER = "tabRenderer"
+  private const val KEY_EXPANDABLE_TAB_RENDERER = "expandableTabRenderer"
   private const val KEY_COMMENT_RENDERER = "commentRenderer"
   private const val KEY_COMMENT_SECTION_RENDERER = "commentSectionRenderer"
   private const val KEY_COMMENT_THREAD_RENDERER = "commentThreadRenderer"
