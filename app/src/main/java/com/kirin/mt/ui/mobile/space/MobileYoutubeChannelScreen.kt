@@ -83,8 +83,17 @@ fun MobileYoutubeChannelScreen(
   val failed = uiState.failed
   val gridState = uiState.gridState
 
-  // 当前内容的 /browse params:Videos Tab 用排序(最新/最热)params,Shorts/直播用各自 tab params。
-  fun channelParams(): String = if (uiState.tab.hasSort) uiState.order.params else uiState.tab.params
+  // 当前内容的 /browse params:Videos Tab 用排序(最新/最热)params;Shorts/直播用服务端提供的
+  // tab params(有则用,对齐 LibreTube 从 header 取;无则回退硬编码)。硬编码对部分频道/新布局失效。
+  fun channelParams(): String {
+    if (uiState.tab.hasSort) return uiState.order.params
+    val keys = when (uiState.tab) {
+      YoutubeConstants.ChannelContentTab.Videos -> listOf("videos")
+      YoutubeConstants.ChannelContentTab.Shorts -> listOf("shorts")
+      YoutubeConstants.ChannelContentTab.Live -> listOf("streams", "live")
+    }
+    return keys.firstNotNullOfOrNull { uiState.serverTabParams[it] } ?: uiState.tab.params
+  }
 
   fun loadFirst() {
     scope.launch {
@@ -150,6 +159,8 @@ fun MobileYoutubeChannelScreen(
       uiState.subscriberCount = header.subscriberCount
       uiState.description = header.description
       uiState.bannerUrl = header.bannerUrl
+      // 记录服务端内容 Tab params(小写标识 → params),切 Shorts/直播用服务端 params。
+      uiState.serverTabParams = header.tabs.map { it.name.lowercase() to it.params }.toMap()
     } else {
       val resolved = runCatching { youtubeRepository.resolveChannel(channelId) }.getOrNull()
       uiState.name = resolved?.name?.ifBlank { channelName } ?: channelName
@@ -157,6 +168,7 @@ fun MobileYoutubeChannelScreen(
       uiState.subscriberCount = null
       uiState.description = ""
       uiState.bannerUrl = ""
+      uiState.serverTabParams = emptyMap()
     }
   }
 

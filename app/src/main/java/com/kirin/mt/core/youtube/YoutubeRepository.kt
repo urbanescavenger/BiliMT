@@ -208,7 +208,7 @@ class YoutubeRepository(
       Log.d(
         "YoutubeChannel",
         "getChannelVideos channelId=$channelId ${if (continuation == null) "first" else "next"} " +
-          "items=${feed.items.size} next=${feed.continuation?.take(12) ?: "null"}",
+          "params=${if (continuation == null) params else "continuation"} items=${feed.items.size} next=${feed.continuation?.take(12) ?: "null"}",
       )
     }
     return YoutubeVideoPage(

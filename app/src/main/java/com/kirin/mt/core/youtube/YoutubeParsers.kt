@@ -98,6 +98,20 @@ internal object YoutubeParsers {
     val description: String = "",
     /** 认证频道（badges 含 VERIFIED）。 */
     val verified: Boolean = false,
+    /**
+     * 频道内容 Tab(视频/Shorts/直播)及其 /browse params。从响应解析(tabIdentifier + endpoint
+     * 的 browseEndpoint.params),对齐 LibreTube/NewPipe 从 header 取 tab。硬编码 params 对部分
+     * 频道/新布局失效,用服务端提供的 params 才能切到对应 Tab。
+     */
+    val tabs: List<ChannelTab> = emptyList(),
+  )
+
+  /**
+   * 频道内容 Tab:稳定标识(如 Videos/Shorts/Streams,服务端 tabIdentifier)+ 对应的 /browse params。
+   */
+  data class ChannelTab(
+    val name: String,
+    val params: String,
   )
 
   /**
@@ -176,7 +190,32 @@ internal object YoutubeParsers {
       bannerUrl = banner,
       description = desc,
       verified = verified,
+      tabs = parseChannelTabs(root),
     )
+  }
+
+  /**
+   * 从频道页 /browse 响应解析内容 Tab 栏(视频/Shorts/直播/播放列表等)。Tab 条在
+   * contents.twoColumnBrowseResultsRenderer.tabs[],每个 tabRenderer 带 stable tabIdentifier
+   * + endpoint.browseEndpoint.params。取「有 params 的 tab」组成 (name, params) 列表,供频道页
+   * 切 Shorts/直播时用服务端 params(而非硬编码)。无 Tab 条返回空列表。
+   */
+  fun parseChannelTabs(root: JsonObject): List<ChannelTab> {
+    val result = mutableListOf<ChannelTab>()
+    val tabsArray = root.obj("contents")
+      ?.obj("twoColumnBrowseResultsRenderer")
+      ?.array("tabs")
+      ?: return result
+    for (tab in tabsArray) {
+      val renderer = (tab as? JsonObject)?.obj("tabRenderer") ?: continue
+      val params = renderer.obj("endpoint")?.obj("browseEndpoint")?.stringOrNull("params")
+      if (params.isNullOrBlank()) continue
+      val name = renderer.stringOrNull("tabIdentifier")
+        ?: renderer.obj("title")?.stringOrNull("simpleText").orEmpty()
+      if (name.isBlank()) continue
+      result.add(ChannelTab(name = name, params = params))
+    }
+    return result
   }
 
   /**

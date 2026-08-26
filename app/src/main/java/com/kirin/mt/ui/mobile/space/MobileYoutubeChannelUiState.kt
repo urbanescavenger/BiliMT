@@ -23,6 +23,8 @@ class MobileYoutubeChannelUiState {
   var description by mutableStateOf("")
   /** banner 图 URL；无则空串。 */
   var bannerUrl by mutableStateOf("")
+  /** 服务端提供的内容 Tab params(稳定标识小写 → params),对齐 LibreTube 从 header 取。 */
+  var serverTabParams by mutableStateOf<Map<String, String>>(emptyMap())
   var followLoading by mutableStateOf(false)
   var items by mutableStateOf<List<VideoSummary>>(emptyList())
   var continuation by mutableStateOf<String?>(null)
