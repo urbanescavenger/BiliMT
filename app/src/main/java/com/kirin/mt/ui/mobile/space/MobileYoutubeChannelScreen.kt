@@ -237,7 +237,9 @@ internal fun MobileYoutubeChannelScreen(
   // 首屏/切排序/切 Tab:拉对应内容。已加载过同 channelId+order+tab 跳过(从播放器返回复用列表,
   // 仅清可能卡住的翻页 loading);切排序/切 Tab 强制重拉。
   LaunchedEffect(channelId, order, tab) {
-    if (uiState.loadedChannelId != channelId || uiState.loadedOrder != order || uiState.loadedTab != tab) {
+    val changed = uiState.loadedChannelId != channelId || uiState.loadedOrder != order || uiState.loadedTab != tab
+    Log.d("Ytabs", "effect fired tab=$tab order=$order loadedTab=${uiState.loadedTab} loadedOrder=${uiState.loadedOrder} changed=$changed")
+    if (changed) {
       loadFirst()
       uiState.loadedChannelId = channelId
       uiState.loadedOrder = order
@@ -364,7 +366,10 @@ internal fun MobileYoutubeChannelScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
           ) {
             YoutubeConstants.ChannelContentTab.entries.forEach { t ->
-              OutlinedButton(onClick = { uiState.tab = t }) {
+              OutlinedButton(onClick = {
+                Log.d("Ytabs", "tabClick from=${uiState.tab} to=$t")
+                uiState.tab = t
+              }) {
                 Text(
                   text = when (t) {
                     YoutubeConstants.ChannelContentTab.Videos -> stringResource(R.string.youtube_channel_tab_videos)
