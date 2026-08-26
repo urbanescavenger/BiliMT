@@ -44,6 +44,7 @@ import com.kirin.mt.ui.mobile.settings.FollowManageKind
 import com.kirin.mt.ui.mobile.settings.MobileFollowManageScreen
 import com.kirin.mt.ui.mobile.settings.MobileLogsScreen
 import com.kirin.mt.ui.mobile.settings.MobileSettingsScreen
+import com.kirin.mt.ui.theme.BiliMobileTheme
 import com.kirin.mt.ui.theme.BiliTvTheme
 import kotlinx.coroutines.launch
 
@@ -73,6 +74,7 @@ class SettingsActivity : ComponentActivity() {
           LocalChineseTextConverter provides textConverter,
           com.kirin.mt.ui.mobile.home.LocalWatchedIds provides watchedIds,
         ) {
+        BiliMobileTheme(appSettings.homeThemeVariant) {
         Surface(modifier = Modifier.fillMaxSize().statusBarsPadding(), color = MaterialTheme.colorScheme.background) {
           val session by appContainer.sessionStore.session.collectAsState(initial = UserSession())
           var followScreen by remember { mutableStateOf<FollowManageKind?>(null) }
@@ -194,6 +196,7 @@ class SettingsActivity : ComponentActivity() {
               modifier = Modifier.fillMaxSize(),
             )
           }
+        }
         }
         }
       }

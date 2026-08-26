@@ -87,6 +87,7 @@ import com.kirin.mt.ui.pgc.PgcSeasonRequest
 import com.kirin.mt.ui.player.LivePlayerScreen
 import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.shell.AppDestination
+import com.kirin.mt.ui.theme.BiliMobileTheme
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
@@ -250,6 +251,7 @@ fun BiliMobileApp(
     LocalChineseTextConverter provides textConverter,
     com.kirin.mt.ui.mobile.home.LocalWatchedIds provides watchedIds,
   ) {
+    BiliMobileTheme(settings.homeThemeVariant) {
     Box(modifier = Modifier.fillMaxSize()) {
     NavigationSuiteScaffold(
       modifier = Modifier.statusBarsPadding(),
@@ -637,6 +639,7 @@ fun BiliMobileApp(
     if (downloadEnqueueing) {
       MobileEnqueueingDialog()
     }
+  }
   }
   }
 }
