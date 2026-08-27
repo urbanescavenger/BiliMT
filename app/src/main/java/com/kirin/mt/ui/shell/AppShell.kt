@@ -1664,6 +1664,7 @@ fun BiliTvApp(
         ) {
           YoutubePlaylistDetailScreen(
             youtubeRepository = youtubeRepository,
+            youtubeHistoryStore = youtubeHistoryStore,
             playlist = displayedYoutubePlaylistRequest,
             // 起播即快照整份已加载列表为连播队列(点行从该视频起,播全部从第一条起);
             // 播放器播完由 PlayerScreen 按队列下一项连播(对齐移动端 playQueue)。
