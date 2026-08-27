@@ -558,7 +558,7 @@ internal object YoutubeParsers {
         } ?: part.obj("text")?.let { runsText(it).ifBlank { simpleText(it) } }
         val t = text?.trim() ?: return@forEach
         if (t.startsWith("by ", ignoreCase = true)) owner = t.removePrefix("by ").trim().ifBlank { null }
-        else if (count == null && Regex("\\d+\\s*\\S*video", ignoreCase = true).containsMatchIn(t)) count = t
+        else if (count == null && Regex("\\d+\\s*\\S*video", RegexOption.IGNORE_CASE).containsMatchIn(t)) count = t
       }
     }
     val cover = vm.obj("heroImage")?.let { firstImageUrl(it) }
