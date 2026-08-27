@@ -218,14 +218,9 @@ internal fun MobileYoutubePlaylistDetailScreen(
               }
             }
             Spacer(modifier = Modifier.height(8.dp))
-            if (items.isNotEmpty()) {
-              OutlinedButton(onClick = { onStartSelected(items.first(), items) }) {
-                Text("播放全部")
-              }
-            }
+            // 简介紧跟作者·视频数行(2026-08-27 用户定稿:简介在播放全部按钮上方)。
             val desc = header?.description
             if (!desc.isNullOrBlank()) {
-              Spacer(modifier = Modifier.height(6.dp))
               var expanded by remember { mutableStateOf(false) }
               val shown = if (expanded) desc else desc.take(120)
               Text(
@@ -236,6 +231,12 @@ internal fun MobileYoutubePlaylistDetailScreen(
                   .fillMaxWidth()
                   .clickable { expanded = !expanded },
               )
+              Spacer(modifier = Modifier.height(8.dp))
+            }
+            if (items.isNotEmpty()) {
+              OutlinedButton(onClick = { onStartSelected(items.first(), items) }) {
+                Text("播放全部")
+              }
             }
           }
         }
