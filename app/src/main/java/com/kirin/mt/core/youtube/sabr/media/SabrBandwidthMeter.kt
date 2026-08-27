@@ -32,8 +32,10 @@ internal class SabrBandwidthMeter(
   }
 
   override fun getBitrateEstimate(): Long {
+    // alpha.9Z:real=0(窗口内全是被迫空转,供给归零)也是有效判定——回落 delegate 会用传输期高估
+    // 把选轨器弹回高档,正好复现「卡死不降档」。仅 -1(尚无任何样本)才回退底层估计。
     val real = realBpsProvider?.invoke() ?: -1L
-    return if (real > 0) real else delegate.getBitrateEstimate()
+    return if (real >= 0L) real else delegate.getBitrateEstimate()
   }
 
   override fun getTimeToFirstByteEstimateUs(): Long = delegate.getTimeToFirstByteEstimateUs()

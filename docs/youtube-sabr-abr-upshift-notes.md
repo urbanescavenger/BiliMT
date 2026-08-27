@@ -113,7 +113,50 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 ## 8. 未决问题清单
 
 - [x] **带宽计不可靠已坐实,最终用「带宽驱动选档」根治**(§5 末行):媒体3 `getBitrateEstimate()` 真机 1M↔437M 跳变 → 新建 `SabrBandwidthMeter` 让带宽计返回真实带宽(中位数),媒体3 原生 ABR 按可信带宽选档,删除 exclude/force 补丁。**2026-08-24 复测通过**:`bw=` 稳定平滑(912K→12M→25M,不再 27K↔232M 狂跳);会话1 真实带宽 12-28M 直接选到顶档 4K(299@6.2M)稳定钉住;会话2 带宽 886K→6M→9.7M→11M 时 **1080p→1440p→4K 自然爬升**,无震荡、无黑屏、无看门狗重载。**「没升」问题根治,媒体3 原生 ABR 按真实带宽选最高可负担档,升降全自动,无需任何 exclude/force 补丁**
-- [ ] **8K(315)缓冲掉不降档 → 可持续带宽高估**:带宽驱动选档后 20:27-29 真机爬到 8K(315 声明 31.6M,真实段 ~80M),瞬时下载 84M 但段间 gap 23-30s → 可持续 ~15M,缓冲 39s→3.6s 仍不降档。根因带宽样本 `bytes/elapsed` 漏掉段间等待。已改样本计入 gap(`bytes/(elapsed+gap)`),`bw=` 应反映可持续带宽。**待真机复测**:bw= 稳定在可持续值、8K 起播即降到可负担档(不再钉 8K 缓冲耗尽)、缓冲掉时能降档
+- [x] **8K(315)缓冲掉不降档 → 可持续带宽高估**:带宽驱动选档后 20:27-29 真机爬到 8K(315 声明 31.6M,真实段 ~80M),瞬时下载 84M 但段间 gap 23-30s → 可持续 ~15M,缓冲 39s→3.6s 仍不降档。根因带宽样本 `bytes/elapsed` 漏掉段间等待。早期方案直接 `bytes/(elapsed+gap)` 全额计 gap,后被 alpha.9X 回退(gap 被当作主动节奏,满缓冲停闸误杀);**最终方案见 §9**(gap + 滑行量扣减,2026-08-27)
 - [ ] **Auto 卡 1080p 不升 → 分辨率优先选档**:带宽驱动后带宽可信(用户手动选 1440 缓冲正常涨),但 media3 按 bitrate 降序选档,YouTube 声明 bitrate 与 height 错位(308 1440p 13.9M < 303 1080p 14.4M)→ 带宽够也停在 1080p。新建 `HeightAwareAdaptiveTrackSelection` 按 height 选档、bitrate 只当门槛。**待真机复测**:Auto 能从 1080p 自然升到 1440p/4K、带宽不够时能降档、无黑屏无看门狗重载
 - [ ] re-resolve 掉档后如何从 480p 回档(4K 重新 resolve 重建 selection 清起始锁 → ABR 回落到真实带宽档,一般已够;待复测确认)
 - [x] relax 强制抬升 → **已废弃**,改带宽驱动(上一条)
+
+---
+
+## 9. 2026-08-27 4K 卡死→看门狗重载死循环:GC 风暴 + 带宽分母漏计段间空窗(alpha.9Z)
+
+### 现象(真机 logs_live.log,Sony BRAVIA 4K,itag315 4K VP9 声明 39.4M)
+
+- 播放周期性 `stall detected, auto-retry`(看门狗)→ **整会话重新 harvest,新会话仍默认 315** → 同码率再来一遍,死循环
+- `YtSabrAbr: sel=0 bitrate=39363148 bw=83029K down=1` —— `down=1` 只是相邻低档候选 index,**不是降档动作**;选轨器(HeightAwareAdaptiveTrackSelection)纯按「声明码率 ≤ 带宽估计」一票决定,est=83M > 39.4M 永不降档
+
+### 时间线还原
+
+1. **19:17:30** 缓冲填到 50s(bufferMax 停闸,`isLoading=false state=3`)
+2. **19:18:09-33** 缓冲耗到 ~10-13s 后恢复取流,但供给贴地:每个 POST 周期 ~10.5s 只回 2 段 ≈10s 内容(供给 ≈0.95x 播放),缓冲不再回涨
+3. **19:18:37-45** **GC 风暴**:堆顶死 380-400MB(0% free),每 ~0.5s 一次并发 GC 单次释放 100-250MB LOS(10-25MB 段 buffer),`Suspending all threads took 15-27ms` 连环;loader 线程(19922)被 blocking GC Alloc 卡 50-92ms 整串
+4. **19:18:44.93** 下一次 fetch 根本没发出,视频缓冲耗干 → `state=BUFFERING`(音频还缓冲 28%,视频没了)
+5. **19:18:53.89** 进度 9s 不动 → 看门狗 `retryKey++` 整会话重载
+
+### 根因:带宽分母只计「传输活跃耗时」
+
+`SabrMediaFetcher.media()` 样本 = `t0→response 读完`,alpha.9X 注释刻意排除段间 gap(「主动节奏非带宽不足」)。但 GC 卡死 loader 的 8s 里 **fetch 压根没发起**——连 `recordRealBandwidthFailure`(只覆盖"发起了且失败")都不产生样本,est 停在最漂亮的 83M。有效带宽(墙钟摊)实测仅 ~10.7Mbps(70s 墙钟仅交付 93.8MB ≈ 19s 内容),远低于 39.4M。
+
+**为什么早期「直接全额计 gap」被回退**:满缓冲停闸(缓冲从 50s 滑行下来)的 gap 会被误判成供给不足 → 每次停闸后 est 崩塌 → 质量棘轮式下滑。**本版方案 = gap 计时 + 滑行量扣减**,两个矛盾同时满足:
+
+| 判定 | 规则(`SabrMediaFetcher.recordFetchGap`) |
+|---|---|
+| gap 计入分母 | `counted = gap − max(0, runway − 10s 安全余量)`,≥0.5s 才记,≤30s 封顶 |
+| 满缓冲主动停闸 | gap 开始时缓冲 ~50s → 滑行量 40s → 42s 的停闸 gap 只计 2s,不误杀 prefetch |
+| GC/断流被迫空转 | runway ~12s → gap 16s 计 ~8s → est 下探 → 降档 |
+| 消耗性 pacing(供给≈1.0x) | runway 10-13s → 每周期计 ~8-10s → est ≈17-33M < 39.4M → 降档 |
+| seek / 手动选档后 | gap 是操作开销,跳过(`lastSeekMs`/`lastManualFormatSelectionMs` 判定) |
+| runway 来源 | 仅**视频** chunk source 每次 getNextChunk 喂 `noteBufferedAheadMs`(音频缓冲远超需求会污染判定);在上次 fetch **结束时快照**(= gap 起点的水位) |
+
+配套改动:
+- `getRealBitrateEstimate()`:窗口内全是空转(量=0)返回 **0**(不再回退 delegate 高估);`SabrBandwidthMeter` 接受 `real >= 0` 为有效
+- `HeightAwareAdaptiveTrackSelection` 升档滞回:升档需 **est ≥ 声明码率×1.25 且缓冲 ≥30s**(降档无门槛自救要快),防临界带宽 308↔315 反复切轨(每次切轨拉新 init 段还丢已缓冲数据)
+- 修正 §52 注释:原「带宽含段间 gap」与 media() 实现矛盾(见上)
+
+### 未决/风险
+
+- [ ] **真机复测**:4K 播放中应出现 `bw gap counted:` 日志,est 回落到可持续值(<39.4M)后自动降到 308/303,看门狗重载不再死循环;好网络下 4K 仍能稳定维持(填充期 gap≈0 不受影响)
+- [ ] 段间 ~10s pacing 的归属(服务端限速 vs 客户端队列上限)未最终定性——若为客户端刻意 2 段队列上限,gap 计时会系统性低估带宽;但升档滞回(缓冲 ≥30s 才升)保证最坏结果是 315↔308 震荡而非永久低档
+- [ ] GC 风暴根因未治:4K VP9 段 buffer(10-25MB)把 ~400MB 堆打满,单次 46MB `response.body?.bytes()` 分配即触发连环 GC;根治需段落盘/流式处理,另立项目

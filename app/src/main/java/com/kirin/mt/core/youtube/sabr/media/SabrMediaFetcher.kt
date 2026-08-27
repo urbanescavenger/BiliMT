@@ -127,6 +127,43 @@ internal class SabrMediaFetcher(
   private var realBwBytes = 0L
   private var realBwTimeMs = 0L
 
+  // alpha.9Z(gap 计时归总到带宽):样本分母原先只计「传输活跃耗时」,fetch 与 fetch 之间的空窗一律不计。
+  // 2026-08-27 真机实证:GC 风暴把 loader 线程卡死 8s,期间管道交付速率=0,但 fetch 根本没发起——连
+  // 失败样本都不产生,est 钉在传输期高位(83M),ABR 永不降档,只能等看门狗整段重载。改为:每次发 POST
+  // 前算 gap=本次开始−上次 fetch 结束,超出「缓冲可滑行量(runway − 安全余量)」的部分作为 bytes=0 样本
+  // 计入窗口;满缓冲主动停闸期间缓冲从高位滑行的时间被扣掉,不误杀正常 prefetch。seek/手动选档后的
+  // gap 是操作开销非供给问题,跳过。runway 由视频 chunk source 每次 getNextChunk 喂(noteBufferedAheadMs),
+  // 在上次 fetch 结束时快照(gap 开始时刻的缓冲水位)。
+  @Volatile private var lastFetchEndMs = 0L
+  @Volatile private var bufferedAheadNoteMs = -1L
+  @Volatile private var bufferedAheadMsAtLastFetch = -1L
+
+  /** 由视频 [DefaultSabrChunkSource] 每次 getNextChunk 喂:播放位置前方缓冲水位(ms)。仅视频轨喂(音频轨缓冲远超需求,会污染滑行量判定)。 */
+  fun noteBufferedAheadMs(ms: Long) {
+    bufferedAheadNoteMs = ms
+  }
+
+  /**
+   * 记录上次 fetch 结束到本次发起之间的被迫空转。只有超出「滑行量」的部分算供给损失,计 bytes=0 样本
+   * (窗口带宽下探);满缓冲滑行部分不惩罚。在每次 media() 发请求前调用。
+   */
+  private fun recordFetchGap(
+    prevFetchEndMs: Long,
+    prevSeekMs: Long?,
+    prevManualMs: Long?,
+    runwayMs: Long,
+    fetchStartMs: Long,
+  ) {
+    if (prevFetchEndMs == 0L || fetchStartMs <= prevFetchEndMs) return
+    if ((prevSeekMs ?: 0L) > prevFetchEndMs || (prevManualMs ?: 0L) > prevFetchEndMs) return
+    val coastMs = (runwayMs - BW_GAP_RUNWAY_RESERVE_MS).coerceAtLeast(0L)
+    val countedMs = ((fetchStartMs - prevFetchEndMs) - coastMs).coerceIn(0L, BW_GAP_MAX_MS)
+    if (countedMs >= BW_GAP_MIN_MS) {
+      addRealBwSample(0L, countedMs)
+      Log.i(tag, "bw gap counted: ${countedMs}ms (raw=${fetchStartMs - prevFetchEndMs}ms coast=${coastMs}ms runway=$runwayMs)")
+    }
+  }
+
   /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。小样本(init/retry/音频段)过滤,不混入窗口。 */
   fun recordRealBandwidthSample(bytes: Long, elapsedMs: Long) {
     if (bytes < REAL_BW_MIN_BYTES || elapsedMs <= 0) return
@@ -153,10 +190,11 @@ internal class SabrMediaFetcher(
     }
   }
 
-  /** 真实带宽估计(bps)= 窗口内累计下载量/累计耗时(含卡住);无样本返回 -1。 */
+  /** 真实带宽估计(bps)= 窗口内累计下载量/累计耗时(含卡住与被迫空转)。无样本返回 -1;窗口内全是空转(量=0)返回 0,不回退底层高估。 */
   fun getRealBitrateEstimate(): Long {
     synchronized(realBandwidthLock) {
-      if (realBwTimeMs <= 0L || realBwBytes <= 0L) return -1L
+      if (realBwTimeMs <= 0L) return -1L
+      if (realBwBytes <= 0L) return 0L
       return realBwBytes * 8000L / realBwTimeMs
     }
   }
@@ -339,6 +377,11 @@ internal class SabrMediaFetcher(
       .header("Referer", "https://www.youtube.com/")
       .build()
     val t0 = SystemClock.elapsedRealtime()
+    // alpha.9Z:发请求前快照 gap 起点(上次 fetch 结束)与当时的缓冲水位,供 gap 计时(见 recordFetchGap)
+    val prevFetchEndMs = lastFetchEndMs
+    val prevSeekMs = lastSeekMs
+    val prevManualMs = lastManualFormatSelectionMs
+    val runwayMs = bufferedAheadMsAtLastFetch
     return try {
       val resp = httpClient.newCall(request).execute().use { response ->
         val code = response.code
@@ -354,6 +397,9 @@ internal class SabrMediaFetcher(
       // 节奏非带宽不足),吞吐 = 窗口累计量/累计耗时。带宽充足时贴近真实下载速率,断流时靠失败段计时下探。
       val mbps = if (elapsed > 0) resp.size.toLong() * 8 / (elapsed * 1000L) else -1L
       recordRealBandwidthSample(resp.size.toLong(), elapsed)
+      recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0)
+      lastFetchEndMs = SystemClock.elapsedRealtime()
+      bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
       Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps est=${getRealBitrateEstimate() / 1000L}K")
       resp
     } catch (e: SabrTerminalException) {
@@ -363,6 +409,9 @@ internal class SabrMediaFetcher(
       // 网络失败/超时:下载量=0、耗时计满 → 窗口带宽下探,让 ABR 有依据降档自救
       val failMs = SystemClock.elapsedRealtime() - t0
       recordRealBandwidthFailure(failMs)
+      recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0)
+      lastFetchEndMs = SystemClock.elapsedRealtime()
+      bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
       Log.w(tag, "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${getRealBitrateEstimate() / 1000L}K)")
       throw e
     }
@@ -576,6 +625,12 @@ internal class SabrMediaFetcher(
      * 显著压低带宽又不过度被历史稀释。卡死时长超窗口时窗口只留该失败段 → 带宽=0 → ABR 彻底降档。
      */
     const val REAL_BW_WINDOW_MS = 20_000L
+    /** alpha.9Z:gap 计入带宽前扣掉的「缓冲安全余量」(ms)——缓冲水位高出它的部分视为主动滑行,不算供给损失。 */
+    const val BW_GAP_RUNWAY_RESERVE_MS = 10_000L
+    /** alpha.9Z:gap 计量下限,短于此的被迫空转视为噪声。 */
+    const val BW_GAP_MIN_MS = 500L
+    /** alpha.9Z:gap 计量上限,防单次超长空窗(如长时间暂停后恢复)单样本毒化窗口。 */
+    const val BW_GAP_MAX_MS = 30_000L
   }
 }
 

@@ -49,15 +49,21 @@ class HeightAwareAdaptiveTrackSelection(
       selected = super.getSelectedIndex()
       return
     }
-    // 带宽门槛:我们的带宽计(SabrBandwidthMeter)已返回「可持续中位数带宽」(段下载含段间 gap),无需
-    // 再乘 media3 的 0.7 保守因子(那是对瞬时带宽的防高估;对已保守的中位数再乘会把档压过头)。
+    // 带宽门槛:我们的带宽计(SabrBandwidthMeter)已返回「可持续带宽」(alpha.9Z 起含段间被迫空转的
+    // gap 计时,传输期高估已被摊薄),无需再乘 media3 的 0.7 保守因子(对瞬时带宽的防高估)。
     val effective = bandwidthMeter.getBitrateEstimate()
+    // alpha.9Z(升档滞回,防降档后横跳):带宽估计在档位临界值附近抖动时,无滞回会 308↔315 反复切轨
+    // (每次切轨都要拉新 init 段,还丢已缓冲的高档数据)。升档要求 ①带宽 ≥ 声明码率 ×1.25 ②缓冲 ≥30s
+    // (降档自救不设门槛,越快越好);同 height 多 codec 切换不算升档,维持原门槛。
+    val currentHeight = getFormat(selected).height
+    val canUpgrade = bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US
     var best = length - 1
     var bestHeight = -1
     for (i in 0 until length) {
       if (isTrackExcluded(i, nowMs)) continue
       val f = getFormat(i)
-      if (f.bitrate > effective) continue // bitrate 只当带宽门槛
+      val required = if (canUpgrade && f.height > currentHeight) f.bitrate * 5L / 4L else f.bitrate.toLong()
+      if (required > effective) continue // bitrate 只当带宽门槛
       // 选声明码率可负担的最高分辨率档;同 height 多 codec(VP9/H264)按 bitrate 降序遍历先到的码率
       // 最高,`f.height > bestHeight` 严格大于不会替换 → 自然保留高码率变体。
       if (f.height > bestHeight) {
@@ -69,6 +75,11 @@ class HeightAwareAdaptiveTrackSelection(
   }
 
   override fun getSelectedIndex(): Int = selected
+
+  private companion object {
+    /** alpha.9Z:升档所需的最低缓冲水位(us)——降档自救后缓冲重建到这一水位前,不允许弹回高档。 */
+    const val UPGRADE_MIN_BUFFERED_US = 30_000_000L
+  }
 
   override fun getSelectionReason(): Int = androidx.media3.common.C.SELECTION_REASON_ADAPTIVE
 

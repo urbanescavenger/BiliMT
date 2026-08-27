@@ -190,6 +190,12 @@ internal class DefaultSabrChunkSource(
     val bufferedDurationUs = loadPositionUs - playbackPositionUs
     val previousChunk = queue.lastOrNull()
 
+    // alpha.9Z:视频轨每次取 chunk 把「播放位置前方缓冲水位」喂给 fetcher,gap 计时据此扣减滑行量
+    // (仅视频轨喂:音频轨缓冲远超需求,会污染判定)。见 SabrMediaFetcher.recordFetchGap。
+    if (trackType == C.TRACK_TYPE_VIDEO) {
+      fetcher.noteBufferedAheadMs(Util.usToMs(bufferedDurationUs))
+    }
+
     val representationHolder = representationHolders[trackSelection.selectedIndex]
     fetcher.selectFormat(representationHolder.representation)
     // 增量升/降档(alpha.9X,修「Auto 起播低档后永不升档」):Auto 全轨自适应原把所有未下载轨的 iterator
