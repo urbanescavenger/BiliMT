@@ -164,9 +164,10 @@ internal class SabrMediaFetcher(
     }
   }
 
-  /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。小样本(init/retry/音频段)过滤,不混入窗口。 */
+  /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。快小样本(init/retry/音频段)过滤;但慢小样本(2026-08-27 真机:服务端挂 8.5s 只回 939B)是真实供给中断,必须入账。 */
   fun recordRealBandwidthSample(bytes: Long, elapsedMs: Long) {
-    if (bytes < REAL_BW_MIN_BYTES || elapsedMs <= 0) return
+    if (elapsedMs <= 0) return
+    if (bytes < REAL_BW_MIN_BYTES && elapsedMs < BW_SLOW_TINY_MS) return
     addRealBwSample(bytes, elapsedMs)
   }
 
@@ -631,6 +632,13 @@ internal class SabrMediaFetcher(
     const val BW_GAP_MIN_MS = 500L
     /** alpha.9Z:gap 计量上限,防单次超长空窗(如长时间暂停后恢复)单样本毒化窗口。 */
     const val BW_GAP_MAX_MS = 30_000L
+    /**
+     * alpha.9Z:快小样本过滤的时间上限(ms)——bytes<100KB 且耗时低于它视为 init/retry/音频噪声丢弃;
+     * 超过它视为「慢小响应」(服务端挂住只回极小体)真实供给中断,按实际 (bytes, elapsed) 入账。
+     * 2026-08-27 真机:rn=18 8.5s 只回 939B 被过滤,est 钉 52M,31s 墙钟仅交付 67.6MB(有效 17M),
+     * 缓冲 19.6s→2% 看门狗重载——供给中断发生在传输内,原过滤器全盲。
+     */
+    const val BW_SLOW_TINY_MS = 2_000L
   }
 }
 
