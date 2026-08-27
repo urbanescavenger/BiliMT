@@ -1152,6 +1152,8 @@ private fun SearchResultsHeader(
 ) {
   val homeColors = LocalHomeColors.current
   var titleFocused by remember { mutableStateOf(false) }
+  // 视频类型才显示排序 chip;UP主 类型只剩类型 chip,标题 Down 需回退落类型 chip。
+  val showSort = searchType == SearchTypeVideo
   Column(
     modifier = Modifier.fillMaxWidth(),
     verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
@@ -1167,8 +1169,14 @@ private fun SearchResultsHeader(
         .onFocusChanged { titleFocused = it.isFocused }
         .onPreviewKeyEvent { event ->
           if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
-            // 类型 chip 恒在排序 LazyRow 最前，标题 Down 落到第一个类型 chip（视频）。
-            runCatching { typeFocusRequesters.getValue(SearchTypeVideo).requestFocus() }.isSuccess
+            // 排序 chip 在类型 chip 前（对齐移动端顺序）;落当前选中排序 chip（避免聚焦未选中 chip 触发焦点即选中重搜）。
+            // UP主 类型排序 chip 不在组合树,回退落第一个类型 chip（视频）。
+            val moved = if (showSort) {
+              runCatching { sortFocusRequesters.getValue(selectedOrderKey).requestFocus() }.getOrDefault(false)
+            } else {
+              false
+            }
+            if (moved) true else runCatching { typeFocusRequesters.getValue(SearchTypeVideo).requestFocus() }.isSuccess
           } else {
             false
           }
@@ -1199,7 +1207,6 @@ private fun SearchResultsHeader(
     }
     val typeOptions = typeOptionsFor(source)
     val sortOptions = sortOptionsFor(source)
-    val showSort = searchType == SearchTypeVideo
     LazyRow(
       modifier = Modifier
         .padding(horizontal = BiliSizing.SearchVideoGridHorizontalPadding)
@@ -1209,13 +1216,15 @@ private fun SearchResultsHeader(
       horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
       contentPadding = PaddingValues(horizontal = BiliSpacing.Xs),
     ) {
-      // 类型 chip 恒在最前（视频/UP主），UP主 类型时隐藏排序 chip。
-      itemsIndexed(typeOptions, key = { _, option -> option.key }) { index, option ->
-        val selected = searchType == option.key
+    // 排序 chip 在前（综合/最多播放/最新/最多弹幕，对齐移动端顺序），类型 chip（视频/UP主）在后；
+    // UP主 类型时隐藏排序 chip，只剩类型 chip。行首 chip（视频类型时为第一个排序 chip）Left 移侧栏。
+    if (showSort) {
+      itemsIndexed(sortOptions, key = { _, option -> option.key }) { index, option ->
+        val selected = selectedOrderKey == option.key
         SearchSortButton(
           option = option,
           selected = selected,
-          modifier = Modifier.focusRequester(typeFocusRequesters.getValue(option.key)),
+          modifier = Modifier.focusRequester(sortFocusRequesters.getValue(option.key)),
           onMoveLeftToNav = if (index == 0) onMoveLeftToNav else null,
           onMoveUpToTitle = {
             runCatching { titleFocusRequester.requestFocus() }.isSuccess
@@ -1224,31 +1233,31 @@ private fun SearchResultsHeader(
             runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
           },
           onSelected = {
-            onTypeSelected(option.key)
+            onOrderSelected(option.key)
           },
         )
       }
-      if (showSort) {
-        itemsIndexed(sortOptions, key = { _, option -> option.key }) { index, option ->
-          val selected = selectedOrderKey == option.key
-          SearchSortButton(
-            option = option,
-            selected = selected,
-            modifier = Modifier.focusRequester(sortFocusRequesters.getValue(option.key)),
-            // 类型 chip 已在最前，排序 chip 的 Left 交给默认焦点系统（移到前一个 chip）。
-            onMoveLeftToNav = null,
-            onMoveUpToTitle = {
-              runCatching { titleFocusRequester.requestFocus() }.isSuccess
-            },
-            onMoveDownToResults = {
-              runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
-            },
-            onSelected = {
-              onOrderSelected(option.key)
-            },
-          )
-        }
-      }
+    }
+    itemsIndexed(typeOptions, key = { _, option -> option.key }) { index, option ->
+      val selected = searchType == option.key
+      SearchSortButton(
+        option = option,
+        selected = selected,
+        modifier = Modifier.focusRequester(typeFocusRequesters.getValue(option.key)),
+        // 排序 chip 在前时类型 chip 的 Left 交给默认焦点系统（移到前一个 chip）；
+        // UP主 类型（排序隐藏）时行首类型 chip 的 Left 移到侧栏。
+        onMoveLeftToNav = if (!showSort && index == 0) onMoveLeftToNav else null,
+        onMoveUpToTitle = {
+          runCatching { titleFocusRequester.requestFocus() }.isSuccess
+        },
+        onMoveDownToResults = {
+          runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
+        },
+        onSelected = {
+          onTypeSelected(option.key)
+        },
+      )
+    }
     }
   }
 }
