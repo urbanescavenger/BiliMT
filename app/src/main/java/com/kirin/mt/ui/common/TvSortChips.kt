@@ -31,6 +31,7 @@ import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliRadius
 import com.kirin.mt.ui.theme.BiliSizing
+import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
 
@@ -43,8 +44,8 @@ import com.kirin.mt.ui.theme.LocalHomeColors
 internal fun TvPlayAllChip(
   modifier: Modifier = Modifier,
   onActivate: () -> Unit,
-  onMoveUp: () -> Boolean,
-  onMoveDown: () -> Boolean,
+  onMoveUp: () -> Boolean = { false },
+  onMoveDown: () -> Boolean = { false },
   onMoveLeft: () -> Boolean = { true },
   onMoveRight: () -> Boolean = { true },
 ) {
@@ -98,8 +99,8 @@ internal fun TvSortToggleChip(
   label: String,
   modifier: Modifier = Modifier,
   onActivate: () -> Unit,
-  onMoveUp: () -> Boolean,
-  onMoveDown: () -> Boolean,
+  onMoveUp: () -> Boolean = { false },
+  onMoveDown: () -> Boolean = { false },
   onMoveLeft: () -> Boolean = { true },
   onMoveRight: () -> Boolean = { true },
 ) {
