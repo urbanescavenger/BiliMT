@@ -140,6 +140,7 @@ internal class DefaultSabrChunkSource(
     // 改为向带宽计返回 SabrMediaFetcher 实测真实带宽(中位数)。AdaptiveTrackSelection 据此原生 ABR 选档,
     // 不再需要 ceiling/force-climb 排除补丁。见 SabrBandwidthMeter / SabrMediaFetcher。
     (bandwidthMeter as? SabrBandwidthMeter)?.setRealBandwidthProvider { fetcher.getRealBitrateEstimate() }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setSustainedBandwidthProvider { fetcher.getSustainedBitrateEstimate() }
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {

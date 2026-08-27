@@ -127,6 +127,26 @@ internal class SabrMediaFetcher(
   private var realBwBytes = 0L
   private var realBwTimeMs = 0L
 
+  // alpha.9Z(升档用「持续带宽」):滑动窗口只计传输活跃耗时,重填缓冲期间背靠背突发会把 est 冲到
+  // 40-70M(2026-08-27 真机:一笔 74Mbps 突发把 est 从 16M 抬到 40M,恰好过 4K 门槛 → 升完必卡——
+  // 服务端 pacing 把长期有效供给压回 16-20M)。持续带宽 = 过去 60s 墙钟内成功交付的媒体字节 / 墙钟
+  // 时长(固定分母,空闲/pacing 全摊入),专供升档判定「这条管子长期扛不扛得住」;降档仍用滑动窗口
+  // est(反应快)。
+  private class SustainedSample(val endWallMs: Long, val bytes: Long)
+  private val sustainedSamples = ArrayDeque<SustainedSample>()
+  private var sustainedBytes = 0L
+
+  private fun addSustainedSample(bytes: Long) {
+    val now = System.currentTimeMillis()
+    synchronized(realBandwidthLock) {
+      sustainedSamples.addLast(SustainedSample(now, bytes))
+      sustainedBytes += bytes
+      while (sustainedSamples.size > 1 && now - sustainedSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
+        sustainedBytes -= sustainedSamples.removeFirst().bytes
+      }
+    }
+  }
+
   // alpha.9Z(gap 计时归总到带宽):样本分母原先只计「传输活跃耗时」,fetch 与 fetch 之间的空窗一律不计。
   // 2026-08-27 真机实证:GC 风暴把 loader 线程卡死 8s,期间管道交付速率=0,但 fetch 根本没发起——连
   // 失败样本都不产生,est 钉在传输期高位(83M),ABR 永不降档,只能等看门狗整段重载。改为:每次发 POST
@@ -174,6 +194,24 @@ internal class SabrMediaFetcher(
     if (elapsedMs <= 0) return
     if (bytes < REAL_BW_MIN_BYTES && elapsedMs < BW_SLOW_TINY_MS) return
     addRealBwSample(bytes, elapsedMs)
+    if (bytes >= REAL_BW_MIN_BYTES) addSustainedSample(bytes)
+  }
+
+  /**
+   * 持续带宽(bps)= 过去 60s 墙钟内成功交付媒体字节 / 墙钟跨度(含全部空窗)。跨度 <15s(刚起播/
+   * 暂停后恢复,证据不足)返回 -1,由调用方回退活跃传输 est。专供升档判定,降档走 [getRealBitrateEstimate]。
+   */
+  fun getSustainedBitrateEstimate(): Long {
+    synchronized(realBandwidthLock) {
+      val now = System.currentTimeMillis()
+      while (sustainedSamples.size > 1 && now - sustainedSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
+        sustainedBytes -= sustainedSamples.removeFirst().bytes
+      }
+      if (sustainedSamples.isEmpty() || sustainedBytes <= 0L) return -1L
+      val spanMs = now - sustainedSamples.first().endWallMs
+      if (spanMs < SUSTAINED_MIN_SPAN_MS) return -1L
+      return sustainedBytes * 8000L / spanMs.coerceAtMost(SUSTAINED_WINDOW_MS)
+    }
   }
 
   /** 记录一次失败/卡住段(fetchStreamData 异常时调用):下载量=0、耗时计满,让窗口带宽下探。 */
@@ -647,6 +685,10 @@ internal class SabrMediaFetcher(
      * 缓冲 19.6s→2% 看门狗重载——供给中断发生在传输内,原过滤器全盲。
      */
     const val BW_SLOW_TINY_MS = 2_000L
+    /** alpha.9Z:持续带宽窗口(墙钟 ms)——升档判据「60s 内实际交付字节/墙钟」。 */
+    const val SUSTAINED_WINDOW_MS = 60_000L
+    /** alpha.9Z:持续带宽最短跨度,不足视为证据不足返回 -1(回退活跃 est,起播爬档不被卡)。 */
+    const val SUSTAINED_MIN_SPAN_MS = 15_000L
   }
 }
 

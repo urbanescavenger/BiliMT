@@ -26,9 +26,23 @@ internal class SabrBandwidthMeter(
   @Volatile
   private var realBpsProvider: (() -> Long)? = null
 
+  @Volatile
+  private var sustainedBpsProvider: (() -> Long)? = null
+
   /** 由持有 [SabrMediaFetcher] 的一方(DefaultSabrChunkSource)注入真实带宽来源。 */
   fun setRealBandwidthProvider(provider: () -> Long) {
     realBpsProvider = provider
+  }
+
+  /** alpha.9Z:注入持续带宽来源(60s 墙钟交付,升档判据用)。 */
+  fun setSustainedBandwidthProvider(provider: () -> Long) {
+    sustainedBpsProvider = provider
+  }
+
+  /** 持续带宽(60s 墙钟);无数据(-1)回退活跃传输 est。 */
+  fun getSustainedBitrateEstimate(): Long {
+    val sustained = sustainedBpsProvider?.invoke() ?: -1L
+    return if (sustained >= 0L) sustained else getBitrateEstimate()
   }
 
   override fun getBitrateEstimate(): Long {

@@ -52,24 +52,29 @@ class HeightAwareAdaptiveTrackSelection(
       selected = super.getSelectedIndex()
       return
     }
-    // 带宽门槛:我们的带宽计(SabrBandwidthMeter)已返回「可持续带宽」(alpha.9Z 起含段间被迫空转的
-    // gap 计时,传输期高估已被摊薄),无需再乘 media3 的 0.7 保守因子(对瞬时带宽的防高估)。
+    // 带宽门槛:活跃传输 est(滑动窗口,含 gap/慢小样本)管「当前扛不扛得住」——降档用它,反应快。
     val effective = bandwidthMeter.getBitrateEstimate()
+    // alpha.9Z(升档用持续带宽):突发速率 est 在重填缓冲期间会冲到 40-70M(2026-08-27 真机:一笔
+    // 74Mbps 突发把 est 从 16M 抬到 40M 过 4K 门槛 → 升完必卡,pacing 有效供给只有 16-20M)。持续带宽
+    // = 过去 60s 墙钟实际交付(SabrMediaFetcher.getSustainedBitrateEstimate),要求 ≥ 声明码率才许升。
+    val sustained = (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimate() ?: -1L
     // alpha.9Z(升档滞回,防降档后横跳):带宽估计在档位临界值附近抖动时,无滞回会 308↔315 反复切轨
-    // (每次切轨都要拉新 init 段,还丢已缓冲的高档数据)。升档要求 ①带宽 ≥ 声明码率 ×1.25 ②缓冲 ≥30s
-    // ③距上次降档 ≥3min(2026-08-27 真机:r1660 升 4K 后 pinned 供给不足卡死→重载→爬档→又升 4K→再卡死;
-    // 重填缓冲期间突发速率 est 冲高会立刻弹回高档,需要时间冷却打破「降→填→升→卡」循环。网络真改善时
-    // 最多晚 3min 升档;手动选档走单轨组不经此路,不受影响)。
+    // (每次切轨都要拉新 init 段,还丢已缓冲的高档数据)。升档要求 ①活跃 est ≥ 声明码率 ×1.25(乘数
+    // 恒生效,不再随缓冲条件开关——旧实现缓冲<30s 时门槛反而更低,方向倒挂) ②持续带宽 ≥ 声明码率
+    // ③降档后:缓冲 ≥30s 且距上次降档 ≥3min(首次选档 lastDowngrade=0 不受 30s 限制,起播爬档不被卡;
+    // 网络真改善时最多晚 3min 升档;手动选档走单轨组不经此路,不受影响)。
     val currentHeight = getFormat(selected).height
-    val canUpgrade = bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US &&
+    val canUpgrade = (lastDowngradeElapsedMs == 0L || bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US) &&
       nowMs - lastDowngradeElapsedMs >= UPGRADE_COOLDOWN_MS
     var best = length - 1
     var bestHeight = -1
     for (i in 0 until length) {
       if (isTrackExcluded(i, nowMs)) continue
       val f = getFormat(i)
-      val required = if (canUpgrade && f.height > currentHeight) f.bitrate * 5L / 4L else f.bitrate.toLong()
+      val isUpgrade = f.height > currentHeight
+      val required = if (isUpgrade) f.bitrate * 5L / 4L else f.bitrate.toLong()
       if (required > effective) continue // bitrate 只当带宽门槛
+      if (isUpgrade && (!canUpgrade || (sustained in 0 until f.bitrate))) continue
       // 选声明码率可负担的最高分辨率档;同 height 多 codec(VP9/H264)按 bitrate 降序遍历先到的码率
       // 最高,`f.height > bestHeight` 严格大于不会替换 → 自然保留高码率变体。
       if (f.height > bestHeight) {
