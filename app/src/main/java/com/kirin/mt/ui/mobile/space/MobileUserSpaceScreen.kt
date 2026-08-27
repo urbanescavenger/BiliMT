@@ -11,24 +11,31 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -45,10 +52,11 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.model.pubdateText
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
-import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.ui.mobile.home.formatCount
+import com.kirin.mt.ui.mobile.home.rememberVideoCardRelativeText
 import com.kirin.mt.ui.theme.BiliColors
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -69,9 +77,10 @@ sealed interface SpaceState {
 }
 
 /**
- * 移动端 UP 主空间页:头像/名/签名/关注 + 投稿网格(最新/最热排序,page 分页)。
- * 复用 VideoRepository.getSpaceVideos/getSpaceUserProfile/checkFollowStatus/setFollowStatus,
- * 视频卡复用 MobileVideoCard。点卡片走 onVideoSelected。
+ * 移动端 UP 主空间页:头像/名/签名/关注 + 投稿列表(最新发布/最多播放排序,page 分页)。
+ * 复用 VideoRepository.getSpaceVideos/getSpaceUserProfile/checkFollowStatus/setFollowStatus。
+ * 投稿区对齐 B站官方(2026-08-27 用户截图定稿):「▶ 播放全部」+「≡ 排序」头部行 + 官方式
+ * 纵向视频行(ChannelVideoRow,与 YouTube 频道页共用,带弹幕数)。点行走 onVideoSelected。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,6 +93,7 @@ fun MobileUserSpaceScreen(
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
   onLongPress: ((VideoSummary) -> Unit)? = null,
+  onPlayAll: (List<VideoSummary>) -> Unit = {},
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -92,6 +102,8 @@ fun MobileUserSpaceScreen(
   val order = uiState.order
   val state = uiState.state
   val gridState = uiState.gridState
+  // 投稿行相对时间文案(今天/昨天/N天前),与首页卡片同一实现。
+  val relativeText = rememberVideoCardRelativeText()
 
   fun loadFirst(orderKey: String) {
     uiState.state = SpaceState.Loading
@@ -303,19 +315,51 @@ fun MobileUserSpaceScreen(
             )
           }
         }
-        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-          OutlinedButton(onClick = { uiState.order = "pubdate" }) {
+        // 内容区头部行(对齐 B站官方 投稿 tab):「▶ 播放全部」左 +「≡ 排序」右,替代原独立排序按钮行。
+        val currentVideos = (state as? SpaceState.Success)?.videos.orEmpty()
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          TextButton(
+            onClick = { if (currentVideos.isNotEmpty()) onPlayAll(currentVideos) },
+            enabled = currentVideos.isNotEmpty(),
+          ) {
             Text(
-              stringResource(R.string.mobile_sort_latest),
-              color = if (order == "pubdate") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+              text = "▶ 播放全部",
+              color = MaterialTheme.colorScheme.primary,
+              fontWeight = FontWeight.Bold,
             )
           }
-          Spacer(Modifier.padding(start = 8.dp))
-          OutlinedButton(onClick = { uiState.order = "click" }) {
-            Text(
-              stringResource(R.string.mobile_sort_hot),
-              color = if (order == "click") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            )
+          Spacer(Modifier.weight(1f))
+          Box {
+            var sortMenuOpen by remember { mutableStateOf(false) }
+            TextButton(onClick = { sortMenuOpen = true }) {
+              Text(
+                text = "≡ " + stringResource(
+                  if (order == "pubdate") R.string.player_up_sort_latest else R.string.player_up_sort_hot,
+                ),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+            DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+              DropdownMenuItem(
+                text = { Text(stringResource(R.string.player_up_sort_latest)) },
+                trailingIcon = { if (order == "pubdate") Text("✓") },
+                onClick = {
+                  uiState.order = "pubdate"
+                  sortMenuOpen = false
+                },
+              )
+              DropdownMenuItem(
+                text = { Text(stringResource(R.string.player_up_sort_hot)) },
+                trailingIcon = { if (order == "click") Text("✓") },
+                onClick = {
+                  uiState.order = "click"
+                  sortMenuOpen = false
+                },
+              )
+            }
           }
         }
       }
@@ -336,8 +380,21 @@ fun MobileUserSpaceScreen(
             Text(stringResource(R.string.mobile_no_videos), modifier = Modifier.padding(16.dp))
           }
         } else {
-          items(s.videos, key = { it.bvid }) { video ->
-            MobileVideoCard(video = video, onClick = onVideoSelected, onOpenOwner = onOpenOwner, onLongPress = onLongPress)
+          // 官方式纵向投稿行(封面左+时长,右标题/日期/播放量·弹幕),行间分割线;替代网格卡片。
+          itemsIndexed(s.videos, key = { _, v -> v.bvid }, span = { _, _ -> GridItemSpan(maxLineSpan) }) { index, video ->
+            ChannelVideoRow(
+              video = video,
+              relativeText = relativeText,
+              onClick = { onVideoSelected(video) },
+              onLongPress = onLongPress,
+              showDanmaku = true,
+            )
+            if (index < s.videos.lastIndex) {
+              HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                modifier = Modifier.padding(vertical = 2.dp),
+              )
+            }
           }
         }
         if (s.loadingMore) {

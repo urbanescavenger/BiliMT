@@ -449,7 +449,7 @@
     <string name="player_panel_empty">&#x6682;&#x65E0;&#x5185;&#x5BB9;</string>
     <string name="player_panel_unknown_up">UP&#x4E3B;</string>
     <string name="player_up_sort_latest">&#x6700;&#x65B0;&#x53D1;&#x5E03;</string>
-    <string name="player_up_sort_hot">&#x6700;&#x70ED;&#x95E8;</string>
+    <string name="player_up_sort_hot">&#x6700;&#x591A;&#x64AD;&#x653E;</string>
     <string name="player_up_follow">&#x5173;&#x6CE8;</string>
     <string name="player_up_followed">&#x5DF2;&#x5173;&#x6CE8;</string>
     <string name="player_up_follow_loading">&#x5904;&#x7406;&#x4E2D;...</string>

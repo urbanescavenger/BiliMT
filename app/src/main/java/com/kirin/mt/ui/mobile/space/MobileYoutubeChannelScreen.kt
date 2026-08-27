@@ -602,14 +602,16 @@ private fun ChannelPlaylistCard(
 
 /**
  * 主页 tab 官方式视频行(对齐 B站官方 UP空间 投稿列表):左封面(右下角时长),右标题/日期/播放量。
- * YouTube 无弹幕数,不显示;长按同网格卡片走视频长按菜单。
+ * [showDanmaku]=true(B站)播放量行追加「💬 弹幕数」;YouTube 无弹幕传默认 false。
+ * 长按走视频长按菜单。B站 UP 空间页(MobileUserSpaceScreen)复用。
  */
 @Composable
-private fun ChannelVideoRow(
+internal fun ChannelVideoRow(
   video: VideoSummary,
   relativeText: VideoCardRelativeText,
   onClick: () -> Unit,
   onLongPress: ((VideoSummary) -> Unit)?,
+  showDanmaku: Boolean = false,
 ) {
   Row(
     modifier = Modifier
@@ -669,8 +671,14 @@ private fun ChannelVideoRow(
         Spacer(modifier = Modifier.height(2.dp))
       }
       if (video.view > 0) {
+        val views = "▶ " + formatCount(video.view, LocalContext.current.resources)
+        val text = if (showDanmaku && video.danmaku > 0) {
+          "$views · 💬 ${formatCount(video.danmaku, LocalContext.current.resources)}"
+        } else {
+          views
+        }
         Text(
-          text = formatCount(video.view, LocalContext.current.resources),
+          text = text,
           style = MaterialTheme.typography.labelSmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

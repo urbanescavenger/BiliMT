@@ -456,6 +456,13 @@ fun BiliMobileApp(
             // 不动 spacePlaybackBehind:保留来源栈(从播放器进来的返回回播放器,从 tab 进来的返回回 tab)。
             onOpenOwner = { video -> openOwner(video) },
             onLongPress = onLongPress,
+            onPlayAll = { queue ->
+              if (queue.isNotEmpty()) {
+                playQueue = queue
+                spacePlaybackBehind = false
+                playbackRequest = queue.first().toPlaybackRequest()
+              }
+            },
             onBack = {
               spaceRequest = null
               spacePlaybackBehind = false
