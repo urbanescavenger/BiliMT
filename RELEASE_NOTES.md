@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.7-alpha.5](#v307-alpha5)
 - [v3.0.7-alpha.4](#v307-alpha4)
 - [v3.0.7-alpha.3](#v307-alpha3)
 - [v3.0.7-alpha.2](#v307-alpha2)
@@ -206,6 +207,14 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.7-alpha.5
+
+**TV 退桌面直播仍后台出声 + 重开 APP 出现新实例修复**。
+
+### 变更
+- **直播/IPTV 退桌面不再后台出声**:`LivePlayerScreen` 此前完全没有生命周期处理,TV 端又不启动 PlaybackService(前台服务注释明确「仅移动端使用,TV 不启动」),按 Home 回桌面后进程存活、直播/IPTV 音频照播。补 `ON_PAUSE → pause` / `ON_RESUME → 续播`,对齐点播 `PlayerScreen` 的既有处理;且只恢复按 Home 前本来在播的台(`player.isPlaying` 判定),用户手动暂停过的不被拉起。
+- **重开 APP 复用同一实例,不再出现新界面**:`MainActivity` 原为默认 `standard` 启动模式,而整个 UI 状态都在 Compose `remember` 里、无任何跨实例保存——盒子桌面启动器重开时常重建 Activity/新开 task:状态全丢回到首页(「新界面」),旧实例压在底下仍在播,退出新实例又掉进旧播放页。Manifest 改 `launchMode="singleTask"` + `alwaysRetainTaskState="true"`,从桌面重开永远复用同一 task/实例,把旧界面直接带回前台。
 
 ## v3.0.7-alpha.4
 
