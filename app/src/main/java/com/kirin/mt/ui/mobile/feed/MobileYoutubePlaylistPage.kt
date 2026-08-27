@@ -1,6 +1,7 @@
 package com.kirin.mt.ui.mobile.feed
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -38,6 +39,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,7 +82,9 @@ fun MobileYoutubePlaylistPage(
   modifier: Modifier = Modifier,
 ) {
   val playlists by youtubePlaylistStore.playlists.collectAsState(initial = emptyList())
-  var selectedName by remember { mutableStateOf<String?>(null) }
+  // rememberSaveable:HorizontalPager 切走本子 tab 再切回时 page 会重组,remember 会丢掉
+  // 选中态掉回列表层;saveable 跨重组保留,停在当前打开的播放列表详情。
+  var selectedName by rememberSaveable { mutableStateOf<String?>(null) }
   var showCreateDialog by remember { mutableStateOf(false) }
 
   // 首次进入迁移旧版单扁平列表进「默认」。
@@ -220,6 +224,17 @@ private fun PlaylistDetailScreen(
   var editMode by remember { mutableStateOf(false) }
   // 批量勾选选中集(编辑模式下勾选的 bvid);「完成」或单点移除时清掉。
   var selectedBvids by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+  // 系统返回:编辑模式先退编辑(对齐相册多选惯例),否则回播放列表列表——
+  // 本子 tab 的两层导航在组件内部,不拦返回键会一路冒泡直接退出应用。
+  BackHandler {
+    if (editMode) {
+      editMode = false
+      selectedBvids = emptySet()
+    } else {
+      onBack()
+    }
+  }
   // 批量移除二次确认弹窗。
   var showRemoveConfirm by remember { mutableStateOf(false) }
   // 本地可重排列表(拖动用);playlist.videos 变化(外部/持久化)时同步。
