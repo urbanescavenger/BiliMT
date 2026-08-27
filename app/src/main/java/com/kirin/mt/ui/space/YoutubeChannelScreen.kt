@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -66,6 +67,8 @@ import com.kirin.mt.core.youtube.YoutubeConstants
 import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.common.FeedStatusScreen
+import com.kirin.mt.ui.common.TvPlayAllChip
+import com.kirin.mt.ui.common.TvSortToggleChip
 import com.kirin.mt.ui.common.VideoGridSkeleton
 import com.kirin.mt.ui.common.appendUniqueByBvid
 import com.kirin.mt.ui.common.focusRestoreKey
@@ -112,9 +115,8 @@ internal fun YoutubeChannelScreen(
   val channels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   val followed = channels.any { it.channelId == channelId }
   val followFocusRequester = remember { FocusRequester() }
-  val sortFocusRequesters = remember {
-    YoutubeConstants.ChannelVideoOrder.entries.associateWith { FocusRequester() }
-  }
+  val sortFocusRequester = remember { FocusRequester() }
+  val playAllFocusRequester = remember { FocusRequester() }
   val tabFocusRequesters = remember {
     YoutubeConstants.ChannelContentTab.entries.associateWith { FocusRequester() }
   }
@@ -379,7 +381,8 @@ internal fun YoutubeChannelScreen(
         tabFocusRequesters = tabFocusRequesters,
         onTabSelected = { uiState.tab = it },
         order = uiState.order,
-        sortFocusRequesters = sortFocusRequesters,
+        sortFocusRequester = sortFocusRequester,
+        playAllFocusRequester = playAllFocusRequester,
         onOrderSelected = { uiState.order = it },
         onPlayAll = ::playAllCurrent,
         onFollowClicked = ::toggleFollow,
@@ -446,7 +449,7 @@ internal fun YoutubeChannelScreen(
                 onMoveLeftToNav = { true },
                 onMoveUpFromFirstRow = {
                   if (uiState.tab.hasSort) {
-                    runCatching { sortFocusRequesters.getValue(uiState.order).requestFocus() }.isSuccess
+                    runCatching { sortFocusRequester.requestFocus() }.isSuccess
                   } else {
                     runCatching { tabFocusRequesters.getValue(uiState.tab).requestFocus() }.isSuccess
                   }
@@ -484,7 +487,8 @@ private fun YoutubeChannelHeader(
   tabFocusRequesters: Map<YoutubeConstants.ChannelContentTab, FocusRequester>,
   onTabSelected: (YoutubeConstants.ChannelContentTab) -> Unit,
   order: YoutubeConstants.ChannelVideoOrder,
-  sortFocusRequesters: Map<YoutubeConstants.ChannelVideoOrder, FocusRequester>,
+  sortFocusRequester: FocusRequester,
+  playAllFocusRequester: FocusRequester,
   onOrderSelected: (YoutubeConstants.ChannelVideoOrder) -> Unit,
   onPlayAll: () -> Unit,
   onFollowClicked: () -> Unit,
@@ -565,7 +569,7 @@ private fun YoutubeChannelHeader(
           onMoveDown = {
             when (option) {
               YoutubeConstants.ChannelContentTab.Videos ->
-                runCatching { sortFocusRequesters.getValue(order).requestFocus() }.isSuccess
+                runCatching { sortFocusRequester.requestFocus() }.isSuccess
               YoutubeConstants.ChannelContentTab.Playlists ->
                 runCatching { playlistFirstItemFocusRequester.requestFocus() }.isSuccess
               else -> runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
@@ -592,14 +596,15 @@ private fun YoutubeChannelHeader(
         )
       }
     }
-    // 排序栏:「▶ 播放全部」+ 最新发布 / 最多播放(对齐移动端主页 tab 头部行「播放全部+排序」)。
-    // 排序聚焦选中即切换,切排序重新拉取;仅主页 tab 显示(Shorts/直播/播放列表无排序)。
+    // 排序栏(仅主页 tab,对齐移动端头部行):「▶ 播放全部」居左 +「≡ 最新/最热」单按钮切换居右。
+    // 切换按钮 OK 在 最新发布↔最多播放 间翻转,切档重新拉取;Shorts/直播/播放列表无排序。
     if (tab.hasSort) {
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
       ) {
-        YoutubeChannelPlayAllChip(
+        TvPlayAllChip(
+          modifier = Modifier.focusRequester(playAllFocusRequester),
           onActivate = onPlayAll,
           onMoveUp = {
             runCatching { tabFocusRequesters.getValue(tab).requestFocus() }.isSuccess
@@ -607,28 +612,40 @@ private fun YoutubeChannelHeader(
           onMoveDown = {
             runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
           },
+          onMoveRight = {
+            runCatching { sortFocusRequester.requestFocus() }.isSuccess
+          },
         )
-        YoutubeConstants.ChannelVideoOrder.entries.forEach { option ->
-          val selected = order == option
-          val titleRes = when (option) {
-            YoutubeConstants.ChannelVideoOrder.Latest -> R.string.player_up_sort_latest
-            YoutubeConstants.ChannelVideoOrder.Popular -> R.string.player_up_sort_hot
-          }
-          YoutubeChannelSortChip(
-            text = stringResource(titleRes),
-            selected = selected,
-            modifier = Modifier.focusRequester(sortFocusRequesters.getValue(option)),
-            onActivate = { onOrderSelected(option) },
-            onFocused = { if (!selected) onOrderSelected(option) },
-            onMoveUp = {
-              // 上移回内容 tab 行当前 tab(不处理 Up 会交给默认焦点搜索,实测丢失焦点)。
-              runCatching { tabFocusRequesters.getValue(tab).requestFocus() }.isSuccess
+        Spacer(Modifier.weight(1f))
+        TvSortToggleChip(
+          label = "≡ " + stringResource(
+            if (order == YoutubeConstants.ChannelVideoOrder.Latest) {
+              R.string.player_up_sort_latest
+            } else {
+              R.string.player_up_sort_hot
             },
-            onMoveDown = {
-              runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
-            },
-          )
-        }
+          ),
+          modifier = Modifier.focusRequester(sortFocusRequester),
+          onActivate = {
+            onOrderSelected(
+              if (order == YoutubeConstants.ChannelVideoOrder.Latest) {
+                YoutubeConstants.ChannelVideoOrder.Popular
+              } else {
+                YoutubeConstants.ChannelVideoOrder.Latest
+              },
+            )
+          },
+          onMoveUp = {
+            runCatching { tabFocusRequesters.getValue(tab).requestFocus() }.isSuccess
+          },
+          onMoveDown = {
+            runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
+          },
+          onMoveLeft = {
+            runCatching { playAllFocusRequester.requestFocus() }.isSuccess
+          },
+          onMoveRight = { true },
+        )
       }
     }
   }
@@ -687,115 +704,6 @@ private fun YoutubeChannelFollowChip(
       fontSize = BiliTypography.HomeSectionTab,
       lineHeight = BiliTypography.HomeSectionTabLineHeight,
       fontWeight = if (followed || focused) FontWeight.Bold else FontWeight.Medium,
-      textAlign = TextAlign.Center,
-      maxLines = 1,
-    )
-  }
-}
-
-@Composable
-private fun YoutubeChannelSortChip(
-  text: String,
-  selected: Boolean,
-  modifier: Modifier = Modifier,
-  onActivate: () -> Unit,
-  onFocused: () -> Unit,
-  onMoveUp: () -> Boolean,
-  onMoveDown: () -> Boolean,
-) {
-  var focused by remember { mutableStateOf(false) }
-  val homeColors = LocalHomeColors.current
-  val shape = RoundedCornerShape(BiliRadius.Pill)
-  val borderColor = if (focused) homeColors.accent else BiliColors.Transparent
-  val textColor = when {
-    selected -> homeColors.accent
-    focused -> homeColors.textPrimary
-    else -> homeColors.textSecondary
-  }
-  val interactionSource = remember { MutableInteractionSource() }
-  Box(
-    modifier = modifier
-      .height(BiliSizing.HomeSectionTabHeight)
-      .widthIn(min = BiliSizing.HomeSectionTabCompactMinWidth)
-      .clip(shape)
-      .border(BorderStroke(BiliFocus.BorderWidth, borderColor), shape)
-      .onFocusChanged { state ->
-        focused = state.isFocused
-        if (state.isFocused) onFocused()
-      }
-      .onPreviewKeyEvent { event ->
-        when {
-          event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> onMoveUp()
-          event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
-          event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
-            onActivate()
-            true
-          }
-          else -> false
-        }
-      }
-      .focusable(interactionSource = interactionSource)
-      .clickable(interactionSource = interactionSource, indication = null, onClick = onActivate)
-      .padding(horizontal = BiliSpacing.Sm),
-    contentAlignment = Alignment.Center,
-  ) {
-    Text(
-      text = text,
-      color = textColor,
-      fontSize = BiliTypography.HomeSectionTab,
-      lineHeight = BiliTypography.HomeSectionTabLineHeight,
-      fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium,
-      textAlign = TextAlign.Center,
-      maxLines = 1,
-    )
-  }
-}
-
-/**
- * 「▶ 播放全部」chip(主页 tab 排序行最前,对齐移动端):OK 把已加载视频整份作连播队列起播。
- * 聚焦不触发任何选择(区别于排序 chip 的聚焦即切换);行首 Left 消费不移动防焦点逃逸出频道页。
- */
-@Composable
-private fun YoutubeChannelPlayAllChip(
-  modifier: Modifier = Modifier,
-  onActivate: () -> Unit,
-  onMoveUp: () -> Boolean,
-  onMoveDown: () -> Boolean,
-) {
-  var focused by remember { mutableStateOf(false) }
-  val homeColors = LocalHomeColors.current
-  val shape = RoundedCornerShape(BiliRadius.Pill)
-  val interactionSource = remember { MutableInteractionSource() }
-  Box(
-    modifier = modifier
-      .height(BiliSizing.HomeSectionTabHeight)
-      .widthIn(min = BiliSizing.HomeSectionTabCompactMinWidth)
-      .clip(shape)
-      .border(BorderStroke(BiliFocus.BorderWidth, if (focused) homeColors.accent else BiliColors.Transparent), shape)
-      .onFocusChanged { state -> focused = state.isFocused }
-      .onPreviewKeyEvent { event ->
-        when {
-          event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> onMoveUp()
-          event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
-          event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft -> true
-          event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
-            onActivate()
-            true
-          }
-          else -> false
-        }
-      }
-      .focusable(interactionSource = interactionSource)
-      .clickable(interactionSource = interactionSource, indication = null, onClick = onActivate)
-      .padding(horizontal = BiliSpacing.Sm),
-    contentAlignment = Alignment.Center,
-  ) {
-    Text(
-      text = "▶ 播放全部",
-      color = BiliColors.BiliPink,
-      fontSize = BiliTypography.HomeSectionTab,
-      lineHeight = BiliTypography.HomeSectionTabLineHeight,
-      fontWeight = if (focused) FontWeight.Bold else FontWeight.Medium,
       textAlign = TextAlign.Center,
       maxLines = 1,
     )

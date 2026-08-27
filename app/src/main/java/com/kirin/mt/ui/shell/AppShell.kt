@@ -1606,6 +1606,14 @@ fun BiliTvApp(
               spacePlaybackBehind = false
               playbackRequest = video.toPlaybackRequest()
             },
+            // 「▶ 播放全部」:整份已加载投稿作连播队列,第一条起播(对齐移动端)。
+            onPlayAll = { queue ->
+              if (queue.isNotEmpty()) {
+                playQueue = queue
+                spacePlaybackBehind = false
+                playbackRequest = queue.first().toPlaybackRequest()
+              }
+            },
           )
         }
       }

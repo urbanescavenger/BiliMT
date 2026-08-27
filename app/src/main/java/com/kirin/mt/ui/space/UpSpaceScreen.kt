@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -18,8 +19,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -60,6 +59,8 @@ import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.ui.common.FeedStatusScreen
+import com.kirin.mt.ui.common.TvPlayAllChip
+import com.kirin.mt.ui.common.TvSortToggleChip
 import com.kirin.mt.ui.common.VideoGridSkeleton
 import com.kirin.mt.ui.common.appendUniqueByBvid
 import com.kirin.mt.ui.common.focusRestoreKey
@@ -80,13 +81,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private data class UpSpaceOrder(val key: String, val titleRes: Int)
-
-private val UpSpaceOrders = listOf(
-  UpSpaceOrder(UpSpaceOrderLatest, R.string.player_up_sort_latest),
-  UpSpaceOrder(UpSpaceOrderHot, R.string.player_up_sort_hot),
-)
-
 private const val FirstPage = 1
 
 @Composable
@@ -100,13 +94,13 @@ internal fun UpSpaceScreen(
   onRestoreFocusHandled: (Int) -> Unit,
   onBack: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
+  onPlayAll: (List<VideoSummary>) -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
   val mid = request.mid
 
-  val sortFocusRequesters = remember {
-    UpSpaceOrders.associate { option -> option.key to FocusRequester() }
-  }
+  val sortFocusRequester = remember { FocusRequester() }
+  val playAllFocusRequester = remember { FocusRequester() }
   val followFocusRequester = remember { FocusRequester() }
 
   BackHandler { onBack() }
@@ -229,6 +223,12 @@ internal fun UpSpaceScreen(
     }
   }
 
+  // 「▶ 播放全部」:整份已加载投稿作连播队列,第一条起播(对齐移动端投稿区头部行)。
+  fun playAllCurrent() {
+    val current = uiState.videoState as? SpaceVideoState.Success ?: return
+    if (current.videos.isNotEmpty()) onPlayAll(current.videos)
+  }
+
   Box(
     modifier = Modifier
       .fillMaxSize()
@@ -242,10 +242,12 @@ internal fun UpSpaceScreen(
         followed = uiState.followed,
         followLoading = uiState.followLoading,
         order = uiState.order,
-        sortFocusRequesters = sortFocusRequesters,
+        sortFocusRequester = sortFocusRequester,
+        playAllFocusRequester = playAllFocusRequester,
         followFocusRequester = followFocusRequester,
         firstItemFocusRequester = firstItemFocusRequester,
         onOrderSelected = { uiState.selectOrder(it) },
+        onPlayAll = ::playAllCurrent,
         onFollowClicked = ::toggleFollow,
         onVideoSelected = onVideoSelected,
       )
@@ -276,7 +278,7 @@ internal fun UpSpaceScreen(
             onLoadMore = ::loadNextPage,
             onMoveLeftToNav = { true },
             onMoveUpFromFirstRow = {
-              runCatching { sortFocusRequesters.getValue(uiState.order).requestFocus() }.isSuccess
+              runCatching { sortFocusRequester.requestFocus() }.isSuccess
             },
             onBackKey = { onBack() },
             onVideoSelected = onVideoSelected,
@@ -302,10 +304,12 @@ private fun UpSpaceHeader(
   followed: Boolean,
   followLoading: Boolean,
   order: String,
-  sortFocusRequesters: Map<String, FocusRequester>,
+  sortFocusRequester: FocusRequester,
+  playAllFocusRequester: FocusRequester,
   followFocusRequester: FocusRequester,
   firstItemFocusRequester: FocusRequester,
   onOrderSelected: (String) -> Unit,
+  onPlayAll: () -> Unit,
   onFollowClicked: () -> Unit,
   onVideoSelected: (VideoSummary) -> Unit,
 ) {
@@ -359,7 +363,7 @@ private fun UpSpaceHeader(
           }
         } else null,
         onMoveDown = {
-          runCatching { sortFocusRequesters.getValue(order).requestFocus() }.isSuccess
+          runCatching { sortFocusRequester.requestFocus() }.isSuccess
         },
       )
       Column(
@@ -430,37 +434,55 @@ private fun UpSpaceHeader(
         )
       }
     }
-    LazyRow(
+    // 内容行(对齐移动端投稿区头部行):「▶ 播放全部」居左 +「≡ 最新/最热」单按钮切换居右,末尾关注 chip。
+    // 切换按钮 OK 在 最新发布↔最多播放 间翻转,切档重新拉取;聚焦只高亮不切档(切档会重拉数据)。
+    Row(
       modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
+      verticalAlignment = Alignment.CenterVertically,
     ) {
-      items(UpSpaceOrders, key = { it.key }) { option ->
-        UpSpaceChip(
-          text = stringResource(option.titleRes),
-          selected = order == option.key,
-          modifier = Modifier.focusRequester(sortFocusRequesters.getValue(option.key)),
-          onActivate = { onOrderSelected(option.key) },
-          onFocused = { if (order != option.key) onOrderSelected(option.key) },
-          onMoveDown = {
-            runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
-          },
-        )
-      }
-      items(1) {
-        UpSpaceFollowChip(
-          isLoggedIn = isLoggedIn,
-          followed = followed,
-          followLoading = followLoading,
-          modifier = Modifier.focusRequester(followFocusRequester),
-          onActivate = onFollowClicked,
-          onMoveDown = {
-            runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
-          },
-          onMoveLeft = {
-            runCatching { sortFocusRequesters.getValue(UpSpaceOrderHot).requestFocus() }.isSuccess
-          },
-        )
-      }
+      TvPlayAllChip(
+        modifier = Modifier.focusRequester(playAllFocusRequester),
+        onActivate = onPlayAll,
+        onMoveDown = {
+          runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
+        },
+        onMoveRight = {
+          runCatching { sortFocusRequester.requestFocus() }.isSuccess
+        },
+      )
+      Spacer(Modifier.weight(1f))
+      TvSortToggleChip(
+        label = "≡ " + stringResource(
+          if (order == UpSpaceOrderLatest) R.string.player_up_sort_latest else R.string.player_up_sort_hot,
+        ),
+        modifier = Modifier.focusRequester(sortFocusRequester),
+        onActivate = {
+          onOrderSelected(if (order == UpSpaceOrderLatest) UpSpaceOrderHot else UpSpaceOrderLatest)
+        },
+        onMoveDown = {
+          runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
+        },
+        onMoveLeft = {
+          runCatching { playAllFocusRequester.requestFocus() }.isSuccess
+        },
+        onMoveRight = {
+          runCatching { followFocusRequester.requestFocus() }.isSuccess
+        },
+      )
+      UpSpaceFollowChip(
+        isLoggedIn = isLoggedIn,
+        followed = followed,
+        followLoading = followLoading,
+        modifier = Modifier.focusRequester(followFocusRequester),
+        onActivate = onFollowClicked,
+        onMoveDown = {
+          runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
+        },
+        onMoveLeft = {
+          runCatching { sortFocusRequester.requestFocus() }.isSuccess
+        },
+      )
     }
   }
 }
@@ -579,62 +601,6 @@ private fun UpSpaceAvatar(
         )
       }
     }
-  }
-}
-
-@Composable
-private fun UpSpaceChip(
-  text: String,
-  selected: Boolean,
-  modifier: Modifier = Modifier,
-  onActivate: () -> Unit,
-  onFocused: () -> Unit,
-  onMoveDown: () -> Boolean,
-) {
-  var focused by remember { mutableStateOf(false) }
-  val homeColors = LocalHomeColors.current
-  val shape = RoundedCornerShape(BiliRadius.Pill)
-  val borderColor = if (focused) homeColors.accent else BiliColors.Transparent
-  val textColor = when {
-    selected -> homeColors.accent
-    focused -> homeColors.textPrimary
-    else -> homeColors.textSecondary
-  }
-  val interactionSource = remember { MutableInteractionSource() }
-  Box(
-    modifier = modifier
-      .height(BiliSizing.HomeSectionTabHeight)
-      .widthIn(min = BiliSizing.HomeSectionTabCompactMinWidth)
-      .clip(shape)
-      .border(BorderStroke(BiliFocus.BorderWidth, borderColor), shape)
-      .onFocusChanged { state ->
-        focused = state.isFocused
-        if (state.isFocused) onFocused()
-      }
-      .onPreviewKeyEvent { event ->
-        when {
-          event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
-          event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
-            onActivate()
-            true
-          }
-          else -> false
-        }
-      }
-      .focusable(interactionSource = interactionSource)
-      .clickable(interactionSource = interactionSource, indication = null, onClick = onActivate)
-      .padding(horizontal = BiliSpacing.Sm),
-    contentAlignment = Alignment.Center,
-  ) {
-    Text(
-      text = text,
-      color = textColor,
-      fontSize = BiliTypography.HomeSectionTab,
-      lineHeight = BiliTypography.HomeSectionTabLineHeight,
-      fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium,
-      textAlign = TextAlign.Center,
-      maxLines = 1,
-    )
   }
 }
 
