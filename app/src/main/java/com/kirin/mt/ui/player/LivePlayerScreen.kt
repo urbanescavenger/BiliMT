@@ -1,6 +1,9 @@
 package com.kirin.mt.ui.player
 
 import androidx.activity.compose.BackHandler
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
@@ -193,6 +196,7 @@ fun LivePlayerScreen(
   val player = remember(roomId) {
     ExoPlayer.Builder(context).build()
   }
+  val lifecycleOwner = LocalLifecycleOwner.current
   val controlsFocusRequester = remember { FocusRequester() }
   val liveLoadErrorPolicy = remember { LiveLoadErrorHandlingPolicy() }
   // IPTV 数据源:强制 IPv4(源 m3u8 302 重定向按客户端 IP 族选节点,IPv6 不可路由的真机会连不上 → 黑屏)。
@@ -279,6 +283,30 @@ fun LivePlayerScreen(
       }
     })
     onDispose { player.release() }
+  }
+
+  // 退到桌面(Home/切走)必须暂停:TV 不启 PlaybackService,直播不 pause 会一直在后台出声。
+  // 对齐 PlayerScreen 的 ON_PAUSE/ON_RESUME 处理;仅恢复"按 Home 前本来在播"的台,
+  // 用户手动暂停过的不被 ON_RESUME 拉起。
+  DisposableEffect(lifecycleOwner, player) {
+    var resumeWhenBack = false
+    val observer = LifecycleEventObserver { _, event ->
+      when (event) {
+        Lifecycle.Event.ON_PAUSE -> {
+          resumeWhenBack = player.isPlaying
+          player.pause()
+        }
+        Lifecycle.Event.ON_RESUME -> {
+          if (resumeWhenBack) {
+            resumeWhenBack = false
+            player.play()
+          }
+        }
+        else -> Unit
+      }
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
   }
 
   // 首次进入:若无显式 preferredQualityId,从 store 读上次直播画质选择,再解锁主加载。
