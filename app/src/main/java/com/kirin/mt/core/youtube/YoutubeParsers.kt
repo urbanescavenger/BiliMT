@@ -595,6 +595,16 @@ internal object YoutubeParsers {
       }
     }
     val cover = vm.obj("heroImage")?.let { firstImageUrl(it) }
+    // 诊断:curl hl=en/zh-CN/zh-TW/ja + 真实 clientVersion 全能复现非空 avatarText/"N 个视频",
+    // 真机(2026-08-27 11:02)却 owner=""(avatarStack text 空串)count=null——设备响应形状不明,
+    // dump metadata 子树定位实际结构(修复后移除)。
+    if (owner == null || count == null) {
+      Log.w(
+        "YtPlaylist",
+        "header meta incomplete owner=${owner?.take(20)} count=$count " +
+          "meta=${vm.obj("metadata").toString().take(1500)}",
+      )
+    }
     return YoutubePlaylistHeader(description = description, owner = owner, videoCountText = count, cover = cover)
   }
 
