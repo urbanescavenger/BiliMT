@@ -28,7 +28,7 @@ data class YoutubeVideoPage(
   val items: List<VideoSummary>,
   val continuation: String?,
   /** 播放列表详情首屏头部(playlistHeaderRenderer 的简介/作者/视频数/封面)；普通视频 feed 恒 null。 */
-  val playlistHeader: YoutubeParsers.YoutubePlaylistHeader? = null,
+  val playlistHeader: YoutubePlaylistHeader? = null,
 )
 
 /** 频道"播放列表"Tab 的一页播放列表卡，带续页 token。internal 因含 [YoutubeParsers.YoutubePlaylist]。 */

@@ -43,11 +43,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.kirin.mt.core.model.VideoSummary
-import com.kirin.mt.core.model.formatCount
+import com.kirin.mt.core.model.durationText
 import com.kirin.mt.core.model.pubdateText
 import com.kirin.mt.core.youtube.YoutubeParsers
+import com.kirin.mt.core.youtube.YoutubePlaylistHeader
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
+import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.mobile.home.rememberVideoCardRelativeText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -74,7 +76,7 @@ internal fun MobileYoutubePlaylistDetailScreen(
 ) {
   val scope = rememberCoroutineScope()
   var items by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
-  var header by remember { mutableStateOf<YoutubeParsers.YoutubePlaylistHeader?>(null) }
+  var header by remember { mutableStateOf<YoutubePlaylistHeader?>(null) }
   var continuation by remember { mutableStateOf<String?>(null) }
   var loading by remember { mutableStateOf(true) }
   var loadingMore by remember { mutableStateOf(false) }

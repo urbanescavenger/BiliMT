@@ -548,17 +548,6 @@ internal object YoutubeParsers {
     return YoutubePlaylistHeader(description = description, owner = owner, videoCountText = count, cover = cover)
   }
 
-  /** 播放列表首屏头部 [parsePlaylistDetailHeader] 的解析结果。字段缺省时用 null（UI 隐藏对应行）。 */
-  data class YoutubePlaylistHeader(
-    val description: String?,
-    /** ownerText，如 "@FollowCnRules"；无则 null。 */
-    val owner: String?,
-    /** numVideosText，如 "20 videos"；无则 null。 */
-    val videoCountText: String?,
-    /** 封面 URL；无则 null。 */
-    val cover: String?,
-  )
-
   /**
    * 从 /player 响应解析视频详情（简介 Tab）。
    *
@@ -1454,3 +1443,17 @@ internal object YoutubeParsers {
   private const val KEY_COMMENT_SECTION_RENDERER = "commentSectionRenderer"
   private const val KEY_COMMENT_THREAD_RENDERER = "commentThreadRenderer"
 }
+
+/**
+ * 播放列表详情首屏头部（[YoutubeParsers.parsePlaylistHeader]）的解析结果。字段缺省时用 null（UI 隐藏对应行）。
+ * 顶层公开类（不在 internal 的 [YoutubeParsers] 内），供 public 的 [YoutubeRepository.YoutubeVideoPage] 引用。
+ */
+data class YoutubePlaylistHeader(
+  val description: String?,
+  /** ownerText，如 "@FollowCnRules"；无则 null。 */
+  val owner: String?,
+  /** numVideosText，如 "20 videos"；无则 null。 */
+  val videoCountText: String?,
+  /** 封面 URL；无则 null。 */
+  val cover: String?,
+)
