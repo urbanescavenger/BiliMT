@@ -133,6 +133,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.7-alpha.6 | SABR 升档判据两连修 + TV 搜索/空间页 UI 对齐移动端:①SABR 升档判据改持续带宽(60s 墙钟累计交付),根治升 4K 后 pacing 必卡反复横跳;②gap 计时时钟单位 bug 修复(epoch 墙钟 vs elapsedRealtime 错位)+升降档 3min 冷却抑制整段重载;③TV 搜索结果页 chip 顺序对齐移动端(排序在前/视频·UP主在后);④TV UP 空间/频道页主页排序改「≡」单按钮右置 OK 翻转(替代聚焦即切换双 chip)+「▶ 播放全部」左置连播,抽共享 TvSortChips |
 | v3.0.7-alpha.5 | TV 退桌面直播仍后台出声 + 重开 APP 出现新实例修复:①LivePlayerScreen(直播/IPTV)补生命周期 ON_PAUSE 暂停/ON_RESUME 续播(TV 不启 PlaybackService,此前 Home 退桌面进程活着继续出声;只恢复退前在播的台,手动暂停过不拉起);②MainActivity 改 singleTask+alwaysRetainTaskState(标准 launchMode 下盒子桌面启动器重开常重建 Activity/新开 task,Compose 状态全丢回首页、旧实例压底仍在播,退出新实例掉进旧播放页;现重开永远复用同一实例把旧界面带回前台) |
 | v3.0.7-alpha.4 | YouTube/B站频道页对齐官方 UI + YouTube 播放列表解析修复:①播放列表卡缩略图/视频数字段迁移修复(封面在 collectionThumbnailViewModel.primaryThumbnail,视频数在缩略图角标 badge,旧路径拿空致"▶"占位块/错显示更新时间);②播放列表详情页作者/视频数恒空修复(viewModel text 节点须读 content 键 + 作者行剥 by/创建者：/建立者： 语言前缀)与简介上移(播放全部上方);③移动端 YouTube 频道页主页 tab 对齐 B站官方——tab「视频」改名「主页」、内容区换官方式纵向视频行、「▶ 播放全部」(连播队列)+「≡ 排序」右对齐菜单;④B站移动端 UP 空间投稿区同样对齐(纵向行带 💬 弹幕+播放全部+排序菜单,「最热门」→「最多播放」);⑤TV 频道页加内容 tab(主页/Shorts/直播/播放列表,视频保留网格)+播放列表焦点卡片网格+新增 TV 播放列表详情页(D-pad 纵向列表,TV 无队列单视频起播) |
 | v3.0.7-alpha.3 | 频道页 Shorts 空修复(shortsLockupViewModel reel 风格专属解析:videoId 在 reelWatchEndpoint,标题/播放量在 accessibilityText)+ 频道页 tab 统一 channelId+服务端 params(弃 UUSH/UULV 系统 browseId,真机 400)+ 普通卡片显示真实观看进度条(PlaybackProgressStore,无进度数据不显示)+ 修复无进度卡片误显满条 |
