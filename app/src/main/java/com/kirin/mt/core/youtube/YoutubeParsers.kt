@@ -531,6 +531,18 @@ internal object YoutubeParsers {
   }
 
   /**
+   * 播放列表详情首屏简介。读 `header.playlistHeaderRenderer.descriptionText`（对齐 NewPipe
+   * PlaylistInfo 的 getDescription，LibreTube PlaylistFragment 展示同一来源）；新老字段
+   * descriptionText / description 都可能是 {runs} 或 {simpleText}。无则返回 null（UI 不显示简介行）。
+   */
+  fun parsePlaylistDescription(root: JsonObject): String? {
+    val header = root.obj("header")?.obj("playlistHeaderRenderer") ?: return null
+    val node = header.obj("descriptionText") ?: header.obj("description") ?: return null
+    val text = runsText(node).ifBlank { simpleText(node) }
+    return text.ifBlank { null }
+  }
+
+  /**
    * 从 /player 响应解析视频详情（简介 Tab）。
    *
    * 取 `videoDetails`（title / author 频道名 / shortDescription 简介 / viewCount）+ `microformat`

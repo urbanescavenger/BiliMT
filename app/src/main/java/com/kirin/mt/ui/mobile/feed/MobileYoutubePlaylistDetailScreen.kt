@@ -63,6 +63,7 @@ internal fun MobileYoutubePlaylistDetailScreen(
 ) {
   val scope = rememberCoroutineScope()
   var items by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
+  var description by remember { mutableStateOf<String?>(null) }
   var continuation by remember { mutableStateOf<String?>(null) }
   var loading by remember { mutableStateOf(true) }
   var loadingMore by remember { mutableStateOf(false) }
@@ -80,6 +81,7 @@ internal fun MobileYoutubePlaylistDetailScreen(
       try {
         val page = youtubeRepository.getPlaylistVideos(playlist.browseId)
         items = page.items.distinctBy { it.bvid }
+        description = page.description
         continuation = page.continuation
         endReached = page.continuation == null
       } catch (e: CancellationException) {
@@ -177,6 +179,23 @@ internal fun MobileYoutubePlaylistDetailScreen(
                 Text("播放全部")
               }
             }
+          }
+        }
+        // 播放列表简介(playlistHeaderRenderer.descriptionText,对齐 LibreTube)。可能较长,点开/收起。
+        val desc = description
+        if (!desc.isNullOrBlank()) {
+          item(span = { GridItemSpan(maxLineSpan) }) {
+            var expanded by remember { mutableStateOf(false) }
+            val shown = if (expanded) desc else desc.take(120)
+            Text(
+              text = shown,
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(vertical = 4.dp),
+            )
           }
         }
         when {

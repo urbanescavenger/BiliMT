@@ -26,6 +26,8 @@ import kotlinx.serialization.json.put
 data class YoutubeVideoPage(
   val items: List<VideoSummary>,
   val continuation: String?,
+  /** 播放列表详情首屏简介(header.playlistHeaderRenderer.descriptionText)；普通视频 feed 恒 null。 */
+  val description: String? = null,
 )
 
 /** 频道"播放列表"Tab 的一页播放列表卡，带续页 token。internal 因含 [YoutubeParsers.YoutubePlaylist]。 */
@@ -289,6 +291,8 @@ class YoutubeRepository(
     return YoutubeVideoPage(
       items = feed.items.map(::toVideoSummary),
       continuation = feed.continuation,
+      // 简介只在首屏 header(playlistHeaderRenderer.descriptionText)有；续页是纯 continuation 无 header。
+      description = if (continuation == null) YoutubeParsers.parsePlaylistDescription(root) else null,
     )
   }
 

@@ -220,6 +220,7 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
   - 修复：专属 `parseShortsLockupViewModel`；同时仍收集 `reelItemRenderer`（部分频道 Shorts tab 用经典条目）双保险。
 - **Live tab** 走 `videoRenderer`（`liveNow` 标识，被通用收集覆盖），无需额外解析。
 - **Playlists 卡**（新布局）用 `lockupViewModel`（`contentType=PLAYLIST`）而非旧 `playlistRenderer`：`diagnosticPlaylistShape` 实测 15 个 `LOCKUP_CONTENT_TYPE_PLAYLIST` 但 `playlistRenderer=0`。播放列表详情 `/browse` 的 browseId **必须带 `VL` 前缀**（裸 `PL...` 返 400，`normalizePlaylistBrowseId` 自动补 `VL`）。
+- **播放列表详情简介**：首屏 `/browse` 的 `header.playlistHeaderRenderer` 有简介（对齐 NewPipe `PlaylistInfo.getDescription` / LibreTube `PlaylistFragment`）。此前 `parseFeedPage` 只收 `playlistVideoRenderer` 丢弃 header；新增 `parsePlaylistDescription` 读 `descriptionText`（老字段 `description` 兜底），仅首屏（续页是纯 continuation 无 header），随 `YoutubeVideoPage.description` 传给移动端详情页头部展示（可点开/收起，>120 字截断）。
 
 ---
 
