@@ -495,6 +495,13 @@ fun BiliMobileApp(
               youtubePlaylistRequest = playlist
               playlistPlaybackBehind = false
             },
+            onPlayAll = { queue ->
+              if (queue.isNotEmpty()) {
+                playQueue = queue
+                channelPlaybackBehind = false
+                playbackRequest = queue.first().toPlaybackRequest()
+              }
+            },
             onBack = {
               youtubeChannelRequest = null
               channelPlaybackBehind = false

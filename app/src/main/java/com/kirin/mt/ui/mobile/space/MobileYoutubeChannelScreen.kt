@@ -3,6 +3,7 @@ package com.kirin.mt.ui.mobile.space
 import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,23 +13,32 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -38,12 +48,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.kirin.mt.R
+import com.kirin.mt.core.model.VideoCardRelativeText
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.model.durationText
+import com.kirin.mt.core.model.pubdateText
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeConstants
@@ -52,6 +67,7 @@ import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.ui.mobile.home.formatCount
+import com.kirin.mt.ui.mobile.home.rememberVideoCardRelativeText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -71,6 +87,7 @@ internal fun MobileYoutubeChannelScreen(
   onVideoSelected: (VideoSummary) -> Unit,
   onLongPress: ((VideoSummary) -> Unit)? = null,
   onOpenPlaylist: (YoutubeParsers.YoutubePlaylist) -> Unit,
+  onPlayAll: (List<VideoSummary>) -> Unit = {},
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -87,6 +104,8 @@ internal fun MobileYoutubeChannelScreen(
   val loadingMore = uiState.loadingMore
   val failed = uiState.failed
   val gridState = uiState.gridState
+  // 主页 tab 官方式视频行的相对时间文案(今天/昨天/N天前),与首页卡片同一实现。
+  val relativeText = rememberVideoCardRelativeText()
 
   // 当前内容的 /browse params:Videos Tab 用排序(最新/最热)params;Shorts/直播用服务端提供的
   // tab params(有则用,对齐 LibreTube 从 header 取;无则回退硬编码)。硬编码对部分频道/新布局失效。
@@ -383,24 +402,7 @@ internal fun MobileYoutubeChannelScreen(
               }
             }
           }
-          // 排序栏:最新 / 最热(对齐 B站 UP 排行)。仅 Videos Tab 显示。
-          if (uiState.tab.hasSort) {
-            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-              OutlinedButton(onClick = { uiState.order = YoutubeConstants.ChannelVideoOrder.Latest }) {
-                Text(
-                  stringResource(R.string.player_up_sort_latest),
-                  color = if (uiState.order == YoutubeConstants.ChannelVideoOrder.Latest) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                )
-              }
-              Spacer(Modifier.padding(start = 8.dp))
-              OutlinedButton(onClick = { uiState.order = YoutubeConstants.ChannelVideoOrder.Popular }) {
-                Text(
-                  stringResource(R.string.player_up_sort_hot),
-                  color = if (uiState.order == YoutubeConstants.ChannelVideoOrder.Popular) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                )
-              }
-            }
-          }
+          // 排序栏已移入主页 tab 内容区的「≡ 最新发布」入口(对齐 B站官方 投稿 tab 布局)。
         }
       }
 
@@ -445,7 +447,80 @@ internal fun MobileYoutubeChannelScreen(
                 onClick = { onOpenPlaylist(playlist) },
               )
             }
+          } else if (uiState.tab == YoutubeConstants.ChannelContentTab.Videos) {
+            // 主页 tab(对齐 B站官方 投稿 tab):「▶ 播放全部」左 +「≡ 排序」右,下方纵向视频行。
+            item(span = { GridItemSpan(maxLineSpan) }) {
+              var sortMenuOpen by remember { mutableStateOf(false) }
+              Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                TextButton(
+                  onClick = { if (displayItems.isNotEmpty()) onPlayAll(displayItems) },
+                  enabled = displayItems.isNotEmpty(),
+                ) {
+                  Text(
+                    text = "▶ 播放全部",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold,
+                  )
+                }
+                Spacer(Modifier.weight(1f))
+                Box {
+                  TextButton(onClick = { sortMenuOpen = true }) {
+                    Text(
+                      text = "≡ " + stringResource(
+                        if (uiState.order == YoutubeConstants.ChannelVideoOrder.Latest) {
+                          R.string.player_up_sort_latest
+                        } else {
+                          R.string.player_up_sort_hot
+                        },
+                      ),
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                  }
+                  DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                    DropdownMenuItem(
+                      text = { Text(stringResource(R.string.player_up_sort_latest)) },
+                      trailingIcon = {
+                        if (uiState.order == YoutubeConstants.ChannelVideoOrder.Latest) Text("✓")
+                      },
+                      onClick = {
+                        uiState.order = YoutubeConstants.ChannelVideoOrder.Latest
+                        sortMenuOpen = false
+                      },
+                    )
+                    DropdownMenuItem(
+                      text = { Text(stringResource(R.string.player_up_sort_hot)) },
+                      trailingIcon = {
+                        if (uiState.order == YoutubeConstants.ChannelVideoOrder.Popular) Text("✓")
+                      },
+                      onClick = {
+                        uiState.order = YoutubeConstants.ChannelVideoOrder.Popular
+                        sortMenuOpen = false
+                      },
+                    )
+                  }
+                }
+              }
+            }
+            // 官方式纵向视频行(封面左+时长,右标题/日期/播放量),行间分割线。
+            itemsIndexed(displayItems, key = { _, v -> v.bvid }, span = { _, _ -> GridItemSpan(maxLineSpan) }) { index, video ->
+              ChannelVideoRow(
+                video = video,
+                relativeText = relativeText,
+                onClick = { onVideoSelected(video) },
+                onLongPress = onLongPress,
+              )
+              if (index < displayItems.lastIndex) {
+                HorizontalDivider(
+                  color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                  modifier = Modifier.padding(vertical = 2.dp),
+                )
+              }
+            }
           } else {
+            // Shorts/直播 tab 保持网格卡片。
             items(displayItems, key = { it.bvid }) { video ->
               MobileVideoCard(
                 video = video,
@@ -521,6 +596,85 @@ private fun ChannelPlaylistCard(
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(top = 2.dp),
       )
+    }
+  }
+}
+
+/**
+ * 主页 tab 官方式视频行(对齐 B站官方 UP空间 投稿列表):左封面(右下角时长),右标题/日期/播放量。
+ * YouTube 无弹幕数,不显示;长按同网格卡片走视频长按菜单。
+ */
+@Composable
+private fun ChannelVideoRow(
+  video: VideoSummary,
+  relativeText: VideoCardRelativeText,
+  onClick: () -> Unit,
+  onLongPress: ((VideoSummary) -> Unit)?,
+) {
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .clip(RoundedCornerShape(8.dp))
+      .combinedClickable(
+        onClick = onClick,
+        onLongClick = onLongPress?.let { { it(video) } },
+      )
+      .padding(vertical = 6.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Box(
+      modifier = Modifier
+        .width(128.dp)
+        .aspectRatio(16f / 9f)
+        .clip(RoundedCornerShape(8.dp)),
+    ) {
+      AsyncImage(
+        model = video.pic,
+        contentDescription = video.title,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.fillMaxSize(),
+      )
+      val durationText = video.durationText()
+      if (durationText.isNotBlank() && !video.isLive) {
+        Text(
+          text = durationText,
+          style = MaterialTheme.typography.labelSmall,
+          fontSize = 11.sp,
+          color = androidx.compose.ui.graphics.Color.White,
+          modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .padding(4.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.7f))
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+        )
+      }
+    }
+    Spacer(modifier = Modifier.width(10.dp))
+    Column(modifier = Modifier.weight(1f)) {
+      Text(
+        text = video.title,
+        style = MaterialTheme.typography.bodyMedium,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+      )
+      Spacer(modifier = Modifier.height(2.dp))
+      val pubdate = video.pubdateText(relativeText)
+      if (pubdate.isNotBlank()) {
+        Text(
+          text = pubdate,
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+      }
+      if (video.view > 0) {
+        Text(
+          text = formatCount(video.view, LocalContext.current.resources),
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
     }
   }
 }
