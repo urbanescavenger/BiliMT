@@ -16,6 +16,8 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlin.random.Random
 import org.schabi.newpipe.extractor.stream.StreamInfo
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -296,15 +298,31 @@ class YoutubeRepository(
       val header = root["header"]
       val phr = (header as? JsonObject)?.get("playlistHeaderRenderer")
       val phrObj = phr as? JsonObject
+      val phrObj2 = (header as? JsonObject)?.get("pageHeaderRenderer") as? JsonObject
+      // 递归找 header 里含 description/playlistHeader 的键路径,定位新布局 pageHeaderRenderer 下简介在哪。
+      val hits = mutableListOf<String>()
+      fun findKeys(node: JsonElement?, path: String) {
+        when (node) {
+          is JsonObject -> node.forEach { (k, v) ->
+            if (k.contains("description", ignoreCase = true) || k.contains("playlist", ignoreCase = true)) {
+              hits += "$path.$k"
+            }
+            findKeys(v, "$path.$k")
+          }
+          is JsonArray -> node.forEachIndexed { i, v -> findKeys(v, "$path[$i]") }
+          else -> {}
+        }
+      }
+      findKeys(header, "header")
       Log.i(
         "YtPlaylist",
         "getPlaylistVideos browseId=$playlistBrowseId " +
           "desc=${playlistHeader?.description?.take(60) ?: "null"} " +
-          "owner=${playlistHeader?.owner ?: "null"} count=${playlistHeader?.videoCountText ?: "null"} " +
-          "cover=${playlistHeader?.cover != null} " +
           "header=${header != null} headerKeys=${(header as? JsonObject)?.keys?.take(10) ?: "N/A"} " +
           "phrKeys=${phrObj?.keys?.take(14) ?: "N/A"} " +
-          "descText=${phrObj?.get("descriptionText") != null} descLegacy=${phrObj?.get("description") != null} " +
+          "pageHeaderRenderer=${phrObj2 != null} phr2Keys=${phrObj2?.keys?.take(14) ?: "N/A"} " +
+          "descHits=${hits.take(20).joinToString(",") ?: "none"} " +
+          "headerJson=${header?.toString()?.take(1200) ?: "N/A"} " +
           "items=${feed.items.size}",
       )
     }
