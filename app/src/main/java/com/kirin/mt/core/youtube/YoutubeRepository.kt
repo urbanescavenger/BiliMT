@@ -27,8 +27,8 @@ import kotlinx.serialization.json.put
 data class YoutubeVideoPage(
   val items: List<VideoSummary>,
   val continuation: String?,
-  /** 播放列表详情首屏简介(header.playlistHeaderRenderer.descriptionText)；普通视频 feed 恒 null。 */
-  val description: String? = null,
+  /** 播放列表详情首屏头部(playlistHeaderRenderer 的简介/作者/视频数/封面)；普通视频 feed 恒 null。 */
+  val playlistHeader: YoutubeParsers.YoutubePlaylistHeader? = null,
 )
 
 /** 频道"播放列表"Tab 的一页播放列表卡，带续页 token。internal 因含 [YoutubeParsers.YoutubePlaylist]。 */
@@ -289,29 +289,29 @@ class YoutubeRepository(
     }
     val root = client.postJson("/browse", payload)
     val feed = YoutubeParsers.parseFeedPage(root)
-    // 简介只在首屏 header(playlistHeaderRenderer.descriptionText)有；续页是纯 continuation 无 header。
-    val description = if (continuation == null) YoutubeParsers.parsePlaylistDescription(root) else null
-    // 诊断：真机确认简介取不到时 dump 首屏 header 结构,定位简介字段实际在哪(descriptionText/description/
-    // 顶层/sidebar),别盲改。仅首屏。
+    // 简介/作者/封面只在首屏 header(playlistHeaderRenderer)有；续页是纯 continuation 无 header。
+    val playlistHeader = if (continuation == null) YoutubeParsers.parsePlaylistHeader(root) else null
+    // 诊断：真机确认简介取不到时 dump 首屏 header 结构,定位字段实际在哪,别盲改。仅首屏。
     if (continuation == null) {
       val header = root["header"]
       val phr = (header as? JsonObject)?.get("playlistHeaderRenderer")
       val phrObj = phr as? JsonObject
-      val descText = phrObj?.get("descriptionText")
-      val descLegacy = phrObj?.get("description")
       Log.i(
         "YtPlaylist",
-        "getPlaylistVideos browseId=$playlistBrowseId descLen=${description?.length ?: -1} " +
-          "desc=${description?.take(60) ?: "null"} " +
+        "getPlaylistVideos browseId=$playlistBrowseId " +
+          "desc=${playlistHeader?.description?.take(60) ?: "null"} " +
+          "owner=${playlistHeader?.owner ?: "null"} count=${playlistHeader?.videoCountText ?: "null"} " +
+          "cover=${playlistHeader?.cover != null} " +
           "header=${header != null} headerKeys=${(header as? JsonObject)?.keys?.take(10) ?: "N/A"} " +
-          "phrKeys=${phrObj?.keys?.take(14) ?: "N/A"} descText=${descText != null} " +
-          "descLegacy=${descLegacy != null} items=${feed.items.size}",
+          "phrKeys=${phrObj?.keys?.take(14) ?: "N/A"} " +
+          "descText=${phrObj?.get("descriptionText") != null} descLegacy=${phrObj?.get("description") != null} " +
+          "items=${feed.items.size}",
       )
     }
     return YoutubeVideoPage(
       items = feed.items.map(::toVideoSummary),
       continuation = feed.continuation,
-      description = description,
+      playlistHeader = playlistHeader,
     )
   }
 

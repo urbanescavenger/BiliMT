@@ -531,16 +531,33 @@ internal object YoutubeParsers {
   }
 
   /**
-   * 播放列表详情首屏简介。读 `header.playlistHeaderRenderer.descriptionText`（对齐 NewPipe
-   * PlaylistInfo 的 getDescription，LibreTube PlaylistFragment 展示同一来源）；新老字段
-   * descriptionText / description 都可能是 {runs} 或 {simpleText}。无则返回 null（UI 不显示简介行）。
+   * 播放列表详情首屏头部信息。读 `header.playlistHeaderRenderer`（对齐 NewPipe `PlaylistInfo` /
+   * LibreTube `PlaylistFragment`）：description、ownerText、numVideosText、封面。字段可能
+   * descriptionText / description 两者、{runs} 或 {simpleText} 两种形状。取不到 header 返回 null。
    */
-  fun parsePlaylistDescription(root: JsonObject): String? {
-    val header = root.obj("header")?.obj("playlistHeaderRenderer") ?: return null
-    val node = header.obj("descriptionText") ?: header.obj("description") ?: return null
-    val text = runsText(node).ifBlank { simpleText(node) }
-    return text.ifBlank { null }
+  fun parsePlaylistHeader(root: JsonObject): YoutubePlaylistHeader? {
+    val phr = root.obj("header")?.obj("playlistHeaderRenderer") ?: return null
+    val descNode = phr.obj("descriptionText") ?: phr.obj("description")
+    val description = if (descNode != null) {
+      runsText(descNode).ifBlank { simpleText(descNode) }.ifBlank { null }
+    } else null
+    val owner = runsText(phr.obj("ownerText")).ifBlank { simpleText(phr.obj("ownerText")) }.ifBlank { null }
+    val count = runsText(phr.obj("numVideosText")).ifBlank { simpleText(phr.obj("numVideosText")) }.ifBlank { null }
+    val cover = phr.obj("primaryThumbnail")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+      ?: phr.obj("thumbnail")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+    return YoutubePlaylistHeader(description = description, owner = owner, videoCountText = count, cover = cover)
   }
+
+  /** 播放列表首屏头部 [parsePlaylistDetailHeader] 的解析结果。字段缺省时用 null（UI 隐藏对应行）。 */
+  data class YoutubePlaylistHeader(
+    val description: String?,
+    /** ownerText，如 "@FollowCnRules"；无则 null。 */
+    val owner: String?,
+    /** numVideosText，如 "20 videos"；无则 null。 */
+    val videoCountText: String?,
+    /** 封面 URL；无则 null。 */
+    val cover: String?,
+  )
 
   /**
    * 从 /player 响应解析视频详情（简介 Tab）。

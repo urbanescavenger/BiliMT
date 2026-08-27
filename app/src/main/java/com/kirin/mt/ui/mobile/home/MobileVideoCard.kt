@@ -284,7 +284,7 @@ private fun FeedStyleCardContent(
 
 /** 相对时间文本(3分钟前/昨天/5天前等),复用 TV 同款字符串资源。 */
 @Composable
-private fun rememberVideoCardRelativeText(): VideoCardRelativeText {
+internal fun rememberVideoCardRelativeText(): VideoCardRelativeText {
   val minutesAgoFormat = stringResource(R.string.video_relative_minutes_ago)
   val hoursAgoFormat = stringResource(R.string.video_relative_hours_ago)
   val yesterday = stringResource(R.string.video_relative_yesterday)
