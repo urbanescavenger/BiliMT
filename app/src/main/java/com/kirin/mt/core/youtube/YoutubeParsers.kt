@@ -531,11 +531,42 @@ internal object YoutubeParsers {
   }
 
   /**
-   * 播放列表详情首屏头部信息。读 `header.playlistHeaderRenderer`（对齐 NewPipe `PlaylistInfo` /
-   * LibreTube `PlaylistFragment`）：description、ownerText、numVideosText、封面。字段可能
-   * descriptionText / description 两者、{runs} 或 {simpleText} 两种形状。取不到 header 返回 null。
+   * 播放列表详情首屏头部信息。两条路径（真机实测 2026-08-27，见 YtPlaylist 诊断日志）：
+   * - 新布局（当前实际返回）：`header.pageHeaderRenderer.content.pageHeaderViewModel` —— 简介在
+   *   `description.descriptionPreviewViewModel.description.content`，作者在 `metadata` rows 的
+   *   avatarStack text（"by xxx"），视频数在同 rows 的文本（"N videos"），封面在 `heroImage`。
+   * - 旧布局（对齐 NewPipe `PlaylistInfo` / LibreTube `PlaylistFragment`）：`header.playlistHeaderRenderer`，
+   *   descriptionText/description、ownerText、numVideosText、primaryThumbnail。保留兜底。
+   * 字段可能 {runs} 或 {simpleText} 两种形状。取不到任一 header 返回 null。
    */
   fun parsePlaylistHeader(root: JsonObject): YoutubePlaylistHeader? {
+    parseLegacyPlaylistHeader(root)?.let { return it }
+    val vm = root.obj("header")?.obj("pageHeaderRenderer")
+      ?.obj("content")?.obj("pageHeaderViewModel") ?: return null
+    val description = vm.obj("description")?.obj("descriptionPreviewViewModel")?.obj("description")?.let { node ->
+      node.stringOrNull("content")?.ifBlank { null }
+        ?: runsText(node).ifBlank { simpleText(node) }.ifBlank { null }
+    }
+    // metadata rows:作者在 avatarStack 的 text（"by xxx"），视频数/播放量在普通文本 parts。
+    var owner: String? = null
+    var count: String? = null
+    vm.obj("metadata")?.obj("contentMetadataViewModel")?.array("metadataRows")?.forEach { rowEl ->
+      (rowEl as? JsonObject)?.array("metadataParts")?.forEach { partEl ->
+        val part = partEl as? JsonObject ?: return@forEach
+        val text = part.obj("avatarStack")?.obj("avatarStackViewModel")?.obj("text")?.let {
+          runsText(it).ifBlank { simpleText(it) }
+        } ?: part.obj("text")?.let { runsText(it).ifBlank { simpleText(it) } }
+        val t = text?.trim() ?: return@forEach
+        if (t.startsWith("by ", ignoreCase = true)) owner = t.removePrefix("by ").trim().ifBlank { null }
+        else if (count == null && Regex("\\d+\\s*\\S*video", ignoreCase = true).containsMatchIn(t)) count = t
+      }
+    }
+    val cover = vm.obj("heroImage")?.let { firstImageUrl(it) }
+    return YoutubePlaylistHeader(description = description, owner = owner, videoCountText = count, cover = cover)
+  }
+
+  /** 旧布局 `header.playlistHeaderRenderer`（部分老响应仍有），取不到返回 null。 */
+  private fun parseLegacyPlaylistHeader(root: JsonObject): YoutubePlaylistHeader? {
     val phr = root.obj("header")?.obj("playlistHeaderRenderer") ?: return null
     val descNode = phr.obj("descriptionText") ?: phr.obj("description")
     val description = if (descNode != null) {
@@ -546,6 +577,21 @@ internal object YoutubeParsers {
     val cover = phr.obj("primaryThumbnail")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
       ?: phr.obj("thumbnail")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
     return YoutubePlaylistHeader(description = description, owner = owner, videoCountText = count, cover = cover)
+  }
+
+  /** 在任意节点里递归找第一个 image.sources[].url（pageHeaderViewModel.heroImage 等 view-model 形状用）。 */
+  private fun firstImageUrl(node: JsonObject): String? {
+    node.array("sources")?.forEach { src ->
+      (src as? JsonObject)?.stringOrNull("url")?.takeIf { it.isNotBlank() }?.let { return it }
+    }
+    for ((_, value) in node) {
+      when (value) {
+        is JsonObject -> firstImageUrl(value)?.let { return it }
+        is JsonArray -> value.forEach { el -> (el as? JsonObject)?.let { firstImageUrl(it)?.let { u -> return u } } }
+        else -> Unit
+      }
+    }
+    return null
   }
 
   /**

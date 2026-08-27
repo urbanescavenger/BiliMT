@@ -291,38 +291,18 @@ class YoutubeRepository(
     }
     val root = client.postJson("/browse", payload)
     val feed = YoutubeParsers.parseFeedPage(root)
-    // 简介/作者/封面只在首屏 header(playlistHeaderRenderer)有；续页是纯 continuation 无 header。
+    // 简介/作者/封面只在首屏 header(playlistHeaderRenderer 或 pageHeaderRenderer)有；续页是纯 continuation 无 header。
     val playlistHeader = if (continuation == null) YoutubeParsers.parsePlaylistHeader(root) else null
-    // 诊断：真机确认简介取不到时 dump 首屏 header 结构,定位字段实际在哪,别盲改。仅首屏。
+    // 诊断：确认首屏 header 解析结果(desc/owner/count/cover),取不到时 dump header 顶层键定位。
     if (continuation == null) {
       val header = root["header"]
-      val phr = (header as? JsonObject)?.get("playlistHeaderRenderer")
-      val phrObj = phr as? JsonObject
-      val phrObj2 = (header as? JsonObject)?.get("pageHeaderRenderer") as? JsonObject
-      // 递归找 header 里含 description/playlistHeader 的键路径,定位新布局 pageHeaderRenderer 下简介在哪。
-      val hits = mutableListOf<String>()
-      fun findKeys(node: JsonElement?, path: String) {
-        when (node) {
-          is JsonObject -> node.forEach { (k, v) ->
-            if (k.contains("description", ignoreCase = true) || k.contains("playlist", ignoreCase = true)) {
-              hits += "$path.$k"
-            }
-            findKeys(v, "$path.$k")
-          }
-          is JsonArray -> node.forEachIndexed { i, v -> findKeys(v, "$path[$i]") }
-          else -> {}
-        }
-      }
-      findKeys(header, "header")
       Log.i(
         "YtPlaylist",
         "getPlaylistVideos browseId=$playlistBrowseId " +
           "desc=${playlistHeader?.description?.take(60) ?: "null"} " +
-          "header=${header != null} headerKeys=${(header as? JsonObject)?.keys?.take(10) ?: "N/A"} " +
-          "phrKeys=${phrObj?.keys?.take(14) ?: "N/A"} " +
-          "pageHeaderRenderer=${phrObj2 != null} phr2Keys=${phrObj2?.keys?.take(14) ?: "N/A"} " +
-          "descHits=${hits.take(20).joinToString(",") ?: "none"} " +
-          "headerJson=${header?.toString()?.take(1200) ?: "N/A"} " +
+          "owner=${playlistHeader?.owner ?: "null"} count=${playlistHeader?.videoCountText ?: "null"} " +
+          "cover=${if (playlistHeader?.cover != null) "ok" else "null"} " +
+          "headerKeys=${(header as? JsonObject)?.keys?.take(10) ?: "N/A"} " +
           "items=${feed.items.size}",
       )
     }
