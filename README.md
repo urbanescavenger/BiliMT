@@ -129,6 +129,15 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 ## 版本更新
 
+### v3.0.7-alpha
+
+| tag | 内容 |
+| --- | --- |
+| v3.0.7-alpha.4 | YouTube/B站频道页对齐官方 UI + YouTube 播放列表解析修复:①播放列表卡缩略图/视频数字段迁移修复(封面在 collectionThumbnailViewModel.primaryThumbnail,视频数在缩略图角标 badge,旧路径拿空致"▶"占位块/错显示更新时间);②播放列表详情页作者/视频数恒空修复(viewModel text 节点须读 content 键 + 作者行剥 by/创建者：/建立者： 语言前缀)与简介上移(播放全部上方);③移动端 YouTube 频道页主页 tab 对齐 B站官方——tab「视频」改名「主页」、内容区换官方式纵向视频行、「▶ 播放全部」(连播队列)+「≡ 排序」右对齐菜单;④B站移动端 UP 空间投稿区同样对齐(纵向行带 💬 弹幕+播放全部+排序菜单,「最热门」→「最多播放」);⑤TV 频道页加内容 tab(主页/Shorts/直播/播放列表,视频保留网格)+播放列表焦点卡片网格+新增 TV 播放列表详情页(D-pad 纵向列表,TV 无队列单视频起播) |
+| v3.0.7-alpha.3 | 频道页 Shorts 空修复(shortsLockupViewModel reel 风格专属解析:videoId 在 reelWatchEndpoint,标题/播放量在 accessibilityText)+ 频道页 tab 统一 channelId+服务端 params(弃 UUSH/UULV 系统 browseId,真机 400)+ 普通卡片显示真实观看进度条(PlaybackProgressStore,无进度数据不显示)+ 修复无进度卡片误显满条 |
+| v3.0.7-alpha.2 | 设置页清理:隐藏已废弃「锁定会话视频轨」诊断开关(TV+移动)+ 移动端隐藏 7 个 TV 专属惰性开关(seek 预览/退出确认/自动连播/看完回首页/播放器时钟/迷你进度条),字段与逻辑保留 |
+| v3.0.7-alpha.1 | YouTube 动态订阅流提速(~6.8s→~2.8s:会话预热后台化 + RSS 改 UULF uploads 播放列表 feed)+ 首刷新收敛为一次合并 + 视频卡片已播放进度条 |
+
 ### v3.0.6-alpha
 
 移动端「已看完」闭环：看完的视频卡片右下角标角标（本地 WatchedStore 跟踪），并纳入 WebDAV 备份/还原；新增「已看完自动删除缓存」开关，看完自动清掉该视频下载文件。

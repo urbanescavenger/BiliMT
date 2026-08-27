@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.7-alpha.4](#v307-alpha4)
 - [v3.0.7-alpha.3](#v307-alpha3)
 - [v3.0.7-alpha.2](#v307-alpha2)
 - [v3.0.7-alpha.1](#v307-alpha1)
@@ -205,6 +206,18 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.7-alpha.4
+
+**YouTube/B站频道页对齐官方 UI + YouTube 播放列表解析修复(TV 端同步 4 tab)**。
+
+### 变更
+- **YouTube 播放列表卡缩略图/视频数修复**(字段迁移):封面已挪进 `contentImage.collectionThumbnailViewModel.primaryThumbnail.thumbnailViewModel.image.sources[]`(旧直连 `thumbnailViewModel` 拿空 → 频道页播放列表卡只剩"▶"占位块);视频数挪到缩略图角标 badge("141 个视频",metadataRows 现在只有更新时间/"View full playlist",旧取首行会错显示更新时间)。`parseChannelPlaylists` 新路径优先旧直连兜底、badge 优先 metadataRows 兜底,curl 实测 21/21 全命中。
+- **播放列表详情页作者/视频数恒空修复**:viewModel text 节点须先读 `content` 键(`runsText` 只认 runs、`simpleText` 只认 simpleText,都不认 content → owner 空串/count null);作者行改结构性判定(avatarStack part 即创建者,剥 by/创建者：/建立者： 语言前缀),视频数=含数字且含 video/视频/影片/動画 词的文本。
+- **播放列表详情页简介上移**:顺序改为 封面→标题→作者·视频数→简介(120 字截断点击展开)→播放全部→视频行(用户定稿)。
+- **移动端 YouTube 频道页主页 tab 对齐 B站官方**(用户提供官方截图定稿):tab「视频」改名「主页」;主页 tab 内容区从双列网格换**官方式纵向视频行**(封面左+时长角标,右标题/日期/播放量,行间分割线);新增「▶ 播放全部」(已加载列表作连播队列从第一条起播)+「≡ 最新发布/最多播放」右对齐排序入口(DropdownMenu 选中打✓),删独立排序按钮行;Shorts/直播 tab 保持网格。
+- **B站移动端 UP 主空间投稿区同样对齐官方**:投稿区换官方式纵向行(复用 ChannelVideoRow 带 💬 弹幕数)+「▶ 播放全部」(连播队列)+「≡ 排序」菜单;共享字符串「最热门」→「最多播放」(官方措辞)。
+- **TV 端 YouTube 频道页对齐移动端**:头部加内容 tab 行(主页/Shorts/直播/播放列表,聚焦只高亮 OK 才切换);**视频保留网格**(TV 刻意),排序仅主页 tab;播放列表 tab 新增焦点卡片网格(封面+标题+视频数,近底自动翻页,返回焦点恢复);**新增 TV 播放列表详情页**(D-pad 纵向列表:封面/作者·视频数/可展开简介/播放全部/带序号视频行;TV 无连播队列单视频起播);数据走服务端 tab params(header 失败回退 resolveChannel+getChannelTabs)。
 
 ## v3.0.7-alpha.3
 
