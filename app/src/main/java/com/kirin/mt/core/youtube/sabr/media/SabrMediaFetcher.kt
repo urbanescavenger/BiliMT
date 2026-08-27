@@ -135,6 +135,11 @@ internal class SabrMediaFetcher(
   // gap 是操作开销非供给问题,跳过。runway 由视频 chunk source 每次 getNextChunk 喂(noteBufferedAheadMs),
   // 在上次 fetch 结束时快照(gap 开始时刻的缓冲水位)。
   @Volatile private var lastFetchEndMs = 0L
+  // alpha.9Z 修正(2026-08-27 真机):lastFetchEndMs 必须用墙钟(System.currentTimeMillis)——
+  // lastSeekMs/lastManualFormatSelectionMs 都是 epoch 值(Instant.now/System.currentTimeMillis),
+  // 若用 elapsedRealtime(开机时长 ~1e6)比较,(prevSeekMs > prevFetchEndMs) 恒真 → gap 永远被判成
+  // seek 后开销跳过,带宽计整场 0 条 gap 样本,升档后 est 钉突发速率 → 卡死→重载→爬档→再卡死死循环。
+  // r1660 实证:4K pinned 60s 缓冲 16s→5.4s 一条 gap 都没记。
   @Volatile private var bufferedAheadNoteMs = -1L
   @Volatile private var bufferedAheadMsAtLastFetch = -1L
 
@@ -378,7 +383,10 @@ internal class SabrMediaFetcher(
       .header("Referer", "https://www.youtube.com/")
       .build()
     val t0 = SystemClock.elapsedRealtime()
-    // alpha.9Z:发请求前快照 gap 起点(上次 fetch 结束)与当时的缓冲水位,供 gap 计时(见 recordFetchGap)
+    // alpha.9Z:发请求前快照 gap 起点(上次 fetch 结束)与当时的缓冲水位,供 gap 计时(见 recordFetchGap)。
+    // lastFetchEndMs/t0Wall 均为墙钟(与 lastSeekMs/lastManualFormatSelectionMs 同源可比);gap 时长也用
+    // 墙钟差值,跳变时 fetchStartMs<=prevFetchEndMs 守卫自然跳过该样本,不产生错误样本。
+    val t0Wall = System.currentTimeMillis()
     val prevFetchEndMs = lastFetchEndMs
     val prevSeekMs = lastSeekMs
     val prevManualMs = lastManualFormatSelectionMs
@@ -398,8 +406,8 @@ internal class SabrMediaFetcher(
       // 节奏非带宽不足),吞吐 = 窗口累计量/累计耗时。带宽充足时贴近真实下载速率,断流时靠失败段计时下探。
       val mbps = if (elapsed > 0) resp.size.toLong() * 8 / (elapsed * 1000L) else -1L
       recordRealBandwidthSample(resp.size.toLong(), elapsed)
-      recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0)
-      lastFetchEndMs = SystemClock.elapsedRealtime()
+      recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall)
+      lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
       Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps est=${getRealBitrateEstimate() / 1000L}K")
       resp
@@ -410,8 +418,8 @@ internal class SabrMediaFetcher(
       // 网络失败/超时:下载量=0、耗时计满 → 窗口带宽下探,让 ABR 有依据降档自救
       val failMs = SystemClock.elapsedRealtime() - t0
       recordRealBandwidthFailure(failMs)
-      recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0)
-      lastFetchEndMs = SystemClock.elapsedRealtime()
+      recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall)
+      lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
       Log.w(tag, "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${getRealBitrateEstimate() / 1000L}K)")
       throw e

@@ -161,6 +161,14 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 
 **新盲区(commit 1c7b08a 修复)**:`rn=18 REAL 939B 8552ms → 0Mbps`——服务端把请求挂 8.5s 只回 939B(供给中断发生在**传输内**),被 `REAL_BW_MIN_BYTES=100KB` 过滤器整条丢弃。31s 墙钟仅交付 67.6MB(有效 ~17M)vs 315 实际码率 ~33M,缓冲 19.6s→2% 看门狗重载,est 仍钉 47-52M。**供给中断的三条路现在全覆盖**:①fetch 没发起(GC,gap 计时)②发起但失败(recordRealBandwidthFailure)③发起"成功"但空转(慢小响应,bytes<100KB 且 elapsed≥2s 按实际入账)。
 
+### r1660 复测(2026-08-27 20:26-33):gap 计数仍为 0——时钟单位 bug 把 gap 计时整个打死(commit 修正)
+
+现象(用户口述):降到 1440 没问题,之后又升回 4K,升完触发重载。日志实锤:4K pinned 60s 缓冲 16s→5.4s,**`bw gap counted` 全场 0 条**,est 钉突发速率 45-60M。
+
+根因(时钟单位不匹配):`lastSeekMs`/`lastManualFormatSelectionMs` 都是 **epoch 墙钟**(`Instant.now().toEpochMilli()`/`System.currentTimeMillis()`,~1.79×10¹²),而 `lastFetchEndMs` 用了 `SystemClock.elapsedRealtime()`(开机时长 ~10⁶)。`recordFetchGap` 的守卫 `(prevSeekMs > prevFetchEndMs)` 恒真 → **任何 gap 都被判成 seek 后开销跳过**。修正:gap 路径统一墙钟(`t0Wall`/`lastFetchEndMs=currentTimeMillis()`),墙钟跳变时由 `fetchStartMs<=prevFetchEndMs` 守卫自然跳过,不产生错误样本。
+
+配套(升档冷却):修完 bug 后 pinned 阶段 est 会真实回落触发降档,但「重填缓冲 → 突发速率 est 冲高 → 立刻弹回高档 → 再卡死」横跳仍在(20:31:48 升 4K→20:32:47 卡死→重载→20:32:58 又升 4K,循环周期 ~70s)。HeightAwareAdaptiveTrackSelection 升档门槛追加 **③距上次降档 ≥3min**(手动选档走单轨组不受影响),打破「降→填→升→卡」循环。
+
 ### 未决/风险
 
 - [ ] **真机复测(r1658+)**:4K 播放中应出现 `bw gap counted:` 日志,慢小响应不再被过滤,est 回落到可持续值(<31.6M)后自动降到 308/303,看门狗重载不再死循环;好网络下 4K 仍能稳定维持(填充期 gap≈0 不受影响)

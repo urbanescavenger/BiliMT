@@ -33,6 +33,9 @@ class HeightAwareAdaptiveTrackSelection(
 
   private var selected = length - 1
 
+  /** alpha.9Z:上次降档时间(elapsedRealtime ms)——升档冷却基准。 */
+  private var lastDowngradeElapsedMs = 0L
+
   override fun updateSelectedTrack(
     playbackPositionUs: Long,
     bufferedDurationUs: Long,
@@ -54,9 +57,12 @@ class HeightAwareAdaptiveTrackSelection(
     val effective = bandwidthMeter.getBitrateEstimate()
     // alpha.9Z(升档滞回,防降档后横跳):带宽估计在档位临界值附近抖动时,无滞回会 308↔315 反复切轨
     // (每次切轨都要拉新 init 段,还丢已缓冲的高档数据)。升档要求 ①带宽 ≥ 声明码率 ×1.25 ②缓冲 ≥30s
-    // (降档自救不设门槛,越快越好);同 height 多 codec 切换不算升档,维持原门槛。
+    // ③距上次降档 ≥3min(2026-08-27 真机:r1660 升 4K 后 pinned 供给不足卡死→重载→爬档→又升 4K→再卡死;
+    // 重填缓冲期间突发速率 est 冲高会立刻弹回高档,需要时间冷却打破「降→填→升→卡」循环。网络真改善时
+    // 最多晚 3min 升档;手动选档走单轨组不经此路,不受影响)。
     val currentHeight = getFormat(selected).height
-    val canUpgrade = bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US
+    val canUpgrade = bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US &&
+      nowMs - lastDowngradeElapsedMs >= UPGRADE_COOLDOWN_MS
     var best = length - 1
     var bestHeight = -1
     for (i in 0 until length) {
@@ -72,6 +78,10 @@ class HeightAwareAdaptiveTrackSelection(
       }
     }
     selected = best
+    // 降档(height 变小)记时间,驱动升档冷却
+    if (getFormat(selected).height < currentHeight) {
+      lastDowngradeElapsedMs = nowMs
+    }
   }
 
   override fun getSelectedIndex(): Int = selected
@@ -79,6 +89,8 @@ class HeightAwareAdaptiveTrackSelection(
   private companion object {
     /** alpha.9Z:升档所需的最低缓冲水位(us)——降档自救后缓冲重建到这一水位前,不允许弹回高档。 */
     const val UPGRADE_MIN_BUFFERED_US = 30_000_000L
+    /** alpha.9Z:降档后升档冷却(ms)——打破「降档→重填→est 冲高→弹回高档→卡死」横跳循环。 */
+    const val UPGRADE_COOLDOWN_MS = 180_000L
   }
 
   override fun getSelectionReason(): Int = androidx.media3.common.C.SELECTION_REASON_ADAPTIVE
