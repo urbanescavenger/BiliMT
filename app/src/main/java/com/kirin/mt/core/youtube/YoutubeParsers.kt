@@ -385,11 +385,27 @@ internal object YoutubeParsers {
       val title = node.obj("metadata")?.obj("lockupMetadataViewModel")?.obj("title")
         ?.stringOrNull("content")
         ?: return@collectByKey
-      val thumbnail = node.obj("contentImage")?.obj("thumbnailViewModel")?.obj("image")
-        ?.array("sources")?.lastOrNull()
-        ?.let { (it as? JsonObject)?.stringOrNull("url") }.orEmpty()
-      // 视频数文案(如 "20 videos")在 metadataRows 的 text.content;播放量等数字也在这,
-      // 但播放列表卡只此一条文字,取首个非空即可。
+      // 封面(实测 2026-08-27,频道页播放列表 tab):contentImage 是 collectionThumbnailViewModel
+      // 包裹,真封面在 primaryThumbnail.thumbnailViewModel.image.sources(21/21 卡全此形状);
+      // 旧直连 contentImage.thumbnailViewModel 仅作服务端回落兜底。直连路径下封面恒空 →
+      // 频道页播放列表卡只剩 "▶" 占位块(alpha 期旧疾)。
+      val thumbnailViewModel = node.obj("contentImage")?.obj("collectionThumbnailViewModel")
+        ?.obj("primaryThumbnail")?.obj("thumbnailViewModel")
+        ?: node.obj("contentImage")?.obj("thumbnailViewModel")
+      val thumbnail = thumbnailViewModel?.obj("image")?.array("sources")
+        ?.let(::pickBestThumbnailUrl).orEmpty()
+      // 视频数(实测 2026-08-27):缩略图角标 badge("100 videos",
+      // thumbnailOverlayBadgeViewModel.thumbnailBadges);metadataRows 现在只有
+      // "Updated X ago"/"View full playlist",已不是视频数(旧注释的 metadataRows 路径失效),
+      // 仅作 badge 缺失时兜底。
+      val badgeTexts = mutableListOf<String>()
+      thumbnailViewModel?.array("overlays")?.forEach { overlay ->
+        (overlay as? JsonObject)?.obj("thumbnailOverlayBadgeViewModel")?.array("thumbnailBadges")
+          ?.forEach { badge ->
+            (badge as? JsonObject)?.obj("thumbnailBadgeViewModel")?.stringOrNull("text")
+              ?.let { badgeTexts.add(it) }
+          }
+      }
       val countTexts = mutableListOf<String>()
       node.obj("metadata")?.obj("lockupMetadataViewModel")?.obj("metadata")
         ?.obj("contentMetadataViewModel")?.array("metadataRows")?.forEach { row ->
@@ -397,8 +413,10 @@ internal object YoutubeParsers {
             (part as? JsonObject)?.obj("text")?.stringOrNull("content")?.let { countTexts.add(it) }
           }
         }
-      val count = countTexts.firstOrNull().orEmpty()
-      // 打开播放列表的 browseId:onTap/navigationEndpoint 的 browseEndpoint 优先,回退 contentId。
+      val count = badgeTexts.firstOrNull() ?: countTexts.firstOrNull().orEmpty()
+      // 打开播放列表的 browseId:onTap/navigationEndpoint 的 browseEndpoint 优先,回退 contentId
+      // (实测 2026-08-27 lockup 卡 onTap 为空 → 落到 contentId(PL...),normalizePlaylistBrowseId
+      // 会补 VL 前缀)。
       val browseId = node.obj("onTap")?.obj("navigationEndpoint")?.obj("browseEndpoint")
         ?.stringOrNull("browseId")
         ?: node.obj("navigationEndpoint")?.obj("browseEndpoint")?.stringOrNull("browseId")
