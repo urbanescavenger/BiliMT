@@ -102,9 +102,11 @@ import com.kirin.mt.ui.settings.SettingsScreen
 import com.kirin.mt.ui.space.UpSpaceRequest
 import com.kirin.mt.ui.space.UpSpaceScreen
 import com.kirin.mt.ui.space.UpSpaceUiState
+import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.ui.space.YoutubeChannelRequest
 import com.kirin.mt.ui.space.YoutubeChannelScreen
 import com.kirin.mt.ui.space.YoutubeChannelUiState
+import com.kirin.mt.ui.space.YoutubePlaylistDetailScreen
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliMotion
@@ -291,6 +293,9 @@ fun BiliTvApp(
   var channelOrigin by remember { mutableStateOf<SpaceOrigin?>(null) }
   var channelPlaybackBehind by remember { mutableStateOf(false) }
   var channelFocusRestoreRequestKey by remember { mutableIntStateOf(0) }
+  // YouTube 播放列表详情页(TV):频道页"播放列表" tab 点卡片进入,覆盖在频道页之上。
+  var youtubePlaylistRequest by remember { mutableStateOf<YoutubeParsers.YoutubePlaylist?>(null) }
+  var playlistPlaybackBehind by remember { mutableStateOf(false) }
   val youtubeChannelUiState = remember { YoutubeChannelUiState() }
   val channelFocusRequester = remember { FocusRequester() }
   val pgcUiState = remember { com.kirin.mt.ui.pgc.PgcUiState() }
@@ -1625,6 +1630,36 @@ fun BiliTvApp(
             onVideoSelected = { video ->
               channelPlaybackBehind = false
               playbackRequest = video.toPlaybackRequest()
+            },
+            onOpenPlaylist = { playlist ->
+              youtubePlaylistRequest = playlist
+              playlistPlaybackBehind = false
+            },
+          )
+        }
+      }
+      // YouTube 播放列表详情页(TV):覆盖在频道页之上,返回回频道页并恢复播放列表网格焦点。
+      val displayedYoutubePlaylistRequest = youtubePlaylistRequest
+      if (displayedYoutubePlaylistRequest != null &&
+        (visiblePlaybackRequest == null || playlistPlaybackBehind)
+      ) {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(BiliColors.VideoBlack),
+        ) {
+          YoutubePlaylistDetailScreen(
+            youtubeRepository = youtubeRepository,
+            playlist = displayedYoutubePlaylistRequest,
+            onVideoSelected = { video ->
+              playlistPlaybackBehind = false
+              playbackRequest = video.toPlaybackRequest()
+            },
+            onBack = {
+              youtubePlaylistRequest = null
+              playlistPlaybackBehind = false
+              channelFocusRestoreRequestKey += 1
+              true
             },
           )
         }
