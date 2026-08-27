@@ -566,20 +566,25 @@ internal object YoutubeParsers {
         ?: runsText(node).ifBlank { simpleText(node) }.ifBlank { null }
     }
     // metadata rows:作者在 avatarStack 的 text，视频数/播放量在普通文本 parts。
-    // 实测 2026-08-27（真机 YtPlaylist 日志 owner/count 恒 null + curl hl=zh 复现）：avatarStack
-    // 文本带语言前缀——英文 "by xxx"、简中 "创建者：xxx"、繁中 "建立者：xxx"——旧 startsWith("by ")
-    // 中文恒不匹配；视频数 "141 个视频"（英文 "141 videos"）——旧正则只认英文 "video"。
-    // 改结构性判定：avatarStack part 即创建者行（剥前缀留名字）；视频数=含数字且含
-    // video/视频/影片/動画 词的文本（排除 "130,265次观看" 纯播放量）。
+    // 实测 2026-08-27（真机 YtPlaylist 日志 + 诊断 dump）：text 节点是 viewModel 形状
+    // {"content": "...", "commandRuns": [...]}，**必须先读 content**——runsText 只认 "runs"、
+    // simpleText 只认 "simpleText"，都不认 content，旧写法 avatarText 恒空串（owner=""）/
+    // 行文本恒空（count=null）。另：avatarStack 文本带语言前缀——英文 "by xxx"、简中
+    // "创建者：xxx"、繁中 "建立者：xxx"——剥前缀留名字；视频数=含数字且含 video/视频/影片/
+    // 動画 词的文本（排除 "130,265 views" 纯播放量行）。
     var owner: String? = null
     var count: String? = null
     vm.obj("metadata")?.obj("contentMetadataViewModel")?.array("metadataRows")?.forEach { rowEl ->
       (rowEl as? JsonObject)?.array("metadataParts")?.forEach { partEl ->
         val part = partEl as? JsonObject ?: return@forEach
-        val avatarText = part.obj("avatarStack")?.obj("avatarStackViewModel")?.obj("text")?.let {
-          runsText(it).ifBlank { simpleText(it) }
+        fun viewModelText(node: JsonObject?): String? {
+          val content = node?.stringOrNull("content")?.trim().orEmpty()
+          if (content.isNotBlank()) return content
+          return node?.let { runsText(it).ifBlank { simpleText(it) } }
         }
-        val text = avatarText ?: part.obj("text")?.let { runsText(it).ifBlank { simpleText(it) } }
+        val avatarText = part.obj("avatarStack")?.obj("avatarStackViewModel")?.obj("text")
+          ?.let(::viewModelText)
+        val text = avatarText ?: part.obj("text")?.let(::viewModelText)
         val t = text?.trim() ?: return@forEach
         if (avatarText != null) {
           val stripped = t
@@ -595,16 +600,6 @@ internal object YoutubeParsers {
       }
     }
     val cover = vm.obj("heroImage")?.let { firstImageUrl(it) }
-    // 诊断:curl hl=en/zh-CN/zh-TW/ja + 真实 clientVersion 全能复现非空 avatarText/"N 个视频",
-    // 真机(2026-08-27 11:02)却 owner=""(avatarStack text 空串)count=null——设备响应形状不明,
-    // dump metadata 子树定位实际结构(修复后移除)。
-    if (owner == null || count == null) {
-      Log.w(
-        "YtPlaylist",
-        "header meta incomplete owner=${owner?.take(20)} count=$count " +
-          "meta=${vm.obj("metadata").toString().take(1500)}",
-      )
-    }
     return YoutubePlaylistHeader(description = description, owner = owner, videoCountText = count, cover = cover)
   }
 
