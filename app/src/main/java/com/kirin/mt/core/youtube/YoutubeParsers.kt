@@ -565,18 +565,33 @@ internal object YoutubeParsers {
       node.stringOrNull("content")?.ifBlank { null }
         ?: runsText(node).ifBlank { simpleText(node) }.ifBlank { null }
     }
-    // metadata rows:作者在 avatarStack 的 text（"by xxx"），视频数/播放量在普通文本 parts。
+    // metadata rows:作者在 avatarStack 的 text，视频数/播放量在普通文本 parts。
+    // 实测 2026-08-27（真机 YtPlaylist 日志 owner/count 恒 null + curl hl=zh 复现）：avatarStack
+    // 文本带语言前缀——英文 "by xxx"、简中 "创建者：xxx"、繁中 "建立者：xxx"——旧 startsWith("by ")
+    // 中文恒不匹配；视频数 "141 个视频"（英文 "141 videos"）——旧正则只认英文 "video"。
+    // 改结构性判定：avatarStack part 即创建者行（剥前缀留名字）；视频数=含数字且含
+    // video/视频/影片/動画 词的文本（排除 "130,265次观看" 纯播放量）。
     var owner: String? = null
     var count: String? = null
     vm.obj("metadata")?.obj("contentMetadataViewModel")?.array("metadataRows")?.forEach { rowEl ->
       (rowEl as? JsonObject)?.array("metadataParts")?.forEach { partEl ->
         val part = partEl as? JsonObject ?: return@forEach
-        val text = part.obj("avatarStack")?.obj("avatarStackViewModel")?.obj("text")?.let {
+        val avatarText = part.obj("avatarStack")?.obj("avatarStackViewModel")?.obj("text")?.let {
           runsText(it).ifBlank { simpleText(it) }
-        } ?: part.obj("text")?.let { runsText(it).ifBlank { simpleText(it) } }
+        }
+        val text = avatarText ?: part.obj("text")?.let { runsText(it).ifBlank { simpleText(it) } }
         val t = text?.trim() ?: return@forEach
-        if (t.startsWith("by ", ignoreCase = true)) owner = t.removePrefix("by ").trim().ifBlank { null }
-        else if (count == null && Regex("\\d+\\s*\\S*video", RegexOption.IGNORE_CASE).containsMatchIn(t)) count = t
+        if (avatarText != null) {
+          val stripped = t
+            .substringAfterLast("创建者：").substringAfterLast("创建者:")
+            .substringAfterLast("建立者：").substringAfterLast("建立者:")
+            .removePrefix("by ").trim()
+          owner = stripped.ifBlank { t }
+        } else if (count == null && t.any { it.isDigit() } &&
+          listOf("video", "视频", "影片", "動画").any { t.contains(it, ignoreCase = true) }
+        ) {
+          count = t
+        }
       }
     }
     val cover = vm.obj("heroImage")?.let { firstImageUrl(it) }
