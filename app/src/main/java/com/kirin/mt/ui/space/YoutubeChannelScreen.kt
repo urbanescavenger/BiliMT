@@ -581,6 +581,10 @@ private fun YoutubeChannelHeader(
             modifier = Modifier.focusRequester(sortFocusRequesters.getValue(option)),
             onActivate = { onOrderSelected(option) },
             onFocused = { if (!selected) onOrderSelected(option) },
+            onMoveUp = {
+              // 上移回内容 tab 行当前 tab(不处理 Up 会交给默认焦点搜索,实测丢失焦点)。
+              runCatching { tabFocusRequesters.getValue(tab).requestFocus() }.isSuccess
+            },
             onMoveDown = {
               runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
             },
@@ -657,6 +661,7 @@ private fun YoutubeChannelSortChip(
   modifier: Modifier = Modifier,
   onActivate: () -> Unit,
   onFocused: () -> Unit,
+  onMoveUp: () -> Boolean,
   onMoveDown: () -> Boolean,
 ) {
   var focused by remember { mutableStateOf(false) }
@@ -681,6 +686,7 @@ private fun YoutubeChannelSortChip(
       }
       .onPreviewKeyEvent { event ->
         when {
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> onMoveUp()
           event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
           event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
             onActivate()
