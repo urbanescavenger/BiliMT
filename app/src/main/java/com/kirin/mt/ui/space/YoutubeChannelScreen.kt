@@ -533,7 +533,7 @@ private fun YoutubeChannelHeader(
       modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
     ) {
-      YoutubeConstants.ChannelContentTab.entries.forEach { option ->
+      YoutubeConstants.ChannelContentTab.entries.forEachIndexed { tabIndex, option ->
         val selected = tab == option
         YoutubeChannelTabChip(
           text = stringResource(
@@ -557,6 +557,24 @@ private fun YoutubeChannelHeader(
               YoutubeConstants.ChannelContentTab.Playlists ->
                 runCatching { playlistFirstItemFocusRequester.requestFocus() }.isSuccess
               else -> runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
+            }
+          },
+          // 左右也显式 requestFocus(实测默认焦点搜索在 tab 行丢失);行首/行尾消费按键不移动,
+          // 防止焦点逃逸出频道页(曾跳到 AppShell 侧栏)。
+          onMoveLeft = {
+            val prev = YoutubeConstants.ChannelContentTab.entries.getOrNull(tabIndex - 1)
+            if (prev != null) {
+              runCatching { tabFocusRequesters.getValue(prev).requestFocus() }.isSuccess
+            } else {
+              true
+            }
+          },
+          onMoveRight = {
+            val next = YoutubeConstants.ChannelContentTab.entries.getOrNull(tabIndex + 1)
+            if (next != null) {
+              runCatching { tabFocusRequesters.getValue(next).requestFocus() }.isSuccess
+            } else {
+              true
             }
           },
         )
@@ -724,6 +742,8 @@ private fun YoutubeChannelTabChip(
   onActivate: () -> Unit,
   onMoveUp: () -> Boolean,
   onMoveDown: () -> Boolean,
+  onMoveLeft: () -> Boolean = { false },
+  onMoveRight: () -> Boolean = { false },
 ) {
   var focused by remember { mutableStateOf(false) }
   val homeColors = LocalHomeColors.current
@@ -746,6 +766,8 @@ private fun YoutubeChannelTabChip(
         when {
           event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> onMoveUp()
           event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft -> onMoveLeft()
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight -> onMoveRight()
           event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
             onActivate()
             true
