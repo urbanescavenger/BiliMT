@@ -90,7 +90,7 @@ import kotlinx.coroutines.launch
  * continuation 分页），关注写入 [YoutubeChannelStore]（免登录）。点视频起播，卡片 owner 点击留在本频道。
  *
  * 2026-08-27 对齐移动端加内容 tab（主页/Shorts/直播/播放列表,tab chip 聚焦只高亮、OK 才切换）；
- * 视频 tab(TV 刻意)保留网格 + 最新发布/最多播放排序(仅主页 tab 显示);播放列表 tab 走
+ * 视频 tab(TV 刻意)保留网格 + 「▶ 播放全部」+ 最新发布/最多播放排序(仅主页 tab 显示);播放列表 tab 走
  * [ChannelPlaylistGrid] 焦点卡片网格,OK 进 [YoutubePlaylistDetailScreen](AppShell 覆盖层)。
  */
 @Composable
@@ -105,6 +105,7 @@ internal fun YoutubeChannelScreen(
   onBack: () -> Boolean,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenPlaylist: (YoutubeParsers.YoutubePlaylist) -> Unit = {},
+  onPlayAll: (List<VideoSummary>) -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
   val channelId = request.channelId
@@ -343,6 +344,22 @@ internal fun YoutubeChannelScreen(
     }
   }
 
+  /** 频道页视频（channelId/owner 为空）统一注入本频道 id + 名 + 头像，卡片 owner 点击留在本频道。 */
+  fun displayItemsFor(state: ChannelVideoState.Success): List<VideoSummary> = state.videos.map { video ->
+    video.copy(
+      channelId = if (video.channelId.isBlank()) channelId else video.channelId,
+      ownerName = if (video.ownerName.isBlank()) uiState.name else video.ownerName,
+      ownerFace = if (video.ownerFace.isBlank()) uiState.avatar else video.ownerFace,
+    )
+  }
+
+  // 「▶ 播放全部」(仅主页 tab):整份已加载视频作连播队列,第一条起播(对齐移动端主页 tab)。
+  fun playAllCurrent() {
+    val state = videoStateFor(uiState.tab) as? ChannelVideoState.Success ?: return
+    if (state.videos.isEmpty()) return
+    onPlayAll(displayItemsFor(state))
+  }
+
   Box(
     modifier = Modifier
       .fillMaxSize()
@@ -364,6 +381,7 @@ internal fun YoutubeChannelScreen(
         order = uiState.order,
         sortFocusRequesters = sortFocusRequesters,
         onOrderSelected = { uiState.order = it },
+        onPlayAll = ::playAllCurrent,
         onFollowClicked = ::toggleFollow,
       )
       Box(
@@ -411,15 +429,8 @@ internal fun YoutubeChannelScreen(
               onAction = { uiState.retryKey += 1 },
             )
             is ChannelVideoState.Success -> {
-              // 频道页视频（channelId/owner 为空）统一注入本频道 id + 名 + 头像，保证卡片 owner
-              // 点击留在本频道、头像显示本频道头像（lockupViewModel 不带 channelAvatarUrl）。
-              val displayItems = state.videos.map { video ->
-                video.copy(
-                  channelId = if (video.channelId.isBlank()) channelId else video.channelId,
-                  ownerName = if (video.ownerName.isBlank()) uiState.name else video.ownerName,
-                  ownerFace = if (video.ownerFace.isBlank()) uiState.avatar else video.ownerFace,
-                )
-              }
+              // 频道页视频统一注入本频道信息(卡片 owner 点击留在本频道、头像显示本频道头像)。
+              val displayItems = displayItemsFor(state)
               TvVideoGrid(
                 videos = displayItems,
                 debugLabel = "channel-grid",
@@ -475,6 +486,7 @@ private fun YoutubeChannelHeader(
   order: YoutubeConstants.ChannelVideoOrder,
   sortFocusRequesters: Map<YoutubeConstants.ChannelVideoOrder, FocusRequester>,
   onOrderSelected: (YoutubeConstants.ChannelVideoOrder) -> Unit,
+  onPlayAll: () -> Unit,
   onFollowClicked: () -> Unit,
 ) {
   val homeColors = LocalHomeColors.current
@@ -580,13 +592,22 @@ private fun YoutubeChannelHeader(
         )
       }
     }
-    // 排序栏:最新发布 / 最多播放（对齐 B站 UP 空间）。聚焦选中即切换,切排序重新拉取。
-    // 仅主页 tab 显示(对齐移动端;Shorts/直播/播放列表无排序)。
+    // 排序栏:「▶ 播放全部」+ 最新发布 / 最多播放(对齐移动端主页 tab 头部行「播放全部+排序」)。
+    // 排序聚焦选中即切换,切排序重新拉取;仅主页 tab 显示(Shorts/直播/播放列表无排序)。
     if (tab.hasSort) {
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
       ) {
+        YoutubeChannelPlayAllChip(
+          onActivate = onPlayAll,
+          onMoveUp = {
+            runCatching { tabFocusRequesters.getValue(tab).requestFocus() }.isSuccess
+          },
+          onMoveDown = {
+            runCatching { firstItemFocusRequester.requestFocus() }.isSuccess
+          },
+        )
         YoutubeConstants.ChannelVideoOrder.entries.forEach { option ->
           val selected = order == option
           val titleRes = when (option) {
@@ -724,6 +745,57 @@ private fun YoutubeChannelSortChip(
       fontSize = BiliTypography.HomeSectionTab,
       lineHeight = BiliTypography.HomeSectionTabLineHeight,
       fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium,
+      textAlign = TextAlign.Center,
+      maxLines = 1,
+    )
+  }
+}
+
+/**
+ * 「▶ 播放全部」chip(主页 tab 排序行最前,对齐移动端):OK 把已加载视频整份作连播队列起播。
+ * 聚焦不触发任何选择(区别于排序 chip 的聚焦即切换);行首 Left 消费不移动防焦点逃逸出频道页。
+ */
+@Composable
+private fun YoutubeChannelPlayAllChip(
+  modifier: Modifier = Modifier,
+  onActivate: () -> Unit,
+  onMoveUp: () -> Boolean,
+  onMoveDown: () -> Boolean,
+) {
+  var focused by remember { mutableStateOf(false) }
+  val homeColors = LocalHomeColors.current
+  val shape = RoundedCornerShape(BiliRadius.Pill)
+  val interactionSource = remember { MutableInteractionSource() }
+  Box(
+    modifier = modifier
+      .height(BiliSizing.HomeSectionTabHeight)
+      .widthIn(min = BiliSizing.HomeSectionTabCompactMinWidth)
+      .clip(shape)
+      .border(BorderStroke(BiliFocus.BorderWidth, if (focused) homeColors.accent else BiliColors.Transparent), shape)
+      .onFocusChanged { state -> focused = state.isFocused }
+      .onPreviewKeyEvent { event ->
+        when {
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> onMoveUp()
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft -> true
+          event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
+            onActivate()
+            true
+          }
+          else -> false
+        }
+      }
+      .focusable(interactionSource = interactionSource)
+      .clickable(interactionSource = interactionSource, indication = null, onClick = onActivate)
+      .padding(horizontal = BiliSpacing.Sm),
+    contentAlignment = Alignment.Center,
+  ) {
+    Text(
+      text = "▶ 播放全部",
+      color = BiliColors.BiliPink,
+      fontSize = BiliTypography.HomeSectionTab,
+      lineHeight = BiliTypography.HomeSectionTabLineHeight,
+      fontWeight = if (focused) FontWeight.Bold else FontWeight.Medium,
       textAlign = TextAlign.Center,
       maxLines = 1,
     )
