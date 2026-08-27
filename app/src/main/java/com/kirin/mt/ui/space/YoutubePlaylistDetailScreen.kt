@@ -57,6 +57,7 @@ import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.core.youtube.YoutubePlaylistHeader
 import com.kirin.mt.core.youtube.YoutubeRepository
+import com.kirin.mt.ui.player.playerFocusedLiquidGlassSurface
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliRadius
@@ -260,10 +261,12 @@ internal fun YoutubePlaylistDetailScreen(
                 )
               }
               // 「播放全部」:第一条起播,整份已加载列表作连播队列。
+              // 聚焦高亮 = 高亮底色(播放器侧板行同款玻璃面)+粉边框——仅细边框在 TV 上几乎不可见。
               val shape = RoundedCornerShape(BiliRadius.Pill)
               Box(
                 modifier = Modifier
                   .clip(shape)
+                  .playerFocusedLiquidGlassSurface(shape = shape, focused = playAllFocused)
                   .border(
                     androidx.compose.foundation.BorderStroke(
                       BiliFocus.BorderWidth,
@@ -414,6 +417,9 @@ private fun YoutubePlaylistVideoRow(
     modifier = Modifier
       .fillMaxWidth()
       .clip(shape)
+      // 聚焦高亮 = 高亮底色(播放器侧板行同款玻璃面)+粉边框——仅细边框在 TV 上几乎不可见,
+      // 用户反馈聚焦行与其它行无区别。
+      .playerFocusedLiquidGlassSurface(shape = shape, focused = focused)
       .border(
         androidx.compose.foundation.BorderStroke(
           BiliFocus.BorderWidth,
