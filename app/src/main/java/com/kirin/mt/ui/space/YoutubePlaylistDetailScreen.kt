@@ -69,13 +69,14 @@ import kotlinx.coroutines.launch
  * continuation 翻页),布局 D-pad 化:顶栏返回 + 封面/标题/作者·视频数 + 「播放全部」 +
  * 可展开简介 + 带序号视频行列表。
  *
- * TV 播放器无连播队列:点视频行/「播放全部」均单视频起播(onVideoSelected)。
+ * 连播:点视频行/「播放全部」均把当前已加载的整份 videos 快照为播放队列传出
+ * (onStartSelected),播放器播完按队列下一项连播(对齐移动端 playQueue)。
  */
 @Composable
 internal fun YoutubePlaylistDetailScreen(
   youtubeRepository: YoutubeRepository,
   playlist: YoutubeParsers.YoutubePlaylist,
-  onVideoSelected: (VideoSummary) -> Unit,
+  onStartSelected: (video: VideoSummary, queue: List<VideoSummary>) -> Unit,
   onBack: () -> Boolean,
   modifier: Modifier = Modifier,
 ) {
@@ -243,7 +244,7 @@ internal fun YoutubePlaylistDetailScreen(
                   modifier = Modifier.clickable { descExpanded = !descExpanded },
                 )
               }
-              // 「播放全部」:TV 无连播队列,单视频起播(第一条)。
+              // 「播放全部」:第一条起播,整份已加载列表作连播队列。
               val shape = RoundedCornerShape(BiliRadius.Pill)
               Box(
                 modifier = Modifier
@@ -262,7 +263,7 @@ internal fun YoutubePlaylistDetailScreen(
                     val confirm = event.key == Key.Enter || event.key == Key.NumPadEnter ||
                       event.key == Key.DirectionCenter
                     if (event.type == KeyEventType.KeyUp && confirm && videos.isNotEmpty()) {
-                      onVideoSelected(videos.first())
+                      onStartSelected(videos.first(), videos)
                       true
                     } else {
                       false
@@ -318,7 +319,7 @@ internal fun YoutubePlaylistDetailScreen(
               onFocused = {
                 if (index >= videos.size - 6) loadNext()
               },
-              onActivate = { onVideoSelected(video) },
+              onActivate = { onStartSelected(video, videos) },
             )
           }
           if (loadingMore) {

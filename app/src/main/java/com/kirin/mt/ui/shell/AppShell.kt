@@ -296,6 +296,9 @@ fun BiliTvApp(
   // YouTube 播放列表详情页(TV):频道页"播放列表" tab 点卡片进入,覆盖在频道页之上。
   var youtubePlaylistRequest by remember { mutableStateOf<YoutubeParsers.YoutubePlaylist?>(null) }
   var playlistPlaybackBehind by remember { mutableStateOf(false) }
+  // 播放队列连播(镜像移动端 MobileApp.playQueue):播放列表详情页起播时快照整份列表,
+  // 播放器播完优先按队列下一项连播(队列优先于下一分P);其它单视频入口起播时清空。
+  var playQueue by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
   val youtubeChannelUiState = remember { YoutubeChannelUiState() }
   val channelFocusRequester = remember { FocusRequester() }
   val pgcUiState = remember { com.kirin.mt.ui.pgc.PgcUiState() }
@@ -1223,6 +1226,7 @@ fun BiliTvApp(
                     }.isSuccess
                   },
                   onVideoSelected = { video ->
+                    playQueue = emptyList()
                     playbackRequest = video.toPlaybackRequest()
                   },
                   onOwnerSelected = { video ->
@@ -1260,6 +1264,7 @@ fun BiliTvApp(
                     }.isSuccess
                   },
                   onVideoSelected = { video ->
+                    playQueue = emptyList()
                     playbackRequest = video.toPlaybackRequest()
                   },
                   onOwnerSelected = { video ->
@@ -1316,6 +1321,7 @@ fun BiliTvApp(
                     }.isSuccess
                   },
                   onVideoSelected = { video, forceStart ->
+                    playQueue = emptyList()
                     playbackRequest = video.toPlaybackRequest(forceStartPosition = forceStart)
                   },
                   onOwnerSelected = { video ->
@@ -1401,6 +1407,7 @@ fun BiliTvApp(
                     }.isSuccess
                   },
                   onVideoSelected = { video ->
+                    playQueue = emptyList()
                     playbackRequest = video.toPlaybackRequest()
                   },
                 )
@@ -1457,6 +1464,8 @@ fun BiliTvApp(
                 ?.lastTime
                 ?.let { it * 1000L }
                 ?: 0L
+              // PGC 用 epId/seasonId 集数连播,不吃播放队列。
+              playQueue = emptyList()
               playbackRequest = com.kirin.mt.core.player.PlaybackRequest(
                 bvid = ep.bvid,
                 cid = ep.cid,
@@ -1496,6 +1505,7 @@ fun BiliTvApp(
           } else {
             PlayerScreen(
               request = displayedPlaybackRequest,
+              playQueue = playQueue,
               videoRepository = videoRepository,
               playbackRepository = playbackRepository,
               youtubeRepository = youtubeRepository,
@@ -1520,6 +1530,8 @@ fun BiliTvApp(
               showMiniProgressBar = settings.showMiniProgressBar,
               playerLogOverlayEnabled = settings.playerLogOverlayEnabled,
               onBack = {
+                // 退出播放器即清连播队列(对齐移动端):下次起播由入口重新快照,防残留队列串台。
+                playQueue = emptyList()
                 if (spaceRequest != null && spaceOrigin == SpaceOrigin.Content) {
                   // 从 UP 主页(内容来源)起播:返回时可见层是 UpSpace 网格,arm 它的 restore
                   playbackRequest = null
@@ -1590,6 +1602,7 @@ fun BiliTvApp(
               true
             },
             onVideoSelected = { video ->
+              playQueue = emptyList()
               spacePlaybackBehind = false
               playbackRequest = video.toPlaybackRequest()
             },
@@ -1628,6 +1641,7 @@ fun BiliTvApp(
               true
             },
             onVideoSelected = { video ->
+              playQueue = emptyList()
               channelPlaybackBehind = false
               playbackRequest = video.toPlaybackRequest()
             },
@@ -1651,7 +1665,10 @@ fun BiliTvApp(
           YoutubePlaylistDetailScreen(
             youtubeRepository = youtubeRepository,
             playlist = displayedYoutubePlaylistRequest,
-            onVideoSelected = { video ->
+            // 起播即快照整份已加载列表为连播队列(点行从该视频起,播全部从第一条起);
+            // 播放器播完由 PlayerScreen 按队列下一项连播(对齐移动端 playQueue)。
+            onStartSelected = { video, queue ->
+              playQueue = queue
               playlistPlaybackBehind = false
               playbackRequest = video.toPlaybackRequest()
             },
