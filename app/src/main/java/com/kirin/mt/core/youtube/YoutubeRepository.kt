@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlin.random.Random
 import org.schabi.newpipe.extractor.stream.StreamInfo
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -288,11 +289,29 @@ class YoutubeRepository(
     }
     val root = client.postJson("/browse", payload)
     val feed = YoutubeParsers.parseFeedPage(root)
+    // 简介只在首屏 header(playlistHeaderRenderer.descriptionText)有；续页是纯 continuation 无 header。
+    val description = if (continuation == null) YoutubeParsers.parsePlaylistDescription(root) else null
+    // 诊断：真机确认简介取不到时 dump 首屏 header 结构,定位简介字段实际在哪(descriptionText/description/
+    // 顶层/sidebar),别盲改。仅首屏。
+    if (continuation == null) {
+      val header = root["header"]
+      val phr = (header as? JsonObject)?.get("playlistHeaderRenderer")
+      val phrObj = phr as? JsonObject
+      val descText = phrObj?.get("descriptionText")
+      val descLegacy = phrObj?.get("description")
+      Log.i(
+        "YtPlaylist",
+        "getPlaylistVideos browseId=$playlistBrowseId descLen=${description?.length ?: -1} " +
+          "desc=${description?.take(60) ?: "null"} " +
+          "header=${header != null} headerKeys=${(header as? JsonObject)?.keys?.take(10) ?: "N/A"} " +
+          "phrKeys=${phrObj?.keys?.take(14) ?: "N/A"} descText=${descText != null} " +
+          "descLegacy=${descLegacy != null} items=${feed.items.size}",
+      )
+    }
     return YoutubeVideoPage(
       items = feed.items.map(::toVideoSummary),
       continuation = feed.continuation,
-      // 简介只在首屏 header(playlistHeaderRenderer.descriptionText)有；续页是纯 continuation 无 header。
-      description = if (continuation == null) YoutubeParsers.parsePlaylistDescription(root) else null,
+      description = description,
     )
   }
 
