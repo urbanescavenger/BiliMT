@@ -420,6 +420,22 @@ fun BiliMobileApp(
             spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(mid, name, face)
             spacePlaybackBehind = true
           },
+          // 简介频道行点头像/名进 YouTube 频道主页(垫在播放器后面,对齐 B 站空间行为)。
+          // channelId 缺省(搜索直进等存卡无 channelId)时按频道名解析,镜像 openOwner 的 YouTube 分支。
+          onOpenYoutubeChannel = { channelId, name ->
+            if (channelId.isNotBlank()) {
+              youtubeChannelRequest = YoutubeChannel(channelId, name)
+              channelPlaybackBehind = true
+            } else if (name.isNotBlank()) {
+              scope.launch {
+                val resolved = runCatching { youtubeRepository.resolveChannel(name) }.getOrNull()
+                if (resolved != null && resolved.channelId.isNotBlank()) {
+                  youtubeChannelRequest = YoutubeChannel(resolved.channelId, resolved.name.ifBlank { name })
+                  channelPlaybackBehind = true
+                }
+              }
+            }
+          },
           modifier = Modifier.fillMaxSize(),
         )
         }

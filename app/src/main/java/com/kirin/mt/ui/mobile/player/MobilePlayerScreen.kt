@@ -328,6 +328,7 @@ fun MobilePlayerScreen(
   onPlayVideo: (VideoSummary) -> Unit = {},
   onBack: () -> Unit,
   onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit = { _, _, _ -> },
+  onOpenYoutubeChannel: (channelId: String, channelName: String) -> Unit = { _, _ -> },
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -1904,6 +1905,7 @@ fun MobilePlayerScreen(
           youtubePlaylistStore = youtubePlaylistStore,
           onPlayVideo = playPlaylistVideo,
           onOpenUpSpace = onOpenUpSpace,
+          onOpenYoutubeChannel = onOpenYoutubeChannel,
           onShare = { shareVideo() },
           onSelectPage = { ep ->
             scope.launch {
@@ -1936,6 +1938,7 @@ fun MobilePlayerScreen(
       youtubePlaylistStore = youtubePlaylistStore,
       onPlayVideo = playPlaylistVideo,
       onOpenUpSpace = onOpenUpSpace,
+      onOpenYoutubeChannel = onOpenYoutubeChannel,
       onShare = { shareVideo() },
       onSelectPage = { ep ->
         scope.launch {
@@ -2214,6 +2217,7 @@ private fun MobileYoutubeIntroTab(
   relatedVideos: List<VideoSummary>,
   youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
   onPlayVideo: (VideoSummary) -> Unit,
+  onOpenChannel: (channelId: String, channelName: String) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val detail = youtubeDetail
@@ -2252,10 +2256,18 @@ private fun MobileYoutubeIntroTab(
       maxLines = 2,
       overflow = TextOverflow.Ellipsis,
     )
-    // 频道行(头像 + 名)。/player 无频道头像字段,渲染占位圆;仅展示,不进频道。
+    // 频道行(头像 + 名)。/player 无频道头像字段,渲染占位圆。点击进频道主页:
+    // channelId 优先 /player videoDetails,缺省回退卡片携带的 request.channelId;
+    // 两者皆缺时仍回调,由 shell 按频道名解析(resolveChannel)后进频道页。
     Row(
       modifier = Modifier
         .fillMaxWidth()
+        .clip(RoundedCornerShape(10.dp))
+        .clickable {
+          val cid = detail.channelId.ifBlank { request.channelId }
+          val name = detail.channelName.ifBlank { request.ownerName }
+          if (cid.isNotBlank() || name.isNotBlank()) onOpenChannel(cid, name)
+        }
         .padding(top = 10.dp),
       verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -2428,6 +2440,7 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
   youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
   onPlayVideo: (VideoSummary) -> Unit,
   onOpenUpSpace: (Long, String, String) -> Unit,
+  onOpenYoutubeChannel: (channelId: String, channelName: String) -> Unit,
   onShare: () -> Unit,
   onSelectPage: (PlaybackEpisode) -> Unit,
   modifier: Modifier = Modifier,
@@ -2474,6 +2487,7 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
             relatedVideos = relatedVideos,
             youtubePlaylistStore = youtubePlaylistStore,
             onPlayVideo = onPlayVideo,
+            onOpenChannel = onOpenYoutubeChannel,
             modifier = Modifier.fillMaxSize(),
           )
         } else {
