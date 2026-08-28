@@ -45,12 +45,18 @@ import coil.compose.AsyncImage
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.durationText
 import com.kirin.mt.core.model.pubdateText
+import com.kirin.mt.core.youtube.YoutubeHistoryEntry
+import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.core.youtube.YoutubePlaylistHeader
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
+import com.kirin.mt.ui.mobile.home.CompletedBadge
+import com.kirin.mt.ui.mobile.home.LocalWatchedIds
+import com.kirin.mt.ui.mobile.home.YoutubeSnapshotWatchProgress
 import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.mobile.home.rememberVideoCardRelativeText
+import com.kirin.mt.ui.mobile.home.rememberYoutubeWatchPositions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -68,6 +74,7 @@ import android.util.Log
 @Composable
 internal fun MobileYoutubePlaylistDetailScreen(
   youtubeRepository: YoutubeRepository,
+  youtubeHistoryStore: YoutubeHistoryStore,
   playlist: YoutubeParsers.YoutubePlaylist,
   onStartSelected: (VideoSummary, List<VideoSummary>) -> Unit,
   onLongPress: ((VideoSummary) -> Unit)? = null,
@@ -84,6 +91,8 @@ internal fun MobileYoutubePlaylistDetailScreen(
   var failed by remember { mutableStateOf<String?>(null) }
   val listState = rememberLazyListState()
   val relativeText = rememberVideoCardRelativeText()
+  // 观看进度快照(videoId -> 历史条目):远程播放列表视频行渲染进度条用(真实进度查播放历史)。
+  val watchPositions = rememberYoutubeWatchPositions(youtubeHistoryStore)
 
   fun loadFirst() {
     scope.launch {
@@ -270,6 +279,7 @@ internal fun MobileYoutubePlaylistDetailScreen(
                 video = video,
                 index = index,
                 relativeText = relativeText,
+                watchEntry = watchPositions[video.bvid],
                 onClick = { onStartSelected(video, items) },
                 onLongPress = onLongPress,
               )
@@ -288,12 +298,13 @@ internal fun MobileYoutubePlaylistDetailScreen(
   }
 }
 
-/** 播放列表一条视频的横向行:编号 + 封面(右下角时长) + 右侧标题/作者/播放量·时间。 */
+/** 播放列表一条视频的横向行:编号 + 封面(右上「已看完」角标/底部进度条,右下角时长) + 右侧标题/作者/播放量·时间。 */
 @Composable
 private fun PlaylistVideoRow(
   video: VideoSummary,
   index: Int,
   relativeText: com.kirin.mt.core.model.VideoCardRelativeText,
+  watchEntry: YoutubeHistoryEntry?,
   onClick: () -> Unit,
   onLongPress: ((VideoSummary) -> Unit)?,
 ) {
@@ -316,7 +327,7 @@ private fun PlaylistVideoRow(
       textAlign = TextAlign.Center,
     )
     Spacer(modifier = Modifier.width(8.dp))
-    // 封面 + 时长。
+    // 封面 + 观看进度 + 时长。
     Box(modifier = Modifier.width(128.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp))) {
       AsyncImage(
         model = video.pic,
@@ -324,6 +335,17 @@ private fun PlaylistVideoRow(
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxSize(),
       )
+      // 已看完角标(右上,右下让位给时长);未看完且历史里有上次播放位置时画底部进度细条。
+      val completed = video.bvid in LocalWatchedIds.current
+      if (completed) {
+        CompletedBadge(modifier = Modifier.align(Alignment.TopEnd).padding(4.dp))
+      } else {
+        YoutubeSnapshotWatchProgress(
+          positionMs = watchEntry?.positionMs ?: 0L,
+          durationMs = watchEntry?.durationMs ?: 0L,
+          modifier = Modifier.align(Alignment.BottomStart),
+        )
+      }
       val durationText = video.durationText()
       if (durationText.isNotBlank() && !video.isLive) {
         Text(

@@ -26,6 +26,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -345,6 +347,49 @@ private fun MobileWatchProgress(video: VideoSummary, modifier: Modifier = Modifi
       modifier = Modifier
         .fillMaxHeight()
         .fillMaxWidth(ratio.coerceIn(0f, 1f))
+        .background(MaterialTheme.colorScheme.primary),
+    )
+  }
+}
+
+/**
+ * YouTube 播放进度快照映射(videoId -> 历史条目),供播放列表这类存「加入时刻快照」的列表
+ * 渲染进度条用——快照的 video.progress 永远停在加入时的值,真实进度只能渲染时从
+ * [YoutubeHistoryStore] 查(播放器起播/暂停/退出都写 positionMs)。历史仅存最近 50 条,
+ * 不在历史里的视频查不到进度,不画条。
+ */
+@Composable
+fun rememberYoutubeWatchPositions(
+  youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
+): Map<String, com.kirin.mt.core.youtube.YoutubeHistoryEntry> {
+  val history by youtubeHistoryStore.history.collectAsState(initial = emptyList())
+  return remember(history) { history.associateBy { it.videoId } }
+}
+
+/**
+ * 快照列表(播放列表)缩略图底部已播放进度细条:样式对齐 [MobileWatchProgress]
+ * (4dp 黑半透明轨道 + primary 填充)。positionMs/durationMs 无效或接近播完(≥99%,
+ * 播完语义交给「已看完」角标)时不画。
+ */
+@Composable
+fun YoutubeSnapshotWatchProgress(
+  positionMs: Long,
+  durationMs: Long,
+  modifier: Modifier = Modifier,
+) {
+  if (durationMs <= 0L || positionMs <= 0L) return
+  val ratio = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+  if (ratio >= 0.99f) return
+  Box(
+    modifier = modifier
+      .fillMaxWidth()
+      .height(4.dp)
+      .background(Color.Black.copy(alpha = 0.35f)),
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxHeight()
+        .fillMaxWidth(ratio)
         .background(MaterialTheme.colorScheme.primary),
     )
   }

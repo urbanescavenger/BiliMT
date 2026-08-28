@@ -59,11 +59,14 @@ import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.DOWNLOAD_PLAYLIST_NAME
+import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.core.youtube.YoutubePlaylist
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.ui.mobile.home.CompletedBadge
 import com.kirin.mt.ui.mobile.home.LocalWatchedIds
+import com.kirin.mt.ui.mobile.home.YoutubeSnapshotWatchProgress
 import com.kirin.mt.ui.mobile.home.formatCount
+import com.kirin.mt.ui.mobile.home.rememberYoutubeWatchPositions
 import com.kirin.mt.ui.theme.BiliColors
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -77,6 +80,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun MobileYoutubePlaylistPage(
   youtubePlaylistStore: YoutubePlaylistStore,
+  youtubeHistoryStore: YoutubeHistoryStore,
   onVideoSelected: (VideoSummary) -> Unit,
   onStartPlaylist: (List<VideoSummary>) -> Unit,
   modifier: Modifier = Modifier,
@@ -103,6 +107,7 @@ fun MobileYoutubePlaylistPage(
     PlaylistDetailScreen(
       playlist = selected,
       youtubePlaylistStore = youtubePlaylistStore,
+      youtubeHistoryStore = youtubeHistoryStore,
       onVideoSelected = onVideoSelected,
       onStartPlaylist = onStartPlaylist,
       onBack = { selectedName = null },
@@ -211,6 +216,7 @@ private fun PlaylistListScreen(
 private fun PlaylistDetailScreen(
   playlist: YoutubePlaylist,
   youtubePlaylistStore: YoutubePlaylistStore,
+  youtubeHistoryStore: YoutubeHistoryStore,
   onVideoSelected: (VideoSummary) -> Unit,
   onStartPlaylist: (List<VideoSummary>) -> Unit,
   onBack: () -> Unit,
@@ -219,6 +225,8 @@ private fun PlaylistDetailScreen(
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val listState = rememberLazyListState()
+  // 观看进度快照(videoId -> 历史条目):列表存的是加入时刻快照,真实进度渲染时查历史。
+  val watchPositions = rememberYoutubeWatchPositions(youtubeHistoryStore)
   // 「下载」是下载自动存档列表:完全映射离线下载——不提供编辑/移除,但可长按拖动排序。
   val autoArchive = playlist.name == DOWNLOAD_PLAYLIST_NAME
   var editMode by remember { mutableStateOf(false) }
@@ -421,16 +429,27 @@ private fun PlaylistDetailScreen(
               },
             )
           }
-          Box {
+          Box(
+            modifier = Modifier
+              .width(110.dp)
+              .height(62.dp)
+              .clip(RoundedCornerShape(8.dp)),
+          ) {
             AsyncImage(
               model = video.pic,
               contentDescription = video.title,
               contentScale = ContentScale.Crop,
-              modifier = Modifier
-                .width(110.dp)
-                .height(62.dp)
-                .clip(RoundedCornerShape(8.dp)),
+              modifier = Modifier.fillMaxSize(),
             )
+            // 播放进度细条:未看完且历史里有上次播放位置时贴缩略图底(已看完交给角标)。
+            if (video.bvid !in LocalWatchedIds.current) {
+              val entry = watchPositions[video.bvid]
+              YoutubeSnapshotWatchProgress(
+                positionMs = entry?.positionMs ?: 0L,
+                durationMs = entry?.durationMs ?: 0L,
+                modifier = Modifier.align(Alignment.BottomStart),
+              )
+            }
             if (editMode) {
               Text(
                 text = "✕ ${stringResource(R.string.playlist_remove)}",

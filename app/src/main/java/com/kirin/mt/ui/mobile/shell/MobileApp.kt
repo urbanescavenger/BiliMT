@@ -550,6 +550,7 @@ fun BiliMobileApp(
         ) {
           MobileYoutubePlaylistDetailScreen(
             youtubeRepository = youtubeRepository,
+            youtubeHistoryStore = youtubeHistoryStore,
             playlist = playlistRequest,
             onStartSelected = { video, queue ->
               playQueue = queue

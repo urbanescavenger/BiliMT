@@ -160,6 +160,7 @@ fun MobileFeedScreen(
         )
         5 -> MobileYoutubePlaylistPage(
           youtubePlaylistStore = youtubePlaylistStore,
+          youtubeHistoryStore = youtubeHistoryStore,
           onVideoSelected = onVideoSelected,
           onStartPlaylist = onStartPlaylist,
           modifier = Modifier.fillMaxSize(),
