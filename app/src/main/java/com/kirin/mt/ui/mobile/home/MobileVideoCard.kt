@@ -355,7 +355,7 @@ private fun MobileWatchProgress(video: VideoSummary, modifier: Modifier = Modifi
 /**
  * YouTube 播放进度快照映射(videoId -> 历史条目),供播放列表这类存「加入时刻快照」的列表
  * 渲染进度条用——快照的 video.progress 永远停在加入时的值,真实进度只能渲染时从
- * [YoutubeHistoryStore] 查(播放器起播/暂停/退出都写 positionMs)。历史仅存最近 50 条,
+ * [YoutubeHistoryStore] 查(播放器起播/暂停/退出都写 positionMs)。历史仅存最近 300 条,
  * 不在历史里的视频查不到进度,不画条。
  */
 @Composable
