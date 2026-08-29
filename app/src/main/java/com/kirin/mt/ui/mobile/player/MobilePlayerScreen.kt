@@ -963,6 +963,10 @@ fun MobilePlayerScreen(
         )
       }
       player.setPlaybackSpeed(playbackSpeed)
+      // alpha.97(修「Auto 永不升过 1080p」诊断):SABR 会话逐视频轨打硬解能力判定(I 级,live 日志可见)。
+      if (sabrEffectiveInfo.isSabrSingle()) {
+        com.kirin.mt.core.youtube.sabr.media.SabrCodecDiagnostics.logVideoCodecSupport(context, sabrEffectiveInfo)
+      }
       if (startPositionMs > 0L) {
         // alpha.34:SABR 源(LENGTH_UNSET 不可 seek)跳过 seekTo——续播已由 startMs 透传进
         // sabr:// URL 协议层完成;seekTo 会重开 DataSource 喂双 init 致 MatroskaExtractor 崩。

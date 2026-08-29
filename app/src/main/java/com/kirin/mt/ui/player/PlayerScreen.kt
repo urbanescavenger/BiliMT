@@ -1749,6 +1749,10 @@ fun PlayerScreen(
           }
         }
         player.setMediaSource(finalMediaSource)
+        // alpha.97(修「Auto 永不升过 1080p」诊断):SABR 会话逐视频轨打硬解能力判定(I 级,live 日志可见)。
+        if (effectiveInfo.isSabrSingle()) {
+          com.kirin.mt.core.youtube.sabr.media.SabrCodecDiagnostics.logVideoCodecSupport(context, effectiveInfo)
+        }
         launchStep = "prepare"
         Log.i(PlayerPlaybackLogTag, "launch step: prepare")
         player.prepare()

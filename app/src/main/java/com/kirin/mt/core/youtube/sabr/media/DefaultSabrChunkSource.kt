@@ -119,6 +119,12 @@ internal class DefaultSabrChunkSource(
     // alpha.9X 决定性诊断:打印 manifest adaptation set 结构(每 set 的 itag 数)+ trackSelection.length()。
     // 判定「旧缓存包(manifest 仍按 mime 拆组 → 视频被拆成多个单轨组)」还是「单组 5 轨但 DefaultTrackSelector
     // 仍只选 1 轨」。fmts= 一行即可见:若视频组是 [243] 一个,是旧包;若 [243 244 …] 多个但仍 sel=1,是选轨器问题。
+    // alpha.97(修「Auto 永不升过 1080p」诊断):补 excluded= —— TrackGroup 全量 itag 减去 selection 已吸收的,
+    // 直接分辨 1440p/2160p 等「进了组没被选」vs「根本没进组(ADAPTIVE 资格被否)」。
+    val selectedIndices = (0..<trackSelection.length()).map { trackSelection.getIndexInTrackGroup(it) }
+    val excludedItags = representations.indices
+      .filterNot { it in selectedIndices }
+      .map { representations[it].formatId.itag }
     Log.i(
       "YtSabrChunk",
       "init trackType=$trackType trackSelLen=${trackSelection.length()} sets=${
@@ -130,7 +136,7 @@ internal class DefaultSabrChunkSource(
           val idx = trackSelection.getIndexInTrackGroup(i)
           "${trackSelection.getFormat(i).id}($idx)b=${trackSelection.getFormat(i).bitrate}"
         }
-      }]"
+      }] excluded=[$excludedItags]"
     )
   }
 
