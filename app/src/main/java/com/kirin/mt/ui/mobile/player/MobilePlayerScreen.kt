@@ -1064,6 +1064,24 @@ fun MobilePlayerScreen(
           MobilePlayerLogTag,
           "playerState=$playbackState pos=${player.currentPosition} videoFmt=${player.videoFormat} audioFmt=${player.audioFormat}",
         )
+        // alpha.97(修「Auto 永不升过 1080p」决定性诊断,镜像 TV PlayerScreen YtSabrTracks):READY 时
+        // dump ①trackSelectionParameters 真实 min/max/viewport 值(验证起始档锁/首帧释放后的实际状态);
+        // ②currentTracks 每轨 renderer 判定(trackSupport/sup/sel)——DefaultTrackSelector 建组真相。
+        if (playbackState == Player.STATE_READY) {
+          Log.i("YtSabrTracks", "params=${player.trackSelectionParameters}")
+          val groups = player.currentTracks.groups
+          Log.i(
+            "YtSabrTracks",
+            "groups=${groups.size} " + groups.mapIndexed { gi, gr ->
+              "g$gi=" + (0..<gr.length).joinToString { ti ->
+                val f = gr.getTrackFormat(ti)
+                "${f.id?.takeIf { it.isNotBlank() } ?: f.codecs}(${f.width}x${f.height})" +
+                  "support=${gr.getTrackSupport(ti)} sup=${gr.isTrackSupported(ti)} " +
+                  "sel=${gr.isTrackSelected(ti)}"
+              }
+            }
+          )
+        }
         // 暴露缓冲态为可观察 state:STATE_BUFFERING→true,READY/ENDED/IDLE→false。
         // 原本仅命令式读 player.playbackState 做 stall 检测,UI 无法据此显加载图标/控制栏。
         isBuffering = playbackState == Player.STATE_BUFFERING
