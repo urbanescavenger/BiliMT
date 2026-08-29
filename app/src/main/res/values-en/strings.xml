@@ -163,6 +163,10 @@
     <string name="settings_logs_description">Logs are saved automatically on crash; you can also export the current logcat manually.</string>
     <string name="settings_logs_export">Export current logs</string>
     <string name="settings_logs_share">Share</string>
+    <string name="settings_logs_send">Report</string>
+    <string name="settings_logs_send_success">Reported to Crashlytics</string>
+    <string name="settings_logs_send_failed">Report failed: %1$s</string>
+    <string name="settings_logs_send_unavailable">Firebase not configured</string>
     <string name="settings_logs_close">Close</string>
     <string name="settings_logs_type_crash">Crash</string>
     <string name="settings_logs_type_manual">Manual</string>

@@ -167,6 +167,10 @@
     <string name="settings_logs_backup">&#x5907;&#x4EFD;</string>
     <string name="settings_logs_backup_success">&#x65E5;&#x5FD7;&#x5DF2;&#x5907;&#x4EFD;</string>
     <string name="settings_logs_backup_failed">&#x5907;&#x4EFD;&#x5931;&#x8D25;&#xFF1A;%1$s</string>
+    <string name="settings_logs_send">&#x4E0A;&#x62A5;</string>
+    <string name="settings_logs_send_success">&#x5DF2;&#x4E0A;&#x62A5; Crashlytics</string>
+    <string name="settings_logs_send_failed">&#x4E0A;&#x62A5;&#x5931;&#x8D25;&#xFF1A;%1$s</string>
+    <string name="settings_logs_send_unavailable">&#x672A;&#x914D;&#x7F6E; Firebase</string>
     <string name="settings_logs_close">&#x5173;&#x95ED;</string>
     <string name="settings_logs_type_crash">&#x5D29;&#x6E83;</string>
     <string name="settings_logs_type_manual">&#x624B;&#x52A8;</string>

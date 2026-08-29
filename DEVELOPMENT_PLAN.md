@@ -1119,3 +1119,4 @@ Flutter 参考 app 继续保留在原项目中，用于行为对照和回退参�
 - ABI 策略：第一版主发 `armeabi-v7a`；工程保留 `arm64-v8a` 构建能力，不把实现锁死在 32 位。
 - 更新检查：仅做手动检查（设置 → 系统设置 → 程序更新），从 GitHub Releases API 拉取最新 tag 与本地 versionCode 对比，按设备 ABI 选 asset；不接入自动/后台检查。
 - 插件策略：不做可扩展插件系统，不保留独立插件标签页；只保留空降助手，在设置页提供开关。
+| P11-62 | Crashlytics 集成 + 日志手动「上报」(日志查看页一键把日志尾部送 Crashlytics 非致命报告) | 实施中(代码完成待云编译;google-services.json 未就位时插件条件禁用,待用户在 Firebase 控制台建项目后放入 app/ 目录自动激活) |

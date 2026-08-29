@@ -59,11 +59,14 @@ internal fun SettingsLogsColumn(
   onBackFromView: () -> Unit,
   onShare: (LogCatcherUtil.LogFileInfo) -> Unit,
   onBackupLog: (LogCatcherUtil.LogFileInfo) -> Unit,
+  onSendLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onToggleRecording: () -> Unit,
   onMoveLeftToSettings: () -> Boolean,
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
+  // 查看中的文件对应的元信息(列表里一定有,找不到时上报按钮禁用为 no-op)
+  val viewingInfo = viewingFile?.let { file -> files.firstOrNull { it.file == file } }
 
   Box(
     modifier = modifier,
@@ -72,6 +75,7 @@ internal fun SettingsLogsColumn(
       LogContentPanel(
         file = viewingFile,
         onBack = onBackFromView,
+        onSend = viewingInfo?.let { info -> { onSendLog(info) } } ?: {},
         modifier = Modifier.fillMaxSize(),
       )
     } else {
@@ -171,6 +175,7 @@ private fun LogListPanel(
 private fun LogContentPanel(
   file: File,
   onBack: () -> Unit,
+  onSend: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
@@ -380,6 +385,27 @@ private fun LogContentPanel(
           Text(
             text = stringResource(R.string.settings_logs_bottom),
             color = homeColors.textPrimary,
+            fontSize = BiliTypography.Body,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+      }
+      BiliFocusableSurface(
+        scaleOnFocus = false,
+        shadowOnFocus = false,
+        shape = RoundedCornerShape(BiliRadius.Pill),
+        onClick = onSend,
+        modifier = Modifier.weight(1f),
+      ) {
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = BiliSpacing.Sm),
+          contentAlignment = Alignment.Center,
+        ) {
+          Text(
+            text = stringResource(R.string.settings_logs_send),
+            color = homeColors.accent,
             fontSize = BiliTypography.Body,
             fontWeight = FontWeight.Bold,
           )

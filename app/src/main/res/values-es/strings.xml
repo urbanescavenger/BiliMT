@@ -164,6 +164,10 @@
     <string name="settings_logs_description">Ante un fallo se guarda el registro automáticamente; también puedes exportar manualmente el logcat actual.</string>
     <string name="settings_logs_export">Exportar registro actual</string>
     <string name="settings_logs_share">Compartir</string>
+    <string name="settings_logs_send">Informar</string>
+    <string name="settings_logs_send_success">Enviado a Crashlytics</string>
+    <string name="settings_logs_send_failed">Error al informar: %1$s</string>
+    <string name="settings_logs_send_unavailable">Firebase no configurado</string>
     <string name="settings_logs_close">Cerrar</string>
     <string name="settings_logs_type_crash">Fallo</string>
     <string name="settings_logs_type_manual">Manual</string>

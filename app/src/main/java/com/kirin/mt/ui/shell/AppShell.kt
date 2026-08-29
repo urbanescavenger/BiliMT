@@ -81,6 +81,7 @@ import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateManager
+import com.kirin.mt.core.util.FirebaseLogSender
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.feed.UserFeedScreen
 import com.kirin.mt.ui.focus.focusDiag
@@ -120,8 +121,10 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 
@@ -995,6 +998,24 @@ fun BiliTvApp(
                       onSuccess = { localizedContext.getString(R.string.settings_logs_backup_success) },
                       onFailure = { localizedContext.getString(R.string.settings_logs_backup_failed, it.message ?: "") },
                     )
+                    Toast.makeText(localizedContext, msg, Toast.LENGTH_SHORT).show()
+                  }
+                },
+                onSendLog = { info ->
+                  coroutineScope.launch {
+                    // sendLogFile 本身快速返回(网络上报异步排队),IO 读文件放 IO 调度器
+                    val result = withContext(Dispatchers.IO) {
+                      FirebaseLogSender.sendLogFile(localizedContext, info.file)
+                    }
+                    val msg = when {
+                      result.isSuccess -> localizedContext.getString(R.string.settings_logs_send_success)
+                      FirebaseLogSender.isAvailable(localizedContext).not() ->
+                        localizedContext.getString(R.string.settings_logs_send_unavailable)
+                      else -> localizedContext.getString(
+                        R.string.settings_logs_send_failed,
+                        result.exceptionOrNull()?.message ?: "",
+                      )
+                    }
                     Toast.makeText(localizedContext, msg, Toast.LENGTH_SHORT).show()
                   }
                 },
