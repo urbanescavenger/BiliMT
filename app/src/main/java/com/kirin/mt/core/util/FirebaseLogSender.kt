@@ -32,7 +32,6 @@ object FirebaseLogSender {
       crashlytics.isCrashlyticsCollectionEnabled = true
       crashlytics.setCustomKey("app_version", AppInfo(appContext).current().versionName)
       crashlytics.setCustomKey("device_model", "${Build.MANUFACTURER} ${Build.MODEL}")
-      crashlytics.debug = false
     }.onFailure { error ->
       logger.debug { "install skipped (Firebase 未初始化): ${error.message}" }
     }
