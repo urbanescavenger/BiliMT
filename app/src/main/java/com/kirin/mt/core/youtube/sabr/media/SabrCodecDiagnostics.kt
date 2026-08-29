@@ -35,10 +35,10 @@ object SabrCodecDiagnostics {
         .setWidth(track.width)
         .setHeight(track.height)
         .setFrameRate(if (track.fps > 0) track.fps.toFloat() else Format.NO_VALUE.toFloat())
-        .setBitrate(if (track.bandwidth > 0) track.bandwidth else Format.NO_VALUE)
+        .setAverageBitrate(if (track.bandwidth > 0) track.bandwidth else Format.NO_VALUE)
         .build()
-      val supportLabel: String
-      val decoderLabel: String
+      var supportLabel: String
+      var decoderLabel: String
       try {
         val capabilities =
           MediaCodecVideoRenderer.supportsFormat(context, MediaCodecSelector.DEFAULT, format)
