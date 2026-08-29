@@ -846,9 +846,8 @@ private fun SearchResultsView(
   val sortFocusRequesters = remember(uiState.source) {
     sortOptionsFor(uiState.source).associate { option -> option.key to FocusRequester() }
   }
-  val typeFocusRequesters = remember(uiState.source) {
-    typeOptionsFor(uiState.source).associate { option -> option.key to FocusRequester() }
-  }
+  // 类型单开关按钮只有一个焦点落点(视频/UP主 两枚旧 chip 已去掉,见 SearchResultsHeader)。
+  val typeToggleFocusRequester = remember { FocusRequester() }
   val selectedOrderKey = uiState.selectedOrderKey
   val source = uiState.source
   val searchType = uiState.searchType
@@ -1052,7 +1051,7 @@ private fun SearchResultsView(
       searchType = searchType,
       selectedOrderKey = selectedOrderKey,
       sortFocusRequesters = sortFocusRequesters,
-      typeFocusRequesters = typeFocusRequesters,
+      typeToggleFocusRequester = typeToggleFocusRequester,
       titleFocusRequester = titleFocusRequester,
       firstResultFocusRequester = firstResultFocusRequester,
       onMoveLeftToNav = onMoveLeftToNav,
@@ -1088,7 +1087,7 @@ private fun SearchResultsView(
             UserResultList(
               users = currentState.users,
               firstResultFocusRequester = firstResultFocusRequester,
-              selectedTypeFocusRequester = typeFocusRequesters.getValue(SearchTypeUser),
+              selectedTypeFocusRequester = typeToggleFocusRequester,
               focusFirstResult = uiState.focusFirstResult,
               onFirstResultFocused = {
                 uiState.focusFirstResult = false
@@ -1142,7 +1141,7 @@ private fun SearchResultsHeader(
   searchType: String,
   selectedOrderKey: String,
   sortFocusRequesters: Map<String, FocusRequester>,
-  typeFocusRequesters: Map<String, FocusRequester>,
+  typeToggleFocusRequester: FocusRequester,
   titleFocusRequester: FocusRequester,
   firstResultFocusRequester: FocusRequester,
   onMoveLeftToNav: () -> Boolean,
@@ -1176,7 +1175,7 @@ private fun SearchResultsHeader(
             } else {
               false
             }
-            if (moved) true else runCatching { typeFocusRequesters.getValue(SearchTypeVideo).requestFocus() }.isSuccess
+            if (moved) true else runCatching { typeToggleFocusRequester.requestFocus() }.isSuccess
           } else {
             false
           }
@@ -1205,7 +1204,6 @@ private fun SearchResultsHeader(
         }
       }
     }
-    val typeOptions = typeOptionsFor(source)
     val sortOptions = sortOptionsFor(source)
     LazyRow(
       modifier = Modifier
@@ -1238,26 +1236,27 @@ private fun SearchResultsHeader(
         )
       }
     }
-    itemsIndexed(typeOptions, key = { _, option -> option.key }) { index, option ->
-      val selected = searchType == option.key
-      SearchSortButton(
-        option = option,
-        selected = selected,
-        modifier = Modifier.focusRequester(typeFocusRequesters.getValue(option.key)),
-        // 排序 chip 在前时类型 chip 的 Left 交给默认焦点系统（移到前一个 chip）；
-        // UP主 类型（排序隐藏）时行首类型 chip 的 Left 移到侧栏。
-        onMoveLeftToNav = if (!showSort && index == 0) onMoveLeftToNav else null,
-        onMoveUpToTitle = {
-          runCatching { titleFocusRequester.requestFocus() }.isSuccess
-        },
-        onMoveDownToResults = {
-          runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
-        },
-        onSelected = {
-          onTypeSelected(option.key)
-        },
-      )
-    }
+    // 类型单开关按钮:恒标「UP主(B站)/频道(YouTube)」,选中态=UP主搜索,OK 在 视频⇄UP主 间翻转。
+    // 「视频」chip 已去掉——默认即视频,不会有误解(对齐移动端,2026-08-30 用户定稿)。
+    // 聚焦只高亮不切类型(P11-53 教训:焦点扫过触发重搜);行尾 Right 消费防焦点逃逸(P11-51 教训)。
+    SearchSortButton(
+      option = typeOptionsFor(source).last(),
+      selected = searchType == SearchTypeUser,
+      selectOnFocus = false,
+      consumeRight = true,
+      modifier = Modifier.focusRequester(typeToggleFocusRequester),
+      // 排序 chip 在前时该按钮 Left 交给默认焦点系统(移回排序行);UP主 类型(排序隐藏,按钮行首)Left 移侧栏。
+      onMoveLeftToNav = if (!showSort) onMoveLeftToNav else null,
+      onMoveUpToTitle = {
+        runCatching { titleFocusRequester.requestFocus() }.isSuccess
+      },
+      onMoveDownToResults = {
+        runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
+      },
+      onSelected = {
+        onTypeSelected(if (searchType == SearchTypeUser) SearchTypeVideo else SearchTypeUser)
+      },
+    )
     }
   }
 }
@@ -1271,6 +1270,11 @@ private fun SearchSortButton(
   onMoveUpToTitle: () -> Boolean,
   onMoveDownToResults: () -> Boolean,
   onSelected: () -> Unit,
+  // 排序 chip 沿用「焦点即选中」;类型开关按钮(单枚)传 false——聚焦只高亮,OK 才翻转,
+  // 防焦点扫过未选中 chip 触发重搜(P11-53 教训)。
+  selectOnFocus: Boolean = true,
+  // 行尾按钮传 true:消费 Right 防焦点逃逸出 chip 行(P11-51 教训)。
+  consumeRight: Boolean = false,
 ) {
   var focused by remember { mutableStateOf(false) }
   val performancePolicy = LocalBiliPerformancePolicy.current
@@ -1319,7 +1323,7 @@ private fun SearchSortButton(
       .border(BorderStroke(borderWidth, borderColor), shape)
       .onFocusChanged { focusState ->
         focused = focusState.isFocused
-        if (focusState.isFocused && !selected) {
+        if (selectOnFocus && focusState.isFocused && !selected) {
           onSelected()
         }
       }
@@ -1327,6 +1331,7 @@ private fun SearchSortButton(
         when {
           event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft ->
             if (onMoveLeftToNav != null) onMoveLeftToNav() else false
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionRight -> consumeRight
           event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> onMoveUpToTitle()
           event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDownToResults()
           event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
