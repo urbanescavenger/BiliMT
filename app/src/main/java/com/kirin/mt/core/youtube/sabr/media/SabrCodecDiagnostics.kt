@@ -6,6 +6,7 @@ import android.content.Context
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.RendererCapabilities
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
@@ -29,8 +30,14 @@ object SabrCodecDiagnostics {
   /** 对 [info] 全部视频轨逐条打硬解能力判定日志。仅 SABR 会话调用(每视频一次,开销可忽略)。 */
   fun logVideoCodecSupport(context: Context, info: PlaybackInfo) {
     info.videoTracks.forEach { track ->
+      // 注意:PlaybackTrack.mimeType 是容器 mime(video/webm/video/mp4),而解码器查询要**编解码 mime**
+      // (video/x-vnd.on2.vp9 / video/avc)——首版误传容器 mime,getDecoderInfos 恒空 → 全线
+      // FORMAT_UNSUPPORTED_SUBTYPE,是诊断工具自身假象(真机渲染器路径经 sampleMime 转换无此问题)。
+      // 对齐 Representation.fromTrack 的 sampleMime 语义:优先 MimeTypes.getMediaMimeType(codecs)。
+      val sampleMime = MimeTypes.getMediaMimeType(track.codecs.ifBlank { null })
+        ?: track.mimeType.ifBlank { null }
       val format = Format.Builder()
-        .setSampleMimeType(track.mimeType.ifBlank { null })
+        .setSampleMimeType(sampleMime)
         .setCodecs(track.codecs.ifBlank { null })
         .setWidth(track.width)
         .setHeight(track.height)
