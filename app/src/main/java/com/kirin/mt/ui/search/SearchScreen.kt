@@ -1239,24 +1239,26 @@ private fun SearchResultsHeader(
     // 类型单开关按钮:恒标「UP主(B站)/频道(YouTube)」,选中态=UP主搜索,OK 在 视频⇄UP主 间翻转。
     // 「视频」chip 已去掉——默认即视频,不会有误解(对齐移动端,2026-08-30 用户定稿)。
     // 聚焦只高亮不切类型(P11-53 教训:焦点扫过触发重搜);行尾 Right 消费防焦点逃逸(P11-51 教训)。
-    SearchSortButton(
-      option = typeOptionsFor(source).last(),
-      selected = searchType == SearchTypeUser,
-      selectOnFocus = false,
-      consumeRight = true,
-      modifier = Modifier.focusRequester(typeToggleFocusRequester),
-      // 排序 chip 在前时该按钮 Left 交给默认焦点系统(移回排序行);UP主 类型(排序隐藏,按钮行首)Left 移侧栏。
-      onMoveLeftToNav = if (!showSort) onMoveLeftToNav else null,
-      onMoveUpToTitle = {
-        runCatching { titleFocusRequester.requestFocus() }.isSuccess
-      },
-      onMoveDownToResults = {
-        runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
-      },
-      onSelected = {
-        onTypeSelected(if (searchType == SearchTypeUser) SearchTypeVideo else SearchTypeUser)
-      },
-    )
+    item {
+      SearchSortButton(
+        option = typeOptionsFor(source).last(),
+        selected = searchType == SearchTypeUser,
+        selectOnFocus = false,
+        consumeRight = true,
+        modifier = Modifier.focusRequester(typeToggleFocusRequester),
+        // 排序 chip 在前时该按钮 Left 交给默认焦点系统(移回排序行);UP主 类型(排序隐藏,按钮行首)Left 移侧栏。
+        onMoveLeftToNav = if (!showSort) onMoveLeftToNav else null,
+        onMoveUpToTitle = {
+          runCatching { titleFocusRequester.requestFocus() }.isSuccess
+        },
+        onMoveDownToResults = {
+          runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
+        },
+        onSelected = {
+          onTypeSelected(if (searchType == SearchTypeUser) SearchTypeVideo else SearchTypeUser)
+        },
+      )
+    }
     }
   }
 }
