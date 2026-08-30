@@ -102,7 +102,7 @@ object FirebaseLogSender {
 
   private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
-  /** 崩溃自动上报是否开启(设置项默认关;由 [bindAutoReport] 订阅设置流持续同步)。 */
+  /** 崩溃日志注入是否开启(设置默认关;只控制 attachCrashLog,送行恒开,见 [bindAutoReport])。 */
   @Volatile
   var crashAutoReportEnabled: Boolean = false
     private set
@@ -128,16 +128,16 @@ object FirebaseLogSender {
   }
 
   /**
-   * 订阅设置流,同步「崩溃日志自动上报」开关。语义:
-   * - **开**:启动时无条件 sendUnsentReports 一次,送掉积压的崩溃报告/上一会话
-   *   recordException(崩溃报告由 Crashlytics 自带捕获链在崩溃时持久化,天然跨启动,
-   *   启动送行即送达;无积压时调用无害)。
-   * - **关**:不主动上报,仅手动「分享并上报」可用。
+   * 订阅设置流,同步「崩溃日志自动上报」开关。语义(送行与开关解耦):
+   * - **送行恒开**:每次启动无条件 sendUnsentReports 一次,清空设备上所有积压报告
+   *   (上会话崩溃报告 + 手动分享;上传管线只在 SDK 初始化窗口存续,票必须在窗口内递,
+   *   无积压时调用无害)。不依赖任何开关——用户手动分享过就该送达。
+   * - **开关只管崩溃日志要不要入队**(`attachCrashLog`):开=崩溃时把日志尾部注入报告;
+   *   关=崩溃报告裸报(不带日志行)。
    *
    * 采集属性恒关(isCrashlyticsCollectionEnabled=false,两档都一样):SDK 自动采集
-   * 开启时 sendUnsentReports 是故意的 no-op、真实上传只剩「下次启动/退后台」,连手动
-   * 分享都被拖成延迟送达——恒关后所有上传都走显式送行,会话内无需开关杂耍,上报成功
-   * 的感知也不依赖常驻轮询。开关只决定「启动送行 + 崩溃日志注入(attachCrashLog)」。
+   * 开启时 sendUnsentReports 是故意的 no-op,上传管线也只在启动时拉起一次——恒关
+   * +启动送行是唯一符合源码架构的组合(见 2026-08-30 源码排查,[SEND_DELAY_MS] 注释)。
    */
   fun bindAutoReport(store: AppSettingsStore) {
     CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
@@ -149,14 +149,12 @@ object FirebaseLogSender {
           runCatching {
             val crashlytics = FirebaseCrashlytics.getInstance()
             crashlytics.isCrashlyticsCollectionEnabled = false
-            if (enabled) {
-              crashlytics.sendUnsentReports()
-              logger.info { "startup: 自动上报开,启动送行已触发(送掉积压报告)" }
-            }
+            crashlytics.sendUnsentReports()
+            logger.info { "startup: 启动送行已触发(清积压,与开关无关)" }
           }.onFailure { error ->
             logger.debug { "auto report configure skipped: ${error.message}" }
           }
-          logger.info { "crash auto report: $enabled (启动送行=${enabled})" }
+          logger.info { "crash auto report: $enabled (仅控制崩溃日志注入;送行恒开)" }
         }
     }
   }
