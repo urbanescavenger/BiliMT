@@ -57,6 +57,7 @@ import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.core.youtube.YoutubePlaylistHeader
 import com.kirin.mt.core.youtube.YoutubeRepository
+import com.kirin.mt.ui.focus.focusDiag
 import com.kirin.mt.ui.player.playerFocusedLiquidGlassSurface
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
@@ -69,6 +70,9 @@ import kotlinx.coroutines.launch
 
 /** 距末尾 2s 内视为已看完(对齐播放器「播到结尾」判定裕量)。 */
 private const val CompletedThresholdMs = 2_000L
+
+/** 初焦重试上限(帧):覆盖层初焦单发在低端盒子上会撞「FocusRequester is not initialized」,失败即整页无焦点。 */
+private const val InitialFocusMaxFrames = 30
 
 /**
  * TV 版 YouTube 播放列表详情页(频道页"播放列表" tab 点卡片进入)。镜像移动端
@@ -104,7 +108,10 @@ internal fun YoutubePlaylistDetailScreen(
   var descExpanded by remember { mutableStateOf(false) }
   var playAllFocused by remember { mutableStateOf(false) }
   val playAllFocusRequester = remember { FocusRequester() }
+  val backFocusRequester = remember { FocusRequester() }
   var firstFocusDone by remember { mutableStateOf(false) }
+  // 本屏(含子节点)是否持有焦点:初焦重试的成功判据。焦点在遮挡层后面(频道页卡片)时为 false。
+  var screenHasFocus by remember { mutableStateOf(false) }
 
   BackHandler { onBack() }
 
@@ -170,13 +177,26 @@ internal fun YoutubePlaylistDetailScreen(
       ?.videoId
   }
 
-  // 首屏到达后聚焦「播放全部」。
+  // 首屏到达后聚焦「播放全部」(空列表/加载失败聚焦返回 chip)。
+  // 单发 requestFocus 在覆盖层环境不可靠:等一帧仍可能撞「FocusRequester is not initialized」
+  // (真机 logs_live 23:58:32/00:04:42 同款异常实锤),被 runCatching 吞掉后整页永远无焦点,
+  // 且焦点留在被盖住的频道页卡片后面、按键全落空。改为验证+重试:拉焦点后等一帧确认
+  // screenHasFocus,未确认继续拉,至多 InitialFocusMaxFrames 帧;焦点已在屏上(用户手动
+  // 移动过)立即停,不抢焦点。
   LaunchedEffect(loading, failed) {
-    if (!loading && failed == null && !firstFocusDone && videos.isNotEmpty()) {
+    if (loading || firstFocusDone) return@LaunchedEffect
+    var attempt = 0
+    while (attempt < InitialFocusMaxFrames) {
       withFrameNanos { }
-      runCatching { playAllFocusRequester.requestFocus() }
-      firstFocusDone = true
+      if (screenHasFocus) break
+      runCatching {
+        if (videos.isNotEmpty()) playAllFocusRequester.requestFocus() else backFocusRequester.requestFocus()
+      }
+      attempt++
+      withFrameNanos { }
+      if (screenHasFocus) break
     }
+    firstFocusDone = true
   }
 
   val cover = header?.cover?.takeIf { it.isNotBlank() } ?: playlist.thumbnail
@@ -187,7 +207,9 @@ internal fun YoutubePlaylistDetailScreen(
   Column(
     modifier = modifier
       .fillMaxSize()
-      .background(BiliColors.VideoBlack),
+      .background(BiliColors.VideoBlack)
+      .focusDiag("playlist-detail")
+      .onFocusChanged { screenHasFocus = it.hasFocus },
   ) {
     // 顶栏:返回 + 播放列表名。
     Row(
@@ -197,7 +219,10 @@ internal fun YoutubePlaylistDetailScreen(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
     ) {
-      YoutubePlaylistBackChip(onActivate = onBack)
+      YoutubePlaylistBackChip(
+        focusRequester = backFocusRequester,
+        onActivate = onBack,
+      )
       Text(
         text = playlist.title,
         color = BiliColors.TextPrimary,
@@ -379,14 +404,18 @@ internal fun YoutubePlaylistDetailScreen(
   }
 }
 
-/** 详情页顶栏返回 chip(聚焦高亮,OK 返回)。 */
+/** 详情页顶栏返回 chip(聚焦高亮,OK 返回;focusRequester 供空列表/加载失败时初焦落点)。 */
 @Composable
-private fun YoutubePlaylistBackChip(onActivate: () -> Boolean) {
+private fun YoutubePlaylistBackChip(
+  focusRequester: FocusRequester,
+  onActivate: () -> Boolean,
+) {
   var focused by remember { mutableStateOf(false) }
   val shape = RoundedCornerShape(BiliRadius.Pill)
   Box(
     modifier = Modifier
       .clip(shape)
+      .focusRequester(focusRequester)
       .border(
         androidx.compose.foundation.BorderStroke(
           BiliFocus.BorderWidth,
