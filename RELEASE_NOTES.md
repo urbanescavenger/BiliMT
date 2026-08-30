@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.7](#v307)
 - [v3.0.7-alpha.11](#v307-alpha11)
 - [v3.0.7-alpha.10](#v307-alpha10)
 - [v3.0.7-alpha.9](#v307-alpha9)
@@ -213,6 +214,22 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.7
+
+**稳定版:YouTube 播放链路大修(SABR 升档判据/4K)+ Crashlytics 日志远程回收完整链路 + 双端 UI 官方对齐。** 本版整合 v3.0.7-alpha.1~11 全部改动:YouTube SABR 自适应三连修(升档判据改持续带宽、gap 时钟单位 bug、Auto 满缓冲不升 1440);Crashlytics 日志远程回收从接入到上报时机重构一站走完(无需 Google Play Services,AOSP 盒子可上报,手动分享恒即时);TV/移动端频道页、排序、搜索结果对齐 B站/YouTube 官方 UI;修 TV 退桌面直播后台出声与重开 APP 新实例;订阅流提速;普通卡片显示真实观看进度条。
+
+### 变更
+- **Crashlytics 日志远程回收链路**(alpha.7~11):接入 Firebase Crashlytics(无需 GMS);日志详情页「上报」按钮把日志尾部(降噪压缩后 ≤56KB 字节预算)以非致命异常上报,控制台 issue 下可查;设置新增「崩溃日志自动上报」(默认关)——开=每次启动检查送行一次送掉崩溃报告积压 + 崩溃日志注入,关=仅手动分享;采集属性恒关使 `sendUnsentReports` 恒生效,手动分享恒即时(修「开关开着要重启才送达」);上传 toast 以真实上传结果为准;R8 full mode 削掉 Crashlytics 组件装配链的 release 包修复(proguard 整包 keep)。配套开发工具:云端日志拉取文档 [docs/crashlytics-log-fetch.md](docs/crashlytics-log-fetch.md) + 脚本 [scripts/fetch_crashlytics_logs.py](scripts/fetch_crashlytics_logs.py)。
+- **SABR 升档判据改持续带宽**(alpha.6/9):原判据看瞬时吞吐,升 4K 后服务端 pacing 交付变慢即被降档反复横跳;改「60s 墙钟累计交付」持续带宽,真撑得住才升;分母扣除需求驱动的停闸空闲,修满缓冲时 sustained 恒低于 1440p 声明、永远凑不出升档证据;gap 判定统一时钟源 + 升降档 3min 冷却抑制整段重载黑屏。
+- **双端 UI 对齐官方**(alpha.4/6):TV 搜索结果页 chip 顺序、UP 空间/YouTube 频道页排序改「≡」单按钮 + 「 ▶ 播放全部」连播;YouTube/B站频道页主页 tab 官方式纵向视频行、播放列表卡缩略图/视频数字段迁移修复、播放列表详情页与 TV 版新增(D-pad 纵向,tab 主页/Shorts/直播/播放列表)。
+- **TV 生命周期修复**(alpha.5):直播/IPTV 补 ON_PAUSE/ON_RESUME 处理(修退桌面后台仍出声);MainActivity 改 `singleTask`+`alwaysRetainTaskState`(修重开 APP 出现新实例、旧实例压底仍在播)。
+- **频道页 Shorts 空修复**(alpha.3):shortsLockupViewModel reel 风格专属解析(videoId 在 reelWatchEndpoint);频道 tab 统一 channelId + 服务端 params。
+- **普通卡片真实观看进度条**(alpha.1/3):本地按 bvid 记忆播放位置,首页/推荐/搜索/频道/动态等卡片显示看过比例,无进度数据不显示。
+- **YouTube 订阅流提速**(alpha.1):~6.8s→~2.8s(会话预热后台化 + RSS 改 UULF uploads feed)。
+- **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
+
+---
 
 ## v3.0.7-alpha.11
 
