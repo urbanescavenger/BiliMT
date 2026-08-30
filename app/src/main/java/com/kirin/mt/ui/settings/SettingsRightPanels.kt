@@ -513,17 +513,18 @@ private fun HomeSectionChip(
   }
 }
 
-private data class SettingsAboutLibrary(
+internal data class SettingsAboutLibrary(
   val name: String,
   val descriptionRes: Int,
   val url: String,
 )
 
-private const val SettingsAboutProjectUrl = "https://github.com/urbanescavenger/BiliMT"
+// internal:移动端 MobileAboutSection 复用同一份项目地址/依赖库清单(2026-08-30)。
+internal const val SettingsAboutProjectUrl = "https://github.com/urbanescavenger/BiliMT"
 private const val SettingsAboutQrSizePx = 320
 private const val SettingsAboutLibraryColumnCount = 2
 
-private val SettingsAboutLibraries = listOf(
+internal val SettingsAboutLibraries = listOf(
   SettingsAboutLibrary("OkHttp", R.string.settings_about_library_okhttp, "https://square.github.io/okhttp/"),
   SettingsAboutLibrary("Coil", R.string.settings_about_library_coil, "https://coil-kt.github.io/coil/"),
   SettingsAboutLibrary(

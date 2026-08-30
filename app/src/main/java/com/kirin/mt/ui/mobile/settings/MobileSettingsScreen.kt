@@ -1,8 +1,11 @@
 package com.kirin.mt.ui.mobile.settings
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
@@ -92,6 +95,8 @@ import com.kirin.mt.ui.settings.latestVersionText
 import com.kirin.mt.ui.i18n.localizedContext
 import com.kirin.mt.ui.settings.normalizeIptvUrl
 import com.kirin.mt.ui.settings.updateVersionActionLabel
+import com.kirin.mt.ui.settings.SettingsAboutLibraries
+import com.kirin.mt.ui.settings.SettingsAboutProjectUrl
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -392,6 +397,9 @@ fun MobileSettingsScreen(
       progress = downloadProgressFraction(updateState),
       onClick = updateVersionOnClick,
     )
+
+    // ===== 关于(折叠面板,与 TV 关于面板同源信息;2026-08-30 补齐) =====
+    MobileAboutSection()
   }
 
     if (showFollowSheet) {
@@ -1167,6 +1175,62 @@ private fun MobileYoutubeSabrSection(
       },
       onDismiss = { showEditDialog = false },
     )
+  }
+}
+
+/**
+ * 关于区(折叠面板,镜像 [MobileIptvSection]):项目名称/简介 + 项目地址(点击跳浏览器)+
+ * 开源协议 + 依赖库清单(点击打开项目主页)。信息与 TV SettingsAboutColumn 同源
+ * ([SettingsAboutProjectUrl]/[SettingsAboutLibraries]);TV 端渲染二维码,移动端在设备上
+ * 直接可点,不放二维码。
+ */
+@Composable
+private fun MobileAboutSection() {
+  val context = LocalContext.current
+  var expanded by remember { mutableStateOf(false) }
+
+  MobileSettingsSectionHeader(
+    text = stringResource(R.string.settings_about_title),
+    onClick = { expanded = !expanded },
+    trailing = {
+      Icon(
+        imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.primary,
+      )
+    },
+  )
+  androidx.compose.animation.AnimatedVisibility(visible = expanded) {
+    Column {
+      MobileSettingsRow(
+        title = stringResource(R.string.settings_about_project_name),
+        description = stringResource(R.string.settings_about_project_intro),
+      )
+      MobileSettingsRow(
+        title = stringResource(R.string.settings_about_project_url_title),
+        description = SettingsAboutProjectUrl,
+        onClick = { openInBrowser(context, SettingsAboutProjectUrl) },
+      )
+      MobileSettingsRow(
+        title = stringResource(R.string.settings_about_license_title),
+        description = stringResource(R.string.settings_about_license_value),
+      )
+      SettingsAboutLibraries.forEach { library ->
+        MobileSettingsRow(
+          title = library.name,
+          description = stringResource(library.descriptionRes),
+          onClick = { openInBrowser(context, library.url) },
+        )
+      }
+    }
+  }
+}
+
+/** 用系统浏览器打开链接;无浏览器(极少数精简包)时静默吞掉 ActivityNotFound。 */
+private fun openInBrowser(context: Context, url: String) {
+  try {
+    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+  } catch (_: ActivityNotFoundException) {
   }
 }
 
