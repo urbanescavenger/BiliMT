@@ -26,6 +26,9 @@ import com.kirin.mt.core.youtube.piped.PipedClient
 import com.kirin.mt.core.youtube.piped.PipedStreams
 import com.kirin.mt.core.youtube.piped.PipedStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
@@ -35,6 +38,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.schabi.newpipe.extractor.stream.AudioStream
@@ -77,6 +81,18 @@ class YoutubePlaybackResolver(
 
   /** 缓存的 base.js URL（避免 resolvePlayerJsUrl 重复拉 watch 页）。 */
   private var cachedPlayerJsUrl: String? = null
+
+  /**
+   * 2026-08-31:字幕 URL 预检 client——**独立短超时**(callTimeout 3s 整调用封口,防
+   * probe-timeout-check-before-fallback 旧疾:超时回退逻辑必须先确认探测 client 超时配置),
+   * 与播放 client 隔离(不共用连接池/dispatcher,慢/被墙字幕不占播放管道)。
+   */
+  private val subtitleProbeClient = OkHttpClient.Builder()
+    .connectTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+    .readTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+    .writeTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+    .callTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+    .build()
 
   suspend fun resolve(
     request: PlaybackRequest,
@@ -903,19 +919,54 @@ class YoutubePlaybackResolver(
     // 字幕(WebVTT URL 直拉,不走 SABR 服务端):NewPipe SubtitleInfo 直接给可拉取的 WebVTT URL。
     // mimeType 固定 text/vtt,Media3 SubtitleExtractor 转 MEDIA3_CUES 由 PlayerView 内置 SubtitleView 渲染。
     // 无字幕时为空列表。id 用索引(非 itag),供字幕轨去重/切换。
-    val subtitleTracks = info.subtitles.mapIndexed { index, subtitle: SubtitlesStream ->
-      PlaybackTrack(
-        id = index,
-        baseUrl = subtitle.url.orEmpty(),
-        backupUrls = emptyList(),
-        bandwidth = 0,
-        codecs = "",
-        width = 0,
-        height = 0,
-        mimeType = "text/vtt",
-        languageCode = subtitle.languageTag,
-      )
+    //
+    // 2026-08-31(修「YouTube 视频转圈加载不出/官方可播」,00:25-00:26 真机):字幕 WebVTT URL 由
+    // MergingMediaSource 并入后,媒体3 要等**全部** child prepare 完成(含 4 条字幕 ProgressiveMediaSource)
+    // 才 selectTracks——某条字幕 URL 响应头 81s 不回(Http2Stream.takeHeaders 超时实锤,直连被掐/DNS 同族),
+    // 主源 SABR fetch 一条没发,整页转圈到 DataSourceException。修法:**字幕 URL 先探测后入列**——独立
+    // 短超时 client(防 probe-timeout-check-before-fallback 旧疾,3s callTimeout 明确写出)HEAD 预检,
+    // 拉不通的丢弃(字幕非关键,宁缺毋拖死主源);探测并行,resolve 最坏拖 3s。
+    val subtitleProbes = coroutineScope {
+      info.subtitles.mapIndexed { index, subtitle: SubtitlesStream ->
+        async {
+          val url = subtitle.url.orEmpty()
+          val reachable = runCatching {
+            subtitleProbeClient.newCall(
+              Request.Builder()
+                .url(url)
+                .header("Range", "bytes=0-1")
+                .build()
+            ).execute().use { resp ->
+              resp.code < 400
+            }
+          }.getOrElse {
+            Log.i(Tag, "subtitle probe error lang=${subtitle.languageTag} host=${runCatching { url.toHttpUrl().host }.getOrNull()}: ${it.message}")
+            false
+          }
+          if (!reachable) {
+            Log.w(Tag, "subtitle probe dropped (unreachable/3s timeout): lang=${subtitle.languageTag} host=${runCatching { url.toHttpUrl().host }.getOrNull()}")
+          }
+          index to (url to reachable)
+        }
+      }.awaitAll()
     }
+    val subtitleTracks = subtitleProbes.filter { it.second.second }
+      .mapIndexed { newIndex, probe ->
+        val (origIndex, pair) = probe
+        val (url, _) = pair
+        PlaybackTrack(
+          id = newIndex,
+          baseUrl = url,
+          backupUrls = emptyList(),
+          bandwidth = 0,
+          codecs = "",
+          width = 0,
+          height = 0,
+          mimeType = "text/vtt",
+          // languageTag 按「原字幕列表下标」取——过滤后 mapIndexed 的 newIndex 已错位。
+          languageCode = info.subtitles[origIndex].languageTag,
+        )
+      }
     Log.i(
       Tag,
       "NewPipe SABR session: sabrUrl=${sabrUrl.take(80)}... poToken=${poTokenB64.length}B" +
