@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.7-alpha.10](#v307-alpha10)
 - [v3.0.7-alpha.9](#v307-alpha9)
 - [v3.0.7-alpha.8](#v307-alpha8)
 - [v3.0.7-alpha.7](#v307-alpha7)
@@ -211,6 +212,14 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.7-alpha.10
+
+**Crashlytics 日志注入降噪 + 字节预算修复(修云端只剩噪音行)**。
+
+### 变更
+- **日志分享/崩溃上报注入前降噪压缩**(`FirebaseLogSender.selectLinesForInjection`):Crashlytics 日志环形缓冲按**字节**计(~64KB,超出丢最旧),r1700 实测 1500 行注入云端只截到 82 行且整段是 HWUI「Image decoding logging dropped」刷屏——SABR/ABR 关键行一没带上。修复:①连续重复行折叠(按剥离时间戳/pid/tid 的业务内容判重);②已知刷屏噪音 tag 整类丢弃(HWUI/CCodecConfig/CCodecBuffers/CCodec/DisplayData);③按 56KB 字节预算从尾往前装,高价值 tag(YtSabr/YtResolver/MobilePlayer/FATAL 等)无条件保留,普通行装满即止;时间序保持旧→新,最新行最后注入最不容易被残余截断。
+- **Crashlytics 云端日志程序化拉取配套**(开发用,不影响包体):新增 [docs/crashlytics-log-fetch.md](docs/crashlytics-log-fetch.md) 与 [scripts/fetch_crashlytics_logs.py](scripts/fetch_crashlytics_logs.py)(token 运行时读本地 configstore、自动续期),云端 issue/event 里 `logs[]` 即当时注入的日志体;`customKeys.log_file/log_size` 可与本地文件对账。
 
 ## v3.0.7-alpha.9
 
