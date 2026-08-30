@@ -105,30 +105,47 @@ object FirebaseLogSender {
   fun sendLogFile(context: Context, file: File): Result<Unit> {
     val appContext = context.applicationContext
     if (!isAvailable(appContext)) {
+      logger.warn { "send: Firebase 未配置,拒绝上报 ${file.name}" }
       return Result.failure(IllegalStateException("Firebase 未配置(google-services.json 未就位)"))
     }
     return runCatching {
       val crashlytics = FirebaseCrashlytics.getInstance()
+      logger.info { "send: 开始 file=${file.name} size=${file.length()}B autoReport=$crashAutoReportEnabled" }
       // 分隔头与录制时的 "======== Logs ========" 风格对齐,控制台里方便定位日志体从哪开始
       crashlytics.log("======== Shared log: ${file.name} (${LogCatcherUtil.formatFileSize(file.length())}) ========")
       val content = LogCatcherUtil.readLogContent(file)
       // 只取尾部 MAX_SEND_LINES 行:超长日志(LIVE 滚动 10MB)也只喂最新部分进环形缓冲
-      content.lines().takeLast(MAX_SEND_LINES).forEach { line ->
+      val lines = content.lines().takeLast(MAX_SEND_LINES)
+      lines.forEach { line ->
         crashlytics.log(line)
       }
       crashlytics.setCustomKey("log_file", file.name)
       crashlytics.setCustomKey("log_size", file.length())
       crashlytics.recordException(RuntimeException("Manual log share: ${file.name}"))
+      logger.info { "send: 已注入 ${lines.size} 行 + recordException 入队" }
       if (!crashAutoReportEnabled) {
         // 采集开关关闭时 recordException 只入队不发。官方手动放行流程是先
         // checkForUnsentReports(等待排队数据落盘完成)再 sendUnsentReports——
         // 直接同步调 sendUnsentReports 有竞态,可能在写盘前 flush 导致报告丢失。
         crashlytics.checkForUnsentReports().addOnCompleteListener { task ->
-          if (task.result == true) {
-            crashlytics.sendUnsentReports()
+          val unsent = task.result == true
+          logger.info { "send: checkForUnsentReports=${task.result}异常=${task.exception?.message}" }
+          if (unsent) {
+            try {
+              crashlytics.sendUnsentReports()
+              logger.info { "send: sendUnsentReports 已触发(等下次网络批量上传)" }
+            } catch (e: Exception) {
+              logger.error(e) { "send: sendUnsentReports 调用失败" }
+            }
+          } else {
+            logger.warn { "send: 无未送报告可放行(可能已被竞态 flush 丢失或已上传)" }
           }
         }
+      } else {
+        logger.info { "send: 采集开关开启,由 SDK 自动批量上传" }
       }
+    }.onFailure { error ->
+      logger.error(error) { "send: 上报异常 ${file.name}" }
     }
   }
 }
