@@ -122,6 +122,10 @@ with open('tmp/latest_event_logs.txt', 'w', encoding='utf-8') as f:
 
 ## 4. 数据形态与限制
 
+- **App 侧上送时机(alpha.11 起)**:采集属性恒关,上传全走显式 `sendUnsentReports()`——
+  手动分享恒即时;开关开时启动送行一次送掉崩溃报告积压。alpha.10 及之前采集跟随开关时,
+  开着的手动分享会被 SDK 的 no-op 语义拖到「下次启动/退后台」才送达(eventTime 与
+  receivedTime 差 11~36 分钟即此因),对账时注意老数据有这个延迟。
 - 事件保留 **90 天**(filter interval 只能往前 90 天;topIssues 默认 7 天)。
 - 每个 event 的 `logs[]` 是注入的原始日志行。上限:**Crashlytics 环形缓冲 ~64KB(按字节计)**,
   超限自动丢最旧。2026-08-30 起 App 侧(FirebaseLogSender `selectLinesForInjection`)在注入前
