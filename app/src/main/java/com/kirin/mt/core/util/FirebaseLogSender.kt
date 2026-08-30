@@ -144,6 +144,7 @@ object FirebaseLogSender {
       } else {
         logger.info { "send: 采集开关开启,由 SDK 自动批量上传" }
       }
+      Unit
     }.onFailure { error ->
       logger.error(error) { "send: 上报异常 ${file.name}" }
     }
