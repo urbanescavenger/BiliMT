@@ -195,7 +195,10 @@ class HeightAwareAdaptiveTrackSelection(
    * 会给子源格式加序号前缀(真机重锚日志实证 id="0:302",ToInt 直接失败 → 校准系数恒 1.0 死锁)。
    * 取最后一个冒号后段兼容 "0:302"/"302"/null。
    */
-  private fun itagOf(f: Format): Int = f.id?.substringAfterLast(':', f.id)?.toIntOrNull() ?: -1
+  private fun itagOf(f: Format): Int {
+    val id = f.id ?: return -1
+    return id.substringAfterLast(':', id).toIntOrNull() ?: -1
+  }
 
   private companion object {
     /** alpha.9Z:升档所需的最低缓冲水位(us)——降档自救后缓冲重建到这一水位前,不允许弹回高档。 */
