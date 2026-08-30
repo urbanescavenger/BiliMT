@@ -1239,7 +1239,10 @@ private fun SearchResultsHeader(
     // 类型单开关按钮:恒标「UP主(B站)/频道(YouTube)」,选中态=UP主搜索,OK 在 视频⇄UP主 间翻转。
     // 「视频」chip 已去掉——默认即视频,不会有误解(对齐移动端,2026-08-30 用户定稿)。
     // 聚焦只高亮不切类型(P11-53 教训:焦点扫过触发重搜);行尾 Right 消费防焦点逃逸(P11-51 教训)。
-    item {
+    // 显式 key:切类型时排序 chip 整组出入组合树,无 key 的 item 按位置挪位会被 LazyRow
+    // 当作新 item 销毁重建 → 聚焦中的类型 chip 节点被 detach → 焦点逃出搜索屏落到侧栏头像,
+    // autoConfirm 直接打开「我的」页(即「切频道退到头像」bug)。稳定 key 令节点跨重组存活,焦点不掉。
+    item(key = "type_toggle") {
       SearchSortButton(
         option = typeOptionsFor(source).last(),
         selected = searchType == SearchTypeUser,
