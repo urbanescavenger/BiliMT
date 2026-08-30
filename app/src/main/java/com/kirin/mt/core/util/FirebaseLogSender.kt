@@ -120,8 +120,14 @@ object FirebaseLogSender {
       crashlytics.setCustomKey("log_size", file.length())
       crashlytics.recordException(RuntimeException("Manual log share: ${file.name}"))
       if (!crashAutoReportEnabled) {
-        // 采集开关关闭时 recordException 只入队不发,手动上报是用户明确动作,立即放行
-        crashlytics.sendUnsentReports()
+        // 采集开关关闭时 recordException 只入队不发。官方手动放行流程是先
+        // checkForUnsentReports(等待排队数据落盘完成)再 sendUnsentReports——
+        // 直接同步调 sendUnsentReports 有竞态,可能在写盘前 flush 导致报告丢失。
+        crashlytics.checkForUnsentReports().addOnCompleteListener { task ->
+          if (task.result == true) {
+            crashlytics.sendUnsentReports()
+          }
+        }
       }
     }
   }
