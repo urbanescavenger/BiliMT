@@ -1250,22 +1250,6 @@ private fun SettingsBehaviorColumn(
         onClick = onLogsSelected,
       )
     }
-    item(key = "about") {
-      SettingsActionRow(
-        title = stringResource(R.string.settings_about_title),
-        description = stringResource(R.string.settings_about_description),
-        value = "",
-        modifier = Modifier
-          .focusRequester(focusRequesters.getValue(SettingsItemAbout))
-          .settingsBoundaryKeys(
-            itemIndex = SettingsItemAbout,
-            onMoveSettingFocus = onMoveSettingFocus,
-            onMoveLeftToNav = onMoveLeftToNav,
-          ),
-        onFocused = { onSettingFocused(SettingsItemAbout) },
-        onClick = onAboutSelected,
-      )
-    }
     item(key = "player-log-overlay") {
       SettingsToggleRow(
         title = stringResource(R.string.settings_player_log_overlay_title),
@@ -1348,7 +1332,7 @@ private fun SettingsBehaviorColumn(
         },
       )
     }
-    // 条件项:有新版才显示,渲染在「最新版本」之后(列表末尾,其后无其它项)。
+    // 条件项:有新版才显示,渲染在「最新版本」之后。
     if (shouldShowReleaseNotesAction(updateState)) {
       item(key = "update-release-notes") {
         SettingsActionRow(
@@ -1366,6 +1350,23 @@ private fun SettingsBehaviorColumn(
           onClick = onOpenReleaseNotes,
         )
       }
+    }
+    // 「关于」并入程序更新组,作为列表最末行(2026-08-30 调整)。
+    item(key = "about") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_about_title),
+        description = stringResource(R.string.settings_about_description),
+        value = "",
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemAbout))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemAbout,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemAbout) },
+        onClick = onAboutSelected,
+      )
     }
   }
   }
@@ -1465,12 +1466,12 @@ private val SettingsFocusableItems = listOf(
   SettingsItemWebDavRestore,
   SettingsItemIptv,
   SettingsItemLogs,
-  SettingsItemAbout,
   SettingsItemPlayerLogOverlay,
   SettingsItemCrashLogAutoReport,
   SettingsItemUpdateCurrentVersion,
   SettingsItemUpdateDownloadOrInstall,
   SettingsItemUpdateReleaseNotes,
+  SettingsItemAbout,
 )
 
 private enum class SettingsRightPanel {
@@ -1533,12 +1534,13 @@ private fun settingsItemToLazyIndex(
   SettingsItemWebDavRestore -> 36
   SettingsItemIptv -> 37
   SettingsItemLogs -> 38
-  SettingsItemAbout -> 39
-  SettingsItemPlayerLogOverlay -> 40
-  SettingsItemCrashLogAutoReport -> 41
-  // 42 = "update-header" section title in LazyColumn
-  SettingsItemUpdateCurrentVersion -> 43
-  SettingsItemUpdateDownloadOrInstall -> 44
-  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 45 else -1
+  SettingsItemPlayerLogOverlay -> 39
+  SettingsItemCrashLogAutoReport -> 40
+  // 41 = "update-header" section title in LazyColumn
+  SettingsItemUpdateCurrentVersion -> 42
+  SettingsItemUpdateDownloadOrInstall -> 43
+  // 44 = "update-release-notes"(有新版才渲染);「关于」并入程序更新节,排在更新日志之后。
+  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 44 else -1
+  SettingsItemAbout -> if (shouldShowReleaseNotesAction(updateState)) 45 else 44
   else -> 0
 }
