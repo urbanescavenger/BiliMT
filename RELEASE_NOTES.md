@@ -3,7 +3,7 @@
 ## 目录
 
 - [v3.0.7](#v307)
-- [v3.0.7-alpha.17](#v307-alpha17)
+- [v3.0.8-alpha.1](#v308-alpha1)
 - [v3.0.7-alpha.16](#v307-alpha16)
 - [v3.0.7-alpha.15](#v307-alpha15)
 - [v3.0.7-alpha.14](#v307-alpha14)
@@ -238,7 +238,7 @@
 
 ---
 
-## v3.0.7-alpha.17
+## v3.0.8-alpha.1
 
 **声明码率口径修正:换真实平均(averageBitrate)+ calib 整体取消 + 顶档门槛 ×1.1**。
 
