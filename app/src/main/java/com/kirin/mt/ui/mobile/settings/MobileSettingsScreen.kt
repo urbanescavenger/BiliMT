@@ -308,22 +308,6 @@ fun MobileSettingsScreen(
       scope = scope,
     )
 
-    // ===== 程序更新 =====
-    MobileSettingsSectionHeader(stringResource(R.string.settings_update_section))
-    MobileSettingsRow(
-      title = stringResource(R.string.settings_update_current_version_title),
-      description = currentVersionText(updateState),
-    )
-    // 最新版本 row 内联下载/进度/安装 + 检查更新(已并入此行,不再单开检查更新栏)。
-    MobileUpdateVersionRow(
-      title = stringResource(R.string.settings_update_latest_version_title),
-      description = latestVersionText(updateState),
-      actionLabel = updateVersionActionLabel(updateState),
-      actionEnabled = isUpdateVersionActionEnabled(updateState),
-      progress = downloadProgressFraction(updateState),
-      onClick = updateVersionOnClick,
-    )
-
     // ===== 系统设置 =====
     MobileSettingsSectionHeader(stringResource(R.string.settings_performance_section))
     MobileSettingsRow(
@@ -391,6 +375,22 @@ fun MobileSettingsScreen(
     MobileYoutubeSabrSection(
       settings = settings,
       appSettingsStore = appSettingsStore,
+    )
+
+    // ===== 程序更新(2026-08-30 调整:与 TV 端对齐,移到设置列表最末尾) =====
+    MobileSettingsSectionHeader(stringResource(R.string.settings_update_section))
+    MobileSettingsRow(
+      title = stringResource(R.string.settings_update_current_version_title),
+      description = currentVersionText(updateState),
+    )
+    // 最新版本 row 内联下载/进度/安装 + 检查更新(已并入此行,不再单开检查更新栏)。
+    MobileUpdateVersionRow(
+      title = stringResource(R.string.settings_update_latest_version_title),
+      description = latestVersionText(updateState),
+      actionLabel = updateVersionActionLabel(updateState),
+      actionEnabled = isUpdateVersionActionEnabled(updateState),
+      progress = downloadProgressFraction(updateState),
+      onClick = updateVersionOnClick,
     )
   }
 

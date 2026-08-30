@@ -996,73 +996,6 @@ private fun SettingsBehaviorColumn(
         onCheckedChange = onAutoRefreshOnSwitchChange,
       )
     }
-    item(key = "update-header") {
-      SettingsSectionTitle(
-        text = stringResource(R.string.settings_update_section),
-        modifier = Modifier.padding(top = BiliSpacing.Lg),
-      )
-    }
-    item(key = "update-current-version") {
-      SettingsActionRow(
-        title = stringResource(R.string.settings_update_current_version_title),
-        description = stringResource(R.string.settings_update_current_version_description),
-        value = currentVersionText(updateState),
-        modifier = Modifier
-          .focusRequester(focusRequesters.getValue(SettingsItemUpdateCurrentVersion))
-          .settingsBoundaryKeys(
-            itemIndex = SettingsItemUpdateCurrentVersion,
-            onMoveSettingFocus = onMoveSettingFocus,
-            onMoveLeftToNav = onMoveLeftToNav,
-          ),
-        onFocused = { onSettingFocused(SettingsItemUpdateCurrentVersion) },
-        onClick = {},
-      )
-    }
-    // 最新版本合并行(镜像移动端):内联检查/下载/进度/安装 + 进度条,无条件渲染。
-    // 「检查更新」已并入此行——Idle/UpToDate/Failed 点按触发检查,Available 下载,Downloaded 安装。
-    item(key = "update-latest-version") {
-      SettingsUpdateVersionRow(
-        title = stringResource(R.string.settings_update_latest_version_title),
-        description = latestVersionText(updateState),
-        actionLabel = updateVersionActionLabel(updateState),
-        actionEnabled = isUpdateVersionActionEnabled(updateState),
-        progress = downloadProgressFraction(updateState),
-        modifier = Modifier
-          .focusRequester(focusRequesters.getValue(SettingsItemUpdateDownloadOrInstall))
-          .settingsBoundaryKeys(
-            itemIndex = SettingsItemUpdateDownloadOrInstall,
-            onMoveSettingFocus = onMoveSettingFocus,
-            onMoveLeftToNav = onMoveLeftToNav,
-          ),
-        onFocused = { onSettingFocused(SettingsItemUpdateDownloadOrInstall) },
-        onClick = {
-          when (updateState.status) {
-            is UpdateUiState.Status.Available -> onDownloadUpdate()
-            is UpdateUiState.Status.Downloaded -> onInstallUpdate()
-            is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> {}
-            else -> onCheckUpdate()
-          }
-        },
-      )
-    }
-    if (shouldShowReleaseNotesAction(updateState)) {
-      item(key = "update-release-notes") {
-        SettingsActionRow(
-          title = stringResource(R.string.settings_update_release_notes_action),
-          description = stringResource(R.string.settings_update_release_notes_action_description),
-          value = "",
-          modifier = Modifier
-            .focusRequester(focusRequesters.getValue(SettingsItemUpdateReleaseNotes))
-            .settingsBoundaryKeys(
-              itemIndex = SettingsItemUpdateReleaseNotes,
-              onMoveSettingFocus = onMoveSettingFocus,
-              onMoveLeftToNav = onMoveLeftToNav,
-            ),
-          onFocused = { onSettingFocused(SettingsItemUpdateReleaseNotes) },
-          onClick = onOpenReleaseNotes,
-        )
-      }
-    }
     item(key = "system-header") {
       SettingsSectionTitle(
         text = stringResource(R.string.settings_performance_section),
@@ -1365,6 +1298,75 @@ private fun SettingsBehaviorColumn(
         onCheckedChange = onCrashLogAutoReportChange,
       )
     }
+    // 「程序更新」节放在列表最末尾(与移动端对齐:2026-08-30 调整)。
+    item(key = "update-header") {
+      SettingsSectionTitle(
+        text = stringResource(R.string.settings_update_section),
+        modifier = Modifier.padding(top = BiliSpacing.Lg),
+      )
+    }
+    item(key = "update-current-version") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_update_current_version_title),
+        description = stringResource(R.string.settings_update_current_version_description),
+        value = currentVersionText(updateState),
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemUpdateCurrentVersion))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemUpdateCurrentVersion,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemUpdateCurrentVersion) },
+        onClick = {},
+      )
+    }
+    // 最新版本合并行(镜像移动端):内联检查/下载/进度/安装 + 进度条,无条件渲染。
+    // 「检查更新」已并入此行——Idle/UpToDate/Failed 点按触发检查,Available 下载,Downloaded 安装。
+    item(key = "update-latest-version") {
+      SettingsUpdateVersionRow(
+        title = stringResource(R.string.settings_update_latest_version_title),
+        description = latestVersionText(updateState),
+        actionLabel = updateVersionActionLabel(updateState),
+        actionEnabled = isUpdateVersionActionEnabled(updateState),
+        progress = downloadProgressFraction(updateState),
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemUpdateDownloadOrInstall))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemUpdateDownloadOrInstall,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemUpdateDownloadOrInstall) },
+        onClick = {
+          when (updateState.status) {
+            is UpdateUiState.Status.Available -> onDownloadUpdate()
+            is UpdateUiState.Status.Downloaded -> onInstallUpdate()
+            is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> {}
+            else -> onCheckUpdate()
+          }
+        },
+      )
+    }
+    // 条件项:有新版才显示,渲染在「最新版本」之后(列表末尾,其后无其它项)。
+    if (shouldShowReleaseNotesAction(updateState)) {
+      item(key = "update-release-notes") {
+        SettingsActionRow(
+          title = stringResource(R.string.settings_update_release_notes_action),
+          description = stringResource(R.string.settings_update_release_notes_action_description),
+          value = "",
+          modifier = Modifier
+            .focusRequester(focusRequesters.getValue(SettingsItemUpdateReleaseNotes))
+            .settingsBoundaryKeys(
+              itemIndex = SettingsItemUpdateReleaseNotes,
+              onMoveSettingFocus = onMoveSettingFocus,
+              onMoveLeftToNav = onMoveLeftToNav,
+            ),
+          onFocused = { onSettingFocused(SettingsItemUpdateReleaseNotes) },
+          onClick = onOpenReleaseNotes,
+        )
+      }
+    }
   }
   }
 }
@@ -1450,9 +1452,6 @@ private val SettingsFocusableItems = listOf(
   SettingsItemHomeThemeVariant,
   SettingsItemAutoConfirmOnFocus,
   SettingsItemAutoRefreshOnSwitch,
-  SettingsItemUpdateCurrentVersion,
-  SettingsItemUpdateDownloadOrInstall,
-  SettingsItemUpdateReleaseNotes,
   SettingsItemClearCache,
   SettingsItemChineseTextVariant,
   SettingsItemHomeSections,
@@ -1469,6 +1468,9 @@ private val SettingsFocusableItems = listOf(
   SettingsItemAbout,
   SettingsItemPlayerLogOverlay,
   SettingsItemCrashLogAutoReport,
+  SettingsItemUpdateCurrentVersion,
+  SettingsItemUpdateDownloadOrInstall,
+  SettingsItemUpdateReleaseNotes,
 )
 
 private enum class SettingsRightPanel {
@@ -1516,78 +1518,27 @@ private fun settingsItemToLazyIndex(
   SettingsItemHomeThemeVariant -> 21
   SettingsItemAutoConfirmOnFocus -> 22
   SettingsItemAutoRefreshOnSwitch -> 23
-  // 24 = "update-header" section title in LazyColumn
-  SettingsItemUpdateCurrentVersion -> 25
-  SettingsItemUpdateDownloadOrInstall -> 26
-  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 27 else -1
-  SettingsItemClearCache -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    28 + updateExtraCount
-  }
-  SettingsItemChineseTextVariant -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    29 + updateExtraCount
-  }
-  SettingsItemHomeSections -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    30 + updateExtraCount
-  }
-  SettingsItemLogs -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    41 + updateExtraCount
-  }
-  SettingsItemAbout -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    42 + updateExtraCount
-  }
-  SettingsItemPlayerLogOverlay -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    43 + updateExtraCount
-  }
-  SettingsItemCrashLogAutoReport -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    44 + updateExtraCount
-  }
-  SettingsItemYoutubeChannels -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    32 + updateExtraCount
-  }
-  SettingsItemYoutubeContentRegion -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    33 + updateExtraCount
-  }
-  SettingsItemPiped -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    34 + updateExtraCount
-  }
-  SettingsItemYoutubeUsePiped -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    35 + updateExtraCount
-  }
-  SettingsItemYoutubeDeliveryPriority -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    36 + updateExtraCount
-  }
-  SettingsItemWebDav -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    37 + updateExtraCount
-  }
-  SettingsItemWebDavBackup -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    38 + updateExtraCount
-  }
-  SettingsItemWebDavRestore -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    39 + updateExtraCount
-  }
-  SettingsItemIptv -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    40 + updateExtraCount
-  }
+  // 24 = "system-header" section title in LazyColumn(「程序更新」节已移到列表最末尾,更新项不再插在中间)
+  SettingsItemClearCache -> 25
+  SettingsItemChineseTextVariant -> 26
+  SettingsItemHomeSections -> 27
+  // 28 = "youtube-header" section title in LazyColumn
+  SettingsItemYoutubeChannels -> 29
+  SettingsItemYoutubeContentRegion -> 30
+  SettingsItemPiped -> 31
+  SettingsItemYoutubeUsePiped -> 32
+  SettingsItemYoutubeDeliveryPriority -> 33
+  SettingsItemWebDav -> 34
+  SettingsItemWebDavBackup -> 35
+  SettingsItemWebDavRestore -> 36
+  SettingsItemIptv -> 37
+  SettingsItemLogs -> 38
+  SettingsItemAbout -> 39
+  SettingsItemPlayerLogOverlay -> 40
+  SettingsItemCrashLogAutoReport -> 41
+  // 42 = "update-header" section title in LazyColumn
+  SettingsItemUpdateCurrentVersion -> 43
+  SettingsItemUpdateDownloadOrInstall -> 44
+  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 45 else -1
   else -> 0
-}
-
-// 合并行(update-latest-version)无条件渲染,只数 release-notes 一个条件项。
-private fun updateExtraItemCount(updateState: UpdateUiState): Int {
-  return if (shouldShowReleaseNotesAction(updateState)) 1 else 0
 }
