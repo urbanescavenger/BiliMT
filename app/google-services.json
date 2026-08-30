@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "392012664321",
+    "project_id": "bilimt",
+    "storage_bucket": "bilimt.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:392012664321:android:1c43e185454e981012fa00",
+        "android_client_info": {
+          "package_name": "com.kirin.mt"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDiTg-vsfRO9MvDV1TAK9GitLju0bOmuK8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:392012664321:android:57b895940878fb9f12fa00",
+        "android_client_info": {
+          "package_name": "com.kirin.mt.debug"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDiTg-vsfRO9MvDV1TAK9GitLju0bOmuK8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
