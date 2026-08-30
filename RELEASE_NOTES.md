@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.7-alpha.8](#v307-alpha8)
 - [v3.0.7-alpha.7](#v307-alpha7)
 - [v3.0.7-alpha.6](#v307-alpha6)
 - [v3.0.7-alpha.5](#v307-alpha5)
@@ -209,6 +210,16 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.7-alpha.8
+
+**Crashlytics 上报可靠性收尾 + 网络排查闭环**。
+
+### 变更
+- **上报 toast 以真实上传结果为准**:入队成功不再显示「已上报 Crashlytics」(之前日志里 `Couldn't open connection` 也能假成功);toast 跟随 SDK 上传任务完成回调,失败带原因(如 500/连接失败)。
+- **手动上报 always 即时送行**:`sendUnsentReports()` 无条件显式调用,不再等 SDK 批量时机(TV 常驻前台会拖到 app 回后台);删掉 `checkForUnsentReports` 门控——该 API 在自动采集模式下恒返回 false,会误跳过送行。
+- **上报链路全程诊断日志**:开始/注入行数/入队/送行触发/上传任务成败(SDK 回调)逐环节落 logcat,配合远程排障。
+- **路由器侧已验证**:passwall 补 `crashlyticsreports-pa.googleapis.com`(真实上传端点)与 `firebaseinstallations.googleapis.com` 后,配置拉取/事件上传全通,控制台可见日志尾部与崩溃报告。
 
 ## v3.0.7-alpha.7
 
