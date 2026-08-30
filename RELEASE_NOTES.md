@@ -3,6 +3,7 @@
 ## 目录
 
 - [v3.0.7](#v307)
+- [v3.0.7-alpha.17](#v307-alpha17)
 - [v3.0.7-alpha.16](#v307-alpha16)
 - [v3.0.7-alpha.15](#v307-alpha15)
 - [v3.0.7-alpha.14](#v307-alpha14)
@@ -236,6 +237,18 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v3.0.7-alpha.17
+
+**声明码率口径修正:换真实平均(averageBitrate)+ calib 整体取消 + 顶档门槛 ×1.1**。
+
+### 变更
+- **根因定位**:ABR 一直拿 `/player` 的 `bitrate` 当"声明码率",但该字段是 **VBR 峰值**(比真实平均高 ~60-75%);真实平均是 `averageBitrate`(≈ contentLength/时长)。23:00 真机 4K 失败复盘:声明 32.3M(peak)的 4K 档实测消耗仅 ~23.4M,calib(0.779 外推)与顶档 0.6 gate 连环补偿下"全部合法"放行,随后网络塌方降档一步没救回 → 整段重载回 720p——失真在口径本身,补偿层注定顾此失彼。
+- **带宽换真平均**(`YoutubePlaybackResolver`):SABR/classic DASH 全链路 `buildSabrTrack`/`parseFormat` 改 `averageBitrate` 优先、peak 回落。WEB /player 原生带该字段;NewPipe 路径自算 `contentLength×8/approxDurationMs`(extractor ItagItem 已解析);Piped 无字段回落 peak(旧行为)。
+- **calib 采样折算机制整体取消**(用户决策):declared=真平均后 required=裸声明=实需(降档判据=供给 vs 消耗本征比较),成熟期 calib 本就收敛 ≈1,取消去掉未熟期折算噪声与解析 bug 面(采样/成熟度地板全删)。
+- **顶档门槛保留、基准重标**(`HeightAwareAdaptiveTrackSelection`):4K 升档 sustained 门槛 0.6→**×1.1**(declared 已是真平均,1.1 是 60s 均值口径的 VBR 尖峰余量);升档重锚锚裸声明。
+- 其余 ABR 机制(水位急救降档、升档冷却、10s 禁回降、逐步候选升降)不变。
+- 口径查证与排查全程见 `docs/youtube-sabr-abr-upshift-notes.md` §16、`docs/youtube-hd-playback.md` §6.25。
 
 ## v3.0.7-alpha.16
 
