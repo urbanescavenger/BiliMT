@@ -147,6 +147,9 @@ internal class DefaultSabrChunkSource(
     // 不再需要 ceiling/force-climb 排除补丁。见 SabrBandwidthMeter / SabrMediaFetcher。
     (bandwidthMeter as? SabrBandwidthMeter)?.setRealBandwidthProvider { fetcher.getRealBitrateEstimate() }
     (bandwidthMeter as? SabrBandwidthMeter)?.setSustainedBandwidthProvider { fetcher.getSustainedBitrateEstimate() }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setReseedBandwidthProvider { bitrateBps ->
+      fetcher.reseedActiveWindow(bitrateBps)
+    }
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {

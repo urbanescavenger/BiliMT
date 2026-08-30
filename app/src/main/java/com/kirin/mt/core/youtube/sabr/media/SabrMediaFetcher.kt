@@ -258,6 +258,26 @@ internal class SabrMediaFetcher(
     addRealBwSample(0L, elapsedMs)
   }
 
+  /**
+   * 2026-08-30 升档重锚(HeightAwareAdaptiveTrackSelection 升档时调用):清空活跃 est 窗口,种入
+   * 「新档声明码率 × REAL_BW_RESEED_MS」的合成样本。升档前窗口里是旧档重填期的突发高估样本(真机
+   * 60-70M),升档后新档供给不足时这些样本顶住「est < 声明码率」的降档门槛(4K 案例实际吞吐 27M vs
+   * est 报 35-52M),缓冲 35s→4s 不降档。重锚后 est 从声明码率起步,真实样本平滑接管:够用就持平,
+   * 不够(慢样本/失败样本入账)快速下探触发正常降档。仅升档调用;降档不需要(低档时 est 高估无害)。
+   */
+  fun reseedActiveWindow(bitrateBps: Long) {
+    if (bitrateBps <= 0L) return
+    val seedBytes = bitrateBps / 8000L * REAL_BW_RESEED_MS
+    if (seedBytes <= 0L) return
+    synchronized(realBandwidthLock) {
+      realBwWindow.clear()
+      realBwBytes = 0L
+      realBwTimeMs = 0L
+      addRealBwSample(seedBytes, REAL_BW_RESEED_MS)
+    }
+    Log.i(tag, "bw reseeded: active est baseline → ${bitrateBps / 1000}K (seed ${seedBytes}B/${REAL_BW_RESEED_MS}ms)")
+  }
+
   /** 推进进滑动窗口;窗口累计耗时超 [REAL_BW_WINDOW_MS] 从前端滚出(至少留 1 个样本防除零)。 */
   private fun addRealBwSample(bytes: Long, timeMs: Long) {
     synchronized(realBandwidthLock) {
@@ -725,6 +745,8 @@ internal class SabrMediaFetcher(
     const val BW_SLOW_TINY_MS = 2_000L
     /** alpha.9Z:持续带宽窗口(墙钟 ms)——升档判据「60s 内实际交付字节/墙钟」。 */
     const val SUSTAINED_WINDOW_MS = 60_000L
+    /** 2026-08-30:升档重锚合成样本时长(ms)——est 从「声明码率」起步,随后真实样本平滑接管。 */
+    const val REAL_BW_RESEED_MS = 4_000L
     /** alpha.9Z:持续带宽最短跨度,不足视为证据不足返回 -1(回退活跃 est,起播爬档不被卡)。 */
     const val SUSTAINED_MIN_SPAN_MS = 15_000L
   }

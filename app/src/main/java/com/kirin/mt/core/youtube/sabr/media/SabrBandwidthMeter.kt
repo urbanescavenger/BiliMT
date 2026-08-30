@@ -29,6 +29,10 @@ internal class SabrBandwidthMeter(
   @Volatile
   private var sustainedBpsProvider: (() -> Long)? = null
 
+  /** 2026-08-30:注入升档重锚执行方(SabrMediaFetcher.reseedActiveWindow)。 */
+  @Volatile
+  private var reseedBandwidthProvider: ((Long) -> Unit)? = null
+
   /** 由持有 [SabrMediaFetcher] 的一方(DefaultSabrChunkSource)注入真实带宽来源。 */
   fun setRealBandwidthProvider(provider: () -> Long) {
     realBpsProvider = provider
@@ -37,6 +41,20 @@ internal class SabrBandwidthMeter(
   /** alpha.9Z:注入持续带宽来源(60s 墙钟交付,升档判据用)。 */
   fun setSustainedBandwidthProvider(provider: () -> Long) {
     sustainedBpsProvider = provider
+  }
+
+  /** 2026-08-30:接线升档重锚执行方。 */
+  fun setReseedBandwidthProvider(provider: (Long) -> Unit) {
+    reseedBandwidthProvider = provider
+  }
+
+  /**
+   * 2026-08-30 升档重锚:升入新档后把活跃 est 窗口重锚到该档声明码率——原窗口里旧档/重填期的突发高估
+   * 样本(60-70M)会顶住降档门槛,新档扛不住时 est 迟迟跌不过声明码率,缓冲漏光前不降档只能看门狗重载。
+   * 重锚后 est 从声明码率起步、真实样本平滑接管。委托给 fetcher(窗口在它那),未接线时静默忽略。
+   */
+  fun reseedToBitrate(bitrateBps: Long) {
+    if (bitrateBps > 0L) reseedBandwidthProvider?.invoke(bitrateBps)
   }
 
   /** 持续带宽(60s 墙钟);无数据(-1)回退活跃传输 est。 */

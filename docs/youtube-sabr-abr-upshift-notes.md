@@ -217,3 +217,32 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 
 - [ ] 1080p 起播满缓冲后应在 ~1-3min 内 Auto 升 1440(YtSabrAbr 行 sus= ≥ 13411K 且 bw= 过门槛)
 - [ ] 真慢网络(供给 < 13.4M)时不误升;sustained 分母修正后 315 防卡死行为不回归(慢网升 4K 应仍被门②/③挡住)
+
+---
+
+## 11. 2026-08-30 「升 4K 后贴地滑行不降档 → 看门狗重载」:水位急救降档 + 升档 est 重锚
+
+### 现象(真机 logs_live.log 20:17-20:20,Sony BRAVIA,v3.0.7 调试包)
+
+- 20:17:47 Auto 爬到 308(1440p),20:18:19 升 315(4K)——升档当时合法(est 41M ≥ 26.6M×1.25、sustained 31M ≥ 26.6M、无降档记录)
+- 随后网络劣化:单段 ~26.5MB 从 3.3s(60-63Mbps)涨到 7.8s(**27-32Mbps**),贴着 4K 声明码率 26.6M 滑行
+- 缓冲 35.6s → 30.8 → 24.8 → 14.6 → 5.4 → **4.0s 全程一个档没降**(`down=1` 候选一直在),20:19:36 stall 看门狗触发 auto-retry → 会话 evict → 全新会话从 480p 重新爬 = 表现为「重载」
+- est(bw=)整个滑行期报 35-52M,直到最后一刻(20:19:35,缓冲 4.0s)才塌到 15.3M——降档判据 `est < 声明码率` 这时才过,为时已晚
+
+### 根因:降档判据依赖的 est 滞后,缓冲水位这个最硬的供给证据反而没参与判定
+
+- est 是 20s 累计字节/累计时间滑动均值:升 4K 前两笔 60/63Mbps 大突发样本滞留窗口,劣化后旧快样本+滑行 gap 扣减把 est 长期抬在 35M+;
+- sustained(60s)同样被突发样本稀释(实测劣化期报 36-44M vs 真实 27M);
+- media3 / HeightAware 都**没有以缓冲水位为依据的降档条件**(水位只用于升档门③)——这是标准 DASH ABR 的缺口,YouTube 网页版按 buffer drain 判降档。
+
+### 修复(本 commit,两处)
+
+1. **水位急救降档**(`HeightAwareAdaptiveTrackSelection.updateSelectedTrack` 头部新增分支):
+   `bufferedDurationUs < 8s` 且 `≤ 上次评估水位`(仍在下漏/持平,排除起播/重填期的正常低点)且升档后过 5s 宽限 → **无视 est 直接降到下一个低分辨率档**(一步一档;落到可持续档缓冲回 8s 以上自动停)。log 行 `YtSabrAbr: buffer-critical downgrade: ...`。阈值 8s < LoadControl MinBuffer 10s、max buffer ≥30s,只有真供给不足摸得到。
+2. **升档 est 重锚**(`SabrMediaFetcher.reseedActiveWindow`,HeightAware 升档分支调用):升入新档瞬间清空活跃 est 窗口,种入「新档声明码率 × 4s」合成样本——旧档突发样本立即失效,est 从声明码率起步平滑接管真实样本;新档扛不住时 est 快速下探、正常降档不再迟钝。log 行 `YtSabrAbr: upshift reseed: ...` / `YtSabr: bw reseeded: ...`。仅升档调用(降档时 est 高估无害,不清)。
+
+### 待真机复测
+
+- [ ] 4K 贴地滑行场景:缓冲到 8s 前应出现 `buffer-critical downgrade`(4K→1440p),不再走到 stall 看门狗重载
+- [ ] 重锚生效:升档后 YtSabrAbr 行 `bw=` 应立即回落到新档声明码率附近,而非滞留 40-70M
+- [ ] 好网络回归:4K 正常播放时不应触发水位降档(缓冲 ≥8s 且水位回升);正常升降档无横跳(3min 冷却仍在)
