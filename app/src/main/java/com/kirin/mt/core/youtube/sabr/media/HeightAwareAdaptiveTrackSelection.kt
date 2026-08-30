@@ -73,6 +73,14 @@ import com.google.common.collect.ImmutableList
  * 降下时,仅把该顶档 excludeTrack 3 分钟——期间 1440p/1080p 升降完全照常(与已取消的「全档 3min
  * 冷却」不同,那锁死全部升降、用户被困低档;本冷却只锁顶档,不再横跳,网络真正好转由冷却自然到期
  * 或手动切档兜底)。非顶档的水位降档不加冷却(降的是可持续档,回弹无碍)。
+ *
+ * 2026-08-31(降档滞回余量 ×0.85,修「1440p↔1080p 临界来回切」,00:01-00:04 真机):declared=真平均后,
+ * est 巡航值正好骑在相邻档门槛上下(本视频 1440p 声明 16.76M,est 15.8-18M)——旧判据 `required > est`
+ * 一穿线即降(est 15.8M vs 门槛 16.76M,差 6% 就切),缓冲 ≥30s 升档冷却随即放行,est 又过线再升,
+ * 每次切换拉 init 段=一次卡顿,3 分钟切了三轮。修法:**当前档(i==selected)降档判据放宽到
+ * required×0.85**(15% 死区:est 15.8M > 14.25M 稳守 1440p),升档候选门槛不变(est ≥ 全额 required
+ * + sustained gate)→ 双阈值滞回带。真饿(est < required×0.85)照样降,水位急救(<8s)是最后兜底
+ * ——临界抖动归滞回,真饿归水位,分工不变。降档候选档(切出去的穿透验证)保持全额 required 不放宽。
  */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
@@ -178,7 +186,10 @@ class HeightAwareAdaptiveTrackSelection(
       if (isTrackExcluded(i, nowMs)) continue
       val f = getFormat(i)
       val isUpgrade = f.height > currentHeight
-      val required = f.bitrate // 声明平均=实需,裸判据(calib 已取消)
+      // 2026-08-31 降档滞回:仅当前档的降档判据放宽 ×0.85(15% 死区),升档/降档候选档保持全额
+      // required——est 巡航骑在门槛 ±10% 时(declared=真平均后常态)不再每周期穿线切档。
+      val required =
+        if (i == selected) f.bitrate * DOWNSHIFT_MARGIN_PERMILLE / 1000L else f.bitrate
       if (required > effective) continue
       if (isUpgrade && (!canUpgrade || (sustained in 0 until required))) continue
       // 顶档(仅 height==组内最高,即真正在尝试 4K 的那一档)sustained 加码 ×1.1,防边缘抖动
@@ -257,6 +268,13 @@ class HeightAwareAdaptiveTrackSelection(
      * 只锁顶档,低档升降不受影响;3min 覆盖一个完整误批-回填周期(周期 ~55-85s)。
      */
     const val TOP_TIER_BUFFER_CRITICAL_COOLDOWN_MS = 180_000L
+    /**
+     * 2026-08-31:当前档降档判据滞回余量(千分位)——降档门槛 = required×0.85,升档门槛 = required
+     * 全额,双阈值差 15% 作死区。est 巡航骑在相邻档门槛 ±10% 时(00:01-00:04 真机 1440p↔1080p
+     * 每周期穿线)不再切;真饿(est < required×0.85)照降,水位急救兜底。与「升档后 10s 禁回降」互补:
+     * 那管升档起步期,本滞回管稳态临界期(不限时)。
+     */
+    const val DOWNSHIFT_MARGIN_PERMILLE = 850L
   }
 
   override fun getSelectionReason(): Int = androidx.media3.common.C.SELECTION_REASON_ADAPTIVE
