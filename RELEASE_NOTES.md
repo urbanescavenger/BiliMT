@@ -214,10 +214,11 @@
 
 ## v3.0.7-alpha.9
 
-**Release 包 Crashlytics 组件被 R8 削掉的修复**。
+**Release 包 Crashlytics 组件被 R8 削掉的修复 + SABR Auto 满缓冲不升 1440 修复**。
 
 ### 变更
 - **proguard 整包保护 Firebase 组件装配链**(`com.google.firebase.**` + `com.google.android.gms.tasks.**`):AGP 9 默认 R8 full mode 把只被组件元数据/反射引用的 Crashlytics 类判为未引用删除,release 包(minify)在 `FirebaseCrashlytics.getInstance()` 抛 `FirebaseCrashlytics component is not present` → 手动上报/崩溃自动上报全部失败;debug 包不混淆无此问题,alpha.8 真机实测暴露。整包 keep 规避逐类排查,体积换取确定性。
+- **SABR Auto 满缓冲不升 1440 修复**:持续带宽(升档门②)分母原为全墙钟跨度,pinned 低档 + 满缓冲时「补一段等 30s」的停闸空窗全摊入 → sustained≈当前档消耗(实测 8-10M,恒低于 1440p 声明 13.4M),从低档永远凑不出升档证据(手动切 1440 实测持续 20M+ 证明管子够)。分母改为扣除需求驱动的停闸空闲(与活跃 est 的 gap 滑行扣减同口径);GC/断流/服务端 pacing 期间仍照旧压低 sustained,升 4K 防卡死意图不变。新增 `sus=` 诊断日志列。
 
 ## v3.0.7-alpha.8
 
