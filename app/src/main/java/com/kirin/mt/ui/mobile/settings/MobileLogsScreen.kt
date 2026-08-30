@@ -244,24 +244,6 @@ private fun MobileLogContentScreen(
     }
   }
 
-  fun sendToCrashlytics() {
-    scope.launch {
-      val result = withContext(Dispatchers.IO) {
-        FirebaseLogSender.sendLogFile(context, file)
-      }
-      val message = when {
-        result.isSuccess -> context.getString(R.string.settings_logs_send_success)
-        !FirebaseLogSender.isAvailable(context) ->
-          context.getString(R.string.settings_logs_send_unavailable)
-        else -> context.getString(
-          R.string.settings_logs_send_failed,
-          result.exceptionOrNull()?.message.orEmpty(),
-        )
-      }
-      Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-    }
-  }
-
   Column(
     modifier = modifier.fillMaxSize().padding(horizontal = 12.dp),
     verticalArrangement = Arrangement.spacedBy(8.dp),
