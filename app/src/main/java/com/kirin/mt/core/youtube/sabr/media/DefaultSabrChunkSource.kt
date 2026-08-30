@@ -153,6 +153,9 @@ internal class DefaultSabrChunkSource(
     (bandwidthMeter as? SabrBandwidthMeter)?.setMeasuredBitrateProvider { itag ->
       fetcher.getMeasuredBitrateBps(itag)
     }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setMeasuredSegCountProvider { itag ->
+      fetcher.getMeasuredSegmentCount(itag)
+    }
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {

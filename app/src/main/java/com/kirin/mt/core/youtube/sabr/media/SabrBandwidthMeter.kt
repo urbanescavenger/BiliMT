@@ -60,6 +60,16 @@ internal class SabrBandwidthMeter(
   /** 2026-08-30:实测消耗码率;未接线/证据不足时 -1(调用方回退声明值)。 */
   fun getMeasuredBitrateBps(itag: Int): Long = measuredBitrateProvider?.invoke(itag) ?: -1L
 
+  /** 2026-08-30:实测已挂账段数(calib 成熟度地板用);未接线时 0。 */
+  @Volatile
+  private var measuredSegCountProvider: ((Int) -> Long)? = null
+
+  fun setMeasuredSegCountProvider(provider: (Int) -> Long) {
+    measuredSegCountProvider = provider
+  }
+
+  fun getMeasuredSegmentCount(itag: Int): Long = measuredSegCountProvider?.invoke(itag) ?: 0L
+
   /**
    * 2026-08-30 升档重锚:升入新档后把活跃 est 窗口重锚到该档声明码率——原窗口里旧档/重填期的突发高估
    * 样本(60-70M)会顶住降档门槛,新档扛不住时 est 迟迟跌不过声明码率,缓冲漏光前不降档只能看门狗重载。

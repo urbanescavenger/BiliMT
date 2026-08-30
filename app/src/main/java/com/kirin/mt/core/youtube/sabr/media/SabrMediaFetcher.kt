@@ -332,6 +332,12 @@ internal class SabrMediaFetcher(
     return snapshot.first * 8000L / (snapshot.second * avgSegMs)
   }
 
+  /** 2026-08-30:实测已挂账段数(calib 成熟度地板用,决定门槛下限 0.65/0.5/0.35)。 */
+  fun getMeasuredSegmentCount(itag: Int): Long {
+    if (itag <= 0) return 0L
+    return synchronized(measuredLock) { measuredTracks[itag]?.segs ?: 0L }
+  }
+
   /** 真实带宽估计(bps)= 窗口内累计下载量/累计耗时(含卡住与被迫空转)。无样本返回 -1;窗口内全是空转(量=0)返回 0,不回退底层高估。 */
   fun getRealBitrateEstimate(): Long {
     synchronized(realBandwidthLock) {

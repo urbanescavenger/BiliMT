@@ -87,7 +87,7 @@ class HeightAwareAdaptiveTrackSelection(
     }
     // 2026-08-30 水位急救降档:水位 <8s 且两次评估间仍在回落/持平(排除起播/重填期的短暂低点,那时水位
     // 在涨)、且过了升档宽限 → 水位下降本身就是最好的降档证据(供给持续低于当前档消耗),无视 est 直接
-    // 降到下一个低分辨率档。逐级一步一档:降到可持续档后缓冲回 8s 以上自动停;配合现有 3min 升档冷却防空跳。
+    // 降到下一个低分辨率档。逐级一步一档:降到可持续档后缓冲回 8s 以上自动停。
     val currentHeight = getFormat(selected).height
     val bufferCritical = bufferedDurationUs < DOWNGRADE_BUFFERED_US &&
       bufferedDurationUs <= prevEvalBufferedUs &&
@@ -126,22 +126,34 @@ class HeightAwareAdaptiveTrackSelection(
     // 2026-08-30 实测码率校准门槛(已复盘验证,见 docs §12/§13):声明码率在高码率源上虚高约 2×,
     // 连续两轮 ×1.25/×1.1 乘数都卡在临界。改为用「当前档实测消耗/声明」校准系数(calib)折算全部候选:
     // required = candidateDeclared × calib。对当前档,declared×calib = 实测消耗 → 降档判据落到真实消耗
-    // (est 起伏不再每周期误降);对升档候选,按同内容系数外推真实需求。calib clamp [0.35, 1] 防极端;
-    // 实测未就绪(<3 段,起播 ~16s)退回 declared 原值 = 旧声明行为,门槛偏保守只晚不冒险。
+    // (est 起伏不再每周期误降);对升档候选,按同内容系数外推真实需求。
+    // 2026-08-30(calib 成熟度地板,修「升 308 后 3s 决策 4K 门槛被压到 0.35 地板 → 105M 声明的 4K
+    // 按 36.9M 误批→漏光缓冲」):刚升入的档只有 3-4 段样本,比值偏低属采样噪声。实测段数 <5 地板
+    // 0.65、<12 地板 0.5、≥12 才放 0.35——第一分钟门槛不被新采样拉穿,4K(105M×0.65=68M)当时批不下来。
     val currentItag = itagOf(getFormat(selected))
     val currentDeclared = getFormat(selected).bitrate.toLong()
     val calibPermille = if (currentItag > 0 && currentDeclared > 0) {
-      val measured = (bandwidthMeter as? SabrBandwidthMeter)?.getMeasuredBitrateBps(currentItag) ?: -1L
-      if (measured > 0L) (measured * 1000L / currentDeclared).coerceIn(CALIB_MIN_PERMILLE, 1000L) else 1000L
+      val meter = bandwidthMeter as? SabrBandwidthMeter
+      val measured = meter?.getMeasuredBitrateBps(currentItag) ?: -1L
+      if (measured > 0L) {
+        val segs = meter?.getMeasuredSegmentCount(currentItag) ?: 0L
+        val floorPermille = when {
+          segs < 5L -> 650L
+          segs < 12L -> 500L
+          else -> CALIB_MIN_PERMILLE
+        }
+        (measured * 1000L / currentDeclared).coerceIn(floorPermille, 1000L)
+      } else 1000L
     } else 1000L
     // alpha.9Z(升档滞回,防降档后横跳):带宽估计在档位临界值附近抖动时,无滞回会 308↔315 反复切轨
     // (每次切轨都要拉新 init 段,还丢已缓冲的高档数据)。升档要求 ①活跃 est ≥ 校准门槛(乘数 ×1.0,
     // 2026-08-30:防卡职能已由重锚+水位急救结构性承担,乘数在声明虚高的视频上只会卡死爬梯)
     // ②持续带宽 ≥ 校准门槛
-    // ③降档后:缓冲 ≥30s 且距上次降档 ≥3min(首次选档 lastDowngrade=0 不受 30s 限制,起播爬档不被卡;
-    // 网络真改善时最多晚 3min 升档;手动选档走单轨组不经此路,不受影响)。
-    val canUpgrade = (lastDowngradeElapsedMs == 0L || bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US) &&
-      nowMs - lastDowngradeElapsedMs >= UPGRADE_COOLDOWN_MS
+    // ③降档后:缓冲 ≥30s 才许升(首次选档 lastDowngrade=0 不受此限,起播爬档不被卡)。
+    // 2026-08-30(用户决策):**3min 升档冷却取消**——22:11-22:14 真机:急救降回 1080p 后缓冲已填满
+    // 45s、门槛 12.7M 明明可升,却被冷却硬锁到 22:14:57,用户被迫手动切档。横跳防护由「缓冲 ≥30s
+    // 才许升 + 升档后 10s 禁止 est 回降 + 重锚基线」承担,不再需要冷却。
+    val canUpgrade = lastDowngradeElapsedMs == 0L || bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US
     var best = length - 1
     var bestHeight = -1
     for (i in 0 until length) {
@@ -182,7 +194,9 @@ class HeightAwareAdaptiveTrackSelection(
         Log.i(
           "YtSabrAbr",
           "upshift reseed: est baseline → ${newDeclared * calibPermille / 1000L} " +
-            "(declared=${getFormat(selected).bitrate} calib=${calibPermille / 1000.0} itag${itagOf(getFormat(selected))})"
+            "(declared=${getFormat(selected).bitrate} calib=${calibPermille / 1000.0} " +
+            "segs=${(bandwidthMeter as? SabrBandwidthMeter)?.getMeasuredSegmentCount(itagOf(getFormat(selected))) ?: 0L} " +
+            "itag${itagOf(getFormat(selected))})"
         )
       }
     }
@@ -203,9 +217,7 @@ class HeightAwareAdaptiveTrackSelection(
   private companion object {
     /** alpha.9Z:升档所需的最低缓冲水位(us)——降档自救后缓冲重建到这一水位前,不允许弹回高档。 */
     const val UPGRADE_MIN_BUFFERED_US = 30_000_000L
-    /** alpha.9Z:降档后升档冷却(ms)——打破「降档→重填→est 冲高→弹回高档→卡死」横跳循环。 */
-    const val UPGRADE_COOLDOWN_MS = 180_000L
-    /** 2026-08-30:水位急救降档阈值(us)——LoadControl max buffer ≥30s、8s 已低于 MinBuffer(10s),只有真供给不足才摸得到。 */
+    /** alpha.9Z:降档后升档所需最低缓冲水位(us)——缓冲重建到这一水位前不允许弹回高档。 */
     const val DOWNGRADE_BUFFERED_US = 8_000_000L
     /** 2026-08-30:升档后的水位急救宽限(ms)——新档刚起步缓冲未回填,不能立刻按同一水位反弹降档。 */
     const val DOWNGRADE_AFTER_UPGRADE_GRACE_MS = 5_000L
