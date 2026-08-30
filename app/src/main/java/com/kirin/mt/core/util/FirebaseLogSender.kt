@@ -194,16 +194,29 @@ object FirebaseLogSender {
       crashlytics.setCustomKey("log_size", file.length())
       crashlytics.recordException(RuntimeException("Manual log share: ${file.name}"))
       logger.info { "send: 降噪后注入 ${lines.size} 行 + recordException 入队" }
-      // 手动上报总是显式即时上传(TV 常驻前台,等 SDK 批量时机可能拖到 app 回后台)。
-      // 注意不能 checkForUnsentReports 门控后再 send:该 API 在「自动采集」模式(开关开)
-      // 下恒返回 false,会把显式送行整个跳过;这里无条件 sendUnsentReports 强制 flush
-      // 已持久化的报告,重复调用无害。
+      // 手动上报总是显式即时上传。注意 SDK 官方语义:自动采集开启(开关开)时
+      // sendUnsentReports() 是故意的 no-op——真实上传只剩「下次启动/退后台」,TV 常驻
+      // 前台 + 直接杀进程等于要重启才送达。修法:临时切采集关,让显式 flush 真正生效,
+      // finally 里按开关状态切回;中途崩溃/被杀无碍,下次启动 bindAutoReport 会按设置重设。
+      // 另外 checkForUnsentReports 不能做门控:开关开时它恒返回 false,会整个跳过送行,
+      // 这里无条件调用,重复调用无害。
       try {
-        crashlytics.sendUnsentReports()
-        logger.info { "send: sendUnsentReports 已触发,上报在途" }
-      } catch (e: Exception) {
-        logger.error(e) { "send: sendUnsentReports 调用失败" }
-        throw e
+        if (crashAutoReportEnabled) {
+          crashlytics.isCrashlyticsCollectionEnabled = false
+          logger.info { "send: 临时切采集关以放行 sendUnsentReports(开关开着)" }
+        }
+        try {
+          crashlytics.sendUnsentReports()
+          logger.info { "send: sendUnsentReports 已触发,上报在途" }
+        } catch (e: Exception) {
+          logger.error(e) { "send: sendUnsentReports 调用失败" }
+          throw e
+        }
+      } finally {
+        if (crashAutoReportEnabled) {
+          runCatching { crashlytics.isCrashlyticsCollectionEnabled = true }
+            .onFailure { error -> logger.error(error) { "send: 采集开关切回失败" } }
+        }
       }
       Unit
     }.onFailure { error ->
