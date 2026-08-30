@@ -294,12 +294,16 @@ fun PlayerScreen(
     // alpha.9Y(分辨率优先选档):媒体3 原生按 bitrate 选档会被 YouTube bitrate/height 错位卡在
     // 1080p 不升(1440p 声明 13.9M < 1080p 14.4M)。注入按 height 选档的自定义 selection(见
     // HeightAwareAdaptiveTrackSelection),带宽只当门槛。混合 mime 组走自定义,音频等退化父类。
+    // alpha.97(修「Auto 永不升过 1080p」根因,同 MobilePlayerScreen):clearViewportSizeConstraints 置
+    // isViewportSizeLimitedByPhysicalDisplaySize=false,解除「物理屏=视口」隐性约束,否则超屏分辨率
+    // (1440p/2160p)永远拿不到 ADAPTIVE 资格。
     val trackSelector = DefaultTrackSelector(context, HeightAwareAdaptiveTrackSelectionFactory())
     trackSelector.setParameters(
       DefaultTrackSelector.Parameters.Builder()
         .setAllowVideoMixedMimeTypeAdaptiveness(true)
         .setAllowVideoNonSeamlessAdaptiveness(true)
         .setAllowMultipleAdaptiveSelections(true)
+        .clearViewportSizeConstraints()
         .build()
     )
     ExoPlayer.Builder(context)

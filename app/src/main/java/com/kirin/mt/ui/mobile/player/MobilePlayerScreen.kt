@@ -474,6 +474,13 @@ fun MobilePlayerScreen(
         .setAllowVideoMixedMimeTypeAdaptiveness(true)
         .setAllowVideoNonSeamlessAdaptiveness(true)
         .setAllowMultipleAdaptiveSelections(true)
+        // alpha.97(修「Auto 永不升过 1080p」根因):base 默认 isViewportSizeLimitedByPhysicalDisplaySize=true
+        // (media3-common TrackSelectionParameters.Builder 默认块),selectVideoTrack 会无视 viewportWidth=MAX
+        // 直接拿物理屏尺寸当视口(Util.getCurrentDisplayModeSize)→ 超屏分辨率(1440p/2160p)的
+        // isSuitableForViewport=false → 失去 ADAPTIVE 资格,恒 sel=false 永不升档(真机 YtSabrTracks 证实
+        // 14 轨全 sup=true 但 308/315 恒不进 selection)。clearViewportSizeConstraints 同时置该开关 false,
+        // 解除物理屏隐性视口约束——ABR 是否升高档全交给带宽(SabrBandwidthMeter 实测)与 HeightAware 选档。
+        .clearViewportSizeConstraints()
         .build()
     )
     ExoPlayer.Builder(context)
