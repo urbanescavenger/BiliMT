@@ -3,6 +3,7 @@
 ## 目录
 
 - [v3.0.7](#v307)
+- [v3.0.7-alpha.13](#v307-alpha13)
 - [v3.0.7-alpha.12](#v307-alpha12)
 - [v3.0.7-alpha.11](#v307-alpha11)
 - [v3.0.7-alpha.10](#v307-alpha10)
@@ -231,6 +232,14 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v3.0.7-alpha.13
+
+**设置页布局调整:「程序更新」节移到设置列表最末尾(TV + 移动端对齐)**。
+
+### 变更
+- **TV**(`SettingsScreen`):「程序更新」节(当前版本/最新版本合并行/更新日志条件项)从「界面与交互」之后移到列表最末尾(崩溃日志自动上报之后);`settingsItemToLazyIndex` 全量重排(更新节移走后中间各行索引固化,删除 `updateExtraItemCount` 偏移计算,更新日志成为末尾条件项不再推移其它行);`SettingsFocusableItems` 焦点循环顺序同步。
+- **移动端**(`MobileSettingsScreen`):「程序更新」区块从「首页分区」之后移到 YouTube SABR 实验区之后,与 TV 端同为最后一段。
 
 ## v3.0.7-alpha.12
 
