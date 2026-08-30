@@ -32,6 +32,11 @@ import com.google.common.collect.ImmutableList
  *   36s→4s 全程不降档。缓冲水位是比 est 更硬的供给证据:<8s 且仍在下漏 → 无视 est 直接降一档。
  * ②**升档重锚**——升入新档瞬间把活跃 est 窗口重锚到新档声明码率(SabrMediaFetcher.reseedActiveWindow),
  *   旧档/重填期的突发高估样本从新档码率起步平滑失效,新档扛不住时 est 快速下探、降档不再迟钝。
+ *
+ * 2026-08-30(修「Auto 卡 1080p 不升 1440p,手动切正常」,20:45-20:52 4K 源真机案例):升档乘数
+ * ×1.25 → ×1.1。门①原防「突发样本撑高 est → 升完必卡」,重锚机制落地后该风险已结构性消除(升完
+ * est=声明码率起步,扛不住立刻塌+水位急救兜底);且高码率视频声明值本就虚高(1080p 声明 22M、1440p
+ * 41.6M、4K 110M),×1.25 把门槛抬到 52M+ 而活跃 est 滑动均值天花板 ~40M,升档永远批不下来。
  */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
@@ -105,8 +110,10 @@ class HeightAwareAdaptiveTrackSelection(
     // = 过去 60s 墙钟实际交付(SabrMediaFetcher.getSustainedBitrateEstimate),要求 ≥ 声明码率才许升。
     val sustained = (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimate() ?: -1L
     // alpha.9Z(升档滞回,防降档后横跳):带宽估计在档位临界值附近抖动时,无滞回会 308↔315 反复切轨
-    // (每次切轨都要拉新 init 段,还丢已缓冲的高档数据)。升档要求 ①活跃 est ≥ 声明码率 ×1.25(乘数
-    // 恒生效,不再随缓冲条件开关——旧实现缓冲<30s 时门槛反而更低,方向倒挂) ②持续带宽 ≥ 声明码率
+    // (每次切轨都要拉新 init 段,还丢已缓冲的高档数据)。升档要求 ①活跃 est ≥ 声明码率 ×1.1(乘数
+    // 2026-08-30 由 1.25 放宽:重锚已消除「突发撑高 est 升完必卡」,乘数不再承担防卡职能,只留防临界
+    // 抖动的余量;且高码率视频声明值虚高,1.25 会把门槛抬出活跃 est 天花板,升档永批不下来)
+    // ②持续带宽 ≥ 声明码率
     // ③降档后:缓冲 ≥30s 且距上次降档 ≥3min(首次选档 lastDowngrade=0 不受 30s 限制,起播爬档不被卡;
     // 网络真改善时最多晚 3min 升档;手动选档走单轨组不经此路,不受影响)。
     val canUpgrade = (lastDowngradeElapsedMs == 0L || bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US) &&
@@ -117,7 +124,7 @@ class HeightAwareAdaptiveTrackSelection(
       if (isTrackExcluded(i, nowMs)) continue
       val f = getFormat(i)
       val isUpgrade = f.height > currentHeight
-      val required = if (isUpgrade) f.bitrate * 5L / 4L else f.bitrate.toLong()
+      val required = if (isUpgrade) f.bitrate * 11L / 10L else f.bitrate.toLong()
       if (required > effective) continue // bitrate 只当带宽门槛
       if (isUpgrade && (!canUpgrade || (sustained in 0 until f.bitrate))) continue
       // 选声明码率可负担的最高分辨率档;同 height 多 codec(VP9/H264)按 bitrate 降序遍历先到的码率

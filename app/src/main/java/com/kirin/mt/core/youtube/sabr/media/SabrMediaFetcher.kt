@@ -234,6 +234,10 @@ internal class SabrMediaFetcher(
    * 的 gap 扣减同口径)后,「管道空闲因为需求低」不再拉低估计,而 GC/断流/服务端 pacing 期间 runway
    * 低、滑行扣不掉,照旧压低 sustained → 防升高档后卡死的意图保留。证据 <15s(刚起播/暂停恢复)返回
    * -1,由调用方回退活跃传输 est。专供升档判定,降档走 [getRealBitrateEstimate]。
+   *
+   * 2026-08-30 修 sus 垃圾尖峰(真机实测 500-635M 物理不可能):gap 扣减后跨度原被 coerceIn 夹到
+   * 下限 1s,停闸空窗接近全跨度时(bytes/1s)直接爆炸。现改为:扣减后跨度 <15s(证据不足)返回 -1,
+   * 由调用方回退活跃 est,不再出垃圾值。
    */
   fun getSustainedBitrateEstimate(): Long {
     synchronized(realBandwidthLock) {
@@ -247,8 +251,9 @@ internal class SabrMediaFetcher(
       if (sustainedSamples.isEmpty() || sustainedBytes <= 0L) return -1L
       val rawSpanMs = now - sustainedSamples.first().endWallMs
       if (rawSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
-      val activeSpanMs = (rawSpanMs - sustainedGapMs).coerceIn(1_000L, SUSTAINED_WINDOW_MS)
-      return sustainedBytes * 8000L / activeSpanMs
+      val activeSpanMs = rawSpanMs - sustainedGapMs
+      if (activeSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
+      return sustainedBytes * 8000L / activeSpanMs.coerceAtMost(SUSTAINED_WINDOW_MS)
     }
   }
 
