@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.7-alpha.7](#v307-alpha7)
 - [v3.0.7-alpha.6](#v307-alpha6)
 - [v3.0.7-alpha.5](#v307-alpha5)
 - [v3.0.7-alpha.4](#v307-alpha4)
@@ -208,6 +209,16 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.7-alpha.7
+
+**Firebase Crashlytics 日志回收 + 崩溃自动上报开关(默认关)**。
+
+### 变更
+- **日志远程回收**:接入 Firebase Crashlytics(无需 Google Play Services,AOSP 盒子可上报);`google-services`/`crashlytics` 插件在 `google-services.json` 就位时自动激活,注册包名 `com.kirin.mt` 与 `com.kirin.mt.debug`。
+- **日志详情页「上报」按钮(TV + 移动端)**:把当前查看的日志尾部(≤1500 行)以非致命异常上报,控制台对应 issue 的「日志/键」标签页可查;未配置 Firebase 时 toast 提示不崩溃,不影响其它功能。
+- **设置新增「崩溃日志自动上报」,默认关**(TV 主设置列表 + 移动端设置页):关闭时崩溃数据不自动出网,崩溃日志仅本地留存;开启后未捕获崩溃的日志尾部自动注入崩溃报告。
+- **既有能力不变**:日志列表「分享」仍为系统分享面板;WebDAV 备份日志入口照旧。
 
 ## v3.0.7-alpha.6
 
