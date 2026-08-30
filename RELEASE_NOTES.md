@@ -3,6 +3,7 @@
 ## 目录
 
 - [v3.0.7](#v307)
+- [v3.0.7-alpha.14](#v307-alpha14)
 - [v3.0.7-alpha.13](#v307-alpha13)
 - [v3.0.7-alpha.12](#v307-alpha12)
 - [v3.0.7-alpha.11](#v307-alpha11)
@@ -232,6 +233,14 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v3.0.7-alpha.14
+
+**设置页「关于」归位到程序更新组(TV)+ 移动端补「关于」折叠区**。
+
+### 变更
+- **TV**(`SettingsScreen`):「关于」行从「日志」之后移入程序更新节,作为列表最末行(当前版本 → 最新版本 → 更新日志 → 关于);`settingsItemToLazyIndex` 相应重排——更新日志条件项固定 44,关于行按更新日志是否显示取 44/45(条件项不再是列尾,须联动偏移);`SettingsFocusableItems` 焦点循环顺序同步。
+- **移动端**(`MobileSettingsScreen`):补充「关于」折叠面板(镜像 IPTV/WebDAV 折叠区结构),置于程序更新节之后——项目名称/简介、项目地址(点击跳浏览器)、开源协议、依赖库清单(点击打开项目主页)。信息与 TV 关于面板同源:`SettingsAboutProjectUrl`/`SettingsAboutLibraries`/`SettingsAboutLibrary` 放开为 `internal` 复用,不复制清单;TV 端二维码不带上(移动端直接可点)。
 
 ## v3.0.7-alpha.13
 
