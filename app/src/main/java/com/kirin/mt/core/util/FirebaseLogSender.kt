@@ -123,22 +123,15 @@ object FirebaseLogSender {
       crashlytics.setCustomKey("log_size", file.length())
       crashlytics.recordException(RuntimeException("Manual log share: ${file.name}"))
       logger.info { "send: 已注入 ${lines.size} 行 + recordException 入队" }
-      // 无论「崩溃自动上报」开关联,手动上报总是显式放行即时上传(TV 常驻前台,
-      // 等 SDK 批量时机可能拖到 app 回后台)。官方流程先 checkForUnsentReports
-      // 等待排队数据落盘完成再 sendUnsentReports,直接同步 send 有竞态丢报告。
-      crashlytics.checkForUnsentReports().addOnCompleteListener { task ->
-        val unsent = task.result == true
-        logger.info { "send: checkForUnsentReports=${task.result}异常=${task.exception?.message}" }
-        if (unsent) {
-          try {
-            crashlytics.sendUnsentReports()
-            logger.info { "send: sendUnsentReports 已触发,上报即时送出" }
-          } catch (e: Exception) {
-            logger.error(e) { "send: sendUnsentReports 调用失败" }
-          }
-        } else {
-          logger.warn { "send: 无未送报告可放行(可能已被竞态 flush 丢失或已上传)" }
-        }
+      // 手动上报总是显式即时上传(TV 常驻前台,等 SDK 批量时机可能拖到 app 回后台)。
+      // 注意不能 checkForUnsentReports 门控后再 send:该 API 在「自动采集」模式(开关开)
+      // 下恒返回 false,会把显式送行整个跳过;这里无条件 sendUnsentReports 强制 flush
+      // 已持久化的报告,重复调用无害。
+      try {
+        crashlytics.sendUnsentReports()
+        logger.info { "send: sendUnsentReports 已触发,上报即时送出" }
+      } catch (e: Exception) {
+        logger.error(e) { "send: sendUnsentReports 调用失败" }
       }
       Unit
     }.onFailure { error ->
