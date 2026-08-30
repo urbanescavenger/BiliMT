@@ -188,8 +188,9 @@ class HeightAwareAdaptiveTrackSelection(
       val isUpgrade = f.height > currentHeight
       // 2026-08-31 降档滞回:仅当前档的降档判据放宽 ×0.85(15% 死区),升档/降档候选档保持全额
       // required——est 巡航骑在门槛 ±10% 时(declared=真平均后常态)不再每周期穿线切档。
-      val required =
-        if (i == selected) f.bitrate * DOWNSHIFT_MARGIN_PERMILLE / 1000L else f.bitrate
+      // 两分支统一 Long(Int×Long 若不显式 toLong 会推断成 Number&Comparable<*> 星投影,CompareTo 禁用)。
+      val required: Long =
+        if (i == selected) f.bitrate * DOWNSHIFT_MARGIN_PERMILLE / 1000L else f.bitrate.toLong()
       if (required > effective) continue
       if (isUpgrade && (!canUpgrade || (sustained in 0 until required))) continue
       // 顶档(仅 height==组内最高,即真正在尝试 4K 的那一档)sustained 加码 ×1.1,防边缘抖动
