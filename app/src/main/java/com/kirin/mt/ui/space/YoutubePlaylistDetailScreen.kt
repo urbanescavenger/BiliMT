@@ -81,6 +81,8 @@ private const val CompletedThresholdMs = 2_000L
  * 缩略图底部观看进度条 + 右下角「已看完」角标:数据取本地 YouTube 播放历史
  * (YoutubeHistoryStore.positionMs/durationMs,播放器写入;TV 播完写 ≈duration,
  * 移动端播完写 0,两种都算已看完)。
+ * 「正在播放」标记(P11-69,用户反馈列表内看不出选过的视频):播放历史 lastPlayedAtMs
+ * 最新的那条视频行,序号换成粉色 ▶ + 标题变粉(全列表唯一;从未播过无标记)。
  */
 @Composable
 internal fun YoutubePlaylistDetailScreen(
@@ -158,6 +160,15 @@ internal fun YoutubePlaylistDetailScreen(
   // collectAsState 持续订阅:播放器写入进度返回本页即刷新,无需手动刷新。
   val history by youtubeHistoryStore.history.collectAsState(initial = emptyList())
   val historyByVideoId = remember(history) { history.associateBy { it.videoId } }
+  // 「正在播放」标记:播放历史里 lastPlayedAtMs 最新的那条(全列表唯一)。
+  // 播放器播这条时写入进度,lastPlayedAtMs 最大即最近在播;从未播过的列表无标记。
+  val playingVideoId = remember(videos, history) {
+    videos.asSequence()
+      .mapNotNull { historyByVideoId[it.bvid] }
+      .filter { it.lastPlayedAtMs > 0L && it.positionMs >= 0L }
+      .maxByOrNull { it.lastPlayedAtMs }
+      ?.videoId
+  }
 
   // 首屏到达后聚焦「播放全部」。
   LaunchedEffect(loading, failed) {
@@ -345,6 +356,7 @@ internal fun YoutubePlaylistDetailScreen(
               index = index,
               progressRatio = ratio,
               completed = completed,
+              playing = video.bvid == playingVideoId,
               onFocused = {
                 if (index >= videos.size - 6) loadNext()
               },
@@ -401,13 +413,14 @@ private fun YoutubePlaylistBackChip(onActivate: () -> Boolean) {
   }
 }
 
-/** 详情页一条视频行:序号 + 封面(右下角「已看完」角标、底部观看进度条) + 标题/作者/播放量·时间。聚焦近底触发翻页。 */
+/** 详情页一条视频行:序号(正在播放换成粉色 ▶) + 封面(右下角「已看完」角标、底部观看进度条) + 标题(正在播放变粉)/作者。聚焦近底触发翻页。 */
 @Composable
 private fun YoutubePlaylistVideoRow(
   video: VideoSummary,
   index: Int,
   progressRatio: Float,
   completed: Boolean,
+  playing: Boolean,
   onFocused: () -> Unit,
   onActivate: () -> Unit,
 ) {
@@ -447,9 +460,10 @@ private fun YoutubePlaylistVideoRow(
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
   ) {
+    // 正在播放:序号换成粉色 ▶(对齐用户确认样例),标题同步变粉。
     Text(
-      text = "${index + 1}",
-      color = BiliColors.TextSecondary,
+      text = if (playing) "▶" else "${index + 1}",
+      color = if (playing) BiliColors.BiliPink else BiliColors.TextSecondary,
       fontSize = BiliTypography.Body,
       textAlign = TextAlign.Center,
       modifier = Modifier.width(28.dp),
@@ -501,7 +515,7 @@ private fun YoutubePlaylistVideoRow(
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(BiliSpacing.Xs)) {
       Text(
         text = video.title,
-        color = BiliColors.TextPrimary,
+        color = if (playing) BiliColors.BiliPink else BiliColors.TextPrimary,
         fontSize = BiliTypography.Body,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
