@@ -99,10 +99,16 @@ object FirebaseLogSender {
 
   /**
    * 把 [file] 的日志尾部(最多 [MAX_SEND_LINES] 行)注入 Crashlytics 并以非致命异常上报。
-   * 失败(未配置)时返回 [Result.failure] 供 UI toast。上报是异步排队的:
-   * 方法成功返回只代表已入队,控制台通常几分钟内出现。
+   *
+   * 返回值只代表「入队」阶段成败(未配置/读文件异常);真正的网络上传结果通过
+   * [onDelivered] 回调(sendUnsentReports 的 Task 完成时触发,可能在任意线程):
+   * 成功才允许 UI 显示「已上报」,失败带原因 toast「上报失败」,杜绝假成功。
    */
-  fun sendLogFile(context: Context, file: File): Result<Unit> {
+  fun sendLogFile(
+    context: Context,
+    file: File,
+    onDelivered: (Result<Unit>) -> Unit = {},
+  ): Result<Unit> {
     val appContext = context.applicationContext
     if (!isAvailable(appContext)) {
       logger.warn { "send: Firebase 未配置,拒绝上报 ${file.name}" }
@@ -129,9 +135,18 @@ object FirebaseLogSender {
       // 已持久化的报告,重复调用无害。
       try {
         crashlytics.sendUnsentReports()
-        logger.info { "send: sendUnsentReports 已触发,上报即时送出" }
+          .addOnSuccessListener {
+            logger.info { "send: 上传任务完成(SDK 回调成功)" }
+            onDelivered(Result.success(Unit))
+          }
+          .addOnFailureListener { e ->
+            logger.error(e) { "send: 上传任务失败(SDK 回调)" }
+            onDelivered(Result.failure(e))
+          }
+        logger.info { "send: sendUnsentReports 已触发,上报在途" }
       } catch (e: Exception) {
         logger.error(e) { "send: sendUnsentReports 调用失败" }
+        onDelivered(Result.failure(e))
       }
       Unit
     }.onFailure { error ->
