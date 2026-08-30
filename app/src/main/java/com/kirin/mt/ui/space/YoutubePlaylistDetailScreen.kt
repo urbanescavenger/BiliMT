@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.space
 
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -40,6 +41,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -58,7 +60,8 @@ import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.core.youtube.YoutubePlaylistHeader
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.focus.focusDiag
-import com.kirin.mt.ui.player.playerFocusedLiquidGlassSurface
+import com.kirin.mt.ui.glass.LocalLiquidGlassBackdrop
+import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliRadius
@@ -73,6 +76,22 @@ private const val CompletedThresholdMs = 2_000L
 
 /** 初焦重试上限(帧):覆盖层初焦单发在低端盒子上会撞「FocusRequester is not initialized」,失败即整页无焦点。 */
 private const val InitialFocusMaxFrames = 30
+
+/** 聚焦高亮底色透明度(纯粉直画,用户选定样例 A:比玻璃面 PlayerPanelFocused 的 30% 再实一档)。 */
+private const val FocusHighlightAlpha = 0.35f
+
+/**
+ * 详情页聚焦高亮底:纯粉半透明直画 background,**不走 playerFocusedLiquidGlassSurface 玻璃链路**。
+ * P11-52 的玻璃高亮在覆盖层环境真机不可见(焦点已确认进屏 GAINED [playlist-detail]、OK 可播,
+ * 用户仍报整页无高亮),改为不依赖玻璃管线/性能策略的硬渲染(P11-72,样例 A:粉底+粉框);
+ * 粉边框仍由调用处 .border(3dp) 叠加。
+ */
+private fun Modifier.playlistFocusFill(focused: Boolean, shape: Shape): Modifier =
+  if (focused) {
+    background(BiliColors.BiliPink.copy(alpha = FocusHighlightAlpha), shape)
+  } else {
+    this
+  }
 
 /**
  * TV 版 YouTube 播放列表详情页(频道页"播放列表" tab 点卡片进入)。镜像移动端
@@ -297,12 +316,12 @@ internal fun YoutubePlaylistDetailScreen(
                 )
               }
               // 「播放全部」:第一条起播,整份已加载列表作连播队列。
-              // 聚焦高亮 = 高亮底色(播放器侧板行同款玻璃面)+粉边框——仅细边框在 TV 上几乎不可见。
+              // 聚焦高亮 = 实心粉底 + 粉边框(硬渲染,不再走玻璃链路,见 playlistFocusFill 注释)。
               val shape = RoundedCornerShape(BiliRadius.Pill)
               Box(
                 modifier = Modifier
                   .clip(shape)
-                  .playerFocusedLiquidGlassSurface(shape = shape, focused = playAllFocused)
+                  .playlistFocusFill(focused = playAllFocused, shape = shape)
                   .border(
                     androidx.compose.foundation.BorderStroke(
                       BiliFocus.BorderWidth,
@@ -455,13 +474,17 @@ private fun YoutubePlaylistVideoRow(
 ) {
   var focused by remember { mutableStateOf(false) }
   val shape = RoundedCornerShape(BiliRadius.Card)
+  // 玻璃高亮渲染链路诊断:一次真机日志分辨「焦点回调没触发」vs「玻璃路径没画出来」。
+  val performancePolicy = LocalBiliPerformancePolicy.current
+  val liquidGlassEnabled =
+    performancePolicy.cinematicVisualEffectsEnabled && performancePolicy.liquidGlassCardsEnabled
+  val backdropPresent = LocalLiquidGlassBackdrop.current != null
   Row(
     modifier = Modifier
       .fillMaxWidth()
       .clip(shape)
-      // 聚焦高亮 = 高亮底色(播放器侧板行同款玻璃面)+粉边框——仅细边框在 TV 上几乎不可见,
-      // 用户反馈聚焦行与其它行无区别。
-      .playerFocusedLiquidGlassSurface(shape = shape, focused = focused)
+      // 聚焦高亮 = 实心粉底 + 粉边框(硬渲染,不再走玻璃链路,见 playlistFocusFill 注释)。
+      .playlistFocusFill(focused = focused, shape = shape)
       .border(
         androidx.compose.foundation.BorderStroke(
           BiliFocus.BorderWidth,
@@ -471,6 +494,13 @@ private fun YoutubePlaylistVideoRow(
       )
       .focusable()
       .onFocusChanged {
+        if (it.isFocused != focused) {
+          Log.i(
+            "BiliMT:FocusDiag",
+            "playlist-row index=$index focused=${it.isFocused} " +
+              "glass=$liquidGlassEnabled backdrop=$backdropPresent",
+          )
+        }
         focused = it.isFocused
         if (it.isFocused) onFocused()
       }
