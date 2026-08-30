@@ -1120,3 +1120,4 @@ Flutter 参考 app 继续保留在原项目中，用于行为对照和回退参�
 - 更新检查：仅做手动检查（设置 → 系统设置 → 程序更新），从 GitHub Releases API 拉取最新 tag 与本地 versionCode 对比，按设备 ABI 选 asset；不接入自动/后台检查。
 - 插件策略：不做可扩展插件系统，不保留独立插件标签页；只保留空降助手，在设置页提供开关。
 | P11-62 | Crashlytics 集成 + 日志手动「上报」(日志查看页一键把日志尾部送 Crashlytics 非致命报告) | 实施中(代码完成待云编译;google-services.json 未就位时插件条件禁用,待用户在 Firebase 控制台建项目后放入 app/ 目录自动激活) |
+| P11-67 | 声明码率口径修正:ABR 带宽改用 averageBitrate(真平均)优先,peak 回落;calib 采样折算机制整体取消(required=裸声明=实需);顶档 sustained 门槛 0.6→×1.1(真平均口径 VBR 尖峰余量);升档重锚锚裸声明。缘起:23:00 真机 4K 升档失败复盘——`bitrate` 字段是 VBR 峰值(比真平均高 ~60-75%),calib/0.6 gate 连环补偿注定失真 | 实施中(代码完成待云编译,详见 `docs/youtube-hd-playback.md` §6.25 与 `docs/youtube-sabr-abr-upshift-notes.md` §16) |

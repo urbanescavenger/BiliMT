@@ -51,6 +51,20 @@ import com.google.common.collect.ImmutableList
  *   toIntOrNull 解析失败 → calib 恒 1.0,实测门槛整场未生效。改取最后一个冒号后段解析。
  * ②升档后 10s 禁止 est 回降——重锚把 est 精确锚在新档门槛,起步期 0 供给 gap 样本立刻打回旧档,
  *   再被 3min 冷却锁死(真饿由水位急救兜底,不经此禁令)。
+ *
+ * 2026-08-30(声明码率口径修正:peak → averageBitrate,23:00 4K 失败真机复盘):ABR 一直拿
+ * /player 的 `bitrate` 当"声明码率",但该字段是 **VBR 峰值**(比真实平均高 ~60-75%);真实平均是
+ * `averageBitrate`(≈ contentLength/duration)。本视频 itag315 声明 32.3M(peak)而实测消耗 ~23.4M,
+ * 两轮失败都源于在失真口径上叠校准:calib 从低档 peak 比外推高档(0.779),顶档 0.6 gate(0.6×32.3M=
+ * 19.4M)在 sus 28-34M 时放行 4K——网络先真给 60s 高吞吐再塌,门槛全部"合法通过"。已由
+ * YoutubePlaybackResolver 全链路把 declared 换成 averageBitrate(WEB 原生字段 / NewPipe 自算,
+ * 见 buildSabrTrack)。口径修正后本类同步简化(用户决策):
+ * ①**calib 机制整体取消**——declared=真实平均后 required=f.bitrate 即实需,采样折算(含成熟度地板
+ *   0.65/0.5/0.35)失去意义,删除;成熟期 calib 本就收敛 ≈1,取消等价,只去掉未熟期折算噪声。
+ * ②**顶档门槛保留、基准重标 ×1.1**——旧 0.6 是对 peak 虚高的修正(0.6×peak≈1.2×real);declared
+ *   已是真平均后,门槛直接 sustained ≥ declared×1.1(1.1=60s 持续均值余量,防 VBR 尖峰打穿)。
+ *   本视频:315 声明 32.3M→~23M,顶档门槛 19.4M→~25.3M,夜间塌方段(sus 8M)永不批准。
+ * 其余机制(升档重锚、水位急救、升档冷却、10s 禁回降、逐步候选升降)语义不变,锚点改裸声明。
  */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
@@ -121,34 +135,13 @@ class HeightAwareAdaptiveTrackSelection(
     val effective = bandwidthMeter.getBitrateEstimate()
     // alpha.9Z(升档用持续带宽):突发速率 est 在重填缓冲期间会冲到 40-70M(2026-08-27 真机:一笔
     // 74Mbps 突发把 est 从 16M 抬到 40M 过 4K 门槛 → 升完必卡,pacing 有效供给只有 16-20M)。持续带宽
-    // = 过去 60s 墙钟实际交付(SabrMediaFetcher.getSustainedBitrateEstimate),要求 ≥ 校准门槛才许升。
+    // = 过去 60s 墙钟实际交付(SabrMediaFetcher.getSustainedBitrateEstimate),要求 ≥ 声明码率才许升。
     val sustained = (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimate() ?: -1L
-    // 2026-08-30 实测码率校准门槛(已复盘验证,见 docs §12/§13):声明码率在高码率源上虚高约 2×,
-    // 连续两轮 ×1.25/×1.1 乘数都卡在临界。改为用「当前档实测消耗/声明」校准系数(calib)折算全部候选:
-    // required = candidateDeclared × calib。对当前档,declared×calib = 实测消耗 → 降档判据落到真实消耗
-    // (est 起伏不再每周期误降);对升档候选,按同内容系数外推真实需求。
-    // 2026-08-30(calib 成熟度地板,修「升 308 后 3s 决策 4K 门槛被压到 0.35 地板 → 105M 声明的 4K
-    // 按 36.9M 误批→漏光缓冲」):刚升入的档只有 3-4 段样本,比值偏低属采样噪声。实测段数 <5 地板
-    // 0.65、<12 地板 0.5、≥12 才放 0.35——第一分钟门槛不被新采样拉穿,4K(105M×0.65=68M)当时批不下来。
-    val currentItag = itagOf(getFormat(selected))
-    val currentDeclared = getFormat(selected).bitrate.toLong()
-    val calibPermille = if (currentItag > 0 && currentDeclared > 0) {
-      val meter = bandwidthMeter as? SabrBandwidthMeter
-      val measured = meter?.getMeasuredBitrateBps(currentItag) ?: -1L
-      if (measured > 0L) {
-        val segs = meter?.getMeasuredSegmentCount(currentItag) ?: 0L
-        val floorPermille = when {
-          segs < 5L -> 650L
-          segs < 12L -> 500L
-          else -> CALIB_MIN_PERMILLE
-        }
-        (measured * 1000L / currentDeclared).coerceIn(floorPermille, 1000L)
-      } else 1000L
-    } else 1000L
+    // 2026-08-30(声明口径修正,见类头):declared 现为 averageBitrate=真实平均消耗,
+    // required = 裸声明;calib 采样折算(实测消耗/声明)机制整体取消。
     // alpha.9Z(升档滞回,防降档后横跳):带宽估计在档位临界值附近抖动时,无滞回会 308↔315 反复切轨
-    // (每次切轨都要拉新 init 段,还丢已缓冲的高档数据)。升档要求 ①活跃 est ≥ 校准门槛(乘数 ×1.0,
-    // 2026-08-30:防卡职能已由重锚+水位急救结构性承担,乘数在声明虚高的视频上只会卡死爬梯)
-    // ②持续带宽 ≥ 校准门槛
+    // (每次切轨都要拉新 init 段,还丢已缓冲的高档数据)。升档要求 ①活跃 est ≥ 声明门槛
+    // ②持续带宽 ≥ 声明门槛
     // ③降档后:缓冲 ≥30s 才许升(首次选档 lastDowngrade=0 不受此限,起播爬档不被卡)。
     // 2026-08-30(用户决策):**3min 升档冷却取消**——22:11-22:14 真机:急救降回 1080p 后缓冲已填满
     // 45s、门槛 12.7M 明明可升,却被冷却硬锁到 22:14:57,用户被迫手动切档。横跳防护由「缓冲 ≥30s
@@ -156,20 +149,19 @@ class HeightAwareAdaptiveTrackSelection(
     val canUpgrade = lastDowngradeElapsedMs == 0L || bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US
     var best = length - 1
     var bestHeight = -1
-    // 最高档(height 2160/4K)额外门槛(2026-08-30 方案B,用户决策):顶档声明的 calib 外推误差最大
-    // (低档轻内容校准系数低估顶档真实消耗,22:43 真机 105M 声明的 4K 按 0.35=36.9M 获批),且 4K 的
-    // pacing 有效供给本就 ≈ 消耗(sus 沿途可达 40-59M 过门槛)→ 边缘 4K 反复获批/漏光/急救, 分钟级
-    // 315↔308 抖动。顶档要求 sustained ≥ declared×0.6(声明虚高 ~2×,0.6 仍远低于真实消耗,千兆管道
-    // 不受损;本视频 63M vs sus 峰 57-59M → 4K 不批,稳 1440p)。
+    // 最高档(height 2160/4K)额外 sustained 门槛(2026-08-30 方案B→口径修正重标):4K 真平均就是
+    // 实需,起步窄选期低档样本对 4K 无参考价值,且 4K 的 pacing 有效供给本就贴地 — 边缘反复获批/
+    // 漏光/急救 → 315↔308 分钟级抖动。顶档要求 sustained ≥ declared×1.1(declared 已是真平均,
+    // 1.1 挡的是 60s 均值口径下的 VBR 尖峰余量;千兆管道不受损,夜间塌方段 sus 8M 永不批 23M 的 4K)。
     val isTopTier = length > 1 && getFormat(0).height >= TOP_TIER_MIN_HEIGHT
     for (i in 0 until length) {
       if (isTrackExcluded(i, nowMs)) continue
       val f = getFormat(i)
       val isUpgrade = f.height > currentHeight
-      val required = f.bitrate * calibPermille / 1000L // bitrate 只当带宽门槛,校准底座
+      val required = f.bitrate // 声明平均=实需,裸判据(calib 已取消)
       if (required > effective) continue
       if (isUpgrade && (!canUpgrade || (sustained in 0 until required))) continue
-      // 顶档(仅 height==组内最高,即真正在尝试 4K 的那一档)要求 sustained 双倍门槛,防边缘抖动
+      // 顶档(仅 height==组内最高,即真正在尝试 4K 的那一档)sustained 加码 ×1.1,防边缘抖动
       if (isUpgrade && isTopTier && i == 0 && sustained < f.bitrate * TOP_TIER_SUSTAINED_PERMILLE / 1000L) {
         continue
       }
@@ -194,18 +186,16 @@ class HeightAwareAdaptiveTrackSelection(
     when {
       // 降档(height 变小)记时间,驱动升档冷却
       getFormat(selected).height < currentHeight -> lastDowngradeElapsedMs = nowMs
-      // 2026-08-30 升档重锚:est 基准重锚到「新档校准码率」(declared×calib,即其预估真实消耗)——
-      // 若锚在声明值,声明虚高的源会瞬间显得"还够再下一档"(连环误升);锚在预估真实值则需真实带宽
-      // 样本顶上来才允许继续爬(见类头注释②)。
+      // 2026-08-30 升档重锚:est 基准重锚到「新档声明码率」。declared 已是 averageBitrate=真实平均
+      // 消耗,无需再校准折算;锚在实需值后,扛不住时真实带宽样本塌下来 est 快速下探降档,扛得住才
+      // 允许继续爬。
       getFormat(selected).height > currentHeight -> {
         lastUpgradeElapsedMs = nowMs
         val newDeclared = getFormat(selected).bitrate.toLong()
-        (bandwidthMeter as? SabrBandwidthMeter)?.reseedToBitrate(newDeclared * calibPermille / 1000L)
+        (bandwidthMeter as? SabrBandwidthMeter)?.reseedToBitrate(newDeclared)
         Log.i(
           "YtSabrAbr",
-          "upshift reseed: est baseline → ${newDeclared * calibPermille / 1000L} " +
-            "(declared=${getFormat(selected).bitrate} calib=${calibPermille / 1000.0} " +
-            "segs=${(bandwidthMeter as? SabrBandwidthMeter)?.getMeasuredSegmentCount(itagOf(getFormat(selected))) ?: 0L} " +
+          "upshift reseed: est baseline → $newDeclared (declared=${getFormat(selected).bitrate} " +
             "itag${itagOf(getFormat(selected))})"
         )
       }
@@ -231,14 +221,16 @@ class HeightAwareAdaptiveTrackSelection(
     const val DOWNGRADE_BUFFERED_US = 8_000_000L
     /** 2026-08-30:升档后的水位急救宽限(ms)——新档刚起步缓冲未回填,不能立刻按同一水位反弹降档。 */
     const val DOWNGRADE_AFTER_UPGRADE_GRACE_MS = 5_000L
-    /** 2026-08-30:校准系数下限(permille)——防「低档轻内容高估品种码率」把高档门槛压穿到真饿。 */
-    const val CALIB_MIN_PERMILLE = 350L
     /** 2026-08-30:升档后禁止 est 回降宽限(ms)——重锚精确锚在新档门槛,起步期小样本会立刻打回。 */
     const val UPGRADE_DOWNGRADE_GRACE_MS = 10_000L
     /** 2026-08-30 方案B:顶档(4K 级)定义高度门槛——组内最高档 height ≥ 此值时启顶档 sustained 加码。 */
     const val TOP_TIER_MIN_HEIGHT = 2160
-    /** 2026-08-30 方案B:顶档升档 sustained 门槛系数千分位——sustained ≥ 声明×0.6 才许升 4K(防边缘循环)。 */
-    const val TOP_TIER_SUSTAINED_PERMILLE = 600L
+    /**
+     * 2026-08-30 修正:顶档升档 sustained 门槛系数千分位——sustained ≥ 声明×1.1 才许升 4K。
+     * 旧 ×0.6 是对 peak 虚高(~2×)的折算;declared 换 averageBitrate=真平均后,1.1 是 60s 均值
+     * 口径下的 VBR 尖峰余量(本视频 315 声明 ~23M → 门槛 ~25.3M)。
+     */
+    const val TOP_TIER_SUSTAINED_PERMILLE = 1100L
   }
 
   override fun getSelectionReason(): Int = androidx.media3.common.C.SELECTION_REASON_ADAPTIVE

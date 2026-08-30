@@ -1555,6 +1555,14 @@ class YoutubePlaybackResolver(
     put("mimeType", stream.format?.mimeType ?: "")
     put("codec", stream.codec ?: "")
     put("bitrate", stream.bitrate)
+    // 2026-08-30 声明口径修正:`bitrate` 是 VBR 峰值(比真平均高 ~60-75%),`averageBitrate`
+    // (contentLength/approxDurationMs 自算,extractor 已解析进 ItagItem)才是真实平均消耗。
+    // 任一未知(直播/老响应)→ 0,buildSabrTrack 回落 peak,行为不劣于旧口径。
+    stream.itagItem?.let { item ->
+      val clen = item.contentLength
+      val durMs = item.approxDurationMs
+      put("averageBitrate", if (clen > 0 && durMs > 0) (clen * 8 / durMs).toInt() else 0)
+    } ?: put("averageBitrate", 0)
     put("fps", stream.fps)
   }
 
@@ -1564,6 +1572,12 @@ class YoutubePlaybackResolver(
     put("mimeType", stream.format?.mimeType ?: "")
     put("codec", stream.codec ?: "")
     put("bitrate", stream.bitrate)
+    // 声明口径修正:同 newPipeVideoRaw(音频 contentLength/approxDurationMs 更精确)。
+    stream.itagItem?.let { item ->
+      val clen = item.contentLength
+      val durMs = item.approxDurationMs
+      put("averageBitrate", if (clen > 0 && durMs > 0) (clen * 8 / durMs).toInt() else 0)
+    } ?: put("averageBitrate", 0)
   }
 
   /** 把 Piped 视频流包装成与 [newPipeVideoRaw] 同形的 JsonObject(供 [buildSabrTrack]/[buildSabrPlaybackInfo] 复用)。 */
@@ -1574,6 +1588,8 @@ class YoutubePlaybackResolver(
     put("mimeType", stream.mimeType ?: "")
     put("codec", stream.codec ?: "")
     put("bitrate", stream.bitrate ?: 0)
+    // 声明口径修正:Piped API 无 average 字段 → 0,回落 peak(保持旧行为)。
+    put("averageBitrate", 0)
     put("fps", stream.fps ?: 0)
   }
 
@@ -1583,6 +1599,8 @@ class YoutubePlaybackResolver(
     put("mimeType", stream.mimeType ?: "")
     put("codec", stream.codec ?: "")
     put("bitrate", stream.bitrate ?: 0)
+    // 声明口径修正:Piped API 无 average 字段 → 0,回落 peak(保持旧行为)。
+    put("averageBitrate", 0)
   }
 
   /**
@@ -1739,7 +1757,10 @@ class YoutubePlaybackResolver(
       id = itag,
       baseUrl = baseUrl,
       backupUrls = emptyList(),
-      bandwidth = raw?.intOrNull("bitrate") ?: 0,
+      // 2026-08-30 修声明口径:bandwidth 改用 averageBitrate(真实平均)优先,peak 回落——
+      // ABR 门槛/重锚据此判"供给 ≥ 实需";WEB /player 原生带 averageBitrate,NewPipe raws
+      // 自算(见 newPipeVideoRaw),Piped 无该字段=0 回落 peak(旧行为)。
+      bandwidth = raw?.intOrNull("averageBitrate")?.takeIf { it > 0 } ?: (raw?.intOrNull("bitrate") ?: 0),
       codecs = codecs,
       width = if (isVideo) (raw?.intOrNull("width") ?: 0) else 0,
       height = if (isVideo) (raw?.intOrNull("height") ?: 0) else 0,
@@ -1858,7 +1879,8 @@ class YoutubePlaybackResolver(
       codecKey = codecKey(codecs),
       width = node.intOrNull("width") ?: 0,
       height = node.intOrNull("height") ?: 0,
-      bitrate = node.intOrNull("bitrate") ?: 0,
+      // 2026-08-30 修声明口径:peak → averageBitrate 优先(classic DASH 路径与 SABR 同口径,见 buildSabrTrack)。
+      bitrate = node.intOrNull("averageBitrate")?.takeIf { it > 0 } ?: (node.intOrNull("bitrate") ?: 0),
       qualityLabel = node.stringOrNull("qualityLabel") ?: "${node.intOrNull("height") ?: 0}p",
       url = url.orEmpty(),
       signatureCipher = cipher,

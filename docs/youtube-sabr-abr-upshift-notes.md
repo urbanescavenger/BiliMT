@@ -364,3 +364,30 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 ### 2026-08-30 追加(方案B,用户决策,96d2390 后)
 
 r1735 复盘通过(急救降回秒级回档、零 watchdog),唯一遗留:本视频 4K pacing 有效供给 (~20M) ≈ 真实消耗 (~21M) 天生临界,升 315 → 60-95s 漏光 → 急救降回 → 秒级爬回,分钟级 315↔308 干净循环。方案B:顶档(组内 height ≥2160 的最高档)升档额外要求 `sustained ≥ declared×0.6`(TOP_TIER_SUSTAINED_PERMILLE,声明虚高 ~2× 故 0.6 远低于真实消耗;本视频 63M vs sus 峰 57-59M → 4K 不批,稳 1440p;千兆管道 sus >63M 照常上 4K)。
+
+## 16. 2026-08-30「升 2160 又失败」:声明码率口径修正 peak → averageBitrate + calib 取消 + 顶档 ×1.1 重标
+
+**现象(23:00 前后真机,视频 4fBaRNYSSOY)**:ABR 按既定机制一路爬到 4K(itag315)后网络塌方,降档 1 步没救回来,水位急救/stall #1→#2 全走完,整段重载回 720p。
+
+**决策级复盘——门槛"全部合法通过",失真在口径**:
+
+| 时间 | 事件 | 判据数据 |
+|---|---|---|
+| 22:59:25 | 窄选起步 [298,302] | bw=14K |
+| 22:59:48 | 升 308(1440p) | calib=0.751(segs=0),reseed=12.03M |
+| 22:59:56 | 升 315(32.3M peak 声明) | calib=0.779 → 门槛 25.2M;est 31.2M 过;顶档 gate 0.6×32.3M=19.4M,sus 28.4-34.5M 过 |
+| 23:00:39 | **rn=19 fetch 仅 942B/1.8s** | est 40509K→6160K 崩塌起点 |
+| 23:00:55 | buffer-critical:315→308(一步) | bufS=4s,供给已 ~7Mbps(15s 下 15MB) |
+| 23:00:57 / 23:01:24 | stall #1 → retry #2(同位置 72534ms);rn=21 47MB/29.6s=12.7M | 连 1440p 都养不起 → 整段重载回 720p |
+
+**联网查证口径**(本节关键结论):InnerTube `/player` 每格式自带两个字段——`bitrate`=**VBR 峰值**、`averageBitrate`=**真实平均**(≈ contentLength/duration);VBR 视频上 peak 比真平均高 ~60-75%(实测样例 itag137:2.0M peak vs 1.19M avg,clen/dur 验证相等)。Google 官方 VP9 VOD 建议 2160p60 编码目标 ~18M;JDownloader itag 表 VP9 4K 标 ~20M;本视频 315 实测消耗 23.4M(与区间吻合)。**此前的声明显然虚高,而 calib/顶档 0.6 全部在 peak 口径上叠修正,连环补偿注定顾此失彼(105M 声明 vs 本视频 32.3M 声明结论相反)。**
+
+**修改(已实施)**:
+1. **resolver 全链路 declared 换 averageBitrate**(YoutubePlaybackResolver):`buildSabrTrack`/`parseFormat` 优先 `averageBitrate>0` 回落 `bitrate`;NewPipe raws 自算 `clen×8/durMs`(extractor 已解析进 ItagItem,`Stream.getItagItem()` 可达),Piped 无字段填 0 回落 peak(旧行为);
+2. **ABR calib 机制整体取消**(用户决策):required=f.bitrate 裸判据;成熟期 calib 本就收敛 ≈1,只去掉未熟期折算噪声(采样/地板全删);
+3. **顶档门槛保留、基准重标**:sustained ≥ declared×**1.1**(旧 0.6 是 peak 虚高修正;真平均=实需后,1.1 是 60s 均值口径的 VBR 尖峰余量)。本视频 315:门槛 19.4M→~25.3M,塌方段(sus 8M)永不批;
+4. 升档重锚锚裸声明 `reseedToBitrate(newDeclared)`,日志去 calib 段。
+
+**参照源码**:NewPipeExtractor fork(extractor/src/main/java/…/services/youtube/YoutubeStreamExtractor.java:1407-1410 已设 contentLength/approxDurationMs;ItagItem.getBitrate=peak)。web 佐证:FOSWLY/vot.js 类型定义、youtube-ext VideoFormat 文档、原始响应 gist(bitrate vs averageBitrate 实测)、developers.google.com/media/vp9/settings/vod。
+
+**未决(下次观察)**:水位急救只降一步,bufS<4s 且已跨两档可降时是否直接跳两档?本次不改,先看口径修正后的表现。
