@@ -134,7 +134,7 @@ class HeightAwareAdaptiveTrackSelection(
       // 2026-08-30 升档重锚:新档声明码率作为 est 新基准,旧档突发样本立即失效(见类头注释②)
       getFormat(selected).height > currentHeight -> {
         lastUpgradeElapsedMs = nowMs
-        (bandwidthMeter as? SabrBandwidthMeter)?.reseedToBitrate(getFormat(selected).bitrate)
+        (bandwidthMeter as? SabrBandwidthMeter)?.reseedToBitrate(getFormat(selected).bitrate.toLong())
         Log.i(
           "YtSabrAbr",
           "upshift reseed: est baseline → ${getFormat(selected).bitrate} (itag${getFormat(selected).id})"
