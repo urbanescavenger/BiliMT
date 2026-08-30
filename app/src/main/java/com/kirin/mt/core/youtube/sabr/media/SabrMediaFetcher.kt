@@ -127,6 +127,20 @@ internal class SabrMediaFetcher(
   private var realBwBytes = 0L
   private var realBwTimeMs = 0L
 
+  // 2026-08-30(实测消耗码率,升降档门槛换地基):声明码率在高码率源上虚高约 2×(真机 302 声明 11.25M
+  // 实测 6.3M、303 声明 22.26M 实测 ~11.5M),声明×est 双失真让乘数门槛(1.25/1.1)连续两轮卡在临界。
+  // 这里从 MEDIA_END 挂账(itag → bytes + 已计段数),实测消耗码率 = bytes×8000 / 段数×平均段时长
+  // (INIT metadata duration/endSegmentNumber)。只按单调 seq 增量记账(重传旧段不重复计入);
+  // <MEASURED_MIN_SEGS 段时证据不足返回 -1,调用方回退声明值,起播首 ~3 段维持旧行为。
+  private class MeasuredTrack {
+    var bytes = 0L
+    var segs = 0L
+    var maxCountedSeq = -1L
+  }
+
+  private val measuredLock = Any()
+  private val measuredTracks = mutableMapOf<Int, MeasuredTrack>()
+
   // alpha.9Z(升档用「持续带宽」):滑动窗口只计传输活跃耗时,重填缓冲期间背靠背突发会把 est 冲到
   // 40-70M(2026-08-27 真机:一笔 74Mbps 突发把 est 从 16M 抬到 40M,恰好过 4K 门槛 → 升完必卡——
   // 服务端 pacing 把长期有效供给压回 16-20M)。持续带宽 = 过去 60s 墙钟内成功交付的媒体字节 / 墙钟
@@ -207,7 +221,10 @@ internal class SabrMediaFetcher(
       // seek/手动选档后的 gap 是操作开销非供给问题:不计 active est,也不计入持续带宽分母。
       demandIdleMs = rawGapMs
     } else {
-      val coastMs = (runwayMs - BW_GAP_RUNWAY_RESERVE_MS).coerceAtLeast(0L)
+      // 2026-08-30:runway 负值 = 快照滞后(1263-1265 真机 runway=-65),拿不到可靠滑行量 → 证据不足,
+      // 全额当需求空闲处理:不惩罚 est(不计 0 供给样本),空窗照常进 sustained 分母扣除。
+      val coastMs = if (runwayMs < 0L) rawGapMs
+        else (runwayMs - BW_GAP_RUNWAY_RESERVE_MS).coerceAtLeast(0L)
       val countedMs = (rawGapMs - coastMs).coerceIn(0L, BW_GAP_MAX_MS)
       if (countedMs >= BW_GAP_MIN_MS) {
         addRealBwSample(0L, countedMs)
@@ -295,6 +312,24 @@ internal class SabrMediaFetcher(
         realBwTimeMs -= front.timeMs
       }
     }
+  }
+
+  /**
+   * 实测消耗码率(itag 子流):MEDIA_END 挂账 bytes ÷ 段数×平均段时长。证据不足(段数 <3、
+   * 尚无 INIT metadata)返回 -1。供升/降档门槛做声明码率的校准底座(HeightAwareAdaptiveTrackSelection)。
+   */
+  fun getMeasuredBitrateBps(itag: Int): Long {
+    if (itag <= 0) return -1L
+    val snapshot = synchronized(measuredLock) {
+      val st = measuredTracks[itag] ?: return -1L
+      if (st.segs < MEASURED_MIN_SEGS) return -1L
+      Pair(st.bytes, st.segs)
+    }
+    val fmt = initializedFormats[itag] ?: return -1L
+    if (fmt.duration <= 0L || fmt.endSegmentNumber <= 0L) return -1L
+    val avgSegMs = fmt.duration / fmt.endSegmentNumber
+    if (avgSegMs <= 0L) return -1L
+    return snapshot.first * 8000L / (snapshot.second * avgSegMs)
   }
 
   /** 真实带宽估计(bps)= 窗口内累计下载量/累计耗时(含卡住与被迫空转)。无样本返回 -1;窗口内全是空转(量=0)返回 0,不回退底层高估。 */
@@ -576,6 +611,17 @@ internal class SabrMediaFetcher(
         Log.i(tag, "MEDIA_END headerId=$headerId itag=${seg.header.itag} seq=${seg.sequenceNumber} chunks=${seg.data.size} bytes=${seg.length()}")
         fmt.downloadedSegments[seg.sequenceNumber] = seg
         if (seg.header.isInitSeg) fmt.initSegment = seg
+        // 2026-08-30 实测消耗码率挂账:只计非 init 段、只按单调 seq 增量(重传旧段不重复计入)。
+        if (!seg.header.isInitSeg) {
+          synchronized(measuredLock) {
+            val st = measuredTracks.getOrPut(seg.header.itag) { MeasuredTrack() }
+            if (seg.sequenceNumber > st.maxCountedSeq) {
+              st.maxCountedSeq = seg.sequenceNumber
+              st.bytes += seg.length()
+              st.segs += 1
+            }
+          }
+        }
       }
       PART_NEXT_REQUEST_POLICY -> {
         val policy = SabrProto.decodeNextRequestPolicy(payload)
@@ -752,6 +798,8 @@ internal class SabrMediaFetcher(
     const val SUSTAINED_WINDOW_MS = 60_000L
     /** 2026-08-30:升档重锚合成样本时长(ms)——est 从「声明码率」起步,随后真实样本平滑接管。 */
     const val REAL_BW_RESEED_MS = 4_000L
+    /** 2026-08-30:实测消耗码率最少段数——少于 3 段(起播 ~16s)证据不足,返回 -1 防小样本抖动。 */
+    const val MEASURED_MIN_SEGS = 3L
     /** alpha.9Z:持续带宽最短跨度,不足视为证据不足返回 -1(回退活跃 est,起播爬档不被卡)。 */
     const val SUSTAINED_MIN_SPAN_MS = 15_000L
   }

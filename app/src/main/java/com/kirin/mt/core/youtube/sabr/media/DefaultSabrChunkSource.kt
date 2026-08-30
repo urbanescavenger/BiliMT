@@ -150,6 +150,9 @@ internal class DefaultSabrChunkSource(
     (bandwidthMeter as? SabrBandwidthMeter)?.setReseedBandwidthProvider { bitrateBps ->
       fetcher.reseedActiveWindow(bitrateBps)
     }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setMeasuredBitrateProvider { itag ->
+      fetcher.getMeasuredBitrateBps(itag)
+    }
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {
@@ -236,6 +239,9 @@ internal class DefaultSabrChunkSource(
         bufferedDurationUs % 1_000_000 / 100_000
       } chunkIndex=${representationHolder.chunkIndex != null} bw=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
         "sus=${(bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimate()?.div(1000) ?: -1L}K " +
+        "meas=${
+          fetcher.getMeasuredBitrateBps(representationHolder.representation.formatId.itag).div(1000)
+        }K " +
         "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
           (0..<trackSelection.length()).joinToString { i ->
             val f = trackSelection.getFormat(i)

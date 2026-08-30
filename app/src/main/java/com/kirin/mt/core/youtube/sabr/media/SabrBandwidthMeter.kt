@@ -33,6 +33,10 @@ internal class SabrBandwidthMeter(
   @Volatile
   private var reseedBandwidthProvider: ((Long) -> Unit)? = null
 
+  /** 2026-08-30:注入实测消耗码率来源(SabrMediaFetcher.getMeasuredBitrateBps,降/升档门槛校准底座)。 */
+  @Volatile
+  private var measuredBitrateProvider: ((Int) -> Long)? = null
+
   /** 由持有 [SabrMediaFetcher] 的一方(DefaultSabrChunkSource)注入真实带宽来源。 */
   fun setRealBandwidthProvider(provider: () -> Long) {
     realBpsProvider = provider
@@ -47,6 +51,14 @@ internal class SabrBandwidthMeter(
   fun setReseedBandwidthProvider(provider: (Long) -> Unit) {
     reseedBandwidthProvider = provider
   }
+
+  /** 2026-08-30:接线实测码率来源。 */
+  fun setMeasuredBitrateProvider(provider: (Int) -> Long) {
+    measuredBitrateProvider = provider
+  }
+
+  /** 2026-08-30:实测消耗码率;未接线/证据不足时 -1(调用方回退声明值)。 */
+  fun getMeasuredBitrateBps(itag: Int): Long = measuredBitrateProvider?.invoke(itag) ?: -1L
 
   /**
    * 2026-08-30 升档重锚:升入新档后把活跃 est 窗口重锚到该档声明码率——原窗口里旧档/重填期的突发高估
