@@ -1065,6 +1065,12 @@ TV 端 `TvVideoGrid`(首页/UP 主页/频道页/动态共用)的焦点在两类�
 
 **relax 窗口**:设计为缓冲设置时长的一半 `bufferMaxMs/2`(TvPlaybackLoadControl 的 PlaybackBufferMax,默认 50s→25s),复用同一值不新增常量。排除用独立常量 `CeilingExclusionMs=600_000L`。
 
+## 6.24 SABR ABR 门槛换地基:实测码率校准 + 水位急救降档 + 升档重锚(2026-08,v3.0.7-alpha.15)
+
+**状态:已实施(b94378d/82b8119/a697cc1/62fe42f),排查全过程与真机逐案证据见 [youtube-sabr-abr-upshift-notes.md](youtube-sabr-abr-upshift-notes.md) §9-§14。**
+
+Auto 升降档三连修(当日 4 轮真机迭代):①声明码率在高码率源虚高 ~2×(302 声明 11.25M 实测 6.3M)+ est 滑动均值被 0 供给 gap 样本压低,声明×est 双失真使乘数门槛(1.25/1.1)连续卡在临界 5-8% → 全部候选门槛改为 `declared × calib`(当前档实测消耗/声明,MEDIA_END 挂账 bytes÷段数×平均段时长,clamp [0.35,1],<3 段退声明行为),乘数取消;②降档以缓冲水位 <8s 且仍下漏为最硬证据直接降一档(est 污染不再误降,修「4K 贴地滑行缓冲 36s→4s 不降→看门狗整段重载」);③升档瞬间活跃 est 窗口重锚到新档 declared×calib(旧档突发样本失效,新档扛不住快速塌),升档后 10s 禁止 est 回降(重锚锚在门槛值,起步期小样本会瞬间打回→3min 冷却锁死的循环);④media3 Merging/TrackGroup 层会把 Format.id 改写成 "0:302" 式复合 id,itag 解析取最后冒号后段;⑤sus(持续带宽)gap 扣减后跨度 <15s 返 -1 修 500M 垃圾尖峰;runway 负值(快照滞后)不惩罚 est。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
