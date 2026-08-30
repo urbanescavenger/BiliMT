@@ -959,6 +959,11 @@ fun BiliTvApp(
                     appSettingsStore.setPlayerLogOverlayEnabled(enabled)
                   }
                 },
+                onCrashLogAutoReportChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setCrashLogAutoReportEnabled(enabled)
+                  }
+                },
                 onAutoConfirmOnFocusChange = { enabled ->
                   coroutineScope.launch {
                     appSettingsStore.setAutoConfirmOnFocus(enabled)

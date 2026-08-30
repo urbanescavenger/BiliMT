@@ -91,6 +91,7 @@ class AppSettingsStore(private val context: Context) {
       showClock = preferences[Keys.ShowClock] ?: true,
       showMiniProgressBar = preferences[Keys.ShowMiniProgressBar] ?: true,
       playerLogOverlayEnabled = preferences[Keys.PlayerLogOverlayEnabled] ?: false,
+      crashLogAutoReportEnabled = preferences[Keys.CrashLogAutoReportEnabled] ?: false,
       autoConfirmOnFocus = autoConfirmOnFocus,
       autoRefreshOnSwitch = autoRefreshOnSwitch,
       liquidGlassCardsEnabled = liquidGlassCardsEnabled,
@@ -288,6 +289,12 @@ class AppSettingsStore(private val context: Context) {
     }
   }
 
+  suspend fun setCrashLogAutoReportEnabled(enabled: Boolean) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.CrashLogAutoReportEnabled] = enabled
+    }
+  }
+
   suspend fun setAutoConfirmOnFocus(enabled: Boolean) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.AutoConfirmOnFocus] = enabled
@@ -434,6 +441,7 @@ class AppSettingsStore(private val context: Context) {
     val ShowClock = booleanPreferencesKey("show_clock")
     val ShowMiniProgressBar = booleanPreferencesKey("show_mini_progress_bar")
     val PlayerLogOverlayEnabled = booleanPreferencesKey("player_log_overlay_enabled")
+    val CrashLogAutoReportEnabled = booleanPreferencesKey("crash_log_auto_report_enabled")
     val AutoConfirmOnFocus = booleanPreferencesKey("auto_confirm_on_focus")
     val AutoRefreshOnSwitch = booleanPreferencesKey("auto_refresh_on_switch")
     val LiquidGlassCardsEnabled = booleanPreferencesKey("liquid_glass_cards_enabled")

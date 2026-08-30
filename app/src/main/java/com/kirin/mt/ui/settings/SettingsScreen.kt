@@ -91,6 +91,7 @@ fun SettingsScreen(
   onShowClockChange: (Boolean) -> Unit,
   onShowMiniProgressBarChange: (Boolean) -> Unit,
   onPlayerLogOverlayEnabledChange: (Boolean) -> Unit,
+  onCrashLogAutoReportChange: (Boolean) -> Unit,
   onAutoConfirmOnFocusChange: (Boolean) -> Unit,
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onHomeSectionEnabledChange: (HomeSection, Boolean) -> Unit,
@@ -155,6 +156,7 @@ fun SettingsScreen(
       SettingsItemShowClock to FocusRequester(),
       SettingsItemShowMiniProgressBar to FocusRequester(),
       SettingsItemPlayerLogOverlay to FocusRequester(),
+      SettingsItemCrashLogAutoReport to FocusRequester(),
       SettingsItemAutoConfirmOnFocus to FocusRequester(),
       SettingsItemAutoRefreshOnSwitch to FocusRequester(),
       SettingsItemVisualPerformanceMode to FocusRequester(),
@@ -285,6 +287,7 @@ fun SettingsScreen(
         onShowClockChange = onShowClockChange,
         onShowMiniProgressBarChange = onShowMiniProgressBarChange,
         onPlayerLogOverlayEnabledChange = onPlayerLogOverlayEnabledChange,
+        onCrashLogAutoReportChange = onCrashLogAutoReportChange,
         onAutoConfirmOnFocusChange = onAutoConfirmOnFocusChange,
         onAutoRefreshOnSwitchChange = onAutoRefreshOnSwitchChange,
         onAboutSelected = {
@@ -517,6 +520,7 @@ private fun SettingsBehaviorColumn(
   onShowClockChange: (Boolean) -> Unit,
   onShowMiniProgressBarChange: (Boolean) -> Unit,
   onPlayerLogOverlayEnabledChange: (Boolean) -> Unit,
+  onCrashLogAutoReportChange: (Boolean) -> Unit,
   onAutoConfirmOnFocusChange: (Boolean) -> Unit,
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onAboutSelected: () -> Unit,
@@ -1345,6 +1349,22 @@ private fun SettingsBehaviorColumn(
         onCheckedChange = onPlayerLogOverlayEnabledChange,
       )
     }
+    item(key = "crash-log-auto-report") {
+      SettingsToggleRow(
+        title = stringResource(R.string.settings_crash_auto_report_title),
+        description = stringResource(R.string.settings_crash_auto_report_description),
+        checked = settings.crashLogAutoReportEnabled,
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemCrashLogAutoReport))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemCrashLogAutoReport,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemCrashLogAutoReport) },
+        onCheckedChange = onCrashLogAutoReportChange,
+      )
+    }
   }
   }
 }
@@ -1396,6 +1416,7 @@ private const val SettingsItemUpdateReleaseNotes = 25
 private const val SettingsItemPlaybackCdn = 21
 private const val SettingsItemLogs = 27
 private const val SettingsItemPlayerLogOverlay = 28
+private const val SettingsItemCrashLogAutoReport = 38
 private const val SettingsItemYoutubeChannels = 29
 private const val SettingsItemWebDav = 30
 private const val SettingsItemYoutubeContentRegion = 33
@@ -1447,6 +1468,7 @@ private val SettingsFocusableItems = listOf(
   SettingsItemLogs,
   SettingsItemAbout,
   SettingsItemPlayerLogOverlay,
+  SettingsItemCrashLogAutoReport,
 )
 
 private enum class SettingsRightPanel {
@@ -1521,6 +1543,10 @@ private fun settingsItemToLazyIndex(
   SettingsItemPlayerLogOverlay -> {
     val updateExtraCount = updateExtraItemCount(updateState)
     43 + updateExtraCount
+  }
+  SettingsItemCrashLogAutoReport -> {
+    val updateExtraCount = updateExtraItemCount(updateState)
+    44 + updateExtraCount
   }
   SettingsItemYoutubeChannels -> {
     val updateExtraCount = updateExtraItemCount(updateState)

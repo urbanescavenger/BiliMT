@@ -65,7 +65,7 @@ internal fun SettingsLogsColumn(
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
-  // 查看中的文件对应的元信息(列表里一定有,找不到时上报按钮禁用为 no-op)
+  // 查看中的文件对应的元信息(列表里一定有,找不到时上报按钮为 no-op)
   val viewingInfo = viewingFile?.let { file -> files.firstOrNull { it.file == file } }
 
   Box(

@@ -331,6 +331,12 @@ fun MobileSettingsScreen(
       description = stringResource(R.string.settings_logs_entry_description),
       onClick = onOpenLogs,
     )
+    MobileSwitchRow(
+      title = stringResource(R.string.settings_crash_auto_report_title),
+      description = stringResource(R.string.settings_crash_auto_report_description),
+      checked = settings.crashLogAutoReportEnabled,
+      onCheckedChange = { scope.launch { appSettingsStore.setCrashLogAutoReportEnabled(it) } },
+    )
     MobileSettingsRow(
       title = stringResource(R.string.downloads_settings_title),
       description = stringResource(R.string.downloads_settings_description),

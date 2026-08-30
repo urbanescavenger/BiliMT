@@ -167,6 +167,8 @@
     <string name="settings_logs_send_success">Reported to Crashlytics</string>
     <string name="settings_logs_send_failed">Report failed: %1$s</string>
     <string name="settings_logs_send_unavailable">Firebase not configured</string>
+    <string name="settings_crash_auto_report_title">Auto-report crash logs</string>
+    <string name="settings_crash_auto_report_description">When enabled, crash log tails upload automatically to Crashlytics; manual reporting from the log viewer is unaffected.</string>
     <string name="settings_logs_close">Close</string>
     <string name="settings_logs_type_crash">Crash</string>
     <string name="settings_logs_type_manual">Manual</string>

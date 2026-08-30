@@ -168,6 +168,8 @@
     <string name="settings_logs_send_success">Enviado a Crashlytics</string>
     <string name="settings_logs_send_failed">Error al informar: %1$s</string>
     <string name="settings_logs_send_unavailable">Firebase no configurado</string>
+    <string name="settings_crash_auto_report_title">Informar fallos automáticamente</string>
+    <string name="settings_crash_auto_report_description">Si se activa, los registros de fallo se suben automáticamente a Crashlytics; el aviso manual del visor de registros no se ve afectado.</string>
     <string name="settings_logs_close">Cerrar</string>
     <string name="settings_logs_type_crash">Fallo</string>
     <string name="settings_logs_type_manual">Manual</string>

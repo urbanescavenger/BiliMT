@@ -171,6 +171,8 @@
     <string name="settings_logs_send_success">&#x5DF2;&#x4E0A;&#x62A5; Crashlytics</string>
     <string name="settings_logs_send_failed">&#x4E0A;&#x62A5;&#x5931;&#x8D25;&#xFF1A;%1$s</string>
     <string name="settings_logs_send_unavailable">&#x672A;&#x914D;&#x7F6E; Firebase</string>
+    <string name="settings_crash_auto_report_title">&#x5D29;&#x6E83;&#x65E5;&#x5FD7;&#x81EA;&#x52A8;&#x4E0A;&#x62A5;</string>
+    <string name="settings_crash_auto_report_description">&#x5F00;&#x542F;&#x540E;&#x5D29;&#x6E83;&#x65E5;&#x5FD7;&#x5C3E;&#x90E8;&#x81EA;&#x52A8;&#x4E0A;&#x4F20; Crashlytics&#xFF1B;&#x65E5;&#x5FD7;&#x8BE6;&#x60C5;&#x9875;&#x7684;&#x624B;&#x52A8;&#x4E0A;&#x62A5;&#x4E0D;&#x53D7;&#x6B64;&#x5F00;&#x5173;&#x9650;&#x5236;&#x3002;</string>
     <string name="settings_logs_close">&#x5173;&#x95ED;</string>
     <string name="settings_logs_type_crash">&#x5D29;&#x6E83;</string>
     <string name="settings_logs_type_manual">&#x624B;&#x52A8;</string>

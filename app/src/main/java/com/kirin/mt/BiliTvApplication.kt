@@ -39,6 +39,8 @@ class BiliTvApplication : Application(), ImageLoaderFactory {
     // 必须在首个 OkHttp 请求前设置。resetForTests 是 OkHttp 4.12 唯一公开的设置 Platform 单例入口。
     Platform.resetForTests(IptvCleartextPlatform(Platform.get()))
     appContainer = AppContainer(this)
+    // 订阅设置流同步「崩溃日志自动上报」开关到 Crashlytics 采集开关(默认关)
+    FirebaseLogSender.bindAutoReport(appContainer.appSettingsStore)
     // path C:初始化 NewPipeExtractor fork(YouTube 服务 + PoTokenProvider)。必须在任何
     // StreamInfo.getInfo() 调用前完成(YoutubePlaybackResolver.resolve 内会调)。
     NewPipeHolder.init(appContainer.youtubeHttpClient, appContainer.biliTvPoTokenProvider)

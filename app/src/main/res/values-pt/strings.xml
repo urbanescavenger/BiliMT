@@ -168,6 +168,8 @@
     <string name="settings_logs_send_success">Enviado para o Crashlytics</string>
     <string name="settings_logs_send_failed">Falha ao comunicar: %1$s</string>
     <string name="settings_logs_send_unavailable">Firebase não configurado</string>
+    <string name="settings_crash_auto_report_title">Comunicar falhos automaticamente</string>
+    <string name="settings_crash_auto_report_description">Quando ativado, os registos de falha são enviados automaticamente para o Crashlytics; a comunicação manual do visualizador de registos não é afetada.</string>
     <string name="settings_logs_close">Fechar</string>
     <string name="settings_logs_type_crash">Falha</string>
     <string name="settings_logs_type_manual">Manual</string>
