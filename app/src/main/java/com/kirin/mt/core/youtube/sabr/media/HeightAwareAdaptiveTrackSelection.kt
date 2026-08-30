@@ -4,6 +4,7 @@ package com.kirin.mt.core.youtube.sabr.media
 
 import android.os.SystemClock
 import android.util.Log
+import androidx.media3.common.Format
 import androidx.media3.common.TrackGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.source.chunk.MediaChunk
@@ -44,6 +45,12 @@ import com.google.common.collect.ImmutableList
  * [0.35,1],未实测退 1.0=声明行为);乘数取消 ×1.0。降档判据从而落到真实消耗(est 起伏 18-24M 不再
  * 误降),升档候选按同内容系数外推真实需求;升档重锚基准同步改为校准值(锚声明会造成声明虚高源的
  * 连环误升)。已对 20:45-52 与 21:03-05 两份日志做决策级复盘通过(docs §13)。
+ *
+ * 2026-08-30(修「Auto 升 1440p 后 1s 打回 → 3min 冷却锁死在 1080p」,21:27 真机)两处:
+ * ①校准系数死锁修复——media3 Merging/TrackGroup 层给 Format.id 加序号前缀(实证 id="0:302"),
+ *   toIntOrNull 解析失败 → calib 恒 1.0,实测门槛整场未生效。改取最后一个冒号后段解析。
+ * ②升档后 10s 禁止 est 回降——重锚把 est 精确锚在新档门槛,起步期 0 供给 gap 样本立刻打回旧档,
+ *   再被 3min 冷却锁死(真饿由水位急救兜底,不经此禁令)。
  */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
@@ -121,7 +128,7 @@ class HeightAwareAdaptiveTrackSelection(
     // required = candidateDeclared × calib。对当前档,declared×calib = 实测消耗 → 降档判据落到真实消耗
     // (est 起伏不再每周期误降);对升档候选,按同内容系数外推真实需求。calib clamp [0.35, 1] 防极端;
     // 实测未就绪(<3 段,起播 ~16s)退回 declared 原值 = 旧声明行为,门槛偏保守只晚不冒险。
-    val currentItag = getFormat(selected).id?.toIntOrNull() ?: -1
+    val currentItag = itagOf(getFormat(selected))
     val currentDeclared = getFormat(selected).bitrate.toLong()
     val calibPermille = if (currentItag > 0 && currentDeclared > 0) {
       val measured = (bandwidthMeter as? SabrBandwidthMeter)?.getMeasuredBitrateBps(currentItag) ?: -1L
@@ -151,6 +158,16 @@ class HeightAwareAdaptiveTrackSelection(
         bestHeight = f.height
       }
     }
+    // 2026-08-30 升档后 10s 禁止 est 回降(修「升 308 后 1s 内被打回 303 → 3min 冷却锁死」):
+    // 重锚把 est 精确锚在新档门槛上,新档 init/段请求期的 0 供给 gap 样本立刻把 est 拽到 required
+    // 以下 → 打回旧档,再被 3min 冷却锁死(21:27:31-32 真机,21:29:30 用户手动切 1440 才恢复)。
+    // 回降宽限 10s:est 基线若真守不住,10s 内水位急救路径(5s 宽限)会接管,不依赖本禁令。
+    if (best != selected &&
+      getFormat(best).height < getFormat(selected).height &&
+      nowMs - lastUpgradeElapsedMs < UPGRADE_DOWNGRADE_GRACE_MS
+    ) {
+      best = selected
+    }
     selected = best
     when {
       // 降档(height 变小)记时间,驱动升档冷却
@@ -165,13 +182,20 @@ class HeightAwareAdaptiveTrackSelection(
         Log.i(
           "YtSabrAbr",
           "upshift reseed: est baseline → ${newDeclared * calibPermille / 1000L} " +
-            "(declared=${getFormat(selected).bitrate} calib=${calibPermille / 1000.0} itag${getFormat(selected).id})"
+            "(declared=${getFormat(selected).bitrate} calib=${calibPermille / 1000.0} itag${itagOf(getFormat(selected))})"
         )
       }
     }
   }
 
   override fun getSelectedIndex(): Int = selected
+
+  /**
+   * 2026-08-30:从 media3 Format.id 解析 itag。id 不保证是裸 itag——media3 的 Merging/TrackGroup 层
+   * 会给子源格式加序号前缀(真机重锚日志实证 id="0:302",ToInt 直接失败 → 校准系数恒 1.0 死锁)。
+   * 取最后一个冒号后段兼容 "0:302"/"302"/null。
+   */
+  private fun itagOf(f: Format): Int = f.id?.substringAfterLast(':', f.id)?.toIntOrNull() ?: -1
 
   private companion object {
     /** alpha.9Z:升档所需的最低缓冲水位(us)——降档自救后缓冲重建到这一水位前,不允许弹回高档。 */
@@ -184,6 +208,8 @@ class HeightAwareAdaptiveTrackSelection(
     const val DOWNGRADE_AFTER_UPGRADE_GRACE_MS = 5_000L
     /** 2026-08-30:校准系数下限(permille)——防「低档轻内容高估品种码率」把高档门槛压穿到真饿。 */
     const val CALIB_MIN_PERMILLE = 350L
+    /** 2026-08-30:升档后禁止 est 回降宽限(ms)——重锚精确锚在新档门槛,起步期小样本会立刻打回。 */
+    const val UPGRADE_DOWNGRADE_GRACE_MS = 10_000L
   }
 
   override fun getSelectionReason(): Int = androidx.media3.common.C.SELECTION_REASON_ADAPTIVE

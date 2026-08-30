@@ -304,3 +304,36 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 - [ ] 无误降:升到 1080p/1440p 后跨停闸周期不应掉回(降档只由水位急救或 est<实测消耗触发)
 - [ ] 4K:声明 110.5M×calib≈44-57M,今晚 pipe 不够则稳定留 1440p,不虚火
 - [ ] §11/§12 各项不回归(水位急救、重锚、无看门狗重载、无横跳)
+
+---
+
+## 14. 2026-08-30「Auto 升 1440p 后 1s 打回 → 3min 冷却锁死在 1080p」:Format.id 前缀致 calib 死锁 + 回降宽限
+
+### 现象(82b8119 包,真机 logs_live.log 21:27-21:29,新视频,声明值正常)
+
+- 21:27:13 Auto 爬梯正常(302→303),21:27:31.79 **升 308(1440p)成功**(bw 15.6M ≥ 声明 14.48M)
+- **1 秒内(21:27:32-35)打回 303** → 记 lastDowngrade → 3min 升档冷却 → 21:27:32-21:30:32 锁死 1080p
+- 21:29:30 用户手动切 1440(fmts=308 单轨组)正常播放——管道没问题的又一例证
+- 三条 `upshift reseed` 全部 `calib=1.0`,而同帧 ABR 行 meas=1761K/3572K 有值 → **实测校准整场没生效**
+
+### 根因一(calib 死锁):media3 TrackGroup/Merging 层重写 Format.id
+
+`HeightAware` 用 `Format.id.toIntOrNull()` 拿 itag;真机重锚日志实证 id 实为 **"0:302"**(media3 源格式在 Merging/TrackGroup 处理时被子序号前缀化)→ toIntOrNull=null → currentItag=-1 → calib 恒 1.0 → 门槛退回声明行为(声明值正常的视频靠运气加深爬梯,虚高的照旧卡死)。
+
+### 根因二(打回-锁死循环):重锚把 est 精确锚在新档门槛上
+
+- 21:27:31.79 升 308:重锚 est baseline = 14483466(calib=1.0 → 精确=声明值=308 门槛)
+- 新档 init/段请求起步期(缓冲 0.7-10s,runway 低)几笔 0 供给 gap 样本把 est 拽到 14483K 以下
+- 下一次评估 `required(308) > effective` 成立 → 打回 303(打回走 `f.height<currentHeight` 分支记 lastDowngrade)
+- 3min 冷却:期间无论 bw 多高 enableUpgrade=false → 21:29:30 用户手动切档中断观察
+
+### 修复
+
+1. `itagOf(Format)`:id 取最后一个冒号后段再 toIntOrNull,兼容 "0:302"/"302"/null → calib 真正生效(本视频 calib≈0.47,308 门槛 14.48M→6.8M)
+2. 升档后 10s 禁止 est 回降(best 落在 lower height 且距 lastUpgrade<10s → 维持现选):起步期不依赖 est 边界判定,真饿由水位急救路径(5s 宽限)兜底
+
+### 待真机复测
+
+- [ ] 重锚日志应出现 `calib=0.xx`(非 1.0)——"0:" 前缀确认在本设备复现
+- [ ] 升 308 后 10s 内不回落;停闸周期恢复也不落(门槛=实测×calib,est 污染窗口裕量大)
+- [ ] 4K(声明 28.45M×calib≈13.4M)本管道 est 19-40M 可能真升 315——观察是否扛得住(扛不住应走水位急救一步降回,非看门狗)
