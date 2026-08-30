@@ -137,6 +137,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.8-alpha.4 | TV YouTube 字幕下线(用户决策:字幕不重要核心是音视频):字幕 MergingMediaSource 整块移除,根治「timedtext 字幕 URL 被掐(81s 响应头超时)拖死 MergingMediaSource 全 child prepare→主源 fetch 零发送→视频转圈加载不出」(直连黑洞同族,官方可播);SabrAwareDataSource 加 youtube/googlevideo 路由诊断日志;附:播放列表聚焦行玻璃面改纯粉实底硬渲染修复 |
 | v3.0.8-alpha.3 | ABR 降档滞回 ×0.85 双阈值死区:当前档降档判据放宽到 required×0.85(升档/候选档保持全额),修「1440p↔1080p 临界来回切」(declared=真平均后 est 巡航骑在门槛±10%,每周期穿线切档,3min 三轮真机实锤);真饿(×0.85 以下)照降,水位急救兜底。附:TV 播放列表详情页初焦进入无焦点修复(初焦单发改验证+重试) |
 | v3.0.8-alpha.2 | 顶档定向冷却:水位急救从 4K(2160p)降下后 3min 内不回弹 4K,防「重填突发过门槛→升 4K→贴地漏光→又降」边缘档反复切档卡顿(只锁顶档,1440p/1080p 升降照常);TV YouTube 播放列表详情页加「正在播放」标记(播放历史最新的行序号换粉▶+标题变粉) |
 | v3.0.8-alpha.1 | 声明码率口径修正:`bitrate` 是 VBR 峰值(虚高~60-75%),换 `averageBitrate`(真平均)优先全链路生效(WEB 原生字段/NewPipe 自算 clen÷dur);calib 采样折算整体取消(required=裸声明=实需);顶档 4K sustained 门槛 0.6→×1.1(真平均口径 VBR 尖峰余量);升档重锚裸锚 |

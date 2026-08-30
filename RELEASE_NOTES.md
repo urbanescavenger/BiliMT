@@ -3,6 +3,7 @@
 ## 目录
 
 - [v3.0.7](#v307)
+- [v3.0.8-alpha.4](#v308-alpha4)
 - [v3.0.8-alpha.3](#v308-alpha3)
 - [v3.0.8-alpha.2](#v308-alpha2)
 - [v3.0.8-alpha.1](#v308-alpha1)
@@ -239,6 +240,16 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v3.0.8-alpha.4
+
+**TV YouTube 字幕下线(根治「视频转圈加载不出、官方可播」)+ 播放列表聚焦高亮硬化**。
+
+### 变更
+- **字幕 MergingMediaSource 整块移除**(用户决策:字幕不重要,核心是音视频稳定性):旧实现把 4 条 WebVTT 字幕以 ProgressiveMediaSource 并入 MergingMediaSource,媒体3 等所有 child prepare 才 selectTracks——timedtext 字幕 URL 响应头被掐(直连黑洞,Http2Stream 等头 81s 超时;官方走自有通道可播)时,字幕 period 挂死拖死主源,SABR `fetch rn=` 零发送,整页转圈。probe 预检方案(过渡版)堵不干净:小探头 3s 偶尔通过,prepare 全量 GET 照样挂。终局:播放链路里不再存在字幕 child,任何字幕网络问题物理上够不到主源;字幕轨数据仍在 PlaybackInfo 传递(未来回归须先「预检+不阻塞主源」)。
+- **路由诊断日志**(`SabrAwareDataSource`):非 sabr 直拉请求中 youtube/googlevideo 域记 host+path 缩略行——以后"直拉被掐"一眼定位(00:25/00:38 两轮诊断靠它收口)。
+- **播放列表聚焦高亮修复**(并行):playlist 视频行/「播放全部」的聚焦玻璃面在覆盖层环境真机渲染不出(焦点实锤进屏仍无高亮),弃玻璃链路改纯粉 35% 实底直画 + 3dp 粉框硬渲染;详情页/频道页网格加 focus 诊断;另含播放列表详情页进入无焦点(初焦验证+重试)修复。
+- 排查证据见 `docs/youtube-sabr-abr-upshift-notes.md` §16-§18 与 CHANGELOG 上下文(P11-52/P11-72/P11-73)。
 
 ## v3.0.8-alpha.3
 
