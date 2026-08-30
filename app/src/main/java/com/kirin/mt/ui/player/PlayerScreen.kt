@@ -75,9 +75,6 @@ import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
-import androidx.media3.extractor.ExtractorsFactory
-import androidx.media3.extractor.text.DefaultSubtitleParserFactory
-import androidx.media3.extractor.text.SubtitleExtractor
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.kirin.mt.R
@@ -1715,26 +1712,13 @@ fun PlayerScreen(
           DashMediaSource.Factory(dataSourceFactory)
             .createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
         }
-        // 字幕合并(YouTube WebVTT URL 直拉,不走 SABR 服务端):每条字幕轨用 SubtitleExtractor 转
-        // MEDIA3_CUES(DefaultExtractorsFactory 不含字幕,必须显式传 ExtractorsFactory),再 MergingMediaSource
-        // 合并进主源。PlayerView 内置 SubtitleView 自动注册为 text output 渲染。无字幕轨时保持原主源。
-        val finalMediaSource = if (effectiveInfo.subtitleTracks.isNotEmpty()) {
-          val subtitleSources = effectiveInfo.subtitleTracks.map { track ->
-            val subtitleFormat = Format.Builder()
-              .setSampleMimeType(MimeTypes.TEXT_VTT)
-              .setLanguage(track.languageCode)
-              .build()
-            val subtitleParserFactory = DefaultSubtitleParserFactory()
-            val extractorsFactory = ExtractorsFactory {
-              arrayOf(SubtitleExtractor(subtitleParserFactory.create(subtitleFormat), subtitleFormat))
-            }
-            ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
-              .createMediaSource(MediaItem.fromUri(track.baseUrl))
-          }
-          MergingMediaSource(mediaSource, *subtitleSources.toTypedArray())
-        } else {
-          mediaSource
-        }
+        // 字幕不再并入主源(P11-73,用户决策:字幕不重要,核心是音视频稳定):
+        // 旧实现把 WebVTT 字幕轨作为 ProgressiveMediaSource 并入 MergingMediaSource——媒体3 要等
+        // **全部** child prepare 完成才 selectTracks,timedtext 响应头被掐(直连黑洞,00:25 真机 81s
+        // 等头超时)时字幕 period 挂死拖死主源,视频转圈加载不出。字幕 URL 网络对播放不可信且非关键,
+        // 彻底移出 Merging,主源直进;字幕轨数据仍在 PlaybackInfo 传递(未来若回归,须先「可达预检+
+        // 失败不阻塞主源」再考虑恢复,参考 P11-72 的 probe 方案)。
+        val finalMediaSource = mediaSource
         // 起始挡位:起播阶段用 min+max 精确锁在起始档(SABR 专属,非 SABR 不卡),保证首段落在起始档
         // (不靠带宽,对齐 LibreTube AbstractPlayerService setMinVideoSize+setMaxVideoSize 锁法,比原 maxHeight
         // 上限更精确,杜绝"起播即顶满 4K");首帧渲染后 onRenderedFirstFrame 松开,升降档交给 ABR+excludeTrack。
