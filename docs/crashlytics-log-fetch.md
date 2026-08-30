@@ -50,6 +50,13 @@ token 只从本地 configstore 运行时读取,代码里无任何凭证,可安�
 过期时自动用 refresh_token 换新并回写(refresh_token 长期有效,通常永不过期,
 只有改密码/主动撤销才需要重新 `firebase login`)。
 
+⚠️ **坑 5**:conda 环境的 openssl 加载 Windows 证书库可能撞上坏证书,报
+`ssl.SSLError: [ASN1: NOT_ENOUGH_DATA]`。脚本已内置 certifi CA bundle 兜底
+(`pip install certifi` 即可),不再走系统证书库。
+
+另:`/events` 端点**必须带 `filter.issue.id`**,不带直接 400;issue 发现只能走
+topIssues(默认 7 天,支持 `filter.interval.start_time/end_time` 拉长窗口)。
+
 ```bash
 # 列最近 issue(7 天,找 "Manual log share: xxx.log")
 python scripts/fetch_crashlytics_logs.py issues
@@ -116,8 +123,11 @@ with open('tmp/latest_event_logs.txt', 'w', encoding='utf-8') as f:
 ## 4. 数据形态与限制
 
 - 事件保留 **90 天**(filter interval 只能往前 90 天;topIssues 默认 7 天)。
-- 每个 event 的 `logs[]` 是注入的原始日志行。上限:**Crashlytics 环形缓冲 ~64KB**,
-  所以 1500 行注入实际只留 ~520 行(尾部),超长日志(如 live 10MB 滚动)只有末尾。
+- 每个 event 的 `logs[]` 是注入的原始日志行。上限:**Crashlytics 环形缓冲 ~64KB(按字节计)**,
+  超限自动丢最旧。2026-08-30 起 App 侧(FirebaseLogSender `selectLinesForInjection`)在注入前
+  做降噪压缩:连续重复行折叠、HWUI/CCodec 等噪音 tag 整类丢、56KB 字节预算从尾往前装
+  (高价值 tag 无条件保留),避免预算被刷屏行吃光后云端只剩一段无效行(如 r1700 曾 1500 行
+  注入只截到 82 行纯 HWUI 噪音)。
 - NON_FATAL 事件带 `exceptions[0].exceptionMessage = "Manual log share: <文件名>"`,
   可以按这个字符串定位手动上报。
 - `customKeys` 里有上报时打的 `log_file` / `log_size`,可和本地文件对账。

@@ -18,6 +18,7 @@ access_token 过期时自动用 refresh_token 换新并回写 configstore(CLI �
 """
 import argparse
 import json
+import ssl
 import sys
 import time
 import urllib.parse
@@ -31,6 +32,19 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 CLIENT_ID = "563584335869-fgrhgmd47bqnekij5i8b5pr03ho849e6.apps.googleusercontent.com"
 CLIENT_SECRET = "j9iVZfS8kkCEFUPaAeJV0sAi"
 OUT_DIR = Path(__file__).resolve().parent.parent / "tmp"
+
+# conda openssl 加载 Windows 证书库可能撞上坏证书(ASN1: NOT_ENOUGH_DATA),
+# 有 certifi 就改用它的 CA bundle 绕开系统证书库
+try:
+    import certifi
+    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _SSL_CTX = None
+
+
+def _open(req, timeout=30):
+    return urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) if _SSL_CTX \
+        else urllib.request.urlopen(req, timeout=timeout)
 
 
 def load_config() -> dict:
@@ -55,7 +69,7 @@ def get_access_token(cfg: dict) -> str:
         "refresh_token": tokens["refresh_token"],
         "grant_type": "refresh_token",
     }).encode()
-    with urllib.request.urlopen(urllib.request.Request(TOKEN_URL, data=data), timeout=30) as resp:
+    with _open(urllib.request.Request(TOKEN_URL, data=data)) as resp:
         result = json.load(resp)
     tokens["access_token"] = result["access_token"]
     tokens["expires_at"] = int(time.time() * 1000) + result.get("expires_in", 3600) * 1000
@@ -70,7 +84,7 @@ def api_get(path: str, params: dict | None = None) -> dict:
     if params:
         url += "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with _open(req) as resp:
         return json.load(resp)
 
 
