@@ -227,6 +227,8 @@ internal fun YoutubePlaylistDetailScreen(
       }
       runCatching {
         if (videos.isNotEmpty()) playAllFocusRequester.requestFocus() else backFocusRequester.requestFocus()
+      }.onFailure {
+        Log.w("BiliMT:FocusDiag", "playlist-request failed attempt=$attempt: ${it.message}")
       }
       attempt++
       withFrameNanos { }
@@ -254,7 +256,28 @@ internal fun YoutubePlaylistDetailScreen(
       .fillMaxSize()
       .background(BiliColors.VideoBlack)
       .focusDiag("playlist-detail")
-      .onFocusChanged { screenHasFocus = it.hasFocus },
+      .onFocusChanged { screenHasFocus = it.hasFocus }
+      // 根级按键日志 + 自动纠焦:任何键按下时若合法落点(播放全部/行/返回 chip)无焦点,
+      // 强行把焦点拉回「播放全部」——不管焦点被谁吃掉都能自愈;按键日志同时回答
+      // 「按键到底有没有到达本屏」「按下时焦点状态是什么」两个问题(P11-72d)。
+      .onPreviewKeyEvent { event ->
+        if (event.type == KeyEventType.KeyDown) {
+          Log.i(
+            "BiliMT:FocusDiag",
+            "playlist-key key=${event.key} legit=${
+              playAllFocused || anyRowFocused || backFocused
+            } screenHasFocus=$screenHasFocus",
+          )
+          if (!(playAllFocused || anyRowFocused || backFocused)) {
+            runCatching {
+              if (videos.isNotEmpty()) playAllFocusRequester.requestFocus() else backFocusRequester.requestFocus()
+            }.onFailure { ex ->
+              Log.w("BiliMT:FocusDiag", "playlist-key-heal failed: ${ex.message}")
+            }
+          }
+        }
+        false // 不消费任何键,只观察与纠焦
+      },
   ) {
     // 顶栏:返回 + 播放列表名。
     Row(
