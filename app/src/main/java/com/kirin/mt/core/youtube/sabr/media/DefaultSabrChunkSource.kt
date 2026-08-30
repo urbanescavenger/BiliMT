@@ -232,6 +232,7 @@ internal class DefaultSabrChunkSource(
       "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
         bufferedDurationUs % 1_000_000 / 100_000
       } chunkIndex=${representationHolder.chunkIndex != null} bw=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
+        "sus=${(bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimate()?.div(1000) ?: -1L}K " +
         "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
           (0..<trackSelection.length()).joinToString { i ->
             val f = trackSelection.getFormat(i)

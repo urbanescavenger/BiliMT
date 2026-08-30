@@ -85,6 +85,7 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 | 2026-08-24 | **带宽驱动选档(最终方案,替代全部 exclude/force 补丁)**:新增 `SabrBandwidthMeter : BandwidthMeter` 包装 DefaultBandwidthMeter,`getBitrateEstimate()` 返回 SabrMediaFetcher 实测真实带宽(中位数);由 DefaultSabrChunkSource 注入真实带宽来源。媒体3 原生 ABR 拿到可信带宽自然选最高可负担档、升降全自动,删除 ceiling/force-climb 排除机制(force-climb 真机反致掉 480p)。PlayerScreen/MobilePlayerScreen 用 wrapper 建带宽计,两处 type DefaultBandwidthMeter→BandwidthMeter | 新建 SabrBandwidthMeter.kt / SabrMediaSource.kt / 两 Screen | 已落地,复测通过(20:27-29 8K 段见下) |
 | 2026-08-24 | **带宽样本计入段间等待(可持续带宽,根治「8K 缓冲掉不降档」)**:带宽驱动选档后 `bw=` 瞬时吞吐(84M)仍高估——8K 段(315 声明 31.6M,真实 ~80M)4.6s 下载后等 23-30s 才拉下一段,瞬时 84M vs 可持续 ~15M;媒体3 拿 73M→effective 51M>31.6M 误判 8K 可负担,缓冲 39s→3.6s 仍不降档。改 `SabrMediaFetcher` 采样 `bps = bytes/(elapsed+gapSinceLastFetchEnd)`,反映真实可持续带宽,ABR 选到可负担档、缓冲掉能降档。加 `lastFetchEndRealtimeMs` 墙钟锚点 | SabrMediaFetcher.kt | 本次新增,待真机复测 |
 | 2026-08-24 | **分辨率优先选档(根治「Auto 卡 1080p 不升」)**:带宽驱动选档后带宽可信,但媒体3 `AdaptiveTrackSelection` 按 **bitrate 降序**选档(bitrate 兼当画质顺序+带宽门槛),而 YouTube 声明 bitrate 与 height 错位(308 1440p 声明 13.9M < 303 1080p 14.4M),媒体3 以为 1080p 是更高级档 → 带宽够也停在 1080p 不升(用户手动选 1440 缓冲正常涨,证明带宽够)。新建 `HeightAwareAdaptiveTrackSelection`:override public `updateSelectedTrack` 自算 `effective=getBitrateEstimate()`(可持续中位数,不再乘 0.7 保守因子)+ 按 **height** 选最高可负担档,bitrate 只当门槛;override public `getSelectedIndex()` 写回自维护索引(父类 `selectedIndex`/`determineIdealSelectedIndex`/`getAllocatedBandwidth` 全 private 不可复用)。Factory override protected `createAdaptiveTrackSelection`(5 参)注入,音频等无 height 组退化父类按码率选档,同 height 多 codec 自然保留高码率变体 | 新建 HeightAwareAdaptiveTrackSelection.kt / 两 Screen(DefaultTrackSelector(context)→(context, Factory)) | 已落地,待真机复测 |
+| 2026-08-30 | **sustained 分母扣减需求驱动的停闸空闲**(修「Auto 不升 1440、手动切正常」,详见 §10):`recordFetchGap` 滑行部分与 seek/手动 gap 记入 `addSustainedGapSample`,`getSustainedBitrateEstimate` 分母改为 `rawSpan − gapMs`;YtSabrAbr 诊断行加 `sus=` | SabrMediaFetcher.kt / DefaultSabrChunkSource.kt | 已落地,待真机复测 |
 
 ---
 
@@ -183,3 +184,36 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 - [ ] **真机复测(r1658+)**:4K 播放中应出现 `bw gap counted:` 日志,慢小响应不再被过滤,est 回落到可持续值(<31.6M)后自动降到 308/303,看门狗重载不再死循环;好网络下 4K 仍能稳定维持(填充期 gap≈0 不受影响)
 - [ ] 段间 ~10s pacing 的归属(服务端限速 vs 客户端队列上限)未最终定性——若为客户端刻意 2 段队列上限,gap 计时会系统性低估带宽;但升档滞回(缓冲 ≥30s 才升)保证最坏结果是 315↔308 震荡而非永久低档
 - [ ] GC 风暴根因未治:4K VP9 段 buffer(10-25MB)把 ~400MB 堆打满,单次 46MB `response.body?.bytes()` 分配即触发连环 GC;根治需段落盘/流式处理,另立项目
+
+---
+
+## 10. 2026-08-30 「Auto 不升 1440、手动切正常」:sustained 分母摊入需求驱动停闸 → 定点死锁(commit 待推,§5 尾行修复)
+
+### 现象(真机 logs_live.log 15:26-15:33,Sony BRAVIA)
+
+- Auto 档起播 480p→720p→1080p60 正常爬,`sel=2(303,7.55M)` 后**钉死不再升**;active est(_bw=_)15:28:53 起 18-19M,早已过 308 门槛①(13.4M×1.25=16.8M),且无降档记录(门③豁免)——卡在门②持续带宽
+- 手动切 1440(15:30:04,selection 重建单轨锁)后每笔 fetch 14-15MB/~9s → **持续 20-23Mbps,播放流畅**,证明管道实际远够 308
+
+### 根因:sustained 的 60s 墙钟分母分不清「管道空闲因为需求低」和「管道空闲因为供给断」
+
+`sustained = 过去 60s 交付字节 ÷ 墙钟跨度(全摊)` 的原意是防「重填期突发速率假信号 → 升完必卡」(§9 r1661)。但它有一个定点死锁:**pinned 低档 + 满缓冲时,管道只在「补一段 ≈10s 内容」的 10s 周期里活跃,其余全停闸空窗**——60s 窗口里 17s 爆发 + 28s 停闸,实测:
+
+```
+15:28:19 bufS=49.4 → 15:28:47 bufS=0.0(28s 零 fetch,满缓冲滑行)
+15:27~15:29 全场交付 ≈60-75MB/60s → sustained ≈ 8-10M < 13.4M(308 档)
+```
+
+即 sustained ≈ **当前档消耗速率**(供给≈需求+服务端 pacing),恒低于高一档声明码率 → 从低档出发永远凑不出升档证据。手动切档走单轨组不经门②,所以一切正常。
+
+### 修复(sustained 分母扣减需求驱动的停闸空闲,与 active est 的 gap 滑行量扣减同口径)
+
+- `SabrMediaFetcher.recordFetchGap`:滑行部分(coast = runway − 10s 安全余量)记入新 `addSustainedGapSample`;seek/手动选档后的 gap 同样全扣
+- `getSustainedBitrateEstimate`:分母 = `rawSpan − sustainedGapMs`(下限 1s 上限 60s)
+- **判别力不变**:GC/断流/服务端 pacing 期间 runway 低、滑行扣不掉,空窗仍留在分母里压低 sustained → 315 防卡死意图保留;只有「满缓冲主动停闸」被豁免
+- 增加诊断:YtSabrAbr 行新增 `sus=`(持续带宽 Kbps),与 `bw=`(活跃 est)并列,真机核对升档判定
+- 风险(与 §9 已记一致):重填期 sustained≈突发速率,308↔315 临界网络可能再现「升 4K→pacing 供给不足→降档」一个循环;由门③缓冲 ≥30s + 冷却 ≥3min + 快速降档兜底,最坏是单次往返而非死循环/看门狗重载
+
+### 待真机复测
+
+- [ ] 1080p 起播满缓冲后应在 ~1-3min 内 Auto 升 1440(YtSabrAbr 行 sus= ≥ 13411K 且 bw= 过门槛)
+- [ ] 真慢网络(供给 < 13.4M)时不误升;sustained 分母修正后 315 防卡死行为不回归(慢网升 4K 应仍被门②/③挡住)

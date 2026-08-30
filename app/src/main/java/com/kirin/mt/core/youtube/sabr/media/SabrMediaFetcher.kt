@@ -136,6 +136,14 @@ internal class SabrMediaFetcher(
   private val sustainedSamples = ArrayDeque<SustainedSample>()
   private var sustainedBytes = 0L
 
+  // 需求驱动空闲扣减(2026-08-30,sustained 分母修正):sustained 分母原为全墙钟跨度,满缓冲停闸的空窗(需求
+  // 所致,管道容量与它无关)也摊进去 → pinned 低档时 sustained≈当前档消耗(定点死锁),永不满足高
+  // 一档门槛。这里与 active est 的 gap 滑行量扣减同口径:满缓冲停闸部分不计入持续分母;真供给中断
+  // (runway 小、滑行扣不掉)仍留在分母里,315 防卡意图不变。
+  private class SustainedGapSample(val endWallMs: Long, val ms: Long)
+  private val sustainedGapSamples = ArrayDeque<SustainedGapSample>()
+  private var sustainedGapMs = 0L
+
   private fun addSustainedSample(bytes: Long) {
     val now = System.currentTimeMillis()
     synchronized(realBandwidthLock) {
@@ -143,6 +151,18 @@ internal class SabrMediaFetcher(
       sustainedBytes += bytes
       while (sustainedSamples.size > 1 && now - sustainedSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
         sustainedBytes -= sustainedSamples.removeFirst().bytes
+      }
+    }
+  }
+
+  private fun addSustainedGapSample(ms: Long) {
+    if (ms <= 0L) return
+    val now = System.currentTimeMillis()
+    synchronized(realBandwidthLock) {
+      sustainedGapSamples.addLast(SustainedGapSample(now, ms))
+      sustainedGapMs += ms
+      while (sustainedGapSamples.size > 1 && now - sustainedGapSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
+        sustainedGapMs -= sustainedGapSamples.removeFirst().ms
       }
     }
   }
@@ -179,14 +199,24 @@ internal class SabrMediaFetcher(
     runwayMs: Long,
     fetchStartMs: Long,
   ) {
-    if (prevFetchEndMs == 0L || fetchStartMs <= prevFetchEndMs) return
-    if ((prevSeekMs ?: 0L) > prevFetchEndMs || (prevManualMs ?: 0L) > prevFetchEndMs) return
-    val coastMs = (runwayMs - BW_GAP_RUNWAY_RESERVE_MS).coerceAtLeast(0L)
-    val countedMs = ((fetchStartMs - prevFetchEndMs) - coastMs).coerceIn(0L, BW_GAP_MAX_MS)
-    if (countedMs >= BW_GAP_MIN_MS) {
-      addRealBwSample(0L, countedMs)
-      Log.i(tag, "bw gap counted: ${countedMs}ms (raw=${fetchStartMs - prevFetchEndMs}ms coast=${coastMs}ms runway=$runwayMs)")
+    if (prevFetchEndMs == 0L) return
+    val rawGapMs = fetchStartMs - prevFetchEndMs
+    if (rawGapMs <= 0L) return
+    val demandIdleMs: Long
+    if ((prevSeekMs ?: 0L) > prevFetchEndMs || (prevManualMs ?: 0L) > prevFetchEndMs) {
+      // seek/手动选档后的 gap 是操作开销非供给问题:不计 active est,也不计入持续带宽分母。
+      demandIdleMs = rawGapMs
+    } else {
+      val coastMs = (runwayMs - BW_GAP_RUNWAY_RESERVE_MS).coerceAtLeast(0L)
+      val countedMs = (rawGapMs - coastMs).coerceIn(0L, BW_GAP_MAX_MS)
+      if (countedMs >= BW_GAP_MIN_MS) {
+        addRealBwSample(0L, countedMs)
+        Log.i(tag, "bw gap counted: ${countedMs}ms (raw=${rawGapMs}ms coast=${coastMs}ms runway=$runwayMs)")
+      }
+      // 需求驱动空闲扣减(2026-08-30):滑行部分(满缓冲主动停闸)= 需求驱动的管道空闲 → 记入持续分母扣除量
+      demandIdleMs = (rawGapMs - countedMs).coerceAtLeast(0L)
     }
+    addSustainedGapSample(demandIdleMs)
   }
 
   /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。快小样本(init/retry/音频段)过滤;但慢小样本(2026-08-27 真机:服务端挂 8.5s 只回 939B)是真实供给中断,必须入账。 */
@@ -198,8 +228,12 @@ internal class SabrMediaFetcher(
   }
 
   /**
-   * 持续带宽(bps)= 过去 60s 墙钟内成功交付媒体字节 / 墙钟跨度(含全部空窗)。跨度 <15s(刚起播/
-   * 暂停后恢复,证据不足)返回 -1,由调用方回退活跃传输 est。专供升档判定,降档走 [getRealBitrateEstimate]。
+   * 持续带宽(bps)= 过去 60s 墙钟内成功交付媒体字节 / 分母(墙钟跨度 − 需求驱动的停闸空闲,2026-08-30 修)。
+   * 2026-08-30 真机实证:1080p 满缓冲 50s 后停闸 28s,全墙钟分母把空窗全摊入 → sustained≈8-10M 恒
+   * <308 门槛 13.4M(手动切 1440 实测持续 20M+),升档被定点锁死。分母改为扣除滑行量(与 active est
+   * 的 gap 扣减同口径)后,「管道空闲因为需求低」不再拉低估计,而 GC/断流/服务端 pacing 期间 runway
+   * 低、滑行扣不掉,照旧压低 sustained → 防升高档后卡死的意图保留。证据 <15s(刚起播/暂停恢复)返回
+   * -1,由调用方回退活跃传输 est。专供升档判定,降档走 [getRealBitrateEstimate]。
    */
   fun getSustainedBitrateEstimate(): Long {
     synchronized(realBandwidthLock) {
@@ -207,10 +241,14 @@ internal class SabrMediaFetcher(
       while (sustainedSamples.size > 1 && now - sustainedSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
         sustainedBytes -= sustainedSamples.removeFirst().bytes
       }
+      while (sustainedGapSamples.size > 1 && now - sustainedGapSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
+        sustainedGapMs -= sustainedGapSamples.removeFirst().ms
+      }
       if (sustainedSamples.isEmpty() || sustainedBytes <= 0L) return -1L
-      val spanMs = now - sustainedSamples.first().endWallMs
-      if (spanMs < SUSTAINED_MIN_SPAN_MS) return -1L
-      return sustainedBytes * 8000L / spanMs.coerceAtMost(SUSTAINED_WINDOW_MS)
+      val rawSpanMs = now - sustainedSamples.first().endWallMs
+      if (rawSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
+      val activeSpanMs = (rawSpanMs - sustainedGapMs).coerceIn(1_000L, SUSTAINED_WINDOW_MS)
+      return sustainedBytes * 8000L / activeSpanMs
     }
   }
 
