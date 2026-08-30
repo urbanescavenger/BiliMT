@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.7-alpha.9](#v307-alpha9)
 - [v3.0.7-alpha.8](#v307-alpha8)
 - [v3.0.7-alpha.7](#v307-alpha7)
 - [v3.0.7-alpha.6](#v307-alpha6)
@@ -210,6 +211,13 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.7-alpha.9
+
+**Release 包 Crashlytics 组件被 R8 削掉的修复**。
+
+### 变更
+- **proguard 整包保护 Firebase 组件装配链**(`com.google.firebase.**` + `com.google.android.gms.tasks.**`):AGP 9 默认 R8 full mode 把只被组件元数据/反射引用的 Crashlytics 类判为未引用删除,release 包(minify)在 `FirebaseCrashlytics.getInstance()` 抛 `FirebaseCrashlytics component is not present` → 手动上报/崩溃自动上报全部失败;debug 包不混淆无此问题,alpha.8 真机实测暴露。整包 keep 规避逐类排查,体积换取确定性。
 
 ## v3.0.7-alpha.8
 
