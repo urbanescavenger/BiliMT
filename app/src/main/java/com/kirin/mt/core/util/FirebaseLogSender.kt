@@ -97,6 +97,11 @@ object FirebaseLogSender {
   private fun logcatBody(line: String): String =
     line.replaceFirst(LOGCAT_META_PREFIX, "")
 
+  /** recordException 落盘后到提醒 SDK 送行的延迟(毫秒):太早会赶在持久化前 flush 扑空。 */
+  private const val SEND_DELAY_MS = 2_000L
+
+  private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
   /** 崩溃自动上报是否开启(设置项默认关;由 [bindAutoReport] 订阅设置流持续同步)。 */
   @Volatile
   var crashAutoReportEnabled: Boolean = false
@@ -213,13 +218,18 @@ object FirebaseLogSender {
       // 跳过送行);这里无条件调用,重复调用无害。SDK 不给上传完成回调(返回 void,
       // Task 监听器不可用,见 2cc5f1c/dfc6e9c),真实成败看 logcat 的
       // TRuntime.CctTransportBackend 诊断行与云端。
-      try {
-        crashlytics.sendUnsentReports()
-        logger.info { "send: sendUnsentReports 已触发,上报在途" }
-      } catch (e: Exception) {
-        logger.error(e) { "send: sendUnsentReports 调用失败" }
-        throw e
-      }
+      //
+      // 送行延后 [SEND_DELAY_MS]:recordException 的持久化是异步的,即时送行会赶在
+      // 报告落盘前发出→flush 扑空(报告滞留设备队列,云端无任何传输尝试;r1708 真机
+      // 18:51/19:13 两次复现)。延后 2s 给落盘留时间;多次分享各自调度,重复调用无害。
+      mainHandler.postDelayed({
+        runCatching {
+          crashlytics.sendUnsentReports()
+          logger.info { "send: sendUnsentReports 已触发,上报在途(延迟 ${SEND_DELAY_MS}ms)" }
+        }.onFailure { error ->
+          logger.error(error) { "send: sendUnsentReports 调用失败" }
+        }
+      }, SEND_DELAY_MS)
       Unit
     }.onFailure { error ->
       logger.error(error) { "send: 上报异常 ${file.name}" }
