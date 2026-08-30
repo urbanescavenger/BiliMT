@@ -156,6 +156,12 @@ class HeightAwareAdaptiveTrackSelection(
     val canUpgrade = lastDowngradeElapsedMs == 0L || bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US
     var best = length - 1
     var bestHeight = -1
+    // 最高档(height 2160/4K)额外门槛(2026-08-30 方案B,用户决策):顶档声明的 calib 外推误差最大
+    // (低档轻内容校准系数低估顶档真实消耗,22:43 真机 105M 声明的 4K 按 0.35=36.9M 获批),且 4K 的
+    // pacing 有效供给本就 ≈ 消耗(sus 沿途可达 40-59M 过门槛)→ 边缘 4K 反复获批/漏光/急救, 分钟级
+    // 315↔308 抖动。顶档要求 sustained ≥ declared×0.6(声明虚高 ~2×,0.6 仍远低于真实消耗,千兆管道
+    // 不受损;本视频 63M vs sus 峰 57-59M → 4K 不批,稳 1440p)。
+    val isTopTier = length > 1 && getFormat(0).height >= TOP_TIER_MIN_HEIGHT
     for (i in 0 until length) {
       if (isTrackExcluded(i, nowMs)) continue
       val f = getFormat(i)
@@ -163,6 +169,10 @@ class HeightAwareAdaptiveTrackSelection(
       val required = f.bitrate * calibPermille / 1000L // bitrate 只当带宽门槛,校准底座
       if (required > effective) continue
       if (isUpgrade && (!canUpgrade || (sustained in 0 until required))) continue
+      // 顶档(仅 height==组内最高,即真正在尝试 4K 的那一档)要求 sustained 双倍门槛,防边缘抖动
+      if (isUpgrade && isTopTier && i == 0 && sustained < f.bitrate * TOP_TIER_SUSTAINED_PERMILLE / 1000L) {
+        continue
+      }
       // 选声明码率可负担的最高分辨率档;同 height 多 codec(VP9/H264)按 bitrate 降序遍历先到的码率
       // 最高,`f.height > bestHeight` 严格大于不会替换 → 自然保留高码率变体。
       if (f.height > bestHeight) {
@@ -225,6 +235,10 @@ class HeightAwareAdaptiveTrackSelection(
     const val CALIB_MIN_PERMILLE = 350L
     /** 2026-08-30:升档后禁止 est 回降宽限(ms)——重锚精确锚在新档门槛,起步期小样本会立刻打回。 */
     const val UPGRADE_DOWNGRADE_GRACE_MS = 10_000L
+    /** 2026-08-30 方案B:顶档(4K 级)定义高度门槛——组内最高档 height ≥ 此值时启顶档 sustained 加码。 */
+    const val TOP_TIER_MIN_HEIGHT = 2160
+    /** 2026-08-30 方案B:顶档升档 sustained 门槛系数千分位——sustained ≥ 声明×0.6 才许升 4K(防边缘循环)。 */
+    const val TOP_TIER_SUSTAINED_PERMILLE = 600L
   }
 
   override fun getSelectionReason(): Int = androidx.media3.common.C.SELECTION_REASON_ADAPTIVE

@@ -360,3 +360,7 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 - [ ] 升 308/303 后重锚日志 `segs=` <5 时 calib ≥0.65,4K 不再 3s 内获批
 - [ ] 急救降回后缓冲回满即自动回 1440p(无 3min 空窗),无需手动切
 - [ ] 315↔308 循环若出现,记录频率与每次是否水位急救(非 watchdog)
+
+### 2026-08-30 追加(方案B,用户决策,96d2390 后)
+
+r1735 复盘通过(急救降回秒级回档、零 watchdog),唯一遗留:本视频 4K pacing 有效供给 (~20M) ≈ 真实消耗 (~21M) 天生临界,升 315 → 60-95s 漏光 → 急救降回 → 秒级爬回,分钟级 315↔308 干净循环。方案B:顶档(组内 height ≥2160 的最高档)升档额外要求 `sustained ≥ declared×0.6`(TOP_TIER_SUSTAINED_PERMILLE,声明虚高 ~2× 故 0.6 远低于真实消耗;本视频 63M vs sus 峰 57-59M → 4K 不批,稳 1440p;千兆管道 sus >63M 照常上 4K)。
