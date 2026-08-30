@@ -1121,3 +1121,4 @@ Flutter 参考 app 继续保留在原项目中，用于行为对照和回退参�
 - 插件策略：不做可扩展插件系统，不保留独立插件标签页；只保留空降助手，在设置页提供开关。
 | P11-62 | Crashlytics 集成 + 日志手动「上报」(日志查看页一键把日志尾部送 Crashlytics 非致命报告) | 实施中(代码完成待云编译;google-services.json 未就位时插件条件禁用,待用户在 Firebase 控制台建项目后放入 app/ 目录自动激活) |
 | P11-67 | 声明码率口径修正:ABR 带宽改用 averageBitrate(真平均)优先,peak 回落;calib 采样折算机制整体取消(required=裸声明=实需);顶档 sustained 门槛 0.6→×1.1(真平均口径 VBR 尖峰余量);升档重锚锚裸声明。缘起:23:00 真机 4K 升档失败复盘——`bitrate` 字段是 VBR 峰值(比真平均高 ~60-75%),calib/0.6 gate 连环补偿注定失真 | 实施中(代码完成待云编译,详见 `docs/youtube-hd-playback.md` §6.25 与 `docs/youtube-sabr-abr-upshift-notes.md` §16) |
+| P11-68 | 顶档定向冷却:水位急救从顶档(2160p)降下时 excludeTrack 该顶档 3min,防「重填突发过门槛→升 4K→贴地漏光→又降」边缘横跳(23:28-31 真机 3.5min 两轮循环、每次级联切档卡顿);只锁顶档,1440p/1080p 升降照常(与已取消的全档冷却本质不同) | 实施中(代码完成待云编译,详见 `docs/youtube-sabr-abr-upshift-notes.md` §17) |

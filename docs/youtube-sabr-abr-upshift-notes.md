@@ -391,3 +391,13 @@ r1735 复盘通过(急救降回秒级回档、零 watchdog),唯一遗留:本视�
 **参照源码**:NewPipeExtractor fork(extractor/src/main/java/…/services/youtube/YoutubeStreamExtractor.java:1407-1410 已设 contentLength/approxDurationMs;ItagItem.getBitrate=peak)。web 佐证:FOSWLY/vot.js 类型定义、youtube-ext VideoFormat 文档、原始响应 gist(bitrate vs averageBitrate 实测)、developers.google.com/media/vp9/settings/vod。
 
 **未决(下次观察)**:水位急救只降一步,bufS<4s 且已跨两档可降时是否直接跳两档?本次不改,先看口径修正后的表现。
+
+## 17. 2026-08-30「4K 边缘档反复横跳、级联切档卡顿」:顶档定向冷却 3min
+
+**现象(23:28-23:31 真机,新代码 babff35 已生效:重载/stall 零次、降档全走水位急救、reseed 无 calib)**:视频 4fBaRNYSSOY 的 4K 真实消耗 ~30-31M(meas 实测),网络持续供给在 27-42M 晃——供给 ≈ 需求的边缘档。循环:重填期(播低档,管道空闲)突发 est 40-60M、sus 41M 过升档门槛(32.3M + 顶档×1.1=35.5M)→ 升 4K → 边播边吸 pacing 供给 ~30M,buffer 40s 漏到 5-6s → 水位急救**级联**(315→308→299,每步拉新 init=一次卡顿)→ 低档重填到 30s+ → 又过门槛 → 再升 4K。3.5 分钟两轮完整循环,用户感知「不重载但一直在切、有部分卡顿」。
+
+**结论**:这不是回归,是供给 ≈ 需求时边缘档的必然震荡;防抖缺失。
+
+**修法(已实施,用户选定方案1)**:水位急救从**顶档**(height≥2160)降下时,`excludeTrack(leavingIndex, 180s)`——顶档 3 分钟内不参与候选;期间 1440p/1080p 升降完全照常。与 §15 已取消的「全档 3min 升档冷却」本质不同:那个把全部升降锁死、用户被打回 1080p 后连 1440p 都升不了;本冷却只锁刚崩的顶档,可持续档位照常工作。非顶档的水位降档不加冷却(降的是可持续档,回弹无碍)。冷却到期自然恢复试顶档;期间想立即回 4K 走手动切档。3min 覆盖一个完整误批-回填周期(实测周期 ~55-85s)。
+
+**未决**:级联降档(315→308→299 三步三次卡顿)是否在水位 <4s 时跳两档——未做,待观察顶档冷却落地后的实际体感。

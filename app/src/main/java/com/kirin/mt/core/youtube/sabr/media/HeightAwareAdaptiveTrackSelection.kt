@@ -65,6 +65,14 @@ import com.google.common.collect.ImmutableList
  *   已是真平均后,门槛直接 sustained ≥ declared×1.1(1.1=60s 持续均值余量,防 VBR 尖峰打穿)。
  *   本视频:315 声明 32.3M→~23M,顶档门槛 19.4M→~25.3M,夜间塌方段(sus 8M)永不批准。
  * 其余机制(升档重锚、水位急救、升档冷却、10s 禁回降、逐步候选升降)语义不变,锚点改裸声明。
+ *
+ * 2026-08-30(顶档定向冷却,修「4K 边缘档反复横跳」,23:28-23:31 真机):供给(27-42M)贴着 4K
+ * 真实消耗(~30M)与声明门槛(32.3M+顶档×1.1=35.5M)边缘,重填期突发 est/sus 过门槛升 4K →
+ * 边播边吸 pacing 供给 ~30M → buffer 漏到 5-6s → 水位急救级联(315→308→299)→ 低档重填 →
+ * 又过门槛升 4K:3.5 分钟两轮循环,每次级联切档都卡一次。修法:水位急救从**顶档**(height≥2160)
+ * 降下时,仅把该顶档 excludeTrack 3 分钟——期间 1440p/1080p 升降完全照常(与已取消的「全档 3min
+ * 冷却」不同,那锁死全部升降、用户被困低档;本冷却只锁顶档,不再横跳,网络真正好转由冷却自然到期
+ * 或手动切档兜底)。非顶档的水位降档不加冷却(降的是可持续档,回弹无碍)。
  */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
@@ -120,6 +128,7 @@ class HeightAwareAdaptiveTrackSelection(
       }
       if (lower >= 0) {
         val current = getFormat(selected)
+        val leavingIndex = selected
         Log.i(
           "YtSabrAbr",
           "buffer-critical downgrade: bufS=${bufferedDurationUs / 1_000_000}s " +
@@ -128,6 +137,17 @@ class HeightAwareAdaptiveTrackSelection(
         )
         selected = lower
         lastDowngradeElapsedMs = nowMs
+        // 2026-08-30 顶档定向冷却:从顶档(2160p)水位降下后把该顶档 excludeTrack 3 分钟,防
+        // 「重填突发过门槛→升 4K→贴地漏光→又降」边缘横跳反复切档卡顿;只锁顶档,低档升降照常
+        // (与已取消的全档冷却不同)。非顶档(可持续档)的急救降档不加冷却。
+        if (currentHeight >= TOP_TIER_MIN_HEIGHT) {
+          excludeTrack(leavingIndex, TOP_TIER_BUFFER_CRITICAL_COOLDOWN_MS)
+          Log.i(
+            "YtSabrAbr",
+            "top-tier cooldown: itag${current.id}(${current.height}p) excluded " +
+              "${TOP_TIER_BUFFER_CRITICAL_COOLDOWN_MS / 1000}s"
+          )
+        }
         return
       }
     }
@@ -231,6 +251,12 @@ class HeightAwareAdaptiveTrackSelection(
      * 口径下的 VBR 尖峰余量(本视频 315 声明 ~23M → 门槛 ~25.3M)。
      */
     const val TOP_TIER_SUSTAINED_PERMILLE = 1100L
+    /**
+     * 2026-08-30:顶档定向冷却时长(ms)——水位急救从顶档降下后,顶档 excludeTrack 这段时间,
+     * 防「重填突发过门槛→升 4K→贴地漏光→又降」边缘横跳(23:28-31 真机 3.5min 两轮循环)。
+     * 只锁顶档,低档升降不受影响;3min 覆盖一个完整误批-回填周期(周期 ~55-85s)。
+     */
+    const val TOP_TIER_BUFFER_CRITICAL_COOLDOWN_MS = 180_000L
   }
 
   override fun getSelectionReason(): Int = androidx.media3.common.C.SELECTION_REASON_ADAPTIVE
