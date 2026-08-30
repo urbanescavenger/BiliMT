@@ -2,7 +2,6 @@ package com.kirin.mt.ui.mobile.settings
 
 import android.widget.Toast
 import androidx.compose.foundation.background
-import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.foundation.clickable
@@ -229,34 +228,20 @@ private fun MobileLogContentScreen(
 
   fun sendToCrashlytics() {
     scope.launch {
-      // 入队失败立即 toast;上传结果走 SDK Task 回调,成功才提示「已上报」
+      // sendUnsentReports 无完成回调,入队成功只提示「已入队:上传中」,不假显示成功
       val result = withContext(Dispatchers.IO) {
-        FirebaseLogSender.sendLogFile(context, file) { delivered ->
-          ContextCompat.getMainExecutor(context).execute {
-            val message = delivered.fold(
-              onSuccess = { context.getString(R.string.settings_logs_send_success) },
-              onFailure = {
-                context.getString(
-                  R.string.settings_logs_send_failed,
-                  it.message.orEmpty(),
-                )
-              },
-            )
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-          }
-        }
+        FirebaseLogSender.sendLogFile(context, file)
       }
-      if (result.isFailure) {
-        val message = if (FirebaseLogSender.isAvailable(context).not()) {
+      val message = when {
+        result.isSuccess -> context.getString(R.string.settings_logs_send_queued)
+        !FirebaseLogSender.isAvailable(context) ->
           context.getString(R.string.settings_logs_send_unavailable)
-        } else {
-          context.getString(
-            R.string.settings_logs_send_failed,
-            result.exceptionOrNull()?.message.orEmpty(),
-          )
-        }
-        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        else -> context.getString(
+          R.string.settings_logs_send_failed,
+          result.exceptionOrNull()?.message.orEmpty(),
+        )
       }
+      Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
     }
   }
 

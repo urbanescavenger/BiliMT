@@ -8,7 +8,6 @@ import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
 import androidx.annotation.StringRes
-import androidx.core.content.ContextCompat
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -1009,35 +1008,22 @@ fun BiliTvApp(
                 },
                 onSendLog = { info ->
                   coroutineScope.launch {
-                    // 入队阶段失败(未配置等)立即 toast;网络上传结果由 SDK Task 回调给出,
-                    // 成功才提示「已上报」,失败提示原因——入队成功不再假显示成功。
                     val result = withContext(Dispatchers.IO) {
-                      FirebaseLogSender.sendLogFile(localizedContext, info.file) { delivered ->
-                        ContextCompat.getMainExecutor(localizedContext).execute {
-                          val msg = delivered.fold(
-                            onSuccess = { localizedContext.getString(R.string.settings_logs_send_success) },
-                            onFailure = {
-                              localizedContext.getString(
-                                R.string.settings_logs_send_failed,
-                                it.message ?: "",
-                              )
-                            },
-                          )
-                          Toast.makeText(localizedContext, msg, Toast.LENGTH_SHORT).show()
-                        }
-                      }
+                      // sendUnsentReports 无完成回调,入队成功只提示「已入队:上传中」,
+                      // 真实上传成败看诊断日志(网络失败时 SDK 打 Couldn't open connection)
+                      FirebaseLogSender.sendLogFile(localizedContext, info.file)
                     }
-                    if (result.isFailure) {
-                      val msg = if (FirebaseLogSender.isAvailable(localizedContext).not()) {
+                    val msg = when {
+                      result.isSuccess ->
+                        localizedContext.getString(R.string.settings_logs_send_queued)
+                      FirebaseLogSender.isAvailable(localizedContext).not() ->
                         localizedContext.getString(R.string.settings_logs_send_unavailable)
-                      } else {
-                        localizedContext.getString(
-                          R.string.settings_logs_send_failed,
-                          result.exceptionOrNull()?.message ?: "",
-                        )
-                      }
-                      Toast.makeText(localizedContext, msg, Toast.LENGTH_SHORT).show()
+                      else -> localizedContext.getString(
+                        R.string.settings_logs_send_failed,
+                        result.exceptionOrNull()?.message ?: "",
+                      )
                     }
+                    Toast.makeText(localizedContext, msg, Toast.LENGTH_SHORT).show()
                   }
                 },
                 onToggleLogRecording = {
