@@ -2,6 +2,8 @@ package com.kirin.mt.ui.mobile.settings
 
 import android.widget.Toast
 import androidx.compose.foundation.background
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
+import com.kirin.mt.core.util.FirebaseLogSender
 import com.kirin.mt.core.util.LogCatcherUtil
 import java.io.File
 import kotlinx.coroutines.launch
@@ -210,7 +213,7 @@ private fun MobileLogFileRow(
   }
 }
 
-/** 日志内容查看：可滚动等宽文本 + 返回/刷新。 */
+/** 日志内容查看：可滚动等宽文本 + 返回/刷新，顶部「上报」把日志尾部送到 Crashlytics。 */
 @Composable
 private fun MobileLogContentScreen(
   file: File,
@@ -218,9 +221,29 @@ private fun MobileLogContentScreen(
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
+  val scope = rememberCoroutineScope()
   var refreshKey by remember { mutableStateOf(0L) }
   val content = remember(file, refreshKey) { LogCatcherUtil.readLogContent(file) }
   val lines = remember(content) { content.lines() }
+
+  fun sendToCrashlytics() {
+    scope.launch {
+      // sendUnsentReports 无完成回调,入队成功只提示「已入队:上传中」,不假显示成功
+      val result = withContext(Dispatchers.IO) {
+        FirebaseLogSender.sendLogFile(context, file)
+      }
+      val message = when {
+        result.isSuccess -> context.getString(R.string.settings_logs_send_queued)
+        !FirebaseLogSender.isAvailable(context) ->
+          context.getString(R.string.settings_logs_send_unavailable)
+        else -> context.getString(
+          R.string.settings_logs_send_failed,
+          result.exceptionOrNull()?.message.orEmpty(),
+        )
+      }
+      Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+  }
 
   Column(
     modifier = modifier.fillMaxSize().padding(horizontal = 12.dp),
@@ -252,6 +275,9 @@ private fun MobileLogContentScreen(
       }
       TextButton(onClick = { refreshKey += 1L }) {
         Text(stringResource(R.string.settings_logs_refresh))
+      }
+      TextButton(onClick = ::sendToCrashlytics) {
+        Text(stringResource(R.string.settings_logs_send))
       }
     }
 

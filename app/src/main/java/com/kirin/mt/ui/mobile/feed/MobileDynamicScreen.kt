@@ -68,6 +68,8 @@ fun MobileDynamicScreen(
   isLoggedIn: Boolean,
   dynamicRefreshKey: Int = 0,
   youtubeChannels: List<YoutubeChannel>,
+  /** store 是否已发出频道首值(含空)。false 时首帧组合频道尚未确认,先不刷新,等确认后 B 站 + YouTube 一起拉。 */
+  channelsReady: Boolean = true,
   onVideoSelected: (VideoSummary) -> Unit,
   onOpenOwner: (VideoSummary) -> Unit,
   onLogin: () -> Unit,
@@ -106,12 +108,20 @@ fun MobileDynamicScreen(
     val currentIds = youtubeChannels.map { it.channelId }
     val cached = youtubeFeedCacheStore.read()
     val cacheValid = cached != null && cached.channelIds == currentIds
+    // 门控:用缓存每频道最新 pubdate 判断 RSS 有无新内容,无则跳过 InnerTube(对齐 LibreTube)。
+    // 仅缓存有效时传,避免用错频道集合的旧缓存做门控。
+    val cachedLatestByChannel = if (cacheValid) {
+      cached!!.videos.groupBy { it.channelId }.mapValues { (_, vs) -> vs.maxOf { it.pubdate } }
+    } else {
+      emptyMap()
+    }
     return try {
       val result = videoRepository.youtubeSubscriptionsFeed(
         youtubeChannels,
         onChannelAvatarResolved = { channel ->
           youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
         },
+        cachedLatestByChannel = cachedLatestByChannel,
       )
       if (result.isNotEmpty()) {
         youtubeTimeoutNotice = false
@@ -183,11 +193,12 @@ fun MobileDynamicScreen(
   }
 
   // 首次进入 + 每次点击底栏"动态"tab(dynamicRefreshKey 自增)都刷新 B 站 + YouTube 关注。
-  // key 加稳定 channelId 列表:首次进入时 youtubeChannels 还是 emptyList(store 未发),首载只拉 B 站;
-  // 频道发出来后 key 变化 → 重跑 loadFirstBody 把 YouTube 并进首载(头像回填不改 ID,不触发重启)。
+  // key 加稳定 channelId 列表 + channelsReady:首帧组合时频道未确认(channelsReady=false)先不拉,
+  // 等 store 发出首值后 channelsReady 置 true → key 变化 → 重跑 loadFirstBody,把 B 站 + YouTube
+  // 一次合并(不再先空频道只拉 B 站、频道到位再重拉;头像回填不改 ID,不触发重启)。
   val youtubeChannelIds = youtubeChannels.map { it.channelId }
-  LaunchedEffect(isLoggedIn, dynamicRefreshKey, youtubeChannelIds) {
-    if (!isLoggedIn) return@LaunchedEffect
+  LaunchedEffect(isLoggedIn, dynamicRefreshKey, youtubeChannelIds, channelsReady) {
+    if (!isLoggedIn || !channelsReady) return@LaunchedEffect
     refreshFeed()
   }
 

@@ -30,7 +30,9 @@ object BiliApiEndpoints {
  const val DynamicFeed = "$ApiBase/x/polymer/web-dynamic/v1/feed/all"
  const val DynamicUnread = "$ApiBase/x/polymer/web-dynamic/v1/feed/unread"
  const val DynamicLike = "$ApiBase/x/polymer/web-dynamic/v1/like/like"
- const val ToviewAdd = "$ApiBase/x/v2/history/toview"
+ // 稍后再看列表(GET):/x/v2/history/toview;添加(POST):/x/v2/history/toview/add;删除:del;清空:clear。
+ const val ToviewList = "$ApiBase/x/v2/history/toview"
+ const val ToviewAdd = "$ApiBase/x/v2/history/toview/add"
  const val HistoryCursor = "$ApiBase/x/web-interface/history/cursor"
  const val FavoriteFolderListAll = "$ApiBase/x/v3/fav/folder/created/list-all"
  const val FavoriteResourceList = "$ApiBase/x/v3/fav/resource/list"

@@ -92,7 +92,9 @@ object LogCatcherUtil {
     val originHandler = Thread.getDefaultUncaughtExceptionHandler()
     Thread.setDefaultUncaughtExceptionHandler { thread, exception ->
       logger.error(exception) { "======== UncaughtException ========" }
-      logLogcat(manual = false)
+      val crashFile = logLogcat(manual = false)
+      // 崩溃自动上报开关开启时,把刚落盘的崩溃日志尾部注入 Crashlytics,自动崩溃报告即携带日志
+      if (crashFile != null) FirebaseLogSender.attachCrashLog(crashFile)
       originHandler?.uncaughtException(thread, exception)
     }
 
@@ -100,8 +102,8 @@ object LogCatcherUtil {
     startLiveLogging()
   }
 
-  fun logLogcat(manual: Boolean = false) {
-    runCatching {
+  fun logLogcat(manual: Boolean = false): File? {
+    return runCatching {
       val process = Runtime.getRuntime().exec("logcat -t 10000 -v threadtime")
       val reader = BufferedReader(InputStreamReader(process.inputStream))
 
@@ -122,9 +124,10 @@ object LogCatcherUtil {
           }
         }
       }
+      logFile
     }.onFailure { error ->
       logger.error(error) { "write log to file failed" }
-    }
+    }.getOrNull()
   }
 
   fun startManualRecording(): Boolean {

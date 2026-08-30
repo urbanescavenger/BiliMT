@@ -119,6 +119,12 @@ internal class DefaultSabrChunkSource(
     // alpha.9X 决定性诊断:打印 manifest adaptation set 结构(每 set 的 itag 数)+ trackSelection.length()。
     // 判定「旧缓存包(manifest 仍按 mime 拆组 → 视频被拆成多个单轨组)」还是「单组 5 轨但 DefaultTrackSelector
     // 仍只选 1 轨」。fmts= 一行即可见:若视频组是 [243] 一个,是旧包;若 [243 244 …] 多个但仍 sel=1,是选轨器问题。
+    // alpha.97(修「Auto 永不升过 1080p」诊断):补 excluded= —— TrackGroup 全量 itag 减去 selection 已吸收的,
+    // 直接分辨 1440p/2160p 等「进了组没被选」vs「根本没进组(ADAPTIVE 资格被否)」。
+    val selectedIndices = (0..<trackSelection.length()).map { trackSelection.getIndexInTrackGroup(it) }
+    val excludedItags = representations.indices
+      .filterNot { it in selectedIndices }
+      .map { representations[it].formatId.itag }
     Log.i(
       "YtSabrChunk",
       "init trackType=$trackType trackSelLen=${trackSelection.length()} sets=${
@@ -130,7 +136,7 @@ internal class DefaultSabrChunkSource(
           val idx = trackSelection.getIndexInTrackGroup(i)
           "${trackSelection.getFormat(i).id}($idx)b=${trackSelection.getFormat(i).bitrate}"
         }
-      }]"
+      }] excluded=[$excludedItags]"
     )
   }
 
@@ -140,6 +146,16 @@ internal class DefaultSabrChunkSource(
     // 改为向带宽计返回 SabrMediaFetcher 实测真实带宽(中位数)。AdaptiveTrackSelection 据此原生 ABR 选档,
     // 不再需要 ceiling/force-climb 排除补丁。见 SabrBandwidthMeter / SabrMediaFetcher。
     (bandwidthMeter as? SabrBandwidthMeter)?.setRealBandwidthProvider { fetcher.getRealBitrateEstimate() }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setSustainedBandwidthProvider { fetcher.getSustainedBitrateEstimate() }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setReseedBandwidthProvider { bitrateBps ->
+      fetcher.reseedActiveWindow(bitrateBps)
+    }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setMeasuredBitrateProvider { itag ->
+      fetcher.getMeasuredBitrateBps(itag)
+    }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setMeasuredSegCountProvider { itag ->
+      fetcher.getMeasuredSegmentCount(itag)
+    }
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {
@@ -190,6 +206,12 @@ internal class DefaultSabrChunkSource(
     val bufferedDurationUs = loadPositionUs - playbackPositionUs
     val previousChunk = queue.lastOrNull()
 
+    // alpha.9Z:视频轨每次取 chunk 把「播放位置前方缓冲水位」喂给 fetcher,gap 计时据此扣减滑行量
+    // (仅视频轨喂:音频轨缓冲远超需求,会污染判定)。见 SabrMediaFetcher.recordFetchGap。
+    if (trackType == C.TRACK_TYPE_VIDEO) {
+      fetcher.noteBufferedAheadMs(Util.usToMs(bufferedDurationUs))
+    }
+
     val representationHolder = representationHolders[trackSelection.selectedIndex]
     fetcher.selectFormat(representationHolder.representation)
     // 增量升/降档(alpha.9X,修「Auto 起播低档后永不升档」):Auto 全轨自适应原把所有未下载轨的 iterator
@@ -219,6 +241,10 @@ internal class DefaultSabrChunkSource(
       "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
         bufferedDurationUs % 1_000_000 / 100_000
       } chunkIndex=${representationHolder.chunkIndex != null} bw=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
+        "sus=${(bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimate()?.div(1000) ?: -1L}K " +
+        "meas=${
+          fetcher.getMeasuredBitrateBps(representationHolder.representation.formatId.itag).div(1000)
+        }K " +
         "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
           (0..<trackSelection.length()).joinToString { i ->
             val f = trackSelection.getFormat(i)

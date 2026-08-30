@@ -145,6 +145,8 @@ class AppContainer(context: Context) {
     pipedClient = pipedClient,
     appSettingsStore = appSettingsStore,
   )
+  // 播放进度本地存储:VideoRepository 用它给普通卡片合入观看进度条,PlaybackRepository 用它续播。
+  val playbackProgressStore: PlaybackProgressStore = PlaybackProgressStore(appContext)
   val videoRepository: VideoRepository = VideoRepository(
     apiClient = apiClient,
     wbiKeyRepository = wbiKeyRepository,
@@ -152,6 +154,7 @@ class AppContainer(context: Context) {
     sessionStore = sessionStore,
     youtubeRepository = youtubeRepository,
     youtubeChannelStore = youtubeChannelStore,
+    progressStore = playbackProgressStore,
   )
   val liveRepository: LiveRepository = LiveRepository(
     apiClient = apiClient,
@@ -169,7 +172,7 @@ class AppContainer(context: Context) {
     wbiSigner = wbiSigner,
     sessionStore = sessionStore,
     codecCapabilityProbe = codecCapabilityProbe,
-    progressStore = PlaybackProgressStore(appContext),
+    progressStore = playbackProgressStore,
     youtubePlaybackResolver = youtubePlaybackResolver,
   )
   val danmakuSettingsStore: DanmakuSettingsStore = DanmakuSettingsStore(appContext)
@@ -256,6 +259,12 @@ class AppContainer(context: Context) {
           Log.i(LogTag, "buvid warmup ok: hasBuvid3=${!buvid3.isNullOrBlank()} hasBuvid4=${!buvid4.isNullOrBlank()}")
         }
         .onFailure { error -> Log.w(LogTag, "buvid warmup failed: ${error.message}") }
+
+      // 预热 YouTube 真实会话(sw.js_data + 首页 cookie):feed 首屏 /browse 不再阻塞 ~3s 会话建立
+      // (冷启动 RSS 全 404 时这段在动态关键路径上)。fire-and-forget,失败静默(下次请求仍会惰性建立)。
+      runCatching { youtubeInnerTubeClient.warmupSession() }
+        .onSuccess { Log.i(LogTag, "youtube session warmup ok") }
+        .onFailure { error -> Log.w(LogTag, "youtube session warmup failed: ${error.message}") }
     }
   }
 

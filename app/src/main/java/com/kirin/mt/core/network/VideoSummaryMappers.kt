@@ -1,6 +1,8 @@
 package com.kirin.mt.core.network
 
 import com.kirin.mt.core.model.Comment
+import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -148,6 +150,29 @@ internal object VideoSummaryMappers {
     )
   }
 
+  // 稍后再看列表项:/x/v2/history/toview 的 data.list[]。仅 UGC 条目(带 bvid/aid/owner)。
+  // progress 为秒数(与历史一致,未观看为 -1),toPlaybackRequest() 自动续播。
+  fun fromToViewItem(json: JsonObject): VideoSummary {
+    val owner = json.obj("owner")
+    return VideoSummary(
+      bvid = json.string("bvid"),
+      title = json.string("title"),
+      pic = fixPicUrl(json.string("pic")),
+      ownerName = owner?.string("name").orEmpty(),
+      ownerFace = "",
+      ownerMid = 0L,
+      view = 0,
+      danmaku = 0,
+      duration = BiliNumberParser.parseDuration(json["duration"]),
+      pubdate = 0L,
+      badge = "",
+      progress = json.int("progress"),
+      cid = json.long("cid"),
+      historyVideos = json.int("videos"),
+      aid = json.long("aid"),
+    )
+  }
+
   fun fromSearch(json: JsonObject): VideoSummary {
     return VideoSummary(
       bvid = json.string("bvid"),
@@ -161,6 +186,22 @@ internal object VideoSummaryMappers {
       duration = BiliNumberParser.parseDuration(json["duration"]),
       pubdate = json.long("pubdate"),
       badge = filterBadge(json.string("badge")),
+    )
+  }
+
+  /** 搜索 UP主（search_type=user）结果映射。字段：mid / uname / upic / usign / fans / videos / level / official_verify。 */
+  fun fromSearchUser(json: JsonObject): UserSummary {
+    return UserSummary(
+      mid = json.long("mid"),
+      channelId = "",
+      name = json.string("uname"),
+      face = fixPicUrl(json.string("upic")),
+      sign = json.string("usign"),
+      fans = BiliNumberParser.toInt(json["fans"]),
+      videos = BiliNumberParser.toInt(json["videos"]),
+      level = json.int("level"),
+      officialVerify = json.obj("official_verify")?.string("title").orEmpty(),
+      source = SourceBili,
     )
   }
 

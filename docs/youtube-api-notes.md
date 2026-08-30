@@ -128,7 +128,7 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 
 关注频道的最新视频（移动端动态/首页、TV 首页热门 tab 共用）。单走任一来源都有缺陷，正确做法是**每频道并发拉 RSS 与 InnerTube `/browse`，按 `videoId` 合并**：
 
-- **RSS**（`/feeds/videos.xml?channel_id=UC...`）：轻量 GET，无 InnerTube 风控/不计配额；提供**精确 ISO 8601 `publishedAt`**。但**不含 duration/live/upcoming/badge/头像**，且直播/Shorts 覆盖不全。
+- **RSS**（`/feeds/videos.xml?playlist_id=UULF<后缀>`，2026-08-26 起用 UULF 变体）：轻量 GET，无 InnerTube 风控/不计配额；提供**精确 ISO 8601 `publishedAt`**。但**不含 duration/live/upcoming/badge/头像**，且直播/Shorts 覆盖不全。**注意**：`channel_id=UC...` 变体自 2025-12 起 YouTube 侧大面积间歇性 404/500（社区 Miniflux/FreshRSS 均报，根因在 YouTube 不在客户端），uploads 播放列表 feed（`playlist_id=UULF`，把 `UC` 换 `UULF`）走不同后端更稳、更新近实时，故改用 UULF。
 - **InnerTube** `/browse`（频道视频 tab）：提供 `duration`/`liveNow`/`isUpcoming`/`badge`/`viewCount`/头像，补 RSS 缺失字段；但 `publishedAt` 是相对时间反推（"4 days ago"），月/年用固定天数近似，刷新排序不稳定。
 - **合并规则**：以 RSS 为基底，`publishedAt` 优先 RSS（精确），`durationSec`/`viewCount`/`liveNow`/`isUpcoming`/`badge`/`channelAvatarUrl` 优先 InnerTube；仅单路有的直接保留。
 - **降级**：任一路失败用另一路（RSS 失败→InnerTube 近似时间；InnerTube 失败→RSS 无 duration/live，降级可用），两者都失败该频道返回空、不影响其它频道。
@@ -145,6 +145,8 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 - 返回模型 `YoutubeSubscriptionsPage(videos, perChannelContinuation)`，`endReached = perChannelContinuation.values.all { it == null }`（所有频道到底即全部加载完）。续页视频同样走「补频道名/id/头像」（`fillChannelInfo`，复用原 :290-296 逻辑）。
 
 **转发层** `VideoRepository.youtubeHomeFeedPage(previousContinuation)` 读 `youtubeChannelStore.channels`，空→空页；头像回写 store 在此处理，UI 无感知。
+
+**会话预热（2026-08-26，v3.0.7-alpha.1）**：冷启动 RSS 全 404 时，首个 InnerTube `/browse` 的 `ensureRealSessionData`（sw.js_data fetch + `captureSessionCookies` 首页 GET，~3s）在 feed 关键路径上，动态冷启动 ~6.8s。新增 `InnerTubeClient.warmupSession()`（`requireBrowserSession=false` 快路径，不引导 WebView 页面），在 `AppContainer.warmupApiConnection` app 启动时 fire-and-forget 预热 `realSessionData` → feed 首屏 `/browse` 直接命中缓存跳过 ~3s，实测 `getSubscriptionsFeed` 6.8s→2.8s。⚠️ 预热只用快路径不用 `requireBrowserSession=true`：WebView 页面引导会持 `sessionMutex` 最长 15s（alpha.89 死循环风险），阻塞 feed 首请求；WebView 页面留给 /player 惰性加载。实测确认 feed 路径从未真正 load WebView 页面（日志里的 WebViewFactory 加载只是 CookieManager 类 init，~30ms，非页面加载）。
 
 **UI 消费（TV `RecommendScreen` + 移动 `HomeScreen`，共用）**：
 - `Success.youtubeContinuation: Map<String,String?>?`（仅 YoutubeTrending 用；非 YouTube 分区为 null）。
@@ -202,7 +204,24 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 
 点赞数原靠 `getVideoDetail` 在 `/player` 之外**另发 `/next`** 从 `videoPrimaryInfoRenderer.videoActions` 工具栏解析回写（对齐 NewPipe `getLikeCount`），但真机**该 `/next` 取不到**（诊断日志 `likes videoId=` 不出现），`detail.likeCount` 恒 null → 移动端简介「点赞」段被 `likeCountInt > 0` 丢弃，只显示「观看 · 时间」。
 
-实测 **`/player` 的 `microformat.playerMicroformatRenderer` 本身就带 `likeCount` 键**（keys 含该字段，值为原始数字串如 `"123456"`）。修复：`parseVideoDetail` 直接 `parseCount(mf.likeCount)` 作主源，**免去二次 `/next` 往返、更快更稳**；`/next` videoActions 仍保留作兜底（真能取到则覆盖）。取不到保持 null（UI 不显示点赞行）。
+实测 **`/player` 的 `microformat.playerMicroformatRenderer` 本身就带 `likeCount` 键**（keys 含该字段，值为原始数字串如 `"123456"`）。修复：`parseVideoDetail` 直接 `parseCount(mf.likeCount)` 作主源，**免去二次 `/next` 往返、更快更稳**；`/next` videoActions 仍保留作兜底（真能取到则覆盖）。UI 取不到保持 null（UI 不显示点赞行）。
+
+### 4.15 频道页 tab：Video/Shorts/Live/Playlists 解析（2026-08-27，v3.0.7-alpha.3）
+
+移动端频道页四大 tab 全走 `getChannelVideos`/`getChannelPlaylists`（InnerTube `/browse`）。**关键：系统播放列表 browseId 已弃用，统一用 channelId + 服务端 tab params。**
+
+- **channelBrowseId 恒 null**（放弃 UUSH/UULV 系统播放列表）：真机诊断日志抓到 Shorts(UUSH)/Live(UULV) `/browse` 直接 **400**。改用 `channelId + params`（与 Videos/Playlists 同路径）后 200。Shorts/Live 的 params 来自 `parseChannelTabs` 反解的**服务端 tab params**（硬编码 `EgZzaG9ydHPy` / `EgdzdHJlYW1z8gYECAAJ6AA%3D%3D` 作兜底）。
+- **Video tab** 走 `lockupViewModel`（新格式）：`contentId`=videoId（§开头 lockup 结构）。
+- **Shorts tab 是 `shortsLockupViewModel`，reel 风格，非 lockup 形状！** 真机日志 dump 出 keys：`entityId,accessibilityText,onTap,menuOnTap,...` **没有 `contentId`**，直接套 `parseLockupViewModel` 首行 `contentId` 检查就 return null → items=0（空 tab 的真因）。
+  - 视频 ID 在 `onTap.innertubeCommand.reelWatchEndpoint.videoId`
+  - 标题 + 播放量在顶层 `accessibilityText`（形如 `"标题, 2.4 thousand views - play Short"`）
+  - 封面 `thumbnailViewModel.image.sources[].url`（取最大），失败回退 `https://i.ytimg.com/vi/<id>/mqdefault.jpg`
+  - 播放量片段含 ` - play Short` 后缀 + 英文单位词（thousand/million/billion），需先转成 K/M/B 再 `parseCount`
+  - 修复：专属 `parseShortsLockupViewModel`；同时仍收集 `reelItemRenderer`（部分频道 Shorts tab 用经典条目）双保险。
+- **Live tab** 走 `videoRenderer`（`liveNow` 标识，被通用收集覆盖），无需额外解析。
+- **Playlists 卡**（新布局）用 `lockupViewModel`（`contentType=PLAYLIST`）而非旧 `playlistRenderer`：`diagnosticPlaylistShape` 实测 15 个 `LOCKUP_CONTENT_TYPE_PLAYLIST` 但 `playlistRenderer=0`。播放列表详情 `/browse` 的 browseId **必须带 `VL` 前缀**（裸 `PL...` 返 400，`normalizePlaylistBrowseId` 自动补 `VL`）。
+  - **封面 + 视频数字段已迁移（实测 2026-08-27，curl 复现 21/21 卡）**：封面在 `contentImage.collectionThumbnailViewModel.primaryThumbnail.thumbnailViewModel.image.sources[]`（多包一层 `collectionThumbnailViewModel`，旧直连 `contentImage.thumbnailViewModel` 拿空 → 播放列表卡只剩 "▶" 占位块、无缩略图）；视频数在缩略图角标 `thumbnailViewModel.overlays[].thumbnailOverlayBadgeViewModel.thumbnailBadges[].thumbnailBadgeViewModel.text`（"100 videos"）。**metadataRows 已不是视频数**——现在只有 "Updated X ago"（更新时间）/"View full playlist"（含 VL browseId），旧解析取首行会错显示更新时间。`parseChannelPlaylists` 已修：封面新路径优先旧直连兜底，视频数 badge 优先 metadataRows 兜底。onTap 仍为空 → browseId 落 contentId(PL...)，靠 normalize 补 VL。同构确认：搜索播放列表筛选（`/search params=EgIQAw%3D%3D`，type=3）的 lockup 卡字段同此形状（`Eg9QAQ%3D%3D` 被服务端无视返回普通视频，勿用）。
+- **播放列表详情头部 + 纵向列表**：首屏 `/browse` 的 header 有完整元数据，但 **真机实测（2026-08-27 YtPlaylist 诊断日志）header 是 `pageHeaderRenderer`，没有 `playlistHeaderRenderer`**——简介/作者/视频数取不到的真因就是解析只走旧路径。新布局实际结构：`header.pageHeaderRenderer.content.pageHeaderViewModel` 下——简介 `description.descriptionPreviewViewModel.description.content`；作者在 `metadata.contentMetadataViewModel.metadataRows[].metadataParts[].avatarStack.avatarStackViewModel.text.content`（"by xxx"）；视频数在同 rows 的文本 parts（"N videos"）；封面 `heroImage`（递归取 image.sources[].url）。`parsePlaylistHeader` 先走新路径、旧 `playlistHeaderRenderer`（descriptionText/ownerText/numVideosText/primaryThumbnail，对齐 NewPipe `PlaylistInfo`）保留兜底。**作者/视频数语言前缀坑（实测 2026-08-27，真机 owner/count 恒 null + curl hl=zh 复现）**：avatarStack 文本带语言前缀——英文 `by xxx`、简中 `创建者：xxx`、繁中 `建立者：xxx`——`startsWith("by ")` 中文恒不匹配；视频数是 `141 个视频`（英文 `141 videos`），旧正则只认英文 `video`。已改结构性判定：avatarStack part 即创建者行（剥前缀留名字）、视频数=含数字且含 video/视频/影片/動画 词的文本。**另一个坑（诊断 dump 实锤）**：`pageHeaderViewModel` 下的 text 节点是 viewModel 形状 `{"content":"...","commandRuns":[...]}`——`runsText`（只认 `runs` 键）/`simpleText`（只认 `simpleText` 键，**不读 content**）都取不到，必须先读 `content` 键；旧写法 avatarText 恒空串 → owner=""、count=null，且设备与 curl 复现响应一致，差异全在解析侧。另：部分播放列表**本身没简介**（`descriptionPreviewViewModel` 只有 `truncationText`"…更多"无 `description.content`），desc=null 是正确行为非 bug。解析成 `YoutubePlaylistHeader(description/owner/videoCountText/cover)`，仅首屏（续页是纯 continuation 无 header），随 `YoutubeVideoPage.playlistHeader` 传给移动端详情页。详情页 2026-08-27 改**纵向列表**（对齐 LibreTube）：顶部全宽封面 + 标题 + 作者·视频数 + 「播放全部」+ 可展开简介（>120 字截断），下方带序号 + 封面（右下角时长）/ 标题 / 作者 / 播放量·时间的视频行列表（非网格）。
 
 ---
 

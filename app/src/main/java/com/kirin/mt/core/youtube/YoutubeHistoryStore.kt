@@ -122,7 +122,7 @@ class YoutubeHistoryStore(private val context: Context) {
   }
 
   private companion object {
-    const val MaxEntries = 50
+    const val MaxEntries = 300
   }
 }
 

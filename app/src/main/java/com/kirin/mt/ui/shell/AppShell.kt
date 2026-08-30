@@ -65,6 +65,7 @@ import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.SpeedTestUiState
 import com.kirin.mt.core.youtube.YoutubeContentLocale
 import com.kirin.mt.core.player.DanmakuSettingsStore
+import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
@@ -80,6 +81,7 @@ import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.storage.UserSession
 import com.kirin.mt.core.update.ApkInstaller
 import com.kirin.mt.core.update.UpdateManager
+import com.kirin.mt.core.util.FirebaseLogSender
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.feed.UserFeedScreen
 import com.kirin.mt.ui.focus.focusDiag
@@ -101,9 +103,11 @@ import com.kirin.mt.ui.settings.SettingsScreen
 import com.kirin.mt.ui.space.UpSpaceRequest
 import com.kirin.mt.ui.space.UpSpaceScreen
 import com.kirin.mt.ui.space.UpSpaceUiState
+import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.ui.space.YoutubeChannelRequest
 import com.kirin.mt.ui.space.YoutubeChannelScreen
 import com.kirin.mt.ui.space.YoutubeChannelUiState
+import com.kirin.mt.ui.space.YoutubePlaylistDetailScreen
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliMotion
@@ -117,8 +121,10 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 
@@ -290,6 +296,12 @@ fun BiliTvApp(
   var channelOrigin by remember { mutableStateOf<SpaceOrigin?>(null) }
   var channelPlaybackBehind by remember { mutableStateOf(false) }
   var channelFocusRestoreRequestKey by remember { mutableIntStateOf(0) }
+  // YouTube 播放列表详情页(TV):频道页"播放列表" tab 点卡片进入,覆盖在频道页之上。
+  var youtubePlaylistRequest by remember { mutableStateOf<YoutubeParsers.YoutubePlaylist?>(null) }
+  var playlistPlaybackBehind by remember { mutableStateOf(false) }
+  // 播放队列连播(镜像移动端 MobileApp.playQueue):播放列表详情页起播时快照整份列表,
+  // 播放器播完优先按队列下一项连播(队列优先于下一分P);其它单视频入口起播时清空。
+  var playQueue by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
   val youtubeChannelUiState = remember { YoutubeChannelUiState() }
   val channelFocusRequester = remember { FocusRequester() }
   val pgcUiState = remember { com.kirin.mt.ui.pgc.PgcUiState() }
@@ -947,6 +959,11 @@ fun BiliTvApp(
                     appSettingsStore.setPlayerLogOverlayEnabled(enabled)
                   }
                 },
+                onCrashLogAutoReportChange = { enabled ->
+                  coroutineScope.launch {
+                    appSettingsStore.setCrashLogAutoReportEnabled(enabled)
+                  }
+                },
                 onAutoConfirmOnFocusChange = { enabled ->
                   coroutineScope.launch {
                     appSettingsStore.setAutoConfirmOnFocus(enabled)
@@ -986,6 +1003,26 @@ fun BiliTvApp(
                       onSuccess = { localizedContext.getString(R.string.settings_logs_backup_success) },
                       onFailure = { localizedContext.getString(R.string.settings_logs_backup_failed, it.message ?: "") },
                     )
+                    Toast.makeText(localizedContext, msg, Toast.LENGTH_SHORT).show()
+                  }
+                },
+                onSendLog = { info ->
+                  coroutineScope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                      // sendUnsentReports 无完成回调,入队成功只提示「已入队:上传中」,
+                      // 真实上传成败看诊断日志(网络失败时 SDK 打 Couldn't open connection)
+                      FirebaseLogSender.sendLogFile(localizedContext, info.file)
+                    }
+                    val msg = when {
+                      result.isSuccess ->
+                        localizedContext.getString(R.string.settings_logs_send_queued)
+                      FirebaseLogSender.isAvailable(localizedContext).not() ->
+                        localizedContext.getString(R.string.settings_logs_send_unavailable)
+                      else -> localizedContext.getString(
+                        R.string.settings_logs_send_failed,
+                        result.exceptionOrNull()?.message ?: "",
+                      )
+                    }
                     Toast.makeText(localizedContext, msg, Toast.LENGTH_SHORT).show()
                   }
                 },
@@ -1174,11 +1211,6 @@ fun BiliTvApp(
                     appSettingsStore.setYoutubeUsePiped(enabled)
                   }
                 },
-                onSabrForceSessionVideoItagChange = { enabled ->
-                  coroutineScope.launch {
-                    appSettingsStore.setSabrForceSessionVideoItag(enabled)
-                  }
-                },
                 onYoutubeDeliveryPriorityChange = { priority ->
                   coroutineScope.launch {
                     appSettingsStore.setYoutubeDeliveryPriority(priority)
@@ -1222,6 +1254,7 @@ fun BiliTvApp(
                     }.isSuccess
                   },
                   onVideoSelected = { video ->
+                    playQueue = emptyList()
                     playbackRequest = video.toPlaybackRequest()
                   },
                   onOwnerSelected = { video ->
@@ -1259,6 +1292,7 @@ fun BiliTvApp(
                     }.isSuccess
                   },
                   onVideoSelected = { video ->
+                    playQueue = emptyList()
                     playbackRequest = video.toPlaybackRequest()
                   },
                   onOwnerSelected = { video ->
@@ -1276,6 +1310,23 @@ fun BiliTvApp(
                       spaceOrigin = SpaceOrigin.Content
                       spacePlaybackBehind = false
                       spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
+                    }
+                  },
+                  onUserSelected = { user ->
+                    if (user.source == SourceYoutube && user.channelId.isNotBlank()) {
+                      youtubeChannelUiState.reset()
+                      channelOrigin = SpaceOrigin.Content
+                      channelPlaybackBehind = false
+                      youtubeChannelRequest = YoutubeChannelRequest(
+                        channelId = user.channelId,
+                        channelName = user.name,
+                        avatar = user.face,
+                      )
+                    } else {
+                      upSpaceUiState.reset()
+                      spaceOrigin = SpaceOrigin.Content
+                      spacePlaybackBehind = false
+                      spaceRequest = UpSpaceRequest(user.mid, user.name, user.face)
                     }
                   },
                 )
@@ -1298,6 +1349,7 @@ fun BiliTvApp(
                     }.isSuccess
                   },
                   onVideoSelected = { video, forceStart ->
+                    playQueue = emptyList()
                     playbackRequest = video.toPlaybackRequest(forceStartPosition = forceStart)
                   },
                   onOwnerSelected = { video ->
@@ -1383,6 +1435,7 @@ fun BiliTvApp(
                     }.isSuccess
                   },
                   onVideoSelected = { video ->
+                    playQueue = emptyList()
                     playbackRequest = video.toPlaybackRequest()
                   },
                 )
@@ -1439,6 +1492,8 @@ fun BiliTvApp(
                 ?.lastTime
                 ?.let { it * 1000L }
                 ?: 0L
+              // PGC 用 epId/seasonId 集数连播,不吃播放队列。
+              playQueue = emptyList()
               playbackRequest = com.kirin.mt.core.player.PlaybackRequest(
                 bvid = ep.bvid,
                 cid = ep.cid,
@@ -1478,6 +1533,7 @@ fun BiliTvApp(
           } else {
             PlayerScreen(
               request = displayedPlaybackRequest,
+              playQueue = playQueue,
               videoRepository = videoRepository,
               playbackRepository = playbackRepository,
               youtubeRepository = youtubeRepository,
@@ -1502,6 +1558,8 @@ fun BiliTvApp(
               showMiniProgressBar = settings.showMiniProgressBar,
               playerLogOverlayEnabled = settings.playerLogOverlayEnabled,
               onBack = {
+                // 退出播放器即清连播队列(对齐移动端):下次起播由入口重新快照,防残留队列串台。
+                playQueue = emptyList()
                 if (spaceRequest != null && spaceOrigin == SpaceOrigin.Content) {
                   // 从 UP 主页(内容来源)起播:返回时可见层是 UpSpace 网格,arm 它的 restore
                   playbackRequest = null
@@ -1572,8 +1630,17 @@ fun BiliTvApp(
               true
             },
             onVideoSelected = { video ->
+              playQueue = emptyList()
               spacePlaybackBehind = false
               playbackRequest = video.toPlaybackRequest()
+            },
+            // 「▶ 播放全部」:整份已加载投稿作连播队列,第一条起播(对齐移动端)。
+            onPlayAll = { queue ->
+              if (queue.isNotEmpty()) {
+                playQueue = queue
+                spacePlaybackBehind = false
+                playbackRequest = queue.first().toPlaybackRequest()
+              }
             },
           )
         }
@@ -1610,8 +1677,51 @@ fun BiliTvApp(
               true
             },
             onVideoSelected = { video ->
+              playQueue = emptyList()
               channelPlaybackBehind = false
               playbackRequest = video.toPlaybackRequest()
+            },
+            onOpenPlaylist = { playlist ->
+              youtubePlaylistRequest = playlist
+              playlistPlaybackBehind = false
+            },
+            // 「▶ 播放全部」:整份已加载视频作连播队列,第一条起播(对齐移动端)。
+            onPlayAll = { queue ->
+              if (queue.isNotEmpty()) {
+                playQueue = queue
+                channelPlaybackBehind = false
+                playbackRequest = queue.first().toPlaybackRequest()
+              }
+            },
+          )
+        }
+      }
+      // YouTube 播放列表详情页(TV):覆盖在频道页之上,返回回频道页并恢复播放列表网格焦点。
+      val displayedYoutubePlaylistRequest = youtubePlaylistRequest
+      if (displayedYoutubePlaylistRequest != null &&
+        (visiblePlaybackRequest == null || playlistPlaybackBehind)
+      ) {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(BiliColors.VideoBlack),
+        ) {
+          YoutubePlaylistDetailScreen(
+            youtubeRepository = youtubeRepository,
+            youtubeHistoryStore = youtubeHistoryStore,
+            playlist = displayedYoutubePlaylistRequest,
+            // 起播即快照整份已加载列表为连播队列(点行从该视频起,播全部从第一条起);
+            // 播放器播完由 PlayerScreen 按队列下一项连播(对齐移动端 playQueue)。
+            onStartSelected = { video, queue ->
+              playQueue = queue
+              playlistPlaybackBehind = false
+              playbackRequest = video.toPlaybackRequest()
+            },
+            onBack = {
+              youtubePlaylistRequest = null
+              playlistPlaybackBehind = false
+              channelFocusRestoreRequestKey += 1
+              true
             },
           )
         }

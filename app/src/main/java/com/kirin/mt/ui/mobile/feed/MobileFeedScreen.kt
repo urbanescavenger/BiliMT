@@ -28,17 +28,18 @@ import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import kotlinx.coroutines.launch
 
-/** 子 tab:动态 / 历史 / 收藏 / 追番 / 播放列表。YouTube 关注已并入动态(统一流),YouTube 历史已并入历史 tab。 */
+/** 子 tab:动态 / 历史 / 稍后再看 / 收藏 / 追番 / 播放列表。YouTube 关注已并入动态(统一流),YouTube 历史已并入历史 tab。 */
 private val FeedTabs = listOf(
   R.string.nav_dynamic,
   R.string.nav_history,
+  R.string.nav_toview,
   R.string.nav_favorite,
   R.string.nav_bangumi,
   R.string.feed_tab_playlist,
 )
 
 /** 播放列表 tab 下标(免登录)。 */
-private const val PlaylistTabIndex = 4
+private const val PlaylistTabIndex = 5
 
 /** 历史 tab 下标(免登录——本地 YouTube 历史未登录也可看)。 */
 private const val HistoryTabIndex = 1
@@ -70,7 +71,12 @@ fun MobileFeedScreen(
 ) {
   val scope = rememberCoroutineScope()
   val pagerState = rememberPagerState(pageCount = { FeedTabs.size }, initialPage = 0)
-  val channels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
+  // 频道流用 nullable initial:首帧组合时 DataStore 还没读出持久化频道 → channelsState=null,
+  // 用 channelsReady=false 通知动态 tab「先别拉」;等 DataStore 发出首值(含空列表)才置 true,
+  // 动态 tab 才把 B 站 + YouTube 一起拉,避免冷启动先空频道只拉 B 站、再重拉一遍。
+  val channelsState by youtubeChannelStore.channels.collectAsState(initial = null)
+  val channels = channelsState.orEmpty()
+  val channelsReady = channelsState != null
 
   // 播放列表免登录;动态(合并 YouTube 关注)在有频道时也免登录;历史 tab 免登录(本地 YouTube 历史);
   // 其余 tab 未登录时显示登录入口。
@@ -118,6 +124,7 @@ fun MobileFeedScreen(
           isLoggedIn = true,
           dynamicRefreshKey = dynamicRefreshKey,
           youtubeChannels = channels,
+          channelsReady = channelsReady,
           onVideoSelected = onVideoSelected,
           onOpenOwner = onOpenOwner,
           onLogin = onLogin,
@@ -134,19 +141,26 @@ fun MobileFeedScreen(
           onLogin = onLogin,
           modifier = Modifier.fillMaxSize(),
         )
-        2 -> MobileFavoritePage(
+        2 -> MobileToViewPage(
           videoRepository = videoRepository,
           onVideoSelected = onVideoSelected,
           onOpenOwner = onOpenOwner,
           modifier = Modifier.fillMaxSize(),
         )
-        3 -> MobileBangumiPage(
+        3 -> MobileFavoritePage(
+          videoRepository = videoRepository,
+          onVideoSelected = onVideoSelected,
+          onOpenOwner = onOpenOwner,
+          modifier = Modifier.fillMaxSize(),
+        )
+        4 -> MobileBangumiPage(
           videoRepository = videoRepository,
           onSeasonSelected = onSeasonSelected,
           modifier = Modifier.fillMaxSize(),
         )
-        4 -> MobileYoutubePlaylistPage(
+        5 -> MobileYoutubePlaylistPage(
           youtubePlaylistStore = youtubePlaylistStore,
+          youtubeHistoryStore = youtubeHistoryStore,
           onVideoSelected = onVideoSelected,
           onStartPlaylist = onStartPlaylist,
           modifier = Modifier.fillMaxSize(),

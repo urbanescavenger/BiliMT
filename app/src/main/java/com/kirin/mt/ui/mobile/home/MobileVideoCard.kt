@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,6 +26,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -45,6 +49,7 @@ import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoCardRelativeText
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.pubdateText
+import com.kirin.mt.core.model.watchProgressRatio
 import com.kirin.mt.ui.i18n.formatCompactCount
 import com.kirin.mt.ui.i18n.localeFromResources
 import com.kirin.mt.ui.theme.BiliColors
@@ -71,6 +76,8 @@ fun MobileVideoCard(
   onLongPress: ((VideoSummary) -> Unit)? = null,
   showYoutubeBorder: Boolean = false,
   feedLayout: Boolean = false,
+  // 紧凑卡底部是否显示「上传时间 · 播放量」(仅频道页传 true;首页/搜索等保持纯播放量)。
+  showPubdate: Boolean = false,
   // 封面覆盖图(Coil data,可传 Bitmap)。IPTV 频道用拉流截帧的缩略图覆盖 logo(镜像 TV VideoCard.coverOverride)。
   coverOverride: Any? = null,
 ) {
@@ -87,7 +94,7 @@ fun MobileVideoCard(
   if (feedLayout) {
     FeedStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner, coverOverride = coverOverride, completed = completed)
   } else {
-    CompactStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner, coverOverride = coverOverride, completed = completed)
+    CompactStyleCardContent(video = video, modifier = baseModifier, onOpenOwner = onOpenOwner, coverOverride = coverOverride, completed = completed, showPubdate = showPubdate)
   }
 }
 
@@ -99,6 +106,7 @@ private fun CompactStyleCardContent(
   onOpenOwner: ((VideoSummary) -> Unit)?,
   coverOverride: Any? = null,
   completed: Boolean = false,
+  showPubdate: Boolean = false,
 ) {
   Column(modifier = modifier) {
     Box(
@@ -128,6 +136,7 @@ private fun CompactStyleCardContent(
       if (completed) {
         CompletedBadge(modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
       }
+      MobileWatchProgress(video = video, modifier = Modifier.align(Alignment.BottomCenter))
     }
     Text(
       text = video.title,
@@ -165,6 +174,16 @@ private fun CompactStyleCardContent(
       }
       if (video.isLive) {
         LiveOnlineCount(online = video.view, areaName = video.liveAreaName)
+      } else if (showPubdate) {
+        // 频道页:显示「上传时间 · 播放量」,镜像 FeedStyleCardContent 的相对时间逻辑。
+        val relativeText = rememberVideoCardRelativeText()
+        val count = formatCount(if (video.view > 0) video.view else video.likeCount, LocalContext.current.resources)
+        val pubdate = video.pubdateText(relativeText)
+        Text(
+          text = if (pubdate.isBlank()) count else "$pubdate · $count",
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
       } else {
         Text(
           text = formatCount(if (video.view > 0) video.view else video.likeCount, LocalContext.current.resources),
@@ -252,6 +271,7 @@ private fun FeedStyleCardContent(
       if (completed) {
         CompletedBadge(modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
       }
+      MobileWatchProgress(video = video, modifier = Modifier.align(Alignment.BottomCenter))
     }
     // 标题在底部。
     Text(
@@ -266,7 +286,7 @@ private fun FeedStyleCardContent(
 
 /** 相对时间文本(3分钟前/昨天/5天前等),复用 TV 同款字符串资源。 */
 @Composable
-private fun rememberVideoCardRelativeText(): VideoCardRelativeText {
+internal fun rememberVideoCardRelativeText(): VideoCardRelativeText {
   val minutesAgoFormat = stringResource(R.string.video_relative_minutes_ago)
   val hoursAgoFormat = stringResource(R.string.video_relative_hours_ago)
   val yesterday = stringResource(R.string.video_relative_yesterday)
@@ -306,6 +326,71 @@ private fun LiveBadge(text: String, modifier: Modifier = Modifier) {
       color = Color.White,
       fontWeight = FontWeight.Bold,
       maxLines = 1,
+    )
+  }
+}
+
+/** 缩略图底部已播放进度细条(对照 LibreTube watch_progress)。直播/无进度时不显示;宽 = progress/duration。
+ *  移动端用 MaterialTheme primary 填充 + 半透明黑轨道,与 TV VideoCard 的 accent 版本保持同一语义。 */
+@Composable
+private fun MobileWatchProgress(video: VideoSummary, modifier: Modifier = Modifier) {
+  if (video.isLive) return
+  val ratio = video.watchProgressRatio()
+  if (ratio <= 0f) return
+  Box(
+    modifier = modifier
+      .fillMaxWidth()
+      .height(4.dp)
+      .background(Color.Black.copy(alpha = 0.35f)),
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxHeight()
+        .fillMaxWidth(ratio.coerceIn(0f, 1f))
+        .background(MaterialTheme.colorScheme.primary),
+    )
+  }
+}
+
+/**
+ * YouTube 播放进度快照映射(videoId -> 历史条目),供播放列表这类存「加入时刻快照」的列表
+ * 渲染进度条用——快照的 video.progress 永远停在加入时的值,真实进度只能渲染时从
+ * [YoutubeHistoryStore] 查(播放器起播/暂停/退出都写 positionMs)。历史仅存最近 300 条,
+ * 不在历史里的视频查不到进度,不画条。
+ */
+@Composable
+fun rememberYoutubeWatchPositions(
+  youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
+): Map<String, com.kirin.mt.core.youtube.YoutubeHistoryEntry> {
+  val history by youtubeHistoryStore.history.collectAsState(initial = emptyList())
+  return remember(history) { history.associateBy { it.videoId } }
+}
+
+/**
+ * 快照列表(播放列表)缩略图底部已播放进度细条:样式对齐 [MobileWatchProgress]
+ * (4dp 黑半透明轨道 + primary 填充)。positionMs/durationMs 无效或接近播完(≥99%,
+ * 播完语义交给「已看完」角标)时不画。
+ */
+@Composable
+fun YoutubeSnapshotWatchProgress(
+  positionMs: Long,
+  durationMs: Long,
+  modifier: Modifier = Modifier,
+) {
+  if (durationMs <= 0L || positionMs <= 0L) return
+  val ratio = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+  if (ratio >= 0.99f) return
+  Box(
+    modifier = modifier
+      .fillMaxWidth()
+      .height(4.dp)
+      .background(Color.Black.copy(alpha = 0.35f)),
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxHeight()
+        .fillMaxWidth(ratio)
+        .background(MaterialTheme.colorScheme.primary),
     )
   }
 }

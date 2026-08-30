@@ -47,6 +47,7 @@ import com.kirin.mt.ui.i18n.LocalChineseTextConverter
 import com.kirin.mt.ui.i18n.localizedContext
 import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceYoutube
+import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.network.LiveRepository
@@ -68,6 +69,7 @@ import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeContentLocale
+import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.LoginActivity
@@ -75,6 +77,7 @@ import com.kirin.mt.ui.mobile.SettingsActivity
 import com.kirin.mt.ui.mobile.common.DevelopingTipContent
 import com.kirin.mt.ui.mobile.downloads.MobileDownloadQualityDialog
 import com.kirin.mt.ui.mobile.feed.MobileFeedScreen
+import com.kirin.mt.ui.mobile.feed.MobileYoutubePlaylistDetailScreen
 import com.kirin.mt.ui.mobile.feed.MobilePlaylistPickerDialog
 import com.kirin.mt.ui.mobile.feed.MobileYoutubeLongPressSheet
 import com.kirin.mt.ui.mobile.space.MobileYoutubeChannelScreen
@@ -87,6 +90,7 @@ import com.kirin.mt.ui.pgc.PgcSeasonRequest
 import com.kirin.mt.ui.player.LivePlayerScreen
 import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.shell.AppDestination
+import com.kirin.mt.ui.theme.BiliMobileTheme
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
@@ -155,6 +159,9 @@ fun BiliMobileApp(
   // YouTube 频道主页(channelId + 名),镜像 space 的覆盖层范式。
   var youtubeChannelRequest by remember { mutableStateOf<YoutubeChannel?>(null) }
   var channelPlaybackBehind by remember { mutableStateOf(false) }
+  // YouTube 播放列表详情页:点频道页播放列表卡进入(覆盖在频道页之上),先列视频再选播。
+  var youtubePlaylistRequest by remember { mutableStateOf<YoutubeParsers.YoutubePlaylist?>(null) }
+  var playlistPlaybackBehind by remember { mutableStateOf(false) }
   // 空间/频道页状态提升到 shell:从空间/频道起播后退出播放器回到页面时不重载(镜像 TV UpSpaceUiState)。
   val upSpaceUiState = remember { com.kirin.mt.ui.mobile.space.MobileUpSpaceUiState() }
   val youtubeChannelUiState = remember { com.kirin.mt.ui.mobile.space.MobileYoutubeChannelUiState() }
@@ -250,6 +257,7 @@ fun BiliMobileApp(
     LocalChineseTextConverter provides textConverter,
     com.kirin.mt.ui.mobile.home.LocalWatchedIds provides watchedIds,
   ) {
+    BiliMobileTheme(settings.homeThemeVariant, settings.appearanceMode) {
     Box(modifier = Modifier.fillMaxSize()) {
     NavigationSuiteScaffold(
       modifier = Modifier.statusBarsPadding(),
@@ -341,6 +349,15 @@ fun BiliMobileApp(
           },
           onOpenOwner = { video -> openOwner(video) },
           onLongPress = onLongPress,
+          onUserSelected = { user ->
+            if (user.source == SourceYoutube && user.channelId.isNotBlank()) {
+              youtubeChannelRequest = YoutubeChannel(user.channelId, user.name)
+              channelPlaybackBehind = false
+            } else {
+              spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(user.mid, user.name, user.face)
+              spacePlaybackBehind = false
+            }
+          },
           modifier = Modifier.fillMaxSize(),
         )
         AppDestination.Settings -> DevelopingTipContent()
@@ -403,6 +420,22 @@ fun BiliMobileApp(
             spaceRequest = com.kirin.mt.ui.space.UpSpaceRequest(mid, name, face)
             spacePlaybackBehind = true
           },
+          // 简介频道行点头像/名进 YouTube 频道主页(垫在播放器后面,对齐 B 站空间行为)。
+          // channelId 缺省(搜索直进等存卡无 channelId)时按频道名解析,镜像 openOwner 的 YouTube 分支。
+          onOpenYoutubeChannel = { channelId, name ->
+            if (channelId.isNotBlank()) {
+              youtubeChannelRequest = YoutubeChannel(channelId, name)
+              channelPlaybackBehind = true
+            } else if (name.isNotBlank()) {
+              scope.launch {
+                val resolved = runCatching { youtubeRepository.resolveChannel(name) }.getOrNull()
+                if (resolved != null && resolved.channelId.isNotBlank()) {
+                  youtubeChannelRequest = YoutubeChannel(resolved.channelId, resolved.name.ifBlank { name })
+                  channelPlaybackBehind = true
+                }
+              }
+            }
+          },
           modifier = Modifier.fillMaxSize(),
         )
         }
@@ -439,6 +472,13 @@ fun BiliMobileApp(
             // 不动 spacePlaybackBehind:保留来源栈(从播放器进来的返回回播放器,从 tab 进来的返回回 tab)。
             onOpenOwner = { video -> openOwner(video) },
             onLongPress = onLongPress,
+            onPlayAll = { queue ->
+              if (queue.isNotEmpty()) {
+                playQueue = queue
+                spacePlaybackBehind = false
+                playbackRequest = queue.first().toPlaybackRequest()
+              }
+            },
             onBack = {
               spaceRequest = null
               spacePlaybackBehind = false
@@ -474,9 +514,53 @@ fun BiliMobileApp(
               playbackRequest = video.toPlaybackRequest()
             },
             onLongPress = onLongPress,
+            onOpenPlaylist = { playlist ->
+              youtubePlaylistRequest = playlist
+              playlistPlaybackBehind = false
+            },
+            onPlayAll = { queue ->
+              if (queue.isNotEmpty()) {
+                playQueue = queue
+                channelPlaybackBehind = false
+                playbackRequest = queue.first().toPlaybackRequest()
+              }
+            },
             onBack = {
               youtubeChannelRequest = null
               channelPlaybackBehind = false
+            },
+            modifier = Modifier.fillMaxSize(),
+          )
+        }
+      }
+    }
+
+    // YouTube 播放列表详情页:点频道页播放列表卡进入,覆盖在频道页之上,先列视频再选播。
+    val playlistRequest = youtubePlaylistRequest
+    if (playlistRequest != null) {
+      BackHandler(enabled = playbackRequest == null || playlistPlaybackBehind) {
+        youtubePlaylistRequest = null
+        playlistPlaybackBehind = false
+      }
+      if (playbackRequest == null || playlistPlaybackBehind) {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        ) {
+          MobileYoutubePlaylistDetailScreen(
+            youtubeRepository = youtubeRepository,
+            youtubeHistoryStore = youtubeHistoryStore,
+            playlist = playlistRequest,
+            onStartSelected = { video, queue ->
+              playQueue = queue
+              playlistPlaybackBehind = false
+              playbackRequest = video.toPlaybackRequest()
+            },
+            onLongPress = onLongPress,
+            onBack = {
+              youtubePlaylistRequest = null
+              playlistPlaybackBehind = false
             },
             modifier = Modifier.fillMaxSize(),
           )
@@ -637,6 +721,7 @@ fun BiliMobileApp(
     if (downloadEnqueueing) {
       MobileEnqueueingDialog()
     }
+  }
   }
   }
 }

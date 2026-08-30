@@ -328,6 +328,7 @@ fun MobilePlayerScreen(
   onPlayVideo: (VideoSummary) -> Unit = {},
   onBack: () -> Unit,
   onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit = { _, _, _ -> },
+  onOpenYoutubeChannel: (channelId: String, channelName: String) -> Unit = { _, _ -> },
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -473,6 +474,13 @@ fun MobilePlayerScreen(
         .setAllowVideoMixedMimeTypeAdaptiveness(true)
         .setAllowVideoNonSeamlessAdaptiveness(true)
         .setAllowMultipleAdaptiveSelections(true)
+        // alpha.97(修「Auto 永不升过 1080p」根因):base 默认 isViewportSizeLimitedByPhysicalDisplaySize=true
+        // (media3-common TrackSelectionParameters.Builder 默认块),selectVideoTrack 会无视 viewportWidth=MAX
+        // 直接拿物理屏尺寸当视口(Util.getCurrentDisplayModeSize)→ 超屏分辨率(1440p/2160p)的
+        // isSuitableForViewport=false → 失去 ADAPTIVE 资格,恒 sel=false 永不升档(真机 YtSabrTracks 证实
+        // 14 轨全 sup=true 但 308/315 恒不进 selection)。clearViewportSizeConstraints 同时置该开关 false,
+        // 解除物理屏隐性视口约束——ABR 是否升高档全交给带宽(SabrBandwidthMeter 实测)与 HeightAware 选档。
+        .clearViewportSizeConstraints()
         .build()
     )
     ExoPlayer.Builder(context)
@@ -574,7 +582,10 @@ fun MobilePlayerScreen(
     ).show()
   }
 
-  // 分享视频:bvid 优先,无 bvid 用 av{aid};文本=标题+换行+链接,走系统 share sheet。
+  // 分享视频:bvid 优先,无 bvid 用 av{aid};文本=标题+换行+链接。
+  // 分享 text/plain 的 bilibili URL:微信/QQ 识别 bilibili.com 域名自动生成可点击的富链接卡片
+  // (封面+标题+描述),点击跳转——对齐 B 站官方分享。不要用 image/* 分享封面图:微信只发图、
+  // 忽略文本,点击不能跳转(曾误改,已回退)。
   fun shareVideo() {
     val bvid = activeRequest.bvid
     val url = when {
@@ -959,6 +970,10 @@ fun MobilePlayerScreen(
         )
       }
       player.setPlaybackSpeed(playbackSpeed)
+      // alpha.97(修「Auto 永不升过 1080p」诊断):SABR 会话逐视频轨打硬解能力判定(I 级,live 日志可见)。
+      if (sabrEffectiveInfo.isSabrSingle()) {
+        com.kirin.mt.core.youtube.sabr.media.SabrCodecDiagnostics.logVideoCodecSupport(context, sabrEffectiveInfo)
+      }
       if (startPositionMs > 0L) {
         // alpha.34:SABR 源(LENGTH_UNSET 不可 seek)跳过 seekTo——续播已由 startMs 透传进
         // sabr:// URL 协议层完成;seekTo 会重开 DataSource 喂双 init 致 MatroskaExtractor 崩。
@@ -1056,6 +1071,24 @@ fun MobilePlayerScreen(
           MobilePlayerLogTag,
           "playerState=$playbackState pos=${player.currentPosition} videoFmt=${player.videoFormat} audioFmt=${player.audioFormat}",
         )
+        // alpha.97(修「Auto 永不升过 1080p」决定性诊断,镜像 TV PlayerScreen YtSabrTracks):READY 时
+        // dump ①trackSelectionParameters 真实 min/max/viewport 值(验证起始档锁/首帧释放后的实际状态);
+        // ②currentTracks 每轨 renderer 判定(trackSupport/sup/sel)——DefaultTrackSelector 建组真相。
+        if (playbackState == Player.STATE_READY) {
+          Log.i("YtSabrTracks", "params=${player.trackSelectionParameters}")
+          val groups = player.currentTracks.groups
+          Log.i(
+            "YtSabrTracks",
+            "groups=${groups.size} " + groups.mapIndexed { gi, gr ->
+              "g$gi=" + (0..<gr.length).joinToString { ti ->
+                val f = gr.getTrackFormat(ti)
+                "${f.id?.takeIf { it.isNotBlank() } ?: f.codecs}(${f.width}x${f.height})" +
+                  "support=${gr.getTrackSupport(ti)} sup=${gr.isTrackSupported(ti)} " +
+                  "sel=${gr.isTrackSelected(ti)}"
+              }
+            }
+          )
+        }
         // 暴露缓冲态为可观察 state:STATE_BUFFERING→true,READY/ENDED/IDLE→false。
         // 原本仅命令式读 player.playbackState 做 stall 检测,UI 无法据此显加载图标/控制栏。
         isBuffering = playbackState == Player.STATE_BUFFERING
@@ -1901,6 +1934,7 @@ fun MobilePlayerScreen(
           youtubePlaylistStore = youtubePlaylistStore,
           onPlayVideo = playPlaylistVideo,
           onOpenUpSpace = onOpenUpSpace,
+          onOpenYoutubeChannel = onOpenYoutubeChannel,
           onShare = { shareVideo() },
           onSelectPage = { ep ->
             scope.launch {
@@ -1933,6 +1967,7 @@ fun MobilePlayerScreen(
       youtubePlaylistStore = youtubePlaylistStore,
       onPlayVideo = playPlaylistVideo,
       onOpenUpSpace = onOpenUpSpace,
+      onOpenYoutubeChannel = onOpenYoutubeChannel,
       onShare = { shareVideo() },
       onSelectPage = { ep ->
         scope.launch {
@@ -2211,6 +2246,7 @@ private fun MobileYoutubeIntroTab(
   relatedVideos: List<VideoSummary>,
   youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
   onPlayVideo: (VideoSummary) -> Unit,
+  onOpenChannel: (channelId: String, channelName: String) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val detail = youtubeDetail
@@ -2249,10 +2285,18 @@ private fun MobileYoutubeIntroTab(
       maxLines = 2,
       overflow = TextOverflow.Ellipsis,
     )
-    // 频道行(头像 + 名)。/player 无频道头像字段,渲染占位圆;仅展示,不进频道。
+    // 频道行(头像 + 名)。/player 无频道头像字段,渲染占位圆。点击进频道主页:
+    // channelId 优先 /player videoDetails,缺省回退卡片携带的 request.channelId;
+    // 两者皆缺时仍回调,由 shell 按频道名解析(resolveChannel)后进频道页。
     Row(
       modifier = Modifier
         .fillMaxWidth()
+        .clip(RoundedCornerShape(10.dp))
+        .clickable {
+          val cid = detail.channelId.ifBlank { request.channelId }
+          val name = detail.channelName.ifBlank { request.ownerName }
+          if (cid.isNotBlank() || name.isNotBlank()) onOpenChannel(cid, name)
+        }
         .padding(top = 10.dp),
       verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -2425,6 +2469,7 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
   youtubePlaylistStore: com.kirin.mt.core.youtube.YoutubePlaylistStore,
   onPlayVideo: (VideoSummary) -> Unit,
   onOpenUpSpace: (Long, String, String) -> Unit,
+  onOpenYoutubeChannel: (channelId: String, channelName: String) -> Unit,
   onShare: () -> Unit,
   onSelectPage: (PlaybackEpisode) -> Unit,
   modifier: Modifier = Modifier,
@@ -2471,6 +2516,7 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
             relatedVideos = relatedVideos,
             youtubePlaylistStore = youtubePlaylistStore,
             onPlayVideo = onPlayVideo,
+            onOpenChannel = onOpenYoutubeChannel,
             modifier = Modifier.fillMaxSize(),
           )
         } else {
@@ -2668,6 +2714,27 @@ private fun MobilePlayerIntroTab(
                 favFolders = folders
                 selectedFolderIds = emptySet()
                 favLoading = false
+              }
+            },
+          )
+          IntroActionButton(
+            iconRes = R.drawable.ic_player_toview,
+            label = stringResource(R.string.player_control_toview),
+            count = "",
+            active = false,
+            enabled = !busy,
+            onClick = {
+              if (busy) return@IntroActionButton
+              scope.launch {
+                busy = true
+                try {
+                  val ok = videoRepository.addToView(metadata.aid)
+                  toast(true, if (ok) context.getString(R.string.feed_action_toview_done)
+                  else context.getString(R.string.feed_action_toview_failed))
+                } catch (e: Exception) {
+                  toast(false, "")
+                }
+                busy = false
               }
             },
           )

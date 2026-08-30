@@ -145,6 +145,9 @@ import okhttp3.OkHttpClient
 @Composable
 fun PlayerScreen(
   request: PlaybackRequest,
+  // 播放队列连播(镜像移动端 MobilePlayerScreen.playQueue):播放列表场景起播时由 shell 快照,
+  // 播完优先按队列下一项连播(优先于下一分P);Related 面板有队列后续时直接显示队列,不拉在线。
+  playQueue: List<VideoSummary> = emptyList(),
   videoRepository: VideoRepository,
   playbackRepository: PlaybackRepository,
   youtubeRepository: com.kirin.mt.core.youtube.YoutubeRepository,
@@ -291,12 +294,16 @@ fun PlayerScreen(
     // alpha.9Y(分辨率优先选档):媒体3 原生按 bitrate 选档会被 YouTube bitrate/height 错位卡在
     // 1080p 不升(1440p 声明 13.9M < 1080p 14.4M)。注入按 height 选档的自定义 selection(见
     // HeightAwareAdaptiveTrackSelection),带宽只当门槛。混合 mime 组走自定义,音频等退化父类。
+    // alpha.97(修「Auto 永不升过 1080p」根因,同 MobilePlayerScreen):clearViewportSizeConstraints 置
+    // isViewportSizeLimitedByPhysicalDisplaySize=false,解除「物理屏=视口」隐性约束,否则超屏分辨率
+    // (1440p/2160p)永远拿不到 ADAPTIVE 资格。
     val trackSelector = DefaultTrackSelector(context, HeightAwareAdaptiveTrackSelectionFactory())
     trackSelector.setParameters(
       DefaultTrackSelector.Parameters.Builder()
         .setAllowVideoMixedMimeTypeAdaptiveness(true)
         .setAllowVideoNonSeamlessAdaptiveness(true)
         .setAllowMultipleAdaptiveSelections(true)
+        .clearViewportSizeConstraints()
         .build()
     )
     ExoPlayer.Builder(context)
@@ -1015,6 +1022,29 @@ fun PlayerScreen(
     val actionToken = ++completionActionToken
     completionActionJob = coroutineScope.launch {
       try {
+        // 播放队列连播无条件执行(对齐移动端:播完先查队列下一项,不受任何开关控制——
+        // 队列来自「播放全部」/播放列表点行,是用户显式选择的连播序列;开关只管隐式连播)。
+        // 命中即起播(不同视频需重拉元数据 clearMetadata=true);队列无下一项再走下方开关分支。
+        val queueNext = if (playQueue.size > 1) {
+          val cur = playQueue.indexOfFirst { it.bvid == displayRequest.bvid }
+          if (cur in 0 until playQueue.lastIndex) playQueue[cur + 1] else null
+        } else {
+          null
+        }
+        if (queueNext != null) {
+          showPlaybackCompletionToast(
+            context.getString(
+              R.string.player_completion_next_episode_toast,
+              textConverter.convert(queueNext.title),
+            ),
+          )
+          delay(CompletionActionDelayMs)
+          if (completionActionToken == actionToken && completionReported) {
+            startPlaybackRequest(queueNext.toPlaybackRequest(), clearMetadata = true)
+          }
+          return@launch
+        }
+
         if (autoPlayNextEpisode) {
           val videoMetadata = resolveDisplayMetadata()
           if (completionActionToken != actionToken || !completionReported) return@launch
@@ -1279,11 +1309,19 @@ fun PlayerScreen(
       PlayerControl.Episodes -> openPanel(PlayerPanel.Episodes)
       PlayerControl.Up -> openUpVideos(UpVideoOrderLatest)
       PlayerControl.Related -> {
+        // 播放列表场景:相关 = 队列后续(与自动连播同源同序,不依赖在线接口成败);
+        // 单视频或已在队列末 → 走在线相关(YouTube /next,B站 related)。
+        val cur = playQueue.indexOfFirst { it.bvid == displayRequest.bvid }
+        val queueRest = if (playQueue.size > 1 && cur in 0 until playQueue.lastIndex) {
+          playQueue.drop(cur + 1)
+        } else {
+          null
+        }
         openVideoListPanel(
           panel = PlayerPanel.RelatedVideos,
           defaultFocusedIndex = 0,
         ) {
-          if (displayRequest.isYoutube) {
+          queueRest ?: if (displayRequest.isYoutube) {
             videoRepository.getYoutubeRelatedVideos(displayRequest.bvid)
           } else {
             videoRepository.getRelatedVideos(displayRequest.bvid)
@@ -1715,6 +1753,10 @@ fun PlayerScreen(
           }
         }
         player.setMediaSource(finalMediaSource)
+        // alpha.97(修「Auto 永不升过 1080p」诊断):SABR 会话逐视频轨打硬解能力判定(I 级,live 日志可见)。
+        if (effectiveInfo.isSabrSingle()) {
+          com.kirin.mt.core.youtube.sabr.media.SabrCodecDiagnostics.logVideoCodecSupport(context, effectiveInfo)
+        }
         launchStep = "prepare"
         Log.i(PlayerPlaybackLogTag, "launch step: prepare")
         player.prepare()

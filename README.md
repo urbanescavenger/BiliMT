@@ -129,6 +129,31 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 ## 版本更新
 
+### v3.0.7
+
+稳定版：YouTube 播放链路大修（SABR 升降档门槛换实测码率地基：实测消耗校准 + 水位急救降档 + 升档重锚 + 取消升档冷却 + 顶档 4K 防抖，根治卡 1080p/720p 不升、升完打回锁死、4K 贴地不降致看门狗重载；含升档判据改持续带宽、gap 时钟 bug 等 alpha.1~16 全部修复）+ Crashlytics 日志远程回收完整链路（无需 GMS，手动分享恒即时、启动检查送行、注入降噪 56KB 字节预算）+ 双端频道页/排序/搜索结果对齐 B站/YouTube 官方 UI + TV 修退桌面直播后台出声与重开新实例 + 订阅流提速 + 普通卡片真实观看进度条。
+
+### v3.0.7-alpha
+
+| tag | 内容 |
+| --- | --- |
+| v3.0.7-alpha.16 | SABR Auto 收尾:3min 升档冷却取消(急救降回秒级回档,无需手动切)+ calib 成熟度地板(刚升档新采样噪声不再把高档门槛拉穿,修 4K 误批漏缓冲)+ 顶档(2160p)升档额外要求 sustained≥声明×0.6(边缘 4K 分钟级获批/降档抖动防线,千兆管道不受损) |
+| v3.0.7-alpha.15 | SABR 升降档门槛换实测码率地基:MEDIA_END 挂账实测消耗码率(声明虚高~2×),升/降档门槛=declared×calib(当前档实测/声明);水位急救降档(缓冲<8s 下漏直接降一档,修 4K 贴地不降致看门狗整段重载);升档 est 重锚+升档后 10s 禁止回降;Format.id 复合格式 itag 解析修复(calib 死锁);sus 跨度不足返-1 修 500M 垃圾尖峰 |
+| v3.0.7-alpha.14 | 设置页「关于」归位程序更新组末行(TV)+ 移动端补「关于」折叠区 |
+| v3.0.7-alpha.13 | 设置「程序更新」节移到列表最末尾(TV+移动端对齐) |
+| v3.0.7-alpha.12 | TV 搜索切「频道/UP主」类型退到头像修复(焦点节点显式 key 防重建逃逸) |
+| v3.0.7-alpha.11 | 上报时机重构:采集恒关+启动检查送行(修「开关开着手动分享要重启才送达」) |
+| v3.0.7-alpha.10 | Crashlytics 日志注入降噪 + 字节预算修复(修云端只剩噪音行) |
+| v3.0.7-alpha.9 | Release 包 Crashlytics 组件被 R8 削掉的修复(proguard 整包 keep)+ SABR Auto 满缓冲不升 1440 修复 |
+| v3.0.7-alpha.8 | Crashlytics 上报可靠性收尾 + 网络排查闭环(域名不可达/重启上传点实证) |
+| v3.0.7-alpha.7 | Firebase Crashlytics 日志回收(无需 GMS)+ 崩溃自动上报开关(默认关)+ 云端日志拉取文档/脚本 |
+| v3.0.7-alpha.6 | SABR 升档判据两连修 + TV 搜索/空间页 UI 对齐移动端:①SABR 升档判据改持续带宽(60s 墙钟累计交付),根治升 4K 后 pacing 必卡反复横跳;②gap 计时时钟单位 bug 修复(epoch 墙钟 vs elapsedRealtime 错位)+升降档 3min 冷却抑制整段重载;③TV 搜索结果页 chip 顺序对齐移动端(排序在前/视频·UP主在后);④TV UP 空间/频道页主页排序改「≡」单按钮右置 OK 翻转(替代聚焦即切换双 chip)+「▶ 播放全部」左置连播,抽共享 TvSortChips |
+| v3.0.7-alpha.5 | TV 退桌面直播仍后台出声 + 重开 APP 出现新实例修复:①LivePlayerScreen(直播/IPTV)补生命周期 ON_PAUSE 暂停/ON_RESUME 续播(TV 不启 PlaybackService,此前 Home 退桌面进程活着继续出声;只恢复退前在播的台,手动暂停过不拉起);②MainActivity 改 singleTask+alwaysRetainTaskState(标准 launchMode 下盒子桌面启动器重开常重建 Activity/新开 task,Compose 状态全丢回首页、旧实例压底仍在播,退出新实例掉进旧播放页;现重开永远复用同一实例把旧界面带回前台) |
+| v3.0.7-alpha.4 | YouTube/B站频道页对齐官方 UI + YouTube 播放列表解析修复:①播放列表卡缩略图/视频数字段迁移修复(封面在 collectionThumbnailViewModel.primaryThumbnail,视频数在缩略图角标 badge,旧路径拿空致"▶"占位块/错显示更新时间);②播放列表详情页作者/视频数恒空修复(viewModel text 节点须读 content 键 + 作者行剥 by/创建者：/建立者： 语言前缀)与简介上移(播放全部上方);③移动端 YouTube 频道页主页 tab 对齐 B站官方——tab「视频」改名「主页」、内容区换官方式纵向视频行、「▶ 播放全部」(连播队列)+「≡ 排序」右对齐菜单;④B站移动端 UP 空间投稿区同样对齐(纵向行带 💬 弹幕+播放全部+排序菜单,「最热门」→「最多播放」);⑤TV 频道页加内容 tab(主页/Shorts/直播/播放列表,视频保留网格)+播放列表焦点卡片网格+新增 TV 播放列表详情页(D-pad 纵向列表,TV 无队列单视频起播) |
+| v3.0.7-alpha.3 | 频道页 Shorts 空修复(shortsLockupViewModel reel 风格专属解析:videoId 在 reelWatchEndpoint,标题/播放量在 accessibilityText)+ 频道页 tab 统一 channelId+服务端 params(弃 UUSH/UULV 系统 browseId,真机 400)+ 普通卡片显示真实观看进度条(PlaybackProgressStore,无进度数据不显示)+ 修复无进度卡片误显满条 |
+| v3.0.7-alpha.2 | 设置页清理:隐藏已废弃「锁定会话视频轨」诊断开关(TV+移动)+ 移动端隐藏 7 个 TV 专属惰性开关(seek 预览/退出确认/自动连播/看完回首页/播放器时钟/迷你进度条),字段与逻辑保留 |
+| v3.0.7-alpha.1 | YouTube 动态订阅流提速(~6.8s→~2.8s:会话预热后台化 + RSS 改 UULF uploads 播放列表 feed)+ 首刷新收敛为一次合并 + 视频卡片已播放进度条 |
+
 ### v3.0.6
 
 稳定版:移动端「已看完」闭环 + YouTube SABR 带宽驱动升降档 + 播放器/交互修复聚合。移动端看完的视频卡片标「已看完」角标并纳入 WebDAV 备份/还原,新增「已看完自动删除缓存」开关看完自动清下载;YouTube SABR 双修(带宽样本计入段间等待根治「8K 缓冲掉不降档」、Auto 选档改按 height 优先根治「卡 1080p 不升」);播放列表长按拖动排序(边缘自动滚动 + 方向相邻槽位,根治拖到顶/底无法换位);播放列表相关视频恒为列表后续 + 进度条末端误触防护;播放器加全屏吞噬层点缓存清晰度不再误开设置页;启动后台预加载首页推荐+动态免二次点击;YouTube 历史/简介频道头像对齐 LibreTube 权威源回填。
@@ -148,6 +173,17 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 | v3.0.6-alpha.3 | SABR 可持续带宽(带宽样本计入段间等待)+ 分辨率优先选档(`HeightAwareAdaptiveTrackSelection`),根治「8K 缓冲掉不降档」与「Auto 卡 1080p 不升」 |
 | v3.0.6-alpha.2 | SABR 带宽驱动选档根治升降档:新建 `SabrBandwidthMeter` 返回实测真实带宽,媒体3 原生 ABR 自动选最高可负担档,真机 1080p→1440p→4K 自然爬升 |
 | v3.0.6-alpha.1 | 已看完闭环:① WebDAV 备份/还原新增「已看完列表」项(`bilitv/watched.json`,移动端+TV 弹窗都加,还原可选);② 设置「播放」节新增「已看完自动删除缓存」开关(仅移动端),播放到结尾自动删该视频下载文件;③ 视频卡片右下角「已看完」角标(`WatchedStore` + CompositionLocal) |
+
+### v3.0.6-alpha
+
+移动端「已看完」闭环：看完的视频卡片右下角标角标（本地 WatchedStore 跟踪），并纳入 WebDAV 备份/还原；新增「已看完自动删除缓存」开关，看完自动清掉该视频下载文件。
+
+| tag | 内容 |
+| --- | --- |
+| v3.0.6-alpha.4 | 设置弹窗 D-pad 焦点根治：WebDAV 编辑/IPTV/Piped 三个弹窗由内联叠层改真 `Dialog` 窗口（独立 window 自带焦点根，D-pad 不再逃到背后设置页）；备份/还原选择弹窗重构「固定顶底+滚动中段」——顶部全选与底部开始/取消锁定常显、中间选项 `LazyColumn` 随焦点滚动滚到底才进底部按钮，根治更多选项下底部按钮被裁剪焦点不可见 |
+| v3.0.6-alpha.3 | SABR 可持续带宽 + 分辨率优先选档：①带宽样本计入段间等待根治「8K 缓冲掉不降档」；②Auto 选档改按 height 优先、bitrate 只当带宽门槛（`HeightAwareAdaptiveTrackSelection`），根治「Auto 卡 1080p 不升」（YouTube 声明 bitrate 与 height 错位） |
+| v3.0.6-alpha.2 | SABR 带宽驱动选档根治升降档：媒体3 带宽计被 SabrDataSource 内存读样本污染（1M↔437M 跳变）致 ABR 钉死低档；新建 `SabrBandwidthMeter` 返回 SabrMediaFetcher 实测真实带宽（中位数），媒体3 原生 ABR 按可信带宽自动选最高可负担档，删 ceiling/force-climb 补丁。真机复测 1080p→1440p→4K 自然爬升，无震荡无黑屏 |
+| v3.0.6-alpha.1 | 已看完闭环：① WebDAV 备份/还原新增「已看完列表」项（`bilitv/watched.json`，移动端+TV 弹窗都加，还原可选）；② 设置「播放」节新增「已看完自动删除缓存」开关（仅移动端），播放到结尾自动删该视频下载文件（`DownloadManager.deleteByVideoId`，含分件+「下载」播放列表存档），实际删了才弹 Toast 反馈；③ 视频卡片右下角「已看完」角标（`WatchedStore` + CompositionLocal，B站 bvid/YouTube videoId 统一承载） |
 
 ### v3.0.5-alpha
 
@@ -178,7 +214,7 @@ TV 覆盖层/长按弹窗返回焦点恢复：UP 主页、YouTube 频道主页�
 
 ### v3.0.2
 
-稳定版：YouTube 播放链路加固 + 关注流可扩展。YouTube 播放器清晰度选择恢复（DASH 自合成兜底多档清晰度 + 按分辨率去重菜单）、DASH 切清晰度播放失败修复（自合成 MPD 多 codec 变体 Representation id 唯一化 + 视频轨按 mimeType 分组独立 AdaptationSet，ExoPlayer 各用正确 extractor）、SABR RELOAD 死循环守卫（attestation 视频直接落 ≤1080p DASH/HLS 兜底）、NewPipe-first 主路径（解耦坏 WEB WebView 收割门卫）、关注流改分批增量拉取 + Room 逐频道缓存（几百频道可扩展，对齐 LibreTube LocalFeedRepository）、在线更新装旧缓存 APK 修复、更新后启动清空实时日志。
+稳定版：YouTube SABR 高清播放与 DASH 兜底稳定化（复活自合成 DASH 主兜底、NewPipe-first 主路径、DASH 切清晰度 init 段 EOF 修复、Representation id 唯一化），在线更新与真机测试链路打磨。
 
 ### v3.0.1
 

@@ -114,34 +114,237 @@ internal class SabrMediaFetcher(
   private val dispatcher = Dispatchers.IO.limitedParallelism(1)
 
   // alpha.9X(真实带宽判断机制):媒体3 DefaultBandwidthMeter 从 SabrDataSource 上报的样本波动离谱
-  // (2026-08-24 真机 bw= 在 1M↔437M 之间 1000 倍跳变),effectiveBitrate 不可信 → AdaptiveTrackSelection 升档
-  // 判定错误(掉档后回不来)。这里直接从实际段下载(resp.size/elapsed)采集真实吞吐,过滤 init/retry 小样本
-  // (几十 KB),取最近 [REAL_BW_MAX_SAMPLES] 个样本的中位数(对稳定 8-13M 段稳,抗偶发慢样本),供
-  // [DefaultSabrChunkSource] 的 relax/ceiling 判定用。锁保护跨线程读写(getNextSegment 在 IO 线程、chunk
-  // source 在主 loader 线程)。
-  private val realBandwidthSamples = ArrayDeque<Long>()
-  private val realBandwidthLock = Any()
-  /** 上次 fetch 下载结束的实时墙钟(elapsedRealtime,0=首),算「段间等待」入带宽样本。 */
-  @Volatile private var lastFetchEndRealtimeMs = 0L
+  // (2026-08-24 真机 bw= 在 1M↔437M 之间 1000 倍跳变),effectiveBitrate 不可信 → AdaptiveTrackSelection 选档
+  // 判定错误。这里直接从实际段下载采集真实吞吐。原实现是「分段采样→最近样本中位数」,但失败/卡死的段
+  // 不产生样本 → 断流时刻带宽停留在历史高位,ABR 无降档依据,只能等看门狗整段重载。
+  // 改为「滑动窗口累计」:带宽 = 窗口内累计下载量 / 窗口内累计耗时。**失败段也要计时间(下载量=0)**,
+  // 卡死那段时间「分子不变、分母一直涨」→ 带宽自动下探,让 ABR 在缓冲耗尽前降档,而非静默丢弃失败。
+  // 锁保护跨线程读写(getNextSegment 在 IO 线程、chunk source 在主 loader 线程)。
+  private class RealBwSample(val bytes: Long, val timeMs: Long)
 
-  /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。小样本/无效时长丢弃。 */
-  fun recordRealBandwidthSample(bytes: Long, elapsedMs: Long) {
-    if (bytes < REAL_BW_MIN_BYTES || elapsedMs <= 0) return
-    val bps = bytes * 8L * 1000L / elapsedMs
+  private val realBandwidthLock = Any()
+  private val realBwWindow = ArrayDeque<RealBwSample>()
+  private var realBwBytes = 0L
+  private var realBwTimeMs = 0L
+
+  // 2026-08-30(实测消耗码率,升降档门槛换地基):声明码率在高码率源上虚高约 2×(真机 302 声明 11.25M
+  // 实测 6.3M、303 声明 22.26M 实测 ~11.5M),声明×est 双失真让乘数门槛(1.25/1.1)连续两轮卡在临界。
+  // 这里从 MEDIA_END 挂账(itag → bytes + 已计段数),实测消耗码率 = bytes×8000 / 段数×平均段时长
+  // (INIT metadata duration/endSegmentNumber)。只按单调 seq 增量记账(重传旧段不重复计入);
+  // <MEASURED_MIN_SEGS 段时证据不足返回 -1,调用方回退声明值,起播首 ~3 段维持旧行为。
+  private class MeasuredTrack {
+    var bytes = 0L
+    var segs = 0L
+    var maxCountedSeq = -1L
+  }
+
+  private val measuredLock = Any()
+  private val measuredTracks = mutableMapOf<Int, MeasuredTrack>()
+
+  // alpha.9Z(升档用「持续带宽」):滑动窗口只计传输活跃耗时,重填缓冲期间背靠背突发会把 est 冲到
+  // 40-70M(2026-08-27 真机:一笔 74Mbps 突发把 est 从 16M 抬到 40M,恰好过 4K 门槛 → 升完必卡——
+  // 服务端 pacing 把长期有效供给压回 16-20M)。持续带宽 = 过去 60s 墙钟内成功交付的媒体字节 / 墙钟
+  // 时长(固定分母,空闲/pacing 全摊入),专供升档判定「这条管子长期扛不扛得住」;降档仍用滑动窗口
+  // est(反应快)。
+  private class SustainedSample(val endWallMs: Long, val bytes: Long)
+  private val sustainedSamples = ArrayDeque<SustainedSample>()
+  private var sustainedBytes = 0L
+
+  // 需求驱动空闲扣减(2026-08-30,sustained 分母修正):sustained 分母原为全墙钟跨度,满缓冲停闸的空窗(需求
+  // 所致,管道容量与它无关)也摊进去 → pinned 低档时 sustained≈当前档消耗(定点死锁),永不满足高
+  // 一档门槛。这里与 active est 的 gap 滑行量扣减同口径:满缓冲停闸部分不计入持续分母;真供给中断
+  // (runway 小、滑行扣不掉)仍留在分母里,315 防卡意图不变。
+  private class SustainedGapSample(val endWallMs: Long, val ms: Long)
+  private val sustainedGapSamples = ArrayDeque<SustainedGapSample>()
+  private var sustainedGapMs = 0L
+
+  private fun addSustainedSample(bytes: Long) {
+    val now = System.currentTimeMillis()
     synchronized(realBandwidthLock) {
-      realBandwidthSamples.addLast(bps)
-      while (realBandwidthSamples.size > REAL_BW_MAX_SAMPLES) realBandwidthSamples.removeFirst()
+      sustainedSamples.addLast(SustainedSample(now, bytes))
+      sustainedBytes += bytes
+      while (sustainedSamples.size > 1 && now - sustainedSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
+        sustainedBytes -= sustainedSamples.removeFirst().bytes
+      }
     }
   }
 
-  /** 真实带宽估计(bps),最近 [REAL_BW_MAX_SAMPLES] 个样本中位数;无样本返回 -1。 */
-  fun getRealBitrateEstimate(): Long {
-    val sorted: List<Long>
+  private fun addSustainedGapSample(ms: Long) {
+    if (ms <= 0L) return
+    val now = System.currentTimeMillis()
     synchronized(realBandwidthLock) {
-      if (realBandwidthSamples.isEmpty()) return -1L
-      sorted = realBandwidthSamples.sorted()
+      sustainedGapSamples.addLast(SustainedGapSample(now, ms))
+      sustainedGapMs += ms
+      while (sustainedGapSamples.size > 1 && now - sustainedGapSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
+        sustainedGapMs -= sustainedGapSamples.removeFirst().ms
+      }
     }
-    return sorted[sorted.size / 2]
+  }
+
+  // alpha.9Z(gap 计时归总到带宽):样本分母原先只计「传输活跃耗时」,fetch 与 fetch 之间的空窗一律不计。
+  // 2026-08-27 真机实证:GC 风暴把 loader 线程卡死 8s,期间管道交付速率=0,但 fetch 根本没发起——连
+  // 失败样本都不产生,est 钉在传输期高位(83M),ABR 永不降档,只能等看门狗整段重载。改为:每次发 POST
+  // 前算 gap=本次开始−上次 fetch 结束,超出「缓冲可滑行量(runway − 安全余量)」的部分作为 bytes=0 样本
+  // 计入窗口;满缓冲主动停闸期间缓冲从高位滑行的时间被扣掉,不误杀正常 prefetch。seek/手动选档后的
+  // gap 是操作开销非供给问题,跳过。runway 由视频 chunk source 每次 getNextChunk 喂(noteBufferedAheadMs),
+  // 在上次 fetch 结束时快照(gap 开始时刻的缓冲水位)。
+  @Volatile private var lastFetchEndMs = 0L
+  // alpha.9Z 修正(2026-08-27 真机):lastFetchEndMs 必须用墙钟(System.currentTimeMillis)——
+  // lastSeekMs/lastManualFormatSelectionMs 都是 epoch 值(Instant.now/System.currentTimeMillis),
+  // 若用 elapsedRealtime(开机时长 ~1e6)比较,(prevSeekMs > prevFetchEndMs) 恒真 → gap 永远被判成
+  // seek 后开销跳过,带宽计整场 0 条 gap 样本,升档后 est 钉突发速率 → 卡死→重载→爬档→再卡死死循环。
+  // r1660 实证:4K pinned 60s 缓冲 16s→5.4s 一条 gap 都没记。
+  @Volatile private var bufferedAheadNoteMs = -1L
+  @Volatile private var bufferedAheadMsAtLastFetch = -1L
+
+  /** 由视频 [DefaultSabrChunkSource] 每次 getNextChunk 喂:播放位置前方缓冲水位(ms)。仅视频轨喂(音频轨缓冲远超需求,会污染滑行量判定)。 */
+  fun noteBufferedAheadMs(ms: Long) {
+    bufferedAheadNoteMs = ms
+  }
+
+  /**
+   * 记录上次 fetch 结束到本次发起之间的被迫空转。只有超出「滑行量」的部分算供给损失,计 bytes=0 样本
+   * (窗口带宽下探);满缓冲滑行部分不惩罚。在每次 media() 发请求前调用。
+   */
+  private fun recordFetchGap(
+    prevFetchEndMs: Long,
+    prevSeekMs: Long?,
+    prevManualMs: Long?,
+    runwayMs: Long,
+    fetchStartMs: Long,
+  ) {
+    if (prevFetchEndMs == 0L) return
+    val rawGapMs = fetchStartMs - prevFetchEndMs
+    if (rawGapMs <= 0L) return
+    val demandIdleMs: Long
+    if ((prevSeekMs ?: 0L) > prevFetchEndMs || (prevManualMs ?: 0L) > prevFetchEndMs) {
+      // seek/手动选档后的 gap 是操作开销非供给问题:不计 active est,也不计入持续带宽分母。
+      demandIdleMs = rawGapMs
+    } else {
+      // 2026-08-30:runway 负值 = 快照滞后(1263-1265 真机 runway=-65),拿不到可靠滑行量 → 证据不足,
+      // 全额当需求空闲处理:不惩罚 est(不计 0 供给样本),空窗照常进 sustained 分母扣除。
+      val coastMs = if (runwayMs < 0L) rawGapMs
+        else (runwayMs - BW_GAP_RUNWAY_RESERVE_MS).coerceAtLeast(0L)
+      val countedMs = (rawGapMs - coastMs).coerceIn(0L, BW_GAP_MAX_MS)
+      if (countedMs >= BW_GAP_MIN_MS) {
+        addRealBwSample(0L, countedMs)
+        Log.i(tag, "bw gap counted: ${countedMs}ms (raw=${rawGapMs}ms coast=${coastMs}ms runway=$runwayMs)")
+      }
+      // 需求驱动空闲扣减(2026-08-30):滑行部分(满缓冲主动停闸)= 需求驱动的管道空闲 → 记入持续分母扣除量
+      demandIdleMs = (rawGapMs - countedMs).coerceAtLeast(0L)
+    }
+    addSustainedGapSample(demandIdleMs)
+  }
+
+  /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。快小样本(init/retry/音频段)过滤;但慢小样本(2026-08-27 真机:服务端挂 8.5s 只回 939B)是真实供给中断,必须入账。 */
+  fun recordRealBandwidthSample(bytes: Long, elapsedMs: Long) {
+    if (elapsedMs <= 0) return
+    if (bytes < REAL_BW_MIN_BYTES && elapsedMs < BW_SLOW_TINY_MS) return
+    addRealBwSample(bytes, elapsedMs)
+    if (bytes >= REAL_BW_MIN_BYTES) addSustainedSample(bytes)
+  }
+
+  /**
+   * 持续带宽(bps)= 过去 60s 墙钟内成功交付媒体字节 / 分母(墙钟跨度 − 需求驱动的停闸空闲,2026-08-30 修)。
+   * 2026-08-30 真机实证:1080p 满缓冲 50s 后停闸 28s,全墙钟分母把空窗全摊入 → sustained≈8-10M 恒
+   * <308 门槛 13.4M(手动切 1440 实测持续 20M+),升档被定点锁死。分母改为扣除滑行量(与 active est
+   * 的 gap 扣减同口径)后,「管道空闲因为需求低」不再拉低估计,而 GC/断流/服务端 pacing 期间 runway
+   * 低、滑行扣不掉,照旧压低 sustained → 防升高档后卡死的意图保留。证据 <15s(刚起播/暂停恢复)返回
+   * -1,由调用方回退活跃传输 est。专供升档判定,降档走 [getRealBitrateEstimate]。
+   *
+   * 2026-08-30 修 sus 垃圾尖峰(真机实测 500-635M 物理不可能):gap 扣减后跨度原被 coerceIn 夹到
+   * 下限 1s,停闸空窗接近全跨度时(bytes/1s)直接爆炸。现改为:扣减后跨度 <15s(证据不足)返回 -1,
+   * 由调用方回退活跃 est,不再出垃圾值。
+   */
+  fun getSustainedBitrateEstimate(): Long {
+    synchronized(realBandwidthLock) {
+      val now = System.currentTimeMillis()
+      while (sustainedSamples.size > 1 && now - sustainedSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
+        sustainedBytes -= sustainedSamples.removeFirst().bytes
+      }
+      while (sustainedGapSamples.size > 1 && now - sustainedGapSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
+        sustainedGapMs -= sustainedGapSamples.removeFirst().ms
+      }
+      if (sustainedSamples.isEmpty() || sustainedBytes <= 0L) return -1L
+      val rawSpanMs = now - sustainedSamples.first().endWallMs
+      if (rawSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
+      val activeSpanMs = rawSpanMs - sustainedGapMs
+      if (activeSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
+      return sustainedBytes * 8000L / activeSpanMs.coerceAtMost(SUSTAINED_WINDOW_MS)
+    }
+  }
+
+  /** 记录一次失败/卡住段(fetchStreamData 异常时调用):下载量=0、耗时计满,让窗口带宽下探。 */
+  fun recordRealBandwidthFailure(elapsedMs: Long) {
+    if (elapsedMs <= 0) return
+    addRealBwSample(0L, elapsedMs)
+  }
+
+  /**
+   * 2026-08-30 升档重锚(HeightAwareAdaptiveTrackSelection 升档时调用):清空活跃 est 窗口,种入
+   * 「新档声明码率 × REAL_BW_RESEED_MS」的合成样本。升档前窗口里是旧档重填期的突发高估样本(真机
+   * 60-70M),升档后新档供给不足时这些样本顶住「est < 声明码率」的降档门槛(4K 案例实际吞吐 27M vs
+   * est 报 35-52M),缓冲 35s→4s 不降档。重锚后 est 从声明码率起步,真实样本平滑接管:够用就持平,
+   * 不够(慢样本/失败样本入账)快速下探触发正常降档。仅升档调用;降档不需要(低档时 est 高估无害)。
+   */
+  fun reseedActiveWindow(bitrateBps: Long) {
+    if (bitrateBps <= 0L) return
+    val seedBytes = bitrateBps / 8000L * REAL_BW_RESEED_MS
+    if (seedBytes <= 0L) return
+    synchronized(realBandwidthLock) {
+      realBwWindow.clear()
+      realBwBytes = 0L
+      realBwTimeMs = 0L
+      addRealBwSample(seedBytes, REAL_BW_RESEED_MS)
+    }
+    Log.i(tag, "bw reseeded: active est baseline → ${bitrateBps / 1000}K (seed ${seedBytes}B/${REAL_BW_RESEED_MS}ms)")
+  }
+
+  /** 推进进滑动窗口;窗口累计耗时超 [REAL_BW_WINDOW_MS] 从前端滚出(至少留 1 个样本防除零)。 */
+  private fun addRealBwSample(bytes: Long, timeMs: Long) {
+    synchronized(realBandwidthLock) {
+      realBwWindow.addLast(RealBwSample(bytes, timeMs))
+      realBwBytes += bytes
+      realBwTimeMs += timeMs
+      while (realBwTimeMs > REAL_BW_WINDOW_MS && realBwWindow.size > 1) {
+        val front = realBwWindow.removeFirst()
+        realBwBytes -= front.bytes
+        realBwTimeMs -= front.timeMs
+      }
+    }
+  }
+
+  /**
+   * 实测消耗码率(itag 子流):MEDIA_END 挂账 bytes ÷ 段数×平均段时长。证据不足(段数 <3、
+   * 尚无 INIT metadata)返回 -1。供升/降档门槛做声明码率的校准底座(HeightAwareAdaptiveTrackSelection)。
+   */
+  fun getMeasuredBitrateBps(itag: Int): Long {
+    if (itag <= 0) return -1L
+    val snapshot = synchronized(measuredLock) {
+      val st = measuredTracks[itag] ?: return -1L
+      if (st.segs < MEASURED_MIN_SEGS) return -1L
+      Pair(st.bytes, st.segs)
+    }
+    val fmt = initializedFormats[itag] ?: return -1L
+    if (fmt.duration <= 0L || fmt.endSegmentNumber <= 0L) return -1L
+    val avgSegMs = fmt.duration / fmt.endSegmentNumber
+    if (avgSegMs <= 0L) return -1L
+    return snapshot.first * 8000L / (snapshot.second * avgSegMs)
+  }
+
+  /** 2026-08-30:实测已挂账段数(calib 成熟度地板用,决定门槛下限 0.65/0.5/0.35)。 */
+  fun getMeasuredSegmentCount(itag: Int): Long {
+    if (itag <= 0) return 0L
+    return synchronized(measuredLock) { measuredTracks[itag]?.segs ?: 0L }
+  }
+
+  /** 真实带宽估计(bps)= 窗口内累计下载量/累计耗时(含卡住与被迫空转)。无样本返回 -1;窗口内全是空转(量=0)返回 0,不回退底层高估。 */
+  fun getRealBitrateEstimate(): Long {
+    synchronized(realBandwidthLock) {
+      if (realBwTimeMs <= 0L) return -1L
+      if (realBwBytes <= 0L) return 0L
+      return realBwBytes * 8000L / realBwTimeMs
+    }
   }
 
   /**
@@ -321,8 +524,16 @@ internal class SabrMediaFetcher(
       .header("Origin", "https://www.youtube.com")
       .header("Referer", "https://www.youtube.com/")
       .build()
+    val t0 = SystemClock.elapsedRealtime()
+    // alpha.9Z:发请求前快照 gap 起点(上次 fetch 结束)与当时的缓冲水位,供 gap 计时(见 recordFetchGap)。
+    // lastFetchEndMs/t0Wall 均为墙钟(与 lastSeekMs/lastManualFormatSelectionMs 同源可比);gap 时长也用
+    // 墙钟差值,跳变时 fetchStartMs<=prevFetchEndMs 守卫自然跳过该样本,不产生错误样本。
+    val t0Wall = System.currentTimeMillis()
+    val prevFetchEndMs = lastFetchEndMs
+    val prevSeekMs = lastSeekMs
+    val prevManualMs = lastManualFormatSelectionMs
+    val runwayMs = bufferedAheadMsAtLastFetch
     return try {
-      val t0 = SystemClock.elapsedRealtime()
       val resp = httpClient.newCall(request).execute().use { response ->
         val code = response.code
         if (code != 200) {
@@ -333,21 +544,26 @@ internal class SabrMediaFetcher(
         response.body?.bytes() ?: throw IOException("SABR empty body")
       }
       val elapsed = SystemClock.elapsedRealtime() - t0
-      // alpha.9X(带宽驱动,可持续带宽):elapsed 只计下载耗时,漏掉段间 gap(如 8K 段 4.6s 下载后等
-      // 23-30s 才拉下一段),瞬时吞吐 84M 高估可持续带宽 → ABR 误判 8K 可负担、缓冲掉不降档。样本
-      // 计入「距上次下载结束的等待」:bps = bytes/(elapsed+gap),反映真实可持续带宽,让媒体3 选档降档。
-      val endRealtime = SystemClock.elapsedRealtime()
-      val gapMs = if (lastFetchEndRealtimeMs > 0L) (t0 - lastFetchEndRealtimeMs).coerceAtLeast(0L) else 0L
-      lastFetchEndRealtimeMs = endRealtime
-      val totalMs = elapsed + gapMs
+      // alpha.9X(带宽驱动,滑动窗口累计):成功段只计「实际下载耗时」(不再混入缓冲等待 gap,那个是主动
+      // 节奏非带宽不足),吞吐 = 窗口累计量/累计耗时。带宽充足时贴近真实下载速率,断流时靠失败段计时下探。
       val mbps = if (elapsed > 0) resp.size.toLong() * 8 / (elapsed * 1000L) else -1L
-      recordRealBandwidthSample(resp.size.toLong(), totalMs)
-      Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms+gap${gapMs}ms → ${mbps}Mbps est=${getRealBitrateEstimate() / 1000L}K")
+      recordRealBandwidthSample(resp.size.toLong(), elapsed)
+      recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall)
+      lastFetchEndMs = System.currentTimeMillis()
+      bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
+      Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps est=${getRealBitrateEstimate() / 1000L}K")
       resp
     } catch (e: SabrTerminalException) {
+      // 致命错误(RELOAD/InvalidPoToken/重试耗尽)不算普通网络降级,不喂带宽样本
       throw e
     } catch (e: Exception) {
-      Log.w(tag, "fetch rn=$rn exception: ${e.message}")
+      // 网络失败/超时:下载量=0、耗时计满 → 窗口带宽下探,让 ABR 有依据降档自救
+      val failMs = SystemClock.elapsedRealtime() - t0
+      recordRealBandwidthFailure(failMs)
+      recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall)
+      lastFetchEndMs = System.currentTimeMillis()
+      bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
+      Log.w(tag, "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${getRealBitrateEstimate() / 1000L}K)")
       throw e
     }
   }
@@ -401,6 +617,17 @@ internal class SabrMediaFetcher(
         Log.i(tag, "MEDIA_END headerId=$headerId itag=${seg.header.itag} seq=${seg.sequenceNumber} chunks=${seg.data.size} bytes=${seg.length()}")
         fmt.downloadedSegments[seg.sequenceNumber] = seg
         if (seg.header.isInitSeg) fmt.initSegment = seg
+        // 2026-08-30 实测消耗码率挂账:只计非 init 段、只按单调 seq 增量(重传旧段不重复计入)。
+        if (!seg.header.isInitSeg) {
+          synchronized(measuredLock) {
+            val st = measuredTracks.getOrPut(seg.header.itag) { MeasuredTrack() }
+            if (seg.sequenceNumber > st.maxCountedSeq) {
+              st.maxCountedSeq = seg.sequenceNumber
+              st.bytes += seg.length()
+              st.segs += 1
+            }
+          }
+        }
       }
       PART_NEXT_REQUEST_POLICY -> {
         val policy = SabrProto.decodeNextRequestPolicy(payload)
@@ -555,8 +782,32 @@ internal class SabrMediaFetcher(
     const val MAX_BACKOFF_SLEEP_MS = 2_500L
     /** 过滤阈值:小于此字节数的样本视为 init/retry/非媒体段,不进真实带宽统计(真实媒体段 ≥ ~300KB)。 */
     const val REAL_BW_MIN_BYTES = 100_000L
-    /** 中位数滑动窗口样本数。 */
-    const val REAL_BW_MAX_SAMPLES = 8
+    /**
+     * 滑动窗口时间跨度(ms):窗口内累计下载量/累计耗时计带宽。约一两个段时长,能让一次 15s 卡死(0量/满耗时)
+     * 显著压低带宽又不过度被历史稀释。卡死时长超窗口时窗口只留该失败段 → 带宽=0 → ABR 彻底降档。
+     */
+    const val REAL_BW_WINDOW_MS = 20_000L
+    /** alpha.9Z:gap 计入带宽前扣掉的「缓冲安全余量」(ms)——缓冲水位高出它的部分视为主动滑行,不算供给损失。 */
+    const val BW_GAP_RUNWAY_RESERVE_MS = 10_000L
+    /** alpha.9Z:gap 计量下限,短于此的被迫空转视为噪声。 */
+    const val BW_GAP_MIN_MS = 500L
+    /** alpha.9Z:gap 计量上限,防单次超长空窗(如长时间暂停后恢复)单样本毒化窗口。 */
+    const val BW_GAP_MAX_MS = 30_000L
+    /**
+     * alpha.9Z:快小样本过滤的时间上限(ms)——bytes<100KB 且耗时低于它视为 init/retry/音频噪声丢弃;
+     * 超过它视为「慢小响应」(服务端挂住只回极小体)真实供给中断,按实际 (bytes, elapsed) 入账。
+     * 2026-08-27 真机:rn=18 8.5s 只回 939B 被过滤,est 钉 52M,31s 墙钟仅交付 67.6MB(有效 17M),
+     * 缓冲 19.6s→2% 看门狗重载——供给中断发生在传输内,原过滤器全盲。
+     */
+    const val BW_SLOW_TINY_MS = 2_000L
+    /** alpha.9Z:持续带宽窗口(墙钟 ms)——升档判据「60s 内实际交付字节/墙钟」。 */
+    const val SUSTAINED_WINDOW_MS = 60_000L
+    /** 2026-08-30:升档重锚合成样本时长(ms)——est 从「声明码率」起步,随后真实样本平滑接管。 */
+    const val REAL_BW_RESEED_MS = 4_000L
+    /** 2026-08-30:实测消耗码率最少段数——少于 3 段(起播 ~16s)证据不足,返回 -1 防小样本抖动。 */
+    const val MEASURED_MIN_SEGS = 3L
+    /** alpha.9Z:持续带宽最短跨度,不足视为证据不足返回 -1(回退活跃 est,起播爬档不被卡)。 */
+    const val SUSTAINED_MIN_SPAN_MS = 15_000L
   }
 }
 

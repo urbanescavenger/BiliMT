@@ -12,7 +12,7 @@ import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
  * 内存瞬时读样本污染(bw= 真机 1M↔437M 1000 倍跳变),effectiveBitrate 不可信 → AdaptiveTrackSelection 升档
  * 判据失真。本类是 [BandwidthMeter] 包装:一切委托给底层 [DefaultBandwidthMeter](保留 TransferListener 传递、
  * 初始带宽 seed、事件分发),仅覆盖 [getBitrateEstimate] 返回 SabrMediaFetcher 从实际段下载测的真实带宽
- * (最近样本中位数,稳定)。真实带宽充足时媒体3 原生 ABR 自然选最高可负担档、升降档全自动,不再需要
+ * (滑动窗口累计量/累计耗时,含失败段计时,断流时自动下探)。真实带宽充足时 media3 原生 ABR 自然选最高可负担档、升降档全自动,不再需要
  * force-climb/exclude 补丁。
  *
  * 真实带宽提供者由 [DefaultSabrChunkSource] 在拿到 fetcher 后注入(`setRealBandwidthProvider`);未提供或
@@ -26,14 +26,70 @@ internal class SabrBandwidthMeter(
   @Volatile
   private var realBpsProvider: (() -> Long)? = null
 
+  @Volatile
+  private var sustainedBpsProvider: (() -> Long)? = null
+
+  /** 2026-08-30:注入升档重锚执行方(SabrMediaFetcher.reseedActiveWindow)。 */
+  @Volatile
+  private var reseedBandwidthProvider: ((Long) -> Unit)? = null
+
+  /** 2026-08-30:注入实测消耗码率来源(SabrMediaFetcher.getMeasuredBitrateBps,降/升档门槛校准底座)。 */
+  @Volatile
+  private var measuredBitrateProvider: ((Int) -> Long)? = null
+
   /** 由持有 [SabrMediaFetcher] 的一方(DefaultSabrChunkSource)注入真实带宽来源。 */
   fun setRealBandwidthProvider(provider: () -> Long) {
     realBpsProvider = provider
   }
 
+  /** alpha.9Z:注入持续带宽来源(60s 墙钟交付,升档判据用)。 */
+  fun setSustainedBandwidthProvider(provider: () -> Long) {
+    sustainedBpsProvider = provider
+  }
+
+  /** 2026-08-30:接线升档重锚执行方。 */
+  fun setReseedBandwidthProvider(provider: (Long) -> Unit) {
+    reseedBandwidthProvider = provider
+  }
+
+  /** 2026-08-30:接线实测码率来源。 */
+  fun setMeasuredBitrateProvider(provider: (Int) -> Long) {
+    measuredBitrateProvider = provider
+  }
+
+  /** 2026-08-30:实测消耗码率;未接线/证据不足时 -1(调用方回退声明值)。 */
+  fun getMeasuredBitrateBps(itag: Int): Long = measuredBitrateProvider?.invoke(itag) ?: -1L
+
+  /** 2026-08-30:实测已挂账段数(calib 成熟度地板用);未接线时 0。 */
+  @Volatile
+  private var measuredSegCountProvider: ((Int) -> Long)? = null
+
+  fun setMeasuredSegCountProvider(provider: (Int) -> Long) {
+    measuredSegCountProvider = provider
+  }
+
+  fun getMeasuredSegmentCount(itag: Int): Long = measuredSegCountProvider?.invoke(itag) ?: 0L
+
+  /**
+   * 2026-08-30 升档重锚:升入新档后把活跃 est 窗口重锚到该档声明码率——原窗口里旧档/重填期的突发高估
+   * 样本(60-70M)会顶住降档门槛,新档扛不住时 est 迟迟跌不过声明码率,缓冲漏光前不降档只能看门狗重载。
+   * 重锚后 est 从声明码率起步、真实样本平滑接管。委托给 fetcher(窗口在它那),未接线时静默忽略。
+   */
+  fun reseedToBitrate(bitrateBps: Long) {
+    if (bitrateBps > 0L) reseedBandwidthProvider?.invoke(bitrateBps)
+  }
+
+  /** 持续带宽(60s 墙钟);无数据(-1)回退活跃传输 est。 */
+  fun getSustainedBitrateEstimate(): Long {
+    val sustained = sustainedBpsProvider?.invoke() ?: -1L
+    return if (sustained >= 0L) sustained else getBitrateEstimate()
+  }
+
   override fun getBitrateEstimate(): Long {
+    // alpha.9Z:real=0(窗口内全是被迫空转,供给归零)也是有效判定——回落 delegate 会用传输期高估
+    // 把选轨器弹回高档,正好复现「卡死不降档」。仅 -1(尚无任何样本)才回退底层估计。
     val real = realBpsProvider?.invoke() ?: -1L
-    return if (real > 0) real else delegate.getBitrateEstimate()
+    return if (real >= 0L) real else delegate.getBitrateEstimate()
   }
 
   override fun getTimeToFirstByteEstimateUs(): Long = delegate.getTimeToFirstByteEstimateUs()

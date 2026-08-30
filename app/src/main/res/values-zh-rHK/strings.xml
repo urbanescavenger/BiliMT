@@ -66,6 +66,11 @@
     <string name="settings_home_theme_black">深黑</string>
     <string name="settings_home_theme_gray">高級灰</string>
     <string name="settings_home_theme_blue_gray">藍灰</string>
+    <string name="settings_appearance_title">外觀</string>
+    <string name="settings_appearance_description">明/暗模式，疊加喺首頁主題之上；跟隨系統就自動切換。</string>
+    <string name="settings_appearance_dark">深色</string>
+    <string name="settings_appearance_light">淺色</string>
+    <string name="settings_appearance_auto">跟隨系統</string>
     <string name="settings_clear_cache_title">清除緩存</string>
     <string name="settings_clear_cache_description">清理封面圖片同暫存檔，不會刪除登入、設定同播放進度。</string>
     <string name="settings_clear_cache_action">清理</string>
@@ -209,6 +214,12 @@
     <string name="search_sort_dm">最多彈幕</string>
     <string name="search_loading">正在搜尋...</string>
     <string name="search_empty">未找到相關影片</string>
+    <string name="search_empty_user">未找到相關UP主/頻道</string>
+    <string name="search_type_video">影片</string>
+    <string name="search_type_user_bili">UP主</string>
+    <string name="search_type_user_youtube">頻道</string>
+    <string name="search_user_fans">粉絲 %1$s</string>
+    <string name="search_user_videos">影片 %1$s</string>
     <string name="search_failed_with_message">搜尋失敗。%1$s</string>
     <string name="dynamic_loading">正在載入動態...</string>
     <string name="dynamic_empty">暫無動態</string>

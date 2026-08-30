@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.common
 
+import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
 
 /**
@@ -16,6 +17,23 @@ internal fun List<VideoSummary>.appendUniqueByBvid(nextVideos: List<VideoSummary
   val knownBvids = mapTo(mutableSetOf()) { video -> video.bvid }
   return this + nextVideos.filter { video -> knownBvids.add(video.bvid) }
 }
+
+/** Appends [nextUsers], dropping any whose mid/channelId already appears in this list. */
+internal fun List<UserSummary>.appendUniqueByMid(nextUsers: List<UserSummary>): List<UserSummary> {
+  if (nextUsers.isEmpty()) {
+    return this
+  }
+  val knownKeys = mapTo(mutableSetOf()) { user -> user.dedupKey() }
+  return this + nextUsers.filter { user -> knownKeys.add(user.dedupKey()) }
+}
+
+/** 用户去重键：B站用 mid，YouTube 用 channelId。 */
+internal fun UserSummary.dedupKey(): String {
+  return if (channelId.isNotBlank()) "yt-$channelId" else "bili-$mid"
+}
+
+/** 用户列表的焦点恢复键（与去重键一致）。 */
+internal fun UserSummary.focusRestoreKey(): String = dedupKey()
 
 /** Resolves the focus-restore index from a [focusKey] (or falls back to [fallbackIndex]). */
 internal fun List<VideoSummary>.resolveFocusIndex(focusKey: String, fallbackIndex: Int): Int {

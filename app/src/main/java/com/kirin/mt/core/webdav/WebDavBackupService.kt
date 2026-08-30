@@ -83,6 +83,8 @@ class WebDavBackupService(
       return Result.failure(IllegalStateException("WebDAV 未配置"))
     }
     return runCatching {
+      // 入口快速连通校验:不通直接判失败(8s 内),避免逐项上传时才发现并产生部分上传。
+      ensureReachable(config)
       // 建目录(已存在时 mkcol 返回 405,内部视为成功)。
       repository.mkcol(dirUrl(config), config.username, config.password)
       if (WebDavBackupItem.Channels in items) {
@@ -107,6 +109,8 @@ class WebDavBackupService(
       return Result.failure(IllegalStateException("WebDAV 未配置"))
     }
     return runCatching {
+      // 入口快速连通校验:不通直接判失败,避免还原中途断连造成部分写回(频道清空后未恢复)。
+      ensureReachable(config)
       var count = 0
       if (WebDavBackupItem.Channels in items) {
         val bytes = repository.get(fileUrl(config), config.username, config.password)
@@ -231,10 +235,22 @@ class WebDavBackupService(
       return Result.failure(IllegalStateException("WebDAV 未配置"))
     }
     return runCatching {
+      ensureReachable(config)
       repository.mkcol(logsDirUrl(config), config.username, config.password)
       val bytes = withContext(Dispatchers.IO) { info.file.readBytes() }
       val ok = repository.put(logFileUrl(config, info.file.name), config.username, config.password, bytes)
       if (!ok) throw IOException("日志上传失败:${info.file.name}")
+    }
+  }
+
+  /**
+   * 入口快速连通校验:对配置根 URL 发短超时 GET,不通(网络异常或任何非 2xx,含 401/403)
+   * 即抛 [IOException] 让整体操作立刻判失败,错误信息同时提示网络与账密两种可能。
+   */
+  private suspend fun ensureReachable(config: WebDavConfig) {
+    val reachable = repository.ping(trimTrailingSlash(config.url), config.username, config.password)
+    if (!reachable) {
+      throw IOException("无法连接服务器(请检查网络、服务器地址或账号密码)")
     }
   }
 

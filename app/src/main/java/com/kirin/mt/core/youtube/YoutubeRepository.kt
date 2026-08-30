@@ -1,9 +1,11 @@
 package com.kirin.mt.core.youtube
 
+import android.os.SystemClock
 import android.util.Log
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -14,6 +16,9 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlin.random.Random
 import org.schabi.newpipe.extractor.stream.StreamInfo
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -24,10 +29,19 @@ import kotlinx.serialization.json.put
 data class YoutubeVideoPage(
   val items: List<VideoSummary>,
   val continuation: String?,
+  /** 播放列表详情首屏头部(playlistHeaderRenderer 的简介/作者/视频数/封面)；普通视频 feed 恒 null。 */
+  val playlistHeader: YoutubePlaylistHeader? = null,
 )
 
-/** 订阅流逐频道拉取的并发上限。并发太高易触发 InnerTube 风控，4 是实测安全值。 */
-const val YoutubeMaxConcurrentChannelFetches = 4
+/** 频道"播放列表"Tab 的一页播放列表卡，带续页 token。internal 因含 [YoutubeParsers.YoutubePlaylist]。 */
+internal data class YoutubePlaylistsPage(
+  val items: List<YoutubeParsers.YoutubePlaylist>,
+  val continuation: String?,
+)
+
+/** 订阅流逐频道拉取的并发上限。对齐 LibreTube CHANNEL_CHUNK_SIZE=5：批次串行、每批 ≤5 频道，
+ * 并发 5 让整批 1 轮 RTT 跑完（旧 4 会让每批 5 个频道空转一轮排队）。峰值并发仍由 ChunkSize 限到 5。 */
+const val YoutubeMaxConcurrentChannelFetches = 5
 
 /** RSS 订阅流并发上限。RSS 是轻量 GET、无 InnerTube 风控，可放宽到 8。 */
 const val YoutubeMaxConcurrentRssFetches = 8
@@ -56,6 +70,22 @@ class YoutubeRepository(
       }
     }
     return client.postJson("/search", payload).let(YoutubeParsers::parseFeedPage)
+  }
+
+  /** 频道搜索（params=TypeChannel），返回原始频道模型 + 续页 token。 */
+  suspend fun searchChannels(
+    query: String,
+    continuation: String? = null,
+  ): YoutubeChannelSearchPage {
+    val payload = buildJsonObject {
+      if (continuation != null) {
+        put("continuation", continuation)
+      } else {
+        put("query", query)
+        put("params", YoutubeSearchParams.TypeChannel)
+      }
+    }
+    return client.postJson("/search", payload).let(YoutubeParsers::parseChannelSearchPage)
   }
 
   /** 热门(趋势)，返回映射后的卡片。 */
@@ -98,6 +128,33 @@ class YoutubeRepository(
         ?: throw YoutubeApiException(statusCode = 0, responseBody = "", message = "channel not found: $query")
       YoutubeChannel(channelId = match.first, name = match.second.ifBlank { query })
     }
+  }
+
+  /**
+   * 频道页头部全量信息（名称/头像/订阅数/banner/简介/认证）。UC 频道 ID 走 /browse，
+   * 返回 [YoutubeParsers.ChannelInfo]；解析失败或非 UC ID 返回 null（调用方回退 request 值）。
+   */
+  suspend internal fun getChannelHeader(channelId: String): YoutubeParsers.ChannelInfo? {
+    if (!channelId.matches(ChannelIdRegex)) return null
+    return runCatching {
+      val payload = buildJsonObject { put("browseId", channelId) }
+      YoutubeParsers.parseChannelInfo(client.postJson("/browse", payload))
+    }.getOrNull()
+  }
+
+  /**
+   * 频道内容 Tab 的服务端 params（小写标识 → params）。与 [getChannelHeader] 独立：
+   * 即使头部 info 解析失败（getChannelHeader 返 null），仍要拿到 tab params 才能切
+   * Shorts/直播/播放列表。UC 频道 ID 走 /browse；失败或非 UC ID 返回空 map。
+   */
+  suspend internal fun getChannelTabs(channelId: String): Map<String, String> {
+    if (!channelId.matches(ChannelIdRegex)) return emptyMap()
+    return runCatching {
+      val payload = buildJsonObject { put("browseId", channelId) }
+      YoutubeParsers.parseChannelTabs(client.postJson("/browse", payload))
+        .map { it.name.lowercase() to it.params }
+        .toMap()
+    }.getOrDefault(emptyMap())
   }
 
   /**
@@ -148,18 +205,21 @@ class YoutubeRepository(
    * 频道"视频"tab 的最新视频，返回映射后的卡片 + 续页 token。
    * [params] 决定排序（[YoutubeConstants.ChannelVideoOrder.Latest] 最新 /
    * [YoutubeConstants.ChannelVideoOrder.Popular] 最热）；翻页 continuation 与排序无关。
+   * [browseId] 非空时覆盖 [channelId] 作为 browseId 且不发 params。Shorts/直播统一用
+   * channelId + 服务端 tab params（系统播放列表 UUSH/UULV 实测 /browse 返回 400，已废弃）。
    */
   suspend fun getChannelVideos(
     channelId: String,
     continuation: String? = null,
     params: String = YoutubeConstants.ChannelVideosParams,
+    browseId: String? = null,
   ): YoutubeVideoPage {
     val payload = buildJsonObject {
       if (continuation != null) {
         put("continuation", continuation)
       } else {
-        put("browseId", channelId)
-        put("params", params)
+        put("browseId", browseId ?: channelId)
+        if (browseId == null) put("params", params)
       }
     }
     val root = client.postJson("/browse", payload)
@@ -171,13 +231,15 @@ class YoutubeRepository(
       Log.w(
         "YoutubeChannel",
         "getChannelVideos EMPTY channelId=[$channelId] ${if (continuation == null) "first" else "next"} " +
-          "reason=${reason ?: "no-reason(parse ok,真无视频)"}",
+          "reason=${reason ?: "no-reason(parse ok,真无视频)"} " +
+          "shape=${YoutubeParsers.diagnosticFeedShape(root)}",
       )
     } else {
       Log.d(
         "YoutubeChannel",
         "getChannelVideos channelId=$channelId ${if (continuation == null) "first" else "next"} " +
-          "items=${feed.items.size} next=${feed.continuation?.take(12) ?: "null"}",
+          "params=${if (continuation == null) params else "continuation"} " +
+          "browseId=${browseId ?: "channel"} items=${feed.items.size} next=${feed.continuation?.take(12) ?: "null"}",
       )
     }
     return YoutubeVideoPage(
@@ -185,6 +247,76 @@ class YoutubeRepository(
       continuation = feed.continuation,
     )
   }
+
+  /**
+   * 频道"播放列表"Tab 的播放列表卡列表。首屏发 browseId+params,续页发 continuation
+   *（对齐 [getChannelVideos]）。[params] 优先用服务端提供的 playlists tab params。
+   */
+  suspend internal fun getChannelPlaylists(
+    channelId: String,
+    continuation: String? = null,
+    params: String = YoutubeConstants.ChannelPlaylistsParams,
+  ): YoutubePlaylistsPage {
+    val payload = buildJsonObject {
+      if (continuation != null) {
+        put("continuation", continuation)
+      } else {
+        put("browseId", channelId)
+        put("params", params)
+      }
+    }
+    val root = client.postJson("/browse", payload)
+    val items = YoutubeParsers.parseChannelPlaylists(root)
+    // 诊断:确认播放列表 Tab 是否真的请求到 playlistRenderer 内容(空=服务端可能无视 params 回落成普通视频)。
+    Log.d("Ytabs", "getChannelPlaylists channelId=$channelId continuation=${continuation != null} " +
+      "params=${if (continuation == null) params.take(8) else "cont"} items=${items.size} " +
+      "shape=${if (items.isEmpty()) YoutubeParsers.diagnosticPlaylistShape(root) else "ok"}")
+    return YoutubePlaylistsPage(
+      items = items,
+      continuation = YoutubeParsers.findContinuation(root),
+    )
+  }
+
+  /**
+   * 打开一个播放列表:按播放列表 browseId（形如 VL...，来自 [YoutubeParsers.YoutubePlaylist.browseId]）
+   * 拉首屏视频列表，翻页发 continuation。对齐 [getChannelVideos] 解析视频。
+   */
+  suspend fun getPlaylistVideos(
+    playlistBrowseId: String,
+    continuation: String? = null,
+  ): YoutubeVideoPage {
+    val payload = buildJsonObject {
+      if (continuation != null) put("continuation", continuation)
+      else put("browseId", normalizePlaylistBrowseId(playlistBrowseId))
+    }
+    val root = client.postJson("/browse", payload)
+    val feed = YoutubeParsers.parseFeedPage(root)
+    // 简介/作者/封面只在首屏 header(playlistHeaderRenderer 或 pageHeaderRenderer)有；续页是纯 continuation 无 header。
+    val playlistHeader = if (continuation == null) YoutubeParsers.parsePlaylistHeader(root) else null
+    // 诊断：确认首屏 header 解析结果(desc/owner/count/cover),取不到时 dump header 顶层键定位。
+    if (continuation == null) {
+      val header = root["header"]
+      Log.i(
+        "YtPlaylist",
+        "getPlaylistVideos browseId=$playlistBrowseId " +
+          "desc=${playlistHeader?.description?.take(60) ?: "null"} " +
+          "owner=${playlistHeader?.owner ?: "null"} count=${playlistHeader?.videoCountText ?: "null"} " +
+          "cover=${if (playlistHeader?.cover != null) "ok" else "null"} " +
+          "headerKeys=${(header as? JsonObject)?.keys?.take(10) ?: "N/A"} " +
+          "items=${feed.items.size}",
+      )
+    }
+    return YoutubeVideoPage(
+      items = feed.items.map(::toVideoSummary),
+      continuation = feed.continuation,
+      playlistHeader = playlistHeader,
+    )
+  }
+
+  /** 打开播放列表的 /browse 需要 `VL` + 播放列表 id(如 VLPL...)。lockupViewModel 卡片提取的
+   *  browseId 可能是裸 PL... 或已 VL 前缀;非 VL 前缀一律补 VL,否则 /browse 返回 400。 */
+  private fun normalizePlaylistBrowseId(id: String): String =
+    if (id.startsWith("VL")) id else "VL$id"
 
   /**
    * 视频详情（简介 Tab）：POST /player 取 videoDetails（title/author/shortDescription/viewCount）
@@ -357,11 +489,13 @@ class YoutubeRepository(
     perChannel: Int = 15,
     onChannelAvatarResolved: suspend (YoutubeChannel) -> Unit = {},
     onChunkReady: (List<VideoSummary>) -> Unit = {},
+    cachedLatestByChannel: Map<String, Long> = emptyMap(),
   ): List<VideoSummary> {
     if (channels.isEmpty()) {
       // 未配置频道时回退显示热门,避免动态 tab 空白(设置里可添加频道)。
       return getTrending(YoutubeConstants.TrendingTabs.values.first())
     }
+    val startMs = SystemClock.elapsedRealtime()
     val rssSemaphore = Semaphore(YoutubeMaxConcurrentRssFetches)
     val innerTubeSemaphore = Semaphore(YoutubeMaxConcurrentChannelFetches)
     val accumulator = mutableListOf<VideoSummary>()
@@ -384,19 +518,40 @@ class YoutubeRepository(
                 onChannelAvatarResolved(channel.copy(avatar = resolvedAvatar))
               }
             }
-            // RSS 与 InnerTube 并行拉取。RSS 提供精确发布时间,InnerTube 补全 duration/live 等字段。
+            // RSS 与 InnerTube 拉取。RSS 提供精确发布时间,InnerTube 补全 duration/live 等字段。
+            // 门控(对齐 LibreTube hasNewerUploads):有缓存时先拉 RSS,若 RSS 最新视频 ≤ 缓存最新
+            // 则跳过 InnerTube 只付 RSS 成本;无缓存(首次)则 RSS+InnerTube 并行拉全保正确性。
+            val cachedLatest = cachedLatestByChannel[channel.channelId]
             val rssDeferred = async {
               rssSemaphore.withPermit {
                 feedCatching(emptyList(), "RSS", channel.channelId) { getChannelRss(channel.channelId) }
               }
             }
-            val innerTubeDeferred = async {
-              innerTubeSemaphore.withPermit {
-                feedCatching(emptyList(), "InnerTube", channel.channelId) { getChannelVideosRaw(channel.channelId) }
+            val innerTubeDeferred: Deferred<List<YoutubeVideo>>? = if (cachedLatest == null) {
+              async {
+                innerTubeSemaphore.withPermit {
+                  feedCatching(emptyList(), "InnerTube", channel.channelId) { getChannelVideosRaw(channel.channelId) }
+                }
               }
+            } else {
+              null
             }
             val rssVideos = rssDeferred.await()
-            val innerTubeVideos = innerTubeDeferred.await()
+            val innerTubeVideos = if (innerTubeDeferred != null) {
+              innerTubeDeferred.await()
+            } else {
+              val rssLatest = rssVideos.maxOfOrNull { it.publishedAt ?: 0L } ?: 0L
+              // innerTubeDeferred==null ⟹ cachedLatest!=null,!! 安全。
+              // RSS 空/失败(rssLatest=0,如 YouTube RSS 404)时不能门控跳过——404 不代表无新内容,
+              // 必须拉 InnerTube 兜底(否则动态页全空);仅 RSS 正常返回且最新≤缓存最新才跳过。
+              if (rssVideos.isEmpty() || rssLatest > cachedLatest!!) {
+                innerTubeSemaphore.withPermit {
+                  feedCatching(emptyList(), "InnerTube", channel.channelId) { getChannelVideosRaw(channel.channelId) }
+                }
+              } else {
+                emptyList()
+              }
+            }
             val merged = mergeByVideoId(rssVideos, innerTubeVideos)
             Log.d(
               "YoutubeFeed",
@@ -420,10 +575,17 @@ class YoutubeRepository(
       accumulator += batchResult
       processed += batch.size
       // 防节流(对齐 LibreTube CHANNEL_BATCH_DELAY):每累计 BatchSize 频道暂停随机 500-1500ms。
-      if (processed % BatchSize == 0) {
+      // 用 >= 而非 % == 0:ChunkSize 不整除 BatchSize 时 % 永不触发(如 ChunkSize=4 时 50 不整除)。
+      if (processed >= BatchSize) {
         delay(Random.nextLong(BatchDelayMs.first, BatchDelayMs.last + 1))
+        processed = 0
       }
     }
+    val elapsedMs = SystemClock.elapsedRealtime() - startMs
+    Log.i(
+      "YoutubeFeed",
+      "getSubscriptionsFeed done: channels=${channels.size} total=${accumulator.size} elapsed=${elapsedMs}ms",
+    )
     return accumulator.sortedByDescending { it.pubdate }
   }
 
@@ -451,6 +613,7 @@ class YoutubeRepository(
       // 未配置频道时回退显示热门,避免首页空白(设置里可添加频道)。
       return YoutubeSubscriptionsPage(getTrending(YoutubeConstants.TrendingTabs.values.first()), emptyMap())
     }
+    val startMs = SystemClock.elapsedRealtime()
     val rssSemaphore = Semaphore(YoutubeMaxConcurrentRssFetches)
     val innerTubeSemaphore = Semaphore(YoutubeMaxConcurrentChannelFetches)
     // 首屏：全部频道；续页：仅 token 非 null 的频道。
@@ -549,14 +712,18 @@ class YoutubeRepository(
       continuationAccumulator.putAll(batchContinuations)
       processed += batch.size
       // 防节流(对齐 LibreTube CHANNEL_BATCH_DELAY):每累计 BatchSize 频道暂停随机 500-1500ms。
-      if (processed % BatchSize == 0) {
+      // 用 >= 而非 % == 0:ChunkSize 不整除 BatchSize 时 % 永不触发(如 ChunkSize=4 时 50 不整除)。
+      if (processed >= BatchSize) {
         delay(Random.nextLong(BatchDelayMs.first, BatchDelayMs.last + 1))
+        processed = 0
       }
     }
-    Log.d(
+    val elapsedMs = SystemClock.elapsedRealtime() - startMs
+    Log.i(
       "YoutubeFeed",
-      "page ${if (previousContinuation == null) "first" else "next"} done: total=${accumulator.size} " +
-        "channelsWithToken=${continuationAccumulator.values.count { it != null }}",
+      "getSubscriptionsPage ${if (previousContinuation == null) "first" else "next"} done: " +
+        "channels=${activeChannels.size} total=${accumulator.size} " +
+        "channelsWithToken=${continuationAccumulator.values.count { it != null }} elapsed=${elapsedMs}ms",
     )
     return YoutubeSubscriptionsPage(
       videos = accumulator.sortedByDescending { it.pubdate },
@@ -636,9 +803,17 @@ class YoutubeRepository(
     return byId.values.toList()
   }
 
-  /** 拉取单频道 RSS 订阅流并解析成 [YoutubeVideo]。失败抛异常，由调用方回退。 */
+  /**
+   * 拉取单频道 RSS 订阅流并解析成 [YoutubeVideo]。失败抛异常，由调用方回退。
+   *
+   * 用 **UULF playlist_id 变体**而非 channel_id:YouTube 的 `feeds/videos.xml?channel_id=` 自
+   * 2025-12 起大面积间歇性 404/500(YouTube 侧问题,见 youtube-api-notes),而 uploads 播放列表
+   * feed(`playlist_id=UULF<后缀>`)走不同后端、更稳、更新近实时。channelId 形如 `UC`+22 位,
+   * UULF 变体把 `UC` 换成 `UULF`(uploads 播放列表 id)。
+   */
   private suspend fun getChannelRss(channelId: String): List<YoutubeVideo> {
-    val xml = client.getText("${YoutubeConstants.RssFeedBase}?channel_id=$channelId")
+    val playlistId = "UULF" + channelId.removePrefix("UC")
+    val xml = client.getText("${YoutubeConstants.RssFeedBase}?playlist_id=$playlistId")
     return YoutubeRssParser.parse(xml)
   }
 

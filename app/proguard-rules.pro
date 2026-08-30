@@ -28,6 +28,14 @@
 -dontwarn java.beans.**
 -dontwarn java.lang.management.**
 
+# Firebase 组件注册链:Crashlytics 等组件经 ComponentDiscovery 元数据/ServiceLoader 反射
+# 装配。AGP 9 R8 full mode 会把只被元数据引用的大小类判定为未引用而删除,release 包
+# (minify)在 FirebaseCrashlytics.getInstance() 抛 "FirebaseCrashlytics component is
+# not present"(debug 不混淆无此问题,alpha.8 实测)。整包保护避开逐类排查。
+-keep class com.google.firebase.** { *; }
+-keep class com.google.android.gms.tasks.** { *; }
+-dontwarn com.google.firebase.**
+
 # NewPipeExtractor fork (libre-tube) — uses reflection for extractors/playlist
 # builders, ships generated protobuf (com.google.protobuf.*) and a JS engine
 # (rhino) for n-decrypt/signature. Keep the whole package so R8 does not strip

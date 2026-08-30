@@ -37,9 +37,27 @@ enum class HomeThemeVariant(val key: String) {
   }
 }
 
+/**
+ * 移动端明/暗模式(叠加在 [HomeThemeVariant] 之上):
+ * Dark/Light 手动指定;Auto 跟随系统。TV 端用 LocalHomeColors 渲染,不消费此字段。
+ */
+enum class AppAppearanceMode(val key: String) {
+  Dark("dark"),
+  Light("light"),
+  Auto("auto");
+
+  companion object {
+    fun fromKey(key: String?): AppAppearanceMode {
+      return entries.firstOrNull { mode -> mode.key == key } ?: Dark
+    }
+  }
+}
+
 data class AppSettings(
   val visualPerformanceMode: AppVisualPerformanceMode = AppVisualPerformanceMode.Balanced,
   val homeThemeVariant: HomeThemeVariant = HomeThemeVariant.Pink,
+  /** 移动端明/暗模式(Dark/Light 手动,Auto 跟随系统)。TV 端不消费。 */
+  val appearanceMode: AppAppearanceMode = AppAppearanceMode.Dark,
   val chineseTextVariant: ChineseTextVariant = ChineseTextVariant.Simplified,
   val playbackQualityPreference: PlaybackQualityPreference = PlaybackQualityPreference.Highest,
   val playbackCodecPreference: PlaybackCodecPreference = PlaybackCodecPreference.Auto,
@@ -69,6 +87,8 @@ data class AppSettings(
   val autoConfirmOnFocus: Boolean = false,
   val autoRefreshOnSwitch: Boolean = false,
   val liquidGlassCardsEnabled: Boolean = false,
+  /** 崩溃日志自动上报 Crashlytics(默认关;分享日志时手动选「分享并上报」不受此开关限制)。 */
+  val crashLogAutoReportEnabled: Boolean = false,
   val enabledHomeSections: Set<HomeSection> = HomeSection.DefaultOrder.toSet(),
   val homeSectionsOrder: List<HomeSection> = HomeSection.DefaultOrder,
   /** IPTV 源地址（远程 m3u 播放列表 URL）。空串表示未配置，Live 页 IPTV tab 显示引导。 */

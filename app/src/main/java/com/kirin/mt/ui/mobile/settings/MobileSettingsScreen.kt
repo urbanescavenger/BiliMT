@@ -1,8 +1,11 @@
 package com.kirin.mt.ui.mobile.settings
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
@@ -73,6 +76,7 @@ import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
+import com.kirin.mt.core.settings.AppAppearanceMode
 import com.kirin.mt.core.settings.AppSettings
 import com.kirin.mt.core.settings.AppSettingsStore
 import com.kirin.mt.core.settings.AppVisualPerformanceMode
@@ -91,6 +95,8 @@ import com.kirin.mt.ui.settings.latestVersionText
 import com.kirin.mt.ui.i18n.localizedContext
 import com.kirin.mt.ui.settings.normalizeIptvUrl
 import com.kirin.mt.ui.settings.updateVersionActionLabel
+import com.kirin.mt.ui.settings.SettingsAboutLibraries
+import com.kirin.mt.ui.settings.SettingsAboutProjectUrl
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -239,60 +245,22 @@ fun MobileSettingsScreen(
       options = enumOptions(YoutubeContentRegion.entries) { it.label },
       onSelected = { scope.launch { appSettingsStore.setYoutubeContentRegion(it) } },
     )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_seek_preview_sprites_title),
-      description = stringResource(R.string.settings_seek_preview_sprites_description),
-      checked = settings.seekPreviewSpritesEnabled,
-      onCheckedChange = { scope.launch { appSettingsStore.setSeekPreviewSpritesEnabled(it) } },
-    )
+    // NOTE: seekPreviewSpritesEnabled 为 TV 播放器专属(TV 才有 seek preview 缩略图),移动端不生效,已隐藏。
     MobileSwitchRow(
       title = stringResource(R.string.settings_air_jump_assistant_title),
       description = stringResource(R.string.settings_air_jump_assistant_description),
       checked = settings.airJumpAssistantEnabled,
       onCheckedChange = { scope.launch { appSettingsStore.setAirJumpAssistantEnabled(it) } },
     )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_confirm_playback_exit_title),
-      description = stringResource(R.string.settings_confirm_playback_exit_description),
-      checked = settings.confirmPlaybackExit,
-      onCheckedChange = { scope.launch { appSettingsStore.setConfirmPlaybackExit(it) } },
-    )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_auto_play_next_episode_title),
-      description = stringResource(R.string.settings_auto_play_next_episode_description),
-      checked = settings.autoPlayNextEpisode,
-      onCheckedChange = { scope.launch { appSettingsStore.setAutoPlayNextEpisode(it) } },
-    )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_auto_play_related_video_title),
-      description = stringResource(R.string.settings_auto_play_related_video_description),
-      checked = settings.autoPlayRelatedVideo,
-      onCheckedChange = { scope.launch { appSettingsStore.setAutoPlayRelatedVideo(it) } },
-    )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_auto_return_home_on_completion_title),
-      description = stringResource(R.string.settings_auto_return_home_on_completion_description),
-      checked = settings.autoReturnHomeOnCompletion,
-      onCheckedChange = { scope.launch { appSettingsStore.setAutoReturnHomeOnCompletion(it) } },
-    )
+    // NOTE: 以下 4 项为 TV 播放器专属(移动端不消费),已隐藏移动端设置页。字段/逻辑保留。
+    //   confirmPlaybackExit / autoPlayNextEpisode / autoPlayRelatedVideo / autoReturnHomeOnCompletion
     MobileSwitchRow(
       title = stringResource(R.string.settings_auto_delete_watched_title),
       description = stringResource(R.string.settings_auto_delete_watched_description),
       checked = settings.autoDeleteWatchedCache,
       onCheckedChange = { scope.launch { appSettingsStore.setAutoDeleteWatchedCache(it) } },
     )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_show_clock_title),
-      description = stringResource(R.string.settings_show_clock_description),
-      checked = settings.showClock,
-      onCheckedChange = { scope.launch { appSettingsStore.setShowClock(it) } },
-    )
-    MobileSwitchRow(
-      title = stringResource(R.string.settings_show_mini_progress_bar_title),
-      description = stringResource(R.string.settings_show_mini_progress_bar_description),
-      checked = settings.showMiniProgressBar,
-      onCheckedChange = { scope.launch { appSettingsStore.setShowMiniProgressBar(it) } },
-    )
+    // NOTE: showClock / showMiniProgressBar 为 TV 播放器专属(移动端不消费),已隐藏移动端设置页。字段/逻辑保留。
 
     // ===== 界面与交互 =====
     MobileSettingsSectionHeader(stringResource(R.string.settings_interaction_section))
@@ -311,6 +279,14 @@ fun MobileSettingsScreen(
       selectedLabel = themeLabel(settings.homeThemeVariant),
       options = enumOptions(HomeThemeVariant.entries) { themeLabel(it) },
       onSelected = { scope.launch { appSettingsStore.setHomeThemeVariant(it) } },
+    )
+    MobileEnumPickerRow(
+      title = stringResource(R.string.settings_appearance_title),
+      description = stringResource(R.string.settings_appearance_description),
+      selected = settings.appearanceMode,
+      selectedLabel = appearanceLabel(settings.appearanceMode),
+      options = enumOptions(AppAppearanceMode.entries) { appearanceLabel(it) },
+      onSelected = { scope.launch { appSettingsStore.setAppearanceMode(it) } },
     )
     MobileEnumPickerRow(
       title = stringResource(R.string.settings_language_title),
@@ -337,28 +313,18 @@ fun MobileSettingsScreen(
       scope = scope,
     )
 
-    // ===== 程序更新 =====
-    MobileSettingsSectionHeader(stringResource(R.string.settings_update_section))
-    MobileSettingsRow(
-      title = stringResource(R.string.settings_update_current_version_title),
-      description = currentVersionText(updateState),
-    )
-    // 最新版本 row 内联下载/进度/安装 + 检查更新(已并入此行,不再单开检查更新栏)。
-    MobileUpdateVersionRow(
-      title = stringResource(R.string.settings_update_latest_version_title),
-      description = latestVersionText(updateState),
-      actionLabel = updateVersionActionLabel(updateState),
-      actionEnabled = isUpdateVersionActionEnabled(updateState),
-      progress = downloadProgressFraction(updateState),
-      onClick = updateVersionOnClick,
-    )
-
     // ===== 系统设置 =====
     MobileSettingsSectionHeader(stringResource(R.string.settings_performance_section))
     MobileSettingsRow(
       title = stringResource(R.string.settings_logs_entry_title),
       description = stringResource(R.string.settings_logs_entry_description),
       onClick = onOpenLogs,
+    )
+    MobileSwitchRow(
+      title = stringResource(R.string.settings_crash_auto_report_title),
+      description = stringResource(R.string.settings_crash_auto_report_description),
+      checked = settings.crashLogAutoReportEnabled,
+      onCheckedChange = { scope.launch { appSettingsStore.setCrashLogAutoReportEnabled(it) } },
     )
     MobileSettingsRow(
       title = stringResource(R.string.downloads_settings_title),
@@ -415,6 +381,25 @@ fun MobileSettingsScreen(
       settings = settings,
       appSettingsStore = appSettingsStore,
     )
+
+    // ===== 程序更新(2026-08-30 调整:与 TV 端对齐,移到设置列表最末尾) =====
+    MobileSettingsSectionHeader(stringResource(R.string.settings_update_section))
+    MobileSettingsRow(
+      title = stringResource(R.string.settings_update_current_version_title),
+      description = currentVersionText(updateState),
+    )
+    // 最新版本 row 内联下载/进度/安装 + 检查更新(已并入此行,不再单开检查更新栏)。
+    MobileUpdateVersionRow(
+      title = stringResource(R.string.settings_update_latest_version_title),
+      description = latestVersionText(updateState),
+      actionLabel = updateVersionActionLabel(updateState),
+      actionEnabled = isUpdateVersionActionEnabled(updateState),
+      progress = downloadProgressFraction(updateState),
+      onClick = updateVersionOnClick,
+    )
+
+    // ===== 关于(折叠面板,与 TV 关于面板同源信息;2026-08-30 补齐) =====
+    MobileAboutSection()
   }
 
     if (showFollowSheet) {
@@ -638,6 +623,15 @@ private fun themeLabel(t: HomeThemeVariant): String = stringResource(
     HomeThemeVariant.Black -> R.string.settings_home_theme_black
     HomeThemeVariant.Gray -> R.string.settings_home_theme_gray
     HomeThemeVariant.BlueGray -> R.string.settings_home_theme_blue_gray
+  }
+)
+
+@Composable
+private fun appearanceLabel(m: AppAppearanceMode): String = stringResource(
+  when (m) {
+    AppAppearanceMode.Dark -> R.string.settings_appearance_dark
+    AppAppearanceMode.Light -> R.string.settings_appearance_light
+    AppAppearanceMode.Auto -> R.string.settings_appearance_auto
   }
 )
 
@@ -1159,12 +1153,8 @@ private fun MobileYoutubeSabrSection(
         onClick = { showEditDialog = true },
         onLongClick = { showEditDialog = true },
       )
-      MobileSwitchRow(
-        title = stringResource(R.string.settings_sabr_force_itag_title),
-        description = stringResource(R.string.settings_sabr_force_itag_description),
-        checked = settings.sabrForceSessionVideoItag,
-        onCheckedChange = { scope.launch { appSettingsStore.setSabrForceSessionVideoItag(it) } },
-      )
+      // NOTE: sabrForceSessionVideoItag("锁定会话视频轨")诊断开关已隐藏(alpha.83 使命完成,
+      // 证伪 itag 是 RELOAD 根因)。字段/逻辑保留,如需再作诊断可恢复此 MobileSwitchRow。
       MobileEnumPickerRow(
         title = stringResource(R.string.settings_youtube_delivery_priority_title),
         description = stringResource(R.string.settings_youtube_delivery_priority_description),
@@ -1185,6 +1175,62 @@ private fun MobileYoutubeSabrSection(
       },
       onDismiss = { showEditDialog = false },
     )
+  }
+}
+
+/**
+ * 关于区(折叠面板,镜像 [MobileIptvSection]):项目名称/简介 + 项目地址(点击跳浏览器)+
+ * 开源协议 + 依赖库清单(点击打开项目主页)。信息与 TV SettingsAboutColumn 同源
+ * ([SettingsAboutProjectUrl]/[SettingsAboutLibraries]);TV 端渲染二维码,移动端在设备上
+ * 直接可点,不放二维码。
+ */
+@Composable
+private fun MobileAboutSection() {
+  val context = LocalContext.current
+  var expanded by remember { mutableStateOf(false) }
+
+  MobileSettingsSectionHeader(
+    text = stringResource(R.string.settings_about_title),
+    onClick = { expanded = !expanded },
+    trailing = {
+      Icon(
+        imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.primary,
+      )
+    },
+  )
+  androidx.compose.animation.AnimatedVisibility(visible = expanded) {
+    Column {
+      MobileSettingsRow(
+        title = stringResource(R.string.settings_about_project_name),
+        description = stringResource(R.string.settings_about_project_intro),
+      )
+      MobileSettingsRow(
+        title = stringResource(R.string.settings_about_project_url_title),
+        description = SettingsAboutProjectUrl,
+        onClick = { openInBrowser(context, SettingsAboutProjectUrl) },
+      )
+      MobileSettingsRow(
+        title = stringResource(R.string.settings_about_license_title),
+        description = stringResource(R.string.settings_about_license_value),
+      )
+      SettingsAboutLibraries.forEach { library ->
+        MobileSettingsRow(
+          title = library.name,
+          description = stringResource(library.descriptionRes),
+          onClick = { openInBrowser(context, library.url) },
+        )
+      }
+    }
+  }
+}
+
+/** 用系统浏览器打开链接;无浏览器(极少数精简包)时静默吞掉 ActivityNotFound。 */
+private fun openInBrowser(context: Context, url: String) {
+  try {
+    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+  } catch (_: ActivityNotFoundException) {
   }
 }
 

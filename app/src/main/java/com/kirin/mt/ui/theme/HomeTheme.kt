@@ -110,4 +110,52 @@ object HomeThemes {
       HomeThemeVariant.BlueGray -> BlueGray
     }
   }
+
+  /**
+   * 移动端亮色主题(明/暗模式 Light):中性浅底 + 各 variant 加深一档的 accent。
+   * accent 在亮底上保证「accent + 白字」对比度 ≥ 4.5:1(见 tmp/light-theme-palette.html)。
+   */
+  fun lightFromVariant(variant: HomeThemeVariant): HomeColorScheme {
+    val accent = when (variant) {
+      HomeThemeVariant.Pink -> LightAccentPink
+      HomeThemeVariant.Black -> LightAccentInk
+      HomeThemeVariant.Gray -> LightAccentGray
+      HomeThemeVariant.BlueGray -> LightAccentBlue
+    }
+    return HomeColorScheme(
+      accent = accent,
+      backgroundTop = LightBackgroundTop,
+      backgroundBottom = LightBackgroundBottom,
+      ambientA = accent.copy(alpha = 0.07f),
+      ambientB = Color(0x0A000000),
+      glassSurface = LightGlassSurface,
+      glassSurfaceStrong = LightGlassSurfaceStrong,
+      sidebarSurface = LightSidebarSurface,
+      glassBorder = LightGlassBorder,
+      cardSurface = LightCardSurface,
+      cardInfoSurface = LightCardInfoSurface,
+      cardFocusedSurface = LightCardFocusedSurface,
+      textPrimary = LightTextPrimary,
+      textSecondary = LightTextSecondary,
+      textTertiary = LightTextTertiary,
+      shineColor = accent,
+    )
+  }
 }
+
+private val LightAccentPink = Color(0xFFD61F6B)
+private val LightAccentBlue = Color(0xFF1F6FD0)
+private val LightAccentInk = Color(0xFF20242E)
+private val LightAccentGray = Color(0xFF5F646E)
+private val LightBackgroundTop = Color(0xFFF6F7F9)
+private val LightBackgroundBottom = Color(0xFFFFFFFF)
+private val LightGlassSurface = Color(0xB3FFFFFF)
+private val LightGlassSurfaceStrong = Color(0xE6FFFFFF)
+private val LightSidebarSurface = Color(0xFFE8EAF0)
+private val LightGlassBorder = Color(0x14000000)
+private val LightCardSurface = Color(0xFFFFFFFF)
+private val LightCardInfoSurface = Color(0xFFEDEFF3)
+private val LightCardFocusedSurface = Color(0xFFE2E6EC)
+private val LightTextPrimary = Color(0xFF16171A)
+private val LightTextSecondary = Color(0xFF5F646E)
+private val LightTextTertiary = Color(0xFF9AA0A8)

@@ -91,6 +91,7 @@ fun SettingsScreen(
   onShowClockChange: (Boolean) -> Unit,
   onShowMiniProgressBarChange: (Boolean) -> Unit,
   onPlayerLogOverlayEnabledChange: (Boolean) -> Unit,
+  onCrashLogAutoReportChange: (Boolean) -> Unit,
   onAutoConfirmOnFocusChange: (Boolean) -> Unit,
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onHomeSectionEnabledChange: (HomeSection, Boolean) -> Unit,
@@ -102,6 +103,7 @@ fun SettingsScreen(
   onBackFromLogView: () -> Unit,
   onShareLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onBackupLog: (LogCatcherUtil.LogFileInfo) -> Unit,
+  onSendLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onToggleLogRecording: () -> Unit,
   updateState: UpdateUiState,
   onCheckUpdate: () -> Unit,
@@ -121,7 +123,6 @@ fun SettingsScreen(
   onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
   onPipedInstanceChange: (url: String) -> Unit,
   onYoutubeUsePipedChange: (Boolean) -> Unit,
-  onSabrForceSessionVideoItagChange: (Boolean) -> Unit,
   onYoutubeDeliveryPriorityChange: (YoutubeDeliveryPriority) -> Unit,
 ) {
   val settingsListState = rememberLazyListState()
@@ -155,6 +156,7 @@ fun SettingsScreen(
       SettingsItemShowClock to FocusRequester(),
       SettingsItemShowMiniProgressBar to FocusRequester(),
       SettingsItemPlayerLogOverlay to FocusRequester(),
+      SettingsItemCrashLogAutoReport to FocusRequester(),
       SettingsItemAutoConfirmOnFocus to FocusRequester(),
       SettingsItemAutoRefreshOnSwitch to FocusRequester(),
       SettingsItemVisualPerformanceMode to FocusRequester(),
@@ -169,7 +171,6 @@ fun SettingsScreen(
       SettingsItemYoutubeContentRegion to FocusRequester(),
       SettingsItemPiped to FocusRequester(),
       SettingsItemYoutubeUsePiped to FocusRequester(),
-      SettingsItemSabrForceItag to FocusRequester(),
       SettingsItemYoutubeDeliveryPriority to FocusRequester(),
       SettingsItemWebDav to FocusRequester(),
       SettingsItemWebDavBackup to FocusRequester(),
@@ -286,6 +287,7 @@ fun SettingsScreen(
         onShowClockChange = onShowClockChange,
         onShowMiniProgressBarChange = onShowMiniProgressBarChange,
         onPlayerLogOverlayEnabledChange = onPlayerLogOverlayEnabledChange,
+        onCrashLogAutoReportChange = onCrashLogAutoReportChange,
         onAutoConfirmOnFocusChange = onAutoConfirmOnFocusChange,
         onAutoRefreshOnSwitchChange = onAutoRefreshOnSwitchChange,
         onAboutSelected = {
@@ -318,7 +320,6 @@ fun SettingsScreen(
         onPipedInstanceChange = onPipedInstanceChange,
         onPipedSelected = { showPipedDialog = true },
         onYoutubeUsePipedChange = onYoutubeUsePipedChange,
-        onSabrForceSessionVideoItagChange = onSabrForceSessionVideoItagChange,
         onYoutubeDeliveryPriorityChange = onYoutubeDeliveryPriorityChange,
         onLogsSelected = {
           rightPanel = if (rightPanel == SettingsRightPanel.Logs) {
@@ -334,6 +335,7 @@ fun SettingsScreen(
         onBackFromLogView = onBackFromLogView,
         onShareLog = onShareLog,
         onBackupLog = onBackupLog,
+        onSendLog = onSendLog,
         onToggleLogRecording = onToggleLogRecording,
         updateState = updateState,
         onCheckUpdate = onCheckUpdate,
@@ -367,6 +369,7 @@ fun SettingsScreen(
           onBackFromView = onBackFromLogView,
           onShare = onShareLog,
           onBackupLog = onBackupLog,
+          onSendLog = onSendLog,
           onToggleRecording = onToggleLogRecording,
           onMoveLeftToSettings = { focusSettingItem(lastFocusedSettingItem) },
           modifier = Modifier.weight(1f),
@@ -517,6 +520,7 @@ private fun SettingsBehaviorColumn(
   onShowClockChange: (Boolean) -> Unit,
   onShowMiniProgressBarChange: (Boolean) -> Unit,
   onPlayerLogOverlayEnabledChange: (Boolean) -> Unit,
+  onCrashLogAutoReportChange: (Boolean) -> Unit,
   onAutoConfirmOnFocusChange: (Boolean) -> Unit,
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onAboutSelected: () -> Unit,
@@ -529,6 +533,7 @@ private fun SettingsBehaviorColumn(
   onBackFromLogView: () -> Unit,
   onShareLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onBackupLog: (LogCatcherUtil.LogFileInfo) -> Unit,
+  onSendLog: (LogCatcherUtil.LogFileInfo) -> Unit,
   onToggleLogRecording: () -> Unit,
   updateState: UpdateUiState,
   onCheckUpdate: () -> Unit,
@@ -553,7 +558,6 @@ private fun SettingsBehaviorColumn(
   onPipedInstanceChange: (url: String) -> Unit,
   onPipedSelected: () -> Unit,
   onYoutubeUsePipedChange: (Boolean) -> Unit,
-  onSabrForceSessionVideoItagChange: (Boolean) -> Unit,
   onYoutubeDeliveryPriorityChange: (YoutubeDeliveryPriority) -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -992,73 +996,6 @@ private fun SettingsBehaviorColumn(
         onCheckedChange = onAutoRefreshOnSwitchChange,
       )
     }
-    item(key = "update-header") {
-      SettingsSectionTitle(
-        text = stringResource(R.string.settings_update_section),
-        modifier = Modifier.padding(top = BiliSpacing.Lg),
-      )
-    }
-    item(key = "update-current-version") {
-      SettingsActionRow(
-        title = stringResource(R.string.settings_update_current_version_title),
-        description = stringResource(R.string.settings_update_current_version_description),
-        value = currentVersionText(updateState),
-        modifier = Modifier
-          .focusRequester(focusRequesters.getValue(SettingsItemUpdateCurrentVersion))
-          .settingsBoundaryKeys(
-            itemIndex = SettingsItemUpdateCurrentVersion,
-            onMoveSettingFocus = onMoveSettingFocus,
-            onMoveLeftToNav = onMoveLeftToNav,
-          ),
-        onFocused = { onSettingFocused(SettingsItemUpdateCurrentVersion) },
-        onClick = {},
-      )
-    }
-    // 最新版本合并行(镜像移动端):内联检查/下载/进度/安装 + 进度条,无条件渲染。
-    // 「检查更新」已并入此行——Idle/UpToDate/Failed 点按触发检查,Available 下载,Downloaded 安装。
-    item(key = "update-latest-version") {
-      SettingsUpdateVersionRow(
-        title = stringResource(R.string.settings_update_latest_version_title),
-        description = latestVersionText(updateState),
-        actionLabel = updateVersionActionLabel(updateState),
-        actionEnabled = isUpdateVersionActionEnabled(updateState),
-        progress = downloadProgressFraction(updateState),
-        modifier = Modifier
-          .focusRequester(focusRequesters.getValue(SettingsItemUpdateDownloadOrInstall))
-          .settingsBoundaryKeys(
-            itemIndex = SettingsItemUpdateDownloadOrInstall,
-            onMoveSettingFocus = onMoveSettingFocus,
-            onMoveLeftToNav = onMoveLeftToNav,
-          ),
-        onFocused = { onSettingFocused(SettingsItemUpdateDownloadOrInstall) },
-        onClick = {
-          when (updateState.status) {
-            is UpdateUiState.Status.Available -> onDownloadUpdate()
-            is UpdateUiState.Status.Downloaded -> onInstallUpdate()
-            is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> {}
-            else -> onCheckUpdate()
-          }
-        },
-      )
-    }
-    if (shouldShowReleaseNotesAction(updateState)) {
-      item(key = "update-release-notes") {
-        SettingsActionRow(
-          title = stringResource(R.string.settings_update_release_notes_action),
-          description = stringResource(R.string.settings_update_release_notes_action_description),
-          value = "",
-          modifier = Modifier
-            .focusRequester(focusRequesters.getValue(SettingsItemUpdateReleaseNotes))
-            .settingsBoundaryKeys(
-              itemIndex = SettingsItemUpdateReleaseNotes,
-              onMoveSettingFocus = onMoveSettingFocus,
-              onMoveLeftToNav = onMoveLeftToNav,
-            ),
-          onFocused = { onSettingFocused(SettingsItemUpdateReleaseNotes) },
-          onClick = onOpenReleaseNotes,
-        )
-      }
-    }
     item(key = "system-header") {
       SettingsSectionTitle(
         text = stringResource(R.string.settings_performance_section),
@@ -1196,22 +1133,8 @@ private fun SettingsBehaviorColumn(
         onCheckedChange = onYoutubeUsePipedChange,
       )
     }
-    item(key = "youtube-sabr-force-itag") {
-      SettingsToggleRow(
-        title = stringResource(R.string.settings_sabr_force_itag_title),
-        description = stringResource(R.string.settings_sabr_force_itag_description),
-        checked = settings.sabrForceSessionVideoItag,
-        modifier = Modifier
-          .focusRequester(focusRequesters.getValue(SettingsItemSabrForceItag))
-          .settingsBoundaryKeys(
-            itemIndex = SettingsItemSabrForceItag,
-            onMoveSettingFocus = onMoveSettingFocus,
-            onMoveLeftToNav = onMoveLeftToNav,
-          ),
-        onFocused = { onSettingFocused(SettingsItemSabrForceItag) },
-        onCheckedChange = onSabrForceSessionVideoItagChange,
-      )
-    }
+    // NOTE: sabrForceSessionVideoItag("锁定会话视频轨")诊断开关已隐藏(alpha.83 使命完成,证伪
+    // itag 是 RELOAD 根因)。字段/逻辑保留,如需再作诊断可恢复此 item。
     item(key = "youtube-delivery-priority") {
       val priorityOptions = remember { YoutubeDeliveryPriority.entries.toList() }
       val effectivePriority = settings.youtubeDeliveryPriority
@@ -1327,22 +1250,6 @@ private fun SettingsBehaviorColumn(
         onClick = onLogsSelected,
       )
     }
-    item(key = "about") {
-      SettingsActionRow(
-        title = stringResource(R.string.settings_about_title),
-        description = stringResource(R.string.settings_about_description),
-        value = "",
-        modifier = Modifier
-          .focusRequester(focusRequesters.getValue(SettingsItemAbout))
-          .settingsBoundaryKeys(
-            itemIndex = SettingsItemAbout,
-            onMoveSettingFocus = onMoveSettingFocus,
-            onMoveLeftToNav = onMoveLeftToNav,
-          ),
-        onFocused = { onSettingFocused(SettingsItemAbout) },
-        onClick = onAboutSelected,
-      )
-    }
     item(key = "player-log-overlay") {
       SettingsToggleRow(
         title = stringResource(R.string.settings_player_log_overlay_title),
@@ -1357,6 +1264,108 @@ private fun SettingsBehaviorColumn(
           ),
         onFocused = { onSettingFocused(SettingsItemPlayerLogOverlay) },
         onCheckedChange = onPlayerLogOverlayEnabledChange,
+      )
+    }
+    item(key = "crash-log-auto-report") {
+      SettingsToggleRow(
+        title = stringResource(R.string.settings_crash_auto_report_title),
+        description = stringResource(R.string.settings_crash_auto_report_description),
+        checked = settings.crashLogAutoReportEnabled,
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemCrashLogAutoReport))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemCrashLogAutoReport,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemCrashLogAutoReport) },
+        onCheckedChange = onCrashLogAutoReportChange,
+      )
+    }
+    // 「程序更新」节放在列表最末尾(与移动端对齐:2026-08-30 调整)。
+    item(key = "update-header") {
+      SettingsSectionTitle(
+        text = stringResource(R.string.settings_update_section),
+        modifier = Modifier.padding(top = BiliSpacing.Lg),
+      )
+    }
+    item(key = "update-current-version") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_update_current_version_title),
+        description = stringResource(R.string.settings_update_current_version_description),
+        value = currentVersionText(updateState),
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemUpdateCurrentVersion))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemUpdateCurrentVersion,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemUpdateCurrentVersion) },
+        onClick = {},
+      )
+    }
+    // 最新版本合并行(镜像移动端):内联检查/下载/进度/安装 + 进度条,无条件渲染。
+    // 「检查更新」已并入此行——Idle/UpToDate/Failed 点按触发检查,Available 下载,Downloaded 安装。
+    item(key = "update-latest-version") {
+      SettingsUpdateVersionRow(
+        title = stringResource(R.string.settings_update_latest_version_title),
+        description = latestVersionText(updateState),
+        actionLabel = updateVersionActionLabel(updateState),
+        actionEnabled = isUpdateVersionActionEnabled(updateState),
+        progress = downloadProgressFraction(updateState),
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemUpdateDownloadOrInstall))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemUpdateDownloadOrInstall,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemUpdateDownloadOrInstall) },
+        onClick = {
+          when (updateState.status) {
+            is UpdateUiState.Status.Available -> onDownloadUpdate()
+            is UpdateUiState.Status.Downloaded -> onInstallUpdate()
+            is UpdateUiState.Status.Checking, is UpdateUiState.Status.Downloading -> {}
+            else -> onCheckUpdate()
+          }
+        },
+      )
+    }
+    // 条件项:有新版才显示,渲染在「最新版本」之后。
+    if (shouldShowReleaseNotesAction(updateState)) {
+      item(key = "update-release-notes") {
+        SettingsActionRow(
+          title = stringResource(R.string.settings_update_release_notes_action),
+          description = stringResource(R.string.settings_update_release_notes_action_description),
+          value = "",
+          modifier = Modifier
+            .focusRequester(focusRequesters.getValue(SettingsItemUpdateReleaseNotes))
+            .settingsBoundaryKeys(
+              itemIndex = SettingsItemUpdateReleaseNotes,
+              onMoveSettingFocus = onMoveSettingFocus,
+              onMoveLeftToNav = onMoveLeftToNav,
+            ),
+          onFocused = { onSettingFocused(SettingsItemUpdateReleaseNotes) },
+          onClick = onOpenReleaseNotes,
+        )
+      }
+    }
+    // 「关于」并入程序更新组,作为列表最末行(2026-08-30 调整)。
+    item(key = "about") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_about_title),
+        description = stringResource(R.string.settings_about_description),
+        value = "",
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemAbout))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemAbout,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemAbout) },
+        onClick = onAboutSelected,
       )
     }
   }
@@ -1410,6 +1419,7 @@ private const val SettingsItemUpdateReleaseNotes = 25
 private const val SettingsItemPlaybackCdn = 21
 private const val SettingsItemLogs = 27
 private const val SettingsItemPlayerLogOverlay = 28
+private const val SettingsItemCrashLogAutoReport = 38
 private const val SettingsItemYoutubeChannels = 29
 private const val SettingsItemWebDav = 30
 private const val SettingsItemYoutubeContentRegion = 33
@@ -1418,8 +1428,7 @@ private const val SettingsItemWebDavRestore = 32
 private const val SettingsItemIptv = 34
 private const val SettingsItemPiped = 35
 private const val SettingsItemYoutubeUsePiped = 36
-private const val SettingsItemSabrForceItag = 37
-private const val SettingsItemYoutubeDeliveryPriority = 38
+private const val SettingsItemYoutubeDeliveryPriority = 37
 
 private val SettingsFocusableItems = listOf(
   SettingsItemAccount,
@@ -1444,9 +1453,6 @@ private val SettingsFocusableItems = listOf(
   SettingsItemHomeThemeVariant,
   SettingsItemAutoConfirmOnFocus,
   SettingsItemAutoRefreshOnSwitch,
-  SettingsItemUpdateCurrentVersion,
-  SettingsItemUpdateDownloadOrInstall,
-  SettingsItemUpdateReleaseNotes,
   SettingsItemClearCache,
   SettingsItemChineseTextVariant,
   SettingsItemHomeSections,
@@ -1454,15 +1460,18 @@ private val SettingsFocusableItems = listOf(
   SettingsItemYoutubeContentRegion,
   SettingsItemPiped,
   SettingsItemYoutubeUsePiped,
-  SettingsItemSabrForceItag,
   SettingsItemYoutubeDeliveryPriority,
   SettingsItemWebDav,
   SettingsItemWebDavBackup,
   SettingsItemWebDavRestore,
   SettingsItemIptv,
   SettingsItemLogs,
-  SettingsItemAbout,
   SettingsItemPlayerLogOverlay,
+  SettingsItemCrashLogAutoReport,
+  SettingsItemUpdateCurrentVersion,
+  SettingsItemUpdateDownloadOrInstall,
+  SettingsItemUpdateReleaseNotes,
+  SettingsItemAbout,
 )
 
 private enum class SettingsRightPanel {
@@ -1510,78 +1519,28 @@ private fun settingsItemToLazyIndex(
   SettingsItemHomeThemeVariant -> 21
   SettingsItemAutoConfirmOnFocus -> 22
   SettingsItemAutoRefreshOnSwitch -> 23
-  // 24 = "update-header" section title in LazyColumn
-  SettingsItemUpdateCurrentVersion -> 25
-  SettingsItemUpdateDownloadOrInstall -> 26
-  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 27 else -1
-  SettingsItemClearCache -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    28 + updateExtraCount
-  }
-  SettingsItemChineseTextVariant -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    29 + updateExtraCount
-  }
-  SettingsItemHomeSections -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    30 + updateExtraCount
-  }
-  SettingsItemLogs -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    42 + updateExtraCount
-  }
-  SettingsItemAbout -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    43 + updateExtraCount
-  }
-  SettingsItemPlayerLogOverlay -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    44 + updateExtraCount
-  }
-  SettingsItemYoutubeChannels -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    32 + updateExtraCount
-  }
-  SettingsItemYoutubeContentRegion -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    33 + updateExtraCount
-  }
-  SettingsItemPiped -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    34 + updateExtraCount
-  }
-  SettingsItemYoutubeUsePiped -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    35 + updateExtraCount
-  }
-  SettingsItemSabrForceItag -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    36 + updateExtraCount
-  }
-  SettingsItemYoutubeDeliveryPriority -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    37 + updateExtraCount
-  }
-  SettingsItemWebDav -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    38 + updateExtraCount
-  }
-  SettingsItemWebDavBackup -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    39 + updateExtraCount
-  }
-  SettingsItemWebDavRestore -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    40 + updateExtraCount
-  }
-  SettingsItemIptv -> {
-    val updateExtraCount = updateExtraItemCount(updateState)
-    41 + updateExtraCount
-  }
+  // 24 = "system-header" section title in LazyColumn(「程序更新」节已移到列表最末尾,更新项不再插在中间)
+  SettingsItemClearCache -> 25
+  SettingsItemChineseTextVariant -> 26
+  SettingsItemHomeSections -> 27
+  // 28 = "youtube-header" section title in LazyColumn
+  SettingsItemYoutubeChannels -> 29
+  SettingsItemYoutubeContentRegion -> 30
+  SettingsItemPiped -> 31
+  SettingsItemYoutubeUsePiped -> 32
+  SettingsItemYoutubeDeliveryPriority -> 33
+  SettingsItemWebDav -> 34
+  SettingsItemWebDavBackup -> 35
+  SettingsItemWebDavRestore -> 36
+  SettingsItemIptv -> 37
+  SettingsItemLogs -> 38
+  SettingsItemPlayerLogOverlay -> 39
+  SettingsItemCrashLogAutoReport -> 40
+  // 41 = "update-header" section title in LazyColumn
+  SettingsItemUpdateCurrentVersion -> 42
+  SettingsItemUpdateDownloadOrInstall -> 43
+  // 44 = "update-release-notes"(有新版才渲染);「关于」并入程序更新节,排在更新日志之后。
+  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 44 else -1
+  SettingsItemAbout -> if (shouldShowReleaseNotesAction(updateState)) 45 else 44
   else -> 0
-}
-
-// 合并行(update-latest-version)无条件渲染,只数 release-notes 一个条件项。
-private fun updateExtraItemCount(updateState: UpdateUiState): Int {
-  return if (shouldShowReleaseNotesAction(updateState)) 1 else 0
 }

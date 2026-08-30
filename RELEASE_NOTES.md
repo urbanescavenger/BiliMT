@@ -1,7 +1,23 @@
 # BiliMT 版本发布说明
 
 ## 目录
-
+- [v3.0.7](#v307)
+- [v3.0.7-alpha.16](#v307-alpha16)
+- [v3.0.7-alpha.15](#v307-alpha15)
+- [v3.0.7-alpha.14](#v307-alpha14)
+- [v3.0.7-alpha.13](#v307-alpha13)
+- [v3.0.7-alpha.12](#v307-alpha12)
+- [v3.0.7-alpha.11](#v307-alpha11)
+- [v3.0.7-alpha.10](#v307-alpha10)
+- [v3.0.7-alpha.9](#v307-alpha9)
+- [v3.0.7-alpha.8](#v307-alpha8)
+- [v3.0.7-alpha.7](#v307-alpha7)
+- [v3.0.7-alpha.6](#v307-alpha6)
+- [v3.0.7-alpha.5](#v307-alpha5)
+- [v3.0.7-alpha.4](#v307-alpha4)
+- [v3.0.7-alpha.3](#v307-alpha3)
+- [v3.0.7-alpha.2](#v307-alpha2)
+- [v3.0.7-alpha.1](#v307-alpha1)
 - [v3.0.6](#v306)
 - [v3.0.6-alpha.13](#v306-alpha13)
 - [v3.0.6-alpha.12](#v306-alpha12)
@@ -145,6 +161,7 @@
 - [v2.0.0-alpha.2](#v200-alpha2)
 - [v2.0.0-alpha.1](#v200-alpha1)
 - [v1.1.2](#v112)
+- [v1.1.1](#v111)
 - [v1.1.1-alpha.8](#v111-alpha8)
 - [v1.1.1-alpha.7](#v111-alpha7)
 - [v1.1.1-alpha.6](#v111-alpha6)
@@ -153,11 +170,11 @@
 - [v1.1.1-alpha.3](#v111-alpha3)
 - [v1.1.1-alpha.2](#v111-alpha2)
 - [v1.1.1-alpha.1](#v111-alpha1)
-- [v1.1.1](#v111)
+- [v1.1.0](#v110)
 - [v1.1.0-alpha.6](#v110-alpha6)
 - [v1.1.0-alpha.5](#v110-alpha5)
 - [v1.1.0-alpha.2](#v110-alpha2)
-- [v1.1.0](#v110)
+- [v1.0.13](#v1013)
 - [v1.0.13-alpha.17](#v1013-alpha17)
 - [v1.0.13-alpha.16](#v1013-alpha16)
 - [v1.0.13-alpha.15](#v1013-alpha15)
@@ -175,7 +192,7 @@
 - [v1.0.13-alpha.3](#v1013-alpha3)
 - [v1.0.13-alpha.2](#v1013-alpha2)
 - [v1.0.13-alpha.1](#v1013-alpha1)
-- [v1.0.13](#v1013)
+- [v1.0.12](#v1012)
 - [v1.0.12-alpha.19](#v1012-alpha19)
 - [v1.0.12-alpha.18](#v1012-alpha18)
 - [v1.0.12-alpha.17](#v1012-alpha17)
@@ -195,7 +212,6 @@
 - [v1.0.12-alpha.3](#v1012-alpha3)
 - [v1.0.12-alpha.2](#v1012-alpha2)
 - [v1.0.12-alpha.1](#v1012-alpha1)
-- [v1.0.12](#v1012)
 - [v1.0.11-alpha.7](#v1011-alpha7)
 - [v1.0.11-alpha.6](#v1011-alpha6)
 - [v1.0.11-alpha.5](#v1011-alpha5)
@@ -207,6 +223,177 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+- [目录](#v录)
+
+## v3.0.7
+
+**稳定版:YouTube 播放链路大修(SABR 升档判据/4K)+ Crashlytics 日志远程回收完整链路 + 双端 UI 官方对齐。** 本版整合 v3.0.7-alpha.1~16 全部改动:YouTube SABR 自适应三连修(升档判据改持续带宽、gap 时钟单位 bug、Auto 满缓冲不升 1440);Crashlytics 日志远程回收从接入到上报时机重构一站走完(无需 Google Play Services,AOSP 盒子可上报,手动分享恒即时);TV/移动端频道页、排序、搜索结果对齐 B站/YouTube 官方 UI;修 TV 退桌面直播后台出声与重开 APP 新实例;订阅流提速;普通卡片显示真实观看进度条。
+
+### 变更
+- **Crashlytics 日志远程回收链路**(alpha.7~11):接入 Firebase Crashlytics(无需 GMS);日志详情页「上报」按钮把日志尾部(降噪压缩后 ≤56KB 字节预算)以非致命异常上报,控制台 issue 下可查;设置新增「崩溃日志自动上报」(默认关)——开=每次启动检查送行一次送掉崩溃报告积压 + 崩溃日志注入,关=仅手动分享;采集属性恒关使 `sendUnsentReports` 恒生效,手动分享恒即时(修「开关开着要重启才送达」);上传 toast 以真实上传结果为准;R8 full mode 削掉 Crashlytics 组件装配链的 release 包修复(proguard 整包 keep)。配套开发工具:云端日志拉取文档 [docs/crashlytics-log-fetch.md](docs/crashlytics-log-fetch.md) + 脚本 [scripts/fetch_crashlytics_logs.py](scripts/fetch_crashlytics_logs.py)。
+- **SABR 升档判据改持续带宽**(alpha.6/9):原判据看瞬时吞吐,升 4K 后服务端 pacing 交付变慢即被降档反复横跳;改「60s 墙钟累计交付」持续带宽,真撑得住才升;分母扣除需求驱动的停闸空闲,修满缓冲时 sustained 恒低于 1440p 声明、永远凑不出升档证据;gap 判定统一时钟源 + 升降档 3min 冷却抑制整段重载黑屏。
+- **SABR ABR 升降档换实测码率地基**(alpha.12~16):升降档门槛全面改用 MEDIA_END 挂账实测消耗码率(声明码率虚高 ~2×)校准折算;水位急救降档(缓冲<8s 仍下漏直接降,修 4K 贴地滑行不降致看门狗整段重载);升档 est 重锚+取消升档冷却(急救回档秒级);calib 成熟度地板;顶档 4K 加 sustained≥声明×0.6 防边缘抖动(千兆管道不受损)。
+- **双端 UI 对齐官方**(alpha.4/6):TV 搜索结果页 chip 顺序、UP 空间/YouTube 频道页排序改「≡」单按钮 + 「 ▶ 播放全部」连播;YouTube/B站频道页主页 tab 官方式纵向视频行、播放列表卡缩略图/视频数字段迁移修复、播放列表详情页与 TV 版新增(D-pad 纵向,tab 主页/Shorts/直播/播放列表)。
+- **TV 生命周期修复**(alpha.5):直播/IPTV 补 ON_PAUSE/ON_RESUME 处理(修退桌面后台仍出声);MainActivity 改 `singleTask`+`alwaysRetainTaskState`(修重开 APP 出现新实例、旧实例压底仍在播)。
+- **频道页 Shorts 空修复**(alpha.3):shortsLockupViewModel reel 风格专属解析(videoId 在 reelWatchEndpoint);频道 tab 统一 channelId + 服务端 params。
+- **普通卡片真实观看进度条**(alpha.1/3):本地按 bvid 记忆播放位置,首页/推荐/搜索/频道/动态等卡片显示看过比例,无进度数据不显示。
+- **YouTube 订阅流提速**(alpha.1):~6.8s→~2.8s(会话预热后台化 + RSS 改 UULF uploads feed)。
+- **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
+
+---
+
+## v3.0.7-alpha.16
+
+**SABR Auto 收尾:取消升档冷却 + calib 成熟度地板 + 顶档 4K 防抖**。
+
+### 变更
+- **3min 升档冷却取消**(用户决策):水位急救降回后,缓冲一满、门槛可负担即秒级回档——修「救回来后缓冲 45s 仍被冷却硬锁 3 分钟,被迫手动切档」;横跳防护由「缓冲 ≥30s 才许升 + 升档后 10s 禁止 est 回降 + 重锚基线」承担。
+- **calib 成熟度地板**:实测 <5 段门槛地板 0.65、<12 段 0.5、≥12 段 0.35——刚升档的新采样(噪声)不再把高档门槛拉穿,修「升 308 后 3s 内 4K(105M 声明)按 0.35=36.9M 误批→漏光缓冲」。
+- **顶档(4K 级)防抖(方案B)**:升入组内最高档(2160p)额外要求 sustained ≥ 声明×0.6——4K pacing 有效供给本就贴着真实消耗(~20M vs 21M),不加码会分钟级获批/漏光/急救抖动;千兆管道(sustained >63M)不受损照常上 4K。
+- 真机验证(r1735):降/升 7 秒完成、零 watchdog 重载、4K 稳 45s+。
+
+## v3.0.7-alpha.15
+
+**SABR Auto 升降档换实测码率地基(修「卡 1080p/720p 不升、升完打回锁死、4K 贴地滑行不降致重载」)**。
+
+### 变更
+- **实测消耗码率**(`SabrMediaFetcher`):MEDIA_END 挂账 per-itag bytes/段数(单调 seq 去重),实测消耗码率 = bytes ÷(段数×平均段时长);≥3 段才报数。真机证明声明码率虚高约 2×(302 声明 11.25M 实测 6.3M)。
+- **校准门槛**(`HeightAwareAdaptiveTrackSelection`):升/降档全部候选门槛改为 `declared × calib`(当前档实测消耗/声明,clamp [0.35,1],未实测退声明行为),升档乘数(×1.25/×1.1)取消——声明虚高 + est 被污染读低的双失真下乘数永远卡临界;降档判据落到真实消耗,est 起伏不再每个停闸周期误降。
+- **水位急救降档**:缓冲 <8s 且仍在下漏时无视带宽估计直接降一档(水位是比 est 更硬的供给证据),修「升 4K 后贴地滑行缓冲 36s→4s 不降档→stall 看门狗整段重载」。
+- **升档 est 重锚**:升入新档瞬间清空活跃 est 窗口、以新档 declared×calib 为基线,旧档突发高估样本立即失效;配合升档后 10s 禁止 est 回降(修「升 1440p 后 1s 被打回→3min 冷却锁死在 1080p」)。
+- **修复**:`Format.id` 被 media3 改写为 "0:302" 复合格式致 itag 解析失败、校准系数恒 1.0 死锁(itag 取最后冒号后段);持续带宽 gap 扣减后跨度 <15s 返回 -1(修 500M+ 垃圾尖峰);runway 负值(快照滞后)不再全额计入 0 供给样本。
+- 诊断:YtSabrAbr 行新增 `meas=`(实测码率)与重锚日志 `calib=`。
+- 排查全程与真机逐案证据见 `docs/youtube-sabr-abr-upshift-notes.md`(§9-§14)。
+
+## v3.0.7-alpha.14
+
+**设置页「关于」归位到程序更新组(TV)+ 移动端补「关于」折叠区**。
+
+### 变更
+- **TV**(`SettingsScreen`):「关于」行从「日志」之后移入程序更新节,作为列表最末行(当前版本 → 最新版本 → 更新日志 → 关于);`settingsItemToLazyIndex` 相应重排——更新日志条件项固定 44,关于行按更新日志是否显示取 44/45(条件项不再是列尾,须联动偏移);`SettingsFocusableItems` 焦点循环顺序同步。
+- **移动端**(`MobileSettingsScreen`):补充「关于」折叠面板(镜像 IPTV/WebDAV 折叠区结构),置于程序更新节之后——项目名称/简介、项目地址(点击跳浏览器)、开源协议、依赖库清单(点击打开项目主页)。信息与 TV 关于面板同源:`SettingsAboutProjectUrl`/`SettingsAboutLibraries`/`SettingsAboutLibrary` 放开为 `internal` 复用,不复制清单;TV 端二维码不带上(移动端直接可点)。
+
+## v3.0.7-alpha.13
+
+**设置页布局调整:「程序更新」节移到设置列表最末尾(TV + 移动端对齐)**。
+
+### 变更
+- **TV**(`SettingsScreen`):「程序更新」节(当前版本/最新版本合并行/更新日志条件项)从「界面与交互」之后移到列表最末尾(崩溃日志自动上报之后);`settingsItemToLazyIndex` 全量重排(更新节移走后中间各行索引固化,删除 `updateExtraItemCount` 偏移计算,更新日志成为末尾条件项不再推移其它行);`SettingsFocusableItems` 焦点循环顺序同步。
+- **移动端**(`MobileSettingsScreen`):「程序更新」区块从「首页分区」之后移到 YouTube SABR 实验区之后,与 TV 端同为最后一段。
+
+## v3.0.7-alpha.12
+
+**TV 搜索切「频道/UP主」类型退到头像修复**。
+
+### 变更
+- **类型开关补稳定 key**(`SearchResultsHeader`):真机日志取证,OK 切类型后聚焦中的类型 chip 节点被 LazyRow 销毁重建(item 无显式 key,切类型时排序 chip 整组出入组合树、位置从行尾挪到行首),焦点逃出搜索屏落到侧栏头像,`autoConfirm` 直接打开「我的」页——即「切频道退到头像」。`item(key = "type_toggle")` 令节点跨重组存活,焦点留在 chip 上。
+
+## v3.0.7-alpha.11
+
+**上报时机重构:采集恒关 + 启动检查送行(修「开关开着手动分享要重启才送达」)**。
+
+### 变更
+- **采集属性恒关**(`FirebaseLogSender` 内 `isCrashlyticsCollectionEnabled=false`,不再跟随设置开关):SDK 官方语义是自动采集开启时 `sendUnsentReports()` 为故意的 no-op、真实上传只剩「下次启动/退后台」——TV 常驻前台 + 直接杀进程等于手动分享也要等重启才送达(r1711 实测 12 事件延迟 11~36 分钟)。恒关后所有上传都走显式送行,会话内零杂耍。
+- **开关语义重定义**:「崩溃日志自动上报」开=每次启动无条件 `sendUnsentReports` 一次,送掉崩溃报告/上一会话 recordException 积压(崩溃报告由捕获链崩溃时持久化,天然跨启动,启动送行即送达);关=不主动上报仅手动分享。开关只控制「启动送行 + 崩溃日志注入」,手动「分享并上报」不受开关影响、恒即时。
+
+## v3.0.7-alpha.10
+
+**Crashlytics 日志注入降噪 + 字节预算修复(修云端只剩噪音行)**。
+
+### 变更
+- **日志分享/崩溃上报注入前降噪压缩**(`FirebaseLogSender.selectLinesForInjection`):Crashlytics 日志环形缓冲按**字节**计(~64KB,超出丢最旧),r1700 实测 1500 行注入云端只截到 82 行且整段是 HWUI「Image decoding logging dropped」刷屏——SABR/ABR 关键行一没带上。修复:①连续重复行折叠(按剥离时间戳/pid/tid 的业务内容判重);②已知刷屏噪音 tag 整类丢弃(HWUI/CCodecConfig/CCodecBuffers/CCodec/DisplayData);③按 56KB 字节预算从尾往前装,高价值 tag(YtSabr/YtResolver/MobilePlayer/FATAL 等)无条件保留,普通行装满即止;时间序保持旧→新,最新行最后注入最不容易被残余截断。
+- **Crashlytics 云端日志程序化拉取配套**(开发用,不影响包体):新增 [docs/crashlytics-log-fetch.md](docs/crashlytics-log-fetch.md) 与 [scripts/fetch_crashlytics_logs.py](scripts/fetch_crashlytics_logs.py)(token 运行时读本地 configstore、自动续期),云端 issue/event 里 `logs[]` 即当时注入的日志体;`customKeys.log_file/log_size` 可与本地文件对账。
+
+## v3.0.7-alpha.9
+
+**Release 包 Crashlytics 组件被 R8 削掉的修复 + SABR Auto 满缓冲不升 1440 修复**。
+
+### 变更
+- **proguard 整包保护 Firebase 组件装配链**(`com.google.firebase.**` + `com.google.android.gms.tasks.**`):AGP 9 默认 R8 full mode 把只被组件元数据/反射引用的 Crashlytics 类判为未引用删除,release 包(minify)在 `FirebaseCrashlytics.getInstance()` 抛 `FirebaseCrashlytics component is not present` → 手动上报/崩溃自动上报全部失败;debug 包不混淆无此问题,alpha.8 真机实测暴露。整包 keep 规避逐类排查,体积换取确定性。
+- **SABR Auto 满缓冲不升 1440 修复**:持续带宽(升档门②)分母原为全墙钟跨度,pinned 低档 + 满缓冲时「补一段等 30s」的停闸空窗全摊入 → sustained≈当前档消耗(实测 8-10M,恒低于 1440p 声明 13.4M),从低档永远凑不出升档证据(手动切 1440 实测持续 20M+ 证明管子够)。分母改为扣除需求驱动的停闸空闲(与活跃 est 的 gap 滑行扣减同口径);GC/断流/服务端 pacing 期间仍照旧压低 sustained,升 4K 防卡死意图不变。新增 `sus=` 诊断日志列。
+
+## v3.0.7-alpha.8
+
+**Crashlytics 上报可靠性收尾 + 网络排查闭环**。
+
+### 变更
+- **上报 toast 以真实上传结果为准**:入队成功不再显示「已上报 Crashlytics」(之前日志里 `Couldn't open connection` 也能假成功);toast 跟随 SDK 上传任务完成回调,失败带原因(如 500/连接失败)。
+- **手动上报 always 即时送行**:`sendUnsentReports()` 无条件显式调用,不再等 SDK 批量时机(TV 常驻前台会拖到 app 回后台);删掉 `checkForUnsentReports` 门控——该 API 在自动采集模式下恒返回 false,会误跳过送行。
+- **上报链路全程诊断日志**:开始/注入行数/入队/送行触发/上传任务成败(SDK 回调)逐环节落 logcat,配合远程排障。
+- **路由器侧已验证**:passwall 补 `crashlyticsreports-pa.googleapis.com`(真实上传端点)与 `firebaseinstallations.googleapis.com` 后,配置拉取/事件上传全通,控制台可见日志尾部与崩溃报告。
+
+## v3.0.7-alpha.7
+
+**Firebase Crashlytics 日志回收 + 崩溃自动上报开关(默认关)**。
+
+### 变更
+- **日志远程回收**:接入 Firebase Crashlytics(无需 Google Play Services,AOSP 盒子可上报);`google-services`/`crashlytics` 插件在 `google-services.json` 就位时自动激活,注册包名 `com.kirin.mt` 与 `com.kirin.mt.debug`。
+- **日志详情页「上报」按钮(TV + 移动端)**:把当前查看的日志尾部(≤1500 行)以非致命异常上报,控制台对应 issue 的「日志/键」标签页可查;未配置 Firebase 时 toast 提示不崩溃,不影响其它功能。
+- **设置新增「崩溃日志自动上报」,默认关**(TV 主设置列表 + 移动端设置页):关闭时崩溃数据不自动出网,崩溃日志仅本地留存;开启后未捕获崩溃的日志尾部自动注入崩溃报告。
+- **既有能力不变**:日志列表「分享」仍为系统分享面板;WebDAV 备份日志入口照旧。
+
+## v3.0.7-alpha.6
+
+**SABR 升档判据两连修 + TV 搜索/空间页 UI 对齐移动端**。
+
+### 变更
+- **SABR 升档判据改用持续带宽,根治升 4K 后 pacing 必卡**:原判据看瞬时吞吐,升到 4K 后服务端 pacing 交付变慢,瞬时值跌回阈值内又被降档,反复横跳;改为「60s 墙钟累计交付字节数」的持续带宽判据,带宽真撑得住才升档。
+- **SABR gap 计时时钟单位 bug 修复 + 降档冷却**:gap 起点用 epoch 墙钟、比较却用 `elapsedRealtime`,单位错位导致 gap 判定被击穿;修正为同一时钟源。另升档/降档加 3 分钟冷却,抑制反复升降带来的整段重载黑屏。
+- **TV 搜索结果页 chip 顺序对齐移动端**:由「视频/UP主 在前、排序在后」改为「综合/最多播放/最新发布/最多弹幕 在前、视频/UP主 在后」(与移动端一致);焦点链跟随调整(标题↓落当前选中排序 chip,避免「焦点即选中」误切档重搜)。
+- **TV UP 空间/YouTube 频道页主页排序改单按钮切换**:`最新发布/最多播放` 双 chip(聚焦即切换,扫过就重拉)改为「≡ 当前档位」单按钮右置,OK 在两档间翻转;「▶ 播放全部」左置(UP 空间/频道页均加,整份已加载视频作连播队列第一条起播),对齐移动端头部行;两 chip 抽共享组件 `TvSortChips`。
+- **TV YouTube 频道页主页 tab 加「▶ 播放全部」**:排序行最前粉色药丸,聚焦只高亮不误触,OK 连播;Shorts/直播/播放列表 tab 不显示。
+
+## v3.0.7-alpha.5
+
+**TV 退桌面直播仍后台出声 + 重开 APP 出现新实例修复**。
+
+### 变更
+- **直播/IPTV 退桌面不再后台出声**:`LivePlayerScreen` 此前完全没有生命周期处理,TV 端又不启动 PlaybackService(前台服务注释明确「仅移动端使用,TV 不启动」),按 Home 回桌面后进程存活、直播/IPTV 音频照播。补 `ON_PAUSE → pause` / `ON_RESUME → 续播`,对齐点播 `PlayerScreen` 的既有处理;且只恢复按 Home 前本来在播的台(`player.isPlaying` 判定),用户手动暂停过的不被拉起。
+- **重开 APP 复用同一实例,不再出现新界面**:`MainActivity` 原为默认 `standard` 启动模式,而整个 UI 状态都在 Compose `remember` 里、无任何跨实例保存——盒子桌面启动器重开时常重建 Activity/新开 task:状态全丢回到首页(「新界面」),旧实例压在底下仍在播,退出新实例又掉进旧播放页。Manifest 改 `launchMode="singleTask"` + `alwaysRetainTaskState="true"`,从桌面重开永远复用同一 task/实例,把旧界面直接带回前台。
+
+## v3.0.7-alpha.4
+
+**YouTube/B站频道页对齐官方 UI + YouTube 播放列表解析修复(TV 端同步 4 tab)**。
+
+### 变更
+- **YouTube 播放列表卡缩略图/视频数修复**(字段迁移):封面已挪进 `contentImage.collectionThumbnailViewModel.primaryThumbnail.thumbnailViewModel.image.sources[]`(旧直连 `thumbnailViewModel` 拿空 → 频道页播放列表卡只剩"▶"占位块);视频数挪到缩略图角标 badge("141 个视频",metadataRows 现在只有更新时间/"View full playlist",旧取首行会错显示更新时间)。`parseChannelPlaylists` 新路径优先旧直连兜底、badge 优先 metadataRows 兜底,curl 实测 21/21 全命中。
+- **播放列表详情页作者/视频数恒空修复**:viewModel text 节点须先读 `content` 键(`runsText` 只认 runs、`simpleText` 只认 simpleText,都不认 content → owner 空串/count null);作者行改结构性判定(avatarStack part 即创建者,剥 by/创建者：/建立者： 语言前缀),视频数=含数字且含 video/视频/影片/動画 词的文本。
+- **播放列表详情页简介上移**:顺序改为 封面→标题→作者·视频数→简介(120 字截断点击展开)→播放全部→视频行(用户定稿)。
+- **移动端 YouTube 频道页主页 tab 对齐 B站官方**(用户提供官方截图定稿):tab「视频」改名「主页」;主页 tab 内容区从双列网格换**官方式纵向视频行**(封面左+时长角标,右标题/日期/播放量,行间分割线);新增「▶ 播放全部」(已加载列表作连播队列从第一条起播)+「≡ 最新发布/最多播放」右对齐排序入口(DropdownMenu 选中打✓),删独立排序按钮行;Shorts/直播 tab 保持网格。
+- **B站移动端 UP 主空间投稿区同样对齐官方**:投稿区换官方式纵向行(复用 ChannelVideoRow 带 💬 弹幕数)+「▶ 播放全部」(连播队列)+「≡ 排序」菜单;共享字符串「最热门」→「最多播放」(官方措辞)。
+- **TV 端 YouTube 频道页对齐移动端**:头部加内容 tab 行(主页/Shorts/直播/播放列表,聚焦只高亮 OK 才切换);**视频保留网格**(TV 刻意),排序仅主页 tab;播放列表 tab 新增焦点卡片网格(封面+标题+视频数,近底自动翻页,返回焦点恢复);**新增 TV 播放列表详情页**(D-pad 纵向列表:封面/作者·视频数/可展开简介/播放全部/带序号视频行;TV 无连播队列单视频起播);数据走服务端 tab params(header 失败回退 resolveChannel+getChannelTabs)。
+
+## v3.0.7-alpha.3
+
+**频道页 Shorts 空修复 + 普通卡片显示真实观看进度条**。
+
+### 变更
+- **修复移动端频道页 Shorts tab 空**(shortsLockupViewModel reel 风格):真机日志 dump 出短视频节点无 `contentId`,视频 ID 在 `onTap.innertubeCommand.reelWatchEndpoint.videoId`,直接套 `parseLockupViewModel` 首行就 return null 致空。新增专属 `parseShortsLockupViewModel`(取 videoId/标题/播放量/封面,播放量词单位 thousand/million/billion 转 K/M/B),Shorts tab 不再空。
+- **频道页 tab 统一用 channelId + 服务端 params**:放弃 UUSH/UULV 系统播放列表 browseId(真机返 400),Shorts/Live 走 `parseChannelTabs` 反解的服务端 tab params。
+- **普通卡片显示真实观看进度条**:本地 `PlaybackProgressStore` 按 bvid 存最近 position,`VideoRepository` 仅在无进度数据(`ProgressUnset`)时填进 progress(秒),历史/稍后再看已填服务端进度与直播跳过;套在首页/推荐/搜索/频道/动态/稍后再看/收藏/相关视频 + YouTube 订阅/搜索。看过→真实比例,没看过→不显示条。
+- **修复无进度数据卡片误显满条进度条**:`progress=-1`(未设进度默认)被当已看完致所有普通卡满条;普通卡默认 `progressUnsetIsCompleted=false` 无数据返回 0,History 卡保留 B站 -1=已看完 语义。
+
+## v3.0.7-alpha.2
+
+**设置页清理:隐藏已废弃的「锁定会话视频轨」诊断开关 + 移动端 7 个 TV 专属惰性开关**。
+
+### 变更
+- **隐藏「锁定会话视频轨」**(sabrForceSessionVideoItag):SABR 诊断使命完成(alpha.83 已证伪"某 itag 是 RELOAD 根因"红绯鱼),此项从 TV + 移动端设置页移除;字段/存储/偏好逻辑保留,需再作诊断可恢复。
+- **移动端隐藏 7 个 TV 专属惰性开关**:seek 预览缩略图、退出播放确认、自动连播下一集、自动连播相关视频、看完回首页、播放器时钟、显示迷你进度条——这些仅 TV 播放器生效,移动端播放器不消费,从移动端设置页移除(字段与 TV 逻辑保留)。
+
+## v3.0.7-alpha.1
+
+**YouTube 动态订阅流大幅提速 + 首刷新收敛为一次合并 + 视频卡片已播放进度条**。
+
+### 变更
+- **YouTube 动态订阅流提速(~6.8s→~2.8s 冷启动)**：
+  - **会话预热**：app 启动后台跑一次 sw.js_data + 首页 cookie 建立真实会话,feed 首屏 `/browse` 不再阻塞 ~3s 会话建立(冷启动 RSS 全 404 走 InnerTube 兜底时这段在关键路径上)。
+  - **RSS 改 UULF**：`feeds/videos.xml` 的 `channel_id=UC...` 变体自 2025-12 起 YouTube 侧大面积间歇性 404/500,改用 uploads 播放列表 feed `playlist_id=UULF<后缀>`,走不同后端更稳、更新近实时。
+  - **RSS 门控跳过 InnerTube**：有缓存时先拉 RSS,若 RSS 最新视频 ≤ 缓存最新则跳过 InnerTube 只付 RSS 成本(对齐 LibreTube `hasNewerUploads`);无缓存首次仍并行拉全保正确性。修复门控在 RSS 空/失败时误跳过 InnerTube 致动态全空的 bug。
+  - **并发与防节流对齐 LibreTube**：InnerTube 并发 4→5 消除每批空转一轮(约快 33-37%),防节流改 `>=50`+重置。
+- **移动端动态首刷新收敛**：冷启动先空频道只拉 B 站、频道到位再重拉 B 站+YouTube 造成双拉;改 nullable `channelsState` 传 `channelsReady`,等 store 发出首值才触发一次合并两源。
+- **视频卡片已播放进度条**：TV VideoCover 非 History 模式 + 移动端 Compact/Feed 布局,缩略图底部叠细条宽=progress/duration;直播/无进度不显示,看完铺满。
+- **移动端稍后再看闭环**：动态分页加列表 tab + 播放器添加入口,修 `addToView` 指向 `/add` 补 buvid。
 
 ## v3.0.6
 
@@ -220,6 +407,7 @@
 
 ### 已知遗留
 - ceiling 门控迭代器对 media3 1.10.0 失效,待改 `trackSelection.excludeTrack`(见 docs/youtube-hd-playback.md §6.23.2),稳定版先带出。
+
 ## v3.0.6-alpha.13
 
 **播放列表长按拖动排序修复:根治「上移到当前可见前两行自动填入」与「最上面视频无法下拖」**。
@@ -240,6 +428,7 @@
 
 ### 其它
 - TV 设置二级菜单只在其归属一级项持有焦点时显示;TV 搜索结果模式顶部 source pill 的 Down 落结果标题(原落未挂载输入框致焦点卡死)。
+
 ## v3.0.6-alpha.11
 
 **播放器加全屏吞噬层盖住底栏——点缓存"清晰度位置"不再误开设置页**。
@@ -333,6 +522,9 @@
 ### 待真机验证
 - WebDAV 备份勾选「已看完列表」→ 还原到新设备,「已看完」角标恢复。
 - 下载某视频 → 开开关 → 播到结尾 → 该下载从「下载」列表消失、文件释放 + Toast;关开关则看完不删。直播/IPTV 不触发。
+
+---
+
 ## v3.0.5
 
 **稳定版:多语言 6 档落地 + YouTube SABR 升降档控制 + 真机兼容性打磨。** 3.0.5 alpha 线合入稳定版。多语言从仅中文扩展到 6 档语言(简中/港繁/台繁 + English / Español / Português),数字与相对时间本地化(中文 万/亿,拉丁 K/M/B),并修复 localeFilters 剪包真因(原只列 zh 变体把 `values-en/es/pt` 整个剪掉,补全后拉丁资源真正进包,ES/PT 骨架补为全量翻译);YouTube SABR 自动档位升级修复(混合 H264/VP9 不再坍缩成单轨,自动档可从 360p 逐步升到 1080p)与起始挡位设置生效(`setMaxVideoSize` 起播 cap + 首帧后 `clearVideoSizeConstraints` 松开,公开 API 绕开 `selectedIndex` private 难点,alpha.8 seed 方案真机失效后替代)+ ceiling 降档滞回防震荡(ceiling 门控对 media3 1.10.0 失效,待改 `excludeTrack`);YouTube 点赞数改从 `/player` `microformat.likeCount` 直取;S905X5M 等 Amlogic 盒子解码器误判仅 H264 修复(`ALL_CODECS` + `isHardwareAccelerated || !isSoftwareOnly`);TV 备份/还原选择弹窗崩溃修复 + 日志分享加备份单文件上传 + YouTube 搜索排序对齐 B 站 4 项。
@@ -626,14 +818,6 @@
 
 ---
 
-## v3.0.2-alpha.25
-
-**复活自合成 DASH 主兜底(对齐 LibreTube createDashSource)**:SABR 播不了的 attestation/RELOAD 视频,改走自合成 DASH——从 NewPipe 流顶层读已解密 URL(content)+ init/index range 拼 `<SegmentBase>` 合成 MPD,提为主兜底(优先于 dashMpdUrl/HLS)。当初放弃基于诊断误判(itagItem.toString 看不出字段,实则在 stream 顶层,同 fork `738c3d4` 可读)。播放器零改动复用 buildDashManifest→DashMediaSource,带 range 守卫零回归。详见 docs/youtube-hd-playback.md row 100。
-
-## v3.0.2-alpha.26
-
-**NewPipe-first 主路径(alpha.93,解耦坏 WEB WebView 收割门卫)**:alpha.25 的自合成 DASH 因 resolve 仍先走 WEB+WebView harvest(该收割已坏——真机 ssl handshake failed / browser session load 两次失败)→ 被挡在门外**触达不到**。本版把 NewPipe 提为一级路径(对齐 LibreTube 直调 `StreamInfo.getInfo`):resolve() 在 signatureTimestamp 后、WEB client loop 前,先试 visionOS NewPipe SABR → 自合成 DASH/HLS 兜底,全失败才落 WEB /player last resort(classic reload-closure/DASH n-decrypt)。纯复用现有函数零新逻辑,播放器零改动。alpha.91 Fix A(status=2 用 PoTokenWebView 重铸)+ Fix B(getIosClientPoToken→null)在此主路径生效。SABR 播不了的 attestation/RELOAD 视频现在真正落到 alpha.92 自合成 DASH。详见 docs/youtube-dash-fallback-plan.md「alpha.93」。
-
 ## v3.0.2
 
 **稳定版**:YouTube 播放链路加固 + 关注流可扩展。自 v3.0.1 稳定版后的全部 alpha 修复与功能(alpha.1–alpha.32)合入。
@@ -698,6 +882,14 @@
 ## v3.0.2-alpha.29
 
 **YouTube 关注流改分批增量拉取 + Room 逐频道缓存(对齐 LibreTube LocalFeedRepository,几百频道可扩展)**:旧模型一次性 async+awaitAll + 外层 withTimeoutOrNull 预算(动态 10s 上限/TV 固定 5s)在几百频道下结构性必超时整批空白。重构为:①`getSubscriptionsFeed` 按频道 `chunked(5)` 分批并发,每批就绪回调 `onChunkReady`(调用方拉到一批 merge 一批),每累计 50 频道 delay 500-1500ms 防节流,单频道独立容错**无外层全局超时**;②缓存从 DataStore 单 key 全量 JSON 换 **Room(SQLite)逐频道行**(`YoutubeFeedEntity`/`YoutubeFeedDao`/`FeedDatabase`,新增 KSP2 2.3.11 + Room 2.8.0),增量刷新只写当前频道行;③动态 tab + TV 增量 merge,home 放宽超时 per-channel 容错。详见 docs/youtube-dash-fallback-plan.md「alpha.98」。
+
+## v3.0.2-alpha.26
+
+**NewPipe-first 主路径(alpha.93,解耦坏 WEB WebView 收割门卫)**:alpha.25 的自合成 DASH 因 resolve 仍先走 WEB+WebView harvest(该收割已坏——真机 ssl handshake failed / browser session load 两次失败)→ 被挡在门外**触达不到**。本版把 NewPipe 提为一级路径(对齐 LibreTube 直调 `StreamInfo.getInfo`):resolve() 在 signatureTimestamp 后、WEB client loop 前,先试 visionOS NewPipe SABR → 自合成 DASH/HLS 兜底,全失败才落 WEB /player last resort(classic reload-closure/DASH n-decrypt)。纯复用现有函数零新逻辑,播放器零改动。alpha.91 Fix A(status=2 用 PoTokenWebView 重铸)+ Fix B(getIosClientPoToken→null)在此主路径生效。SABR 播不了的 attestation/RELOAD 视频现在真正落到 alpha.92 自合成 DASH。详见 docs/youtube-dash-fallback-plan.md「alpha.93」。
+
+## v3.0.2-alpha.25
+
+**复活自合成 DASH 主兜底(对齐 LibreTube createDashSource)**:SABR 播不了的 attestation/RELOAD 视频,改走自合成 DASH——从 NewPipe 流顶层读已解密 URL(content)+ init/index range 拼 `<SegmentBase>` 合成 MPD,提为主兜底(优先于 dashMpdUrl/HLS)。当初放弃基于诊断误判(itagItem.toString 看不出字段,实则在 stream 顶层,同 fork `738c3d4` 可读)。播放器零改动复用 buildDashManifest→DashMediaSource,带 range 守卫零回归。详见 docs/youtube-hd-playback.md row 100。
 
 ## v3.0.2-alpha.10
 
@@ -2293,6 +2485,30 @@ v1.1.1 稳定版后的 alpha.1 ~ alpha.8 汇总。本版聚焦动态/追番页 U
 - `BiliMT-v1.1.2-arm64-v8a.apk`
 - `BiliMT-v1.1.2-armeabi-v7a.apk`
 
+## v1.1.1
+
+v1.1.0-alpha.1 ~ alpha.6 稳定版汇总 + alpha 后续修复。本版聚焦动态页（Dynamic feed）体验完善与 PGC 番剧选集改进。
+
+### 动态页
+- **收藏 / 追番 tab**：动态页 tab 行新增「收藏」「追番」入口，复用现有收藏夹与追番基建。
+- **动态卡片社交计数 + 长按操作菜单**（Phase A，alpha.2）：卡片展示点赞 / 评论 / 分享数；长按弹出操作面板（点赞 / 稍后再看 / 去 UP 主主页）。对照 BV 源码后自写 API（BV mobile 端这些均为 `notYetImplemented()` 桩，无可抄实现）。
+- **类型过滤 pill 行**（Phase B，alpha.5）：顶部「全部 / 视频」胶囊 pill，默认「视频」，切换重载；网格 Up 落类型行、类型行 Up 回侧栏、Down 进网格。
+- **网格 footer + 未读红点 + 收藏排序透传**（Phase C，alpha.5）：列表末尾 footer（加载中 / 没有更多了 / 加载失败 + 可聚焦重试）；侧栏 Dynamic 图标未读红点；`getFavoriteFolderVideos` 加 `order` 参数（默认 `mtime`，排序 pill UI 推迟）。
+- **动态详情评论全屏页**（Phase D，alpha.6）：长按菜单「查看评论」进入全屏评论页，热门 / 最新排序、焦点驱动翻页，尾部 footer 复用 Phase C 模式；楼中楼二级回复本期仅显示回复数。
+
+### PGC 番剧选集
+- **选集弹窗每页 20 → 100**：抽出 `EPISODES_PER_PAGE = 100` 常量替换 4 处硬编码 `20`，绝大多数番剧一页搞定，不再翻 tab。
+- **默认聚焦上次播放集**：用服务端 `user_status.progress.last_ep_id` 定位初始焦点，重新进入看过的番剧焦点直接停在上次那一集并滚动可见；无记录 / 找不到回退第 1 集正片。BV 源码只给对应集打进度徽标、未自动定位焦点，本版补强。
+
+### 修复
+- **`TvVideoGrid` footer 漏 `import Box`**：alpha.3 / alpha.4 编译失败根因，补齐导入（两个 tag 已被 CI 孤儿清理）。
+- **`UserFeedScreen` 首个 `LaunchedEffect` 关闭**：避免重复加载副作用。
+- **`UpdateRepository` versionCode 公式与 build.gradle 对齐**：应用内更新版本对比与构建期 versionCode 计算一致，稳定版 / prerelease 都能正确识别新旧关系。
+
+### 安装包
+- `BiliMT-v1.1.1-armeabi-v7a.apk`
+- `BiliMT-v1.1.1-arm64-v8a.apk`
+
 ## v1.1.1-alpha.8
 
 v1.1.1-alpha.7 后的修复：部分 PGC 番剧因 `is_drm=true` 被硬拦截起播即失败，现在对齐 BV 直接播返回的清晰 DASH。
@@ -2373,29 +2589,28 @@ v1.1.1 稳定版后的第一个 alpha。把动态页两行结构合并成一行�
 - **文案**：新增 `nav_dynamic_video` / `nav_dynamic_all`，TW/HK 繁体「影片 / 綜合」；删掉无用的 `feed_type_all` / `feed_type_video`。
 - **「综合」tab 预留**：当前与「视频」可见结果接近，作为后续专栏 / 番剧等多类型动态渲染的入口。
 
-## v1.1.1
+## v1.1.0
 
-v1.1.0-alpha.1 ~ alpha.6 稳定版汇总 + alpha 后续修复。本版聚焦动态页（Dynamic feed）体验完善与 PGC 番剧选集改进。
+v1.0.13-alpha.8 ~ alpha.17 稳定版汇总。焦点/布局/分区设置全面对齐 BV。
 
-### 动态页
-- **收藏 / 追番 tab**：动态页 tab 行新增「收藏」「追番」入口，复用现有收藏夹与追番基建。
-- **动态卡片社交计数 + 长按操作菜单**（Phase A，alpha.2）：卡片展示点赞 / 评论 / 分享数；长按弹出操作面板（点赞 / 稍后再看 / 去 UP 主主页）。对照 BV 源码后自写 API（BV mobile 端这些均为 `notYetImplemented()` 桩，无可抄实现）。
-- **类型过滤 pill 行**（Phase B，alpha.5）：顶部「全部 / 视频」胶囊 pill，默认「视频」，切换重载；网格 Up 落类型行、类型行 Up 回侧栏、Down 进网格。
-- **网格 footer + 未读红点 + 收藏排序透传**（Phase C，alpha.5）：列表末尾 footer（加载中 / 没有更多了 / 加载失败 + 可聚焦重试）；侧栏 Dynamic 图标未读红点；`getFavoriteFolderVideos` 加 `order` 参数（默认 `mtime`，排序 pill UI 推迟）。
-- **动态详情评论全屏页**（Phase D，alpha.6）：长按菜单「查看评论」进入全屏评论页，热门 / 最新排序、焦点驱动翻页，尾部 footer 复用 Phase C 模式；楼中楼二级回复本期仅显示回复数。
+### 焦点与导航
+- **UGC/PGC 侧键进入先落顶部 tab**（alpha.8/11）：侧键进 UGC/PGC 焦点先落顶部分区 tab 行（选中那个 pill），不直接进网格，对齐动态/BV。Down 进内容、Up 回侧栏。
+- **PGC tab 焦点即选中**（alpha.13）：焦点落某 PgcType tab 即选中、grid 切到它的内容，无需先 Enter。
+- **PGC 全屏详情页/索引页按 Back 显示侧键**（alpha.9）：番剧/索引全屏 overlay 按 Back 关闭回带侧栏基页（含分集对话框/滤镜的嵌套 Back）。
+- **UGC 分区显隐面板 Up/Down 修复**（alpha.10）：33 行面板显式 D-pad 纵向导航 + 滚入视野 + 排序后焦点跟随。
+- **UP 主页起播返回焦点无法选中修复**（alpha.16）：从 UP 主页起播返回后焦点落回离开时那张卡片。
 
-### PGC 番剧选集
-- **选集弹窗每页 20 → 100**：抽出 `EPISODES_PER_PAGE = 100` 常量替换 4 处硬编码 `20`，绝大多数番剧一页搞定，不再翻 tab。
-- **默认聚焦上次播放集**：用服务端 `user_status.progress.last_ep_id` 定位初始焦点，重新进入看过的番剧焦点直接停在上次那一集并滚动可见；无记录 / 找不到回退第 1 集正片。BV 源码只给对应集打进度徽标、未自动定位焦点，本版补强。
+### 布局与样式
+- **UGC/PGC/动态 上部 tab 样式统一**（alpha.11）：提取共享 `BiliCapsuleTabRow` + `BiliPillTab`（玻璃胶囊 pill），三页顶部 tab 视觉一致。
+- **PGC 网格 5 列**（alpha.14）：主内容网格 + index 网格改 5 列（PGC 专用 `PgcGridColumns`），一屏约 5×2。
+- **PGC 海报比例 3:4**（alpha.15）：`PgcCard`/季详情封面改固定 3:4（`PgcPosterAspect=0.75`），不拉伸海报，对齐 BV。
 
-### 修复
-- **`TvVideoGrid` footer 漏 `import Box`**：alpha.3 / alpha.4 编译失败根因，补齐导入（两个 tag 已被 CI 孤儿清理）。
-- **`UserFeedScreen` 首个 `LaunchedEffect` 关闭**：避免重复加载副作用。
-- **`UpdateRepository` versionCode 公式与 build.gradle 对齐**：应用内更新版本对比与构建期 versionCode 计算一致，稳定版 / prerelease 都能正确识别新旧关系。
+### 分区设置
+- **UGC 新增分区显隐切换修复**（alpha.12）：24 个新 UGC 分区关不掉的 bug（前向兼容每次补回）经一次性迁移修复。
+- **UGC 排序显示的排前面**（alpha.17）：`homeSectionsOrder` 维持 enabled-first 不变式（显示的分区排前、隐藏排后），toggle 即时重排 + 重启检测。
 
-### 安装包
-- `BiliMT-v1.1.1-armeabi-v7a.apk`
-- `BiliMT-v1.1.1-arm64-v8a.apk`
+### 构建
+- **`computeVersionCode` minor 权重 1e4→1e5**：使 v1.1.0 的 versionCode（1,100,000）高于 v1.0.13（1,013,000），避免 patch≥10 时 minor bump 反而降级。历史 v1.0.x 的 versionCode 不变（minor=0）。
 
 ## v1.1.0-alpha.6
 
@@ -2455,28 +2670,22 @@ v1.1.0-alpha.1 ~ alpha.6 稳定版汇总 + alpha 后续修复。本版聚焦动�
 - 动态卡片点赞/评论计数是否正确显示（来自 `module_stat`）。
 - 短按仍起播、头像点击仍进 UP 主主页、网格 D-pad 焦点/翻页加载未回归。
 
-## v1.1.0
+## v1.0.13
 
-v1.0.13-alpha.8 ~ alpha.17 稳定版汇总。焦点/布局/分区设置全面对齐 BV。
+### 修复
+- **PGC（番剧）播放黑屏——彻底修复**：经过 alpha.9–alpha.19 多轮调试，定位到真根因：PGC 季详情接口 `/pgc/view/web/season` 的 payload 包在根级 `result` 字段下（和 PGC playurl 一样，BV 的 `BiliResponse.getResponseData()` 也是 `data?:result`），而 `getSeasonInfo`/`getPgcVideoMetadata` 只读 `data` → 拿到 null → 季详情加载失败 → PGC 卡在季详情页「正在加载…」根本进不了播放器。修：两处都改成读 `data ?: result`。PGC 现在能正常加载季详情、进播放器播放。
 
-### 焦点与导航
-- **UGC/PGC 侧键进入先落顶部 tab**（alpha.8/11）：侧键进 UGC/PGC 焦点先落顶部分区 tab 行（选中那个 pill），不直接进网格，对齐动态/BV。Down 进内容、Up 回侧栏。
-- **PGC tab 焦点即选中**（alpha.13）：焦点落某 PgcType tab 即选中、grid 切到它的内容，无需先 Enter。
-- **PGC 全屏详情页/索引页按 Back 显示侧键**（alpha.9）：番剧/索引全屏 overlay 按 Back 关闭回带侧栏基页（含分集对话框/滤镜的嵌套 Back）。
-- **UGC 分区显隐面板 Up/Down 修复**（alpha.10）：33 行面板显式 D-pad 纵向导航 + 滚入视野 + 排序后焦点跟随。
-- **UP 主页起播返回焦点无法选中修复**（alpha.16）：从 UP 主页起播返回后焦点落回离开时那张卡片。
+### 改进（本轮 alpha 累积）
+- **实时日志**（alpha.11/14）：常驻滚动 logcat 写 `logs_live.log`，上限 10MB 丢弃最旧，每行 flush；设置→日志可查看/分享，播放器诊断叠层实时滚动。
+- **播放器日志叠层**（alpha.13–16）：开关开启后，播放器/季详情页把实时日志 + 内存态（state/step/请求信息）盖在画面上，黑屏时直接排查，不用退出。
+- **PGC 起播超时兜底**（alpha.14）：HTTP 客户端加 `callTimeout(15s)`，launch 协程包 `withTimeoutOrNull(30s)`，季详情 fetch 包 `withTimeoutOrNull(20s)`——不再无限卡 Loading，超时跳 Failed。
+- **PGC playurl SDR fnval + 排除杜比视界**（alpha.10）：PGC 用 SDR fnval，轨道选择排除 dvhe/未知 codec。
+- **PGC playurl 用 MergingMediaSource**（alpha.12）：对齐 BV，绕开合成 DASH MPD 的 SegmentBase 拼接风险。
+- **网络层 Referer 对齐 BV**（alpha.18）：`https://www.bilibili.com`（去尾斜杠）。
 
-### 布局与样式
-- **UGC/PGC/动态 上部 tab 样式统一**（alpha.11）：提取共享 `BiliCapsuleTabRow` + `BiliPillTab`（玻璃胶囊 pill），三页顶部 tab 视觉一致。
-- **PGC 网格 5 列**（alpha.14）：主内容网格 + index 网格改 5 列（PGC 专用 `PgcGridColumns`），一屏约 5×2。
-- **PGC 海报比例 3:4**（alpha.15）：`PgcCard`/季详情封面改固定 3:4（`PgcPosterAspect=0.75`），不拉伸海报，对齐 BV。
-
-### 分区设置
-- **UGC 新增分区显隐切换修复**（alpha.12）：24 个新 UGC 分区关不掉的 bug（前向兼容每次补回）经一次性迁移修复。
-- **UGC 排序显示的排前面**（alpha.17）：`homeSectionsOrder` 维持 enabled-first 不变式（显示的分区排前、隐藏排后），toggle 即时重排 + 重启检测。
-
-### 构建
-- **`computeVersionCode` minor 权重 1e4→1e5**：使 v1.1.0 的 versionCode（1,100,000）高于 v1.0.13（1,013,000），避免 patch≥10 时 minor bump 反而降级。历史 v1.0.x 的 versionCode 不变（minor=0）。
+### 调试基础设施
+- 季详情/播放器 fetch 异常不再被吞，错误码显示在叠层 `ERR:` 行 + 失败页。
+- PGC 季详情 fetch 区分「真超时」/「返回空(data=null)」/「异常」三种失败模式。
 
 ## v1.0.13-alpha.17
 
@@ -2686,22 +2895,38 @@ v1.0.13-alpha.8 ~ alpha.17 稳定版汇总。焦点/布局/分区设置全面对
 ### 已知待验（真机）
 - `dynamic/region?rid=<子tid>` 返回 `data.archives` 结构需真机确认；若某子分区显示空/报错，后续换 `/x/web-interface/region/dynamic` 或 app 端 `/x/v2/region/dynamic` 兜底（仅接口层一处改动，逻辑层不动）。
 
-## v1.0.13
+## v1.0.12
 
-### 修复
-- **PGC（番剧）播放黑屏——彻底修复**：经过 alpha.9–alpha.19 多轮调试，定位到真根因：PGC 季详情接口 `/pgc/view/web/season` 的 payload 包在根级 `result` 字段下（和 PGC playurl 一样，BV 的 `BiliResponse.getResponseData()` 也是 `data?:result`），而 `getSeasonInfo`/`getPgcVideoMetadata` 只读 `data` → 拿到 null → 季详情加载失败 → PGC 卡在季详情页「正在加载…」根本进不了播放器。修：两处都改成读 `data ?: result`。PGC 现在能正常加载季详情、进播放器播放。
+汇总 v1.0.11-alpha.1 ~ alpha.7 的改动，发布为稳定版 v1.0.12。
 
-### 改进（本轮 alpha 累积）
-- **实时日志**（alpha.11/14）：常驻滚动 logcat 写 `logs_live.log`，上限 10MB 丢弃最旧，每行 flush；设置→日志可查看/分享，播放器诊断叠层实时滚动。
-- **播放器日志叠层**（alpha.13–16）：开关开启后，播放器/季详情页把实时日志 + 内存态（state/step/请求信息）盖在画面上，黑屏时直接排查，不用退出。
-- **PGC 起播超时兜底**（alpha.14）：HTTP 客户端加 `callTimeout(15s)`，launch 协程包 `withTimeoutOrNull(30s)`，季详情 fetch 包 `withTimeoutOrNull(20s)`——不再无限卡 Loading，超时跳 Failed。
-- **PGC playurl SDR fnval + 排除杜比视界**（alpha.10）：PGC 用 SDR fnval，轨道选择排除 dvhe/未知 codec。
-- **PGC playurl 用 MergingMediaSource**（alpha.12）：对齐 BV，绕开合成 DASH MPD 的 SegmentBase 拼接风险。
-- **网络层 Referer 对齐 BV**（alpha.18）：`https://www.bilibili.com`（去尾斜杠）。
+### 首页分区设置（新功能）
+- 设置页新增「首页分区」入口：点击 toggle 显示/隐藏右侧面板；聚焦普通设置项时左侧列表占满全宽，面板不再常驻占用半屏。
+- 分区面板改为竖向列表 + ▲▼ 上移/下移按钮，可自定义首页 tab 的**显隐**与**排列顺序**，顺序持久化到 DataStore（`home_sections_order`），首页 tab 按自定义顺序显示。
+- 顺序与显隐数据分离，读取时对持久化顺序补齐缺失分区，前向兼容新增分区。
 
-### 调试基础设施
-- 季详情/播放器 fetch 异常不再被吞，错误码显示在叠层 `ERR:` 行 + 失败页。
-- PGC 季详情 fetch 区分「真超时」/「返回空(data=null)」/「异常」三种失败模式。
+### 播放器退出卡死修复
+- 播放中按返回，第二次退不出去：退出被 `saveProgress`（DataStore IO 异常未兜底）和 `reportProgress`（网络心跳）阻塞。改为先本地保存（`runCatching` 兜底）→ 立即退出 → 网络上报 best-effort 放退出之后，退出不再被存储/网络卡住。
+
+### CDN 测速与起播优化
+- **Auto 起播变快**：测速增加 `earlyReturn` 模式，第一个够好的候选一回来就返回，不再被死链 backupUrl 拖到 ~1s；`probeUrl` 改 `enqueue` + 可取消；video/audio 选优并行。
+- **测速更诚实**：对话框顶部摘要行区分「接口耗时」与「CDN 首字节」，数字与体感对得上；测速走 `CdnSelector` 实际候选过滤，测完预热缓存，重开同视频跳过重复测速。
+- 测速候选按 host 去重，结果行显示 CDN 友好名（官方/阿里云/Akamai/华为云）。
+- 起播紧预算（连接/读取 1s、整体 1.5s），playurl 90s 内存缓存，复用同 bvid 元数据。
+- 修测速编译错误（`CompletableDeferred` 桥接 OkHttp `enqueue`）、读超时误用 `ConnectTimeoutMs` 等参数问题。
+
+### 首页缩略图
+- 封面 `ContentScale` 改 `FillBounds`（对齐 BV 源码 + B 站 `1c` 后缀），不再切边丢画面。
+
+### 设置页交互
+- 「首页分区」「关于」入口改为 toggle：点一下显示右侧面板、再点一下隐藏。
+
+### 安装包
+- `BiliMT-v1.0.12-arm64-v8a.apk`
+- `BiliMT-v1.0.12-armeabi-v7a.apk`
+
+---
+
+以下为 1.0.11 测试版（alpha）的逐版记录：
 
 ## v1.0.12-alpha.19
 
@@ -2830,39 +3055,6 @@ v1.0.13-alpha.8 ~ alpha.17 稳定版汇总。焦点/布局/分区设置全面对
 - PGC feed/index/season 未 WBI 签名（对齐 BV 旧版）；若 B 站现强制 w_rid，运行时会报错，需真机验证后补签名。
 - 焦点/滚动润色较朴素（用 LazyVerticalGrid，未用 TvVideoGrid 行滚动动画）。
 - 云编译只保证构建通过，运行时正确性需真机验证。
-
-## v1.0.12
-
-汇总 v1.0.11-alpha.1 ~ alpha.7 的改动，发布为稳定版 v1.0.12。
-
-### 首页分区设置（新功能）
-- 设置页新增「首页分区」入口：点击 toggle 显示/隐藏右侧面板；聚焦普通设置项时左侧列表占满全宽，面板不再常驻占用半屏。
-- 分区面板改为竖向列表 + ▲▼ 上移/下移按钮，可自定义首页 tab 的**显隐**与**排列顺序**，顺序持久化到 DataStore（`home_sections_order`），首页 tab 按自定义顺序显示。
-- 顺序与显隐数据分离，读取时对持久化顺序补齐缺失分区，前向兼容新增分区。
-
-### 播放器退出卡死修复
-- 播放中按返回，第二次退不出去：退出被 `saveProgress`（DataStore IO 异常未兜底）和 `reportProgress`（网络心跳）阻塞。改为先本地保存（`runCatching` 兜底）→ 立即退出 → 网络上报 best-effort 放退出之后，退出不再被存储/网络卡住。
-
-### CDN 测速与起播优化
-- **Auto 起播变快**：测速增加 `earlyReturn` 模式，第一个够好的候选一回来就返回，不再被死链 backupUrl 拖到 ~1s；`probeUrl` 改 `enqueue` + 可取消；video/audio 选优并行。
-- **测速更诚实**：对话框顶部摘要行区分「接口耗时」与「CDN 首字节」，数字与体感对得上；测速走 `CdnSelector` 实际候选过滤，测完预热缓存，重开同视频跳过重复测速。
-- 测速候选按 host 去重，结果行显示 CDN 友好名（官方/阿里云/Akamai/华为云）。
-- 起播紧预算（连接/读取 1s、整体 1.5s），playurl 90s 内存缓存，复用同 bvid 元数据。
-- 修测速编译错误（`CompletableDeferred` 桥接 OkHttp `enqueue`）、读超时误用 `ConnectTimeoutMs` 等参数问题。
-
-### 首页缩略图
-- 封面 `ContentScale` 改 `FillBounds`（对齐 BV 源码 + B 站 `1c` 后缀），不再切边丢画面。
-
-### 设置页交互
-- 「首页分区」「关于」入口改为 toggle：点一下显示右侧面板、再点一下隐藏。
-
-### 安装包
-- `BiliMT-v1.0.12-arm64-v8a.apk`
-- `BiliMT-v1.0.12-armeabi-v7a.apk`
-
----
-
-以下为 1.0.11 测试版（alpha）的逐版记录：
 
 ## v1.0.11-alpha.7
 
@@ -3008,3 +3200,223 @@ v1.0.13-alpha.8 ~ alpha.17 稳定版汇总。焦点/布局/分区设置全面对
 ### 安装包
 - `BiliMT-v1.0.7-armeabi-v7a.apk`
 - `BiliMT-v1.0.7-arm64-v8a.apk`
+
+## 目录
+
+- [v3.0.7](#v307)
+- [v3.0.7-alpha.16](#v307-alpha16)
+- [v3.0.7-alpha.15](#v307-alpha15)
+- [v3.0.7-alpha.14](#v307-alpha14)
+- [v3.0.7-alpha.13](#v307-alpha13)
+- [v3.0.7-alpha.12](#v307-alpha12)
+- [v3.0.7-alpha.11](#v307-alpha11)
+- [v3.0.7-alpha.10](#v307-alpha10)
+- [v3.0.7-alpha.9](#v307-alpha9)
+- [v3.0.7-alpha.8](#v307-alpha8)
+- [v3.0.7-alpha.7](#v307-alpha7)
+- [v3.0.7-alpha.6](#v307-alpha6)
+- [v3.0.7-alpha.5](#v307-alpha5)
+- [v3.0.7-alpha.4](#v307-alpha4)
+- [v3.0.7-alpha.3](#v307-alpha3)
+- [v3.0.7-alpha.2](#v307-alpha2)
+- [v3.0.7-alpha.1](#v307-alpha1)
+- [v3.0.6-alpha.11](#v306-alpha11)
+- [v3.0.6-alpha.8](#v306-alpha8)
+- [v3.0.6-alpha.7](#v306-alpha7)
+- [v3.0.6-alpha.6](#v306-alpha6)
+- [v3.0.6-alpha.5](#v306-alpha5)
+- [v3.0.6-alpha.4](#v306-alpha4)
+- [v3.0.6-alpha.3](#v306-alpha3)
+- [v3.0.6-alpha.2](#v306-alpha2)
+- [v3.0.6-alpha.1](#v306-alpha1)
+- [v3.0.5-alpha.9](#v305-alpha9)
+- [v3.0.5-alpha.8](#v305-alpha8)
+- [v3.0.5-alpha.7](#v305-alpha7)
+- [v3.0.5-alpha.6](#v305-alpha6)
+- [v3.0.5-alpha.5](#v305-alpha5)
+- [v3.0.5-alpha.4](#v305-alpha4)
+- [v3.0.5-alpha.3](#v305-alpha3)
+- [v3.0.5-alpha.1](#v305-alpha1)
+- [v3.0.4-alpha.9](#v304-alpha9)
+- [v3.0.4-alpha.8](#v304-alpha8)
+- [v3.0.4-alpha.7](#v304-alpha7)
+- [v3.0.4-alpha.6](#v304-alpha6)
+- [v3.0.4-alpha.5](#v304-alpha5)
+- [v3.0.4-alpha.2](#v304-alpha2)
+- [v3.0.4-alpha.1](#v304-alpha1)
+- [v3.0.3](#v303)
+- [v3.0.3-alpha.3](#v303-alpha3)
+- [v3.0.3-alpha.2](#v303-alpha2)
+- [v3.0.3-alpha.1](#v303-alpha1)
+- [v3.0.2-alpha.32](#v302-alpha32)
+- [v3.0.2-alpha.31](#v302-alpha31)
+- [v3.0.2-alpha.30](#v302-alpha30)
+- [v3.0.2-alpha.29](#v302-alpha29)
+- [v3.0.2-alpha.26](#v302-alpha26)
+- [v3.0.2-alpha.25](#v302-alpha25)
+- [v3.0.2-alpha.10](#v302-alpha10)
+- [v3.0.2-alpha.9](#v302-alpha9)
+- [v3.0.2-alpha.8](#v302-alpha8)
+- [v3.0.2-alpha.7](#v302-alpha7)
+- [v3.0.2-alpha.6](#v302-alpha6)
+- [v3.0.2-alpha.5](#v302-alpha5)
+- [v3.0.2-alpha.4](#v302-alpha4)
+- [v3.0.2-alpha.3](#v302-alpha3)
+- [v3.0.2-alpha.2](#v302-alpha2)
+- [v3.0.1](#v301)
+- [v3.0.1-alpha.33](#v301-alpha33)
+- [v3.0.1-alpha.32](#v301-alpha32)
+- [v3.0.1-alpha.31](#v301-alpha31)
+- [v3.0.1-alpha.30](#v301-alpha30)
+- [v3.0.1-alpha.29](#v301-alpha29)
+- [v3.0.1-alpha.28](#v301-alpha28)
+- [v3.0.1-alpha.27](#v301-alpha27)
+- [v3.0.1-alpha.26](#v301-alpha26)
+- [v3.0.1-alpha.25](#v301-alpha25)
+- [v3.0.1-alpha.24](#v301-alpha24)
+- [v3.0.1-alpha.23](#v301-alpha23)
+- [v3.0.1-alpha.22](#v301-alpha22)
+- [v3.0.1-alpha.21](#v301-alpha21)
+- [v3.0.1-alpha.20](#v301-alpha20)
+- [v3.0.1-alpha.19](#v301-alpha19)
+- [v3.0.1-alpha.18](#v301-alpha18)
+- [v3.0.1-alpha.17](#v301-alpha17)
+- [v3.0.1-alpha.16](#v301-alpha16)
+- [v3.0.1-alpha.15](#v301-alpha15)
+- [v3.0.1-alpha.14](#v301-alpha14)
+- [v3.0.1-alpha.13](#v301-alpha13)
+- [v3.0.1-alpha.12](#v301-alpha12)
+- [v3.0.1-alpha.11](#v301-alpha11)
+- [v3.0.1-alpha.10](#v301-alpha10)
+- [v3.0.1-alpha.9](#v301-alpha9)
+- [v3.0.1-alpha.8](#v301-alpha8)
+- [v3.0.1-alpha.7](#v301-alpha7)
+- [v3.0.1-alpha.6](#v301-alpha6)
+- [v3.0.1-alpha.5](#v301-alpha5)
+- [v3.0.1-alpha.4](#v301-alpha4)
+- [v3.0.1-alpha.3](#v301-alpha3)
+- [v3.0.1-alpha.2](#v301-alpha2)
+- [v3.0.1-alpha.1](#v301-alpha1)
+- [v3.0.0](#v300)
+- [v3.0.0-alpha.10](#v300-alpha10)
+- [v3.0.0-alpha.9](#v300-alpha9)
+- [v3.0.0-alpha.8](#v300-alpha8)
+- [v3.0.0-alpha.7](#v300-alpha7)
+- [v3.0.0-alpha.6](#v300-alpha6)
+- [v3.0.0-alpha.5](#v300-alpha5)
+- [v3.0.0-alpha.4](#v300-alpha4)
+- [v3.0.0-alpha.3](#v300-alpha3)
+- [v3.0.0-alpha.1](#v300-alpha1)
+- [v2.0.10](#v2010)
+- [v2.0.9](#v209)
+- [v2.0.9-alpha.3](#v209-alpha3)
+- [v2.0.9-alpha.2](#v209-alpha2)
+- [v2.0.9-alpha.1](#v209-alpha1)
+- [v2.0.8](#v208)
+- [v2.0.8-alpha.13](#v208-alpha13)
+- [v2.0.8-alpha.12](#v208-alpha12)
+- [v2.0.8-alpha.11](#v208-alpha11)
+- [v2.0.8-alpha.9](#v208-alpha9)
+- [v2.0.8-alpha.7](#v208-alpha7)
+- [v2.0.8-alpha.6](#v208-alpha6)
+- [v2.0.7](#v207)
+- [v2.0.6](#v206)
+- [v2.0.5](#v205)
+- [v2.0.5-alpha.8](#v205-alpha8)
+- [v2.0.5-alpha.7](#v205-alpha7)
+- [v2.0.5-alpha.5](#v205-alpha5)
+- [v2.0.5-alpha.4](#v205-alpha4)
+- [v2.0.5-alpha.3](#v205-alpha3)
+- [v2.0.4](#v204)
+- [v2.0.3](#v203)
+- [v2.0.2](#v202)
+- [v2.0.1](#v201)
+- [v2.0.1-alpha.6](#v201-alpha6)
+- [v2.0.1-alpha.5](#v201-alpha5)
+- [v2.0.1-alpha.4](#v201-alpha4)
+- [v2.0.0](#v200)
+- [v2.0.0-alpha.23](#v200-alpha23)
+- [v2.0.0-alpha.22](#v200-alpha22)
+- [v2.0.0-alpha.21](#v200-alpha21)
+- [v2.0.0-alpha.20](#v200-alpha20)
+- [v2.0.0-alpha.19](#v200-alpha19)
+- [v2.0.0-alpha.18](#v200-alpha18)
+- [v2.0.0-alpha.16](#v200-alpha16)
+- [v2.0.0-alpha.15](#v200-alpha15)
+- [v2.0.0-alpha.14](#v200-alpha14)
+- [v2.0.0-alpha.13](#v200-alpha13)
+- [v2.0.0-alpha.12](#v200-alpha12)
+- [v2.0.0-alpha.11](#v200-alpha11)
+- [v2.0.0-alpha.10](#v200-alpha10)
+- [v2.0.0-alpha.9](#v200-alpha9)
+- [v2.0.0-alpha.8](#v200-alpha8)
+- [v2.0.0-alpha.7](#v200-alpha7)
+- [v2.0.0-alpha.6](#v200-alpha6)
+- [v2.0.0-alpha.5](#v200-alpha5)
+- [v2.0.0-alpha.4](#v200-alpha4)
+- [v2.0.0-alpha.3](#v200-alpha3)
+- [v2.0.0-alpha.2](#v200-alpha2)
+- [v2.0.0-alpha.1](#v200-alpha1)
+- [v1.1.2](#v112)
+- [v1.1.1-alpha.8](#v111-alpha8)
+- [v1.1.1-alpha.7](#v111-alpha7)
+- [v1.1.1-alpha.6](#v111-alpha6)
+- [v1.1.1-alpha.5](#v111-alpha5)
+- [v1.1.1-alpha.4](#v111-alpha4)
+- [v1.1.1-alpha.3](#v111-alpha3)
+- [v1.1.1-alpha.2](#v111-alpha2)
+- [v1.1.1-alpha.1](#v111-alpha1)
+- [v1.1.1](#v111)
+- [v1.1.0-alpha.6](#v110-alpha6)
+- [v1.1.0-alpha.5](#v110-alpha5)
+- [v1.1.0-alpha.2](#v110-alpha2)
+- [v1.1.0](#v110)
+- [v1.0.13-alpha.17](#v1013-alpha17)
+- [v1.0.13-alpha.16](#v1013-alpha16)
+- [v1.0.13-alpha.15](#v1013-alpha15)
+- [v1.0.13-alpha.14](#v1013-alpha14)
+- [v1.0.13-alpha.13](#v1013-alpha13)
+- [v1.0.13-alpha.12](#v1013-alpha12)
+- [v1.0.13-alpha.11](#v1013-alpha11)
+- [v1.0.13-alpha.10](#v1013-alpha10)
+- [v1.0.13-alpha.9](#v1013-alpha9)
+- [v1.0.13-alpha.8](#v1013-alpha8)
+- [v1.0.13-alpha.7](#v1013-alpha7)
+- [v1.0.13-alpha.6](#v1013-alpha6)
+- [v1.0.13-alpha.5](#v1013-alpha5)
+- [v1.0.13-alpha.4](#v1013-alpha4)
+- [v1.0.13-alpha.3](#v1013-alpha3)
+- [v1.0.13-alpha.2](#v1013-alpha2)
+- [v1.0.13-alpha.1](#v1013-alpha1)
+- [v1.0.13](#v1013)
+- [v1.0.12-alpha.19](#v1012-alpha19)
+- [v1.0.12-alpha.18](#v1012-alpha18)
+- [v1.0.12-alpha.17](#v1012-alpha17)
+- [v1.0.12-alpha.16](#v1012-alpha16)
+- [v1.0.12-alpha.15](#v1012-alpha15)
+- [v1.0.12-alpha.14](#v1012-alpha14)
+- [v1.0.12-alpha.13](#v1012-alpha13)
+- [v1.0.12-alpha.12](#v1012-alpha12)
+- [v1.0.12-alpha.11](#v1012-alpha11)
+- [v1.0.12-alpha.10](#v1012-alpha10)
+- [v1.0.12-alpha.9](#v1012-alpha9)
+- [v1.0.12-alpha.8](#v1012-alpha8)
+- [v1.0.12-alpha.7](#v1012-alpha7)
+- [v1.0.12-alpha.6](#v1012-alpha6)
+- [v1.0.12-alpha.5](#v1012-alpha5)
+- [v1.0.12-alpha.4](#v1012-alpha4)
+- [v1.0.12-alpha.3](#v1012-alpha3)
+- [v1.0.12-alpha.2](#v1012-alpha2)
+- [v1.0.12-alpha.1](#v1012-alpha1)
+- [v1.0.12](#v1012)
+- [v1.0.11-alpha.7](#v1011-alpha7)
+- [v1.0.11-alpha.6](#v1011-alpha6)
+- [v1.0.11-alpha.5](#v1011-alpha5)
+- [v1.0.11-alpha.4](#v1011-alpha4)
+- [v1.0.11-alpha.3](#v1011-alpha3)
+- [v1.0.11-alpha.2](#v1011-alpha2)
+- [v1.0.11-alpha.1](#v1011-alpha1)
+- [v1.0.10](#v1010)
+- [v1.0.9](#v109)
+- [v1.0.8](#v108)
+- [v1.0.7](#v107)

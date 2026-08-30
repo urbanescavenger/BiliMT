@@ -48,6 +48,30 @@ internal object YoutubeParsers {
     collectByKey(root, KEY_LOCKUP_VIEW_MODEL) { node ->
       parseLockupViewModel(node)?.let { videos.add(it) }
     }
+    // 频道页 Shorts tab:shortsLockupViewModel。⚠️ 实测(2026-08-27)它是 reel 风格,不是
+    // lockupViewModel 形状:无 contentId,视频ID 在 onTap.innertubeCommand.reelWatchEndpoint.videoId,
+    // 标题/播放量在顶层 accessibilityText("标题, X views - play Short")。走专属 parseShortsLockupViewModel。
+    var shortsDumpDone = false
+    collectByKey(root, KEY_SHORTS_LOCKUP_VIEW_MODEL) { node ->
+      val v = parseShortsLockupViewModel(node)
+      if (v != null) videos.add(v)
+      else if (!shortsDumpDone) {
+        // 诊断:parseShortsLockupViewModel 也失败时 dump 首个失败节点结构。
+        shortsDumpDone = true
+        Log.w("YtShorts", "shorts node keys=[${node.keys.joinToString(",")}] " +
+          "contentId=${node.stringOrNull("contentId")} top=${node.toString().take(600)}")
+      }
+    }
+    // 播放列表详情页(open playlist)条目 playlistVideoRenderer,与 videoRenderer 共享
+    // videoId/thumbnail/title/lengthText 形状,parseVideoRenderer 可直接复用。
+    collectByKey(root, KEY_PLAYLIST_VIDEO_RENDERER) { node ->
+      parseVideoRenderer(node)?.let { videos.add(it) }
+    }
+    // 频道 Shorts tab 经典条目 reelItemRenderer(短剧网格)。shortsLockupViewModel 已在上方收集,
+    // 部分频道 Shorts tab 用 reelItemRenderer,两者都收集保证不空。
+    collectByKey(root, KEY_REEL_ITEM_RENDERER) { node ->
+      parseReelItemRenderer(node)?.let { videos.add(it) }
+    }
     val continuation = findContinuation(root)
     return YoutubeFeedPage(items = videos, continuation = continuation)
   }
@@ -77,45 +101,400 @@ internal object YoutubeParsers {
     return null
   }
 
-  /** 频道页 header 解析结果。 */
-  data class ChannelInfo(val channelId: String, val name: String, val avatarUrl: String)
+  /**
+   * 播放列表 Tab 空响应诊断:报响应里出现的 lockupViewModel contentType 分布 + 顶层键。
+   * 新布局频道播放列表卡可能是 lockupViewModel(contentType=PLAYLIST)而非旧 playlistRenderer,
+   * 用它确认 parseChannelPlaylists 漏收集的 renderer 形状,再决定要不要加收集分支。
+   */
+  fun diagnosticPlaylistShape(root: JsonObject): String {
+    val lockup = mutableListOf<String>()
+    collectByKey(root, "lockupViewModel") { node ->
+      lockup.add(node.stringOrNull("contentType") ?: "?")
+    }
+    val playlists = arrayOf("playlistRenderer", "playlistCardRenderer").count { k ->
+      root.toString().contains("\"$k\"")
+    }
+    return "topKeys=${root.keys.joinToString(",")} " +
+      "lockup=[${lockup.joinToString(",")}] playlistRenderers=$playlists"
+  }
 
   /**
-   * 从频道页 /browse 响应解析频道 info，返回 [ChannelInfo]（含头像）。
+   * 诊断:频道视频(Shorts 等)/browse 返回 0 条时的响应形状。报顶层键、contents 首节点下的
+   * renderer 键,以及各种已知 renderer 键出现的次数——确认短视频响应是「真无内容」还是
+   * 「用了解析器漏收集的 renderer 形状」。
+   */
+  fun diagnosticFeedShape(root: JsonObject): String {
+    val counts = LinkedHashMap<String, Int>()
+    val known = arrayOf(
+      "videoRenderer", "gridVideoRenderer", "compactVideoRenderer", "lockupViewModel",
+      "shortsLockupViewModel", "reelItemRenderer", "playlistVideoRenderer", "richItemRenderer",
+      "shelfRenderer", "radioRenderer", "playlistRenderer", "alertRenderer", "messageRenderer",
+    )
+    fun scan(e: JsonElement) {
+      when (e) {
+        is JsonObject -> {
+          for (k in e.keys) {
+            if (known.contains(k)) counts[k] = (counts[k] ?: 0) + 1
+          }
+          for ((_, v) in e) scan(v)
+        }
+        is JsonArray -> for (item in e) scan(item)
+        else -> Unit
+      }
+    }
+    scan(root)
+    val contentKeys = (root["contents"] as? JsonObject)?.keys?.joinToString(",") ?: "null"
+    val sections = counts.entries.filter { it.value > 0 }
+      .joinToString(",") { "${it.key}=${it.value}" }
+    return "top=${root.keys.joinToString(",")} contentsKeys=[$contentKeys] renderers=[${sections.ifBlank { "none" }}]"
+  }
+
+  /**
+   * 频道页 header 解析结果。含订阅数/banner/简介/认证，供频道页头部展示
+   *（对齐 LibreTube `ChannelResponse` 的 subscriberCount/banner/description/verified）。
+   */
+  data class ChannelInfo(
+    val channelId: String,
+    val name: String,
+    val avatarUrl: String,
+    /** 订阅数；未知为 null。 */
+    val subscriberCount: Long? = null,
+    /** banner 图 URL；无则空串。 */
+    val bannerUrl: String = "",
+    /** 频道简介；无则空串。 */
+    val description: String = "",
+    /** 认证频道（badges 含 VERIFIED）。 */
+    val verified: Boolean = false,
+    /**
+     * 频道内容 Tab(视频/Shorts/直播)及其 /browse params。从响应解析(tabIdentifier + endpoint
+     * 的 browseEndpoint.params),对齐 LibreTube/NewPipe 从 header 取 tab。硬编码 params 对部分
+     * 频道/新布局失效,用服务端提供的 params 才能切到对应 Tab。
+     */
+    val tabs: List<ChannelTab> = emptyList(),
+  )
+
+  /**
+   * 频道内容 Tab:稳定标识(如 Videos/Shorts/Streams,服务端 tabIdentifier)+ 对应的 /browse params。
+   */
+  data class ChannelTab(
+    val name: String,
+    val params: String,
+  )
+
+  /**
+   * 频道"播放列表"Tab 的一张播放列表卡(playlistRenderer)。供频道页 Playlists Tab 展示;
+   * 点击用 [browseId] 打开播放列表详情。
+   */
+  data class YoutubePlaylist(
+    val id: String,
+    val title: String,
+    /** 封面图 URL;无则空串。 */
+    val thumbnail: String,
+    /** 视频数文案(如 "20 videos");无则空串。 */
+    val videoCount: String,
+    /** 打开播放列表的 browseId(playlistRenderer.navigationEndpoint.browseEndpoint.browseId,形如 VL...)。 */
+    val browseId: String,
+  )
+
+  /**
+   * 从频道页 /browse 响应解析频道 info，返回 [ChannelInfo]。
    *
-   * YouTube 频道页 header 有三种形态，任一命中即用：
-   *   1. header → c4TabbedHeaderRenderer → { channelId, title, avatar }
-   *   2. metadata → channelMetadataRenderer → { externalId, title, avatar }
-   *   3. microformat → microformatDataRenderer → { externalId, title }（无头像）
+   * YouTube 频道页 header 有三种形态，字段分散在不同形态，合并收集：
+   *   1. header → c4TabbedHeaderRenderer → { channelId, title, avatar, subscriberCountText,
+   *      banner, description, badges(VERIFIED) }
+   *   2. metadata → channelMetadataRenderer → { externalId, title, avatar, description }
+   *   3. microformat → microformatDataRenderer → { externalId, title, description }
+   * 先命中 c4Header 的完整字段，缺的用 metadata/microformat 补齐。
    *
-   * @return 解析出的 [ChannelInfo]；解析不到时返回 null（由调用方回退输入串）。
+   * @return 解析出的 [ChannelInfo]；解析不到 channelId 时返回 null（由调用方回退输入串）。
    */
   fun parseChannelInfo(root: JsonObject): ChannelInfo? {
+    var id: String? = null
+    var name = ""
+    var avatar = ""
+    var subscriberCount: Long? = null
+    var banner = ""
+    var desc = ""
+    var verified = false
+
     val c4Header = root.obj("header")?.obj("c4TabbedHeaderRenderer")
     if (c4Header != null) {
-      val id = c4Header.stringOrNull("channelId")
-      val name = c4Header.stringOrNull("title")
-      if (!id.isNullOrBlank()) {
-        val avatar = c4Header.obj("avatar")?.array("thumbnails")?.let(::pickBestThumbnailUrl).orEmpty()
-        return ChannelInfo(id, name ?: "", avatar)
+      val c4Id = c4Header.stringOrNull("channelId")
+      if (!c4Id.isNullOrBlank()) {
+        id = c4Id
+        name = c4Header.stringOrNull("title").orEmpty()
+        avatar = c4Header.obj("avatar")?.array("thumbnails")?.let(::pickBestThumbnailUrl).orEmpty()
+        subscriberCount = parseCount(
+          runsText(c4Header.obj("subscriberCountText")).ifBlank { simpleText(c4Header.obj("subscriberCountText")) },
+        )
+        banner = c4Header.obj("banner")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+          ?: c4Header.obj("mobileBanner")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+          .orEmpty()
+        desc = c4Header.obj("description")?.let { runsText(it).ifBlank { simpleText(it) } }.orEmpty()
+        verified = c4Header.array("badges")?.any {
+          val badge = (it as? JsonObject)
+          val renderer = badge?.obj("badgeRenderer") ?: badge?.obj("metadataBadgeRenderer")
+          renderer?.stringOrNull("style")?.contains("VERIFIED", ignoreCase = true) == true ||
+            renderer?.stringOrNull("styleId")?.contains("VERIFIED", ignoreCase = true) == true
+        } == true
       }
     }
+
     val channelMetadata = root.obj("metadata")?.obj("channelMetadataRenderer")
     if (channelMetadata != null) {
-      val id = channelMetadata.stringOrNull("externalId")
-      val name = channelMetadata.stringOrNull("title")
-      if (!id.isNullOrBlank()) {
-        val avatar = channelMetadata.obj("avatar")?.array("thumbnails")?.let(::pickBestThumbnailUrl).orEmpty()
-        return ChannelInfo(id, name ?: "", avatar)
+      val metaId = channelMetadata.stringOrNull("externalId")
+      if (!metaId.isNullOrBlank()) {
+        if (id == null) id = metaId
+        if (name.isBlank()) name = channelMetadata.stringOrNull("title").orEmpty()
+        if (avatar.isBlank()) {
+          avatar = channelMetadata.obj("avatar")?.array("thumbnails")?.let(::pickBestThumbnailUrl).orEmpty()
+        }
+        if (desc.isBlank()) desc = channelMetadata.stringOrNull("description").orEmpty()
       }
     }
+
     val microformat = root.obj("microformat")?.obj("microformatDataRenderer")
     if (microformat != null) {
-      val id = microformat.stringOrNull("externalId")
-      val name = microformat.stringOrNull("title")
-      if (!id.isNullOrBlank()) return ChannelInfo(id, name ?: "", "")
+      val mfId = microformat.stringOrNull("externalId")
+      if (!mfId.isNullOrBlank()) {
+        if (id == null) id = mfId
+        if (name.isBlank()) name = microformat.stringOrNull("title").orEmpty()
+        if (desc.isBlank()) desc = microformat.stringOrNull("description").orEmpty()
+      }
     }
-    return null
+
+    if (id == null) return null
+    return ChannelInfo(
+      channelId = id,
+      name = name,
+      avatarUrl = avatar,
+      subscriberCount = subscriberCount,
+      bannerUrl = banner,
+      description = desc,
+      verified = verified,
+      tabs = parseChannelTabs(root),
+    )
+  }
+
+  /**
+   * 从频道页 /browse 响应解析内容 Tab 栏(视频/Shorts/直播/播放列表等)。
+   *
+   * 频道布局依 client 版本/频道而变:部分返回旧 `tabRenderer`(真机 UCTu_hTa 有 featured/videos/
+   * shorts/podcast/playlists/posts 6 个),部分新布局只给 `expandableTabRenderer`(搜索)。两种都递归
+   * 收集。名字不靠 title(新格式 title.simpleText/content/tabIdentifier 常为空),而是从 params 解码
+   * protobuf field1 取稳定标识(videos/shorts/streams/playlists/featured/podcast/posts)。取「有 params
+   * 的 tab」按名去重组成 (name, params) 列表,供切 Tab 用服务端 params(而非硬编码)。
+   */
+  fun parseChannelTabs(root: JsonObject): List<ChannelTab> {
+    val result = mutableListOf<ChannelTab>()
+    val seen = HashSet<String>()
+    collectByKey(root, KEY_TAB_RENDERER) { renderer -> collectTab(renderer, seen, result) }
+    collectByKey(root, KEY_EXPANDABLE_TAB_RENDERER) { renderer -> collectTab(renderer, seen, result) }
+    // 诊断:打印解析到的 tab 名字 + params 前缀,便于真机核验服务端 tab params 是否取到。
+    Log.d("Ytabs", "parseChannelTabs found=${result.map { "${it.name}:${it.params.take(10)}" }}")
+    return result
+  }
+
+  /**
+   * 从单个 tab(旧 tabRenderer 或新 expandableTabRenderer)取 name + params。
+   *
+   * 名字优先从 params 解码的 protobuf field1 取(如 "videos"/"shorts"/"streams"/"playlists"/
+   * "featured"/"posts"),因为新布局 tab 的 title 结构多变(simpleText/content/tabIdentifier 常为
+   * 空,真机 SHAPE 全 text=null),而 params 里的 field1 字符串是稳定标识。取不到再回退 title。
+   */
+  private fun collectTab(renderer: JsonObject, seen: MutableSet<String>, out: MutableList<ChannelTab>) {
+    val params = renderer.obj("endpoint")?.obj("browseEndpoint")?.stringOrNull("params")
+    if (params.isNullOrBlank()) return
+    val title = renderer.obj("title")
+    val name = decodeTabName(params)
+      ?: renderer.stringOrNull("tabIdentifier")
+      ?: title?.stringOrNull("simpleText")
+      ?: title?.stringOrNull("content").orEmpty()
+    if (name.isBlank()) return
+    if (seen.add(name.lowercase())) out.add(ChannelTab(name = name, params = params))
+  }
+
+  /**
+   * 从 /browse tab 的 params(URL 编码 base64 的 protobuf)解析第一个 length-delimited 字符串字段,
+   * 得到 tab 类型标识:视频=videos / 短视频=shorts / 直播=streams / 播放列表=playlists /
+   * 精选=featured / 播客=podcast / 帖子=posts。InnerTube 的 tab 选择器在 field2(wire2,首字节
+   * 0x12 而非 0x0A),所以不限定字段号,通用读首个 wire-type-2 字段。解析失败返回 null。
+   */
+  private fun decodeTabName(params: String): String? {
+    val urlDecoded = try { java.net.URLDecoder.decode(params, "UTF-8") } catch (e: Exception) { params }
+    val bytes = try { android.util.Base64.decode(urlDecoded, android.util.Base64.DEFAULT) }
+    catch (e: Exception) { return null }
+    if (bytes.size < 2) return null
+    var idx = 0
+    // 读 key varint(不限字段号,但要求 wire type 2 = 低3位是 010)。
+    val wire = bytes[0].toInt() and 0x07
+    if (wire != 2) return null
+    do {
+      idx++
+      if (idx >= bytes.size) return null
+    } while (bytes[idx - 1].toInt() and 0x80 != 0)
+    // 读长度 varint。
+    var len = 0
+    var shift = 0
+    while (idx < bytes.size) {
+      val b = bytes[idx].toInt()
+      len = len or ((b and 0x7F) shl shift)
+      idx++
+      if (b and 0x80 == 0) break
+      shift += 7
+      if (shift > 28) return null
+    }
+    if (len <= 0 || idx + len > bytes.size) return null
+    return String(bytes, idx, len, Charsets.UTF_8)
+  }
+
+  /**
+   * 从频道"播放列表"Tab 的 /browse 响应解析播放列表卡列表。兼容两种形状：
+   *  - 旧布局:richItemRenderer.content.playlistRenderer(递归收集所有 playlistRenderer)
+   *  - 新布局:lockupViewModel + contentType=LOCKUP_CONTENT_TYPE_PLAYLIST(实测 2026-08,
+   *    纯 playlistRenderer 收集返回 0,lockup 才是新布局播放列表卡;视频 tab 的 lockup 是
+   *    contentType=VIDEO,按 contentType 过滤互不串)。
+   * 递归收集两种 renderer,按序追加。
+   */
+  fun parseChannelPlaylists(root: JsonObject): List<YoutubePlaylist> {
+    val result = mutableListOf<YoutubePlaylist>()
+    collectByKey(root, KEY_PLAYLIST_RENDERER) { node ->
+      val id = node.stringOrNull("playlistId") ?: return@collectByKey
+      val title = runsText(node.obj("title")).ifBlank { simpleText(node.obj("title")) }
+      val thumbnail = node.obj("thumbnailRenderer")?.obj("thumbnail")
+        ?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+        .orEmpty()
+      val count = runsText(node.obj("videoCountText")).ifBlank { simpleText(node.obj("videoCountText")) }
+      val browseId = node.obj("navigationEndpoint")?.obj("browseEndpoint")
+        ?.stringOrNull("browseId").orEmpty()
+      result.add(
+        YoutubePlaylist(
+          id = id,
+          title = title,
+          thumbnail = thumbnail,
+          videoCount = count,
+          browseId = browseId,
+        ),
+      )
+    }
+    // 新布局 lockupViewModel 播放列表卡。
+    collectByKey(root, "lockupViewModel") { node ->
+      val ct = node.stringOrNull("contentType")
+      if (ct == null || !ct.contains("PLAYLIST")) return@collectByKey
+      val id = node.stringOrNull("contentId") ?: return@collectByKey
+      val title = node.obj("metadata")?.obj("lockupMetadataViewModel")?.obj("title")
+        ?.stringOrNull("content")
+        ?: return@collectByKey
+      // 封面(实测 2026-08-27,频道页播放列表 tab):contentImage 是 collectionThumbnailViewModel
+      // 包裹,真封面在 primaryThumbnail.thumbnailViewModel.image.sources(21/21 卡全此形状);
+      // 旧直连 contentImage.thumbnailViewModel 仅作服务端回落兜底。直连路径下封面恒空 →
+      // 频道页播放列表卡只剩 "▶" 占位块(alpha 期旧疾)。
+      val thumbnailViewModel = node.obj("contentImage")?.obj("collectionThumbnailViewModel")
+        ?.obj("primaryThumbnail")?.obj("thumbnailViewModel")
+        ?: node.obj("contentImage")?.obj("thumbnailViewModel")
+      val thumbnail = thumbnailViewModel?.obj("image")?.array("sources")
+        ?.let(::pickBestThumbnailUrl).orEmpty()
+      // 视频数(实测 2026-08-27):缩略图角标 badge("100 videos",
+      // thumbnailOverlayBadgeViewModel.thumbnailBadges);metadataRows 现在只有
+      // "Updated X ago"/"View full playlist",已不是视频数(旧注释的 metadataRows 路径失效),
+      // 仅作 badge 缺失时兜底。
+      val badgeTexts = mutableListOf<String>()
+      thumbnailViewModel?.array("overlays")?.forEach { overlay ->
+        (overlay as? JsonObject)?.obj("thumbnailOverlayBadgeViewModel")?.array("thumbnailBadges")
+          ?.forEach { badge ->
+            (badge as? JsonObject)?.obj("thumbnailBadgeViewModel")?.stringOrNull("text")
+              ?.let { badgeTexts.add(it) }
+          }
+      }
+      val countTexts = mutableListOf<String>()
+      node.obj("metadata")?.obj("lockupMetadataViewModel")?.obj("metadata")
+        ?.obj("contentMetadataViewModel")?.array("metadataRows")?.forEach { row ->
+          (row as? JsonObject)?.array("metadataParts")?.forEach { part ->
+            (part as? JsonObject)?.obj("text")?.stringOrNull("content")?.let { countTexts.add(it) }
+          }
+        }
+      val count = badgeTexts.firstOrNull() ?: countTexts.firstOrNull().orEmpty()
+      // 打开播放列表的 browseId:onTap/navigationEndpoint 的 browseEndpoint 优先,回退 contentId
+      // (实测 2026-08-27 lockup 卡 onTap 为空 → 落到 contentId(PL...),normalizePlaylistBrowseId
+      // 会补 VL 前缀)。
+      val browseId = node.obj("onTap")?.obj("navigationEndpoint")?.obj("browseEndpoint")
+        ?.stringOrNull("browseId")
+        ?: node.obj("navigationEndpoint")?.obj("browseEndpoint")?.stringOrNull("browseId")
+        ?: id
+      result.add(YoutubePlaylist(id = id, title = title, thumbnail = thumbnail, videoCount = count, browseId = browseId))
+    }
+    return result
+  }
+
+  /**
+   * 频道 Shorts tab 的 reelItemRenderer(短剧网格条目)。形状:videoId + headline(title, runs 或
+   * simpleText)+ thumbnail.thumbnails。频道/UP 名等缺省由频道页注入。
+   */
+  private fun parseReelItemRenderer(node: JsonObject): YoutubeVideo? {
+    val videoId = node.stringOrNull("videoId") ?: return null
+    val title = runsText(node.obj("headline")).ifBlank { simpleText(node.obj("headline")) }
+    val thumbnail = node.obj("thumbnail")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+      ?: node.obj("thumbnailRenderer")?.obj("thumbnail")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+      ?: "https://i.ytimg.com/vi/$videoId/mqdefault.jpg"
+    return YoutubeVideo(
+      videoId = videoId,
+      title = title,
+      channelName = "",
+      channelId = "",
+      thumbnailUrl = thumbnail,
+      viewCount = null,
+      durationSec = null,
+      publishedAt = null,
+      liveNow = false,
+      isUpcoming = false,
+      badge = "Shorts",
+    )
+  }
+
+  /**
+   * 频道 Shorts tab 的 shortsLockupViewModel(reel 风格条目)。
+   *
+   * 实测结构(2026-08-27,真机日志 dump):
+   *  - 无 contentId!视频ID 在 `onTap.innertubeCommand.reelWatchEndpoint.videoId`
+   *  - 标题 + 播放量在顶层 `accessibilityText`(形如 "标题, 2.4 thousand views - play Short")
+   *  - 封面 `thumbnailViewModel.image.sources[].url`(取最大),失败回退 mqdefault
+   * 拿不到 videoId 就跳过。防御式,不抛错。
+   */
+  private fun parseShortsLockupViewModel(node: JsonObject): YoutubeVideo? {
+    val videoId = node.obj("onTap")?.obj("innertubeCommand")
+      ?.obj("reelWatchEndpoint")?.stringOrNull("videoId")
+    if (videoId.isNullOrBlank()) return null
+
+    // accessibilityText 形如 "标题, 2.4 thousand views - play Short"。标题取逗号前,剩余部分找播放量。
+    // 播放量片段含 " - play Short" 后缀与英文单位词(parseCount 只认 K/M/B 后缀),先清洗成数字串。
+    val a11y = node.stringOrNull("accessibilityText").orEmpty()
+    val title = a11y.substringBefore(", ").trim().ifBlank { "Short" }
+    val viewsText = a11y.substringAfter(", ", "")
+      .substringBefore(" - play").substringBefore(" - view")
+      .replace("thousand", "K", ignoreCase = true)
+      .replace("million", "M", ignoreCase = true)
+      .replace("billion", "B", ignoreCase = true)
+    val viewCount = parseCount(viewsText)
+
+    val thumbnailUrl = node.obj("thumbnailViewModel")?.obj("image")
+      ?.array("sources")?.let(::pickBestThumbnailUrl)
+      ?: node.obj("contentImage")?.obj("thumbnailViewModel")?.obj("image")
+        ?.array("sources")?.let(::pickBestThumbnailUrl)
+      ?: "https://i.ytimg.com/vi/$videoId/mqdefault.jpg"
+
+    return YoutubeVideo(
+      videoId = videoId,
+      title = title,
+      channelName = "",
+      channelId = "",
+      thumbnailUrl = thumbnailUrl,
+      viewCount = viewCount,
+      durationSec = null,
+      publishedAt = null,
+      liveNow = false,
+      isUpcoming = false,
+      badge = "Shorts",
+    )
   }
 
   /**
@@ -134,6 +513,123 @@ internal object YoutubeParsers {
       }
     }
     return result
+  }
+
+  /**
+   * 解析一页频道搜索结果（/search + params=TypeChannel），返回频道列表 + 续页 token。
+   * 复用 [parseChannelCandidates] 的 channelRenderer 收集，但提取更全字段（头像/订阅/视频数/简介）。
+   */
+  fun parseChannelSearchPage(root: JsonObject): YoutubeChannelSearchPage {
+    val channels = mutableListOf<YoutubeChannelSearchResult>()
+    collectByKey(root, KEY_CHANNEL_RENDERER) { node ->
+      val id = node.stringOrNull("channelId")
+      if (!id.isNullOrBlank()) {
+        val title = runsText(node.obj("title")).ifBlank { simpleText(node.obj("title")) }
+        val avatar = node.obj("thumbnail")?.array("thumbnails")?.let(::pickBestThumbnailUrl).orEmpty()
+        val subscribers = parseCount(
+          runsText(node.obj("subscriberCountText")).ifBlank { simpleText(node.obj("subscriberCountText")) },
+        )
+        val videos = parseCount(
+          runsText(node.obj("videoCountText")).ifBlank { simpleText(node.obj("videoCountText")) },
+        )
+        val desc = runsText(node.obj("descriptionSnippet")).ifBlank { simpleText(node.obj("descriptionSnippet")) }
+        channels.add(
+          YoutubeChannelSearchResult(
+            channelId = id,
+            name = title,
+            avatarUrl = avatar,
+            subscriberCount = subscribers,
+            videoCount = videos,
+            description = desc,
+          ),
+        )
+      }
+    }
+    return YoutubeChannelSearchPage(items = channels, continuation = findContinuation(root))
+  }
+
+  /**
+   * 播放列表详情首屏头部信息。两条路径（真机实测 2026-08-27，见 YtPlaylist 诊断日志）：
+   * - 新布局（当前实际返回）：`header.pageHeaderRenderer.content.pageHeaderViewModel` —— 简介在
+   *   `description.descriptionPreviewViewModel.description.content`，作者在 `metadata` rows 的
+   *   avatarStack text（"by xxx"），视频数在同 rows 的文本（"N videos"），封面在 `heroImage`。
+   * - 旧布局（对齐 NewPipe `PlaylistInfo` / LibreTube `PlaylistFragment`）：`header.playlistHeaderRenderer`，
+   *   descriptionText/description、ownerText、numVideosText、primaryThumbnail。保留兜底。
+   * 字段可能 {runs} 或 {simpleText} 两种形状。取不到任一 header 返回 null。
+   */
+  fun parsePlaylistHeader(root: JsonObject): YoutubePlaylistHeader? {
+    parseLegacyPlaylistHeader(root)?.let { return it }
+    val vm = root.obj("header")?.obj("pageHeaderRenderer")
+      ?.obj("content")?.obj("pageHeaderViewModel") ?: return null
+    val description = vm.obj("description")?.obj("descriptionPreviewViewModel")?.obj("description")?.let { node ->
+      node.stringOrNull("content")?.ifBlank { null }
+        ?: runsText(node).ifBlank { simpleText(node) }.ifBlank { null }
+    }
+    // metadata rows:作者在 avatarStack 的 text，视频数/播放量在普通文本 parts。
+    // 实测 2026-08-27（真机 YtPlaylist 日志 + 诊断 dump）：text 节点是 viewModel 形状
+    // {"content": "...", "commandRuns": [...]}，**必须先读 content**——runsText 只认 "runs"、
+    // simpleText 只认 "simpleText"，都不认 content，旧写法 avatarText 恒空串（owner=""）/
+    // 行文本恒空（count=null）。另：avatarStack 文本带语言前缀——英文 "by xxx"、简中
+    // "创建者：xxx"、繁中 "建立者：xxx"——剥前缀留名字；视频数=含数字且含 video/视频/影片/
+    // 動画 词的文本（排除 "130,265 views" 纯播放量行）。
+    var owner: String? = null
+    var count: String? = null
+    vm.obj("metadata")?.obj("contentMetadataViewModel")?.array("metadataRows")?.forEach { rowEl ->
+      (rowEl as? JsonObject)?.array("metadataParts")?.forEach { partEl ->
+        val part = partEl as? JsonObject ?: return@forEach
+        fun viewModelText(node: JsonObject?): String? {
+          val content = node?.stringOrNull("content")?.trim().orEmpty()
+          if (content.isNotBlank()) return content
+          return node?.let { runsText(it).ifBlank { simpleText(it) } }
+        }
+        val avatarText = part.obj("avatarStack")?.obj("avatarStackViewModel")?.obj("text")
+          ?.let(::viewModelText)
+        val text = avatarText ?: part.obj("text")?.let(::viewModelText)
+        val t = text?.trim() ?: return@forEach
+        if (avatarText != null) {
+          val stripped = t
+            .substringAfterLast("创建者：").substringAfterLast("创建者:")
+            .substringAfterLast("建立者：").substringAfterLast("建立者:")
+            .removePrefix("by ").trim()
+          owner = stripped.ifBlank { t }
+        } else if (count == null && t.any { it.isDigit() } &&
+          listOf("video", "视频", "影片", "動画").any { t.contains(it, ignoreCase = true) }
+        ) {
+          count = t
+        }
+      }
+    }
+    val cover = vm.obj("heroImage")?.let { firstImageUrl(it) }
+    return YoutubePlaylistHeader(description = description, owner = owner, videoCountText = count, cover = cover)
+  }
+
+  /** 旧布局 `header.playlistHeaderRenderer`（部分老响应仍有），取不到返回 null。 */
+  private fun parseLegacyPlaylistHeader(root: JsonObject): YoutubePlaylistHeader? {
+    val phr = root.obj("header")?.obj("playlistHeaderRenderer") ?: return null
+    val descNode = phr.obj("descriptionText") ?: phr.obj("description")
+    val description = if (descNode != null) {
+      runsText(descNode).ifBlank { simpleText(descNode) }.ifBlank { null }
+    } else null
+    val owner = runsText(phr.obj("ownerText")).ifBlank { simpleText(phr.obj("ownerText")) }.ifBlank { null }
+    val count = runsText(phr.obj("numVideosText")).ifBlank { simpleText(phr.obj("numVideosText")) }.ifBlank { null }
+    val cover = phr.obj("primaryThumbnail")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+      ?: phr.obj("thumbnail")?.array("thumbnails")?.let(::pickBestThumbnailUrl)
+    return YoutubePlaylistHeader(description = description, owner = owner, videoCountText = count, cover = cover)
+  }
+
+  /** 在任意节点里递归找第一个 image.sources[].url（pageHeaderViewModel.heroImage 等 view-model 形状用）。 */
+  private fun firstImageUrl(node: JsonObject): String? {
+    node.array("sources")?.forEach { src ->
+      (src as? JsonObject)?.stringOrNull("url")?.takeIf { it.isNotBlank() }?.let { return it }
+    }
+    for ((_, value) in node) {
+      when (value) {
+        is JsonObject -> firstImageUrl(value)?.let { return it }
+        is JsonArray -> value.forEach { el -> (el as? JsonObject)?.let { firstImageUrl(it)?.let { u -> return u } } }
+        else -> Unit
+      }
+    }
+    return null
   }
 
   /**
@@ -919,7 +1415,7 @@ internal object YoutubeParsers {
    * 之前是全树扫+取最后一个，频道视频 tab 响应里可能夹带 shorts/相关频道等其它 section 的 token，
    * 取错会导致续页返回首屏相同视频（去重后零新增 → ~50 到底 / 死循环）。
    */
-  private fun findContinuation(root: JsonObject): String? {
+  fun findContinuation(root: JsonObject): String? {
     appendContinuationItems(root)?.let { return firstContinuationToken(it) }
     reloadContinuationItems(root)?.let { return firstContinuationToken(it) }
     videoGridItems(root)?.let { return firstContinuationToken(it) }
@@ -1019,9 +1515,29 @@ internal object YoutubeParsers {
   private const val KEY_GRID_VIDEO_RENDERER = "gridVideoRenderer"
   private const val KEY_COMPACT_VIDEO_RENDERER = "compactVideoRenderer"
   private const val KEY_LOCKUP_VIEW_MODEL = "lockupViewModel"
+  private const val KEY_SHORTS_LOCKUP_VIEW_MODEL = "shortsLockupViewModel"
+  private const val KEY_PLAYLIST_RENDERER = "playlistRenderer"
+  private const val KEY_PLAYLIST_VIDEO_RENDERER = "playlistVideoRenderer"
+  private const val KEY_REEL_ITEM_RENDERER = "reelItemRenderer"
   private const val KEY_CONTINUATION_ITEM_RENDERER = "continuationItemRenderer"
   private const val KEY_CHANNEL_RENDERER = "channelRenderer"
+  private const val KEY_TAB_RENDERER = "tabRenderer"
+  private const val KEY_EXPANDABLE_TAB_RENDERER = "expandableTabRenderer"
   private const val KEY_COMMENT_RENDERER = "commentRenderer"
   private const val KEY_COMMENT_SECTION_RENDERER = "commentSectionRenderer"
   private const val KEY_COMMENT_THREAD_RENDERER = "commentThreadRenderer"
 }
+
+/**
+ * 播放列表详情首屏头部（[YoutubeParsers.parsePlaylistHeader]）的解析结果。字段缺省时用 null（UI 隐藏对应行）。
+ * 顶层公开类（不在 internal 的 [YoutubeParsers] 内），供 public 的 [YoutubeRepository.YoutubeVideoPage] 引用。
+ */
+data class YoutubePlaylistHeader(
+  val description: String?,
+  /** ownerText，如 "@FollowCnRules"；无则 null。 */
+  val owner: String?,
+  /** numVideosText，如 "20 videos"；无则 null。 */
+  val videoCountText: String?,
+  /** 封面 URL；无则 null。 */
+  val cover: String?,
+)

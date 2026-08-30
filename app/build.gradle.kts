@@ -3,6 +3,10 @@ plugins {
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.kotlin.serialization)
   alias(libs.plugins.ksp)
+  // Firebase 两个插件仅声明(apply false)进 classpath,真正 apply 在下方按
+  // google-services.json 是否存在条件触发——JSON 没放进来时构建/CI 行为完全不变。
+  alias(libs.plugins.google.services) apply false
+  alias(libs.plugins.firebase.crashlytics) apply false
 }
 
 val supportedAbis = setOf("armeabi-v7a", "arm64-v8a")
@@ -142,6 +146,10 @@ kotlin {
 
 dependencies {
   implementation(platform(libs.compose.bom))
+  // Crashlytics 经 firebase-bom 版本仲裁;无 google-services.json 时 FirebaseApp 不会初始化,
+  // SDK 只是进包不工作,所有调用点都有 runCatching 兜底。
+  implementation(platform(libs.firebase.bom))
+  implementation(libs.firebase.crashlytics)
 
   implementation(libs.activity.compose)
   implementation(libs.androidx.core.ktx)
@@ -182,4 +190,18 @@ dependencies {
 
 ksp {
   arg("room.generateKotlin", "true")
+}
+
+// Firebase 按需启用:google-services / crashlytics 插件只在 app/google-services.json 存在时
+// 才 apply——JSON 没放进来时构建与集成前完全一致(CI 当前阶段),JSON 放入后自动激活。
+if (file("google-services.json").exists()) {
+  apply(plugin = "com.google.gms.google-services")
+  apply(plugin = "com.google.firebase.crashlytics")
+}
+
+// Firebase 按需启用:google-services / crashlytics 插件只在 JSON 就位时 apply。
+// 没有 JSON 时整个构建与集成前完全一致(CI 当前阶段),JSON 放入 app/ 目录后自动激活。
+if (file("google-services.json").exists()) {
+  apply(plugin = "com.google.gms.google-services")
+  apply(plugin = "com.google.firebase.crashlytics")
 }
