@@ -123,26 +123,22 @@ object FirebaseLogSender {
       crashlytics.setCustomKey("log_size", file.length())
       crashlytics.recordException(RuntimeException("Manual log share: ${file.name}"))
       logger.info { "send: 已注入 ${lines.size} 行 + recordException 入队" }
-      if (!crashAutoReportEnabled) {
-        // 采集开关关闭时 recordException 只入队不发。官方手动放行流程是先
-        // checkForUnsentReports(等待排队数据落盘完成)再 sendUnsentReports——
-        // 直接同步调 sendUnsentReports 有竞态,可能在写盘前 flush 导致报告丢失。
-        crashlytics.checkForUnsentReports().addOnCompleteListener { task ->
-          val unsent = task.result == true
-          logger.info { "send: checkForUnsentReports=${task.result}异常=${task.exception?.message}" }
-          if (unsent) {
-            try {
-              crashlytics.sendUnsentReports()
-              logger.info { "send: sendUnsentReports 已触发(等下次网络批量上传)" }
-            } catch (e: Exception) {
-              logger.error(e) { "send: sendUnsentReports 调用失败" }
-            }
-          } else {
-            logger.warn { "send: 无未送报告可放行(可能已被竞态 flush 丢失或已上传)" }
+      // 无论「崩溃自动上报」开关联,手动上报总是显式放行即时上传(TV 常驻前台,
+      // 等 SDK 批量时机可能拖到 app 回后台)。官方流程先 checkForUnsentReports
+      // 等待排队数据落盘完成再 sendUnsentReports,直接同步 send 有竞态丢报告。
+      crashlytics.checkForUnsentReports().addOnCompleteListener { task ->
+        val unsent = task.result == true
+        logger.info { "send: checkForUnsentReports=${task.result}异常=${task.exception?.message}" }
+        if (unsent) {
+          try {
+            crashlytics.sendUnsentReports()
+            logger.info { "send: sendUnsentReports 已触发,上报即时送出" }
+          } catch (e: Exception) {
+            logger.error(e) { "send: sendUnsentReports 调用失败" }
           }
+        } else {
+          logger.warn { "send: 无未送报告可放行(可能已被竞态 flush 丢失或已上传)" }
         }
-      } else {
-        logger.info { "send: 采集开关开启,由 SDK 自动批量上传" }
       }
       Unit
     }.onFailure { error ->
