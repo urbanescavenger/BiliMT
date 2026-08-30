@@ -3,6 +3,7 @@
 ## 目录
 
 - [v3.0.7](#v307)
+- [v3.0.8-alpha.3](#v308-alpha3)
 - [v3.0.8-alpha.2](#v308-alpha2)
 - [v3.0.8-alpha.1](#v308-alpha1)
 - [v3.0.7-alpha.16](#v307-alpha16)
@@ -238,6 +239,15 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v3.0.8-alpha.3
+
+**ABR 降档滞回 ×0.85 双阈值死区(修「1440p↔1080p 临界来回切」)+ TV 播放列表详情页进入无焦点修复**。
+
+### 变更
+- **降档滞回**(`HeightAwareAdaptiveTrackSelection`):declared=真平均后,est 巡航值(供给滑动估计,含 pacing/gap 样本)天然骑在相邻档门槛 ±10% 区间——这是常态而非异常。旧判据 `required > est` 无降档滞回,单样本穿线即降;降档后缓冲 ≥30s 升档立即放行,est 回线即弹回 → 临界档循环(est 15.8M vs 门槛 16.76M 差 6% 就切,3 分钟三轮,全程 buffer 34-40s 充足)。修法:**当前档(i==selected)降档判据 = required×0.85**(预留 15% 死区),升档候选门槛保持全额(上严下调)。真饿(est < ×0.85)照降,水位急救(<8s)兜底。ABR 四层分工:临界抖动→本滞回(不限时)、真饿→水位急救、升档起步期→10s 禁回降、4K 边缘回弹→顶档定向冷却。
+- **TV 播放列表详情页进入无焦点修复**(`YoutubePlaylistDetailScreen` + 频道页播放列表网格):初焦单发 `requestFocus` 在覆盖层环境撞「FocusRequester is not initialized」被 runCatching 吞掉后整页永久无焦点(真机同款异常实锤)——改验证+重试(拉焦点后确认本屏持有,未确认至多重试 30 帧,用户手动移动过不抢);空列表/加载失败改初焦落返回 chip。
+- 排查证据见 `docs/youtube-sabr-abr-upshift-notes.md` §18;附 alpha.3 前一版编译修复(if Long/Int 分支推断星投影)。
 
 ## v3.0.8-alpha.2
 
