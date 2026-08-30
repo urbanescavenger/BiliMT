@@ -108,7 +108,8 @@ object FirebaseLogSender {
       // JSON 就位时 FirebaseInitProvider 已初始化默认实例;未就位时 getInstance 抛
       // IllegalStateException,在这里捕获后只记 debug 日志,应用照常启动。
       val crashlytics = FirebaseCrashlytics.getInstance()
-      crashlytics.isCrashlyticsCollectionEnabled = true
+      // 采集开关恒关:上传全部走显式 sendUnsentReports(见 [bindAutoReport] 注释)。
+      crashlytics.isCrashlyticsCollectionEnabled = false
       crashlytics.setCustomKey("app_version", AppInfo(appContext).current().versionName)
       crashlytics.setCustomKey("device_model", "${Build.MANUFACTURER} ${Build.MODEL}")
     }.onFailure { error ->
@@ -122,10 +123,16 @@ object FirebaseLogSender {
   }
 
   /**
-   * 订阅设置流,把「崩溃日志自动上报」开关同步到 Crashlytics 数据采集开关:
-   * 关(默认)时崩溃数据不自动发往 Firebase,仅分享时手动「分享并上报」仍可用
-   * (手动上报走 recordException + sendUnsentReports 主动放行,不依赖采集开关)。
-   * 启动时收集一次前 crashAutoReportEnabled=false,走默认关闭语义,无需等待。
+   * 订阅设置流,同步「崩溃日志自动上报」开关。语义:
+   * - **开**:启动时无条件 sendUnsentReports 一次,送掉积压的崩溃报告/上一会话
+   *   recordException(崩溃报告由 Crashlytics 自带捕获链在崩溃时持久化,天然跨启动,
+   *   启动送行即送达;无积压时调用无害)。
+   * - **关**:不主动上报,仅手动「分享并上报」可用。
+   *
+   * 采集属性恒关(isCrashlyticsCollectionEnabled=false,两档都一样):SDK 自动采集
+   * 开启时 sendUnsentReports 是故意的 no-op、真实上传只剩「下次启动/退后台」,连手动
+   * 分享都被拖成延迟送达——恒关后所有上传都走显式送行,会话内无需开关杂耍,上报成功
+   * 的感知也不依赖常驻轮询。开关只决定「启动送行 + 崩溃日志注入(attachCrashLog)」。
    */
   fun bindAutoReport(store: AppSettingsStore) {
     CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
@@ -135,19 +142,25 @@ object FirebaseLogSender {
         .collect { enabled ->
           crashAutoReportEnabled = enabled
           runCatching {
-            FirebaseCrashlytics.getInstance().isCrashlyticsCollectionEnabled = enabled
+            val crashlytics = FirebaseCrashlytics.getInstance()
+            crashlytics.isCrashlyticsCollectionEnabled = false
+            if (enabled) {
+              crashlytics.sendUnsentReports()
+              logger.info { "startup: 自动上报开,启动送行已触发(送掉积压报告)" }
+            }
           }.onFailure { error ->
             logger.debug { "auto report configure skipped: ${error.message}" }
           }
-          logger.info { "crash auto report: $enabled" }
+          logger.info { "crash auto report: $enabled (启动送行=${enabled})" }
         }
     }
   }
 
   /**
    * 未捕获崩溃发生后由 LogCatcherUtil 的全局处理器调用(此时崩溃报告已在本进程排队):
-   * 若开关打开,把刚落盘的崩溃日志尾部注入 Crashlytics 日志缓冲,自动崩溃报告
-   * (Crashlytics 自带捕获链,下次启动发送)即携带这些日志行。开关关闭时是 no-op。
+   * 若开关打开,把刚落盘的崩溃日志尾部注入 Crashlytics 日志缓冲,崩溃报告即携带这些
+   * 日志行——采集恒关后它不会由 SDK 自动送行,而是由 [bindAutoReport] 的启动送行
+   * (switch 开时每启动检查一次)在下次启动送达。开关关闭时是 no-op。
    */
   fun attachCrashLog(file: File) {
     if (!crashAutoReportEnabled) return
@@ -194,29 +207,18 @@ object FirebaseLogSender {
       crashlytics.setCustomKey("log_size", file.length())
       crashlytics.recordException(RuntimeException("Manual log share: ${file.name}"))
       logger.info { "send: 降噪后注入 ${lines.size} 行 + recordException 入队" }
-      // 手动上报总是显式即时上传。注意 SDK 官方语义:自动采集开启(开关开)时
-      // sendUnsentReports() 是故意的 no-op——真实上传只剩「下次启动/退后台」,TV 常驻
-      // 前台 + 直接杀进程等于要重启才送达。修法:临时切采集关,让显式 flush 真正生效,
-      // finally 里按开关状态切回;中途崩溃/被杀无碍,下次启动 bindAutoReport 会按设置重设。
-      // 另外 checkForUnsentReports 不能做门控:开关开时它恒返回 false,会整个跳过送行,
-      // 这里无条件调用,重复调用无害。
+      // 采集恒关(bindAutoReport/install 已设 false)后,sendUnsentReports 恒生效:
+      // 显式即时上传,不再受「自动采集开启时为 no-op」的拖累,也无须临时切开关。
+      // 注意 checkForUnsentReports 不能做门控(自动采集开启模式下恒 false,会整个
+      // 跳过送行);这里无条件调用,重复调用无害。SDK 不给上传完成回调(返回 void,
+      // Task 监听器不可用,见 2cc5f1c/dfc6e9c),真实成败看 logcat 的
+      // TRuntime.CctTransportBackend 诊断行与云端。
       try {
-        if (crashAutoReportEnabled) {
-          crashlytics.isCrashlyticsCollectionEnabled = false
-          logger.info { "send: 临时切采集关以放行 sendUnsentReports(开关开着)" }
-        }
-        try {
-          crashlytics.sendUnsentReports()
-          logger.info { "send: sendUnsentReports 已触发,上报在途" }
-        } catch (e: Exception) {
-          logger.error(e) { "send: sendUnsentReports 调用失败" }
-          throw e
-        }
-      } finally {
-        if (crashAutoReportEnabled) {
-          runCatching { crashlytics.isCrashlyticsCollectionEnabled = true }
-            .onFailure { error -> logger.error(error) { "send: 采集开关切回失败" } }
-        }
+        crashlytics.sendUnsentReports()
+        logger.info { "send: sendUnsentReports 已触发,上报在途" }
+      } catch (e: Exception) {
+        logger.error(e) { "send: sendUnsentReports 调用失败" }
+        throw e
       }
       Unit
     }.onFailure { error ->
