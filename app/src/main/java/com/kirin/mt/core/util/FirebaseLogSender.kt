@@ -135,13 +135,15 @@ object FirebaseLogSender {
       // 已持久化的报告,重复调用无害。
       try {
         crashlytics.sendUnsentReports()
-          .addOnSuccessListener {
-            logger.info { "send: 上传任务完成(SDK 回调成功)" }
-            onDelivered(Result.success(Unit))
-          }
-          .addOnFailureListener { e ->
-            logger.error(e) { "send: 上传任务失败(SDK 回调)" }
-            onDelivered(Result.failure(e))
+          .addOnCompleteListener { task ->
+            if (task.isSuccessful) {
+              logger.info { "send: 上传任务完成(SDK 回调成功)" }
+              onDelivered(Result.success(Unit))
+            } else {
+              val e = task.exception ?: RuntimeException("上传任务失败(无异常详情)")
+              logger.error(e) { "send: 上传任务失败(SDK 回调)" }
+              onDelivered(Result.failure(e))
+            }
           }
         logger.info { "send: sendUnsentReports 已触发,上报在途" }
       } catch (e: Exception) {
