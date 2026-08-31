@@ -431,13 +431,36 @@ fun LivePlayerScreen(
           } else if (nowMs - stallSinceMs >= LiveStallThresholdMs && autoRetryCount < MaxLiveAutoRetry) {
             autoRetryCount += 1
             autoResumePositionMs = currentPositionMs.coerceAtLeast(0L)
-            android.util.Log.w(
-              LivePlaybackLogTag,
-              "live stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
-            )
             stallBaselinePositionMs = 0L
             stallSinceMs = 0L
-            retryKey += 1
+            // IPTV 卡 stall 优先换镜像源(同 onPlayerError 分支):半死源(m3u8 活但 ts
+            // 段超时,真机日志实证 183.129.255.66 这类)重挂同一 url 还是它,烧满 3 次
+            // 重试也救不回;判活重排后 urls[0] 之后往往就是活源,直接 selectedQn++ 切过去。
+            // 单源台/已到末源退回同源重载(与 B站直播行为一致)。
+            if (request.isIptv) {
+              val urls = iptvChannels
+                .getOrNull(selectedChannelIndex.coerceIn(0, iptvChannels.lastIndex.coerceAtLeast(0)))
+                ?.urls ?: request.iptvUrls
+              if (selectedQn < urls.lastIndex) {
+                selectedQn += 1
+                android.util.Log.w(
+                  LivePlaybackLogTag,
+                  "iptv stall detected, switch to source #${selectedQn + 1}/${urls.size} (auto-retry #$autoRetryCount @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%)",
+                )
+              } else {
+                android.util.Log.w(
+                  LivePlaybackLogTag,
+                  "iptv stall detected at last source, reload same (auto-retry #$autoRetryCount @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%)",
+                )
+                retryKey += 1
+              }
+            } else {
+              android.util.Log.w(
+                LivePlaybackLogTag,
+                "live stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
+              )
+              retryKey += 1
+            }
           }
         } else {
           stallBaselinePositionMs = currentPositionMs
