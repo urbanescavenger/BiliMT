@@ -262,7 +262,12 @@ internal class DefaultSabrChunkSource(
       "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
         bufferedDurationUs % 1_000_000 / 100_000
       } chunkIndex=${representationHolder.chunkIndex != null} bw=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
-        "sus=${(bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw()?.div(1000) ?: -1L}K " +
+        // 2026-08-31 显示修正:sus 原值 -1(证据不足)曾被 -1/1000 整除打成 0K,取证时把「无证据」
+        // 误读成「证据为零」;负值原样显示。
+        "sus=${
+          (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw()
+            ?.let { if (it >= 0) "${it / 1000}K" else "-1" } ?: "-1"
+        } " +
         "meas=${
           fetcher.getMeasuredBitrateBps(representationHolder.representation.formatId.itag).div(1000)
         }K " +

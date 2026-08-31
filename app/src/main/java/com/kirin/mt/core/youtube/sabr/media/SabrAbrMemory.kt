@@ -19,7 +19,7 @@ object SabrAbrMemory {
   @Volatile
   private var lastStartupStallWallMs = 0L
 
-  /** 起播期判定阈值:pos 在此之内 stall 视为起播 stall(冷启动误跳期,sustained 证据 <15s 尚未成熟)。 */
+  /** 起播期判定阈值:pos 在此之内 stall 视为起播 stall(冷启动误跳期,sustained 证据尚未成熟)。 */
   const val STARTUP_STALL_POS_MAX_MS = 30_000L
 
   /** 顶档冷却时长(对齐 HeightAware 既有 TOP_TIER_BUFFER_CRITICAL_COOLDOWN_MS=3min)。 */

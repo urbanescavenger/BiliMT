@@ -249,12 +249,13 @@ internal class SabrMediaFetcher(
    * 2026-08-30 真机实证:1080p 满缓冲 50s 后停闸 28s,全墙钟分母把空窗全摊入 → sustained≈8-10M 恒
    * <308 门槛 13.4M(手动切 1440 实测持续 20M+),升档被定点锁死。分母改为扣除滑行量(与 active est
    * 的 gap 扣减同口径)后,「管道空闲因为需求低」不再拉低估计,而 GC/断流/服务端 pacing 期间 runway
-   * 低、滑行扣不掉,照旧压低 sustained → 防升高档后卡死的意图保留。证据 <15s(刚起播/暂停恢复)返回
-   * -1,由调用方回退活跃传输 est。专供升档判定,降档走 [getRealBitrateEstimate]。
+   * 低、滑行扣不掉,照旧压低 sustained → 防升高档后卡死的意图保留。证据 <10s(刚起播/暂停恢复,
+   * 2026-08-31 15s→10s,见 SUSTAINED_MIN_SPAN_MS)返回 -1,由调用方回退活跃传输 est。专供升档判定,
+   * 降档走 [getRealBitrateEstimate]。
    *
    * 2026-08-30 修 sus 垃圾尖峰(真机实测 500-635M 物理不可能):gap 扣减后跨度原被 coerceIn 夹到
-   * 下限 1s,停闸空窗接近全跨度时(bytes/1s)直接爆炸。现改为:扣减后跨度 <15s(证据不足)返回 -1,
-   * 由调用方回退活跃 est,不再出垃圾值。
+   * 下限 1s,停闸空窗接近全跨度时(bytes/1s)直接爆炸。现改为:扣减后跨度不足 SUSTAINED_MIN_SPAN_MS
+   * (证据不足)返回 -1,由调用方回退活跃 est,不再出垃圾值。
    */
   fun getSustainedBitrateEstimate(): Long {
     synchronized(realBandwidthLock) {
@@ -806,8 +807,13 @@ internal class SabrMediaFetcher(
     const val REAL_BW_RESEED_MS = 4_000L
     /** 2026-08-30:实测消耗码率最少段数——少于 3 段(起播 ~16s)证据不足,返回 -1 防小样本抖动。 */
     const val MEASURED_MIN_SEGS = 3L
-    /** alpha.9Z:持续带宽最短跨度,不足视为证据不足返回 -1(回退活跃 est,起播爬档不被卡)。 */
-    const val SUSTAINED_MIN_SPAN_MS = 15_000L
+    /**
+     * alpha.9Z:持续带宽最短跨度,不足视为证据不足返回 -1(顶档闸据此挡冷启动 4K,起播爬档不被卡)。
+     * 2026-08-31 15s→10s:ABR 评估只发生在 getNextChunk(缓冲灌满后 loader 停拉=零评估),首灌窗口
+     * 实测仅 ~11s——15s 成熟期落在「满缓冲空闲期」内,顶档要等缓冲漏到 10s(~50s 后)才有机会被
+     * 评到(20:28 真机:首次升档拖到 53s,1440p 拖到 115s)。10s 让顶档证据在首灌窗口内成熟。
+     */
+    const val SUSTAINED_MIN_SPAN_MS = 10_000L
   }
 }
 

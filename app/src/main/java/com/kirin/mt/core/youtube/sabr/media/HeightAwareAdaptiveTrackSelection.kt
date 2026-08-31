@@ -87,12 +87,15 @@ import com.google.common.collect.ImmutableList
  * 33-58M,sustained 因证据 <15s 返回 -1 且**被 getSustainedBitrateEstimate 回退成同一个爆发 est**
  * → 顶档门槛(26.9M×1.1)「合法通过」→ 720p 一步直跳 2160p + reseed 锚死 → 切轨发生在 pos=0 首帧前
  * → loader 停发 chunk 永不 READY → 看门狗整链路重载 → counter reset 后同样误判再来 → ~16s 无限循环。
- * 两处根治:
- * ①**升档需持续带宽证据 + 逐级爬**——sustained 改用原值(getSustainedBitrateEstimateRaw,-1=无证据
- *   不回退),无证据(冷启动/重载后 ~15s 内)**完全禁升档**(首档由起始选轨/高度 cap 决定,不卡起播);
- *   有证据后升档也只升**下一个更高分辨率档**(同 height 多 codec 变体不受限),不再「可负担的最高档
- *   一步到顶」——爆发 est 误判的最坏后果从「直跳 4K」降为「多升一档」,该档真扛不住由既有降档路径
- *   (滞回/水位急救)接管。降档仍放开全部低档一步落位(2026-08-27 既有语义,真饿要快)。
+ * 两处根治(①为 20:28 真机首验后的修订版):
+ * ①**顶档需持续带宽原值证据 + 全档逐级爬**——sustained 改用原值(getSustainedBitrateEstimateRaw,
+ *   -1=无证据**不回退**),顶档 ×1.1 闸读它,-1 恒小于门槛 → 冷启动 4K 自动被挡,不需要「无证据一律
+ *   禁升」(首版曾那样做,20:28 真机:非顶档梯子也被冻,首灌窗口 ~11s 错过后满缓冲期零评估,首次升档
+ *   拖到 53s、1440p 拖到 115s,用户报「升档要一分钟」)。非顶档冷启动照常爬:活跃 est 门 +
+ *   **逐级爬**(只升下一个更高分辨率档,同 height 多 codec 变体不受限),爆发 est 误判的最坏后果
+ *   从「直跳 4K」降为「多升一档」,真扛不住由滞回/水位急救接管。冷启动升档**跳过重锚**(锚点会把 est
+ *   压在新档声明值拖死下一步爬升);证据成熟后的稳态升档保持重锚语义。降档仍放开全部低档一步落位
+ *   (2026-08-27 既有语义,真饿要快)。
  * ②**顶档起播 stall 冷却(跨重载记忆)**——起播期(pos<30s)stall 重载由播放器侧记入
  *   [SabrAbrMemory],重载后新建的 selection 实例在冷却期(3min)内跳过顶档(≥2160)候选;
  *   打破「重载 → 全新状态 → 同样误判 → 再重载」的无记忆循环。低档升降/手动选档不受影响。
@@ -185,8 +188,6 @@ class HeightAwareAdaptiveTrackSelection(
     // 2026-08-31 改用原值(-1=证据不足**不回退**):旧 getSustainedBitrateEstimate 在冷启动把 -1 回退成
     // 被爆发样本撑高的活跃 est,sustained 闸门整体失效(720p 2 段爆发 33-58M 直接过 4K 门槛)。
     val sustained = (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw() ?: -1L
-    // 2026-08-31:持续带宽证据(<15s 跨度返回 -1)——无证据禁升档,首档由起始选轨决定不受影响。
-    val sustainedEvidence = sustained >= 0L
     // 2026-08-30(声明口径修正,见类头):declared 现为 averageBitrate=真实平均消耗,
     // required = 裸声明;calib 采样折算(实测消耗/声明)机制整体取消。
     // alpha.9Z(升档滞回,防降档后横跳):带宽估计在档位临界值附近抖动时,无滞回会 308↔315 反复切轨
@@ -219,10 +220,9 @@ class HeightAwareAdaptiveTrackSelection(
       if (isTrackExcluded(i, nowMs)) continue
       val f = getFormat(i)
       val isUpgrade = f.height > currentHeight
-      // 2026-08-31 ①冷启动证据门槛:持续带宽证据不足(<15s,冷启动/重载后)一律禁升——首档由
-      // 起始选轨/高度 cap 决定,起播不受卡;证据成熟后本闸自然放行。
-      if (isUpgrade && !sustainedEvidence) continue
-      // 2026-08-31 ①逐级爬:越级候选(高于下一档)跳过。
+      // 2026-08-31 ①逐级爬:越级候选(高于下一档)跳过。非顶档升档在冷启动(sustained=-1 证据不足)
+      // 也放行——`sustained in 0 until required` 对 -1 不成立,梯子靠活跃 est 门(required>effective)
+      // + 本逐级约束跑,最坏多升一档(便宜可回退);顶档由下方 ×1.1 闸(-1 恒被挡)单独看死。
       if (isUpgrade && f.height > nextUpgradeHeight) continue
       // 2026-08-31 ②顶档 stall 冷却:起播 stall 重载后 3min 内顶档不进候选(低档升降照常)。
       if (isUpgrade && topTierStallBlocked && f.height >= TOP_TIER_MIN_HEIGHT) {
@@ -243,7 +243,9 @@ class HeightAwareAdaptiveTrackSelection(
         if (i == selected) f.bitrate * DOWNSHIFT_MARGIN_PERMILLE / 1000L else f.bitrate.toLong()
       if (required > effective) continue
       if (isUpgrade && (!canUpgrade || (sustained in 0 until required))) continue
-      // 顶档(仅 height==组内最高,即真正在尝试 4K 的那一档)sustained 加码 ×1.1,防边缘抖动
+      // 顶档(仅 height==组内最高,即真正在尝试 4K 的那一档)sustained 加码 ×1.1,防边缘抖动。
+      // 2026-08-31 复核:本闸兼任冷启动顶档闸——sustained 原值在证据不足时为 -1,-1 < 声明×1.1
+      // 恒真 → 冷启动(起播/重载后 ~10s 内)顶档自动不进候选,非顶档不受影响(见下方注释)。
       if (isUpgrade && isTopTier && i == 0 && sustained < f.bitrate * TOP_TIER_SUSTAINED_PERMILLE / 1000L) {
         continue
       }
@@ -274,12 +276,24 @@ class HeightAwareAdaptiveTrackSelection(
       getFormat(selected).height > currentHeight -> {
         lastUpgradeElapsedMs = nowMs
         val newDeclared = getFormat(selected).bitrate.toLong()
-        (bandwidthMeter as? SabrBandwidthMeter)?.reseedToBitrate(newDeclared)
-        Log.i(
-          "YtSabrAbr",
-          "upshift reseed: est baseline → $newDeclared (declared=${getFormat(selected).bitrate} " +
-            "itag${itagOf(getFormat(selected))})"
-        )
+        // 2026-08-31 冷启动梯子跳过重锚:sustained 证据不足(-1)时的升档是「爆发 est + 逐级爬」的
+        // 冷启动梯子,重锚把 est 压到新档声明值会拖死下一步爬升(20:28 真机:升 1080 锚 5.7M,est 从
+        // 2.8M 爬回 13.4M 门槛花了 ~2min 才到 1440p);梯子误判由水位急救/滞回兜底。证据成熟后的
+        // 升档(稳态会话)保持重锚语义不变。
+        if (sustained >= 0L) {
+          (bandwidthMeter as? SabrBandwidthMeter)?.reseedToBitrate(newDeclared)
+          Log.i(
+            "YtSabrAbr",
+            "upshift reseed: est baseline → $newDeclared (declared=${getFormat(selected).bitrate} " +
+              "itag${itagOf(getFormat(selected))})"
+          )
+        } else {
+          Log.i(
+            "YtSabrAbr",
+            "upshift (cold-start ladder, reseed skipped): " +
+              "itag${itagOf(getFormat(selected))}(${getFormat(selected).height}p) declared=${getFormat(selected).bitrate}"
+          )
+        }
       }
     }
   }
