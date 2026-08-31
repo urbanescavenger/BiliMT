@@ -117,6 +117,18 @@ import com.google.common.collect.ImmutableList
  *   B2(DefaultSabrChunkSource)——getNextChunk 的 holder/selectFormat 改到 updateSelectedTrack
  *     **之后**重读(对齐上游 media3 DashChunkSource):原顺序用切换前 selectedIndex 取 holder,
  *     切档决策对同一次调用 staged 的段无效,每次切档白吃一个循环生效延迟。
+ *
+ * 2026-09-01(VP9 粘性梯子,修「升档跨 codec 换解码器撞 codec 强制回收」):00:31 真机——梯子 720p
+ *   avc(298)→1080p avc(299,旧规则保高码率变体)→1440p 只有 VP9(308)→ **avc→vp9 必然换解码器**;
+ *   MTK codec2 回收脏实例两次各 ~5s(一次 avc 原地重建、一次 avc→vp9),视频冻住音频照播、清晰度
+ *   显示如实停在 1080p,用户被迫手动退出。同场对照:会话 2 同样的切换只要 49ms(旧实例干净,不走强制
+ *   回收)——坑是概率性的设备层行为(AOSP MediaCodec.cpp 回收路径:pending buffer → WOULD_BLOCK →
+ *   重试强拆;MTK 定制 RM 重试 ≈5s),app 不可治,只能消触发面。修法:**同 height 多 codec 变体粘
+ *   全组顶档 codec**(isTopCodecVariant,全组取顶档——窄选期子集算不出;YouTube=VP9,顶档 avc 的
+ *   视频自动反转)→ 升档(302→303→308→315)与水位急救降档全程单 codec 零解码器重建。配套
+ *   PlayerScreen 视频冻结看门狗(VideoFreezeThresholdMs=12s,位置基看门狗对「音频活视频死」结构性
+ *   失明)兜底设备自抽风的残余场景。生态圈同类:androidx/media #3059(MTK)、google/ExoPlayer
+ *   #10369(Amlogic STB)、androidx/media #1615(Pixel,官方 bug: in platform)——平台层无解。
  */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
@@ -124,7 +136,38 @@ class HeightAwareAdaptiveTrackSelection(
   private val bandwidthMeter: BandwidthMeter,
 ) : AdaptiveTrackSelection(group, tracks, bandwidthMeter) {
 
+  /**
+   * 2026-09-01(VP9 粘性梯子):**全组**引用——窄选期(起始高度 cap)的 selection 只含低档子集
+   * (如 [298/302] 两轨),按子集算「组内最高档」会得到 720p 的 codec(错);整张梯子的顶档
+   * (如 315/2160p VP9)必须从全组取,粘性才知道该粘谁。
+   */
+  private val fullGroup: TrackGroup = group
+
   private var selected = length - 1
+
+  /**
+   * 2026-09-01(VP9 粘性梯子,修「升档 avc→vp9 解码器切换撞 codec 强制回收」):整张梯子最高
+   * 分辨率档的 codec。YouTube 梯子 1440p/2160p 只有 VP9,avc 天花板在 1080p——旧「同 height 多
+   * codec 保留高码率变体」规则让梯子在 1080p 选 avc(299 码率 > 303),爬到 1440p **必然跨 codec
+   * 换解码器**,每次都在赌设备坑:00:31 真机 MTK codec2 回收脏实例 ~5s×2(avc 原地重建 + avc→vp9),
+   * 视频冻住音频照播、清晰度显示如实停在 1080p,用户被迫手动退出;生态圈同类(平台层无解):
+   * androidx/media #3059(MTK)、google/ExoPlayer #10369(Amlogic STB)、androidx/media #1615
+   * (Pixel,官方标 bug: in platform)。修法:同 height 多 codec 变体改粘全组顶档 codec
+   * (YouTube=VP9)→ 整场单 codec 零解码器重建;顶档是 avc 的视频自动反转,不写死 VP9。
+   */
+  private val topGroupCodec: String? = run {
+    var top: Format? = null
+    for (i in 0 until fullGroup.length) {
+      val g = fullGroup.getFormat(i)
+      if (top == null || g.height > top.height || (g.height == top.height && g.bitrate > top.bitrate)) {
+        top = g
+      }
+    }
+    top?.sampleMimeType
+  }
+
+  private fun isTopCodecVariant(f: Format): Boolean =
+    f.sampleMimeType != null && f.sampleMimeType == topGroupCodec
 
   /**
    * 2026-08-31:selection 实例创建时间(elapsedRealtime ms)——冷启动梯子锁基准。实例创建 ≈
@@ -184,7 +227,12 @@ class HeightAwareAdaptiveTrackSelection(
       for (i in 0 until length) {
         if (isTrackExcluded(i, nowMs)) continue
         val f = getFormat(i)
-        if (f.height in 1 until currentHeight && f.height > lowerHeight) {
+        // 2026-09-01 VP9 粘性:同 height 多 codec 变体粘顶档 codec——水位急救降档(如 1440p→1080p)
+        // 旧规则会选中 299(avc,码率更高),把 vp9→avc 跨 codec 换解码器引进降档路径。
+        if (f.height in 1 until currentHeight &&
+          (f.height > lowerHeight ||
+            (f.height == lowerHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(lower))))
+        ) {
           lower = i
           lowerHeight = f.height
         }
@@ -288,9 +336,12 @@ class HeightAwareAdaptiveTrackSelection(
       if (isUpgrade && isTopTier && i == 0 && sustained < f.bitrate * TOP_TIER_SUSTAINED_PERMILLE / 1000L) {
         continue
       }
-      // 选声明码率可负担的最高分辨率档;同 height 多 codec(VP9/H264)按 bitrate 降序遍历先到的码率
-      // 最高,`f.height > bestHeight` 严格大于不会替换 → 自然保留高码率变体。
-      if (f.height > bestHeight) {
+      // 选声明码率可负担的最高分辨率档;同 height 多 codec(VP9/H264)2026-09-01 起改粘全组顶档
+      // codec(VP9 粘性,见 isTopCodecVariant——旧「保留高码率变体」让 1080p 选 avc(299>303),爬到
+      // 1440p(仅 VP9)必然跨 codec 换解码器,赌设备 codec 回收坑)。
+      if (f.height > bestHeight ||
+        (f.height == bestHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(best)))
+      ) {
         best = i
         bestHeight = f.height
       }

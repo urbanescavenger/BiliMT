@@ -502,3 +502,36 @@ r1735 复盘通过(急救降回秒级回档、零 watchdog),唯一遗留:本视�
 - [ ] 千兆/好网络 4K 满缓冲滑行不误伤:staged 切档正常、est 不因满缓冲空档塌方;
 - [ ] 水位急救触发的那次 getNextChunk,请求应立即载新档段(rn 不再夹带旧顶档段);
 - [ ] 非顶档(≤1440p)水位急救仍在 8s 触发,行为不变。
+
+## 21. 2026-09-01「升 1440p 视频冻住音频照播」:跨 codec 换解码器撞 codec 强制回收(VP9 粘性梯子 + 视频冻结看门狗)
+
+**现象(00:30-00:32 真机 logs_live.log,新视频 1573s,v3.0.9-alpha.1)**:播放 ~1 分多钟后卡顿,之后**音频正常播、视频冻死**,画面清晰度显示停在 1080p 不动,用户手动退出。另:同晚 4K 段行为验证 A/B1/B2 全部按设计工作(会话 2:00:29:18 真实 sus=48.7M 升 2160 → 漏到 6.9s → 水位急救踢回 1440p + 180s 冷却,仅 2.3s 重缓冲,零看门狗)。
+
+**根因(不是 ABR/网络,是解码器层)**:梯子 720p avc(298)→1080p avc(299,旧「同 height 保高码率变体」)→1440p 只有 VP9(308)→ 升 1440p **必然跨 codec 换解码器**。时间线:
+
+```
+00:31:25.5  avc 解码器原地重建(缓冲区账目乱,"discarded an unknown buffer")
+            → MediaCodec::reclaim → 5.0s 后才 "Released by resource manager"
+00:31:30.6  重建完成,继续播 1080p avc(~10s)
+00:31:40.1  真正的 avc→vp9 切换 → reclaim 又卡 5.5s
+00:31:45.7  vp9 就位(1440p 配置完成)——切换其实成功了
+00:31:48.5  用户退出(距 vp9 就位 3s,第一帧还没渲染出来)
+```
+
+期间 ABR 已选 1440p 并在拉数据(升档发生)、渲染器停在 1080p 冻着(1440p 零帧渲染)、UI 清晰度显示跟实际解码高度(onVideoSizeChanged,显示=实际播放)如实停 1080p——三方一致。音频 aac 解码器独立,照常播;位置基 stall 看门狗(8s)因位置一直在走全程失明。
+
+**联网查证(生态圈同类,平台层无解)**:[androidx/media #3059](https://github.com/androidx/media/issues/3059)(MTK 解码器,4K→2K 冻结,workaround `canReuseCodec`→`REUSE_RESULT_NO`)、[google/ExoPlayer #10369](https://github.com/google/ExoPlayer/issues/10369)(Amlogic STB,参考帧数不同档间切换解码器停吐帧)、[androidx/media #1615](https://github.com/androidx/media/issues/1615)(Pixel 6/7,官方 **bug: in platform**)。~5s 回收等待:AOSP [MediaCodec.cpp](https://android.googlesource.com/platform/frameworks/av/+/ea2b9c0/media/libstagefright/MediaCodec.cpp) 回收路径——codec 有未归还 buffer → `Can't reclaim codec right now due to pending buffers` → WOULD_BLOCK → 重试强拆(AOSP 等待 0.5s/次;实测 ~5s 为 MTK 定制 RM 重试策略)。同场对照:会话 2 同样的 avc→vp9 只要 **49ms**(旧实例干净,不走强制回收)——坑是概率性设备行为,app 不可治。media3 1.6+ 预热线(`experimentalSetEnableMediaCodecVideoRendererPrewarming`)只管播放列表条目切换,不适用流内 ABR。
+
+**修法两件(已实施)**:
+
+1. **VP9 粘性梯子(消触发面)**——HeightAwareAdaptiveTrackSelection 同 height 多 codec 变体改粘**全组顶档** codec(`isTopCodecVariant`,顶档必须从 fullGroup 取:窄选期 [298/302] 子集算不出整梯顶档;YouTube=VP9,顶档 avc 的视频自动反转):升档 302(720p vp9)→303(1080p vp9)→308→315 与水位急救降档全程单 codec,零解码器重建;旧规则会在 1080p 选 299 avc(码率 7.1M>303 的 5.7M),1440p 边界必换 codec,且降档路径(1440p→1080p)也会把 vp9→avc 引进来。起始档(窄选首评)同样粘 → 整场零切换。
+2. **视频冻结看门狗(踩坑兜底)**——PlayerScreen 新增 `VideoFreezeThresholdMs=12s`:BUFFERING 挂死且**位置仍在前进**(音频驱动时钟)超阈值 → 走既有 auto-retry 恢复链(记 autoResumePositionMs、bump retryKey 重载续播、共享 MaxStallAutoRetry=2 预算)。阈值标定:必须让过合法解码器重建最坏情形(codec 回收 5.5s + 首帧 1-2s ≈ 8s)——8s 会正好打在恢复窗口里(本例 vp9 00:31:45.66 就位,8s 阈值 00:31:48.06 开枪,而用户 00:31:48.5 才退,差 0.4s 枪毙一个正在恢复的会话);12s 只兜不自愈的真挂死。与位置基看门狗分工:位置冻结(时钟全停)归 8s 老看门狗,「音频活视频死」归 12s 新看门狗。
+
+**残余(已知不修)**:avc 解码器自身病倒原地重建(00:31:25 那道)是设备故障,粘性梯子消不掉,由看门狗兜底;VP9 拆起来干不干净无对照样本(vp9 从未当过被拆方),若将来出现 vp9 侧挂死,同样由看门狗兜。
+
+**待真机复测**:
+- [ ] 新会话梯子应全程 vp9:起始 720p 应选 **302**(webm)而非 298,升 1080p 应选 **303** 而非 299(YtSabrAbr 行 sel 对应 itag 核对);
+- [ ] 升档到 1440p 应无解码器重建日志(无 `DMCodecAdapterFactory: Creating ... adapter for track type video`,无 `MediaCodec::reclaim`);
+- [ ] 水位急救降档(1440p→1080p)应选 303 vp9,同 codec 无切换;
+- [ ] 若再撞 codec 回收挂死(音频活视频死),~12s 应出现 `video freeze: BUFFERING ... with pos advancing, auto-retry` 并自动恢复,无需手动退出;
+- [ ] 正常重缓冲(位置冻结)仍走 8s 老看门狗,行为不变。

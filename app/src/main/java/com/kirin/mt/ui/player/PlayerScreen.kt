@@ -1813,6 +1813,23 @@ fun PlayerScreen(
   LaunchedEffect(player, playerState) {
     var stallBaselinePositionMs = 0L
     var stallSinceMs = 0L
+    // 2026-09-01 视频冻结看门狗:BUFFERING 窗口起点 + 窗口内位置是否前进过(音频活着)。
+    var bufferingSinceMs = 0L
+    var bufferingLastPosMs = 0L
+    var bufferingPosAdvanced = false
+    // 2026-08-31 起播 stall 记忆(两个看门狗共用):YouTube/SABR 起播期(pos<30s)stall 重载把
+    // ABR/带宽窗口全清零,同样的冷启动误判必然复发——记入进程级 SabrAbrMemory,重载后新 ABR 实例
+    // 把顶档(≥2160)冷却 3min,打破无记忆循环。
+    fun noteStartupStallMemory(posMs: Long) {
+      if (displayRequestState.value.isYoutube && posMs <= SabrAbrMemory.STARTUP_STALL_POS_MAX_MS) {
+        SabrAbrMemory.noteStartupStall()
+        Log.i(
+          PlayerPlaybackLogTag,
+          "startup stall noted: top-tier cooldown " +
+            "${SabrAbrMemory.TOP_TIER_STARTUP_STALL_COOLDOWN_MS / 1000}s for relaunched ABR",
+        )
+      }
+    }
     while (isActive) {
       val nowMs = SystemClock.elapsedRealtime()
       val currentPositionMs = player.currentPosition.takeIf { it >= 0L } ?: 0L
@@ -1873,6 +1890,38 @@ fun PlayerScreen(
         player.playWhenReady &&
         !completionReported
       if (isStallBuffering) {
+        // 2026-09-01 视频冻结看门狗(与下方位置冻结看门狗互补):BUFFERING 期间位置仍在前
+        // 进 = 音频驱动时钟活着、视频渲染器层挂死——升档跨 codec(avc→vp9)换解码器时卡在
+        // codec 强制回收(00:31 真机两次各 ~5s,音频照播画面冻死,用户被迫手动退出)。位置基
+        // 看门狗对这类故障结构性失明:每次轮询位置都变、基线被重置。见 VideoFreezeThresholdMs
+        // 的阈值标定——必须让过合法重建(~8s),只兜不自愈的真挂死。
+        if (bufferingSinceMs == 0L) {
+          bufferingSinceMs = nowMs
+          bufferingLastPosMs = currentPositionMs
+          bufferingPosAdvanced = false
+        } else {
+          if (currentPositionMs != bufferingLastPosMs) {
+            bufferingPosAdvanced = true
+            bufferingLastPosMs = currentPositionMs
+          }
+          if (bufferingPosAdvanced &&
+            nowMs - bufferingSinceMs >= VideoFreezeThresholdMs &&
+            autoRetryCount < MaxStallAutoRetry
+          ) {
+            autoResumePositionMs = currentPositionMs
+            autoRetryCount += 1
+            Log.w(
+              PlayerPlaybackLogTag,
+              "video freeze: BUFFERING ${(nowMs - bufferingSinceMs) / 1000}s with pos advancing, " +
+                "auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
+            )
+            noteStartupStallMemory(currentPositionMs)
+            bufferingSinceMs = 0L
+            stallSinceMs = 0L
+            stallBaselinePositionMs = 0L
+            retryKey += 1L
+          }
+        }
         if (currentPositionMs == stallBaselinePositionMs) {
           if (stallSinceMs == 0L) {
             stallSinceMs = nowMs
@@ -1883,19 +1932,7 @@ fun PlayerScreen(
               PlayerPlaybackLogTag,
               "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
             )
-            // 2026-08-31 起播 stall 记忆(修「起播 4K→重载 死循环」):重载把 ABR/带宽窗口全清零,
-            // 同样的冷启动误判必然复发。起播期(YouTube/SABR)stall 记入进程级 SabrAbrMemory,重载后
-            // 新 ABR 实例把顶档(≥2160)冷却 3min,打破无记忆循环。见 SabrAbrMemory / HeightAware。
-            if (displayRequestState.value.isYoutube &&
-              currentPositionMs <= SabrAbrMemory.STARTUP_STALL_POS_MAX_MS
-            ) {
-              SabrAbrMemory.noteStartupStall()
-              Log.i(
-                PlayerPlaybackLogTag,
-                "startup stall noted: top-tier cooldown " +
-                  "${SabrAbrMemory.TOP_TIER_STARTUP_STALL_COOLDOWN_MS / 1000}s for relaunched ABR",
-              )
-            }
+            noteStartupStallMemory(currentPositionMs)
             stallSinceMs = 0L
             stallBaselinePositionMs = 0L
             retryKey += 1L
@@ -1907,6 +1944,7 @@ fun PlayerScreen(
       } else {
         stallBaselinePositionMs = currentPositionMs
         stallSinceMs = 0L
+        bufferingSinceMs = 0L
       }
       delay(BiliMotion.PlayerProgressUpdateMs)
     }
@@ -2719,6 +2757,14 @@ private const val PlayerDanmakuLogTag = "BiliMT:Danmaku"
 private const val PlayerPlaybackLogTag = "BiliMT:Player"
 /** BUFFERING 且进度不前进超过此阈值判定为 stall,触发自动重载续播。 */
 private const val StallThresholdMs = 8_000L
+/**
+ * 2026-09-01 视频冻结看门狗阈值:BUFFERING 挂死但**位置仍在前进**(音频驱动时钟)超过此值 → 视频渲染器
+ * 层挂死(升档跨 codec 换解码器卡在 codec 强制回收,MTK 盒子实测 ~5.5s/次、可连撞),位置基看门狗对此
+ * 结构性失明(每次轮询位置都变、基线被重置)。阈值必须让过合法解码器重建最坏情形(codec 回收 5.5s +
+ * 首帧 1-2s ≈ 8s)——8s 会正好打在恢复窗口里(00:31 真机:vp9 就位后 ~3s 内本应出画面);12s 只兜
+ * 不自愈的真挂死,把「卡到用户手动退出」变成「卡 ~12s 自动重载」。
+ */
+private const val VideoFreezeThresholdMs = 12_000L
 /** 单次播放会话内 stall 自动重试上限,超过则交用户手动重试,避免死循环刷 CDN。 */
 private const val MaxStallAutoRetry = 2
 /** 起播整体超时：callTimeout 兜住单次 HTTP，withTimeout 兜住整条 launch（含串行调用叠加）。 */
