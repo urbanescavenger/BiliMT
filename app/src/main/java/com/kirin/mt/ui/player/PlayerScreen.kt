@@ -1367,6 +1367,14 @@ fun PlayerScreen(
   // (onRenderedFirstFrame)后松开,ABR 在「默认画质上限」的轨道组里爬到默认画质。仅 SABR 应用。
   var startQualityRelaxed by remember { mutableStateOf(false) }
 
+  // 2026-09-01 黑屏诊断(READY 态视频零帧):本会话自 prepare 起是否渲染过首帧——「音频照播、
+  // 画面黑」(MTK codec 回收/零帧渲染,00:31 与 07:22 两案)只发生在 READY 态,READY+位置前进
+  // 正好看门狗盲区,必须显式记首帧才能兜。launch 每轮重置。
+  var frameRendered by remember { mutableStateOf(false) }
+  // 黑屏画质熔断:视频零帧自动重试 ≥2 次仍黑,把起始档压到此高度(1080p,00:31 对照中 avc 1080p
+  // 可出画)重试;恢复出帧后不再动它(防在坏档上来回弹)。Int.MAX_VALUE=未触发。
+  var blackFrameHeightCap by remember { mutableIntStateOf(Int.MAX_VALUE) }
+
   DisposableEffect(player) {
     val listener = object : Player.Listener {
       override fun onPlayerError(error: PlaybackException) {
@@ -1393,6 +1401,9 @@ fun PlayerScreen(
       }
 
       override fun onVideoSizeChanged(videoSize: VideoSize) {
+        // 2026-09-01 黑屏诊断:视频尺寸上报 = 解码器真实出帧的唯一系统级证据(07:22 案 whole 5
+        // 轮会话零上报,坐实「音频活视频死」)。带时间戳,与首帧日志配对。
+        Log.i(PlayerPlaybackLogTag, "video size: ${videoSize.width}x${videoSize.height}")
         // 显示=实际播放:按实际解码高度更新画质面板高亮。解码器切换时显示跟随实际档位,
         // 不再停留在"请求档"(修 Auto「显示2160实际360p」)。
         // 用高度匹配(而非 quality.description)——B 站 description 是 "1080P"/"4K" 非 "${h}p"。
@@ -1413,6 +1424,9 @@ fun PlayerScreen(
       }
 
       override fun onRenderedFirstFrame() {
+        // 2026-09-01 黑屏诊断:首帧渲染回执(07:22 案 5 轮会话此回调零触发)。
+        frameRendered = true
+        Log.i(PlayerPlaybackLogTag, "video first frame rendered")
         // 起始挡位:首帧已渲染 = 实际运行起来,松开 selector 高度 cap,让 ABR 爬回默认画质上限。
         if (!startQualityRelaxed) {
           startQualityRelaxed = true
@@ -1444,6 +1458,15 @@ fun PlayerScreen(
             "tracks=${player.currentTracks.groups.size} " +
             "video=${player.videoFormat?.codecs} audio=${player.audioFormat?.codecs}",
         )
+        if (playbackState == Player.STATE_ENDED) {
+          // 2026-09-01 黑屏诊断:ENDED 时位置/缓冲——07:22 案 1573s 视频在 pos≈100-128s 连续 4 轮
+          // 提前 ENDED(auto-retry 重载循环),无位置日志无法定位是 sample 流早 EOF 还是 clock 跳变。
+          Log.w(
+            PlayerPlaybackLogTag,
+            "player ENDED @pos=${player.currentPosition}ms buffered=${player.bufferedPercentage} " +
+              "duration=${player.duration} frameRendered=$frameRendered",
+          )
+        }
         if (playbackState == Player.STATE_ENDED && playerState is PlayerScreenState.Ready && player.mediaItemCount > 0) {
           reportPlaybackCompleted()
         }
@@ -1724,7 +1747,14 @@ fun PlayerScreen(
         // (不靠带宽,对齐 LibreTube AbstractPlayerService setMinVideoSize+setMaxVideoSize 锁法,比原 maxHeight
         // 上限更精确,杜绝"起播即顶满 4K");首帧渲染后 onRenderedFirstFrame 松开,升降档交给 ABR+excludeTrack。
         startQualityRelaxed = false
-        val startQualityHeight = if (effectiveInfo.isSabrSingle()) youtubeStartQuality.startHeight else null
+        frameRendered = false
+        // 黑屏画质熔断:零帧重试 ≥2 次后启动,起始档压到 BlackFrameHeightCap(与手动选档取小)。
+        val startQualityHeight = if (effectiveInfo.isSabrSingle()) {
+          youtubeStartQuality.startHeight?.let { minOf(it, blackFrameHeightCap) }
+            ?: blackFrameHeightCap.takeIf { it != Int.MAX_VALUE }
+        } else {
+          null
+        }
         if (startQualityHeight != null) {
           // 在现有参数基础上叠加高度 min+max cap,保留其它配置(mixed-mime/non-seamless 等)。
           val cur = player.trackSelectionParameters
@@ -1817,6 +1847,14 @@ fun PlayerScreen(
     var bufferingSinceMs = 0L
     var bufferingLastPosMs = 0L
     var bufferingPosAdvanced = false
+    // 2026-09-01 黑屏看门狗(READY 态变体):READY+音频前进但 never 首帧(解码器出帧为零,07:22
+    // 案 5 轮会话 onVideoSizeChanged/onRenderedFirstFrame 均零触发)——位置基+BUFFERING 基看门狗
+    // 双双结构性失明的第三种故障态。独立预算计数,首帧真渲染后清零。
+    var noFrameSinceMs = 0L
+    var noFrameLastPosMs = 0L
+    var noFramePosAdvanced = false
+    var noFrameRetryCount = 0
+    var noFrameBlackLogged = false
     // 2026-08-31 起播 stall 记忆(两个看门狗共用):YouTube/SABR 起播期(pos<30s)stall 重载把
     // ABR/带宽窗口全清零,同样的冷启动误判必然复发——记入进程级 SabrAbrMemory,重载后新 ABR 实例
     // 把顶档(≥2160)冷却 3min,打破无记忆循环。
@@ -1945,6 +1983,71 @@ fun PlayerScreen(
         stallBaselinePositionMs = currentPositionMs
         stallSinceMs = 0L
         bufferingSinceMs = 0L
+        // 2026-09-01 黑屏看门狗(READY 态):audio 时钟活着(位置前进)但本会话从未渲染过首帧,
+        // 超黑屏阈值走 auto-retry 链;重试 ≥2 次仍黑则熔断压画质(BlackFrameHeightCap)重试,
+        // 熔断后仍黑则停止重试(避免同一坏档无限重载),交用户手动重试/退出。
+        val isReadyNoFrame = playerState is PlayerScreenState.Ready &&
+          player.playbackState == Player.STATE_READY &&
+          player.playWhenReady &&
+          !frameRendered &&
+          !completionReported
+        if (isReadyNoFrame) {
+          if (noFrameSinceMs == 0L) {
+            noFrameSinceMs = nowMs
+            noFrameLastPosMs = currentPositionMs
+            noFramePosAdvanced = false
+          } else {
+            if (currentPositionMs != noFrameLastPosMs) {
+              noFramePosAdvanced = true
+              noFrameLastPosMs = currentPositionMs
+            }
+            if (noFramePosAdvanced &&
+              nowMs - noFrameSinceMs >= VideoFreezeThresholdMs &&
+              !noFrameBlackLogged
+            ) {
+              noFrameSinceMs = 0L
+              if (noFrameRetryCount >= 2) {
+                if (blackFrameHeightCap > BlackFrameHeightCap) {
+                  val priorRetries = noFrameRetryCount
+                  blackFrameHeightCap = BlackFrameHeightCap
+                  noFrameRetryCount = 0
+                  Log.w(
+                    PlayerPlaybackLogTag,
+                    "video black: READY no first frame with pos advancing after $priorRetries retries, " +
+                      "cap height to $BlackFrameHeightCap, auto-retry",
+                  )
+                  noteStartupStallMemory(currentPositionMs)
+                  autoResumePositionMs = currentPositionMs
+                  retryKey += 1L
+                } else {
+                  // 画质已压到兜底仍零帧:平台层故障非画质问题,停手避免无限重载。
+                  noFrameBlackLogged = true
+                  Log.e(
+                    PlayerPlaybackLogTag,
+                    "video black: READY no first frame even at cap $BlackFrameHeightCap, " +
+                      "stop auto-retry (codec/platform-level)",
+                  )
+                }
+              } else {
+                noFrameRetryCount += 1
+                Log.w(
+                  PlayerPlaybackLogTag,
+                  "video black: READY no first frame with pos advancing, " +
+                    "auto-retry #${noFrameRetryCount} @pos=${currentPositionMs}ms",
+                )
+                noteStartupStallMemory(currentPositionMs)
+                autoResumePositionMs = currentPositionMs
+                retryKey += 1L
+              }
+            }
+          }
+        } else {
+          noFrameSinceMs = 0L
+          if (frameRendered) {
+            noFrameRetryCount = 0
+            noFrameBlackLogged = false
+          }
+        }
       }
       delay(BiliMotion.PlayerProgressUpdateMs)
     }
@@ -2765,6 +2868,11 @@ private const val StallThresholdMs = 8_000L
  * 不自愈的真挂死,把「卡到用户手动退出」变成「卡 ~12s 自动重载」。
  */
 private const val VideoFreezeThresholdMs = 12_000L
+/**
+ * 2026-09-01 黑屏画质熔断高度:READY 态音频前进但零帧渲染、2 次重载后仍黑时,起始档压到此高度重试。
+ * 00:31 对照中 avc 1080p(299/303)可出画、零帧只发生在 1440p VP9;720p/1080p 双 codec 可用。
+ */
+private const val BlackFrameHeightCap = 1080
 /** 单次播放会话内 stall 自动重试上限,超过则交用户手动重试,避免死循环刷 CDN。 */
 private const val MaxStallAutoRetry = 2
 /** 起播整体超时：callTimeout 兜住单次 HTTP，withTimeout 兜住整条 launch（含串行调用叠加）。 */

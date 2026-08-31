@@ -535,3 +535,24 @@ r1735 复盘通过(急救降回秒级回档、零 watchdog),唯一遗留:本视�
 - [ ] 水位急救降档(1440p→1080p)应选 303 vp9,同 codec 无切换;
 - [ ] 若再撞 codec 回收挂死(音频活视频死),~12s 应出现 `video freeze: BUFFERING ... with pos advancing, auto-retry` 并自动恢复,无需手动退出;
 - [ ] 正常重缓冲(位置冻结)仍走 8s 老看门狗,行为不变。
+
+## 22. 2026-09-01「07:22 一直黑屏,音频正常」:全档零帧渲染 × READY 态看门狗盲区(诊断三件 + 黑屏画质熔断)
+
+**现象(07:22-07:25 真机 logs_live.log,同 1573s 视频,v3.0.9-alpha.2 后)**:续播 80s 起播后**全程黑屏但音频正常播**。5 轮会话:07:22:35 起(stall retry #1 @80s pos 12s 未出画)→ 07:23:00(READY 720p avc 298)→07:23:24 提前 ENDED →07:23:28(READY 1080p vp9 303,单格式会话)→ ~43s 再 launch →07:23:49(READY 720p,升档 4K 在途)→07:24:20 ENDED →07:24:24(READY 1440p vp9 308 单格式会话)→ 用户 11s 后手动退出。**关键证伪:720p avc 起始会话同样黑屏——§21「零帧只发生在 1440p VP9」不成立,当日故障与分辨率/codec 无关**。且位置/流完全健康:每轮会话 4-9MB 段连拉、bufS 到 47-48s(LoadControl 上限)、setFrameRate(60.0) 每轮 READY 都设上(解码器配置成功)、无 playback error、无 video size 上报(onVideoSizeChanged 零次)。
+
+**另一未解**:前 4 轮在 pos≈100-128s 提前 STATE_ENDED(视频 1573s  never 播到头),每次 ENDED → reportPlaybackCompleted → 同视频重载循环——ENDED 时 app 无任何位置日志,无法判定是 sample 流早 EOF 还是时钟跳变(07:22 的 ENDED-position 诊断已加)。伴生 4 次 `SabrDataSource open ... InterruptedException → evict sid`(ExoPlayer cancel 在途 chunk 时 fetcher 打断,open 抛 IOException→evict 会话→重 harvest,与会话切换窗口吻合)。
+
+**根因(结构盲区,两层看门狗共同失明)**:该故障态是 **READY + playWhenReady + 音频驱动位置前进 + 零帧渲染**——位置基 stall 看门狗(8s)要求位置不前进、视频冻结看门狗(12s)要求 BUFFERING,双双不触发 → 无限黑屏,用户唯一出路是手动退出(00:31 案与本案同构,§21 只处理了 BUFFERING 变体)。
+
+**修法三件(已实施,PlayerScreen)**:
+
+1. **决定性诊断日志**:①`onVideoSizeChanged` 打 `video size: WxH`(解码器真实出帧的系统级证据);②`onRenderedFirstFrame` 打回执 + 置 `frameRendered` 标志;③`STATE_ENDED` 打 `player ENDED @pos/buffered/duration/frameRendered`(提前 ENDED 案的位置取证)。下一次真机日志即可回答「零帧 vs 早 EOF vs 时钟跳变」。
+2. **黑屏看门狗(READY 态变体)**:READY+音频前进但本会话从未渲染首帧,超 `VideoFreezeThresholdMs=12s` → 走既有 auto-retry 链(`autoResumePositionMs`+`retryKey` 重载续播);独立 `noFrameRetryCount` 预算(首帧真渲染即清零),与两条既有看门狗三态互补:位置冻结→8s、BUFFERING 视频死→12s、READY 黑屏→12s。
+3. **黑屏画质熔断**:READY 零帧重试 ≥2 次仍黑,起始档压到 `BlackFrameHeightCap=1080` 重试(§21 对照 avc 1080p 可出画);若 720p/1080p 也黑则停手记 `video black: ... even at cap`(平台层故障非画质,避免同一坏档无限重载)。熔断标志首帧恢复时自动复位。
+
+**待真机复测**:
+- [ ] 复现时日志应出现 `video black: READY no first frame with pos advancing, auto-retry #N`(~12s 一拍),黑屏从「手动退出才能解」变「~12s 自动重载」;
+- [ ] 若熔断生效,应见 `cap height to 1080, auto-retry`,且重载后 1080p 会话观察是否出画(区分「分档触发」vs「全档平台故障」);
+- [ ] 若全档零帧,应见 `video black: ... even at cap 1080, stop auto-retry`——届时按 ENDED-position + video size 时间线定位 sample 流问题(SabrMediaPeriod 侧时间戳映射嫌疑);
+- [ ] 正常会话不应出现上述任何一条(误报=0);
+- [ ] 提前 ENDED 案:`player ENDED @pos=...` 应给出准确位置,判定 100-128s 提前结束的真因。
