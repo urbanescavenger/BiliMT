@@ -175,6 +175,17 @@ internal class DefaultSabrChunkSource(
   }
 
   override fun updateTrackSelection(trackSelection: ExoTrackSelection) {
+    // 2026-08-31 切轨停发诊断(log add,修「起播 4K→重载」取证):切轨时刻打点——旧/新选中档与
+    // chunkIndex 状态。真机 20:04 复盘:720p→315(2160p)切轨后 getNextChunk 再未被调用(6s 空窗→
+    // 看门狗重载),此日志区分「chunk source 拒发」vs「media3 loader 根本没来要」。
+    val old = this.trackSelection
+    Log.i(
+      "YtSabrChunk",
+      "updateTrackSelection: sel ${old.selectedIndex}(${old.selectedFormat?.height}p)" +
+        " → ${trackSelection.selectedIndex}(${trackSelection.selectedFormat?.height}p) " +
+        "len=${trackSelection.length()} newIndexHasChunkIndex=" +
+        "${representationHolders.getOrNull(trackSelection.selectedIndex)?.chunkIndex != null}"
+    )
     this.trackSelection = trackSelection
   }
 
@@ -193,7 +204,17 @@ internal class DefaultSabrChunkSource(
     loadingChunk: Chunk,
     queue: MutableList<out MediaChunk>,
   ): Boolean {
-    return trackSelection.shouldCancelChunkLoad(playbackPositionUs, loadingChunk, queue)
+    val cancel = trackSelection.shouldCancelChunkLoad(playbackPositionUs, loadingChunk, queue)
+    // 2026-08-31 切轨停发诊断:取消在途 chunk 是「切轨后 loader 卡住」的候选链路之一(取消后
+    // sample stream 重建,若不再来要 chunk 即坐实 loader 侧)。
+    if (cancel) {
+      Log.i(
+        "YtSabrChunk",
+        "shouldCancelLoad=true: canceling itag=${(loadingChunk.dataSpec.customData as? SabrSegmentRequest)?.formatItag}" +
+          " type=${if (loadingChunk is InitializationChunk) "init" else "media"} posMs=${Util.usToMs(playbackPositionUs)}"
+      )
+    }
+    return cancel
   }
 
   override fun getNextChunk(
@@ -241,7 +262,12 @@ internal class DefaultSabrChunkSource(
       "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
         bufferedDurationUs % 1_000_000 / 100_000
       } chunkIndex=${representationHolder.chunkIndex != null} bw=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
-        "sus=${(bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimate()?.div(1000) ?: -1L}K " +
+        // 2026-08-31 显示修正:sus 原值 -1(证据不足)曾被 -1/1000 整除打成 0K,取证时把「无证据」
+        // 误读成「证据为零」;负值原样显示。
+        "sus=${
+          (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw()
+            ?.let { if (it >= 0) "${it / 1000}K" else "-1" } ?: "-1"
+        } " +
         "meas=${
           fetcher.getMeasuredBitrateBps(representationHolder.representation.formatId.itag).div(1000)
         }K " +
@@ -300,6 +326,12 @@ internal class DefaultSabrChunkSource(
     }
 
     if (representationHolder.segmentCount == 0L) {
+      // 2026-08-31 切轨停发诊断:endOfStream 回执(与「根本没来要」区分;chunkIndex 为 null 的
+      // segmentCount==0 = 新轨 init 尚未解出段表却走到 media 分支,异常路径)。
+      Log.w(
+        "YtSabrChunk",
+        "getNextChunk → endOfStream(segmentCount=0, chunkIndex=${representationHolder.chunkIndex != null})"
+      )
       out.endOfStream = true
       return
     }
@@ -310,10 +342,15 @@ internal class DefaultSabrChunkSource(
     )
 
     if (segmentNum > lastAvailableSegmentNum) {
+      Log.i(
+        "YtSabrChunk",
+        "getNextChunk → endOfStream(segmentNum $segmentNum > last $lastAvailableSegmentNum)"
+      )
       out.endOfStream = true
       return
     }
     if (representationHolder.getSegmentStartTimeUs(segmentNum) >= representationHolder.periodDurationUs) {
+      Log.i("YtSabrChunk", "getNextChunk → endOfStream(startTimeUs >= periodDurationUs)")
       out.endOfStream = true
       return
     }
@@ -354,6 +391,14 @@ internal class DefaultSabrChunkSource(
   }
 
   override fun onChunkLoadCompleted(chunk: Chunk) {
+    // 2026-08-31 切轨停发诊断(log add):chunk 交付回执——真机 20:04 里 315 的 init+2 段全部
+    // 交付后 loader 再无 getNextChunk(6s 空窗→看门狗),此日志界定「数据到位 vs media3 不再来要」。
+    Log.i(
+      "YtSabrChunk",
+      "chunk completed: ${if (chunk is InitializationChunk) "init" else "media"}" +
+        " itag=${(chunk.dataSpec.customData as? SabrSegmentRequest)?.formatItag}" +
+        " bytes=${chunk.bytesLoaded()} sel=${trackSelection.selectedIndex}(${trackSelection.selectedFormat?.height}p)"
+    )
     if (chunk is InitializationChunk) {
       val trackIndex = trackSelection.indexOf(chunk.trackFormat)
       val representationHolder = representationHolders[trackIndex]
@@ -371,6 +416,14 @@ internal class DefaultSabrChunkSource(
     loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo,
     loadErrorHandlingPolicy: LoadErrorHandlingPolicy,
   ): Boolean {
+    // 2026-08-31 切轨停发诊断:错误也打点(静默 fallback 会表现为「不请求了」)。
+    Log.w(
+      "YtSabrChunk",
+      "chunk load error: itag=${(chunk.dataSpec.customData as? SabrSegmentRequest)?.formatItag}" +
+        " type=${if (chunk is InitializationChunk) "init" else "media"}" +
+        " cancelable=$cancelable error=${loadErrorInfo.exception.javaClass.simpleName}" +
+        ": ${loadErrorInfo.exception.message?.take(120)}"
+    )
     if (!cancelable) return false
     // alpha.64:SabrDataSource 在 SabrTerminalException 时已 evict 会话;这里走默认 fallback 逻辑。
     // 404 末段兜底(对齐 LibreTube missingLastSegment 处理)。

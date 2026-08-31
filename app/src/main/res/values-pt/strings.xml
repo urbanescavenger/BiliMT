@@ -108,7 +108,7 @@
     <string name="settings_clear_cache_calculating">A calcular</string>
     <string name="settings_clear_cache_done">%1$s de cache limpos</string>
     <string name="settings_language_title">Idioma</string>
-    <string name="settings_language_description">Alterna o texto da interface; Hong Kong e Taiwan convertem também títulos, danmaku e nomes de criadores.</string>
+    <string name="settings_language_description">Alterna o texto da interface — 6 opções: 简体, 港繁, 台繁, English, Español, Português. As variantes de Hong Kong e Taiwan convertem também títulos, danmaku e nomes de criadores.</string>
     <string name="settings_language_simplified">简体</string>
     <string name="settings_language_hong_kong">香港</string>
     <string name="settings_language_taiwan">台湾</string>
@@ -165,7 +165,7 @@
     <string name="settings_logs_export">Exportar registo atual</string>
     <string name="settings_logs_share">Partilhar</string>
     <string name="settings_logs_send">Comunicar</string>
-    <string name="settings_logs_send_queued">Na fila: a enviar</string>
+    <string name="settings_logs_send_queued">Na fila: será enviado no próximo arranque</string>
     <string name="settings_logs_send_failed">Falha ao comunicar: %1$s</string>
     <string name="settings_logs_send_unavailable">Firebase não configurado</string>
     <string name="settings_crash_auto_report_title">Comunicar falhos automaticamente</string>
@@ -638,6 +638,7 @@
     <string name="settings_webdav_item_piped">Configuração Piped</string>
     <string name="settings_webdav_item_watched">Lista de já vistos</string>
     <string name="settings_webdav_item_biliaccount">Conta Bilibili</string>
+    <string name="settings_webdav_item_iptv">Configuração IPTV</string>
     <string name="settings_webdav_item_logs">Registos</string>
     <string name="settings_webdav_start_backup">Iniciar cópia de segurança</string>
     <string name="settings_webdav_start_restore">Iniciar restauração</string>

@@ -45,6 +45,12 @@ internal class SabrAwareDataSource(private val http: DataSource) : DataSource {
         sabr.open(dataSpec)
       }
     } else {
+      // 2026-08-31 诊断:www.youtube.com/googlevideo 的直拉 URL 被掐时(响应头不回,Http2Stream 等
+      // 头超时),此处一行缩略日志即可定位是哪条流卡死(00:25 真机:timedtext 字幕 URL 拖死 Merging
+      // prepare 81s,主源 fetch 一条没发)。B站 CDN 分段量大,只记 youtube/googlevideo 域。
+      if (uri.host?.contains("youtube") == true || uri.host?.contains("googlevideo") == true) {
+        Log.i(tag, "route http: host=${uri.host} path=${uri.encodedPath} url=${uri.toString().take(120)}")
+      }
       delegate = http
       http.open(dataSpec)
     }

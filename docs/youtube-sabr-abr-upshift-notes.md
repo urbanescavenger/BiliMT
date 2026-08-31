@@ -364,3 +364,112 @@ effectiveBitrate = bandwidthMeter.getBitrateEstimate() × 0.7 × (chunkDuration/
 ### 2026-08-30 追加(方案B,用户决策,96d2390 后)
 
 r1735 复盘通过(急救降回秒级回档、零 watchdog),唯一遗留:本视频 4K pacing 有效供给 (~20M) ≈ 真实消耗 (~21M) 天生临界,升 315 → 60-95s 漏光 → 急救降回 → 秒级爬回,分钟级 315↔308 干净循环。方案B:顶档(组内 height ≥2160 的最高档)升档额外要求 `sustained ≥ declared×0.6`(TOP_TIER_SUSTAINED_PERMILLE,声明虚高 ~2× 故 0.6 远低于真实消耗;本视频 63M vs sus 峰 57-59M → 4K 不批,稳 1440p;千兆管道 sus >63M 照常上 4K)。
+
+## 16. 2026-08-30「升 2160 又失败」:声明码率口径修正 peak → averageBitrate + calib 取消 + 顶档 ×1.1 重标
+
+**现象(23:00 前后真机,视频 4fBaRNYSSOY)**:ABR 按既定机制一路爬到 4K(itag315)后网络塌方,降档 1 步没救回来,水位急救/stall #1→#2 全走完,整段重载回 720p。
+
+**决策级复盘——门槛"全部合法通过",失真在口径**:
+
+| 时间 | 事件 | 判据数据 |
+|---|---|---|
+| 22:59:25 | 窄选起步 [298,302] | bw=14K |
+| 22:59:48 | 升 308(1440p) | calib=0.751(segs=0),reseed=12.03M |
+| 22:59:56 | 升 315(32.3M peak 声明) | calib=0.779 → 门槛 25.2M;est 31.2M 过;顶档 gate 0.6×32.3M=19.4M,sus 28.4-34.5M 过 |
+| 23:00:39 | **rn=19 fetch 仅 942B/1.8s** | est 40509K→6160K 崩塌起点 |
+| 23:00:55 | buffer-critical:315→308(一步) | bufS=4s,供给已 ~7Mbps(15s 下 15MB) |
+| 23:00:57 / 23:01:24 | stall #1 → retry #2(同位置 72534ms);rn=21 47MB/29.6s=12.7M | 连 1440p 都养不起 → 整段重载回 720p |
+
+**联网查证口径**(本节关键结论):InnerTube `/player` 每格式自带两个字段——`bitrate`=**VBR 峰值**、`averageBitrate`=**真实平均**(≈ contentLength/duration);VBR 视频上 peak 比真平均高 ~60-75%(实测样例 itag137:2.0M peak vs 1.19M avg,clen/dur 验证相等)。Google 官方 VP9 VOD 建议 2160p60 编码目标 ~18M;JDownloader itag 表 VP9 4K 标 ~20M;本视频 315 实测消耗 23.4M(与区间吻合)。**此前的声明显然虚高,而 calib/顶档 0.6 全部在 peak 口径上叠修正,连环补偿注定顾此失彼(105M 声明 vs 本视频 32.3M 声明结论相反)。**
+
+**修改(已实施)**:
+1. **resolver 全链路 declared 换 averageBitrate**(YoutubePlaybackResolver):`buildSabrTrack`/`parseFormat` 优先 `averageBitrate>0` 回落 `bitrate`;NewPipe raws 自算 `clen×8/durMs`(extractor 已解析进 ItagItem,`Stream.getItagItem()` 可达),Piped 无字段填 0 回落 peak(旧行为);
+2. **ABR calib 机制整体取消**(用户决策):required=f.bitrate 裸判据;成熟期 calib 本就收敛 ≈1,只去掉未熟期折算噪声(采样/地板全删);
+3. **顶档门槛保留、基准重标**:sustained ≥ declared×**1.1**(旧 0.6 是 peak 虚高修正;真平均=实需后,1.1 是 60s 均值口径的 VBR 尖峰余量)。本视频 315:门槛 19.4M→~25.3M,塌方段(sus 8M)永不批;
+4. 升档重锚锚裸声明 `reseedToBitrate(newDeclared)`,日志去 calib 段。
+
+**参照源码**:NewPipeExtractor fork(extractor/src/main/java/…/services/youtube/YoutubeStreamExtractor.java:1407-1410 已设 contentLength/approxDurationMs;ItagItem.getBitrate=peak)。web 佐证:FOSWLY/vot.js 类型定义、youtube-ext VideoFormat 文档、原始响应 gist(bitrate vs averageBitrate 实测)、developers.google.com/media/vp9/settings/vod。
+
+**未决(下次观察)**:水位急救只降一步,bufS<4s 且已跨两档可降时是否直接跳两档?本次不改,先看口径修正后的表现。
+
+## 17. 2026-08-30「4K 边缘档反复横跳、级联切档卡顿」:顶档定向冷却 3min
+
+**现象(23:28-23:31 真机,新代码 babff35 已生效:重载/stall 零次、降档全走水位急救、reseed 无 calib)**:视频 4fBaRNYSSOY 的 4K 真实消耗 ~30-31M(meas 实测),网络持续供给在 27-42M 晃——供给 ≈ 需求的边缘档。循环:重填期(播低档,管道空闲)突发 est 40-60M、sus 41M 过升档门槛(32.3M + 顶档×1.1=35.5M)→ 升 4K → 边播边吸 pacing 供给 ~30M,buffer 40s 漏到 5-6s → 水位急救**级联**(315→308→299,每步拉新 init=一次卡顿)→ 低档重填到 30s+ → 又过门槛 → 再升 4K。3.5 分钟两轮完整循环,用户感知「不重载但一直在切、有部分卡顿」。
+
+**结论**:这不是回归,是供给 ≈ 需求时边缘档的必然震荡;防抖缺失。
+
+**修法(已实施,用户选定方案1)**:水位急救从**顶档**(height≥2160)降下时,`excludeTrack(leavingIndex, 180s)`——顶档 3 分钟内不参与候选;期间 1440p/1080p 升降完全照常。与 §15 已取消的「全档 3min 升档冷却」本质不同:那个把全部升降锁死、用户被打回 1080p 后连 1440p 都升不了;本冷却只锁刚崩的顶档,可持续档位照常工作。非顶档的水位降档不加冷却(降的是可持续档,回弹无碍)。冷却到期自然恢复试顶档;期间想立即回 4K 走手动切档。3min 覆盖一个完整误批-回填周期(实测周期 ~55-85s)。
+
+**未决**:级联降档(315→308→299 三步三次卡顿)是否在水位 <4s 时跳两档——未做,待观察顶档冷却落地后的实际体感。
+
+## 18. 2026-08-31「1440p↔1080p 临界来回切」:降档滞回余量 ×0.85(双阈值死区)
+
+**现象(00:01-00:04 真机,新视频,308 声明=真平均 16.76M)**:00:01:40 est 17.9M 升 1440p → 00:02:13 est 滑到 15.8M(只差门槛 16.76M 的 6%)→ 立即降 1080p → 00:03:37 est 17.9M 又过线升回。全程 buffer 34-40s 充足,纯 est 穿线切换,每次拉 init 段=一次卡顿,3 分钟三轮。
+
+**根因**:declared=真平均后,est 的巡航值(供给滑动估计,含 pacing/gap 样本)天然骑在相邻档门槛 ±10% 区间——这是常态而非异常。旧判据 `required > est` 无降档滞回,单样本穿线即降;降档后又因「3min 冷却已取消 + 缓冲 ≥30s」立即放行升档,est 回线即弹回 → 临界档循环。alpha.2 的顶档冷却只管 315 水位降档,不管稳态 est 穿线,管不到这。
+
+**修法(已实施)**:classic ABR 双阈值滞回——**当前档(i==selected)降档判据 = required×0.85**,升档候选门槛保持 required 全额(预留 15% 死区)。est 15.8M > 14.25M → 稳守 1440p;真饿(est<14.25M)照降,水位急救(<8s)兜底。分工:临界抖动归滞回、真饿归水位、升档起步期归「10s 禁回降」、边缘档回弹归「顶档定向冷却」。四处机制互补不重叠。
+
+**未决观察**:×0.85 是否需要按档位差异化(如 1080p 以上收紧到 ×0.9)——先看实际体感,单值够用就不加复杂度。
+
+## 19. 2026-08-31「起播一直 2160 然后 ~16s 一轮无限重载」:冷启动爆发样本直跳顶档 + stall 重载无记忆
+
+**现象(20:04-20:05 真机 logs_live.log,51 分钟视频 sid=p6mdaGH8aODvZYiRlM1kJA)**:起播 720p 首帧后 34ms 松开起始高度 cap → ABR 首评即从 720p **一步直跳 itag315(2160p,声明 26.9M)** → 切轨发生在 pos=0 首帧前 → 4K 数据其实全部拉到位(rn=2 一次 28MB/2.7s=84Mbps,init+seq1 10MB+seq2 18MB,c2.mtk.vp9.decoder 重建成功 output format 3840x2160 都出来了)→ **但之后 6s 再无任何 SABR fetch 发出**,播放器停在 BUFFERING/视频轨 null/`buffered=0%` 永不 READY → 9s 后 stall 看门狗 `auto-retry #1 @pos=0ms` **整链路重启**(metadata→playurl→cdn→prepare)→ 回到 720p READY → `recovered, counter reset` → 34ms 后同样误判再跳 4K → 再 stall。三连循环 @pos=0/138/232ms,每轮 ~16s,永不升级(每轮都是 retry #1,恢复发生在 720p 段把计数器清零)。
+
+**根因一(冷启动误判,§本档)**:升档 sustained 闸门被整体废掉——`SabrBandwidthMeter.getSustainedBitrateEstimate()` 在持续带宽证据不足(<15s 跨度,fetcher 返回 -1)时**回退到活跃传输 est**,而活跃 est 窗口刚被 2 个 720p 段的爆发样本(rn=0 2.5MB/0.3-1s、rn=1 3.7MB/0.5s → 20-86Mbps 突发)撑到 33-58M,顶档门槛 26.9M×1.1=29.5M 「合法通过」。首帧后松 cap 触发重建 selection(2 轨→6 轨组),新实例首评 currentHeight=720、canUpgrade=true(无降档史)、sustained=假值 → 720p 直跳 2160p,且 reseed 把 est 锚死在 26.9M + 10s 禁回降。
+
+**根因二(重载无记忆)**:看门狗 auto-retry 走整链路重启,ABR/带宽窗口/excludeTrack 冷却全部随实例销毁清零;每次恢复都在 720p 段(counter reset),同一个爆发误判必然复发——无状态机的同坑循环。
+
+**修法 ①(冷启动防直跳,HeightAwareAdaptiveTrackSelection)**:
+- sustained 改用**原值**(`SabrBandwidthMeter.getSustainedBitrateEstimateRaw()`,新增,-1 不回退)——证据不足(<15s)时 `sustainedEvidence=false`,**一律禁升档**;首档由起始选轨/高度 cap 决定,起播不被卡,证据成熟(连续拉流 15s 墙钟)后自然放行。
+- **升档逐级爬**:候选只允许「下一个更高分辨率档」(未排除轨中最小严格更高 height;同 height 多 codec 变体全部放行)——爆发 est 误判的最坏后果从「一步到顶 4K」降为「多升一档」,真扛不住由滞回(§18)/水位急救/顶档 sustained×1.1 接管。降档不在此限(放开全部低档一步落位,2026-08-27 既有语义)。
+- 诊断日志 `YtSabrAbr` 的 `sus=` 同步改打原值(旧打的是回退值,误导取证——20:04 日志里 sus=32884K 实为 -1 回退成活跃 est 的假值)。
+
+**修法 ②(跨重载记忆,SabrAbrMemory 新单例)**:PlayerScreen stall 看门狗触发时,若 YouTube 请求且 `pos < 30s`(冷启动误跳期)→ `SabrAbrMemory.noteStartupStall()` 记进程级时间戳;重载后**新建**的 HeightAware 实例在 3min 冷却内跳过顶档(≥2160)候选(日志 `top-tier startup-stall cooldown: skip itagX(2160p), remain Ns`,每实例一次)。低档升降/手动选档不受影响。单例进程级不按 videoId:重载后立刻重进同一视频正是主场景;误伤面 = 起播 stall 后 3min 内换看其它 YouTube 视频不自动上 4K,可接受。
+
+**log add(③切轨停发取证,DefaultSabrChunkSource)**:rn=2 之后 getNextChunk 再未被调用是「loader 停发」的直接死因,但其卡点在 media3 内部还是 chunk source 内部无证据。补四类打点(均为 chunk 粒度低频):
+- `updateTrackSelection`:切轨时刻 sel 旧→新(高度)+新轨 chunkIndex 状态;
+- `chunk completed`:init/media 交付回执(itag/bytes/当前 sel);
+- `shouldCancelLoad=true`:在途 chunk 被取消(切轨取消链路);
+- `chunk load error` + `getNextChunk → endOfStream(...)`:错误与拒发路径。
+下轮真机若再现「起播切轨后停发」,由这些日志界定:有 `updateTrackSelection`+`chunk completed` 但无后续 `YtSabrAbr`(getNextChunk 入口日志)→ media3 loader 侧卡死(需往 sample stream 重建方向查);有 endOfStream/取消 → chunk source 侧。
+
+**待真机复测**:①起播应稳在起始档 ≥15s,然后 1080→1440→2160 逐级爬(真网络扛得住才继续);②若起播仍 stall,重载后日志应出现 `top-tier startup-stall cooldown`,顶档 3min 不进候选,循环即断;③切轨停发的直接死因由新增日志定位。
+
+### 19.1 2026-08-31 20:28 真机首验:死循环已断,但「无证据一律禁升」矫枉过正——升档拖一分钟
+
+**现象(20:28-20:30 真机,修复后首验)**:零 stall、零重载、逐级爬生效(修复核心工作);但 720p 卡了 **53s** 才升 1080p,**115s** 才到 1440p,用户报「升档怎么要一分钟」。
+
+**归因(日志逐帧)**:首灌 11s 灌满 ~48s 缓冲期间,每次 chunk 都有 ABR 评估机会,但 `sus=-1`(显示为 0K)→ 首版「无证据一律禁升」把非顶档梯子也冻死;随后缓冲满 → loader 停拉 → **42s 零次 getNextChunk = 零次评估**(ABR 只在 getNextChunk 时跑),梯子错过天然窗口后要等缓冲漏到 10s 才有下一次;15s 证据成熟期正好落在满缓冲空闲期里。之后每次升档 reseed 又把 est 锚死在新档声明值(5.7M),est 爬回 1440 门槛 13.4M 又花 ~2min。
+
+**修订(2026-08-31 二版)**:
+1. **撤「无证据一律禁升」**:非顶档冷启动照常爬(活跃 est 门 + 逐级爬约束,误判最坏=多升一档可回退);**顶档防死循环不受影响**——顶档 ×1.1 闸读 sustained 原值,-1 恒小于门槛,冷启动 4K 依然自动被挡。
+2. **SUSTAINED_MIN_SPAN_MS 15s→10s**(SabrMediaFetcher):ABR 评估饥饿是结构性约束(满缓冲零评估),首灌窗口实测 ~11s,15s 成熟期落在空闲期=顶档永远要等 ~50s;10s 让顶档证据在首灌窗口内成熟。
+3. **冷启动升档跳过 reseed**:锚点把 est 压在新档声明值,梯子每步都被拖(20:29:04 升 1080 锚 5.7M,est 从 2.8M 爬回 13.4M 花 ~2min);证据成熟后的稳态升档保持重锚语义不变。误判兜底由水位急救/滞回承担。
+4. 显示修正:`sus=0K` 实为 -1(整数除法 -1/1000=0),负值原样显示,不再误导取证。
+
+**诚实判断**:本视频管道 sustained 实测 ~20-25M < 4K 需求 29.5M(26.9M×1.1),最终停在 1440p 是正确结果非 bug;夜间带宽好转后 4K 自然放行。
+
+**待真机复测**:起播几秒内应完成 720→1080→1440 阶梯(首灌窗口内逐级);4K 仅当 sustained ≥ 声明×1.1(本网络 ≈ 停 1440p 正常);顶档 stall 冷却与切轨停发取证日志维持原验证点。
+
+### 19.2 2026-08-31 20:45 真机二验(P11-75c 后):续播场景重建窗口连升两档→看门狗死循环;冷启动锁档 10s
+
+**现象(20:45-20:46 真机,续播 pos=1569s)**:READY(720p) → 首帧松 cap 重建 6 轨组(**样本队列整体丢弃**,BUFFERING video=null) → 36ms 后梯子升 299(1080p) → 4s 后再升 308(1440p,首档尚未渲染)→ 新档 init 请求(带 2s 服务端 backoff)排不上队 → bufS=0.-9(负载位置落后播放头,playhead 前方无数据)→ 视频轨永不激活 → 8s 看门狗 `stall @pos=1569901ms buffered=50%` → 整链路重载 → 续播同剧本再演,3 轮循环,每轮 retry #1(pos>30s,②的起播 stall 记忆不触发;且卡在 1440p 非顶档,记忆也救不了)。
+
+**根因**:P11-75c 撤掉证据门后,冷启动梯子**没有任何水位/时间门**——cap 释放重建是每次会话必经的队列整丢点(起播 pos≈0 便宜、续播 pos=1569s 同样整丢刚灌的 6s),重建窗口内梯子连升两档,切轨请求挤进重灌期撑爆 8s 看门狗。19 版的 20:04 死循环是「重建窗口 + 直跳顶档」;本轮是「重建窗口 + 连升两档」——重建窗口是共同死因,梯子必须绕开它。
+
+**修法(已实施,用户拍板「起播锁档 10s 没问题」)**:`canUpgrade` 加冷启动时间锁——selection 实例创建(≈重建时刻)后 **10s 内禁升档**(死亡窗口 8.8s,10s 覆盖;比 30s 水位门可预测,慢网络下灌 30s 缓冲会拖更久)。期满梯子自由爬:档内 ABR 切换**不丢样本队列**(队列整丢只发生在选组重建),无缝。原「首档豁免(lastDowngrade=0 不受 30s 水位限)」被锁取代;降档史语义不变(降档后仍需 ≥30s 缓冲回升)。
+
+**遗留(下轮修)**:①**僵尸拉流**——重建丢弃旧 sample stream 后,在途 chunk load 未被取消:`SabrDataSource.open()` 同步阻塞在 `fetcher.getNextSegment()`(SABR POST 循环),media3 的 cancel 打不断;本轮该僵尸 6 次重复拉同一 seg=336(各 3.3MB 共 ~20MB 废流量),独占串行 fetcher 4s,把新轨 init/段请求全堵在后面,是重灌窗口被撑到 9s 的放大器。修法方向:getNextSegment 支持取消中断(DataSource.close 置位,循环检查);②seg=336 重复 6 次的 getNextSegment 内部循环终止条件需查(一次段请求拉了 6 个 POST)。
+
+**待真机复测**:续播(pos>30s)起播应在 720p 稳住 ~10s(重建后 1-3s 内视频轨激活、READY),10s 后无缝逐级爬;全程零 stall 零重载。若仍卡,看新增 chunk 日志定位僵尸拉流占比。
+
+### 19.3 2026-08-31 21:01 真机三验(P11-75d 后):10s 锁生效,但白名单丢包饿死续播重灌——在途请求 itag 入白名单
+
+**现象(21:01-21:02 真机,续播 pos=1569s)**:P11-75d 的 10s 锁工作正常(重建窗口内零 upshift,恢复后梯子 21:03 正常爬 303→308→315),但**首次续播仍在重建后 ~10s 饿死**:`READY(720p)→ 重建(队列整丢,BUFFERING)→ 9.9s 后 stall @pos=1569947ms buffered=50% → 重载`,第二轮恢复仅 2.2s 后正常。
+
+**真凶(§19.2 预判的「僵尸拉流」实锤 + 精确机制)**:重建后新 6 轨选组初始档=index 5=**itag302**(720p webm,bitrate 降序组的末位),`selectFormat` 把 fetcher 的 `videoFormat` 从 298 翻成 302;而在途旧 chunk(298 seg=336)还在 `getNextSegment` 循环里——processPart 的**广告白名单 `[audioFormat, videoFormat]=[139, 302]` 把服务端每次都回来的 298 段数据当广告丢弃**(`skip ad/unrequested MEDIA_HEADER itag=298`)→ `hasSegment(336)` 永假 → 六连重试(每次 POST 3.3MB,含一次 5.4s 慢响应)独占串行 fetcher **8.5s** → 新轨 init 21:01:59.99 才被服务,看门狗 21:02:00.81 开枪,**差 0.7s**。第二轮无在途冲突所以 2.2s 即恢复。
+
+**修法(已实施,SabrMediaFetcher)**:白名单 = 当前选中格式 **+ 在途段请求 itag 集合**(`pendingRequestItags`:getNextSegment 进入时加、finally 移除;MEDIA_HEADER 与 FORMAT_INITIALIZATION_METADATA 两处过滤同步并入)。在途请求的响应不再被丢,旧 chunk 一次 POST 即完成(<1s),串行 fetcher 不再被占。广告防御语义不变:从未被请求过的 itag 照丢(广告段只可能出现在非请求 itag 上)。
+
+**待真机复测**:续播应在重建后 1-3s 内出画面(720p 稳 ~10s),全程零 stall 零重载;日志不应再出现 `skip ad/unrequested` 丟在途 itag + `getNextSegment: no seg ... (retry)` 连发。若仍有饿死,查 getNextSegment 重试循环的其他出口。

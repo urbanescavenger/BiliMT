@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.space
 
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -37,9 +38,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -57,7 +60,9 @@ import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.core.youtube.YoutubePlaylistHeader
 import com.kirin.mt.core.youtube.YoutubeRepository
-import com.kirin.mt.ui.player.playerFocusedLiquidGlassSurface
+import com.kirin.mt.ui.focus.focusDiag
+import com.kirin.mt.ui.glass.LocalLiquidGlassBackdrop
+import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliRadius
@@ -70,6 +75,25 @@ import kotlinx.coroutines.launch
 /** 距末尾 2s 内视为已看完(对齐播放器「播到结尾」判定裕量)。 */
 private const val CompletedThresholdMs = 2_000L
 
+/** 初焦重试上限(帧):覆盖层初焦单发在低端盒子上会撞「FocusRequester is not initialized」,失败即整页无焦点。 */
+private const val InitialFocusMaxFrames = 30
+
+/** 聚焦高亮底色透明度(纯粉直画,用户选定样例 A:比玻璃面 PlayerPanelFocused 的 30% 再实一档)。 */
+private const val FocusHighlightAlpha = 0.35f
+
+/**
+ * 详情页聚焦高亮底:纯粉半透明直画 background,**不走 playerFocusedLiquidGlassSurface 玻璃链路**。
+ * P11-52 的玻璃高亮在覆盖层环境真机不可见(焦点已确认进屏 GAINED [playlist-detail]、OK 可播,
+ * 用户仍报整页无高亮),改为不依赖玻璃管线/性能策略的硬渲染(P11-72,样例 A:粉底+粉框);
+ * 粉边框仍由调用处 .border(3dp) 叠加。
+ */
+private fun Modifier.playlistFocusFill(focused: Boolean, shape: Shape): Modifier =
+  if (focused) {
+    background(BiliColors.BiliPink.copy(alpha = FocusHighlightAlpha), shape)
+  } else {
+    this
+  }
+
 /**
  * TV 版 YouTube 播放列表详情页(频道页"播放列表" tab 点卡片进入)。镜像移动端
  * MobileYoutubePlaylistDetailScreen 的数据流(getPlaylistVideos 首屏 header 元数据 + 滚动
@@ -81,6 +105,8 @@ private const val CompletedThresholdMs = 2_000L
  * 缩略图底部观看进度条 + 右下角「已看完」角标:数据取本地 YouTube 播放历史
  * (YoutubeHistoryStore.positionMs/durationMs,播放器写入;TV 播完写 ≈duration,
  * 移动端播完写 0,两种都算已看完)。
+ * 「正在播放」标记(P11-69,用户反馈列表内看不出选过的视频):播放历史 lastPlayedAtMs
+ * 最新的那条视频行,序号换成粉色 ▶ + 标题变粉(全列表唯一;从未播过无标记)。
  */
 @Composable
 internal fun YoutubePlaylistDetailScreen(
@@ -101,8 +127,20 @@ internal fun YoutubePlaylistDetailScreen(
   var failed by remember { mutableStateOf<String?>(null) }
   var descExpanded by remember { mutableStateOf(false) }
   var playAllFocused by remember { mutableStateOf(false) }
+  var backFocused by remember { mutableStateOf(false) }
   val playAllFocusRequester = remember { FocusRequester() }
+  val backFocusRequester = remember { FocusRequester() }
+  // 列表首行落点:「播放全部」按 ↓ 显式聚焦到它(覆盖层默认焦点搜索不可靠,P11-50/51 教训)。
+  val firstRowFocusRequester = remember { FocusRequester() }
   var firstFocusDone by remember { mutableStateOf(false) }
+  // 本屏(含子节点)是否持有焦点:焦点在遮挡层后面(频道页卡片)时为 false。
+  var screenHasFocus by remember { mutableStateOf(false) }
+  // 「合法焦点落点」(播放全部/视频行/返回 chip)是否真的拿到焦点。
+  // 不能只看根 hasFocus:简介 Text 的 clickable 也参与焦点(真机实锤把初焦/↓搜索的焦点都吃掉,
+  // 三个有日志的节点零回调而子树 hasFocus=true——P11-72c),那种焦点在视觉上完全不可见,
+  // 若以其为成功判据,重试循环会误判成功后放弃。
+  var anyRowFocused by remember { mutableStateOf(false) }
+  fun legitFocusTargetHasFocus(): Boolean = playAllFocused || backFocused || anyRowFocused
 
   BackHandler { onBack() }
 
@@ -158,14 +196,54 @@ internal fun YoutubePlaylistDetailScreen(
   // collectAsState 持续订阅:播放器写入进度返回本页即刷新,无需手动刷新。
   val history by youtubeHistoryStore.history.collectAsState(initial = emptyList())
   val historyByVideoId = remember(history) { history.associateBy { it.videoId } }
+  // 「正在播放」标记:播放历史里 lastPlayedAtMs 最新的那条(全列表唯一)。
+  // 播放器播这条时写入进度,lastPlayedAtMs 最大即最近在播;从未播过的列表无标记。
+  val playingVideoId = remember(videos, history) {
+    videos.asSequence()
+      .mapNotNull { historyByVideoId[it.bvid] }
+      .filter { it.lastPlayedAtMs > 0L && it.positionMs >= 0L }
+      .maxByOrNull { it.lastPlayedAtMs }
+      ?.videoId
+  }
 
-  // 首屏到达后聚焦「播放全部」。
+  // 首屏到达后聚焦「播放全部」(空列表/加载失败聚焦返回 chip)。
+  // 单发 requestFocus 在覆盖层环境不可靠:等一帧仍可能撞「FocusRequester is not initialized」
+  // (真机 logs_live 23:58:32/00:04:42 同款异常实锤),被 runCatching 吞掉后整页永远无焦点,
+  // 且焦点留在被盖住的频道页卡片后面、按键全落空。改为验证+重试:拉焦点后等一帧确认
+  // screenHasFocus,未确认继续拉,至多 InitialFocusMaxFrames 帧;焦点已在屏上(用户手动
+  // 移动过)立即停,不抢焦点。
   LaunchedEffect(loading, failed) {
-    if (!loading && failed == null && !firstFocusDone && videos.isNotEmpty()) {
+    if (loading || firstFocusDone) return@LaunchedEffect
+    var attempt = 0
+    var confirmed = false
+    while (attempt < InitialFocusMaxFrames) {
       withFrameNanos { }
-      runCatching { playAllFocusRequester.requestFocus() }
-      firstFocusDone = true
+      // 判据 = 合法落点(播放全部/行/返回 chip)真的有焦点,不是根 hasFocus——
+      // 后者会被「焦点卡在简介 clickable 上」误判成功(P11-72c);若焦点卡在简介,
+      // requestFocus 会强行从它抢到目标节点,循环即自愈。
+      if (legitFocusTargetHasFocus()) {
+        confirmed = true
+        break
+      }
+      runCatching {
+        if (videos.isNotEmpty()) playAllFocusRequester.requestFocus() else backFocusRequester.requestFocus()
+      }.onFailure {
+        Log.w("BiliMT:FocusDiag", "playlist-request failed attempt=$attempt: ${it.message}")
+      }
+      attempt++
+      withFrameNanos { }
+      if (legitFocusTargetHasFocus()) {
+        confirmed = true
+        break
+      }
     }
+    Log.i(
+      "BiliMT:FocusDiag",
+      "playlist-focus initial done attempts=$attempt confirmed=$confirmed " +
+        "target=${if (videos.isNotEmpty()) "playall" else "back"} " +
+        "playAll=$playAllFocused row=$anyRowFocused back=$backFocused screenHasFocus=$screenHasFocus",
+    )
+    firstFocusDone = true
   }
 
   val cover = header?.cover?.takeIf { it.isNotBlank() } ?: playlist.thumbnail
@@ -176,7 +254,30 @@ internal fun YoutubePlaylistDetailScreen(
   Column(
     modifier = modifier
       .fillMaxSize()
-      .background(BiliColors.VideoBlack),
+      .background(BiliColors.VideoBlack)
+      .focusDiag("playlist-detail")
+      .onFocusChanged { screenHasFocus = it.hasFocus }
+      // 根级按键日志 + 自动纠焦:任何键按下时若合法落点(播放全部/行/返回 chip)无焦点,
+      // 强行把焦点拉回「播放全部」——不管焦点被谁吃掉都能自愈;按键日志同时回答
+      // 「按键到底有没有到达本屏」「按下时焦点状态是什么」两个问题(P11-72d)。
+      .onPreviewKeyEvent { event ->
+        if (event.type == KeyEventType.KeyDown) {
+          Log.i(
+            "BiliMT:FocusDiag",
+            "playlist-key key=${event.key} legit=${
+              playAllFocused || anyRowFocused || backFocused
+            } screenHasFocus=$screenHasFocus",
+          )
+          if (!(playAllFocused || anyRowFocused || backFocused)) {
+            runCatching {
+              if (videos.isNotEmpty()) playAllFocusRequester.requestFocus() else backFocusRequester.requestFocus()
+            }.onFailure { ex ->
+              Log.w("BiliMT:FocusDiag", "playlist-key-heal failed: ${ex.message}")
+            }
+          }
+        }
+        false // 不消费任何键,只观察与纠焦
+      },
   ) {
     // 顶栏:返回 + 播放列表名。
     Row(
@@ -186,7 +287,11 @@ internal fun YoutubePlaylistDetailScreen(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
     ) {
-      YoutubePlaylistBackChip(onActivate = onBack)
+      YoutubePlaylistBackChip(
+        focusRequester = backFocusRequester,
+        onActivate = onBack,
+        onFocusedChange = { backFocused = it },
+      )
       Text(
         text = playlist.title,
         color = BiliColors.TextPrimary,
@@ -257,16 +362,26 @@ internal fun YoutubePlaylistDetailScreen(
                   fontSize = BiliTypography.BodySmall,
                   maxLines = if (descExpanded) Int.MAX_VALUE else 2,
                   overflow = TextOverflow.Ellipsis,
-                  modifier = Modifier.clickable { descExpanded = !descExpanded },
+                  // clickable 在 TV 上参与焦点且无任何视觉高亮——真机实锤把初焦/默认搜索的焦点
+                  // 都吃在这里,用户视角=整页无焦点(P11-72c)。简介展开非焦点目标,禁焦;
+                  // OK 键不再落在这里(焦点在播放全部/行上,OK 不会误展开简介)。
+                  modifier = Modifier
+                    .focusProperties { canFocus = false }
+                    .onFocusChanged {
+                      if (it.isFocused || it.hasFocus) {
+                        Log.i("BiliMT:FocusDiag", "playlist-desc focused=${it.isFocused}")
+                      }
+                    }
+                    .clickable { descExpanded = !descExpanded },
                 )
               }
               // 「播放全部」:第一条起播,整份已加载列表作连播队列。
-              // 聚焦高亮 = 高亮底色(播放器侧板行同款玻璃面)+粉边框——仅细边框在 TV 上几乎不可见。
+              // 聚焦高亮 = 实心粉底 + 粉边框(硬渲染,不再走玻璃链路,见 playlistFocusFill 注释)。
               val shape = RoundedCornerShape(BiliRadius.Pill)
               Box(
                 modifier = Modifier
                   .clip(shape)
-                  .playerFocusedLiquidGlassSurface(shape = shape, focused = playAllFocused)
+                  .playlistFocusFill(focused = playAllFocused, shape = shape)
                   .border(
                     androidx.compose.foundation.BorderStroke(
                       BiliFocus.BorderWidth,
@@ -275,18 +390,34 @@ internal fun YoutubePlaylistDetailScreen(
                     shape,
                   )
                   .focusRequester(playAllFocusRequester)
-                  .focusable()
-                  .onFocusChanged { playAllFocused = it.isFocused }
+                  // onFocusChanged/onPreviewKeyEvent 必须在 focusable **之前**:官方文档
+                  // 「onFocusChanged 只监听它之后第一个 focusTarget」——放反了(onFocusChanged
+                  // 在 focusable 后)它绑定不到本节点,P11-72b/c/d 全系「节点零回调而子树
+                  // hasFocus=true」「requestFocus 静默失败」谜团的真凶:焦点一直成功落在
+                  // 播放全部/行上,回调全瞎,聚焦状态永远 false → 高亮不亮(P11-72e)。
+                  .onFocusChanged {
+                    if (it.isFocused != playAllFocused) {
+                      Log.i("BiliMT:FocusDiag", "playlist-playall focused=${it.isFocused}")
+                    }
+                    playAllFocused = it.isFocused
+                  }
                   .onPreviewKeyEvent { event ->
                     val confirm = event.key == Key.Enter || event.key == Key.NumPadEnter ||
                       event.key == Key.DirectionCenter
-                    if (event.type == KeyEventType.KeyUp && confirm && videos.isNotEmpty()) {
-                      onStartSelected(videos.first(), videos)
-                      true
-                    } else {
-                      false
+                    when {
+                      // ↓ 显式落列表首行:覆盖层默认焦点搜索曾证不可靠(P11-50/51),不交给搜索。
+                      event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown &&
+                        videos.isNotEmpty() -> {
+                        runCatching { firstRowFocusRequester.requestFocus() }.isSuccess
+                      }
+                      event.type == KeyEventType.KeyUp && confirm && videos.isNotEmpty() -> {
+                        onStartSelected(videos.first(), videos)
+                        true
+                      }
+                      else -> false
                     }
                   }
+                  .focusable()
                   .padding(horizontal = BiliSpacing.Md, vertical = BiliSpacing.Sm),
               ) {
                 Text(
@@ -345,10 +476,18 @@ internal fun YoutubePlaylistDetailScreen(
               index = index,
               progressRatio = ratio,
               completed = completed,
+              playing = video.bvid == playingVideoId,
+              // 首行挂 requester 供「播放全部」↓ 显式落点;首行 ↑ 显式回「播放全部」。
+              firstRow = index == 0,
+              firstRowFocusRequester = firstRowFocusRequester,
+              onMoveUpFromFirstRow = {
+                runCatching { playAllFocusRequester.requestFocus() }.isSuccess
+              },
               onFocused = {
                 if (index >= videos.size - 6) loadNext()
               },
               onActivate = { onStartSelected(video, videos) },
+              onFocusedChange = { anyRowFocused = it },
             )
           }
           if (loadingMore) {
@@ -367,14 +506,26 @@ internal fun YoutubePlaylistDetailScreen(
   }
 }
 
-/** 详情页顶栏返回 chip(聚焦高亮,OK 返回)。 */
+/** 详情页顶栏返回 chip(聚焦高亮,OK 返回;focusRequester 供空列表/加载失败时初焦落点)。 */
 @Composable
-private fun YoutubePlaylistBackChip(onActivate: () -> Boolean) {
+private fun YoutubePlaylistBackChip(
+  focusRequester: FocusRequester,
+  onActivate: () -> Boolean,
+  onFocusedChange: (Boolean) -> Unit,
+) {
   var focused by remember { mutableStateOf(false) }
   val shape = RoundedCornerShape(BiliRadius.Pill)
   Box(
     modifier = Modifier
       .clip(shape)
+      .focusRequester(focusRequester)
+      .onFocusChanged {
+        if (it.isFocused != focused) {
+          Log.i("BiliMT:FocusDiag", "playlist-back focused=${it.isFocused}")
+        }
+        focused = it.isFocused
+        onFocusedChange(it.isFocused)
+      }
       .border(
         androidx.compose.foundation.BorderStroke(
           BiliFocus.BorderWidth,
@@ -383,7 +534,6 @@ private fun YoutubePlaylistBackChip(onActivate: () -> Boolean) {
         shape,
       )
       .focusable()
-      .onFocusChanged { focused = it.isFocused }
       .onPreviewKeyEvent { event ->
         if (event.type == KeyEventType.KeyUp && event.key.let {
             it == Key.Enter || it == Key.NumPadEnter || it == Key.DirectionCenter
@@ -401,25 +551,34 @@ private fun YoutubePlaylistBackChip(onActivate: () -> Boolean) {
   }
 }
 
-/** 详情页一条视频行:序号 + 封面(右下角「已看完」角标、底部观看进度条) + 标题/作者/播放量·时间。聚焦近底触发翻页。 */
+/** 详情页一条视频行:序号(正在播放换成粉色 ▶) + 封面(右下角「已看完」角标、底部观看进度条) + 标题(正在播放变粉)/作者。聚焦近底触发翻页;首行 ↑ 显式回「播放全部」。 */
 @Composable
 private fun YoutubePlaylistVideoRow(
   video: VideoSummary,
   index: Int,
   progressRatio: Float,
   completed: Boolean,
+  playing: Boolean,
+  firstRow: Boolean,
+  firstRowFocusRequester: FocusRequester,
+  onMoveUpFromFirstRow: () -> Boolean,
   onFocused: () -> Unit,
   onActivate: () -> Unit,
+  onFocusedChange: (Boolean) -> Unit,
 ) {
   var focused by remember { mutableStateOf(false) }
   val shape = RoundedCornerShape(BiliRadius.Card)
+  // 玻璃高亮渲染链路诊断:一次真机日志分辨「焦点回调没触发」vs「玻璃路径没画出来」。
+  val performancePolicy = LocalBiliPerformancePolicy.current
+  val liquidGlassEnabled =
+    performancePolicy.cinematicVisualEffectsEnabled && performancePolicy.liquidGlassCardsEnabled
+  val backdropPresent = LocalLiquidGlassBackdrop.current != null
   Row(
-    modifier = Modifier
+    modifier = (if (firstRow) Modifier.focusRequester(firstRowFocusRequester) else Modifier)
       .fillMaxWidth()
       .clip(shape)
-      // 聚焦高亮 = 高亮底色(播放器侧板行同款玻璃面)+粉边框——仅细边框在 TV 上几乎不可见,
-      // 用户反馈聚焦行与其它行无区别。
-      .playerFocusedLiquidGlassSurface(shape = shape, focused = focused)
+      // 聚焦高亮 = 实心粉底 + 粉边框(硬渲染,不再走玻璃链路,见 playlistFocusFill 注释)。
+      .playlistFocusFill(focused = focused, shape = shape)
       .border(
         androidx.compose.foundation.BorderStroke(
           BiliFocus.BorderWidth,
@@ -427,29 +586,43 @@ private fun YoutubePlaylistVideoRow(
         ),
         shape,
       )
-      .focusable()
+      // onFocusChanged/onPreviewKeyEvent 必须在 focusable **之前**(同上「播放全部」处注释,
+      // P11-72e):放反=绑定不到本行的 focusTarget,焦点回调全瞎、行高亮永不亮。
       .onFocusChanged {
+        if (it.isFocused != focused) {
+          Log.i(
+            "BiliMT:FocusDiag",
+            "playlist-row index=$index focused=${it.isFocused} " +
+              "glass=$liquidGlassEnabled backdrop=$backdropPresent",
+          )
+        }
         focused = it.isFocused
+        onFocusedChange(it.isFocused)
         if (it.isFocused) onFocused()
       }
       .onPreviewKeyEvent { event ->
-        if (event.type == KeyEventType.KeyUp && event.key.let {
+        when {
+          event.type == KeyEventType.KeyUp && event.key.let {
             it == Key.Enter || it == Key.NumPadEnter || it == Key.DirectionCenter
+          } -> {
+            onActivate()
+            true
           }
-        ) {
-          onActivate()
-          true
-        } else {
-          false
+          // 首行 ↑ 显式回「播放全部」(与它的 ↓ 显式落首行成对,防覆盖层默认搜索丢焦)。
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp && firstRow ->
+            onMoveUpFromFirstRow()
+          else -> false
         }
       }
+      .focusable()
       .padding(BiliSpacing.Sm),
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
   ) {
+    // 正在播放:序号换成粉色 ▶(对齐用户确认样例),标题同步变粉。
     Text(
-      text = "${index + 1}",
-      color = BiliColors.TextSecondary,
+      text = if (playing) "▶" else "${index + 1}",
+      color = if (playing) BiliColors.BiliPink else BiliColors.TextSecondary,
       fontSize = BiliTypography.Body,
       textAlign = TextAlign.Center,
       modifier = Modifier.width(28.dp),
@@ -501,7 +674,7 @@ private fun YoutubePlaylistVideoRow(
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(BiliSpacing.Xs)) {
       Text(
         text = video.title,
-        color = BiliColors.TextPrimary,
+        color = if (playing) BiliColors.BiliPink else BiliColors.TextPrimary,
         fontSize = BiliTypography.Body,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,

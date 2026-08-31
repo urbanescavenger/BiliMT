@@ -191,6 +191,7 @@ fun BiliTvApp(
   webdavConfigStore: com.kirin.mt.core.webdav.WebDavConfigStore,
   webdavBackupService: com.kirin.mt.core.webdav.WebDavBackupService,
   iptvRepository: com.kirin.mt.core.network.IptvRepository,
+  iptvProbeStore: com.kirin.mt.core.player.IptvSourceProbeStore,
 ) {
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
@@ -1009,8 +1010,10 @@ fun BiliTvApp(
                 onSendLog = { info ->
                   coroutineScope.launch {
                     val result = withContext(Dispatchers.IO) {
-                      // sendUnsentReports 无完成回调,入队成功只提示「已入队:上传中」,
-                      // 真实上传成败看诊断日志(网络失败时 SDK 打 Couldn't open connection)
+                      // SDK 结构性限制(doBackgroundInitialization 只在启动时拉起上传管线):
+                      // 会话中 recordException 的报告要等下次启动 finalize 才存在,sendUnsentReports
+                      // 中途调用是无人消费的 no-op——toast 如实说「下次启动后送达」,不承诺即时;
+                      // 真实网络成败看诊断日志(失败时 SDK 打 Couldn't open connection)与云端
                       FirebaseLogSender.sendLogFile(localizedContext, info.file)
                     }
                     val msg = when {
@@ -1415,6 +1418,7 @@ fun BiliTvApp(
                 AppDestination.Live -> com.kirin.mt.ui.live.LiveScreen(
                   liveRepository = liveRepository,
                   iptvRepository = iptvRepository,
+                  iptvProbeStore = iptvProbeStore,
                   uiState = liveUiState,
                   firstItemFocusRequester = liveFocusRequester,
                   tabFocusRequester = liveTabFocusRequester,
@@ -1523,6 +1527,7 @@ fun BiliTvApp(
               playbackHttpClient = playbackHttpClient,
               liveQualityPreferenceStore = liveQualityPreferenceStore,
               iptvRepository = iptvRepository,
+              iptvProbeStore = iptvProbeStore,
               onBack = {
                 playbackFocusRestoreDestination = selectedDestination
                 playbackRequest = null

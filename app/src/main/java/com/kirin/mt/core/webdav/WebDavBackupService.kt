@@ -22,8 +22,16 @@ data class PipedBackupData(
   val pipedInstanceUrl: String = "",
 )
 
-/** 备份/还原可选项:YouTube 关注频道、Piped 配置、已看完列表、B站账号、日志。还原不支持日志(诊断产物只上传不还原)。 */
-enum class WebDavBackupItem { Channels, Piped, Watched, BiliAccount, Logs }
+/** 备份/还原可选项:YouTube 关注频道、Piped 配置、已看完列表、B站账号、IPTV 源配置、日志。还原不支持日志(诊断产物只上传不还原)。 */
+enum class WebDavBackupItem { Channels, Piped, Watched, BiliAccount, Iptv, Logs }
+
+/** IPTV 源配置备份载荷:m3u 地址 + Basic Auth 账号/密码(空串=未配置)。含源密码,还原即恢复 IPTV 源配置。 */
+@Serializable
+data class IptvBackupData(
+  val sourceUrl: String = "",
+  val username: String = "",
+  val password: String = "",
+)
 
 /** B站账号登录态备份载荷:SESSDATA/bili_jct/buvid/mid 及资料(face/uname/isVip)。含登录凭证,还原即恢复登录态。 */
 @Serializable
@@ -71,6 +79,8 @@ class WebDavBackupService(
   private val watchedFileName = "watched.json"
   /** B站账号登录态备份文件名。 */
   private val biliSessionFileName = "session.json"
+  /** IPTV 源配置备份文件名。 */
+  private val iptvConfigFileName = "iptv_config.json"
   /** 日志备份子目录。 */
   private val logsDir = "logs"
 
@@ -96,6 +106,7 @@ class WebDavBackupService(
       if (WebDavBackupItem.Piped in items) backupPipedConfig(config)
       if (WebDavBackupItem.Watched in items) backupWatched(config)
       if (WebDavBackupItem.BiliAccount in items) backupBiliAccount(config)
+      if (WebDavBackupItem.Iptv in items) backupIptvConfig(config)
       if (WebDavBackupItem.Logs in items) backupLogs(config)
     }
   }
@@ -123,6 +134,7 @@ class WebDavBackupService(
       if (WebDavBackupItem.Piped in items) restorePipedConfig(config)
       if (WebDavBackupItem.Watched in items) restoreWatched(config)
       if (WebDavBackupItem.BiliAccount in items) restoreBiliAccount(config)
+      if (WebDavBackupItem.Iptv in items) restoreIptvConfig(config)
       count
     }
   }
@@ -195,6 +207,30 @@ class WebDavBackupService(
     sessionStore.saveUserProfile(data.mid, data.face, data.uname, data.isVip)
   }
 
+  /** 备份 IPTV 源配置(m3u 地址 + Basic Auth 账号/密码)到 `{url}/bilitv/iptv_config.json`(覆盖)。失败即抛,让整体备份失败。 */
+  private suspend fun backupIptvConfig(config: WebDavConfig) {
+    val s = settingsStore.settings.first()
+    val data = IptvBackupData(
+      sourceUrl = s.iptvSourceUrl,
+      username = s.iptvSourceUsername,
+      password = s.iptvSourcePassword,
+    )
+    val body = json.encodeToString(IptvBackupData.serializer(), data).toByteArray()
+    val ok = repository.put(iptvConfigUrl(config), config.username, config.password, body)
+    if (!ok) throw IOException("IPTV 配置上传失败:服务器返回非 2xx")
+  }
+
+  /** 还原 IPTV 源配置。备份文件缺失(旧备份)或解析失败时跳过,不使整体还原失败。 */
+  private suspend fun restoreIptvConfig(config: WebDavConfig) {
+    val bytes = repository.get(iptvConfigUrl(config), config.username, config.password) ?: return
+    val data = runCatching {
+      json.decodeFromString(IptvBackupData.serializer(), bytes.decodeToString())
+    }.getOrNull() ?: return
+    settingsStore.setIptvSourceUrl(data.sourceUrl)
+    settingsStore.setIptvSourceUsername(data.username)
+    settingsStore.setIptvSourcePassword(data.password)
+  }
+
   /**
    * 备份日志:把 crash_logs 目录下所有日志(手动/崩溃/实时)上传到 `{url}/bilitv/logs/`(同名覆盖)。
    * 全部上传成功后才删本地日志。无日志时直接返回。
@@ -263,6 +299,8 @@ class WebDavBackupService(
   private fun watchedUrl(config: WebDavConfig): String = "${dirUrl(config)}/$watchedFileName"
 
   private fun biliSessionUrl(config: WebDavConfig): String = "${dirUrl(config)}/$biliSessionFileName"
+
+  private fun iptvConfigUrl(config: WebDavConfig): String = "${dirUrl(config)}/$iptvConfigFileName"
 
   private fun logsDirUrl(config: WebDavConfig): String = "${dirUrl(config)}/$logsDir"
 

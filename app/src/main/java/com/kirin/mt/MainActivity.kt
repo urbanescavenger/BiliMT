@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
             webdavConfigStore = appContainer.webdavConfigStore,
             webdavBackupService = appContainer.webdavBackupService,
             iptvRepository = appContainer.iptvRepository,
+            iptvProbeStore = appContainer.iptvSourceProbeStore,
           )
         } else {
           BiliMobileApp(

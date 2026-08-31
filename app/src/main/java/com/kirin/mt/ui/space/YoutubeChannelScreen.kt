@@ -77,6 +77,7 @@ import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.home.VideoCardMode
 import com.kirin.mt.ui.home.GridFooterState
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
+import com.kirin.mt.ui.focus.focusDiag
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
 import com.kirin.mt.ui.theme.BiliRadius
@@ -806,7 +807,9 @@ private fun ChannelPlaylistGrid(
     ),
     horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
     verticalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
-    modifier = Modifier.fillMaxSize(),
+    modifier = Modifier
+      .fillMaxSize()
+      .focusDiag("channel-playlists"),
   ) {
     itemsIndexed(playlists) { index, playlist ->
       val requester = when {

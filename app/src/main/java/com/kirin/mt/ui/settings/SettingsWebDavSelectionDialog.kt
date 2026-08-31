@@ -71,6 +71,7 @@ internal fun SettingsWebDavSelectionDialog(
       WebDavBackupItem.Piped,
       WebDavBackupItem.Watched,
       WebDavBackupItem.BiliAccount,
+      WebDavBackupItem.Iptv,
     )
   } else {
     WebDavBackupItem.entries
@@ -93,6 +94,7 @@ internal fun SettingsWebDavSelectionDialog(
     WebDavBackupItem.Piped -> stringResource(R.string.settings_webdav_item_piped)
     WebDavBackupItem.Watched -> stringResource(R.string.settings_webdav_item_watched)
     WebDavBackupItem.BiliAccount -> stringResource(R.string.settings_webdav_item_biliaccount)
+    WebDavBackupItem.Iptv -> stringResource(R.string.settings_webdav_item_iptv)
     WebDavBackupItem.Logs -> stringResource(R.string.settings_webdav_item_logs)
   }
 

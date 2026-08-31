@@ -87,6 +87,17 @@ internal class SabrMediaFetcher(
   private var audioFormat: FormatId? = null
   private var videoFormat: FormatId? = null
 
+  /**
+   * 2026-08-31(修续播重建窗口饿死):**在途段请求的 itag 集合**(getNextSegment 进入时加、返回/抛错时移除,
+   * ConcurrentHashMap.newKeySet 因 loader 线程与 fetcher 并发)。processPart 的广告白名单必须包含它们——
+   * 21:01 真机:重建后新选组初始档翻 302(videoFormat 变更),在途旧 chunk(298 seg=336)的响应数据
+   * 全被 `skip ad/unrequested` 丢弃 → hasSegment 永假 → 六连重试(含一次 5.4s 慢响应)独占串行 fetcher
+   * 8.5s → 新轨 init 排不上队 → 看门狗重载。白名单=当前选中+在途请求,广告防御语义不变(从没被请求
+   * 过的 itag 照丢)。
+   */
+  private val pendingRequestItags: MutableSet<Int> =
+    java.util.concurrent.ConcurrentHashMap.newKeySet()
+
   /** 请求序号(每次 POST 追加 &rn=,AtomicInt 防 A/V 两 loader 并发)。 */
   private val requestNumber = AtomicInteger(0)
   /** 上次请求墙钟(epoch ms,0=首次),算 elapsedWallTimeMs。 */
@@ -249,12 +260,13 @@ internal class SabrMediaFetcher(
    * 2026-08-30 真机实证:1080p 满缓冲 50s 后停闸 28s,全墙钟分母把空窗全摊入 → sustained≈8-10M 恒
    * <308 门槛 13.4M(手动切 1440 实测持续 20M+),升档被定点锁死。分母改为扣除滑行量(与 active est
    * 的 gap 扣减同口径)后,「管道空闲因为需求低」不再拉低估计,而 GC/断流/服务端 pacing 期间 runway
-   * 低、滑行扣不掉,照旧压低 sustained → 防升高档后卡死的意图保留。证据 <15s(刚起播/暂停恢复)返回
-   * -1,由调用方回退活跃传输 est。专供升档判定,降档走 [getRealBitrateEstimate]。
+   * 低、滑行扣不掉,照旧压低 sustained → 防升高档后卡死的意图保留。证据 <10s(刚起播/暂停恢复,
+   * 2026-08-31 15s→10s,见 SUSTAINED_MIN_SPAN_MS)返回 -1,由调用方回退活跃传输 est。专供升档判定,
+   * 降档走 [getRealBitrateEstimate]。
    *
    * 2026-08-30 修 sus 垃圾尖峰(真机实测 500-635M 物理不可能):gap 扣减后跨度原被 coerceIn 夹到
-   * 下限 1s,停闸空窗接近全跨度时(bytes/1s)直接爆炸。现改为:扣减后跨度 <15s(证据不足)返回 -1,
-   * 由调用方回退活跃 est,不再出垃圾值。
+   * 下限 1s,停闸空窗接近全跨度时(bytes/1s)直接爆炸。现改为:扣减后跨度不足 SUSTAINED_MIN_SPAN_MS
+   * (证据不足)返回 -1,由调用方回退活跃 est,不再出垃圾值。
    */
   fun getSustainedBitrateEstimate(): Long {
     synchronized(realBandwidthLock) {
@@ -371,34 +383,40 @@ internal class SabrMediaFetcher(
   fun getNextSegment(req: SabrSegmentRequest): SabrSegment {
     fatalError?.let { throw SabrTerminalException("SABR error: $it") }
     val itag = req.formatItag
+    // 2026-08-31:在途 itag 入白名单(修重建后旧在途请求响应被广告过滤丢弃的死循环),finally 移除。
+    pendingRequestItags.add(itag)
     return runBlocking {
-      withContext(dispatcher) {
-        var attempt = 0
-        while (attempt < MAX_ATTEMPTS) {
-          attempt++
-          // 同步 bufferedSegments:按 req.bufferedSegments 保留(清除已不缓冲的,防内存泄漏)
-          initializedFormats[itag]?.bufferedSegments?.keys?.retainAll(req.bufferedSegments)
+      try {
+        withContext(dispatcher) {
+          var attempt = 0
+          while (attempt < MAX_ATTEMPTS) {
+            attempt++
+            // 同步 bufferedSegments:按 req.bufferedSegments 保留(清除已不缓冲的,防内存泄漏)
+            initializedFormats[itag]?.bufferedSegments?.keys?.retainAll(req.bufferedSegments)
 
-          var fmt = initializedFormats[itag]
-          if (fmt == null || !fmt.hasSegment(req.segment)) {
-            // 已下载但播放器不再要的段(seek 后)清掉,防泄漏
-            fmt?.downloadedSegments?.clear()
-            // 单流 POST——服务端推多段,缓存进 initializedFormats
-            media(req)
+            var fmt = initializedFormats[itag]
+            if (fmt == null || !fmt.hasSegment(req.segment)) {
+              // 已下载但播放器不再要的段(seek 后)清掉,防泄漏
+              fmt?.downloadedSegments?.clear()
+              // 单流 POST——服务端推多段,缓存进 initializedFormats
+              media(req)
+            }
+            // 终端检查(media 可能置位)
+            reloadPlayerDump?.let { throw SabrTerminalException("RELOAD_PLAYER_RESPONSE: $it") }
+            if (invalidPo) throw SabrTerminalException("InvalidPoToken (StreamProtectionStatus status=3)")
+            fatalError?.let { throw SabrTerminalException("SABR error: $it") }
+
+            fmt = initializedFormats[itag]
+            val seg = fmt?.getSegment(req.segment)
+            if (seg != null) return@withContext seg
+            // transient:段未到(服务端只回了 context+backoff 或 redirect)。backoff 已在 media 起始 sleep,
+            // redirect 已写回 session.sabrUrl。循环重试同请求。
+            Log.i(tag, "getNextSegment: no seg ${req.segment} itag $itag after attempt $attempt (retry)")
           }
-          // 终端检查(media 可能置位)
-          reloadPlayerDump?.let { throw SabrTerminalException("RELOAD_PLAYER_RESPONSE: $it") }
-          if (invalidPo) throw SabrTerminalException("InvalidPoToken (StreamProtectionStatus status=3)")
-          fatalError?.let { throw SabrTerminalException("SABR error: $it") }
-
-          fmt = initializedFormats[itag]
-          val seg = fmt?.getSegment(req.segment)
-          if (seg != null) return@withContext seg
-          // transient:段未到(服务端只回了 context+backoff 或 redirect)。backoff 已在 media 起始 sleep,
-          // redirect 已写回 session.sabrUrl。循环重试同请求。
-          Log.i(tag, "getNextSegment: no seg ${req.segment} itag $itag after attempt $attempt (retry)")
+          throw SabrTerminalException("exhausted $MAX_ATTEMPTS attempts for seg ${req.segment} itag $itag")
         }
-        throw SabrTerminalException("exhausted $MAX_ATTEMPTS attempts for seg ${req.segment} itag $itag")
+      } finally {
+        pendingRequestItags.remove(itag)
       }
     }
   }
@@ -583,7 +601,9 @@ internal class SabrMediaFetcher(
         }
         // alpha.71 广告防御层:跳过非白名单 itag 的 MEDIA_HEADER(广告段)。不入 partialSegments
         // → 其后续 MEDIA/MEDIA_END 按 headerId 找不到段自动丢弃。
-        val hdrWhitelist = setOfNotNull(audioFormat?.itag, videoFormat?.itag)
+        // 2026-08-31:白名单=当前选中格式+在途段请求 itag——选轨切换后旧在途请求的响应不再被误丢
+        // (21:01 真机:videoFormat 翻 302 后 298 在途段响应全被丢,六连重试独占 fetcher 8.5s)。
+        val hdrWhitelist = setOfNotNull(audioFormat?.itag, videoFormat?.itag) + pendingRequestItags
         if (hdrWhitelist.isNotEmpty() && mh.itag !in hdrWhitelist) {
           Log.w(tag, "skip ad/unrequested MEDIA_HEADER itag=${mh.itag} headerId=${mh.headerId} (whitelist=$hdrWhitelist)")
           return
@@ -651,7 +671,8 @@ internal class SabrMediaFetcher(
         // visionOS 客户端(path C)通常不注入广告,但作安全网:广告格式不入表 → 其 MEDIA 段
         // 在 partialSegments 找不到 headerId → MEDIA/MEDIA_END 自动丢弃 → 不喂解码器。
         // 白名单空(audioFormat/videoFormat 均未设)时不过滤,避免误杀。
-        val whitelistedItags = setOfNotNull(audioFormat?.itag, videoFormat?.itag)
+        // 2026-08-31:同 MEDIA_HEADER 白名单,并入在途段请求 itag(见 pendingRequestItags)。
+        val whitelistedItags = setOfNotNull(audioFormat?.itag, videoFormat?.itag) + pendingRequestItags
         if (whitelistedItags.isNotEmpty() && fi.itag !in whitelistedItags) {
           Log.w(tag, "skip ad/unrequested FORMAT_INIT itag=${fi.itag} (whitelist=$whitelistedItags)")
           return
@@ -806,8 +827,13 @@ internal class SabrMediaFetcher(
     const val REAL_BW_RESEED_MS = 4_000L
     /** 2026-08-30:实测消耗码率最少段数——少于 3 段(起播 ~16s)证据不足,返回 -1 防小样本抖动。 */
     const val MEASURED_MIN_SEGS = 3L
-    /** alpha.9Z:持续带宽最短跨度,不足视为证据不足返回 -1(回退活跃 est,起播爬档不被卡)。 */
-    const val SUSTAINED_MIN_SPAN_MS = 15_000L
+    /**
+     * alpha.9Z:持续带宽最短跨度,不足视为证据不足返回 -1(顶档闸据此挡冷启动 4K,起播爬档不被卡)。
+     * 2026-08-31 15s→10s:ABR 评估只发生在 getNextChunk(缓冲灌满后 loader 停拉=零评估),首灌窗口
+     * 实测仅 ~11s——15s 成熟期落在「满缓冲空闲期」内,顶档要等缓冲漏到 10s(~50s 后)才有机会被
+     * 评到(20:28 真机:首次升档拖到 53s,1440p 拖到 115s)。10s 让顶档证据在首灌窗口内成熟。
+     */
+    const val SUSTAINED_MIN_SPAN_MS = 10_000L
   }
 }
 

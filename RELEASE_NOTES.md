@@ -1,7 +1,15 @@
 # BiliMT 版本发布说明
 
 ## 目录
+
+- [v3.0.8](#v308)
 - [v3.0.7](#v307)
+- [v3.0.8-alpha.6](#v308-alpha6)
+- [v3.0.8-alpha.5](#v308-alpha5)
+- [v3.0.8-alpha.4](#v308-alpha4)
+- [v3.0.8-alpha.3](#v308-alpha3)
+- [v3.0.8-alpha.2](#v308-alpha2)
+- [v3.0.8-alpha.1](#v308-alpha1)
 - [v3.0.7-alpha.16](#v307-alpha16)
 - [v3.0.7-alpha.15](#v307-alpha15)
 - [v3.0.7-alpha.14](#v307-alpha14)
@@ -225,6 +233,22 @@
 - [v1.0.7](#v107)
 - [目录](#v录)
 
+## v3.0.8
+
+**稳定版:YouTube SABR 起播 4K 死循环根治 + ABR 码率口径与滞回精修 + TV IPTV 多镜像源判活自动换源。** 本版整合 v3.0.8-alpha.1~7 全部改动:YouTube SABR 起播/续播 4K 无限重载四层连环根治(冷启动防直跳顶档+锁档 10s+stall 重载跨重载记忆+广告白名单丢在途请求);ABR 声明码率换真实平均(averageBitrate)+降档滞回死区+顶档定向冷却;TV YouTube 字幕下线根治「字幕 URL 直连黑洞拖死主源转圈」;TV IPTV 三期判活(启动廉价探活+截帧铁证回写+活源前置重排)与看门狗 READY/ENDED 盲区修复;WebDAV 备份加 IPTV 源配置。
+
+### 变更
+- **SABR 起播 4K 死循环根治**(alpha.6,P11-75 系列,四层连环):①冷启动防直跳顶档(sustained 原值不回退爆发假值+顶档 ×1.1 自动挡+升档逐级爬+证据期 15→10s+冷启动免重锚)——修起播 pos=0 一两笔爆发样本直跳 2160p→loader 停发→看门狗重载→同误判再来的 ~16s/轮死循环;②冷启动锁档 10s——修首帧松 cap 重建选组整丢样本队列窗口内连升两档饿死看门狗的续播 3 轮死循环;③stall 重载跨重载记忆(`SabrAbrMemory` 进程级,起播期 stall 后 3min 顶档冷却,打破「重载→全新状态→同样误判」);④广告白名单丢在途请求修复——选轨翻转后在途旧 chunk 响应被当广告丢弃→六连重试独占 fetcher 8.5s 饿死新轨 init,白名单并入在途段请求 itag 集合。排查四轮真机复盘见 `docs/youtube-sabr-abr-upshift-notes.md` §19-§19.3。
+- **ABR 码率口径与滞回精修**(alpha.1~3):①声明码率换真实平均(`bitrate` 是 VBR 峰值虚高 ~60-75%,全链路改 `averageBitrate` 优先,NewPipe 路径自算 clen÷dur;calib 采样折算整体取消;顶档 sustained 门槛重标 ×1.1);②降档滞回 ×0.85 双阈值死区(当前档降档判据放宽 15%,修 est 巡航骑在相邻档门槛 ±10% 的临界来回切档;升档门槛保持全额,真饿照降水位急救兜底);③顶档定向冷却(水位急救从 4K 降下后 3min 不回弹,防边缘档反复切档卡顿,非顶档升降照常)。
+- **TV IPTV 多镜像源判活+自动换源**(alpha.5~7,`docs/iptv-feasibility.md` 三期):启动后台廉价 m3u8 探活(App 级 store 会话复用,并发 2,首个活源即止,~50MB/千频道)+可见频道截帧多源回退(出帧=拉流解码渲染全链路铁证,判死源跳过,超时永不判死)+urls 活源前置重排(列表/侧栏/断流换源顺序同享,点开直接播活源);stall 看门狗 IPTV 分支优先换镜像源(半死源卡 8s 直接切活源,不再烧满 3 次同源重试);看门狗 READY/ENDED 盲区修复(半死源状态机舞步绕过 8s 计时:唯一段 BUFFERING 态播完→进度前进一路重置→冻结后 0.2s 内翻 READY 清零计时,「有画面不播」25s 靠手动——条件扩展 BUFFERING‖ENDED‖(READY&&!isPlaying),真 ENDED 秒切下一源);截帧并发槽预算 26s 封顶。
+- **TV YouTube 字幕下线**(alpha.4,根治「视频转圈加载不出、官方可播」):字幕 URL 响应头被掐(直连黑洞,81s 超时)时字幕 child 拖死 MergingMediaSource 整链路 prepare,主源 fetch 零发送;播放链路里不再存在字幕 child,物理上够不到主源(用户决策:字幕不重要,核心是音视频稳定)。附 `SabrAwareDataSource` youtube/googlevideo 路由诊断日志。
+- **TV 播放列表体验**(alpha.2~4):详情页「正在播放」标记(历史最新行粉 ▶+粉标题);进入无焦点修复(初焦验证+重试,修覆盖层环境 FocusRequester 未初始化被吞);聚焦高亮弃玻璃改纯粉实底硬渲染。
+- **WebDAV 备份/还原加 IPTV 源配置**(alpha.6):源 URL/账号/密码三件套 `iptv_config.json`,还原写回,四语言文案。
+- **Crashlytics toast 如实化**(alpha.5 附):`sendUnsentReports` 会话中调用是无人消费的 no-op,toast 改「下次启动后送达」。
+- **语言设置描述补 6 档明示**(stable):设置页语言项描述从仅提「香港和台湾转换标题/弹幕/UP 名」改为明示 6 档语言(简体、港繁、台繁、English、Español、Português),六语言包同步更新——英/西/葡语用户此前无从得知可切换回中文或切其它语言。
+
+---
+
 ## v3.0.7
 
 **稳定版:YouTube 播放链路大修(SABR 升档判据/4K)+ Crashlytics 日志远程回收完整链路 + 双端 UI 官方对齐。** 本版整合 v3.0.7-alpha.1~16 全部改动:YouTube SABR 自适应三连修(升档判据改持续带宽、gap 时钟单位 bug、Auto 满缓冲不升 1440);Crashlytics 日志远程回收从接入到上报时机重构一站走完(无需 Google Play Services,AOSP 盒子可上报,手动分享恒即时);TV/移动端频道页、排序、搜索结果对齐 B站/YouTube 官方 UI;修 TV 退桌面直播后台出声与重开 APP 新实例;订阅流提速;普通卡片显示真实观看进度条。
@@ -241,6 +265,83 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v3.0.8-alpha.6
+
+**YouTube SABR 起播 4K 无限重载根治(四层连环修复)+ WebDAV 备份 IPTV 源配置 + IPTV 真机首验两洞修复**。排查全程四轮真机复盘见 `docs/youtube-sabr-abr-upshift-notes.md` §19-§19.3。
+
+### 变更
+- **SABR 起播 4K 死循环根治**(P11-75 系列,四层):
+  - **冷启动防直跳顶档**:旧 `getSustainedBitrateEstimate` 在持续带宽证据不足(<10s)时回退到被 1-2 笔爆发样本撑高的活跃 est(真机 720p 两段爆发 33-58M 直接过 4K 门槛),起播 pos=0 一步直跳 2160p → 切轨后 loader 停发永不 READY → 看门狗重载 → 同误判再来,~16s/轮无限循环。修:sustained 改原值获取(-1 不回退),顶档 ×1.1 闸在冷启动自动挡 4K;升档**逐级爬**(只许下一个更高分辨率档,同 height 多 codec 变体不受限),爆发误判最坏后果从「直跳 4K」降为「多升一档」;证据成熟期 15s→10s(落在首灌窗口内);冷启动升档跳过 est 重锚(锚点拖梯子)。
+  - **冷启动锁档 10s**:首帧松 cap 重建选组会整丢样本队列,重建窗口内连升两档会把新档 init/段请求挤进重灌期饿死看门狗(续播 pos=1569s 真机 3 轮死循环)——selection 实例创建后 10s 内禁升档,期满档内 ABR 切换不丢队列、无缝爬。
+  - **stall 重载跨重载记忆**(`SabrAbrMemory` 进程级单例):YouTube 起播期(pos<30s)stall 重载记时间戳,重载后新 ABR 实例 3min 内跳过顶档候选,打破「重载→全新状态→同样误判」无记忆循环;低档升降/手动选档不受影响。
+  - **广告白名单丢在途请求修复**(续播饿死真凶):重建后选组初始档翻转使 `videoFormat` 变更,processPart 广告白名单把**在途旧 chunk 请求的响应数据当广告丢弃** → `hasSegment` 永假六连重试独占串行 fetcher 8.5s → 新轨 init 差 0.7s 没赶上 8s 看门狗。修:白名单=当前选中格式+**在途段请求 itag 集合**(getNextSegment 进入加/finally 移除),广告防御语义不变(从未被请求过的 itag 照丢)。
+  - 附带:`YtSabrAbr` 日志 sus= 改打原值(-1 证据不足曾整除显示成 0K 误导取证);`DefaultSabrChunkSource` 补切轨/交付/取消/拒发四类取证日志(下轮再遇「切轨后停发」直接界定 media3 loader 侧 vs chunk source 侧)。
+- **WebDAV 备份/还原增加 IPTV 源配置项**(P11-74):`IptvBackupData`(源 URL/账号/密码)上传 `bilitv/iptv_config.json`,还原写回三 setter(缺失/解析失败跳过不炸整体);两端选择弹窗还原列表补 IPTV 项,四语言文案;IPTV 无本地频道存储,备份即源配置(对齐 Piped 模式)。
+- **IPTV 真机首验两洞修复**:①stall 看门狗 IPTV 分支改**优先换镜像源**——半死源(m3u8 活但 ts 段超时)同源重挂烧满 3 次重试救不回,卡 8s 直接 `selectedQn++` 切活源(单源台/末源退回同源重载);②截帧多源回退并发槽浪费——在截 URL 被防重入误判失败开第二路同频道双占槽,改让位等首次协程回填;单频道截帧总预算 26s 封顶(原来半死频道逐源 3×22s=66s 霸死 3 并发槽,首屏缩略图全排队)。
+
+### 真机验证点
+- **续播**(pos>30s):进入后 1-3s 出画面,720p 起步稳 ~10s(锁档期),然后无缝逐级爬升(720→1080→1440,4K 仅持续带宽 ≥ 声明×1.1 放行),全程零 stall 零重载。
+- 日志不再出现:`skip ad/unrequested` 丢在途 itag、`getNextSegment: no seg (retry)` 连发、起播期 `upshift` 突现顶档。
+- WebDAV 备份勾 IPTV 后服务器出现 `iptv_config.json`,还原后设置页 IPTV 源三件套恢复。
+- IPTV 半死源频道卡住 ~8s 自动切活源,不再烧满重试;首屏缩略图排队明显缩短。
+
+## v3.0.8-alpha.5
+
+**TV IPTV 多镜像源判活 + 自动换源:载入列表即切可用源,点开直接播活源**(不再"首开线路1 黑屏 → 报错才轮询换源")。方案与实现详见 `docs/iptv-feasibility.md` 三期。
+
+### 变更
+- **分层判活**(成本核算:截帧探活全量是 GB 级/数十分钟,不可行):
+  - **第一层·启动后台廉价 m3u8 探活**:App 启动延迟 15s 后台扫全列表,仅多源频道、顺序 GET 拉 m3u8(~10-100 KB/次)、首个活源即止、并发 2、单频道补试上限 3(约 50 MB/千频道)。探活 client 与拉流同栈(IPv4-only DNS + 裸 IP 明文放行,否则裸 IP http 源必假死);校验 peek 前 2 KB 像 m3u8,防 200 回 HTML 错误页误判活。结果存 app 级 store,**判活一次本次启动全程复用**。
+  - **第二层·截帧多源回退**:可见频道截帧(现有缩略图功能)urls[0] 出不了帧(段 403/解码失败)顺序补试下一镜像,出帧 = 拉流+解码+渲染全链路铁证可播,回写 store;判死源跳过不浪费 22s。**截帧超时永不判死**(22s 慢源假死),只有 m3u8 都拉不到的硬失败才标死。
+- **urls 活源前置重排**(`[活]+[未探]+[死]` 稳定分区):TV 列表加载即重排,判活结果流式到达 debounce 回写(滚动途中也生效);播放器频道侧栏切源、断流自动换源(`selectedQn++`)顺序同享;点开 `selectedQn=0` 直接播活源。
+- **仅 TV 端**,移动端本轮不动(构造默认参数,行为与旧版一致)。
+- 附带:Crashlytics 上报 toast 如实化(`sendUnsentReports` 会话中调用是无人消费的 no-op,改「下次启动后送达」)+ `fetch_crashlytics_logs.py` token 过期 ms/秒单位错判修复。
+
+### 真机验证点
+- 冷启动 15s 后 logcat `BiliMT:IptvProbe`:逐频道 `probe alive/dead` + 结尾 `sweep done: channels=N aliveUrls=X deadUrls=Y`;未配置源时 `url blank -> empty` 安静退出(fire-and-forget)。
+- 死镜像排前的频道点开应直接播活源,不再先黑屏报错。
+- IPTV 列表滚动,urls[0] 段损坏的频道应自动换镜像截出图。
+
+## v3.0.8-alpha.4
+
+**TV YouTube 字幕下线(根治「视频转圈加载不出、官方可播」)+ 播放列表聚焦高亮硬化**。
+
+### 变更
+- **字幕 MergingMediaSource 整块移除**(用户决策:字幕不重要,核心是音视频稳定性):旧实现把 4 条 WebVTT 字幕以 ProgressiveMediaSource 并入 MergingMediaSource,媒体3 等所有 child prepare 才 selectTracks——timedtext 字幕 URL 响应头被掐(直连黑洞,Http2Stream 等头 81s 超时;官方走自有通道可播)时,字幕 period 挂死拖死主源,SABR `fetch rn=` 零发送,整页转圈。probe 预检方案(过渡版)堵不干净:小探头 3s 偶尔通过,prepare 全量 GET 照样挂。终局:播放链路里不再存在字幕 child,任何字幕网络问题物理上够不到主源;字幕轨数据仍在 PlaybackInfo 传递(未来回归须先「预检+不阻塞主源」)。
+- **路由诊断日志**(`SabrAwareDataSource`):非 sabr 直拉请求中 youtube/googlevideo 域记 host+path 缩略行——以后"直拉被掐"一眼定位(00:25/00:38 两轮诊断靠它收口)。
+- **播放列表聚焦高亮修复**(并行):playlist 视频行/「播放全部」的聚焦玻璃面在覆盖层环境真机渲染不出(焦点实锤进屏仍无高亮),弃玻璃链路改纯粉 35% 实底直画 + 3dp 粉框硬渲染;详情页/频道页网格加 focus 诊断;另含播放列表详情页进入无焦点(初焦验证+重试)修复。
+- 排查证据见 `docs/youtube-sabr-abr-upshift-notes.md` §16-§18 与 CHANGELOG 上下文(P11-52/P11-72/P11-73)。
+
+## v3.0.8-alpha.3
+
+**ABR 降档滞回 ×0.85 双阈值死区(修「1440p↔1080p 临界来回切」)+ TV 播放列表详情页进入无焦点修复**。
+
+### 变更
+- **降档滞回**(`HeightAwareAdaptiveTrackSelection`):declared=真平均后,est 巡航值(供给滑动估计,含 pacing/gap 样本)天然骑在相邻档门槛 ±10% 区间——这是常态而非异常。旧判据 `required > est` 无降档滞回,单样本穿线即降;降档后缓冲 ≥30s 升档立即放行,est 回线即弹回 → 临界档循环(est 15.8M vs 门槛 16.76M 差 6% 就切,3 分钟三轮,全程 buffer 34-40s 充足)。修法:**当前档(i==selected)降档判据 = required×0.85**(预留 15% 死区),升档候选门槛保持全额(上严下调)。真饿(est < ×0.85)照降,水位急救(<8s)兜底。ABR 四层分工:临界抖动→本滞回(不限时)、真饿→水位急救、升档起步期→10s 禁回降、4K 边缘回弹→顶档定向冷却。
+- **TV 播放列表详情页进入无焦点修复**(`YoutubePlaylistDetailScreen` + 频道页播放列表网格):初焦单发 `requestFocus` 在覆盖层环境撞「FocusRequester is not initialized」被 runCatching 吞掉后整页永久无焦点(真机同款异常实锤)——改验证+重试(拉焦点后确认本屏持有,未确认至多重试 30 帧,用户手动移动过不抢);空列表/加载失败改初焦落返回 chip。
+- 排查证据见 `docs/youtube-sabr-abr-upshift-notes.md` §18;附 alpha.3 前一版编译修复(if Long/Int 分支推断星投影)。
+
+## v3.0.8-alpha.2
+
+**顶档定向冷却(防 4K 边缘档反复切档卡顿)+ TV 播放列表「正在播放」标记**。
+
+### 变更
+- **顶档定向冷却**(`HeightAwareAdaptiveTrackSelection`):水位急救从顶档(2160p)降下时 `excludeTrack` 该顶档 3 分钟——alpha.1 真机(23:28-31)证明口径修正后门槛全部按设计工作(重载/stall 零次),但供给(27-42M)贴着 4K 实际消耗(~30M)的边缘档会震荡:重填期突发 est/sus 过门槛升 4K → 边播边吸 pacing 供给 ~30M,buffer 漏到 5-6s → 水位急救级联(315→308→299,每步切档卡一次)→ 低档重填 → 再升,3.5 分钟两轮。冷却后 3min 内顶档不参与候选,1440p/1080p 升降完全照常(与已取消的「全档 3min 冷却」本质不同:那锁死全部升降);冷却自然到期再试顶档,想立即回 4K 手动切档。非顶档的水位降档不加冷却。
+- **TV YouTube 播放列表「正在播放」标记**(`YoutubePlaylistDetailScreen`,用户反馈进列表看不出播过哪条):播放历史 `lastPlayedAtMs` 最新的视频行序号换成粉色 ▶ + 标题变粉(全列表唯一,从未播过无标记),播放器写进度返回列表即实时亮起。
+- 排查证据见 `docs/youtube-sabr-abr-upshift-notes.md` §17。
+
+## v3.0.8-alpha.1
+
+**声明码率口径修正:换真实平均(averageBitrate)+ calib 整体取消 + 顶档门槛 ×1.1**。
+
+### 变更
+- **根因定位**:ABR 一直拿 `/player` 的 `bitrate` 当"声明码率",但该字段是 **VBR 峰值**(比真实平均高 ~60-75%);真实平均是 `averageBitrate`(≈ contentLength/时长)。23:00 真机 4K 失败复盘:声明 32.3M(peak)的 4K 档实测消耗仅 ~23.4M,calib(0.779 外推)与顶档 0.6 gate 连环补偿下"全部合法"放行,随后网络塌方降档一步没救回 → 整段重载回 720p——失真在口径本身,补偿层注定顾此失彼。
+- **带宽换真平均**(`YoutubePlaybackResolver`):SABR/classic DASH 全链路 `buildSabrTrack`/`parseFormat` 改 `averageBitrate` 优先、peak 回落。WEB /player 原生带该字段;NewPipe 路径自算 `contentLength×8/approxDurationMs`(extractor ItagItem 已解析);Piped 无字段回落 peak(旧行为)。
+- **calib 采样折算机制整体取消**(用户决策):declared=真平均后 required=裸声明=实需(降档判据=供给 vs 消耗本征比较),成熟期 calib 本就收敛 ≈1,取消去掉未熟期折算噪声与解析 bug 面(采样/成熟度地板全删)。
+- **顶档门槛保留、基准重标**(`HeightAwareAdaptiveTrackSelection`):4K 升档 sustained 门槛 0.6→**×1.1**(declared 已是真平均,1.1 是 60s 均值口径的 VBR 尖峰余量);升档重锚锚裸声明。
+- 其余 ABR 机制(水位急救降档、升档冷却、10s 禁回降、逐步候选升降)不变。
+- 口径查证与排查全程见 `docs/youtube-sabr-abr-upshift-notes.md` §16、`docs/youtube-hd-playback.md` §6.25。
 
 ## v3.0.7-alpha.16
 

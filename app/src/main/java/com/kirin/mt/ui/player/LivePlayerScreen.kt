@@ -66,6 +66,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.kirin.mt.core.network.IptvChannel
 import com.kirin.mt.core.network.IptvRepository
+import com.kirin.mt.core.player.IptvSourceProbeStore
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -120,7 +121,7 @@ private const val ControlIndexBack = 0
 private const val ControlIndexQuality = 1
 private const val ControlCount = 2
 
-/** BUFFERING 且进度不前进超过此阈值判定为 stall,触发自动重载源。 */
+/** 进度连续不前进超过此阈值判定为 stall,触发自动重载源(见下方看门狗条件,B站直播仅 BUFFERING 态)。 */
 private const val LiveStallThresholdMs = 8_000L
 /** 单次直播会话内自动重试上限,超过后交用户手动重试,避免死循环刷 CDN。 */
 private const val MaxLiveAutoRetry = 3
@@ -158,6 +159,8 @@ fun LivePlayerScreen(
   onBack: () -> Unit,
   isMobile: Boolean = false,
   iptvRepository: IptvRepository? = null,
+  // TV 端传 app 级判活结果(活源前置重排);移动端不传(默认 null),行为与旧版一致。
+  iptvProbeStore: IptvSourceProbeStore? = null,
 ) {
   val context = LocalContext.current
   val roomId = request.liveRoomId
@@ -280,6 +283,30 @@ fun LivePlayerScreen(
             "tracks=${player.currentTracks.groups.size} " +
             "video=${player.videoFormat?.codecs} audio=${player.audioFormat?.codecs}",
         )
+        // IPTV 真播完(mediaItemCount>0;切源 clearMediaItems 触发的瞬时 ENDED 为 0,排除)
+        // 即断流:直播流没有合法 ENDED,立即切下一个镜像源,不等 8s 看门狗。
+        // 与 onPlayerError 分支同机制:last source 退回同源重载,retry 上限同看门狗。
+        if (request.isIptv && playbackState == Player.STATE_ENDED &&
+          player.mediaItemCount > 0 && autoRetryCount < MaxLiveAutoRetry
+        ) {
+          autoRetryCount += 1
+          val urls = iptvChannels
+            .getOrNull(selectedChannelIndex.coerceIn(0, iptvChannels.lastIndex.coerceAtLeast(0)))
+            ?.urls ?: request.iptvUrls
+          if (selectedQn < urls.lastIndex) {
+            selectedQn += 1
+            android.util.Log.w(
+              LivePlaybackLogTag,
+              "iptv playback ended, switch to source #${selectedQn + 1}/${urls.size} (auto-retry #$autoRetryCount)",
+            )
+          } else {
+            android.util.Log.w(
+              LivePlaybackLogTag,
+              "iptv playback ended at last source, reload same (auto-retry #$autoRetryCount)",
+            )
+            retryKey += 1
+          }
+        }
       }
     })
     onDispose { player.release() }
@@ -321,16 +348,22 @@ fun LivePlayerScreen(
 
   // TV-only IPTV:拉取 m3u 频道列表一次,并解析进入时所在频道(优先名匹配,回退 URL 匹配,再回退 0)。
   // 匹配台与原始 request 同源时 activeChannelUrls 结构相等 → 不触发多余重载(见主加载键)。
+  // 判活结果(启动扫描/列表页截帧回写)活源前置重排:频道侧栏切源、断流自动 selectedQn++
+  // 的顺序都变成活源优先,首开(selectedQn=0)直接播活源。名匹配为主,URL 匹配仅兜底
+  // (重排后 urls 结构可能与 request.iptvUrls 不同,靠名匹配不受影响)。
   LaunchedEffect(roomId, request.isIptv) {
     if (!request.isIptv || isMobile || iptvRepository == null) return@LaunchedEffect
     iptvChannelLoading = true
     val result = runCatching { iptvRepository.getChannels() }.getOrDefault(emptyList())
-    iptvChannels = result
+    val reordered = iptvProbeStore?.let { store ->
+      result.map { channel -> channel.copy(urls = store.reorderUrls(channel.urls)) }
+    } ?: result
+    iptvChannels = reordered
     iptvChannelLoading = false
-    if (result.isNotEmpty() && selectedChannelIndex < 0) {
-      selectedChannelIndex = result.indexOfFirst { it.name == request.title }
+    if (reordered.isNotEmpty() && selectedChannelIndex < 0) {
+      selectedChannelIndex = reordered.indexOfFirst { it.name == request.title }
         .takeIf { it >= 0 }
-        ?: result.indexOfFirst { it.urls == request.iptvUrls }
+        ?: reordered.indexOfFirst { it.urls == request.iptvUrls }
         .takeIf { it >= 0 }
         ?: 0
       focusedChannelIndex = selectedChannelIndex
@@ -404,7 +437,12 @@ fun LivePlayerScreen(
     }
   }
 
-  // stall 检测:STATE_BUFFERING 且用户想播、进度连续 N 秒不前进 → 自动重载源。
+  // stall 检测:用户想播、进度连续 N 秒不前进 → 自动重载源/换镜像源。
+  // IPTV 半死源状态机舞步(真机 21:33 CCTV-1 实证,183.129.255.66 只吐 1 个 10s 段):
+  // BUFFERING 态下 position 照样前进(消耗已缓冲唯一段)→ 段耗尽冻结后 0.2s 内 ExoPlayer
+  // 翻 READY(判定流无更多媒体)→ 仅认 BUFFERING 的看门狗恰在开枪前被状态翻转重置,
+  // READY 冻帧("有画面不播")零覆盖。故 IPTV 扩展:READY 且未在播、ENDED 同算 stall。
+  // B站直播维持原语义(仅 BUFFERING;ENDED 是主播下播的合法终态,不该自动重载)。
   LaunchedEffect(loadState, player) {
     var stallBaselinePositionMs = 0L
     var stallSinceMs = 0L
@@ -412,23 +450,52 @@ fun LivePlayerScreen(
       if (loadState is LiveLoadState.Ready) {
         val currentPositionMs = player.currentPosition
         val nowMs = System.currentTimeMillis()
-        val isStallBuffering =
-          player.playbackState == Player.STATE_BUFFERING &&
-            player.playWhenReady &&
-            currentPositionMs == stallBaselinePositionMs
-        if (isStallBuffering) {
+        val isStall =
+          player.playWhenReady &&
+            currentPositionMs == stallBaselinePositionMs &&
+            if (request.isIptv) {
+              player.playbackState == Player.STATE_BUFFERING ||
+                player.playbackState == Player.STATE_ENDED ||
+                (player.playbackState == Player.STATE_READY && !player.isPlaying)
+            } else {
+              player.playbackState == Player.STATE_BUFFERING
+            }
+        if (isStall) {
           if (stallSinceMs == 0L) {
             stallSinceMs = nowMs
           } else if (nowMs - stallSinceMs >= LiveStallThresholdMs && autoRetryCount < MaxLiveAutoRetry) {
             autoRetryCount += 1
             autoResumePositionMs = currentPositionMs.coerceAtLeast(0L)
-            android.util.Log.w(
-              LivePlaybackLogTag,
-              "live stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
-            )
             stallBaselinePositionMs = 0L
             stallSinceMs = 0L
-            retryKey += 1
+            // IPTV 卡 stall 优先换镜像源(同 onPlayerError 分支):半死源(m3u8 活但 ts
+            // 段超时,真机日志实证 183.129.255.66 这类)重挂同一 url 还是它,烧满 3 次
+            // 重试也救不回;判活重排后 urls[0] 之后往往就是活源,直接 selectedQn++ 切过去。
+            // 单源台/已到末源退回同源重载(与 B站直播行为一致)。
+            if (request.isIptv) {
+              val urls = iptvChannels
+                .getOrNull(selectedChannelIndex.coerceIn(0, iptvChannels.lastIndex.coerceAtLeast(0)))
+                ?.urls ?: request.iptvUrls
+              if (selectedQn < urls.lastIndex) {
+                selectedQn += 1
+                android.util.Log.w(
+                  LivePlaybackLogTag,
+                  "iptv stall detected, switch to source #${selectedQn + 1}/${urls.size} (auto-retry #$autoRetryCount @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%)",
+                )
+              } else {
+                android.util.Log.w(
+                  LivePlaybackLogTag,
+                  "iptv stall detected at last source, reload same (auto-retry #$autoRetryCount @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%)",
+                )
+                retryKey += 1
+              }
+            } else {
+              android.util.Log.w(
+                LivePlaybackLogTag,
+                "live stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
+              )
+              retryKey += 1
+            }
           }
         } else {
           stallBaselinePositionMs = currentPositionMs
