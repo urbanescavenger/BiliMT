@@ -473,3 +473,32 @@ r1735 复盘通过(急救降回秒级回档、零 watchdog),唯一遗留:本视�
 **修法(已实施,SabrMediaFetcher)**:白名单 = 当前选中格式 **+ 在途段请求 itag 集合**(`pendingRequestItags`:getNextSegment 进入时加、finally 移除;MEDIA_HEADER 与 FORMAT_INITIALIZATION_METADATA 两处过滤同步并入)。在途请求的响应不再被丢,旧 chunk 一次 POST 即完成(<1s),串行 fetcher 不再被占。广告防御语义不变:从未被请求过的 itag 照丢(广告段只可能出现在非请求 itag 上)。
 
 **待真机复测**:续播应在重建后 1-3s 内出画面(720p 稳 ~10s),全程零 stall 零重载;日志不应再出现 `skip ad/unrequested` 丟在途 itag + `getNextSegment: no seg ... (retry)` 连发。若仍有饿死,查 getNextSegment 重试循环的其他出口。
+
+## 20. 2026-08-31「23:25 中段重载」:冷却到期即回 4K → 漏 49s → 水位急救差 0.6s 输给在途(A/B1/B2 三修)
+
+**现象(23:20-23:25 真机 logs_live.log,视频 IW5NIdD1sGc,315 声明=真平均 26.6M)**:起播两次 stall(pos=0,23:20:41/57)记入顶档冷却 180s → 23:22:36 重开后正常爬到 1440p,23:22:55 冷却剩 62s 正确跳过 4K → **23:23:57 冷却到期,2s 内 ABR 立刻回 4K**(23:23:59,rn=33 init itag315)→ 缓冲 26.3s→7.0s 匀速漏 49s → 23:24:48.052 水位急救 315→308 + 重拉 180s 冷却,但 **2ms 前已 staged 的 rn=37 仍载 4K 段**(3 段 39MB,seq32-34,7.6s 传完)→ 7.0s 缓冲 < 7.6s 在途 → 23:24:55 缓冲见底 BUFFERING(pos 冻 134051ms)→ 8s 看门狗 23:25:03 auto-retry #1 **整链路重载**。重载后新冷却把 4K 挡住,480→1440 稳定——用户所见「重载后降档正常」。
+
+**根因解剖(三层延迟叠加,8s 阈值结构性必败)**:
+
+| 层 | 机制 | 本例耗时 |
+|---|---|---|
+| B1 评估盲窗 | `updateSelectedTrack` 只在 getNextChunk 跑,4K 段循环 10-14s(传输 6-8s+里程碑间隔) | 23:24:36(bufS=11.7)→23:24:48(bufS=7.0)间 12s 零评估 |
+| B2 staged 积压 | 急救只影响后续 getNextChunk,救不了已 staged 的 3 个 4K 段;且 holder/selectFormat 在 updateSelectedTrack **之前**取(上游 media3 是之后),同一次调用 staged 的段也用旧档 | rn=37 载 315 seq32-34 |
+| B3 串行管道 | UMP 一票在途,积压 39MB 传完才轮得到 1440p 请求 | 7.6s(39MB @41Mbps) |
+
+4K 期间 est/sus 全程失明:活跃 est 只计传输窗口(30-36M 恒 >26.6M×0.85 滞回线),sus 在 23:24:14 后掉 -1(证据窗失效);fetcher 排队间隔被旧 10s 滑行余量扣成 coast(水位 16.4s 下 14.2s 间隔,coast 扣 6.45s)→ pacing 有效供给 ~16M 在两个口径里都不可见。**8s 阈值的最坏反应线 = 盲窗 14s + 积压排空 8s + 替换段传输 4s ≈ 26s,结构性永远来不及**;本例只差 0.6s 是因为评估恰好撞在请求发出前 2ms。
+
+**修法三件(已实施)**:
+
+1. **A——顶档 sustained 分母收紧(SabrMediaFetcher)**:顶档在位时(当前视频 FormatId.height≥2160)`recordFetchGap` 的 sustained 滑行扣减余量 10s→20s(`TOP_TIER_GAP_RUNWAY_RESERVE_MS`):4K 失败期(水位 <20s)的 fetcher 排队间隔全额留在持续分母 → sus 塌到有效供给(~16M),冷却到期后的 4K 重准入闸(sus≥declared×1.1)被真证据挡住,不再被同一批低档突发样本「合法通过」。**只收 sustained 不收活跃 est**——est 若同步加严,千兆管道 4K 满缓冲滑行期(loader 停拉,缓冲 48s→10s 每周期 ~10s 空档)会被打成 0 供给样本误踢好管道。
+2. **B1——顶档水位急救阈值 8s→20s(HeightAwareAdaptiveTrackSelection,`TOP_TIER_CRITICAL_BUFFERED_US`)**:顶档在位时水位 <20s 且评估间回落即触发(非顶档维持 8s 不动)——覆盖 B1+B2+B3 的最坏反应线。本例复盘:23:24:24 评估 bufS=14.5(自 20.5 回落)即触发 → 23:24:48 的请求载 1440p → 谷底 ~3-5s 活着,不触发看门狗。假阳性代价=180s 顶档冷却(升 4K 本就要求缓冲 ≥30s,重爬周期天然重叠,边际成本小);假阴性代价=看门狗重载(~11s 冻结+整链重启),不对称支持提前触发;千兆管道 4K 缓冲只涨不跌穿 20s 不受损。
+3. **B2——决策后重读 holder(对齐上游 media3,DefaultSabrChunkSource)**: getNextChunk 的 staging holder 与 `fetcher.selectFormat` 移到 `updateSelectedTrack` 之后按新 selectedIndex 重读(决策前的候选/合成 iterator 语义不变,用 preSelectionHolder)——原顺序使切档决策对同一次调用 staged 的段无效,每次切档(急救/升档)白吃一个循环生效延迟。
+
+**分工**:A 治「失败证据进 sus,防冷却到期后被同一批突发样本快速重准入」;B1 治「进来了也必须在死前退出去」(确定性,顺带拉 180s 冷却);B2 治「决策到生效多等一个循环」。三者互补;A/B2 不改变 4K 首次准入(那次凭的是 1440p 期真实突发传输,任何口径都拦不住,靠 B1 兜底退出)。
+
+**待真机复测**:
+- [ ] 同视频(或同边缘网络):4K 尝试应被 B1 在水位 ~14-20s 时踢下(日志 `buffer-critical downgrade: bufS=14s` 一类),零看门狗重载;
+- [ ] 顶档失败后的 180s 冷却期内 sus 应塌到 ~16M 量级(非 30M+),冷却内 4K 重准入被挡;
+- [ ] 千兆/好网络 4K 满缓冲滑行不误伤:staged 切档正常、est 不因满缓冲空档塌方;
+- [ ] 水位急救触发的那次 getNextChunk,请求应立即载新档段(rn 不再夹带旧顶档段);
+- [ ] 非顶档(≤1440p)水位急救仍在 8s 触发,行为不变。

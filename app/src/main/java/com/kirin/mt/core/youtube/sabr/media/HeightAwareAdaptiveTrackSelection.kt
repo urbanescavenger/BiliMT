@@ -102,6 +102,21 @@ import com.google.common.collect.ImmutableList
  * ②**顶档起播 stall 冷却(跨重载记忆)**——起播期(pos<30s)stall 重载由播放器侧记入
  *   [SabrAbrMemory],重载后新建的 selection 实例在冷却期(3min)内跳过顶档(≥2160)候选;
  *   打破「重载 → 全新状态 → 同样误判 → 再重载」的无记忆循环。低档升降/手动选档不受影响。
+ *
+ * 2026-08-31(23:25 真机「4K 回准入 → 漏 49s → 水位急救差 0.6s 输给在途 → 看门狗重载」复盘,三修):
+ *   剧本:起播 stall 冷却 23:23:57 到期,**2s 内**凭 1440p 期的突发 sus(30670≥26.6M×1.1)回 4K →
+ *   4K pacing 有效供给仅 ~16M(活跃 est 却读 30-36M:只计传输窗口;串行 fetcher 排队间隔被旧 10s
+ *   滑行余量扣成 coast)→ 缓冲 26.3s→7.0s 漏 49s 全程无降档证据 → 7.0s 水位急救动手时 rn=37 已在途
+ *   载 4K 段(39MB/7.6s),7.0<7.6 缓冲见底 → 看门狗重载;重载后 180s 冷却把 4K 挡住,一切正常
+ *   ——即用户所见「后面降档正常」。修法三件(详见各处注释):
+ *   A(SabrMediaFetcher)——顶档在位时 sustained 分母的滑行余量 10s→20s:4K 失败证据进 sus,
+ *     防冷却到期后被同一批低档突发样本「合法」重准入;est 口径不动(防千兆满缓冲滑行误伤)。
+ *   B1(本类 TOP_TIER_CRITICAL_BUFFERED_US)——顶档水位急救阈值 8s→20s:急救必须提前一个完整
+ *     chunk 循环(评估盲窗 ~14s + staged 积压排空 ~8s + 替换段传输 ~4s)触发,8s 在串行管道里
+ *     结构性来不及;非顶档维持 8s。
+ *   B2(DefaultSabrChunkSource)——getNextChunk 的 holder/selectFormat 改到 updateSelectedTrack
+ *     **之后**重读(对齐上游 media3 DashChunkSource):原顺序用切换前 selectedIndex 取 holder,
+ *     切档决策对同一次调用 staged 的段无效,每次切档白吃一个循环生效延迟。
  */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
@@ -149,7 +164,17 @@ class HeightAwareAdaptiveTrackSelection(
     // 在涨)、且过了升档宽限 → 水位下降本身就是最好的降档证据(供给持续低于当前档消耗),无视 est 直接
     // 降到下一个低分辨率档。逐级一步一档:降到可持续档后缓冲回 8s 以上自动停。
     val currentHeight = getFormat(selected).height
-    val bufferCritical = bufferedDurationUs < DOWNGRADE_BUFFERED_US &&
+    // 2026-08-31 B1(顶档水位急救阈值 8s→20s):SABR 串行管道下急救必须提前一个完整循环触发——
+    // ①评估只在 getNextChunk 发生,4K 段循环 10-14s → 两次评估间最长 ~14s 盲窗;②急救只影响后续
+    // getNextChunk staged 的段,已 staged 的 4K 段积压(rn 一票 ~39MB/7.6s)仍占死串行 fetcher;
+    // ③替换段传输还要 ~4s。23:24 真机:水位 7.0s 才触发,输给在途 7.6s 差 0.6s → 缓冲见底 → 看门狗
+    // 整段重载。顶档在位时阈值提为 20s(覆盖 ①+②+③ 的最坏 ~26s 供给线,本例会在 23:24:24 评估
+    // bufS=14.5 自 20.5 回落时触发 → 23:24:48 的请求载 1440p,谷底 ~3-5s 活着);非顶档维持 8s
+    // 不动。假阳性代价=180s 顶档冷却(升 4K 本就要求缓冲 ≥30s,重爬周期天然重叠),假阴性代价=看门狗
+    // 重载(~11s 冻结+整链重启),不对称性支持提前触发;千兆管道 4K 缓冲只涨不跌穿 20s,不受损。
+    val criticalBufferedUs =
+      if (currentHeight >= TOP_TIER_MIN_HEIGHT) TOP_TIER_CRITICAL_BUFFERED_US else DOWNGRADE_BUFFERED_US
+    val bufferCritical = bufferedDurationUs < criticalBufferedUs &&
       bufferedDurationUs <= prevEvalBufferedUs &&
       nowMs - lastUpgradeElapsedMs >= DOWNGRADE_AFTER_UPGRADE_GRACE_MS
     prevEvalBufferedUs = bufferedDurationUs
@@ -335,6 +360,11 @@ class HeightAwareAdaptiveTrackSelection(
     const val COLD_START_LADDER_LOCK_MS = 10_000L
     /** alpha.9Z:降档后升档所需最低缓冲水位(us)——缓冲重建到这一水位前不允许弹回高档。 */
     const val DOWNGRADE_BUFFERED_US = 8_000_000L
+    /**
+     * 2026-08-31 B1:顶档(≥2160)在位时的水位急救阈值(us)——见 updateSelectedTrack 的 B1 注释。
+     * 与 SabrMediaFetcher.TOP_TIER_GAP_RUNWAY_RESERVE_MS(A)同值同语义:水位 <20s 即顶档供给线失守。
+     */
+    const val TOP_TIER_CRITICAL_BUFFERED_US = 20_000_000L
     /** 2026-08-30:升档后的水位急救宽限(ms)——新档刚起步缓冲未回填,不能立刻按同一水位反弹降档。 */
     const val DOWNGRADE_AFTER_UPGRADE_GRACE_MS = 5_000L
     /** 2026-08-30:升档后禁止 est 回降宽限(ms)——重锚精确锚在新档门槛,起步期小样本会立刻打回。 */

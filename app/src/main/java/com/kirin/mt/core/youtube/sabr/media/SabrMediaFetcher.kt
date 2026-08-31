@@ -83,9 +83,13 @@ internal class SabrMediaFetcher(
   /** 正在处理的 partial 段(headerId → Segment,MEDIA 累积/MEDIA_END 收尾)。 */
   private val partialSegments = mutableMapOf<Int, SabrSegment>()
 
-  /** 当前选中的音频/视频 FormatId(由 [SabrMediaPeriod.selectTracks]→[selectFormat] 设)。 */
+  /**
+   * 当前选中的音频/视频 FormatId(由 [SabrMediaPeriod] selectTracks→[selectFormat] 设)。
+   * 2026-08-31 A:videoFormat 加 @Volatile——[recordFetchGap] 在 fetcher IO 线程读它的 height
+   * 判顶档滑行余量,而 selectFormat 在 loader 线程写,跨线程可见。
+   */
   private var audioFormat: FormatId? = null
-  private var videoFormat: FormatId? = null
+  @Volatile private var videoFormat: FormatId? = null
 
   /**
    * 2026-08-31(修续播重建窗口饿死):**在途段请求的 itag 集合**(getNextSegment 进入时加、返回/抛错时移除,
@@ -214,6 +218,20 @@ internal class SabrMediaFetcher(
   }
 
   /**
+   * 2026-08-31 A(顶档 sustained 分母收紧):当前视频档是否顶档(≥2160)——顶档在位时 [recordFetchGap]
+   * 的 sustained 滑行扣减改用 20s 余量(见 TOP_TIER_GAP_RUNWAY_RESERVE_MS)。4K 的 SABR pacing 下
+   * 请求间隔多为 fetcher 串行排队等待(23:24 真机:水位 16.4s 下 14.2s 间隔),旧 10s 余量把它扣成
+   * 「合法滑行」→ sus 全看不见死亡行军(有效 ~16M vs 声明 26.6M,sus 反而读 30M+),冷却一到期 4K
+   * 准入闸就被低档突发样本「合法通过」。20s 与 ABR 顶档水位急救阈值(HeightAware B1)同值同语义:
+   * 水位 <20s 期间的间隔全额留在持续分母 → sus 塌到有效供给,顶档重准入被真证据挡住。
+   * **只收 sustained,不收活跃 est**:est 侧若同步加严,千兆管道 4K 满缓冲滑行期(loader 停拉期间
+   * 缓冲 48s→10s,每周期 ~10s 空档)也会被打成 0 供给样本 → 好管道的 4K 被误踢。est 保持突发口径,
+   * 死亡行军的退出由 B1 水位急救(确定性,拉 180s 冷却)兜底,A 只负责「失败证据进 sus,防快速重进」。
+   */
+  private fun isTopTierVideoSelected(): Boolean =
+    (videoFormat?.height ?: 0) >= TOP_TIER_GAP_RESERVE_MIN_HEIGHT
+
+  /**
    * 记录上次 fetch 结束到本次发起之间的被迫空转。只有超出「滑行量」的部分算供给损失,计 bytes=0 样本
    * (窗口带宽下探);满缓冲滑行部分不惩罚。在每次 media() 发请求前调用。
    */
@@ -241,8 +259,14 @@ internal class SabrMediaFetcher(
         addRealBwSample(0L, countedMs)
         Log.i(tag, "bw gap counted: ${countedMs}ms (raw=${rawGapMs}ms coast=${coastMs}ms runway=$runwayMs)")
       }
-      // 需求驱动空闲扣减(2026-08-30):滑行部分(满缓冲主动停闸)= 需求驱动的管道空闲 → 记入持续分母扣除量
-      demandIdleMs = (rawGapMs - countedMs).coerceAtLeast(0L)
+      // 需求驱动空闲扣减(2026-08-30):滑行部分(满缓冲主动停闸)= 需求驱动的管道空闲 → 记入持续分母扣除量。
+      // 2026-08-31 A:顶档在位时持续分母的滑行扣减改用 20s 余量(见 isTopTierVideoSelected)——est 口径
+      // 不变,只让 4K pacing 排队等待进 sus 分母。
+      val sustainedCoastMs = if (runwayMs < 0L) rawGapMs
+        else if (isTopTierVideoSelected()) (runwayMs - TOP_TIER_GAP_RUNWAY_RESERVE_MS).coerceAtLeast(0L)
+        else coastMs
+      val countedForSustainedMs = (rawGapMs - sustainedCoastMs).coerceIn(0L, BW_GAP_MAX_MS)
+      demandIdleMs = (rawGapMs - countedForSustainedMs).coerceAtLeast(0L)
     }
     addSustainedGapSample(demandIdleMs)
   }
@@ -810,6 +834,16 @@ internal class SabrMediaFetcher(
     const val REAL_BW_WINDOW_MS = 20_000L
     /** alpha.9Z:gap 计入带宽前扣掉的「缓冲安全余量」(ms)——缓冲水位高出它的部分视为主动滑行,不算供给损失。 */
     const val BW_GAP_RUNWAY_RESERVE_MS = 10_000L
+    /** 2026-08-31 A:顶档滑行余量加严的档位门槛(当前视频档 ≥ 此 height 时启用 20s 余量)。 */
+    const val TOP_TIER_GAP_RESERVE_MIN_HEIGHT = 2160
+    /**
+     * 2026-08-31 A:顶档在位时的 **sustained 分母**滑行余量(ms)——4K 死亡行军(23:24 真机)里旧 10s 余量
+     * 把缓冲 16.4s 水位下 14.2s 的 fetcher 排队间隔扣成合法滑行,sus 只剩突发口径(读 30M+,有效供给
+     * 才 ~16M),顶档重准入闸被低档突发「合法通过」。20s 与 ABR 顶档水位急救阈值(HeightAware B1)
+     * 同值同语义。只作用于 sustained 分母,活跃 est 不收(防千兆 4K 满缓冲滑行被误伤,见
+     * isTopTierVideoSelected)。
+     */
+    const val TOP_TIER_GAP_RUNWAY_RESERVE_MS = 20_000L
     /** alpha.9Z:gap 计量下限,短于此的被迫空转视为噪声。 */
     const val BW_GAP_MIN_MS = 500L
     /** alpha.9Z:gap 计量上限,防单次超长空窗(如长时间暂停后恢复)单样本毒化窗口。 */
