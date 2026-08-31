@@ -638,6 +638,7 @@
     <string name="settings_webdav_item_piped">Piped config</string>
     <string name="settings_webdav_item_watched">Watched list</string>
     <string name="settings_webdav_item_biliaccount">Bilibili account</string>
+    <string name="settings_webdav_item_iptv">IPTV config</string>
     <string name="settings_webdav_item_logs">Logs</string>
     <string name="settings_webdav_start_backup">Start backup</string>
     <string name="settings_webdav_start_restore">Start restore</string>
