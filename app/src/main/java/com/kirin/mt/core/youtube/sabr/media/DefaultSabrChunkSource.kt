@@ -392,7 +392,7 @@ internal class DefaultSabrChunkSource(
       "YtSabrChunk",
       "chunk completed: ${if (chunk is InitializationChunk) "init" else "media"}" +
         " itag=${(chunk.dataSpec.customData as? SabrSegmentRequest)?.formatItag}" +
-        " bytes=${chunk.bytesLoaded} sel=${trackSelection.selectedIndex}(${trackSelection.selectedFormat?.height}p)"
+        " bytes=${chunk.bytesLoaded()} sel=${trackSelection.selectedIndex}(${trackSelection.selectedFormat?.height}p)"
     )
     if (chunk is InitializationChunk) {
       val trackIndex = trackSelection.indexOf(chunk.trackFormat)
