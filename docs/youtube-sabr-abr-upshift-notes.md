@@ -411,3 +411,27 @@ r1735 复盘通过(急救降回秒级回档、零 watchdog),唯一遗留:本视�
 **修法(已实施)**:classic ABR 双阈值滞回——**当前档(i==selected)降档判据 = required×0.85**,升档候选门槛保持 required 全额(预留 15% 死区)。est 15.8M > 14.25M → 稳守 1440p;真饿(est<14.25M)照降,水位急救(<8s)兜底。分工:临界抖动归滞回、真饿归水位、升档起步期归「10s 禁回降」、边缘档回弹归「顶档定向冷却」。四处机制互补不重叠。
 
 **未决观察**:×0.85 是否需要按档位差异化(如 1080p 以上收紧到 ×0.9)——先看实际体感,单值够用就不加复杂度。
+
+## 19. 2026-08-31「起播一直 2160 然后 ~16s 一轮无限重载」:冷启动爆发样本直跳顶档 + stall 重载无记忆
+
+**现象(20:04-20:05 真机 logs_live.log,51 分钟视频 sid=p6mdaGH8aODvZYiRlM1kJA)**:起播 720p 首帧后 34ms 松开起始高度 cap → ABR 首评即从 720p **一步直跳 itag315(2160p,声明 26.9M)** → 切轨发生在 pos=0 首帧前 → 4K 数据其实全部拉到位(rn=2 一次 28MB/2.7s=84Mbps,init+seq1 10MB+seq2 18MB,c2.mtk.vp9.decoder 重建成功 output format 3840x2160 都出来了)→ **但之后 6s 再无任何 SABR fetch 发出**,播放器停在 BUFFERING/视频轨 null/`buffered=0%` 永不 READY → 9s 后 stall 看门狗 `auto-retry #1 @pos=0ms` **整链路重启**(metadata→playurl→cdn→prepare)→ 回到 720p READY → `recovered, counter reset` → 34ms 后同样误判再跳 4K → 再 stall。三连循环 @pos=0/138/232ms,每轮 ~16s,永不升级(每轮都是 retry #1,恢复发生在 720p 段把计数器清零)。
+
+**根因一(冷启动误判,§本档)**:升档 sustained 闸门被整体废掉——`SabrBandwidthMeter.getSustainedBitrateEstimate()` 在持续带宽证据不足(<15s 跨度,fetcher 返回 -1)时**回退到活跃传输 est**,而活跃 est 窗口刚被 2 个 720p 段的爆发样本(rn=0 2.5MB/0.3-1s、rn=1 3.7MB/0.5s → 20-86Mbps 突发)撑到 33-58M,顶档门槛 26.9M×1.1=29.5M 「合法通过」。首帧后松 cap 触发重建 selection(2 轨→6 轨组),新实例首评 currentHeight=720、canUpgrade=true(无降档史)、sustained=假值 → 720p 直跳 2160p,且 reseed 把 est 锚死在 26.9M + 10s 禁回降。
+
+**根因二(重载无记忆)**:看门狗 auto-retry 走整链路重启,ABR/带宽窗口/excludeTrack 冷却全部随实例销毁清零;每次恢复都在 720p 段(counter reset),同一个爆发误判必然复发——无状态机的同坑循环。
+
+**修法 ①(冷启动防直跳,HeightAwareAdaptiveTrackSelection)**:
+- sustained 改用**原值**(`SabrBandwidthMeter.getSustainedBitrateEstimateRaw()`,新增,-1 不回退)——证据不足(<15s)时 `sustainedEvidence=false`,**一律禁升档**;首档由起始选轨/高度 cap 决定,起播不被卡,证据成熟(连续拉流 15s 墙钟)后自然放行。
+- **升档逐级爬**:候选只允许「下一个更高分辨率档」(未排除轨中最小严格更高 height;同 height 多 codec 变体全部放行)——爆发 est 误判的最坏后果从「一步到顶 4K」降为「多升一档」,真扛不住由滞回(§18)/水位急救/顶档 sustained×1.1 接管。降档不在此限(放开全部低档一步落位,2026-08-27 既有语义)。
+- 诊断日志 `YtSabrAbr` 的 `sus=` 同步改打原值(旧打的是回退值,误导取证——20:04 日志里 sus=32884K 实为 -1 回退成活跃 est 的假值)。
+
+**修法 ②(跨重载记忆,SabrAbrMemory 新单例)**:PlayerScreen stall 看门狗触发时,若 YouTube 请求且 `pos < 30s`(冷启动误跳期)→ `SabrAbrMemory.noteStartupStall()` 记进程级时间戳;重载后**新建**的 HeightAware 实例在 3min 冷却内跳过顶档(≥2160)候选(日志 `top-tier startup-stall cooldown: skip itagX(2160p), remain Ns`,每实例一次)。低档升降/手动选档不受影响。单例进程级不按 videoId:重载后立刻重进同一视频正是主场景;误伤面 = 起播 stall 后 3min 内换看其它 YouTube 视频不自动上 4K,可接受。
+
+**log add(③切轨停发取证,DefaultSabrChunkSource)**:rn=2 之后 getNextChunk 再未被调用是「loader 停发」的直接死因,但其卡点在 media3 内部还是 chunk source 内部无证据。补四类打点(均为 chunk 粒度低频):
+- `updateTrackSelection`:切轨时刻 sel 旧→新(高度)+新轨 chunkIndex 状态;
+- `chunk completed`:init/media 交付回执(itag/bytes/当前 sel);
+- `shouldCancelLoad=true`:在途 chunk 被取消(切轨取消链路);
+- `chunk load error` + `getNextChunk → endOfStream(...)`:错误与拒发路径。
+下轮真机若再现「起播切轨后停发」,由这些日志界定:有 `updateTrackSelection`+`chunk completed` 但无后续 `YtSabrAbr`(getNextChunk 入口日志)→ media3 loader 侧卡死(需往 sample stream 重建方向查);有 endOfStream/取消 → chunk source 侧。
+
+**待真机复测**:①起播应稳在起始档 ≥15s,然后 1080→1440→2160 逐级爬(真网络扛得住才继续);②若起播仍 stall,重载后日志应出现 `top-tier startup-stall cooldown`,顶档 3min 不进候选,循环即断;③切轨停发的直接死因由新增日志定位。

@@ -114,6 +114,7 @@ import com.kirin.mt.core.youtube.YoutubeLoadStep
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import com.kirin.mt.core.youtube.sabr.media.HeightAwareAdaptiveTrackSelectionFactory
+import com.kirin.mt.core.youtube.sabr.media.SabrAbrMemory
 import com.kirin.mt.core.youtube.sabr.media.SabrBandwidthMeter
 import com.kirin.mt.core.youtube.sabr.media.SabrManifest
 import com.kirin.mt.core.youtube.sabr.media.SabrMediaFetcher
@@ -1882,6 +1883,19 @@ fun PlayerScreen(
               PlayerPlaybackLogTag,
               "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
             )
+            // 2026-08-31 起播 stall 记忆(修「起播 4K→重载 死循环」):重载把 ABR/带宽窗口全清零,
+            // 同样的冷启动误判必然复发。起播期(YouTube/SABR)stall 记入进程级 SabrAbrMemory,重载后
+            // 新 ABR 实例把顶档(≥2160)冷却 3min,打破无记忆循环。见 SabrAbrMemory / HeightAware。
+            if (displayRequestState.value.isYoutube &&
+              currentPositionMs <= SabrAbrMemory.STARTUP_STALL_POS_MAX_MS
+            ) {
+              SabrAbrMemory.noteStartupStall()
+              Log.i(
+                PlayerPlaybackLogTag,
+                "startup stall noted: top-tier cooldown " +
+                  "${SabrAbrMemory.TOP_TIER_STARTUP_STALL_COOLDOWN_MS / 1000}s for relaunched ABR",
+              )
+            }
             stallSinceMs = 0L
             stallBaselinePositionMs = 0L
             retryKey += 1L

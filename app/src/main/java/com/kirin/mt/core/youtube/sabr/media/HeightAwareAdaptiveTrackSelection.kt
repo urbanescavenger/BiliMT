@@ -81,6 +81,21 @@ import com.google.common.collect.ImmutableList
  * required×0.85**(15% 死区:est 15.8M > 14.25M 稳守 1440p),升档候选门槛不变(est ≥ 全额 required
  * + sustained gate)→ 双阈值滞回带。真饿(est < required×0.85)照样降,水位急救(<8s)是最后兜底
  * ——临界抖动归滞回,真饿归水位,分工不变。降档候选档(切出去的穿透验证)保持全额 required 不放宽。
+ *
+ * 2026-08-31(冷启动防直跳顶档 + stall 重载记忆,修「起播 4K→重载 死循环」,20:04 真机复盘):真机
+ * 起播剧本:720p 首帧后 34ms 松开起始高度 cap → ABR 首评,活跃 est 已被 2 个 720p 段爆发样本撑到
+ * 33-58M,sustained 因证据 <15s 返回 -1 且**被 getSustainedBitrateEstimate 回退成同一个爆发 est**
+ * → 顶档门槛(26.9M×1.1)「合法通过」→ 720p 一步直跳 2160p + reseed 锚死 → 切轨发生在 pos=0 首帧前
+ * → loader 停发 chunk 永不 READY → 看门狗整链路重载 → counter reset 后同样误判再来 → ~16s 无限循环。
+ * 两处根治:
+ * ①**升档需持续带宽证据 + 逐级爬**——sustained 改用原值(getSustainedBitrateEstimateRaw,-1=无证据
+ *   不回退),无证据(冷启动/重载后 ~15s 内)**完全禁升档**(首档由起始选轨/高度 cap 决定,不卡起播);
+ *   有证据后升档也只升**下一个更高分辨率档**(同 height 多 codec 变体不受限),不再「可负担的最高档
+ *   一步到顶」——爆发 est 误判的最坏后果从「直跳 4K」降为「多升一档」,该档真扛不住由既有降档路径
+ *   (滞回/水位急救)接管。降档仍放开全部低档一步落位(2026-08-27 既有语义,真饿要快)。
+ * ②**顶档起播 stall 冷却(跨重载记忆)**——起播期(pos<30s)stall 重载由播放器侧记入
+ *   [SabrAbrMemory],重载后新建的 selection 实例在冷却期(3min)内跳过顶档(≥2160)候选;
+ *   打破「重载 → 全新状态 → 同样误判 → 再重载」的无记忆循环。低档升降/手动选档不受影响。
  */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
@@ -98,6 +113,9 @@ class HeightAwareAdaptiveTrackSelection(
 
   /** 2026-08-30:上次评估的缓冲水位(us),首次评估为 -1——判定「水位仍在下漏」。 */
   private var prevEvalBufferedUs = -1L
+
+  /** 2026-08-31:顶档 stall 冷却的跳过日志是否已打过(每 selection 实例一次,防每 chunk 刷屏)。 */
+  private var topTierStallBlockLogged = false
 
   override fun updateSelectedTrack(
     playbackPositionUs: Long,
@@ -164,7 +182,11 @@ class HeightAwareAdaptiveTrackSelection(
     // alpha.9Z(升档用持续带宽):突发速率 est 在重填缓冲期间会冲到 40-70M(2026-08-27 真机:一笔
     // 74Mbps 突发把 est 从 16M 抬到 40M 过 4K 门槛 → 升完必卡,pacing 有效供给只有 16-20M)。持续带宽
     // = 过去 60s 墙钟实际交付(SabrMediaFetcher.getSustainedBitrateEstimate),要求 ≥ 声明码率才许升。
-    val sustained = (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimate() ?: -1L
+    // 2026-08-31 改用原值(-1=证据不足**不回退**):旧 getSustainedBitrateEstimate 在冷启动把 -1 回退成
+    // 被爆发样本撑高的活跃 est,sustained 闸门整体失效(720p 2 段爆发 33-58M 直接过 4K 门槛)。
+    val sustained = (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw() ?: -1L
+    // 2026-08-31:持续带宽证据(<15s 跨度返回 -1)——无证据禁升档,首档由起始选轨决定不受影响。
+    val sustainedEvidence = sustained >= 0L
     // 2026-08-30(声明口径修正,见类头):declared 现为 averageBitrate=真实平均消耗,
     // required = 裸声明;calib 采样折算(实测消耗/声明)机制整体取消。
     // alpha.9Z(升档滞回,防降档后横跳):带宽估计在档位临界值附近抖动时,无滞回会 308↔315 反复切轨
@@ -182,10 +204,38 @@ class HeightAwareAdaptiveTrackSelection(
     // 漏光/急救 → 315↔308 分钟级抖动。顶档要求 sustained ≥ declared×1.1(declared 已是真平均,
     // 1.1 挡的是 60s 均值口径下的 VBR 尖峰余量;千兆管道不受损,夜间塌方段 sus 8M 永不批 23M 的 4K)。
     val isTopTier = length > 1 && getFormat(0).height >= TOP_TIER_MIN_HEIGHT
+    // 2026-08-31 ②stall 重载记忆:起播期 stall 重载后冷却期内跳过顶档(SabrAbrMemory,跨重载单例)。
+    val topTierStallBlocked = isTopTier && SabrAbrMemory.isTopTierStartupBlocked()
+    // 2026-08-31 ①逐级爬:升档候选只允许「下一个更高分辨率档」(未排除轨中最小的、严格高于当前的
+    // height;同 height 多 codec 变体全部放行)——爆发 est 误判的最坏后果从「一步到顶 4K」降为
+    // 「多升一档」,真扛不住由滞回/水位急救接管。降档不在此限(放开全部低档一步落位的既有语义)。
+    var nextUpgradeHeight = Int.MAX_VALUE
+    for (i in 0 until length) {
+      if (isTrackExcluded(i, nowMs)) continue
+      val h = getFormat(i).height
+      if (h > currentHeight && h < nextUpgradeHeight) nextUpgradeHeight = h
+    }
     for (i in 0 until length) {
       if (isTrackExcluded(i, nowMs)) continue
       val f = getFormat(i)
       val isUpgrade = f.height > currentHeight
+      // 2026-08-31 ①冷启动证据门槛:持续带宽证据不足(<15s,冷启动/重载后)一律禁升——首档由
+      // 起始选轨/高度 cap 决定,起播不受卡;证据成熟后本闸自然放行。
+      if (isUpgrade && !sustainedEvidence) continue
+      // 2026-08-31 ①逐级爬:越级候选(高于下一档)跳过。
+      if (isUpgrade && f.height > nextUpgradeHeight) continue
+      // 2026-08-31 ②顶档 stall 冷却:起播 stall 重载后 3min 内顶档不进候选(低档升降照常)。
+      if (isUpgrade && topTierStallBlocked && f.height >= TOP_TIER_MIN_HEIGHT) {
+        if (!topTierStallBlockLogged) {
+          topTierStallBlockLogged = true
+          Log.i(
+            "YtSabrAbr",
+            "top-tier startup-stall cooldown: skip itag${itagOf(f)}(${f.height}p), " +
+              "remain ${SabrAbrMemory.topTierStartupBlockedRemainSec()}s"
+          )
+        }
+        continue
+      }
       // 2026-08-31 降档滞回:仅当前档的降档判据放宽 ×0.85(15% 死区),升档/降档候选档保持全额
       // required——est 巡航骑在门槛 ±10% 时(declared=真平均后常态)不再每周期穿线切档。
       // 两分支统一 Long(Int×Long 若不显式 toLong 会推断成 Number&Comparable<*> 星投影,CompareTo 禁用)。

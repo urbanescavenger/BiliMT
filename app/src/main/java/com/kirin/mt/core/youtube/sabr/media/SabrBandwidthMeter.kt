@@ -85,6 +85,15 @@ internal class SabrBandwidthMeter(
     return if (sustained >= 0L) sustained else getBitrateEstimate()
   }
 
+  /**
+   * 2026-08-31(冷启动防直跳顶档):持续带宽**原值**,证据不足(<15s 跨度,见 SabrMediaFetcher.
+   * getSustainedBitrateEstimate)返回 -1 且**不回退**活跃 est——旧 getSustainedBitrateEstimate 在
+   * 冷启动(刚起播/重载后 ~15s 内)回退到被 1-2 笔爆发样本撑高的活跃 est(真机 20:04:2 个 720p 段
+   * 爆发 33-58M 直接过 4K 门槛),升档判据的 sustained 闸门在冷启动期被整体废掉。ABR 升档门槛改用
+   * 本方法区分「有持续证据」与「无证据」(无证据 = 不许升档),日志/降档仍可用带回退的旧方法。
+   */
+  fun getSustainedBitrateEstimateRaw(): Long = sustainedBpsProvider?.invoke() ?: -1L
+
   override fun getBitrateEstimate(): Long {
     // alpha.9Z:real=0(窗口内全是被迫空转,供给归零)也是有效判定——回落 delegate 会用传输期高估
     // 把选轨器弹回高档,正好复现「卡死不降档」。仅 -1(尚无任何样本)才回退底层估计。
