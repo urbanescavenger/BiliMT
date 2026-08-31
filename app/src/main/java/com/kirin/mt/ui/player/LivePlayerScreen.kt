@@ -121,7 +121,7 @@ private const val ControlIndexBack = 0
 private const val ControlIndexQuality = 1
 private const val ControlCount = 2
 
-/** BUFFERING 且进度不前进超过此阈值判定为 stall,触发自动重载源。 */
+/** 进度连续不前进超过此阈值判定为 stall,触发自动重载源(见下方看门狗条件,B站直播仅 BUFFERING 态)。 */
 private const val LiveStallThresholdMs = 8_000L
 /** 单次直播会话内自动重试上限,超过后交用户手动重试,避免死循环刷 CDN。 */
 private const val MaxLiveAutoRetry = 3
@@ -283,6 +283,30 @@ fun LivePlayerScreen(
             "tracks=${player.currentTracks.groups.size} " +
             "video=${player.videoFormat?.codecs} audio=${player.audioFormat?.codecs}",
         )
+        // IPTV 真播完(mediaItemCount>0;切源 clearMediaItems 触发的瞬时 ENDED 为 0,排除)
+        // 即断流:直播流没有合法 ENDED,立即切下一个镜像源,不等 8s 看门狗。
+        // 与 onPlayerError 分支同机制:last source 退回同源重载,retry 上限同看门狗。
+        if (request.isIptv && playbackState == Player.STATE_ENDED &&
+          player.mediaItemCount > 0 && autoRetryCount < MaxLiveAutoRetry
+        ) {
+          autoRetryCount += 1
+          val urls = iptvChannels
+            .getOrNull(selectedChannelIndex.coerceIn(0, iptvChannels.lastIndex.coerceAtLeast(0)))
+            ?.urls ?: request.iptvUrls
+          if (selectedQn < urls.lastIndex) {
+            selectedQn += 1
+            android.util.Log.w(
+              LivePlaybackLogTag,
+              "iptv playback ended, switch to source #${selectedQn + 1}/${urls.size} (auto-retry #$autoRetryCount)",
+            )
+          } else {
+            android.util.Log.w(
+              LivePlaybackLogTag,
+              "iptv playback ended at last source, reload same (auto-retry #$autoRetryCount)",
+            )
+            retryKey += 1
+          }
+        }
       }
     })
     onDispose { player.release() }
@@ -413,7 +437,12 @@ fun LivePlayerScreen(
     }
   }
 
-  // stall 检测:STATE_BUFFERING 且用户想播、进度连续 N 秒不前进 → 自动重载源。
+  // stall 检测:用户想播、进度连续 N 秒不前进 → 自动重载源/换镜像源。
+  // IPTV 半死源状态机舞步(真机 21:33 CCTV-1 实证,183.129.255.66 只吐 1 个 10s 段):
+  // BUFFERING 态下 position 照样前进(消耗已缓冲唯一段)→ 段耗尽冻结后 0.2s 内 ExoPlayer
+  // 翻 READY(判定流无更多媒体)→ 仅认 BUFFERING 的看门狗恰在开枪前被状态翻转重置,
+  // READY 冻帧("有画面不播")零覆盖。故 IPTV 扩展:READY 且未在播、ENDED 同算 stall。
+  // B站直播维持原语义(仅 BUFFERING;ENDED 是主播下播的合法终态,不该自动重载)。
   LaunchedEffect(loadState, player) {
     var stallBaselinePositionMs = 0L
     var stallSinceMs = 0L
@@ -421,11 +450,17 @@ fun LivePlayerScreen(
       if (loadState is LiveLoadState.Ready) {
         val currentPositionMs = player.currentPosition
         val nowMs = System.currentTimeMillis()
-        val isStallBuffering =
-          player.playbackState == Player.STATE_BUFFERING &&
-            player.playWhenReady &&
-            currentPositionMs == stallBaselinePositionMs
-        if (isStallBuffering) {
+        val isStall =
+          player.playWhenReady &&
+            currentPositionMs == stallBaselinePositionMs &&
+            if (request.isIptv) {
+              player.playbackState == Player.STATE_BUFFERING ||
+                player.playbackState == Player.STATE_ENDED ||
+                (player.playbackState == Player.STATE_READY && !player.isPlaying)
+            } else {
+              player.playbackState == Player.STATE_BUFFERING
+            }
+        if (isStall) {
           if (stallSinceMs == 0L) {
             stallSinceMs = nowMs
           } else if (nowMs - stallSinceMs >= LiveStallThresholdMs && autoRetryCount < MaxLiveAutoRetry) {

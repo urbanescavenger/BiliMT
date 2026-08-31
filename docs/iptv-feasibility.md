@@ -201,6 +201,19 @@ val info = if (request.isIptv) {
 
 **遗留认知**:进 IPTV tab 缩略图要逐频道拉流截帧(3~22s/张、并发 3),首屏填满本来就要 15~30s——这是"每次进列表都截新鲜画面"的固有代价,非 bug;要秒出图需磁盘缓存上次会话缩略图(与该旧需求冲突,待定)。
 
+### 三期真机二验发现与修复(21:33 真机日志,BRAVIA,CCTV-1"有画面不播"不自动换源)
+
+**现象**:CCTV-1 首源 `183.129.255.66:8480/hls/1` 画面冻住 25s 不播,全程零 `iptv stall detected` 日志,最终用户手动按键切的源(日志 43.609 的 ENDED tracks=0 是切源 `clearMediaItems` 的瞬时态,非真 ENDED)。
+
+**真凶:半死源状态机舞步绕过 8s 看门狗**。该源 m3u8 每 6s 轮询全 200 但 24s 内只吐 1 个 10s ts 段:
+1. 唯一段在 BUFFERING 态下被播完(ExoPlayer 有缓冲数据 position 照样前进)→ 看门狗 `stallSince` 被"进度在动"一路重置;
+2. ~34.3s 段耗尽 position 冻结,看门狗计时,将于 ~42.5s 开枪;**42.318s ExoPlayer 翻 READY**(判定流无更多媒体)——差 0.2s,看门狗条件 `state==BUFFERING` 变假,stallSince 清零;
+3. READY 冻帧(="有画面但是不播"的实体)看门狗零覆盖;且 IPTV 真播到 ENDED 在代码里没有任何恢复分支(直播流没有合法 ENDED)。
+
+**修复(LivePlayerScreen)**:①看门狗条件 IPTV 扩展——`playWhenReady && position 冻结 && (BUFFERING || ENDED || (READY && !isPlaying))` 累计 8s 照切源;B站直播维持仅 BUFFERING 语义(ENDED 是主播下播合法终态);②`onPlaybackStateChanged` 加 IPTV ENDED 即时切源分支(直播 ENDED 即断流,不等 8s),用 `mediaItemCount>0` 排除切源 `clearMediaItems` 的瞬时 ENDED 防自激循环,last source 退回同源重载、retry 上限同看门狗。READY&&!isPlaying 的罕见误判(audio focus suppressed 等)由 retry 上限 3 兜底。日志:`iptv playback ended, switch to source #N/M`。
+
+**预期时序**:同场景下 ~42.5s 看门狗开枪(冻结后 8s)自动切活源,不再依赖用户手动;若源直接播到 ENDED 则秒切。
+
 ### 三期实现记录
 
 | 模块 | 改动 |
