@@ -96,6 +96,9 @@ import com.google.common.collect.ImmutableList
  *   从「直跳 4K」降为「多升一档」,真扛不住由滞回/水位急救接管。冷启动升档**跳过重锚**(锚点会把 est
  *   压在新档声明值拖死下一步爬升);证据成熟后的稳态升档保持重锚语义。降档仍放开全部低档一步落位
  *   (2026-08-27 既有语义,真饿要快)。
+ * ③**冷启动锁档 10s**(20:45 真机续播死循环后补)——selection 实例创建(≈cap 释放重建、样本队列
+ *   整丢)后 10s 内禁升档:重建窗口内连升两档会把新档 init/段请求挤进重灌期,视频轨永不激活 →
+ *   看门狗重载死循环(死亡窗口 8.8s)。期满梯子自由爬,档内 ABR 切换不丢队列、无缝。
  * ②**顶档起播 stall 冷却(跨重载记忆)**——起播期(pos<30s)stall 重载由播放器侧记入
  *   [SabrAbrMemory],重载后新建的 selection 实例在冷却期(3min)内跳过顶档(≥2160)候选;
  *   打破「重载 → 全新状态 → 同样误判 → 再重载」的无记忆循环。低档升降/手动选档不受影响。
@@ -107,6 +110,12 @@ class HeightAwareAdaptiveTrackSelection(
 ) : AdaptiveTrackSelection(group, tracks, bandwidthMeter) {
 
   private var selected = length - 1
+
+  /**
+   * 2026-08-31:selection 实例创建时间(elapsedRealtime ms)——冷启动梯子锁基准。实例创建 ≈
+   * cap 释放重建(样本队列整体丢弃)时刻,锁内禁升档,越过重建重灌窗口。
+   */
+  private val createdElapsedMs = SystemClock.elapsedRealtime()
 
   /** alpha.9Z:上次降档时间(elapsedRealtime ms)——升档冷却基准。 */
   private var lastDowngradeElapsedMs = 0L
@@ -197,7 +206,12 @@ class HeightAwareAdaptiveTrackSelection(
     // 2026-08-30(用户决策):**3min 升档冷却取消**——22:11-22:14 真机:急救降回 1080p 后缓冲已填满
     // 45s、门槛 12.7M 明明可升,却被冷却硬锁到 22:14:57,用户被迫手动切档。横跳防护由「缓冲 ≥30s
     // 才许升 + 升档后 10s 禁止 est 回降 + 重锚基线」承担,不再需要冷却。
-    val canUpgrade = lastDowngradeElapsedMs == 0L || bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US
+    // 2026-08-31 冷启动锁档 10s(用户拍板):selection 实例创建 ≈ cap 释放重建(样本队列整体丢弃)
+    // 时刻,重建窗口内连升两档=新档 init/段请求(带 2s 服务端 backoff)全挤进重灌期 → 视频轨永不
+    // 激活 → 看门狗重载死循环(20:45 真机 pos=1569s 续播 3 轮,死亡窗口 8.8s)。实例创建后 10s 内
+    // 禁升档,期满梯子自由爬(档内 ABR 切换不丢队列、无缝);原「首档豁免」取消,锁覆盖全部升档。
+    val canUpgrade = nowMs - createdElapsedMs >= COLD_START_LADDER_LOCK_MS &&
+      (lastDowngradeElapsedMs == 0L || bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US)
     var best = length - 1
     var bestHeight = -1
     // 最高档(height 2160/4K)额外 sustained 门槛(2026-08-30 方案B→口径修正重标):4K 真平均就是
@@ -313,6 +327,12 @@ class HeightAwareAdaptiveTrackSelection(
   private companion object {
     /** alpha.9Z:升档所需的最低缓冲水位(us)——降档自救后缓冲重建到这一水位前,不允许弹回高档。 */
     const val UPGRADE_MIN_BUFFERED_US = 30_000_000L
+    /**
+     * 2026-08-31:冷启动梯子锁(ms)——selection 实例创建(≈cap 释放重建、队列整丢)后这段时间内
+     * 禁升档。20:45 真机死亡窗口 8.8s(重建→看门狗),10s 覆盖之;用户拍板起播锁 10s 可接受。
+     * 期满档内 ABR 切换不丢样本队列,梯子无缝爬。
+     */
+    const val COLD_START_LADDER_LOCK_MS = 10_000L
     /** alpha.9Z:降档后升档所需最低缓冲水位(us)——缓冲重建到这一水位前不允许弹回高档。 */
     const val DOWNGRADE_BUFFERED_US = 8_000_000L
     /** 2026-08-30:升档后的水位急救宽限(ms)——新档刚起步缓冲未回填,不能立刻按同一水位反弹降档。 */
