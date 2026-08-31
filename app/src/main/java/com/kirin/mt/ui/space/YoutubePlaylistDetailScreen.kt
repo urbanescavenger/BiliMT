@@ -390,7 +390,11 @@ internal fun YoutubePlaylistDetailScreen(
                     shape,
                   )
                   .focusRequester(playAllFocusRequester)
-                  .focusable()
+                  // onFocusChanged/onPreviewKeyEvent 必须在 focusable **之前**:官方文档
+                  // 「onFocusChanged 只监听它之后第一个 focusTarget」——放反了(onFocusChanged
+                  // 在 focusable 后)它绑定不到本节点,P11-72b/c/d 全系「节点零回调而子树
+                  // hasFocus=true」「requestFocus 静默失败」谜团的真凶:焦点一直成功落在
+                  // 播放全部/行上,回调全瞎,聚焦状态永远 false → 高亮不亮(P11-72e)。
                   .onFocusChanged {
                     if (it.isFocused != playAllFocused) {
                       Log.i("BiliMT:FocusDiag", "playlist-playall focused=${it.isFocused}")
@@ -413,6 +417,7 @@ internal fun YoutubePlaylistDetailScreen(
                       else -> false
                     }
                   }
+                  .focusable()
                   .padding(horizontal = BiliSpacing.Md, vertical = BiliSpacing.Sm),
               ) {
                 Text(
@@ -581,7 +586,8 @@ private fun YoutubePlaylistVideoRow(
         ),
         shape,
       )
-      .focusable()
+      // onFocusChanged/onPreviewKeyEvent 必须在 focusable **之前**(同上「播放全部」处注释,
+      // P11-72e):放反=绑定不到本行的 focusTarget,焦点回调全瞎、行高亮永不亮。
       .onFocusChanged {
         if (it.isFocused != focused) {
           Log.i(
@@ -608,6 +614,7 @@ private fun YoutubePlaylistVideoRow(
           else -> false
         }
       }
+      .focusable()
       .padding(BiliSpacing.Sm),
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
