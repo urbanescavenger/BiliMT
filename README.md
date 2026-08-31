@@ -137,6 +137,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.8-alpha.7 | TV IPTV「有画面不播」不自动换源根治:半死源状态机舞步绕过 8s 看门狗(唯一段在 BUFFERING 态播完→进度前进一路重置计时→段耗尽冻结后 0.2s 内 ExoPlayer 翻 READY 使 BUFFERING-only 条件清零,READY 冻帧零覆盖;真机 25s 冻画面靠手动切源)。修:看门狗 IPTV 条件扩展 BUFFERING‖ENDED‖(READY&&!isPlaying) 冻结 8s 照切源;IPTV 真播到 ENDED 秒切下一源(mediaItemCount>0 排除切源瞬时态防自激,末源同源重载);B站直播语义不变 |
 | v3.0.8-alpha.6 | YouTube SABR 起播 4K 无限重载根治(四层连环,四轮真机复盘):①冷启动防直跳顶档(sustained 原值不回退爆发假值+顶档×1.1 自动挡+升档逐级爬+证据期 15→10s+冷启动免重锚);②冷启动锁档 10s(首帧重建选组整丢样本队列窗口内禁升,期满档内切换无缝爬);③stall 重载跨重载记忆(SabrAbrMemory,起播期 stall 后 3min 顶档冷却);④广告白名单丢在途请求修复(选轨翻转后在途 chunk 响应被当广告丢弃→六连重试独占 fetcher 8.5s 饿死看门狗,白名单并入在途请求 itag)。附:WebDAV 备份/还原加 IPTV 源配置项;IPTV 真机首验两洞修复(stall 看门狗优先换镜像源+截帧并发槽预算 26s 封顶) |
 | v3.0.8-alpha.5 | TV IPTV 多镜像源判活+自动换源:启动后台廉价 m3u8 探活(App 级 store 会话复用,并发 2,首个活源即止)+可见频道截帧多源回退(判死源跳过,出帧=可播铁证回写)+urls 活源前置重排(列表/侧栏/断流换源顺序同享),点开直接播活源不再首开黑屏报错轮询;附 Crashlytics toast 如实化(下次启动后送达) |
 | v3.0.8-alpha.4 | TV YouTube 字幕下线(用户决策:字幕不重要核心是音视频):字幕 MergingMediaSource 整块移除,根治「timedtext 字幕 URL 被掐(81s 响应头超时)拖死 MergingMediaSource 全 child prepare→主源 fetch 零发送→视频转圈加载不出」(直连黑洞同族,官方可播);SabrAwareDataSource 加 youtube/googlevideo 路由诊断日志;附:播放列表聚焦行玻璃面改纯粉实底硬渲染修复 |
