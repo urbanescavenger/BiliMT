@@ -3,6 +3,7 @@
 ## 目录
 
 - [v3.0.7](#v307)
+- [v3.0.8-alpha.5](#v308-alpha5)
 - [v3.0.8-alpha.4](#v308-alpha4)
 - [v3.0.8-alpha.3](#v308-alpha3)
 - [v3.0.8-alpha.2](#v308-alpha2)
@@ -240,6 +241,23 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v3.0.8-alpha.5
+
+**TV IPTV 多镜像源判活 + 自动换源:载入列表即切可用源,点开直接播活源**(不再"首开线路1 黑屏 → 报错才轮询换源")。方案与实现详见 `docs/iptv-feasibility.md` 三期。
+
+### 变更
+- **分层判活**(成本核算:截帧探活全量是 GB 级/数十分钟,不可行):
+  - **第一层·启动后台廉价 m3u8 探活**:App 启动延迟 15s 后台扫全列表,仅多源频道、顺序 GET 拉 m3u8(~10-100 KB/次)、首个活源即止、并发 2、单频道补试上限 3(约 50 MB/千频道)。探活 client 与拉流同栈(IPv4-only DNS + 裸 IP 明文放行,否则裸 IP http 源必假死);校验 peek 前 2 KB 像 m3u8,防 200 回 HTML 错误页误判活。结果存 app 级 store,**判活一次本次启动全程复用**。
+  - **第二层·截帧多源回退**:可见频道截帧(现有缩略图功能)urls[0] 出不了帧(段 403/解码失败)顺序补试下一镜像,出帧 = 拉流+解码+渲染全链路铁证可播,回写 store;判死源跳过不浪费 22s。**截帧超时永不判死**(22s 慢源假死),只有 m3u8 都拉不到的硬失败才标死。
+- **urls 活源前置重排**(`[活]+[未探]+[死]` 稳定分区):TV 列表加载即重排,判活结果流式到达 debounce 回写(滚动途中也生效);播放器频道侧栏切源、断流自动换源(`selectedQn++`)顺序同享;点开 `selectedQn=0` 直接播活源。
+- **仅 TV 端**,移动端本轮不动(构造默认参数,行为与旧版一致)。
+- 附带:Crashlytics 上报 toast 如实化(`sendUnsentReports` 会话中调用是无人消费的 no-op,改「下次启动后送达」)+ `fetch_crashlytics_logs.py` token 过期 ms/秒单位错判修复。
+
+### 真机验证点
+- 冷启动 15s 后 logcat `BiliMT:IptvProbe`:逐频道 `probe alive/dead` + 结尾 `sweep done: channels=N aliveUrls=X deadUrls=Y`;未配置源时 `url blank -> empty` 安静退出(fire-and-forget)。
+- 死镜像排前的频道点开应直接播活源,不再先黑屏报错。
+- IPTV 列表滚动,urls[0] 段损坏的频道应自动换镜像截出图。
 
 ## v3.0.8-alpha.4
 
