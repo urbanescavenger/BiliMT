@@ -66,6 +66,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.kirin.mt.core.network.IptvChannel
 import com.kirin.mt.core.network.IptvRepository
+import com.kirin.mt.core.player.IptvSourceProbeStore
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -158,6 +159,8 @@ fun LivePlayerScreen(
   onBack: () -> Unit,
   isMobile: Boolean = false,
   iptvRepository: IptvRepository? = null,
+  // TV 端传 app 级判活结果(活源前置重排);移动端不传(默认 null),行为与旧版一致。
+  iptvProbeStore: IptvSourceProbeStore? = null,
 ) {
   val context = LocalContext.current
   val roomId = request.liveRoomId
@@ -321,16 +324,22 @@ fun LivePlayerScreen(
 
   // TV-only IPTV:拉取 m3u 频道列表一次,并解析进入时所在频道(优先名匹配,回退 URL 匹配,再回退 0)。
   // 匹配台与原始 request 同源时 activeChannelUrls 结构相等 → 不触发多余重载(见主加载键)。
+  // 判活结果(启动扫描/列表页截帧回写)活源前置重排:频道侧栏切源、断流自动 selectedQn++
+  // 的顺序都变成活源优先,首开(selectedQn=0)直接播活源。名匹配为主,URL 匹配仅兜底
+  // (重排后 urls 结构可能与 request.iptvUrls 不同,靠名匹配不受影响)。
   LaunchedEffect(roomId, request.isIptv) {
     if (!request.isIptv || isMobile || iptvRepository == null) return@LaunchedEffect
     iptvChannelLoading = true
     val result = runCatching { iptvRepository.getChannels() }.getOrDefault(emptyList())
-    iptvChannels = result
+    val reordered = iptvProbeStore?.let { store ->
+      result.map { channel -> channel.copy(urls = store.reorderUrls(channel.urls)) }
+    } ?: result
+    iptvChannels = reordered
     iptvChannelLoading = false
-    if (result.isNotEmpty() && selectedChannelIndex < 0) {
-      selectedChannelIndex = result.indexOfFirst { it.name == request.title }
+    if (reordered.isNotEmpty() && selectedChannelIndex < 0) {
+      selectedChannelIndex = reordered.indexOfFirst { it.name == request.title }
         .takeIf { it >= 0 }
-        ?: result.indexOfFirst { it.urls == request.iptvUrls }
+        ?: reordered.indexOfFirst { it.urls == request.iptvUrls }
         .takeIf { it >= 0 }
         ?: 0
       focusedChannelIndex = selectedChannelIndex

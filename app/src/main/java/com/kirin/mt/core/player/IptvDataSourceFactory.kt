@@ -44,10 +44,22 @@ class IptvDataSourceFactory {
     return OkHttpDataSource.Factory(client).setUserAgent(BiliHeaders.UserAgent)
   }
 
+  /**
+   * 廉价 m3u8 探活用 client(见 [IptvSourceProber]):与拉流同栈(IPv4-only DNS、
+   * 裸 IP 明文放行、请求事件日志——否则裸 IP http 源探活必假死),仅把超时压短
+   * (探活只拉 m3u8 文本,失败要快速回吐,不留 15s)。
+   */
+  fun createProbeClient(): OkHttpClient = client.newBuilder()
+    .connectTimeout(ProbeConnectTimeoutSeconds, TimeUnit.SECONDS)
+    .readTimeout(ProbeReadTimeoutSeconds, TimeUnit.SECONDS)
+    .build()
+
   private companion object {
     const val ConnectTimeoutSeconds = 15L
     const val ReadTimeoutSeconds = 15L
     const val WriteTimeoutSeconds = 15L
+    const val ProbeConnectTimeoutSeconds = 10L
+    const val ProbeReadTimeoutSeconds = 8L
     const val LogTag = "BiliMT:IptvNet"
   }
 }

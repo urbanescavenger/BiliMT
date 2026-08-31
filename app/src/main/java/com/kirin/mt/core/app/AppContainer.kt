@@ -36,12 +36,15 @@ import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.player.CdnSpeedTester
 import com.kirin.mt.core.player.CodecCapabilityProbe
 import com.kirin.mt.core.player.DanmakuSettingsStore
+import com.kirin.mt.core.player.IptvSourceProbeStore
+import com.kirin.mt.core.player.IptvSourceProber
 import com.kirin.mt.core.player.LiveQualityPreferenceStore
 import com.kirin.mt.core.player.PlaybackProgressStore
 import com.kirin.mt.core.player.PlaybackRepository
@@ -166,6 +169,13 @@ class AppContainer(context: Context) {
     client = downloadHttpClient,
     appSettingsStore = appSettingsStore,
   )
+  // IPTV 源判活(app 级,判活一次本次启动全程复用,见 docs/iptv-feasibility.md 三期):
+  // store 由 TV 列表页/播放器/缩略图截帧共读共写;prober 只在启动扫一次。
+  val iptvSourceProbeStore: IptvSourceProbeStore = IptvSourceProbeStore()
+  private val iptvSourceProber = IptvSourceProber(
+    repository = iptvRepository,
+    store = iptvSourceProbeStore,
+  )
   val playbackRepository: PlaybackRepository = PlaybackRepository(
     apiClient = apiClient,
     wbiKeyRepository = wbiKeyRepository,
@@ -268,7 +278,23 @@ class AppContainer(context: Context) {
     }
   }
 
+  /**
+   * 启动后台 IPTV 源判活扫描(见 docs/iptv-feasibility.md 三期):延迟 15s 避开冷启动
+   * 图片/接口流量高峰,然后对多源频道廉价 m3u8 探活(约 50 MB/千频道,KB 级 GET),
+   * 结果写 [iptvSourceProbeStore] 供 TV 列表/播放器活源前置复用。fire-and-forget:
+   * 未配置源时 getChannels 返回空自然退出;失败静默(列表/截帧路径不受影响)。
+   */
+  fun startIptvSourceProbe() {
+    applicationScope.launch {
+      delay(IptvProbeStartupDelayMs)
+      runCatching { iptvSourceProber.sweepOnce() }
+        .onFailure { error -> Log.w(LogTag, "iptv source probe failed: ${error.message}") }
+    }
+  }
+
   private companion object {
     const val LogTag = "BiliWarmup"
+    /** IPTV 判活扫描的启动延迟:避开冷启动图片/接口流量高峰再动网络。 */
+    const val IptvProbeStartupDelayMs = 15_000L
   }
 }

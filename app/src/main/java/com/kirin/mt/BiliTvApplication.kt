@@ -46,6 +46,8 @@ class BiliTvApplication : Application(), ImageLoaderFactory {
     NewPipeHolder.init(appContainer.youtubeHttpClient, appContainer.biliTvPoTokenProvider)
     // 预热 api.bilibili.com 连接池,首开主页/播放省掉冷建连。fire-and-forget。
     appContainer.warmupApiConnection()
+    // IPTV 源判活扫描(延迟 15s 后台跑,判活一次本次启动全程复用,仅 TV 路径消费)。
+    appContainer.startIptvSourceProbe()
   }
 
   override fun newImageLoader(): ImageLoader {

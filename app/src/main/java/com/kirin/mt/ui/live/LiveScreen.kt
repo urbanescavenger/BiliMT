@@ -25,6 +25,7 @@ import com.kirin.mt.core.model.LiveAreaGroup
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.network.LiveRepository
+import com.kirin.mt.core.player.IptvSourceProbeStore
 import com.kirin.mt.core.player.IptvThumbnailManager
 import com.kirin.mt.ui.common.BiliCapsuleTabRow
 import com.kirin.mt.ui.common.BiliPillTab
@@ -38,9 +39,14 @@ import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 private const val FirstPage = 1
+
+/** 判活结果流式回写重排的 debounce(ms):启动扫描每频道都推进一次结果流,攒一攒再重排。 */
+private const val IptvProbeReorderDebounceMs = 2_000L
 
 /** 直播分区 tab:推荐 + 各一级分区(网游/手游/娱乐/电台/...)。镜像移动端父分区做 tab 的策略。 */
 internal sealed interface LiveSection {
@@ -112,6 +118,7 @@ internal data class LiveLoadRequest(
 internal fun LiveScreen(
   liveRepository: LiveRepository,
   iptvRepository: IptvRepository,
+  iptvProbeStore: IptvSourceProbeStore,
   uiState: LiveUiState,
   firstItemFocusRequester: FocusRequester,
   tabFocusRequester: FocusRequester,
@@ -157,7 +164,7 @@ internal fun LiveScreen(
   val context = LocalContext.current
   val isIptv = activeSection is LiveSection.Iptv
   val thumbnailManager = remember(context, isIptv) {
-    if (isIptv) IptvThumbnailManager(context) else null
+    if (isIptv) IptvThumbnailManager(context, iptvProbeStore) else null
   }
   var iptvThumbnails by remember { mutableStateOf<Map<String, Bitmap>>(emptyMap()) }
   DisposableEffect(thumbnailManager) {
@@ -221,7 +228,9 @@ internal fun LiveScreen(
       }
       if (page == null) {
         // IPTV:一次拉全量,无分页。未配置源时 getChannels 返回空 → 空态提示去设置。
+        // 判活结果(启动扫描/截帧回写,app 级 store)活源前置重排 urls:点开即播活源。
         val channels = iptvRepository.getChannels()
+          .map { channel -> channel.copy(urls = iptvProbeStore.reorderUrls(channel.urls)) }
         if (channels.isEmpty()) {
           LiveState.Empty
         } else {
@@ -253,6 +262,29 @@ internal fun LiveScreen(
     uiState.sectionStates = uiState.sectionStates + (sectionToLoad.key to nextState)
     if (uiState.loadRequest?.id == request.id) {
       uiState.loadRequest = null
+    }
+  }
+
+  // IPTV 判活结果流式到达(启动扫描/可见频道截帧回写都会推进 store):debounce 后把
+  // IPTV 列表各频道 iptvUrls 重新活源前置——用户停在列表滚动途中拿到结果也生效,
+  // 不只列表初次加载那一刻。只写实际有变化的项,无变化不触发网格重组。
+  LaunchedEffect(iptvProbeStore) {
+    iptvProbeStore.results.collectLatest {
+      if (it.isEmpty()) return@collectLatest
+      delay(IptvProbeReorderDebounceMs)
+      val iptvState = uiState.sectionStates[LiveSection.Iptv.key] as? LiveState.Success
+        ?: return@collectLatest
+      val reordered = iptvState.videos.map { video ->
+        if (video.iptvUrls.size >= 2) {
+          video.copy(iptvUrls = iptvProbeStore.reorderUrls(video.iptvUrls))
+        } else {
+          video
+        }
+      }
+      if (reordered.zip(iptvState.videos).any { (new, old) -> new.iptvUrls != old.iptvUrls }) {
+        uiState.sectionStates = uiState.sectionStates +
+          (LiveSection.Iptv.key to iptvState.copy(videos = reordered))
+      }
     }
   }
 
@@ -413,12 +445,18 @@ internal fun LiveScreen(
                 val safeLast = last.coerceAtMost(currentState.videos.lastIndex)
                 if (first > safeLast) return@launch
                 val visible = currentState.videos.subList(first, safeLast + 1)
-                // 并发截帧:死源/慢源只占一个并发槽,不串行堵住整批(信号量限并发 3)。
-                visible.mapNotNull { it.iptvUrls.firstOrNull() }
-                  .map { url -> async { url to thumbnailManager?.getThumbnail(url) } }
+                // 并发截帧 + 多源回退:urls[0] 截不出帧(段 403/解码失败)顺序补试下一
+                // 镜像(廉价探活已判死的跳过),出帧即证活回写 store。死源/慢源只占一个
+                // 并发槽,不串行堵住整批(信号量限并发 3)。
+                visible.filter { it.iptvUrls.isNotEmpty() }
+                  .map { video -> async { video to thumbnailManager?.getThumbnailForChannel(video.iptvUrls) } }
                   .forEach { deferred ->
-                    val (url, bmp) = deferred.await()
-                    if (bmp != null) iptvThumbnails = iptvThumbnails + (url to bmp)
+                    val (video, bmp) = deferred.await()
+                    if (bmp != null) {
+                      // 频道任一 url 出帧,全部 urls 都映射同一 bitmap:coverOverrides 按
+                      // firstOrNull() 键控,判活重排会动 first,塞全 urls 才不失联。
+                      iptvThumbnails = iptvThumbnails + video.iptvUrls.map { it to bmp }
+                    }
                   }
               }
             } else null,

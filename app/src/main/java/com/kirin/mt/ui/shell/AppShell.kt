@@ -191,6 +191,7 @@ fun BiliTvApp(
   webdavConfigStore: com.kirin.mt.core.webdav.WebDavConfigStore,
   webdavBackupService: com.kirin.mt.core.webdav.WebDavBackupService,
   iptvRepository: com.kirin.mt.core.network.IptvRepository,
+  iptvProbeStore: com.kirin.mt.core.player.IptvSourceProbeStore,
 ) {
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
@@ -1417,6 +1418,7 @@ fun BiliTvApp(
                 AppDestination.Live -> com.kirin.mt.ui.live.LiveScreen(
                   liveRepository = liveRepository,
                   iptvRepository = iptvRepository,
+                  iptvProbeStore = iptvProbeStore,
                   uiState = liveUiState,
                   firstItemFocusRequester = liveFocusRequester,
                   tabFocusRequester = liveTabFocusRequester,
@@ -1525,6 +1527,7 @@ fun BiliTvApp(
               playbackHttpClient = playbackHttpClient,
               liveQualityPreferenceStore = liveQualityPreferenceStore,
               iptvRepository = iptvRepository,
+              iptvProbeStore = iptvProbeStore,
               onBack = {
                 playbackFocusRestoreDestination = selectedDestination
                 playbackRequest = null
