@@ -87,6 +87,17 @@ internal class SabrMediaFetcher(
   private var audioFormat: FormatId? = null
   private var videoFormat: FormatId? = null
 
+  /**
+   * 2026-08-31(修续播重建窗口饿死):**在途段请求的 itag 集合**(getNextSegment 进入时加、返回/抛错时移除,
+   * ConcurrentHashMap.newKeySet 因 loader 线程与 fetcher 并发)。processPart 的广告白名单必须包含它们——
+   * 21:01 真机:重建后新选组初始档翻 302(videoFormat 变更),在途旧 chunk(298 seg=336)的响应数据
+   * 全被 `skip ad/unrequested` 丢弃 → hasSegment 永假 → 六连重试(含一次 5.4s 慢响应)独占串行 fetcher
+   * 8.5s → 新轨 init 排不上队 → 看门狗重载。白名单=当前选中+在途请求,广告防御语义不变(从没被请求
+   * 过的 itag 照丢)。
+   */
+  private val pendingRequestItags: MutableSet<Int> =
+    java.util.concurrent.ConcurrentHashMap.newKeySet()
+
   /** 请求序号(每次 POST 追加 &rn=,AtomicInt 防 A/V 两 loader 并发)。 */
   private val requestNumber = AtomicInteger(0)
   /** 上次请求墙钟(epoch ms,0=首次),算 elapsedWallTimeMs。 */
@@ -372,34 +383,40 @@ internal class SabrMediaFetcher(
   fun getNextSegment(req: SabrSegmentRequest): SabrSegment {
     fatalError?.let { throw SabrTerminalException("SABR error: $it") }
     val itag = req.formatItag
+    // 2026-08-31:在途 itag 入白名单(修重建后旧在途请求响应被广告过滤丢弃的死循环),finally 移除。
+    pendingRequestItags.add(itag)
     return runBlocking {
-      withContext(dispatcher) {
-        var attempt = 0
-        while (attempt < MAX_ATTEMPTS) {
-          attempt++
-          // 同步 bufferedSegments:按 req.bufferedSegments 保留(清除已不缓冲的,防内存泄漏)
-          initializedFormats[itag]?.bufferedSegments?.keys?.retainAll(req.bufferedSegments)
+      try {
+        withContext(dispatcher) {
+          var attempt = 0
+          while (attempt < MAX_ATTEMPTS) {
+            attempt++
+            // 同步 bufferedSegments:按 req.bufferedSegments 保留(清除已不缓冲的,防内存泄漏)
+            initializedFormats[itag]?.bufferedSegments?.keys?.retainAll(req.bufferedSegments)
 
-          var fmt = initializedFormats[itag]
-          if (fmt == null || !fmt.hasSegment(req.segment)) {
-            // 已下载但播放器不再要的段(seek 后)清掉,防泄漏
-            fmt?.downloadedSegments?.clear()
-            // 单流 POST——服务端推多段,缓存进 initializedFormats
-            media(req)
+            var fmt = initializedFormats[itag]
+            if (fmt == null || !fmt.hasSegment(req.segment)) {
+              // 已下载但播放器不再要的段(seek 后)清掉,防泄漏
+              fmt?.downloadedSegments?.clear()
+              // 单流 POST——服务端推多段,缓存进 initializedFormats
+              media(req)
+            }
+            // 终端检查(media 可能置位)
+            reloadPlayerDump?.let { throw SabrTerminalException("RELOAD_PLAYER_RESPONSE: $it") }
+            if (invalidPo) throw SabrTerminalException("InvalidPoToken (StreamProtectionStatus status=3)")
+            fatalError?.let { throw SabrTerminalException("SABR error: $it") }
+
+            fmt = initializedFormats[itag]
+            val seg = fmt?.getSegment(req.segment)
+            if (seg != null) return@withContext seg
+            // transient:段未到(服务端只回了 context+backoff 或 redirect)。backoff 已在 media 起始 sleep,
+            // redirect 已写回 session.sabrUrl。循环重试同请求。
+            Log.i(tag, "getNextSegment: no seg ${req.segment} itag $itag after attempt $attempt (retry)")
           }
-          // 终端检查(media 可能置位)
-          reloadPlayerDump?.let { throw SabrTerminalException("RELOAD_PLAYER_RESPONSE: $it") }
-          if (invalidPo) throw SabrTerminalException("InvalidPoToken (StreamProtectionStatus status=3)")
-          fatalError?.let { throw SabrTerminalException("SABR error: $it") }
-
-          fmt = initializedFormats[itag]
-          val seg = fmt?.getSegment(req.segment)
-          if (seg != null) return@withContext seg
-          // transient:段未到(服务端只回了 context+backoff 或 redirect)。backoff 已在 media 起始 sleep,
-          // redirect 已写回 session.sabrUrl。循环重试同请求。
-          Log.i(tag, "getNextSegment: no seg ${req.segment} itag $itag after attempt $attempt (retry)")
+          throw SabrTerminalException("exhausted $MAX_ATTEMPTS attempts for seg ${req.segment} itag $itag")
         }
-        throw SabrTerminalException("exhausted $MAX_ATTEMPTS attempts for seg ${req.segment} itag $itag")
+      } finally {
+        pendingRequestItags.remove(itag)
       }
     }
   }
@@ -584,7 +601,9 @@ internal class SabrMediaFetcher(
         }
         // alpha.71 广告防御层:跳过非白名单 itag 的 MEDIA_HEADER(广告段)。不入 partialSegments
         // → 其后续 MEDIA/MEDIA_END 按 headerId 找不到段自动丢弃。
-        val hdrWhitelist = setOfNotNull(audioFormat?.itag, videoFormat?.itag)
+        // 2026-08-31:白名单=当前选中格式+在途段请求 itag——选轨切换后旧在途请求的响应不再被误丢
+        // (21:01 真机:videoFormat 翻 302 后 298 在途段响应全被丢,六连重试独占 fetcher 8.5s)。
+        val hdrWhitelist = setOfNotNull(audioFormat?.itag, videoFormat?.itag) + pendingRequestItags
         if (hdrWhitelist.isNotEmpty() && mh.itag !in hdrWhitelist) {
           Log.w(tag, "skip ad/unrequested MEDIA_HEADER itag=${mh.itag} headerId=${mh.headerId} (whitelist=$hdrWhitelist)")
           return
@@ -652,7 +671,8 @@ internal class SabrMediaFetcher(
         // visionOS 客户端(path C)通常不注入广告,但作安全网:广告格式不入表 → 其 MEDIA 段
         // 在 partialSegments 找不到 headerId → MEDIA/MEDIA_END 自动丢弃 → 不喂解码器。
         // 白名单空(audioFormat/videoFormat 均未设)时不过滤,避免误杀。
-        val whitelistedItags = setOfNotNull(audioFormat?.itag, videoFormat?.itag)
+        // 2026-08-31:同 MEDIA_HEADER 白名单,并入在途段请求 itag(见 pendingRequestItags)。
+        val whitelistedItags = setOfNotNull(audioFormat?.itag, videoFormat?.itag) + pendingRequestItags
         if (whitelistedItags.isNotEmpty() && fi.itag !in whitelistedItags) {
           Log.w(tag, "skip ad/unrequested FORMAT_INIT itag=${fi.itag} (whitelist=$whitelistedItags)")
           return

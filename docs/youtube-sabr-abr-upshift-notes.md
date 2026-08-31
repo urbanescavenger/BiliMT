@@ -463,3 +463,13 @@ r1735 复盘通过(急救降回秒级回档、零 watchdog),唯一遗留:本视�
 **遗留(下轮修)**:①**僵尸拉流**——重建丢弃旧 sample stream 后,在途 chunk load 未被取消:`SabrDataSource.open()` 同步阻塞在 `fetcher.getNextSegment()`(SABR POST 循环),media3 的 cancel 打不断;本轮该僵尸 6 次重复拉同一 seg=336(各 3.3MB 共 ~20MB 废流量),独占串行 fetcher 4s,把新轨 init/段请求全堵在后面,是重灌窗口被撑到 9s 的放大器。修法方向:getNextSegment 支持取消中断(DataSource.close 置位,循环检查);②seg=336 重复 6 次的 getNextSegment 内部循环终止条件需查(一次段请求拉了 6 个 POST)。
 
 **待真机复测**:续播(pos>30s)起播应在 720p 稳住 ~10s(重建后 1-3s 内视频轨激活、READY),10s 后无缝逐级爬;全程零 stall 零重载。若仍卡,看新增 chunk 日志定位僵尸拉流占比。
+
+### 19.3 2026-08-31 21:01 真机三验(P11-75d 后):10s 锁生效,但白名单丢包饿死续播重灌——在途请求 itag 入白名单
+
+**现象(21:01-21:02 真机,续播 pos=1569s)**:P11-75d 的 10s 锁工作正常(重建窗口内零 upshift,恢复后梯子 21:03 正常爬 303→308→315),但**首次续播仍在重建后 ~10s 饿死**:`READY(720p)→ 重建(队列整丢,BUFFERING)→ 9.9s 后 stall @pos=1569947ms buffered=50% → 重载`,第二轮恢复仅 2.2s 后正常。
+
+**真凶(§19.2 预判的「僵尸拉流」实锤 + 精确机制)**:重建后新 6 轨选组初始档=index 5=**itag302**(720p webm,bitrate 降序组的末位),`selectFormat` 把 fetcher 的 `videoFormat` 从 298 翻成 302;而在途旧 chunk(298 seg=336)还在 `getNextSegment` 循环里——processPart 的**广告白名单 `[audioFormat, videoFormat]=[139, 302]` 把服务端每次都回来的 298 段数据当广告丢弃**(`skip ad/unrequested MEDIA_HEADER itag=298`)→ `hasSegment(336)` 永假 → 六连重试(每次 POST 3.3MB,含一次 5.4s 慢响应)独占串行 fetcher **8.5s** → 新轨 init 21:01:59.99 才被服务,看门狗 21:02:00.81 开枪,**差 0.7s**。第二轮无在途冲突所以 2.2s 即恢复。
+
+**修法(已实施,SabrMediaFetcher)**:白名单 = 当前选中格式 **+ 在途段请求 itag 集合**(`pendingRequestItags`:getNextSegment 进入时加、finally 移除;MEDIA_HEADER 与 FORMAT_INITIALIZATION_METADATA 两处过滤同步并入)。在途请求的响应不再被丢,旧 chunk 一次 POST 即完成(<1s),串行 fetcher 不再被占。广告防御语义不变:从未被请求过的 itag 照丢(广告段只可能出现在非请求 itag 上)。
+
+**待真机复测**:续播应在重建后 1-3s 内出画面(720p 稳 ~10s),全程零 stall 零重载;日志不应再出现 `skip ad/unrequested` 丟在途 itag + `getNextSegment: no seg ... (retry)` 连发。若仍有饿死,查 getNextSegment 重试循环的其他出口。
