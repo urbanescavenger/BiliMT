@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.8](#v308)
 - [v3.0.7](#v307)
 - [v3.0.8-alpha.6](#v308-alpha6)
 - [v3.0.8-alpha.5](#v308-alpha5)
@@ -225,6 +226,21 @@
 - [v1.0.9](#v109)
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
+
+## v3.0.8
+
+**稳定版:YouTube SABR 起播 4K 死循环根治 + ABR 码率口径与滞回精修 + TV IPTV 多镜像源判活自动换源。** 本版整合 v3.0.8-alpha.1~7 全部改动:YouTube SABR 起播/续播 4K 无限重载四层连环根治(冷启动防直跳顶档+锁档 10s+stall 重载跨重载记忆+广告白名单丢在途请求);ABR 声明码率换真实平均(averageBitrate)+降档滞回死区+顶档定向冷却;TV YouTube 字幕下线根治「字幕 URL 直连黑洞拖死主源转圈」;TV IPTV 三期判活(启动廉价探活+截帧铁证回写+活源前置重排)与看门狗 READY/ENDED 盲区修复;WebDAV 备份加 IPTV 源配置。
+
+### 变更
+- **SABR 起播 4K 死循环根治**(alpha.6,P11-75 系列,四层连环):①冷启动防直跳顶档(sustained 原值不回退爆发假值+顶档 ×1.1 自动挡+升档逐级爬+证据期 15→10s+冷启动免重锚)——修起播 pos=0 一两笔爆发样本直跳 2160p→loader 停发→看门狗重载→同误判再来的 ~16s/轮死循环;②冷启动锁档 10s——修首帧松 cap 重建选组整丢样本队列窗口内连升两档饿死看门狗的续播 3 轮死循环;③stall 重载跨重载记忆(`SabrAbrMemory` 进程级,起播期 stall 后 3min 顶档冷却,打破「重载→全新状态→同样误判」);④广告白名单丢在途请求修复——选轨翻转后在途旧 chunk 响应被当广告丢弃→六连重试独占 fetcher 8.5s 饿死新轨 init,白名单并入在途段请求 itag 集合。排查四轮真机复盘见 `docs/youtube-sabr-abr-upshift-notes.md` §19-§19.3。
+- **ABR 码率口径与滞回精修**(alpha.1~3):①声明码率换真实平均(`bitrate` 是 VBR 峰值虚高 ~60-75%,全链路改 `averageBitrate` 优先,NewPipe 路径自算 clen÷dur;calib 采样折算整体取消;顶档 sustained 门槛重标 ×1.1);②降档滞回 ×0.85 双阈值死区(当前档降档判据放宽 15%,修 est 巡航骑在相邻档门槛 ±10% 的临界来回切档;升档门槛保持全额,真饿照降水位急救兜底);③顶档定向冷却(水位急救从 4K 降下后 3min 不回弹,防边缘档反复切档卡顿,非顶档升降照常)。
+- **TV IPTV 多镜像源判活+自动换源**(alpha.5~7,`docs/iptv-feasibility.md` 三期):启动后台廉价 m3u8 探活(App 级 store 会话复用,并发 2,首个活源即止,~50MB/千频道)+可见频道截帧多源回退(出帧=拉流解码渲染全链路铁证,判死源跳过,超时永不判死)+urls 活源前置重排(列表/侧栏/断流换源顺序同享,点开直接播活源);stall 看门狗 IPTV 分支优先换镜像源(半死源卡 8s 直接切活源,不再烧满 3 次同源重试);看门狗 READY/ENDED 盲区修复(半死源状态机舞步绕过 8s 计时:唯一段 BUFFERING 态播完→进度前进一路重置→冻结后 0.2s 内翻 READY 清零计时,「有画面不播」25s 靠手动——条件扩展 BUFFERING‖ENDED‖(READY&&!isPlaying),真 ENDED 秒切下一源);截帧并发槽预算 26s 封顶。
+- **TV YouTube 字幕下线**(alpha.4,根治「视频转圈加载不出、官方可播」):字幕 URL 响应头被掐(直连黑洞,81s 超时)时字幕 child 拖死 MergingMediaSource 整链路 prepare,主源 fetch 零发送;播放链路里不再存在字幕 child,物理上够不到主源(用户决策:字幕不重要,核心是音视频稳定)。附 `SabrAwareDataSource` youtube/googlevideo 路由诊断日志。
+- **TV 播放列表体验**(alpha.2~4):详情页「正在播放」标记(历史最新行粉 ▶+粉标题);进入无焦点修复(初焦验证+重试,修覆盖层环境 FocusRequester 未初始化被吞);聚焦高亮弃玻璃改纯粉实底硬渲染。
+- **WebDAV 备份/还原加 IPTV 源配置**(alpha.6):源 URL/账号/密码三件套 `iptv_config.json`,还原写回,四语言文案。
+- **Crashlytics toast 如实化**(alpha.5 附):`sendUnsentReports` 会话中调用是无人消费的 no-op,toast 改「下次启动后送达」。
+
+---
 
 ## v3.0.7
 
