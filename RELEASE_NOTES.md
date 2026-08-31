@@ -3,6 +3,7 @@
 ## 目录
 
 - [v3.0.7](#v307)
+- [v3.0.8-alpha.6](#v308-alpha6)
 - [v3.0.8-alpha.5](#v308-alpha5)
 - [v3.0.8-alpha.4](#v308-alpha4)
 - [v3.0.8-alpha.3](#v308-alpha3)
@@ -241,6 +242,26 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v3.0.8-alpha.6
+
+**YouTube SABR 起播 4K 无限重载根治(四层连环修复)+ WebDAV 备份 IPTV 源配置 + IPTV 真机首验两洞修复**。排查全程四轮真机复盘见 `docs/youtube-sabr-abr-upshift-notes.md` §19-§19.3。
+
+### 变更
+- **SABR 起播 4K 死循环根治**(P11-75 系列,四层):
+  - **冷启动防直跳顶档**:旧 `getSustainedBitrateEstimate` 在持续带宽证据不足(<10s)时回退到被 1-2 笔爆发样本撑高的活跃 est(真机 720p 两段爆发 33-58M 直接过 4K 门槛),起播 pos=0 一步直跳 2160p → 切轨后 loader 停发永不 READY → 看门狗重载 → 同误判再来,~16s/轮无限循环。修:sustained 改原值获取(-1 不回退),顶档 ×1.1 闸在冷启动自动挡 4K;升档**逐级爬**(只许下一个更高分辨率档,同 height 多 codec 变体不受限),爆发误判最坏后果从「直跳 4K」降为「多升一档」;证据成熟期 15s→10s(落在首灌窗口内);冷启动升档跳过 est 重锚(锚点拖梯子)。
+  - **冷启动锁档 10s**:首帧松 cap 重建选组会整丢样本队列,重建窗口内连升两档会把新档 init/段请求挤进重灌期饿死看门狗(续播 pos=1569s 真机 3 轮死循环)——selection 实例创建后 10s 内禁升档,期满档内 ABR 切换不丢队列、无缝爬。
+  - **stall 重载跨重载记忆**(`SabrAbrMemory` 进程级单例):YouTube 起播期(pos<30s)stall 重载记时间戳,重载后新 ABR 实例 3min 内跳过顶档候选,打破「重载→全新状态→同样误判」无记忆循环;低档升降/手动选档不受影响。
+  - **广告白名单丢在途请求修复**(续播饿死真凶):重建后选组初始档翻转使 `videoFormat` 变更,processPart 广告白名单把**在途旧 chunk 请求的响应数据当广告丢弃** → `hasSegment` 永假六连重试独占串行 fetcher 8.5s → 新轨 init 差 0.7s 没赶上 8s 看门狗。修:白名单=当前选中格式+**在途段请求 itag 集合**(getNextSegment 进入加/finally 移除),广告防御语义不变(从未被请求过的 itag 照丢)。
+  - 附带:`YtSabrAbr` 日志 sus= 改打原值(-1 证据不足曾整除显示成 0K 误导取证);`DefaultSabrChunkSource` 补切轨/交付/取消/拒发四类取证日志(下轮再遇「切轨后停发」直接界定 media3 loader 侧 vs chunk source 侧)。
+- **WebDAV 备份/还原增加 IPTV 源配置项**(P11-74):`IptvBackupData`(源 URL/账号/密码)上传 `bilitv/iptv_config.json`,还原写回三 setter(缺失/解析失败跳过不炸整体);两端选择弹窗还原列表补 IPTV 项,四语言文案;IPTV 无本地频道存储,备份即源配置(对齐 Piped 模式)。
+- **IPTV 真机首验两洞修复**:①stall 看门狗 IPTV 分支改**优先换镜像源**——半死源(m3u8 活但 ts 段超时)同源重挂烧满 3 次重试救不回,卡 8s 直接 `selectedQn++` 切活源(单源台/末源退回同源重载);②截帧多源回退并发槽浪费——在截 URL 被防重入误判失败开第二路同频道双占槽,改让位等首次协程回填;单频道截帧总预算 26s 封顶(原来半死频道逐源 3×22s=66s 霸死 3 并发槽,首屏缩略图全排队)。
+
+### 真机验证点
+- **续播**(pos>30s):进入后 1-3s 出画面,720p 起步稳 ~10s(锁档期),然后无缝逐级爬升(720→1080→1440,4K 仅持续带宽 ≥ 声明×1.1 放行),全程零 stall 零重载。
+- 日志不再出现:`skip ad/unrequested` 丢在途 itag、`getNextSegment: no seg (retry)` 连发、起播期 `upshift` 突现顶档。
+- WebDAV 备份勾 IPTV 后服务器出现 `iptv_config.json`,还原后设置页 IPTV 源三件套恢复。
+- IPTV 半死源频道卡住 ~8s 自动切活源,不再烧满重试;首屏缩略图排队明显缩短。
 
 ## v3.0.8-alpha.5
 
