@@ -228,7 +228,8 @@ private fun MobileLogContentScreen(
 
   fun sendToCrashlytics() {
     scope.launch {
-      // sendUnsentReports 无完成回调,入队成功只提示「已入队:上传中」,不假显示成功
+      // SDK 结构性限制:会话中 recordException 要等下次启动 finalize 才成报告,upload
+      // 中途发起是 no-op;入队成功只提示「已入队:下次启动后送达」,不假显示成功
       val result = withContext(Dispatchers.IO) {
         FirebaseLogSender.sendLogFile(context, file)
       }

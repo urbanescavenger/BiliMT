@@ -165,7 +165,7 @@
     <string name="settings_logs_export">Exportar registro actual</string>
     <string name="settings_logs_share">Compartir</string>
     <string name="settings_logs_send">Informar</string>
-    <string name="settings_logs_send_queued">En cola: subiendo</string>
+    <string name="settings_logs_send_queued">En cola: se enviará al reiniciar la app</string>
     <string name="settings_logs_send_failed">Error al informar: %1$s</string>
     <string name="settings_logs_send_unavailable">Firebase no configurado</string>
     <string name="settings_crash_auto_report_title">Informar fallos automáticamente</string>

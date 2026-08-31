@@ -165,7 +165,7 @@
     <string name="settings_logs_export">Exportar registo atual</string>
     <string name="settings_logs_share">Partilhar</string>
     <string name="settings_logs_send">Comunicar</string>
-    <string name="settings_logs_send_queued">Na fila: a enviar</string>
+    <string name="settings_logs_send_queued">Na fila: será enviado no próximo arranque</string>
     <string name="settings_logs_send_failed">Falha ao comunicar: %1$s</string>
     <string name="settings_logs_send_unavailable">Firebase não configurado</string>
     <string name="settings_crash_auto_report_title">Comunicar falhos automaticamente</string>

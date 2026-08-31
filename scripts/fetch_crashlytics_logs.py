@@ -59,8 +59,10 @@ def save_config(cfg: dict) -> None:
 
 def get_access_token(cfg: dict) -> str:
     tokens = cfg["tokens"]
+    # expires_at 是毫秒纪元(firebase CLI 写入),比较必须同单位换 ms——
+    # 曾经错拿秒比较,ms 恒大于 s 判成永不过期,死守旧 token 直到 API 401
     expires_at = tokens.get("expires_at", 0)
-    if expires_at > time.time() + 60 and tokens.get("access_token"):
+    if expires_at > time.time() * 1000 + 60_000 and tokens.get("access_token"):
         return tokens["access_token"]
     print("[auth] access token 已过期/缺失,用 refresh_token 换新...", file=sys.stderr)
     data = urllib.parse.urlencode({
