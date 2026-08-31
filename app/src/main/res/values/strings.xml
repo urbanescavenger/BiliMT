@@ -108,7 +108,7 @@
     <string name="settings_clear_cache_calculating">&#x8BA1;&#x7B97;&#x4E2D;</string>
     <string name="settings_clear_cache_done">&#x5DF2;&#x6E05;&#x7406; %1$s &#x7F13;&#x5B58;</string>
     <string name="settings_language_title">&#x8BED;&#x8A00;</string>
-    <string name="settings_language_description">&#x5207;&#x6362;&#x754C;&#x9762;&#x6587;&#x5B57;&#xFF0C;&#x9999;&#x6E2F;&#x548C;&#x53F0;&#x6E7E;&#x4F1A;&#x540C;&#x65F6;&#x8F6C;&#x6362;&#x6807;&#x9898;&#x3001;&#x5F39;&#x5E55;&#x548C; UP &#x4E3B;&#x540D;&#x79F0;&#x3002;</string>
+    <string name="settings_language_description">&#x5207;&#x6362;&#x754C;&#x9762;&#x6587;&#x5B57;&#xFF0C;&#x5171; 6 &#x6863;&#xFF1A;&#x7B80;&#x4F53;&#x3001;&#x6E2F;&#x7E41;&#x3001;&#x53F0;&#x7E41;&#x3001;English&#x3001;Espa&#xF1;ol&#x3001;Portugu&#xEA;s&#xFF1B;&#x6E2F;&#x53F0;&#x7E41;&#x9AD4;&#x540C;&#x6642;&#x8F6C;&#x63DB;&#x6807;&#x9898;&#x3001;&#x5F39;&#x5E55;&#x548C; UP &#x4E3B;&#x540D;&#x79F0;&#x3002;</string>
     <string name="settings_language_simplified">&#x7B80;&#x4F53;</string>
     <string name="settings_language_hong_kong">&#x9999;&#x6E2F;</string>
     <string name="settings_language_taiwan">&#x53F0;&#x6E7E;</string>

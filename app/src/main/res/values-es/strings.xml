@@ -108,7 +108,7 @@
     <string name="settings_clear_cache_calculating">Calculando</string>
     <string name="settings_clear_cache_done">Se limpiaron %1$s de caché</string>
     <string name="settings_language_title">Idioma</string>
-    <string name="settings_language_description">Cambia el idioma de la interfaz; Hong Kong y Taiwán también convierten títulos, danmaku y nombres de UP.</string>
+    <string name="settings_language_description">Cambia el idioma de la interfaz — 6 opciones: 简体, 港繁, 台繁, English, Español, Português. Las variantes de Hong Kong y Taiwán también convierten títulos, danmaku y nombres de UP.</string>
     <string name="settings_language_simplified">简体</string>
     <string name="settings_language_hong_kong">香港</string>
     <string name="settings_language_taiwan">台湾</string>
