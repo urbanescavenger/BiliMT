@@ -638,3 +638,34 @@ Auto 播 480p 时服务端按 480p 节奏吐段(每笔 0.5-0.9MB + 每请求 ~1.
 - [ ] 4K 不被试探:无 `trial upshift` 指向 315, sus×1.1 不达标仍挡;
 - [ ] bufferMax=30s 用户档也能触发(0.8×~28s≈22s > 15s 地板);
 - [ ] §23 的 cap= 取证在试探后应显著抬升(480p ~3M → 720p ~10M 量级,验证「试探治愈测量」)。
+
+### §24.1 alpha.5 首验复盘(2026-09-01 晚,21:0X 真机 4 轮重载)
+
+**试探机制本身按设计工作**:①21:02:44 1440p 试探失败优雅降档(BUFFERING 2s 恢复,零重载);②
+**20:54:08 出现「试探治愈测量」成功案例**——试探期 pacing 样本让 sus/cap 变真,gated 门合法升
+1080p(§24 复测清单第 5 项 ✓)。
+
+**4 轮 stall 重载(20:57:56 / 21:07:33 / 21:13:23 / 21:14:47)直接原因 = 网络塌方窗口**:fetch
+单笔 24-36s 慢滴(rn=47 耗 30.4s / rn=48 36.6s / rn=32 24.7s)或长时间无响应(rn=54 >27s 无
+REAL)、`unexpected end of stream` ×2。playbackHttpClient 刻意 callTimeout=0 + readTimeout 15s
+(per-read 重置)——慢滴永不超时,这是为支持大段慢速下载的既有取舍,本轮不动。
+
+**试探三缺陷放大了伤害(本轮修,12e60cab)**:
+
+1. **重载后 maxObserved 归零 → 试探线跌到 0.8×20s=17s**:21:08:46 在 bufS=20s(远未满)就试探
+   1440p(sus 仅 7.15M vs 需 13.3M)→ 大亏空 → 恰逢网络塌方 → 21:13:23 重载。修:试探准入加
+   `maxObservedBufferedUs >= TRIAL_MIN_CEILING_US(25s)`——重载/冷启动后必须先完整回填一轮;
+   bufferMax=30s 用户档(fill ~28s)仍可用。
+2. **失败冷却不跨重载**:冷却/试探态是 selection 实例字段,重载即洗掉;且 21:13 案例重载发生在
+   **试探期**(降档路径从未跑,冷却根本没记)→ 新实例立即重试同一堵墙。修:冷却/active 态迁
+   `SabrAbrMemory`(墙钟,noteTrialFail/isTrialFailBlocked/onStallReload),PlayerScreen 看门狗
+   重载路径(noteStartupStallMemory)无条件调 `onStallReload()` 把 activeTrial 转记失败冷却。
+3. **试探期无熔断**:1440p 级亏空(~9M/s)下 20s 缓冲 1-2s 穿底,水位急救(5s 宽限 + 8s 阈值)
+   来不及救(21:14:20 bufS=0s)。修:试探熔断(trial abort)——试探档缓冲 <15s(TRIAL_ABORT_
+   BUFFERED_US)且仍在下漏 → 2s 宽限(TRIAL_ABORT_GRACE_MS)后无视 8s/20s 阈值与 5s 宽限立即降档。
+
+**待真机复测(alpha.6)**:
+- [ ] 试探只发生在 bufS ≥ 0.8×maxObs 且 maxObs ≥ 25s(重载后不再低水位试探);
+- [ ] 试探失败/试探期重载后,新实例 180s 内不再试同档(日志 remain Ns, survives reload);
+- [ ] 试探期缓冲跌破 15s 立即熔断降档(无 5s 宽限);
+- [ ] 网络稳定时段 Auto 停在真实可持续档,重载次数回落到网络塌方次数。
