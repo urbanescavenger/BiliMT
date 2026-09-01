@@ -1077,6 +1077,12 @@ Auto 升降档三连修(当日 4 轮真机迭代):①声明码率在高码率源
 
 `/player` 的 `bitrate` 字段是 **VBR 峰值**(比真实平均高 ~60-75%),真实平均是 `averageBitrate`(≈ clen/duration)。此前 ABR 的 required=declared×calib 与顶档 sustained≥declared×0.6 全部在 peak 口径上叠连环补偿(23:00 真机:calib 0.779 外推 + 0.6 gate 在 sus 28-34M 时"合法"放行 4K,随后网络塌方降档一步没救回→整段重载回 720p)。修正:①`buildSabrTrack`/`parseFormat` 带宽改 `averageBitrate` 优先(WEB 原生字段;NewPipe raws 自算 clen×8/approxDurationMs,extractor ItagItem 已含;Piped 无字段回落 peak=旧行为);②calib 采样/成熟度地板整体取消,required=裸声明=实需(用户决策);③顶档门槛保留、系数 0.6→**1.1**(真平均口径下的 VBR 尖峰余量);④升档重锚锚裸声明。其余机制(水位急救/升档冷却/10s 禁回降/逐步候选)不变。
 
+## 6.26 满缓冲试探升档(trial upshift):SABR 服务端 pacing 下的测量死锁根治(2026-09,v3.0.9-alpha.4 后)
+
+**状态:已实施(9ffb66f1)。排查全过程与真机逐案证据(15:47/15:48 同网络对照)见 [youtube-sabr-abr-upshift-notes.md](youtube-sabr-abr-upshift-notes.md) §24。**
+
+§6.25/§23 的 cap 重填容量通道首验证伪:cap 测的仍是服务端供给节奏(SABR 按 selectedFmts 的档位 pace 供流)——Auto 480p 会话 est/sus/cap 全钉在 ~3M,70 秒后手切 1440 同网络实测 22-24Mbps(cap 3129K→22475K)。播 X 档永远只能测到 ~X 档量级「容量」,测量型门槛结构性看不到真管道。修法:满缓冲试探升档——缓冲升穿 max(15s 地板, 0.8×历史最高水位)(跨线判定防首填误触发)+ canUpgrade 不豁免 + 下一档不在失败冷却时,容量/持续闸失真也升一档;试探本身治愈测量(新档 pacing 把 sus/cap 喂到真实量级);失败由重锚+滞回+水位急救回收并记 3min 失败冷却;×1.1 顶档 sustained 闸与起播 stall 冷却不试探(4K/起播防线不松)。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |
