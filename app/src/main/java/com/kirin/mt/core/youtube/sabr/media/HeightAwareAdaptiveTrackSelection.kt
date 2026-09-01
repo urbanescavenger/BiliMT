@@ -140,6 +140,19 @@ import com.google.common.collect.ImmutableList
  *   仅喂 isUpgrade 候选与 effective 取大;降档口径(alpha.9Z gap 入账)与 4K 顶档 sus×1.1 闸不动。
  *   日志 cap= 字段取证。
  */
+/* 2026-09-01(满缓冲试探升档 trial upshift,修「Auto 满缓冲不升档」的 pacing 真根因):15:47/15:48
+ *   真机同网络对照——Auto 480p 会话 est/sus/cap 全被 SABR 服务端 pacing 钉在 ~3M(cap 中位 3129K),
+ *   70 秒后手切 1440 同网络 REAL 22-24Mbps 连续 6 笔(cap=22475K)。结论:播 X 档时服务端只按 ~X 档
+ *   节奏供流,测量型门槛(est/sus/cap)结构性看不到真管道——2026-09-01 的 cap 重填容量通道也逃不掉
+ *   (它测的仍是服务端供给节奏,不是管道容量)。唯一能让 ABR 获得高档真实数据的手段=试探性请求高档
+ *   (等价手切:服务端立刻按新档 pace,sus/cap 被喂到真实量级,测量通道被治愈)。修法:
+ *   ①触发=缓冲「升穿」试探水位线(max(15s 地板, 0.8×本实例见过的最高水位))+ canUpgrade(冷启动锁
+ *     +降档后水位)+ 下一档不在失败冷却——跨线判定(本评估在上一评估之上)防首填单调期骑线常真;
+ *   ②放行范围:容量/持续闸失真也升,一次仍只升一档(逐级爬不动);×1.1 顶档 sustained 闸与起播 stall
+ *     冷却不试探(4K 死亡行军防线不松,顶档真证据由 1440p pacing 样本提供);
+ *   ③失败回收:重锚已锚新档声明值 → est 真实样本快速下探 + 水位急救兜底;降出试探档时记 3min 失败
+ *     冷却(与顶档冷却同值,防每轮回填都撞同一堵墙),期满由下次满缓冲重新试探。
+ */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
   tracks: IntArray,
@@ -197,6 +210,16 @@ class HeightAwareAdaptiveTrackSelection(
   /** 2026-08-31:顶档 stall 冷却的跳过日志是否已打过(每 selection 实例一次,防每 chunk 刷屏)。 */
   private var topTierStallBlockLogged = false
 
+  /** 2026-09-01 满缓冲试探:本实例见过的最高缓冲水位(us)——试探水位线 = max(地板, 0.8×此值)。 */
+  private var maxObservedBufferedUs = 0L
+
+  /** 2026-09-01 满缓冲试探:试探失败的 height 与解禁时刻(elapsedRealtime ms)——冷却期内不重试该档。 */
+  private var trialFailedHeight = -1
+  private var trialFailedUntilElapsedMs = 0L
+
+  /** 2026-09-01 满缓冲试探:最近一次升档是否试探批准——降档离开该档时据此记失败冷却。 */
+  private var lastUpgradeWasTrial = false
+
   override fun updateSelectedTrack(
     playbackPositionUs: Long,
     bufferedDurationUs: Long,
@@ -217,6 +240,8 @@ class HeightAwareAdaptiveTrackSelection(
     // 在涨)、且过了升档宽限 → 水位下降本身就是最好的降档证据(供给持续低于当前档消耗),无视 est 直接
     // 降到下一个低分辨率档。逐级一步一档:降到可持续档后缓冲回 8s 以上自动停。
     val currentHeight = getFormat(selected).height
+    // 2026-09-01 满缓冲试探:先留上一评估的水位(试探用「升穿水位线」判定,防首填单调期骑线常真误触发)
+    val prevBufferedUsForTrial = prevEvalBufferedUs
     // 2026-08-31 B1(顶档水位急救阈值 8s→20s):SABR 串行管道下急救必须提前一个完整循环触发——
     // ①评估只在 getNextChunk 发生,4K 段循环 10-14s → 两次评估间最长 ~14s 盲窗;②急救只影响后续
     // getNextChunk staged 的段,已 staged 的 4K 段积压(rn 一票 ~39MB/7.6s)仍占死串行 fetcher;
@@ -231,6 +256,7 @@ class HeightAwareAdaptiveTrackSelection(
       bufferedDurationUs <= prevEvalBufferedUs &&
       nowMs - lastUpgradeElapsedMs >= DOWNGRADE_AFTER_UPGRADE_GRACE_MS
     prevEvalBufferedUs = bufferedDurationUs
+    if (bufferedDurationUs > maxObservedBufferedUs) maxObservedBufferedUs = bufferedDurationUs
     if (bufferCritical) {
       var lower = -1
       var lowerHeight = -1
@@ -258,6 +284,7 @@ class HeightAwareAdaptiveTrackSelection(
         )
         selected = lower
         lastDowngradeElapsedMs = nowMs
+        markDowngradeFromTrial(nowMs, currentHeight)
         // 2026-08-30 顶档定向冷却:从顶档(2160p)水位降下后把该顶档 excludeTrack 3 分钟,防
         // 「重填突发过门槛→升 4K→贴地漏光→又降」边缘横跳反复切档卡顿;只锁顶档,低档升降照常
         // (与已取消的全档冷却不同)。非顶档(可持续档)的急救降档不加冷却。
@@ -305,6 +332,8 @@ class HeightAwareAdaptiveTrackSelection(
       (lastDowngradeElapsedMs == 0L || bufferedDurationUs >= UPGRADE_MIN_BUFFERED_US)
     var best = length - 1
     var bestHeight = -1
+    // 2026-09-01 满缓冲试探:最终选中的升档是否经试探放行(驱动 lastUpgradeWasTrial → 失败冷却)
+    var bestIsTrial = false
     // 最高档(height 2160/4K)额外 sustained 门槛(2026-08-30 方案B→口径修正重标):4K 真平均就是
     // 实需,起步窄选期低档样本对 4K 无参考价值,且 4K 的 pacing 有效供给本就贴地 — 边缘反复获批/
     // 漏光/急救 → 315↔308 分钟级抖动。顶档要求 sustained ≥ declared×1.1(declared 已是真平均,
@@ -321,6 +350,15 @@ class HeightAwareAdaptiveTrackSelection(
       val h = getFormat(i).height
       if (h > currentHeight && h < nextUpgradeHeight) nextUpgradeHeight = h
     }
+    // 2026-09-01 满缓冲试探升档(trial upshift):canUpgrade 已含冷启动锁 10s + 降档后缓冲 ≥30s;
+    // 试探水位线 = max(15s 地板, 0.8×历史最高水位),要求「升穿」(上一评估在线下)——满缓冲本身
+    // 就是供给富余于当前档的硬证据,也是测量型门槛在服务端 pacing 下唯一可补的盲区。下一档在失败
+    // 冷却期内不重试(防每轮回填都撞同一堵墙)。
+    val trialThresholdUs = maxOf(TRIAL_FLOOR_BUFFERED_US, maxObservedBufferedUs * 8 / 10)
+    val trialUpgrade = canUpgrade &&
+      bufferedDurationUs >= trialThresholdUs &&
+      prevBufferedUsForTrial < trialThresholdUs &&
+      !(nextUpgradeHeight == trialFailedHeight && nowMs < trialFailedUntilElapsedMs)
     for (i in 0 until length) {
       if (isTrackExcluded(i, nowMs)) continue
       val f = getFormat(i)
@@ -348,13 +386,22 @@ class HeightAwareAdaptiveTrackSelection(
         if (i == selected) f.bitrate * DOWNSHIFT_MARGIN_PERMILLE / 1000L else f.bitrate.toLong()
       // 2026-09-01 重填容量:升档候选用 max(effective, 容量中位数) 过门;当前档(降档判据)与低档候选
       // 仍用 effective——降档口径不变(alpha.9Z「卡死不降档」防线)。
-      if (required > (if (isUpgrade) upgradeEstFloor else effective)) continue
-      if (isUpgrade && (!canUpgrade || (sustained in 0 until required))) continue
-      // 顶档(仅 height==组内最高,即真正在尝试 4K 的那一档)sustained 加码 ×1.1,防边缘抖动。
-      // 2026-08-31 复核:本闸兼任冷启动顶档闸——sustained 原值在证据不足时为 -1,-1 < 声明×1.1
-      // 恒真 → 冷启动(起播/重载后 ~10s 内)顶档自动不进候选,非顶档不受影响(见下方注释)。
-      if (isUpgrade && isTopTier && i == 0 && sustained < f.bitrate * TOP_TIER_SUSTAINED_PERMILLE / 1000L) {
-        continue
+      if (!isUpgrade) {
+        // 降档口径不变(alpha.9Z「卡死不降档」防线):当前档与低档候选仍用 effective。
+        if (required > effective) continue
+      } else {
+        // 2026-09-01 满缓冲试探:容量/持续闸失真(服务端 pacing,见类头)时凭满缓冲放行;
+        // ×1.1 顶档闸与起播 stall 冷却不试探(4K 死亡行军/起播死循环防线不松)。
+        val capacityGateFail = required > upgradeEstFloor
+        val sustainedGateFail = !canUpgrade || (sustained in 0 until required)
+        val topTierGateFail = isTopTier && i == 0 &&
+          sustained < f.bitrate * TOP_TIER_SUSTAINED_PERMILLE / 1000L
+        if (capacityGateFail || sustainedGateFail) {
+          if (topTierGateFail || !trialUpgrade) continue
+          bestIsTrial = true
+        } else if (topTierGateFail) {
+          continue
+        }
       }
       // 选声明码率可负担的最高分辨率档;同 height 多 codec(VP9/H264)2026-09-01 起改粘全组顶档
       // codec(VP9 粘性,见 isTopCodecVariant——旧「保留高码率变体」让 1080p 选 avc(299>303),爬到
@@ -379,12 +426,29 @@ class HeightAwareAdaptiveTrackSelection(
     selected = best
     when {
       // 降档(height 变小)记时间,驱动升档冷却
-      getFormat(selected).height < currentHeight -> lastDowngradeElapsedMs = nowMs
+      getFormat(selected).height < currentHeight -> {
+        lastDowngradeElapsedMs = nowMs
+        markDowngradeFromTrial(nowMs, currentHeight)
+      }
       // 2026-08-30 升档重锚:est 基准重锚到「新档声明码率」。declared 已是 averageBitrate=真实平均
       // 消耗,无需再校准折算;锚在实需值后,扛不住时真实带宽样本塌下来 est 快速下探降档,扛得住才
       // 允许继续爬。
       getFormat(selected).height > currentHeight -> {
         lastUpgradeElapsedMs = nowMs
+        lastUpgradeWasTrial = bestIsTrial
+        if (bestIsTrial) {
+          // 2026-09-01 满缓冲试探取证:est/sus 此刻仍是低档 pacing 失真值,升入后服务端按新档
+          // pace 供流,sus/cap 被喂到真实量级(1440p 手切会话 cap=22475K 实证)。
+          Log.i(
+            "YtSabrAbr",
+            "trial upshift (buffer-full probe): bufS=${bufferedDurationUs / 1_000_000}s " +
+              "threshold=${trialThresholdUs / 1_000_000}s → " +
+              "itag${itagOf(getFormat(selected))}(${getFormat(selected).height}p) " +
+              "declared=${getFormat(selected).bitrate} " +
+              "est=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
+              "sus=${if (sustained >= 0L) "${sustained / 1000}K" else "-1"}"
+          )
+        }
         val newDeclared = getFormat(selected).bitrate.toLong()
         // 2026-08-31 冷启动梯子跳过重锚:sustained 证据不足(-1)时的升档是「爆发 est + 逐级爬」的
         // 冷启动梯子,重锚把 est 压到新档声明值会拖死下一步爬升(20:28 真机:升 1080 锚 5.7M,est 从
@@ -418,6 +482,23 @@ class HeightAwareAdaptiveTrackSelection(
   private fun itagOf(f: Format): Int {
     val id = f.id ?: return -1
     return id.substringAfterLast(':', id).toIntOrNull() ?: -1
+  }
+
+  /**
+   * 2026-09-01 满缓冲试探:降档离开试探批准的档时记 3min 失败冷却(与顶档冷却同值),冷却期内
+   * 该档既不过容量闸(失真值)也不被试探重试,期满由下次满缓冲重新试探;非试探降档只清标记。
+   */
+  private fun markDowngradeFromTrial(nowMs: Long, fromHeight: Int) {
+    if (lastUpgradeWasTrial) {
+      trialFailedHeight = fromHeight
+      trialFailedUntilElapsedMs = nowMs + TRIAL_FAIL_COOLDOWN_MS
+      Log.i(
+        "YtSabrAbr",
+        "trial fail cooldown: ${fromHeight}p excluded ${TRIAL_FAIL_COOLDOWN_MS / 1000}s " +
+          "(retry on next buffer-full)"
+      )
+    }
+    lastUpgradeWasTrial = false
   }
 
   private companion object {
@@ -461,6 +542,16 @@ class HeightAwareAdaptiveTrackSelection(
      * 那管升档起步期,本滞回管稳态临界期(不限时)。
      */
     const val DOWNSHIFT_MARGIN_PERMILLE = 850L
+    /**
+     * 2026-09-01:试探水位线地板(us)——「满缓冲=供给富余」证据的最低可信线;30s bufferMax 档
+     * (0.8×28s≈22s)也在线上,地板只在更小水位时兜底。
+     */
+    const val TRIAL_FLOOR_BUFFERED_US = 15_000_000L
+    /**
+     * 2026-09-01:试探失败档冷却(ms)——试探扛不住的档冷却这段时间,防每轮回填都重试同一堵墙;
+     * 与顶档定向冷却同值(3min 覆盖一个完整误批-回填周期)。
+     */
+    const val TRIAL_FAIL_COOLDOWN_MS = 180_000L
   }
 
   override fun getSelectionReason(): Int = androidx.media3.common.C.SELECTION_REASON_ADAPTIVE
