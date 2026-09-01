@@ -1859,6 +1859,10 @@ fun PlayerScreen(
     // ABR/带宽窗口全清零,同样的冷启动误判必然复发——记入进程级 SabrAbrMemory,重载后新 ABR 实例
     // 把顶档(≥2160)冷却 3min,打破无记忆循环。
     fun noteStartupStallMemory(posMs: Long) {
+      // 2026-09-01 试探跨重载记忆:任何 stall 重载时,若正有试探在身(试探期被重载打死,降档路径
+      // 没跑、180s 失败冷却没记),转记失败冷却——新 ABR 实例不立即重试同一堵墙(21:13 真机案例)。
+      // 与起播顶档记忆(pos 条件)独立,无条件执行。
+      SabrAbrMemory.onStallReload()
       if (displayRequestState.value.isYoutube && posMs <= SabrAbrMemory.STARTUP_STALL_POS_MAX_MS) {
         SabrAbrMemory.noteStartupStall()
         Log.i(

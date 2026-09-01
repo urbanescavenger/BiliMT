@@ -152,6 +152,18 @@ import com.google.common.collect.ImmutableList
  *     冷却不试探(4K 死亡行军防线不松,顶档真证据由 1440p pacing 样本提供);
  *   ③失败回收:重锚已锚新档声明值 → est 真实样本快速下探 + 水位急救兜底;降出试探档时记 3min 失败
  *     冷却(与顶档冷却同值,防每轮回填都撞同一堵墙),期满由下次满缓冲重新试探。
+ *
+ * 2026-09-01 晚(alpha.5 首验复盘,21:0X 真机 4 轮重载):试探机制本身按设计工作(21:02:44 1440p
+ *   试探失败优雅降档零重载;20:54:08 试探治愈测量——试探期 pacing 样本让 sus/cap 变真,gated 门合法
+ *   升 1080p)。4 轮重载直接原因是网络塌方窗口(单笔 fetch 24-36s 慢滴/无响应,playbackHttpClient
+ *   callTimeout=0 既有取舍,慢滴不超时),但试探三缺陷放大了伤害,本轮修:
+ *   ①浅填充防线——maxObserved 随实例归零使试探线跌到 17s,21:08:46 在 bufS=20s 就试探 1440p;
+ *     修:试探还要求 maxObserved ≥ 25s(TRIAL_MIN_CEILING_US),重载后必须先完整回填一轮。
+ *   ②失败冷却不跨重载——实例字段被重载洗掉,21:13 案例重载发生在试探期(降档没跑,冷却没记)→
+ *     新实例立即重试;修:冷却/active 态迁 SabrAbrMemory(墙钟),看门狗重载调 onStallReload()
+ *     把 activeTrial 转记失败冷却(PlayerScreen.noteStartupStallMemory 无条件调用)。
+ *   ③试探期无熔断——1440p 级亏空 ~9M/s 下 20s 缓冲 1-2s 穿底,5s 宽限+8s 阈值来不及救(21:14:20
+ *     bufS=0s);修:试探档缓冲 <15s 且仍在下漏 → 2s 宽限后无视阈值立即降档(TRIAL_ABORT_*)。
  */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
@@ -213,11 +225,10 @@ class HeightAwareAdaptiveTrackSelection(
   /** 2026-09-01 满缓冲试探:本实例见过的最高缓冲水位(us)——试探水位线 = max(地板, 0.8×此值)。 */
   private var maxObservedBufferedUs = 0L
 
-  /** 2026-09-01 满缓冲试探:试探失败的 height 与解禁时刻(elapsedRealtime ms)——冷却期内不重试该档。 */
-  private var trialFailedHeight = -1
-  private var trialFailedUntilElapsedMs = 0L
-
-  /** 2026-09-01 满缓冲试探:最近一次升档是否试探批准——降档离开该档时据此记失败冷却。 */
+  /**
+   * 2026-09-01 满缓冲试探:最近一次升档是否试探批准——降档离开该档时据此记失败冷却 + 熔断判定用。
+   * (试探失败冷却本体在 [SabrAbrMemory],跨重载有效——实例字段会被看门狗重载洗掉,21:13 真机案例。)
+   */
   private var lastUpgradeWasTrial = false
 
   override fun updateSelectedTrack(
@@ -252,9 +263,15 @@ class HeightAwareAdaptiveTrackSelection(
     // 重载(~11s 冻结+整链重启),不对称性支持提前触发;千兆管道 4K 缓冲只涨不跌穿 20s,不受损。
     val criticalBufferedUs =
       if (currentHeight >= TOP_TIER_MIN_HEIGHT) TOP_TIER_CRITICAL_BUFFERED_US else DOWNGRADE_BUFFERED_US
-    val bufferCritical = bufferedDurationUs < criticalBufferedUs &&
+    // 2026-09-01 试探熔断(trial abort,21:14 真机案例):试探是自己批准进去的,亏空要能秒退——
+    // 缓冲 <15s 且仍在下漏时无视 8s/20s 阈值与 5s 宽限立即降档。1440p 级亏空(~9M/s)下 20s 缓冲
+    // 1-2s 穿底,5s 宽限+8s 阈值来不及救(bufS=0s 才触发)。宽限仅 2s(一个评估循环)。
+    val trialAbort = lastUpgradeWasTrial &&
+      bufferedDurationUs < TRIAL_ABORT_BUFFERED_US &&
+      nowMs - lastUpgradeElapsedMs >= TRIAL_ABORT_GRACE_MS
+    val bufferCritical = (bufferedDurationUs < criticalBufferedUs || trialAbort) &&
       bufferedDurationUs <= prevEvalBufferedUs &&
-      nowMs - lastUpgradeElapsedMs >= DOWNGRADE_AFTER_UPGRADE_GRACE_MS
+      (trialAbort || nowMs - lastUpgradeElapsedMs >= DOWNGRADE_AFTER_UPGRADE_GRACE_MS)
     prevEvalBufferedUs = bufferedDurationUs
     if (bufferedDurationUs > maxObservedBufferedUs) maxObservedBufferedUs = bufferedDurationUs
     if (bufferCritical) {
@@ -352,13 +369,18 @@ class HeightAwareAdaptiveTrackSelection(
     }
     // 2026-09-01 满缓冲试探升档(trial upshift):canUpgrade 已含冷启动锁 10s + 降档后缓冲 ≥30s;
     // 试探水位线 = max(15s 地板, 0.8×历史最高水位),要求「升穿」(上一评估在线下)——满缓冲本身
-    // 就是供给富余于当前档的硬证据,也是测量型门槛在服务端 pacing 下唯一可补的盲区。下一档在失败
-    // 冷却期内不重试(防每轮回填都撞同一堵墙)。
+    // 就是供给富余于当前档的硬证据,也是测量型门槛在服务端 pacing 下唯一可补的盲区。
+    // 2026-09-01 晚(浅填充防线,21:08:46 真机案例):maxObserved 随实例创建归零,看门狗重载后
+    // 新实例试探线跌到 0.8×20s=17s,在 bufS=20s(缓冲远未满)就试探 1440p → 亏空恰逢网络塌方
+    // → 重载。修:试探还要求 maxObserved ≥ 25s(本实例见过一次像样的回填)——重载/冷启动后必须
+    // 先完整回填一轮才许试探;bufferMax=30s 用户档(fill ~28s)仍可用。失败冷却读 SabrAbrMemory
+    // (墙钟,跨重载有效——21:13 案例重载洗掉冷却后立即重试同一堵墙)。
     val trialThresholdUs = maxOf(TRIAL_FLOOR_BUFFERED_US, maxObservedBufferedUs * 8 / 10)
     val trialUpgrade = canUpgrade &&
+      maxObservedBufferedUs >= TRIAL_MIN_CEILING_US &&
       bufferedDurationUs >= trialThresholdUs &&
       prevBufferedUsForTrial < trialThresholdUs &&
-      !(nextUpgradeHeight == trialFailedHeight && nowMs < trialFailedUntilElapsedMs)
+      !SabrAbrMemory.isTrialFailBlocked(nextUpgradeHeight, System.currentTimeMillis())
     for (i in 0 until length) {
       if (isTrackExcluded(i, nowMs)) continue
       val f = getFormat(i)
@@ -438,7 +460,9 @@ class HeightAwareAdaptiveTrackSelection(
         lastUpgradeWasTrial = bestIsTrial
         if (bestIsTrial) {
           // 2026-09-01 满缓冲试探取证:est/sus 此刻仍是低档 pacing 失真值,升入后服务端按新档
-          // pace 供流,sus/cap 被喂到真实量级(1440p 手切会话 cap=22475K 实证)。
+          // pace 供流,sus/cap 被喂到真实量级(1440p 手切会话 cap=22475K 实证)。active 记入
+          // SabrAbrMemory——看门狗重载路径据此把「试探期被打死」转记失败冷却。
+          SabrAbrMemory.noteTrialActive(getFormat(selected).height)
           Log.i(
             "YtSabrAbr",
             "trial upshift (buffer-full probe): bufS=${bufferedDurationUs / 1_000_000}s " +
@@ -448,6 +472,9 @@ class HeightAwareAdaptiveTrackSelection(
               "est=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
               "sus=${if (sustained >= 0L) "${sustained / 1000}K" else "-1"}"
           )
+        } else {
+          // 2026-09-01:试探档向上离开(gated 升档)→ 试探成功闭环,清 active 不记冷却。
+          SabrAbrMemory.noteTrialActive(-1)
         }
         val newDeclared = getFormat(selected).bitrate.toLong()
         // 2026-08-31 冷启动梯子跳过重锚:sustained 证据不足(-1)时的升档是「爆发 est + 逐级爬」的
@@ -487,15 +514,16 @@ class HeightAwareAdaptiveTrackSelection(
   /**
    * 2026-09-01 满缓冲试探:降档离开试探批准的档时记 3min 失败冷却(与顶档冷却同值),冷却期内
    * 该档既不过容量闸(失真值)也不被试探重试,期满由下次满缓冲重新试探;非试探降档只清标记。
+   * 2026-09-01 晚:冷却改记 SabrAbrMemory(墙钟)——selection 实例字段会被看门狗重载洗掉,
+   * 21:13 真机案例重载后新实例立即重试同一堵墙。
    */
   private fun markDowngradeFromTrial(nowMs: Long, fromHeight: Int) {
     if (lastUpgradeWasTrial) {
-      trialFailedHeight = fromHeight
-      trialFailedUntilElapsedMs = nowMs + TRIAL_FAIL_COOLDOWN_MS
+      SabrAbrMemory.noteTrialFail(fromHeight, TRIAL_FAIL_COOLDOWN_MS)
       Log.i(
         "YtSabrAbr",
         "trial fail cooldown: ${fromHeight}p excluded ${TRIAL_FAIL_COOLDOWN_MS / 1000}s " +
-          "(retry on next buffer-full)"
+          "(remain ${SabrAbrMemory.trialFailBlockedRemainSec()}s, survives reload)"
       )
     }
     lastUpgradeWasTrial = false
@@ -552,6 +580,19 @@ class HeightAwareAdaptiveTrackSelection(
      * 与顶档定向冷却同值(3min 覆盖一个完整误批-回填周期)。
      */
     const val TRIAL_FAIL_COOLDOWN_MS = 180_000L
+    /**
+     * 2026-09-01 晚(浅填充防线):试探准入的本实例历史最高水位下限——重载/冷启动后 maxObserved
+     * 归零会令试探线跌到 17s(21:08:46 真机在 bufS=20s 就试探 1440p),必须先见过一次像样回填
+     * (≥25s)才许试探。bufferMax=30s 用户档(fill ~28s)仍可用。
+     */
+    const val TRIAL_MIN_CEILING_US = 25_000_000L
+    /**
+     * 2026-09-01 晚(试探熔断,21:14 真机 bufS=0s 案例):试探档缓冲跌破此线且仍在下漏 → 无视
+     * 8s/20s 水位急救阈值与 5s 宽限立即降档。试探是自己批准的,亏空秒退。
+     */
+    const val TRIAL_ABORT_BUFFERED_US = 15_000_000L
+    /** 2026-09-01 晚:试探熔断宽限(ms)——升档后首个评估循环内不熔断(防重锚瞬间误判)。 */
+    const val TRIAL_ABORT_GRACE_MS = 2_000L
   }
 
   override fun getSelectionReason(): Int = androidx.media3.common.C.SELECTION_REASON_ADAPTIVE
