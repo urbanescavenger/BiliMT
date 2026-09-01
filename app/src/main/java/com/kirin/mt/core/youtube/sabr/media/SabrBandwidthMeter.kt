@@ -52,6 +52,17 @@ internal class SabrBandwidthMeter(
     reseedBandwidthProvider = provider
   }
 
+  /** 2026-09-01 重填容量来源(SabrMediaFetcher.getRefillCapacityBps,免疫墙钟空转的管道实测)。 */
+  @Volatile
+  private var refillCapacityProvider: (() -> Long)? = null
+
+  fun setRefillCapacityProvider(provider: () -> Long) {
+    refillCapacityProvider = provider
+  }
+
+  /** 重填容量(bps);未接线/样本不足 -1,调用方回退活跃 est。仅供升档判据。 */
+  fun getRefillCapacityEstimate(): Long = refillCapacityProvider?.invoke() ?: -1L
+
   /** 2026-08-30:接线实测码率来源。 */
   fun setMeasuredBitrateProvider(provider: (Int) -> Long) {
     measuredBitrateProvider = provider

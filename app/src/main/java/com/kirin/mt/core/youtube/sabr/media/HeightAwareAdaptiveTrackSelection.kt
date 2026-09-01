@@ -130,6 +130,16 @@ import com.google.common.collect.ImmutableList
  *   失明)兜底设备自抽风的残余场景。生态圈同类:androidx/media #3059(MTK)、google/ExoPlayer
  *   #10369(Amlogic STB)、androidx/media #1615(Pixel,官方 bug: in platform)——平台层无解。
  */
+/* 2026-09-01(重填容量通道,修「Auto 满缓冲后结构性不升档」):12:05-12:13 真机——Auto 会话 720p
+ *   起播后 bw/sus 结构性封顶在 ≈播放消耗码率(720p ~3.4-4.5M),升档门 required > effective 过不去,
+ *   ~100s 才爬到 1080p(还得靠重填期突发抬 est);手动切 1440 单轨会话实测 14-24Mbps(REAL 行),铁证
+ *   管道富余。根因:effective/sus 都含墙钟口径,满缓冲停闸 30-40s 后衰减/收敛到消耗码率,而下一档
+ *   声明码率(303=5.6M/308=13.3M)只有「正在按该档消耗」才可能被墙钟口径读到——鸡生蛋死锁,梯子
+ *   只剩冷启动爆发样本一条路(§19 压掉它是对的,但没给它第二条路)。修:**重填容量中位数**通道
+ *   (SabrMediaFetcher.getRefillCapacityBps,近 8 笔成功请求 bytes/HTTP 耗时,免疫墙钟空转、无衰减),
+ *   仅喂 isUpgrade 候选与 effective 取大;降档口径(alpha.9Z gap 入账)与 4K 顶档 sus×1.1 闸不动。
+ *   日志 cap= 字段取证。
+ */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
   tracks: IntArray,
@@ -270,6 +280,14 @@ class HeightAwareAdaptiveTrackSelection(
     // 2026-08-31 改用原值(-1=证据不足**不回退**):旧 getSustainedBitrateEstimate 在冷启动把 -1 回退成
     // 被爆发样本撑高的活跃 est,sustained 闸门整体失效(720p 2 段爆发 33-58M 直接过 4K 门槛)。
     val sustained = (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw() ?: -1L
+    // 2026-09-01 重填容量通道(修「Auto 满缓冲后结构性不升档」):effective 含被迫空转(alpha.9Z gap
+    // 入账),满缓冲停闸 30-40s 后衰减到 ≈播放消耗码率(720p 玩出 ~3.4-4.5M 的 sus/bw 顶)——当前档
+    // playing 时升档门 required > effective 被定点锁死,手动切 1440 却实测 14-24Mbps(12:05/12:12 真机)。
+    // 本通道取每次成功请求的瞬时吞吐中位数(bytes/HTTP 耗时,不发请求不产生样本 → 满缓冲期不衰减,
+    // 中位数抗 TCP 爬升/小段单笔噪声),仅喂**升档**判据与 effective 取大;降档仍走 effective(卡死不降
+    // 防线不动)、4K 顶档 sus×1.1 闸不动(防 4K 死亡行军复发)。
+    val capacityFloor = (bandwidthMeter as? SabrBandwidthMeter)?.getRefillCapacityEstimate() ?: -1L
+    val upgradeEstFloor = if (capacityFloor > 0L) maxOf(effective, capacityFloor) else effective
     // 2026-08-30(声明口径修正,见类头):declared 现为 averageBitrate=真实平均消耗,
     // required = 裸声明;calib 采样折算(实测消耗/声明)机制整体取消。
     // alpha.9Z(升档滞回,防降档后横跳):带宽估计在档位临界值附近抖动时,无滞回会 308↔315 反复切轨
@@ -328,7 +346,9 @@ class HeightAwareAdaptiveTrackSelection(
       // 两分支统一 Long(Int×Long 若不显式 toLong 会推断成 Number&Comparable<*> 星投影,CompareTo 禁用)。
       val required: Long =
         if (i == selected) f.bitrate * DOWNSHIFT_MARGIN_PERMILLE / 1000L else f.bitrate.toLong()
-      if (required > effective) continue
+      // 2026-09-01 重填容量:升档候选用 max(effective, 容量中位数) 过门;当前档(降档判据)与低档候选
+      // 仍用 effective——降档口径不变(alpha.9Z「卡死不降档」防线)。
+      if (required > (if (isUpgrade) upgradeEstFloor else effective)) continue
       if (isUpgrade && (!canUpgrade || (sustained in 0 until required))) continue
       // 顶档(仅 height==组内最高,即真正在尝试 4K 的那一档)sustained 加码 ×1.1,防边缘抖动。
       // 2026-08-31 复核:本闸兼任冷启动顶档闸——sustained 原值在证据不足时为 -1,-1 < 声明×1.1

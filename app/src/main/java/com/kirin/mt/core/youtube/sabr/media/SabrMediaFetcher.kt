@@ -141,6 +141,8 @@ internal class SabrMediaFetcher(
   private val realBwWindow = ArrayDeque<RealBwSample>()
   private var realBwBytes = 0L
   private var realBwTimeMs = 0L
+  /** 2026-09-01 重填容量环(每次成功媒体请求一笔,无墙钟衰减),中位数喂升档判据。 */
+  private val capacityWindow = ArrayDeque<RealBwSample>()
 
   // 2026-08-30(实测消耗码率,升降档门槛换地基):声明码率在高码率源上虚高约 2×(真机 302 声明 11.25M
   // 实测 6.3M、303 声明 22.26M 实测 ~11.5M),声明×est 双失真让乘数门槛(1.25/1.1)连续两轮卡在临界。
@@ -276,7 +278,36 @@ internal class SabrMediaFetcher(
     if (elapsedMs <= 0) return
     if (bytes < REAL_BW_MIN_BYTES && elapsedMs < BW_SLOW_TINY_MS) return
     addRealBwSample(bytes, elapsedMs)
-    if (bytes >= REAL_BW_MIN_BYTES) addSustainedSample(bytes)
+    if (bytes >= REAL_BW_MIN_BYTES) {
+      addSustainedSample(bytes)
+      addCapacitySample(bytes, elapsedMs)
+    }
+  }
+
+  /**
+   * 2026-09-01 重填容量通道(修「Auto 满缓冲后结构性不升档」):活动 est(realBwWindow)含被迫空转
+   * (alpha.9Z gap 入账),满缓冲停闸 30-40s 后衰减到 ≈播放消耗码率 → 当前档 playing 时 effective
+   * 结构性 < 下一档声明码率,升档门(required > effective)被定点锁死(12:05 真机:720p 会话 sus
+   * 顶 4.4M,1080p 需 5.5M;手动切 1440 实测 14-24Mbps 铁证管道富余)。本通道记**每次成功请求的
+   * 瞬时吞吐**(bytes/HTTP 耗时,天然免疫墙钟空转——不发请求不产生样本,满缓冲期不衰减),取
+   * 近 [CAPACITY_WINDOW_SAMPLES] 笔中位数(单笔 TCP 爬升/小段噪声被中位数抚平)。专供升档判据
+   * (HeightAwareAdaptiveTrackSelection,仅 isUpgrade 用);降档仍走 [getRealBitrateEstimate]
+   * (gap 入账语义不变,防「卡死不降档」复发);4K 顶档 sus×1.1 闸不变。
+   */
+  private fun addCapacitySample(bytes: Long, elapsedMs: Long) {
+    synchronized(realBandwidthLock) {
+      capacityWindow.addLast(RealBwSample(bytes, elapsedMs))
+      while (capacityWindow.size > CAPACITY_WINDOW_SAMPLES) capacityWindow.removeFirst()
+    }
+  }
+
+  /** 重填容量(bps)= 近 N 笔成功请求瞬时吞吐的中位数;样本 < 3 返回 -1(证据不足)。无墙钟衰减。 */
+  fun getRefillCapacityBps(): Long {
+    synchronized(realBandwidthLock) {
+      if (capacityWindow.size < CAPACITY_MIN_SAMPLES) return -1L
+      val sorted = capacityWindow.sortedBy { it.bytes * 8000L / it.timeMs.coerceAtLeast(1L) }
+      return sorted[sorted.size / 2].bytes * 8000L / sorted[sorted.size / 2].timeMs.coerceAtLeast(1L)
+    }
   }
 
   /**
@@ -827,6 +858,10 @@ internal class SabrMediaFetcher(
     const val MAX_BACKOFF_SLEEP_MS = 2_500L
     /** 过滤阈值:小于此字节数的样本视为 init/retry/非媒体段,不进真实带宽统计(真实媒体段 ≥ ~300KB)。 */
     const val REAL_BW_MIN_BYTES = 100_000L
+    /** 2026-09-01 重填容量环容量(笔)——近 8 笔成功请求,中位数抗单笔 TCP 爬升/小段噪声。 */
+    const val CAPACITY_WINDOW_SAMPLES = 8
+    /** 2026-09-01 重填容量最少样本数,不足 -1(证据不足,升档判据回退活跃 est)。 */
+    const val CAPACITY_MIN_SAMPLES = 3
     /**
      * 滑动窗口时间跨度(ms):窗口内累计下载量/累计耗时计带宽。约一两个段时长,能让一次 15s 卡死(0量/满耗时)
      * 显著压低带宽又不过度被历史稀释。卡死时长超窗口时窗口只留该失败段 → 带宽=0 → ABR 彻底降档。
