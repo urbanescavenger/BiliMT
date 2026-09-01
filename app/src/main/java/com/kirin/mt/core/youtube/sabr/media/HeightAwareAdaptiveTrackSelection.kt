@@ -164,6 +164,14 @@ import com.google.common.collect.ImmutableList
  *     把 activeTrial 转记失败冷却(PlayerScreen.noteStartupStallMemory 无条件调用)。
  *   ③试探期无熔断——1440p 级亏空 ~9M/s 下 20s 缓冲 1-2s 穿底,5s 宽限+8s 阈值来不及救(21:14:20
  *     bufS=0s);修:试探档缓冲 <15s 且仍在下漏 → 2s 宽限后无视阈值立即降档(TRIAL_ABORT_*)。
+ *
+ * 2026-09-01 更晚(alpha.6 复盘,用户拍板「既然要锁三分钟不要例外」):alpha.6 三修全部按预期
+ *   工作(试探致重载 0 次、缓冲不穿底、低水位试探消失),但残留泄漏——失败冷却只挡试探路径,
+ *   gated 门读到的恰是试探期 pacing 样本(虚高),14s/42s 后即「合法」重批同一档(22:17:14/
+ *   22:30:19 真机),720↔1080↔1440 每 1-3 分钟来回切、每轮 buffer-critical 探到 4-9s。一致化修:
+ *   **降档即记冷却(不区分试探/gated/普通降档),冷却期内该档 gated 与试探一起封锁**——饥饿与
+ *   est 崩塌都是不可持续的证据,而冷却期样本恰是最不该信的证据;锁「被降出的那一档」非全梯子,
+ *   更低档升降/更高档试探/手动选档照常。
  */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
@@ -373,14 +381,13 @@ class HeightAwareAdaptiveTrackSelection(
     // 2026-09-01 晚(浅填充防线,21:08:46 真机案例):maxObserved 随实例创建归零,看门狗重载后
     // 新实例试探线跌到 0.8×20s=17s,在 bufS=20s(缓冲远未满)就试探 1440p → 亏空恰逢网络塌方
     // → 重载。修:试探还要求 maxObserved ≥ 25s(本实例见过一次像样的回填)——重载/冷启动后必须
-    // 先完整回填一轮才许试探;bufferMax=30s 用户档(fill ~28s)仍可用。失败冷却读 SabrAbrMemory
-    // (墙钟,跨重载有效——21:13 案例重载洗掉冷却后立即重试同一堵墙)。
+    // 先完整回填一轮才许试探;bufferMax=30s 用户档(fill ~28s)仍可用。失败冷却的封锁在候选
+    // 循环里统一做(gated+trial 一起挡,见循环注释),此处不再单查。
     val trialThresholdUs = maxOf(TRIAL_FLOOR_BUFFERED_US, maxObservedBufferedUs * 8 / 10)
     val trialUpgrade = canUpgrade &&
       maxObservedBufferedUs >= TRIAL_MIN_CEILING_US &&
       bufferedDurationUs >= trialThresholdUs &&
-      prevBufferedUsForTrial < trialThresholdUs &&
-      !SabrAbrMemory.isTrialFailBlocked(nextUpgradeHeight, System.currentTimeMillis())
+      prevBufferedUsForTrial < trialThresholdUs
     for (i in 0 until length) {
       if (isTrackExcluded(i, nowMs)) continue
       val f = getFormat(i)
@@ -406,6 +413,11 @@ class HeightAwareAdaptiveTrackSelection(
       // 两分支统一 Long(Int×Long 若不显式 toLong 会推断成 Number&Comparable<*> 星投影,CompareTo 禁用)。
       val required: Long =
         if (i == selected) f.bitrate * DOWNSHIFT_MARGIN_PERMILLE / 1000L else f.bitrate.toLong()
+      // 2026-09-01 晚(失败冷却统一封锁,gated 与试探一起挡):降档已证明该档不可持续(饥饿或 est
+      // 崩塌),而冷却期 est/sus/cap 读到的恰是试探期/旧档 pacing 样本(虚高,22:17:14 真机 14s 后
+      // 绕冷却重批 1440p)——两种路都不批,期满恢复原判据。锁的是「被降出的那一档」,非全梯子
+      // (8/30 被取消的全局冷却不复辟):更低档升降、更高档试探、手动选档照常。
+      if (isUpgrade && SabrAbrMemory.isTrialFailBlocked(f.height, System.currentTimeMillis())) continue
       // 2026-09-01 重填容量:升档候选用 max(effective, 容量中位数) 过门;当前档(降档判据)与低档候选
       // 仍用 effective——降档口径不变(alpha.9Z「卡死不降档」防线)。
       if (!isUpgrade) {
@@ -512,20 +524,26 @@ class HeightAwareAdaptiveTrackSelection(
   }
 
   /**
-   * 2026-09-01 满缓冲试探:降档离开试探批准的档时记 3min 失败冷却(与顶档冷却同值),冷却期内
-   * 该档既不过容量闸(失真值)也不被试探重试,期满由下次满缓冲重新试探;非试探降档只清标记。
-   * 2026-09-01 晚:冷却改记 SabrAbrMemory(墙钟)——selection 实例字段会被看门狗重载洗掉,
-   * 21:13 真机案例重载后新实例立即重试同一堵墙。
+   * 2026-09-01 满缓冲试探:降档离开某档时记 3min 失败冷却。2026-09-01 晚一致化(用户拍板「既然要
+   * 锁三分钟不要例外」):**降档即记冷却,不区分试探/gated/普通降档**——饥饿(buffer-critical)与
+   * est 崩塌(滞回)都是该档不可持续的证据,冷却期内该档 gated 与试探一起挡(见候选循环);
+   * 冷却本体记 [SabrAbrMemory](墙钟,跨重载有效——21:13 真机案例重载洗掉实例冷却后立即重试)。
    */
   private fun markDowngradeFromTrial(nowMs: Long, fromHeight: Int) {
     if (lastUpgradeWasTrial) {
-      SabrAbrMemory.noteTrialFail(fromHeight, TRIAL_FAIL_COOLDOWN_MS)
       Log.i(
         "YtSabrAbr",
         "trial fail cooldown: ${fromHeight}p excluded ${TRIAL_FAIL_COOLDOWN_MS / 1000}s " +
           "(remain ${SabrAbrMemory.trialFailBlockedRemainSec()}s, survives reload)"
       )
+    } else {
+      Log.i(
+        "YtSabrAbr",
+        "downgrade fail cooldown: ${fromHeight}p excluded ${TRIAL_FAIL_COOLDOWN_MS / 1000}s " +
+          "(gated+trial blocked, survives reload)"
+      )
     }
+    SabrAbrMemory.noteTrialFail(fromHeight, TRIAL_FAIL_COOLDOWN_MS)
     lastUpgradeWasTrial = false
   }
 
