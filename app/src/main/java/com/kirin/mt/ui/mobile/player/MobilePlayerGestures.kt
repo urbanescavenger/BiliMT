@@ -10,10 +10,16 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 
 /**
+ * 竖向拖拽的半屏侧:左半屏=亮度、右半屏=音量(通用手机播放器习惯)。
+ */
+internal enum class VerticalDragSide { Brightness, Volume }
+
+/**
  * 移动端播放器统一手势检测:在单个 pointerInput 里互斥地识别
  *   - 单击(中央三分之二区域 / 左右各六分之一边缘)
  *   - 长按(越过 longPressTimeout 仍未越过 touchSlop)
- *   - 横向拖拽(越过水平 touchSlop)
+ *   - 横向拖拽(越过水平 touchSlop,且水平位移不小于竖向)→ seek
+ *   - 竖向拖拽(越过竖向 touchSlop,且竖向位移大于水平)→ 左半屏亮度 / 右半屏音量
  *
  * 之所以手写 awaitPointerEventScope 循环、而不是叠 detectTapGestures + detectHorizontalDragGestures
  * 两个 pointerInput:两者会抢 down 事件、行为不确定。单循环按「超时→长按、越过 slop→拖拽、抬起→单击」
@@ -28,6 +34,10 @@ internal suspend fun PointerInputScope.detectPlayerGestures(
   onSeekDelta: (deltaPx: Float) -> Unit,
   onSeekEnd: () -> Unit,
   onSeekCancel: () -> Unit,
+  onVerticalDragStart: (side: VerticalDragSide) -> Unit = {},
+  onVerticalDragDelta: (side: VerticalDragSide, deltaPx: Float) -> Unit = { _, _ -> },
+  onVerticalDragEnd: () -> Unit = {},
+  onVerticalDragCancel: () -> Unit = {},
 ) {
   // 用 Compose 默认值(与 DefaultViewConfiguration 一致),避免不同 Compose 版本
   // ViewConfiguration 成员名差异(touchSlop/longPressTimeout vs *Millis/pointerSlop)。
@@ -45,6 +55,7 @@ internal suspend fun PointerInputScope.detectPlayerGestures(
     val downPos = down.position
     val downTime = down.uptimeMillis
     var mode = Mode.Tap
+    var verticalSide = VerticalDragSide.Brightness
 
     try {
       while (true) {
@@ -53,25 +64,38 @@ internal suspend fun PointerInputScope.detectPlayerGestures(
 
         if (mode == Mode.Tap) {
           val dt = change.uptimeMillis - downTime
+          val dx = change.position.x - downPos.x
+          val dy = change.position.y - downPos.y
           when {
             dt >= longPressTimeoutMs -> {
               mode = Mode.LongPress
               onLongPressStart()
             }
-            abs(change.position.x - downPos.x) > slop -> {
+            // 横向 seek 与竖向亮度/音量在越过 slop 时按主方向互斥判定:
+            // |dx|>=|dy| → 横拖 seek;否则竖拖,按 down 点在左/右半屏分亮度(左)/音量(右)。
+            abs(dx) > slop && abs(dx) >= abs(dy) -> {
               mode = Mode.Drag
               onSeekStart()
+            }
+            abs(dy) > slop -> {
+              verticalSide = if (downPos.x < width / 2f) VerticalDragSide.Brightness else VerticalDragSide.Volume
+              mode = Mode.VerticalDrag
+              onVerticalDragStart(verticalSide)
             }
           }
         }
         if (mode == Mode.Drag) {
           onSeekDelta(change.positionChange().x)
         }
+        if (mode == Mode.VerticalDrag) {
+          onVerticalDragDelta(verticalSide, change.positionChange().y)
+        }
 
         if (change.changedToUp()) {
           when (mode) {
             Mode.LongPress -> onLongPressEnd()
             Mode.Drag -> onSeekEnd()
+            Mode.VerticalDrag -> onVerticalDragEnd()
             Mode.Tap -> {
               // 中央 2/3 区域 → 暂停/播放;左右各 1/6 边缘 → 切换控件显隐。
               val edge = width / 6f
@@ -91,6 +115,7 @@ internal suspend fun PointerInputScope.detectPlayerGestures(
       // 协程被取消(系统拦截/多指抢断)时,按当前模式补发清理,避免倍速/拖拽状态卡死
       when (mode) {
         Mode.Drag -> onSeekCancel()
+        Mode.VerticalDrag -> onVerticalDragCancel()
         Mode.LongPress -> onLongPressEnd()
         Mode.Tap -> Unit
       }
@@ -98,4 +123,4 @@ internal suspend fun PointerInputScope.detectPlayerGestures(
   }
 }
 
-private enum class Mode { Tap, LongPress, Drag }
+private enum class Mode { Tap, LongPress, Drag, VerticalDrag }
