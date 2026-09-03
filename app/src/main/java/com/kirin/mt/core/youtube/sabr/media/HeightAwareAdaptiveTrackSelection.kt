@@ -172,6 +172,17 @@ import com.google.common.collect.ImmutableList
  *   **降档即记冷却(不区分试探/gated/普通降档),冷却期内该档 gated 与试探一起封锁**——饥饿与
  *   est 崩塌都是不可持续的证据,而冷却期样本恰是最不该信的证据;锁「被降出的那一档」非全梯子,
  *   更低档升降/更高档试探/手动选档照常。
+ *
+ * 2026-09-03(缓冲读数塌方守门,23:44:15 真机误降复盘):级联降档复盘发现三级降档里只有最后一级
+ *   是误降——23:43:56-59 五笔 fetch 38-70Mbps、bufS 回填 48.8s(1080p 完全可持续),23:43:59→
+ *   23:44:15 **17s 零 fetch、播放只消耗 17s**,bufS 读数却 48.8→0.0(物理上不可能的衰减速率)。
+ *   这是 SABR 服务端 bufferedRange 周期性 reset(alpha.62 own-range-null 家族,~40-45s 周期,
+ *   塌到 9.9s/0s 地板),不是真饥饿——但 buffer-critical 照单全收:1080p 误降 720p + 180s 冷却,
+ *   ABR 钉死低档直到会话结束(est 被 pacing 钉 5-6M 爬不回,手动重选 1440p 新会话才恢复,54-79Mbps
+ *   稳跑到日志尾)。修:**物理塌方守门**——水位衰减速率不可能超过墙钟(播放 1s/s),记录上次评估
+ *   墙钟时刻,若两次评估间 `上次水位 - 本次水位 > 墙钟时长 + 2s 余量` → 读数塌方非真饿,跳过本轮
+ *   水位降档(含试探熔断同源误判);下轮评估衰减速率恢复 ≤1s/s 自然放行,真饿最多晚一轮急救。
+ *   seek 也落此守门(代价=最多延迟一轮急救,方向无害);est 降档路径不受影响(口径不同)。
  */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
@@ -227,6 +238,9 @@ class HeightAwareAdaptiveTrackSelection(
   /** 2026-08-30:上次评估的缓冲水位(us),首次评估为 -1——判定「水位仍在下漏」。 */
   private var prevEvalBufferedUs = -1L
 
+  /** 2026-09-03:上次评估的墙钟时刻(elapsedRealtime ms)——缓冲读数塌方守门的衰减速率基准。 */
+  private var prevEvalElapsedMs = SystemClock.elapsedRealtime()
+
   /** 2026-08-31:顶档 stall 冷却的跳过日志是否已打过(每 selection 实例一次,防每 chunk 刷屏)。 */
   private var topTierStallBlockLogged = false
 
@@ -277,10 +291,28 @@ class HeightAwareAdaptiveTrackSelection(
     val trialAbort = lastUpgradeWasTrial &&
       bufferedDurationUs < TRIAL_ABORT_BUFFERED_US &&
       nowMs - lastUpgradeElapsedMs >= TRIAL_ABORT_GRACE_MS
-    val bufferCritical = (bufferedDurationUs < criticalBufferedUs || trialAbort) &&
+    // 2026-09-03 缓冲读数塌方守门:水位衰减的物理上限=墙钟(播放消耗 1s/s),SABR 服务端
+    // bufferedRange 周期性 reset(own-range-null 家族)会让读数 ~40-45s 周期塌到 9.9s/0s 地板——
+    // 23:44:15 真机:17s 零 fetch、播放 17s,bufS 48.8→0.0,buffer-critical 误降 1080p→720p +
+    // 180s 冷却钉死低档。两次评估间水位跌幅 > 墙钟 + 余量 → 读数塌方非真饿,本轮水位降档跳过
+    // (试探熔断同源误判一并拦);下轮衰减速率恢复 ≤1s/s 自然放行,真饿最多晚一轮急救。
+    val evalGapUs = (nowMs - prevEvalElapsedMs) * 1000
+    val bufferCollapseArtifact = prevEvalBufferedUs >= 0 && evalGapUs > 0 &&
+      prevEvalBufferedUs - bufferedDurationUs > evalGapUs + BUFFER_COLLAPSE_MARGIN_US
+    if (bufferCollapseArtifact) {
+      Log.i(
+        "YtSabrAbr",
+        "buffered-range collapse artifact ignored: bufS=${prevEvalBufferedUs / 1_000_000}s→" +
+          "${bufferedDurationUs / 1_000_000}s in ${evalGapUs / 1_000}ms " +
+          "(readout reset, not starvation)"
+      )
+    }
+    val bufferCritical = !bufferCollapseArtifact &&
+      (bufferedDurationUs < criticalBufferedUs || trialAbort) &&
       bufferedDurationUs <= prevEvalBufferedUs &&
       (trialAbort || nowMs - lastUpgradeElapsedMs >= DOWNGRADE_AFTER_UPGRADE_GRACE_MS)
     prevEvalBufferedUs = bufferedDurationUs
+    prevEvalElapsedMs = nowMs
     if (bufferedDurationUs > maxObservedBufferedUs) maxObservedBufferedUs = bufferedDurationUs
     if (bufferCritical) {
       var lower = -1
@@ -611,6 +643,13 @@ class HeightAwareAdaptiveTrackSelection(
     const val TRIAL_ABORT_BUFFERED_US = 15_000_000L
     /** 2026-09-01 晚:试探熔断宽限(ms)——升档后首个评估循环内不熔断(防重锚瞬间误判)。 */
     const val TRIAL_ABORT_GRACE_MS = 2_000L
+    /**
+     * 2026-09-03:缓冲读数塌方守门余量(us)——两次评估间水位衰减超过「墙钟时长 + 此余量」判为
+     * 服务端 bufferedRange reset 伪降档证据(23:44:15 真机 17s 内掉 48.8s),跳过本轮水位降档。
+     * 余量吸收评估时戳与水位读数的轻微异步;真饿(≤1s/s 自然回落)与 seek 后的合法骤减
+     * (下一轮即恢复正常速率)不受影响。
+     */
+    const val BUFFER_COLLAPSE_MARGIN_US = 2_000_000L
   }
 
   override fun getSelectionReason(): Int = androidx.media3.common.C.SELECTION_REASON_ADAPTIVE
