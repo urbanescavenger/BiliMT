@@ -316,10 +316,6 @@
     <string name="bangumi_status_want">Want to watch</string>
     <string name="bangumi_status_watching">Watching</string>
     <string name="bangumi_status_watched">Watched</string>
-    <string name="feed_action_sheet_title">Moments actions</string>
-    <string name="feed_action_like">Like</string>
-    <string name="feed_action_toview">Watch later</string>
-    <string name="feed_action_upspace">Go to UP page</string>
     <string name="feed_action_like_done">Liked</string>
     <string name="feed_action_like_failed">Failed to like</string>
     <string name="feed_action_toview_done">Added to watch later</string>
@@ -327,7 +323,6 @@
     <string name="feed_footer_loading">Loading…</string>
     <string name="feed_footer_end">No more</string>
     <string name="feed_footer_failed">Load failed</string>
-    <string name="feed_action_comment">View comments</string>
     <string name="nav_comment">Comments</string>
     <string name="comment_loading">Loading comments…</string>
     <string name="comment_empty">No comments</string>
@@ -429,6 +424,8 @@
     <string name="player_control_like">Like</string>
     <string name="player_control_coin">Coin</string>
     <string name="player_control_favorite">Favorite</string>
+    <string name="player_control_toview">Watch later</string>
+    <string name="player_control_comment">Comments</string>
     <string name="player_panel_favorite">Favorite to folder</string>
     <string name="player_favorite_confirm">Confirm favorite</string>
     <string name="player_favorite_empty">No favorite folders</string>

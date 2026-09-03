@@ -95,6 +95,8 @@ internal enum class PlayerControl {
   Like,
   Coin,
   Favorite,
+  ToView,
+  Comment,
   Settings,
 }
 
@@ -2229,6 +2231,8 @@ private val PlayerControl.iconRes: Int
     PlayerControl.Like -> R.drawable.ic_player_like
     PlayerControl.Coin -> R.drawable.ic_player_coin
     PlayerControl.Favorite -> R.drawable.ic_player_favorite
+    PlayerControl.ToView -> R.drawable.ic_player_toview
+    PlayerControl.Comment -> R.drawable.ic_player_comment
     PlayerControl.Settings -> R.drawable.ic_nav_settings
   }
 
@@ -2240,6 +2244,8 @@ private val PlayerControl.labelRes: Int
     PlayerControl.Like -> R.string.player_control_like
     PlayerControl.Coin -> R.string.player_control_coin
     PlayerControl.Favorite -> R.string.player_control_favorite
+    PlayerControl.ToView -> R.string.player_control_toview
+    PlayerControl.Comment -> R.string.player_control_comment
     PlayerControl.Settings -> R.string.player_control_settings
   }
 

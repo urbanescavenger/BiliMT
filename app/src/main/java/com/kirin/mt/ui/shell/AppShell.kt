@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.os.Build
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
@@ -35,6 +36,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import kotlin.system.exitProcess
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -760,7 +762,14 @@ fun BiliTvApp(
           val now = SystemClock.elapsedRealtime()
           if (now - lastAppExitBackPressMs <= ExitConfirmWindowMs) {
             cancelAppExitConfirmToast()
-            context.findActivity()?.finish()
+            // 彻底退出不留后台:仅 finish() 只出 Activity,进程仍以缓存任务驻留后台
+            // (盒子任务管理器可见,协程/网络线程继续活着)。finishAffinity 清任务栈后
+            // 直接杀进程,退出即终结。
+            context.findActivity()?.let { activity ->
+              activity.finishAffinity()
+              Process.killProcess(Process.myPid())
+              exitProcess(0)
+            }
           } else {
             lastAppExitBackPressMs = now
             showAppExitConfirmToast()
@@ -1345,7 +1354,6 @@ fun BiliTvApp(
                   tabFocusRequester = feedTabFocusRequester,
                   restoreFocusRequestKey = restoreFocusRequestKeyFor(AppDestination.Dynamic),
                   onRestoreFocusHandled = { key -> clearFocusRestoreRequest(AppDestination.Dynamic, key) },
-                  onActionSheetDismissed = { requestContentGridRestore(selectedDestination) },
                   onMoveLeftToNav = {
                     runCatching {
                       navFocusRequesters.getValue(selectedDestination).requestFocus()
@@ -1371,14 +1379,6 @@ fun BiliTvApp(
                       spacePlaybackBehind = false
                       spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
                     }
-                  },
-                  onCommentSelected = { video ->
-                    commentRequest = com.kirin.mt.ui.feed.CommentRequest(
-                      aid = video.aid,
-                      title = video.title,
-                      source = video.source,
-                      videoId = video.bvid,
-                    )
                   },
                   onSeasonSelected = { season ->
                     pgcSeasonRequest = com.kirin.mt.ui.pgc.PgcSeasonRequest(
@@ -1596,6 +1596,14 @@ fun BiliTvApp(
                   channelId = channelId,
                   channelName = channelName,
                   avatar = avatar,
+                )
+              },
+              onOpenComments = { commentPlayback ->
+                commentRequest = com.kirin.mt.ui.feed.CommentRequest(
+                  aid = commentPlayback.aid,
+                  title = commentPlayback.title,
+                  source = commentPlayback.source,
+                  videoId = commentPlayback.bvid,
                 )
               },
               spaceReturnKey = spaceFocusRestoreRequestKey,

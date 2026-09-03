@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -77,6 +78,7 @@ import com.kirin.mt.core.player.startPlaybackService
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.ui.theme.BiliColors
 import java.io.File
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -141,6 +143,13 @@ fun MobileOfflinePlayerScreen(
   var playbackSpeed by remember { mutableFloatStateOf(1f) }
   var showSpeedSheet by remember { mutableStateOf(false) }
   var wasPlayingBeforeSeek by remember { mutableStateOf(false) }
+  // 竖滑亮度/音量:气泡(左半=亮度☀/右半=音量🔊)+ 百分比,松手 800ms 后隐藏;调节器见 MobilePlayerVerticalGesture.kt
+  val verticalGestureController = remember(context) {
+    context.findActivity()?.let { PlayerVerticalGestureController(it) }
+  }
+  var verticalBubbleSide by remember { mutableStateOf<VerticalDragSide?>(null) }
+  var verticalBubbleFraction by remember { mutableFloatStateOf(0f) }
+  var verticalBubbleHideJob by remember { mutableStateOf<Job?>(null) }
 
   // 全屏:跟随设备方向 + 隐藏系统栏(沉浸);非全屏:竖屏 + 系统栏可见。退出/关播放器恢复。
   DisposableEffect(fullscreen) {
@@ -335,6 +344,32 @@ fun MobileOfflinePlayerScreen(
         onSeekCancel = {
           seekPreviewMs = -1L
         },
+        // 竖滑:左半屏亮度 / 右半屏音量,气泡实时显百分比,松手 800ms 后隐藏
+        onVerticalDragStart = { side ->
+          val ctl = verticalGestureController ?: return@detectPlayerGestures
+          verticalBubbleHideJob?.cancel()
+          verticalBubbleSide = side
+          verticalBubbleFraction =
+            if (side == VerticalDragSide.Brightness) ctl.onBrightnessStart() else ctl.onVolumeStart()
+        },
+        onVerticalDragDelta = { side, dy ->
+          val ctl = verticalGestureController ?: return@detectPlayerGestures
+          val h = size.height.toFloat()
+          verticalBubbleFraction =
+            if (side == VerticalDragSide.Brightness) ctl.onBrightnessDelta(dy, h) else ctl.onVolumeDelta(dy, h)
+        },
+        onVerticalDragEnd = {
+          verticalBubbleHideJob = scope.launch {
+            delay(800)
+            verticalBubbleSide = null
+          }
+        },
+        onVerticalDragCancel = {
+          verticalBubbleHideJob = scope.launch {
+            delay(800)
+            verticalBubbleSide = null
+          }
+        },
       )
     }
 
@@ -383,6 +418,17 @@ fun MobileOfflinePlayerScreen(
               }
             }
           }
+        }
+
+        // 竖滑亮度/音量气泡:显示在手势所在半屏的中央附近(左=亮度☀,右=音量🔊)
+        verticalBubbleSide?.let { side ->
+          VerticalGestureBubble(
+            side = side,
+            fraction = verticalBubbleFraction,
+            modifier = Modifier
+              .align(Alignment.Center)
+              .offset(x = if (side == VerticalDragSide.Volume) 96.dp else (-96).dp),
+          )
         }
 
         // 手势层:z 序最顶,先于 PlayerView 收到触摸。透明无内容,不遮挡下层视觉。

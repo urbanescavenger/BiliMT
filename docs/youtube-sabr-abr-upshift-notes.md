@@ -473,3 +473,276 @@ r1735 复盘通过(急救降回秒级回档、零 watchdog),唯一遗留:本视�
 **修法(已实施,SabrMediaFetcher)**:白名单 = 当前选中格式 **+ 在途段请求 itag 集合**(`pendingRequestItags`:getNextSegment 进入时加、finally 移除;MEDIA_HEADER 与 FORMAT_INITIALIZATION_METADATA 两处过滤同步并入)。在途请求的响应不再被丢,旧 chunk 一次 POST 即完成(<1s),串行 fetcher 不再被占。广告防御语义不变:从未被请求过的 itag 照丢(广告段只可能出现在非请求 itag 上)。
 
 **待真机复测**:续播应在重建后 1-3s 内出画面(720p 稳 ~10s),全程零 stall 零重载;日志不应再出现 `skip ad/unrequested` 丟在途 itag + `getNextSegment: no seg ... (retry)` 连发。若仍有饿死,查 getNextSegment 重试循环的其他出口。
+
+## 20. 2026-08-31「23:25 中段重载」:冷却到期即回 4K → 漏 49s → 水位急救差 0.6s 输给在途(A/B1/B2 三修)
+
+**现象(23:20-23:25 真机 logs_live.log,视频 IW5NIdD1sGc,315 声明=真平均 26.6M)**:起播两次 stall(pos=0,23:20:41/57)记入顶档冷却 180s → 23:22:36 重开后正常爬到 1440p,23:22:55 冷却剩 62s 正确跳过 4K → **23:23:57 冷却到期,2s 内 ABR 立刻回 4K**(23:23:59,rn=33 init itag315)→ 缓冲 26.3s→7.0s 匀速漏 49s → 23:24:48.052 水位急救 315→308 + 重拉 180s 冷却,但 **2ms 前已 staged 的 rn=37 仍载 4K 段**(3 段 39MB,seq32-34,7.6s 传完)→ 7.0s 缓冲 < 7.6s 在途 → 23:24:55 缓冲见底 BUFFERING(pos 冻 134051ms)→ 8s 看门狗 23:25:03 auto-retry #1 **整链路重载**。重载后新冷却把 4K 挡住,480→1440 稳定——用户所见「重载后降档正常」。
+
+**根因解剖(三层延迟叠加,8s 阈值结构性必败)**:
+
+| 层 | 机制 | 本例耗时 |
+|---|---|---|
+| B1 评估盲窗 | `updateSelectedTrack` 只在 getNextChunk 跑,4K 段循环 10-14s(传输 6-8s+里程碑间隔) | 23:24:36(bufS=11.7)→23:24:48(bufS=7.0)间 12s 零评估 |
+| B2 staged 积压 | 急救只影响后续 getNextChunk,救不了已 staged 的 3 个 4K 段;且 holder/selectFormat 在 updateSelectedTrack **之前**取(上游 media3 是之后),同一次调用 staged 的段也用旧档 | rn=37 载 315 seq32-34 |
+| B3 串行管道 | UMP 一票在途,积压 39MB 传完才轮得到 1440p 请求 | 7.6s(39MB @41Mbps) |
+
+4K 期间 est/sus 全程失明:活跃 est 只计传输窗口(30-36M 恒 >26.6M×0.85 滞回线),sus 在 23:24:14 后掉 -1(证据窗失效);fetcher 排队间隔被旧 10s 滑行余量扣成 coast(水位 16.4s 下 14.2s 间隔,coast 扣 6.45s)→ pacing 有效供给 ~16M 在两个口径里都不可见。**8s 阈值的最坏反应线 = 盲窗 14s + 积压排空 8s + 替换段传输 4s ≈ 26s,结构性永远来不及**;本例只差 0.6s 是因为评估恰好撞在请求发出前 2ms。
+
+**修法三件(已实施)**:
+
+1. **A——顶档 sustained 分母收紧(SabrMediaFetcher)**:顶档在位时(当前视频 FormatId.height≥2160)`recordFetchGap` 的 sustained 滑行扣减余量 10s→20s(`TOP_TIER_GAP_RUNWAY_RESERVE_MS`):4K 失败期(水位 <20s)的 fetcher 排队间隔全额留在持续分母 → sus 塌到有效供给(~16M),冷却到期后的 4K 重准入闸(sus≥declared×1.1)被真证据挡住,不再被同一批低档突发样本「合法通过」。**只收 sustained 不收活跃 est**——est 若同步加严,千兆管道 4K 满缓冲滑行期(loader 停拉,缓冲 48s→10s 每周期 ~10s 空档)会被打成 0 供给样本误踢好管道。
+2. **B1——顶档水位急救阈值 8s→20s(HeightAwareAdaptiveTrackSelection,`TOP_TIER_CRITICAL_BUFFERED_US`)**:顶档在位时水位 <20s 且评估间回落即触发(非顶档维持 8s 不动)——覆盖 B1+B2+B3 的最坏反应线。本例复盘:23:24:24 评估 bufS=14.5(自 20.5 回落)即触发 → 23:24:48 的请求载 1440p → 谷底 ~3-5s 活着,不触发看门狗。假阳性代价=180s 顶档冷却(升 4K 本就要求缓冲 ≥30s,重爬周期天然重叠,边际成本小);假阴性代价=看门狗重载(~11s 冻结+整链重启),不对称支持提前触发;千兆管道 4K 缓冲只涨不跌穿 20s 不受损。
+3. **B2——决策后重读 holder(对齐上游 media3,DefaultSabrChunkSource)**: getNextChunk 的 staging holder 与 `fetcher.selectFormat` 移到 `updateSelectedTrack` 之后按新 selectedIndex 重读(决策前的候选/合成 iterator 语义不变,用 preSelectionHolder)——原顺序使切档决策对同一次调用 staged 的段无效,每次切档(急救/升档)白吃一个循环生效延迟。
+
+**分工**:A 治「失败证据进 sus,防冷却到期后被同一批突发样本快速重准入」;B1 治「进来了也必须在死前退出去」(确定性,顺带拉 180s 冷却);B2 治「决策到生效多等一个循环」。三者互补;A/B2 不改变 4K 首次准入(那次凭的是 1440p 期真实突发传输,任何口径都拦不住,靠 B1 兜底退出)。
+
+**待真机复测**:
+- [ ] 同视频(或同边缘网络):4K 尝试应被 B1 在水位 ~14-20s 时踢下(日志 `buffer-critical downgrade: bufS=14s` 一类),零看门狗重载;
+- [ ] 顶档失败后的 180s 冷却期内 sus 应塌到 ~16M 量级(非 30M+),冷却内 4K 重准入被挡;
+- [ ] 千兆/好网络 4K 满缓冲滑行不误伤:staged 切档正常、est 不因满缓冲空档塌方;
+- [ ] 水位急救触发的那次 getNextChunk,请求应立即载新档段(rn 不再夹带旧顶档段);
+- [ ] 非顶档(≤1440p)水位急救仍在 8s 触发,行为不变。
+
+## 21. 2026-09-01「升 1440p 视频冻住音频照播」:跨 codec 换解码器撞 codec 强制回收(VP9 粘性梯子 + 视频冻结看门狗)
+
+**现象(00:30-00:32 真机 logs_live.log,新视频 1573s,v3.0.9-alpha.1)**:播放 ~1 分多钟后卡顿,之后**音频正常播、视频冻死**,画面清晰度显示停在 1080p 不动,用户手动退出。另:同晚 4K 段行为验证 A/B1/B2 全部按设计工作(会话 2:00:29:18 真实 sus=48.7M 升 2160 → 漏到 6.9s → 水位急救踢回 1440p + 180s 冷却,仅 2.3s 重缓冲,零看门狗)。
+
+**根因(不是 ABR/网络,是解码器层)**:梯子 720p avc(298)→1080p avc(299,旧「同 height 保高码率变体」)→1440p 只有 VP9(308)→ 升 1440p **必然跨 codec 换解码器**。时间线:
+
+```
+00:31:25.5  avc 解码器原地重建(缓冲区账目乱,"discarded an unknown buffer")
+            → MediaCodec::reclaim → 5.0s 后才 "Released by resource manager"
+00:31:30.6  重建完成,继续播 1080p avc(~10s)
+00:31:40.1  真正的 avc→vp9 切换 → reclaim 又卡 5.5s
+00:31:45.7  vp9 就位(1440p 配置完成)——切换其实成功了
+00:31:48.5  用户退出(距 vp9 就位 3s,第一帧还没渲染出来)
+```
+
+期间 ABR 已选 1440p 并在拉数据(升档发生)、渲染器停在 1080p 冻着(1440p 零帧渲染)、UI 清晰度显示跟实际解码高度(onVideoSizeChanged,显示=实际播放)如实停 1080p——三方一致。音频 aac 解码器独立,照常播;位置基 stall 看门狗(8s)因位置一直在走全程失明。
+
+**联网查证(生态圈同类,平台层无解)**:[androidx/media #3059](https://github.com/androidx/media/issues/3059)(MTK 解码器,4K→2K 冻结,workaround `canReuseCodec`→`REUSE_RESULT_NO`)、[google/ExoPlayer #10369](https://github.com/google/ExoPlayer/issues/10369)(Amlogic STB,参考帧数不同档间切换解码器停吐帧)、[androidx/media #1615](https://github.com/androidx/media/issues/1615)(Pixel 6/7,官方 **bug: in platform**)。~5s 回收等待:AOSP [MediaCodec.cpp](https://android.googlesource.com/platform/frameworks/av/+/ea2b9c0/media/libstagefright/MediaCodec.cpp) 回收路径——codec 有未归还 buffer → `Can't reclaim codec right now due to pending buffers` → WOULD_BLOCK → 重试强拆(AOSP 等待 0.5s/次;实测 ~5s 为 MTK 定制 RM 重试策略)。同场对照:会话 2 同样的 avc→vp9 只要 **49ms**(旧实例干净,不走强制回收)——坑是概率性设备行为,app 不可治。media3 1.6+ 预热线(`experimentalSetEnableMediaCodecVideoRendererPrewarming`)只管播放列表条目切换,不适用流内 ABR。
+
+**修法两件(已实施)**:
+
+1. **VP9 粘性梯子(消触发面)**——HeightAwareAdaptiveTrackSelection 同 height 多 codec 变体改粘**全组顶档** codec(`isTopCodecVariant`,顶档必须从 fullGroup 取:窄选期 [298/302] 子集算不出整梯顶档;YouTube=VP9,顶档 avc 的视频自动反转):升档 302(720p vp9)→303(1080p vp9)→308→315 与水位急救降档全程单 codec,零解码器重建;旧规则会在 1080p 选 299 avc(码率 7.1M>303 的 5.7M),1440p 边界必换 codec,且降档路径(1440p→1080p)也会把 vp9→avc 引进来。起始档(窄选首评)同样粘 → 整场零切换。
+2. **视频冻结看门狗(踩坑兜底)**——PlayerScreen 新增 `VideoFreezeThresholdMs=12s`:BUFFERING 挂死且**位置仍在前进**(音频驱动时钟)超阈值 → 走既有 auto-retry 恢复链(记 autoResumePositionMs、bump retryKey 重载续播、共享 MaxStallAutoRetry=2 预算)。阈值标定:必须让过合法解码器重建最坏情形(codec 回收 5.5s + 首帧 1-2s ≈ 8s)——8s 会正好打在恢复窗口里(本例 vp9 00:31:45.66 就位,8s 阈值 00:31:48.06 开枪,而用户 00:31:48.5 才退,差 0.4s 枪毙一个正在恢复的会话);12s 只兜不自愈的真挂死。与位置基看门狗分工:位置冻结(时钟全停)归 8s 老看门狗,「音频活视频死」归 12s 新看门狗。
+
+**残余(已知不修)**:avc 解码器自身病倒原地重建(00:31:25 那道)是设备故障,粘性梯子消不掉,由看门狗兜底;VP9 拆起来干不干净无对照样本(vp9 从未当过被拆方),若将来出现 vp9 侧挂死,同样由看门狗兜。
+
+**待真机复测**:
+- [ ] 新会话梯子应全程 vp9:起始 720p 应选 **302**(webm)而非 298,升 1080p 应选 **303** 而非 299(YtSabrAbr 行 sel 对应 itag 核对);
+- [ ] 升档到 1440p 应无解码器重建日志(无 `DMCodecAdapterFactory: Creating ... adapter for track type video`,无 `MediaCodec::reclaim`);
+- [ ] 水位急救降档(1440p→1080p)应选 303 vp9,同 codec 无切换;
+- [ ] 若再撞 codec 回收挂死(音频活视频死),~12s 应出现 `video freeze: BUFFERING ... with pos advancing, auto-retry` 并自动恢复,无需手动退出;
+- [ ] 正常重缓冲(位置冻结)仍走 8s 老看门狗,行为不变。
+
+## 22. 2026-09-01「07:22 一直黑屏,音频正常」:全档零帧渲染 × READY 态看门狗盲区(诊断三件 + 黑屏画质熔断)
+
+**现象(07:22-07:25 真机 logs_live.log,同 1573s 视频,v3.0.9-alpha.2 后)**:续播 80s 起播后**全程黑屏但音频正常播**。5 轮会话:07:22:35 起(stall retry #1 @80s pos 12s 未出画)→ 07:23:00(READY 720p avc 298)→07:23:24 提前 ENDED →07:23:28(READY 1080p vp9 303,单格式会话)→ ~43s 再 launch →07:23:49(READY 720p,升档 4K 在途)→07:24:20 ENDED →07:24:24(READY 1440p vp9 308 单格式会话)→ 用户 11s 后手动退出。**关键证伪:720p avc 起始会话同样黑屏——§21「零帧只发生在 1440p VP9」不成立,当日故障与分辨率/codec 无关**。且位置/流完全健康:每轮会话 4-9MB 段连拉、bufS 到 47-48s(LoadControl 上限)、setFrameRate(60.0) 每轮 READY 都设上(解码器配置成功)、无 playback error、无 video size 上报(onVideoSizeChanged 零次)。
+
+**另一未解**:前 4 轮在 pos≈100-128s 提前 STATE_ENDED(视频 1573s  never 播到头),每次 ENDED → reportPlaybackCompleted → 同视频重载循环——ENDED 时 app 无任何位置日志,无法判定是 sample 流早 EOF 还是时钟跳变(07:22 的 ENDED-position 诊断已加)。伴生 4 次 `SabrDataSource open ... InterruptedException → evict sid`(ExoPlayer cancel 在途 chunk 时 fetcher 打断,open 抛 IOException→evict 会话→重 harvest,与会话切换窗口吻合)。
+
+**根因(结构盲区,两层看门狗共同失明)**:该故障态是 **READY + playWhenReady + 音频驱动位置前进 + 零帧渲染**——位置基 stall 看门狗(8s)要求位置不前进、视频冻结看门狗(12s)要求 BUFFERING,双双不触发 → 无限黑屏,用户唯一出路是手动退出(00:31 案与本案同构,§21 只处理了 BUFFERING 变体)。
+
+**修法三件(已实施,PlayerScreen)**:
+
+1. **决定性诊断日志**:①`onVideoSizeChanged` 打 `video size: WxH`(解码器真实出帧的系统级证据);②`onRenderedFirstFrame` 打回执 + 置 `frameRendered` 标志;③`STATE_ENDED` 打 `player ENDED @pos/buffered/duration/frameRendered`(提前 ENDED 案的位置取证)。下一次真机日志即可回答「零帧 vs 早 EOF vs 时钟跳变」。
+2. **黑屏看门狗(READY 态变体)**:READY+音频前进但本会话从未渲染首帧,超 `VideoFreezeThresholdMs=12s` → 走既有 auto-retry 链(`autoResumePositionMs`+`retryKey` 重载续播);独立 `noFrameRetryCount` 预算(首帧真渲染即清零),与两条既有看门狗三态互补:位置冻结→8s、BUFFERING 视频死→12s、READY 黑屏→12s。
+3. **黑屏画质熔断**:READY 零帧重试 ≥2 次仍黑,起始档压到 `BlackFrameHeightCap=1080` 重试(§21 对照 avc 1080p 可出画);若 720p/1080p 也黑则停手记 `video black: ... even at cap`(平台层故障非画质,避免同一坏档无限重载)。熔断标志首帧恢复时自动复位。
+
+**待真机复测**:
+- [ ] 复现时日志应出现 `video black: READY no first frame with pos advancing, auto-retry #N`(~12s 一拍),黑屏从「手动退出才能解」变「~12s 自动重载」;
+- [ ] 若熔断生效,应见 `cap height to 1080, auto-retry`,且重载后 1080p 会话观察是否出画(区分「分档触发」vs「全档平台故障」);
+- [ ] 若全档零帧,应见 `video black: ... even at cap 1080, stop auto-retry`——届时按 ENDED-position + video size 时间线定位 sample 流问题(SabrMediaPeriod 侧时间戳映射嫌疑);
+- [ ] 正常会话不应出现上述任何一条(误报=0);
+- [ ] 提前 ENDED 案:`player ENDED @pos=...` 应给出准确位置,判定 100-128s 提前结束的真因。
+
+## 23. 2026-09-01「Auto 不升档,手切 1440 无误」:墙钟口径鸡生蛋死锁 → 重填容量中位数通道
+
+**现象(12:05-12:13 真机 logs_live.log,重启电视恢复零帧故障后的新会话)**:Auto 会话从 720p 起
+播,~100s 才靠冷启动梯子爬到 1080p,1440p 永远够不着;手动切 1440 单轨会话立刻正常(REAL 行 14-24Mbps)。
+12:05 会话逐证:est 爬 2.6M→8.3M(重填期)→ LoadControl 满闸停拉 40s → **est 衰减回 4.1M** → 再重填
+爬回 5.5M 过 303 门槛升 1080;12:12 会话 sus 顶 4.4-4.5M,1080p 需 5.6M、1440p 需 13.3M,升档门
+(`required > effective`)**结构性过不去**。bw/sus 全程贴着播放消耗码率:720p 消耗 3.4M → 有效口径
+顶棚 ~4.5M;要读出 5.6M/13.3M 的「容量」,必须先在按那一档消耗——**鸡生蛋**。唯一能把口径顶上去的是
+重填期突发样本,而 §19/§20 刚好为防 4K 死亡行军把突发样本压掉了(压得对)。
+
+**根因(口径冲突,不是 bug)**:effective(活跃 est,含 gap)与 sus(60s 墙钟交付)都是**消耗量
+口径**——满缓冲停闸后交付=消耗,两个估计必收敛到当前档码率。下一档的容量证据只存在于「请求在途的
+瞬时速率」里,而这恰恰是两个口径都不含的部分。§19 堵住了突发样本这条路 → 升档只剩冷启动梯子
+(sus=-1 放行),会话一长满闸,梯子就停了。**堵对了一条路,但没开另一条。**
+
+**修法(2026-09-01,重填容量中位数通道)**:
+
+1. `SabrMediaFetcher.getRefillCapacityBps()`——每次成功媒体请求记一笔瞬时吞吐(`bytes/HTTP 耗时`,
+   不含缓冲等待 gap,天然免疫墙钟空转),留近 8 笔取**中位数**(抗单笔 TCP 爬升/小段噪声),样本
+   <3 返回 -1。**无墙钟衰减**:满缓冲期不发请求→不产生新样本→不衰减,容量证据跨空窗持久。
+2. 判据接线:HeightAwareAdaptiveTrackSelection 升档候选改 `required > max(effective, capacityFloor)`
+   过门;**降档仍用 effective**(alpha.9Z gap 入账语义不动,「卡死不降档」防线不碰);**4K 顶档
+   sus×1.1 闸不动**(防 §20 死亡行军复发——4K 准入仍看 60s 墙钟真实交付,容量通道不参与)。
+3. 取证:`YtSabrAbr` 日志行新加 `cap=` 字段(与 bw/sus 并列)。
+
+**预期行为变化**:720p 会话中 1.4-2.4MB 段瞬时吞吐 8-14M(12:05 REAL)→ cap≈11M → 302→303 十秒级
+触发(旧 ~100s);1080p 后段更大(11-24M)→ cap≈15M+ → 308 达标升 1440。1440p→4K 不受影响仍由
+sus×1.1 看死。单笔慢样本(冷启动 rn=0 1.4MB/4.4s=2.7M)被中位数稀释,3 笔后证据成立。
+
+**风险与护栏**:千兆 LAN 重填期 cap 可能冲高(9MB/0.3s)——但逐级爬(一次一档)+ 升档后 10s 禁回降
++ 水位急救 + 重锚语义全保留;最坏多升一档,真扛不住由滞回/急救接管。手动锁档单轨会话不走 ABR 不受影响。
+
+**待真机复测**:
+- [ ] Auto 会话 `cap=` 出现且 ≥ 5.6M 后,303 升档应在冷启动锁 10s 到期后一拍内触发(旧 ~100s);
+- [ ] 继续爬 1440p 应触发(cap ≥ 13.3M 时);
+- [ ] 4K 准入不变化:sus×1.1 不达标仍不进 315(除非真 60s 级持续);
+- [ ] 夜间弱网不误升:cap 随失败/慢样本下跌,升档门自动回 effective 口径;
+- [ ] 「提前 ENDED 悬案」取证仍在跑(12:0X 各 ENDED @pos=0 duration=UNSET——SABR 单流 period 时长
+  UNSET,EOF 即 ENDED,位置日志打不出真实位置;下一步给 ENDED 分支改记 bufferedDurationMs/最后样本位)。
+
+## 24. 2026-09-01「Auto 仍卡 480p,手切 1440 没问题」:服务端 pacing 鸡生蛋 → 满缓冲试探升档(trial upshift)
+
+**现象(15:32/15:47 真机 logs_live.log,§23 修完后的首验)**:§23 的 cap 通道已生效(cap= 字段有值
+2626-3778K)但 Auto 仍钉死 480p:升档门 `required(298 声明 4271302) > max(bw, cap=3129-3778K)` 全程
+成立。15:47 Auto 会话全部口径贴地:est 1.8-3.2M / sus 3.4M / cap 2717-3163K,26 笔 fetch REAL 全在
+2.5-5Mbps。**70 秒后手切 1440(15:48-49,同网络同分钟)**:REAL 21-27MB / 5.5-9.7s → **22-24Mbps
+连续 6 笔**,sus=20.3M、**cap=22475K**——同一条网络。
+
+**根因(比 §23 更深一层:cap 通道也被 pacing 污染)**:SABR 服务端按 selectedFmts 的节奏供流——
+Auto 播 480p 时服务端按 480p 节奏吐段(每笔 0.5-0.9MB + 每请求 ~1.5s 固定开销),cap 中位数测出的
+是**服务端供给节奏**,不是管道容量;手切 1440 后服务端必须按 23.5M/秒供流才追得上播放,单笔 25MB
+把固定开销摊平,真实管道速率才显形。即:**播 X 档永远只能测到 ~X 档量级的「容量」——§23 的结论
+(测量口径含墙钟空转)只对了一半,把 gap 剔掉(cap 通道)也逃不掉,因为样本本身被 pacing 封顶**。
+测量与升档互为前提的鸡生蛋死锁在 pacing 层闭环:不升档 → 测不到高档容量 → 永不升。
+
+**修法(9ffb66f1,满缓冲试探升档 trial upshift)**:既然测量通道结构性失真,升档判据补第二条路——
+**用「满缓冲」本身当证据,把「用户手切」自动化**:
+
+1. **触发(全部满足)**:①缓冲**升穿**试探水位线 `max(15s 地板, 0.8×本实例历史最高水位)`(满缓冲
+   =服务端节奏都喂满闸=供给富余于当前档的硬证据);**跨线判定**(本评估 ≥ 线且上一评估 < 线)防首填
+   单调期骑线常真——单调期 maxObs==bufS → 线恒随水位走 → 只在穿越瞬间/回填跨线各触发一次;②
+   `canUpgrade` 不豁免(冷启动锁 10s + 降档后缓冲 ≥30s 既有防线保留);③下一档不在失败冷却。
+2. **放行范围**:容量/持续闸失真也放行,但一次仍只升一档(逐级爬不动);**×1.1 顶档 sustained 闸与
+   起播 stall 冷却不试探**(4K 死亡行军 §20 / 起播死循环 §19 防线不松)——顶档(4K)真证据由 1440p
+   pacing 样本自然提供(手切会话 sus=20M 实证)。
+3. **试探治愈测量**:升入新档后服务端按新档 pace,sus/cap 立刻被喂到真实量级 → 下一档门槛开始读真
+   数据(1440p 手切会话 cap 3129K→22475K 实证);失败时重锚已锚新档声明值 → est 被真实样本快速拽塌
+   → 滞回 ×0.85/水位急救 20s/8s 降回。
+4. **失败冷却**:降出试探批准的档时记 3min 失败冷却(与顶档冷却同值),冷却期内该档既不过失真闸也
+   不被试探,期满由下次满缓冲重新试探——窄管道代价 = 每 ~3-4min 一次试探,不每轮回填撞同一堵墙。
+5. **取证**:`trial upshift (buffer-full probe)` / `trial fail cooldown` 两条日志。
+
+**预期行为**:宽管道(本例 22M)Auto 从 480p 逐级试探 720p→1080p→1440p,每级一次切换;窄管道试探
+失败→冷却→重试,梯子停在真实可持续档。4K 准入仍由 sus×1.1 看死不试探。
+
+**待真机复测**:
+- [ ] 满缓冲后日志出现 `trial upshift`,720p(298/302)→1080p→1440p 逐级上(本例宽管道应爬到 1440p);
+- [ ] 试探失败场景:`trial fail cooldown` 日志 + 水位不穿底(急救 20s/8s 在重锚配合下活着);
+- [ ] 4K 不被试探:无 `trial upshift` 指向 315, sus×1.1 不达标仍挡;
+- [ ] bufferMax=30s 用户档也能触发(0.8×~28s≈22s > 15s 地板);
+- [ ] §23 的 cap= 取证在试探后应显著抬升(480p ~3M → 720p ~10M 量级,验证「试探治愈测量」)。
+
+### §24.1 alpha.5 首验复盘(2026-09-01 晚,21:0X 真机 4 轮重载)
+
+**试探机制本身按设计工作**:①21:02:44 1440p 试探失败优雅降档(BUFFERING 2s 恢复,零重载);②
+**20:54:08 出现「试探治愈测量」成功案例**——试探期 pacing 样本让 sus/cap 变真,gated 门合法升
+1080p(§24 复测清单第 5 项 ✓)。
+
+**4 轮 stall 重载(20:57:56 / 21:07:33 / 21:13:23 / 21:14:47)直接原因 = 网络塌方窗口**:fetch
+单笔 24-36s 慢滴(rn=47 耗 30.4s / rn=48 36.6s / rn=32 24.7s)或长时间无响应(rn=54 >27s 无
+REAL)、`unexpected end of stream` ×2。playbackHttpClient 刻意 callTimeout=0 + readTimeout 15s
+(per-read 重置)——慢滴永不超时,这是为支持大段慢速下载的既有取舍,本轮不动。
+
+**试探三缺陷放大了伤害(本轮修,12e60cab)**:
+
+1. **重载后 maxObserved 归零 → 试探线跌到 0.8×20s=17s**:21:08:46 在 bufS=20s(远未满)就试探
+   1440p(sus 仅 7.15M vs 需 13.3M)→ 大亏空 → 恰逢网络塌方 → 21:13:23 重载。修:试探准入加
+   `maxObservedBufferedUs >= TRIAL_MIN_CEILING_US(25s)`——重载/冷启动后必须先完整回填一轮;
+   bufferMax=30s 用户档(fill ~28s)仍可用。
+2. **失败冷却不跨重载**:冷却/试探态是 selection 实例字段,重载即洗掉;且 21:13 案例重载发生在
+   **试探期**(降档路径从未跑,冷却根本没记)→ 新实例立即重试同一堵墙。修:冷却/active 态迁
+   `SabrAbrMemory`(墙钟,noteTrialFail/isTrialFailBlocked/onStallReload),PlayerScreen 看门狗
+   重载路径(noteStartupStallMemory)无条件调 `onStallReload()` 把 activeTrial 转记失败冷却。
+3. **试探期无熔断**:1440p 级亏空(~9M/s)下 20s 缓冲 1-2s 穿底,水位急救(5s 宽限 + 8s 阈值)
+   来不及救(21:14:20 bufS=0s)。修:试探熔断(trial abort)——试探档缓冲 <15s(TRIAL_ABORT_
+   BUFFERED_US)且仍在下漏 → 2s 宽限(TRIAL_ABORT_GRACE_MS)后无视 8s/20s 阈值与 5s 宽限立即降档。
+
+**待真机复测(alpha.6)**:
+- [ ] 试探只发生在 bufS ≥ 0.8×maxObs 且 maxObs ≥ 25s(重载后不再低水位试探);
+- [ ] 试探失败/试探期重载后,新实例 180s 内不再试同档(日志 remain Ns, survives reload);
+- [ ] 试探期缓冲跌破 15s 立即熔断降档(无 5s 宽限);
+- [ ] 网络稳定时段 Auto 停在真实可持续档,重载次数回落到网络塌方次数。
+
+### §24.2 alpha.6 复盘 + 失败冷却一致化(2026-09-01 晚,d4822104)
+
+**alpha.6 三修全部按预期工作**(22:14-23:10 真机 55 分钟):①全部试探发生在 bufS=38-43s /
+threshold=37-39s(浅填充防线 ✓);②失败冷却 `survives reload` 正确记录 ✓;③buffer-critical
+全部在 4-9s 触发、缓冲从未穿底到 0(熔断 ✓);**试探致重载 0 次**(唯一一次 stall 是 23:04:01
+@pos=0 起播毛刺,6s 自恢复;alpha.5 同场景 30 分钟 4 次)。
+
+**残留泄漏:冷却只挡试探路径,gated 未挡**。gated 门(est/sus/cap)读到的恰是试探期 pacing
+样本(虚高):22:17:00 1440p 试探失败记冷却 → **22:17:14(14s 后)gated 重批 1440p**;22:29:37
+1080p 试探失败 → 22:30:19(42s 后)重批;23:04:20 起播恢复期爆发样本 2s 内 gated 直上 1440p
+(16.4M)→ 结果 720↔1080↔1440 每 1-3 分钟一个来回,每轮 buffer-critical 探到 4-9s(短
+BUFFERING、清晰度跳,未到重载)。
+
+**一致化修(12e60cab→d4822104,用户拍板「既然要锁三分钟不要例外」)**:
+1. **降档即记冷却,无例外**——水位饥饿(buffer-critical)、est 崩塌(滞回)、试探失败三种降档
+   路径统一记被降出档的 180s 冷却(markDowngradeFromTrial 去 lastUpgradeWasTrial 前置条件,
+   日志区分 trial fail/downgrade fail 两种前缀供取证);
+2. **封锁 gated+试探一起**(候选循环 `isTrialFailBlocked(f.height)` 直接 continue)——饥饿与
+   est 崩塌都是不可持续的证据,冷却期样本恰是最不该信的证据;
+3. **锁「被降出的那一档」非全梯子**——更低档升降、更高档试探、手动选档照常(8/30 被取消的
+   全局冷却不复辟),期满恢复原判据。
+
+**预期**:720↔1080↔1440 分钟级来回切消失,Auto 稳定停在试探/降档验证过的可持续档;已知代价
+= 真网络短暂塌方后,塌方期所在档多锁 ≤3min(期满自然恢复)。
+
+**待真机复测(alpha.7)**:
+- [ ] 降档后日志出现 `downgrade fail cooldown`,同档 gated 不再秒批(22:17:14 模式消失);
+- [ ] 720↔1080↔1440 来回切频率显著下降(Auto 停在验证过的可持续档);
+- [ ] 冷却期满后梯子恢复爬升(gated 或满缓冲试探)。
+
+## 25. 2026-09-03「级联降档钉死 720p,手切 1440 稳跑」:缓冲读数塌方 → 假 buffer-critical 误降(物理塌方守门)
+
+### 现象(23:36-23:47 真机 logs_live.log,24min 视频档,Sony BRAVIA)
+
+级联降档四级复盘,只有最后一级是误降:
+
+| 时间 | 事件 | 触发 | 判定 |
+|---|---|---|---|
+| 23:40:03 | 试探升 4K(声明 26.8M) | est 重锚 | — |
+| 23:40:26 | 4K→1440p + 180s 冷却 | buffer-critical bufS=19s 回落 | ✅ 对(4K pacing 供给 ~16M 扛不住) |
+| 23:41:40 | 1440p→1080p + 180s 冷却 | est 门:一笔 4.8MB/7.56s 慢 fetch 把 est 28.5M→9.2M,穿 0.85×13.37M=11.36M 门槛 | ⚠️ 方向对(23:42-23:45 连 720p 都填不住,网络真塌),但触发证据=单样本 |
+| 23:44:15 | 1080p→720p + 180s 冷却 | buffer-critical bufS=0s | ❌ **误降(读数塌方)** |
+
+**误降铁证链**:23:43:56-59 五笔 fetch 38-70Mbps、1.9s 回填 +39s,bufS=48.8(1080p 实需 5.8M
+完全可持续,est 也在回升 10→17M);23:43:59.6→23:44:15.8 **17s 零 fetch**(fetcher 全静默)、
+player 一直 READY 在播;然后 bufS 读数 **48.8→0.0** + BUFFERING——17s 播放最多消耗 17s,缓冲
+该剩 ≥31s,**物理上不可能的衰减速率**。期间无 seek 日志、无 reload、无 status=2——这是 SABR
+服务端 bufferedRange 周期性 reset(alpha.62 own-range-null 家族,本段 ~40-45s 周期,塌到
+9.9s/0s 地板,23:42:28/23:43:10/23:43:55 同模式),不是真饥饿。
+
+**代价**:1080p 白进 180s 冷却(23:47:15 到期),冷却期 est/cap 恰是低档 pacing 样本(正是
+§24.2「降档即记冷却」想堵的洞反噬);ABR 钉死 720p 直到会话结束,手切 1440p 新会话(rr5 host,
+54-79Mbps、sus 42-53M、零降档零 rebuffer 跑到日志尾)才恢复——**1440 稳定属实,但 ABR 自己
+没有恢复路径**(est 结构性钉消耗码率 §23/§24 + 冷却),救场的是手动单轨换新会话。
+
+### 修法(缓冲读数塌方守门,本 commit)
+
+**物理判据:水位衰减速率不可能超过墙钟(播放消耗 1s/s)**。`updateSelectedTrack` 记录上次评估
+墙钟时刻(`prevEvalElapsedMs`),两次评估间:
+
+```
+上次水位 - 本次水位 > 墙钟时长 + BUFFER_COLLAPSE_MARGIN_US(2s) → 读数塌方非真饿
+```
+
+- 命中 → 打 `buffered-range collapse artifact ignored` 日志,**跳过本轮水位降档**(试探熔断
+  同源误判一并拦,est 降档路径不受影响——口径不同);
+- 下轮评估衰减速率恢复 ≤1s/s 自然放行,真饿最多晚一轮急救(真饿时塌方后读数在地板,下轮
+  bufS 仍 <8s 且不再「超速衰减」,正常触发);
+- seek 后的合法骤减落同一守门,代价=最多延迟一轮急救,方向无害;
+- 余量 2s 吸收评估时戳与水位读数的轻微异步。
+
+### 待真机复测(alpha.7+)
+
+- [ ] 周期塌方场景出现 `buffered-range collapse artifact ignored`,同轮不再 `buffer-critical downgrade`;
+- [ ] 塌方误降消失后,1080p 不再进 180s 冷却、ABR 不被钉死低档;
+- [ ] 真饥饿(供给持续 < 当前档)降档仍正常:水位 ≤1s/s 自然回落路径不被守门拦截。

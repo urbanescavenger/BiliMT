@@ -317,10 +317,6 @@
     <string name="bangumi_status_want">Quiero ver</string>
     <string name="bangumi_status_watching">Viendo</string>
     <string name="bangumi_status_watched">Vistos</string>
-    <string name="feed_action_sheet_title">Acciones del feed</string>
-    <string name="feed_action_like">Me gusta</string>
-    <string name="feed_action_toview">Ver más tarde</string>
-    <string name="feed_action_upspace">Ir a la página del UP</string>
     <string name="feed_action_like_done">Me gusta enviado</string>
     <string name="feed_action_like_failed">Fallo al dar me gusta</string>
     <string name="feed_action_toview_done">Añadido a ver más tarde</string>
@@ -328,7 +324,6 @@
     <string name="feed_footer_loading">Cargando…</string>
     <string name="feed_footer_end">No hay más</string>
     <string name="feed_footer_failed">Fallo al cargar</string>
-    <string name="feed_action_comment">Ver comentarios</string>
     <string name="nav_comment">Comentarios</string>
     <string name="comment_loading">Cargando comentarios...</string>
     <string name="comment_empty">Sin comentarios</string>
@@ -428,6 +423,8 @@
     <string name="player_control_like">Me gusta</string>
     <string name="player_control_coin">Moneda</string>
     <string name="player_control_favorite">Favorito</string>
+    <string name="player_control_toview">Ver más tarde</string>
+    <string name="player_control_comment">Comentarios</string>
     <string name="player_panel_favorite">Guardar en favoritos</string>
     <string name="player_favorite_confirm">Confirmar favorito</string>
     <string name="player_favorite_empty">Sin favoritos</string>

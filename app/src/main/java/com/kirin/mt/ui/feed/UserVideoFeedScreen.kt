@@ -1,6 +1,5 @@
 package com.kirin.mt.ui.feed
 
-import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Box
@@ -39,7 +38,6 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -55,8 +53,6 @@ import com.kirin.mt.core.network.FollowingSeason
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.network.mergeByPubdate
 import com.kirin.mt.core.youtube.YoutubeChannel
-import com.kirin.mt.ui.common.BiliActionItem
-import com.kirin.mt.ui.common.BiliActionSheet
 import com.kirin.mt.ui.common.BiliCapsuleTabRow
 import com.kirin.mt.ui.common.BiliPillTab
 import com.kirin.mt.ui.common.FeedStatusScreen
@@ -205,17 +201,10 @@ internal fun UserFeedScreen(
   onMoveLeftToNav: () -> Boolean,
   onVideoSelected: (VideoSummary, Boolean) -> Unit,
  onOwnerSelected: (VideoSummary) -> Unit = {},
- onCommentSelected: (VideoSummary) -> Unit = {},
  onSeasonSelected: (com.kirin.mt.core.network.FollowingSeason) -> Unit = {},
- onActionSheetDismissed: () -> Unit = {},
 ) {
   val coroutineScope = rememberCoroutineScope()
-  val context = LocalContext.current
   val selectedTab = feedState.selectedTab
-  var actionSheetVideo by remember { mutableStateOf<VideoSummary?>(null) }
-  // 长按菜单内选中了会跳转的项(评论 / 去 UP 主主页)时置 true,onDismiss 据此跳过网格焦点恢复,
-  // 避免焦点被抢到菜单底下隐藏的网格上;仅 Back / 点赞 / 稍后再看(留在网格)才恢复卡片焦点。
-  var actionSheetNavigating by remember { mutableStateOf(false) }
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   // 本地 YouTube 播放历史(免登录):合并进 History tab,与 B 站历史按播放时间倒序混合。
   val youtubeHistory by youtubeHistoryStore.history.collectAsState(initial = emptyList())
@@ -381,7 +370,7 @@ internal fun UserFeedScreen(
             onMoveLeftToNav = onMoveLeftToNav,
             onVideoSelected = { video -> onVideoSelected(video, false) },
             onOwnerSelected = onOwnerSelected,
-            onCardLongPress = { video -> actionSheetVideo = video },
+            onCardLongPress = { video -> onOwnerSelected(video) },
           )
           UserFeedTab.DynamicAll -> DynamicFeedContent(
             state = feedState.dynamicAll,
@@ -398,7 +387,7 @@ internal fun UserFeedScreen(
             onMoveLeftToNav = onMoveLeftToNav,
             onVideoSelected = { video -> onVideoSelected(video, false) },
             onOwnerSelected = onOwnerSelected,
-            onCardLongPress = { video -> actionSheetVideo = video },
+            onCardLongPress = { video -> onOwnerSelected(video) },
           )
           UserFeedTab.History -> HistoryFeedContent(
             state = feedState.history.state,
@@ -458,81 +447,6 @@ internal fun UserFeedScreen(
        }
       }
     }
-  }
-
-  actionSheetVideo?.let { video ->
-    val likeLabel = stringResource(R.string.feed_action_like)
-    val toviewLabel = stringResource(R.string.feed_action_toview)
-    val upspaceLabel = stringResource(R.string.feed_action_upspace)
-    val commentLabel = stringResource(R.string.feed_action_comment)
-    val likeDone = stringResource(R.string.feed_action_like_done)
-    val likeFailed = stringResource(R.string.feed_action_like_failed)
-    val toviewDone = stringResource(R.string.feed_action_toview_done)
-    val toviewFailed = stringResource(R.string.feed_action_toview_failed)
-
-    BiliActionSheet(
-      title = stringResource(R.string.feed_action_sheet_title),
-      items = listOf(
-        BiliActionItem(
-          label = commentLabel,
-          enabled = video.aid > 0L || video.source == SourceYoutube,
-          onClick = {
-            actionSheetNavigating = true
-            onCommentSelected(video)
-          },
-        ),
-        BiliActionItem(
-          label = likeLabel,
-          enabled = video.dynId.isNotBlank(),
-          onClick = {
-            coroutineScope.launch {
-              val ok = runCatching { videoRepository.likeDynamic(video.dynId) }
-                .getOrDefault(false)
-              Toast.makeText(
-                context,
-                if (ok) likeDone else likeFailed,
-                Toast.LENGTH_SHORT,
-              ).show()
-            }
-          },
-        ),
-        BiliActionItem(
-          label = toviewLabel,
-          enabled = video.aid > 0L,
-          onClick = {
-            coroutineScope.launch {
-              val ok = runCatching { videoRepository.addToView(video.aid) }
-                .getOrDefault(false)
-              Toast.makeText(
-                context,
-                if (ok) toviewDone else toviewFailed,
-                Toast.LENGTH_SHORT,
-              ).show()
-            }
-          },
-        ),
-        BiliActionItem(
-          label = upspaceLabel,
-          enabled = video.ownerMid > 0L ||
-            (video.source == SourceYoutube && video.channelId.isNotBlank()),
-          onClick = {
-            actionSheetNavigating = true
-            onOwnerSelected(video)
-          },
-        ),
-      ),
-      onDismiss = {
-        if (!actionSheetNavigating) {
-          // BiliActionSheet 是屏内覆盖层(非 Dialog),关闭时其聚焦节点被移除,Compose 不会自动把
-          // 焦点还给底下网格 → 焦点会落到侧栏头像并 autoConfirm 打开「我的」页(焦点丢失)。
-          // 走 AppShell 的 contentFocusRestore 机制:置 contentFocusRestoreDestination 抑制头像
-          // autoConfirm,并让网格 restore effect 把焦点拉回刚长按的那张卡片。
-          onActionSheetDismissed()
-        }
-        actionSheetNavigating = false
-        actionSheetVideo = null
-      },
-    )
   }
 }
 

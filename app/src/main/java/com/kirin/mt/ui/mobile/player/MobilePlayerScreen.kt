@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -182,6 +183,7 @@ import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.player.withResolvedMetadata
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -405,6 +407,13 @@ fun MobilePlayerScreen(
   var pauseInteractionToken by remember { mutableIntStateOf(0) }
   // 拖拽 seek 起点记录的播放意图:松手 seek 后若之前在播放则恢复,避免拖拽后意外暂停
   var wasPlayingBeforeSeek by remember { mutableStateOf(false) }
+  // 竖滑亮度/音量:气泡(左半=亮度☀/右半=音量🔊)+ 百分比,松手 800ms 后隐藏;调节器见 MobilePlayerVerticalGesture.kt
+  val verticalGestureController = remember(context) {
+    context.findActivity()?.let { PlayerVerticalGestureController(it) }
+  }
+  var verticalBubbleSide by remember { mutableStateOf<VerticalDragSide?>(null) }
+  var verticalBubbleFraction by remember { mutableFloatStateOf(0f) }
+  var verticalBubbleHideJob by remember { mutableStateOf<Job?>(null) }
   // 诊断:最近一次 routeSeek 的时间戳(毫秒),用于 ENDED 时区分"自然播完"还是"seek 到末尾误触"
   var lastSeekAtMs by remember { mutableLongStateOf(0L) }
   // 空降助手(AirJump):SponsorBlock 风格自动跳过广告/片头/片尾段,镜像 TV PlayerScreen
@@ -1573,6 +1582,17 @@ fun MobilePlayerScreen(
             }
           }
 
+          // 竖滑亮度/音量气泡:显示在手势所在半屏的中央附近(左=亮度☀,右=音量🔊)
+          verticalBubbleSide?.let { side ->
+            VerticalGestureBubble(
+              side = side,
+              fraction = verticalBubbleFraction,
+              modifier = Modifier
+                .align(Alignment.Center)
+                .offset(x = if (side == VerticalDragSide.Volume) 96.dp else (-96).dp),
+            )
+          }
+
           // 顶层手势层:z 序最顶(最后绘制=事件分发优先),先于弹幕层 AndroidView(DanmakuView)
           // 与 PlayerView 收到触摸。弹幕层的 DanmakuView 会消费 ACTION_DOWN,若手势挂在父 Box
           // modifier 上会被它挡住(弹幕开启即点不暂停/切不出控件);提到这里一劳永逸避开,且不依赖
@@ -1631,6 +1651,32 @@ fun MobilePlayerScreen(
                   onSeekCancel = {
                     dragSeekActive = false
                     seekPreviewMs = null
+                  },
+                  // 竖滑:左半屏亮度 / 右半屏音量,气泡实时显百分比,松手 800ms 后隐藏
+                  onVerticalDragStart = { side ->
+                    val ctl = verticalGestureController ?: return@detectPlayerGestures
+                    verticalBubbleHideJob?.cancel()
+                    verticalBubbleSide = side
+                    verticalBubbleFraction =
+                      if (side == VerticalDragSide.Brightness) ctl.onBrightnessStart() else ctl.onVolumeStart()
+                  },
+                  onVerticalDragDelta = { side, dy ->
+                    val ctl = verticalGestureController ?: return@detectPlayerGestures
+                    val h = size.height.toFloat()
+                    verticalBubbleFraction =
+                      if (side == VerticalDragSide.Brightness) ctl.onBrightnessDelta(dy, h) else ctl.onVolumeDelta(dy, h)
+                  },
+                  onVerticalDragEnd = {
+                    verticalBubbleHideJob = scope.launch {
+                      delay(800)
+                      verticalBubbleSide = null
+                    }
+                  },
+                  onVerticalDragCancel = {
+                    verticalBubbleHideJob = scope.launch {
+                      delay(800)
+                      verticalBubbleSide = null
+                    }
                   },
                 )
               },

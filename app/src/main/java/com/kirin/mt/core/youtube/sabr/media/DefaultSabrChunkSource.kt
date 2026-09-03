@@ -147,6 +147,7 @@ internal class DefaultSabrChunkSource(
     // 不再需要 ceiling/force-climb 排除补丁。见 SabrBandwidthMeter / SabrMediaFetcher。
     (bandwidthMeter as? SabrBandwidthMeter)?.setRealBandwidthProvider { fetcher.getRealBitrateEstimate() }
     (bandwidthMeter as? SabrBandwidthMeter)?.setSustainedBandwidthProvider { fetcher.getSustainedBitrateEstimate() }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setRefillCapacityProvider { fetcher.getRefillCapacityBps() }
     (bandwidthMeter as? SabrBandwidthMeter)?.setReseedBandwidthProvider { bitrateBps ->
       fetcher.reseedActiveWindow(bitrateBps)
     }
@@ -233,8 +234,9 @@ internal class DefaultSabrChunkSource(
       fetcher.noteBufferedAheadMs(Util.usToMs(bufferedDurationUs))
     }
 
-    val representationHolder = representationHolders[trackSelection.selectedIndex]
-    fetcher.selectFormat(representationHolder.representation)
+    // 2026-08-31 B2:决策前快照——升/降档候选与合成 iterator 都基于「当前档」构(ABR 看到的是切换前
+    // 状态,语义不变);staging 的 holder 与 fetcher 格式改到 updateSelectedTrack 之后重读(见下)。
+    val preSelectionHolder = representationHolders[trackSelection.selectedIndex]
     // 增量升/降档(alpha.9X,修「Auto 起播低档后永不升档」):Auto 全轨自适应原把所有未下载轨的 iterator
     // 填 MediaChunkIterator.EMPTY,AdaptiveTrackSelection 看不到任何备选数据 → selectedIndex 冻结在低档
     // (默认带宽估计 ~1Mbps 起步如 itag244=480p),带宽涨了也无新轨可切。这里只给「当前档的下一高码率档」
@@ -243,7 +245,7 @@ internal class DefaultSabrChunkSource(
     // 切到该档后其 init 才按需加载(chunkIndex 变真),下一轮再给再下一档喂合成 iterator;已下载档保留真
     // iterator(可降回)。其余档仍 EMPTY(不参与切轨)→ 一次只升降一档、不越级、不预拉多轨 init。
     val currentBitrate =
-      if (representationHolder.chunkIndex != null) trackSelection.getFormat(trackSelection.selectedIndex).bitrate else -1
+      if (preSelectionHolder.chunkIndex != null) trackSelection.getFormat(trackSelection.selectedIndex).bitrate else -1
     var upgradeCandidateIndex = if (currentBitrate > 0) {
       (0..<trackSelection.length())
         .filter { trackSelection.getFormat(it).bitrate > currentBitrate }
@@ -261,15 +263,20 @@ internal class DefaultSabrChunkSource(
       "YtSabrAbr",
       "sel=${trackSelection.selectedIndex} bitrate=$currentBitrate bufS=${bufferedDurationUs / 1_000_000}.${
         bufferedDurationUs % 1_000_000 / 100_000
-      } chunkIndex=${representationHolder.chunkIndex != null} bw=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
+      } chunkIndex=${preSelectionHolder.chunkIndex != null} bw=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
         // 2026-08-31 显示修正:sus 原值 -1(证据不足)曾被 -1/1000 整除打成 0K,取证时把「无证据」
         // 误读成「证据为零」;负值原样显示。
         "sus=${
           (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw()
             ?.let { if (it >= 0) "${it / 1000}K" else "-1" } ?: "-1"
         } " +
+        // 2026-09-01 重填容量取证:近 N 笔成功请求瞬时吞吐中位数(免疫墙钟空转),升档判据用它与 bw 取大。
+        "cap=${
+          (bandwidthMeter as? SabrBandwidthMeter)?.getRefillCapacityEstimate()
+            ?.let { if (it >= 0) "${it / 1000}K" else "-1" } ?: "-1"
+        } " +
         "meas=${
-          fetcher.getMeasuredBitrateBps(representationHolder.representation.formatId.itag).div(1000)
+          fetcher.getMeasuredBitrateBps(preSelectionHolder.representation.formatId.itag).div(1000)
         }K " +
         "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
           (0..<trackSelection.length()).joinToString { i ->
@@ -287,8 +294,8 @@ internal class DefaultSabrChunkSource(
         val holder = representationHolders[i]
         val timing = when {
           holder.chunkIndex != null -> holder                 // 已下载轨:真 iterator(含当前档,可降回)
-          i == upgradeCandidateIndex -> representationHolder   // 下一高码率档:合成(升档)
-          i == downgradeCandidateIndex -> representationHolder // 下一低码率档:合成(网络崩时降档)
+          i == upgradeCandidateIndex -> preSelectionHolder     // 下一高码率档:合成(升档)
+          i == downgradeCandidateIndex -> preSelectionHolder  // 下一低码率档:合成(网络崩时降档)
           else -> null
         }
         if (timing == null) MediaChunkIterator.EMPTY
@@ -301,6 +308,13 @@ internal class DefaultSabrChunkSource(
         }
       },
     )
+
+    // 2026-08-31 B2(对齐上游 media3 DashChunkSource:先 updateSelectedTrack 再读 selectedIndex):
+    // 原实现在决策前取 holder 并喂 fetcher.selectFormat → 切档决策对同一次调用 staged 的段无效
+    // (23:24:48.052 水位急救 315→308,2ms 后 staged 的请求仍载 315 段),每次切档(含急救/升档)
+    // 白吃一个循环的生效延迟。决策后重读:急救/切档当次 staged 的段立即按新档发出。
+    val representationHolder = representationHolders[trackSelection.selectedIndex]
+    fetcher.selectFormat(representationHolder.representation)
 
     if (representationHolder.chunkExtractor != null && representationHolder.chunkIndex == null) {
       // 新格式首请求:init 段(服务端按 isInitSeg 发 fMP4 init,ChunkExtractor 从中解 ChunkIndex)
