@@ -172,6 +172,8 @@ fun PlayerScreen(
   onBack: () -> Unit,
   onOpenUpSpace: (mid: Long, ownerName: String, ownerFace: String) -> Unit = { _, _, _ -> },
   onOpenYoutubeChannel: (channelId: String, channelName: String, avatar: String) -> Unit = { _, _, _ -> },
+  /** 控制栏「评论」:把评论页叠到播放器之上(AppShell commentRequest 覆盖层),不退出播放。 */
+  onOpenComments: (PlaybackRequest) -> Unit = {},
   spaceReturnKey: Int = 0,
 ) {
   val context = LocalContext.current
@@ -826,13 +828,15 @@ fun PlayerScreen(
     }
   }
 
-  /** 控制栏可见按钮:PGC 或无 aid 时隐藏点赞/投币/收藏。 */
+  /** 控制栏可见按钮:PGC 或无 aid 时隐藏点赞/投币/收藏/稍后再看;评论另有 aid>0 或 YouTube 判据。 */
   fun availableControls(): List<PlayerControl> {
     val hideInteraction = displayRequest.isPgc || displayRequest.aid <= 0L
-    return if (hideInteraction) {
-      PlayerControl.entries.filter { !it.isAction }
-    } else {
-      PlayerControl.entries.toList()
+    return PlayerControl.entries.filter { control ->
+      when (control) {
+        PlayerControl.Like, PlayerControl.Coin, PlayerControl.Favorite, PlayerControl.ToView -> !hideInteraction
+        PlayerControl.Comment -> !displayRequest.isPgc && (displayRequest.aid > 0L || displayRequest.isYoutube)
+        else -> true
+      }
     }
   }
 
@@ -864,6 +868,24 @@ fun PlayerScreen(
           true,
           if (liked) context.getString(R.string.feed_action_like_done) else context.getString(R.string.player_like_cancelled),
         )
+      } else {
+        showInteractionToast(false, "", result.exceptionOrNull())
+      }
+      interactionBusy = false
+      showControls()
+    }
+  }
+
+  /** 稍后再看(UGC):与点赞同款互动调用 + toast;重复加入由服务端幂等,失败走通用错误提示。 */
+  fun doAddToView() {
+    val aid = displayRequest.aid
+    if (aid <= 0L || interactionBusy) return
+    interactionBusy = true
+    coroutineScope.launch {
+      val result = runCatching { videoRepository.addToView(aid) }
+      val ok = result.getOrDefault(false)
+      if (ok) {
+        showInteractionToast(true, context.getString(R.string.feed_action_toview_done))
       } else {
         showInteractionToast(false, "", result.exceptionOrNull())
       }
@@ -1327,6 +1349,8 @@ fun PlayerScreen(
         }
       }
       PlayerControl.Like -> doLike()
+      PlayerControl.ToView -> doAddToView()
+      PlayerControl.Comment -> onOpenComments(displayRequest)
       PlayerControl.Coin -> {
         if (interactionBusy) return
         coinDialogFocusedIndex = 0

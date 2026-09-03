@@ -317,10 +317,6 @@
     <string name="bangumi_status_want">Quero ver</string>
     <string name="bangumi_status_watching">A ver</string>
     <string name="bangumi_status_watched">Visto</string>
-    <string name="feed_action_sheet_title">Ações da atualização</string>
-    <string name="feed_action_like">Gostar</string>
-    <string name="feed_action_toview">Ver mais tarde</string>
-    <string name="feed_action_upspace">Ir para a página do criador</string>
     <string name="feed_action_like_done">Gostou</string>
     <string name="feed_action_like_failed">Falha ao gostar</string>
     <string name="feed_action_toview_done">Adicionado para ver mais tarde</string>
@@ -328,7 +324,6 @@
     <string name="feed_footer_loading">A carregar…</string>
     <string name="feed_footer_end">Sem mais</string>
     <string name="feed_footer_failed">Falha ao carregar</string>
-    <string name="feed_action_comment">Ver comentários</string>
     <string name="nav_comment">Comentários</string>
     <string name="comment_loading">A carregar os comentários...</string>
     <string name="comment_empty">Sem comentários</string>
@@ -428,6 +423,8 @@
     <string name="player_control_like">Gostar</string>
     <string name="player_control_coin">Dar moedas</string>
     <string name="player_control_favorite">Favorito</string>
+    <string name="player_control_toview">Ver mais tarde</string>
+    <string name="player_control_comment">Comentários</string>
     <string name="player_panel_favorite">Guardar nos favoritos</string>
     <string name="player_favorite_confirm">Confirmar favorito</string>
     <string name="player_favorite_empty">Sem favoritos</string>

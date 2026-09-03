@@ -1354,7 +1354,6 @@ fun BiliTvApp(
                   tabFocusRequester = feedTabFocusRequester,
                   restoreFocusRequestKey = restoreFocusRequestKeyFor(AppDestination.Dynamic),
                   onRestoreFocusHandled = { key -> clearFocusRestoreRequest(AppDestination.Dynamic, key) },
-                  onActionSheetDismissed = { requestContentGridRestore(selectedDestination) },
                   onMoveLeftToNav = {
                     runCatching {
                       navFocusRequesters.getValue(selectedDestination).requestFocus()
@@ -1380,14 +1379,6 @@ fun BiliTvApp(
                       spacePlaybackBehind = false
                       spaceRequest = UpSpaceRequest(video.ownerMid, video.ownerName, video.ownerFace)
                     }
-                  },
-                  onCommentSelected = { video ->
-                    commentRequest = com.kirin.mt.ui.feed.CommentRequest(
-                      aid = video.aid,
-                      title = video.title,
-                      source = video.source,
-                      videoId = video.bvid,
-                    )
                   },
                   onSeasonSelected = { season ->
                     pgcSeasonRequest = com.kirin.mt.ui.pgc.PgcSeasonRequest(
@@ -1605,6 +1596,14 @@ fun BiliTvApp(
                   channelId = channelId,
                   channelName = channelName,
                   avatar = avatar,
+                )
+              },
+              onOpenComments = { commentPlayback ->
+                commentRequest = com.kirin.mt.ui.feed.CommentRequest(
+                  aid = commentPlayback.aid,
+                  title = commentPlayback.title,
+                  source = commentPlayback.source,
+                  videoId = commentPlayback.bvid,
                 )
               },
               spaceReturnKey = spaceFocusRestoreRequestKey,

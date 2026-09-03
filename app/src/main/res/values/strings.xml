@@ -325,10 +325,6 @@
     <string name="bangumi_status_want">想看</string>
     <string name="bangumi_status_watching">在看</string>
     <string name="bangumi_status_watched">看过</string>
-    <string name="feed_action_sheet_title">动态操作</string>
-    <string name="feed_action_like">点赞</string>
-    <string name="feed_action_toview">稍后再看</string>
-    <string name="feed_action_upspace">去 UP 主主页</string>
     <string name="feed_action_like_done">已点赞</string>
     <string name="feed_action_like_failed">点赞失败</string>
     <string name="feed_action_toview_done">已加入稍后再看</string>
@@ -336,7 +332,6 @@
     <string name="feed_footer_loading">加载中…</string>
     <string name="feed_footer_end">没有更多了</string>
     <string name="feed_footer_failed">加载失败</string>
-    <string name="feed_action_comment">查看评论</string>
     <string name="nav_comment">评论</string>
     <string name="comment_loading">正在加载评论...</string>
     <string name="comment_empty">暂无评论</string>
@@ -440,6 +435,7 @@
     <string name="player_control_coin">&#x6295;&#x5E01;</string>
     <string name="player_control_favorite">&#x6536;&#x85CF;</string>
     <string name="player_control_toview">稍后再看</string>
+    <string name="player_control_comment">评论</string>
     <string name="player_panel_favorite">&#x6536;&#x85CF;&#x5230;&#x6536;&#x85CF;&#x5939;</string>
     <string name="player_favorite_confirm">&#x786E;&#x8BA4;&#x6536;&#x85CF;</string>
     <string name="player_favorite_empty">&#x6682;&#x65E0;&#x6536;&#x85CF;&#x5939;</string>
