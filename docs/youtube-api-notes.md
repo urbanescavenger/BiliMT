@@ -101,6 +101,12 @@ params 原样传，不额外 URL 编码。
 - `parseVideoRenderer` 需回退读取 overlay。
 - `lockupViewModel` 时长在 `contentImage.thumbnailViewModel.overlays[].thumbnailOverlayBadgeViewModel.thumbnailBadges[].thumbnailBadgeViewModel.text`（如 "13:09"）。⚠️ 若用「递归收集 contentImage 全部字符串再取第一个像时长的」方式，`collectStrings` 会把缩略图 `width`/`height`/`backgroundColor` 等**纯数字**也收进来，而 `parseDuration` 若把单段纯数字当秒，就会误匹配到同一响应里所有卡片一致的缩略图尺寸数值 → 整个主页所有视频时长显示成同一个常量（实测 2:58）。**`parseDuration` 必须只接受含冒号的真实时长格式（`MM:SS`/`HH:MM:SS`）并校验秒位 0..59，拒绝单段纯数字**（v3.0.3-alpha.3 修复）。
 
+### 发布时间相对文本多语言解析（重要，2026-09-06，v3.0.10-alpha.1）
+
+`publishedTimeText`/lockup `metadataParts[].text.content` 的相对时间**语言跟随请求 `hl`**（`YoutubeContentRegion` 可选 US/JP/HK/TW/KR/GB/DE），不是恒英文。旧 `parseRelative` 只认英文正则 + 简体子集字符集 `[秒分時时天周週月年]`，**zh-Hant 的 小時/分鐘/個月（小/鐘/個 三字不在集内）、ja 的 時間/か月、ko 全系（3분 전/시간 전）、de 全系（vor 2 Tagen）全部解析失败** → `publishedAt=null` → `toVideoSummary` pubdate 回落当前时间 → 动态/搜索/频道页整页「1 分钟前」+ 按 pubdate 排序全乱。真机日志实锤（HK 节点）：「1 年前」「2 週前」「1 天前」正常解析，「3 個月前」（61+ 次）「14 小時前」（大量）全 null；「有时候才坏」= RSS 正常时时间来自 RSS 精确 ISO（`feeds/videos.xml?playlist_id=UULF...`），RSS 间歇 404 整频道回落 InnerTube 兜底才塌方。
+
+修法（v3.0.10-alpha.1）：重写 `parseRelative` 为「提取 `(\d+)\s*([^\d]+)`（数字 + 其后非数字片段）→ 单位关键词 contains 归一到英文单位」——对语言后缀（週間/Tagen/전 等）天然免疫，一次覆盖全部支持 hl 的格式（en/ja/zh-Hans/zh-Hant/ko/de）。⚠️ 单位判断顺序敏感：hour（小時/時間/시간）须先于 minute（分/분）；month 的专名 token（個月/个月/か月/ヶ月/개월）与兜底「月」同分支；未知单位返回 null（不要猜），parsePublished 拿 null 走上层兜底。**教训：任何从 InnerTube 文本反推数据的解析都要按 `YoutubeContentRegion` 全部 hl 变体验证，不能用默认 en 测过就算覆盖。**
+
 ### 续页 continuation
 响应末尾 `continuationItemRenderer.continuationEndpoint.continuationCommand.token`（取最后一个）。续页请求 body 用 `{ "continuation": "...", context }`。
 
