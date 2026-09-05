@@ -221,7 +221,9 @@ fun LivePlayerScreen(
     )
   } else request
   // IPTV 专属 TV 路径:确认键开关频道面板,左/右切台,上/下切源。mobile 与 B 站直播不受影响。
-  val isIptvTv = request.isIptv && !isMobile
+  val isIptvTv = request.isIptvChannel && !isMobile
+  // TVBox(TV):无频道面板/切台,只有线路切换(上/下键同 IPTV)。
+  val isTvboxTv = request.isTvbox && !isMobile
 
   val qualities = liveInfo?.qualities.orEmpty()
   val qualityLabel = stringResource(R.string.live_quality)
@@ -286,7 +288,8 @@ fun LivePlayerScreen(
         // IPTV 真播完(mediaItemCount>0;切源 clearMediaItems 触发的瞬时 ENDED 为 0,排除)
         // 即断流:直播流没有合法 ENDED,立即切下一个镜像源,不等 8s 看门狗。
         // 与 onPlayerError 分支同机制:last source 退回同源重载,retry 上限同看门狗。
-        if (request.isIptv && playbackState == Player.STATE_ENDED &&
+        // TVBox 点播不适用:ENDED=影片播完是合法终态,自动切线路会换台重播。
+        if (request.isIptvChannel && playbackState == Player.STATE_ENDED &&
           player.mediaItemCount > 0 && autoRetryCount < MaxLiveAutoRetry
         ) {
           autoRetryCount += 1
@@ -352,7 +355,8 @@ fun LivePlayerScreen(
   // 的顺序都变成活源优先,首开(selectedQn=0)直接播活源。名匹配为主,URL 匹配仅兜底
   // (重排后 urls 结构可能与 request.iptvUrls 不同,靠名匹配不受影响)。
   LaunchedEffect(roomId, request.isIptv) {
-    if (!request.isIptv || isMobile || iptvRepository == null) return@LaunchedEffect
+    // TVBox 点播不进 m3u 台列表(它不是直播频道,线路表就在 request.iptvUrls 里)。
+    if (!request.isIptvChannel || isMobile || iptvRepository == null) return@LaunchedEffect
     iptvChannelLoading = true
     val result = runCatching { iptvRepository.getChannels() }.getOrDefault(emptyList())
     val reordered = iptvProbeStore?.let { store ->
@@ -453,11 +457,12 @@ fun LivePlayerScreen(
         val isStall =
           player.playWhenReady &&
             currentPositionMs == stallBaselinePositionMs &&
-            if (request.isIptv) {
+            if (request.isIptvChannel) {
               player.playbackState == Player.STATE_BUFFERING ||
                 player.playbackState == Player.STATE_ENDED ||
                 (player.playbackState == Player.STATE_READY && !player.isPlaying)
             } else {
+              // TVBox 点播维持 BUFFERING-only 语义:ENDED=影片播完合法终态,READY 未播=用户暂停。
               player.playbackState == Player.STATE_BUFFERING
             }
         if (isStall) {
@@ -687,6 +692,7 @@ fun LivePlayerScreen(
             when {
               isIptvTv && showChannelPanel -> { moveChannelFocus(-1); true } // 面板打开:上移焦点
               isIptvTv -> { switchSource(-1); true } // 面板关闭:上键上一个线路
+              isTvboxTv -> { switchSource(-1); true } // 影视库:上键上一线路(无频道面板)
               showQualityPanel -> { changeQualityFocus(-1); true }
               else -> { showControls(); true }
             }
@@ -695,6 +701,7 @@ fun LivePlayerScreen(
             when {
               isIptvTv && showChannelPanel -> { moveChannelFocus(1); true } // 面板打开:下移焦点
               isIptvTv -> { switchSource(1); true } // 面板关闭:下键下一个线路
+              isTvboxTv -> { switchSource(1); true } // 影视库:下键下一线路(无频道面板)
               showQualityPanel -> { changeQualityFocus(1); true }
               controlsVisible -> { controlsVisible = false; true }
               else -> { showControls(); true }

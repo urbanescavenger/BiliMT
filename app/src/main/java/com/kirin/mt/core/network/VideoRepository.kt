@@ -47,6 +47,7 @@ class VideoRepository(
   private val youtubeRepository: YoutubeRepository,
   private val youtubeChannelStore: YoutubeChannelStore,
   private val progressStore: PlaybackProgressStore,
+  private val tvboxRepository: TvboxRepository,
 ) {
   private val spaceVideoRepository = SpaceVideoRepository(
     apiClient = apiClient,
@@ -324,6 +325,14 @@ class VideoRepository(
       items = feed.items.map(youtubeRepository::toVideoSummary).withLocalProgress(),
       continuation = feed.continuation,
     )
+  }
+
+  /**
+   * TVBox(影视库)聚合搜索:内置 MacCMS 采集站白名单全站扇出,同名同年份跨站合并=多线路。
+   * 无排序/无翻页(单发全量),见 [TvboxRepository]。
+   */
+  suspend fun tvboxSearch(keyword: String): List<VideoSummary> {
+    return tvboxRepository.search(keyword)
   }
 
   suspend fun youtubeSubscriptionsFeed(

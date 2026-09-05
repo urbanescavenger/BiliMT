@@ -46,6 +46,7 @@ import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.ui.i18n.LocalChineseTextConverter
 import com.kirin.mt.ui.i18n.localizedContext
 import com.kirin.mt.core.model.SourceIptv
+import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
@@ -182,9 +183,9 @@ fun BiliMobileApp(
   val scope = rememberCoroutineScope()
 
   // 卡片长按:B站/YouTube 弹操作菜单(下载/加入播放列表),不再直接 toggle。
-  // IPTV 直播卡除外:直播无下载、加播放列表无意义。
+  // IPTV 直播卡除外:直播无下载、加播放列表无意义。TVBox 点播卡同免(spike 无下载)。
   val onLongPress: (VideoSummary) -> Unit = { video ->
-    if (video.source != SourceIptv) {
+    if (video.source != SourceIptv && video.source != SourceTvbox) {
       longPressVideo = video
       showPlaylistPicker = false
       showDownloadDialog = false
@@ -193,7 +194,11 @@ fun BiliMobileApp(
 
   // 打开 UP 主页:按来源分流——YouTube 带 channelId 进频道主页,否则 B 站空间。
   // 卡片身份数据缺失(首页/动态特殊卡无 owner、搜索 YouTube 无 channelId)时,点击按需解析补齐。
+  // 影视库(TVBox)卡「UP主」位是线路条数,无空间页可进,忽略。
   fun openOwner(video: VideoSummary) {
+    if (video.source == SourceTvbox) {
+      return
+    }
     if (video.source == SourceYoutube) {
       if (video.channelId.isNotBlank()) {
         youtubeChannelRequest = YoutubeChannel(video.channelId, video.ownerName)

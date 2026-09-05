@@ -532,6 +532,7 @@
     <string name="settings_update_status_downloaded">Descarga completada; puedes tocar para instalar.</string>
     <string name="search_source_bili">Bilibili</string>
     <string name="search_source_youtube">YouTube</string>
+    <string name="search_source_tvbox">TVBox</string>
     <string name="home_section_youtube_trending">YouTube en tendencia</string>
     <string name="feed_tab_youtube">Seguidos de YouTube</string>
     <string name="feed_tab_playlist">Lista de reproducción</string>

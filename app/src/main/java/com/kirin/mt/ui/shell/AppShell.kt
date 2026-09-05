@@ -73,6 +73,7 @@ import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.SourceIptv
+import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.settings.AppPerformancePolicy
 import com.kirin.mt.core.settings.AppSettings
@@ -587,15 +588,15 @@ fun BiliTvApp(
   }
 
   fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false): PlaybackRequest {
-    // IPTV 卡片:直链 m3u8,走直播播放器(LivePlayerScreen)的 IPTV 分支,带镜像源列表。
-    if (source == SourceIptv) {
+    // IPTV/TVBox 卡片:直链 m3u8,走直播播放器(LivePlayerScreen)的直链分支,带镜像源/线路列表。
+    if (source == SourceIptv || source == SourceTvbox) {
       return PlaybackRequest(
         bvid = "",
         cid = 0L,
         title = title,
         ownerName = ownerName,
         coverUrl = pic,
-        source = SourceIptv,
+        source = source,
         iptvUrls = iptvUrls,
       )
     }
@@ -1308,7 +1309,10 @@ fun BiliTvApp(
                     playbackRequest = video.toPlaybackRequest()
                   },
                   onOwnerSelected = { video ->
-                    if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
+                    // 影视库(TVBox)卡「UP主」位是线路条数,无空间页可进,忽略。
+                    if (video.source == SourceTvbox) {
+                      // no-op
+                    } else if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
                       youtubeChannelUiState.reset()
                       channelOrigin = SpaceOrigin.Content
                       channelPlaybackBehind = false

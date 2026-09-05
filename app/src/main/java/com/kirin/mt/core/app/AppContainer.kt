@@ -19,6 +19,7 @@ import com.kirin.mt.core.network.BiliHttpClientFactory
 import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.core.network.SpaceHttpSupport
+import com.kirin.mt.core.network.TvboxRepository
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.youtube.InnerTubeClient
 import com.kirin.mt.core.youtube.YoutubeBotGuard
@@ -150,6 +151,7 @@ class AppContainer(context: Context) {
   )
   // 播放进度本地存储:VideoRepository 用它给普通卡片合入观看进度条,PlaybackRepository 用它续播。
   val playbackProgressStore: PlaybackProgressStore = PlaybackProgressStore(appContext)
+  val tvboxRepository: TvboxRepository = TvboxRepository()
   val videoRepository: VideoRepository = VideoRepository(
     apiClient = apiClient,
     wbiKeyRepository = wbiKeyRepository,
@@ -158,6 +160,7 @@ class AppContainer(context: Context) {
     youtubeRepository = youtubeRepository,
     youtubeChannelStore = youtubeChannelStore,
     progressStore = playbackProgressStore,
+    tvboxRepository = tvboxRepository,
   )
   val liveRepository: LiveRepository = LiveRepository(
     apiClient = apiClient,

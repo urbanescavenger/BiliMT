@@ -33,11 +33,11 @@ data class VideoSummary(
   val likeCount: Int = 0,
   val commentCount: Int = 0,
   val forwardCount: Int = 0,
-  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube] / [SourceIptv]。YouTube 卡片 bvid 字段承载 videoId。 */
+  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube] / [SourceIptv] / [SourceTvbox]。YouTube 卡片 bvid 字段承载 videoId。 */
   val source: String = SourceBili,
   /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 卡片填充，用于进 UP 主页；B 站卡片为空串。 */
   val channelId: String = "",
-  /** IPTV 频道镜像源 URL 列表（仅 [SourceIptv] 卡片填充）。同名频道合并成一个直播间，播放器里可切换源。 */
+  /** IPTV 频道镜像源 URL 列表（仅 [SourceIptv]/[SourceTvbox] 卡片填充）。同名频道合并成一个直播间，播放器里可切换源；TVBox 卡为跨站多线路。 */
   val iptvUrls: List<String> = emptyList(),
 )
 
@@ -47,3 +47,5 @@ const val ProgressUnset = -1
 const val SourceBili = "bili"
 const val SourceYoutube = "youtube"
 const val SourceIptv = "iptv"
+/** TVBox(影视库)源:P11-77 spike,内置 MacCMS 采集站聚合搜索,直链 m3u8 复用 IPTV 播放路径。 */
+const val SourceTvbox = "tvbox"

@@ -61,6 +61,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.image.BiliImageSizing
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
@@ -125,12 +126,16 @@ private val YoutubeSearchSortOptions = listOf(
   SearchSortOption(YoutubeSearchParams.Rating, R.string.search_sort_rating),
 )
 
-/** 按来源返回排序选项(两源都有一套,对齐 B站 4 项)。 */
+/** 按来源返回排序选项(B站/YouTube 各一套;影视库(TVBox)无排序,空集=隐藏排序 chip)。 */
 private fun sortOptionsFor(source: String): List<SearchSortOption> =
-  if (source == SourceYoutube) YoutubeSearchSortOptions else BiliSearchSortOptions
+  when {
+    source == SourceTvbox -> emptyList()
+    source == SourceYoutube -> YoutubeSearchSortOptions
+    else -> BiliSearchSortOptions
+  }
 
-/** 各来源默认排序(综合)的 key,切换来源时用于重置选中项。 */
-private fun defaultOrderKey(source: String): String = sortOptionsFor(source).first().key
+/** 各来源默认排序(综合)的 key,切换来源时用于重置选中项;影视库 无排序,空 key。 */
+private fun defaultOrderKey(source: String): String = sortOptionsFor(source).firstOrNull()?.key.orEmpty()
 
 @Stable
 private class MobileSearchUiState {
@@ -206,7 +211,17 @@ fun MobileSearchScreen(
     uiState.resultState = SearchResultState.Loading
     searchJob = scope.launch {
       val state = try {
-        if (uiState.searchType == SearchTypeUser) {
+        if (uiState.source == SourceTvbox) {
+          // 影视库:聚合搜索单发全量,无排序/无翻页;类型/排序 chip 均隐藏。
+          val videos = videoRepository.tvboxSearch(keyword = query)
+          if (videos.isEmpty()) SearchResultState.Empty
+          else SearchResultState.Success(
+            videos = videos,
+            nextPage = FirstPage + 1,
+            loadingMore = false,
+            endReached = true,
+          )
+        } else if (uiState.searchType == SearchTypeUser) {
           // UP主/频道搜索:无排序,忽略 order。
           if (uiState.source == SourceYoutube) {
             val page = videoRepository.youtubeSearchChannels(query = query)
@@ -340,9 +355,13 @@ fun MobileSearchScreen(
     }
   }
 
-  // 输入态下随输入防抖拉联想;提交态不拉。
+  // 输入态下随输入防抖拉联想;提交态不拉。影视库(TVBox)无联想(联想是 B站 sug 接口),恒空。
   LaunchedEffect(uiState.query, uiState.submittedQuery) {
     if (uiState.submittedQuery != null) return@LaunchedEffect
+    if (uiState.source == SourceTvbox) {
+      uiState.suggestions = emptyList()
+      return@LaunchedEffect
+    }
     val q = uiState.query.trim()
     if (q.isEmpty()) {
       uiState.suggestions = emptyList()
@@ -391,6 +410,7 @@ fun MobileSearchScreen(
       listOf(
         SourceBili to stringResource(R.string.search_source_bili),
         SourceYoutube to stringResource(R.string.search_source_youtube),
+        SourceTvbox to stringResource(R.string.search_source_tvbox),
       ).forEach { (value, label) ->
         FilterChip(
           selected = uiState.source == value,
@@ -456,7 +476,7 @@ fun MobileSearchScreen(
     } else {
       // 结果态:排序 chip(仅视频类型,B站/YouTube 各一套) + 类型单开关按钮(恒标「UP主/频道」,默认视频不占位;
       // 选中=UP主搜索,再点切回视频)。「视频」chip 已按用户要求去掉——默认即视频,不会有误解。
-      // UP主/频道 类型时排序隐藏,只剩该类型按钮。
+      // UP主/频道 类型时排序隐藏,只剩该类型按钮。影视库(TVBox)源排序/类型按钮全隐藏(无排序/无 UP主)。
       val userTypeLabel = stringResource(
         if (uiState.source == SourceYoutube) R.string.search_type_user_youtube else R.string.search_type_user_bili
       )
@@ -474,15 +494,17 @@ fun MobileSearchScreen(
             )
           }
         }
-        FilterChip(
-          selected = uiState.searchType == SearchTypeUser,
-          onClick = {
-            uiState.selectType(
-              if (uiState.searchType == SearchTypeUser) SearchTypeVideo else SearchTypeUser
-            )
-          },
-          label = { Text(userTypeLabel) },
-        )
+        if (uiState.source != SourceTvbox) {
+          FilterChip(
+            selected = uiState.searchType == SearchTypeUser,
+            onClick = {
+              uiState.selectType(
+                if (uiState.searchType == SearchTypeUser) SearchTypeVideo else SearchTypeUser
+              )
+            },
+            label = { Text(userTypeLabel) },
+          )
+        }
       }
 
       Box(modifier = Modifier.fillMaxSize()) {

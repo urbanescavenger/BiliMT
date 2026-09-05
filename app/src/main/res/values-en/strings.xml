@@ -533,6 +533,7 @@
     <string name="settings_update_status_downloaded">Download complete. Tap to install.</string>
     <string name="search_source_bili">Bilibili</string>
     <string name="search_source_youtube">YouTube</string>
+    <string name="search_source_tvbox">TVBox</string>
     <string name="home_section_youtube_trending">YouTube trending</string>
     <string name="feed_tab_youtube">YouTube follows</string>
     <string name="feed_tab_playlist">Playlists</string>

@@ -61,6 +61,7 @@ import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.image.buildExternalImageRequest
 import com.kirin.mt.core.image.buildVideoThumbnailRequest
 import com.kirin.mt.core.model.SourceIptv
+import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoCardRelativeText
 import com.kirin.mt.core.model.VideoSummary
@@ -579,8 +580,8 @@ private fun VideoCover(
         )
         .crossfade(false)
         .build()
-    } else if (video.source == SourceIptv) {
-      // IPTV 台标(tvg-logo):外部图源裸请求,不拼 B 站 CDN 后缀、不加 B 站 Referer(同 YouTube 处理),
+    } else if (video.source == SourceIptv || video.source == SourceTvbox) {
+      // IPTV 台标(tvg-logo)/TVBox 采集站封面:外部图源裸请求,不拼 B 站 CDN 后缀、不加 B 站 Referer(同 YouTube 处理),
       // 否则 `@480w_270h_1c.webp` 后缀破坏台标 URL、B 站 Referer 被第三方图源防盗链拒绝 → 纯色占位。
       buildExternalImageRequest(
         context = context,
