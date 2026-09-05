@@ -677,7 +677,11 @@ fun PlayerScreen(
       }?.takeIf { it >= 0 } ?: 0
       PlayerPanel.Speed -> PlayerSpeedOptions.indexOf(playbackSpeed).takeIf { it >= 0 } ?: 2
       PlayerPanel.Episodes -> metadata?.pages
-        ?.indexOfFirst { episode -> episode.cid == displayRequest.cid }
+        ?.indexOfFirst { episode ->
+          // 影视库选集按集索引高亮(cid 恒 0 无从比对);B站/PGC 按 cid 匹配。
+          if (displayRequest.isTvbox) episode.page == displayRequest.tvboxEpisodeIndex
+          else episode.cid == displayRequest.cid
+        }
         ?.takeIf { it >= 0 } ?: 0
       else -> 0
     }
@@ -1207,15 +1211,26 @@ fun PlayerScreen(
         val episode = metadata?.pages?.getOrNull(focusedPanelIndex) ?: return
         coroutineScope.launch {
           saveAndReportProgressNow()
-          val nextRequest = displayRequest.copy(
-            cid = episode.cid,
-            epId = episode.epId,
-            startPositionMs = 0L,
-            preferredQualityId = selectedQuality?.id,
-            forceStartPosition = true,
-            historyPage = episode.page,
-          )
-          startPlaybackRequest(nextRequest, clearMetadata = false)
+          if (displayRequest.isTvbox) {
+            // 影视库选集:同线路内切集(episode.page=选集索引),进度归零重播;线路档不变。
+            val nextRequest = displayRequest.copy(
+              tvboxEpisodeIndex = episode.page,
+              startPositionMs = 0L,
+              preferredQualityId = selectedQuality?.id,
+              forceStartPosition = true,
+            )
+            startPlaybackRequest(nextRequest, clearMetadata = false)
+          } else {
+            val nextRequest = displayRequest.copy(
+              cid = episode.cid,
+              epId = episode.epId,
+              startPositionMs = 0L,
+              preferredQualityId = selectedQuality?.id,
+              forceStartPosition = true,
+              historyPage = episode.page,
+            )
+            startPlaybackRequest(nextRequest, clearMetadata = false)
+          }
         }
         return
       }
@@ -1584,11 +1599,11 @@ fun PlayerScreen(
     launchStep = "metadata"
     Log.i(PlayerPlaybackLogTag, "launch step: metadata (pgc=${activeRequest.isPgc} youtube=${activeRequest.isYoutube})")
     // YouTube/TVBox 无 B 站 view/metadata/分P，跳过 B 站专属的元数据、历史续播和 cid 解析,cid 恒为 0。
-    // TVBox 点播:线路表在 request.iptvUrls,元数据/分P/B站 cid 解析全跳过(对齐 YouTube 路径)。
+    // TVBox 点播:合成元数据(分P=当前线路分集)供选集面板/自动连播;B站 cid 解析/互动同步全跳过。
     val isYoutube = activeRequest.isYoutube
     val skipBiliMetadata = isYoutube || activeRequest.isTvbox
     val videoMetadata = if (skipBiliMetadata) {
-      null
+      if (activeRequest.isTvbox) tvboxSyntheticMetadata(activeRequest) else null
     } else {
       val existingMetadata = metadata
       if (existingMetadata != null && existingMetadata.bvid == activeRequest.bvid) {
@@ -2829,6 +2844,27 @@ private fun PlaybackVideoMetadata?.hasEpisodeCid(cid: Long): Boolean {
   if (cid <= 0L) return false
   val pages = this?.pages.orEmpty()
   return pages.isEmpty() || pages.any { episode -> episode.cid == cid }
+}
+
+/** TVBox(影视库)合成元数据:分P=当前线路分集(选集面板/自动连播数据源);无线路/无分集为 null。 */
+internal fun tvboxSyntheticMetadata(request: PlaybackRequest): PlaybackVideoMetadata? {
+  val line = request.tvboxCurrentLine ?: return null
+  if (line.episodes.isEmpty()) return null
+  return PlaybackVideoMetadata(
+    aid = 0L,
+    bvid = request.bvid,
+    cid = 0L,
+    title = request.title,
+    ownerName = request.ownerName,
+    ownerFace = "",
+    ownerMid = 0L,
+    viewCount = 0,
+    danmakuCount = 0,
+    pubdate = 0L,
+    pages = line.episodes.mapIndexed { index, episode ->
+      PlaybackEpisode(cid = 0L, page = index, title = episode.title, durationSeconds = 0)
+    },
+  )
 }
 
 internal fun PlaybackRequest.withResolvedMetadata(

@@ -174,6 +174,7 @@ import com.kirin.mt.ui.player.PlayerDanmakuLayer
 import com.kirin.mt.ui.player.appendSabrStartMs
 import com.kirin.mt.ui.player.buildDashMediaItem
 import com.kirin.mt.ui.player.hasRemoteManifest
+import com.kirin.mt.ui.player.tvboxSyntheticMetadata
 import com.kirin.mt.ui.player.isHlsManifest
 import com.kirin.mt.ui.player.isSabrDash
 import com.kirin.mt.ui.player.isSabrProgressive
@@ -739,7 +740,10 @@ fun MobilePlayerScreen(
       // TVBox 点播:线路表在 request.iptvUrls,元数据/分P/B站 cid 解析全跳过(对齐 YouTube 路径)。
       val isYoutube = request.isYoutube
       val skipBiliMetadata = isYoutube || request.isTvbox
-      val videoMetadata = if (skipBiliMetadata) null else runCatching { playbackRepository.getVideoMetadata(request) }.getOrNull()
+      // TVBox:合成元数据(分P=当前线路分集)供选集列表/自动连播;B站 metadata 不拉。
+      val videoMetadata = if (skipBiliMetadata) {
+        if (request.isTvbox) tvboxSyntheticMetadata(request) else null
+      } else runCatching { playbackRepository.getVideoMetadata(request) }.getOrNull()
       metadata = videoMetadata
       // YouTube 简介 Tab 单独拉 /player videoDetails（view/metadata 走 B 站，YouTube 无）。
       youtubeDetailLoading = isYoutube
@@ -1993,14 +1997,24 @@ fun MobilePlayerScreen(
           onShare = { shareVideo() },
           onSelectPage = { ep ->
             scope.launch {
-              loadRequest(activeRequest.copy(
-                cid = ep.cid,
-                epId = ep.epId,
-                startPositionMs = 0L,
-                preferredQualityId = selectedQualityId,
-                forceStartPosition = true,
-                historyPage = ep.page,
-              ))
+              if (activeRequest.isTvbox) {
+                // 影视库选集:同线路内切集(page=选集索引),进度归零;线路档不变。
+                loadRequest(activeRequest.copy(
+                  tvboxEpisodeIndex = ep.page,
+                  startPositionMs = 0L,
+                  preferredQualityId = selectedQualityId,
+                  forceStartPosition = true,
+                ))
+              } else {
+                loadRequest(activeRequest.copy(
+                  cid = ep.cid,
+                  epId = ep.epId,
+                  startPositionMs = 0L,
+                  preferredQualityId = selectedQualityId,
+                  forceStartPosition = true,
+                  historyPage = ep.page,
+                ))
+              }
             }
           },
           modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars),
@@ -2026,14 +2040,24 @@ fun MobilePlayerScreen(
       onShare = { shareVideo() },
       onSelectPage = { ep ->
         scope.launch {
-          loadRequest(activeRequest.copy(
-            cid = ep.cid,
-            epId = ep.epId,
-            startPositionMs = 0L,
-            preferredQualityId = selectedQualityId,
-            forceStartPosition = true,
-            historyPage = ep.page,
-          ))
+          if (activeRequest.isTvbox) {
+            // 影视库选集:同线路内切集(page=选集索引),进度归零;线路档不变。
+            loadRequest(activeRequest.copy(
+              tvboxEpisodeIndex = ep.page,
+              startPositionMs = 0L,
+              preferredQualityId = selectedQualityId,
+              forceStartPosition = true,
+            ))
+          } else {
+            loadRequest(activeRequest.copy(
+              cid = ep.cid,
+              epId = ep.epId,
+              startPositionMs = 0L,
+              preferredQualityId = selectedQualityId,
+              forceStartPosition = true,
+              historyPage = ep.page,
+            ))
+          }
         }
       },
     )
@@ -2808,8 +2832,12 @@ private fun MobilePlayerIntroTab(
       if (metadata.pages.size > 1) {
         SectionTitle(stringResource(R.string.player_control_episodes))
         metadata.pages.forEach { ep ->
-          val selected = ep.cid == request.cid ||
-            (ep.epId > 0L && ep.epId == request.epId)
+          val selected = if (request.isTvbox) {
+            // 影视库:分P 页号=选集索引,cid 恒 0 无从比对。
+            ep.page == request.tvboxEpisodeIndex
+          } else {
+            ep.cid == request.cid || (ep.epId > 0L && ep.epId == request.epId)
+          }
           TextButton(
             onClick = { onSelectPage(ep) },
             modifier = Modifier.fillMaxWidth(),

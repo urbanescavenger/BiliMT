@@ -1,6 +1,8 @@
 package com.kirin.mt.core.network
 
 import com.kirin.mt.core.model.SourceTvbox
+import com.kirin.mt.core.model.TvboxEpisode
+import com.kirin.mt.core.model.TvboxLine
 import com.kirin.mt.core.model.VideoSummary
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -123,23 +125,6 @@ class TvboxRepository {
       }
     }
 
-  /**
-   * 播放地址:优先取**直链 m3u8** 播放组的第一集(`$$$` 分隔多源组,`#` 分集,`集名$URL`)。
-   * 采集站的播放组常混装两种形态:直链 `…/xxx/index.m3u8`(量子第二组/暴风等)与
-   * **share/play HTML 页**(非凡 `/share/<hash>`、量子第一组 `/share/<hash>`、极速 `/play/<id>`)。
-   * HTML 页直接喂 HLS 解析器必死(tracks=0,stall 轮空,2026-09-06 真机 logs_live 实锤),
-   * 故选组时直链组优先;全无直链组才回落 share/play 页(播放时经 [resolveLineUrl] 解析)。
-   */
-  private fun firstEpisodeUrl(vod: TvboxVod): String? {
-    val groups = vod.vod_play_url.split("$$$")
-    val episodeUrls = groups.map { group ->
-      val firstEpisode = group.split("#").firstOrNull().orEmpty()
-      firstEpisode.substringAfter('$', "").trim()
-    }.filter { it.startsWith("http") }
-    return episodeUrls.firstOrNull { it.substringBefore('?').endsWith(".m3u8") }
-      ?: episodeUrls.firstOrNull()
-  }
-
   /** 合并键:去空白小写片名 + 年份,同名同年份跨站视为同一部(多线路)。 */
   private fun mergeKey(vod: TvboxVod): String =
     "${vod.vod_name.replace(WHITESPACE_REGEX, "").lowercase()}|${vod.vod_year.trim()}"
@@ -151,12 +136,15 @@ class TvboxRepository {
     }
     return groups.values.take(MaxMergedResults).map { members ->
       val first = members.first()
+      // 每站一条线路 = 完整分集列表(选集在线路内换 index;线路=清晰度面板档位)。
+      val lines = members.map { TvboxLine(name = it.site.name, episodes = parseEpisodeList(it.vod)) }
+        .filter { it.episodes.isNotEmpty() }
       VideoSummary(
         bvid = "tvbox:${mergeKey(first.vod)}",
         title = first.vod.vod_name,
         pic = members.firstNotNullOfOrNull { it.vod.vod_pic.takeIf(String::isNotBlank) } ?: "",
         // 「UP主」位显示线路信息:单站显示站名,多站显示条数(站点明细进播放器「线路」面板)。
-        ownerName = if (members.size == 1) first.site.name else "${members.size} 条线路",
+        ownerName = if (members.size == 1) first.site.name else "${lines.size} 条线路",
         ownerFace = "",
         ownerMid = 0L,
         view = 0,
@@ -165,16 +153,39 @@ class TvboxRepository {
         pubdate = 0L,
         badge = members.firstNotNullOfOrNull { it.vod.vod_remarks.takeIf(String::isNotBlank) } ?: "",
         source = SourceTvbox,
-        // 每站第 1 集 URL = 多线路(播放器按 selectedQn 索引切换,IPTV 同机制)。
-        // spike 局限:剧集只能看第 1 集;选集列表留待后续阶段。
-        iptvUrls = members.mapNotNull { firstEpisodeUrl(it.vod) }.distinct(),
+        tvboxLines = lines,
       )
     }
+  }
+
+  /**
+   * 全分集解析:取一个播放组(`$$$` 分隔多源组,直链 m3u8 组优先——share/play 页组混着会
+   * 把同一批集解析成两份),`#` 分集、`集名$URL` 逐条提取。空集名回落「正片」(电影组常无标题)。
+   */
+  private fun parseEpisodeList(vod: TvboxVod): List<TvboxEpisode> {
+    val groups = vod.vod_play_url.split("$$$")
+      .map { group ->
+        group.split("#").mapNotNull { segment ->
+          val title = segment.substringBefore('$', "").trim()
+          val url = segment.substringAfter('$', "").trim()
+          if (url.startsWith("http")) {
+            TvboxEpisode(title = title.ifBlank { "正片" }, url = url)
+          } else {
+            null
+          }
+        }
+      }
+      .filter { it.isNotEmpty() }
+    return (groups.firstOrNull { parsed -> parsed.any { it.url.substringBefore('?').endsWith(".m3u8") } }
+      ?: groups.firstOrNull())
+      .orEmpty()
+      .take(MaxEpisodesPerLine)
   }
 
   private companion object {
     val WHITESPACE_REGEX = Regex("\\s+")
     const val MaxMergedResults = 60
+    const val MaxEpisodesPerLine = 500
     /** share/play 页内嵌播放地址:非凡 `const url = "…index.m3u8?sign=…"`;其余站点兜底取页内首个 m3u8。 */
     val CONST_URL_REGEX = Regex("""const url\s*=\s*"([^"]+)"""")
     val M3U8_URL_REGEX = Regex("""https?://[^"'\s<>]+\.m3u8[^"'\s<>]*""")

@@ -4,6 +4,7 @@ import com.kirin.mt.core.model.SourceBili
 import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
+import com.kirin.mt.core.model.TvboxLine
 import com.kirin.mt.core.youtube.InnerTubeClient
 
 data class PlaybackRequest(
@@ -38,6 +39,10 @@ data class PlaybackRequest(
   val source: String = SourceBili,
   /** IPTV 频道镜像源/TVBox 跨站线路 URL 列表（仅 [SourceIptv]/[SourceTvbox] 请求填充）。播放器里按 selectedQn 当源索引切换。 */
   val iptvUrls: List<String> = emptyList(),
+  /** TVBox 线路表（仅 [SourceTvbox] 请求填充）：每线路=一个采集站+完整分集。清晰度面板=线路列表([preferredQualityId]=线路索引)。 */
+  val tvboxLines: List<TvboxLine> = emptyList(),
+  /** TVBox 当前选集索引（当前线路内；选集面板/自动连播切集用）。 */
+  val tvboxEpisodeIndex: Int = 0,
   /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 请求填充，用于播放历史进频道主页；B 站为空串。 */
   val channelId: String = "",
   /**
@@ -61,9 +66,14 @@ data class PlaybackRequest(
   val isIptvChannel: Boolean
     get() = source == SourceIptv
 
-  /** 这是 TVBox（影视库）点播请求：MacCMS 采集站直链 m3u8，spike 阶段无选集（各线路第 1 集）。 */
+  /** 这是 TVBox（影视库）点播请求：MacCMS 采集站直链/懒解析 m3u8,线路=清晰度档,线路内可切集。 */
   val isTvbox: Boolean
     get() = source == SourceTvbox
+
+  /** TVBox 当前线路(线路索引=preferredQualityId);非 TVBox 或无线路表为 null。 */
+  val tvboxCurrentLine: TvboxLine?
+    get() = if (tvboxLines.isEmpty()) null
+    else tvboxLines.getOrNull((preferredQualityId ?: 0).coerceIn(0, tvboxLines.lastIndex))
 
   /** 这是 YouTube 播放请求：走 InnerTube /player 解析 progressive 直链，跳过 B 站 DASH playurl。 */
   val isYoutube: Boolean

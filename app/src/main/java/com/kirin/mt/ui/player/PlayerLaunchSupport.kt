@@ -14,16 +14,28 @@ import com.kirin.mt.core.player.PlaybackRequest
  * 镜像 AppShell.kt 内的同名逻辑(后者为 BiliTvApp 局部函数,这里提供模块级 internal 版本)。
  */
 internal fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false): PlaybackRequest {
-  // IPTV/TVBox 卡片:直链 m3u8,走直播播放器(LivePlayerScreen)的直链分支,带镜像源/线路列表。
-  if (source == SourceIptv || source == SourceTvbox) {
+  // IPTV 卡片:直链 m3u8,走直播播放器(LivePlayerScreen)的 IPTV 分支,带镜像源列表。
+  if (source == SourceIptv) {
     return PlaybackRequest(
       bvid = "",
       cid = 0L,
       title = title,
       ownerName = ownerName,
       coverUrl = pic,
-      source = source,
+      source = SourceIptv,
       iptvUrls = iptvUrls,
+    )
+  }
+  // TVBox(影视库)卡片:点播,VOD 播放器(PlayerScreen),线路表带每站完整分集(选集在线路内)。
+  if (source == SourceTvbox) {
+    return PlaybackRequest(
+      bvid = "",
+      cid = 0L,
+      title = title,
+      ownerName = ownerName,
+      coverUrl = pic,
+      source = SourceTvbox,
+      tvboxLines = tvboxLines,
     )
   }
   // 直播卡片:走直播播放(独立 LivePlayerScreen),不带点播字段。

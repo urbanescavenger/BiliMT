@@ -39,6 +39,24 @@ data class VideoSummary(
   val channelId: String = "",
   /** IPTV 频道镜像源 URL 列表（仅 [SourceIptv]/[SourceTvbox] 卡片填充）。同名频道合并成一个直播间，播放器里可切换源；TVBox 卡为跨站多线路。 */
   val iptvUrls: List<String> = emptyList(),
+  /** TVBox(影视库)线路表（仅 [SourceTvbox] 卡片填充）：每线路=一个采集站的完整分集列表。选集在线路内换 index。 */
+  val tvboxLines: List<TvboxLine> = emptyList(),
+)
+
+/** TVBox(影视库)线路：一个采集站 + 其分集列表(线路=清晰度面板档位,选集=线路内换 index)。 */
+@Serializable
+data class TvboxLine(
+  /** 站点名(线路面板显示,如「极速资源」)。 */
+  val name: String,
+  /** 分集列表(播放页标题 + 可解析 URL;share/play 页 URL 播放时经 TvboxRepository.resolveLineUrl 解析)。 */
+  val episodes: List<TvboxEpisode> = emptyList(),
+)
+
+/** TVBox(影视库)一集:播放页标题 + 可解析 URL。 */
+@Serializable
+data class TvboxEpisode(
+  val title: String,
+  val url: String,
 )
 
 const val ProgressUnset = -1
