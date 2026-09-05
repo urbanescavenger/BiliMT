@@ -1346,23 +1346,40 @@ internal object YoutubeParsers {
     return nowSec - seconds
   }
 
-  /** 英文 "5 weeks ago" / 中文及繁体 "5 週前"/"3 小时前"/"1 个月前"。 */
-  private fun parseRelative(lower: String): Pair<Long, String>? {
-    Regex("""(\d+)\s+([a-z]+)""").find(lower)?.let { m ->
-      val amount = m.groupValues[1].toLongOrNull() ?: return null
-      return amount to m.groupValues[2]
-    }
-    // 中文/繁体单位，统一映射成英文单位供 parsePublished 换算。
-    val zh = Regex("""(\d+)\s*([秒分時时天周週月年]+)前""").find(lower) ?: return null
-    val amount = zh.groupValues[1].toLongOrNull() ?: return null
-    val unit = when (zh.groupValues[2]) {
-      "秒" -> "second"
-      "分" -> "minute"
-      "時", "时" -> "hour"
-      "天" -> "day"
-      "周", "週" -> "week"
-      "月" -> "month"
-      "年" -> "year"
+  /**
+   * 相对时间解析,覆盖 [YoutubeContentRegion] 全部 hl(en/ja/zh-Hans/zh-Hant/ko/de):
+   * en "5 weeks ago" / 简繁 "5 週前"/"3 小时前"/"1 个月前" / ja "3時間前"/"1か月前" /
+   * ko "3분 전"/"3시간 전" / de "vor 2 Tagen"。
+   *
+   * 旧实现只认 `(\d+)\s*([秒分時时天周週月年]+)前`,zh-Hant 的 小時/分鐘/個月、ja 的
+   * 時間/か月、ko/de 全系全解析失败 → publishedAt=null → 动态页 pubdate 回落当前时间,
+   * 整页「1 分钟前」+ 排序全乱(真机 2026-09-05 日志实锤:HK 节点「3 個月前」「14 小時前」
+   * 全 null,「1 年前」「2 週前」正常)。改为:提取「数字 + 其后非数字片段」,再按单位
+   * 关键词归一到英文单位,contains 匹配对语言后缀(週間/Tagen/전等)天然免疫。
+   */
+  private fun parseRelative(text: String): Pair<Long, String>? {
+    val m = Regex("""(\d+)\s*([^\d]+)""").find(text) ?: return null
+    val amount = m.groupValues[1].toLongOrNull() ?: return null
+    val blob = m.groupValues[2].lowercase()
+    val unit = when {
+      // second:en second(s) / 简繁 秒 / de Sekunde(n) / ko 초
+      "second" in blob || "秒" in blob || "sekund" in blob || "초" in blob -> "second"
+      // hour:en hour / 简繁 小时·小時 / ja 時間 / ko 시간 / de Stunde(n)
+      "hour" in blob || "小時" in blob || "小时" in blob || "時間" in blob ||
+        "时间" in blob || "시간" in blob || "stund" in blob -> "hour"
+      // minute:en minute(s)·min / 简繁 分钟·分鐘 / ja 分 / ko 분
+      "minut" in blob || "min" in blob || "分钟" in blob || "分鐘" in blob ||
+        "分" in blob || "분" in blob -> "minute"
+      // day:en day / 简繁 天 / ja 日 / ko 일 / de Tag(en)
+      "day" in blob || "天" in blob || "日" in blob || "일" in blob || "tag" in blob -> "day"
+      // week:en week / 简繁 周·週(含 週間) / ko 주(간) / de Woche(n)
+      "week" in blob || "周" in blob || "週" in blob || "주" in blob || "woch" in blob -> "week"
+      // month:en month / 简繁 个月·個月 / ja か月·ヶ月 / ko 개월 / de Monat(en)
+      "month" in blob || "個月" in blob || "个月" in blob || "か月" in blob ||
+        "ヶ月" in blob || "개월" in blob || "monat" in blob || "달" in blob ||
+        "月" in blob -> "month"
+      // year:en year / 简繁 年 / ko 년 / de Jahr(en)
+      "year" in blob || "年" in blob || "년" in blob || "jahr" in blob -> "year"
       else -> return null
     }
     return amount to unit
