@@ -1231,8 +1231,10 @@ fun MobilePlayerScreen(
     }
   }
 
-  // 空降助手:按 bvid 拉 SponsorBlock 段;切集/开关变化时重置四组状态(镜像 TV)
-  LaunchedEffect(airJumpAssistantEnabled, activeRequest.bvid, activeRequest.cid) {
+  // 空降助手:按 bvid 拉 SponsorBlock 段;开关/bvid 变化时重置四组状态(镜像 TV)。
+  // 键不放 cid:段按视频缓存,自动连播 cid 0→真实值两次赋值会让效果中途重启,
+  // 并发 fetch 互相覆盖(后者重置+被 scope-left 杀掉),整轮播放无段。
+  LaunchedEffect(airJumpAssistantEnabled, activeRequest.bvid) {
     airJumpSegments = emptyList()
     warnedAirJumpIds = emptySet()
     skippedAirJumpIds = emptySet()
@@ -1240,9 +1242,14 @@ fun MobilePlayerScreen(
     if (!airJumpAssistantEnabled || activeRequest.bvid.isBlank()) {
       return@LaunchedEffect
     }
-    airJumpSegments = runCatching {
-      playbackRepository.getAirJumpSegments(activeRequest.bvid)
+    val targetBvid = activeRequest.bvid
+    val segments = runCatching {
+      playbackRepository.getAirJumpSegments(targetBvid)
     }.getOrDefault(emptyList())
+    // 期间换了视频(本协程已被取消重启)就不落状态,别把新实例已拉到的段覆盖成空。
+    if (activeRequest.bvid == targetBvid) {
+      airJumpSegments = segments
+    }
   }
 
   // 相关视频:播放列表场景相关 = 播放列表后续(与自动连播 computeNextRequest 同源同序,不依赖在线接口成败);

@@ -1573,7 +1573,8 @@ fun PlayerScreen(
     playbackPaused = false
     currentCodecText = ""
     danmakuEntries = emptyList()
-    airJumpSegments = emptyList()
+    // airJumpSegments 不在此重置:同 bvid 重试/切码率时段仍有效,且 AirJump 效果(键=开关+bvid)
+    // 不会重启,清掉后整轮无段;重置责任全在 AirJump 效果,bvid 变化必然重启覆盖。
     warnedAirJumpIds = emptySet()
     skippedAirJumpIds = emptySet()
     lastAirJumpPositionMs = 0L
@@ -2081,7 +2082,11 @@ fun PlayerScreen(
     }
   }
 
-  LaunchedEffect(airJumpAssistantEnabled, displayRequest.bvid, displayRequest.cid) {
+  // 空降助手:按 bvid 拉 SponsorBlock 段。键只放 bvid 不放 cid——段按视频缓存,与 cid 无关;
+  // 之前键含 cid,自动连播换视频时 cid 经历 0→真实值两次赋值,效果中途重启出两个并发 fetch,
+  // 后者先重置 airJumpSegments、前者的成功赋值被覆盖,自己又被 scope-left 异常杀掉,
+  // 整轮播放段为空(真机 19:14:26.229 loaded=1 后 .249 scope-left,重进才 hit cache)。
+  LaunchedEffect(airJumpAssistantEnabled, displayRequest.bvid) {
     airJumpSegments = emptyList()
     warnedAirJumpIds = emptySet()
     skippedAirJumpIds = emptySet()
@@ -2089,9 +2094,14 @@ fun PlayerScreen(
     if (!airJumpAssistantEnabled || displayRequest.bvid.isBlank()) {
       return@LaunchedEffect
     }
-    airJumpSegments = runCatching {
-      playbackRepository.getAirJumpSegments(displayRequest.bvid)
+    val targetBvid = displayRequest.bvid
+    val segments = runCatching {
+      playbackRepository.getAirJumpSegments(targetBvid)
     }.getOrDefault(emptyList())
+    // 期间换了视频(本协程已被取消重启)就不落状态,别把新实例已拉到的段覆盖成空。
+    if (displayRequest.bvid == targetBvid) {
+      airJumpSegments = segments
+    }
   }
 
   LaunchedEffect(danmakuSettings.enabled, displayRequest.cid) {
