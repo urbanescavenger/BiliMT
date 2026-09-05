@@ -545,7 +545,7 @@ fun MobilePlayerScreen(
           )
         }
       }
-      if (!activeRequest.isYoutube) {
+      if (!activeRequest.isYoutube && !activeRequest.isTvbox) {
         val progressSeconds = progressSecondsOverride
           ?: (positionMs / 1000L).toInt()
         runCatching {
@@ -735,22 +735,24 @@ fun MobilePlayerScreen(
     activeRequest = request
     player.clearMediaItems()
     try {
-      // YouTube 无 B 站 view/metadata/cid，跳过 B 站元数据与 cid 解析。
+      // YouTube/TVBox 无 B 站 view/metadata/cid，跳过 B 站元数据与 cid 解析。
+      // TVBox 点播:线路表在 request.iptvUrls,元数据/分P/B站 cid 解析全跳过(对齐 YouTube 路径)。
       val isYoutube = request.isYoutube
-      val videoMetadata = if (isYoutube) null else runCatching { playbackRepository.getVideoMetadata(request) }.getOrNull()
+      val skipBiliMetadata = isYoutube || request.isTvbox
+      val videoMetadata = if (skipBiliMetadata) null else runCatching { playbackRepository.getVideoMetadata(request) }.getOrNull()
       metadata = videoMetadata
       // YouTube 简介 Tab 单独拉 /player videoDetails（view/metadata 走 B 站，YouTube 无）。
       youtubeDetailLoading = isYoutube
       youtubeDetail = if (isYoutube) runCatching { videoRepository.getYoutubeVideoDetail(request.bvid) }.getOrNull() else null
       youtubeDetailLoading = false
-      val cid = if (isYoutube) {
+      val cid = if (skipBiliMetadata) {
         0L
       } else {
         request.cid.takeIf { it > 0L }
           ?: videoMetadata?.cid?.takeIf { it > 0L }
           ?: playbackRepository.resolveCid(request.bvid)
       }
-      if (cid <= 0L && !isYoutube) {
+      if (cid <= 0L && !skipBiliMetadata) {
         playerState = MobilePlayerState.Failed(context.getString(R.string.player_error_missing_cid))
         return
       }

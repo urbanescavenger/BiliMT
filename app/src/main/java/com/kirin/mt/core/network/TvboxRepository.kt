@@ -10,9 +10,11 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -86,6 +88,9 @@ class TvboxRepository {
     coerceInputValues = true
   }
 
+  /** 线路解析缓存:原始 share/play URL → 可播 m3u8。切线路/失败重试不重复拉页。 */
+  private val resolveCache = ConcurrentHashMap<String, String>()
+
   /** 聚合搜索:全站扇出 → 合并。永不抛错(最差返回空列表,UI 落「无结果」)。 */
   suspend fun search(keyword: String): List<VideoSummary> = coroutineScope {
     val siteResults = TvboxBuiltInSites.map { site ->
@@ -118,12 +123,21 @@ class TvboxRepository {
       }
     }
 
-  /** 播放地址:取第一个播放组(`$$$` 分隔多源)的第一集(`#` 分隔,`集名$URL`)。 */
+  /**
+   * 播放地址:优先取**直链 m3u8** 播放组的第一集(`$$$` 分隔多源组,`#` 分集,`集名$URL`)。
+   * 采集站的播放组常混装两种形态:直链 `…/xxx/index.m3u8`(量子第二组/暴风等)与
+   * **share/play HTML 页**(非凡 `/share/<hash>`、量子第一组 `/share/<hash>`、极速 `/play/<id>`)。
+   * HTML 页直接喂 HLS 解析器必死(tracks=0,stall 轮空,2026-09-06 真机 logs_live 实锤),
+   * 故选组时直链组优先;全无直链组才回落 share/play 页(播放时经 [resolveLineUrl] 解析)。
+   */
   private fun firstEpisodeUrl(vod: TvboxVod): String? {
-    val firstGroup = vod.vod_play_url.split("$$$").firstOrNull().orEmpty()
-    val firstEpisode = firstGroup.split("#").firstOrNull().orEmpty()
-    val url = firstEpisode.substringAfter('$', "").trim()
-    return url.takeIf { it.startsWith("http") }
+    val groups = vod.vod_play_url.split("$$$")
+    val episodeUrls = groups.map { group ->
+      val firstEpisode = group.split("#").firstOrNull().orEmpty()
+      firstEpisode.substringAfter('$', "").trim()
+    }.filter { it.startsWith("http") }
+    return episodeUrls.firstOrNull { it.substringBefore('?').endsWith(".m3u8") }
+      ?: episodeUrls.firstOrNull()
   }
 
   /** 合并键:去空白小写片名 + 年份,同名同年份跨站视为同一部(多线路)。 */
@@ -161,5 +175,55 @@ class TvboxRepository {
   private companion object {
     val WHITESPACE_REGEX = Regex("\\s+")
     const val MaxMergedResults = 60
+    /** share/play 页内嵌播放地址:非凡 `const url = "…index.m3u8?sign=…"`;其余站点兜底取页内首个 m3u8。 */
+    val CONST_URL_REGEX = Regex("""const url\s*=\s*"([^"]+)"""")
+    val M3U8_URL_REGEX = Regex("""https?://[^"'\s<>]+\.m3u8[^"'\s<>]*""")
+    val RELATIVE_M3U8_REGEX = Regex("""["'](/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']""")
+  }
+
+  /**
+   * 把一条线路 URL 解析成可直接喂 [androidx.media3.exoplayer.hls.HlsMediaSource] 的 m3u8 地址。
+   * 直链 m3u8 原样返回;share/play HTML 页拉一次页面,按优先级提取:
+   * ①非凡 share 页内嵌 `const url = "…"`(相对路径相对页面 URL 解析);
+   * ②页内首个绝对 m3u8(极速 play 页含 `/play/<id>/index.m3u8`);
+   * ③页内首个相对 m3u8。解析结果按原始 URL 缓存(切线路/重试不重复拉页)。
+   * 失败返回 null(调用方按「该线路死」处理,顺延下一线路)。
+   */
+  suspend fun resolveLineUrl(rawUrl: String): String? {
+    if (rawUrl.substringBefore('?').endsWith(".m3u8")) return rawUrl
+    resolveCache[rawUrl]?.let { return it }
+    return withContext(Dispatchers.IO) {
+      try {
+        val pageUrl = rawUrl.toHttpUrlOrNull() ?: return@withContext null
+        val request = Request.Builder().url(pageUrl).build()
+        httpClient.newCall(request).execute().use { response ->
+          if (!response.isSuccessful) return@withContext null
+          val html = response.body?.string().orEmpty()
+          val extracted = extractM3u8(html)
+            ?: return@withContext null
+          val resolved = if (extracted.startsWith("http")) {
+            extracted
+          } else {
+            // 相对路径(非凡 `/20230218/…/index.m3u8?sign=…`):RFC 相对引用直接对页面 URL 解析,含查询串。
+            pageUrl.resolve(extracted)?.toString() ?: return@withContext null
+          }
+          resolveCache[rawUrl] = resolved
+          resolved
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        null
+      }
+    }
+  }
+
+  /** 页面 HTML → m3u8 地址(绝对或相对)。三级兜底见 [resolveLineUrl] 注释。 */
+  private fun extractM3u8(html: String): String? {
+    CONST_URL_REGEX.find(html)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotBlank() }
+      ?.let { return it }
+    M3U8_URL_REGEX.find(html)?.value?.let { return it }
+    RELATIVE_M3U8_REGEX.find(html)?.groupValues?.get(1)?.let { return it }
+    return null
   }
 }

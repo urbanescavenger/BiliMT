@@ -17,8 +17,9 @@ data class BiliPlaybackHeaders(
   fun asMap(includeCookie: Boolean = true): Map<String, String> {
     return buildMap {
       put("User-Agent", BiliHeaders.UserAgent)
-      put("Referer", referer)
-      put("Origin", origin)
+      // 空串 Referer/Origin 不发:TVBox 等第三方裸数据源不套 B站头,防防盗链 CDN 误拒。
+      if (referer.isNotBlank()) put("Referer", referer)
+      if (origin.isNotBlank()) put("Origin", origin)
       if (includeCookie) {
         cookie?.let { value -> put("Cookie", value) }
       }

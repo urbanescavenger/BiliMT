@@ -383,7 +383,7 @@ fun BiliMobileApp(
         // 背后的"设置"tab 打开设置页。此层让播放器无点击目标处也吞掉指针,播放器控件叠在其上仍正常响应;
         // 将来底下新增别的内容也一样被盖住。
         Box(Modifier.fillMaxSize().pointerInput(Unit) { consumeAllGestures() })
-        if (request.isLive || request.isIptv) {
+        if (request.isLive || request.isIptvChannel) {
           LivePlayerScreen(
             request = request,
             playbackRepository = playbackRepository,

@@ -1524,7 +1524,7 @@ fun BiliTvApp(
             .fillMaxSize()
             .background(BiliColors.VideoBlack),
         ) {
-          if (displayedPlaybackRequest.isLive || displayedPlaybackRequest.isIptv) {
+          if (displayedPlaybackRequest.isLive || displayedPlaybackRequest.isIptvChannel) {
             com.kirin.mt.ui.player.LivePlayerScreen(
               request = displayedPlaybackRequest,
               playbackRepository = playbackRepository,

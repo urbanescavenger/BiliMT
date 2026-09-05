@@ -8,6 +8,7 @@ import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliNumberParser
 import com.kirin.mt.core.network.PgcMappers
 import com.kirin.mt.core.network.SpaceHttpSupport
+import com.kirin.mt.core.network.TvboxRepository
 import com.kirin.mt.core.network.asObjectOrNull
 import com.kirin.mt.core.network.boolean
 import com.kirin.mt.core.network.int
@@ -36,6 +37,7 @@ class PlaybackRepository(
   private val codecCapabilityProbe: CodecCapabilityProbe,
   private val progressStore: PlaybackProgressStore,
   private val youtubePlaybackResolver: YoutubePlaybackResolver,
+  private val tvboxRepository: TvboxRepository,
 ) {
   private val videoshotRepository = VideoshotRepository(
     apiClient = apiClient,
@@ -60,6 +62,11 @@ class PlaybackRepository(
     // 传 codecCapability 让 resolver 过滤设备解不了的高清轨道（4K VP9/AV1 无硬解时回退）。
     if (request.isYoutube) {
       return youtubePlaybackResolver.resolve(request, codecPreference, codecCapabilityProbe.probe(), youtubeDefaultQuality, youtubeStartQuality)
+    }
+    // TVBox(影视库)点播:MacCMS 采集站直链/懒解析线路 → 远程 HLS,走 VOD 播放器(P11-77 用户决策:
+    // 参考 PGC/番剧路径,不进直播壳)。线路=清晰度档(preferredQualityId=线路索引),选档即重解析换线。
+    if (request.isTvbox) {
+      return getTvboxPlaybackInfo(request)
     }
     val requestedQualityId = request.preferredQualityId ?: qualityPreference.requestedQualityId
     val cacheKey = PlaybackCacheKey(
@@ -147,6 +154,70 @@ class PlaybackRepository(
     )
     storeCachedPlaybackInfo(cacheKey, info)
     return info
+  }
+
+  /**
+   * TVBox(影视库)点播播放信息(P11-77):把跨站线路列表解析成一条可播的远程 HLS URL,
+   * 走 VOD 播放器(参考 PGC/番剧路径,[PlaybackInfo.remoteHlsManifestUrl] 即 alpha.90 的
+   * HlsMediaSource 分支;dummy 视频轨只做路由,真实轨由 HLS playlist 自带)。
+   *
+   * 线路 = 清晰度档:`preferredQualityId` 存线路索引,选档即重入本方法换线;
+   * 解析顺序 = 请求档优先,失败顺延其它线路(死线不硬扛,与 IPTV 镜像容灾同心智)。
+   * 起播头不带 B站 Cookie/Referer/Origin(裸数据源,防第三方 CDN 防盗链误拒)。
+   */
+  private suspend fun getTvboxPlaybackInfo(request: PlaybackRequest): PlaybackInfo {
+    val lines = request.iptvUrls
+    if (lines.isEmpty()) {
+      throw IllegalStateException("tvbox: 该影片无可用线路")
+    }
+    val startIndex = (request.preferredQualityId ?: 0).coerceIn(0, lines.lastIndex)
+    val order = buildList {
+      add(startIndex)
+      addAll((0..lines.lastIndex).filter { it != startIndex })
+    }
+    var resolvedUrl: String? = null
+    var resolvedIndex = startIndex
+    for (index in order) {
+      val resolved = tvboxRepository.resolveLineUrl(lines[index])
+      if (resolved != null) {
+        resolvedIndex = index
+        resolvedUrl = resolved
+        break
+      }
+      Log.w(PlaybackLogTag, "tvbox line #$index resolve failed: ${lines[index]}")
+    }
+    val streamUrl = resolvedUrl
+      ?: throw IllegalStateException("tvbox: 全部线路解析失败(${lines.size} 条)")
+    Log.i(PlaybackLogTag, "tvbox playback resolved line=#$resolvedIndex/${lines.lastIndex} url=$streamUrl")
+    val qualities = lines.mapIndexed { index, _ ->
+      PlaybackQuality(index, "线路${index + 1}")
+    }
+    // dummy 视频轨:路由由 isHlsManifest()(remoteHlsManifestUrl!=null)判定,非轨字段;
+    // audioTracks 空(HLS playlist 自带 A/V)。对齐 YoutubePlaybackResolver 的 HLS 兜底形制。
+    val dummyTrack = PlaybackTrack(
+      id = 0,
+      baseUrl = streamUrl,
+      backupUrls = emptyList(),
+      bandwidth = 0,
+      codecs = "video/mp4",
+      width = 0,
+      height = 480,
+      mimeType = "video/mp4",
+      segmentBase = PlaybackSegmentBase("0-0", "0-0"),
+    )
+    return PlaybackInfo(
+      bvid = request.bvid,
+      cid = 0L,
+      title = request.title,
+      durationMs = 0L,
+      qualities = qualities,
+      selectedQuality = qualities[resolvedIndex],
+      videoTracks = listOf(dummyTrack),
+      audioTracks = emptyList(),
+      // 裸头:BiliPlaybackHeaders 空串 Referer/Origin 不发(见 asMap 的空串跳过)。
+      headers = BiliPlaybackHeaders(sessData = null, biliJct = null, referer = "", origin = ""),
+      remoteHlsManifestUrl = streamUrl,
+    )
   }
 
   /**

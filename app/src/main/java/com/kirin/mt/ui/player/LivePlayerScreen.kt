@@ -222,8 +222,6 @@ fun LivePlayerScreen(
   } else request
   // IPTV 专属 TV 路径:确认键开关频道面板,左/右切台,上/下切源。mobile 与 B 站直播不受影响。
   val isIptvTv = request.isIptvChannel && !isMobile
-  // TVBox(TV):无频道面板/切台,只有线路切换(上/下键同 IPTV)。
-  val isTvboxTv = request.isTvbox && !isMobile
 
   val qualities = liveInfo?.qualities.orEmpty()
   val qualityLabel = stringResource(R.string.live_quality)
@@ -692,7 +690,6 @@ fun LivePlayerScreen(
             when {
               isIptvTv && showChannelPanel -> { moveChannelFocus(-1); true } // 面板打开:上移焦点
               isIptvTv -> { switchSource(-1); true } // 面板关闭:上键上一个线路
-              isTvboxTv -> { switchSource(-1); true } // 影视库:上键上一线路(无频道面板)
               showQualityPanel -> { changeQualityFocus(-1); true }
               else -> { showControls(); true }
             }
@@ -701,7 +698,6 @@ fun LivePlayerScreen(
             when {
               isIptvTv && showChannelPanel -> { moveChannelFocus(1); true } // 面板打开:下移焦点
               isIptvTv -> { switchSource(1); true } // 面板关闭:下键下一个线路
-              isTvboxTv -> { switchSource(1); true } // 影视库:下键下一线路(无频道面板)
               showQualityPanel -> { changeQualityFocus(1); true }
               controlsVisible -> { controlsVisible = false; true }
               else -> { showControls(); true }

@@ -580,8 +580,8 @@ fun PlayerScreen(
   }
 
   suspend fun reportProgressNow(overrideProgressSeconds: Int? = null) {
-    // YouTube 无 B 站 heartbeat，跳过上报；本地进度保存仍走 saveProgressNow。
-    if (activeRequest.isYoutube) return
+    // YouTube/TVBox 无 B 站 heartbeat，跳过上报；本地进度保存仍走 saveProgressNow。
+    if (activeRequest.isYoutube || activeRequest.isTvbox) return
     val state = playerState as? PlayerScreenState.Ready ?: return
     val progressSeconds = overrideProgressSeconds
       ?: ((player.currentPosition.takeIf { it >= 0L } ?: playbackPositionState.longValue).coerceAtLeast(0L) / 1000L).toInt()
@@ -1583,9 +1583,11 @@ fun PlayerScreen(
     player.clearMediaItems()
     launchStep = "metadata"
     Log.i(PlayerPlaybackLogTag, "launch step: metadata (pgc=${activeRequest.isPgc} youtube=${activeRequest.isYoutube})")
-    // YouTube 无 B 站 view/metadata/分P，跳过 B 站专属的元数据、历史续播和 cid 解析，cid 恒为 0。
+    // YouTube/TVBox 无 B 站 view/metadata/分P，跳过 B 站专属的元数据、历史续播和 cid 解析,cid 恒为 0。
+    // TVBox 点播:线路表在 request.iptvUrls,元数据/分P/B站 cid 解析全跳过(对齐 YouTube 路径)。
     val isYoutube = activeRequest.isYoutube
-    val videoMetadata = if (isYoutube) {
+    val skipBiliMetadata = isYoutube || activeRequest.isTvbox
+    val videoMetadata = if (skipBiliMetadata) {
       null
     } else {
       val existingMetadata = metadata
@@ -1599,7 +1601,7 @@ fun PlayerScreen(
       }
     }
     metadata = videoMetadata
-    var effectiveRequest = if (isYoutube) {
+    var effectiveRequest = if (skipBiliMetadata) {
       activeRequest
     } else {
       activeRequest.withNextHistoryEpisodeIfNeeded(videoMetadata)
@@ -1615,14 +1617,14 @@ fun PlayerScreen(
           }
         }
     }
-    val cid = if (isYoutube) {
+    val cid = if (skipBiliMetadata) {
       0L
     } else {
       effectiveRequest.cid.takeIf { it > 0L }
         ?: videoMetadata?.cid?.takeIf { it > 0L }
         ?: playbackRepository.resolveCid(effectiveRequest.bvid)
     }
-    if (cid <= 0L && !isYoutube) {
+    if (cid <= 0L && !skipBiliMetadata) {
       playerState = PlayerScreenState.Failed(context.getString(R.string.player_error_missing_cid))
       return@LaunchedEffect
     }

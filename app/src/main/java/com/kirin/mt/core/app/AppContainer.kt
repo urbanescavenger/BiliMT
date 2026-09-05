@@ -187,6 +187,7 @@ class AppContainer(context: Context) {
     codecCapabilityProbe = codecCapabilityProbe,
     progressStore = playbackProgressStore,
     youtubePlaybackResolver = youtubePlaybackResolver,
+    tvboxRepository = tvboxRepository,
   )
   val danmakuSettingsStore: DanmakuSettingsStore = DanmakuSettingsStore(appContext)
   val liveQualityPreferenceStore: LiveQualityPreferenceStore = LiveQualityPreferenceStore(appContext)
