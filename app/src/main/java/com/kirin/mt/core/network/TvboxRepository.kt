@@ -116,7 +116,7 @@ class TvboxRepository {
           val parsed = json.decodeFromString(TvboxSearchResponse.serializer(), body)
           parsed.list
             .map { TvboxSiteVod(site, it) }
-            .filter { firstEpisodeUrl(it.vod) != null }
+            .filter { parseEpisodeList(it.vod).isNotEmpty() }
         }
       } catch (e: CancellationException) {
         throw e
