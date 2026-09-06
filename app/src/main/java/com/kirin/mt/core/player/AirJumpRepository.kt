@@ -41,6 +41,10 @@ internal class AirJumpRepository(
         segmentsCache[bvid] = segments
         Log.i(LogTag, "loaded segments: bvid=$bvid segments=${segments.size} (attempt=${attempt + 1}/$totalAttempts)")
         return segments
+      } catch (error: kotlinx.coroutines.CancellationException) {
+        // 协程被取消(Compose 效果重启/scope 离开)不是网络错误,重抛让它立刻死,
+        // 别当可重试错误吞掉——retry 的 delay 会立刻再抛,徒增 "scope left" 日志噪音。
+        throw error
       } catch (error: BiliNetworkException) {
         if (error.statusCode == 404) {
           // 该视频在 SponsorBlock 无段，缓存空列表，下次秒回不再请求。

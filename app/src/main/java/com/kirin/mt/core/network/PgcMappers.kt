@@ -44,6 +44,7 @@ internal object PgcMappers {
     val userStatus = data.obj("user_status")
     val progress = userStatus?.obj("progress")
     val type = data.int("type")
+    val stat = data.obj("stat")
     return PgcSeason(
       seasonId = data.int("season_id"),
       title = data.string("title"),
@@ -65,6 +66,10 @@ internal object PgcMappers {
           lastTime = it.int("last_time"),
         )
       },
+      badge = data.string("badge"),
+      viewCount = stat?.long("play") ?: 0L,
+      danmakuCount = stat?.long("danmaku") ?: 0L,
+      followCount = stat?.long("follow").takeIf { it != 0L } ?: stat?.long("followers") ?: 0L,
     )
   }
 
@@ -78,6 +83,7 @@ internal object PgcMappers {
       longTitle = json.string("long_title"),
       cover = VideoSummaryMappers.fixPicUrl(json.string("cover")),
       duration = json.int("duration"),
+      badge = json.string("badge"),
     )
   }
 

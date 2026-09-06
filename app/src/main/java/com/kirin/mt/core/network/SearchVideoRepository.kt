@@ -19,6 +19,9 @@ internal class SearchVideoRepository(
     keyword: String,
     page: Int,
     order: String,
+    duration: Int = 0,
+    pubtimeBeginSeconds: Long = 0L,
+    pubtimeEndSeconds: Long = 0L,
   ): List<VideoSummary> {
     if (keyword.isBlank()) return emptyList()
 
@@ -31,6 +34,16 @@ internal class SearchVideoRepository(
       "pagesize" to "20",
       "order" to order,
     )
+    // 移动端筛选面板(对齐官方筛选项):时长档位 1-4;发布时间区间 unix 秒。
+    if (duration > 0) {
+      params["duration"] = duration.toString()
+    }
+    if (pubtimeBeginSeconds > 0) {
+      params["pubtime_begin_s"] = pubtimeBeginSeconds.toString()
+    }
+    if (pubtimeEndSeconds > 0) {
+      params["pubtime_end_s"] = pubtimeEndSeconds.toString()
+    }
 
     val signedParams = if (keys != null) {
       wbiSigner.sign(params, keys.imgKey, keys.subKey)
@@ -108,6 +121,53 @@ internal class SearchVideoRepository(
       .mapNotNull { it.asObjectOrNull() }
       .filter { it.long("mid") != 0L }
       .map(VideoSummaryMappers::fromSearchUser)
+  }
+
+  /** 搜索番剧（search_type=media_bangumi）。番剧搜索无排序，不带 order 参数。 */
+  suspend fun searchBangumi(
+    keyword: String,
+    page: Int,
+  ): List<VideoSummary> {
+    if (keyword.isBlank()) return emptyList()
+
+    val sessData = sessionStore.sessData.first()
+    val keys = wbiKeyRepository.ensureKeys(sessData)
+    val params = mutableMapOf(
+      "keyword" to keyword,
+      "search_type" to "media_bangumi",
+      "page" to page.toString(),
+      "pagesize" to "20",
+    )
+
+    val signedParams = if (keys != null) {
+      wbiSigner.sign(params, keys.imgKey, keys.subKey)
+    } else {
+      params
+    }
+
+    val result = runCatching {
+      val signedRoot = apiClient.getJson(
+        url = BiliApiEndpoints.Search,
+        params = signedParams,
+        sessData = sessData,
+      ).rootObject()
+      signedRoot.requireBiliCodeOk("search bangumi")
+      signedRoot.searchResultOrNull()
+    }.getOrNull()
+      ?: runCatching {
+        val unsignedRoot = apiClient.getJson(
+          url = BiliApiEndpoints.Search,
+          params = params,
+        ).rootObject()
+        unsignedRoot.requireBiliCodeOk("search bangumi fallback")
+        unsignedRoot.searchResultOrNull()
+      }.getOrNull()
+      ?: return emptyList()
+
+    return result
+      .mapNotNull { it.asObjectOrNull() }
+      .filter { (it.int("season_id") ?: 0) > 0 }
+      .map(VideoSummaryMappers::fromSearchBangumi)
   }
 
   suspend fun getSearchSuggestions(keyword: String): List<String> {

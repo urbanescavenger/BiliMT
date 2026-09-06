@@ -116,6 +116,7 @@ fun MobileSettingsScreen(
   webdavBackupService: com.kirin.mt.core.webdav.WebDavBackupService,
   appCacheManager: AppCacheManager,
   iptvRepository: IptvRepository,
+  tvboxRepository: com.kirin.mt.core.network.TvboxRepository,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -374,6 +375,13 @@ fun MobileSettingsScreen(
       settings = settings,
       appSettingsStore = appSettingsStore,
       iptvRepository = iptvRepository,
+    )
+
+    // ===== 影视库源(TVBox 配置) =====
+    MobileTvboxSection(
+      settings = settings,
+      appSettingsStore = appSettingsStore,
+      tvboxRepository = tvboxRepository,
     )
 
     // ===== YouTube SABR 实验:Piped 后端 + itag 诊断(alpha.84,对齐 TV SettingsScreen) =====
@@ -836,6 +844,7 @@ private fun MobileWebDavSelectionDialog(
       com.kirin.mt.core.webdav.WebDavBackupItem.Watched,
       com.kirin.mt.core.webdav.WebDavBackupItem.BiliAccount,
       com.kirin.mt.core.webdav.WebDavBackupItem.Iptv,
+      com.kirin.mt.core.webdav.WebDavBackupItem.Tvbox,
     )
   } else {
     com.kirin.mt.core.webdav.WebDavBackupItem.entries
@@ -856,6 +865,7 @@ private fun MobileWebDavSelectionDialog(
     com.kirin.mt.core.webdav.WebDavBackupItem.Watched -> stringResource(R.string.settings_webdav_item_watched)
     com.kirin.mt.core.webdav.WebDavBackupItem.BiliAccount -> stringResource(R.string.settings_webdav_item_biliaccount)
     com.kirin.mt.core.webdav.WebDavBackupItem.Iptv -> stringResource(R.string.settings_webdav_item_iptv)
+    com.kirin.mt.core.webdav.WebDavBackupItem.Tvbox -> stringResource(R.string.settings_webdav_item_tvbox)
     com.kirin.mt.core.webdav.WebDavBackupItem.Logs -> stringResource(R.string.settings_webdav_item_logs)
   }
 
@@ -1102,6 +1112,104 @@ private fun MobileIptvEditDialog(
     },
     confirmButton = {
       TextButton(onClick = { onSave(normalizeIptvUrl(urlValue), usernameValue.trim(), passwordValue) }) {
+        Text(stringResource(R.string.settings_webdav_save))
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text(stringResource(R.string.mobile_dialog_cancel))
+      }
+    },
+  )
+}
+
+/** 影视库源(TVBox 配置)配置区:地址行只显示 URL,点按弹窗编辑,保存后拉 config 校验(镜像 MobileIptvSection)。 */
+@Composable
+private fun MobileTvboxSection(
+  settings: AppSettings,
+  appSettingsStore: AppSettingsStore,
+  tvboxRepository: com.kirin.mt.core.network.TvboxRepository,
+) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+  var showEditDialog by remember { mutableStateOf(false) }
+  var expanded by remember { mutableStateOf(false) }
+
+  MobileSettingsSectionHeader(
+    text = stringResource(R.string.settings_tvbox_title),
+    onClick = { expanded = !expanded },
+    trailing = {
+      Icon(
+        imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.primary,
+      )
+    },
+  )
+  androidx.compose.animation.AnimatedVisibility(visible = expanded) {
+    Column {
+      MobileSettingsRow(
+        title = stringResource(R.string.settings_tvbox_url_label),
+        description = settings.tvboxConfigUrl.ifBlank { stringResource(R.string.settings_tvbox_configure_hint) },
+        onClick = { showEditDialog = true },
+        onLongClick = { showEditDialog = true },
+      )
+    }
+  }
+
+  if (showEditDialog) {
+    MobileTvboxEditDialog(
+      url = settings.tvboxConfigUrl,
+      onSave = { url ->
+        showEditDialog = false
+        scope.launch {
+          appSettingsStore.setTvboxConfigUrl(url)
+          // 保存后拉一次 config 校验,成功提示可用站数(镜像 TV AppShell onTvboxConfigChange)。
+          val siteCount = tvboxRepository.validateConfig(url)
+          if (siteCount >= 0) {
+            Toast.makeText(
+              context,
+              context.getString(R.string.settings_tvbox_connect_success, siteCount),
+              Toast.LENGTH_SHORT,
+            ).show()
+          } else {
+            Toast.makeText(
+              context,
+              R.string.settings_tvbox_connect_failed,
+              Toast.LENGTH_SHORT,
+            ).show()
+          }
+        }
+      },
+      onDismiss = { showEditDialog = false },
+    )
+  }
+}
+
+/** TVBox 配置编辑弹窗:单 URL 输入框 + 保存/取消。保存时补全 URL 协议(镜像 TV SettingsTvboxDialog)。 */
+@Composable
+private fun MobileTvboxEditDialog(
+  url: String,
+  onSave: (url: String) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  var urlValue by remember { mutableStateOf(url) }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text(stringResource(R.string.settings_tvbox_title)) },
+    text = {
+      Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+          value = urlValue,
+          onValueChange = { urlValue = it },
+          label = { Text(stringResource(R.string.settings_tvbox_url_label)) },
+          singleLine = true,
+        )
+      }
+    },
+    confirmButton = {
+      TextButton(onClick = { onSave(normalizeIptvUrl(urlValue)) }) {
         Text(stringResource(R.string.settings_webdav_save))
       }
     },

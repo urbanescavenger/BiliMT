@@ -6,12 +6,17 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -30,6 +35,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -46,12 +52,14 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,6 +69,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.image.BiliImageSizing
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
@@ -84,9 +93,10 @@ private const val FirstPage = 1
 private const val PageSize = 20
 private const val SearchSuggestionDebounceMs = 250L
 
-/** 搜索类型:视频 / UP主(频道)。 */
+/** 搜索类型:视频 / 番剧(仅 B 站) / UP主(频道)。 */
 private const val SearchTypeVideo = "video"
 private const val SearchTypeUser = "user"
+private const val SearchTypeBangumi = "media_bangumi"
 
 /** 搜索结果分页状态。 */
 private sealed interface SearchResultState {
@@ -125,12 +135,65 @@ private val YoutubeSearchSortOptions = listOf(
   SearchSortOption(YoutubeSearchParams.Rating, R.string.search_sort_rating),
 )
 
-/** 按来源返回排序选项(两源都有一套,对齐 B站 4 项)。 */
+/** 按来源返回排序选项(B站/YouTube 各一套;影视库(TVBox)无排序,空集=隐藏排序 chip)。 */
 private fun sortOptionsFor(source: String): List<SearchSortOption> =
-  if (source == SourceYoutube) YoutubeSearchSortOptions else BiliSearchSortOptions
+  when {
+    source == SourceTvbox -> emptyList()
+    source == SourceYoutube -> YoutubeSearchSortOptions
+    else -> BiliSearchSortOptions
+  }
 
-/** 各来源默认排序(综合)的 key,切换来源时用于重置选中项。 */
-private fun defaultOrderKey(source: String): String = sortOptionsFor(source).first().key
+/** 各来源默认排序(综合)的 key,切换来源时用于重置选中项;影视库 无排序,空 key。 */
+private fun defaultOrderKey(source: String): String = sortOptionsFor(source).firstOrNull()?.key.orEmpty()
+
+/** 移动端结果页类型 tab(对齐官方 综合/番剧/UP主 并排):视频 tab 标「综合」。key 即类型 key。 */
+private fun typeTabsFor(source: String): List<SearchSortOption> =
+  if (source == SourceYoutube) {
+    listOf(
+      SearchSortOption(SearchTypeVideo, R.string.search_type_comprehensive),
+      SearchSortOption(SearchTypeUser, R.string.search_type_user_youtube),
+    )
+  } else {
+    listOf(
+      SearchSortOption(SearchTypeVideo, R.string.search_type_comprehensive),
+      SearchSortOption(SearchTypeBangumi, R.string.search_type_bangumi),
+      SearchSortOption(SearchTypeUser, R.string.search_type_user_bili),
+    )
+  }
+
+/** 筛选面板·发布时间回看秒数(0=不限),对齐官方筛选项。 */
+private val SearchPubtimeOptions = listOf(
+  0L to R.string.search_filter_any,
+  86400L to R.string.search_filter_time_day,
+  604800L to R.string.search_filter_time_week,
+  15552000L to R.string.search_filter_time_half_year,
+)
+
+/** 筛选面板·内容时长档位(0=不限,1-4 即接口 duration 参数),对齐官方筛选项。 */
+private val SearchDurationOptions = listOf(
+  0 to R.string.search_filter_any,
+  1 to R.string.search_filter_duration_10,
+  2 to R.string.search_filter_duration_30,
+  3 to R.string.search_filter_duration_60,
+  4 to R.string.search_filter_duration_60p,
+)
+
+/** 空结果文案按类型区分:UP主/番剧/视频。 */
+private fun emptyMessageResFor(searchType: String): Int = when (searchType) {
+  SearchTypeUser -> R.string.search_empty_user
+  SearchTypeBangumi -> R.string.search_empty_bangumi
+  else -> R.string.search_empty
+}
+
+/** 影视库源空结果文案:未配置给设置引导,配置加载失败给排查提示,就绪落通用「无结果」。 */
+private fun tvboxEmptyMessageRes(status: com.kirin.mt.core.network.TvboxSourceStatus): Int =
+  when (status) {
+    com.kirin.mt.core.network.TvboxSourceStatus.NotConfigured ->
+      R.string.search_tvbox_not_configured
+    is com.kirin.mt.core.network.TvboxSourceStatus.Failed ->
+      R.string.search_tvbox_load_failed
+    is com.kirin.mt.core.network.TvboxSourceStatus.Ready -> R.string.search_empty
+  }
 
 @Stable
 private class MobileSearchUiState {
@@ -139,6 +202,9 @@ private class MobileSearchUiState {
   var source by mutableStateOf(SourceBili)
   var searchType by mutableStateOf(SearchTypeVideo)
   var orderKey by mutableStateOf(BiliSearchSortOptions.first().key)
+  // 筛选面板(仅 B 站视频搜索消费):时长档位 1-4(0=不限)、发布时间回看秒数(0=不限)。
+  var filterDuration by mutableStateOf(0)
+  var filterPubtimeSeconds by mutableStateOf(0L)
   var suggestions by mutableStateOf<List<String>>(emptyList())
   var resultState by mutableStateOf<SearchResultState>(SearchResultState.Loading)
 
@@ -162,8 +228,15 @@ private class MobileSearchUiState {
   fun selectSource(newSource: String) {
     if (source == newSource) return
     source = newSource
+    // 番剧类型仅 B 站源提供,切到其它源回退视频类型(YouTube 类型循环只有 视频⇄频道)。
+    if (searchType == SearchTypeBangumi) {
+      searchType = SearchTypeVideo
+    }
     // 排序 key 与来源耦合(B站 totalrank/click…,YouTube params 串),切源重置为该源默认「综合」。
     orderKey = defaultOrderKey(newSource)
+    // 筛选(时长/发布时间)仅 B 站视频搜索有,切源一并重置。
+    filterDuration = 0
+    filterPubtimeSeconds = 0L
     resultState = SearchResultState.Loading
   }
 
@@ -172,6 +245,17 @@ private class MobileSearchUiState {
     if (searchType == newType) return
     searchType = newType
     resultState = SearchResultState.Loading
+  }
+
+  /** 筛选发布时间区间起点:回看 N 秒 → now-N(unix 秒);不限返回 0(不传参)。 */
+  fun pubtimeBeginSeconds(): Long {
+    if (filterPubtimeSeconds <= 0L) return 0L
+    return System.currentTimeMillis() / 1000 - filterPubtimeSeconds
+  }
+
+  /** 筛选发布时间区间终点:now(unix 秒);不限返回 0(不传参)。 */
+  fun pubtimeEndSeconds(): Long {
+    return if (filterPubtimeSeconds > 0L) System.currentTimeMillis() / 1000 else 0L
   }
 }
 
@@ -190,6 +274,8 @@ fun MobileSearchScreen(
   modifier: Modifier = Modifier,
   onLongPress: ((VideoSummary) -> Unit)? = null,
   onUserSelected: (UserSummary) -> Unit = {},
+  tvboxSourceStatus: com.kirin.mt.core.network.TvboxSourceStatus =
+    com.kirin.mt.core.network.TvboxSourceStatus.NotConfigured,
 ) {
   val scope = rememberCoroutineScope()
   val keyboard = LocalSoftwareKeyboardController.current
@@ -206,7 +292,17 @@ fun MobileSearchScreen(
     uiState.resultState = SearchResultState.Loading
     searchJob = scope.launch {
       val state = try {
-        if (uiState.searchType == SearchTypeUser) {
+        if (uiState.source == SourceTvbox) {
+          // 影视库:聚合搜索单发全量,无排序/无翻页;类型/排序 chip 均隐藏。
+          val videos = videoRepository.tvboxSearch(keyword = query)
+          if (videos.isEmpty()) SearchResultState.Empty
+          else SearchResultState.Success(
+            videos = videos,
+            nextPage = FirstPage + 1,
+            loadingMore = false,
+            endReached = true,
+          )
+        } else if (uiState.searchType == SearchTypeUser) {
           // UP主/频道搜索:无排序,忽略 order。
           if (uiState.source == SourceYoutube) {
             val page = videoRepository.youtubeSearchChannels(query = query)
@@ -228,6 +324,16 @@ fun MobileSearchScreen(
               endReached = users.size < PageSize,
             )
           }
+        } else if (uiState.searchType == SearchTypeBangumi) {
+          // 番剧搜索:无排序,结果卡带 seasonId,点击进 PGC 季详情(MobileApp 拦截)。
+          val seasons = videoRepository.searchBangumi(keyword = query, page = FirstPage)
+          if (seasons.isEmpty()) SearchResultState.Empty
+          else SearchResultState.Success(
+            videos = seasons,
+            nextPage = FirstPage + 1,
+            loadingMore = false,
+            endReached = seasons.size < PageSize,
+          )
         } else if (uiState.source == SourceYoutube) {
           val page = videoRepository.youtubeSearch(query = query, params = order)
           if (page.items.isEmpty()) SearchResultState.Empty
@@ -239,7 +345,14 @@ fun MobileSearchScreen(
             endReached = page.continuation == null,
           )
         } else {
-          val videos = videoRepository.searchVideos(keyword = query, page = FirstPage, order = order)
+          val videos = videoRepository.searchVideos(
+            keyword = query,
+            page = FirstPage,
+            order = order,
+            duration = uiState.filterDuration,
+            pubtimeBeginSeconds = uiState.pubtimeBeginSeconds(),
+            pubtimeEndSeconds = uiState.pubtimeEndSeconds(),
+          )
           if (videos.isEmpty()) SearchResultState.Empty
           else SearchResultState.Success(
             videos = videos,
@@ -275,6 +388,15 @@ fun MobileSearchScreen(
     loadFirstPage(q, key)
   }
 
+  /** 筛选面板选择(时长/发布时间,仅 B 站视频搜索消费):更新状态并重搜首页。 */
+  fun selectFilter(newDuration: Int = uiState.filterDuration, newPubtimeSeconds: Long = uiState.filterPubtimeSeconds) {
+    if (newDuration == uiState.filterDuration && newPubtimeSeconds == uiState.filterPubtimeSeconds) return
+    uiState.filterDuration = newDuration
+    uiState.filterPubtimeSeconds = newPubtimeSeconds
+    val q = uiState.submittedQuery ?: return
+    loadFirstPage(q, uiState.orderKey)
+  }
+
   fun loadNextPage() {
     val current = uiState.resultState as? SearchResultState.Success ?: return
     if (current.loadingMore || current.endReached) return
@@ -307,6 +429,17 @@ fun MobileSearchScreen(
               moreUsers.size < PageSize || mergedUsers.size == current.users.size
             },
           )
+        } else if (uiState.searchType == SearchTypeBangumi) {
+          // 番剧搜索翻页:无排序。
+          val more = videoRepository.searchBangumi(keyword = q, page = current.nextPage)
+          val merged = (current.videos + more).distinctBy { it.bvid }
+          current.copy(
+            videos = merged,
+            nextPage = current.nextPage + 1,
+            continuation = null,
+            loadingMore = false,
+            endReached = more.size < PageSize || merged.size == current.videos.size,
+          )
         } else {
           val more: List<VideoSummary>
           val nextContinuation: String?
@@ -315,7 +448,14 @@ fun MobileSearchScreen(
             more = page.items
             nextContinuation = page.continuation
           } else {
-            more = videoRepository.searchVideos(keyword = q, page = current.nextPage, order = uiState.orderKey)
+            more = videoRepository.searchVideos(
+              keyword = q,
+              page = current.nextPage,
+              order = uiState.orderKey,
+              duration = uiState.filterDuration,
+              pubtimeBeginSeconds = uiState.pubtimeBeginSeconds(),
+              pubtimeEndSeconds = uiState.pubtimeEndSeconds(),
+            )
             nextContinuation = null
           }
           val merged = (current.videos + more).distinctBy { it.bvid }
@@ -340,9 +480,13 @@ fun MobileSearchScreen(
     }
   }
 
-  // 输入态下随输入防抖拉联想;提交态不拉。
+  // 输入态下随输入防抖拉联想;提交态不拉。影视库(TVBox)无联想(联想是 B站 sug 接口),恒空。
   LaunchedEffect(uiState.query, uiState.submittedQuery) {
     if (uiState.submittedQuery != null) return@LaunchedEffect
+    if (uiState.source == SourceTvbox) {
+      uiState.suggestions = emptyList()
+      return@LaunchedEffect
+    }
     val q = uiState.query.trim()
     if (q.isEmpty()) {
       uiState.suggestions = emptyList()
@@ -391,6 +535,7 @@ fun MobileSearchScreen(
       listOf(
         SourceBili to stringResource(R.string.search_source_bili),
         SourceYoutube to stringResource(R.string.search_source_youtube),
+        SourceTvbox to stringResource(R.string.search_source_tvbox),
       ).forEach { (value, label) ->
         FilterChip(
           selected = uiState.source == value,
@@ -454,35 +599,64 @@ fun MobileSearchScreen(
         )
       }
     } else {
-      // 结果态:排序 chip(仅视频类型,B站/YouTube 各一套) + 类型单开关按钮(恒标「UP主/频道」,默认视频不占位;
-      // 选中=UP主搜索,再点切回视频)。「视频」chip 已按用户要求去掉——默认即视频,不会有误解。
-      // UP主/频道 类型时排序隐藏,只剩该类型按钮。
-      val userTypeLabel = stringResource(
-        if (uiState.source == SourceYoutube) R.string.search_type_user_youtube else R.string.search_type_user_bili
-      )
-      val sortOptions = sortOptionsFor(uiState.source)
-      Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
-        if (uiState.searchType == SearchTypeVideo && sortOptions.isNotEmpty()) {
-          sortOptions.forEach { opt ->
-            FilterChip(
-              selected = uiState.orderKey == opt.key,
-              onClick = { selectOrder(opt.key) },
-              label = { Text(stringResource(opt.titleRes)) },
-            )
+      // 结果态:类型 tab 行(对齐官方:综合/番剧/UP主 并排,选中粉色+下划线) + 行尾筛选漏斗
+      // (仅视频类型显示;底部弹层含 排序方式 + 发布时间/内容时长(仅 B 站))。
+      // 影视库(TVBox)源 tab 行整行隐藏(无类型/无筛选概念)。
+      if (uiState.source != SourceTvbox) {
+        var showFilterSheet by remember { mutableStateOf(false) }
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+          horizontalArrangement = Arrangement.spacedBy(24.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          typeTabsFor(uiState.source).forEach { tab ->
+            val selected = uiState.searchType == tab.key
+            Column(
+              horizontalAlignment = Alignment.CenterHorizontally,
+              modifier = Modifier.clickable { uiState.selectType(tab.key) },
+            ) {
+              Text(
+                text = stringResource(tab.titleRes),
+                color = if (selected) {
+                  MaterialTheme.colorScheme.primary
+                } else {
+                  MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+              )
+              Box(
+                modifier = Modifier
+                  .padding(top = 2.dp)
+                  .width(20.dp)
+                  .height(3.dp)
+                  .clip(RoundedCornerShape(2.dp))
+                  .background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent),
+              )
+            }
+          }
+          Spacer(modifier = Modifier.weight(1f))
+          if (uiState.searchType == SearchTypeVideo) {
+            IconButton(onClick = { showFilterSheet = true }) {
+              Icon(
+                painter = painterResource(R.drawable.ic_search_filter),
+                contentDescription = stringResource(R.string.search_filter),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
           }
         }
-        FilterChip(
-          selected = uiState.searchType == SearchTypeUser,
-          onClick = {
-            uiState.selectType(
-              if (uiState.searchType == SearchTypeUser) SearchTypeVideo else SearchTypeUser
-            )
-          },
-          label = { Text(userTypeLabel) },
-        )
+        if (showFilterSheet) {
+          SearchFilterSheet(
+            source = uiState.source,
+            orderKey = uiState.orderKey,
+            pubtimeSeconds = uiState.filterPubtimeSeconds,
+            duration = uiState.filterDuration,
+            onDismiss = { showFilterSheet = false },
+            onSortSelected = { key -> selectOrder(key) },
+            onPubtimeSelected = { seconds -> selectFilter(newPubtimeSeconds = seconds) },
+            onDurationSelected = { value -> selectFilter(newDuration = value) },
+          )
+        }
       }
 
       Box(modifier = Modifier.fillMaxSize()) {
@@ -514,8 +688,13 @@ fun MobileSearchScreen(
                   contentAlignment = Alignment.Center,
                 ) {
                   Text(
+                    // 影视库源空结果分流:未配置/配置加载失败给引导文案(配置就绪才落通用「无结果」)。
                     text = stringResource(
-                      if (uiState.searchType == SearchTypeUser) R.string.search_empty_user else R.string.search_empty
+                      if (uiState.source == SourceTvbox) {
+                        tvboxEmptyMessageRes(tvboxSourceStatus)
+                      } else {
+                        emptyMessageResFor(uiState.searchType)
+                      }
                     ),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -564,6 +743,81 @@ fun MobileSearchScreen(
       }
     }
   }
+}
+
+/**
+ * 筛选底部弹层(对齐官方筛选项):排序方式(两源各一套)+ 发布时间/内容时长(仅 B 站,
+ * YouTube 无对应参数)。选中即生效并重搜,弹层保持打开可连续调整。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SearchFilterSheet(
+  source: String,
+  orderKey: String,
+  pubtimeSeconds: Long,
+  duration: Int,
+  onDismiss: () -> Unit,
+  onSortSelected: (String) -> Unit,
+  onPubtimeSelected: (Long) -> Unit,
+  onDurationSelected: (Int) -> Unit,
+) {
+  ModalBottomSheet(onDismissRequest = onDismiss) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 16.dp)
+        .padding(bottom = 24.dp),
+    ) {
+      FilterSectionTitle(stringResource(R.string.search_filter_sort))
+      FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        sortOptionsFor(source).forEach { opt ->
+          FilterChip(
+            selected = orderKey == opt.key,
+            onClick = { onSortSelected(opt.key) },
+            label = { Text(stringResource(opt.titleRes)) },
+          )
+        }
+      }
+      if (source != SourceYoutube) {
+        FilterSectionTitle(stringResource(R.string.search_filter_pubtime))
+        FlowRow(
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          SearchPubtimeOptions.forEach { (seconds, labelRes) ->
+            FilterChip(
+              selected = pubtimeSeconds == seconds,
+              onClick = { onPubtimeSelected(seconds) },
+              label = { Text(stringResource(labelRes)) },
+            )
+          }
+        }
+        FilterSectionTitle(stringResource(R.string.search_filter_duration))
+        FlowRow(
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          SearchDurationOptions.forEach { (value, labelRes) ->
+            FilterChip(
+              selected = duration == value,
+              onClick = { onDurationSelected(value) },
+              label = { Text(stringResource(labelRes)) },
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun FilterSectionTitle(text: String) {
+  Text(
+    text = text,
+    style = MaterialTheme.typography.titleSmall,
+    color = MaterialTheme.colorScheme.onSurface,
+    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
+  )
 }
 
 @Composable

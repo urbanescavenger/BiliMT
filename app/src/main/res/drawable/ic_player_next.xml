@@ -1,0 +1,13 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="32dp"
+    android:height="32dp"
+    android:viewportWidth="32"
+    android:viewportHeight="32">
+    <!-- 下一集(skip-next):右向三角 + 竖条,对齐 B 站横屏播放器 ⏭ -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M8.9,7.2 L21.4,15.1 A1.05,1.05 0 0 1 21.4,16.9 L8.9,24.8 A1.05,1.05 0 0 1 7.3,23.9 L7.3,8.1 A1.05,1.05 0 0 1 8.9,7.2 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M23.1,7h1.8a1,1 0 0 1 1,1v16a1,1 0 0 1 -1,1h-1.8a1,1 0 0 1 -1,-1v-16a1,1 0 0 1 1,-1z" />
+</vector>

@@ -84,6 +84,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.image.BiliImageSizing
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
@@ -151,6 +152,10 @@ internal class SearchUiState {
       return
     }
     source = newSource
+    // 番剧类型仅 B 站源提供,切到其它源回退视频类型(YouTube 类型循环只有 视频⇄频道)。
+    if (searchType == SearchTypeBangumi) {
+      searchType = SearchTypeVideo
+    }
     // 排序 key 与来源耦合(B站 totalrank/click…,YouTube params 串),切源重置为该源默认「综合」。
     selectedOrderKey = defaultOrderKey(newSource)
     focusFirstResult = true
@@ -235,6 +240,8 @@ internal fun SearchScreen(
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
   onUserSelected: (UserSummary) -> Unit = {},
+  tvboxSourceStatus: com.kirin.mt.core.network.TvboxSourceStatus =
+    com.kirin.mt.core.network.TvboxSourceStatus.NotConfigured,
 ) {
   val coroutineScope = rememberCoroutineScope()
   val searchHistory by searchHistoryStore.history.collectAsState(initial = emptyList())
@@ -353,6 +360,7 @@ internal fun SearchScreen(
           onVideoSelected = onVideoSelected,
           onOwnerSelected = onOwnerSelected,
           onUserSelected = onUserSelected,
+          tvboxSourceStatus = tvboxSourceStatus,
         )
       }
     }
@@ -368,9 +376,17 @@ private fun SearchSourceToggle(
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
-  // 单个按钮占满整行居中,显示当前源;点击循环切换到另一个源。
-  val label = if (source == SourceBili) "BILIBILI" else "YOUTUBE"
-  val targetSource = if (source == SourceBili) SourceYoutube else SourceBili
+  // 单个按钮占满整行居中,显示当前源;点击循环切换到下一个源(B站→YouTube→影视库→B站)。
+  val label = when (source) {
+    SourceBili -> "BILIBILI"
+    SourceYoutube -> "YOUTUBE"
+    else -> stringResource(R.string.search_source_tvbox)
+  }
+  val targetSource = when (source) {
+    SourceBili -> SourceYoutube
+    SourceYoutube -> SourceTvbox
+    else -> SourceBili
+  }
   BiliFocusableSurface(
     scaleOnFocus = false,
     shape = RoundedCornerShape(BiliRadius.Pill),
@@ -841,6 +857,8 @@ private fun SearchResultsView(
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
   onUserSelected: (UserSummary) -> Unit = {},
+  tvboxSourceStatus: com.kirin.mt.core.network.TvboxSourceStatus =
+    com.kirin.mt.core.network.TvboxSourceStatus.NotConfigured,
 ) {
   val coroutineScope = rememberCoroutineScope()
   val sortFocusRequesters = remember(uiState.source) {
@@ -868,7 +886,21 @@ private fun SearchResultsView(
     uiState.focusedResultIndex = 0
     uiState.focusedResultKey = ""
     val nextState = try {
-      if (searchType == SearchTypeUser) {
+      if (source == SourceTvbox) {
+        // 影视库:聚合搜索单发全量,无排序/无翻页;searchType 仅视频(类型/排序 chip 均已隐藏)。
+        val videos = videoRepository.tvboxSearch(keyword = query)
+        if (videos.isEmpty()) {
+          SearchResultState.Empty
+        } else {
+          SearchResultState.Success(
+            videos = videos,
+            nextPage = FirstPage + 1,
+            loadingMore = false,
+            endReached = true,
+            loadMoreError = "",
+          )
+        }
+      } else if (searchType == SearchTypeUser) {
         if (source == SourceYoutube) {
           val page = videoRepository.youtubeSearchChannels(query = query)
           if (page.items.isEmpty()) {
@@ -896,6 +928,20 @@ private fun SearchResultsView(
               loadMoreError = "",
             )
           }
+        }
+      } else if (searchType == SearchTypeBangumi) {
+        // 番剧搜索:无排序,结果卡带 seasonId,点击进 PGC 季详情(壳层拦截)。
+        val seasons = videoRepository.searchBangumi(keyword = query, page = FirstPage)
+        if (seasons.isEmpty()) {
+          SearchResultState.Empty
+        } else {
+          SearchResultState.Success(
+            videos = seasons,
+            nextPage = FirstPage + 1,
+            loadingMore = false,
+            endReached = seasons.size < PageSize,
+            loadMoreError = "",
+          )
         }
       } else if (source == SourceYoutube) {
         val page = videoRepository.youtubeSearch(query = query, params = selectedOrderKey)
@@ -988,6 +1034,21 @@ private fun SearchResultsView(
             endReached = endReached,
             loadMoreError = "",
           )
+        } else if (searchType == SearchTypeBangumi) {
+          // 番剧搜索翻页:无排序。
+          val nextSeasons = videoRepository.searchBangumi(keyword = query, page = pageToLoad)
+          val mergedSeasons = latestState.videos.appendUniqueByBvid(nextSeasons)
+          nextContinuation = null
+          endReached = nextSeasons.size < PageSize ||
+            mergedSeasons.size == latestState.videos.size
+          latestState.copy(
+            videos = mergedSeasons,
+            nextPage = pageToLoad + 1,
+            continuation = nextContinuation,
+            loadingMore = false,
+            endReached = endReached,
+            loadMoreError = "",
+          )
         } else {
           val nextVideos: List<VideoSummary>
           if (source == SourceYoutube) {
@@ -1071,8 +1132,13 @@ private fun SearchResultsView(
       when (val currentState = uiState.resultState) {
         SearchResultState.Loading -> VideoGridSkeleton()
         SearchResultState.Empty -> FeedStatusScreen(
+          // 影视库源空结果分流:未配置/配置加载失败给引导文案(配置就绪才落通用「无结果」)。
           message = stringResource(
-            if (searchType == SearchTypeUser) R.string.search_empty_user else R.string.search_empty
+            if (source == SourceTvbox) {
+              tvboxEmptyMessageRes(tvboxSourceStatus)
+            } else {
+              emptyMessageResFor(searchType)
+            }
           )
         )
         is SearchResultState.Failed -> FeedStatusScreen(
@@ -1152,7 +1218,9 @@ private fun SearchResultsHeader(
   val homeColors = LocalHomeColors.current
   var titleFocused by remember { mutableStateOf(false) }
   // 视频类型才显示排序 chip;UP主 类型只剩类型 chip,标题 Down 需回退落类型 chip。
-  val showSort = searchType == SearchTypeVideo
+  // 影视库(TVBox)源排序/类型 chip 全隐藏(无排序/无 UP主 概念),标题 Down 直接落结果网格。
+  val isTvboxSource = source == SourceTvbox
+  val showSort = searchType == SearchTypeVideo && !isTvboxSource
   Column(
     modifier = Modifier.fillMaxWidth(),
     verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
@@ -1170,12 +1238,19 @@ private fun SearchResultsHeader(
           if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
             // 排序 chip 在类型 chip 前（对齐移动端顺序）;落当前选中排序 chip（避免聚焦未选中 chip 触发焦点即选中重搜）。
             // UP主 类型排序 chip 不在组合树,回退落第一个类型 chip（视频）。
+            // 影视库 源两组 chip 都不在组合树,直接落结果网格首卡。
             val moved = if (showSort) {
               runCatching { sortFocusRequesters.getValue(selectedOrderKey).requestFocus() }.getOrDefault(false)
             } else {
               false
             }
-            if (moved) true else runCatching { typeToggleFocusRequester.requestFocus() }.isSuccess
+            if (moved) {
+              true
+            } else if (isTvboxSource) {
+              runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
+            } else {
+              runCatching { typeToggleFocusRequester.requestFocus() }.isSuccess
+            }
           } else {
             false
           }
@@ -1205,7 +1280,8 @@ private fun SearchResultsHeader(
       }
     }
     val sortOptions = sortOptionsFor(source)
-    LazyRow(
+    // 影视库(TVBox)排序/类型两组 chip 全隐藏,整行 LazyRow 不组合,标题下直接落结果网格。
+    if (!isTvboxSource) LazyRow(
       modifier = Modifier
         .padding(horizontal = BiliSizing.SearchVideoGridHorizontalPadding)
         .fillMaxWidth()
@@ -1236,20 +1312,21 @@ private fun SearchResultsHeader(
         )
       }
     }
-    // 类型单开关按钮:恒标「UP主(B站)/频道(YouTube)」,选中态=UP主搜索,OK 在 视频⇄UP主 间翻转。
-    // 「视频」chip 已去掉——默认即视频,不会有误解(对齐移动端,2026-08-30 用户定稿)。
-    // 聚焦只高亮不切类型(P11-53 教训:焦点扫过触发重搜);行尾 Right 消费防焦点逃逸(P11-51 教训)。
+    // 类型循环按钮:OK 在 视频→番剧→UP主(B站)/ 视频⇄频道(YouTube) 间循环,按钮恒标「下一类型」。
+    // 默认即视频;聚焦只高亮不切类型(P11-53 教训:焦点扫过触发重搜);行尾 Right 消费防焦点逃逸(P11-51 教训)。
     // 显式 key:切类型时排序 chip 整组出入组合树,无 key 的 item 按位置挪位会被 LazyRow
     // 当作新 item 销毁重建 → 聚焦中的类型 chip 节点被 detach → 焦点逃出搜索屏落到侧栏头像,
     // autoConfirm 直接打开「我的」页(即「切频道退到头像」bug)。稳定 key 令节点跨重组存活,焦点不掉。
-    item(key = "type_toggle") {
+    // 影视库(TVBox)源无 UP主 概念,类型按钮整颗隐藏。
+    if (!isTvboxSource) item(key = "type_toggle") {
+      val nextType = nextSearchType(searchType, typeOptionsFor(source))
       SearchSortButton(
-        option = typeOptionsFor(source).last(),
-        selected = searchType == SearchTypeUser,
+        option = nextType,
+        selected = searchType != SearchTypeVideo,
         selectOnFocus = false,
         consumeRight = true,
         modifier = Modifier.focusRequester(typeToggleFocusRequester),
-        // 排序 chip 在前时该按钮 Left 交给默认焦点系统(移回排序行);UP主 类型(排序隐藏,按钮行首)Left 移侧栏。
+        // 排序 chip 在前时该按钮 Left 交给默认焦点系统(移回排序行);非视频类型(排序隐藏,按钮行首)Left 移侧栏。
         onMoveLeftToNav = if (!showSort) onMoveLeftToNav else null,
         onMoveUpToTitle = {
           runCatching { titleFocusRequester.requestFocus() }.isSuccess
@@ -1258,7 +1335,7 @@ private fun SearchResultsHeader(
           runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
         },
         onSelected = {
-          onTypeSelected(if (searchType == SearchTypeUser) SearchTypeVideo else SearchTypeUser)
+          onTypeSelected(nextType.key)
         },
       )
     }
@@ -1787,6 +1864,9 @@ private const val SearchTypeVideo = "video"
 /** 搜索类型：UP主/频道。 */
 private const val SearchTypeUser = "user"
 
+/** 搜索类型：番剧（B站 search_type=media_bangumi,仅 B 站源提供）。 */
+private const val SearchTypeBangumi = "media_bangumi"
+
 private val BiliSearchSortOptions = listOf(
   SearchSortOption("totalrank", R.string.search_sort_totalrank),
   SearchSortOption("click", R.string.search_sort_click),
@@ -1802,14 +1882,26 @@ private val YoutubeSearchSortOptions = listOf(
   SearchSortOption(YoutubeSearchParams.Rating, R.string.search_sort_rating),
 )
 
-/** 按来源返回排序选项(两源都有一套,对齐 B站 4 项)。 */
+/**
+ * 按来源返回排序选项(B站/YouTube 各一套)。影视库(TVBox)无排序:给单枚幽灵「综合」选项——
+ * chip 因 showSort=false 不渲染,但 sortFocusRequesters map 非空,结果网格首卡 Up 落空后
+ * 自然回退到标题(重新搜索),且 selectSource 的 defaultOrderKey 取得到 key。
+ */
+private val TvboxSearchSortOptions = listOf(
+  SearchSortOption("tvbox_default", R.string.search_sort_totalrank),
+)
+
 private fun sortOptionsFor(source: String): List<SearchSortOption> =
-  if (source == SourceYoutube) YoutubeSearchSortOptions else BiliSearchSortOptions
+  when {
+    source == SourceTvbox -> TvboxSearchSortOptions
+    source == SourceYoutube -> YoutubeSearchSortOptions
+    else -> BiliSearchSortOptions
+  }
 
 /** 各来源默认排序(综合)的 key,切换来源时用于重置选中项。 */
 private fun defaultOrderKey(source: String): String = sortOptionsFor(source).first().key
 
-/** 搜索类型选项：视频 + UP主（B站）/ 频道（YouTube）。key 即 [SearchTypeVideo]/[SearchTypeUser]。 */
+/** 搜索类型选项：视频 + 番剧 + UP主（B站）/ 频道（YouTube）。key 即 [SearchTypeVideo]/[SearchTypeBangumi]/[SearchTypeUser]。 */
 private fun typeOptionsFor(source: String): List<SearchSortOption> =
   if (source == SourceYoutube) {
     listOf(
@@ -1819,8 +1911,35 @@ private fun typeOptionsFor(source: String): List<SearchSortOption> =
   } else {
     listOf(
       SearchSortOption(SearchTypeVideo, R.string.search_type_video),
+      SearchSortOption(SearchTypeBangumi, R.string.search_type_bangumi),
       SearchSortOption(SearchTypeUser, R.string.search_type_user_bili),
     )
+  }
+
+/**
+ * 类型循环按钮的「下一类型」:取当前类型在选项里的下一项(不在列表按视频处理落到第一项)。
+ * B站 视频→番剧→UP主→视频;YouTube 视频⇄频道。
+ */
+private fun nextSearchType(current: String, options: List<SearchSortOption>): SearchSortOption {
+  val index = options.indexOfFirst { it.key == current }
+  return options[(index + 1).mod(options.size)]
+}
+
+/** 空结果文案按类型区分:UP主/番剧/视频。 */
+private fun emptyMessageResFor(searchType: String): Int = when (searchType) {
+  SearchTypeUser -> R.string.search_empty_user
+  SearchTypeBangumi -> R.string.search_empty_bangumi
+  else -> R.string.search_empty
+}
+
+/** 影视库源空结果文案:未配置给设置引导,配置加载失败给排查提示,就绪落通用「无结果」。 */
+private fun tvboxEmptyMessageRes(status: com.kirin.mt.core.network.TvboxSourceStatus): Int =
+  when (status) {
+    com.kirin.mt.core.network.TvboxSourceStatus.NotConfigured ->
+      R.string.search_tvbox_not_configured
+    is com.kirin.mt.core.network.TvboxSourceStatus.Failed ->
+      R.string.search_tvbox_load_failed
+    is com.kirin.mt.core.network.TvboxSourceStatus.Ready -> R.string.search_empty
   }
 
 private val SearchKeyboardRows = listOf(

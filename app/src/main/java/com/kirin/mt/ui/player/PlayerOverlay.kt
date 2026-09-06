@@ -243,6 +243,8 @@ internal fun BoxScope.PlayerOverlay(
       PlayerPanel.Episodes -> PlayerEpisodesPanel(
         episodes = metadata?.pages.orEmpty(),
         currentCid = request.cid,
+        // 影视库:当前选集按集索引高亮(分P 页号=选集索引)。
+        currentEpisodePage = request.tvboxEpisodeIndex.takeIf { request.isTvbox },
         focusedIndex = focusedPanelIndex,
         modifier = Modifier.align(Alignment.CenterEnd),
       )
@@ -960,6 +962,7 @@ private fun VideoshotCroppedCanvas(
 private fun PlayerEpisodesPanel(
   episodes: List<PlaybackEpisode>,
   currentCid: Long,
+  currentEpisodePage: Int?,
   focusedIndex: Int,
   modifier: Modifier = Modifier,
 ) {
@@ -1001,7 +1004,12 @@ private fun PlayerEpisodesPanel(
           EpisodeRow(
             title = convertChineseText(episode.panelTitle(index)),
             focused = focusedIndex == index,
-            selected = episode.cid == currentCid,
+            // 影视库:分P 页号=选集索引高亮(cid 恒 0 无从比对);B站/PGC 按 cid 匹配。
+            selected = if (currentEpisodePage != null) {
+              episode.page == currentEpisodePage
+            } else {
+              episode.cid == currentCid
+            },
           )
         }
       }

@@ -55,8 +55,13 @@ class BiliHttpClientFactory {
   fun createDownloadClient(): OkHttpClient {
     return OkHttpClient.Builder()
       .connectTimeout(DownloadConnectTimeoutSeconds, TimeUnit.SECONDS)
+      // readTimeout 300s→30s:每次 read 都重置,300s 意味着连接半死断流时下载要挂满 5 分钟
+      // 才报错,UI 停在 Downloading 看着像卡死。30s 断流即抛错,由 UpdateDownloader 的
+      // 断点续传重试接着传,不再整包重来。
       .readTimeout(DownloadReadTimeoutSeconds, TimeUnit.SECONDS)
       .writeTimeout(DownloadWriteTimeoutSeconds, TimeUnit.SECONDS)
+      // callTimeout 不在这里加:整调用上限须按包大小动态给(慢网下 27.5MB 本来就要几分钟),
+      // 由 UpdateDownloader 按每次下载 newBuilder() 覆盖。
       .build()
   }
 
@@ -74,7 +79,7 @@ class BiliHttpClientFactory {
   private companion object {
     const val NetworkTimeoutSeconds = 15L
     const val DownloadConnectTimeoutSeconds = 30L
-    const val DownloadReadTimeoutSeconds = 300L
+    const val DownloadReadTimeoutSeconds = 30L
     const val DownloadWriteTimeoutSeconds = 60L
   }
 }

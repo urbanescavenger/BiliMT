@@ -101,6 +101,7 @@ import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.player.PlaybackQuality
+import com.kirin.mt.core.player.PlaybackEpisode
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.LastPlayedStore
 import com.kirin.mt.core.player.PlaybackRequest
@@ -580,8 +581,8 @@ fun PlayerScreen(
   }
 
   suspend fun reportProgressNow(overrideProgressSeconds: Int? = null) {
-    // YouTube 无 B 站 heartbeat，跳过上报；本地进度保存仍走 saveProgressNow。
-    if (activeRequest.isYoutube) return
+    // YouTube/TVBox 无 B 站 heartbeat，跳过上报；本地进度保存仍走 saveProgressNow。
+    if (activeRequest.isYoutube || activeRequest.isTvbox) return
     val state = playerState as? PlayerScreenState.Ready ?: return
     val progressSeconds = overrideProgressSeconds
       ?: ((player.currentPosition.takeIf { it >= 0L } ?: playbackPositionState.longValue).coerceAtLeast(0L) / 1000L).toInt()
@@ -676,9 +677,20 @@ fun PlayerScreen(
         (playerState as? PlayerScreenState.Ready)?.info?.qualities?.indexOfFirst { it.id == quality.id }
       }?.takeIf { it >= 0 } ?: 0
       PlayerPanel.Speed -> PlayerSpeedOptions.indexOf(playbackSpeed).takeIf { it >= 0 } ?: 2
-      PlayerPanel.Episodes -> metadata?.pages
-        ?.indexOfFirst { episode -> episode.cid == displayRequest.cid }
-        ?.takeIf { it >= 0 } ?: 0
+      PlayerPanel.Episodes -> {
+        val focusIdx = metadata?.pages
+          ?.indexOfFirst { episode ->
+            // 影视库选集按集索引高亮(cid 恒 0 无从比对);B站/PGC 按 cid 匹配。
+            if (displayRequest.isTvbox) episode.page == displayRequest.tvboxEpisodeIndex
+            else episode.cid == displayRequest.cid
+          }
+          ?.takeIf { it >= 0 } ?: 0
+        Log.i(
+          PlayerPlaybackLogTag,
+          "episodes panel open: pages=${metadata?.pages?.size} focusIdx=$focusIdx tvbox=${displayRequest.isTvbox}",
+        )
+        focusIdx
+      }
       else -> 0
     }
     progressFocused = false
@@ -1207,15 +1219,31 @@ fun PlayerScreen(
         val episode = metadata?.pages?.getOrNull(focusedPanelIndex) ?: return
         coroutineScope.launch {
           saveAndReportProgressNow()
-          val nextRequest = displayRequest.copy(
-            cid = episode.cid,
-            epId = episode.epId,
-            startPositionMs = 0L,
-            preferredQualityId = selectedQuality?.id,
-            forceStartPosition = true,
-            historyPage = episode.page,
-          )
-          startPlaybackRequest(nextRequest, clearMetadata = false)
+          if (displayRequest.isTvbox) {
+            // 影视库选集:同线路内切集(episode.page=选集索引),进度归零重播;线路档不变。
+            Log.i(
+              PlayerPlaybackLogTag,
+              "tvbox episode switch: focusIdx=$focusedPanelIndex page=${episode.page} title=${episode.title} " +
+                "line=${displayRequest.tvboxCurrentLine?.name} pages=${metadata?.pages?.size}",
+            )
+            val nextRequest = displayRequest.copy(
+              tvboxEpisodeIndex = episode.page,
+              startPositionMs = 0L,
+              preferredQualityId = selectedQuality?.id,
+              forceStartPosition = true,
+            )
+            startPlaybackRequest(nextRequest, clearMetadata = false)
+          } else {
+            val nextRequest = displayRequest.copy(
+              cid = episode.cid,
+              epId = episode.epId,
+              startPositionMs = 0L,
+              preferredQualityId = selectedQuality?.id,
+              forceStartPosition = true,
+              historyPage = episode.page,
+            )
+            startPlaybackRequest(nextRequest, clearMetadata = false)
+          }
         }
         return
       }
@@ -1573,7 +1601,8 @@ fun PlayerScreen(
     playbackPaused = false
     currentCodecText = ""
     danmakuEntries = emptyList()
-    airJumpSegments = emptyList()
+    // airJumpSegments 不在此重置:同 bvid 重试/切码率时段仍有效,且 AirJump 效果(键=开关+bvid)
+    // 不会重启,清掉后整轮无段;重置责任全在 AirJump 效果,bvid 变化必然重启覆盖。
     warnedAirJumpIds = emptySet()
     skippedAirJumpIds = emptySet()
     lastAirJumpPositionMs = 0L
@@ -1582,10 +1611,21 @@ fun PlayerScreen(
     player.clearMediaItems()
     launchStep = "metadata"
     Log.i(PlayerPlaybackLogTag, "launch step: metadata (pgc=${activeRequest.isPgc} youtube=${activeRequest.isYoutube})")
-    // YouTube 无 B 站 view/metadata/分P，跳过 B 站专属的元数据、历史续播和 cid 解析，cid 恒为 0。
+    // YouTube/TVBox 无 B 站 view/metadata/分P，跳过 B 站专属的元数据、历史续播和 cid 解析,cid 恒为 0。
+    // TVBox 点播:合成元数据(分P=当前线路分集)供选集面板/自动连播;B站 cid 解析/互动同步全跳过。
     val isYoutube = activeRequest.isYoutube
-    val videoMetadata = if (isYoutube) {
-      null
+    val skipBiliMetadata = isYoutube || activeRequest.isTvbox
+    val videoMetadata = if (skipBiliMetadata) {
+      if (activeRequest.isTvbox) {
+        tvboxSyntheticMetadata(activeRequest).also {
+          // 诊断(TV 端选集黑屏):合成元数据是选集面板唯一数据源,空=面板「暂无数据」/切集无反应。
+          Log.i(
+            PlayerPlaybackLogTag,
+            "tvbox synthetic metadata: pages=${it?.pages?.size} line=${activeRequest.tvboxCurrentLine?.name} " +
+              "epIdx=${activeRequest.tvboxEpisodeIndex} lines=${activeRequest.tvboxLines.size}",
+          )
+        }
+      } else null
     } else {
       val existingMetadata = metadata
       if (existingMetadata != null && existingMetadata.bvid == activeRequest.bvid) {
@@ -1598,7 +1638,7 @@ fun PlayerScreen(
       }
     }
     metadata = videoMetadata
-    var effectiveRequest = if (isYoutube) {
+    var effectiveRequest = if (skipBiliMetadata) {
       activeRequest
     } else {
       activeRequest.withNextHistoryEpisodeIfNeeded(videoMetadata)
@@ -1614,14 +1654,14 @@ fun PlayerScreen(
           }
         }
     }
-    val cid = if (isYoutube) {
+    val cid = if (skipBiliMetadata) {
       0L
     } else {
       effectiveRequest.cid.takeIf { it > 0L }
         ?: videoMetadata?.cid?.takeIf { it > 0L }
         ?: playbackRepository.resolveCid(effectiveRequest.bvid)
     }
-    if (cid <= 0L && !isYoutube) {
+    if (cid <= 0L && !skipBiliMetadata) {
       playerState = PlayerScreenState.Failed(context.getString(R.string.player_error_missing_cid))
       return@LaunchedEffect
     }
@@ -2081,7 +2121,11 @@ fun PlayerScreen(
     }
   }
 
-  LaunchedEffect(airJumpAssistantEnabled, displayRequest.bvid, displayRequest.cid) {
+  // 空降助手:按 bvid 拉 SponsorBlock 段。键只放 bvid 不放 cid——段按视频缓存,与 cid 无关;
+  // 之前键含 cid,自动连播换视频时 cid 经历 0→真实值两次赋值,效果中途重启出两个并发 fetch,
+  // 后者先重置 airJumpSegments、前者的成功赋值被覆盖,自己又被 scope-left 异常杀掉,
+  // 整轮播放段为空(真机 19:14:26.229 loaded=1 后 .249 scope-left,重进才 hit cache)。
+  LaunchedEffect(airJumpAssistantEnabled, displayRequest.bvid) {
     airJumpSegments = emptyList()
     warnedAirJumpIds = emptySet()
     skippedAirJumpIds = emptySet()
@@ -2089,9 +2133,14 @@ fun PlayerScreen(
     if (!airJumpAssistantEnabled || displayRequest.bvid.isBlank()) {
       return@LaunchedEffect
     }
-    airJumpSegments = runCatching {
-      playbackRepository.getAirJumpSegments(displayRequest.bvid)
+    val targetBvid = displayRequest.bvid
+    val segments = runCatching {
+      playbackRepository.getAirJumpSegments(targetBvid)
     }.getOrDefault(emptyList())
+    // 期间换了视频(本协程已被取消重启)就不落状态,别把新实例已拉到的段覆盖成空。
+    if (displayRequest.bvid == targetBvid) {
+      airJumpSegments = segments
+    }
   }
 
   LaunchedEffect(danmakuSettings.enabled, displayRequest.cid) {
@@ -2817,6 +2866,27 @@ private fun PlaybackVideoMetadata?.hasEpisodeCid(cid: Long): Boolean {
   if (cid <= 0L) return false
   val pages = this?.pages.orEmpty()
   return pages.isEmpty() || pages.any { episode -> episode.cid == cid }
+}
+
+/** TVBox(影视库)合成元数据:分P=当前线路分集(选集面板/自动连播数据源);无线路/无分集为 null。 */
+internal fun tvboxSyntheticMetadata(request: PlaybackRequest): PlaybackVideoMetadata? {
+  val line = request.tvboxCurrentLine ?: return null
+  if (line.episodes.isEmpty()) return null
+  return PlaybackVideoMetadata(
+    aid = 0L,
+    bvid = request.bvid,
+    cid = 0L,
+    title = request.title,
+    ownerName = request.ownerName,
+    ownerFace = "",
+    ownerMid = 0L,
+    viewCount = 0,
+    danmakuCount = 0,
+    pubdate = 0L,
+    pages = line.episodes.mapIndexed { index, episode ->
+      PlaybackEpisode(cid = 0L, page = index, title = episode.title, durationSeconds = 0)
+    },
+  )
 }
 
 internal fun PlaybackRequest.withResolvedMetadata(

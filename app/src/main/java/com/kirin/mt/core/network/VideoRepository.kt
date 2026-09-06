@@ -47,6 +47,7 @@ class VideoRepository(
   private val youtubeRepository: YoutubeRepository,
   private val youtubeChannelStore: YoutubeChannelStore,
   private val progressStore: PlaybackProgressStore,
+  private val tvboxRepository: TvboxRepository,
 ) {
   private val spaceVideoRepository = SpaceVideoRepository(
     apiClient = apiClient,
@@ -274,11 +275,17 @@ class VideoRepository(
     keyword: String,
     page: Int = 1,
     order: String = SearchOrderTotalRank,
+    duration: Int = 0,
+    pubtimeBeginSeconds: Long = 0L,
+    pubtimeEndSeconds: Long = 0L,
   ): List<VideoSummary> {
     return searchVideoRepository.searchVideos(
       keyword = keyword,
       page = page,
       order = order,
+      duration = duration,
+      pubtimeBeginSeconds = pubtimeBeginSeconds,
+      pubtimeEndSeconds = pubtimeEndSeconds,
     ).withLocalProgress()
   }
 
@@ -292,6 +299,17 @@ class VideoRepository(
     page: Int = 1,
   ): List<UserSummary> {
     return searchVideoRepository.searchUsers(
+      keyword = keyword,
+      page = page,
+    )
+  }
+
+  /** 搜索番剧（B站 search_type=media_bangumi）。结果卡带 seasonId,点击进 PGC 季详情。 */
+  suspend fun searchBangumi(
+    keyword: String,
+    page: Int = 1,
+  ): List<VideoSummary> {
+    return searchVideoRepository.searchBangumi(
       keyword = keyword,
       page = page,
     )
@@ -324,6 +342,14 @@ class VideoRepository(
       items = feed.items.map(youtubeRepository::toVideoSummary).withLocalProgress(),
       continuation = feed.continuation,
     )
+  }
+
+  /**
+   * TVBox(影视库)聚合搜索:内置 MacCMS 采集站白名单全站扇出,同名同年份跨站合并=多线路。
+   * 无排序/无翻页(单发全量),见 [TvboxRepository]。
+   */
+  suspend fun tvboxSearch(keyword: String): List<VideoSummary> {
+    return tvboxRepository.search(keyword)
   }
 
   suspend fun youtubeSubscriptionsFeed(

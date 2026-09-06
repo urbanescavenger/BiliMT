@@ -2,7 +2,9 @@ package com.kirin.mt.core.player
 
 import com.kirin.mt.core.model.SourceBili
 import com.kirin.mt.core.model.SourceIptv
+import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
+import com.kirin.mt.core.model.TvboxLine
 import com.kirin.mt.core.youtube.InnerTubeClient
 
 data class PlaybackRequest(
@@ -35,8 +37,12 @@ data class PlaybackRequest(
   val liveRoomId: Long = 0L,
   /** 内容来源：[SourceBili]（默认）/ [SourceYoutube] / [SourceIptv]。YouTube 请求 bvid 字段承载 videoId。 */
   val source: String = SourceBili,
-  /** IPTV 频道镜像源 URL 列表（仅 [SourceIptv] 请求填充）。播放器里按 selectedQn 当源索引切换。 */
+  /** IPTV 频道镜像源/TVBox 跨站线路 URL 列表（仅 [SourceIptv]/[SourceTvbox] 请求填充）。播放器里按 selectedQn 当源索引切换。 */
   val iptvUrls: List<String> = emptyList(),
+  /** TVBox 线路表（仅 [SourceTvbox] 请求填充）：每线路=一个采集站+完整分集。清晰度面板=线路列表([preferredQualityId]=线路索引)。 */
+  val tvboxLines: List<TvboxLine> = emptyList(),
+  /** TVBox 当前选集索引（当前线路内；选集面板/自动连播切集用）。 */
+  val tvboxEpisodeIndex: Int = 0,
   /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 请求填充，用于播放历史进频道主页；B 站为空串。 */
   val channelId: String = "",
   /**
@@ -52,9 +58,22 @@ data class PlaybackRequest(
   val isLive: Boolean
     get() = liveRoomId > 0L
 
-  /** 这是 IPTV 播放请求：直链 m3u8，跳过 B 站 getRoomPlayInfo。 */
+  /** 这是 IPTV/TVBox 直链 m3u8 播放请求：跳过 B 站 getRoomPlayInfo，共用 LivePlayerScreen 直链路径与线路切换。 */
   val isIptv: Boolean
+    get() = source == SourceIptv || source == SourceTvbox
+
+  /** 这是 IPTV 直播频道请求（IPTV 专属语义：m3u 台列表/频道面板/「断流即切源」，TVBox 点播不具备）。 */
+  val isIptvChannel: Boolean
     get() = source == SourceIptv
+
+  /** 这是 TVBox（影视库）点播请求：MacCMS 采集站直链/懒解析 m3u8,线路=清晰度档,线路内可切集。 */
+  val isTvbox: Boolean
+    get() = source == SourceTvbox
+
+  /** TVBox 当前线路(线路索引=preferredQualityId);非 TVBox 或无线路表为 null。 */
+  val tvboxCurrentLine: TvboxLine?
+    get() = if (tvboxLines.isEmpty()) null
+    else tvboxLines.getOrNull((preferredQualityId ?: 0).coerceIn(0, tvboxLines.lastIndex))
 
   /** 这是 YouTube 播放请求：走 InnerTube /player 解析 progressive 直链，跳过 B 站 DASH playurl。 */
   val isYoutube: Boolean
@@ -166,6 +185,10 @@ data class PlaybackEpisode(
   val durationSeconds: Int,
   /** PGC 剧集 ep_id；UGC 多 P 为 0。 */
   val epId: Long = 0L,
+  /** 角标(接口 badge,如「会员」);空=无。选集面板卡片右上角。 */
+  val badge: String = "",
+  /** 序号标签(如「第 1198 话」,PGC 正片短标题数字时生成);空=显示「P{page}」。 */
+  val indexLabel: String = "",
 )
 
 data class PlaybackTrack(

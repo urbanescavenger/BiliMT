@@ -73,6 +73,7 @@ import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.SourceIptv
+import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.settings.AppPerformancePolicy
 import com.kirin.mt.core.settings.AppSettings
@@ -194,6 +195,7 @@ fun BiliTvApp(
   webdavBackupService: com.kirin.mt.core.webdav.WebDavBackupService,
   iptvRepository: com.kirin.mt.core.network.IptvRepository,
   iptvProbeStore: com.kirin.mt.core.player.IptvSourceProbeStore,
+  tvboxRepository: com.kirin.mt.core.network.TvboxRepository,
 ) {
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
@@ -597,6 +599,18 @@ fun BiliTvApp(
         coverUrl = pic,
         source = SourceIptv,
         iptvUrls = iptvUrls,
+      )
+    }
+    // TVBox(影视库)卡片:点播,VOD 播放器(PlayerScreen),线路表带每站完整分集(选集在线路内)。
+    if (source == SourceTvbox) {
+      return PlaybackRequest(
+        bvid = "",
+        cid = 0L,
+        title = title,
+        ownerName = ownerName,
+        coverUrl = pic,
+        source = SourceTvbox,
+        tvboxLines = tvboxLines,
       )
     }
     // 直播卡片:走直播播放(独立 LivePlayerScreen),不带点播字段。
@@ -1213,6 +1227,26 @@ fun BiliTvApp(
                     ).show()
                   }
                 },
+                onTvboxConfigChange = { url ->
+                  coroutineScope.launch {
+                    appSettingsStore.setTvboxConfigUrl(url)
+                    // 保存后拉一次 config 校验,成功提示可用站数,失败提示检查地址。
+                    val siteCount = tvboxRepository.validateConfig(url)
+                    if (siteCount >= 0) {
+                      Toast.makeText(
+                        localizedContext,
+                        localizedContext.getString(R.string.settings_tvbox_connect_success, siteCount),
+                        Toast.LENGTH_SHORT,
+                      ).show()
+                    } else {
+                      Toast.makeText(
+                        localizedContext,
+                        R.string.settings_tvbox_connect_failed,
+                        Toast.LENGTH_SHORT,
+                      ).show()
+                    }
+                  }
+                },
                 onPipedInstanceChange = { url ->
                   coroutineScope.launch {
                     appSettingsStore.setPipedInstanceUrl(url)
@@ -1291,6 +1325,7 @@ fun BiliTvApp(
                   videoRepository = videoRepository,
                   searchHistoryStore = searchHistoryStore,
                   uiState = searchUiState,
+                  tvboxSourceStatus = tvboxRepository.sourceStatus.collectAsState().value,
                   firstItemFocusRequester = searchFocusRequester,
                   restoreFocusRequestKey = restoreFocusRequestKeyFor(AppDestination.Search),
                   onRestoreFocusHandled = { key -> clearFocusRestoreRequest(AppDestination.Search, key) },
@@ -1304,11 +1339,20 @@ fun BiliTvApp(
                     }.isSuccess
                   },
                   onVideoSelected = { video ->
-                    playQueue = emptyList()
-                    playbackRequest = video.toPlaybackRequest()
+                    if (video.seasonId > 0) {
+                      // 番剧搜索卡(seasonId>0):进 PGC 季详情,epId=0 由季详情自行选首集。
+                      pgcSeasonRequest = com.kirin.mt.ui.pgc.PgcSeasonRequest(seasonId = video.seasonId)
+                    } else {
+                      playQueue = emptyList()
+                      playbackRequest = video.toPlaybackRequest()
+                    }
                   },
                   onOwnerSelected = { video ->
-                    if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
+                    // 影视库(TVBox)卡「UP主」位是线路条数,无空间页可进,忽略。
+                    // 番剧卡「UP主」位是声优串,mid=0 无空间页,忽略。
+                    if (video.source == SourceTvbox || video.seasonId > 0) {
+                      // no-op
+                    } else if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
                       youtubeChannelUiState.reset()
                       channelOrigin = SpaceOrigin.Content
                       channelPlaybackBehind = false
@@ -1520,7 +1564,7 @@ fun BiliTvApp(
             .fillMaxSize()
             .background(BiliColors.VideoBlack),
         ) {
-          if (displayedPlaybackRequest.isLive || displayedPlaybackRequest.isIptv) {
+          if (displayedPlaybackRequest.isLive || displayedPlaybackRequest.isIptvChannel) {
             com.kirin.mt.ui.player.LivePlayerScreen(
               request = displayedPlaybackRequest,
               playbackRepository = playbackRepository,

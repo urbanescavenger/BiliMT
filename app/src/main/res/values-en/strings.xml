@@ -288,7 +288,22 @@
     <string name="search_loading">Searching…</string>
     <string name="search_empty">No videos found</string>
     <string name="search_empty_user">No matching creators/channels</string>
+    <string name="search_empty_bangumi">No matching anime</string>
     <string name="search_type_video">Videos</string>
+    <string name="search_type_bangumi">Anime</string>
+    <string name="search_type_comprehensive">Featured</string>
+    <string name="search_filter">Filter</string>
+    <string name="search_filter_sort">Sort by</string>
+    <string name="search_filter_pubtime">Publish time</string>
+    <string name="search_filter_duration">Duration</string>
+    <string name="search_filter_any">Any</string>
+    <string name="search_filter_time_day">Last 24 hours</string>
+    <string name="search_filter_time_week">Last week</string>
+    <string name="search_filter_time_half_year">Last 6 months</string>
+    <string name="search_filter_duration_10">0-10 min</string>
+    <string name="search_filter_duration_30">10-30 min</string>
+    <string name="search_filter_duration_60">30-60 min</string>
+    <string name="search_filter_duration_60p">60+ min</string>
     <string name="search_type_user_bili">Creators</string>
     <string name="search_type_user_youtube">Channels</string>
     <string name="search_user_fans">%1$s fans</string>
@@ -418,6 +433,8 @@
     <string name="player_error_empty_tracks">Playback API returned no usable audio/video tracks</string>
     <string name="player_error_launch_timeout">Start timeout (30s). Retry.</string>
     <string name="player_control_episodes">Episodes</string>
+    <string name="player_control_next_episode">Next episode</string>
+    <string name="player_speed_label">Speed</string>
     <string name="player_control_up">UP</string>
     <string name="player_control_related">Related</string>
     <string name="player_control_settings">Settings</string>
@@ -533,6 +550,7 @@
     <string name="settings_update_status_downloaded">Download complete. Tap to install.</string>
     <string name="search_source_bili">Bilibili</string>
     <string name="search_source_youtube">YouTube</string>
+    <string name="search_source_tvbox">TVBox</string>
     <string name="home_section_youtube_trending">YouTube trending</string>
     <string name="feed_tab_youtube">YouTube follows</string>
     <string name="feed_tab_playlist">Playlists</string>
@@ -608,6 +626,15 @@
     <string name="settings_youtube_delivery_priority_description">SABR first (default); switch to DASH self-compose for stuttering/slow sources, which can reach 4K.</string>
     <string name="settings_iptv_connect_success">IPTV source connected</string>
     <string name="settings_iptv_connect_failed">IPTV source connection failed</string>
+    <!-- TVBox config source (P11-81) -->
+    <string name="settings_tvbox_title">TVBox source</string>
+    <string name="settings_tvbox_description">Remote TVBox config URL; search reads its direct-link sites (type 0/1 only)</string>
+    <string name="settings_tvbox_url_label">Config URL</string>
+    <string name="settings_tvbox_configure_hint">Not configured, tap to edit</string>
+    <string name="settings_tvbox_connect_success">TVBox config loaded, %1$d sites</string>
+    <string name="settings_tvbox_connect_failed">Failed to load TVBox config, check the config URL</string>
+    <string name="search_tvbox_not_configured">TVBox not configured. Set a TVBox config URL in Settings</string>
+    <string name="search_tvbox_load_failed">Failed to load the TVBox config. Check the config URL in Settings</string>
     <string name="settings_webdav_username_label">Username</string>
     <string name="settings_webdav_password_label">Password</string>
     <string name="settings_webdav_field_hint">Not filled</string>
@@ -636,6 +663,7 @@
     <string name="settings_webdav_item_watched">Watched list</string>
     <string name="settings_webdav_item_biliaccount">Bilibili account</string>
     <string name="settings_webdav_item_iptv">IPTV config</string>
+    <string name="settings_webdav_item_tvbox">TVBox config</string>
     <string name="settings_webdav_item_logs">Logs</string>
     <string name="settings_webdav_start_backup">Start backup</string>
     <string name="settings_webdav_start_restore">Start restore</string>
@@ -650,6 +678,8 @@
     <string name="player_listen_mode">Audio mode</string>
     <string name="player_error_failed">Playback failed</string>
     <string name="player_paused_tap_play">Paused. Tap to play.</string>
+    <string name="player_control_play">Play</string>
+    <string name="player_control_pause">Pause</string>
     <string name="danmaku_send">Send danmaku</string>
     <string name="danmaku_empty_content">Danmaku cannot be empty</string>
     <string name="danmaku_sent">Danmaku sent</string>

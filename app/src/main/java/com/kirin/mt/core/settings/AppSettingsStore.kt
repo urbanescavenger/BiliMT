@@ -100,6 +100,7 @@ class AppSettingsStore(private val context: Context) {
       iptvSourceUrl = preferences[Keys.IptvSourceUrl] ?: "",
       iptvSourceUsername = preferences[Keys.IptvSourceUsername] ?: "",
       iptvSourcePassword = preferences[Keys.IptvSourcePassword] ?: "",
+      tvboxConfigUrl = preferences[Keys.TvboxConfigUrl] ?: "",
       youtubeUsePiped = preferences[Keys.YoutubeUsePiped] ?: false,
       pipedInstanceUrl = preferences[Keys.PipedInstanceUrl] ?: "",
       sabrForceSessionVideoItag = preferences[Keys.SabrForceSessionVideoItag] ?: false,
@@ -150,6 +151,13 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setIptvSourcePassword(password: String) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.IptvSourcePassword] = password
+    }
+  }
+
+  /** TVBox 配置 URL(影视库源)。 */
+  suspend fun setTvboxConfigUrl(url: String) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.TvboxConfigUrl] = url
     }
   }
 
@@ -452,6 +460,7 @@ class AppSettingsStore(private val context: Context) {
     val IptvSourceUrl = stringPreferencesKey("iptv_source_url")
     val IptvSourceUsername = stringPreferencesKey("iptv_source_username")
     val IptvSourcePassword = stringPreferencesKey("iptv_source_password")
+    val TvboxConfigUrl = stringPreferencesKey("tvbox_config_url")
     val YoutubeUsePiped = booleanPreferencesKey("youtube_use_piped")
     val PipedInstanceUrl = stringPreferencesKey("piped_instance_url")
     val SabrForceSessionVideoItag = booleanPreferencesKey("sabr_force_session_video_itag")

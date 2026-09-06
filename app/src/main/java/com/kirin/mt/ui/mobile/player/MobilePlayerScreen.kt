@@ -41,6 +41,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -83,6 +84,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -174,6 +176,7 @@ import com.kirin.mt.ui.player.PlayerDanmakuLayer
 import com.kirin.mt.ui.player.appendSabrStartMs
 import com.kirin.mt.ui.player.buildDashMediaItem
 import com.kirin.mt.ui.player.hasRemoteManifest
+import com.kirin.mt.ui.player.tvboxSyntheticMetadata
 import com.kirin.mt.ui.player.isHlsManifest
 import com.kirin.mt.ui.player.isSabrDash
 import com.kirin.mt.ui.player.isSabrProgressive
@@ -385,6 +388,9 @@ fun MobilePlayerScreen(
   var settingsSheet by remember { mutableStateOf(false) }
   // alpha.9X(恢复清晰度选择):底栏画质下拉菜单(挂在 HD 图标按钮上)
   var showQualityMenu by remember { mutableStateOf(false) }
+  // P11-78(B站式横屏底栏):选集底部弹层 / 倍速下拉菜单(挂在横屏底栏文字按钮上)
+  var showEpisodeSheet by remember { mutableStateOf(false) }
+  var showSpeedMenu by remember { mutableStateOf(false) }
   // 底栏音轨下拉菜单(挂在音轨图标按钮上,仅 YouTube 多音轨视频显示)
   var showAudioMenu by remember { mutableStateOf(false) }
   // 下载清晰度选择对话框(底栏下载按钮打开)
@@ -545,7 +551,7 @@ fun MobilePlayerScreen(
           )
         }
       }
-      if (!activeRequest.isYoutube) {
+      if (!activeRequest.isYoutube && !activeRequest.isTvbox) {
         val progressSeconds = progressSecondsOverride
           ?: (positionMs / 1000L).toInt()
         runCatching {
@@ -735,22 +741,27 @@ fun MobilePlayerScreen(
     activeRequest = request
     player.clearMediaItems()
     try {
-      // YouTube 无 B 站 view/metadata/cid，跳过 B 站元数据与 cid 解析。
+      // YouTube/TVBox 无 B 站 view/metadata/cid，跳过 B 站元数据与 cid 解析。
+      // TVBox 点播:线路表在 request.iptvUrls,元数据/分P/B站 cid 解析全跳过(对齐 YouTube 路径)。
       val isYoutube = request.isYoutube
-      val videoMetadata = if (isYoutube) null else runCatching { playbackRepository.getVideoMetadata(request) }.getOrNull()
+      val skipBiliMetadata = isYoutube || request.isTvbox
+      // TVBox:合成元数据(分P=当前线路分集)供选集列表/自动连播;B站 metadata 不拉。
+      val videoMetadata = if (skipBiliMetadata) {
+        if (request.isTvbox) tvboxSyntheticMetadata(request) else null
+      } else runCatching { playbackRepository.getVideoMetadata(request) }.getOrNull()
       metadata = videoMetadata
       // YouTube 简介 Tab 单独拉 /player videoDetails（view/metadata 走 B 站，YouTube 无）。
       youtubeDetailLoading = isYoutube
       youtubeDetail = if (isYoutube) runCatching { videoRepository.getYoutubeVideoDetail(request.bvid) }.getOrNull() else null
       youtubeDetailLoading = false
-      val cid = if (isYoutube) {
+      val cid = if (skipBiliMetadata) {
         0L
       } else {
         request.cid.takeIf { it > 0L }
           ?: videoMetadata?.cid?.takeIf { it > 0L }
           ?: playbackRepository.resolveCid(request.bvid)
       }
-      if (cid <= 0L && !isYoutube) {
+      if (cid <= 0L && !skipBiliMetadata) {
         playerState = MobilePlayerState.Failed(context.getString(R.string.player_error_missing_cid))
         return
       }
@@ -1231,8 +1242,10 @@ fun MobilePlayerScreen(
     }
   }
 
-  // 空降助手:按 bvid 拉 SponsorBlock 段;切集/开关变化时重置四组状态(镜像 TV)
-  LaunchedEffect(airJumpAssistantEnabled, activeRequest.bvid, activeRequest.cid) {
+  // 空降助手:按 bvid 拉 SponsorBlock 段;开关/bvid 变化时重置四组状态(镜像 TV)。
+  // 键不放 cid:段按视频缓存,自动连播 cid 0→真实值两次赋值会让效果中途重启,
+  // 并发 fetch 互相覆盖(后者重置+被 scope-left 杀掉),整轮播放无段。
+  LaunchedEffect(airJumpAssistantEnabled, activeRequest.bvid) {
     airJumpSegments = emptyList()
     warnedAirJumpIds = emptySet()
     skippedAirJumpIds = emptySet()
@@ -1240,9 +1253,14 @@ fun MobilePlayerScreen(
     if (!airJumpAssistantEnabled || activeRequest.bvid.isBlank()) {
       return@LaunchedEffect
     }
-    airJumpSegments = runCatching {
-      playbackRepository.getAirJumpSegments(activeRequest.bvid)
+    val targetBvid = activeRequest.bvid
+    val segments = runCatching {
+      playbackRepository.getAirJumpSegments(targetBvid)
     }.getOrDefault(emptyList())
+    // 期间换了视频(本协程已被取消重启)就不落状态,别把新实例已拉到的段覆盖成空。
+    if (activeRequest.bvid == targetBvid) {
+      airJumpSegments = segments
+    }
   }
 
   // 相关视频:播放列表场景相关 = 播放列表后续(与自动连播 computeNextRequest 同源同序,不依赖在线接口成败);
@@ -1326,6 +1344,30 @@ fun MobilePlayerScreen(
       scope.launch { loadRequest(playQueue[idx].toPlaybackRequest().copy(preferredQualityId = selectedQualityId)) }
     } else {
       onPlayVideo(video)
+    }
+  }
+
+  // 选集切换(P11-78 选集弹层与简介 Tab 共用):影视库同线路切集(page=选集索引,进度归零),
+  // B 站/PGC 按 cid/epId 切分集;都带当前画质偏好。
+  val selectEpisode: (PlaybackEpisode) -> Unit = { ep ->
+    scope.launch {
+      if (activeRequest.isTvbox) {
+        loadRequest(activeRequest.copy(
+          tvboxEpisodeIndex = ep.page,
+          startPositionMs = 0L,
+          preferredQualityId = selectedQualityId,
+          forceStartPosition = true,
+        ))
+      } else {
+        loadRequest(activeRequest.copy(
+          cid = ep.cid,
+          epId = ep.epId,
+          startPositionMs = 0L,
+          preferredQualityId = selectedQualityId,
+          forceStartPosition = true,
+          historyPage = ep.page,
+        ))
+      }
     }
   }
 
@@ -1688,6 +1730,232 @@ fun MobilePlayerScreen(
       if (controlsVisible && playerState is MobilePlayerState.Ready) {
         val readyInfo = (playerState as MobilePlayerState.Ready).info
         val keyboardController = LocalSoftwareKeyboardController.current
+        // 发送弹幕动作:横屏胶囊与竖屏内联输入栏共用(发在当前播放位置,成功后本地插入立即渲染)。
+        val sendDanmakuAction: () -> Unit = {
+          val msg = danmakuInputText.trim()
+          Log.i(DanmakuSendLogTag, "onSend triggered msg=${msg.length}c cid=${readyInfo.cid} bvid=${readyInfo.bvid}")
+          if (msg.isBlank()) {
+            Toast.makeText(context, context.getString(R.string.danmaku_empty_content), Toast.LENGTH_SHORT).show()
+          } else {
+            val progressMs = playbackPositionState.longValue
+            danmakuSending = true
+            scope.launch {
+              val result = runCatching {
+                playbackRepository.sendDanmaku(
+                  cid = readyInfo.cid,
+                  bvid = readyInfo.bvid,
+                  msg = msg,
+                  progressMs = progressMs,
+                )
+              }
+              danmakuSending = false
+              result
+                .onSuccess { posted ->
+                  if (posted != null) {
+                    // 本地插入,立即在弹幕层渲染(白色滚动 + 粉色粗描边识别)。
+                    // showAtMs 用响应回来时的实时播放头 + 前置偏移:发送网络请求耗时 1-3s,
+                    // 期间视频在播,用发送时的 progressMs 会让 showAtMs 落后于实际播放头被引擎跳过
+                    // (Bytedance 对 showAtTime < start(time) 不显示)。实时位置 + 1s 保证落在 set time 之后。
+                    val livePos = player.currentPosition
+                    val showAtMs = livePos + LocalDanmakuLeadMs
+                    danmakuEntries = danmakuEntries + DanmakuEntry(
+                      showAtMs = showAtMs,
+                      text = msg,
+                      mode = DanmakuMode.Scroll,
+                      color = android.graphics.Color.WHITE,
+                      isMine = true,
+                    )
+                    danmakuInputText = ""
+                    danmakuInputActive = false
+                    keyboardController?.hide()
+                    Toast.makeText(context, context.getString(R.string.danmaku_sent), Toast.LENGTH_SHORT).show()
+                  } else {
+                    // sendDanmaku 对未登录/参数非法返回 null(未抛)。
+                    Toast.makeText(context, context.getString(R.string.danmaku_send_requires_login), Toast.LENGTH_LONG).show()
+                  }
+                }
+                .onFailure { error ->
+                  if (error is CancellationException) throw error
+                  Log.w(DanmakuSendLogTag, "send danmaku failed", error)
+                  val message = when (error) {
+                    is BiliApiCodeException -> context.getString(R.string.danmaku_api_error, error.code, error.biliMessage)
+                    is BiliNetworkException -> context.getString(R.string.danmaku_network_error, error.statusCode)
+                    else -> context.getString(R.string.danmaku_send_failed, error.localizedMessage ?: error::class.simpleName)
+                  }
+                  Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                }
+            }
+          }
+        }
+        // 画质选中动作:横屏文字入口与竖屏 HD 图标入口共用(选中即重载,续播当前位置)。
+        val onQualitySelected: (PlaybackQuality) -> Unit = { q ->
+          showQualityMenu = false
+          Log.i(MobilePlayerLogTag, "点清晰度: usingCachedPlayback=$usingCachedPlayback 点=${q.id} '${q.description}' 现播档=$actualQualityId 菜单档数=${readyInfo.qualities.size} bvid=${activeRequest.bvid} cid=${activeRequest.cid}")
+          selectedQualityId = q.id
+          actualQualityId = q.id
+          scope.launch {
+            loadRequest(activeRequest.copy(
+              startPositionMs = player.currentPosition.takeIf { it > 0L }
+                ?: playbackPositionState.longValue,
+              preferredQualityId = q.id,
+            ))
+          }
+        }
+        if (fullscreen) {
+          // P11-78 B站式横屏底栏:时间行(左上)→ 全宽进度条 → 控制行
+          // (⏸/⏭ 弹幕开关 弹幕设置 弹幕胶囊 | 选集 倍速 画质文字 全屏退出)。竖屏底栏保持原布局不变。
+          // 下一集可用性按当前 metadata/playQueue 记忆化,避免进度 tick 重组每 500ms 重算打日志。
+          val nextRequest = remember(activeRequest, metadata, playQueue) { computeNextRequest() }
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .background(Color.Black)
+              .padding(horizontal = 12.dp, vertical = 4.dp),
+          ) {
+            Text(
+              text = "${formatMs(positionMs)} / ${formatMs(durationMs)}",
+              color = Color.White,
+              style = MaterialTheme.typography.labelMedium,
+            )
+            SlimSeekSlider(
+              value = (seekPreviewMs ?: positionMs).toFloat().coerceIn(0f, durationMs.toFloat()),
+              valueRange = 0f..durationMs.toFloat(),
+              onValueChange = {
+                if (seekPreviewMs == null) wasPlayingBeforeSeek = player.playWhenReady
+                seekPreviewMs = it.toLong()
+              },
+              onValueChangeFinished = {
+                seekPreviewMs?.let { target ->
+                  routeSeek(target)
+                  playbackPositionState.longValue = target
+                  danmakuSyncToken += 1L
+                }
+                if (wasPlayingBeforeSeek) player.play()
+                seekPreviewMs = null
+              },
+              modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+            )
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+              MobilePlayerIconButton(
+                iconRes = if (isPlaying) R.drawable.ic_player_pause else R.drawable.ic_player_play,
+                contentDescription = stringResource(if (isPlaying) R.string.player_control_pause else R.string.player_control_play),
+                tint = Color.White,
+                onClick = {
+                  pauseInteractionToken++
+                  togglePlayback()
+                },
+              )
+              // 下一集:仅当有可播下一项(播放列表后续 / 分P下一集)显示;B站恒显,我们按可用性显隐。
+              if (nextRequest != null) {
+                MobilePlayerIconButton(
+                  iconRes = R.drawable.ic_player_next,
+                  contentDescription = stringResource(R.string.player_control_next_episode),
+                  tint = Color.White,
+                  onClick = { scope.launch { loadRequest(nextRequest) } },
+                )
+              }
+              if (!activeRequest.isYoutube) {
+                // 弹幕开关:直接切换弹幕层显隐(持久化)。
+                MobilePlayerIconButton(
+                  iconRes = R.drawable.ic_player_subtitles,
+                  contentDescription = stringResource(R.string.player_settings_danmaku_toggle),
+                  tint = if (danmakuSettings.enabled) BiliColors.BiliPink else BiliColors.TextPrimary,
+                  onClick = { scope.launch { danmakuSettingsStore.setEnabled(!danmakuSettings.enabled) } },
+                )
+                // 弹幕设置:打开既有设置面板(倍速/弹幕/分享)。
+                MobilePlayerIconButton(
+                  iconRes = R.drawable.ic_nav_settings,
+                  contentDescription = stringResource(R.string.player_settings_danmaku),
+                  tint = Color.White,
+                  onClick = { settingsSheet = true },
+                )
+                // 弹幕胶囊输入(B站式):占据中部弹性空间,键盘发送/点「发送」。
+                DanmakuPill(
+                  text = danmakuInputText,
+                  onTextChange = { if (it.length <= 100) danmakuInputText = it },
+                  sending = danmakuSending,
+                  onSend = sendDanmakuAction,
+                  modifier = Modifier.weight(1f),
+                )
+              } else {
+                Spacer(Modifier.weight(1f))
+              }
+              // 选集:多P/PGC/影视库分集才显示(与简介 Tab 同源 metadata.pages)。
+              if ((metadata?.pages?.size ?: 0) > 1) {
+                TextButton(onClick = { showEpisodeSheet = true }) {
+                  Text(stringResource(R.string.player_control_episodes), color = Color.White)
+                }
+              }
+              // 倍速:文字按钮(非 1.0x 时显示当前倍速),菜单列全部档位。
+              Box {
+                TextButton(onClick = { showSpeedMenu = true }) {
+                  Text(
+                    text = if (playbackSpeed == 1f) stringResource(R.string.player_speed_label)
+                    else "${playbackSpeed}x",
+                    color = Color.White,
+                  )
+                }
+                DropdownMenu(
+                  expanded = showSpeedMenu,
+                  onDismissRequest = { showSpeedMenu = false },
+                  containerColor = Color(0xFF1A1A20),
+                ) {
+                  PlaybackSpeedOptions.forEach { rate ->
+                    DropdownMenuItem(
+                      text = {
+                        Text(
+                          text = "${rate}x",
+                          color = if (rate == playbackSpeed) Color(0xFFFB7299) else Color.White,
+                        )
+                      },
+                      onClick = {
+                        showSpeedMenu = false
+                        playbackSpeed = rate
+                        player.setPlaybackSpeed(rate)
+                      },
+                    )
+                  }
+                }
+              }
+              // 画质:文字按钮显示当前实际档位(显示=实际播放);缓存命中只读静态文字。
+              if (usingCachedPlayback) {
+                Text(
+                  text = readyInfo.selectedQuality.description,
+                  color = Color.White,
+                  style = MaterialTheme.typography.labelLarge,
+                  modifier = Modifier.padding(horizontal = 8.dp),
+                )
+              } else if (readyInfo.qualities.isNotEmpty()) {
+                PlaybackQualityMenu(
+                  qualities = readyInfo.qualities,
+                  actualQualityId = actualQualityId,
+                  expanded = showQualityMenu,
+                  onDismiss = { showQualityMenu = false },
+                  onSelect = onQualitySelected,
+                  trigger = {
+                    TextButton(onClick = { showQualityMenu = true }) {
+                      Text(
+                        text = readyInfo.qualities.firstOrNull { it.id == actualQualityId }?.description
+                          ?: readyInfo.selectedQuality.description,
+                        color = Color.White,
+                      )
+                    }
+                  },
+                )
+              }
+              // 全屏退出保留在行尾(B站靠返回手势退出,我们保留显式入口避免无从退出的回归)。
+              MobilePlayerIconButton(
+                iconRes = R.drawable.ic_player_fullscreen_exit,
+                contentDescription = stringResource(R.string.player_fullscreen_exit),
+                tint = Color.White,
+                onClick = { fullscreen = false },
+              )
+            }
+          }
+        } else {
         Column(
           modifier = Modifier
             .fillMaxWidth()
@@ -1701,62 +1969,7 @@ fun MobilePlayerScreen(
               text = danmakuInputText,
               onTextChange = { if (it.length <= 100) danmakuInputText = it },
               sending = danmakuSending,
-              onSend = {
-                val msg = danmakuInputText.trim()
-                Log.i(DanmakuSendLogTag, "onSend triggered msg=${msg.length}c cid=${readyInfo.cid} bvid=${readyInfo.bvid}")
-                if (msg.isBlank()) {
-                  Toast.makeText(context, context.getString(R.string.danmaku_empty_content), Toast.LENGTH_SHORT).show()
-                } else {
-                  val progressMs = playbackPositionState.longValue
-                  danmakuSending = true
-                  scope.launch {
-                    val result = runCatching {
-                      playbackRepository.sendDanmaku(
-                        cid = readyInfo.cid,
-                        bvid = readyInfo.bvid,
-                        msg = msg,
-                        progressMs = progressMs,
-                      )
-                    }
-                    danmakuSending = false
-                    result
-                      .onSuccess { posted ->
-                        if (posted != null) {
-                          // 本地插入,立即在弹幕层渲染(白色滚动 + 粉色粗描边识别)。
-                          // showAtMs 用响应回来时的实时播放头 + 前置偏移:发送网络请求耗时 1-3s,
-                          // 期间视频在播,用发送时的 progressMs 会让 showAtMs 落后于实际播放头被引擎跳过
-                          // (Bytedance 对 showAtTime < start(time) 不显示)。实时位置 + 1s 保证落在 set time 之后。
-                          val livePos = player.currentPosition
-                          val showAtMs = livePos + LocalDanmakuLeadMs
-                          danmakuEntries = danmakuEntries + DanmakuEntry(
-                            showAtMs = showAtMs,
-                            text = msg,
-                            mode = DanmakuMode.Scroll,
-                            color = android.graphics.Color.WHITE,
-                            isMine = true,
-                          )
-                          danmakuInputText = ""
-                          danmakuInputActive = false
-                          keyboardController?.hide()
-                          Toast.makeText(context, context.getString(R.string.danmaku_sent), Toast.LENGTH_SHORT).show()
-                        } else {
-                          // sendDanmaku 对未登录/参数非法返回 null(未抛)。
-                          Toast.makeText(context, context.getString(R.string.danmaku_send_requires_login), Toast.LENGTH_LONG).show()
-                        }
-                      }
-                      .onFailure { error ->
-                        if (error is CancellationException) throw error
-                        Log.w(DanmakuSendLogTag, "send danmaku failed", error)
-                        val message = when (error) {
-                          is BiliApiCodeException -> context.getString(R.string.danmaku_api_error, error.code, error.biliMessage)
-                          is BiliNetworkException -> context.getString(R.string.danmaku_network_error, error.statusCode)
-                          else -> context.getString(R.string.danmaku_send_failed, error.localizedMessage ?: error::class.simpleName)
-                        }
-                        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-                      }
-                  }
-                }
-              },
+              onSend = sendDanmakuAction,
             )
           }
           Row(
@@ -1785,8 +1998,7 @@ fun MobilePlayerScreen(
             Text(formatMs(durationMs), color = Color.White)
             // 上一个/下一个(◀▶)按钮已移除:播放列表里紧挨缓存清晰度静态文字,点"清晰度"易误触切下一集。
             // 与在线播放器对齐,进度条行只保留清晰度/音轨入口。
-            // alpha.9X(恢复清晰度选择):HD 画质按钮 + DropdownMenu,列全部可播档位,选中即重载(preferredQualityId)。
-            // 播放器页面未包 MaterialTheme,DropdownMenu 显式深色 containerColor,否则默认白底。
+            // alpha.9X(恢复清晰度选择):HD 画质按钮 + 档位菜单(抽成 PlaybackQualityMenu,横屏文字入口共用)。
             // 缓存命中:清晰度只读——显示缓存清晰度静态文字,不可切换(本地源无多轨)。
             val qualities = readyInfo.qualities
             if (usingCachedPlayback) {
@@ -1797,44 +2009,21 @@ fun MobilePlayerScreen(
                 modifier = Modifier.padding(horizontal = 8.dp),
               )
             } else if (qualities.isNotEmpty()) {
-              Box {
-                MobilePlayerIconButton(
-                  iconRes = R.drawable.ic_player_hd,
-                  contentDescription = stringResource(R.string.player_settings_quality),
-                  tint = BiliColors.TextPrimary,
-                  onClick = { showQualityMenu = true },
-                )
-                DropdownMenu(
-                  expanded = showQualityMenu,
-                  onDismissRequest = { showQualityMenu = false },
-                  containerColor = Color(0xFF1A1A20),
-                ) {
-                  qualities.forEach { q ->
-                    val selected = q.id == actualQualityId
-                    DropdownMenuItem(
-                      text = {
-                        Text(
-                          text = q.description,
-                          color = if (selected) Color(0xFFFB7299) else Color.White,
-                        )
-                      },
-                      onClick = {
-                        showQualityMenu = false
-                        Log.i(MobilePlayerLogTag, "点清晰度: usingCachedPlayback=$usingCachedPlayback 点=${q.id} '${q.description}' 现播档=$actualQualityId 菜单档数=${qualities.size} bvid=${activeRequest.bvid} cid=${activeRequest.cid}")
-                        selectedQualityId = q.id
-                        actualQualityId = q.id
-                        scope.launch {
-                          loadRequest(activeRequest.copy(
-                            startPositionMs = player.currentPosition.takeIf { it > 0L }
-                              ?: playbackPositionState.longValue,
-                            preferredQualityId = q.id,
-                          ))
-                        }
-                      },
-                    )
-                  }
-                }
-              }
+              PlaybackQualityMenu(
+                qualities = qualities,
+                actualQualityId = actualQualityId,
+                expanded = showQualityMenu,
+                onDismiss = { showQualityMenu = false },
+                onSelect = onQualitySelected,
+                trigger = {
+                  MobilePlayerIconButton(
+                    iconRes = R.drawable.ic_player_hd,
+                    contentDescription = stringResource(R.string.player_settings_quality),
+                    tint = BiliColors.TextPrimary,
+                    onClick = { showQualityMenu = true },
+                  )
+                },
+              )
             }
             // 音轨切换入口:仅 YouTube 多音轨(多语言配音)视频显示。列出全部可选音轨,选中即重载。
             val audioTracks = readyInfo.availableAudioTracks
@@ -1910,6 +2099,7 @@ fun MobilePlayerScreen(
             )
           }
         }
+        }
       }
 
       // 设置弹窗:倍速 / 弹幕 / 分享(画质已移至底栏 HD 按钮)
@@ -1940,6 +2130,61 @@ fun MobilePlayerScreen(
               shareVideo()
             },
           )
+        }
+      }
+
+      // P11-78 选集底部弹层(B站式横屏底栏「选集」入口):列出 metadata.pages
+      // (多P/PGC 分集/影视库线路分集),点选切播(共用 selectEpisode)。
+      // P11-80 对齐官方选集面板:两列紧凑卡(序号+标题+角标),当前集粉色高亮。
+      if (showEpisodeSheet) {
+        val sheetState = rememberModalBottomSheetState()
+        ModalBottomSheet(
+          onDismissRequest = { showEpisodeSheet = false },
+          sheetState = sheetState,
+          containerColor = Color(0xFF1A1A20),
+        ) {
+          val pages = metadata?.pages ?: emptyList()
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .heightIn(max = 420.dp)
+              .verticalScroll(rememberScrollState())
+              .padding(horizontal = 16.dp, vertical = 8.dp),
+          ) {
+            Text(
+              text = stringResource(R.string.player_control_episodes),
+              color = Color.White,
+              style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(8.dp))
+            pages.chunked(2).forEach { rowEps ->
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                rowEps.forEach { ep ->
+                  val selected = if (activeRequest.isTvbox) {
+                    ep.page == activeRequest.tvboxEpisodeIndex
+                  } else {
+                    ep.cid == activeRequest.cid || (ep.epId > 0L && ep.epId == activeRequest.epId)
+                  }
+                  EpisodeSheetCard(
+                    ep = ep,
+                    selected = selected,
+                    onSelect = {
+                      showEpisodeSheet = false
+                      selectEpisode(ep)
+                    },
+                    modifier = Modifier.weight(1f),
+                  )
+                }
+                if (rowEps.size == 1) {
+                  Spacer(Modifier.weight(1f))
+                }
+              }
+              Spacer(Modifier.height(8.dp))
+            }
+          }
         }
       }
 
@@ -1982,18 +2227,7 @@ fun MobilePlayerScreen(
           onOpenUpSpace = onOpenUpSpace,
           onOpenYoutubeChannel = onOpenYoutubeChannel,
           onShare = { shareVideo() },
-          onSelectPage = { ep ->
-            scope.launch {
-              loadRequest(activeRequest.copy(
-                cid = ep.cid,
-                epId = ep.epId,
-                startPositionMs = 0L,
-                preferredQualityId = selectedQualityId,
-                forceStartPosition = true,
-                historyPage = ep.page,
-              ))
-            }
-          },
+          onSelectPage = selectEpisode,
           modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars),
         )
       }
@@ -2015,18 +2249,7 @@ fun MobilePlayerScreen(
       onOpenUpSpace = onOpenUpSpace,
       onOpenYoutubeChannel = onOpenYoutubeChannel,
       onShare = { shareVideo() },
-      onSelectPage = { ep ->
-        scope.launch {
-          loadRequest(activeRequest.copy(
-            cid = ep.cid,
-            epId = ep.epId,
-            startPositionMs = 0L,
-            preferredQualityId = selectedQualityId,
-            forceStartPosition = true,
-            historyPage = ep.page,
-          ))
-        }
-      },
+      onSelectPage = selectEpisode,
     )
   }
   }
@@ -2796,20 +3019,33 @@ private fun MobilePlayerIntroTab(
       }
 
       // 多分P:在此处展示选集(替代相关视频);单P:保持相关视频列表。
+      // P11-80:竖屏简介 tab 选集对齐官方——与横屏选集弹层同款两列紧凑卡(序号+标题+角标,当前集高亮)。
       if (metadata.pages.size > 1) {
         SectionTitle(stringResource(R.string.player_control_episodes))
-        metadata.pages.forEach { ep ->
-          val selected = ep.cid == request.cid ||
-            (ep.epId > 0L && ep.epId == request.epId)
-          TextButton(
-            onClick = { onSelectPage(ep) },
+        metadata.pages.chunked(2).forEach { rowEps ->
+          Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
           ) {
-            Text(
-              text = "P${ep.page} ${ep.title}",
-              color = if (selected) Color(0xFFFB7299) else Color.White,
-            )
+            rowEps.forEach { ep ->
+              val selected = if (request.isTvbox) {
+                // 影视库:分P 页号=选集索引,cid 恒 0 无从比对。
+                ep.page == request.tvboxEpisodeIndex
+              } else {
+                ep.cid == request.cid || (ep.epId > 0L && ep.epId == request.epId)
+              }
+              EpisodeSheetCard(
+                ep = ep,
+                selected = selected,
+                onSelect = { onSelectPage(ep) },
+                modifier = Modifier.weight(1f),
+              )
+            }
+            if (rowEps.size == 1) {
+              Spacer(Modifier.weight(1f))
+            }
           }
+          Spacer(Modifier.height(8.dp))
         }
       } else {
         // 相关视频:2 列 chunked Row,复用 MobileVideoCard,点击切播 / 进 UP 主页。
@@ -3118,6 +3354,154 @@ private fun DanmakuInputBar(
       Text(
         if (sending) stringResource(R.string.danmaku_sending) else stringResource(R.string.danmaku_submit),
         color = if (sending || text.isBlank()) Color(0xFF8A8A95) else BiliColors.BiliPink,
+      )
+    }
+  }
+}
+
+/**
+ * 弹幕胶囊输入(P11-78,B站式横屏底栏中央):圆角胶囊深色底 + 无边框输入 + 「发送」,
+ * 发在当前播放位置。字数上限 100 由调用方 onTextChange 拦截;键盘发送键/点「发送」均触发 onSend。
+ * 有文本且非发送中才显示「发送」;placeholder 提示用 danmaku_input_hint。
+ */
+@Composable
+private fun DanmakuPill(
+  text: String,
+  onTextChange: (String) -> Unit,
+  sending: Boolean,
+  onSend: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  BasicTextField(
+    value = text,
+    onValueChange = onTextChange,
+    modifier = modifier
+      .heightIn(min = 36.dp)
+      .clip(RoundedCornerShape(50))
+      .background(Color(0xFF26262E)),
+    singleLine = true,
+    textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+    keyboardActions = KeyboardActions(onSend = { onSend() }),
+    cursorBrush = SolidColor(BiliColors.BiliPink),
+    // decorationBox 必须渲染 inner()(输入框实际文本内容):漏渲染=打字只进状态不显示
+    // (曾致横屏胶囊打字无回显,退出全屏竖屏输入栏才见文本)。
+    decorationBox = { inner ->
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+      ) {
+        // hint 与输入内容叠加在同一弹性区:空时显 hint,输入后 inner() 显示文本。
+        Box(modifier = Modifier.weight(1f)) {
+          if (text.isEmpty()) {
+            Text(
+              text = stringResource(R.string.danmaku_input_hint),
+              color = Color(0xFF8A8A95),
+              fontSize = 14.sp,
+              maxLines = 1,
+            )
+          }
+          inner()
+        }
+        if (text.isNotBlank() && !sending) {
+          Text(
+            text = stringResource(R.string.danmaku_submit),
+            color = BiliColors.BiliPink,
+            fontSize = 14.sp,
+            modifier = Modifier
+              .clickable(onClick = onSend)
+              .padding(start = 8.dp),
+          )
+        }
+      }
+    },
+  )
+}
+
+/**
+ * 画质入口 + 档位下拉菜单(P11-78 抽取共用):入口样式由 [trigger] 提供——
+ * 横屏为文字按钮(显示当前实际档位,显示=实际播放),竖屏为 HD 图标按钮。
+ * 播放器页面未包 MaterialTheme,菜单显式深色 containerColor;选中项粉色高亮。
+ */
+@Composable
+private fun PlaybackQualityMenu(
+  qualities: List<PlaybackQuality>,
+  actualQualityId: Int?,
+  expanded: Boolean,
+  onDismiss: () -> Unit,
+  onSelect: (PlaybackQuality) -> Unit,
+  trigger: @Composable () -> Unit,
+) {
+  Box {
+    trigger()
+    DropdownMenu(
+      expanded = expanded,
+      onDismissRequest = onDismiss,
+      containerColor = Color(0xFF1A1A20),
+    ) {
+      qualities.forEach { q ->
+        val selected = q.id == actualQualityId
+        DropdownMenuItem(
+          text = {
+            Text(
+              text = q.description,
+              color = if (selected) Color(0xFFFB7299) else Color.White,
+            )
+          },
+          onClick = { onSelect(q) },
+        )
+      }
+    }
+  }
+}
+/**
+ * 选集面板两列卡(P11-80,对齐官方选集面板):序号标签(PGC「第 N 话」/其它「P{page}」)+
+ * 集标题,右上角角标(会员等);当前集粉色高亮。
+ */
+@Composable
+private fun EpisodeSheetCard(
+  ep: com.kirin.mt.core.player.PlaybackEpisode,
+  selected: Boolean,
+  onSelect: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val accent = Color(0xFFFB7299)
+  Box(modifier = modifier) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(8.dp))
+        .background(if (selected) Color(0x1FFB7299) else Color(0xFF26262C))
+        .clickable(onClick = onSelect)
+        .padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
+    ) {
+      Text(
+        text = ep.indexLabel.ifEmpty { "P${ep.page}" },
+        color = if (selected) accent else Color.White,
+        style = MaterialTheme.typography.bodyMedium,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+      )
+      if (ep.title.isNotBlank()) {
+        Text(
+          text = ep.title,
+          color = if (selected) accent else Color(0xFFB8B8BE),
+          style = MaterialTheme.typography.bodySmall,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
+    }
+    if (ep.badge.isNotBlank()) {
+      Text(
+        text = ep.badge,
+        color = Color.White,
+        style = MaterialTheme.typography.labelSmall,
+        modifier = Modifier
+          .align(Alignment.TopEnd)
+          .clip(RoundedCornerShape(bottomStart = 6.dp, topEnd = 8.dp))
+          .background(accent)
+          .padding(horizontal = 5.dp, vertical = 1.dp),
       )
     }
   }

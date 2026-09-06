@@ -293,7 +293,22 @@
     <string name="search_loading">正在搜索...</string>
     <string name="search_empty">未找到相关视频</string>
     <string name="search_empty_user">未找到相关UP主/频道</string>
+    <string name="search_empty_bangumi">未找到相关番剧</string>
     <string name="search_type_video">视频</string>
+    <string name="search_type_bangumi">番剧</string>
+    <string name="search_type_comprehensive">综合</string>
+    <string name="search_filter">筛选</string>
+    <string name="search_filter_sort">排序方式</string>
+    <string name="search_filter_pubtime">发布时间</string>
+    <string name="search_filter_duration">内容时长</string>
+    <string name="search_filter_any">不限</string>
+    <string name="search_filter_time_day">最近一天</string>
+    <string name="search_filter_time_week">最近一周</string>
+    <string name="search_filter_time_half_year">最近半年</string>
+    <string name="search_filter_duration_10">0-10分钟</string>
+    <string name="search_filter_duration_30">10-30分钟</string>
+    <string name="search_filter_duration_60">30-60分钟</string>
+    <string name="search_filter_duration_60p">60分钟+</string>
     <string name="search_type_user_bili">UP主</string>
     <string name="search_type_user_youtube">频道</string>
     <string name="search_user_fans">粉丝 %1$s</string>
@@ -428,6 +443,8 @@
     <string name="player_error_empty_tracks">&#25773;&#25918;&#25509;&#21475;&#26410;&#36820;&#22238;&#21487;&#29992;&#38899;&#35270;&#39057;&#36712;</string>
     <string name="player_error_launch_timeout">起播超时（30s），请重试</string>
     <string name="player_control_episodes">&#x9009;&#x96C6;</string>
+    <string name="player_control_next_episode">&#x4E0B;&#x4E00;&#x96C6;</string>
+    <string name="player_speed_label">&#x500D;&#x901F;</string>
     <string name="player_control_up">UP&#x4E3B;</string>
     <string name="player_control_related">&#x76F8;&#x5173;</string>
     <string name="player_control_settings">&#x8BBE;&#x7F6E;</string>
@@ -543,6 +560,7 @@
     <string name="settings_update_status_downloaded">&#x4E0B;&#x8F7D;&#x5B8C;&#x6210;&#xFF0C;&#x53EF;&#x70B9;&#x51FB;&#x5B89;&#x88C5;&#x3002;</string>
     <string name="search_source_bili">B站</string>
     <string name="search_source_youtube">YouTube</string>
+    <string name="search_source_tvbox">TVBox</string>
     <string name="home_section_youtube_trending">YouTube 热门</string>
     <string name="feed_tab_youtube">YouTube 关注</string>
     <string name="feed_tab_playlist">播放列表</string>
@@ -619,6 +637,15 @@
     <string name="settings_youtube_delivery_priority_description">SABR 优先（默认）；卡顿/慢源可切 DASH 自合成优先，能出 4K</string>
     <string name="settings_iptv_connect_success">IPTV 源连接成功</string>
     <string name="settings_iptv_connect_failed">IPTV 源连接失败</string>
+    <!-- TVBox 源(P11-81,原称「影视库」):配置 URL 驱动,type 0/1 采集站 -->
+    <string name="settings_tvbox_title">TVBox 源</string>
+    <string name="settings_tvbox_description">远程 TVBox 配置 URL，搜索读取其中的采集站（仅支持 type 0/1 直链接口）</string>
+    <string name="settings_tvbox_url_label">配置地址</string>
+    <string name="settings_tvbox_configure_hint">未配置，点按编辑</string>
+    <string name="settings_tvbox_connect_success">TVBox 配置加载成功，%1$d 个站点</string>
+    <string name="settings_tvbox_connect_failed">TVBox 配置加载失败，请检查配置地址</string>
+    <string name="search_tvbox_not_configured">TVBox 未配置，请在设置中填写 TVBox 配置地址</string>
+    <string name="search_tvbox_load_failed">TVBox 配置加载失败，请检查设置中的配置地址</string>
     <string name="settings_webdav_username_label">账号</string>
     <string name="settings_webdav_password_label">密码</string>
     <string name="settings_webdav_field_hint">未填写</string>
@@ -647,6 +674,7 @@
     <string name="settings_webdav_item_watched">已看完列表</string>
     <string name="settings_webdav_item_biliaccount">B站账号</string>
     <string name="settings_webdav_item_iptv">IPTV 配置</string>
+    <string name="settings_webdav_item_tvbox">TVBox 配置</string>
     <string name="settings_webdav_item_logs">日志</string>
     <string name="settings_webdav_start_backup">开始备份</string>
     <string name="settings_webdav_start_restore">开始还原</string>
@@ -664,6 +692,8 @@
     <string name="player_listen_mode">听视频模式</string>
     <string name="player_error_failed">播放失败</string>
     <string name="player_paused_tap_play">已暂停,点击播放</string>
+    <string name="player_control_play">&#x64AD;&#x653E;</string>
+    <string name="player_control_pause">&#x6682;&#x505C;</string>
     <string name="danmaku_send">发送弹幕</string>
     <string name="danmaku_empty_content">弹幕内容不能为空</string>
     <string name="danmaku_sent">弹幕已发送</string>

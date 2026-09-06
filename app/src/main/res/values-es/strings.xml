@@ -289,7 +289,22 @@
     <string name="search_loading">Buscando...</string>
     <string name="search_empty">No se encontraron videos relacionados</string>
     <string name="search_empty_user">No se encontraron creadores/canales</string>
+    <string name="search_empty_bangumi">No se encontraron animes relacionados</string>
     <string name="search_type_video">Videos</string>
+    <string name="search_type_bangumi">Anime</string>
+    <string name="search_type_comprehensive">Destacados</string>
+    <string name="search_filter">Filtrar</string>
+    <string name="search_filter_sort">Ordenar por</string>
+    <string name="search_filter_pubtime">Fecha de publicación</string>
+    <string name="search_filter_duration">Duración</string>
+    <string name="search_filter_any">Cualquiera</string>
+    <string name="search_filter_time_day">Último día</string>
+    <string name="search_filter_time_week">Última semana</string>
+    <string name="search_filter_time_half_year">Último medio año</string>
+    <string name="search_filter_duration_10">0-10 min</string>
+    <string name="search_filter_duration_30">10-30 min</string>
+    <string name="search_filter_duration_60">30-60 min</string>
+    <string name="search_filter_duration_60p">60+ min</string>
     <string name="search_type_user_bili">Creadores</string>
     <string name="search_type_user_youtube">Canales</string>
     <string name="search_user_fans">%1$s seguidores</string>
@@ -417,6 +432,8 @@
     <string name="player_error_empty_tracks">La API de reproducción no devolvió pistas de audio y video disponibles</string>
     <string name="player_error_launch_timeout">Tiempo de inicio agotado (30 s); inténtalo de nuevo</string>
     <string name="player_control_episodes">Seleccionar episodio</string>
+    <string name="player_control_next_episode">Siguiente episodio</string>
+    <string name="player_speed_label">Velocidad</string>
     <string name="player_control_up">UP</string>
     <string name="player_control_related">Relacionados</string>
     <string name="player_control_settings">Ajustes</string>
@@ -532,6 +549,7 @@
     <string name="settings_update_status_downloaded">Descarga completada; puedes tocar para instalar.</string>
     <string name="search_source_bili">Bilibili</string>
     <string name="search_source_youtube">YouTube</string>
+    <string name="search_source_tvbox">TVBox</string>
     <string name="home_section_youtube_trending">YouTube en tendencia</string>
     <string name="feed_tab_youtube">Seguidos de YouTube</string>
     <string name="feed_tab_playlist">Lista de reproducción</string>
@@ -608,6 +626,15 @@
     <string name="settings_youtube_delivery_priority_description">SABR primero (predeterminado); ante ralentizaciones/fuentes lentas puedes cambiar a DASH autocompuesto primero, que puede dar 4K</string>
     <string name="settings_iptv_connect_success">Conexión a la fuente IPTV correcta</string>
     <string name="settings_iptv_connect_failed">Fallo de conexión a la fuente IPTV</string>
+    <!-- Fuente biblioteca de vídeo (config TVBox, P11-81) -->
+    <string name="settings_tvbox_title">Fuente TVBox</string>
+    <string name="settings_tvbox_description">URL de configuración TVBox remota; la búsqueda lee sus sitios de enlace directo (solo type 0/1)</string>
+    <string name="settings_tvbox_url_label">URL de configuración</string>
+    <string name="settings_tvbox_configure_hint">Sin configurar, toca para editar</string>
+    <string name="settings_tvbox_connect_success">Config TVBox cargada, %1$d sitios</string>
+    <string name="settings_tvbox_connect_failed">Fallo al cargar la config TVBox; revisa la URL</string>
+    <string name="search_tvbox_not_configured">TVBox sin configurar. Añade una URL de config TVBox en Ajustes</string>
+    <string name="search_tvbox_load_failed">Fallo al cargar la config TVBox; revisa la URL en Ajustes</string>
     <string name="settings_webdav_username_label">Usuario</string>
     <string name="settings_webdav_password_label">Contraseña</string>
     <string name="settings_webdav_field_hint">Sin completar</string>
@@ -636,6 +663,7 @@
     <string name="settings_webdav_item_watched">Lista de vistos</string>
     <string name="settings_webdav_item_biliaccount">Cuenta de Bilibili</string>
     <string name="settings_webdav_item_iptv">Configuración de IPTV</string>
+    <string name="settings_webdav_item_tvbox">Configuración de TVBox</string>
     <string name="settings_webdav_item_logs">Registro</string>
     <string name="settings_webdav_start_backup">Iniciar copia</string>
     <string name="settings_webdav_start_restore">Iniciar restauración</string>
@@ -653,6 +681,8 @@
     <string name="player_listen_mode">Modo de escuchar video</string>
     <string name="player_error_failed">Fallo en la reproducción</string>
     <string name="player_paused_tap_play">En pausa; toca para reproducir</string>
+    <string name="player_control_play">Reproducir</string>
+    <string name="player_control_pause">Pausar</string>
     <string name="danmaku_send">Enviar danmaku</string>
     <string name="danmaku_empty_content">El contenido del danmaku no puede estar vacío</string>
     <string name="danmaku_sent">Danmaku enviado</string>

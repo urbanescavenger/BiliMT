@@ -46,6 +46,7 @@ import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.ui.i18n.LocalChineseTextConverter
 import com.kirin.mt.ui.i18n.localizedContext
 import com.kirin.mt.core.model.SourceIptv
+import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
@@ -104,6 +105,7 @@ fun BiliMobileApp(
   videoRepository: VideoRepository,
   liveRepository: LiveRepository,
   iptvRepository: IptvRepository,
+  tvboxRepository: com.kirin.mt.core.network.TvboxRepository,
   playbackRepository: PlaybackRepository,
   danmakuSettingsStore: DanmakuSettingsStore,
   liveQualityPreferenceStore: com.kirin.mt.core.player.LiveQualityPreferenceStore,
@@ -182,9 +184,9 @@ fun BiliMobileApp(
   val scope = rememberCoroutineScope()
 
   // 卡片长按:B站/YouTube 弹操作菜单(下载/加入播放列表),不再直接 toggle。
-  // IPTV 直播卡除外:直播无下载、加播放列表无意义。
+  // IPTV 直播卡除外:直播无下载、加播放列表无意义。TVBox 点播卡同免(spike 无下载)。
   val onLongPress: (VideoSummary) -> Unit = { video ->
-    if (video.source != SourceIptv) {
+    if (video.source != SourceIptv && video.source != SourceTvbox) {
       longPressVideo = video
       showPlaylistPicker = false
       showDownloadDialog = false
@@ -193,7 +195,11 @@ fun BiliMobileApp(
 
   // 打开 UP 主页:按来源分流——YouTube 带 channelId 进频道主页,否则 B 站空间。
   // 卡片身份数据缺失(首页/动态特殊卡无 owner、搜索 YouTube 无 channelId)时,点击按需解析补齐。
+  // 影视库(TVBox)卡「UP主」位是线路条数,无空间页可进,忽略。
   fun openOwner(video: VideoSummary) {
+    if (video.source == SourceTvbox) {
+      return
+    }
     if (video.source == SourceYoutube) {
       if (video.channelId.isNotBlank()) {
         youtubeChannelRequest = YoutubeChannel(video.channelId, video.ownerName)
@@ -343,9 +349,16 @@ fun BiliMobileApp(
         AppDestination.Search -> MobileSearchScreen(
           videoRepository = videoRepository,
           searchHistoryStore = searchHistoryStore,
+          tvboxSourceStatus = tvboxRepository.sourceStatus.collectAsState().value,
           onVideoSelected = { video ->
-            playQueue = emptyList()
-            playbackRequest = video.toPlaybackRequest()
+            if (video.seasonId > 0) {
+              // 番剧搜索卡(seasonId>0):进 PGC 季详情,epId=0 由季详情自行选首集。
+              pgcSeasonRequest = PgcSeasonRequest(seasonId = video.seasonId)
+              pgcPlaybackBehind = false
+            } else {
+              playQueue = emptyList()
+              playbackRequest = video.toPlaybackRequest()
+            }
           },
           onOpenOwner = { video -> openOwner(video) },
           onLongPress = onLongPress,
@@ -378,7 +391,7 @@ fun BiliMobileApp(
         // 背后的"设置"tab 打开设置页。此层让播放器无点击目标处也吞掉指针,播放器控件叠在其上仍正常响应;
         // 将来底下新增别的内容也一样被盖住。
         Box(Modifier.fillMaxSize().pointerInput(Unit) { consumeAllGestures() })
-        if (request.isLive || request.isIptv) {
+        if (request.isLive || request.isIptvChannel) {
           LivePlayerScreen(
             request = request,
             playbackRepository = playbackRepository,

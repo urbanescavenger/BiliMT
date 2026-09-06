@@ -121,6 +121,7 @@ fun SettingsScreen(
   onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Unit>,
   onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Int>,
   onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
+  onTvboxConfigChange: (url: String) -> Unit,
   onPipedInstanceChange: (url: String) -> Unit,
   onYoutubeUsePipedChange: (Boolean) -> Unit,
   onYoutubeDeliveryPriorityChange: (YoutubeDeliveryPriority) -> Unit,
@@ -176,6 +177,7 @@ fun SettingsScreen(
       SettingsItemWebDavBackup to FocusRequester(),
       SettingsItemWebDavRestore to FocusRequester(),
       SettingsItemIptv to FocusRequester(),
+      SettingsItemTvbox to FocusRequester(),
       SettingsItemLogs to FocusRequester(),
       SettingsItemAbout to FocusRequester(),
     )
@@ -185,6 +187,7 @@ fun SettingsScreen(
   var rightPanel by remember { mutableStateOf(SettingsRightPanel.None) }
   var showWebDavDialog by remember { mutableStateOf(false) }
   var showIptvDialog by remember { mutableStateOf(false) }
+  var showTvboxDialog by remember { mutableStateOf(false) }
   var showPipedDialog by remember { mutableStateOf(false) }
   var showBackupDialog by remember { mutableStateOf(false) }
   var showRestoreDialog by remember { mutableStateOf(false) }
@@ -317,6 +320,8 @@ fun SettingsScreen(
         webDavState = webDavState,
         onIptvSourceConfigChange = onIptvSourceConfigChange,
         onIptvSelected = { showIptvDialog = true },
+        onTvboxConfigChange = onTvboxConfigChange,
+        onTvboxSelected = { showTvboxDialog = true },
         onPipedInstanceChange = onPipedInstanceChange,
         onPipedSelected = { showPipedDialog = true },
         onYoutubeUsePipedChange = onYoutubeUsePipedChange,
@@ -418,6 +423,21 @@ fun SettingsScreen(
         onDismiss = {
           showIptvDialog = false
           focusSettingItem(SettingsItemIptv)
+        },
+      )
+    }
+    if (showTvboxDialog) {
+      SettingsTvboxDialog(
+        url = settings.tvboxConfigUrl,
+        onSave = { url ->
+          onTvboxConfigChange(url)
+          showTvboxDialog = false
+          // 保存后焦点回到 TVBox 行(弹窗内 URL 字段随弹窗移除,不恢复会落到侧栏头像)。
+          focusSettingItem(SettingsItemTvbox)
+        },
+        onDismiss = {
+          showTvboxDialog = false
+          focusSettingItem(SettingsItemTvbox)
         },
       )
     }
@@ -555,6 +575,8 @@ private fun SettingsBehaviorColumn(
   webDavState: WebDavBackupState,
   onIptvSourceConfigChange: (url: String, username: String, password: String) -> Unit,
   onIptvSelected: () -> Unit,
+  onTvboxConfigChange: (url: String) -> Unit,
+  onTvboxSelected: () -> Unit,
   onPipedInstanceChange: (url: String) -> Unit,
   onPipedSelected: () -> Unit,
   onYoutubeUsePipedChange: (Boolean) -> Unit,
@@ -1230,6 +1252,24 @@ private fun SettingsBehaviorColumn(
         onClick = onIptvSelected,
       )
     }
+    item(key = "tvbox") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_tvbox_title),
+        description = stringResource(R.string.settings_tvbox_description),
+        value = settings.tvboxConfigUrl.ifBlank {
+          stringResource(R.string.settings_tvbox_configure_hint)
+        },
+        modifier = Modifier
+          .focusRequester(focusRequesters.getValue(SettingsItemTvbox))
+          .settingsBoundaryKeys(
+            itemIndex = SettingsItemTvbox,
+            onMoveSettingFocus = onMoveSettingFocus,
+            onMoveLeftToNav = onMoveLeftToNav,
+          ),
+        onFocused = { onSettingFocused(SettingsItemTvbox) },
+        onClick = onTvboxSelected,
+      )
+    }
     item(key = "logs") {
       SettingsActionRow(
         title = stringResource(R.string.settings_logs_entry_title),
@@ -1426,6 +1466,7 @@ private const val SettingsItemYoutubeContentRegion = 33
 private const val SettingsItemWebDavBackup = 31
 private const val SettingsItemWebDavRestore = 32
 private const val SettingsItemIptv = 34
+private const val SettingsItemTvbox = 41
 private const val SettingsItemPiped = 35
 private const val SettingsItemYoutubeUsePiped = 36
 private const val SettingsItemYoutubeDeliveryPriority = 37
@@ -1465,6 +1506,7 @@ private val SettingsFocusableItems = listOf(
   SettingsItemWebDavBackup,
   SettingsItemWebDavRestore,
   SettingsItemIptv,
+  SettingsItemTvbox,
   SettingsItemLogs,
   SettingsItemPlayerLogOverlay,
   SettingsItemCrashLogAutoReport,
@@ -1533,14 +1575,15 @@ private fun settingsItemToLazyIndex(
   SettingsItemWebDavBackup -> 35
   SettingsItemWebDavRestore -> 36
   SettingsItemIptv -> 37
-  SettingsItemLogs -> 38
-  SettingsItemPlayerLogOverlay -> 39
-  SettingsItemCrashLogAutoReport -> 40
-  // 41 = "update-header" section title in LazyColumn
-  SettingsItemUpdateCurrentVersion -> 42
-  SettingsItemUpdateDownloadOrInstall -> 43
-  // 44 = "update-release-notes"(有新版才渲染);「关于」并入程序更新节,排在更新日志之后。
-  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 44 else -1
-  SettingsItemAbout -> if (shouldShowReleaseNotesAction(updateState)) 45 else 44
+  SettingsItemTvbox -> 38
+  SettingsItemLogs -> 39
+  SettingsItemPlayerLogOverlay -> 40
+  SettingsItemCrashLogAutoReport -> 41
+  // 42 = "update-header" section title in LazyColumn
+  SettingsItemUpdateCurrentVersion -> 43
+  SettingsItemUpdateDownloadOrInstall -> 44
+  // 45 = "update-release-notes"(有新版才渲染);「关于」并入程序更新节,排在更新日志之后。
+  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 45 else -1
+  SettingsItemAbout -> if (shouldShowReleaseNotesAction(updateState)) 46 else 45
   else -> 0
 }
