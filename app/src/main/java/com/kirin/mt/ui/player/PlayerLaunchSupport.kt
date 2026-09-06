@@ -51,6 +51,30 @@ internal fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false)
       liveRoomId = liveRoomId,
     )
   }
+  // 番剧历史卡(epId>0,fromHistory business=pgc):续播该集,走 PGC playurl(ep_id)而非 UGC bvid。
+  // bvid 此时是网格 key "ep{epId}" 非真实稿件号,必须置空;playurl 用 ep_id+cid,heartbeat 用 aid+epid+sid
+  // (BV sendHeartbeat avid/bvid 二选一)。subType 未知(=0),播放器从季 metadata 回填。
+  if (epId > 0L) {
+    val advanceToNextEpisode = shouldAdvanceToNextHistoryEpisode()
+    return PlaybackRequest(
+      bvid = "",
+      cid = cid,
+      title = title,
+      startPositionMs = progress
+        .takeIf { it > 0 && !isWatchCompleted() && !advanceToNextEpisode }
+        ?.times(1000L) ?: 0L,
+      aid = aid,
+      coverUrl = pic,
+      viewCount = view,
+      danmakuCount = danmaku,
+      epId = epId,
+      seasonId = seasonId.toLong(),
+      forceStartPosition = forceStartPosition,
+      historyPage = historyPage,
+      advanceToNextHistoryEpisode = advanceToNextEpisode,
+      source = source,
+    )
+  }
   val advanceToNextEpisode = shouldAdvanceToNextHistoryEpisode()
   return PlaybackRequest(
     bvid = bvid,

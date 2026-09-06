@@ -612,6 +612,7 @@ class PlaybackRepository(
       pubdate = 0L,
       pages = pages,
       desc = season.evaluate,
+      seasonSubType = season.type,
     )
   }
 
@@ -758,20 +759,23 @@ class PlaybackRepository(
     subType: Int = 0,
     aid: Long = 0L,
   ): Boolean {
-    if (bvid.isBlank() || cid <= 0L) return false
+    if (cid <= 0L) return false
     val sessData = sessionStore.sessData.first()
     val biliJct = sessionStore.biliJct.first()
     if (sessData.isNullOrBlank() || biliJct.isNullOrBlank()) return false
 
     val isPgc = epId > 0L || seasonId > 0L
-    val baseParams = mapOf(
-      "bvid" to bvid,
-      "cid" to cid.toString(),
-      "played_time" to progressSeconds.toString(),
-      "real_played_time" to progressSeconds.toString(),
-      "start_ts" to (System.currentTimeMillis() / 1000L).toString(),
-      "csrf" to biliJct,
-    )
+    // BV sendHeartbeat:avid/bvid 二选一必填。番剧历史续播入口无真实 bvid(卡片 bvid="ep{id}" 是
+    // 网格 key),用 aid(该集 avid)满足;UGC 仍要求 bvid 非空。
+    if (bvid.isBlank() && !(isPgc && aid > 0L)) return false
+    val baseParams: Map<String, String> = buildMap {
+      if (bvid.isNotBlank()) put("bvid", bvid)
+      put("cid", cid.toString())
+      put("played_time", progressSeconds.toString())
+      put("real_played_time", progressSeconds.toString())
+      put("start_ts", (System.currentTimeMillis() / 1000L).toString())
+      put("csrf", biliJct)
+    }
     val params = if (!isPgc) {
       baseParams
     } else {

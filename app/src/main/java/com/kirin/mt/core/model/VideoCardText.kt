@@ -15,8 +15,8 @@ data class VideoCardRelativeText(
 fun VideoSummary.durationText(): String {
   // 直播无时长,不在封面叠层显示 00:00。
   if (isLive) return ""
-  // 番剧卡(季)不携带单集时长,避免封面叠层显示假 00:00。
-  if (seasonId > 0) return ""
+  // 番剧搜索季卡不携带单集时长,避免封面叠层显示假 00:00;番剧历史卡(epId>0)带该集真实时长,照常显示。
+  if (seasonId > 0 && duration <= 0) return ""
   return duration.formatDurationSeconds()
 }
 

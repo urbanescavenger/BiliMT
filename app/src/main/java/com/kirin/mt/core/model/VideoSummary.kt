@@ -26,6 +26,12 @@ data class VideoSummary(
   val liveRoomId: Long = 0L,
   /** PGC 季 id;>0 表示这张卡片是番剧/影视季(由番剧搜索映射而来),点击进 PGC 季详情而非播放器。 */
   val seasonId: Int = 0,
+  /**
+   * PGC 剧集 id;>0 表示这是番剧历史卡(仅 fromHistory business=pgc 条目填充,kid=季 id、
+   * oid=该集 avid 也一并填),点击经 toPlaybackRequest 走 PGC playurl(ep_id)续播该集,
+   * 不像搜索季卡(seasonId>0 且 epId=0)那样进季详情。bvid 承载 "ep{epId}" 作网格 key。
+   */
+  val epId: Long = 0L,
   /** 直播分区名(仅直播卡片填充,移动端卡片据此显示分区)。 */
   val liveAreaName: String = "",
   // 动态专属字段:仅 fromDynamicItem 填充,其它来源保持默认 0/空。

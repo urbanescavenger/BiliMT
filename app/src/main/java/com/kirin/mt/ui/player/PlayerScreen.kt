@@ -1638,6 +1638,12 @@ fun PlayerScreen(
       }
     }
     metadata = videoMetadata
+    // 番剧历史续播入口(fromHistory pgc)的请求 subType=0(历史条目不带季类型):季 metadata 回填,
+    // 供 heartbeat sub_type 上报对齐 BV。搜索季卡/季详情入口自带 subType,回填不生效。
+    val metaSeasonSubType = videoMetadata?.seasonSubType ?: 0
+    if (!skipBiliMetadata && activeRequest.subType <= 0 && metaSeasonSubType > 0) {
+      activeRequest = activeRequest.copy(subType = metaSeasonSubType)
+    }
     var effectiveRequest = if (skipBiliMetadata) {
       activeRequest
     } else {
@@ -2903,6 +2909,8 @@ internal fun PlaybackRequest.withResolvedMetadata(
     viewCount = viewCount.takeIf { it > 0 } ?: metadata?.viewCount ?: 0,
     danmakuCount = danmakuCount.takeIf { it > 0 } ?: metadata?.danmakuCount ?: 0,
     pubdate = pubdate.takeIf { it > 0L } ?: metadata?.pubdate ?: 0L,
+    // PGC 季类型回填:番剧历史续播入口 subType=0,季 metadata(season.type)补上,heartbeat sub_type 用。
+    subType = subType.takeIf { it > 0 } ?: metadata?.seasonSubType ?: 0,
   )
 }
 

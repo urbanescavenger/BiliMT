@@ -176,6 +176,12 @@ data class PlaybackVideoMetadata(
   val liked: Boolean = false,
   val coined: Boolean = false,
   val faved: Boolean = false,
+  /**
+   * PGC 季副类型(season.type:1番剧/2电影/3纪录/4国创/5电视剧/7综艺),仅 /pgc/view/web/season 返回。
+   * 番剧历史续播入口的请求 subType=0(历史条目不带季类型),播放器据此回填 activeRequest.subType,
+   * 供 heartbeat sub_type 上报对齐 BV。非 PGC / 非该路径恒 0。
+   */
+  val seasonSubType: Int = 0,
 )
 
 data class PlaybackEpisode(
