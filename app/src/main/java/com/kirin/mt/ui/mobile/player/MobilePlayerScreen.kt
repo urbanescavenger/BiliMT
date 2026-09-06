@@ -525,8 +525,8 @@ fun MobilePlayerScreen(
     val positionMs = player.currentPosition.coerceAtLeast(0L)
     val durationMs = player.duration.takeIf { it > 0 } ?: info.durationMs
     // 播放到结尾(距末尾 2s 内)视为「已看完」,写入本地 watched 集合供卡片右下角标角标。
-    // 直播/IPTV 时长语义不同,不标记。幂等写入。
-    val reachedEnd = !activeRequest.isLive && !activeRequest.isIptv &&
+    // 直播/IPTV/TVBox/红果(bvid 为合成 key 或空串)时长语义不同,不标记。幂等写入。
+    val reachedEnd = !activeRequest.isLive && !activeRequest.isIptv && !activeRequest.isTvbox &&
       durationMs > 0 && positionMs >= durationMs - 2000L
     scope.launch {
       if (reachedEnd) {
@@ -2080,8 +2080,8 @@ fun MobilePlayerScreen(
                 onClick = { danmakuInputActive = !danmakuInputActive },
               )
             }
-            // 下载入口:打开清晰度选择对话框,确认后入队下载。直播/IPTV 不可下载;已缓存(命中本地源)隐藏。
-            if (!activeRequest.isLive && !activeRequest.isIptv && !usingCachedPlayback) {
+            // 下载入口:打开清晰度选择对话框,确认后入队下载。直播/IPTV/红果不可下载;已缓存(命中本地源)隐藏。
+            if (!activeRequest.isLive && !activeRequest.isIptv && !activeRequest.isTvbox && !usingCachedPlayback) {
               MobilePlayerIconButton(
                 iconRes = R.drawable.ic_player_download,
                 contentDescription = stringResource(R.string.downloads_menu_download),

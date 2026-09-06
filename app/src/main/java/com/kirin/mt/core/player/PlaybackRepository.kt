@@ -3,6 +3,7 @@ package com.kirin.mt.core.player
 import android.util.Log
 import com.kirin.mt.core.auth.WbiKeyRepository
 import com.kirin.mt.core.auth.WbiSigner
+import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliNumberParser
@@ -205,8 +206,13 @@ class PlaybackRepository(
     val qualities = lines.mapIndexed { index, line ->
       PlaybackQuality(index, line.name.ifBlank { "线路${index + 1}" })
     }
-    // dummy 视频轨:路由由 isHlsManifest()(remoteHlsManifestUrl!=null)判定,非轨字段;
-    // audioTracks 空(HLS playlist 自带 A/V)。对齐 YoutubePlaybackResolver 的 HLS 兜底形制。
+    // 红果短剧(P11-83)解析产物是明文 MP4 直链(HLS 之外的 progressive 流):
+    // dummy 轨 segmentBase=null(isProgressive)→ 播放器走 ProgressiveMediaSource 分支单轨播放,
+    // remoteHlsManifestUrl 必须置 null(isHlsManifest() 优先级高于 progressive 分支,置 null 才不截胡)。
+    // 影视库(MacCMS)线路解析产物是 m3u8:remoteHlsManifestUrl=直链,isHlsManifest() 路由 HlsMediaSource。
+    val isHongguo = request.source == SourceHongguo
+    // dummy 视频轨:路由由 isHlsManifest()(remoteHlsManifestUrl!=null)/isProgressive 判定,非轨字段;
+    // audioTracks 空(HLS playlist 自带 A/V;红果 MP4 自带 A/V)。对齐 YoutubePlaybackResolver 的 HLS 兜底形制。
     val dummyTrack = PlaybackTrack(
       id = 0,
       baseUrl = streamUrl,
@@ -216,7 +222,7 @@ class PlaybackRepository(
       width = 0,
       height = 480,
       mimeType = "video/mp4",
-      segmentBase = PlaybackSegmentBase("0-0", "0-0"),
+      segmentBase = if (isHongguo) null else PlaybackSegmentBase("0-0", "0-0"),
     )
     return PlaybackInfo(
       bvid = request.bvid,
@@ -229,7 +235,7 @@ class PlaybackRepository(
       audioTracks = emptyList(),
       // 裸头:BiliPlaybackHeaders 空串 Referer/Origin 不发(见 asMap 的空串跳过)。
       headers = BiliPlaybackHeaders(sessData = null, biliJct = null, referer = "", origin = ""),
-      remoteHlsManifestUrl = streamUrl,
+      remoteHlsManifestUrl = if (isHongguo) null else streamUrl,
     )
   }
 

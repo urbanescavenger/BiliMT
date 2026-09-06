@@ -73,6 +73,7 @@ import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.SourceIptv
+import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.settings.AppPerformancePolicy
@@ -610,6 +611,18 @@ fun BiliTvApp(
         ownerName = ownerName,
         coverUrl = pic,
         source = SourceTvbox,
+        tvboxLines = tvboxLines,
+      )
+    }
+    // 红果短剧卡片(P11-83):点播,VOD 播放器,单线路分集=播放页 URL(播放时懒解析 MP4 直链)。
+    if (source == SourceHongguo) {
+      return PlaybackRequest(
+        bvid = "",
+        cid = 0L,
+        title = title,
+        ownerName = ownerName,
+        coverUrl = pic,
+        source = SourceHongguo,
         tvboxLines = tvboxLines,
       )
     }
@@ -1348,9 +1361,9 @@ fun BiliTvApp(
                     }
                   },
                   onOwnerSelected = { video ->
-                    // 影视库(TVBox)卡「UP主」位是线路条数,无空间页可进,忽略。
+                    // 影视库(TVBox)/红果短剧卡「UP主」位是线路条数/源名,无空间页可进,忽略。
                     // 番剧卡「UP主」位是声优串,mid=0 无空间页,忽略。
-                    if (video.source == SourceTvbox || video.seasonId > 0) {
+                    if (video.source == SourceTvbox || video.source == SourceHongguo || video.seasonId > 0) {
                       // no-op
                     } else if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
                       youtubeChannelUiState.reset()

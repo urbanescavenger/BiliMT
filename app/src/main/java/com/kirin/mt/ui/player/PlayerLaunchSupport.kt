@@ -1,6 +1,7 @@
 package com.kirin.mt.ui.player
 
 import com.kirin.mt.core.model.LiveRoom
+import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.VideoSummary
@@ -35,6 +36,18 @@ internal fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false)
       ownerName = ownerName,
       coverUrl = pic,
       source = SourceTvbox,
+      tvboxLines = tvboxLines,
+    )
+  }
+  // 红果短剧卡片(P11-83):点播,VOD 播放器,单线路分集=播放页 URL(播放时懒解析 MP4 直链)。
+  if (source == SourceHongguo) {
+    return PlaybackRequest(
+      bvid = "",
+      cid = 0L,
+      title = title,
+      ownerName = ownerName,
+      coverUrl = pic,
+      source = SourceHongguo,
       tvboxLines = tvboxLines,
     )
   }

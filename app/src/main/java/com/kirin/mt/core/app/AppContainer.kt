@@ -155,6 +155,9 @@ class AppContainer(context: Context) {
     client = downloadHttpClient,
     appSettingsStore = appSettingsStore,
   )
+  val hongguoRepository: HongguoRepository = HongguoRepository(
+    client = downloadHttpClient,
+  )
   val videoRepository: VideoRepository = VideoRepository(
     apiClient = apiClient,
     wbiKeyRepository = wbiKeyRepository,
@@ -164,6 +167,7 @@ class AppContainer(context: Context) {
     youtubeChannelStore = youtubeChannelStore,
     progressStore = playbackProgressStore,
     tvboxRepository = tvboxRepository,
+    hongguoRepository = hongguoRepository,
   )
   val liveRepository: LiveRepository = LiveRepository(
     apiClient = apiClient,

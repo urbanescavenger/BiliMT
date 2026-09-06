@@ -41,7 +41,7 @@ data class VideoSummary(
   val likeCount: Int = 0,
   val commentCount: Int = 0,
   val forwardCount: Int = 0,
-  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube] / [SourceIptv] / [SourceTvbox]。YouTube 卡片 bvid 字段承载 videoId。 */
+  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube] / [SourceIptv] / [SourceTvbox] / [SourceHongguo]。YouTube 卡片 bvid 字段承载 videoId。 */
   val source: String = SourceBili,
   /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 卡片填充，用于进 UP 主页；B 站卡片为空串。 */
   val channelId: String = "",
@@ -75,3 +75,9 @@ const val SourceYoutube = "youtube"
 const val SourceIptv = "iptv"
 /** TVBox(影视库)源:P11-77 spike,内置 MacCMS 采集站聚合搜索,直链 m3u8 复用 IPTV 播放路径。 */
 const val SourceTvbox = "tvbox"
+/**
+ * 红果短剧源(P11-83):hongguoduanju.com 网页端解析,零配置零签名。
+ * 搜索一步直出剧集列表(含 vid_list),播放=播放页 SSR 内嵌 main_url 明文 MP4。
+ * 播放复用 TVBox 线路心智(单线路 TvboxLine,分集 URL=播放页地址,懒解析取直链)。
+ */
+const val SourceHongguo = "hongguo"

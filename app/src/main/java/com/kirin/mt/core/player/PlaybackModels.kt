@@ -1,6 +1,7 @@
 package com.kirin.mt.core.player
 
 import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
@@ -66,9 +67,9 @@ data class PlaybackRequest(
   val isIptvChannel: Boolean
     get() = source == SourceIptv
 
-  /** 这是 TVBox（影视库）点播请求：MacCMS 采集站直链/懒解析 m3u8,线路=清晰度档,线路内可切集。 */
+  /** 这是 TVBox 式点播请求(影视库采集站 / 红果短剧 P11-83):MacCMS 直链/懒解析 m3u8 或红果播放页懒解析 MP4,线路=清晰度档,线路内可切集。 */
   val isTvbox: Boolean
-    get() = source == SourceTvbox
+    get() = source == SourceTvbox || source == SourceHongguo
 
   /** TVBox 当前线路(线路索引=preferredQualityId);非 TVBox 或无线路表为 null。 */
   val tvboxCurrentLine: TvboxLine?

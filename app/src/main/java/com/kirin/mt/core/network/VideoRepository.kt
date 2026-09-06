@@ -48,6 +48,7 @@ class VideoRepository(
   private val youtubeChannelStore: YoutubeChannelStore,
   private val progressStore: PlaybackProgressStore,
   private val tvboxRepository: TvboxRepository,
+  private val hongguoRepository: HongguoRepository,
 ) {
   private val spaceVideoRepository = SpaceVideoRepository(
     apiClient = apiClient,
@@ -350,6 +351,14 @@ class VideoRepository(
    */
   suspend fun tvboxSearch(keyword: String): List<VideoSummary> {
     return tvboxRepository.search(keyword)
+  }
+
+  /**
+   * 红果短剧搜索(P11-83):网页端一步直出剧集列表(含分集),无排序/无翻页(10 条/次)。
+   * 见 [HongguoRepository]。
+   */
+  suspend fun hongguoSearch(keyword: String): List<VideoSummary> {
+    return hongguoRepository.search(keyword)
   }
 
   suspend fun youtubeSubscriptionsFeed(
