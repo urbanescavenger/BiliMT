@@ -275,11 +275,17 @@ class VideoRepository(
     keyword: String,
     page: Int = 1,
     order: String = SearchOrderTotalRank,
+    duration: Int = 0,
+    pubtimeBeginSeconds: Long = 0L,
+    pubtimeEndSeconds: Long = 0L,
   ): List<VideoSummary> {
     return searchVideoRepository.searchVideos(
       keyword = keyword,
       page = page,
       order = order,
+      duration = duration,
+      pubtimeBeginSeconds = pubtimeBeginSeconds,
+      pubtimeEndSeconds = pubtimeEndSeconds,
     ).withLocalProgress()
   }
 

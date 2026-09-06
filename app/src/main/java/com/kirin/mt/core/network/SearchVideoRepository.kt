@@ -19,6 +19,9 @@ internal class SearchVideoRepository(
     keyword: String,
     page: Int,
     order: String,
+    duration: Int = 0,
+    pubtimeBeginSeconds: Long = 0L,
+    pubtimeEndSeconds: Long = 0L,
   ): List<VideoSummary> {
     if (keyword.isBlank()) return emptyList()
 
@@ -31,6 +34,16 @@ internal class SearchVideoRepository(
       "pagesize" to "20",
       "order" to order,
     )
+    // 移动端筛选面板(对齐官方筛选项):时长档位 1-4;发布时间区间 unix 秒。
+    if (duration > 0) {
+      params["duration"] = duration.toString()
+    }
+    if (pubtimeBeginSeconds > 0) {
+      params["pubtime_begin_s"] = pubtimeBeginSeconds.toString()
+    }
+    if (pubtimeEndSeconds > 0) {
+      params["pubtime_end_s"] = pubtimeEndSeconds.toString()
+    }
 
     val signedParams = if (keys != null) {
       wbiSigner.sign(params, keys.imgKey, keys.subKey)
