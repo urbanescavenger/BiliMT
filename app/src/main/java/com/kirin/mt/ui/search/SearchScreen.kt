@@ -360,6 +360,7 @@ internal fun SearchScreen(
           onVideoSelected = onVideoSelected,
           onOwnerSelected = onOwnerSelected,
           onUserSelected = onUserSelected,
+          tvboxSourceStatus = tvboxSourceStatus,
         )
       }
     }
@@ -856,6 +857,8 @@ private fun SearchResultsView(
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
   onUserSelected: (UserSummary) -> Unit = {},
+  tvboxSourceStatus: com.kirin.mt.core.network.TvboxSourceStatus =
+    com.kirin.mt.core.network.TvboxSourceStatus.NotConfigured,
 ) {
   val coroutineScope = rememberCoroutineScope()
   val sortFocusRequesters = remember(uiState.source) {
