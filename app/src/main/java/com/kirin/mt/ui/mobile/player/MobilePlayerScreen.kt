@@ -3365,20 +3365,25 @@ private fun DanmakuPill(
     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
     keyboardActions = KeyboardActions(onSend = { onSend() }),
     cursorBrush = SolidColor(BiliColors.BiliPink),
+    // decorationBox 必须渲染 inner()(输入框实际文本内容):漏渲染=打字只进状态不显示
+    // (曾致横屏胶囊打字无回显,退出全屏竖屏输入栏才见文本)。
     decorationBox = { inner ->
       Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
       ) {
-        if (text.isEmpty()) {
-          Text(
-            text = stringResource(R.string.danmaku_input_hint),
-            color = Color(0xFF8A8A95),
-            fontSize = 14.sp,
-            maxLines = 1,
-          )
+        // hint 与输入内容叠加在同一弹性区:空时显 hint,输入后 inner() 显示文本。
+        Box(modifier = Modifier.weight(1f)) {
+          if (text.isEmpty()) {
+            Text(
+              text = stringResource(R.string.danmaku_input_hint),
+              color = Color(0xFF8A8A95),
+              fontSize = 14.sp,
+              maxLines = 1,
+            )
+          }
+          inner()
         }
-        Spacer(Modifier.weight(1f))
         if (text.isNotBlank() && !sending) {
           Text(
             text = stringResource(R.string.danmaku_submit),
