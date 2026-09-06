@@ -844,6 +844,7 @@ private fun MobileWebDavSelectionDialog(
       com.kirin.mt.core.webdav.WebDavBackupItem.Watched,
       com.kirin.mt.core.webdav.WebDavBackupItem.BiliAccount,
       com.kirin.mt.core.webdav.WebDavBackupItem.Iptv,
+      com.kirin.mt.core.webdav.WebDavBackupItem.Tvbox,
     )
   } else {
     com.kirin.mt.core.webdav.WebDavBackupItem.entries
@@ -864,6 +865,7 @@ private fun MobileWebDavSelectionDialog(
     com.kirin.mt.core.webdav.WebDavBackupItem.Watched -> stringResource(R.string.settings_webdav_item_watched)
     com.kirin.mt.core.webdav.WebDavBackupItem.BiliAccount -> stringResource(R.string.settings_webdav_item_biliaccount)
     com.kirin.mt.core.webdav.WebDavBackupItem.Iptv -> stringResource(R.string.settings_webdav_item_iptv)
+    com.kirin.mt.core.webdav.WebDavBackupItem.Tvbox -> stringResource(R.string.settings_webdav_item_tvbox)
     com.kirin.mt.core.webdav.WebDavBackupItem.Logs -> stringResource(R.string.settings_webdav_item_logs)
   }
 
