@@ -34,6 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +55,7 @@ import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.ui.i18n.currentUiLocale
 import com.kirin.mt.ui.i18n.formatCompactCount
 import com.kirin.mt.ui.pgc.PgcSeasonRequest
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** 话数分组阈值/组大小:超过 50 集按 50 集一组出快捷跳转条(对齐官方选集面板)。 */
@@ -78,6 +80,7 @@ internal fun MobilePgcSeasonScreen(
   var loading by remember { mutableStateOf(true) }
   var failed by remember { mutableStateOf(false) }
   val listState = rememberLazyListState()
+  val scrollScope = rememberCoroutineScope()
 
   LaunchedEffect(request) { currentRequest = request }
 
@@ -214,7 +217,7 @@ internal fun MobilePgcSeasonScreen(
                         val row = start / 2
                         val base = episodeRowsBaseIndex(s)
                         // base + 行号(组首集所在行),animateScrollToItem 保证可见。
-                        listState.animateScrollToItem(base + row)
+                        scrollScope.launch { listState.animateScrollToItem(base + row) }
                       },
                       label = { Text(episodeGroupLabel(s, start, end)) },
                       colors = FilterChipDefaults.filterChipColors(),
