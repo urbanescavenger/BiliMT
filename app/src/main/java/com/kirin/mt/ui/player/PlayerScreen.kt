@@ -677,13 +677,20 @@ fun PlayerScreen(
         (playerState as? PlayerScreenState.Ready)?.info?.qualities?.indexOfFirst { it.id == quality.id }
       }?.takeIf { it >= 0 } ?: 0
       PlayerPanel.Speed -> PlayerSpeedOptions.indexOf(playbackSpeed).takeIf { it >= 0 } ?: 2
-      PlayerPanel.Episodes -> metadata?.pages
-        ?.indexOfFirst { episode ->
-          // 影视库选集按集索引高亮(cid 恒 0 无从比对);B站/PGC 按 cid 匹配。
-          if (displayRequest.isTvbox) episode.page == displayRequest.tvboxEpisodeIndex
-          else episode.cid == displayRequest.cid
-        }
-        ?.takeIf { it >= 0 } ?: 0
+      PlayerPanel.Episodes -> {
+        val focusIdx = metadata?.pages
+          ?.indexOfFirst { episode ->
+            // 影视库选集按集索引高亮(cid 恒 0 无从比对);B站/PGC 按 cid 匹配。
+            if (displayRequest.isTvbox) episode.page == displayRequest.tvboxEpisodeIndex
+            else episode.cid == displayRequest.cid
+          }
+          ?.takeIf { it >= 0 } ?: 0
+        Log.i(
+          PlayerPlaybackLogTag,
+          "episodes panel open: pages=${metadata?.pages?.size} focusIdx=$focusIdx tvbox=${displayRequest.isTvbox}",
+        )
+        focusIdx
+      }
       else -> 0
     }
     progressFocused = false
@@ -1214,6 +1221,11 @@ fun PlayerScreen(
           saveAndReportProgressNow()
           if (displayRequest.isTvbox) {
             // 影视库选集:同线路内切集(episode.page=选集索引),进度归零重播;线路档不变。
+            Log.i(
+              PlayerPlaybackLogTag,
+              "tvbox episode switch: focusIdx=$focusedPanelIndex page=${episode.page} title=${episode.title} " +
+                "line=${displayRequest.tvboxCurrentLine?.name} pages=${metadata?.pages?.size}",
+            )
             val nextRequest = displayRequest.copy(
               tvboxEpisodeIndex = episode.page,
               startPositionMs = 0L,
@@ -1604,7 +1616,16 @@ fun PlayerScreen(
     val isYoutube = activeRequest.isYoutube
     val skipBiliMetadata = isYoutube || activeRequest.isTvbox
     val videoMetadata = if (skipBiliMetadata) {
-      if (activeRequest.isTvbox) tvboxSyntheticMetadata(activeRequest) else null
+      if (activeRequest.isTvbox) {
+        tvboxSyntheticMetadata(activeRequest).also {
+          // 诊断(TV 端选集黑屏):合成元数据是选集面板唯一数据源,空=面板「暂无数据」/切集无反应。
+          Log.i(
+            PlayerPlaybackLogTag,
+            "tvbox synthetic metadata: pages=${it?.pages?.size} line=${activeRequest.tvboxCurrentLine?.name} " +
+              "epIdx=${activeRequest.tvboxEpisodeIndex} lines=${activeRequest.tvboxLines.size}",
+          )
+        }
+      } else null
     } else {
       val existingMetadata = metadata
       if (existingMetadata != null && existingMetadata.bvid == activeRequest.bvid) {
