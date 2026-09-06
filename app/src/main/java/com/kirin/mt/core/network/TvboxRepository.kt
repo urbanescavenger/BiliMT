@@ -112,6 +112,12 @@ class TvboxRepository(
     .readTimeout(15, TimeUnit.SECONDS)
     .build()
 
+  /** m3u8 存活预检 client:5s 连/6s 读(比线路请求更紧,预检失败只是顺延不是终点)。 */
+  private val probeClient = httpClient.newBuilder()
+    .connectTimeout(5, TimeUnit.SECONDS)
+    .readTimeout(6, TimeUnit.SECONDS)
+    .build()
+
   private val json = Json {
     ignoreUnknownKeys = true
     isLenient = true
@@ -133,6 +139,9 @@ class TvboxRepository(
 
   /** 线路解析缓存:原始 share/play URL → 可播 m3u8。切线路/失败重试不重复拉页。 */
   private val resolveCache = ConcurrentHashMap<String, String>()
+
+  /** m3u8 死链缓存:url → 死判定到期时间戳(5 分钟)。自动重试/重进不再重复探测死链。 */
+  private val deadUntilCache = ConcurrentHashMap<String, Long>()
 
   private val sitesMutex = Mutex()
   private val statusFlow = MutableStateFlow<TvboxSourceStatus>(TvboxSourceStatus.NotConfigured)
@@ -323,6 +332,8 @@ class TvboxRepository(
     const val MaxEpisodesPerLine = 500
     /** config 缓存 TTL:站点列表变化不频繁,5 分钟内复用,换 URL 即失效。 */
     const val ConfigTtlMs = 5 * 60 * 1000L
+    /** m3u8 死链判定缓存 TTL:5 分钟后重新探测(CDN 可能回源补文件)。 */
+    const val DeadProbeTtlMs = 5 * 60 * 1000L
 
     /**
      * 官方视频站播放页特征(`://host/` 片段,contains 匹配即可覆盖 http/https 与移动版子域):
@@ -392,6 +403,41 @@ class TvboxRepository(
     M3U8_URL_REGEX.find(html)?.value?.let { return it }
     RELATIVE_M3U8_REGEX.find(html)?.groupValues?.get(1)?.let { return it }
     return null
+  }
+
+  /**
+   * m3u8 存活预检(P11-81d):解析「成功」≠ 文件还在——采集站老资源 CDN 404 是常态
+   * (真机实测量子 vip1.lz-cdn.com 2022 年旧片 index.m3u8 返回 404,顺延逻辑不知情,
+   * 播放器 Source error 后自动重试原样打死链)。用 Range 0-0 轻量探测(借 awesome-zhuiju-free
+   * check-availability 手法):200/206 = 活;404/410 = 明确死,调用方顺延下一线路;其余
+   * (403 防盗链/5xx/超时)保守按活处理,不误杀慢源,让播放器自己兜。死判定缓存 5 分钟,
+   * 自动重试/重进不重复探测。裸头(无 Referer/Origin),与播放头一致。
+   */
+  suspend fun probePlayable(url: String): Boolean {
+    deadUntilCache[url]?.let { until -> if (System.currentTimeMillis() < until) return false }
+    return withContext(Dispatchers.IO) {
+      try {
+        val request = Request.Builder()
+          .url(url)
+          .header("Range", "bytes=0-0")
+          .build()
+        probeClient.newCall(request).execute().use { response ->
+          when (response.code) {
+            200, 206 -> true
+            404, 410 -> {
+              deadUntilCache[url] = System.currentTimeMillis() + DeadProbeTtlMs
+              false
+            }
+            else -> true
+          }
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        // 探测网络失败按活处理——探测只是辅助,别因为探测网络抖动把好线路杀掉。
+        true
+      }
+    }
   }
 
   /** 官方视频站播放页判定:命中 [OFFICIAL_PLAYER_HOSTS] 任一特征即不可懒解析,选集期剔除。 */

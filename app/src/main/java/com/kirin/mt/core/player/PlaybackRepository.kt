@@ -187,15 +187,20 @@ class PlaybackRepository(
         ?: episodes.get(resolvedEpisode.coerceIn(0, episodes.lastIndex))
       val resolved = tvboxRepository.resolveLineUrl(episode.url)
       if (resolved != null) {
-        resolvedLine = candidate
-        resolvedEpisode = episodes.indexOf(episode)
-        resolvedUrl = resolved
-        break
+        // m3u8 存活预检(P11-81d):解析成功但 CDN 404 的死链(采集站老资源常态)也顺延下一线路。
+        if (tvboxRepository.probePlayable(resolved)) {
+          resolvedLine = candidate
+          resolvedEpisode = episodes.indexOf(episode)
+          resolvedUrl = resolved
+          break
+        }
+        Log.w(PlaybackLogTag, "tvbox line #$candidate episode#$resolvedEpisode m3u8 probe dead: $resolved")
+      } else {
+        Log.w(PlaybackLogTag, "tvbox line #$candidate episode#$resolvedEpisode resolve failed: ${episode.url}")
       }
-      Log.w(PlaybackLogTag, "tvbox line #$candidate episode#$resolvedEpisode resolve failed: ${episode.url}")
     }
     val streamUrl = resolvedUrl
-      ?: throw IllegalStateException("tvbox: 全部线路解析失败(${lines.size} 条线路)")
+      ?: throw IllegalStateException("tvbox: 全部线路解析失败或 m3u8 已失效(${lines.size} 条线路)")
     Log.i(PlaybackLogTag, "tvbox playback resolved line=#$resolvedLine/${lines.lastIndex} episode=#$resolvedEpisode url=$streamUrl")
     val qualities = lines.mapIndexed { index, line ->
       PlaybackQuality(index, line.name.ifBlank { "线路${index + 1}" })
