@@ -293,6 +293,9 @@ class TvboxRepository(
   /**
    * 全分集解析:取一个播放组(`$$$` 分隔多源组,直链 m3u8 组优先——share/play 页组混着会
    * 把同一批集解析成两份),`#` 分集、`集名$URL` 逐条提取。空集名回落「正片」(电影组常无标题)。
+   * 官方播放页(v.qq.com 等,JS 播放器无直链可提取)在集级剔除——整线剔空后该线路自动消失
+   * (P11-81c:真机日志实测「tvbox line #0 episode#0 resolve failed: v.qq.com/x/cover/...」
+   * 单线路影片无得顺延,直接播放失败;源头剔除后选集面板不再出现点了必失败的集)。
    */
   private fun parseEpisodeList(vod: TvboxVod): List<TvboxEpisode> {
     val groups = vod.vod_play_url.split("$$$")
@@ -300,7 +303,7 @@ class TvboxRepository(
         group.split("#").mapNotNull { segment ->
           val title = segment.substringBefore('$', "").trim()
           val url = segment.substringAfter('$', "").trim()
-          if (url.startsWith("http")) {
+          if (url.startsWith("http") && !isOfficialPlayerPage(url)) {
             TvboxEpisode(title = title.ifBlank { "正片" }, url = url)
           } else {
             null
@@ -320,6 +323,25 @@ class TvboxRepository(
     const val MaxEpisodesPerLine = 500
     /** config 缓存 TTL:站点列表变化不频繁,5 分钟内复用,换 URL 即失效。 */
     const val ConfigTtlMs = 5 * 60 * 1000L
+
+    /**
+     * 官方视频站播放页特征(`://host/` 片段,contains 匹配即可覆盖 http/https 与移动版子域):
+     * 腾讯/爱奇艺/优酷/芒果/B站/搜狐/1905/PPTV/乐视。这些页面是 JS 播放器(部分带 DRM),
+     * 正则三级提取拿不到直链,选集解析期直接剔除;采集站 share 页(非凡/量子)不含这些特征,不受影响。
+     */
+    val OFFICIAL_PLAYER_HOSTS = listOf(
+      "://v.qq.com/",
+      "://m.v.qq.com/",
+      ".iqiyi.com/",
+      ".youku.com/",
+      ".mgtv.com/",
+      ".bilibili.com/",
+      ".sohu.com/",
+      ".1905.com/",
+      ".pptv.com/",
+      ".le.com/",
+      ".letv.com/",
+    )
     /** share/play 页内嵌播放地址:非凡 `const url = "…index.m3u8?sign=…"`;其余站点兜底取页内首个 m3u8。 */
     val CONST_URL_REGEX = Regex("""const url\s*=\s*"([^"]+)"""")
     val M3U8_URL_REGEX = Regex("""https?://[^"'\s<>]+\.m3u8[^"'\s<>]*""")
@@ -371,4 +393,8 @@ class TvboxRepository(
     RELATIVE_M3U8_REGEX.find(html)?.groupValues?.get(1)?.let { return it }
     return null
   }
+
+  /** 官方视频站播放页判定:命中 [OFFICIAL_PLAYER_HOSTS] 任一特征即不可懒解析,选集期剔除。 */
+  private fun isOfficialPlayerPage(url: String): Boolean =
+    OFFICIAL_PLAYER_HOSTS.any { url.contains(it) }
 }
