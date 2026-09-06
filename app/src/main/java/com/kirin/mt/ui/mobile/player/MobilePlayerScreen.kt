@@ -3019,24 +3019,33 @@ private fun MobilePlayerIntroTab(
       }
 
       // 多分P:在此处展示选集(替代相关视频);单P:保持相关视频列表。
+      // P11-80:竖屏简介 tab 选集对齐官方——与横屏选集弹层同款两列紧凑卡(序号+标题+角标,当前集高亮)。
       if (metadata.pages.size > 1) {
         SectionTitle(stringResource(R.string.player_control_episodes))
-        metadata.pages.forEach { ep ->
-          val selected = if (request.isTvbox) {
-            // 影视库:分P 页号=选集索引,cid 恒 0 无从比对。
-            ep.page == request.tvboxEpisodeIndex
-          } else {
-            ep.cid == request.cid || (ep.epId > 0L && ep.epId == request.epId)
-          }
-          TextButton(
-            onClick = { onSelectPage(ep) },
+        metadata.pages.chunked(2).forEach { rowEps ->
+          Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
           ) {
-            Text(
-              text = "P${ep.page} ${ep.title}",
-              color = if (selected) Color(0xFFFB7299) else Color.White,
-            )
+            rowEps.forEach { ep ->
+              val selected = if (request.isTvbox) {
+                // 影视库:分P 页号=选集索引,cid 恒 0 无从比对。
+                ep.page == request.tvboxEpisodeIndex
+              } else {
+                ep.cid == request.cid || (ep.epId > 0L && ep.epId == request.epId)
+              }
+              EpisodeSheetCard(
+                ep = ep,
+                selected = selected,
+                onSelect = { onSelectPage(ep) },
+                modifier = Modifier.weight(1f),
+              )
+            }
+            if (rowEps.size == 1) {
+              Spacer(Modifier.weight(1f))
+            }
           }
+          Spacer(Modifier.height(8.dp))
         }
       } else {
         // 相关视频:2 列 chunked Row,复用 MobileVideoCard,点击切播 / 进 UP 主页。
