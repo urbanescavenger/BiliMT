@@ -417,6 +417,8 @@
     <string name="player_error_empty_tracks">La API de reproducción no devolvió pistas de audio y video disponibles</string>
     <string name="player_error_launch_timeout">Tiempo de inicio agotado (30 s); inténtalo de nuevo</string>
     <string name="player_control_episodes">Seleccionar episodio</string>
+    <string name="player_control_next_episode">Siguiente episodio</string>
+    <string name="player_speed_label">Velocidad</string>
     <string name="player_control_up">UP</string>
     <string name="player_control_related">Relacionados</string>
     <string name="player_control_settings">Ajustes</string>
@@ -654,6 +656,8 @@
     <string name="player_listen_mode">Modo de escuchar video</string>
     <string name="player_error_failed">Fallo en la reproducción</string>
     <string name="player_paused_tap_play">En pausa; toca para reproducir</string>
+    <string name="player_control_play">Reproducir</string>
+    <string name="player_control_pause">Pausar</string>
     <string name="danmaku_send">Enviar danmaku</string>
     <string name="danmaku_empty_content">El contenido del danmaku no puede estar vacío</string>
     <string name="danmaku_sent">Danmaku enviado</string>

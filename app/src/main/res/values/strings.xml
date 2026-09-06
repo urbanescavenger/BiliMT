@@ -428,6 +428,8 @@
     <string name="player_error_empty_tracks">&#25773;&#25918;&#25509;&#21475;&#26410;&#36820;&#22238;&#21487;&#29992;&#38899;&#35270;&#39057;&#36712;</string>
     <string name="player_error_launch_timeout">起播超时（30s），请重试</string>
     <string name="player_control_episodes">&#x9009;&#x96C6;</string>
+    <string name="player_control_next_episode">&#x4E0B;&#x4E00;&#x96C6;</string>
+    <string name="player_speed_label">&#x500D;&#x901F;</string>
     <string name="player_control_up">UP&#x4E3B;</string>
     <string name="player_control_related">&#x76F8;&#x5173;</string>
     <string name="player_control_settings">&#x8BBE;&#x7F6E;</string>
@@ -665,6 +667,8 @@
     <string name="player_listen_mode">听视频模式</string>
     <string name="player_error_failed">播放失败</string>
     <string name="player_paused_tap_play">已暂停,点击播放</string>
+    <string name="player_control_play">&#x64AD;&#x653E;</string>
+    <string name="player_control_pause">&#x6682;&#x505C;</string>
     <string name="danmaku_send">发送弹幕</string>
     <string name="danmaku_empty_content">弹幕内容不能为空</string>
     <string name="danmaku_sent">弹幕已发送</string>

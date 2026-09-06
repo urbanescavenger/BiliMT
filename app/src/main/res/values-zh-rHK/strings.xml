@@ -309,6 +309,10 @@
     <string name="player_error_missing_cid">未能取得影片 CID</string>
     <string name="player_error_empty_tracks">播放介面未返回可用音影片軌</string>
     <string name="player_control_episodes">選集</string>
+    <string name="player_control_play">播放</string>
+    <string name="player_control_pause">暫停</string>
+    <string name="player_control_next_episode">下一集</string>
+    <string name="player_speed_label">倍速</string>
     <string name="player_control_up">UP 主</string>
     <string name="player_control_related">相關</string>
     <string name="player_control_settings">設定</string>

@@ -418,6 +418,8 @@
     <string name="player_error_empty_tracks">Playback API returned no usable audio/video tracks</string>
     <string name="player_error_launch_timeout">Start timeout (30s). Retry.</string>
     <string name="player_control_episodes">Episodes</string>
+    <string name="player_control_next_episode">Next episode</string>
+    <string name="player_speed_label">Speed</string>
     <string name="player_control_up">UP</string>
     <string name="player_control_related">Related</string>
     <string name="player_control_settings">Settings</string>
@@ -651,6 +653,8 @@
     <string name="player_listen_mode">Audio mode</string>
     <string name="player_error_failed">Playback failed</string>
     <string name="player_paused_tap_play">Paused. Tap to play.</string>
+    <string name="player_control_play">Play</string>
+    <string name="player_control_pause">Pause</string>
     <string name="danmaku_send">Send danmaku</string>
     <string name="danmaku_empty_content">Danmaku cannot be empty</string>
     <string name="danmaku_sent">Danmaku sent</string>
