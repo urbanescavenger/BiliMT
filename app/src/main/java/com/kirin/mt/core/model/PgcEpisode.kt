@@ -11,4 +11,6 @@ data class PgcEpisode(
   val cover: String,
   /** 秒 */
   val duration: Int,
+  /** 角标文案(接口 badge,如「会员」);空=无角标。 */
+  val badge: String = "",
 )

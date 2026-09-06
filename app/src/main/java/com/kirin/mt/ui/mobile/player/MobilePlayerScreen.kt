@@ -2134,7 +2134,8 @@ fun MobilePlayerScreen(
       }
 
       // P11-78 选集底部弹层(B站式横屏底栏「选集」入口):列出 metadata.pages
-      // (多P/PGC 分集/影视库线路分集),当前集粉色高亮,点选切播(共用 selectEpisode)。
+      // (多P/PGC 分集/影视库线路分集),点选切播(共用 selectEpisode)。
+      // P11-80 对齐官方选集面板:两列紧凑卡(序号+标题+角标),当前集粉色高亮。
       if (showEpisodeSheet) {
         val sheetState = rememberModalBottomSheetState()
         ModalBottomSheet(
@@ -2155,24 +2156,33 @@ fun MobilePlayerScreen(
               color = Color.White,
               style = MaterialTheme.typography.titleMedium,
             )
-            pages.forEach { ep ->
-              val selected = if (activeRequest.isTvbox) {
-                ep.page == activeRequest.tvboxEpisodeIndex
-              } else {
-                ep.cid == activeRequest.cid || (ep.epId > 0L && ep.epId == activeRequest.epId)
-              }
-              TextButton(
-                onClick = {
-                  showEpisodeSheet = false
-                  selectEpisode(ep)
-                },
+            Spacer(Modifier.height(8.dp))
+            pages.chunked(2).forEach { rowEps ->
+              Row(
                 modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
               ) {
-                Text(
-                  text = "P${ep.page} ${ep.title}",
-                  color = if (selected) Color(0xFFFB7299) else Color.White,
-                )
+                rowEps.forEach { ep ->
+                  val selected = if (activeRequest.isTvbox) {
+                    ep.page == activeRequest.tvboxEpisodeIndex
+                  } else {
+                    ep.cid == activeRequest.cid || (ep.epId > 0L && ep.epId == activeRequest.epId)
+                  }
+                  EpisodeSheetCard(
+                    ep = ep,
+                    selected = selected,
+                    onSelect = {
+                      showEpisodeSheet = false
+                      selectEpisode(ep)
+                    },
+                    modifier = Modifier.weight(1f),
+                  )
+                }
+                if (rowEps.size == 1) {
+                  Spacer(Modifier.weight(1f))
+                }
               }
+              Spacer(Modifier.height(8.dp))
             }
           }
         }
@@ -3432,6 +3442,58 @@ private fun PlaybackQualityMenu(
           onClick = { onSelect(q) },
         )
       }
+    }
+  }
+}
+/**
+ * 选集面板两列卡(P11-80,对齐官方选集面板):序号标签(PGC「第 N 话」/其它「P{page}」)+
+ * 集标题,右上角角标(会员等);当前集粉色高亮。
+ */
+@Composable
+private fun EpisodeSheetCard(
+  ep: com.kirin.mt.core.player.PlaybackEpisode,
+  selected: Boolean,
+  onSelect: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val accent = Color(0xFFFB7299)
+  Box(modifier = modifier) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(8.dp))
+        .background(if (selected) Color(0x1FFB7299) else Color(0xFF26262C))
+        .clickable(onClick = onSelect)
+        .padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
+    ) {
+      Text(
+        text = ep.indexLabel.ifEmpty { "P${ep.page}" },
+        color = if (selected) accent else Color.White,
+        style = MaterialTheme.typography.bodyMedium,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+      )
+      if (ep.title.isNotBlank()) {
+        Text(
+          text = ep.title,
+          color = if (selected) accent else Color(0xFFB8B8BE),
+          style = MaterialTheme.typography.bodySmall,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
+    }
+    if (ep.badge.isNotBlank()) {
+      Text(
+        text = ep.badge,
+        color = Color.White,
+        style = MaterialTheme.typography.labelSmall,
+        modifier = Modifier
+          .align(Alignment.TopEnd)
+          .clip(RoundedCornerShape(bottomStart = 6.dp, topEnd = 8.dp))
+          .background(accent)
+          .padding(horizontal = 5.dp, vertical = 1.dp),
+      )
     }
   }
 }

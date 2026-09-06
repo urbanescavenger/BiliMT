@@ -185,6 +185,10 @@ data class PlaybackEpisode(
   val durationSeconds: Int,
   /** PGC 剧集 ep_id；UGC 多 P 为 0。 */
   val epId: Long = 0L,
+  /** 角标(接口 badge,如「会员」);空=无。选集面板卡片右上角。 */
+  val badge: String = "",
+  /** 序号标签(如「第 1198 话」,PGC 正片短标题数字时生成);空=显示「P{page}」。 */
+  val indexLabel: String = "",
 )
 
 data class PlaybackTrack(

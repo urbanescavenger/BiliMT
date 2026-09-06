@@ -579,12 +579,16 @@ class PlaybackRepository(
     val data = root.obj("data") ?: root.obj("result") ?: JsonObject(emptyMap())
     val season = PgcMappers.fromSeasonData(data)
     val pages = season.episodes.mapIndexed { index, ep ->
+      val shortTitle = ep.title.trim()
       PlaybackEpisode(
         cid = ep.cid,
         page = index + 1,
         title = ep.longTitle.ifBlank { ep.title },
         durationSeconds = ep.duration,
         epId = ep.id.toLong(),
+        badge = ep.badge,
+        // 短标题是纯数字(正片话数)→「第 N 话」标签;花絮/非数字短标题回落 P{page}。
+        indexLabel = if (shortTitle.matches(Regex("\\d+"))) "第 $shortTitle 话" else "",
       )
     }.filter { it.cid > 0L }
 
@@ -598,8 +602,8 @@ class PlaybackRepository(
       ownerName = "",
       ownerFace = "",
       ownerMid = 0L,
-      viewCount = 0,
-      danmakuCount = 0,
+      viewCount = season.viewCount.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+      danmakuCount = season.danmakuCount.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
       pubdate = 0L,
       pages = pages,
       desc = season.evaluate,
