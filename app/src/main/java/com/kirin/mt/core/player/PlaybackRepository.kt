@@ -233,8 +233,15 @@ class PlaybackRepository(
       selectedQuality = qualities[resolvedLine],
       videoTracks = listOf(dummyTrack),
       audioTracks = emptyList(),
-      // 裸头:BiliPlaybackHeaders 空串 Referer/Origin 不发(见 asMap 的空串跳过)。
-      headers = BiliPlaybackHeaders(sessData = null, biliJct = null, referer = "", origin = ""),
+      // 红果(P11-83 真机 403 修复):显式带红果域名 Referer/Origin——playback client 拦截器会给
+      // 缺 Referer 的请求默认注入 B站 Referer(BiliHeaders.Referer),B站 Referer 打到字节系
+      // qznovelvod CDN 触发防盗链 403(实测三态:裸 200/B站头 403/红果头 200)。显式非空头
+      // 拦截器保留(asMap 非空即发)。TVBox 采集站实测吃 B站 Referer 不误拒,维持裸头不动。
+      headers = if (isHongguo) {
+        BiliPlaybackHeaders(sessData = null, biliJct = null, referer = "https://hongguoduanju.com/", origin = "https://hongguoduanju.com")
+      } else {
+        BiliPlaybackHeaders(sessData = null, biliJct = null, referer = "", origin = "")
+      },
       remoteHlsManifestUrl = if (isHongguo) null else streamUrl,
     )
   }
