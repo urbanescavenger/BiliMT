@@ -24,6 +24,8 @@ data class VideoSummary(
   val isLive: Boolean = false,
   /** 直播间 id;>0 表示这张卡片是直播间(由 LiveRoom 映射而来),点击走直播播放。 */
   val liveRoomId: Long = 0L,
+  /** PGC 季 id;>0 表示这张卡片是番剧/影视季(由番剧搜索映射而来),点击进 PGC 季详情而非播放器。 */
+  val seasonId: Int = 0,
   /** 直播分区名(仅直播卡片填充,移动端卡片据此显示分区)。 */
   val liveAreaName: String = "",
   // 动态专属字段:仅 fromDynamicItem 填充,其它来源保持默认 0/空。

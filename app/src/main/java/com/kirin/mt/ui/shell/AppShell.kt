@@ -1317,12 +1317,18 @@ fun BiliTvApp(
                     }.isSuccess
                   },
                   onVideoSelected = { video ->
-                    playQueue = emptyList()
-                    playbackRequest = video.toPlaybackRequest()
+                    if (video.seasonId > 0) {
+                      // 番剧搜索卡(seasonId>0):进 PGC 季详情,epId=0 由季详情自行选首集。
+                      pgcSeasonRequest = com.kirin.mt.ui.pgc.PgcSeasonRequest(seasonId = video.seasonId)
+                    } else {
+                      playQueue = emptyList()
+                      playbackRequest = video.toPlaybackRequest()
+                    }
                   },
                   onOwnerSelected = { video ->
                     // 影视库(TVBox)卡「UP主」位是线路条数,无空间页可进,忽略。
-                    if (video.source == SourceTvbox) {
+                    // 番剧卡「UP主」位是声优串,mid=0 无空间页,忽略。
+                    if (video.source == SourceTvbox || video.seasonId > 0) {
                       // no-op
                     } else if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
                       youtubeChannelUiState.reset()

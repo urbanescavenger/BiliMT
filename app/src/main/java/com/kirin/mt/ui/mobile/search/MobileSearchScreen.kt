@@ -85,9 +85,10 @@ private const val FirstPage = 1
 private const val PageSize = 20
 private const val SearchSuggestionDebounceMs = 250L
 
-/** 搜索类型:视频 / UP主(频道)。 */
+/** 搜索类型:视频 / 番剧(仅 B 站) / UP主(频道)。 */
 private const val SearchTypeVideo = "video"
 private const val SearchTypeUser = "user"
+private const val SearchTypeBangumi = "media_bangumi"
 
 /** 搜索结果分页状态。 */
 private sealed interface SearchResultState {
@@ -137,6 +138,34 @@ private fun sortOptionsFor(source: String): List<SearchSortOption> =
 /** 各来源默认排序(综合)的 key,切换来源时用于重置选中项;影视库 无排序,空 key。 */
 private fun defaultOrderKey(source: String): String = sortOptionsFor(source).firstOrNull()?.key.orEmpty()
 
+/** 搜索类型选项:视频 + 番剧 + UP主(B站)/ 频道(YouTube)。key 即 [SearchTypeVideo]/[SearchTypeBangumi]/[SearchTypeUser]。 */
+private fun typeOptionsFor(source: String): List<SearchSortOption> =
+  if (source == SourceYoutube) {
+    listOf(
+      SearchSortOption(SearchTypeVideo, R.string.search_type_video),
+      SearchSortOption(SearchTypeUser, R.string.search_type_user_youtube),
+    )
+  } else {
+    listOf(
+      SearchSortOption(SearchTypeVideo, R.string.search_type_video),
+      SearchSortOption(SearchTypeBangumi, R.string.search_type_bangumi),
+      SearchSortOption(SearchTypeUser, R.string.search_type_user_bili),
+    )
+  }
+
+/** 类型循环按钮的「下一类型」:当前类型在选项里的下一项(不在列表按视频落第一项)。B站 视频→番剧→UP主→视频。 */
+private fun nextSearchType(current: String, options: List<SearchSortOption>): SearchSortOption {
+  val index = options.indexOfFirst { it.key == current }
+  return options[(index + 1).mod(options.size)]
+}
+
+/** 空结果文案按类型区分:UP主/番剧/视频。 */
+private fun emptyMessageResFor(searchType: String): Int = when (searchType) {
+  SearchTypeUser -> R.string.search_empty_user
+  SearchTypeBangumi -> R.string.search_empty_bangumi
+  else -> R.string.search_empty
+}
+
 @Stable
 private class MobileSearchUiState {
   var query by mutableStateOf("")
@@ -167,6 +196,10 @@ private class MobileSearchUiState {
   fun selectSource(newSource: String) {
     if (source == newSource) return
     source = newSource
+    // 番剧类型仅 B 站源提供,切到其它源回退视频类型(YouTube 类型循环只有 视频⇄频道)。
+    if (searchType == SearchTypeBangumi) {
+      searchType = SearchTypeVideo
+    }
     // 排序 key 与来源耦合(B站 totalrank/click…,YouTube params 串),切源重置为该源默认「综合」。
     orderKey = defaultOrderKey(newSource)
     resultState = SearchResultState.Loading
@@ -243,6 +276,16 @@ fun MobileSearchScreen(
               endReached = users.size < PageSize,
             )
           }
+        } else if (uiState.searchType == SearchTypeBangumi) {
+          // 番剧搜索:无排序,结果卡带 seasonId,点击进 PGC 季详情(MobileApp 拦截)。
+          val seasons = videoRepository.searchBangumi(keyword = query, page = FirstPage)
+          if (seasons.isEmpty()) SearchResultState.Empty
+          else SearchResultState.Success(
+            videos = seasons,
+            nextPage = FirstPage + 1,
+            loadingMore = false,
+            endReached = seasons.size < PageSize,
+          )
         } else if (uiState.source == SourceYoutube) {
           val page = videoRepository.youtubeSearch(query = query, params = order)
           if (page.items.isEmpty()) SearchResultState.Empty
@@ -321,6 +364,17 @@ fun MobileSearchScreen(
             } else {
               moreUsers.size < PageSize || mergedUsers.size == current.users.size
             },
+          )
+        } else if (uiState.searchType == SearchTypeBangumi) {
+          // 番剧搜索翻页:无排序。
+          val more = videoRepository.searchBangumi(keyword = q, page = current.nextPage)
+          val merged = (current.videos + more).distinctBy { it.bvid }
+          current.copy(
+            videos = merged,
+            nextPage = current.nextPage + 1,
+            continuation = null,
+            loadingMore = false,
+            endReached = more.size < PageSize || merged.size == current.videos.size,
           )
         } else {
           val more: List<VideoSummary>
@@ -474,13 +528,11 @@ fun MobileSearchScreen(
         )
       }
     } else {
-      // 结果态:排序 chip(仅视频类型,B站/YouTube 各一套) + 类型单开关按钮(恒标「UP主/频道」,默认视频不占位;
-      // 选中=UP主搜索,再点切回视频)。「视频」chip 已按用户要求去掉——默认即视频,不会有误解。
-      // UP主/频道 类型时排序隐藏,只剩该类型按钮。影视库(TVBox)源排序/类型按钮全隐藏(无排序/无 UP主)。
-      val userTypeLabel = stringResource(
-        if (uiState.source == SourceYoutube) R.string.search_type_user_youtube else R.string.search_type_user_bili
-      )
+      // 结果态:排序 chip(仅视频类型,B站/YouTube 各一套) + 类型循环按钮(恒标「下一类型」,
+      // OK/点击在 视频→番剧→UP主(B站)/ 视频⇄频道(YouTube) 间循环,默认视频)。
+      // 非视频类型时排序隐藏,只剩该类型按钮。影视库(TVBox)源排序/类型按钮全隐藏(无排序/无 UP主)。
       val sortOptions = sortOptionsFor(uiState.source)
+      val nextType = nextSearchType(uiState.searchType, typeOptionsFor(uiState.source))
       Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -496,13 +548,9 @@ fun MobileSearchScreen(
         }
         if (uiState.source != SourceTvbox) {
           FilterChip(
-            selected = uiState.searchType == SearchTypeUser,
-            onClick = {
-              uiState.selectType(
-                if (uiState.searchType == SearchTypeUser) SearchTypeVideo else SearchTypeUser
-              )
-            },
-            label = { Text(userTypeLabel) },
+            selected = uiState.searchType != SearchTypeVideo,
+            onClick = { uiState.selectType(nextType.key) },
+            label = { Text(stringResource(nextType.titleRes)) },
           )
         }
       }
@@ -536,9 +584,7 @@ fun MobileSearchScreen(
                   contentAlignment = Alignment.Center,
                 ) {
                   Text(
-                    text = stringResource(
-                      if (uiState.searchType == SearchTypeUser) R.string.search_empty_user else R.string.search_empty
-                    ),
+                    text = stringResource(emptyMessageResFor(uiState.searchType)),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,

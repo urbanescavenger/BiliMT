@@ -293,7 +293,9 @@
     <string name="search_loading">正在搜索...</string>
     <string name="search_empty">未找到相关视频</string>
     <string name="search_empty_user">未找到相关UP主/频道</string>
+    <string name="search_empty_bangumi">未找到相关番剧</string>
     <string name="search_type_video">视频</string>
+    <string name="search_type_bangumi">番剧</string>
     <string name="search_type_user_bili">UP主</string>
     <string name="search_type_user_youtube">频道</string>
     <string name="search_user_fans">粉丝 %1$s</string>

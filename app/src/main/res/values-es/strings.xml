@@ -289,7 +289,9 @@
     <string name="search_loading">Buscando...</string>
     <string name="search_empty">No se encontraron videos relacionados</string>
     <string name="search_empty_user">No se encontraron creadores/canales</string>
+    <string name="search_empty_bangumi">No se encontraron animes relacionados</string>
     <string name="search_type_video">Videos</string>
+    <string name="search_type_bangumi">Anime</string>
     <string name="search_type_user_bili">Creadores</string>
     <string name="search_type_user_youtube">Canales</string>
     <string name="search_user_fans">%1$s seguidores</string>

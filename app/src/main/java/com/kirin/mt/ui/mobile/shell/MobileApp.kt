@@ -349,8 +349,14 @@ fun BiliMobileApp(
           videoRepository = videoRepository,
           searchHistoryStore = searchHistoryStore,
           onVideoSelected = { video ->
-            playQueue = emptyList()
-            playbackRequest = video.toPlaybackRequest()
+            if (video.seasonId > 0) {
+              // 番剧搜索卡(seasonId>0):进 PGC 季详情,epId=0 由季详情自行选首集。
+              pgcSeasonRequest = PgcSeasonRequest(seasonId = video.seasonId)
+              pgcPlaybackBehind = false
+            } else {
+              playQueue = emptyList()
+              playbackRequest = video.toPlaybackRequest()
+            }
           },
           onOpenOwner = { video -> openOwner(video) },
           onLongPress = onLongPress,

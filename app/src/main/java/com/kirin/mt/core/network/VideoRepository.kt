@@ -298,6 +298,17 @@ class VideoRepository(
     )
   }
 
+  /** 搜索番剧（B站 search_type=media_bangumi）。结果卡带 seasonId,点击进 PGC 季详情。 */
+  suspend fun searchBangumi(
+    keyword: String,
+    page: Int = 1,
+  ): List<VideoSummary> {
+    return searchVideoRepository.searchBangumi(
+      keyword = keyword,
+      page = page,
+    )
+  }
+
   /** 搜索 YouTube 频道（InnerTube /search + params=TypeChannel）。 */
   suspend fun youtubeSearchChannels(
     query: String,
