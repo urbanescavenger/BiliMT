@@ -627,14 +627,14 @@
     <string name="settings_iptv_connect_success">Conexión a la fuente IPTV correcta</string>
     <string name="settings_iptv_connect_failed">Fallo de conexión a la fuente IPTV</string>
     <!-- Fuente biblioteca de vídeo (config TVBox, P11-81) -->
-    <string name="settings_tvbox_title">Fuente biblioteca (config TVBox)</string>
-    <string name="settings_tvbox_description">URL de configuración TVBox remota; la búsqueda de biblioteca lee sus sitios de enlace directo (solo type 0/1)</string>
+    <string name="settings_tvbox_title">Fuente TVBox</string>
+    <string name="settings_tvbox_description">URL de configuración TVBox remota; la búsqueda lee sus sitios de enlace directo (solo type 0/1)</string>
     <string name="settings_tvbox_url_label">URL de configuración</string>
     <string name="settings_tvbox_configure_hint">Sin configurar, toca para editar</string>
-    <string name="settings_tvbox_connect_success">Fuente biblioteca cargada, %1$d sitios</string>
-    <string name="settings_tvbox_connect_failed">Fallo al cargar la config de biblioteca; revisa la URL</string>
-    <string name="search_tvbox_not_configured">Fuente biblioteca sin configurar. Añade una URL de config TVBox en Ajustes</string>
-    <string name="search_tvbox_load_failed">Fallo al cargar la config de biblioteca; revisa la URL en Ajustes</string>
+    <string name="settings_tvbox_connect_success">Config TVBox cargada, %1$d sitios</string>
+    <string name="settings_tvbox_connect_failed">Fallo al cargar la config TVBox; revisa la URL</string>
+    <string name="search_tvbox_not_configured">TVBox sin configurar. Añade una URL de config TVBox en Ajustes</string>
+    <string name="search_tvbox_load_failed">Fallo al cargar la config TVBox; revisa la URL en Ajustes</string>
     <string name="settings_webdav_username_label">Usuario</string>
     <string name="settings_webdav_password_label">Contraseña</string>
     <string name="settings_webdav_field_hint">Sin completar</string>

@@ -627,14 +627,14 @@
     <string name="settings_iptv_connect_success">IPTV source connected</string>
     <string name="settings_iptv_connect_failed">IPTV source connection failed</string>
     <!-- TVBox config source (P11-81) -->
-    <string name="settings_tvbox_title">Video library source (TVBox config)</string>
-    <string name="settings_tvbox_description">Remote TVBox config URL; the video library search reads its direct-link sites (type 0/1 only)</string>
+    <string name="settings_tvbox_title">TVBox source</string>
+    <string name="settings_tvbox_description">Remote TVBox config URL; search reads its direct-link sites (type 0/1 only)</string>
     <string name="settings_tvbox_url_label">Config URL</string>
     <string name="settings_tvbox_configure_hint">Not configured, tap to edit</string>
-    <string name="settings_tvbox_connect_success">Video library source loaded, %1$d sites</string>
-    <string name="settings_tvbox_connect_failed">Failed to load video library config, check the config URL</string>
-    <string name="search_tvbox_not_configured">Video library source not configured. Set a TVBox config URL in Settings</string>
-    <string name="search_tvbox_load_failed">Failed to load the video library config. Check the config URL in Settings</string>
+    <string name="settings_tvbox_connect_success">TVBox config loaded, %1$d sites</string>
+    <string name="settings_tvbox_connect_failed">Failed to load TVBox config, check the config URL</string>
+    <string name="search_tvbox_not_configured">TVBox not configured. Set a TVBox config URL in Settings</string>
+    <string name="search_tvbox_load_failed">Failed to load the TVBox config. Check the config URL in Settings</string>
     <string name="settings_webdav_username_label">Username</string>
     <string name="settings_webdav_password_label">Password</string>
     <string name="settings_webdav_field_hint">Not filled</string>
