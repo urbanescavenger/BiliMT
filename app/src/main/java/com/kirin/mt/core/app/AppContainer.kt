@@ -151,7 +151,10 @@ class AppContainer(context: Context) {
   )
   // 播放进度本地存储:VideoRepository 用它给普通卡片合入观看进度条,PlaybackRepository 用它续播。
   val playbackProgressStore: PlaybackProgressStore = PlaybackProgressStore(appContext)
-  val tvboxRepository: TvboxRepository = TvboxRepository()
+  val tvboxRepository: TvboxRepository = TvboxRepository(
+    client = downloadHttpClient,
+    appSettingsStore = appSettingsStore,
+  )
   val videoRepository: VideoRepository = VideoRepository(
     apiClient = apiClient,
     wbiKeyRepository = wbiKeyRepository,

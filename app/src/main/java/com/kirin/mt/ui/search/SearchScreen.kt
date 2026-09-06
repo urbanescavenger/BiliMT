@@ -240,6 +240,8 @@ internal fun SearchScreen(
   onVideoSelected: (VideoSummary) -> Unit,
   onOwnerSelected: (VideoSummary) -> Unit = {},
   onUserSelected: (UserSummary) -> Unit = {},
+  tvboxSourceStatus: com.kirin.mt.core.network.TvboxSourceStatus =
+    com.kirin.mt.core.network.TvboxSourceStatus.NotConfigured,
 ) {
   val coroutineScope = rememberCoroutineScope()
   val searchHistory by searchHistoryStore.history.collectAsState(initial = emptyList())
@@ -1127,7 +1129,14 @@ private fun SearchResultsView(
       when (val currentState = uiState.resultState) {
         SearchResultState.Loading -> VideoGridSkeleton()
         SearchResultState.Empty -> FeedStatusScreen(
-          message = stringResource(emptyMessageResFor(searchType))
+          // 影视库源空结果分流:未配置/配置加载失败给引导文案(配置就绪才落通用「无结果」)。
+          message = stringResource(
+            if (source == SourceTvbox) {
+              tvboxEmptyMessageRes(tvboxSourceStatus)
+            } else {
+              emptyMessageResFor(searchType)
+            }
+          )
         )
         is SearchResultState.Failed -> FeedStatusScreen(
           message = stringResource(R.string.search_failed_with_message, currentState.message),
@@ -1919,6 +1928,16 @@ private fun emptyMessageResFor(searchType: String): Int = when (searchType) {
   SearchTypeBangumi -> R.string.search_empty_bangumi
   else -> R.string.search_empty
 }
+
+/** 影视库源空结果文案:未配置给设置引导,配置加载失败给排查提示,就绪落通用「无结果」。 */
+private fun tvboxEmptyMessageRes(status: com.kirin.mt.core.network.TvboxSourceStatus): Int =
+  when (status) {
+    com.kirin.mt.core.network.TvboxSourceStatus.NotConfigured ->
+      R.string.search_tvbox_not_configured
+    is com.kirin.mt.core.network.TvboxSourceStatus.Failed ->
+      R.string.search_tvbox_load_failed
+    is com.kirin.mt.core.network.TvboxSourceStatus.Ready -> R.string.search_empty
+  }
 
 private val SearchKeyboardRows = listOf(
   listOf("A", "B", "C", "D", "E", "F"),

@@ -195,6 +195,7 @@ fun BiliTvApp(
   webdavBackupService: com.kirin.mt.core.webdav.WebDavBackupService,
   iptvRepository: com.kirin.mt.core.network.IptvRepository,
   iptvProbeStore: com.kirin.mt.core.player.IptvSourceProbeStore,
+  tvboxRepository: com.kirin.mt.core.network.TvboxRepository,
 ) {
   val settings by appSettingsStore.settings.collectAsState(initial = AppSettings())
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
@@ -1226,6 +1227,26 @@ fun BiliTvApp(
                     ).show()
                   }
                 },
+                onTvboxConfigChange = { url ->
+                  coroutineScope.launch {
+                    appSettingsStore.setTvboxConfigUrl(url)
+                    // 保存后拉一次 config 校验,成功提示可用站数,失败提示检查地址。
+                    val siteCount = tvboxRepository.validateConfig(url)
+                    if (siteCount >= 0) {
+                      Toast.makeText(
+                        localizedContext,
+                        localizedContext.getString(R.string.settings_tvbox_connect_success, siteCount),
+                        Toast.LENGTH_SHORT,
+                      ).show()
+                    } else {
+                      Toast.makeText(
+                        localizedContext,
+                        R.string.settings_tvbox_connect_failed,
+                        Toast.LENGTH_SHORT,
+                      ).show()
+                    }
+                  }
+                },
                 onPipedInstanceChange = { url ->
                   coroutineScope.launch {
                     appSettingsStore.setPipedInstanceUrl(url)
@@ -1304,6 +1325,7 @@ fun BiliTvApp(
                   videoRepository = videoRepository,
                   searchHistoryStore = searchHistoryStore,
                   uiState = searchUiState,
+                  tvboxSourceStatus = tvboxRepository.sourceStatus.collectAsState().value,
                   firstItemFocusRequester = searchFocusRequester,
                   restoreFocusRequestKey = restoreFocusRequestKeyFor(AppDestination.Search),
                   onRestoreFocusHandled = { key -> clearFocusRestoreRequest(AppDestination.Search, key) },

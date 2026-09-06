@@ -98,6 +98,11 @@ data class AppSettings(
   /** IPTV 源密码（可选，Basic Auth）。 */
   val iptvSourcePassword: String = "",
   /**
+   * TVBox 配置 URL(影视库源)。空串表示未配置,影视库搜索显示引导。
+   * 拉取 config JSON 解析 `sites` 数组(type 0/1 MacCMS 采集站,见 [com.kirin.mt.core.network.TvboxRepository])。
+   */
+  val tvboxConfigUrl: String = "",
+  /**
    * YouTube SABR 实验开关:走 Piped 后端 `/streams/{videoId}` 拿**已 attested 的 WEB-bound**
    * ustreamerConfig(对齐 LibreTube 默认 Piped 路径),修 NewPipe visionOS 路径拿未 attested config 致
    * RELOAD_PLAYER_RESPONSE 死循环。默认关——先走现有 NewPipe 路径,RELOAD 卡死时手动开作诊断/回退方案。

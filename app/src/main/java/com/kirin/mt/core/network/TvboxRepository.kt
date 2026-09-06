@@ -4,11 +4,18 @@ import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.TvboxEpisode
 import com.kirin.mt.core.model.TvboxLine
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.settings.AppSettingsStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -20,37 +27,49 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
- * TVBox(影视库)数据源 spike(P11-77):内置 MacCMS 采集站白名单,零配置直接可用。
+ * TVBox(影视库)数据源(P11-77 spike → P11-81 配置化)。
  *
- * 可行性研究结论(docs 内 P11-77 条目):真实 TVBox 配置里 70% 站点是 csp_jar、22% 是 drpy2 JS
- * (两者都要执行第三方代码,排除);type 0/1「纯 HTTP 采集站」是标准 MacCMS REST API
- * (`?ac=detail&wd=关键词` 一步直出含 `vod_play_url` 的完整结果),零代码执行可用。
- * config 本身只是地址簿——本源直接内置站点白名单,不解析任何 TVBox config、不执行任何 jar/js。
+ * 站点来源:用户在设置里填写 TVBox 配置 URL,[TvboxRepository] 拉取 config 解析 `sites` 数组,
+ * 只留 type 0/1「纯 HTTP 采集站」(标准 MacCMS REST API,`?ac=detail&wd=关键词` 一步直出含
+ * `vod_play_url` 的完整结果,零代码执行可用);type 3(csp_jar / drpy2 JS,要执行第三方代码)与
+ * searchable=0 的站静默过滤。config 是 JSONC(`//` 注释、尾逗号),用 kotlinx 1.9.0
+ * `allowComments` 原生解析——严禁按行截断剥注释(URL 里的 `//` 会被误剥)。
  *
- * 播放复用 IPTV 直链路径:[VideoSummary.source] 置 [SourceTvbox],线路 URL 走 `iptvUrls`
- * 字段(同名同年份跨站合并=多线路,容灾对齐 IPTV 镜像源心智)。spike 局限:合并卡取各站
- * 第 1 集,剧集选集(分集列表)留待后续阶段。
+ * 播放复用 IPTV 直链路径:[VideoSummary.source] 置 [SourceTvbox],线路=站点(跨站同名同年份
+ * 合并成一张多线路卡,线路=清晰度面板档位)。单站搜索独立容错,失败/超时/纯文本应答按
+ * 「该站无结果」静默丢弃(采集站死站是常态)。
  */
 
-/** 一个内置采集站(标准 MacCMS 采集接口,type 1 JSON)。 */
+/** 一个采集站(标准 MacCMS 采集接口,type 0/1 JSON)。 */
 data class TvboxSite(
   val name: String,
   /** API 根地址,搜索时拼 `?ac=detail&wd=关键词`。 */
   val api: String,
 )
 
-/**
- * 内置白名单:取自真实 TVBox 配置(饭太硬/摸鱼儿/小马三份重合名单)里 https 直连可达
- * 且支持 `wd` 搜索的站点(2026-09-06 实测;索尼「暂不支持搜索」、飞速/四九/可可 https 不可达,弃)。
- * 全部 https——manifest 未开 cleartext,http 站点接不进来,是刻意取舍。
- */
-val TvboxBuiltInSites = listOf(
-  TvboxSite("极速资源", "https://jszyapi.com/api.php/provide/vod/"),
-  TvboxSite("量子资源", "https://cj.lziapi.com/api.php/provide/vod/"),
-  TvboxSite("非凡资源", "https://ffzy1.tv/api.php/provide/vod/"),
-  TvboxSite("暴风资源", "https://bfzyapi.com/api.php/provide/vod/"),
-  TvboxSite("百度资源", "https://api.apibdzy.com/api.php/provide/vod/"),
+/** TVBox config 里一个 site 条目(只取过滤需要的字段,其余 ignoreUnknownKeys 丢弃)。 */
+@Serializable
+private data class TvboxConfigSite(
+  val name: String = "",
+  /** 站点类型:0/1=MacCMS JSON/XML 采集站(收),3=csp/drpy 蜘蛛(丢)。缺省按 0。 */
+  val type: Int = 0,
+  val api: String = "",
+  /** TVBox 惯例:0=不进搜索。缺省按 1。 */
+  val searchable: Int = 1,
 )
+
+@Serializable
+private data class TvboxConfigRoot(val sites: List<TvboxConfigSite> = emptyList())
+
+/** 影视库源状态(搜索空态引导用)。 */
+sealed interface TvboxSourceStatus {
+  /** 未配置 TVBox 配置 URL。 */
+  data object NotConfigured : TvboxSourceStatus
+  /** 配置拉取/解析失败(附原因)。 */
+  data class Failed(val message: String) : TvboxSourceStatus
+  /** 配置就绪(含可用站数,可能为 0)。 */
+  data class Ready(val siteCount: Int) : TvboxSourceStatus
+}
 
 /** 单站搜索响应(MacCMS `ac=detail` 返回的 list 自带播放地址,无需二次详情请求)。 */
 @Serializable
@@ -71,16 +90,26 @@ private data class TvboxVod(
 private data class TvboxSiteVod(val site: TvboxSite, val vod: TvboxVod)
 
 /**
- * TVBox 聚合搜索仓库。对内置白名单全站并行扇出(单站独立容错,失败/超时静默丢弃——采集站
- * 死站是常态,不报错),同名同年份跨站合并成一张多线路卡。响应/站点质量差是常态:
- * 纯文本应答(如「暂不支持搜索」)、字段缺失/类型漂移、非法 JSON 全部按「该站无结果」处理。
+ * TVBox 聚合搜索仓库。站点来自用户配置的 TVBox config URL(懒加载 + TTL 缓存),搜索时对
+ * 全部站点并行扇出(单站独立容错,失败/超时静默丢弃——采集站死站是常态,不报错),同名同年份
+ * 跨站合并成一张多线路卡。响应/站点质量差是常态:纯文本应答(如「暂不支持搜索」)、字段缺失/
+ * 类型漂移、非法 JSON 全部按「该站无结果」处理。
  */
-class TvboxRepository {
+class TvboxRepository(
+  private val client: OkHttpClient,
+  private val appSettingsStore: AppSettingsStore,
+) {
 
   /** 独立短超时 client:慢站自然掉队,不拖累别的站(对齐 probe-timeout 配置先行的教训)。 */
-  private val httpClient = OkHttpClient.Builder()
+  private val httpClient = client.newBuilder()
     .connectTimeout(5, TimeUnit.SECONDS)
     .readTimeout(8, TimeUnit.SECONDS)
+    .build()
+
+  /** config 拉取放宽到 15s(远程 gist/网盘慢);复用注入 client 的拦截器栈。 */
+  private val configClient = client.newBuilder()
+    .connectTimeout(15, TimeUnit.SECONDS)
+    .readTimeout(15, TimeUnit.SECONDS)
     .build()
 
   private val json = Json {
@@ -90,12 +119,115 @@ class TvboxRepository {
     coerceInputValues = true
   }
 
+  /**
+   * config 专用解析器:TVBox config 是 JSONC(大量 `//` 注释、尾逗号),allowComments 原生
+   * 吃掉——严禁按行截断剥注释(URL 值里的 `//` 会被误剥成 `"http:`)。
+   */
+  private val configJson = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+    coerceInputValues = true
+    allowComments = true
+    allowTrailingComma = true
+  }
+
   /** 线路解析缓存:原始 share/play URL → 可播 m3u8。切线路/失败重试不重复拉页。 */
   private val resolveCache = ConcurrentHashMap<String, String>()
 
+  private val sitesMutex = Mutex()
+  private val statusFlow = MutableStateFlow<TvboxSourceStatus>(TvboxSourceStatus.NotConfigured)
+
+  /** 影视库源状态(搜索空态引导、设置保存校验共用)。 */
+  val sourceStatus: StateFlow<TvboxSourceStatus> = statusFlow.asStateFlow()
+
+  /** 缓存键=config URL;URL 变更即失效(换配置立查新站),TTL 内不重拉。 */
+  private var cachedUrl: String? = null
+  private var cachedSites: List<TvboxSite> = emptyList()
+  private var cachedAtMs: Long = 0L
+
+  /**
+   * 当前可用站点(懒加载):读 settings 的配置 URL → 空返 NotConfigured;同 URL 且未过 TTL 用
+   * 缓存;否则拉 config 解析。失败/未配置返回空列表(search 按无结果落地,状态流另行上报)。
+   * 失败不缓存负结果——下次搜索自动重试。
+   */
+  private suspend fun currentSites(): List<TvboxSite> {
+    val url = appSettingsStore.settings.first().tvboxConfigUrl.trim()
+    if (url.isEmpty()) {
+      statusFlow.value = TvboxSourceStatus.NotConfigured
+      return emptyList()
+    }
+    sitesMutex.withLock {
+      val cacheFresh = cachedUrl == url && System.currentTimeMillis() - cachedAtMs < ConfigTtlMs
+      if (!cacheFresh) {
+        val (sites, error) = fetchAndParseConfig(url)
+        if (sites == null) {
+          statusFlow.value = TvboxSourceStatus.Failed(error ?: "加载失败")
+          return emptyList()
+        }
+        cachedUrl = url
+        cachedSites = sites
+        cachedAtMs = System.currentTimeMillis()
+      }
+      statusFlow.value = TvboxSourceStatus.Ready(cachedSites.size)
+      return cachedSites
+    }
+  }
+
+  /**
+   * 拉取 + 解析 + 过滤一个 config。成功返回可用站点(type 0/1、searchable≠0、api 合法、
+   * 按 api 去重防重复扇出),失败返回 null+原因。永不抛错。
+   */
+  private suspend fun fetchAndParseConfig(url: String): Pair<List<TvboxSite>?, String?> =
+    withContext(Dispatchers.IO) {
+      try {
+        val request = Request.Builder().url(url).build()
+        configClient.newCall(request).execute().use { response ->
+          if (!response.isSuccessful) {
+            return@withContext null to "HTTP ${response.code}"
+          }
+          val body = response.body?.string().orEmpty()
+          val root = configJson.decodeFromString(TvboxConfigRoot.serializer(), body)
+          val sites = root.sites
+            .asSequence()
+            .filter { it.type in 0..1 }
+            .filter { it.searchable != 0 }
+            .filter { it.name.isNotBlank() && it.api.startsWith("http") }
+            .map { TvboxSite(name = it.name.trim(), api = it.api.trim().trimEnd('/')) }
+            .distinctBy { it.api }
+            .toList()
+          sites to null
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        null to (e.message ?: e.javaClass.simpleName)
+      }
+    }
+
+  /**
+   * 设置页保存校验:拉取指定 URL 并解析,返回可用站数(失败 -1)。URL 与当前配置一致时
+   * 预热缓存,保存后首次搜索不重拉。
+   */
+  suspend fun validateConfig(url: String): Int {
+    val trimmed = url.trim()
+    val (sites, _) = fetchAndParseConfig(trimmed)
+    val count = sites?.size ?: return -1
+    val currentUrl = appSettingsStore.settings.first().tvboxConfigUrl.trim()
+    if (currentUrl == trimmed) {
+      sitesMutex.withLock {
+        cachedUrl = trimmed
+        cachedSites = sites
+        cachedAtMs = System.currentTimeMillis()
+      }
+      statusFlow.value = TvboxSourceStatus.Ready(count)
+    }
+    return count
+  }
+
   /** 聚合搜索:全站扇出 → 合并。永不抛错(最差返回空列表,UI 落「无结果」)。 */
   suspend fun search(keyword: String): List<VideoSummary> = coroutineScope {
-    val siteResults = TvboxBuiltInSites.map { site ->
+    val sites = currentSites()
+    val siteResults = sites.map { site ->
       async { searchSite(site, keyword) }
     }.awaitAll()
     mergeResults(siteResults.filterNotNull().flatten())
@@ -186,6 +318,8 @@ class TvboxRepository {
     val WHITESPACE_REGEX = Regex("\\s+")
     const val MaxMergedResults = 60
     const val MaxEpisodesPerLine = 500
+    /** config 缓存 TTL:站点列表变化不频繁,5 分钟内复用,换 URL 即失效。 */
+    const val ConfigTtlMs = 5 * 60 * 1000L
     /** share/play 页内嵌播放地址:非凡 `const url = "…index.m3u8?sign=…"`;其余站点兜底取页内首个 m3u8。 */
     val CONST_URL_REGEX = Regex("""const url\s*=\s*"([^"]+)"""")
     val M3U8_URL_REGEX = Regex("""https?://[^"'\s<>]+\.m3u8[^"'\s<>]*""")

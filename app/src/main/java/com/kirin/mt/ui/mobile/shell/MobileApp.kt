@@ -105,6 +105,7 @@ fun BiliMobileApp(
   videoRepository: VideoRepository,
   liveRepository: LiveRepository,
   iptvRepository: IptvRepository,
+  tvboxRepository: com.kirin.mt.core.network.TvboxRepository,
   playbackRepository: PlaybackRepository,
   danmakuSettingsStore: DanmakuSettingsStore,
   liveQualityPreferenceStore: com.kirin.mt.core.player.LiveQualityPreferenceStore,
@@ -348,6 +349,7 @@ fun BiliMobileApp(
         AppDestination.Search -> MobileSearchScreen(
           videoRepository = videoRepository,
           searchHistoryStore = searchHistoryStore,
+          tvboxSourceStatus = tvboxRepository.sourceStatus.collectAsState().value,
           onVideoSelected = { video ->
             if (video.seasonId > 0) {
               // 番剧搜索卡(seasonId>0):进 PGC 季详情,epId=0 由季详情自行选首集。

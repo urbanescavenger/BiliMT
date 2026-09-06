@@ -185,6 +185,16 @@ private fun emptyMessageResFor(searchType: String): Int = when (searchType) {
   else -> R.string.search_empty
 }
 
+/** 影视库源空结果文案:未配置给设置引导,配置加载失败给排查提示,就绪落通用「无结果」。 */
+private fun tvboxEmptyMessageRes(status: com.kirin.mt.core.network.TvboxSourceStatus): Int =
+  when (status) {
+    com.kirin.mt.core.network.TvboxSourceStatus.NotConfigured ->
+      R.string.search_tvbox_not_configured
+    is com.kirin.mt.core.network.TvboxSourceStatus.Failed ->
+      R.string.search_tvbox_load_failed
+    is com.kirin.mt.core.network.TvboxSourceStatus.Ready -> R.string.search_empty
+  }
+
 @Stable
 private class MobileSearchUiState {
   var query by mutableStateOf("")
@@ -264,6 +274,8 @@ fun MobileSearchScreen(
   modifier: Modifier = Modifier,
   onLongPress: ((VideoSummary) -> Unit)? = null,
   onUserSelected: (UserSummary) -> Unit = {},
+  tvboxSourceStatus: com.kirin.mt.core.network.TvboxSourceStatus =
+    com.kirin.mt.core.network.TvboxSourceStatus.NotConfigured,
 ) {
   val scope = rememberCoroutineScope()
   val keyboard = LocalSoftwareKeyboardController.current
@@ -676,7 +688,14 @@ fun MobileSearchScreen(
                   contentAlignment = Alignment.Center,
                 ) {
                   Text(
-                    text = stringResource(emptyMessageResFor(uiState.searchType)),
+                    // 影视库源空结果分流:未配置/配置加载失败给引导文案(配置就绪才落通用「无结果」)。
+                    text = stringResource(
+                      if (uiState.source == SourceTvbox) {
+                        tvboxEmptyMessageRes(tvboxSourceStatus)
+                      } else {
+                        emptyMessageResFor(uiState.searchType)
+                      }
+                    ),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
