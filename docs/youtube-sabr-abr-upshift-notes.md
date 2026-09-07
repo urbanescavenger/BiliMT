@@ -746,3 +746,36 @@ player 一直 READY 在播;然后 bufS 读数 **48.8→0.0** + BUFFERING——17
 - [ ] 周期塌方场景出现 `buffered-range collapse artifact ignored`,同轮不再 `buffer-critical downgrade`;
 - [ ] 塌方误降消失后,1080p 不再进 180s 冷却、ABR 不被钉死低档;
 - [ ] 真饥饿(供给持续 < 当前档)降档仍正常:水位 ≤1s/s 自然回落路径不被守门拦截。
+
+## 26. 2026-09-07「历史续播黑屏到底」:SABR 续播位置冻结永不 READY → 深度重试兜底 (P11-85)
+
+### 现象(09-07 真机 logs_live.log 三案连环)
+
+- 18:54 Wa6q7ql0K1c@1667s、19:29 NZAHbh78ogk@6022s、19:49 XaqIROmRDow@1524s:历史 tab 续播,SABR 单流
+  seekTo(startPositionMs) 后**播放位置精确冻结在 seek 点**,BUFFERING 永不 READY、零渲染(frameRendered=false);
+  但数据(A/V chunk 覆盖续播点)、解码器(c2.mtk 创建成功)、bufS(20-53s)全就位。
+- 8s stall 看门狗 auto-retry ×2 后放弃;用户手动重开同一视频 8+ 轮全挂(同位置同 sid 会话)。
+- **同视频换位置(19:38@6829s)或换轨(19:32:12 单轨 247)后 ~2s 起播**;移动端用户报告正常。
+  同位置重载有时也自愈(19:32:12 与失败会话同 sid 同位置)——竞态,非确定性路径错误。
+
+### 排查要点(静态分析已核对、均排除)
+
+- req.segment=segmentNum+1 与服务端 wire seq 严格对齐(init=seq0,media seq N 覆盖 chunkIndex[N-1],19:04 从 0 起播实拉验证);
+- clippedStartTimeUs=loadPositionUs(裸中段位置)→ BundledChunkExtractor.init → extractor.seek(0, clip):
+  FragmentedMp4Extractor 按 tfdt 绝对域逐样本跳过,19:38 中段裁剪也成功渲染,非关键帧理论不成立;
+- SabrMediaPeriod/ChunkSampleStream 初始不连续点、SabrMediaFetcher 段缓存、buildBufferedRanges(startMs=0 疑点,
+  服务端回落按 playerTimeMs 判)均 LibreTube 同构。**根因未定**,疑服务端段锚点与首段裁剪竞态。
+
+### 处置(7305b13e,诊断+韧性双管)
+
+1. `DefaultSabrChunkSource.getNextChunk` 首 media chunk 诊断行(trackType/loadPositionMs/segmentNum/
+   startMs/clipMs/itag,queue.isEmpty 打点)——下轮复盘首段裁剪是否吃关键帧/段映射错位。
+2. TV PlayerScreen 看门狗「深度重试」:常规重试(2 次)耗尽且位置仍冻结 ≥8s 时,若为 SABR 单流:
+   evict SabrStreamRegistry 会话(重试 playurl 重建新会话+轨解析重跑)+ 续播点前推 10s(SabrDeepRetryNudgeMs,
+   换段对齐),每视频限一次(sabrDeepRetryUsedForBvid)。预期黑屏 ~26s 内自愈,不再无限黑到底。
+
+### 待真机复测
+
+- [ ] 历史→YouTube 续播不再黑屏到底(最多 ~26s 自愈,日志应见 `stall retries exhausted, deep retry`);
+- [ ] 深度重试后起播正常、位置≈续播点+10s;
+- [ ] 正常续播(不卡)路径零回归:常规 2 次重试行为不变。
