@@ -157,6 +157,8 @@ internal class SabrMediaFetcher(
 
   private val measuredLock = Any()
   private val measuredTracks = mutableMapOf<Int, MeasuredTrack>()
+  /** P11-85 诊断:tf dt 探针每 itag 只打一次的日志去重集合。 */
+  private val tfdtProbeLogged = mutableSetOf<Int>()
 
   // alpha.9Z(升档用「持续带宽」):滑动窗口只计传输活跃耗时,重填缓冲期间背靠背突发会把 est 冲到
   // 40-70M(2026-08-27 真机:一笔 74Mbps 突发把 est 从 16M 抬到 40M,恰好过 4K 门槛 → 升完必卡——
@@ -702,6 +704,19 @@ internal class SabrMediaFetcher(
               st.segs += 1
             }
           }
+          // P11-85 诊断(每 itag 首个 media 段一次):扫 fMP4 段字节里的 tfdt box,读 baseMediaDecodeTime
+          // 原始值——判样本时间戳域(绝对 ≈ seq×段时长×timescale,还是请求相对/0 基)。续播黑屏案:
+          // chunk 数据就位、解码器就位、渲染器 11s 零读——唯一未证伪解释是样本 PTS 不在续播点域。
+          synchronized(tfdtProbeLogged) {
+            if (!tfdtProbeLogged.contains(seg.header.itag)) {
+              tfdtProbeLogged.add(seg.header.itag)
+              val first = seg.data.firstOrNull()
+              if (first != null) {
+                val tfdt = probeFmp4Tfdt(first)
+                Log.i(tag, "MEDIA tfdt itag=${seg.header.itag} seq=${seg.sequenceNumber} startMs=${seg.header.startMs} durMs=${seg.duration} $tfdt")
+              }
+            }
+          }
         }
       }
       PART_NEXT_REQUEST_POLICY -> {
@@ -818,6 +833,34 @@ internal class SabrMediaFetcher(
         Log.i(tag, "part type=$type payloadLen=${payload.size} (unhandled)")
       }
     }
+  }
+
+  /**
+   * P11-85 诊断:在一段 fMP4 段字节(单个 moof+mdat)里找 tfdt box 并读 baseMediaDecodeTime。
+   * 结构:size(4) 'tfdt'(4) version(1) flags(3) baseMediaDecodeTime(ver0=4B/ver1=8B)。
+   * 找到 't'f'd't' 四字节的首次出现即取值(段内第一个 tfdt;不做严格 box 树遍历,诊断够用)。
+   * @return 人读字符串:版本 + 原始 tick 值(HEX),找不到返回提示。
+   */
+  private fun probeFmp4Tfdt(data: ByteArray): String {
+    val limit = minOf(data.size - 12, 1 shl 20)
+    var i = 0
+    while (i < limit) {
+      if (data[i] == 't'.code.toByte() && data[i + 1] == 'f'.code.toByte() &&
+        data[i + 2] == 'd'.code.toByte() && data[i + 3] == 't'.code.toByte()
+      ) {
+        val version = data[i + 4].toInt() and 0xFF
+        val width = if (version == 1) 8 else 4
+        if (i + 8 + width <= data.size) {
+          var value = 0L
+          for (k in 0 until width) {
+            value = (value shl 8) or (data[i + 8 + k].toLong() and 0xFF)
+          }
+          return "tfdtVer=$version baseMediaDecodeTime=$value ticks (hex=${value.toString(16)})"
+        }
+      }
+      i++
+    }
+    return "tfdt not found in first ${minOf(data.size, 1 shl 20)}B"
   }
 
   /**
