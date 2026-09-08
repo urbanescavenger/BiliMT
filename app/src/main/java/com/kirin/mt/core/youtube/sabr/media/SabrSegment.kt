@@ -46,6 +46,12 @@ internal class InitializedFormat(
   val duration: Long,
   /** init 段(isInitSeg=true 的段,seq 通常 0);ChunkExtractor 从此解 ChunkIndex。 */
   var initSegment: SabrSegment? = null,
+
+  /**
+   * P11-85:段号→绝对时间网格(由 init 段解出的 ChunkIndex 回喂,见 [seqStartMsBySeq])。
+   * MEDIA_HEADER.startMs/durationMs 服务端恒回 0(visionOS 实测),header 不可信。
+   */
+  @Volatile var seqStartMsBySeq: LongArray? = null,
 ) {
   /**
    * 取出 seq 段(从 [downloadedSegments] 移除 → 标记 [bufferedSegments]),对齐 LibreTube `getSegment`。
@@ -61,10 +67,23 @@ internal class InitializedFormat(
     return segment
   }
 
+  /** P11-85:wire seq(media 段号,init=0)→ 段绝对开始 ms;网格未回喂或越界返回 null。 */
+  fun segmentStartMs(sequenceNumber: Long): Long? {
+    val grid = seqStartMsBySeq ?: return null
+    val index = (sequenceNumber - 1).toInt()
+    if (index < 0 || index >= grid.size) return null
+    return grid[index]
+  }
+
   /**
    * 算本格式真实 bufferedRanges——把 [bufferedSegments]+[downloadedSegments] 按 seq 连续分段,
-   * 每段一个 [BufferedRangeInput](startTimeMs=首段 header.startMs,durationMs=段时长和,
-   * startSegmentIndex/endSegmentIndex=段号区间)。**从不发 Int.MAX**(对齐 LibreTube,修 alpha.63 双流 fake-full)。
+   * 每段一个 [BufferedRangeInput](startSegmentIndex/endSegmentIndex=段号区间)。**从不发 Int.MAX**。
+   *
+   * P11-85 修续播黑屏:startTimeMs/durationMs 原用 header.startMs/durationMs——visionOS 服务端
+   * 恒回 0 → 上报 {start:0,dur:0} 垃圾 ranges;playerTimeMs=0(从头播)时服务端回落判定与真实
+   * 状态巧合一致不炸,**playerTimeMs>0(历史续播)时服务端回落到垃圾 ranges → 段锚点错乱 →
+   * 位置冻结黑屏**。有网格([seqStartMsBySeq])时按段号查真实绝对时间;无网格(首请求 init
+   * 未解出前)维持旧行为(该窗口本就只有 init 请求,不含媒体范围语义)。
    */
   fun buildBufferedRanges(): List<BufferedRangeInput> =
     bufferedSegments.entries.union(downloadedSegments.entries).sortedBy { it.key }
@@ -74,16 +93,24 @@ internal class InitializedFormat(
         acc.lastOrNull()!!.add(id to segment)
         acc
       }.map { partition ->
-        val duration = partition.sumOf { it.second.duration }
-        val (firstId, firstSegment) = partition.first()
+        val firstId = partition.first().first
+        val lastId = partition.last().first
+        // 真实时间:wire seq N 覆盖网格第 N-1 段(网格=ChunkIndex.timesMs,init 占 seq 0)。
+        val startMs = segmentStartMs(firstId)
+        val endMs = segmentStartMs(lastId + 1)
+        val duration = if (startMs != null && endMs != null && endMs > startMs) {
+          endMs - startMs
+        } else {
+          partition.sumOf { it.second.duration }
+        }
         BufferedRangeInput(
           itag = id.itag,
           lastModified = id.lastModified,
           xtags = id.xtags,
-          startTimeMs = firstSegment.header.startMs,
+          startTimeMs = startMs ?: partition.first().second.header.startMs,
           durationMs = duration,
           startSegmentIndex = firstId.toInt(),
-          endSegmentIndex = partition.last().first.toInt(),
+          endSegmentIndex = lastId.toInt(),
           timeRange = null,
         )
       }

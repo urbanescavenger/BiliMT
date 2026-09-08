@@ -433,6 +433,14 @@ internal class SabrMediaFetcher(
   fun getEndSegmentNumber(formatItag: Int): Long? = initializedFormats[formatItag]?.endSegmentNumber
 
   /**
+   * P11-85:回喂段号→绝对时间网格(init 段解出的 ChunkIndex,loader 线程调)。
+   * buildBufferedRanges 据此上报真实 startTimeMs/durationMs(header.startMs 恒 0 不可信)。
+   */
+  fun registerSegmentGrid(formatItag: Int, timesMs: LongArray) {
+    initializedFormats[formatItag]?.seqStartMsBySeq = timesMs
+  }
+
+  /**
    * 取 [req] 指定段。若该格式未初始化或该段未下载 → 调 [media] POST 一批(单流多段),
    * 然后从 [initializedFormats] 取段。终端错误(RELOAD_PLAYER/InvalidPoToken/SABR_ERROR)抛
    * [SabrTerminalException];transient(backoff/redirect/段未到)在 [MAX_ATTEMPTS] 内重试。

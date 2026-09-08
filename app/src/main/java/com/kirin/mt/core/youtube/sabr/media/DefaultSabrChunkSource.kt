@@ -429,6 +429,12 @@ internal class DefaultSabrChunkSource(
       if (representationHolder.chunkIndex == null) {
         representationHolder.chunkExtractor?.chunkIndex?.let {
           representationHolders[trackIndex].chunkIndex = it
+          // P11-85:段表(绝对时间网格)回喂 fetcher——buildBufferedRanges 上报真实
+          // startTimeMs/durationMs 用(header.startMs/durationMs 服务端恒回 0,续播场景
+          // 垃圾 ranges 会把服务端回落判定带偏 → 位置冻结黑屏,详见 SabrSegment)。
+          val itag = representationHolder.representation.formatId.itag
+          val timesMs = LongArray(it.length) { i -> Util.usToMs(it.timesUs[i]) }
+          fetcher.registerSegmentGrid(itag, timesMs)
         }
       }
     }
