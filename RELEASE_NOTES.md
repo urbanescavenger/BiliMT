@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.11](#v3011)
 - [v3.0.9](#v309)
 - [v3.0.10](#v3010)
 - [v3.0.8](#v308)
@@ -234,6 +235,21 @@
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
 - [目录](#v录)
+
+## v3.0.11
+
+**稳定版:番剧播放记录并入历史 tab + TV 启动初始焦点死区修复 + SABR 历史续播黑屏根因修复 + 应用图标重绘。** 本版整合 v3.0.11-alpha.1~4 全部改动。
+
+### 变更
+- **番剧播放记录并入历史 tab**(alpha.1,P11-84):历史接口本就返回 `business=pgc` 条目但 `fromHistory` 只读 `history.bvid`(pgc 时为空)被静默丢弃——按 BV HistoryData + bilibili-API-collect 补解析(history.oid=该集 avid、history.epid=剧集 id、kid=季 id、cid=该集 cid);`VideoSummary` 新增 epId 字段;PGC playurl 走 ep_id+cid;heartbeat 放宽 avid/bvid 二选一(BV sendHeartbeat 同语义,pgc 无 bvid 用 aid);番剧历史条目自然混入历史网格,支持 PGC 续播。
+- **TV 启动初始焦点死区修复**(alpha.4,P11-87):冷启动到首屏数据就绪前(Loading)或首拉失败(Failed/Empty)时,唯一抢焦点的网格首卡 effect 无从生效,TV 上无节点持焦时 D-pad 全部按键无响应——表现为「进首页焦点没默认位置、遥控器像死机」。修:RecommendScreen 初始焦点兜底(初始期 Failed→重试按钮、Loading/Empty→分区 tab 持焦,Success 后网格首卡 effect 照常接管);Down 从 tab 在 Failed 态落重试按钮;`FeedStatusScreen` 加可选 actionFocusRequester。
+- **推荐预加载被登录态翻转取消修复**(alpha.4,P11-87):启动时 session 从磁盘异步加载,isLoggedIn false→true 翻转会取消预拉协程(真机日志实锤:Run1 222ms 即被杀,Run2 见屏幕已写 Loading 只能 skip,登录态下推荐预加载全程零贡献)——推荐预加载拆出 isLoggedIn key 改 `LaunchedEffect(Unit)`(推荐免登录可拉与登录态无关);动态预加载保持原 key 靠重跑补拉。另加 RecommendScreen loader 诊断日志(`BiliMT:Home`)。
+- **SABR 历史续播黑屏根因修复**(alpha.2~3,P11-85 系列):历史续播位置冻结永不 READY 三案排查实锤——`buildBufferedRanges` 上报 `{start:0,dur:0}` 垃圾(visionOS MEDIA_HEADER.startMs/durationMs 恒 0),续播 playerTimeMs>0 时服务端回落判定被带偏;修:init 解出的段表时间网格回喂 fetcher,上报真实 startMs/durMs,无网格零风险回退;附 tfdt 探针(MEDIA_END 首 media 段扫 fMP4 baseMediaDecodeTime)与深度重试兜底(重试耗尽后 evict 会话+续播点前推 10s,每视频一次)。
+- **TV 设置页 TVBox 行焦点跳顶修复**(alpha.2,P11-85):`SettingsItemTvbox=41` 与 Account 撞号,`settingsItemToLazyIndex` when 先命中 Account→0 致 TVBox 分支永不可达,改 Tvbox=42。
+- **红果短剧内置源**(alpha.1~3,P11-83/86):网页端免签名解析(搜索 loader 纯 JSON + 播放页 SSR 内嵌 main_url 明文 MP4);后实测网页匿名端每剧仅放开前 3 集且无账号体系,搜索前端摘除红果源(后端链路保留,历史/继续观看已有红果卡片仍可播);起播 403 修复(显式红果域名 Referer/Origin,防播放拦截器注入 B站头触发字节 CDN 防盗链)。
+- **应用图标重绘**(alpha.4,P11-88):哔哩MT方案E精修版——粉渐变底白电视壳+屏幕大MT(球状天线/机身投影/背景高光),mipmap 五密度全量替换+adaptive 背景改渐变 drawable。
+
+---
 
 ## v3.0.9
 
