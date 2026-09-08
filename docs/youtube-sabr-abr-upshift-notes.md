@@ -779,3 +779,20 @@ player 一直 READY 在播;然后 bufS 读数 **48.8→0.0** + BUFFERING——17
 - [ ] 历史→YouTube 续播不再黑屏到底(最多 ~26s 自愈,日志应见 `stall retries exhausted, deep retry`);
 - [ ] 深度重试后起播正常、位置≈续播点+10s;
 - [ ] 正常续播(不卡)路径零回归:常规 2 次重试行为不变。
+
+### §26.1 根因实锤:bufferedRanges 上报垃圾时间(P11-85b,5ae4237e,2026-09-08)
+
+用户追问「是不是保存/上报有问题」后定位实锤:`buildBufferedRanges` 的 startTimeMs/durationMs 取
+MEDIA_HEADER.startMs/durationMs,而 visionOS 服务端该字段**恒回 0**(全天日志每条
+`MEDIA_HEADER ... startMs=0 dur=0ms`)→ 每次请求上报的「我已缓冲」状态全是 `{start:0,dur:0}` 垃圾。
+这正是 §16 60s 断崖案记过的「服务端回落按 playerTimeMs 判」路径的输入:
+
+- playerTimeMs=0(从头播):垃圾 ranges 与真实状态巧合一致 → 不炸 → 搜索/首页播放全正常;
+- **playerTimeMs>0(历史续播):服务端回落到垃圾 ranges → 段锚点错乱 → 位置精确冻结永不 READY**;
+- 同会话重试 → 同垃圾同结果(8 轮全挂);清缓存/换包(debug 包缓存独立)/换位置(续播点落段前)/
+  换轨(VP9)→ 锚点重抽或绕开回落 → 恢复——全部真机现象由此贯通。
+
+**修**(5ae4237e):init 段解出的 ChunkIndex 段号→绝对时间网格回喂 fetcher(`registerSegmentGrid`),
+`buildBufferedRanges` 有网格时按 wire seq N→网格第 N-1 段查真实 startMs、durationMs=网格区间差;
+无网格(首个 init 请求窗口)零风险回退旧行为。LibreTube 无此问题暴露面:其每次 createMediaSource
+新建 SabrClient 无会话复用(§26 已记),且其 clientInfo 下服务端可能回填 startMs。
