@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.home
 
+import android.util.Log
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.BorderStroke
@@ -130,6 +131,7 @@ internal fun RecommendScreen(
   val activeSection = sections.firstOrNull { section -> section.key == activeSectionKey } ?: selectedSection
   val selectedSectionFocusRequester = tabFocusRequester
   val bannerFocusRequester = remember { FocusRequester() }
+  val actionFocusRequester = remember { FocusRequester() }
   val state = uiState.sectionStates[activeSection.key] ?: RecommendState.Loading
   val activeRefreshKey = uiState.sectionRefreshKeys[activeSection.key] ?: 0
 
@@ -177,6 +179,7 @@ internal fun RecommendScreen(
     val request = uiState.loadRequest ?: return@LaunchedEffect
     val sectionToLoad = sections.firstOrNull { section -> section.key == request.sectionKey }
       ?: return@LaunchedEffect
+    Log.d(LoadLogTag, "load start id=${request.id} section=${request.sectionKey} refresh=${request.refreshKey}")
     // 刷新时若已有 Success，保留旧 videos 不切到 Loading 骨架，避免网格销毁重建
     // 导致 Compose 把焦点从 tab/侧栏抢到第一个视频卡片。
     val previousState = uiState.sectionStates[sectionToLoad.key]
@@ -224,6 +227,7 @@ internal fun RecommendScreen(
       // 取消(composition 离开,LaunchedEffect 被系统取消)：还原 loadRequest 与 section 状态,
       // 让下一次进入组合时 LaunchedEffect(sections) 重新发加载请求——否则状态停在 Loading/Empty
       // 且 reload 守卫只看 null,重进首页不重拉,卡片一直 ERR/骨架。
+      Log.d(LoadLogTag, "load cancelled id=${request.id} section=${request.sectionKey}")
       if (uiState.loadRequest?.id == request.id) {
         uiState.loadRequest = null
       }
@@ -231,8 +235,14 @@ internal fun RecommendScreen(
       uiState.loadedSectionKeys = uiState.loadedSectionKeys - sectionToLoad.key
       throw error
     } catch (error: Exception) {
+      Log.e(LoadLogTag, "load failed id=${request.id} section=${request.sectionKey}: ${error.message}")
       RecommendState.Failed(error.message.orEmpty())
     }
+    Log.d(
+      LoadLogTag,
+      "load done id=${request.id} section=${request.sectionKey} -> ${nextState::class.simpleName}" +
+        (if (nextState is RecommendState.Success) " videos=${nextState.videos.size}" else ""),
+    )
     uiState.loadedSectionKeys = uiState.loadedSectionKeys + sectionToLoad.key
     uiState.sectionStates = uiState.sectionStates + (sectionToLoad.key to nextState)
     if (uiState.loadRequest?.id == request.id) {
@@ -358,11 +368,37 @@ internal fun RecommendScreen(
   val activeBanners = uiState.bannerBySection[activeSection.key] ?: emptyList()
   val activeSectionHasBanner = activeSection.feedRcmdTid != null && activeBanners.isNotEmpty()
   val onMoveDownFromTab: () -> Boolean = {
-    if (activeSectionHasBanner) {
-      runCatching { bannerFocusRequester.requestFocus() }.getOrDefault(false)
-    } else {
-      uiState.focusFirstItemKey += 1
-      true
+    when {
+      activeSectionHasBanner -> runCatching { bannerFocusRequester.requestFocus() }.getOrDefault(false)
+      // 首拉失败时 Down 应落到重试按钮(网格不存在,focusFirstItemKey 无处生效)。
+      state is RecommendState.Failed -> runCatching { actionFocusRequester.requestFocus() }.getOrDefault(false)
+      else -> {
+        uiState.focusFirstItemKey += 1
+        true
+      }
+    }
+  }
+
+  // 启动初始焦点兜底:首屏数据就绪前(Loading)或首拉失败(Failed/Empty)时网格未组合,
+  // 网格首卡初始焦点 effect(TvVideoGrid requestInitialFocus)无从生效,而 TV 上没有任何
+  // 节点持有焦点时 D-pad 全部按键无响应——表现为「进首页焦点没默认位置、遥控器像死机」。
+  // 这里在初始焦点期(requestInitialFocus=true)给非 Success 状态一个焦点落点:
+  // Failed → 重试按钮(一键可重试),Loading/Empty → 当前分区 tab。
+  // 不调 onInitialFocusRequested(不消费 pending 标记):Success 后网格 effect 照常接管首卡。
+  if (requestInitialFocus) {
+    LaunchedEffect(state) {
+      repeat(InitialFocusRetryCount) {
+        withFrameNanos { }
+        val focused = when (state) {
+          is RecommendState.Success -> return@LaunchedEffect
+          is RecommendState.Failed -> runCatching { actionFocusRequester.requestFocus() }.getOrDefault(false)
+          else -> runCatching { selectedSectionFocusRequester.requestFocus() }.getOrDefault(false)
+        }
+        if (focused) {
+          return@LaunchedEffect
+        }
+        delay(InitialFocusRetryDelayMs)
+      }
     }
   }
 
@@ -417,6 +453,7 @@ internal fun RecommendScreen(
         is RecommendState.Failed -> FeedStatusScreen(
           message = stringResource(R.string.recommend_failed_with_message, currentState.message),
           actionLabel = stringResource(R.string.action_retry),
+          actionFocusRequester = actionFocusRequester,
           onAction = {
             selectSection(section = activeSection, forceRefresh = true)
           },
@@ -702,6 +739,7 @@ private const val InitialFocusRetryDelayMs = 50L
 private const val RestoreFocusRetryCount = 8
 private const val FirstPage = 1
 private const val PageSize = 20
+private const val LoadLogTag = "BiliMT:Home"
 
 internal sealed interface RecommendState {
   data object Loading : RecommendState

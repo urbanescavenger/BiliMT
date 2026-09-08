@@ -20,6 +20,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontWeight
 import com.kirin.mt.ui.focus.BiliFocusableSurface
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
@@ -36,6 +38,7 @@ fun FeedStatusScreen(
   message: String,
   actionLabel: String? = null,
   onAction: () -> Unit = {},
+  actionFocusRequester: FocusRequester? = null,
 ) {
   Column(
     modifier = Modifier.fillMaxSize(),
@@ -51,7 +54,8 @@ fun FeedStatusScreen(
       BiliFocusableSurface(
         scaleOnFocus = false,
         onClick = onAction,
-        modifier = Modifier.padding(top = BiliSpacing.Lg),
+        modifier = (actionFocusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
+          .padding(top = BiliSpacing.Lg),
       ) {
         Text(
           text = actionLabel,

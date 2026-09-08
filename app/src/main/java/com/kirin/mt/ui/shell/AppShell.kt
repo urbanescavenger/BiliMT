@@ -338,15 +338,13 @@ fun BiliTvApp(
     appSettingsStore.ensureEnabledSectionsFirst()
   }
 
-  // 启动后台预加载:首页推荐 + 动态(视频)提前拉好,切到对应 tab 时数据已就绪,免二次点击。
-  // 推荐免登录可拉;动态需登录(未登录时跳过,登录后本 effect 因 isLoggedIn 变化重跑补拉)。
+  // 启动后台预加载:首页推荐提前拉好,切到推荐 tab 时数据已就绪,免二次点击。
+  // 推荐免登录可拉,与登录态无关——用 LaunchedEffect(Unit) 固定跑一次。不能挂在 isLoggedIn
+  // 上:启动时 session 从磁盘异步加载,isLoggedIn false→true 翻转会把预拉协程中途取消
+  // (真机日志实锤:Run1 222ms 即被杀,Run2 见屏幕已写 Loading 只能 skip,预加载全程零贡献)。
   // 预加载只写「屏幕尚未自行加载」的状态,避免与屏幕自身 LaunchedEffect 并发加载互相覆盖。
-  LaunchedEffect(userSession.isLoggedIn) {
-    Log.d(PreloadLogTag, "start isLoggedIn=${userSession.isLoggedIn} channels=${youtubeChannels.size}")
-    // 1. 首页推荐
+  LaunchedEffect(Unit) {
     if (recommendUiState.sectionStates[HomeSection.Recommend.key] == null) {
-      // 本 effect 以 isLoggedIn 为 key,登录态变化(启动时 session 从磁盘加载)会取消重跑;
-      // 取消必须向上抛,否则 runCatching 吞掉 CancellationException 会误写 Empty 卡死推荐。
       val videos = try {
         videoRepository.getHomeSectionVideos(section = HomeSection.Recommend, page = 1, idx = 0)
       } catch (error: CancellationException) {
@@ -378,8 +376,13 @@ fun BiliTvApp(
     } else {
       Log.d(PreloadLogTag, "recommend already present, skip")
     }
+  }
 
-    // 2. 动态(视频):B 站 + YouTube 关注合并,复用 loadDynamicFirstPage 同款逻辑。
+  // 动态(视频)预加载:B 站 + YouTube 关注合并,复用 loadDynamicFirstPage 同款逻辑。
+  // 需登录(未登录时跳过,登录后本 effect 因 isLoggedIn 变化重跑补拉);启动时 session
+  // 从磁盘加载翻转 isLoggedIn 会取消重跑,由重跑补拉,推荐预加载已拆到上面不受影响。
+  LaunchedEffect(userSession.isLoggedIn) {
+    Log.d(PreloadLogTag, "dynamic preload start isLoggedIn=${userSession.isLoggedIn} channels=${youtubeChannels.size}")
     if (userSession.isLoggedIn && !userFeedState.dynamicVideo.loadedOnce) {
       val dynamicState = userFeedState.dynamicVideo
       var biliEndReached = true
