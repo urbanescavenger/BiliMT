@@ -1,6 +1,7 @@
 package com.kirin.mt.ui.player
 
 import com.kirin.mt.core.model.LiveRoom
+import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.VideoSummary
@@ -38,6 +39,18 @@ internal fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false)
       tvboxLines = tvboxLines,
     )
   }
+  // 红果短剧卡片(P11-83):点播,VOD 播放器,单线路分集=播放页 URL(播放时懒解析 MP4 直链)。
+  if (source == SourceHongguo) {
+    return PlaybackRequest(
+      bvid = "",
+      cid = 0L,
+      title = title,
+      ownerName = ownerName,
+      coverUrl = pic,
+      source = SourceHongguo,
+      tvboxLines = tvboxLines,
+    )
+  }
   // 直播卡片:走直播播放(独立 LivePlayerScreen),不带点播字段。
   if (liveRoomId > 0L) {
     return PlaybackRequest(
@@ -49,6 +62,30 @@ internal fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false)
       ownerMid = ownerMid,
       coverUrl = pic,
       liveRoomId = liveRoomId,
+    )
+  }
+  // 番剧历史卡(epId>0,fromHistory business=pgc):续播该集,走 PGC playurl(ep_id)而非 UGC bvid。
+  // bvid 此时是网格 key "ep{epId}" 非真实稿件号,必须置空;playurl 用 ep_id+cid,heartbeat 用 aid+epid+sid
+  // (BV sendHeartbeat avid/bvid 二选一)。subType 未知(=0),播放器从季 metadata 回填。
+  if (epId > 0L) {
+    val advanceToNextEpisode = shouldAdvanceToNextHistoryEpisode()
+    return PlaybackRequest(
+      bvid = "",
+      cid = cid,
+      title = title,
+      startPositionMs = progress
+        .takeIf { it > 0 && !isWatchCompleted() && !advanceToNextEpisode }
+        ?.times(1000L) ?: 0L,
+      aid = aid,
+      coverUrl = pic,
+      viewCount = view,
+      danmakuCount = danmaku,
+      epId = epId,
+      seasonId = seasonId.toLong(),
+      forceStartPosition = forceStartPosition,
+      historyPage = historyPage,
+      advanceToNextHistoryEpisode = advanceToNextEpisode,
+      source = source,
     )
   }
   val advanceToNextEpisode = shouldAdvanceToNextHistoryEpisode()

@@ -1466,7 +1466,9 @@ private const val SettingsItemYoutubeContentRegion = 33
 private const val SettingsItemWebDavBackup = 31
 private const val SettingsItemWebDavRestore = 32
 private const val SettingsItemIptv = 34
-private const val SettingsItemTvbox = 41
+// P11-85 修:原 41 与 SettingsItemAccount 重复——settingsItemToLazyIndex 的 when 先命中 Account→0,
+// TVBox 行上/下键聚焦永远滚到列表顶端(focusRequesters map 键 41 也被 Account 抢)。
+private const val SettingsItemTvbox = 42
 private const val SettingsItemPiped = 35
 private const val SettingsItemYoutubeUsePiped = 36
 private const val SettingsItemYoutubeDeliveryPriority = 37

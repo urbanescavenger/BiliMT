@@ -69,6 +69,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.image.BiliImageSizing
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.UserSummary
@@ -135,10 +136,10 @@ private val YoutubeSearchSortOptions = listOf(
   SearchSortOption(YoutubeSearchParams.Rating, R.string.search_sort_rating),
 )
 
-/** 按来源返回排序选项(B站/YouTube 各一套;影视库(TVBox)无排序,空集=隐藏排序 chip)。 */
+/** 按来源返回排序选项(B站/YouTube 各一套;影视库(TVBox)/红果短剧无排序,空集=隐藏排序 chip)。 */
 private fun sortOptionsFor(source: String): List<SearchSortOption> =
   when {
-    source == SourceTvbox -> emptyList()
+    source == SourceTvbox || source == SourceHongguo -> emptyList()
     source == SourceYoutube -> YoutubeSearchSortOptions
     else -> BiliSearchSortOptions
   }
@@ -295,6 +296,16 @@ fun MobileSearchScreen(
         if (uiState.source == SourceTvbox) {
           // 影视库:聚合搜索单发全量,无排序/无翻页;类型/排序 chip 均隐藏。
           val videos = videoRepository.tvboxSearch(keyword = query)
+          if (videos.isEmpty()) SearchResultState.Empty
+          else SearchResultState.Success(
+            videos = videos,
+            nextPage = FirstPage + 1,
+            loadingMore = false,
+            endReached = true,
+          )
+        } else if (uiState.source == SourceHongguo) {
+          // 红果短剧:网页端一步直出,无排序/无翻页(10 条/次);类型/排序 chip 均隐藏。
+          val videos = videoRepository.hongguoSearch(keyword = query)
           if (videos.isEmpty()) SearchResultState.Empty
           else SearchResultState.Success(
             videos = videos,
@@ -480,10 +491,10 @@ fun MobileSearchScreen(
     }
   }
 
-  // 输入态下随输入防抖拉联想;提交态不拉。影视库(TVBox)无联想(联想是 B站 sug 接口),恒空。
+  // 输入态下随输入防抖拉联想;提交态不拉。影视库(TVBox)/红果短剧无联想(联想是 B站 sug 接口),恒空。
   LaunchedEffect(uiState.query, uiState.submittedQuery) {
     if (uiState.submittedQuery != null) return@LaunchedEffect
-    if (uiState.source == SourceTvbox) {
+    if (uiState.source == SourceTvbox || uiState.source == SourceHongguo) {
       uiState.suggestions = emptyList()
       return@LaunchedEffect
     }
@@ -532,6 +543,7 @@ fun MobileSearchScreen(
       modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
       horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+      // 红果短剧源已从搜索源摘除(网页匿名端只放开前 3 集,暂不上前端),后端链路保留。
       listOf(
         SourceBili to stringResource(R.string.search_source_bili),
         SourceYoutube to stringResource(R.string.search_source_youtube),
@@ -601,8 +613,8 @@ fun MobileSearchScreen(
     } else {
       // 结果态:类型 tab 行(对齐官方:综合/番剧/UP主 并排,选中粉色+下划线) + 行尾筛选漏斗
       // (仅视频类型显示;底部弹层含 排序方式 + 发布时间/内容时长(仅 B 站))。
-      // 影视库(TVBox)源 tab 行整行隐藏(无类型/无筛选概念)。
-      if (uiState.source != SourceTvbox) {
+      // 影视库(TVBox)/红果短剧源 tab 行整行隐藏(无类型/无筛选概念)。
+      if (uiState.source != SourceTvbox && uiState.source != SourceHongguo) {
         var showFilterSheet by remember { mutableStateOf(false) }
         Row(
           modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),

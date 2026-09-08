@@ -3,6 +3,7 @@ package com.kirin.mt.core.player
 import android.util.Log
 import com.kirin.mt.core.auth.WbiKeyRepository
 import com.kirin.mt.core.auth.WbiSigner
+import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliNumberParser
@@ -205,8 +206,13 @@ class PlaybackRepository(
     val qualities = lines.mapIndexed { index, line ->
       PlaybackQuality(index, line.name.ifBlank { "线路${index + 1}" })
     }
-    // dummy 视频轨:路由由 isHlsManifest()(remoteHlsManifestUrl!=null)判定,非轨字段;
-    // audioTracks 空(HLS playlist 自带 A/V)。对齐 YoutubePlaybackResolver 的 HLS 兜底形制。
+    // 红果短剧(P11-83)解析产物是明文 MP4 直链(HLS 之外的 progressive 流):
+    // dummy 轨 segmentBase=null(isProgressive)→ 播放器走 ProgressiveMediaSource 分支单轨播放,
+    // remoteHlsManifestUrl 必须置 null(isHlsManifest() 优先级高于 progressive 分支,置 null 才不截胡)。
+    // 影视库(MacCMS)线路解析产物是 m3u8:remoteHlsManifestUrl=直链,isHlsManifest() 路由 HlsMediaSource。
+    val isHongguo = request.source == SourceHongguo
+    // dummy 视频轨:路由由 isHlsManifest()(remoteHlsManifestUrl!=null)/isProgressive 判定,非轨字段;
+    // audioTracks 空(HLS playlist 自带 A/V;红果 MP4 自带 A/V)。对齐 YoutubePlaybackResolver 的 HLS 兜底形制。
     val dummyTrack = PlaybackTrack(
       id = 0,
       baseUrl = streamUrl,
@@ -216,7 +222,7 @@ class PlaybackRepository(
       width = 0,
       height = 480,
       mimeType = "video/mp4",
-      segmentBase = PlaybackSegmentBase("0-0", "0-0"),
+      segmentBase = if (isHongguo) null else PlaybackSegmentBase("0-0", "0-0"),
     )
     return PlaybackInfo(
       bvid = request.bvid,
@@ -227,9 +233,16 @@ class PlaybackRepository(
       selectedQuality = qualities[resolvedLine],
       videoTracks = listOf(dummyTrack),
       audioTracks = emptyList(),
-      // 裸头:BiliPlaybackHeaders 空串 Referer/Origin 不发(见 asMap 的空串跳过)。
-      headers = BiliPlaybackHeaders(sessData = null, biliJct = null, referer = "", origin = ""),
-      remoteHlsManifestUrl = streamUrl,
+      // 红果(P11-83 真机 403 修复):显式带红果域名 Referer/Origin——playback client 拦截器会给
+      // 缺 Referer 的请求默认注入 B站 Referer(BiliHeaders.Referer),B站 Referer 打到字节系
+      // qznovelvod CDN 触发防盗链 403(实测三态:裸 200/B站头 403/红果头 200)。显式非空头
+      // 拦截器保留(asMap 非空即发)。TVBox 采集站实测吃 B站 Referer 不误拒,维持裸头不动。
+      headers = if (isHongguo) {
+        BiliPlaybackHeaders(sessData = null, biliJct = null, referer = "https://hongguoduanju.com/", origin = "https://hongguoduanju.com")
+      } else {
+        BiliPlaybackHeaders(sessData = null, biliJct = null, referer = "", origin = "")
+      },
+      remoteHlsManifestUrl = if (isHongguo) null else streamUrl,
     )
   }
 
@@ -612,6 +625,7 @@ class PlaybackRepository(
       pubdate = 0L,
       pages = pages,
       desc = season.evaluate,
+      seasonSubType = season.type,
     )
   }
 
@@ -758,20 +772,23 @@ class PlaybackRepository(
     subType: Int = 0,
     aid: Long = 0L,
   ): Boolean {
-    if (bvid.isBlank() || cid <= 0L) return false
+    if (cid <= 0L) return false
     val sessData = sessionStore.sessData.first()
     val biliJct = sessionStore.biliJct.first()
     if (sessData.isNullOrBlank() || biliJct.isNullOrBlank()) return false
 
     val isPgc = epId > 0L || seasonId > 0L
-    val baseParams = mapOf(
-      "bvid" to bvid,
-      "cid" to cid.toString(),
-      "played_time" to progressSeconds.toString(),
-      "real_played_time" to progressSeconds.toString(),
-      "start_ts" to (System.currentTimeMillis() / 1000L).toString(),
-      "csrf" to biliJct,
-    )
+    // BV sendHeartbeat:avid/bvid 二选一必填。番剧历史续播入口无真实 bvid(卡片 bvid="ep{id}" 是
+    // 网格 key),用 aid(该集 avid)满足;UGC 仍要求 bvid 非空。
+    if (bvid.isBlank() && !(isPgc && aid > 0L)) return false
+    val baseParams: Map<String, String> = buildMap {
+      if (bvid.isNotBlank()) put("bvid", bvid)
+      put("cid", cid.toString())
+      put("played_time", progressSeconds.toString())
+      put("real_played_time", progressSeconds.toString())
+      put("start_ts", (System.currentTimeMillis() / 1000L).toString())
+      put("csrf", biliJct)
+    }
     val params = if (!isPgc) {
       baseParams
     } else {

@@ -266,6 +266,8 @@ fun PlayerScreen(
   var pendingSABRSeekMs by remember { mutableStateOf<Long?>(null) }
   var sabrSeekReloadKey by remember { mutableIntStateOf(0) }
   var autoRetryCount by remember { mutableIntStateOf(0) }
+  // P11-85 深度重试去重:每视频只放行一次(换视频重置),防无限重载。
+  var sabrDeepRetryUsedForBvid by remember { mutableStateOf<String?>(null) }
   var lastPlaybackExitBackPressMs by remember { mutableLongStateOf(0L) }
   var playbackExitConfirmToast by remember { mutableStateOf<Toast?>(null) }
   var playbackCompletionToast by remember { mutableStateOf<Toast?>(null) }
@@ -1638,6 +1640,12 @@ fun PlayerScreen(
       }
     }
     metadata = videoMetadata
+    // 番剧历史续播入口(fromHistory pgc)的请求 subType=0(历史条目不带季类型):季 metadata 回填,
+    // 供 heartbeat sub_type 上报对齐 BV。搜索季卡/季详情入口自带 subType,回填不生效。
+    val metaSeasonSubType = videoMetadata?.seasonSubType ?: 0
+    if (!skipBiliMetadata && activeRequest.subType <= 0 && metaSeasonSubType > 0) {
+      activeRequest = activeRequest.copy(subType = metaSeasonSubType)
+    }
     var effectiveRequest = if (skipBiliMetadata) {
       activeRequest
     } else {
@@ -2031,17 +2039,42 @@ fun PlayerScreen(
         if (currentPositionMs == stallBaselinePositionMs) {
           if (stallSinceMs == 0L) {
             stallSinceMs = nowMs
-          } else if (nowMs - stallSinceMs >= StallThresholdMs && autoRetryCount < MaxStallAutoRetry) {
-            autoResumePositionMs = currentPositionMs
-            autoRetryCount += 1
-            Log.w(
-              PlayerPlaybackLogTag,
-              "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
-            )
-            noteStartupStallMemory(currentPositionMs)
-            stallSinceMs = 0L
-            stallBaselinePositionMs = 0L
-            retryKey += 1L
+          } else if (nowMs - stallSinceMs >= StallThresholdMs) {
+            if (autoRetryCount < MaxStallAutoRetry) {
+              autoResumePositionMs = currentPositionMs
+              autoRetryCount += 1
+              Log.w(
+                PlayerPlaybackLogTag,
+                "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
+              )
+              noteStartupStallMemory(currentPositionMs)
+              stallSinceMs = 0L
+              stallBaselinePositionMs = 0L
+              retryKey += 1L
+            } else {
+              // P11-85 深度重试:常规重试(2 次)耗尽后位置仍冻结,若是 YouTube SABR 单流会话,
+              // 做一次「深度重试」——evict SABR 会话(重试 playurl 重建新会话,轨解析重跑)+
+              // 续播点前推 ~10s(换段对齐)。09-07 真机复盘:历史续播卡死时数据/解码器全就位却
+              // 永不 READY,同一位置连续 8+ 次重载全挂,换会话/换位置后 ~2s 起播——疑服务端段
+              // 锚点与首段裁剪(clippedStartTimeUs=loadPositionUs)竞态,重置会话+换位置实证能解。
+              // 每视频限一次,防无限重载。
+              val sabrInfo = (playerState as? PlayerScreenState.Ready)?.info
+              if (sabrInfo != null && sabrInfo.isSabrSingle() && sabrDeepRetryUsedForBvid != sabrInfo.bvid) {
+                sabrDeepRetryUsedForBvid = sabrInfo.bvid
+                SabrStreamRegistry.getByVideoId(sabrInfo.bvid)?.let { SabrStreamRegistry.evict(it) }
+                val nudged = minOf(currentPositionMs + SabrDeepRetryNudgeMs, sabrInfo.durationMs - 1000L)
+                autoResumePositionMs = if (nudged > currentPositionMs) nudged else currentPositionMs
+                autoRetryCount = 0
+                Log.w(
+                  PlayerPlaybackLogTag,
+                  "stall retries exhausted, deep retry: evict sabr session, resume @" +
+                    "${autoResumePositionMs}ms (frozen at $currentPositionMs buffered=${player.bufferedPercentage}%)",
+                )
+                stallSinceMs = 0L
+                stallBaselinePositionMs = 0L
+                retryKey += 1L
+              }
+            }
           }
         } else {
           stallBaselinePositionMs = currentPositionMs
@@ -2903,6 +2936,8 @@ internal fun PlaybackRequest.withResolvedMetadata(
     viewCount = viewCount.takeIf { it > 0 } ?: metadata?.viewCount ?: 0,
     danmakuCount = danmakuCount.takeIf { it > 0 } ?: metadata?.danmakuCount ?: 0,
     pubdate = pubdate.takeIf { it > 0L } ?: metadata?.pubdate ?: 0L,
+    // PGC 季类型回填:番剧历史续播入口 subType=0,季 metadata(season.type)补上,heartbeat sub_type 用。
+    subType = subType.takeIf { it > 0 } ?: metadata?.seasonSubType ?: 0,
   )
 }
 
@@ -2973,6 +3008,8 @@ private const val VideoFreezeThresholdMs = 12_000L
 private const val BlackFrameHeightCap = 1080
 /** 单次播放会话内 stall 自动重试上限,超过则交用户手动重试,避免死循环刷 CDN。 */
 private const val MaxStallAutoRetry = 2
+/** P11-85 SABR 深度重试续播点前推量:覆盖一个视频段(~5-6s)并换段对齐,重置服务端段锚点。 */
+private const val SabrDeepRetryNudgeMs = 10_000L
 /** 起播整体超时：callTimeout 兜住单次 HTTP，withTimeout 兜住整条 launch（含串行调用叠加）。 */
 private const val LaunchTimeoutMs = 30_000L
 

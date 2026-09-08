@@ -357,11 +357,13 @@ class TvboxRepository(
     val CONST_URL_REGEX = Regex("""const url\s*=\s*"([^"]+)"""")
     val M3U8_URL_REGEX = Regex("""https?://[^"'\s<>]+\.m3u8[^"'\s<>]*""")
     val RELATIVE_M3U8_REGEX = Regex("""["'](/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']""")
+    /** 红果播放页内嵌直链:`"main_url":"https:\/\/v3-hgweb.qznovelvod.com\/…"`(非贪婪取完整串,见 resolveHongguoMainUrl)。 */
+    val HONGGUO_MAIN_URL_REGEX = Regex("""\"main_url\":\"(.*?)\"""")
   }
 
   /**
-   * 把一条线路 URL 解析成可直接喂 [androidx.media3.exoplayer.hls.HlsMediaSource] 的 m3u8 地址。
-   * 直链 m3u8 原样返回;share/play HTML 页拉一次页面,按优先级提取:
+   * 把一条线路 URL 解析成可直接喂播放器的流地址。直链 m3u8 原样返回;红果短剧播放页
+   * (P11-83)走专属分支提取 `main_url` 明文 MP4;其余 share/play HTML 页拉一次页面,按优先级提取:
    * ①非凡 share 页内嵌 `const url = "…"`(相对路径相对页面 URL 解析);
    * ②页内首个绝对 m3u8(极速 play 页含 `/play/<id>/index.m3u8`);
    * ③页内首个相对 m3u8。解析结果按原始 URL 缓存(切线路/重试不重复拉页)。
@@ -370,6 +372,11 @@ class TvboxRepository(
   suspend fun resolveLineUrl(rawUrl: String): String? {
     if (rawUrl.substringBefore('?').endsWith(".m3u8")) return rawUrl
     resolveCache[rawUrl]?.let { return it }
+    if (isHongguoPlayerPage(rawUrl)) {
+      val resolved = resolveHongguoMainUrl(rawUrl) ?: return null
+      resolveCache[rawUrl] = resolved
+      return resolved
+    }
     return withContext(Dispatchers.IO) {
       try {
         val pageUrl = rawUrl.toHttpUrlOrNull() ?: return@withContext null
@@ -404,6 +411,35 @@ class TvboxRepository(
     RELATIVE_M3U8_REGEX.find(html)?.groupValues?.get(1)?.let { return it }
     return null
   }
+
+  /** 红果短剧播放页判定:`hongguoduanju.com/player/{series_id}/{vid}` 形态。 */
+  private fun isHongguoPlayerPage(url: String): Boolean =
+    url.contains("://hongguoduanju.com/player/") || url.contains("://www.hongguoduanju.com/player/")
+
+  /**
+   * 红果短剧播放页 → main_url 直链(P11-83 spike 实锤):播放页 SSR 把明文 MP4(qznovelvod CDN,
+   * 无签名无 DRM)内嵌在页面 JSON 里,正则提取后反转义 JSON 斜杠(`\/`、`/`)即得。
+   * 直链带时间戳参数会过期,靠 resolveCache 短缓存 + 播放前现取;失败返回 null(顺延逻辑对
+   * 红果单线路即直接判死,让上层报错,不自造兜底)。裸头即可,不带 Referer/UA。
+   */
+  private suspend fun resolveHongguoMainUrl(pageUrl: String): String? =
+    withContext(Dispatchers.IO) {
+      try {
+        val request = Request.Builder().url(pageUrl).build()
+        httpClient.newCall(request).execute().use { response ->
+          if (!response.isSuccessful) return@withContext null
+          val html = response.body?.string().orEmpty()
+          HONGGUO_MAIN_URL_REGEX.find(html)?.groupValues?.get(1)
+            ?.replace("\\/", "/")
+            ?.replace("\\u002F", "/")
+            ?.takeIf { it.startsWith("http") }
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        null
+      }
+    }
 
   /**
    * m3u8 存活预检(P11-81d):解析「成功」≠ 文件还在——采集站老资源 CDN 404 是常态

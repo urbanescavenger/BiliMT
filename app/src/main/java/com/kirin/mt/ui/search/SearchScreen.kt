@@ -84,6 +84,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.image.BiliImageSizing
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.UserSummary
@@ -377,6 +378,7 @@ private fun SearchSourceToggle(
 ) {
   val homeColors = LocalHomeColors.current
   // 单个按钮占满整行居中,显示当前源;点击循环切换到下一个源(B站→YouTube→影视库→B站)。
+  // 红果短剧源已从搜索源轮换摘除(网页匿名端只放开前 3 集,暂不上前端),后端链路保留。
   val label = when (source) {
     SourceBili -> "BILIBILI"
     SourceYoutube -> "YOUTUBE"
@@ -900,6 +902,20 @@ private fun SearchResultsView(
             loadMoreError = "",
           )
         }
+      } else if (source == SourceHongguo) {
+        // 红果短剧:网页端一步直出,无排序/无翻页(10 条/次);类型/排序 chip 均已隐藏。
+        val videos = videoRepository.hongguoSearch(keyword = query)
+        if (videos.isEmpty()) {
+          SearchResultState.Empty
+        } else {
+          SearchResultState.Success(
+            videos = videos,
+            nextPage = FirstPage + 1,
+            loadingMore = false,
+            endReached = true,
+            loadMoreError = "",
+          )
+        }
       } else if (searchType == SearchTypeUser) {
         if (source == SourceYoutube) {
           val page = videoRepository.youtubeSearchChannels(query = query)
@@ -1133,6 +1149,7 @@ private fun SearchResultsView(
         SearchResultState.Loading -> VideoGridSkeleton()
         SearchResultState.Empty -> FeedStatusScreen(
           // 影视库源空结果分流:未配置/配置加载失败给引导文案(配置就绪才落通用「无结果」)。
+          // 红果短剧零配置,直接落通用「无结果」。
           message = stringResource(
             if (source == SourceTvbox) {
               tvboxEmptyMessageRes(tvboxSourceStatus)
@@ -1218,8 +1235,8 @@ private fun SearchResultsHeader(
   val homeColors = LocalHomeColors.current
   var titleFocused by remember { mutableStateOf(false) }
   // 视频类型才显示排序 chip;UP主 类型只剩类型 chip,标题 Down 需回退落类型 chip。
-  // 影视库(TVBox)源排序/类型 chip 全隐藏(无排序/无 UP主 概念),标题 Down 直接落结果网格。
-  val isTvboxSource = source == SourceTvbox
+  // 影视库(TVBox)/红果短剧源排序/类型 chip 全隐藏(无排序/无 UP主 概念),标题 Down 直接落结果网格。
+  val isTvboxSource = source == SourceTvbox || source == SourceHongguo
   val showSort = searchType == SearchTypeVideo && !isTvboxSource
   Column(
     modifier = Modifier.fillMaxWidth(),
@@ -1893,7 +1910,7 @@ private val TvboxSearchSortOptions = listOf(
 
 private fun sortOptionsFor(source: String): List<SearchSortOption> =
   when {
-    source == SourceTvbox -> TvboxSearchSortOptions
+    source == SourceTvbox || source == SourceHongguo -> TvboxSearchSortOptions
     source == SourceYoutube -> YoutubeSearchSortOptions
     else -> BiliSearchSortOptions
   }

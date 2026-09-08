@@ -371,6 +371,16 @@ internal class DefaultSabrChunkSource(
 
     val seekTimeUs = if (queue.isEmpty()) loadPositionUs else C.TIME_UNSET
     val startTimeUs = representationHolder.getSegmentStartTimeUs(segmentNum)
+    // P11-85 诊断:续播黑屏(位置冻结、数据就位、永不 READY)取证——每轨首 media chunk 打点:
+    // loadPosition(裁剪起点)与段号/段起点的映射关系,下轮复盘首段裁剪是否吃掉关键帧。
+    if (queue.isEmpty()) {
+      Log.i(
+        "YtSabrChunk",
+        "first media chunk: trackType=$trackType loadPositionMs=${Util.usToMs(loadPositionUs)}" +
+          " segmentNum=$segmentNum startMs=${Util.usToMs(startTimeUs)} clipMs=${Util.usToMs(seekTimeUs)}" +
+          " itag=${representationHolder.representation.formatId.itag}",
+      )
+    }
     val bufferedSegments = queue.mapNotNull { (it.dataSpec.customData as SabrSegmentRequest?)?.segment }
     val dataSpec = DataSpec.Builder()
       .setUri(manifest.sabrUrl)
@@ -419,6 +429,12 @@ internal class DefaultSabrChunkSource(
       if (representationHolder.chunkIndex == null) {
         representationHolder.chunkExtractor?.chunkIndex?.let {
           representationHolders[trackIndex].chunkIndex = it
+          // P11-85:段表(绝对时间网格)回喂 fetcher——buildBufferedRanges 上报真实
+          // startTimeMs/durationMs 用(header.startMs/durationMs 服务端恒回 0,续播场景
+          // 垃圾 ranges 会把服务端回落判定带偏 → 位置冻结黑屏,详见 SabrSegment)。
+          val itag = representationHolder.representation.formatId.itag
+          val timesMs = LongArray(it.length) { i -> Util.usToMs(it.timesUs[i]) }
+          fetcher.registerSegmentGrid(itag, timesMs)
         }
       }
     }

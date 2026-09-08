@@ -16,6 +16,7 @@ import com.kirin.mt.core.download.DownloadUrlResolver
 import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliHttpClientFactory
+import com.kirin.mt.core.network.HongguoRepository
 import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.core.network.SpaceHttpSupport
@@ -155,6 +156,9 @@ class AppContainer(context: Context) {
     client = downloadHttpClient,
     appSettingsStore = appSettingsStore,
   )
+  val hongguoRepository: HongguoRepository = HongguoRepository(
+    client = downloadHttpClient,
+  )
   val videoRepository: VideoRepository = VideoRepository(
     apiClient = apiClient,
     wbiKeyRepository = wbiKeyRepository,
@@ -164,6 +168,7 @@ class AppContainer(context: Context) {
     youtubeChannelStore = youtubeChannelStore,
     progressStore = playbackProgressStore,
     tvboxRepository = tvboxRepository,
+    hongguoRepository = hongguoRepository,
   )
   val liveRepository: LiveRepository = LiveRepository(
     apiClient = apiClient,

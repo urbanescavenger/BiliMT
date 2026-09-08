@@ -26,6 +26,12 @@ data class VideoSummary(
   val liveRoomId: Long = 0L,
   /** PGC 季 id;>0 表示这张卡片是番剧/影视季(由番剧搜索映射而来),点击进 PGC 季详情而非播放器。 */
   val seasonId: Int = 0,
+  /**
+   * PGC 剧集 id;>0 表示这是番剧历史卡(仅 fromHistory business=pgc 条目填充,kid=季 id、
+   * oid=该集 avid 也一并填),点击经 toPlaybackRequest 走 PGC playurl(ep_id)续播该集,
+   * 不像搜索季卡(seasonId>0 且 epId=0)那样进季详情。bvid 承载 "ep{epId}" 作网格 key。
+   */
+  val epId: Long = 0L,
   /** 直播分区名(仅直播卡片填充,移动端卡片据此显示分区)。 */
   val liveAreaName: String = "",
   // 动态专属字段:仅 fromDynamicItem 填充,其它来源保持默认 0/空。
@@ -35,7 +41,7 @@ data class VideoSummary(
   val likeCount: Int = 0,
   val commentCount: Int = 0,
   val forwardCount: Int = 0,
-  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube] / [SourceIptv] / [SourceTvbox]。YouTube 卡片 bvid 字段承载 videoId。 */
+  /** 内容来源：[SourceBili]（默认）/ [SourceYoutube] / [SourceIptv] / [SourceTvbox] / [SourceHongguo]。YouTube 卡片 bvid 字段承载 videoId。 */
   val source: String = SourceBili,
   /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 卡片填充，用于进 UP 主页；B 站卡片为空串。 */
   val channelId: String = "",
@@ -69,3 +75,9 @@ const val SourceYoutube = "youtube"
 const val SourceIptv = "iptv"
 /** TVBox(影视库)源:P11-77 spike,内置 MacCMS 采集站聚合搜索,直链 m3u8 复用 IPTV 播放路径。 */
 const val SourceTvbox = "tvbox"
+/**
+ * 红果短剧源(P11-83):hongguoduanju.com 网页端解析,零配置零签名。
+ * 搜索一步直出剧集列表(含 vid_list),播放=播放页 SSR 内嵌 main_url 明文 MP4。
+ * 播放复用 TVBox 线路心智(单线路 TvboxLine,分集 URL=播放页地址,懒解析取直链)。
+ */
+const val SourceHongguo = "hongguo"

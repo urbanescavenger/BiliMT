@@ -118,18 +118,27 @@ internal object VideoSummaryMappers {
     )
   }
 
+  /**
+   * \u5386\u53f2\u6761\u76ee(/x/web-interface/history/cursor)\u3002\u756a\u5267/\u5f71\u89c6\u6761\u76ee(business=pgc)\u5b57\u6bb5\u4e0e\u7a3f\u4ef6\u4e0d\u540c:
+   * history.bvid \u4e3a\u7a7a\u3001history.oid=\u8be5\u96c6 avid\u3001history.epid=\u5267\u96c6 id\u3001\u9876\u5c42 kid=\u5b63 id(season_id)\u3001
+   * cid=\u8be5\u96c6 cid(BV HistoryData.kt + bilibili-API-collect \u4f50\u8bc1)\u3002pgc \u6761\u76ee bvid \u627f\u8f7d "ep{epId}"
+   * \u4f5c\u7f51\u683c key(\u79fb\u52a8\u7aef\u5386\u53f2\u7f51\u683c\u6309 bvid \u505a LazyGrid key,\u7a7a\u4e32\u591a\u6761\u76f8\u649e;TV \u7aef feedKey \u540c\u6837\u56de\u9000 bvid)\u3002
+   */
   fun fromHistory(json: JsonObject): VideoSummary {
     val history = json.obj("history")
     val cover = json.string("cover").ifBlank { json.string("pic") }
     val badge = json.string("badge")
     val business = history?.string("business").orEmpty()
+    val epId = history?.int("epid")?.takeIf { it > 0 }?.toLong() ?: 0L
+    // 仅 epid>0 的 pgc 条目按番剧卡处理(可经 PGC playurl 续播);畸形 epid=0 回落普通条目(bvid 空,点击无效)。
+    val isPgcEntry = business == "pgc" && epId > 0L
     val isLive = json.int("live_status") == 1 ||
       business == "live" ||
       badge.contains("\u76f4\u64ad") ||
       badge == "\u672a\u5f00\u64ad"
 
     return VideoSummary(
-      bvid = history?.string("bvid").orEmpty(),
+      bvid = history?.string("bvid").orEmpty().ifBlank { if (isPgcEntry) "ep$epId" else "" },
       title = json.string("title"),
       pic = fixPicUrl(cover),
       ownerName = json.string("author_name"),
@@ -144,9 +153,14 @@ internal object VideoSummaryMappers {
       viewAt = json.long("view_at"),
       cid = history?.long("cid")?.takeIf { it != 0L } ?: (history?.long("oid") ?: 0L),
       historyPage = history?.int("page") ?: 0,
-      historyPart = history?.string("part").orEmpty(),
+      historyPart = json.string("show_title").orEmpty().ifBlank { history?.string("part").orEmpty() },
       historyVideos = json.int("videos"),
       isLive = isLive,
+      // PGC \u4e13\u5c5e:epId>0 \u2192 toPlaybackRequest \u8d70 PGC \u7eed\u64ad\u8be5\u96c6;seasonId=\u5b63 id \u4f9b\u5b63\u5206\u96c6/heartbeat sid;
+      // aid=\u8be5\u96c6 avid \u4f9b\u65e0 bvid \u573a\u666f\u7684 heartbeat(BV sendHeartbeat avid/bvid \u4e8c\u9009\u4e00)\u3002
+      epId = if (isPgcEntry) epId else 0L,
+      seasonId = if (isPgcEntry) json.int("kid") ?: 0 else 0,
+      aid = if (isPgcEntry) history?.long("oid") ?: 0L else 0L,
     )
   }
 
