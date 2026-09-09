@@ -138,6 +138,7 @@ internal fun RecommendScreen(
 
   fun requestSectionLoad(sectionKey: String, refreshKey: Int) {
     uiState.nextLoadRequestId += 1
+    Log.d(LoadLogTag, "requestSectionLoad key=$sectionKey refresh=$refreshKey -> id=${uiState.nextLoadRequestId + 1} inst=$screenInstanceTag")
     uiState.loadRequest = RecommendLoadRequest(
       id = uiState.nextLoadRequestId,
       sectionKey = sectionKey,
@@ -146,6 +147,11 @@ internal fun RecommendScreen(
   }
 
   LaunchedEffect(sections) {
+    Log.d(
+      LoadLogTag,
+      "sections effect inst=$screenInstanceTag sections=${sections.joinToString { it.key }} " +
+        "loadRequest=${uiState.loadRequest?.id ?: "null"}",
+    )
     val sectionKeys = sections.mapTo(mutableSetOf()) { section -> section.key }
     uiState.loadedSectionKeys = uiState.loadedSectionKeys.filterTo(mutableSetOf()) { key -> key in sectionKeys }
     uiState.sectionStates = uiState.sectionStates.filterKeys { key -> key in sectionKeys }
@@ -159,6 +165,7 @@ internal fun RecommendScreen(
       uiState.focusedVideoKey = ""
     }
     if (uiState.loadRequest != null && sections.none { section -> section.key == uiState.loadRequest?.sectionKey }) {
+      Log.d(LoadLogTag, "loadRequest invalidated (section gone from sections) inst=$screenInstanceTag")
       uiState.loadRequest = null
     }
 
