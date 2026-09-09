@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -175,11 +176,23 @@ internal fun RecommendScreen(
     }
   }
 
+  // P11-89 诊断:真机日志实锤同一 loadRequest 的加载 effect 跑了两个实例(start×2/cancel×2),
+  // 说明 RecommendScreen 组合在反复销毁重建。给屏幕加实例身份,组合/销毁/加载各打一条,
+  // 复现日志即可看出:谁在销毁、销毁与 loadRequest 变化的时序关系。定位后移除。
+  val screenInstanceTag = remember { "i" + (100..999).random() }
+  Log.d(LoadLogTag, "screen compose inst=$screenInstanceTag loadRequest=${uiState.loadRequest?.id ?: "null"}")
+  DisposableEffect(Unit) {
+    onDispose { Log.d(LoadLogTag, "screen dispose inst=$screenInstanceTag") }
+  }
+
   LaunchedEffect(videoRepository, uiState.loadRequest) {
     val request = uiState.loadRequest ?: return@LaunchedEffect
     val sectionToLoad = sections.firstOrNull { section -> section.key == request.sectionKey }
       ?: return@LaunchedEffect
-    Log.d(LoadLogTag, "load start id=${request.id} section=${request.sectionKey} refresh=${request.refreshKey}")
+    Log.d(
+      LoadLogTag,
+      "load start id=${request.id} section=${request.sectionKey} refresh=${request.refreshKey} inst=$screenInstanceTag",
+    )
     // 刷新时若已有 Success，保留旧 videos 不切到 Loading 骨架，避免网格销毁重建
     // 导致 Compose 把焦点从 tab/侧栏抢到第一个视频卡片。
     val previousState = uiState.sectionStates[sectionToLoad.key]
@@ -230,7 +243,7 @@ internal fun RecommendScreen(
       // 只清「本请求写的 Loading 占位」,不动其它来源的状态:P11-87 后壳层预加载与本加载并发,
       // 真机实测(2026-09-09 alpha.6 冷启动日志)预拉 51.938 写入 Success(20 条),本请求
       // 52.595 被取消时无差别 delete 把预拉成果一并抹掉 → 推荐页空到重点击才恢复。
-      Log.d(LoadLogTag, "load cancelled id=${request.id} section=${request.sectionKey}")
+      Log.d(LoadLogTag, "load cancelled id=${request.id} section=${request.sectionKey} inst=$screenInstanceTag")
       if (uiState.loadRequest?.id == request.id) {
         uiState.loadRequest = null
       }
