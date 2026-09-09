@@ -409,7 +409,12 @@ internal class DefaultSabrChunkSource(
       representationHolder.periodDurationUs,
       segmentNum,
       1,
-      0,
+      // P11-90:SabrDataSource 已把段内 tfdt 相对化(首值→0),这里把样本时间整体平移到段
+      // 网格起点——复刻 media3 <1.10 老 ChunkExtractorWrapper 的「首样本==startTimeUs」自校准
+      // (1.10 移除该逻辑,BundledChunkExtractor 纯透传 tfdt,续播时 clip 在段内找不到样本 →
+      // 位置冻结连环重载,详见 SabrDataSource 注释)。非首 chunk 无 clip,offset 同样按段起点,
+      // 各段独立校准,时间线与 chunk 声明一致。
+      startTimeUs,
       representationHolder.chunkExtractor!!,
     )
   }
