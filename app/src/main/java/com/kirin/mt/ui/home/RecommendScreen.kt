@@ -227,12 +227,18 @@ internal fun RecommendScreen(
       // 取消(composition 离开,LaunchedEffect 被系统取消)：还原 loadRequest 与 section 状态,
       // 让下一次进入组合时 LaunchedEffect(sections) 重新发加载请求——否则状态停在 Loading/Empty
       // 且 reload 守卫只看 null,重进首页不重拉,卡片一直 ERR/骨架。
+      // 只清「本请求写的 Loading 占位」,不动其它来源的状态:P11-87 后壳层预加载与本加载并发,
+      // 真机实测(2026-09-09 alpha.6 冷启动日志)预拉 51.938 写入 Success(20 条),本请求
+      // 52.595 被取消时无差别 delete 把预拉成果一并抹掉 → 推荐页空到重点击才恢复。
       Log.d(LoadLogTag, "load cancelled id=${request.id} section=${request.sectionKey}")
       if (uiState.loadRequest?.id == request.id) {
         uiState.loadRequest = null
       }
-      uiState.sectionStates = uiState.sectionStates - sectionToLoad.key
-      uiState.loadedSectionKeys = uiState.loadedSectionKeys - sectionToLoad.key
+      val current = uiState.sectionStates[sectionToLoad.key]
+      if (current is RecommendState.Loading) {
+        uiState.sectionStates = uiState.sectionStates - sectionToLoad.key
+        uiState.loadedSectionKeys = uiState.loadedSectionKeys - sectionToLoad.key
+      }
       throw error
     } catch (error: Exception) {
       Log.e(LoadLogTag, "load failed id=${request.id} section=${request.sectionKey}: ${error.message}")
