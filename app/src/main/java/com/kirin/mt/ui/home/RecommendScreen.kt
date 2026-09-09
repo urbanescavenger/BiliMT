@@ -120,6 +120,14 @@ internal fun RecommendScreen(
   onOwnerSelected: (VideoSummary) -> Unit,
 ) {
   val coroutineScope = rememberCoroutineScope()
+  // P11-89 诊断:真机日志实锤同一 loadRequest 的加载 effect 跑了两个实例(start×2/cancel×2),
+  // 说明 RecommendScreen 组合在反复销毁重建。给屏幕加实例身份,组合/销毁/加载各打一条,
+  // 复现日志即可看出:谁在销毁、销毁与 loadRequest 变化的时序关系。定位后移除。
+  val screenInstanceTag = remember { "i" + (100..999).random() }
+  Log.d(LoadLogTag, "screen compose inst=$screenInstanceTag loadRequest=${uiState.loadRequest?.id ?: "null"}")
+  DisposableEffect(Unit) {
+    onDispose { Log.d(LoadLogTag, "screen dispose inst=$screenInstanceTag") }
+  }
   val sections = remember(enabledHomeSections, homeSectionsOrder) {
     homeSectionsOrder.filter { section -> section in enabledHomeSections }
       .ifEmpty { listOf(HomeSection.Recommend) }
@@ -181,15 +189,6 @@ internal fun RecommendScreen(
         refreshKey = uiState.sectionRefreshKeys[sectionKeyToLoad] ?: 0,
       )
     }
-  }
-
-  // P11-89 诊断:真机日志实锤同一 loadRequest 的加载 effect 跑了两个实例(start×2/cancel×2),
-  // 说明 RecommendScreen 组合在反复销毁重建。给屏幕加实例身份,组合/销毁/加载各打一条,
-  // 复现日志即可看出:谁在销毁、销毁与 loadRequest 变化的时序关系。定位后移除。
-  val screenInstanceTag = remember { "i" + (100..999).random() }
-  Log.d(LoadLogTag, "screen compose inst=$screenInstanceTag loadRequest=${uiState.loadRequest?.id ?: "null"}")
-  DisposableEffect(Unit) {
-    onDispose { Log.d(LoadLogTag, "screen dispose inst=$screenInstanceTag") }
   }
 
   LaunchedEffect(videoRepository, uiState.loadRequest) {
