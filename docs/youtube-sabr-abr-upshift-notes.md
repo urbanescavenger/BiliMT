@@ -827,3 +827,31 @@ clip 在段内找不到 ≥clip 的样本 → 永远 BUFFERING → 位置基看�
 A/V 各段独立校准、同步性不受影响。**真机验证待做**:31min 视频续播 ~13:20 应直接出画面零看门狗;
 22:23 一轮解析层即败(`VISIONOS player response is not valid` ×2 → WEB /player 纯 SABR 无直链
 → no decodable formats),与 P11-90 无关(未到 SABR 层),属 §19 死路家族的服务端响应波动。
+
+## 28. 2026-09-10「播3秒跳10s」:P11-90 tfdt 补丁遍历 bug(全程 no-op)+ webm offset 翻倍 → 遍历重写 + 容器分流 (P11-91)
+
+**现象(alpha.7 真机 logs_live_20260910_060654,199s 视频 7E4_M-IME2I 续播 44.7s)**:首帧正常渲染
+(READY pos=44687),26ms 后位置跳到 **79876 = 39938×2(音频段网格起点×2)**,之后播 3 秒跳一段、
+循环——用户观感「播3秒跳10s」。两次会话(480p H264 + 1080p VP9)同样跳法。
+
+**根因(P11-90 三层连环的 bug)**:
+1. **tfdt 采集遍历写错**:`walkContainer(wanted)` 的 tfdt 命中分支 `type == TFDT && wanted == TRAF`
+   在递归进 traf 后(wanted 已翻成 TFDT)恒假,tf dt 被当容器继续递归找 traf——**补丁全程 no-op**,
+   零失败日志但零段被相对化;
+2. 补丁失效后,`sampleOffsetUs=段网格起点`(P11-90 的 ②)叠在**原始绝对 tfdt** 上——该视频的
+   tfdt 本就与网格一致(79876=2×39938 实锤),offset 一加时间轴翻倍,播放到段尾即跳下一段的
+   翻倍位置;
+3. webm(VP9/AV1 itag 244/247/248/271/313)无 tfdt,MatroskaExtractor 的 cluster 时间戳本身是
+   绝对值(与网格一致),加 offset 同样翻倍。
+
+**修(6291cb0c)**:
+1. 遍历重写:单层 box 遍历 + `insideTraf` 标志(moof→递归;traf→insideTraf=true 递归;TFDT→
+   仅 insideTraf 时采集),补丁真正生效;加 `tfdt relativized: found=N v0=…` 日志作生效回执;
+2. `DefaultSabrChunkSource` offset 按容器分流:`containerMimeType` 以 webm 结尾 → 0(绝对 cluster
+   时间即正确);否则(mp4)→ `startTimeUs`(相对化后样本=网格,clip 由 media3 自动换算);
+3. `SabrDataSource` 的 `CancellationException`(media3 seek/丢弃打断在途拉流)不再整会话 evict——
+   此前 06:04:04 `seg=11 InterruptedException → evict` 一次 seek 拆掉健康会话白吃一轮 init 重拉,
+   现仅记日志按普通 load 取消上抛。
+
+**待真机复测**:续播位置平滑前进零跳变;`tfdt relativized: found=N` 出现;31min 视频续播(~13:20)
+应直接出画面(§27 场景一并验证)。

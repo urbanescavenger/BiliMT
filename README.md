@@ -134,6 +134,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.11-alpha.8 | SABR「播3秒跳10s」时间轴翻倍修复(P11-90 tfdt 补丁遍历 bug:补丁此前全程 no-op,offset 叠在原始绝对 tfdt 上样本时间翻倍;webm/VP9 轨无 tfdt 加 offset 同翻倍)——遍历重写(moof→traf→tfdt 单层+insideTraf 标志)+ offset 按容器分流(webm 保持 0)+ chunk 加载取消不再整会话 evict,详见 SABR 笔记 §28 |
 | v3.0.11-alpha.7 | 推荐页空页面修复(取消处理器只清 Loading 占位不删预加载 Success——此前屏幕自身加载被取消时无差别 delete 会抹掉壳层预拉成果,推荐页空到重点击)+ WebDAV 实时日志备份上传加时间戳文件名(logs_live_YYYYMMDD_HHMMSS.log,防固定名同名覆盖历史不可追溯)+ SABR 续播位置冻结连环重载修复(media3 1.10 缺失老 ChunkExtractorWrapper 首样本自校准:tfdt 相对化 + sampleOffsetUs=段网格起点,详见 SABR 笔记 §27)+ 首页加载实例诊断日志 |
 | v3.0.11-alpha.6 | TV 桌面横幅卡重绘为哔哩MT(BV 构图正负片:白底+粉渐变电视屏内 MT 零文字,与图标成对;xhdpi 升真 640x360) |
 | v3.0.11-alpha.5 | 文档:README 对齐 v3.0.11-alpha.4(补 v3.0.9/v3.0.10/v3.0.11-alpha 全部版本条目+主要功能对齐) |
