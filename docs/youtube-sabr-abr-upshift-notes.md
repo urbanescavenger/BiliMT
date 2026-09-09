@@ -796,3 +796,34 @@ MEDIA_HEADER.startMs/durationMs,而 visionOS 服务端该字段**恒回 0**(全�
 `buildBufferedRanges` 有网格时按 wire seq N→网格第 N-1 段查真实 startMs、durationMs=网格区间差;
 无网格(首个 init 请求窗口)零风险回退旧行为。LibreTube 无此问题暴露面:其每次 createMediaSource
 新建 SabrClient 无会话复用(§26 已记),且其 clientInfo 下服务端可能回填 startMs。
+
+## 27. 2026-09-09「续播位置冻结连环重载(801s 四轮全冻)」:media3 1.10 缺失首样本自校准 → tfdt 相对化 + sampleOffsetUs=段网格起点 (P11-90)
+
+**现象(21:17-21:19 真机 logs_live_20260909_212154,dev.r1874,31min 视频 pnsTunF6LM0 续播 ~800s)**:
+四轮会话(初载 → auto-retry #1 → auto-retry #2 → 深度重试 evict 会话 + 续播点 +10s)全部冻在续播点
+801000/811000,位置一步未走、`frameRendered=false`;换全新起播视频(3 小时长视频)立刻 READY 正常播。
+数据层全绿:视频段(700KB~1.1MB×8+)音频段均交付、`STREAM_PROTECTION status=1`、无 skip ad/无 MEDIA error
+——**数据到了、样本读不到**。
+
+**根因(media3 1.10 语义考古)**:1.10 的 `chunk` 目录已无老 `ChunkExtractorWrapper`(项目早期分析的
+tmp/ChunkExtractorWrapper.java 即此类)——老实现把每 chunk 首样本**自校准**到声明 startTimeUs
+(`sampleOffsetUs = startTimeUs − 段内首样本时间`)+ 按 seekTimeUs 裁剪,段内 tfdt 无论是 0 基还是绝对值都能对上。
+1.10 换成 `BundledChunkExtractor` 后**时间戳纯透传 tfdt、零 offset、零裁剪**,只把
+`extractor.seek(0, clippedStartTimeUs)` 交给 FragmentedMp4Extractor 按 tfdt 自跳样本
+(`TrackFragmentBundle.seek`:`firstSampleToOutputIndex` 停在 ≤seekTime 的最后同步帧);而项目
+`DefaultSabrChunkSource` 传 `sampleOffsetUs=0`——续播段若 tfdt 与段表网格不一致(相对时间/漂移),
+clip 在段内找不到 ≥clip 的样本 → 永远 BUFFERING → 位置基看门狗(8s)连环开枪,每次重载同位置复现。
+
+**修(759c09d7/79704b1e)**:
+1. `SabrDataSource` 拍平后把段内所有 tfdt 的 `baseMediaDecodeTime` **相对化**(首个→0、其余减首值):
+   严格按 box 树走(moof→traf→tfdt),不全文扫 `'tfdt'` 字节——mdat 视频负载可能撞出同样四字节,
+   盲扫会改坏数据;解析异常不动原字节(维持现状优先)。init 段无 tfdt,自然 no-op;
+2. `DefaultSabrChunkSource` 的 `ContainerMediaChunk` `sampleOffsetUs` `0→startTimeUs`(段网格起点):
+   样本时间 = 网格起点 + 段内相对值,与 chunk 声明时间线一致;clip 由 media3 自动换算
+   (`clippedStartTimeUs − sampleOffsetUs` 传给 extractor)。
+   合起来精确复刻老 ChunkExtractorWrapper「首样本==startTimeUs」语义。
+
+**安全性**:tfdt 本就与网格一致的段幂等(重写后 +offset 仍得原值);全新起播行为不变(起点 0 offset 0);
+A/V 各段独立校准、同步性不受影响。**真机验证待做**:31min 视频续播 ~13:20 应直接出画面零看门狗;
+22:23 一轮解析层即败(`VISIONOS player response is not valid` ×2 → WEB /player 纯 SABR 无直链
+→ no decodable formats),与 P11-90 无关(未到 SABR 层),属 §19 死路家族的服务端响应波动。

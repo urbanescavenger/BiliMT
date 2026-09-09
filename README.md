@@ -134,6 +134,9 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.11-alpha.7 | 推荐页空页面修复(取消处理器只清 Loading 占位不删预加载 Success——此前屏幕自身加载被取消时无差别 delete 会抹掉壳层预拉成果,推荐页空到重点击)+ WebDAV 实时日志备份上传加时间戳文件名(logs_live_YYYYMMDD_HHMMSS.log,防固定名同名覆盖历史不可追溯)+ SABR 续播位置冻结连环重载修复(media3 1.10 缺失老 ChunkExtractorWrapper 首样本自校准:tfdt 相对化 + sampleOffsetUs=段网格起点,详见 SABR 笔记 §27)+ 首页加载实例诊断日志 |
+| v3.0.11-alpha.6 | TV 桌面横幅卡重绘为哔哩MT(BV 构图正负片:白底+粉渐变电视屏内 MT 零文字,与图标成对;xhdpi 升真 640x360) |
+| v3.0.11-alpha.5 | 文档:README 对齐 v3.0.11-alpha.4(补 v3.0.9/v3.0.10/v3.0.11-alpha 全部版本条目+主要功能对齐) |
 | v3.0.11-alpha.4 | TV 启动初始焦点死区修复:初始期 Failed→重试按钮、Loading/Empty→分区 tab 持焦(此前唯一抢焦点的是网格首卡 effect,仅 Success 后生效,数据未就绪/首拉失败时遥控器全无反应),Success 后网格首卡照常接管;推荐预加载拆出登录态 key(此前启动时 session 磁盘加载翻转 isLoggedIn 会把预拉协程中途取消,登录态下预加载全程零贡献);loader 诊断日志。附:应用图标重绘(哔哩MT方案E精修:粉渐变底白电视壳+屏幕大MT,mipmap 五密度全量替换) |
 | v3.0.11-alpha.3 | SABR 历史续播黑屏根因修复:bufferedRanges 上报真实段时间(此前 visionOS 头恒报 {0,0} 垃圾,带偏服务端续播回落判定致位置冻结)+ tfdt 探针诊断;红果短剧从搜索前端摘除(网页匿名端每剧仅 3 集且无登录体系,后端链路保留) |
 | v3.0.11-alpha.2 | TV 设置页 TVBox 行焦点跳顶修复(常量与 Account 撞号致分支不可达)+ SABR 历史续播黑屏深度重试兜底(重试耗尽后 evict 会话+续播点前推 10s,每视频一次)+ 红果起播 403 修复(显式红果 Referer/Origin,防播放拦截器注入 B站头触发字节 CDN 防盗链) |
