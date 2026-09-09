@@ -10,6 +10,7 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import java.io.IOException
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * alpha.64(端口 LibreTube `SabrDataSource`):SABR 流的 [DataSource]。
@@ -54,6 +55,13 @@ internal class SabrDataSource(
       Log.w("YtSabr", "SabrDataSource open: terminal seg=${req.segment} itag=${req.formatItag}: ${e.message} → evict sid=$sessionId")
       SabrStreamRegistry.evict(sessionId)
       throw IOException("SABR terminal: ${e.message}")
+    } catch (e: CancellationException) {
+      // P11-91:chunk 加载被取消(media3 seek/丢弃打断在途拉流,runBlocking 中断以
+      // CancellationException 浮出)是良性取消——此前落进通用 catch 当会话死亡整会话 evict,
+      // 一次 seek 就拆掉健康会话、白吃一轮 init 重拉(真机 2026-09-10 06:04:04 实锤)。
+      // 只按普通 load 取消上抛,不 evict。
+      Log.i("YtSabr", "SabrDataSource open: seg=${req.segment} itag=${req.formatItag} cancelled (chunk load cancelled) → 不 evict")
+      throw IOException("SABR fetch cancelled: ${e.message}")
     } catch (e: Exception) {
       Log.w("YtSabr", "SabrDataSource open: seg=${req.segment} itag=${req.formatItag} ${e::class.simpleName}: ${e.message} → evict sid=$sessionId")
       SabrStreamRegistry.evict(sessionId)
@@ -109,6 +117,10 @@ internal class SabrDataSource(
       for ((valueOffset, version) in patches) {
         writeTfdtValue(valueOffset, readTfdtValue(valueOffset, version) - v0, version)
       }
+      Log.i(
+        "YtSabr",
+        "tfdt relativized: found=${patches.size} v0=${v0}ms→0 (bytes=${data.size})",
+      )
     } catch (e: Exception) {
       // 任何解析异常都不动原字节(宁可维持现状,也不改坏数据)。
       Log.w("YtSabr", "tfdt relativize skipped: ${e.message}")
@@ -117,24 +129,24 @@ internal class SabrDataSource(
 
   /** 遍历 [start,end) 的顶层 box;对 moof 递归找 traf→tfdt,把 (值字段偏移, version) 收进 [out]。 */
   private fun walkTopLevel(start: Int, end: Int, out: MutableList<Pair<Int, Long>>) {
-    var pos = start
-    while (pos + 8 <= end) {
-      val boxEnd = boxEnd(pos, end) ?: return
-      if (typeAt(pos) == MOOF) walkContainer(pos + 8, boxEnd, out, TRAF)
-      pos = boxEnd
-    }
+    walkBoxes(start, end, /* insideTraf = */ false, out)
   }
 
-  /** 在 [wanted] 容器(traf)内遍历找 tfdt,收进 [out];[wanted]=TRAF 时递归其内找 tfdt。 */
-  private fun walkContainer(start: Int, end: Int, out: MutableList<Pair<Int, Long>>, wanted: Int) {
+  /**
+   * P11-91 修遍历 bug:旧实现的 wanted 分支把 traf 内的 tfdt 又当容器递归(wanted==TFDT 时
+   * `type == TFDT && wanted == TRAF` 恒假,落进 else-if 递归进 tfdt 内部找 traf)——tfdt 永远
+   * 采集不到,补丁全程 no-op,offset 叠在原始绝对 tfdt 上时间轴翻倍(真机 2026-09-10:
+   * READY pos=44687 → 26ms 后 79876 = 39938×2,「播3秒跳10s」)。改为单层遍历 + insideTraf 标志:
+   * moof → 递归找 traf;traf → 递归捕获 tfdt。
+   */
+  private fun walkBoxes(start: Int, end: Int, insideTraf: Boolean, out: MutableList<Pair<Int, Long>>) {
     var pos = start
     while (pos + 8 <= end) {
       val boxEnd = boxEnd(pos, end) ?: return
-      val type = typeAt(pos)
-      if (type == TFDT && wanted == TRAF) {
-        out.add(pos + 12 to (data[pos + 8].toInt() and 0x01).toLong())
-      } else if (type == wanted) {
-        walkContainer(pos + 8, boxEnd, out, if (wanted == TRAF) TFDT else TRAF)
+      when (typeAt(pos)) {
+        MOOF -> walkBoxes(pos + 8, boxEnd, false, out)
+        TRAF -> walkBoxes(pos + 8, boxEnd, true, out)
+        TFDT -> if (insideTraf) out.add(pos + 12 to (data[pos + 8].toInt() and 0x01).toLong())
       }
       pos = boxEnd
     }
