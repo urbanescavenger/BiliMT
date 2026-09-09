@@ -161,7 +161,7 @@ internal class SabrDataSource(
 
   private fun writeTfdtValue(valueOffset: Int, value: Long, version: Long) {
     val clamped = value.coerceAtLeast(0L)
-    if (version == 1L) writeLong64(valueOffset, clamped) else writeUint32(valueOffset, clamped)
+    if (version == 1L) writeLong64(valueOffset, clamped) else writeUint32(valueOffset, clamped.toInt())
   }
 
   private fun readUint32(pos: Int): Int =
