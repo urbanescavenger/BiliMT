@@ -14,6 +14,9 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /** Piped 配置备份载荷:启用开关 + 实例 URL(空串=默认实例 [com.kirin.mt.core.youtube.YoutubePlaybackResolver.DEFAULT_PIPED_INSTANCE])。 */
 @Serializable
@@ -268,7 +271,7 @@ class WebDavBackupService(
     repository.mkcol(logsDirUrl(config), config.username, config.password)
     logFiles.forEach { info ->
       val bytes = withContext(Dispatchers.IO) { info.file.readBytes() }
-      val ok = repository.put(logFileUrl(config, info.file.name), config.username, config.password, bytes)
+      val ok = repository.put(logFileUrl(config, uploadedLogName(info)), config.username, config.password, bytes)
       if (!ok) throw IOException("日志上传失败:${info.file.name}")
     }
     deleteBackedUpLogs(logFiles)
@@ -301,7 +304,7 @@ class WebDavBackupService(
       ensureReachable(config)
       repository.mkcol(logsDirUrl(config), config.username, config.password)
       val bytes = withContext(Dispatchers.IO) { info.file.readBytes() }
-      val ok = repository.put(logFileUrl(config, info.file.name), config.username, config.password, bytes)
+      val ok = repository.put(logFileUrl(config, uploadedLogName(info)), config.username, config.password, bytes)
       if (!ok) throw IOException("日志上传失败:${info.file.name}")
     }
   }
@@ -334,6 +337,18 @@ class WebDavBackupService(
   private fun logsDirUrl(config: WebDavConfig): String = "${dirUrl(config)}/$logsDir"
 
   private fun logFileUrl(config: WebDavConfig, name: String): String = "${logsDirUrl(config)}/$name"
+
+  /**
+   * 上传用文件名：实时日志追加时间戳(如 logs_live_20260909_204915.log)再传——固定名 logs_live.log
+   * 同名覆盖,新旧内容在服务器上不可分辨(2026-09-09 排查推荐空页时,连续多次备份疑似更新
+   * 实为同名覆盖的旧文件,大小读数还被网络盘缓存干扰);带时间戳每次落盘独立文件,历史可追溯。
+   * 手动/崩溃日志文件名本身已带时间戳,原样上传。时间戳不含冒号,Windows 网络盘显示友好。
+   */
+  private fun uploadedLogName(info: LogCatcherUtil.LogFileInfo): String {
+    if (info.type != LogCatcherUtil.LogType.Live) return info.file.name
+    val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+    return "logs_live_$timestamp.log"
+  }
 
   private fun trimTrailingSlash(url: String): String = url.trimEnd('/')
 }

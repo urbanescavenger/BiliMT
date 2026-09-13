@@ -138,6 +138,13 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 | tag | 内容 |
 | --- | --- |
+| v3.0.11-alpha.11 | SABR 续播起播黑屏根治三件套(P11-95):根因=续播起播 SABR bootstrap 首包服务端偶发 16~20.5s 慢(rr5 节点,同包恒定 1673519B)撞 8s stall 看门狗,数据在途被杀轮 → auto-retry 循环黑屏 ~50s,换新会话首包 2s 即愈(09-13 两场日志闭环,清缓存与修好无关)。修①Ready 态首帧前显示「正在缓冲...」(转圈此前只绑 Loading 态,黑屏阶段界面零反馈);②起播阶段 stall 阈值 8s→25s(StartupStallThresholdMs,出帧后仍 8s);③起播 stall 判死立即 evict SABR 会话换新会话重试(播放中不动会话保 ~6h 复用)。附带日志读法修正:stall 的 buffered=% 是 seek 位置非真实缓冲;`ENDED @pos=0 duration=MIN` 是重载拆卸回声非提前 EOF。详见 SABR 笔记 §30 |
+| v3.0.11-alpha.10 | TV YouTube 播放列表详情页下键反弹修复(P11-93):根级纠焦判据 anyRowFocused 单布尔被无关行入场补发的 isFocused=false 清零(框架焦点实际仍在持焦行)→ 下一按键误判丢焦 → 焦点拽回「播放全部」+ ↓ 重放 = 弹回顶/原行,连按赶在误判窗口前才连续;修=行聚焦改按行号集合跟踪(无关行 false 变 no-op)。+ debug 构建桌面图标/TV banner 加 DEBUG 角标(P11-94,debug 源集资源覆盖,release 零影响;TV 桌面显示 banner 非图标) |
+| v3.0.11-alpha.9 | SABR 切轨重载死循环修复(P11-92):ABR 升档(如 1440p)后服务端只回「请求段+1/+2」永不回请求段 → 6 连试 terminal evict → 全量重载循环(09-13 三轮、09-10 271、09-09 137/247 同签名)。根因=请求里带着旧档 bufferedRange 污染(服务端按跨格式游标起推,请求体无显式段号);手切没事实证=重建会话锁单轨后 bufferedRanges 只带自身格式。修①media() 后 retainAll 清非当前格式(对齐 LibreTube);修②服务端跳段时空段顶位不再 6 连试 evict。详见 SABR 笔记 §29/§29.1 |
+| v3.0.11-alpha.8 | SABR「播3秒跳10s」时间轴翻倍修复(P11-90 tfdt 补丁遍历 bug:补丁此前全程 no-op,offset 叠在原始绝对 tfdt 上样本时间翻倍;webm/VP9 轨无 tfdt 加 offset 同翻倍)——遍历重写(moof→traf→tfdt 单层+insideTraf 标志)+ offset 按容器分流(webm 保持 0)+ chunk 加载取消不再整会话 evict,详见 SABR 笔记 §28 |
+| v3.0.11-alpha.7 | 推荐页空页面修复(取消处理器只清 Loading 占位不删预加载 Success——此前屏幕自身加载被取消时无差别 delete 会抹掉壳层预拉成果,推荐页空到重点击)+ WebDAV 实时日志备份上传加时间戳文件名(logs_live_YYYYMMDD_HHMMSS.log,防固定名同名覆盖历史不可追溯)+ SABR 续播位置冻结连环重载修复(media3 1.10 缺失老 ChunkExtractorWrapper 首样本自校准:tfdt 相对化 + sampleOffsetUs=段网格起点,详见 SABR 笔记 §27)+ 首页加载实例诊断日志 |
+| v3.0.11-alpha.6 | TV 桌面横幅卡重绘为哔哩MT(BV 构图正负片:白底+粉渐变电视屏内 MT 零文字,与图标成对;xhdpi 升真 640x360) |
+| v3.0.11-alpha.5 | 文档:README 对齐 v3.0.11-alpha.4(补 v3.0.9/v3.0.10/v3.0.11-alpha 全部版本条目+主要功能对齐) |
 | v3.0.11-alpha.4 | TV 启动初始焦点死区修复:初始期 Failed→重试按钮、Loading/Empty→分区 tab 持焦(此前唯一抢焦点的是网格首卡 effect,仅 Success 后生效,数据未就绪/首拉失败时遥控器全无反应),Success 后网格首卡照常接管;推荐预加载拆出登录态 key(此前启动时 session 磁盘加载翻转 isLoggedIn 会把预拉协程中途取消,登录态下预加载全程零贡献);loader 诊断日志。附:应用图标重绘(哔哩MT方案E精修:粉渐变底白电视壳+屏幕大MT,mipmap 五密度全量替换) |
 | v3.0.11-alpha.3 | SABR 历史续播黑屏根因修复:bufferedRanges 上报真实段时间(此前 visionOS 头恒报 {0,0} 垃圾,带偏服务端续播回落判定致位置冻结)+ tfdt 探针诊断;红果短剧从搜索前端摘除(网页匿名端每剧仅 3 集且无登录体系,后端链路保留) |
 | v3.0.11-alpha.2 | TV 设置页 TVBox 行焦点跳顶修复(常量与 Account 撞号致分支不可达)+ SABR 历史续播黑屏深度重试兜底(重试耗尽后 evict 会话+续播点前推 10s,每视频一次)+ 红果起播 403 修复(显式红果 Referer/Origin,防播放拦截器注入 B站头触发字节 CDN 防盗链) |

@@ -444,6 +444,10 @@ internal class SabrMediaFetcher(
    * 取 [req] 指定段。若该格式未初始化或该段未下载 → 调 [media] POST 一批(单流多段),
    * 然后从 [initializedFormats] 取段。终端错误(RELOAD_PLAYER/InvalidPoToken/SABR_ERROR)抛
    * [SabrTerminalException];transient(backoff/redirect/段未到)在 [MAX_ATTEMPTS] 内重试。
+   *
+   * P11-92(2026-09-13 真机三轮 308 重载死循环):两处改——①media() 后 retainAll 清非当前
+   * 选中格式(对齐 LibreTube),切档后旧格式 bufferedRange 不再上报;②服务端跳段(只回请求段
+   * 之后的段)时空段顶位,不再 6 连试 terminal evict。
    */
   fun getNextSegment(req: SabrSegmentRequest): SabrSegment {
     fatalError?.let { throw SabrTerminalException("SABR error: $it") }
@@ -460,11 +464,23 @@ internal class SabrMediaFetcher(
             initializedFormats[itag]?.bufferedSegments?.keys?.retainAll(req.bufferedSegments)
 
             var fmt = initializedFormats[itag]
+            var preExistingSeqs: Set<Long> = emptySet()
             if (fmt == null || !fmt.hasSegment(req.segment)) {
               // 已下载但播放器不再要的段(seek 后)清掉,防泄漏
               fmt?.downloadedSegments?.clear()
+              preExistingSeqs = fmt?.downloadedSegments?.keys?.toSet() ?: emptySet()
               // 单流 POST——服务端推多段,缓存进 initializedFormats
               media(req)
+              // P11-92(对齐 LibreTube getNextSegment 收尾 retainAll):media() 后清掉非当前选中
+              // 格式的已初始化缓存。此前切档后旧格式(如 302)的 bufferedRange 一直随请求上报——
+              // 真机 2026-09-13 三轮 308 死循环实锤:请求体没显式段号,服务端按「全部 bufferedRange
+              // 最大 endSegmentIndex+1」起推(=旧档缓冲尾),目标段永不到 → 6 连试 → terminal evict
+              // → 全量重载 → ABR 再升同档 → 循环。清掉旧格式后 bufferedRange 只带音频+当前视频,
+              // 服务端回落 playerTimeMs 判(§26.1 已实证回落路径),从目标段起推。
+              // LibreTube 同位置无条件 retainAll(仅当前 A/V);这里保守多留在途 itag,在途响应不白丢。
+              initializedFormats.keys.retainAll { f ->
+                f == audioFormat?.itag || f == videoFormat?.itag || f in pendingRequestItags
+              }
             }
             // 终端检查(media 可能置位)
             reloadPlayerDump?.let { throw SabrTerminalException("RELOAD_PLAYER_RESPONSE: $it") }
@@ -474,6 +490,35 @@ internal class SabrMediaFetcher(
             fmt = initializedFormats[itag]
             val seg = fmt?.getSegment(req.segment)
             if (seg != null) return@withContext seg
+            // P11-92 跳段自适应:服务端对刚切入的格式可能只推「请求段之后的段」——真机 09-13 请求
+            // seq N → 回 N+1,N+2(6 次响应字节级相同),09-09 137/247、09-10 271 同签名。重试注定
+            // 落空(同请求同响应),此前 6 连试耗尽 → terminal evict → 全量重载死循环。这里检测
+            // 「目标段缺失 + 收到目标段之后的新段」→ 接受服务端游标:该段以**空段**顶位(零字节,
+            // extractor EOF 直接收尾零样本),视频内容缺一段(~一个段时长),时间线由下一段的真实
+            // 样本时间接上(P11-90/91 段网格 offset 语义),A/V 不失步;后续段已在缓存或由服务端
+            // 游标顺延。仅媒体段生效(req.segment>0),init 段缺失走 transient 重试。
+            if (req.segment > 0 && fmt != null) {
+              val freshAhead =
+                fmt.downloadedSegments.keys.filter { it > req.segment && it !in preExistingSeqs }
+              if (freshAhead.isNotEmpty()) {
+                fmt.downloadedSegments[req.segment] = SabrSegment(
+                  header = SabrProto.MediaHeader(
+                    headerId = 0, videoId = null, itag = itag, lmt = 0L, xtags = null,
+                    isInitSeg = false, sequenceNumber = req.segment.toInt(),
+                    contentLength = 0L, durationMs = 0L, startMs = 0L,
+                  ),
+                  sequenceNumber = req.segment,
+                  data = mutableListOf(),
+                  duration = 0L,
+                )
+                Log.w(
+                  tag,
+                  "getNextSegment: server skipped seg ${req.segment} itag $itag " +
+                    "(fresh ahead=$freshAhead) → 空段顶位跳过 (P11-92)",
+                )
+                return@withContext fmt.getSegment(req.segment)!!
+              }
+            }
             // transient:段未到(服务端只回了 context+backoff 或 redirect)。backoff 已在 media 起始 sleep,
             // redirect 已写回 session.sabrUrl。循环重试同请求。
             Log.i(tag, "getNextSegment: no seg ${req.segment} itag $itag after attempt $attempt (retry)")

@@ -409,7 +409,12 @@ internal class DefaultSabrChunkSource(
       representationHolder.periodDurationUs,
       segmentNum,
       1,
-      0,
+      // P11-90/91:mp4 段的 tfdt 已被 SabrDataSource 相对化(首值→0),样本时间整体平移到段
+      // 网格起点——复刻 media3 <1.10 老 ChunkExtractorWrapper 的「首样本==startTimeUs」自校准。
+      // P11-91 修了 tfdt 采集遍历 bug(此前补丁全程 no-op,offset 叠在原始绝对 tfdt 上时间轴
+      // 翻倍,「播3秒跳10s」)。webm(VP9/AV1)轨无 tfdt,MatroskaExtractor 的 cluster 时间戳
+      // 是绝对值(与网格一致),offset 必须保持 0,否则同样翻倍——按容器分流。
+      if (trackSelection.selectedFormat.containerMimeType?.endsWith("webm") == true) 0L else startTimeUs,
       representationHolder.chunkExtractor!!,
     )
   }

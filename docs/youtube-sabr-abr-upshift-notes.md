@@ -796,3 +796,163 @@ MEDIA_HEADER.startMs/durationMs,而 visionOS 服务端该字段**恒回 0**(全�
 `buildBufferedRanges` 有网格时按 wire seq N→网格第 N-1 段查真实 startMs、durationMs=网格区间差;
 无网格(首个 init 请求窗口)零风险回退旧行为。LibreTube 无此问题暴露面:其每次 createMediaSource
 新建 SabrClient 无会话复用(§26 已记),且其 clientInfo 下服务端可能回填 startMs。
+
+## 27. 2026-09-09「续播位置冻结连环重载(801s 四轮全冻)」:media3 1.10 缺失首样本自校准 → tfdt 相对化 + sampleOffsetUs=段网格起点 (P11-90)
+
+**现象(21:17-21:19 真机 logs_live_20260909_212154,dev.r1874,31min 视频 pnsTunF6LM0 续播 ~800s)**:
+四轮会话(初载 → auto-retry #1 → auto-retry #2 → 深度重试 evict 会话 + 续播点 +10s)全部冻在续播点
+801000/811000,位置一步未走、`frameRendered=false`;换全新起播视频(3 小时长视频)立刻 READY 正常播。
+数据层全绿:视频段(700KB~1.1MB×8+)音频段均交付、`STREAM_PROTECTION status=1`、无 skip ad/无 MEDIA error
+——**数据到了、样本读不到**。
+
+**根因(media3 1.10 语义考古)**:1.10 的 `chunk` 目录已无老 `ChunkExtractorWrapper`(项目早期分析的
+tmp/ChunkExtractorWrapper.java 即此类)——老实现把每 chunk 首样本**自校准**到声明 startTimeUs
+(`sampleOffsetUs = startTimeUs − 段内首样本时间`)+ 按 seekTimeUs 裁剪,段内 tfdt 无论是 0 基还是绝对值都能对上。
+1.10 换成 `BundledChunkExtractor` 后**时间戳纯透传 tfdt、零 offset、零裁剪**,只把
+`extractor.seek(0, clippedStartTimeUs)` 交给 FragmentedMp4Extractor 按 tfdt 自跳样本
+(`TrackFragmentBundle.seek`:`firstSampleToOutputIndex` 停在 ≤seekTime 的最后同步帧);而项目
+`DefaultSabrChunkSource` 传 `sampleOffsetUs=0`——续播段若 tfdt 与段表网格不一致(相对时间/漂移),
+clip 在段内找不到 ≥clip 的样本 → 永远 BUFFERING → 位置基看门狗(8s)连环开枪,每次重载同位置复现。
+
+**修(759c09d7/79704b1e)**:
+1. `SabrDataSource` 拍平后把段内所有 tfdt 的 `baseMediaDecodeTime` **相对化**(首个→0、其余减首值):
+   严格按 box 树走(moof→traf→tfdt),不全文扫 `'tfdt'` 字节——mdat 视频负载可能撞出同样四字节,
+   盲扫会改坏数据;解析异常不动原字节(维持现状优先)。init 段无 tfdt,自然 no-op;
+2. `DefaultSabrChunkSource` 的 `ContainerMediaChunk` `sampleOffsetUs` `0→startTimeUs`(段网格起点):
+   样本时间 = 网格起点 + 段内相对值,与 chunk 声明时间线一致;clip 由 media3 自动换算
+   (`clippedStartTimeUs − sampleOffsetUs` 传给 extractor)。
+   合起来精确复刻老 ChunkExtractorWrapper「首样本==startTimeUs」语义。
+
+**安全性**:tfdt 本就与网格一致的段幂等(重写后 +offset 仍得原值);全新起播行为不变(起点 0 offset 0);
+A/V 各段独立校准、同步性不受影响。**真机验证待做**:31min 视频续播 ~13:20 应直接出画面零看门狗;
+22:23 一轮解析层即败(`VISIONOS player response is not valid` ×2 → WEB /player 纯 SABR 无直链
+→ no decodable formats),与 P11-90 无关(未到 SABR 层),属 §19 死路家族的服务端响应波动。
+
+## 28. 2026-09-10「播3秒跳10s」:P11-90 tfdt 补丁遍历 bug(全程 no-op)+ webm offset 翻倍 → 遍历重写 + 容器分流 (P11-91)
+
+**现象(alpha.7 真机 logs_live_20260910_060654,199s 视频 7E4_M-IME2I 续播 44.7s)**:首帧正常渲染
+(READY pos=44687),26ms 后位置跳到 **79876 = 39938×2(音频段网格起点×2)**,之后播 3 秒跳一段、
+循环——用户观感「播3秒跳10s」。两次会话(480p H264 + 1080p VP9)同样跳法。
+
+**根因(P11-90 三层连环的 bug)**:
+1. **tfdt 采集遍历写错**:`walkContainer(wanted)` 的 tfdt 命中分支 `type == TFDT && wanted == TRAF`
+   在递归进 traf 后(wanted 已翻成 TFDT)恒假,tf dt 被当容器继续递归找 traf——**补丁全程 no-op**,
+   零失败日志但零段被相对化;
+2. 补丁失效后,`sampleOffsetUs=段网格起点`(P11-90 的 ②)叠在**原始绝对 tfdt** 上——该视频的
+   tfdt 本就与网格一致(79876=2×39938 实锤),offset 一加时间轴翻倍,播放到段尾即跳下一段的
+   翻倍位置;
+3. webm(VP9/AV1 itag 244/247/248/271/313)无 tfdt,MatroskaExtractor 的 cluster 时间戳本身是
+   绝对值(与网格一致),加 offset 同样翻倍。
+
+**修(6291cb0c)**:
+1. 遍历重写:单层 box 遍历 + `insideTraf` 标志(moof→递归;traf→insideTraf=true 递归;TFDT→
+   仅 insideTraf 时采集),补丁真正生效;加 `tfdt relativized: found=N v0=…` 日志作生效回执;
+2. `DefaultSabrChunkSource` offset 按容器分流:`containerMimeType` 以 webm 结尾 → 0(绝对 cluster
+   时间即正确);否则(mp4)→ `startTimeUs`(相对化后样本=网格,clip 由 media3 自动换算);
+3. `SabrDataSource` 的 `CancellationException`(media3 seek/丢弃打断在途拉流)不再整会话 evict——
+   此前 06:04:04 `seg=11 InterruptedException → evict` 一次 seek 拆掉健康会话白吃一轮 init 重拉,
+   现仅记日志按普通 load 取消上抛。
+
+**待真机复测**:续播位置平滑前进零跳变;`tfdt relativized: found=N` 出现;31min 视频续播(~13:20)
+应直接出画面(§27 场景一并验证)。
+
+## 29. 2026-09-13「升 1440p 每 60-90s 一轮重载」:服务端跳段(只回请求段+1/+2)+ 旧档 bufferedRange 游标污染 (P11-92)
+
+### 现象(真机 logs_live_20260913_124126,12:36-12:41)
+
+三轮完整重载循环(12:38:36 / 12:39:25 / 12:40:42),**每一轮同一死法**:ABR 升档切 1440p(itag 308)
+后,请求目标段 seq N → 服务端每次只回 **N+1、N+2 两段**(6 次重试响应字节级完全相同:请求 14→回
+15,16;21→22,23;34→35,36);`getNextSegment` 6 连试耗尽 → `SABR terminal: exhausted` → evict 整
+会话 → 播放器 ENDED → stall auto-retry 全量重载(回续播点重来)→ 带宽 est 高(80Mbps)ABR 又升
+308 → 撞同一堵墙。`no seg` 共 60 次**无一例外全 itag 308**。
+
+### 历史同签名(非单视频问题,结构性)
+
+| 日志 | itag | 签名 |
+|---|---|---|
+| 09-13(本节) | 308(1440p)×3 轮 | 请求 N → 回 N+1,N+2 |
+| 09-10 060654 | 271(1440p)×30 | 请求 24 → 回 25,26 |
+| 09-09 210214 | 137(1080p H264)×12、247 ×3 | 请求 33 → 回 34,35 |
+
+散案未串起,今天三轮同日志连发才看清:**会话中途切轨(多为 ABR 升档)即触发,与视频无关**。
+
+### 机制(证据 + 推断)
+
+1. **请求体没有显式目标段号**——`fetchStreamData` 的 `VideoPlaybackAbrRequest` 只有
+   playerTimeMs + bufferedRanges + selected/preferred 格式;目标段只存在客户端 ChunkIndex 换算里
+   (DefaultSabrChunkSource `segmentNum+1` 塞进 DataSpec.customData,服务端请求体里根本没这个字段)。
+2. **服务端按「全部 bufferedRange 最大 endSegmentIndex+1」起推**(=被切走旧档的缓冲尾):三轮的旧
+   档(302)游标分别 14/21/34,服务端回的恰好全是 +1、+2;09-09 的 137 案旧档游标 33 → 回 34,35。
+   顺序播放时旧档游标+1 恰好==请求段,所以平时不炸;**只有切轨瞬间**请求段≠旧档游标+1 才炸。
+3. 音频轨反证:会话 2 首个音频请求 bufferedRanges=1(仅自身 init),请求 seq 7 → **精确回 seq 7**。
+   服务端能精确服务目标段——区别就在切轨后请求里还带着旧档的 fat bufferedRange。
+4. bufferedRange 时间全是 `{start:0,dur:0}` 垃圾(§26.1 同源洞:含 init seq 0 的分区走
+   `segmentStartMs(0)=null` 回退,网格存在也救不了),服务端回落到自己的跨档游标逻辑。
+5. 辅证:全程 unhandled UMP **type=51 SABR_CONTEXT_UPDATE**(每响应 1740B,`contexts=0/0`),
+   LibreTube 有处理并回传——显著差异,待查是否相关。
+
+**用户实证**:手切 1440 没问题(同会话 selectTracks 路径,理论上应撞同一堵墙;疑切档时机/缓冲状态
+差异,**未闭环**——需拿手切成功日志对照)。
+
+### 修复(两处,均在 SabrMediaFetcher.getNextSegment)
+
+1. **旧格式 bufferedRange 清除(根因候选,对齐 LibreTube)**:`media()` 收尾
+   `initializedFormats.keys.retainAll { 当前音频 || 当前视频 || 在途 }`——LibreTube 同位置无条件
+   retainAll(仅当前 A/V,我们保守多留在途 itag)。切档后旧格式 bufferedRange 不再上报,服务端回落
+   playerTimeMs 判(§26.1 已实证回落路径),从目标段起推。
+2. **跳段自适应(伤害兜底)**:检测「目标段缺失 + 收到目标段之后的新段」→ **空段顶位**(零字节,
+   extractor EOF 直接收尾零样本),内容缺一段(~一个段时长),时间线由下一段的真实样本时间接上
+   (P11-90/91 段网格 offset 语义),A/V 不失步;不再 6 连试注定相同的请求。仅媒体段生效
+   (segment>0),init 段缺失走 transient 重试。日志:`server skipped seg N → 空段顶位跳过`。
+
+### 待真机复测
+
+- [ ] 宽管道 Auto 爬到 1440p 不再触发重载(日志无 terminal exhausted itag 308/271);
+- [ ] 若服务端仍跳段:日志见 `server skipped seg N → 空段顶位跳过`,切档点视频跳 ~5s 继续(**非重载**);
+- [ ] 空段被 extractor 正常收尾(零字节 read 不炸 FragmentedMp4/MatroskaExtractor)——若炸会退回
+      今日行为(load error),需补合成空 moof/cluster;
+- [ ] 顺序播放/续播/seek 回退无回归(bufferedRange 上报变少后,服务端回落路径 §26.1 场景复验);
+- [ ] 手切 1440 与 ABR 升 1440 行为一致性对照。
+
+### §29.1 手切 1440 稳定的机制闭环(2026-09-13 12:43-13:00 手切会话,logs_live_20260913_130133)
+
+上一节「手切为何没事未闭环」已闭环:手切走**整播放器重建 + 锁单轨**(12:43:13 player ENDED →
+launch → 12:43:19 init 308 全新 SABR 会话,`selectedFmts=2` 锁 139+308),请求 bufferedRanges=1~3
+**只带自身格式**——无旧档(302)污染 → 服务端精确回请求段(续播 ~160s 请求 wire seq 35 → 回
+35,36 ✓)。此后 12:43-13:00 308 稳定交付 215 段、零 `no seg`、零 terminal。
+
+这直接证实 §29 的机制推断:**服务端跳段的触发输入就是请求里的跨格式 bufferedRange**(游标被旧档
+endSegmentIndex 带偏),也证实 P11-92 修复①(retainAll 清非当前格式)方向正确——修复后 ABR 会话内
+切档的请求形态将与本手切会话等价(bufferedRanges 只带自身格式)。
+
+补充:手切路径本身的代价 = 一次全量重建(本例 ~6s);P11-92 后 ABR 升档应免重建且免跳段。
+
+## 30. 2026-09-13「续播起播黑屏 ~50s 后自愈/清缓存后正常」:bootstrap 慢首包 vs 8s 看门狗赛跑 (P11-95)
+
+**日志**:logs_live_20260913_210200(21:00 场)+ logs_live_20260913_211258(21:11 场,完整复现闭环,
+同视频 pnsTunF6LM0、同续播点 ~1544s)。
+
+**现象**:续播起播黑屏 ~50s(auto-retry #1/#2 循环)后第三次尝试 ~2s 起播;用户清缓存后以为修好。
+21:08 从头播另一视频秒开正常——「黑屏」特异性绑定**续播起播**。
+
+**根因链(21:11 场三尝试对照,证据铁)**:
+1. 续播起播流程 = rn=0 首请求(常被 SABR_REDIRECT 踢节点,~0.3-2s)→ rn=1 拉 bootstrap 包
+   (恒定 1673519B)→ 再二次请求目标段(seg=308@1544s)→ 出画。比从头播**多一个往返**。
+2. 三次尝试请求完全相同,唯一差异是服务端吐 bootstrap 的耗时:**20.5s / 16.4s / 2s**(rr5 节点慢首包)。
+3. `StallThresholdMs=8s` 位置冻结看门狗在数据到达前杀轮 → in-flight 慢响应回来时已被 evict →
+   auto-retry 复用同一会话再撞慢首包 → 循环。第三次(新 sid/cpn)赶上快首包,READY 只比看门狗快 ~0.5s。
+4. **清缓存与此无关**:cacheDir 播放链路不读(只有 image_cache/updates);起作用的只是重试梯子/新会话。
+
+**两个日志读法修正**:
+- stall 消息 `buffered=82%` 是 `player.bufferedPercentage` = seek位置/时长,续播时恒 ≈ 进度百分比,
+  **不代表任何数据到达**(判数据看 `first media chunk` 是否出现)。
+- `player ENDED @pos=0ms duration=MIN frameRendered=false` 是重载拆卸回声(clearMediaItems 后
+  ExoPlayer 状态回调),非服务端提前 EOF——真·播完是 pos≈duration。07:22 案四轮「提前 ENDED」同款。
+
+**修复三件套(P11-95,PlayerScreen.kt)**:
+1. Ready 态首帧前(`!frameRendered && videoTracks 非空`)显示「正在缓冲...」——转圈此前只绑
+   playerState==Loading,prepare 完即撤,黑屏阶段界面零反馈(用户误读「已结束」)。
+2. 起播阶段 stall 阈值 8s → 25s(`StartupStallThresholdMs`,覆盖最慢实测首包 20.5s+渲染 ~3s);
+   出帧后仍 8s。
+3. 起播 stall 判死时立即 evict SABR 会话(重载 resolve 铸新会话,热路径 ~4-5s,别让重试复用同一个
+   慢会话);播放中(已出帧)stall 不动会话——保 ~6h 会话复用(alpha.29)。

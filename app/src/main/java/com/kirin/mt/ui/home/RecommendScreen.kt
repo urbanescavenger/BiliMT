@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -119,6 +120,14 @@ internal fun RecommendScreen(
   onOwnerSelected: (VideoSummary) -> Unit,
 ) {
   val coroutineScope = rememberCoroutineScope()
+  // P11-89 诊断:真机日志实锤同一 loadRequest 的加载 effect 跑了两个实例(start×2/cancel×2),
+  // 说明 RecommendScreen 组合在反复销毁重建。给屏幕加实例身份,组合/销毁/加载各打一条,
+  // 复现日志即可看出:谁在销毁、销毁与 loadRequest 变化的时序关系。定位后移除。
+  val screenInstanceTag = remember { "i" + (100..999).random() }
+  Log.d(LoadLogTag, "screen compose inst=$screenInstanceTag loadRequest=${uiState.loadRequest?.id ?: "null"}")
+  DisposableEffect(Unit) {
+    onDispose { Log.d(LoadLogTag, "screen dispose inst=$screenInstanceTag") }
+  }
   val sections = remember(enabledHomeSections, homeSectionsOrder) {
     homeSectionsOrder.filter { section -> section in enabledHomeSections }
       .ifEmpty { listOf(HomeSection.Recommend) }
@@ -137,6 +146,7 @@ internal fun RecommendScreen(
 
   fun requestSectionLoad(sectionKey: String, refreshKey: Int) {
     uiState.nextLoadRequestId += 1
+    Log.d(LoadLogTag, "requestSectionLoad key=$sectionKey refresh=$refreshKey -> id=${uiState.nextLoadRequestId + 1} inst=$screenInstanceTag")
     uiState.loadRequest = RecommendLoadRequest(
       id = uiState.nextLoadRequestId,
       sectionKey = sectionKey,
@@ -145,6 +155,11 @@ internal fun RecommendScreen(
   }
 
   LaunchedEffect(sections) {
+    Log.d(
+      LoadLogTag,
+      "sections effect inst=$screenInstanceTag sections=${sections.joinToString { it.key }} " +
+        "loadRequest=${uiState.loadRequest?.id ?: "null"}",
+    )
     val sectionKeys = sections.mapTo(mutableSetOf()) { section -> section.key }
     uiState.loadedSectionKeys = uiState.loadedSectionKeys.filterTo(mutableSetOf()) { key -> key in sectionKeys }
     uiState.sectionStates = uiState.sectionStates.filterKeys { key -> key in sectionKeys }
@@ -158,6 +173,7 @@ internal fun RecommendScreen(
       uiState.focusedVideoKey = ""
     }
     if (uiState.loadRequest != null && sections.none { section -> section.key == uiState.loadRequest?.sectionKey }) {
+      Log.d(LoadLogTag, "loadRequest invalidated (section gone from sections) inst=$screenInstanceTag")
       uiState.loadRequest = null
     }
 
@@ -179,7 +195,10 @@ internal fun RecommendScreen(
     val request = uiState.loadRequest ?: return@LaunchedEffect
     val sectionToLoad = sections.firstOrNull { section -> section.key == request.sectionKey }
       ?: return@LaunchedEffect
-    Log.d(LoadLogTag, "load start id=${request.id} section=${request.sectionKey} refresh=${request.refreshKey}")
+    Log.d(
+      LoadLogTag,
+      "load start id=${request.id} section=${request.sectionKey} refresh=${request.refreshKey} inst=$screenInstanceTag",
+    )
     // 刷新时若已有 Success，保留旧 videos 不切到 Loading 骨架，避免网格销毁重建
     // 导致 Compose 把焦点从 tab/侧栏抢到第一个视频卡片。
     val previousState = uiState.sectionStates[sectionToLoad.key]
@@ -227,12 +246,18 @@ internal fun RecommendScreen(
       // 取消(composition 离开,LaunchedEffect 被系统取消)：还原 loadRequest 与 section 状态,
       // 让下一次进入组合时 LaunchedEffect(sections) 重新发加载请求——否则状态停在 Loading/Empty
       // 且 reload 守卫只看 null,重进首页不重拉,卡片一直 ERR/骨架。
-      Log.d(LoadLogTag, "load cancelled id=${request.id} section=${request.sectionKey}")
+      // 只清「本请求写的 Loading 占位」,不动其它来源的状态:P11-87 后壳层预加载与本加载并发,
+      // 真机实测(2026-09-09 alpha.6 冷启动日志)预拉 51.938 写入 Success(20 条),本请求
+      // 52.595 被取消时无差别 delete 把预拉成果一并抹掉 → 推荐页空到重点击才恢复。
+      Log.d(LoadLogTag, "load cancelled id=${request.id} section=${request.sectionKey} inst=$screenInstanceTag")
       if (uiState.loadRequest?.id == request.id) {
         uiState.loadRequest = null
       }
-      uiState.sectionStates = uiState.sectionStates - sectionToLoad.key
-      uiState.loadedSectionKeys = uiState.loadedSectionKeys - sectionToLoad.key
+      val current = uiState.sectionStates[sectionToLoad.key]
+      if (current is RecommendState.Loading) {
+        uiState.sectionStates = uiState.sectionStates - sectionToLoad.key
+        uiState.loadedSectionKeys = uiState.loadedSectionKeys - sectionToLoad.key
+      }
       throw error
     } catch (error: Exception) {
       Log.e(LoadLogTag, "load failed id=${request.id} section=${request.sectionKey}: ${error.message}")

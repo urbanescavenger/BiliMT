@@ -2039,13 +2039,26 @@ fun PlayerScreen(
         if (currentPositionMs == stallBaselinePositionMs) {
           if (stallSinceMs == 0L) {
             stallSinceMs = nowMs
-          } else if (nowMs - stallSinceMs >= StallThresholdMs) {
+          } else if (nowMs - stallSinceMs >= if (!frameRendered) StartupStallThresholdMs else StallThresholdMs) {
             if (autoRetryCount < MaxStallAutoRetry) {
               autoResumePositionMs = currentPositionMs
               autoRetryCount += 1
+              // P11-95(09-13 黑屏复盘):起播阶段(未出首帧)的 stall 根因是会话级慢首包——09-13 实测同一
+              // SABR 会话连两轮 bootstrap 20.5s/16.4s(rr5 慢首包),换新会话 2s 即愈。立即 evict,重载
+              // resolve 铸新会话(热路径 ~4-5s),别让重试复用同一个慢会话。播放中(已出帧)的 stall 不动
+              // 会话——多为瞬态网络,保 ~6h 会话复用(alpha.29)。
+              if (!frameRendered) {
+                val sabrInfo = (playerState as? PlayerScreenState.Ready)?.info
+                if (sabrInfo != null && sabrInfo.isSabrSingle()) {
+                  SabrStreamRegistry.getByVideoId(sabrInfo.bvid)?.let { sid ->
+                    SabrStreamRegistry.evict(sid)
+                    Log.w(PlayerPlaybackLogTag, "startup stall: evict sabr session sid=$sid, retry with fresh session")
+                  }
+                }
+              }
               Log.w(
                 PlayerPlaybackLogTag,
-                "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
+                "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% startup=${!frameRendered}",
               )
               noteStartupStallMemory(currentPositionMs)
               stallSinceMs = 0L
@@ -2531,6 +2544,17 @@ fun PlayerScreen(
           showCoinDialog = showCoinDialog,
           coinDialogFocusedIndex = coinDialogFocusedIndex,
         )
+        // P11-95(09-13 黑屏复盘):Ready 只代表 prepare 完成,不代表已出画面——续播起播撞 SABR 慢首包
+        // (实测 bootstrap 可拖 16-20s)时 ExoPlayer 停在 BUFFERING 等数据,而转圈提示只绑 Loading 态,
+        // 此阶段界面无任何表示:提示消失+黑屏,用户误以为"已结束"。首帧渲染(onRenderedFirstFrame
+        // → frameRendered=true)前持续显示缓冲提示;纯音频(videoTracks 空)不显示,避免永远转圈。
+        if (!frameRendered && state.info.videoTracks.isNotEmpty()) {
+          PlayerLoadingOverlay(
+            isYoutube = displayRequest.isYoutube,
+            step = null,
+            textOverride = stringResource(R.string.player_buffering),
+          )
+        }
       }
     }
     if (showClock && playerState !is PlayerScreenState.Ready) {
@@ -2661,7 +2685,7 @@ private fun BoxScope.PlayerLogOverlay(
 }
 
 @Composable
-private fun PlayerLoadingOverlay(isYoutube: Boolean, step: YoutubeLoadStep?) {
+private fun PlayerLoadingOverlay(isYoutube: Boolean, step: YoutubeLoadStep?, textOverride: String? = null) {
   Box(
     modifier = Modifier.fillMaxSize(),
     contentAlignment = Alignment.Center,
@@ -2674,7 +2698,8 @@ private fun PlayerLoadingOverlay(isYoutube: Boolean, step: YoutubeLoadStep?) {
       Text(
         // YouTube 且 resolver 已 emit 当前步骤时显示阶段文字(随加载进度切换);
         // 否则(早期 metadata 拉取 / B站)回退静态"正在加载播放地址..."。
-        text = if (isYoutube && step != null) step.label else stringResource(R.string.player_loading),
+        // textOverride:非加载阶段复用此转圈的场景(如 Ready 态等首帧)指定固定文案。
+        text = textOverride ?: if (isYoutube && step != null) step.label else stringResource(R.string.player_loading),
         color = BiliColors.TextPrimary,
         fontSize = BiliTypography.Body,
       )
@@ -2993,6 +3018,14 @@ private const val PlayerDanmakuLogTag = "BiliMT:Danmaku"
 private const val PlayerPlaybackLogTag = "BiliMT:Player"
 /** BUFFERING 且进度不前进超过此阈值判定为 stall,触发自动重载续播。 */
 private const val StallThresholdMs = 8_000L
+/**
+ * P11-95(09-13 黑屏复盘):起播阶段(首帧未渲染)的 stall 判定阈值。续播起播要先拉 SABR bootstrap
+ * (1.67MB 恒定包)再二次请求目标段,服务端偶发慢首包实测 20.5s/16.4s(09-13,rr5 节点),8s 看门狗在
+ * 数据到达前杀轮 → auto-retry 循环黑屏 ~50s。放宽到 25s 让最慢实测首包(+渲染 ~3s)能活着落地;
+ * 超过 25s 才判死,且判死时 stall 分支会 evict SABR 会话换新会话重试(新会话首包实测 2s)。
+ * 仅未出首帧阶段生效;出帧后的播放中 stall 仍用 [StallThresholdMs]。
+ */
+private const val StartupStallThresholdMs = 25_000L
 /**
  * 2026-09-01 视频冻结看门狗阈值:BUFFERING 挂死但**位置仍在前进**(音频驱动时钟)超过此值 → 视频渲染器
  * 层挂死(升档跨 codec 换解码器卡在 codec 强制回收,MTK 盒子实测 ~5.5s/次、可连撞),位置基看门狗对此
