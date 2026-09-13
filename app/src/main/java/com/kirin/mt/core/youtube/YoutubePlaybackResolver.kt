@@ -178,7 +178,7 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "SABR dead-loop guard: videoId=$videoId 已 RELOAD(reloadCount=${SabrStreamRegistry.reloadCount(videoId)})→ 跳过重建,直接 DASH/HLS 兜底")
       null
     } else {
-      buildSabrSessionFromNewPipe(videoId, poToken, youtubeDefaultQuality)
+      buildSabrSessionFromNewPipe(videoId, poToken, youtubeDefaultQuality, youtubeStartQuality)
     }
     if (np != null) {
       YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
@@ -431,7 +431,7 @@ class YoutubePlaybackResolver(
           var sabrSession: SabrSession? = null
           var sabrRaws: List<JsonObject> = raws
           var sabrDuration = durationMs
-          val npResult = buildSabrSessionFromNewPipe(videoId, poToken, youtubeDefaultQuality)
+          val npResult = buildSabrSessionFromNewPipe(videoId, poToken, youtubeDefaultQuality, youtubeStartQuality)
           if (npResult != null) {
             sabrSession = npResult.session
             sabrRaws = npResult.raws
@@ -795,6 +795,7 @@ class YoutubePlaybackResolver(
     videoId: String,
     poToken: String?,
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+    youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
   ): NewPipeSabrResult? {
     val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
       .getOrElse {
