@@ -168,10 +168,16 @@ internal class SabrMediaPeriod(
   override fun getNextLoadPositionUs(): Long = compositeSequenceableLoader.nextLoadPositionUs
 
   override fun readDiscontinuity(): Long {
+    // P11-96:对齐 1.10 DashMediaPeriod.tryConsumeInitialDiscontinuityFromStreams——必须消费
+    // **所有**流,不能 early-return:任一流遗留 hasInitialDiscontinuity=true 都会让该流
+    // readData 永久 NOTHING_READ(视频轨饿死黑屏)。旧实现消费到第一个 true 就返回,
+    // 后面的流(顺序上音频在视频后)永不消费。handleInitialDiscontinuity=false 后此处是
+    // 兜底 no-op,保留以防未来重新启用协议。
+    var hasDiscontinuity = false
     for (sampleStream in sampleStreams) {
-      if (sampleStream.consumeInitialDiscontinuity()) return initialStartTimeUs
+      hasDiscontinuity = sampleStream.consumeInitialDiscontinuity() || hasDiscontinuity
     }
-    return C.TIME_UNSET
+    return if (hasDiscontinuity) initialStartTimeUs else C.TIME_UNSET
   }
 
   override fun getBufferedPositionUs(): Long = compositeSequenceableLoader.bufferedPositionUs
@@ -268,8 +274,17 @@ internal class SabrMediaPeriod(
       drmEventDispatcher,
       loadErrorHandlingPolicy,
       mediaSourceEventDispatcher,
-      canReportInitialDiscontinuity,
-      C.TIME_UNSET, // firstChunkStartTimeUs:1.10.0 新增(1.9.2 无此参),C.TIME_UNSET=未指定(对齐 LibreTube 1.9.2 不传此值的语义)
+      // P11-96 续播黑屏根治:不参与 media3 1.10 initial-discontinuity 协议。1.10 的
+      // ChunkSampleStream 在「续播点落在 chunk 中间」(chunkStart < position)时置
+      // hasInitialDiscontinuity=true 并阻塞 readData(NOTHING_READ),直到 period 的
+      // readDiscontinuity() 消费它。本类移植自 LibreTube 1.9.2(彼时无此协议),传
+      // firstChunkStartTimeUs=UNSET 使评估推迟到 chunk 开载——若播放器调 readDiscontinuity
+      // 早于首 chunk 开载,needToEvaluateInitialDiscontinuity 永不清零 → A/V read 永久
+      // 阻塞 → 满缓冲 52s/fwdBuf、rendered=0、永不 READY 的黑屏死锁(00:06 实锤两轮)。
+      // 传 false 恢复 1.9.2 语义:mid-chunk 续播靠 ContainerMediaChunk 的 clip
+      // (seekTimeUs)+sampleQueue.setStartTimeUs 裁剪,行为与 LibreTube 一致。
+      false,
+      C.TIME_UNSET, // firstChunkStartTimeUs(handleInitialDiscontinuity=false 时无意义)
       null,
     )
   }
