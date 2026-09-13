@@ -66,6 +66,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
@@ -1454,6 +1455,28 @@ fun PlayerScreen(
         Log.d(PlayerPlaybackLogTag, "player isLoading=$isLoading state=${player.playbackState}")
       }
 
+      override fun onTracksChanged(tracks: Tracks) {
+        // P11-96 起播不出首帧诊断(09-13 真机两案:数据满 49s buffer、解码器已建,却 30s+ 停在
+        // BUFFERING 不转 READY 不出首帧,且 tracks 全程为 0)——onTracksChanged 是 TrackSelection
+        // 产出结果的唯一回调。零触发 = 轨选择从未完成;有触发但 selected 空 = 选了轨没喂 renderer。
+        // 与 startup probe / 首帧日志配对,定位卡在 selection 还是渲染层。
+        val selected = StringBuilder()
+        tracks.groups.forEach { group ->
+          for (i in 0..<group.length) {
+            if (group.isTrackSelected(i)) {
+              val f = group.getTrackFormat(i)
+              if (selected.isNotEmpty()) selected.append(',')
+              selected.append(group.type).append(':')
+                .append(f.id?.takeIf { s -> s.isNotBlank() } ?: f.codecs)
+            }
+          }
+        }
+        Log.i(
+          PlayerPlaybackLogTag,
+          "tracks changed groups=${tracks.groups.size} selected=[$selected]",
+        )
+      }
+
       override fun onVideoSizeChanged(videoSize: VideoSize) {
         // 2026-09-01 黑屏诊断:视频尺寸上报 = 解码器真实出帧的唯一系统级证据(07:22 案 whole 5
         // 轮会话零上报,坐实「音频活视频死」)。带时间戳,与首帧日志配对。
@@ -1845,7 +1868,9 @@ fun PlayerScreen(
           com.kirin.mt.core.youtube.sabr.media.SabrCodecDiagnostics.logVideoCodecSupport(context, effectiveInfo)
         }
         launchStep = "prepare"
-        Log.i(PlayerPlaybackLogTag, "launch step: prepare")
+        // P11-96:prepare 带续播定位——起播卡死案(23:16:30/23:17:05)都发生在续播 pos=901000,
+        // 记下 startPos 供与探针/tracks 日志配对,判断是否 seek 位置相关。
+        Log.i(PlayerPlaybackLogTag, "launch step: prepare startPos=${startPositionMs}ms")
         player.prepare()
         player.setPlaybackSpeed(playbackSpeed)
         if (startPositionMs > 0L) {
@@ -1915,6 +1940,8 @@ fun PlayerScreen(
   LaunchedEffect(player, playerState) {
     var stallBaselinePositionMs = 0L
     var stallSinceMs = 0L
+    // P11-96 起播探针节拍:未出首帧期间每 StartupProbeIntervalMs 打一行「为什么还没播」快照。
+    var startupProbeSinceMs = 0L
     // 2026-09-01 视频冻结看门狗:BUFFERING 窗口起点 + 窗口内位置是否前进过(音频活着)。
     var bufferingSinceMs = 0L
     var bufferingLastPosMs = 0L
@@ -2162,6 +2189,27 @@ fun PlayerScreen(
             noFrameBlackLogged = false
           }
         }
+      }
+      // P11-96 起播探针(09-13 真机两案:23:16:30/23:17:05 数据满 49s buffer、解码器已建,却 30s+
+      // 停 BUFFERING 不转 READY 不出首帧;state 变迁日志只有两帧,中间卡在哪层无证据)。未出首帧
+      // 期间每 3s 打一行快照:state/pos/buffered/playWhenReady/suppression/轨选择。与
+      // onTracksChanged、onRenderedFirstFrame 配对——tracks 恒 0 = selection 没产出;tracks 有值
+      // 仍 BUFFERING = renderer 没喂上。首帧渲染后自动停,不产生稳态噪音。
+      if (!frameRendered && playerState is PlayerScreenState.Ready) {
+        if (nowMs - startupProbeSinceMs >= StartupProbeIntervalMs) {
+          startupProbeSinceMs = nowMs
+          Log.i(
+            PlayerPlaybackLogTag,
+            "startup probe state=${playbackStateName(player.playbackState)} " +
+              "pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% " +
+              "isLoading=${player.isLoading} playWhenReady=${player.playWhenReady} " +
+              "suppress=${suppressionReasonName(player.playbackSuppressionReason)} " +
+              "tracks=${player.currentTracks.groups.size} " +
+              "video=${player.videoFormat?.codecs} audio=${player.audioFormat?.codecs}",
+          )
+        }
+      } else {
+        startupProbeSinceMs = 0L
       }
       delay(BiliMotion.PlayerProgressUpdateMs)
     }
@@ -3046,12 +3094,22 @@ private const val SabrDeepRetryNudgeMs = 10_000L
 /** 起播整体超时：callTimeout 兜住单次 HTTP，withTimeout 兜住整条 launch（含串行调用叠加）。 */
 private const val LaunchTimeoutMs = 30_000L
 
+/** P11-96 起播探针间隔:未出首帧期间的「为什么还没播」快照周期。3s 足够看清卡死形态,不刷屏。 */
+private const val StartupProbeIntervalMs = 3_000L
+
 private fun playbackStateName(state: Int): String = when (state) {
   Player.STATE_IDLE -> "IDLE"
   Player.STATE_BUFFERING -> "BUFFERING"
   Player.STATE_READY -> "READY"
   Player.STATE_ENDED -> "ENDED"
   else -> "UNKNOWN($state)"
+}
+
+/** P11-96 起播探针用:播放抑制原因名(UNsuitable audio route/focus loss 等会让 BUFFERING 永不转 READY)。 */
+private fun suppressionReasonName(reason: Int): String = when (reason) {
+  Player.PLAYBACK_SUPPRESSION_REASON_NONE -> "NONE"
+  Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS -> "AUDIO_FOCUS_LOSS"
+  else -> "OTHER($reason)"
 }
 
 private val DanmakuOpacityOptions = listOf(0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f)
