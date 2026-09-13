@@ -5,6 +5,7 @@ import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.C.TrackType
 import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.StreamKey
 import androidx.media3.common.TrackGroup
 import androidx.media3.common.util.UnstableApi
@@ -64,6 +65,8 @@ internal class SabrMediaPeriod(
   private var compositeSequenceableLoader: SequenceableLoader = compositeSequenceableLoaderFactory.empty()
   private var canReportInitialDiscontinuity = true
   private var initialStartTimeUs: Long = 0
+  /** P11-96c:对齐 1.10 DashMediaPeriod——初始不连续消费完成前压制全流 read(见 [readDiscontinuity])。 */
+  private var readingSuppressedWaitingForInitialDiscontinuity = false
 
   init {
     val result = buildTrackGroups(drmSessionManager, chunkSourceFactory, manifest.adaptationSets)
@@ -144,6 +147,12 @@ internal class SabrMediaPeriod(
     if (canReportInitialDiscontinuity) {
       canReportInitialDiscontinuity = false
       initialStartTimeUs = positionUs
+      // P11-96c:对齐 1.10 DashMediaPeriod.selectTracks——任一流可能持有初始不连续时全流压读,
+      // 由 readDiscontinuity()(播放器每轮 doSomeWork 调 updatePlaybackPositions→readDiscontinuity)
+      // 全量消费后解除。没有这一步,首 chunk 开载前的窗口期流可能被读到未裁剪样本。
+      if (mayHaveAnyStreamWithPendingInitialDiscontinuity()) {
+        setSuppressReadOnAllStreams(true)
+      }
     }
     return positionUs
   }
@@ -168,16 +177,37 @@ internal class SabrMediaPeriod(
   override fun getNextLoadPositionUs(): Long = compositeSequenceableLoader.nextLoadPositionUs
 
   override fun readDiscontinuity(): Long {
-    // P11-96:对齐 1.10 DashMediaPeriod.tryConsumeInitialDiscontinuityFromStreams——必须消费
-    // **所有**流,不能 early-return:任一流遗留 hasInitialDiscontinuity=true 都会让该流
-    // readData 永久 NOTHING_READ(视频轨饿死黑屏)。旧实现消费到第一个 true 就返回,
-    // 后面的流(顺序上音频在视频后)永不消费。handleInitialDiscontinuity=false 后此处是
-    // 兜底 no-op,保留以防未来重新启用协议。
-    var hasDiscontinuity = false
-    for (sampleStream in sampleStreams) {
-      hasDiscontinuity = sampleStream.consumeInitialDiscontinuity() || hasDiscontinuity
+    // P11-96c:完整适配 media3 1.10 initial-discontinuity 协议(对齐 DashMediaPeriod):
+    // 压读期间全量消费所有流(consumeInitialDiscontinuity 只清 hasInitialDiscontinuity、
+    // 不清 needToEvaluateInitialDiscontinuity——若仍有流未评估完则继续压读,等下一轮
+    // doSomeWork 再消费;这是 1.10 协议防「早调扑空」死锁的核心)。任一流报告了不连续
+    // 则返回初始位置,播放器会 resetRendererPosition 到该点冲刷渲染器重对齐。
+    // 旧实现(402ee541 之前)消费到第一个 true 就 early-return,顺序在后的流永不消费
+    // → 其 readData 恒 NOTHING_READ → 满缓冲黑屏死锁(00:06 实锤)。
+    if (readingSuppressedWaitingForInitialDiscontinuity) {
+      val hasDiscontinuity = tryConsumeInitialDiscontinuityFromStreams()
+      if (!mayHaveAnyStreamWithPendingInitialDiscontinuity()) {
+        setSuppressReadOnAllStreams(false)
+      }
+      if (hasDiscontinuity) return initialStartTimeUs
     }
-    return if (hasDiscontinuity) initialStartTimeUs else C.TIME_UNSET
+    return C.TIME_UNSET
+  }
+
+  private fun mayHaveAnyStreamWithPendingInitialDiscontinuity(): Boolean =
+    sampleStreams.any { it.mayHaveInitialDiscontinuity() }
+
+  private fun setSuppressReadOnAllStreams(suppressRead: Boolean) {
+    readingSuppressedWaitingForInitialDiscontinuity = suppressRead
+    sampleStreams.forEach { it.setSuppressRead(suppressRead) }
+  }
+
+  private fun tryConsumeInitialDiscontinuityFromStreams(): Boolean {
+    var consumedDiscontinuity = false
+    for (sampleStream in sampleStreams) {
+      consumedDiscontinuity = sampleStream.consumeInitialDiscontinuity() || consumedDiscontinuity
+    }
+    return consumedDiscontinuity
   }
 
   override fun getBufferedPositionUs(): Long = compositeSequenceableLoader.bufferedPositionUs
@@ -274,19 +304,31 @@ internal class SabrMediaPeriod(
       drmEventDispatcher,
       loadErrorHandlingPolicy,
       mediaSourceEventDispatcher,
-      // P11-96 续播黑屏根治:不参与 media3 1.10 initial-discontinuity 协议。1.10 的
-      // ChunkSampleStream 在「续播点落在 chunk 中间」(chunkStart < position)时置
-      // hasInitialDiscontinuity=true 并阻塞 readData(NOTHING_READ),直到 period 的
-      // readDiscontinuity() 消费它。本类移植自 LibreTube 1.9.2(彼时无此协议),传
-      // firstChunkStartTimeUs=UNSET 使评估推迟到 chunk 开载——若播放器调 readDiscontinuity
-      // 早于首 chunk 开载,needToEvaluateInitialDiscontinuity 永不清零 → A/V read 永久
-      // 阻塞 → 满缓冲 52s/fwdBuf、rendered=0、永不 READY 的黑屏死锁(00:06 实锤两轮)。
-      // 传 false 恢复 1.9.2 语义:mid-chunk 续播靠 ContainerMediaChunk 的 clip
-      // (seekTimeUs)+sampleQueue.setStartTimeUs 裁剪,行为与 LibreTube 一致。
-      false,
-      C.TIME_UNSET, // firstChunkStartTimeUs(handleInitialDiscontinuity=false 时无意义)
+      // P11-96c:完整参与 media3 1.10 initial-discontinuity 协议(对齐 DashMediaPeriod):
+      // 仅**首次**选轨(canReportInitialDiscontinuity=true)且非 all-sync 轨(视频)参与。
+      // 续播点落在 chunk 中间时,流会在首 chunk 开载时置 hasInitialDiscontinuity=true 锁
+      // readData,由本类 readDiscontinuity() 全量消费后解锁并回报初始位置——渲染器从
+      // 续播点精确重对齐(比 402ee541 的「退出协议」更正确,后者靠 clip 保留 1.9.2 行为)。
+      // AAC-LC(mp4a.40.x,itag139/140)按 MimeTypes.allSamplesAreSyncSamples=all-sync 不参与。
+      canReportInitialDiscontinuity && !areAllSamplesSyncSamples(trackGroupInfo, selection),
+      // firstChunkStartTimeUs:SABR 段表(sidx)在 init chunk 加载前不可得,对齐上游
+      // DashMediaPeriod.getFirstChunkStartTimeUs 的 index==null 分支返回 TIME_UNSET——
+      // 评估推迟到首 chunk 开载,由 setSuppressReadOnAllStreams 压读 + 每轮 doSomeWork
+      // 重试 readDiscontinuity 保证最终消费(上游同款时序)。
+      C.TIME_UNSET,
       null,
     )
+  }
+
+  private fun areAllSamplesSyncSamples(trackGroupInfo: TrackGroupInfo, selection: ExoTrackSelection): Boolean {
+    val representations = manifest.adaptationSets[trackGroupInfo.adaptationSetIndices[0]].representations
+    for (i in 0..<selection.length()) {
+      val format = representations[selection.getIndexInTrackGroup(i)].format
+      if (!MimeTypes.allSamplesAreSyncSamples(format.sampleMimeType, format.codecs)) {
+        return false
+      }
+    }
+    return true
   }
 
   private data class TrackGroupInfo(
