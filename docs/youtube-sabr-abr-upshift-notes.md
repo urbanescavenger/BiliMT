@@ -855,3 +855,61 @@ A/V 各段独立校准、同步性不受影响。**真机验证待做**:31min �
 
 **待真机复测**:续播位置平滑前进零跳变;`tfdt relativized: found=N` 出现;31min 视频续播(~13:20)
 应直接出画面(§27 场景一并验证)。
+
+## 29. 2026-09-13「升 1440p 每 60-90s 一轮重载」:服务端跳段(只回请求段+1/+2)+ 旧档 bufferedRange 游标污染 (P11-92)
+
+### 现象(真机 logs_live_20260913_124126,12:36-12:41)
+
+三轮完整重载循环(12:38:36 / 12:39:25 / 12:40:42),**每一轮同一死法**:ABR 升档切 1440p(itag 308)
+后,请求目标段 seq N → 服务端每次只回 **N+1、N+2 两段**(6 次重试响应字节级完全相同:请求 14→回
+15,16;21→22,23;34→35,36);`getNextSegment` 6 连试耗尽 → `SABR terminal: exhausted` → evict 整
+会话 → 播放器 ENDED → stall auto-retry 全量重载(回续播点重来)→ 带宽 est 高(80Mbps)ABR 又升
+308 → 撞同一堵墙。`no seg` 共 60 次**无一例外全 itag 308**。
+
+### 历史同签名(非单视频问题,结构性)
+
+| 日志 | itag | 签名 |
+|---|---|---|
+| 09-13(本节) | 308(1440p)×3 轮 | 请求 N → 回 N+1,N+2 |
+| 09-10 060654 | 271(1440p)×30 | 请求 24 → 回 25,26 |
+| 09-09 210214 | 137(1080p H264)×12、247 ×3 | 请求 33 → 回 34,35 |
+
+散案未串起,今天三轮同日志连发才看清:**会话中途切轨(多为 ABR 升档)即触发,与视频无关**。
+
+### 机制(证据 + 推断)
+
+1. **请求体没有显式目标段号**——`fetchStreamData` 的 `VideoPlaybackAbrRequest` 只有
+   playerTimeMs + bufferedRanges + selected/preferred 格式;目标段只存在客户端 ChunkIndex 换算里
+   (DefaultSabrChunkSource `segmentNum+1` 塞进 DataSpec.customData,服务端请求体里根本没这个字段)。
+2. **服务端按「全部 bufferedRange 最大 endSegmentIndex+1」起推**(=被切走旧档的缓冲尾):三轮的旧
+   档(302)游标分别 14/21/34,服务端回的恰好全是 +1、+2;09-09 的 137 案旧档游标 33 → 回 34,35。
+   顺序播放时旧档游标+1 恰好==请求段,所以平时不炸;**只有切轨瞬间**请求段≠旧档游标+1 才炸。
+3. 音频轨反证:会话 2 首个音频请求 bufferedRanges=1(仅自身 init),请求 seq 7 → **精确回 seq 7**。
+   服务端能精确服务目标段——区别就在切轨后请求里还带着旧档的 fat bufferedRange。
+4. bufferedRange 时间全是 `{start:0,dur:0}` 垃圾(§26.1 同源洞:含 init seq 0 的分区走
+   `segmentStartMs(0)=null` 回退,网格存在也救不了),服务端回落到自己的跨档游标逻辑。
+5. 辅证:全程 unhandled UMP **type=51 SABR_CONTEXT_UPDATE**(每响应 1740B,`contexts=0/0`),
+   LibreTube 有处理并回传——显著差异,待查是否相关。
+
+**用户实证**:手切 1440 没问题(同会话 selectTracks 路径,理论上应撞同一堵墙;疑切档时机/缓冲状态
+差异,**未闭环**——需拿手切成功日志对照)。
+
+### 修复(两处,均在 SabrMediaFetcher.getNextSegment)
+
+1. **旧格式 bufferedRange 清除(根因候选,对齐 LibreTube)**:`media()` 收尾
+   `initializedFormats.keys.retainAll { 当前音频 || 当前视频 || 在途 }`——LibreTube 同位置无条件
+   retainAll(仅当前 A/V,我们保守多留在途 itag)。切档后旧格式 bufferedRange 不再上报,服务端回落
+   playerTimeMs 判(§26.1 已实证回落路径),从目标段起推。
+2. **跳段自适应(伤害兜底)**:检测「目标段缺失 + 收到目标段之后的新段」→ **空段顶位**(零字节,
+   extractor EOF 直接收尾零样本),内容缺一段(~一个段时长),时间线由下一段的真实样本时间接上
+   (P11-90/91 段网格 offset 语义),A/V 不失步;不再 6 连试注定相同的请求。仅媒体段生效
+   (segment>0),init 段缺失走 transient 重试。日志:`server skipped seg N → 空段顶位跳过`。
+
+### 待真机复测
+
+- [ ] 宽管道 Auto 爬到 1440p 不再触发重载(日志无 terminal exhausted itag 308/271);
+- [ ] 若服务端仍跳段:日志见 `server skipped seg N → 空段顶位跳过`,切档点视频跳 ~5s 继续(**非重载**);
+- [ ] 空段被 extractor 正常收尾(零字节 read 不炸 FragmentedMp4/MatroskaExtractor)——若炸会退回
+      今日行为(load error),需补合成空 moof/cluster;
+- [ ] 顺序播放/续播/seek 回退无回归(bufferedRange 上报变少后,服务端回落路径 §26.1 场景复验);
+- [ ] 手切 1440 与 ABR 升 1440 行为一致性对照。
