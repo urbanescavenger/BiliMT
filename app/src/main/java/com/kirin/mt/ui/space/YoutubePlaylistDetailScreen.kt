@@ -139,8 +139,14 @@ internal fun YoutubePlaylistDetailScreen(
   // 不能只看根 hasFocus:简介 Text 的 clickable 也参与焦点(真机实锤把初焦/↓搜索的焦点都吃掉,
   // 三个有日志的节点零回调而子树 hasFocus=true——P11-72c),那种焦点在视觉上完全不可见,
   // 若以其为成功判据,重试循环会误判成功后放弃。
-  var anyRowFocused by remember { mutableStateOf(false) }
-  fun legitFocusTargetHasFocus(): Boolean = playAllFocused || backFocused || anyRowFocused
+  // 行聚焦按「行号集合」跟踪,不能用 last-writer-wins 单布尔(P11-93 反弹根因,真机
+  // logs_live 17:27:38/17:28:21-24 同签名实锤):某行入场/重组时它的 onFocusChanged 会补发
+  // 一次 isFocused=false,这个无关行的回调把单布尔清零,而真正持焦的行并没丢焦(按键时刻
+  // 该行还收到了丢失回调=框架焦点仍在)→ 下一个按键被判 legit=false → 根级纠焦把焦点拽回
+  // 「播放全部」+ 框架把未消费的 ↓ 重放 → 用户视角=焦点弹回顶部/原地不动,快速连按赶在
+  // 误判窗口前到达才显得「连按才动」。按行号增删后,无关行的 false 删不到持焦行号=no-op。
+  var focusedRowIndexes by remember { mutableStateOf(emptySet<Int>()) }
+  fun legitFocusTargetHasFocus(): Boolean = playAllFocused || backFocused || focusedRowIndexes.isNotEmpty()
 
   BackHandler { onBack() }
 
@@ -241,7 +247,7 @@ internal fun YoutubePlaylistDetailScreen(
       "BiliMT:FocusDiag",
       "playlist-focus initial done attempts=$attempt confirmed=$confirmed " +
         "target=${if (videos.isNotEmpty()) "playall" else "back"} " +
-        "playAll=$playAllFocused row=$anyRowFocused back=$backFocused screenHasFocus=$screenHasFocus",
+        "playAll=$playAllFocused rows=$focusedRowIndexes back=$backFocused screenHasFocus=$screenHasFocus",
     )
     firstFocusDone = true
   }
@@ -256,19 +262,22 @@ internal fun YoutubePlaylistDetailScreen(
       .fillMaxSize()
       .background(BiliColors.VideoBlack)
       .focusDiag("playlist-detail")
-      .onFocusChanged { screenHasFocus = it.hasFocus }
+      .onFocusChanged {
+        screenHasFocus = it.hasFocus
+        // 整屏失焦(去播放器/回频道页)时清空行号集合,避免持焦行被 LazyColumn 回收后残留假「有行持焦」。
+        if (!it.hasFocus && focusedRowIndexes.isNotEmpty()) focusedRowIndexes = emptySet()
+      }
       // 根级按键日志 + 自动纠焦:任何键按下时若合法落点(播放全部/行/返回 chip)无焦点,
       // 强行把焦点拉回「播放全部」——不管焦点被谁吃掉都能自愈;按键日志同时回答
       // 「按键到底有没有到达本屏」「按下时焦点状态是什么」两个问题(P11-72d)。
       .onPreviewKeyEvent { event ->
         if (event.type == KeyEventType.KeyDown) {
+          val legit = legitFocusTargetHasFocus()
           Log.i(
             "BiliMT:FocusDiag",
-            "playlist-key key=${event.key} legit=${
-              playAllFocused || anyRowFocused || backFocused
-            } screenHasFocus=$screenHasFocus",
+            "playlist-key key=${event.key} legit=$legit rows=$focusedRowIndexes screenHasFocus=$screenHasFocus",
           )
-          if (!(playAllFocused || anyRowFocused || backFocused)) {
+          if (!legit) {
             runCatching {
               if (videos.isNotEmpty()) playAllFocusRequester.requestFocus() else backFocusRequester.requestFocus()
             }.onFailure { ex ->
@@ -487,7 +496,11 @@ internal fun YoutubePlaylistDetailScreen(
                 if (index >= videos.size - 6) loadNext()
               },
               onActivate = { onStartSelected(video, videos) },
-              onFocusedChange = { anyRowFocused = it },
+              onFocusedChange = { focused ->
+                // 按行号增删而非覆写:无关行入场补发的 isFocused=false 删不到持焦行号(no-op),
+                // 根级纠焦判据不再被无关行的回调清零(P11-93 反弹根因)。
+                focusedRowIndexes = if (focused) focusedRowIndexes + index else focusedRowIndexes - index
+              },
             )
           }
           if (loadingMore) {
