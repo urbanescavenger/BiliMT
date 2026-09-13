@@ -956,3 +956,56 @@ endSegmentIndex 带偏),也证实 P11-92 修复①(retainAll 清非当前格式)
    出帧后仍 8s。
 3. 起播 stall 判死时立即 evict SABR 会话(重载 resolve 铸新会话,热路径 ~4-5s,别让重试复用同一个
    慢会话);播放中(已出帧)stall 不动会话——保 ~6h 会话复用(alpha.29)。
+
+## 31. 2026-09-14「续播满缓冲黑屏死锁」:media3 1.10 initial-discontinuity 协议不兼容 (P11-96)
+
+**日志**:logs_live_20260914_000747(00:06 死锁两轮,P11-96 诊断版 dev.r1896)+ 20260914_005734(00:57 复测通过 dev.r1898)。
+
+**现象与 P11-95 的本质区别**:数据层全绿(41-51Mbps、init+resume 段全到、tfdt 相对化正常),
+探针实锤 `BUFFERING fwdBuf=52000ms isLoading=false playWhenReady=true tracks=2 video=avc1.64001F rendered=0`
+冻死 20+s——轨选了、格式读了、**52s 真实前向缓冲在手**,视频解码器 allocate 后从未 start,一帧未喂。
+**触发条件**:续播点落在 chunk 中间(`first media chunk` 打点对比:死锁案 clip 落段内 3s 深
+823000-820000,正常案 1s 811000-810000/段起点)。alpha.11 日志的 buffered=48%/bufS=49s 均为假象
+(位置百分比/ABR 估算),真凭据只有探针 fwdBuf+rendered(P11-96 诊断打点新增)。
+
+**根因**(tmp/ 留的 media3 1.10 源码逐行核):1.10 ChunkSampleStream 新增 initial-discontinuity
+协议——首 chunk 开载时 `chunkStart < pendingResetPositionUs`(mid-chunk 续播)→
+`hasInitialDiscontinuity=true` → readData/skipData 恒 NOTHING_READ,唯一解锁是 period
+readDiscontinuity()→consumeInitialDiscontinuity()。core 无外部调用者(ExoPlayerImplInternal 每轮
+doSomeWork 调 updatePlaybackPositions→readDiscontinuity),消费方只有 dash 库自带 DashMediaPeriod
+(select 时全流 setSuppressRead(true) 压读 + tryConsumeInitialDiscontinuityFromStreams 全量消费 +
+manifest 段表预算 firstChunkStartTimeUs 立即评估)。从 LibreTube(锁 media3 **1.9.2**,无此协议)
+移植的 SabrMediaPeriod 踩雷两处:①handleInitialDiscontinuity 传 true + firstChunkStartTimeUs=UNSET
+(评估推迟到 chunk 开载);②readDiscontinuity 消费到第一个 true 就 early-return,顺序在后的流永不
+消费——视频流 consume 返回 true 后 return,音频流 hasInitialDiscontinuity 永不清 → 读通道死锁。
+
+**修复演进**:P11-96b(402ee541)先退出协议(handleInitialDiscontinuity=false 恢复 1.9.2 语义);
+P11-96c(3c61ff90)按用户定方向改**完整适配**(对齐 DashMediaPeriod 全套):①readDiscontinuity 全量
+消费;②selectTracks 首次选轨任一流 may-have 即 setSuppressReadOnAllStreams(true);③消费完且无
+may-have 才解除(consume 不清 needToEvaluate,评估未完继续压读等下一轮 doSomeWork——防「早调
+扑空」的核心);④handleInitialDiscontinuity=首次选轨 && !all-sync(AAC-LC mp4a.40.x 按 MimeTypes
+判 all-sync 不参与,视频参与);⑤firstChunkStartTimeUs 维持 UNSET(SABR 段表 init 加载前不可得,
+上游 segmentIndex==null 同款分支)。
+
+**状态:已修,真机验证通过**(00:57 死锁点 pnsTunF6LM0@823000ms prepare→首帧 5.5s→二次 first
+media chunk seg164(=初始不连续被消费后 resetRendererPosition 重对齐重喂首段,协议设计行为)
+→READY,零 stall;2b3D1GLctLM@34000ms 续播 6s 首帧正常)。
+
+## 32. 2026-09-14 会话绑定档与自动选轨对齐(P11-97,判别实验待真机)
+
+**背景**:4K 视频 irrSuCb3BhI(23:58/00:56 两晚)SABR 会话逐请求回 154B RELOAD_PLAYER_RESPONSE
+→ 死循环守卫(reloadCount=8)→ 自合成 DASH 兜底正常构建(14 视频轨)→ NewPipe 直链 4 连 403
+(n-param)→ 全链失败。该视频之外其它视频正常——特异性绑定**会话绑定档=最高可用 itag313**。
+
+**两个归因理论**(各有真机证据,互斥待判):alpha.14「2160p 会话必 RELOAD,≤1080p 会话可播」
+(绑定档高度);alpha.83「RELOAD 与 itag 无关,根因 visionOS 未 attested ustreamerConfig」
+(响应级)。关键事实:sabrUrl/ustreamerConfig 均为 player 响应级、不随绑定档变;videoFormatId 仅
+请求兜底(请求体 preferredVideoFormatIds 按 itag 查 videoFormats 全表,alpha.29)。
+
+**修复**(fc4f22a8):会话绑定档从「默认画质上限」改为「自动选轨实际首轨」——起始画质
+startHeight 下最高档(枚举≤720,恒在 alpha.14 安全区);起始=自动时绑最低档(自动选轨起点);
+未设起始但设了默认上限时按上限。首 fetch(唯一 RELOAD 暴露时刻)请求的就是起始档 → 绑它=
+身份与首请求逐 itag 一致,无 alpha.77 式错位。
+
+**状态:代码完成,判别实验待真机**——irrSuCb3BhI 复测:仍 RELOAD → alpha.83 成立,走 DASH-first
+方案(P11-98,顺带修直链 403);能播 → 绑定档高度成立,问题关死。

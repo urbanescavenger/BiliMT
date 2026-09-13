@@ -130,6 +130,12 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 ## 版本更新
 
+### v3.0.12-alpha
+
+| tag | 内容 |
+| --- | --- |
+| v3.0.12-alpha.1 | SABR 续播「满缓冲黑屏死锁」根治(P11-96):根因=media3 1.10 新增 initial-discontinuity 协议,续播点落在段中间时 ChunkSampleStream 锁死 readData 等待 period 消费,而 LibreTube(1.9.2)移植的 SabrMediaPeriod 消费逻辑残缺(early-return 只消费第一个流+评估推迟竞态)→ 满缓冲 52s、解码器不喂帧、永不 READY。修=完整适配协议(对齐官方 DashMediaPeriod:全流压读+全量消费+all-sync 豁免+首次选轨限定),真机验证死锁位 823000ms 5.5s 起播、协议重对齐链路完整走通。+ 起播诊断打点(startup probe/onTracksChanged/prepare startPos/清缓存日志,fwdBuf+rendered 据此戳破 buffered=% 假象)。+ SABR 会话绑定档与自动选轨对齐(P11-97):绑起始画质首轨替代默认画质上限(自动画质下 4K 视频不再绑 4K 会话撞 RELOAD,ABR 爬档走全表不受影响),顺带判别 RELOAD 归因(绑定档高度 vs 响应级 ustreamerConfig),4K 视频待真机复测。详见 SABR 笔记 §31/§32 |
+
 ### v3.0.11-alpha
 
 | tag | 内容 |
