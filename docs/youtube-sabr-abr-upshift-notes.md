@@ -926,3 +926,33 @@ endSegmentIndex 带偏),也证实 P11-92 修复①(retainAll 清非当前格式)
 切档的请求形态将与本手切会话等价(bufferedRanges 只带自身格式)。
 
 补充:手切路径本身的代价 = 一次全量重建(本例 ~6s);P11-92 后 ABR 升档应免重建且免跳段。
+
+## 30. 2026-09-13「续播起播黑屏 ~50s 后自愈/清缓存后正常」:bootstrap 慢首包 vs 8s 看门狗赛跑 (P11-95)
+
+**日志**:logs_live_20260913_210200(21:00 场)+ logs_live_20260913_211258(21:11 场,完整复现闭环,
+同视频 pnsTunF6LM0、同续播点 ~1544s)。
+
+**现象**:续播起播黑屏 ~50s(auto-retry #1/#2 循环)后第三次尝试 ~2s 起播;用户清缓存后以为修好。
+21:08 从头播另一视频秒开正常——「黑屏」特异性绑定**续播起播**。
+
+**根因链(21:11 场三尝试对照,证据铁)**:
+1. 续播起播流程 = rn=0 首请求(常被 SABR_REDIRECT 踢节点,~0.3-2s)→ rn=1 拉 bootstrap 包
+   (恒定 1673519B)→ 再二次请求目标段(seg=308@1544s)→ 出画。比从头播**多一个往返**。
+2. 三次尝试请求完全相同,唯一差异是服务端吐 bootstrap 的耗时:**20.5s / 16.4s / 2s**(rr5 节点慢首包)。
+3. `StallThresholdMs=8s` 位置冻结看门狗在数据到达前杀轮 → in-flight 慢响应回来时已被 evict →
+   auto-retry 复用同一会话再撞慢首包 → 循环。第三次(新 sid/cpn)赶上快首包,READY 只比看门狗快 ~0.5s。
+4. **清缓存与此无关**:cacheDir 播放链路不读(只有 image_cache/updates);起作用的只是重试梯子/新会话。
+
+**两个日志读法修正**:
+- stall 消息 `buffered=82%` 是 `player.bufferedPercentage` = seek位置/时长,续播时恒 ≈ 进度百分比,
+  **不代表任何数据到达**(判数据看 `first media chunk` 是否出现)。
+- `player ENDED @pos=0ms duration=MIN frameRendered=false` 是重载拆卸回声(clearMediaItems 后
+  ExoPlayer 状态回调),非服务端提前 EOF——真·播完是 pos≈duration。07:22 案四轮「提前 ENDED」同款。
+
+**修复三件套(P11-95,PlayerScreen.kt)**:
+1. Ready 态首帧前(`!frameRendered && videoTracks 非空`)显示「正在缓冲...」——转圈此前只绑
+   playerState==Loading,prepare 完即撤,黑屏阶段界面零反馈(用户误读「已结束」)。
+2. 起播阶段 stall 阈值 8s → 25s(`StartupStallThresholdMs`,覆盖最慢实测首包 20.5s+渲染 ~3s);
+   出帧后仍 8s。
+3. 起播 stall 判死时立即 evict SABR 会话(重载 resolve 铸新会话,热路径 ~4-5s,别让重试复用同一个
+   慢会话);播放中(已出帧)stall 不动会话——保 ~6h 会话复用(alpha.29)。
