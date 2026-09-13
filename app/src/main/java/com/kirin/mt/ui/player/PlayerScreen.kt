@@ -2207,7 +2207,7 @@ fun PlayerScreen(
               "suppress=${suppressionReasonName(player.playbackSuppressionReason)} " +
               "tracks=${player.currentTracks.groups.size} " +
               "video=${player.videoFormat?.codecs} audio=${player.audioFormat?.codecs} " +
-              "rendered=${(player as? ExoPlayer)?.videoDecoderCounters?.renderedFrameCount ?: -1}",
+              "rendered=${(player as? ExoPlayer)?.videoDecoderCounters?.renderedOutputBufferCount ?: -1}",
           )
         }
       } else {
