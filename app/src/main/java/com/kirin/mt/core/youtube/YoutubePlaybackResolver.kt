@@ -822,18 +822,33 @@ class YoutubePlaybackResolver(
     // alpha.77:harvest 选轨必须与 buildSabrPlaybackInfo 的选档一致——否则会话绑定的 videoFormatId
     // 与播放器实际请求的 itag 不一致(harvest 盲取最高分辨率首条 vs 播放按默认画质上限选档)
     // → 服务端 RELOAD_PLAYER_RESPONSE 死循环(alpha.77 真机:itag313 会话 + itag136 请求)。
-    // 用 youtubeDefaultQuality 的 maxHeight 从全部视频流里选同一档,而非盲取最高分辨率首条。
-    val maxHeight = youtubeDefaultQuality.maxHeight
+    // P11-97(09-14):绑定档改为**与自动选轨对齐**——绑自动选轨实际首轨(起播锁档的起始档),
+    // 而非默认画质上限。理由:
+    // ① 首次 fetch(唯一 RELOAD 暴露时刻)请求的就是起始档(seedBps 落点,最高 ≤ startHeight;
+    //    起始画质=自动时最低档)——绑它,会话身份与首请求逐 itag 一致,无 alpha.77 式错位。
+    // ② 起始画质枚举最高 720P(YoutubeStartQuality),恒在 alpha.14 实测安全区(≤1080p 会话可播;
+    //    2160p 会话首 fetch 即 RELOAD,irrSuCb3BhI 00:56/23:58 两晚实锤)。
+    // ③ videoFormatId 仅是请求兜底(请求体 preferredVideoFormatIds 按 itag 查 videoFormats 全表,
+    //    alpha.29),ABR 爬档请求更高档走全表,不依赖绑定档=上限。
+    // ④ 若对齐后 4K 视频仍 RELOAD,则证实 alpha.83 结论(「RELOAD 与 itag 选择无关,根因是
+    //    NewPipe visionOS 未 attested 的 ustreamerConfig」——sabrUrl/ustreamerConfig 均为 player
+    //    响应级、不随绑定档变),届时走 DASH-first 方案另修(P11-98)。
+    // 默认画质上限仅保留在两处:ABR 爬档天花板 + 用户显式设了上限但起始画质=自动时的绑定兜底。
+    val alignHeight = youtubeStartQuality.startHeight
+    val defaultMaxHeight = youtubeDefaultQuality.maxHeight
     val defaultItag = when {
-      maxHeight != null ->
-        videoFormats.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }?.itag
+      alignHeight != null ->
+        videoFormats.filter { it.height in 1..alignHeight }.maxByOrNull { it.height }?.itag
           ?: videoFormats.minByOrNull { it.height }?.itag // 全部超过上限 → 取最低档
-      else -> videoFormats.maxByOrNull { it.height }?.itag // Auto → 最高可用
+      defaultMaxHeight != null ->
+        videoFormats.filter { it.height in 1..defaultMaxHeight }.maxByOrNull { it.height }?.itag
+          ?: videoFormats.minByOrNull { it.height }?.itag
+      else -> videoFormats.minByOrNull { it.height }?.itag // 双自动:自动选轨从最低档起 → 绑最低档同起点
     }
     val firstVideo = defaultItag?.let { target ->
       videoStreams.firstOrNull { it.toSabrFormatId().itag == target }
     } ?: videoStreams.firstOrNull { it.height > 0 } ?: videoStreams.firstOrNull()
-    Log.i(Tag, "NewPipe SABR harvest: videoFormats=${videoFormats.size} maxHeight=$maxHeight defaultItag=$defaultItag firstVideo=itag${firstVideo?.itag}(${firstVideo?.height}p)")
+    Log.i(Tag, "NewPipe SABR harvest: videoFormats=${videoFormats.size} startHeight=$alignHeight defaultQualityMax=${youtubeDefaultQuality.maxHeight} defaultItag=$defaultItag firstVideo=itag${firstVideo?.itag}(${firstVideo?.height}p)")
     // alpha.83 诊断:dump 每个视频流 itag 的 codec。真机日志坐实 itag248=vp9(720p webm 视频),
     // **不是** opus 音频——此前「itag248=opus 误分类成视频轨」的记录是误读(已推翻,见 docs/youtube-hd-playback.md
     // 最新结论)。RELOAD 根因是 NewPipe visionOS 拿到未 attested 的 ustreamerConfig,与 itag 选择无关,
