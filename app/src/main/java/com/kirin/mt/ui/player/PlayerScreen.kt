@@ -2202,10 +2202,12 @@ fun PlayerScreen(
             PlayerPlaybackLogTag,
             "startup probe state=${playbackStateName(player.playbackState)} " +
               "pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% " +
+              "fwdBuf=${player.totalBufferedDuration}ms " +
               "isLoading=${player.isLoading} playWhenReady=${player.playWhenReady} " +
               "suppress=${suppressionReasonName(player.playbackSuppressionReason)} " +
               "tracks=${player.currentTracks.groups.size} " +
-              "video=${player.videoFormat?.codecs} audio=${player.audioFormat?.codecs}",
+              "video=${player.videoFormat?.codecs} audio=${player.audioFormat?.codecs} " +
+              "rendered=${(player as? ExoPlayer)?.videoDecoderCounters?.renderedFrameCount ?: -1}",
           )
         }
       } else {
