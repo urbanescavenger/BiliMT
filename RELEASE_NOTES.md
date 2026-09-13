@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.0.12](#v3012)
 - [v3.0.11](#v3011)
 - [v3.0.9](#v309)
 - [v3.0.10](#v3010)
@@ -235,6 +236,22 @@
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
 - [目录](#v录)
+
+## v3.0.12
+
+**稳定版:SABR 续播/起播/切轨/时间轴四连稳定性修复 + 推荐页空页面修复 + TV 播放列表下键反弹修复 + debug 构建角标。** 本版整合 v3.0.11-alpha.5~11 全部改动。
+
+### 变更
+- **SABR 续播起播黑屏根治三件套**(alpha.11,P11-95,`docs/youtube-sabr-abr-upshift-notes.md` §30):续播起播 bootstrap 首包服务端偶发 16~20.5s 慢撞 8s stall 看门狗 → auto-retry 循环黑屏 ~50s(09-13 两场日志闭环;清缓存与修好无关,换新会话首包 2s 即愈)。修:①Ready 态首帧渲染前显示「正在缓冲...」(转圈此前只绑 Loading 态,黑屏阶段界面零反馈);②起播阶段 stall 阈值 8s→25s(`StartupStallThresholdMs`,出帧后仍 8s);③起播 stall 判死立即 evict SABR 会话换新会话重试(播放中不动会话保 ~6h 复用)。
+- **SABR 切轨服务端跳段重载死循环修复**(alpha.9,P11-92,笔记 §29/§29.1):ABR 升档后请求目标段服务端只回「请求段+1/+2」→ 6 连试 terminal evict → 全量重载循环;根因=请求里带旧档 bufferedRange 游标污染(服务端按跨格式游标起推)。修:media() 后 retainAll 清非当前格式(对齐 LibreTube)+ 跳段时空段顶位不再 6 连试 evict。
+- **SABR「播3秒跳10s」时间轴翻倍修复**(alpha.8,P11-91,笔记 §28):P11-90 tfdt 补丁遍历 bug(补丁此前全程 no-op,offset 叠在原始绝对 tfdt 上样本时间翻倍)——遍历重写(moof→traf→tfdt 单层+insideTraf 标志)+ offset 按容器分流(webm 保持 0)+ chunk 加载取消不再整会话 evict。
+- **SABR 续播位置冻结连环重载修复**(alpha.7,P11-90,笔记 §27):media3 1.10 缺失老 ChunkExtractorWrapper 首样本自校准 → tfdt 相对化 + sampleOffsetUs=段网格起点,复刻 media3<1.10 语义,续播 ~800s 四轮全冻根治。
+- **推荐页空页面修复**(alpha.6,P11-89):取消处理器此前无差别 delete,屏幕自身加载被取消时把壳层预拉 Success 成果一并抹掉(推荐页空到重点击)——改只清 Loading 占位不删预加载 Success;附 WebDAV 实时日志备份上传加时间戳文件名(防固定名同名覆盖历史不可追溯)+ RecommendScreen 实例/加载诊断日志。
+- **TV YouTube 播放列表详情页下键反弹修复**(alpha.10,P11-93):根级纠焦判据 anyRowFocused 单布尔被无关行入场补发的 isFocused=false 清零(框架焦点实际仍在持焦行)→ 下一按键误判丢焦拽回「播放全部」;修=行聚焦改按行号集合跟踪(无关行 false 变 no-op)。
+- **debug 构建桌面图标/TV banner 加 DEBUG 角标**(alpha.10,P11-94):debug 源集资源覆盖,release 零影响;Android TV leanback 桌面显示 banner 补角标。
+- **TV 桌面横幅重绘为哔哩MT**(alpha.5~6,P11-88):BV 构图正负片(白底+粉渐变电视屏内 MT 零文字)与图标成对,xhdpi 升真 640x360。
+
+---
 
 ## v3.0.11
 
