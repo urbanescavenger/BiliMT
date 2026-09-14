@@ -207,6 +207,16 @@ class YoutubePlaybackResolver(
     // ② NewPipe 无 SABR → DASH/HLS 兜底(alpha.92 自合成 DASH 为主,次 dashMpdUrl[恒空]/HLS)。durationMs 传 0
     //    → buildDashFallbackFromNewPipe 内部用 info.duration 兜底。dashFirst 时 DASH 已先试过,跳过。
     if (!dashFirst) {
+      // P11-101 Phase 1 判别探针(仅诊断,不改播放行为):门控视频(ANDROID 直链 403 判死)重试时
+      // 验证「attested WEB /player → dashManifestUrl → WebView decipher」链路四个 go/no-go 判据:
+      // ① WEB /player 带自铸 poToken 是否返回 OK(非 LOGIN_REQUIRED);
+      // ② streamingData 是否含 dashManifestUrl(参数键:s/sig/n 在否);
+      // ③ 现有 n/s 解密机制在该 URL 上是否产出(URL 类闭包导出 + 结构正则);
+      // ④ decipher 后 URL(+pot)OkHttp GET 是否 200(全链终极判据)。
+      if (SabrStreamRegistry.isDashFallbackFailed(videoId)) {
+        runCatching { probeWebDashChain(videoId, poToken, signatureTimestamp) }
+          .onFailure { Log.w(Tag, "P11-101 probe threw: ${it.message}") }
+      }
       val npDash = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality) }.getOrNull()
       if (npDash != null) {
         YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
@@ -1233,6 +1243,90 @@ class YoutubePlaybackResolver(
    * 但已无其它出口)。返回的 PlaybackInfo 仅一条 dummy 视频轨(audioTracks 空——manifest 自带 A/V 轨),
    * 路由由 [PlaybackInfo.isHlsManifest]/[PlaybackInfo.hasRemoteManifest] 判定,非 dummy 轨字段。
    */
+  /**
+   * P11-101 Phase 1 判别探针(仅诊断,不改播放行为)——门控视频(Fhyu9sqcF-o/irrSuCb3BhI 类,
+   * SABR RELOAD + ANDROID 直链 403)验证「attested WEB /player → dashManifestUrl → WebView
+   * decipher → +pot」链路(FreeTube 2026 生产架构同款,`decipherManifestUrl`)。四判据:
+   * ① WEB /player 带自铸 poToken 是否 OK(非 LOGIN_REQUIRED);② dashManifestUrl 在否/带什么
+   * 参数(s/sig/n);③ 现有 n/s 解密机制对该 URL 是否产出(URL 类闭包导出 + 结构正则——plasma
+   * 时代可能 stale,verdict 就是取证);④ decipher 后 +pot 的 URL OkHttp GET 是否 200。
+   */
+  private suspend fun probeWebDashChain(videoId: String, poToken: String?, signatureTimestamp: Int?) {
+    // ① attested WEB /player
+    val player = runCatching {
+      postPlayer(videoId, InnerTubeClient.Client.WEB, poToken, signatureTimestamp)
+    }.getOrNull()
+    if (player == null) {
+      Log.w(Tag, "P11-101 probe ①: WEB /player request threw → 判据①否")
+      return
+    }
+    val status = player.obj("playabilityStatus")?.stringOrNull("status")
+    val streamingData = player.obj("streamingData")
+    Log.i(
+      Tag,
+      "P11-101 probe ①: playability=$status poTokenArg=${poToken?.length ?: 0}B " +
+        "streamingDataKeys=${streamingData?.keys?.toList() ?: "ABSENT"}",
+    )
+    // ② dashManifestUrl 在否/参数键
+    val dashUrl = streamingData?.stringOrNull("dashManifestUrl")
+    if (dashUrl.isNullOrBlank()) {
+      // 备选变体判据:adaptive 直链在否(url vs signatureCipher,Phase 2 变体的数据源)
+      val adaptive = streamingData?.array("adaptiveFormats").orEmpty()
+      val first = (adaptive.firstOrNull() as? JsonObject)
+      val firstUrl = first?.stringOrNull("url")
+      val firstCipher = first?.stringOrNull("signatureCipher")
+      Log.i(
+        Tag,
+        "P11-101 probe ②: dashManifestUrl ABSENT adaptive=${adaptive.size} " +
+          "firstUrl=${if (firstUrl.isNullOrBlank()) "ABSENT" else "present(${firstUrl.length}B)"} " +
+          "firstCipher=${if (firstCipher.isNullOrBlank()) "none" else "present"}",
+      )
+      return
+    }
+    val dashUri = Uri.parse(dashUrl)
+    Log.i(
+      Tag,
+      "P11-101 probe ②: dashManifestUrl=${dashUrl.length}B host=${dashUri.host} " +
+        "keys=${dashUri.queryParameterNames} s=${dashUri.getQueryParameter("s")?.length ?: 0}B " +
+        "n=${dashUri.getQueryParameter("n")?.length ?: 0}B sig=${if (dashUri.getQueryParameter("sig") != null) "yes" else "no"}",
+    )
+    // ③ 现有 n/s 解密机制尝试(机制在、正则可能 stale——verdict 即结论)
+    val playerJsUrl = resolvePlayerJsUrl(videoId)
+    Log.i(Tag, "P11-101 probe ③: playerJsUrl=${playerJsUrl?.take(90) ?: "ABSENT"}")
+    var current = dashUrl
+    val sParam = dashUri.getQueryParameter("s")
+    if (!sParam.isNullOrBlank()) {
+      val spParam = dashUri.getQueryParameter("sp") ?: "signature"
+      val decipheredS = runCatching { sDecryptor.decrypt(sParam, playerJsUrl) }.getOrNull()
+      Log.i(Tag, "P11-101 probe ③: s-decrypt=${if (decipheredS.isNullOrBlank()) "FAILED" else "ok(${sParam.length}->${decipheredS.length})"}")
+      if (!decipheredS.isNullOrBlank()) {
+        current = current.replaceFirst("?s=${Uri.encode(sParam)}", "?$spParam=${Uri.encode(decipheredS)}")
+      }
+    }
+    val nBefore = Uri.parse(current).getQueryParameter("n")
+    current = nDecryptor.decrypt(current, playerJsUrl)
+    val nAfter = Uri.parse(current).getQueryParameter("n")
+    Log.i(
+      Tag,
+      "P11-101 probe ③: n-decrypt=${if (current != dashUrl && nAfter != nBefore) "transformed" else "unchanged/failed"} " +
+        "(n $nBefore → $nAfter, urlLen=${current.length})",
+    )
+    // ④ 全链终极判据:decipher 后 +pot 的 manifest URL OkHttp GET 状态
+    if (current != dashUrl) {
+      val potUrl = current.let { u ->
+        val sep = if (u.contains('?')) "&" else "?"
+        "$u${sep}pot=${poToken ?: ""}"
+      }
+      val httpStatus = runCatching {
+        val req = Request.Builder().url(potUrl).header("Range", "bytes=0-1023").build()
+        httpClient.newCall(req).execute().use { it.code }
+      }.getOrDefault(-1)
+      Log.i(Tag, "P11-101 probe ④: manifest GET(+pot) → HTTP $httpStatus (200=全链通 → Phase 2 go)")
+    } else {
+      Log.w(Tag, "P11-101 probe ④: decipher 无产出 → 判据③④否")
+    }
+  }
+
   private suspend fun buildDashFallbackFromNewPipe(
     videoId: String,
     durationMs: Long,
@@ -1372,36 +1466,12 @@ class YoutubePlaybackResolver(
       )
     }
     // alpha.90:dashMpdUrl 空(android 无 manifest)→ 落 visionOS hlsUrl(Apple 平台原生 HLS 交付)。
-    val hlsUrl = info.hlsUrl
-    if (!hlsUrl.isNullOrBlank()) {
-      Log.i(Tag, "兜底: dashMpdUrl 空 → hlsUrl=${hlsUrl.length}B dur=${resolvedDuration}ms → 远程 HLS HlsMediaSource")
-      // dummy 视频轨:路由由 isHlsManifest()(remoteHlsManifestUrl!=null)判定,非轨字段;audioTracks 空(HLS playlist 自带 A/V)。
-      val dummyTrack = PlaybackTrack(
-        id = 0,
-        baseUrl = hlsUrl,
-        backupUrls = emptyList(),
-        bandwidth = 0,
-        codecs = "video/mp4",
-        width = 0,
-        height = 480,
-        mimeType = "video/mp4",
-        segmentBase = PlaybackSegmentBase("0-0", "0-0"),
-      )
-      val quality = PlaybackQuality(0, "HLS 兜底")
-      return PlaybackInfo(
-        bvid = videoId,
-        cid = 0L,
-        title = request.title,
-        durationMs = resolvedDuration,
-        qualities = listOf(quality),
-        selectedQuality = quality,
-        videoTracks = listOf(dummyTrack),
-        audioTracks = emptyList(),
-        headers = YoutubePlaybackHeaders,
-        remoteHlsManifestUrl = hlsUrl,
-      )
-    }
-    Log.w(Tag, "兜底: dashMpdUrl 与 hlsUrl 均空 → 返回 null(上层落常规 NewPipe harvest,会 RELOAD 但已无其它出口)")
+    // P11-101 Step 0 停用:YouTube HLS 媒体段同 GVS attestation 网关门控(manifest/playlist 200 但
+    // 段 403,09-15 真机),且 media3 1.10 HlsChunkSource.createFallbackOptions 在段加载错误处理
+    // 路径有 redundantGroups/trackSelection 失配 → ArrayIndexOutOfBoundsException FATAL 闪退
+    // (09-15 00:26 XQ-EC72 真机实锤)。撤掉 HLS 兜底,门控视频到此为止落 Failed(清晰报错),
+    // 第三级兜底由 Phase 1/2 的 WEB-DASH 接替。
+    Log.w(Tag, "HLS 兜底已停用(P11-101 Step 0,media3 createFallbackOptions 崩溃+媒体段门控 403)→ 返回 null")
     return null
   }
 
