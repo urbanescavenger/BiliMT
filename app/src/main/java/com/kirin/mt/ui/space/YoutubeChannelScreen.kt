@@ -692,6 +692,9 @@ private fun YoutubeChannelFollowChip(
       .onFocusChanged { state -> focused = state.isFocused }
       .onPreviewKeyEvent { event ->
         when {
+          // P11-98c:↑ 在频道页最顶可聚焦节点处吞键——此前未处理落默认焦点遍历,焦点逃到
+          // sidebar(21:35:27.474 顶行 ↑ 经 sort→tab→follow 链,28.416 GAINED [sidebar] 实锤)。
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> true
           event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
           event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft -> onMoveLeft()
           event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {

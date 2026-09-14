@@ -96,6 +96,9 @@ private const val TvGridRestoreFocusRetryCount = 90
 // 循环即刻退出;360 帧(60fps≈6s、30fps≈12s)只在慢布局兜底,不拖累正常路径。
 private const val TvGridRestoreFocusWaitLayoutFrames = 360
 
+/** P11-98c:焦点转移(scrollThenFocusItem)的按帧重试上限——滚动后目标行慢组合时单发必败。 */
+private const val FocusItemRetryFrames = 30
+
 internal const val TvFocusLogTag = "BiliMT:Focus"
 
 // Keys that confirm a card selection; holding one for this long opens the card's long-press action menu.
@@ -420,18 +423,29 @@ internal fun TvVideoGrid(
     focusScrollJob = coroutineScope.launch {
       val smoothScroll = performancePolicy.smoothScrollingEnabled
       try {
+        // P11-98c:焦点转移加按帧重试——此前单帧等待+单发 requestFocus,慢组合(滚动后目标行
+        // 未及布局)时 requester 未挂节点必失败,焦点留在原卡而按键已被吞,表现为「按 ↑ 没反应、
+        // 连按多次才挪一格」(21:35:26.292 not-initialized + index=8 连按 4 次实锤)。
+        // 正常路径首帧即中,循环立即退出不拖慢。
+        fun focusWithRetry() {
+          var tries = 0
+          while (tries < FocusItemRetryFrames && !focusItem(index)) {
+            withFrameNanos { }
+            tries++
+          }
+        }
         if (smoothScroll) {
           val scrollJob = launch {
             scrollRow(row, smoothScroll = true)
           }
           delay(BiliMotion.FocusScrollDelayMs)
-          focusItem(index)
+          focusWithRetry()
           scrollJob.join()
           delay(BiliMotion.FocusScrollSettleMs)
         } else {
           scrollRow(row, smoothScroll = false)
           withFrameNanos { }
-          focusItem(index)
+          focusWithRetry()
         }
       } finally {
         if (rowScrollGeneration == scrollGeneration) {
