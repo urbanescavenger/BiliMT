@@ -37,6 +37,25 @@ internal object SabrStreamRegistry {
   private val pendingReloads = ConcurrentHashMap<String, String>()
   private val reloadCounts = ConcurrentHashMap<String, Int>()
 
+  /**
+   * alpha.9X(P11-99b):自合成 DASH 兜底直链 403(BAD_HTTP_STATUS)已判死标记(videoId 集合)。
+   * attestation 门控视频(如 Fhyu9sqcF-o/irrSuCb3BhI)SABR RELOAD → DASH 兜底 → NewPipe ANDROID
+   * 未 attested 直链 403 → 重试只会原样再 403。播放器 error-retry 时标记,resolve 重进由
+   * [buildDashFallbackFromNewPipe] 检查跳过自合成 DASH,直落 dashMpdUrl/HLS(visionOS HLS manifest
+   * URL 不走 attestation 门控,LibreTube 次选兜底同源)。进程级,不随 evict 清(同 reloadCounts 语义)。
+   */
+  private val dashFallbackFailedVideos =
+    java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+  /** DASH 兜底直链 403 判死标记(播放器 onPlayerError 2004 + YouTube 请求时调)。 */
+  fun markDashFallbackFailed(videoId: String) {
+    if (dashFallbackFailedVideos.add(videoId)) {
+      Log.w(tag, "markDashFallbackFailed videoId=$videoId → 下次 resolve 跳过自合成 DASH,直落 dashMpdUrl/HLS")
+    }
+  }
+
+  fun isDashFallbackFailed(videoId: String): Boolean = dashFallbackFailedVideos.contains(videoId)
+
   /** 存 reloadToken 停车 + 递增连续 reload 计数。由 [SabrMediaFetcher.processPart] RELOAD 分支调用。 */
   fun storeReloadToken(videoId: String, token: String) {
     pendingReloads[videoId] = token

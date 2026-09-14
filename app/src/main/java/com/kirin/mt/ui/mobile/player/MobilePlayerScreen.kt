@@ -1153,6 +1153,11 @@ fun MobilePlayerScreen(
           // 避免重播已看过的一段——status=3 已被同步刷新消除,此路径仅真终端错误偶发)。
           // 计数上限(MaxStallAutoRetry)防不可恢复错误无限重试。同步刷新后 status=3 不再触发本路径。
           if (autoRetryCount < MaxStallAutoRetry) {
+            // P11-99b:对齐 TV——2004 BAD_HTTP_STATUS + YouTube = DASH 兜底直链 403,标记进 registry
+            // → 重 resolve 跳过自合成 DASH 直落 dashMpdUrl/HLS。SABR 错误恒为 2000,不误标。
+            if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube) {
+              SabrStreamRegistry.markDashFallbackFailed(activeRequest.bvid)
+            }
             autoRetryCount += 1
             autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
             Log.w(

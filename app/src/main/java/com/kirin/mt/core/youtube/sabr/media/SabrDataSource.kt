@@ -43,6 +43,10 @@ internal class SabrDataSource(
     uri = dataSpec.uri
     val req = dataSpec.customData as? SabrSegmentRequest
       ?: throw IOException("SABR DataSpec.customData is not SabrSegmentRequest")
+    // ⚠️ 顺序铁律:transferInitializing/transferStarted 必须先于任何 open 抛错——close() 无条件
+    // transferEnded(),BaseDataSource 未记 dataSpec 时抛 NPE(P11-99 首版把 fast-fail 检查放
+    // transferInitializing 之前,真机 09-15 00:01:56 UnexpectedNullPointerException 实锤)。
+    transferInitializing(dataSpec)
     // alpha.9X(RELOAD 快速失败):会话已收过 RELOAD_PLAYER_RESPONSE(reloadCount>0)后,服务端对本
     // 视频只会继续回 RELOAD 终止包(alpha.14 jNl6YkkzKxw / 09-14 Fhyu9sqcF-o 真机:8 连 chunk 重试
     // 每次都是 RELOAD,首请求还可能是 15s ReadTimeout → 理论最坏 8×15s 白等)。不再发请求,立即抛错
@@ -57,11 +61,9 @@ internal class SabrDataSource(
       )
       throw IOException("SABR session reload-killed: videoId=$vid → resolver guard falls back to DASH")
     }
-    transferInitializing(dataSpec)
-    // alpha.9X(对齐 LibreTube `SabrDataSource.open`):transferStarted 移到 getNextSegment **之前**,让
-    // DefaultBandwidthMeter 把真实网络 POST 耗时计入带宽样本(否则只在 POST 之后才开始传输窗口,只量到内存
-    // 瞬时读 → 带宽估计失真 → AdaptiveTrackSelection 升档判定错误)。getNextSegment 失败时 transferStarted 已
-    // 调用、未收尾,交给 chunk load error 通路兜底(对齐 LibreTube)。
+    // P11-99 首版教训:transferStarted 移到 fast-fail 检查**之后**仍必须在 getNextSegment 之前
+    // (让 DefaultBandwidthMeter 量到真实网络耗时;失败时 transferStarted 已调、未收尾,由 close()
+    // transferEnded 收尾——BaseDataSource 状态机要求 initializing/started 先行)。
     transferStarted(dataSpec)
     val segment = try {
       fetcher.getNextSegment(req)

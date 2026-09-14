@@ -1445,6 +1445,13 @@ fun PlayerScreen(
         // 记当前位置进 autoResumePositionMs 续播(不回退 saved progress)。预算同 stall 看门狗共享
         // autoRetryCount(MaxStallAutoRetry),isPlaying 后清零;超限置 Failed 交用户手动重试。
         if (autoRetryCount < MaxStallAutoRetry) {
+          // P11-99b:2004 BAD_HTTP_STATUS + YouTube = DASH 兜底直链 403(attestation 门控视频
+          // NewPipe ANDROID 未 attested 直链必 403,重试只会原样再 403)。标记进 registry → 重
+          // resolve 时 buildDashFallbackFromNewPipe 跳过自合成 DASH 直落 dashMpdUrl/HLS(visionOS
+          // HLS manifest 不走 attestation 门控)。SABR 错误恒为 2000(IOException),不误标。
+          if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube) {
+            SabrStreamRegistry.markDashFallbackFailed(activeRequest.bvid)
+          }
           autoRetryCount += 1
           autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
           Log.w(

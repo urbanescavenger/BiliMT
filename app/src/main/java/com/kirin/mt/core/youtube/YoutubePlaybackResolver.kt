@@ -21,6 +21,7 @@ import com.kirin.mt.core.youtube.sabr.SabrClient
 import com.kirin.mt.core.youtube.sabr.SabrFetchResult
 import com.kirin.mt.core.youtube.sabr.SabrSession
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
+import android.net.Uri
 import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
 import com.kirin.mt.core.youtube.piped.PipedClient
 import com.kirin.mt.core.youtube.piped.PipedStreams
@@ -1260,10 +1261,22 @@ class YoutubePlaybackResolver(
     audioCandidates.take(2).forEach { a ->
       Log.i(Tag, "自合成DASH diag: a itag=${a.itag} url=${a.content?.length}B init=[${a.initStart}-${a.initEnd}] index=[${a.indexStart}-${a.indexEnd}] codec=${a.codec}")
     }
+    // alpha.9X(P11-99b 直链 403 诊断):只打 query 参数**键**与关键参数在否(pot=attestation 凭证,
+    // n=n-decrypt 结果),不打完整 URL 值。判别「未 attested(pot 缺)」vs「n-decrypt 失效(n 原样)」。
+    videoCandidates.firstOrNull()?.content?.let { u ->
+      Log.i(
+        Tag,
+        "直链参数键 diag: keys=${Uri.parse(u).queryParameterNames} host=${Uri.parse(u).host}",
+      )
+    }
+    val dashFallbackFailed = SabrStreamRegistry.isDashFallbackFailed(videoId)
+    if (dashFallbackFailed) {
+      Log.w(Tag, "自合成DASH: 直链 403 已判死(videoId=$videoId)→ 跳过自合成 DASH,直落 dashMpdUrl/HLS")
+    }
     val synthAudio = audioCandidates.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
       ?: audioCandidates.firstOrNull { it.audioTrackType != AudioTrackType.DUBBED }
       ?: audioCandidates.firstOrNull()
-    if (videoCandidates.isNotEmpty() && synthAudio != null) {
+    if (!dashFallbackFailed && videoCandidates.isNotEmpty() && synthAudio != null) {
       // alpha.9X:DASH 自合成支持多档清晰度——全部带 range 的视频流各构一条 PlaybackTrack + 一档 quality,
       // 复用 alpha.81 多 Representation 机制(buildDashManifest 每条 track 生成一个 <Representation>,
       // 塞进同一 <AdaptationSet>),ExoPlayer 自动选轨/手动选档,与 SABR allVideoTracks 同构。
