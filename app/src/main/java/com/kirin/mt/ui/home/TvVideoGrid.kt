@@ -427,7 +427,7 @@ internal fun TvVideoGrid(
         // 未及布局)时 requester 未挂节点必失败,焦点留在原卡而按键已被吞,表现为「按 ↑ 没反应、
         // 连按多次才挪一格」(21:35:26.292 not-initialized + index=8 连按 4 次实锤)。
         // 正常路径首帧即中,循环立即退出不拖慢。
-        fun focusWithRetry() {
+        suspend fun focusWithRetry() {
           var tries = 0
           while (tries < FocusItemRetryFrames && !focusItem(index)) {
             withFrameNanos { }
