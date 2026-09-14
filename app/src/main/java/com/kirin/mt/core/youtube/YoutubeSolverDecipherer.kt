@@ -127,10 +127,13 @@ class YoutubeSolverDecipherer(context: Context, private val executor: YoutubeJsE
   companion object {
     private const val Tag = "YtSolver"
     private val ASSETS = listOf(
-      "youtube/meriyah.min.js",
-      "youtube/astring.min.js",
-      "youtube/yt.solver.core.js",
-      "youtube/yt_solver_driver.js",
+      // 裸名(不含 youtube/ 前缀):ensureLoaded 统一 open("youtube/$asset")。
+      // ⚠️ 首版把全路径写进本表再拼前缀 → assets.open("youtube/youtube/…") FileNotFound
+      // → "solver asset missing"(07:44 r1919 真机实锤)。
+      "meriyah.min.js",
+      "astring.min.js",
+      "yt.solver.core.js",
+      "yt_solver_driver.js",
     )
     private const val SolveTimeoutMs = 30_000L
     private const val SolvePollIntervalMs = 100L
