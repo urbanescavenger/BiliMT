@@ -442,6 +442,8 @@ internal fun TvVideoGrid(
   }
 
   fun moveFocus(fromIndex: Int, direction: Key): Boolean {
+    // P11-98b:按键级取证(此前该层零日志,焦点逃逸只能靠 LOST/GAINED 时间轴倒推)。
+    Log.d(TvFocusLogTag, "grid-key label=$debugLabel index=$fromIndex dir=$direction")
     val currentRow = fromIndex / columns
     val currentColumn = fromIndex % columns
     val lastIndex = videos.lastIndex
@@ -449,11 +451,18 @@ internal fun TvVideoGrid(
 
     if (direction == Key.DirectionUp && currentRow == 0) {
       commitFocusedItem(fromIndex)
-      return onMoveUpFromFirstRow()
+      // P11-98b:顶行 ↑ 的边界回调若未处理(目标 requester 未挂载,如 tab 栏未组合),吞掉
+      // 按键、焦点留在原卡——绝不能把 false 漏给默认焦点遍历:遍历按几何找 grid 外的
+      // focusable,正是逃逸路径(21:11:09 连按 ↑ 4 连发 FocusRequester not initialized +
+      // 焦点逃到 sidebar/avatar 实锤)。回调成功时焦点已去 tab 栏,同样返回 true。
+      onMoveUpFromFirstRow()
+      return true
     }
     if (direction == Key.DirectionLeft && currentColumn == 0) {
       commitFocusedItem(fromIndex)
-      return onMoveLeftToNav()
+      // P11-98b:首列 ← 同理——nav requester 未挂时吞掉,不漏给默认遍历逃逸。
+      onMoveLeftToNav()
+      return true
     }
 
     val targetIndex = when (direction) {
