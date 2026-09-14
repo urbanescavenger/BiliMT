@@ -51,7 +51,9 @@ class YoutubeSolverDecipherer(context: Context, private val executor: YoutubeJsE
       }
       Log.d(Tag, "solver asset loaded: $asset (result=${result?.take(20)})")
     }
-    val ready = executor.eval("typeof window.__ytSolveLoaded")?.contains("true") == true
+    // typeof 布尔值 → "boolean"(首版误写 contains("true") → ready 恒 false → solve 静默返回,
+    // 07:55 r1920 真机:4 个 asset 全 loaded 却 solver n=FAILED 无 solver error 日志)
+    val ready = executor.eval("typeof window.__ytSolveLoaded")?.contains("boolean") == true
     loaded = ready
     if (ready) Log.i(Tag, "yt solver loaded (meriyah+astring+core+driver)")
     return ready
@@ -63,7 +65,10 @@ class YoutubeSolverDecipherer(context: Context, private val executor: YoutubeJsE
    * @return map(challenge → transformed);失败返回 null(上层回退/放弃,留 verdict 日志)。
    */
   suspend fun solve(playerJsUrl: String, nChallenges: List<String>, sigChallenges: List<String>): Map<String, String>? {
-    if (!ensureLoaded()) return null
+    if (!ensureLoaded()) {
+      Log.w(Tag, "solver: ensureLoaded failed (assets missing/eval failed)")
+      return null
+    }
     val nArr = nChallenges.joinToString(",") { JsonPrimitive(it).toString() }
     val sigArr = sigChallenges.joinToString(",") { JsonPrimitive(it).toString() }
     executor.eval("window.__ytSolveResult = null")
