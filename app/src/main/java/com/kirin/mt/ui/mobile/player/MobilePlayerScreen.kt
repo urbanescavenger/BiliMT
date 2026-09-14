@@ -205,6 +205,8 @@ private const val MobilePlayerLogTag = "BiliMT:MobilePlayer"
 
 /** alpha.67:单次播放会话内 error-retry 上限(onPlayerErrorChanged),超过则交用户手动重试,避免死循环。 */
 private const val MaxStallAutoRetry = 2
+// P11-99c:onPlayerError 重试独立预算(对齐 TV)——降级链 SABR→DASH→HLS 三级,2 次不够。
+private const val MaxErrorAutoRetry = 3
 // 空降助手阈值(镜像 TV PlayerScreen)
 private const val AirJumpWarningLeadMs = 3_500L
 private const val AirJumpCompletionToastSuppressMs = 1_500L
@@ -369,6 +371,8 @@ fun MobilePlayerScreen(
   var pendingSABRSeekMs by remember { mutableStateOf<Long?>(null) }
   var sabrSeekReloadKey by remember { mutableIntStateOf(0) }
   var autoRetryCount by remember { mutableIntStateOf(0) }
+  // P11-99c:onPlayerError 专用重试预算(与 stall 看门狗分开,对齐 TV)——降级链三级需 3 击,isPlaying 清零。
+  var errorRetryCount by remember { mutableIntStateOf(0) }
   var danmakuEntries by remember { mutableStateOf<List<com.kirin.mt.core.player.DanmakuEntry>>(emptyList()) }
   var fullscreen by rememberSaveable { mutableStateOf(false) }
   // 听视频模式(音频-only):禁用视频轨,只播音频。顶栏右上角耳机按钮切换。
@@ -1083,6 +1087,10 @@ fun MobilePlayerScreen(
           autoRetryCount = 0
           Log.i(MobilePlayerLogTag, "playback error auto-retry recovered, counter reset")
         }
+        if (playing && errorRetryCount > 0) {
+          errorRetryCount = 0
+          Log.i(MobilePlayerLogTag, "playback error-retry recovered, counter reset")
+        }
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {
@@ -1152,17 +1160,19 @@ fun MobilePlayerScreen(
           // 记当前位置进 autoResumePositionMs,重载后续播点 = 卡住位置(不回退到 saved progress,
           // 避免重播已看过的一段——status=3 已被同步刷新消除,此路径仅真终端错误偶发)。
           // 计数上限(MaxStallAutoRetry)防不可恢复错误无限重试。同步刷新后 status=3 不再触发本路径。
-          if (autoRetryCount < MaxStallAutoRetry) {
-            // P11-99b:对齐 TV——2004 BAD_HTTP_STATUS + YouTube = DASH 兜底直链 403,标记进 registry
-            // → 重 resolve 跳过自合成 DASH 直落 dashMpdUrl/HLS。SABR 错误恒为 2000,不误标。
-            if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube) {
-              SabrStreamRegistry.markDashFallbackFailed(activeRequest.bvid)
-            }
-            autoRetryCount += 1
+          // P11-99b:对齐 TV——2004 BAD_HTTP_STATUS + YouTube = DASH 兜底直链 403,标记进 registry
+          // → 重 resolve 跳过自合成 DASH 直落 dashMpdUrl/HLS。SABR 错误恒为 2000,不误标。
+          // P11-99c:标记移到预算判定**之前**(预算耗尽的最后一击也标记);重试用独立
+          // errorRetryCount(MaxErrorAutoRetry=3,容纳 SABR→DASH→HLS 三级)。
+          if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube) {
+            SabrStreamRegistry.markDashFallbackFailed(activeRequest.bvid)
+          }
+          if (errorRetryCount < MaxErrorAutoRetry) {
+            errorRetryCount += 1
             autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
             Log.w(
               MobilePlayerLogTag,
-              "playback error, auto-retry #${autoRetryCount} @pos=${autoResumePositionMs}ms: ${error.message}",
+              "playback error, auto-retry #${errorRetryCount} @pos=${autoResumePositionMs}ms: ${error.message}",
             )
             retryKey += 1L
           } else {

@@ -1150,3 +1150,4 @@ Flutter 参考 app 继续保留在原项目中，用于行为对照和回退参�
 | P11-99 | DASH 兜底不生效修复:TV onPlayerError 自动重试(对齐移动端,bump retryKey 重 resolve)+ SabrDataSource RELOAD 快速失败(reloadCount>0 不再发请求)+ SabrMediaFetcher 暴露 videoId;链路:RELOAD→快速失败→source error→自动重试→alpha.93 守卫→DASH/HLS 兜底 | Done(代码完成,待云编译+真机) |
 | P11-100 | YouTube 会员专属视频不再过滤,展示进 feed 并打「会员」角标(YoutubeParsers parseLockupViewModel/parseVideoRenderer 两处 isMembersOnly 命中由 return null 改为置 badge="会员",badge 经 toVideoSummary 透传,TV VideoCard/移动端 MobileVideoCard 既有角标渲染复用) | Done(代码完成,待云编译+真机) |
 | P11-99b | P11-99 复测收尾:SabrDataSource fast-fail NPE 修复(transferInitializing 先行)+ DASH 兜底直链 403 判死标记(registry videoId 集合,TV/移动 2004+YouTube 时标)→ resolve 跳过自合成 DASH 直落 dashMpdUrl/HLS(visionOS HLS 不走 attestation 门控)+ 直链参数键诊断 | Done(代码完成,待云编译+真机) |
+| P11-99c | 降级链预算:onPlayerError 独立 errorRetryCount=3(TV+移动,isPlaying 清零)+ 2004 标记移出预算分支(最后一击也标记) | Done(代码完成,待云编译+真机) |

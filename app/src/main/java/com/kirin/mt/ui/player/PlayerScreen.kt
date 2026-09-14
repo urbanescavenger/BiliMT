@@ -267,6 +267,10 @@ fun PlayerScreen(
   var pendingSABRSeekMs by remember { mutableStateOf<Long?>(null) }
   var sabrSeekReloadKey by remember { mutableIntStateOf(0) }
   var autoRetryCount by remember { mutableIntStateOf(0) }
+  // P11-99c:onPlayerError 专用重试预算(与 stall 看门狗的 autoRetryCount 分开)。降级链 SABR→DASH
+  // →HLS 有 3 级,共享 2 次预算会在 HLS 降级触发前烧完(09-15 00:22 真机:SABR 2000 用 #1、DASH
+  // 2001 网络抖动用 #2、DASH 403 无预算直接 Failed)。isPlaying 后清零。
+  var errorRetryCount by remember { mutableIntStateOf(0) }
   // P11-85 深度重试去重:每视频只放行一次(换视频重置),防无限重载。
   var sabrDeepRetryUsedForBvid by remember { mutableStateOf<String?>(null) }
   var lastPlaybackExitBackPressMs by remember { mutableLongStateOf(0L) }
@@ -1442,21 +1446,22 @@ fun PlayerScreen(
         // PLAYER_RESPONSE 终止包路径:DataSource.open 抛 IOException → source error → 此前 TV 端只置
         // Failed,重 resolve(alpha.93 守卫 → DASH/HLS 兜底)永远没机会跑 →「DASH 兜底不生效」。
         // bump retryKey → launch effect 重 resolve:registry reloadCount>0 守卫跳过 SABR 落 DASH。
-        // 记当前位置进 autoResumePositionMs 续播(不回退 saved progress)。预算同 stall 看门狗共享
-        // autoRetryCount(MaxStallAutoRetry),isPlaying 后清零;超限置 Failed 交用户手动重试。
-        if (autoRetryCount < MaxStallAutoRetry) {
-          // P11-99b:2004 BAD_HTTP_STATUS + YouTube = DASH 兜底直链 403(attestation 门控视频
-          // NewPipe ANDROID 未 attested 直链必 403,重试只会原样再 403)。标记进 registry → 重
-          // resolve 时 buildDashFallbackFromNewPipe 跳过自合成 DASH 直落 dashMpdUrl/HLS(visionOS
-          // HLS manifest 不走 attestation 门控)。SABR 错误恒为 2000(IOException),不误标。
-          if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube) {
-            SabrStreamRegistry.markDashFallbackFailed(activeRequest.bvid)
-          }
-          autoRetryCount += 1
+        // 记当前位置进 autoResumePositionMs 续播(不回退 saved progress)。
+        // P11-99b:2004 BAD_HTTP_STATUS + YouTube = DASH 兜底直链 403(attestation 门控视频 NewPipe
+        // ANDROID 未 attested 直链必 403,重试只会原样再 403)→ 标记进 registry → 重 resolve 时
+        // buildDashFallbackFromNewPipe 跳过自合成 DASH 直落 dashMpdUrl/HLS。SABR 错误恒为 2000,不误标。
+        // P11-99c:标记移到预算判定**之前**(预算耗尽的最后一击也标记,手动重试同样能 HLS 接上);
+        // 重试用独立 errorRetryCount(MaxErrorAutoRetry=3,容纳 SABR→DASH→HLS 三级),不再烧
+        // stall 看门狗预算;isPlaying 清零;超限置 Failed 交用户手动重试。
+        if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube) {
+          SabrStreamRegistry.markDashFallbackFailed(activeRequest.bvid)
+        }
+        if (errorRetryCount < MaxErrorAutoRetry) {
+          errorRetryCount += 1
           autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
           Log.w(
             PlayerPlaybackLogTag,
-            "playback error, auto-retry #${autoRetryCount} @pos=${autoResumePositionMs}ms: ${error.message}",
+            "playback error, auto-retry #${errorRetryCount} @pos=${autoResumePositionMs}ms: ${error.message}",
           )
           retryKey += 1L
         } else {
@@ -1548,6 +1553,10 @@ fun PlayerScreen(
         if (isPlaying && autoRetryCount > 0) {
           autoRetryCount = 0
           Log.i(PlayerPlaybackLogTag, "stall auto-retry recovered, counter reset")
+        }
+        if (isPlaying && errorRetryCount > 0) {
+          errorRetryCount = 0
+          Log.i(PlayerPlaybackLogTag, "playback error-retry recovered, counter reset")
         }
       }
 
@@ -3114,6 +3123,9 @@ private const val VideoFreezeThresholdMs = 12_000L
 private const val BlackFrameHeightCap = 1080
 /** 单次播放会话内 stall 自动重试上限,超过则交用户手动重试,避免死循环刷 CDN。 */
 private const val MaxStallAutoRetry = 2
+// P11-99c:onPlayerError 重试独立预算——降级链 SABR→DASH→HLS 三级各需一击(09-15 真机:SABR 2000
+// + DASH 2001 网络抖动 + DASH 403,共享 2 次预算在 HLS 降级前烧完)。
+private const val MaxErrorAutoRetry = 3
 /** P11-85 SABR 深度重试续播点前推量:覆盖一个视频段(~5-6s)并换段对齐,重置服务端段锚点。 */
 private const val SabrDeepRetryNudgeMs = 10_000L
 /** 起播整体超时：callTimeout 兜住单次 HTTP，withTimeout 兜住整条 launch（含串行调用叠加）。 */
