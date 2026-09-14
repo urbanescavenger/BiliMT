@@ -335,6 +335,20 @@ private fun PlaylistVideoRow(
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxSize(),
       )
+      // 源角标(会员/直播等):左上(样式对齐 MobileVideoCard,右上让位给「已看完」)。
+      if (video.badge.isNotBlank()) {
+        Text(
+          text = video.badge,
+          style = MaterialTheme.typography.labelSmall,
+          color = androidx.compose.ui.graphics.Color.White,
+          modifier = Modifier
+            .align(Alignment.TopStart)
+            .padding(4.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f))
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+        )
+      }
       // 已看完角标(右上,右下让位给时长);未看完且历史里有上次播放位置时画底部进度细条。
       val completed = video.bvid in LocalWatchedIds.current
       if (completed) {

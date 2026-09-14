@@ -63,6 +63,7 @@ import com.kirin.mt.core.youtube.YoutubePlaylistHeader
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.focus.focusDiag
 import com.kirin.mt.ui.glass.LocalLiquidGlassBackdrop
+import com.kirin.mt.ui.i18n.convertChineseText
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
@@ -758,6 +759,19 @@ private fun YoutubePlaylistVideoRow(
               .background(BiliColors.BiliPink),
           )
         }
+      }
+      // 会员/直播等源角标:贴缩略图右上(样式同已看完 pill;VideoCard 通用卡已有此渲染,详情页自绘行补齐)。
+      if (video.badge.isNotBlank()) {
+        Text(
+          text = convertChineseText(video.badge),
+          color = Color.White,
+          fontSize = 10.sp,
+          modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(4.dp)
+            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+            .padding(horizontal = 4.dp, vertical = 1.dp),
+        )
       }
       // 已看完角标:贴缩略图右下,深色半透明 pill(样式对齐移动端 CompletedBadge)。
       if (completed) {
