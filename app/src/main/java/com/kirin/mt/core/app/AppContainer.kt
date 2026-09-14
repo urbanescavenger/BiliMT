@@ -31,6 +31,7 @@ import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.core.youtube.YoutubeJsExecutor
 import com.kirin.mt.core.youtube.YoutubeNDecryptor
+import com.kirin.mt.core.youtube.YoutubeSolverDecipherer
 import com.kirin.mt.core.youtube.YoutubePlaybackResolver
 import com.kirin.mt.core.youtube.YoutubeSDecryptor
 import com.kirin.mt.core.youtube.YoutubeRepository
@@ -135,6 +136,8 @@ class AppContainer(context: Context) {
   )
   val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(appContext, youtubeJsExecutor, youtubeHttpClient)
   val youtubeSDecryptor: YoutubeSDecryptor = YoutubeSDecryptor(youtubeJsExecutor, youtubeHttpClient)
+  // P11-101:WebView 内 yt-dlp solver(n/s decipher,AST 结构匹配 + URL 类 transform)
+  val youtubeSolverDecipherer: YoutubeSolverDecipherer = YoutubeSolverDecipherer(appContext, youtubeJsExecutor)
   val youtubeRepository: YoutubeRepository = YoutubeRepository(
     client = youtubeInnerTubeClient,
   )
@@ -145,6 +148,7 @@ class AppContainer(context: Context) {
     botGuard = youtubeBotGuard,
     nDecryptor = youtubeNDecryptor,
     sDecryptor = youtubeSDecryptor,
+    solverDecipherer = youtubeSolverDecipherer,
     httpClient = youtubeHttpClient,
     biliTvPoTokenProvider = biliTvPoTokenProvider,
     pipedClient = pipedClient,

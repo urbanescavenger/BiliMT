@@ -67,6 +67,8 @@ class YoutubePlaybackResolver(
   private val botGuard: YoutubeBotGuard,
   private val nDecryptor: YoutubeNDecryptor,
   private val sDecryptor: YoutubeSDecryptor,
+  /** P11-101:WebView 内 yt-dlp solver(meriyah AST 结构匹配 + URL 类 transform),n/s decipher。 */
+  private val solverDecipherer: YoutubeSolverDecipherer,
   private val httpClient: OkHttpClient,
   private val biliTvPoTokenProvider: NewPipePoTokenGenerator,
   /** Piped 后端客户端(可选,实验:对齐 LibreTube 默认 Piped 路径修 RELOAD)。null = 走 NewPipe(旧行为)。 */
@@ -1302,15 +1304,29 @@ class YoutubePlaybackResolver(
         "P11-101 probe ③': combined=${combinedFormats.size} " +
           "firstCombinedUrl=${if (firstCombinedUrl.isNullOrBlank()) "ABSENT" else "present(${firstCombinedUrl.length}B)"}",
       )
-      // n-decrypt 尝试(plasma 时代可能 stale,verdict 即结论)
+      // n-decrypt 尝试:① yt-dlp solver(P11-101,AST 结构匹配 + URL 类 transform,主选);
+      // ② 旧 URL 类 config 法(NDecryptor,alpha.32 证伪,verdict 对照留取证)。
       val playerJsUrl2 = resolvePlayerJsUrl(videoId)
       var sabrUrlT = sabrData.sabrUrl
       if (!sabrN.isNullOrBlank() && playerJsUrl2 != null) {
-        sabrUrlT = nDecryptor.decrypt(sabrData.sabrUrl, playerJsUrl2)
+        val solved = runCatching { solverDecipherer.solve(playerJsUrl2, listOf(sabrN), emptyList()) }.getOrNull()
+        val solverN = solved?.let { transformedN(solved, sabrN) }
+        Log.i(
+          Tag,
+          "P11-101 probe ③': solver n=${if (solverN != null && solverN != sabrN) "transformed($sabrN → $solverN)" else if (solverN == null) "FAILED" else "unchanged"}",
+        )
+        if (solverN != null && solverN != sabrN) {
+          val withQ = sabrData.sabrUrl.replaceFirst("?n=${Uri.encode(sabrN)}", "?n=${Uri.encode(solverN)}")
+          sabrUrlT = if (withQ != sabrData.sabrUrl) withQ
+          else sabrData.sabrUrl.replaceFirst("&n=${Uri.encode(sabrN)}", "&n=${Uri.encode(solverN)}")
+        } else {
+          // solver 未产出 → 旧法对照(取证)
+          sabrUrlT = nDecryptor.decrypt(sabrData.sabrUrl, playerJsUrl2)
+        }
         val nAfter = Uri.parse(sabrUrlT).getQueryParameter("n")
         Log.i(
           Tag,
-          "P11-101 probe ③': n-decrypt=${if (sabrUrlT != sabrData.sabrUrl && nAfter != sabrN) "transformed" else "unchanged/failed"} (n $sabrN → $nAfter)",
+          "P11-101 probe ③': final n-decrypt=${if (sabrUrlT != sabrData.sabrUrl && nAfter != sabrN) "transformed" else "unchanged/failed"} (n $sabrN → $nAfter)",
         )
       }
       // ④' 全链终极判据:WEB SABR 会话 + init POST(对齐 buildSabrSessionFromReloadPlayer WEB 分支)

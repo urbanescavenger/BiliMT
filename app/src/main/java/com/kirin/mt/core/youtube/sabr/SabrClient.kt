@@ -137,7 +137,14 @@ internal data class SabrSession(
       // sabrUrl 加 alr=yes + cpn(对齐 FreeTube Watch.js L1619-1620 + SabrSchemePlugin 追加 rn)。cpn = 16 随机字节 base64url
       val usedCpn = cpn ?: randomCpn()
       val withParams = sabrUrlWithParams(sabrUrl, usedCpn)
-      val po = Base64.decode(poTokenB64, Base64.DEFAULT)
+      // P11-101:WEB/BotGuard 铸的 poToken 是 YouTube web64 变体('.' 填充),Base64.DEFAULT 会抛
+      // "bad base-64"(09-15 07:07 probe ④' 实锤)。SABR StreamerContext.field2 的正确语义是
+      // token 字符串的**原始字节**(对齐 status=2 刷新路径 refreshPoToken 的 token.toByteArray(UTF_8)
+      // 与 LibreTube/FreeTube 的 po_token string bytes),不是 base64 解码结果。保留 DEFAULT 解码
+      // 兼容历史上传入「已 encodeToString 的字节」的路径(harvest 时代),web64 失败时落 UTF-8 字节。
+      val po = if (poTokenB64.isBlank()) ByteArray(0)
+      else runCatching { Base64.decode(poTokenB64, Base64.DEFAULT) }
+        .getOrElse { poTokenB64.toByteArray(Charsets.UTF_8) }
       // ustreamerConfig 是 YouTube 的 URL-safe base64(含 -/_),DEFAULT 解码会丢弃非法字符→损坏字节
       // → 服务端判 sabr.malformed_config(alpha.72 真机全黑)。对齐 LibreTube SabrManifest URL_SAFE 解码。
       val ustreamer = Base64.decode(ustreamerConfigB64, Base64.URL_SAFE)
