@@ -1310,7 +1310,7 @@ class YoutubePlaybackResolver(
       var sabrUrlT = sabrData.sabrUrl
       if (!sabrN.isNullOrBlank() && playerJsUrl2 != null) {
         val solved = runCatching { solverDecipherer.solve(playerJsUrl2, listOf(sabrN), emptyList()) }.getOrNull()
-        val solverN = solved?.let { transformedN(solved, sabrN) }
+        val solverN = solved?.let { solverDecipherer.transformedN(solved, sabrN) }
         Log.i(
           Tag,
           "P11-101 probe ③': solver n=${if (solverN != null && solverN != sabrN) "transformed($sabrN → $solverN)" else if (solverN == null) "FAILED" else "unchanged"}",

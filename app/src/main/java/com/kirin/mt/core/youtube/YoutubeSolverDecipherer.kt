@@ -11,7 +11,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.stringOrNull
 
 /**
  * P11-101 Phase 2b:WebView 内 YouTube s/n decipher——打包 yt-dlp `yt.solver.core`
@@ -65,8 +64,8 @@ class YoutubeSolverDecipherer(context: Context, private val executor: YoutubeJsE
    */
   suspend fun solve(playerJsUrl: String, nChallenges: List<String>, sigChallenges: List<String>): Map<String, String>? {
     if (!ensureLoaded()) return null
-    val nArr = nChallenges.joinToString(",") { JsonPrimitive(it) }
-    val sigArr = sigChallenges.joinToString(",") { JsonPrimitive(it) }
+    val nArr = nChallenges.joinToString(",") { JsonPrimitive(it).toString() }
+    val sigArr = sigChallenges.joinToString(",") { JsonPrimitive(it).toString() }
     executor.eval("window.__ytSolveResult = null")
     val started = runCatching {
       executor.eval("window.__ytSolveRun(${JsonPrimitive(playerJsUrl)}, [$nArr], [$sigArr])")
@@ -121,6 +120,9 @@ class YoutubeSolverDecipherer(context: Context, private val executor: YoutubeJsE
   /** solver 输出 data 里取回 transformed n。 */
   fun transformedN(solved: Map<String, String>, original: String?): String? =
     original?.let { solved[it] } ?: solved.values.firstOrNull()
+
+  private fun JsonObject.stringOrNull(name: String): String? =
+    this[name]?.jsonPrimitive?.contentOrNull
 
   companion object {
     private const val Tag = "YtSolver"
