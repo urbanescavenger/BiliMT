@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
@@ -115,6 +116,13 @@ internal fun YoutubePlaylistDetailScreen(
   playlist: YoutubeParsers.YoutubePlaylist,
   onStartSelected: (video: VideoSummary, queue: List<VideoSummary>) -> Unit,
   onBack: () -> Boolean,
+  // P11-98:从播放器返回详情页的焦点恢复(镜像 TvVideoGrid/ChannelPlaylistGrid 范式)。
+  // key!=0 时按 [restoreFocusTarget]("playall"/"back"/"row:N")恢复离开前的聚焦落点;
+  // 详情页在播放期间整页 dispose,离开前落点经 [onFocusTargetChange] hoist 到 AppShell。
+  restoreFocusRequestKey: Int = 0,
+  restoreFocusTarget: String? = null,
+  onRestoreFocusHandled: (Int) -> Unit = {},
+  onFocusTargetChange: (String?) -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val coroutineScope = rememberCoroutineScope()
@@ -132,7 +140,17 @@ internal fun YoutubePlaylistDetailScreen(
   val backFocusRequester = remember { FocusRequester() }
   // 列表首行落点:「播放全部」按 ↓ 显式聚焦到它(覆盖层默认焦点搜索不可靠,P11-50/51 教训)。
   val firstRowFocusRequester = remember { FocusRequester() }
+  // P11-98:退出恢复 requester + 列表状态(恢复目标行需 scrollToItem 定位,否则 requester
+  // 永不挂节点)。restoreKey>0 时列表以目标行起始创建。
+  val restoreFocusRequester = remember { FocusRequester() }
   var firstFocusDone by remember { mutableStateOf(false) }
+  val restoreTargetRowIndex = restoreFocusTarget
+    ?.takeIf { it.startsWith("row:") }
+    ?.removePrefix("row:")
+    ?.toIntOrNull()
+  val listState = rememberLazyListState(
+    initialFirstVisibleItemIndex = if (restoreFocusRequestKey > 0) (restoreTargetRowIndex ?: 0) else 0,
+  )
   // 本屏(含子节点)是否持有焦点:焦点在遮挡层后面(频道页卡片)时为 false。
   var screenHasFocus by remember { mutableStateOf(false) }
   // 「合法焦点落点」(播放全部/视频行/返回 chip)是否真的拿到焦点。
@@ -219,7 +237,8 @@ internal fun YoutubePlaylistDetailScreen(
   // screenHasFocus,未确认继续拉,至多 InitialFocusMaxFrames 帧;焦点已在屏上(用户手动
   // 移动过)立即停,不抢焦点。
   LaunchedEffect(loading, failed) {
-    if (loading || firstFocusDone) return@LaunchedEffect
+    // P11-98:恢复在身时让位——restore effect 负责拉焦,初焦不抢(两次抢会互相覆盖)。
+    if (loading || firstFocusDone || restoreFocusRequestKey != 0) return@LaunchedEffect
     var attempt = 0
     var confirmed = false
     while (attempt < InitialFocusMaxFrames) {
@@ -250,6 +269,59 @@ internal fun YoutubePlaylistDetailScreen(
         "playAll=$playAllFocused rows=$focusedRowIndexes back=$backFocused screenHasFocus=$screenHasFocus",
     )
     firstFocusDone = true
+  }
+
+  // P11-98:从播放器返回时按离开前落点恢复焦点(镜像 TvVideoGrid 范式:scroll 定位目标行 +
+  // 等目标行进入视口布局 + 按帧重试)。此前详情页无任何恢复:PlayerScreen.onBack 的分支链
+  // 只认频道层,详情页起播被误 bump channel key,返回后整页冷重组无焦点(20:40:40 两次
+  // FocusRequester not initialized + 焦点落到 sidebar 实锤)。
+  LaunchedEffect(restoreFocusRequestKey, videos.size) {
+    if (restoreFocusRequestKey <= 0) return@LaunchedEffect
+    if (videos.isEmpty()) {
+      Log.w("BiliMT:Focus", "playlist-detail restore skipped: key=$restoreFocusRequestKey videos=0")
+      return@LaunchedEffect
+    }
+    firstFocusDone = true // 恢复接管,初焦不再抢
+    val target = restoreFocusTarget
+    Log.d(
+      "BiliMT:Focus",
+      "playlist-detail restore start: key=$restoreFocusRequestKey target=$target videos=${videos.size}",
+    )
+    val rowRequester = when {
+      target == null || target == "playall" -> playAllFocusRequester
+      target == "back" -> backFocusRequester
+      restoreTargetRowIndex != null -> {
+        val rowIndex = restoreTargetRowIndex.coerceIn(0, videos.lastIndex)
+        listState.scrollToItem(rowIndex)
+        null // 行 requester 由 itemsIndexed 挂在目标行上,此处只等布局
+      }
+      else -> playAllFocusRequester
+    }
+    if (rowRequester == null) {
+      var waited = 0
+      while (
+        !listState.layoutInfo.visibleItemsInfo.any { it.index == restoreTargetRowIndex } &&
+        waited < InitialFocusMaxFrames
+      ) {
+        withFrameNanos { }
+        waited++
+      }
+    }
+    var attempt = 0
+    while (attempt < InitialFocusMaxFrames && !legitFocusTargetHasFocus()) {
+      runCatching {
+        (rowRequester ?: restoreFocusRequester).requestFocus()
+      }
+      attempt++
+      withFrameNanos { }
+    }
+    val confirmed = legitFocusTargetHasFocus()
+    Log.i(
+      "BiliMT:Focus",
+      "playlist-detail restore done attempts=$attempt confirmed=$confirmed target=$target " +
+        "playAll=$playAllFocused rows=$focusedRowIndexes back=$backFocused",
+    )
+    onRestoreFocusHandled(restoreFocusRequestKey)
   }
 
   val cover = header?.cover?.takeIf { it.isNotBlank() } ?: playlist.thumbnail
@@ -299,7 +371,10 @@ internal fun YoutubePlaylistDetailScreen(
       YoutubePlaylistBackChip(
         focusRequester = backFocusRequester,
         onActivate = onBack,
-        onFocusedChange = { backFocused = it },
+        onFocusedChange = {
+          backFocused = it
+          if (it) onFocusTargetChange("back")
+        },
       )
       Text(
         text = playlist.title,
@@ -312,6 +387,7 @@ internal fun YoutubePlaylistDetailScreen(
       )
     }
     LazyColumn(
+      state = listState,
       modifier = Modifier.fillMaxSize(),
       contentPadding = androidx.compose.foundation.layout.PaddingValues(
         horizontal = BiliSizing.VideoGridHorizontalPadding,
@@ -409,6 +485,7 @@ internal fun YoutubePlaylistDetailScreen(
                       Log.i("BiliMT:FocusDiag", "playlist-playall focused=${it.isFocused}")
                     }
                     playAllFocused = it.isFocused
+                    if (it.isFocused) onFocusTargetChange("playall")
                   }
                   .onPreviewKeyEvent { event ->
                     val confirm = event.key == Key.Enter || event.key == Key.NumPadEnter ||
@@ -489,6 +566,11 @@ internal fun YoutubePlaylistDetailScreen(
               // 首行挂 requester 供「播放全部」↓ 显式落点;首行 ↑ 显式回「播放全部」。
               firstRow = index == 0,
               firstRowFocusRequester = firstRowFocusRequester,
+              // P11-98:恢复在身时目标行挂 restore requester(离开前聚焦的行)。
+              restoreFocusRequester = if (
+                restoreFocusRequestKey != 0 &&
+                index == restoreTargetRowIndex?.coerceIn(0, videos.lastIndex)
+              ) restoreFocusRequester else null,
               onMoveUpFromFirstRow = {
                 runCatching { playAllFocusRequester.requestFocus() }.isSuccess
               },
@@ -500,6 +582,7 @@ internal fun YoutubePlaylistDetailScreen(
                 // 按行号增删而非覆写:无关行入场补发的 isFocused=false 删不到持焦行号(no-op),
                 // 根级纠焦判据不再被无关行的回调清零(P11-93 反弹根因)。
                 focusedRowIndexes = if (focused) focusedRowIndexes + index else focusedRowIndexes - index
+                if (focused) onFocusTargetChange("row:$index")
               },
             )
           }
@@ -574,6 +657,7 @@ private fun YoutubePlaylistVideoRow(
   playing: Boolean,
   firstRow: Boolean,
   firstRowFocusRequester: FocusRequester,
+  restoreFocusRequester: FocusRequester? = null,
   onMoveUpFromFirstRow: () -> Boolean,
   onFocused: () -> Unit,
   onActivate: () -> Unit,
@@ -587,7 +671,12 @@ private fun YoutubePlaylistVideoRow(
     performancePolicy.cinematicVisualEffectsEnabled && performancePolicy.liquidGlassCardsEnabled
   val backdropPresent = LocalLiquidGlassBackdrop.current != null
   Row(
-    modifier = (if (firstRow) Modifier.focusRequester(firstRowFocusRequester) else Modifier)
+    // P11-98:恢复在身时目标行挂 restore requester(优先于首行 requester)。
+    modifier = (when {
+      restoreFocusRequester != null -> Modifier.focusRequester(restoreFocusRequester)
+      firstRow -> Modifier.focusRequester(firstRowFocusRequester)
+      else -> Modifier
+    })
       .fillMaxWidth()
       .clip(shape)
       // 聚焦高亮 = 实心粉底 + 粉边框(硬渲染,不再走玻璃链路,见 playlistFocusFill 注释)。

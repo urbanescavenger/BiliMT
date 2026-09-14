@@ -302,6 +302,10 @@ fun BiliTvApp(
   var channelOrigin by remember { mutableStateOf<SpaceOrigin?>(null) }
   var channelPlaybackBehind by remember { mutableStateOf(false) }
   var channelFocusRestoreRequestKey by remember { mutableIntStateOf(0) }
+  // P11-98:播放列表详情页的退出恢复 key + 离开前聚焦落点("playall"/"back"/"row:N")——
+  // 详情页在播放期间整页 dispose,remember 全丢,落点必须 hoist 到这里才能跨播放存活。
+  var playlistDetailFocusRestoreRequestKey by remember { mutableIntStateOf(0) }
+  var playlistDetailFocusTarget by remember { mutableStateOf<String?>(null) }
   // YouTube 播放列表详情页(TV):频道页"播放列表" tab 点卡片进入,覆盖在频道页之上。
   var youtubePlaylistRequest by remember { mutableStateOf<YoutubeParsers.YoutubePlaylist?>(null) }
   var playlistPlaybackBehind by remember { mutableStateOf(false) }
@@ -1630,6 +1634,14 @@ fun BiliTvApp(
                   playbackRequest = null
                   spaceFocusRestoreRequestKey += 1
                   Log.d(FocusLogTag, "video exit via upSpace(content): spaceRestoreKey bumped, no playback restore")
+                } else if (youtubePlaylistRequest != null) {
+                  // P11-98:从播放列表详情页起播——返回时可见层是详情页,arm 它自己的 restore。
+                  // 此前分支链只认频道层:详情页起播被误归 channel(bump 错层),返回后详情页
+                  // 冷重组无恢复、焦点丢(20:40:39 实锤)。必须排在 channel 分支之前——
+                  // 从详情页起播时频道请求也非空,判它就错了。
+                  playbackRequest = null
+                  playlistDetailFocusRestoreRequestKey += 1
+                  Log.d(FocusLogTag, "video exit via youtubePlaylistDetail: playlistRestoreKey bumped")
                 } else if (youtubeChannelRequest != null && channelOrigin == SpaceOrigin.Content) {
                   // 从 YouTube 频道页(内容来源)起播:返回时可见层是频道网格,arm 它的 restore
                   playbackRequest = null
@@ -1790,6 +1802,12 @@ fun BiliTvApp(
               playlistPlaybackBehind = false
               playbackRequest = video.toPlaybackRequest()
             },
+            restoreFocusRequestKey = playlistDetailFocusRestoreRequestKey,
+            restoreFocusTarget = playlistDetailFocusTarget,
+            onRestoreFocusHandled = { key ->
+              if (key == playlistDetailFocusRestoreRequestKey) playlistDetailFocusRestoreRequestKey = 0
+            },
+            onFocusTargetChange = { playlistDetailFocusTarget = it },
             onBack = {
               youtubePlaylistRequest = null
               playlistPlaybackBehind = false
