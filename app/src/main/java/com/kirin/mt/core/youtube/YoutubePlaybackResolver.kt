@@ -1295,7 +1295,7 @@ class YoutubePlaybackResolver(
     Log.i(Tag, "P11-101 probe ③: playerJsUrl=${playerJsUrl?.take(90) ?: "ABSENT"}")
     var current = dashUrl
     val sParam = dashUri.getQueryParameter("s")
-    if (!sParam.isNullOrBlank()) {
+    if (!sParam.isNullOrBlank() && playerJsUrl != null) {
       val spParam = dashUri.getQueryParameter("sp") ?: "signature"
       val decipheredS = runCatching { sDecryptor.decrypt(sParam, playerJsUrl) }.getOrNull()
       Log.i(Tag, "P11-101 probe ③: s-decrypt=${if (decipheredS.isNullOrBlank()) "FAILED" else "ok(${sParam.length}->${decipheredS.length})"}")
@@ -1304,7 +1304,9 @@ class YoutubePlaybackResolver(
       }
     }
     val nBefore = Uri.parse(current).getQueryParameter("n")
-    current = nDecryptor.decrypt(current, playerJsUrl)
+    if (playerJsUrl != null) {
+      current = nDecryptor.decrypt(current, playerJsUrl)
+    }
     val nAfter = Uri.parse(current).getQueryParameter("n")
     Log.i(
       Tag,
