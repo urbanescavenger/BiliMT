@@ -78,6 +78,13 @@ internal class SabrMediaFetcher(
   private val session = entry.session
   private val poTokenState = entry.poTokenState
 
+  /**
+   * alpha.9X:本会话绑定的 videoId(透传 [entry.videoId])。供 [SabrDataSource.open] 在
+   * RELOAD_PLAYER_RESPONSE 已发生(reloadCount>0)时快速失败判定,免得 ExoPlayer chunk load
+   * 重试逐个白跑网络请求。
+   */
+  val videoId: String? get() = entry.videoId
+
   /** 已初始化格式(itag → InitializedFormat)。FORMAT_INITIALIZATION_METADATA part 建表。 */
   private val initializedFormats = mutableMapOf<Int, InitializedFormat>()
   /** 正在处理的 partial 段(headerId → Segment,MEDIA 累积/MEDIA_END 收尾)。 */

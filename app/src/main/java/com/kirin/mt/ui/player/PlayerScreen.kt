@@ -1438,7 +1438,23 @@ fun PlayerScreen(
           "player error code=${error.errorCode} codeName=${error.errorCodeName} message=${error.message}",
           error,
         )
-        playerState = PlayerScreenState.Failed(error.message.orEmpty())
+        // alpha.9X:player error 自动重试(对齐 MobilePlayerScreen onPlayerErrorChanged)。SABR RELOAD
+        // PLAYER_RESPONSE 终止包路径:DataSource.open 抛 IOException → source error → 此前 TV 端只置
+        // Failed,重 resolve(alpha.93 守卫 → DASH/HLS 兜底)永远没机会跑 →「DASH 兜底不生效」。
+        // bump retryKey → launch effect 重 resolve:registry reloadCount>0 守卫跳过 SABR 落 DASH。
+        // 记当前位置进 autoResumePositionMs 续播(不回退 saved progress)。预算同 stall 看门狗共享
+        // autoRetryCount(MaxStallAutoRetry),isPlaying 后清零;超限置 Failed 交用户手动重试。
+        if (autoRetryCount < MaxStallAutoRetry) {
+          autoRetryCount += 1
+          autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
+          Log.w(
+            PlayerPlaybackLogTag,
+            "playback error, auto-retry #${autoRetryCount} @pos=${autoResumePositionMs}ms: ${error.message}",
+          )
+          retryKey += 1L
+        } else {
+          playerState = PlayerScreenState.Failed(error.message.orEmpty())
+        }
       }
 
       override fun onPlayerErrorChanged(error: PlaybackException?) {
