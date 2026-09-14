@@ -18,9 +18,11 @@ import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.sabr.FormatId as SabrFormatId
 import com.kirin.mt.core.youtube.sabr.SabrAudioTrack
 import com.kirin.mt.core.youtube.sabr.SabrClient
+import com.kirin.mt.core.youtube.sabr.SabrFetchRequest
 import com.kirin.mt.core.youtube.sabr.SabrFetchResult
 import com.kirin.mt.core.youtube.sabr.SabrSession
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
+import com.kirin.mt.core.youtube.sabr.SabrStreamType
 import android.net.Uri
 import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
 import com.kirin.mt.core.youtube.piped.PipedClient
@@ -1270,17 +1272,91 @@ class YoutubePlaybackResolver(
     // ② dashManifestUrl 在否/参数键
     val dashUrl = streamingData?.stringOrNull("dashManifestUrl")
     if (dashUrl.isNullOrBlank()) {
-      // 备选变体判据:adaptive 直链在否(url vs signatureCipher,Phase 2 变体的数据源)
-      val adaptive = streamingData?.array("adaptiveFormats").orEmpty()
-      val first = (adaptive.firstOrNull() as? JsonObject)
-      val firstUrl = first?.stringOrNull("url")
-      val firstCipher = first?.stringOrNull("signatureCipher")
+      // P11-101 Phase 2 修订:真机 r1916 实测 WEB /player 带token → dashManifestUrl ABSENT 且
+      // adaptive=34 全无 url/cipher(SABR-only 门控签名),但 serverAbrStreamingUrl 在。
+      // → 转测 WEB SABR 变体(= alpha.85b 机制 + 现在的 decipher):③' sabrUrl n-param + n-decrypt;
+      // ④' 构 WEB SABR 会话 + POST init,verdict(MEDIA ok vs RELOAD vs 403)。
+      val sabrData = parseSabrData(player)
+      if (sabrData == null) {
+        val combined = streamingData?.array("formats").orEmpty().mapNotNull { it as? JsonObject }
+        val firstCombinedUrl = combined.firstOrNull()?.stringOrNull("url")
+        Log.w(
+          Tag,
+          "P11-101 probe ③': parseSabrData ABSENT(无 sabrUrl/ustreamerCfg) " +
+            "combined=${combined.size} firstCombinedUrl=${if (firstCombinedUrl.isNullOrBlank()) "ABSENT" else "present(${firstCombinedUrl.length}B)"}",
+        )
+        return
+      }
+      val sabrN = sabrData.sabrUrl.let { Uri.parse(it).getQueryParameter("n") }
       Log.i(
         Tag,
-        "P11-101 probe ②: dashManifestUrl ABSENT adaptive=${adaptive.size} " +
-          "firstUrl=${if (firstUrl.isNullOrBlank()) "ABSENT" else "present(${firstUrl.length}B)"} " +
-          "firstCipher=${if (firstCipher.isNullOrBlank()) "none" else "present"}",
+        "P11-101 probe ③': WEB-SABR sabrUrl=${sabrData.sabrUrl.length}B n-param=${if (sabrN.isNullOrBlank()) "ABSENT(n-free)" else "present(${sabrN.length}B)"} " +
+          "ustreamerCfg=${sabrData.ustreamerCfgB64.length}B raws=${sabrData.raws.size}",
       )
+      // combined/progressive 保底判据(itag18 不受 PO token 强制,yt-dlp #12363)
+      val playerStreaming = player.obj("streamingData")
+      val combinedFormats = playerStreaming?.array("formats").orEmpty().mapNotNull { it as? JsonObject }
+      val firstCombinedUrl = combinedFormats.firstOrNull()?.stringOrNull("url")
+      Log.i(
+        Tag,
+        "P11-101 probe ③': combined=${combinedFormats.size} " +
+          "firstCombinedUrl=${if (firstCombinedUrl.isNullOrBlank()) "ABSENT" else "present(${firstCombinedUrl.length}B)"}",
+      )
+      // n-decrypt 尝试(plasma 时代可能 stale,verdict 即结论)
+      val playerJsUrl2 = resolvePlayerJsUrl(videoId)
+      var sabrUrlT = sabrData.sabrUrl
+      if (!sabrN.isNullOrBlank() && playerJsUrl2 != null) {
+        sabrUrlT = nDecryptor.decrypt(sabrData.sabrUrl, playerJsUrl2)
+        val nAfter = Uri.parse(sabrUrlT).getQueryParameter("n")
+        Log.i(
+          Tag,
+          "P11-101 probe ③': n-decrypt=${if (sabrUrlT != sabrData.sabrUrl && nAfter != sabrN) "transformed" else "unchanged/failed"} (n $sabrN → $nAfter)",
+        )
+      }
+      // ④' 全链终极判据:WEB SABR 会话 + init POST(对齐 buildSabrSessionFromReloadPlayer WEB 分支)
+      val webPo = poToken
+      if (webPo != null && playerJsUrl2 != null) {
+        val raws = sabrData.raws
+        val videoRaws = raws.filter { (it.intOrNull("height") ?: 0) > 0 }
+        val audioRaws = raws.filter { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
+        val firstVideo = videoRaws.firstOrNull()
+        val firstAudio = audioRaws.firstOrNull { (it.stringOrNull("xtags") ?: "").contains("acont=original") }
+          ?: audioRaws.firstOrNull()
+        if (firstVideo != null && firstAudio != null) {
+          val videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) }
+          val session = SabrSession.fromSabrData(
+            sabrUrlT, webPo, sabrData.ustreamerCfgB64,
+            innerTubeClient.sabrClientInfo(),
+            rawToSabrFormatId(firstAudio, 0), rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0),
+            userAgent = InnerTubeClient.Client.WEB.userAgent,
+            cookieHeader = "", visitorData = "",
+            cpn = queryParam(sabrData.sabrUrl, "cpn").orEmpty(),
+            videoFormats = videoFormats,
+          )
+          val result = runCatching {
+            SabrClient(httpClient).fetch(session, SabrFetchRequest(isInit = true, streamType = SabrStreamType.VIDEO, videoItag = session.videoFormatId.itag))
+          }.getOrNull()
+          when (result) {
+            is SabrFetchResult.Success ->
+              Log.i(Tag, "P11-101 probe ④': SABR init POST → MEDIA ok bytes=${result.data.size} mediaHeader=${result.mediaHeader != null} (全链通 → Phase 2 go)")
+            is SabrFetchResult.Redirect ->
+              Log.i(Tag, "P11-101 probe ④': SABR init POST → Redirect(newUrl=${result.newSabrUrl.length}B)")
+            is SabrFetchResult.Backoff ->
+              Log.i(Tag, "P11-101 probe ④': SABR init POST → Backoff(${result.ms}ms,会话被接受但缓发)")
+            is SabrFetchResult.ReloadPlayer ->
+              Log.w(Tag, "P11-101 probe ④': SABR init POST → RELOAD again(服务端拒会话) dump=${result.dump.take(80)}")
+            SabrFetchResult.InvalidPoToken ->
+              Log.w(Tag, "P11-101 probe ④': SABR init POST → InvalidPoToken(token 被拒)")
+            is SabrFetchResult.Error ->
+              Log.w(Tag, "P11-101 probe ④': SABR init POST → Error ${result.message.take(120)}")
+            null -> Log.w(Tag, "P11-101 probe ④': SABR init POST threw(见上方异常日志)")
+          }
+        } else {
+          Log.w(Tag, "P11-101 probe ④': raws 无可选轨(video=${firstVideo != null} audio=${firstAudio != null})")
+        }
+      } else {
+        Log.w(Tag, "P11-101 probe ④': 跳过(poToken=${webPo != null} playerJsUrl=${playerJsUrl2 != null})")
+      }
       return
     }
     val dashUri = Uri.parse(dashUrl)
