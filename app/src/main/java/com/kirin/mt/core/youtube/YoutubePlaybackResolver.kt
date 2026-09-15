@@ -1905,7 +1905,10 @@ class YoutubePlaybackResolver(
     )
     val sid = SabrStreamRegistry.registerByVideoId(
       videoId, session, SabrClient(httpClient),
-      refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
+      // ⚠️ 刷新回调用会话自己的 minter(botGuard)——首版接 biliTvPoTokenProvider(PoTokenWebView),
+      // 其输出 888B 且绑它自己的 visitorData(09-15 08:55 真机:60s 时 status=2 → refreshed 888B
+      // → 下一请求 status=3 → 60s 重载循环)。WEB 会话身份 = YoutubeBotGuard token,同 minter 续命。
+      refreshPoToken = { botGuard.generatePoToken(videoId)?.toByteArray(Charsets.UTF_8) },
     )
     // WEB 会话是全新身份(探针 init POST 已被服务端接受)——清零 videoId 的 reload 计数,
     // 否则旧 visionOS 死会话留下的计数会触发 SabrDataSource fast-fail 误杀新会话
