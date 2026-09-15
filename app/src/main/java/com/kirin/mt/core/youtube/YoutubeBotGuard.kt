@@ -444,9 +444,6 @@ class YoutubeBotGuard(
   // ---- GenerateIT ----
 
   private suspend fun generateIntegrityToken(botguardResponse: String): String? = withContext(Dispatchers.IO) {
-    val genCookie = innerTubeClient.currentSessionCookies()
-    val genVisitor = innerTubeClient.currentVisitorData()
-    Log.i(Tag, "GenerateIT cookie=${genCookie.take(60)} visitor=${genVisitor.take(24)}")
     val body = "[\"$RequestKey\",${jsonString(botguardResponse)}]".toRequestBody(JsonProtobufMediaType)
     val request = Request.Builder()
       // 对齐 FreeTube botGuardScript.js 的 buildURL('GenerateIT', true) = www.youtube.com/api/jnn/v1/GenerateIT。
@@ -457,13 +454,15 @@ class YoutubeBotGuard(
       .header("Content-Type", "application/json+protobuf")
       .header("x-goog-api-key", WaaApiKey)
       .header("x-user-agent", "grpc-web-javascript/0.1")
-      .header("User-Agent", YoutubeConstants.MobileUserAgent)
-      // 对齐 FreeTube botGuardScript.js：GenerateIT 在 WebView 同源发，自动携带完整浏览器
-      // cookie(含 VISITOR_INFO1_LIVE) + visitorData。我们 OkHttp 直发必须显式带 Cookie +
-      // X-Goog-Visitor-Id，否则 integrityToken 未绑定到会话 → 最终 PO token 无效 → /player 拒签
-      // DASH 流(§6.7 row 34)。
-      .header("Cookie", innerTubeClient.currentSessionCookies())
-      .header("X-Goog-Visitor-Id", innerTubeClient.currentVisitorData())
+      .header("User-Agent", YoutubeConstants.UserAgent)
+      // P11-105(裸发,对齐 FreeTube/FreeTubeAndroid):FreeTube botGuardScript.js 的 GenerateIT 只带
+      // content-type/x-goog-api-key/x-user-agent 三头(且 token 铸造跑在 Electron cookie-less
+      // partition session,§6.7 row 35 实证"alpha.10 加的 cookie 是多余且非根因");FreeTubeAndroid
+      // bgwebview(全新 WebView 无会话 cookie)同样等效裸发。row 34 加的 Cookie+X-Goog-Visitor-Id
+      // 把 integrityToken 绑到移动浏览器会话 visitor——而 P11-103 起挑战已来自桌面 watch 页
+      // (ytAtN.R 自带页面 visitor),跨会话绑定正是 attestation 链断点:铸出的 token 被 SABR 服务端
+      // 逐请求 status=2 nag、playerTimeMs≥60s 升 status=3(P11-104 请求形状对齐后 nag 仍在,
+      // 排除请求体因素)。row 34 的 cookie 结论属旧 create 链时代,page-challenge 链对齐两参照裸发。
       .build()
     var status = 0
     val text = runCatching {
