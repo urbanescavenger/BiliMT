@@ -1879,6 +1879,13 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "WEB-SABR: parseSabrData ABSENT(无 sabrUrl/ustreamerCfg)→ abort")
       return null
     }
+    // P11-112(诊断):/player 响应的 serverAbrStreamingUrl 参数键——与 FreeTube HAR 对比
+    //(FT: alr,c=WEB,cpn,cps,keepalive,n,rqh,sabr,spc,svpuc,... 1000B)。服务端签发的参数集
+    // 是它对会话信任度的可见信号;若我们缺 c/keepalive/sabr/svpuc 等键,差异在 /player 会话身份。
+    runCatching {
+      val keys = Uri.parse(sd.sabrUrl).getQueryParameterNames()
+      Log.i(Tag, "WEB-SABR sabrUrl params(${keys.size}): $keys len=${sd.sabrUrl.length}")
+    }
     // 选轨(对齐 reload harvest:startHeight 上限内最高档)
     val raws = sd.raws
     val videoRaws = raws.filter { (it.intOrNull("height") ?: 0) > 0 }
