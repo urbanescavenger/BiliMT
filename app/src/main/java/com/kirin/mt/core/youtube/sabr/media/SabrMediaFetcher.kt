@@ -491,7 +491,23 @@ internal class SabrMediaFetcher(
             }
             // 终端检查(media 可能置位)
             reloadPlayerDump?.let { throw SabrTerminalException("RELOAD_PLAYER_RESPONSE: $it") }
-            if (invalidPo) throw SabrTerminalException("InvalidPoToken (StreamProtectionStatus status=3)")
+            if (invalidPo) {
+              // P11-102d 取证:分辨「60s 服务窗口」vs「sabrContexts 全空」。窗口假设 → sessAgeMs/
+              // sessReqN 落在 ~60s 边界;contexts 假设 → unhandledParts(52/53/57)非零且 ctx 恒 0。
+              val ranges = initializedFormats.values.flatMap { it.buildBufferedRanges() }
+                .joinToString { "itag${it.itag}:s${it.startTimeMs}+${it.durationMs}(${it.startSegmentIndex}-${it.endSegmentIndex})" }
+              Log.w(
+                tag,
+                "InvalidPoToken diag: sessAgeMs=${System.currentTimeMillis() - entry.diagSessionStartMs}" +
+                  " sessReqN=${entry.diagRequestCount.get()} status2Seen=${entry.diagStatus2Count.get()}" +
+                  " pot=${poTokenState.currentPoToken.size}B" +
+                  " ctxActive=${session.activeSabrContextTypes.size} ctxStored=${session.sabrContexts.size}" +
+                  " unhandled=${entry.diagUnhandledParts.entries.sortedBy { it.key }.joinToString { "${it.key}x${it.value}" }.ifEmpty { "none" }}" +
+                  " req=[itag=${req.formatItag} seg=${req.segment} playerTimeMs=${req.segmentStartTimeMs}]" +
+                  " ranges=[$ranges]",
+              )
+              throw SabrTerminalException("InvalidPoToken (StreamProtectionStatus status=3)")
+            }
             fatalError?.let { throw SabrTerminalException("SABR error: $it") }
 
             fmt = initializedFormats[itag]
@@ -585,6 +601,7 @@ internal class SabrMediaFetcher(
     }
 
     val now = System.currentTimeMillis()
+    entry.diagRequestCount.incrementAndGet() // P11-102d 会话级请求计数(status=3 取证)
     val lastMs = lastRequestMs.get()
     val elapsed = if (lastMs > 0L) (now - lastMs).coerceAtLeast(0L) else 0L
 
@@ -855,7 +872,10 @@ internal class SabrMediaFetcher(
         // status=2(Attestation pending)= 服务端预警 → media() 的 readParts 后同步重铸 PO token
         // (阻塞 loader 线程 ~1s,看门狗已取消无 8s cancel 风险)。下个请求一定带新 token → status=3
         // 不再出现。异步(alpha.66 maybeRefreshPoToken)有竞态:刷新晚一拍撞 status=3 → 全量重载。
-        else if (status == 2) needsPoTokenRefresh = true
+        else if (status == 2) {
+          needsPoTokenRefresh = true
+          entry.diagStatus2Count.incrementAndGet() // P11-102d
+        }
       }
       PART_RELOAD_PLAYER_RESPONSE -> {
         // Phase 1(diag):结构化解析。reloadToken = ReloadPlaybackParams.token(整串 base64),
@@ -897,6 +917,7 @@ internal class SabrMediaFetcher(
         Log.w(tag, "SABR_ERROR type=${err?.type} code=${err?.code}")
       }
       else -> {
+        entry.diagUnhandledParts.merge(type, 1, Int::plus) // P11-102d 未识别 part 计数
         Log.i(tag, "part type=$type payloadLen=${payload.size} (unhandled)")
       }
     }

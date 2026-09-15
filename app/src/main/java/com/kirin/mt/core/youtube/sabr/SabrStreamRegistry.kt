@@ -254,6 +254,17 @@ internal object SabrStreamRegistry {
      */
     val videoFirstStartMs = AtomicLong(0L)
     val audioFirstStartMs = AtomicLong(0L)
+
+    // ── P11-102d 诊断:status=3(InvalidPoToken)终端取证计数 ──
+    // r1931 真机:同一 fresh token 一次收(seg=12)一次拒(seg=13, playerTimeMs=61440>60000),
+    // 3 会话不同 token 全死同一 playerTimeMs → token 无关。候选机制:60s 服务窗口(锚 0,续播
+    // 吃光)vs sabrContexts 全空(contexts=0/0,type 52/53 part 未处理)。本组计数给一次真机分辨:
+    // 窗口假设 → sessAgeMs/请求序号落在 ~60s 边界;contexts 假设 → unhandledParts(52/53/57)
+    // 非零且 ctxActive/ctxStored 恒 0。
+    val diagSessionStartMs = System.currentTimeMillis()
+    val diagStatus2Count = AtomicLong(0L)
+    val diagRequestCount = AtomicLong(0L)
+    val diagUnhandledParts = ConcurrentHashMap<Int, Int>()
   }
 
   /**
