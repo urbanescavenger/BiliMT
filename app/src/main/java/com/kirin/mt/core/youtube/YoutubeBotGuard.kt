@@ -172,7 +172,13 @@ class YoutubeBotGuard(
     val watch = fetchHtmlPageData(
       "https://www.youtube.com/watch?v=$videoId&bpctr=9999999999&has_verified=1", "watch",
     )
-    if (watch != null) return watch
+    // P11-106 修复:watch 结果必须写缓存——webSessionIdentity() 从缓存取桌面会话身份,
+    // 首版漏写导致桌面 override 恒 null(r1937 日志:page data ctx=true 但 /player 仍 ctxOs=Android/13)。
+    // 顺带恢复原语义:同 videoId 的 mint 不重复抓页(每页 ~1.4MB)。
+    if (watch != null) {
+      cachedPageData = videoId to watch
+      return watch
+    }
     Log.w(Tag, "watch page unusable → homepage fallback for the rest of the session (FreeTube 9637)")
     homepageFallback = true
     val home = fetchHtmlPageData("https://www.youtube.com/", "home")
