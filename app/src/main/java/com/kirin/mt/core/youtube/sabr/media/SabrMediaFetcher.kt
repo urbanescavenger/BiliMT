@@ -630,28 +630,66 @@ internal class SabrMediaFetcher(
     // 为 null),对齐 LibreTube 发空串("" 而非 "default")——多音轨视频(如 jNl6YkkzKxw 5 音轨)发真实 id。
     val audioTrackId = session.audioTracks.firstOrNull { it.formatId.itag == audioFormat?.itag }?.id
       ?.takeIf { it != "default" } ?: ""
-    val clientAbrState = ClientAbrStateInput(
-      timeSinceLastManualFormatSelectionMs = lastManualFormatSelectionMs?.let { now - it } ?: 0L,
-      lastManualSelectedResolution = max(vHeight, 360),
-      clientViewportWidth = 640,
-      clientViewportHeight = max(vHeight, 360),
-      stickyResolution = max(vHeight, 360),
-      clientViewportIsFlexible = false,
-      bandwidthEstimate = 0L,
-      // 请求体 playerTimeMs = 段起点(对齐 LibreTube setPlayerTimeMs(segmentStartTimeMs))
-      playerTimeMs = playerTimeMs,
-      timeSinceLastSeekMs = lastSeekMs?.let { now - it } ?: 0L,
-      visibility = 1,
-      playbackRate = req.playbackSpeed,
-      elapsedWallTimeMs = elapsed,
-      timeSinceLastActionMs = lastActionMs?.let { now - it } ?: 0L,
-      // alpha.64 单流:bitfield=0(A+V,videoFormat 存在时)。alpha.63 双流用 2(VIDEO_ONLY)/1(AUDIO_ONLY)
-      // 是 60s 断崖根因——服务端双流模型在 ~60s 边界软拒。单流 bitfield=0 对齐 LibreTube。
-      enabledTrackTypesBitfield = if (videoFormat == null) 1 else 0,
-      drcEnabled = false,
-      enableVoiceBoost = false,
-      audioTrackId = audioTrackId,
-    )
+    // P11-104(WEB-SABR 请求体对齐 FreeTube 实测形状):FreeTube HAR(2026-09-15 bundle.har,门控视频
+    // KXXZbbnm9t0 全 31 请求逐字节解码)显示 WEB 客户端请求体只含 clientAbrState{16 lastManualResolution/
+    // 18 viewportW/19 viewportH/21 sticky/23 bandwidthEstimate(真实值)/28 playerTimeMs/35 playbackRate/
+    // 40 bitfield(仅 audio=1,video 省略=默认 0)}+ selected/buffered/ustreamer/preferred + streamerContext
+    // {clientInfo **仅 4 字段**(clientName/version/osName/osVersion),poToken,cookie};全部零值/布尔默认
+    // **省略不写**。同一 token(90B)全会话不变一路播到 playerTimeMs=138240——服务端不 nag。
+    // 我们此前:12 字段 clientInfo + 显式零值(timeSince*/visibility/drc/voiceBoost/audioTrackId="")
+    // + bandwidthEstimate=0 → 服务端从首请求起 status=2 nag、playerTimeMs≥60s 升 status=3
+    // (r1933:sessAgeMs=7.8s 实锤,判据是播放位置非会话墙钟)。visionOS 路径(能播)不动,webShape
+    // 仅对 clientName=1(WEB)生效。
+    val webShape = session.clientInfo.clientName == 1
+    val bwEstimateBps = getRealBitrateEstimate()
+    val clientAbrState = if (webShape) {
+      ClientAbrStateInput(
+        lastManualSelectedResolution = max(vHeight, 360),
+        clientViewportWidth = 640,
+        clientViewportHeight = max(vHeight, 360),
+        stickyResolution = max(vHeight, 360),
+        bandwidthEstimate = bwEstimateBps.takeIf { it > 0 },
+        // 请求体 playerTimeMs = 段起点(既有结论 alpha.37,FreeTube 实测同为段位附近)
+        playerTimeMs = playerTimeMs,
+        playbackRate = req.playbackSpeed,
+        enabledTrackTypesBitfield = if (videoFormat == null) 1 else null, // video→省略(=0,FreeTube 同)
+      )
+    } else {
+      ClientAbrStateInput(
+        timeSinceLastManualFormatSelectionMs = lastManualFormatSelectionMs?.let { now - it } ?: 0L,
+        lastManualSelectedResolution = max(vHeight, 360),
+        clientViewportWidth = 640,
+        clientViewportHeight = max(vHeight, 360),
+        stickyResolution = max(vHeight, 360),
+        clientViewportIsFlexible = false,
+        bandwidthEstimate = 0L,
+        // 请求体 playerTimeMs = 段起点(对齐 LibreTube setPlayerTimeMs(segmentStartTimeMs))
+        playerTimeMs = playerTimeMs,
+        timeSinceLastSeekMs = lastSeekMs?.let { now - it } ?: 0L,
+        visibility = 1,
+        playbackRate = req.playbackSpeed,
+        elapsedWallTimeMs = elapsed,
+        timeSinceLastActionMs = lastActionMs?.let { now - it } ?: 0L,
+        // alpha.64 单流:bitfield=0(A+V,videoFormat 存在时)。alpha.63 双流用 2(VIDEO_ONLY)/1(AUDIO_ONLY)
+        // 是 60s 断崖根因——服务端双流模型在 ~60s 边界软拒。单流 bitfield=0 对齐 LibreTube。
+        enabledTrackTypesBitfield = if (videoFormat == null) 1 else 0,
+        drcEnabled = false,
+        enableVoiceBoost = false,
+        audioTrackId = audioTrackId,
+      )
+    }
+    val clientInfo = if (webShape) {
+      // P11-104:FreeTube WEB clientInfo 仅 4 字段(HAR 实测)——多余设备指纹字段
+      //(deviceMake/Model、acceptLanguage/Region、screen、formFactor、utcOffset、timeZone)全部去掉。
+      session.clientInfo.copy(
+        deviceMake = null, deviceModel = null, acceptLanguage = null, acceptRegion = null,
+        screenWidthPoints = null, screenHeightPoints = null, screenPixelDensity = null,
+        clientFormFactor = null, androidSdkVersion = null, screenDensityFloat = null,
+        utcOffsetMinutes = null, timeZone = null,
+      )
+    } else {
+      session.clientInfo
+    }
     val input = SabrRequestInput(
       clientAbrState = clientAbrState,
       selectedFormatIds = selected,
@@ -661,13 +699,13 @@ internal class SabrMediaFetcher(
       preferredAudioFormatIds = listOfNotNull(audioEnc),
       preferredVideoFormatIds = listOfNotNull(videoEnc),
       preferredSubtitleFormatIds = emptyList(),
-      streamerContext = streamerContext,
+      streamerContext = streamerContext.copy(clientInfo = clientInfo),
     )
     val body = SabrProto.encodeVideoPlaybackAbrRequest(input)
     val rn = requestNumber.getAndIncrement()
     lastRequestMs.set(now)
     val url = "${session.sabrUrl}&rn=$rn"
-    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs bitfield=${if (videoFormat == null) 1 else 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} audioTrackId=\"$audioTrackId\" body=${body.size}B")
+    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs shape=${if (webShape) "ft" else "libre"} bitfield=${clientAbrState.enabledTrackTypesBitfield ?: 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} bw=${bwEstimateBps}bps body=${body.size}B")
 
     val request = Request.Builder()
       .url(url)
