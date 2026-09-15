@@ -94,10 +94,22 @@ class YoutubeBotGuard(
     Log.i(Tag, "challenge ok: source=${challenge.source} interpreter=${interpreterJs.length}B program=${program.length}B global=$globalName")
 
     // 2) 加载 interpreter JS 进 WebView（定义 window[globalName]）。
-    // 用 try-catch 包裹捕获 interpreter JS 的运行时错误（evaluateJavascript 对抛错脚本返回 null）。
-    val wrappedInterpreter = "try { $interpreterJs } catch(e) { window.__interpreterError = String(e && e.stack || e); }"
-    val interpreterEval = executor.eval(wrappedInterpreter)
-    Log.i(Tag, "interpreter eval result=${interpreterEval?.take(60)}")
+    // P11-110:优先 <script src> 标签加载(对齐 FreeTube botGuardScript.js 的 script 元素加载 +
+    // FreeTubeAndroid bgwebview 同款)——两参照都不用 eval;BotGuard VM 对脚本执行上下文敏感
+    // (c42fee2c7 专门把 fetch+new Function 改成 script 元素)。eval 文本路径保留作兜底。
+    var interpreterLoaded = false
+    challenge.interpreterUrl?.let { url ->
+      interpreterLoaded = loadInterpreterViaScript(url)
+      Log.i(Tag, "interpreter script-tag load: $interpreterLoaded")
+    }
+    if (!interpreterLoaded) {
+      val interpreterJs = challenge.interpreterJavascript ?: return null
+      // 用 try-catch 包裹捕获 interpreter JS 的运行时错误（evaluateJavascript 对抛错脚本返回 null）。
+      val wrappedInterpreter = "try { $interpreterJs } catch(e) { window.__interpreterError = String(e && e.stack || e); }"
+      val interpreterEval = executor.eval(wrappedInterpreter)
+      Log.i(Tag, "interpreter eval result=${interpreterEval?.take(60)}")
+    }
+    val interpreterError = executor.eval("window.__interpreterError")
     val interpreterError = executor.eval("window.__interpreterError")
     Log.i(Tag, "interpreter error: $interpreterError")
     // 确认 window[globalName] 是否真的定义了。
@@ -128,6 +140,8 @@ class YoutubeBotGuard(
     val globalName: String?,
     /** P11-101 Phase 2d:挑战来源诊断(page-bgChallenge / att-get / create)。 */
     val source: String = "create",
+    /** P11-110:interpreter CDN URL——有则用 <script> 标签加载(两参照同款),无则 eval 兜底。 */
+    val interpreterUrl: String? = null,
   )
 
   private suspend fun fetchChallenge(): Challenge? {
@@ -357,7 +371,7 @@ class YoutubeBotGuard(
       return null
     }
     Log.i(Tag, "page bgChallenge ok: interpreter=${interpreterJs.length}B program=${program.length}B")
-    return Challenge(interpreterJs, program, globalName, source = "page-bgChallenge")
+    return Challenge(interpreterJs, program, globalName, source = "page-bgChallenge", interpreterUrl = interpreterUrl)
   }
 
   /** /att/get fallback:页面未带 bgChallenge 时,用 eacrToken 换新 challenge(FreeTube botGuardScript 同款)。 */
@@ -406,10 +420,37 @@ class YoutubeBotGuard(
       return null
     }
     Log.i(Tag, "att-get challenge ok: interpreter=${interpreterJs.length}B program=${program.length}B")
-    return Challenge(interpreterJs, program, globalName, source = "att-get")
+    return Challenge(interpreterJs, program, globalName, source = "att-get", interpreterUrl = url)
   }
 
   // ---- WebView snapshot / mint ----
+
+  /**
+   * P11-110:interpreter 经 **<script src> 标签**加载进宿主页(对齐 FreeTube botGuardScript.js 的
+   * script 元素加载 + FreeTubeAndroid bgwebview)。两参照均不以 eval 注入 interpreter;BotGuard VM
+   * 对脚本执行上下文敏感(c42fee2c7 专门把 fetch+new Function 换成 script 元素)。轮询加载完成,
+   * 超时/失败返回 false(调用方落 eval 兜底)。
+   */
+  private suspend fun loadInterpreterViaScript(url: String): Boolean {
+    executor.eval(
+      "(function(){ window.__interpLoad={status:'pending'}; var s=document.createElement('script'); " +
+        "s.src=${jsonString(url)}; s.onload=function(){window.__interpLoad={status:'loaded'}}; " +
+        "s.onerror=function(){window.__interpLoad={status:'error'}}; document.head.appendChild(s); })()"
+    )
+    val deadline = System.currentTimeMillis() + InterpreterLoadTimeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      val raw = executor.eval("JSON.stringify(window.__interpLoad)")
+      // evaluateJavascript 对字符串结果再包一层 JSON 编码(带引号)——先解外层再解对象(pollState 同款)。
+      val inner = runCatching { json.parseToJsonElement(raw ?: "").jsonPrimitive.contentOrNull }.getOrNull() ?: raw
+      when (runCatching { json.parseToJsonElement(inner).jsonObject.stringOrNull("status") }.getOrNull()) {
+        "loaded" -> return true
+        "error" -> return false
+      }
+      delay(100)
+    }
+    Log.w(Tag, "interpreter script-tag load timeout ($url)")
+    return false
+  }
 
   private suspend fun runSnapshot(program: String, globalName: String, contentBinding: JsonObject): JsonObject? {
     // 诊断:确认 js_shell.html 的桌面指纹 polyfill 在真机生效(VM 读到与 context 一致的桌面环境)。
@@ -564,6 +605,8 @@ class YoutubeBotGuard(
     const val RequestKey = "O43z0dpjhgX20SCx4KAo"
     const val WaaApiKey = "AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw"
     const val PollTimeoutMs = 6_000L
+    // P11-110:interpreter <script> 标签加载超时(CDN 63KB,真机 ~1s;留裕量)。
+    const val InterpreterLoadTimeoutMs = 10_000L
     // /att/get 的 program 更大(35KB>10KB),VM 加载/eval 更慢,8s 首尝试会 timeout,加到 20s。
     const val OverallTimeoutMs = 20_000L
     val JsonProtobufMediaType = "application/json+protobuf".toMediaType()
