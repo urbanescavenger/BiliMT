@@ -810,6 +810,12 @@ class YoutubePlaybackResolver(
       .firstOrNull { it.startsWith("$key=") }?.substringAfter("=")
   }
 
+  /** P11-113:16 字符随机 cpn(youtubei.js Utils.generateRandomString(16) 同源,FT Watch.js L659 同款)。 */
+  private fun generateCpn(): String {
+    val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    return buildString { repeat(16) { append(alphabet.random()) } }
+  }
+
   /** path C:[StreamInfo.getInfo] 的结果包装——session + 供 buildSabrPlaybackInfo 的 raws + 时长 + 字幕。 */
   private data class NewPipeSabrResult(
     val session: SabrSession,
@@ -1923,6 +1929,16 @@ class YoutubePlaybackResolver(
       else sabrUrl.replaceFirst("&n=${Uri.encode(sabrN)}", "&n=${Uri.encode(solverN)}")
       Log.i(Tag, "WEB-SABR: n transformed($sabrN → $solverN)")
     }
+    // P11-113(对齐 FreeTube Watch.js L1739-1740):cpn 是**客户端生成**的播放 nonce——FT 用
+    // `Utils.generateRandomString(16)` + `url.searchParams.set('cpn', videoInfo.cpn)` 注入 sabrUrl
+    //(服务端签发的 URL 同样不带 cpn)。我们此前 queryParam("cpn") 落空(r1945 dump:34 键无 cpn)
+    // → 会话 cpn 为空 → 服务端无法把请求与 playbackCookie/ustreamerConfig 会话配对 → status=2 nag。
+    val cpnParam = queryParam(sd.sabrUrl, "cpn")
+    val webCpn = cpnParam ?: generateCpn()
+    if (cpnParam == null) {
+      sabrUrl = if (sabrUrl.contains("?")) "$sabrUrl&cpn=$webCpn" else "$sabrUrl?cpn=$webCpn"
+      Log.i(Tag, "WEB-SABR: cpn injected client-side($webCpn)——FreeTube Watch.js 同款")
+    }
     // WEB 会话(P11-106:身份全链桌面化——桌面 ytcfg 的 INNERTUBE_CONTEXT + 桌面 UA + 页面 cookie;
     // 无桌面身份时回退旧行为);poToken web64 → UTF-8 字节(fromSabrData 内已修)
     val webIdentity = botGuard.webSessionIdentity()
@@ -1939,7 +1955,7 @@ class YoutubePlaybackResolver(
       // 现链(页面挑战+bare GenerateIT+桌面 clientInfo)对齐 FreeTube 全无 HTTP 身份头。
       cookieHeader = "",
       visitorData = "",
-      cpn = queryParam(sd.sabrUrl, "cpn"),
+      cpn = webCpn,
       videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
     )
     val sid = SabrStreamRegistry.registerByVideoId(
