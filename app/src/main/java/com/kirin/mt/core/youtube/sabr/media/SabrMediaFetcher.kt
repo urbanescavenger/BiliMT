@@ -559,9 +559,10 @@ internal class SabrMediaFetcher(
     // [SabrStreamRegistry.refreshPoTokenSingleFlight]:会话一把锁 + 5s freshness 共铸共复用。
     if (needsPoTokenRefresh) {
       needsPoTokenRefresh = false
-      val fresh = SabrStreamRegistry.refreshPoTokenSingleFlight(entry.poTokenState) {
-        entry.refreshPoToken?.invoke()
-      }
+      val fresh = SabrStreamRegistry.refreshPoTokenSingleFlight(
+        entry.poTokenState,
+        mint = { entry.refreshPoToken?.invoke() },
+      )
       if (fresh != null && fresh.isNotEmpty()) {
         Log.i(tag, "PO token refreshed on status=2: ${fresh.size}B (single-flight) → next request uses fresh token")
       } else {
