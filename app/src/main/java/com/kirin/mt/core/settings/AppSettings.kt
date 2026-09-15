@@ -118,10 +118,12 @@ data class AppSettings(
    */
   val sabrForceSessionVideoItag: Boolean = false,
   /**
-   * YouTube 播放路径优先级:主路径先走 SABR 还是 DASH 自合成兜底。默认 [com.kirin.mt.core.player.YoutubeDeliveryPriority.Sabr]
-   * ——保持历史行为(NewPipe SABR 主路径 → DASH 兜底)。[com.kirin.mt.core.player.YoutubeDeliveryPriority.Dash]
-   * 用于慢源/卡顿场景:慢 SABR 首段会被 8s stall 看门狗误杀触发完整重建,切 Dash 让 DASH 自合成优先
-   * (NewPipe 已解密直链拼 MPD,实测能出 4K VP9)。见 docs/youtube-hd-playback.md。
+   * YouTube 播放路径优先级(P11-114)。默认 [com.kirin.mt.core.player.YoutubeDeliveryPriority.Sabr]
+   * ——保持历史行为(NewPipe SABR 主路径 → WEB-SABR 兜底 → DASH 兜底)。
+   * [com.kirin.mt.core.player.YoutubeDeliveryPriority.Dash] 用于慢源/卡顿场景:慢 SABR 首段会被
+   * 8s stall 看门狗误杀触发完整重建,切 Dash 让 DASH 自合成优先(NewPipe 已解密直链拼 MPD,实测能出
+   * 4K VP9)。[com.kirin.mt.core.player.YoutubeDeliveryPriority.WebSabr] 强制先走 WEB attested
+   * 路径(桌面身份+cpn+poToken),适用门控视频/4K 强制场景。见 docs/youtube-hd-playback.md。
    */
   val youtubeDeliveryPriority: YoutubeDeliveryPriority = YoutubeDeliveryPriority.Sabr,
 ) {

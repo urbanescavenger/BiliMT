@@ -94,8 +94,11 @@ class YoutubePlaybackResolver(
     var lastError: String? = null
     var havePlayable = false
 
-    // 播放路径优先级:true = DASH 自合成优先(慢 SABR 首段被 stall 看门狗误杀场景的逃生通道,见 youtube-hd-playback.md)。
-    val dashFirst = appSettingsStore?.settings?.first()?.youtubeDeliveryPriority == YoutubeDeliveryPriority.Dash
+    // 播放路径优先级(P11-114):Dash = DASH 自合成优先(慢 SABR 首段被 stall 看门狗误杀场景的逃生通道);
+    // WebSabr = 强制 WEB attested 路径优先(门控视频/4K);Sabr(默认)= NewPipe SABR 主链。
+    val deliveryPriority = appSettingsStore?.settings?.first()?.youtubeDeliveryPriority ?: YoutubeDeliveryPriority.Sabr
+    val dashFirst = deliveryPriority == YoutubeDeliveryPriority.Dash
+    val webSabrFirst = deliveryPriority == YoutubeDeliveryPriority.WebSabr
 
     // ── Piped 后端 opt-in（实验:对齐 LibreTube 默认 Piped 路径,修 RELOAD_PLAYER_RESPONSE 死循环）──
     // 用户在设置开 youtubeUsePiped 后,先走 Piped `/streams/{videoId}`。Piped 实例自带 poToken 请求
@@ -157,6 +160,23 @@ class YoutubePlaybackResolver(
     // 提取 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp），注入 /player
     // 的 contentPlaybackContext。缺它 WEB /player 可能被判"非真浏览器" → "The page needs to be reloaded"。
     val signatureTimestamp = resolveSignatureTimestamp(videoId)
+
+    // ── P11-114(用户设置「WEB-SABR 优先」):强制先走 WEB attested 路径(桌面身份+cpn+poToken)──
+    // 适用门控视频/4K 强制场景;失败标记后落回 NewPipe SABR 主链(主链 RELOAD 时 ② 兜底段
+    // 因 isWebSabrFailed 不再重复尝试,防循环)。
+    if (webSabrFirst && poToken != null) {
+      val webSabr = runCatching {
+        buildWebSabrFallback(videoId, poToken, signatureTimestamp, request, youtubeDefaultQuality)
+      }.getOrNull()
+      if (webSabr != null) {
+        SabrStreamRegistry.clearWebSabrFailed(videoId)
+        YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+        Log.i(Tag, "WEB-SABR 优先(用户设置) → playback ready: videoId=$videoId sid=${webSabr.second} → sabr:// DASH")
+        return@withContext webSabr.first
+      }
+      SabrStreamRegistry.markWebSabrFailed(videoId)
+      Log.w(Tag, "WEB-SABR 优先失败 → 落 NewPipe 主链(SABR→DASH 兜底)")
+    }
 
     // ── NewPipe-first 主路径(alpha.93):对齐 LibreTube 直调 NewPipe getInfo,不依赖 WEB /player WebView harvest ──
     // alpha.89 WebView harvest 坏(卡 m.youtube.com 错误页 27s)→ 先走自包含的 NewPipe(visonOS SABR → DASH 兜底)。

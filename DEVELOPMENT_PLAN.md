@@ -1162,4 +1162,5 @@ Flutter 参考 app 继续保留在原项目中，用于行为对照和回退参�
 | P11-110 | interpreter <script src> 标签加载(两参照同款;eval 兜底保留,create 路径无 URL 落兜底) | Done(真机判读:VM 加载非判据) |
 | P11-111 | WEB-SABR bufferedRanges 截断到请求段(PipePipe Track.bufferedThrough=next-1;预取缓存不上报;业界 #52/#66 双佐证) | Done(真机判读:会话寿命 5s→30s 但 nag 依旧) |
 | P11-112 | 诊断:sabrUrl 参数键 dump(对比 FT HAR,判 /player 签发信任度差异) | Done(判读:缺 cpn) |
-| P11-113 | WEB-SABR cpn 客户端生成注入(FT Watch.js L659/L1740 同款;缺它服务端无法配对 playbackCookie) | Done(代码完成,待云编译+真机) |
+| P11-113 | WEB-SABR cpn 客户端生成注入(FT Watch.js L659/L1740 同款;缺它服务端无法配对 playbackCookie) | Done(P11-111 已闭环;cpn 路径待 WEB-SABR 实际触发时验证) |
+| P11-114 | 播放优先级设置补全:三档 SABR/DASH/WEB-SABR(枚举+resolver webSabrFirst 分支+两端 UI+4 语言) | Done(代码完成,待云编译+真机) |

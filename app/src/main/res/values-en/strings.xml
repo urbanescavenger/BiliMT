@@ -624,7 +624,7 @@
     <string name="settings_sabr_force_itag_title">Lock session video track</string>
     <string name="settings_sabr_force_itag_description">SABR diagnostic: force the session-selected itag to disprove an itag as the RELOAD root cause.</string>
     <string name="settings_youtube_delivery_priority_title">Playback priority</string>
-    <string name="settings_youtube_delivery_priority_description">SABR first (default); switch to DASH self-compose for stuttering/slow sources, which can reach 4K.</string>
+    <string name="settings_youtube_delivery_priority_description">SABR first (default); alternatives: DASH self-compose (stutter/slow-source escape, can reach 4K) or WEB-SABR (forced WEB-attested path, for gated videos).</string>
     <string name="settings_iptv_connect_success">IPTV source connected</string>
     <string name="settings_iptv_connect_failed">IPTV source connection failed</string>
     <!-- TVBox config source (P11-81) -->

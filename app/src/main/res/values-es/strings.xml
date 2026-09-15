@@ -624,7 +624,7 @@
     <string name="settings_sabr_force_itag_title">Bloquear pista de video de la sesión</string>
     <string name="settings_sabr_force_itag_description">Diagnóstico SABR: fuerza el itag seleccionado de la sesión para descartar si un itag es la causa del RELOAD</string>
     <string name="settings_youtube_delivery_priority_title">Prioridad de reproducción</string>
-    <string name="settings_youtube_delivery_priority_description">SABR primero (predeterminado); ante ralentizaciones/fuentes lentas puedes cambiar a DASH autocompuesto primero, que puede dar 4K</string>
+    <string name="settings_youtube_delivery_priority_description">SABR primero (predeterminado); alternativas: DASH autocompuesto (escape ante lentitud, puede dar 4K) o WEB-SABR (ruta WEB autenticada forzada, para vídeos restringidos)</string>
     <string name="settings_iptv_connect_success">Conexión a la fuente IPTV correcta</string>
     <string name="settings_iptv_connect_failed">Fallo de conexión a la fuente IPTV</string>
     <!-- Fuente biblioteca de vídeo (config TVBox, P11-81) -->
