@@ -211,13 +211,21 @@ class YoutubePlaybackResolver(
     // ② NewPipe 无 SABR → DASH/HLS 兜底(alpha.92 自合成 DASH 为主,次 dashMpdUrl[恒空]/HLS)。durationMs 传 0
     //    → buildDashFallbackFromNewPipe 内部用 info.duration 兜底。dashFirst 时 DASH 已先试过,跳过。
     if (!dashFirst) {
-      // P11-101 Phase 1 判别探针(仅诊断,不改播放行为):门控视频(ANDROID 直链 403 判死)重试时
-      // 验证「attested WEB /player → dashManifestUrl → WebView decipher」链路四个 go/no-go 判据:
-      // ① WEB /player 带自铸 poToken 是否返回 OK(非 LOGIN_REQUIRED);
-      // ② streamingData 是否含 dashManifestUrl(参数键:s/sig/n 在否);
-      // ③ 现有 n/s 解密机制在该 URL 上是否产出(URL 类闭包导出 + 结构正则);
-      // ④ decipher 后 URL(+pot)OkHttp GET 是否 200(全链终极判据)。
+      // P11-101 Phase 2c(生产兜底):门控视频(ANDROID 直链 403 判死)→ WEB SABR 会话——
+      // attested WEB /player(自铸 poToken)→ parseSabrData → solver n-decrypt(WebView 内
+      // yt-dlp solver,08:15 r1921 真机全链通:transformed → init POST MEDIA ok)→
+      // SabrSession(WEB ClientInfo + WEB poToken)+ registerByVideoId(status=2 刷新回调)。
+      // 成功即返回 sabr:// PlaybackInfo(与普通视频同一播放链路,自适应);失败落 DASH 兜底。
       if (SabrStreamRegistry.isDashFallbackFailed(videoId)) {
+        val webSabr = runCatching {
+          buildWebSabrFallback(videoId, poToken, signatureTimestamp, request, youtubeDefaultQuality)
+        }.getOrNull()
+        if (webSabr != null) {
+          YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+          Log.i(Tag, "NewPipe-first → WEB-SABR 兜底 playback ready: videoId=$videoId sid=${webSabr.second} → sabr:// DASH")
+          return@withContext webSabr.first
+        }
+        Log.w(Tag, "WEB-SABR 兜底未产出 → 落 DASH 兜底(探针取证随行)")
         runCatching { probeWebDashChain(videoId, poToken, signatureTimestamp) }
           .onFailure { Log.w(Tag, "P11-101 probe threw: ${it.message}") }
       }
@@ -1814,6 +1822,102 @@ class YoutubePlaybackResolver(
    * → 重建 MediaSource(新 `sabr://...&itag=N` → SabrStreamingDataSource 按新 itag 请求)。poToken 会话级
    * 不绑 itag(FreeTube 证实),同 sid 换 itag 即换清晰度,无需重 harvest。
    */
+  /**
+   * P11-101 Phase 2c(生产兜底):WEB SABR 会话——attested WEB /player(自铸 poToken)→
+   * parseSabrData → yt-dlp solver n-decrypt → SabrSession(WEB ClientInfo + WEB poToken)
+   * → registerByVideoId(status=2 刷新回调)。08:15 r1921 探针全链通(transformed → init POST
+   * MEDIA ok)。返回 (PlaybackInfo, sid);任一步失败返回 null(上层落 DASH 兜底)。
+   */
+  private suspend fun buildWebSabrFallback(
+    videoId: String,
+    poToken: String?,
+    signatureTimestamp: Int?,
+    request: PlaybackRequest,
+    youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+  ): Pair<PlaybackInfo, String>? {
+    if (poToken == null) {
+      Log.w(Tag, "WEB-SABR: no poToken → abort")
+      return null
+    }
+    val player = runCatching {
+      postPlayer(videoId, InnerTubeClient.Client.WEB, poToken, signatureTimestamp)
+    }.getOrNull()
+    if (player == null) {
+      Log.w(Tag, "WEB-SABR: WEB /player failed → abort")
+      return null
+    }
+    val status = player.obj("playabilityStatus")?.stringOrNull("status")
+    if (status != "OK") {
+      Log.w(Tag, "WEB-SABR: playability=$status → abort")
+      return null
+    }
+    val sd = parseSabrData(player)
+    if (sd == null) {
+      Log.w(Tag, "WEB-SABR: parseSabrData ABSENT(无 sabrUrl/ustreamerCfg)→ abort")
+      return null
+    }
+    // 选轨(对齐 reload harvest:startHeight 上限内最高档)
+    val raws = sd.raws
+    val videoRaws = raws.filter { (it.intOrNull("height") ?: 0) > 0 }
+    val audioRaws = raws.filter { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
+    val maxHeight = youtubeDefaultQuality.maxHeight
+    val defaultItag = maxHeight?.let { cap ->
+      videoRaws.filter { (it.intOrNull("height") ?: 0) in 1..cap }.maxByOrNull { it.intOrNull("height") ?: 0 }
+        ?.intOrNull("itag")
+    } ?: videoRaws.maxByOrNull { it.intOrNull("height") ?: 0 }?.intOrNull("itag")
+    val firstVideo = defaultItag?.let { t -> videoRaws.firstOrNull { (it.intOrNull("itag") ?: 0) == t } }
+      ?: videoRaws.firstOrNull()
+    val firstAudio = audioRaws.firstOrNull { (it.stringOrNull("xtags") ?: "").contains("acont=original") }
+      ?: audioRaws.firstOrNull()
+    if (firstVideo == null || firstAudio == null) {
+      Log.w(Tag, "WEB-SABR: missing streams(video=${firstVideo != null} audio=${firstAudio != null})→ abort")
+      return null
+    }
+    // n-decrypt(yt-dlp solver;无 n 参数则跳过;transform 失败即 abort——未 transform POST 必 403)
+    var sabrUrl = sd.sabrUrl
+    val sabrN = Uri.parse(sabrUrl).getQueryParameter("n")
+    if (!sabrN.isNullOrBlank()) {
+      val playerJsUrl = resolvePlayerJsUrl(videoId)
+      if (playerJsUrl == null) {
+        Log.w(Tag, "WEB-SABR: no playerJsUrl → abort")
+        return null
+      }
+      val solved = runCatching { solverDecipherer.solve(playerJsUrl, listOf(sabrN), emptyList()) }.getOrNull()
+      val solverN = solved?.let { solverDecipherer.transformedN(solved, sabrN) }
+      if (solverN == null || solverN == sabrN) {
+        Log.w(Tag, "WEB-SABR: n-decrypt unchanged/failed → abort(未 transform POST 必 403)")
+        return null
+      }
+      val withQ = sabrUrl.replaceFirst("?n=${Uri.encode(sabrN)}", "?n=${Uri.encode(solverN)}")
+      sabrUrl = if (withQ != sabrUrl) withQ
+      else sabrUrl.replaceFirst("&n=${Uri.encode(sabrN)}", "&n=${Uri.encode(solverN)}")
+      Log.i(Tag, "WEB-SABR: n transformed($sabrN → $solverN)")
+    }
+    // WEB 会话(WEB ClientInfo + WEB UA + WEB poToken);poToken web64 → UTF-8 字节(fromSabrData 内已修)
+    val vFmt = rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
+    val aFmt = rawToSabrFormatId(firstAudio, 0)
+    val session = SabrSession.fromSabrData(
+      sabrUrl, poToken, sd.ustreamerCfgB64, innerTubeClient.sabrClientInfo(), aFmt, vFmt,
+      userAgent = InnerTubeClient.Client.WEB.userAgent,
+      cookieHeader = "", visitorData = "",
+      cpn = queryParam(sd.sabrUrl, "cpn"),
+      videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
+    )
+    val sid = SabrStreamRegistry.registerByVideoId(
+      videoId, session, SabrClient(httpClient),
+      refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
+    )
+    Log.i(
+      Tag,
+      "WEB-SABR playback ready: sid=$sid poToken=${poToken.length}B ustreamerCfg=${sd.ustreamerCfgB64.length}B " +
+        "video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} videoFormats=${videoRaws.size} dur=${sd.durationMs}ms"
+    )
+    return buildSabrPlaybackInfo(
+      request, videoId, sd.durationMs, sd.raws, session, sid,
+      youtubeDefaultQuality = youtubeDefaultQuality,
+    ) to sid
+  }
+
   private fun buildSabrPlaybackInfo(
     request: PlaybackRequest,
     videoId: String,
