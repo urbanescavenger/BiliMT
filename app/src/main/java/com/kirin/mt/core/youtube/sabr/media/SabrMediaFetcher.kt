@@ -706,6 +706,13 @@ internal class SabrMediaFetcher(
     lastRequestMs.set(now)
     val url = "${session.sabrUrl}&rn=$rn"
     Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs shape=${if (webShape) "ft" else "libre"} bitfield=${clientAbrState.enabledTrackTypesBitfield ?: 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} bw=${bwEstimateBps}bps body=${body.size}B")
+    // P11-108(字节级取证):WEB 会话前 2 个请求 dump body hex + token hex——与 FreeTube HAR
+    // (tmp/bundle.har,已解码)逐字节对比用。协议层已全对齐(P11-104..107)仍 nag,剩最后
+    // 检查手段:本地 diff 真实字节。每会话最多 2 行,Log 单行 ~3.3KB 可容纳。
+    if (webShape && rn <= 1) {
+      val hex = body.joinToString("") { "%02x".format(it) }
+      Log.i(tag, "WEBREQDUMP rn=$rn potHex=${poTokenState.currentPoToken.take(160).joinToString("") { "%02x".format(it) }} bodyHex=$hex")
+    }
 
     val request = Request.Builder()
       .url(url)
