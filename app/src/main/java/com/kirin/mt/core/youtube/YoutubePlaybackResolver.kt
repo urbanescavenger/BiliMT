@@ -1907,6 +1907,11 @@ class YoutubePlaybackResolver(
       videoId, session, SabrClient(httpClient),
       refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
     )
+    // WEB 会话是全新身份(探针 init POST 已被服务端接受)——清零 videoId 的 reload 计数,
+    // 否则旧 visionOS 死会话留下的计数会触发 SabrDataSource fast-fail 误杀新会话
+    //(08:45 r1922 真机:WEB-SABR playback ready 后所有 open 立即 reload-killed)。
+    // 若 WEB 会话中途又收 RELOAD,计数重新累加 → fast-fail → 自动重试 → 重走本分支 = 自愈闭环。
+    SabrStreamRegistry.resetReloadCount(videoId)
     Log.i(
       Tag,
       "WEB-SABR playback ready: sid=$sid poToken=${poToken.length}B ustreamerCfg=${sd.ustreamerCfgB64.length}B " +
