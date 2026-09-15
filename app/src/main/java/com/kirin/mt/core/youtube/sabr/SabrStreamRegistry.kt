@@ -5,6 +5,7 @@ import android.util.Log
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 进程级 SABR 流会话注册表——把 resolve 阶段 harvest+构造的 [SabrSession]/[SabrClient]
@@ -135,14 +136,59 @@ internal object SabrStreamRegistry {
   }
 
   /**
+   * P11-102c:status=2 PO token 刷新 **single-flight** 入口。
+   *
+   * 并发调用者共享同一会话 [PoTokenState.refreshMutex]:持锁者执行 [mint](完整 BotGuard 重铸,
+   * ~1-3s),其余排队;轮到时若 freshness 窗口([freshnessMs],默认 5s)内刚铸过则直接复用,
+   * 不再重复铸。铸成后统一写 [PoTokenState.currentPoToken](会话内所有 fetcher 下个请求带同一
+   * fresh token)。mint 失败/null 不写状态(keep stale),由调用方日志告警。
+   *
+   * 返回 fresh token(含 coalesce 复用);null=mint 失败或被并发者抢先铸出后复用失败(理论不可达,
+   * lastRefreshedToken 非空即返回)。
+   */
+  suspend fun refreshPoTokenSingleFlight(
+    state: PoTokenState,
+    mint: suspend () -> ByteArray?,
+    freshnessMs: Long = 5_000L,
+  ): ByteArray? {
+    return state.refreshMutex.withLock {
+      val lastToken = state.lastRefreshedToken
+      val lastAt = state.lastRefreshAtMs
+      val now = System.currentTimeMillis()
+      if (lastToken != null && lastAt > 0L && now - lastAt < freshnessMs) {
+        Log.i(tag, "PO token refresh coalesced (fresh age=${now - lastAt}ms, ${lastToken.size}B) → reuse")
+        return@withLock lastToken
+      }
+      val fresh = mint()
+      if (fresh != null && fresh.isNotEmpty()) {
+        state.currentPoToken = fresh
+        state.lastRefreshedToken = fresh
+        state.lastRefreshAtMs = System.currentTimeMillis()
+        fresh
+      } else {
+        null
+      }
+    }
+  }
+
+  /**
    * alpha.66/67:会话级 PO token 状态(holder,避免 data class [Entry] 加 var 破坏 equals)。
    * [currentPoToken] 初始=[SabrSession.poToken];status=2 时由 [SabrMediaFetcher.media] **同步**重铸
    * 换新(对齐 LibreTube,下个请求一定带新 token)。提升到会话级(非 fetcher 实例)——切清晰度重建
    * fetcher 时新 fetcher 仍读已刷新的 token(修 alpha.65 fetcher-instance currentPoToken 重建即丢的
    * 回归)。@Volatile 保证跨线程可见,单 ByteArray 引用读写无撕裂。
+   *
+   * P11-102c(single-flight 刷新):[refreshMutex] + [lastRefreshedToken]/[lastRefreshAtMs]。
+   * 会话里每个 fetcher(视频轨/音轨/多轨组)在自己响应里看到 status=2 都会调刷新——r1928 真机
+   * 13:30:04-08 实锤 4 个 fetcher **并发各铸一次**(完整 BotGuard 重铸),token(124/128B 混出)
+   * last-write-wins 互相踩 → 服务端判 InvalidPoToken(status=3)整会话死。single-flight:并发
+   * 刷新进同一把锁,锁内 freshness 窗口(5s)内刚铸过直接复用,4 次 mint 收敛 1 次。
    */
   class PoTokenState(initialPoToken: ByteArray) {
     @Volatile var currentPoToken: ByteArray = initialPoToken
+    val refreshMutex = kotlinx.coroutines.sync.Mutex()
+    @Volatile var lastRefreshedToken: ByteArray? = null
+    @Volatile var lastRefreshAtMs: Long = 0L
   }
 
   /** 一个 SABR 播放会话:SabrSession(会话参数)+ SabrClient(驱动器,持有 httpClient)+ 服务窗口起点。 */

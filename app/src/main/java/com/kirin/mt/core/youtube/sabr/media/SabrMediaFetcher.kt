@@ -552,12 +552,18 @@ internal class SabrMediaFetcher(
     // 异步(alpha.66 maybeRefreshPoToken 后台 launch)有竞态:刷新需 ~550ms,下一段请求在此之前发出带旧 token
     // → 撞 status=3 → evict → onPlayerError 全量重载 → 重播前 60s + 音频先出现。看门狗已取消(改动 3),
     // 同步阻塞 loader 线程 ~1s 安全(前方 ~20s lookahead 缓冲兜底,LibreTube 同栈同做法)。
+    //
+    // P11-102c(single-flight):needsPoTokenRefresh 是 fetcher 实例状态,会话里每个 fetcher 都会
+    // 在自己的 status=2 响应后各自重铸——r1928 真机 13:30:04-08 实锤 4 个 fetcher 并发 4 次完整
+    // BotGuard mint,token last-write-wins 互相踩 → InvalidPoToken(status=3)整会话死。改走
+    // [SabrStreamRegistry.refreshPoTokenSingleFlight]:会话一把锁 + 5s freshness 共铸共复用。
     if (needsPoTokenRefresh) {
       needsPoTokenRefresh = false
-      val fresh = entry.refreshPoToken?.invoke()
+      val fresh = SabrStreamRegistry.refreshPoTokenSingleFlight(entry.poTokenState) {
+        entry.refreshPoToken?.invoke()
+      }
       if (fresh != null && fresh.isNotEmpty()) {
-        entry.poTokenState.currentPoToken = fresh
-        Log.i(tag, "PO token refreshed on status=2: ${fresh.size}B (sync) → next request uses fresh token")
+        Log.i(tag, "PO token refreshed on status=2: ${fresh.size}B (single-flight) → next request uses fresh token")
       } else {
         Log.w(tag, "PO token refresh null/empty on status=2 (refreshPoToken=${entry.refreshPoToken != null}) — keep stale")
       }
