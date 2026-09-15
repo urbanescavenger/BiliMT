@@ -1938,10 +1938,14 @@ class YoutubePlaybackResolver(
         Log.w(Tag, "WEB-SABR: no playerJsUrl → abort")
         return null
       }
-      val solved = runCatching { solverDecipherer.solve(playerJsUrl, listOf(sabrN), emptyList()) }.getOrNull()
+      val solved = runCatching { solverDecipherer.solve(playerJsUrl, listOf(sabrN), emptyList()) }
+        // P11-114 诊断:r1947 真机 solver 静默失败(loaded→abort 之间零 solver 日志)——runCatching
+        // 吞掉的异常必须现形才能定位(怀疑 WebView 主线程被 botGuard mint 并发占用/重建)。
+        .onFailure { Log.w(Tag, "WEB-SABR: solver threw: ${it::class.simpleName}: ${it.message}") }
+        .getOrNull()
       val solverN = solved?.let { solverDecipherer.transformedN(solved, sabrN) }
       if (solverN == null || solverN == sabrN) {
-        Log.w(Tag, "WEB-SABR: n-decrypt unchanged/failed → abort(未 transform POST 必 403)")
+        Log.w(Tag, "WEB-SABR: n-decrypt unchanged/failed → abort(未 transform POST 必 403) playerJsUrl=${playerJsUrl.length}B sabrN=$sabrN")
         return null
       }
       val withQ = sabrUrl.replaceFirst("?n=${Uri.encode(sabrN)}", "?n=${Uri.encode(solverN)}")
