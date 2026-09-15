@@ -648,9 +648,11 @@ internal class SabrMediaFetcher(
         clientViewportWidth = 640,
         clientViewportHeight = max(vHeight, 360),
         stickyResolution = max(vHeight, 360),
-        bandwidthEstimate = bwEstimateBps.takeIf { it > 0 },
-        // 请求体 playerTimeMs = 段起点(既有结论 alpha.37,FreeTube 实测同为段位附近)
-        playerTimeMs = playerTimeMs,
+        // P11-109(字节级 diff):FreeTube 的 bandwidthEstimate **恒有**(init=1400000 默认值)。
+        bandwidthEstimate = bwEstimateBps.takeIf { it > 0 } ?: 1_000_000L,
+        // P11-109:playerTimeMs=0 时省略(init 请求)——FreeTube rn=0-3 的 f28 全缺席,
+        // 我们此前显式写 0(proto2 存在语义下=「会话已开始计时」,疑为 status=2 从首请求起 nag 触发点)。
+        playerTimeMs = playerTimeMs.takeIf { it != 0L },
         playbackRate = req.playbackSpeed,
         enabledTrackTypesBitfield = if (videoFormat == null) 1 else null, // video→省略(=0,FreeTube 同)
       )
@@ -694,7 +696,10 @@ internal class SabrMediaFetcher(
       clientAbrState = clientAbrState,
       selectedFormatIds = selected,
       bufferedRanges = bufferedRanges,
-      playerTimeMs = playerTimeMs,
+      // P11-109(字节级取证):FreeTube 31 个请求**从无顶层 playerTimeMs(field4)**——只放
+      // clientAbrState.f28。我们此前每请求都显式发 f4(alpha.28 visionOS 服务端模型的结论,
+      // visionOS 路径保留);webShape 对齐 FreeTube 整体不发。
+      playerTimeMs = if (webShape) null else playerTimeMs,
       videoPlaybackUstreamerConfig = session.ustreamerConfig,
       preferredAudioFormatIds = listOfNotNull(audioEnc),
       preferredVideoFormatIds = listOfNotNull(videoEnc),
