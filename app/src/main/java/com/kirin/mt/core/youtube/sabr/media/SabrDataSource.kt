@@ -31,6 +31,16 @@ internal class SabrDataSource(
   private var data: ByteArray = ByteArray(0)
   private var position: Int = 0
   private var uri: Uri? = null
+  /**
+   * P11-102b:transferStarted 是否已调。close() 的 transferEnded() 只在本标志为真时才调——
+   * fast-fail(customData 类型不符 / reload-killed)路径在 transferInitializing 之后、
+   * transferStarted 之前抛错,closeQuietly 仍会走 close();此时 DefaultBandwidthMeter 没收到过
+   * onTransferStart,onTransferEnd 里取 DataSpec 为 null → `isFlagSet` NPE,把干净的
+   * reload-killed IOException 升级成 UnexpectedLoaderException(真机 09-15 13:14:51
+   * KXXZbbnm9t0 实锤,Source error 直抛)。meter 对 onTransferInitializing 不记账(该事件
+   * 无需配对收尾),故 initialized-未-started 的 transferEnded 跳过即平衡。
+   */
+  private var transferStartedCalled = false
 
   class Factory(
     private val fetcher: SabrMediaFetcher,
@@ -43,9 +53,10 @@ internal class SabrDataSource(
     uri = dataSpec.uri
     val req = dataSpec.customData as? SabrSegmentRequest
       ?: throw IOException("SABR DataSpec.customData is not SabrSegmentRequest")
-    // ⚠️ 顺序铁律:transferInitializing/transferStarted 必须先于任何 open 抛错——close() 无条件
-    // transferEnded(),BaseDataSource 未记 dataSpec 时抛 NPE(P11-99 首版把 fast-fail 检查放
-    // transferInitializing 之前,真机 09-15 00:01:56 UnexpectedNullPointerException 实锤)。
+    // ⚠️ 顺序铁律:transferInitializing/transferStarted 必须先于任何 open 抛错——BaseDataSource
+    // 未记 dataSpec 时收尾路径异常(P11-99 首版把 fast-fail 检查放 transferInitializing 之前,真机
+    // 09-15 00:01:56 UnexpectedNullPointerException 实锤)。P11-102b 起 close() 按配对守卫
+    // ([transferStartedCalled]),initialized-未-started 的抛错不再触发 transferEnded NPE。
     transferInitializing(dataSpec)
     // alpha.9X(RELOAD 快速失败):会话已收过 RELOAD_PLAYER_RESPONSE(reloadCount>0)后,服务端对本
     // 视频只会继续回 RELOAD 终止包(alpha.14 jNl6YkkzKxw / 09-14 Fhyu9sqcF-o 真机:8 连 chunk 重试
@@ -65,6 +76,7 @@ internal class SabrDataSource(
     // (让 DefaultBandwidthMeter 量到真实网络耗时;失败时 transferStarted 已调、未收尾,由 close()
     // transferEnded 收尾——BaseDataSource 状态机要求 initializing/started 先行)。
     transferStarted(dataSpec)
+    transferStartedCalled = true
     val segment = try {
       fetcher.getNextSegment(req)
     } catch (e: SabrTerminalException) {
@@ -103,7 +115,11 @@ internal class SabrDataSource(
   override fun getUri(): Uri? = if (position >= data.size) null else uri
 
   override fun close() {
-    transferEnded()
+    // P11-102b:与 [transferStartedCalled] 配对(fast-fail 路径跳过,防 BandwidthMeter NPE)。
+    if (transferStartedCalled) {
+      transferEnded()
+      transferStartedCalled = false
+    }
     data = ByteArray(0)
     position = 0
   }
