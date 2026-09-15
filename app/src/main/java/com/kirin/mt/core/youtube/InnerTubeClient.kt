@@ -67,6 +67,9 @@ class InnerTubeClient(
     client: Client = Client.WEB,
     poToken: String? = null,
     viaWebView: Boolean = false,
+    // P11-106:WEB-SABR 链用桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT 覆盖合成 context
+    //(FreeTube buildSessionFromYtConfig 同款——会话身份与挑战来源同源)。null=默认。
+    contextOverride: JsonObject? = null,
   ): JsonObject = withContext(Dispatchers.IO) {
     // 先拉真实 visitorData（WEB /player 用合成 visitorData 会被拦，见 ensureRealSessionData）。
     // 仅 /player 走 WebView 时强制浏览器会话引导；feed 的 /browse、/search 等走快路径，
@@ -81,7 +84,7 @@ class InnerTubeClient(
       if (!poToken.isNullOrBlank()) {
         put("serviceIntegrityDimensions", buildJsonObject { put("poToken", poToken) })
       }
-      put("context", buildContext(client = client))
+      put("context", contextOverride ?: buildContext(client = client))
     }
 
     // 诊断:dump /player 请求体,确认 contentPoToken 真的在顶层 serviceIntegrityDimensions 里
@@ -623,6 +626,22 @@ class InnerTubeClient(
       screenPixelDensity = 1,
       clientFormFactor = 0,
       timeZone = d?.timeZone,
+    )
+  }
+
+  /**
+   * P11-106:WEB-SABR 桌面会话 ClientInfo——从桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT 取
+   * osName/osVersion/clientVersion(FreeTube clientInfo 4 字段形状:clientName=1 + 版本/OS)。
+   * 我们此前 sabrClientInfo 用 sw.js_data(移动会话)报 osName=Android——WEB 客户端 + Android
+   * OS 混搭,SABR 服务端逐请求 status=2 nag(r1934/35 排除请求体/GenerateIT 绑定后剩余差异)。
+   */
+  internal fun webDesktopSabrClientInfo(context: JsonObject): com.kirin.mt.core.youtube.sabr.ClientInfoInput {
+    val c = context.obj("client")
+    return com.kirin.mt.core.youtube.sabr.ClientInfoInput(
+      clientName = YoutubeConstants.ClientNameId.toIntOrNull(),
+      clientVersion = c?.stringOrNull("clientVersion") ?: YoutubeConstants.ClientVersion,
+      osName = c?.stringOrNull("osName"),
+      osVersion = c?.stringOrNull("osVersion"),
     )
   }
 

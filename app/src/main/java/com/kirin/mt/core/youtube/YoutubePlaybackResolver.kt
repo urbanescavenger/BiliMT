@@ -663,6 +663,8 @@ class YoutubePlaybackResolver(
     client: InnerTubeClient.Client,
     poToken: String?,
     signatureTimestamp: Int?,
+    // P11-106:WEB-SABR 链传桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT(会话身份=桌面 WEB)。
+    contextOverride: JsonObject? = null,
   ): JsonObject {
     val payload = buildJsonObject {
       put("videoId", videoId)
@@ -688,11 +690,11 @@ class YoutubePlaybackResolver(
     // 捕获 viaWebView 异常 → 回退 OkHttp 直连(viaWebView=false)。OkHttp WEB /player 可能被判
     // "The page needs to be reloaded"(unplayable),但至少返回结构化响应而非硬崩;部分视频仍可取流。
     return runCatching {
-      innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = useWebView)
+      innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = useWebView, contextOverride = contextOverride)
     }.getOrElse { e ->
       if (useWebView) {
         Log.w(Tag, "postPlayer $client viaWebView failed (${e.message}) → fallback OkHttp viaWebView=false")
-        innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = false)
+        innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = false, contextOverride = contextOverride)
       } else throw e
     }
   }
@@ -1855,7 +1857,13 @@ class YoutubePlaybackResolver(
       return null
     }
     val player = runCatching {
-      postPlayer(videoId, InnerTubeClient.Client.WEB, poToken, signatureTimestamp)
+      // P11-106:WEB-SABR 全链桌面化——/player context 用桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT
+      //(FreeTube buildSessionFromYtConfig 同款:会话身份与挑战来源同源,osName=Windows)。
+      // 此前用移动 sw.js_data 合成 context(osName=Android)——WEB 客户端+Android 混搭身份,
+      // SABR 服务端逐请求 status=2 nag(P11-104/105 排除请求体/GenerateIT 后的剩余差异)。
+      // 无桌面身份(页未抓过/解析失败)→ 回退合成 context(旧行为)。
+      val desktopCtx = botGuard.webSessionIdentity()?.context
+      postPlayer(videoId, InnerTubeClient.Client.WEB, poToken, signatureTimestamp, contextOverride = desktopCtx)
     }.getOrNull()
     if (player == null) {
       Log.w(Tag, "WEB-SABR: WEB /player failed → abort")
@@ -1908,18 +1916,24 @@ class YoutubePlaybackResolver(
       else sabrUrl.replaceFirst("&n=${Uri.encode(sabrN)}", "&n=${Uri.encode(solverN)}")
       Log.i(Tag, "WEB-SABR: n transformed($sabrN → $solverN)")
     }
-    // WEB 会话(WEB ClientInfo + WEB UA + WEB poToken);poToken web64 → UTF-8 字节(fromSabrData 内已修)
+    // WEB 会话(P11-106:身份全链桌面化——桌面 ytcfg 的 INNERTUBE_CONTEXT + 桌面 UA + 页面 cookie;
+    // 无桌面身份时回退旧行为);poToken web64 → UTF-8 字节(fromSabrData 内已修)
+    val webIdentity = botGuard.webSessionIdentity()
     val vFmt = rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
     val aFmt = rawToSabrFormatId(firstAudio, 0)
     val session = SabrSession.fromSabrData(
-      sabrUrl, poToken, sd.ustreamerCfgB64, innerTubeClient.sabrClientInfo(), aFmt, vFmt,
-      userAgent = InnerTubeClient.Client.WEB.userAgent,
+      sabrUrl, poToken, sd.ustreamerCfgB64,
+      if (webIdentity != null) innerTubeClient.webDesktopSabrClientInfo(webIdentity.context) else innerTubeClient.sabrClientInfo(),
+      aFmt, vFmt,
+      userAgent = if (webIdentity != null) YoutubeConstants.UserAgent else InnerTubeClient.Client.WEB.userAgent,
       // P11-101:会话身份对齐 /player 请求——首版传空(沿用 reload 路径惯例),60s 时服务端
       // 校验 token↔visitor/cookie 链失败(status=2 → refreshed 128B 仍 status=3,r1924 真机)。
       // WEB SABR 的 token 是 YtBotGuard 用 InnerTubeClient 会话 visitorData 铸的(GenerateIT
       // cookieV1L 配对),SABR POST 必须带同一份身份。
-      cookieHeader = innerTubeClient.currentSessionCookies(),
-      visitorData = innerTubeClient.currentVisitorData(),
+      // P11-106:cookie/visitor 换桌面 watch 页会话页(身份与 /player 同源);无则回退移动会话。
+      cookieHeader = webIdentity?.cookie ?: innerTubeClient.currentSessionCookies(),
+      visitorData = webIdentity?.context?.obj("client")?.stringOrNull("visitorData")
+        ?: innerTubeClient.currentVisitorData(),
       cpn = queryParam(sd.sabrUrl, "cpn"),
       videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
     )

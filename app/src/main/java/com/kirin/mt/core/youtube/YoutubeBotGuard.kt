@@ -144,6 +144,14 @@ class YoutubeBotGuard(
      * 原始 R 是 hex 转义的 JSON 字符串,parseLooseJson 已递归解开成对象。
      */
     val attestationData: JsonObject?,
+    /**
+     * P11-106:桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT(桌面 WEB 会话身份:osName=Windows +
+     * visitorData 等)——WEB-SABR 的 /player context + clientInfo 全链用它(FreeTube
+     * buildSessionFromYtConfig 同款)。
+     */
+    val webContext: JsonObject?,
+    /** P11-106:watch 页响应的 Set-Cookie(桌面页会话 cookie,SABR POST 身份用)。 */
+    val webCookie: String?,
   )
 
   private var cachedPageData: Pair<String, PageData>? = null
@@ -177,6 +185,7 @@ class YoutubeBotGuard(
     // the watch page"):桌面 UA 才拿得到含 window.ytAtN 的桌面版页面——移动 UA 实测被 302,
     // 跟随重定向后的页面无 ytAtN(2026-09-15 日志:ytAtN=false → challenge 全落 create → token
     // attestation 链占位 → SABR status=2 逐请求拦截、60s 升级 status=3)。
+    var pageCookie: String? = null
     val page = withContext(Dispatchers.IO) {
       runCatching {
         val req = Request.Builder()
@@ -184,7 +193,12 @@ class YoutubeBotGuard(
           .header("User-Agent", YoutubeConstants.UserAgent)
           .header("Accept-Language", "en-US")
           .build()
-        httpClient.newCall(req).execute().use { it.body?.string().orEmpty() }
+        httpClient.newCall(req).execute().use { resp ->
+          // P11-106:捕获桌面页会话 cookie(Set-Cookie)供 SABR POST 身份配对。
+          pageCookie = resp.headers("Set-Cookie").joinToString("; ") { it.substringBefore(';') }
+            .takeIf { it.isNotBlank() }
+          resp.body?.string().orEmpty()
+        }
       }.getOrNull()
     }
     if (page.isNullOrBlank()) {
@@ -195,13 +209,30 @@ class YoutubeBotGuard(
     //(r1926 真机实锤,整轮铸造失败)。花括号一律转义。
     val ytcfgStr = Regex("""ytcfg\.set\((\{.+?\})\);""", RegexOption.DOT_MATCHES_ALL).find(page)?.groupValues?.get(1)
     val ytConfig = ytcfgStr?.let { s -> runCatching { json.parseToJsonElement(s).jsonObject }.getOrNull() }
+    // P11-106:桌面 WEB 会话身份(桌面 ytcfg 的 INNERTUBE_CONTEXT,osName=Windows + visitorData)。
+    val webContext = ytConfig?.obj("INNERTUBE_CONTEXT")
     val attestation = findYtAtN(page)?.let { parseLooseJson(it) }
     if (ytConfig == null) Log.w(Tag, "$kind page: ytcfg missing/parse failed")
     if (attestation == null) Log.w(Tag, "$kind page: ytAtN missing/parse failed")
-    Log.i(Tag, "$kind page data: ytcfg=${ytConfig != null} ytAtN=${attestation != null} (page=${page.length}B)")
+    Log.i(Tag, "$kind page data: ytcfg=${ytConfig != null} ytAtN=${attestation != null} " +
+      "ctx=${webContext != null} cookie=${pageCookie?.length ?: 0}B (page=${page.length}B)")
     // FreeTube 9637:ytcfg 与 challenge 都是 botguard 必需,缺任一视为本页无效。
     if (ytConfig == null || attestation == null) return null
-    return PageData(ytConfig, attestation)
+    return PageData(ytConfig, attestation, webContext, pageCookie)
+  }
+
+  /**
+   * P11-106:桌面 watch 页会话身份(WEB-SABR 全链一致桌面化的数据源)。
+   * context = 桌面 ytcfg 的 INNERTUBE_CONTEXT(osName=Windows + visitorData);cookie = 页面 Set-Cookie。
+   * FreeTube buildSessionFromYtConfig 的会话即由这套身份构造——/player、SABR clientInfo、UA 全对齐。
+   * 无缓存(铸 token 前没抓过页)返回 null,调用方回退旧身份。
+   */
+  data class WebSessionIdentity(val context: JsonObject, val cookie: String?)
+
+  fun webSessionIdentity(): WebSessionIdentity? {
+    val cached = cachedPageData ?: return null
+    val ctx = cached.second.webContext ?: return null
+    return WebSessionIdentity(ctx, cached.second.webCookie)
   }
 
   /**
