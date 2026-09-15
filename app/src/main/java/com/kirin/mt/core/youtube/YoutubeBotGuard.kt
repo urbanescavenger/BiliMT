@@ -6,7 +6,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -22,11 +24,16 @@ import okhttp3.RequestBody.Companion.toRequestBody
  * YouTube PO token（Proof-of-Origin）生成，基于 **bgutils-js(MIT)** 打包进隐藏 WebView。
  *
  * 无 PO token 时 YouTube 会剥掉 adaptive 高清流 url（只剩 progressive 360p），
- * 这是高清(1080P/2K/4K)的唯一前置。流程(P11-101 Phase 2d,对齐 FreeTube 9607/9637 现行法)：
- *  0. 拉 watch 页 HTML → 提取 ytcfg + ytAtN({R: bgChallenge, T: eacrToken});注入 window.yt={config_}。
+ * 这是高清(1080P/2K/4K)的唯一前置。流程(P11-101 Phase 2d + P11-103,对齐 FreeTube 9607/9637
+ * /c42fee2c7 现行法)：
+ *  0. **桌面 UA** 拉 watch 页 HTML(移动 UA 被 302 且页面无 ytAtN,r1932 实锤)→ 提取 ytcfg +
+ *     ytAtN({R: bgChallenge, T: eacrToken};loose JSON,bgutils-js parseLooseJSON 同款解析);
+ *     watch 页无效→整个会话回退主页(主页同样带 ytcfg+ytAtN,FreeTube 9637);注入 window.yt={config_}。
  *  1. challenge 优先级:页面内嵌 bgChallenge → `POST /youtubei/v1/att/get`(ENGAGEMENT_TYPE_UNBOUND
  *     + eacrToken,FreeTube botGuardScript 同款)→ Create 端点(旧法兜底)。
  *     `bgChallenge` { program, globalName, interpreterUrl },interpreter 单独 GET。
+ *     ⚠️ 落到 create = attestation 链占位 → SABR 逐请求 status=2、60s 升级 status=3(r1932 实锤),
+ *     页面挑战是唯一完整链源,create 只是残路。
  *  2. 隐藏 WebView eval interpreter JS → 定义 `window[globalName]`。
  *  3. `__runSnapshot`(bgutils BotGuardClient.create + snapshot,只传 webPoSignalOutput)→ botguardResponse。
  *  4. `POST Waa/GenerateIT`([requestKey, botguardResponse])→ integrityToken。
@@ -62,8 +69,9 @@ class YoutubeBotGuard(
       Log.w(Tag, "bgutils bundle load failed")
       return null
     }
-    // P11-101 Phase 2d(对齐 FreeTube 9607/9637 现行铸造法):
-    // ① 拉 watch 页 HTML 提取 ytcfg + ytAtN(R=页面内嵌 bgChallenge,T=eacrToken);
+    // P11-101 Phase 2d + P11-103(对齐 FreeTube 9607/9637/c42fee2c7 现行铸造法):
+    // ① 桌面 UA 拉 watch 页 HTML 提取 ytcfg + ytAtN(R=页面内嵌 bgChallenge,T=eacrToken;
+    //    loose JSON 解析;watch 页无效整个会话回退主页);
     // ② 注入 window.yt = {config_: ytConfig}(interpreter VM 读 EVENT_ID 等——首版缺它,
     //    铸出的 token attestation 链占位,60s re-attestation 被拒:status=2→refresh→status=3);
     // ③ challenge 优先级:页面 bgChallenge → /att/get(eacrToken) → Create 端点(旧法兜底)。
@@ -130,41 +138,160 @@ class YoutubeBotGuard(
 
   private data class PageData(
     val ytConfig: JsonObject?,
-    /** window.ytAtN({...}) 的数据:{ R: { bgChallenge: { program, globalName, interpreterUrl } }, T: eacrToken } */
+    /**
+     * window.ytAtN({...}) 的数据:{ R: { bgChallenge: { program, globalName, interpreterUrl } }, T: eacrToken }。
+     * 原始 R 是 hex 转义的 JSON 字符串,parseLooseJson 已递归解开成对象。
+     */
     val attestationData: JsonObject?,
   )
 
   private var cachedPageData: Pair<String, PageData>? = null
 
+  /**
+   * P11-103(对齐 FreeTube 9637):watch 页一次抓不到有效数据(ytcfg/ytAtN 缺失=captcha/风控信号)
+   * 就整个会话改用主页——主页同样带 ytcfg + ytAtN,且一次失败预示后续会持续失败。
+   */
+  private var homepageFallback = false
+
   private suspend fun fetchPageData(videoId: String): PageData? {
     cachedPageData?.let { (vid, data) -> if (vid == videoId) return data }
+    if (homepageFallback) {
+      val home = fetchHtmlPageData("https://www.youtube.com/", "home")
+      if (home != null) cachedPageData = videoId to home
+      return home
+    }
+    val watch = fetchHtmlPageData(
+      "https://www.youtube.com/watch?v=$videoId&bpctr=9999999999&has_verified=1", "watch",
+    )
+    if (watch != null) return watch
+    Log.w(Tag, "watch page unusable → homepage fallback for the rest of the session (FreeTube 9637)")
+    homepageFallback = true
+    val home = fetchHtmlPageData("https://www.youtube.com/", "home")
+    if (home != null) cachedPageData = videoId to home
+    return home
+  }
+
+  private suspend fun fetchHtmlPageData(url: String, kind: String): PageData? {
+    // P11-103(对齐 FreeTube c42fee2c7 "Spoof desktop user agent to scrape the right version of
+    // the watch page"):桌面 UA 才拿得到含 window.ytAtN 的桌面版页面——移动 UA 实测被 302,
+    // 跟随重定向后的页面无 ytAtN(2026-09-15 日志:ytAtN=false → challenge 全落 create → token
+    // attestation 链占位 → SABR status=2 逐请求拦截、60s 升级 status=3)。
     val page = withContext(Dispatchers.IO) {
       runCatching {
         val req = Request.Builder()
-          .url("https://www.youtube.com/watch?v=$videoId&bpctr=9999999999&has_verified=1")
-          .header("User-Agent", YoutubeConstants.MobileUserAgent)
+          .url(url)
+          .header("User-Agent", YoutubeConstants.UserAgent)
           .header("Accept-Language", "en-US")
           .build()
         httpClient.newCall(req).execute().use { it.body?.string().orEmpty() }
       }.getOrNull()
     }
     if (page.isNullOrBlank()) {
-      Log.w(Tag, "watch page fetch failed/blank")
+      Log.w(Tag, "$kind page fetch failed/blank")
       return null
     }
     // ⚠️ Java Pattern 与 JS 不同:`{` 不转义会被当量词解析 → "Syntax error near index 14"
     //(r1926 真机实锤,整轮铸造失败)。花括号一律转义。
     val ytcfgStr = Regex("""ytcfg\.set\((\{.+?\})\);""", RegexOption.DOT_MATCHES_ALL).find(page)?.groupValues?.get(1)
     val ytConfig = ytcfgStr?.let { s -> runCatching { json.parseToJsonElement(s).jsonObject }.getOrNull() }
-    if (ytConfig == null) Log.w(Tag, "watch page: ytcfg missing/parse failed")
-    val attStr = Regex("""window\.ytAtN\(\s*(\{[\s\S]*?\})\s*\)""").find(page)?.groupValues?.get(1)
-    val attestation = attStr?.let { s -> runCatching { json.parseToJsonElement(s).jsonObject }.getOrNull() }
-    if (attestation == null) Log.w(Tag, "watch page: ytAtN missing/parse failed")
-    val data = PageData(ytConfig, attestation)
-    cachedPageData = videoId to data
-    Log.i(Tag, "watch page data: ytcfg=${ytConfig != null} ytAtN=${attestation != null} (page=${page.length}B)")
-    return data
+    val attestation = findYtAtN(page)?.let { parseLooseJson(it) }
+    if (ytConfig == null) Log.w(Tag, "$kind page: ytcfg missing/parse failed")
+    if (attestation == null) Log.w(Tag, "$kind page: ytAtN missing/parse failed")
+    Log.i(Tag, "$kind page data: ytcfg=${ytConfig != null} ytAtN=${attestation != null} (page=${page.length}B)")
+    // FreeTube 9637:ytcfg 与 challenge 都是 botguard 必需,缺任一视为本页无效。
+    if (ytConfig == null || attestation == null) return null
+    return PageData(ytConfig, attestation)
   }
+
+  /**
+   * P11-103:ytAtN 数据提取。页面先有空调用 `window.ytAtN(); delete window.ytAtN;`(无参),
+   * 实参数据在另一处 `window.ytAtN({'R': '\x7b\x22...' , ...})`。R 值是 hex 转义的 JSON 字符串,
+   * 内含单/双引号——正则 `\{[\s\S]*?\}` 会因值内结构截断,须做引号感知的平衡括号扫描。
+   */
+  private fun findYtAtN(page: String): String? {
+    var searchFrom = 0
+    while (true) {
+      val idx = page.indexOf("window.ytAtN(", searchFrom)
+      if (idx < 0) return null
+      var j = idx + "window.ytAtN(".length
+      while (j < page.length && page[j].isWhitespace()) j++
+      if (j < page.length && page[j] == '{') {
+        var depth = 0
+        var k = j
+        var inStr: Char? = null
+        var closed = false
+        while (k < page.length && !closed) {
+          val c = page[k]
+          if (inStr != null) {
+            if (c == '\\') {
+              k += 2
+              continue
+            }
+            if (c == inStr) inStr = null
+          } else {
+            when (c) {
+              '\'', '"' -> inStr = c
+              '{' -> depth++
+              '}' -> {
+                depth--
+                if (depth == 0) closed = true
+              }
+            }
+          }
+          k++
+        }
+        if (closed) return page.substring(j, k)
+      }
+      searchFrom = idx + 1
+    }
+  }
+
+  /**
+   * P11-103:bgutils-js `parseLooseJSON` 的 Kotlin 移植( helpers.ts L66-118)。ytAtN({...})
+   * 不是严格 JSON:单引号 key/value、`\xNN` hex 转义、字符串值内嵌 JSON(需递归解)。
+   * ① 去尾逗号;② 单引号字符串→JSON.stringify 等价的双引号串(仅解 \' 转义,反斜杠/双引号
+   *   重新转义——\xNN 保持字面量留给第⑤步);③ 裸 key 加引号;④ JSON.parse;
+   * ⑤ 递归 normalize:字符串解 \xNN,解出的内容以 { [ 开头再 JSON.parse 并继续 normalize。
+   */
+  private fun parseLooseJson(raw: String): JsonObject? {
+    var text = raw.replace(Regex(""",\s*([}\]])""")) { it.groupValues[1] }
+    val singleQuoted = Regex("""'((?:[^'\\]|\\[\s\S])*?)'""")
+    runCatching {
+      text = text.replace(singleQuoted) { m ->
+        // JS 侧等价:innerStr.replace(/\\'/g, "'") 后 JSON.stringify。
+        val inner = m.groupValues[1].replace("\\'", "'")
+        jsonString(inner)
+      }
+    }.onFailure { Log.w(Tag, "parseLooseJson single-quote pass failed: ${it.message}") }
+    text = text.replace(Regex("""([{,]\s*)([a-zA-Z0-9_${'$'}]+)\s*:""")) { m ->
+      m.groupValues[1] + "\"" + m.groupValues[2] + "\":"
+    }
+    val root = runCatching { json.parseToJsonElement(text) }.getOrElse {
+      Log.w(Tag, "parseLooseJson parse failed: ${it.message}")
+      return null
+    }
+    return runCatching { normalizeJsonElement(root) as? JsonObject }.getOrNull()
+  }
+
+  /** parseLooseJSON normalizeValue 递归:解 \xNN;解出 JSON 文本再 parse。 */
+  private fun normalizeJsonElement(el: JsonElement): JsonElement = when (el) {
+    is JsonPrimitive -> if (el.isString) {
+      val decoded = decodeHexEscapes(el.content)
+      val trimmed = decoded.trim()
+      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+        runCatching { normalizeJsonElement(json.parseToJsonElement(decoded)) }.getOrDefault(JsonPrimitive(decoded))
+      } else {
+        JsonPrimitive(decoded)
+      }
+    } else {
+      el
+    }
+    is JsonArray -> JsonArray(el.map { normalizeJsonElement(it) })
+    is JsonObject -> JsonObject(el.mapValues { normalizeJsonElement(it.value) })
+  }
+
+  private fun decodeHexEscapes(value: String): String =
+    Regex("""\\x([0-9A-Fa-f]{2})""").replace(value) { m -> m.groupValues[1].toInt(16).toChar().toString() }
 
   /** 页面内嵌 bgChallenge(R.bgChallenge: program/globalName/interpreterUrl)→ 拉 interpreter。 */
   private suspend fun challengeFromPage(pageData: PageData?): Challenge? {
@@ -179,7 +306,11 @@ class YoutubeBotGuard(
       ?: return null
     val interpreterJs = withContext(Dispatchers.IO) {
       runCatching {
-        val req = Request.Builder().url(interpreterUrl).header("User-Agent", YoutubeConstants.MobileUserAgent).build()
+        // interpreter 多在 www.google.com/js/ CDN——对齐 FreeTubeAndroid WebView 拦截(带 Referer)。
+        val req = Request.Builder().url(interpreterUrl)
+          .header("User-Agent", YoutubeConstants.UserAgent)
+          .header("Referer", "https://www.youtube.com/")
+          .build()
         httpClient.newCall(req).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
       }.getOrNull()
     }
@@ -224,7 +355,10 @@ class YoutubeBotGuard(
     val interpreterJs = interpreterUrl?.let { url ->
       withContext(Dispatchers.IO) {
         runCatching {
-          val req = Request.Builder().url(url).header("User-Agent", YoutubeConstants.MobileUserAgent).build()
+          val req = Request.Builder().url(url)
+            .header("User-Agent", YoutubeConstants.UserAgent)
+            .header("Referer", "https://www.youtube.com/")
+            .build()
           httpClient.newCall(req).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
         }.getOrNull()
       }
