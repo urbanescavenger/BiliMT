@@ -22,13 +22,15 @@ import okhttp3.RequestBody.Companion.toRequestBody
  * YouTube PO token（Proof-of-Origin）生成，基于 **bgutils-js(MIT)** 打包进隐藏 WebView。
  *
  * 无 PO token 时 YouTube 会剥掉 adaptive 高清流 url（只剩 progressive 360p），
- * 这是高清(1080P/2K/4K)的唯一前置。流程（对齐 FreeTube botGuardScript.js + bgutils-js v4）：
- *  1. `POST /youtubei/v1/att/get`（ENGAGEMENT_TYPE_UNBOUND，对齐 FreeTube）→
- *     `challengeData.bgChallenge` { program, globalName, interpreterUrl }，interpreter 单独 GET。
+ * 这是高清(1080P/2K/4K)的唯一前置。流程(P11-101 Phase 2d,对齐 FreeTube 9607/9637 现行法)：
+ *  0. 拉 watch 页 HTML → 提取 ytcfg + ytAtN({R: bgChallenge, T: eacrToken});注入 window.yt={config_}。
+ *  1. challenge 优先级:页面内嵌 bgChallenge → `POST /youtubei/v1/att/get`(ENGAGEMENT_TYPE_UNBOUND
+ *     + eacrToken,FreeTube botGuardScript 同款)→ Create 端点(旧法兜底)。
+ *     `bgChallenge` { program, globalName, interpreterUrl },interpreter 单独 GET。
  *  2. 隐藏 WebView eval interpreter JS → 定义 `window[globalName]`。
- *  3. `__runSnapshot`（bgutils BotGuardClient.create + snapshot，只传 webPoSignalOutput）→ botguardResponse。
- *  4. `POST Waa/GenerateIT`（[requestKey, botguardResponse]）→ integrityToken。
- *  5. `__mint`（bgutils WebPoMinter）→ 视频 ID 绑定的 PO token。
+ *  3. `__runSnapshot`(bgutils BotGuardClient.create + snapshot,只传 webPoSignalOutput)→ botguardResponse。
+ *  4. `POST Waa/GenerateIT`([requestKey, botguardResponse])→ integrityToken。
+ *  5. `__mint`(bgutils WebPoMinter)→ 视频 ID 绑定的 PO token。
  *
  * 网络由 Kotlin 发（WebView 跨源 fetch 被 CORS 拦），WebView 只执行 interpreter JS + WASM。
  * 任一步失败返回 null，绝不阻塞"无 PO token 直连 /player"主路径。
@@ -60,12 +62,27 @@ class YoutubeBotGuard(
       Log.w(Tag, "bgutils bundle load failed")
       return null
     }
-    // 1) 拿 challenge 并 descramble。
-    val challenge = fetchChallenge() ?: return null
+    // P11-101 Phase 2d(对齐 FreeTube 9607/9637 现行铸造法):
+    // ① 拉 watch 页 HTML 提取 ytcfg + ytAtN(R=页面内嵌 bgChallenge,T=eacrToken);
+    // ② 注入 window.yt = {config_: ytConfig}(interpreter VM 读 EVENT_ID 等——首版缺它,
+    //    铸出的 token attestation 链占位,60s re-attestation 被拒:status=2→refresh→status=3);
+    // ③ challenge 优先级:页面 bgChallenge → /att/get(eacrToken) → Create 端点(旧法兜底)。
+    val pageData = fetchPageData(videoId)
+    pageData?.ytConfig?.let { cfg ->
+      // window.yt 注入必须先于 interpreter eval(BotGuard VM 启动时读 window.yt.config_)。
+      // cfg 是合法 JSON 对象文本,原样 splice 进 eval 即为合法 JS 对象字面量。
+      val inject = executor.eval("window.yt = { config_: ${cfg} }; typeof window.yt")
+      Log.i(Tag, "page ytcfg injected: $inject (${cfg.toString().length}B)")
+    }
+    // 1) 拿 challenge 并 descramble(优先级:页面内嵌 → /att/get → Create)。
+    val challenge = challengeFromPage(pageData)
+      ?: attGetChallenge(pageData?.attestationData)
+      ?: fetchChallenge()
+      ?: return null
     val interpreterJs = challenge.interpreterJavascript ?: return null
     val program = challenge.program ?: return null
     val globalName = challenge.globalName ?: return null
-    Log.i(Tag, "challenge ok: interpreter=${interpreterJs.length}B program=${program.length}B global=$globalName")
+    Log.i(Tag, "challenge ok: source=${challenge.source} interpreter=${interpreterJs.length}B program=${program.length}B global=$globalName")
 
     // 2) 加载 interpreter JS 进 WebView（定义 window[globalName]）。
     // 用 try-catch 包裹捕获 interpreter JS 的运行时错误（evaluateJavascript 对抛错脚本返回 null）。
@@ -100,11 +117,122 @@ class YoutubeBotGuard(
     val interpreterJavascript: String?,
     val program: String?,
     val globalName: String?,
+    /** P11-101 Phase 2d:挑战来源诊断(page-bgChallenge / att-get / create)。 */
+    val source: String = "create",
   )
 
   private suspend fun fetchChallenge(): Challenge? {
     val c = innerTubeClient.fetchBotGuardChallenge() ?: return null
-    return Challenge(c.interpreterJavascript, c.program, c.globalName)
+    return Challenge(c.interpreterJavascript, c.program, c.globalName, source = "create")
+  }
+
+  // ---- P11-101 Phase 2d:watch 页 HTML 提取(ytcfg + ytAtN)+ 页面/att-get 挑战链 ----
+
+  private data class PageData(
+    val ytConfig: JsonObject?,
+    /** window.ytAtN({...}) 的数据:{ R: { bgChallenge: { program, globalName, interpreterUrl } }, T: eacrToken } */
+    val attestationData: JsonObject?,
+  )
+
+  private var cachedPageData: Pair<String, PageData>? = null
+
+  private suspend fun fetchPageData(videoId: String): PageData? {
+    cachedPageData?.let { (vid, data) -> if (vid == videoId) return data }
+    val page = withContext(Dispatchers.IO) {
+      runCatching {
+        val req = Request.Builder()
+          .url("https://www.youtube.com/watch?v=$videoId&bpctr=9999999999&has_verified=1")
+          .header("User-Agent", YoutubeConstants.MobileUserAgent)
+          .header("Accept-Language", "en-US")
+          .build()
+        httpClient.newCall(req).execute().use { it.body?.string().orEmpty() }
+      }.getOrNull()
+    }
+    if (page.isNullOrBlank()) {
+      Log.w(Tag, "watch page fetch failed/blank")
+      return null
+    }
+    val ytcfgStr = Regex("""ytcfg\.set\(({.+?})\);""", RegexOption.DOT_MATCHES_ALL).find(page)?.groupValues?.get(1)
+    val ytConfig = ytcfgStr?.let { s -> runCatching { json.parseToJsonElement(s).jsonObject }.getOrNull() }
+    if (ytConfig == null) Log.w(Tag, "watch page: ytcfg missing/parse failed")
+    val attStr = Regex("""window\.ytAtN\(\s*(\{[\s\S]*?\})\s*\)""").find(page)?.groupValues?.get(1)
+    val attestation = attStr?.let { s -> runCatching { json.parseToJsonElement(s).jsonObject }.getOrNull() }
+    if (attestation == null) Log.w(Tag, "watch page: ytAtN missing/parse failed")
+    val data = PageData(ytConfig, attestation)
+    cachedPageData = videoId to data
+    Log.i(Tag, "watch page data: ytcfg=${ytConfig != null} ytAtN=${attestation != null} (page=${page.length}B)")
+    return data
+  }
+
+  /** 页面内嵌 bgChallenge(R.bgChallenge: program/globalName/interpreterUrl)→ 拉 interpreter。 */
+  private suspend fun challengeFromPage(pageData: PageData?): Challenge? {
+    val r = pageData?.attestationData?.obj("R") ?: return null
+    val bg = r.obj("bgChallenge") ?: return null
+    val program = bg.stringOrNull("program") ?: return null
+    val globalName = bg.stringOrNull("globalName") ?: return null
+    val interpreterUrl = bg.obj("interpreterUrl")
+      ?.stringOrNull("privateDoNotAccessOrElseTrustedResourceUrlWrappedValue")
+      ?.takeIf { it.isNotBlank() }
+      ?.let { if (it.startsWith("//")) "https:$it" else it }
+      ?: return null
+    val interpreterJs = withContext(Dispatchers.IO) {
+      runCatching {
+        val req = Request.Builder().url(interpreterUrl).header("User-Agent", YoutubeConstants.MobileUserAgent).build()
+        httpClient.newCall(req).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
+      }.getOrNull()
+    }
+    if (interpreterJs.isNullOrBlank()) {
+      Log.w(Tag, "page bgChallenge: interpreter fetch failed ($interpreterUrl)")
+      return null
+    }
+    Log.i(Tag, "page bgChallenge ok: interpreter=${interpreterJs.length}B program=${program.length}B")
+    return Challenge(interpreterJs, program, globalName, source = "page-bgChallenge")
+  }
+
+  /** /att/get fallback:页面未带 bgChallenge 时,用 eacrToken 换新 challenge(FreeTube botGuardScript 同款)。 */
+  private suspend fun attGetChallenge(attestation: JsonObject?): Challenge? {
+    val eacrToken = attestation?.stringOrNull("T")
+    if (eacrToken.isNullOrBlank()) {
+      Log.i(Tag, "att/get: no eacrToken in page data → skip")
+      return null
+    }
+    val resp = runCatching {
+      innerTubeClient.postJson(
+        "/att/get",
+        buildJsonObject {
+          put("engagementType", "ENGAGEMENT_TYPE_UNBOUND")
+          put("eacrToken", eacrToken)
+        },
+        client = InnerTubeClient.Client.WEB,
+      )
+    }.getOrElse {
+      Log.w(Tag, "att/get failed: ${it.message}")
+      return null
+    }
+    val bgChallenge = resp.obj("bgChallenge")
+    val program = bgChallenge?.stringOrNull("program")
+    val globalName = bgChallenge?.stringOrNull("globalName")
+    if (program == null || globalName == null) {
+      Log.w(Tag, "att/get: no bgChallenge in response")
+      return null
+    }
+    val interpreterUrl = bgChallenge.obj("interpreterUrl")
+      ?.stringOrNull("privateDoNotAccessOrElseTrustedResourceUrlWrappedValue")
+      ?.let { if (it.startsWith("//")) "https:$it" else it }
+    val interpreterJs = interpreterUrl?.let { url ->
+      withContext(Dispatchers.IO) {
+        runCatching {
+          val req = Request.Builder().url(url).header("User-Agent", YoutubeConstants.MobileUserAgent).build()
+          httpClient.newCall(req).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
+        }.getOrNull()
+      }
+    }
+    if (interpreterJs.isNullOrBlank()) {
+      Log.w(Tag, "att/get: interpreter fetch failed ($interpreterUrl)")
+      return null
+    }
+    Log.i(Tag, "att-get challenge ok: interpreter=${interpreterJs.length}B program=${program.length}B")
+    return Challenge(interpreterJs, program, globalName, source = "att-get")
   }
 
   // ---- WebView snapshot / mint ----
@@ -255,6 +383,8 @@ class YoutubeBotGuard(
   }
 
   private fun JsonObject.stringOrNull(name: String): String? = this[name]?.jsonPrimitive?.contentOrNull
+
+  private fun JsonObject.obj(name: String): JsonObject? = this[name] as? JsonObject
 
   private companion object {
     const val Tag = "YtBotGuard"
