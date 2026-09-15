@@ -685,6 +685,9 @@ class YoutubePlaybackResolver(
     signatureTimestamp: Int?,
     // P11-106:WEB-SABR 链传桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT(会话身份=桌面 WEB)。
     contextOverride: JsonObject? = null,
+    // P11-115:桌面 watch 页 Set-Cookie / visitorData——/player 的 HTTP 身份与 body context 同源。
+    cookieOverride: String? = null,
+    visitorOverride: String? = null,
   ): JsonObject {
     val payload = buildJsonObject {
       put("videoId", videoId)
@@ -710,11 +713,11 @@ class YoutubePlaybackResolver(
     // 捕获 viaWebView 异常 → 回退 OkHttp 直连(viaWebView=false)。OkHttp WEB /player 可能被判
     // "The page needs to be reloaded"(unplayable),但至少返回结构化响应而非硬崩;部分视频仍可取流。
     return runCatching {
-      innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = useWebView, contextOverride = contextOverride)
+      innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = useWebView, contextOverride = contextOverride, cookieOverride = cookieOverride, visitorOverride = visitorOverride)
     }.getOrElse { e ->
       if (useWebView) {
         Log.w(Tag, "postPlayer $client viaWebView failed (${e.message}) → fallback OkHttp viaWebView=false")
-        innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = false, contextOverride = contextOverride)
+        innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = false, contextOverride = contextOverride, cookieOverride = cookieOverride, visitorOverride = visitorOverride)
       } else throw e
     }
   }
@@ -1888,8 +1891,15 @@ class YoutubePlaybackResolver(
       // 此前用移动 sw.js_data 合成 context(osName=Android)——WEB 客户端+Android 混搭身份,
       // SABR 服务端逐请求 status=2 nag(P11-104/105 排除请求体/GenerateIT 后的剩余差异)。
       // 无桌面身份(页未抓过/解析失败)→ 回退合成 context(旧行为)。
-      val desktopCtx = botGuard.webSessionIdentity()?.context
-      postPlayer(videoId, InnerTubeClient.Client.WEB, poToken, signatureTimestamp, contextOverride = desktopCtx)
+      val desktopId = botGuard.webSessionIdentity()
+      postPlayer(
+        videoId, InnerTubeClient.Client.WEB, poToken, signatureTimestamp,
+        contextOverride = desktopId?.context,
+        // P11-115:cookie/visitor 同步换桌面页会话——消除「桌面 body + 移动 cookie」混搭
+        //(r1947:混搭身份被服务端签发降级 sabrUrl 缺 cpn/cver,会话被 status=2 nag)。
+        cookieOverride = desktopId?.cookie,
+        visitorOverride = desktopId?.context?.obj("client")?.stringOrNull("visitorData"),
+      )
     }.getOrNull()
     if (player == null) {
       Log.w(Tag, "WEB-SABR: WEB /player failed → abort")
