@@ -1979,7 +1979,11 @@ class YoutubePlaybackResolver(
     val vFmt = rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
     val aFmt = rawToSabrFormatId(firstAudio, 0)
     val session = SabrSession.fromSabrData(
-      sabrUrl, poToken, sd.ustreamerCfgB64,
+      // P11-116(判别实验):会话 streamerContext.poToken 置空——判别「服务端拒绝我们的 token 内容」
+      // vs「WEB 会话其他维度」。/player 仍带 poToken(拿 SABR 数据);会话不带(对齐 NewPipe pot-less
+      // 的干净形态)。若 pot-less 会话 status=1 → token 内容被拒实锤(P11-117 转铸 VM 桌面化);
+      // 若仍 nag → token 无关,WEB 会话还有未对齐维度。
+      sabrUrl, "", sd.ustreamerCfgB64,
       if (webIdentity != null) innerTubeClient.webDesktopSabrClientInfo(webIdentity.context) else innerTubeClient.sabrClientInfo(),
       aFmt, vFmt,
       userAgent = if (webIdentity != null) YoutubeConstants.UserAgent else InnerTubeClient.Client.WEB.userAgent,
@@ -2006,7 +2010,7 @@ class YoutubePlaybackResolver(
     SabrStreamRegistry.resetReloadCount(videoId)
     Log.i(
       Tag,
-      "WEB-SABR playback ready: sid=$sid poToken=${poToken.length}B ustreamerCfg=${sd.ustreamerCfgB64.length}B " +
+      "WEB-SABR playback ready(P11-116 pot-less EXPERIMENT): sid=$sid poToken=0B ustreamerCfg=${sd.ustreamerCfgB64.length}B " +
         "video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} videoFormats=${videoRaws.size} dur=${sd.durationMs}ms"
     )
     return buildSabrPlaybackInfo(
