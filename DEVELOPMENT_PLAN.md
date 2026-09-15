@@ -1155,4 +1155,5 @@ Flutter 参考 app 继续保留在原项目中，用于行为对照和回退参�
 | P11-103 | PO token 挑战源修复:桌面 UA 抓 watch 页(移动 UA 被 302 且无 ytAtN → 三次 mint 全落 create → token attestation 链占位 → SABR 逐请求 status=2、60s 升 status=3)+ findYtAtN 平衡括号提取 + parseLooseJson(bgutils-js 同款 loose JSON)+ 主页 fallback(FreeTube 9637)+ interpreter Referer | Done(真机验证通过:ytAtN=true + source=page-bgChallenge) |
 | P11-104 | WEB-SABR 请求体对齐 FreeTube HAR 实测形状:clientInfo 砍到 4 字段+bandwidthEstimate 真实值+显式零值省略+bitfield video 省略(webShape 按 clientName==1 分流,visionOS 路径不动) | Done(真机判读:形状非 nag 判据) |
 | P11-105 | GenerateIT 裸发:撤 row 34 的 Cookie+X-Goog-Visitor-Id(FreeTube cookie-less partition + FreeTubeAndroid bgwebview 双参照实证裸发;跨会话 visitor 绑定 = attestation 链断点)+ UA 对齐桌面链 | Done(真机判读:绑定非 nag 判据,裸发保留)
-| P11-106 | WEB-SABR 会话身份全链桌面化:/player context + clientInfo + UA + cookie/visitor 换桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT(FreeTube buildSessionFromYtConfig 同款,身份与挑战同源;postJson 加 contextOverride;无桌面身份回退旧行为,visionOS 不动) | Done(代码完成,待云编译+真机) |
+| P11-106 | WEB-SABR 会话身份全链桌面化:/player context + clientInfo + UA + cookie/visitor 换桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT(FreeTube buildSessionFromYtConfig 同款,身份与挑战同源;postJson 加 contextOverride;无桌面身份回退旧行为,visionOS 不动) | Done(真机判读:身份生效但 nag 依旧) |
+| P11-107 | WEB-SABR POST 撤 HTTP Cookie/X-Goog-Visitor-Id 头(FreeTube HAR 实测:SABR POST 无任何 HTTP 身份头,身份全在 protobuf playbackCookie/poToken) | Done(代码完成,待云编译+真机) |

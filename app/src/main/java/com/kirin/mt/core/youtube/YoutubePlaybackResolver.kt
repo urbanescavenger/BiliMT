@@ -1926,14 +1926,12 @@ class YoutubePlaybackResolver(
       if (webIdentity != null) innerTubeClient.webDesktopSabrClientInfo(webIdentity.context) else innerTubeClient.sabrClientInfo(),
       aFmt, vFmt,
       userAgent = if (webIdentity != null) YoutubeConstants.UserAgent else InnerTubeClient.Client.WEB.userAgent,
-      // P11-101:会话身份对齐 /player 请求——首版传空(沿用 reload 路径惯例),60s 时服务端
-      // 校验 token↔visitor/cookie 链失败(status=2 → refreshed 128B 仍 status=3,r1924 真机)。
-      // WEB SABR 的 token 是 YtBotGuard 用 InnerTubeClient 会话 visitorData 铸的(GenerateIT
-      // cookieV1L 配对),SABR POST 必须带同一份身份。
-      // P11-106:cookie/visitor 换桌面 watch 页会话页(身份与 /player 同源);无则回退移动会话。
-      cookieHeader = webIdentity?.cookie ?: innerTubeClient.currentSessionCookies(),
-      visitorData = webIdentity?.context?.obj("client")?.stringOrNull("visitorData")
-        ?: innerTubeClient.currentVisitorData(),
+      // P11-107(HAR 实锤):FreeTube 的 SABR POST **不带 HTTP Cookie/X-Goog-Visitor-Id**——身份全在
+      // protobuf body(playbackCookie/poToken/streamerContext),HTTP 层只有桌面 UA + Origin/Referer。
+      // P11-101/r1924 时代"补 cookie/visitor"是旧 token 链(create 挑战+PoTokenWebView)时代的结论,
+      // 现链(页面挑战+bare GenerateIT+桌面 clientInfo)对齐 FreeTube 全无 HTTP 身份头。
+      cookieHeader = "",
+      visitorData = "",
       cpn = queryParam(sd.sabrUrl, "cpn"),
       videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
     )
