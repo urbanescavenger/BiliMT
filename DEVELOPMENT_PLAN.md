@@ -1159,4 +1159,5 @@ Flutter 参考 app 继续保留在原项目中，用于行为对照和回退参�
 | P11-107 | WEB-SABR POST 撤 HTTP Cookie/X-Goog-Visitor-Id 头(FreeTube HAR 实测:SABR POST 无任何 HTTP 身份头,身份全在 protobuf playbackCookie/poToken) | Done(真机判读:HTTP 头非判据) |
 | P11-108 | WEB-SABR 字节级取证:webShape 前 2 请求 bodyHex+potHex dump,本地与 FreeTube HAR 逐字节对比 | Done(取证完成) |
 | P11-109 | WEB-SABR 时间语义:顶层 f4 不发(FreeTube 31 请求全无)+ f28=0 省略 + bwEstimate 恒发默认 1M(字节级 diff 定案) | Done(真机判读:时间语义非判据) |
-| P11-110 | interpreter <script src> 标签加载(两参照同款;eval 兜底保留,create 路径无 URL 落兜底) | Done(代码完成,待云编译+真机) |
+| P11-110 | interpreter <script src> 标签加载(两参照同款;eval 兜底保留,create 路径无 URL 落兜底) | Done(真机判读:VM 加载非判据) |
+| P11-111 | WEB-SABR bufferedRanges 截断到请求段(PipePipe Track.bufferedThrough=next-1;预取缓存不上报;业界 #52/#66 双佐证) | Done(代码完成,待云编译+真机) |

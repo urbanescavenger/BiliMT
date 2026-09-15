@@ -613,7 +613,17 @@ internal class SabrMediaFetcher(
       videoFormat = session.videoFormatId
     }
     val selected = initializedFormats.values.map { SabrProto.encodeFormatId(it.id.itag, it.id.lastModified, it.id.xtags) }
-    val bufferedRanges = initializedFormats.values.flatMap { it.buildBufferedRanges() }
+    // P11-111(PipePipe-exact bufferedRanges):PipePipe Track.bufferedThrough = next-1——每轨只报到
+    // 请求段的前一段,服务端多段推送的预取缓存**不上报**。我们此前把预取缓存全量上报(一次 range
+    // 覆盖 30-70s):6s 墙钟在协议里"已缓冲"60s+ → 服务端播放进度语义破坏 → ~60s 服务窗口撞墙
+    // (status=2 nag → status=3;GoogleVideo#52 downloader 实锤同一窗口,token 无关)。
+    // 请求轨截到 req.segment-1;init(req.segment=0)→ 全空(对齐 FT rn=0-5 无 ranges)。
+    // 其他轨维持自身缓存形态(其 loader 前沿=其自身 next)。P11-92 已实证:裁掉后服务端回落
+    // playerTimeMs 判、从目标段起推,不会破坏推送游标。
+    val bufferedRanges = initializedFormats.values.flatMap { fmt ->
+      val cap = if (fmt.id.itag == req.formatItag) req.segment.toLong() else Long.MAX_VALUE
+      fmt.buildBufferedRanges(cap)
+    }
     val audioEnc = audioFormat?.let { SabrProto.encodeFormatId(it.itag, it.lastModified, it.xtags) }
     val videoEnc = videoFormat?.let { SabrProto.encodeFormatId(it.itag, it.lastModified, it.xtags) }
     val (activeCtxs, unsentCtxTypes) = session.prepareSabrContexts()
