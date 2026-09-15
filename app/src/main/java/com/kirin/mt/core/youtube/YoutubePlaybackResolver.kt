@@ -1899,7 +1899,12 @@ class YoutubePlaybackResolver(
     val session = SabrSession.fromSabrData(
       sabrUrl, poToken, sd.ustreamerCfgB64, innerTubeClient.sabrClientInfo(), aFmt, vFmt,
       userAgent = InnerTubeClient.Client.WEB.userAgent,
-      cookieHeader = "", visitorData = "",
+      // P11-101:会话身份对齐 /player 请求——首版传空(沿用 reload 路径惯例),60s 时服务端
+      // 校验 token↔visitor/cookie 链失败(status=2 → refreshed 128B 仍 status=3,r1924 真机)。
+      // WEB SABR 的 token 是 YtBotGuard 用 InnerTubeClient 会话 visitorData 铸的(GenerateIT
+      // cookieV1L 配对),SABR POST 必须带同一份身份。
+      cookieHeader = innerTubeClient.currentSessionCookies(),
+      visitorData = innerTubeClient.currentVisitorData(),
       cpn = queryParam(sd.sabrUrl, "cpn"),
       videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
     )
