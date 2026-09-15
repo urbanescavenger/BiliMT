@@ -110,7 +110,6 @@ class YoutubeBotGuard(
       Log.i(Tag, "interpreter eval result=${interpreterEval?.take(60)}")
     }
     val interpreterError = executor.eval("window.__interpreterError")
-    val interpreterError = executor.eval("window.__interpreterError")
     Log.i(Tag, "interpreter error: $interpreterError")
     // 确认 window[globalName] 是否真的定义了。
     val globalCheck = executor.eval("typeof window.$globalName")
@@ -420,7 +419,7 @@ class YoutubeBotGuard(
       return null
     }
     Log.i(Tag, "att-get challenge ok: interpreter=${interpreterJs.length}B program=${program.length}B")
-    return Challenge(interpreterJs, program, globalName, source = "att-get", interpreterUrl = url)
+    return Challenge(interpreterJs, program, globalName, source = "att-get", interpreterUrl = interpreterUrl)
   }
 
   // ---- WebView snapshot / mint ----
@@ -442,7 +441,7 @@ class YoutubeBotGuard(
       val raw = executor.eval("JSON.stringify(window.__interpLoad)")
       // evaluateJavascript 对字符串结果再包一层 JSON 编码(带引号)——先解外层再解对象(pollState 同款)。
       val inner = runCatching { json.parseToJsonElement(raw ?: "").jsonPrimitive.contentOrNull }.getOrNull() ?: raw
-      when (runCatching { json.parseToJsonElement(inner).jsonObject.stringOrNull("status") }.getOrNull()) {
+      when (runCatching { json.parseToJsonElement(inner ?: "").jsonObject.stringOrNull("status") }.getOrNull()) {
         "loaded" -> return true
         "error" -> return false
       }
