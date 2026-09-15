@@ -47,6 +47,15 @@ internal object SabrStreamRegistry {
   private val dashFallbackFailedVideos =
     java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+  /**
+   * P11-102(guard 放开):WEB-SABR 兜底**已失败**标记(videoId 集合)。reloadCount>0 放行走
+   * WEB-SABR(pot>0 会话)后若仍失败(solver 失败/playability 非 OK 等),标记后本次进程不再
+   * 重试——每次 WEB-SABR 尝试要 WebView /player + solver n-decrypt(~25s),auto-retry 链里反复
+   * 烧无意义。成功时 [clearWebSabrFailed] 清除。进程级,同 [dashFallbackFailedVideos] 语义。
+   */
+  private val webSabrFailedVideos =
+    java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
   /** DASH 兜底直链 403 判死标记(播放器 onPlayerError 2004 + YouTube 请求时调)。 */
   fun markDashFallbackFailed(videoId: String) {
     if (dashFallbackFailedVideos.add(videoId)) {
@@ -55,6 +64,22 @@ internal object SabrStreamRegistry {
   }
 
   fun isDashFallbackFailed(videoId: String): Boolean = dashFallbackFailedVideos.contains(videoId)
+
+  /** WEB-SABR 兜底失败标记(resolve 内 buildWebSabrFallback 返回 null 时调)。 */
+  fun markWebSabrFailed(videoId: String) {
+    if (webSabrFailedVideos.add(videoId)) {
+      Log.w(tag, "markWebSabrFailed videoId=$videoId → 本进程不再重试 WEB-SABR(防烧 WebView/solver)")
+    }
+  }
+
+  fun isWebSabrFailed(videoId: String): Boolean = webSabrFailedVideos.contains(videoId)
+
+  /** WEB-SABR 成功后清除失败标记(下次 resolve 可再走 WEB-SABR)。 */
+  fun clearWebSabrFailed(videoId: String) {
+    if (webSabrFailedVideos.remove(videoId)) {
+      Log.i(tag, "clearWebSabrFailed videoId=$videoId(WEB-SABR 已成功)")
+    }
+  }
 
   /** 存 reloadToken 停车 + 递增连续 reload 计数。由 [SabrMediaFetcher.processPart] RELOAD 分支调用。 */
   fun storeReloadToken(videoId: String, token: String) {

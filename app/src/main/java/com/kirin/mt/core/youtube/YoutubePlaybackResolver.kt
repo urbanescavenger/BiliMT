@@ -168,6 +168,9 @@ class YoutubePlaybackResolver(
     // 17→24 无界爬升直至 evict→Source error;对齐 LibreTube 对 RELOAD 直接失败不循环)。RELOAD 后跳过 SABR,
     // 直接落 ② 的 DASH/HLS 兜底。注意:DASH 自合成兜底(NewPipe 已解密直链拼 MPD)不走 SABR attestation,
     // 实测能出 4K(2160p VP9,见 docs youtube-hd-playback.md「alpha.9X」),不是只 ≤1080p。
+    // P11-102(guard 放开):NewPipe SABR 仍不放(空 pot 重建必再 RELOAD),但 ② 兜底段在
+    // reloadCount>0 且 pot 已铸出时直接走 WEB-SABR(pot>0 会话,r1927 真机证一把过),省掉注定
+    // 403 的 DASH 一轮。
     //
     // youtubeDeliveryPriority=Dash(用户设「DASH 优先」):先走 DASH 自合成兜底,成功直接返回;失败才落 SABR。
     // 逃生通道——慢 SABR 首段(googlevideo 服务器 >10s 才送首段)会被 8s stall 看门狗误判完整重建。
@@ -216,15 +219,27 @@ class YoutubePlaybackResolver(
       // yt-dlp solver,08:15 r1921 真机全链通:transformed → init POST MEDIA ok)→
       // SabrSession(WEB ClientInfo + WEB poToken)+ registerByVideoId(status=2 刷新回调)。
       // 成功即返回 sabr:// PlaybackInfo(与普通视频同一播放链路,自适应);失败落 DASH 兜底。
-      if (SabrStreamRegistry.isDashFallbackFailed(videoId)) {
+      //
+      // P11-102(guard 放开):RELOAD 过(reloadCount>0)且 pot 已铸出 → **直接** WEB-SABR(pot>0
+      // 会话),不再先撞注定 403 的自合成 DASH 兜底(真机 09-15 13:14 KXXZbbnm9t0:guard 跳 NewPipe
+      // SABR——空 pot 重建必再 RELOAD,不放——→ DASH 403 → 又烧一轮 auto-retry 才到 WEB-SABR,
+      // ~60s 才恢复;而 WEB-SABR pot=128B 一把过)。WEB-SABR 失败标记 [markWebSabrFailed] 后落
+      // DASH/HLS,原 isDashFallbackFailed 通道不变。
+      val webSabrDue =
+        !SabrStreamRegistry.isWebSabrFailed(videoId) &&
+          (SabrStreamRegistry.isDashFallbackFailed(videoId) ||
+            (SabrStreamRegistry.reloadCount(videoId) > 0 && poToken != null))
+      if (webSabrDue) {
         val webSabr = runCatching {
           buildWebSabrFallback(videoId, poToken, signatureTimestamp, request, youtubeDefaultQuality)
         }.getOrNull()
         if (webSabr != null) {
+          SabrStreamRegistry.clearWebSabrFailed(videoId)
           YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
           Log.i(Tag, "NewPipe-first → WEB-SABR 兜底 playback ready: videoId=$videoId sid=${webSabr.second} → sabr:// DASH")
           return@withContext webSabr.first
         }
+        SabrStreamRegistry.markWebSabrFailed(videoId)
         Log.w(Tag, "WEB-SABR 兜底未产出 → 落 DASH 兜底(探针取证随行)")
         runCatching { probeWebDashChain(videoId, poToken, signatureTimestamp) }
           .onFailure { Log.w(Tag, "P11-101 probe threw: ${it.message}") }
