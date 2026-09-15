@@ -152,7 +152,9 @@ class YoutubeBotGuard(
       Log.w(Tag, "watch page fetch failed/blank")
       return null
     }
-    val ytcfgStr = Regex("""ytcfg\.set\(({.+?})\);""", RegexOption.DOT_MATCHES_ALL).find(page)?.groupValues?.get(1)
+    // ⚠️ Java Pattern 与 JS 不同:`{` 不转义会被当量词解析 → "Syntax error near index 14"
+    //(r1926 真机实锤,整轮铸造失败)。花括号一律转义。
+    val ytcfgStr = Regex("""ytcfg\.set\((\{.+?\})\);""", RegexOption.DOT_MATCHES_ALL).find(page)?.groupValues?.get(1)
     val ytConfig = ytcfgStr?.let { s -> runCatching { json.parseToJsonElement(s).jsonObject }.getOrNull() }
     if (ytConfig == null) Log.w(Tag, "watch page: ytcfg missing/parse failed")
     val attStr = Regex("""window\.ytAtN\(\s*(\{[\s\S]*?\})\s*\)""").find(page)?.groupValues?.get(1)
