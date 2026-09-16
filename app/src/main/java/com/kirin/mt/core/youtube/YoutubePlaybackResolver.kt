@@ -23,6 +23,7 @@ import com.kirin.mt.core.youtube.sabr.SabrFetchResult
 import com.kirin.mt.core.youtube.sabr.SabrSession
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import com.kirin.mt.core.youtube.sabr.SabrStreamType
+import com.kirin.mt.core.youtube.sabr.websafeBase64ToBytes
 import android.net.Uri
 import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
 import com.kirin.mt.core.youtube.piped.PipedClient
@@ -2030,10 +2031,13 @@ class YoutubePlaybackResolver(
     )
     val sid = SabrStreamRegistry.registerByVideoId(
       videoId, session, SabrClient(httpClient),
-      // ⚠️ 刷新回调用会话自己的 minter(botGuard)——首版接 biliTvPoTokenProvider(PoTokenWebView),
-      // 其输出 888B 且绑它自己的 visitorData(09-15 08:55 真机:60s 时 status=2 → refreshed 888B
-      // → 下一请求 status=3 → 60s 重载循环)。WEB 会话身份 = YoutubeBotGuard token,同 minter 续命。
-      refreshPoToken = { botGuard.generatePoToken(videoId)?.toByteArray(Charsets.UTF_8) },
+      // P11-117(第二刀,对齐 FreeTube):**不注册 status=2 刷新回调**。
+      // FreeTube `SabrSchemePlugin.js:359-365` 只对 `status===3` 反应,**status=2 完全忽略**,全程
+      // 单 token(mintAsWebsafeString(videoId) 一次);我们却在 status=2 时同步重铸(P11-68/102c),
+      // 那是为追 60s 窗口自创的机制,两个参照都没有。传 null 即保持会话初始 token 不变
+      //(single-flight 的 mint 返回 null → 日志「keep stale」)。**仅 WEB-SABR 这么改**——
+      // visionOS/Piped 路径的回调(biliTvPoTokenProvider)保持原状,那条路当前是可用的,别动。
+      refreshPoToken = null,
     )
     // WEB 会话是全新身份(探针 init POST 已被服务端接受)——清零 videoId 的 reload 计数,
     // 否则旧 visionOS 死会话留下的计数会触发 SabrDataSource fast-fail 误杀新会话
@@ -2042,7 +2046,10 @@ class YoutubePlaybackResolver(
     SabrStreamRegistry.resetReloadCount(videoId)
     Log.i(
       Tag,
-      "WEB-SABR playback ready(P11-116 pot-less EXPERIMENT): sid=$sid poToken=0B ustreamerCfg=${sd.ustreamerCfgB64.length}B " +
+      // P11-117:恢复真实 token 长度入日志——P11-116 把这里硬编码成 `poToken=0B`,实验结束后没回滚,
+      // 导致 r1951 会话明明带 128B token 日志却显示 0B(判读陷阱)。字符串长度与解码后字节长度都给。
+      "WEB-SABR playback ready: sid=$sid poTokenStr=${poToken.length}B poTokenBytes=${websafeBase64ToBytes(poToken).size}B " +
+        "ustreamerCfg=${sd.ustreamerCfgB64.length}B " +
         "video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} videoFormats=${videoRaws.size} dur=${sd.durationMs}ms"
     )
     return buildSabrPlaybackInfo(

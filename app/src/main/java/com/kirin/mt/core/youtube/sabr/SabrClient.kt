@@ -137,14 +137,15 @@ internal data class SabrSession(
       // sabrUrl 加 alr=yes + cpn(对齐 FreeTube Watch.js L1619-1620 + SabrSchemePlugin 追加 rn)。cpn = 16 随机字节 base64url
       val usedCpn = cpn ?: randomCpn()
       val withParams = sabrUrlWithParams(sabrUrl, usedCpn)
-      // P11-101:WEB/BotGuard 铸的 poToken 是 YouTube web64 变体('.' 填充),Base64.DEFAULT 会抛
-      // "bad base-64"(09-15 07:07 probe ④' 实锤)。SABR StreamerContext.field2 的正确语义是
-      // token 字符串的**原始字节**(对齐 status=2 刷新路径 refreshPoToken 的 token.toByteArray(UTF_8)
-      // 与 LibreTube/FreeTube 的 po_token string bytes),不是 base64 解码结果。保留 DEFAULT 解码
-      // 兼容历史上传入「已 encodeToString 的字节」的路径(harvest 时代),web64 失败时落 UTF-8 字节。
+      // P11-117(纠正 P11-101 的前提):poToken 必须**解码成字节**再进 proto。
+      // FreeTube `SabrSchemePlugin.js:636` 是 `const poToken = base64ToU8(sabrData.poToken)`——
+      // 它的 poToken 是 `mintAsWebsafeString(videoId)` 产出的 websafe 串,进 proto 前**解码**;
+      // base64ToU8 先 `-`→`+`、`_`→`/` 再补 `=`(googlevideo/utils)。
+      // P11-101 写的「FreeTube 用 po_token string bytes」是误读 → 我们此前对含 '-'/'_' 的 web64
+      // 串 DEFAULT 解码抛错后落 UTF-8 **原文**,把 128 字节的字符串当 token 发出去(r1951 真机
+      // `SabrSession: poToken=128B`,而 FreeTube 同路径解出 ~90B)。此处按 FreeTube 归一化解码。
       val po = if (poTokenB64.isBlank()) ByteArray(0)
-      else runCatching { Base64.decode(poTokenB64, Base64.DEFAULT) }
-        .getOrElse { poTokenB64.toByteArray(Charsets.UTF_8) }
+      else websafeBase64ToBytes(poTokenB64)
       // ustreamerConfig 是 YouTube 的 URL-safe base64(含 -/_),DEFAULT 解码会丢弃非法字符→损坏字节
       // → 服务端判 sabr.malformed_config(alpha.72 真机全黑)。对齐 LibreTube SabrManifest URL_SAFE 解码。
       val ustreamer = Base64.decode(ustreamerConfigB64, Base64.URL_SAFE)
@@ -165,6 +166,22 @@ internal data class SabrSession(
       return "$url${sep}alr=yes&cpn=$cpn"
     }
   }
+}
+
+/**
+ * websafe base64 → bytes(对齐 googlevideo `base64ToU8`):先 `-`→`+`、`_`→`/` 归一化,再按标准表解码,
+ * 无 padding 变体也放行;两者都失败才回退原始 UTF-8 字节(兼容 harvest 时代「传入已 encodeToString 的
+ * 字节」的路径)。
+ *
+ * P11-117:poToken 的**创建路径**(`fromSabrData`)与 status=2 **刷新路径**必须用同一套转换——
+ * 此前创建路径 DEFAULT 解码失败即落原文、刷新路径固定 `toByteArray(UTF_8)`,同一枚 token 在两条路上
+ * 字节形态不一致(r1949 真机:创建 89B、刷新 124B;r1951:创建 128B = 128 字节的字符串)。
+ */
+internal fun websafeBase64ToBytes(value: String): ByteArray {
+  val normalized = value.replace('-', '+').replace('_', '/')
+  return runCatching { Base64.decode(normalized, Base64.DEFAULT) }
+    .recoverCatching { Base64.decode(normalized, Base64.DEFAULT or Base64.NO_PADDING) }
+    .getOrElse { value.toByteArray(Charsets.UTF_8) }
 }
 
 /**
