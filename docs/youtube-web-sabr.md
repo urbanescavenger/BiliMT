@@ -3,9 +3,13 @@
 > **这条路要做什么**:不借 Piped 等第三方实例,**自己铸一个 YouTube WEB 会话**,拿到服务端签发的
 > `serverAbrStreamingUrl` + `ustreamerConfig`,再喂给既有的 SABR 播放栈(与 visionOS 路共用下游)。
 >
-> **状态(2026-09-16):未打通。** P11-101 → P11-116 共 13 轮真机迭代,服务端始终 `status=2` nag,
-> 且第 4 个响应必升终态 `status=3`(InvalidPoToken)→ 会话死 → 重试循环 → 播放失败。
-> 带 token 与不带 token 的响应**逐字节一致**,`status=1` 一次都没出现过。
+> **状态(2026-09-16 晚):已打通(harvest 形态)。** P11-101 → P11-118 共 15 轮「原生对齐」(WEB 会话逐请求
+> `status=2` nag → 第 4 个响应必升终态 `status=3` → 会话死)全部落空后,按 FreeTube 源码审计转**「材料」路线**:
+> 真机 replay 实证 **浏览器亲手产出的材料(sabrUrl + body + 原 cpn)经我们的 OkHttp 原样重放即得 `status=1`
+> + 完整媒体段**,且「补 / 不补 Cookie+visitor」两种传输形态结果**完全相同** ⇒ **nag 差异只在材料**。
+> 把 WebView harvest 接成会话来源后,真机 r1958:`USING HARVEST MATERIAL` → `status=1 ×6`、零 `status=3`、
+> 零 `Playback error`、16~19Mbps 在流。**待完善**:选定档落阶梯默认(body 的 formatId 字段搬家)、起播延迟
+> = harvest 12~40s。详见 §6 计划与 §3 实测。
 >
 > **对照**:同一天的 NewPipe(visionOS)主路对**同一个门控视频** `status=1 ×24`、零 RELOAD、干净播通
 > 100 秒以上(见 §3)。
