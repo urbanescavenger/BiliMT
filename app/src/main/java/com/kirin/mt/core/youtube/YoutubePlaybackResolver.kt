@@ -868,6 +868,29 @@ class YoutubePlaybackResolver(
     return if (kept.isEmpty()) base else "$base?${kept.joinToString("&")}"
   }
 
+  /**
+   * P11-120:把 NewPipe 给的字幕 URL 改写成 **WebVTT**(`fmt=vtt`)。
+   *
+   * 为什么必须改写:NewPipe fork 的 `StreamInfo.subtitles` 来自 `getSubtitlesDefault()` —— 拿的是
+   * **默认格式(TTML/XML)** 的 URL(`…&fmt=ttml`)。播放端按 `text/vtt` 建 Format + `WebvttParser` 解析,
+   * 于是每条字幕轨都在加载后抛 `ParserException: Expected WEBVTT. Got <?xml version="1.0" …>`,
+   * media3 把这个错误当**轨级失败**处理(`Disabling track due to error`)→ 播放不受影响但字幕永不出现。
+   * 2026-09-17 真机日志实锤(zh/en/th 三条轨同签名),用户视角就是「有选项没效果」。
+   *
+   * 改写安全性:与 NewPipe 内部 `getSubtitles(MediaFormat.VTT)` 完全同款做法 —— 同一个 baseUrl 只换
+   * `fmt`。`fmt` **不在** `sparams=ip,ipbits,expire,v,ei,caps,opi,xoaf` 里,签名不受影响;
+   * 本机 curl 复核过 ANDROID / visionOS 两条 /player 的签名 URL 加 `&fmt=vtt` 均 200 且是真 WEBVTT。
+   *
+   * 幂等:已经是 `fmt=vtt` 就原样保留;没有 `fmt` 参数则补一个。
+   */
+  private fun forceWebVttUrl(url: String): String {
+    if (url.isEmpty()) return url
+    if (SubtitleFmtParamRegex.containsMatchIn(url)) {
+      return SubtitleFmtParamRegex.replace(url) { match -> match.groupValues[1] + "fmt=vtt" }
+    }
+    return url + if (url.contains('?')) "&fmt=vtt" else "?fmt=vtt"
+  }
+
   /** 取 URL query 里 key 的值(如 `&cpn=<value>` → value);无则 null。 */
   private fun queryParam(url: String, key: String): String? {
     val qIdx = url.indexOf("?")
@@ -1068,7 +1091,10 @@ class YoutubePlaybackResolver(
     val subtitleTracks = info.subtitles.mapIndexed { index, subtitle: SubtitlesStream ->
       PlaybackTrack(
         id = index,
-        baseUrl = subtitle.url.orEmpty(),
+        // 关键:NewPipe 给的 URL 是**默认格式(TTML/XML)**,必须改写成 vtt,否则 media3 的
+        // WebvttParser 直接抛 "Expected WEBVTT. Got <?xml …" 并静默 disable 该轨
+        // (2026-09-17 真机实锤,三条轨全部如此 → 用户视角「有选项没效果」)。详见 [forceWebVttUrl]。
+        baseUrl = forceWebVttUrl(subtitle.url.orEmpty()),
         backupUrls = emptyList(),
         bandwidth = 0,
         codecs = "",
@@ -1086,7 +1112,7 @@ class YoutubePlaybackResolver(
       "NewPipe SABR session: sabrUrl=${sabrUrl.take(80)}... poToken=${poTokenB64.length}B" +
         "(aligned-LibreTube-no-poToken) ustreamerCfg=${ustreamerCfgB64.length}B " +
         "cpn=${visionOsCpn ?: "random"} video=itag${vFmt.itag}(${vFmt.height}p) audio=itag${aFmt.itag} " +
-        "videoFormats=${videoFormats.size} subtitles=${subtitleTracks.size} dur=${durationMs}ms"
+        "videoFormats=${videoFormats.size} subtitles=${subtitleTracks.size}(fmt=vtt 已改写) dur=${durationMs}ms"
     )
     return NewPipeSabrResult(session, raws, durationMs, subtitleTracks)
   }
@@ -2779,6 +2805,12 @@ class YoutubePlaybackResolver(
 
   private companion object {
     const val Tag = "YtResolver"
+
+    /**
+     * P11-120:字幕 URL 的 `fmt` 参数(`&fmt=ttml` / `?fmt=srv3`)。匹配时保留前导 `?`/`&`,
+     * 只用 [forceWebVttUrl] 替换取值,避免把 query 分隔符一起删掉。
+     */
+    val SubtitleFmtParamRegex = Regex("([?&])fmt=[^&]*")
 
     /** Piped 实例默认值(用户未填 pipedInstanceUrl 时用)。对齐 LibreTube 默认 kavin.rocks 公共实例。 */
     const val DEFAULT_PIPED_INSTANCE = "https://pipedapi.kavin.rocks"
