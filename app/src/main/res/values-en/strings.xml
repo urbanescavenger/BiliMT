@@ -723,6 +723,9 @@
     <string name="danmaku_network_error">Network error HTTP %1$d</string>
     <string name="danmaku_send_failed">Send failed: %1$s</string>
     <string name="player_audio_track">Audio track</string>
+    <string name="player_subtitle">Subtitles</string>
+    <string name="player_subtitle_off">Off</string>
+    <string name="player_subtitle_auto">%1$s (auto-generated)</string>
     <string name="player_tab_intro">Intro</string>
     <string name="player_comment_count_format">Comments %1$s</string>
     <string name="player_confirm">Confirm</string>

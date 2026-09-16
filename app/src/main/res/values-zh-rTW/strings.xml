@@ -381,6 +381,9 @@
     <string name="player_danmaku_capacity_unlimited">無限</string>
     <string name="player_value_on">開</string>
     <string name="player_value_off">關</string>
+    <string name="player_subtitle">字幕</string>
+    <string name="player_subtitle_off">關閉</string>
+    <string name="player_subtitle_auto">%1$s（自動產生）</string>
     <string name="player_value_current">目前</string>
     <string name="player_area_full">滿螢幕</string>
     <string name="player_area_three_quarters">3/4 螢幕</string>

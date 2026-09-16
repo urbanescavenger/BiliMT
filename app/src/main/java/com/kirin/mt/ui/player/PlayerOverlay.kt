@@ -65,7 +65,9 @@ import com.kirin.mt.core.player.DanmakuSettings
 import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackEpisode
 import com.kirin.mt.core.player.PlaybackQuality
+import com.kirin.mt.core.player.PlaybackTrack
 import com.kirin.mt.core.player.PlaybackRequest
+import com.kirin.mt.core.player.SubtitleTracks
 import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.VideoshotData
 import com.kirin.mt.core.player.VideoshotFrame
@@ -105,6 +107,7 @@ internal enum class PlayerPanel {
   Main,
   Quality,
   Audio,
+  Subtitle,
   Danmaku,
   Speed,
   Episodes,
@@ -113,6 +116,27 @@ internal enum class PlayerPanel {
   Favorite,
 }
 
+/**
+ * P11-119/120:Main 面板末尾两个**条件项**的可见性与行号。
+ *
+ * Main 面板前 3 项固定(0 清晰度 / 1 弹幕 / 2 倍速),之后按「音轨 → 字幕」顺序追加,
+ * 各自是否存在由视频本身决定(多音轨视频才有音轨项;有字幕的视频才有字幕项)。
+ * 行号必须与 [PlayerScreen.activateFocusedPanelItem] 的分支严格一致,故集中在这里算一次。
+ */
+internal fun hasAudioTrackChoice(info: PlaybackInfo?): Boolean = (info?.availableAudioTracks?.size ?: 0) > 1
+
+internal fun hasSubtitleChoice(info: PlaybackInfo?): Boolean = !info?.subtitleTracks.isNullOrEmpty()
+
+/** Main 面板「音轨」项行号(紧跟固定 3 项)。 */
+internal const val MainAudioRowIndex = 3
+
+/** Main 面板「字幕」项行号(紧跟音轨项之后)。 */
+internal fun mainSubtitleRowIndex(info: PlaybackInfo?): Int =
+  MainAudioRowIndex + if (hasAudioTrackChoice(info)) 1 else 0
+
+/** 字幕面板项数 = 「关闭」+ 每条字幕轨。 */
+internal fun subtitlePanelItemCount(info: PlaybackInfo?): Int = 1 + (info?.subtitleTracks?.size ?: 0)
+
 @Composable
 internal fun BoxScope.PlayerOverlay(
   request: PlaybackRequest,
@@ -120,6 +144,8 @@ internal fun BoxScope.PlayerOverlay(
   actualQuality: PlaybackQuality?,
   /** P11-119:当前音轨 id(activeRequest.preferredAudioTrackId,未选则服务器声明默认轨)——供音轨面板打勾。 */
   currentAudioTrackId: String?,
+  /** P11-120:当前选中的字幕轨 id(null=关闭)——供 Main 面板字幕项显示与字幕面板打勾。 */
+  currentSubtitleTrackId: Int?,
   metadata: PlaybackVideoMetadata?,
   sidePanelVideos: List<VideoSummary>,
   sidePanelLoading: Boolean,
@@ -233,6 +259,7 @@ internal fun BoxScope.PlayerOverlay(
       PlayerPanel.Main,
       PlayerPanel.Quality,
       PlayerPanel.Audio,
+      PlayerPanel.Subtitle,
       PlayerPanel.Danmaku,
       PlayerPanel.Speed -> PlayerSettingsPanel(
         activePanel = activePanel,
@@ -240,6 +267,7 @@ internal fun BoxScope.PlayerOverlay(
         info = info,
         actualQuality = actualQuality,
         currentAudioTrackId = currentAudioTrackId,
+        currentSubtitleTrackId = currentSubtitleTrackId,
         currentCodecText = currentCodecText,
         playbackSpeed = playbackSpeed,
         danmakuSettings = danmakuSettings,
@@ -1813,6 +1841,7 @@ private fun PlayerSettingsPanel(
   info: PlaybackInfo,
   actualQuality: PlaybackQuality?,
   currentAudioTrackId: String?,
+  currentSubtitleTrackId: Int?,
   currentCodecText: String,
   playbackSpeed: Float,
   danmakuSettings: DanmakuSettings,
@@ -1907,16 +1936,29 @@ private fun PlayerSettingsPanel(
               trailingChevron = true,
             )
           }
-          // P11-119:音轨入口——仅多音轨(多语言配音)视频出现,追加在末位(index 3),
-          // 不打乱既有 0/1/2(清晰度/弹幕/倍速)的索引语义。
-          if (info.availableAudioTracks.size > 1) {
+          // P11-119:音轨入口——仅多音轨(多语言配音)视频出现,追加在固定 3 项之后,
+          // 不打乱既有 0/1/2(清晰度/弹幕/倍速)的索引语义。行号见 MainAudioRowIndex。
+          if (hasAudioTrackChoice(info)) {
             val currentAudio = info.availableAudioTracks.firstOrNull { it.id == currentAudioTrackId }
             item(key = "audio") {
               SettingsRow(
                 iconRes = R.drawable.ic_player_audio_track,
                 title = stringResource(R.string.player_audio_track),
                 value = currentAudio?.displayName ?: currentAudio?.languageCode ?: "",
-                focused = focusedIndex == 3,
+                focused = focusedIndex == MainAudioRowIndex,
+                trailingChevron = true,
+              )
+            }
+          }
+          // P11-120:字幕入口——仅有字幕的视频出现,排在音轨项之后(行号见 mainSubtitleRowIndex)。
+          if (hasSubtitleChoice(info)) {
+            val currentSubtitle = info.subtitleTracks.firstOrNull { it.id == currentSubtitleTrackId }
+            item(key = "subtitle") {
+              SettingsRow(
+                iconRes = R.drawable.ic_player_subtitles,
+                title = stringResource(R.string.player_subtitle),
+                value = currentSubtitle?.let { subtitleRowTitle(it) } ?: stringResource(R.string.player_value_off),
+                focused = focusedIndex == mainSubtitleRowIndex(info),
                 trailingChevron = true,
               )
             }
@@ -1947,6 +1989,31 @@ private fun PlayerSettingsPanel(
               value = if (track.id == currentAudioTrackId) stringResource(R.string.player_value_current) else "",
               focused = focusedIndex == index,
               trailingCheck = track.id == currentAudioTrackId,
+            )
+          }
+        }
+        PlayerPanel.Subtitle -> {
+          // P11-120:index 0 = 「关闭」,其后每条字幕轨一项(镜像 Audio 面板的列表形态)。
+          // 切换是纯客户端轨道选择(懒加载轨选中后才拉 WebVTT),故不重开会话、位置不变。
+          // 注意:LazyColumn 的 content 是 LazyListScope.() -> Unit(非 @Composable),
+          // 每行都必须包在 item{} 里,不能裸调 SettingsRow。
+          item(key = "subtitle-off") {
+            SettingsRow(
+              iconRes = R.drawable.ic_player_subtitles,
+              title = stringResource(R.string.player_subtitle_off),
+              value = if (currentSubtitleTrackId == null) stringResource(R.string.player_value_current) else "",
+              focused = focusedIndex == 0,
+              trailingCheck = currentSubtitleTrackId == null,
+            )
+          }
+          itemsIndexed(info.subtitleTracks, key = { _, track -> track.id }) { index, track ->
+            val selected = track.id == currentSubtitleTrackId
+            SettingsRow(
+              iconRes = R.drawable.ic_player_subtitles,
+              title = subtitleRowTitle(track),
+              value = if (selected) stringResource(R.string.player_value_current) else "",
+              focused = focusedIndex == index + 1,
+              trailingCheck = selected,
             )
           }
         }
@@ -1986,9 +2053,10 @@ private fun PlayerSettingsPanel(
 
 private fun PlayerPanel.settingsRowCount(info: PlaybackInfo): Int {
   return when (this) {
-    PlayerPanel.Main -> if (info.availableAudioTracks.size > 1) 4 else 3
+    PlayerPanel.Main -> 3 + (if (hasAudioTrackChoice(info)) 1 else 0) + (if (hasSubtitleChoice(info)) 1 else 0)
     PlayerPanel.Quality -> info.qualities.size.coerceAtLeast(1)
     PlayerPanel.Audio -> info.availableAudioTracks.size.coerceAtLeast(1)
+    PlayerPanel.Subtitle -> subtitlePanelItemCount(info)
     PlayerPanel.Danmaku -> DanmakuSettingsRowCount
     PlayerPanel.Speed -> PlayerSpeedOptions.size
     PlayerPanel.Episodes,
@@ -2300,6 +2368,7 @@ private val PlayerPanel.titleRes: Int
     PlayerPanel.Main -> R.string.player_settings_title
     PlayerPanel.Quality -> R.string.player_settings_quality
     PlayerPanel.Audio -> R.string.player_audio_track
+    PlayerPanel.Subtitle -> R.string.player_subtitle
     PlayerPanel.Danmaku -> R.string.player_settings_danmaku
     PlayerPanel.Speed -> R.string.player_settings_speed
     PlayerPanel.Episodes -> R.string.player_panel_episodes
@@ -2311,6 +2380,20 @@ private val PlayerPanel.titleRes: Int
 
 private fun String.withCodecLabel(codec: String): String {
   return if (codec.isBlank()) this else "$this($codec)"
+}
+
+/**
+ * P11-120:字幕轨列表标题。显示名缺省回落语言码;自动生成(asr)轨加本地化后缀
+ * ——YouTube 同一语言常同时给人工轨与 asr 轨(如 en 与 en-asr),不标就分不清。
+ */
+@Composable
+private fun subtitleRowTitle(track: PlaybackTrack): String {
+  val label = convertChineseText(SubtitleTracks.labelOf(track))
+  return if (track.isAutoGenerated) {
+    stringResource(R.string.player_subtitle_auto, label)
+  } else {
+    label
+  }
 }
 
 private fun PlaybackEpisode.panelTitle(index: Int): String {

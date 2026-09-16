@@ -726,6 +726,9 @@
     <string name="danmaku_network_error">Erro de rede HTTP %1$d</string>
     <string name="danmaku_send_failed">Falha ao enviar: %1$s</string>
     <string name="player_audio_track">Faixa de áudio</string>
+    <string name="player_subtitle">Legendas</string>
+    <string name="player_subtitle_off">Desativadas</string>
+    <string name="player_subtitle_auto">%1$s (geradas automaticamente)</string>
     <string name="player_tab_intro">Introdução</string>
     <string name="player_comment_count_format">Comentários %1$s</string>
     <string name="player_confirm">Confirmar</string>

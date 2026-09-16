@@ -738,6 +738,9 @@
     <string name="danmaku_network_error">网络错误 HTTP %1$d</string>
     <string name="danmaku_send_failed">发送失败:%1$s</string>
     <string name="player_audio_track">音轨</string>
+    <string name="player_subtitle">字幕</string>
+    <string name="player_subtitle_off">关闭</string>
+    <string name="player_subtitle_auto">%1$s（自动生成）</string>
     <string name="player_tab_intro">简介</string>
     <string name="player_comment_count_format">评论 %1$s</string>
     <string name="player_confirm">确认</string>

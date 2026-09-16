@@ -104,6 +104,7 @@ import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackEpisode
 import com.kirin.mt.core.player.PlaybackRepository
+import com.kirin.mt.core.player.SubtitleTracks
 import com.kirin.mt.core.player.LastPlayedStore
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackTrack
@@ -673,6 +674,21 @@ fun PlayerScreen(
     }
   }
 
+  // P11-120:当前选中的字幕轨 id(null=关闭)。**默认关闭**且每个视频重置——字幕轨是懒加载轨,
+  // 未选中时一个请求都不发,所以默认态零开销、零风险(防线④)。
+  // 声明位置必须在 openPanel/activateFocusedPanelItem 之前:那两个局部函数要引用它。
+  var selectedSubtitleTrackId by remember { mutableStateOf<Int?>(null) }
+  // 字幕专用短超时 client(共享主源连接池,只覆盖超时)。见 SubtitleTracks.createShortTimeoutClient。
+  val subtitleHttpClient = remember(playbackHttpClient) {
+    SubtitleTracks.createShortTimeoutClient(playbackHttpClient)
+  }
+
+  fun applySubtitleSelection(trackId: Int?) {
+    selectedSubtitleTrackId = trackId
+    val info = (playerState as? PlayerScreenState.Ready)?.info ?: return
+    SubtitleTracks.applySelection(player, info.subtitleTracks, trackId)
+  }
+
   fun openPanel(panel: PlayerPanel) {
     if (panel != PlayerPanel.UpVideos) {
       showUnfollowConfirm = false
@@ -690,6 +706,12 @@ fun PlayerScreen(
             (activeRequest.preferredAudioTrackId == null && t.isDefault)
         }
         ?.takeIf { it >= 0 } ?: 0
+      PlayerPanel.Subtitle -> {
+        // P11-120:初焦落到当前选中轨(行号 = 轨下标 + 1,因为 index 0 是「关闭」);未开字幕则落到「关闭」。
+        val idx = (playerState as? PlayerScreenState.Ready)?.info?.subtitleTracks
+          ?.indexOfFirst { it.id == selectedSubtitleTrackId } ?: -1
+        if (idx >= 0) idx + 1 else 0
+      }
       PlayerPanel.Speed -> PlayerSpeedOptions.indexOf(playbackSpeed).takeIf { it >= 0 } ?: 2
       PlayerPanel.Episodes -> {
         val focusIdx = metadata?.pages
@@ -1168,10 +1190,13 @@ fun PlayerScreen(
   fun panelItemCount(): Int {
     val info = (playerState as? PlayerScreenState.Ready)?.info
     return when (activePanel) {
-      // P11-119:多音轨视频在 Main 末尾追加「音轨」项(index 3),故 Main 项数随之为 4。
-      PlayerPanel.Main -> if ((info?.availableAudioTracks?.size ?: 0) > 1) 4 else 3
+      // P11-119:多音轨视频在 Main 末尾追加「音轨」项;P11-120:有字幕的视频再追加「字幕」项
+      // (顺序恒为 清晰度/弹幕/倍速 → 音轨 → 字幕,故各自 index 由前面几项是否存在决定)。
+      PlayerPanel.Main -> 3 + (if (hasAudioTrackChoice(info)) 1 else 0) + (if (hasSubtitleChoice(info)) 1 else 0)
       PlayerPanel.Quality -> info?.qualities?.size?.coerceAtLeast(1) ?: 1
       PlayerPanel.Audio -> info?.availableAudioTracks?.size?.coerceAtLeast(1) ?: 1
+      // P11-120:字幕面板 = 「关闭」+ 每条字幕轨。
+      PlayerPanel.Subtitle -> subtitlePanelItemCount(info)
       PlayerPanel.Danmaku -> 8
       PlayerPanel.Speed -> PlayerSpeedOptions.size
       PlayerPanel.Episodes -> metadata?.pages?.size ?: 0
@@ -1203,13 +1228,22 @@ fun PlayerScreen(
     // alpha.9X(恢复清晰度选择):恢复本地 info(供 Quality 分支取 qualities)。
     val info = (playerState as? PlayerScreenState.Ready)?.info ?: return
     when (activePanel) {
-      PlayerPanel.Main -> when (focusedPanelIndex) {
-        // alpha.9X(恢复清晰度选择):Main 面板 index 0 = 清晰度 → Quality 面板;1 = 弹幕;2 = 倍速。
-        // P11-119:index 3 = 音轨(仅多音轨视频出现)→ Audio 面板。
-        0 -> openPanel(PlayerPanel.Quality)
-        1 -> openPanel(PlayerPanel.Danmaku)
-        2 -> openPanel(PlayerPanel.Speed)
-        3 -> openPanel(PlayerPanel.Audio)
+      // alpha.9X(恢复清晰度选择):Main 面板 0 = 清晰度 → Quality;1 = 弹幕;2 = 倍速(前三项固定)。
+      // P11-119:音轨项(仅多音轨视频出现)→ Audio;P11-120:字幕项(仅有字幕的视频出现)→ Subtitle。
+      // 两个条件项的行号由 PlayerOverlay 的 MainAudioRowIndex/mainSubtitleRowIndex 统一算(与渲染同源);
+      // 用 when{} + 显式条件(而非 when(index) 字面量)是因为无音轨项时字幕项行号会等于音轨项行号。
+      PlayerPanel.Main -> when {
+        focusedPanelIndex == 0 -> openPanel(PlayerPanel.Quality)
+        focusedPanelIndex == 1 -> openPanel(PlayerPanel.Danmaku)
+        focusedPanelIndex == 2 -> openPanel(PlayerPanel.Speed)
+        focusedPanelIndex == MainAudioRowIndex && hasAudioTrackChoice(info) -> openPanel(PlayerPanel.Audio)
+        focusedPanelIndex == mainSubtitleRowIndex(info) && hasSubtitleChoice(info) -> openPanel(PlayerPanel.Subtitle)
+      }
+      PlayerPanel.Subtitle -> {
+        // P11-120:选字幕 = 纯客户端轨道选择(懒加载轨此刻才开始拉 WebVTT),不重跑 resolve、不重开会话。
+        // index 0 = 关闭。
+        val trackId = if (focusedPanelIndex == 0) null else info.subtitleTracks.getOrNull(focusedPanelIndex - 1)?.id
+        applySubtitleSelection(trackId)
       }
       PlayerPanel.Audio -> {
         // P11-119:选音轨 → 带 preferredAudioTrackId 重跑 resolve(SABR 路径 = 用命中轨的 formatId
@@ -1838,6 +1872,15 @@ fun PlayerScreen(
             ).create(),
           ),
         )
+        // P11-120:字幕专用短超时数据源(不走 SabrAwareDataSourceFactory——字幕恒是 http(s) 的 timedtext URL,
+        // 与 sabr:// 无关)。5s/8s 超时是防线②:黑洞时快速失败,不长时间占住 loader。
+        val subtitleDataSourceFactory = DefaultDataSource.Factory(
+          context,
+          BiliMediaDataSourceFactory(
+            client = subtitleHttpClient,
+            headers = effectiveInfo.headers,
+          ).create(),
+        )
         // alpha.59(Phase 2 DASH):SABR 轨 isSabrDash=true(segmentBase 仍 null → isProgressive 为 true),
         // 须排除走 DASH 分支(SegmentTemplate MPD + SabrDashDataSource 逐段拉),而非 progressive MergingMediaSource。
         // alpha.64(单流移植):isSabrSingle=true → 走自定义 SabrMediaSource(单流,修 60s 断崖 + A/V 同步 + 后台音频)。
@@ -1883,18 +1926,24 @@ fun PlayerScreen(
           DashMediaSource.Factory(dataSourceFactory)
             .createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
         }
-        // 字幕不再并入主源(P11-73,用户决策:字幕不重要,核心是音视频稳定):
-        // 旧实现把 WebVTT 字幕轨作为 ProgressiveMediaSource 并入 MergingMediaSource——媒体3 要等
-        // **全部** child prepare 完成才 selectTracks,timedtext 响应头被掐(直连黑洞,00:25 真机 81s
-        // 等头超时)时字幕 period 挂死拖死主源,视频转圈加载不出。字幕 URL 网络对播放不可信且非关键,
-        // 彻底移出 Merging,主源直进;字幕轨数据仍在 PlaybackInfo 传递(未来若回归,须先「可达预检+
-        // 失败不阻塞主源」再考虑恢复,参考 P11-72 的 probe 方案)。
-        val finalMediaSource = mediaSource
+        // P11-120:字幕以**懒加载**方式回归(P11-73 曾整块下线,原因见 [SubtitleTracks] 头注释)。
+        // 与旧实现的唯一但决定性的差别:每条字幕轨在 prepare 期**零读取**(media3 的
+        // enableLazyLoadingWithSingleTrack),只有被 track selection 选中才发请求;且用独立 5s/8s
+        // 短超时 client,拉不通只丢字幕、够不到主源。本轮 selectedSubtitleTrackId 被重置为 null,
+        // 下方 setMediaSource 后按它重新施加选择 —— 默认即「TEXT 轨禁用」,用户不开字幕连一个请求都没有。
+        val subtitleTracks = effectiveInfo.subtitleTracks
+        val finalMediaSource = SubtitleTracks.attach(
+          mainSource = mediaSource,
+          dataSourceFactory = subtitleDataSourceFactory,
+          subtitleTracks = subtitleTracks,
+        )
         // 起始挡位:起播阶段用 min+max 精确锁在起始档(SABR 专属,非 SABR 不卡),保证首段落在起始档
         // (不靠带宽,对齐 LibreTube AbstractPlayerService setMinVideoSize+setMaxVideoSize 锁法,比原 maxHeight
         // 上限更精确,杜绝"起播即顶满 4K");首帧渲染后 onRenderedFirstFrame 松开,升降档交给 ABR+excludeTrack。
         startQualityRelaxed = false
         frameRendered = false
+        // P11-120:换视频重置字幕为关闭(不跨视频继承用户的字幕选择)。
+        selectedSubtitleTrackId = null
         // 黑屏画质熔断:零帧重试 ≥2 次后启动,起始档压到 BlackFrameHeightCap(与手动选档取小)。
         val startQualityHeight = if (effectiveInfo.isSabrSingle()) {
           youtubeStartQuality.startHeight?.let { minOf(it, blackFrameHeightCap) }
@@ -1915,6 +1964,9 @@ fun PlayerScreen(
           }
         }
         player.setMediaSource(finalMediaSource)
+        // P11-120:新 MediaSource 会重置轨道选择,重新施加字幕状态(默认关闭 = 禁用 TEXT 轨,
+        // 顺带压掉 media3 可能从系统 CaptioningManager 读到的偏好而自动选轨)。
+        SubtitleTracks.applySelection(player, subtitleTracks, selectedSubtitleTrackId)
         // alpha.97(修「Auto 永不升过 1080p」诊断):SABR 会话逐视频轨打硬解能力判定(I 级,live 日志可见)。
         if (effectiveInfo.isSabrSingle()) {
           com.kirin.mt.core.youtube.sabr.media.SabrCodecDiagnostics.logVideoCodecSupport(context, effectiveInfo)
@@ -2607,6 +2659,8 @@ fun PlayerScreen(
           currentAudioTrackId = activeRequest.preferredAudioTrackId
             ?: state.info.availableAudioTracks.firstOrNull { it.isDefault }?.id
             ?: state.info.availableAudioTracks.firstOrNull()?.id,
+          // P11-120:当前字幕轨(null=关闭)——Main 面板字幕项显示 + 字幕面板打勾。
+          currentSubtitleTrackId = selectedSubtitleTrackId,
           metadata = metadata,
           sidePanelVideos = sidePanelVideos,
           sidePanelLoading = sidePanelLoading,
