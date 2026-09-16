@@ -95,7 +95,11 @@ class YoutubeSabrHarvester(
       result
     }
 
-  /** P11-118:停掉采集 WebView 的媒体并暂停其渲染(下次 harvest 前 [resumeRendering] 恢复)。 */
+  /** P11-118:停掉采集 WebView 的媒体并暂停其渲染(下次 harvest 前 [resumeRendering] 恢复)。
+   *  P11-118b:光 pause() 不够——真机 r1954 采集完成后它**继续按节奏发 SABR POST**(19:28:58/19:29:09/
+   *  19:29:20,约 11s 一次),把同一个视频又下一遍,直接饿死主播放器(rn=3 首个媒体段 50s 没回来,
+   *  用户「视频没加载出来」)。故这里加 `loadUrl("about:blank")` **硬停页面**——实例/ cookie jar /
+   *  渲染进程都保留(不违反 alpha.61「长期存活 WebView」前提),只是把当前文档连同其媒体请求一起丢掉。 */
   private fun stopPlayback() {
     val view = webView ?: return
     runCatching {
@@ -105,6 +109,7 @@ class YoutubeSabrHarvester(
       )
     }
     runCatching { view.onPause() }
+    runCatching { view.loadUrl("about:blank") }
   }
 
   private fun resumeRendering() {

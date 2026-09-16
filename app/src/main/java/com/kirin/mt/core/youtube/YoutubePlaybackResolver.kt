@@ -1,5 +1,6 @@
 package com.kirin.mt.core.youtube
 
+import android.util.Base64
 import android.util.Log
 import com.kirin.mt.core.download.ResolvedDownload
 import com.kirin.mt.core.download.ResolvedPart
@@ -23,6 +24,8 @@ import com.kirin.mt.core.youtube.sabr.SabrFetchResult
 import com.kirin.mt.core.youtube.sabr.SabrSession
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import com.kirin.mt.core.youtube.sabr.SabrStreamType
+import com.kirin.mt.core.youtube.sabr.SabrProto
+import com.kirin.mt.core.youtube.sabr.UmpReader
 import com.kirin.mt.core.youtube.sabr.websafeBase64ToBytes
 import android.net.Uri
 import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
@@ -41,8 +44,10 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.AudioTrackType
 import org.schabi.newpipe.extractor.stream.StreamInfo
@@ -1901,6 +1906,85 @@ class YoutubePlaybackResolver(
    * → registerByVideoId(status=2 刷新回调)。08:15 r1921 探针全链通(transformed → init POST
    * MEDIA ok)。返回 (PlaybackInfo, sid);任一步失败返回 null(上层落 DASH 兜底)。
    */
+  /**
+   * P11-118c(阶段 2 决定性实验):把 harvest 捕获的浏览器请求**原样重放**。
+   *
+   * 为什么这是决定性的:材料(URL + body + 浏览器原 cpn)是**浏览器亲手产生、服务端已回 200** 的。
+   * - 若我们的传输重放后拿到 `status=1` + MEDIA ⇒ 材料可用、传输无碍 ⇒ 后续接播放栈即可跑通;
+   * - 若仍 `status=2` ⇒ 差异只在「请求从哪发出」(浏览器会话 vs OkHttp) ⇒ 原生路线到此为止。
+   *
+   * A/B 两发,对照同一份材料的两种传输形态:
+   * ① **浏览器忠实形态**——FreeTube 的 SABR POST 只有 3 个头(content-type/accept-encoding/accept),
+   *    无 Cookie、无 X-Goog-Visitor-Id(P11-107 已实证);
+   * ② **我们原生路径形态**——补 Cookie + X-Goog-Visitor-Id + Origin/Referer。
+   *
+   * 重放规则沿 alpha.25 的实测结论:**保留浏览器 cpn、只剥 rn**(reset 为 0)——alpha.24 剥 cpn 时
+   * 只回 105B `SABR_CONTEXT_UPDATE` 无媒体;保 cpn 后拿到完整媒体段。
+   */
+  private suspend fun replayHarvestCapture(capture: YoutubeSabrHarvester.SabrCapture) {
+    val body = runCatching { Base64.decode(capture.bodyB64, Base64.DEFAULT) }.getOrNull()
+    if (body == null || body.isEmpty()) {
+      Log.w(Tag, "P11-118 harvest replay: body decode failed/empty (b64=${capture.bodyB64.length})")
+      return
+    }
+    val stripped = capture.url.split("&").filterNot { it.startsWith("rn=") }.joinToString("&")
+      .let { if (it.startsWith("http")) it else "&$it" }
+    val replayUrl = "$stripped&rn=0"
+    Log.i(
+      Tag,
+      "P11-118 harvest replay: start body=${body.size}B urlHasCpn=${replayUrl.contains("cpn=")} " +
+        "urlHasCver=${replayUrl.contains("cver=")} url=${replayUrl.take(170)}",
+    )
+    suspend fun fire(label: String, withIdentityHeaders: Boolean) = withContext(Dispatchers.IO) {
+      val rb = Request.Builder()
+        .url(replayUrl)
+        .post(body.toRequestBody("application/x-protobuf".toMediaType()))
+        .header("accept-encoding", "identity")
+        .header("accept", "application/vnd.yt-ump")
+        .header("content-type", "application/x-protobuf")
+        .header("User-Agent", YoutubeConstants.UserAgent)
+      if (withIdentityHeaders) {
+        rb.header("Cookie", innerTubeClient.currentSessionCookies())
+          .header("X-Goog-Visitor-Id", innerTubeClient.currentVisitorData())
+          .header("Origin", "https://www.youtube.com")
+          .header("Referer", "https://www.youtube.com/")
+      }
+      runCatching {
+        httpClient.newCall(rb.build()).execute().use { r ->
+          val ct = r.header("Content-Type")
+          val bytes = r.body?.byteStream()?.use { it.readBytes() }
+          Log.i(Tag, "P11-118 harvest replay[$label]: HTTP ${r.code} ct=$ct body=${bytes?.size ?: 0}B")
+          if (bytes != null && ct?.contains("yt-ump") == true) {
+            val ump = UmpReader()
+            ump.append(bytes)
+            ump.readParts { type, payload ->
+              val detail = when (type) {
+                SabrProto.PART_SABR_ERROR -> SabrProto.decodeSabrError(payload)?.let { "type=${it.type} code=${it.code}" }
+                SabrProto.PART_SABR_REDIRECT -> "url=${SabrProto.decodeSabrRedirect(payload)?.take(100)}"
+                SabrProto.PART_STREAM_PROTECTION_STATUS -> "status=${SabrProto.decodeStreamProtectionStatus(payload)}"
+                SabrProto.PART_NEXT_REQUEST_POLICY -> SabrProto.decodeNextRequestPolicy(payload)?.let { "backoff=${it.backoffTimeMs}ms cookie=${it.playbackCookie != null}" }
+                SabrProto.PART_MEDIA_HEADER -> SabrProto.decodeMediaHeader(payload)?.let { "headerId=${it.headerId} itag=${it.itag} isInit=${it.isInitSeg} seq=${it.sequenceNumber} contentLen=${it.contentLength} dur=${it.durationMs}ms" }
+                else -> "payloadLen=${payload.size}"
+              }
+              Log.i(Tag, "P11-118 harvest replay[$label] UMP: type=$type(${replayPartName(type)}) $detail")
+            }
+          }
+        }
+      }.onFailure { Log.w(Tag, "P11-118 harvest replay[$label] failed: ${it.message}") }
+    }
+    fire("freetube-shape", withIdentityHeaders = false)
+    fire("native-shape", withIdentityHeaders = true)
+  }
+
+  /** UMP part type → 可读名(诊断用,对齐 SabrClient 内部同名表)。 */
+  private fun replayPartName(type: Int): String = when (type) {
+    20 -> "MEDIA_HEADER"; 21 -> "MEDIA"; 22 -> "MEDIA_END"; 30 -> "CONFIG"
+    35 -> "NEXT_REQUEST_POLICY"; 42 -> "FORMAT_INIT_METADATA"; 43 -> "SABR_REDIRECT"
+    44 -> "SABR_ERROR"; 46 -> "RELOAD_PLAYER_RESPONSE"; 47 -> "PLAYBACK_START_POLICY"
+    57 -> "SABR_CONTEXT_UPDATE"; 58 -> "STREAM_PROTECTION_STATUS"; 59 -> "SABR_CONTEXT_SENDING_POLICY"
+    else -> "?"
+  }
+
   private suspend fun buildWebSabrFallback(
     videoId: String,
     poToken: String?,
@@ -1936,6 +2020,8 @@ class YoutubePlaybackResolver(
             "P11-118 harvest probe: captured SABR POST status=${cap.status} " +
               "bodyB64=${cap.bodyB64.length}B elapsed=${ms}ms url=${cap.url.take(160)}",
           )
+          // P11-118c:拿到材料就立刻原样重放(阶段 2 决定性实验),见 replayHarvestCapture 注释。
+          replayHarvestCapture(cap)
         }
       }
     }
