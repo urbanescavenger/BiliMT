@@ -35,6 +35,7 @@ import com.kirin.mt.core.youtube.YoutubeSolverDecipherer
 import com.kirin.mt.core.youtube.YoutubePlaybackResolver
 import com.kirin.mt.core.youtube.YoutubeSDecryptor
 import com.kirin.mt.core.youtube.YoutubeRepository
+import com.kirin.mt.core.youtube.YoutubeSabrHarvester
 import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -143,6 +144,11 @@ class AppContainer(context: Context) {
   )
   val pipedClient: com.kirin.mt.core.youtube.piped.PipedClient =
     com.kirin.mt.core.youtube.piped.PipedClient(httpClient = youtubeHttpClient, json = json)
+  // P11-118 诊断(阶段 2 最小验证):复活 WebView harvest 采集器——真实桌面 WebView 加载 watch 页,
+  // hook fetch/XHR 截获浏览器自己发的 SABR POST(浏览器 WASM 做 n-transform + 全 WEB 一致 attested body)。
+  // 当前**只采集打日志、不接播放栈**(见 YoutubePlaybackResolver 的 harvest probe)。
+  val youtubeSabrHarvester: YoutubeSabrHarvester =
+    YoutubeSabrHarvester(appContext, youtubeInnerTubeClient)
   val youtubePlaybackResolver: YoutubePlaybackResolver = YoutubePlaybackResolver(
     innerTubeClient = youtubeInnerTubeClient,
     botGuard = youtubeBotGuard,
@@ -153,6 +159,8 @@ class AppContainer(context: Context) {
     biliTvPoTokenProvider = biliTvPoTokenProvider,
     pipedClient = pipedClient,
     appSettingsStore = appSettingsStore,
+    sabrHarvester = youtubeSabrHarvester,
+    diagnosticScope = applicationScope,
   )
   // 播放进度本地存储:VideoRepository 用它给普通卡片合入观看进度条,PlaybackRepository 用它续播。
   val playbackProgressStore: PlaybackProgressStore = PlaybackProgressStore(appContext)

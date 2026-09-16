@@ -29,8 +29,10 @@ import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
 import com.kirin.mt.core.youtube.piped.PipedClient
 import com.kirin.mt.core.youtube.piped.PipedStreams
 import com.kirin.mt.core.youtube.piped.PipedStream
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -76,6 +78,14 @@ class YoutubePlaybackResolver(
   private val pipedClient: PipedClient? = null,
   /** 设置存储(读 youtubeUsePiped/pipedInstanceUrl/sabrForceSessionVideoItag)。null = 全 false/空(旧行为)。 */
   private val appSettingsStore: com.kirin.mt.core.settings.AppSettingsStore? = null,
+  /**
+   * P11-118 诊断(阶段 2 最小验证):WebView harvest 采集器。**只采集打日志,不接播放栈**——
+   * 回答「这套真浏览器配置(桌面 UA 真 WebView + 浏览器自己发 SABR POST)今天是否仍然可行」。
+   * null = 不跑诊断。
+   */
+  private val sabrHarvester: YoutubeSabrHarvester? = null,
+  /** 诊断用后台作用域:harvest 含首页预热 + watch 页 SPA init,4~50s,绝不能阻塞 resolve 主链。 */
+  private val diagnosticScope: CoroutineScope? = null,
 ) {
 
   /** 从 player base.js 提取的 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp）。 */
@@ -83,6 +93,9 @@ class YoutubePlaybackResolver(
 
   /** 缓存的 base.js URL（避免 resolvePlayerJsUrl 重复拉 watch 页）。 */
   private var cachedPlayerJsUrl: String? = null
+
+  /** P11-118 诊断:已跑过 harvest 探针的 videoId(进程内去重,防 auto-retry 反复触发真实 watch 页加载)。 */
+  private val harvestProbed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
   suspend fun resolve(
     request: PlaybackRequest,
@@ -1898,6 +1911,29 @@ class YoutubePlaybackResolver(
     if (poToken == null) {
       Log.w(Tag, "WEB-SABR: no poToken → abort")
       return null
+    }
+    // ── P11-118 诊断(阶段 2 最小验证,只采集不接线)──────────────────────────────
+    // 判据:harvest probe: captured status=200 bodyB64=<N>B → 这套「真浏览器发 SABR POST」今天仍然可行;
+    //       NO CAPTURE → 风控空白页/超时,阶段 2 归零(整条 WEB-SABR 线按 S2 收掉)。
+    // 必须后台跑:harvest = 首页预热(≤15s)+ watch 页 SPA init(4~8s),阻塞 resolve 会让起播等半分钟。
+    // 每个 videoId 只探一次(进程内),避免 auto-retry 反复触发真实 watch 页加载(风控)。
+    if (sabrHarvester != null && diagnosticScope != null && harvestProbed.add(videoId)) {
+      diagnosticScope.launch {
+        val t0 = System.currentTimeMillis()
+        val cap = runCatching {
+          sabrHarvester.harvest(videoId, startMs = request.startPositionMs, timeoutMs = 40_000L)
+        }.getOrNull()
+        val ms = System.currentTimeMillis() - t0
+        if (cap == null) {
+          Log.w(Tag, "P11-118 harvest probe: NO CAPTURE after ${ms}ms → 阶段 2 归零信号(风控空白页/超时)")
+        } else {
+          Log.i(
+            Tag,
+            "P11-118 harvest probe: captured status=${cap.status} method=${cap.method} " +
+              "bodyB64=${cap.bodyB64.length}B elapsed=${ms}ms url=${cap.url.take(160)}",
+          )
+        }
+      }
     }
     // P11-106:WEB-SABR 全链桌面化——/player context 用桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT
     //(FreeTube buildSessionFromYtConfig 同款:会话身份与挑战来源同源,osName=Windows)。
