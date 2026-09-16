@@ -104,6 +104,7 @@ internal enum class PlayerPanel {
   None,
   Main,
   Quality,
+  Audio,
   Danmaku,
   Speed,
   Episodes,
@@ -117,6 +118,8 @@ internal fun BoxScope.PlayerOverlay(
   request: PlaybackRequest,
   info: PlaybackInfo,
   actualQuality: PlaybackQuality?,
+  /** P11-119:当前音轨 id(activeRequest.preferredAudioTrackId,未选则服务器声明默认轨)——供音轨面板打勾。 */
+  currentAudioTrackId: String?,
   metadata: PlaybackVideoMetadata?,
   sidePanelVideos: List<VideoSummary>,
   sidePanelLoading: Boolean,
@@ -229,12 +232,14 @@ internal fun BoxScope.PlayerOverlay(
     when (activePanel) {
       PlayerPanel.Main,
       PlayerPanel.Quality,
+      PlayerPanel.Audio,
       PlayerPanel.Danmaku,
       PlayerPanel.Speed -> PlayerSettingsPanel(
         activePanel = activePanel,
         focusedIndex = focusedPanelIndex,
         info = info,
         actualQuality = actualQuality,
+        currentAudioTrackId = currentAudioTrackId,
         currentCodecText = currentCodecText,
         playbackSpeed = playbackSpeed,
         danmakuSettings = danmakuSettings,
@@ -1807,6 +1812,7 @@ private fun PlayerSettingsPanel(
   focusedIndex: Int,
   info: PlaybackInfo,
   actualQuality: PlaybackQuality?,
+  currentAudioTrackId: String?,
   currentCodecText: String,
   playbackSpeed: Float,
   danmakuSettings: DanmakuSettings,
@@ -1901,6 +1907,20 @@ private fun PlayerSettingsPanel(
               trailingChevron = true,
             )
           }
+          // P11-119:音轨入口——仅多音轨(多语言配音)视频出现,追加在末位(index 3),
+          // 不打乱既有 0/1/2(清晰度/弹幕/倍速)的索引语义。
+          if (info.availableAudioTracks.size > 1) {
+            val currentAudio = info.availableAudioTracks.firstOrNull { it.id == currentAudioTrackId }
+            item(key = "audio") {
+              SettingsRow(
+                iconRes = R.drawable.ic_player_audio_track,
+                title = stringResource(R.string.player_audio_track),
+                value = currentAudio?.displayName ?: currentAudio?.languageCode ?: "",
+                focused = focusedIndex == 3,
+                trailingChevron = true,
+              )
+            }
+          }
         }
         PlayerPanel.Quality -> {
           val qualities = info.qualities.ifEmpty { listOf(info.selectedQuality) }
@@ -1914,6 +1934,19 @@ private fun PlayerSettingsPanel(
               value = if (quality.id == currentQuality.id) stringResource(R.string.player_value_current) else "",
               focused = focusedIndex == index,
               trailingCheck = quality.id == currentQuality.id,
+            )
+          }
+        }
+        PlayerPanel.Audio -> {
+          // P11-119:音轨列表(镜像 Quality 面板)。打勾 = 当前轨(preferredAudioTrackId,
+          // 未选时由 PlayerScreen 回落服务器声明默认轨)。
+          itemsIndexed(info.availableAudioTracks, key = { _, track -> track.id }) { index, track ->
+            SettingsRow(
+              iconRes = R.drawable.ic_player_audio_track,
+              title = track.displayName ?: track.languageCode ?: track.id,
+              value = if (track.id == currentAudioTrackId) stringResource(R.string.player_value_current) else "",
+              focused = focusedIndex == index,
+              trailingCheck = track.id == currentAudioTrackId,
             )
           }
         }
@@ -1953,8 +1986,9 @@ private fun PlayerSettingsPanel(
 
 private fun PlayerPanel.settingsRowCount(info: PlaybackInfo): Int {
   return when (this) {
-    PlayerPanel.Main -> 3
+    PlayerPanel.Main -> if (info.availableAudioTracks.size > 1) 4 else 3
     PlayerPanel.Quality -> info.qualities.size.coerceAtLeast(1)
+    PlayerPanel.Audio -> info.availableAudioTracks.size.coerceAtLeast(1)
     PlayerPanel.Danmaku -> DanmakuSettingsRowCount
     PlayerPanel.Speed -> PlayerSpeedOptions.size
     PlayerPanel.Episodes,
@@ -2265,6 +2299,7 @@ private val PlayerPanel.titleRes: Int
   get() = when (this) {
     PlayerPanel.Main -> R.string.player_settings_title
     PlayerPanel.Quality -> R.string.player_settings_quality
+    PlayerPanel.Audio -> R.string.player_audio_track
     PlayerPanel.Danmaku -> R.string.player_settings_danmaku
     PlayerPanel.Speed -> R.string.player_settings_speed
     PlayerPanel.Episodes -> R.string.player_panel_episodes

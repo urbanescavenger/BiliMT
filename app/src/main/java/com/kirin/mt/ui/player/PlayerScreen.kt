@@ -683,6 +683,13 @@ fun PlayerScreen(
       PlayerPanel.Quality -> actualQuality?.let { quality ->
         (playerState as? PlayerScreenState.Ready)?.info?.qualities?.indexOfFirst { it.id == quality.id }
       }?.takeIf { it >= 0 } ?: 0
+      PlayerPanel.Audio -> (playerState as? PlayerScreenState.Ready)?.info?.availableAudioTracks
+        // P11-119:初焦落到当前音轨(已选 → preferredAudioTrackId;未选 → 服务器声明默认轨)。
+        ?.indexOfFirst { t ->
+          t.id == activeRequest.preferredAudioTrackId ||
+            (activeRequest.preferredAudioTrackId == null && t.isDefault)
+        }
+        ?.takeIf { it >= 0 } ?: 0
       PlayerPanel.Speed -> PlayerSpeedOptions.indexOf(playbackSpeed).takeIf { it >= 0 } ?: 2
       PlayerPanel.Episodes -> {
         val focusIdx = metadata?.pages
@@ -1161,8 +1168,10 @@ fun PlayerScreen(
   fun panelItemCount(): Int {
     val info = (playerState as? PlayerScreenState.Ready)?.info
     return when (activePanel) {
-      PlayerPanel.Main -> 3
+      // P11-119:多音轨视频在 Main 末尾追加「音轨」项(index 3),故 Main 项数随之为 4。
+      PlayerPanel.Main -> if ((info?.availableAudioTracks?.size ?: 0) > 1) 4 else 3
       PlayerPanel.Quality -> info?.qualities?.size?.coerceAtLeast(1) ?: 1
+      PlayerPanel.Audio -> info?.availableAudioTracks?.size?.coerceAtLeast(1) ?: 1
       PlayerPanel.Danmaku -> 8
       PlayerPanel.Speed -> PlayerSpeedOptions.size
       PlayerPanel.Episodes -> metadata?.pages?.size ?: 0
@@ -1196,9 +1205,20 @@ fun PlayerScreen(
     when (activePanel) {
       PlayerPanel.Main -> when (focusedPanelIndex) {
         // alpha.9X(恢复清晰度选择):Main 面板 index 0 = 清晰度 → Quality 面板;1 = 弹幕;2 = 倍速。
+        // P11-119:index 3 = 音轨(仅多音轨视频出现)→ Audio 面板。
         0 -> openPanel(PlayerPanel.Quality)
         1 -> openPanel(PlayerPanel.Danmaku)
         2 -> openPanel(PlayerPanel.Speed)
+        3 -> openPanel(PlayerPanel.Audio)
+      }
+      PlayerPanel.Audio -> {
+        // P11-119:选音轨 → 带 preferredAudioTrackId 重跑 resolve(SABR 路径 = 用命中轨的 formatId
+        // 重建会话;与清晰度切换同一套机制,保持当前位置)。
+        val track = info.availableAudioTracks.getOrNull(focusedPanelIndex) ?: return
+        activeRequest = activeRequest.copy(
+          startPositionMs = player.currentPosition.takeIf { it > 0L } ?: playbackPositionState.longValue,
+          preferredAudioTrackId = track.id,
+        )
       }
       PlayerPanel.Quality -> {
         // alpha.9X(恢复清晰度选择):选中 Quality 面板某档 → 更新 selectedQuality + 用 preferredQualityId 重跑 resolve。
@@ -2583,6 +2603,10 @@ fun PlayerScreen(
           request = displayRequest,
           info = state.info,
           actualQuality = actualQuality,
+          // P11-119:当前音轨 = 已选(preferredAudioTrackId)→ 否则服务器声明默认轨 → 否则第一条。
+          currentAudioTrackId = activeRequest.preferredAudioTrackId
+            ?: state.info.availableAudioTracks.firstOrNull { it.isDefault }?.id
+            ?: state.info.availableAudioTracks.firstOrNull()?.id,
           metadata = metadata,
           sidePanelVideos = sidePanelVideos,
           sidePanelLoading = sidePanelLoading,

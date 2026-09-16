@@ -2211,6 +2211,23 @@ class YoutubePlaybackResolver(
       sabrUrl = if (sabrUrl.contains("?")) "$sabrUrl&cpn=$webCpn" else "$sabrUrl?cpn=$webCpn"
       Log.i(Tag, "WEB-SABR: cpn injected client-side($webCpn)——FreeTube Watch.js 同款")
     }
+    // P11-119:WEB-SABR 也提供**音轨列表**。此前这条路的会话没传 audioTracks → `availableAudioTracks`
+    // 恒空 ⇒ 移动端在 WEB-SABR 档下也看不到音轨菜单(NewPipe/Piped 路径是传了的)。数据源与 DASH 路径
+    // 同源:/player `adaptiveFormats[].audioTrack{id,displayName,audioIsDefault}` + `language`
+    // (解析器见 parseFormat)。单音轨视频多个 itag 的 id 都为 null → 折叠成一条 "default" 防误显示。
+    val sabrAudioTracks = audioRaws.map { raw ->
+      val at = raw.obj("audioTrack")
+      SabrAudioTrack(
+        id = at?.stringOrNull("id") ?: "default",
+        languageCode = raw.stringOrNull("language"),
+        displayName = at?.stringOrNull("displayName"),
+        isDefault = at?.get("audioIsDefault")?.jsonPrimitive?.booleanOrNull ?: false,
+        formatId = rawToSabrFormatId(raw, 0),
+      )
+    }.distinctBy { it.id }
+    if (sabrAudioTracks.size > 1) {
+      Log.i(Tag, "WEB-SABR audioTracks(${sabrAudioTracks.size}): ${sabrAudioTracks.joinToString { "${it.id}/${it.displayName ?: it.languageCode ?: "?"}${if (it.isDefault) "*" else ""}" }}")
+    }
     // WEB 会话(P11-106:身份全链桌面化——桌面 ytcfg 的 INNERTUBE_CONTEXT + 桌面 UA + 页面 cookie;
     // 无桌面身份时回退旧行为);poToken web64 → UTF-8 字节(fromSabrData 内已修)
     val webIdentity = botGuard.webSessionIdentity()
@@ -2234,6 +2251,7 @@ class YoutubePlaybackResolver(
       visitorData = "",
       cpn = material.cpn,
       videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
+      audioTracks = sabrAudioTracks,
     ) else SabrSession.fromSabrData(
       // P11-117:恢复会话 poToken(P11-116 的 pot-less 是判别实验,已判读完毕:token 洗清——
       // 带/不带 token 的响应逐字节一致)。对齐 FreeTube:`createLocalSabrManifest(result, poToken, …)`
@@ -2251,6 +2269,7 @@ class YoutubePlaybackResolver(
       visitorData = "",
       cpn = webCpn,
       videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
+      audioTracks = sabrAudioTracks,
     )
     val sid = SabrStreamRegistry.registerByVideoId(
       videoId, session, SabrClient(httpClient),
