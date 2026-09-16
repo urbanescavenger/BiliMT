@@ -131,7 +131,7 @@ class YoutubePlaybackResolver(
           !piped.serverAbrStreamingUrl.isNullOrBlank() &&
           !piped.videoPlaybackUstreamerConfig.isNullOrBlank()
         ) {
-          val r = buildSabrSessionFromPiped(videoId, piped, youtubeDefaultQuality)
+          val r = buildSabrSessionFromPiped(videoId, piped, youtubeDefaultQuality, request.preferredAudioTrackId)
           if (r != null) {
             YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
             val sabrClient = SabrClient(httpClient)
@@ -223,7 +223,12 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "SABR dead-loop guard: videoId=$videoId 已 RELOAD(reloadCount=${SabrStreamRegistry.reloadCount(videoId)})→ 跳过重建,直接 DASH/HLS 兜底")
       null
     } else {
-      buildSabrSessionFromNewPipe(videoId, poToken, youtubeDefaultQuality, youtubeStartQuality)
+      // P11-119c:SABR 主链同样消费 preferredAudioTrackId(此前只有 WEB-SABR 消费 ⇒ 默认「SABR 优先」
+      // 档位下点选音轨恒无效,会话永远落原声轨)。
+      buildSabrSessionFromNewPipe(
+        videoId, poToken, youtubeDefaultQuality, youtubeStartQuality,
+        preferredAudioTrackId = request.preferredAudioTrackId,
+      )
     }
     if (np != null) {
       YoutubeLoadProgress.emit(YoutubeLoadStep.BuildSession)
@@ -470,9 +475,14 @@ class YoutubePlaybackResolver(
               var session = cachedEntry.session
               // 音轨切换:preferredAudioTrackId 命中且与当前 audioFormatId 不同 → copy 换 audioFormatId 并重注册
               // (更新缓存 entry,下个音频段请求用新 itag)。poToken 会话级不绑 itag,无需重 harvest。
+              // P11-119c:判据必须含 **xtags**——多音轨视频的每条音轨共用同一 itag(真机 r1963:
+              // en-US 配音与 zh-Hant 原声都是 itag140),只比 itag 会把切轨判成「无变化」直接跳过。
               if (request.preferredAudioTrackId != null) {
                 val match = session.audioTracks.firstOrNull { it.id == request.preferredAudioTrackId }
-                if (match != null && match.formatId.itag != session.audioFormatId.itag) {
+                if (match != null &&
+                  (match.formatId.itag != session.audioFormatId.itag ||
+                    match.formatId.xtags != session.audioFormatId.xtags)
+                ) {
                   session = session.copy(audioFormatId = match.formatId)
                   SabrStreamRegistry.registerByVideoId(
                     videoId, session, cachedEntry.client,
@@ -506,7 +516,10 @@ class YoutubePlaybackResolver(
           var sabrSession: SabrSession? = null
           var sabrRaws: List<JsonObject> = raws
           var sabrDuration = durationMs
-          val npResult = buildSabrSessionFromNewPipe(videoId, poToken, youtubeDefaultQuality, youtubeStartQuality)
+          val npResult = buildSabrSessionFromNewPipe(
+            videoId, poToken, youtubeDefaultQuality, youtubeStartQuality,
+            preferredAudioTrackId = request.preferredAudioTrackId,
+          )
           if (npResult != null) {
             sabrSession = npResult.session
             sabrRaws = npResult.raws
@@ -895,6 +908,12 @@ class YoutubePlaybackResolver(
     poToken: String?,
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
     youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
+    /**
+     * P11-119c:用户点选的音轨 id(PlaybackRequest.preferredAudioTrackId)。命中 [AudioStream.getAudioTrackId]
+     * 即用该轨的 formatId 建会话(xtags 决定服务端发哪条音频),未命中/为空回落原声轨。
+     * 此前这条主链**完全不看它**(签名里就没有 request)⇒ 「SABR 优先」档位下切轨恒无效。
+     */
+    preferredAudioTrackId: String? = null,
   ): NewPipeSabrResult? {
     val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
       .getOrElse {
@@ -958,7 +977,18 @@ class YoutubePlaybackResolver(
       .joinToString { "${it.itag}=${it.codec}" })
     // 优先原声轨(getAudioTrackType()==ORIGINAL,来自 xtags acont=original),跳过配音/翻译轨。
     // 多语言配音视频里同一 itag 会按语言重复出现,盲取第一条可能拿到配音轨。
-    val firstAudio = audioStreams.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
+    // P11-119c:先认用户点选的轨(preferredAudioTrackId)——与 WEB-SABR 路径同语义,否则切轨无效。
+    val preferredAudio = preferredAudioTrackId?.let { id -> audioStreams.firstOrNull { it.getAudioTrackId() == id } }
+    if (preferredAudioTrackId != null) {
+      Log.i(
+        Tag,
+        if (preferredAudio != null) "NewPipe SABR audio switch: track=$preferredAudioTrackId → audio=itag${preferredAudio.itag}"
+        else "NewPipe SABR audio switch: track=$preferredAudioTrackId 未命中 → 回落原声轨(可选=" +
+          audioStreams.map { it.getAudioTrackId() ?: "null" }.distinct().joinToString(",") + ")",
+      )
+    }
+    val firstAudio = preferredAudio
+      ?: audioStreams.firstOrNull { it.audioTrackType == AudioTrackType.ORIGINAL }
       ?: audioStreams.firstOrNull { it.audioTrackType != AudioTrackType.DUBBED }
       ?: audioStreams.firstOrNull()
     if (firstVideo == null || firstAudio == null) {
@@ -981,6 +1011,16 @@ class YoutubePlaybackResolver(
         displayName = it.getAudioTrackName() ?: it.getAudioLocale()?.getDisplayName(),
         isDefault = it.audioTrackType == AudioTrackType.ORIGINAL,
         formatId = it.toSabrFormatId(),
+      )
+    }
+    // P11-119c:与 WEB-SABR 路径同款音轨列表日志——此前这条主链只打会话里的单条 audio=itag,
+    // 真机切轨失败时看不出「可选 id 有哪些/是否命中」,排查只能读代码。
+    val distinctAudioTracks = sabrAudioTracks.distinctBy { it.id }
+    if (distinctAudioTracks.size > 1) {
+      Log.i(
+        Tag,
+        "NewPipe SABR audioTracks(${distinctAudioTracks.size}): " +
+          distinctAudioTracks.joinToString { "${it.id}/${it.displayName ?: it.languageCode ?: "?"}${if (it.isDefault) "*orig" else ""}@itag${it.formatId.itag}" },
       )
     }
     // alpha.14:对齐 LibreTube——visionOS SABR 请求**不带 poToken**。
@@ -1018,10 +1058,13 @@ class YoutubePlaybackResolver(
     // 字幕(WebVTT URL,不走 SABR 服务端):NewPipe SubtitleInfo 直接给可拉取的 WebVTT URL。
     // mimeType 固定 text/vtt。无字幕时为空列表。id 用索引(非 itag),供字幕轨去重/切换。
     //
-    // 2026-08-31(P11-73,用户决策:字幕不重要,核心是音视频):**字幕不再并入播放主源**——旧实现
-    // MergingMediaSource 合并 WebVTT ProgressiveMediaSource,媒体3 等全部 child prepare 才开播,
-    // timedtext URL 被掐(响应头 81s 不回,直连黑洞)时拖死主源整页转圈(00:25 真机)。播放端已移除
-    // 字幕合并(PlayerScreen),这里保留字幕轨数据供未来「预检+不阻塞主源」方案回归,当前不消费。
+    // 2026-08-31(P11-73):字幕曾整块下线——旧实现把每条 WebVTT 做成普通 ProgressiveMediaSource 并进
+    // MergingMediaSource,媒体3 要等全部 child prepare 才开播,而 SubtitleExtractor 要读完整个文件才声明轨,
+    // timedtext 被掐(响应头 81s 不回)时字幕 period 拖死主源整页转圈(00:25 真机)。
+    // 2026-09-17(P11-120)回归:播放端改**懒加载**(prepare 期零读取 + 未选中不发请求 + 独立短超时 +
+    // 失败即弃),见 [com.kirin.mt.core.player.SubtitleTracks];复测确认 timedtext 真实签名 URL 直连可用
+    // (200/0.6~1.8s/真 WEBVTT,无需 poToken),P11-72 当时属偶发黑洞而非结构性封禁。
+    // displayName/isAutoGenerated 供播放器字幕面板显示与「人工 vs 自动生成」同语言重轨区分。
     val subtitleTracks = info.subtitles.mapIndexed { index, subtitle: SubtitlesStream ->
       PlaybackTrack(
         id = index,
@@ -1033,6 +1076,9 @@ class YoutubePlaybackResolver(
         height = 0,
         mimeType = "text/vtt",
         languageCode = subtitle.languageTag,
+        // NewPipe fork 的 getDisplayLanguageName() 理论上不抛,但它是解析产物,别让字幕显示名拖垮取流。
+        displayName = runCatching { subtitle.displayLanguageName }.getOrNull(),
+        isAutoGenerated = subtitle.isAutoGenerated,
       )
     }
     Log.i(
@@ -1069,6 +1115,8 @@ class YoutubePlaybackResolver(
     videoId: String,
     piped: PipedStreams,
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+    /** P11-119c:同 [buildSabrSessionFromNewPipe]——消费用户点选的音轨 id。 */
+    preferredAudioTrackId: String? = null,
   ): NewPipeSabrResult? {
     val sabrUrlRaw = piped.serverAbrStreamingUrl
     val ustreamerCfgB64 = piped.videoPlaybackUstreamerConfig
@@ -1095,7 +1143,17 @@ class YoutubePlaybackResolver(
     } ?: videoStreams.firstOrNull()
     Log.i(Tag, "Piped SABR harvest: videoFormats=${videoFormats.size} maxHeight=$maxHeight defaultItag=$defaultItag firstVideo=itag${firstVideo?.itag}(${firstVideo?.height}p)")
     // 优先原声轨(audioTrackType=="ORIGINAL",对齐 NewPipe AudioTrackType.ORIGINAL),跳过配音/翻译轨。
-    val firstAudio = audioStreams.firstOrNull { it.audioTrackType == "ORIGINAL" }
+    // P11-119c:先认用户点选的轨(preferredAudioTrackId),否则切轨无效。
+    val preferredAudio = preferredAudioTrackId?.let { id -> audioStreams.firstOrNull { it.audioTrackId == id } }
+    if (preferredAudioTrackId != null) {
+      Log.i(
+        Tag,
+        if (preferredAudio != null) "Piped SABR audio switch: track=$preferredAudioTrackId → audio=itag${preferredAudio.itag}"
+        else "Piped SABR audio switch: track=$preferredAudioTrackId 未命中 → 回落原声轨",
+      )
+    }
+    val firstAudio = preferredAudio
+      ?: audioStreams.firstOrNull { it.audioTrackType == "ORIGINAL" }
       ?: audioStreams.firstOrNull { it.audioTrackType != "DUBBED" }
       ?: audioStreams.firstOrNull()
     if (firstVideo == null || firstAudio == null) {
@@ -2340,7 +2398,11 @@ class YoutubePlaybackResolver(
     youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
   ): PlaybackInfo {
     val aItag = sabrSession.audioFormatId.itag
-    val aRaw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == aItag }
+    // P11-119c:多条音轨共用同一 itag(靠 xtags 区分)时,只按 itag 取 raw 会拿到**别的**音轨的
+    // 码率/codec 元数据 → 先按 xtags 精确匹配,再按 itag 兜底。
+    val aXtags = sabrSession.audioFormatId.xtags
+    val aRaw = (if (aXtags != null) raws.firstOrNull { it.stringOrNull("xtags") == aXtags } else null)
+      ?: raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == aItag }
     val audioTrack = buildSabrTrack(aItag, aRaw, "audio", sid, videoId)
     // 多语言配音:全部可选音轨(供播放器音轨切换菜单)。按 id 去重——单音轨会话多个 itag 折叠成一条。
     val availableAudioTracks = sabrSession.audioTracks
