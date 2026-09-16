@@ -160,7 +160,6 @@ class AppContainer(context: Context) {
     pipedClient = pipedClient,
     appSettingsStore = appSettingsStore,
     sabrHarvester = youtubeSabrHarvester,
-    diagnosticScope = applicationScope,
   )
   // 播放进度本地存储:VideoRepository 用它给普通卡片合入观看进度条,PlaybackRepository 用它续播。
   val playbackProgressStore: PlaybackProgressStore = PlaybackProgressStore(appContext)

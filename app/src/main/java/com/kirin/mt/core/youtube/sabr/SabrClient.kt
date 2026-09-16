@@ -153,6 +153,42 @@ internal data class SabrSession(
       return SabrSession(withParams, po, ustreamer, clientInfo, audioFormatId, videoFormatId, videoFormats, audioTracks, userAgent, cookieHeader, visitorData, usedCpn)
     }
 
+    /**
+     * P11-118d:直接吃**原始字节**的入口(harvest 材料专用)。
+     *
+     * 退役的 harvest 代码把 poToken/ustreamerConfig 用 STANDARD base64 编回字符串再交给 [fromSabrData],
+     * 而 [fromSabrData] 现在按 URL_SAFE 解 ustreamerConfig → 往返必坏(`sabr.malformed_config`,全黑)。
+     * 这里直接收字节,消除 base64 往返,也消除「创建路径 vs 刷新路径字节形态不一致」的历史坑。
+     */
+    fun fromSabrBytes(
+      sabrUrl: String,
+      poTokenBytes: ByteArray,
+      ustreamerConfigBytes: ByteArray,
+      clientInfo: ClientInfoInput,
+      audioFormatId: FormatId,
+      videoFormatId: FormatId,
+      userAgent: String,
+      cookieHeader: String,
+      visitorData: String,
+      cpn: String? = null,
+      videoFormats: List<FormatId> = emptyList(),
+      audioTracks: List<SabrAudioTrack> = emptyList(),
+    ): SabrSession {
+      val usedCpn = cpn ?: randomCpn()
+      val withParams = sabrUrlWithParams(sabrUrl, usedCpn)
+      Log.i(
+        tag,
+        "SabrSession(bytes/harvest): sabrUrl=${withParams.take(200)}... poToken=${poTokenBytes.size}B " +
+          "ustreamerCfg=${ustreamerConfigBytes.size}B cpn=$usedCpn audio=$audioFormatId video=$videoFormatId " +
+          "videoFormats=${videoFormats.size} audioTracks=${audioTracks.size} ua=${userAgent.take(40)} " +
+          "cookie=${cookieHeader.length}B visitor=${visitorData.length}B",
+      )
+      return SabrSession(
+        withParams, poTokenBytes, ustreamerConfigBytes, clientInfo, audioFormatId, videoFormatId,
+        videoFormats, audioTracks, userAgent, cookieHeader, visitorData, usedCpn,
+      )
+    }
+
     /** 16 字节随机 → base64url 无 padding(对齐 youtubei.js generateRandomString 16 位 cpn)。 */
     private fun randomCpn(): String {
       val bytes = ByteArray(16)

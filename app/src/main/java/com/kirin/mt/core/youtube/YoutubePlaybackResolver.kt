@@ -32,10 +32,8 @@ import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
 import com.kirin.mt.core.youtube.piped.PipedClient
 import com.kirin.mt.core.youtube.piped.PipedStreams
 import com.kirin.mt.core.youtube.piped.PipedStream
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -84,13 +82,10 @@ class YoutubePlaybackResolver(
   /** 设置存储(读 youtubeUsePiped/pipedInstanceUrl/sabrForceSessionVideoItag)。null = 全 false/空(旧行为)。 */
   private val appSettingsStore: com.kirin.mt.core.settings.AppSettingsStore? = null,
   /**
-   * P11-118 诊断(阶段 2 最小验证):WebView harvest 采集器。**只采集打日志,不接播放栈**——
-   * 回答「这套真浏览器配置(桌面 UA 真 WebView + 浏览器自己发 SABR POST)今天是否仍然可行」。
-   * null = 不跑诊断。
+   * P11-118d:WebView harvest 采集器(阶段 2 主材料来源)。null = 不启用(纯自造材料,旧行为)。
+   * 它跑一次真实桌面 WebView 的 watch 页,截获浏览器自己发的 SABR POST;那份材料服务端才认。
    */
   private val sabrHarvester: YoutubeSabrHarvester? = null,
-  /** 诊断用后台作用域:harvest 含首页预热 + watch 页 SPA init,4~50s,绝不能阻塞 resolve 主链。 */
-  private val diagnosticScope: CoroutineScope? = null,
 ) {
 
   /** 从 player base.js 提取的 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp）。 */
@@ -1907,6 +1902,70 @@ class YoutubePlaybackResolver(
    * MEDIA ok)。返回 (PlaybackInfo, sid);任一步失败返回 null(上层落 DASH 兜底)。
    */
   /**
+   * P11-118d:harvest 材料——浏览器亲手产出的 SABR 会话三元组(sabrUrl + poToken/ustreamerConfig + 原 cpn)。
+   * 服务端只认这份材料(20:57 replay 实证 status=1),我们自造的 /player 材料恒被 nag。
+   */
+  private class HarvestMaterial(
+    val baseSabrUrl: String,
+    val cpn: String,
+    val poTokenBytes: ByteArray,
+    val ustreamerConfigBytes: ByteArray,
+    val audioFormatId: SabrProto.FormatIdLite,
+    val videoFormatId: SabrProto.FormatIdLite,
+  )
+
+  /**
+   * 跑一次 harvest 并把捕获的 body 解成会话材料。任何一步失败返回 null(调用方回退自造材料)。
+   * 进程内每 videoId 只跑一次(auto-retry 不重复触发真实 watch 页加载 = 防风控)。
+   * 拿到 POST 但解不出材料时顺带跑 [replayHarvestCapture] 留证据(那正是 20:57 判出 status=1 的手段)。
+   */
+  private suspend fun harvestSessionMaterial(videoId: String, startMs: Long): HarvestMaterial? {
+    val harvester = sabrHarvester ?: return null
+    if (!harvestProbed.add(videoId)) {
+      Log.i(Tag, "P11-118 harvest: $videoId already harvested in this process → 用自造材料")
+      return null
+    }
+    val t0 = System.currentTimeMillis()
+    val cap = runCatching { harvester.harvest(videoId, startMs = startMs, timeoutMs = 40_000L) }.getOrNull()
+    val ms = System.currentTimeMillis() - t0
+    if (cap == null) {
+      Log.w(Tag, "P11-118 harvest: NO CAPTURE after ${ms}ms(风控空白页/超时)→ 回退自造材料")
+      harvestProbed.remove(videoId)
+      return null
+    }
+    if (!cap.method.equals("POST", ignoreCase = true)) {
+      Log.w(Tag, "P11-118 harvest: only ${cap.method} status=${cap.status} (no SABR POST) after ${ms}ms → 回退自造材料,允许重探")
+      harvestProbed.remove(videoId)
+      return null
+    }
+    Log.i(Tag, "P11-118 harvest: captured SABR POST status=${cap.status} bodyB64=${cap.bodyB64.length}B elapsed=${ms}ms")
+    val body = runCatching { Base64.decode(cap.bodyB64, Base64.DEFAULT) }.getOrNull()?.takeIf { it.isNotEmpty() }
+    val decoded = body?.let { runCatching { SabrProto.decodeVideoPlaybackAbrRequest(it) }.getOrNull() }
+    val cpn = queryParam(cap.url, "cpn")
+    val audio = decoded?.audioFormatId
+    val video = decoded?.videoFormatId
+    if (decoded == null || cpn == null || audio == null || video == null) {
+      Log.w(
+        Tag,
+        "P11-118 harvest: material incomplete(body=${body?.size ?: 0}B cpn=$cpn audio=$audio video=$video)" +
+          " → 回退自造材料 + replay 取证",
+      )
+      replayHarvestCapture(cap)
+      return null
+    }
+    // 剥 alr/cpn/rn → fromSabrData 再加 alr=yes+cpn;cver 等浏览器参数保留(对齐 alpha.25/26 replay)。
+    val base = cap.url.split("&")
+      .filterNot { it.startsWith("alr=") || it.startsWith("cpn=") || it.startsWith("rn=") }
+      .joinToString("&").let { if (it.startsWith("http")) it else "&$it" }
+    Log.i(
+      Tag,
+      "P11-118 harvest material: poToken=${decoded.poToken.size}B ustreamerCfg=${decoded.ustreamerConfig.size}B " +
+        "cpn=$cpn audio=itag${audio.itag} video=itag${video.itag} urlHasCver=${base.contains("cver=")}",
+    )
+    return HarvestMaterial(base, cpn, decoded.poToken, decoded.ustreamerConfig, audio, video)
+  }
+
+  /**
    * P11-118c(阶段 2 决定性实验):把 harvest 捕获的浏览器请求**原样重放**。
    *
    * 为什么这是决定性的:材料(URL + body + 浏览器原 cpn)是**浏览器亲手产生、服务端已回 200** 的。
@@ -1996,34 +2055,20 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "WEB-SABR: no poToken → abort")
       return null
     }
-    // ── P11-118 诊断(阶段 2 最小验证,只采集不接线)──────────────────────────────
-    // 判据:harvest probe: captured status=200 bodyB64=<N>B → 这套「真浏览器发 SABR POST」今天仍然可行;
-    //       NO CAPTURE → 风控空白页/超时,阶段 2 归零(整条 WEB-SABR 线按 S2 收掉)。
-    // 必须后台跑:harvest = 首页预热(≤15s)+ watch 页 SPA init(4~8s),阻塞 resolve 会让起播等半分钟。
-    // 每个 videoId 只探一次(进程内),避免 auto-retry 反复触发真实 watch 页加载(风控)。
-    if (sabrHarvester != null && diagnosticScope != null && harvestProbed.add(videoId)) {
-      diagnosticScope.launch {
-        val t0 = System.currentTimeMillis()
-        val cap = runCatching {
-          sabrHarvester.harvest(videoId, startMs = request.startPositionMs, timeoutMs = 40_000L)
-        }.getOrNull()
-        val ms = System.currentTimeMillis() - t0
-        if (cap == null) {
-          Log.w(Tag, "P11-118 harvest probe: NO CAPTURE after ${ms}ms → 阶段 2 归零信号(风控空白页/超时)")
-        } else if (!cap.method.equals("POST", ignoreCase = true)) {
-          // 只抓到非 SABR 请求(首页预载 GET/403 之类)——不算通过,撤掉去重键允许后续重探。
-          harvestProbed.remove(videoId)
-          Log.w(Tag, "P11-118 harvest probe: only ${cap.method} status=${cap.status} (no SABR POST) after ${ms}ms → 未通过,允许重探")
-        } else {
-          Log.i(
-            Tag,
-            "P11-118 harvest probe: captured SABR POST status=${cap.status} " +
-              "bodyB64=${cap.bodyB64.length}B elapsed=${ms}ms url=${cap.url.take(160)}",
-          )
-          // P11-118c:拿到材料就立刻原样重放(阶段 2 决定性实验),见 replayHarvestCapture 注释。
-          replayHarvestCapture(cap)
-        }
-      }
+    // ── P11-118d:阶段 2 收尾——harvest 材料优先 ─────────────────────────────────
+    // 20:57 真机 replay 实验实证:浏览器产出的材料(sabrUrl + body + 原 cpn)经**我们的 OkHttp**
+    // 原样重放得到 `STREAM_PROTECTION_STATUS status=1` + 完整媒体段(761KB;itag251/396,含 init 与
+    // seq=1..4),且 A(FreeTube 式 3 头)/ B(补 Cookie+visitor)两种传输形态结果**完全相同**
+    // ⇒ 追了 15 轮的 nag 差异**只在材料**,不在身份/传输。故 WEB-SABR 会话优先用 harvest 材料;
+    // 抓不到(风控空白页/超时/body 空)才回退我们自造的 /player 材料(见下方 material==null 分支)。
+    val material = harvestSessionMaterial(videoId, request.startPositionMs)
+    if (material != null) {
+      Log.i(
+        Tag,
+        "WEB-SABR: USING HARVEST MATERIAL po=${material.poTokenBytes.size}B " +
+          "ust=${material.ustreamerConfigBytes.size}B cpn=${material.cpn} " +
+          "audio=itag${material.audioFormatId.itag} video=itag${material.videoFormatId.itag}",
+      )
     }
     // P11-106:WEB-SABR 全链桌面化——/player context 用桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT
     //(FreeTube buildSessionFromYtConfig 同款:会话身份与挑战来源同源,osName=Windows)。
@@ -2099,9 +2144,11 @@ class YoutubePlaybackResolver(
       return null
     }
     // n-decrypt(yt-dlp solver;无 n 参数则跳过;transform 失败即 abort——未 transform POST 必 403)
+    // P11-118d:harvest 材料存在时**整段跳过**——那份 URL 的 n 已由浏览器 WASM transform 过,
+    // 且 solver 失败会 abort 掉我们手上唯一可用的材料(必须避免)。
     var sabrUrl = sd.sabrUrl
     val sabrN = Uri.parse(sabrUrl).getQueryParameter("n")
-    if (!sabrN.isNullOrBlank()) {
+    if (material == null && !sabrN.isNullOrBlank()) {
       val playerJsUrl = resolvePlayerJsUrl(videoId)
       if (playerJsUrl == null) {
         Log.w(Tag, "WEB-SABR: no playerJsUrl → abort")
@@ -2128,16 +2175,35 @@ class YoutubePlaybackResolver(
     // → 会话 cpn 为空 → 服务端无法把请求与 playbackCookie/ustreamerConfig 会话配对 → status=2 nag。
     val cpnParam = queryParam(sd.sabrUrl, "cpn")
     val webCpn = cpnParam ?: generateCpn()
-    if (cpnParam == null) {
+    // P11-118d:用 harvest 材料时 cpn 必须是**浏览器原 cpn**(材料三元组之一),不注入自造 cpn。
+    if (material == null && cpnParam == null) {
       sabrUrl = if (sabrUrl.contains("?")) "$sabrUrl&cpn=$webCpn" else "$sabrUrl?cpn=$webCpn"
       Log.i(Tag, "WEB-SABR: cpn injected client-side($webCpn)——FreeTube Watch.js 同款")
     }
     // WEB 会话(P11-106:身份全链桌面化——桌面 ytcfg 的 INNERTUBE_CONTEXT + 桌面 UA + 页面 cookie;
     // 无桌面身份时回退旧行为);poToken web64 → UTF-8 字节(fromSabrData 内已修)
     val webIdentity = botGuard.webSessionIdentity()
-    val vFmt = rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
-    val aFmt = rawToSabrFormatId(firstAudio, 0)
-    val session = SabrSession.fromSabrData(
+    // P11-118d:harvest 材料优先——会话用浏览器选定/绑定的 formatId(height 从我们的 /player 阶梯补齐);
+    // 无材料时仍用我们阶梯上的默认档。
+    val materialVideoRaw = material?.videoFormatId?.let { m -> videoRaws.firstOrNull { (it.intOrNull("itag") ?: 0) == m.itag } }
+    val vFmt = material?.let {
+      SabrFormatId(it.videoFormatId.itag, it.videoFormatId.lastModified, it.videoFormatId.xtags, materialVideoRaw?.intOrNull("height") ?: 0)
+    } ?: rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
+    val aFmt = material?.let { SabrFormatId(it.audioFormatId.itag, it.audioFormatId.lastModified, it.audioFormatId.xtags, 0) }
+      ?: rawToSabrFormatId(firstAudio, 0)
+    val session = if (material != null) SabrSession.fromSabrBytes(
+      material.baseSabrUrl,
+      material.poTokenBytes,
+      material.ustreamerConfigBytes,
+      if (webIdentity != null) innerTubeClient.webDesktopSabrClientInfo(webIdentity.context) else innerTubeClient.sabrClientInfo(),
+      aFmt, vFmt,
+      userAgent = if (webIdentity != null) YoutubeConstants.UserAgent else InnerTubeClient.Client.WEB.userAgent,
+      // SABR POST 不带 HTTP Cookie/X-Goog-Visitor-Id(P11-107 HAR 实锤,FreeTube 同款)。
+      cookieHeader = "",
+      visitorData = "",
+      cpn = material.cpn,
+      videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
+    ) else SabrSession.fromSabrData(
       // P11-117:恢复会话 poToken(P11-116 的 pot-less 是判别实验,已判读完毕:token 洗清——
       // 带/不带 token 的响应逐字节一致)。对齐 FreeTube:`createLocalSabrManifest(result, poToken, …)`
       // 把 content-bound(videoId 绑定)token 放进 sabrData,`SabrSchemePlugin` 再
