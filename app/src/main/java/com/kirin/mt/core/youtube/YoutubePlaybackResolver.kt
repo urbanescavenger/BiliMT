@@ -2088,7 +2088,8 @@ class YoutubePlaybackResolver(
         Tag,
         "WEB-SABR: USING HARVEST MATERIAL po=${material.poTokenBytes.size}B " +
           "ust=${material.ustreamerConfigBytes.size}B cpn=${material.cpn} " +
-          "audio=itag${material.audioFormatId.itag} video=itag${material.videoFormatId.itag}",
+          "audio=itag${material.audioFormatId?.itag ?: "ladder-default"} " +
+          "video=itag${material.videoFormatId?.itag ?: "ladder-default"}",
       )
     }
     // P11-106:WEB-SABR 全链桌面化——/player context 用桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT
