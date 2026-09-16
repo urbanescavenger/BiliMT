@@ -1954,7 +1954,8 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "P11-118 harvest: only ${cap.method} status=${cap.status} (no SABR POST) after ${ms}ms → 回退自造材料,允许重探")
       harvestProbed.remove(videoId)
       return null
-    }    Log.i(Tag, "P11-118 harvest: captured SABR POST status=${cap.status} bodyB64=${cap.bodyB64.length}B elapsed=${ms}ms")
+    }
+    Log.i(Tag, "P11-118 harvest: captured SABR POST status=${cap.status} bodyB64=${cap.bodyB64.length}B elapsed=${ms}ms")
     val body = runCatching { Base64.decode(cap.bodyB64, Base64.DEFAULT) }.getOrNull()?.takeIf { it.isNotEmpty() }
     val decoded = body?.let { runCatching { SabrProto.decodeVideoPlaybackAbrRequest(it) }.getOrNull() }
     val cpn = queryParam(cap.url, "cpn")
