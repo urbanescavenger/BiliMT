@@ -1910,8 +1910,9 @@ class YoutubePlaybackResolver(
     val cpn: String,
     val poTokenBytes: ByteArray,
     val ustreamerConfigBytes: ByteArray,
-    val audioFormatId: SabrProto.FormatIdLite,
-    val videoFormatId: SabrProto.FormatIdLite,
+    /** body 里解出的选定档;解不出(YouTube proto 演进)时为 null → 用我们 /player 阶梯的默认档。 */
+    val audioFormatId: SabrProto.FormatIdLite?,
+    val videoFormatId: SabrProto.FormatIdLite?,
   )
 
   /**
@@ -1926,7 +1927,14 @@ class YoutubePlaybackResolver(
       return null
     }
     val t0 = System.currentTimeMillis()
-    val cap = runCatching { harvester.harvest(videoId, startMs = startMs, timeoutMs = 40_000L) }.getOrNull()
+    var cap = runCatching { harvester.harvest(videoId, startMs = startMs, timeoutMs = 40_000L) }.getOrNull()
+    if (cap == null) {
+      // P11-118d:首次(冷)harvest 要把 WebView 从零建起来 + 加载真实首页建立上下文,常常吃不进 40s
+      // 窗口(r1956 真机:第一次 `NO CAPTURE after 40009ms`,而紧接着的重试只花 1932ms)。这里就地补一次
+      // 重试而不是让上层 auto-retry 兜——省掉一整轮播放失败。
+      Log.w(Tag, "P11-118 harvest: cold attempt 无捕获(${System.currentTimeMillis() - t0}ms)→ 立即重试一次(WebView 已热)")
+      cap = runCatching { harvester.harvest(videoId, startMs = startMs, timeoutMs = 30_000L) }.getOrNull()
+    }
     val ms = System.currentTimeMillis() - t0
     if (cap == null) {
       Log.w(Tag, "P11-118 harvest: NO CAPTURE after ${ms}ms(风控空白页/超时)→ 回退自造材料")
@@ -1942,14 +1950,26 @@ class YoutubePlaybackResolver(
     val body = runCatching { Base64.decode(cap.bodyB64, Base64.DEFAULT) }.getOrNull()?.takeIf { it.isNotEmpty() }
     val decoded = body?.let { runCatching { SabrProto.decodeVideoPlaybackAbrRequest(it) }.getOrNull() }
     val cpn = queryParam(cap.url, "cpn")
-    val audio = decoded?.audioFormatId
-    val video = decoded?.videoFormatId
-    if (decoded == null || cpn == null || audio == null || video == null) {
+    if (decoded == null || cpn == null) {
       Log.w(
         Tag,
-        "P11-118 harvest: material incomplete(body=${body?.size ?: 0}B cpn=$cpn audio=$audio video=$video)" +
-          " → 回退自造材料 + replay 取证",
+        "P11-118 harvest: decode/cpn 失败(body=${body?.size ?: 0}B cpn=$cpn) → 回退自造材料 + replay 取证; " +
+          "body fields = ${body?.let { SabrProto.fieldHistogram(it) } ?: "N/A"}",
       )
+      replayHarvestCapture(cap)
+      return null
+    }
+    Log.i(
+      Tag,
+      "P11-118 harvest decoded: poToken=${decoded.poToken.size}B ustreamerCfg=${decoded.ustreamerConfig.size}B " +
+        "audio=${decoded.audioFormatId} video=${decoded.videoFormatId} " +
+        "bodyFields=${body?.let { SabrProto.fieldHistogram(it) } ?: "N/A"}",
+    )
+    // P11-118d:材料判据只看**会话三元组**(poToken + ustreamerConfig + 浏览器 cpn)——
+    // formatId 解不出(YouTube proto 把 16/17 搬走了)不阻断会话:poToken 不绑 itag(P11-29),
+    // 选定档用我们 /player 阶梯的默认档即可。真正不可替代的是那三个(服务端只认它们)。
+    if (decoded.poToken.isEmpty() || decoded.ustreamerConfig.isEmpty()) {
+      Log.w(Tag, "P11-118 harvest: poToken/ustreamerCfg 空 → 回退自造材料 + replay 取证")
       replayHarvestCapture(cap)
       return null
     }
@@ -1960,9 +1980,10 @@ class YoutubePlaybackResolver(
     Log.i(
       Tag,
       "P11-118 harvest material: poToken=${decoded.poToken.size}B ustreamerCfg=${decoded.ustreamerConfig.size}B " +
-        "cpn=$cpn audio=itag${audio.itag} video=itag${video.itag} urlHasCver=${base.contains("cver=")}",
+        "cpn=$cpn audio=${decoded.audioFormatId?.itag ?: "ladder-default"} video=${decoded.videoFormatId?.itag ?: "ladder-default"} " +
+        "urlHasCver=${base.contains("cver=")}",
     )
-    return HarvestMaterial(base, cpn, decoded.poToken, decoded.ustreamerConfig, audio, video)
+    return HarvestMaterial(base, cpn, decoded.poToken, decoded.ustreamerConfig, decoded.audioFormatId, decoded.videoFormatId)
   }
 
   /**
@@ -2184,12 +2205,16 @@ class YoutubePlaybackResolver(
     // 无桌面身份时回退旧行为);poToken web64 → UTF-8 字节(fromSabrData 内已修)
     val webIdentity = botGuard.webSessionIdentity()
     // P11-118d:harvest 材料优先——会话用浏览器选定/绑定的 formatId(height 从我们的 /player 阶梯补齐);
-    // 无材料时仍用我们阶梯上的默认档。
-    val materialVideoRaw = material?.videoFormatId?.let { m -> videoRaws.firstOrNull { (it.intOrNull("itag") ?: 0) == m.itag } }
-    val vFmt = material?.let {
-      SabrFormatId(it.videoFormatId.itag, it.videoFormatId.lastModified, it.videoFormatId.xtags, materialVideoRaw?.intOrNull("height") ?: 0)
+    // 解不出 formatId 时(YouTube proto 演进)用我们阶梯的默认档,会话仍成立。
+    val mV = material?.videoFormatId
+    val vFmt = mV?.let { m ->
+      SabrFormatId(
+        m.itag, m.lastModified, m.xtags,
+        videoRaws.firstOrNull { (it.intOrNull("itag") ?: 0) == m.itag }?.intOrNull("height") ?: 0,
+      )
     } ?: rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
-    val aFmt = material?.let { SabrFormatId(it.audioFormatId.itag, it.audioFormatId.lastModified, it.audioFormatId.xtags, 0) }
+    val mA = material?.audioFormatId
+    val aFmt = mA?.let { SabrFormatId(it.itag, it.lastModified, it.xtags, 0) }
       ?: rawToSabrFormatId(firstAudio, 0)
     val session = if (material != null) SabrSession.fromSabrBytes(
       material.baseSabrUrl,

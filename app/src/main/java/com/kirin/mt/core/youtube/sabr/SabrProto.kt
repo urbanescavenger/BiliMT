@@ -524,6 +524,25 @@ internal object SabrProto {
     return DecodedAbrRequest(poToken, ustreamerConfig, audioFmt, videoFmt)
   }
 
+  /**
+   * P11-118 诊断:打印 body 顶层字段号 → 形态/长度。YouTube 侧 proto 演进时(字段搬家)靠它定位
+   * 「poToken/ustreamerConfig/formatId 现在在哪个字段」。用法见 harvestSessionMaterial。
+   */
+  fun fieldHistogram(body: ByteArray): String {
+    val r = ProtoReader(body)
+    val parts = mutableListOf<String>()
+    while (true) {
+      val f = r.nextField() ?: break
+      val desc = when (val v = f.value) {
+        is ByteArray -> "${v.size}B"
+        is Long -> "v=$v"
+        else -> v.toString()
+      }
+      parts += "${f.fieldNumber}:$desc"
+    }
+    return parts.joinToString(" ")
+  }
+
   /** FormatId(itag/lastModified/xtags)——对齐 encodeFormatId 的字段号(1/2/3)。 */
   fun decodeFormatIdLite(payload: ByteArray): FormatIdLite {
     val r = ProtoReader(payload)
