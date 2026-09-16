@@ -688,6 +688,12 @@ class YoutubePlaybackResolver(
     // P11-115:桌面 watch 页 Set-Cookie / visitorData——/player 的 HTTP 身份与 body context 同源。
     cookieOverride: String? = null,
     visitorOverride: String? = null,
+    // P11-117:UA 覆盖(见 InnerTubeClient.postJson)。WEB-SABR 传桌面 UA——此前该链**没有 UA 入口**,
+    // 「桌面身份」只进了 body context。
+    uaOverride: String? = null,
+    // P11-117:强制走 OkHttp。WEB 默认走 browserSession WebView,而那条路的 UA 由移动
+    // settings.userAgentString 决定、Cookie 头被丢(fetchViaWebView)——桌面四件套只有 OkHttp 能带上。
+    forceOkHttp: Boolean = false,
   ): JsonObject {
     val payload = buildJsonObject {
       put("videoId", videoId)
@@ -707,17 +713,19 @@ class YoutubePlaybackResolver(
     }
     // WEB/WEB_EMBEDDED /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView；
     // ANDROID 保持 OkHttp 直连(作为回退)。TVHTML5 也走 WebView(TV client OkHttp 直连大概率被拦)。
-    val useWebView = client == InnerTubeClient.Client.WEB || client == InnerTubeClient.Client.WEB_EMBEDDED || client == InnerTubeClient.Client.TVHTML5
+    // P11-117:forceOkHttp 时跳过 WebView——桌面 UA/Cookie 只有 OkHttp 分支真能带上。
+    val useWebView = !forceOkHttp &&
+      (client == InnerTubeClient.Client.WEB || client == InnerTubeClient.Client.WEB_EMBEDDED || client == InnerTubeClient.Client.TVHTML5)
     // alpha.89:WebView fetch 安全网——若 browserSession 卡在错误页(origin=null)→ fetch CORS 失败抛错,
     // 此前直接冒泡致 resolve "no decodable formats" 全视频播不了(真机 alpha.88 "现在都不能播放")。
     // 捕获 viaWebView 异常 → 回退 OkHttp 直连(viaWebView=false)。OkHttp WEB /player 可能被判
     // "The page needs to be reloaded"(unplayable),但至少返回结构化响应而非硬崩;部分视频仍可取流。
     return runCatching {
-      innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = useWebView, contextOverride = contextOverride, cookieOverride = cookieOverride, visitorOverride = visitorOverride)
+      innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = useWebView, contextOverride = contextOverride, cookieOverride = cookieOverride, visitorOverride = visitorOverride, uaOverride = uaOverride)
     }.getOrElse { e ->
       if (useWebView) {
         Log.w(Tag, "postPlayer $client viaWebView failed (${e.message}) → fallback OkHttp viaWebView=false")
-        innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = false, contextOverride = contextOverride, cookieOverride = cookieOverride, visitorOverride = visitorOverride)
+        innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = false, contextOverride = contextOverride, cookieOverride = cookieOverride, visitorOverride = visitorOverride, uaOverride = uaOverride)
       } else throw e
     }
   }
@@ -737,10 +745,15 @@ class YoutubePlaybackResolver(
       val m = Regex("""\"jsUrl\":\"([^\"]+base\.js)\"""").find(page)
         ?: Regex("""\"jsUrl\":\"([^\"]+)\"""").find(page)
       val raw = m?.groupValues?.get(1)
-      raw?.takeIf { it.isNotBlank() }
+      val resolved = raw?.takeIf { it.isNotBlank() }
         ?.replace("\\/", "/")
         ?.replace("\\u0026", "&")
         ?.let { if (it.startsWith("http")) it else "https://www.youtube.com$it" }
+      // P11-117(诊断):打 jsUrl **内容**而非长度——此前 solver 失败时只知长度,判不出是不是拿错
+      // player 版本(base.js 版本必须与签发 sabrUrl 里 n 的那个 player 同源)。UA 保持移动口径不动
+      //(改 UA 会同时改 n 解密前提,变量不唯一),等这条日志拿出版本号再决定是否对齐桌面。
+      Log.i(Tag, "resolvePlayerJsUrl(mobile UA) → ${resolved?.take(120)}")
+      resolved
     }
     cachedPlayerJsUrl = url
     return url
@@ -1885,13 +1898,21 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "WEB-SABR: no poToken → abort")
       return null
     }
+    // P11-106:WEB-SABR 全链桌面化——/player context 用桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT
+    //(FreeTube buildSessionFromYtConfig 同款:会话身份与挑战来源同源,osName=Windows)。
+    // 无桌面身份(页未抓过/解析失败)→ 回退合成 context(旧行为)。
+    val desktopId = botGuard.webSessionIdentity()
+    // P11-117 诊断(G1 判据):把「桌面身份」与「会话默认身份」并排打出来,并显式记录 UA/Cookie 覆盖。
+    // 此前 13 轮反复声称「身份已桌面化」,但 HTTP 层从来没有 UA 入口、Cookie 也被 WebView 丢头——
+    // 这条日志是判「桌面身份到底有没有上线」的唯一凭据。
+    Log.i(
+      Tag,
+      "WEB-SABR identity: desktopVis=${desktopId?.context?.obj("client")?.stringOrNull("visitorData")?.take(24)} " +
+        "sessionVis=${innerTubeClient.currentVisitorData().take(24)} " +
+        "desktopCookie=${desktopId?.cookie?.let { "${it.length}B" } ?: "null"} " +
+        "uaOverride=${YoutubeConstants.UserAgent.take(32)} forceOkHttp=true",
+    )
     val player = runCatching {
-      // P11-106:WEB-SABR 全链桌面化——/player context 用桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT
-      //(FreeTube buildSessionFromYtConfig 同款:会话身份与挑战来源同源,osName=Windows)。
-      // 此前用移动 sw.js_data 合成 context(osName=Android)——WEB 客户端+Android 混搭身份,
-      // SABR 服务端逐请求 status=2 nag(P11-104/105 排除请求体/GenerateIT 后的剩余差异)。
-      // 无桌面身份(页未抓过/解析失败)→ 回退合成 context(旧行为)。
-      val desktopId = botGuard.webSessionIdentity()
       postPlayer(
         videoId, InnerTubeClient.Client.WEB, poToken, signatureTimestamp,
         contextOverride = desktopId?.context,
@@ -1899,6 +1920,9 @@ class YoutubePlaybackResolver(
         //(r1947:混搭身份被服务端签发降级 sabrUrl 缺 cpn/cver,会话被 status=2 nag)。
         cookieOverride = desktopId?.cookie,
         visitorOverride = desktopId?.context?.obj("client")?.stringOrNull("visitorData"),
+        // P11-117:桌面 UA + 强制 OkHttp——桌面四件套(body context/visitor/cookie/UA)第一次同源上线。
+        uaOverride = YoutubeConstants.UserAgent,
+        forceOkHttp = true,
       )
     }.getOrNull()
     if (player == null) {
@@ -1919,8 +1943,16 @@ class YoutubePlaybackResolver(
     //(FT: alr,c=WEB,cpn,cps,keepalive,n,rqh,sabr,spc,svpuc,... 1000B)。服务端签发的参数集
     // 是它对会话信任度的可见信号;若我们缺 c/keepalive/sabr/svpuc 等键,差异在 /player 会话身份。
     runCatching {
-      val keys = Uri.parse(sd.sabrUrl).getQueryParameterNames()
-      Log.i(Tag, "WEB-SABR sabrUrl params(${keys.size}): $keys len=${sd.sabrUrl.length}")
+      val parsed = Uri.parse(sd.sabrUrl)
+      val keys = parsed.getQueryParameterNames()
+      // P11-117:补 c=/cver=/n= 的存在性——「服务端签发形状」是它对我们会话信任度的可见信号
+      //(cver 是 FreeTube 没有、youtubei.js decipher 才加的键,故只做观测不做对齐目标)。
+      Log.i(
+        Tag,
+        "WEB-SABR sabrUrl params(${keys.size}): $keys len=${sd.sabrUrl.length} " +
+          "c=${parsed.getQueryParameter("c")} cver=${parsed.getQueryParameter("cver")} " +
+          "n=${parsed.getQueryParameter("n") != null}",
+      )
     }
     // 选轨(对齐 reload harvest:startHeight 上限内最高档)
     val raws = sd.raws
@@ -1979,11 +2011,11 @@ class YoutubePlaybackResolver(
     val vFmt = rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
     val aFmt = rawToSabrFormatId(firstAudio, 0)
     val session = SabrSession.fromSabrData(
-      // P11-116(判别实验):会话 streamerContext.poToken 置空——判别「服务端拒绝我们的 token 内容」
-      // vs「WEB 会话其他维度」。/player 仍带 poToken(拿 SABR 数据);会话不带(对齐 NewPipe pot-less
-      // 的干净形态)。若 pot-less 会话 status=1 → token 内容被拒实锤(P11-117 转铸 VM 桌面化);
-      // 若仍 nag → token 无关,WEB 会话还有未对齐维度。
-      sabrUrl, "", sd.ustreamerCfgB64,
+      // P11-117:恢复会话 poToken(P11-116 的 pot-less 是判别实验,已判读完毕:token 洗清——
+      // 带/不带 token 的响应逐字节一致)。对齐 FreeTube:`createLocalSabrManifest(result, poToken, …)`
+      // 把 content-bound(videoId 绑定)token 放进 sabrData,`SabrSchemePlugin` 再
+      // `base64ToU8(sabrData.poToken)` 进 streamerContext.poToken。
+      sabrUrl, poToken, sd.ustreamerCfgB64,
       if (webIdentity != null) innerTubeClient.webDesktopSabrClientInfo(webIdentity.context) else innerTubeClient.sabrClientInfo(),
       aFmt, vFmt,
       userAgent = if (webIdentity != null) YoutubeConstants.UserAgent else InnerTubeClient.Client.WEB.userAgent,

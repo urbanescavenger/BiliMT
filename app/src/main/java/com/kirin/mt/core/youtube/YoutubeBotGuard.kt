@@ -75,7 +75,8 @@ class YoutubeBotGuard(
     //    loose JSON 解析;watch 页无效整个会话回退主页);
     // ② 注入 window.yt = {config_: ytConfig}(interpreter VM 读 EVENT_ID 等——首版缺它,
     //    铸出的 token attestation 链占位,60s re-attestation 被拒:status=2→refresh→status=3);
-    // ③ challenge 优先级:页面 bgChallenge → /att/get(eacrToken) → Create 端点(旧法兜底)。
+    // ③ challenge 优先级(P11-117 改):/att/get(**带完整 context,无 eacrToken**,FreeTube 同款)
+    //    → 页面 bgChallenge → Create 端点(旧法兜底)。
     val pageData = fetchPageData(videoId)
     pageData?.ytConfig?.let { cfg ->
       // window.yt 注入必须先于 interpreter eval(BotGuard VM 启动时读 window.yt.config_)。
@@ -83,9 +84,12 @@ class YoutubeBotGuard(
       val inject = executor.eval("window.yt = { config_: ${cfg} }; typeof window.yt")
       Log.i(Tag, "page ytcfg injected: $inject (${cfg.toString().length}B)")
     }
-    // 1) 拿 challenge 并 descramble(优先级:页面内嵌 → /att/get → Create)。
-    val challenge = challengeFromPage(pageData)
-      ?: attGetChallenge(pageData?.attestationData)
+    // 1) 拿 challenge 并 descramble。
+    // P11-117:顺序改为 **/att/get 优先**(对齐 FreeTube——它以 /att/get 为唯一来源)。此前页面 bgChallenge
+    // 优先:挑战来自 OkHttp 桌面 UA 抓的 watch 页,兑换却用移动身份,跨身份兑换是 13 轮的盲区。
+    // 页面 bgChallenge / Create 端点保留为兜底。
+    val challenge = attGetChallenge()
+      ?: challengeFromPage(pageData)
       ?: fetchChallenge()
       ?: return null
     val interpreterJs = challenge.interpreterJavascript ?: return null
@@ -374,20 +378,33 @@ class YoutubeBotGuard(
   }
 
   /** /att/get fallback:页面未带 bgChallenge 时,用 eacrToken 换新 challenge(FreeTube botGuardScript 同款)。 */
-  private suspend fun attGetChallenge(attestation: JsonObject?): Challenge? {
-    val eacrToken = attestation?.stringOrNull("T")
-    if (eacrToken.isNullOrBlank()) {
-      Log.i(Tag, "att/get: no eacrToken in page data → skip")
+  /**
+   * P11-117(对齐 FreeTube `botGuardScript.js:14-30`):挑战从 `/att/get` 取——body 带**完整 context**、
+   * **不带 eacrToken**,并带 `X-Goog-Visitor-Id` / `X-Youtube-Client-Version` / `X-Youtube-Client-Name:1`。
+   *
+   * 旧实现发 `{engagementType, eacrToken}`(eacrToken 来自 OkHttp 抓的桌面 watch 页)且用 postJson 的
+   * 默认身份(合成移动 context + 移动 UA)→ **挑战按桌面身份拿、兑换按移动身份**,这条跨身份兑换是
+   * 13 轮里从没被打开过的差异,而且该端点此前零日志。
+   */
+  private suspend fun attGetChallenge(): Challenge? {
+    val identity = webSessionIdentity()
+    if (identity == null) {
+      Log.i(Tag, "att/get: no desktop identity yet(page not fetched)→ skip")
       return null
     }
+    val ctx = identity.context
     val resp = runCatching {
       innerTubeClient.postJson(
         "/att/get",
         buildJsonObject {
           put("engagementType", "ENGAGEMENT_TYPE_UNBOUND")
-          put("eacrToken", eacrToken)
+          put("context", ctx)
         },
         client = InnerTubeClient.Client.WEB,
+        contextOverride = ctx,
+        visitorOverride = ctx.obj("client")?.stringOrNull("visitorData"),
+        cookieOverride = identity.cookie,
+        uaOverride = YoutubeConstants.UserAgent,
       )
     }.getOrElse {
       Log.w(Tag, "att/get failed: ${it.message}")
