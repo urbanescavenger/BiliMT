@@ -94,8 +94,11 @@ class YoutubePlaybackResolver(
   /** 缓存的 base.js URL（避免 resolvePlayerJsUrl 重复拉 watch 页）。 */
   private var cachedPlayerJsUrl: String? = null
 
-  /** P11-118 诊断:已跑过 harvest 探针的 videoId(进程内去重,防 auto-retry 反复触发真实 watch 页加载)。 */
-  private val harvestProbed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+  /** P11-118 诊断:已跑过 harvest 的 videoId → 上次采集时刻(进程内防风控)。
+   *  P11-118g:改**时间窗**去重(45s)——原先一次性去重导致「会话被看门狗/错误重载后不再 harvest,
+   *  只能用已知会死的自造材料」(r1959 真机:harvest 会话被 stall 重载后,新会话用自造材料,
+   *  60s 处 status=3 处决 → 又一轮重载)。 */
+  private val harvestProbed = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
   suspend fun resolve(
     request: PlaybackRequest,
@@ -1917,15 +1920,21 @@ class YoutubePlaybackResolver(
 
   /**
    * 跑一次 harvest 并把捕获的 body 解成会话材料。任何一步失败返回 null(调用方回退自造材料)。
-   * 进程内每 videoId 只跑一次(auto-retry 不重复触发真实 watch 页加载 = 防风控)。
+   * **时间窗去重(45s)**:窗口内不重复采集(防风控 + 防 auto-retry 立刻重打);窗口外允许重新采集——
+   * 会话被看门狗/错误重载后必须能拿到新材料,否则只能退回已知会死的自造材料。
    * 拿到 POST 但解不出材料时顺带跑 [replayHarvestCapture] 留证据(那正是 20:57 判出 status=1 的手段)。
    */
   private suspend fun harvestSessionMaterial(videoId: String, startMs: Long): HarvestMaterial? {
     val harvester = sabrHarvester ?: return null
-    if (!harvestProbed.add(videoId)) {
-      Log.i(Tag, "P11-118 harvest: $videoId already harvested in this process → 用自造材料")
-      return null
+    val now = System.currentTimeMillis()
+    harvestProbed[videoId]?.let { last ->
+      if (now - last < HARVEST_RETRY_WINDOW_MS) {
+        Log.i(Tag, "P11-118 harvest: $videoId 刚采集过(${now - last}ms 前,窗口 ${HARVEST_RETRY_WINDOW_MS}ms)→ 用自造材料")
+        return null
+      }
+      Log.i(Tag, "P11-118 harvest: $videoId 上次采集已 ${now - last}ms(超窗口)→ 重新采集")
     }
+    harvestProbed[videoId] = now
     val t0 = System.currentTimeMillis()
     var cap = runCatching { harvester.harvest(videoId, startMs = startMs, timeoutMs = 40_000L) }.getOrNull()
     if (cap == null) {
@@ -1945,8 +1954,7 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "P11-118 harvest: only ${cap.method} status=${cap.status} (no SABR POST) after ${ms}ms → 回退自造材料,允许重探")
       harvestProbed.remove(videoId)
       return null
-    }
-    Log.i(Tag, "P11-118 harvest: captured SABR POST status=${cap.status} bodyB64=${cap.bodyB64.length}B elapsed=${ms}ms")
+    }    Log.i(Tag, "P11-118 harvest: captured SABR POST status=${cap.status} bodyB64=${cap.bodyB64.length}B elapsed=${ms}ms")
     val body = runCatching { Base64.decode(cap.bodyB64, Base64.DEFAULT) }.getOrNull()?.takeIf { it.isNotEmpty() }
     val decoded = body?.let { runCatching { SabrProto.decodeVideoPlaybackAbrRequest(it) }.getOrNull() }
     val cpn = queryParam(cap.url, "cpn")
@@ -2205,18 +2213,14 @@ class YoutubePlaybackResolver(
     // WEB 会话(P11-106:身份全链桌面化——桌面 ytcfg 的 INNERTUBE_CONTEXT + 桌面 UA + 页面 cookie;
     // 无桌面身份时回退旧行为);poToken web64 → UTF-8 字节(fromSabrData 内已修)
     val webIdentity = botGuard.webSessionIdentity()
-    // P11-118d:harvest 材料优先——会话用浏览器选定/绑定的 formatId(height 从我们的 /player 阶梯补齐);
-    // 解不出 formatId 时(YouTube proto 演进)用我们阶梯的默认档,会话仍成立。
-    val mV = material?.videoFormatId
-    val vFmt = mV?.let { m ->
-      SabrFormatId(
-        m.itag, m.lastModified, m.xtags,
-        videoRaws.firstOrNull { (it.intOrNull("itag") ?: 0) == m.itag }?.intOrNull("height") ?: 0,
-      )
-    } ?: rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
-    val mA = material?.audioFormatId
-    val aFmt = mA?.let { SabrFormatId(it.itag, it.lastModified, it.xtags, 0) }
-      ?: rawToSabrFormatId(firstAudio, 0)
+    // P11-118g:会话默认档**一律走我们阶梯的默认档**,不用 harvest 材料里的选定档。
+    // 依据(r1959 真机,`UrTJQIeUSiM`):材料选定档=itag399(AV1 1080p)时会话默认 399,而播放器选
+    // 136/137(H264)→ 首帧出来 0.1s 后 `tracks changed` 从 3 条视频轨扩到 6 条 + `video size: 0x0` +
+    // `video=null` → 重新 BUFFERING、pos 卡 0、duration 读成 Long.MIN → 判 ENDED → 看门狗 auto-retry
+    // ⇒ **重载**。对照组(同日干净 visionOS 会话)从未出现这套 `0x0/tracks changed/ENDED` 模式。
+    // 材料里真正不可替代的是 poToken/ustreamerConfig/cpn/URL,formatId 只是请求默认档(P11-29:token 不绑 itag)。
+    val vFmt = rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
+    val aFmt = rawToSabrFormatId(firstAudio, 0)
     val session = if (material != null) SabrSession.fromSabrBytes(
       material.baseSabrUrl,
       material.poTokenBytes,
@@ -2668,6 +2672,10 @@ class YoutubePlaybackResolver(
 
     /** Piped 实例默认值(用户未填 pipedInstanceUrl 时用)。对齐 LibreTube 默认 kavin.rocks 公共实例。 */
     const val DEFAULT_PIPED_INSTANCE = "https://pipedapi.kavin.rocks"
+
+    /** P11-118g:harvest 重新采集的时间窗——窗口内不重复采集(防风控/防 auto-retry 立刻重打),
+     *  窗口外允许重采(会话被重载后必须能拿到新材料)。取值覆盖一次典型重载(错误/看门狗 → 重新 resolve)。 */
+    private const val HARVEST_RETRY_WINDOW_MS = 45_000L
 
     /** googlevideo 直链无需 B 站 Cookie；仅带 youtube Referer/Origin。 */
     val YoutubePlaybackHeaders = BiliPlaybackHeaders(
