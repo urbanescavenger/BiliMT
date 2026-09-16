@@ -136,6 +136,19 @@ YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕
 **无签名**的旧式 URL 才是 `200` + **空 body（0 字节）**——即「缺签名=空 200」，不是挂。
 ⇒ P11-72 当时属**偶发黑洞**（HTTP/2 流已开、响应头不回，与 DNS 污染/RELOAD 偶发同族），**不是结构性封禁**。
 
+**⚠️ WEB 客户端的 captionTracks 是另一个物种（2026-09-17，P11-119e 真机实锤）**：WEB `/player` 签发的
+`captionTracks[].baseUrl` 带 **`exp=xpe`**，这是 YouTube「该视频字幕在 PO token 灰度内」的标记 ——
+**不带 `pot` 时 `/api/timedtext` 回 `200` + 空 body（0 字节）**，与「缺签名」的失败长得一模一样但根因不同。
+
+- 真机症状（r1968，视频 `iTY92w_uPys`，WEB-SABR 档）：4 条字幕轨全部挂载成功、点选后
+  `WebvttParser: Expected WEBVTT. Got null` → media3 `Disabling track due to error`，字幕永不出现（主源不受影响）。
+- 修法（对齐 yt-dlp [#13075](https://github.com/yt-dlp/yt-dlp/issues/13075) / [PR #13234](https://github.com/yt-dlp/yt-dlp/pull/13234)）：
+  URL 的 `exp` 值含 `xpe`/`xpv` 时追加 **`potc=1&pot=<token>&c=<clientName>`**；`pot` 取 **websafe base64
+  原样**（不解码），token 绑定与 PLAYER 同款 = **videoId 内容绑定** ⇒ 复用同一视频已有的 content-bound
+  poToken，不必另铸 subs 上下文 token。实现在 `YoutubePlaybackResolver.withSubsPotToken`。
+- 判据顺序：**先看 `exp`**（决定要不要 pot）→ 再看签名（决定要不要 `fmt` 之外的改写）。两条路的字幕
+  URL 不能互相套用结论：ANDROID/visionOS 加 `fmt=vtt` 就好，WEB 还得补 `pot`。
+
 ### 4.9.2 懒加载：让 prepare 期零读取（P11-120 的关键）
 
 media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack(int trackId, Format format)`，javadoc 原文：*"Allows the ProgressiveMediaSource to complete preparation without reading any data"* —— 数据只在**该轨被 track selection 选中**时才开始读。这就是外挂字幕轨需要的语义，且 **media3 自己的 `DefaultMediaSourceFactory` 处理 `MediaItem.SubtitleConfiguration` 时正是这么调的**（同包直调 + `setLoadOnlySelectedTracks`）。注意它 **package-private**：
