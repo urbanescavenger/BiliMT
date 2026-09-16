@@ -525,6 +525,39 @@ internal object SabrProto {
   }
 
   /**
+   * P11-119:解析 `/player` adaptiveFormats 的 `xtags`(base64(proto) → 键值描述表),例如
+   * `{acont=dubbed-auto, lang=en-US}` 或 `{acont=original, lang=zh-Hant}`。
+   *
+   * 这是判「哪条是**原声轨**」的唯一可靠信号:YouTube 用 `acont=original` 标原声、`acont=dubbed-auto`
+   * 标自动配音。**字面量 "acont=original" 不会出现在 base64 串里** —— 旧代码直接对 base64 串做子串
+   * 判断,恒不命中 → 永远落到 audioRaws 第一条(r1962 真机实锤:双音轨视频恒播英语配音轨
+   * `itag=140 xtags=…dubbed-auto…lang=en-US`)。
+   */
+  fun parseFormatXtags(xtagsB64: String?): Map<String, String> {
+    if (xtagsB64.isNullOrBlank()) return emptyMap()
+    val bytes = runCatching { Base64.decode(xtagsB64, Base64.DEFAULT) }.getOrNull() ?: return emptyMap()
+    val out = LinkedHashMap<String, String>()
+    val r = ProtoReader(bytes)
+    while (true) {
+      val f = r.nextField() ?: break
+      if (f.fieldNumber != 1) continue
+      val sub = f.value as? ByteArray ?: continue
+      var key: String? = null
+      var value: String? = null
+      val sr = ProtoReader(sub)
+      while (true) {
+        val sf = sr.nextField() ?: break
+        when (sf.fieldNumber) {
+          1 -> key = (sf.value as? ByteArray)?.toString(Charsets.UTF_8)
+          2 -> value = (sf.value as? ByteArray)?.toString(Charsets.UTF_8)
+        }
+      }
+      if (key != null && value != null) out[key] = value
+    }
+    return out
+  }
+
+  /**
    * P11-118 诊断:打印 body 顶层字段号 → 形态/长度。YouTube 侧 proto 演进时(字段搬家)靠它定位
    * 「poToken/ustreamerConfig/formatId 现在在哪个字段」。用法见 harvestSessionMaterial。
    */

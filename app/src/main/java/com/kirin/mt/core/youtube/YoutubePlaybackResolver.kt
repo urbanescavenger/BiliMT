@@ -1261,8 +1261,7 @@ class YoutubePlaybackResolver(
     } ?: videoRaws.firstOrNull()
     Log.i(Tag, "reload harvest: source=${if (usedWeb) "WEB" else "visionOS"} videoFormats=${videoFormats.size} maxHeight=$maxHeight defaultItag=$defaultItag firstVideo=itag${firstVideo?.intOrNull("itag")}(${firstVideo?.intOrNull("height")}p)")
     // 优先原声轨(xtags 含 acont=original);否则取第一条音频。
-    val firstAudio = audioRaws.firstOrNull { (it.stringOrNull("xtags") ?: "").contains("acont=original") }
-      ?: audioRaws.firstOrNull()
+    val firstAudio = audioRaws.firstOrNull { isOriginalAudioRaw(it) } ?: audioRaws.firstOrNull()
     if (firstVideo == null || firstAudio == null) {
       Log.w(Tag, "reload: missing streams (video=${firstVideo != null} audio=${firstAudio != null}) → fallback")
       return null
@@ -1420,8 +1419,7 @@ class YoutubePlaybackResolver(
         val videoRaws = raws.filter { (it.intOrNull("height") ?: 0) > 0 }
         val audioRaws = raws.filter { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
         val firstVideo = videoRaws.firstOrNull()
-        val firstAudio = audioRaws.firstOrNull { (it.stringOrNull("xtags") ?: "").contains("acont=original") }
-          ?: audioRaws.firstOrNull()
+        val firstAudio = audioRaws.firstOrNull { isOriginalAudioRaw(it) } ?: audioRaws.firstOrNull()
         if (firstVideo != null && firstAudio != null) {
           val videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) }
           val session = SabrSession.fromSabrData(
@@ -1804,6 +1802,18 @@ class YoutubePlaybackResolver(
     height,
   )
 
+  /**
+   * P11-119:该音频 raw 是否为**原声轨**。
+   * 先认字面量(NewPipe 侧历史上出现过明文 xtags),再解 base64(proto)——`/player` 的 xtags 是
+   * base64,里面只有编码后的 "acont"/"original" 字节,**字面量子串恒不命中**;旧写法因此永远落到
+   * audioRaws 第一条(r1962 真机:双音轨视频恒播英语配音轨)。
+   */
+  private fun isOriginalAudioRaw(raw: JsonObject): Boolean {
+    val xtags = raw.stringOrNull("xtags") ?: return false
+    if (xtags.contains("acont=original")) return true
+    return SabrProto.parseFormatXtags(xtags)["acont"]?.equals("original", ignoreCase = true) == true
+  }
+
   /** NewPipe [VideoStream] → SABR [SabrFormatId](itag/lastModified/xtags 来自 ItagItem,height 来自流)。 */
   private fun VideoStream.toSabrFormatId(): SabrFormatId = SabrFormatId(
     itag,
@@ -2168,8 +2178,8 @@ class YoutubePlaybackResolver(
     } ?: videoRaws.maxByOrNull { it.intOrNull("height") ?: 0 }?.intOrNull("itag")
     val firstVideo = defaultItag?.let { t -> videoRaws.firstOrNull { (it.intOrNull("itag") ?: 0) == t } }
       ?: videoRaws.firstOrNull()
-    val firstAudio = audioRaws.firstOrNull { (it.stringOrNull("xtags") ?: "").contains("acont=original") }
-      ?: audioRaws.firstOrNull()
+    // P11-119:默认音轨 = **原声轨**(isOriginalAudioRaw 解 xtags proto),不再用恒不命中的字面量判断。
+    val firstAudio = audioRaws.firstOrNull { isOriginalAudioRaw(it) } ?: audioRaws.firstOrNull()
     if (firstVideo == null || firstAudio == null) {
       Log.w(Tag, "WEB-SABR: missing streams(video=${firstVideo != null} audio=${firstAudio != null})→ abort")
       return null
@@ -2217,16 +2227,23 @@ class YoutubePlaybackResolver(
     // (解析器见 parseFormat)。单音轨视频多个 itag 的 id 都为 null → 折叠成一条 "default" 防误显示。
     val sabrAudioTracks = audioRaws.map { raw ->
       val at = raw.obj("audioTrack")
+      val xt = SabrProto.parseFormatXtags(raw.stringOrNull("xtags"))
       SabrAudioTrack(
         id = at?.stringOrNull("id") ?: "default",
-        languageCode = raw.stringOrNull("language"),
+        languageCode = xt["lang"] ?: raw.stringOrNull("language"),
         displayName = at?.stringOrNull("displayName"),
-        isDefault = at?.get("audioIsDefault")?.jsonPrimitive?.booleanOrNull ?: false,
+        // 语义 = 「默认播这条」= 原声轨(与 NewPipe 路径 audioTrackType==ORIGINAL 同义)。
+        // **不用** YouTube 的 audioIsDefault —— r1962 实锤它标的是英语**配音**轨,用了就会默认播配音。
+        isDefault = isOriginalAudioRaw(raw),
         formatId = rawToSabrFormatId(raw, 0),
       )
     }.distinctBy { it.id }
     if (sabrAudioTracks.size > 1) {
-      Log.i(Tag, "WEB-SABR audioTracks(${sabrAudioTracks.size}): ${sabrAudioTracks.joinToString { "${it.id}/${it.displayName ?: it.languageCode ?: "?"}${if (it.isDefault) "*" else ""}" }}")
+      Log.i(
+        Tag,
+        "WEB-SABR audioTracks(${sabrAudioTracks.size}): " +
+          sabrAudioTracks.joinToString { "${it.id}/${it.displayName ?: it.languageCode ?: "?"}${if (it.isDefault) "*orig" else ""}@itag${it.formatId.itag}" },
+      )
     }
     // WEB 会话(P11-106:身份全链桌面化——桌面 ytcfg 的 INNERTUBE_CONTEXT + 桌面 UA + 页面 cookie;
     // 无桌面身份时回退旧行为);poToken web64 → UTF-8 字节(fromSabrData 内已修)
@@ -2238,7 +2255,18 @@ class YoutubePlaybackResolver(
     // ⇒ **重载**。对照组(同日干净 visionOS 会话)从未出现这套 `0x0/tracks changed/ENDED` 模式。
     // 材料里真正不可替代的是 poToken/ustreamerConfig/cpn/URL,formatId 只是请求默认档(P11-29:token 不绑 itag)。
     val vFmt = rawToSabrFormatId(firstVideo, firstVideo.intOrNull("height") ?: 0)
-    val aFmt = rawToSabrFormatId(firstAudio, 0)
+    // P11-119:音轨切换——消费 preferredAudioTrackId。此前 WEB-SABR 路径**完全不消费**它
+    // (只有「缓存会话复用」那条老路会换 audioFormatId),而这条路每次重建会话 ⇒ 切轨恒不生效
+    // (r1962 真机:点选中文轨后 `audio switch` 一次都没打)。
+    val preferredAudio = request.preferredAudioTrackId?.let { id -> sabrAudioTracks.firstOrNull { it.id == id } }
+    if (preferredAudio != null) {
+      Log.i(
+        Tag,
+        "WEB-SABR audio switch: track=${preferredAudio.id}(${preferredAudio.displayName ?: preferredAudio.languageCode}) " +
+          "→ audio=itag${preferredAudio.formatId.itag}",
+      )
+    }
+    val aFmt = preferredAudio?.formatId ?: rawToSabrFormatId(firstAudio, 0)
     val session = if (material != null) SabrSession.fromSabrBytes(
       material.baseSabrUrl,
       material.poTokenBytes,
