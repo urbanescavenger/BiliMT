@@ -86,14 +86,35 @@ class YoutubeSabrHarvester(
    */
   suspend fun harvest(videoId: String, startMs: Long = 0L, timeoutMs: Long = 50_000L): SabrCapture? =
     withContext(Dispatchers.Main) {
-      runCatching { withTimeoutOrNull(timeoutMs) { harvestImpl(videoId, startMs) } }
+      val result = runCatching { withTimeoutOrNull(timeoutMs) { harvestImpl(videoId, startMs) } }
         .onFailure { Log.w(Tag, "harvest failed: ${it.message ?: it::class.simpleName}") }
         .getOrNull()
+      // P11-118:采集一结束就让采集 WebView **停声停播**。它长期存活且 watch 页会 autoplay,
+      // 否则退出播放器后它仍在响(真机 09-16 17:04 AudioFocusDelegate 抢焦点),且与主播放器位置不一致。
+      stopPlayback()
+      result
     }
+
+  /** P11-118:停掉采集 WebView 的媒体并暂停其渲染(下次 harvest 前 [resumeRendering] 恢复)。 */
+  private fun stopPlayback() {
+    val view = webView ?: return
+    runCatching {
+      view.evaluateJavascript(
+        "try{var ms=document.querySelectorAll('video,audio');for(var i=0;i<ms.length;i++){ms[i].pause();ms[i].muted=true;ms[i].volume=0;}}catch(e){};'ok'",
+        null,
+      )
+    }
+    runCatching { view.onPause() }
+  }
+
+  private fun resumeRendering() {
+    runCatching { webView?.onResume() }
+  }
 
   private suspend fun harvestImpl(videoId: String, startMs: Long = 0L): SabrCapture? {
     // alpha.61:复用长期存活 WebView(首次懒建并加载首页建立真实上下文),不再每次新建+销毁。
     val view = ensureWebView()
+    resumeRendering() // P11-118:上次采集后 onPause 过,这里恢复渲染/媒体
     // seed cookies:watch 播放器在 WebView 里发 /youtubei/v1/player 需要 VISITOR_INFO1_LIVE
     // 等会话 cookie(对齐 YoutubeJsExecutor.fetchViaWebView 的 CookieManager 写法)。
     // 每次 harvest 重播一遍(会话 cookie 可能变化),长期存活 WebView 已有的真实 cookie 会叠加。
@@ -117,6 +138,10 @@ class YoutubeSabrHarvester(
       val deadline = start + 30_000L
       var lastDiag = start
       var lastCaptureDump = start
+      // P11-118:SABR POST 优先的兜底位。首页/预热阶段也会发 googlevideo GET(如 itag18 预载 403),
+      // 旧判据「url 非空 && status>0」会把它当有效捕获**立刻返回**(真机 09-16 17:03:24:探针抓到首页
+      // 403 GET 就收工,而真正的 SABR POST 在 1.4s 后才发)→ 探针白跑、也不该拿它当阶段 2 判据。
+      var nonPostCapture: SabrCapture? = null
       while (System.currentTimeMillis() < deadline) {
         // alpha.53:空白页 fail-fast——onPageFinished 正常 ~1-2s 触发;超 [BLANK_PAGE_ABORT_MS] 仍没触发
         // = 页根本没渲染(风控/WebView 渲染崩,alpha.52 真机 w120:title 空/NOBODY/player=false 干等 30s)。
@@ -136,8 +161,15 @@ class YoutubeSabrHarvester(
             val status = obj["status"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
             if (!url.isNullOrBlank() && status > 0) {
               val n = extractQuery(url, "n")
-              Log.i(Tag, "harvest: captured $method status=$status n=${n ?: "ABSENT"} url=$url bodyB64=${body?.length ?: 0}B")
-              return SabrCapture(url, method, body ?: "", status)
+              // P11-118:POST(SABR)优先——命中即返回;非 POST 只记兜底,继续等 POST 到 deadline。
+              if (method.equals("POST", ignoreCase = true)) {
+                Log.i(Tag, "harvest: captured SABR $method status=$status n=${n ?: "ABSENT"} url=$url bodyB64=${body?.length ?: 0}B")
+                return SabrCapture(url, method, body ?: "", status)
+              }
+              if (nonPostCapture == null) {
+                nonPostCapture = SabrCapture(url, method, body ?: "", status)
+                Log.i(Tag, "harvest: non-SABR capture seen ($method status=$status n=${n ?: "ABSENT"}) → 继续等 SABR POST")
+              }
             }
           }
           // alpha.47 诊断:全数组无有效项——每 ~3s dump 看 hook 到底记了什么、status 是否全 0。
@@ -161,6 +193,10 @@ class YoutubeSabrHarvester(
           view.evaluateJavascript(PAGE_DIAG_JS, null)
         }
         delay(200)
+      }
+      nonPostCapture?.let {
+        Log.w(Tag, "harvest: no SABR POST before deadline; only ${it.method} status=${it.status} → return non-SABR(阶段 2 判据不算通过)")
+        return it
       }
       Log.w(Tag, "harvest: timeout (30s 内 watch 无 googlevideo 请求)")
       // 注意:不再 view.destroy()——WebView 长期存活复用(alpha.61),下次 harvest 直接导航到新 watch 页。
@@ -348,6 +384,16 @@ class YoutubeSabrHarvester(
     const val HOOK_JS = """
 (function(){
   if(window.__gvHook) return; window.__gvHook=true; window.__gvCaptures=[];
+  // P11-118:强制静音。采集 WebView 里的 watch 页会 autoplay(mediaPlaybackRequiresUserGesture=false
+  // 是为触发 SABR POST 必需的),而 URL 上的 `mute=1` 在 SPA 里不保证生效——真机 09-16 17:04/17:05
+  // `AudioFocusDelegate` 两次抢到 AudioFocus,用户听到第二路音频(退出播放器后仍在响、且与主播放器
+  // 位置不一致)。这里在**页内**永久压住:周期扫 + 捕获阶段拦 play 事件。
+  // 整块包 try:onPageStarted 时机极早,hook 本体绝不能被这一段拖垮(否则采集全废)。
+  try{
+    function _muteAll(){ try{ var ms=document.querySelectorAll('video,audio'); for(var i=0;i<ms.length;i++){ ms[i].muted=true; ms[i].volume=0; } }catch(e){} }
+    _muteAll(); setInterval(_muteAll, 300);
+    document.addEventListener('play', function(e){ try{ e.target.muted=true; e.target.volume=0; }catch(_){ } }, true);
+  }catch(e){}
   function b64(buf){ try{ if(!buf) return ''; var bytes=(buf instanceof Uint8Array)?buf:new Uint8Array(buf); var s=''; for(var i=0;i<bytes.length;i++) s+=String.fromCharCode(bytes[i]); return btoa(s); }catch(e){ return ''; } }
   function isGv(url){ return /googlevideo\.com\/videoplayback/.test(url||''); }
   function isPlayer(url){ return /youtubei\/v[0-9]+\/player/.test(url||''); }

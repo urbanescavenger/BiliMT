@@ -1926,10 +1926,14 @@ class YoutubePlaybackResolver(
         val ms = System.currentTimeMillis() - t0
         if (cap == null) {
           Log.w(Tag, "P11-118 harvest probe: NO CAPTURE after ${ms}ms → 阶段 2 归零信号(风控空白页/超时)")
+        } else if (!cap.method.equals("POST", ignoreCase = true)) {
+          // 只抓到非 SABR 请求(首页预载 GET/403 之类)——不算通过,撤掉去重键允许后续重探。
+          harvestProbed.remove(videoId)
+          Log.w(Tag, "P11-118 harvest probe: only ${cap.method} status=${cap.status} (no SABR POST) after ${ms}ms → 未通过,允许重探")
         } else {
           Log.i(
             Tag,
-            "P11-118 harvest probe: captured status=${cap.status} method=${cap.method} " +
+            "P11-118 harvest probe: captured SABR POST status=${cap.status} " +
               "bodyB64=${cap.bodyB64.length}B elapsed=${ms}ms url=${cap.url.take(160)}",
           )
         }
