@@ -1170,3 +1170,4 @@ Flutter 参考 app 继续保留在原项目中，用于行为对照和回退参�
 | P11-118 | 复活 WebView harvest 作「已知可通配置 + 尺子」(阶段 2;第一步只采集打日志不接播放栈) | 实施中(S1 已命中:r1951/r1952 连续两构建 G1 达标而 `status=1×0`;取回 396 行未改 + AppContainer/resolver 接线 + 后台探针) |
 | P11-120 | YouTube 字幕回归(A1 懒加载方案)+ 两端字幕 UI:①`SubtitleTracks`(字幕轨懒加载挂载 + 独立 5s/8s 短超时 client + 失败即弃 + 默认关闭);②`SubtitleLazyLoadingSupport`(同包直调 media3 包私有 `enableLazyLoadingWithSingleTrack`,反射兜底)+ proguard keep;③TV Main 面板「字幕」项 + Subtitle 面板(关闭/语言轨);④移动端设置弹层「字幕」段 | 实施中(代码完成待云编译+真机) |
 | P11-121 | 移动端「会员」角标对齐 TV:新增共用 `SourceBadge`(BiliPink 粉底胶囊)替换三处内联 Text,位置左上→右上(卡片/在线播放列表行/自定义播放列表行);在线播放列表行「已看完」让位到左下;自定义播放列表行补上原先完全缺失的角标(编辑模式隐藏);播放器「播放列表后续」行补角标 | 已发 v3.0.13-alpha.5(云编译绿;待真机验证) |
+| P11-122 | 修「WEB-SABR 会话全部在首帧后 0.14-1.7s 被自己的看门狗杀掉」:两个看门狗计时器跨起播期累加,首帧渲染那一轮同时触发「25s 档→8s 档」阈值切换与 `bufferingPosAdvanced` 置真 → 「刚播起来」立刻被判成「挂死」→ 重载死循环(`PlayerScreen` 轮询检测 `frameRendered` false→true 跳变,那一刻清零计时器) | 实施中(代码完成待云编译+真机) |

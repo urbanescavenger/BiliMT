@@ -2050,6 +2050,13 @@ fun PlayerScreen(
     var bufferingSinceMs = 0L
     var bufferingLastPosMs = 0L
     var bufferingPosAdvanced = false
+    // P11-122(09-17 真机:WEB-SABR 三个 harvest 会话全部在**首帧后 0.14-1.7s** 被自己的看门狗杀掉)
+    // 起播成功 = 首帧渲染那一刻。此前累积的 BUFFERING/位置冻结计时器必须在此清零——续播 SABR 要拉
+    // bootstrap + 大段(本案例 475s 续播点,prepare→首帧实测 12.1/16.3/32.6s)会把计时器灌满,首帧一
+    // 渲染阈值立刻被跨过(位置冻结看门狗还同时从 StartupStallThresholdMs 25s 档切到 StallThresholdMs
+    // 8s 档),于是「刚播起来」被判成「挂死」→ 重载 → 新一轮慢起播 → 死循环。宽限期从「开始播」起算,
+    // 不从「开始等」起算。真挂死(从未出帧、或出帧后位置不再前进)判据不受影响。
+    var frameRenderedSeen = frameRendered
     // 2026-09-01 黑屏看门狗(READY 态变体):READY+音频前进但 never 首帧(解码器出帧为零,07:22
     // 案 5 轮会话 onVideoSizeChanged/onRenderedFirstFrame 均零触发)——位置基+BUFFERING 基看门狗
     // 双双结构性失明的第三种故障态。独立预算计数,首帧真渲染后清零。
@@ -2127,6 +2134,17 @@ fun PlayerScreen(
       }
       if (playerState is PlayerScreenState.Ready) {
         handleAirJumpPosition(currentPositionMs)
+      }
+      // P11-122:首帧渲染 = 起播真正成功——见 frameRenderedSeen 声明处的复盘。清零两个起播期计时器,
+      // 让看门狗从「开始播」重新计时(否则慢起播攒下的 12-33s 会在首帧那一轮立刻越过阈值开枪)。
+      if (frameRendered != frameRenderedSeen) {
+        frameRenderedSeen = frameRendered
+        if (frameRendered) {
+          stallSinceMs = 0L
+          stallBaselinePositionMs = currentPositionMs
+          bufferingSinceMs = 0L
+          bufferingPosAdvanced = false
+        }
       }
       // stall 检测:STATE_BUFFERING 且用户想播(playWhenReady)、进度连续 N 秒不前进 → 自动重载续播。
       // 排除:已暂停(playWhenReady=false)、已结束、非 Ready 态。seek/换段后 position 变化会清零基线。
