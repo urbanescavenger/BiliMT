@@ -142,6 +142,7 @@ import com.kirin.mt.core.network.FavoriteFolder
 import com.kirin.mt.core.network.BiliApiCodeException
 import com.kirin.mt.core.network.BiliNetworkException
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
+import com.kirin.mt.ui.mobile.home.SourceBadge
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
@@ -2760,15 +2761,28 @@ private fun MobileYoutubeIntroTab(
             .padding(vertical = 6.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          AsyncImage(
-            model = v.pic,
-            contentDescription = v.title,
-            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+          Box(
             modifier = Modifier
               .width(110.dp)
               .height(62.dp)
               .clip(RoundedCornerShape(8.dp)),
-          )
+          ) {
+            AsyncImage(
+              model = v.pic,
+              contentDescription = v.title,
+              contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+              modifier = Modifier.fillMaxSize(),
+            )
+            // 源角标(会员等):右上粉底 pill——这段「播放列表后续」原先整块没有角标(P11-121 补齐,对齐 TV VideoCard)。
+            if (v.badge.isNotBlank()) {
+              SourceBadge(
+                text = v.badge,
+                modifier = Modifier
+                  .align(Alignment.TopEnd)
+                  .padding(2.dp),
+              )
+            }
+          }
           Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
             Text(
               text = v.title,

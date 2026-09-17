@@ -124,12 +124,11 @@ private fun CompactStyleCardContent(
       if (video.isLive) {
         LiveBadge(text = video.badge.ifBlank { stringResource(R.string.mobile_live) }, modifier = Modifier.align(Alignment.TopStart))
       } else if (video.badge.isNotEmpty() && video.source != SourceIptv) {
-        Text(
+        // 源角标(会员等):右上粉底 pill,对齐 TV VideoCard(原先左上裸白字)。
+        SourceBadge(
           text = video.badge,
-          style = MaterialTheme.typography.labelSmall,
-          color = Color.White,
           modifier = Modifier
-            .align(Alignment.TopStart)
+            .align(Alignment.TopEnd)
             .padding(6.dp),
         )
       }
@@ -259,12 +258,11 @@ private fun FeedStyleCardContent(
       if (video.isLive) {
         LiveBadge(text = video.badge.ifBlank { stringResource(R.string.mobile_live) }, modifier = Modifier.align(Alignment.TopStart))
       } else if (video.badge.isNotEmpty() && video.source != SourceIptv) {
-        Text(
+        // 源角标(会员等):右上粉底 pill,对齐 TV VideoCard(原先左上裸白字)。
+        SourceBadge(
           text = video.badge,
-          style = MaterialTheme.typography.labelSmall,
-          color = Color.White,
           modifier = Modifier
-            .align(Alignment.TopStart)
+            .align(Alignment.TopEnd)
             .padding(6.dp),
         )
       }
@@ -328,6 +326,26 @@ private fun LiveBadge(text: String, modifier: Modifier = Modifier) {
       maxLines = 1,
     )
   }
+}
+
+/**
+ * 源角标(会员等):粉底圆角 pill + 白色粗体字,贴封面**右上**(调用处用 BoxScope.align 定位)。
+ * 对齐 TV `VideoCard` 的 `VideoBadge`(accent 胶囊)——原先移动端是左上裸白字,压在亮色封面上看不清。
+ * `internal` 供播放列表行复用。直播角标不走这里(见 [LiveBadge],仍贴左上)。
+ */
+@Composable
+internal fun SourceBadge(text: String, modifier: Modifier = Modifier) {
+  Text(
+    text = text,
+    style = MaterialTheme.typography.labelSmall,
+    color = Color.White,
+    fontWeight = FontWeight.Bold,
+    maxLines = 1,
+    modifier = modifier
+      .clip(RoundedCornerShape(4.dp))
+      .background(BiliColors.BiliPink)
+      .padding(horizontal = 5.dp, vertical = 2.dp),
+  )
 }
 
 /** 缩略图底部已播放进度细条(对照 LibreTube watch_progress)。直播/无进度时不显示;宽 = progress/duration。
