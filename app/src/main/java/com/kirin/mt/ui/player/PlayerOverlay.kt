@@ -94,6 +94,16 @@ internal enum class PlayerControl {
   Episodes,
   Up,
   Related,
+
+  /**
+   * P11-123:画质/字幕直连入口——底栏一键直达对应面板,不再走「设置 → Main 面板 → 子面板」两步。
+   * 这两个按钮是**带当前值**的形态([isValueBearing]):画质按钮显示当前档(+编码),字幕按钮显示
+   * 当前轨(未开字幕显示「关闭」)——即把原本只在右下状态区显示的画质文案移进按钮里(占原显示位)。
+   * 枚举位置决定控制行顺序(availableControls 按 entries 过滤),故紧跟 Related。
+   */
+  Quality,
+  Subtitle,
+
   Like,
   Coin,
   Favorite,
@@ -201,6 +211,7 @@ internal fun BoxScope.PlayerOverlay(
       request = request,
       info = info,
       actualQuality = actualQuality,
+      currentSubtitleTrackId = currentSubtitleTrackId,
       availableControls = availableControls,
       focusedControl = focusedControl,
       progressFocused = progressFocused,
@@ -480,6 +491,8 @@ private fun PlayerBottomOverlay(
   request: PlaybackRequest,
   info: PlaybackInfo,
   actualQuality: PlaybackQuality?,
+  /** P11-123:当前字幕轨 id(null=关闭)——供「字幕」值按钮显示当前轨名。 */
+  currentSubtitleTrackId: Int?,
   availableControls: List<PlayerControl>,
   focusedControl: PlayerControl,
   progressFocused: Boolean,
@@ -570,6 +583,25 @@ private fun PlayerBottomOverlay(
             active = active,
             focused = focused,
           )
+        } else if (control.isValueBearing) {
+          // P11-123:画质/字幕 = 「图标 + 当前值」形态,点击直达对应面板。
+          PlayerValueButton(
+            iconRes = control.iconRes,
+            contentDescription = stringResource(control.labelRes),
+            value = when (control) {
+              // 画质:当前实际播放档 + 编码标签,与右下状态区原先那条文案同源同形(文案搬进按钮)。
+              PlayerControl.Quality -> (actualQuality ?: info.selectedQuality)
+                .description
+                .withCodecLabel(currentCodecText)
+              // 字幕:当前选中轨名(自动生成轨带「自动」标);未开字幕显示「关闭」——与字幕面板 index 0 同词。
+              PlayerControl.Subtitle -> info.subtitleTracks
+                .firstOrNull { it.id == currentSubtitleTrackId }
+                ?.let { subtitleRowTitle(it) }
+                ?: stringResource(R.string.player_subtitle_off)
+              else -> ""
+            },
+            focused = focused,
+          )
         } else {
           PlayerIconButton(
             iconRes = control.iconRes,
@@ -589,6 +621,8 @@ private fun PlayerBottomOverlay(
         danmakuSettings = danmakuSettings,
         onlineCountText = onlineCountText,
         currentCodecText = currentCodecText,
+        // P11-123:底栏有「画质」值按钮时,当前档文案已经搬进按钮(占原显示位),状态区不再重复一遍。
+        showQualityText = PlayerControl.Quality !in availableControls,
       )
     }
   }
@@ -617,6 +651,51 @@ private fun PlayerIconButton(
       contentDescription = contentDescription,
       tint = BiliColors.TextPrimary,
       modifier = Modifier.size(BiliSizing.PlayerControlIconSize),
+    )
+  }
+}
+
+/**
+ * P11-123:「图标 + 当前值」控制按钮(画质/字幕)。
+ *
+ * 形态与 [PlayerIconButton] 同一套液态玻璃/焦点光晕,但**宽度自适应**(图标 + 文本),因为它承载的是
+ * 原本只在右下状态区显示的当前值(如 `1080P60(AV1)`),固定 60dp 方块放不下。高度与图标按钮一致(60dp),
+ * 故与同排按钮基线对齐。文本样式对齐被它接管的那条状态文案(PlayerStatus/次级字号 + 粗体)。
+ */
+@Composable
+private fun PlayerValueButton(
+  @DrawableRes iconRes: Int,
+  contentDescription: String,
+  value: String,
+  focused: Boolean,
+) {
+  val shape = RoundedCornerShape(BiliRadius.Card)
+  Row(
+    modifier = Modifier
+      .height(BiliSizing.PlayerControlIconButtonSize)
+      .clip(shape)
+      .playerLiquidGlassSurface(
+        shape = shape,
+        focused = focused,
+        surfaceColor = if (focused) BiliColors.PlayerControlFocused else BiliColors.PlayerControlIdle,
+      )
+      .padding(horizontal = BiliSpacing.Lg),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
+  ) {
+    Icon(
+      painter = painterResource(iconRes),
+      contentDescription = contentDescription,
+      tint = BiliColors.TextPrimary,
+      modifier = Modifier.size(BiliSizing.PlayerControlIconSize),
+    )
+    Text(
+      text = value,
+      color = BiliColors.TextPrimary,
+      fontSize = BiliTypography.PlayerStatus,
+      fontWeight = FontWeight.Bold,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
     )
   }
 }
@@ -716,6 +795,8 @@ private fun PlayerStatusTexts(
   danmakuSettings: DanmakuSettings,
   onlineCountText: String,
   currentCodecText: String,
+  /** P11-123:是否显示当前档文案。底栏有「画质」值按钮时置 false(文案已搬进按钮)。 */
+  showQualityText: Boolean,
 ) {
   Row(
     horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
@@ -743,12 +824,14 @@ private fun PlayerStatusTexts(
       fontSize = BiliTypography.PlayerStatus,
       maxLines = 1,
     )
-    Text(
-      text = (actualQuality ?: info.selectedQuality).description.withCodecLabel(currentCodecText),
-      color = BiliColors.TextSecondary,
-      fontSize = BiliTypography.PlayerStatus,
-      maxLines = 1,
-    )
+    if (showQualityText) {
+      Text(
+        text = (actualQuality ?: info.selectedQuality).description.withCodecLabel(currentCodecText),
+        color = BiliColors.TextSecondary,
+        fontSize = BiliTypography.PlayerStatus,
+        maxLines = 1,
+      )
+    }
   }
 }
 
@@ -2338,6 +2421,8 @@ private val PlayerControl.iconRes: Int
     PlayerControl.Episodes -> R.drawable.ic_player_playlist
     PlayerControl.Up -> R.drawable.ic_nav_account
     PlayerControl.Related -> R.drawable.ic_player_related
+    PlayerControl.Quality -> R.drawable.ic_player_hd
+    PlayerControl.Subtitle -> R.drawable.ic_player_subtitles
     PlayerControl.Like -> R.drawable.ic_player_like
     PlayerControl.Coin -> R.drawable.ic_player_coin
     PlayerControl.Favorite -> R.drawable.ic_player_favorite
@@ -2351,6 +2436,8 @@ private val PlayerControl.labelRes: Int
     PlayerControl.Episodes -> R.string.player_control_episodes
     PlayerControl.Up -> R.string.player_control_up
     PlayerControl.Related -> R.string.player_control_related
+    PlayerControl.Quality -> R.string.player_settings_quality
+    PlayerControl.Subtitle -> R.string.player_subtitle
     PlayerControl.Like -> R.string.player_control_like
     PlayerControl.Coin -> R.string.player_control_coin
     PlayerControl.Favorite -> R.string.player_control_favorite
@@ -2362,6 +2449,13 @@ private val PlayerControl.labelRes: Int
 /** 是否带计数 + 激活态的互动按钮(点赞/投币/收藏),用 PlayerActionButton 渲染。 */
 internal val PlayerControl.isAction: Boolean
   get() = this == PlayerControl.Like || this == PlayerControl.Coin || this == PlayerControl.Favorite
+
+/**
+ * P11-123:是否「图标 + 当前值」形态(画质/字幕),用 [PlayerValueButton] 渲染。
+ * 宽度自适应(不是固定 60dp 方块),故仅在底栏有余量时启用(当前仅 YouTube)。
+ */
+internal val PlayerControl.isValueBearing: Boolean
+  get() = this == PlayerControl.Quality || this == PlayerControl.Subtitle
 
 private val PlayerPanel.titleRes: Int
   get() = when (this) {

@@ -879,10 +879,18 @@ fun PlayerScreen(
   /** 控制栏可见按钮:PGC 或无 aid 时隐藏点赞/投币/收藏/稍后再看;评论另有 aid>0 或 YouTube 判据。 */
   fun availableControls(): List<PlayerControl> {
     val hideInteraction = displayRequest.isPgc || displayRequest.aid <= 0L
+    val info = (playerState as? PlayerScreenState.Ready)?.info
     return PlayerControl.entries.filter { control ->
       when (control) {
         PlayerControl.Like, PlayerControl.Coin, PlayerControl.Favorite, PlayerControl.ToView -> !hideInteraction
         PlayerControl.Comment -> !displayRequest.isPgc && (displayRequest.aid > 0L || displayRequest.isYoutube)
+        // P11-123:画质/字幕直连入口本次**只对 YouTube 开**(用户要求先做 YouTube)。B站 底栏已 9 个按钮
+        // (60dp 按钮 + 24dp 间距 ≈732dp),再加两个值按钮会挤出可用宽度,待其底栏方案定了再放开。
+        PlayerControl.Quality -> displayRequest.isYoutube
+        // 字幕按钮仅在视频真有字幕轨时出现——与 Main 面板字幕项同一判据(hasSubtitleChoice),
+        // 免得没字幕的视频上多一个点开是空列表的按钮。轨未挂载完时 info 未就绪,不显示;
+        // 轨挂载后 info 更新会重新计算(availableControls 在每次重组时调用)。
+        PlayerControl.Subtitle -> displayRequest.isYoutube && hasSubtitleChoice(info)
         else -> true
       }
     }
@@ -1416,6 +1424,10 @@ fun PlayerScreen(
     when (focusedControl) {
       PlayerControl.Settings -> openPanel(PlayerPanel.Main)
       PlayerControl.Episodes -> openPanel(PlayerPanel.Episodes)
+      // P11-123:画质/字幕从底栏一键直达各自面板(初焦由 openPanel 落到当前档/当前轨)。
+      // Back 回退无需改层级:closePanelOrControls 对任何已打开面板都是「关面板 → 回控制栏」。
+      PlayerControl.Quality -> openPanel(PlayerPanel.Quality)
+      PlayerControl.Subtitle -> openPanel(PlayerPanel.Subtitle)
       PlayerControl.Up -> openUpVideos(UpVideoOrderLatest)
       PlayerControl.Related -> {
         // 播放列表场景:相关 = 队列后续(与自动连播同源同序,不依赖在线接口成败);
