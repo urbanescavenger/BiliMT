@@ -48,6 +48,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -584,22 +586,24 @@ private fun PlayerBottomOverlay(
             focused = focused,
           )
         } else if (control.isValueBearing) {
-          // P11-123:画质/字幕 = 「图标 + 当前值」形态,点击直达对应面板。
+          // P11-123:画质/字幕 = 「当前值」形态,点击直达对应面板。
+          val valueText = when (control) {
+            // 画质:当前实际播放档 + 编码标签,与右下状态区原先那条文案同源同形(文案搬进按钮)。
+            PlayerControl.Quality -> (actualQuality ?: info.selectedQuality)
+              .description
+              .withCodecLabel(currentCodecText)
+            // 字幕:当前选中轨名(自动生成轨带「自动」标);未开字幕显示「关闭」——与字幕面板 index 0 同词。
+            PlayerControl.Subtitle -> info.subtitleTracks
+              .firstOrNull { it.id == currentSubtitleTrackId }
+              ?.let { subtitleRowTitle(it) }
+              ?: stringResource(R.string.player_subtitle_off)
+            else -> ""
+          }
           PlayerValueButton(
-            iconRes = control.iconRes,
-            contentDescription = stringResource(control.labelRes),
-            value = when (control) {
-              // 画质:当前实际播放档 + 编码标签,与右下状态区原先那条文案同源同形(文案搬进按钮)。
-              PlayerControl.Quality -> (actualQuality ?: info.selectedQuality)
-                .description
-                .withCodecLabel(currentCodecText)
-              // 字幕:当前选中轨名(自动生成轨带「自动」标);未开字幕显示「关闭」——与字幕面板 index 0 同词。
-              PlayerControl.Subtitle -> info.subtitleTracks
-                .firstOrNull { it.id == currentSubtitleTrackId }
-                ?.let { subtitleRowTitle(it) }
-                ?: stringResource(R.string.player_subtitle_off)
-              else -> ""
-            },
+            iconRes = control.valueIconRes,
+            // 无障碍播报「标签 + 当前值」:画质按钮无图标,标签不能只靠图标承载。
+            contentDescription = "${stringResource(control.labelRes)} $valueText",
+            value = valueText,
             focused = focused,
           )
         } else {
@@ -656,15 +660,16 @@ private fun PlayerIconButton(
 }
 
 /**
- * P11-123:「图标 + 当前值」控制按钮(画质/字幕)。
+ * P11-123:「当前值」控制按钮(画质/字幕)。
  *
- * 形态与 [PlayerIconButton] 同一套液态玻璃/焦点光晕,但**宽度自适应**(图标 + 文本),因为它承载的是
- * 原本只在右下状态区显示的当前值(如 `1080P60(AV1)`),固定 60dp 方块放不下。高度与图标按钮一致(60dp),
+ * 形态与 [PlayerIconButton] 同一套液态玻璃/焦点光晕,但**宽度自适应**(可带图标 + 文本),因为它承载的是
+ * 原本只在右下状态区显示的当前值(如 `1080p60(AV1)`),固定 60dp 方块放不下。高度与图标按钮一致(60dp),
  * 故与同排按钮基线对齐。文本样式对齐被它接管的那条状态文案(PlayerStatus/次级字号 + 粗体)。
+ * [iconRes] 为 null 时是纯文字按钮(画质按钮即如此,用户要求去掉 HD 标志)。
  */
 @Composable
 private fun PlayerValueButton(
-  @DrawableRes iconRes: Int,
+  @DrawableRes iconRes: Int?,
   contentDescription: String,
   value: String,
   focused: Boolean,
@@ -679,16 +684,19 @@ private fun PlayerValueButton(
         focused = focused,
         surfaceColor = if (focused) BiliColors.PlayerControlFocused else BiliColors.PlayerControlIdle,
       )
+      .semantics { this.contentDescription = contentDescription }
       .padding(horizontal = BiliSpacing.Lg),
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
   ) {
-    Icon(
-      painter = painterResource(iconRes),
-      contentDescription = contentDescription,
-      tint = BiliColors.TextPrimary,
-      modifier = Modifier.size(BiliSizing.PlayerControlIconSize),
-    )
+    if (iconRes != null) {
+      Icon(
+        painter = painterResource(iconRes),
+        contentDescription = null,
+        tint = BiliColors.TextPrimary,
+        modifier = Modifier.size(BiliSizing.PlayerControlIconSize),
+      )
+    }
     Text(
       text = value,
       color = BiliColors.TextPrimary,
@@ -2456,6 +2464,18 @@ internal val PlayerControl.isAction: Boolean
  */
 internal val PlayerControl.isValueBearing: Boolean
   get() = this == PlayerControl.Quality || this == PlayerControl.Subtitle
+
+/**
+ * P11-123:值按钮左侧图标(null = 纯文字按钮)。
+ *
+ * 画质**不带图标**(用户反馈「不需要画质 HD 标志」):当前档文字本身就是信息,再加一个 HD 方块
+ * 既占宽又冗余(面板里每行已有 HD 图标)。字幕保留 CC 图标——它是「这是字幕入口」的唯一形状提示。
+ */
+internal val PlayerControl.valueIconRes: Int?
+  get() = when (this) {
+    PlayerControl.Subtitle -> R.drawable.ic_player_subtitles
+    else -> null
+  }
 
 private val PlayerPanel.titleRes: Int
   get() = when (this) {
