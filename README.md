@@ -139,6 +139,14 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 | v3.0.13-alpha.2 | 频道页/播放列表详情页返回丢焦根治 + 网格 D-pad 导航修复(P11-98/98b/98c):①onBack 分支补播放列表详情层(此前误归频道层,详情页冷重组无恢复焦点丢)+详情页新增 restore 机制(离开前落点 hoist 跨播放存活,scroll 定位+等布局+重试)+频道播放列表网格 restore 对齐 TvVideoGrid 完整防御;②网格顶行↑/首列←边界回调失败时吞键不漏默认遍历(曾逃到 sidebar avatar 误开「我的主页」),↓ 末行 fall-through 保留;③网格↑焦点转移按帧重试修「按多次才挪一格」(滚动后目标行未组合单发 requestFocus 必败)+频道 follow chip 顶行↑吞键防逃逸;④TvVideoGrid 加 grid-key 按键级日志,焦点问题可精确定位到键。真机验证:restore 链路三处秒成,←→↓ 导航正常。 |
 | v3.0.13-alpha.1 | SABR 续播「满缓冲黑屏死锁」根治(P11-96):根因=media3 1.10 新增 initial-discontinuity 协议,续播点落在段中间时 ChunkSampleStream 锁死 readData 等待 period 消费,而 LibreTube(1.9.2)移植的 SabrMediaPeriod 消费逻辑残缺(early-return 只消费第一个流+评估推迟竞态)→ 满缓冲 52s、解码器不喂帧、永不 READY。修=完整适配协议(对齐官方 DashMediaPeriod:全流压读+全量消费+all-sync 豁免+首次选轨限定),真机验证死锁位 823000ms 5.5s 起播、协议重对齐链路完整走通。+ 起播诊断打点(startup probe/onTracksChanged/prepare startPos/清缓存日志,fwdBuf+rendered 据此戳破 buffered=% 假象)。+ SABR 会话绑定档与自动选轨对齐(P11-97):绑起始画质首轨替代默认画质上限(自动画质下 4K 视频不再绑 4K 会话撞 RELOAD,ABR 爬档走全表不受影响),顺带判别 RELOAD 归因(绑定档高度 vs 响应级 ustreamerConfig),4K 视频待真机复测。详见 SABR 笔记 §31/§32 |
 
+### v3.0.12
+
+稳定版：SABR 稳定性四连修复（续播起播黑屏根治三件套 P11-95——起播缓冲提示+看门狗 25s 宽限+stall 换新会话；切轨服务端跳段重载死循环 P11-92；「播3秒跳10s」时间轴翻倍 P11-91；续播位置冻结连环重载 P11-90）+ 推荐页空页面修复（取消处理器只清 Loading 占位不删预加载 Success）+ TV 播放列表详情页下键反弹修复（行聚焦按行号集合跟踪）+ WebDAV 日志备份时间戳防同名覆盖 + debug 构建桌面图标/TV banner DEBUG 角标 + TV 桌面横幅重绘为哔哩MT。整合 v3.0.11-alpha.5~11。
+
+### v3.0.11
+
+稳定版：番剧播放记录并入历史 tab（pgc 条目解析+PGC 续播+heartbeat 放宽）+ TV 启动初始焦点死区修复（初始期 Failed→重试按钮、Loading/Empty→分区 tab 持焦，Success 后网格首卡接管；推荐预加载拆出登录态 key 不再被 session 磁盘加载翻转取消）+ SABR 历史续播黑屏根因修复（bufferedRanges 上报真实段时间，修 visionOS 头恒报 {0,0} 垃圾带偏服务端续播回落判定）+ TV 设置页 TVBox 行焦点跳顶修复 + SABR 深度重试兜底 + 红果短剧内置源（搜索前端已摘除，后端链路保留）+ 应用图标重绘（哔哩MT方案E精修版）。
+
 ### v3.0.11-alpha
 
 | tag | 内容 |
@@ -146,7 +154,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 | v3.0.11-alpha.11 | SABR 续播起播黑屏根治三件套(P11-95):根因=续播起播 SABR bootstrap 首包服务端偶发 16~20.5s 慢(rr5 节点,同包恒定 1673519B)撞 8s stall 看门狗,数据在途被杀轮 → auto-retry 循环黑屏 ~50s,换新会话首包 2s 即愈(09-13 两场日志闭环,清缓存与修好无关)。修①Ready 态首帧前显示「正在缓冲...」(转圈此前只绑 Loading 态,黑屏阶段界面零反馈);②起播阶段 stall 阈值 8s→25s(StartupStallThresholdMs,出帧后仍 8s);③起播 stall 判死立即 evict SABR 会话换新会话重试(播放中不动会话保 ~6h 复用)。附带日志读法修正:stall 的 buffered=% 是 seek 位置非真实缓冲;`ENDED @pos=0 duration=MIN` 是重载拆卸回声非提前 EOF。详见 SABR 笔记 §30 |
 | v3.0.11-alpha.10 | TV YouTube 播放列表详情页下键反弹修复(P11-93):根级纠焦判据 anyRowFocused 单布尔被无关行入场补发的 isFocused=false 清零(框架焦点实际仍在持焦行)→ 下一按键误判丢焦 → 焦点拽回「播放全部」+ ↓ 重放 = 弹回顶/原行,连按赶在误判窗口前才连续;修=行聚焦改按行号集合跟踪(无关行 false 变 no-op)。+ debug 构建桌面图标/TV banner 加 DEBUG 角标(P11-94,debug 源集资源覆盖,release 零影响;TV 桌面显示 banner 非图标) |
 | v3.0.11-alpha.9 | SABR 切轨重载死循环修复(P11-92):ABR 升档(如 1440p)后服务端只回「请求段+1/+2」永不回请求段 → 6 连试 terminal evict → 全量重载循环(09-13 三轮、09-10 271、09-09 137/247 同签名)。根因=请求里带着旧档 bufferedRange 污染(服务端按跨格式游标起推,请求体无显式段号);手切没事实证=重建会话锁单轨后 bufferedRanges 只带自身格式。修①media() 后 retainAll 清非当前格式(对齐 LibreTube);修②服务端跳段时空段顶位不再 6 连试 evict。详见 SABR 笔记 §29/§29.1 |
-| v3.0.11-alpha.8 | SABR「播3秒跳10s」时间轴翻倍修复(P11-90 tfdt 补丁遍历 bug:补丁此前全程 no-op,offset 叠在原始绝对 tfdt 上样本时间翻倍;webm/VP9 轨无 tfdt 加 offset 同翻倍)——遍历重写(moof→traf→tfdt 单层+insideTraf 标志)+ offset 按容器分流(webm 保持 0)+ chunk 加载取消不再整会话 evict,详见 SABR 笔记 §28 |
+| v3.0.11-alpha.8 | SABR「播3秒跳10s」时间轴翻倍修复(P11-91 tfdt 补丁遍历 bug:补丁此前全程 no-op,offset 叠在原始绝对 tfdt 上样本时间翻倍;webm/VP9 轨无 tfdt 加 offset 同翻倍)——遍历重写(moof→traf→tfdt 单层+insideTraf 标志)+ offset 按容器分流(webm 保持 0)+ chunk 加载取消不再整会话 evict,详见 SABR 笔记 §28 |
 | v3.0.11-alpha.7 | 推荐页空页面修复(取消处理器只清 Loading 占位不删预加载 Success——此前屏幕自身加载被取消时无差别 delete 会抹掉壳层预拉成果,推荐页空到重点击)+ WebDAV 实时日志备份上传加时间戳文件名(logs_live_YYYYMMDD_HHMMSS.log,防固定名同名覆盖历史不可追溯)+ SABR 续播位置冻结连环重载修复(media3 1.10 缺失老 ChunkExtractorWrapper 首样本自校准:tfdt 相对化 + sampleOffsetUs=段网格起点,详见 SABR 笔记 §27)+ 首页加载实例诊断日志 |
 | v3.0.11-alpha.6 | TV 桌面横幅卡重绘为哔哩MT(BV 构图正负片:白底+粉渐变电视屏内 MT 零文字,与图标成对;xhdpi 升真 640x360) |
 | v3.0.11-alpha.5 | 文档:README 对齐 v3.0.11-alpha.4(补 v3.0.9/v3.0.10/v3.0.11-alpha 全部版本条目+主要功能对齐) |

@@ -2,6 +2,44 @@
 
 ## 目录
 
+- [v3.0.12](#v3012)
+- [v3.0.11](#v3011)
+- [v3.0.10](#v3010)
+- [v3.0.9](#v309)
+- [v3.0.13-alpha.4](#v3013-alpha4)
+- [v3.0.13-alpha.3](#v3013-alpha3)
+- [v3.0.13-alpha.2](#v3013-alpha2)
+- [v3.0.13-alpha.1](#v3013-alpha1)
+- [v3.0.12-alpha.1](#v3012-alpha1)
+- [v3.0.11-alpha.11](#v3011-alpha11)
+- [v3.0.11-alpha.10](#v3011-alpha10)
+- [v3.0.11-alpha.9](#v3011-alpha9)
+- [v3.0.11-alpha.8](#v3011-alpha8)
+- [v3.0.11-alpha.7](#v3011-alpha7)
+- [v3.0.11-alpha.6](#v3011-alpha6)
+- [v3.0.11-alpha.5](#v3011-alpha5)
+- [v3.0.11-alpha.4](#v3011-alpha4)
+- [v3.0.11-alpha.3](#v3011-alpha3)
+- [v3.0.11-alpha.2](#v3011-alpha2)
+- [v3.0.11-alpha.1](#v3011-alpha1)
+- [v3.0.10-alpha.9](#v3010-alpha9)
+- [v3.0.10-alpha.8](#v3010-alpha8)
+- [v3.0.10-alpha.7](#v3010-alpha7)
+- [v3.0.10-alpha.6](#v3010-alpha6)
+- [v3.0.10-alpha.5](#v3010-alpha5)
+- [v3.0.10-alpha.4](#v3010-alpha4)
+- [v3.0.10-alpha.3](#v3010-alpha3)
+- [v3.0.10-alpha.2](#v3010-alpha2)
+- [v3.0.10-alpha.1](#v3010-alpha1)
+- [v3.0.9-alpha.9](#v309-alpha9)
+- [v3.0.9-alpha.8](#v309-alpha8)
+- [v3.0.9-alpha.7](#v309-alpha7)
+- [v3.0.9-alpha.6](#v309-alpha6)
+- [v3.0.9-alpha.5](#v309-alpha5)
+- [v3.0.9-alpha.4](#v309-alpha4)
+- [v3.0.9-alpha.3](#v309-alpha3)
+- [v3.0.9-alpha.2](#v309-alpha2)
+- [v3.0.9-alpha.1](#v309-alpha1)
 - [v3.0.8](#v308)
 - [v3.0.7](#v307)
 - [v3.0.8-alpha.6](#v308-alpha6)
@@ -227,6 +265,69 @@
 - [v1.0.8](#v108)
 - [v1.0.7](#v107)
 
+## v3.0.12
+
+**稳定版:SABR 续播/起播/切轨/时间轴四连稳定性修复 + 推荐页空页面修复 + TV 播放列表下键反弹修复 + debug 构建角标。** 本版整合 v3.0.11-alpha.5~11 全部改动。
+
+### 变更
+- **SABR 续播起播黑屏根治三件套**(alpha.11,P11-95,`docs/youtube-sabr-abr-upshift-notes.md` §30):续播起播 bootstrap 首包服务端偶发 16~20.5s 慢撞 8s stall 看门狗 → auto-retry 循环黑屏 ~50s(09-13 两场日志闭环;清缓存与修好无关,换新会话首包 2s 即愈)。修:①Ready 态首帧渲染前显示「正在缓冲...」(转圈此前只绑 Loading 态,黑屏阶段界面零反馈);②起播阶段 stall 阈值 8s→25s(`StartupStallThresholdMs`,出帧后仍 8s);③起播 stall 判死立即 evict SABR 会话换新会话重试(播放中不动会话保 ~6h 复用)。
+- **SABR 切轨服务端跳段重载死循环修复**(alpha.9,P11-92,笔记 §29/§29.1):ABR 升档后请求目标段服务端只回「请求段+1/+2」→ 6 连试 terminal evict → 全量重载循环;根因=请求里带旧档 bufferedRange 游标污染(服务端按跨格式游标起推)。修:media() 后 retainAll 清非当前格式(对齐 LibreTube)+ 跳段时空段顶位不再 6 连试 evict。
+- **SABR「播3秒跳10s」时间轴翻倍修复**(alpha.8,P11-91,笔记 §28):P11-90 tfdt 补丁遍历 bug(补丁此前全程 no-op,offset 叠在原始绝对 tfdt 上样本时间翻倍)——遍历重写(moof→traf→tfdt 单层+insideTraf 标志)+ offset 按容器分流(webm 保持 0)+ chunk 加载取消不再整会话 evict。
+- **SABR 续播位置冻结连环重载修复**(alpha.7,P11-90,笔记 §27):media3 1.10 缺失老 ChunkExtractorWrapper 首样本自校准 → tfdt 相对化 + sampleOffsetUs=段网格起点,复刻 media3<1.10 语义,续播 ~800s 四轮全冻根治。
+- **推荐页空页面修复**(alpha.6,P11-89):取消处理器此前无差别 delete,屏幕自身加载被取消时把壳层预拉 Success 成果一并抹掉(推荐页空到重点击)——改只清 Loading 占位不删预加载 Success;附 WebDAV 实时日志备份上传加时间戳文件名(防固定名同名覆盖历史不可追溯)+ RecommendScreen 实例/加载诊断日志。
+- **TV YouTube 播放列表详情页下键反弹修复**(alpha.10,P11-93):根级纠焦判据 anyRowFocused 单布尔被无关行入场补发的 isFocused=false 清零(框架焦点实际仍在持焦行)→ 下一按键误判丢焦拽回「播放全部」;修=行聚焦改按行号集合跟踪(无关行 false 变 no-op)。
+- **debug 构建桌面图标/TV banner 加 DEBUG 角标**(alpha.10,P11-94):debug 源集资源覆盖,release 零影响;Android TV leanback 桌面显示 banner 补角标。
+- **TV 桌面横幅重绘为哔哩MT**(alpha.5~6,P11-88):BV 构图正负片(白底+粉渐变电视屏内 MT 零文字)与图标成对,xhdpi 升真 640x360。
+
+---
+
+## v3.0.11
+
+**稳定版:番剧播放记录并入历史 tab + TV 启动初始焦点死区修复 + SABR 历史续播黑屏根因修复 + 应用图标重绘。** 本版整合 v3.0.11-alpha.1~4 全部改动。
+
+### 变更
+- **番剧播放记录并入历史 tab**(alpha.1,P11-84):历史接口本就返回 `business=pgc` 条目但 `fromHistory` 只读 `history.bvid`(pgc 时为空)被静默丢弃——按 BV HistoryData + bilibili-API-collect 补解析(history.oid=该集 avid、history.epid=剧集 id、kid=季 id、cid=该集 cid);`VideoSummary` 新增 epId 字段;PGC playurl 走 ep_id+cid;heartbeat 放宽 avid/bvid 二选一(BV sendHeartbeat 同语义,pgc 无 bvid 用 aid);番剧历史条目自然混入历史网格,支持 PGC 续播。
+- **TV 启动初始焦点死区修复**(alpha.4,P11-87):冷启动到首屏数据就绪前(Loading)或首拉失败(Failed/Empty)时,唯一抢焦点的网格首卡 effect 无从生效,TV 上无节点持焦时 D-pad 全部按键无响应——表现为「进首页焦点没默认位置、遥控器像死机」。修:RecommendScreen 初始焦点兜底(初始期 Failed→重试按钮、Loading/Empty→分区 tab 持焦,Success 后网格首卡 effect 照常接管);Down 从 tab 在 Failed 态落重试按钮;`FeedStatusScreen` 加可选 actionFocusRequester。
+- **推荐预加载被登录态翻转取消修复**(alpha.4,P11-87):启动时 session 从磁盘异步加载,isLoggedIn false→true 翻转会取消预拉协程(真机日志实锤:Run1 222ms 即被杀,Run2 见屏幕已写 Loading 只能 skip,登录态下推荐预加载全程零贡献)——推荐预加载拆出 isLoggedIn key 改 `LaunchedEffect(Unit)`(推荐免登录可拉与登录态无关);动态预加载保持原 key 靠重跑补拉。另加 RecommendScreen loader 诊断日志(`BiliMT:Home`)。
+- **SABR 历史续播黑屏根因修复**(alpha.2~3,P11-85 系列):历史续播位置冻结永不 READY 三案排查实锤——`buildBufferedRanges` 上报 `{start:0,dur:0}` 垃圾(visionOS MEDIA_HEADER.startMs/durationMs 恒 0),续播 playerTimeMs>0 时服务端回落判定被带偏;修:init 解出的段表时间网格回喂 fetcher,上报真实 startMs/durMs,无网格零风险回退;附 tfdt 探针(MEDIA_END 首 media 段扫 fMP4 baseMediaDecodeTime)与深度重试兜底(重试耗尽后 evict 会话+续播点前推 10s,每视频一次)。
+- **TV 设置页 TVBox 行焦点跳顶修复**(alpha.2,P11-85):`SettingsItemTvbox=41` 与 Account 撞号,`settingsItemToLazyIndex` when 先命中 Account→0 致 TVBox 分支永不可达,改 Tvbox=42。
+- **红果短剧内置源**(alpha.1~3,P11-83/86):网页端免签名解析(搜索 loader 纯 JSON + 播放页 SSR 内嵌 main_url 明文 MP4);后实测网页匿名端每剧仅放开前 3 集且无账号体系,搜索前端摘除红果源(后端链路保留,历史/继续观看已有红果卡片仍可播);起播 403 修复(显式红果域名 Referer/Origin,防播放拦截器注入 B站头触发字节 CDN 防盗链)。
+- **应用图标重绘**(alpha.4,P11-88):哔哩MT方案E精修版——粉渐变底白电视壳+屏幕大MT(球状天线/机身投影/背景高光),mipmap 五密度全量替换+adaptive 背景改渐变 drawable。
+
+---
+
+## v3.0.10
+
+**稳定版:TVBox 第三搜索源全系列 + 双端搜索/番剧 UI 官方对齐。** 本版整合 v3.0.10-alpha.1~9 全部改动:搜索新增 TVBox 源(MacCMS 采集站聚合搜索、跨站同名同年份合并多线路卡、线路=清晰度档选档即换线、选集面板、自动连播、断点续播);从内置白名单 spike 演进为完全用户配置驱动(设置填 TVBox 配置 URL,type 0/1 直链采集站过滤,JSONC 注释原生解析,官方播放页剔除,m3u8 存活预检);WebDAV 备份/还原纳入 TVBox 配置;B站搜索番剧分类与移动端三 tab+筛选面板;番剧详情/选集面板对齐官方;移动播放器横屏底栏对齐 B 站官方。
+
+### 变更
+- **TVBox 搜索源**(alpha.2~4,P11-77 系列):搜索页第三源(MacCMS 采集站 `?ac=detail&wd=` 聚合搜索,单站失败静默丢弃);同名同年份跨站合并成一张多线路卡;播放走 VOD 播放器(番剧路径),线路=站点(清晰度面板显站名,选档即换线保留进度),share/play HTML 页懒解析三级提取 m3u8(非凡 `const url=`/页内绝对/相对引用);选集面板(合成元数据,分P=线路分集)+自动连播+断点续播;裸头(空 Referer/Origin)防第三方 CDN 防盗链误拒。
+- **TVBox 配置化**(alpha.9,P11-81 系列):删除内嵌 5 站白名单,源完全由用户设置里的 TVBox 配置 URL 驱动——拉取解析 `sites` 数组(kotlinx `allowComments` 原生吃 JSONC 注释),只收 type 0/1 纯 MacCMS 直链站(type 3 csp/drpy 蜘蛛与 searchable=0 静默过滤),按 api 去重;Mutex+5 分钟 TTL 缓存;TV/移动两端设置入口(镜像 IPTV 模式),保存即校验并 Toast 报可用站数;搜索空态分流引导(未配置/加载失败);官方播放页(v.qq.com/爱奇艺/优酷/芒果/B站等,JS 播放器无直链可提取)选集期剔除,死线路源头消失;m3u8 存活预检(Range 1 字节轻量探测,解析成功但 CDN 404 的死链起播前顺延下一线路,死判定缓存 5 分钟);UI 命名定版「TVBox」;manifest 开 `usesCleartextTraffic`(采集站 m3u8 常为 http 明文)。
+- **WebDAV 备份/还原纳入 TVBox 配置**(alpha.5,P11-82):TVBox 配置 URL 随 WebDAV 备份/还原,镜像 IPTV 项。
+- **B站搜索番剧分类**(alpha.7,P11-79):类型循环加「番剧」(`media_bangumi`),结果卡进 PGC 季详情;移动端搜索类型改官方三 tab(综合/番剧/UP主)+ 筛选面板(排序/发布时间/内容时长)。
+- **番剧详情/选集面板对齐官方**(alpha.8,P11-80 系列,移动端):选集两列紧凑卡(第 N 话+标题+会员角标+当前集粉色高亮+顶部进度条)、>50 集话数分组快捷跳(50/组)、头部数据行(播放/追番/弹幕)+季 badge、更新状态显示;竖屏播放器简介 tab 选集同款两列卡。
+- **移动播放器横屏底栏对齐 B 站官方**(alpha.6,P11-78):⏸⏭/弹幕胶囊(修打字无回显)/选集/倍速/画质文字按钮;空降助手自动连播不识别段修复。
+- **更新下载断流修复**(alpha.1 附):callTimeout 按包大小兜底 + Range 断点续传 + 指数退避重试 5 次。
+- **动态相对时间多语言解析**(alpha.1):补齐 zh-Hant 小時/分鐘/個月等全语言,修动态整页「1分钟前」+排序乱。
+
+---
+
+## v3.0.9
+
+**稳定版:YouTube SABR 满缓冲试探升档体系(Auto 满缓冲结构性不升档根治) + 4K 死亡行军/跨 codec 换解码器/零帧黑屏连环修复 + 动态长按弹窗下线改直进 UP 主页 + TV 播放器控制栏加稍后再看/评论。** 本版整合 v3.0.9-alpha.1~9 全部改动。
+
+### 变更
+- **SABR 满缓冲试探升档**(alpha.4~7,`docs/youtube-sabr-abr-upshift-notes.md` §20-§24):Auto 模式「播 X 档只能测到 ~X 档量级容量」的 pacing 测量死锁根治——满缓冲(升穿 max(15s 地板, 0.8×历史最高水位)且跨线防骑线误触发)且下一档不在失败冷却时,容量/持续闸失真也放行试升一档(逐级爬不动时);试探本身治愈测量(新档 pacing 把 sus/cap 喂到真实量级);配套三修:试探准入 maxObserved≥25s(修 maxObserved 随实例归零致试探线跌落)、失败冷却迁 `SabrAbrMemory` 墙钟(修重载洗掉冷却)、试探期缓冲<15s 仍在下漏 2s 宽限后熔断立即降档(防 20s 缓冲 1-2s 穿底)。
+- **ABR 失败冷却一致化**(alpha.7):降档即记 3min 冷却(不区分试探/gated/普通降档——饥饿与 est 崩塌都是不可持续证据),冷却期内该档 gated 与试探一起封锁;锁「被降出的那一档」而非全梯子,更低档升降/更高档试探/手动选档照常,期满恢复原判据。修「冷却只挡试探路径,gated 门读到试探期 pacing 虚高样本,14s/42s 后合法重批同一档,720↔1080↔1440 每 1-3 分钟来回切」。
+- **缓冲读数塌方守门**(alpha.7):SABR bufferedRange 周期性 reset 触发假 buffer-critical 误降档(真机 17s 零 fetch 播放 17s,bufS 48.8→0.0 物理不可能仍触发 1080p→720p+180s 冷却钉死低档);水位衰减 > 墙钟+2s 余量判读数塌方,跳过水位降档(试探熔断同源误判一并拦),seek 后合法骤减落同一守门方向无害。
+- **4K 死亡行军三层根治**(alpha.1):①顶档在位时 sustained 分母滑行余量 10s→20s(防起播 stall 冷却到期被同批 4K 期突发样本「合法通过」重准入;est 口径不动防千兆满缓冲滑行误伤);②顶档水位急救阈值 8s→20s(串行管道最坏反应线=评估盲窗 14s+staged 积压排空 8s+替换段传输 4s≈26s,8s 结构性必败;非顶档维持 8s);③getNextChunk 的 holder/selectFormat 移到 updateSelectedTrack 之后重读(对齐上游 media3,原顺序切档决策对同次 staged 段无效,白吃一循环生效延迟)。
+- **升档跨 codec 换解码器防护**(alpha.2):VP9 粘性梯子(升降档不跨 codec 换解码器,防 1080p↔1440p 跨 H264/VP9 撞 codec 强制回收致帧冻结)+视频冻结看门狗(解码器重建窗口帧停滞兜底整段重载)。
+- **全档零帧渲染黑屏画质熔断**(alpha.3):音频正常画面全黑的 READY 态看门狗盲区修复(条件扩展 BUFFERING‖ENDED‖(READY&&!isPlaying))、诊断三件(渲染管线/解码器状态/黑屏判定打点)+黑屏画质熔断(连续零帧自动降档重载)。
+- **TV 彻底退出**(alpha.8):两次返回退出改 `finishAffinity`+`killProcess`+`exitProcess(0)`——原 `finish()` 只出 Activity,进程仍以缓存任务驻留后台(盒子任务管理器可见,协程/OkHttp 线程活着);3s 确认窗口与播放中不受影响。
+- **移动端播放器竖滑手势**(alpha.8):左半屏上下滑调亮度、右半屏调音量,在线+离线两播放器接入。
+- **动态长按弹窗下线,长按直进 UP 主页/频道**(alpha.9,P11-76):动态页长按视频卡片改与其他视频卡片对齐——直接进 UP 主页/B站空间/YouTube 频道。根治弹窗「方向键焦点掉出弹窗」:日志复盘(4 次会话 FocusDiag)证实弹窗内移动正常,焦点丢失发生在确认导航项时弹窗整体卸载、聚焦节点被移除、焦点无主落到侧栏头像并被 autoConfirm 抢开「我的」页;不再用抑制补丁,从根上取消弹窗。
+- **TV 播放器控制栏加「稍后再看」「评论」**(alpha.9,P11-76):弹窗功能搬家——「稍后再看」= 控制栏互动按钮(与点赞/投币/收藏同排,成功 toast,非 PGC 且有 aid 时可见);「评论」= 评论页覆盖层直接叠在播放器上不退出播放(Back 回播放),B站与 YouTube 视频都支持;`player_control_comment` 补四语言文案。
+
 ## v3.0.8
 
 **稳定版:YouTube SABR 起播 4K 死循环根治 + ABR 码率口径与滞回精修 + TV IPTV 多镜像源判活自动换源。** 本版整合 v3.0.8-alpha.1~7 全部改动:YouTube SABR 起播/续播 4K 无限重载四层连环根治(冷启动防直跳顶档+锁档 10s+stall 重载跨重载记忆+广告白名单丢在途请求);ABR 声明码率换真实平均(averageBitrate)+降档滞回死区+顶档定向冷却;TV YouTube 字幕下线根治「字幕 URL 直连黑洞拖死主源转圈」;TV IPTV 三期判活(启动廉价探活+截帧铁证回写+活源前置重排)与看门狗 READY/ENDED 盲区修复;WebDAV 备份加 IPTV 源配置。
@@ -259,6 +360,316 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v3.0.13-alpha.4
+
+**音轨可切 + 字幕覆盖三条取流路**(P11-119~119e / P11-120)
+
+### 变更
+- **音轨切换打通全链**(P11-119/119c):此前只有 WEB-SABR 路消费 `preferredAudioTrackId`,而 SABR 主链(默认「SABR 优先」档走的正是它)签名里**根本没有 request** ⇒ 点选音轨毫无变化;现 WEB-SABR / NewPipe 主链 / Piped 三路 + 缓存会话复用全部消费偏好。
+- **修「恒播英语配音」**(P11-119b):原声轨判定过去是拿 **base64 串**做 `acont=original` 子串匹配(恒不命中 → 永远落列表第一条 = 英语配音轨),改为**解 xtags proto**(`acont`/`lang`);缓存复用判据补 **xtags**(多音轨视频各轨共用同一 itag,只比 itag 会把切轨判成「无变化」直接跳过)。
+- **TV 端音轨面板**(P11-119):仅多音轨视频出现,镜像清晰度面板。
+- **字幕回归**(P11-120):P11-73 整块下线后改**懒加载**挂载——每条字幕轨 `enableLazyLoadingWithSingleTrack`(prepare 期零读取、未选中不发请求)+ 独立 5s/8s 短超时 client + 失败即弃 + 默认关闭,字幕任何网络问题都**够不到主源**;TV(设置弹层)与移动端(播放器设置)补字幕 UI,含「人工 vs 自动生成(asr)」同语言重轨区分。
+- **TTML 须改写 vtt**(P11-120b):NewPipe 给的是 **TTML/XML** URL,须改写 `fmt=vtt`,否则 media3 抛 `Expected WEBVTT` 把该轨静默 disable(用户视角「有选项没效果」)。
+- **字幕覆盖三条取流路**(P11-119d):WEB-SABR 从 WEB `/player` 的 `captions` 取轨(该路不调 `getInfo`,此前无字幕入口)、DASH 兜底两个出口(自合成/远程 MPD)带上 NewPipe 字幕、NewPipe 字幕构造抽成共用函数。
+- **WEB 字幕补 pot**(P11-119e):WEB 的 `captionTracks` 带 **`exp=xpe`**(PO token 灰度标记),**不带 `pot` 时 `/api/timedtext` 回空 200**,按 yt-dlp 补 `potc=1&pot=&c=WEB`(与既有的「缺签名=空 200」症状相同、根因不同)。
+- **harvest 两条重载链**(P11-118g):去重改 45s 时间窗(重载后能重新采集)、会话默认档一律走阶梯默认档(对齐播放器实际选档)。
+- 真机判据:`WEB-SABR audio switch:` / `subtitleTracks(N)` 与 `NewPipe SABR audio switch:` 均按预期出现。
+
+## v3.0.13-alpha.3
+
+**WEB-SABR 打通(harvest 形态)**(P11-118)
+
+### 变更
+- **路线转向**(P11-118):15 轮「原生对齐」全部落空后,按 FreeTube 源码审计转**「材料」路线**——WEB 会话逐请求 `status=2` nag → 第 4 个响应必升 `status=3` 处决,身份 / 请求体 / 时间语义 / VM / token 字节全试过。
+- **真机 replay 实证**:浏览器亲手产出的 SABR 材料(**sabrUrl + body + 原 cpn**)经我们的 OkHttp 原样重放即得 `status=1` + 完整媒体段(761KB/1.4MB),且「补 / 不补 Cookie+visitor」两种传输形态结果完全相同 ⇒ **nag 差异只在材料,不在身份/传输**。
+- **接成会话来源**:取回 alpha.61 的 `YoutubeSabrHarvester`(**未改一行**)+ 新增 `SabrSession.fromSabrBytes` 直收字节(消除退役代码 STANDARD 编码 → 现在 URL_SAFE 解码的 base64 往返损坏)+ 有材料时跳过 n-decrypt 与自造 cpn 注入。
+- 真机 r1958:`USING HARVEST MATERIAL` → `status=1 ×6`、**零 status=3、零 Playback error**、16~19Mbps 在流。
+- **同批修复**:采集完 `about:blank` 硬停(修「退出后音频仍在响」「视频没加载出来」)、采集页强制静音、status=2 不再重铸 token(对齐 FreeTube)、桌面身份首次真正上线(`uaOverride` + `/att/get` 同源——14 轮里声称做过、实际从未上线)、poToken 按 FreeTube `base64ToU8` 解码、harvest 冷启动就地重试。
+- **同批并入的可播性修复**(本 tag 提交范围内):
+  - **降级链闭环**(P11-99/99b/99c):RELOAD → fast-fail → source error → onPlayerError 自动重试(独立预算 3 次)→ 死循环守卫跳过 SABR → 自合成 DASH 兜底;DASH 直链 403 时标记并自动降级 HLS。
+  - **会员专属视频不再过滤**(P11-100):展示进 feed 并打「会员」角标;播放列表详情页视频行补源角标渲染(TV 右上/移动端左上)。
+  - **bufferedRanges 截断到请求段**(P11-111):PipePipe `Track.bufferedThrough=next-1` 同款,预取缓存不上报;真机判读截断生效、会话寿命 5s→30s。
+  - **播放优先级新增 WEB-SABR 档**(P11-114):`YoutubeDeliveryPriority` 增 WEB-SABR 选项(SABR / DASH / WEB-SABR 三档,两端设置 UI 自动枚举,4 语言描述更新)。
+- **已知待完善**:①选定档落阶梯默认(720p)——body 的 formatId 字段搬家(`bodyFields=1:204B 5:1318B 19:72B`,选择在字段 1 子消息里),待 dump 子字段;②起播延迟 = harvest 12~40s(仅 `WebSabr 优先` 档/兜底触发,默认档不受影响)。详见 `docs/youtube-web-sabr.md`。
+
+## v3.0.13-alpha.2
+
+**频道页/播放列表详情页返回丢焦根治 + 网格 D-pad 导航修复**(P11-98/98b/98c)
+
+### 变更
+- **返回丢焦根治**(P11-98):onBack 分支补播放列表详情层(此前误归频道层,详情页冷重组无恢复焦点丢)+ 详情页新增 restore 机制(离开前落点 hoist 跨播放存活,scroll 定位+等布局+重试)+ 频道播放列表网格 restore 对齐 TvVideoGrid 完整防御(单发加固)。
+- **网格 D-pad 边界逃逸**(P11-98b):网格顶行↑/首列← 边界回调失败时吞键不漏默认遍历(曾逃到 sidebar avatar 误开「我的主页」),↓ 末行 fall-through 保留。
+- **网格 ↑ 焦点转移卡顿**(P11-98c):按帧重试修「按多次才挪一格」(滚动后目标行未组合单发 requestFocus 必败)+ 频道 follow chip 顶行↑吞键防逃逸。
+- **按键级日志**:TvVideoGrid 加 grid-key 按键级日志,焦点问题可精确定位到键。
+- 真机验证:restore 链路三处秒成,←→↓ 导航正常。
+
+## v3.0.13-alpha.1
+
+**SABR 续播「满缓冲黑屏死锁」根治**(P11-96)
+
+### 变更
+- **根因**(P11-96):media3 1.10 新增 initial-discontinuity 协议,续播点落在段中间时 ChunkSampleStream 锁死 readData 等待 period 消费,而 LibreTube(1.9.2)移植的 SabrMediaPeriod 消费逻辑残缺(early-return 只消费第一个流 + 评估推迟竞态)→ 满缓冲 52s、解码器不喂帧、永不 READY。
+- **修**:完整适配协议(对齐官方 DashMediaPeriod:全流压读 + 全量消费 + all-sync 豁免 + 首次选轨限定),真机验证死锁位 823000ms 5.5s 起播、协议重对齐链路完整走通。
+- **起播诊断打点**(P11-96):startup probe / onTracksChanged / prepare startPos / 清缓存日志,fwdBuf+rendered 据此戳破 buffered=% 假象。
+- **SABR 会话绑定档与自动选轨对齐**(P11-97):绑起始画质首轨替代默认画质上限(自动画质下 4K 视频不再绑 4K 会话撞 RELOAD,ABR 爬档走全表不受影响),顺带判别 RELOAD 归因(绑定档高度 vs 响应级 ustreamerConfig),4K 视频待真机复测。详见 SABR 笔记 §31/§32。
+- 本 tag 提交范围内仅文档对齐(README 条目 + SABR 笔记 §31/§32),代码基线同 v3.0.12-alpha.1。
+
+## v3.0.12-alpha.1
+
+**SABR 续播「满缓冲黑屏」根治:完整适配 media3 1.10 initial-discontinuity 协议 + 会话绑定档与自动选轨对齐**
+
+### 变更
+- **起播「满缓冲黑屏」诊断打点**(P11-96):onTracksChanged + startup probe(补真实前向缓冲 + 视频渲染帧计数)+ prepare startPos + 清缓存日志——buffered=% 是位置假象,fwdBuf+rendered 才是真凭据。
+- **根因定位**(P11-96b):media3 1.10 新增 initial-discontinuity 协议,续播点落在段中间时 ChunkSampleStream 锁死 readData 等待 period 消费,而 LibreTube(1.9.2)移植的 SabrMediaPeriod 消费逻辑残缺(early-return 只消费第一个流 + 评估推迟竞态)→ 满缓冲 52s、解码器不喂帧、永不 READY。先退出协议恢复 1.9.2 语义 + readDiscontinuity 全量消费。
+- **完整适配协议**(P11-96c,取代退出方案):对齐官方 DashMediaPeriod——全流压读 + 全量消费 + all-sync 豁免 + 首次选轨限定。真机验证通过:死锁点 pnsTunF6LM0@823000ms 首帧 5.5s、协议重对齐链路完整走通(二次首段重对齐为协议设计行为)。
+- **SABR 会话绑定档与自动选轨对齐**(P11-97):绑起始画质首轨替代默认画质上限(自动画质下 4K 视频不再绑 4K 会话撞 RELOAD,ABR 爬档走全表不受影响),顺带判别 RELOAD 归因(绑定档高度 vs 响应级 ustreamerConfig),4K 视频待真机复测。详见 SABR 笔记 §31/§32。
+
+## v3.0.11-alpha.11
+
+**SABR 续播起播黑屏根治三件套**(P11-95)
+
+### 变更
+- **根因**:续播起播 SABR bootstrap 首包服务端偶发 16~20.5s 慢(rr5 节点,同包恒定 1673519B)撞 8s stall 看门狗,数据在途被杀轮 → auto-retry 循环黑屏 ~50s,换新会话首包 2s 即愈(09-13 两场日志闭环,清缓存与修好无关)。
+- **起播缓冲提示**:Ready 态首帧前显示「正在缓冲...」(转圈此前只绑 Loading 态,黑屏阶段界面零反馈)。
+- **看门狗起播宽限**:起播阶段 stall 阈值 8s→25s(`StartupStallThresholdMs`,出帧后仍 8s)。
+- **起播 stall 换新会话**:起播 stall 判死立即 evict SABR 会话换新会话重试(播放中不动会话,保 ~6h 复用)。
+- **日志读法修正**:stall 的 buffered=% 是 seek 位置非真实缓冲;`ENDED @pos=0 duration=MIN` 是重载拆卸回声非提前 EOF。详见 SABR 笔记 §30。
+
+## v3.0.11-alpha.10
+
+**TV YouTube 播放列表详情页下键反弹修复 + debug 构建 DEBUG 角标**(P11-93/94)
+
+### 变更
+- **下键反弹根治**(P11-93):根级纠焦判据 anyRowFocused 单布尔被无关行入场补发的 isFocused=false 清零(框架焦点实际仍在持焦行)→ 下一按键误判丢焦 → 焦点拽回「播放全部」+ ↓ 重放 = 弹回顶/原行,连按赶在误判窗口前才连续;修=行聚焦改按行号集合跟踪(无关行 false 变 no-op)。
+- **DEBUG 角标**(P11-94):debug 构建桌面图标 / TV banner 加 DEBUG 角标(debug 源集资源覆盖,release 零影响;TV 桌面显示 banner 非图标)。
+
+## v3.0.11-alpha.9
+
+**SABR 切轨重载死循环修复**(P11-92)
+
+### 变更
+- **症状**:ABR 升档(如 1440p)后服务端只回「请求段+1/+2」永不回请求段 → 6 连试 terminal evict → 全量重载循环(09-13 三轮、09-10 271、09-09 137/247 同签名)。
+- **根因**:请求里带着旧档 bufferedRange 污染(服务端按跨格式游标起推,请求体无显式段号);手切没事实证 = 重建会话锁单轨后 bufferedRanges 只带自身格式。
+- **修①**:media() 后 retainAll 清非当前格式(对齐 LibreTube)。
+- **修②**:服务端跳段时空段顶位不再 6 连试 evict。详见 SABR 笔记 §29/§29.1。
+
+## v3.0.11-alpha.8
+
+**SABR「播3秒跳10s」时间轴翻倍修复**(P11-91)
+
+### 变更
+- **根因三连**:①tfdt 补丁遍历写错(wanted==TFDT 时命中分支恒假,被当容器继续递归找 traf)→ 补丁此前全程 no-op;②补丁 no-op 后 sampleOffsetUs=段网格起点叠在**原始绝对 tfdt** 上(与网格一致,2×起点实测)→ 时间轴翻倍、播放到段尾即跳下一段;③webm(VP9/AV1)轨无 tfdt,MatroskaExtractor cluster 时间戳本身是绝对值,加 offset 同样翻倍。
+- **修**:①遍历重写(walkContainer 单层遍历 + insideTraf 标志,moof→traf→tfdt 用标志位传递);②offset 按容器分流(webm 保持 0,mp4 用相对化后的 startTimeUs);③chunk 加载取消(CancellationException)不再整会话 evict,仅记日志按普通 load 取消上抛。详见 SABR 笔记 §28。
+
+## v3.0.11-alpha.7
+
+**推荐页空页面修复 + WebDAV 日志时间戳 + SABR 续播位置冻结连环重载修复**(P11-89/90)
+
+### 变更
+- **推荐页空页面修复**(P11-89):取消处理器只清 Loading 占位不删预加载 Success——此前屏幕自身加载被取消时无差别 delete 会抹掉壳层预拉成果,推荐页空到重点击;附 RecommendScreen 实例身份 / load effect 诊断打点。
+- **WebDAV 实时日志备份加时间戳文件名**(P11-89):`logs_live_YYYYMMDD_HHMMSS.log`,防固定名同名覆盖致历史不可追溯。
+- **SABR 续播位置冻结连环重载修复**(P11-90):补回 media3 1.10 缺失的老 ChunkExtractorWrapper 首样本自校准语义——tfdt 相对化 + `sampleOffsetUs`=段网格起点。详见 SABR 笔记 §27。
+- 首页加载实例诊断日志。
+
+## v3.0.11-alpha.6
+
+**TV 桌面横幅卡重绘为哔哩MT**(P11-88)
+
+### 变更
+- TV 桌面横幅卡改哔哩MT 方案(旧哔哩TV 爆点图替换),BV 构图正负片:白底+粉渐变电视屏内 MT 零文字,与图标成对;xhdpi 升真 640x360。
+
+## v3.0.11-alpha.5
+
+**文档:README 对齐 v3.0.11-alpha.4**
+
+### 变更
+- README 补 v3.0.9 / v3.0.10 / v3.0.11-alpha 全部版本条目 + 主要功能对齐(TVBox 影视库/番剧历史/移动搜索三 tab/触屏手势/番剧选集官方对齐);P11-88 应用图标重绘计划与进度登记。
+
+## v3.0.11-alpha.4
+
+**TV 启动初始焦点死区修复 + 应用图标重绘**(P11-87)
+
+### 变更
+- **启动初始焦点死区**:初始期 Failed→重试按钮、Loading/Empty→分区 tab 持焦(此前唯一抢焦点的是网格首卡 effect,仅 Success 后生效,数据未就绪/首拉失败时遥控器全无反应),Success 后网格首卡照常接管。
+- **推荐预加载拆出登录态 key**:此前启动时 session 磁盘加载翻转 isLoggedIn 会把预拉协程中途取消,登录态下预加载全程零贡献;附 loader 诊断日志。
+- **应用图标重绘**:哔哩MT 方案E精修(粉渐变底白电视壳+屏幕大 MT,mipmap 五密度全量替换)。
+
+## v3.0.11-alpha.3
+
+**SABR 历史续播黑屏根因修复 + 红果短剧从搜索前端摘除**(P11-85b/86)
+
+### 变更
+- **SABR 历史续播黑屏根因**(P11-85b):bufferedRanges 上报真实段时间——此前 visionOS 头恒报 `{0,0}` 垃圾,带偏服务端续播回落判定致位置冻结;附 tfdt 探针诊断(MEDIA_END 首 media 段扫 fMP4 tfdt baseMediaDecodeTime)。
+- **红果短剧从搜索前端摘除**(P11-86):网页匿名端每剧仅 3 集且无登录体系,后端链路保留。
+
+## v3.0.11-alpha.2
+
+**TVBox 设置行焦点跳顶修复 + SABR 历史续播黑屏深度重试兜底 + 红果起播 403 修复**(P11-85/83)
+
+### 变更
+- **TV 设置页 TVBox 行焦点跳顶**(P11-85):常量与 Account 撞号致分支不可达。
+- **SABR 历史续播黑屏深度重试兜底**(P11-85):重试耗尽后 evict 会话 + 续播点前推 10s,每视频一次。
+- **红果起播 403 修复**(P11-83):显式红果 Referer/Origin,防播放拦截器注入 B站头触发字节 CDN 防盗链。
+
+## v3.0.11-alpha.1
+
+**番剧播放记录并入历史 tab + 红果短剧内置第四搜索源**(P11-84/83/81e)
+
+### 变更
+- **番剧播放记录并入历史 tab**(P11-84):pgc 条目解析 + PGC 续播 + heartbeat 放宽。
+- **红果短剧内置第四搜索源**(P11-83):网页端免签名解析,零配置;AppContainer 补 HongguoRepository import(修 CI Unresolved reference)。
+- **TVBox UI 命名回调**(P11-81e):源按钮/设置/Toast/空态 8 key × 4 locale。
+
+## v3.0.10-alpha.9
+
+**TVBox 配置化收尾 + m3u8 存活预检 + WebDAV 纳入 TVBox 配置**(P11-81/81b/81c/81d/82)
+
+### 变更
+- **影视库源改 TVBox 配置驱动**(P11-81):删除内嵌 5 站白名单,设置页填配置 URL 聚合采集站。
+- **搜索空态引导修复**(P11-81b):tvboxSourceStatus 透传进 SearchResultsView(此前在子函数作用域,空态引导拿不到)。
+- **官方播放页选集期剔除**(P11-81c):v.qq.com 等无效线路源头筛掉。
+- **m3u8 存活预检**(P11-81d):解析成功但 CDN 404 的死链也顺延下一线路。
+- **WebDAV 备份/还原纳入 TVBox 配置 URL**(P11-82):镜像 IPTV 项。
+
+## v3.0.10-alpha.8
+
+**竖屏播放器简介 tab 选集改两列卡**(P11-80b)
+
+### 变更
+- 竖屏简介 tab 选集改两列卡,对齐横屏弹层/官方。
+
+## v3.0.10-alpha.7
+
+**番剧详情/选集面板对齐官方**(P11-80)
+
+### 变更
+- **两列选集卡**:第N话 + 标题 + 会员角标 + 当前集粉色高亮 + 顶部进度条。
+- **话数分组快捷跳**:>50 集按 50/组(套 coroutineScope,animateScrollToItem 是 suspend)。
+- **头部数据行**:播放 / 追番 / 弹幕 + 季 badge。
+
+## v3.0.10-alpha.6
+
+**移动端搜索对齐官方**(P11-79b)
+
+### 变更
+- 三 tab(综合 / 番剧 / UP主)+ 筛选面板(排序 / 时间 / 时长)。
+
+## v3.0.10-alpha.5
+
+**移动端横屏底栏对齐 B 站官方 + B站搜索新增番剧分类**(P11-78/79)
+
+### 变更
+- **横屏底栏对齐 B 站官方**(P11-78):⏸⏭ / 弹幕胶囊 / 选集 / 倍速 / 画质文字。
+- **横屏弹幕胶囊打字无回显修复**(P11-78):decorationBox 漏渲染 inner()。
+- **B站搜索新增番剧分类**(P11-79):media_bangumi 结果进 PGC 季详情。
+- **TV 端选集链路诊断日志**:面板打开 / 切集动作 / 合成元数据,定位切集黑屏。
+
+## v3.0.10-alpha.4
+
+**TVBox 选集上线**(P11-77c)
+
+### 变更
+- 线路=站点(清晰度面板),选集=线路内分集列表;附 CI 编译修复(searchSite 过滤改用 parseEpisodeList、PlayerScreen 补 PlaybackEpisode import)。
+
+## v3.0.10-alpha.3
+
+**TVBox 播放改走 VOD PlayerScreen(番剧路径)**(P11-77b)
+
+### 变更
+- TVBox 播放改走 VOD PlayerScreen(番剧路径);线路直链/懒解析修 share 页当 m3u8 喂死。
+
+## v3.0.10-alpha.2
+
+**TVBox 影视库搜索(spike)+ 更新下载断流卡死修复**(P11-77)
+
+### 变更
+- **TVBox 影视库搜索**:内置 MacCMS 采集站白名单聚合搜索 + 跨站多线路直链播放。
+- **更新下载断流卡死修复**:callTimeout 按包大小兜底 + Range 断点续传 + 指数退避重试 5 次。
+
+## v3.0.10-alpha.1
+
+**动态相对时间多语言解析补齐 + 空降助手自动连播不识别段修复**(P11-37)
+
+### 变更
+- **动态相对时间多语言解析补齐**:zh-Hant 小時/分鐘/個月等全语言,修整页「1分钟前」+ 排序乱。
+- **空降助手自动连播不识别段修复**:AirJump 效果键去掉 cid,消灭重启竞态。
+
+## v3.0.9-alpha.9
+
+**动态长按弹窗下线改直进 UP 主页/频道 + 缓冲读数塌方守门**
+
+### 变更
+- **动态长按弹窗下线**:改直进 UP 主页/频道,稍后再看/评论挪进 TV 播放器控制栏——修方向键焦点掉出弹窗(根因:弹窗卸载时聚焦节点被移除,焦点无主落到侧栏头像被 autoConfirm 抢开「我的」;不抑制,直接取消弹窗);动态两 tab onCardLongPress 对齐 History/Favorite;删 BiliActionSheet 及相关接线/死字符串;PlayerControl 加 ToView(addToView+toast)/Comment(onOpenComments 复用 AppShell commentRequest 覆盖层,叠播放器上不退出,YouTube 也支持)。
+- **缓冲读数塌方守门**:SABR bufferedRange 周期性 reset 触发假 buffer-critical 误降(真机 17s 零 fetch 播放 17s,bufS 48.8→0.0 物理不可能,1080p 误降 720p + 180s 冷却钉死低档到会话结束,手切 1440 新会话才恢复 54-79Mbps 稳跑)。守门:水位衰减 > 墙钟+2s 余量判读数塌方跳过水位降档(试探熔断同源误判一并拦),下轮速率恢复自然放行,真饿最多晚一轮急救;seek 后合法骤减落同一守门方向无害。
+
+## v3.0.9-alpha.8
+
+**移动端竖滑手势:亮度/音量**
+
+### 变更
+- 左半屏上下滑调亮度、右半屏调音量,在线 + 离线两播放器接入。
+
+## v3.0.9-alpha.7
+
+**失败冷却一致化 + TV 两次返回彻底退出杀进程**
+
+### 变更
+- **失败冷却一致化**:降档即记冷却、gated + 试探一起封锁——alpha.6 复盘残留泄漏:冷却只挡试探路径,gated 门读到的恰是试探期 pacing 样本(虚高),14s/42s 后即「合法」重批同一档,720↔1080↔1440 每 1-3 分钟来回切;修=降档即记冷却(不区分试探/gated/普通降档),冷却期内该档 gated 与试探一起封锁(候选循环 isTrialFailBlocked 直接 continue),锁「被降出的那一档」非全梯子,更低档升降/更高档试探/手动选档照常。
+- **TV 两次返回退出改彻底退出杀进程**:finish() 只出 Activity,进程仍以缓存任务驻留后台(盒子任务管理器可见,协程/OkHttp 线程活着);改 finishAffinity + killProcess + exitProcess(0),3s 确认窗口与播放中不受影响。
+
+## v3.0.9-alpha.6
+
+**试探升档首验三修**(alpha.5 真机 4 轮重载复盘)
+
+### 变更
+- **根因**:直接原因是网络塌方窗口(单笔 fetch 24-36s 慢滴/无响应,callTimeout=0 既有取舍),试探三缺陷放大伤害。
+- **试探准入加 maxObserved≥25s**(`TRIAL_MIN_CEILING_US`):maxObserved 随实例归零致试探线跌到 17s,在 bufS=20s 就试探 1440p(sus 7.15M vs 需 13.3M)。
+- **失败冷却迁 SabrAbrMemory 墙钟跨重载记忆**:试探失败冷却是实例字段,重载洗掉(重载发生在试探期,降档没跑冷却根本没记);PlayerScreen 看门狗重载调 onStallReload 把 activeTrial 转记失败冷却。
+- **试探熔断防穿底**:试探档缓冲<15s 且仍在下漏,2s 宽限后无视阈值立即降档(`TRIAL_ABORT_*`)——试探期无熔断时亏空 9M/s 下 20s 缓冲 1-2s 穿底,5s 宽限+8s 阈值来不及救。
+- 试探机制本身按设计工作:优雅降档零重载、试探治愈测量(gated 合法升 1080p)。
+
+## v3.0.9-alpha.5
+
+**Auto 满缓冲不升档 pacing 真根因——满缓冲试探升档**
+
+### 变更
+- **真根因**:同网络对照证据(Auto cap 3129K vs 手切 1440 REAL 22-24Mbps)——播 X 档只能测到 ~X 档量级容量,测量型门槛结构性看不到真管道,前一轮 cap 重填容量通道也逃不掉(它测的仍是服务端供给节奏)。
+- **修:满缓冲试探升档(trial upshift)**:缓冲升穿 max(15s 地板, 0.8×历史最高水位)且跨线(防首填单调期骑线误触发)+ canUpgrade(冷启动锁/降档水位不豁免)+ 下一档不在失败冷却时,容量/持续闸失真也升一档(逐级爬不动);试探本身治愈测量(新档 pacing 把 sus/cap 喂到真实量级)。
+- **失败回收**:重锚 + 滞回 + 水位急救回收并记 3min 失败冷却(期满重新试探);×1.1 顶档 sustained 闸与起播 stall 冷却不试探(4K 死亡行军/起播死循环防线不松)。
+
+## v3.0.9-alpha.4
+
+**Auto 满缓冲结构性不升档根治**
+
+### 变更
+- 重填容量中位数通道(cap=)。
+
+## v3.0.9-alpha.3
+
+**全档零帧渲染(音频正常画面黑)诊断三件 + 黑屏画质熔断**
+
+### 变更
+- 全档零帧渲染诊断三件;READY 态看门狗盲区修复 + 黑屏画质熔断。
+
+## v3.0.9-alpha.2
+
+**升档跨 codec 换解码器撞 codec 强制回收修复**
+
+### 变更
+- **VP9 粘性梯子**:同高度多 codec 变体粘全组顶档 codec,起播/升降档全程单 codec 零重建(此前升档跨 codec 换解码器撞 MTK codec 强制回收,~5s 冻结、1440p 零帧)。
+- **视频冻结看门狗 12s**:BUFFERING 挂死但位置仍前进 = 音频驱动时钟逃过 8s 位置看门狗。
+
+## v3.0.9-alpha.1
+
+**4K 死亡行军三层根治**(A/B1/B2)
+
+### 变更
+- **背景**:起播 stall 冷却到期 2s 即回 4K,凭 1440p 期突发 sus(30670≥26.6M×1.1)「合法通过」;4K pacing 有效供给仅 ~16M(活跃 est 30-36M 只计传输窗口、fetcher 排队间隔被 10s 滑行余量扣成 coast)→ 缓冲 26.3s→7.0s 漏 49s 全程无降档证据;7.0s 水位急救动手时已在途载 4K 段(39MB/7.6s),输 0.6s → 缓冲见底 → 看门狗整段重载。
+- **A 顶档 sustained 分母滑行余量 10s→20s**:4K 失败期排队间隔进 sus,防冷却到期被同一批突发样本重准入(est 口径不动,防千兆满缓冲滑行误伤)。
+- **B1 顶档水位急救阈值 8s→20s**:串行管道最坏反应线 = 评估盲窗 14s + staged 积压排空 8s + 替换段传输 4s ≈ 26s,8s 结构性必败;非顶档维持 8s。
+- **B2 getNextChunk 换档决策重读对齐上游 media3**:holder/selectFormat 移到 updateSelectedTrack 之后(原顺序切档决策对同次 staged 段无效,白吃一循环生效延迟)。详见 SABR 笔记 §20。
+- **设置页语言项描述明示 6 档语言**(简体/港繁/台繁/English/Español/Português),六语言包同步。
 
 ## v3.0.8-alpha.6
 
