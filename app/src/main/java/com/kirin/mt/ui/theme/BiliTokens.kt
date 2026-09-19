@@ -29,12 +29,6 @@ object BiliColors {
   val TextSecondary = Color(0xB3FFFFFF)
   val TextTertiary = Color(0x80FFFFFF)
   val Transparent = Color(0x00000000)
-
-  // P11-124:B站 播放器对齐官方版式——进度条浅蓝。取色自设计稿 tmp/p11-124-bili-align-official.html
-  // 的 --bar-blue(#a9c0f0);轨道是同色 46% 透明(color-mix(... 46%, transparent))。
-  // 仅 !isYoutube 路径用,YouTube 仍走 ProgressTrack/ProgressBuffered/BiliPink 那套。
-  val PlayerOfficialProgress = Color(0xFFA9C0F0)
-  val PlayerOfficialProgressTrack = Color(0x75A9C0F0)
 }
 
 object BiliHomeThemeColors {
@@ -215,8 +209,10 @@ object BiliSizing {
   val PlayerSeekPreviewHeight = 96.dp
   val PlayerPauseIndicatorSize = 96.dp
 
-  // ── P11-124:B站 官方版式(仅 !isYoutube 路径)────────────────────────────────
+  // ── P11-124:B站 官方版式(仅 SourceBili 路径)────────────────────────────────
   // 数值全部取自设计稿 tmp/p11-124-bili-align-official.html 的 calc(N * var(--u))(1 单位 = 1dp)。
+  // 注意:版式/几何照官方,但**配色仍用我们原来的**(进度条 ProgressTrack/ProgressBuffered/BiliPink,
+  // 焦点态 PlayerControlFocused 粉色玻璃),不走设计稿的浅蓝 --bar-blue 与白描边。
   // 顶部信息块:标题 2 行 + 元信息 1 行 + 动作行,内容比 YouTube 版高,渐变高度须同步放大。
   val PlayerOfficialTopPadding = 30.dp
   val PlayerOfficialTopGradientHeight = 196.dp
@@ -231,15 +227,13 @@ object BiliSizing {
   val PlayerOfficialProgressHeight = 5.dp
   val PlayerOfficialProgressRadius = 3.dp
   val PlayerOfficialProgressKnobSize = 13.dp
-  // 进度条行高 = 条 5dp + 上下各(焦点描边偏移 6dp + 描边 2dp)。焦点环画在行内,故不挤动条的位置。
+  // 进度条行高:容下 13dp 滑块(条本体 5dp 居中),高度不影响视觉,只是给行留出滑块空间。
   val PlayerOfficialProgressRowHeight = 21.dp
+  // 控制行:每项同一固定宽度槽(图标项与文案项都居中于同宽槽 → 整行等宽等距)。
+  val PlayerOfficialControlWidth = 56.dp
   val PlayerOfficialControlSpacing = 26.dp
   val PlayerOfficialControlBoxSize = 34.dp
   val PlayerOfficialControlIconSize = 30.dp
-  // 焦点态(设计稿 .ci.focus / .speed.focus / .act.focus 提案):白色 2dp 描边 + 外扩 6dp 圆角矩形。
-  val PlayerOfficialFocusOffset = 6.dp
-  val PlayerOfficialFocusBorderWidth = 2.dp
-  val PlayerOfficialFocusCornerRadius = 6.dp
 }
 
 object BiliTypography {

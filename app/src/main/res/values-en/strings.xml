@@ -509,6 +509,7 @@
     <string name="player_speed_value">%1$.1fx</string>
     <string name="player_meta_pubdate">Published %1$s</string>
     <string name="player_meta_view_count">%1$s views</string>
+    <string name="player_quality_badge">HD</string>
     <!-- P11-124: B站 official-layout meta line. -->
     <string name="player_meta_bili_view_count">%1$s plays</string>
     <string name="player_meta_bili_danmaku_count">%1$s danmaku</string>

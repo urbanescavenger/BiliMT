@@ -34,7 +34,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -43,7 +42,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -324,6 +322,8 @@ internal fun BoxScope.PlayerOverlay(
         actionFocused = actionFocused,
         playbackSpeed = playbackSpeed,
         currentCodecText = currentCodecText,
+        // P11-124:字幕槽的压暗判据(无选中轨 = 关闭 → TextTertiary),与控制行同一份状态。
+        currentSubtitleTrackId = currentSubtitleTrackId,
         danmakuEnabled = danmakuSettings.enabled,
         positionState = positionState,
         durationState = durationState,
@@ -738,11 +738,18 @@ private fun BiliActionItem(
   active: Boolean,
   focused: Boolean,
 ) {
+  val shape = RoundedCornerShape(BiliRadius.Card)
   val tint = if (active) BiliColors.BiliPink else BiliColors.TextPrimary
   Row(
     modifier = Modifier
+      // 焦点态与控制行同一套:获焦铺 PlayerControlFocused 粉色玻璃,未获焦透明。
+      .playerFocusedLiquidGlassSurface(
+        shape = shape,
+        focused = focused,
+        surfaceColor = BiliColors.PlayerControlFocused,
+      )
+      .padding(horizontal = BiliSpacing.Sm, vertical = BiliSpacing.Xs)
       .height(BiliSizing.PlayerOfficialActionIconSize)
-      .biliFocusRing(focused = focused)
       .semantics { contentDescription = label },
     verticalAlignment = Alignment.CenterVertically,
   ) {
@@ -766,9 +773,9 @@ private fun BiliActionItem(
 /**
  * P11-124:B站 版式底部——细进度条行(结构沿用 [PlayerBottomOverlay]:bar + Spacer + 时间)+ 控制行。
  *
- * 控制行 = 倍速文案 → 裸图标×7 → 画质值按钮 → 设置(顺序见 [BiliPlayerControls]);官方是**裸图标**
- * (无液态玻璃底块),焦点态用设计稿提案的白描边 [biliFocusRing]。原右下角状态文案(在看/弹幕/画质)
- * 官方没有,故 B站 路径整块不渲染(画质信息由画质按钮承载)。
+ * 控制行 = 倍速文案 → 图标×7 → 画质文案 → 设置(顺序见 [BiliPlayerControls]),每项都是同一固定宽度的
+ * 等宽槽(见 [BiliControlSlot]),故整行等宽等距。原右下角状态文案(在看/弹幕/画质)官方没有,
+ * 故 B站 路径整块不渲染(画质档位改由画质槽的 contentDescription 承载,屏上只显示「HD」)。
  */
 @Composable
 private fun BiliControlBarOverlay(
@@ -780,6 +787,8 @@ private fun BiliControlBarOverlay(
   actionFocused: Boolean,
   playbackSpeed: Float,
   currentCodecText: String,
+  /** P11-123/P11-124:当前字幕轨 id(null=关闭)——控制行字幕槽据此压暗,与弹幕开关同一个灰。 */
+  currentSubtitleTrackId: Int?,
   /** P11-124:弹幕开关的状态(关掉时控制行那枚图标压暗)。 */
   danmakuEnabled: Boolean,
   positionState: State<Long>,
@@ -790,6 +799,7 @@ private fun BiliControlBarOverlay(
   modifier: Modifier = Modifier,
 ) {
   val speedLabel = playbackSpeed.speedTextBadge()
+  // 真实档位仍算出来,只是不再上屏 —— 改由画质槽的 contentDescription 播报。
   val qualityText = (actualQuality ?: info.selectedQuality).description.withCodecLabel(currentCodecText)
   Column(
     modifier = modifier
@@ -837,27 +847,29 @@ private fun BiliControlBarOverlay(
         // P11-124:焦点唯一——动作行或进度条夺焦时控制行不高亮。
         val focused = !progressFocused && !actionFocused && focusedControl == control
         when (control) {
-          // 倍速 = 纯文案值按钮(官方底栏第一项),点击出倍速列表(PlayerPanel.Speed)。
+          // 倍速 = 纯文案槽(官方底栏第一项),点击出倍速列表(PlayerPanel.Speed)。
           PlayerControl.Speed -> BiliTextControl(
             text = speedLabel,
             contentDescription = "${stringResource(control.labelRes)} $speedLabel",
             focused = focused,
           )
-          // 画质 = 带当前值的文案按钮(官方此位没有,但我们要保留——否则屏上再也看不到当前画质)。
+          // 画质 = 纯文字「HD」(与倍速同款等宽槽)。用户要求不再显示 `1080P60(H.264)` 长文案,
+          // 真实档位信息改由 contentDescription 承载(焦点/无障碍播报仍能听到当前档)。
           PlayerControl.Quality -> BiliTextControl(
-            text = qualityText,
+            text = stringResource(R.string.player_quality_badge),
             contentDescription = "${stringResource(R.string.player_settings_quality)} $qualityText",
             focused = focused,
           )
-          // 其余全是裸图标(34dp 方框装 30dp 图标,无底块)。
+          // 其余全是同宽槽内居中的裸图标(官方无底块、无玻璃)。
           else -> BiliIconControl(
             iconRes = control.iconRes,
             contentDescription = stringResource(control.labelRes),
-            // P11-124:弹幕开关带开关态——关掉时整枚图标压暗,一眼能看出当前是开还是关。
-            tint = if (control == PlayerControl.DanmakuToggle && !danmakuEnabled) {
-              BiliColors.TextTertiary
-            } else {
-              BiliColors.TextPrimary
+            tint = when {
+              // 弹幕开关带开关态——关掉时整枚图标压暗,一眼能看出当前是开还是关。
+              control == PlayerControl.DanmakuToggle && !danmakuEnabled -> BiliColors.TextTertiary
+              // 字幕同理:未选中任何轨(= 关闭)时压暗,与弹幕开关用同一个灰(TextTertiary)。
+              control == PlayerControl.Subtitle && currentSubtitleTrackId == null -> BiliColors.TextTertiary
+              else -> BiliColors.TextPrimary
             },
             focused = focused,
           )
@@ -867,7 +879,37 @@ private fun BiliControlBarOverlay(
   }
 }
 
-/** P11-124:B站 控制行的裸图标项(官方无底块、无玻璃;焦点态见 [biliFocusRing])。 */
+/**
+ * P11-124:B站 控制行的**等宽槽**——每项(图标或文案)都放进同尺寸槽并居中,整行因此等宽等距。
+ *
+ * 焦点态用我们原来的着色:获焦槽铺 [BiliColors.PlayerControlFocused] 粉色玻璃(圆角 [BiliRadius.Card]);
+ * 未获焦**保持透明**(官方是裸图标,不加 idle 底块)。槽内图标/文字的 tint 不随焦点变粉(靠底色区分),
+ * 只按语义压暗(弹幕关 / 字幕关 → [BiliColors.TextTertiary])。
+ */
+@Composable
+private fun BiliControlSlot(
+  contentDescription: String,
+  focused: Boolean,
+  content: @Composable () -> Unit,
+) {
+  val shape = RoundedCornerShape(BiliRadius.Card)
+  Box(
+    modifier = Modifier
+      .width(BiliSizing.PlayerOfficialControlWidth)
+      .height(BiliSizing.PlayerOfficialControlBoxSize)
+      .playerFocusedLiquidGlassSurface(
+        shape = shape,
+        focused = focused,
+        surfaceColor = BiliColors.PlayerControlFocused,
+      )
+      .semantics { this.contentDescription = contentDescription },
+    contentAlignment = Alignment.Center,
+  ) {
+    content()
+  }
+}
+
+/** P11-124:B站 控制行的图标项(同宽槽内居中;官方无底块,焦点态见 [BiliControlSlot])。 */
 @Composable
 private fun BiliIconControl(
   @DrawableRes iconRes: Int,
@@ -875,35 +917,24 @@ private fun BiliIconControl(
   focused: Boolean,
   tint: Color = BiliColors.TextPrimary,
 ) {
-  Box(
-    modifier = Modifier
-      .size(BiliSizing.PlayerOfficialControlBoxSize)
-      .biliFocusRing(focused = focused),
-    contentAlignment = Alignment.Center,
-  ) {
+  BiliControlSlot(contentDescription = contentDescription, focused = focused) {
     Icon(
       painter = painterResource(iconRes),
-      contentDescription = contentDescription,
+      contentDescription = null,
       tint = tint,
       modifier = Modifier.size(BiliSizing.PlayerOfficialControlIconSize),
     )
   }
 }
 
-/** P11-124:B站 控制行的「当前值」文案按钮(倍速 / 画质),19sp 粗体白,与裸图标同排居中对齐。 */
+/** P11-124:B站 控制行的文案项(倍速 `1.0x` / 画质 `HD`),19sp 粗体白,居中等宽槽。 */
 @Composable
 private fun BiliTextControl(
   text: String,
   contentDescription: String,
   focused: Boolean,
 ) {
-  Box(
-    modifier = Modifier
-      .height(BiliSizing.PlayerOfficialControlBoxSize)
-      .biliFocusRing(focused = focused)
-      .semantics { this.contentDescription = contentDescription },
-    contentAlignment = Alignment.Center,
-  ) {
+  BiliControlSlot(contentDescription = contentDescription, focused = focused) {
     Text(
       text = text,
       color = BiliColors.TextPrimary,
@@ -915,33 +946,11 @@ private fun BiliTextControl(
 }
 
 /**
- * P11-124:B站 焦点态(设计稿 tmp/p11-124-bili-align-official.html 提案):白色 2dp 描边 + 外扩 6dp 圆角矩形。
+ * P11-124:B站 版式进度条:几何照官方(高 5dp / 圆角 3dp / 滑块 13dp),**配色回到我们原来的**
+ * ——轨道 [BiliColors.ProgressTrack]、缓冲 [BiliColors.ProgressBuffered]、已播段与滑块 [BiliColors.BiliPink]。
  *
- * 用 `drawBehind` 画在元素**布局边界之外**(等同 CSS `outline` + `outline-offset`):不影响布局(不像
- * border+padding 那样让相邻项随焦点位移),官方是裸图标没有底块,靠这一圈白描边表示焦点。
- */
-private fun Modifier.biliFocusRing(focused: Boolean): Modifier {
-  if (!focused) return this
-  return drawBehind {
-    val offsetPx = BiliSizing.PlayerOfficialFocusOffset.toPx()
-    val strokePx = BiliSizing.PlayerOfficialFocusBorderWidth.toPx()
-    val radiusPx = BiliSizing.PlayerOfficialFocusCornerRadius.toPx()
-    drawRoundRect(
-      color = BiliColors.TextPrimary,
-      topLeft = Offset(-offsetPx, -offsetPx),
-      size = Size(size.width + offsetPx * 2f, size.height + offsetPx * 2f),
-      cornerRadius = CornerRadius(radiusPx, radiusPx),
-      style = Stroke(width = strokePx),
-    )
-  }
-}
-
-/**
- * P11-124:B站 版式进度条(官方样):高 5dp / 圆角 3dp / 已播段浅蓝 [BiliColors.PlayerOfficialProgress] /
- * 轨道同色 46% 透明 / 滑块 13dp 白色圆——**无粉色、无焦点光晕、滑块不随焦点变化**。
- *
- * 与 [TvProgressBar](YouTube 路径)分开:官方照片里没有「焦点变大」这套,获焦只用 [biliFocusRing]
- * 在行外描一圈白边(焦点可见性)。
+ * 与 [TvProgressBar](老版式路径)分开:这里不随焦点放大条/滑块(几何固定),获焦只在滑块外补一圈
+ * [BiliColors.PlayerFocusGlow] 白色光晕(我们原来表示「进度条获焦」的做法),保证焦点肉眼可辨。
  */
 @Composable
 private fun BiliProgressBar(
@@ -956,8 +965,7 @@ private fun BiliProgressBar(
   Canvas(
     modifier = modifier
       .fillMaxWidth()
-      .height(BiliSizing.PlayerOfficialProgressRowHeight)
-      .biliFocusRing(focused = isFocused),
+      .height(BiliSizing.PlayerOfficialProgressRowHeight),
   ) {
     val durationMs = durationState.value
     val progress = progressFraction(previewPositionMs ?: positionState.value, durationMs)
@@ -966,18 +974,26 @@ private fun BiliProgressBar(
     val barHeight = BiliSizing.PlayerOfficialProgressHeight.toPx()
     val radius = BiliSizing.PlayerOfficialProgressRadius.toPx()
 
-    drawRoundBar(1f, centerY, barHeight, radius, BiliColors.PlayerOfficialProgressTrack)
-    // 缓冲段:官方照片里没有这一层,但它是既有的功能信息(预取进度),沿用既有 token 保留语义。
+    drawRoundBar(1f, centerY, barHeight, radius, BiliColors.ProgressTrack)
     if (buffered > 0f) {
       drawRoundBar(buffered, centerY, barHeight, radius, BiliColors.ProgressBuffered)
     }
-    drawRoundBar(progress, centerY, barHeight, radius, BiliColors.PlayerOfficialProgress)
+    drawRoundBar(progress, centerY, barHeight, radius, BiliColors.BiliPink)
     drawAirJumpSegments(airJumpSegments, durationMs, centerY, barHeight, radius)
 
     val knobRadius = BiliSizing.PlayerOfficialProgressKnobSize.toPx() / 2f
     val knobCenterX = (size.width * progress).coerceIn(knobRadius, (size.width - knobRadius).coerceAtLeast(knobRadius))
+    if (isFocused) {
+      // 焦点可见性:几何不变(滑块仍 13dp),只在滑块外补一圈白色光晕(我们原来表示「进度条获焦」的做法)。
+      // 半径 1.6× 保证在 21dp 行高内够醒目(10.4dp < 行半高 10.5dp),一眼能看出焦点在进度条上。
+      drawCircle(
+        color = BiliColors.PlayerFocusGlow,
+        radius = knobRadius * 1.6f,
+        center = Offset(knobCenterX, centerY),
+      )
+    }
     drawCircle(
-      color = BiliColors.TextPrimary,
+      color = BiliColors.BiliPink,
       radius = knobRadius,
       center = Offset(knobCenterX, centerY),
     )
@@ -2926,7 +2942,9 @@ private val PlayerControl.iconRes: Int
     PlayerControl.Up -> R.drawable.ic_nav_account
     PlayerControl.Related -> R.drawable.ic_player_related
     PlayerControl.Quality -> R.drawable.ic_player_hd
-    PlayerControl.Subtitle -> R.drawable.ic_player_subtitles
+    // P11-124:字幕入口改用 CC 形状图标(原 ic_player_subtitles 是三横线=字幕文本形)。
+    // iconRes 全源共用,故 YouTube 的「字幕」值按钮会一并换成 CC —— 用户已确认这次允许。
+    PlayerControl.Subtitle -> R.drawable.ic_player_cc
     PlayerControl.Like -> R.drawable.ic_player_like
     PlayerControl.Coin -> R.drawable.ic_player_coin
     PlayerControl.Favorite -> R.drawable.ic_player_favorite
@@ -2977,7 +2995,8 @@ internal val PlayerControl.isValueBearing: Boolean
  */
 internal val PlayerControl.valueIconRes: Int?
   get() = when (this) {
-    PlayerControl.Subtitle -> R.drawable.ic_player_subtitles
+    // P11-124:与 iconRes 的「字幕」项同形(CC)——两处保持一致,不出现「底栏 CC / 值按钮三横线」。
+    PlayerControl.Subtitle -> R.drawable.ic_player_cc
     else -> null
   }
 

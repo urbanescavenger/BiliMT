@@ -520,6 +520,8 @@
     <string name="player_speed_value">%1$.1f &#x500D;</string>
     <string name="player_meta_pubdate">&#x53D1;&#x5E03;&#x4E8E;%1$s</string>
     <string name="player_meta_view_count">%1$s&#x6B21;&#x89C2;&#x770B;</string>
+    <!-- P11-124:B站 控制行「画质」槽的屏上文案——只显示 HD,真实档位由 contentDescription 承载。 -->
+    <string name="player_quality_badge">HD</string>
     <!-- P11-124:B站 官方版式元信息行(单项一段,用 player_meta_separator 串联)。计数段后缀对齐官方
          「1.3万播放 / 13弹幕 / 544点赞」:播放量与弹幕数走缩写(调用处传 formatCompactCountText 结果),
          点赞/收藏/投币直接传原数字(官方三连不缩写、不带「万」),值为 0 时整段由调用处跳过。 -->
