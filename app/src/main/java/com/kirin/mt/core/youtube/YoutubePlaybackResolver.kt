@@ -183,6 +183,28 @@ class YoutubePlaybackResolver(
     if (poToken != null) Log.i(Tag, "PO token minted (${poToken.length} chars)") else Log.w(Tag, "PO token unavailable; degrade to no-token")
     YoutubeLoadProgress.emit(YoutubeLoadStep.MintToken)
 
+    // ── P11-127(全移动):WEB-SABR 的 token 换**移动 minter** ────────────────────────────────
+    // 此前 WEB-SABR 用上面那枚 `botGuard` token:它的挑战源是**桌面 watch 页**(OkHttp 桌面 UA 抓
+    // ytcfg/`ytAtN` + `/att/get` 桌面 ctx)。移动 UA 下 watch 页 302 到 m.youtube.com 且**没有
+    // `ytAtN`**(docs/youtube-web-sabr.md:91-93,P11-103),这条挑战链在「全移动」世界里结构性不可用;
+    // 与它搭配的会话侧桌面身份又正是 P11-106 判为「身份生效但 nag 依旧」的那一半。
+    // 替代物是**已经在用的**移动 minter:`PoTokenWebView`(移植 LibreTube,bgutils/BotGuard 在
+    // cookie-less 隐藏 WebView 里铸,移动 UA),SABR 主链在 `getWebClientPoToken` / `refreshPoToken`
+    // 处已用它,并已真机验证可铸。
+    // 只在 WEB-SABR 真会出场时铸(用户选「WEB-SABR 优先」档,或 NewPipe 主链已 RELOAD / DASH 已失败
+    // 的兜底场景),避免给默认 SABR 档白付铸造耗时;铸造失败回落原 botGuard token(不阻断)。
+    val webSabrInPlay = webSabrFirst ||
+      SabrStreamRegistry.reloadCount(videoId) > 0 ||
+      SabrStreamRegistry.isDashFallbackFailed(videoId)
+    val webSabrPoToken: String? = if (!webSabrInPlay) {
+      poToken
+    } else {
+      runCatching { biliTvPoTokenProvider.ensureWebToken(videoId)?.streamingDataPoToken }
+        .getOrNull()
+        ?.also { Log.i(Tag, "WEB-SABR token: mobile minter (${it.length} chars)") }
+        ?: poToken.also { Log.w(Tag, "WEB-SABR token: mobile minter 未产出 → 回落 botGuard token(${it?.length ?: 0} chars)") }
+    }
+
     // 提取 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp），注入 /player
     // 的 contentPlaybackContext。缺它 WEB /player 可能被判"非真浏览器" → "The page needs to be reloaded"。
     val signatureTimestamp = resolveSignatureTimestamp(videoId)
@@ -203,7 +225,7 @@ class YoutubePlaybackResolver(
     }
     if (webSabrFirst && poToken != null && !webSabrFirstBudgetShort) {
       val webSabr = runCatching {
-        buildWebSabrFallback(videoId, poToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs)
+        buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs)
       }.onFailure {
         // P11-125:这条链整条包 runCatching——不落证就等于「失败且不知道为什么」。
         Log.w(Tag, "WEB-SABR(优先)链异常: ${it::class.simpleName}: ${it.message}", it)
@@ -297,7 +319,7 @@ class YoutubePlaybackResolver(
             (SabrStreamRegistry.reloadCount(videoId) > 0 && poToken != null))
       if (webSabrDue) {
         val webSabr = runCatching {
-          buildWebSabrFallback(videoId, poToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs)
+          buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs)
         }.onFailure {
           // P11-125:同上——兜底段失败也必须留证。
           Log.w(Tag, "WEB-SABR(兜底)链异常: ${it::class.simpleName}: ${it.message}", it)
@@ -2282,7 +2304,9 @@ class YoutubePlaybackResolver(
         .header("accept-encoding", "identity")
         .header("accept", "application/vnd.yt-ump")
         .header("content-type", "application/x-protobuf")
-        .header("User-Agent", YoutubeConstants.UserAgent)
+        // P11-127:与最终传输形态一致(移动 UA)——桌面腿那轮 A/B replay 的结论已判读完
+        // (P11-118c:材料可用/传输无碍),此处只是让取证与线上形态同源。
+        .header("User-Agent", InnerTubeClient.Client.WEB.userAgent)
       if (withIdentityHeaders) {
         rb.header("Cookie", innerTubeClient.currentSessionCookies())
           .header("X-Goog-Visitor-Id", innerTubeClient.currentVisitorData())
@@ -2354,30 +2378,30 @@ class YoutubePlaybackResolver(
           "video=itag${material.videoFormatId?.itag ?: "ladder-default"}",
       )
     }
-    // P11-106:WEB-SABR 全链桌面化——/player context 用桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT
-    //(FreeTube buildSessionFromYtConfig 同款:会话身份与挑战来源同源,osName=Windows)。
-    // 无桌面身份(页未抓过/解析失败)→ 回退合成 context(旧行为)。
-    val desktopId = botGuard.webSessionIdentity()
-    // P11-117 诊断(G1 判据):把「桌面身份」与「会话默认身份」并排打出来,并显式记录 UA/Cookie 覆盖。
-    // 此前 13 轮反复声称「身份已桌面化」,但 HTTP 层从来没有 UA 入口、Cookie 也被 WebView 丢头——
-    // 这条日志是判「桌面身份到底有没有上线」的唯一凭据。
+    // ── P11-127(全移动):身份不再桌面化 ────────────────────────────────────────────────
+    // 此前(P11-106/P11-117)这一段用「桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT + 该页 cookie +
+    // 桌面 UA + forceOkHttp」四件套,动机是 FreeTube 桌面版能播。但真机判读的结论是
+    // **「身份生效但 nag 依旧」**(P11-106 Done 注),桌面化从未通过它自己的成功判据;
+    // 且这套身份与铸造 VM(Android 指纹)、采集页(UA 桌面 + Client Hints 移动)三处互相矛盾。
+    // 现在四处统一为**原生 Android 移动**:`uaOverride=null` 让 `postJson` 落到
+    // `Client.WEB.userAgent`(=MobileUserAgent)、`currentVisitorData()`、`currentSessionCookies()`、
+    // `buildContext(WEB)`(osName 来自移动 `sw.js_data`=Android);`contextOverride=null` 同理。
+    // 保留 `forceOkHttp=true`(单变量:它让 /player 走唯一真带 Cookie/UA 的传输,且不再经 WebView)。
     Log.i(
       Tag,
-      "WEB-SABR identity: desktopVis=${desktopId?.context?.obj("client")?.stringOrNull("visitorData")?.take(24)} " +
-        "sessionVis=${innerTubeClient.currentVisitorData().take(24)} " +
-        "desktopCookie=${desktopId?.cookie?.let { "${it.length}B" } ?: "null"} " +
-        "uaOverride=${YoutubeConstants.UserAgent.take(32)} forceOkHttp=true",
+      "WEB-SABR identity: mobile=true osName=${innerTubeClient.sabrClientInfo().osName ?: "?"} " +
+        "visitor=${innerTubeClient.currentVisitorData().take(24)} " +
+        "cookie=${innerTubeClient.currentSessionCookies().length}B " +
+        "ua=${InnerTubeClient.Client.WEB.userAgent.take(40)} forceOkHttp=true",
     )
     val player = runCatching {
       postPlayer(
-        videoId, InnerTubeClient.Client.WEB, poToken, signatureTimestamp,
-        contextOverride = desktopId?.context,
-        // P11-115:cookie/visitor 同步换桌面页会话——消除「桌面 body + 移动 cookie」混搭
-        //(r1947:混搭身份被服务端签发降级 sabrUrl 缺 cpn/cver,会话被 status=2 nag)。
-        cookieOverride = desktopId?.cookie,
-        visitorOverride = desktopId?.context?.obj("client")?.stringOrNull("visitorData"),
-        // P11-117:桌面 UA + 强制 OkHttp——桌面四件套(body context/visitor/cookie/UA)第一次同源上线。
-        uaOverride = YoutubeConstants.UserAgent,
+        videoId, InnerTubeClient.Client.WEB, webSabrPoToken, signatureTimestamp,
+        // P11-127:四个 override 全撤(桌面身份下线),/player 用会话默认的移动身份。
+        contextOverride = null,
+        cookieOverride = null,
+        visitorOverride = null,
+        uaOverride = null,
         forceOkHttp = true,
       )
     }.getOrNull()
@@ -2488,9 +2512,13 @@ class YoutubePlaybackResolver(
           sabrAudioTracks.joinToString { "${it.id}/${it.displayName ?: it.languageCode ?: "?"}${if (it.isDefault) "*orig" else ""}@itag${it.formatId.itag}" },
       )
     }
-    // WEB 会话(P11-106:身份全链桌面化——桌面 ytcfg 的 INNERTUBE_CONTEXT + 桌面 UA + 页面 cookie;
-    // 无桌面身份时回退旧行为);poToken web64 → UTF-8 字节(fromSabrData 内已修)
-    val webIdentity = botGuard.webSessionIdentity()
+    // WEB 会话身份(P11-127:全移动)——`sabrClientInfo()` = clientName=1(WEB) + osName/osVersion
+    // 取自移动 `sw.js_data`(=Android) + acceptLanguage/Region/screens/formFactor/timeZone;
+    // UA 用 `Client.WEB.userAgent`(=MobileUserAgent)。此前这里是「有桌面身份就走
+    // `webDesktopSabrClientInfo` + 桌面 UA」的二分,桌面那一半已被 P11-106 真机判为『身份生效但 nag
+    // 依旧』,且与铸造 VM/采集页三处矛盾,现整段收敛(原 `webIdentity == null` 的兜底分支就是唯一路径)。
+    // 注意 **clientName 仍为 1**:`SabrMediaFetcher` 的 `webShape = clientName == 1` 决定请求形状
+    // (4 字段 clientInfo + 不发顶层 playerTimeMs),改 clientName 会同时翻动身份与请求形状两个变量。
     // P11-118g:会话默认档**一律走我们阶梯的默认档**,不用 harvest 材料里的选定档。
     // 依据(r1959 真机,`UrTJQIeUSiM`):材料选定档=itag399(AV1 1080p)时会话默认 399,而播放器选
     // 136/137(H264)→ 首帧出来 0.1s 后 `tracks changed` 从 3 条视频轨扩到 6 条 + `video size: 0x0` +
@@ -2514,9 +2542,9 @@ class YoutubePlaybackResolver(
       material.baseSabrUrl,
       material.poTokenBytes,
       material.ustreamerConfigBytes,
-      if (webIdentity != null) innerTubeClient.webDesktopSabrClientInfo(webIdentity.context) else innerTubeClient.sabrClientInfo(),
+      innerTubeClient.sabrClientInfo(),
       aFmt, vFmt,
-      userAgent = if (webIdentity != null) YoutubeConstants.UserAgent else InnerTubeClient.Client.WEB.userAgent,
+      userAgent = InnerTubeClient.Client.WEB.userAgent,
       // SABR POST 不带 HTTP Cookie/X-Goog-Visitor-Id(P11-107 HAR 实锤,FreeTube 同款)。
       cookieHeader = "",
       visitorData = "",
@@ -2529,9 +2557,9 @@ class YoutubePlaybackResolver(
       // 把 content-bound(videoId 绑定)token 放进 sabrData,`SabrSchemePlugin` 再
       // `base64ToU8(sabrData.poToken)` 进 streamerContext.poToken。
       sabrUrl, poToken, sd.ustreamerCfgB64,
-      if (webIdentity != null) innerTubeClient.webDesktopSabrClientInfo(webIdentity.context) else innerTubeClient.sabrClientInfo(),
+      innerTubeClient.sabrClientInfo(),
       aFmt, vFmt,
-      userAgent = if (webIdentity != null) YoutubeConstants.UserAgent else InnerTubeClient.Client.WEB.userAgent,
+      userAgent = InnerTubeClient.Client.WEB.userAgent,
       // P11-107(HAR 实锤):FreeTube 的 SABR POST **不带 HTTP Cookie/X-Goog-Visitor-Id**——身份全在
       // protobuf body(playbackCookie/poToken/streamerContext),HTTP 层只有桌面 UA + Origin/Referer。
       // P11-101/r1924 时代"补 cookie/visitor"是旧 token 链(create 挑战+PoTokenWebView)时代的结论,

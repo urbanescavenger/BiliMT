@@ -653,22 +653,6 @@ class InnerTubeClient(
   }
 
   /**
-   * P11-106:WEB-SABR 桌面会话 ClientInfo——从桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT 取
-   * osName/osVersion/clientVersion(FreeTube clientInfo 4 字段形状:clientName=1 + 版本/OS)。
-   * 我们此前 sabrClientInfo 用 sw.js_data(移动会话)报 osName=Android——WEB 客户端 + Android
-   * OS 混搭,SABR 服务端逐请求 status=2 nag(r1934/35 排除请求体/GenerateIT 绑定后剩余差异)。
-   */
-  internal fun webDesktopSabrClientInfo(context: JsonObject): com.kirin.mt.core.youtube.sabr.ClientInfoInput {
-    val c = context.obj("client")
-    return com.kirin.mt.core.youtube.sabr.ClientInfoInput(
-      clientName = YoutubeConstants.ClientNameId.toIntOrNull(),
-      clientVersion = c?.stringOrNull("clientVersion") ?: YoutubeConstants.ClientVersion,
-      osName = c?.stringOrNull("osName"),
-      osVersion = c?.stringOrNull("osVersion"),
-    )
-  }
-
-  /**
    * path C(NewPipe visionOS 取流):SABR StreamerContext 的 ClientInfo **必须用 visionOS 客户端**——
    * NewPipe getInfo 走的 visionOS /player 返回的 ustreamerConfig 绑定 visionOS 客户端,配 WEB client
    * info(clientName=1)会被服务端 RELOAD_PLAYER 整体拒(alpha.75 真机:所有 init 全拒)。逐字对齐
