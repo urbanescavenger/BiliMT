@@ -15,11 +15,13 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
@@ -44,6 +46,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -238,6 +241,10 @@ fun PlayerScreen(
   // 进度条/控制行都不高亮)。YouTube 版式无动作行,这两个状态恒为 false/0,行为不变。
   var actionFocused by remember { mutableStateOf(false) }
   var focusedActionIndex by remember { mutableIntStateOf(0) }
+  // P11-124(追加):B站 控制行「画面旋转」——按一次循环 +90°,只转视频画面(弹幕/预览/控制层不跟转)。
+  var videoRotation by remember { mutableIntStateOf(0) }
+  // P11-124(追加):B站 控制行「播放序列」——false = 列表播放(默认),true = 单视频循环(REPEAT_MODE_ONE)。
+  var singleVideoLoop by remember { mutableStateOf(false) }
   var focusedControl by remember { mutableStateOf(PlayerControl.Episodes) }
   var activePanel by remember { mutableStateOf(PlayerPanel.None) }
   var focusedPanelIndex by remember { mutableIntStateOf(0) }
@@ -917,11 +924,14 @@ fun PlayerScreen(
         // 免得没字幕的视频上多一个点开是空列表的按钮。轨未挂载完时 info 未就绪,不显示;
         // 轨挂载后 info 更新会重新计算(availableControls 在每次重组时调用)。
         PlayerControl.Subtitle -> displayRequest.isYoutube && hasSubtitleChoice(info)
-        // P11-124:倍速/刷新/弹幕开关三个新入口只属于 **B站 版式控制行**(BiliPlayerControls 显式顺序),
-        // 这里(YouTube 走的 entries 过滤路径)恒为 false —— 保证 YouTube 控制行一项不多、一项不少。
+        // P11-124:倍速/刷新/弹幕开关/旋转/播放序列这些新入口只属于 **B站 版式控制行**
+        // (BiliPlayerControls 显式顺序),这里(其它源走的 entries 过滤路径)恒为 false
+        // —— 保证 YouTube / 影视库 / IPTV 控制行一项不多、一项不少。
         PlayerControl.Speed,
         PlayerControl.Refresh,
-        PlayerControl.DanmakuToggle -> false
+        PlayerControl.DanmakuToggle,
+        PlayerControl.Rotate,
+        PlayerControl.PlaySequence -> false
         else -> true
       }
     }
@@ -1252,6 +1262,13 @@ fun PlayerScreen(
 
   fun reportPlaybackCompleted() {
     if (completionReported) return
+    // P11-124(追加):单视频循环下不触发播完链路(自动下一P / 自动相关推荐 / 播完退出)。
+    // REPEAT_MODE_ONE 正常不会走到 ENDED,但 SABR/DASH 这类 duration=LENGTH_UNSET 的源仍可能上报
+    // ENDED,故在链路唯一入口处显式兜一道(比逐处加判据稳)。
+    if (singleVideoLoop) {
+      Log.i(PlayerPlaybackLogTag, "STATE_ENDED ignored: play sequence is single-video loop")
+      return
+    }
     completionReported = true
     val completedDurationMs = maxDurationMs()
     if (completedDurationMs > 0L) {
@@ -1548,6 +1565,21 @@ fun PlayerScreen(
       PlayerControl.Refresh -> refreshPlayback()
       PlayerControl.DanmakuToggle -> {
         persistDanmakuSettings(danmakuSettings.copy(enabled = !danmakuSettings.enabled))
+        showControls()
+      }
+      // P11-124(追加):画面旋转 —— 循环 +90°(0 → 90 → 180 → 270 → 0)。
+      // 只改渲染层的旋转角:弹幕层/seek 预览/雪碧图/控制层都是独立浮层,位置与朝向不变。
+      PlayerControl.Rotate -> {
+        videoRotation = (videoRotation + 90) % 360
+        showControls()
+      }
+      // P11-124(追加):播放序列 —— 列表播放 / 单视频循环 两态,直接切 player.repeatMode。
+      // 注意 repeatMode 会被重解析(刷新/切清晰度/切音轨)重建会话时重置,故 launch effect 里
+      // prepare 之后按当前状态重设一次(见 player.playWhenReady = true 处)。
+      PlayerControl.PlaySequence -> {
+        singleVideoLoop = !singleVideoLoop
+        player.repeatMode = if (singleVideoLoop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+        Log.i(PlayerPlaybackLogTag, "play sequence: singleVideoLoop=$singleVideoLoop repeatMode=${player.repeatMode}")
         showControls()
       }
       PlayerControl.Up -> openUpVideos(UpVideoOrderLatest)
@@ -2121,6 +2153,9 @@ fun PlayerScreen(
           danmakuSyncToken += 1L
         }
         player.playWhenReady = true
+        // P11-124(追加):重解析(手动刷新 / 切清晰度 / 切音轨 / 自动重试)都会重建会话,repeatMode 可能
+        // 被重置为 OFF → 在这里按当前「播放序列」状态重设一次,保证单视频循环跨会话不丢。
+        player.repeatMode = if (singleVideoLoop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
         playbackPaused = false
         // YouTube 起播即写入播放历史（含频道/封面元数据），供历史 tab 展示与续播。
         if (isYoutube) {
@@ -2774,22 +2809,43 @@ fun PlayerScreen(
         }
       },
   ) {
-    AndroidView(
-      factory = { viewContext ->
-        PlayerView(viewContext).apply {
-          useController = false
-          keepScreenOn = true
-          resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-          setShutterBackgroundColor(android.graphics.Color.BLACK)
-          this.player = player
-        }
-      },
-      update = { view ->
-        view.keepScreenOn = true
-        view.player = player
-      },
-      modifier = Modifier.fillMaxSize(),
-    )
+    // P11-124(追加):视频画面旋转(仅 B站 控制行「画面旋转」驱动)。
+    // 做法:外层 BoxWithConstraints 拿父容器尺寸,内层 Box 承载 PlayerView;90/270 时长宽互换
+    // (size(maxHeight, maxWidth))再 rotationZ 旋转、居中对齐 —— 这样 FIT 是按「旋转后的坐标系」算的,
+    // 画面完整不裁切(代价是 16:9 源转 90° 后左右留黑,这是旋转本身的物理结果)。
+    // 只有这一层转:弹幕层 / seek 预览 / 雪碧图 / 控制层都是 Box 的其它子节点,不跟转。
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+      val rotatedQuarter = videoRotation == 90 || videoRotation == 270
+      Box(
+        modifier = Modifier
+          .align(Alignment.Center)
+          .then(
+            if (rotatedQuarter) {
+              Modifier.size(maxHeight, maxWidth)
+            } else {
+              Modifier.size(maxWidth, maxHeight)
+            },
+          )
+          .graphicsLayer { rotationZ = videoRotation.toFloat() },
+      ) {
+        AndroidView(
+          factory = { viewContext ->
+            PlayerView(viewContext).apply {
+              useController = false
+              keepScreenOn = true
+              resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+              setShutterBackgroundColor(android.graphics.Color.BLACK)
+              this.player = player
+            }
+          },
+          update = { view ->
+            view.keepScreenOn = true
+            view.player = player
+          },
+          modifier = Modifier.fillMaxSize(),
+        )
+      }
+    }
 
     if (playerLogOverlayEnabled) {
       // 内联诊断：不走 PlayerLogOverlay 子组合，直接放 Box 早子节点。决定性测试——
@@ -2869,6 +2925,9 @@ fun PlayerScreen(
           actionControls = if (alignedBiliLayout()) biliActionControls() else emptyList(),
           focusedActionIndex = focusedActionIndex,
           actionFocused = actionFocused,
+          // P11-124(追加):旋转角 / 播放序列状态 —— B站 控制行两枚图标的状态着色与播报文案。
+          videoRotation = videoRotation,
+          singleVideoLoop = singleVideoLoop,
           activePanel = activePanel,
           focusedPanelIndex = focusedPanelIndex,
           playbackSpeed = playbackSpeed,

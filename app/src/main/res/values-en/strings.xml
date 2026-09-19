@@ -445,6 +445,12 @@
     <string name="player_control_comment">Comments</string>
     <!-- P11-124: B站 control row "refresh" (re-resolve + reload current video). -->
     <string name="player_control_refresh">Refresh</string>
+    <!-- P11-124: control row "rotate video" (cycles +90°). -->
+    <string name="player_control_rotate">Rotate video</string>
+    <!-- P11-124: control row "play sequence" (list playback / single-video loop). -->
+    <string name="player_control_play_sequence">Play sequence</string>
+    <string name="player_sequence_list">List playback</string>
+    <string name="player_sequence_single">Single-video loop</string>
     <string name="player_panel_favorite">Favorite to folder</string>
     <string name="player_favorite_confirm">Confirm favorite</string>
     <string name="player_favorite_empty">No favorite folders</string>

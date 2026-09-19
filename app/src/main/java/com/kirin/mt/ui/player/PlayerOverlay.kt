@@ -115,9 +115,9 @@ internal enum class PlayerControl {
   Comment,
   Settings,
 
-  // ── P11-124:B站 版式控制行的三个新入口(点击即生效,不开子面板)。只在 [BiliPlayerControls]
-  // (!isYoutube 路径)里出现;YouTube 由 availableControls() 显式过滤为 false,版式/行为一字不变。
-  /** 倍速文案按钮(值 = 现有 playbackSpeed.speedText())→ Speed 面板。 */
+  // ── P11-124:B站 版式控制行的新入口(点击即生效,不开子面板)。只在 [BiliPlayerControls]
+  // (SourceBili 路径)里出现;其它源由 availableControls() 显式过滤为 false,版式/行为一字不变。
+  /** 倍速文案按钮(值 = playbackSpeed.speedTextBadge(),如 `1.0x`)→ Speed 面板。 */
   Speed,
 
   /** 刷新:重新解析并重载当前视频,位置保持当前播放点(见 PlayerScreen.refreshPlayback)。 */
@@ -126,28 +126,28 @@ internal enum class PlayerControl {
   /** 弹幕开关:直接翻转 danmakuSettings.enabled(与设置面板里那一项同源)。 */
   DanmakuToggle,
 
-  /**
-   * TODO(P11-124):官方控制行还有「画面旋转」与「播放序列」,本轮**刻意不做**(宁缺勿假):
-   * 旋转要改 AndroidView(PlayerView) 的渲染层(旋转角需与宽高比/弹幕层联动),播放序列要先加
-   * 两态播放模式(列表连播 / 单视频循环)。两者各自的 vector drawable 已按设计稿建好备用
-   * (ic_player_rotate / ic_player_sequence),下一轮补行为时再把枚举项与 [BiliPlayerControls] 补上。
-   */
+  /** P11-124(追加):画面旋转——按一次循环 +90°(0 → 90 → 180 → 270),只转视频画面,浮层不跟转。 */
+  Rotate,
+
+  /** P11-124(追加):播放序列——列表播放 / 单视频循环 两态(player.repeatMode 切换)。 */
+  PlaySequence,
 }
 
 /**
  * P11-124:B站 版式控制行的项与**顺序**(对齐官方客户端底栏:倍速文案 → 入口图标… → 画质值按钮 → 设置)。
  *
  * 与 YouTube(沿用 [PlayerControl.entries] 过滤出的 availableControls)分开维护:两边项集与顺序都不同
- * (B站:无「点赞/投币/收藏/稍后再看/评论」——它们搬到了顶部动作行;多了倍速/刷新/弹幕开关,且字幕恒显示)。
+ * (B站:无「点赞/投币/收藏/稍后再看/评论」——它们搬到了顶部动作行;多了倍速/刷新/旋转/弹幕开关/序列,
+ * 且字幕恒显示)。
  */
 internal val BiliPlayerControls: List<PlayerControl> = listOf(
   PlayerControl.Speed,
   PlayerControl.Up,
-  // TODO(P11-124):此处应插「画面旋转」(ic_player_rotate 已建),待 PlayerView 渲染层支持旋转后补。
+  PlayerControl.Rotate,
   PlayerControl.Refresh,
   PlayerControl.Subtitle,
   PlayerControl.DanmakuToggle,
-  // TODO(P11-124):此处应插「播放序列」(ic_player_sequence 已建),待两态播放模式落地后补。
+  PlayerControl.PlaySequence,
   PlayerControl.Episodes,
   PlayerControl.Related,
   PlayerControl.Quality,
@@ -236,6 +236,10 @@ internal fun BoxScope.PlayerOverlay(
   focusedActionIndex: Int,
   /** P11-124:焦点是否在动作行——三级焦点 动作行 → 进度条 → 控制行,焦点唯一。 */
   actionFocused: Boolean,
+  /** P11-124(追加):视频画面旋转角(0/90/180/270)——控制行「画面旋转」槽据此点亮。 */
+  videoRotation: Int,
+  /** P11-124(追加):播放序列是否单视频循环——控制行「播放序列」槽据此点亮。 */
+  singleVideoLoop: Boolean,
   activePanel: PlayerPanel,
   focusedPanelIndex: Int,
   playbackSpeed: Float,
@@ -325,6 +329,9 @@ internal fun BoxScope.PlayerOverlay(
         // P11-124:字幕槽的压暗判据(无选中轨 = 关闭 → TextTertiary),与控制行同一份状态。
         currentSubtitleTrackId = currentSubtitleTrackId,
         danmakuEnabled = danmakuSettings.enabled,
+        // P11-124(追加):旋转角 / 播放序列两态——控制行对应槽的状态着色与 contentDescription。
+        videoRotation = videoRotation,
+        singleVideoLoop = singleVideoLoop,
         positionState = positionState,
         durationState = durationState,
         bufferedPercentageState = bufferedPercentageState,
@@ -364,7 +371,21 @@ internal fun BoxScope.PlayerOverlay(
       modifier = Modifier.align(Alignment.Center),
     )
   } else if (playbackPaused && showPauseIndicator) {
-    PauseIndicatorOverlay(modifier = Modifier.align(Alignment.Center))
+    // P11-124(追加):暂停图标从屏幕正中挪到右下角(对齐 TV 端官方)。**两个源都挪**(YouTube/B站 共用)。
+    // 离底高度分档:两种底栏高度差很多(B站 薄栏 96dp 即可 / 老版式高栏需 152dp 才不压时间与状态文案),
+    // 用同一个值会导致矮栏图标偏高、或高栏图标压住文案,故按源取档。
+    PauseIndicatorOverlay(
+      modifier = Modifier
+        .align(Alignment.BottomEnd)
+        .padding(
+          end = BiliSizing.PlayerOverlayHorizontalPadding,
+          bottom = if (request.source == SourceBili) {
+            BiliSizing.PlayerPauseIndicatorBottomPadding
+          } else {
+            BiliSizing.PlayerPauseIndicatorBottomPaddingTallBar
+          },
+        ),
+    )
   }
 
   if (activePanel != PlayerPanel.None) {
@@ -791,6 +812,10 @@ private fun BiliControlBarOverlay(
   currentSubtitleTrackId: Int?,
   /** P11-124:弹幕开关的状态(关掉时控制行那枚图标压暗)。 */
   danmakuEnabled: Boolean,
+  /** P11-124(追加):视频画面旋转角(0/90/180/270)。 */
+  videoRotation: Int,
+  /** P11-124(追加):播放序列是否单视频循环。 */
+  singleVideoLoop: Boolean,
   positionState: State<Long>,
   durationState: State<Long>,
   bufferedPercentageState: State<Long>,
@@ -853,22 +878,33 @@ private fun BiliControlBarOverlay(
             contentDescription = "${stringResource(control.labelRes)} $speedLabel",
             focused = focused,
           )
-          // 画质 = 纯文字「HD」(与倍速同款等宽槽)。用户要求不再显示 `1080P60(H.264)` 长文案,
+          // 画质 = 纯文字「HD」(与倍速同款的文案项)。用户要求不再显示 `1080P60(H.264)` 长文案,
           // 真实档位信息改由 contentDescription 承载(焦点/无障碍播报仍能听到当前档)。
           PlayerControl.Quality -> BiliTextControl(
             text = stringResource(R.string.player_quality_badge),
             contentDescription = "${stringResource(R.string.player_settings_quality)} $qualityText",
             focused = focused,
           )
-          // 其余全是同宽槽内居中的裸图标(官方无底块、无玻璃)。
+          // 其余全是裸图标(官方无底块、无玻璃;各按内容宽紧挨排布)。
           else -> BiliIconControl(
             iconRes = control.iconRes,
-            contentDescription = stringResource(control.labelRes),
+            // P11-124(追加):旋转/播放序列把「非默认态」写进 contentDescription,焦点播报能听出当前状态。
+            contentDescription = when (control) {
+              PlayerControl.Rotate -> "${stringResource(control.labelRes)} $videoRotation°"
+              PlayerControl.PlaySequence -> stringResource(control.labelRes) + " " + stringResource(
+                if (singleVideoLoop) R.string.player_sequence_single else R.string.player_sequence_list,
+              )
+              else -> stringResource(control.labelRes)
+            },
             tint = when {
               // 弹幕开关带开关态——关掉时整枚图标压暗,一眼能看出当前是开还是关。
               control == PlayerControl.DanmakuToggle && !danmakuEnabled -> BiliColors.TextTertiary
               // 字幕同理:未选中任何轨(= 关闭)时压暗,与弹幕开关用同一个灰(TextTertiary)。
               control == PlayerControl.Subtitle && currentSubtitleTrackId == null -> BiliColors.TextTertiary
+              // P11-124(追加):旋转/播放序列用 tint 表示「非默认态」(与弹幕开关同一套表达法)——
+              // 非 0 角度 / 单视频循环时点亮 BiliPink,默认态保持白色。
+              control == PlayerControl.Rotate && videoRotation != 0 -> BiliColors.BiliPink
+              control == PlayerControl.PlaySequence && singleVideoLoop -> BiliColors.BiliPink
               else -> BiliColors.TextPrimary
             },
             focused = focused,
@@ -880,11 +916,13 @@ private fun BiliControlBarOverlay(
 }
 
 /**
- * P11-124:B站 控制行的**等宽槽**——每项(图标或文案)都放进同尺寸槽并居中,整行因此等宽等距。
+ * P11-124:B站 控制行的槽——每项(图标或文案)各按自身内容宽度排布,靠 [BiliSizing.PlayerOfficialControlSpacing]
+ * (8dp)紧挨着靠左排列(真机反馈「不需要分散」,故已撤掉曾经的 56dp 等宽槽);左右各留 4dp 内边距,
+ * 让获焦的粉底比内容略宽一圈。
  *
  * 焦点态用我们原来的着色:获焦槽铺 [BiliColors.PlayerControlFocused] 粉色玻璃(圆角 [BiliRadius.Card]);
  * 未获焦**保持透明**(官方是裸图标,不加 idle 底块;获焦才铺粉底)。槽内图标/文字的 tint 不随焦点变粉(靠底色区分),
- * 只按语义压暗(弹幕关 / 字幕关 → [BiliColors.TextTertiary])。
+ * 只按语义压暗或点亮(弹幕关 / 字幕关 → [BiliColors.TextTertiary];旋转非 0 / 单视频循环 → [BiliColors.BiliPink])。
  */
 @Composable
 private fun BiliControlSlot(
@@ -2958,6 +2996,9 @@ private val PlayerControl.iconRes: Int
     PlayerControl.Speed -> R.drawable.ic_player_speed
     PlayerControl.Refresh -> R.drawable.ic_player_refresh
     PlayerControl.DanmakuToggle -> R.drawable.ic_player_danmaku_toggle
+    // P11-124(追加):画面旋转 / 播放序列(本轮接上行为)。
+    PlayerControl.Rotate -> R.drawable.ic_player_rotate
+    PlayerControl.PlaySequence -> R.drawable.ic_player_sequence
   }
 
 private val PlayerControl.labelRes: Int
@@ -2977,6 +3018,9 @@ private val PlayerControl.labelRes: Int
     PlayerControl.Speed -> R.string.player_settings_speed
     PlayerControl.DanmakuToggle -> R.string.player_settings_danmaku_toggle
     PlayerControl.Refresh -> R.string.player_control_refresh
+    // P11-124(追加):画面旋转 / 播放序列。
+    PlayerControl.Rotate -> R.string.player_control_rotate
+    PlayerControl.PlaySequence -> R.string.player_control_play_sequence
   }
 
 /** 是否带计数 + 激活态的互动按钮(点赞/投币/收藏),用 PlayerActionButton 渲染。 */

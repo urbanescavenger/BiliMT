@@ -456,6 +456,12 @@
     <string name="player_control_comment">评论</string>
     <!-- P11-124:B站 控制行「刷新」——重新解析并重载当前视频(YouTube 老路径不出现该项)。 -->
     <string name="player_control_refresh">刷新</string>
+    <!-- P11-124(追加):控制行「画面旋转」(点击循环 +90°)。 -->
+    <string name="player_control_rotate">画面旋转</string>
+    <!-- P11-124(追加):控制行「播放序列」(列表播放 / 单视频循环 两态)。 -->
+    <string name="player_control_play_sequence">播放序列</string>
+    <string name="player_sequence_list">列表播放</string>
+    <string name="player_sequence_single">单视频循环</string>
     <string name="player_panel_favorite">&#x6536;&#x85CF;&#x5230;&#x6536;&#x85CF;&#x5939;</string>
     <string name="player_favorite_confirm">&#x786E;&#x8BA4;&#x6536;&#x85CF;</string>
     <string name="player_favorite_empty">&#x6682;&#x65E0;&#x6536;&#x85CF;&#x5939;</string>
