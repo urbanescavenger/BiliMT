@@ -2396,7 +2396,7 @@ class YoutubePlaybackResolver(
     )
     val player = runCatching {
       postPlayer(
-        videoId, InnerTubeClient.Client.WEB, webSabrPoToken, signatureTimestamp,
+        videoId, InnerTubeClient.Client.WEB, poToken, signatureTimestamp,
         // P11-127:四个 override 全撤(桌面身份下线),/player 用会话默认的移动身份。
         contextOverride = null,
         cookieOverride = null,
