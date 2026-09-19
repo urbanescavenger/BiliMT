@@ -883,7 +883,7 @@ private fun BiliControlBarOverlay(
  * P11-124:B站 控制行的**等宽槽**——每项(图标或文案)都放进同尺寸槽并居中,整行因此等宽等距。
  *
  * 焦点态用我们原来的着色:获焦槽铺 [BiliColors.PlayerControlFocused] 粉色玻璃(圆角 [BiliRadius.Card]);
- * 未获焦**保持透明**(官方是裸图标,不加 idle 底块)。槽内图标/文字的 tint 不随焦点变粉(靠底色区分),
+ * 未获焦**保持透明**(官方是裸图标,不加 idle 底块;获焦才铺粉底)。槽内图标/文字的 tint 不随焦点变粉(靠底色区分),
  * 只按语义压暗(弹幕关 / 字幕关 → [BiliColors.TextTertiary])。
  */
 @Composable
@@ -895,13 +895,16 @@ private fun BiliControlSlot(
   val shape = RoundedCornerShape(BiliRadius.Card)
   Box(
     modifier = Modifier
-      .width(BiliSizing.PlayerOfficialControlWidth)
+      // P11-124:按内容宽度排列(用户二轮反馈「不需要分散,靠左紧挨」)——撤掉原先的 56dp 等宽槽:
+      // 等宽是为了让长文案不挤行,但真机看着每项之间空太多。现在图标/文案各按自身宽度,靠小间距(8dp)
+      // 紧挨着排,整行仍靠左;左右各留 4dp 内边距,让获焦的粉底比内容略宽一圈。
       .height(BiliSizing.PlayerOfficialControlBoxSize)
       .playerFocusedLiquidGlassSurface(
         shape = shape,
         focused = focused,
         surfaceColor = BiliColors.PlayerControlFocused,
       )
+      .padding(horizontal = BiliSpacing.Xs)
       .semantics { this.contentDescription = contentDescription },
     contentAlignment = Alignment.Center,
   ) {
@@ -909,7 +912,7 @@ private fun BiliControlSlot(
   }
 }
 
-/** P11-124:B站 控制行的图标项(同宽槽内居中;官方无底块,焦点态见 [BiliControlSlot])。 */
+/** P11-124:B站 控制行的图标项(按内容宽排列;官方无底块,焦点态见 [BiliControlSlot])。 */
 @Composable
 private fun BiliIconControl(
   @DrawableRes iconRes: Int,
@@ -927,7 +930,7 @@ private fun BiliIconControl(
   }
 }
 
-/** P11-124:B站 控制行的文案项(倍速 `1.0x` / 画质 `HD`),19sp 粗体白,居中等宽槽。 */
+/** P11-124:B站 控制行的文案项(倍速 `1.0x` / 画质 `HD`),19sp 粗体白,按内容宽排布。 */
 @Composable
 private fun BiliTextControl(
   text: String,

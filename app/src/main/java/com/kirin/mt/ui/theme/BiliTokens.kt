@@ -230,8 +230,7 @@ object BiliSizing {
   // 进度条行高:容下 13dp 滑块(条本体 5dp 居中),高度不影响视觉,只是给行留出滑块空间。
   val PlayerOfficialProgressRowHeight = 21.dp
   // 控制行:每项同一固定宽度槽(图标项与文案项都居中于同宽槽 → 整行等宽等距)。
-  val PlayerOfficialControlWidth = 56.dp
-  val PlayerOfficialControlSpacing = 26.dp
+  val PlayerOfficialControlSpacing = 8.dp
   val PlayerOfficialControlBoxSize = 34.dp
   val PlayerOfficialControlIconSize = 30.dp
 }
