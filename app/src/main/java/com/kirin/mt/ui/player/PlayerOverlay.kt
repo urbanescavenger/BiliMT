@@ -177,20 +177,22 @@ internal val YoutubePlayerControls: List<PlayerControl> = listOf(
 
 /**
  * P11-124(追加):**非 B站 非 YouTube 的点播源**(影视库 TVBox / IPTV 点播 / 红果)的控制行项与顺序
- * = [YoutubePlayerControls] **减掉「评论」**(这三个源的卡片数据里没有 aid 字段,请求恒 aid=0,评论本来就
- * 打不开/不显示)。
+ * = [YoutubePlayerControls] **减掉「评论」「UP主页」「字幕」**(用户 2026-09-19 定:这三个源的卡片数据里
+ * 没有 aid 字段,请求恒 aid=0,评论本来就打不开;卡片也没有 UP 信息,点「UP主页」是空面板;多数视频没有
+ * 字幕轨,那枚图标恒灰、点开只有「关闭」)。
  *
- * 顺序:1.0x | UP主页 | 画面旋转 | 刷新 | 字幕 | 播放序列 | 播放列表 | 相关视频 | 画质(HD) | 设置。
+ * 顺序:1.0x | 画面旋转 | 刷新 | 播放序列 | 播放列表 | 相关视频 | 画质(HD) | 设置。
  *
  * 用**显式列表**而非 `PlayerControl.entries` 过滤:倍速/刷新/旋转/序列这些是追加在枚举尾部的新项,走过滤
  * 会把它们排到「设置」之后(真机看就是顺序错位)。自此 entries 的声明顺序**不再影响任何源的屏上顺序**。
  */
 internal val GenericPlayerControls: List<PlayerControl> = listOf(
   PlayerControl.Speed,
-  PlayerControl.Up,
+  // 用户要求(2026-09-19)这三源**先去掉「UP主页」与「字幕」**:它们的卡片没有 UP 信息(ownerMid=0,
+  // 点「UP主页」是空面板),多数视频也没有字幕轨(图标灰着、点开只有「关闭」)。
+  // 字幕并未彻底断掉——设置面板的 Main 里仍有「字幕」行(有轨时才出现),需要时可从这里进。
   PlayerControl.Rotate,
   PlayerControl.Refresh,
-  PlayerControl.Subtitle,
   PlayerControl.PlaySequence,
   PlayerControl.Episodes,
   PlayerControl.Related,
