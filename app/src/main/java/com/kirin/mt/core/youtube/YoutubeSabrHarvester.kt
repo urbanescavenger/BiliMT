@@ -87,6 +87,9 @@ class YoutubeSabrHarvester(
    */
   @Volatile private var mainDocHeadersLogged: Boolean = false
 
+  /** P11-127:本次 harvest 是否已打过身份自证([SABR_IDENT_JS])。每次 harvest 清零。 */
+  @Volatile private var identLogged: Boolean = false
+
   /**
    * 长期存活 WebView(alpha.61:复用跨 harvest 积累真实浏览上下文——每次新建 fresh WebView 被
    * YouTube 风控成空白页 `body=NOBODY player=false`(alpha.60 真机),长期存活 + 先加载真实首页
@@ -232,13 +235,19 @@ class YoutubeSabrHarvester(
     val cookies = innerTubeClient.currentSessionCookies()
     runCatching {
       CookieManager.getInstance().setCookie(YoutubeConstants.Origin, cookies)
+      // P11-127:setCookie 写的是 **host-only** cookie,只对 www.youtube.com 生效;移动 UA 下
+      // watch 页 302 到 m.youtube.com,不补这一行移动腿一开局就没有 VISITOR_INFO1_LIVE 会话种子
+      // (桌面腿不受影响:host-only 不外溢)。
+      if (view.settings.userAgentString == YoutubeConstants.MobileUserAgent) {
+        CookieManager.getInstance().setCookie("https://m.youtube.com/", cookies)
+      }
       CookieManager.getInstance().flush()
     }.onFailure { Log.w(Tag, "seed cookies failed: ${it.message}") }
     // alpha.49(顺序反转):watch 页唯一稳定捕获源(embed Error 153 config 拒不可解,已删)。
     // 锚定用 `t=<秒>`(SPA 起播位置参数;startMs=0 首播不锚定)。
     val watchT = if (startMs > 0) "&t=${startMs / 1000}" else ""
     YoutubeLoadProgress.emit(YoutubeLoadStep.HarvestWatch)
-    Log.i(Tag, "harvest: load watch videoId=$videoId startMs=$startMs${watchT} cookie=${cookies.length}B (webView=${if (reused) "reuse" else "rebuilt"})")
+    Log.i(Tag, "harvest: load watch videoId=$videoId startMs=$startMs${watchT} cookie=${cookies.length}B ua=${view.settings.userAgentString.take(40)} (webView=${if (reused) "reuse" else "rebuilt"})")
     // P11-125:清空页面层取证(上一轮的 onPageFinished/错误计数不能带进本轮)。
     pageFinishedMs = 0L
     lastFinishedUrl = null
@@ -246,6 +255,7 @@ class YoutubeSabrHarvester(
     lastHttpError = null
     mainFrameError = null
     mainDocHeadersLogged = false
+    identLogged = false
     view.loadUrl("https://www.youtube.com/watch?v=$videoId&autoplay=1&mute=1$watchT")
       // 轮询 window.__gvCaptures[0](对齐 BotGuard pollState 双解码:evaluateJavascript 对字符串
       // 结果做 JSON 编码,先解内层字符串再解析对象)。alpha.20 只截 SABR POST 致 25s 无捕获——
@@ -341,6 +351,12 @@ class YoutubeSabrHarvester(
         if (System.currentTimeMillis() - lastDiag > 3_000L) {
           lastDiag = System.currentTimeMillis()
           view.evaluateJavascript(PAGE_DIAG_JS, null)
+          // P11-127:身份自证只打一次(页 ytcfg / Client Hints 是稳态,不需要周期刷屏)。
+          // 等 onPageFinished 之后再打——ytcfg 由页面 boot 时注入,过早读恒为 '?'。
+          if (!identLogged && pageFinishedMs != 0L) {
+            identLogged = true
+            view.evaluateJavascript(SABR_IDENT_JS, null)
+          }
         }
         delay(200)
       }
@@ -385,10 +401,15 @@ class YoutubeSabrHarvester(
     @Suppress("DEPRECATION")
     settings.allowUniversalAccessFromFileURLs = true
     settings.mediaPlaybackRequiresUserGesture = false // 允许 muted autoplay,触发播放器 → SABR POST
-    // 桌面 UA——alpha.22 真机 embed 报「错误 153 视频播放器配置错误」:播放器自己的 config
-    // 请求被拒(mobile UA 嫌疑;FreeTube 桌面 Electron 能播)。harvester 是独立 WebView,UA 不影响
-    // 我们 mobile /player 流程,故此处用桌面 UA 让 watch 页播放器正常 init。
-    settings.userAgentString = YoutubeConstants.UserAgent
+    // P11-127(全移动):**移动 UA**——采集页此前用桌面 UA,理由是「alpha.22 embed 报错误 153,怕
+    // mobile UA 被拒」,而 embed 路径已在 alpha.77-79 整条删除(「embed Error 153 config 拒不可解、
+    // 从未成功捕获一次」),该理由的两个场景都不存在了。留下的反效果是身份自相矛盾:UA 说桌面
+    // Windows、内核照发 `Sec-CH-UA-Platform: "Android"`/`Mobile: ?1`,而 Android WebView 无 API
+    // 能覆盖/抑制 Client Hints(见本文件主文档头 dump 与 FORENSIC_JS 的注释)——这正是 2026 生态
+    // 「token 按平台隔离 + videoId 内容绑定」下最容易被判伪的形态。
+    // 移动 UA 下 www.youtube.com 会 302 到 m.youtube.com(YoutubeBrowserSession 已实证),故身份、
+    // Client Hints、页面 ytcfg 三者自此一致(mweb 站 + Android 平台 + 原生指纹)。
+    settings.userAgentString = YoutubeConstants.MobileUserAgent
     webViewClient = object : WebViewClient() {
       // onPageStarted 在页面脚本(含播放器 base.js)加载前触发——SABR/GET 在播放器 init 后
       // (数秒)才发,故此处注入的 fetch/XHR wrapper 必先于首个 googlevideo 请求就位。
@@ -631,6 +652,20 @@ class YoutubeSabrHarvester(
      */
     @Suppress("MaxLineLength")
     const val PAGE_DIAG_JS = """try{var p=document.getElementById('movie_player')||document.querySelector('.html5-video-player');var v=document.querySelector('video');var vs=(v&&(v.currentSrc||v.src))||'NONE';var gvc=(window.__gvCaptures&&window.__gvCaptures.length)||0;var de=document.documentElement;var dl=(de&&de.outerHTML)?de.outerHTML.length:-1;console.log('PAGE diag title='+document.title+' dl='+dl+' rs='+document.readyState+' ytcfg='+!!window.ytcfg+' body='+((document.body&&document.body.innerText)||'NOBODY').slice(0,60)+' player='+!!p+' vp='+(window.innerWidth+'x'+window.innerHeight)+' videoSrc='+vs.slice(0,120)+' captures='+gvc);}catch(e){console.log('PAGE diag err '+e);}"""
+
+    /**
+     * P11-127(全移动 Stage 1 取证):采集页**身份自证**探针——只在成功那一路打一次(失败出口由
+     * [FORENSIC_JS] 覆盖),回答三件事:
+     * 1. `host`/`href` —— 移动 UA 下是否 302 到 `m.youtube.com`(判「移动站真的生效」);
+     * 2. `cfgName/cfgVer/cfgOs` —— 页面 ytcfg `INNERTUBE_CONTEXT.client` 自称是谁(WEB?MWEB?osName?)。
+     *    **这条决定材料与我们的会话是否同客户端**:ustreamerConfig/token 绑签发它的客户端
+     *    (visionOS 的教训——clientInfo 配错被服务端 RELOAD_PLAYER 整体拒),而我们的会话恒用
+     *    clientName=1(WEB);若页面自称 MWEB 则材料与会话不同源;
+     * 3. `ua`/`uadMobile`/`uadPlatform` —— UA 与 Client Hints 是否终于自洽(桌面腿的教训:
+     *    UA=Windows + `Sec-CH-UA-Platform: "Android"` 自相矛盾,且 WebView 无 API 可改 CH)。
+     */
+    @Suppress("MaxLineLength")
+    const val SABR_IDENT_JS = """try{var c=(window.ytcfg&&window.ytcfg.get)?window.ytcfg.get('INNERTUBE_CONTEXT'):null;var cl=(c&&c.client)||{};var uad=navigator.userAgentData||null;var p=document.getElementById('movie_player')||document.querySelector('.html5-video-player');var v=document.querySelector('video');var vs=(v&&(v.currentSrc||v.src))||'NONE';var gvc=(window.__gvCaptures&&window.__gvCaptures.length)||0;console.log('harvest ident host='+location.host+' href='+location.href.slice(0,70)+' cfgName='+(cl.clientName||'?')+' cfgVer='+(cl.clientVersion||'?')+' cfgOs='+(cl.osName||'?')+' cfgOsVer='+(cl.osVersion||'?')+' ua='+navigator.userAgent.slice(0,60)+' uadMobile='+(uad?String(uad.mobile):'NONE')+' uadPlatform='+(uad?String(uad.platform):'NONE')+' uadBrands='+(uad?JSON.stringify(uad.brands):'NONE')+' vp='+window.innerWidth+'x'+window.innerHeight+' dpr='+window.devicePixelRatio+' player='+!!p+' videoSrc='+vs.slice(0,50)+' captures='+gvc);}catch(e){console.log('harvest ident err '+e);}"""
 
     /**
      * fetch/XHR wrapper——截获**所有**发往 googlevideo.com/videoplayback 的请求(POST=SABR / GET=DASH 段),
