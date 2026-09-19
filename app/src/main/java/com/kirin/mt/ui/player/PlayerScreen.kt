@@ -6,6 +6,8 @@ import android.content.ContextWrapper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import android.view.LayoutInflater
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -31,6 +33,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -46,7 +49,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -2840,12 +2842,19 @@ fun PlayerScreen(
       },
   ) {
     // P11-124(追加):视频画面旋转(仅 B站 控制行「画面旋转」驱动)。
-    // 做法:外层 BoxWithConstraints 拿父容器尺寸,内层 Box 承载 PlayerView;90/270 时长宽互换
-    // (size(maxHeight, maxWidth))再 rotationZ 旋转、居中对齐 —— 这样 FIT 是按「旋转后的坐标系」算的,
-    // 画面完整不裁切(代价是 16:9 源转 90° 后左右留黑,这是旋转本身的物理结果)。
+    // **关键约束:SurfaceView 不支持旋转变换**(只支持尺寸/位置变化)——真机实测上一版
+    // `Modifier.graphicsLayer { rotationZ }` 对画面完全无效。故旋转态改用 TextureView 承载
+    // (TextureView 是普通纹理层,跟随视图自身的变换),0° 时仍用默认 SurfaceView 保播放性能。
+    // 旋转交给**视图自己的 View.rotation**(不是 Compose 的 graphicsLayer);90/270 时容器长宽互换
+    // (size(maxHeight, maxWidth))—— 尺寸变化两种 surface 都吃,所以容器尺寸逻辑与上一版一致。
     // 只有这一层转:弹幕层 / seek 预览 / 雪碧图 / 控制层都是 Box 的其它子节点,不跟转。
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+      // rotatedQuarter 只管「容器尺寸要不要互换 + 要不要 ZOOM」(尺寸变化 SurfaceView 也吃)。
       val rotatedQuarter = videoRotation == 90 || videoRotation == 270
+      // 承载方式:**只要转了就得 TextureView**。SurfaceView 对旋转变换是全盘丢弃(不只是 90/270,
+      // `rotation = 180f` 同样无效),所以判据不能用 rotatedQuarter ——否则 180° 这一档按下去看不出任何变化。
+      // 0° 时仍用默认 SurfaceView,不牺牲默认播放性能。
+      val needsTextureSurface = videoRotation != 0
       Box(
         modifier = Modifier
           .align(Alignment.Center)
@@ -2855,33 +2864,54 @@ fun PlayerScreen(
             } else {
               Modifier.size(maxWidth, maxHeight)
             },
-          )
-          .graphicsLayer { rotationZ = videoRotation.toFloat() },
+          ),
       ) {
-        AndroidView(
-          factory = { viewContext ->
-            PlayerView(viewContext).apply {
-              useController = false
-              keepScreenOn = true
-              resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-              setShutterBackgroundColor(android.graphics.Color.BLACK)
-              this.player = player
-            }
-          },
-          update = { view ->
-            view.keepScreenOn = true
-            // P11-124(追加):旋转后要「整个画面」铺满,不是缩成中间一条窄带 —— 90/270 时用 ZOOM,
-            // 让旋转后的画面盖住整屏(代价:16:9 源转 90° 后只看得到源的中间约 1/3 横条,这是
-            // 「铺满」的必然裁切);0/180 仍是 FIT,不裁切、完整显示。
-            view.resizeMode = if (rotatedQuarter) {
-              AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-            } else {
-              AspectRatioFrameLayout.RESIZE_MODE_FIT
-            }
-            view.player = player
-          },
-          modifier = Modifier.fillMaxSize(),
-        )
+        // key(needsTextureSurface):SurfaceView ↔ TextureView 不能原地换,承载方式一变就整个重建
+        // PlayerView;旧实例经 onRelease 解绑 player,避免两个视图同时攥着同一个 player。
+        key(needsTextureSurface) {
+          AndroidView(
+            factory = { viewContext ->
+              val view = if (needsTextureSurface) {
+                LayoutInflater.from(viewContext)
+                  .inflate(R.layout.view_player_texture, null) as PlayerView
+              } else {
+                PlayerView(viewContext)
+              }
+              view.apply {
+                useController = false
+                keepScreenOn = true
+                // 初始值就按旋转态给,不能只写在 update 里:否则首帧会先按 FIT 排一次再跳成 ZOOM。
+                resizeMode = if (rotatedQuarter) {
+                  AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                } else {
+                  AspectRatioFrameLayout.RESIZE_MODE_FIT
+                }
+                setShutterBackgroundColor(android.graphics.Color.BLACK)
+                this.player = player
+              }
+            },
+            update = { view ->
+              view.keepScreenOn = true
+              // P11-124(追加):旋转后要「整个画面」铺满,不是缩成中间一条窄带 —— 90/270 时用 ZOOM,
+              // 让旋转后的画面盖住整屏(代价:16:9 源转 90° 后只看得到源的中间约 1/3 横条,这是
+              // 「铺满」的必然裁切);0/180 仍是 FIT,不裁切、完整显示。
+              view.resizeMode = if (rotatedQuarter) {
+                AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+              } else {
+                AspectRatioFrameLayout.RESIZE_MODE_FIT
+              }
+              // 旋转:视图自己的属性(TextureView 跟得上;SurfaceView 不支持,故旋转态已切 TextureView)。
+              view.rotation = videoRotation.toFloat()
+              // 旋转态下视图的可视矩形是「转过来的」960×540,而它所在的 Compose 承载盒只有 540×960,
+              // ViewGroup 默认 clipChildren=true 会把超出的两侧裁掉(表现为「转了但被切」)。
+              // 该承载盒只装这一个视图,关掉它的裁剪无副作用(不转时也不影响)。
+              (view.parent as? ViewGroup)?.clipChildren = false
+              view.player = player
+            },
+            onRelease = { view -> view.player = null },
+            modifier = Modifier.fillMaxSize(),
+          )
+        }
       }
     }
 
