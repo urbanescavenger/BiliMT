@@ -2840,6 +2840,14 @@ fun PlayerScreen(
           },
           update = { view ->
             view.keepScreenOn = true
+            // P11-124(追加):旋转后要「整个画面」铺满,不是缩成中间一条窄带 —— 90/270 时用 ZOOM,
+            // 让旋转后的画面盖住整屏(代价:16:9 源转 90° 后只看得到源的中间约 1/3 横条,这是
+            // 「铺满」的必然裁切);0/180 仍是 FIT,不裁切、完整显示。
+            view.resizeMode = if (rotatedQuarter) {
+              AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            } else {
+              AspectRatioFrameLayout.RESIZE_MODE_FIT
+            }
             view.player = player
           },
           modifier = Modifier.fillMaxSize(),

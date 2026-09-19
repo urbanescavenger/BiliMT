@@ -887,7 +887,13 @@ private fun BiliControlBarOverlay(
           )
           // 其余全是裸图标(官方无底块、无玻璃;各按内容宽紧挨排布)。
           else -> BiliIconControl(
-            iconRes = control.iconRes,
+            // P11-124(追加):播放序列按状态换图标 —— 列表播放 = Material `repeat`,单视频循环 = `repeat_one`
+            // (比只靠变色直观:一眼看出是「循环列表」还是「循环这一个」)。
+            iconRes = if (control == PlayerControl.PlaySequence && singleVideoLoop) {
+              R.drawable.ic_player_sequence_one
+            } else {
+              control.iconRes
+            },
             // P11-124(追加):旋转/播放序列把「非默认态」写进 contentDescription,焦点播报能听出当前状态。
             contentDescription = when (control) {
               PlayerControl.Rotate -> "${stringResource(control.labelRes)} $videoRotation°"
