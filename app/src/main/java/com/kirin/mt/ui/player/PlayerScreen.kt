@@ -227,10 +227,6 @@ fun PlayerScreen(
   var favSelectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
   var favLoadedForAid by remember { mutableLongStateOf(0L) }
   var interactionToast by remember { mutableStateOf<Toast?>(null) }
-  var onlineCountText by remember { mutableStateOf("") }
-  var onlineCountRequestJob by remember { mutableStateOf<Job?>(null) }
-  var onlineCountRequestToken by remember { mutableLongStateOf(0L) }
-  var nextOnlineCountRefreshAtMs by remember { mutableLongStateOf(0L) }
   var clockText by remember { mutableStateOf(currentClockText()) }
   var clockMinuteKey by remember { mutableLongStateOf(currentClockMinuteKey()) }
   var currentCodecText by remember { mutableStateOf("") }
@@ -356,8 +352,6 @@ fun PlayerScreen(
     onDispose {
       completionActionJob?.cancel()
       completionActionJob = null
-      onlineCountRequestJob?.cancel()
-      onlineCountRequestJob = null
       playbackExitConfirmToast?.cancel()
       playbackCompletionToast?.cancel()
       interactionToast?.cancel()
@@ -396,16 +390,6 @@ fun PlayerScreen(
     cancelPlaybackCompletionToast()
   }
 
-  fun resetOnlineCountPolling() {
-    if (onlineCountText.isNotEmpty() || onlineCountRequestJob != null || nextOnlineCountRefreshAtMs != 0L) {
-      onlineCountRequestJob?.cancel()
-      onlineCountRequestJob = null
-      onlineCountRequestToken += 1L
-      nextOnlineCountRefreshAtMs = 0L
-      onlineCountText = ""
-    }
-  }
-
   fun acquirePlaybackWakeLock() {
     runCatching {
       if (playbackWakeLock?.isHeld != true) {
@@ -423,12 +407,11 @@ fun PlayerScreen(
   }
 
   /**
-   * P11-124:控制行重新出现时的初焦项。YouTube 版式仍落在「选集」(entries 过滤出的第一项),
-   * B站 版式落在控制行首项(倍速文案)。**不能**用 availableControls().first():局部函数有声明顺序
-   * 约束,showControls 声明在 availableControls 之前。
+   * P11-124:控制行重新出现时的初焦项。三份显式项集([BiliPlayerControls] / [YoutubePlayerControls] /
+   * [GenericPlayerControls])的首项都是「倍速文案」= Speed,故不再按源判断
+   * (entries 过滤路径已退场 —— 任何源都不再靠 [PlayerControl.entries] 的声明顺序取序)。
    */
-  fun defaultFocusedControl(): PlayerControl =
-    if (displayRequest.source == SourceBili) PlayerControl.Speed else PlayerControl.Episodes
+  fun defaultFocusedControl(): PlayerControl = PlayerControl.Speed
 
   fun showControls() {
     if (!controlsVisible && activePanel == PlayerPanel.None) {
@@ -916,34 +899,6 @@ fun PlayerScreen(
     }
   }
 
-  /** 控制栏可见按钮:PGC 或无 aid 时隐藏点赞/投币/收藏/稍后再看;评论另有 aid>0 或 YouTube 判据。 */
-  fun availableControls(): List<PlayerControl> {
-    val hideInteraction = displayRequest.isPgc || displayRequest.aid <= 0L
-    val info = (playerState as? PlayerScreenState.Ready)?.info
-    return PlayerControl.entries.filter { control ->
-      when (control) {
-        PlayerControl.Like, PlayerControl.Coin, PlayerControl.Favorite, PlayerControl.ToView -> !hideInteraction
-        PlayerControl.Comment -> !displayRequest.isPgc && (displayRequest.aid > 0L || displayRequest.isYoutube)
-        // P11-123:画质/字幕直连入口本次**只对 YouTube 开**(用户要求先做 YouTube)。B站 底栏已 9 个按钮
-        // (60dp 按钮 + 24dp 间距 ≈732dp),再加两个值按钮会挤出可用宽度,待其底栏方案定了再放开。
-        PlayerControl.Quality -> displayRequest.isYoutube
-        // 字幕按钮仅在视频真有字幕轨时出现——与 Main 面板字幕项同一判据(hasSubtitleChoice),
-        // 免得没字幕的视频上多一个点开是空列表的按钮。轨未挂载完时 info 未就绪,不显示;
-        // 轨挂载后 info 更新会重新计算(availableControls 在每次重组时调用)。
-        PlayerControl.Subtitle -> displayRequest.isYoutube && hasSubtitleChoice(info)
-        // P11-124:倍速/刷新/弹幕开关/旋转/播放序列这些新入口只属于 **B站 版式控制行**
-        // (BiliPlayerControls 显式顺序),这里(其它源走的 entries 过滤路径)恒为 false
-        // —— 保证 YouTube / 影视库 / IPTV 控制行一项不多、一项不少。
-        PlayerControl.Speed,
-        PlayerControl.Refresh,
-        PlayerControl.DanmakuToggle,
-        PlayerControl.Rotate,
-        PlayerControl.PlaySequence -> false
-        else -> true
-      }
-    }
-  }
-
   /**
    * P11-124:B站 版式顶部动作行的项(可见项 + 顺序见 [BiliPlayerActions])。显隐判据与底栏那三个
    * 互动按钮完全同源:PGC / 无 aid 时隐藏点赞/投币/收藏/稍后再看,评论另有判据。全隐时动作行整行不渲染,
@@ -961,21 +916,25 @@ fun PlayerScreen(
   }
 
   /**
-   * P11-124:是否走「对齐官方」的 B站 版式。判据必须与 [PlayerOverlay] 里那次分叉**完全一致**
-   * (`request.source == SourceBili`):YouTube 走老路径,**影视库(TVBox)/IPTV/红果 也走老路径**
-   * ——它们没有三连/UP主/弹幕,套官方底栏会多出「弹幕开关」这类无意义入口,控制行项集也会对不上。
+   * P11-124:是否走「对齐官方」的 B站 版式(B站 顶栏 = 标题/元信息/动作行三行块)。判据必须与
+   * [PlayerOverlay] 里那次分叉**完全一致**(`request.source == SourceBili`)。底栏已是所有源共用,
+   * 这里只决定:顶栏形态 + 是否有顶部动作行 + 控制行用哪份显式项集。
    */
   fun alignedBiliLayout(): Boolean = displayRequest.source == SourceBili
 
-  /** P11-124:动作行是否可获焦(仅 B站 版式且至少有一项)。 */
+  /** P11-124:动作行是否可获焦(仅 B站 版式且至少有一项;YouTube 等无动作行 → 恒两级焦点)。 */
   fun actionRowAvailable(): Boolean = alignedBiliLayout() && biliActionControls().isNotEmpty()
 
   /**
    * P11-124:当前源**实际渲染**的控制行项集。左右移动/初焦必须与传给 PlayerOverlay 的那份完全同源,
-   * 否则 B站 版式会在 YouTube 的项集上移动(项对不上 → 焦点跑到没渲染的项/移不动)。
+   * 否则会在别的源的项集上移动(项对不上 → 焦点跑到没渲染的项/移不动)。
+   * B站 / YouTube 用各自的显式顺序,其余源(影视库/IPTV/红果)沿用 entries 过滤。
    */
-  fun currentControls(): List<PlayerControl> =
-    if (alignedBiliLayout()) BiliPlayerControls else availableControls()
+  fun currentControls(): List<PlayerControl> = when {
+    alignedBiliLayout() -> BiliPlayerControls
+    displayRequest.isYoutube -> YoutubePlayerControls
+    else -> GenericPlayerControls
+  }
 
   fun showInteractionToast(ok: Boolean, successMsg: String, error: Throwable? = null) {
     val message = when {
@@ -1166,7 +1125,6 @@ fun PlayerScreen(
       metadata = null
     }
     cancelPendingCompletionAction()
-    resetOnlineCountPolling()
     sidePanelVideos = emptyList()
     activePanel = PlayerPanel.None
     progressFocused = false
@@ -1505,8 +1463,8 @@ fun PlayerScreen(
   }
 
   fun moveFocusedControl(delta: Int) {
-    // P11-124:用 currentControls()(当前源实际渲染的项集),不能用 availableControls()——后者是
-    // YouTube 的 entries 过滤结果,B站 版式的项/顺序与它不同。
+    // P11-124:必须用 currentControls()(当前源实际渲染的项集)——三份显式列表的项/顺序各不相同,
+    // 错用别的源的列表会导致焦点跑到没渲染的项或移不动。
     val controls = currentControls()
     val current = controls.indexOf(focusedControl).takeIf { it >= 0 } ?: 0
     val next = (current + delta).coerceIn(0, controls.lastIndex)
@@ -2237,11 +2195,6 @@ fun PlayerScreen(
     }
   }
 
-  val shouldPollOnlineCount = playerState is PlayerScreenState.Ready &&
-    playerActuallyPlaying &&
-    previewPositionMs == null &&
-    !completionReported
-  val shouldPollOnlineCountState = rememberUpdatedState(shouldPollOnlineCount)
   val displayRequestState = rememberUpdatedState(displayRequest)
 
   LaunchedEffect(player, playerState) {
@@ -2299,40 +2252,6 @@ fun PlayerScreen(
         if (clockMinuteKey != nextClockMinuteKey) {
           clockMinuteKey = nextClockMinuteKey
           clockText = currentClockText()
-        }
-      }
-      val onlineRequest = displayRequestState.value
-      val canPollOnlineCount = shouldPollOnlineCountState.value &&
-        lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
-        onlineRequest.aid > 0L &&
-        onlineRequest.cid > 0L
-      if (!canPollOnlineCount) {
-        resetOnlineCountPolling()
-      } else if (nowMs >= nextOnlineCountRefreshAtMs && onlineCountRequestJob?.isActive != true) {
-        val aid = onlineRequest.aid
-        val cid = onlineRequest.cid
-        val requestToken = ++onlineCountRequestToken
-        nextOnlineCountRefreshAtMs = nowMs + OnlineCountRefreshMs
-        onlineCountRequestJob = coroutineScope.launch {
-          try {
-            val countText = runCatching {
-              playbackRepository.getOnlineCount(aid, cid).orEmpty()
-            }.getOrDefault("")
-            val currentRequest = displayRequestState.value
-            if (
-              onlineCountRequestToken == requestToken &&
-              shouldPollOnlineCountState.value &&
-              lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
-              currentRequest.aid == aid &&
-              currentRequest.cid == cid
-            ) {
-              onlineCountText = countText
-            }
-          } finally {
-            if (onlineCountRequestToken == requestToken) {
-              onlineCountRequestJob = null
-            }
-          }
         }
       }
       if (playerState is PlayerScreenState.Ready) {
@@ -2979,7 +2898,6 @@ fun PlayerScreen(
           seekPreviewSpritesEnabled = seekPreviewSpritesEnabled,
           videoshotData = videoshotData,
           videoshotSprites = videoshotSprites,
-          onlineCountText = onlineCountText,
           currentCodecText = currentCodecText,
           showUnfollowConfirm = showUnfollowConfirm,
           unfollowConfirmFocusedConfirm = unfollowConfirmFocusedConfirm,
@@ -3481,7 +3399,7 @@ private sealed interface PlayerScreenState {
 }
 
 private const val SeekStepMs = 10_000L
-private const val OnlineCountRefreshMs = 60_000L
+
 private const val ExitConfirmWindowMs = 3_000L
 private const val CompletedProgressSeconds = -1
 private const val CompletionActionDelayMs = 3_000L

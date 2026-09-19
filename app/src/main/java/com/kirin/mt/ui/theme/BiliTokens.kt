@@ -178,12 +178,6 @@ object BiliSizing {
   val PlayerTopTimeReservedWidth = 150.dp
   val PlayerTopGradientHeight = 132.dp
   val PlayerBottomGradientHeight = 196.dp
-  val PlayerBottomPadding = 25.dp
-  val PlayerProgressTouchHeight = 40.dp
-  val PlayerProgressHeight = 4.dp
-  val PlayerProgressFocusedHeight = 6.dp
-  val PlayerProgressKnobSize = 16.dp
-  val PlayerProgressFocusedKnobSize = 20.dp
   val PlayerMiniProgressHeight = 3.dp
   val PlayerControlIconButtonSize = 60.dp
   val PlayerControlIconSize = 36.dp
@@ -211,9 +205,6 @@ object BiliSizing {
   // P11-124(追加):暂停图标挪到右下角后离屏幕底边的高度。照片量出的位置(图标中心 ≈24% 屏高)对应 96dp;
   // B站 薄底栏的进度条行顶边 ≈100-105dp,96dp 恰好落在其上方(最多蹭到时间文案行盒顶部几 dp 的空白)。
   val PlayerPauseIndicatorBottomPadding = 96.dp
-  // 老版式(YouTube/影视库/IPTV)底栏更高:40dp 进度条行 + 16dp 间隔 + 60dp 控制行 + 25dp 底 padding
-  // → 进度条行顶边 ≈141dp,96dp 会让图标压住时间/状态文案,故这一档抬到 152dp(141 + 11dp 间隙)。
-  val PlayerPauseIndicatorBottomPaddingTallBar = 152.dp
 
   // ── P11-124:B站 官方版式(仅 SourceBili 路径)────────────────────────────────
   // 数值全部取自设计稿 tmp/p11-124-bili-align-official.html 的 calc(N * var(--u))(1 单位 = 1dp)。

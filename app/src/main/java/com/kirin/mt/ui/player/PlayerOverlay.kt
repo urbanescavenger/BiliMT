@@ -53,7 +53,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import coil.compose.AsyncImage
@@ -79,7 +78,6 @@ import com.kirin.mt.ui.glass.biliLiquidGlassSurface
 import com.kirin.mt.ui.i18n.convertChineseText
 import com.kirin.mt.ui.i18n.currentUiLocale
 import com.kirin.mt.ui.i18n.formatCompactCount
-import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
@@ -99,11 +97,11 @@ internal enum class PlayerControl {
   Related,
 
   /**
-   * P11-123:画质/字幕直连入口——底栏一键直达对应面板,不再走「设置 → Main 面板 → 子面板」两步。
-   * 这两个按钮是**带当前值**的形态([isValueBearing]):画质按钮显示当前档(+编码),字幕按钮显示
-   * 当前轨(未开字幕显示「关闭」)——即把原本只在右下状态区显示的画质文案移进按钮里(占原显示位)。
-   * 枚举位置决定 **YouTube** 控制行顺序(availableControls 按 entries 过滤),故紧跟 Related;
-   * B站 版式改用显式顺序 [BiliPlayerControls],与这里的声明顺序无关。
+   * P11-123/P11-124:画质与字幕的底栏直连入口(一键直达对应面板,不再走「设置 → Main → 子面板」两步)。
+   * 屏上形态与其它项一致:画质显示纯文字「HD」、字幕显示 CC 图标(未选轨压暗),当前档/当前轨进
+   * contentDescription —— 即把原本只在右下状态区显示的画质文案并入按钮。
+   * 声明位置决定 [PlayerControl.entries] 的过滤顺序(影视库/IPTV/红果 走那条路),故紧跟 Related;
+   * B站 / YouTube 已改用显式顺序 [BiliPlayerControls] / [YoutubePlayerControls],与这里无关。
    */
   Quality,
   Subtitle,
@@ -115,8 +113,8 @@ internal enum class PlayerControl {
   Comment,
   Settings,
 
-  // ── P11-124:B站 版式控制行的新入口(点击即生效,不开子面板)。只在 [BiliPlayerControls]
-  // (SourceBili 路径)里出现;其它源由 availableControls() 显式过滤为 false,版式/行为一字不变。
+  // ── P11-124:控制行的新入口(点击即生效,不开子面板)。三份**显式项集**各按源取用:
+  // [BiliPlayerControls] / [YoutubePlayerControls] / [GenericPlayerControls](弹幕开关仅 B站 有)。
   /** 倍速文案按钮(值 = playbackSpeed.speedTextBadge(),如 `1.0x`)→ Speed 面板。 */
   Speed,
 
@@ -134,11 +132,12 @@ internal enum class PlayerControl {
 }
 
 /**
- * P11-124:B站 版式控制行的项与**顺序**(对齐官方客户端底栏:倍速文案 → 入口图标… → 画质值按钮 → 设置)。
+ * P11-124:B站 版式控制行的项与**顺序**(对齐官方客户端底栏:倍速文案 → 入口图标… → 画质文案 → 设置)。
  *
- * 与 YouTube(沿用 [PlayerControl.entries] 过滤出的 availableControls)分开维护:两边项集与顺序都不同
- * (B站:无「点赞/投币/收藏/稍后再看/评论」——它们搬到了顶部动作行;多了倍速/刷新/旋转/弹幕开关/序列,
- * 且字幕恒显示)。
+ * 三份**显式顺序**按源分开维护(底栏渲染统一成 [PlayerControlBarOverlay],差异只在传入的项集):
+ * B站 有「弹幕开关」并把点赞/投币/收藏/稍后再看/评论搬到顶部动作行;YouTube 无弹幕,评论留在底栏
+ * (见 [YoutubePlayerControls]);影视库/IPTV/红果 既无弹幕也无评论(见 [GenericPlayerControls])。
+ * `PlayerControl.entries` 的声明顺序不再影响任何源的屏上顺序。
  */
 internal val BiliPlayerControls: List<PlayerControl> = listOf(
   PlayerControl.Speed,
@@ -147,6 +146,51 @@ internal val BiliPlayerControls: List<PlayerControl> = listOf(
   PlayerControl.Refresh,
   PlayerControl.Subtitle,
   PlayerControl.DanmakuToggle,
+  PlayerControl.PlaySequence,
+  PlayerControl.Episodes,
+  PlayerControl.Related,
+  PlayerControl.Quality,
+  PlayerControl.Settings,
+)
+
+/**
+ * P11-124(追加):YouTube 版式控制行的项与顺序 = [BiliPlayerControls] **减掉「弹幕开关」**、
+ * 并在「相关视频」之后插「评论」(YouTube 没有弹幕,评论也没有顶部动作行可放,故留在底栏)。
+ *
+ * 顺序:1.0x | UP主页 | 画面旋转 | 刷新 | 字幕 | 播放序列 | 播放列表 | 相关视频 | 评论 | 画质(HD) | 设置。
+ * 字幕恒显示(与 B站 一致;无字幕轨时面板里只有「关闭」且图标压暗);画质同样只显示「HD」文字,
+ * 真实档位进 contentDescription。
+ */
+internal val YoutubePlayerControls: List<PlayerControl> = listOf(
+  PlayerControl.Speed,
+  PlayerControl.Up,
+  PlayerControl.Rotate,
+  PlayerControl.Refresh,
+  PlayerControl.Subtitle,
+  PlayerControl.PlaySequence,
+  PlayerControl.Episodes,
+  PlayerControl.Related,
+  PlayerControl.Comment,
+  PlayerControl.Quality,
+  PlayerControl.Settings,
+)
+
+/**
+ * P11-124(追加):**非 B站 非 YouTube 的点播源**(影视库 TVBox / IPTV 点播 / 红果)的控制行项与顺序
+ * = [YoutubePlayerControls] **减掉「评论」**(这三个源的卡片数据里没有 aid 字段,请求恒 aid=0,评论本来就
+ * 打不开/不显示)。
+ *
+ * 顺序:1.0x | UP主页 | 画面旋转 | 刷新 | 字幕 | 播放序列 | 播放列表 | 相关视频 | 画质(HD) | 设置。
+ *
+ * 用**显式列表**而非 `PlayerControl.entries` 过滤:倍速/刷新/旋转/序列这些是追加在枚举尾部的新项,走过滤
+ * 会把它们排到「设置」之后(真机看就是顺序错位)。自此 entries 的声明顺序**不再影响任何源的屏上顺序**。
+ */
+internal val GenericPlayerControls: List<PlayerControl> = listOf(
+  PlayerControl.Speed,
+  PlayerControl.Up,
+  PlayerControl.Rotate,
+  PlayerControl.Refresh,
+  PlayerControl.Subtitle,
   PlayerControl.PlaySequence,
   PlayerControl.Episodes,
   PlayerControl.Related,
@@ -222,7 +266,6 @@ internal fun BoxScope.PlayerOverlay(
   seekPreviewSpritesEnabled: Boolean,
   videoshotData: VideoshotData?,
   videoshotSprites: Map<String, ImageBitmap>,
-  onlineCountText: String,
   currentCodecText: String,
   showUnfollowConfirm: Boolean,
   unfollowConfirmFocusedConfirm: Boolean,
@@ -265,42 +308,9 @@ internal fun BoxScope.PlayerOverlay(
   coinDialogFocusedIndex: Int,
 ) {
   if (controlsVisible) {
-    // P11-124:按源分版式——只有 B站 源走官方版式(B站=SourceBili,含 UGC 与 PGC/番剧)。
-    // YouTube 与影视库(TVBox)/IPTV/红果 一律保持老版式:它们没有 B站 的三连/UP主/弹幕数,
-    // 套官方底栏反而会出现「弹幕开关」这种无意义入口。
-    if (request.source != SourceBili) {
-      PlayerTopOverlay(
-        request = request,
-        title = info.title,
-        showClock = showClock,
-        clockText = clockText,
-        modifier = Modifier.align(Alignment.TopCenter),
-      )
-      PlayerBottomOverlay(
-        request = request,
-        info = info,
-        actualQuality = actualQuality,
-        currentSubtitleTrackId = currentSubtitleTrackId,
-        availableControls = availableControls,
-        focusedControl = focusedControl,
-        progressFocused = progressFocused,
-        positionState = positionState,
-        durationState = durationState,
-        bufferedPercentageState = bufferedPercentageState,
-        airJumpSegments = airJumpSegments,
-        previewPositionMs = previewPositionMs,
-        danmakuSettings = danmakuSettings,
-        onlineCountText = onlineCountText,
-        currentCodecText = currentCodecText,
-        likeCount = likeCount,
-        liked = liked,
-        coinCount = coinCount,
-        coined = coined,
-        favCount = favCount,
-        faved = faved,
-        modifier = Modifier.align(Alignment.BottomCenter),
-      )
-    } else {
+    // P11-124:**顶栏按源分**——B站 用三行信息块(标题 / 元信息 / 动作行),其余源(YouTube / 影视库 /
+    // IPTV / 红果)沿用 PlayerTopOverlay(标题 + UP主/播放日/播放量)。
+    if (request.source == SourceBili) {
       BiliTopInfoOverlay(
         request = request,
         title = info.title,
@@ -317,29 +327,40 @@ internal fun BoxScope.PlayerOverlay(
         clockText = clockText,
         modifier = Modifier.align(Alignment.TopCenter),
       )
-      BiliControlBarOverlay(
-        info = info,
-        actualQuality = actualQuality,
-        availableControls = availableControls,
-        focusedControl = focusedControl,
-        progressFocused = progressFocused,
-        actionFocused = actionFocused,
-        playbackSpeed = playbackSpeed,
-        currentCodecText = currentCodecText,
-        // P11-124:字幕槽的压暗判据(无选中轨 = 关闭 → TextTertiary),与控制行同一份状态。
-        currentSubtitleTrackId = currentSubtitleTrackId,
-        danmakuEnabled = danmakuSettings.enabled,
-        // P11-124(追加):旋转角 / 播放序列两态——控制行对应槽的状态着色与 contentDescription。
-        videoRotation = videoRotation,
-        singleVideoLoop = singleVideoLoop,
-        positionState = positionState,
-        durationState = durationState,
-        bufferedPercentageState = bufferedPercentageState,
-        airJumpSegments = airJumpSegments,
-        previewPositionMs = previewPositionMs,
-        modifier = Modifier.align(Alignment.BottomCenter),
+    } else {
+      PlayerTopOverlay(
+        request = request,
+        title = info.title,
+        showClock = showClock,
+        clockText = clockText,
+        modifier = Modifier.align(Alignment.TopCenter),
       )
     }
+    // P11-124:**底栏两端（所有源）共用一套**——细进度条 + 内容宽紧挨的图标/文案槽,差异只在传入的项集
+    // (B站 → BiliPlayerControls / YouTube → YoutubePlayerControls / 其余 → entries 过滤)。
+    // 右侧状态文案(在看/弹幕/画质)已整块去掉:画质由 HD 文案槽承载,弹幕数在顶栏元信息行。
+    PlayerControlBarOverlay(
+      info = info,
+      actualQuality = actualQuality,
+      availableControls = availableControls,
+      focusedControl = focusedControl,
+      progressFocused = progressFocused,
+      actionFocused = actionFocused,
+      playbackSpeed = playbackSpeed,
+      currentCodecText = currentCodecText,
+      // 字幕槽的压暗判据(无选中轨 = 关闭 → TextTertiary),与控制行同一份状态。
+      currentSubtitleTrackId = currentSubtitleTrackId,
+      danmakuEnabled = danmakuSettings.enabled,
+      // 旋转角 / 播放序列两态——控制行对应槽的状态着色与 contentDescription。
+      videoRotation = videoRotation,
+      singleVideoLoop = singleVideoLoop,
+      positionState = positionState,
+      durationState = durationState,
+      bufferedPercentageState = bufferedPercentageState,
+      airJumpSegments = airJumpSegments,
+      previewPositionMs = previewPositionMs,
+      modifier = Modifier.align(Alignment.BottomCenter),
+    )
   } else {
     if (showClock) {
       ClockOverlay(
@@ -371,19 +392,15 @@ internal fun BoxScope.PlayerOverlay(
       modifier = Modifier.align(Alignment.Center),
     )
   } else if (playbackPaused && showPauseIndicator) {
-    // P11-124(追加):暂停图标从屏幕正中挪到右下角(对齐 TV 端官方)。**两个源都挪**(YouTube/B站 共用)。
-    // 离底高度分档:两种底栏高度差很多(B站 薄栏 96dp 即可 / 老版式高栏需 152dp 才不压时间与状态文案),
-    // 用同一个值会导致矮栏图标偏高、或高栏图标压住文案,故按源取档。
+    // P11-124(追加):暂停图标从屏幕正中挪到右下角(对齐 TV 端官方)。**所有源共用同一位置**——
+    // 底栏统一成细进度条那套后,各源的底栏高度已经一致,不再需要按源分档(原先 YouTube 的高栏分档
+    // 随旧 PlayerBottomOverlay 一起取消)。离底 96dp 落在进度条行顶边(≈100-105dp)之上。
     PauseIndicatorOverlay(
       modifier = Modifier
         .align(Alignment.BottomEnd)
         .padding(
           end = BiliSizing.PlayerOverlayHorizontalPadding,
-          bottom = if (request.source == SourceBili) {
-            BiliSizing.PlayerPauseIndicatorBottomPadding
-          } else {
-            BiliSizing.PlayerPauseIndicatorBottomPaddingTallBar
-          },
+          bottom = BiliSizing.PlayerPauseIndicatorBottomPadding,
         ),
     )
   }
@@ -792,14 +809,15 @@ private fun BiliActionItem(
 }
 
 /**
- * P11-124:B站 版式底部——细进度条行(结构沿用 [PlayerBottomOverlay]:bar + Spacer + 时间)+ 控制行。
+ * P11-124:播放器底部控制层(进度条行 + 控制行)——**所有源共用**,差异只在传入的项集
+ * ([BiliPlayerControls] / [YoutubePlayerControls] / entries 过滤)。
  *
- * 控制行 = 倍速文案 → 图标×7 → 画质文案 → 设置(顺序见 [BiliPlayerControls]),每项都是同一固定宽度的
- * 等宽槽(见 [BiliControlSlot]),故整行等宽等距。原右下角状态文案(在看/弹幕/画质)官方没有,
- * 故 B站 路径整块不渲染(画质档位改由画质槽的 contentDescription 承载,屏上只显示「HD」)。
+ * 结构:细进度条 + Spacer + 时间(右);隔 [BiliSizing.PlayerOfficialRowsGap] 是控制行——
+ * 各项按内容宽、靠 8dp 间距紧挨着靠左排列(见 [PlayerControlSlot])。右侧不再有状态文案(在看/弹幕/画质):
+ * 画质档位改由画质槽的 contentDescription 承载,屏上只显示「HD」;弹幕数在 B站 顶栏元信息行。
  */
 @Composable
-private fun BiliControlBarOverlay(
+private fun PlayerControlBarOverlay(
   info: PlaybackInfo,
   actualQuality: PlaybackQuality?,
   availableControls: List<PlayerControl>,
@@ -846,7 +864,7 @@ private fun BiliControlBarOverlay(
       modifier = Modifier.fillMaxWidth(),
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      BiliProgressBar(
+      PlayerProgressBar(
         positionState = positionState,
         durationState = durationState,
         bufferedPercentageState = bufferedPercentageState,
@@ -873,20 +891,20 @@ private fun BiliControlBarOverlay(
         val focused = !progressFocused && !actionFocused && focusedControl == control
         when (control) {
           // 倍速 = 纯文案槽(官方底栏第一项),点击出倍速列表(PlayerPanel.Speed)。
-          PlayerControl.Speed -> BiliTextControl(
+          PlayerControl.Speed -> PlayerTextControl(
             text = speedLabel,
             contentDescription = "${stringResource(control.labelRes)} $speedLabel",
             focused = focused,
           )
           // 画质 = 纯文字「HD」(与倍速同款的文案项)。用户要求不再显示 `1080P60(H.264)` 长文案,
           // 真实档位信息改由 contentDescription 承载(焦点/无障碍播报仍能听到当前档)。
-          PlayerControl.Quality -> BiliTextControl(
+          PlayerControl.Quality -> PlayerTextControl(
             text = stringResource(R.string.player_quality_badge),
             contentDescription = "${stringResource(R.string.player_settings_quality)} $qualityText",
             focused = focused,
           )
           // 其余全是裸图标(官方无底块、无玻璃;各按内容宽紧挨排布)。
-          else -> BiliIconControl(
+          else -> PlayerIconControl(
             // P11-124(追加):播放序列按状态换图标 —— 列表播放 = Material `repeat`,单视频循环 = `repeat_one`
             // (比只靠变色直观:一眼看出是「循环列表」还是「循环这一个」)。
             iconRes = if (control == PlayerControl.PlaySequence && singleVideoLoop) {
@@ -894,12 +912,19 @@ private fun BiliControlBarOverlay(
             } else {
               control.iconRes
             },
-            // P11-124(追加):旋转/播放序列把「非默认态」写进 contentDescription,焦点播报能听出当前状态。
+            // P11-124:旋转/播放序列把「非默认态」写进 contentDescription,焦点播报能听出当前状态。
             contentDescription = when (control) {
               PlayerControl.Rotate -> "${stringResource(control.labelRes)} $videoRotation°"
               PlayerControl.PlaySequence -> stringResource(control.labelRes) + " " + stringResource(
                 if (singleVideoLoop) R.string.player_sequence_single else R.string.player_sequence_list,
               )
+              // 字幕槽屏上只有 CC 图标(未选轨压暗),当前轨名/「关闭」进 contentDescription
+              // —— 与画质槽同一套(真实值不进画面、但播报仍能听到)。
+              PlayerControl.Subtitle -> stringResource(control.labelRes) + " " + (
+                info.subtitleTracks.firstOrNull { it.id == currentSubtitleTrackId }
+                  ?.let { subtitleRowTitle(it) }
+                  ?: stringResource(R.string.player_subtitle_off)
+                )
               else -> stringResource(control.labelRes)
             },
             tint = when {
@@ -931,7 +956,7 @@ private fun BiliControlBarOverlay(
  * 只按语义压暗或点亮(弹幕关 / 字幕关 → [BiliColors.TextTertiary];旋转非 0 / 单视频循环 → [BiliColors.BiliPink])。
  */
 @Composable
-private fun BiliControlSlot(
+private fun PlayerControlSlot(
   contentDescription: String,
   focused: Boolean,
   content: @Composable () -> Unit,
@@ -956,15 +981,15 @@ private fun BiliControlSlot(
   }
 }
 
-/** P11-124:B站 控制行的图标项(按内容宽排列;官方无底块,焦点态见 [BiliControlSlot])。 */
+/** P11-124:控制行的图标项(所有源共用;按内容宽排列,无底块,焦点态见 [PlayerControlSlot])。 */
 @Composable
-private fun BiliIconControl(
+private fun PlayerIconControl(
   @DrawableRes iconRes: Int,
   contentDescription: String,
   focused: Boolean,
   tint: Color = BiliColors.TextPrimary,
 ) {
-  BiliControlSlot(contentDescription = contentDescription, focused = focused) {
+  PlayerControlSlot(contentDescription = contentDescription, focused = focused) {
     Icon(
       painter = painterResource(iconRes),
       contentDescription = null,
@@ -974,14 +999,14 @@ private fun BiliIconControl(
   }
 }
 
-/** P11-124:B站 控制行的文案项(倍速 `1.0x` / 画质 `HD`),19sp 粗体白,按内容宽排布。 */
+/** P11-124:控制行的文案项(倍速 `1.0x` / 画质 `HD`),19sp 粗体白,按内容宽排布(所有源共用)。 */
 @Composable
-private fun BiliTextControl(
+private fun PlayerTextControl(
   text: String,
   contentDescription: String,
   focused: Boolean,
 ) {
-  BiliControlSlot(contentDescription = contentDescription, focused = focused) {
+  PlayerControlSlot(contentDescription = contentDescription, focused = focused) {
     Text(
       text = text,
       color = BiliColors.TextPrimary,
@@ -993,14 +1018,14 @@ private fun BiliTextControl(
 }
 
 /**
- * P11-124:B站 版式进度条:几何照官方(高 5dp / 圆角 3dp / 滑块 13dp),**配色回到我们原来的**
+ * P11-124:播放器进度条(所有源共用):几何照官方(高 5dp / 圆角 3dp / 滑块 13dp),配色是我们原来的
  * ——轨道 [BiliColors.ProgressTrack]、缓冲 [BiliColors.ProgressBuffered]、已播段与滑块 [BiliColors.BiliPink]。
  *
- * 与 [TvProgressBar](老版式路径)分开:这里不随焦点放大条/滑块(几何固定),获焦只在滑块外补一圈
- * [BiliColors.PlayerFocusGlow] 白色光晕(我们原来表示「进度条获焦」的做法),保证焦点肉眼可辨。
+ * 不随焦点放大条/滑块(几何固定),获焦只在滑块外补一圈 [BiliColors.PlayerFocusGlow] 白色光晕
+ * (我们原来表示「进度条获焦」的做法),保证焦点肉眼可辨。
  */
 @Composable
-private fun BiliProgressBar(
+private fun PlayerProgressBar(
   positionState: State<Long>,
   durationState: State<Long>,
   bufferedPercentageState: State<Long>,
@@ -1048,272 +1073,6 @@ private fun BiliProgressBar(
 }
 
 @Composable
-private fun PlayerBottomOverlay(
-  request: PlaybackRequest,
-  info: PlaybackInfo,
-  actualQuality: PlaybackQuality?,
-  /** P11-123:当前字幕轨 id(null=关闭)——供「字幕」值按钮显示当前轨名。 */
-  currentSubtitleTrackId: Int?,
-  availableControls: List<PlayerControl>,
-  focusedControl: PlayerControl,
-  progressFocused: Boolean,
-  positionState: State<Long>,
-  durationState: State<Long>,
-  bufferedPercentageState: State<Long>,
-  airJumpSegments: List<AirJumpSegment>,
-  previewPositionMs: Long?,
-  danmakuSettings: DanmakuSettings,
-  onlineCountText: String,
-  currentCodecText: String,
-  likeCount: Int,
-  liked: Boolean,
-  coinCount: Int,
-  coined: Boolean,
-  favCount: Int,
-  faved: Boolean,
-  modifier: Modifier = Modifier,
-) {
-  Column(
-    modifier = modifier
-      .fillMaxWidth()
-      .height(BiliSizing.PlayerBottomGradientHeight)
-      .background(
-        Brush.verticalGradient(
-          colors = listOf(BiliColors.OverlayTransparent, BiliColors.OverlayStrong),
-        ),
-      )
-      .padding(
-        start = BiliSizing.PlayerOverlayHorizontalPadding,
-        end = BiliSizing.PlayerOverlayHorizontalPadding,
-        bottom = BiliSizing.PlayerBottomPadding,
-      ),
-    verticalArrangement = Arrangement.Bottom,
-  ) {
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      TvProgressBar(
-        positionState = positionState,
-        durationState = durationState,
-        bufferedPercentageState = bufferedPercentageState,
-        airJumpSegments = airJumpSegments,
-        isFocused = progressFocused,
-        previewPositionMs = previewPositionMs,
-        modifier = Modifier.weight(1f),
-      )
-      Spacer(modifier = Modifier.width(BiliSpacing.Xl))
-      PlayerTimeText(
-        positionState = positionState,
-        durationState = durationState,
-        previewPositionMs = previewPositionMs,
-      )
-    }
-    Spacer(modifier = Modifier.height(BiliSpacing.Lg))
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      availableControls.forEachIndexed { index, control ->
-        val focused = !progressFocused && focusedControl == control
-        if (control.isAction) {
-          val count: Int
-          val active: Boolean
-          when (control) {
-            PlayerControl.Like -> {
-              count = likeCount
-              active = liked
-            }
-            PlayerControl.Coin -> {
-              count = coinCount
-              active = coined
-            }
-            PlayerControl.Favorite -> {
-              count = favCount
-              active = faved
-            }
-            else -> {
-              count = 0
-              active = false
-            }
-          }
-          PlayerActionButton(
-            iconRes = control.iconRes,
-            contentDescription = stringResource(control.labelRes),
-            count = count,
-            active = active,
-            focused = focused,
-          )
-        } else if (control.isValueBearing) {
-          // P11-123:画质/字幕 = 「当前值」形态,点击直达对应面板。
-          val valueText = when (control) {
-            // 画质:当前实际播放档 + 编码标签,与右下状态区原先那条文案同源同形(文案搬进按钮)。
-            PlayerControl.Quality -> (actualQuality ?: info.selectedQuality)
-              .description
-              .withCodecLabel(currentCodecText)
-            // 字幕:当前选中轨名(自动生成轨带「自动」标);未开字幕显示「关闭」——与字幕面板 index 0 同词。
-            PlayerControl.Subtitle -> info.subtitleTracks
-              .firstOrNull { it.id == currentSubtitleTrackId }
-              ?.let { subtitleRowTitle(it) }
-              ?: stringResource(R.string.player_subtitle_off)
-            else -> ""
-          }
-          PlayerValueButton(
-            iconRes = control.valueIconRes,
-            // 无障碍播报「标签 + 当前值」:画质按钮无图标,标签不能只靠图标承载。
-            contentDescription = "${stringResource(control.labelRes)} $valueText",
-            value = valueText,
-            focused = focused,
-          )
-        } else {
-          PlayerIconButton(
-            iconRes = control.iconRes,
-            contentDescription = stringResource(control.labelRes),
-            focused = focused,
-          )
-        }
-        if (index != availableControls.lastIndex) {
-          Spacer(modifier = Modifier.width(BiliSpacing.Xl))
-        }
-      }
-      Spacer(modifier = Modifier.weight(1f))
-      PlayerStatusTexts(
-        request = request,
-        info = info,
-        actualQuality = actualQuality,
-        danmakuSettings = danmakuSettings,
-        onlineCountText = onlineCountText,
-        currentCodecText = currentCodecText,
-        // P11-123:底栏有「画质」值按钮时,当前档文案已经搬进按钮(占原显示位),状态区不再重复一遍。
-        showQualityText = PlayerControl.Quality !in availableControls,
-      )
-    }
-  }
-}
-
-@Composable
-private fun PlayerIconButton(
-  @DrawableRes iconRes: Int,
-  contentDescription: String,
-  focused: Boolean,
-) {
-  val shape = RoundedCornerShape(BiliRadius.Card)
-  Box(
-    modifier = Modifier
-      .size(BiliSizing.PlayerControlIconButtonSize)
-      .clip(shape)
-      .playerLiquidGlassSurface(
-        shape = shape,
-        focused = focused,
-        surfaceColor = if (focused) BiliColors.PlayerControlFocused else BiliColors.PlayerControlIdle,
-      ),
-    contentAlignment = Alignment.Center,
-  ) {
-    Icon(
-      painter = painterResource(iconRes),
-      contentDescription = contentDescription,
-      tint = BiliColors.TextPrimary,
-      modifier = Modifier.size(BiliSizing.PlayerControlIconSize),
-    )
-  }
-}
-
-/**
- * P11-123:「当前值」控制按钮(画质/字幕)。
- *
- * 形态与 [PlayerIconButton] 同一套液态玻璃/焦点光晕,但**宽度自适应**(可带图标 + 文本),因为它承载的是
- * 原本只在右下状态区显示的当前值(如 `1080p60(AV1)`),固定 60dp 方块放不下。高度与图标按钮一致(60dp),
- * 故与同排按钮基线对齐。文本样式对齐被它接管的那条状态文案(PlayerStatus/次级字号 + 粗体)。
- * [iconRes] 为 null 时是纯文字按钮(画质按钮即如此,用户要求去掉 HD 标志)。
- */
-@Composable
-private fun PlayerValueButton(
-  @DrawableRes iconRes: Int?,
-  contentDescription: String,
-  value: String,
-  focused: Boolean,
-) {
-  val shape = RoundedCornerShape(BiliRadius.Card)
-  Row(
-    modifier = Modifier
-      .height(BiliSizing.PlayerControlIconButtonSize)
-      .clip(shape)
-      .playerLiquidGlassSurface(
-        shape = shape,
-        focused = focused,
-        surfaceColor = if (focused) BiliColors.PlayerControlFocused else BiliColors.PlayerControlIdle,
-      )
-      .semantics { this.contentDescription = contentDescription }
-      .padding(horizontal = BiliSpacing.Lg),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Sm),
-  ) {
-    if (iconRes != null) {
-      Icon(
-        painter = painterResource(iconRes),
-        contentDescription = null,
-        tint = BiliColors.TextPrimary,
-        modifier = Modifier.size(BiliSizing.PlayerControlIconSize),
-      )
-    }
-    Text(
-      text = value,
-      color = BiliColors.TextPrimary,
-      fontSize = BiliTypography.PlayerStatus,
-      fontWeight = FontWeight.Bold,
-      maxLines = 1,
-      overflow = TextOverflow.Ellipsis,
-    )
-  }
-}
-
-/**
- * 互动按钮(点赞/投币/收藏):图标 + 下方计数,激活时 BiliPink 着色。
- * 尺寸与 PlayerIconButton 等宽,高度略增以容纳计数文本。
- */
-@Composable
-private fun PlayerActionButton(
-  @DrawableRes iconRes: Int,
-  contentDescription: String,
-  count: Int,
-  active: Boolean,
-  focused: Boolean,
-) {
-  val shape = RoundedCornerShape(BiliRadius.Card)
-  val context = LocalContext.current
-  val tint = if (active) BiliColors.BiliPink else BiliColors.TextPrimary
-  Column(
-    modifier = Modifier
-      .width(BiliSizing.PlayerControlIconButtonSize)
-      .height(BiliSizing.PlayerControlIconButtonSize)
-      .clip(shape)
-      .playerLiquidGlassSurface(
-        shape = shape,
-        focused = focused,
-        surfaceColor = if (focused) BiliColors.PlayerControlFocused else BiliColors.PlayerControlIdle,
-      )
-      .padding(vertical = BiliSpacing.Xs),
-    horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.Center,
-  ) {
-    Icon(
-      painter = painterResource(iconRes),
-      contentDescription = contentDescription,
-      tint = tint,
-      modifier = Modifier.size(BiliSizing.PlayerControlIconSize - 6.dp),
-    )
-    Spacer(modifier = Modifier.height(BiliSpacing.Xxs))
-    Text(
-      text = formatCount(count, context.resources),
-      color = tint,
-      fontSize = 11.sp,
-      fontWeight = if (active || focused) FontWeight.Bold else FontWeight.Normal,
-      maxLines = 1,
-    )
-  }
-}
-
-@Composable
 internal fun Modifier.playerLiquidGlassSurface(
   shape: Shape,
   focused: Boolean,
@@ -1355,54 +1114,6 @@ internal fun Modifier.playerFocusedLiquidGlassSurface(
 }
 
 @Composable
-private fun PlayerStatusTexts(
-  request: PlaybackRequest,
-  info: PlaybackInfo,
-  actualQuality: PlaybackQuality?,
-  danmakuSettings: DanmakuSettings,
-  onlineCountText: String,
-  currentCodecText: String,
-  /** P11-123:是否显示当前档文案。底栏有「画质」值按钮时置 false(文案已搬进按钮)。 */
-  showQualityText: Boolean,
-) {
-  Row(
-    horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    if (onlineCountText.isNotBlank()) {
-      Text(
-        text = stringResource(R.string.player_online_status, onlineCountText),
-        color = BiliColors.TextSecondary,
-        fontSize = BiliTypography.PlayerStatus,
-        maxLines = 1,
-      )
-    }
-    val danmakuText = when {
-      !danmakuSettings.enabled -> stringResource(R.string.player_danmaku_off)
-      request.danmakuCount > 0 -> stringResource(
-        R.string.player_danmaku_count_status,
-        request.danmakuCount.formatCompactCountText(),
-      )
-      else -> stringResource(R.string.player_danmaku_on)
-    }
-    Text(
-      text = danmakuText,
-      color = if (danmakuSettings.enabled) BiliColors.TextSecondary else BiliColors.TextTertiary,
-      fontSize = BiliTypography.PlayerStatus,
-      maxLines = 1,
-    )
-    if (showQualityText) {
-      Text(
-        text = (actualQuality ?: info.selectedQuality).description.withCodecLabel(currentCodecText),
-        color = BiliColors.TextSecondary,
-        fontSize = BiliTypography.PlayerStatus,
-        maxLines = 1,
-      )
-    }
-  }
-}
-
-@Composable
 private fun PlayerTimeText(
   positionState: State<Long>,
   durationState: State<Long>,
@@ -1414,82 +1125,6 @@ private fun PlayerTimeText(
     fontSize = BiliTypography.PlayerTime,
     fontWeight = FontWeight.Bold,
   )
-}
-
-@Composable
-private fun TvProgressBar(
-  positionState: State<Long>,
-  durationState: State<Long>,
-  bufferedPercentageState: State<Long>,
-  airJumpSegments: List<AirJumpSegment>,
-  isFocused: Boolean,
-  previewPositionMs: Long?,
-  modifier: Modifier = Modifier,
-) {
-  Canvas(
-    modifier = modifier
-      .fillMaxWidth()
-      .height(BiliSizing.PlayerProgressTouchHeight),
-  ) {
-    val positionMs = positionState.value
-    val durationMs = durationState.value
-    val bufferedPercentage = bufferedPercentageState.value
-    val progress = progressFraction(positionMs, durationMs)
-    val buffered = (bufferedPercentage / 100f).coerceIn(0f, 1f)
-    val preview = previewPositionMs?.let { progressFraction(it, durationMs) }
-    val barHeight = if (isFocused) {
-      BiliSizing.PlayerProgressFocusedHeight.toPx()
-    } else {
-      BiliSizing.PlayerProgressHeight.toPx()
-    }
-    val centerY = size.height / 2f
-    val radius = barHeight / 2f
-    val knobSize = if (isFocused) {
-      BiliSizing.PlayerProgressFocusedKnobSize.toPx()
-    } else {
-      BiliSizing.PlayerProgressKnobSize.toPx()
-    }
-
-    drawRoundBar(1f, centerY, barHeight, radius, BiliColors.ProgressTrack)
-    drawRoundBar(buffered, centerY, barHeight, radius, BiliColors.ProgressBuffered)
-    drawRoundBar(progress, centerY, barHeight, radius, BiliColors.BiliPink)
-    drawAirJumpSegments(airJumpSegments, durationMs, centerY, barHeight, radius)
-
-    if (preview != null) {
-      val previewX = preview * size.width
-      val previewKnobRadius = knobSize * 0.95f
-      val previewKnobCenterX = previewX.coerceIn(previewKnobRadius, size.width - previewKnobRadius)
-      drawCircle(
-        color = BiliColors.PlayerFocusGlow,
-        radius = previewKnobRadius,
-        center = Offset(previewKnobCenterX, centerY),
-      )
-      drawCircle(
-        color = BiliColors.TextPrimary,
-        radius = knobSize * 0.48f,
-        center = Offset(previewKnobCenterX, centerY),
-      )
-      drawCircle(
-        color = BiliColors.BiliPink,
-        radius = knobSize * 0.22f,
-        center = Offset(previewKnobCenterX, centerY),
-      )
-    } else {
-      val x = progress * size.width
-      val knobRadius = if (isFocused) knobSize * 0.62f else knobSize * 0.5f
-      val knobCenterX = x.coerceIn(knobRadius, size.width - knobRadius)
-      drawCircle(
-        color = if (isFocused) BiliColors.PlayerFocusGlow else BiliColors.BiliPink,
-        radius = knobRadius,
-        center = Offset(knobCenterX, centerY),
-      )
-      drawCircle(
-        color = BiliColors.BiliPink,
-        radius = knobSize * 0.38f,
-        center = Offset(knobCenterX, centerY),
-      )
-    }
-  }
 }
 
 @Composable
@@ -3027,30 +2662,6 @@ private val PlayerControl.labelRes: Int
     // P11-124(追加):画面旋转 / 播放序列。
     PlayerControl.Rotate -> R.string.player_control_rotate
     PlayerControl.PlaySequence -> R.string.player_control_play_sequence
-  }
-
-/** 是否带计数 + 激活态的互动按钮(点赞/投币/收藏),用 PlayerActionButton 渲染。 */
-internal val PlayerControl.isAction: Boolean
-  get() = this == PlayerControl.Like || this == PlayerControl.Coin || this == PlayerControl.Favorite
-
-/**
- * P11-123:是否「图标 + 当前值」形态(画质/字幕),用 [PlayerValueButton] 渲染。
- * 宽度自适应(不是固定 60dp 方块),故仅在底栏有余量时启用(当前仅 YouTube)。
- */
-internal val PlayerControl.isValueBearing: Boolean
-  get() = this == PlayerControl.Quality || this == PlayerControl.Subtitle
-
-/**
- * P11-123:值按钮左侧图标(null = 纯文字按钮)。
- *
- * 画质**不带图标**(用户反馈「不需要画质 HD 标志」):当前档文字本身就是信息,再加一个 HD 方块
- * 既占宽又冗余(面板里每行已有 HD 图标)。字幕保留 CC 图标——它是「这是字幕入口」的唯一形状提示。
- */
-internal val PlayerControl.valueIconRes: Int?
-  get() = when (this) {
-    // P11-124:与 iconRes 的「字幕」项同形(CC)——两处保持一致,不出现「底栏 CC / 值按钮三横线」。
-    PlayerControl.Subtitle -> R.drawable.ic_player_cc
-    else -> null
   }
 
 private val PlayerPanel.titleRes: Int
