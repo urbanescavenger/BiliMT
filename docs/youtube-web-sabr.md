@@ -17,6 +17,12 @@
 > **2026-09-16 更新**:对 FreeTube 源码逐行审计后,**14 轮里追的方向有一半是空的** —— 桌面身份从未真正上线
 > (见 §4 第 8 项),挑战与兑换不同源(§4 第 9 项)。缺口清单见 **§5**,据此重排的实现计划见 **§6**(P11-117/118)。
 >
+> **2026-09-19 更新(采集腿当天全废,非我们的改动)**:真机 r1979 整场 harvest **0 捕获**,watch 页恒
+> `title= body=NOBODY player=false` 且**页内 JS 一行没跑**(零 YouTube console、零 `gv req`),同时 chromium 打了
+> 48 次 `spdy_session.cc:2997 Received HEADERS for invalid stream`(09-17 正常日志 0 次);harvest 代码自 09-16
+> 未改、同机同码 09-16/09-17 能出材料 ⇒ 判为**该机当天的 WebView 通路坏了**。据此加 **P11-125**:
+> 补异常/页面层取证(§1.9)+ 空壳页丢弃实例重建(§1.11)。实测见 **§3.4**。
+>
 > 相关文档:[youtube-hd-playback.md](youtube-hd-playback.md)(总史/§6.x 逐条真机)、
 > [youtube-dash-fallback-plan.md](youtube-dash-fallback-plan.md)(DASH 兜底)、
 > [youtube-vs-libretube-comparison.md](youtube-vs-libretube-comparison.md)(逐环节对照)、
@@ -176,6 +182,12 @@ LibreTube 能播门控视频是因为它**默认走 Piped 后端**(`/streams/{id
 | 每请求一行 | [:723](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L723) | `shape=ft\|libre bitfield= selectedFmts= bufferedRanges= pot= cookie= contexts= bw=` |
 | `/player` 诊断行 | [InnerTubeClient.kt:103-115](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt#L103-L115) | `poTokenArg` / `bodySID` / `bodySIDToken` / `cookieV1L` / `cookieOv` / `ctxOs` / `ctxBrowser` / `bodyLen` |
 | `VM fingerprint=` / solver 异常 | [YoutubeBotGuard.kt:466](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L466) / [:952-954](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L952-L954) | 铸 token 的 VM 环境;solver 抛错现形(P11-114b) |
+| `postPlayer … failed after Nms (类名: message)` + 栈 | [YoutubePlaybackResolver.kt:763-775](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L763-L775) | **P11-125**:rethrow 前落证。`after 1ms` = 瞬时抛错(会话数据/参数/WebView 状态);`after 30000ms` = 网络超时。两者修法完全不同 |
+| `WEB-SABR(优先/兜底)链异常` | [YoutubePlaybackResolver.kt:187-190](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L187-L190) / [:280-283](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L280-L283) | **P11-125**:整条 `buildWebSabrFallback` 的 `runCatching` 落证(此前失败只剩一句 `abort`) |
+| PAGE diag `dl=` / `rs=` / `ytcfg=` | [YoutubeSabrHarvester.kt:509](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L509) | **P11-125**:主文档 `documentElement.outerHTML` 长度 / `readyState` / kevlar 是否 boot。区别于 `body=NOBODY`:区分「空文档」与「渲染崩」 |
+| `DOCLEN`(同步回传长度) | [YoutubeSabrHarvester.kt:500](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L500) | **P11-125**:与 PAGE diag 同源但走 `evaluateJavascript` 回传值(空壳判定必须同步拿到长度,不能等 console) |
+| `onReceivedError(main frame)` / `onReceivedHttpError … mainFrame=` / fail-fast 汇总 | [YoutubeSabrHarvester.kt:357-393](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L357-L393) | **P11-125**:主文档错误**无条件**记(旧实现只记 URL 含 youtube/googlevideo 的);fail-fast / timeout 时汇总打 `mainFrameErr=` + `httpErr=` + `last=` |
+| `webView=reuse\|rebuilt` | [YoutubeSabrHarvester.kt:189](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L189) | **P11-125**:上轮空壳被丢弃后这次必是 `rebuilt`;若重建后**仍然**空壳 ⇒ 问题不在实例层 |
 
 ### 1.10 开关
 
@@ -183,6 +195,26 @@ LibreTube 能播门控视频是因为它**默认走 Piped 后端**(`/streams/{id
 `youtubeUsePiped`、`pipedInstanceUrl`、`sabrForceSessionVideoItag`([AppSettings.kt:111-128](../app/src/main/java/com/kirin/mt/core/settings/AppSettings.kt#L111-L128));
 TV 入口 [SettingsScreen.kt:1128-1178](../app/src/main/java/com/kirin/mt/ui/settings/SettingsScreen.kt#L1128-L1178),
 移动入口 [MobileSettingsScreen.kt:1252-1281](../app/src/main/java/com/kirin/mt/ui/mobile/settings/MobileSettingsScreen.kt#L1252-L1281)。
+
+### 1.11 空壳页处理:丢实例重建(P11-125)
+
+alpha.61 起 harvest WebView **长期存活复用**(每次直接导航到新 watch 页,靠累积的真实浏览上下文躲风控)。
+P11-125 给这条前提加了健康闸:
+
+| 判据 | 阈值 | 动作 |
+|---|---|---|
+| `onPageFinished` 超时未触发 | `BLANK_PAGE_ABORT_MS = 8s` | fail-fast + `invalidateWebView()` |
+| `onPageFinished` 已触发,但当前文档是 watch 页且主文档 `< EMPTY_DOC_ABORT_CHARS = 20KB` | 完成后 `DOC_LEN_CHECK_DELAY_MS = 1s` 量一次 | fail-fast + `invalidateWebView()` |
+
+- 20KB 的依据:真实 watch 页 `documentElement.outerHTML` 恒 >100KB(kevlar 骨架 + 内联数据),空文档/错误壳只有几十字节。
+- **watch 页闸门**:空壳判据只在 `lastFinishedUrl` 含 `/watch?` 时才生效 —— `stopPlayback()` 会把上个文档硬停到
+  `about:blank`,它的 `onPageFinished` 可能落在新 harvest 的 `loadUrl` 之后(09-19 21:15:44 实测相差 16ms),
+  不设这道闸会把正常重试误判成空壳。
+- `invalidateWebView()` = `stopLoading()` + `loadUrl("about:blank")` + `destroy()` + 清 `webView`/`ready`/`pageFinishedMs`;
+  下次 harvest 走 `ensureWebView()` 重建(重新加载首页建立上下文,即已验证过的冷启动路径)。
+- **边界(诚实)**:Chromium 的网络栈(含 HTTP/2 socket 池)是**进程级**共享的,`destroy()` 只回收本实例的渲染进程与文档,
+  cookie jar / 会话由 WebView 框架持有。若重建后仍空壳,`webView=rebuilt` + 同样取证即可判死「实例层」假设,
+  直接指向网络/风控层 —— 这正是这条改动的第二个作用(把假设变成可判读的实验)。
 
 ---
 
@@ -259,6 +291,43 @@ alpha.13「sabrUrl=ABSENT → SABR 方向关闭」(实为 snake_case 假阴性)�
 09-15 晚同一门控视频在 visionOS 主路**几乎每次都挂**(起播 2~6s 内 `RELOAD_PLAYER_RESPONSE`,seg=0 init 段);
 09-16 早同一构建全通。`RELOAD_PLAYER_RESPONSE` 的语义是 "streams expired or new config",**随服务端配置/时效抖动**,
 不是可稳定复现的代码缺陷。判「主路是否健康」必须看当天日志。
+
+### 3.4 2026-09-19:harvest 整场零捕获(采集腿全废,非代码回归)
+
+日志 `logs_live_20260919_211811.log`(debug **r1979**,BRAVIA_AE2,「WEB-SABR 优先」档,三次 resolve / 两个视频)。
+
+**症状**:整场 `captures=[1-9]` **0 次**、`USING HARVEST MATERIAL` **0 次**;每次 PAGE diag 恒为
+`title=`(空)`body=NOBODY player=false vp=540x960 captures=0`。
+
+**判据一:页内 JS 一行没跑。** 09-17 正常那次(21:34)首页加载时能看到 YouTube 自己的 console
+(`LegacyDataMixin…@…/ytmainappweb…/kevlar_base…js`)、`PLAYERREQ`/`PLAYERRESP`、`gv req method=POST itag=? sabr=true`
+→ `captured SABR POST status=200`;09-19 这些**一条都没有**(只剩我们自己的 PAGE diag),`gv req` 零条 ——
+即文档拿到了、页内脚本从未执行,所以播放器没 init、不会发 SABR POST。
+
+**判据二:chromium 的 HTTP/2 会话被搞坏。**
+
+| 日志 | `spdy_session.cc:2997 Received HEADERS for invalid stream` |
+|---|---|
+| 09-16 r1962(正常) | 2 |
+| 09-17(正常) | **0** |
+| 09-19 r1979(失效) | **48** |
+
+**判据三:首页那次 `onPageFinished` 从未触发** —— 21:15:07.837 `onPageStarted: https://www.youtube.com/`,
+直到 12.2s 后的兜底超时才返回;watch 页要么 3s「完成」却给空文档(21:15:23.043),要么 8s 都不完成走 fail-fast。
+
+**判据四:harvest 代码这次没动过** —— [YoutubeSabrHarvester.kt](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt)
+最后一次改动是 09-16 `f30a4b07`(P11-118c);同机同码 09-16/09-17 能出材料;同一进程启动时(21:12)另一个 WebView
+(`YtBrowserSession`)还能正常读到 visitorData/cookies。⇒ **09-19 那天这台电视的 WebView 通路坏了**,与我们的改动无关。
+
+**回退自造材料那条腿当天同样不健康**:
+
+- 视频 `qINttM4fKZo`:三次 `/player` 全部在 `WEB-SABR identity` 之后 **1ms** 内 `WEB /player failed → abort`,
+  且 `postJson` 的诊断行一次都没打出来(异常抛在打日志之前),再被 `postPlayer` 的 `runCatching` 吞成一句**没有 message** 的失败。
+- 视频 `5VmXkcTH4G8`:第 4 次 `/player` 成功、会话也建起来了(21:17:29 `WEB-SABR playback ready`),
+  但**首个媒体段被服务端饿死**:rn=0 返回 104B、rn=1/rn=2 各 11B(只有一条无用的 `part type=67`),
+  音频段 7.6s、视频段 **13.4s** 才回来 ⇒ prepare → 首个视频段共 **27s**。用户 21:17:54 退出,视频 21:17:56 才到 = 真机黑屏。
+
+**对策(P11-125)**:埋点 + 空壳页丢实例重建,见 §1.9 与 §1.11。
 
 ---
 

@@ -184,6 +184,9 @@ class YoutubePlaybackResolver(
     if (webSabrFirst && poToken != null) {
       val webSabr = runCatching {
         buildWebSabrFallback(videoId, poToken, signatureTimestamp, request, youtubeDefaultQuality)
+      }.onFailure {
+        // P11-125:这条链整条包 runCatching——不落证就等于「失败且不知道为什么」。
+        Log.w(Tag, "WEB-SABR(优先)链异常: ${it::class.simpleName}: ${it.message}", it)
       }.getOrNull()
       if (webSabr != null) {
         SabrStreamRegistry.clearWebSabrFailed(videoId)
@@ -274,6 +277,9 @@ class YoutubePlaybackResolver(
       if (webSabrDue) {
         val webSabr = runCatching {
           buildWebSabrFallback(videoId, poToken, signatureTimestamp, request, youtubeDefaultQuality)
+        }.onFailure {
+          // P11-125:同上——兜底段失败也必须留证。
+          Log.w(Tag, "WEB-SABR(兜底)链异常: ${it::class.simpleName}: ${it.message}", it)
         }.getOrNull()
         if (webSabr != null) {
           SabrStreamRegistry.clearWebSabrFailed(videoId)
@@ -750,13 +756,22 @@ class YoutubePlaybackResolver(
     // 此前直接冒泡致 resolve "no decodable formats" 全视频播不了(真机 alpha.88 "现在都不能播放")。
     // 捕获 viaWebView 异常 → 回退 OkHttp 直连(viaWebView=false)。OkHttp WEB /player 可能被判
     // "The page needs to be reloaded"(unplayable),但至少返回结构化响应而非硬崩;部分视频仍可取流。
+    // P11-125:耗时 + 异常必须留证。真机 09-19 r1979 三次 WEB-SABR /player 在 `WEB-SABR identity`
+    // 之后 **1ms** 内失败,而这里 `else throw e` 把异常原样抛出、调用方 runCatching{}.getOrNull()
+    // 再吞一层,结果只剩一句 "WEB /player failed → abort",连 message 都没有。
+    // 「1ms 内瞬时抛错」(会话数据/参数/WebView 状态)与「30s 网络超时」修法完全不同,故先落证再抛。
+    val startedAt = System.currentTimeMillis()
     return runCatching {
       innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = useWebView, contextOverride = contextOverride, cookieOverride = cookieOverride, visitorOverride = visitorOverride, uaOverride = uaOverride)
     }.getOrElse { e ->
+      val costMs = System.currentTimeMillis() - startedAt
       if (useWebView) {
-        Log.w(Tag, "postPlayer $client viaWebView failed (${e.message}) → fallback OkHttp viaWebView=false")
+        Log.w(Tag, "postPlayer $client viaWebView failed after ${costMs}ms (${e::class.simpleName}: ${e.message}) → fallback OkHttp viaWebView=false", e)
         innerTubeClient.postJson("/player", payload, client = client, poToken = poToken, viaWebView = false, contextOverride = contextOverride, cookieOverride = cookieOverride, visitorOverride = visitorOverride, uaOverride = uaOverride)
-      } else throw e
+      } else {
+        Log.w(Tag, "postPlayer $client viaWebView=false failed after ${costMs}ms (${e::class.simpleName}: ${e.message}) → 抛给调用方", e)
+        throw e
+      }
     }
   }
 

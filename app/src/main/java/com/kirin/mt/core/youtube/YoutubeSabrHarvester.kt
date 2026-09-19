@@ -55,14 +55,36 @@ class YoutubeSabrHarvester(
    * alpha.53:最近一次 harvest 的页面是否已加载完成(即 [WebViewClient.onPageFinished] 是否触发)。
    * 正常 watch 页 ~1-2s 触发;空白页(YouTube 风控/WebView 渲染进程崩)时**永不触发**且 title 空/body
    * NOBODY。据此 fail-fast 而非干等满 30s,给轮换工厂的重试留出窗口内(剩余 ~20s)时间。
-   * 每次 [harvest] 开始时清零;单次并发由 registry rotationInFlight 保证,无需加锁。
+   * 每次 [harvestImpl] 开始时清零([invalidateWebView] 也会清);单次并发由 registry rotationInFlight 保证,无需加锁。
    */
   @Volatile private var pageFinishedMs: Long = 0L
+
+  /**
+   * P11-125:最近一次 [WebViewClient.onPageFinished] 的 URL。空壳页判据只在**当前文档就是 watch 页**
+   * 时才量主文档长度——[stopPlayback] 会把上一个文档硬停到 `about:blank`,它的 onPageFinished 可能
+   * 落在新 harvest 的 loadUrl 之后(真机 09-19 21:15:44:load watch 与 `onPageFinished: about:blank`
+   * 差 16ms),届时量到的是空白的 about:blank 文档,不设这道闸就会把正常重试误判成空壳。
+   */
+  @Volatile private var lastFinishedUrl: String? = null
+
+  /**
+   * P11-125:本次 harvest 期间页面层错误的累计([WebViewClient.onReceivedError] /
+   * [WebViewClient.onReceivedHttpError])。真机 09-19 r1979 整场 harvest 0 捕获,但 PAGE diag 只有
+   * `title= body=NOBODY player=false captures=0`,分不清「YouTube 返回了空文档」与「文档拿到了、
+   * 子资源取不回来(连接被中间盒搞坏)」——两者修法完全不同。故 fail-fast 时把主文档错误 + 子资源
+   * 错误一并打出来。每次 [harvestImpl] 开始清零。
+   */
+  @Volatile private var httpErrorCount: Int = 0
+  @Volatile private var lastHttpError: String? = null
+  @Volatile private var mainFrameError: String? = null
 
   /**
    * 长期存活 WebView(alpha.61:复用跨 harvest 积累真实浏览上下文——每次新建 fresh WebView 被
    * YouTube 风控成空白页 `body=NOBODY player=false`(alpha.60 真机),长期存活 + 先加载真实首页
    * 对齐 [YoutubeBrowserSession] 成功模式,让 WebView 建立真实 cookie/会话后再采集 watch 页 SABR POST)。
+   *
+   * P11-125 放宽:长期存活的前提是**这个实例还健康**。页面恒空且零 console(渲染进程没跑过任何 JS,
+   * 真机 09-19)→ 由 [invalidateWebView] 丢弃重建,见该函数注释。
    */
   private var webView: WebView? = null
 
@@ -116,8 +138,40 @@ class YoutubeSabrHarvester(
     runCatching { webView?.onResume() }
   }
 
+  /**
+   * P11-125:丢弃当前采集 WebView,下次 [harvest] 走 [ensureWebView] 重建(重建时会重新加载
+   * `https://www.youtube.com/` 建立真实上下文,即 alpha.61 那条已验证过的冷启动路径)。
+   *
+   * 依据(真机 09-19 r1979):整场 harvest 0 捕获,watch 页恒 `title= body=NOBODY player=false`,
+   * **一条 YouTube 自己的 console 都没有**(09-17 正常时有 `LegacyDataMixin`/`PLAYERREQ`/`gv req`),
+   * 同时 chromium 打了 48 次 `spdy_session.cc:2997 Received HEADERS for invalid stream`
+   * (09-17 正常日志 0 次)。文档拿到了但页内 JS 一行没跑 ⇒ 要么该实例的渲染进程死了,要么它的网络
+   * 请求(ytmainappweb 的 JS bundle)取不回来。这两者都只能靠**换实例**来复位。
+   *
+   * alpha.61 的「长期存活复用」前提是实例仍健康;空壳页继续复用只会让后续每次 harvest 都撞同一堵墙
+   * (09-19 三次 harvest 全部 `no capture`,连冷启动重试也救不回来)。
+   *
+   * 诚实的边界:Chromium 的网络栈(含 HTTP/2 socket 池)是**进程级**共享的,`destroy()` 只回收本实例
+   * 的渲染进程与文档,cookie jar / 会话由 WebView 框架持有(alpha.61 的会话前提不受影响)。若重建后
+   * 仍空壳,日志里的 `webView=rebuilt` + 同样的空壳取证即可证明问题不在实例层,而在网络/风控层。
+   */
+  private fun invalidateWebView() {
+    val old = webView ?: return
+    Log.w(Tag, "harvest: 丢弃采集 WebView 实例(下次 harvest 重建;若重建后仍空壳=非实例问题)")
+    runCatching { old.stopLoading() }
+    runCatching { old.loadUrl("about:blank") }
+    runCatching { old.destroy() }
+    webView = null
+    ready = null
+    pageFinishedMs = 0L
+    lastFinishedUrl = null
+  }
+
   private suspend fun harvestImpl(videoId: String, startMs: Long = 0L): SabrCapture? {
     // alpha.61:复用长期存活 WebView(首次懒建并加载首页建立真实上下文),不再每次新建+销毁。
+    // P11-125:把「本次是新建还是复用」打进日志——上轮空壳被 [invalidateWebView] 丢弃后,这次必是
+    // 新建;若新建后**仍然**空壳,就说明问题不在这个实例(渲染进程/页面),而在更下层(网络/风控)。
+    val reused = webView != null
     val view = ensureWebView()
     resumeRendering() // P11-118:上次采集后 onPause 过,这里恢复渲染/媒体
     // seed cookies:watch 播放器在 WebView 里发 /youtubei/v1/player 需要 VISITOR_INFO1_LIVE
@@ -132,8 +186,13 @@ class YoutubeSabrHarvester(
     // 锚定用 `t=<秒>`(SPA 起播位置参数;startMs=0 首播不锚定)。
     val watchT = if (startMs > 0) "&t=${startMs / 1000}" else ""
     YoutubeLoadProgress.emit(YoutubeLoadStep.HarvestWatch)
-    Log.i(Tag, "harvest: load watch videoId=$videoId startMs=$startMs${watchT} cookie=${cookies.length}B (reuse WebView)")
+    Log.i(Tag, "harvest: load watch videoId=$videoId startMs=$startMs${watchT} cookie=${cookies.length}B (webView=${if (reused) "reuse" else "rebuilt"})")
+    // P11-125:清空页面层取证(上一轮的 onPageFinished/错误计数不能带进本轮)。
     pageFinishedMs = 0L
+    lastFinishedUrl = null
+    httpErrorCount = 0
+    lastHttpError = null
+    mainFrameError = null
     view.loadUrl("https://www.youtube.com/watch?v=$videoId&autoplay=1&mute=1$watchT")
       // 轮询 window.__gvCaptures[0](对齐 BotGuard pollState 双解码:evaluateJavascript 对字符串
       // 结果做 JSON 编码,先解内层字符串再解析对象)。alpha.20 只截 SABR POST 致 25s 无捕获——
@@ -147,13 +206,44 @@ class YoutubeSabrHarvester(
       // 旧判据「url 非空 && status>0」会把它当有效捕获**立刻返回**(真机 09-16 17:03:24:探针抓到首页
       // 403 GET 就收工,而真正的 SABR POST 在 1.4s 后才发)→ 探针白跑、也不该拿它当阶段 2 判据。
       var nonPostCapture: SabrCapture? = null
+      // P11-125:空壳页的长度判据只量一次(见下方 DOC_LEN_JS 分支)。
+      var docLenChecked = false
       while (System.currentTimeMillis() < deadline) {
         // alpha.53:空白页 fail-fast——onPageFinished 正常 ~1-2s 触发;超 [BLANK_PAGE_ABORT_MS] 仍没触发
         // = 页根本没渲染(风控/WebView 渲染崩,alpha.52 真机 w120:title 空/NOBODY/player=false 干等 30s)。
         // 立即放弃交轮换工厂重试,不耗满 30s(否则重试永远赶不上窗口耗尽)。正常页 1-2s 已过该闸,无副作用。
+        // P11-125:补打页面层取证(主文档错误 + 子资源错误)——判「服务端返回空文档」还是「子资源取不回来」。
         if (pageFinishedMs == 0L && System.currentTimeMillis() - start > BLANK_PAGE_ABORT_MS) {
-          Log.w(Tag, "harvest: onPageFinished not fired within ${BLANK_PAGE_ABORT_MS}ms (blank page — throttle/renderer died) → fail fast, let rotation retry")
+          Log.w(
+            Tag,
+            "harvest: onPageFinished not fired within ${BLANK_PAGE_ABORT_MS}ms (blank page — throttle/renderer died) → fail fast, let rotation retry" +
+              " | mainFrameErr=${mainFrameError ?: "none"} httpErr=$httpErrorCount last=${lastHttpError ?: "none"}",
+          )
+          invalidateWebView()
           return null
+        }
+        // P11-125:onPageFinished **触发了**、页却是空文档——真机 09-19 21:15:23 watch 页 3s 就「完成」,
+        // 但 title 空 / body NOBODY / player=false / **一条 YouTube 自己的 console 都没有**(09-17 正常时
+        // 有 `LegacyDataMixin`/`PLAYERREQ`/`gv req`)。旧逻辑只在 onPageFinished **没触发**时 fail-fast,
+        // 这种「完成了但空」的页面会干耗满 30s 轮询窗口,且复用的坏 WebView 让后续每次 harvest 都撞同一堵墙。
+        // 判据:当前文档必须是 watch 页(挡掉 stopPlayback 留下的 about:blank 竞态,见 [lastFinishedUrl]),
+        // 且主文档 outerHTML 长度低于 [EMPTY_DOC_ABORT_CHARS]——真实 watch 页恒 >100KB,空壳只有几十字节。
+        if (pageFinishedMs != 0L && !docLenChecked &&
+          System.currentTimeMillis() - pageFinishedMs > DOC_LEN_CHECK_DELAY_MS &&
+          lastFinishedUrl?.contains("/watch?") == true
+        ) {
+          docLenChecked = true
+          val dl = evalOn(view, DOC_LEN_JS)?.trim()?.toLongOrNull() ?: -1L
+          if (dl in 0L until EMPTY_DOC_ABORT_CHARS) {
+            Log.w(
+              Tag,
+              "harvest: watch 页是空壳文档(dl=${dl}B,onPageFinished 已触发)→ fail fast + 丢弃该 WebView" +
+                " | mainFrameErr=${mainFrameError ?: "none"} httpErr=$httpErrorCount last=${lastHttpError ?: "none"}",
+            )
+            invalidateWebView()
+            return null
+          }
+          Log.i(Tag, "harvest: 文档非空壳 dl=${dl}B → 继续等 SABR POST")
         }
         // alpha.47:读全数组并遍历,不再只读 [0]——首条无效(status=0/url 空)不再挡住后续 SABR POST。
         val raw = evalOn(view, "(window.__gvCaptures && window.__gvCaptures.length) ? JSON.stringify(window.__gvCaptures) : null")
@@ -203,7 +293,11 @@ class YoutubeSabrHarvester(
         Log.w(Tag, "harvest: no SABR POST before deadline; only ${it.method} status=${it.status} → return non-SABR(阶段 2 判据不算通过)")
         return it
       }
-      Log.w(Tag, "harvest: timeout (30s 内 watch 无 googlevideo 请求)")
+      Log.w(
+        Tag,
+        "harvest: timeout (30s 内 watch 无 googlevideo 请求)" +
+          " | mainFrameErr=${mainFrameError ?: "none"} httpErr=$httpErrorCount last=${lastHttpError ?: "none"}",
+      )
       // 注意:不再 view.destroy()——WebView 长期存活复用(alpha.61),下次 harvest 直接导航到新 watch 页。
       return null
   }
@@ -249,6 +343,8 @@ class YoutubeSabrHarvester(
       override fun onPageFinished(view: WebView?, url: String?) {
         // alpha.53:记录页面加载完成时刻——空白页 fail-fast 判定用(见 harvestImpl 轮询循环)。
         pageFinishedMs = System.currentTimeMillis()
+        // P11-125:记完成 URL——空壳页判据只对 watch 文档生效(挡 about:blank 竞态)。
+        lastFinishedUrl = url
         // alpha.61:首次首页加载完成 → 解除 ensureWebView 等待。
         if (deferred.isActive) deferred.complete(Unit)
         Log.i(Tag, "harvest onPageFinished: $url")
@@ -263,10 +359,17 @@ class YoutubeSabrHarvester(
         request: WebResourceRequest?,
         error: android.webkit.WebResourceError?,
       ) {
-        if (request?.url?.toString()?.contains("googlevideo") == true ||
-          request?.url?.toString()?.contains("youtube") == true
-        ) {
-          Log.w(Tag, "harvest onReceivedError: ${request?.url} ${error?.description}")
+        val url = request?.url?.toString()
+        // P11-125:主文档错误**无条件**记(空白页第一判据)。旧实现只记 URL 含 youtube/googlevideo 的,
+        // 主文档若走了别的 host(重定向/m.youtube.com)就被漏掉,而那正是「页为什么是空的」的关键证据。
+        if (request?.isForMainFrame == true) {
+          mainFrameError = "${error?.errorCode}/${error?.description} @${url?.take(80)}"
+          Log.w(Tag, "harvest onReceivedError(main frame): $url ${error?.errorCode} ${error?.description}")
+        }
+        if (url?.contains("googlevideo") == true || url?.contains("youtube") == true) {
+          httpErrorCount++
+          lastHttpError = "${error?.errorCode}/${error?.description} @${url.take(80)}"
+          Log.w(Tag, "harvest onReceivedError: $url ${error?.description}")
         }
       }
 
@@ -275,7 +378,17 @@ class YoutubeSabrHarvester(
         request: WebResourceRequest?,
         errorResponse: WebResourceResponse?,
       ) {
-        Log.w(Tag, "harvest onReceivedHttpError: ${request?.url} code=${errorResponse?.statusCode} reason=${errorResponse?.reasonPhrase}")
+        val url = request?.url?.toString()
+        val code = errorResponse?.statusCode
+        // P11-125:主文档非 2xx 是「空文档」的直接来源(YouTube 边缘 4xx/5xx 空体)→ 单独记;
+        // 其余子资源错误累计计数,供 fail-fast 汇总(注意:正常 watch 页也会有几个子资源非 200,
+        // 如 accounts.google.com/ServiceLogin,故计数本身不等于故障,只作对比取证)。
+        if (request?.isForMainFrame == true) {
+          mainFrameError = "HTTP $code @${url?.take(80)}"
+        }
+        httpErrorCount++
+        lastHttpError = "HTTP $code @${url?.take(80)}"
+        Log.w(Tag, "harvest onReceivedHttpError: $url code=$code reason=${errorResponse?.reasonPhrase} mainFrame=${request?.isForMainFrame}")
       }
 
       // alpha.43:shouldInterceptRequest 只读记录所有 googlevideo 请求的 itag/sabr(method+url),
@@ -366,13 +479,34 @@ class YoutubeSabrHarvester(
     const val HOMEPAGE_LOAD_MS = 15_000L
 
     /**
+     * P11-125:空壳页判据——onPageFinished 后延迟这么久才量主文档长度,给 SPA 首屏留出时间
+     * (避免刚 finish 就读到尚未构建的 documentElement)。
+     */
+    const val DOC_LEN_CHECK_DELAY_MS = 1_000L
+
+    /**
+     * P11-125:空壳页阈值——真实 watch 页 documentElement.outerHTML 恒 >100KB(kevlar 骨架 + 内联数据),
+     * 空文档/错误壳只有几十字节。取 20KB 留足余量:正常页 1s 内即远超,空壳绝无可能达到。
+     */
+    const val EMPTY_DOC_ABORT_CHARS = 20_000L
+
+    /**
+     * P11-125:主文档长度探针——同步返回 documentElement.outerHTML 长度(-1=读不到),同时经 console
+     * 打 ytcfg/readyState/title 三个旁证:真实 watch 页 `ytcfg=true`(kevlar 已 boot),空壳恒 false。
+     * 与 PAGE_DIAG_JS 的区别:PAGE_DIAG 走 console 是异步取证,evaluateJavascript 的回传值拿不到;
+     * 这条要的是**回传值**(空壳判定必须同步拿到长度,不能等 console)。
+     */
+    @Suppress("MaxLineLength")
+    const val DOC_LEN_JS = """try{var de=document.documentElement;var dl=(de&&de.outerHTML)?de.outerHTML.length:-1;console.log('DOCLEN dl='+dl+' ytcfg='+!!window.ytcfg+' rs='+document.readyState+' title='+document.title);dl;}catch(e){console.log('DOCLEN err '+e);-1;}"""
+
+    /**
      * 页面状态诊断脚本——dump player 元素 present/viewport 尺寸/<video> src/captures 条数,
      * 经 console.log 路由到 [onConsoleMessage]。onPageFinished 调一次 + harvest 轮询循环每 ~3s 调一次
      * (alpha.43:watch 页 SPA 播放器 init 在 onPageFinished 后数秒,周期性 dump 看状态演进 player false→true、
      * videoSrc 出现、captures 增长;videoSrc 看 progressive 经 media stack 实际选的格式)。
      */
     @Suppress("MaxLineLength")
-    const val PAGE_DIAG_JS = """try{var p=document.getElementById('movie_player')||document.querySelector('.html5-video-player');var v=document.querySelector('video');var vs=(v&&(v.currentSrc||v.src))||'NONE';var gvc=(window.__gvCaptures&&window.__gvCaptures.length)||0;console.log('PAGE diag title='+document.title+' body='+((document.body&&document.body.innerText)||'NOBODY').slice(0,60)+' player='+!!p+' vp='+(window.innerWidth+'x'+window.innerHeight)+' videoSrc='+vs.slice(0,120)+' captures='+gvc);}catch(e){console.log('PAGE diag err '+e);}"""
+    const val PAGE_DIAG_JS = """try{var p=document.getElementById('movie_player')||document.querySelector('.html5-video-player');var v=document.querySelector('video');var vs=(v&&(v.currentSrc||v.src))||'NONE';var gvc=(window.__gvCaptures&&window.__gvCaptures.length)||0;var de=document.documentElement;var dl=(de&&de.outerHTML)?de.outerHTML.length:-1;console.log('PAGE diag title='+document.title+' dl='+dl+' rs='+document.readyState+' ytcfg='+!!window.ytcfg+' body='+((document.body&&document.body.innerText)||'NOBODY').slice(0,60)+' player='+!!p+' vp='+(window.innerWidth+'x'+window.innerHeight)+' videoSrc='+vs.slice(0,120)+' captures='+gvc);}catch(e){console.log('PAGE diag err '+e);}"""
 
     /**
      * fetch/XHR wrapper——截获**所有**发往 googlevideo.com/videoplayback 的请求(POST=SABR / GET=DASH 段),
