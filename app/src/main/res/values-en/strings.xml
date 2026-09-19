@@ -443,6 +443,8 @@
     <string name="player_control_favorite">Favorite</string>
     <string name="player_control_toview">Watch later</string>
     <string name="player_control_comment">Comments</string>
+    <!-- P11-124: B站 control row "refresh" (re-resolve + reload current video). -->
+    <string name="player_control_refresh">Refresh</string>
     <string name="player_panel_favorite">Favorite to folder</string>
     <string name="player_favorite_confirm">Confirm favorite</string>
     <string name="player_favorite_empty">No favorite folders</string>
@@ -507,6 +509,12 @@
     <string name="player_speed_value">%1$.1fx</string>
     <string name="player_meta_pubdate">Published %1$s</string>
     <string name="player_meta_view_count">%1$s views</string>
+    <!-- P11-124: B站 official-layout meta line. -->
+    <string name="player_meta_bili_view_count">%1$s plays</string>
+    <string name="player_meta_bili_danmaku_count">%1$s danmaku</string>
+    <string name="player_meta_bili_like_count">%1$s likes</string>
+    <string name="player_meta_bili_favorite_count">%1$s favorites</string>
+    <string name="player_meta_bili_coin_count">%1$s coins</string>
     <string name="player_seek_preview">Seek preview</string>
     <string name="player_air_jump_will_skip">Skipping ad</string>
     <string name="player_air_jump_skipped">Skipped ad</string>

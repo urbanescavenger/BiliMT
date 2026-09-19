@@ -1,0 +1,19 @@
+<!-- P11-124:B站 控制行「画面旋转」。本轮**未上场**(旋转要改 PlayerView 渲染层,见 PlayerControl 的 TODO),
+     先按设计稿建好备用。Vector drawable 无 stroke-dasharray,中轴虚线按 3 段短划画。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:pathData="M6,6H18A2,2 0 0 1 20,8V16A2,2 0 0 1 18,18H6A2,2 0 0 1 4,16V8A2,2 0 0 1 6,6Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:pathData="M12,6V8.4M12,10.6V13M12,15.2V18" />
+</vector>

@@ -454,6 +454,8 @@
     <string name="player_control_favorite">&#x6536;&#x85CF;</string>
     <string name="player_control_toview">稍后再看</string>
     <string name="player_control_comment">评论</string>
+    <!-- P11-124:B站 控制行「刷新」——重新解析并重载当前视频(YouTube 老路径不出现该项)。 -->
+    <string name="player_control_refresh">刷新</string>
     <string name="player_panel_favorite">&#x6536;&#x85CF;&#x5230;&#x6536;&#x85CF;&#x5939;</string>
     <string name="player_favorite_confirm">&#x786E;&#x8BA4;&#x6536;&#x85CF;</string>
     <string name="player_favorite_empty">&#x6682;&#x65E0;&#x6536;&#x85CF;&#x5939;</string>
@@ -518,6 +520,14 @@
     <string name="player_speed_value">%1$.1f &#x500D;</string>
     <string name="player_meta_pubdate">&#x53D1;&#x5E03;&#x4E8E;%1$s</string>
     <string name="player_meta_view_count">%1$s&#x6B21;&#x89C2;&#x770B;</string>
+    <!-- P11-124:B站 官方版式元信息行(单项一段,用 player_meta_separator 串联)。计数段后缀对齐官方
+         「1.3万播放 / 13弹幕 / 544点赞」:播放量与弹幕数走缩写(调用处传 formatCompactCountText 结果),
+         点赞/收藏/投币直接传原数字(官方三连不缩写、不带「万」),值为 0 时整段由调用处跳过。 -->
+    <string name="player_meta_bili_view_count">%1$s播放</string>
+    <string name="player_meta_bili_danmaku_count">%1$s弹幕</string>
+    <string name="player_meta_bili_like_count">%1$s点赞</string>
+    <string name="player_meta_bili_favorite_count">%1$s收藏</string>
+    <string name="player_meta_bili_coin_count">%1$s投币</string>
     <string name="player_seek_preview">&#x5FEB;&#x8FDB;&#x9884;&#x89C8;</string>
     <string name="player_air_jump_will_skip">&#x5373;&#x5C06;&#x8DF3;&#x8FC7;&#x5E7F;&#x544A;</string>
     <string name="player_air_jump_skipped">&#x5DF2;&#x8DF3;&#x8FC7;&#x5E7F;&#x544A;</string>

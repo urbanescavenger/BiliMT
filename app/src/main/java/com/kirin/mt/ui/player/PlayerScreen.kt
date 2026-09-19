@@ -79,6 +79,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.kirin.mt.R
+import com.kirin.mt.core.model.SourceBili
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
@@ -232,6 +233,11 @@ fun PlayerScreen(
   var lastAirJumpPositionMs by remember { mutableLongStateOf(0L) }
   var controlsVisible by remember { mutableStateOf(false) }
   var progressFocused by remember { mutableStateOf(false) }
+  // P11-124:三级焦点(动作行 → 进度条 → 控制行)。B站 版式顶部多了动作行(点赞/收藏/投币/稍后再看/评论),
+  // 故在 progressFocused 之上再加「焦点在动作行 + 当前项下标」两态;焦点唯一(actionFocused 为真时
+  // 进度条/控制行都不高亮)。YouTube 版式无动作行,这两个状态恒为 false/0,行为不变。
+  var actionFocused by remember { mutableStateOf(false) }
+  var focusedActionIndex by remember { mutableIntStateOf(0) }
   var focusedControl by remember { mutableStateOf(PlayerControl.Episodes) }
   var activePanel by remember { mutableStateOf(PlayerPanel.None) }
   var focusedPanelIndex by remember { mutableIntStateOf(0) }
@@ -402,10 +408,21 @@ fun PlayerScreen(
     }
   }
 
+  /**
+   * P11-124:控制行重新出现时的初焦项。YouTube 版式仍落在「选集」(entries 过滤出的第一项),
+   * B站 版式落在控制行首项(倍速文案)。**不能**用 availableControls().first():局部函数有声明顺序
+   * 约束,showControls 声明在 availableControls 之前。
+   */
+  fun defaultFocusedControl(): PlayerControl =
+    if (displayRequest.source == SourceBili) PlayerControl.Speed else PlayerControl.Episodes
+
   fun showControls() {
     if (!controlsVisible && activePanel == PlayerPanel.None) {
-      focusedControl = PlayerControl.Episodes
+      focusedControl = defaultFocusedControl()
       progressFocused = false
+      // P11-124:控制栏重新出现 = 焦点回到控制行(动作行/进度条让焦)。
+      actionFocused = false
+      focusedActionIndex = 0
     }
     controlsVisible = true
     pauseInteractionToken++
@@ -434,6 +451,9 @@ fun PlayerScreen(
     activePanel = PlayerPanel.None
     previewPositionMs = null
     progressFocused = false
+    // P11-124:控制层整块隐藏,动作行焦点一并复位。
+    actionFocused = false
+    focusedActionIndex = 0
     controlsVisible = false
   }
 
@@ -488,6 +508,7 @@ fun PlayerScreen(
       showControls()
     } else {
       progressFocused = false
+      actionFocused = false
     }
   }
 
@@ -506,9 +527,12 @@ fun PlayerScreen(
     activePanel = PlayerPanel.None
     if (revealControls) {
       progressFocused = true
+      // P11-124:焦点唯一——seek 预览把焦点拉到进度条,动作行让焦。
+      actionFocused = false
       showControls()
     } else {
       progressFocused = false
+      actionFocused = false
     }
   }
 
@@ -695,6 +719,8 @@ fun PlayerScreen(
       unfollowConfirmFocusedConfirm = false
     }
     activePanel = panel
+    // P11-124:面板夺焦 —— 动作行让焦,避免面板打开时动作行还挂着白描边。
+    actionFocused = false
     focusedPanelIndex = when (panel) {
       PlayerPanel.Quality -> actualQuality?.let { quality ->
         (playerState as? PlayerScreenState.Ready)?.info?.qualities?.indexOfFirst { it.id == quality.id }
@@ -891,10 +917,48 @@ fun PlayerScreen(
         // 免得没字幕的视频上多一个点开是空列表的按钮。轨未挂载完时 info 未就绪,不显示;
         // 轨挂载后 info 更新会重新计算(availableControls 在每次重组时调用)。
         PlayerControl.Subtitle -> displayRequest.isYoutube && hasSubtitleChoice(info)
+        // P11-124:倍速/刷新/弹幕开关三个新入口只属于 **B站 版式控制行**(BiliPlayerControls 显式顺序),
+        // 这里(YouTube 走的 entries 过滤路径)恒为 false —— 保证 YouTube 控制行一项不多、一项不少。
+        PlayerControl.Speed,
+        PlayerControl.Refresh,
+        PlayerControl.DanmakuToggle -> false
         else -> true
       }
     }
   }
+
+  /**
+   * P11-124:B站 版式顶部动作行的项(可见项 + 顺序见 [BiliPlayerActions])。显隐判据与底栏那三个
+   * 互动按钮完全同源:PGC / 无 aid 时隐藏点赞/投币/收藏/稍后再看,评论另有判据。全隐时动作行整行不渲染,
+   * 焦点模型退回两级(与 YouTube 一致)。
+   */
+  fun biliActionControls(): List<PlayerControl> {
+    val hideInteraction = displayRequest.isPgc || displayRequest.aid <= 0L
+    return BiliPlayerActions.filter { control ->
+      when (control) {
+        PlayerControl.Like, PlayerControl.Coin, PlayerControl.Favorite, PlayerControl.ToView -> !hideInteraction
+        PlayerControl.Comment -> !displayRequest.isPgc && (displayRequest.aid > 0L || displayRequest.isYoutube)
+        else -> true
+      }
+    }
+  }
+
+  /**
+   * P11-124:是否走「对齐官方」的 B站 版式。判据必须与 [PlayerOverlay] 里那次分叉**完全一致**
+   * (`request.source == SourceBili`):YouTube 走老路径,**影视库(TVBox)/IPTV/红果 也走老路径**
+   * ——它们没有三连/UP主/弹幕,套官方底栏会多出「弹幕开关」这类无意义入口,控制行项集也会对不上。
+   */
+  fun alignedBiliLayout(): Boolean = displayRequest.source == SourceBili
+
+  /** P11-124:动作行是否可获焦(仅 B站 版式且至少有一项)。 */
+  fun actionRowAvailable(): Boolean = alignedBiliLayout() && biliActionControls().isNotEmpty()
+
+  /**
+   * P11-124:当前源**实际渲染**的控制行项集。左右移动/初焦必须与传给 PlayerOverlay 的那份完全同源,
+   * 否则 B站 版式会在 YouTube 的项集上移动(项对不上 → 焦点跑到没渲染的项/移不动)。
+   */
+  fun currentControls(): List<PlayerControl> =
+    if (alignedBiliLayout()) BiliPlayerControls else availableControls()
 
   fun showInteractionToast(ok: Boolean, successMsg: String, error: Throwable? = null) {
     val message = when {
@@ -1054,7 +1118,12 @@ fun PlayerScreen(
         progressFocused = false
       }
       activePanel != PlayerPanel.None -> openPanel(PlayerPanel.None)
-      controlsVisible -> controlsVisible = false
+      controlsVisible -> {
+        // P11-124:连控制层一起收,动作行焦点一并复位(下次 showControls 会重新给初焦)。
+        actionFocused = false
+        focusedActionIndex = 0
+        controlsVisible = false
+      }
       else -> requestExitPlayer()
     }
   }
@@ -1412,11 +1481,57 @@ fun PlayerScreen(
   }
 
   fun moveFocusedControl(delta: Int) {
-    val controls = availableControls()
+    // P11-124:用 currentControls()(当前源实际渲染的项集),不能用 availableControls()——后者是
+    // YouTube 的 entries 过滤结果,B站 版式的项/顺序与它不同。
+    val controls = currentControls()
     val current = controls.indexOf(focusedControl).takeIf { it >= 0 } ?: 0
     val next = (current + delta).coerceIn(0, controls.lastIndex)
     focusedControl = controls[next]
     progressFocused = false
+    actionFocused = false
+    showControls()
+  }
+
+  /** P11-124:动作行内左右移动(夹在 0..lastIndex,不循环)。 */
+  fun moveFocusedAction(delta: Int) {
+    val actions = biliActionControls()
+    if (actions.isEmpty()) return
+    focusedActionIndex = (focusedActionIndex + delta).coerceIn(0, actions.lastIndex)
+    showControls()
+  }
+
+  /**
+   * P11-124:动作行 OK/Enter —— 复用既有行为,不另写一套。
+   * 点赞=直投;投币=弹确认框(与底栏 Coin 分支同款);收藏=收藏夹面板;稍后再看=直投;评论=评论页叠层。
+   */
+  fun activateFocusedAction() {
+    when (biliActionControls().getOrNull(focusedActionIndex)) {
+      PlayerControl.Like -> doLike()
+      PlayerControl.Favorite -> openFavoritePanel()
+      PlayerControl.Coin -> {
+        if (interactionBusy) return
+        coinDialogFocusedIndex = 0
+        showCoinDialog = true
+        showControls()
+      }
+      PlayerControl.ToView -> doAddToView()
+      PlayerControl.Comment -> onOpenComments(displayRequest)
+      else -> Unit
+    }
+  }
+
+  /**
+   * P11-124:控制行「刷新」——重新解析并重载当前视频,**位置保持在当前播放点**。
+   *
+   * 复用既有重载机制(与 onPlayerError 自动重试、stall 看门狗同一套):把当前位置写进 autoResumePositionMs,
+   * 再 bump retryKey 重跑 launch effect;effect 内 requestedStartPositionMs 会优先取它(SABR 源经 startMs
+   * 透传进 sabr:// URL,普通源走 player.seekTo)。计数预算(autoRetryCount/errorRetryCount)不动——
+   * 刷新是用户主动行为,不应吃掉自动重试预算。
+   */
+  fun refreshPlayback() {
+    autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
+    Log.i(PlayerPlaybackLogTag, "manual refresh, reload @pos=${autoResumePositionMs}ms")
+    retryKey += 1L
     showControls()
   }
 
@@ -1428,6 +1543,13 @@ fun PlayerScreen(
       // Back 回退无需改层级:closePanelOrControls 对任何已打开面板都是「关面板 → 回控制栏」。
       PlayerControl.Quality -> openPanel(PlayerPanel.Quality)
       PlayerControl.Subtitle -> openPanel(PlayerPanel.Subtitle)
+      // P11-124:B站 控制行新增的三项 —— 倍速面板 / 重载当前视频 / 弹幕总开关(与设置面板那一项同源)。
+      PlayerControl.Speed -> openPanel(PlayerPanel.Speed)
+      PlayerControl.Refresh -> refreshPlayback()
+      PlayerControl.DanmakuToggle -> {
+        persistDanmakuSettings(danmakuSettings.copy(enabled = !danmakuSettings.enabled))
+        showControls()
+      }
       PlayerControl.Up -> openUpVideos(UpVideoOrderLatest)
       PlayerControl.Related -> {
         // 播放列表场景:相关 = 队列后续(与自动连播同源同序,不依赖在线接口成败);
@@ -1466,6 +1588,8 @@ fun PlayerScreen(
     when {
       previewPositionMs != null -> commitPreviewSeek()
       activePanel != PlayerPanel.None -> activateFocusedPanelItem()
+      // P11-124:动作行夺焦时 OK 执行动作行项(优先于下面的「暂停态 OK = 播放/暂停」)。
+      actionFocused -> activateFocusedAction()
       playbackPaused && !completionReported -> togglePlayback()
       controlsVisible -> activateFocusedControl()
       else -> showControls()
@@ -2454,6 +2578,15 @@ fun PlayerScreen(
     }
   }
 
+  // P11-124:动作行项集随源/可交互性变化(切视频、PGC 判据),项数变少时把下标夹回末项,
+  // 否则会停在越界下标上 → 整行没有白描边(焦点「消失」)。
+  val actionControlCount = if (alignedBiliLayout()) biliActionControls().size else 0
+  LaunchedEffect(actionControlCount) {
+    if (actionControlCount > 0) {
+      focusedActionIndex = focusedActionIndex.coerceIn(0, actionControlCount - 1)
+    }
+  }
+
   Box(
     modifier = Modifier
       .fillMaxSize()
@@ -2568,6 +2701,8 @@ fun PlayerScreen(
                 }
               }
               previewPositionMs != null -> updatePreviewSeek(-SeekStepMs)
+              // P11-124:动作行内左右切换项(夹在 0..lastIndex)。
+              actionFocused -> moveFocusedAction(-1)
               progressFocused -> updatePreviewSeek(-SeekStepMs, revealControls = true)
               controlsVisible -> moveFocusedControl(-1)
               else -> updatePreviewSeek(-SeekStepMs, revealControls = false)
@@ -2591,6 +2726,8 @@ fun PlayerScreen(
                 }
               }
               previewPositionMs != null -> updatePreviewSeek(SeekStepMs)
+              // P11-124:动作行内左右切换项(夹在 0..lastIndex)。
+              actionFocused -> moveFocusedAction(1)
               progressFocused -> updatePreviewSeek(SeekStepMs, revealControls = true)
               controlsVisible -> moveFocusedControl(1)
               else -> updatePreviewSeek(SeekStepMs, revealControls = false)
@@ -2600,7 +2737,17 @@ fun PlayerScreen(
           Key.DirectionUp -> {
             when {
               activePanel != PlayerPanel.None -> changePanelFocus(-1)
-              controlsVisible && !progressFocused -> progressFocused = true
+              // P11-124:三级焦点 控制行 → 进度条 → 动作行(动作行只存在于 B站 版式;无动作行时保持现状)。
+              progressFocused && actionRowAvailable() -> {
+                // 若此刻正挂着 seek 预览,先落地(与 ↓/OK 语义一致),否则 previewPositionMs 会挡在
+                // 动作行的 ←/→ 分支前面(焦点已在动作行却还在 seek)。
+                if (previewPositionMs != null) commitPreviewSeek()
+                actionFocused = true
+                focusedActionIndex = 0
+                progressFocused = false
+                showControls()
+              }
+              controlsVisible && !progressFocused && !actionFocused -> progressFocused = true
               else -> Unit
             }
             true
@@ -2608,6 +2755,12 @@ fun PlayerScreen(
           Key.DirectionDown -> {
             when {
               activePanel != PlayerPanel.None -> changePanelFocus(1)
+              // P11-124:动作行 → 进度条。
+              actionFocused -> {
+                actionFocused = false
+                progressFocused = true
+                showControls()
+              }
               playbackPaused && controlsVisible && progressFocused -> progressFocused = false
               else -> toggleControlsFromRemoteMenu()
             }
@@ -2708,8 +2861,14 @@ fun PlayerScreen(
           unfollowConfirmFocusedConfirm = unfollowConfirmFocusedConfirm,
           controlsVisible = controlsVisible,
           focusedControl = focusedControl,
-          availableControls = availableControls(),
+          // P11-124:控制行项集/顺序按源分——YouTube 仍走 entries 过滤(一项不多、一项不少),
+          // B站 走官方版式的显式顺序 BiliPlayerControls(倍速文案 → 裸图标… → 画质值按钮 → 设置)。
+          availableControls = currentControls(),
           progressFocused = progressFocused,
+          // P11-124:顶部动作行(点赞/收藏/投币/稍后再看/评论),仅 B站 版式有;YouTube 传空。
+          actionControls = if (alignedBiliLayout()) biliActionControls() else emptyList(),
+          focusedActionIndex = focusedActionIndex,
+          actionFocused = actionFocused,
           activePanel = activePanel,
           focusedPanelIndex = focusedPanelIndex,
           playbackSpeed = playbackSpeed,

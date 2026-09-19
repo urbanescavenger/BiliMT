@@ -1,0 +1,20 @@
+<!-- P11-124:B站 控制行「刷新」(重新解析并重载当前视频)。形状照设计稿 tmp/p11-124-bili-align-official.html。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.9"
+        android:strokeLineCap="round"
+        android:pathData="M20,12A8,8 0 1 1 17.4,6.1" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.9"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M20,4.4V10H14.4" />
+</vector>
