@@ -431,7 +431,7 @@
     <string name="player_failed_with_message">Failed to load playback. %1$s</string>
     <string name="player_error_missing_cid">Could not get video CID</string>
     <string name="player_error_empty_tracks">Playback API returned no usable audio/video tracks</string>
-    <string name="player_error_launch_timeout">Start timeout (30s). Retry.</string>
+    <string name="player_error_launch_timeout">Start timeout (%1$d s). Retry.</string>
     <string name="player_control_episodes">Episodes</string>
     <string name="player_control_next_episode">Next episode</string>
     <string name="player_speed_label">Speed</string>

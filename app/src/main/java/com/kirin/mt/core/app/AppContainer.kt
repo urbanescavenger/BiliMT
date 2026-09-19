@@ -52,6 +52,7 @@ import com.kirin.mt.core.player.IptvSourceProber
 import com.kirin.mt.core.player.LiveQualityPreferenceStore
 import com.kirin.mt.core.player.PlaybackProgressStore
 import com.kirin.mt.core.player.PlaybackRepository
+import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.settings.AppSettingsStore
 import com.kirin.mt.core.storage.SearchHistoryStore
 import com.kirin.mt.core.storage.SessionStore
@@ -315,9 +316,39 @@ class AppContainer(context: Context) {
     }
   }
 
+  /**
+   * P11-126:启动后台预热 harvest 采集 WebView(见 [YoutubeSabrHarvester.prewarm])。
+   *
+   * 真机 09-19:harvest WebView 的冷启(建实例 + 加载 youtube.com 首页建立浏览上下文)实测 **10.9s**,
+   * 而它整段都落在起播预算里(PO token 铸造 9.3s + player js 4.4s 之后才轮到它)⇒ watch 页还没开始
+   * 加载预算就到期,整条 launch 被取消,连已建好的 NewPipe 兜底会话也一起丢弃,用户黑屏 ~99s。
+   * 把冷启挪到播放之外,harvest 就只剩「导航 watch 页等捕获」那 1~2s。
+   *
+   * **只在「WEB-SABR 优先」档做**:只有这一档 harvest 在起播关键路径上(该档 90s 预算就是为它给的);
+   * SABR/DASH 档的 harvest 只做很晚的兜底,多等几秒无所谓 —— 不给不用它的用户白起一个 WebView +
+   * 拉一次首页(~1.4MB)。用户切档后重启即生效。
+   *
+   * fire-and-forget,失败静默(与 [warmupApiConnection] / [startIptvSourceProbe] 同款)。
+   */
+  fun startYoutubeHarvestPrewarm() {
+    applicationScope.launch {
+      val priority = runCatching { appSettingsStore.settings.first().youtubeDeliveryPriority }.getOrNull()
+      if (priority != YoutubeDeliveryPriority.WebSabr) {
+        Log.i(LogTag, "youtube harvest prewarm skipped (priority=$priority,只有 WEB-SABR 优先档在关键路径上)")
+        return@launch
+      }
+      delay(YoutubeHarvestPrewarmDelayMs)
+      runCatching { youtubeSabrHarvester.prewarm() }
+        .onSuccess { ms -> if (ms != null) Log.i(LogTag, "youtube harvest prewarm ok: ${ms}ms") }
+        .onFailure { error -> Log.w(LogTag, "youtube harvest prewarm failed: ${error.message}") }
+    }
+  }
+
   private companion object {
     const val LogTag = "BiliWarmup"
     /** IPTV 判活扫描的启动延迟:避开冷启动图片/接口流量高峰再动网络。 */
     const val IptvProbeStartupDelayMs = 15_000L
+    /** P11-126:harvest 预热的启动延迟——比 IPTV 探活早,因为预热自己还要再花 4~11s 建 WebView + 载首页。 */
+    const val YoutubeHarvestPrewarmDelayMs = 8_000L
   }
 }

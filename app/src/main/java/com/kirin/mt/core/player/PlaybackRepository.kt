@@ -58,11 +58,16 @@ class PlaybackRepository(
     qualityPreference: PlaybackQualityPreference,
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
     youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
+    // P11-126:调用方(起播)给的绝对 deadline(`System.currentTimeMillis()` 基准),0 = 不限。
+    // 只有 YouTube 分派会读它——resolver 据此算剩余预算,不够就不做注定失败的 WEB-SABR 优先、
+    // 直接落 NewPipe 主链,并把它内部那两层 harvest 超时收敛进剩余预算。
+    // 带默认值 ⇒ 所有既有调用点(含移动端)零改动、行为不变。
+    deadlineMs: Long = 0L,
   ): PlaybackInfo {
     // YouTube 播放：走 InnerTube /player（PO token + n/s 解密），不走 B 站 DASH playurl。
     // 传 codecCapability 让 resolver 过滤设备解不了的高清轨道（4K VP9/AV1 无硬解时回退）。
     if (request.isYoutube) {
-      return youtubePlaybackResolver.resolve(request, codecPreference, codecCapabilityProbe.probe(), youtubeDefaultQuality, youtubeStartQuality)
+      return youtubePlaybackResolver.resolve(request, codecPreference, codecCapabilityProbe.probe(), youtubeDefaultQuality, youtubeStartQuality, deadlineMs)
     }
     // TVBox(影视库)点播:MacCMS 采集站直链/懒解析线路 → 远程 HLS,走 VOD 播放器(P11-77 用户决策:
     // 参考 PGC/番剧路径,不进直播壳)。线路=清晰度档(preferredQualityId=线路索引),选档即重解析换线。

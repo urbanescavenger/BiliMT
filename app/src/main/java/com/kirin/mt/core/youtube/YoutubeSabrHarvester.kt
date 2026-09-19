@@ -14,8 +14,11 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -79,6 +82,12 @@ class YoutubeSabrHarvester(
   @Volatile private var mainFrameError: String? = null
 
   /**
+   * P11-126:本次 harvest 是否已 dump 过主文档请求头(每次 harvest 只打一次,免得刷屏)。
+   * 判据见 [shouldInterceptRequest] 里的注释。
+   */
+  @Volatile private var mainDocHeadersLogged: Boolean = false
+
+  /**
    * 长期存活 WebView(alpha.61:复用跨 harvest 积累真实浏览上下文——每次新建 fresh WebView 被
    * YouTube 风控成空白页 `body=NOBODY player=false`(alpha.60 真机),长期存活 + 先加载真实首页
    * 对齐 [YoutubeBrowserSession] 成功模式,让 WebView 建立真实 cookie/会话后再采集 watch 页 SABR POST)。
@@ -87,6 +96,14 @@ class YoutubeSabrHarvester(
    * 真机 09-19)→ 由 [invalidateWebView] 丢弃重建,见该函数注释。
    */
   private var webView: WebView? = null
+
+  /**
+   * P11-126:串行化 WebView 创建。harvest 的并发前提原本由 registry `rotationInFlight` 保证单飞,
+   * 但新增的启动预热([prewarm])会在播放之外并发进入 [ensureWebView] —— 两个协程同时走到
+   * `webView == null` 就会各建一个 WebView 并互相顶掉(`loadUrl` 抢导航)。同 [InnerTubeClient]
+   * 的 `sessionMutex` 用法。
+   */
+  private val webViewMutex = Mutex()
 
   /** 首次首页加载完成信号([ensureWebView] 用)。 */
   private var ready: CompletableDeferred<Unit>? = null
@@ -136,6 +153,41 @@ class YoutubeSabrHarvester(
 
   private fun resumeRendering() {
     runCatching { webView?.onResume() }
+  }
+
+  /**
+   * P11-126:后台预热——把 [ensureWebView] 那次冷启动(建 WebView + 加载 `https://www.youtube.com/`
+   * 建立真实浏览上下文)挪到播放之外。
+   *
+   * 依据(真机 09-19 `logs_live_20260919_214431.log`):这次冷启实测吃掉 **10.9s**,而它整段都落在
+   * 起播的 30s 预算里(PO token 铸造 9.3s + player js 4.4s 之后才轮到它)⇒ watch 页还没开始加载
+   * 预算就到期,整条 launch 被取消。预热后 harvest 只剩「导航到 watch 页等捕获」那 1~2s。
+   *
+   * 结束时调 [stopPlayback] 硬停页面:首页加载完会留一个 autoplay 的页(静音由页内 HOOK 压住),
+   * 不停掉就白耗流量,且下次 harvest 前的 about:blank 竞态会变复杂。
+   *
+   * **不发** [YoutubeLoadProgress]:它是全局单例,预热发生在播放器之外,emit 会留下一个 stale 的
+   * 非 null step 显示在播放器加载叠层上;沿用 `BiliMT:Preload` 那套「只打日志」的做法。
+   *
+   * 并发安全:与 harvest 共享 [webViewMutex];若 WebView 已存在(已有 harvest 跑过 / 已被预热过)
+   * 直接 no-op。由 `AppContainer.startYoutubeHarvestPrewarm` 在进程启动后延迟调用一次。
+   *
+   * @return 冷启动耗时 ms;未做任何事时返回 null。
+   */
+  suspend fun prewarm(): Long? = withContext(Dispatchers.Main) {
+    if (webView != null) {
+      Log.i(Tag, "prewarm: 采集 WebView 已存在(已预热或已采集过)→ 跳过")
+      return@withContext null
+    }
+    val t0 = System.currentTimeMillis()
+    val view = runCatching { ensureWebView() }
+      .onFailure { Log.w(Tag, "prewarm: ensureWebView 失败: ${it.message}") }
+      .getOrNull() ?: return@withContext null
+    // 硬停页面(见 stopPlayback 注释:长期存活实例 + 只丢当前文档,实例/cookie jar/渲染进程都保留)。
+    stopPlayback()
+    val ms = System.currentTimeMillis() - t0
+    Log.i(Tag, "prewarm: 采集 WebView 冷启完成 ${ms}ms(url=${view.url})→ 之后 harvest 只剩 watch 页导航")
+    ms
   }
 
   /**
@@ -193,6 +245,7 @@ class YoutubeSabrHarvester(
     httpErrorCount = 0
     lastHttpError = null
     mainFrameError = null
+    mainDocHeadersLogged = false
     view.loadUrl("https://www.youtube.com/watch?v=$videoId&autoplay=1&mute=1$watchT")
       // 轮询 window.__gvCaptures[0](对齐 BotGuard pollState 双解码:evaluateJavascript 对字符串
       // 结果做 JSON 编码,先解内层字符串再解析对象)。alpha.20 只截 SABR POST 致 25s 无捕获——
@@ -219,6 +272,7 @@ class YoutubeSabrHarvester(
             "harvest: onPageFinished not fired within ${BLANK_PAGE_ABORT_MS}ms (blank page — throttle/renderer died) → fail fast, let rotation retry" +
               " | mainFrameErr=${mainFrameError ?: "none"} httpErr=$httpErrorCount last=${lastHttpError ?: "none"}",
           )
+          runForensicProbe(view, "onPageFinished 未触发")
           invalidateWebView()
           return null
         }
@@ -240,6 +294,7 @@ class YoutubeSabrHarvester(
               "harvest: watch 页是空壳文档(dl=${dl}B,onPageFinished 已触发)→ fail fast + 丢弃该 WebView" +
                 " | mainFrameErr=${mainFrameError ?: "none"} httpErr=$httpErrorCount last=${lastHttpError ?: "none"}",
             )
+            runForensicProbe(view, "空壳文档 dl=$dl")
             invalidateWebView()
             return null
           }
@@ -298,6 +353,7 @@ class YoutubeSabrHarvester(
         "harvest: timeout (30s 内 watch 无 googlevideo 请求)" +
           " | mainFrameErr=${mainFrameError ?: "none"} httpErr=$httpErrorCount last=${lastHttpError ?: "none"}",
       )
+      runForensicProbe(view, "轮询到期无捕获")
       // 注意:不再 view.destroy()——WebView 长期存活复用(alpha.61),下次 harvest 直接导航到新 watch 页。
       return null
   }
@@ -309,14 +365,16 @@ class YoutubeSabrHarvester(
    * 让 WebView 不被 YouTube 风控成空白页。返回 WebView 前等待首页加载完成(或超时 HOMEPAGE_LOAD_MS)。
    */
   private suspend fun ensureWebView(): WebView = withContext(Dispatchers.Main) {
-    webView?.let { return@withContext it }
-    val deferred = CompletableDeferred<Unit>()
-    ready = deferred
-    val created = createWebView(deferred)
-    webView = created
-    withTimeoutOrNull(HOMEPAGE_LOAD_MS) { deferred.await() }
-    Log.i(Tag, "harvest WebView initialized (long-lived): ${created.url}")
-    created
+    webViewMutex.withLock {
+      webView?.let { return@withLock it }
+      val deferred = CompletableDeferred<Unit>()
+      ready = deferred
+      val created = createWebView(deferred)
+      webView = created
+      withTimeoutOrNull(HOMEPAGE_LOAD_MS) { deferred.await() }
+      Log.i(Tag, "harvest WebView initialized (long-lived): ${created.url}")
+      created
+    }
   }
 
   private fun createWebView(deferred: CompletableDeferred<Unit>): WebView = WebView(appContext).apply {
@@ -397,6 +455,17 @@ class YoutubeSabrHarvester(
       // 也结构化记录,确认 watch 页选 progressive(itag 18 sabr=false)而非 SABR POST。
       override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
         val url = request?.url?.toString() ?: return null
+        // P11-126:主文档请求头**打一次**——查「UA 说桌面 Windows、Client Hints 说 Android WebView」
+        // 这类身份自相矛盾(社区实测:Android WebView 即使覆盖 UA,仍会自动发
+        // `Sec-CH-UA: "Android WebView"` / `Sec-CH-UA-Mobile: ?1` / `Sec-CH-UA-Platform: "Android"`,
+        // 机器人检测据此判伪 → 回空壳;且 WebView 无任何 API 能覆盖/抑制这些头)。
+        // 注意:此处 requestHeaders 不一定含全部客户端提示(部分由网络栈后置添加),
+        // 权威判据是 FORENSIC_JS 里的 navigator.userAgentData,这里只是同一时刻的旁证。
+        if (request.isForMainFrame && !mainDocHeadersLogged) {
+          mainDocHeadersLogged = true
+          val headers = request.requestHeaders.entries.joinToString("; ") { "${it.key}=${it.value.take(120)}" }
+          Log.w(Tag, "harvest main-doc request headers: $headers")
+        }
         if (url.contains("googlevideo.com/videoplayback")) {
           val itag = extractQuery(url, "itag") ?: "?"
           val sabr = if (url.contains("sabr=")) "true" else "false"
@@ -441,6 +510,40 @@ class YoutubeSabrHarvester(
         view.evaluateJavascript(script) { result -> if (cont.isActive) cont.resume(result) }
       }.onFailure { e -> if (cont.isActive) cont.resume(null) }
     }
+
+  /**
+   * P11-126:解 `evaluateJavascript` 回传值的外层 JSON 编码(字符串结果会被加引号并转义,见
+   * [parseCaptureArray] 的双解码说明)。解不出就原样返回,保证日志永远有东西可看。
+   */
+  private fun decodeJsString(raw: String?): String {
+    if (raw.isNullOrBlank()) return "null"
+    return runCatching { json.parseToJsonElement(raw).jsonPrimitive.contentOrNull }.getOrNull() ?: raw
+  }
+
+  /**
+   * P11-126:空壳页取证(见 [FORENSIC_JS] 的判据说明)。**只落日志,不改任何行为**——候选修法
+   * (如补 consent cookie、换 UA 让身份自洽)等这份证据出来再定。
+   *
+   * 三处出口共用:onPageFinished 未触发、已触发但文档空壳、30s 轮询到期。都在 `invalidateWebView()`
+   * **之前**调用(之后实例已销毁,探针必然拿不到东西)。
+   */
+  private suspend fun runForensicProbe(view: WebView, reason: String) = withContext(NonCancellable) {
+    val sync = runCatching { evalOn(view, FORENSIC_JS) }.getOrNull()
+    Log.w(Tag, "harvest forensic($reason): ${decodeJsString(sync)}")
+    // 同源 fetch 与高熵 Client Hints 都是异步的,给它们 ~1.5s 再回读。
+    delay(1_500)
+    val uad = runCatching { evalOn(view, "window.__forensicUad||'pending'") }.getOrNull()
+    val fetched = runCatching { evalOn(view, "window.__forensicFetch||'pending'") }.getOrNull()
+    Log.w(Tag, "harvest forensic($reason) async: uad=${decodeJsString(uad)} | fetch=${decodeJsString(fetched)}")
+    // cookie jar:社区实测「补 SOCS/CONSENT 能拿回真页」,先确认这两个 cookie 在不在(本轮不注入)。
+    val jar = runCatching { CookieManager.getInstance().getCookie(YoutubeConstants.Origin) }.getOrNull().orEmpty()
+    Log.w(
+      Tag,
+      "harvest forensic($reason) cookie jar: len=${jar.length}B socs=${jar.contains("SOCS=")} " +
+        "consent=${jar.contains("CONSENT=")} visitor=${jar.contains("VISITOR_INFO1_LIVE=")}",
+    )
+    Unit
+  }
 
   /**
    * 解析 evaluateJavascript 回传的 capture 数组——兼容两种 WebView 行为:
@@ -498,6 +601,27 @@ class YoutubeSabrHarvester(
      */
     @Suppress("MaxLineLength")
     const val DOC_LEN_JS = """try{var de=document.documentElement;var dl=(de&&de.outerHTML)?de.outerHTML.length:-1;console.log('DOCLEN dl='+dl+' ytcfg='+!!window.ytcfg+' rs='+document.readyState+' title='+document.title);dl;}catch(e){console.log('DOCLEN err '+e);-1;}"""
+
+    /**
+     * P11-126:空壳页取证探针——同源返回一段 JSON,另起两个异步结果到 `window.__forensicUad` /
+     * `window.__forensicFetch`([runForensicProbe] 延迟回读)。
+     *
+     * 真机 09-19 的核心悬案:同一分钟 OkHttp 抓同一 watch 页得 1,437,481B 完整页,而采集 WebView
+     * 只得到 39 字节空骨架。要判的四件事:
+     *
+     * 1. `dl`/`head` —— 那 39 字节到底是什么(39 恰好等于空骨架 `<html><head></head><body></body></html>`)。
+     * 2. `enc`/`tr`/`dec`(`performance` 导航条目)—— **决定性**:`enc≈1.4MB` 而 `dl=39` ⇒ 服务端发了、
+     *    文档是空的(解析/渲染层);`enc≈39/0` ⇒ 服务端/链路真没发内容。
+     * 3. `ua` + `uadBrands`/`uadMobile`/`uadPlatform` + `__forensicUad` —— 核「UA 说桌面 Windows、
+     *    Client Hints 说 Android WebView」这类身份自相矛盾(社区实测这是 WebView 被静默回空壳的常见原因,
+     *    且 WebView **没有** API 能覆盖/抑制 Sec-CH-UA)。
+     * 4. `__forensicFetch` —— 页内同源 `fetch('/robots.txt')`,判「导航路径坏」还是「WebView 网络整体坏」。
+     *
+     * 另有 Kotlin 侧的 cookie jar 检查(SOCS/CONSENT 在不在)见 [runForensicProbe]。
+     * 注意:本轮**只取证不改行为**(consent cookie 注入等候选修法留到判读之后)。
+     */
+    @Suppress("MaxLineLength")
+    const val FORENSIC_JS = """(function(){try{var de=document.documentElement;var html=de?de.outerHTML:'';var navs=(window.performance&&performance.getEntriesByType)?performance.getEntriesByType('navigation'):[];var nav=(navs&&navs[0])||{};var uad=navigator.userAgentData||null;var o={dl:html.length,head:html.slice(0,240),href:location.href,rs:document.readyState,enc:nav.encodedBodySize,tr:nav.transferSize,dec:nav.decodedBodySize,rstart:nav.responseStart,rend:nav.responseEnd,ua:navigator.userAgent,uadBrands:uad?JSON.stringify(uad.brands):'NONE',uadMobile:uad?String(uad.mobile):'NONE',uadPlatform:uad?String(uad.platform):'NONE'};window.__forensic=JSON.stringify(o);try{if(uad&&uad.getHighEntropyValues){uad.getHighEntropyValues(['platform','platformVersion','architecture','model','uaFullVersion']).then(function(v){window.__forensicUad=JSON.stringify(v);}).catch(function(e){window.__forensicUad='err='+e;});}else{window.__forensicUad='NO_API';}}catch(e){window.__forensicUad='threw='+e;}try{fetch('/robots.txt',{cache:'no-store'}).then(function(r){return r.text().then(function(t){window.__forensicFetch='status='+r.status+' len='+t.length+' head='+t.slice(0,60);});}).catch(function(e){window.__forensicFetch='err='+e;});}catch(e){window.__forensicFetch='threw='+e;}return window.__forensic;}catch(e){return 'FORENSIC_THREW='+e;}})()"""
 
     /**
      * 页面状态诊断脚本——dump player 元素 present/viewport 尺寸/<video> src/captures 条数,

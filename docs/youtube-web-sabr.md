@@ -23,6 +23,13 @@
 > 未改、同机同码 09-16/09-17 能出材料 ⇒ 判为**该机当天的 WebView 通路坏了**。据此加 **P11-125**:
 > 补异常/页面层取证(§1.9)+ 空壳页丢弃实例重建(§1.11)。实测见 **§3.4**。
 >
+> **2026-09-19 二次判读(关键:真正的「播放不出」不是 WEB-SABR)**:第二次真机抓到
+> `postPlayer … failed after 0ms (TimeoutCancellationException)` —— 上一份日志里三次「1ms 内 /player 失败」
+> **是父协程已被取消**,不是网络/身份问题。父协程是 TV 起播写死的 30s 预算,而 WEB-SABR 优先链的固定开销
+> 就有 ~21-28s ⇒ 整条 launch 被取消,**连已建好的 NewPipe 兜底会话也被丢弃**,用户黑屏 ~99s。据此加
+> **P11-126**:起播预算按交付档给 + 不足早退 + 耗尽可见(§1.12)、harvest WebView 启动预热(§1.13)、
+> 空壳页取证探针(§1.14,含 Sec-CH-UA / consent cookie / `; wv)` 三条社区线索,§3.6)。实测见 **§3.5**。
+>
 > 相关文档:[youtube-hd-playback.md](youtube-hd-playback.md)(总史/§6.x 逐条真机)、
 > [youtube-dash-fallback-plan.md](youtube-dash-fallback-plan.md)(DASH 兜底)、
 > [youtube-vs-libretube-comparison.md](youtube-vs-libretube-comparison.md)(逐环节对照)、
@@ -188,6 +195,10 @@ LibreTube 能播门控视频是因为它**默认走 Piped 后端**(`/streams/{id
 | `DOCLEN`(同步回传长度) | [YoutubeSabrHarvester.kt:500](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L500) | **P11-125**:与 PAGE diag 同源但走 `evaluateJavascript` 回传值(空壳判定必须同步拿到长度,不能等 console) |
 | `onReceivedError(main frame)` / `onReceivedHttpError … mainFrame=` / fail-fast 汇总 | [YoutubeSabrHarvester.kt:357-393](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L357-L393) | **P11-125**:主文档错误**无条件**记(旧实现只记 URL 含 youtube/googlevideo 的);fail-fast / timeout 时汇总打 `mainFrameErr=` + `httpErr=` + `last=` |
 | `webView=reuse\|rebuilt` | [YoutubeSabrHarvester.kt:189](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L189) | **P11-125**:上轮空壳被丢弃后这次必是 `rebuilt`;若重建后**仍然**空壳 ⇒ 问题不在实例层 |
+| `prewarm: 采集 WebView 冷启完成 Nms` / `BiliWarmup: youtube harvest prewarm ok\|skipped` | [YoutubeSabrHarvester.kt](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt) / [AppContainer.kt](../app/src/main/java/com/kirin/mt/core/app/AppContainer.kt) | **P11-126**:预热是否真做、冷启实际多久(真机 09-19 是 10.9s) |
+| `launch step: playurl (budget=Nms)` / `launch timeout after Nms (step=…)` | [PlayerScreen.kt](../app/src/main/java/com/kirin/mt/ui/player/PlayerScreen.kt) | **P11-126**:起播预算取到多少、预算耗尽死在哪一步(此前完全静默) |
+| `WEB-SABR 优先:剩余预算 Nms < 45000ms → 跳过` | [YoutubePlaybackResolver.kt](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt) | **P11-126**:预算不足早退是否生效(有没有白烧 harvest) |
+| `harvest forensic(...)` 四行 / `harvest main-doc request headers` | [YoutubeSabrHarvester.kt](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt) | **P11-126**:§1.14 的空壳页取证(见 §3.6 的四条社区线索) |
 
 ### 1.10 开关
 
@@ -215,6 +226,52 @@ P11-125 给这条前提加了健康闸:
 - **边界(诚实)**:Chromium 的网络栈(含 HTTP/2 socket 池)是**进程级**共享的,`destroy()` 只回收本实例的渲染进程与文档,
   cookie jar / 会话由 WebView 框架持有。若重建后仍空壳,`webView=rebuilt` + 同样取证即可判死「实例层」假设,
   直接指向网络/风控层 —— 这正是这条改动的第二个作用(把假设变成可判读的实验)。
+
+---
+
+### 1.12 起播预算:按交付档给,不够就早退(P11-126)
+
+真机 09-19 判读:`WEB-SABR 优先` 链的**固定开销**已达 ~21-28s(PO token 铸造 ~9s + player jsUrl/
+signatureTimestamp ~4s + harvest WebView 冷启 4~11s),而 TV 起播原本把整条 launch(resolve + CDN
+选源 + 建 source + prepare)包在一个写死的 **30s** 里 ⇒ watch 页还没开始加载预算就到期,整条 launch
+被取消,连**已经建好的 NewPipe 兜底会话也被一起丢弃**(用户黑屏 ~99s 直至手动退出)。
+
+| 源 / 档 | 预算 | 依据 |
+|---|---|---|
+| B站 / 影视库(TVBox) / IPTV / 红果 / 未知源 | **30s**(不变) | 真机起播实测 1~3s |
+| YouTube `SABR 优先` / `DASH 优先` | **45s** | 铸 token + 抓 player js |
+| YouTube `WEB-SABR 优先` | **90s** | 额外承担 harvest WebView 冷启 |
+
+取值的单一真源:[YoutubeLaunchBudget](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeLaunchBudget.kt)。
+`PlayerScreen` 按 `youtubeDeliveryPriority`(P11-126 起从 AppShell 透传)取值,并把
+`deadlineMs = now + budget` 一路传给 `getPlaybackInfo` → `YoutubePlaybackResolver.resolve`。
+
+三件事都靠这个 deadline:
+
+1. **预算不足早退**:进 WEB-SABR 优先/兜底前先看剩余预算,低于 `MinWebSabrFirstBudgetMs = 45s` 就
+   整条跳过、直接落 NewPipe 主链 —— 不让注定失败的 harvest 白烧 40s+30s。
+2. **harvest 超时收敛**:`harvestSessionMaterial` 的两次尝试从硬编码 `40s`/`30s` 改成
+   `min(硬上限, 剩余 - FallbackReserveMs)`(`12s` 留给兜底落地),剩余不足 `MinHarvestAttemptMs = 3s`
+   干脆不发。
+3. **预算耗尽可见**:`withTimeoutOrNull` 返回 null 时打
+   `launch timeout after Nms (step=…) → Failed(起播超时)`(此前完全静默,只能靠
+   `Timed out waiting for 30000 ms` 的异常栈倒推)。注意 launch 超时**不会**触发自动重试
+   (`onPlayerError` 只在 prepare 之后才可能回调),用户只能手点重试。超时文案也从写死的
+   `起播超时（30s）` 改成带真实秒数 `起播超时（%1$d 秒）`(4 份 locale)。
+
+### 1.13 harvest WebView 启动预热(P11-126)
+
+`YoutubeSabrHarvester.prewarm()` 把那次冷启(建 WebView + 载 `https://www.youtube.com/`)挪到播放之外,
+结束时调 `stopPlayback()` 硬停页面(只丢当前文档,实例/cookie jar/渲染进程保留)。触发点
+`AppContainer.startYoutubeHarvestPrewarm()`(`BiliTvApplication.onCreate` 调用,启动后延迟 **8s**,
+fire-and-forget、失败静默,与 `startIptvSourceProbe` 同款)。
+
+**只在 `youtubeDeliveryPriority == WebSabr` 时做** —— 只有这一档 harvest 在起播关键路径上;
+SABR/DASH 档的 harvest 只做很晚的兜底,不给不用它的用户白起一个 WebView + 拉一次首页。
+**不发** `YoutubeLoadProgress`(全局单例,预热在播放器之外,emit 会留 stale UI 状态)。
+
+并发:`ensureWebView` 的创建点用 `webViewMutex` 串行化(预热会在播放之外并发进入它);
+`webView != null` 时 `prewarm` 直接 no-op。
 
 ---
 
@@ -328,6 +385,84 @@ alpha.13「sabrUrl=ABSENT → SABR 方向关闭」(实为 snake_case 假阴性)�
   音频段 7.6s、视频段 **13.4s** 才回来 ⇒ prepare → 首个视频段共 **27s**。用户 21:17:54 退出,视频 21:17:56 才到 = 真机黑屏。
 
 **对策(P11-125)**:埋点 + 空壳页丢实例重建,见 §1.9 与 §1.11。
+
+### 3.5 2026-09-19 二次判读:真正的「播放不出」是起播预算,不是 WEB-SABR
+
+`logs_live_20260919_214431.log`(r1980+,WEB-SABR 优先档,视频 `qINttM4fKZo` 续播 644s)。P11-125 加的
+异常埋点**一次就定案**:
+
+```
+21:42:34.386 harvest failed: Timed out waiting for 30000 ms
+21:42:34.396 WEB-SABR identity: …
+21:42:34.399 postPlayer WEB viaWebView=false failed after 0ms
+        (TimeoutCancellationException: Timed out waiting for 30000 ms) → 抛给调用方
+```
+
+`after 0ms` + `TimeoutCancellationException` = **父协程已被取消** —— 不是网络失败、不是身份/参数。
+上一份日志里三次「1ms 内 `/player` 失败」是同一个原因。父协程是 `PlayerScreen` 的
+`withTimeoutOrNull(LaunchTimeoutMs = 30_000)`,从 21:42:04.377 起算、21:42:34.386 到期。
+
+后果:resolve 恢复时抛取消异常 ⇒ `launch step:` **只到 `playurl` 就没了**(正常应有
+`cdn → prepare → BUFFERING → READY`),而 21:42:40.060 **已经成功建好的 NewPipe SABR 兜底会话**
+因为协程已死而无人消费 ⇒ 用户从 21:42:34 黑屏到 21:44:13 手动退出,**约 99s**。
+`?: Failed(player_error_launch_timeout)` 会显示「起播超时(30s),请重试」,且 launch 超时**不触发
+自动重试**,只能手点。修法见 §1.12(预算按档 + 不足早退 + 耗尽可见)与 §1.13(预热)。
+
+**空白页取证(新埋点)**:watch 页 `dl=39 rs=complete ytcfg=false title=` 空 —— 39 字符正好是空骨架
+`<html><head></head><body></body></html>`(6+6+7+6+7+7);而**同一分钟 OkHttp 抓同一 watch 页得
+1,437,481B 完整页**(21:42:07.071 `YtBotGuard: watch page data: ytcfg=true ytAtN=true ctx=true
+(page=1437481B)`)⇒ **服务端对我们没关门,是 WebView/Chromium 那一路取不到 youtube.com 内容**。
+WebView 提供方/版本自 09-16 未变(`com.sony.dtv.b2b.webview 1.0.2 code 6`,09-16 正常时也是它),
+两条路径 **UA 完全一致**(`YoutubeConstants.UserAgent` 桌面 Chrome 126)⇒ UA 字符串不是差异点。
+
+**P11-125 的行为改动本次仍未验证**:`onPageFinished`(21:42:34.437)比父预算取消(34.386)晚 51ms,
+harvest 已死,空壳分支与新的取证探针都没机会跑到 —— 这也是 §1.14 的取证探针要包
+`withContext(NonCancellable)` 的原因(取消态下普通 suspend 点会直接抛,证据永远打不出来)。
+
+### 3.6 社区线索(2026-09-19 检索,用于 §1.14 取证设计)
+
+FreeTube 侧(`v0.25.2` → `v0.25.3`,2026-08-11 / 08-28):
+
+- **bgutils-js 3.2.0 → 4.0.2**(#9490)—— 我们捆的是 **v4.0.3**(见
+  [youtube-hd-playback.md](youtube-hd-playback.md) §6.6),已对齐,不是缺口。
+- **watch 页拿不到时回退用首页**取 poToken challenge data / ytcfg / playerId(#9637,关 issue #9632
+  「Could not find ytcfg in the HTML page (**CAPTCHA page**)」),理由原文:*"The YouTube home page
+  seems to work when the watch page is returning captchas."* 官方 NOTE:*"as long as YouTube requires
+  us to use information from the HTML page, there will always be a chance that YouTube will return a
+  CAPTCHA page instead."*
+  **不能直接搬**:FreeTube 只要 ytcfg + challenge 就能自己铸 token 取流;我们的 harvest 腿必须让
+  watch 页**真的播起来**才能截到 SABR POST,首页给不了这个。
+- SABR redirect 没更新实际在用的 SABR URL(#9689)—— 记下备用。
+
+更贴近我们 39 字节症状的两条(社区):
+
+- **`Sec-CH-UA` 客户端提示与 UA 不一致**:Android WebView **会自动发送** Client Hints
+  (`Sec-CH-UA: …"Android WebView"…`、`Sec-CH-UA-Mobile: ?1`、`Sec-CH-UA-Platform: "Android"`),
+  **即使 UA 被覆盖成桌面字符串也一样**;机器人检测读这些,静默回空壳。且
+  **`shouldInterceptRequest` 改不了、WebView 也没有 API 能覆盖/抑制 Sec-CH-UA**。
+  → 与我们的现象高度吻合(WebView 身份自相矛盾 vs OkHttp 只有 UA 头、身份自洽)。
+- **consent / 拦截壳**:有实测记录「HTTP 200、586KB、零视频」的空壳,补 `CONSENT=PENDING+987` +
+  `SOCS=CAI`(免登录)可拿回真 payload。我们的采集 WebView 用自己的 cookie jar,是否带这两个 cookie
+  从未查过。
+- **UA 尾部 `; wv)`**:部分机器人检测专挑这个 token 静默剥内容。我们显式覆盖了 UA,理论上没有,但需实测确认。
+
+**本轮决定:只取证不改行为** —— 先把 §1.14 的四组数据拿到,再定用哪条修法(consent cookie 注入 /
+身份自洽 / 换实例)。
+
+### 1.14 空壳页取证探针(P11-126)
+
+`FORENSIC_JS` + `runForensicProbe(view, reason)`,在三处出口都调(onPageFinished 未触发 /
+已触发但主文档 <20KB / 轮询到期),均在 `invalidateWebView()` **之前**。整段包
+`withContext(NonCancellable)` —— 父预算取消时普通 suspend 点会立刻抛,证据就打不出来(§3.5 的教训)。
+
+| 探针字段 | 判什么 |
+|---|---|
+| `dl` / `head`(前 240 字符) | 那 39 字节到底是什么(39 == 空骨架) |
+| `enc` / `tr` / `dec`(`performance` 导航条目) | **决定性**:`enc≈1.4MB` 而 `dl=39` ⇒ 服务端发了、文档是空的(解析/渲染层);`enc≈39/0` ⇒ 服务端/链路真没发内容 |
+| `ua` + `uadBrands`/`uadMobile`/`uadPlatform` + `__forensicUad`(高熵) | UA 与 Client Hints 是否自相矛盾 |
+| `__forensicFetch`(页内同源 `fetch('/robots.txt')`) | 「导航路径坏」还是「WebView 网络整体坏」 |
+| `harvest main-doc request headers`(Kotlin 侧,`shouldInterceptRequest` 打一次) | 同一时刻的请求头旁证(注:客户端提示不一定在此层可见,权威是 JS 侧) |
+| `harvest forensic … cookie jar: socs=/consent=/visitor=` | 这两个 consent cookie 到底在不在 |
 
 ---
 

@@ -1614,6 +1614,8 @@ fun BiliTvApp(
               playbackQualityPreference = settings.playbackQualityPreference,
               youtubeDefaultQuality = settings.youtubeDefaultQuality,
               youtubeStartQuality = settings.youtubeStartQuality,
+              // P11-126:交付档决定起播预算(WEB-SABR 优先链固定开销 ~21-28s,30s 必然超时)。
+              youtubeDeliveryPriority = settings.youtubeDeliveryPriority,
               defaultPlaybackSpeed = settings.defaultPlaybackSpeed,
               bufferMaxMs = settings.bufferMax.ms,
               playbackCdnPreference = settings.playbackCdnPreference,

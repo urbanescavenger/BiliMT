@@ -103,6 +103,7 @@ import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
+import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.player.PlaybackQuality
@@ -164,6 +165,10 @@ fun PlayerScreen(
   playbackQualityPreference: PlaybackQualityPreference,
   youtubeDefaultQuality: YoutubeDefaultQuality,
   youtubeStartQuality: YoutubeStartQuality,
+  // P11-126:起播预算要按 YouTube 交付档分档(见 YoutubeLaunchBudget),而 PlaybackRequest 上没有
+  // delivery-priority 字段(该值本来只在 resolver 内部从 appSettingsStore 读,UI 层拿不到)。
+  // 故照本文件既有的 settings.* 透传范式(AppShell 已有 20+ 个同类入参)把它传进来,只用于算预算。
+  youtubeDeliveryPriority: YoutubeDeliveryPriority = YoutubeDeliveryPriority.Sabr,
   defaultPlaybackSpeed: DefaultPlaybackSpeed,
   bufferMaxMs: Int,
   playbackCdnPreference: PlaybackCdnPreference,
@@ -1964,16 +1969,30 @@ fun PlayerScreen(
       // Resolver/Constants/PlaybackModels),待修 viaWebView session 隔离后再启用下行 .let。
       // .let { if (isYoutube) it.copy(preferredYoutubeClient = com.kirin.mt.core.youtube.InnerTubeClient.Client.TVHTML5) else it }
     displayRequest = resolvedRequest
+    // P11-126:按源/交付档取起播预算(见 [YoutubeLaunchBudget] 的取值理由)。仅 YouTube 分档;
+    // 其它源(B站/影视库/IPTV/红果)起播实测 1~3s,保持原来的 30s。
+    val launchBudgetMs = if (resolvedRequest.isYoutube) {
+      com.kirin.mt.core.youtube.YoutubeLaunchBudget.forPriority(youtubeDeliveryPriority)
+    } else {
+      com.kirin.mt.core.youtube.YoutubeLaunchBudget.DefaultMs
+    }
+    // 预算同时作为 resolve 的绝对 deadline 传下去:resolver 据此算剩余预算,不够就不做注定失败的
+    // WEB-SABR 优先、直接落 NewPipe 主链,并把它自己那两层 harvest 超时(40s/30s,原本与外层
+    // 30s 完全互不感知)收敛到剩余预算内。0 = 不限。
+    val launchDeadlineMs = System.currentTimeMillis() + launchBudgetMs
     playerState = try {
-      withTimeoutOrNull(LaunchTimeoutMs) {
+      withTimeoutOrNull(launchBudgetMs) {
         launchStep = "playurl"
-        Log.i(PlayerPlaybackLogTag, "launch step: playurl")
+        // P11-126:把预算打进日志——真机判读时「预算多少」是第一现场信息(此前只能从
+        // `Timed out waiting for 30000 ms` 的异常栈倒推)。
+        Log.i(PlayerPlaybackLogTag, "launch step: playurl (budget=${launchBudgetMs}ms)")
         val info = playbackRepository.getPlaybackInfo(
           request = resolvedRequest,
           codecPreference = playbackCodecPreference,
           qualityPreference = playbackQualityPreference,
           youtubeDefaultQuality = youtubeDefaultQuality,
           youtubeStartQuality = youtubeStartQuality,
+          deadlineMs = launchDeadlineMs,
         )
       // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体),
       // 或远程 manifest 兜底(DASH/HLS manifest 自带 A/V 轨,dummy 视频轨非 progressive 但 audioTracks 合法为空)。
@@ -2188,7 +2207,18 @@ fun PlayerScreen(
         }
         PlayerScreenState.Ready(info)
       }
-      } ?: PlayerScreenState.Failed(context.getString(R.string.player_error_launch_timeout))
+      } ?: run {
+        // P11-126:预算耗尽必须**可见**。此前这一步是静默的——`withTimeoutOrNull` 返回 null 直接落
+        // Failed,日志里既没有"预算超了"也没有超在哪一步,只能靠 `Timed out waiting for 30000 ms`
+        // 的异常栈倒推(真机 09-19 就是这么花了半轮才定位)。同时注意 launch 超时**不会**触发任何
+        // 自动重试(`onPlayerError` 只在 prepare 之后才可能回调),用户只能手点重试按钮。
+        Log.w(
+          PlayerPlaybackLogTag,
+          "launch timeout after ${launchBudgetMs}ms (step=$launchStep) → Failed(起播超时)。" +
+            "若是 YouTube:检查是否 harvest 冷启吃掉了预算(见 BiliWarmup 的 prewarm 日志)",
+        )
+        PlayerScreenState.Failed(context.getString(R.string.player_error_launch_timeout, (launchBudgetMs / 1000L).toInt()))
+      }
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {
@@ -3462,8 +3492,10 @@ private const val MaxStallAutoRetry = 2
 private const val MaxErrorAutoRetry = 3
 /** P11-85 SABR 深度重试续播点前推量:覆盖一个视频段(~5-6s)并换段对齐,重置服务端段锚点。 */
 private const val SabrDeepRetryNudgeMs = 10_000L
-/** 起播整体超时：callTimeout 兜住单次 HTTP，withTimeout 兜住整条 launch（含串行调用叠加）。 */
-private const val LaunchTimeoutMs = 30_000L
+// P11-126:起播整体超时已按源/交付档取值,见 com.kirin.mt.core.youtube.YoutubeLaunchBudget
+// (B站/影视库/IPTV/红果 30s、YouTube SABR/DASH 45s、YouTube WEB-SABR 优先 90s)。
+// 原来的 `LaunchTimeoutMs = 30_000L` 单一常量已删 —— WEB-SABR 优先链的固定开销就有 ~21-28s,
+// 30s 必然超时(真机 09-19:整条 launch 被取消,连已建好的兜底会话也一起丢弃,用户黑屏 ~99s)。
 
 /** P11-96 起播探针间隔:未出首帧期间的「为什么还没播」快照周期。3s 足够看清卡死形态,不刷屏。 */
 private const val StartupProbeIntervalMs = 3_000L

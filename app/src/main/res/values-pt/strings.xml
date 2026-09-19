@@ -430,7 +430,7 @@
     <string name="player_failed_with_message">Falha ao carregar a reprodução. %1$s</string>
     <string name="player_error_missing_cid">Não foi possível obter o CID do vídeo</string>
     <string name="player_error_empty_tracks">A interface de reprodução não devolveu faixas de áudio/vídeo disponíveis</string>
-    <string name="player_error_launch_timeout">Tempo esgotado ao iniciar (30s); tente novamente</string>
+    <string name="player_error_launch_timeout">Tempo esgotado ao iniciar (%1$d s); tente novamente</string>
     <string name="player_control_episodes">Selecionar episódio</string>
     <string name="player_control_next_episode">Próximo episódio</string>
     <string name="player_speed_label">Velocidade</string>

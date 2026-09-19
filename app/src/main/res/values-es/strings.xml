@@ -430,7 +430,7 @@
     <string name="player_failed_with_message">Fallo al cargar la reproducción. %1$s</string>
     <string name="player_error_missing_cid">No se pudo obtener el CID del video</string>
     <string name="player_error_empty_tracks">La API de reproducción no devolvió pistas de audio y video disponibles</string>
-    <string name="player_error_launch_timeout">Tiempo de inicio agotado (30 s); inténtalo de nuevo</string>
+    <string name="player_error_launch_timeout">Tiempo de inicio agotado (%1$d s); inténtalo de nuevo</string>
     <string name="player_control_episodes">Seleccionar episodio</string>
     <string name="player_control_next_episode">Siguiente episodio</string>
     <string name="player_speed_label">Velocidad</string>

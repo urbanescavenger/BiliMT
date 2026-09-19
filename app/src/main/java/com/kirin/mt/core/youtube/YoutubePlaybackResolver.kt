@@ -106,10 +106,19 @@ class YoutubePlaybackResolver(
     codecCapability: CodecCapability,
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
     youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
+    // P11-126:调用方(起播)给的绝对 deadline(`System.currentTimeMillis()` 基准),0 = 不限。
+    // 见 [YoutubeLaunchBudget]:WEB-SABR 优先链的固定开销(PO token ~9s + player js ~4s +
+    // harvest WebView 冷启 4~11s)本身就吃掉 21-28s,而 harvest 自己那两层超时(40s/30s)原本与
+    // 外层完全互不感知——真机 09-19 就是 harvest 烧到一半外层预算到期,整条 launch 被取消,
+    // 连已建好的 NewPipe 兜底会话也一起丢弃。故这里按剩余预算决定「值不值得试」以及每层给多久。
+    deadlineMs: Long = 0L,
   ): PlaybackInfo = withContext(Dispatchers.IO) {
     val videoId = request.bvid
     var lastError: String? = null
     var havePlayable = false
+
+    // P11-126:剩余预算。deadlineMs<=0 视为不限(移动端与既有调用点不传 → 行为与今天完全一致)。
+    fun remainingMs(): Long = if (deadlineMs <= 0L) Long.MAX_VALUE else (deadlineMs - System.currentTimeMillis()).coerceAtLeast(0L)
 
     // 播放路径优先级(P11-114):Dash = DASH 自合成优先(慢 SABR 首段被 stall 看门狗误杀场景的逃生通道);
     // WebSabr = 强制 WEB attested 路径优先(门控视频/4K);Sabr(默认)= NewPipe SABR 主链。
@@ -181,9 +190,20 @@ class YoutubePlaybackResolver(
     // ── P11-114(用户设置「WEB-SABR 优先」):强制先走 WEB attested 路径(桌面身份+cpn+poToken)──
     // 适用门控视频/4K 强制场景;失败标记后落回 NewPipe SABR 主链(主链 RELOAD 时 ② 兜底段
     // 因 isWebSabrFailed 不再重复尝试,防循环)。
-    if (webSabrFirst && poToken != null) {
+    // P11-126:先看剩余预算够不够——不够就不进 harvest(它最长会烧 40s+30s),直接落 NewPipe。
+    // 真机 09-19:harvest 冷启把 30s 预算吃光,整条 launch 被取消,连兜底会话也白建;这条早退
+    // 至少保证「兜底能落地、用户不必白等」。
+    val webSabrFirstBudgetShort = webSabrFirst && poToken != null && remainingMs() < MinWebSabrFirstBudgetMs
+    if (webSabrFirstBudgetShort) {
+      Log.w(
+        Tag,
+        "WEB-SABR 优先:剩余预算 ${remainingMs()}ms < ${MinWebSabrFirstBudgetMs}ms" +
+          "(harvest 冷启就要 4~11s,注定来不及)→ 跳过 WEB-SABR,直落 NewPipe 主链(不烧 WebView/solver)",
+      )
+    }
+    if (webSabrFirst && poToken != null && !webSabrFirstBudgetShort) {
       val webSabr = runCatching {
-        buildWebSabrFallback(videoId, poToken, signatureTimestamp, request, youtubeDefaultQuality)
+        buildWebSabrFallback(videoId, poToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs)
       }.onFailure {
         // P11-125:这条链整条包 runCatching——不落证就等于「失败且不知道为什么」。
         Log.w(Tag, "WEB-SABR(优先)链异常: ${it::class.simpleName}: ${it.message}", it)
@@ -272,11 +292,12 @@ class YoutubePlaybackResolver(
       // DASH/HLS,原 isDashFallbackFailed 通道不变。
       val webSabrDue =
         !SabrStreamRegistry.isWebSabrFailed(videoId) &&
+          remainingMs() >= MinWebSabrFirstBudgetMs &&
           (SabrStreamRegistry.isDashFallbackFailed(videoId) ||
             (SabrStreamRegistry.reloadCount(videoId) > 0 && poToken != null))
       if (webSabrDue) {
         val webSabr = runCatching {
-          buildWebSabrFallback(videoId, poToken, signatureTimestamp, request, youtubeDefaultQuality)
+          buildWebSabrFallback(videoId, poToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs)
         }.onFailure {
           // P11-125:同上——兜底段失败也必须留证。
           Log.w(Tag, "WEB-SABR(兜底)链异常: ${it::class.simpleName}: ${it.message}", it)
@@ -2133,7 +2154,7 @@ class YoutubePlaybackResolver(
    * 会话被看门狗/错误重载后必须能拿到新材料,否则只能退回已知会死的自造材料。
    * 拿到 POST 但解不出材料时顺带跑 [replayHarvestCapture] 留证据(那正是 20:57 判出 status=1 的手段)。
    */
-  private suspend fun harvestSessionMaterial(videoId: String, startMs: Long): HarvestMaterial? {
+  private suspend fun harvestSessionMaterial(videoId: String, startMs: Long, deadlineMs: Long = 0L): HarvestMaterial? {
     val harvester = sabrHarvester ?: return null
     val now = System.currentTimeMillis()
     harvestProbed[videoId]?.let { last ->
@@ -2145,13 +2166,34 @@ class YoutubePlaybackResolver(
     }
     harvestProbed[videoId] = now
     val t0 = System.currentTimeMillis()
-    var cap = runCatching { harvester.harvest(videoId, startMs = startMs, timeoutMs = 40_000L) }.getOrNull()
+    // P11-126:把 harvest 的两层超时收敛进剩余预算——原来 40s+30s 是硬编码,与外层起播预算完全
+    // 互不感知(真机 09-19:harvest 冷启烧到一半外层 30s 到期,整条 launch 被取消)。
+    // 每次尝试都留出 [FallbackReserveMs] 给 NewPipe 兜底落地(真机实测兜底约 6s),不够 [MinHarvestAttemptMs]
+    // 就干脆不发——发一次注定被砍的 harvest 只会白烧 WebView/solver。
+    fun harvestBudgetMs(hardCapMs: Long): Long {
+      if (deadlineMs <= 0L) return hardCapMs
+      val remaining = (deadlineMs - System.currentTimeMillis()).coerceAtLeast(0L)
+      return minOf(hardCapMs, (remaining - FallbackReserveMs).coerceAtLeast(0L))
+    }
+
+    val firstBudget = harvestBudgetMs(HarvestColdCapMs)
+    if (firstBudget < MinHarvestAttemptMs) {
+      Log.w(Tag, "P11-118 harvest: 剩余预算只够 ${firstBudget}ms(< ${MinHarvestAttemptMs}ms)→ 放弃采集,直接自造材料(让兜底有时间落地)")
+      harvestProbed.remove(videoId)
+      return null
+    }
+    var cap = runCatching { harvester.harvest(videoId, startMs = startMs, timeoutMs = firstBudget) }.getOrNull()
     if (cap == null) {
-      // P11-118d:首次(冷)harvest 要把 WebView 从零建起来 + 加载真实首页建立上下文,常常吃不进 40s
+      // P11-118d:首次(冷)harvest 要把 WebView 从零建起来 + 加载真实首页建立上下文,常常吃不进
       // 窗口(r1956 真机:第一次 `NO CAPTURE after 40009ms`,而紧接着的重试只花 1932ms)。这里就地补一次
       // 重试而不是让上层 auto-retry 兜——省掉一整轮播放失败。
       Log.w(Tag, "P11-118 harvest: cold attempt 无捕获(${System.currentTimeMillis() - t0}ms)→ 立即重试一次(WebView 已热)")
-      cap = runCatching { harvester.harvest(videoId, startMs = startMs, timeoutMs = 30_000L) }.getOrNull()
+      val retryBudget = harvestBudgetMs(HarvestWarmCapMs)
+      if (retryBudget < MinHarvestAttemptMs) {
+        Log.w(Tag, "P11-118 harvest: 重试预算只够 ${retryBudget}ms(< ${MinHarvestAttemptMs}ms)→ 不重试")
+      } else {
+        cap = runCatching { harvester.harvest(videoId, startMs = startMs, timeoutMs = retryBudget) }.getOrNull()
+      }
     }
     val ms = System.currentTimeMillis() - t0
     if (cap == null) {
@@ -2289,6 +2331,8 @@ class YoutubePlaybackResolver(
     signatureTimestamp: Int?,
     request: PlaybackRequest,
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+    // P11-126:起播给的绝对 deadline(0=不限),透传给 [harvestSessionMaterial] 收敛 harvest 超时。
+    deadlineMs: Long = 0L,
   ): Pair<PlaybackInfo, String>? {
     if (poToken == null) {
       Log.w(Tag, "WEB-SABR: no poToken → abort")
@@ -2300,7 +2344,7 @@ class YoutubePlaybackResolver(
     // seq=1..4),且 A(FreeTube 式 3 头)/ B(补 Cookie+visitor)两种传输形态结果**完全相同**
     // ⇒ 追了 15 轮的 nag 差异**只在材料**,不在身份/传输。故 WEB-SABR 会话优先用 harvest 材料;
     // 抓不到(风控空白页/超时/body 空)才回退我们自造的 /player 材料(见下方 material==null 分支)。
-    val material = harvestSessionMaterial(videoId, request.startPositionMs)
+    val material = harvestSessionMaterial(videoId, request.startPositionMs, deadlineMs)
     if (material != null) {
       Log.i(
         Tag,
@@ -2948,6 +2992,34 @@ class YoutubePlaybackResolver(
     /** P11-118g:harvest 重新采集的时间窗——窗口内不重复采集(防风控/防 auto-retry 立刻重打),
      *  窗口外允许重采(会话被重载后必须能拿到新材料)。取值覆盖一次典型重载(错误/看门狗 → 重新 resolve)。 */
     private const val HARVEST_RETRY_WINDOW_MS = 45_000L
+
+    /**
+     * P11-126:进 WEB-SABR 优先/兜底前要求的最小**剩余**预算。低于它就跳过整条 WEB-SABR,
+     * 直接落 NewPipe 主链。
+     *
+     * 依据(真机 09-19 `logs_live_20260919_214431.log`):WEB-SABR 优先链在真正开始 harvest 之前
+     * 已花掉 ~13.7s(PO token 铸造 9.3s + player jsUrl/signatureTimestamp 4.4s);harvest **健康**时
+     * watch 页 1~2s 就能出捕获(09-17 实测 1.4s),但**冷启**(建 WebView + 载首页)要 4~11s,不健康时
+     * 更要烧满 40s+30s。取 45s = 「至少还够一次冷启 harvest + /player + solver + 建会话」。
+     */
+    private const val MinWebSabrFirstBudgetMs = 45_000L
+
+    /**
+     * P11-126:给 NewPipe 兜底预留的落地时间。每次 harvest 尝试的预算 = min(硬上限, 剩余 - 本值),
+     * 保证 harvest 无论怎么烧,后面那条兜底(NewPipe SABR/DASH)仍有预算可用——真机 09-19 的教训
+     * 就是 harvest 把预算吃光后,已经建好的兜底会话被整个丢弃。
+     * 取值依据:真机兜底实测 21:42:34 → 21:42:40.04(约 6s),留 12s 余量。
+     */
+    private const val FallbackReserveMs = 12_000L
+
+    /** P11-126:低于这个剩余预算就不发这次 harvest——发一次注定被砍的只会白烧 WebView/solver。 */
+    private const val MinHarvestAttemptMs = 3_000L
+
+    /** P11-126:harvest 冷启(建 WebView + 载首页)的硬上限,原 `timeoutMs = 40_000L`。 */
+    private const val HarvestColdCapMs = 40_000L
+
+    /** P11-126:harvest 热态重试的硬上限,原 `timeoutMs = 30_000L`。 */
+    private const val HarvestWarmCapMs = 30_000L
 
     /** googlevideo 直链无需 B 站 Cookie；仅带 youtube Referer/Origin。 */
     val YoutubePlaybackHeaders = BiliPlaybackHeaders(
