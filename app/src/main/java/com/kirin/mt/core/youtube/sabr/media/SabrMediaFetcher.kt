@@ -89,6 +89,22 @@ internal class SabrMediaFetcher(
   private val initializedFormats = mutableMapOf<Int, InitializedFormat>()
 
   /**
+   * 2026-09-20(C1「跟着服务端走」):**服务端实际推来的视频 itag 集合**(FORMAT_INITIALIZATION_METADATA
+   * 里出现过的,含被白名单跳过的)。
+   *
+   * 依据(r2019 真机):材料会话的供流格式**绑定在浏览器那一场会话上** —— 服务端只推 itag=251/396
+   * (浏览器 Auto 选的),而我们选 140/315;两者不相交 ⇒ 我们的档从不被初始化 ⇒ `no seg 0 [fmt=null]`
+   * 无限循环。**我们能选的只有服务端愿意给的**,所以选档必须在它推来的集合内进行。
+   *
+   * 自纠正:pot-less / 非材料会话里服务端推的就是我们的档 ⇒ 该集合≈我们的档 ⇒ 行为不变。
+   */
+  private val serverPushedVideoItags: MutableSet<Int> =
+    java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+  /** C1:当前已知的「服务端推来的视频 itag」快照(空 = 还没收到任何 FORMAT_INIT)。 */
+  fun serverServedVideoItags(): Set<Int> = serverPushedVideoItags
+
+  /**
    * P11-130(升档预加载):下一档候选 itag —— 由 [DefaultSabrChunkSource] 在「下一档可负担 + 缓冲健康」
    * 时上报。生效期内本 fetcher 把该档一起写进请求的 `preferredVideoFormatIds`、**不报它的 bufferedRange**
    * (报"没有"=请把数据推给我)、并在清理非当前格式时保住它,让服务端把它的 init(+段)推回来缓存
@@ -1149,9 +1165,13 @@ internal class SabrMediaFetcher(
         // 2026-08-31:同 MEDIA_HEADER 白名单,并入在途段请求 itag(见 pendingRequestItags)。
         val whitelistedItags = setOfNotNull(audioFormat?.itag, videoFormat?.itag) + pendingRequestItags
         if (whitelistedItags.isNotEmpty() && fi.itag !in whitelistedItags) {
+          // C1:即便是被跳过的,也记进「服务端推来的集合」—— 被跳过恰恰说明服务端愿意给、而我们没选它,
+          // 这正是选档该考虑的候选(见 serverPushedVideoItags)。
+          serverPushedVideoItags.add(fi.itag)
           Log.w(tag, "skip ad/unrequested FORMAT_INIT itag=${fi.itag} (whitelist=$whitelistedItags)")
           return
         }
+        serverPushedVideoItags.add(fi.itag)
         Log.i(tag, "FORMAT_INITIALIZATION_METADATA itag=${fi.itag} endSegNum=${fi.endSegmentNumber} duration=${fi.endTimeMs}ms")
         initializedFormats[fi.itag] = InitializedFormat(
           id = FormatId(fi.itag, fi.lastModified, fi.xtags, 0),

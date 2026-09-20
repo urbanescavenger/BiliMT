@@ -391,6 +391,24 @@ class HeightAwareAdaptiveTrackSelection(
    */
   private var freezeEpisodeSuppressLogged = false
 
+  /**
+   * 2026-09-20(C1「跟着服务端走」):**服务端实际推来的视频 itag 集合**,由 [DefaultSabrChunkSource] 每次
+   * getNextChunk 从 fetcher 同步。
+   *
+   * 依据(r2019 真机):材料会话的供流格式**绑定在浏览器那一场会话上** —— 服务端只推 itag=251(Opus 音频)/
+   * 396(360p AV1)(=浏览器 Auto 选的),而我们选 140/315;交集空 ⇒ 我们的档从不被初始化 ⇒
+   * `no seg 0 [fmt=null]` 无限循环。**能选的只有服务端愿意给的**,所以候选必须收在这个集合内。
+   *
+   * 三条防线:①空集合 = 还没收到 FORMAT_INIT → 不收窄(冷启动照常);②集合与本组**无交集** = 数据异常或
+   * 组不对 → 不收窄(否则会把候选清空成死锁);③自纠正:pot-less / 非材料会话里服务端推的就是我们的档
+   * ⇒ 集合≈我们的档 ⇒ 行为不变。
+   */
+  @Volatile private var serverServedItags: Set<Int> = emptySet()
+
+  fun noteServerServedItags(itags: Set<Int>) {
+    serverServedItags = itags
+  }
+
   /** 2026-08-31:顶档 stall 冷却的跳过日志是否已打过(每 selection 实例一次,防每 chunk 刷屏)。 */
   private var topTierStallBlockLogged = false
 
@@ -485,6 +503,7 @@ class HeightAwareAdaptiveTrackSelection(
       var lowerHeight = -1
       for (i in 0 until length) {
         if (isTrackExcluded(i, nowMs)) continue
+        if (restrictToServed && i !in servedInGroup!!) continue
         val f = getFormat(i)
         // 2026-09-01 VP9 粘性:同 height 多 codec 变体粘顶档 codec——水位急救降档(如 1440p→1080p)
         // 旧规则会选中 299(avc,码率更高),把 vp9→avc 跨 codec 换解码器引进降档路径。
@@ -567,12 +586,18 @@ class HeightAwareAdaptiveTrackSelection(
     val isTopTier = length > 1 && getFormat(0).height >= TOP_TIER_MIN_HEIGHT
     // 2026-08-31 ②stall 重载记忆:起播期 stall 重载后冷却期内跳过顶档(SabrAbrMemory,跨重载单例)。
     val topTierStallBlocked = isTopTier && SabrAbrMemory.isTopTierStartupBlocked()
+    // C1:把候选收窄到「服务端真的会推的 itag」。三道防线见 serverServedItags 说明。
+    val servedNow = serverServedItags
+    val servedInGroup = if (servedNow.isEmpty()) null
+      else (0 until length).filter { itagOf(getFormat(it)) in servedNow }.toSet()
+    val restrictToServed = servedInGroup != null && servedInGroup.isNotEmpty()
     // 2026-08-31 ①逐级爬:升档候选只允许「下一个更高分辨率档」(未排除轨中最小的、严格高于当前的
     // height;同 height 多 codec 变体全部放行)——爆发 est 误判的最坏后果从「一步到顶 4K」降为
     // 「多升一档」,真扛不住由滞回/水位急救接管。降档不在此限(放开全部低档一步落位的既有语义)。
     var nextUpgradeHeight = Int.MAX_VALUE
     for (i in 0 until length) {
       if (isTrackExcluded(i, nowMs)) continue
+      if (restrictToServed && i !in servedInGroup!!) continue
       val h = getFormat(i).height
       if (h > currentHeight && h < nextUpgradeHeight) nextUpgradeHeight = h
     }
@@ -591,6 +616,7 @@ class HeightAwareAdaptiveTrackSelection(
       prevBufferedUsForTrial < trialThresholdUs
     for (i in 0 until length) {
       if (isTrackExcluded(i, nowMs)) continue
+      if (restrictToServed && i !in servedInGroup!!) continue
       val f = getFormat(i)
       val isUpgrade = f.height > currentHeight
       // 2026-08-31 ①逐级爬:越级候选(高于下一档)跳过。非顶档升档在冷启动(sustained=-1 证据不足)

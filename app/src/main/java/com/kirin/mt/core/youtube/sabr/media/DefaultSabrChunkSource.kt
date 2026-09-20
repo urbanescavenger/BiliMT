@@ -272,6 +272,9 @@ internal class DefaultSabrChunkSource(
     // 服务端照旧从 seg 0 起推。缓冲水位(noteBufferedAheadMs)保持**仅视频轨**(音频缓冲远超需求会污染
     // 滑行量判定,见上),两者语义不同、不能一起搬出去。
     fetcher.notePlaybackPositionMs(Util.usToMs(playbackPositionUs))
+    // 2026-09-20(C1):把「服务端实际推来的视频 itag」同步给选档 —— 材料会话里服务端只服务它那场会话
+    // 绑定的格式(r2019:只推 251/396),我们选的档不被初始化 ⇒ no seg 死循环;选档收在这个集合内才通。
+    (trackSelection as? HeightAwareAdaptiveTrackSelection)?.noteServerServedItags(fetcher.serverServedVideoItags())
     if (trackType == C.TRACK_TYPE_VIDEO) {
       fetcher.noteBufferedAheadMs(Util.usToMs(bufferedDurationUs))
       // P11-130(升档预加载):下一档可负担 + 缓冲健康 → 让 fetcher 提前把它的 init(+段)取回来,
