@@ -466,6 +466,9 @@ class HeightAwareAdaptiveTrackSelection(
   /** 2026-08-31:顶档 stall 冷却的跳过日志是否已打过(每 selection 实例一次,防每 chunk 刷屏)。 */
   private var topTierStallBlockLogged = false
 
+  /** P11-153:试探被「超容量」拒绝的一次性日志(每实例一次,防每 chunk 刷屏)。 */
+  private var trialOverCapacityLogged = false
+
   /** 2026-09-01 满缓冲试探:本实例见过的最高缓冲水位(us)——试探水位线 = max(地板, 0.8×此值)。 */
   private var maxObservedBufferedUs = 0L
 
@@ -743,8 +746,23 @@ class HeightAwareAdaptiveTrackSelection(
         val sustainedGateFail = !canUpgrade || (sustained in 0 until required)
         val topTierGateFail = isTopTier && i == 0 &&
           sustained < f.bitrate * TOP_TIER_SUSTAINED_PERMILLE / 1000L
+        // P11-153(②,r2048 TV 真机):**试探放行也要有上限** —— 满缓冲只该"绕过偏悲观的估计",
+        // 不该授权"超过实测容量 1.5 倍"的跳档。依据:23:15:55 `trial upshift … → itag302(720p)
+        // declared=18619097`(18.6M)而实测容量 `cap≈9M` ⇒ 超容量 2 倍 ⇒ 切轨后新轨喂不动、老轨缓冲
+        // 又被 `cleanup dropped formats=[244]` 丢掉 ⇒ **视频冻 33 秒**(音频靠自己缓冲继续播)。
+        val trialOverCapacity = trialUpgrade &&
+          required > upgradeEstFloor * TRIAL_MAX_OVER_CAPACITY_PERMILLE / 1000L
         if (capacityGateFail || sustainedGateFail) {
-          if (topTierGateFail || !trialUpgrade) continue
+          if (trialOverCapacity && !trialOverCapacityLogged) {
+            trialOverCapacityLogged = true
+            Log.i(
+              "YtSabrAbr",
+              "trial refused (over-capacity): itag${itagOf(f)}(${f.height}p) declared=${f.bitrate / 1000}K " +
+                "> floor=${upgradeEstFloor / 1000}K×${TRIAL_MAX_OVER_CAPACITY_PERMILLE / 1000} — " +
+                "满缓冲只绕过悲观估计,不授权超容量跳档(P11-153)",
+            )
+          }
+          if (topTierGateFail || !trialUpgrade || trialOverCapacity) continue
           bestIsTrial = true
         } else if (topTierGateFail) {
           continue
@@ -818,11 +836,21 @@ class HeightAwareAdaptiveTrackSelection(
         // 2.8M 爬回 13.4M 门槛花了 ~2min 才到 1440p);梯子误判由水位急救/滞回兜底。证据成熟后的
         // 升档(稳态会话)保持重锚语义不变。
         if (sustained >= 0L) {
-          (bandwidthMeter as? SabrBandwidthMeter)?.reseedToBitrate(newDeclared)
+          // ── P11-153(①b,2026-09-20 r2048 TV 真机):**重锚不得锚到垃圾声明值** ────────────────
+          // 重锚的初衷是「est 从新档的真实消耗起步」;但当声明的 `bitrate` 本身失真(那场 720p60 声明
+          // **18.6M**,144p 声明 4.7M —— vp9 轨缺 ItagItem 时回落 VBR 峰值,见
+          // [YoutubePlaybackResolver.newPipeVideoRaw]),重锚等于把 est 一夜抬到 18.6M,后续所有判据
+          // 都建立在假数据上(`upshift reseed: est baseline → 18619097`)。
+          // 故:有实测容量时以它为上限(容量是"真给过多少"的证据,比声明可信),夹住再锚。
+          val capacity = (bandwidthMeter as? SabrBandwidthMeter)?.getRefillCapacityEstimate() ?: -1L
+          val anchor = if (capacity > 0L) minOf(newDeclared, capacity * RESEED_MAX_OVER_CAPACITY_PERMILLE / 1000L)
+          else newDeclared
+          (bandwidthMeter as? SabrBandwidthMeter)?.reseedToBitrate(anchor)
           Log.i(
             "YtSabrAbr",
-            "upshift reseed: est baseline → $newDeclared (declared=${getFormat(selected).bitrate} " +
-              "itag${itagOf(getFormat(selected))})"
+            "upshift reseed: est baseline → $anchor" +
+              (if (anchor != newDeclared) " (声明 $newDeclared 失真,按实测容量 $capacity 夹住)" else "") +
+              " (declared=${getFormat(selected).bitrate} itag${itagOf(getFormat(selected))})",
           )
         } else {
           Log.i(
@@ -905,6 +933,20 @@ class HeightAwareAdaptiveTrackSelection(
      * 口径下的 VBR 尖峰余量(本视频 315 声明 ~23M → 门槛 ~25.3M)。
      */
     const val TOP_TIER_SUSTAINED_PERMILLE = 1100L
+
+    /**
+     * P11-153:满缓冲试探允许的最大「超容量」倍率(千分比)。
+     *
+     * 满缓冲试探的初衷是绕过**偏悲观**的 est/sus 估计(pacing 失真),不是授权跳到喂不动的档;
+     * 超过实测容量这一倍率的跳档已被真机证明会把画面冻住(见 [trialOverCapacity] 处注释)。
+     */
+    const val TRIAL_MAX_OVER_CAPACITY_PERMILLE = 1500L
+
+    /**
+     * P11-153(①b):重锚(升档重锚 est 基线)允许的最大「超实测容量」倍率(千分比)。
+     * 声明值本身失真时,以实测容量为准夹住,别把假数据锚进 est 基线。
+     */
+    const val RESEED_MAX_OVER_CAPACITY_PERMILLE = 1200L
     /**
      * 2026-08-30:顶档定向冷却时长(ms)——水位急救从顶档降下后,顶档 excludeTrack 这段时间,
      * 防「重填突发过门槛→升 4K→贴地漏光→又降」边缘横跳(23:28-31 真机 3.5min 两轮循环)。

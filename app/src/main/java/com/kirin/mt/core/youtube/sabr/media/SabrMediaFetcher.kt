@@ -1059,7 +1059,17 @@ internal class SabrMediaFetcher(
       // 真机 2026-09-20 13:32 就是这样挂死的:`fetch rn=2` 发出后既无 REAL 也无 exception,缓冲耗尽、
       // 播放冻在 34.5s 达 54 秒。给整调用一个上限后,挂死的请求会被切断 → IOException →
       // 已有的 onPlayerErrorChanged error-retry 链接管(那条链本身是好的,缺的只是「谁来触发它」)。
-      call.timeout().timeout(SabrCallTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+      //
+      // ── P11-153(③,2026-09-20 r2048 TV 真机):**上限按档高自适应,低档不再等满 40 秒** ────────
+      // 那场 23:15:59 之后的 33 秒里**一个新请求都没发**(慢滴占着单并发许可),而整调用上限是 40s
+      // ⇒ 用户在第 33 秒手动退出 —— 也就是说**冻结时长 ≈ 40s 上限本身**。但 40s 是 P11-134 为
+      // **4K 大段**(实测 28.2s)留的余量,不能一刀切小。故按**本次请求的档高**分档:
+      //   ≥1440p:保留 [SabrCallTimeoutMs](40s,大段合法慢)
+      //   ≤1080p:收紧到 [SabrCallTimeoutMsLow](18s)——低档段小,慢滴到这个量级已无供给价值,
+      //          早切早让 error-retry 链接管(4K 大段不受影响)。
+      val reqHeight = session.videoFormats.firstOrNull { it.itag == req.formatItag }?.height ?: 0
+      val callCapMs = if (reqHeight >= 1440) SabrCallTimeoutMs else SabrCallTimeoutMsLow
+      call.timeout().timeout(callCapMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       val resp = call.execute().use { response ->
         val code = response.code
         if (code != 200) {
@@ -1384,6 +1394,13 @@ internal class SabrMediaFetcher(
      * 只切真挂死的慢滴请求。见调用点注释。
      */
     const val SabrCallTimeoutMs = 40_000L
+
+    /**
+     * P11-153(③):**≤1080p 档的整调用上限**(ms)。低档段小,慢滴到这个量级已无供给价值 ——
+     * 早切早让 error-retry 链接管;≥1440p 仍用 [SabrCallTimeoutMs](4K 大段实测可达 28.2s)。
+     * 依据(r2048 TV 真机):切轨后 33 秒无新请求(慢滴占着单并发许可),而 40s 上限还没到 ⇒ 用户先退出。
+     */
+    const val SabrCallTimeoutMsLow = 18_000L
 
     /** transient 重试上限(耗尽→SabrTerminalException→evict)。对齐旧 SabrDashDataSource BACKOFF_MAX_ATTEMPTS。 */
     const val MAX_ATTEMPTS = 6
