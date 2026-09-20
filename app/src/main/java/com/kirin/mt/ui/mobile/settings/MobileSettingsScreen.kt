@@ -70,6 +70,7 @@ import com.kirin.mt.core.i18n.ChineseTextVariant
 import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.PlaybackCdnPreference
+import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.player.YoutubeStartQuality
@@ -215,36 +216,12 @@ fun MobileSettingsScreen(
       onSelected = { scope.launch { appSettingsStore.setPlaybackCdnPreference(it) } },
     )
     MobileEnumPickerRow(
-      title = stringResource(R.string.settings_youtube_default_quality_title),
-      description = stringResource(R.string.settings_youtube_default_quality_description),
-      selected = settings.youtubeDefaultQuality,
-      selectedLabel = settings.youtubeDefaultQuality.label,
-      options = enumOptions(YoutubeDefaultQuality.entries) { it.label },
-      onSelected = { scope.launch { appSettingsStore.setYoutubeDefaultQuality(it) } },
-    )
-    MobileEnumPickerRow(
-      title = stringResource(R.string.settings_youtube_start_quality_title),
-      description = stringResource(R.string.settings_youtube_start_quality_description),
-      selected = settings.youtubeStartQuality,
-      selectedLabel = settings.youtubeStartQuality.label,
-      options = enumOptions(YoutubeStartQuality.entries) { it.label },
-      onSelected = { scope.launch { appSettingsStore.setYoutubeStartQuality(it) } },
-    )
-    MobileEnumPickerRow(
       title = stringResource(R.string.settings_playback_buffer_title),
       description = stringResource(R.string.settings_playback_buffer_description),
       selected = settings.bufferMax,
       selectedLabel = settings.bufferMax.label,
       options = enumOptions(PlaybackBufferMax.entries) { it.label },
       onSelected = { scope.launch { appSettingsStore.setPlaybackBufferMax(it) } },
-    )
-    MobileEnumPickerRow(
-      title = stringResource(R.string.settings_youtube_content_region_title),
-      description = stringResource(R.string.settings_youtube_content_region_description),
-      selected = settings.youtubeContentRegion,
-      selectedLabel = settings.youtubeContentRegion.label,
-      options = enumOptions(YoutubeContentRegion.entries) { it.label },
-      onSelected = { scope.launch { appSettingsStore.setYoutubeContentRegion(it) } },
     )
     // NOTE: seekPreviewSpritesEnabled 为 TV 播放器专属(TV 才有 seek preview 缩略图),移动端不生效,已隐藏。
     MobileSwitchRow(
@@ -262,6 +239,12 @@ fun MobileSettingsScreen(
       onCheckedChange = { scope.launch { appSettingsStore.setAutoDeleteWatchedCache(it) } },
     )
     // NOTE: showClock / showMiniProgressBar 为 TV 播放器专属(移动端不消费),已隐藏移动端设置页。字段/逻辑保留。
+
+    // ===== YouTube 设置(P11-131:可折叠一级分组,全部 YouTube 项收拢于此;默认折叠) =====
+    MobileYoutubeSettingsSection(
+      settings = settings,
+      appSettingsStore = appSettingsStore,
+    )
 
     // ===== 界面与交互 =====
     MobileSettingsSectionHeader(stringResource(R.string.settings_interaction_section))
@@ -382,12 +365,6 @@ fun MobileSettingsScreen(
       settings = settings,
       appSettingsStore = appSettingsStore,
       tvboxRepository = tvboxRepository,
-    )
-
-    // ===== YouTube SABR 实验:Piped 后端 + itag 诊断(alpha.84,对齐 TV SettingsScreen) =====
-    MobileYoutubeSabrSection(
-      settings = settings,
-      appSettingsStore = appSettingsStore,
     )
 
     // ===== 程序更新(2026-08-30 调整:与 TV 端对齐,移到设置列表最末尾) =====
@@ -1222,13 +1199,17 @@ private fun MobileTvboxEditDialog(
 }
 
 /**
- * YouTube SABR 实验区(可折叠):启用 Piped 后端开关 + Piped 实例 URL 行(点按弹窗编辑)+
- * 锁定会话视频轨诊断开关。镜像 [MobileIptvSection] 的折叠段结构,对齐 TV SettingsScreen
- * 的三行 YouTube SABR 实验(alpha.84)。resolve() 读这三项:开 Piped 走 Piped 后端修
- * RELOAD_PLAYER_RESPONSE 死循环,失败回退 NewPipe;空串实例用默认 [DEFAULT_PIPED_INSTANCE]。
+ * P11-131「YouTube 设置」——可折叠一级分组,把**全部** YouTube 项收拢在一处(此前三个散在
+ * 「播放设置」、三个埋在「YouTube SABR 实验」折叠区)。镜像 [MobileIptvSection] 的折叠段结构,
+ * 与 TV SettingsScreen 的同名分组对齐。**默认折叠**(移动端既有折叠组一致)。
+ *
+ * 其中「YouTube 解码器」「YouTube 默认倍速」是 P11-131 从 B站/YouTube 共享设置里**拆出来**的
+ * 两份独立值(读取端在新键缺席时回落旧共享键,存量用户观感不变)。
+ * Piped 三项由 resolve() 消费:开 Piped 走 Piped 后端修 RELOAD_PLAYER_RESPONSE 死循环,失败
+ * 回退 NewPipe;空串实例用默认 [DEFAULT_PIPED_INSTANCE]。
  */
 @Composable
-private fun MobileYoutubeSabrSection(
+private fun MobileYoutubeSettingsSection(
   settings: AppSettings,
   appSettingsStore: AppSettingsStore,
 ) {
@@ -1237,18 +1218,62 @@ private fun MobileYoutubeSabrSection(
   var expanded by remember { mutableStateOf(false) }
 
   MobileSettingsSectionHeader(
-    text = stringResource(R.string.settings_youtube_sabr_section),
+    text = stringResource(R.string.settings_youtube_group_title),
     onClick = { expanded = !expanded },
     trailing = {
       Icon(
         imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-        contentDescription = null,
+        contentDescription = stringResource(
+          if (expanded) R.string.settings_group_collapse else R.string.settings_group_expand,
+        ),
         tint = MaterialTheme.colorScheme.primary,
       )
     },
   )
   androidx.compose.animation.AnimatedVisibility(visible = expanded) {
     Column {
+      MobileEnumPickerRow(
+        title = stringResource(R.string.settings_youtube_default_quality_title),
+        description = stringResource(R.string.settings_youtube_default_quality_description),
+        selected = settings.youtubeDefaultQuality,
+        selectedLabel = settings.youtubeDefaultQuality.label,
+        options = enumOptions(YoutubeDefaultQuality.entries) { it.label },
+        onSelected = { scope.launch { appSettingsStore.setYoutubeDefaultQuality(it) } },
+      )
+      MobileEnumPickerRow(
+        title = stringResource(R.string.settings_youtube_start_quality_title),
+        description = stringResource(R.string.settings_youtube_start_quality_description),
+        selected = settings.youtubeStartQuality,
+        selectedLabel = settings.youtubeStartQuality.label,
+        options = enumOptions(YoutubeStartQuality.entries) { it.label },
+        onSelected = { scope.launch { appSettingsStore.setYoutubeStartQuality(it) } },
+      )
+      MobileEnumPickerRow(
+        title = stringResource(R.string.settings_youtube_default_speed_title),
+        description = stringResource(R.string.settings_youtube_default_speed_description),
+        selected = settings.youtubeDefaultSpeed,
+        selectedLabel = settings.youtubeDefaultSpeed.label,
+        options = enumOptions(DefaultPlaybackSpeed.entries) { it.label },
+        onSelected = { scope.launch { appSettingsStore.setYoutubeDefaultSpeed(it) } },
+      )
+      MobileEnumPickerRow(
+        title = stringResource(R.string.settings_youtube_codec_title),
+        description = stringResource(R.string.settings_youtube_codec_description),
+        selected = settings.youtubePlaybackCodecPreference,
+        selectedLabel = codecLabel(settings.youtubePlaybackCodecPreference),
+        options = enumOptions(PlaybackCodecPreference.entries) { codecLabel(it) },
+        onSelected = { scope.launch { appSettingsStore.setYoutubePlaybackCodecPreference(it) } },
+      )
+      MobileEnumPickerRow(
+        title = stringResource(R.string.settings_youtube_content_region_title),
+        description = stringResource(R.string.settings_youtube_content_region_description),
+        selected = settings.youtubeContentRegion,
+        selectedLabel = settings.youtubeContentRegion.label,
+        options = enumOptions(YoutubeContentRegion.entries) { it.label },
+        onSelected = { scope.launch { appSettingsStore.setYoutubeContentRegion(it) } },
+      )
+      // SABR 相关三项保留原纯标签分组,信息结构不变。
+      MobileSettingsSectionHeader(stringResource(R.string.settings_youtube_sabr_section))
       MobileSwitchRow(
         title = stringResource(R.string.settings_youtube_use_piped_title),
         description = stringResource(R.string.settings_youtube_use_piped_description),

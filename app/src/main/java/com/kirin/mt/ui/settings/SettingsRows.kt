@@ -13,7 +13,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -59,6 +63,61 @@ import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
 import com.kirin.mt.ui.theme.LocalHomeColors
+
+/**
+ * P11-131:可折叠一级分组的组头(TV)。与 [SettingsSectionTitle] 不同——**可聚焦可点击**,因为它同时是
+ * 开合开关。外观沿用节标题(次要色 + SectionTitle 字号),右侧给展开/收起提示与箭头。
+ *
+ * 高度取 [BiliSizing.SettingsRowHeight],与其它行一致,免得 [settingsRowFallbackHeightPx] 的滚动估算失真。
+ */
+@Composable
+internal fun SettingsCollapsibleSectionTitle(
+  text: String,
+  expanded: Boolean,
+  modifier: Modifier = Modifier,
+  onFocused: () -> Unit = {},
+  onClick: () -> Unit,
+) {
+  val homeColors = LocalHomeColors.current
+  BiliFocusableSurface(
+    scaleOnFocus = false,
+    shadowOnFocus = false,
+    shape = RoundedCornerShape(BiliRadius.Panel),
+    onClick = onClick,
+    onFocused = onFocused,
+    modifier = modifier
+      .fillMaxWidth()
+      .height(BiliSizing.SettingsRowHeight),
+  ) {
+    Row(
+      modifier = Modifier
+        .fillMaxSize()
+        .padding(start = BiliSpacing.Lg, end = BiliSpacing.Xl),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Text(
+        text = text,
+        color = homeColors.textSecondary,
+        fontSize = BiliTypography.SectionTitle,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.weight(1f),
+      )
+      Text(
+        text = stringResource(
+          if (expanded) R.string.settings_group_collapse else R.string.settings_group_expand,
+        ),
+        color = homeColors.textSecondary,
+        fontSize = BiliTypography.BodySmall,
+      )
+      Icon(
+        imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+        contentDescription = null,
+        tint = homeColors.accent,
+        modifier = Modifier.padding(start = BiliSpacing.Xs),
+      )
+    }
+  }
+}
 
 @Composable
 internal fun SettingsOptionRow(

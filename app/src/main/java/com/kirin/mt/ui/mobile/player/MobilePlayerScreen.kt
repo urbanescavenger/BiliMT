@@ -326,6 +326,8 @@ fun MobilePlayerScreen(
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
   playbackCodecPreference: PlaybackCodecPreference,
+  /** P11-131:YouTube 专用解码器(与 [playbackCodecPreference] 拆开,互不影响)。 */
+  youtubePlaybackCodecPreference: PlaybackCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
   playbackCdnPreference: PlaybackCdnPreference,
   youtubeDefaultQuality: YoutubeDefaultQuality,
@@ -870,6 +872,8 @@ fun MobilePlayerScreen(
         qualityPreference = playbackQualityPreference,
         youtubeDefaultQuality = youtubeDefaultQuality,
         youtubeStartQuality = youtubeStartQuality,
+        // P11-131:YouTube 走自己那份解码器;B站 路径在 repository 内部仍用 codecPreference。
+        youtubeCodecPreference = youtubePlaybackCodecPreference,
       )
       selectedQualityId = info.selectedQuality.id
       actualQualityId = info.selectedQuality.id
@@ -1261,7 +1265,7 @@ fun MobilePlayerScreen(
   // 加载(镜像 TV PlayerScreen 的 load 序列)。key 不含 activeRequest:自动连播/用户切集/切画质
   // 由显式 loadRequest 调用触发(见 ExoPlayer 监听器与各 onClick),避免后台重组被推迟时无法加载;
   // 本 effect 只处理初始加载、新视频(request 变)、设置变更、error-retry(retryKey 变)。
-  LaunchedEffect(request, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
+  LaunchedEffect(request, playbackCodecPreference, youtubePlaybackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
     loadRequest(activeRequest)
   }
 

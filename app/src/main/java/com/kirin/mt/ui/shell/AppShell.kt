@@ -233,6 +233,12 @@ fun BiliTvApp(
   } else {
     settings.playbackCodecPreference
   }
+  // P11-131:YouTube 侧同样受低配档强制 H264——lowSpecMode 是设备能力兜底,不是按内容源的偏好。
+  val effectiveYoutubePlaybackCodecPreference = if (settings.lowSpecMode) {
+    PlaybackCodecPreference.H264
+  } else {
+    settings.youtubePlaybackCodecPreference
+  }
   val coroutineScope = rememberCoroutineScope()
   val cdnSpeedTester = remember { CdnSpeedTester(playbackHttpClient) }
   val lastPlayedStore = remember { LastPlayedStore(context) }
@@ -933,6 +939,17 @@ fun BiliTvApp(
                     appSettingsStore.setYoutubeDefaultQuality(quality)
                   }
                 },
+                // P11-131:YouTube 拆出来的两项——只写 YouTube 自有键,B站 的 setter 不受影响。
+                onYoutubePlaybackCodecPreferenceChange = { preference ->
+                  coroutineScope.launch {
+                    appSettingsStore.setYoutubePlaybackCodecPreference(preference)
+                  }
+                },
+                onYoutubeDefaultSpeedChange = { speed ->
+                  coroutineScope.launch {
+                    appSettingsStore.setYoutubeDefaultSpeed(speed)
+                  }
+                },
                 onYoutubeStartQualityChange = { quality ->
                   coroutineScope.launch {
                     appSettingsStore.setYoutubeStartQuality(quality)
@@ -1611,12 +1628,14 @@ fun BiliTvApp(
               playbackHttpClient = playbackHttpClient,
               cdnSelector = cdnSelector,
               playbackCodecPreference = effectivePlaybackCodecPreference,
+              youtubePlaybackCodecPreference = effectiveYoutubePlaybackCodecPreference,
               playbackQualityPreference = settings.playbackQualityPreference,
               youtubeDefaultQuality = settings.youtubeDefaultQuality,
               youtubeStartQuality = settings.youtubeStartQuality,
               // P11-126:交付档决定起播预算(WEB-SABR 优先链固定开销 ~21-28s,30s 必然超时)。
               youtubeDeliveryPriority = settings.youtubeDeliveryPriority,
               defaultPlaybackSpeed = settings.defaultPlaybackSpeed,
+              youtubeDefaultSpeed = settings.youtubeDefaultSpeed,
               bufferMaxMs = settings.bufferMax.ms,
               playbackCdnPreference = settings.playbackCdnPreference,
               seekPreviewSpritesEnabled = settings.seekPreviewSpritesEnabled,

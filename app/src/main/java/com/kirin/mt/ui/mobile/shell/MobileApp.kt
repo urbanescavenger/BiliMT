@@ -249,6 +249,9 @@ fun BiliMobileApp(
 
   val effectiveCodecPreference =
     if (settings.lowSpecMode) PlaybackCodecPreference.H264 else settings.playbackCodecPreference
+  // P11-131:YouTube 侧同样受低配档强制 H264。
+  val effectiveYoutubeCodecPreference =
+    if (settings.lowSpecMode) PlaybackCodecPreference.H264 else settings.youtubePlaybackCodecPreference
 
   val bottomNav = listOf(
     AppDestination.Recommend,
@@ -412,6 +415,7 @@ fun BiliMobileApp(
           playbackHttpClient = playbackHttpClient,
           cdnSelector = cdnSelector,
           playbackCodecPreference = effectiveCodecPreference,
+          youtubePlaybackCodecPreference = effectiveYoutubeCodecPreference,
           playbackQualityPreference = settings.playbackQualityPreference,
           playbackCdnPreference = settings.playbackCdnPreference,
           youtubeDefaultQuality = settings.youtubeDefaultQuality,

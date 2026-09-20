@@ -61,6 +61,12 @@ data class AppSettings(
   val chineseTextVariant: ChineseTextVariant = ChineseTextVariant.Simplified,
   val playbackQualityPreference: PlaybackQualityPreference = PlaybackQualityPreference.Highest,
   val playbackCodecPreference: PlaybackCodecPreference = PlaybackCodecPreference.Auto,
+  /**
+   * YouTube 播放专用解码器偏好(P11-131 拆分:此前与 [playbackCodecPreference] 共用一个值)。
+   * 读取端在新键未写盘时回落到 [playbackCodecPreference] ⇒ 存量用户行为不变;
+   * 首次在 YouTube 行改动后二者独立。
+   */
+  val youtubePlaybackCodecPreference: PlaybackCodecPreference = PlaybackCodecPreference.Auto,
   val playbackCdnPreference: PlaybackCdnPreference = PlaybackCdnPreference.Auto,
   /** YouTube 默认画质(按分辨率上限选档)。 */
   val youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
@@ -70,6 +76,8 @@ data class AppSettings(
   val youtubeContentRegion: YoutubeContentRegion = YoutubeContentRegion.US,
   /** 默认播放倍速(起播时初始化播放器 playbackSpeed)。 */
   val defaultPlaybackSpeed: DefaultPlaybackSpeed = DefaultPlaybackSpeed.X100,
+  /** YouTube 起播专用默认倍速(P11-131 拆分)。未写盘时回落到 [defaultPlaybackSpeed]。 */
+  val youtubeDefaultSpeed: DefaultPlaybackSpeed = DefaultPlaybackSpeed.X100,
   /** 播放缓冲时长上限(maxBuffer)。网络波动时缓冲池顶住不卡的时间;默认 50s 对齐 LibreTube。 */
   val bufferMax: PlaybackBufferMax = PlaybackBufferMax.Standard,
   val seekPreviewSpritesEnabled: Boolean = true,

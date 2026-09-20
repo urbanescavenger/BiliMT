@@ -67,6 +67,16 @@ class AppSettingsStore(private val context: Context) {
         defaultVisualPerformanceMode
       }
 
+    // P11-131:YouTube 拆分项的回退读取——自己那枚 key 不存在时沿用**旧的共享 key**。
+    // 只读回退、不写迁移:首次在 YouTube 行改动后自有 key 落地,两端自此独立;在此之前跟随后改的
+    // 共享值,与存量用户「什么都没变」的预期一致(沿用 low_spec_mode→visual_performance_mode 的既有范式)。
+    val youtubePlaybackCodecPreference = PlaybackCodecPreference.fromKey(
+      preferences[Keys.YoutubePlaybackCodecPreference] ?: preferences[Keys.PlaybackCodecPreference],
+    )
+    val youtubeDefaultSpeed = DefaultPlaybackSpeed.fromKey(
+      preferences[Keys.YoutubeDefaultSpeed] ?: preferences[Keys.DefaultPlaybackSpeed],
+    )
+
     AppSettings(
       visualPerformanceMode = visualPerformanceMode,
       homeThemeVariant = HomeThemeVariant.fromKey(preferences[Keys.HomeThemeVariant]),
@@ -74,12 +84,14 @@ class AppSettingsStore(private val context: Context) {
       chineseTextVariant = ChineseTextVariant.fromKey(preferences[Keys.ChineseTextVariant]),
       playbackQualityPreference = PlaybackQualityPreference.fromKey(preferences[Keys.PlaybackQualityPreference]),
       playbackCodecPreference = PlaybackCodecPreference.fromKey(preferences[Keys.PlaybackCodecPreference]),
+      youtubePlaybackCodecPreference = youtubePlaybackCodecPreference,
       playbackCdnPreference = PlaybackCdnPreference.fromKey(preferences[Keys.PlaybackCdnPreference]),
       youtubeDefaultQuality = YoutubeDefaultQuality.fromKey(preferences[Keys.YoutubeDefaultQuality]),
       youtubeStartQuality = YoutubeStartQuality.fromKey(preferences[Keys.YoutubeStartQuality]),
       youtubeContentRegion = YoutubeContentRegion.fromKey(preferences[Keys.YoutubeContentRegion]),
       youtubeDeliveryPriority = YoutubeDeliveryPriority.fromKey(preferences[Keys.YoutubeDeliveryPriority]),
       defaultPlaybackSpeed = DefaultPlaybackSpeed.fromKey(preferences[Keys.DefaultPlaybackSpeed]),
+      youtubeDefaultSpeed = youtubeDefaultSpeed,
       bufferMax = PlaybackBufferMax.fromKey(preferences[Keys.PlaybackBufferMax]),
       seekPreviewSpritesEnabled = preferences[Keys.SeekPreviewSpritesEnabled] ?: true,
       airJumpAssistantEnabled = preferences[Keys.AirJumpAssistantEnabled] ?: true,
@@ -191,6 +203,22 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setPlaybackCodecPreference(preference: PlaybackCodecPreference) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.PlaybackCodecPreference] = preference.key
+    }
+  }
+
+  /**
+   * P11-131:只写 YouTube 自有键。**不要**顺带写共享键——那正是拆分的反面
+   * (对比 [setVisualPerformanceMode] 写两枚键:那里是「同步旧键」语义,这里要的是「各自独立」)。
+   */
+  suspend fun setYoutubePlaybackCodecPreference(preference: PlaybackCodecPreference) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.YoutubePlaybackCodecPreference] = preference.key
+    }
+  }
+
+  suspend fun setYoutubeDefaultSpeed(speed: DefaultPlaybackSpeed) {
+    context.biliDataStore.edit { preferences ->
+      preferences[Keys.YoutubeDefaultSpeed] = speed.key
     }
   }
 
@@ -432,12 +460,16 @@ class AppSettingsStore(private val context: Context) {
     val ChineseTextVariant = stringPreferencesKey("chinese_text_variant")
     val PlaybackQualityPreference = stringPreferencesKey("playback_quality_preference")
     val PlaybackCodecPreference = stringPreferencesKey("playback_codec_preference")
+    /** P11-131:YouTube 专用解码器。缺席时读取端回落 [PlaybackCodecPreference]。 */
+    val YoutubePlaybackCodecPreference = stringPreferencesKey("youtube_playback_codec_preference")
     val PlaybackCdnPreference = stringPreferencesKey("playback_cdn_preference")
     val YoutubeDefaultQuality = stringPreferencesKey("youtube_default_quality")
     val YoutubeStartQuality = stringPreferencesKey("youtube_start_quality")
     val YoutubeContentRegion = stringPreferencesKey("youtube_content_region")
     val YoutubeDeliveryPriority = stringPreferencesKey("youtube_delivery_priority")
     val DefaultPlaybackSpeed = stringPreferencesKey("default_playback_speed")
+    /** P11-131:YouTube 专用起播倍速。缺席时读取端回落 [DefaultPlaybackSpeed]。 */
+    val YoutubeDefaultSpeed = stringPreferencesKey("youtube_default_speed")
     val PlaybackBufferMax = stringPreferencesKey("playback_buffer_max")
     val SeekPreviewSpritesEnabled = booleanPreferencesKey("seek_preview_sprites_enabled")
     val AirJumpAssistantEnabled = booleanPreferencesKey("air_jump_assistant_enabled")

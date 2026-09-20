@@ -164,6 +164,8 @@ fun PlayerScreen(
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
   playbackCodecPreference: PlaybackCodecPreference,
+  /** P11-131:YouTube 专用解码器(与 [playbackCodecPreference] 拆开,互不影响)。 */
+  youtubePlaybackCodecPreference: PlaybackCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
   youtubeDefaultQuality: YoutubeDefaultQuality,
   youtubeStartQuality: YoutubeStartQuality,
@@ -172,6 +174,8 @@ fun PlayerScreen(
   // 故照本文件既有的 settings.* 透传范式(AppShell 已有 20+ 个同类入参)把它传进来,只用于算预算。
   youtubeDeliveryPriority: YoutubeDeliveryPriority = YoutubeDeliveryPriority.Sabr,
   defaultPlaybackSpeed: DefaultPlaybackSpeed,
+  /** P11-131:YouTube 起播专用倍速(与 [defaultPlaybackSpeed] 拆开,互不影响)。 */
+  youtubeDefaultSpeed: DefaultPlaybackSpeed,
   bufferMaxMs: Int,
   playbackCdnPreference: PlaybackCdnPreference,
   seekPreviewSpritesEnabled: Boolean,
@@ -258,7 +262,11 @@ fun PlayerScreen(
   var actualQuality by remember { mutableStateOf<PlaybackQuality?>(null) }
   val storedDanmakuSettings by danmakuSettingsStore.settings.collectAsState(initial = DanmakuSettings())
   var danmakuSettings by remember { mutableStateOf(DanmakuSettings()) }
-  var playbackSpeed by remember { mutableFloatStateOf(defaultPlaybackSpeed.value) }
+  // P11-131:起播倍速按内容源取 B站 / YouTube 两份值之一。remember 保持**无 key**——沿用「每个播放器
+  // 实例只初始化一次」的既有语义;若按 request 上 key,播放中自动连播/换源会把用户在倍速菜单里临时
+  // 调过的值冲掉。用入参 request(而非 activeRequest)判源,同一实例内不随换源改速。
+  val initialPlaybackSpeed = if (request.isYoutube) youtubeDefaultSpeed else defaultPlaybackSpeed
+  var playbackSpeed by remember { mutableFloatStateOf(initialPlaybackSpeed.value) }
   var previewPositionMs by remember { mutableStateOf<Long?>(null) }
   val playbackPositionState = remember { mutableLongStateOf(0L) }
   val playbackDurationState = remember { mutableLongStateOf(0L) }
@@ -1834,7 +1842,7 @@ fun PlayerScreen(
     if (playerState !is PlayerScreenState.Loading) YoutubeLoadProgress.clear()
   }
 
-  LaunchedEffect(activeRequest, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
+  LaunchedEffect(activeRequest, playbackCodecPreference, youtubePlaybackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
     val launchJob = coroutineContext[Job]
     playbackLaunchJob = launchJob
     try {
@@ -1956,6 +1964,8 @@ fun PlayerScreen(
           youtubeDefaultQuality = youtubeDefaultQuality,
           youtubeStartQuality = youtubeStartQuality,
           deadlineMs = launchDeadlineMs,
+          // P11-131:YouTube 走自己那份解码器;B站 路径在 repository 内部仍用 codecPreference。
+          youtubeCodecPreference = youtubePlaybackCodecPreference,
         )
       // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体),
       // 或远程 manifest 兜底(DASH/HLS manifest 自带 A/V 轨,dummy 视频轨非 progressive 但 audioTracks 合法为空)。

@@ -213,6 +213,13 @@
     <string name="settings_youtube_default_quality_description">The quality cap used for new YouTube videos. Auto uses the highest available.</string>
     <string name="settings_youtube_start_quality_title">YouTube start quality</string>
     <string name="settings_youtube_start_quality_description">The lowest quality at which an Auto video starts. It then climbs up to the default quality as bandwidth allows. Auto starts at the lowest tier.</string>
+    <string name="settings_youtube_group_title">YouTube settings</string>
+    <string name="settings_youtube_codec_title">YouTube decoder</string>
+    <string name="settings_youtube_codec_description">Decoder preference for YouTube tracks, independent of the decoder under Playback. Auto prefers H.264 &gt; VP9 &gt; AV1 &gt; H.265; manual options list only codecs this device supports.</string>
+    <string name="settings_youtube_default_speed_title">YouTube default speed</string>
+    <string name="settings_youtube_default_speed_description">The playback speed used when starting a new YouTube video, independent of the default playback speed under Playback. You can still adjust it in the menu during playback.</string>
+    <string name="settings_group_expand">Expand</string>
+    <string name="settings_group_collapse">Collapse</string>
     <string name="settings_youtube_content_region_title">YouTube content region</string>
     <string name="settings_youtube_content_region_description">InnerTube content region/language (gl/hl). Defaults to the US; do not set to China (gl=CN triggers anti-bot). When on a VPN for a different region, let gl follow to avoid IP/region mismatch being flagged as a bot, and see region-local content. Note: the primary SABR path is decided by NewPipe; this mainly affects WEB /player and DASH fallback.</string>
     <string name="settings_default_speed_title">Default playback speed</string>

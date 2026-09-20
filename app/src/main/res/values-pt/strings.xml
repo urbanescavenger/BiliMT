@@ -214,6 +214,13 @@
     <string name="settings_youtube_default_quality_description">Limite de qualidade utilizado por padrão nos novos vídeos do YouTube. Automático é a qualidade mais alta disponível.</string>
     <string name="settings_youtube_start_quality_title">Qualidade inicial do YouTube</string>
     <string name="settings_youtube_start_quality_description">Qualidade mínima em que um vídeo Automático inicia. Depois sobe gradualmente até a qualidade padrão. Automático inicia no nível mais baixo.</string>
+    <string name="settings_youtube_group_title">Configurações do YouTube</string>
+    <string name="settings_youtube_codec_title">Decodificador do YouTube</string>
+    <string name="settings_youtube_codec_description">Preferência de decodificador para as faixas do YouTube, independente do decodificador em Reprodução. Automático prefere H.264 &gt; VP9 &gt; AV1 &gt; H.265; as opções manuais listam apenas codecs compatíveis com este aparelho.</string>
+    <string name="settings_youtube_default_speed_title">Velocidade padrão do YouTube</string>
+    <string name="settings_youtube_default_speed_description">Velocidade de reprodução ao iniciar um vídeo do YouTube, independente da velocidade padrão em Reprodução. Você ainda pode ajustá-la no menu durante a reprodução.</string>
+    <string name="settings_group_expand">Expandir</string>
+    <string name="settings_group_collapse">Recolher</string>
     <string name="settings_youtube_content_region_title">Região de conteúdo do YouTube</string>
     <string name="settings_youtube_content_region_description">Região/idioma do conteúdo do InnerTube (gl/hl). Padrão: EUA; não definir China (gl=CN testado como anti-scraper). Com VPN de outra região pode deixar o gl acompanhar, para evitar que o bot seja detetado por IP e região incompatíveis, e ver o conteúdo da região correspondente. Nota: o caminho principal SABR é decidido pelo NewPipe; esta opção afeta principalmente o WEB /player e o fallback DASH.</string>
     <string name="settings_default_speed_title">Velocidade de reprodução padrão</string>
