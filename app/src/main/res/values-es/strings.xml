@@ -215,6 +215,7 @@
     <string name="settings_youtube_start_quality_title">Calidad inicial de YouTube</string>
     <string name="settings_youtube_start_quality_description">Calidad mínima con la que inicia un video en Automático. Luego sube gradualmente hasta la calidad predeterminada. Automático inicia en el nivel más bajo.</string>
     <string name="settings_youtube_group_title">Ajustes de YouTube</string>
+    <string name="settings_youtube_group_desc">Calidad / calidad inicial / velocidad / códec / canales / región / Piped / prioridad de entrega</string>
     <string name="settings_youtube_codec_title">Decodificador de YouTube</string>
     <string name="settings_youtube_codec_description">Qué códec usan las pistas de YouTube. VP9 es el códec principal de YouTube; elegirlo mantiene un solo decodificador durante toda la sesión y evita tirones al cambiar de decodificador. Las demás opciones solo listan códecs compatibles con este dispositivo. Independiente del decodificador de Reproducción.</string>
     <string name="settings_youtube_default_speed_title">Velocidad predeterminada de YouTube</string>

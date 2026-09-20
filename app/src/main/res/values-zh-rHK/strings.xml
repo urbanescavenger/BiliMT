@@ -148,6 +148,7 @@
     <string name="settings_youtube_default_quality_title">YouTube 預設畫質</string>
     <string name="settings_youtube_default_quality_description">新開 YouTube 影片預設使用嘅畫質上限。自動為最高可用畫質。</string>
     <string name="settings_youtube_group_title">YouTube 設定</string>
+    <string name="settings_youtube_group_desc">畫質 / 起播畫質 / 倍速 / 解碼器 / 頻道 / 內容區域 / Piped / 交付優先級</string>
     <string name="settings_youtube_codec_title">YouTube 解碼器</string>
     <string name="settings_youtube_codec_description">YouTube 軌道用邊種編碼。VP9 係 YouTube 嘅主力編碼,揀佢可以令全場播放保持同一個解碼器、避免換解碼器時嘅卡頓;其餘選項只列出本機支援嘅編碼。同「播放設定」入面嘅解碼器互相獨立。</string>
     <string name="settings_youtube_default_speed_title">YouTube 預設倍速</string>

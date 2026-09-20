@@ -218,6 +218,7 @@
     <string name="settings_youtube_start_quality_title">YouTube 起步画质</string>
     <string name="settings_youtube_start_quality_description">自动画质时视频起播的最低清晰度档,网络实测后会逐档爬升到默认画质。自动为最低档起播。</string>
     <string name="settings_youtube_group_title">YouTube 设置</string>
+    <string name="settings_youtube_group_desc">画质 / 起播画质 / 倍速 / 解码器 / 频道 / 内容区域 / Piped / 交付优先级</string>
     <string name="settings_youtube_codec_title">YouTube 解码器</string>
     <string name="settings_youtube_codec_description">YouTube 轨道用哪种编码。VP9 是 YouTube 的主力编码,选它可让整场播放保持同一解码器、避免换解码器时的卡顿;其余选项只列出本机支持的编码。与「播放设置」里的解码器相互独立。</string>
     <string name="settings_youtube_default_speed_title">YouTube 默认倍速</string>

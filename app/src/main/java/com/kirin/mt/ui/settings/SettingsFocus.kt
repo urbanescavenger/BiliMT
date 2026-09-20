@@ -63,6 +63,45 @@ internal suspend fun FocusRequester.requestFocusWithRetry(
   return false
 }
 
+/**
+ * P11-148:把焦点搬到列表第 [index] 项——滚到舒适位置 → **等它真正进入布局** → 有界重试抢焦点。
+ *
+ * 主设置列表与各二级面板共用。此前各处都是「滚完只等一帧就 requestFocus」:离屏行在 LazyColumn
+ * 里没组合 ⇒ FocusRequester 无挂载节点 ⇒ 请求落空,而原行又被这次滚动回收 ⇒ 焦点树空、D-pad 全哑。
+ *
+ * @param requester 目标行的 FocusRequester;null 表示该项没有归属者(直接放弃,由调用方决定兜底)。
+ * @param label 失败日志上下文。
+ * @return 是否抢到焦点。
+ */
+internal suspend fun LazyListState.focusItemWithLayoutWait(
+  index: Int,
+  direction: Int,
+  requester: FocusRequester?,
+  fallbackItemHeightPx: Int,
+  edgeInsetPx: Int,
+  label: String,
+): Boolean {
+  scrollItemIntoComfortableView(
+    index = index,
+    direction = direction,
+    fallbackItemHeightPx = fallbackItemHeightPx,
+    edgeInsetPx = edgeInsetPx,
+  )
+  var waitedFrames = 0
+  while (
+    layoutInfo.visibleItemsInfo.none { item -> item.index == index } &&
+    waitedFrames < SettingsFocusWaitLayoutFrames
+  ) {
+    withFrameNanos { }
+    waitedFrames += 1
+  }
+  if (requester == null) {
+    Log.w(SettingsLogTag, "focus target has no requester: $label")
+    return false
+  }
+  return requester.requestFocusWithRetry(label = "$label waited=$waitedFrames")
+}
+
 internal val SettingsBringIntoViewSpec = object : BringIntoViewSpec {
   override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
     val childEnd = offset + size

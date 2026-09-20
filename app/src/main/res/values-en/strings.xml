@@ -214,6 +214,7 @@
     <string name="settings_youtube_start_quality_title">YouTube start quality</string>
     <string name="settings_youtube_start_quality_description">The lowest quality at which an Auto video starts. It then climbs up to the default quality as bandwidth allows. Auto starts at the lowest tier.</string>
     <string name="settings_youtube_group_title">YouTube settings</string>
+    <string name="settings_youtube_group_desc">Quality / start quality / speed / codec / channels / region / Piped / delivery priority</string>
     <string name="settings_youtube_codec_title">YouTube decoder</string>
     <string name="settings_youtube_codec_description">Which codec YouTube tracks use. VP9 is the main codec on YouTube; picking it keeps one decoder for the whole session and avoids stutter when the decoder switches. Other options list only codecs this device supports. Independent of the decoder under Playback.</string>
     <string name="settings_youtube_default_speed_title">YouTube default speed</string>

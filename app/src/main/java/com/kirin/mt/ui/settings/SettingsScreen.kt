@@ -20,9 +20,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -187,8 +185,9 @@ fun SettingsScreen(
       SettingsItemTvbox to FocusRequester(),
       SettingsItemLogs to FocusRequester(),
       SettingsItemAbout to FocusRequester(),
-      // P11-131:折叠组的三枚新 requester(缺项会让 focusSettingItem 静默 no-op,行可达但焦点恢复坏掉)。
-      SettingsItemYoutubeGroupHeader to FocusRequester(),
+      // P11-131/P11-148:「YouTube 设置」三项 requester(缺项会让 focusSettingItem 静默 no-op,
+      // 行可达但焦点恢复坏掉)。
+      SettingsItemYoutubeSettings to FocusRequester(),
       SettingsItemYoutubeDefaultSpeed to FocusRequester(),
       SettingsItemYoutubeCodec to FocusRequester(),
     )
@@ -196,10 +195,6 @@ fun SettingsScreen(
   var lastFocusedSettingItem by remember { mutableIntStateOf(SettingsItemAccount) }
   var focusSettingJob by remember { mutableStateOf<Job?>(null) }
   var rightPanel by remember { mutableStateOf(SettingsRightPanel.None) }
-  // P11-131:TV 端首个可折叠一级分组。**默认展开**——若默认折叠而组头焦点又没接好,整个 YouTube
-  // 设置会变成不可达死区;展开态最坏也只是多几行。rememberSaveable:设置页在「我的」/Settings
-  // 目的地之间会被卸载重挂,remember 会丢状态。
-  var youtubeGroupExpanded by rememberSaveable { mutableStateOf(true) }
   var showWebDavDialog by remember { mutableStateOf(false) }
   var showIptvDialog by remember { mutableStateOf(false) }
   var showTvboxDialog by remember { mutableStateOf(false) }
@@ -217,14 +212,14 @@ fun SettingsScreen(
     if (visibleLazyIndices.isEmpty()) return null
     val targetOrder = SettingsFocusableItems.indexOf(targetItem)
     return SettingsFocusableItems
-      .filter { item -> settingsItemToLazyIndex(item, updateState, youtubeGroupExpanded) in visibleLazyIndices }
+      .filter { item -> settingsItemToLazyIndex(item, updateState) in visibleLazyIndices }
       .minByOrNull { item -> kotlin.math.abs(SettingsFocusableItems.indexOf(item) - targetOrder) }
   }
 
   fun focusSettingItem(itemIndex: Int, direction: Int = 0): Boolean {
-    val lazyIndex = settingsItemToLazyIndex(itemIndex, updateState, youtubeGroupExpanded)
+    val lazyIndex = settingsItemToLazyIndex(itemIndex, updateState)
     if (lazyIndex < 0) {
-      Log.i(SettingsLogTag, "focus skip hidden item=$itemIndex expanded=$youtubeGroupExpanded")
+      Log.i(SettingsLogTag, "focus skip hidden item=$itemIndex")
       return true
     }
     val requester = settingFocusRequesters[itemIndex]
@@ -233,34 +228,20 @@ fun SettingsScreen(
       Log.w(SettingsLogTag, "focus skip unknown item=$itemIndex")
       return true
     }
-    Log.i(SettingsLogTag, "focus item=$itemIndex lazy=$lazyIndex expanded=$youtubeGroupExpanded")
+    Log.i(SettingsLogTag, "focus item=$itemIndex lazy=$lazyIndex")
     focusSettingJob?.cancel()
     focusSettingJob = coroutineScope.launch {
-      settingsListState.scrollItemIntoComfortableView(
+      // P11-148:滚 → 等目标行**真正进入布局** → 有界重试抢焦点(共用助手,见 SettingsFocus.kt)。
+      // 此前是「滚完只等一帧就 requestFocus」:离屏行没组合 ⇒ FocusRequester 无挂载节点 ⇒ 请求
+      // 落空,而原行又被这次滚动回收 ⇒ 焦点树空、D-pad 全哑。跨屏跳转(长按连发、首尾环绕、
+      // 进页恢复上次行)最易触发;列表深处的 WebDAV「备份」行因此按不到。
+      val focused = settingsListState.focusItemWithLayoutWait(
         index = lazyIndex,
         direction = direction,
+        requester = requester,
         fallbackItemHeightPx = settingsRowFallbackHeightPx,
         edgeInsetPx = settingsScrollInsetPx,
-      )
-      // P11-148:先等目标行**真正进入布局**,再抢焦点。
-      // 离屏行在 LazyColumn 里根本没组合 ⇒ FocusRequester 无挂载节点 ⇒ 此前「滚完只等一帧就
-      // requestFocus」必落空(FocusRequester 节点缺失时直接抛 IllegalStateException,见折叠组
-      // 的注释),而原行又被这次滚动回收了 ⇒ 焦点被一并清掉,整棵焦点树无焦点、D-pad 全哑。
-      // 最易触发的是**跨屏跳转**:长按连发的连跳、首尾环绕(最顶↑→最底)、进页恢复上次行,
-      // 以及「YouTube 设置」折叠组两端(组头⇄组后第一行,折叠态一次跨 9 行)——P11-131 把
-      // 散落的 YouTube 项并成这个 10 行大块后,这类跳转从偶发变成日常,所以症状是那次改动后
-      // 才明显。列表深处的 WebDAV「备份」行因此按不到(用户报的「无法在 TV 选择备份」)。
-      var waitedFrames = 0
-      while (
-        settingsListState.layoutInfo.visibleItemsInfo.none { item -> item.index == lazyIndex } &&
-        waitedFrames < SettingsFocusWaitLayoutFrames
-      ) {
-        withFrameNanos { }
-        waitedFrames += 1
-      }
-      // 组合到位后仍可能差一帧(焦点节点尚未激活),小步重试;失败会打 SettingsLogTag 警告。
-      val focused = requester.requestFocusWithRetry(
-        label = "item=$itemIndex lazy=$lazyIndex waited=$waitedFrames dir=$direction",
+        label = "item=$itemIndex lazy=$lazyIndex dir=$direction",
       )
       if (focused) {
         return@launch
@@ -291,7 +272,7 @@ fun SettingsScreen(
         wrapped = true
       }
       val targetItem = SettingsFocusableItems[nextOrderIndex]
-      if (settingsItemToLazyIndex(targetItem, updateState, youtubeGroupExpanded) >= 0) {
+      if (settingsItemToLazyIndex(targetItem, updateState) >= 0) {
         Log.i(SettingsLogTag, "move from=$itemIndex dir=$direction → $targetItem")
         // 循环跳转时滚动方向取反,把远端项滚进视口(上→底要往下滚,下→顶要往上滚)。
         return focusSettingItem(targetItem, if (wrapped) -direction else direction)
@@ -323,11 +304,6 @@ fun SettingsScreen(
         listState = settingsListState,
         focusRequesters = settingFocusRequesters,
         userSession = userSession,
-        youtubeGroupExpanded = youtubeGroupExpanded,
-        onYoutubeGroupToggle = {
-          youtubeGroupExpanded = !youtubeGroupExpanded
-          Log.i(SettingsLogTag, "youtube group expanded=$youtubeGroupExpanded")
-        },
         onAccountClick = onAccountClick,
         onSettingFocused = { itemIndex ->
           // 两层架构:聚焦只记录最近项(供返回焦点),不展开右侧二级菜单;
@@ -349,11 +325,6 @@ fun SettingsScreen(
         onClearCache = onClearCache,
         onSeekPreviewSpritesEnabledChange = onSeekPreviewSpritesEnabledChange,
         onPlaybackQualityPreferenceChange = onPlaybackQualityPreferenceChange,
-        onYoutubeDefaultQualityChange = onYoutubeDefaultQualityChange,
-        onYoutubePlaybackCodecPreferenceChange = onYoutubePlaybackCodecPreferenceChange,
-        onYoutubeDefaultSpeedChange = onYoutubeDefaultSpeedChange,
-        onYoutubeStartQualityChange = onYoutubeStartQualityChange,
-        onYoutubeContentRegionChange = onYoutubeContentRegionChange,
         onDefaultPlaybackSpeedChange = onDefaultPlaybackSpeedChange,
         onPlaybackBufferMaxChange = onPlaybackBufferMaxChange,
         onPlaybackCodecPreferenceChange = onPlaybackCodecPreferenceChange,
@@ -390,6 +361,14 @@ fun SettingsScreen(
             SettingsRightPanel.YoutubeChannels
           }
         },
+        // P11-148:「YouTube 设置」入口行 → 右侧二级面板(取代 P11-131 的折叠组)。
+        onYoutubeSettingsSelected = {
+          rightPanel = if (rightPanel == SettingsRightPanel.YoutubeSettings) {
+            SettingsRightPanel.None
+          } else {
+            SettingsRightPanel.YoutubeSettings
+          }
+        },
         onWebDavSelected = { showWebDavDialog = true },
         onBackupSelected = { showBackupDialog = true },
         onRestoreSelected = { showRestoreDialog = true },
@@ -400,8 +379,6 @@ fun SettingsScreen(
         onTvboxSelected = { showTvboxDialog = true },
         onPipedInstanceChange = onPipedInstanceChange,
         onPipedSelected = { showPipedDialog = true },
-        onYoutubeUsePipedChange = onYoutubeUsePipedChange,
-        onYoutubeDeliveryPriorityChange = onYoutubeDeliveryPriorityChange,
         onLogsSelected = {
           rightPanel = if (rightPanel == SettingsRightPanel.Logs) {
             SettingsRightPanel.None
@@ -425,7 +402,6 @@ fun SettingsScreen(
         onOpenReleaseNotes = onOpenReleaseNotes,
         speedTestState = speedTestState,
         onRunSpeedTest = onRunSpeedTest,
-        channels = channels,
         onAddYoutubeChannel = onAddYoutubeChannel,
         onRemoveYoutubeChannel = onRemoveYoutubeChannel,
         webDavConfig = webDavConfig,
@@ -462,6 +438,29 @@ fun SettingsScreen(
           channels = channels,
           onAdd = onAddYoutubeChannel,
           onRemove = onRemoveYoutubeChannel,
+          onMoveLeftToSettings = { focusSettingItem(lastFocusedSettingItem) },
+          modifier = Modifier.weight(1f),
+        )
+        // P11-148:原折叠组 9 行的新家(独立焦点岛,D-pad 不再跨屏)。
+        SettingsRightPanel.YoutubeSettings -> SettingsYoutubeSettingsColumn(
+          settings = settings,
+          codecCapability = codecCapability,
+          channels = channels,
+          onDefaultQualityChange = onYoutubeDefaultQualityChange,
+          onStartQualityChange = onYoutubeStartQualityChange,
+          onDefaultSpeedChange = onYoutubeDefaultSpeedChange,
+          onCodecChange = onYoutubePlaybackCodecPreferenceChange,
+          onContentRegionChange = onYoutubeContentRegionChange,
+          onChannelsSelected = {
+            rightPanel = if (rightPanel == SettingsRightPanel.YoutubeChannels) {
+              SettingsRightPanel.None
+            } else {
+              SettingsRightPanel.YoutubeChannels
+            }
+          },
+          onPipedSelected = { showPipedDialog = true },
+          onUsePipedChange = onYoutubeUsePipedChange,
+          onDeliveryPriorityChange = onYoutubeDeliveryPriorityChange,
           onMoveLeftToSettings = { focusSettingItem(lastFocusedSettingItem) },
           modifier = Modifier.weight(1f),
         )
@@ -593,9 +592,6 @@ private fun SettingsBehaviorColumn(
   onSettingFocused: (Int) -> Unit,
   onMoveSettingFocus: (Int, Int) -> Boolean,
   onMoveLeftToNav: () -> Boolean,
-  /** P11-131:「YouTube 设置」折叠组的开合态与切换。 */
-  youtubeGroupExpanded: Boolean,
-  onYoutubeGroupToggle: () -> Unit,
   onVisualPerformanceModeChange: (AppVisualPerformanceMode) -> Unit,
   liquidGlassCardsSupported: Boolean,
   onLiquidGlassCardsEnabledChange: (Boolean) -> Unit,
@@ -604,12 +600,6 @@ private fun SettingsBehaviorColumn(
   onClearCache: () -> Unit,
   onSeekPreviewSpritesEnabledChange: (Boolean) -> Unit,
   onPlaybackQualityPreferenceChange: (PlaybackQualityPreference) -> Unit,
-  onYoutubeDefaultQualityChange: (YoutubeDefaultQuality) -> Unit,
-  /** P11-131:YouTube 专属解码器 / 起播倍速(与 B站 的两项相互独立)。 */
-  onYoutubePlaybackCodecPreferenceChange: (YoutubeCodecPreference) -> Unit,
-  onYoutubeDefaultSpeedChange: (DefaultPlaybackSpeed) -> Unit,
-  onYoutubeStartQualityChange: (YoutubeStartQuality) -> Unit,
-  onYoutubeContentRegionChange: (YoutubeContentRegion) -> Unit,
   onDefaultPlaybackSpeedChange: (DefaultPlaybackSpeed) -> Unit,
   onPlaybackBufferMaxChange: (PlaybackBufferMax) -> Unit,
   onPlaybackCodecPreferenceChange: (PlaybackCodecPreference) -> Unit,
@@ -644,10 +634,8 @@ private fun SettingsBehaviorColumn(
   onOpenReleaseNotes: () -> Unit,
   speedTestState: SpeedTestUiState,
   onRunSpeedTest: () -> Unit,
-  channels: List<com.kirin.mt.core.youtube.YoutubeChannel>,
   onAddYoutubeChannel: suspend (String) -> Boolean,
   onRemoveYoutubeChannel: suspend (String) -> Boolean,
-  onYoutubeChannelsSelected: () -> Unit,
   webDavConfig: com.kirin.mt.core.webdav.WebDavConfig,
   onWebDavBackup: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Unit>,
   onWebDavRestore: suspend (com.kirin.mt.core.webdav.WebDavConfig, Set<com.kirin.mt.core.webdav.WebDavBackupItem>) -> Result<Int>,
@@ -660,9 +648,6 @@ private fun SettingsBehaviorColumn(
   onTvboxConfigChange: (url: String) -> Unit,
   onTvboxSelected: () -> Unit,
   onPipedInstanceChange: (url: String) -> Unit,
-  onPipedSelected: () -> Unit,
-  onYoutubeUsePipedChange: (Boolean) -> Unit,
-  onYoutubeDeliveryPriorityChange: (YoutubeDeliveryPriority) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -1119,218 +1104,28 @@ private fun SettingsBehaviorColumn(
         onClick = onHomeSectionsSelected,
       )
     }
-    // ── P11-131:「YouTube 设置」可折叠一级分组。全部 YouTube 项收拢于此(含原「YouTube 内容」节)。
-    //    组头常驻可见,组内 9 行随 youtubeGroupExpanded 渲染/卸载;焦点下标由
-    //    settingsItemToLazyIndex 的折叠位移统一处理,这里的 if 必须与 SettingsYoutubeGroupItems 同序同数。
-    item(key = "youtube-group-header") {
-      SettingsCollapsibleSectionTitle(
-        text = stringResource(R.string.settings_youtube_group_title),
-        expanded = youtubeGroupExpanded,
+    // ── P11-148:原「YouTube 设置」可折叠分组 → 二级面板入口。
+    //    折叠组把 10 行塞在列表中段(组头还压在视口边缘),D-pad 在组两端一次跨 9 行,
+    //    正是「离屏行未组合 ⇒ 抢焦点落空 ⇒ 焦点树空、D-pad 全哑」最容易踩的场景;
+    //    改成一枚入口行 + 右侧面板后:①主列表少 9 行,到 WebDAV「备份」这类深处行的
+    //    跳转距离整体缩短;②面板是独立焦点岛(与首页分区/日志/关于/频道管理同一套机制),
+    //    行间移动不再跨屏。入口行仍是面板的归属项(Left 回得来、聚焦别的一级项即收起)。
+    item(key = "youtube-settings") {
+      SettingsActionRow(
+        title = stringResource(R.string.settings_youtube_group_title),
+        description = stringResource(R.string.settings_youtube_group_desc),
+        value = "",
         modifier = Modifier
-          .padding(top = BiliSpacing.Lg)
-          .focusRequester(focusRequesters.getValue(SettingsItemYoutubeGroupHeader))
+          .focusRequester(focusRequesters.getValue(SettingsItemYoutubeSettings))
           .settingsBoundaryKeys(
-            itemIndex = SettingsItemYoutubeGroupHeader,
+            itemIndex = SettingsItemYoutubeSettings,
             onMoveSettingFocus = onMoveSettingFocus,
             onMoveLeftToNav = onMoveLeftToNav,
           ),
-        onFocused = { onSettingFocused(SettingsItemYoutubeGroupHeader) },
-        onClick = onYoutubeGroupToggle,
+        onFocused = { onSettingFocused(SettingsItemYoutubeSettings) },
+        onClick = onYoutubeSettingsSelected,
       )
     }
-    if (youtubeGroupExpanded) {
-      item(key = "youtube-default-quality") {
-        val qualityOptions = remember { YoutubeDefaultQuality.entries.toList() }
-        val effectiveQuality = settings.youtubeDefaultQuality
-        SettingsOptionRow(
-          title = stringResource(R.string.settings_youtube_default_quality_title),
-          description = stringResource(R.string.settings_youtube_default_quality_description),
-          value = effectiveQuality.label,
-          modifier = Modifier
-            .focusRequester(focusRequesters.getValue(SettingsItemYoutubeDefaultQuality))
-            .settingsBoundaryKeys(
-              itemIndex = SettingsItemYoutubeDefaultQuality,
-              onMoveSettingFocus = onMoveSettingFocus,
-              onMoveLeftToNav = onMoveLeftToNav,
-            ),
-          onFocused = { onSettingFocused(SettingsItemYoutubeDefaultQuality) },
-          onClick = {
-            val currentIndex = qualityOptions.indexOf(effectiveQuality).takeIf { it >= 0 } ?: 0
-            onYoutubeDefaultQualityChange(qualityOptions[(currentIndex + 1) % qualityOptions.size])
-          },
-        )
-      }
-      item(key = "youtube-start-quality") {
-        val startQualityOptions = remember { YoutubeStartQuality.entries.toList() }
-        val effectiveStartQuality = settings.youtubeStartQuality
-        SettingsOptionRow(
-          title = stringResource(R.string.settings_youtube_start_quality_title),
-          description = stringResource(R.string.settings_youtube_start_quality_description),
-          value = effectiveStartQuality.label,
-          modifier = Modifier
-            .focusRequester(focusRequesters.getValue(SettingsItemYoutubeStartQuality))
-            .settingsBoundaryKeys(
-              itemIndex = SettingsItemYoutubeStartQuality,
-              onMoveSettingFocus = onMoveSettingFocus,
-              onMoveLeftToNav = onMoveLeftToNav,
-            ),
-          onFocused = { onSettingFocused(SettingsItemYoutubeStartQuality) },
-          onClick = {
-            val currentIndex = startQualityOptions.indexOf(effectiveStartQuality).takeIf { it >= 0 } ?: 0
-            onYoutubeStartQualityChange(startQualityOptions[(currentIndex + 1) % startQualityOptions.size])
-          },
-        )
-      }
-      item(key = "youtube-default-speed") {
-        val speedOptions = remember { DefaultPlaybackSpeed.entries.toList() }
-        val effectiveSpeed = settings.youtubeDefaultSpeed
-        SettingsOptionRow(
-          title = stringResource(R.string.settings_youtube_default_speed_title),
-          description = stringResource(R.string.settings_youtube_default_speed_description),
-          value = effectiveSpeed.label,
-          modifier = Modifier
-            .focusRequester(focusRequesters.getValue(SettingsItemYoutubeDefaultSpeed))
-            .settingsBoundaryKeys(
-              itemIndex = SettingsItemYoutubeDefaultSpeed,
-              onMoveSettingFocus = onMoveSettingFocus,
-              onMoveLeftToNav = onMoveLeftToNav,
-            ),
-          onFocused = { onSettingFocused(SettingsItemYoutubeDefaultSpeed) },
-          onClick = {
-            val currentIndex = speedOptions.indexOf(effectiveSpeed).takeIf { it >= 0 } ?: 0
-            onYoutubeDefaultSpeedChange(speedOptions[(currentIndex + 1) % speedOptions.size])
-          },
-        )
-      }
-      item(key = "youtube-codec") {
-        // P11-133:YouTube 自己的值域(Auto/VP9/AV1/H.264/H.265)。设备解不了的族不进列表;
-        // VP9 恒在(isSupportedBy 对它恒真)。
-        val codecOptions = remember(codecCapability) {
-          YoutubeCodecPreference.entries.filter { it.isSupportedBy(codecCapability) }
-        }
-        val configuredPreference = settings.youtubePlaybackCodecPreference.takeIf { preference ->
-          preference in codecOptions
-        } ?: YoutubeCodecPreference.Auto
-        // 与 B站 那行同样受低配档强制显示 H264,否则行里显示用户选的值而播放强制 H264(「设置没用」)。
-        val effectivePreference = if (settings.lowSpecMode) {
-          YoutubeCodecPreference.H264
-        } else {
-          configuredPreference
-        }
-        SettingsOptionRow(
-          title = stringResource(R.string.settings_youtube_codec_title),
-          description = stringResource(R.string.settings_youtube_codec_description),
-          value = effectivePreference.youtubeCodecLabel(),
-          modifier = Modifier
-            .focusRequester(focusRequesters.getValue(SettingsItemYoutubeCodec))
-            .settingsBoundaryKeys(
-              itemIndex = SettingsItemYoutubeCodec,
-              onMoveSettingFocus = onMoveSettingFocus,
-              onMoveLeftToNav = onMoveLeftToNav,
-            ),
-          onFocused = { onSettingFocused(SettingsItemYoutubeCodec) },
-          onClick = {
-            val currentIndex = codecOptions.indexOf(configuredPreference).takeIf { it >= 0 } ?: 0
-            onYoutubePlaybackCodecPreferenceChange(codecOptions[(currentIndex + 1) % codecOptions.size])
-          },
-        )
-      }
-      item(key = "youtube-channels") {
-        SettingsActionRow(
-          title = stringResource(R.string.settings_youtube_channels),
-          description = stringResource(R.string.settings_youtube_channels_desc),
-          value = "${channels.size}",
-          modifier = Modifier
-            .focusRequester(focusRequesters.getValue(SettingsItemYoutubeChannels))
-            .settingsBoundaryKeys(
-              itemIndex = SettingsItemYoutubeChannels,
-              onMoveSettingFocus = onMoveSettingFocus,
-              onMoveLeftToNav = onMoveLeftToNav,
-            ),
-          onFocused = { onSettingFocused(SettingsItemYoutubeChannels) },
-          onClick = onYoutubeChannelsSelected,
-        )
-      }
-      item(key = "youtube-content-region") {
-        val regionOptions = remember { YoutubeContentRegion.entries.toList() }
-        val effectiveRegion = settings.youtubeContentRegion
-        SettingsOptionRow(
-          title = stringResource(R.string.settings_youtube_content_region_title),
-          description = stringResource(R.string.settings_youtube_content_region_description),
-          value = effectiveRegion.label,
-          modifier = Modifier
-            .focusRequester(focusRequesters.getValue(SettingsItemYoutubeContentRegion))
-            .settingsBoundaryKeys(
-              itemIndex = SettingsItemYoutubeContentRegion,
-              onMoveSettingFocus = onMoveSettingFocus,
-              onMoveLeftToNav = onMoveLeftToNav,
-            ),
-          onFocused = { onSettingFocused(SettingsItemYoutubeContentRegion) },
-          onClick = {
-            val currentIndex = regionOptions.indexOf(effectiveRegion).takeIf { it >= 0 } ?: 0
-            onYoutubeContentRegionChange(regionOptions[(currentIndex + 1) % regionOptions.size])
-          },
-        )
-      }
-      // ── YouTube SABR 实验:Piped 后端 + itag 诊断(alpha.83)──
-      item(key = "youtube-piped") {
-        SettingsActionRow(
-          title = stringResource(R.string.settings_piped_title),
-          description = stringResource(R.string.settings_piped_description),
-          value = settings.pipedInstanceUrl.ifBlank {
-            stringResource(R.string.settings_piped_default_hint)
-          },
-          modifier = Modifier
-            .focusRequester(focusRequesters.getValue(SettingsItemPiped))
-            .settingsBoundaryKeys(
-              itemIndex = SettingsItemPiped,
-              onMoveSettingFocus = onMoveSettingFocus,
-              onMoveLeftToNav = onMoveLeftToNav,
-            ),
-          onFocused = { onSettingFocused(SettingsItemPiped) },
-          onClick = onPipedSelected,
-        )
-      }
-      item(key = "youtube-use-piped") {
-        SettingsToggleRow(
-          title = stringResource(R.string.settings_youtube_use_piped_title),
-          description = stringResource(R.string.settings_youtube_use_piped_description),
-          checked = settings.youtubeUsePiped,
-          modifier = Modifier
-            .focusRequester(focusRequesters.getValue(SettingsItemYoutubeUsePiped))
-            .settingsBoundaryKeys(
-              itemIndex = SettingsItemYoutubeUsePiped,
-              onMoveSettingFocus = onMoveSettingFocus,
-              onMoveLeftToNav = onMoveLeftToNav,
-            ),
-          onFocused = { onSettingFocused(SettingsItemYoutubeUsePiped) },
-          onCheckedChange = onYoutubeUsePipedChange,
-        )
-      }
-      // NOTE: sabrForceSessionVideoItag("锁定会话视频轨")诊断开关已隐藏(alpha.83 使命完成,证伪
-      // itag 是 RELOAD 根因)。字段/逻辑保留,如需再作诊断可恢复此 item。
-      item(key = "youtube-delivery-priority") {
-        val priorityOptions = remember { YoutubeDeliveryPriority.entries.toList() }
-        val effectivePriority = settings.youtubeDeliveryPriority
-        SettingsOptionRow(
-          title = stringResource(R.string.settings_youtube_delivery_priority_title),
-          description = stringResource(R.string.settings_youtube_delivery_priority_description),
-          value = effectivePriority.label,
-          modifier = Modifier
-            .focusRequester(focusRequesters.getValue(SettingsItemYoutubeDeliveryPriority))
-            .settingsBoundaryKeys(
-              itemIndex = SettingsItemYoutubeDeliveryPriority,
-              onMoveSettingFocus = onMoveSettingFocus,
-              onMoveLeftToNav = onMoveLeftToNav,
-            ),
-          onFocused = { onSettingFocused(SettingsItemYoutubeDeliveryPriority) },
-          onClick = {
-            val currentIndex = priorityOptions.indexOf(effectivePriority).takeIf { it >= 0 } ?: 0
-            onYoutubeDeliveryPriorityChange(priorityOptions[(currentIndex + 1) % priorityOptions.size])
-          },
-        )
-      }
-    } // ── /if (youtubeGroupExpanded):组内 9 行到此为止,数量须与 SettingsYoutubeGroupItems 一致 ──
     item(key = "webdav") {
       SettingsActionRow(
         title = stringResource(R.string.settings_webdav_title),
@@ -1628,20 +1423,22 @@ private const val SettingsItemPiped = 35
 private const val SettingsItemYoutubeUsePiped = 36
 private const val SettingsItemYoutubeDeliveryPriority = 37
 
-// P11-131:可折叠「YouTube 设置」分组。取 47+ 是**有意避开** settingsItemToLazyIndex 的位置空间 0..48 ——
-// 常量值与 LazyColumn 下标撞号极易误读。现用常量占满 0..42,故新值必须 ≥43。
-private const val SettingsItemYoutubeGroupHeader = 47
+// P11-148:主列表里的「YouTube 设置」二级面板入口行(原 P11-131 折叠组头的位置/编号)。
+// 常量取 47+ 是**有意避开** settingsItemToLazyIndex 的位置空间(常量值与 LazyColumn 下标撞号极易误读);
+// 现用常量占满 0..42,故新值必须 ≥43。
+private const val SettingsItemYoutubeSettings = 47
 private const val SettingsItemYoutubeDefaultSpeed = 48
 private const val SettingsItemYoutubeCodec = 49
 
 /**
- * P11-131:「YouTube 设置」组内行(**展开态**按此顺序紧跟组头)。
+ * P11-148:「YouTube 设置」二级面板内的 9 行,**按面板里的视觉顺序**排列。
  *
- * 这份列表同时是两件事的**唯一真源**:①折叠时哪些行映射 -1(不可聚焦);②组后各行要前移多少
- * (`.size`)。**新增组内行必须同时加进这里**——漏加则折叠时该行仍被判为可见,`focusSettingItem`
- * 会把 `requestFocus()` 打在未渲染的节点上,直接 `IllegalStateException` 崩溃(那里没有 runCatching)。
+ * 这份列表是面板 D-pad 顺序的唯一真源([SettingsYoutubeSettingsColumn] 用它遍历),同时供
+ * [SettingsItemConstantsAreUnique] 核对「每个常量都有归属」——主列表的 [SettingsFocusableItems]
+ * 与这份面板列表**合起来**必须覆盖全部 `SettingsItem*` 常量。**新增面板行必须同时加进这里**,
+ * 否则该行在面板里不可达、且常量守卫会当场报错(这是刻意的网)。
  */
-private val SettingsYoutubeGroupItems = listOf(
+internal val SettingsYoutubePanelItems = listOf(
   SettingsItemYoutubeDefaultQuality,
   SettingsItemYoutubeStartQuality,
   SettingsItemYoutubeDefaultSpeed,
@@ -1652,12 +1449,6 @@ private val SettingsYoutubeGroupItems = listOf(
   SettingsItemYoutubeUsePiped,
   SettingsItemYoutubeDeliveryPriority,
 )
-
-/**
- * P11-131:**展开态**下组头所在的 LazyColumn 下标;组后各行按展开态编号。
- * 刻意不带 `SettingsItem` 前缀——它是**位置**,与上面那批**项 id**常量分属两个空间。
- */
-private const val YoutubeGroupHeaderLazyIndex = 26
 
 private val SettingsFocusableItems = listOf(
   SettingsItemAccount,
@@ -1683,18 +1474,8 @@ private val SettingsFocusableItems = listOf(
   SettingsItemClearCache,
   SettingsItemChineseTextVariant,
   SettingsItemHomeSections,
-  // P11-131:「YouTube 设置」折叠组——组头在前,组内 9 行紧随(顺序必须与 LazyColumn 视觉顺序一致,
-  // 否则上下键会之字形跳)。顺序与 SettingsYoutubeGroupItems 保持一致。
-  SettingsItemYoutubeGroupHeader,
-  SettingsItemYoutubeDefaultQuality,
-  SettingsItemYoutubeStartQuality,
-  SettingsItemYoutubeDefaultSpeed,
-  SettingsItemYoutubeCodec,
-  SettingsItemYoutubeChannels,
-  SettingsItemYoutubeContentRegion,
-  SettingsItemPiped,
-  SettingsItemYoutubeUsePiped,
-  SettingsItemYoutubeDeliveryPriority,
+  // P11-148:「YouTube 设置」只剩一枚入口行(9 行在右侧二级面板里,不走主列表 D-pad)。
+  SettingsItemYoutubeSettings,
   SettingsItemWebDav,
   SettingsItemWebDavBackup,
   SettingsItemWebDavRestore,
@@ -1732,16 +1513,18 @@ private val SettingsItemConstantsAreUnique: Unit = run {
     SettingsItemYoutubeChannels, SettingsItemWebDav, SettingsItemYoutubeContentRegion,
     SettingsItemWebDavBackup, SettingsItemWebDavRestore, SettingsItemIptv, SettingsItemTvbox,
     SettingsItemPiped, SettingsItemYoutubeUsePiped, SettingsItemYoutubeDeliveryPriority,
-    SettingsItemYoutubeGroupHeader, SettingsItemYoutubeDefaultSpeed, SettingsItemYoutubeCodec,
+    SettingsItemYoutubeSettings, SettingsItemYoutubeDefaultSpeed, SettingsItemYoutubeCodec,
   )
   check(all.size == all.distinct().size) { "duplicate SettingsItem* constant: $all" }
   // SettingsItemPlaybackHeader 是「播放设置」节标题,本就不参与 D-pad 遍历——除此之外每个常量
-  // 都必须能在 SettingsFocusableItems 里找到(漏加 = 该行不可达)。
+  // 都必须有归属:主列表的一级/入口行走 SettingsFocusableItems,「YouTube 设置」面板内的 9 行
+  // 走 SettingsYoutubePanelItems。两处都没有 = 该行在任何地方都不可达(漏加必被这条 check 拦下)。
   val nonFocusable = setOf(SettingsItemPlaybackHeader)
-  check(SettingsFocusableItems.toSet() == all.toSet() - nonFocusable) {
-    "SettingsFocusableItems 与常量表不一致: 缺=" +
-      "${(all.toSet() - nonFocusable) - SettingsFocusableItems.toSet()} " +
-      "多=${SettingsFocusableItems.toSet() - (all.toSet() - nonFocusable)}"
+  val reachable = SettingsFocusableItems.toSet() + SettingsYoutubePanelItems.toSet()
+  check(reachable == all.toSet() - nonFocusable) {
+    "焦点项表与常量表不一致: 缺=" +
+      "${(all.toSet() - nonFocusable) - reachable} " +
+      "多=${reachable - (all.toSet() - nonFocusable)}"
   }
 }
 
@@ -1751,6 +1534,8 @@ private enum class SettingsRightPanel {
   Logs,
   About,
   YoutubeChannels,
+  // P11-148:原「YouTube 设置」折叠组的替代——9 行搬进右侧二级面板,入口行是归属项。
+  YoutubeSettings,
 }
 
 // 每个二级菜单(右侧面板)归属的一级菜单项。焦点移到其它一级项时,面板应隐藏(不统属)。
@@ -1760,21 +1545,22 @@ private fun SettingsRightPanel.ownerItem(): Int? = when (this) {
   SettingsRightPanel.Logs -> SettingsItemLogs
   SettingsRightPanel.About -> SettingsItemAbout
   SettingsRightPanel.YoutubeChannels -> SettingsItemYoutubeChannels
+  SettingsRightPanel.YoutubeSettings -> SettingsItemYoutubeSettings
 }
 
 /**
- * P11-131:**展开态**下的项→LazyColumn 下标表(即「组内 9 行都渲染」时的样子)。
+ * 项 → 主列表 LazyColumn 下标表。
  *
- * 折叠位移不在这里逐条手改,由 [settingsItemToLazyIndex] 统一施加——见那里的说明。
+ * P11-148 起不再有「折叠位移」这层:YouTube 的 9 行已搬进二级面板,不占主列表下标,
+ * 故本表即最终下标(旧 `expandedItemToLazyIndex` + 位移包装已合并回本函数)。
  */
-private fun expandedItemToLazyIndex(
+private fun settingsItemToLazyIndex(
   itemIndex: Int,
   updateState: UpdateUiState,
 ): Int = when (itemIndex) {
   SettingsItemAccount -> 0
   SettingsItemPlaybackHeader -> 1
   SettingsItemPlaybackQuality -> 2
-  // 3/4 原为 YouTube 默认画质/起步画质,已移入折叠组(P11-131);组后各行整体上移 2。
   SettingsItemDefaultSpeed -> 3
   SettingsItemPlaybackBufferMax -> 4
   SettingsItemPlaybackCodec -> 5
@@ -1798,54 +1584,28 @@ private fun expandedItemToLazyIndex(
   SettingsItemClearCache -> 23
   SettingsItemChineseTextVariant -> 24
   SettingsItemHomeSections -> 25
-  // 26 = "youtube-group-header" 可折叠组头(常驻可见,不在 SettingsYoutubeGroupItems 里)
-  SettingsItemYoutubeDefaultQuality -> 27
-  SettingsItemYoutubeStartQuality -> 28
-  SettingsItemYoutubeDefaultSpeed -> 29
-  SettingsItemYoutubeCodec -> 30
-  SettingsItemYoutubeChannels -> 31
-  SettingsItemYoutubeContentRegion -> 32
-  SettingsItemPiped -> 33
-  SettingsItemYoutubeUsePiped -> 34
-  SettingsItemYoutubeDeliveryPriority -> 35
-  SettingsItemWebDav -> 36
-  SettingsItemWebDavBackup -> 37
-  SettingsItemWebDavRestore -> 38
-  SettingsItemIptv -> 39
-  SettingsItemTvbox -> 40
-  SettingsItemLogs -> 41
-  SettingsItemPlayerLogOverlay -> 42
-  SettingsItemCrashLogAutoReport -> 43
-  // 44 = "update-header" section title in LazyColumn
-  SettingsItemUpdateCurrentVersion -> 45
-  SettingsItemUpdateDownloadOrInstall -> 46
-  // 47 = "update-release-notes"(有新版才渲染);「关于」并入程序更新节,排在更新日志之后。
-  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 47 else -1
-  SettingsItemAbout -> if (shouldShowReleaseNotesAction(updateState)) 48 else 47
-  else -> 0
+  // 26 = "youtube-settings" 二级面板入口行(P11-148;原折叠组头位置)。
+  // 组内 9 行已搬进 SettingsYoutubeSettingsColumn 面板,**不再占主列表下标**——所以这里
+  // 没有它们的条目,下面各行比 P11-131 的展开态整体前移 9。
+  SettingsItemYoutubeSettings -> 26
+  SettingsItemWebDav -> 27
+  SettingsItemWebDavBackup -> 28
+  SettingsItemWebDavRestore -> 29
+  SettingsItemIptv -> 30
+  SettingsItemTvbox -> 31
+  SettingsItemLogs -> 32
+  SettingsItemPlayerLogOverlay -> 33
+  SettingsItemCrashLogAutoReport -> 34
+  // 35 = "update-header" section title in LazyColumn
+  SettingsItemUpdateCurrentVersion -> 36
+  SettingsItemUpdateDownloadOrInstall -> 37
+  // 38 = "update-release-notes"(有新版才渲染);「关于」并入程序更新节,排在更新日志之后。
+  SettingsItemUpdateReleaseNotes -> if (shouldShowReleaseNotesAction(updateState)) 38 else -1
+  SettingsItemAbout -> if (shouldShowReleaseNotesAction(updateState)) 39 else 38
+  // P11-148:未知项(例如只属于二级面板、不占主列表下标的 YouTube 行)一律 -1 = 跳过,
+  // **不要**回落 0——0 是 Account,会表现成「按上下键跳到列表顶端」(P11-85 那类 bug 的形态),
+  // 而 -1 只会被 moveSettingFocus 静默跳过并留一条日志,错得可控。
+  else -> -1
 }
 
-/**
- * P11-131:「展开态下标表」+「折叠位移」两层合成。
- *
- * 折叠时组内 9 行整体不渲染 ⇒ ①组内各行映射 -1(沿用 :1649 发布说明那行的既有语义:
- * `moveSettingFocus` 见负值即跳过,故 `SettingsFocusableItems` 保留全部项、上下键自动跨过折叠行);
- * ②组头之后的行整体前移 `SettingsYoutubeGroupItems.size`。
- *
- * 位移量从列表 `.size` 派生,**不要**再写一个 9——否则加行时会两处不同步。
- */
-private fun settingsItemToLazyIndex(
-  itemIndex: Int,
-  updateState: UpdateUiState,
-  youtubeGroupExpanded: Boolean,
-): Int {
-  val expandedIndex = expandedItemToLazyIndex(itemIndex, updateState)
-  if (expandedIndex < 0) return -1
-  return when {
-    itemIndex in SettingsYoutubeGroupItems ->
-      if (youtubeGroupExpanded) expandedIndex else -1
-    expandedIndex > YoutubeGroupHeaderLazyIndex ->
-      expandedIndex - SettingsYoutubeGroupItems.size
-    else -> expandedIndex
-  }
-}
+
