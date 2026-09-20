@@ -91,6 +91,8 @@ internal object SabrProto {
   fun encodeStreamerContext(s: StreamerContextInput): ByteArray {
     val w = ProtoWriter()
     if (s.clientInfo != null) w.message(1, encodeClientInfo(s.clientInfo))
+    // 材料 clientInfo 发在后面 = 材料赢(静态身份以材料为准,见 StreamerContextInput)。
+    if (s.materialClientInfoBytes != null) w.message(1, s.materialClientInfoBytes)
     if (s.poToken.isNotEmpty()) w.bytes(2, s.poToken)
     if (s.playbackCookie != null && s.playbackCookie.isNotEmpty()) w.bytes(3, s.playbackCookie)
     for (ctx in s.sabrContexts) {
@@ -516,6 +518,8 @@ internal object SabrProto {
      * 唯一不用猜测语义的做法是**原样带过去** —— 见 [SabrRequestInput.leadingClientAbrStateBytes]。
      */
     val clientAbrStateRaw: ByteArray? = null,
+    /** 2026-09-20(A1):材料 streamerContext.client_info 的原始字节(见 StreamerContextInput)。 */
+    val clientInfoRaw: ByteArray? = null,
   )
   data class FormatIdLite(val itag: Int, val lastModified: Long, val xtags: String?)
 
@@ -528,6 +532,7 @@ internal object SabrProto {
     // 2026-09-20:保留 client_abr_state(field 1)的原始字节——对齐 MWEB 形状用(我们只建模 17 个字段,
     // 浏览器 MWEB 那条还有 ~11 个没建模的,原样透传才能不动语义地对齐)。见 DecodedAbrRequest。
     var clientAbrRaw: ByteArray? = null
+    var clientInfoRaw: ByteArray? = null
     while (true) {
       val f = r.nextField() ?: break
       when (f.fieldNumber) {
@@ -535,10 +540,14 @@ internal object SabrProto {
         5 -> ustreamerConfig = f.value as ByteArray
         16 -> if (audioFmt == null) audioFmt = decodeFormatIdLite(f.value as ByteArray)
         17 -> if (videoFmt == null) videoFmt = decodeFormatIdLite(f.value as ByteArray)
-        19 -> poToken = decodeStreamerContextPoToken(f.value as ByteArray)
+        19 -> {
+          poToken = decodeStreamerContextPoToken(f.value as ByteArray)
+          // 2026-09-20(A1):同一份 streamerContext 里把 client_info(inner field 1)的原始字节也留下。
+          if (clientInfoRaw == null) clientInfoRaw = decodeStreamerContextClientInfoRaw(f.value as ByteArray)
+        }
       }
     }
-    return DecodedAbrRequest(poToken, ustreamerConfig, audioFmt, videoFmt, clientAbrRaw)
+    return DecodedAbrRequest(poToken, ustreamerConfig, audioFmt, videoFmt, clientAbrRaw, clientInfoRaw)
   }
 
   /**
@@ -609,6 +618,16 @@ internal object SabrProto {
   }
 
   /** StreamerContext.field2 = poToken(bytes)。 */
+  /** 2026-09-20(A1):取 streamerContext(19)里 client_info(inner field 1)的原始字节;无则 null。 */
+  private fun decodeStreamerContextClientInfoRaw(payload: ByteArray): ByteArray? {
+    val r = ProtoReader(payload)
+    while (true) {
+      val f = r.nextField() ?: break
+      if (f.fieldNumber == 1) return f.value as? ByteArray
+    }
+    return null
+  }
+
   private fun decodeStreamerContextPoToken(payload: ByteArray): ByteArray {
     val r = ProtoReader(payload)
     while (true) {
@@ -776,6 +795,15 @@ internal data class SabrContext(val type: Int, val value: ByteArray)
 
 internal data class StreamerContextInput(
   val clientInfo: ClientInfoInput?,
+  /**
+   * 2026-09-20(A1 身份对齐):材料 streamerContext 里 `client_info`(field 1)的**原始字节**,
+   * 发在 typed [clientInfo] **之后** ⇒ protobuf 合并语义下**材料赢**:`clientName=2`(MWEB)、
+   * `deviceMake=google`、`deviceModel=pixel 7`、`f1=zh_CN` 等全部原样落地,一个值都不用我们编。
+   *
+   * 为什么这里"材料赢"而 clientAbrState 那边"我们赢":clientInfo 是**静态身份**,材料是唯一正确值;
+   * clientAbrState 含**动态进度**(playerTimeMs/计时),材料那份是采集时的快照、照抄等于谎报进度。
+   */
+  val materialClientInfoBytes: ByteArray? = null,
   val poToken: ByteArray,
   val playbackCookie: ByteArray? = null,
   val sabrContexts: List<SabrContext> = emptyList(),

@@ -2234,6 +2234,8 @@ class YoutubePlaybackResolver(
      * ~11 个未建模字段保留)。
      */
     val clientAbrStateRaw: ByteArray?,
+    /** 2026-09-20(A1 身份对齐):材料 streamerContext.client_info 的原始字节。 */
+    val clientInfoRaw: ByteArray?,
   )
 
   /**
@@ -2346,7 +2348,7 @@ class YoutubePlaybackResolver(
     )
     return HarvestMaterial(
       base, cpn, decoded.poToken, decoded.ustreamerConfig,
-      decoded.audioFormatId, decoded.videoFormatId, decoded.clientAbrStateRaw,
+      decoded.audioFormatId, decoded.videoFormatId, decoded.clientAbrStateRaw, decoded.clientInfoRaw,
     )
       // 2026-09-20(补 P11-118c 判别实验):材料**解得出**时也把这份原始捕获存下来。此前 `cap` 只在
       // 「解不出材料」的三个失败分支里被 replay 取证,成功那份直接丢掉 —— 于是「会话建起来了、却在
@@ -2638,6 +2640,7 @@ class YoutubePlaybackResolver(
       videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
       audioTracks = sabrAudioTracks,
       leadingClientAbrStateBytes = material.clientAbrStateRaw,
+      leadingClientInfoBytes = material.clientInfoRaw,
     ) else SabrSession.fromSabrData(
       // P11-117:恢复会话 poToken(P11-116 的 pot-less 是判别实验,已判读完毕:token 洗清——
       // 带/不带 token 的响应逐字节一致)。对齐 FreeTube:`createLocalSabrManifest(result, poToken, …)`

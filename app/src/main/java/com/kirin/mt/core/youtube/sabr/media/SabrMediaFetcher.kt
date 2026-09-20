@@ -754,6 +754,9 @@ internal class SabrMediaFetcher(
     val (activeCtxs, unsentCtxTypes) = session.prepareSabrContexts()
     val streamerContext = StreamerContextInput(
       clientInfo = session.clientInfo,
+      // 2026-09-20(A1 身份对齐):材料 clientInfo 原样发在 typed 之后 ⇒ 合并语义下材料赢
+      // (clientName=2/MWEB、deviceMake=google、deviceModel=pixel 7、f1=zh_CN 全落地,零猜测)。
+      materialClientInfoBytes = session.leadingClientInfoBytes,
       poToken = poTokenState.currentPoToken,
       playbackCookie = session.playbackCookie,
       sabrContexts = activeCtxs,
@@ -777,7 +780,26 @@ internal class SabrMediaFetcher(
     // 仅对 clientName=1(WEB)生效。
     val webShape = session.clientInfo.clientName == 1
     val bwEstimateBps = getRealBitrateEstimate()
-    val clientAbrState = if (webShape) {
+    // 2026-09-20(A2 形状对齐):会话带 harvest 材料 ⇒ **只发动态字段**,静态部分全部留 null 由材料那份
+    // 原始 f1 提供(它作为本请求 f1 之前的一份发出,见 SabrRequestInput.leadingClientAbrStateBytes)。
+    //
+    // 为什么这样切:静态(身份/能力/偏好——viewport/sticky/lastManualRes/bitfield/drc/visibility/
+    // flexible/voiceBoost/audioTrackId)以材料为准 = 与浏览器逐字段一致,且不必猜那 ~11 个未建模字段;
+    // 动态(进度/计时——playerTimeMs/bandwidthEstimate/各 timeSinceLast*/elapsedWall/playbackRate)必须
+    // 我们给当前值:材料那份是**采集那一刻的快照**(它的 playerTimeMs=0),照抄等于向服务端谎报播放进度。
+    // 编码器本就跳过 null ⇒ 合并结果 = 材料的静态 + 我们的动态,不需要任何字段级滤波。
+    val materialAligned = session.leadingClientAbrStateBytes != null
+    val clientAbrState = if (materialAligned) {
+      ClientAbrStateInput(
+        bandwidthEstimate = bwEstimateBps.takeIf { it > 0 } ?: 1_000_000L,
+        playerTimeMs = playerTimeMs.takeIf { it != 0L },
+        timeSinceLastManualFormatSelectionMs = lastManualFormatSelectionMs?.let { now - it } ?: 0L,
+        timeSinceLastSeekMs = lastSeekMs?.let { now - it } ?: 0L,
+        elapsedWallTimeMs = elapsed,
+        timeSinceLastActionMs = lastActionMs?.let { now - it } ?: 0L,
+        playbackRate = req.playbackSpeed,
+      )
+    } else if (webShape) {
       ClientAbrStateInput(
         lastManualSelectedResolution = max(vHeight, 360),
         clientViewportWidth = 640,
