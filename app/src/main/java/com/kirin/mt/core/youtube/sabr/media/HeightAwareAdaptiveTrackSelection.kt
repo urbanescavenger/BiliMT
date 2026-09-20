@@ -566,8 +566,19 @@ class HeightAwareAdaptiveTrackSelection(
     // C1:把候选收窄到「服务端真的会推的 itag」——**必须在水位急救降档循环之前算好**
     // (那道循环在下面 `if (bufferCritical)` 里,位置比主候选循环早;首版放它在主循环前 → 编译期
     //  Unresolved reference,CI 直接红)。三道防线见 serverServedItags 说明。
+    //
+    // ── P11-152(2026-09-20 r2042 TV 真机):**收窄只对「材料会话」生效** ─────────────────────
+    // 这条收窄是给材料会话设计的(那种会话**只供浏览器那一场绑定的档**)。但它此前对所有会话生效,
+    // 而普通会话(自造 / NewPipe)服务端**要什么给什么** ⇒ 收窄把梯子冻在「已经推过的档」上:
+    //
+    //   TV 日志 `logs_live_20260920_224027.log`:会话 14 轨含 1080p/1440p/2160p,`pushed=[139, 247]`
+    //   ⇒ 集合只有 {139, 247} ⇒ 全程 `sel=5`(720p),而 `up=4` 说明它看得见上面 4 档却选不了;
+    //   我们不去请求 1080p,服务端自然也不推它 ⇒ **永远解不开**。手机端「钉死 144p」同源。
+    //
+    // 故:仅当该视频在册会话里有材料会话([SabrStreamRegistry.hasMaterialSession])时才收窄。
+    val materialSession = com.kirin.mt.core.youtube.sabr.SabrStreamRegistry.hasMaterialSession(serverServedVideoId)
     val servedNow = serverServedItags + serverServedItagsProvider()
-    val servedInGroup = if (servedNow.isEmpty()) null
+    val servedInGroup = if (!materialSession || servedNow.isEmpty()) null
       else (0 until length).filter { itagOf(getFormat(it)) in servedNow }.toSet()
     val restrictToServed = servedInGroup != null && servedInGroup.isNotEmpty()
     if (bufferCritical) {

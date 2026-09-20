@@ -80,6 +80,16 @@ internal object SabrStreamRegistry {
     if (videoId.isNullOrBlank()) emptySet() else serverServedItagsByVideo[videoId]?.toSet() ?: emptySet()
 
   /**
+   * P11-152:该视频当前是否有**材料会话**在册(决定选档要不要收窄到 served 集合)。
+   *
+   * 收窄本身只对材料会话有意义(服务端只供浏览器那场绑定的档);对普通会话收窄会把梯子冻在
+   * 「已推过的档」上 —— r2042 TV 真机 `pushed=[139, 247]` ⇒ 全程停 720p(见 [SabrSession.fromHarvestMaterial])。
+   */
+  fun hasMaterialSession(videoId: String?): Boolean =
+    if (videoId.isNullOrBlank()) false
+    else sessions.values.any { it.videoId == videoId && it.session.fromHarvestMaterial }
+
+  /**
    * P11-146(2026-09-20 历史复盘后的**四臂轮换**;取代 P11-145 的三臂)。
    *
    * 复盘发现(全部有日志,见 docs/youtube-web-sabr.md §5.9.7):当天**能播的两场都是「材料会话 +

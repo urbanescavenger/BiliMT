@@ -93,6 +93,16 @@ internal data class SabrSession(
    */
   val sabrContexts: MutableMap<Int, ByteArray> = ConcurrentHashMap(),
   val activeSabrContextTypes: MutableSet<Int> = ConcurrentHashMap.newKeySet(),
+  /**
+   * P11-152:**本会话是否由 harvest 材料构建**([fromSabrBytes])。
+   *
+   * 只用于一件事:选档要不要「收窄到服务端推过的 itag」。材料会话**只供浏览器那一场绑定的档**
+   * (服务端按那场会话签发的绑定供流),我们的档若不在其中会 `no seg` 死循环 ⇒ 材料会话必须收窄;
+   * 而**普通会话(自造 / NewPipe)服务端是要什么给什么**,对它收窄会把梯子冻在「已推过的档」上:
+   * r2042 TV 真机(`logs_live_20260920_224027.log`)`pushed=[139, 247]` ⇒ 集合只有 720p ⇒
+   * 全程停在 720p(日志 `up=4` 说明它看得见上面 4 档却选不了);手机端「钉死 144p」同源。
+   */
+  val fromHarvestMaterial: Boolean = false,
 ) {
   /** alpha.29:按 itag 查多清晰度 FormatId;查不到回退默认 [videoFormatId](同 itag 时)。 */
   /** alpha.29:按 itag 查多清晰度 FormatId;查不到回退默认 [videoFormatId](同 itag 时)。 */
@@ -210,6 +220,8 @@ internal data class SabrSession(
       return SabrSession(
         withParams, poTokenBytes, ustreamerConfigBytes, clientInfo, audioFormatId, videoFormatId,
         videoFormats, audioTracks, userAgent, cookieHeader, visitorData, usedCpn,
+        // P11-152:材料会话标记 —— 只有它才收窄选档(见 [SabrSession.fromHarvestMaterial])。
+        fromHarvestMaterial = true,
       ).also {
         it.leadingClientAbrStateBytes = leadingClientAbrStateBytes
         it.leadingClientInfoBytes = leadingClientInfoBytes
