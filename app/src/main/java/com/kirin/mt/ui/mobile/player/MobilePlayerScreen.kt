@@ -1318,6 +1318,7 @@ fun MobilePlayerScreen(
     while (true) {
       delay(ProgressUpdateMs)
       val ready = playerState as? MobilePlayerState.Ready ?: continue
+      // 下面看门狗块用 ready.info 取会话信息(sabrInfo),故 ready 仍被消费。
       val currentPositionMs = player.currentPosition.coerceAtLeast(0L)
       if (seekPreviewMs == null) {
         playbackPositionState.longValue = currentPositionMs
@@ -1338,8 +1339,10 @@ fun MobilePlayerScreen(
       }
 
       val nowMs = android.os.SystemClock.elapsedRealtime()
-      // 排除:已暂停(playWhenReady=false 是用户意图)、已完成、非 Ready 态。
-      val isStallBuffering = ready &&
+      // 排除:已暂停(playWhenReady=false 是用户意图)、已完成。非 Ready 态在循环开头已 `?: continue` 掉,
+      // 故这里不必再判态(注意本文件 `ready` 是 `MobilePlayerState.Ready` **对象**而非布尔,
+      // 不能直接进 `&&` 链——与 TV 那边 `playerState is PlayerScreenState.Ready` 的写法不同)。
+      val isStallBuffering =
         player.playbackState == Player.STATE_BUFFERING &&
         player.playWhenReady &&
         !completionReported
@@ -1385,7 +1388,7 @@ fun MobilePlayerScreen(
               // 别复用同一个慢会话(同 TV P11-95)。播放中(已出帧)的 stall 不动会话——多为瞬态网络,
               // 保住长会话复用。
               if (!frameRendered) {
-                val sabrInfo = (playerState as? MobilePlayerState.Ready)?.info
+                val sabrInfo = ready.info
                 if (sabrInfo != null && sabrInfo.isSabrSingle()) {
                   SabrStreamRegistry.getByVideoId(sabrInfo.bvid)?.let { sid ->
                     SabrStreamRegistry.evict(sid)
