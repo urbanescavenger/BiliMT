@@ -2572,13 +2572,21 @@ class YoutubePlaybackResolver(
     )
     val sid = SabrStreamRegistry.registerByVideoId(
       videoId, session, SabrClient(httpClient),
-      // P11-117(第二刀,对齐 FreeTube):**不注册 status=2 刷新回调**。
-      // FreeTube `SabrSchemePlugin.js:359-365` 只对 `status===3` 反应,**status=2 完全忽略**,全程
-      // 单 token(mintAsWebsafeString(videoId) 一次);我们却在 status=2 时同步重铸(P11-68/102c),
-      // 那是为追 60s 窗口自创的机制,两个参照都没有。传 null 即保持会话初始 token 不变
-      //(single-flight 的 mint 返回 null → 日志「keep stale」)。**仅 WEB-SABR 这么改**——
-      // visionOS/Piped 路径的回调(biliTvPoTokenProvider)保持原状,那条路当前是可用的,别动。
-      refreshPoToken = null,
+      // ── P11-127(Stage 2):重新启用 status=2 同步刷新 ─────────────────────────────────────
+      // P11-117 当初**故意**传 null(对齐 FreeTube `SabrSchemePlugin.js:359-365`「只对 status===3
+      // 反应」)。那是在**桌面会话 + 移动铸 token 错配**的年代做的决定:重铸出来的 token 与桌面会话
+      // 不同源,刷了也没用,只能靠 status=3 时换整页/换会话。
+      // 现在身份统一为移动(会话 `sabrClientInfo()`=Android + 移动 UA + 移动 minter),重铸的 token
+      // 与 /player 同源 ⇒ 值得再试。真机 09-20 判读给出了直接动因:`hOv8` 会话 `status2Seen=5`(服务端
+      // 从第 2 个响应起一路 nag)后仍在 ~35s 升 `status=3` 处决 → evict → ExoPlayer Source error →
+      // auto-retry(用户体感「能播但 ~60s 重载一次」);而下一份**新材料**建的会话全程 `status=1`。
+      // 即在 status=2 时就换上新鲜 token,有望把「处决+重载」变成「无感续播」。
+      // 同步语义由 [SabrMediaFetcher] 保证(alpha.67 改回同步 + alpha.68 取消看门狗:status=2 在响应
+      // 解析处同步重铸,下个请求必带新 token;异步化曾致竞态 status=3 60s 重启)。
+      // single-flight(P11-102c)防多 fetcher 并发各铸一次互相踩。
+      refreshPoToken = {
+        biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8)
+      },
     )
     // WEB 会话是全新身份(探针 init POST 已被服务端接受)——清零 videoId 的 reload 计数,
     // 否则旧 visionOS 死会话留下的计数会触发 SabrDataSource fast-fail 误杀新会话
