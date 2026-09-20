@@ -80,25 +80,36 @@ internal object SabrStreamRegistry {
     if (videoId.isNullOrBlank()) emptySet() else serverServedItagsByVideo[videoId]?.toSet() ?: emptySet()
 
   /**
-   * P11-144(2026-09-20,A/B 取证):WEB-SABR **「材料派 vs 自造派」轮换计数**(按 videoId)。
+   * P11-145(2026-09-20,**token 三臂轮换**;取代 P11-144 的「材料派/自造派」二臂)。
    *
-   * 同一个视频的第 1 次 resolve 走**材料派**(harvest 材料建会话)、第 2 次走**自造派**(我们自己的
-   * /player),第 3 次又材料 …… 于是**同一视频、同一网络、相隔数十秒**就能在一个构建里拿到两派的
-   * 同条件对比 —— 比此前「拿 r2026 的材料场去比 r2028 的自造场」这种跨场拼接硬得多。
+   * 会话侧已由 r2030 的 A/B 定论:**材料 URL 会话只供浏览器那一场绑定的档**(实测 token 状态是
+   * `status=1` ×19 而服务端仍只推 251/399、我们的档从未被初始化)⇒ **会话一律走我们自己的 /player**。
+   * 剩下的唯一变量是 **token**,故按 resolve 次数轮换三臂:
    *
-   * 判据(见 r2026/r2024):材料派会在格式墙上死(`no seg <我们的档>`,媒体块 0);自造派能拿到我们的档。
-   * 两派都可能遇到 `status=2` 那关(那是另一条线,见 SabrMediaFetcher 的 keep-stale 实验)。
+   *   臂 A(0)= 我们自铸(`ensureWebToken`,现况):r2030 实测——第一笔就 `status=2`(potAge 839ms,
+   *            非过期)、给 6.3MB 宽限后转 `status=3`;
+   *   臂 B(1)= **harvest 页铸的那枚**(87B):r2030 实测它拿到 `status=1` ×19 ⇒ 页面上下文
+   *            (BgUtils #44:`yt.config_.EVENT_ID`)是被接受的关键;本臂只借 token,不借 URL/ust/cpn;
+   *   臂 C(2)= **不带 token(pot-less)**:调研指出这是我们日志里唯一稳定 `status=1` 的配置。
+   *
+   * 判据:`token 形态` 日志(臂/大小/首字节)+ `resp summary`(格式)+ status 序列 + `first media chunk`。
    */
-  private val webSabrArmAttempts =
+  private val webSabrTokenArmCounters =
     java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
 
-  /** true = 本次 resolve 用 harvest 材料建会话;false = 用我们自己的 /player。 */
-  fun nextWebSabrArmUseMaterial(videoId: String): Boolean {
-    val n = webSabrArmAttempts
+  /** 0=自铸 / 1=harvest 页铸 / 2=不带 token。 */
+  fun nextWebSabrTokenArm(videoId: String): Int {
+    val n = webSabrTokenArmCounters
       .getOrPut(videoId) { java.util.concurrent.atomic.AtomicInteger() }
       .incrementAndGet()
-    Log.i(tag, "WEB-SABR A/B(P11-144): videoId=$videoId resolve#$n → ${if (n % 2 == 1) "材料派" else "自造派"}")
-    return n % 2 == 1
+    val arm = (n - 1) % 3
+    val label = when (arm) {
+      0 -> "A(自铸)"
+      1 -> "B(harvest 页铸)"
+      else -> "C(pot-less)"
+    }
+    Log.i(tag, "WEB-SABR token 三臂(P11-145): videoId=$videoId resolve#$n → 臂$label")
+    return arm
   }
 
   /** DASH 兜底直链 403 判死标记(播放器 onPlayerError 2004 + YouTube 请求时调)。 */

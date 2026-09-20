@@ -953,6 +953,52 @@ harvest 痕迹 0 行、`skip ad/unrequested` 0 次、`SabrSession:` 无标记、
 再看 `resp summary` 的 usable/init(格式墙)→ 再看 status 序列与 `potAgeMs`(token 线)→ 最后看
 `first media chunk` / `playerState=3(READY)`(是否真的播起来)。
 
+### 5.9.6 r2030 的 A/B 判读:两个变量彻底分开;token 线锁定「铸造上下文」(P11-145)
+
+真机 `logs_live_20260920_205125.log`(r2030 = P11-144 那版,同一视频 LSnMDFCe0lY,两派各一次 resolve)。
+
+| 派别 | token(pot/potAge) | 服务端供的档 | 可用字节 | status 序列 |
+|---|---|---|---|---|
+| **材料派** `SabrSession(bytes/harvest)` | 88B(harvest 页铸)/ 2018ms | 只有 251/399 | `usable=1214B/2416131B`、`init=[]` | **`status=1` ×19** |
+| **自造派** `SabrSession:` 无标记 | 87B(自铸)/ 839ms | **`init/pushed=[140,302]`** | **`usable=6297809B/6297809B`** | `status=2` ×1 → keep-stale → **`status=3`** |
+
+**结论一(格式墙与会话 URL 绑死、与 token 无关)**:材料派的 token 被服务端**完全接受**(`status=1` ×19),
+但服务端仍只推 251/399 ⇒ 我们的档从未被初始化 ⇒ `no seg` ×6 → evict。**这是 P11-143 前提最干净的一次证明。**
+
+**结论二(token 线 = 铸造上下文)**:自造派格式全对(6.3MB 全部可用 + 两条轨都送出 `first media chunk`),
+但自铸 token **第一笔就被当作占位级**(`potAgeMs=839` ⇒ 不是过期),给完 6.3MB 宽限转 `status=3`。
+**刻意不刷新(keep-stale)也照样死** ⇒ 之前的「刷新才是凶手」假设被证伪;与 BgUtils README 的
+「status=2 = 只当占位、1~2MB 宽限、快去拿**真** token」完全吻合(我们这次拿到 6.3MB,同量级)。
+
+**联网调研的定论(带出处,详见 §5.9.7)**:
+
+- BgUtils README:`status=2` = "can still request up to 1-2 MB of data **using a cold start token** …
+  request a **real** PO token as soon as possible";`status=3` = "cannot continue"。
+- **冷启桩**是 `packet[0]=34`(0x22)、定长 `2+8+len(identifier)` —— 与 harvest 采到的 **10B** 桩逐字节吻合;
+  我们自铸那串首字节是 **50**(0x32)= protobuf field 6,属 **minter 输出(真 token 类)**,不是桩。
+- **「每次 +65B 变长」是复用同一个 minter 的客户端故障态**(NewPipe PR #11955,2025-10-16:
+  "the potoken seems to get longer every time its requested … worked by **forceRecreate=true**")。
+- **关键杠杆是铸造上下文**:BgUtils #44 —— attestation challenge 已绑 `yt.config_.EVENT_ID`,
+  「tokens generated using challenges from `/att/get` are now **rejected**」;PipePipeClient #86 单变量实测:
+  **无 EVENT_ID → status 2 @60s;有匹配 EVENT_ID → status 1 @65s+**;bgutil #243:成功率 58% → 92%。
+- FreeTube/googlevideo **只对 status=3 反应**,LibreTube 是唯一「status=2 就重铸」的少数派(而那是我们踩的坑)。
+- 强制强度是**概率性 A/B**(bgutil #243)⇒ 跨场次对比无意义,只看当天日志。
+
+**本轮动作(P11-145:会话固定自造,token 三臂轮换)**:
+
+| 臂 | token 来源 | 实现 |
+|---|---|---|
+| **A** | 自铸(`ensureWebToken`) | 现况(`poToken` 字符串路径) |
+| **B** | **harvest 页铸的那枚**(唯一拿到过 `status=1` 的) | 只借 token:新参 `SabrSession.fromSabrData(poTokenBytesOverride=…)` **原始字节直传**(不经 base64 往返,避免 P11-118d 记过的往返坑);URL/ust/cpn 一概不用 |
+| **C** | **不带 token(pot-less)** | `webSabrPoToken=""`(非 null 过上游守卫;`fromSabrData` 对 blank → `ByteArray(0)`),连铸造都省 |
+
+配套:①会话侧删掉材料 URL 分支(`fromSabrBytes` 那条,已被 A/B 判死),`n-decrypt` 与 cpn 注入恢复为
+**一律执行**(不再因材料而跳过);②新增 `describeTokenShape` 与 `WEB-SABR token 形态(P11-145): 臂X …`
+日志(`34`=桩 / `50`=minter 输出 / `>128B` 判可疑超长)。
+
+**判据**:三臂各自的 `token 形态`(臂/大小/首字节)+ `resp summary`(格式)+ status 序列 + `first media chunk`。
+预期:臂 B/C 若有一臂全程 `status=1` 且 `usable` 满 ⇒ 拿到「既有我们的档、又不被 token 挡」的组合,即为可交付形态。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)

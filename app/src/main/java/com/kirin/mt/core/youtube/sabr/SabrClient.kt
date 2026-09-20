@@ -144,6 +144,12 @@ internal data class SabrSession(
       videoFormats: List<FormatId> = emptyList(),
       /** 多语言配音:全部可选音频轨(供播放器音轨切换菜单)。默认空(单音轨)。 */
       audioTracks: List<SabrAudioTrack> = emptyList(),
+      /**
+       * P11-145:**token 原始字节直传**(绕过 base64 往返)。给「用 harvest 页铸的那枚 token 建我们自己的
+       * 会话」这条臂用 —— 材料那边的 token 本来就是字节,编回 base64 再解只会重蹈 P11-118d 记过的往返坑
+       * (STANDARD/URL_SAFE 不一致 → `sabr.malformed_config`)。null = 走 [poTokenB64] 解码(老行为)。
+       */
+      poTokenBytesOverride: ByteArray? = null,
     ): SabrSession {
       // sabrUrl 加 alr=yes + cpn(对齐 FreeTube Watch.js L1619-1620 + SabrSchemePlugin 追加 rn)。cpn = 16 随机字节 base64url
       val usedCpn = cpn ?: randomCpn()
@@ -155,8 +161,8 @@ internal data class SabrSession(
       // P11-101 写的「FreeTube 用 po_token string bytes」是误读 → 我们此前对含 '-'/'_' 的 web64
       // 串 DEFAULT 解码抛错后落 UTF-8 **原文**,把 128 字节的字符串当 token 发出去(r1951 真机
       // `SabrSession: poToken=128B`,而 FreeTube 同路径解出 ~90B)。此处按 FreeTube 归一化解码。
-      val po = if (poTokenB64.isBlank()) ByteArray(0)
-      else websafeBase64ToBytes(poTokenB64)
+      val po = poTokenBytesOverride
+        ?: if (poTokenB64.isBlank()) ByteArray(0) else websafeBase64ToBytes(poTokenB64)
       // ustreamerConfig 是 YouTube 的 URL-safe base64(含 -/_),DEFAULT 解码会丢弃非法字符→损坏字节
       // → 服务端判 sabr.malformed_config(alpha.72 真机全黑)。对齐 LibreTube SabrManifest URL_SAFE 解码。
       val ustreamer = Base64.decode(ustreamerConfigB64, Base64.URL_SAFE)

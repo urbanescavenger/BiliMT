@@ -238,10 +238,17 @@ class YoutubePlaybackResolver(
     val webSabrInPlay = webSabrFirst ||
       SabrStreamRegistry.reloadCount(videoId) > 0 ||
       SabrStreamRegistry.isDashFallbackFailed(videoId)
-    val webSabrPoToken: String? = if (!webSabrInPlay) {
-      poToken
-    } else {
-      runCatching { biliTvPoTokenProvider.ensureWebToken(videoId)?.streamingDataPoToken }
+    // P11-145:token 三臂(P11-144 的「材料派/自造派」二臂已被 r2030 判读 —— 材料 URL 会话即使 token
+    // 状态 `status=1` ×19 也只供 251/399,格式墙与会话 URL 绑死、与 token 无关;会话侧从此固定走
+    // 我们自己的 /player,只留 token 一个变量)。
+    //   臂 A(0)= 自铸 `ensureWebToken`(现况)  臂 B(1)= harvest 页铸的那枚  臂 C(2)= 不带 token
+    val webSabrTokenArm: Int = if (webSabrInPlay) SabrStreamRegistry.nextWebSabrTokenArm(videoId) else 0
+    val webSabrPoToken: String? = when {
+      !webSabrInPlay -> poToken
+      // 臂 C:pot-less。传 "" 而**不是** null —— 上游有 `poToken == null → abort` 守卫,且
+      // SabrSession.fromSabrData 对 blank 的处理就是 ByteArray(0)。顺带省掉一次铸造。
+      webSabrTokenArm == 2 -> ""
+      else -> runCatching { biliTvPoTokenProvider.ensureWebToken(videoId)?.streamingDataPoToken }
         .getOrNull()
         ?.also { Log.i(Tag, "WEB-SABR token: mobile minter (${it.length} chars)") }
         ?: poToken.also { Log.w(Tag, "WEB-SABR token: mobile minter 未产出 → 回落 botGuard token(${it?.length ?: 0} chars)") }
@@ -279,7 +286,7 @@ class YoutubePlaybackResolver(
     }
     if (webSabrFirst && poToken != null && !webSabrFirstBudgetShort && !webSabrFirstBlocked) {
       val webSabr = runCatching {
-        buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs)
+        buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs, webSabrTokenArm)
       }.onFailure {
         // P11-125:这条链整条包 runCatching——不落证就等于「失败且不知道为什么」。
         Log.w(Tag, "WEB-SABR(优先)链异常: ${it::class.simpleName}: ${it.message}", it)
@@ -374,7 +381,7 @@ class YoutubePlaybackResolver(
             (SabrStreamRegistry.reloadCount(videoId) > 0 && poToken != null))
       if (webSabrDue) {
         val webSabr = runCatching {
-          buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs)
+          buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs, webSabrTokenArm)
         }.onFailure {
           // P11-125:同上——兜底段失败也必须留证。
           Log.w(Tag, "WEB-SABR(兜底)链异常: ${it::class.simpleName}: ${it.message}", it)
@@ -2460,6 +2467,30 @@ class YoutubePlaybackResolver(
       ?.takeIf { it.isNotEmpty() }
   }
 
+  /**
+   * P11-145:token **形态**判据(来自联网调研,带出处)。
+   *
+   * BgUtils README/`WebPoMinter.ts` 的冷启桩是 `packet[0] = 34`(0x22)、定长 `2 + 8 + len(identifier)`
+   * (identifier 为空即 **10B**)——与我们 harvest 采到的那枚 10B 桩逐字节吻合;而 minter 输出的真 token
+   * 类首字节是 `50`(0x32)= protobuf field 6 + wiretype 2(rustypipe 正是按 field 6 校验真 token)。
+   * 另据 NewPipe PR #11955(2025-10-16):**复用同一个 minter 反复铸造会让 token 越来越长**,那种
+   * token 用出去会被拒 ⇒ `>128B` 判可疑(我们实测膨胀到 1300B+)。
+   *
+   * 判别价值:冷启桩 = 服务端只当占位(1~2MB 宽限后 status=3);minter 输出 = 可能是真 token,
+   * 但缺少页面上下文(`yt.config_.EVENT_ID`)时仍会被当作占位 —— 这正是臂 A/臂 B 的差别所在。
+   */
+  private fun describeTokenShape(bytes: ByteArray): String {
+    if (bytes.isEmpty()) return "0B(pot-less)"
+    val first = bytes[0].toInt() and 0xFF
+    val kind = when (first) {
+      34 -> "冷启桩(0x22)"
+      50 -> "minter 输出(0x32)"
+      else -> "未知首字节"
+    }
+    val over = if (bytes.size > 128) " ⚠️超长(>128B,疑复用 minter 膨胀;真 token ~110-128B)" else ""
+    return "${bytes.size}B first=0x%02x %s%s".format(first, kind, over)
+  }
+
   private suspend fun buildWebSabrFallback(
     videoId: String,
     poToken: String?,
@@ -2468,42 +2499,33 @@ class YoutubePlaybackResolver(
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
     // P11-126:起播给的绝对 deadline(0=不限),透传给 [harvestSessionMaterial] 收敛 harvest 超时。
     deadlineMs: Long = 0L,
+    /** P11-145:token 臂(0=自铸 / 1=harvest 页铸 / 2=pot-less),由 [SabrStreamRegistry.nextWebSabrTokenArm] 轮换。 */
+    tokenArm: Int = 0,
   ): Pair<PlaybackInfo, String>? {
     if (poToken == null) {
       Log.w(Tag, "WEB-SABR: no poToken → abort")
       return null
     }
-    // ── P11-118d:阶段 2 收尾——harvest 材料优先 ─────────────────────────────────
-    // 20:57 真机 replay 实验实证:浏览器产出的材料(sabrUrl + body + 原 cpn)经**我们的 OkHttp**
-    // 原样重放得到 `STREAM_PROTECTION_STATUS status=1` + 完整媒体段(761KB;itag251/396,含 init 与
-    // seq=1..4),且 A(FreeTube 式 3 头)/ B(补 Cookie+visitor)两种传输形态结果**完全相同**
-    // ⇒ 追了 15 轮的 nag 差异**只在材料**,不在身份/传输。故 WEB-SABR 会话优先用 harvest 材料;
-    // 抓不到(风控空白页/超时/body 空)才回退我们自造的 /player 材料(见下方 material==null 分支)。
-    //
-    // ── P11-144(2026-09-20,A/B 取证):按 resolve 次数轮换「材料派 / 自造派」 ─────────────────
-    // 开关不再写死成 false,而是**轮换**:同一视频第 1 次 resolve = 材料派(harvest 材料建会话)、
-    // 第 2 次 = 自造派(我们自己的 /player)、第 3 次又材料 …… ⇒ **同一视频、同一网络、相隔数十秒**
-    // 就能在一个构建里拿到两派同条件对比(优于跨场拼接)。判据见 [SabrStreamRegistry.nextWebSabrArmUseMaterial]。
-    val useMaterialArm = SabrStreamRegistry.nextWebSabrArmUseMaterial(videoId)
-    val material: HarvestMaterial? = if (useMaterialArm) {
-      harvestSessionMaterial(videoId, request.startPositionMs, deadlineMs)
+    // ── P11-145(2026-09-20,r2030 A/B 判读后重构):**会话固定自造,只留 token 一个变量** ─────────
+    // r2030 的 A/B 把两个变量彻底分开了:
+    //   材料 URL 会话(harvest 页铸的 88B token):**token 状态 status=1 ×19**(被完全接受),
+    //     但 `resp summary: req=302 usable=1214B/2416131B init=[] pushed=[251,399]` ⇒ 我们的档从未被
+    //     初始化 ⇒ 格式墙与会话 URL 绑死,**与 token 无关**;
+    //   我们自己的会话(自铸 87B token):`usable=6297809B/6297809B init/pushed=[140,302]` ⇒ 格式全对,
+    //     但第一笔就 `status=2`(potAge 839ms,非过期)→ 6.3MB 宽限后转 `status=3`。
+    // ⇒ 会话侧从此固定走我们自己的 /player(`fromSabrData` 那条),材料**只借 token**(臂 B)。
+    // 臂 B 才去 harvest(只为拿那枚页面上下文 token,不借 URL/ust/cpn);臂 A/C 不采集。
+    val pageTokenBytes: ByteArray? = if (tokenArm == 1) {
+      val m = harvestSessionMaterial(videoId, request.startPositionMs, deadlineMs)
+      Log.i(
+        Tag,
+        "WEB-SABR 臂B(harvest 页铸): 只借 token = ${m?.poTokenBytes?.size ?: -1}B " +
+          "(materials 的 URL/ust/cpn 一概不用;r2030 实测这枚拿到过 status=1 ×19)",
+      )
+      m?.poTokenBytes?.takeIf { it.isNotEmpty() }
     } else {
+      Log.i(Tag, "WEB-SABR 臂${if (tokenArm == 2) "C(pot-less)" else "A(自铸)"}: 不采集,直接用我们自己的 /player 会话")
       null
-    }
-    if (material == null) {
-      Log.i(
-        Tag,
-        "WEB-SABR: 本次=自造派(P11-144)→ 不采集、直接自造会话" +
-          "(材料 URL 会话只供浏览器档;自造实测能供我们的档)",
-      )
-    } else {
-      Log.i(
-        Tag,
-        "WEB-SABR: USING HARVEST MATERIAL po=${material.poTokenBytes.size}B " +
-          "ust=${material.ustreamerConfigBytes.size}B cpn=${material.cpn} " +
-          "audio=itag${material.audioFormatId?.itag ?: "ladder-default"} " +
-          "video=itag${material.videoFormatId?.itag ?: "ladder-default"}",
-      )
     }
     // ── P11-127(全移动):身份不再桌面化 ────────────────────────────────────────────────
     // 此前(P11-106/P11-117)这一段用「桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT + 该页 cookie +
@@ -2579,11 +2601,11 @@ class YoutubePlaybackResolver(
       return null
     }
     // n-decrypt(yt-dlp solver;无 n 参数则跳过;transform 失败即 abort——未 transform POST 必 403)
-    // P11-118d:harvest 材料存在时**整段跳过**——那份 URL 的 n 已由浏览器 WASM transform 过,
-    // 且 solver 失败会 abort 掉我们手上唯一可用的材料(必须避免)。
+    // P11-118d 时代 harvest 材料存在时整段跳过(那份 URL 的 n 已由浏览器 WASM transform 过);
+    // **P11-145 起会话固定用我们自己 /player 的 URL** ⇒ 这条 transform 一律必跑。
     var sabrUrl = sd.sabrUrl
     val sabrN = Uri.parse(sabrUrl).getQueryParameter("n")
-    if (material == null && !sabrN.isNullOrBlank()) {
+    if (!sabrN.isNullOrBlank()) {
       val playerJsUrl = resolvePlayerJsUrl(videoId)
       if (playerJsUrl == null) {
         Log.w(Tag, "WEB-SABR: no playerJsUrl → abort")
@@ -2610,8 +2632,9 @@ class YoutubePlaybackResolver(
     // → 会话 cpn 为空 → 服务端无法把请求与 playbackCookie/ustreamerConfig 会话配对 → status=2 nag。
     val cpnParam = queryParam(sd.sabrUrl, "cpn")
     val webCpn = cpnParam ?: generateCpn()
-    // P11-118d:用 harvest 材料时 cpn 必须是**浏览器原 cpn**(材料三元组之一),不注入自造 cpn。
-    if (material == null && cpnParam == null) {
+    // P11-118d 时代用 harvest 材料时 cpn 必须用**浏览器原 cpn**;P11-145 起会话固定用我们自己的
+    // URL ⇒ 一律注入自造 cpn(P11-113 口径:cpn 本就是客户端生成的播放 nonce)。
+    if (cpnParam == null) {
       sabrUrl = if (sabrUrl.contains("?")) "$sabrUrl&cpn=$webCpn" else "$sabrUrl?cpn=$webCpn"
       Log.i(Tag, "WEB-SABR: cpn injected client-side($webCpn)——FreeTube Watch.js 同款")
     }
@@ -2665,22 +2688,10 @@ class YoutubePlaybackResolver(
       )
     }
     val aFmt = preferredAudio?.formatId ?: rawToSabrFormatId(firstAudio, 0)
-    val session = if (material != null) SabrSession.fromSabrBytes(
-      material.baseSabrUrl,
-      material.poTokenBytes,
-      material.ustreamerConfigBytes,
-      innerTubeClient.sabrClientInfo(),
-      aFmt, vFmt,
-      userAgent = InnerTubeClient.Client.WEB.userAgent,
-      // SABR POST 不带 HTTP Cookie/X-Goog-Visitor-Id(P11-107 HAR 实锤,FreeTube 同款)。
-      cookieHeader = "",
-      visitorData = "",
-      cpn = material.cpn,
-      videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
-      audioTracks = sabrAudioTracks,
-      leadingClientAbrStateBytes = material.clientAbrStateRaw,
-      leadingClientInfoBytes = material.clientInfoRaw,
-    ) else SabrSession.fromSabrData(
+    // P11-145:会话**只走自造**(材料 URL 会话的格式墙已被 r2030 A/B 证实,且与 token 无关);
+    // 臂 B 用 `poTokenBytesOverride` 把 harvest 页铸的那枚 token 的**原始字节**直传进来
+    // (不经 base64 往返)。臂 A = 走 poToken 字符串解码;臂 C = poToken 为 ""(blank → ByteArray(0))。
+    val session = SabrSession.fromSabrData(
       // P11-117:恢复会话 poToken(P11-116 的 pot-less 是判别实验,已判读完毕:token 洗清——
       // 带/不带 token 的响应逐字节一致)。对齐 FreeTube:`createLocalSabrManifest(result, poToken, …)`
       // 把 content-bound(videoId 绑定)token 放进 sabrData,`SabrSchemePlugin` 再
@@ -2698,6 +2709,15 @@ class YoutubePlaybackResolver(
       cpn = webCpn,
       videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
       audioTracks = sabrAudioTracks,
+      poTokenBytesOverride = pageTokenBytes,
+    )
+    // P11-145:token **形态**判据(调研 #2)——`34`(0x22)=冷启桩 / `50`(0x32)=minter 输出 /
+    // 空=pot-less;>128B 视为可疑(实测「复用同一 minter」会让它每次 +65B 膨胀到 1300B+,必被拒)。
+    Log.i(
+      Tag,
+      "WEB-SABR token 形态(P11-145): 臂${when (tokenArm) { 0 -> "A(自铸)"; 1 -> "B(harvest页)"; else -> "C(pot-less)" }} " +
+        describeTokenShape(session.poToken) +
+        " (ust=${session.ustreamerConfig.size}B cpn=${session.cpn})",
     )
     val sid = SabrStreamRegistry.registerByVideoId(
       videoId, session, SabrClient(httpClient),
