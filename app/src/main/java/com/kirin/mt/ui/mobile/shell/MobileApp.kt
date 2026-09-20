@@ -56,6 +56,7 @@ import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.YoutubeCodecPreference
 import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.PlaybackRequest
@@ -112,6 +113,7 @@ fun BiliMobileApp(
   liveQualityPreferenceStore: com.kirin.mt.core.player.LiveQualityPreferenceStore,
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
+  codecCapabilityProbe: com.kirin.mt.core.player.CodecCapabilityProbe,
   authRepository: AuthRepository,
   appSettingsStore: AppSettingsStore,
   sessionStore: SessionStore,
@@ -249,9 +251,14 @@ fun BiliMobileApp(
 
   val effectiveCodecPreference =
     if (settings.lowSpecMode) PlaybackCodecPreference.H264 else settings.playbackCodecPreference
-  // P11-131:YouTube 侧同样受低配档强制 H264。
-  val effectiveYoutubeCodecPreference =
-    if (settings.lowSpecMode) PlaybackCodecPreference.H264 else settings.youtubePlaybackCodecPreference
+  // P11-131/P11-133:YouTube 侧同样受低配档强制 H264;另按本机解码能力拦一道(解不了 → Auto)。
+  val codecCapability = remember(codecCapabilityProbe) { codecCapabilityProbe.probe() }
+  val effectiveYoutubeCodecPreference = when {
+    settings.lowSpecMode -> YoutubeCodecPreference.H264
+    settings.youtubePlaybackCodecPreference.isSupportedBy(codecCapability) ->
+      settings.youtubePlaybackCodecPreference
+    else -> YoutubeCodecPreference.Auto
+  }
 
   val bottomNav = listOf(
     AppDestination.Recommend,

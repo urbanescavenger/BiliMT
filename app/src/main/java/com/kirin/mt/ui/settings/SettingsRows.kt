@@ -53,6 +53,7 @@ import com.kirin.mt.core.player.CodecCapability
 import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.YoutubeCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.webdav.WebDavBackupState
 import com.kirin.mt.core.settings.AppVisualPerformanceMode
@@ -450,6 +451,21 @@ internal fun SettingsToggleRow(
     }
   }
 }
+
+/**
+ * P11-133:YouTube 解码器标签——**YouTube 自己的值域**(含 VP9),不是 B站 的
+ * [PlaybackCodecPreference]。VP9 恒可选(平台层必有软解,且 YouTube 梯子顶档就是它)。
+ */
+@Composable
+internal fun YoutubeCodecPreference.youtubeCodecLabel(): String = stringResource(
+  when (this) {
+    YoutubeCodecPreference.Auto -> R.string.settings_youtube_codec_auto
+    YoutubeCodecPreference.Vp9 -> R.string.settings_youtube_codec_vp9
+    YoutubeCodecPreference.Av1 -> R.string.settings_youtube_codec_av01
+    YoutubeCodecPreference.H264 -> R.string.settings_youtube_codec_h264
+    YoutubeCodecPreference.H265 -> R.string.settings_youtube_codec_h265
+  }
+)
 
 internal fun CodecCapability.playbackCodecOptions(): List<PlaybackCodecPreference> {
   return buildList {

@@ -149,9 +149,14 @@
     <string name="settings_youtube_default_quality_description">新開 YouTube 影片預設使用嘅畫質上限。自動為最高可用畫質。</string>
     <string name="settings_youtube_group_title">YouTube 設定</string>
     <string name="settings_youtube_codec_title">YouTube 解碼器</string>
-    <string name="settings_youtube_codec_description">YouTube 軌道嘅解碼偏好,同「播放設定」入面嘅解碼器互相獨立。自動優先 H.264 &gt; VP9 &gt; AV1 &gt; H.265,手動選項只顯示目前裝置支援嘅編碼。</string>
+    <string name="settings_youtube_codec_description">YouTube 軌道用邊種編碼。VP9 係 YouTube 嘅主力編碼,揀佢可以令全場播放保持同一個解碼器、避免換解碼器時嘅卡頓;其餘選項只列出本機支援嘅編碼。同「播放設定」入面嘅解碼器互相獨立。</string>
     <string name="settings_youtube_default_speed_title">YouTube 預設倍速</string>
     <string name="settings_youtube_default_speed_description">新開 YouTube 影片起播時用嘅播放倍速,同「播放設定」入面嘅預設播放倍速互相獨立。播放中仍然可以喺選單度臨時調整。</string>
+    <string name="settings_youtube_codec_auto">自動</string>
+    <string name="settings_youtube_codec_vp9">VP9</string>
+    <string name="settings_youtube_codec_av01">AV1</string>
+    <string name="settings_youtube_codec_h264">H.264</string>
+    <string name="settings_youtube_codec_h265">H.265</string>
     <string name="settings_group_expand">展開</string>
     <string name="settings_group_collapse">收起</string>
     <string name="settings_youtube_content_region_title">YouTube 內容地區</string>

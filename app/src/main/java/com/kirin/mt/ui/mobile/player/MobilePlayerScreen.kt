@@ -159,6 +159,7 @@ import com.kirin.mt.core.player.DanmakuPostResult
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.YoutubeCodecPreference
 import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackTrack
 import com.kirin.mt.core.player.SubtitleTracks
@@ -326,8 +327,8 @@ fun MobilePlayerScreen(
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
   playbackCodecPreference: PlaybackCodecPreference,
-  /** P11-131:YouTube 专用解码器(与 [playbackCodecPreference] 拆开,互不影响)。 */
-  youtubePlaybackCodecPreference: PlaybackCodecPreference,
+  /** P11-131/P11-133:YouTube 专用解码器(与 [playbackCodecPreference] 拆开,值域是 YouTube 自己的)。 */
+  youtubePlaybackCodecPreference: YoutubeCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
   playbackCdnPreference: PlaybackCdnPreference,
   youtubeDefaultQuality: YoutubeDefaultQuality,
@@ -1009,6 +1010,8 @@ fun MobilePlayerScreen(
       selectedSubtitleTrackId = null
       val startQualityHeight = if (effectiveInfo.isSabrSingle()) youtubeStartQuality.startHeight else null
       abrSelectionFactory.startupLockHeight = startQualityHeight
+      // P11-133:梯子的 codec 锚点跟着「YouTube 解码器」设置走(Auto = 历史行为:粘全组顶档 codec)。
+      abrSelectionFactory.preferredCodecFamily = youtubePlaybackCodecPreference.codecKey
       player.setMediaSource(finalMediaSource)
       player.prepare()
       // P11-120:新 MediaSource 会重置轨道选择,重新施加字幕状态(默认关闭 = 禁用 TEXT 轨)。

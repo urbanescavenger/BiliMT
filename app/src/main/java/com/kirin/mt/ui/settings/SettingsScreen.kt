@@ -40,6 +40,7 @@ import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.YoutubeCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.SpeedTestUiState
 import com.kirin.mt.core.player.YoutubeDefaultQuality
@@ -80,7 +81,7 @@ fun SettingsScreen(
   onPlaybackQualityPreferenceChange: (PlaybackQualityPreference) -> Unit,
   onYoutubeDefaultQualityChange: (YoutubeDefaultQuality) -> Unit,
   /** P11-131:YouTube 专属解码器 / 起播倍速(与 B站 的两项相互独立)。 */
-  onYoutubePlaybackCodecPreferenceChange: (PlaybackCodecPreference) -> Unit,
+  onYoutubePlaybackCodecPreferenceChange: (YoutubeCodecPreference) -> Unit,
   onYoutubeDefaultSpeedChange: (DefaultPlaybackSpeed) -> Unit,
   onYoutubeStartQualityChange: (YoutubeStartQuality) -> Unit,
   onYoutubeContentRegionChange: (YoutubeContentRegion) -> Unit,
@@ -555,7 +556,7 @@ private fun SettingsBehaviorColumn(
   onPlaybackQualityPreferenceChange: (PlaybackQualityPreference) -> Unit,
   onYoutubeDefaultQualityChange: (YoutubeDefaultQuality) -> Unit,
   /** P11-131:YouTube 专属解码器 / 起播倍速(与 B站 的两项相互独立)。 */
-  onYoutubePlaybackCodecPreferenceChange: (PlaybackCodecPreference) -> Unit,
+  onYoutubePlaybackCodecPreferenceChange: (YoutubeCodecPreference) -> Unit,
   onYoutubeDefaultSpeedChange: (DefaultPlaybackSpeed) -> Unit,
   onYoutubeStartQualityChange: (YoutubeStartQuality) -> Unit,
   onYoutubeContentRegionChange: (YoutubeContentRegion) -> Unit,
@@ -1150,20 +1151,24 @@ private fun SettingsBehaviorColumn(
         )
       }
       item(key = "youtube-codec") {
-        val codecOptions = remember(codecCapability) { codecCapability.playbackCodecOptions() }
+        // P11-133:YouTube 自己的值域(Auto/VP9/AV1/H.264/H.265)。设备解不了的族不进列表;
+        // VP9 恒在(isSupportedBy 对它恒真)。
+        val codecOptions = remember(codecCapability) {
+          YoutubeCodecPreference.entries.filter { it.isSupportedBy(codecCapability) }
+        }
         val configuredPreference = settings.youtubePlaybackCodecPreference.takeIf { preference ->
           preference in codecOptions
-        } ?: PlaybackCodecPreference.Auto
+        } ?: YoutubeCodecPreference.Auto
         // 与 B站 那行同样受低配档强制显示 H264,否则行里显示用户选的值而播放强制 H264(「设置没用」)。
         val effectivePreference = if (settings.lowSpecMode) {
-          PlaybackCodecPreference.H264
+          YoutubeCodecPreference.H264
         } else {
           configuredPreference
         }
         SettingsOptionRow(
           title = stringResource(R.string.settings_youtube_codec_title),
           description = stringResource(R.string.settings_youtube_codec_description),
-          value = effectivePreference.codecLabel(),
+          value = effectivePreference.youtubeCodecLabel(),
           modifier = Modifier
             .focusRequester(focusRequesters.getValue(SettingsItemYoutubeCodec))
             .settingsBoundaryKeys(

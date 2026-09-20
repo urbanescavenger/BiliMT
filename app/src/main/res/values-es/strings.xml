@@ -216,9 +216,14 @@
     <string name="settings_youtube_start_quality_description">Calidad mínima con la que inicia un video en Automático. Luego sube gradualmente hasta la calidad predeterminada. Automático inicia en el nivel más bajo.</string>
     <string name="settings_youtube_group_title">Ajustes de YouTube</string>
     <string name="settings_youtube_codec_title">Decodificador de YouTube</string>
-    <string name="settings_youtube_codec_description">Preferencia de decodificador para las pistas de YouTube, independiente del decodificador de Reproducción. Automático prefiere H.264 &gt; VP9 &gt; AV1 &gt; H.265; las opciones manuales solo listan códecs compatibles con este dispositivo.</string>
+    <string name="settings_youtube_codec_description">Qué códec usan las pistas de YouTube. VP9 es el códec principal de YouTube; elegirlo mantiene un solo decodificador durante toda la sesión y evita tirones al cambiar de decodificador. Las demás opciones solo listan códecs compatibles con este dispositivo. Independiente del decodificador de Reproducción.</string>
     <string name="settings_youtube_default_speed_title">Velocidad predeterminada de YouTube</string>
     <string name="settings_youtube_default_speed_description">Velocidad de reproducción al iniciar un video de YouTube, independiente de la velocidad predeterminada de Reproducción. Aún puedes ajustarla en el menú durante la reproducción.</string>
+    <string name="settings_youtube_codec_auto">Automático</string>
+    <string name="settings_youtube_codec_vp9">VP9</string>
+    <string name="settings_youtube_codec_av01">AV1</string>
+    <string name="settings_youtube_codec_h264">H.264</string>
+    <string name="settings_youtube_codec_h265">H.265</string>
     <string name="settings_group_expand">Expandir</string>
     <string name="settings_group_collapse">Contraer</string>
     <string name="settings_youtube_content_region_title">Región de contenido de YouTube</string>

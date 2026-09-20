@@ -76,6 +76,7 @@ import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
 import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.YoutubeCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.settings.AppAppearanceMode
 import com.kirin.mt.core.settings.AppSettings
@@ -570,6 +571,20 @@ private fun qualityLabel(q: PlaybackQualityPreference): String = stringResource(
     PlaybackQualityPreference.Q1080 -> R.string.settings_playback_quality_1080
     PlaybackQualityPreference.Q720 -> R.string.settings_playback_quality_720
     PlaybackQualityPreference.Q480 -> R.string.settings_playback_quality_480
+  }
+)
+
+/**
+ * P11-133:YouTube 解码器标签——YouTube 自己的值域(含 VP9),与 B站 的 [codecLabel] 分开。
+ */
+@Composable
+private fun youtubeCodecLabel(c: YoutubeCodecPreference): String = stringResource(
+  when (c) {
+    YoutubeCodecPreference.Auto -> R.string.settings_youtube_codec_auto
+    YoutubeCodecPreference.Vp9 -> R.string.settings_youtube_codec_vp9
+    YoutubeCodecPreference.Av1 -> R.string.settings_youtube_codec_av01
+    YoutubeCodecPreference.H264 -> R.string.settings_youtube_codec_h264
+    YoutubeCodecPreference.H265 -> R.string.settings_youtube_codec_h265
   }
 )
 
@@ -1260,8 +1275,10 @@ private fun MobileYoutubeSettingsSection(
         title = stringResource(R.string.settings_youtube_codec_title),
         description = stringResource(R.string.settings_youtube_codec_description),
         selected = settings.youtubePlaybackCodecPreference,
-        selectedLabel = codecLabel(settings.youtubePlaybackCodecPreference),
-        options = enumOptions(PlaybackCodecPreference.entries) { codecLabel(it) },
+        selectedLabel = youtubeCodecLabel(settings.youtubePlaybackCodecPreference),
+        // P11-133:YouTube 自己的值域(含 VP9)。移动端不做设备能力过滤——VP9 恒可选,
+        // 其余族解不了时播放侧(PlaybackRepository)会退回 Auto,不必在这里藏项。
+        options = enumOptions(YoutubeCodecPreference.entries) { youtubeCodecLabel(it) },
         onSelected = { scope.launch { appSettingsStore.setYoutubePlaybackCodecPreference(it) } },
       )
       MobileEnumPickerRow(

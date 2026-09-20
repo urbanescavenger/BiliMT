@@ -61,6 +61,7 @@ class MainActivity : ComponentActivity() {
             liveQualityPreferenceStore = appContainer.liveQualityPreferenceStore,
             playbackHttpClient = appContainer.playbackHttpClient,
             cdnSelector = appContainer.cdnSelector,
+            codecCapabilityProbe = appContainer.codecCapabilityProbe,
             authRepository = appContainer.authRepository,
             appSettingsStore = appContainer.appSettingsStore,
             sessionStore = appContainer.sessionStore,

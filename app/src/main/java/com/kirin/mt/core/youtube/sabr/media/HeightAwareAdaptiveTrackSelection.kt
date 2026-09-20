@@ -195,6 +195,12 @@ class HeightAwareAdaptiveTrackSelection(
    * 整个选择集 → ChunkSampleStream 重建 → 队列整丢 1.16s)。
    */
   private val startupLockHeightProvider: () -> Int? = { null },
+  /**
+   * P11-133:用户选的 YouTube 解码器族(null = Auto)。非空且**本组确实有这一族的变体**时,
+   * 粘性梯子的锚点从「全组顶档 codec」换成这一族——粘性本身照旧(整场单 codec,不跨族换解码器,
+   * 那正是本类存在的理由),只是粘的对象听用户的。
+   */
+  private val preferredCodecFamilyProvider: () -> String? = { null },
 ) : AdaptiveTrackSelection(group, tracks, bandwidthMeter) {
 
   /**
@@ -289,8 +295,40 @@ class HeightAwareAdaptiveTrackSelection(
     top?.sampleMimeType
   }
 
-  private fun isTopCodecVariant(f: Format): Boolean =
-    f.sampleMimeType != null && f.sampleMimeType == topGroupCodec
+  /** `codecs=` 前缀 → 族。YouTube 梯子里 avc/av01 同为 video/mp4,只能靠 codecs 串区分。 */
+  private fun codecFamilyOf(f: Format): String? {
+    val c = f.codecs ?: return null
+    return when {
+      c.startsWith("vp9", true) || c.startsWith("vp09", true) -> "vp9"
+      c.startsWith("av01", true) -> "av01"
+      c.startsWith("avc", true) -> "avc"
+      c.startsWith("hev", true) || c.startsWith("hvc", true) -> "hevc"
+      else -> null
+    }
+  }
+
+  /**
+   * 用户选的族在本组**真的有变体**吗。没有就退回 Auto 的顶档锚点——否则 [isTopCodecVariant] 谁都
+   * 不匹配,`bestIndexOf` 只剩码率兜底,同 height 各挑各的 codec,反而制造跨族换解码器。
+   * 懒算:读的是 [preferredCodecFamilyProvider],而它由 player 在 prepare 前写入。
+   */
+  private val hasPreferredFamily: Boolean by lazy {
+    val want = preferredCodecFamilyProvider() ?: return@lazy false
+    (0 until fullGroup.length).any { codecFamilyOf(fullGroup.getFormat(it)) == want }
+  }
+
+  /**
+   * 锚点族上屏判据。Auto([preferredCodecFamilyProvider] 为 null,或本组无该族)走**历史行为**——
+   * 按 `sampleMimeType == 全组顶档 codec`,与 P11-133 之前逐字节等价。
+   */
+  private fun isTopCodecVariant(f: Format): Boolean {
+    val want = preferredCodecFamilyProvider()?.takeIf { hasPreferredFamily }
+    return if (want != null) {
+      codecFamilyOf(f) == want
+    } else {
+      f.sampleMimeType != null && f.sampleMimeType == topGroupCodec
+    }
+  }
 
   /**
    * 2026-08-31:selection 实例创建时间(elapsedRealtime ms)——冷启动梯子锁基准。实例创建 ≈
@@ -750,6 +788,12 @@ class HeightAwareAdaptiveTrackSelectionFactory : AdaptiveTrackSelection.Factory(
    */
   @Volatile var startupLockHeight: Int? = null
 
+  /**
+   * P11-133:用户选的 YouTube 解码器族(`YoutubeCodecPreference.codecKey`;null = Auto)。
+   * 与 [startupLockHeight] 同时机写入(player 在 prepare 前),选择类每次评估现读。
+   */
+  @Volatile var preferredCodecFamily: String? = null
+
   /** P11-128:松开起播锁高(首帧后调)。下一次 `updateSelectedTrack` 即生效,无重建。 */
   fun releaseStartupLock() {
     startupLockHeight = null
@@ -762,5 +806,5 @@ class HeightAwareAdaptiveTrackSelectionFactory : AdaptiveTrackSelection.Factory(
     bandwidthMeter: BandwidthMeter,
     adaptationCheckpoints: ImmutableList<AdaptiveTrackSelection.AdaptationCheckpoint>,
   ): AdaptiveTrackSelection =
-    HeightAwareAdaptiveTrackSelection(group, tracks, bandwidthMeter) { startupLockHeight }
+    HeightAwareAdaptiveTrackSelection(group, tracks, bandwidthMeter, { startupLockHeight }, { preferredCodecFamily })
 }

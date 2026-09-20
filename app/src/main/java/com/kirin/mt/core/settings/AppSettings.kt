@@ -8,6 +8,7 @@ import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeCodecPreference
 import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
@@ -62,11 +63,11 @@ data class AppSettings(
   val playbackQualityPreference: PlaybackQualityPreference = PlaybackQualityPreference.Highest,
   val playbackCodecPreference: PlaybackCodecPreference = PlaybackCodecPreference.Auto,
   /**
-   * YouTube 播放专用解码器偏好(P11-131 拆分:此前与 [playbackCodecPreference] 共用一个值)。
-   * 读取端在新键未写盘时回落到 [playbackCodecPreference] ⇒ 存量用户行为不变;
-   * 首次在 YouTube 行改动后二者独立。
+   * YouTube 播放专用解码器偏好(P11-131 从 [playbackCodecPreference] 拆分;P11-133 改为
+   * YouTube 自己的值域——多出 **VP9**,见 [YoutubeCodecPreference])。
+   * 读取端在新键未写盘时回落到 [playbackCodecPreference] ⇒ 存量用户行为不变。
    */
-  val youtubePlaybackCodecPreference: PlaybackCodecPreference = PlaybackCodecPreference.Auto,
+  val youtubePlaybackCodecPreference: YoutubeCodecPreference = YoutubeCodecPreference.Auto,
   val playbackCdnPreference: PlaybackCdnPreference = PlaybackCdnPreference.Auto,
   /** YouTube 默认画质(按分辨率上限选档)。 */
   val youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,

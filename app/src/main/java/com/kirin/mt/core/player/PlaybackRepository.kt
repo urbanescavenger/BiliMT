@@ -63,15 +63,24 @@ class PlaybackRepository(
     // 直接落 NewPipe 主链,并把它内部那两层 harvest 超时收敛进剩余预算。
     // 带默认值 ⇒ 所有既有调用点(含移动端)零改动、行为不变。
     deadlineMs: Long = 0L,
-    // P11-131:YouTube 专用解码器偏好。默认 = 共享值 ⇒ 不传的调用点(下载/测速)行为与拆分前一致。
+    // P11-131/P11-133:YouTube 专用解码器偏好(值域是 YouTube 自己的 [YoutubeCodecPreference],
+    // 含 VP9)。默认 Auto ⇒ 不传的调用点(下载/测速)行为与拆分前一致。
     // **必须排在最后**:DownloadUrlResolver 与 MobileApp 有按位置传参的调用点,插在前面会重绑实参。
-    youtubeCodecPreference: PlaybackCodecPreference = codecPreference,
+    youtubeCodecPreference: YoutubeCodecPreference = YoutubeCodecPreference.Auto,
   ): PlaybackInfo {
     // YouTube 播放：走 InnerTube /player（PO token + n/s 解密），不走 B 站 DASH playurl。
     // 传 codecCapability 让 resolver 过滤设备解不了的高清轨道（4K VP9/AV1 无硬解时回退）。
-    // P11-131:用 YouTube 那份解码器,与 B站 的 [codecPreference] 独立。
+    // P11-133:YouTube 侧解码器独立于 B站 的 [codecPreference];选中的族若本机解不了则退回 Auto,
+    // 否则会把代表轨钉在解不出的 codec 上 → 全档零帧黑屏(与 B站 侧 :94-98 同一套护栏思路)。
     if (request.isYoutube) {
-      return youtubePlaybackResolver.resolve(request, youtubeCodecPreference, codecCapabilityProbe.probe(), youtubeDefaultQuality, youtubeStartQuality, deadlineMs)
+      val capability = codecCapabilityProbe.probe()
+      val effectiveYoutubeCodec = if (youtubeCodecPreference.isSupportedBy(capability)) {
+        youtubeCodecPreference
+      } else {
+        Log.w(PlaybackLogTag, "youtube codec ${youtubeCodecPreference.key} unsupported by device → fallback Auto")
+        YoutubeCodecPreference.Auto
+      }
+      return youtubePlaybackResolver.resolve(request, effectiveYoutubeCodec, capability, youtubeDefaultQuality, youtubeStartQuality, deadlineMs)
     }
     // TVBox(影视库)点播:MacCMS 采集站直链/懒解析线路 → 远程 HLS,走 VOD 播放器(P11-77 用户决策:
     // 参考 PGC/番剧路径,不进直播壳)。线路=清晰度档(preferredQualityId=线路索引),选档即重解析换线。

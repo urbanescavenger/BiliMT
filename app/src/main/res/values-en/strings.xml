@@ -215,9 +215,14 @@
     <string name="settings_youtube_start_quality_description">The lowest quality at which an Auto video starts. It then climbs up to the default quality as bandwidth allows. Auto starts at the lowest tier.</string>
     <string name="settings_youtube_group_title">YouTube settings</string>
     <string name="settings_youtube_codec_title">YouTube decoder</string>
-    <string name="settings_youtube_codec_description">Decoder preference for YouTube tracks, independent of the decoder under Playback. Auto prefers H.264 &gt; VP9 &gt; AV1 &gt; H.265; manual options list only codecs this device supports.</string>
+    <string name="settings_youtube_codec_description">Which codec YouTube tracks use. VP9 is YouTube's main codec; picking it keeps one decoder for the whole session and avoids stutter when the decoder switches. Other options list only codecs this device supports. Independent of the decoder under Playback.</string>
     <string name="settings_youtube_default_speed_title">YouTube default speed</string>
     <string name="settings_youtube_default_speed_description">The playback speed used when starting a new YouTube video, independent of the default playback speed under Playback. You can still adjust it in the menu during playback.</string>
+    <string name="settings_youtube_codec_auto">Auto</string>
+    <string name="settings_youtube_codec_vp9">VP9</string>
+    <string name="settings_youtube_codec_av01">AV1</string>
+    <string name="settings_youtube_codec_h264">H.264</string>
+    <string name="settings_youtube_codec_h265">H.265</string>
     <string name="settings_group_expand">Expand</string>
     <string name="settings_group_collapse">Collapse</string>
     <string name="settings_youtube_content_region_title">YouTube content region</string>

@@ -15,6 +15,7 @@ import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeCodecPreference
 import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
@@ -70,7 +71,7 @@ class AppSettingsStore(private val context: Context) {
     // P11-131:YouTube 拆分项的回退读取——自己那枚 key 不存在时沿用**旧的共享 key**。
     // 只读回退、不写迁移:首次在 YouTube 行改动后自有 key 落地,两端自此独立;在此之前跟随后改的
     // 共享值,与存量用户「什么都没变」的预期一致(沿用 low_spec_mode→visual_performance_mode 的既有范式)。
-    val youtubePlaybackCodecPreference = PlaybackCodecPreference.fromKey(
+    val youtubePlaybackCodecPreference = YoutubeCodecPreference.fromKey(
       preferences[Keys.YoutubePlaybackCodecPreference] ?: preferences[Keys.PlaybackCodecPreference],
     )
     val youtubeDefaultSpeed = DefaultPlaybackSpeed.fromKey(
@@ -210,7 +211,7 @@ class AppSettingsStore(private val context: Context) {
    * P11-131:只写 YouTube 自有键。**不要**顺带写共享键——那正是拆分的反面
    * (对比 [setVisualPerformanceMode] 写两枚键:那里是「同步旧键」语义,这里要的是「各自独立」)。
    */
-  suspend fun setYoutubePlaybackCodecPreference(preference: PlaybackCodecPreference) {
+  suspend fun setYoutubePlaybackCodecPreference(preference: YoutubeCodecPreference) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.YoutubePlaybackCodecPreference] = preference.key
     }

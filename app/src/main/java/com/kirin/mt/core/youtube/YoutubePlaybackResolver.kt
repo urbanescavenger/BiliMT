@@ -6,7 +6,7 @@ import com.kirin.mt.core.download.ResolvedDownload
 import com.kirin.mt.core.download.ResolvedPart
 import com.kirin.mt.core.player.BiliPlaybackHeaders
 import com.kirin.mt.core.player.CodecCapability
-import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.YoutubeCodecPreference
 import com.kirin.mt.core.player.PlaybackAudioTrack
 import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackQuality
@@ -102,7 +102,7 @@ class YoutubePlaybackResolver(
 
   suspend fun resolve(
     request: PlaybackRequest,
-    codecPreference: PlaybackCodecPreference,
+    codecPreference: YoutubeCodecPreference,
     codecCapability: CodecCapability,
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
     youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
@@ -2640,7 +2640,7 @@ class YoutubePlaybackResolver(
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
     youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
     /** P11-129:解码器设置——决定「同分辨率多个 codec 变体」用哪一条(菜单只显示分辨率)。 */
-    codecPreference: PlaybackCodecPreference = PlaybackCodecPreference.Auto,
+    codecPreference: YoutubeCodecPreference = YoutubeCodecPreference.Auto,
   ): PlaybackInfo {
     val aItag = sabrSession.audioFormatId.itag
     // P11-119c:多条音轨共用同一 itag(靠 xtags 区分)时,只按 itag 取 raw 会拿到**别的**音轨的
@@ -2664,7 +2664,7 @@ class YoutubePlaybackResolver(
     // ── P11-129(对齐 B站 / LibreTube):清晰度菜单**只列分辨率** ────────────────────────────────
     // 此前按 itag 逐条列,而 SABR 阶梯同 height 有多条 codec/帧率变体(720p 5 条、1080p 3 条、1440p 2 条、
     // 2160p 2 条…)⇒ 菜单里「720p」重复出现。现在**同 height 合并成一条**,标签只留 `"${h}p"`;
-    // 「用哪个变体」交给**「解码器」设置**([PlaybackCodecPreference],两端设置页已有的那一行)。
+    // 「用哪个变体」交给**「YouTube 解码器」设置**([YoutubeCodecPreference],P11-133 起是 YouTube 自己的值域)。
     // 代表轨的挑法与 DASH 分支的 [pickVideo] 同源:手动选中优先 → codec 偏好([codecRank] 越小越优)
     // → 码率高者。手动切换仍是「选中 itag 单轨锁定」,只是现在选中的是该分辨率的代表轨。
     fun codecKeyOfItag(itag: Int): String {
@@ -2831,7 +2831,7 @@ class YoutubePlaybackResolver(
 
   private fun pickVideo(
     candidates: List<ParsedFormat>,
-    preference: PlaybackCodecPreference,
+    preference: YoutubeCodecPreference,
     preferredItag: Int?,
     preferredMaxHeight: Int?,
   ): ParsedFormat? {
@@ -2853,14 +2853,17 @@ class YoutubePlaybackResolver(
     )
   }
 
-  /** codec 偏好秩：偏好 codec 排最前，越靠前数字越小。 */
-  private fun codecRank(codecKey: String, preference: PlaybackCodecPreference): Int {
-    val order = when (preference) {
-      PlaybackCodecPreference.H264 -> listOf("avc", "vp9", "av01", "hevc", "other")
-      PlaybackCodecPreference.H265 -> listOf("hevc", "avc", "vp9", "av01", "other")
-      PlaybackCodecPreference.Av1 -> listOf("av01", "vp9", "avc", "hevc", "other")
-      PlaybackCodecPreference.Auto -> listOf("avc", "vp9", "av01", "hevc", "other")
-    }
+  /**
+   * codec 偏好秩：偏好 codec 排最前，越靠前数字越小。
+   *
+   * P11-133:值域换成 [YoutubeCodecPreference]（多出 VP9）。Auto 沿用历史顺序
+   * `avc > vp9 > av01 > hevc`；手动选中的族置顶，其余按该顺序兜底——这样任何一档在手时，
+   * 同分辨率的变体都优先落在用户选的那族上（P11-129 的「同 height 多个 codec 变体用哪条」）。
+   */
+  private fun codecRank(codecKey: String, preference: YoutubeCodecPreference): Int {
+    val autoOrder = listOf("avc", "vp9", "av01", "hevc", "other")
+    val preferred = preference.codecKey
+    val order = if (preferred == null) autoOrder else listOf(preferred) + autoOrder.filter { it != preferred }
     return order.indexOf(codecKey).let { if (it < 0) order.size else it }
   }
 

@@ -62,6 +62,7 @@ import com.kirin.mt.core.player.CodecCapabilityProbe
 import com.kirin.mt.core.player.LastPlayedStore
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.YoutubeCodecPreference
 import com.kirin.mt.core.player.PlaybackRepository
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.SpeedTestUiState
@@ -233,11 +234,13 @@ fun BiliTvApp(
   } else {
     settings.playbackCodecPreference
   }
-  // P11-131:YouTube 侧同样受低配档强制 H264——lowSpecMode 是设备能力兜底,不是按内容源的偏好。
-  val effectiveYoutubePlaybackCodecPreference = if (settings.lowSpecMode) {
-    PlaybackCodecPreference.H264
-  } else {
-    settings.youtubePlaybackCodecPreference
+  // P11-131/P11-133:YouTube 侧同样受低配档强制 H264(lowSpecMode 是设备能力兜底,不按内容源区分);
+  // 另按本机解码能力拦一道——选中的族解不了就回 Auto,否则梯子会把代表轨钉在解不出的 codec 上。
+  val effectiveYoutubePlaybackCodecPreference = when {
+    settings.lowSpecMode -> YoutubeCodecPreference.H264
+    settings.youtubePlaybackCodecPreference.isSupportedBy(codecCapability) ->
+      settings.youtubePlaybackCodecPreference
+    else -> YoutubeCodecPreference.Auto
   }
   val coroutineScope = rememberCoroutineScope()
   val cdnSpeedTester = remember { CdnSpeedTester(playbackHttpClient) }
