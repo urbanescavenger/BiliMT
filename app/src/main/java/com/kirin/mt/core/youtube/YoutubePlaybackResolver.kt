@@ -243,7 +243,10 @@ class YoutubePlaybackResolver(
     // 状态 `status=1` ×19 也只供 251/399,格式墙与会话 URL 绑死、与 token 无关;会话侧从此固定走
     // 我们自己的 /player,只留 token 一个变量)。
     //   臂 A(0)= 自铸 `ensureWebToken`(现况)  臂 B(1)= harvest 页铸的那枚  臂 C(2)= 不带 token
-    val webSabrTokenArm: Int = if (webSabrInPlay) SabrStreamRegistry.nextWebSabrTokenArm(videoId) else 0
+    // P11-150:四臂轮换是**取证实验**,默认关闭(见 [WEB_SABR_ARM_EXPERIMENT])。默认关时只用臂 A
+    // (我们自己的会话 + 自铸 token,~2.6s,不采集、不轮换),且判死标记完全生效 ⇒ 失败一次即让位主链。
+    val webSabrTokenArm: Int =
+      if (webSabrInPlay && WEB_SABR_ARM_EXPERIMENT) SabrStreamRegistry.nextWebSabrTokenArm(videoId) else 0
     val webSabrPoToken: String? = when {
       !webSabrInPlay -> poToken
       // 臂 C:pot-less。传 "" 而**不是** null —— 上游有 `poToken == null → abort` 守卫,且
@@ -289,7 +292,9 @@ class YoutubePlaybackResolver(
     // 四臂每臂只该试一次,故闸门改成「本视频已试臂数 < 4」:未试满四臂时忽略标记(继续轮换),
     // 试满后才恢复「永久跳过」语义(那时是产品行为:WEB-SABR 失败一次即自动换到能播的路)。
     val armsTried = SabrStreamRegistry.webSabrArmsTried(videoId)
-    val armRotationOpen = armsTried < 4
+    // P11-150:轮换放行只在**实验打开**时成立。默认关时 armRotationOpen 恒 false ⇒
+    // 判死标记**完全生效**(WEB-SABR 失败一次即永久让位主链 = P11-138 的产品语义,用户几秒内能看)。
+    val armRotationOpen = WEB_SABR_ARM_EXPERIMENT && armsTried < 4
     val webSabrFirstBlocked = webSabrFirst && SabrStreamRegistry.isWebSabrFailed(videoId) && !armRotationOpen
     if (webSabrFirst && SabrStreamRegistry.isWebSabrFailed(videoId) && armRotationOpen) {
       Log.w(
@@ -402,7 +407,9 @@ class YoutubePlaybackResolver(
       val webSabrDue =
         // P11-147:四臂实验未试满时,判死标记让位给轮换(否则臂 B/C/D 在兜底路上同样轮不到);
         // 试满四臂后恢复原语义(标记即跳过)。
-        (!SabrStreamRegistry.isWebSabrFailed(videoId) || SabrStreamRegistry.webSabrArmsTried(videoId) < 4) &&
+        // P11-150:与上面同一口径 —— 只有实验打开时才让判死标记让位给轮换。
+        (!SabrStreamRegistry.isWebSabrFailed(videoId) ||
+          (WEB_SABR_ARM_EXPERIMENT && SabrStreamRegistry.webSabrArmsTried(videoId) < 4)) &&
           remainingMs() >= MinWebSabrFirstBudgetMs &&
           (SabrStreamRegistry.isDashFallbackFailed(videoId) ||
             (SabrStreamRegistry.reloadCount(videoId) > 0 && poToken != null))
@@ -2596,7 +2603,9 @@ class YoutubePlaybackResolver(
       )
       else -> Log.i(
         Tag,
-        "WEB-SABR 臂${if (tokenArm == 2) "C(自造+pot-less)" else "A(自造+自铸 token)"}: 不采集,直接用我们自己的 /player 会话",
+        "WEB-SABR 臂${if (tokenArm == 2) "C(自造+pot-less)" else "A(自造+自铸 token)"}" +
+          "${if (WEB_SABR_ARM_EXPERIMENT) "" else "(四臂实验关,P11-150:单次尝试→失败即让位主链)"}: " +
+          "不采集,直接用我们自己的 /player 会话",
       )
     }
     // ── P11-127(全移动):身份不再桌面化 ────────────────────────────────────────────────
@@ -3320,6 +3329,21 @@ class YoutubePlaybackResolver(
 
     /** P11-149:等移动铸造器产出的上限(冷启实测 4~6s;超了宁可跳过本臂,不回落桌面 token)。 */
     private const val MINTER_WAIT_MS = 6_000L
+
+    /**
+     * P11-150:**四臂轮换取证实验开关** —— 默认 **false**。
+     *
+     * 打开时(A 自造+自铸 / B 自造+页面 token / C pot-less / D 完整材料会话):每臂都会「建成功」,
+     * 然后被服务端在 ~20 秒后判 `status=3`;而轮换闸门(P11-147)会**压住判死标记** ⇒ 播放器连续重试
+     * 四条路线、**期间不让位给能播的主链**。r2038 真机实测(21:43–21:47):整场 **0 个 NewPipe 兜底会话、
+     * 完全没播** —— 取证版把可播性拿走了,故默认关闭。
+     *
+     * 关闭时(默认):只用臂 A(我们自己的会话 + 自铸 token,~2.6s,不采集),判死标记**完全生效**
+     * ⇒ WEB-SABR 失败一次即永久让位主链(P11-138 语义:用户几秒内就能看到画面)。
+     *
+     * dev 构建置 true 即可复现四臂取证日志(判据见 docs/youtube-web-sabr.md §5.10)。
+     */
+    private const val WEB_SABR_ARM_EXPERIMENT = false
 
     /** P11-126:harvest 冷启(建 WebView + 载首页)的硬上限,原 `timeoutMs = 40_000L`。 */
     private const val HarvestColdCapMs = 40_000L
