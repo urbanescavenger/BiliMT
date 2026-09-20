@@ -790,7 +790,14 @@ internal class SabrMediaFetcher(
     val prevManualMs = lastManualFormatSelectionMs
     val runwayMs = bufferedAheadMsAtLastFetch
     return try {
-      val resp = httpClient.newCall(request).execute().use { response ->
+      val call = httpClient.newCall(request)
+      // P11-134:SABR POST **整调用上限**。playback client 是 `callTimeout(0)`(为不切掉长分片),
+      // 只有 per-read 15s ⇒ 服务端「慢滴」(每次 read 都在 15s 内挤一点)时**永不超时**。
+      // 真机 2026-09-20 13:32 就是这样挂死的:`fetch rn=2` 发出后既无 REAL 也无 exception,缓冲耗尽、
+      // 播放冻在 34.5s 达 54 秒。给整调用一个上限后,挂死的请求会被切断 → IOException →
+      // 已有的 onPlayerErrorChanged error-retry 链接管(那条链本身是好的,缺的只是「谁来触发它」)。
+      call.timeout().timeout(SabrCallTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+      val resp = call.execute().use { response ->
         val code = response.code
         if (code != 200) {
           val hdrs = response.headers.joinToString("; ") { "${it.first}=${it.second.take(80)}" }
@@ -1082,6 +1089,11 @@ internal class SabrMediaFetcher(
   private companion object {
     /** P11-130:预取窗口(ms)——上报后这段时间内每个请求都带候选档;过期自动失效,避免长期白吃带宽。 */
     const val PREFETCH_WINDOW_MS = 30_000L
+    /**
+     * P11-134:SABR POST **整调用上限**(ms)。实测单笔 2.1~28.2s(2160p 大段 28.2s),40s 给足余量,
+     * 只切真挂死的慢滴请求。见调用点注释。
+     */
+    const val SabrCallTimeoutMs = 40_000L
 
     /** transient 重试上限(耗尽→SabrTerminalException→evict)。对齐旧 SabrDashDataSource BACKOFF_MAX_ATTEMPTS。 */
     const val MAX_ATTEMPTS = 6
