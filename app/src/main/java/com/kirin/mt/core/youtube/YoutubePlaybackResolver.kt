@@ -2506,26 +2506,41 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "WEB-SABR: no poToken → abort")
       return null
     }
-    // ── P11-145(2026-09-20,r2030 A/B 判读后重构):**会话固定自造,只留 token 一个变量** ─────────
-    // r2030 的 A/B 把两个变量彻底分开了:
-    //   材料 URL 会话(harvest 页铸的 88B token):**token 状态 status=1 ×19**(被完全接受),
-    //     但 `resp summary: req=302 usable=1214B/2416131B init=[] pushed=[251,399]` ⇒ 我们的档从未被
-    //     初始化 ⇒ 格式墙与会话 URL 绑死,**与 token 无关**;
-    //   我们自己的会话(自铸 87B token):`usable=6297809B/6297809B init/pushed=[140,302]` ⇒ 格式全对,
-    //     但第一笔就 `status=2`(potAge 839ms,非过期)→ 6.3MB 宽限后转 `status=3`。
-    // ⇒ 会话侧从此固定走我们自己的 /player(`fromSabrData` 那条),材料**只借 token**(臂 B)。
-    // 臂 B 才去 harvest(只为拿那枚页面上下文 token,不借 URL/ust/cpn);臂 A/C 不采集。
-    val pageTokenBytes: ByteArray? = if (tokenArm == 1) {
-      val m = harvestSessionMaterial(videoId, request.startPositionMs, deadlineMs)
-      Log.i(
-        Tag,
-        "WEB-SABR 臂B(harvest 页铸): 只借 token = ${m?.poTokenBytes?.size ?: -1}B " +
-          "(materials 的 URL/ust/cpn 一概不用;r2030 实测这枚拿到过 status=1 ×19)",
-      )
-      m?.poTokenBytes?.takeIf { it.isNotEmpty() }
+    // ── P11-146(历史复盘后重构):**四臂**,把「历史证明能播的基底」和「新修的 C1」一起放回轮换 ──
+    // 复盘(docs/youtube-web-sabr.md §5.9.7,全部有日志):
+    //   当天能播的两场 r1992(status=1 ×10 / 媒体块 35)、r2002(status=1 ×100 / 媒体块 115)
+    //   **都是「材料会话 + harvest 页铸的 token」**;而自铸 token(r2008/r2028/r2030 自造臂)第一笔就
+    //   被判 status=2。当天崩溃真凶 = 已修的刷新 bug(刷新次数 r2002=0→status3 零次 / r2006=1→22 /
+    //   r2008=3→66)。材料会话唯一的病是**格式集**(服务端只供那一场浏览器选中的档):r1992 请求 136 ✓、
+    //   r2002 请求 698 ✓ 就播,r2030 请求 302 ✗ 就 0 块 —— 正是 C1 要解决的,而 C1 被起播锁夹回(本轮已修)。
+    //   臂 A=自造+自铸 / B=自造+harvest 页 token / C=自造+pot-less / D=**完整材料会话 + C1 修复**。
+    val harvestNeeded = tokenArm == 1 || tokenArm == 3
+    val material: HarvestMaterial? = if (harvestNeeded) {
+      harvestSessionMaterial(videoId, request.startPositionMs, deadlineMs)
     } else {
-      Log.i(Tag, "WEB-SABR 臂${if (tokenArm == 2) "C(pot-less)" else "A(自铸)"}: 不采集,直接用我们自己的 /player 会话")
       null
+    }
+    /** 臂 D:材料会话(URL/ust/cpn/token 全借)。 */
+    val sessionMaterial: HarvestMaterial? = if (tokenArm == 3) material else null
+    /** 臂 B:只借 harvest 页铸的 token(原始字节直传,见 fromSabrData 的 poTokenBytesOverride)。 */
+    val pageTokenBytes: ByteArray? =
+      if (tokenArm == 1) material?.poTokenBytes?.takeIf { it.isNotEmpty() } else null
+    when (tokenArm) {
+      1 -> Log.i(
+        Tag,
+        "WEB-SABR 臂B(自造+页面 token): 只借 token = ${pageTokenBytes?.size ?: -1}B " +
+          "(URL/ust/cpn 一概不用;r1992/r2002/r2030 实测页面 token 拿 status=1)",
+      )
+      3 -> Log.i(
+        Tag,
+        "WEB-SABR 臂D(完整材料会话+C1 修复): 材料 po=${material?.poTokenBytes?.size ?: -1}B " +
+          "ust=${material?.ustreamerConfigBytes?.size ?: -1}B cpn=${material?.cpn ?: "-"} " +
+          "(历史能播基底;起播锁已改为服从 served 集合 ⇒ 选档应落进服务端真供的档)",
+      )
+      else -> Log.i(
+        Tag,
+        "WEB-SABR 臂${if (tokenArm == 2) "C(自造+pot-less)" else "A(自造+自铸 token)"}: 不采集,直接用我们自己的 /player 会话",
+      )
     }
     // ── P11-127(全移动):身份不再桌面化 ────────────────────────────────────────────────
     // 此前(P11-106/P11-117)这一段用「桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT + 该页 cookie +
@@ -2601,11 +2616,11 @@ class YoutubePlaybackResolver(
       return null
     }
     // n-decrypt(yt-dlp solver;无 n 参数则跳过;transform 失败即 abort——未 transform POST 必 403)
-    // P11-118d 时代 harvest 材料存在时整段跳过(那份 URL 的 n 已由浏览器 WASM transform 过);
-    // **P11-145 起会话固定用我们自己 /player 的 URL** ⇒ 这条 transform 一律必跑。
+    // **臂 D(材料 URL)整段跳过**——那份 URL 的 n 已由浏览器 WASM transform 过,且 solver 失败会
+    // abort 掉手上唯一可用的材料;其余三臂用我们自己的 /player URL ⇒ 一律必跑。
     var sabrUrl = sd.sabrUrl
     val sabrN = Uri.parse(sabrUrl).getQueryParameter("n")
-    if (!sabrN.isNullOrBlank()) {
+    if (sessionMaterial == null && !sabrN.isNullOrBlank()) {
       val playerJsUrl = resolvePlayerJsUrl(videoId)
       if (playerJsUrl == null) {
         Log.w(Tag, "WEB-SABR: no playerJsUrl → abort")
@@ -2632,9 +2647,9 @@ class YoutubePlaybackResolver(
     // → 会话 cpn 为空 → 服务端无法把请求与 playbackCookie/ustreamerConfig 会话配对 → status=2 nag。
     val cpnParam = queryParam(sd.sabrUrl, "cpn")
     val webCpn = cpnParam ?: generateCpn()
-    // P11-118d 时代用 harvest 材料时 cpn 必须用**浏览器原 cpn**;P11-145 起会话固定用我们自己的
-    // URL ⇒ 一律注入自造 cpn(P11-113 口径:cpn 本就是客户端生成的播放 nonce)。
-    if (cpnParam == null) {
+    // 臂 D 用**浏览器原 cpn**(材料三元组之一,绑 body 的 poToken/ustreamerConfig 会话)⇒ 不注入;
+    // 其余三臂用我们自己的 URL ⇒ 注入自造 cpn(P11-113 口径:cpn 本就是客户端生成的播放 nonce)。
+    if (sessionMaterial == null && cpnParam == null) {
       sabrUrl = if (sabrUrl.contains("?")) "$sabrUrl&cpn=$webCpn" else "$sabrUrl?cpn=$webCpn"
       Log.i(Tag, "WEB-SABR: cpn injected client-side($webCpn)——FreeTube Watch.js 同款")
     }
@@ -2688,10 +2703,25 @@ class YoutubePlaybackResolver(
       )
     }
     val aFmt = preferredAudio?.formatId ?: rawToSabrFormatId(firstAudio, 0)
-    // P11-145:会话**只走自造**(材料 URL 会话的格式墙已被 r2030 A/B 证实,且与 token 无关);
-    // 臂 B 用 `poTokenBytesOverride` 把 harvest 页铸的那枚 token 的**原始字节**直传进来
-    // (不经 base64 往返)。臂 A = 走 poToken 字符串解码;臂 C = poToken 为 ""(blank → ByteArray(0))。
-    val session = SabrSession.fromSabrData(
+    // P11-146:臂 D = 完整材料会话(fromSabrBytes,历史能播基底);其余三臂 = 自造会话
+    // (臂 B 用 poTokenBytesOverride 直传 harvest 页 token 的原始字节,免 base64 往返;
+    //  臂 C 的 poToken 为 ""(blank → ByteArray(0));臂 A 走 poToken 字符串解码)。
+    val session = if (sessionMaterial != null) SabrSession.fromSabrBytes(
+      sessionMaterial.baseSabrUrl,
+      sessionMaterial.poTokenBytes,
+      sessionMaterial.ustreamerConfigBytes,
+      innerTubeClient.sabrClientInfo(),
+      aFmt, vFmt,
+      userAgent = InnerTubeClient.Client.WEB.userAgent,
+      // SABR POST 不带 HTTP Cookie/X-Goog-Visitor-Id(P11-107 HAR 实锤,FreeTube 同款)。
+      cookieHeader = "",
+      visitorData = "",
+      cpn = sessionMaterial.cpn,
+      videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
+      audioTracks = sabrAudioTracks,
+      leadingClientAbrStateBytes = sessionMaterial.clientAbrStateRaw,
+      leadingClientInfoBytes = sessionMaterial.clientInfoRaw,
+    ) else SabrSession.fromSabrData(
       // P11-117:恢复会话 poToken(P11-116 的 pot-less 是判别实验,已判读完毕:token 洗清——
       // 带/不带 token 的响应逐字节一致)。对齐 FreeTube:`createLocalSabrManifest(result, poToken, …)`
       // 把 content-bound(videoId 绑定)token 放进 sabrData,`SabrSchemePlugin` 再
@@ -2715,7 +2745,7 @@ class YoutubePlaybackResolver(
     // 空=pot-less;>128B 视为可疑(实测「复用同一 minter」会让它每次 +65B 膨胀到 1300B+,必被拒)。
     Log.i(
       Tag,
-      "WEB-SABR token 形态(P11-145): 臂${when (tokenArm) { 0 -> "A(自铸)"; 1 -> "B(harvest页)"; else -> "C(pot-less)" }} " +
+      "WEB-SABR token 形态(P11-146): 臂${when (tokenArm) { 0 -> "A(自造+自铸)"; 1 -> "B(自造+页面token)"; 2 -> "C(自造+pot-less)"; else -> "D(完整材料会话)" }} " +
         describeTokenShape(session.poToken) +
         " (ust=${session.ustreamerConfig.size}B cpn=${session.cpn})",
     )

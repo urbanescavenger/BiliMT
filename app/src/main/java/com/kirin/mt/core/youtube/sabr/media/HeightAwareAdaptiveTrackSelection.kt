@@ -258,26 +258,57 @@ class HeightAwareAdaptiveTrackSelection(
   private var lastLockLogMs = 0L
 
   /**
+   * P11-146(C1 的缺口修):**本组内「服务端真的会推的档」索引集**;空集或无交集返回 null(=不收窄)。
+   *
+   * 为什么起播锁与初始档也必须用它 —— §5.9.2/§5.9.3 记的结构死锁:
+   * 收窄只在 [updateSelectedTrack] 里生效,而**起播期**的档由 [applyStartupLock] 从
+   * [initialSelectedIndex] 夹回锁高档。实测(r2022/r2023):收窄算出 399(在集合内)仍被夹回
+   * 720p=itag302(不在集合内)⇒ 请求一个服务端永不供的档 ⇒ 无首帧 ⇒ **锁永不释放** ⇒ 收窄永远
+   * 没机会生效。此函数与 [updateSelectedTrack] 里的同名计算**同一口径**(那处保持原样,风险最小)。
+   */
+  private fun servedIndexesInGroup(): Set<Int>? {
+    val servedNow = serverServedItags + serverServedItagsProvider()
+    if (servedNow.isEmpty()) return null
+    return (0 until length).filter { itagOf(getFormat(it)) in servedNow }.toSet().ifEmpty { null }
+  }
+
+  /** P11-146:起播锁日志(节流 5s),`reason` 标出这次是按锁高还是按 served 集合选的目标。 */
+  private fun logStartupLock(lock: Int, from: Int, to: Int, reason: String) {
+    val nowMs = SystemClock.elapsedRealtime()
+    if (nowMs - lastLockLogMs <= 5_000L) return
+    lastLockLogMs = nowMs
+    Log.i(
+      "YtSabrAbr",
+      "startup lock ${lock}p[$reason]: ${getFormat(from).height}p@${getFormat(from).bitrate}" +
+        "(itag${getFormat(from).id}) → ${getFormat(to).height}p@${getFormat(to).bitrate}(itag${getFormat(to).id})",
+    )
+  }
+
+  /**
    * P11-128:把候选档夹进起播锁高。`lock == null`(松开后)直接放行;无视频高度的组(音频)放行;
    * 组内没有该高度的轨时退到「≤ 锁高的最高档」;再没有就不动(保底不把 selected 弄成非法值)。
    * 同高度多 codec 变体时优先顶档 codec(VP9 粘性梯子的同一条规则,避免锁高期就跨 codec)。
+   *
+   * P11-146:**served 集合非空时,锁只在集合内找目标**(锁高在集合内优先;否则集合内最高的 ≤ 锁高;
+   * 再否则集合内最优)—— 否则会把档夹回服务端不供的轨,触发上面记的死锁。
    */
   private fun applyStartupLock(index: Int): Int {
     val lock = startupLockHeightProvider() ?: return index
     val safe = index.coerceIn(0, length - 1)
     if ((0 until length).none { getFormat(it).height > 0 }) return index
+    val served = servedIndexesInGroup()
+    if (served != null) {
+      val target = bestIndexOf { it in served && getFormat(it).height == lock }
+        ?: bestIndexOf { it in served && getFormat(it).height in 1..lock }
+        ?: bestIndexOf { it in served }
+      if (target == null || target == index) return index
+      logStartupLock(lock, safe, target, "served")
+      return target
+    }
     if (getFormat(safe).height == lock) return index
     val best = bestIndexOf { getFormat(it).height == lock } ?: bestIndexOf { getFormat(it).height in 1..lock }
     if (best == null || best == index) return index
-    val nowMs = SystemClock.elapsedRealtime()
-    if (nowMs - lastLockLogMs > 5_000L) {
-      lastLockLogMs = nowMs
-      Log.i(
-        "YtSabrAbr",
-        "startup lock ${lock}p: ${getFormat(safe).height}p@${getFormat(safe).bitrate} → " +
-          "${getFormat(best).height}p@${getFormat(best).bitrate}(itag${getFormat(best).id})",
-      )
-    }
+    logStartupLock(lock, safe, best, "lock")
     return best
   }
 
@@ -285,10 +316,20 @@ class HeightAwareAdaptiveTrackSelection(
    * P11-128:构造时的初始档。有锁高 → 锁高那档(同高度优先顶档 codec、再比码率),对齐旧
    * `setMinVideoSize+setMaxVideoSize` 的「首段必落起始档」语义;无锁 → 沿用本类原行为
    * (最低档,交给首次 `updateSelectedTrack` 按带宽爬)。
+   *
+   * P11-146:同上 —— served 集合非空时,初值就在集合内挑(否则第一笔请求必然问一个服务端不供的档)。
    */
   private fun initialSelectedIndex(): Int {
     val lock = startupLockHeightProvider() ?: return length - 1
     if ((0 until length).none { getFormat(it).height > 0 }) return length - 1
+    val served = servedIndexesInGroup()
+    if (served != null) {
+      bestIndexOf { it in served && getFormat(it).height == lock }?.let { return it }
+      val maxServedH = (0 until length).filter { it in served }
+        .map { getFormat(it).height }.filter { it in 1..lock }.maxOrNull()
+      if (maxServedH != null) bestIndexOf { it in served && getFormat(it).height == maxServedH }?.let { return it }
+      bestIndexOf { it in served }?.let { return it }
+    }
     bestIndexOf { getFormat(it).height == lock }?.let { return it }
     val maxH = (0 until length).map { getFormat(it).height }.filter { it in 1..lock }.maxOrNull()
       ?: return length - 1

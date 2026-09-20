@@ -715,11 +715,25 @@ class YoutubeSabrHarvester(
     try{ if(typeof p.setPlaybackQualityRange==='function'){p.setPlaybackQualityRange('hd1080','hd1080');out.push('range=hd1080');} }catch(e){out.push('rangeErr='+e);}
     try{ if(typeof p.setPlaybackQuality==='function'){p.setPlaybackQuality('hd1080');out.push('q=hd1080');} }catch(e){out.push('qErr='+e);}
     try{ if(typeof p.getPlaybackQuality==='function'){out.push('now='+p.getPlaybackQuality());} }catch(e){}
+    try{ if(typeof p.getAvailableQualityLevels==='function'){out.push('avail='+JSON.stringify(p.getAvailableQualityLevels()));} }catch(e){}
     try{ var vs=p.getVideoStats&&p.getVideoStats(); if(vs){out.push('fmt='+vs.fmt+' vp='+vs.viewport);} }catch(e){}
   } else { out.push('NO_PLAYER'); }
   out.push('vp='+window.innerWidth+'x'+window.innerHeight);
   console.log('harvest quality nudge: '+out.join(' '));
-}catch(e){console.log('harvest quality nudge err '+e);}"""
+}catch(e){console.log('harvest quality nudge err '+e);}
+// P11-146(C3 核验):注入点紧跟 onPageFinished,那一刻播放器常常还没起播(实测 now=unknown/fmt=undefined)
+// ⇒ 光看第一行判不出「推没推上去」。故 4s 后再读一次:若那时 now=hd1080/avail 含 hd1080 且 fmt 有值,
+// 才算 C3 真正生效(浏览器选档 = 我们推的档 ⇒ 材料会话就会供我们的档)。
+setTimeout(function(){try{
+  var p=document.getElementById('movie_player')||document.querySelector('.html5-video-player');
+  var o=[];
+  if(!p){console.log('harvest quality nudge +4s: NO_PLAYER');return;}
+  try{ if(typeof p.getPlaybackQuality==='function'){o.push('now='+p.getPlaybackQuality());} }catch(e){}
+  try{ if(typeof p.getAvailableQualityLevels==='function'){o.push('avail='+JSON.stringify(p.getAvailableQualityLevels()));} }catch(e){}
+  try{ var vs=p.getVideoStats&&p.getVideoStats(); if(vs){o.push('fmt='+vs.fmt+' vp='+vs.viewport+' mime='+vs.mimeType);} }catch(e){}
+  try{ var v=document.querySelector('video'); o.push('videoW='+((v&&v.videoWidth)||0)+' paused='+((v&&v.paused)===true)); }catch(e){}
+  console.log('harvest quality nudge +4s: '+o.join(' '));
+}catch(e){console.log('harvest quality nudge +4s err '+e);}},4000);"""
 
     const val DOC_LEN_JS = """try{var de=document.documentElement;var dl=(de&&de.outerHTML)?de.outerHTML.length:-1;console.log('DOCLEN dl='+dl+' ytcfg='+!!window.ytcfg+' rs='+document.readyState+' title='+document.title);dl;}catch(e){console.log('DOCLEN err '+e);-1;}"""
 

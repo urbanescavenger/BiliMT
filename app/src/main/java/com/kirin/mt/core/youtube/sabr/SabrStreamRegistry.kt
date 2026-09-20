@@ -80,35 +80,38 @@ internal object SabrStreamRegistry {
     if (videoId.isNullOrBlank()) emptySet() else serverServedItagsByVideo[videoId]?.toSet() ?: emptySet()
 
   /**
-   * P11-145(2026-09-20,**token 三臂轮换**;取代 P11-144 的「材料派/自造派」二臂)。
+   * P11-146(2026-09-20 历史复盘后的**四臂轮换**;取代 P11-145 的三臂)。
    *
-   * 会话侧已由 r2030 的 A/B 定论:**材料 URL 会话只供浏览器那一场绑定的档**(实测 token 状态是
-   * `status=1` ×19 而服务端仍只推 251/399、我们的档从未被初始化)⇒ **会话一律走我们自己的 /player**。
-   * 剩下的唯一变量是 **token**,故按 resolve 次数轮换三臂:
+   * 复盘发现(全部有日志,见 docs/youtube-web-sabr.md §5.9.7):当天**能播的两场都是「材料会话 +
+   * harvest 页铸的 token」**(r1992 `status=1`×10/媒体块 35;r2002 `status=1`×100/媒体块 115),
+   * 而「自铸 token」这条(r2008/r2028/r2030 自造臂)第一笔就被判 `status=2`;当天崩溃的真凶是
+   * 已修的刷新 bug(刷新次数 r2002=0→status3 零次、r2006=1→22 次、r2008=3→66 次)。
+   * 材料会话唯一的病是**它的格式集**:服务端只供「那一场浏览器选中的档」,我们的阶梯选档得落进去
+   * (r1992 请求 136 ✓、r2002 请求 698 ✓ 就播;r2030 请求 302 ✗ 就 0 块)—— 这正是 C1 要解决的,
+   * 而 C1 被起播锁夹回(P11-146 已修)。
    *
-   *   臂 A(0)= 我们自铸(`ensureWebToken`,现况):r2030 实测——第一笔就 `status=2`(potAge 839ms,
-   *            非过期)、给 6.3MB 宽限后转 `status=3`;
-   *   臂 B(1)= **harvest 页铸的那枚**(87B):r2030 实测它拿到 `status=1` ×19 ⇒ 页面上下文
-   *            (BgUtils #44:`yt.config_.EVENT_ID`)是被接受的关键;本臂只借 token,不借 URL/ust/cpn;
-   *   臂 C(2)= **不带 token(pot-less)**:调研指出这是我们日志里唯一稳定 `status=1` 的配置。
-   *
-   * 判据:`token 形态` 日志(臂/大小/首字节)+ `resp summary`(格式)+ status 序列 + `first media chunk`。
+   * 故按 resolve 次数轮换四臂,一次构建覆盖全部假设:
+   *   臂 A(0)= 自造会话 + 自铸 token(现况,2.6s)
+   *   臂 B(1)= 自造会话 + **harvest 页 token**(只借 token;两边各一半的合成)
+   *   臂 C(2)= 自造会话 + **不带 token**(pot-less)
+   *   臂 D(3)= **完整材料会话**(URL/ust/cpn/token 全借)+ C1 起播锁修复 ⇒ 历史基底 + 新修
    */
   private val webSabrTokenArmCounters =
     java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
 
-  /** 0=自铸 / 1=harvest 页铸 / 2=不带 token。 */
+  /** 0=自造+自铸 / 1=自造+页面 token / 2=pot-less / 3=完整材料会话。 */
   fun nextWebSabrTokenArm(videoId: String): Int {
     val n = webSabrTokenArmCounters
       .getOrPut(videoId) { java.util.concurrent.atomic.AtomicInteger() }
       .incrementAndGet()
-    val arm = (n - 1) % 3
+    val arm = (n - 1) % 4
     val label = when (arm) {
-      0 -> "A(自铸)"
-      1 -> "B(harvest 页铸)"
-      else -> "C(pot-less)"
+      0 -> "A(自造+自铸 token)"
+      1 -> "B(自造+harvest 页 token)"
+      2 -> "C(自造+pot-less)"
+      else -> "D(完整材料会话+C1 修复)"
     }
-    Log.i(tag, "WEB-SABR token 三臂(P11-145): videoId=$videoId resolve#$n → 臂$label")
+    Log.i(tag, "WEB-SABR 四臂(P11-146): videoId=$videoId resolve#$n → 臂$label")
     return arm
   }
 
