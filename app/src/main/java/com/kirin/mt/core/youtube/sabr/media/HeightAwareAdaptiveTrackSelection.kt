@@ -183,6 +183,20 @@ import com.google.common.collect.ImmutableList
  *   墙钟时刻,若两次评估间 `上次水位 - 本次水位 > 墙钟时长 + 2s 余量` → 读数塌方非真饿,跳过本轮
  *   水位降档(含试探熔断同源误判);下轮评估衰减速率恢复 ≤1s/s 自然放行,真饿最多晚一轮急救。
  *   seek 也落此守门(代价=最多延迟一轮急救,方向无害);est 降档路径不受影响(口径不同)。
+ *
+ * 2026-09-20(冻结 episode,修「一次冻结连降四档」,13:57-13:58 真机复盘):服务端在 seg=12 改推
+ *   白名单外的 itag(335)连续 32.8s 零可用视频数据 → 水位从 31.9s 漏到 5.8s → 水位急救动手。但
+ *   **冻结窗口只有 5.7s(13:58:08.935 playerState=3 → 13:58:14.635 playerState=2),里面塞了 4 次
+ *   降档**(720p→480p→360p→240p→144p):冻结期间每次评估「水位仍在下漏」都重新成立 → 同一段冻结被
+ *   拆成 4 个独立评估、算了 4 次账(冻结时间在累加);而每次降档自身还要 1.5-3.4s 拉新档 init
+ *   (1848B 小请求 + 服务端 NEXT_REQUEST_POLICY backoff 2s),期间零可用数据 → 水位继续漏 → 下一轮
+ *   又成立。5.8s 的存量买单 4 次切档,自然穿到地板。对照:13:58:14.635 冻结结束后**只要不再降档**,
+ *   缓冲 13:58:18 就回到 5.8s、13:58:22 回到 30.3s——4 秒回满。
+ *   修:**冻结 episode 位**——首次跌破急救阈值置位,episode 内不再触发第二次水位降档;水位回到阈值
+ *   以上(恢复)才清位。同一段冻结整段只算一次账,与冻结时长无关(时长不累加)。真饿(供给持续不足)
+ *   不靠本路径兜底:**est 降档路径完全不受本闸影响**(总供给不足时窗口被失败/零样本填满 → est 塌到
+ *   当前档 required×0.85 以下 → 候选循环照常逐级下探),水位急救的定位是「est 反应太慢时的快速
+ *   一档」,一 episode 一档符合其定位。级联链上的 180s 冷却误伤(240p 被锁死 180s)也随之消失。
  */
 class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
@@ -348,6 +362,26 @@ class HeightAwareAdaptiveTrackSelection(
   /** 2026-09-03:上次评估的墙钟时刻(elapsedRealtime ms)——缓冲读数塌方守门的衰减速率基准。 */
   private var prevEvalElapsedMs = SystemClock.elapsedRealtime()
 
+  /**
+   * 2026-09-20(冻结 episode,见类头):水位急救的「同一冻结只降一档」闸。
+   *
+   * 置位:水位急救降档那一刻。清位:水位回到急救阈值以上(恢复)。
+   * 语义 = 一段连续饥饿(冻结)整段只算一次账——旧实现每次评估都重新判「仍在下漏」,一次 5.7s 冻结
+   * 被拆成 4 次独立触发、连降到底(13:57-13:58 真机)。与「冻结时长」无关,不做任何时长累加。
+   *
+   * 不影响 est 降档路径(总供给真不足时 est 塌下来照常逐级下探),只收水位急救这一条快速通道。
+   */
+  private var freezeEpisodeActive = false
+
+  /**
+   * 2026-09-20:冻结 episode 闸住第二枪时的取证日志是否已打过(每 episode 一次,防每评估刷屏)。
+   *
+   * **为什么必须打**:水位急救是唯一一条「静默生效」的路径——被闸住时日志里什么都没发生,真机复盘
+   * 无法区分「闸生效了」和「ABR 根本没在评估」(本次 144p 锁死复盘就吃过这个亏:240p 候选被
+   * [SabrAbrMemory.isTrialFailBlocked] 静默 continue,整段日志一片安静)。一行一 episode,足够取证。
+   */
+  private var freezeEpisodeSuppressLogged = false
+
   /** 2026-08-31:顶档 stall 冷却的跳过日志是否已打过(每 selection 实例一次,防每 chunk 刷屏)。 */
   private var topTierStallBlockLogged = false
 
@@ -414,8 +448,24 @@ class HeightAwareAdaptiveTrackSelection(
           "(readout reset, not starvation)"
       )
     }
+    // 2026-09-20 冻结 episode(见类头):水位回到阈值以上 = 这段饥饿结束,清位——下次跌破才重新开一段,
+    // 期间(含持续下漏)不再开第二枪。**不做任何时长累加**:整段冻结只记一次,与它持续多久无关。
+    val belowCriticalUs = bufferedDurationUs < criticalBufferedUs || trialAbort
+    if (!belowCriticalUs) {
+      freezeEpisodeActive = false
+      freezeEpisodeSuppressLogged = false
+    } else if (freezeEpisodeActive && !bufferCollapseArtifact && !freezeEpisodeSuppressLogged) {
+      freezeEpisodeSuppressLogged = true
+      Log.i(
+        "YtSabrAbr",
+        "freeze episode: bufS=${bufferedDurationUs / 1_000_000}s held at " +
+          "${getFormat(selected).height}p — water-level downgrade suppressed " +
+          "(one step per starvation episode)",
+      )
+    }
     val bufferCritical = !bufferCollapseArtifact &&
-      (bufferedDurationUs < criticalBufferedUs || trialAbort) &&
+      belowCriticalUs &&
+      !freezeEpisodeActive &&
       bufferedDurationUs <= prevEvalBufferedUs &&
       (trialAbort || nowMs - lastUpgradeElapsedMs >= DOWNGRADE_AFTER_UPGRADE_GRACE_MS)
     prevEvalBufferedUs = bufferedDurationUs
@@ -448,6 +498,9 @@ class HeightAwareAdaptiveTrackSelection(
         )
         selected = lower
         lastDowngradeElapsedMs = nowMs
+        // 2026-09-20 冻结 episode 置位:本段饥饿已用掉这一枪,水位回到阈值以上前不再开第二枪
+        // (旧实现无此闸 → 一次 5.7s 冻结连降四档到地板,见类头)。
+        freezeEpisodeActive = true
         markDowngradeFromTrial(nowMs, currentHeight)
         // 2026-08-30 顶档定向冷却:从顶档(2160p)水位降下后把该顶档 excludeTrack 3 分钟,防
         // 「重填突发过门槛→升 4K→贴地漏光→又降」边缘横跳反复切档卡顿;只锁顶档,低档升降照常

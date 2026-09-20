@@ -269,6 +269,13 @@ internal class SabrMediaFetcher(
   /**
    * 记录上次 fetch 结束到本次发起之间的被迫空转。只有超出「滑行量」的部分算供给损失,计 bytes=0 样本
    * (窗口带宽下探);满缓冲滑行部分不惩罚。在每次 media() 发请求前调用。
+   *
+   * 2026-09-20(**服务端 backoff 睡眠剔除**):`NEXT_REQUEST_POLICY` 要求我们等的那段(上限
+   * [MAX_BACKOFF_SLEEP_MS])发生在 [fetchStreamData] 开头,fetchStartMs 在它之后才取 → 全额落进
+   * rawGapMs。但那是**服务端叫停**,不是链路供给不足也不需求驱动空闲——计进零供给样本等于自己拽低
+   * est。真机 13:58:11 / 13:58:15 各 2010ms / 2015ms(coast=0,因为 runway 4305/172 < 10s 余量),
+   * est 23752K→17926K→13836K。修:由 [serverBackoffSleepMs] 原样扣除后再算 coast/counted/sustained,
+   * 扣除量既不计 0 供给样本、也不作需求空闲扣减(两边都不偏袒);日志保留 raw 与 backoff 供取证。
    */
   private fun recordFetchGap(
     prevFetchEndMs: Long,
@@ -276,32 +283,41 @@ internal class SabrMediaFetcher(
     prevManualMs: Long?,
     runwayMs: Long,
     fetchStartMs: Long,
+    serverBackoffSleepMs: Long = 0L,
   ) {
     if (prevFetchEndMs == 0L) return
     val rawGapMs = fetchStartMs - prevFetchEndMs
     if (rawGapMs <= 0L) return
+    // 服务端要求的 backoff 睡眠 = 操作开销,从 gap 里原样剔除(coerce 防时钟跳变导致的负值)。
+    val backoffMs = serverBackoffSleepMs.coerceIn(0L, rawGapMs)
+    val gapMs = rawGapMs - backoffMs
+    if (gapMs <= 0L) return
     val demandIdleMs: Long
     if ((prevSeekMs ?: 0L) > prevFetchEndMs || (prevManualMs ?: 0L) > prevFetchEndMs) {
       // seek/手动选档后的 gap 是操作开销非供给问题:不计 active est,也不计入持续带宽分母。
-      demandIdleMs = rawGapMs
+      demandIdleMs = gapMs
     } else {
       // 2026-08-30:runway 负值 = 快照滞后(1263-1265 真机 runway=-65),拿不到可靠滑行量 → 证据不足,
       // 全额当需求空闲处理:不惩罚 est(不计 0 供给样本),空窗照常进 sustained 分母扣除。
-      val coastMs = if (runwayMs < 0L) rawGapMs
+      val coastMs = if (runwayMs < 0L) gapMs
         else (runwayMs - BW_GAP_RUNWAY_RESERVE_MS).coerceAtLeast(0L)
-      val countedMs = (rawGapMs - coastMs).coerceIn(0L, BW_GAP_MAX_MS)
+      val countedMs = (gapMs - coastMs).coerceIn(0L, BW_GAP_MAX_MS)
       if (countedMs >= BW_GAP_MIN_MS) {
         addRealBwSample(0L, countedMs)
-        Log.i(tag, "bw gap counted: ${countedMs}ms (raw=${rawGapMs}ms coast=${coastMs}ms runway=$runwayMs)")
+        Log.i(
+          tag,
+          "bw gap counted: ${countedMs}ms (raw=${rawGapMs}ms backoff=${backoffMs}ms " +
+            "coast=${coastMs}ms runway=$runwayMs)",
+        )
       }
       // 需求驱动空闲扣减(2026-08-30):滑行部分(满缓冲主动停闸)= 需求驱动的管道空闲 → 记入持续分母扣除量。
       // 2026-08-31 A:顶档在位时持续分母的滑行扣减改用 20s 余量(见 isTopTierVideoSelected)——est 口径
       // 不变,只让 4K pacing 排队等待进 sus 分母。
-      val sustainedCoastMs = if (runwayMs < 0L) rawGapMs
+      val sustainedCoastMs = if (runwayMs < 0L) gapMs
         else if (isTopTierVideoSelected()) (runwayMs - TOP_TIER_GAP_RUNWAY_RESERVE_MS).coerceAtLeast(0L)
         else coastMs
-      val countedForSustainedMs = (rawGapMs - sustainedCoastMs).coerceIn(0L, BW_GAP_MAX_MS)
-      demandIdleMs = (rawGapMs - countedForSustainedMs).coerceAtLeast(0L)
+      val countedForSustainedMs = (gapMs - sustainedCoastMs).coerceIn(0L, BW_GAP_MAX_MS)
+      demandIdleMs = (gapMs - countedForSustainedMs).coerceAtLeast(0L)
     }
     addSustainedGapSample(demandIdleMs)
   }
@@ -618,10 +634,14 @@ internal class SabrMediaFetcher(
    * bufferedRanges=全部真实 buildBufferedRanges(无 Int.MAX)。
    */
   private suspend fun fetchStreamData(req: SabrSegmentRequest): ByteArray {
+    // 2026-09-20(服务端 backoff 不入账,见 recordFetchGap):本次睡眠是**服务端 NEXT_REQUEST_POLICY
+    // 要求我们等的**,不是链路供给不足——时长要原样剔除,否则被计成 bytes=0 样本把 est 拽低。
+    var serverBackoffSleepMs = 0L
     backoffTime?.let { backoff ->
       val sleep = min(backoff.toLong(), MAX_BACKOFF_SLEEP_MS)
       Log.i(tag, "fetchStreamData: sleeping backoff $backoff ms (capped $sleep) before request")
       delay(sleep)
+      serverBackoffSleepMs = sleep
       backoffTime = null
     }
 
@@ -811,7 +831,7 @@ internal class SabrMediaFetcher(
       // 节奏非带宽不足),吞吐 = 窗口累计量/累计耗时。带宽充足时贴近真实下载速率,断流时靠失败段计时下探。
       val mbps = if (elapsed > 0) resp.size.toLong() * 8 / (elapsed * 1000L) else -1L
       recordRealBandwidthSample(resp.size.toLong(), elapsed)
-      recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall)
+      recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
       Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps est=${getRealBitrateEstimate() / 1000L}K")
@@ -823,7 +843,7 @@ internal class SabrMediaFetcher(
       // 网络失败/超时:下载量=0、耗时计满 → 窗口带宽下探,让 ABR 有依据降档自救
       val failMs = SystemClock.elapsedRealtime() - t0
       recordRealBandwidthFailure(failMs)
-      recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall)
+      recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
       Log.w(tag, "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${getRealBitrateEstimate() / 1000L}K)")
