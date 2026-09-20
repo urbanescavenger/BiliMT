@@ -97,7 +97,9 @@ internal class SabrMediaFetcher(
    * 没数据、音频轨照播 ⇒ 用户看到「升档视频停顿、音频没断」。
    */
   @Volatile private var prefetchItag: Int? = null
-  private var prefetchUntilMs = 0L
+  // 2026-09-20:@Volatile——写入方从此有两个(`prefetchFormat` 的 loading 线程 + `cancelPrefetch` 的
+  // chunk-source 评估线程),而读取在请求构造线程;非 volatile 时撤销可能对下一笔请求不可见。
+  @Volatile private var prefetchUntilMs = 0L
 
   /** P11-130:上报升档候选档(窗口期内有效;同一档重复上报不刷日志)。 */
   fun prefetchFormat(itag: Int) {
@@ -111,6 +113,30 @@ internal class SabrMediaFetcher(
   /** P11-130:当前生效的预取档(null=无)。每次请求/清理时现读,窗口过期自动失效。 */
   private fun activePrefetchItag(): Int? =
     prefetchItag?.takeIf { System.currentTimeMillis() < prefetchUntilMs }
+
+  /**
+   * 2026-09-20(预取窗口撤销,修「窗口期内抢响应预算 → 正在播的格式饿死」):缓冲跌破撤销线时由
+   * DefaultSabrChunkSource.maybePrefetchNextTier 调用,立刻让本窗口失效。
+   *
+   * 为什么必须能撤销:窗口(30s)此前是**进入时检查一次**就一路生效——真机两场播放到缓冲塌到 0 的
+   * 全过程中,每个请求仍在 `preferredVideoFormatIds` 里点名要 1080p itag335,服务端照办(每次响应
+   * 7.87MB 全是 335),而白名单只认 `[140,698]` → 整段丢弃,且**当次请求的 698 段挤不进来** →
+   * `no seg` → 6 连重试 → `terminal → evict`。撤销后请求不再点名它,当次段得以正常送达。
+   *
+   * 只清窗口,**不动**该档在 chunk source `prefetchedTiers` 里的记录:本会话不再重试该档,保持
+   * 「同一档只报一次、不持续白吃带宽」的原意(该档能否重试需等白名单放行验证后再评估)。
+   */
+  fun cancelPrefetch(bufferedDurationUs: Long) {
+    val cur = activePrefetchItag() ?: return
+    prefetchItag = null
+    prefetchUntilMs = 0L
+    Log.i(
+      tag,
+      "prefetch canceled: itag$cur 撤销(缓冲 ${bufferedDurationUs / 1_000_000}s 跌破撤销线)" +
+        " — 不再与正在播的格式抢响应预算",
+    )
+  }
+
   /** 正在处理的 partial 段(headerId → Segment,MEDIA 累积/MEDIA_END 收尾)。 */
   private val partialSegments = mutableMapOf<Int, SabrSegment>()
 

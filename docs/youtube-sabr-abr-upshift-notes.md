@@ -1108,3 +1108,78 @@ startHeight 下最高档(枚举≤720,恒在 alpha.14 安全区);起始=自动�
   `buffer-critical downgrade`。← r2003 已闭环(§33.1)
 - 级联场景下 `downgrade fail cooldown` 应**只记一笔**(源档),不再有 240p/360p/480p 沿途各一笔。
 - ①的服务端改推 335/跳段若复现,本修法**不能**阻止第一次降档(那是正确反应),但应止步一档。
+
+## 34. 2026-09-20「无效流量从哪来」:8MB 全丢弃是**我们自己点名要的** —— 预取窗口改成可撤销 (P11-136)
+
+### 起因
+
+§33 的 ①(服务端改推白名单外 itag、每次下满 ~8MB 全丢)当时只记为「服务端行为,待单独处理」。
+追下去发现:**服务端不是乱推,是照我们的要求推的**。
+
+### 机制(四步,全在代码里)
+
+1. `DefaultSabrChunkSource.maybePrefetchNextTier` 选「比当前档分辨率更高的下一档」——播 720p(698)时
+   就是 **1080p itag335**,`prefetchFormat(335)` 把它塞进 `preferredVideoFormatIds` **第二位**。
+2. 并且**故意不报它的 bufferedRange**([SabrMediaFetcher.kt](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt)
+   的 bufferedRanges filter,注释原话「报'没有' = 请把数据推给我」)——这是在明确要求服务端推它。
+3. 服务端**照办**:每个响应都带 `FORMAT_INIT itag=335` + 5 个 335 段(≈**7.87MB**)+ 音频段;
+   实测该笔 8.2MB = 335×5 + 140×2,**我们请求的 698 seg 一个字节都没有**。
+4. 但白名单是 `{当前音频, 当前视频} + pendingRequestItags` ——**335 不在里面** → 直接 `return`,
+   **连 `initializedFormats[335]` 都不建**(所以 P11-130 想要的「缓存进 initializedFormats 以便切档命中」
+   **结构上永不可能发生**),335 的 MEDIA part 找不到 headerId 全部丢弃。
+
+**代码里的自相矛盾**(一处漏接线):P11-130 作者**知道**预取档的缓存要保住——
+`initializedFormats.keys.retainAll { … || f == activePrefetchItag() }`(注释:「预取候选档的缓存要保住,
+否则刚预取到就被清」)——**但白名单不含 `activePrefetchItag()`,而白名单是更早的一道闸**。
+那句保护的是一个从未被创建过的缓存。
+
+### 闭环证据:两场日志的「零可用数据窗口」= 预取窗口本身
+
+| | `logs_live_20260920_135925.log` | `logs_live_20260920_142332.log` |
+|---|---|---|
+| 宣布预取 335 | 13:57:35.977 | 14:22:29.994 |
+| 30s 窗口到期 | ≈13:58:05.98 | ≈14:22:59.99 |
+| 最后一笔 skip 335 | 13:58:05.978 | 14:22:57.301 |
+| 窗口**内**发出的请求 | rn=3..14 全 `no seg` | rn=3..15 全 `no seg` |
+| 窗口到期后**第一笔** | rn=15 **13:58:08.843 立刻拿到 698 seg 12/13/14** | rn=16 **14:23:01.206 立刻拿到 698 段** |
+
+两场各 12/13 次 `skip ad/unrequested FORMAT_INIT`,**全部是 itag=335、没有别的 itag** ⇒ 这道 alpha.71
+广告防线在实测里一次广告都没拦到,**拦的全是我们自己点名要的预取档**。
+
+### 为什么"丢弃"这么贵(三重代价)
+
+- **响应预算被占满**:335 吃掉 7.87MB 后,当次请求的段挤不进来 → `no seg` → 重试 `MAX_ATTEMPTS=6`
+  (每次再下 ~8MB)→ `terminal → evict` → 新会话(窗口还在)**再问一次 335**。
+- **丢弃发生在下载之后**:`response.body?.bytes()` 先拿完整 8MB 再逐 part 解析 —— 判断「要不要」时钱已花掉。
+- **恶性闭环**:丢掉的字节照进 `est`(无条件喂 `recordRealBandwidthSample`),`bandwidthEstimate`
+  被抬到 32Mbps 再**上报服务端** → 服务端更确信该推高分辨率 → 更多无效流量。
+
+### 修法(本 commit,C 段;A 段另开一轮)
+
+**预取窗口改成「持续条件」**:进入线仍是缓冲 ≥20s(`PREFETCH_MIN_BUFFERED_US`,不变),但**新增撤销线
+15s**(`PREFETCH_REVOKE_BUFFERED_US`)——窗口期内缓冲跌破即由 `fetcher.cancelPrefetch()` 立刻撤销。
+滞回带 5s 防缓冲在 20s 上下自然抖动时被一次轻微回落永久关掉。撤销是**单向**的(该档仍留在
+chunk source 的 `prefetchedTiers`,保持「同一档只报一次、不持续白吃带宽」的原意):本会话不再重试该档。
+诊断日志 `prefetch canceled: itagN 撤销(缓冲 Ns 跌破撤销线)`(每档一次)。
+`prefetchUntilMs` 加 `@Volatile`——写入方从此有两个(loading 线程 + chunk-source 评估线程)。
+
+> 修复前:14:22:29.994 在缓冲爬升到 ≥20s 时合法进入,此后 30s 一路照问,缓冲塌到 0 也照问 →
+> 14:22:58.600 BUFFERING(4.8s 卡顿)。修复后缓冲跌破 15s 即撤销,当次段得以正常送达。
+
+### A 段(待验证,另开一轮)
+
+**白名单并入 `activePrefetchItag()`** —— 让预取数据真进 `initializedFormats`,P11-130 的原意才成立。
+单独上之前要先验三件事:
+1. **主害是否真消除**:白名单放行只是把浪费的 8MB 变成有用,但响应预算仍被它占 ——当次要的段能否送来,
+   取决于服务端怎么分预算,需实测(这正是 C 段先做的原因)。
+2. **能否被选中**:ABR 有 codec 粘性,可能选同 height 的别的变体 ——实测 14:23:06 的候选是
+   `itag248`,而缓存里会是 `335`;预取 335、升档选 248 就白预取(r1995 已有 AV1 vs VP9 错配先例)。
+3. **请求形状**:335 一旦进 `initializedFormats`,`selected = initializedFormats.values.map{}` 会把它
+   报进 `selectedFormatIds` —— 请求体形状是逐字节对齐换来的(P11-104/P11-109),动它要单独验。
+
+### 待真机复测
+
+- 日志应见 `prefetch canceled: itagN 撤销(缓冲 Ns 跌破撤销线)`,且**此后不再有该 itag 的
+  `skip ad/unrequested`** 与 `no seg` 重试风暴。
+- 预取窗口期内若缓冲始终 ≥15s,行为与旧版一致(不误撤)。
+- 反例防线:若某场预取窗口期内**没有**撤销、缓冲却仍塌 —— 说明触发点不在预取,需重查。
