@@ -590,7 +590,50 @@ FreeTube **从不刷新 token**(单 token 全程,只绑 videoId),我们却把「
 
 ---
 
-## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
+### 5.7 2026-09-20 下午:同一残留**升级**为「必死」+ 运行时判死标记补齐(P11-138)
+
+**现象**:`logs_live_20260920_151317.log` / `_151843.log`(`dev.r2008`,同机同视频)。WEB 会话**每会话第 2 笔**
+就被 nag:实测 `rn=0`(`pot=88B`)→ `status=1`;`rn=1`(`pot=88B`,cookie=true)→ **`status=2`**
+(`sessAgeMs≈5.5s`)→ 同步重铸 → `rn=2` 起 `pot=208B` → **`status=3`** 每笔死 → evict → 新会话原样重演。
+整场 **0 个媒体段**。各版 status 分布对照,能播与否一目了然:
+
+| 版本 | 成功段 | status=1 | status=2 | status=3 |
+|---|---|---|---|---|
+| r2002 | **115** | 100 | 0 | 0 |
+| r2003 | 47 | 44 | 1 | 7 |
+| r2006 | 108 | 88 | 1 | 7 |
+| r2008 | **0** | **6** | **3** | **21** |
+
+**这是 §5.6「残留」的升级,不是新根因**:失败态 diag 在 r2003/r2006/r2008 **三版逐字段一致**
+(`sessAgeMs≈5.5s / sessReqN=2 / pot=208B / ctxActive=0 ctxStored=0 / unhandled=47x2,52x1,53x1`)
+⇒ 机制相同,只是 §5.6 那轮是「能播但 ~60s 重载一次」,这轮退化成「一次都不播」。
+
+**同一份日志里的对照(用户观测「SABR 可以,WEB-SABR 不行」的机器侧证据)**:15:18:24 起换成
+pot-less 主路(`shape=libre`、**`pot=0B` 完全不带 PO token**、cookie=true)→ 一路 `status=1`,
+15:18:26→15:18:29 **连续 20 段成功**。即:**WEB 形状必须带 token,而它带的 token 被服务端拒;
+pot-less 那条不带 token,反而不被判死。**
+
+**循环的真原因(本 commit 修的)**:`markWebSabrFailed` 机制本来就有,但差两处:
+
+1. 它此前**只在「构建失败」时**被调(`buildWebSabrFallback` 返回 null)。今天构建从没失败(harvest 每次
+   都交出 88B),所以标记从未置位。**已补**:fetcher 运行时撞 `InvalidPoToken status=3` 且
+   `session.clientInfo.clientName == 1`(WEB 会话)时也置标记([SabrMediaFetcher.kt](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt)
+   的 status=3 抛出点)。只在 WEB 会话上标,pot-less 主路的 status=3 另有原因,不连坐。
+2. **`webSabrFirst` 那条分支不查标记**([YoutubePlaybackResolver.kt](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt)
+   的 `if (webSabrFirst && poToken != null && !webSabrFirstBudgetShort)`)—— 只补 fetcher 侧会漏掉它,
+   「WEB-SABR 优先」设置下仍会建成功→clear→运行时死→标记→**本次仍重试**→建成功→clear→… 无限循环。
+   **已补**:加 `isWebSabrFailed(videoId)` 守卫,与下方 `webSabrDue` 分支同款。
+
+**修后的时序**:建成功→clear→运行时死→**标记**→下次 resolve 跳过 WEB-SABR → 落 NewPipe pot-less 主链
+(今天的实测可播路径)。效果:把「无法播放」变成「第一次失败后自动换到能播的路」。
+
+**仍待解决(未动)**:服务端为何在这轮把 WEB 会话的处决提前到第 2 笔。候选方向与 §5.6 同:材料形态/身份
+已被那轮否定(「重新采集的新材料建的会话立刻又是 status=1」),指向服务端策略 + 会话轮换;而 §5.6 记的
+「status=2 同步刷新回调**尚未被真机触发验证**」这轮被触发了 —— 刷新后的 208B token 依然被判 invalid,
+说明**重铸这条兜底在当前形态下是无效的**。这条要单开一轮。
+
+---
+
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。
 > 全程用真机日志判读,**G1 未达标不判 status**(13 轮的共同盲区就是在黑箱上投轮次)。

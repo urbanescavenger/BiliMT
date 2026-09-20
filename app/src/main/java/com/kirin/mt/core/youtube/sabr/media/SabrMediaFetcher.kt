@@ -575,6 +575,23 @@ internal class SabrMediaFetcher(
                   " req=[itag=${req.formatItag} seg=${req.segment} playerTimeMs=${req.segmentStartTimeMs}]" +
                   " ranges=[$ranges]",
               )
+              // 2026-09-20(**运行时判死 WEB-SABR**,修「WEB-SABR 会话建起来了却每笔都死 → 无限重选」):
+              // 真机 15:09-15:18(logs_live_20260920_151317/151843,r2008):WEB 形状(shape=ft)每会话**第 2 笔**
+              // 就被 nag(status=2,sessAgeMs≈5.5s)→ 同步重铸 88B→208B → status=3 起每笔死;而同一份日志里
+              // pot-less 那条(shape=libre,**pot=0B** 完全不带 token)一路 status=1、15:18:26 起连续 20 段成功。
+              // 用户实测结论同:「SABR 可以,WEB-SABR 不行」。
+              //
+              // **为什么必须在这里标,而不是只靠 resolve 里的构建失败标记**:[markWebSabrFailed] 此前只在
+              // `buildWebSabrFallback` 返回 null(构建失败)时调,而今天构建**从没失败**(harvest 每次都交出 88B);
+              // 且 [YoutubePlaybackResolver] 在**构建成功那一刻**就 `clearWebSabrFailed` 并 return ——
+              // 标记在「建起来」时被清、失败却发生在运行时 ⇒ 标记永远留不住 ⇒ 建成功→清→运行时死→resolve
+              // 再来→WEB-SABR 触发条件仍真(该视频 `reloadCount>0`)→ 建成功→清→… **无限循环**,5+ 个会话 0 段。
+              // 补上这一笔后:建成功→清→运行时死→**标记**→下次 resolve 见 `isWebSabrFailed` → 跳过 WEB-SABR
+              // → 落 pot-less 主路(实测全绿)。效果:把「无法播放」变成「第一次失败后自动换到能播的路」。
+              // 只在 WEB 会话上标(clientName==1 即 webShape),pot-less 主路的 status=3 另有原因,不该连坐。
+              if (session.clientInfo.clientName == 1) {
+                entry.videoId?.let { SabrStreamRegistry.markWebSabrFailed(it) }
+              }
               throw SabrTerminalException("InvalidPoToken (StreamProtectionStatus status=3)")
             }
             fatalError?.let { throw SabrTerminalException("SABR error: $it") }

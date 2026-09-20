@@ -224,7 +224,19 @@ class YoutubePlaybackResolver(
           "(harvest 冷启就要 4~11s,注定来不及)→ 跳过 WEB-SABR,直落 NewPipe 主链(不烧 WebView/solver)",
       )
     }
-    if (webSabrFirst && poToken != null && !webSabrFirstBudgetShort) {
+    // 2026-09-20(**运行时判死的标记必须在这条路上也被认**):此分支此前只查预算,不查 [isWebSabrFailed]。
+    // 而运行时判死(fetcher 撞 `InvalidPoToken status=3`,真机 15:09-15:18 WEB 每会话第 2 笔即死)现在也会
+    // 置标记 —— 不查它就会:建成功→clear→运行时死→**标记**→本次 resolve 仍重试 WEB-SABR→建成功→clear→…
+    // 与修复前一样无限循环(下方 `webSabrDue` 那条分支本来就有这个守卫,只补 fetcher 侧会漏掉这里)。
+    val webSabrFirstBlocked = webSabrFirst && SabrStreamRegistry.isWebSabrFailed(videoId)
+    if (webSabrFirstBlocked) {
+      Log.w(
+        Tag,
+        "WEB-SABR 优先:该视频 WEB-SABR 已判死(运行时 token 被服务端拒)→ 跳过," +
+          "落 NewPipe 主链(pot-less SABR 实测可播)",
+      )
+    }
+    if (webSabrFirst && poToken != null && !webSabrFirstBudgetShort && !webSabrFirstBlocked) {
       val webSabr = runCatching {
         buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs)
       }.onFailure {
