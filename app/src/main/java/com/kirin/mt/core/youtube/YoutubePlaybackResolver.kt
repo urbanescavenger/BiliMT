@@ -167,6 +167,7 @@ class YoutubePlaybackResolver(
               subtitleTracks = r.subtitleTracks,
               youtubeDefaultQuality = youtubeDefaultQuality,
               youtubeStartQuality = youtubeStartQuality,
+              codecPreference = codecPreference,
             )
           }
           Log.w(Tag, "Piped path: buildSabrSessionFromPiped returned null (instance=$instance) → fall back to NewPipe")
@@ -296,6 +297,7 @@ class YoutubePlaybackResolver(
         subtitleTracks = np.subtitleTracks.orEmpty(),
         youtubeDefaultQuality = youtubeDefaultQuality,
         youtubeStartQuality = youtubeStartQuality,
+        codecPreference = codecPreference,
       )
     }
     // ② NewPipe 无 SABR → DASH/HLS 兜底(alpha.92 自合成 DASH 为主,次 dashMpdUrl[恒空]/HLS)。durationMs 传 0
@@ -494,6 +496,7 @@ class YoutubePlaybackResolver(
               request, videoId, rp.durationMs, rp.raws, rp.session, sid,
               subtitleTracks = rp.subtitleTracks,
               youtubeDefaultQuality = youtubeDefaultQuality,
+              codecPreference = codecPreference,
             )
           }
           Log.w(Tag, "SABR reload 闭环未回 SABR(WEB/visionOS reload 均无 sabrUrl)→ 试 DASH/HLS 兜底")
@@ -542,7 +545,10 @@ class YoutubePlaybackResolver(
                 }
               }
               Log.i(Tag, "SABR session reuse: videoId=$videoId sid=$cachedSid → reuse (skip harvest/decipher), preferredQuality=${request.preferredQualityId}")
-              return@withContext buildSabrPlaybackInfo(request, videoId, durationMs, raws, session, cachedSid)
+              return@withContext buildSabrPlaybackInfo(
+                request, videoId, durationMs, raws, session, cachedSid,
+                codecPreference = codecPreference,
+              )
             }
           }
           // alpha.86:退回 NewPipe visionOS 作 SABR 主路径(对齐 LibreTube 完全本地模式)。alpha.85 试 attested
@@ -608,6 +614,7 @@ class YoutubePlaybackResolver(
               request, videoId, sabrDuration, sabrRaws, sabrSession, sid,
               subtitleTracks = npResult?.subtitleTracks.orEmpty(),
               youtubeDefaultQuality = youtubeDefaultQuality,
+              codecPreference = codecPreference,
             )
           }
         } else {
@@ -2632,6 +2639,8 @@ class YoutubePlaybackResolver(
     subtitleTracks: List<PlaybackTrack> = emptyList(),
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
     youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
+    /** P11-129:解码器设置——决定「同分辨率多个 codec 变体」用哪一条(菜单只显示分辨率)。 */
+    codecPreference: PlaybackCodecPreference = PlaybackCodecPreference.Auto,
   ): PlaybackInfo {
     val aItag = sabrSession.audioFormatId.itag
     // P11-119c:多条音轨共用同一 itag(靠 xtags 区分)时,只按 itag 取 raw 会拿到**别的**音轨的
@@ -2652,38 +2661,53 @@ class YoutubePlaybackResolver(
       }
       .distinctBy { it.id }
 
-    // 全部视频 itag 作清晰度菜单;videoFormats 为空(classic 仅首条)则兜底默认 videoFormatId。
-    val videoFmts = sabrSession.videoFormats.ifEmpty { listOf(sabrSession.videoFormatId) }
-    val qualities = videoFmts.sortedByDescending { it.height }.map { fmt ->
-      val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == fmt.itag }
-      val h = raw?.intOrNull("height") ?: fmt.height
-      // alpha.78:codec 兜底读 "codec" key(对齐 buildSabrTrack)——NewPipe 路径 mimeType 是纯
-      // "video/mp4" 不含 codecs=,但 newPipeVideoRaw 已把 stream.codec 写进 "codec" key;不兜底则
-      // 新建会话的画质菜单丢 codec(显示裸 "1440p"),复用会话(WEB raws 带 codecs=)却显示 "1440p VP9"。
-      val codec = shortCodec(
+    // ── P11-129(对齐 B站 / LibreTube):清晰度菜单**只列分辨率** ────────────────────────────────
+    // 此前按 itag 逐条列,而 SABR 阶梯同 height 有多条 codec/帧率变体(720p 5 条、1080p 3 条、1440p 2 条、
+    // 2160p 2 条…)⇒ 菜单里「720p」重复出现。现在**同 height 合并成一条**,标签只留 `"${h}p"`;
+    // 「用哪个变体」交给**「解码器」设置**([PlaybackCodecPreference],两端设置页已有的那一行)。
+    // 代表轨的挑法与 DASH 分支的 [pickVideo] 同源:手动选中优先 → codec 偏好([codecRank] 越小越优)
+    // → 码率高者。手动切换仍是「选中 itag 单轨锁定」,只是现在选中的是该分辨率的代表轨。
+    fun codecKeyOfItag(itag: Int): String {
+      val raw = raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == itag }
+      return codecKey(
         extractCodecs(raw?.stringOrNull("mimeType") ?: "")
-          .ifEmpty { raw?.stringOrNull("codec").orEmpty() }
-      )
-      PlaybackQuality(
-        id = fmt.itag,
-        description = (if (h > 0) "${h}p" else "itag ${fmt.itag}") + (if (codec.isNotEmpty()) " $codec" else ""),
+          .ifEmpty { raw?.stringOrNull("codec").orEmpty() },
       )
     }
-    // 选档:preferredQualityId 命中菜单用之(播放中手动切清晰度优先);否则按默认画质设置选:
-    //  - maxHeight != null:height <= maxHeight 的最高 itag(全部超上限时取最低档保证可播);
-    //  - Auto:maxBy height(与 DASH 分支 pickVideo 的 Auto 语义一致——最大化分辨率;
-    //    现状用会话首条,NewPipe 顺序不保证降序,可能并非最高)。
+    fun bitrateOfItag(itag: Int): Long =
+      raws.firstOrNull { (it.longOrNull("itag")?.toInt() ?: 0) == itag }?.longOrNull("bitrate") ?: 0L
+
+    // 全部视频 itag 作清晰度菜单;videoFormats 为空(classic 仅首条)则兜底默认 videoFormatId。
+    val videoFmts = sabrSession.videoFormats.ifEmpty { listOf(sabrSession.videoFormatId) }
+    /** height → 该分辨率的代表 itag(按解码器设置挑:手动选中 → codec 偏好 → 码率高者)。 */
+    val repItagByHeight: Map<Int, Int> = videoFmts.groupBy { it.height }.mapValues { (_, sameHeight) ->
+      (sameHeight.minWithOrNull(
+        compareBy<SabrFormatId>(
+          { if (it.itag == request.preferredQualityId) -1 else codecRank(codecKeyOfItag(it.itag), codecPreference) },
+          { -bitrateOfItag(it.itag) },
+        ),
+      ) ?: sameHeight.first()).itag
+    }
+    val heightsDesc = repItagByHeight.keys.sortedDescending()
+    val qualities = heightsDesc.map { h ->
+      val itag = repItagByHeight.getValue(h)
+      PlaybackQuality(id = itag, description = if (h > 0) "${h}p" else "itag $itag")
+    }
+    // 选档:preferredQualityId 命中该分辨率 → 用它的代表轨(换「解码器」设置后仍停在同一分辨率);
+    // 否则按默认画质设置选:
+    //  - maxHeight != null:height <= maxHeight 的最高档(全部超上限时取最低档保证可播);
+    //  - Auto:最高可用(与 DASH 分支 pickVideo 的 Auto 语义一致——最大化分辨率)。
     //  同 sid 换 itag 即换清晰度(见上 alpha.29 注释),选非首条 itag 安全,无需重 harvest。
     val maxHeight = youtubeDefaultQuality.maxHeight
     val defaultItag = when {
       maxHeight != null ->
-        videoFmts.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }?.itag
-          ?: videoFmts.minByOrNull { it.height }?.itag // 全部超过上限 → 取最低档
-      else -> videoFmts.maxByOrNull { it.height }?.itag // Auto → 最高可用
+        heightsDesc.firstOrNull { it in 1..maxHeight }?.let { repItagByHeight.getValue(it) }
+          ?: heightsDesc.lastOrNull()?.let { repItagByHeight.getValue(it) } // 全部超过上限 → 取最低档
+      else -> heightsDesc.firstOrNull()?.let { repItagByHeight.getValue(it) } // Auto → 最高可用
     } ?: sabrSession.videoFormatId.itag
-    val selectedItag = request.preferredQualityId
-      ?.takeIf { pid -> videoFmts.any { it.itag == pid } }
-      ?: defaultItag
+    val preferredHeight = request.preferredQualityId
+      ?.let { pid -> videoFmts.firstOrNull { it.itag == pid }?.height }
+    val selectedItag = preferredHeight?.let { repItagByHeight[it] } ?: defaultItag
     val selectedQuality = qualities.firstOrNull { it.id == selectedItag } ?: qualities.first()
     // alpha.81(复刻 LibreTube):manifest 塞全部视频轨,由 ExoPlayer 选轨。⚠️ 注意:AdaptiveTrackSelection
     // 按初始带宽估计(~1Mbps)起步,默认**不是**选最高 bitrate(旧注释误读),而是从低档起、带宽涨后爬档;
