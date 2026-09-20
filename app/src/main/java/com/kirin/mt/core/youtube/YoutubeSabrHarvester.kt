@@ -318,6 +318,9 @@ class YoutubeSabrHarvester(
             return null
           }
           Log.i(Tag, "harvest: 文档非空壳 dl=${dl}B → 继续等 SABR POST")
+          // C3 step 1:页面正常渲染后推一次选档(见 QUALITY_NUDGE_JS 说明);结果打在 console 上,
+          // 由 harvest 的 console 采集带到 app 日志(harvest console[LOG]: … harvest quality nudge: …)。
+          evalOn(view, QUALITY_NUDGE_JS)
         }
         // alpha.47:读全数组并遍历,不再只读 [0]——首条无效(status=0/url 空)不再挡住后续 SABR POST。
         val raw = evalOn(view, "(window.__gvCaptures && window.__gvCaptures.length) ? JSON.stringify(window.__gvCaptures) : null")
@@ -678,6 +681,34 @@ class YoutubeSabrHarvester(
      * 这条要的是**回传值**(空壳判定必须同步拿到长度,不能等 console)。
      */
     @Suppress("MaxLineLength")
+    /**
+     * 2026-09-20(C3「尽量一致」step 1):**把 harvest 页的选档往我们要的方向推**。
+     *
+     * 为什么要推:材料会话的供流格式**绑定在浏览器那一场会话上** —— 真机 r2019 铁证:服务端只推
+     * `FORMAT_INIT itag=251(Opus 音频)/ 396(360p AV1)`(=浏览器 Auto 选的),而我们播放器要的是
+     * 140/高分辨率档;两者不相交 ⇒ `initializedFormats` 空 ⇒ `no seg 0 [fmt=null]` 无限循环。
+     * 而浏览器选 360p 的原因很直白:harvest 的 WebView 视口只有 **432x768**(日志 `vp=432x768`)。
+     *
+     * 这一步只做**能确定的那一半:分辨率** —— 调 play 器的 quality 接口 + 报告结果,让浏览器 Auto 落在
+     * 我们要的档位附近。**编解码族(AV1 vs VP9)控制不了**(由浏览器能力+偏好决定),那一半靠我们侧对齐
+     * (我们梯子本就含各 codec 变体,可选到浏览器那一条)。
+     *
+     * 防御式:移动站播放器的 quality 接口不一定存在 → 全程 try/catch,并把结论打在 console 上,
+     * 一轮真机即可判读「推没推上去」。
+     */
+    const val QUALITY_NUDGE_JS = """try{
+  var p=document.getElementById('movie_player')||document.querySelector('.html5-video-player');
+  var out=[];
+  if(p){
+    try{ if(typeof p.setPlaybackQualityRange==='function'){p.setPlaybackQualityRange('hd1080','hd1080');out.push('range=hd1080');} }catch(e){out.push('rangeErr='+e);}
+    try{ if(typeof p.setPlaybackQuality==='function'){p.setPlaybackQuality('hd1080');out.push('q=hd1080');} }catch(e){out.push('qErr='+e);}
+    try{ if(typeof p.getPlaybackQuality==='function'){out.push('now='+p.getPlaybackQuality());} }catch(e){}
+    try{ var vs=p.getVideoStats&&p.getVideoStats(); if(vs){out.push('fmt='+vs.fmt+' vp='+vs.viewport);} }catch(e){}
+  } else { out.push('NO_PLAYER'); }
+  out.push('vp='+window.innerWidth+'x'+window.innerHeight);
+  console.log('harvest quality nudge: '+out.join(' '));
+}catch(e){console.log('harvest quality nudge err '+e);}"""
+
     const val DOC_LEN_JS = """try{var de=document.documentElement;var dl=(de&&de.outerHTML)?de.outerHTML.length:-1;console.log('DOCLEN dl='+dl+' ytcfg='+!!window.ytcfg+' rs='+document.readyState+' title='+document.title);dl;}catch(e){console.log('DOCLEN err '+e);-1;}"""
 
     /**
