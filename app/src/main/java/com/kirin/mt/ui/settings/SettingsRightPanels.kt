@@ -563,6 +563,7 @@ internal val SettingsAboutLibraries = listOf(
  *
  * 行顺序的唯一真源是 [SettingsYoutubePanelItems](也是常量守卫的核对依据,漏加即当场报错)。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun SettingsYoutubeSettingsColumn(
   settings: AppSettings,

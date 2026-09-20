@@ -354,13 +354,6 @@ fun SettingsScreen(
             SettingsRightPanel.HomeSections
           }
         },
-        onYoutubeChannelsSelected = {
-          rightPanel = if (rightPanel == SettingsRightPanel.YoutubeChannels) {
-            SettingsRightPanel.None
-          } else {
-            SettingsRightPanel.YoutubeChannels
-          }
-        },
         // P11-148:「YouTube 设置」入口行 → 右侧二级面板(取代 P11-131 的折叠组)。
         onYoutubeSettingsSelected = {
           rightPanel = if (rightPanel == SettingsRightPanel.YoutubeSettings) {
@@ -378,7 +371,6 @@ fun SettingsScreen(
         onTvboxConfigChange = onTvboxConfigChange,
         onTvboxSelected = { showTvboxDialog = true },
         onPipedInstanceChange = onPipedInstanceChange,
-        onPipedSelected = { showPipedDialog = true },
         onLogsSelected = {
           rightPanel = if (rightPanel == SettingsRightPanel.Logs) {
             SettingsRightPanel.None
@@ -617,6 +609,8 @@ private fun SettingsBehaviorColumn(
   onAutoRefreshOnSwitchChange: (Boolean) -> Unit,
   onAboutSelected: () -> Unit,
   onHomeSectionsSelected: () -> Unit,
+  /** P11-148:「YouTube 设置」入口行的开合(9 行在右侧面板,入口行本身仍在主列表里渲染)。 */
+  onYoutubeSettingsSelected: () -> Unit,
   onLogsSelected: () -> Unit,
   logFiles: List<LogCatcherUtil.LogFileInfo>,
   isRecordingLog: Boolean,
@@ -1377,58 +1371,58 @@ private fun SettingsSectionTitle(
 
 // SettingsLogTag 见 SettingsFocus.kt(P11-148 起与焦点重试工具同处,弹窗侧也要用)。
 
-private const val SettingsItemAccount = 41
-private const val SettingsItemPlaybackHeader = 0
-private const val SettingsItemPlaybackQuality = 1
-private const val SettingsItemPlaybackCodec = 2
-private const val SettingsItemSeekPreviewSprites = 3
-private const val SettingsItemAirJumpAssistant = 4
-private const val SettingsItemConfirmPlaybackExit = 5
-private const val SettingsItemAutoPlayNextEpisode = 6
-private const val SettingsItemAutoPlayRelatedVideo = 7
-private const val SettingsItemAutoReturnHomeOnCompletion = 8
-private const val SettingsItemShowClock = 9
-private const val SettingsItemShowMiniProgressBar = 10
-private const val SettingsItemSpeedTest = 11
-private const val SettingsItemVisualPerformanceMode = 12
-private const val SettingsItemLiquidGlassCards = 13
-private const val SettingsItemHomeThemeVariant = 14
-private const val SettingsItemAutoConfirmOnFocus = 15
-private const val SettingsItemAutoRefreshOnSwitch = 16
-private const val SettingsItemYoutubeDefaultQuality = 17
-private const val SettingsItemYoutubeStartQuality = 40
-private const val SettingsItemDefaultSpeed = 23
-private const val SettingsItemPlaybackBufferMax = 39
-private const val SettingsItemClearCache = 18
-private const val SettingsItemChineseTextVariant = 19
-private const val SettingsItemAbout = 20
-private const val SettingsItemHomeSections = 26
-private const val SettingsItemUpdateCurrentVersion = 22
-private const val SettingsItemUpdateDownloadOrInstall = 24
-private const val SettingsItemUpdateReleaseNotes = 25
-private const val SettingsItemPlaybackCdn = 21
-private const val SettingsItemLogs = 27
-private const val SettingsItemPlayerLogOverlay = 28
-private const val SettingsItemCrashLogAutoReport = 38
-private const val SettingsItemYoutubeChannels = 29
-private const val SettingsItemWebDav = 30
-private const val SettingsItemYoutubeContentRegion = 33
-private const val SettingsItemWebDavBackup = 31
-private const val SettingsItemWebDavRestore = 32
-private const val SettingsItemIptv = 34
+internal const val SettingsItemAccount = 41
+internal const val SettingsItemPlaybackHeader = 0
+internal const val SettingsItemPlaybackQuality = 1
+internal const val SettingsItemPlaybackCodec = 2
+internal const val SettingsItemSeekPreviewSprites = 3
+internal const val SettingsItemAirJumpAssistant = 4
+internal const val SettingsItemConfirmPlaybackExit = 5
+internal const val SettingsItemAutoPlayNextEpisode = 6
+internal const val SettingsItemAutoPlayRelatedVideo = 7
+internal const val SettingsItemAutoReturnHomeOnCompletion = 8
+internal const val SettingsItemShowClock = 9
+internal const val SettingsItemShowMiniProgressBar = 10
+internal const val SettingsItemSpeedTest = 11
+internal const val SettingsItemVisualPerformanceMode = 12
+internal const val SettingsItemLiquidGlassCards = 13
+internal const val SettingsItemHomeThemeVariant = 14
+internal const val SettingsItemAutoConfirmOnFocus = 15
+internal const val SettingsItemAutoRefreshOnSwitch = 16
+internal const val SettingsItemYoutubeDefaultQuality = 17
+internal const val SettingsItemYoutubeStartQuality = 40
+internal const val SettingsItemDefaultSpeed = 23
+internal const val SettingsItemPlaybackBufferMax = 39
+internal const val SettingsItemClearCache = 18
+internal const val SettingsItemChineseTextVariant = 19
+internal const val SettingsItemAbout = 20
+internal const val SettingsItemHomeSections = 26
+internal const val SettingsItemUpdateCurrentVersion = 22
+internal const val SettingsItemUpdateDownloadOrInstall = 24
+internal const val SettingsItemUpdateReleaseNotes = 25
+internal const val SettingsItemPlaybackCdn = 21
+internal const val SettingsItemLogs = 27
+internal const val SettingsItemPlayerLogOverlay = 28
+internal const val SettingsItemCrashLogAutoReport = 38
+internal const val SettingsItemYoutubeChannels = 29
+internal const val SettingsItemWebDav = 30
+internal const val SettingsItemYoutubeContentRegion = 33
+internal const val SettingsItemWebDavBackup = 31
+internal const val SettingsItemWebDavRestore = 32
+internal const val SettingsItemIptv = 34
 // P11-85 修:原 41 与 SettingsItemAccount 重复——settingsItemToLazyIndex 的 when 先命中 Account→0,
 // TVBox 行上/下键聚焦永远滚到列表顶端(focusRequesters map 键 41 也被 Account 抢)。
-private const val SettingsItemTvbox = 42
-private const val SettingsItemPiped = 35
-private const val SettingsItemYoutubeUsePiped = 36
-private const val SettingsItemYoutubeDeliveryPriority = 37
+internal const val SettingsItemTvbox = 42
+internal const val SettingsItemPiped = 35
+internal const val SettingsItemYoutubeUsePiped = 36
+internal const val SettingsItemYoutubeDeliveryPriority = 37
 
 // P11-148:主列表里的「YouTube 设置」二级面板入口行(原 P11-131 折叠组头的位置/编号)。
 // 常量取 47+ 是**有意避开** settingsItemToLazyIndex 的位置空间(常量值与 LazyColumn 下标撞号极易误读);
 // 现用常量占满 0..42,故新值必须 ≥43。
-private const val SettingsItemYoutubeSettings = 47
-private const val SettingsItemYoutubeDefaultSpeed = 48
-private const val SettingsItemYoutubeCodec = 49
+internal const val SettingsItemYoutubeSettings = 47
+internal const val SettingsItemYoutubeDefaultSpeed = 48
+internal const val SettingsItemYoutubeCodec = 49
 
 /**
  * P11-148:「YouTube 设置」二级面板内的 9 行,**按面板里的视觉顺序**排列。
