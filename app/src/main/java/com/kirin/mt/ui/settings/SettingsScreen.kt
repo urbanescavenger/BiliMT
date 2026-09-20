@@ -54,6 +54,7 @@ import com.kirin.mt.core.settings.HomeThemeVariant
 import com.kirin.mt.core.update.UpdateUiState
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.core.webdav.WebDavBackupState
+import com.kirin.mt.ui.focus.focusDiag
 import com.kirin.mt.ui.theme.BiliSizing
 import com.kirin.mt.ui.theme.BiliSpacing
 import com.kirin.mt.ui.theme.BiliTypography
@@ -207,10 +208,29 @@ fun SettingsScreen(
   var showRestoreDialog by remember { mutableStateOf(false) }
   var webDavState by remember { mutableStateOf<WebDavBackupState>(WebDavBackupState.Idle) }
 
+  /**
+   * P11-148:抢焦点失败时的兜底落点——在**当下可见**的行里挑一个离 [targetItem] 最近的。
+   * 只在失败路径调用(开销无所谓);返回 null 表示列表里没有任何可见行(那时也无处可落)。
+   */
+  fun nearestVisibleSettingItem(targetItem: Int): Int? {
+    val visibleLazyIndices = settingsListState.layoutInfo.visibleItemsInfo.map { it.index }.toSet()
+    if (visibleLazyIndices.isEmpty()) return null
+    val targetOrder = SettingsFocusableItems.indexOf(targetItem)
+    return SettingsFocusableItems
+      .filter { item -> settingsItemToLazyIndex(item, updateState, youtubeGroupExpanded) in visibleLazyIndices }
+      .minByOrNull { item -> kotlin.math.abs(SettingsFocusableItems.indexOf(item) - targetOrder) }
+  }
+
   fun focusSettingItem(itemIndex: Int, direction: Int = 0): Boolean {
     val lazyIndex = settingsItemToLazyIndex(itemIndex, updateState, youtubeGroupExpanded)
     if (lazyIndex < 0) {
       Log.i(SettingsLogTag, "focus skip hidden item=$itemIndex expanded=$youtubeGroupExpanded")
+      return true
+    }
+    val requester = settingFocusRequesters[itemIndex]
+    if (requester == null) {
+      // 缺 requester 此前是静默 no-op(焦点悄悄留在原行/丢掉,无迹可查)——补日志。
+      Log.w(SettingsLogTag, "focus skip unknown item=$itemIndex")
       return true
     }
     Log.i(SettingsLogTag, "focus item=$itemIndex lazy=$lazyIndex expanded=$youtubeGroupExpanded")
@@ -222,8 +242,38 @@ fun SettingsScreen(
         fallbackItemHeightPx = settingsRowFallbackHeightPx,
         edgeInsetPx = settingsScrollInsetPx,
       )
-      withFrameNanos { }
-      settingFocusRequesters[itemIndex]?.requestFocus()
+      // P11-148:先等目标行**真正进入布局**,再抢焦点。
+      // 离屏行在 LazyColumn 里根本没组合 ⇒ FocusRequester 无挂载节点 ⇒ 此前「滚完只等一帧就
+      // requestFocus」必落空(FocusRequester 节点缺失时直接抛 IllegalStateException,见折叠组
+      // 的注释),而原行又被这次滚动回收了 ⇒ 焦点被一并清掉,整棵焦点树无焦点、D-pad 全哑。
+      // 最易触发的是**跨屏跳转**:长按连发的连跳、首尾环绕(最顶↑→最底)、进页恢复上次行,
+      // 以及「YouTube 设置」折叠组两端(组头⇄组后第一行,折叠态一次跨 9 行)——P11-131 把
+      // 散落的 YouTube 项并成这个 10 行大块后,这类跳转从偶发变成日常,所以症状是那次改动后
+      // 才明显。列表深处的 WebDAV「备份」行因此按不到(用户报的「无法在 TV 选择备份」)。
+      var waitedFrames = 0
+      while (
+        settingsListState.layoutInfo.visibleItemsInfo.none { item -> item.index == lazyIndex } &&
+        waitedFrames < SettingsFocusWaitLayoutFrames
+      ) {
+        withFrameNanos { }
+        waitedFrames += 1
+      }
+      // 组合到位后仍可能差一帧(焦点节点尚未激活),小步重试;失败会打 SettingsLogTag 警告。
+      val focused = requester.requestFocusWithRetry(
+        label = "item=$itemIndex lazy=$lazyIndex waited=$waitedFrames dir=$direction",
+      )
+      if (focused) {
+        return@launch
+      }
+      // 兜底:目标行最终抢不到焦点时,绝不能把焦点树留空(D-pad 会彻底没反应,只能退出重进)。
+      // 就近把焦点交给**目标旁边一个当下确实可见的行**,保住继续导航的能力,并留日志备查。
+      val fallbackItem = nearestVisibleSettingItem(itemIndex) ?: return@launch
+      Log.w(
+        SettingsLogTag,
+        "focus fallback: $itemIndex → $fallbackItem " +
+          "visible=${settingsListState.layoutInfo.visibleItemsInfo.map { item -> item.index }}",
+      )
+      settingFocusRequesters[fallbackItem]?.requestFocusWithRetry(label = "fallback item=$fallbackItem")
     }
     return true
   }
@@ -620,7 +670,9 @@ private fun SettingsBehaviorColumn(
   CompositionLocalProvider(LocalBringIntoViewSpec provides SettingsBringIntoViewSpec) {
     LazyColumn(
       state = listState,
-      modifier = modifier.fillMaxSize(),
+      // P11-148:焦点区域诊断标签——设置列表此前在 FocusDiag 轨迹里是「无标签区域」,真机日志分不清
+      // 「焦点彻底丢光(root LOST 后无 GAINED)」与「焦点跑到别处」。此标签让下次 TV 日志一眼定位。
+      modifier = modifier.fillMaxSize().focusDiag("settings"),
       contentPadding = PaddingValues(bottom = BiliSpacing.Xxl),
       verticalArrangement = Arrangement.spacedBy(BiliSpacing.Md),
     ) {
@@ -1528,8 +1580,7 @@ private fun SettingsSectionTitle(
   )
 }
 
-/** P11-131:设置页诊断日志。设置页此前零日志,D-pad 焦点回归(行不可达/跳顶)只能靠它证伪。 */
-private const val SettingsLogTag = "BiliMT:Settings"
+// SettingsLogTag 见 SettingsFocus.kt(P11-148 起与焦点重试工具同处,弹窗侧也要用)。
 
 private const val SettingsItemAccount = 41
 private const val SettingsItemPlaybackHeader = 0

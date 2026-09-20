@@ -101,7 +101,11 @@ internal fun SettingsWebDavSelectionDialog(
   }
 
   // 打开时焦点先落到「全选」行,按确认切换全选,D-pad 下移逐项单选。
-  LaunchedEffect(Unit) { runCatching { allFocusRequester.requestFocus() } }
+  // P11-148:带重试——真 Dialog 是新窗口,首个组合帧节点可能还没挂载,一次 requestFocus 落空
+  // 就整窗无焦点(D-pad 在弹窗里按不到任何项 = 「无法在 TV 选择备份」),只能在背后设置页动。
+  LaunchedEffect(Unit) {
+    allFocusRequester.requestFocusWithRetry("webdav-selection-dialog select-all")
+  }
 
   // 真 Dialog 窗口:独立 window 自带焦点根,D-pad 遍历不会逃到背后的设置页。
   Dialog(

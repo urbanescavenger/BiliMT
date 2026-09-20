@@ -82,8 +82,9 @@ internal fun SettingsIptvDialog(
   val saveBringIntoViewRequester = remember { BringIntoViewRequester() }
 
   // 弹窗打开时焦点先落到 URL 字段(仅高亮不弹 IME),按确认键才唤起系统输入法。
+  // P11-148:带重试——新 Dialog 窗口首帧节点未必已挂载,一次落空就整窗 D-pad 死掉。
   LaunchedEffect(Unit) {
-    runCatching { urlFocusRequester.requestFocus() }
+    urlFocusRequester.requestFocusWithRetry("iptv-dialog url")
   }
 
   fun save() = onSave(normalizeIptvUrl(urlValue), usernameValue.trim(), passwordValue)
