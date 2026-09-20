@@ -798,6 +798,16 @@ internal class SabrMediaFetcher(
         elapsedWallTimeMs = elapsed,
         timeSinceLastActionMs = lastActionMs?.let { now - it } ?: 0L,
         playbackRate = req.playbackSpeed,
+        // 2026-09-20(A3,修 `sabr.no_audio_selected`):**这两个属于「请求语义」不属于「身份」**,
+        // 必须是我们自己的值,不能继承材料那份 —— 上一轮把它们一起交给材料是切错了类。真机 r2014 实证:
+        // 材料会话的判决从 `InvalidPoToken(status=3)`(身份/token 无效,硬死)变成
+        // `SABR Error type=sabr.no_audio_selected code=3`(语义错误)—— 身份那层已经过了,缺的就是这个。
+        // 依据:①本仓库既有约定 `bitfield = if (videoFormat == null) 1 else 0`,**0 = A+V**(材料那份是 3,
+        // 语义未知);②错误名字面指向音轨选择,而单音轨视频我们本就该发 `audioTrackId=""`
+        // (LibreTube 同款,见上方 alpha.16 注释),材料那份没有 69 是**它的**状态,不是我们要的。
+        // 两者都在材料之后发出 ⇒ 合并语义下我们赢(见 SabrRequestInput.leadingClientAbrStateBytes)。
+        enabledTrackTypesBitfield = if (videoFormat == null) 1 else 0,
+        audioTrackId = audioTrackId,
       )
     } else if (webShape) {
       ClientAbrStateInput(

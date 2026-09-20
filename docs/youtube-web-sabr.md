@@ -720,6 +720,44 @@ pot-less 那条不带 token,反而不被判死。**
 
 ---
 
+### 5.9.1 实测:A1+A2 生效,判决升级;判别实验给出分岔结论(P11-140)
+
+**A1+A2 已在 r2014 真机落地,请求体逐字段核对无误**(`logs_live_20260920_160843.log`)。材料会话的
+`client_abr_state` 与 `client_info` 各出现**两份**(材料在前、我们在后),合并结果为:
+**材料的静态(viewport 1080×607 / sticky 0 / bitfield 3 / drc / visibility / f17·f38·f57·f58·f59·f68·f71·f72·f79·f80·f85)
++ 我们的动态(tsLastManual / bwEstimate / tsLastSeek / playbackRate / elapsedWall / tsLastAction)**,
+`ustreamerConfig` 亦为材料的 1275B。非材料会话(同一份日志里的自造材料会话)仍是老形状 ⇒ 开关只在
+材料会话上生效,非材料路径逐字节不变。
+
+**服务端判决升级(关键进展)**:同一视频、同一会话形态,判决从
+`InvalidPoToken (StreamProtectionStatus status=3)`(**身份/token 被判无效,硬死**)
+变成 `SABR Error type=sabr.no_audio_selected code=3`(**语义错误**)⇒ **身份与形状这层已通过**。
+
+**判别实验(P11-139 ③)终于跑出了结果 —— 分岔判据有答案了**:
+
+```
+P11-118 harvest replay: Ft917Ifvz2c WEB-SABR 运行时判死 → 重放上次浏览器材料取证(每视频一次)
+harvest replay[freetube-shape]: HTTP 200 ct=application/vnd.yt-ump body=755053B
+UMP: type=58(STREAM_PROTECTION_STATUS) status=1
+UMP: type=47(PLAYBACK_START_POLICY) payloadLen=12     ← 顺带解出 part 47 的真名
+UMP: type=42(FORMAT_INIT_METADATA) payloadLen=98
+```
+
+⇒ **`status=1` + 755KB + FORMAT_INIT:材料是好的,差异在我们的会话构造** ⇒ 按 §5.8 的分叉表,
+**「逐字段对齐」是正确方向**(不必换会话轮换/身份杠杆)。**旁证**:同一场里判死后的兜底路径正常
+播放了 20 段,app 可用。
+
+**A3(本 commit)**:材料对齐分支里把 `enabledTrackTypesBitfield` 与 `audioTrackId` **拿回我们自己的值**
+(`0`=A+V;单轨发 `""`)。理由是上一轮把它们一起交给材料**切错了类** —— 按 §5.9 的三分法,它们属于
+**「请求语义」(选了哪些轨)**,不属于「身份/能力/偏好」;材料那份 `bitfield=3` 语义未知、且它没有 69
+是**它**的会话状态。两者在材料之后发出 ⇒ 合并语义下我们赢。
+
+**工具坑(记下来免得再犯)**:`tmp/webreq_diff.py` 必须**按会话切分再归并** —— `rn` 号在每个会话里
+都会重来一遍,按 rn 全局归并会让后一个会话(如自造材料那条)的 dump **覆盖**前一个(材料那条),
+据此读出的 body 根本不是想问的那条(本轮就先误读了一次,差点得出「A1+A2 没生效」的错误结论)。
+
+---
+
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。
