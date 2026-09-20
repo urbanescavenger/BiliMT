@@ -276,11 +276,26 @@ class YoutubePlaybackResolver(
     // 而运行时判死(fetcher 撞 `InvalidPoToken status=3`,真机 15:09-15:18 WEB 每会话第 2 笔即死)现在也会
     // 置标记 —— 不查它就会:建成功→clear→运行时死→**标记**→本次 resolve 仍重试 WEB-SABR→建成功→clear→…
     // 与修复前一样无限循环(下方 `webSabrDue` 那条分支本来就有这个守卫,只补 fetcher 侧会漏掉这里)。
-    val webSabrFirstBlocked = webSabrFirst && SabrStreamRegistry.isWebSabrFailed(videoId)
+    //
+    // ── P11-147(2026-09-20 r2032 实测):**臂实验期间,判死标记要让位给轮换** ──────────────────────
+    // r2032 硬伤:臂 A 一死就置标记,下一轮 resolve 直接被 `已判死 → 跳过` 短路 —— **臂 B/C/D 永远轮不到**
+    // (日志:21:04:02.974 `resolve#2 → 臂B` 紧跟 21:04:02.975 `已判死 → 跳过,落 NewPipe 主链`)。
+    // 四臂每臂只该试一次,故闸门改成「本视频已试臂数 < 4」:未试满四臂时忽略标记(继续轮换),
+    // 试满后才恢复「永久跳过」语义(那时是产品行为:WEB-SABR 失败一次即自动换到能播的路)。
+    val armsTried = SabrStreamRegistry.webSabrArmsTried(videoId)
+    val armRotationOpen = armsTried < 4
+    val webSabrFirstBlocked = webSabrFirst && SabrStreamRegistry.isWebSabrFailed(videoId) && !armRotationOpen
+    if (webSabrFirst && SabrStreamRegistry.isWebSabrFailed(videoId) && armRotationOpen) {
+      Log.w(
+        Tag,
+        "WEB-SABR 优先:该视频已判死,但**四臂实验未试满**($armsTried/4)→ 继续轮换" +
+          "(P11-147;试满后恢复「失败即换路」语义)",
+      )
+    }
     if (webSabrFirstBlocked) {
       Log.w(
         Tag,
-        "WEB-SABR 优先:该视频 WEB-SABR 已判死(运行时 token 被服务端拒)→ 跳过," +
+        "WEB-SABR 优先:该视频 WEB-SABR 已判死(运行时 token 被服务端拒)且四臂已试满 → 跳过," +
           "落 NewPipe 主链(pot-less SABR 实测可播)",
       )
     }
@@ -375,7 +390,9 @@ class YoutubePlaybackResolver(
       // ~60s 才恢复;而 WEB-SABR pot=128B 一把过)。WEB-SABR 失败标记 [markWebSabrFailed] 后落
       // DASH/HLS,原 isDashFallbackFailed 通道不变。
       val webSabrDue =
-        !SabrStreamRegistry.isWebSabrFailed(videoId) &&
+        // P11-147:四臂实验未试满时,判死标记让位给轮换(否则臂 B/C/D 在兜底路上同样轮不到);
+        // 试满四臂后恢复原语义(标记即跳过)。
+        (!SabrStreamRegistry.isWebSabrFailed(videoId) || SabrStreamRegistry.webSabrArmsTried(videoId) < 4) &&
           remainingMs() >= MinWebSabrFirstBudgetMs &&
           (SabrStreamRegistry.isDashFallbackFailed(videoId) ||
             (SabrStreamRegistry.reloadCount(videoId) > 0 && poToken != null))

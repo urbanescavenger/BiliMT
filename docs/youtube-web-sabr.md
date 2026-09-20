@@ -1051,6 +1051,22 @@ harvest 痕迹 0 行、`skip ad/unrequested` 0 次、`SabrSession:` 无标记、
 **预期**:臂 D 若出现「`startup lock …[served]` + `init=[<served 中的档>]` + 满 usable + `status=1`」,
 即为「历史基底 + C1 修复」的可交付形态;臂 B 若同样能播,则不必依赖材料会话。
 
+#### 5.9.7.1 r2032 实测:四臂设计的一个硬伤 —— **判死标记把后三臂全短路了**(P11-147)
+
+真机 `logs_live_20260920_210415.log`(r2032 = P11-145 三臂版):
+
+| 臂 | 结果 |
+|---|---|
+| 臂 A(自造+自铸 token,87B `first=0x32`) | **第 4 次复现**:`status=1` **0 次** / `status=2` ×4 / `status=3` ×22,`first media chunk` 2 块后死,`Playback error` |
+| 臂 B(自造+页面 token) | **从没跑**:`resolve#2 → 臂B` 的下一行就是 `WEB-SABR 优先:该视频 WEB-SABR 已判死 → 跳过,落 NewPipe 主链` |
+
+原因:臂 A 运行时判死置了 `markWebSabrFailed`,而 `webSabrFirst` 分支的闸门 `!isWebSabrFailed(videoId)`
+(P11-138 补的)直接把整条 WEB-SABR 跳过 ⇒ **轮换计数前进了,但路径被短路** —— 臂 C/D 同理永远轮不到。
+
+**修(P11-147)**:闸门改成「**本视频已试臂数 < 4**」优先 —— 四臂未试满时忽略判死标记(继续轮换),
+试满四臂后才恢复「失败即永久跳过」的产品语义(那时才该换到能播的路)。两条 WEB-SABR 分支
+(`webSabrFirst` 与兜底 `webSabrDue`)都改;新增日志 `该视频已判死,但**四臂实验未试满**(N/4)→ 继续轮换`。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)

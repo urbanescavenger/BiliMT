@@ -99,6 +99,9 @@ internal object SabrStreamRegistry {
   private val webSabrTokenArmCounters =
     java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
 
+  /** P11-147:本视频已试过的臂数(r2032 实测:不查这个,臂 A 一死就会把 B/C/D 全短路)。 */
+  fun webSabrArmsTried(videoId: String): Int = webSabrTokenArmCounters[videoId]?.get() ?: 0
+
   /** 0=自造+自铸 / 1=自造+页面 token / 2=pot-less / 3=完整材料会话。 */
   fun nextWebSabrTokenArm(videoId: String): Int {
     val n = webSabrTokenArmCounters
