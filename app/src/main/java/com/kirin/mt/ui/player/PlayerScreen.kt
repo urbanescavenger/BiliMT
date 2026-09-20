@@ -2115,6 +2115,9 @@ fun PlayerScreen(
           null
         }
         abrSelectionFactory.startupLockHeight = startQualityHeight
+      // C1(2026-09-20):同时把 videoId 给选档 —— 让它从进程级记忆里读到
+      // 「该视频上服务端推过的 itag」,首个请求就收窄(材料会话里服务端只服务它那场会话绑定的格式)。
+      abrSelectionFactory.serverServedVideoId = activeRequest.bvid
         // P11-133:梯子的 codec 锚点跟着「YouTube 解码器」设置走(Auto = 历史行为:粘全组顶档 codec)。
         abrSelectionFactory.preferredCodecFamily = youtubePlaybackCodecPreference.codecKey
         player.setMediaSource(finalMediaSource)

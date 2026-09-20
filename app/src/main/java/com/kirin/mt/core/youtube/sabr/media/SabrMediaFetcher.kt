@@ -1168,10 +1168,12 @@ internal class SabrMediaFetcher(
           // C1:即便是被跳过的,也记进「服务端推来的集合」—— 被跳过恰恰说明服务端愿意给、而我们没选它,
           // 这正是选档该考虑的候选(见 serverPushedVideoItags)。
           serverPushedVideoItags.add(fi.itag)
+          SabrStreamRegistry.noteServerServedItag(entry.videoId, fi.itag)
           Log.w(tag, "skip ad/unrequested FORMAT_INIT itag=${fi.itag} (whitelist=$whitelistedItags)")
           return
         }
         serverPushedVideoItags.add(fi.itag)
+        SabrStreamRegistry.noteServerServedItag(entry.videoId, fi.itag)
         Log.i(tag, "FORMAT_INITIALIZATION_METADATA itag=${fi.itag} endSegNum=${fi.endSegmentNumber} duration=${fi.endTimeMs}ms")
         initializedFormats[fi.itag] = InitializedFormat(
           id = FormatId(fi.itag, fi.lastModified, fi.xtags, 0),

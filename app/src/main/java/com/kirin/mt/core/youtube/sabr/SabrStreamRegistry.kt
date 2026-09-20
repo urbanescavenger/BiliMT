@@ -57,6 +57,28 @@ internal object SabrStreamRegistry {
   private val webSabrFailedVideos =
     java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+  /**
+   * 2026-09-20(C1「跟着服务端走」):**该视频上服务端实际推过的 itag**(进程级,跨会话重建有效)。
+   *
+   * 为什么必须进程级 + 按 videoId:材料会话里服务端只服务它那场会话绑定的格式(r2022:只推 399/251,
+   * 而我们在请求 302)—— 而**首个 FORMAT_INIT 要几秒后才到**,rn=0 时收窄集合必然为空;更糟的是之后
+   * loader 卡在 `getNextSegment` 的 6 连重试里、`getNextChunk` 不再被调用(同步点被阻塞),evict 后新
+   * 会话又是空集合 ⇒ 永远收窄不到。挂在选档实例里同样会被"重建即丢"。故记在这里。
+   *
+   * 累积(不是覆盖):同一视频重新 harvest 出的材料可能服务不同格式,取并集只会更宽松、不会把候选清空;
+   * 非材料会话里服务端推的就是我们的档 ⇒ 并集≈我们的档 ⇒ 行为不变。
+   */
+  private val serverServedItagsByVideo =
+    java.util.concurrent.ConcurrentHashMap<String, MutableSet<Int>>()
+
+  fun noteServerServedItag(videoId: String?, itag: Int) {
+    if (videoId.isNullOrBlank()) return
+    serverServedItagsByVideo.getOrPut(videoId) { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add(itag)
+  }
+
+  fun serverServedItags(videoId: String?): Set<Int> =
+    if (videoId.isNullOrBlank()) emptySet() else serverServedItagsByVideo[videoId]?.toSet() ?: emptySet()
+
   /** DASH 兜底直链 403 判死标记(播放器 onPlayerError 2004 + YouTube 请求时调)。 */
   fun markDashFallbackFailed(videoId: String) {
     if (dashFallbackFailedVideos.add(videoId)) {

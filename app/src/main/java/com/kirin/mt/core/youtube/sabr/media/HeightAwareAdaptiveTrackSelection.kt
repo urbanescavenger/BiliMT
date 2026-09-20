@@ -223,6 +223,11 @@ class HeightAwareAdaptiveTrackSelection(
    * 那正是本类存在的理由),只是粘的对象听用户的。
    */
   private val preferredCodecFamilyProvider: () -> String? = { null },
+  /**
+   * 2026-09-20(C1,见 [serverServedItags]):**进程级记着的「服务端推过的 itag」** provider(按 videoId)。
+   * 实例创建起即可读 ⇒ 会话重建/首个请求就能收窄,不必等 chunk source 喂(那条路在 no seg 暴风里被阻塞)。
+   */
+  private val serverServedItagsProvider: () -> Set<Int> = { emptySet() },
 ) : AdaptiveTrackSelection(group, tracks, bandwidthMeter) {
 
   /**
@@ -501,7 +506,7 @@ class HeightAwareAdaptiveTrackSelection(
     // C1:把候选收窄到「服务端真的会推的 itag」——**必须在水位急救降档循环之前算好**
     // (那道循环在下面 `if (bufferCritical)` 里,位置比主候选循环早;首版放它在主循环前 → 编译期
     //  Unresolved reference,CI 直接红)。三道防线见 serverServedItags 说明。
-    val servedNow = serverServedItags
+    val servedNow = serverServedItags + serverServedItagsProvider()
     val servedInGroup = if (servedNow.isEmpty()) null
       else (0 until length).filter { itagOf(getFormat(it)) in servedNow }.toSet()
     val restrictToServed = servedInGroup != null && servedInGroup.isNotEmpty()
@@ -884,6 +889,12 @@ class HeightAwareAdaptiveTrackSelectionFactory : AdaptiveTrackSelection.Factory(
    */
   @Volatile var preferredCodecFamily: String? = null
 
+  /**
+   * 2026-09-20(C1):当前播放的视频 id —— 供 selection 从 [SabrStreamRegistry.serverServedItags] 读
+   * 「该视频上服务端推过的 itag」。由播放器在 prepare 前写入(与 [startupLockHeight] 同时机)。
+   */
+  @Volatile var serverServedVideoId: String? = null
+
   /** P11-128:松开起播锁高(首帧后调)。下一次 `updateSelectedTrack` 即生效,无重建。 */
   fun releaseStartupLock() {
     startupLockHeight = null
@@ -896,5 +907,8 @@ class HeightAwareAdaptiveTrackSelectionFactory : AdaptiveTrackSelection.Factory(
     bandwidthMeter: BandwidthMeter,
     adaptationCheckpoints: ImmutableList<AdaptiveTrackSelection.AdaptationCheckpoint>,
   ): AdaptiveTrackSelection =
-    HeightAwareAdaptiveTrackSelection(group, tracks, bandwidthMeter, { startupLockHeight }, { preferredCodecFamily })
+    HeightAwareAdaptiveTrackSelection(
+      group, tracks, bandwidthMeter, { startupLockHeight }, { preferredCodecFamily },
+      { com.kirin.mt.core.youtube.sabr.SabrStreamRegistry.serverServedItags(serverServedVideoId) },
+    )
 }
