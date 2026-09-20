@@ -4,6 +4,7 @@ import android.util.Base64
 import android.util.Log
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.sync.withLock
 
@@ -342,6 +343,16 @@ internal object SabrStreamRegistry {
     val diagSessionStartMs = System.currentTimeMillis()
     val diagStatus2Count = AtomicLong(0L)
     val diagRequestCount = AtomicLong(0L)
+
+    /**
+     * P11-155:本会话累计 `status=3` 次数 + 「首笔已记」标记。
+     *
+     * **为什么放 Entry 而不是某个解析器**:活跃的媒体路径是 [SabrMediaFetcher](自有 UMP 解析),
+     * 而 [SabrClient.processUmpStream] 只服务 DataSource 路径 —— P11-154 曾把判据埋进后者,真机上
+     * 两行日志一个都没出(判据失效)。放 Entry 让两条路径共用一份,杜绝再次分叉。
+     */
+    val diagStatus3Count = AtomicLong(0L)
+    val diagFirstStatusLogged = AtomicBoolean(false)
     val diagUnhandledParts = ConcurrentHashMap<Int, Int>()
   }
 

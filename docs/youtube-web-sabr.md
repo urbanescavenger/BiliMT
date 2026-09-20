@@ -1329,6 +1329,63 @@ rn=1 → status=2 + usable=5042267B/5042267B ; rn=2 → status=2 + usable=453041
 + `status=3` 计 0 且连续播放 >60s + 两轨 `first media chunk` + 无 `Playback error`。
 **判别项**照 §5.9.8 ①:服务端强制是概率性 A/B,单场 `status=2` 不构成反证;同一视频同一天内既通又死 ⇒ 判服务端强制态。
 
+### 5.11.4 r2053 判读:页面上下文**取得到**但铸造内核**吃不下**;方向校准回「借页面 token」(P11-156)
+
+**判读**(`logs_live_20260921_073305.log` / `_075030.log`,`dev.r2053`):
+
+| # | 结果 | 证据 |
+|---|---|---|
+| ① | **页面上下文取得到**(证伪 P11-103) | `armA page ctx: GET https://m.youtube.com/watch?v=… → 693467B (1343ms) ytcfg=true eventId=ymywau6h **ytAtN=true** program=42311B interpreter=63271B` |
+| ② | **铸造内核吃不下页面挑战** | `P11-154: 页面上下文铸造失败 → 本进程后续 mint 整体回落 Create: Error: **PMD:Undefined**` |
+| ③ | 失败自愈生效(无回归) | 回落 Create → `token 形态 臂A 87B first=0x32 ctx=create` → 首笔 `status=2` → `status=3` → `markWebSabrFailed` → 主链 `status=1` 正常播 |
+
+**② 的机制**:`PMD:Undefined` 出自 `po_token.html` 的 `obtainPoToken` —— `webPoSignalOutput[0]` 为空,即
+`runBotGuard(pageChallenge)` 之后 **snapshot 没把 minter 填进去**。该文件的 `snapshot()` 是**裸调用**
+(只传 `webPoSignalOutput`),那是 LibreTube 为 **Create 的 program** 定制的形态 —— Create 的 program
+确实产出 minter(所以今天照样铸出 87B、`first=0x32`),而**页面 `bgChallenge` 的 program 在这个调用形态下
+不产出**。⇒ 想用页面挑战,得换 snapshot 调用形态(bgutils 正版 `__runSnapshot` 带
+`contentBinding`/`signedTimestamp`),不是换挑战源。
+
+**⚠️ P11-154 的判据埋点也埋错了(已修,P11-155)**:那两行「首笔 status」与 `status3Count` 被写进
+[SabrClient.processUmpStream](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrClient.kt),而**活跃的媒体
+路径是 [SabrMediaFetcher](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt) 自己的
+UMP 解析**(`fetch rn= N REAL …` 那行就是它)⇒ 真机上**两行判据一行都没出**、`status3Count` 恒 0。
+已改为「计数与首笔标记放 **`Entry`**,由活跃路径写入」。**教训**:判据埋点必须落在**实际执行**的那条解析路径上,
+否则「零行日志」会被误读成「实验没生效」——这正是 §5.10.1 要求判据机械可判的原因。
+
+**方向校准(P11-156)**:
+
+到 09-21 为止,两条线的事实是:
+
+| | 产出被接受 token 的次数 |
+|---|---|
+| **我们自己的铸造内核** | **0 / 2** —— 臂 A 的 Create 挑战:每场首笔 `status=2`(7/7 场);P11-154 的页面挑战:连 minter 都产不出 |
+| **页面自己铸**(harvest 采到的 87~88B) | **3 / 3** —— r1992 `status=1`×10 / r2002 ×100 / r2030 材料臂 ×19(§5.9.7) |
+
+历史唯一完整成功场 **r1992** 的配方是「**材料会话 + 页面 token**」(§5.6 表 + §5.9.7 更正),我们离开它
+是因为**材料会话的格式墙**(§5.9.4:只供浏览器那一场选中的档)。而 **臂 B 正是这套配方里唯一缺的那一半**:
+**会话仍用我们自己的 `/player` URL**(服务端因此供**我们要的档**),只把**会话 token** 换成页面铸的那枚
+(`SabrSession.fromSabrData(poTokenBytesOverride=…)`,原始字节直传免 base64 往返)。
+
+**动作**:`WEB_SABR_ARM_B_ONLY`(**默认 true**)—— **只把臂号置 1**:
+
+- **不开轮换、不动 P11-147 闸门** ⇒ `armRotationOpen` 恒 false ⇒ **判死标记完全生效** ⇒ 臂 B 失败一次即
+  永久让位主链。**不会重演 r2038**(四臂轮换 + 闸门压住判死标记 → 连试四条路线、期间不让位 → 整场 0 个
+  兜底会话、完全没播)。
+- 采集腿没交东西(冷启桩/整场零捕获)时 `pageTokenBytes` 为 null ⇒ 会话回落自铸 token ⇒ **与臂 A 行为相同**。
+- 判据行:`臂B(自造+页面 token): 只借 token = NB <形态>` —— `87~88B first=0x32`(minter 输出)= 真 token;
+  `10B first=0x22` = 冷启桩(harvester 已丢弃);`-1B` = 采集腿没交东西。
+
+**判据**:`P11-118 harvest: captured SABR POST … poToken=87~88B → 真 token` + `臂B … 87B first=0x32`
++ **首笔 `STREAM_PROTECTION_STATUS status=1`** + `resp summary` 的 `init/pushed` 含**我们的** itag(格式墙绕开)
++ `status=3` 计 0 且连续 >60s。
+
+**若首笔仍为 `status=2`** ⇒ 判「**token 不是那个变量**」,杠杆在会话/URL 侧 ⇒ 下一轮测 URL 轴(臂 D / 材料会话)。
+
+**成本提示**:臂 B 每次起播先跑一次 harvest(`HarvestColdCapMs=40s` / 重试 `HarvestWarmCapMs=30s`,受
+`MinWebSabrFirstBudgetMs` 与 `FallbackReserveMs=12s` 夹住)。真机 prewarm 已实测 `ok: 9373ms`(WebView 热),
+故冷启那一笔通常只花 watch 页加载 + 播放器铸 token 的时间。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)

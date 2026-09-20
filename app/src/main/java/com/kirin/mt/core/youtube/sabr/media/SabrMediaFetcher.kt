@@ -621,8 +621,8 @@ internal class SabrMediaFetcher(
                 tag,
                 "InvalidPoToken diag: sessAgeMs=${System.currentTimeMillis() - entry.diagSessionStartMs}" +
                   " sessReqN=${entry.diagRequestCount.get()} status2Seen=${entry.diagStatus2Count.get()}" +
-                  // P11-154:§5.10.1 #4 的「status=3 计数 = 0」直接可读,不必外部 grep 统计。
-                  " status3Count=${entry.client.sessionStatus3Count}" +
+                  // P11-154/155:§5.10.1 #4 的「status=3 计数 = 0」直接可读,不必外部 grep 统计。
+                  " status3Count=${entry.diagStatus3Count.get()}" +
                   " pot=${poTokenState.currentPoToken.size}B" +
                   " ctxActive=${session.activeSabrContextTypes.size} ctxStored=${session.sabrContexts.size}" +
                   " unhandled=${entry.diagUnhandledParts.entries.sortedBy { it.key }.joinToString { "${it.key}x${it.value}" }.ifEmpty { "none" }}" +
@@ -1263,7 +1263,21 @@ internal class SabrMediaFetcher(
       PART_STREAM_PROTECTION_STATUS -> {
         val status = SabrProto.decodeStreamProtectionStatus(payload)
         Log.w(tag, "STREAM_PROTECTION_STATUS status=$status")
-        if (status == 3) invalidPo = true
+        // P11-155:首笔单独一行(判据行)——`status` 由 2 变 1 即「铸造上下文」实验成立。
+        // P11-154 曾把这两行埋进 SabrClient.processUmpStream(Data Source 路径),真机上一行都没出;
+        // 这里是**活跃的媒体路径**。计数与标记都在 Entry,与解析器无关。
+        if (entry.diagFirstStatusLogged.compareAndSet(false, true)) {
+          val pot = poTokenState.currentPoToken
+          Log.w(
+            tag,
+            "首笔 STREAM_PROTECTION_STATUS status=$status (pot=${pot.size}B" +
+              " first=0x%02x)".format(pot.firstOrNull()?.toInt()?.and(0xFF) ?: 0),
+          )
+        }
+        if (status == 3) {
+          entry.diagStatus3Count.incrementAndGet()
+          invalidPo = true
+        }
         // alpha.67(对齐 LibreTube processPart status==2 `poToken = generatePoToken()` 同步):
         // status=2(Attestation pending)= 服务端预警 → media() 的 readParts 后同步重铸 PO token
         // (阻塞 loader 线程 ~1s,看门狗已取消无 8s cancel 风险)。下个请求一定带新 token → status=3

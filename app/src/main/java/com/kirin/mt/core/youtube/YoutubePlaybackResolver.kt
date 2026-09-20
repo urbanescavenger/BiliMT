@@ -245,8 +245,29 @@ class YoutubePlaybackResolver(
     //   臂 A(0)= 自铸 `ensureWebToken`(现况)  臂 B(1)= harvest 页铸的那枚  臂 C(2)= 不带 token
     // P11-150:四臂轮换是**取证实验**,默认关闭(见 [WEB_SABR_ARM_EXPERIMENT])。默认关时只用臂 A
     // (我们自己的会话 + 自铸 token,~2.6s,不采集、不轮换),且判死标记完全生效 ⇒ 失败一次即让位主链。
-    val webSabrTokenArm: Int =
-      if (webSabrInPlay && WEB_SABR_ARM_EXPERIMENT) SabrStreamRegistry.nextWebSabrTokenArm(videoId) else 0
+    //
+    // ── P11-156:**只开臂 B** ──────────────────────────────────────────────────────────────
+    // 起因:到 09-21 为止,「我们自己铸的 token」**从未**被服务端接受过——臂 A 的 Create 挑战让每场
+    // 首笔就是 `status=2`(7/7 场);P11-154 试的「页面挑战」连 minter 都产不出(`PMD:Undefined`)。
+    // 而**页面自己铸**的那枚(harvest 采到的 87~88B)历史 **3/3 拿到 `status=1`**(r1992 ×10 / r2002 ×100
+    // / r2030 材料臂 ×19,§5.9.7)。
+    // 臂 B 正是「材料会话 + 页面 token」这套历史成功配方里我们**唯一缺的那一半**:会话仍用我们自己的
+    // `/player` URL(所以服务端会供**我们要的档**,绕开材料会话的格式墙 §5.9.4),只把**会话 token**
+    // 换成页面铸的那枚(`SabrSession.fromSabrData(poTokenBytesOverride=…)`)。
+    //
+    // **为什么用专用开关而不是打开 [WEB_SABR_ARM_EXPERIMENT]**:后者会连带打开四臂轮换 + P11-147 的
+    // 「未试满四臂就不认判死标记」闸门 —— r2038 实测那样会连试四条路线、期间不让位给能播的主链
+    // (`logs_live_20260920_214742.log`:整场 0 个兜底会话、完全没播)。本开关**只改臂号**,
+    // `armRotationOpen` 仍恒 false ⇒ **判死标记完全生效** ⇒ 臂 B 失败一次即永久让位主链(有界)。
+    //
+    // 采集腿采不到真 token(只剩冷启桩/整场零捕获)时,harvester 自己返回 null → `pageTokenBytes` 为
+    // null → 会话回落自铸 token ⇒ 行为与臂 A 相同。**没有任何一条分支会让可播性变差。**
+    val webSabrTokenArm: Int = when {
+      !webSabrInPlay -> 0
+      WEB_SABR_ARM_EXPERIMENT -> SabrStreamRegistry.nextWebSabrTokenArm(videoId)
+      WEB_SABR_ARM_B_ONLY -> 1
+      else -> 0
+    }
     val webSabrPoToken: String? = when {
       !webSabrInPlay -> poToken
       // 臂 C:pot-less。传 "" 而**不是** null —— 上游有 `poToken == null → abort` 守卫,且
@@ -2618,8 +2639,12 @@ class YoutubePlaybackResolver(
     when (tokenArm) {
       1 -> Log.i(
         Tag,
+        // P11-156:臂 B 的判据行——**借到的 token 形态**才是关键:87~88B 且 `first=0x32`(minter 输出)
+        // 是「真 token」(历史 3/3 拿 status=1);`10B first=0x22` 是冷启桩(必死,harvester 已丢弃);
+        // `-1B` = 采集腿没交东西 ⇒ 会话回落自铸 token(等价臂 A)。
         "WEB-SABR 臂B(自造+页面 token): 只借 token = ${pageTokenBytes?.size ?: -1}B " +
-          "(URL/ust/cpn 一概不用;r1992/r2002/r2030 实测页面 token 拿 status=1)",
+          describeTokenShape(pageTokenBytes ?: ByteArray(0)) +
+          " (URL/ust/cpn 一概不用;r1992/r2002/r2030 实测页面 token 拿 status=1)",
       )
       3 -> Log.i(
         Tag,
@@ -3381,6 +3406,26 @@ class YoutubePlaybackResolver(
      * dev 构建置 true 即可复现四臂取证日志(判据见 docs/youtube-web-sabr.md §5.10)。
      */
     private const val WEB_SABR_ARM_EXPERIMENT = false
+
+    /**
+     * P11-156:**只开臂 B**开关 —— 默认 **true**。
+     *
+     * 臂 B = 会话仍用我们自己的 `/player` URL(服务端因此会供**我们要的档**,绕开材料会话的格式墙),
+     * 只把**会话 token** 换成 harvest 采到的、**页面自己铸**的那枚(87~88B)。
+     *
+     * 为什么押它:到 09-21 为止,**我们自己的铸造内核从未产出过被服务端接受的 token** —— 臂 A 的
+     * Create 挑战让每场首笔就 `status=2`(7/7 场);P11-154 试的页面挑战更连 minter 都产不出
+     * (`PMD:Undefined`)。而页面自铸的那枚历史 **3/3 拿到 `status=1`**(§5.9.7)。
+     * 即「材料会话 + 页面 token」这套历史成功配方里,臂 B 是唯一缺的那一半。
+     *
+     * **与 [WEB_SABR_ARM_EXPERIMENT] 的区别(关键)**:本开关**只改臂号**,不开轮换、不动 P11-147 闸门
+     * ⇒ `armRotationOpen` 恒 false ⇒ **判死标记完全生效** ⇒ 臂 B 失败一次即永久让位主链。
+     * 不会重演 r2038 的「连试四条路线、期间不让位主链 → 整场没播」。
+     *
+     * 采集腿没采到真 token(只剩冷启桩/整场零捕获)时 `pageTokenBytes` 为 null ⇒ 会话回落自铸 token
+     * ⇒ 与臂 A 行为相同。**回退 = 把这一行改成 false**(一行)。
+     */
+    private const val WEB_SABR_ARM_B_ONLY = true
 
     /** P11-126:harvest 冷启(建 WebView + 载首页)的硬上限,原 `timeoutMs = 40_000L`。 */
     private const val HarvestColdCapMs = 40_000L
