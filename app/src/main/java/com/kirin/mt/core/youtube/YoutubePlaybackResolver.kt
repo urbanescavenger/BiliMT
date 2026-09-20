@@ -2182,6 +2182,9 @@ class YoutubePlaybackResolver(
   )
 
   /** 把 NewPipe 视频流包装成 /player adaptive 风格的 JsonObject(供 buildSabrPlaybackInfo 取 codec/height/fps)。 */
+  /** P11-153(①a):已打过「回落峰值」警告的 itag(每 itag 一次,防刷屏)。 */
+  private val peakFallbackLogged = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+
   private fun newPipeVideoRaw(stream: VideoStream): JsonObject = buildJsonObject {
     put("itag", stream.itag.toLong())
     put("height", stream.height)
@@ -2196,7 +2199,21 @@ class YoutubePlaybackResolver(
       val clen = item.contentLength
       val durMs = item.approxDurationMs
       put("averageBitrate", if (clen > 0 && durMs > 0) (clen * 8 / durMs).toInt() else 0)
-    } ?: put("averageBitrate", 0)
+    } ?: run {
+      put("averageBitrate", 0)
+      // P11-153(①a,2026-09-20 r2048 TV 真机):**缺 ItagItem 的轨(实测是 vp9 那批)会静默回落
+      // VBR 峰值当声明值** —— 那场 720p60 声明 18.6M、144p 声明 4.7M、2160p 声明 71.6M(真值约
+      // 2~3M / 0.1M / 25M),ABR 的所有门槛/重锚都建立在这份假数据上(试探因此跳到一个"看着才
+      // 18.6M"的档,重锚又把 est 一夜抬到 18.6M)。这里补一行(每 itag 一次)让回落可见。
+      if (peakFallbackLogged.add(stream.itag)) {
+        Log.w(
+          Tag,
+          "declared falls back to VBR PEAK (itagItem 缺失,无 averageBitrate): " +
+            "itag=${stream.itag} ${stream.height}p codec=${stream.codec} peak=${stream.bitrate / 1000}K " +
+            "→ ABR 门槛/重锚将按此假数据判(P11-153;vp9 轨常见)",
+        )
+      }
+    }
     put("fps", stream.fps)
   }
 
@@ -2211,7 +2228,16 @@ class YoutubePlaybackResolver(
       val clen = item.contentLength
       val durMs = item.approxDurationMs
       put("averageBitrate", if (clen > 0 && durMs > 0) (clen * 8 / durMs).toInt() else 0)
-    } ?: put("averageBitrate", 0)
+    } ?: run {
+      put("averageBitrate", 0)
+      if (peakFallbackLogged.add(stream.itag)) {
+        Log.w(
+          Tag,
+          "declared falls back to VBR PEAK (itagItem 缺失,无 averageBitrate): " +
+            "audio itag=${stream.itag} codec=${stream.codec} peak=${stream.bitrate / 1000}K (P11-153)",
+        )
+      }
+    }
   }
 
   /** 把 Piped 视频流包装成与 [newPipeVideoRaw] 同形的 JsonObject(供 [buildSabrTrack]/[buildSabrPlaybackInfo] 复用)。 */
