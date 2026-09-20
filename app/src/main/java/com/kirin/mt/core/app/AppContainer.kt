@@ -133,9 +133,28 @@ class AppContainer(context: Context) {
   // 铸造的 poToken 缓存供 SABR init 复用(init==extraction 同 minter)。内容绑定(contentBinding)正确,
   // 修复 visionOS SABR RELOAD 死循环(§6.17/alpha.80)。旧 BiliTvPoTokenProvider/YoutubeBotGuard 保留,
   // SABR 不再用,但 /player 等仍走 BotGuard。
+  /**
+   * P11-154:arm A 的**铸造上下文**供给(显式标注类型,避免 lambda 类型推断歧义)。
+   *
+   * 把挑战源从 `[REQUEST_KEY]`→`/api/jnn/v1/Create`(文档里没有页面/ytcfg/EVENT_ID)换成
+   * 「移动 watch 页自带的 ytAtN + 该页 `yt.config_`(EVENT_ID)」。依据:历史唯一拿到 `status=1` 的
+   * token 都出自真 watch 页自铸(MWEB,3/3);而我们自铸的首笔必被判占位级(`status=2`,今天 7/7 场)。
+   *
+   * 关(实验关)→ null ⇒ 回落路径与改动前**逐字节一致**。开关见 [NewPipePoTokenGenerator.ARM_A_PAGE_CONTEXT]。
+   */
+  private val armAPageContextSupplier: (suspend (String) -> YoutubeBotGuard.PoTokenPageContext?)? =
+    if (NewPipePoTokenGenerator.ARM_A_PAGE_CONTEXT) {
+      { videoId ->
+        youtubeBotGuard.fetchArmAPageContext(videoId, youtubeBrowserSession.readVisitorData())
+      }
+    } else {
+      null
+    }
+
   val biliTvPoTokenProvider: NewPipePoTokenGenerator = NewPipePoTokenGenerator(
     appContext = appContext,
     httpClient = youtubeHttpClient,
+    pageContextSupplier = armAPageContextSupplier,
   )
   val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(appContext, youtubeJsExecutor, youtubeHttpClient)
   val youtubeSDecryptor: YoutubeSDecryptor = YoutubeSDecryptor(youtubeJsExecutor, youtubeHttpClient)
@@ -345,11 +364,38 @@ class AppContainer(context: Context) {
     }
   }
 
+  /**
+   * P11-154(只读取证,零行为影响):探一次**真实浏览会话的活文档**里有没有 `window.ytAtN` / `EVENT_ID`。
+   *
+   * 要回答的悬案:P11-103 记的「移动 UA 抓 watch 页拿不到 ytAtN」是从 **OkHttp 302 后的 HTML** 推的,
+   * 而 MWEB 是 Polymer SPA——**启动后的活文档**与初始 HTML 不是一回事,从没测过。这条答案决定
+   * P11-154 的下一轮该把页面上下文的**供给源**换成活文档还是别的。
+   *
+   * 真实浏览会话是懒加载的(首次 /player 才建),故这里等它起来:每 [PageContextProbeIntervalMs] 探一次,
+   * 最多 [PageContextProbeAttempts] 次。只读、不导航、不建会话(见 [YoutubeBrowserSession.peekPageContext])。
+   */
+  fun startYoutubePageContextProbe() {
+    applicationScope.launch {
+      repeat(PageContextProbeAttempts) {
+        delay(PageContextProbeIntervalMs)
+        val result = runCatching { youtubeBrowserSession.peekPageContext() }.getOrNull()
+        if (result != null) {
+          Log.i(LogTag, "armA probe(live session): $result")
+          return@launch
+        }
+      }
+      Log.i(LogTag, "armA probe(live session): 无活会话/不在 youtube 域 → 本轮未取到")
+    }
+  }
+
   private companion object {
     const val LogTag = "BiliWarmup"
     /** IPTV 判活扫描的启动延迟:避开冷启动图片/接口流量高峰再动网络。 */
     const val IptvProbeStartupDelayMs = 15_000L
     /** P11-126:harvest 预热的启动延迟——比 IPTV 探活早,因为预热自己还要再花 4~11s 建 WebView + 载首页。 */
     const val YoutubeHarvestPrewarmDelayMs = 8_000L
+    /** P11-154:活文档探针的尝试次数 × 间隔(等真实浏览会话起来;每次 5s,共 ~60s)。 */
+    const val PageContextProbeAttempts = 12
+    const val PageContextProbeIntervalMs = 5_000L
   }
 }

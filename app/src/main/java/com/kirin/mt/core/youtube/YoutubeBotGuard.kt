@@ -258,6 +258,120 @@ class YoutubeBotGuard(
     return WebSessionIdentity(ctx, cached.second.webCookie)
   }
 
+  // ---- P11-154:arm A 的「页面铸造上下文」(移动 MWEB 页:挑战 + 该挑战绑定的那份 ytcfg) ----
+
+  /**
+   * P11-154:arm A([PoTokenWebView],LibreTube 移植)的**页面铸造上下文**——挑战 **与该挑战所绑定的
+   * 那份 ytcfg** 一并取自**同一张**移动 watch 页。
+   *
+   * **为什么必须成对**:调研(BgUtils #44 / PipePipeClient #86 / bgutil #243)指出 attestation challenge
+   * 绑的是 `yt.config_.EVENT_ID`;只有挑战、文档里却没有同一份 EVENT_ID 是**构造上就不成立的错配**,
+   * 单独测它分不清「页面挑战无效」与「我们配对错了」。故二者一并交付,任一缺失即整体作废。
+   *
+   * **为什么是移动页**:历史唯一拿到 `status=1` 的 token 都出自真 watch 页自铸,而那些页全是 MWEB
+   * (`harvest ident host=m.youtube.com cfgName=MWEB cfgOs=Android`,真机 37/37)。桌面链
+   * (`fetchPageData` + `/att/get`)已被 r2034 实测判死(`playability=UNPLAYABLE`,够不到 SABR 请求)。
+   */
+  data class PoTokenPageContext(
+    /** 可直接喂 `po_token.html` 的 `runBotGuard(data)` 的挑战对象(已含 interpreter JS 文本)。 */
+    val challengeJson: String,
+    /** 该页 `ytcfg` 的 JSON 文本,注入 `window.yt = {config_: …}` 用。 */
+    val ytcfgJson: String,
+    /** `ytcfg.EVENT_ID` 前 8 位(日志判据;非空是发车的硬条件之一)。 */
+    val eventId: String,
+    /** 诊断字段(程序/interpreter/页面大小),供日志一行说清。 */
+    val diag: String,
+  )
+
+  /** P11-154:per-videoId 缓存(含 null 结果——避免同一视频反复白拉 1MB 页)。 */
+  private var cachedArmAPageContext: Pair<String, PoTokenPageContext?>? = null
+
+  /**
+   * P11-154:取 arm A 的页面上下文。**拿不到就返回 null**,调用方整体回落 Create(与改动前逐字节一致)。
+   */
+  suspend fun fetchArmAPageContext(videoId: String, visitorData: String? = null): PoTokenPageContext? =
+    withTimeoutOrNull(ArmAPageContextTimeoutMs) {
+      withContext(Dispatchers.IO) {
+        cachedArmAPageContext?.let { (vid, ctx) -> if (vid == videoId) return@withContext ctx }
+        val ctx = runCatching { buildArmAPageContext(videoId, visitorData) }
+          .onFailure { Log.w(Tag, "armA page ctx failed: ${it.message ?: it::class.simpleName}") }
+          .getOrNull()
+        cachedArmAPageContext = videoId to ctx
+        ctx
+      }
+    }
+
+  private suspend fun buildArmAPageContext(videoId: String, visitorData: String?): PoTokenPageContext? {
+    // 直取 m.youtube.com(不走 www + 302):确定性,且与历史上铸出被接受 token 的那张页同类。
+    val url = "https://m.youtube.com/watch?v=$videoId"
+    val started = System.currentTimeMillis()
+    val page = withContext(Dispatchers.IO) {
+      runCatching {
+        val builder = Request.Builder().url(url)
+          .header("User-Agent", YoutubeConstants.MobileUserAgent)
+          .header("Accept-Language", "en-US")
+        // 移动腿缺 VISITOR_INFO1_LIVE 会以空会话起(harvest 同款经验)——有则带上。
+        if (!visitorData.isNullOrBlank()) builder.header("Cookie", "VISITOR_INFO1_LIVE=$visitorData")
+        httpClient.newCall(builder.build()).execute().use { it.body?.string().orEmpty() }
+      }.getOrNull()
+    }
+    val elapsed = System.currentTimeMillis() - started
+    if (page.isNullOrBlank()) {
+      Log.w(Tag, "armA page ctx: GET $url → blank (${elapsed}ms) → UNUSABLE → 整体回落 Create")
+      return null
+    }
+    val ytcfg = findMergedYtcfg(page)
+    val eventId = ytcfg?.stringOrNull("EVENT_ID")
+    val attestation = findYtAtN(page)?.let { parseLooseJson(it) }
+    val bg = attestation?.obj("R")?.obj("bgChallenge")
+    val program = bg?.stringOrNull("program")
+    val globalName = bg?.stringOrNull("globalName")
+    val interpreterUrl = bg?.obj("interpreterUrl")
+      ?.stringOrNull("privateDoNotAccessOrElseTrustedResourceUrlWrappedValue")
+      ?.takeIf { it.isNotBlank() }
+      ?.let { if (it.startsWith("//")) "https:$it" else it }
+    val interpreterJs = interpreterUrl?.let { fetchInterpreterJsText(it) }
+    Log.i(
+      Tag,
+      "armA page ctx: GET $url → ${page.length}B (${elapsed}ms) ytcfg=${ytcfg != null}" +
+        " eventId=${eventId?.take(8) ?: "NONE"} ytAtN=${attestation != null}" +
+        " program=${program?.length ?: 0}B interpreter=${interpreterJs?.length ?: 0}B",
+    )
+    // 原子性:任一必需项缺失即**整体作废**(不交付半成品上下文)。
+    if (ytcfg == null || eventId.isNullOrBlank() || program.isNullOrBlank() ||
+      globalName.isNullOrBlank() || interpreterJs.isNullOrBlank()
+    ) {
+      Log.w(
+        Tag,
+        "armA page ctx: UNUSABLE (缺 ytcfg/EVENT_ID/program/globalName/interpreter)" +
+          " → 整体回落 Create(行为与改动前一致)",
+      )
+      return null
+    }
+    // `po_token.html` 的 runBotGuard 只读这三个字段(interpreter 走 new Function 内联执行 ⇒
+    // blockNetworkLoads=true 仍成立,CDN 取 JS 留在 Kotlin 侧)。
+    val challengeObj = buildJsonObject {
+      put(
+        "interpreterJavascript",
+        buildJsonObject {
+          put("privateDoNotAccessOrElseSafeScriptWrappedValue", interpreterJs)
+          put("privateDoNotAccessOrElseTrustedResourceUrlWrappedValue", interpreterUrl)
+        },
+      )
+      put("program", program)
+      put("globalName", globalName)
+      put("messageId", "")
+      put("interpreterHash", "")
+      put("clientExperimentsStateBlob", "")
+    }
+    return PoTokenPageContext(
+      challengeJson = json.encodeToString(JsonObject.serializer(), challengeObj),
+      ytcfgJson = json.encodeToString(JsonObject.serializer(), ytcfg),
+      eventId = eventId.take(8),
+      diag = "program=${program.length}B interpreter=${interpreterJs.length}B page=${page.length}B",
+    )
+  }
+
   /**
    * P11-103:ytAtN 数据提取。页面先有空调用 `window.ytAtN(); delete window.ytAtN;`(无参),
    * 实参数据在另一处 `window.ytAtN({'R': '\x7b\x22...' , ...})`。R 值是 hex 转义的 JSON 字符串,
@@ -268,37 +382,87 @@ class YoutubeBotGuard(
     while (true) {
       val idx = page.indexOf("window.ytAtN(", searchFrom)
       if (idx < 0) return null
-      var j = idx + "window.ytAtN(".length
-      while (j < page.length && page[j].isWhitespace()) j++
-      if (j < page.length && page[j] == '{') {
-        var depth = 0
-        var k = j
-        var inStr: Char? = null
-        var closed = false
-        while (k < page.length && !closed) {
-          val c = page[k]
-          if (inStr != null) {
-            if (c == '\\') {
-              k += 2
-              continue
-            }
-            if (c == inStr) inStr = null
-          } else {
-            when (c) {
-              '\'', '"' -> inStr = c
-              '{' -> depth++
-              '}' -> {
-                depth--
-                if (depth == 0) closed = true
-              }
-            }
-          }
-          k++
+      scanBalancedObject(page, idx + "window.ytAtN(".length)?.let { return it }
+      searchFrom = idx + 1
+    }
+  }
+
+  /**
+   * P11-154:自 [from] 起跳过空白,遇 `{` 则做**引号感知的平衡括号扫描**,返回该对象文本(含花括号)。
+   * 从 [findYtAtN] 原实现原样提出——现在两处共用(ytAtN 与 [findMergedYtcfg]),避免再分叉一份扫描器:
+   * 它的转义/引号处理是踩过坑的(值内含 `\xNN` 与引号,非引号感知的扫描会截断)。
+   */
+  private fun scanBalancedObject(page: String, from: Int): String? {
+    var j = from
+    while (j < page.length && page[j].isWhitespace()) j++
+    if (j >= page.length || page[j] != '{') return null
+    var depth = 0
+    var k = j
+    var inStr: Char? = null
+    var closed = false
+    while (k < page.length && !closed) {
+      val c = page[k]
+      if (inStr != null) {
+        if (c == '\\') {
+          k += 2
+          continue
         }
-        if (closed) return page.substring(j, k)
+        if (c == inStr) inStr = null
+      } else {
+        when (c) {
+          '\'', '"' -> inStr = c
+          '{' -> depth++
+          '}' -> {
+            depth--
+            if (depth == 0) closed = true
+          }
+        }
+      }
+      k++
+    }
+    return if (closed) page.substring(j, k) else null
+  }
+
+  /**
+   * P11-154:把页面里**所有** `ytcfg.set({...})` blob 合并为一个对象(后者覆盖同名顶层键)。
+   *
+   * 旧 [fetchHtmlPageData] 用 `Regex("ytcfg\\.set\\((\\{.+?\\})\\);", DOT_MATCHES_ALL)` 只取**第一个**,
+   * 且非贪婪 `.+?` 在值内含 `});` 时会提前截断。而移动(MWEB)页会把 ytcfg 分多次 set(基础 cfg + 页面
+   * 追加),`EVENT_ID` 与 `INNERTUBE_CONTEXT` 未必落在同一个 blob 里 ⇒ 必须全收 + 合并。
+   */
+  private fun findMergedYtcfg(page: String): JsonObject? {
+    var searchFrom = 0
+    var found = false
+    val merged = LinkedHashMap<String, JsonElement>()
+    while (true) {
+      val idx = page.indexOf("ytcfg.set(", searchFrom)
+      if (idx < 0) break
+      val raw = scanBalancedObject(page, idx + "ytcfg.set(".length)
+      if (raw != null) {
+        // 严格 JSON 优先(ytcfg.set 通常就是严格 JSON);失败才退到宽松解析——[parseLooseJson] 的
+        // 单引号处理会把双引号串里的撇号(`it's`)误当引号,故不能一上来就用它。
+        val parsed = runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull()
+          ?: parseLooseJson(raw)
+        parsed?.let { o ->
+          merged.putAll(o)
+          found = true
+        }
       }
       searchFrom = idx + 1
     }
+    return if (found) JsonObject(merged) else null
+  }
+
+  /** P11-154:取 interpreter JS 文本(页挑战链共用;移动身份,对齐全移动会话)。 */
+  private suspend fun fetchInterpreterJsText(interpreterUrl: String): String? = withContext(Dispatchers.IO) {
+    runCatching {
+      // interpreter 多在 www.google.com/js/ CDN——对齐 FreeTubeAndroid WebView 拦截(带 Referer)。
+      val req = Request.Builder().url(interpreterUrl)
+        .header("User-Agent", YoutubeConstants.MobileUserAgent)
+        .header("Referer", "https://www.youtube.com/")
+        .build()
+      httpClient.newCall(req).execute().use { if (it.isSuccessful) it.body?.string().orEmpty() else "" }
+    }.getOrNull()?.takeIf { it.isNotBlank() }
   }
 
   /**
@@ -625,6 +789,12 @@ class YoutubeBotGuard(
     const val InterpreterLoadTimeoutMs = 10_000L
     // /att/get 的 program 更大(35KB>10KB),VM 加载/eval 更慢,8s 首尝试会 timeout,加到 20s。
     const val OverallTimeoutMs = 20_000L
+    /**
+     * P11-154:arm A 页面上下文的**整段上限**(含 1MB 页 GET + interpreter CDN GET)。
+     * 它跑在被 await 的铸造窗口内(见 [YoutubePlaybackResolver.MINTER_WAIT_MS])⇒ 必须收敛,
+     * 否则实验臂会被静默跳过、实验根本没跑。
+     */
+    const val ArmAPageContextTimeoutMs = 12_000L
     val JsonProtobufMediaType = "application/json+protobuf".toMediaType()
   }
 }

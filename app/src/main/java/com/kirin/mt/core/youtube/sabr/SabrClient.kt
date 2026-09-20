@@ -18,6 +18,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -333,6 +334,25 @@ internal sealed class SabrFetchResult {
  */
 internal class SabrClient(private val httpClient: OkHttpClient) {
   private val tag = "YtSabr"
+
+  /**
+   * P11-154:**首笔**响应的 STREAM_PROTECTION_STATUS 只打一次(判据行)。
+   *
+   * 背景:WEB-SABR 会话的失败签名是「**首笔**就 `status=2`(占位级)→ 宽限后 `status=3`」,而此前只能靠
+   * 人工把 `STREAM_PROTECTION_STATUS status=2` 与「这是本会话第一笔」拼起来读 —— 无法机械判定。
+   * 这里把「首笔 + 它的 status + 当时的 token 形态(pot 字节数/首字节)」压成一行,让实验的判据
+   * 从 `2` 变 `1` 一眼可读(§5.10.1 的口径)。
+   */
+  private val firstStatusLogged = AtomicBoolean(false)
+
+  /**
+   * P11-154:本会话(本 SabrClient 实例)累计的 `status=3` 次数 —— 给 `InvalidPoToken diag` 行带上,
+   * 让 §5.10.1 #4 的「`status=3` 计数 = 0」不必靠外部 grep 统计。
+   */
+  private val status3Count = AtomicInteger(0)
+
+  /** P11-154:本会话累计 `status=3` 次数(供 `InvalidPoToken diag` 行作 §5.10.1 #4 判据)。 */
+  val sessionStatus3Count: Int get() = status3Count.get()
   // alpha.27:SabrClient 现在在一个 SABR 播放会话内被 video+audio 两路 loader 线程并发调用
   //(MergingMediaSource 双 ProgressiveMediaSource),requestNumber 必须线程安全,否则 rn 重复
   //→服务端可能拒签。AtomicInt 保证每次 fetch 拿唯一 rn。
@@ -548,7 +568,19 @@ internal class SabrClient(private val httpClient: OkHttpClient) {
             PART_STREAM_PROTECTION_STATUS -> {
               val status = SabrProto.decodeStreamProtectionStatus(payload)
               Log.w(tag, "STREAM_PROTECTION_STATUS status=$status")
-              if (status == 3) invalidPo = true
+              // P11-154:首笔单独一行(判据行)——`status` 由 2 变 1 即页面上下文实验成立。
+              if (firstStatusLogged.compareAndSet(false, true)) {
+                val pot = session.poToken
+                Log.w(
+                  tag,
+                  "首笔 STREAM_PROTECTION_STATUS status=$status (pot=${pot.size}B" +
+                    " first=0x%02x)".format(pot.firstOrNull()?.toInt()?.and(0xFF) ?: 0),
+                )
+              }
+              if (status == 3) {
+                status3Count.incrementAndGet()
+                invalidPo = true
+              }
             }
             PART_SABR_REDIRECT -> {
               redirectUrl = SabrProto.decodeSabrRedirect(payload)

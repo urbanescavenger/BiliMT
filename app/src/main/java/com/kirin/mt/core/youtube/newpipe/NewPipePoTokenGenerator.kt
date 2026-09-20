@@ -6,6 +6,7 @@ import android.os.Looper
 import android.util.Log
 import android.webkit.CookieManager
 import com.kirin.mt.BuildConfig
+import com.kirin.mt.core.youtube.YoutubeBotGuard
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.schabi.newpipe.extractor.NewPipe
@@ -37,6 +38,11 @@ import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper
 class NewPipePoTokenGenerator(
     private val appContext: Context,
     private val httpClient: OkHttpClient,
+    /**
+     * P11-154:arm A 的**页面铸造上下文**供给(移动 watch 页的挑战 + 该页 ytcfg)。
+     * null ⇒ [PoTokenWebView] 走与改动前逐字节一致的 `[REQUEST_KEY]`→`/api/jnn/v1/Create` 路径。
+     */
+    private val pageContextSupplier: (suspend (String) -> YoutubeBotGuard.PoTokenPageContext?)? = null,
 ) : PoTokenProvider {
     private val TAG = NewPipePoTokenGenerator::class.simpleName
     private val supportsWebView by lazy { runCatching { CookieManager.getInstance() }.isSuccess }
@@ -46,6 +52,20 @@ class NewPipePoTokenGenerator(
     private var webPoTokenGenerator: PoTokenWebView? = null
 
     private var poToken: PoTokenResult? = null
+
+    /**
+     * P11-154:页面上下文这条支路失败过一次后置位 → 本进程后续 mint 整体回落 Create。
+     * 目的:一次页面上下文故障不该让 arm A **永久**不可用(实验自愈,失败分支有界)。
+     */
+    @Volatile
+    private var pageContextDisabled = false
+
+    /**
+     * P11-154:最近一次铸造的上下文摘要(`page-bgChallenge …` / `create …`),供 resolver 的
+     * `WEB-SABR token 形态` 日志带上作判据。未铸过 ⇒ none。
+     */
+    val lastMintContext: String
+        get() = webPoTokenGenerator?.mintContext ?: "none"
 
     /** resolver 取流时读:与 getInfo() 期间铸造的同一枚 poToken。 */
     fun cached(): PoTokenResult? = poToken
@@ -95,8 +115,14 @@ class NewPipePoTokenGenerator(
                         webPoTokenGenerator?.let { Handler(Looper.getMainLooper()).post { it.close() } }
 
                         // create a new webPoTokenGenerator
+                        // P11-154:页面上下文支路失败过一次 ⇒ 传 null,本进程后续重建都走 Create。
                         webPoTokenGenerator = PoTokenWebView
-                            .newPoTokenGenerator(appContext, httpClient)
+                            .newPoTokenGenerator(
+                                appContext,
+                                httpClient,
+                                videoId = videoId,
+                                pageContextSupplier = if (pageContextDisabled) null else pageContextSupplier,
+                            )
                     }
                 }
 
@@ -115,6 +141,16 @@ class NewPipePoTokenGenerator(
                 poTokenGenerator.generatePoToken(videoId)
             }
         } catch (throwable: Throwable) {
+            // P11-154:页面上下文这条支路铸造失败 → 记一次并**整体回落 Create**(实验自愈),
+            // 否则页面链路的偶发故障会让 arm A 在本进程内永久不可用。
+            if (webPoTokenGenerator?.usedPageContext == true && !pageContextDisabled) {
+                pageContextDisabled = true
+                Log.w(
+                    TAG,
+                    "P11-154: 页面上下文铸造失败 → 本进程后续 mint 整体回落 Create: " +
+                        "${throwable.message ?: throwable::class.simpleName}",
+                )
+            }
             if (hasBeenRecreated) {
                 // the poTokenGenerator has just been recreated (and possibly this is already the
                 // second time we try), so there is likely nothing we can do
@@ -150,4 +186,21 @@ class NewPipePoTokenGenerator(
         // 不带 poToken → ustreamerConfig visitor 不绑定 → SABR 空 poToken 首请求走 status=2 懒鉴权(对齐
         // LibreTube),缓存改由 resolver 的 ensureWebToken 按需铸。见 docs/youtube-dash-fallback-plan.md。
         null
+
+    companion object {
+        /**
+         * P11-154:**arm A 铸造上下文实验**——默认 **true**。
+         *
+         * true:[PoTokenWebView] 的挑战取自移动 watch 页自带的 `ytAtN`,并在同一文档注入该页的
+         * `yt.config_`(EVENT_ID);页面不可用时**整体回落** Create(与 false 时的行为逐字节一致)。
+         * 依据见 docs/youtube-web-sabr.md §5.9.6(BgUtils #44 / PipePipeClient #86 / bgutil #243)与
+         * 本仓历史账(唯一拿到 `status=1` 的 token 都出自真 watch 页自铸,3/3)。
+         *
+         * 失败分支**有界**:①取不到页 → 走 Create(= 改动前);②页面上下文铸造抛错 → 本进程回落 Create;
+         * ③页面 token 更严 → 本臂中止 → 落健康主链(非 r2038 那种整场没播)。
+         *
+         * **回退 = 把这一行改成 false**(AppContainer 据此不再注入 supplier)。
+         */
+        const val ARM_A_PAGE_CONTEXT = true
+    }
 }

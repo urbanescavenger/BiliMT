@@ -1258,6 +1258,77 @@ rn=1 → status=2 + usable=5042267B/5042267B ; rn=2 → status=2 + usable=453041
   ①a 峰值回落**加一次性诊断**(`declared falls back to VBR PEAK (itagItem 缺失…)`),让这类假数据在日志里可见
   —— ① 的根治在 extractor 侧(为 vp9 轨补 `averageBitrate`),本轮先止血 + 留证据。
 
+### 5.11.3 r2048 晚场判读 + **arm A 的铸造上下文**(P11-154)
+
+**判读**(`logs_live_20260920_233731.log`,并把当天 41 场日志一起复核):
+
+- WEB-SABR 会话**每场首笔**响应就是 `STREAM_PROTECTION_STATUS status=2`(**7/7 场,无一例外**),
+  宽限 1~10MB 后升 `status=3 InvalidPoToken` → terminal → `markWebSabrFailed` → 落 NewPipe pot-less 主链
+  (主链健康:`status=1` 常态、零错误、媒体段满可用)。
+- 代价:23:32:58 起 → 23:33:12 判死 → 23:33:22 `Playback error` → 23:33:28 NewPipe 会话 →
+  23:33:46 出画面 ⇒ **~30s 起播税**,且判死标记只按 `videoId` 记在**本进程**内(每个新视频重交一次)。
+
+**机制定位(本轮新挖出,并更正了一处此前的误指):**
+
+| 组件 | 挑战来源 | 现状 |
+|---|---|---|
+| **arm A 的 token** = `NewPipePoTokenGenerator`→[`PoTokenWebView`](../app/src/main/java/com/kirin/mt/core/youtube/newpipe/PoTokenWebView.kt)(LibreTube 移植) | `[REQUEST_KEY]`→**`/api/jnn/v1/Create`** | `loadDataWithBaseURL` 合成文档 + `blockNetworkLoads=true` ⇒ **没有页面、没有 ytcfg、没有 EVENT_ID**。首笔必 `status=2` |
+| `YoutubeBotGuard.generatePoToken`(桌面链:桌面 watch 页 + `/att/get`) | `/att/get` | **P11-127 后已被淘汰**,现在只服务 NewPipe 主链。⚠️ 上一轮曾把**它**误指为「全移动下仍然可用的杠杆」,实际它正是被淘汰的那条 |
+
+**为什么押注页面上下文**(三条独立证据指向同一处):
+
+1. **历史账**(§5.9.7):唯一拿到 `status=1` 的 token **全部出自真 watch 页自铸** —— r1992 `status=1`×10 /
+   r2002 ×100 / r2030 材料臂 ×19;**3/3**。自铸的(同 87~88B)首笔一律 `status=2`。
+2. **那些页全是 MWEB**:真机 `harvest ident` **37/37 条** = `host=m.youtube.com cfgName=MWEB cfgOs=Android`
+   (身份自洽,正是 P11-127「全移动」期望的形态)。
+3. **外部调研**:BgUtils #44 —— challenge 已绑 `yt.config_.EVENT_ID`,「用 `/att/get` 的 challenge 铸的 token
+   现在会被拒」;PipePipeClient #86 单变量实测「无 EVENT_ID → status 2 @60s;有 → status 1 @65s+」;
+   bgutil #243 成功率 58% → 92%。
+
+**动作(P11-154)**:
+
+- [`YoutubeBotGuard.fetchArmAPageContext(videoId)`](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt):
+  OkHttp 拉 `https://m.youtube.com/watch?v=`(移动 UA + `VISITOR_INFO1_LIVE`),复用既有 `findYtAtN`/`parseLooseJson`;
+  新增 `scanBalancedObject`(从 `findYtAtN` 原实现提出)与 `findMergedYtcfg`(**合并全部 `ytcfg.set` blob**——
+  旧的正则只取第一个,且非贪婪 `.+?` 在值含 `});` 时会截断)。
+  产出 `PoTokenPageContext(challengeJson, ytcfgJson, eventId, diag)`;**缺任一项即整体作废**(不交付半成品上下文)。
+- [`PoTokenWebView`](../app/src/main/java/com/kirin/mt/core/youtube/newpipe/PoTokenWebView.kt) 双分支:
+  有页面上下文 → **先**注入 `window.yt = {config_: …}`(必须**早于** interpreter eval——VM 启动时读 `window.yt.config_`)
+  **再**喂页面挑战(`interpreterJavascript.privateDoNotAccessOrElseSafeScriptWrappedValue` = interpreter JS 文本,
+  走 `new Function` 内联执行 ⇒ `blockNetworkLoads=true` 依然成立,CDN 取 JS 留在 Kotlin 侧);
+  否则逐字节走原来的 Create 路径。**取不到 ⇒ 整体回落 Create**(不产生半成品状态)。
+- 铸造失败 ⇒ `pageContextDisabled` 置位,本进程后续 mint 回落 Create(**实验自愈**,不让一次故障让 arm A 永久不可用)。
+- **只读探针** [`YoutubeBrowserSession.peekPageContext()`](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBrowserSession.kt):
+  读活 MWEB 文档的 `typeof window.ytAtN` / `EVENT_ID` / `ytcfg`。**不导航、不建会话**。
+  它回答的是 P11-103 的悬案——那句「移动 UA 抓 watch 页拿不到 `ytAtN`」是从 **OkHttp 302 后的 HTML** 推的,
+  而 MWEB 是 Polymer SPA,**启动后的活文档**与初始 HTML 不是一回事,从没测过。
+- `MINTER_WAIT_MS` **同 gate** 6s→9s:页面上下文拉取跑在被 await 的铸造窗口**内**,冷启超 6s 会让 arm A 被
+  **静默跳过**、实验根本没跑(§5.10.3 的自检项)。回退 = 开关置 false,自动恢复 6s。
+- 判据行:首笔 `STREAM_PROTECTION_STATUS` **单独一行**(带 pot 字节数/首字节),`InvalidPoToken diag` 加 `status3Count`
+  ⇒ §5.10.1 #4 的「`status=3` 计数 = 0」不必外部 grep。
+
+**全移动口径自检**:页面 = MWEB + 移动 UA;铸造文档本就 `MobileUserAgent`;会话本就 P11-127 移动 WEB
+(`/player` client=WEB + 移动 UA + Android ctx)。**无任何桌面件**;桌面链明确排除(它 r2034 实测配移动 `/player`
+得 `playability=UNPLAYABLE`,**够不到第 2 步**)。
+
+**两处残留口径差(本轮故意不动,守单变量)**:
+
+1. 页面自称 **MWEB(`clientName=2`)**,会话是 **WEB(`clientName=1`)+ 移动 UA** —— 同在 Android 移动侧,
+   不是「桌面 vs 移动」矛盾。若本轮证明「页面挑战有效但配对仍不够」,下一轮的变量正是**把会话也换成 MWEB client**。
+2. **历史被接受的配置同时换了两个变量**:被接受的 = 页面 URL + 页面 token(r1992/r2002 材料会话);
+   被拒的 = 我们的 URL + 我们的 token(自造会话)。本轮**只换 token 侧**。若 `status=2` 实由 URL/会话侧驱动,
+   本轮不会动它 —— 但日志能判(我们 URL 侧已证能供全量数据:`usable=6297809B/6297809B init/pushed=[140,302]`)。
+
+⇒ **阶梯:本轮测 token 轴;若不动,下一轮测 URL 轴**(即从没跑起来的臂 D / 材料会话)。两轮各守一个变量。
+
+**开关**:`NewPipePoTokenGenerator.ARM_A_PAGE_CONTEXT`(**默认 true**)。失败分支全部有界:
+取不到页 → Create(= 改动前);铸造抛错 → 进程内回落 Create;页面 token 更严 → 本臂中止 → 落健康主链
+(不是 r2038 那种「整场 0 个兜底会话、完全没播」)。
+
+**判据**:`armA 铸造上下文: challenge=page-bgChallenge ytcfg=page eventId=…` 出现 + **首笔 status 由 `2` 变 `1`**
++ `status=3` 计 0 且连续播放 >60s + 两轨 `first media chunk` + 无 `Playback error`。
+**判别项**照 §5.9.8 ①:服务端强制是概率性 A/B,单场 `status=2` 不构成反证;同一视频同一天内既通又死 ⇒ 判服务端强制态。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)

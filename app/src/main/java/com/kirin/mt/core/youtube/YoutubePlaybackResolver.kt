@@ -2839,6 +2839,9 @@ class YoutubePlaybackResolver(
       Tag,
       "WEB-SABR token 形态(P11-146): 臂${armLabelOf(tokenArm)} " +
         describeTokenShape(session.poToken) +
+        // P11-154:铸造上下文——判据的核心字段。`ctx=page-bgChallenge …` ⇒ 本轮的页面上下文实验生效;
+        // `ctx=create …` ⇒ 回落到了改动前那条(取不到页 / 未启用 / 铸造失败自愈)。
+        " ctx=${biliTvPoTokenProvider.lastMintContext}" +
         " (ust=${session.ustreamerConfig.size}B cpn=${session.cpn})",
     )
     val sid = SabrStreamRegistry.registerByVideoId(
@@ -3353,8 +3356,16 @@ class YoutubePlaybackResolver(
     /** P11-126:低于这个剩余预算就不发这次 harvest——发一次注定被砍的只会白烧 WebView/solver。 */
     private const val MinHarvestAttemptMs = 3_000L
 
-    /** P11-149:等移动铸造器产出的上限(冷启实测 4~6s;超了宁可跳过本臂,不回落桌面 token)。 */
-    private const val MINTER_WAIT_MS = 6_000L
+    /**
+     * P11-149:等移动铸造器产出的上限(冷启实测 4~6s;超了宁可跳过本臂,不回落桌面 token)。
+     *
+     * P11-154:arm A 页面上下文实验打开时**同 gate** 提到 9s —— 页面上下文拉取(1MB 移动 watch 页 +
+     * interpreter CDN)跑在这段被 await 的窗口**内**,冷启超 6s 会让 arm A 被**静默跳过**、实验根本
+     * 没跑(§5.10.3 的自检项)。只有 [awaitMobileMinter] 读它,主链不受影响;
+     * 回退 = 把 [NewPipePoTokenGenerator.ARM_A_PAGE_CONTEXT] 改回 false,这里自动恢复 6s。
+     */
+    private val MINTER_WAIT_MS: Long =
+      if (NewPipePoTokenGenerator.ARM_A_PAGE_CONTEXT) 9_000L else 6_000L
 
     /**
      * P11-150:**四臂轮换取证实验开关** —— 默认 **false**。

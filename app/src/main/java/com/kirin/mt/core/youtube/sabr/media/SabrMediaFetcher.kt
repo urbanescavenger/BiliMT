@@ -621,6 +621,8 @@ internal class SabrMediaFetcher(
                 tag,
                 "InvalidPoToken diag: sessAgeMs=${System.currentTimeMillis() - entry.diagSessionStartMs}" +
                   " sessReqN=${entry.diagRequestCount.get()} status2Seen=${entry.diagStatus2Count.get()}" +
+                  // P11-154:§5.10.1 #4 的「status=3 计数 = 0」直接可读,不必外部 grep 统计。
+                  " status3Count=${entry.client.sessionStatus3Count}" +
                   " pot=${poTokenState.currentPoToken.size}B" +
                   " ctxActive=${session.activeSabrContextTypes.size} ctxStored=${session.sabrContexts.size}" +
                   " unhandled=${entry.diagUnhandledParts.entries.sortedBy { it.key }.joinToString { "${it.key}x${it.value}" }.ifEmpty { "none" }}" +

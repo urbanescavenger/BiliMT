@@ -142,6 +142,21 @@ class YoutubeBrowserSession(context: Context) {
     return cookies
   }
 
+  /**
+   * P11-154(只读取证):看一眼**当前活文档**里有没有 `window.ytAtN` / `EVENT_ID` / `ytcfg`。
+   *
+   * 要回答的悬案:P11-103 记的「移动 UA 抓 watch 页拿不到 ytAtN」是从 **OkHttp 302 后的 HTML** 推的,
+   * 而 MWEB 是 Polymer SPA——**启动后的活文档**与初始 HTML 不是一回事,从没测过。本探针只读,
+   * **绝不调 [ensureLoaded]、绝不导航**,所以对会话零影响;结果只进日志,不喂任何铸造路径。
+   */
+  suspend fun peekPageContext(): String? = withContext(Dispatchers.Main) {
+    val view = webView ?: return@withContext null
+    if (!isOnYoutube(view.url)) return@withContext null
+    val raw = eval(PageContextProbeJs) ?: return@withContext null
+    // evaluateJavascript 对字符串结果做 JSON 编码(带引号+转义)→ 先解出内层字符串,便于 grep。
+    runCatching { json.parseToJsonElement(raw).jsonPrimitive.contentOrNull }.getOrNull() ?: raw
+  }
+
   /** 在真实页面里发同源 fetch 并取回响应文本(对齐 FreeTubeAndroid 主 WebView 的 /player)。 */
   suspend fun fetchViaWebView(
     url: String,
@@ -243,5 +258,17 @@ class YoutubeBrowserSession(context: Context) {
     const val LoadRetries = 2
     const val FetchTimeoutMs = 20_000L
     const val FetchPollIntervalMs = 100L
+
+    /**
+     * P11-154:活文档探针(只读)。返回 JSON 文本——判据四项:`ytAtN` 的类型(undefined ⇒ 该页无页面挑战)、
+     * `EVENT_ID` 是否可得、`ytcfg` 是否在、以及 `docLen`(顺带看是不是空壳页)。
+     */
+    @Suppress("MaxLineLength")
+    const val PageContextProbeJs =
+      "(function(){try{var c=(window.ytcfg&&window.ytcfg.get)?window.ytcfg:null;" +
+        "var e=c?c.get('EVENT_ID'):null;var de=document.documentElement;" +
+        "return JSON.stringify({url:location.href.slice(0,60),ytAtN:typeof window.ytAtN," +
+        "eventId:e?String(e).slice(0,8):'NONE',ytcfg:typeof window.ytcfg,yt:typeof window.yt," +
+        "docLen:de?de.outerHTML.length:-1});}catch(e){return 'PROBE_THREW='+e;}})()"
   }
 }
