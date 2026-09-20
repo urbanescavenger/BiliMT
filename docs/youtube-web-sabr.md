@@ -603,7 +603,7 @@ FreeTube **从不刷新 token**(单 token 全程,只绑 videoId),我们却把「
 | SABR 会话 `clientInfo` / UA | `webDesktopSabrClientInfo`(clientName=1 + osName=**Windows**)+ 桌面 UA | `sabrClientInfo()`(clientName **仍=1**,osName=**Android**)+ 移动 UA;删掉 `webDesktopSabrClientInfo` |
 | WEB-SABR 的 token 来源 | `botGuard`(桌面 watch 页取挑战 + `/att/get` 桌面 ctx) | **移动 minter**:`biliTvPoTokenProvider.ensureWebToken` = `PoTokenWebView`(SABR 主链同款,带缓存) |
 
-> **⚠️ 2026-09-20 晚更正(P11-148,复核 `logs_live_20260920_091404.log`)**:上表这行指的只是
+> **⚠️ 2026-09-20 晚更正(P11-149,复核 `logs_live_20260920_091404.log`)**:上表这行指的只是
 > **解析器 / `/player` 那次请求**用的 token。**r1992 那场的会话本身是「材料会话」**
 > (`WebView harvest` 采到的 POST → `SabrSession(bytes/harvest)`,会话 token = **harvest 页铸的 87B**,
 > 日志原文 `USING HARVEST MATERIAL po=87B` + `SabrSession(bytes/harvest)`)。
@@ -1080,7 +1080,7 @@ harvest 痕迹 0 行、`skip ad/unrequested` 0 次、`SabrSession:` 无标记、
 
 ### 5.10 判决与收手线(2026-09-20 立,取代 §6 的口头停止条件)
 
-> **为什么单独立节**:§6 写了 S1/S2/S3,但当天 P11-128→P11-148 约 20 轮无人按它收手。教训是
+> **为什么单独立节**:§6 写了 S1/S2/S3,但当天 P11-128→P11-147 约 20 轮无人按它收手。教训是
 > **停止条件必须可机械判定**(能用日志字段算),否则等于没写。
 
 #### 5.10.1 判据:什么叫「WEB-SABR 通了」
@@ -1115,7 +1115,7 @@ harvest 痕迹 0 行、`skip ad/unrequested` 0 次、`SabrSession:` 无标记、
 - 实验版本上线前先自检一句:**「这个实验真能跑到第 2 步吗?」** —— P11-145/P11-146 连续两版都因闸门
   (判死标记短路后续臂)而跑不到第 2 步,装到机器上才发现。
 
-### 5.9.8 r2034 两条实证 + 两处可执行缺陷(P11-148)
+### 5.9.8 r2034 两条实证 + 两处可执行缺陷(P11-149)
 
 **实证 ①(正面):自造会话 + 自铸 token 在服务端宽松态下**真能播**。**
 `logs_live_20260920_211628.log`,GRbG-4Yqhwk,臂 A(sid `7xcLrqdPSA9kwnzqnn7gRg`):
@@ -1135,7 +1135,7 @@ rn=1 → status=2 + usable=5042267B/5042267B ; rn=2 → status=2 + usable=453041
 
 **实证 ②(负面,两个可执行缺陷)** —— `logs_live_20260920_212547.log`,视频 `-Tl1avLHa_I`:
 
-| 缺陷 | 日志 | 修(P11-148) |
+| 缺陷 | 日志 | 修(P11-149) |
 |---|---|---|
 | **臂 A 回落到已淘汰的桌面 token** | `resolve#1 → 臂A` 后 1.6s 取 token → `mobile minter 未产出 → 回落 botGuard token(128 chars)` → `/player` **`playability=UNPLAYABLE → abort`** | `awaitMobileMinter()`:等移动铸造器(冷启实测 4~6s,上限 6s),**等不到就跳过本臂**,不再回落桌面 botGuard(桌面挑战链 token 配移动 WEB 会话是 P11-127 明确淘汰的组合) |
 | **臂 B 桩-only 却白烧 36s** | `cold attempt 无捕获(6450ms)`(桩被丢弃,正确)→ **内置重试又跑 30s** → `NO CAPTURE after 36466ms` | harvester 新增 `lastStubOnly`;调用方见「只剩桩」即**跳过重试**(桩已判无用,再采不会变好) |

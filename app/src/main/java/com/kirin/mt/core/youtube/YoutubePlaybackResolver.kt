@@ -255,7 +255,7 @@ class YoutubePlaybackResolver(
     if (webSabrInPlay && webSabrTokenArm != 2 && webSabrPoToken == null) {
       Log.w(
         Tag,
-        "WEB-SABR: 移动铸造器 ${MINTER_WAIT_MS}ms 内未产出 → **跳过本臂**(P11-148;" +
+        "WEB-SABR: 移动铸造器 ${MINTER_WAIT_MS}ms 内未产出 → **跳过本臂**(P11-149;" +
           "不再回落桌面 botGuard token —— r2034 实测那个组合换来 `playability=UNPLAYABLE`)",
       )
     }
@@ -322,7 +322,7 @@ class YoutubePlaybackResolver(
       Log.w(
         Tag,
         "WEB-SABR 臂${armLabelOf(webSabrTokenArm)} 本轮失败 → 落 NewPipe 主链(SABR→DASH 兜底)" +
-          "(四臂进度 ${SabrStreamRegistry.webSabrArmsTried(videoId)}/4;P11-148 汇总行)",
+          "(四臂进度 ${SabrStreamRegistry.webSabrArmsTried(videoId)}/4;P11-149 汇总行)",
       )
     }
 
@@ -2315,8 +2315,8 @@ class YoutubePlaybackResolver(
         "(P11-142 起「只采到冷启桩」也走这里:桩被 harvester 丢弃,见上一条 `丢弃冷启桩`)")
       val retryBudget = harvestBudgetMs(HarvestWarmCapMs)
       if (harvester.lastStubOnly) {
-        // P11-148:桩已被判定无用(P11-142),再采一次不会变好 —— r2034 实测这次重试又烧了 30s 且同样只出桩。
-        Log.w(Tag, "P11-118 harvest: 本轮只剩冷启桩(已被丢弃)→ **跳过重试**(P11-148),直接回退自造材料")
+        // P11-149:桩已被判定无用(P11-142),再采一次不会变好 —— r2034 实测这次重试又烧了 30s 且同样只出桩。
+        Log.w(Tag, "P11-118 harvest: 本轮只剩冷启桩(已被丢弃)→ **跳过重试**(P11-149),直接回退自造材料")
       } else if (retryBudget < MinHarvestAttemptMs) {
         Log.w(Tag, "P11-118 harvest: 重试预算只够 ${retryBudget}ms(< ${MinHarvestAttemptMs}ms)→ 不重试")
       } else {
@@ -2521,7 +2521,7 @@ class YoutubePlaybackResolver(
     return "${bytes.size}B first=0x%02x %s%s".format(first, kind, over)
   }
 
-  /** P11-148:臂名(日志统一口径,与 [SabrStreamRegistry.nextWebSabrTokenArm] 的轮换顺序一致)。 */
+  /** P11-149:臂名(日志统一口径,与 [SabrStreamRegistry.nextWebSabrTokenArm] 的轮换顺序一致)。 */
   private fun armLabelOf(arm: Int): String = when (arm) {
     0 -> "A(自造+自铸)"
     1 -> "B(自造+页面token)"
@@ -2530,7 +2530,7 @@ class YoutubePlaybackResolver(
   }
 
   /**
-   * P11-148:等移动铸造器产出 WEB token(冷启实测 4~6s),**等不到就返回 null 让调用方跳过本臂**。
+   * P11-149:等移动铸造器产出 WEB token(冷启实测 4~6s),**等不到就返回 null 让调用方跳过本臂**。
    *
    * 依据(r2034 21:23 那场):`resolve → 臂A` 后 1.6s 就去取 token,而 `PoTokenWebView` 刚
    * `loadHtmlAndObtainBotguard()`(冷启中)→ 取不到 → 旧逻辑**回落桌面 botGuard token(128 chars)**
@@ -3318,7 +3318,7 @@ class YoutubePlaybackResolver(
     /** P11-126:低于这个剩余预算就不发这次 harvest——发一次注定被砍的只会白烧 WebView/solver。 */
     private const val MinHarvestAttemptMs = 3_000L
 
-    /** P11-148:等移动铸造器产出的上限(冷启实测 4~6s;超了宁可跳过本臂,不回落桌面 token)。 */
+    /** P11-149:等移动铸造器产出的上限(冷启实测 4~6s;超了宁可跳过本臂,不回落桌面 token)。 */
     private const val MINTER_WAIT_MS = 6_000L
 
     /** P11-126:harvest 冷启(建 WebView + 载首页)的硬上限,原 `timeoutMs = 40_000L`。 */
