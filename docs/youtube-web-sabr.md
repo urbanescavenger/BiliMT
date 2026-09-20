@@ -682,10 +682,17 @@ pot-less 那条不带 token,反而不被判死。**
 同一份日志里**两边请求体都在**(我们的 `WEBREQDUMP` 分片 + 浏览器的 `HARVBODY` 分片),
 用 `tmp/webreq_diff.py` 逐字段摊开后,**两边 `streamerContext.clientInfo` 不是同一个客户端**:
 
-| | clientName | 其它字段 | URL |
-|---|---|---|---|
-| **我们**(WEB-SABR 会话) | **1 = WEB** | 只有 4 字段(`clientVersion` / `osName=Android` / `osVersion=13`) | `c=WEB` |
-| **浏览器**(那份被服务端回 200 的采集材料) | **2 = MWEB**(+ `c=MWEB`) | `f1=zh_CN`、`deviceMake=google`、`deviceModel=pixel 7`、`clientVersion`、`osName=Android`、`osVersion=13` | `c=MWEB` |
+| | clientName | 其它字段 |
+|---|---|---|
+| **我们**(WEB-SABR 会话的真实请求体) | **1 = WEB** | 只有 4 字段(`clientVersion` / `osName=Android` / `osVersion=13`) |
+| **浏览器**(那份被服务端回 200 的采集材料) | **2 = MWEB** | `f1=zh_CN`、`deviceMake=google`、`deviceModel=pixel 7`、`clientVersion`、`osName=Android`、`osVersion=13` |
+
+> **更正一处首版误读**:首版还写了「我们的 URL 是 `c=WEB`、材料是 `c=MWEB`」——**不成立**。
+> 那行 `WEB-SABR sabrUrl params(…) … c=WEB cver=null` 打的是 `sd = parseSabrData(player)`,即
+> **我们自己 /player 响应**里的 URL,而它是在 harvest 期间顺带打的;**有材料时会话实际走的是
+> `material.baseSabrUrl`**(`SabrSession.fromSabrBytes(material.baseSabrUrl, …)`),也就是浏览器那条
+> URL。所以 URL 这一层是**同源**的,不构成差异。站得住的只有上表的 **clientInfo 不一致** ——
+> 它来自双方**真实请求体**(我们的 `WEBREQDUMP` vs 浏览器的 `HARVBODY`),不是推断。
 
 **机制**:harvest 采到的是 **MWEB 页面**的材料 —— `poToken` / `ustreamerConfig` / `cpn` 都是 MWEB 身份下铸的,
 而我们把它包在 **WEB 会话**里发出去 ⇒ **令牌与身份不同源** ⇒ 服务端判 invalid ⇒ 每笔 `status=3`。
