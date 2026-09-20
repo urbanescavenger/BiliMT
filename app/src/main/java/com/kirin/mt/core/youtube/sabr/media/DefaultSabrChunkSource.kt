@@ -266,11 +266,14 @@ internal class DefaultSabrChunkSource(
 
     // alpha.9Z:视频轨每次取 chunk 把「播放位置前方缓冲水位」喂给 fetcher,gap 计时据此扣减滑行量
     // (仅视频轨喂:音频轨缓冲远超需求,会污染判定)。见 SabrMediaFetcher.recordFetchGap。
+    // 2026-09-20(修 r2018 实测:位置锚没生效):**播放位置必须两条轨都喂** —— 位置与轨道无关,
+    // 而**本场第一个请求是音频轨的 init**(r2018 日志 `fetch rn=0 itag=140 seg=0 shape=ft`):
+    // 原来只在视频轨分支里喂,音频轨先跑 ⇒ 那一笔请求时位置注入口还是 -1 ⇒ 锚为 null ⇒ 位置锚 0 次命中,
+    // 服务端照旧从 seg 0 起推。缓冲水位(noteBufferedAheadMs)保持**仅视频轨**(音频缓冲远超需求会污染
+    // 滑行量判定,见上),两者语义不同、不能一起搬出去。
+    fetcher.notePlaybackPositionMs(Util.usToMs(playbackPositionUs))
     if (trackType == C.TRACK_TYPE_VIDEO) {
       fetcher.noteBufferedAheadMs(Util.usToMs(bufferedDurationUs))
-      // 2026-09-20:播放位置也喂给 fetcher —— 材料会话的 init 请求会用它替代 CAS 里那个 0
-      // (材料那份 playerTimeMs=0 会让服务端从 seg 0 起推,续播时请求段与推送游标对不上)。
-      fetcher.notePlaybackPositionMs(Util.usToMs(playbackPositionUs))
       // P11-130(升档预加载):下一档可负担 + 缓冲健康 → 让 fetcher 提前把它的 init(+段)取回来,
       // 切档那刻直接命中缓存(否则每次升档现拉 2.5–7.2s,视频轨断流而音频照播)。
       maybePrefetchNextTier(bufferedDurationUs)

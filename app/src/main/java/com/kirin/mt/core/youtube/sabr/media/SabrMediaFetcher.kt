@@ -838,6 +838,10 @@ internal class SabrMediaFetcher(
     } else null
     if (positionAnchorMs != null) {
       Log.i(tag, "material session: init 请求用真实播放位置作锚 playerTimeMs=$positionAnchorMs(替代 0)")
+    } else if (materialAligned && playerTimeMs == 0L) {
+      // 2026-09-20(诊断):锚没生效时**把原因打出来** —— r2018 首次实测只看到「0 次命中」,分不清是
+      // 「位置注入口还没被喂(-1)」还是「条件不成立」,白烧一轮。打 note 原值即可一次定性。
+      Log.i(tag, "material session: init 位置锚未生效(note=${playbackPositionNoteMs}ms,>0 才用)")
     }
     val clientAbrState = if (materialAligned) {
       ClientAbrStateInput(
