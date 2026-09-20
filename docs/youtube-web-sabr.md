@@ -42,6 +42,11 @@
 > 必死)正是刚修掉的那个 bug。据此 **P11-142**:harvester 只采到冷启桩时**不再退桩**,返回 null 让
 > resolver 落自造材料。详见 **§5.9.3**。
 >
+> **2026-09-20 更新③(r2026:自造会话首次播通,材料路线收摊)**:同一场日志里材料会话**媒体块 0**
+> (真 token 也一样 —— 服务端只供它那一场绑定的档,我们的档从未被初始化)vs 自造会话**14 块 + `playerState=3(READY)` + `videoFmt=302`**
+> (`status=3`/`Playback error`/`RELOAD` 全 0)。材料路线的前提(自造必死)已被 P11-141 证伪 ⇒
+> **P11-143:harvest 整段停用**(不采集、不用材料),起播同时从 9.3~9.5s 降到 ~2.6s。详见 **§5.9.4**。
+>
 > 相关文档:[youtube-hd-playback.md](youtube-hd-playback.md)(总史/§6.x 逐条真机)、
 > [youtube-dash-fallback-plan.md](youtube-dash-fallback-plan.md)(DASH 兜底)、
 > [youtube-vs-libretube-comparison.md](youtube-vs-libretube-comparison.md)(逐环节对照)、
@@ -866,6 +871,49 @@ r2024 里 4/5 次采集只拿到冷启桩(`poToken=10B`;真 token 那份 `88B / 
 ①**真材料 URL 会话**同样只供浏览器档(表 2 第二行)⇒ 需 C1 起播锁修正 / 音频组纳入 251 / 或不再用材料 URL 播;
 ②provider 铸的 token 是**占位形态**:刷新日志字节数单调涨 `154 → 219 → … → 1324B`(**+65B/次**),首字节恒
 `0x32`、带自增计数 —— 与那个 10B 冷启桩同族,不是签名过的真 token(要单独一轮)。
+
+### 5.9.4 r2026 判读:自造会话**首次播通**(材料 0 块 vs 自造 14 块);harvest 整段停用(P11-143)
+
+真机 `logs_live_20260920_202417.log`(r2026 = P11-142 那版,20:21–20:24)。这一场第一次拿到
+**同一场日志里材料会话与自造会话的并列对比**,结论是结构性的。
+
+| 会话 | 类型 | 我们请求 | 服务端实际供 | 媒体块 | 结果 |
+|---|---|---|---|---|---|
+| NHaKyQ(GRbG) | 材料(**真** 87B token) | 302 / 140 | 只有 251/399… | **0** | 响应 12MB ×6 全是同一条 body → `no seg 140` ×6 → evict |
+| **HCcQ_eKj(GRbG)** | **自造**(我们自己的 /player) | 302 / 140 | **302 ✓ 140 ✓** | **14 块** | **`playerState=3(READY)`、`videoFmt=302`** |
+| XYpwk6(UblCOS7McLg) | 材料(真 87B token) | 698 / 140 | 只有 248/251/303/399 | **0** | 响应 2.88MB ×12 全是同一条 → `no seg 698` ×6 → evict |
+| HMQBx0x(UblCOS7McLg) | NewPipe 兜底 | 136 / 139 | — | — | 用户退出 |
+
+自造会话(12 秒窗口)的实据:
+
+```
+WEB-SABR: harvest 已停用前的路径 = 「刚采集过(44553ms 前,窗口 45000ms)→ 用自造材料」
+solver: ok challenges=1 nChanged=true → n transformed(A8R1O4oywrVFsAd9ea4 → E6daFaAnyg1Rjg)
+FORMAT_INITIALIZATION_METADATA itag=302 endSegNum=312 / itag=140 endSegNum=157
+chunk completed: media itag=302 bytes=724266 sel=8(720p)   ×10(700KB~2MB/块)
+chunk completed: media itag=140 bytes=161855               ×4
+fetch rn=0/1/2 REAL 6335153B / 5042267B / 4530418B → 16~20Mbps
+PO token refreshed on status=2: 88B → 154B (websafe base64 已解码)   ← P11-141 在真机生效
+playerState=3(READY) pos=0 videoFmt=Format(302, …vp9 1280x720…)
+status=3 = 0 / Playback error = 0 / RELOAD = 0
+```
+
+⇒ **材料 URL 会话结构上只供「浏览器那一场绑定的档」**(服务端按那场会话签发的绑定供流),我们要的是
+阶梯选出来的档,只有碰巧重合才播得动;而**我们自己的 /player 会话供的正是我们要的档**(它就是这么
+签发的)。当初改用材料的前提(「自造会话跑到第 4 个请求必死」)是 P11-141 修掉的刷新未解码 bug
+⇒ 前提消失,材料路线的价值随之归零。
+
+**本轮动作(P11-143)**:`buildWebSabrFallback` 的 harvest **整段停用** —— 不采集、不用材料
+(开关 `USE_HARVEST_MATERIAL_FOR_SESSION = false`,分支保留可回退)。附带收益:**起播变快** ——
+r2026 自造从「用自造材料」到 playback ready **~2.6s**(n-solver 2.1s + /player),
+而 harvest 每场 9.3~9.5s(有时 30s+)。
+
+**判据(下一份日志)**:无 `harvest: captured SABR POST` / `USING HARVEST MATERIAL` / `SabrSession(bytes/harvest)`;
+`SabrSession:` 无标记 + `FORMAT_INITIALIZATION_METADATA itag=<我们的档>` + `chunk completed: media`;
+`status=3` 与 `Playback error` 保持 0;起播耗时应明显下降。
+
+**未动**:①`BiliWarmup` 的采集 WebView 预热(app 启动期,3~15s)仍在跑 —— 采集已停用后它是纯开销,
+下轮可一并摘掉;②provider 铸的 token 仍是占位形态(155→…,+65B/次)。
 
 ---
 
