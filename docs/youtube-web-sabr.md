@@ -468,6 +468,8 @@ FreeTube 侧(`v0.25.2` → `v0.25.3`,2026-08-11 / 08-28):
 
 ## 4. 当前未打通的关键点(占位 / 桩 / 死代码 / 口径不一致)
 
+> **口径更新(2026-09-20,见 §5.6)**:本表是「全移动」之前的清单。其中「桌面身份」相关项(#5/#8/#9 的身份口径、以及被当作材料 token 来源的桌面挑战链)已随 P11-127 作废;下表保留作历史与后续清理参考。
+
 | # | 位置 | 问题 |
 |---|---|---|
 | 1 | [YoutubePlaybackResolver.kt:1982-1986](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1982-L1986) | **pot-less 实验硬编码**(`fromSabrData(sabrUrl, "", …)`),无开关;要做带 token 的对照必须先改回 |
@@ -521,7 +523,8 @@ P11-106/107/115 证明的是「桌面 **body context** 无关」,不是「桌面
 | 铸造环境 | 每次新建 `WebContentsView`(offscreen)+ `Emulation.setDeviceMetricsOverride` 1920×1080 **mobile:false**,UA 桌面 | 常驻单例 WebView,移动 UA,壳页 |
 
 形态判据:**FreeTube 桌面 = 全桌面,安卓版 = 全移动**(安卓 `local.js` 用 `navigator.userAgent` 当 `user_agent`);
-**我们是混合**(移动铸造 + 桌面会话),两边都不是。
+**我们曾是"混合"**(移动铸造 + 桌面会话),两边都不是。
+→ **2026-09-20 已按「全移动」收敛并打通,见 §5.6**(采集页/`/player`/会话 clientInfo 全部原生 Android;`clientName` 仍保持 1 以免动请求形状)。
 
 **G-4 interpreter 加载方式** FreeTube HEAD 用 `new Function(interpreterJavascript)()` **eval**
 ([botGuardScript.js:48-56](../../FreeTubeMt/src/botGuardScript.js#L48-L56));我们 P11-110 改成 `<script src>` 并自称对齐 FreeTube —— 对齐的是旧版。
@@ -555,6 +558,35 @@ P11-106/107/115 证明的是「桌面 **body context** 无关」,不是「桌面
 FreeTube **从不刷新 token**(单 token 全程,只绑 videoId),我们却把「status=2 刷新」当核心机制在修(P11-68/102c)。
 而 P11-116 的 pot-less 实验**不干净**:会话中途在 status=2 时**冒出一个新 token**,那是 FreeTube 绝不会做的动作。
 判别法:铸一次 → 全程沿用(关掉 status=2 刷新)→ 看第 4 个响应还升不升 `status=3`。若不再升 ⇒ **我们自己把 nag 升级成了处决**。
+
+---
+
+### 5.6 2026-09-20 全移动:身份自洽 → `status=1` + 2160p(已打通,P11-127)
+
+**结论先行:这条线通了。** 09-20 真机(`logs_live_20260920_091404.log`,`dev.r1992`,Sony XQ-EC72,WEB-SABR 优先档):`status=1` ×10 / `status=2` ×0 / `status=3` ×0;会话 18 轨含 **2160p**;单会话 09:12:40 连播到 09:14:38 用户退出(**~2 分钟**),`InvalidPoToken` / `auto-retry` / `playback error` / `stall detected` **全部零行**。
+
+**怎么破的(单变量:身份)** —— 把 §5.1 G-3 判出的「混合身份」整条换成**原生 Android 移动**,四处同源:
+
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| 采集 WebView UA([YoutubeSabrHarvester.kt:391](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L391)) | 桌面 Chrome(Win64) | `MobileUserAgent` |
+| 采集页 cookie seed | 只写 `www.youtube.com`(**host-only**) | 补写 `m.youtube.com`(移动 UA 会 302 过去) |
+| `/player` 四个 override(`context`/`cookie`/`visitor`/`ua`) | 桌面 ytcfg context + 桌面 cookie/visitor + 桌面 UA | **全撤** → 落 `Client.WEB.userAgent` + `currentVisitorData()` + `currentSessionCookies()` + `buildContext(WEB)`(osName 来自移动 `sw.js_data`=Android) |
+| SABR 会话 `clientInfo` / UA | `webDesktopSabrClientInfo`(clientName=1 + osName=**Windows**)+ 桌面 UA | `sabrClientInfo()`(clientName **仍=1**,osName=**Android**)+ 移动 UA;删掉 `webDesktopSabrClientInfo` |
+| WEB-SABR 的 token 来源 | `botGuard`(桌面 watch 页取挑战 + `/att/get` 桌面 ctx) | **移动 minter**:`biliTvPoTokenProvider.ensureWebToken` = `PoTokenWebView`(SABR 主链同款,带缓存) |
+
+**为什么必须这样**:
+1. **Android WebView 覆盖 UA 改不了 Client Hints** —— `Sec-CH-UA-Platform` 恒 `"Android"`、`Mobile: ?1`,应用层**无 API 可覆盖/抑制**(本文件 §1.14 与 [YoutubeSabrHarvester.kt:460-462](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L460-L462) 早已记录)。桌面腿真机实证同一请求里 `UA=Windows NT 10.0` + `sec-ch-ua-platform="Android"` —— 「桌面身份」必然自相矛盾。FreeTube 桌面能全桌面是因为 Electron 有 `Emulation.setUserAgentOverride`+`userAgentMetadata`+`setDeviceMetricsOverride`,Android 应用拿不到这层。
+2. **移动 UA 下 watch 页 302 到 m.youtube.com 且页内无 `ytAtN`**(§1.9 / P11-103)→ 桌面那条「页面取挑战 + 桌面 ctx 兑换」的 token 链在移动世界**结构性不存在**,必须换成本来就是移动的那枚 minter。
+3. **`clientName` 保持 1 是刻意的**:[SabrMediaFetcher.kt:653](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L653) 的 `webShape = clientInfo.clientName == 1` 决定请求形状(4 字段 clientInfo + 不发顶层 `playerTimeMs`)。身份与请求形状是两个变量,一次只动一个。
+
+**判读关键:采到的是「冷启桩」还是「真 token」**(§4 表的坑,现已绕开)。移动站播放器会连发多个 SABR POST:**首个带的是 cold-start 占位 token** —— 10 字节 = `0x22(34) 0x08(8) + 8B header`、identifier 长度 0(即 BgUtils 的 cold start 包格式),只在 `sps`(**StreamProtectionStatus**)`=2` 时有效;真 token 真机实测 **87–88B**。桌面腿恒抓到 10B 桩 ⇒ 会话 `status2Seen=0`、**第一个请求就被判死**。修法:采集改判 `poToken ≥ 80B` 才「命中即返回」,只拿到桩就再等 6s(`STUB_GRACE_MS`)找真 token、到期再退桩([YoutubeSabrHarvester.kt:333](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L333),`poTokenLenOf` 复用 `SabrProto.decodeVideoPlaybackAbrRequest`)。
+
+**同时重新启用了 status=2 同步刷新**:P11-117 曾**故意**给 WEB-SABR 传 `refreshPoToken = null`(对齐 FreeTube「只对 `status===3` 反应」)—— 那是「桌面会话 + 移动铸 token」错配年代的决定,重铸了也不同源,刷了没用。身份统一后改回移动 minter 回调(与 SABR 主链同一枚;同步语义由 alpha.67/68 保证,P11-102c single-flight 防并发抢占)。**注意**:09-20 那轮服务端全程未 nag(`status=2` 零次),所以**这条回调整体尚未被真机触发验证**,它是「下次 nag 时的兜底」。
+
+**残留(已记录,未修)**:
+- **服务端 60s 级按会话处决仍在**:同日早先一轮(`logs_live_20260920_071935.log`)`hOv8` 会话 `status2Seen=5`(服务端从第 2 个响应起一路 nag)后播到 `sessAgeMs=35557` 升 `status=3`(回包仅 **135B**、无媒体)→ evict → ExoPlayer Source error → auto-retry @pos=63383ms(用户体感「能播但 ~60s 重载一次」);而**重新采集的新材料**建的会话立刻又是 `status=1` ⇒ 与「材料形态/身份」无关,是服务端策略,靠 status=2 刷新或提前轮换应对。
+- **页面客户端是 MWEB,我们是 WEB**:`harvest ident host=m.youtube.com cfgName=MWEB cfgVer=2.20260918 cfgOs=Android`,而会话 `clientName=1`。材料与会话**不同客户端**却能 `status=1` ⇒ 这一层不是判据;若日后需要单开一轮评估 MWEB(必须连带验 `webShape` 翻 false 后的请求形状,不能和身份改动混判)。
 
 ---
 
@@ -614,6 +646,8 @@ G1 达标但 G2 仍 0 → 第二刀:**关掉 status=2 刷新**(§5.5)。再 0 �
 - **当尺子**:同一天同一视频跑 1 与 2,逐字段 diff —— sabrUrl 键集 / ustreamerConfig 前 32B hex / poToken 字节 / `clientInfo` / bodyHex field 号集合 / `rn=0..3` 的 status 序列。
 
 ### 停止条件(钉死)
+
+> **结果(2026-09-20)**:S1 触发过(桌面身份上线仍 nag)→ 按 S1 转「身份」假设以外的方向,最终以**全移动**打通(§5.6);**S2 未触发**(harvest 腿与身份都活了),本线保持启用。
 
 - **S1** 连续 2 个构建 `status=1 ×0` 且 G1 已达标 → 停「身份」假设,转阶段 2。
 - **S2** harvest 复活当天也 `status=1 ×0` → **整条 WEB-SABR 线停**(同一天 visionOS 主路 `status=1 ×24` 是决定性反证)。
