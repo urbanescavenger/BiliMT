@@ -1228,6 +1228,36 @@ rn=1 → status=2 + usable=5042267B/5042267B ; rn=2 → status=2 + usable=453041
 **通用教训**(与本轮 §5.10.4 同一条):**为 A 场景造的约束,必须显式绑定 A 场景**,否则它会静默地把 B 场景
 按死 —— 而且死法(「稳定但永远低档」)看起来不像 bug。
 
+#### 5.11.2 r2048 TV 实测:「视频定格、音频照播」33 秒(P11-153)
+
+真机 `logs_live_20260920_231653.log`(BRAVIA_AE2;会话 `source=NewPipe(primary)`,**不是 WEB-SABR**)。完整链条:
+
+```
+23:15:55.697  trial upshift (buffer-full probe): bufS=51s threshold=41s → itag302(720p) declared=18619097
+23:15:55.697  upshift reseed: est baseline → 18619097        ← est 被锚到 18.6M(实测容量 cap≈9M)
+23:15:59.166  cleanup dropped formats=[244] … video=302      ← 切轨:旧视频轨缓冲被丢
+23:15:59.235  chunk completed: media itag=302 bytes=1357413  ← 新轨只到这一块
+23:15:59 → 23:16:32(用户退出):**33 秒内一条 `fetch rn=` 都没有**
+```
+
+⇒ **视频轨**切轨后只拿到 1 块就再无数据(画面定格);**音频轨**缓冲未被切轨丢弃 ⇒ 靠自身缓冲继续播
+= 用户所见「视频卡住、音频正常」。
+
+**三条成因**:
+
+| # | 问题 | 证据 |
+|---|---|---|
+| ① | **声明码率失真**(ABR 的输入) | 本场 vp9 轨全部离谱:144p 声明 **4.7M**、720p60 **18.6M**、1080p60 27.8M、2160p **71.6M**。根因:`newPipeVideoRaw` 在 `stream.itagItem == null` 时**静默回落 VBR 峰值**(vp9 轨恰好缺 ItagItem)。它同时毒化两处:试探的目标选择 + 升档重锚(est→18.6M) |
+| ② | **满缓冲试探授权超容量跳档** | 试探按设计绕过 est/sus 闸(本意是绕过偏悲观估计),于是跳到 declared 18.6M 的轨,而实测容量仅 ~9M ⇒ 超容量 2× |
+| ③ | **挂死无兜底:冻结时长 ≈ 整调用上限本身** | 每个 SABR POST 有 40s 整调用上限(P11-134 为 4K 大段 28.2s 留的余量);慢滴占着单并发许可 ⇒ 低档请求也要等满 40s 才切;用户在第 33 秒退出 |
+
+**修(P11-153,三件)**:
+- **②** `TRIAL_MAX_OVER_CAPACITY_PERMILLE=1500`:试探目标不得超实测容量 ×1.5(日志 `trial refused (over-capacity): …`);
+- **③** 整调用上限**按档高自适应**:≤1080p → **18s**([SabrCallTimeoutMsLow]),≥1440p 保留 40s(4K 大段合法慢);
+- **①** ①b **重锚按实测容量夹住**(`RESEED_MAX_OVER_CAPACITY_PERMILLE=1200`,日志打出「声明失真,按实测容量夹住」);
+  ①a 峰值回落**加一次性诊断**(`declared falls back to VBR PEAK (itagItem 缺失…)`),让这类假数据在日志里可见
+  —— ① 的根治在 extractor 侧(为 vp9 轨补 `averageBitrate`),本轮先止血 + 留证据。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
