@@ -498,6 +498,13 @@ class HeightAwareAdaptiveTrackSelection(
     prevEvalBufferedUs = bufferedDurationUs
     prevEvalElapsedMs = nowMs
     if (bufferedDurationUs > maxObservedBufferedUs) maxObservedBufferedUs = bufferedDurationUs
+    // C1:把候选收窄到「服务端真的会推的 itag」——**必须在水位急救降档循环之前算好**
+    // (那道循环在下面 `if (bufferCritical)` 里,位置比主候选循环早;首版放它在主循环前 → 编译期
+    //  Unresolved reference,CI 直接红)。三道防线见 serverServedItags 说明。
+    val servedNow = serverServedItags
+    val servedInGroup = if (servedNow.isEmpty()) null
+      else (0 until length).filter { itagOf(getFormat(it)) in servedNow }.toSet()
+    val restrictToServed = servedInGroup != null && servedInGroup.isNotEmpty()
     if (bufferCritical) {
       var lower = -1
       var lowerHeight = -1
@@ -586,11 +593,6 @@ class HeightAwareAdaptiveTrackSelection(
     val isTopTier = length > 1 && getFormat(0).height >= TOP_TIER_MIN_HEIGHT
     // 2026-08-31 ②stall 重载记忆:起播期 stall 重载后冷却期内跳过顶档(SabrAbrMemory,跨重载单例)。
     val topTierStallBlocked = isTopTier && SabrAbrMemory.isTopTierStartupBlocked()
-    // C1:把候选收窄到「服务端真的会推的 itag」。三道防线见 serverServedItags 说明。
-    val servedNow = serverServedItags
-    val servedInGroup = if (servedNow.isEmpty()) null
-      else (0 until length).filter { itagOf(getFormat(it)) in servedNow }.toSet()
-    val restrictToServed = servedInGroup != null && servedInGroup.isNotEmpty()
     // 2026-08-31 ①逐级爬:升档候选只允许「下一个更高分辨率档」(未排除轨中最小的、严格高于当前的
     // height;同 height 多 codec 变体全部放行)——爆发 est 误判的最坏后果从「一步到顶 4K」降为
     // 「多升一档」,真扛不住由滞回/水位急救接管。降档不在此限(放开全部低档一步落位的既有语义)。
