@@ -285,6 +285,23 @@ internal class SabrMediaFetcher(
   }
 
   /**
+   * 2026-09-20(材料会话的**位置锚**,见 fetchStreamData):由视频 [DefaultSabrChunkSource] 每次
+   * getNextChunk 喂当前播放位置(ms)。
+   *
+   * 为什么需要:材料会话的 rn=0 是 init 请求,它自己的 `playerTimeMs` 按定义是 0,而材料那份 CAS 也是
+   * `playerTimeMs=0` ⇒ 两边都说「我在 0」⇒ **服务端从 seg 0 起推**。续播到 402s 时我们要的是那附近,
+   * 于是请求段与推送游标对不上 → `no seg` 6 连 → evict(r2017 真机:`MEDIA_END seq=0..4` 全是片子开头)。
+   * 用真实播放位置替代那个 0,让服务端游标落在正确位置。仅材料会话生效。
+   */
+  @Volatile private var playbackPositionNoteMs = -1L
+
+  fun notePlaybackPositionMs(ms: Long) {
+    playbackPositionNoteMs = ms
+  }
+
+
+
+  /**
    * 2026-08-31 A(顶档 sustained 分母收紧):当前视频档是否顶档(≥2160)——顶档在位时 [recordFetchGap]
    * 的 sustained 滑行扣减改用 20s 余量(见 TOP_TIER_GAP_RUNWAY_RESERVE_MS)。4K 的 SABR pacing 下
    * 请求间隔多为 fetcher 串行排队等待(23:24 真机:水位 16.4s 下 14.2s 间隔),旧 10s 余量把它扣成
@@ -557,9 +574,21 @@ internal class SabrMediaFetcher(
               // → 全量重载 → ABR 再升同档 → 循环。清掉旧格式后 bufferedRange 只带音频+当前视频,
               // 服务端回落 playerTimeMs 判(§26.1 已实证回落路径),从目标段起推。
               // LibreTube 同位置无条件 retainAll(仅当前 A/V);这里保守多留在途 itag,在途响应不白丢。
+              // 2026-09-20(诊断):这道清理会**静默**丢格式,而丢了之后所有请求都变 `no seg`
+              // (r2017 真机:140/302 的 init 登记过、也成功交付过一次,之后却 `no seg 0` 6 连 → evict)。
+              // 打点把「丢了谁、当时 audioFormat/videoFormat/在途 是什么」一次说清,避免再靠猜。
+              val beforeKeys = initializedFormats.keys.toList()
               initializedFormats.keys.retainAll { f ->
                 f == audioFormat?.itag || f == videoFormat?.itag || f in pendingRequestItags ||
                   f == activePrefetchItag() // P11-130:预取候选档的缓存要保住,否则刚预取到就被清
+              }
+              val dropped = beforeKeys - initializedFormats.keys
+              if (dropped.isNotEmpty()) {
+                Log.w(
+                  tag,
+                  "cleanup dropped formats=$dropped (audio=${audioFormat?.itag} video=${videoFormat?.itag} " +
+                    "pending=$pendingRequestItags prefetch=${activePrefetchItag()})",
+                )
               }
             }
             // 终端检查(media 可能置位)
@@ -644,7 +673,15 @@ internal class SabrMediaFetcher(
             // `getNextChunk` 不被调用(r2006 实测 14:46:36→14:47:08 只有 1 个评估点),那条路结构上
             // 够不着故障现场 —— 第一版(c)挂在那边,整场没打出一条 `prefetch canceled` 就是这个原因。
             cancelPrefetch("请求 seg ${req.segment} itag $itag 未送达(attempt $attempt)")
-            Log.i(tag, "getNextSegment: no seg ${req.segment} itag $itag after attempt $attempt (retry)")
+            // 2026-09-20(诊断):`no seg` 有两种完全不同的成因 —— ①这一档的缓存被整条丢了(fmt==null);
+            // ②缓存还在,但**服务端推的游标不在请求段附近**(r2017 真机:请求 402s 附近的段,服务端却从
+            // seq 0..4 起推)。把已有段的区间一并打出来,一次就能分清是哪种,不必再猜。
+            Log.i(
+              tag,
+              "getNextSegment: no seg ${req.segment} itag $itag after attempt $attempt (retry)" +
+                (if (fmt == null) " [fmt=null 缓存被丢]"
+                 else " [cached=${fmt.downloadedSegments.keys.sorted()} buffered=${fmt.bufferedSegments.keys.sorted()}]"),
+            )
           }
           throw SabrTerminalException("exhausted $MAX_ATTEMPTS attempts for seg ${req.segment} itag $itag")
         }
@@ -793,10 +830,19 @@ internal class SabrMediaFetcher(
     // 我们给当前值:材料那份是**采集那一刻的快照**(它的 playerTimeMs=0),照抄等于向服务端谎报播放进度。
     // 编码器本就跳过 null ⇒ 合并结果 = 材料的静态 + 我们的动态,不需要任何字段级滤波。
     val materialAligned = session.leadingClientAbrStateBytes != null
+    // 2026-09-20(位置锚,见 notePlaybackPositionMs):材料会话的 **init 请求**(playerTimeMs 按定义为 0)
+    // 改用真实播放位置 —— 否则材料那份 CAS 的 playerTimeMs=0 会让服务端从 seg 0 起推,而续播时要的是
+    // 当前位置附近(r2017 真机:`MEDIA_END seq=0..4` 全是片子开头 → 请求段与推送游标对不上 → no seg 死循环)。
+    val positionAnchorMs = if (materialAligned && playerTimeMs == 0L) {
+      playbackPositionNoteMs.takeIf { it > 0L }
+    } else null
+    if (positionAnchorMs != null) {
+      Log.i(tag, "material session: init 请求用真实播放位置作锚 playerTimeMs=$positionAnchorMs(替代 0)")
+    }
     val clientAbrState = if (materialAligned) {
       ClientAbrStateInput(
         bandwidthEstimate = bwEstimateBps.takeIf { it > 0 } ?: 1_000_000L,
-        playerTimeMs = playerTimeMs.takeIf { it != 0L },
+        playerTimeMs = playerTimeMs.takeIf { it != 0L } ?: positionAnchorMs,
         timeSinceLastManualFormatSelectionMs = lastManualFormatSelectionMs?.let { now - it } ?: 0L,
         timeSinceLastSeekMs = lastSeekMs?.let { now - it } ?: 0L,
         elapsedWallTimeMs = elapsed,

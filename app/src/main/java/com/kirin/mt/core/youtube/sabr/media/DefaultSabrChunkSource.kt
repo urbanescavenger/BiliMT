@@ -268,6 +268,9 @@ internal class DefaultSabrChunkSource(
     // (仅视频轨喂:音频轨缓冲远超需求,会污染判定)。见 SabrMediaFetcher.recordFetchGap。
     if (trackType == C.TRACK_TYPE_VIDEO) {
       fetcher.noteBufferedAheadMs(Util.usToMs(bufferedDurationUs))
+      // 2026-09-20:播放位置也喂给 fetcher —— 材料会话的 init 请求会用它替代 CAS 里那个 0
+      // (材料那份 playerTimeMs=0 会让服务端从 seg 0 起推,续播时请求段与推送游标对不上)。
+      fetcher.notePlaybackPositionMs(Util.usToMs(playbackPositionUs))
       // P11-130(升档预加载):下一档可负担 + 缓冲健康 → 让 fetcher 提前把它的 init(+段)取回来,
       // 切档那刻直接命中缓存(否则每次升档现拉 2.5–7.2s,视频轨断流而音频照播)。
       maybePrefetchNextTier(bufferedDurationUs)
