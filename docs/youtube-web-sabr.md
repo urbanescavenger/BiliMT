@@ -317,17 +317,20 @@ SABR/DASH 档的 harvest 只做很晚的兜底,不给不用它的用户白起一
 
 ### 2.1 已证伪的假设(别再走)
 
-> **⚠️ 2026-09-20 晚修正(P11-146)**:本清单是 **P11-101→116 期间**攒的,而那段时期 `status=2` 的
+> **⚠️ 2026-09-20 晚修正(P11-146,复核日期 2026-09-20)**:本清单是 **P11-101→116 期间**攒的,而那段时期 `status=2` 的
 > **同步刷新带着未解码的 bug**(P11-141 修)。凡涉及 token 的条目都要重核 —— 尤其下面第一条。
 > 当日实测反证:harvest 页铸的 token(r1992/r2002/r2030 三场)拿 `status=1`;我们自铸的 token
 > (同 87B,r2008/r2028/r2030)第一笔就被判 `status=2` ⇒ **token 来源确实是判据**。
 
-- ~~**「token 内容不对」**~~ **【已推翻,见上】** :原证据是 P11-105/106/109/110 逐层对齐后仍 nag、
-  P11-116 pot-less 与会话带 token 的响应**逐字节一致**,以及外部 **GoogleVideo#52**(2026-08-18,
-  「有效 token 与无 token 停点一字节不差」)。**但这几条都在刷新未解码的年代**;P11-141 修好后当日即出现
-  「材料 token → `status=1` ×100 / 媒体块 115」与「自铸 token → 第一笔 `status=2`」的并排对照。
-  现状按「**铸造上下文(页面 EVENT_ID)决定 token 是否被当占位**」处理(§5.9.6 调研)。
-- **「身份/UA/cookie/visitor 混搭」**:P11-106 全链桌面化**已生效**仍 nag;P11-107 撤 HTTP 头同样无效;P11-115 换桌面页 cookie/visitor 同样无效。
+| 假设 | 原判据 | 复核(P11-146 起) |
+|---|---|---|
+| ~~**「token 内容不对」**~~ | P11-105/106/109/110 逐层对齐后仍 nag;P11-116 pot-less 与会话带 token 响应**逐字节一致**;外部 GoogleVideo#52 | **已推翻(2026-09-20)**:上述证据全在**刷新未解码年代**;P11-141 修好后当日出现「材料 token → `status=1`×100/媒体块 115」与「自铸 token → 首笔 `status=2`」并排对照 ⇒ 现状按「**铸造上下文(页面 `EVENT_ID`)决定 token 是否被当占位**」处理(§5.9.6 调研) |
+| 「身份/UA/cookie/visitor 混搭」 | P11-106 全链桌面化已生效仍 nag;P11-107 撤 HTTP 头无效;P11-115 换桌面 cookie/visitor 无效 | 未复核(需重跑;当时同样处于刷新 bug 期) |
+| 「请求体形状/时间语义」 | P11-104 / P11-109 字节级对齐后仍 nag | 未复核 |
+| 「VM 加载方式」 | P11-110 `<script src>` 生效仍 nag | 未复核 |
+| 「cpn 缺失」 | P11-113 注入后 `status=2`×9 | 未复核(cpn 对窗口/寿命有用,非 nag 解药) |
+| 「n/s 未解密」 | P11-101 solver 已让 403 消失 | 仍成立(确实修好了) |
+| 更早(alpha 时代) | 桌面 VM 指纹 polyfill、`VISITOR_INFO1_LIVE` 配对、GenerateIT 带 cookie 绑定、WEB_EMBEDDED、正则 n 方案等 | 未复核,见 [youtube-hd-playback.md](youtube-hd-playback.md) §6.7 |
 - **「请求体形状/时间语义」**:P11-104 / P11-109 字节级对齐后仍 nag。
 - **「VM 加载方式」**:P11-110 `<script src>` 生效仍 nag。
 - **「cpn 缺失」**:P11-113 注入后 WEB 会话 status=2 ×9(注:cpn 对 ~60s 窗口/会话寿命有用,但不是 nag 的解药)。
@@ -599,6 +602,14 @@ FreeTube **从不刷新 token**(单 token 全程,只绑 videoId),我们却把「
 | `/player` 四个 override(`context`/`cookie`/`visitor`/`ua`) | 桌面 ytcfg context + 桌面 cookie/visitor + 桌面 UA | **全撤** → 落 `Client.WEB.userAgent` + `currentVisitorData()` + `currentSessionCookies()` + `buildContext(WEB)`(osName 来自移动 `sw.js_data`=Android) |
 | SABR 会话 `clientInfo` / UA | `webDesktopSabrClientInfo`(clientName=1 + osName=**Windows**)+ 桌面 UA | `sabrClientInfo()`(clientName **仍=1**,osName=**Android**)+ 移动 UA;删掉 `webDesktopSabrClientInfo` |
 | WEB-SABR 的 token 来源 | `botGuard`(桌面 watch 页取挑战 + `/att/get` 桌面 ctx) | **移动 minter**:`biliTvPoTokenProvider.ensureWebToken` = `PoTokenWebView`(SABR 主链同款,带缓存) |
+
+> **⚠️ 2026-09-20 晚更正(P11-148,复核 `logs_live_20260920_091404.log`)**:上表这行指的只是
+> **解析器 / `/player` 那次请求**用的 token。**r1992 那场的会话本身是「材料会话」**
+> (`WebView harvest` 采到的 POST → `SabrSession(bytes/harvest)`,会话 token = **harvest 页铸的 87B**,
+> 日志原文 `USING HARVEST MATERIAL po=87B` + `SabrSession(bytes/harvest)`)。
+> 原文没区分「解析器 token」与「会话 token」,曾直接导致把 r1992 误读成「自造会话曾打通」——
+> 引用本节请以「**材料会话 + 页面 token**」为准(§5.9.7 场次对照表)。
+
 
 **为什么必须这样**:
 1. **Android WebView 覆盖 UA 改不了 Client Hints** —— `Sec-CH-UA-Platform` 恒 `"Android"`、`Mobile: ?1`,应用层**无 API 可覆盖/抑制**(本文件 §1.14 与 [YoutubeSabrHarvester.kt:460-462](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L460-L462) 早已记录)。桌面腿真机实证同一请求里 `UA=Windows NT 10.0` + `sec-ch-ua-platform="Android"` —— 「桌面身份」必然自相矛盾。FreeTube 桌面能全桌面是因为 Electron 有 `Emulation.setUserAgentOverride`+`userAgentMetadata`+`setDeviceMetricsOverride`,Android 应用拿不到这层。
@@ -1066,6 +1077,74 @@ harvest 痕迹 0 行、`skip ad/unrequested` 0 次、`SabrSession:` 无标记、
 **修(P11-147)**:闸门改成「**本视频已试臂数 < 4**」优先 —— 四臂未试满时忽略判死标记(继续轮换),
 试满四臂后才恢复「失败即永久跳过」的产品语义(那时才该换到能播的路)。两条 WEB-SABR 分支
 (`webSabrFirst` 与兜底 `webSabrDue`)都改;新增日志 `该视频已判死,但**四臂实验未试满**(N/4)→ 继续轮换`。
+
+### 5.10 判决与收手线(2026-09-20 立,取代 §6 的口头停止条件)
+
+> **为什么单独立节**:§6 写了 S1/S2/S3,但当天 P11-128→P11-148 约 20 轮无人按它收手。教训是
+> **停止条件必须可机械判定**(能用日志字段算),否则等于没写。
+
+#### 5.10.1 判据:什么叫「WEB-SABR 通了」
+
+一轮四臂测试里,**任一条会话**满足下列**全部**条件即算通(字段都在日志里,不需要推断):
+
+| # | 字段 | 判据 |
+|---|---|---|
+| 1 | `WEB-SABR 四臂(P11-146): … → 臂X` | 四臂在**同一视频 + 连续重试**里都跑到过(证明实验本身可执行) |
+| 2 | `startup lock …[served]` | **出现过**(证明 C1 收窄真生效 —— 这是历史上从没生效过的那一环) |
+| 3 | `resp summary: init=[…]` | 含我们请求的档,且 `usable/size` **≥ 95%** |
+| 4 | status 序列 | **`status=3` 出现次数 = 0**,且连续播放 **> 60s** |
+| 5 | `first media chunk` / `playerState=3(READY)` | 两条轨都有,且无 `Playback error` / 无 `auto-retry` |
+
+**判别项(区分「我们的问题」还是「服务端强制态」)**:同一视频、同一臂、**同一天**内既出现「播通」
+又出现「`status=2` 首笔即来 → `status=3`」⇒ 判为服务端概率性强制(bgutil #243 已给出机制),**不算我们退步**;
+此时只记录「服务端宽松窗口出现过」。
+
+#### 5.10.2 收手线(机械触发)
+
+- **再给 ≤ 2 个构建**(自本节起算)。若两轮都拿不到 §5.10.1 的全部条件 ⇒ **WEB-SABR 降级为
+  「可选档 + 失败即让位」**(现状已是:失败一次即跳 NewPipe 主链),剩余精力转回用户可见收益
+  (主链稳定性、4K/画质、起播速度)。
+- **反例证据已足够**:主链(NewPipe pot-less SABR)**当天多次实测 `status=1`、零错误、媒体段 100% 可用**,
+  用户实际可用的从来不是 WEB-SABR ⇒ 「把它做通」的边际价值必须由 §5.10.1 的判据背书才继续投入。
+
+#### 5.10.3 文档机制(防止再引用坏结论)
+
+- 每条结论 → **`日期 + 当时配置 + 失效条件`** 三要素(§2.1 表已加「复核」栏)。
+- 「已证伪」清单**引用前必须核日期与当时的 bug 状态**:P11-141(刷新未解码)修好前的一切
+  token 相关结论**都不可信**。
+- 实验版本上线前先自检一句:**「这个实验真能跑到第 2 步吗?」** —— P11-145/P11-146 连续两版都因闸门
+  (判死标记短路后续臂)而跑不到第 2 步,装到机器上才发现。
+
+### 5.9.8 r2034 两条实证 + 两处可执行缺陷(P11-148)
+
+**实证 ①(正面):自造会话 + 自铸 token 在服务端宽松态下**真能播**。**
+`logs_live_20260920_211628.log`,GRbG-4Yqhwk,臂 A(sid `7xcLrqdPSA9kwnzqnn7gRg`):
+
+```
+WEB-SABR 优先(用户设置) → playback ready(video=itag315 audio=itag140)   ← 是 WEB-SABR,不是 NewPipe
+status=2 + resp summary: req=140 usable=6335153B/6335153B init=[140,302] pushed=[140,302]
+status=2 但刻意不刷新 → keep 87B(age=11348ms)                          ← keep-stale 在起作用
+first media chunk ×2 + playerState=3(READY) + startup lock released
+rn=1 → status=2 + usable=5042267B/5042267B ; rn=2 → status=2 + usable=4530418B/4530418B
+全场:chunk completed: media ×14、status=3 = 0、Playback error = 0
+```
+
+⇒ 服务端 **`status=2` 反复但不升级**时,会话照常供全量数据 —— **keep-stale(不刷新)正是这时候保住了它**
+(按老行为刷成另一枚自铸 token,会像 r2028 那样 0.5s 内被判 `status=3`)。这与同一配置早先 4 次必死并排,
+再次印证「决定因素是服务端当刻强制态」(§5.9.6 调研:概率性 A/B)。
+
+**实证 ②(负面,两个可执行缺陷)** —— `logs_live_20260920_212547.log`,视频 `-Tl1avLHa_I`:
+
+| 缺陷 | 日志 | 修(P11-148) |
+|---|---|---|
+| **臂 A 回落到已淘汰的桌面 token** | `resolve#1 → 臂A` 后 1.6s 取 token → `mobile minter 未产出 → 回落 botGuard token(128 chars)` → `/player` **`playability=UNPLAYABLE → abort`** | `awaitMobileMinter()`:等移动铸造器(冷启实测 4~6s,上限 6s),**等不到就跳过本臂**,不再回落桌面 botGuard(桌面挑战链 token 配移动 WEB 会话是 P11-127 明确淘汰的组合) |
+| **臂 B 桩-only 却白烧 36s** | `cold attempt 无捕获(6450ms)`(桩被丢弃,正确)→ **内置重试又跑 30s** → `NO CAPTURE after 36466ms` | harvester 新增 `lastStubOnly`;调用方见「只剩桩」即**跳过重试**(桩已判无用,再采不会变好) |
+
+外加一处**取证改进**:臂失败时打一行汇总 `WEB-SABR 臂X 本轮失败 → 落 NewPipe 主链(四臂进度 N/4)`,
+免得再靠 grep 拼四臂结果。
+
+同场还确认两处修复生效:**P11-147 闸门**(`该视频已判死,但四臂实验未试满(2/4)→ 继续轮换` —— 臂 B 真跑到了)、
+**P11-142 桩丢弃**(`丢弃冷启桩`)。
 
 ---
 

@@ -33,6 +33,7 @@ import com.kirin.mt.core.youtube.piped.PipedClient
 import com.kirin.mt.core.youtube.piped.PipedStreams
 import com.kirin.mt.core.youtube.piped.PipedStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
@@ -248,10 +249,15 @@ class YoutubePlaybackResolver(
       // 臂 C:pot-less。传 "" 而**不是** null —— 上游有 `poToken == null → abort` 守卫,且
       // SabrSession.fromSabrData 对 blank 的处理就是 ByteArray(0)。顺带省掉一次铸造。
       webSabrTokenArm == 2 -> ""
-      else -> runCatching { biliTvPoTokenProvider.ensureWebToken(videoId)?.streamingDataPoToken }
-        .getOrNull()
+      else -> awaitMobileMinter(videoId)
         ?.also { Log.i(Tag, "WEB-SABR token: mobile minter (${it.length} chars)") }
-        ?: poToken.also { Log.w(Tag, "WEB-SABR token: mobile minter 未产出 → 回落 botGuard token(${it?.length ?: 0} chars)") }
+    }
+    if (webSabrInPlay && webSabrTokenArm != 2 && webSabrPoToken == null) {
+      Log.w(
+        Tag,
+        "WEB-SABR: 移动铸造器 ${MINTER_WAIT_MS}ms 内未产出 → **跳过本臂**(P11-148;" +
+          "不再回落桌面 botGuard token —— r2034 实测那个组合换来 `playability=UNPLAYABLE`)",
+      )
     }
 
     // 提取 signatureTimestamp（对齐 youtubei.js Player.ts #getSignatureTimestamp），注入 /player
@@ -313,7 +319,11 @@ class YoutubePlaybackResolver(
         return@withContext webSabr.first
       }
       SabrStreamRegistry.markWebSabrFailed(videoId)
-      Log.w(Tag, "WEB-SABR 优先失败 → 落 NewPipe 主链(SABR→DASH 兜底)")
+      Log.w(
+        Tag,
+        "WEB-SABR 臂${armLabelOf(webSabrTokenArm)} 本轮失败 → 落 NewPipe 主链(SABR→DASH 兜底)" +
+          "(四臂进度 ${SabrStreamRegistry.webSabrArmsTried(videoId)}/4;P11-148 汇总行)",
+      )
     }
 
     // ── NewPipe-first 主路径(alpha.93):对齐 LibreTube 直调 NewPipe getInfo,不依赖 WEB /player WebView harvest ──
@@ -2304,7 +2314,10 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "P11-118 harvest: cold attempt 无捕获(${System.currentTimeMillis() - t0}ms)→ 立即重试一次(WebView 已热)" +
         "(P11-142 起「只采到冷启桩」也走这里:桩被 harvester 丢弃,见上一条 `丢弃冷启桩`)")
       val retryBudget = harvestBudgetMs(HarvestWarmCapMs)
-      if (retryBudget < MinHarvestAttemptMs) {
+      if (harvester.lastStubOnly) {
+        // P11-148:桩已被判定无用(P11-142),再采一次不会变好 —— r2034 实测这次重试又烧了 30s 且同样只出桩。
+        Log.w(Tag, "P11-118 harvest: 本轮只剩冷启桩(已被丢弃)→ **跳过重试**(P11-148),直接回退自造材料")
+      } else if (retryBudget < MinHarvestAttemptMs) {
         Log.w(Tag, "P11-118 harvest: 重试预算只够 ${retryBudget}ms(< ${MinHarvestAttemptMs}ms)→ 不重试")
       } else {
         cap = runCatching { harvester.harvest(videoId, startMs = startMs, timeoutMs = retryBudget) }.getOrNull()
@@ -2506,6 +2519,33 @@ class YoutubePlaybackResolver(
     }
     val over = if (bytes.size > 128) " ⚠️超长(>128B,疑复用 minter 膨胀;真 token ~110-128B)" else ""
     return "${bytes.size}B first=0x%02x %s%s".format(first, kind, over)
+  }
+
+  /** P11-148:臂名(日志统一口径,与 [SabrStreamRegistry.nextWebSabrTokenArm] 的轮换顺序一致)。 */
+  private fun armLabelOf(arm: Int): String = when (arm) {
+    0 -> "A(自造+自铸)"
+    1 -> "B(自造+页面token)"
+    2 -> "C(自造+pot-less)"
+    else -> "D(完整材料会话)"
+  }
+
+  /**
+   * P11-148:等移动铸造器产出 WEB token(冷启实测 4~6s),**等不到就返回 null 让调用方跳过本臂**。
+   *
+   * 依据(r2034 21:23 那场):`resolve → 臂A` 后 1.6s 就去取 token,而 `PoTokenWebView` 刚
+   * `loadHtmlAndObtainBotguard()`(冷启中)→ 取不到 → 旧逻辑**回落桌面 botGuard token(128 chars)**
+   * → 用那个 token 发 `/player` → **`playability=UNPLAYABLE` → abort**。桌面挑战链的 token 配移动
+   * WEB 会话本就是 P11-127 明确淘汰的组合;宁可本臂不跑,也不要拿它去换一个必然失败的会话。
+   * (臂 B 的页面 token 若也拿不到,同样落 null → 由调用方跳过/换下一臂。)
+   */
+  private suspend fun awaitMobileMinter(videoId: String, timeoutMs: Long = MINTER_WAIT_MS): String? {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (true) {
+      val t = runCatching { biliTvPoTokenProvider.ensureWebToken(videoId)?.streamingDataPoToken }.getOrNull()
+      if (!t.isNullOrBlank()) return t
+      if (System.currentTimeMillis() >= deadline) return null
+      delay(600L)
+    }
   }
 
   private suspend fun buildWebSabrFallback(
@@ -2762,7 +2802,7 @@ class YoutubePlaybackResolver(
     // 空=pot-less;>128B 视为可疑(实测「复用同一 minter」会让它每次 +65B 膨胀到 1300B+,必被拒)。
     Log.i(
       Tag,
-      "WEB-SABR token 形态(P11-146): 臂${when (tokenArm) { 0 -> "A(自造+自铸)"; 1 -> "B(自造+页面token)"; 2 -> "C(自造+pot-less)"; else -> "D(完整材料会话)" }} " +
+      "WEB-SABR token 形态(P11-146): 臂${armLabelOf(tokenArm)} " +
         describeTokenShape(session.poToken) +
         " (ust=${session.ustreamerConfig.size}B cpn=${session.cpn})",
     )
@@ -3277,6 +3317,9 @@ class YoutubePlaybackResolver(
 
     /** P11-126:低于这个剩余预算就不发这次 harvest——发一次注定被砍的只会白烧 WebView/solver。 */
     private const val MinHarvestAttemptMs = 3_000L
+
+    /** P11-148:等移动铸造器产出的上限(冷启实测 4~6s;超了宁可跳过本臂,不回落桌面 token)。 */
+    private const val MINTER_WAIT_MS = 6_000L
 
     /** P11-126:harvest 冷启(建 WebView + 载首页)的硬上限,原 `timeoutMs = 40_000L`。 */
     private const val HarvestColdCapMs = 40_000L

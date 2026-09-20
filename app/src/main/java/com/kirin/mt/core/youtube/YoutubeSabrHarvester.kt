@@ -128,8 +128,18 @@ class YoutubeSabrHarvester(
    * 由浏览器 POST 时播放位置定),故旋转到 mid-playhead 必须先让浏览器锚定在播放头,否则新会话窗口仍
    * 从 0 起算 → 请求 playhead>60s 被拒(alpha.47 session2 死因)。默认 startMs=0(从头播,原行为)。
    */
+  /**
+   * P11-148:**本轮采集是否「只采到冷启桩、桩被丢弃」**。给调用方判「要不要再补一次采集」用 ——
+   * r2034 实测:「冷启桩被丢弃(6s 早退)+ 调用方内置重试(又 30s)」串行白烧 36s,而第二次同样只出桩。
+   * 桩已被判定无用(P11-142),再采一次不会变好,故调用方据此跳过重试。
+   */
+  @Volatile
+  var lastStubOnly: Boolean = false
+    private set
+
   suspend fun harvest(videoId: String, startMs: Long = 0L, timeoutMs: Long = 50_000L): SabrCapture? =
     withContext(Dispatchers.Main) {
+      lastStubOnly = false
       val result = runCatching { withTimeoutOrNull(timeoutMs) { harvestImpl(videoId, startMs) } }
         .onFailure { Log.w(Tag, "harvest failed: ${it.message ?: it::class.simpleName}") }
         .getOrNull()
@@ -397,6 +407,7 @@ class YoutubeSabrHarvester(
         // `no seg 0 itag <我们的档>` ×6;对照 r2023 那场自造材料会话 `status=1 ×12` 且正常供我们的
         // 302/140)。故桩**没有价值**:返回 null 才能让 resolver 立刻落自造路径。
         if (stubCapture != null && System.currentTimeMillis() >= stubGraceDeadline) {
+          lastStubOnly = true
           Log.w(
             Tag,
             "harvest: 真 token 的 POST 未出现 → **丢弃冷启桩**" +
@@ -407,6 +418,7 @@ class YoutubeSabrHarvester(
       }
       // P11-142:轮询到期也只有桩 → 同样丢弃(桩材料会话出生即死,见上)。
       stubCapture?.let {
+        lastStubOnly = true
         Log.w(
           Tag,
           "harvest: 轮询到期,只有冷启桩 POST(poToken=${poTokenLenOf(it.bodyB64)}B)→ 丢弃,返回 null(落自造材料)",
