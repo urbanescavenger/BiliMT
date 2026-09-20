@@ -208,7 +208,7 @@ internal class DefaultSabrChunkSource(
     // 2026-09-20:窗口是**持续条件**——缓冲跌破撤销线立即撤销(见 PREFETCH_REVOKE_BUFFERED_US)。
     // 放在最前:撤销要能抢在"又一次请求带上预取档"之前生效。
     if (bufferedDurationUs < PREFETCH_REVOKE_BUFFERED_US) {
-      fetcher.cancelPrefetch(bufferedDurationUs)
+      fetcher.cancelPrefetch("缓冲 ${bufferedDurationUs / 1_000_000}s 跌破撤销线")
       return
     }
     if (bufferedDurationUs < PREFETCH_MIN_BUFFERED_US) return

@@ -115,26 +115,28 @@ internal class SabrMediaFetcher(
     prefetchItag?.takeIf { System.currentTimeMillis() < prefetchUntilMs }
 
   /**
-   * 2026-09-20(预取窗口撤销,修「窗口期内抢响应预算 → 正在播的格式饿死」):缓冲跌破撤销线时由
-   * DefaultSabrChunkSource.maybePrefetchNextTier 调用,立刻让本窗口失效。
+   * 2026-09-20(预取窗口撤销):让本窗口立刻失效。两个调用点、两条不同的证据链:
    *
-   * 为什么必须能撤销:窗口(30s)此前是**进入时检查一次**就一路生效——真机两场播放到缓冲塌到 0 的
-   * 全过程中,每个请求仍在 `preferredVideoFormatIds` 里点名要 1080p itag335,服务端照办(每次响应
-   * 7.87MB 全是 335),而白名单只认 `[140,698]` → 整段丢弃,且**当次请求的 698 段挤不进来** →
-   * `no seg` → 6 连重试 → `terminal → evict`。撤销后请求不再点名它,当次段得以正常送达。
+   * ① **缓冲跌破撤销线**(DefaultSabrChunkSource.maybePrefetchNextTier)——语义"进入条件是持续条件"。
+   * ② **本次请求的段没送达**(本类 `no seg` 重试路径)——语义"服务端把响应预算给了预取档,当次的段
+   *    挤不进来"。这条是主钩子:水位那条挂在 `getNextChunk` 上,而 `no seg` 暴风期 loader 卡在重试
+   *    循环里、`getNextChunk` 不被调用(r2006 实测 32s 只有 1 个评估点),那条路结构上够不着故障。
+   *
+   * 为什么必须能撤销:窗口(30s)此前是**进入时检查一次**就一路生效——真机三场播放到缓冲塌到 0 的
+   * 全过程中,每个请求仍在 `preferredVideoFormatIds` 里点名要 1080p itag335,服务端照办(每笔响应
+   * 7.6–7.9MB 全是 335),而白名单只认 `[140,698]` → 整段丢弃,且**当次请求的 698 段挤不进来** →
+   * `no seg` → 6 连重试 → `terminal → evict` → 新会话(窗口还在)再问一次。r2006 实测量级:
+   * 12 次 × ~7.6MB ≈ 91MB 全丢、`skip FORMAT_INIT itag=335` 14 次 == `no seg` 14 次、
+   * 缓冲 29.5s → 5.8s → 2.6s 卡顿。撤销后请求不再点名它,当次段得以正常送达。
    *
    * 只清窗口,**不动**该档在 chunk source `prefetchedTiers` 里的记录:本会话不再重试该档,保持
    * 「同一档只报一次、不持续白吃带宽」的原意(该档能否重试需等白名单放行验证后再评估)。
    */
-  fun cancelPrefetch(bufferedDurationUs: Long) {
+  fun cancelPrefetch(reason: String) {
     val cur = activePrefetchItag() ?: return
     prefetchItag = null
     prefetchUntilMs = 0L
-    Log.i(
-      tag,
-      "prefetch canceled: itag$cur 撤销(缓冲 ${bufferedDurationUs / 1_000_000}s 跌破撤销线)" +
-        " — 不再与正在播的格式抢响应预算",
-    )
+    Log.i(tag, "prefetch canceled: itag$cur 撤销($reason) — 不再与正在播的格式抢响应预算")
   }
 
   /** 正在处理的 partial 段(headerId → Segment,MEDIA 累积/MEDIA_END 收尾)。 */
@@ -609,8 +611,18 @@ internal class SabrMediaFetcher(
                 return@withContext fmt.getSegment(req.segment)!!
               }
             }
-            // transient:段未到(服务端只回了 context+backoff 或 redirect)。backoff 已在 media 起始 sleep,
-            // redirect 已写回 session.sabrUrl。循环重试同请求。
+            // transient:段未到。三种成因:①服务端只回了 context+backoff 或 redirect(backoff 已在 media
+            // 起始 sleep,redirect 已写回 session.sabrUrl)——循环重试同请求即可;②服务端只推了**同格式**
+            // 更后面的段(上面 P11-92 分支已接走);③**服务端把响应预算给了别的 itag**(真机三场同签名:
+            // 响应 7.6–7.9MB 全是预取档 itag335、白名单丢弃、当次的段挤不进来)——这一种**重试注定落空**,
+            // 因为每笔重试都带着同一个预取档,服务端每次都做同样的取舍。第 ③ 种正是下面这行的处理对象。
+            //
+            // 2026-09-20(预取抢预算的**即时反馈**,主钩子):段没送达 = 预取档是首要嫌疑,当场撤销,
+            // 让**下一笔**重试就能把段拿回来,而不是干等 30s 窗口自然到期(那之前每笔都在白下 ~8MB)。
+            // **钩子必须在这里**:水位撤销挂在 `getNextChunk` 上,而暴风期 loader 卡在本循环里,
+            // `getNextChunk` 不被调用(r2006 实测 14:46:36→14:47:08 只有 1 个评估点),那条路结构上
+            // 够不着故障现场 —— 第一版(c)挂在那边,整场没打出一条 `prefetch canceled` 就是这个原因。
+            cancelPrefetch("请求 seg ${req.segment} itag $itag 未送达(attempt $attempt)")
             Log.i(tag, "getNextSegment: no seg ${req.segment} itag $itag after attempt $attempt (retry)")
           }
           throw SabrTerminalException("exhausted $MAX_ATTEMPTS attempts for seg ${req.segment} itag $itag")
@@ -629,7 +641,20 @@ internal class SabrMediaFetcher(
     val data = fetchStreamData(req)
     val ump = UmpReader()
     ump.append(data)
-    ump.readParts { type, payload -> processPart(type, payload) }
+    // 2026-09-20(无效流量取证):一次响应内的丢弃统计——见 DiscardTracker 为何必须是调用内局部量。
+    val discard = DiscardTracker()
+    ump.readParts { type, payload -> processPart(type, payload, discard) }
+    // 2026-09-20(无效流量取证,只观测不改口径):本响应里被整段丢弃的媒体字节。
+    // 真机三场「预取窗口 = 零可用数据窗口」期间每笔响应丢 7.6–7.9MB,而这些字节照进
+    // `recordRealBandwidthSample` → est 一路抬到 32Mbps → 又作为 `bandwidthEstimate` **上报服务端**
+    // → 服务端更确信该推高分辨率(恶性闭环)。口径动不动(是否剔出 est/sus/上报)等这个数出来再定。
+    if (discard.bytes > 0L) {
+      Log.w(
+        tag,
+        "discarded media: ${discard.bytes}B of ${data.size}B " +
+          "(itags=${discard.itags.sorted()}) — 未白名单格式的段整段丢弃",
+      )
+    }
     // alpha.67(对齐 LibreTube processPart status==2 `poToken = generatePoToken()` 同步):status=2 在
     // 本响应里出现 → 此处(下个请求发出前)同步重铸 PO token,下个请求一定带新 token → status=3 不再出现。
     // 异步(alpha.66 maybeRefreshPoToken 后台 launch)有竞态:刷新需 ~550ms,下一段请求在此之前发出带旧 token
@@ -877,8 +902,8 @@ internal class SabrMediaFetcher(
     }
   }
 
-  /** 处理一个 UMP part(对齐 LibreTube processPart)。 */
-  private fun processPart(type: Int, payload: ByteArray) {
+  /** 处理一个 UMP part(对齐 LibreTube processPart)。[discard] 只用于 2026-09-20 的无效流量取证。 */
+  private fun processPart(type: Int, payload: ByteArray, discard: DiscardTracker) {
     when (type) {
       PART_MEDIA_HEADER -> {
         val mh = SabrProto.decodeMediaHeader(payload)
@@ -896,6 +921,8 @@ internal class SabrMediaFetcher(
         // (21:01 真机:videoFormat 翻 302 后 298 在途段响应全被丢,六连重试独占 fetcher 8.5s)。
         val hdrWhitelist = setOfNotNull(audioFormat?.itag, videoFormat?.itag) + pendingRequestItags
         if (hdrWhitelist.isNotEmpty() && mh.itag !in hdrWhitelist) {
+          // 2026-09-20:记下 headerId→itag——PART_MEDIA 只有 headerId,靠这条才认得出被丢弃的字节是谁的。
+          discard.headerItags[mh.headerId] = mh.itag
           Log.w(tag, "skip ad/unrequested MEDIA_HEADER itag=${mh.itag} headerId=${mh.headerId} (whitelist=$hdrWhitelist)")
           return
         }
@@ -914,7 +941,16 @@ internal class SabrMediaFetcher(
       PART_MEDIA -> {
         // payload = [headerId varint][media bytes]。headerId 是 UMP 自定义 varint(首字节<128 时单字节)。
         val (headerId, hdrLen) = readUmpVarint(payload, 0) ?: return
-        val seg = partialSegments[headerId] ?: return
+        // 2026-09-20 取证:partialSegments 里没有 = 其 MEDIA_HEADER 未登记。**只统计能归因到
+        // 白名单跳过的那部分**(discard.headerItags 有记录才计),否则无从归因的字节(如 MEDIA_END
+        // 之后到达的重复块)混进来会把数抬高——这个数是拿去判断口径要不要改的,必须可信。
+        val seg = partialSegments[headerId] ?: run {
+          discard.headerItags[headerId]?.let {
+            discard.bytes += payload.size.toLong()
+            discard.itags.add(it)
+          }
+          return
+        }
         seg.data.add(if (hdrLen == 0) payload else payload.copyOfRange(hdrLen, payload.size))
       }
       PART_MEDIA_END -> {
@@ -1200,3 +1236,17 @@ internal class SabrMediaFetcher(
  * [SabrDataSource.open] 捕获 → [com.kirin.mt.core.youtube.sabr.SabrStreamRegistry.evict] → 播放器 error-retry 重 harvest。
  */
 internal class SabrTerminalException(message: String) : Exception(message)
+
+/**
+ * 2026-09-20(无效流量取证):**一次响应内**被整段丢弃的媒体字节与来源 itag。
+ *
+ * **为什么是调用内局部量而不是 fetcher 的实例字段**:fetcher 是**跨轨共享**的(SabrMediaPeriod 注释:
+ * 「底层共享同一 SABR 会话/fetcher——这是修 60s 断崖的核心」),视频与音频两个 loader 会并发进
+ * `media()`;实例字段会互相踩,统计出来的数会串场。
+ */
+private class DiscardTracker {
+  var bytes = 0L
+  /** MEDIA_HEADER 被白名单跳过时记 headerId→itag——PART_MEDIA 只有 headerId,靠它才认得出是谁的字节。 */
+  val headerItags = mutableMapOf<Int, Int>()
+  val itags = mutableSetOf<Int>()
+}

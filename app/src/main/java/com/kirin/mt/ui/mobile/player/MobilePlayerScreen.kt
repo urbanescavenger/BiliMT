@@ -231,6 +231,21 @@ private const val AirJumpCompletionToastSuppressMs = 1_500L
 private const val AirJumpRewindResetThresholdMs = 2_000L
 private const val AirJumpRewindResetLeadMs = 1_000L
 
+/**
+ * 2026-09-20:ExoPlayer `playbackState` 常量 → 状态名,供日志可读。
+ *
+ * 为什么值得为此加一个函数:本文件同时打两种重试计数(`errorRetryCount` 与 `autoRetryCount`)、
+ * 又打裸 `playbackState` Int,复盘时极易读反 —— P11-135 就是既读反了状态(把 READY 当 BUFFERING)、
+ * 又分不清是哪个计数器,白追一轮。
+ */
+private fun playbackStateName(state: Int): String = when (state) {
+  Player.STATE_IDLE -> "IDLE"
+  Player.STATE_BUFFERING -> "BUFFERING"
+  Player.STATE_READY -> "READY"
+  Player.STATE_ENDED -> "ENDED"
+  else -> "UNKNOWN($state)"
+}
+
 private sealed interface MobilePlayerState {
   data object Loading : MobilePlayerState
   data class Ready(val info: PlaybackInfo) : MobilePlayerState
@@ -1142,21 +1157,27 @@ fun MobilePlayerScreen(
 
       override fun onIsPlayingChanged(playing: Boolean) {
         isPlaying = playing
+        // 2026-09-20:两条日志都要点明**清的是哪个计数器**——本文件有两个独立预算
+        // (`autoRetryCount` 看门狗档,上限 MaxStallAutoRetry=2;`errorRetryCount` 错误档,
+        // 上限 MaxErrorAutoRetry=3),此前两行都写「counter reset」,复盘时分不清。
         if (playing && autoRetryCount > 0) {
           autoRetryCount = 0
-          Log.i(MobilePlayerLogTag, "playback error auto-retry recovered, counter reset")
+          Log.i(MobilePlayerLogTag, "stall-watchdog retry budget reset (autoRetryCount 0/$MaxStallAutoRetry)")
         }
         if (playing && errorRetryCount > 0) {
           errorRetryCount = 0
-          Log.i(MobilePlayerLogTag, "playback error-retry recovered, counter reset")
+          Log.i(MobilePlayerLogTag, "playback error-retry budget reset (errorRetryCount 0/$MaxErrorAutoRetry)")
         }
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {
         // alpha.74 诊断:确认音频轨是否被选中(videoFormat/audioFormat)+ 播放器最终状态。
+        // 2026-09-20:括号里补**状态名**。此前只打裸 Int,而 ExoPlayer 的常量是 1=IDLE/2=BUFFERING/
+        // 3=READY/4=ENDED ——「3」不是 BUFFERING。P11-135 复盘时读反了它,把「正常播放的窗口」当成
+        // 「冻结窗口」,整条因果讲反、白追了一轮。Int 保留(便于沿用既有 grep)。
         Log.i(
           MobilePlayerLogTag,
-          "playerState=$playbackState pos=${player.currentPosition} videoFmt=${player.videoFormat} audioFmt=${player.audioFormat}",
+          "playerState=$playbackState(${playbackStateName(playbackState)}) pos=${player.currentPosition} videoFmt=${player.videoFormat} audioFmt=${player.audioFormat}",
         )
         // alpha.97(修「Auto 永不升过 1080p」决定性诊断,镜像 TV PlayerScreen YtSabrTracks):READY 时
         // dump ①trackSelectionParameters 真实 min/max/viewport 值(验证起始档锁/首帧释放后的实际状态);
@@ -1229,9 +1250,11 @@ fun MobilePlayerScreen(
           if (errorRetryCount < MaxErrorAutoRetry) {
             errorRetryCount += 1
             autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
+            // 2026-09-20:点明是**错误档**预算(与看门狗档 autoRetryCount 区分开,见 onIsPlayingChanged)。
             Log.w(
               MobilePlayerLogTag,
-              "playback error, auto-retry #${errorRetryCount} @pos=${autoResumePositionMs}ms: ${error.message}",
+              "playback error, error-retry #${errorRetryCount}/$MaxErrorAutoRetry " +
+                "@pos=${autoResumePositionMs}ms: ${error.message}",
             )
             retryKey += 1L
           } else {
