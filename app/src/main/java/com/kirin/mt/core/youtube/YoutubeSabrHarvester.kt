@@ -388,17 +388,29 @@ class YoutubeSabrHarvester(
           }
         }
         delay(200)
-        // P11-127:只拿到冷启桩时,再等 [STUB_GRACE_MS] 找真 token 的 POST;到点就带着桩收工,
-        // 不把额外耗時拖到 30s 轮询期限(起播预算敏感)。
+        // P11-142(2026-09-20 r2024 真机判读):**不再退桩**。
+        // r2024 一场里 4/5 次采集只拿到冷启桩(poToken=10B;真 token 那份是 88B/ust 8657B),而这些
+        // 桩材料会话**出生即死**:桩 token 让服务端一路 `status=2`(attestation pending,整场 114 次),
+        // 永远拿不到 `status=1`。更糟的是**桩材料把「自造材料」路径挤掉了** ——
+        // [YoutubePlaybackResolver.harvestSessionMaterial] 返回非 null,resolver 就不再走我们自己的
+        // /player 会话;而**材料 URL 会话只供浏览器那一场绑定的档位**(r2024 五场全死于
+        // `no seg 0 itag <我们的档>` ×6;对照 r2023 那场自造材料会话 `status=1 ×12` 且正常供我们的
+        // 302/140)。故桩**没有价值**:返回 null 才能让 resolver 立刻落自造路径。
         if (stubCapture != null && System.currentTimeMillis() >= stubGraceDeadline) {
-          Log.w(Tag, "harvest: 真 token 的 POST 未出现 → 退冷启桩(poToken=${poTokenLenOf(stubCapture!!.bodyB64)}B)")
-          return stubCapture
+          Log.w(
+            Tag,
+            "harvest: 真 token 的 POST 未出现 → **丢弃冷启桩**" +
+              "(poToken=${poTokenLenOf(stubCapture!!.bodyB64)}B)→ 返回 null 落自造材料(见 P11-142)",
+          )
+          return null
         }
       }
-      // P11-127:桩优于非 POST(GET 段):桩至少是 SABR POST(URL/ustreamerConfig/cpn 可用)。
+      // P11-142:轮询到期也只有桩 → 同样丢弃(桩材料会话出生即死,见上)。
       stubCapture?.let {
-        Log.w(Tag, "harvest: 轮询到期,只有冷启桩 POST(poToken=${poTokenLenOf(it.bodyB64)}B)→ 返回它")
-        return it
+        Log.w(
+          Tag,
+          "harvest: 轮询到期,只有冷启桩 POST(poToken=${poTokenLenOf(it.bodyB64)}B)→ 丢弃,返回 null(落自造材料)",
+        )
       }
       nonPostCapture?.let {
         Log.w(Tag, "harvest: no SABR POST before deadline; only ${it.method} status=${it.status} → return non-SABR(阶段 2 判据不算通过)")

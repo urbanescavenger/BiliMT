@@ -2277,7 +2277,8 @@ class YoutubePlaybackResolver(
       // P11-118d:首次(冷)harvest 要把 WebView 从零建起来 + 加载真实首页建立上下文,常常吃不进
       // 窗口(r1956 真机:第一次 `NO CAPTURE after 40009ms`,而紧接着的重试只花 1932ms)。这里就地补一次
       // 重试而不是让上层 auto-retry 兜——省掉一整轮播放失败。
-      Log.w(Tag, "P11-118 harvest: cold attempt 无捕获(${System.currentTimeMillis() - t0}ms)→ 立即重试一次(WebView 已热)")
+      Log.w(Tag, "P11-118 harvest: cold attempt 无捕获(${System.currentTimeMillis() - t0}ms)→ 立即重试一次(WebView 已热)" +
+        "(P11-142 起「只采到冷启桩」也走这里:桩被 harvester 丢弃,见上一条 `丢弃冷启桩`)")
       val retryBudget = harvestBudgetMs(HarvestWarmCapMs)
       if (retryBudget < MinHarvestAttemptMs) {
         Log.w(Tag, "P11-118 harvest: 重试预算只够 ${retryBudget}ms(< ${MinHarvestAttemptMs}ms)→ 不重试")
