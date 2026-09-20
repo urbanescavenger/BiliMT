@@ -322,7 +322,9 @@ fun PlayerScreen(
     // alpha.97(修「Auto 永不升过 1080p」根因,同 MobilePlayerScreen):clearViewportSizeConstraints 置
     // isViewportSizeLimitedByPhysicalDisplaySize=false,解除「物理屏=视口」隐性约束,否则超屏分辨率
     // (1440p/2160p)永远拿不到 ADAPTIVE 资格。
-    val trackSelector = DefaultTrackSelector(context, HeightAwareAdaptiveTrackSelectionFactory())
+    // P11-128:工厂实例要留引用——起播锁高(替代 setMin/MaxVideoSize)通过它下发/释放。
+    val abrSelectionFactory = remember { HeightAwareAdaptiveTrackSelectionFactory() }
+    val trackSelector = DefaultTrackSelector(context, abrSelectionFactory)
     trackSelector.setParameters(
       DefaultTrackSelector.Parameters.Builder()
         .setAllowVideoMixedMimeTypeAdaptiveness(true)
@@ -1719,13 +1721,13 @@ fun PlayerScreen(
         // 2026-09-01 黑屏诊断:首帧渲染回执(07:22 案 5 轮会话此回调零触发)。
         frameRendered = true
         Log.i(PlayerPlaybackLogTag, "video first frame rendered")
-        // 起始挡位:首帧已渲染 = 实际运行起来,松开 selector 高度 cap,让 ABR 爬回默认画质上限。
+        // 起始挡位:首帧已渲染 = 实际运行起来,松开起播锁高,让 ABR 爬回默认画质上限。
+        // P11-128:改调 `releaseStartupLock()`(选择内部状态),不再改 selector 参数——改参数会换出新的
+        // 选择集 ⇒ ChunkSampleStream 重建(样本队列整丢)。此处零重建。
         if (!startQualityRelaxed) {
           startQualityRelaxed = true
-          val cur = player.trackSelectionParameters
-          if (cur is DefaultTrackSelector.Parameters) {
-            player.setTrackSelectionParameters(cur.buildUpon().clearVideoSizeConstraints().build())
-          }
+          abrSelectionFactory.releaseStartupLock()
+          Log.i(PlayerPlaybackLogTag, "startup lock released (ABR 自由爬档, 零重建)")
         }
       }
 
@@ -2084,9 +2086,11 @@ fun PlayerScreen(
           dataSourceFactory = subtitleDataSourceFactory,
           subtitleTracks = subtitleTracks,
         )
-        // 起始挡位:起播阶段用 min+max 精确锁在起始档(SABR 专属,非 SABR 不卡),保证首段落在起始档
-        // (不靠带宽,对齐 LibreTube AbstractPlayerService setMinVideoSize+setMaxVideoSize 锁法,比原 maxHeight
-        // 上限更精确,杜绝"起播即顶满 4K");首帧渲染后 onRenderedFirstFrame 松开,升降档交给 ABR+excludeTrack。
+        // 起始挡位:起播阶段锁在起始档(SABR 专属,非 SABR 不锁),保证首段落在起始档、杜绝"起播即顶满 4K"。
+        // P11-128:锁**搬到选择内部**([HeightAwareAdaptiveTrackSelectionFactory.startupLockHeight]),
+        // 不再用 `setMin/MaxVideoSize`——后者改的是 selector 的选择集,首帧后松开会换出新的选择集 ⇒
+        // ChunkSampleStream 重建(样本队列整丢 + 从当前位置重装,真机实测 1.16s 后才重新出帧)。改成内部
+        // 锁高后选择集恒定,松开只是允许选更高档 → 零重建。黑屏熔断压档同样走这个锁(与手动选档取小)。
         startQualityRelaxed = false
         frameRendered = false
         // P11-120:换视频重置字幕为关闭(不跨视频继承用户的字幕选择)。
@@ -2098,18 +2102,7 @@ fun PlayerScreen(
         } else {
           null
         }
-        if (startQualityHeight != null) {
-          // 在现有参数基础上叠加高度 min+max cap,保留其它配置(mixed-mime/non-seamless 等)。
-          val cur = player.trackSelectionParameters
-          if (cur is DefaultTrackSelector.Parameters) {
-            player.setTrackSelectionParameters(
-              cur.buildUpon()
-                .setMinVideoSize(Int.MIN_VALUE, startQualityHeight)
-                .setMaxVideoSize(Int.MAX_VALUE, startQualityHeight)
-                .build()
-            )
-          }
-        }
+        abrSelectionFactory.startupLockHeight = startQualityHeight
         player.setMediaSource(finalMediaSource)
         // P11-120:新 MediaSource 会重置轨道选择,重新施加字幕状态(默认关闭 = 禁用 TEXT 轨,
         // 顺带压掉 media3 可能从系统 CaptioningManager 读到的偏好而自动选轨)。

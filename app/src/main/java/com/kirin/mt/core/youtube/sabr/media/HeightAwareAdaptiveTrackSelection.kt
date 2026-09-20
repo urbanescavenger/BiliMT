@@ -188,6 +188,13 @@ class HeightAwareAdaptiveTrackSelection(
   group: TrackGroup,
   tracks: IntArray,
   private val bandwidthMeter: BandwidthMeter,
+  /**
+   * P11-128:起播档**锁高**提供者(可空=不锁)。非空期间只允许该高度的档上屏,语义等价于原来的
+   * `setMinVideoSize(…,H) + setMaxVideoSize(…,H)` 双锁,但**表达在选择内部**而不是 selector 参数 ——
+   * 见 [HeightAwareAdaptiveTrackSelectionFactory.startupLockHeight] 的说明(selector 参数一变就会换掉
+   * 整个选择集 → ChunkSampleStream 重建 → 队列整丢 1.16s)。
+   */
+  private val startupLockHeightProvider: () -> Int? = { null },
 ) : AdaptiveTrackSelection(group, tracks, bandwidthMeter) {
 
   /**
@@ -197,7 +204,69 @@ class HeightAwareAdaptiveTrackSelection(
    */
   private val fullGroup: TrackGroup = group
 
-  private var selected = length - 1
+  /**
+   * 当前选中的档。P11-128:写入统一过 [applyStartupLock] —— 起播锁高期内,任何分支算出来的档
+   * (含父类按码率的兜底、升档路径)都被夹回锁高那档,等价于原来的 min+max 双锁,但不改选择集。
+   * 锁只在起播期生效(首帧后 player 调 `releaseStartupLock()`),对稳态零影响。
+   *
+   * 初值**懒算**:[initialSelectedIndex] 会读 `isTopCodecVariant`(依赖本类后面才初始化的
+   * `topGroupCodec`),构造期直接算会读到未初始化的 null ⇒ 粘 codec 偏好失效。首次读取时再算,
+   * 那时所有字段已就绪。
+   */
+  private var selectedRaw: Int? = null
+
+  private var selected: Int
+    get() = selectedRaw ?: initialSelectedIndex().also { selectedRaw = it }
+    set(value) {
+      selectedRaw = applyStartupLock(value)
+    }
+
+  /** P11-128:锁高日志节流(每 selection 实例最多每 5s 打一次,防升档路径反复被夹刷屏)。 */
+  private var lastLockLogMs = 0L
+
+  /**
+   * P11-128:把候选档夹进起播锁高。`lock == null`(松开后)直接放行;无视频高度的组(音频)放行;
+   * 组内没有该高度的轨时退到「≤ 锁高的最高档」;再没有就不动(保底不把 selected 弄成非法值)。
+   * 同高度多 codec 变体时优先顶档 codec(VP9 粘性梯子的同一条规则,避免锁高期就跨 codec)。
+   */
+  private fun applyStartupLock(index: Int): Int {
+    val lock = startupLockHeightProvider() ?: return index
+    val safe = index.coerceIn(0, length - 1)
+    if ((0 until length).none { getFormat(it).height > 0 }) return index
+    if (getFormat(safe).height == lock) return index
+    val best = bestIndexOf { getFormat(it).height == lock } ?: bestIndexOf { getFormat(it).height in 1..lock }
+    if (best == null || best == index) return index
+    val nowMs = SystemClock.elapsedRealtime()
+    if (nowMs - lastLockLogMs > 5_000L) {
+      lastLockLogMs = nowMs
+      Log.i(
+        "YtSabrAbr",
+        "startup lock ${lock}p: ${getFormat(safe).height}p@${getFormat(safe).bitrate} → " +
+          "${getFormat(best).height}p@${getFormat(best).bitrate}(itag${getFormat(best).id})",
+      )
+    }
+    return best
+  }
+
+  /**
+   * P11-128:构造时的初始档。有锁高 → 锁高那档(同高度优先顶档 codec、再比码率),对齐旧
+   * `setMinVideoSize+setMaxVideoSize` 的「首段必落起始档」语义;无锁 → 沿用本类原行为
+   * (最低档,交给首次 `updateSelectedTrack` 按带宽爬)。
+   */
+  private fun initialSelectedIndex(): Int {
+    val lock = startupLockHeightProvider() ?: return length - 1
+    if ((0 until length).none { getFormat(it).height > 0 }) return length - 1
+    bestIndexOf { getFormat(it).height == lock }?.let { return it }
+    val maxH = (0 until length).map { getFormat(it).height }.filter { it in 1..lock }.maxOrNull()
+      ?: return length - 1
+    return bestIndexOf { getFormat(it).height == maxH } ?: (length - 1)
+  }
+
+  /** 满足条件者里挑一个:顶档 codec 优先,其次码率高者;无满足者返回 null。 */
+  private fun bestIndexOf(predicate: (Int) -> Boolean): Int? =
+    (0 until length).filter(predicate).maxWithOrNull(
+      compareBy({ if (isTopCodecVariant(getFormat(it))) 1 else 0 }, { getFormat(it).bitrate }),
+    )
 
   /**
    * 2026-09-01(VP9 粘性梯子,修「升档 avc→vp9 解码器切换撞 codec 强制回收」):整张梯子最高
@@ -664,11 +733,34 @@ class HeightAwareAdaptiveTrackSelection(
  */
 class HeightAwareAdaptiveTrackSelectionFactory : AdaptiveTrackSelection.Factory() {
 
+  /**
+   * P11-128:起播档**锁高**(可空;非空 = 只允许该高度的档上屏,语义 = 旧 `setMinVideoSize(…,H)` +
+   * `setMaxVideoSize(…,H)` 双锁)。
+   *
+   * **为什么搬到选择内部**:旧做法改的是 `TrackSelectionParameters`,那是 `DefaultTrackSelector` 的
+   * **选择集**输入 —— cap 一变就换出一个「轨道集不同的新 selection」,media3 无法沿用 →
+   * `SabrMediaPeriod.releaseDisabledStreams` 释放 ChunkSampleStream、`selectNewStreams` 重建
+   * (**样本队列整体丢弃**)。真机实测(2026-09-20 `logs_live_20260920_091404.log`):首帧后 32ms 松开 cap
+   * → `init trackType=2 trackSelLen=3→6` → `bufS=0.0` + `videoFmt=null` + `loadPositionMs=0` 重装 →
+   * **1.16s 后才重新出帧**;文档 §19.2 早已把它记为「每次会话必经的队列整丢点」。
+   * 搬到选择内部后选择集自始至终不变,松开只是「允许选更高档」→ **原地换档,零重建**。
+   *
+   * 写入时机:player 在 `prepare()` 前赋 [startupLockHeight];释放:首帧回调调 [releaseStartupLock]。
+   * 选择类每次 `updateSelectedTrack` 现读本值,故释放无需通知已创建的实例。
+   */
+  @Volatile var startupLockHeight: Int? = null
+
+  /** P11-128:松开起播锁高(首帧后调)。下一次 `updateSelectedTrack` 即生效,无重建。 */
+  fun releaseStartupLock() {
+    startupLockHeight = null
+  }
+
   override fun createAdaptiveTrackSelection(
     group: TrackGroup,
     tracks: IntArray,
     type: Int,
     bandwidthMeter: BandwidthMeter,
     adaptationCheckpoints: ImmutableList<AdaptiveTrackSelection.AdaptationCheckpoint>,
-  ): AdaptiveTrackSelection = HeightAwareAdaptiveTrackSelection(group, tracks, bandwidthMeter)
+  ): AdaptiveTrackSelection =
+    HeightAwareAdaptiveTrackSelection(group, tracks, bandwidthMeter) { startupLockHeight }
 }

@@ -497,7 +497,9 @@ fun MobilePlayerScreen(
     // adaptive selection(坍缩成 1 轨永不升档)。显式 DefaultTrackSelector 开视频混合 mime + 非无缝 + 多自适应。
     // alpha.9Y(分辨率优先选档,对齐 PlayerScreen):媒体3 原生按 bitrate 选档会被 YouTube bitrate/height
     // 错位卡在 1080p 不升。注入按 height 选档的自定义 selection,带宽只当门槛。
-    val trackSelector = DefaultTrackSelector(context, HeightAwareAdaptiveTrackSelectionFactory())
+    // P11-128:工厂实例要留引用——起播锁高(替代 setMin/MaxVideoSize)通过它下发/释放。
+    val abrSelectionFactory = remember { HeightAwareAdaptiveTrackSelectionFactory() }
+    val trackSelector = DefaultTrackSelector(context, abrSelectionFactory)
     trackSelector.setParameters(
       DefaultTrackSelector.Parameters.Builder()
         .setAllowVideoMixedMimeTypeAdaptiveness(true)
@@ -990,25 +992,18 @@ fun MobilePlayerScreen(
         dataSourceFactory = subtitleDataSourceFactory,
         subtitleTracks = sabrEffectiveInfo.subtitleTracks,
       )
-      // 起始挡位:起播阶段用 min+max 精确锁在起始档(SABR 专属,非 SABR 不卡),保证首段落在起始档
-      // (不靠带宽,对齐 LibreTube AbstractPlayerService setMinVideoSize+setMaxVideoSize 锁法,比原 maxHeight
-      // 上限更精确,杜绝"起播即顶满 4K");首帧渲染后 onRenderedFirstFrame 松开,升降档交给 ABR+excludeTrack。
+      // 起始挡位:起播阶段锁在起始档(SABR 专属,非 SABR 不锁),保证首段落在起始档、杜绝"起播即顶满 4K"。
+      // P11-128:锁**搬到选择内部**([HeightAwareAdaptiveTrackSelectionFactory.startupLockHeight]),
+      // 不再用 `TrackSelectionParameters.setMin/MaxVideoSize`。旧做法改的是 selector 的**选择集**,
+      // 首帧后松开 ⇒ 换出「轨道集不同的新 selection」⇒ media3 不能沿用 ⇒ ChunkSampleStream 重建
+      // (样本队列整丢、`bufS=0.0`、`videoFmt=null`、从当前位置重装,真机实测 1.16s 后才重新出帧;
+      // 文档 §19.2 记作「每次会话必经的队列整丢点」)。改成内部锁高后选择集恒定不变,松开只是允许选更高档
+      // → **原地换档,零重建**。升降档在松开后照旧交给 ABR(带宽门槛 + 内部排除 + 滞回)。
       startQualityRelaxed = false
       // P11-120:换视频重置字幕为关闭(不跨视频继承)。
       selectedSubtitleTrackId = null
       val startQualityHeight = if (effectiveInfo.isSabrSingle()) youtubeStartQuality.startHeight else null
-      if (startQualityHeight != null) {
-        // 在现有参数基础上叠加高度 min+max cap,保留其它配置(mixed-mime/non-seamless/audioOnly 禁用视频轨等)。
-        val cur = player.trackSelectionParameters
-        if (cur is DefaultTrackSelector.Parameters) {
-          player.setTrackSelectionParameters(
-            cur.buildUpon()
-              .setMinVideoSize(Int.MIN_VALUE, startQualityHeight)
-              .setMaxVideoSize(Int.MAX_VALUE, startQualityHeight)
-              .build()
-          )
-        }
-      }
+      abrSelectionFactory.startupLockHeight = startQualityHeight
       player.setMediaSource(finalMediaSource)
       player.prepare()
       // P11-120:新 MediaSource 会重置轨道选择,重新施加字幕状态(默认关闭 = 禁用 TEXT 轨)。
@@ -1084,13 +1079,13 @@ fun MobilePlayerScreen(
     val listener = object : Player.Listener {
       override fun onRenderedFirstFrame() {
         Log.i(MobilePlayerLogTag, "onRenderedFirstFrame (视频首帧已渲染)")
-        // 起始挡位:首帧已渲染 = 实际运行起来,松开 selector 高度 cap,让 ABR 爬回默认画质上限。
+        // 起始挡位:首帧已渲染 = 实际运行起来,松开起播锁高,让 ABR 爬回默认画质上限。
+        // P11-128:改调 `releaseStartupLock()`(选择内部状态),**不再**改 selector 参数——
+        // 改参数会换出新的选择集 ⇒ ChunkSampleStream 重建(队列整丢 1.16s)。此处零重建。
         if (!startQualityRelaxed) {
           startQualityRelaxed = true
-          val cur = player.trackSelectionParameters
-          if (cur is DefaultTrackSelector.Parameters) {
-            player.setTrackSelectionParameters(cur.buildUpon().clearVideoSizeConstraints().build())
-          }
+          abrSelectionFactory.releaseStartupLock()
+          Log.i(MobilePlayerLogTag, "startup lock released (ABR 自由爬档, 零重建)")
         }
       }
 
