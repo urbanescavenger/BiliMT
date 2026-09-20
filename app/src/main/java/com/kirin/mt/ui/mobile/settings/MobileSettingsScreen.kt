@@ -584,7 +584,6 @@ private fun youtubeCodecLabel(c: YoutubeCodecPreference): String = stringResourc
     YoutubeCodecPreference.Vp9 -> R.string.settings_youtube_codec_vp9
     YoutubeCodecPreference.Av1 -> R.string.settings_youtube_codec_av01
     YoutubeCodecPreference.H264 -> R.string.settings_youtube_codec_h264
-    YoutubeCodecPreference.H265 -> R.string.settings_youtube_codec_h265
   }
 )
 

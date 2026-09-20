@@ -222,7 +222,6 @@
     <string name="settings_youtube_codec_vp9">VP9</string>
     <string name="settings_youtube_codec_av01">AV1</string>
     <string name="settings_youtube_codec_h264">H.264</string>
-    <string name="settings_youtube_codec_h265">H.265</string>
     <string name="settings_group_expand">Expand</string>
     <string name="settings_group_collapse">Collapse</string>
     <string name="settings_youtube_content_region_title">YouTube content region</string>
