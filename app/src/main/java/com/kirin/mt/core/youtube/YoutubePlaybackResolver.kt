@@ -167,7 +167,7 @@ class YoutubePlaybackResolver(
               videoId,
               r.session,
               sabrClient,
-              refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
+              refreshPoToken = sabrRefreshPoToken(videoId),
               forceSessionVideoItag = cfg.sabrForceSessionVideoItag,
             )
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
@@ -336,7 +336,7 @@ class YoutubePlaybackResolver(
       // streamingDataPoToken(alpha.91 Fix A:统一 minter,替 YoutubeBotGuard PLACEHOLDER),对齐 LibreTube。
       val sid = SabrStreamRegistry.registerByVideoId(
         videoId, np.session, sabrClient,
-        refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
+        refreshPoToken = sabrRefreshPoToken(videoId),
       )
       YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
       Log.i(
@@ -536,7 +536,7 @@ class YoutubePlaybackResolver(
             val sabrClient = SabrClient(httpClient)
             val sid = SabrStreamRegistry.registerByVideoId(
               videoId, rp.session, sabrClient,
-              refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
+              refreshPoToken = sabrRefreshPoToken(videoId),
             )
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
             Log.i(
@@ -654,7 +654,7 @@ class YoutubePlaybackResolver(
             // 对齐 LibreTube SabrClient.generatePoToken。botGuard 是 AppContainer 进程级单例,lambda 长生命周期安全。
             val sid = SabrStreamRegistry.registerByVideoId(
               videoId, sabrSession, sabrClient,
-              refreshPoToken = { biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8) },
+              refreshPoToken = sabrRefreshPoToken(videoId),
             )
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
             Log.i(
@@ -2437,6 +2437,28 @@ class YoutubePlaybackResolver(
     else -> "?"
   }
 
+  /**
+   * C 线(2026-09-20):SABR status=2 PO token 刷新回调的**唯一构造入口**。
+   *
+   * provider 的 `streamingDataPoToken` 是 **websafe base64 串**(r2023 真机实测两种:120 / 208 字符),
+   * 而 `streamerContext.poToken` 要的是**解码后的字节** —— FreeTube `SabrSchemePlugin.js:636`
+   * `base64ToU8(sabrData.poToken)`,与 [SabrSession.fromSabrData] 的 P11-117 归一化同一口径。
+   *
+   * 修的是什么:此前 5 处刷新回调各写 `?.toByteArray(Charsets.UTF_8)`,等于**把 base64 文本当 token
+   * 发出去**。r2023 日志实证(status=2 一刷即死):
+   *   `PO token refreshed on status=2: 208B`  ← 208B == 208 字符数 = 没解码(解码后应 ~156B)
+   *   → 下一笔请求 pot=208B → STREAM_PROTECTION_STATUS **status=3** ×8 → evict → 整会话死
+   * 会话**创建**路径 P11-117 已修过同一个坑(那次是 `poToken=128B`,同样是字符串字节),
+   * 刷新路径漏了 ⇒ 只要服务端发 status=2,刷新就把可用 token 换成必被判死的字节。收敛到这里,
+   * 只留一处实现,从结构上杜绝再次分叉。
+   */
+  private fun sabrRefreshPoToken(videoId: String): suspend () -> ByteArray? = {
+    biliTvPoTokenProvider.getWebClientPoToken(videoId)
+      ?.streamingDataPoToken
+      ?.let { websafeBase64ToBytes(it) }
+      ?.takeIf { it.isNotEmpty() }
+  }
+
   private suspend fun buildWebSabrFallback(
     videoId: String,
     poToken: String?,
@@ -2674,9 +2696,20 @@ class YoutubePlaybackResolver(
       // 同步语义由 [SabrMediaFetcher] 保证(alpha.67 改回同步 + alpha.68 取消看门狗:status=2 在响应
       // 解析处同步重铸,下个请求必带新 token;异步化曾致竞态 status=3 60s 重启)。
       // single-flight(P11-102c)防多 fetcher 并发各铸一次互相踩。
-      refreshPoToken = {
-        biliTvPoTokenProvider.getWebClientPoToken(videoId)?.streamingDataPoToken?.toByteArray(Charsets.UTF_8)
-      },
+      //
+      // ── C 线(2026-09-20 r2023 真机判读):刷新 token 必须**解码**,不能发原文 ────────────────
+      // r2023 日志(mmzKjp 会话,LSnMDFCe0lY)把这条链钉死了:
+      //   19:23:27 建会话,请求带 `pot=88B`(= 120 字符 websafe 串经 [websafeBase64ToBytes] 解码)
+      //            → 12 连 status=1,末笔 status=2
+      //   19:23:31.633 status=2 → 同步刷新,日志 `PO token refreshed ... 208B`
+      //   19:23:31.879 紧接的下一笔请求 pot=208B → **status=3**;其后 8 连 status=3(135B 空响应)
+      //            → evict → ExoPlayer Source error → 整会话死
+      // 208B = 208 **字符**数 ⇒ 这一笔把 base64 **文本**当 token 发出去了(解码后应 ~156B)。
+      // 即 [SabrSession.fromSabrData] 的 P11-117 修过的那个坑(「把 128 字节的字符串当 token 发出去」
+      // → r1951 `poToken=128B` 判死)**在刷新路径上原封不动地留着**:创建路径解码、刷新路径不解码,
+      // 于是 status=2 一刷就把可用 token 换成必然被判死的字节。刷新回调收敛到
+      // [sabrRefreshPoToken] 单一入口,从结构上杜绝再次分叉。
+      refreshPoToken = sabrRefreshPoToken(videoId),
     )
     // WEB 会话是全新身份(探针 init POST 已被服务端接受)——清零 videoId 的 reload 计数,
     // 否则旧 visionOS 死会话留下的计数会触发 SabrDataSource fast-fail 误杀新会话

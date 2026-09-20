@@ -30,6 +30,12 @@
 > **P11-126**:起播预算按交付档给 + 不足早退 + 耗尽可见(§1.12)、harvest WebView 启动预热(§1.13)、
 > 空壳页取证探针(§1.14,含 Sec-CH-UA / consent cookie / `; wv)` 三条社区线索,§3.6)。实测见 **§3.5**。
 >
+> **2026-09-20 更新(`status=3` 的真凶找到:刷新路径的 token 没解码)**:r2023 真机把「status=1 → status=2
+> → 刷新 → status=3 整会话死」这条链钉死了 —— 刷新回调把 provider 的 websafe base64 **串**当 token 字节发出去
+> (`208B` 的字节数 == 字符数是铁证),而同一字段的**创建**路径 P11-117 早已解码 ⇒ 服务端必然 `InvalidPoToken`。
+> 详见 **§5.9.2**(P11-141)。同一份日志另给出 **C1 收窄为何从未生效** 的机制(起播锁把候选夹回)与材料会话
+> 只供 `399/251` 的字节证据,同样记在 §5.9.2。
+>
 > 相关文档:[youtube-hd-playback.md](youtube-hd-playback.md)(总史/§6.x 逐条真机)、
 > [youtube-dash-fallback-plan.md](youtube-dash-fallback-plan.md)(DASH 兜底)、
 > [youtube-vs-libretube-comparison.md](youtube-vs-libretube-comparison.md)(逐环节对照)、
@@ -755,6 +761,59 @@ UMP: type=42(FORMAT_INIT_METADATA) payloadLen=98
 **工具坑(记下来免得再犯)**:`tmp/webreq_diff.py` 必须**按会话切分再归并** —— `rn` 号在每个会话里
 都会重来一遍,按 rn 全局归并会让后一个会话(如自造材料那条)的 dump **覆盖**前一个(材料那条),
 据此读出的 body 根本不是想问的那条(本轮就先误读了一次,差点得出「A1+A2 没生效」的错误结论)。
+
+---
+
+### 5.9.2 r2023 判读:`status=2` 刷新的 token **没解码** —— `status=3` 的真凶(P11-141)
+
+真机 `logs_live_20260920_192411.log`(r2023 = `8f7cab15`,XQ-EC72 / Android 16,两视频 + 一次兜底,19:21–19:24)。
+这一场的价值在于:**每一环都有字节级证据**,不用再靠推断。
+
+#### (1) 判决链:刷新的下一笔请求就是处决令
+
+| 时刻 | 请求带的 token | 服务端 |
+|---|---|---|
+| 19:23:27 建会话(mmzKjp,自造材料) | `pot=88B` | `status=1` ×12,末笔 **status=2** |
+| 19:23:31.633 | status=2 → 同步刷新,日志 `PO token refreshed on status=2: 208B` | — |
+| 19:23:31.879 | `pot=208B` | **status=3**(`InvalidPoToken diag: sessAgeMs=4831 sessReqN=2 status2Seen=1 pot=208B`) |
+| 19:23:34 → 19:23:42 | `pot=208B` ×7 | **status=3** ×7(每笔 135B 空响应)→ evict 风暴 → `Playback error` |
+
+⇒ **换上去的 token 不是"过期了"或"身份不对",而是格式错的**:208B 正好等于 `streamingDataPoToken` 的**字符数**。
+
+#### (2) 根因:`refreshPoToken` 把 base64 文本当 token 字节发
+
+provider 的 `streamingDataPoToken` 是 **websafe base64 串**(真机实测两种长度:120 / 208 字符),
+而 `streamerContext.poToken` 要的是**解码后的字节** —— FreeTube `SabrSchemePlugin.js:636` `base64ToU8(sabrData.poToken)`,
+与 [SabrSession.fromSabrData](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrClient.kt#L151-L158) 的 P11-117 归一化同一口径:
+
+- **创建**路径:P11-117 已修(`poToken=128B` 那次真机判死 → 改 `websafeBase64ToBytes`)⇒ 请求里 `pot=88B` ✓
+- **刷新**路径:5 处调用点各写 `?.streamingDataPoToken?.toByteArray(Charsets.UTF_8)` ⇒ 请求里 `pot=208B` ✗
+
+同一 protobuf 字段两种编码,于是 **服务端一发 status=2,刷新就把可用 token 换成必被判死的字节** ——
+这解释了此前多轮「能播但 ~60s 重载一次」「status=2 之后必 status=3」的全部现象(P11-102c 记的
+「token 124/128B 混出、last-write-wins 互相踩」也是同一件事:那些字节数同样是字符串长度)。
+
+**修**:刷新回调收敛为唯一入口 [sabrRefreshPoToken](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L2445-L2460)
+(`websafeBase64ToBytes` + `takeIf { isNotEmpty() }`),5 处调用点全部改用;`SabrMediaFetcher` 的刷新日志加
+`before B → fresh B`,让「是否解码」在日志里一眼可判。
+
+**下一轮判据**:刷新日志应显示 **120→88 / 208→156(≈3/4,不是等长)**,且紧随的请求 `status=1`。
+若解码后仍是 `status=3`,那才轮到「token 来源/绑定」这条假设(本场日志**已排除**它作为首选:
+刷新用的 `PoTokenWebView` 与首次铸造**是同一个实例**、未重建,`visitor_data` 相同 —— 见
+`PoTokenWebView: initialization finished` 只在 19:21:51 出现过一次)。
+
+#### (3) 同一份日志:材料会话只供 `399/251`,以及 C1 为何从未生效(本次未修,留给下一轮)
+
+- **275 次 `skip ad/unrequested` 全是 itag 251 / 399** —— 即 harvest 材料绑定的浏览器 Auto 档;我们每场都请求
+  `302/140`(`whitelist=[140, 302]`),交集恒空 ⇒ 6 连 `getNextSegment: no seg 0` → evict。单笔响应
+  18,393,345B 里 **18,389,496B 被整段丢弃**,两场死会话白烧 ~200MB。
+- **C1 的收窄算出来也会被起播锁夹回**:[initialSelectedIndex / applyStartupLock](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/HeightAwareAdaptiveTrackSelection.kt#L258-L296)
+  **不看 served 集合**。即便集合里已有 `{399,251}`(上一场 skip 时写入),收窄选中 399(1080p)也会被
+  `applyStartupLock` 夹回锁高档 720p = itag302 → **302 永不被供 ⇒ 无首帧 ⇒ 锁永不释放** = 结构性死锁。
+  这也解释了 r2022/r2023 两轮「收窄机制对但从不生效」。
+- **材料 URL 会话的音频侧无解**:材料只推 251(Opus),而我们的音频组只有 140 ⇒ 即使视频收窄到 399 也活不了。
+- **反面对照**:19:23:24 起的那场「自造材料」(我们自己的 sabrUrl + 材料 pot)能正常供 `302/140`
+  (init + seg 21/22 真数据)⇒ **材料会话的毒在 URL(服务端按那场会话绑定的格式供流),不在 pot**。
 
 ---
 
