@@ -3,6 +3,7 @@ package com.kirin.mt.core.youtube
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Base64
 import android.util.Log
 import android.view.View
 import android.webkit.ConsoleMessage
@@ -26,6 +27,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import com.kirin.mt.core.youtube.sabr.SabrProto
 import kotlin.coroutines.resume
 
 /**
@@ -269,6 +271,13 @@ class YoutubeSabrHarvester(
       // 旧判据「url 非空 && status>0」会把它当有效捕获**立刻返回**(真机 09-16 17:03:24:探针抓到首页
       // 403 GET 就收工,而真正的 SABR POST 在 1.4s 后才发)→ 探针白跑、也不该拿它当阶段 2 判据。
       var nonPostCapture: SabrCapture? = null
+      // P11-127(Stage 2):**冷启桩兜底位**。移动站(m.youtube.com)的播放器会连发多个 SABR POST:
+      // 首个带的是**冷启动占位 token**(10B,`34,8,+8B header`、identifier 长度 0),随后的 POST 才带
+      // 真 token(真机 09-20 实测 88B)。此前「命中即返回」有时抓到桩 ⇒ 会话 `status2Seen=0` 从第一个
+      // 请求就被判死(WXczq9O 案,秒死)。故:真 token 命中才立刻返回;只拿到桩则记在这里、**再等
+      // [STUB_GRACE_MS]** 看有没有真 token 的 POST,到期才退桩(把额外耗时限死在 6s)。
+      var stubCapture: SabrCapture? = null
+      var stubGraceDeadline = 0L
       // P11-125:空壳页的长度判据只量一次(见下方 DOC_LEN_JS 分支)。
       var docLenChecked = false
       while (System.currentTimeMillis() < deadline) {
@@ -321,10 +330,27 @@ class YoutubeSabrHarvester(
             val status = obj["status"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
             if (!url.isNullOrBlank() && status > 0) {
               val n = extractQuery(url, "n")
-              // P11-118:POST(SABR)优先——命中即返回;非 POST 只记兜底,继续等 POST 到 deadline。
+              // P11-118:POST(SABR)优先;P11-127:再分「真 token」与「冷启桩」。
               if (method.equals("POST", ignoreCase = true)) {
-                Log.i(Tag, "harvest: captured SABR $method status=$status n=${n ?: "ABSENT"} url=$url bodyB64=${body?.length ?: 0}B")
-                return SabrCapture(url, method, body ?: "", status)
+                val cap = SabrCapture(url, method, body ?: "", status)
+                val tokenLen = poTokenLenOf(cap.bodyB64)
+                if (tokenLen >= MIN_REAL_PO_TOKEN_BYTES) {
+                  Log.i(
+                    Tag,
+                    "harvest: captured SABR $method status=$status n=${n ?: "ABSENT"} " +
+                      "poToken=${tokenLen}B → 真 token,命中即返回 url=$url bodyB64=${body?.length ?: 0}B",
+                  )
+                  return cap
+                }
+                if (stubCapture == null) {
+                  stubCapture = cap
+                  stubGraceDeadline = System.currentTimeMillis() + STUB_GRACE_MS
+                  Log.w(
+                    Tag,
+                    "harvest: SABR POST 只带冷启桩(poToken=${tokenLen}B)→ 继续等带真 token 的 POST" +
+                      "(最多再等 ${STUB_GRACE_MS}ms)",
+                  )
+                }
               }
               if (nonPostCapture == null) {
                 nonPostCapture = SabrCapture(url, method, body ?: "", status)
@@ -359,6 +385,17 @@ class YoutubeSabrHarvester(
           }
         }
         delay(200)
+        // P11-127:只拿到冷启桩时,再等 [STUB_GRACE_MS] 找真 token 的 POST;到点就带着桩收工,
+        // 不把额外耗時拖到 30s 轮询期限(起播预算敏感)。
+        if (stubCapture != null && System.currentTimeMillis() >= stubGraceDeadline) {
+          Log.w(Tag, "harvest: 真 token 的 POST 未出现 → 退冷启桩(poToken=${poTokenLenOf(stubCapture!!.bodyB64)}B)")
+          return stubCapture
+        }
+      }
+      // P11-127:桩优于非 POST(GET 段):桩至少是 SABR POST(URL/ustreamerConfig/cpn 可用)。
+      stubCapture?.let {
+        Log.w(Tag, "harvest: 轮询到期,只有冷启桩 POST(poToken=${poTokenLenOf(it.bodyB64)}B)→ 返回它")
+        return it
       }
       nonPostCapture?.let {
         Log.w(Tag, "harvest: no SABR POST before deadline; only ${it.method} status=${it.status} → return non-SABR(阶段 2 判据不算通过)")
@@ -567,6 +604,17 @@ class YoutubeSabrHarvester(
   }
 
   /**
+   * P11-127:body 里 `streamerContext.poToken` 的字节数(解不出返回 -1)——判「真 token
+   * (≥[MIN_REAL_PO_TOKEN_BYTES])」还是「冷启桩(恒 10B)」。真机 09-20:移动站首个 SABR POST 带 10B
+   * 桩、随后的 POST 才带 88B 真 token;用桩建会话 `status2Seen=0`、第一个请求就被判死。
+   */
+  private fun poTokenLenOf(bodyB64: String): Int {
+    if (bodyB64.isEmpty()) return -1
+    val body = runCatching { Base64.decode(bodyB64, Base64.DEFAULT) }.getOrNull() ?: return -1
+    return runCatching { SabrProto.decodeVideoPlaybackAbrRequest(body).poToken.size }.getOrDefault(-1)
+  }
+
+  /**
    * 解析 evaluateJavascript 回传的 capture 数组——兼容两种 WebView 行为:
    *  1. 字符串结果被 JSON 编码(加引号):raw=`"[{\"url\":...}]"` → 剥一层引号再解数组。
    *  2. 直接回传数组:raw=`[{"url":...}]` → 直接解数组。
@@ -595,6 +643,15 @@ class YoutubeSabrHarvester(
      * = 页未渲染(风控/渲染崩),立即放弃让轮换重试,不干等 30s。正常加载远快于 8s,不会误杀。
      */
     const val BLANK_PAGE_ABORT_MS = 8_000L
+
+    /**
+     * P11-127:判定「真 token」的最小字节数。冷启桩恒 **10B**(`34,8,+8B header`、identifier 长度 0,
+     * 只在 `sps=2` 时有效);真 token 真机实测 88B、我们自铸 94~120B。取 80 留足余量。
+     */
+    const val MIN_REAL_PO_TOKEN_BYTES = 80
+
+    /** P11-127:只拿到冷启桩时,额外等「带真 token 的 POST」的上限(ms)。到点仍无则退桩收工。 */
+    const val STUB_GRACE_MS = 6_000L
 
     /**
      * alpha.61:首次首页加载超时——ensureWebView 等首页 onPageFinished 建立真实上下文的兜底上限。
