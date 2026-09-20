@@ -98,6 +98,9 @@ internal class DefaultSabrChunkSource(
 
   private val representationHolders: MutableList<RepresentationHolder>
 
+  /** P11-130:已上报预取过的档(itag)——同一档只预取一次,避免持续白吃带宽。 */
+  private val prefetchedTiers = mutableSetOf<Int>()
+
   init {
     val representations =
       adaptationSetIndices.flatMap { manifest.adaptationSets[it].representations }.toList()
@@ -190,6 +193,30 @@ internal class DefaultSabrChunkSource(
     this.trackSelection = trackSelection
   }
 
+  /**
+   * P11-130(升档预加载):判断「下一档是否值得预取」并上报给 fetcher。
+   *
+   * 条件(全部满足才报,宁缺勿滥):①视频轨;②缓冲水位 ≥ [PREFETCH_MIN_BUFFERED_US](预取会占用串行
+   * fetcher,缓冲薄时不许抢);③存在比当前档**分辨率更高**的下一档(阶梯是码率降序,index 越小越高档,
+   * 故从 sel-1 往上找第一条 height 更大的);④该档声明码率 ≤ 实测带宽 × [PREFETCH_BW_MARGIN_PERMILLE]
+   * (够不着就别预取);⑤同一档只报一次(避免持续白吃带宽)。
+   */
+  private fun maybePrefetchNextTier(bufferedDurationUs: Long) {
+    if (bufferedDurationUs < PREFETCH_MIN_BUFFERED_US) return
+    val sel = trackSelection.selectedIndex
+    val curHeight = representationHolders.getOrNull(sel)?.representation?.format?.height ?: return
+    val nextIdx = (sel - 1 downTo 0).firstOrNull {
+      representationHolders[it].representation.format.height > curHeight
+    } ?: return
+    val holder = representationHolders[nextIdx]
+    val nextItag = holder.representation.formatId.itag
+    if (!prefetchedTiers.add(nextItag)) return
+    val nextBitrate = holder.representation.format.bitrate
+    val bw = bandwidthMeter.getBitrateEstimate()
+    if (bw <= 0L || nextBitrate > bw * PREFETCH_BW_MARGIN_PERMILLE / 1000L) return
+    fetcher.prefetchFormat(nextItag)
+  }
+
   override fun maybeThrowError() {
     // fatalError 由 fetcher.getNextSegment 抛 SabrTerminalException → DataSource open → chunk load error 通路,
     // 这里不重复 throw(对齐 LibreTube fatalError 走 getNextSegment throw)。
@@ -232,6 +259,9 @@ internal class DefaultSabrChunkSource(
     // (仅视频轨喂:音频轨缓冲远超需求,会污染判定)。见 SabrMediaFetcher.recordFetchGap。
     if (trackType == C.TRACK_TYPE_VIDEO) {
       fetcher.noteBufferedAheadMs(Util.usToMs(bufferedDurationUs))
+      // P11-130(升档预加载):下一档可负担 + 缓冲健康 → 让 fetcher 提前把它的 init(+段)取回来,
+      // 切档那刻直接命中缓存(否则每次升档现拉 2.5–7.2s,视频轨断流而音频照播)。
+      maybePrefetchNextTier(bufferedDurationUs)
     }
 
     // 2026-08-31 B2:决策前快照——升/降档候选与合成 iterator 都基于「当前档」构(ABR 看到的是切换前
@@ -547,3 +577,13 @@ internal class DefaultSabrChunkSource(
     fun getLastAvailableSegmentNum(): Long = chunkIndex!!.length.toLong() - 1
   }
 }
+
+/**
+ * P11-130(升档预加载)阈值。
+ *
+ * [PREFETCH_MIN_BUFFERED_US]:缓冲水位门槛——预取占用**串行** fetcher,缓冲薄时不许抢(与"满缓冲试探"
+ * 同源的思路:有富余才做额外动作)。
+ * [PREFETCH_BW_MARGIN_PERMILLE]:下一档声明码率相对实测带宽的上限(0.8×)——够不着就别预取,白吃带宽。
+ */
+private const val PREFETCH_MIN_BUFFERED_US = 20_000_000L
+private const val PREFETCH_BW_MARGIN_PERMILLE = 800L

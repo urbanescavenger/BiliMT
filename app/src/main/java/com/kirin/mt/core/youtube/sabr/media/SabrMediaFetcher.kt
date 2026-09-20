@@ -87,6 +87,30 @@ internal class SabrMediaFetcher(
 
   /** 已初始化格式(itag → InitializedFormat)。FORMAT_INITIALIZATION_METADATA part 建表。 */
   private val initializedFormats = mutableMapOf<Int, InitializedFormat>()
+
+  /**
+   * P11-130(升档预加载):下一档候选 itag —— 由 [DefaultSabrChunkSource] 在「下一档可负担 + 缓冲健康」
+   * 时上报。生效期内本 fetcher 把该档一起写进请求的 `preferredVideoFormatIds`、**不报它的 bufferedRange**
+   * (报"没有"=请把数据推给我)、并在清理非当前格式时保住它,让服务端把它的 init(+段)推回来缓存
+   * ⇒ 切档那一刻 `getNextSegment` 直接命中缓存,不必现拉。
+   * 动因(真机 2026-09-20):每次升档要 2.5–7.2s(新档 init 往返 + 新档首段 2.3–7.2MB),期间**视频轨**
+   * 没数据、音频轨照播 ⇒ 用户看到「升档视频停顿、音频没断」。
+   */
+  @Volatile private var prefetchItag: Int? = null
+  private var prefetchUntilMs = 0L
+
+  /** P11-130:上报升档候选档(窗口期内有效;同一档重复上报不刷日志)。 */
+  fun prefetchFormat(itag: Int) {
+    val now = System.currentTimeMillis()
+    val fresh = prefetchItag != itag || now >= prefetchUntilMs
+    prefetchItag = itag
+    prefetchUntilMs = now + PREFETCH_WINDOW_MS
+    if (fresh) Log.i(tag, "prefetch: 候选档 itag$itag 随下一请求预取(窗口 ${PREFETCH_WINDOW_MS / 1000}s)")
+  }
+
+  /** P11-130:当前生效的预取档(null=无)。每次请求/清理时现读,窗口过期自动失效。 */
+  private fun activePrefetchItag(): Int? =
+    prefetchItag?.takeIf { System.currentTimeMillis() < prefetchUntilMs }
   /** 正在处理的 partial 段(headerId → Segment,MEDIA 累积/MEDIA_END 收尾)。 */
   private val partialSegments = mutableMapOf<Int, SabrSegment>()
 
@@ -486,7 +510,8 @@ internal class SabrMediaFetcher(
               // 服务端回落 playerTimeMs 判(§26.1 已实证回落路径),从目标段起推。
               // LibreTube 同位置无条件 retainAll(仅当前 A/V);这里保守多留在途 itag,在途响应不白丢。
               initializedFormats.keys.retainAll { f ->
-                f == audioFormat?.itag || f == videoFormat?.itag || f in pendingRequestItags
+                f == audioFormat?.itag || f == videoFormat?.itag || f in pendingRequestItags ||
+                  f == activePrefetchItag() // P11-130:预取候选档的缓存要保住,否则刚预取到就被清
               }
             }
             // 终端检查(media 可能置位)
@@ -620,12 +645,24 @@ internal class SabrMediaFetcher(
     // 请求轨截到 req.segment-1;init(req.segment=0)→ 全空(对齐 FT rn=0-5 无 ranges)。
     // 其他轨维持自身缓存形态(其 loader 前沿=其自身 next)。P11-92 已实证:裁掉后服务端回落
     // playerTimeMs 判、从目标段起推,不会破坏推送游标。
-    val bufferedRanges = initializedFormats.values.flatMap { fmt ->
-      val cap = if (fmt.id.itag == req.formatItag) req.segment.toLong() else Long.MAX_VALUE
-      fmt.buildBufferedRanges(cap)
-    }
+    // P11-130(升档预加载):预取档**不报缓冲**(报"没有" = 请把数据推给我),否则服务端按我们的
+    // bufferedRange 判「已给过」就不再推。其余轨维持自身缓存形态(P11-92 已实证裁掉当前轨不破坏推送游标)。
+    val prefetchActive = activePrefetchItag()
+    val bufferedRanges = initializedFormats.values
+      .filter { it.id.itag != prefetchActive }
+      .flatMap { fmt ->
+        val cap = if (fmt.id.itag == req.formatItag) req.segment.toLong() else Long.MAX_VALUE
+        fmt.buildBufferedRanges(cap)
+      }
     val audioEnc = audioFormat?.let { SabrProto.encodeFormatId(it.itag, it.lastModified, it.xtags) }
     val videoEnc = videoFormat?.let { SabrProto.encodeFormatId(it.itag, it.lastModified, it.xtags) }
+    // P11-130:把预取候选档一起报为 preferred —— 服务端在同一响应里把它的 init(+段)推回来,
+    // 缓存进 initializedFormats ⇒ 切档那一刻 getNextSegment 直接命中缓存,不必现拉(真机实测切档
+    // 现拉要 2.5–7.2s:新档 init 往返 + 新档首段 2.3–7.2MB)。
+    val prefetchEnc = prefetchActive
+      ?.takeIf { it != videoFormat?.itag }
+      ?.let { pf -> session.videoFormats.firstOrNull { it.itag == pf } }
+      ?.let { SabrProto.encodeFormatId(it.itag, it.lastModified, it.xtags) }
     val (activeCtxs, unsentCtxTypes) = session.prepareSabrContexts()
     val streamerContext = StreamerContextInput(
       clientInfo = session.clientInfo,
@@ -712,7 +749,7 @@ internal class SabrMediaFetcher(
       playerTimeMs = if (webShape) null else playerTimeMs,
       videoPlaybackUstreamerConfig = session.ustreamerConfig,
       preferredAudioFormatIds = listOfNotNull(audioEnc),
-      preferredVideoFormatIds = listOfNotNull(videoEnc),
+      preferredVideoFormatIds = listOfNotNull(videoEnc, prefetchEnc),
       preferredSubtitleFormatIds = emptyList(),
       streamerContext = streamerContext.copy(clientInfo = clientInfo),
     )
@@ -1043,6 +1080,9 @@ internal class SabrMediaFetcher(
   }
 
   private companion object {
+    /** P11-130:预取窗口(ms)——上报后这段时间内每个请求都带候选档;过期自动失效,避免长期白吃带宽。 */
+    const val PREFETCH_WINDOW_MS = 30_000L
+
     /** transient 重试上限(耗尽→SabrTerminalException→evict)。对齐旧 SabrDashDataSource BACKOFF_MAX_ATTEMPTS。 */
     const val MAX_ATTEMPTS = 6
     /** 单次 backoff 最大 sleep(ms,<8s stall watchdog)。对齐旧 MAX_BACKOFF_SLEEP_MS。 */
