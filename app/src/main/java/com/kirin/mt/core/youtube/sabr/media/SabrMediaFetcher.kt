@@ -361,6 +361,9 @@ internal class SabrMediaFetcher(
     if ((prevSeekMs ?: 0L) > prevFetchEndMs || (prevManualMs ?: 0L) > prevFetchEndMs) {
       // seek/手动选档后的 gap 是操作开销非供给问题:不计 active est,也不计入持续带宽分母。
       demandIdleMs = gapMs
+      // P11-151(a):同时把「刚发生过操作事件」告诉 ABR —— 紧随其后的降档不按「供给不足」惩罚
+      // (否则一次 seek 就把源档锁 90~180 秒,画面钉在最低档;22:00:09 真机实证)。
+      SabrAbrMemory.noteOperationEvent()
     } else {
       // 2026-08-30:runway 负值 = 快照滞后(1263-1265 真机 runway=-65),拿不到可靠滑行量 → 证据不足,
       // 全额当需求空闲处理:不惩罚 est(不计 0 供给样本),空窗照常进 sustained 分母扣除。

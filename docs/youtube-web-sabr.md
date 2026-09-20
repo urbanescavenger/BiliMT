@@ -1171,6 +1171,39 @@ rn=1 → status=2 + usable=5042267B/5042267B ; rn=2 → status=2 + usable=453041
 **通用教训(写进机制)**:凡是「为了取证而改变默认行为」的实验,**必须收进默认关闭的开关**,
 否则它会把用户可见的可播性当成本。本次代价是用户一整场看不了。
 
+### 5.11 另一条线:「降档钉死」(P11-151)
+
+**症状**(r2042 真机 `logs_live_20260920_220043.log`,主链 NewPipe 会话):缓冲**一直有 25~28 秒**,
+画面却被钉在 **144p**(`sel=13 itag160 b=112087`)约 2 分钟。
+
+**轨迹**:720p(`sel=5`)→ 缓冲涨到 **46s**(`sus=9530K cap=8823K`)→ 缓冲掉到 9.9s →
+**掉到 144p** → 之后 `sus` 衰减到 701K、`cap` 到 1368K、`bw` 冻结在 634~885K → 再没爬回。
+
+**三道既有护栏,逐条对照**:
+
+| 护栏 | 本场表现 |
+|---|---|
+| 快小样本过滤(`REAL_BW_MIN_BYTES=100KB` + `BW_SLOW_TINY_MS=2s`) | 生效(144p 的 66KB 段被滤掉)——**副作用**:掉到最低档后估计值再无可回升的样本 |
+| gap 滑行豁免(`recordFetchGap`:只把 `runway − 保留量` 之外算供给损失) | 正常工作:`bw gap counted: 9612ms (raw=42328ms coast=32716ms runway=42716)`(豁免 77%) |
+| **降档失败冷却** `markDowngradeFromTrial` | **就是它**:`downgrade fail cooldown: 720p excluded 180s (gated+trial blocked, survives reload)` |
+
+**根因**(代码事实):该冷却**降档即记、不区分原因**(注释原文「不区分试探/gated/普通降档」),
+且冷却期 **180 秒墙钟、跨重载有效**([SabrAbrMemory]) ⇒ 一次降档就把源档**从候选里剔掉 3 分钟**,
+期间任何升档路径都碰不到它。而这一次降档紧跟操作事件(缓冲 46s→9.9s),**并不是「该档不可持续」的证据**。
+
+**修(P11-151)**:
+- **(a) 按原因定时长**:操作事件(seek/手动选档,由 `recordFetchGap` 的操作分支经
+  `SabrAbrMemory.noteOperationEvent()` 上报)后 20 秒内的降档只记 **20s** 短冷却;
+  其余(真饥饿 / est 崩塌)记 `TRIAL_FAIL_COOLDOWN_MS`(**180s → 90s**);日志带 `reason=`。
+- **(b) 健康缓冲提前解除**:缓冲 ≥20s 且 `est ≥ 该档声明码率×1.1` ⇒ 调 `SabrAbrMemory.clearTrialFail()` 解
+  除冷却,日志 `cooldown cleared early: <H>p (bufS=… est=…K ≥ declared=…K×1.1, remain=Ns → 0)`。
+- **(d) 降档原因诊断行**(缺证据不盲改):每次降档打一行
+  `downgrade <from>p → <to>p: est=… sus=… bufS=… freeze=… blockedFrom=… opEvent=…` ——
+  22:00 那场只留下周期性 `sel=` 行,看不出「为什么连 720p 都不选」。**下一份日志据此定 (c)**。
+
+**留给下一轮(c,未做)**:est/sus 被「满缓冲空闲」稀释(`addSustainedGapSample(demandIdleMs)`)这条口径
+**本轮不动**(它经过 P11-134/135 多轮调校,盲改风险高)—— 等 (d) 的诊断行给出证据再定。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)

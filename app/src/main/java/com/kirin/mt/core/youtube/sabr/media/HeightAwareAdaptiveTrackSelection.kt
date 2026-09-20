@@ -486,6 +486,25 @@ class HeightAwareAdaptiveTrackSelection(
     // 2026-08-30 水位急救降档:水位 <8s 且两次评估间仍在回落/持平(排除起播/重填期的短暂低点,那时水位
     // 在涨)、且过了升档宽限 → 水位下降本身就是最好的降档证据(供给持续低于当前档消耗),无视 est 直接
     // 降到下一个低分辨率档。逐级一步一档:降到可持续档后缓冲回 8s 以上自动停。
+    // ── P11-151(b,2026-09-20):**健康缓冲提前解除降档冷却** ────────────────────────────────
+    // 22:00 真机:一次降档把 720p 锁了 180 秒(墙钟、跨重载),而当时缓冲有 25~28 秒 ⇒ 画面钉在 144p。
+    // 冷却的本意是「该档扛不住」;缓冲既已回到 [EARLY_CLEAR_BUFFERED_US] 且实测带宽超过该档声明码率
+    // ×1.1,就没有理由继续等 —— 提前解除并留一行日志(便于验收)。
+    if (bufferedDurationUs >= EARLY_CLEAR_BUFFERED_US) {
+      val estNow = bandwidthMeter.getBitrateEstimate()
+      for (i in 0 until length) {
+        val f = getFormat(i)
+        if (f.height > 0 && SabrAbrMemory.isTrialFailBlocked(f.height) && estNow >= f.bitrate * 11 / 10) {
+          Log.i(
+            "YtSabrAbr",
+            "cooldown cleared early: ${f.height}p " +
+              "(bufS=${bufferedDurationUs / 1_000_000}s est=${estNow / 1000}K ≥ " +
+              "declared=${f.bitrate / 1000}K×1.1, remain=${SabrAbrMemory.trialFailBlockedRemainSec()}s → 0)",
+          )
+          SabrAbrMemory.clearTrialFail(f.height)
+        }
+      }
+    }
     val currentHeight = getFormat(selected).height
     // 2026-09-01 满缓冲试探:先留上一评估的水位(试探用「升穿水位线」判定,防首填单调期骑线常真误触发)
     val prevBufferedUsForTrial = prevEvalBufferedUs
@@ -737,6 +756,17 @@ class HeightAwareAdaptiveTrackSelection(
       // 降档(height 变小)记时间,驱动升档冷却
       getFormat(selected).height < currentHeight -> {
         lastDowngradeElapsedMs = nowMs
+        // P11-151(诊断):降档**原因**一行 —— 22:00 那场真机里降档只留下周期性的 `sel=` 行,
+        // 看不出「为什么连 720p 都不选」(是被锁 / 被 served 收窄 / est 太低 / 饥饿)。
+        Log.i(
+          "YtSabrAbr",
+          "downgrade ${currentHeight}p → ${getFormat(selected).height}p: " +
+            "est=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
+            "sus=${if (sustained >= 0L) "${sustained / 1000}K" else "-1"} " +
+            "bufS=${bufferedDurationUs / 1_000_000}s freeze=$freezeEpisodeActive " +
+            "blockedFrom=${SabrAbrMemory.isTrialFailBlocked(currentHeight)} " +
+            "opEvent=${SabrAbrMemory.recentOperationEvent()}",
+        )
         markDowngradeFromTrial(nowMs, currentHeight)
       }
       // 2026-08-30 升档重锚:est 基准重锚到「新档声明码率」。declared 已是 averageBitrate=真实平均
@@ -799,26 +829,32 @@ class HeightAwareAdaptiveTrackSelection(
   }
 
   /**
-   * 2026-09-01 满缓冲试探:降档离开某档时记 3min 失败冷却。2026-09-01 晚一致化(用户拍板「既然要
+   * 2026-09-01 满缓冲试探:降档离开某档时记失败冷却。2026-09-01 晚一致化(用户拍板「既然要
    * 锁三分钟不要例外」):**降档即记冷却,不区分试探/gated/普通降档**——饥饿(buffer-critical)与
    * est 崩塌(滞回)都是该档不可持续的证据,冷却期内该档 gated 与试探一起挡(见候选循环);
    * 冷却本体记 [SabrAbrMemory](墙钟,跨重载有效——21:13 真机案例重载洗掉实例冷却后立即重试)。
+   *
+   * **P11-151(a,2026-09-20)按原因定时长**:上面那条「不区分」的口径在
+   * `logs_live_20260920_220043.log` 出了反例 —— 一次降档(紧跟 seek/操作事件,缓冲从 46s 掉到 9.9s)
+   * 就把 720p 锁 180 秒,期间**任何升档路径都碰不到它** ⇒ 画面钉在 144p 而缓冲一直有 25~28 秒。
+   * 故:操作事件(seek/手动选档,见 [SabrAbrMemory.recentOperationEvent])后的降档只记
+   * [SabrAbrMemory.OPERATION_EVENT_COOLDOWN_MS] 的短冷却(它不代表该档不可持续);
+   * 其余(真饥饿/est 崩塌)记 [TRIAL_FAIL_COOLDOWN_MS](180s→**90s**,并可由 (b) 提前解除)。
    */
   private fun markDowngradeFromTrial(nowMs: Long, fromHeight: Int) {
-    if (lastUpgradeWasTrial) {
-      Log.i(
-        "YtSabrAbr",
-        "trial fail cooldown: ${fromHeight}p excluded ${TRIAL_FAIL_COOLDOWN_MS / 1000}s " +
-          "(remain ${SabrAbrMemory.trialFailBlockedRemainSec()}s, survives reload)"
-      )
-    } else {
-      Log.i(
-        "YtSabrAbr",
-        "downgrade fail cooldown: ${fromHeight}p excluded ${TRIAL_FAIL_COOLDOWN_MS / 1000}s " +
-          "(gated+trial blocked, survives reload)"
-      )
+    val opEvent = SabrAbrMemory.recentOperationEvent()
+    val cooldownMs = if (opEvent) SabrAbrMemory.OPERATION_EVENT_COOLDOWN_MS else TRIAL_FAIL_COOLDOWN_MS
+    val reason = when {
+      opEvent -> "op-event(seek/手动选档,非供给不足)"
+      lastUpgradeWasTrial -> "trial-fail"
+      else -> "supply(gated/普通降档)"
     }
-    SabrAbrMemory.noteTrialFail(fromHeight, TRIAL_FAIL_COOLDOWN_MS)
+    Log.i(
+      "YtSabrAbr",
+      "downgrade fail cooldown: ${fromHeight}p excluded ${cooldownMs / 1000}s " +
+        "reason=$reason(remain ${SabrAbrMemory.trialFailBlockedRemainSec()}s, survives reload)",
+    )
+    SabrAbrMemory.noteTrialFail(fromHeight, cooldownMs)
     lastUpgradeWasTrial = false
   }
 
@@ -872,7 +908,13 @@ class HeightAwareAdaptiveTrackSelection(
      * 2026-09-01:试探失败档冷却(ms)——试探扛不住的档冷却这段时间,防每轮回填都重试同一堵墙;
      * 与顶档定向冷却同值(3min 覆盖一个完整误批-回填周期)。
      */
-    const val TRIAL_FAIL_COOLDOWN_MS = 180_000L
+    const val TRIAL_FAIL_COOLDOWN_MS = 90_000L
+
+    /**
+     * P11-151(b):提前解除降档冷却所需的**健康缓冲水位**。缓冲回到这一水位且实测带宽已超过被锁档的
+     * 声明码率(×1.1)⇒ 解除该档冷却,不再死等 [TRIAL_FAIL_COOLDOWN_MS]。
+     */
+    const val EARLY_CLEAR_BUFFERED_US = 20_000_000L
     /**
      * 2026-09-01 晚(浅填充防线):试探准入的本实例历史最高水位下限——重载/冷启动后 maxObserved
      * 归零会令试探线跌到 17s(21:08:46 真机在 bufS=20s 就试探 1440p),必须先见过一次像样回填
