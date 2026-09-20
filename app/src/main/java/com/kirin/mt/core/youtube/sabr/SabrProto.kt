@@ -129,6 +129,11 @@ internal object SabrProto {
   fun encodeVideoPlaybackAbrRequest(s: SabrRequestInput): ByteArray {
     val w = ProtoWriter()
     // field1 client_abr_state
+    // 2026-09-20(对齐 MWEB 形状,见 SabrRequestInput.leadingClientAbrStateBytes):**先把材料那份
+    // 原始 f1 发出去**,再发我们自己的 f1 —— protobuf 对同一 length-delimited 字段的多次出现是
+    // **合并**语义:标量后者覆盖前者、前者独有的字段(我们没建模的那 ~11 个)原样保留。
+    // 于是一行代码就实现「我们的实时值 + 浏览器的未知字段」,而不必猜测 f57/f58/f59/f68/f71/f72/f79 的语义。
+    if (s.leadingClientAbrStateBytes != null) w.message(1, s.leadingClientAbrStateBytes)
     if (s.clientAbrState != null) w.message(1, encodeClientAbrState(s.clientAbrState))
     // field2 selected_format_ids(repeated;isInit 时空,否则 [audio,video])
     for (f in s.selectedFormatIds) w.message(2, f)
@@ -503,6 +508,14 @@ internal object SabrProto {
     val ustreamerConfig: ByteArray,
     val audioFormatId: FormatIdLite?,
     val videoFormatId: FormatIdLite?,
+    /**
+     * 2026-09-20(对齐 MWEB 形状):材料 body 里 `client_abr_state`(field 1)的**原始字节**。
+     *
+     * 为什么留原始字节而不是解成类型:浏览器那条 MWEB 的 clientAbrState 有 ~11 个我们**没建模**的字段
+     * (`f17/f38/f57/f58/f59/f68/f71/f72/f79/f80/f85`,其中 f38/f72/f79 还是嵌套子消息)。要把形状对齐,
+     * 唯一不用猜测语义的做法是**原样带过去** —— 见 [SabrRequestInput.leadingClientAbrStateBytes]。
+     */
+    val clientAbrStateRaw: ByteArray? = null,
   )
   data class FormatIdLite(val itag: Int, val lastModified: Long, val xtags: String?)
 
@@ -512,16 +525,20 @@ internal object SabrProto {
     var audioFmt: FormatIdLite? = null
     var videoFmt: FormatIdLite? = null
     var poToken: ByteArray = ByteArray(0)
+    // 2026-09-20:保留 client_abr_state(field 1)的原始字节——对齐 MWEB 形状用(我们只建模 17 个字段,
+    // 浏览器 MWEB 那条还有 ~11 个没建模的,原样透传才能不动语义地对齐)。见 DecodedAbrRequest。
+    var clientAbrRaw: ByteArray? = null
     while (true) {
       val f = r.nextField() ?: break
       when (f.fieldNumber) {
+        1 -> if (clientAbrRaw == null) clientAbrRaw = f.value as ByteArray
         5 -> ustreamerConfig = f.value as ByteArray
         16 -> if (audioFmt == null) audioFmt = decodeFormatIdLite(f.value as ByteArray)
         17 -> if (videoFmt == null) videoFmt = decodeFormatIdLite(f.value as ByteArray)
         19 -> poToken = decodeStreamerContextPoToken(f.value as ByteArray)
       }
     }
-    return DecodedAbrRequest(poToken, ustreamerConfig, audioFmt, videoFmt)
+    return DecodedAbrRequest(poToken, ustreamerConfig, audioFmt, videoFmt, clientAbrRaw)
   }
 
   /**
@@ -780,6 +797,15 @@ internal data class TimeRangeInput(val startTicks: Long, val durationTicks: Long
 
 internal data class SabrRequestInput(
   val clientAbrState: ClientAbrStateInput?,
+  /**
+   * 2026-09-20(A1+A2 身份/形状对齐):harvest 材料里 `client_abr_state`(field 1)的**原始字节**,
+   * 在本请求自己的 f1 **之前**发出。protobuf 合并语义 ⇒ 我们的实时值覆盖标量,材料独有的字段保留。
+   *
+   * 为什么需要:浏览器那条 MWEB 的 clientAbrState 比 [ClientAbrStateInput] 多 ~11 个字段
+   * (`f17/f38/f57/f58/f59/f68/f71/f72/f79/f80/f85`,含 f38/f72/f79 三个嵌套子消息)。要把形状对齐,
+   * 逐个建模等于在不知道语义的前提下猜;原样透传既忠实又零猜测。null = 不发(非材料会话不受影响)。
+   */
+  val leadingClientAbrStateBytes: ByteArray? = null,
   val selectedFormatIds: List<ByteArray>,          // 已 encode 的 FormatId bytes
   val bufferedRanges: List<BufferedRangeInput>,
   val playerTimeMs: Long?,

@@ -829,6 +829,9 @@ internal class SabrMediaFetcher(
     }
     val input = SabrRequestInput(
       clientAbrState = clientAbrState,
+      // 2026-09-20(A2 形状对齐):材料会话带原始 client_abr_state ⇒ 作为本请求 f1 之前的一份发出,
+      // 我们没建模的字段(浏览器 MWEB 那 ~11 个)原样保留,标量由下面这份覆盖。非材料会话为 null,零影响。
+      leadingClientAbrStateBytes = session.leadingClientAbrStateBytes,
       selectedFormatIds = selected,
       bufferedRanges = bufferedRanges,
       // P11-109(字节级取证):FreeTube 31 个请求**从无顶层 playerTimeMs(field4)**——只放

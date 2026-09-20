@@ -69,6 +69,12 @@ internal data class SabrSession(
    */
   @Volatile var playbackCookie: ByteArray? = null,
   /**
+   * 2026-09-20(A2 形状对齐):harvest 材料里 `client_abr_state` 的原始字节。非空时
+   * [SabrMediaFetcher] 会把它作为本请求 f1 **之前**的一份发出(protobuf 合并语义 ⇒ 我们的实时值覆盖
+   * 标量、材料独有的未知字段保留)。null = 不发,非材料会话行为不变。
+   */
+  @Volatile var leadingClientAbrStateBytes: ByteArray? = null,
+  /**
    * alpha.31:SABR 上下文握手状态机——服务端用 SABR_CONTEXT_UPDATE(part 57)下发上下文,要求客户端
    * 把 {type, value} 回传进下次请求 streamerContext.sabr_contexts(field5)+ unsent_sabr_contexts(field6)。
    * **不回传 → 服务端判定握手未完成 → 只回 context+backoff 不发 media → 8 次重试后 EOF → 视频打不开
@@ -173,6 +179,11 @@ internal data class SabrSession(
       cpn: String? = null,
       videoFormats: List<FormatId> = emptyList(),
       audioTracks: List<SabrAudioTrack> = emptyList(),
+      /**
+       * 2026-09-20(A2 形状对齐):材料 body 里 client_abr_state 的原始字节(见 SabrProto.DecodedAbrRequest)。
+       * 非材料会话传 null ⇒ 行为与改动前逐字节一致。
+       */
+      leadingClientAbrStateBytes: ByteArray? = null,
     ): SabrSession {
       val usedCpn = cpn ?: randomCpn()
       val withParams = sabrUrlWithParams(sabrUrl, usedCpn)
@@ -186,7 +197,7 @@ internal data class SabrSession(
       return SabrSession(
         withParams, poTokenBytes, ustreamerConfigBytes, clientInfo, audioFormatId, videoFormatId,
         videoFormats, audioTracks, userAgent, cookieHeader, visitorData, usedCpn,
-      )
+      ).also { it.leadingClientAbrStateBytes = leadingClientAbrStateBytes }
     }
 
     /** 16 字节随机 → base64url 无 padding(对齐 youtubei.js generateRandomString 16 位 cpn)。 */

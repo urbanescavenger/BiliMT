@@ -2228,6 +2228,12 @@ class YoutubePlaybackResolver(
     /** body 里解出的选定档;解不出(YouTube proto 演进)时为 null → 用我们 /player 阶梯的默认档。 */
     val audioFormatId: SabrProto.FormatIdLite?,
     val videoFormatId: SabrProto.FormatIdLite?,
+    /**
+     * 2026-09-20(A2 形状对齐):材料 body 里 client_abr_state 的原始字节,透传进会话 →
+     * 请求时作为本请求 f1 之前的一份发出(protobuf 合并 ⇒ 我们的实时值覆盖标量、材料独有的
+     * ~11 个未建模字段保留)。
+     */
+    val clientAbrStateRaw: ByteArray?,
   )
 
   /**
@@ -2338,7 +2344,10 @@ class YoutubePlaybackResolver(
         "cpn=$cpn audio=${decoded.audioFormatId?.itag ?: "ladder-default"} video=${decoded.videoFormatId?.itag ?: "ladder-default"} " +
         "urlHasCver=${base.contains("cver=")}",
     )
-    return HarvestMaterial(base, cpn, decoded.poToken, decoded.ustreamerConfig, decoded.audioFormatId, decoded.videoFormatId)
+    return HarvestMaterial(
+      base, cpn, decoded.poToken, decoded.ustreamerConfig,
+      decoded.audioFormatId, decoded.videoFormatId, decoded.clientAbrStateRaw,
+    )
       // 2026-09-20(补 P11-118c 判别实验):材料**解得出**时也把这份原始捕获存下来。此前 `cap` 只在
       // 「解不出材料」的三个失败分支里被 replay 取证,成功那份直接丢掉 —— 于是「会话建起来了、却在
       // 运行时被判死」这种形态(真机 15:09-15:18)手里没有任何可比对的材料。见 [WebReplayOnce]。
@@ -2628,6 +2637,7 @@ class YoutubePlaybackResolver(
       cpn = material.cpn,
       videoFormats = videoRaws.map { rawToSabrFormatId(it, it.intOrNull("height") ?: 0) },
       audioTracks = sabrAudioTracks,
+      leadingClientAbrStateBytes = material.clientAbrStateRaw,
     ) else SabrSession.fromSabrData(
       // P11-117:恢复会话 poToken(P11-116 的 pot-less 是判别实验,已判读完毕:token 洗清——
       // 带/不带 token 的响应逐字节一致)。对齐 FreeTube:`createLocalSabrManifest(result, poToken, …)`
