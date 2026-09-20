@@ -311,6 +311,9 @@ fun PlayerScreen(
         .build()
     )
   }
+  // P11-128:工厂实例提到 composable 层(不能在下面 `remember(bufferMaxMs){}` 里再调 remember)——
+  // 起播锁高(替代 setMin/MaxVideoSize)通过它下发/释放,DisposableEffect 与 loadRequest 都要用。
+  val abrSelectionFactory = remember { HeightAwareAdaptiveTrackSelectionFactory() }
   val player = remember(bufferMaxMs) {
     // alpha.9X:YouTube SABR Auto 升档——视频 TrackGroup 是 H264+VP9 混合 mime 组,DefaultTrackSelector
     // 默认不允许混合 mime 进同一条 adaptive selection,把选组锁在选定轨的 mime 上(选定 VP9 就只剩 1 轨,
@@ -322,8 +325,6 @@ fun PlayerScreen(
     // alpha.97(修「Auto 永不升过 1080p」根因,同 MobilePlayerScreen):clearViewportSizeConstraints 置
     // isViewportSizeLimitedByPhysicalDisplaySize=false,解除「物理屏=视口」隐性约束,否则超屏分辨率
     // (1440p/2160p)永远拿不到 ADAPTIVE 资格。
-    // P11-128:工厂实例要留引用——起播锁高(替代 setMin/MaxVideoSize)通过它下发/释放。
-    val abrSelectionFactory = remember { HeightAwareAdaptiveTrackSelectionFactory() }
     val trackSelector = DefaultTrackSelector(context, abrSelectionFactory)
     trackSelector.setParameters(
       DefaultTrackSelector.Parameters.Builder()
