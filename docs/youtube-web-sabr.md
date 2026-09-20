@@ -676,6 +676,43 @@ pot-less 那条不带 token,反而不被判死。**
 
 ---
 
+### 5.9 2026-09-20 夜:**首个双方字节对比** —— 首要嫌疑是「材料 MWEB / 会话 WEB」身份不一致(P11-139 产出的第一个结论)
+
+工具补完后的第一份日志(`logs_live_20260920_154335.log`,`dev.r2011`)就给出了此前拿不到的东西:
+同一份日志里**两边请求体都在**(我们的 `WEBREQDUMP` 分片 + 浏览器的 `HARVBODY` 分片),
+用 `tmp/webreq_diff.py` 逐字段摊开后,**两边 `streamerContext.clientInfo` 不是同一个客户端**:
+
+| | clientName | 其它字段 | URL |
+|---|---|---|---|
+| **我们**(WEB-SABR 会话) | **1 = WEB** | 只有 4 字段(`clientVersion` / `osName=Android` / `osVersion=13`) | `c=WEB` |
+| **浏览器**(那份被服务端回 200 的采集材料) | **2 = MWEB**(+ `c=MWEB`) | `f1=zh_CN`、`deviceMake=google`、`deviceModel=pixel 7`、`clientVersion`、`osName=Android`、`osVersion=13` | `c=MWEB` |
+
+**机制**:harvest 采到的是 **MWEB 页面**的材料 —— `poToken` / `ustreamerConfig` / `cpn` 都是 MWEB 身份下铸的,
+而我们把它包在 **WEB 会话**里发出去 ⇒ **令牌与身份不同源** ⇒ 服务端判 invalid ⇒ 每笔 `status=3`。
+
+**这与 §5.6 的残留是同一条**,只是当时那轮还能 `status=1`,所以被判为「这一层不是判据」;现在有了字节证据,
+它升为首要嫌疑。§5.6 当时已写明:「若日后需要单开一轮评估 MWEB(**必须连带验 `webShape` 翻 false 后的请求形状,
+不能和身份改动混判**)」—— 那条警告现在正好适用。
+
+**其它可见差异(次要,备查)**:①`clientAbrState` 形状:浏览器发富集合(`bitfield=3`、`drc=1`、`sticky=0`、
+`viewport=1080x607`、`f57/f58/f59/f71/f72/f79/f80/f85`),我们发稀疏的 FreeTube WEB 集合(`bitfield=0`、
+`sticky=720`、`viewport=640x720`);②`ustreamerConfig` 出现了**三个不同的数**:材料 `1275B` / 我们请求体
+`2239B` / 会话日志 `3000B` —— 需查是否发错了那一份。
+
+**判死→重放实验(P11-139 ③)仍未跑成**,原因不是接线:该日志末尾那次 `loadRequest`(15:43:28)之后
+**1.8s `ExoPlayerImpl: Release`**(用户退出播放器),resolve 被取消 ⇒ 该实验**仍待一次不被打断的 resolve**。
+不过材料被直接用于会话且照样死,已部分回答「材料内容」这一问 —— 问题更像在**我们给材料套的身份**。
+
+**下一步三选一**(需拍板):
+
+| 方案 | 内容 | 风险 |
+|---|---|---|
+| **A(推荐)** | 会话身份整体对齐材料:`clientName=2` + `c=MWEB` + `deviceMake/Model` + locale,并**同时**按 MWEB 对齐请求体形状(`webShape` 由 `clientName == 1` 派生,改它会顺带翻转形状) | 动的是 §5.6 已判读过的身份层,但这次**有字节证据**,且 §5.6 本就要求"评估 MWEB 必须连带验 webShape" |
+| B | 只改 `c=MWEB` + clientName,形状不动 | 一半对齐可能是最坏情况(两边都不一致) |
+| C | 先把重放实验跑出来再决定 | 最稳,需再跑一次真机 |
+
+---
+
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。
