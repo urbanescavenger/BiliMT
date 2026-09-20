@@ -79,6 +79,28 @@ internal object SabrStreamRegistry {
   fun serverServedItags(videoId: String?): Set<Int> =
     if (videoId.isNullOrBlank()) emptySet() else serverServedItagsByVideo[videoId]?.toSet() ?: emptySet()
 
+  /**
+   * P11-144(2026-09-20,A/B 取证):WEB-SABR **「材料派 vs 自造派」轮换计数**(按 videoId)。
+   *
+   * 同一个视频的第 1 次 resolve 走**材料派**(harvest 材料建会话)、第 2 次走**自造派**(我们自己的
+   * /player),第 3 次又材料 …… 于是**同一视频、同一网络、相隔数十秒**就能在一个构建里拿到两派的
+   * 同条件对比 —— 比此前「拿 r2026 的材料场去比 r2028 的自造场」这种跨场拼接硬得多。
+   *
+   * 判据(见 r2026/r2024):材料派会在格式墙上死(`no seg <我们的档>`,媒体块 0);自造派能拿到我们的档。
+   * 两派都可能遇到 `status=2` 那关(那是另一条线,见 SabrMediaFetcher 的 keep-stale 实验)。
+   */
+  private val webSabrArmAttempts =
+    java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+
+  /** true = 本次 resolve 用 harvest 材料建会话;false = 用我们自己的 /player。 */
+  fun nextWebSabrArmUseMaterial(videoId: String): Boolean {
+    val n = webSabrArmAttempts
+      .getOrPut(videoId) { java.util.concurrent.atomic.AtomicInteger() }
+      .incrementAndGet()
+    Log.i(tag, "WEB-SABR A/B(P11-144): videoId=$videoId resolve#$n → ${if (n % 2 == 1) "材料派" else "自造派"}")
+    return n % 2 == 1
+  }
+
   /** DASH 兜底直链 403 判死标记(播放器 onPlayerError 2004 + YouTube 请求时调)。 */
   fun markDashFallbackFailed(videoId: String) {
     if (dashFallbackFailedVideos.add(videoId)) {
@@ -184,6 +206,7 @@ internal object SabrStreamRegistry {
       val fresh = mint()
       if (fresh != null && fresh.isNotEmpty()) {
         state.currentPoToken = fresh
+        state.currentPoTokenAtMs = System.currentTimeMillis()
         state.lastRefreshedToken = fresh
         state.lastRefreshAtMs = System.currentTimeMillis()
         fresh
@@ -208,6 +231,12 @@ internal object SabrStreamRegistry {
    */
   class PoTokenState(initialPoToken: ByteArray) {
     @Volatile var currentPoToken: ByteArray = initialPoToken
+    /**
+     * P11-144(取证):当前 token 的**起始时刻**。请求日志打它的年龄 —— 用来分辨「后续请求被判
+     * status=3」到底是 **token 过期**(年龄大)还是 **token 内容被拒**(刚换上去就被拒)。
+     * r2028 实测:刷新后 0.5s 就被判 status=3 且 `potAge` 极小 ⇒ 内容问题,不是过期。
+     */
+    @Volatile var currentPoTokenAtMs: Long = System.currentTimeMillis()
     val refreshMutex = kotlinx.coroutines.sync.Mutex()
     @Volatile var lastRefreshedToken: ByteArray? = null
     @Volatile var lastRefreshAtMs: Long = 0L

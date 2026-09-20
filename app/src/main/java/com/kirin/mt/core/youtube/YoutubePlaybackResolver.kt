@@ -2480,21 +2480,12 @@ class YoutubePlaybackResolver(
     // ⇒ 追了 15 轮的 nag 差异**只在材料**,不在身份/传输。故 WEB-SABR 会话优先用 harvest 材料;
     // 抓不到(风控空白页/超时/body 空)才回退我们自造的 /player 材料(见下方 material==null 分支)。
     //
-    // ── P11-143(2026-09-20 r2026 真机判读):**harvest 整段停用 —— 不用材料建会话,也不再采集** ──
-    // r2026 同场日志给出了决定性对比(材料会话 vs 自造会话,同机同视频):
-    //   材料会话(真 token 87B)NHaKyQ / XYpwk6:响应 12MB ×6 / 2.88MB ×12 **全是同一条 body**,
-    //     我们的档(302/140 与 698/140)从头到尾**没有被初始化过** ⇒ 媒体块 **0** ⇒ `no seg` ×6 → evict。
-    //   自造会话 HCcQ_eKj(我们自己的 /player URL):`FORMAT_INITIALIZATION_METADATA itag=302` +
-    //     `itag=140` 都认;`chunk completed: media` **14 块**(302 的 700KB~2MB/块 + 140 的 161KB),
-    //     `fetch REAL 6.3MB/5.0MB/4.5MB`(16~20Mbps),`playerState=3(READY)`、`videoFmt=302` ⇒ **播起来了**。
-    //     `status=3` = 0、`Playback error` = 0、`RELOAD` = 0。
-    // 原因是结构性的:**材料 URL 会话只供「浏览器那一场绑定的档」**(服务端按那场会话签发的绑定供流),
-    // 而我们要的是阶梯选出来的档 —— 两边只有碰巧重合时才播得动。当初改用材料的前提
-    // (「我们自己的会话跑到第 4 个请求必死」)正是 P11-141 修掉的刷新未解码 bug。
-    // 另外自造路径也**更快**:r2026 自造从「用自造材料」到 playback ready 只花 **~2.6s**
-    // (n-solver ok 2.1s + /player),而 harvest 每场 9.3~9.5s(有时 30s+)。
-    // 故整段停用:不采集、不用材料。分支保留(开关可回退),供后续「材料会话档位对齐」继续研究。
-    val material: HarvestMaterial? = if (USE_HARVEST_MATERIAL_FOR_SESSION) {
+    // ── P11-144(2026-09-20,A/B 取证):按 resolve 次数轮换「材料派 / 自造派」 ─────────────────
+    // 开关不再写死成 false,而是**轮换**:同一视频第 1 次 resolve = 材料派(harvest 材料建会话)、
+    // 第 2 次 = 自造派(我们自己的 /player)、第 3 次又材料 …… ⇒ **同一视频、同一网络、相隔数十秒**
+    // 就能在一个构建里拿到两派同条件对比(优于跨场拼接)。判据见 [SabrStreamRegistry.nextWebSabrArmUseMaterial]。
+    val useMaterialArm = SabrStreamRegistry.nextWebSabrArmUseMaterial(videoId)
+    val material: HarvestMaterial? = if (useMaterialArm) {
       harvestSessionMaterial(videoId, request.startPositionMs, deadlineMs)
     } else {
       null
@@ -2502,8 +2493,8 @@ class YoutubePlaybackResolver(
     if (material == null) {
       Log.i(
         Tag,
-        "WEB-SABR: harvest 已停用(P11-143)→ 不采集、直接自造会话" +
-          "(材料 URL 会话只供浏览器档;自造实测能供我们的档且更快)",
+        "WEB-SABR: 本次=自造派(P11-144)→ 不采集、直接自造会话" +
+          "(材料 URL 会话只供浏览器档;自造实测能供我们的档)",
       )
     } else {
       Log.i(
@@ -3219,16 +3210,6 @@ class YoutubePlaybackResolver(
 
     /** P11-126:低于这个剩余预算就不发这次 harvest——发一次注定被砍的只会白烧 WebView/solver。 */
     private const val MinHarvestAttemptMs = 3_000L
-
-    /**
-     * P11-143(2026-09-20):WEB-SABR 是否用 harvest 材料建会话 / 是否采集。
-     *
-     * **false = 不采集、不用材料**(当前值)。依据见 [buildWebSabrFallback] 里的判读:r2026 同场对比
-     * 材料会话媒体块 **0** vs 自造会话 **14 块且 playerState=READY**,且材料 URL 会话结构上只供
-     * 浏览器那一场绑定的档;自造还更快(~2.6s vs harvest 9.3~9.5s)。
-     * 置 true 可回退(材料分支与其取证仍在代码里),供后续「材料会话档位对齐」继续研究。
-     */
-    private const val USE_HARVEST_MATERIAL_FOR_SESSION = false
 
     /** P11-126:harvest 冷启(建 WebView + 载首页)的硬上限,原 `timeoutMs = 40_000L`。 */
     private const val HarvestColdCapMs = 40_000L

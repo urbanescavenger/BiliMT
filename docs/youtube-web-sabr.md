@@ -915,6 +915,44 @@ r2026 自造从「用自造材料」到 playback ready **~2.6s**(n-solver 2.1s +
 **未动**:①`BiliWarmup` 的采集 WebView 预热(app 启动期,3~15s)仍在跑 —— 采集已停用后它是纯开销,
 下轮可一并摘掉;②provider 铸的 token 仍是占位形态(155→…,+65B/次)。
 
+### 5.9.5 r2028 → P11-144:单构建 A/B(材料派 vs 自造派)+ 停刷新 + 加厚取证
+
+**r2028 判读(P11-143 那版)**:P11-143 的判据**全部达成** —— `harvest 已停用(P11-143)` 出现、
+harvest 痕迹 0 行、`skip ad/unrequested` 0 次、`SabrSession:` 无标记、`solver ok` + `n transformed`、
+**服务端供了我们的档**(`FORMAT_INITIALIZATION_METADATA itag=302` + `itag=140`)、**两条轨都送出
+`first media chunk`**(audio seg 11 @109.8s、video seg 21 @115.6s,正好落在 seek 的 119s)。
+(起播 37.5s 不是回归:该场网络很慢 —— mint 14s、player.js 14s、首个响应 20.7s 只跑 2Mbps。)
+
+**但 `status=2 → 刷新 → status=3` 在这条视频上又回来了**,且 P11-141 的解码修复**没救下它**:
+
+| 场次 | 视频 | 刷新出的 token | 结果 |
+|---|---|---|---|
+| r2023 | LSnM | 208 字符(**未**解码) | **status=3** |
+| r2028 | LSnM | 同一枚 token(**已**解码 = 154B) | **status=3**(`potAge` 极小 ⇒ 不是过期) |
+| r2026 | GRbG | 同一枚 token(已解码 = 154B) | 被接受,继续 status=2、媒体照流 |
+
+⇒ 编码已修好,**问题在 token 内容/接受条件**:我们自己铸的那枚(154B、`50,151,1,…`、每次 +65B 的
+占位形态)时而被接受时而被拒;而**会话开头那枚 88B token 一直是被接受的**(r2028 rn=0 那笔 6.3MB
+响应里既有 status=2、也有我们的档与真媒体段)。
+
+**P11-144 三件事(一个构建)**:
+
+1. **单构建 A/B**:`SabrStreamRegistry.nextWebSabrArmUseMaterial(videoId)` 按 resolve 次数轮换 ——
+   同一视频第 1 次 = **材料派**、第 2 次 = **自造派**、第 3 次又材料 ⇒ **同一视频、同一网络、相隔数十秒**
+   拿到两派同条件对比(优于此前跨场拼接)。日志:`WEB-SABR A/B(P11-144): videoId=… resolve#N → 材料派/自造派`
+   + 会话行有/无 `(bytes/harvest)` 标记。开关 `USE_HARVEST_MATERIAL_FOR_SESSION` 已撤(轮换取代它)。
+2. **停刷新(keep-stale 实验)**:`SabrMediaFetcher.REFRESH_PO_TOKEN_ON_STATUS2 = false` —— status=2 时
+   **保留原 token**,打 `status=2 但**刻意不刷新** … keep NB (age=Nms); 下一笔请求的 status 即判据`。
+   两个假设据此分开:下一笔 status=1/2 且媒体在流 ⇒ **刷新才是凶手**;照样 status=3 ⇒ **status=2 是硬处决**
+   (方向转「同一条铸造链重铸真 token」)。
+3. **加厚取证**:①每笔响应打 `resp summary: req=… usable=NB/NB init=[…] pushed=[…]` —— **格式墙判据**
+   (usable=0 且 init 里没有 req ⇒ 服务端只供别的档);②请求日志加 `potAgeMs=`(分辨过期 vs 内容被拒);
+   ③`PoTokenState.currentPoTokenAtMs` 记录 token 起始时刻。
+
+**读日志的顺序**:先 `WEB-SABR A/B … → 材料派/自造派` 定派别 → 再看 `SabrSession` 有无 harvest 标记 →
+再看 `resp summary` 的 usable/init(格式墙)→ 再看 status 序列与 `potAgeMs`(token 线)→ 最后看
+`first media chunk` / `playerState=3(READY)`(是否真的播起来)。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)

@@ -729,6 +729,13 @@ internal class SabrMediaFetcher(
           "(itags=${discard.itags.sorted()}) — 未白名单格式的段整段丢弃",
       )
     }
+    // P11-144(取证):一笔响应的「我们请求的档 vs 服务端真正推来的档 + 可用字节」摘要。
+    // 材料派/自造派的**格式墙**判据就落在这行:usable=0 且 init/pushed 里没有 req ⇒ 服务端只供别的档。
+    Log.i(
+      tag,
+      "resp summary: req=${req.formatItag} usable=${data.size - discard.bytes}B/${data.size}B " +
+        "init=${initializedFormats.keys.sorted()} pushed=${serverPushedVideoItags.sorted()}",
+    )
     // alpha.67(对齐 LibreTube processPart status==2 `poToken = generatePoToken()` 同步):status=2 在
     // 本响应里出现 → 此处(下个请求发出前)同步重铸 PO token,下个请求一定带新 token → status=3 不再出现。
     // 异步(alpha.66 maybeRefreshPoToken 后台 launch)有竞态:刷新需 ~550ms,下一段请求在此之前发出带旧 token
@@ -741,26 +748,45 @@ internal class SabrMediaFetcher(
     // [SabrStreamRegistry.refreshPoTokenSingleFlight]:会话一把锁 + 5s freshness 共铸共复用。
     if (needsPoTokenRefresh) {
       needsPoTokenRefresh = false
-      // C 线(2026-09-20):刷新前后都打出 token 字节数。r2023 的判死证据正是「字节数 == 字符数」
-      // (= websafe 串没解码就当 token 发出去,服务端 InvalidPoToken/status=3);修好后这里应看到
-      // 换上去的字节数 ≈ 原值的 3/4(120 字符→88B / 208 字符→156B),不是等长。
-      val before = poTokenState.currentPoToken.size
-      val fresh = SabrStreamRegistry.refreshPoTokenSingleFlight(
-        entry.poTokenState,
-        mint = { entry.refreshPoToken?.invoke() },
-      )
-      if (fresh != null && fresh.isNotEmpty()) {
-        Log.i(
-          tag,
-          "PO token refreshed on status=2: ${before}B → ${fresh.size}B (websafe base64 已解码)" +
-            " → next request uses fresh token",
-        )
-      } else {
+      // ── P11-144(2026-09-20):**keep-stale 实验 —— status=2 时不再刷新** ─────────────────────
+      // 三次同视频的并排证据(P11-141 把编码修好之后仍然如此):
+      //   r2023 LSnM:刷新出 208 字符(**未**解码)→ 紧接着 status=3
+      //   r2028 LSnM:同一枚 token(**已**解码 = 154B)→ 紧接着 status=3(`potAge` 极小,不是过期)
+      //   r2026 GRbG:同一枚 token(已解码 = 154B)→ 被接受,继续 status=2、媒体照流
+      // 即:刷新出的 token 时而被接受时而被判 InvalidPoToken,而**会话开头那枚 88B token 一直是被接受的**
+      // (r2028 rn=0 那笔 6.3MB 响应里既有 status=2、也有我们的档与真媒体段)。故本轮把刷新停掉、
+      // 保留原 token,用下一笔请求的 status 把两个假设分开:
+      //   下一笔 status=1/2 且媒体在流 ⇒ **刷新才是凶手** ⇒ 该做「只在铸出可用 token 时才换」;
+      //   下一笔照样 status=3          ⇒ **status=2 是硬处决** ⇒ 方向转「同一条铸造链重铸真 token」。
+      val keepAge = System.currentTimeMillis() - poTokenState.currentPoTokenAtMs
+      if (!REFRESH_PO_TOKEN_ON_STATUS2) {
         Log.w(
           tag,
-          "PO token refresh null/empty on status=2 (refreshPoToken=${entry.refreshPoToken != null})" +
-            " — keep stale ${before}B",
+          "status=2 但**刻意不刷新**(P11-144 keep-stale 实验)→ keep " +
+            "${poTokenState.currentPoToken.size}B (age=${keepAge}ms); 下一笔请求的 status 即判据",
         )
+      } else {
+        // C 线(2026-09-20):刷新前后都打出 token 字节数。r2023 的判死证据正是「字节数 == 字符数」
+        // (= websafe 串没解码就当 token 发出去,服务端 InvalidPoToken/status=3);修好后这里应看到
+        // 换上去的字节数 ≈ 原值的 3/4(120 字符→88B / 208 字符→156B),不是等长。
+        val before = poTokenState.currentPoToken.size
+        val fresh = SabrStreamRegistry.refreshPoTokenSingleFlight(
+          entry.poTokenState,
+          mint = { entry.refreshPoToken?.invoke() },
+        )
+        if (fresh != null && fresh.isNotEmpty()) {
+          Log.i(
+            tag,
+            "PO token refreshed on status=2: ${before}B → ${fresh.size}B (websafe base64 已解码)" +
+              " → next request uses fresh token",
+          )
+        } else {
+          Log.w(
+            tag,
+            "PO token refresh null/empty on status=2 (refreshPoToken=${entry.refreshPoToken != null})" +
+              " — keep stale ${before}B",
+          )
+        }
       }
     }
   }
@@ -974,7 +1000,7 @@ internal class SabrMediaFetcher(
     val rn = requestNumber.getAndIncrement()
     lastRequestMs.set(now)
     val url = "${session.sabrUrl}&rn=$rn"
-    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs shape=${if (webShape) "ft" else "libre"} bitfield=${clientAbrState.enabledTrackTypesBitfield ?: 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} bw=${bwEstimateBps}bps body=${body.size}B")
+    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs shape=${if (webShape) "ft" else "libre"} bitfield=${clientAbrState.enabledTrackTypesBitfield ?: 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B potAgeMs=${System.currentTimeMillis() - poTokenState.currentPoTokenAtMs} cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} bw=${bwEstimateBps}bps body=${body.size}B")
     // P11-108(字节级取证):WEB 会话前 2 个请求 dump body hex + token hex——与 FreeTube HAR
     // (tmp/bundle.har,已解码)逐字节对比用。协议层已全对齐(P11-104..107)仍 nag,剩最后
     // 检查手段:本地 diff 真实字节。
@@ -1338,6 +1364,16 @@ internal class SabrMediaFetcher(
   }
 
   private companion object {
+    /**
+     * P11-144(2026-09-20):status=2 时是否重铸 PO token。
+     *
+     * **false = 不刷新、keep stale**(当前值,取证实验)。依据见 [media] 里的长注释:同一枚刷新 token
+     * 在 r2026(GRbG)被接受、在 r2023/r2028(LSnM)被判 `InvalidPoToken status=3`;而会话开头那枚
+     * 88B token 一直是被接受的。停掉刷新即可用「下一笔请求的 status」把「刷新才是凶手」与
+     * 「status=2 是硬处决」分开。置 true 可回退到 alpha.13 的同步刷新(代码原样保留)。
+     */
+    const val REFRESH_PO_TOKEN_ON_STATUS2 = false
+
     /** P11-130:预取窗口(ms)——上报后这段时间内每个请求都带候选档;过期自动失效,避免长期白吃带宽。 */
     const val PREFETCH_WINDOW_MS = 30_000L
     /**
