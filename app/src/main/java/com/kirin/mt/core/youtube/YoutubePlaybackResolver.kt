@@ -100,6 +100,25 @@ class YoutubePlaybackResolver(
    *  60s 处 status=3 处决 → 又一轮重载)。 */
   private val harvestProbed = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
+  /**
+   * 2026-09-20(补 P11-118c 判别实验):该视频**最近一次成功** harvest 到的浏览器原始捕获
+   * (URL + bodyB64)。由 [harvestSessionMaterial] 在材料解得出时写入。
+   *
+   * 为什么需要它:此前 `cap` 只在「材料解不出」的失败分支里被 [replayHarvestCapture] 取证,
+   * **成功那份直接丢掉**;于是真机 15:09-15:18 那种「会话建起来了、却在运行时被判死」的形态,
+   * 手里没有任何可重放的材料,判别实验做不了。
+   */
+  private val lastHarvestCapture =
+    java.util.concurrent.ConcurrentHashMap<String, YoutubeSabrHarvester.SabrCapture>()
+
+  /**
+   * 2026-09-20:已对该视频跑过「运行时判死 → 重放取证」的标记(**每视频一次**)。
+   *
+   * 为什么要限一次:重放是白烧一发真实 POST,而结论(材料好不好)不会因为多跑几发而不同;
+   * 不做这个限制会变成每次 resolve 都打一发,反而把自己变成风控目标。
+   */
+  private val replayedAfterWebDeath = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
   suspend fun resolve(
     request: PlaybackRequest,
     codecPreference: YoutubeCodecPreference,
@@ -194,6 +213,28 @@ class YoutubePlaybackResolver(
     // 处已用它,并已真机验证可铸。
     // 只在 WEB-SABR 真会出场时铸(用户选「WEB-SABR 优先」档,或 NewPipe 主链已 RELOAD / DASH 已失败
     // 的兜底场景),避免给默认 SABR 档白付铸造耗时;铸造失败回落原 botGuard token(不阻断)。
+    // 2026-09-20(补 P11-118c 判别实验 —— 「把 WEB-SABR 走通」的分岔判据):上一次 WEB 会话在**运行时**
+    // 被判死时(fetcher 撞 `InvalidPoToken status=3` → [SabrStreamRegistry.markWebSabrFailed]),把当时
+    // 那份**浏览器亲手产生、服务端已回 200** 的材料原样重放一发,留一条 `status=?` 证据。
+    //
+    // **为什么必须放在 resolve 顶层**:判死标记会让下面两条 WEB 分支整体跳过(`buildWebSabrFallback`
+    // 不再被调用),挂在 harvest 流程里就永远跑不到 —— 而"跑不到"正是这条实验自 09-16 之后再没出过
+    // 证据的原因(P11-118c 只在"材料解不出"时才跑)。
+    //
+    // 判据(决定后续所有工作的方向):
+    //   status=1    → 材料是好的,差异在我们**会话构造 / 传输** ⇒ 逐字段对齐可做,且那是唯一的活;
+    //   status=2/3  → 服务端不看材料(§5.6 已出过一次此结论)⇒ 对齐字节没意义,换杠杆(会话轮换 / 身份)。
+    val staleWebCapture = lastHarvestCapture[videoId]
+    if (staleWebCapture != null && SabrStreamRegistry.isWebSabrFailed(videoId) &&
+      replayedAfterWebDeath.add(videoId)
+    ) {
+      Log.w(
+        Tag,
+        "P11-118 harvest replay: $videoId WEB-SABR 运行时判死 → 重放上次浏览器材料取证(每视频一次)",
+      )
+      replayHarvestCapture(staleWebCapture)
+    }
+
     val webSabrInPlay = webSabrFirst ||
       SabrStreamRegistry.reloadCount(videoId) > 0 ||
       SabrStreamRegistry.isDashFallbackFailed(videoId)
@@ -2249,6 +2290,19 @@ class YoutubePlaybackResolver(
     }
     Log.i(Tag, "P11-118 harvest: captured SABR POST status=${cap.status} bodyB64=${cap.bodyB64.length}B elapsed=${ms}ms")
     val body = runCatching { Base64.decode(cap.bodyB64, Base64.DEFAULT) }.getOrNull()?.takeIf { it.isNotEmpty() }
+    // 2026-09-20(与 WEBREQDUMP **对称**的取证补齐):把**浏览器那份** body 也分片 dump 出来。
+    // 为什么必须补:此前日志里只有 `bodyB64=<长度>`,**内容不在日志里** —— 于是「我们的 body vs 浏览器的
+    // body 逐字段对比」结构上缺半边,拿日志什么都比不了(tmp/webreq_diff.py 按 base64 解必失败,实测)。
+    // 分片规则同 WEBREQDUMP(logcat 单行上限),标记独立用 HARVBODY 便于 grep 与拼接。
+    body?.let { b ->
+      val hex = b.joinToString("") { "%02x".format(it) }
+      val chunk = 1800
+      val parts = (hex.length + chunk - 1) / chunk
+      for (i in 0 until parts) {
+        val seg = hex.substring(i * chunk, minOf((i + 1) * chunk, hex.length))
+        Log.i(Tag, "HARVBODY part=${i + 1}/$parts bodyHex=$seg")
+      }
+    }
     val decoded = body?.let { runCatching { SabrProto.decodeVideoPlaybackAbrRequest(it) }.getOrNull() }
     val cpn = queryParam(cap.url, "cpn")
     if (decoded == null || cpn == null) {
@@ -2285,6 +2339,10 @@ class YoutubePlaybackResolver(
         "urlHasCver=${base.contains("cver=")}",
     )
     return HarvestMaterial(base, cpn, decoded.poToken, decoded.ustreamerConfig, decoded.audioFormatId, decoded.videoFormatId)
+      // 2026-09-20(补 P11-118c 判别实验):材料**解得出**时也把这份原始捕获存下来。此前 `cap` 只在
+      // 「解不出材料」的三个失败分支里被 replay 取证,成功那份直接丢掉 —— 于是「会话建起来了、却在
+      // 运行时被判死」这种形态(真机 15:09-15:18)手里没有任何可比对的材料。见 [WebReplayOnce]。
+      .also { lastHarvestCapture[videoId] = cap }
   }
 
   /**

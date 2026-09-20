@@ -848,10 +848,27 @@ internal class SabrMediaFetcher(
     Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs shape=${if (webShape) "ft" else "libre"} bitfield=${clientAbrState.enabledTrackTypesBitfield ?: 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} bw=${bwEstimateBps}bps body=${body.size}B")
     // P11-108(字节级取证):WEB 会话前 2 个请求 dump body hex + token hex——与 FreeTube HAR
     // (tmp/bundle.har,已解码)逐字节对比用。协议层已全对齐(P11-104..107)仍 nag,剩最后
-    // 检查手段:本地 diff 真实字节。每会话最多 2 行,Log 单行 ~3.3KB 可容纳。
+    // 检查手段:本地 diff 真实字节。
+    //
+    // 2026-09-20(修取证工具本身):**原来"单行 ~3.3KB 可容纳"的判断是错的** —— 真机实测 bodyHex
+    // 在 3851 字符处被 logcat 截成半截(奇数长度),而丢掉的正是 body **最后**的 `streamerContext`
+    // (clientInfo / poToken / playbackCookie = 身份段)——恰恰是「能通 / 必死」最可能的差异所在,
+    // 导致逐字段对比结构上永远看不到想问的那一段。改**分片**:~1800 字符/行(前缀 + 1800 hex =
+    // ~1.9KB,留足 logcat 单行上限余量),首片带 part=i/n 与 potHex 便于拼接。旧 grep
+    // (`WEBREQDUMP rn=N potHex=… bodyHex=…`)仍命中首片,不破坏既有用法。
     if (webShape && rn <= 1) {
       val hex = body.joinToString("") { "%02x".format(it) }
-      Log.i(tag, "WEBREQDUMP rn=$rn potHex=${poTokenState.currentPoToken.take(160).joinToString("") { "%02x".format(it) }} bodyHex=$hex")
+      val potHex = poTokenState.currentPoToken.take(160).joinToString("") { "%02x".format(it) }
+      val chunk = 1800
+      val parts = (hex.length + chunk - 1) / chunk
+      for (i in 0 until parts) {
+        val seg = hex.substring(i * chunk, minOf((i + 1) * chunk, hex.length))
+        Log.i(
+          tag,
+          if (i == 0) "WEBREQDUMP rn=$rn part=1/$parts potHex=$potHex bodyHex=$seg"
+          else "WEBREQDUMP rn=$rn part=${i + 1}/$parts bodyHex=$seg",
+        )
+      }
     }
 
     val request = Request.Builder()
