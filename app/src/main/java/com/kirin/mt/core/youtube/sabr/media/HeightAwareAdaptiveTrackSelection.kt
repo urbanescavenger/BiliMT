@@ -228,6 +228,14 @@ class HeightAwareAdaptiveTrackSelection(
    * 实例创建起即可读 ⇒ 会话重建/首个请求就能收窄,不必等 chunk source 喂(那条路在 no seg 暴风里被阻塞)。
    */
   private val serverServedItagsProvider: () -> Set<Int> = { emptySet() },
+  /**
+   * P11-152:**该视频是否有材料会话在册** provider —— 决定 served 收窄是否生效。
+   *
+   * 注意 `serverServedVideoId` 是**工厂**的字段,选择类里不可见(CI 曾在 579 行报
+   * `Unresolved reference 'serverServedVideoId'`)⇒ 与 [serverServedItagsProvider] 同一口径:
+   * 由工厂在 `createAdaptiveTrackSelection` 里闭包传入。
+   */
+  private val materialSessionProvider: () -> Boolean = { false },
 ) : AdaptiveTrackSelection(group, tracks, bandwidthMeter) {
 
   /**
@@ -576,7 +584,7 @@ class HeightAwareAdaptiveTrackSelection(
     //   我们不去请求 1080p,服务端自然也不推它 ⇒ **永远解不开**。手机端「钉死 144p」同源。
     //
     // 故:仅当该视频在册会话里有材料会话([SabrStreamRegistry.hasMaterialSession])时才收窄。
-    val materialSession = com.kirin.mt.core.youtube.sabr.SabrStreamRegistry.hasMaterialSession(serverServedVideoId)
+    val materialSession = materialSessionProvider()
     val servedNow = serverServedItags + serverServedItagsProvider()
     val servedInGroup = if (!materialSession || servedNow.isEmpty()) null
       else (0 until length).filter { itagOf(getFormat(it)) in servedNow }.toSet()
@@ -1004,5 +1012,6 @@ class HeightAwareAdaptiveTrackSelectionFactory : AdaptiveTrackSelection.Factory(
     HeightAwareAdaptiveTrackSelection(
       group, tracks, bandwidthMeter, { startupLockHeight }, { preferredCodecFamily },
       { com.kirin.mt.core.youtube.sabr.SabrStreamRegistry.serverServedItags(serverServedVideoId) },
+      { com.kirin.mt.core.youtube.sabr.SabrStreamRegistry.hasMaterialSession(serverServedVideoId) },
     )
 }
