@@ -112,7 +112,11 @@ internal class SabrMediaFetcher(
 
   /** P11-130:当前生效的预取档(null=无)。每次请求/清理时现读,窗口过期自动失效。 */
   private fun activePrefetchItag(): Int? =
-    prefetchItag?.takeIf { System.currentTimeMillis() < prefetchUntilMs }
+    // 2026-09-20(A4a):材料会话整体停用预取 —— 请求不再发 preferred*(对齐浏览器的字段集),预取本就
+    // 靠 preferred 第二位承载,留着它只会让 bufferedRanges 白剔一个格式 + retainAll 白保一份缓存。
+    // 且预取本身已判定无效(P11-130 真机)并会抢响应预算(P11-136/137),停用只赚不亏。
+    if (session.leadingClientAbrStateBytes != null) null
+    else prefetchItag?.takeIf { System.currentTimeMillis() < prefetchUntilMs }
 
   /**
    * 2026-09-20(预取窗口撤销):让本窗口立刻失效。两个调用点、两条不同的证据链:
@@ -871,8 +875,20 @@ internal class SabrMediaFetcher(
       // visionOS 路径保留);webShape 对齐 FreeTube 整体不发。
       playerTimeMs = if (webShape) null else playerTimeMs,
       videoPlaybackUstreamerConfig = session.ustreamerConfig,
-      preferredAudioFormatIds = listOfNotNull(audioEnc),
-      preferredVideoFormatIds = listOfNotNull(videoEnc, prefetchEnc),
+      // 2026-09-20(A4a,修 `sabr.no_audio_selected`):**材料会话不发 preferred\***。
+      //
+      // 依据(真机 r2015 `logs_live_20260920_172632.log` + 字节对比):浏览器那条**被服务端 200 接受**的
+      // SABR 请求,body 里**只有三组字段** `{f1 clientAbrState, f5 ustreamerConfig, f19 streamerContext}` ——
+      // 一个 `preferred*` 都不带;而我们比它多出 f16/f17,且恰好带着「我要 itag140」。而那份材料的
+      // 会话本是围绕 **itag251(Opus)** 建的(材料解码 `audio=itag251`)⇒ 我们在一个 251 的会话里
+      // 报「偏好 140」,服务端回的字面就是 `sabr.no_audio_selected`。
+      //
+      // 语义上也站得住:`preferred*` 是「额外点名要哪一档」的**提示**,而 SABR 材料会话本来就是
+      // **服务端主导**(服务端按 ustreamerConfig + CAS 决定推什么);`selectedFormatIds` / `bufferedRanges`
+      // 才是我们播放器的真实状态,仍照常发。顺带:预取(P11-130)在材料会话里也一并停用 —— 它本就
+      // 已判定无效且会抢响应预算,停用只赚不亏。
+      preferredAudioFormatIds = if (materialAligned) emptyList() else listOfNotNull(audioEnc),
+      preferredVideoFormatIds = if (materialAligned) emptyList() else listOfNotNull(videoEnc, prefetchEnc),
       preferredSubtitleFormatIds = emptyList(),
       streamerContext = streamerContext.copy(clientInfo = clientInfo),
     )
