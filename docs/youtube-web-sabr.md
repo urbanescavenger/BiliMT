@@ -1880,6 +1880,51 @@ selection 实例里 —— 因为实例正是会被重建的那个东西。**
 
 ---
 
+### 5.11.14 「暂停一会儿 → 砸到 144p」:**用户暂停被当成零供给样本**(P11-167)
+
+**起因**:用户报「又降档 144 了,这次视频我手动暂停了一会儿」(`logs_live_20260921_214100.log`,TV
+`BRAVIA_AE2`,`dev.r2071`)。
+
+**现象与链条(决定性两行)**:
+
+```
+21:39:57.623  sel=1 bitrate=12106890(2160p) bufS=9.9 bw=16451K sus=4372K cap=19163K meas=11921K
+21:39:57.625  buffer-critical downgrade: bufS=9s itag401/2160p → 1440p@10520121     ← 先正常降一档
+21:40:04.963  bw gap counted: 30000ms (raw=113358ms backoff=0ms coast=38366ms runway=48366)   ← ★ 暂停 113 秒
+21:40:04.963  fetch rn=15 REAL 11549178B 7321ms → 12Mbps est=**0K**                  ← 12Mbps 的请求,est 却是 0
+21:40:05.026  downgrade 1440p → 144p: est=**0K** sus=-1 bufS=8s                      ← ★ 直落最低档
+21:40:06.106  sel=23 bitrate=62219 … bw=0K meas=0K
+（之后 est 长时间停在 1.1~1.7Mbps ⇒ 卡在 144p,因为新请求都是 144p 小段,多为 59~132KB,被
+ [REAL_BW_MIN_BYTES]=100KB 过滤或吞吐极低;用户体感「降档到底」）
+```
+
+**根因(两处叠加,都在 [SabrMediaFetcher](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt))**:
+
+1. **`recordFetchGap` 把用户暂停当零供给样本入账**:`addRealBwSample(0L, countedMs)` —— `coast` 只按
+   `runway - 10s` 扣,113 秒的暂停扣完还余 75 秒,再被 `BW_GAP_MAX_MS=30s` 截到 **30 秒**,
+   于是 active 窗口里出现一个「**0 字节 / 30 秒**」样本 ⇒ est = 0/30000 = **0**。
+   该通道本意是记「**被迫空转**」(服务端慢滴造成的供给空窗),**用户暂停不是供给不足**。
+2. **`getRealBitrateEstimate()` 把「无字节证据」返回成 `0`**(`if (realBwBytes <= 0L) return 0L`)——
+   于是下游读到的是「**实测带宽 = 0**」而不是「**证据不足**」。这与本仓已记过的同类坑一模一样
+   (`sus` 的 `-1` 曾被 `-1/1000` 整除打成 `0K`,把「无证据」误读成「证据为零」)。
+
+**修(P11-167)**:
+
+1. **超长 gap 一律按需求空闲处理**:新增 `BW_GAP_IGNORE_MS = 30_000`;`gapMs > 该值` ⇒ **不计 active est**
+   (并打 `bw gap ignored: raw=…ms → 按需求空闲处理(用户暂停/后台),不计 active est`),sustained 分母
+   也按「全额需求空闲」扣。依据:**供给不足时 loader 会立刻再要下一笔**(gap 量级≈秒级),113 秒只可能是
+   用户暂停/后台/切页;而十几秒的慢滴+重试 gap 仍照旧入账(真实供给证据)。
+2. **「无证据」不再报成 0**:`getRealBitrateEstimate()` 在 `realBwBytes <= 0` 时返回 **-1** ⇒
+   `SabrBandwidthMeter.getBitrateEstimate()` 回落 `delegate`(media3 默认计,免疫空转)。
+   同时新增 `fmtEstForLog()` 让 **-1 原样打印为 `-1`**(避免 `-1/1000` 又印成 `0K`);
+   上报服务端的 `bwEstimateBps` 仍按既有口径夹成 `0`(不改上传语义)。
+
+**判据**:暂停后恢复时**不再出现** `bw gap counted: 30000ms (raw=11xxxxms …)` 与
+`est=0K` / `downgrade … → 144p: est=0K`;应出现 `bw gap ignored: raw=…ms(> 30000ms)→ 按需求空闲处理`;
+恢复播放后画质应停在暂停前的档位附近,而不是砸到底再慢慢爬。
+
+---
+
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。

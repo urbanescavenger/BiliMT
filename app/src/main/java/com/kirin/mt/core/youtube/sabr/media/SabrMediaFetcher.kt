@@ -392,7 +392,24 @@ internal class SabrMediaFetcher(
       // 全额当需求空闲处理:不惩罚 est(不计 0 供给样本),空窗照常进 sustained 分母扣除。
       val coastMs = if (runwayMs < 0L) gapMs
         else (runwayMs - BW_GAP_RUNWAY_RESERVE_MS).coerceAtLeast(0L)
-      val countedMs = (gapMs - coastMs).coerceIn(0L, BW_GAP_MAX_MS)
+      // ── P11-167:超长 gap **不是供给不足**,不许当零供给样本入账 ─────────────────────────────
+      // 真机 `logs_live_20260921_214100.log`:用户**手动暂停**了 113 秒,于是
+      //   `bw gap counted: 30000ms (raw=113358ms backoff=0ms coast=38366ms runway=48366)`
+      // 即 `addRealBwSample(0L, 30_000L)` 往 active 窗口塞了一个「0 字节 / 30 秒」样本 ⇒ est 塌到 ≈0
+      // ⇒ 紧接着 `downgrade 1440p → 144p: est=0K sus=-1 bufS=8s` **砸到最低档**,而且之后的请求都是
+      // 144p 小段(59~132KB,多被 [REAL_BW_MIN_BYTES] 过滤)、est 长时间爬不回(1.1~1.7Mbps),就
+      // 「卡在 144p」。**供给不足时 loader 会立刻再要下一笔**(gap 量级≈秒级),113 秒只可能是
+      // 用户暂停/后台/切页 ⇒ 一律按需求空闲处理(不计 active est),并留一行日志与「供给停顿」区分。
+      val countedMs = if (gapMs > BW_GAP_IGNORE_MS) {
+        Log.i(
+          tag,
+          "bw gap ignored: raw=${rawGapMs}ms(> ${BW_GAP_IGNORE_MS}ms)→ 按需求空闲处理(用户暂停/后台)," +
+            "不计 active est(否则 est 会被拽到 0 ⇒ 砸最低档)",
+        )
+        0L
+      } else {
+        (gapMs - coastMs).coerceIn(0L, BW_GAP_MAX_MS)
+      }
       if (countedMs >= BW_GAP_MIN_MS) {
         addRealBwSample(0L, countedMs)
         Log.i(
@@ -404,7 +421,7 @@ internal class SabrMediaFetcher(
       // 需求驱动空闲扣减(2026-08-30):滑行部分(满缓冲主动停闸)= 需求驱动的管道空闲 → 记入持续分母扣除量。
       // 2026-08-31 A:顶档在位时持续分母的滑行扣减改用 20s 余量(见 isTopTierVideoSelected)——est 口径
       // 不变,只让 4K pacing 排队等待进 sus 分母。
-      val sustainedCoastMs = if (runwayMs < 0L) gapMs
+      val sustainedCoastMs = if (runwayMs < 0L || gapMs > BW_GAP_IGNORE_MS) gapMs
         else if (isTopTierVideoSelected()) (runwayMs - TOP_TIER_GAP_RUNWAY_RESERVE_MS).coerceAtLeast(0L)
         else coastMs
       val countedForSustainedMs = (gapMs - sustainedCoastMs).coerceIn(0L, BW_GAP_MAX_MS)
@@ -546,10 +563,23 @@ internal class SabrMediaFetcher(
   }
 
   /** 真实带宽估计(bps)= 窗口内累计下载量/累计耗时(含卡住与被迫空转)。无样本返回 -1;窗口内全是空转(量=0)返回 0,不回退底层高估。 */
+  /**
+   * P11-167:估计值打日志用 —— **-1 原样显示为 `-1`**,不要走 `-1 / 1000`(Kotlin 整除得 0,
+   * 会把「证据不足」印成「0K」——本仓已踩过同一个坑,见 `sus` 字段注释)。
+   */
+  private fun fmtEstForLog(bps: Long): String = if (bps >= 0L) "${bps / 1000L}K" else "-1"
+
   fun getRealBitrateEstimate(): Long {
     synchronized(realBandwidthLock) {
       if (realBwTimeMs <= 0L) return -1L
-      if (realBwBytes <= 0L) return 0L
+      // ── P11-167:**「无字节证据」不是「实测带宽为零」** ────────────────────────────────────────
+      // 原实现此处 `return 0L`,于是窗口里只剩零字节样本(如 P11-167 那个 30s 空转样本)时,
+      // est 被报成 0 ⇒ 降档判据读到 `est=0K` ⇒ 直接砸最低档(真机 21:40:05
+      // `downgrade 1440p → 144p: est=0K`)。这与本仓已记过的同类坑一模一样(sus 的 -1 曾被
+      // `-1/1000` 打成 `0K`,把「证据不足」误读成「证据为零」)。
+      // 改为返回 -1(证据不足)⇒ [SabrBandwidthMeter.getBitrateEstimate] 回落 delegate
+      // (media3 默认计,天然免疫空转),而不是把 0 当结论用。
+      if (realBwBytes <= 0L) return -1L
       return realBwBytes * 8000L / realBwTimeMs
     }
   }
@@ -902,7 +932,9 @@ internal class SabrMediaFetcher(
     // (r1933:sessAgeMs=7.8s 实锤,判据是播放位置非会话墙钟)。visionOS 路径(能播)不动,webShape
     // 仅对 clientName=1(WEB)生效。
     val webShape = session.clientInfo.clientName == 1
-    val bwEstimateBps = getRealBitrateEstimate()
+    // P11-167:real est 现在可能返回 **-1**(「证据不足」,见 getRealBitrateEstimate 的说明)——
+    // 上报服务端的 `bandwidthEstimate` 不能是负数,按既有口径(无证据即 0)夹一下,不改上传语义。
+    val bwEstimateBps = getRealBitrateEstimate().takeIf { it > 0L } ?: 0L
     // 2026-09-20(A2 形状对齐):会话带 harvest 材料 ⇒ **只发动态字段**,静态部分全部留 null 由材料那份
     // 原始 f1 提供(它作为本请求 f1 之前的一份发出,见 SabrRequestInput.leadingClientAbrStateBytes)。
     //
@@ -1123,7 +1155,7 @@ internal class SabrMediaFetcher(
       recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
-      Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps est=${getRealBitrateEstimate() / 1000L}K")
+      Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps est=${fmtEstForLog(getRealBitrateEstimate())}")
       resp
     } catch (e: SabrTerminalException) {
       // 致命错误(RELOAD/InvalidPoToken/重试耗尽)不算普通网络降级,不喂带宽样本
@@ -1135,7 +1167,7 @@ internal class SabrMediaFetcher(
       recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
-      Log.w(tag, "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${getRealBitrateEstimate() / 1000L}K)")
+      Log.w(tag, "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${fmtEstForLog(getRealBitrateEstimate())})")
       throw e
     }
   }
@@ -1492,6 +1524,16 @@ internal class SabrMediaFetcher(
     const val BW_GAP_MIN_MS = 500L
     /** alpha.9Z:gap 计量上限,防单次超长空窗(如长时间暂停后恢复)单样本毒化窗口。 */
     const val BW_GAP_MAX_MS = 30_000L
+
+    /**
+     * P11-167:**超过它就认定「不是供给不足」的 gap**(ms)⇒ 不计 active est(按需求空闲/操作开销处理)。
+     *
+     * 依据(真机 `logs_live_20260921_214100.log`):用户手动**暂停 113 秒**,被记 30s 零字节样本进 active
+     * 窗口 → est 塌 0 → `downgrade 1440p → 144p: est=0K` 砸最低档且长时间爬不回。
+     * 供给不足时 loader 会立刻再要下一笔(gap 量级≈秒级),故 30s 足以把两者分开,同时仍允许
+     * 「慢滴 + 重试」造成的十几秒 gap 照旧入账(那是真实供给证据)。
+     */
+    const val BW_GAP_IGNORE_MS = 30_000L
     /**
      * alpha.9Z:快小样本过滤的时间上限(ms)——bytes<100KB 且耗时低于它视为 init/retry/音频噪声丢弃;
      * 超过它视为「慢小响应」(服务端挂住只回极小体)真实供给中断,按实际 (bytes, elapsed) 入账。
