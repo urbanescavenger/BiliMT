@@ -32,10 +32,7 @@ import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
 import com.kirin.mt.core.youtube.piped.PipedClient
 import com.kirin.mt.core.youtube.piped.PipedStreams
 import com.kirin.mt.core.youtube.piped.PipedStream
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -103,17 +100,6 @@ class YoutubePlaybackResolver(
    *  只能用已知会死的自造材料」(r1959 真机:harvest 会话被 stall 重载后,新会话用自造材料,
    *  60s 处 status=3 处决 → 又一轮重载)。 */
   private val harvestProbed = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
-  /**
-   * P11-161:**后台并发工作用的 scope**(目前只有「提前启动 harvest」)。
-   *
-   * 刻意**不挂在 `resolve` 的 `withContext` 上**:`withContext` 的 block 自带 CoroutineScope,
-   * 若在那里 `async`,它是 structured child —— resolve 返回前会等它跑完,于是「WEB-SABR 被跳过」的场景
-   * (poToken 为空 / 预算不足)也要白等一次 harvest(最长 40s)。这里 fire-and-forget。
-   * resolver 是 AppContainer 持有的应用级单例,故此 scope 生命周期与进程同长,不需要显式取消。
-   */
-  private val earlyWorkScope =
-    CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
   /**
    * 2026-09-20(补 P11-118c 判别实验):该视频**最近一次成功** harvest 到的浏览器原始捕获
@@ -210,37 +196,6 @@ class YoutubePlaybackResolver(
         }
       }
     }
-
-    // ── P11-161:**提前并发启动 harvest**,把起播最大的两段串行重叠掉 ─────────────────────────
-    // 起因(真机 `logs_live_20260921_093758.log` 的起播时间轴,`loadRequest → 首帧` = 51.4s):
-    //   09:36:09.5→23.1  桌面 BotGuard 铸 token(watch 页 + /att/get + snapshot + GenerateIT) 13.6s
-    //   09:36:23.1→29.9  NewPipe getInfo 等                                                 6.8s
-    //   09:36:29.9→47.6  **harvest**                                                        17.7s
-    // 后两段与前两段**互不依赖**(harvest 只要 videoId/起始位置/预算),却串着跑 ⇒ 白付 ~20s。
-    // 这里在**桌面 BotGuard 铸 token 之前**就把它并发启动,`buildWebSabrFallback` 里改为 await。
-    //
-    // 为什么用**独立 scope** 而不是 `withContext` 里的 `async`:后者是 structured child,
-    // resolve 返回前会等它跑完 —— 于是「WEB-SABR 被跳过」(poToken 为空 / 预算不足)的场景也要白等一次
-    // harvest。这里 fire-and-forget;并发/重复安全由 harvester 自身保证:
-    //   · `YoutubeSabrHarvester.webViewMutex` 串行化 WebView 操作
-    //   · `harvestProbed` 45s 去重窗(同一视频窗口内不重复采集)
-    //
-    // 启动门(全部在铸 token **之前**就已知):用户确实选了「WEB-SABR 优先」档、臂确实要采集、
-    // 该视频没被判死、剩余预算够(与下面那条 `webSabrFirstBudgetShort` 同口径)。
-    val armNeedsHarvest = WEB_SABR_ARM_B_ONLY || WEB_SABR_ARM_EXPERIMENT
-    val earlyHarvest: kotlinx.coroutines.Deferred<HarvestMaterial?>? =
-      if (sabrHarvester != null && webSabrFirst && armNeedsHarvest &&
-        !SabrStreamRegistry.isWebSabrFailed(videoId) && remainingMs() >= MinWebSabrFirstBudgetMs
-      ) {
-        Log.i(Tag, "P11-161 harvest 提前并发启动(与 BotGuard 铸 token / getInfo 重叠;remaining=${remainingMs()}ms)")
-        earlyWorkScope.async {
-          runCatching { harvestSessionMaterial(videoId, request.startPositionMs, deadlineMs) }
-            .onFailure { Log.w(Tag, "P11-161 提前 harvest 失败: ${it.message}") }
-            .getOrNull()
-        }
-      } else {
-        null
-      }
 
     // 生成视频 ID 绑定的 PO token（best-effort）。无 PO token 时 YouTube 剥掉 adaptive 高清 url
     // （只剩 progressive 360p）；有 token 才能拿高清直链。失败降级为无 token 直连。
@@ -378,10 +333,7 @@ class YoutubePlaybackResolver(
     }
     if (webSabrFirst && poToken != null && !webSabrFirstBudgetShort && !webSabrFirstBlocked) {
       val webSabr = runCatching {
-        buildWebSabrFallback(
-            videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs,
-            webSabrTokenArm, earlyHarvest,
-          )
+        buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs, webSabrTokenArm)
       }.onFailure {
         // P11-125:这条链整条包 runCatching——不落证就等于「失败且不知道为什么」。
         Log.w(Tag, "WEB-SABR(优先)链异常: ${it::class.simpleName}: ${it.message}", it)
@@ -484,10 +436,7 @@ class YoutubePlaybackResolver(
             (SabrStreamRegistry.reloadCount(videoId) > 0 && poToken != null))
       if (webSabrDue) {
         val webSabr = runCatching {
-          buildWebSabrFallback(
-            videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs,
-            webSabrTokenArm, earlyHarvest,
-          )
+          buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs, webSabrTokenArm)
         }.onFailure {
           // P11-125:同上——兜底段失败也必须留证。
           Log.w(Tag, "WEB-SABR(兜底)链异常: ${it::class.simpleName}: ${it.message}", it)
@@ -2663,11 +2612,6 @@ class YoutubePlaybackResolver(
     deadlineMs: Long = 0L,
     /** P11-145:token 臂(0=自铸 / 1=harvest 页铸 / 2=pot-less),由 [SabrStreamRegistry.nextWebSabrTokenArm] 轮换。 */
     tokenArm: Int = 0,
-    /**
-     * P11-161:**提前并发启动的 harvest**(见 [resolve] 里 `earlyHarvest` 的注释)。
-     * 非 null 时直接 await 它的结果,**不再重复采集**(harvestSessionMaterial 自身有 45s 去重窗,重复调用也只会立刻返回 null)。
-     */
-    earlyHarvest: kotlinx.coroutines.Deferred<HarvestMaterial?>? = null,
   ): Pair<PlaybackInfo, String>? {
     if (poToken == null) {
       Log.w(Tag, "WEB-SABR: no poToken → abort")
@@ -2683,17 +2627,7 @@ class YoutubePlaybackResolver(
     //   臂 A=自造+自铸 / B=自造+harvest 页 token / C=自造+pot-less / D=**完整材料会话 + C1 修复**。
     val harvestNeeded = tokenArm == 1 || tokenArm == 3
     val material: HarvestMaterial? = if (harvestNeeded) {
-      // P11-161:优先取**提前并发启动**的那一份(它已与 BotGuard 铸 token / getInfo 重叠跑过)。
-      // await 失败/被取消时**不再补采**——采集窗口已按 `harvestProbed` 记账,补调用也只会立刻返回 null;
-      // 直接把「没采到」交给下面的臂回落逻辑(回自铸 token),行为与改动前一致。
-      val early = earlyHarvest
-      if (early != null) {
-        runCatching { early.await() }
-          .onFailure { Log.w(Tag, "P11-161 提前 harvest await 失败: ${it.message}") }
-          .getOrNull()
-      } else {
-        harvestSessionMaterial(videoId, request.startPositionMs, deadlineMs)
-      }
+      harvestSessionMaterial(videoId, request.startPositionMs, deadlineMs)
     } else {
       null
     }

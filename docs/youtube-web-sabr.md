@@ -1588,43 +1588,6 @@ Dispatcher,预建复用,不进热路径分配。
 实际生效的超时是哪一个** —— 共享 client 的三件套(`connect/read/write`)很容易在只改 `callTimeout` 时
 被漏掉,而它往往**先**触发。
 
-### 5.11.8 r2054 起播时间轴实测 → **harvest 提前并发启动**(P11-161)
-
-**实测时间轴**(`logs_live_20260921_093758.log` 续播场,`loadRequest → 首帧` = **51.4s**):
-
-| 起 | 止 | 阶段 | 时长 |
-|---|---|---|---|
-| 09:36:07.9 | 09:36:09.5 | 会话预热(cookie/visitor) | 1.6s |
-| 09:36:09.5 | 09:36:23.1 | **桌面 BotGuard 铸 token**(watch 页 1.27MB + `/att/get` + interpreter + snapshot + GenerateIT) | **13.6s** |
-| 09:36:23.1 | 09:36:29.9 | NewPipe getInfo 等 | 6.8s |
-| 09:36:29.9 | 09:36:47.6 | **harvest** | **17.7s** |
-| 09:36:47.6 | 09:36:49.9 | 会话构建(/player + n-solver) | 2.3s |
-| 09:36:49.9 | 09:36:59.3 | 会话就绪 → 首帧(首笔 SABR 往返) | 9.4s |
-
-(prewarm 的 10.0s 已在另一条协程里与上面重叠,不重复计。)
-
-**问题**:后两段(13.6s + 6.8s = 20.4s)与 harvest(17.7s)**互不依赖** —— harvest 只需要
-`videoId` / 起始位置 / 预算 —— 却**串着跑** ⇒ 白付约 **20s**。
-
-**修(P11-161)**:在**桌面 BotGuard 铸 token 之前**就把 harvest 并发启动,`buildWebSabrFallback` 里改为
-`await` 那一份。新增参数 `earlyHarvest: Deferred<HarvestMaterial?>?`,两个调用点都透传;
-非 null 时直接 await(**不再补采** —— 采集窗口已按 `harvestProbed` 记账,补调用只会立刻返回 null)。
-
-**为什么用独立 scope 而不是 `withContext` 里的 `async`**:`withContext` 的 block 自带 CoroutineScope,
-那里的 `async` 是 **structured child** —— resolve 返回前会等它跑完,于是「WEB-SABR 被跳过」的场景
-(poToken 为空 / 预算不足)也要**白等一次 harvest**(最长 40s)。故新增 `earlyWorkScope`
-(fire-and-forget);并发/重复安全由 harvester 自身保证:`webViewMutex` 串行化 WebView 操作、
-`harvestProbed` 45s 去重窗。
-
-**启动门**(全部在铸 token **之前**已知):`sabrHarvester != null && webSabrFirst && 臂需采集 &&
-!isWebSabrFailed(videoId) && remainingMs() >= MinWebSabrFirstBudgetMs`。
-
-**预期收益**:把 20.4s 与 17.7s 重叠 ⇒ 省 **10~17s**(起播从 ~51s 降到 ~35s 上下)。
-
-**判据**:日志出现 `P11-161 harvest 提前并发启动(…remaining=Nms)` 且**它排在 `PO token minted` 之前**;
-`loadRequest → first media chunk` 总耗时明显下降;`captured SABR POST … poToken=88B → 真 token` 与
-首笔 `status=1` **保持不变**(这是不能动的底线)。
-
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
