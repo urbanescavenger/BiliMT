@@ -1590,6 +1590,56 @@ Dispatcher,预建复用,不进热路径分配。
 
 ---
 
+### 5.11.8 r2054 起播时间轴实测 + **harvest 提前并发启动**(P11-161,**已回退**)
+
+> ⚠️ **本节结论已作废(2026-09-21,回退提交 `5d22c181`)**。时间轴数据本身有效(仍是起播优化的靶子),
+> 但**不要照抄这里的改法** —— 真机实测该改动导致播放劣化,见下方「回退原因」。
+
+**实测时间轴**(`logs_live_20260921_093758.log` 续播场,`loadRequest → 首帧` = **51.4s**):
+
+| 起 | 止 | 阶段 | 时长 |
+|---|---|---|---|
+| 09:36:07.9 | 09:36:09.5 | 会话预热(cookie/visitor) | 1.6s |
+| 09:36:09.5 | 09:36:23.1 | **桌面 BotGuard 铸 token**(watch 页 1.27MB + `/att/get` + interpreter + snapshot + GenerateIT) | **13.6s** |
+| 09:36:23.1 | 09:36:29.9 | NewPipe getInfo 等 | 6.8s |
+| 09:36:29.9 | 09:36:47.6 | **harvest** | **17.7s** |
+| 09:36:47.6 | 09:36:49.9 | 会话构建(/player + n-solver) | 2.3s |
+| 09:36:49.9 | 09:36:59.3 | 会话就绪 → 首帧(首笔 SABR 往返) | 9.4s |
+
+(prewarm 的 10.0s 已在另一条协程里与上面重叠,不重复计。)
+
+**当时的判断**:后两段(20.4s)与 harvest(17.7s)**互不依赖**(harvest 只要 videoId/起始位置/预算)却
+串着跑 ⇒ 白付约 20s。改法是在**桌面 BotGuard 铸 token 之前**并发启动 harvest,`buildWebSabrFallback`
+改为 `await` 那一份;为避免 `withContext` 里 `async` 的 structured-child 语义(resolve 返回前会等它跑完),
+新增了独立的 `earlyWorkScope`(fire-and-forget)。
+
+**回退原因(真机 `logs_live_20260921_101056.log`)**:播放明显劣化 ——
+
+| 读数 | 值 |
+|---|---|
+| WEB-SABR 会话 | 3 场 |
+| `fetch rn=… exception: timeout (fail=18xxxms bwNow=0K)`(零字节等满 18s 被切) | **6 次** |
+| 拿到「首笔 `status=1`」的会话 | **仅 1 场** |
+| harvest 采到真 token(`88B → 真 token,命中即返回`) | 4 次(采集腿本身是好的) |
+| 取消异常 | `P11-161 提前 harvest await 失败: **The coroutine scope left the composition**` |
+
+两条同时出现:
+
+1. **提前 harvest 的 Deferred 被「composition 取消」干掉**。`The coroutine scope left the composition` 是
+   Compose 的 `LeftCompositionCancellationException`(见 [YoutubeRepository.kt:451](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeRepository.kt#L451)
+   的既有注释)—— 说明「用独立 scope 就与 UI 生命周期无关」这个假设**在某处不成立**:harvest 链或其调用方
+   仍带着 composition scope 的上下文。**这一条本身就是个待查的机制**。
+2. **会话侧大面积零字节超时**(6 次)。注意:`bwNow=0K` 这类零字节停顿**在 P11-161 之前就存在**
+   (见 §5.11.7 那笔 `fail=16533ms bwNow=0K`),所以「都不能播」**可能部分是服务端当刻的强制态**
+   —— 文档多处记过服务端强制是**概率性 A/B**、跨场次对比无意义(§5.9.6 / §5.9.8)。故回退后若**仍**不能播,
+   说明主因不在并发改动,而在那个零字节停顿(那是 P11-160 试图覆盖、但 18s 仍不够的场景)。
+
+**动作**:回退(提交 `5d22c181`,只回退代码逻辑;本条记录随后补回)。**下一步不建议盲目重试并发** ——
+先做两件取证:①那条 composition 取消到底从哪来(谁把 UI 的 Job 上下文带进后台 scope);
+②零字节停顿的真实上限(把 18s 抬到多少才够 / 是否该在停顿期不切会话)。
+
+---
+
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。
