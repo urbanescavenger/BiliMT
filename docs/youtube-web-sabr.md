@@ -1386,6 +1386,38 @@ UMP 解析**(`fetch rn= N REAL …` 那行就是它)⇒ 真机上**两行判据�
 `MinWebSabrFirstBudgetMs` 与 `FallbackReserveMs=12s` 夹住)。真机 prewarm 已实测 `ok: 9373ms`(WebView 热),
 故冷启那一笔通常只花 watch 页加载 + 播放器铸 token 的时间。
 
+#### 5.11.4.1 r2054 实测:**臂 B 打通**(WEB-SABR 自造会话首次全指标达标)
+
+真机 `logs_live_20260921_083216.log`(`dev.r2054`,视频 `GJj1TN73ZPQ`)。**§5.10.1 的判据全部达成**:
+
+| 判据 | 结果 |
+|---|---|
+| 臂跑到 | ✅ 臂 B(`WEB-SABR 臂B(自造+页面 token): 只借 token = 88B 88B first=0x32 minter 输出(0x32)`) |
+| 借到的是真 token | ✅ harvest `captured SABR POST … poToken=88B → 真 token,命中即返回`(不是 10B 冷启桩) |
+| **首笔 status** | ✅ **`status=1`** —— `首笔 STREAM_PROTECTION_STATUS status=1 (pot=88B first=0x32)` |
+| status 序列 | ✅ **`status=1` ×108,`status=3` ×0**(此前自造会话是 7/7 场首笔 `status=2`) |
+| 格式(绕开格式墙) | ✅ `resp summary: req=247 usable=2032742B/2032742B init=[140, 247] pushed=[140, 247]` —— 服务端供**我们的**档,`usable` 多数 **100%** |
+| 播放 | ✅ `first media chunk` 两轨都有;**281 个媒体块**;`playerState=3(READY)` |
+| 连续时长 | ✅ **08:18:07 → 08:31:31 ≈ 13 分 24 秒**,期间 `Playback error` / `auto-retry` / `stall` / `RELOAD` / `markWebSabrFailed` **全部 0** |
+| 画质 | ✅ ABR 升到 **itag248(1078p)**,末笔 `chunk completed: media itag=248 bytes=428510 sel=0(1078p)` |
+
+**结论**:**「token 就是那个变量」被证实** —— 同一套自造会话(我们自己的 `/player` URL、移动 WEB 身份),
+只把会话 token 从「自铸」换成「页面自铸的那枚 88B」,首笔即从 `status=2` 变 `status=1`,并连续播 13 分钟。
+这也把 §5.9.6「结论一(格式墙与会话 URL 绑死、与 token 无关)」精确化:**格式墙只在材料 URL 上;
+token 与格式两件事互相独立**。历史成功配方「材料会话 + 页面 token」里,**真正承重的是 token 那一半**。
+
+**尚未解决的残留**:
+
+1. **起播税 ~20s**:harvest 第一次尝试撞 `onPageFinished not fired within 8000ms (blank page)` → fail-fast +
+   `丢弃采集 WebView 实例` → 重建重试成功。两次的 `onPageFinished` 实测都在 **~8s**(第一次 8.2s 被杀、
+   重试 8.1s 刚好赶上)⇒ **`BLANK_PAGE_ABORT_MS=8000` 正卡在边界上**。修法候选:①阈值放宽(代价:真空页
+   fail-fast 变慢);②abort 前先看 `document.readyState`/文档长度,别只看时间;③把 watch 页导航并入
+   prewarm(prewarm 目前只加载首页)。
+2. **harvest 采集腿仍是唯一 token 来源**:自铸内核(臂 A / P11-154 的页面挑战)至今 **0/3** 产出被接受的
+   token。若日后要摆脱采集腿,得换 snapshot 调用形态走 bgutils 正版路径(见 §5.11.4 ②)。
+3. **降档/选档行为**:本场 `pushed=[134,140,160,247,248,278]`、`sel` 轨迹在 0(1080p)与其他档间摆动,
+   属 P11-151/152/153 那条「降档钉死 / 不升档」线,与本节的 token 结论无关。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
