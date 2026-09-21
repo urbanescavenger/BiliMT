@@ -284,10 +284,9 @@ class YoutubeSabrHarvester(
       // P11-127(Stage 2):**冷启桩兜底位**。移动站(m.youtube.com)的播放器会连发多个 SABR POST:
       // 首个带的是**冷启动占位 token**(10B,`34,8,+8B header`、identifier 长度 0),随后的 POST 才带
       // 真 token(真机 09-20 实测 88B)。此前「命中即返回」有时抓到桩 ⇒ 会话 `status2Seen=0` 从第一个
-      // 请求就被判死(WXczq9O 案,秒死)。故:真 token 命中才立刻返回;只拿到桩则记在这里、**再等
-      // [STUB_GRACE_MS]** 看有没有真 token 的 POST,到期才退桩(把额外耗时限死在 6s)。
+      // 请求就被判死(WXczq9O 案,秒死)。故:真 token 命中才立刻返回;只拿到桩则记在这里、
+      // **继续轮询到本轮窗口到期**(P11-159 起;旧实现固定再等 6s,撑不过前贴片广告,见下方注释)。
       var stubCapture: SabrCapture? = null
-      var stubGraceDeadline = 0L
       // P11-125:空壳页的长度判据只量一次(见下方 DOC_LEN_JS 分支)。
       var docLenChecked = false
       // P11-158:「onPageFinished 迟到」判据的探测节流 + 只打一次的日志标记。
@@ -387,11 +386,10 @@ class YoutubeSabrHarvester(
                 }
                 if (stubCapture == null) {
                   stubCapture = cap
-                  stubGraceDeadline = System.currentTimeMillis() + STUB_GRACE_MS
                   Log.w(
                     Tag,
                     "harvest: SABR POST 只带冷启桩(poToken=${tokenLen}B)→ 继续等带真 token 的 POST" +
-                      "(最多再等 ${STUB_GRACE_MS}ms)",
+                      "(P11-159:等满本轮窗口,不再 6s 就放弃 —— 前贴片广告期间页面只发桩)",
                   )
                 }
               }
@@ -428,30 +426,30 @@ class YoutubeSabrHarvester(
           }
         }
         delay(200)
-        // P11-142(2026-09-20 r2024 真机判读):**不再退桩**。
-        // r2024 一场里 4/5 次采集只拿到冷启桩(poToken=10B;真 token 那份是 88B/ust 8657B),而这些
-        // 桩材料会话**出生即死**:桩 token 让服务端一路 `status=2`(attestation pending,整场 114 次),
-        // 永远拿不到 `status=1`。更糟的是**桩材料把「自造材料」路径挤掉了** ——
-        // [YoutubePlaybackResolver.harvestSessionMaterial] 返回非 null,resolver 就不再走我们自己的
-        // /player 会话;而**材料 URL 会话只供浏览器那一场绑定的档位**(r2024 五场全死于
-        // `no seg 0 itag <我们的档>` ×6;对照 r2023 那场自造材料会话 `status=1 ×12` 且正常供我们的
-        // 302/140)。故桩**没有价值**:返回 null 才能让 resolver 立刻落自造路径。
-        if (stubCapture != null && System.currentTimeMillis() >= stubGraceDeadline) {
-          lastStubOnly = true
-          Log.w(
-            Tag,
-            "harvest: 真 token 的 POST 未出现 → **丢弃冷启桩**" +
-              "(poToken=${poTokenLenOf(stubCapture!!.bodyB64)}B)→ 返回 null 落自造材料(见 P11-142)",
-          )
-          return null
-        }
+        // P11-142(2026-09-20 r2024 真机判读):**不退桩** —— 桩材料会话出生即死(10B 桩让服务端一路
+        // `status=2`,整场 114 次,永远拿不到 `status=1`),且桩材料会把「自造」路径挤掉(材料 URL 会话
+        // 只供浏览器那一场绑定的档位,r2024 五场全死于 `no seg 0 itag <我们的档>`)。故桩**只作放弃信号**。
+        //
+        // ── P11-159(r2054 续播场实测):但**不能再固定 6s 就放弃** ─────────────────────────────
+        // 真机 `logs_live_20260921_092228.log`(续播 startPos=196000):页面**完全正常**
+        // (`dl=682063`、`ytcfg=true`、`onPageFinished 迟到但非空壳`),整段却只拿到 10B 冷启桩 —— 因为
+        // 移动 watch 页在**前贴片广告**期间只发冷启桩(`pagead`/`赞助商广告` 同刻在页内)。旧实现
+        // `STUB_GRACE_MS=6000` 到期即 `return null`,而本轮采集窗口其实有 **40s**,它只用了 **16.3s** 就走了
+        // ⇒ 广告一结束本可拿到的真 token 永远等不到;更糟的是桩被丢弃会置 `lastStubOnly`,让上层
+        // **跳过那次热重试**(P11-149)⇒ 采集彻底失败 ⇒ 回落自铸 token ⇒ 首笔 `status=2` ⇒ 判死。
+        // 改为**由本轮采集窗口兜底**:拿到桩后继续轮询到 `deadline`(窗口本身已由起播预算夹住),
+        // 期间任何一条带真 token 的 POST 都会被上面的命中即返回接走;**仍然不退桩**(到期处置不变)。
+        // 代价诚实记录:若页面**始终**铸不出真 token(非广告场景),现在会等满窗口(冷 40s / 热 30s)
+        // 才落自造路径,而旧实现 ~6s 就落 —— 用「多等」换「广告场景不再必败」。
       }
       // P11-142:轮询到期也只有桩 → 同样丢弃(桩材料会话出生即死,见上)。
+      // P11-159:这条现在是**唯一**的「只有桩」出口(旧实现还有一条 6s 提前出口,撑不过广告,已删)。
       stubCapture?.let {
         lastStubOnly = true
         Log.w(
           Tag,
-          "harvest: 轮询到期,只有冷启桩 POST(poToken=${poTokenLenOf(it.bodyB64)}B)→ 丢弃,返回 null(落自造材料)",
+          "harvest: 轮询到期(本轮窗口用满),只有冷启桩 POST(poToken=${poTokenLenOf(it.bodyB64)}B)" +
+            "→ 丢弃,返回 null(落自造材料)",
         )
       }
       nonPostCapture?.let {
@@ -715,7 +713,19 @@ class YoutubeSabrHarvester(
      */
     const val MIN_REAL_PO_TOKEN_BYTES = 80
 
-    /** P11-127:只拿到冷启桩时,额外等「带真 token 的 POST」的上限(ms)。到点仍无则退桩收工。 */
+    /**
+     * P11-159:**本常量已停用**(保留注释说明来龙去脉,供后续检索)。
+     *
+     * P11-127 引入它:只拿到冷启桩时,额外等「带真 token 的 POST」的上限 6s,到点仍无则退桩收工
+     * (当时的理由是「把额外耗时限死在 6s」)。
+     *
+     * r2054 续播场(`logs_live_20260921_092228.log`)实测它**撑不过前贴片广告**:页面完全正常
+     * (`dl=682063`/`ytcfg=true`),广告期间页面只发冷启桩,6s 到期即 `return null` —— 而本轮采集窗口
+     * 其实有 **40s**,它只用了 **16.3s**;更糟的是桩被丢弃会置 `lastStubOnly`,让上层跳过那次热重试
+     * (P11-149)⇒ 采集彻底失败 ⇒ 回落自铸 token ⇒ 首笔 `status=2` ⇒ 判死。
+     * 现在改为**由本轮采集窗口兜底**(等满 `deadline`,窗口本身已被起播预算夹住)。
+     */
+    @Suppress("unused")
     const val STUB_GRACE_MS = 6_000L
 
     /**
