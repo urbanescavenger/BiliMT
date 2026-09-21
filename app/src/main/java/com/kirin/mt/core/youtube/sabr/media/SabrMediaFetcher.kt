@@ -74,6 +74,23 @@ internal class SabrMediaFetcher(
   private val httpClient: OkHttpClient,
 ) {
   private val tag = "YtSabr"
+
+  /**
+   * P11-160:SABR 请求专用的 client 克隆 —— 把 **readTimeout** 抬到与「整调用上限」同一值。
+   *
+   * 为什么必须克隆:共享的 YouTube client([BiliHttpClientFactory.baseBuilder])是给**小 API 调用**定的
+   * `connect/read/write = 15s`;而 SABR 是流式媒体请求,服务端**首包偶发 16~20s**(真机实测:正常场
+   * `rn=0` 4.5~7.2s,慢启动场 16.5s 零字节)。本方法既有的 `call.timeout()` 只覆盖整调用,
+   * **readTimeout(15s) 会把慢启动抢先处决** ⇒ 自适应上限(18s/40s)形同虚设。
+   *
+   * 两个克隆按档高预建复用(连接池/Dispatcher 与父 client 共享,克隆本身接近零成本),不进热路径分配。
+   */
+  private val clientLowCap: OkHttpClient by lazy {
+    httpClient.newBuilder().readTimeout(SabrCallTimeoutMsLow, java.util.concurrent.TimeUnit.MILLISECONDS).build()
+  }
+  private val clientHighCap: OkHttpClient by lazy {
+    httpClient.newBuilder().readTimeout(SabrCallTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).build()
+  }
   /** 派生自 [entry](会话级,切清晰度重建 fetcher 时复用已刷新的 token)。 */
   private val session = entry.session
   private val poTokenState = entry.poTokenState
@@ -1055,7 +1072,6 @@ internal class SabrMediaFetcher(
     val prevManualMs = lastManualFormatSelectionMs
     val runwayMs = bufferedAheadMsAtLastFetch
     return try {
-      val call = httpClient.newCall(request)
       // P11-134:SABR POST **整调用上限**。playback client 是 `callTimeout(0)`(为不切掉长分片),
       // 只有 per-read 15s ⇒ 服务端「慢滴」(每次 read 都在 15s 内挤一点)时**永不超时**。
       // 真机 2026-09-20 13:32 就是这样挂死的:`fetch rn=2` 发出后既无 REAL 也无 exception,缓冲耗尽、
@@ -1071,6 +1087,19 @@ internal class SabrMediaFetcher(
       //          早切早让 error-retry 链接管(4K 大段不受影响)。
       val reqHeight = session.videoFormats.firstOrNull { it.itag == req.formatItag }?.height ?: 0
       val callCapMs = if (reqHeight >= 1440) SabrCallTimeoutMs else SabrCallTimeoutMsLow
+      // ── P11-160(r2054 续播多场实测):**readTimeout 必须一起抬,否则上面那个上限有一半是纸面的** ──
+      // 共享的 YouTube client(`BiliHttpClientFactory.baseBuilder`)带的是 `readTimeout(15s)` /
+      // `writeTimeout(15s)` / `connectTimeout(15s)` —— 那是给**小 API 调用**定的;而本方法此前只覆盖了
+      // `callTimeout`,**没覆盖 readTimeout** ⇒ 服务端首包一旦超过 15s,读超时先触发,`callCapMs` 根本用不上。
+      // 真机 `logs_live_20260921_094658.log`(续播 `iTY92w_uPys @415s`):
+      //   `fetch rn=0 exception: timeout (fail=16533ms bwNow=0K)` + `rn=1 … fail=16622ms`(同一会话两笔都零字节)
+      //   ⇒ 会话被 evict → 28s 后 stall 看门狗重试 → 新会话成功(该场 rn=0 只用 4.5s)
+      // 而同日另外两场正常会话首包是 `rn=0 4569ms / 7204ms`、`rn=1 3565ms / 4457ms` ⇒ 16.5s **不是**常态,
+      // 是服务端偶发的慢启动(与既有记录「首包偶发 16-20s」一致);正常情况本来就不该被杀,慢启动更不该。
+      // 修法:按本次档高选用**预建的 client 克隆**(readTimeout 已抬到对应的 `callCapMs`)—— 于是唯一的界
+      // 就是 P11-153 那个自适应上限,「零字节慢启动」与「慢滴」都归它管,不再出现「15s 读超时抢先处决」
+      // 这种与档高无关的暗规则。克隆预建复用,不进热路径分配。
+      val call = (if (reqHeight >= 1440) clientHighCap else clientLowCap).newCall(request)
       call.timeout().timeout(callCapMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       val resp = call.execute().use { response ->
         val code = response.code

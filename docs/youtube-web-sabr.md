@@ -1541,6 +1541,53 @@ token**」而不是「退桩」。
 现在串行吃掉了 22s + 17.7s,重叠后约可省 10~17s;②桌面 BotGuard 那枚 token 在臂 B 路径上只是**兜底**,
 可惰性化或与 harvest 并行(省 5~13s,波动大);③首帧前 9.4s 是首笔 SABR 往返,属网络/服务端,暂无可为。
 
+### 5.11.7 r2054 续播多场实测:SABR 请求**继承了 15s readTimeout**,把自适应上限架空(P11-160)
+
+真机 `logs_live_20260921_094658.log`(连续续播 3 场:`iTY92w_uPys @415s` ×2 尝试 + `Ft917Ifvz2c @446s`)。
+
+**总体**:`status=1` ×32 / `status=3` **0**;`Playback error` / `markWebSabrFailed` **0**;末笔升到 **1080p/1440p**。
+**3 场里 2 场直接成功,1 场偶发失败后自愈**(stall 看门狗重试 → 新会话成功)。
+
+**失败那场的逐帧**(`iTY92w_uPys @415s` 第 1 次):
+
+```
+09:40:26.313  fetch rn=0 itag=140 seg=0 pot=87B …            ← 会话已建好、请求已发出
+09:40:42.862  fetch rn=0 exception: timeout (fail=16533ms bwNow=0K)   ← 零字节等满 16.5s 被杀
+09:40:42.864  SabrDataSource open: seg=0 itag=140 SocketTimeoutException → evict sid=…
+09:40:59.503  fetch rn=1 exception: timeout (fail=16622ms bwNow=0K)   ← 同一会话第 2 笔也一样
+09:40:52.406  stall detected, auto-retry #1 @pos=415523ms startup=true → 重建 → 09:41:19 首笔 status=1 ✓
+```
+
+**决定性对照**(同日其它正常会话的首包)**:
+
+| 会话 | `rn=0` | `rn=1` |
+|---|---|---|
+| 成功场 09:41 | `REAL 4569ms` | `REAL 3565ms` |
+| 成功场 09:46 | `REAL 7204ms` | `REAL 4457ms` |
+| **慢启动场 09:40** | `timeout fail=16533ms` | `timeout fail=16622ms` |
+
+⇒ 正常首包 **3.5~7.2s**,16.5s 不是常态,是**服务端偶发慢启动**(与既有记录「首包偶发 16~20s」一致)。
+
+**根因(配置事故,不是续播逻辑)**:SABR 走的是共享 YouTube client
+([BiliHttpClientFactory.baseBuilder](../app/src/main/java/com/kirin/mt/core/network/BiliHttpClientFactory.kt#L68-L76)),
+它带 `connect/read/write = 15s` —— 那是给**小 API 调用**定的。而 [SabrMediaFetcher](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt)
+**只覆盖了 `callTimeout`(P11-134/P11-153 的自适应上限),没覆盖 `readTimeout`** ⇒
+服务端首包一旦超 15s,**读超时抢先处决**,`callCapMs`(≤1080p 18s / ≥1440p 40s)**根本用不上**
+(16.5s ≈ 15s read + 建连,实测两次都落在这个数上)。P11-134 那段注释还写着「playback client 是
+`callTimeout(0)`、只有 per-read 15s」—— 那是加自适应上限**之前**的状态,注释与实现已经脱节。
+
+**修(P11-160)**:新增两个按档高**预建的 client 克隆**(`clientLowCap` / `clientHighCap`),
+把 `readTimeout` 抬到与 `callCapMs` **同一值**,于是唯一的界就是 P11-153 那个自适应上限 ——
+「零字节慢启动」与「慢滴」都归它管,不再有「与档高无关的 15s 暗规则」。克隆与父 client 共享连接池/
+Dispatcher,预建复用,不进热路径分配。
+
+**判据**:慢启动场次应看到 `fetch rn=0 REAL …`(而不是 `exception: timeout`)、不再 `evict`、
+不再触发 `stall detected … startup=true`;正常场次的带宽/耗时分布不变。
+
+**教训(与既有 `probe-timeout-check-before-fallback` 同类)**:**改「上限/回退」逻辑前,必须先确认这条链
+实际生效的超时是哪一个** —— 共享 client 的三件套(`connect/read/write`)很容易在只改 `callTimeout` 时
+被漏掉,而它往往**先**触发。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
