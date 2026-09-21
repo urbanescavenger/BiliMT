@@ -274,8 +274,9 @@ class HeightAwareAdaptiveTrackSelection(
       val applied = applyStartupLock(value)
       selectedRaw = applied
       // P11-164:回写「当前档」,供选择集被重建时继承(见 [rememberedItagProvider])。
-      // 放在夹锁**之后**回写 —— 记的应是真正上屏的那一档。
-      runCatching { onSelectedItagChanged(getFormat(applied).id) }
+      // 放在夹锁**之后**回写 —— 记的应是真正上屏的那一档;itag 走 [itagOf](media3 的 `Format.id`
+      // 是 **String**,不是 Int —— CI 曾因此报 `Argument type mismatch: actual 'String?'`)。
+      runCatching { onSelectedItagChanged(itagOf(getFormat(applied))) }
     }
 
   /** P11-128:锁高日志节流(每 selection 实例最多每 5s 打一次,防升档路径反复被夹刷屏)。 */
@@ -368,10 +369,10 @@ class HeightAwareAdaptiveTrackSelection(
     return bestIndexOf { getFormat(it).height == maxH } ?: (length - 1)
   }
 
-  /** P11-164:按 itag 找本组索引(记忆档继承用);无/null 返回 null。 */
+  /** P11-164:按 itag 找本组索引(记忆档继承用);无/null 返回 null。itag 用 [itagOf] 解析。 */
   private fun indexOfItag(itag: Int?): Int? {
     if (itag == null || itag <= 0) return null
-    return (0 until length).firstOrNull { getFormat(it).id == itag }
+    return (0 until length).firstOrNull { itagOf(getFormat(it)) == itag }
   }
 
   /** 满足条件者里挑一个:顶档 codec 优先,其次码率高者;无满足者返回 null。 */
