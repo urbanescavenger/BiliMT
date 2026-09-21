@@ -346,7 +346,7 @@ class YoutubeJsExecutor(context: Context) {
      * P11-162:拦截器**代发请求**时的连接/读取超时(ms)。
      *
      * 此前完全没设 ⇒ `HttpURLConnection` 默认 0 = 无限 ⇒ 真机实测卡死 99 秒(见 [shouldInterceptRequest]
-     * 里的注释)。连接 8s / 读 15s:interpreter 的 `google.com/js/*` CDN 只有 63KB,15s 足够;
+     * 里的注释)。连接 8s / 读 15s:interpreter 的 google.com/js CDN 只有 63KB,15s 足够;
      * 超时即抛错 → catch 回落 `super.shouldInterceptRequest`(交给 Chromium 原生栈)。
      */
     const val InterceptConnectTimeoutMs = 8_000

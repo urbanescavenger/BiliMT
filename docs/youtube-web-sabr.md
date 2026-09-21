@@ -1693,6 +1693,11 @@ FreeTube 是怎么解决加载速度问题」。遂对 `E:\GITHUB\FreeTubeMt`(�
 **判据**:慢网络场次下 `intercept failed: Broken pipe` 之前的静默时长应从 **99s 量级**降到 **≤15s**;
 `PO token unavailable; degrade to no-token` 不再拖慢整次解析;正常场次的铸造耗时分布不变。
 
+**教训(编译期踩的坑,记一笔)**:**Kotlin 的块注释是嵌套的**。本轮在 KDoc 里写了
+`` `google.com/js/*` `` —— 其中的 `/*` **开了一个嵌套注释**,于是外层 KDoc 永不闭合,CI 报
+`Unclosed comment` + 一串 `Unresolved reference`(所有 companion 常量"消失")。**写注释时避免在
+KDoc/块注释里出现 `/*` 字面量**(用"google.com/js 目录"这类写法)。JS 侧无此问题(JS 块注释不嵌套)。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
