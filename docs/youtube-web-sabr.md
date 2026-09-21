@@ -1754,6 +1754,59 @@ OkHttp 的 `readTimeout` 语义正是「**多久没有新字节**」(每字节�
 
 ---
 
+### 5.11.11 「开字幕 → 掉到 144p」:选择集重建时初值落最低档(P11-164)
+
+**起因**:用户报「又降档到底,手切没问题」(TV `BRAVIA_AE2`,`dev.r2067`,`logs_live_20260921_193433.log`)。
+
+**现象与相关性(2/3 次复现,精确到毫秒)**:
+
+| 字幕操作 | 紧跟着 |
+|---|---|
+| `19:17:04.271 BiliSubtitle: 字幕已选: id=0 lang=zh asr=false` | `19:17:04.305 YtSabrChunk: updateTrackSelection: sel 0(1080p) → **19(144p)** len=20` |
+| `19:19:17.910 BiliSubtitle: 字幕已选: id=0 lang=zh asr=false` | `19:19:17.941 updateTrackSelection: sel 0(1080p) → **19(144p)** len=20` |
+| `19:23:51.974` | `19:23:51.985 updateTrackSelection: sel 0(1080p) → 0(1080p) len=1`(这条是**音频**组,len=1,与视频无关) |
+
+**掉下去之后的连锁**(`19:17:06 → 19:17:17`,6 次切档):
+
+```
+19:17:06.434 cleanup dropped formats=[299] (audio=140 video=160)    ← 1080p 轨缓冲被丢
+19:17:14.776 cleanup dropped formats=[160] (video=133)             ← 每 0.6~8s 换一档
+19:17:15.385 cleanup dropped formats=[133] (video=134)
+19:17:16.011 cleanup dropped formats=[134] (video=135)
+19:17:16.976 cleanup dropped formats=[135] (video=298)
+```
+一路从 144p 爬回 720p;期间 `buffer-critical downgrade: bufS=0s` ×2(切档丢缓冲 ⇒ 缓冲读 0 ⇒ 再降档)、
+`downgrade fail cooldown: 720p excluded 90s` ×2 —— 即**用户看到的「砸到底再慢慢爬、还反复掉」**。
+
+**根因(一行代码)**:
+[HeightAwareAdaptiveTrackSelection.initialSelectedIndex()](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/HeightAwareAdaptiveTrackSelection.kt#L330-L331)
+
+```kotlin
+private fun initialSelectedIndex(): Int {
+  val lock = startupLockHeightProvider() ?: return length - 1   // ← 无起播锁 ⇒ 返回「最后一个」= 最低档
+  ...
+}
+```
+
+`startupLockHeight` 由 UI 在起播时置为 `startQualityHeight`(`MobilePlayerScreen.kt:1048` /
+`PlayerScreen.kt:2117`),**起播锁释放后置 null**;而**开字幕会改变 track group ⇒ ExoPlayer 重跑
+`selectTracks` ⇒ 新建一个 selection 实例**([SabrMediaPeriod.selectNewStreams](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaPeriod.kt#L256-L278))
+⇒ 新实例懒算 [selected](#L257-L263) ⇒ 锁已松 ⇒ **直接落最低档**。
+
+**为什么「手切没问题」**:手动选档走 `selected` 的 **setter**(`applyStartupLock(value)`),不经过
+`initialSelectedIndex()` ⇒ 不受重建影响。
+
+**修法方向(待实施)**:让选择集**重建时继承「当前档」**而不是从最低档起 —— 加一个 provider
+(`rememberedVideoItagProvider: () -> Int?`,按 videoId 从 `SabrStreamRegistry` 取;在 `selected` 的
+setter 里回写当前 itag 与用户设置),`initialSelectedIndex()` 在 `lock == null` 时**先**用记忆档
+(同 itag 或最近 height)兜底,再退到 `length - 1`。这同时修掉「**任何 track group 变化都会重置画质**」
+这一类问题(字幕只是最常见的触发点)。
+
+**判据**:开/关字幕时日志里**不再出现** `sel N(1080p) → 19(144p)`;`cleanup dropped formats` 不再被字幕
+触发连发;不再出现由切档引起的 `buffer-critical downgrade: bufS=0s`。
+
+---
+
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。
