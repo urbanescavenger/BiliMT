@@ -1700,6 +1700,60 @@ KDoc/块注释里出现 `/*` 字面量**(用"google.com/js 目录"这类写法)�
 
 ---
 
+### 5.11.10 r2054 三段连续重试判读 + **FreeTube 为什么"没问题"**(P11-163)
+
+**起因**:用户报「似乎还是很慢」,并问「FreeTube 为什么没问题」。
+
+#### (1) 真机判读(`logs_live_20260921_171235.log`,同一视频连着重试 3 次)
+
+| 尝试 | 关键序列 | 结果 |
+|---|---|---|
+| **第 1 次** 17:10:32 | `17:11:07.944 fetch rn=0 itag=140 seg=0 pot=87B` 发出 → **18 秒零字节** → `17:11:25.973 fetch rn=0 exception: timeout (fail=18006ms bwNow=0K)` → `SabrDataSource open: seg=0 InterruptedIOException: timeout → evict` → **`17:11:25.997 rn=1` 立刻重试** → `17:11:30.348 fetch rn=1 REAL 5114720B 4349ms → 9Mbps` → `首笔 status=1` | **58 秒**才出画面 |
+| 第 2 次 17:11:34 | `17:11:55.629 rn=0 REAL 4116ms` → 首笔 **`status=2`** → `17:11:56.148 rn=1 REAL 135B 462ms` → **`status=3`** → `markWebSabrFailed` → 连续 `135B + status=3` ×22 | 判死 → 落主链 |
+| 第 3 次 17:12:07 | 直接 `source=NewPipe(primary)` → 17:12:21 出帧 | 播了 |
+
+**决定性读数**:第 1 次里——**同一会话、同一 token、同一个段:第一笔 18 秒零字节,重试 4.3 秒就成了**。
+⇒ 这不是"服务端不给",是**第一笔请求偶发落在零字节停顿上,而重试有效**。
+
+**而那 18 秒是我们自己让它等的**:P11-160 把 `readTimeout` 抬到与 `callTimeout` 同值(18s/40s),于是每次
+遇到这种停顿都**老老实实等满 18 秒**才重试。
+
+**第 2 次是另一回事**:首笔 `status=2`(尽管借到真 88B token、`first=0x32`)→ `status=3` 判死 ——
+属文档 §5.9.8 ① 记过的**服务端概率性强制**,不是我们能改的(判别项:同一视频同一天内既通又死)。
+
+#### (2) FreeTube 为什么"没问题"——**它比我们更"能等",不是更"快"**
+
+对 `FreeTubeMt`(桌面,Shaka + SABR 插件)与 `FreeTubeAndroid` 逐行核:
+
+| | FreeTube | 我们 |
+|---|---|---|
+| 请求超时 | **`streaming.retryParameters.timeout = 30s`**(SABR/本地 API 路径 **60s**,`ft-shaka-video-player.js:2855-2868`) | 18s(≤1080p)/ 40s(≥1440p) |
+| 超时后的动作 | **只重试这一笔请求**(Shaka `NetworkingEngine` 按 `retryParameters` 自动重试) | **`evict` 整个会话** + 由播放器 error-retry 链重建 |
+| 静默重置 | 有 `createTimeoutController(cb, timeoutMs)` + `resetTimeoutOnce()`(`SabrSchemePlugin.js:264-274`)—— 但**只重置一次**,`nextRequestPolicy.backoff` 等待后重置 | 无(OkHttp `readTimeout` 天然按字节重置) |
+| snapshot 超时 | 显式 **10_000**(bgutils 默认只有 **3s**) | 本轮(P11-162)才补上 |
+
+**结论(校正用户的印象)**:**FreeTube 没有"固定 5 秒"** —— 它的数是 **30s / 60s**,bgutils 的默认是 **3s**,
+FreeTube 覆盖成 **10s**(§5.11.9)。也就是说在「第一笔零字节停顿」这个具体场景上,**FreeTube 比我们更能等**:
+它等到 30s 才动手,我们 18s 就切;若服务端 20s 才回,他们是**正常拿到数据**,我们是**切掉 + 重建会话**。
+
+⇒ **他们"没问题"更可能是两件事叠加**:①**超时后只重试单笔请求、不拆会话**(代价小得多);
+②桌面网络路径(非移动/非 CN 出口)本身遇到这种停顿的概率低。**不是他们解决了停顿。**
+
+#### (3) 据此的修法方向(P11-163,待确认)
+
+关键事实:**重试只要 4.3 秒就成** —— 所以"早切早重试"严格优于"等满 18 秒"。
+OkHttp 的 `readTimeout` 语义正是「**多久没有新字节**」(每字节重置),天然就是"静默超时",与"整调用上限"分离:
+
+- `readTimeout`(静默)→ **8s**:零字节停顿 8 秒即切、立刻重试;慢滴下载不受影响(字节一直在来);
+- `callTimeout`(整调用)→ 保持 P11-153 的自适应 18s/40s;
+- 依据分布:**成功的首笔总耗时 3.5~7.2s**,**停顿的都 ≥16.5s** —— 8s 正落在空档里。
+
+另有一条更接近 FreeTube 的思路(代价更小、可后做):**请求超时后不 `evict` 整个会话**,只重发这一笔
+(Shaka 的做法)—— 但真机第 1 次显示 `evict` 后同一 sid 的 `rn=1` 仍成功,故**当前 evict 未观测到额外代价**,
+优先级低于静默超时。
+
+---
+
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。
