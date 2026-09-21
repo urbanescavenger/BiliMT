@@ -31,6 +31,21 @@ import com.kirin.mt.core.youtube.sabr.SabrProto
 import kotlin.coroutines.resume
 
 /**
+ * P11-165:**可用材料的 token 字节下限**(采集侧与消费侧**共用这一份口径**)。
+ *
+ * 移动站(m.youtube.com)的播放器会先发一个带**冷启桩** token 的 SABR POST(恒 **10B**、
+ * `first=0x22`、只在 `sps=2` 时有效),真 token(真机实测 87~88B、`first=0x32`)要等内容起播才铸。
+ * 桩材料会话**出生即死**:服务端一路 `status=2`(占位)后升 `status=3` ⇒ 判死落主链。
+ *
+ * **为什么要提到文件级、两侧共用**:采集侧(`YoutubeSabrHarvester`)本来就会丢弃桩(P11-142),
+ * 但真机 `logs_live_20260921_210436.log` 证明**它被一条兜底路径绕过了** —— 桩 POST 经
+ * `nonPostCapture` 被交回上层,而消费侧(`YoutubePlaybackResolver.harvestSessionMaterial`)只检查
+ * 「poToken/ustreamerCfg 非空」⇒ 10B 桩两个字段都非空 ⇒ **被当成材料** ⇒ 臂 B 把桩当会话 token
+ * ⇒ 必然判死。故把阈值提成**单一定义**,消费侧也拿它当硬闸,任何路径漏桩都会被拦。
+ */
+internal const val MIN_USABLE_HARVEST_PO_TOKEN_BYTES = 80
+
+/**
  * SABR n-decrypt 的 WebView 嵌入采集器(plasma 兜底方案)。
  *
  * 背景:plasma 播放器把 n/sig transform 移进 WASM,[YoutubeNDecryptor] 正则方案结构性
@@ -372,8 +387,9 @@ class YoutubeSabrHarvester(
             val status = obj["status"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
             if (!url.isNullOrBlank() && status > 0) {
               val n = extractQuery(url, "n")
+              val isPost = method.equals("POST", ignoreCase = true)
               // P11-118:POST(SABR)优先;P11-127:再分「真 token」与「冷启桩」。
-              if (method.equals("POST", ignoreCase = true)) {
+              if (isPost) {
                 val cap = SabrCapture(url, method, body ?: "", status)
                 val tokenLen = poTokenLenOf(cap.bodyB64)
                 if (tokenLen >= MIN_REAL_PO_TOKEN_BYTES) {
@@ -393,7 +409,15 @@ class YoutubeSabrHarvester(
                   )
                 }
               }
-              if (nonPostCapture == null) {
+              // ── P11-165:兜底位**只收非 POST** ────────────────────────────────────────────────
+              // 真机 `logs_live_20260921_210436.log` 实锤的漏洞:这里此前**对 POST 也记**(判断在 POST 分支之外),
+              // 于是「只拿到冷启桩」时 —— 到期处置先打「丢弃冷启桩,返回 null」,**紧接着却走
+              // `nonPostCapture?.let { return it }` 把同一个桩 POST 交了出去** ⇒ 上层
+              // `harvest material: poToken=10B ustreamerCfg=1319B` 把它当材料(两个字段都非空,过了空值检查)
+              // ⇒ 臂 B 把 **10B 冷启桩**当会话 token(`pot=10B first=0x22`)⇒ 首笔 `status=2` ⇒ 必然 `status=3`
+              // ⇒ 判死落主链(用户看到「重载 + SABR 兜底」)。即 **P11-142「丢弃冷启桩」被这条兜底路径绕过**。
+              // 兜底位本来的用途是「页只发了 GET(DASH)、没有 SABR POST」时让调用方知道,故只该收非 POST。
+              if (!isPost && nonPostCapture == null) {
                 nonPostCapture = SabrCapture(url, method, body ?: "", status)
                 Log.i(Tag, "harvest: non-SABR capture seen ($method status=$status n=${n ?: "ABSENT"}) → 继续等 SABR POST")
               }
@@ -452,7 +476,8 @@ class YoutubeSabrHarvester(
             "→ 丢弃,返回 null(落自造材料)",
         )
       }
-      nonPostCapture?.let {
+      // P11-165:再兜一道 —— 兜底位**永不放行 POST**(见上面 `只收非 POST` 的注释:桩 POST 曾从这里漏出去)。
+      nonPostCapture?.takeIf { !it.method.equals("POST", ignoreCase = true) }?.let {
         Log.w(Tag, "harvest: no SABR POST before deadline; only ${it.method} status=${it.status} → return non-SABR(阶段 2 判据不算通过)")
         return it
       }
@@ -710,8 +735,11 @@ class YoutubeSabrHarvester(
     /**
      * P11-127:判定「真 token」的最小字节数。冷启桩恒 **10B**(`34,8,+8B header`、identifier 长度 0,
      * 只在 `sps=2` 时有效);真 token 真机实测 88B、我们自铸 94~120B。取 80 留足余量。
+     *
+     * P11-165:实际值在文件级 [MIN_USABLE_HARVEST_PO_TOKEN_BYTES] —— 那里**采集侧与消费侧共用一份**,
+     * 避免「采集侧判桩、消费侧照收」这类分叉(真机上就漏过一次,见该常量注释)。
      */
-    const val MIN_REAL_PO_TOKEN_BYTES = 80
+    const val MIN_REAL_PO_TOKEN_BYTES = MIN_USABLE_HARVEST_PO_TOKEN_BYTES
 
     /**
      * P11-159:**本常量已停用**(保留注释说明来龙去脉,供后续检索)。

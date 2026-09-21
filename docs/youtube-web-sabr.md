@@ -1807,6 +1807,47 @@ setter 里回写当前 itag 与用户设置),`initialSelectedIndex()` 在 `lock 
 
 ---
 
+### 5.11.12 r2068 判读:**冷启桩绕过「丢弃」进了会话**(P11-165)
+
+**起因**:用户报「怎么重载了,SABR 兜底」(`logs_live_20260921_210436.log`,TV `BRAVIA_AE2`,`dev.r2068`)。
+两场都走「WEB-SABR 建好 → 死 → `Playback error` → auto-retry → 落 NewPipe 主链」,但死因不同:
+
+| 场次 | 首笔 | 结果 |
+|---|---|---|
+| 20:51:52(i2fGDdM21EM) | `首笔 status=2 (pot=**89B** first=0x32)` | 6.8s 后 `status=3` → 判死(**服务端概率性强制**,§5.9.8 ①) |
+| **21:00:31**(pRp2zSGDilY) | `首笔 status=2 (pot=**10B** first=0x22)` | 50s 后 `status=3` → 判死(**我们的 bug**,见下) |
+
+**21:00 那场的链条(决定性)**:
+
+```
+21:00:26.276  YtSabrHarvest: 轮询到期(本轮窗口用满),只有冷启桩 POST(poToken=10B)→ 丢弃,返回 null(落自造材料)
+21:00:26.284  YtResolver: P11-118 harvest: captured SABR POST status=200 bodyB64=2680B elapsed=30060ms   ← ★ 上层仍拿到「捕获」
+21:00:26.408  YtResolver: P11-118 harvest material: poToken=**10B** ustreamerCfg=1319B cpn=… audio=251 video=401
+21:00:26.409  臂B: 只借 token = **10B** 10B first=0x22 冷启桩(0x22)
+21:00:37.240  首笔 STREAM_PROTECTION_STATUS status=2 (pot=10B first=0x22) → status=3 → 判死
+```
+
+**根因**:**P11-142 的「丢弃冷启桩」被一条兜底路径绕过**。采集循环里那个兜底位
+(`nonPostCapture`,`P11-118` 引入,用途是「页只发了 GET(DASH)、无 SABR POST」时让调用方知道)
+**判断写在 POST 分支之外** ⇒ **桩 POST 也被记进兜底位**;到期处置先打「丢弃冷启桩」,**紧接着
+`nonPostCapture?.let { return it }` 把同一个桩 POST 交了出去**。上层
+`harvestSessionMaterial` 的材料判据只看「poToken/ustreamerCfg **非空**」—— 10B 桩两个字段都非空
+⇒ 被当材料 ⇒ 臂 B 把桩当**会话 token** ⇒ 首笔 `status=2` ⇒ 必然 `status=3`。
+
+**修(P11-165)**:
+
+1. **采集侧**:兜底位**只收非 POST**(`if (!isPost && nonPostCapture == null)`),并在到期处置再加一道
+   `takeIf { !isPost }` 防回归;
+2. **消费侧硬闸**:`harvestSessionMaterial` 在解出材料后**独立拦一次** `decoded.poToken.size <
+   [MIN_USABLE_HARVEST_PO_TOKEN_BYTES](80)`(日志 `P11-165 harvest: poToken 只有 10B … → 拒绝该材料`);
+3. **单一口径**:阈值提成**文件级 `internal const`**,采集侧与消费侧共用一份(原 `MIN_REAL_PO_TOKEN_BYTES`
+   改为引用它)—— 避免「采集侧判桩、消费侧照收」这类分叉。
+
+**判据**:日志不再出现 `harvest material: poToken=10B` / `臂B … 10B first=0x22`;只有桩的场次应看到
+`丢弃冷启桩 → 返回 null` **之后** `harvestSessionMaterial` 返回 null(会话用自铸 token,行为与臂 A 相同)。
+
+---
+
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。

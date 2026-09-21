@@ -2428,6 +2428,20 @@ class YoutubePlaybackResolver(
       replayHarvestCapture(cap)
       return null
     }
+    // ── P11-165:硬闸 —— **冷启桩(10B)永远不是可用材料** ──────────────────────────────────
+    // 采集侧本就会丢弃桩(P11-142),但真机 `logs_live_20260921_210436.log` 实锤它被一条兜底路径
+    // (`nonPostCapture`)绕过:桩 POST 被交回上层,而上面那个检查只看「非空」⇒ 10B 桩两个字段都非空
+    // ⇒ 被当材料 ⇒ 臂 B 把桩当**会话 token**(`pot=10B first=0x22`)⇒ 首笔 `status=2` ⇒ `status=3` 判死
+    // ⇒ 用户看到「重载 + SABR 兜底」。这里作为**消费侧硬闸**独立拦一次(P11-142 的语义本该如此)。
+    if (decoded.poToken.size < MIN_USABLE_HARVEST_PO_TOKEN_BYTES) {
+      Log.w(
+        Tag,
+        "P11-165 harvest: poToken 只有 ${decoded.poToken.size}B(< ${MIN_USABLE_HARVEST_PO_TOKEN_BYTES}B," +
+          "冷启桩 first=0x%02x)→ **拒绝该材料**,回退自造 token".format(decoded.poToken.firstOrNull()?.toInt()?.and(0xFF) ?: 0),
+      )
+      replayHarvestCapture(cap)
+      return null
+    }
     // 剥 alr/cpn/rn → fromSabrData 再加 alr=yes+cpn;cver 等浏览器参数保留(对齐 alpha.25/26 replay)。
     val base = cap.url.split("&")
       .filterNot { it.startsWith("alr=") || it.startsWith("cpn=") || it.startsWith("rn=") }
