@@ -1505,6 +1505,42 @@ token**」而不是「退桩」。
 **判据**:续播应出现 `harvest: captured SABR POST … poToken=88B → 真 token` + `臂B … 88B first=0x32`
 + **首笔 `status=1`**;广告场景下应看到**桩之后继续等**、并在广告结束拿到真 token。
 
+#### 5.11.6.1 r2054 续播场(第三份)实测:**P11-158 + P11-159 双修生效,续播打通**
+
+真机 `logs_live_20260921_093758.log`(续播 `startPos=196000`):
+
+```
+09:36:38.082  onPageFinished 迟到(8167ms)但**文档非空壳**(dl=837328B) → 不判死        ← P11-158 生效
+09:36:39.089  SABR POST 只带冷启桩(poToken=10B) → 继续等真 token(P11-159:等满本轮窗口)  ← P11-159 生效
+09:36:47.625  captured SABR POST status=200 poToken=87B → 真 token,命中即返回           ← 广告结束后拿到
+09:36:47.648  臂B: 只借 token = 87B 87B first=0x32 minter 输出(0x32)
+09:36:59.272  首笔 STREAM_PROTECTION_STATUS status=1 (pot=87B first=0x32)               ← ★
+```
+
+**注意时间差**:桩 `09:36:39.089` → 真 token `09:36:47.625` = **8.5s**。旧的 6s 宽限会在 **09:36:45.089**
+放弃 ⇒ **差 2.5s 就漏掉**。这一轮不是「顺手修」,是**正好卡在成败边界上**。
+
+**会话健康度**:`status=1` ×10 / `status=3` **0**;`Playback error`/`auto-retry`/`stall`/`markWebSabrFailed`
+**全 0**;**续播位置正确接上**(`first media chunk loadPositionMs=196964`、`playerState=3(READY) pos=196974`);
+`resp summary` 全部 `usable = 100%` 且 `init/pushed` 含我们的档;末笔升到 **itag308(1440p)**。
+
+⇒ **WEB-SABR 现在「新播 + 续播」两条路都立住**(新播见 §5.11.4.1)。
+
+**起播耗时构成(同场实测,`loadRequest` → 首帧 = 51.4s)** —— 下一轮优化的靶子:
+
+| 阶段 | 时长 | 说明 |
+|---|---|---|
+| loadRequest → prewarm 完成 | 10.0s | 含 `youtubeIntro` + harvest WebView 冷启 5.6s |
+| 桌面 watch 页抓取 + **桌面 BotGuard 铸 token**(128 chars) | 5.1s | `YoutubeBotGuard.generatePoToken`(resolver 顶部,给主链兜底用;臂 B 用不到) |
+| → harvest 开始 | 6.8s | NewPipe getInfo 等 |
+| **harvest** | **17.7s** | 页面加载 8.2s + **广告等待 8.5s**(不可压缩的部分) |
+| 会话构建 | 2.3s | /player + n-solver |
+| 会话就绪 → 首帧 | **9.4s** | 第一笔 SABR 请求往返 |
+
+**优化候选(按收益)**:①**把 harvest 与前段(BotGuard 铸 token / getInfo)并行** —— 两段互不依赖,
+现在串行吃掉了 22s + 17.7s,重叠后约可省 10~17s;②桌面 BotGuard 那枚 token 在臂 B 路径上只是**兜底**,
+可惰性化或与 harvest 并行(省 5~13s,波动大);③首帧前 9.4s 是首笔 SABR 往返,属网络/服务端,暂无可为。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
