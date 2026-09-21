@@ -290,20 +290,50 @@ class YoutubeSabrHarvester(
       var stubGraceDeadline = 0L
       // P11-125:空壳页的长度判据只量一次(见下方 DOC_LEN_JS 分支)。
       var docLenChecked = false
+      // P11-158:「onPageFinished 迟到」判据的探测节流 + 只打一次的日志标记。
+      var lastLatePageProbeMs = 0L
+      var latePageLogged = false
       while (System.currentTimeMillis() < deadline) {
         // alpha.53:空白页 fail-fast——onPageFinished 正常 ~1-2s 触发;超 [BLANK_PAGE_ABORT_MS] 仍没触发
         // = 页根本没渲染(风控/WebView 渲染崩,alpha.52 真机 w120:title 空/NOBODY/player=false 干等 30s)。
         // 立即放弃交轮换工厂重试,不耗满 30s(否则重试永远赶不上窗口耗尽)。正常页 1-2s 已过该闸,无副作用。
         // P11-125:补打页面层取证(主文档错误 + 子资源错误)——判「服务端返回空文档」还是「子资源取不回来」。
+        //
+        // ── P11-158(r2054 续播场实测):本闸门会**假阴性**,必须先看证据再判死 ──────────────────
+        // 真机 `logs_live_20260921_083745.log`:续播场第 1 次尝试 8.2s 触发本闸门并 `invalidateWebView()`,
+        // 而**同刻 forensic 打出 `dl=825863` / `rs=interactive`** —— 页面完整、播放器在跑,它只是一张
+        // **无广告**、本可采到真 token 的好页(对照:同机成功那场 083216 的 `onPageFinished` 在 **8.1s**
+        // 才触发,离 8s 线只差 0.1s)。这一杀的代价:弃实例 + 重建重试(多 ~10s),而重建后那次正好被
+        // 服务端发了**广告**,广告期页面只发 10B 冷启桩 ⇒ 采集彻底失败 ⇒ 回落自铸 token ⇒ 首笔
+        // `status=2` ⇒ 判死。即**一个假阴性闸门把续播从「能成」变成「必败」**。
+        // 改为**文档长度判据**:文档非空壳 ⇒ 页面活着,继续等 SABR POST(轮询窗口由本轮 deadline 兜底);
+        // 只有文档真的空/极短才 fail-fast。探测按 [LATE_PAGE_PROBE_INTERVAL_MS] 节流,避免每 200ms 一次 eval。
         if (pageFinishedMs == 0L && System.currentTimeMillis() - start > BLANK_PAGE_ABORT_MS) {
-          Log.w(
-            Tag,
-            "harvest: onPageFinished not fired within ${BLANK_PAGE_ABORT_MS}ms (blank page — throttle/renderer died) → fail fast, let rotation retry" +
-              " | mainFrameErr=${mainFrameError ?: "none"} httpErr=$httpErrorCount last=${lastHttpError ?: "none"}",
-          )
-          runForensicProbe(view, "onPageFinished 未触发")
-          invalidateWebView()
-          return null
+          val now = System.currentTimeMillis()
+          if (now - lastLatePageProbeMs > LATE_PAGE_PROBE_INTERVAL_MS) {
+            lastLatePageProbeMs = now
+            val lateDl = evalOn(view, DOC_LEN_JS)?.trim()?.toLongOrNull() ?: -1L
+            if (lateDl >= EMPTY_DOC_ABORT_CHARS) {
+              if (!latePageLogged) {
+                latePageLogged = true
+                Log.i(
+                  Tag,
+                  "harvest: onPageFinished 迟到(${now - start}ms)但**文档非空壳**(dl=${lateDl}B)" +
+                    " → 不判死,继续等 SABR POST(轮询窗口由 deadline 兜底)",
+                )
+              }
+            } else {
+              Log.w(
+                Tag,
+                "harvest: onPageFinished not fired within ${BLANK_PAGE_ABORT_MS}ms 且文档为空壳(dl=${lateDl}B)" +
+                  " → fail fast, let rotation retry" +
+                  " | mainFrameErr=${mainFrameError ?: "none"} httpErr=$httpErrorCount last=${lastHttpError ?: "none"}",
+              )
+              runForensicProbe(view, "onPageFinished 未触发且空壳 dl=$lateDl")
+              invalidateWebView()
+              return null
+            }
+          }
         }
         // P11-125:onPageFinished **触发了**、页却是空文档——真机 09-19 21:15:23 watch 页 3s 就「完成」,
         // 但 title 空 / body NOBODY / player=false / **一条 YouTube 自己的 console 都没有**(09-17 正常时
@@ -670,6 +700,14 @@ class YoutubeSabrHarvester(
      * = 页未渲染(风控/渲染崩),立即放弃让轮换重试,不干等 30s。正常加载远快于 8s,不会误杀。
      */
     const val BLANK_PAGE_ABORT_MS = 8_000L
+
+    /**
+     * P11-158:`onPageFinished` 迟到后,**复查文档长度**的间隔。
+     *
+     * 轮询本身 200ms 一轮,eval `DOC_LEN_JS` 要跨 WebView 线程;2s 一次足够(判据是「文档是不是空壳」,
+     * 不是「第几毫秒」),避免每轮都 eval。
+     */
+    const val LATE_PAGE_PROBE_INTERVAL_MS = 2_000L
 
     /**
      * P11-127:判定「真 token」的最小字节数。冷启桩恒 **10B**(`34,8,+8B header`、identifier 长度 0,
