@@ -784,7 +784,14 @@ class YoutubeBotGuard(
     const val Tag = "YtBotGuard"
     const val RequestKey = "O43z0dpjhgX20SCx4KAo"
     const val WaaApiKey = "AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw"
-    const val PollTimeoutMs = 6_000L
+    /**
+     * P11-162:`__runSnapshot` / `__mint` 的**轮询**上限。
+     *
+     * 由 6s 抬到 12s:**必须大于 bgutils 的 snapshot 超时**——那里现在是显式 **10_000**(此前漏传、
+     * 走 bgutils 默认 3s)。若轮询仍停在 6s,会在 VM 还在跑时先放弃 ⇒ 白等一次铸造。
+     * 整段仍由 [OverallTimeoutMs](20s) 兜住:snapshot ≤10s + GenerateIT + mint 都在预算内。
+     */
+    const val PollTimeoutMs = 12_000L
     // P11-110:interpreter <script> 标签加载超时(CDN 63KB,真机 ~1s;留裕量)。
     const val InterpreterLoadTimeoutMs = 10_000L
     // /att/get 的 program 更大(35KB>10KB),VM 加载/eval 更慢,8s 首尝试会 timeout,加到 20s。

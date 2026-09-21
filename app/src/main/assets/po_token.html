@@ -75,7 +75,24 @@
         if (!this.vmFunctions.asyncSnapshotFunction)
           return reject(new Error('[BotGuardClient]: Async snapshot function not found'));
 
-        this.vmFunctions.asyncSnapshotFunction(function (response) { resolve(response) }, [
+        // P11-162(2026-09-21):**补超时**。原实现直接调 asyncSnapshotFunction、**不设任何超时**
+        // ⇒ VM 若不回调,这个 Promise 永不 settle ⇒ 整次铸造无界挂起(它落在每次起播的关键路径上)。
+        // 对齐 FreeTube(`FreeTubeAndroid/src/botGuardScript.js` 的 `snapshot({webPoSignalOutput}, 10_000)`)
+        // 与 bgutils 的 `snapshot(args, timeout = defaultTimeout)` 语义:10s 后拒绝,让上层走失败/回退路径。
+        var settled = false;
+        var timer = setTimeout(function () {
+          if (!settled) {
+            settled = true;
+            reject(new Error('PMD:SnapshotTimeout(10000ms)'));
+          }
+        }, 10000);
+
+        this.vmFunctions.asyncSnapshotFunction(function (response) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(response);
+        }, [
           args.contentBinding,
           args.signedTimestamp,
           args.webPoSignalOutput,

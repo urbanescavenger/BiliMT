@@ -1640,6 +1640,61 @@ Dispatcher,预建复用,不进热路径分配。
 
 ---
 
+### 5.11.9 对 FreeTube 源码逐行核:**超时三处缺失**(P11-162)
+
+**起因**:r2054 真机 `logs_live_20260921_143130.log` 出现一次 **~99 秒静默卡顿**(见下),用户提示「看看
+FreeTube 是怎么解决加载速度问题」。遂对 `E:\GITHUB\FreeTubeMt`(桌面)与 `E:\GITHUB\FreeTubeAndroid`
+逐行核,结论:**FreeTube 在关键路径上处处显式设超时,而我们在三处漏了**。
+
+**(1) 99 秒卡顿的现场**:
+
+```
+12:08:43  YtBotGuard: watch page data → postJson /att/get
+12:08:46  YtBotGuard: challenge ok: source=att-get interpreter=63271B program=39003B global=trayride
+          ↓ 静默 99 秒,期间零 YtBotGuard 日志(interpreter 用 <script src> 加载中)
+12:10:25  YtJsExecutor: intercept failed: Broken pipe
+12:10:25  YtResolver: PO token unavailable; degrade to no-token      ← 整次解析被拖了近百秒
+12:10:32  用户重试 → 一切正常
+```
+
+`generatePoToken` 自己有 `withTimeoutOrNull(OverallTimeoutMs = 20s)`,**这次没兜住** —— 阻塞读占着线程,
+不在可取消的挂起点上。
+
+**(2) 三处缺失(对 FreeTube 逐行核出的差异)**:
+
+| # | 我们的实现 | FreeTube | 后果 |
+|---|---|---|---|
+| a | [`assets/youtube/bgutils.js`](../app/src/main/assets/youtube/bgutils.js) 的 `__runSnapshot` 调 `client.snapshot({ webPoSignalOutput })` —— **不传超时**,走 bgutils 默认 **3s**(`defaultTimeout = 3e3`);而它上面两行的注释**却写着**「对齐 FreeTube 的 `10_000`」 | `botGuardScript.js`:`snapshot({ webPoSignalOutput }, **10_000**)` | 注释与代码不符:**少 7 秒余量**,冷启/慢机上 VM 一旦 >3s 就 `BgError("VM operation timed out")` ⇒ 整次铸造失败(落在每次解析的关键路径上) |
+| b | [`po_token.html`](../app/src/main/assets/po_token.html) 的 `snapshot()` 直接调 `asyncSnapshotFunction`、**不设任何超时** | 同上(10s) | VM 不回调则 Promise **永不 settle** ⇒ 无界挂起 |
+| c | [`YoutubeJsExecutor.shouldInterceptRequest`](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeJsExecutor.kt) **自己把请求代发**(`URL(urlStr).openConnection() as HttpURLConnection`),而 `connectTimeout`/`readTimeout` **默认都是 0 = 无限** | 只用 `webRequest.onBeforeSendHeaders` **改请求头**,网络 I/O 交给 **Chromium 原生栈**(自带超时);只对 `google.com/js/*` + `youtubei/*` 两个模式生效 | **结构上不可能卡这么久** —— 这就是上面 99 秒的直接原因 |
+
+**(3) FreeTube 解决「加载慢」的四招**(比超时更值得借鉴,`FreeTubeAndroid/src/main/poTokenGenerator.js`):
+
+1. **只改头、不代发**(见上 #c);
+2. **mint 串行化**(Promise 队列 `enqueueAsyncFunction`)—— 不并发铸造;
+3. **拿到 token 就返回,不等清理** —— 原文注释:*"schedule the cleanup separately, so that we can return
+   the potoken without having to wait until the cleanup is done"*;
+4. **会话长期复用**(`session.fromPartition('potoken')`,不每次新建)。
+
+**(4) 本轮动作(P11-162,只做有界化,不动行为)**:
+
+- **a**:`bgutils.js` 的 snapshot 补上**显式 `10_000`**,并把注释改成与代码一致;
+  连带 `YoutubeBotGuard.PollTimeoutMs` **6s → 12s**(轮询上限**必须大于** snapshot 超时,否则会在 VM
+  还在跑时先放弃;整段仍由 `OverallTimeoutMs=20s` 兜住);
+- **b**:`po_token.html` 的 `snapshot()` 加 **10s 超时**(`PMD:SnapshotTimeout(10000ms)`);
+- **c**:拦截器代发的连接补 **`connectTimeout=8s` / `readTimeout=15s`**,超时即抛错 → catch 回落
+  `super.shouldInterceptRequest`(**交给 Chromium 原生栈自己取** —— 正是 FreeTube 的做法);
+  另加一行慢请求留证(`intercept slow: Nms <url>`,>2s 才打,便于区分「网络慢」与「真挂死」)。
+
+**未做(留待有证据再动)**:把 `google.com/js/*` 的 interpreter 加载改成**直接 `return null`**(完全不代发)。
+那是更贴近 FreeTube 的形态,但会丢掉我们目前注入的 `referer/origin/Sec-Fetch-*` 头,风险未验证 ——
+先用超时把它**变有界**,不赌行为变化。
+
+**判据**:慢网络场次下 `intercept failed: Broken pipe` 之前的静默时长应从 **99s 量级**降到 **≤15s**;
+`PO token unavailable; degrade to no-token` 不再拖慢整次解析;正常场次的铸造耗时分布不变。
+
+---
+
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。
