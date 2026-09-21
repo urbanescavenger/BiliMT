@@ -236,6 +236,18 @@ class HeightAwareAdaptiveTrackSelection(
    * 由工厂在 `createAdaptiveTrackSelection` 里闭包传入。
    */
   private val materialSessionProvider: () -> Boolean = { false },
+  /**
+   * P11-164:**选择集重建时要继承的「当前档」** provider(按 videoId,进程级记忆)。
+   *
+   * [initialSelectedIndex] 在「无起播锁」时原本直接 `return length - 1`(≈最低档);而起播锁**首帧后就释放**
+   * ⇒ 此后任何选择集重建都会落最低档。真机 `logs_live_20260921_193433.log` 实锤:**开字幕**(改 track group
+   * ⇒ ExoPlayer 重跑 `selectTracks` ⇒ 新建 selection 实例)`sel 0(1080p)` → **`sel 19(144p)`**,随后切档
+   * 丢缓冲 ×5 + `buffer-critical downgrade: bufS=0s` ×2 才慢慢爬回来(用户报「又降档到底,手切没问题」——
+   * 手切走 setter,不经过初值)。
+   */
+  private val rememberedItagProvider: () -> Int? = { null },
+  /** P11-164:选档变化时回写「当前档」(见 [rememberedItagProvider])。 */
+  private val onSelectedItagChanged: (Int) -> Unit = {},
 ) : AdaptiveTrackSelection(group, tracks, bandwidthMeter) {
 
   /**
@@ -259,7 +271,11 @@ class HeightAwareAdaptiveTrackSelection(
   private var selected: Int
     get() = selectedRaw ?: initialSelectedIndex().also { selectedRaw = it }
     set(value) {
-      selectedRaw = applyStartupLock(value)
+      val applied = applyStartupLock(value)
+      selectedRaw = applied
+      // P11-164:回写「当前档」,供选择集被重建时继承(见 [rememberedItagProvider])。
+      // 放在夹锁**之后**回写 —— 记的应是真正上屏的那一档。
+      runCatching { onSelectedItagChanged(getFormat(applied).id) }
     }
 
   /** P11-128:锁高日志节流(每 selection 实例最多每 5s 打一次,防升档路径反复被夹刷屏)。 */
@@ -328,7 +344,15 @@ class HeightAwareAdaptiveTrackSelection(
    * P11-146:同上 —— served 集合非空时,初值就在集合内挑(否则第一笔请求必然问一个服务端不供的档)。
    */
   private fun initialSelectedIndex(): Int {
-    val lock = startupLockHeightProvider() ?: return length - 1
+    val lock = startupLockHeightProvider()
+    if (lock == null) {
+      // ── P11-164:无起播锁时**先继承「当前档」**,而不是直接落最低档 ────────────────────────────
+      // 起播锁首帧后就释放,此后任何**选择集重建**(开字幕/切音轨等改 track group 的操作)都会重算初值;
+      // 旧实现直接 `return length - 1` ⇒ 1080p 一开字幕就掉 144p(真机 19:17:04 实锤)。
+      // 记忆档优先(按 itag 精确匹配),找不到再退回旧行为。
+      indexOfItag(rememberedItagProvider())?.let { return it }
+      return length - 1
+    }
     if ((0 until length).none { getFormat(it).height > 0 }) return length - 1
     val served = servedIndexesInGroup()
     if (served != null) {
@@ -342,6 +366,12 @@ class HeightAwareAdaptiveTrackSelection(
     val maxH = (0 until length).map { getFormat(it).height }.filter { it in 1..lock }.maxOrNull()
       ?: return length - 1
     return bestIndexOf { getFormat(it).height == maxH } ?: (length - 1)
+  }
+
+  /** P11-164:按 itag 找本组索引(记忆档继承用);无/null 返回 null。 */
+  private fun indexOfItag(itag: Int?): Int? {
+    if (itag == null || itag <= 0) return null
+    return (0 until length).firstOrNull { getFormat(it).id == itag }
   }
 
   /** 满足条件者里挑一个:顶档 codec 优先,其次码率高者;无满足者返回 null。 */
@@ -1055,5 +1085,8 @@ class HeightAwareAdaptiveTrackSelectionFactory : AdaptiveTrackSelection.Factory(
       group, tracks, bandwidthMeter, { startupLockHeight }, { preferredCodecFamily },
       { com.kirin.mt.core.youtube.sabr.SabrStreamRegistry.serverServedItags(serverServedVideoId) },
       { com.kirin.mt.core.youtube.sabr.SabrStreamRegistry.hasMaterialSession(serverServedVideoId) },
+      // P11-164:选择集重建时继承「当前档」(进程级记忆,按 serverServedVideoId)。
+      { com.kirin.mt.core.youtube.sabr.SabrStreamRegistry.rememberedVideoItag(serverServedVideoId) },
+      { itag -> com.kirin.mt.core.youtube.sabr.SabrStreamRegistry.rememberVideoItag(serverServedVideoId, itag) },
     )
 }

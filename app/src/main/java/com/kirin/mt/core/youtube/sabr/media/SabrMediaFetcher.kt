@@ -76,20 +76,26 @@ internal class SabrMediaFetcher(
   private val tag = "YtSabr"
 
   /**
-   * P11-160:SABR 请求专用的 client 克隆 —— 把 **readTimeout** 抬到与「整调用上限」同一值。
+   * P11-166:SABR 请求专用的 client 克隆 —— **把「静默超时」与「整调用上限」分开**。
    *
-   * 为什么必须克隆:共享的 YouTube client([BiliHttpClientFactory.baseBuilder])是给**小 API 调用**定的
-   * `connect/read/write = 15s`;而 SABR 是流式媒体请求,服务端**首包偶发 16~20s**(真机实测:正常场
-   * `rn=0` 4.5~7.2s,慢启动场 16.5s 零字节)。本方法既有的 `call.timeout()` 只覆盖整调用,
-   * **readTimeout(15s) 会把慢启动抢先处决** ⇒ 自适应上限(18s/40s)形同虚设。
+   * 共享的 YouTube client([BiliHttpClientFactory.baseBuilder])是给**小 API 调用**定的
+   * `connect/read/write = 15s`;而 SABR 是流式媒体请求。P11-160 曾把 `readTimeout` 直接抬到与
+   * `callTimeout` 同值(18s/40s),方向对但**代价没被算进去** —— 真机 `logs_live_20260921_171235.log`:
+   * 第 1 次尝试 `17:11:07.944 fetch rn=0` 发出 → **18 秒零字节** → timeout → evict → **`rn=1` 立刻重试
+   * 4.3 秒就成了**(`REAL 5114720B 4349ms`)⇒ **那 18 秒是我们自己在等的**,重试明明只要 4 秒。
    *
-   * 两个克隆按档高预建复用(连接池/Dispatcher 与父 client 共享,克隆本身接近零成本),不进热路径分配。
+   * OkHttp 的 `readTimeout` 语义 = **「多久没有新字节」**(每收到一字节即重置)——正是"零字节停顿"的判据,
+   * 而慢滴下载(字节一直在来)不受影响。故:
+   *   · `readTimeout` = [SabrSilenceTimeoutMs] **8s**(静默 8 秒即切、立刻重试);
+   *   · `callTimeout` 仍按档高自适应(P11-153:≤1080p 18s / ≥1440p 40s),由 `call.timeout()` 每次设。
+   * 依据分布:**成功的首笔总耗时 3.5~7.2s**,**零字节停顿的都 ≥16.5s** —— 8s 正落在空档里。
+   *
+   * 克隆与父 client 共享连接池/Dispatcher,lazy 预建,不进热路径分配。
    */
-  private val clientLowCap: OkHttpClient by lazy {
-    httpClient.newBuilder().readTimeout(SabrCallTimeoutMsLow, java.util.concurrent.TimeUnit.MILLISECONDS).build()
-  }
-  private val clientHighCap: OkHttpClient by lazy {
-    httpClient.newBuilder().readTimeout(SabrCallTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).build()
+  private val sabrHttpClient: OkHttpClient by lazy {
+    httpClient.newBuilder()
+      .readTimeout(SabrSilenceTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+      .build()
   }
   /** 派生自 [entry](会话级,切清晰度重建 fetcher 时复用已刷新的 token)。 */
   private val session = entry.session
@@ -1096,10 +1102,9 @@ internal class SabrMediaFetcher(
       //   ⇒ 会话被 evict → 28s 后 stall 看门狗重试 → 新会话成功(该场 rn=0 只用 4.5s)
       // 而同日另外两场正常会话首包是 `rn=0 4569ms / 7204ms`、`rn=1 3565ms / 4457ms` ⇒ 16.5s **不是**常态,
       // 是服务端偶发的慢启动(与既有记录「首包偶发 16-20s」一致);正常情况本来就不该被杀,慢启动更不该。
-      // 修法:按本次档高选用**预建的 client 克隆**(readTimeout 已抬到对应的 `callCapMs`)—— 于是唯一的界
-      // 就是 P11-153 那个自适应上限,「零字节慢启动」与「慢滴」都归它管,不再出现「15s 读超时抢先处决」
-      // 这种与档高无关的暗规则。克隆预建复用,不进热路径分配。
-      val call = (if (reqHeight >= 1440) clientHighCap else clientLowCap).newCall(request)
+      // 修法:用**静默超时 8s** 的 client 克隆(见 [sabrHttpClient]),`callTimeout` 仍按档高自适应 ——
+      // 零字节停顿 8 秒即切、立刻重试(真机实测重试 ~4s 即成),慢滴下载不受影响。
+      val call = sabrHttpClient.newCall(request)
       call.timeout().timeout(callCapMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       val resp = call.execute().use { response ->
         val code = response.code
@@ -1446,6 +1451,15 @@ internal class SabrMediaFetcher(
      * 依据(r2048 TV 真机):切轨后 33 秒无新请求(慢滴占着单并发许可),而 40s 上限还没到 ⇒ 用户先退出。
      */
     const val SabrCallTimeoutMsLow = 18_000L
+
+    /**
+     * P11-166:**静默超时**(ms)—— OkHttp `readTimeout` 语义 = 多久没有新字节(每字节重置)。
+     *
+     * 依据(真机 `logs_live_20260921_171235.log`):**成功的首笔总耗时 3.5~7.2s**,**零字节停顿的
+     * 都 ≥16.5s**,而**停顿后立刻重试只需 4.3s 即成** ⇒ 8s 落在分布空档里,把"等 18 秒"压成"等 8 秒
+     * 再重试"。慢滴(字节持续到来)不受影响。
+     */
+    const val SabrSilenceTimeoutMs = 8_000L
 
     /** transient 重试上限(耗尽→SabrTerminalException→evict)。对齐旧 SabrDashDataSource BACKOFF_MAX_ATTEMPTS。 */
     const val MAX_ATTEMPTS = 6

@@ -1796,11 +1796,12 @@ private fun initialSelectedIndex(): Int {
 **为什么「手切没问题」**:手动选档走 `selected` 的 **setter**(`applyStartupLock(value)`),不经过
 `initialSelectedIndex()` ⇒ 不受重建影响。
 
-**修法方向(待实施)**:让选择集**重建时继承「当前档」**而不是从最低档起 —— 加一个 provider
-(`rememberedVideoItagProvider: () -> Int?`,按 videoId 从 `SabrStreamRegistry` 取;在 `selected` 的
-setter 里回写当前 itag 与用户设置),`initialSelectedIndex()` 在 `lock == null` 时**先**用记忆档
-(同 itag 或最近 height)兜底,再退到 `length - 1`。这同时修掉「**任何 track group 变化都会重置画质**」
-这一类问题(字幕只是最常见的触发点)。
+**修法(已实施,P11-164)**:新增进程级记忆 `SabrStreamRegistry.rememberedVideoItag(videoId)` /
+`rememberVideoItag(videoId, itag)`(按 videoId,`ConcurrentHashMap`),选档类的 `selected` **setter 在夹锁后
+回写**当前 itag,`initialSelectedIndex()` 在 `lock == null` 时**先按记忆 itag 精确匹配**、匹配不到才退回
+`length - 1`。接线在 `HeightAwareAdaptiveTrackSelectionFactory.createAdaptiveTrackSelection` 的两个闭包里
+(与既有 `serverServedItagsProvider` / `materialSessionProvider` 同一口径)。**记忆放在 registry 而不是
+selection 实例里 —— 因为实例正是会被重建的那个东西。**
 
 **判据**:开/关字幕时日志里**不再出现** `sel N(1080p) → 19(144p)`;`cleanup dropped formats` 不再被字幕
 触发连发;不再出现由切档引起的 `buffer-critical downgrade: bufS=0s`。
@@ -1845,6 +1846,37 @@ setter 里回写当前 itag 与用户设置),`initialSelectedIndex()` 在 `lock 
 
 **判据**:日志不再出现 `harvest material: poToken=10B` / `臂B … 10B first=0x22`;只有桩的场次应看到
 `丢弃冷启桩 → 返回 null` **之后** `harvestSessionMaterial` 返回 null(会话用自铸 token,行为与臂 A 相同)。
+
+---
+
+### 5.11.13 SABR 请求:**静默超时与整调用上限分离**(P11-166)
+
+**起因**:§5.11.10 的判读 —— `logs_live_20260921_171235.log` 第 1 次尝试
+`17:11:07.944 fetch rn=0`(init 请求)→ **18 秒零字节** → `timeout (fail=18006ms bwNow=0K)` → evict →
+**`rn=1` 立刻重试 4.3 秒就成了**(`REAL 5114720B 4349ms`)。即**那 18 秒是我们自己在等的**,而重试只要 4 秒。
+
+**根因**:P11-160 把 `readTimeout` 抬到与 `callTimeout` 同值(18s/40s) —— 方向对(修掉"15s 读超时抢先
+处决"),但**代价没被算进去**:遇到零字节停顿时每次都老实等满 18 秒才重试。
+
+**修法(P11-166)**:**OkHttp 的 `readTimeout` 语义就是「多久没有新字节」**(每收到一字节即重置),正是
+"零字节停顿"的判据,与"整调用上限"本就该分开:
+
+| | 值 | 语义 |
+|---|---|---|
+| `readTimeout`([SabrSilenceTimeoutMs](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt)) | **8s** | 静默 8 秒 → 切断 → 立刻重试 |
+| `callTimeout`(P11-153) | 18s(≤1080p)/ 40s(≥1440p) | 整调用上限,**不变** |
+
+依据分布:**成功的首笔总耗时 3.5~7.2s**、**零字节停顿的都 ≥16.5s** ⇒ 8s 落在空档里。**慢滴下载不受影响**
+(字节一直在来,`readTimeout` 不断重置)。实现上把 P11-160 的两个克隆(`clientLowCap`/`clientHighCap`)
+合并为**一个** `sabrHttpClient`(readTimeout 固定 8s),`callTimeout` 仍由 `call.timeout()` 每次按档高设。
+
+**判据**:慢启动场次应看到 `fetch rn=0 exception: timeout (fail≈8xxxms bwNow=0K)`(而不是 18xxxms)后
+**立刻重试成功**;`loadRequest → first media chunk` 总耗时在那种场次下应缩短约 10 秒;正常场次的
+带宽/耗时分布不变。
+
+**对照 FreeTube(§5.11.10)**:它用 30s/60s 的**整请求**超时 + Shaka 自动重试,遇到同样的停顿只会
+**更慢**,而且超时后**不拆会话**。我们这条"静默 8s + 单笔重试"的形状比两者都优 —— 前提是重试确实有效
+(真机两条独立证据:4.3s / 4.1s 即成)。
 
 ---
 

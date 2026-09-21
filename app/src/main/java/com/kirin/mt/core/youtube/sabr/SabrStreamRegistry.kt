@@ -81,6 +81,30 @@ internal object SabrStreamRegistry {
     if (videoId.isNullOrBlank()) emptySet() else serverServedItagsByVideo[videoId]?.toSet() ?: emptySet()
 
   /**
+   * P11-164:该视频**当前选中的视频档 itag**(进程级记忆)。
+   *
+   * **为什么必须有它**:`HeightAwareAdaptiveTrackSelection.initialSelectedIndex()` 在「无起播锁」时
+   * 直接 `return length - 1`(≈最低档)。而**起播锁首帧后就释放**,此后任何**选择集重建**都会重算初值
+   * —— 真机 `logs_live_20260921_193433.log` 实锤:**开字幕**(改 track group ⇒ ExoPlayer 重跑
+   * `selectTracks` ⇒ `SabrMediaPeriod.selectNewStreams` 新建 selection 实例)⇒ 选档从
+   * `sel 0(1080p)` **直接跳到 `sel 19(144p)`**,随后一路切档丢缓冲(`cleanup dropped formats=[…]` ×5)
+   * + `buffer-critical downgrade: bufS=0s` ×2 才慢慢爬回来。手动选档不受影响(走 setter,不经过初值)。
+   *
+   * 记在这里(而不是 selection 实例里)是因为**实例会被重建**——这正是要修的场景。
+   */
+  private val rememberedVideoItagByVideo = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+  /** P11-164:选择集重建时继承的档(见 [rememberedVideoItagByVideo] 的说明)。无记录返回 null。 */
+  fun rememberedVideoItag(videoId: String?): Int? =
+    if (videoId.isNullOrBlank()) null else rememberedVideoItagByVideo[videoId]
+
+  /** P11-164:选档变化时回写(由选档类在 `selected` setter 里调用)。 */
+  fun rememberVideoItag(videoId: String?, itag: Int) {
+    if (videoId.isNullOrBlank() || itag <= 0) return
+    rememberedVideoItagByVideo[videoId] = itag
+  }
+
+  /**
    * P11-152:该视频当前是否有**材料会话**在册(决定选档要不要收窄到 served 集合)。
    *
    * 收窄本身只对材料会话有意义(服务端只供浏览器那场绑定的档);对普通会话收窄会把梯子冻在
