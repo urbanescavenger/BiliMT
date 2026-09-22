@@ -32,6 +32,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -808,6 +809,8 @@ private fun ChannelPlaylistGrid(
   val gridState = rememberLazyGridState(
     initialFirstVisibleItemIndex = if (restoreFocusRequestKey > 0) restoreTargetRow else 0,
   )
+  // P11-171 诊断:目标卡是否真的把 restoreFocusRequester 挂上了节点(失败日志里区分成因)。
+  var restoreRequesterAttached by remember { mutableStateOf(false) }
   // P11-98:从播放列表详情页/播放器返回时按记录索引恢复焦点——对齐 TvVideoGrid 的完整防御
   // (scrollRow + 等目标行进入视口布局 + 按帧重试)。此前是「等 1 帧单发 requestFocus」:
   // 视频播放期间频道整页 dispose、返回后冷重组(20:41 channel open 重拉 tab 数据),
@@ -823,6 +826,11 @@ private fun ChannelPlaylistGrid(
       }
       return@LaunchedEffect
     }
+    // P11-171 诊断:目标卡到底有没有把 restore requester 挂上节点。真机 logs_live_20260922_213906
+    // 21:25:16.7→18.2 连抛 90 次「FocusRequester is not initialized」(=ChannelGridRestoreRetryCount)
+    // 后 restore failed,而同一行日志却说 rowVisible=true——即「目标行在屏上、requester 却没节点」,
+    // 靠 attached 标记区分「条件没命中目标项」和「项没组合」两种成因。
+    restoreRequesterAttached = false
     val targetIndex = focusedIndex.coerceIn(0, playlists.lastIndex)
     val targetRow = targetIndex / columns
     Log.d("BiliMT:Focus", "channel-playlists restore start: key=$restoreFocusRequestKey targetIndex=$targetIndex row=$targetRow items=${playlists.size}")
@@ -849,7 +857,8 @@ private fun ChannelPlaylistGrid(
     }
     Log.w(
       "BiliMT:Focus",
-      "channel-playlists restore failed: key=$restoreFocusRequestKey targetIndex=$targetIndex rowVisible=$rowVisible",
+      "channel-playlists restore failed: key=$restoreFocusRequestKey targetIndex=$targetIndex rowVisible=$rowVisible " +
+        "attached=$restoreRequesterAttached focusedKey=$focusedKey items=${playlists.size}",
     )
     onRestoreFocusHandled(restoreFocusRequestKey)
   }
@@ -871,6 +880,10 @@ private fun ChannelPlaylistGrid(
         restoreFocusRequestKey != 0 && (playlist.id == focusedKey || index == focusedIndex) -> restoreFocusRequester
         index == 0 -> firstItemFocusRequester
         else -> null
+      }
+      // P11-171 诊断:目标卡组合到就把标记立起来(requester 挂节点=组合成功)。
+      if (requester === restoreFocusRequester) {
+        SideEffect { restoreRequesterAttached = true }
       }
       ChannelPlaylistCard(
         playlist = playlist,

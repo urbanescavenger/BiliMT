@@ -1778,6 +1778,10 @@ fun BiliTvApp(
               val origin = channelOrigin
               channelOrigin = null
               channelPlaybackBehind = false
+              // P11-171 诊断:与详情页 onBack 同批补日志——这两处是本层 restore key 的全部 bump 点,
+              // 此前都零日志,回不到「谁把下层 restore key 顶起来了」(真机 logs_live_20260922_213906
+              // 21:25:16.716 频道页 restore 拿到 key=1,而 21:16:22 已归零)。
+              Log.d(FocusLogTag, "youtubeChannel back: request=null origin=$origin")
               when (origin) {
                 SpaceOrigin.Player -> channelFocusRestoreRequestKey += 1
                 SpaceOrigin.Content -> requestContentGridRestore(selectedDestination)
@@ -1836,6 +1840,12 @@ fun BiliTvApp(
               youtubePlaylistRequest = null
               playlistPlaybackBehind = false
               channelFocusRestoreRequestKey += 1
+              // P11-171 诊断:此分支此前零日志,是「返回后焦点消失」判读的盲区——本处与频道页
+              // onBack 是该层 restore key 的全部 bump 点。真机 logs_live_20260922_213906 里
+              // 21:25:16.716 频道页 restore 拿到 key=1(21:16:22 已归零),而频道页 onBack 会连
+              // youtubeChannelRequest 一起置空(与「频道页 restore 活到 18.241」矛盾)⇒ 唯一可能是
+              // 详情页被弹了一层;这行日志就是下轮判读的唯一指纹。
+              Log.d(FocusLogTag, "youtubePlaylistDetail back: request=null channelRestoreKey=$channelFocusRestoreRequestKey")
               true
             },
           )
