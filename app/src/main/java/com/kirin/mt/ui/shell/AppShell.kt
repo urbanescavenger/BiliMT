@@ -825,8 +825,18 @@ fun BiliTvApp(
           // 让 TvVideoGrid 的网格恢复 effect 有机会把焦点拉回原视频卡片。
           // 内容覆盖层(UP 主页 / YouTube 频道)返回走网格恢复时同样抑制,防覆盖层关闭后的
           // 延迟焦点回落把焦点丢到头像并 autoConfirm。
+          // P11-172:覆盖层自身的返回恢复(播放列表详情 / 频道 / UP 主页三层的 restore key)同样要抑制。
+          // 真机 logs_live_20260922_224548 实锤:22:32:24.958 从播放列表详情退出播放器 → 详情页被
+          // Back 弹掉(25.899)→ 焦点落头像且当时 suppress=false(这两个 destination 都是 null)
+          // ⇒ 26.068 直接 `openMyPage=true` 把用户送进「我的」页;此后 accountSelected=true 让内容层
+          // 不再组合,27.452 频道页返回触发的 requestContentGridRestore 失去目标(日志里没有任何
+          // TvVideoGrid restore 行)⇒ Dynamic 网格永不回焦,用户视角=「返回后焦点丢失」。
+          // 三层 key 在各自的 onBack 里清零、在各自恢复完成时由 onRestoreFocusHandled 清零,
+          // 故本条件随层栈自动收敛,不会长期关掉头像 autoConfirm。
           val suppressAccountAutoConfirm =
-            playbackFocusRestoreDestination != null || contentFocusRestoreDestination != null
+            playbackFocusRestoreDestination != null || contentFocusRestoreDestination != null ||
+              playlistDetailFocusRestoreRequestKey > 0 || channelFocusRestoreRequestKey > 0 ||
+              spaceFocusRestoreRequestKey > 0
           AppSidebar(
             selectedDestination = selectedDestination,
             accountSelected = accountSelected,
@@ -1731,6 +1741,9 @@ fun BiliTvApp(
               val origin = spaceOrigin
               spaceOrigin = null
               spacePlaybackBehind = false
+              // P11-172:本层被弹掉=本层待恢复作废,先清零再按 origin 决定下层(否则中断的恢复
+              // 会把 key 挂在 >0 上,头像 autoConfirm 抑制不收敛)。
+              spaceFocusRestoreRequestKey = 0
               when (origin) {
                 SpaceOrigin.Player -> spaceFocusRestoreRequestKey += 1
                 SpaceOrigin.Content -> requestContentGridRestore(selectedDestination)
@@ -1778,6 +1791,9 @@ fun BiliTvApp(
               val origin = channelOrigin
               channelOrigin = null
               channelPlaybackBehind = false
+              // P11-172:本层被弹掉=本层待恢复作废(真机 logs_live_20260922_224548 频道页 restore
+              // 26.633 开跑、27.452 被 Back 弹掉后 key 永远挂在 1),先清零再按 origin 决定下层。
+              channelFocusRestoreRequestKey = 0
               // P11-171 诊断:与详情页 onBack 同批补日志——这两处是本层 restore key 的全部 bump 点,
               // 此前都零日志,回不到「谁把下层 restore key 顶起来了」(真机 logs_live_20260922_213906
               // 21:25:16.716 频道页 restore 拿到 key=1,而 21:16:22 已归零)。
@@ -1839,6 +1855,8 @@ fun BiliTvApp(
             onBack = {
               youtubePlaylistRequest = null
               playlistPlaybackBehind = false
+              // P11-172:本层被弹掉=本层待恢复作废,清零后 arm 下层(频道页)的恢复。
+              playlistDetailFocusRestoreRequestKey = 0
               channelFocusRestoreRequestKey += 1
               // P11-171 诊断:此分支此前零日志,是「返回后焦点消失」判读的盲区——本处与频道页
               // onBack 是该层 restore key 的全部 bump 点。真机 logs_live_20260922_213906 里

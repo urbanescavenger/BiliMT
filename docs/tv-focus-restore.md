@@ -51,6 +51,8 @@ Box(root, focusDiag("root"))
 | **空数据早退造成双向死锁** | `restore skipped: key=… videos=0` 之后该页**再无任何按键日志**,按键落 `avatar focused … openMyPage=true` | 数据未到时不要静默 return:先「占位」聚焦一个必然存在的落点(返回 chip),按帧等数据(`RestoreDataWaitFrames`);数据到了且用户没自己动过再做精确恢复,否则只消费 key |
 | **恢复判据用「任一合法落点」** | 占位已持焦 → 精确恢复一拍都不试就 `restore done confirmed=true`,焦点留在占位 | 判据必须是**恢复目标本身**有焦点(按 `target` 分派:playall/back/行号集合) |
 | **一次返回弹两层(待证)** | 下层 restore key 被莫名 bump(只有该层自己的 onBack 能 bump)而该层 onBack 无日志 ⇒ 用户停在下下层页面 | 先补日志:各层 onBack 分支**都要打日志**,否则判读无指纹。⚠️**别拿 `WindowOnBackDispatcher: OnBackInvokedCallback is not enabled` 当「用户按了 Back」的证据**——它是 BackHandler 注册/注销的产物:老日志 `logs_live_20260921_210436.log` 20:58:28.519 退出播放器后 20:58:28.819 也出现,而那次单层干净返回 |
+| **焦点落头像 → autoConfirm 把用户抢走** | `avatar focused: autoConfirm=true suppress=false -> openMyPage=true`,后续 `GAINED [sidebar]`;再往后内容层的 `requestContentGridRestore` **一次都没跑**(没有 `TvVideoGrid restore` 行),因为 `accountSelected=true` 让内容层不再组合 | 任何「层栈返回」期间都必须抑制头像 autoConfirm:抑制条件要覆盖**所有**恢复在身的路径(`playbackFocusRestoreDestination`/`contentFocusRestoreDestination`/**各覆盖层自己的 restore key**),否则覆盖层返回时两个 destination 都是 null ⇒ 头像一抢焦就开「我的」页(P11-172) |
+| **被中断的恢复把 key 挂死** | 某层 restore 开跑后被 Back 弹掉 ⇒ 该层 key 永远 >0(抑制条件/恢复 effect 都不收敛) | 各层 `onBack` 先把**本层** key 清零,再 arm 下层;恢复正常完成走 `onRestoreFocusHandled` 清零 |
 | **下层恢复失败** | `channel-playlists restore failed … attached=false` + 90 次 `FocusRequester is not initialized`,而同一行 `rowVisible=true` | 目标卡 requester 挂不上:核对 requester 挂载条件(`playlist.id == focusedKey \|\| index == focusedIndex`)与目标项是否真的组合 |
 | **onFocusChanged 放错位置** | 节点零回调而子树 `hasFocus=true`、requestFocus 静默失败 | `onFocusChanged`/`onPreviewKeyEvent` 必须写在 `focusable()` **之前**(只监听其后第一个 focusTarget) |
 | **单布尔跟踪焦点** | 下键「弹回顶部/原地不动」,无关行入场补发 `isFocused=false` 清零 | 行聚焦按**行号集合**增删,不用 last-writer-wins 单布尔 |
@@ -72,6 +74,7 @@ Box(root, focusDiag("root"))
 - P11-93:行聚焦改行号集合(下键反弹)
 - P11-98 / 98b / 98c:详情页 restore 上链、频道网格完整防御、网格边界逃逸
 - P11-148:TV 设置页 D-pad 丢焦点
-- **P11-171**:播放列表详情页返回零焦点(**空表死锁** + 数据未 hoist + 下层频道网格恢复全败 + 疑似一次返回弹两层(待证))
+- **P11-171**:播放列表详情页返回零焦点(**空表死锁** + 数据未 hoist + 下层频道网格恢复全败)
+- **P11-172**:返回丢焦第二场 —— 详情页被弹掉后**头像 autoConfirm 劫持**用户(抑制条件漏覆盖层 restore key)+ 被中断的恢复把 key 挂死;另记录「返回瞬间主线程卡死 ~850ms 让占位 effect 来不及跑」
 
 判断「用户到底按了几次 Back」只能看各层 onBack 自己的日志;**层切换警告不可作证**(见上表)。
