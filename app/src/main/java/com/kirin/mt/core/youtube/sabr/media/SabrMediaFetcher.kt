@@ -318,6 +318,13 @@ internal class SabrMediaFetcher(
   @Volatile private var bufferedAheadNoteMs = -1L
   @Volatile private var bufferedAheadMsAtLastFetch = -1L
 
+  /**
+   * P11-173:本会话是否已交付过**真实媒体段**(≥ [REAL_BW_MIN_BYTES])。
+   * 饥饿快切([SabrStarvingCallTimeoutMs])只在此之后生效 —— 起播时水位必然是 0,若不排除会把
+   * bootstrap 首包上限砍半(真机 2026-09-23 实证,见 [fetchStreamData] 内注释)。
+   */
+  @Volatile private var deliveredRealMedia = false
+
   /** 由视频 [DefaultSabrChunkSource] 每次 getNextChunk 喂:播放位置前方缓冲水位(ms)。仅视频轨喂(音频轨缓冲远超需求,会污染滑行量判定)。 */
   fun noteBufferedAheadMs(ms: Long) {
     bufferedAheadNoteMs = ms
@@ -1127,7 +1134,9 @@ internal class SabrMediaFetcher(
       // P11-173:饥饿快切 —— 缓冲已知见底(< SabrStarvingBufferMs)时把整调用上限收到 8s/12s。
       // 这条通道存在的唯一理由:让请求在 **8s stall 看门狗把整场重载之前**失败,把「零字节/慢滴」
       // 变成一笔失败样本喂带宽计(recordRealBandwidthFailure)⇒ ABR 有机会先降档自救。
-      val starving = bufferedAheadNoteMs in 0..SabrStarvingBufferMs
+      // 只对「已开播之后」的请求生效:起播期水位恒为 0,而首包偶发 16~20s 是常态(P11-160),
+      // 那种情况该由 StartupStallThresholdMs=25s 的起播看门狗兜底,不该在这里被砍到 8s。
+      val starving = deliveredRealMedia && bufferedAheadNoteMs in 0..SabrStarvingBufferMs
       val callCapMs = when {
         starving && reqHeight >= 1440 -> SabrStarvingCallTimeoutMsHigh
         starving -> SabrStarvingCallTimeoutMs
@@ -1169,6 +1178,12 @@ internal class SabrMediaFetcher(
       // 节奏非带宽不足),吞吐 = 窗口累计量/累计耗时。带宽充足时贴近真实下载速率,断流时靠失败段计时下探。
       val mbps = if (elapsed > 0) resp.size.toLong() * 8 / (elapsed * 1000L) else -1L
       recordRealBandwidthSample(resp.size.toLong(), elapsed)
+      // P11-173(修正):记「本会话已交付过真实媒体段」—— 饥饿快切只在此之后生效。
+      // 依据(真机 logs_live_20260923_000311,r2087):起播时 `bufAhead=0ms` 本来就会命中
+      // `SabrStarvingBufferMs`,把首笔请求上限从 18s 砍到 8s —— 而 P11-160 记过「首包偶发
+      // 16~20s 是服务端慢启动,不该被杀」。用「是否已交付过真实段」把起播的 bootstrap 段
+      // 排除在快切口径之外(起播的兜底是 StartupStallThresholdMs=25s 那条看门狗)。
+      if (resp.size.toLong() >= REAL_BW_MIN_BYTES) deliveredRealMedia = true
       recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
