@@ -313,8 +313,10 @@ class WebDavBackupService(
    * 入口快速连通校验:对配置根 URL 发 GET,不通(网络异常或非 2xx,含 401/403)即抛 [IOException]
    * 让整体操作立刻判失败,错误信息同时提示网络与账密两种可能。
    *
-   * P11-174:探测本身改成「8s 失败后换 15s 再试一次」并把 405 视为可达(见 [WebDavRepository.ping]),
-   * 所以这里最多等 23s;每次尝试的 HTTP 码/异常都落 [WebDavRepository.WebDavLogTag] 日志。
+   * P11-174/176:探测本身是三档 8s → 15s → 25s 并把 405 视为可达(见 [WebDavRepository.ping]),
+   * 所以这里最坏等 ~48s(冷启服务器一次操作内能熬过去);每次尝试的 HTTP 码/异常都落
+   * [WebDavRepository.WebDavLogTag] 日志。启动预热([com.kirin.mt.core.app.AppContainer.startWebDavPrewarm])
+   * 已把冷启挪出用户按键那一刻,热连接下第一档(8s)即中。
    */
   private suspend fun ensureReachable(config: WebDavConfig) {
     val reachable = repository.ping(trimTrailingSlash(config.url), config.username, config.password)
