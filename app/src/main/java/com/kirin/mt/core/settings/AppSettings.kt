@@ -8,6 +8,7 @@ import com.kirin.mt.core.player.PlaybackCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
 import com.kirin.mt.core.player.PlaybackBufferMax
 import com.kirin.mt.core.player.YoutubeDefaultQuality
+import com.kirin.mt.core.player.YoutubeCodecPreference
 import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.youtube.YoutubeContentRegion
@@ -61,6 +62,12 @@ data class AppSettings(
   val chineseTextVariant: ChineseTextVariant = ChineseTextVariant.Simplified,
   val playbackQualityPreference: PlaybackQualityPreference = PlaybackQualityPreference.Highest,
   val playbackCodecPreference: PlaybackCodecPreference = PlaybackCodecPreference.Auto,
+  /**
+   * YouTube 播放专用解码器偏好(P11-131 从 [playbackCodecPreference] 拆分;P11-133 改为
+   * YouTube 自己的值域——多出 **VP9**,见 [YoutubeCodecPreference])。
+   * 读取端在新键未写盘时回落到 [playbackCodecPreference] ⇒ 存量用户行为不变。
+   */
+  val youtubePlaybackCodecPreference: YoutubeCodecPreference = YoutubeCodecPreference.Auto,
   val playbackCdnPreference: PlaybackCdnPreference = PlaybackCdnPreference.Auto,
   /** YouTube 默认画质(按分辨率上限选档)。 */
   val youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
@@ -70,6 +77,8 @@ data class AppSettings(
   val youtubeContentRegion: YoutubeContentRegion = YoutubeContentRegion.US,
   /** 默认播放倍速(起播时初始化播放器 playbackSpeed)。 */
   val defaultPlaybackSpeed: DefaultPlaybackSpeed = DefaultPlaybackSpeed.X100,
+  /** YouTube 起播专用默认倍速(P11-131 拆分)。未写盘时回落到 [defaultPlaybackSpeed]。 */
+  val youtubeDefaultSpeed: DefaultPlaybackSpeed = DefaultPlaybackSpeed.X100,
   /** 播放缓冲时长上限(maxBuffer)。网络波动时缓冲池顶住不卡的时间;默认 50s 对齐 LibreTube。 */
   val bufferMax: PlaybackBufferMax = PlaybackBufferMax.Standard,
   val seekPreviewSpritesEnabled: Boolean = true,
@@ -118,10 +127,12 @@ data class AppSettings(
    */
   val sabrForceSessionVideoItag: Boolean = false,
   /**
-   * YouTube 播放路径优先级:主路径先走 SABR 还是 DASH 自合成兜底。默认 [com.kirin.mt.core.player.YoutubeDeliveryPriority.Sabr]
-   * ——保持历史行为(NewPipe SABR 主路径 → DASH 兜底)。[com.kirin.mt.core.player.YoutubeDeliveryPriority.Dash]
-   * 用于慢源/卡顿场景:慢 SABR 首段会被 8s stall 看门狗误杀触发完整重建,切 Dash 让 DASH 自合成优先
-   * (NewPipe 已解密直链拼 MPD,实测能出 4K VP9)。见 docs/youtube-hd-playback.md。
+   * YouTube 播放路径优先级(P11-114)。默认 [com.kirin.mt.core.player.YoutubeDeliveryPriority.Sabr]
+   * ——保持历史行为(NewPipe SABR 主路径 → WEB-SABR 兜底 → DASH 兜底)。
+   * [com.kirin.mt.core.player.YoutubeDeliveryPriority.Dash] 用于慢源/卡顿场景:慢 SABR 首段会被
+   * 8s stall 看门狗误杀触发完整重建,切 Dash 让 DASH 自合成优先(NewPipe 已解密直链拼 MPD,实测能出
+   * 4K VP9)。[com.kirin.mt.core.player.YoutubeDeliveryPriority.WebSabr] 强制先走 WEB attested
+   * 路径(桌面身份+cpn+poToken),适用门控视频/4K 强制场景。见 docs/youtube-hd-playback.md。
    */
   val youtubeDeliveryPriority: YoutubeDeliveryPriority = YoutubeDeliveryPriority.Sabr,
 ) {

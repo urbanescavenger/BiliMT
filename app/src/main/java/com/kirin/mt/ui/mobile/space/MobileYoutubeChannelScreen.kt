@@ -66,6 +66,7 @@ import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
+import com.kirin.mt.ui.mobile.home.SourceBadge
 import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.mobile.home.rememberVideoCardRelativeText
 import kotlinx.coroutines.CancellationException
@@ -601,7 +602,7 @@ private fun ChannelPlaylistCard(
 }
 
 /**
- * 主页 tab 官方式视频行(对齐 B站官方 UP空间 投稿列表):左封面(右下角时长),右标题/日期/播放量。
+ * 主页 tab 官方式视频行(对齐 B站官方 UP空间 投稿列表):左封面(右上角会员等源角标,右下角时长),右标题/日期/播放量。
  * [showDanmaku]=true(B站)播放量行追加「💬 弹幕数」;YouTube 无弹幕传默认 false。
  * 长按走视频长按菜单。B站 UP 空间页(MobileUserSpaceScreen)复用。
  */
@@ -636,6 +637,15 @@ internal fun ChannelVideoRow(
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxSize(),
       )
+      // 会员/源角标:右上粉底 pill,对齐首页卡(MobileVideoCard)与 TV VideoCard;原先本行只有时长,角标丢失。
+      if (video.badge.isNotBlank()) {
+        SourceBadge(
+          text = video.badge,
+          modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(4.dp),
+        )
+      }
       val durationText = video.durationText()
       if (durationText.isNotBlank() && !video.isLive) {
         Text(

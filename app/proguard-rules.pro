@@ -50,3 +50,16 @@
 }
 -dontwarn org.schabi.newpipe.**
 
+
+# P11-120(字幕懒加载):SubtitleLazyLoadingSupport 故意声明在 media3 的包
+# androidx.media3.exoplayer.source 下 —— 它靠「同包」直接调用包私有方法
+# ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack(int, Format)
+# (media3 用它让字幕轨在 prepare 期**零读取**,只在轨被选中时才拉数据)。
+# 运行期包访问要求该类与 media3 的 Factory 处于同一 runtime package,故 R8 既不能
+# 改它的包名/类名,也不能把它内联进别的包的调用方 —— 一旦破坏,字幕懒加载失效,
+# 就会重现 P11-72 的「字幕轨拖死主源、视频转圈加载不出」。同时钉住被调方法名,
+# 供代码内的反射兜底(enable → enableReflectively)使用。
+-keep class androidx.media3.exoplayer.source.SubtitleLazyLoadingSupport { *; }
+-keepclassmembers class androidx.media3.exoplayer.source.ProgressiveMediaSource$Factory {
+    *** enableLazyLoadingWithSingleTrack(...);
+}

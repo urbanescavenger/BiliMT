@@ -98,6 +98,9 @@ internal class DefaultSabrChunkSource(
 
   private val representationHolders: MutableList<RepresentationHolder>
 
+  /** P11-130:已上报预取过的档(itag)——同一档只预取一次,避免持续白吃带宽。 */
+  private val prefetchedTiers = mutableSetOf<Int>()
+
   init {
     val representations =
       adaptationSetIndices.flatMap { manifest.adaptationSets[it].representations }.toList()
@@ -190,6 +193,39 @@ internal class DefaultSabrChunkSource(
     this.trackSelection = trackSelection
   }
 
+  /**
+   * P11-130(升档预加载):判断「下一档是否值得预取」并上报给 fetcher。
+   *
+   * 条件(全部满足才报,宁缺勿滥):①视频轨;②缓冲水位 ≥ [PREFETCH_MIN_BUFFERED_US](预取会占用串行
+   * fetcher,缓冲薄时不许抢);③存在比当前档**分辨率更高**的下一档(阶梯是码率降序,index 越小越高档,
+   * 故从 sel-1 往上找第一条 height 更大的);④该档声明码率 ≤ 实测带宽 × [PREFETCH_BW_MARGIN_PERMILLE]
+   * (够不着就别预取);⑤同一档只报一次(避免持续白吃带宽)。
+   *
+   * 2026-09-20:②**是持续条件不是一次性检查**——生效窗口期内缓冲跌破
+   * [PREFETCH_REVOKE_BUFFERED_US] 立即撤销(否则缓冲塌了还继续抢响应预算,把正在播的格式饿死)。
+   */
+  private fun maybePrefetchNextTier(bufferedDurationUs: Long) {
+    // 2026-09-20:窗口是**持续条件**——缓冲跌破撤销线立即撤销(见 PREFETCH_REVOKE_BUFFERED_US)。
+    // 放在最前:撤销要能抢在"又一次请求带上预取档"之前生效。
+    if (bufferedDurationUs < PREFETCH_REVOKE_BUFFERED_US) {
+      fetcher.cancelPrefetch("缓冲 ${bufferedDurationUs / 1_000_000}s 跌破撤销线")
+      return
+    }
+    if (bufferedDurationUs < PREFETCH_MIN_BUFFERED_US) return
+    val sel = trackSelection.selectedIndex
+    val curHeight = representationHolders.getOrNull(sel)?.representation?.format?.height ?: return
+    val nextIdx = (sel - 1 downTo 0).firstOrNull {
+      representationHolders[it].representation.format.height > curHeight
+    } ?: return
+    val holder = representationHolders[nextIdx]
+    val nextItag = holder.representation.formatId.itag
+    if (!prefetchedTiers.add(nextItag)) return
+    val nextBitrate = holder.representation.format.bitrate
+    val bw = bandwidthMeter.getBitrateEstimate()
+    if (bw <= 0L || nextBitrate > bw * PREFETCH_BW_MARGIN_PERMILLE / 1000L) return
+    fetcher.prefetchFormat(nextItag)
+  }
+
   override fun maybeThrowError() {
     // fatalError 由 fetcher.getNextSegment 抛 SabrTerminalException → DataSource open → chunk load error 通路,
     // 这里不重复 throw(对齐 LibreTube fatalError 走 getNextSegment throw)。
@@ -230,8 +266,20 @@ internal class DefaultSabrChunkSource(
 
     // alpha.9Z:视频轨每次取 chunk 把「播放位置前方缓冲水位」喂给 fetcher,gap 计时据此扣减滑行量
     // (仅视频轨喂:音频轨缓冲远超需求,会污染判定)。见 SabrMediaFetcher.recordFetchGap。
+    // 2026-09-20(修 r2018 实测:位置锚没生效):**播放位置必须两条轨都喂** —— 位置与轨道无关,
+    // 而**本场第一个请求是音频轨的 init**(r2018 日志 `fetch rn=0 itag=140 seg=0 shape=ft`):
+    // 原来只在视频轨分支里喂,音频轨先跑 ⇒ 那一笔请求时位置注入口还是 -1 ⇒ 锚为 null ⇒ 位置锚 0 次命中,
+    // 服务端照旧从 seg 0 起推。缓冲水位(noteBufferedAheadMs)保持**仅视频轨**(音频缓冲远超需求会污染
+    // 滑行量判定,见上),两者语义不同、不能一起搬出去。
+    fetcher.notePlaybackPositionMs(Util.usToMs(playbackPositionUs))
+    // 2026-09-20(C1):把「服务端实际推来的视频 itag」同步给选档 —— 材料会话里服务端只服务它那场会话
+    // 绑定的格式(r2019:只推 251/396),我们选的档不被初始化 ⇒ no seg 死循环;选档收在这个集合内才通。
+    (trackSelection as? HeightAwareAdaptiveTrackSelection)?.noteServerServedItags(fetcher.serverServedVideoItags())
     if (trackType == C.TRACK_TYPE_VIDEO) {
       fetcher.noteBufferedAheadMs(Util.usToMs(bufferedDurationUs))
+      // P11-130(升档预加载):下一档可负担 + 缓冲健康 → 让 fetcher 提前把它的 init(+段)取回来,
+      // 切档那刻直接命中缓存(否则每次升档现拉 2.5–7.2s,视频轨断流而音频照播)。
+      maybePrefetchNextTier(bufferedDurationUs)
     }
 
     // 2026-08-31 B2:决策前快照——升/降档候选与合成 iterator 都基于「当前档」构(ABR 看到的是切换前
@@ -547,3 +595,30 @@ internal class DefaultSabrChunkSource(
     fun getLastAvailableSegmentNum(): Long = chunkIndex!!.length.toLong() - 1
   }
 }
+
+/**
+ * P11-130(升档预加载)阈值。
+ *
+ * [PREFETCH_MIN_BUFFERED_US]:缓冲水位门槛——预取占用**串行** fetcher,缓冲薄时不许抢(与"满缓冲试探"
+ * 同源的思路:有富余才做额外动作)。
+ * [PREFETCH_BW_MARGIN_PERMILLE]:下一档声明码率相对实测带宽的上限(0.8×)——够不着就别预取,白吃带宽。
+ *
+ * 2026-09-20([PREFETCH_REVOKE_BUFFERED_US],修「预取窗口期内抢响应预算 → 正在播的格式饿死」):
+ * 上面两条此前**只在进入时检查一次**,此后 30s 窗口(SabrMediaFetcher 的 PREFETCH_WINDOW_MS)一路照问不误
+ * ——真机两场(`logs_live_20260920_135925.log` / `logs_live_20260920_142332.log`,视频 UblCOS7McLg):
+ * 播 720p 时预取候选 = 1080p itag335,服务端**照办**(每个响应带 `FORMAT_INIT itag=335` + 5 个 335 段
+ * ≈7.87MB),而白名单只认 `[140,698]` → 整段丢弃(且 `initializedFormats[335]` 连建都不建,见
+ * SabrMediaFetcher 两处白名单);更要命的是**响应预算被 335 占满,当次请求的 698 段根本不来** →
+ * `no seg` → 重试 6 次 → `terminal → evict` → 新会话(窗口还在)再问一次 335。两场各 12/13 次,
+ * 「零可用数据 32.8s / 25s」窗口**与预取窗口逐帧吻合**(13:57:35.977 宣布 → 13:58:05.98 到期 →
+ * 13:58:08.843 窗口到期后第一笔立刻拿到 698 seg 12/13/14;14:22:29.994 宣布 → 14:22:59.99 到期 →
+ * 14:23:01.206 第一笔立刻拿到 698 段)。
+ *
+ * 修法:**窗口是持续条件,不是进入时的一次性检查**——缓冲跌破 [PREFETCH_REVOKE_BUFFERED_US] 就立即撤销。
+ * 撤销线比进入线低 5s 作滞回带,防缓冲在 20s 上下自然抖动时被一次轻微回落永久关掉。
+ * 撤销是**单向**的(该档仍留在 chunk source 的 `prefetchedTiers`,`prefetchedTiers` 的原意「同一档只报
+ * 一次、避免持续白吃带宽」不变):本会话不再重试该档。
+ */
+private const val PREFETCH_MIN_BUFFERED_US = 20_000_000L
+private const val PREFETCH_REVOKE_BUFFERED_US = 15_000_000L
+private const val PREFETCH_BW_MARGIN_PERMILLE = 800L

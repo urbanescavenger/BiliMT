@@ -1,0 +1,2127 @@
+# YouTube WEB-SABR(自制 WEB 会话 SABR):实现路径与失败经验
+
+> **这条路要做什么**:不借 Piped 等第三方实例,**自己铸一个 YouTube WEB 会话**,拿到服务端签发的
+> `serverAbrStreamingUrl` + `ustreamerConfig`,再喂给既有的 SABR 播放栈(与 visionOS 路共用下游)。
+>
+> **状态(2026-09-16 晚):已打通(harvest 形态)。** P11-101 → P11-118 共 15 轮「原生对齐」(WEB 会话逐请求
+> `status=2` nag → 第 4 个响应必升终态 `status=3` → 会话死)全部落空后,按 FreeTube 源码审计转**「材料」路线**:
+> 真机 replay 实证 **浏览器亲手产出的材料(sabrUrl + body + 原 cpn)经我们的 OkHttp 原样重放即得 `status=1`
+> + 完整媒体段**,且「补 / 不补 Cookie+visitor」两种传输形态结果**完全相同** ⇒ **nag 差异只在材料**。
+> 把 WebView harvest 接成会话来源后,真机 r1958:`USING HARVEST MATERIAL` → `status=1 ×6`、零 `status=3`、
+> 零 `Playback error`、16~19Mbps 在流。**待完善**:选定档落阶梯默认(body 的 formatId 字段搬家)、起播延迟
+> = harvest 12~40s。详见 §6 计划与 §3 实测。
+>
+> **对照**:同一天的 NewPipe(visionOS)主路对**同一个门控视频** `status=1 ×24`、零 RELOAD、干净播通
+> 100 秒以上(见 §3)。
+>
+> **2026-09-16 更新**:对 FreeTube 源码逐行审计后,**14 轮里追的方向有一半是空的** —— 桌面身份从未真正上线
+> (见 §4 第 8 项),挑战与兑换不同源(§4 第 9 项)。缺口清单见 **§5**,据此重排的实现计划见 **§6**(P11-117/118)。
+>
+> **2026-09-19 更新(采集腿当天全废,非我们的改动)**:真机 r1979 整场 harvest **0 捕获**,watch 页恒
+> `title= body=NOBODY player=false` 且**页内 JS 一行没跑**(零 YouTube console、零 `gv req`),同时 chromium 打了
+> 48 次 `spdy_session.cc:2997 Received HEADERS for invalid stream`(09-17 正常日志 0 次);harvest 代码自 09-16
+> 未改、同机同码 09-16/09-17 能出材料 ⇒ 判为**该机当天的 WebView 通路坏了**。据此加 **P11-125**:
+> 补异常/页面层取证(§1.9)+ 空壳页丢弃实例重建(§1.11)。实测见 **§3.4**。
+>
+> **2026-09-19 二次判读(关键:真正的「播放不出」不是 WEB-SABR)**:第二次真机抓到
+> `postPlayer … failed after 0ms (TimeoutCancellationException)` —— 上一份日志里三次「1ms 内 /player 失败」
+> **是父协程已被取消**,不是网络/身份问题。父协程是 TV 起播写死的 30s 预算,而 WEB-SABR 优先链的固定开销
+> 就有 ~21-28s ⇒ 整条 launch 被取消,**连已建好的 NewPipe 兜底会话也被丢弃**,用户黑屏 ~99s。据此加
+> **P11-126**:起播预算按交付档给 + 不足早退 + 耗尽可见(§1.12)、harvest WebView 启动预热(§1.13)、
+> 空壳页取证探针(§1.14,含 Sec-CH-UA / consent cookie / `; wv)` 三条社区线索,§3.6)。实测见 **§3.5**。
+>
+> **2026-09-20 更新(`status=3` 的真凶找到:刷新路径的 token 没解码)**:r2023 真机把「status=1 → status=2
+> → 刷新 → status=3 整会话死」这条链钉死了 —— 刷新回调把 provider 的 websafe base64 **串**当 token 字节发出去
+> (`208B` 的字节数 == 字符数是铁证),而同一字段的**创建**路径 P11-117 早已解码 ⇒ 服务端必然 `InvalidPoToken`。
+> 详见 **§5.9.2**(P11-141)。同一份日志另给出 **C1 收窄为何从未生效** 的机制(起播锁把候选夹回)与材料会话
+> 只供 `399/251` 的字节证据,同样记在 §5.9.2。
+>
+> **2026-09-20 更新②(r2024 判读:解码修复生效,真墙浮出)**:`status=3` 从 22 次归零、刷新日志回到
+> 精确 3/4 解码(468→349 / 1160→869)⇒ P11-141 确认有效。真墙随之暴露:**材料 URL 会话只供浏览器那一场
+> 绑定的档**,五场全死于 `no seg 0 itag <我们的档>`;而「当初改用材料」的前提(自造会话跑到第 4 个请求
+> 必死)正是刚修掉的那个 bug。据此 **P11-142**:harvester 只采到冷启桩时**不再退桩**,返回 null 让
+> resolver 落自造材料。详见 **§5.9.3**。
+>
+> **2026-09-20 更新③(r2026:自造会话首次播通,材料路线收摊)**:同一场日志里材料会话**媒体块 0**
+> (真 token 也一样 —— 服务端只供它那一场绑定的档,我们的档从未被初始化)vs 自造会话**14 块 + `playerState=3(READY)` + `videoFmt=302`**
+> (`status=3`/`Playback error`/`RELOAD` 全 0)。材料路线的前提(自造必死)已被 P11-141 证伪 ⇒
+> **P11-143:harvest 整段停用**(不采集、不用材料),起播同时从 9.3~9.5s 降到 ~2.6s。详见 **§5.9.4**。
+>
+> 相关文档:[youtube-hd-playback.md](youtube-hd-playback.md)(总史/§6.x 逐条真机)、
+> [youtube-dash-fallback-plan.md](youtube-dash-fallback-plan.md)(DASH 兜底)、
+> [youtube-vs-libretube-comparison.md](youtube-vs-libretube-comparison.md)(逐环节对照)、
+> [libretube-streaming-impl.md](libretube-streaming-impl.md)(LibreTube 移植来源)。
+
+---
+
+## 0. 为什么会有这条路
+
+YouTube 侧的门控(attestation)让「拿不到已 attested 的 player response」变成一个死结,历史上试过三条路:
+
+| 路 | 拿什么喂播放器 | 门控下的表现 |
+|---|---|---|
+| **visionOS SABR**(NewPipe fork,现主路) | NewPipe `getInfo` 的 `serverAbrStreamingUrl` + `ustreamerConfig` | **未 attested**(visionOS 客户端),服务端可判 `RELOAD_PLAYER_RESPONSE`;实测偶发、当天多数能播 |
+| **WEB-SABR**(本文档) | 我们自己的 `/player` + 自铸 POT + yt-dlp solver 解 n | 服务端逐请求 `status=2` nag → 终态 `status=3` |
+| **DASH 直链**(兜底) | NewPipe 直链拼 SegmentBase MPD | 非门控视频可用(可出 4K);门控视频直链 403 |
+
+WEB-SABR 的动机来自 Y-01([DEVELOPMENT_PLAN.md:1032-1046](../DEVELOPMENT_PLAN.md#L1032-L1046)):
+LibreTube 能播门控视频是因为它**默认走 Piped 后端**(`/streams/{id}` 回 attested 的 WEB-bound config),
+所以「我们自己产一个 attested WEB 会话」看起来是治本方向。
+
+**但"用别人的 Piped 实例"这条前置被否决了**(2026-09-15 用户决定):Piped 的价值本来就是借别人铸好的会话 + 出口 IP;
+自建 Piped 也不是捷径——Piped-Backend 自己同样要跑 `bg-helper` 铸 poToken,而 poToken 与 IP 绑定,
+还要额外做 IP 轮换防封,社区实测其 SABR/po_token gate 同样只回 360p。**这条路等于把客户端的活搬到服务器重做一遍。**
+参考:[Self-Hosting - Piped](https://docs.piped.video/docs/self-hosting/)、
+[Piped-Backend config.properties(`BG_HELPER_URL`)](https://gitdab.com/TeamPiped-mirror/Piped-Backend/src/branch/master/config.properties)、
+[lighttube-org/pot-generator(PoTokens 与 IP 绑定)](https://github.com/lighttube-org/pot-generator)、
+[captainzonks/spoke-piped(SABR gate 致实例只回 360p)](https://github.com/captainzonks/spoke-piped)。
+
+---
+
+## 1. 实现路径(链路图)
+
+总览:`resolve()` 选路 → `buildWebSabrFallback`(桌面 watch 页身份 + 自铸 POT)→ `parseSabrData`
+→ solver n-decrypt → cpn 注入 → `SabrSession.fromSabrData` → `registerByVideoId` → `SabrMediaSource`/`SabrMediaPeriod`
+→ `SabrMediaFetcher`(webShape POST)→ `SabrDataSource`(终端处理)。
+
+### 1.1 入口与优先级
+
+- [YoutubePlaybackResolver.kt:99-101](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L99-L101)
+  读 `youtubeDeliveryPriority`,派生 `dashFirst` / `webSabrFirst`;默认 `Sabr`。
+- [:167-179](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L167-L179)
+  **WebSabr 档强制优先**:条件 `webSabrFirst && poToken != null`;成功 `clearWebSabrFailed` 直接返回,
+  失败 `markWebSabrFailed(videoId)` 落 NewPipe 主链(不重复尝试,防循环)。
+- [:248-266](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L248-L266)
+  **兜底触发**:`webSabrDue = !isWebSabrFailed && (isDashFallbackFailed || (reloadCount > 0 && poToken != null))`
+  ——「DASH 直链已判死 403」或「已 RELOAD 过且手里有 token」。失败后顺带跑 `probeWebDashChain` 取证。
+- 失败标记本体:[SabrStreamRegistry.kt:57-83](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrStreamRegistry.kt#L57-L83)
+  进程级 `webSabrFailedVideos` 集合(姊妹通道 `isDashFallbackFailed` 在 [:48-67](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrStreamRegistry.kt#L48-L67))。
+- 成功后必须 [:2010](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L2010)
+  `resetReloadCount(videoId)` 清零 visionOS 死会话留下的计数,否则 `SabrDataSource` 会按 `reloadCount>0` 立刻 fast-fail 新会话。
+
+### 1.2 `/player`:桌面 watch 页身份 + 页面挑战
+
+- [YoutubePlaybackResolver.kt:1877-1903](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1877-L1903)
+  `buildWebSabrFallback`:`poToken == null` 直接 abort;`botGuard.webSessionIdentity()` 取桌面身份,
+  再 `postPlayer(... contextOverride / cookieOverride / visitorOverride ...)`(P11-115)。
+- 身份来源:[YoutubeBotGuard.kt:251-255](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L251-L255)
+  `webSessionIdentity()` = 桌面 watch 页 ytcfg 的 `INNERTUBE_CONTEXT`(osName=Windows)+ 页面 Set-Cookie。
+  抓取在 [:178-241](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L178-L241),URL 带
+  `bpctr=9999999999&has_verified=1`,**必须桌面 UA**(移动 UA 被 302 且页面无 `ytAtN`,P11-103)。
+- 挑战解析:`findYtAtN`([:262-298](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L262-L298),
+  引号感知平衡括号扫描,避开页面里无参 `window.ytAtN();` 空调用)+ `parseLooseJson`
+  ([:307-325](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L307-L325),bgutils-js helpers 移植)。
+- 请求体组装:`postPlayer` [:681-723](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L681-L723);
+  WEB 走 `viaWebView=true`(WebView 原生栈),异常回退 OkHttp。
+- poToken 位置:[InnerTubeClient.kt:68-95](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt#L68-L95)
+  —— 放在**顶层 `serviceIntegrityDimensions.poToken`**(不在 context 内);`context` 可被 `contextOverride` 覆盖,
+  `X-Goog-Visitor-Id` / `Cookie` 由 `visitorOverride` / `cookieOverride` 接管([:136-146](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt#L136-L146))。
+
+### 1.3 PO token 铸造(BotGuard)
+
+- [YoutubeBotGuard.kt:60-132](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L60-L132)
+  `generatePoToken`(20s 超时)→ `mintPoToken` 五步:注入 `window.yt={config_:…}` → challenge 取源优先级
+  `challengeFromPage`(页面 bgChallenge) → `attGetChallenge`(`POST /att/get`,`ENGAGEMENT_TYPE_UNBOUND` + eacrToken)
+  → `fetchChallenge`(`create` 旧法兜底)。**落到 `create` 即 attestation 链占位**(P11-103 的根因)。
+- [:433-452](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L433-L452)
+  `loadInterpreterViaScript`:注入 `<script src>` + 轮询 `__interpLoad`(对齐 FreeTube `botGuardScript.js` c42fee2c7),
+  失败才落 eval 文本兜底。
+- [:523-572](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L523-L572)
+  `generateIntegrityToken`:**裸发** `POST /api/jnn/v1/GenerateIT`,只带 `content-type` / `x-goog-api-key` / `x-user-agent`
+  (P11-105 撤掉 Cookie + X-Goog-Visitor-Id)。
+- 产出形态:124 字符 web64(`.` 填充)。会话侧字节形态见
+  [SabrClient.kt:140-147](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrClient.kt#L140-L147)
+  —— 先试 `Base64.DEFAULT`,失败(web64)落 UTF-8 原字节。**注意:创建路径与刷新路径的字节形态历史上并不一致**
+  (r1949 会话创建时 89B、刷新后 124B),`P11-101` 结论是"原始字节"才对,下次带 token 的会话值得顺手核一眼。
+
+### 1.4 n/s 解密(yt-dlp solver)
+
+- [YoutubeSolverDecipherer.kt:28-60](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSolverDecipherer.kt#L28-L60)
+  `ensureLoaded` 依次 eval 四个 asset:`meriyah.min.js` → `astring.min.js` → `yt.solver.core.js` → `yt_solver_driver.js`
+  (目录 `app/src/main/assets/youtube/`);就绪判据 `typeof window.__ytSolveLoaded == "boolean"`。
+- [:67-123](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSolverDecipherer.kt#L67-L123) `solve` 轮询 30s 取结果。
+- 调用点 [YoutubePlaybackResolver.kt:1942-1965](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1942-L1965):
+  只在 `sabrUrl` 带 `n` 时跑;`solverN == sabrN`(未变)即 abort(未 transform 必 403)。
+- **已退役的旧方案**:`YoutubeNDecryptor`(player hash → nClass,alpha.32 真机证伪)与 `YoutubeSDecryptor`
+  (旧正则,plasma 后失配),见 [YoutubeSolverDecipherer.kt:19-23](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSolverDecipherer.kt#L19-L23)。
+  本体仍保留,YoutubeNDecryptor 仅剩诊断探针调用([:1378](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1378))。
+
+### 1.5 cpn 注入
+
+- [YoutubePlaybackResolver.kt:1966-1975](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1966-L1975)
+  —— 服务端签发的 sabrUrl **不带 cpn**(P11-112 dump:34 键无 cpn/cver),故客户端生成 16 位随机 cpn 注入
+  (对齐 FreeTube Watch.js L659/L1740、youtubei.js `generateRandomString(16)`)。
+- [SabrClient.kt:137-139](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrClient.kt#L137-L139) + [:162-166](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrClient.kt#L162-L166):
+  `sabrUrlWithParams` 追加 `alr=yes&cpn=<cpn>`(自适应重定向 + 会话绑定);`SABR_REDIRECT` 换 URL 时重加([:110-112](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrClient.kt#L110-L112))。
+- 逐请求 URL = `${session.sabrUrl}&rn=$rn`([SabrMediaFetcher.kt:722](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L722))。
+
+### 1.6 会话构造
+
+- [YoutubePlaybackResolver.kt:1981-1998](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1981-L1998)
+  `SabrSession.fromSabrData(...)`:`poToken` **传 `""`**(P11-116 pot-less 实验,硬编码)、clientInfo =
+  `webDesktopSabrClientInfo(context)`、`userAgent = YoutubeConstants.UserAgent`(桌面)、`cookieHeader = ""`、`visitorData = ""`。
+- [InnerTubeClient.kt:651-659](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt#L651-L659)
+  `webDesktopSabrClientInfo`:**只 4 字段**(clientName=1 / clientVersion / osName / osVersion)。
+  对照 `sabrClientInfo`(移动 sw.js_data 指纹)与 `visionOsSabrClientInfo`(clientName=101 / Apple RealityDevice14,1)。
+- [:1999-2005](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1999-L2005)
+  `registerByVideoId`,`refreshPoToken = { botGuard.generatePoToken(videoId)?.toByteArray(UTF_8) }`(**同 minter 续命**)。
+  注释记录了失败版本:接 `biliTvPoTokenProvider` 输出 888B、绑自身 visitorData → `status=3` → 60s 重载循环。
+
+### 1.7 请求形状(FreeTube 形状 = `webShape`)
+
+- 判定:[SabrMediaFetcher.kt:653](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L653)
+  `webShape = session.clientInfo.clientName == 1`(只有 WEB clientInfo 走 FreeTube 形状,visionOS 走 `libre` 形状)。
+- [:655-668](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L655-L668) `ClientAbrState` 只写 6 字段
+  (viewport 640×max(h,360)、bandwidthEstimate 恒有、`playerTimeMs` 零值省略、bitfield video 省略);
+  对照 `libre` 形状的 12+ 字段([:669-692](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L669-L692))。
+- [:693-704](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L693-L704) clientInfo 用 `copy(...)`
+  把 device/screen/acceptLanguage/timeZone 等**全部置 null**(FreeTube 仅 4 字段)。
+- 时间语义 [:709-712](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L709-L712):
+  webShape 下顶层 `playerTimeMs`(f4)**不发**,只放 `clientAbrState.f28`。
+- bufferedRanges [:623-626](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L623-L626) +
+  [SabrSegment.kt:88-120](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrSegment.kt#L88-L120):
+  请求轨只报到**请求段的前一段**(`minOf(partition.last().first, capSeq - 1)`,P11-111 对齐 PipePipe `bufferedThrough = next-1`),
+  init → 全空;其他轨维持自身缓存。
+
+### 1.8 status 处理
+
+- [SabrMediaFetcher.kt:927-939](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L927-L939)
+  `PART_STREAM_PROTECTION_STATUS`:`3` → `invalidPo = true`;`2` → `needsPoTokenRefresh = true`;**`1` 无分支**(静默,只打日志)。
+- status=2 刷新 [:576-587](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L576-L587) 同步走
+  `refreshPoTokenSingleFlight`([SabrStreamRegistry.kt:149-172](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrStreamRegistry.kt#L149-L172)):
+  5s freshness 窗口内复用(coalesce),否则铸一次统一写回;动机是 4 个 fetcher 并发各铸一次 last-write-wins 互踩 → 整会话 `status=3`(P11-102c)。
+- status=3 **terminal**:先打 `InvalidPoToken diag`([:499-508](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L499-L508)),
+  再 `throw SabrTerminalException`([:509](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L509));
+  上层 [SabrDataSource.kt:82-95](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrDataSource.kt#L82-L95)
+  catch → `evict(sessionId)` → 播放器 error-retry 重跑 resolve。
+- RELOAD:[SabrMediaFetcher.kt:940-973](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L940-L973)
+  解析 `ReloadPlayerResponse` → 存单槽(`storeReloadTokenSlot`)→ **首次 RELOAD 立即抛**(不读完 part,对齐 LibreTube「RELOAD 直接失败不循环」)。
+
+### 1.9 诊断埋点
+
+| 埋点 | 位置 | 看什么 |
+|---|---|---|
+| `WEBREQDUMP`(potHex + bodyHex) | [:727-730](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L727-L730) | 仅 `webShape && rn<=1`,与 FreeTube HAR 逐字节 diff |
+| `InvalidPoToken diag` | [:499-508](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L499-L508) | `sessAgeMs` / `sessReqN` / `status2Seen` / `pot` / `ctxActive` / `unhandled` / `req` / `ranges` |
+| 每请求一行 | [:723](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L723) | `shape=ft\|libre bitfield= selectedFmts= bufferedRanges= pot= cookie= contexts= bw=` |
+| `/player` 诊断行 | [InnerTubeClient.kt:103-115](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt#L103-L115) | `poTokenArg` / `bodySID` / `bodySIDToken` / `cookieV1L` / `cookieOv` / `ctxOs` / `ctxBrowser` / `bodyLen` |
+| `VM fingerprint=` / solver 异常 | [YoutubeBotGuard.kt:466](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L466) / [:952-954](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L952-L954) | 铸 token 的 VM 环境;solver 抛错现形(P11-114b) |
+| `postPlayer … failed after Nms (类名: message)` + 栈 | [YoutubePlaybackResolver.kt:763-775](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L763-L775) | **P11-125**:rethrow 前落证。`after 1ms` = 瞬时抛错(会话数据/参数/WebView 状态);`after 30000ms` = 网络超时。两者修法完全不同 |
+| `WEB-SABR(优先/兜底)链异常` | [YoutubePlaybackResolver.kt:187-190](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L187-L190) / [:280-283](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L280-L283) | **P11-125**:整条 `buildWebSabrFallback` 的 `runCatching` 落证(此前失败只剩一句 `abort`) |
+| PAGE diag `dl=` / `rs=` / `ytcfg=` | [YoutubeSabrHarvester.kt:509](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L509) | **P11-125**:主文档 `documentElement.outerHTML` 长度 / `readyState` / kevlar 是否 boot。区别于 `body=NOBODY`:区分「空文档」与「渲染崩」 |
+| `DOCLEN`(同步回传长度) | [YoutubeSabrHarvester.kt:500](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L500) | **P11-125**:与 PAGE diag 同源但走 `evaluateJavascript` 回传值(空壳判定必须同步拿到长度,不能等 console) |
+| `onReceivedError(main frame)` / `onReceivedHttpError … mainFrame=` / fail-fast 汇总 | [YoutubeSabrHarvester.kt:357-393](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L357-L393) | **P11-125**:主文档错误**无条件**记(旧实现只记 URL 含 youtube/googlevideo 的);fail-fast / timeout 时汇总打 `mainFrameErr=` + `httpErr=` + `last=` |
+| `webView=reuse\|rebuilt` | [YoutubeSabrHarvester.kt:189](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L189) | **P11-125**:上轮空壳被丢弃后这次必是 `rebuilt`;若重建后**仍然**空壳 ⇒ 问题不在实例层 |
+| `prewarm: 采集 WebView 冷启完成 Nms` / `BiliWarmup: youtube harvest prewarm ok\|skipped` | [YoutubeSabrHarvester.kt](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt) / [AppContainer.kt](../app/src/main/java/com/kirin/mt/core/app/AppContainer.kt) | **P11-126**:预热是否真做、冷启实际多久(真机 09-19 是 10.9s) |
+| `launch step: playurl (budget=Nms)` / `launch timeout after Nms (step=…)` | [PlayerScreen.kt](../app/src/main/java/com/kirin/mt/ui/player/PlayerScreen.kt) | **P11-126**:起播预算取到多少、预算耗尽死在哪一步(此前完全静默) |
+| `WEB-SABR 优先:剩余预算 Nms < 45000ms → 跳过` | [YoutubePlaybackResolver.kt](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt) | **P11-126**:预算不足早退是否生效(有没有白烧 harvest) |
+| `harvest forensic(...)` 四行 / `harvest main-doc request headers` | [YoutubeSabrHarvester.kt](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt) | **P11-126**:§1.14 的空壳页取证(见 §3.6 的四条社区线索) |
+
+### 1.10 开关
+
+`youtubeDeliveryPriority`(sabr/dash/websabr,[YoutubeDeliveryPriority.kt:18-29](../app/src/main/java/com/kirin/mt/core/player/YoutubeDeliveryPriority.kt#L18-L29))、
+`youtubeUsePiped`、`pipedInstanceUrl`、`sabrForceSessionVideoItag`([AppSettings.kt:111-128](../app/src/main/java/com/kirin/mt/core/settings/AppSettings.kt#L111-L128));
+TV 入口 [SettingsScreen.kt:1128-1178](../app/src/main/java/com/kirin/mt/ui/settings/SettingsScreen.kt#L1128-L1178),
+移动入口 [MobileSettingsScreen.kt:1252-1281](../app/src/main/java/com/kirin/mt/ui/mobile/settings/MobileSettingsScreen.kt#L1252-L1281)。
+
+### 1.11 空壳页处理:丢实例重建(P11-125)
+
+alpha.61 起 harvest WebView **长期存活复用**(每次直接导航到新 watch 页,靠累积的真实浏览上下文躲风控)。
+P11-125 给这条前提加了健康闸:
+
+| 判据 | 阈值 | 动作 |
+|---|---|---|
+| `onPageFinished` 超时未触发 | `BLANK_PAGE_ABORT_MS = 8s` | fail-fast + `invalidateWebView()` |
+| `onPageFinished` 已触发,但当前文档是 watch 页且主文档 `< EMPTY_DOC_ABORT_CHARS = 20KB` | 完成后 `DOC_LEN_CHECK_DELAY_MS = 1s` 量一次 | fail-fast + `invalidateWebView()` |
+
+- 20KB 的依据:真实 watch 页 `documentElement.outerHTML` 恒 >100KB(kevlar 骨架 + 内联数据),空文档/错误壳只有几十字节。
+- **watch 页闸门**:空壳判据只在 `lastFinishedUrl` 含 `/watch?` 时才生效 —— `stopPlayback()` 会把上个文档硬停到
+  `about:blank`,它的 `onPageFinished` 可能落在新 harvest 的 `loadUrl` 之后(09-19 21:15:44 实测相差 16ms),
+  不设这道闸会把正常重试误判成空壳。
+- `invalidateWebView()` = `stopLoading()` + `loadUrl("about:blank")` + `destroy()` + 清 `webView`/`ready`/`pageFinishedMs`;
+  下次 harvest 走 `ensureWebView()` 重建(重新加载首页建立上下文,即已验证过的冷启动路径)。
+- **边界(诚实)**:Chromium 的网络栈(含 HTTP/2 socket 池)是**进程级**共享的,`destroy()` 只回收本实例的渲染进程与文档,
+  cookie jar / 会话由 WebView 框架持有。若重建后仍空壳,`webView=rebuilt` + 同样取证即可判死「实例层」假设,
+  直接指向网络/风控层 —— 这正是这条改动的第二个作用(把假设变成可判读的实验)。
+
+---
+
+### 1.12 起播预算:按交付档给,不够就早退(P11-126)
+
+真机 09-19 判读:`WEB-SABR 优先` 链的**固定开销**已达 ~21-28s(PO token 铸造 ~9s + player jsUrl/
+signatureTimestamp ~4s + harvest WebView 冷启 4~11s),而 TV 起播原本把整条 launch(resolve + CDN
+选源 + 建 source + prepare)包在一个写死的 **30s** 里 ⇒ watch 页还没开始加载预算就到期,整条 launch
+被取消,连**已经建好的 NewPipe 兜底会话也被一起丢弃**(用户黑屏 ~99s 直至手动退出)。
+
+| 源 / 档 | 预算 | 依据 |
+|---|---|---|
+| B站 / 影视库(TVBox) / IPTV / 红果 / 未知源 | **30s**(不变) | 真机起播实测 1~3s |
+| YouTube `SABR 优先` / `DASH 优先` | **45s** | 铸 token + 抓 player js |
+| YouTube `WEB-SABR 优先` | **90s** | 额外承担 harvest WebView 冷启 |
+
+取值的单一真源:[YoutubeLaunchBudget](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeLaunchBudget.kt)。
+`PlayerScreen` 按 `youtubeDeliveryPriority`(P11-126 起从 AppShell 透传)取值,并把
+`deadlineMs = now + budget` 一路传给 `getPlaybackInfo` → `YoutubePlaybackResolver.resolve`。
+
+三件事都靠这个 deadline:
+
+1. **预算不足早退**:进 WEB-SABR 优先/兜底前先看剩余预算,低于 `MinWebSabrFirstBudgetMs = 45s` 就
+   整条跳过、直接落 NewPipe 主链 —— 不让注定失败的 harvest 白烧 40s+30s。
+2. **harvest 超时收敛**:`harvestSessionMaterial` 的两次尝试从硬编码 `40s`/`30s` 改成
+   `min(硬上限, 剩余 - FallbackReserveMs)`(`12s` 留给兜底落地),剩余不足 `MinHarvestAttemptMs = 3s`
+   干脆不发。
+3. **预算耗尽可见**:`withTimeoutOrNull` 返回 null 时打
+   `launch timeout after Nms (step=…) → Failed(起播超时)`(此前完全静默,只能靠
+   `Timed out waiting for 30000 ms` 的异常栈倒推)。注意 launch 超时**不会**触发自动重试
+   (`onPlayerError` 只在 prepare 之后才可能回调),用户只能手点重试。超时文案也从写死的
+   `起播超时（30s）` 改成带真实秒数 `起播超时（%1$d 秒）`(4 份 locale)。
+
+### 1.13 harvest WebView 启动预热(P11-126)
+
+`YoutubeSabrHarvester.prewarm()` 把那次冷启(建 WebView + 载 `https://www.youtube.com/`)挪到播放之外,
+结束时调 `stopPlayback()` 硬停页面(只丢当前文档,实例/cookie jar/渲染进程保留)。触发点
+`AppContainer.startYoutubeHarvestPrewarm()`(`BiliTvApplication.onCreate` 调用,启动后延迟 **8s**,
+fire-and-forget、失败静默,与 `startIptvSourceProbe` 同款)。
+
+**只在 `youtubeDeliveryPriority == WebSabr` 时做** —— 只有这一档 harvest 在起播关键路径上;
+SABR/DASH 档的 harvest 只做很晚的兜底,不给不用它的用户白起一个 WebView + 拉一次首页。
+**不发** `YoutubeLoadProgress`(全局单例,预热在播放器之外,emit 会留 stale UI 状态)。
+
+并发:`ensureWebView` 的创建点用 `webViewMutex` 串行化(预热会在播放之外并发进入它);
+`webView != null` 时 `prewarm` 直接 no-op。
+
+---
+
+## 2. 失败经验(P11-101 → P11-116)
+
+一天之内 13 轮,每轮都是「改一处 → 云编译 → 真机判读」。**除 P11-111 外,对 nag 全部无效。**
+
+| 编号 | 尝试 | 判读原文 |
+|---|---|---|
+| P11-101 | WEB-DASH 兜底探针 → 发现 `dashManifestUrl` ABSENT 但 `serverAbrStreamingUrl` 在 → 转 WEB SABR 变体;打包 yt-dlp solver | r1921 探针全链通(403 消失),r1923-25 60s 死点仍在:`status=2 → refresh → status=3` |
+| P11-102c | status=2 刷新改 single-flight | 修掉并发互踩;status=3 仍复现 |
+| P11-102d | status=3 终端取证埋点 | 「3 会话不同 token 全死同一 playerTimeMs → **token 无关**」 |
+| P11-103 | 挑战源:移动 UA 抓 watch 页拿不到 `ytAtN` → 三次 mint 全落 `source=create` | 修好后链**真通了**,但 nag 照旧 |
+| P11-104 | 请求体对齐 FreeTube HAR(webShape:clientInfo 砍到 4 字段 / 真实带宽 / 零值省略) | 「请求形状非 nag 判据」 |
+| P11-105 | GenerateIT 裸发(撤 Cookie + X-Goog-Visitor-Id) | 「绑定非 nag 判据」(裸发保留) |
+| **P11-106** | **会话身份全链桌面化**(桌面 ytcfg context 接管 context/clientInfo/UA/cookie/visitor) | 「**身份已生效但 nag 依旧**」 |
+| P11-107 | SABR POST 撤 HTTP Cookie / X-Goog-Visitor-Id 头 | 「HTTP 头非判据」 |
+| P11-108 | 字节级 dump `bodyHex`/`potHex`,与 FreeTube HAR 逐字节 diff | 取证完成,锁定 3 处残差 |
+| P11-109 | 时间语义对齐(不发 f4 / f28 省略 / bwEstimate 恒发) | 「时间语义非判据」→ 判定「剩余唯一未对齐层 = **铸 token 的 VM 环境**」 |
+| **P11-110** | interpreter 改 `<script src>` 标签加载 | 「**VM 加载非判据**」;联网命中 **GoogleVideo#52** |
+| **P11-111** | bufferedRanges 截断到请求段 | **唯一真修**:会话寿命 5-8s → 30s;**但 nag 依旧** |
+| P11-112 | sabrUrl 参数键 dump | 34 键 vs FreeTube 多 **cpn/cver** |
+| P11-113 | 客户端注入 cpn(r1947) | 链路全通,但 WEB 会话 **status=2 ×9 / status=1 ×0** |
+| P11-115 | `/player` 换桌面 watch 页 cookie/visitor | 真机判死(见 §3):`cookieOv=547B` 生效,但 **status=1 ×0**、sabrUrl 仍缺 cpn/cver |
+| P11-116 | **pot-less 判别实验** | 仍 nag → token 洗清(见 §3) |
+
+### 2.1 已证伪的假设(别再走)
+
+> **⚠️ 2026-09-20 晚修正(P11-146,复核日期 2026-09-20)**:本清单是 **P11-101→116 期间**攒的,而那段时期 `status=2` 的
+> **同步刷新带着未解码的 bug**(P11-141 修)。凡涉及 token 的条目都要重核 —— 尤其下面第一条。
+> 当日实测反证:harvest 页铸的 token(r1992/r2002/r2030 三场)拿 `status=1`;我们自铸的 token
+> (同 87B,r2008/r2028/r2030)第一笔就被判 `status=2` ⇒ **token 来源确实是判据**。
+
+| 假设 | 原判据 | 复核(P11-146 起) |
+|---|---|---|
+| ~~**「token 内容不对」**~~ | P11-105/106/109/110 逐层对齐后仍 nag;P11-116 pot-less 与会话带 token 响应**逐字节一致**;外部 GoogleVideo#52 | **已推翻(2026-09-20)**:上述证据全在**刷新未解码年代**;P11-141 修好后当日出现「材料 token → `status=1`×100/媒体块 115」与「自铸 token → 首笔 `status=2`」并排对照 ⇒ 现状按「**铸造上下文(页面 `EVENT_ID`)决定 token 是否被当占位**」处理(§5.9.6 调研) |
+| 「身份/UA/cookie/visitor 混搭」 | P11-106 全链桌面化已生效仍 nag;P11-107 撤 HTTP 头无效;P11-115 换桌面 cookie/visitor 无效 | 未复核(需重跑;当时同样处于刷新 bug 期) |
+| 「请求体形状/时间语义」 | P11-104 / P11-109 字节级对齐后仍 nag | 未复核 |
+| 「VM 加载方式」 | P11-110 `<script src>` 生效仍 nag | 未复核 |
+| 「cpn 缺失」 | P11-113 注入后 `status=2`×9 | 未复核(cpn 对窗口/寿命有用,非 nag 解药) |
+| 「n/s 未解密」 | P11-101 solver 已让 403 消失 | 仍成立(确实修好了) |
+| 更早(alpha 时代) | 桌面 VM 指纹 polyfill、`VISITOR_INFO1_LIVE` 配对、GenerateIT 带 cookie 绑定、WEB_EMBEDDED、正则 n 方案等 | 未复核,见 [youtube-hd-playback.md](youtube-hd-playback.md) §6.7 |
+- **「请求体形状/时间语义」**:P11-104 / P11-109 字节级对齐后仍 nag。
+- **「VM 加载方式」**:P11-110 `<script src>` 生效仍 nag。
+- **「cpn 缺失」**:P11-113 注入后 WEB 会话 status=2 ×9(注:cpn 对 ~60s 窗口/会话寿命有用,但不是 nag 的解药)。
+- **「n/s 未解密」**:P11-101 的 solver 已让 403 消失(这条确实修好了,不是 nag 的原因)。
+- 更早被证伪的同类假设(alpha 时代,不同症状):桌面 VM 指纹 polyfill、`VISITOR_INFO1_LIVE` cookie 配对、
+  GenerateIT 带 cookie 绑定、WEB_EMBEDDED 客户端、正则/URL-class n 方案等(见 [youtube-hd-playback.md](youtube-hd-playback.md) §6.7)。
+
+### 2.2 反例:曾经推翻过的"定论"
+
+文档里有些「已证伪」后来本身被推翻,引用旧结论前先核日期:
+alpha.13「sabrUrl=ABSENT → SABR 方向关闭」(实为 snake_case 假阴性)、alpha.83「itag248 误分类」、
+「60s 会话窗口是硬约束」(实为上报缓冲量 vs 墙钟进度不匹配,P11-111 修)、
+「4K 两路全堵、接受 ≤1080p」(被 DASH 直链第三条路推翻)。
+
+---
+
+## 3. 决定性实测(2026-09-15 / 09-16)
+
+### 3.1 pot-less 与会话带 token 逐字节一致(P11-116)
+
+| 请求 | r1949(会话带 token) | r1950(pot-less) | 服务端状态 |
+|---|---|---|---|
+| rn=3 | pot=89B → 3542048B | pot=0B → 3542048B | status=2 |
+| rn=4 | pot=89B → 3051373B | pot=0B → 3051373B | status=2 |
+| rn=5 | pot=124B(刷新后) → 2233871B | pot=124B(刷新后) → 2233871B | status=2 |
+| rn=6 | pot=124B → **71B** | pot=124B → **71B** | **status=3(终态)** |
+
+- 三份日志里 `STREAM_PROTECTION_STATUS status=1` 出现次数 = **0**;`status=2` 恰好 3 次后第 4 个响应必升 `status=3`,4/4 会话一致。
+- ⇒ nag 与终态**都不是 token 触发的**;`status=2` 是"未通过 attestation"的常态,`status=3` 是服务端对 3 次未响应 nag 的处决。
+
+### 3.2 同日对照:visionOS 主路干净(P11-115/116 的判死依据)
+
+`logs_live_20260916_094251.log`(dev.r1950,SABR 优先档):
+
+- **status=1 ×24 / status=2 ×2 / status=3 ×0 / RELOAD ×0 / Playback error ×0**。
+- 其中一段就是 WEB-SABR 反复失败的那个门控视频 `KXXZbbnm9t0`(startPos=59000 续播):首帧 09:41:12,连续播到日志末尾(~100s+),
+  `shape=libre pot=0B`(**不带 token**);候选档含 1440p(271)与 2160p(313),ABR 末段稳在 1080p VP9。
+- ⇒ 同样的服务端、同样的网络,**visionOS 会话不带 token 反而 `status=1`** —— 说明 status 与"我们铸的 token"无关,
+  更可能与**客户端身份/服务端策略窗口**有关。
+
+### 3.3 与 09-15 晚的对比(必须知道的抖动)
+
+09-15 晚同一门控视频在 visionOS 主路**几乎每次都挂**(起播 2~6s 内 `RELOAD_PLAYER_RESPONSE`,seg=0 init 段);
+09-16 早同一构建全通。`RELOAD_PLAYER_RESPONSE` 的语义是 "streams expired or new config",**随服务端配置/时效抖动**,
+不是可稳定复现的代码缺陷。判「主路是否健康」必须看当天日志。
+
+### 3.4 2026-09-19:harvest 整场零捕获(采集腿全废,非代码回归)
+
+日志 `logs_live_20260919_211811.log`(debug **r1979**,BRAVIA_AE2,「WEB-SABR 优先」档,三次 resolve / 两个视频)。
+
+**症状**:整场 `captures=[1-9]` **0 次**、`USING HARVEST MATERIAL` **0 次**;每次 PAGE diag 恒为
+`title=`(空)`body=NOBODY player=false vp=540x960 captures=0`。
+
+**判据一:页内 JS 一行没跑。** 09-17 正常那次(21:34)首页加载时能看到 YouTube 自己的 console
+(`LegacyDataMixin…@…/ytmainappweb…/kevlar_base…js`)、`PLAYERREQ`/`PLAYERRESP`、`gv req method=POST itag=? sabr=true`
+→ `captured SABR POST status=200`;09-19 这些**一条都没有**(只剩我们自己的 PAGE diag),`gv req` 零条 ——
+即文档拿到了、页内脚本从未执行,所以播放器没 init、不会发 SABR POST。
+
+**判据二:chromium 的 HTTP/2 会话被搞坏。**
+
+| 日志 | `spdy_session.cc:2997 Received HEADERS for invalid stream` |
+|---|---|
+| 09-16 r1962(正常) | 2 |
+| 09-17(正常) | **0** |
+| 09-19 r1979(失效) | **48** |
+
+**判据三:首页那次 `onPageFinished` 从未触发** —— 21:15:07.837 `onPageStarted: https://www.youtube.com/`,
+直到 12.2s 后的兜底超时才返回;watch 页要么 3s「完成」却给空文档(21:15:23.043),要么 8s 都不完成走 fail-fast。
+
+**判据四:harvest 代码这次没动过** —— [YoutubeSabrHarvester.kt](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt)
+最后一次改动是 09-16 `f30a4b07`(P11-118c);同机同码 09-16/09-17 能出材料;同一进程启动时(21:12)另一个 WebView
+(`YtBrowserSession`)还能正常读到 visitorData/cookies。⇒ **09-19 那天这台电视的 WebView 通路坏了**,与我们的改动无关。
+
+**回退自造材料那条腿当天同样不健康**:
+
+- 视频 `qINttM4fKZo`:三次 `/player` 全部在 `WEB-SABR identity` 之后 **1ms** 内 `WEB /player failed → abort`,
+  且 `postJson` 的诊断行一次都没打出来(异常抛在打日志之前),再被 `postPlayer` 的 `runCatching` 吞成一句**没有 message** 的失败。
+- 视频 `5VmXkcTH4G8`:第 4 次 `/player` 成功、会话也建起来了(21:17:29 `WEB-SABR playback ready`),
+  但**首个媒体段被服务端饿死**:rn=0 返回 104B、rn=1/rn=2 各 11B(只有一条无用的 `part type=67`),
+  音频段 7.6s、视频段 **13.4s** 才回来 ⇒ prepare → 首个视频段共 **27s**。用户 21:17:54 退出,视频 21:17:56 才到 = 真机黑屏。
+
+**对策(P11-125)**:埋点 + 空壳页丢实例重建,见 §1.9 与 §1.11。
+
+### 3.5 2026-09-19 二次判读:真正的「播放不出」是起播预算,不是 WEB-SABR
+
+`logs_live_20260919_214431.log`(r1980+,WEB-SABR 优先档,视频 `qINttM4fKZo` 续播 644s)。P11-125 加的
+异常埋点**一次就定案**:
+
+```
+21:42:34.386 harvest failed: Timed out waiting for 30000 ms
+21:42:34.396 WEB-SABR identity: …
+21:42:34.399 postPlayer WEB viaWebView=false failed after 0ms
+        (TimeoutCancellationException: Timed out waiting for 30000 ms) → 抛给调用方
+```
+
+`after 0ms` + `TimeoutCancellationException` = **父协程已被取消** —— 不是网络失败、不是身份/参数。
+上一份日志里三次「1ms 内 `/player` 失败」是同一个原因。父协程是 `PlayerScreen` 的
+`withTimeoutOrNull(LaunchTimeoutMs = 30_000)`,从 21:42:04.377 起算、21:42:34.386 到期。
+
+后果:resolve 恢复时抛取消异常 ⇒ `launch step:` **只到 `playurl` 就没了**(正常应有
+`cdn → prepare → BUFFERING → READY`),而 21:42:40.060 **已经成功建好的 NewPipe SABR 兜底会话**
+因为协程已死而无人消费 ⇒ 用户从 21:42:34 黑屏到 21:44:13 手动退出,**约 99s**。
+`?: Failed(player_error_launch_timeout)` 会显示「起播超时(30s),请重试」,且 launch 超时**不触发
+自动重试**,只能手点。修法见 §1.12(预算按档 + 不足早退 + 耗尽可见)与 §1.13(预热)。
+
+**空白页取证(新埋点)**:watch 页 `dl=39 rs=complete ytcfg=false title=` 空 —— 39 字符正好是空骨架
+`<html><head></head><body></body></html>`(6+6+7+6+7+7);而**同一分钟 OkHttp 抓同一 watch 页得
+1,437,481B 完整页**(21:42:07.071 `YtBotGuard: watch page data: ytcfg=true ytAtN=true ctx=true
+(page=1437481B)`)⇒ **服务端对我们没关门,是 WebView/Chromium 那一路取不到 youtube.com 内容**。
+WebView 提供方/版本自 09-16 未变(`com.sony.dtv.b2b.webview 1.0.2 code 6`,09-16 正常时也是它),
+两条路径 **UA 完全一致**(`YoutubeConstants.UserAgent` 桌面 Chrome 126)⇒ UA 字符串不是差异点。
+
+**P11-125 的行为改动本次仍未验证**:`onPageFinished`(21:42:34.437)比父预算取消(34.386)晚 51ms,
+harvest 已死,空壳分支与新的取证探针都没机会跑到 —— 这也是 §1.14 的取证探针要包
+`withContext(NonCancellable)` 的原因(取消态下普通 suspend 点会直接抛,证据永远打不出来)。
+
+### 3.6 社区线索(2026-09-19 检索,用于 §1.14 取证设计)
+
+FreeTube 侧(`v0.25.2` → `v0.25.3`,2026-08-11 / 08-28):
+
+- **bgutils-js 3.2.0 → 4.0.2**(#9490)—— 我们捆的是 **v4.0.3**(见
+  [youtube-hd-playback.md](youtube-hd-playback.md) §6.6),已对齐,不是缺口。
+- **watch 页拿不到时回退用首页**取 poToken challenge data / ytcfg / playerId(#9637,关 issue #9632
+  「Could not find ytcfg in the HTML page (**CAPTCHA page**)」),理由原文:*"The YouTube home page
+  seems to work when the watch page is returning captchas."* 官方 NOTE:*"as long as YouTube requires
+  us to use information from the HTML page, there will always be a chance that YouTube will return a
+  CAPTCHA page instead."*
+  **不能直接搬**:FreeTube 只要 ytcfg + challenge 就能自己铸 token 取流;我们的 harvest 腿必须让
+  watch 页**真的播起来**才能截到 SABR POST,首页给不了这个。
+- SABR redirect 没更新实际在用的 SABR URL(#9689)—— 记下备用。
+
+更贴近我们 39 字节症状的两条(社区):
+
+- **`Sec-CH-UA` 客户端提示与 UA 不一致**:Android WebView **会自动发送** Client Hints
+  (`Sec-CH-UA: …"Android WebView"…`、`Sec-CH-UA-Mobile: ?1`、`Sec-CH-UA-Platform: "Android"`),
+  **即使 UA 被覆盖成桌面字符串也一样**;机器人检测读这些,静默回空壳。且
+  **`shouldInterceptRequest` 改不了、WebView 也没有 API 能覆盖/抑制 Sec-CH-UA**。
+  → 与我们的现象高度吻合(WebView 身份自相矛盾 vs OkHttp 只有 UA 头、身份自洽)。
+- **consent / 拦截壳**:有实测记录「HTTP 200、586KB、零视频」的空壳,补 `CONSENT=PENDING+987` +
+  `SOCS=CAI`(免登录)可拿回真 payload。我们的采集 WebView 用自己的 cookie jar,是否带这两个 cookie
+  从未查过。
+- **UA 尾部 `; wv)`**:部分机器人检测专挑这个 token 静默剥内容。我们显式覆盖了 UA,理论上没有,但需实测确认。
+
+**本轮决定:只取证不改行为** —— 先把 §1.14 的四组数据拿到,再定用哪条修法(consent cookie 注入 /
+身份自洽 / 换实例)。
+
+### 1.14 空壳页取证探针(P11-126)
+
+`FORENSIC_JS` + `runForensicProbe(view, reason)`,在三处出口都调(onPageFinished 未触发 /
+已触发但主文档 <20KB / 轮询到期),均在 `invalidateWebView()` **之前**。整段包
+`withContext(NonCancellable)` —— 父预算取消时普通 suspend 点会立刻抛,证据就打不出来(§3.5 的教训)。
+
+| 探针字段 | 判什么 |
+|---|---|
+| `dl` / `head`(前 240 字符) | 那 39 字节到底是什么(39 == 空骨架) |
+| `enc` / `tr` / `dec`(`performance` 导航条目) | **决定性**:`enc≈1.4MB` 而 `dl=39` ⇒ 服务端发了、文档是空的(解析/渲染层);`enc≈39/0` ⇒ 服务端/链路真没发内容 |
+| `ua` + `uadBrands`/`uadMobile`/`uadPlatform` + `__forensicUad`(高熵) | UA 与 Client Hints 是否自相矛盾 |
+| `__forensicFetch`(页内同源 `fetch('/robots.txt')`) | 「导航路径坏」还是「WebView 网络整体坏」 |
+| `harvest main-doc request headers`(Kotlin 侧,`shouldInterceptRequest` 打一次) | 同一时刻的请求头旁证(注:客户端提示不一定在此层可见,权威是 JS 侧) |
+| `harvest forensic … cookie jar: socs=/consent=/visitor=` | 这两个 consent cookie 到底在不在 |
+
+---
+
+## 4. 当前未打通的关键点(占位 / 桩 / 死代码 / 口径不一致)
+
+> **口径更新(2026-09-20,见 §5.6)**:本表是「全移动」之前的清单。其中「桌面身份」相关项(#5/#8/#9 的身份口径、以及被当作材料 token 来源的桌面挑战链)已随 P11-127 作废;下表保留作历史与后续清理参考。
+
+| # | 位置 | 问题 |
+|---|---|---|
+| 1 | [YoutubePlaybackResolver.kt:1982-1986](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1982-L1986) | **pot-less 实验硬编码**(`fromSabrData(sabrUrl, "", …)`),无开关;要做带 token 的对照必须先改回 |
+| 2 | [YoutubeBotGuard.kt:576-586](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L576-L586) | `contentBinding`(`b=PLACEHOLDER&hh=PLACEHOLDER`)是占位;但 **FreeTube 无此物**(bgutils 只编 videoId 字节),且我们自己的 [bgutils.js:406-408](../app/src/main/assets/youtube/bgutils.js#L406-L408) 收下就丢 → **死代码,不是缺口**,别再追 |
+| 3 | [BiliTvPoTokenProvider.kt:53-69](../app/src/main/java/com/kirin/mt/core/youtube/newpipe/BiliTvPoTokenProvider.kt#L53-L69) | `getWebEmbedClientPoToken` / `getAndroidClientPoToken` / `getIosClientPoToken` **恒 null(未实现)** → 门控视频直链必 403(P11-99b 根因) |
+| 4 | [YoutubePlaybackResolver.kt:1999-2005](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1999-L2005) | WEB-SABR **未接 `sabrForceSessionVideoItag`**(只有 Piped 路径传) |
+| 5 | [YoutubePlaybackResolver.kt:732](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L732) vs [YoutubeBotGuard.kt:212](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L212) | **UA 口径不一致**:挑战/身份页用桌面 UA,抽 base.js 的 `resolvePlayerJsUrl` 仍用移动 UA(solver 输入与身份不同源) |
+| 6 | [SabrStreamRegistry.kt:96-128](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrStreamRegistry.kt#L96-L128) + [YoutubePlaybackResolver.kt:1160-1210](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1160-L1210) | RELOAD 闭环**半截**:单槽 parking / `consumeReloadTokenSlot` / `buildSabrSessionFromReloadPlayer` 无生产消费方(已被「首次 RELOAD 直接抛」取代) |
+| 7 | [YoutubeNDecryptor.kt:17-39](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeNDecryptor.kt#L17-L39) | 已证伪的旧 n 方案本体保留(仅诊断探针调用),属死代码 |
+| 8 | [InnerTubeClient.kt:68-79](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt#L68-L79) / [buildWebViewHeaders:579](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt#L579) / [YoutubeBrowserSession.kt:163](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBrowserSession.kt#L163) | **桌面身份从未上线(本轮新发现,最重要)**:`postJson` 的 UA 恒为 `client.userAgent`(WEB→`MobileUserAgent`),`postPlayer` 只有 context/cookie/visitor 三个 override **没有 uaOverride** → 桌面 UA 无入口;Cookie 被 `fetchViaWebView` 丢头 + Fetch 禁止头双保险失效 ⇒ P11-106/107/115 证明的是「桌面 **body context** 无关」,**不是**「桌面身份无关」 |
+| 9 | [YoutubeBotGuard.kt:377-423](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L377-L423) | `/att/get` **与挑战不同源**:挑战来自 OkHttp 桌面 UA 抓的 watch 页,兑换用 `postJson(client=WEB)` 默认移动身份 + 合成 context;且该端点**零日志**(diag 门只开 `/player`) |
+
+---
+
+## 5. FreeTube 对齐缺口审计(2026-09-16,对源码逐行核)
+
+审计对象:本地克隆 `E:\GITHUB\FreeTubeMt` @c210eca20(桌面)、`E:\GITHUB\FreeTubeAndroid` @5d486ad88。
+结论:**铸造那一段基本对齐了,差的全在它周围**。
+
+### 5.1 真缺口(结构性)
+
+**G-1 挑战来源与身份(走偏最大的一处)**
+FreeTube 的整个铸造流程只有 85 行([botGuardScript.js:11-85](../../FreeTubeMt/src/botGuardScript.js#L11-L85)),挑战**只从 `/att/get` 拿**:
+
+```
+POST https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false&alt=json
+headers: Accept, Content-Type: application/json,
+         X-Goog-Visitor-Id: context.client.visitorData,
+         X-Youtube-Client-Version: context.client.clientVersion,
+         X-Youtube-Client-Name: '1'
+body:    { engagementType:'ENGAGEMENT_TYPE_UNBOUND', context }   ← 完整 context,没有 eacrToken
+```
+
+我们([YoutubeBotGuard.kt:377-423](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L377-L423))三处不同:
+①**优先级反了**(我们「页面 bgChallenge 优先 → att/get → create」,FreeTube 是 att/get 唯一);
+②**body 不同**(我们发 `{engagementType, eacrToken}`,FreeTube **没有 eacrToken 这个字段**);
+③**头不同**(缺那三个 `X-Goog-*`/`X-Youtube-Client-*`,context 由 postJson 注入的是合成移动身份)。
+而且 FreeTube 传进铸造脚本的 `context` **就是 `/player` 用的同一份对象**([local.js:445-448](../../FreeTubeMt/src/renderer/helpers/api/local.js#L445-L448))
+—— **一份 context 贯穿三段**;我们四段四个身份。
+
+**G-2 桌面身份从未上线** —— 见 §4 第 8 项。`postJson` 没有 UA override 入口、`fetchViaWebView` 丢 Cookie 头 ⇒
+P11-106/107/115 证明的是「桌面 **body context** 无关」,不是「桌面身份无关」。
+**反向证据**:唯一一次桌面 UA 真上线 = alpha.20-26 harvest(桌面 UA 真 WebView),也是**唯一跑通过 `status=1`** 的配置。
+
+**G-3 身份一致性的机制不同**
+
+| | FreeTube | 我们 |
+|---|---|---|
+| 一致性靠什么 | **同一个 context 对象**序列化传给铸造脚本 + UA 从 `defaultSession` **拷贝**给铸造分区([poTokenGenerator.js:91](../../FreeTubeMt/src/main/poTokenGenerator.js#L91)) | 无。四段各自取身份 |
+| cookie 罐 | 铸造跑在 `partition('potoken', cache:false)`,**故意 cookie-less**,每次 `clearData()`;`/player` 用 defaultSession 真实 cookie | 进程级全局 jar,桌面身份从未写进去 |
+| 铸造环境 | 每次新建 `WebContentsView`(offscreen)+ `Emulation.setDeviceMetricsOverride` 1920×1080 **mobile:false**,UA 桌面 | 常驻单例 WebView,移动 UA,壳页 |
+
+形态判据:**FreeTube 桌面 = 全桌面,安卓版 = 全移动**(安卓 `local.js` 用 `navigator.userAgent` 当 `user_agent`);
+**我们曾是"混合"**(移动铸造 + 桌面会话),两边都不是。
+→ **2026-09-20 已按「全移动」收敛并打通,见 §5.6**(采集页/`/player`/会话 clientInfo 全部原生 Android;`clientName` 仍保持 1 以免动请求形状)。
+
+**G-4 interpreter 加载方式** FreeTube HEAD 用 `new Function(interpreterJavascript)()` **eval**
+([botGuardScript.js:48-56](../../FreeTubeMt/src/botGuardScript.js#L48-L56));我们 P11-110 改成 `<script src>` 并自称对齐 FreeTube —— 对齐的是旧版。
+
+### 5.2 行为差异(不是缺口,方向相反)
+
+| 项 | FreeTube | 我们 |
+|---|---|---|
+| `status=2` | **完全忽略**,只对 `status===3` 反应(→ CRITICAL → 整页重载) | 同步刷新 token(P11-68/102c) |
+| `bufferedRanges` | **不截断**:当前流报真实缓冲,另一条流塞 `MAX_INT32` 假满区间(明确告诉服务端"别发这条") | 截断到请求段前一档(P11-111,**对齐的是 PipePipe 不是 FT**) |
+| SABR POST 的 `Content-Type` | 发 `application/x-protobuf`,但被自己的 webRequest 钩子 `delete` 掉 | 照发 |
+
+### 5.3 我们做过、FreeTube 没有的东西
+
+| 我们的做法 | FreeTube | 结论 |
+|---|---|---|
+| `contentBinding`(`c=…&b=PLACEHOLDER…` + `e=…`) | **无此物**(只 `TextEncoder().encode(videoId)`) | 死代码(我们的 bgutils 已忽略该参数) |
+| 抓 watch 页解析 ytcfg | **无此物**:ytcfg 由 youtubei.js 从 `sw.js_data` + `POST /youtubei/v1/config` 拿 | 自创路径 |
+| 页面 bgChallenge 优先 | 只用 `/att/get` | 自创 |
+| 给 SABR URL 补 `cver` | **无此物**(youtubei.js decipher 的行为) | **纠正 §5 旧版**:不是 FT 的缺口 |
+| 桌面 VM 指纹 polyfill | 无(只设 1920×1080/mobile:false) | 已移除,别再动 |
+
+### 5.4 确认已对齐(别再改)
+
+`GenerateIT` 的 URL / 三头 / body 形态 / `x-goog-api-key` 值(`AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw`)/
+`RequestKey`(`O43z0dpjhgX20SCx4KAo`)—— 与 [YoutubeBotGuard.kt:604-605](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt#L604-L605) **逐字相同**;
+`snapshot` 不带 contentBinding、`mint` 用 videoId;SABR `clientInfo` 只 4 字段(FT 也是 4);SABR POST 不带 Cookie/`X-Goog-Visitor-Id`;`/player` body 不带 cpn。
+
+### 5.5 一个最便宜的判别实验(从没做过)
+
+FreeTube **从不刷新 token**(单 token 全程,只绑 videoId),我们却把「status=2 刷新」当核心机制在修(P11-68/102c)。
+而 P11-116 的 pot-less 实验**不干净**:会话中途在 status=2 时**冒出一个新 token**,那是 FreeTube 绝不会做的动作。
+判别法:铸一次 → 全程沿用(关掉 status=2 刷新)→ 看第 4 个响应还升不升 `status=3`。若不再升 ⇒ **我们自己把 nag 升级成了处决**。
+
+---
+
+### 5.6 2026-09-20 全移动:身份自洽 → `status=1` + 2160p(已打通,P11-127)
+
+**结论先行:这条线通了。** 09-20 真机(`logs_live_20260920_091404.log`,`dev.r1992`,Sony XQ-EC72,WEB-SABR 优先档):`status=1` ×10 / `status=2` ×0 / `status=3` ×0;会话 18 轨含 **2160p**;单会话 09:12:40 连播到 09:14:38 用户退出(**~2 分钟**),`InvalidPoToken` / `auto-retry` / `playback error` / `stall detected` **全部零行**。
+
+**怎么破的(单变量:身份)** —— 把 §5.1 G-3 判出的「混合身份」整条换成**原生 Android 移动**,四处同源:
+
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| 采集 WebView UA([YoutubeSabrHarvester.kt:391](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L391)) | 桌面 Chrome(Win64) | `MobileUserAgent` |
+| 采集页 cookie seed | 只写 `www.youtube.com`(**host-only**) | 补写 `m.youtube.com`(移动 UA 会 302 过去) |
+| `/player` 四个 override(`context`/`cookie`/`visitor`/`ua`) | 桌面 ytcfg context + 桌面 cookie/visitor + 桌面 UA | **全撤** → 落 `Client.WEB.userAgent` + `currentVisitorData()` + `currentSessionCookies()` + `buildContext(WEB)`(osName 来自移动 `sw.js_data`=Android) |
+| SABR 会话 `clientInfo` / UA | `webDesktopSabrClientInfo`(clientName=1 + osName=**Windows**)+ 桌面 UA | `sabrClientInfo()`(clientName **仍=1**,osName=**Android**)+ 移动 UA;删掉 `webDesktopSabrClientInfo` |
+| WEB-SABR 的 token 来源 | `botGuard`(桌面 watch 页取挑战 + `/att/get` 桌面 ctx) | **移动 minter**:`biliTvPoTokenProvider.ensureWebToken` = `PoTokenWebView`(SABR 主链同款,带缓存) |
+
+> **⚠️ 2026-09-20 晚更正(P11-149,复核 `logs_live_20260920_091404.log`)**:上表这行指的只是
+> **解析器 / `/player` 那次请求**用的 token。**r1992 那场的会话本身是「材料会话」**
+> (`WebView harvest` 采到的 POST → `SabrSession(bytes/harvest)`,会话 token = **harvest 页铸的 87B**,
+> 日志原文 `USING HARVEST MATERIAL po=87B` + `SabrSession(bytes/harvest)`)。
+> 原文没区分「解析器 token」与「会话 token」,曾直接导致把 r1992 误读成「自造会话曾打通」——
+> 引用本节请以「**材料会话 + 页面 token**」为准(§5.9.7 场次对照表)。
+
+
+**为什么必须这样**:
+1. **Android WebView 覆盖 UA 改不了 Client Hints** —— `Sec-CH-UA-Platform` 恒 `"Android"`、`Mobile: ?1`,应用层**无 API 可覆盖/抑制**(本文件 §1.14 与 [YoutubeSabrHarvester.kt:460-462](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L460-L462) 早已记录)。桌面腿真机实证同一请求里 `UA=Windows NT 10.0` + `sec-ch-ua-platform="Android"` —— 「桌面身份」必然自相矛盾。FreeTube 桌面能全桌面是因为 Electron 有 `Emulation.setUserAgentOverride`+`userAgentMetadata`+`setDeviceMetricsOverride`,Android 应用拿不到这层。
+2. **移动 UA 下 watch 页 302 到 m.youtube.com 且页内无 `ytAtN`**(§1.9 / P11-103)→ 桌面那条「页面取挑战 + 桌面 ctx 兑换」的 token 链在移动世界**结构性不存在**,必须换成本来就是移动的那枚 minter。
+3. **`clientName` 保持 1 是刻意的**:[SabrMediaFetcher.kt:653](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L653) 的 `webShape = clientInfo.clientName == 1` 决定请求形状(4 字段 clientInfo + 不发顶层 `playerTimeMs`)。身份与请求形状是两个变量,一次只动一个。
+
+**判读关键:采到的是「冷启桩」还是「真 token」**(§4 表的坑,现已绕开)。移动站播放器会连发多个 SABR POST:**首个带的是 cold-start 占位 token** —— 10 字节 = `0x22(34) 0x08(8) + 8B header`、identifier 长度 0(即 BgUtils 的 cold start 包格式),只在 `sps`(**StreamProtectionStatus**)`=2` 时有效;真 token 真机实测 **87–88B**。桌面腿恒抓到 10B 桩 ⇒ 会话 `status2Seen=0`、**第一个请求就被判死**。修法:采集改判 `poToken ≥ 80B` 才「命中即返回」,只拿到桩就再等 6s(`STUB_GRACE_MS`)找真 token、到期再退桩([YoutubeSabrHarvester.kt:333](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt#L333),`poTokenLenOf` 复用 `SabrProto.decodeVideoPlaybackAbrRequest`)。
+
+**同时重新启用了 status=2 同步刷新**:P11-117 曾**故意**给 WEB-SABR 传 `refreshPoToken = null`(对齐 FreeTube「只对 `status===3` 反应」)—— 那是「桌面会话 + 移动铸 token」错配年代的决定,重铸了也不同源,刷了没用。身份统一后改回移动 minter 回调(与 SABR 主链同一枚;同步语义由 alpha.67/68 保证,P11-102c single-flight 防并发抢占)。**注意**:09-20 那轮服务端全程未 nag(`status=2` 零次),所以**这条回调整体尚未被真机触发验证**,它是「下次 nag 时的兜底」。
+
+**残留(已记录,未修)**:
+- **服务端 60s 级按会话处决仍在**:同日早先一轮(`logs_live_20260920_071935.log`)`hOv8` 会话 `status2Seen=5`(服务端从第 2 个响应起一路 nag)后播到 `sessAgeMs=35557` 升 `status=3`(回包仅 **135B**、无媒体)→ evict → ExoPlayer Source error → auto-retry @pos=63383ms(用户体感「能播但 ~60s 重载一次」);而**重新采集的新材料**建的会话立刻又是 `status=1` ⇒ 与「材料形态/身份」无关,是服务端策略,靠 status=2 刷新或提前轮换应对。
+- **页面客户端是 MWEB,我们是 WEB**:`harvest ident host=m.youtube.com cfgName=MWEB cfgVer=2.20260918 cfgOs=Android`,而会话 `clientName=1`。材料与会话**不同客户端**却能 `status=1` ⇒ 这一层不是判据;若日后需要单开一轮评估 MWEB(必须连带验 `webShape` 翻 false 后的请求形状,不能和身份改动混判)。
+
+---
+
+### 5.7 2026-09-20 下午:同一残留**升级**为「必死」+ 运行时判死标记补齐(P11-138)
+
+**现象**:`logs_live_20260920_151317.log` / `_151843.log`(`dev.r2008`,同机同视频)。WEB 会话**每会话第 2 笔**
+就被 nag:实测 `rn=0`(`pot=88B`)→ `status=1`;`rn=1`(`pot=88B`,cookie=true)→ **`status=2`**
+(`sessAgeMs≈5.5s`)→ 同步重铸 → `rn=2` 起 `pot=208B` → **`status=3`** 每笔死 → evict → 新会话原样重演。
+整场 **0 个媒体段**。各版 status 分布对照,能播与否一目了然:
+
+| 版本 | 成功段 | status=1 | status=2 | status=3 |
+|---|---|---|---|---|
+| r2002 | **115** | 100 | 0 | 0 |
+| r2003 | 47 | 44 | 1 | 7 |
+| r2006 | 108 | 88 | 1 | 7 |
+| r2008 | **0** | **6** | **3** | **21** |
+
+**这是 §5.6「残留」的升级,不是新根因**:失败态 diag 在 r2003/r2006/r2008 **三版逐字段一致**
+(`sessAgeMs≈5.5s / sessReqN=2 / pot=208B / ctxActive=0 ctxStored=0 / unhandled=47x2,52x1,53x1`)
+⇒ 机制相同,只是 §5.6 那轮是「能播但 ~60s 重载一次」,这轮退化成「一次都不播」。
+
+**同一份日志里的对照(用户观测「SABR 可以,WEB-SABR 不行」的机器侧证据)**:15:18:24 起换成
+pot-less 主路(`shape=libre`、**`pot=0B` 完全不带 PO token**、cookie=true)→ 一路 `status=1`,
+15:18:26→15:18:29 **连续 20 段成功**。即:**WEB 形状必须带 token,而它带的 token 被服务端拒;
+pot-less 那条不带 token,反而不被判死。**
+
+**循环的真原因(本 commit 修的)**:`markWebSabrFailed` 机制本来就有,但差两处:
+
+1. 它此前**只在「构建失败」时**被调(`buildWebSabrFallback` 返回 null)。今天构建从没失败(harvest 每次
+   都交出 88B),所以标记从未置位。**已补**:fetcher 运行时撞 `InvalidPoToken status=3` 且
+   `session.clientInfo.clientName == 1`(WEB 会话)时也置标记([SabrMediaFetcher.kt](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt)
+   的 status=3 抛出点)。只在 WEB 会话上标,pot-less 主路的 status=3 另有原因,不连坐。
+2. **`webSabrFirst` 那条分支不查标记**([YoutubePlaybackResolver.kt](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt)
+   的 `if (webSabrFirst && poToken != null && !webSabrFirstBudgetShort)`)—— 只补 fetcher 侧会漏掉它,
+   「WEB-SABR 优先」设置下仍会建成功→clear→运行时死→标记→**本次仍重试**→建成功→clear→… 无限循环。
+   **已补**:加 `isWebSabrFailed(videoId)` 守卫,与下方 `webSabrDue` 分支同款。
+
+**修后的时序**:建成功→clear→运行时死→**标记**→下次 resolve 跳过 WEB-SABR → 落 NewPipe pot-less 主链
+(今天的实测可播路径)。效果:把「无法播放」变成「第一次失败后自动换到能播的路」。
+
+**仍待解决(未动)**:服务端为何在这轮把 WEB 会话的处决提前到第 2 笔。候选方向与 §5.6 同:材料形态/身份
+已被那轮否定(「重新采集的新材料建的会话立刻又是 status=1」),指向服务端策略 + 会话轮换;而 §5.6 记的
+「status=2 同步刷新回调**尚未被真机触发验证**」这轮被触发了 —— 刷新后的 208B token 依然被判 invalid,
+说明**重铸这条兜底在当前形态下是无效的**。这条要单开一轮。
+
+---
+
+### 5.8 2026-09-20 晚:为「把 WEB-SABR 走通」补的取证工具 + 一条分岔判据(P11-139)
+
+> 起因:§5.7 的处置是「失败即自动换到 pot-less」——那是**绕开**;用户要求的是**走通**。
+> 要把 WEB 走通,先得能**看清**两边字节差在哪。动手前查工具,查出三处**结构性缺陷**(都不是逻辑
+> bug,是「看不到」)。
+
+| # | 缺陷 | 证据 | 修法 |
+|---|---|---|---|
+| ① | 我们的 `WEBREQDUMP` 被 **logcat 单行上限截断** | 真机 hex **3851 字符(奇数 = 半截)**,丢掉的正是 body **最后**的 `streamerContext`(clientInfo / poToken / playbackCookie = **身份段**)——恰恰是「能通 / 必死」最可能的差异所在 | 改**分片** dump:~1800 字符/行 + `part=i/n`,首片带 `potHex`;旧 grep 仍命中首片 |
+| ② | **浏览器那份 body 的内容根本不在日志里** | 日志只有 `bodyB64=<长度>`(如 `19004B`),没有内容 ⇒ "我们的 body vs 浏览器的 body" 逐字段对比**结构上缺半边**(`tmp/webreq_diff.py` 按 base64 解必失败,实测) | 新增 `HARVBODY part=i/n bodyHex=…` 分片 dump,与 WEBREQDUMP **对称** |
+| ③ | P11-118c 的**判别实验跑不到** | `replayHarvestCapture` 只在「材料解不出」的三个失败分支里被调;而今天失败形态是「材料解得出、会话也建起来了、运行时才被判死」⇒ **自 09-16 之后再没出过证据** | 见下:挂到 `resolve` 顶层 |
+
+**③ 分岔判据(本轮核心产出)** —— 触发:上次 WEB 会话**运行时**被判死
+(`SabrStreamRegistry.isWebSabrFailed`,由 fetcher 撞 `status=3` 置位,见 §5.7),且手里有那份材料的
+原始捕获(本轮新增 `lastHarvestCapture`:材料**解得出**时也存下来;此前成功那份直接丢掉)——
+则把**浏览器亲手产生、服务端已回 200** 的材料原样重放一发,记 `status=?`。**每视频一次**
+(重放是白烧一发真实 POST,结论不因多跑而变;不限制反而把自己变成风控目标)。
+
+**为什么必须挂在 `resolve` 顶层**:判死标记会让下面两条 WEB 分支整体跳过(`buildWebSabrFallback`
+不再被调用),挂在 harvest 流程里就**永远跑不到** —— 这正是它 09-16 之后没出过证据的原因。
+
+**结果二选一,决定后面所有工作的方向**:
+
+| 重放结果 | 含义 | 下一步 |
+|---|---|---|
+| `status=1` | 材料是好的,差异在**我们的会话构造 / 传输** | **逐字段对齐可做,且那是唯一的活**(用 ①② 的完整字节) |
+| `status=2/3` | 服务端不看材料(§5.6 已出过一次此结论) | **对齐字节没意义**,换杠杆:会话轮换节奏 / 身份 |
+
+**④ 对比脚本的配对规则**(`tmp/webreq_diff.py`,不入库,已同步支持分片 + 旧单行两种格式):
+必须按「**同 rn + 同 kind**」配对 —— 同为 `rn=1`,`seg=0`(init)与 `seg=N`(真实分段)的 body 结构
+本来就不同(`clientAbrState` 无 `playerTimeMs`、无 `selectedFormatIds` / `bufferedRanges`),
+**混比会读出假差异**(第一版脚本就差点这样误读:r2002 的 `rn=1` 是真实分段、r2008 的是 init,
+字段数不同纯粹是 kind 不同)。
+
+**明确不碰**(边界,写清免得下次误改):§5.6 已判读过的身份四处(UA / cookie / visitor / context)、
+`webShape`、token 来源 —— 那些属于「对齐字节」分支里的活,**得等 ③ 的结果出来才谈得上**。
+
+**待真机(一次即可)**:让一个视频的 WEB 会话死一次,看日志里 `P11-118 harvest replay[…]: … status=`
+的值 ⇒ 按上表分流。
+
+---
+
+### 5.9 2026-09-20 夜:**首个双方字节对比** —— 首要嫌疑是「材料 MWEB / 会话 WEB」身份不一致(P11-139 产出的第一个结论)
+
+工具补完后的第一份日志(`logs_live_20260920_154335.log`,`dev.r2011`)就给出了此前拿不到的东西:
+同一份日志里**两边请求体都在**(我们的 `WEBREQDUMP` 分片 + 浏览器的 `HARVBODY` 分片),
+用 `tmp/webreq_diff.py` 逐字段摊开后,**两边 `streamerContext.clientInfo` 不是同一个客户端**:
+
+| | clientName | 其它字段 |
+|---|---|---|
+| **我们**(WEB-SABR 会话的真实请求体) | **1 = WEB** | 只有 4 字段(`clientVersion` / `osName=Android` / `osVersion=13`) |
+| **浏览器**(那份被服务端回 200 的采集材料) | **2 = MWEB** | `f1=zh_CN`、`deviceMake=google`、`deviceModel=pixel 7`、`clientVersion`、`osName=Android`、`osVersion=13` |
+
+> **更正一处首版误读**:首版还写了「我们的 URL 是 `c=WEB`、材料是 `c=MWEB`」——**不成立**。
+> 那行 `WEB-SABR sabrUrl params(…) … c=WEB cver=null` 打的是 `sd = parseSabrData(player)`,即
+> **我们自己 /player 响应**里的 URL,而它是在 harvest 期间顺带打的;**有材料时会话实际走的是
+> `material.baseSabrUrl`**(`SabrSession.fromSabrBytes(material.baseSabrUrl, …)`),也就是浏览器那条
+> URL。所以 URL 这一层是**同源**的,不构成差异。站得住的只有上表的 **clientInfo 不一致** ——
+> 它来自双方**真实请求体**(我们的 `WEBREQDUMP` vs 浏览器的 `HARVBODY`),不是推断。
+
+**机制**:harvest 采到的是 **MWEB 页面**的材料 —— `poToken` / `ustreamerConfig` / `cpn` 都是 MWEB 身份下铸的,
+而我们把它包在 **WEB 会话**里发出去 ⇒ **令牌与身份不同源** ⇒ 服务端判 invalid ⇒ 每笔 `status=3`。
+
+**这与 §5.6 的残留是同一条**,只是当时那轮还能 `status=1`,所以被判为「这一层不是判据」;现在有了字节证据,
+它升为首要嫌疑。§5.6 当时已写明:「若日后需要单开一轮评估 MWEB(**必须连带验 `webShape` 翻 false 后的请求形状,
+不能和身份改动混判**)」—— 那条警告现在正好适用。
+
+**其它可见差异(次要,备查)**:①`clientAbrState` 形状:浏览器发富集合(`bitfield=3`、`drc=1`、`sticky=0`、
+`viewport=1080x607`、`f57/f58/f59/f71/f72/f79/f80/f85`),我们发稀疏的 FreeTube WEB 集合(`bitfield=0`、
+`sticky=720`、`viewport=640x720`);②`ustreamerConfig` 出现了**三个不同的数**:材料 `1275B` / 我们请求体
+`2239B` / 会话日志 `3000B` —— 需查是否发错了那一份。
+
+**判死→重放实验(P11-139 ③)仍未跑成**,原因不是接线:该日志末尾那次 `loadRequest`(15:43:28)之后
+**1.8s `ExoPlayerImpl: Release`**(用户退出播放器),resolve 被取消 ⇒ 该实验**仍待一次不被打断的 resolve**。
+不过材料被直接用于会话且照样死,已部分回答「材料内容」这一问 —— 问题更像在**我们给材料套的身份**。
+
+**下一步三选一**(需拍板):
+
+| 方案 | 内容 | 风险 |
+|---|---|---|
+| **A(推荐)** | 会话身份整体对齐材料:`clientName=2` + `c=MWEB` + `deviceMake/Model` + locale,并**同时**按 MWEB 对齐请求体形状(`webShape` 由 `clientName == 1` 派生,改它会顺带翻转形状) | 动的是 §5.6 已判读过的身份层,但这次**有字节证据**,且 §5.6 本就要求"评估 MWEB 必须连带验 webShape" |
+| B | 只改 `c=MWEB` + clientName,形状不动 | 一半对齐可能是最坏情况(两边都不一致) |
+| C | 先把重放实验跑出来再决定 | 最稳,需再跑一次真机 |
+
+---
+
+### 5.9.1 实测:A1+A2 生效,判决升级;判别实验给出分岔结论(P11-140)
+
+**A1+A2 已在 r2014 真机落地,请求体逐字段核对无误**(`logs_live_20260920_160843.log`)。材料会话的
+`client_abr_state` 与 `client_info` 各出现**两份**(材料在前、我们在后),合并结果为:
+**材料的静态(viewport 1080×607 / sticky 0 / bitfield 3 / drc / visibility / f17·f38·f57·f58·f59·f68·f71·f72·f79·f80·f85)
++ 我们的动态(tsLastManual / bwEstimate / tsLastSeek / playbackRate / elapsedWall / tsLastAction)**,
+`ustreamerConfig` 亦为材料的 1275B。非材料会话(同一份日志里的自造材料会话)仍是老形状 ⇒ 开关只在
+材料会话上生效,非材料路径逐字节不变。
+
+**服务端判决升级(关键进展)**:同一视频、同一会话形态,判决从
+`InvalidPoToken (StreamProtectionStatus status=3)`(**身份/token 被判无效,硬死**)
+变成 `SABR Error type=sabr.no_audio_selected code=3`(**语义错误**)⇒ **身份与形状这层已通过**。
+
+**判别实验(P11-139 ③)终于跑出了结果 —— 分岔判据有答案了**:
+
+```
+P11-118 harvest replay: Ft917Ifvz2c WEB-SABR 运行时判死 → 重放上次浏览器材料取证(每视频一次)
+harvest replay[freetube-shape]: HTTP 200 ct=application/vnd.yt-ump body=755053B
+UMP: type=58(STREAM_PROTECTION_STATUS) status=1
+UMP: type=47(PLAYBACK_START_POLICY) payloadLen=12     ← 顺带解出 part 47 的真名
+UMP: type=42(FORMAT_INIT_METADATA) payloadLen=98
+```
+
+⇒ **`status=1` + 755KB + FORMAT_INIT:材料是好的,差异在我们的会话构造** ⇒ 按 §5.8 的分叉表,
+**「逐字段对齐」是正确方向**(不必换会话轮换/身份杠杆)。**旁证**:同一场里判死后的兜底路径正常
+播放了 20 段,app 可用。
+
+**A3(本 commit)**:材料对齐分支里把 `enabledTrackTypesBitfield` 与 `audioTrackId` **拿回我们自己的值**
+(`0`=A+V;单轨发 `""`)。理由是上一轮把它们一起交给材料**切错了类** —— 按 §5.9 的三分法,它们属于
+**「请求语义」(选了哪些轨)**,不属于「身份/能力/偏好」;材料那份 `bitfield=3` 语义未知、且它没有 69
+是**它**的会话状态。两者在材料之后发出 ⇒ 合并语义下我们赢。
+
+**工具坑(记下来免得再犯)**:`tmp/webreq_diff.py` 必须**按会话切分再归并** —— `rn` 号在每个会话里
+都会重来一遍,按 rn 全局归并会让后一个会话(如自造材料那条)的 dump **覆盖**前一个(材料那条),
+据此读出的 body 根本不是想问的那条(本轮就先误读了一次,差点得出「A1+A2 没生效」的错误结论)。
+
+---
+
+### 5.9.2 r2023 判读:`status=2` 刷新的 token **没解码** —— `status=3` 的真凶(P11-141)
+
+真机 `logs_live_20260920_192411.log`(r2023 = `8f7cab15`,XQ-EC72 / Android 16,两视频 + 一次兜底,19:21–19:24)。
+这一场的价值在于:**每一环都有字节级证据**,不用再靠推断。
+
+#### (1) 判决链:刷新的下一笔请求就是处决令
+
+| 时刻 | 请求带的 token | 服务端 |
+|---|---|---|
+| 19:23:27 建会话(mmzKjp,自造材料) | `pot=88B` | `status=1` ×12,末笔 **status=2** |
+| 19:23:31.633 | status=2 → 同步刷新,日志 `PO token refreshed on status=2: 208B` | — |
+| 19:23:31.879 | `pot=208B` | **status=3**(`InvalidPoToken diag: sessAgeMs=4831 sessReqN=2 status2Seen=1 pot=208B`) |
+| 19:23:34 → 19:23:42 | `pot=208B` ×7 | **status=3** ×7(每笔 135B 空响应)→ evict 风暴 → `Playback error` |
+
+⇒ **换上去的 token 不是"过期了"或"身份不对",而是格式错的**:208B 正好等于 `streamingDataPoToken` 的**字符数**。
+
+#### (2) 根因:`refreshPoToken` 把 base64 文本当 token 字节发
+
+provider 的 `streamingDataPoToken` 是 **websafe base64 串**(真机实测两种长度:120 / 208 字符),
+而 `streamerContext.poToken` 要的是**解码后的字节** —— FreeTube `SabrSchemePlugin.js:636` `base64ToU8(sabrData.poToken)`,
+与 [SabrSession.fromSabrData](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrClient.kt#L151-L158) 的 P11-117 归一化同一口径:
+
+- **创建**路径:P11-117 已修(`poToken=128B` 那次真机判死 → 改 `websafeBase64ToBytes`)⇒ 请求里 `pot=88B` ✓
+- **刷新**路径:5 处调用点各写 `?.streamingDataPoToken?.toByteArray(Charsets.UTF_8)` ⇒ 请求里 `pot=208B` ✗
+
+同一 protobuf 字段两种编码,于是 **服务端一发 status=2,刷新就把可用 token 换成必被判死的字节** ——
+这解释了此前多轮「能播但 ~60s 重载一次」「status=2 之后必 status=3」的全部现象(P11-102c 记的
+「token 124/128B 混出、last-write-wins 互相踩」也是同一件事:那些字节数同样是字符串长度)。
+
+**修**:刷新回调收敛为唯一入口 [sabrRefreshPoToken](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L2445-L2460)
+(`websafeBase64ToBytes` + `takeIf { isNotEmpty() }`),5 处调用点全部改用;`SabrMediaFetcher` 的刷新日志加
+`before B → fresh B`,让「是否解码」在日志里一眼可判。
+
+**下一轮判据**:刷新日志应显示 **120→88 / 208→156(≈3/4,不是等长)**,且紧随的请求 `status=1`。
+若解码后仍是 `status=3`,那才轮到「token 来源/绑定」这条假设(本场日志**已排除**它作为首选:
+刷新用的 `PoTokenWebView` 与首次铸造**是同一个实例**、未重建,`visitor_data` 相同 —— 见
+`PoTokenWebView: initialization finished` 只在 19:21:51 出现过一次)。
+
+#### (3) 同一份日志:材料会话只供 `399/251`,以及 C1 为何从未生效(本次未修,留给下一轮)
+
+- **275 次 `skip ad/unrequested` 全是 itag 251 / 399** —— 即 harvest 材料绑定的浏览器 Auto 档;我们每场都请求
+  `302/140`(`whitelist=[140, 302]`),交集恒空 ⇒ 6 连 `getNextSegment: no seg 0` → evict。单笔响应
+  18,393,345B 里 **18,389,496B 被整段丢弃**,两场死会话白烧 ~200MB。
+- **C1 的收窄算出来也会被起播锁夹回**:[initialSelectedIndex / applyStartupLock](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/HeightAwareAdaptiveTrackSelection.kt#L258-L296)
+  **不看 served 集合**。即便集合里已有 `{399,251}`(上一场 skip 时写入),收窄选中 399(1080p)也会被
+  `applyStartupLock` 夹回锁高档 720p = itag302 → **302 永不被供 ⇒ 无首帧 ⇒ 锁永不释放** = 结构性死锁。
+  这也解释了 r2022/r2023 两轮「收窄机制对但从不生效」。
+- **材料 URL 会话的音频侧无解**:材料只推 251(Opus),而我们的音频组只有 140 ⇒ 即使视频收窄到 399 也活不了。
+- **反面对照**:19:23:24 起的那场「自造材料」(我们自己的 sabrUrl + 材料 pot)能正常供 `302/140`
+  (init + seg 21/22 真数据)⇒ **材料会话的毒在 URL(服务端按那场会话绑定的格式供流),不在 pot**。
+
+### 5.9.3 r2024 判读:解码修复生效、`status=3` 归零;真墙是「材料 URL 只供浏览器的档」;冷启桩改为丢弃(P11-142)
+
+真机 `logs_live_20260920_200705.log`(r2024 = P11-141 解码修复那版,20:00–20:06,三视频)。
+
+#### (1) 修复验证:刷新不再判死
+
+| 指标 | r2023(修前) | r2024(修后) |
+|---|---|---|
+| `STREAM_PROTECTION_STATUS status=3` | 22 | **0** |
+| `InvalidPoToken` | 27 | **0** |
+| 刷新日志形态 | `… 208B`(208 字符 = 未解码) | `468B → 349B`、`1160B → 869B`(**精确 3/4 = 已解码**) |
+
+#### (2) 真墙:材料 URL 会话只供「浏览器那一场绑定的档」
+
+五场会话**全部** `SabrSession(bytes/harvest)`,**全部**在 ~20s 内被 `no seg 0 itag <我们的档>` ×6 打掉:
+
+| 会话 | 材料 | 我们请求 | 服务端只供 |
+|---|---|---|---|
+| b8_WgDb2 / v3OeGK(GRbG) | po=**10B(桩)** | 302 | 248 / 251 / 303 / 399 |
+| TokDzJc(UblCOS7McLg) | po=**88B(真)** | 140 → 698 | 248 / 251 / 303 / 399(`status=1 ×12`、真数据 1.7+3.8MB,但 140 从不来) |
+| cuSMR3hT / 2l396sKC(UNx587AizhU) | po=10B(桩) | 136 / 140 | — |
+
+#### (3) 反转:当初改用「材料」的前提,是我们自己制造的
+
+材料路线(P11-118d)的依据是「**我们自己的** WEB 会话跑到第 4 个请求就被判死」—— 那正是 P11-141 修掉的
+bug(`status=2` → 刷新未解码 → `status=3`)。r2023 里那场**自造材料**(我们自己的 /player URL)会话
+`status=1 ×12`、**正常供我们的 302/140**,唯一死因就是那个未解码的刷新。⇒ 材料与自造两条路的价值对比,
+需要用修好的刷新重跑一次自造路才能定。
+
+#### (4) 本轮动作(P11-142):harvester **不再退桩**
+
+r2024 里 4/5 次采集只拿到冷启桩(`poToken=10B`;真 token 那份 `88B / ustreamerCfg 8657B`),而
+`STUB_GRACE_MS` 到期后的「退桩」把**桩材料喂给了会话** ⇒ ①桩 token 让服务端一路 `status=2`(整场 114 次),
+永无 `status=1`;②桩材料**挤掉了自造路径**(`harvestSessionMaterial` 返回非 null,resolver 不再走自己的
+/player)。故改为:**只拿到桩就返回 null**(`YoutubeSabrHarvester` 两处出口),让 resolver 落自造材料。
+
+**判据**:下一份日志应出现 `harvest: 真 token 的 POST 未出现 → **丢弃冷启桩** … 返回 null 落自造材料` →
+`SabrSession:`(**无** `(bytes/harvest)` 标记)→ 请求的 itag 出现在服务端响应里(不再 `no seg 0 itag <我们的档>`
+×6)→ `status=1` 持续。
+
+#### (5) 仍未修
+
+①**真材料 URL 会话**同样只供浏览器档(表 2 第二行)⇒ 需 C1 起播锁修正 / 音频组纳入 251 / 或不再用材料 URL 播;
+②provider 铸的 token 是**占位形态**:刷新日志字节数单调涨 `154 → 219 → … → 1324B`(**+65B/次**),首字节恒
+`0x32`、带自增计数 —— 与那个 10B 冷启桩同族,不是签名过的真 token(要单独一轮)。
+
+### 5.9.4 r2026 判读:自造会话**首次播通**(材料 0 块 vs 自造 14 块);harvest 整段停用(P11-143)
+
+真机 `logs_live_20260920_202417.log`(r2026 = P11-142 那版,20:21–20:24)。这一场第一次拿到
+**同一场日志里材料会话与自造会话的并列对比**,结论是结构性的。
+
+| 会话 | 类型 | 我们请求 | 服务端实际供 | 媒体块 | 结果 |
+|---|---|---|---|---|---|
+| NHaKyQ(GRbG) | 材料(**真** 87B token) | 302 / 140 | 只有 251/399… | **0** | 响应 12MB ×6 全是同一条 body → `no seg 140` ×6 → evict |
+| **HCcQ_eKj(GRbG)** | **自造**(我们自己的 /player) | 302 / 140 | **302 ✓ 140 ✓** | **14 块** | **`playerState=3(READY)`、`videoFmt=302`** |
+| XYpwk6(UblCOS7McLg) | 材料(真 87B token) | 698 / 140 | 只有 248/251/303/399 | **0** | 响应 2.88MB ×12 全是同一条 → `no seg 698` ×6 → evict |
+| HMQBx0x(UblCOS7McLg) | NewPipe 兜底 | 136 / 139 | — | — | 用户退出 |
+
+自造会话(12 秒窗口)的实据:
+
+```
+WEB-SABR: harvest 已停用前的路径 = 「刚采集过(44553ms 前,窗口 45000ms)→ 用自造材料」
+solver: ok challenges=1 nChanged=true → n transformed(A8R1O4oywrVFsAd9ea4 → E6daFaAnyg1Rjg)
+FORMAT_INITIALIZATION_METADATA itag=302 endSegNum=312 / itag=140 endSegNum=157
+chunk completed: media itag=302 bytes=724266 sel=8(720p)   ×10(700KB~2MB/块)
+chunk completed: media itag=140 bytes=161855               ×4
+fetch rn=0/1/2 REAL 6335153B / 5042267B / 4530418B → 16~20Mbps
+PO token refreshed on status=2: 88B → 154B (websafe base64 已解码)   ← P11-141 在真机生效
+playerState=3(READY) pos=0 videoFmt=Format(302, …vp9 1280x720…)
+status=3 = 0 / Playback error = 0 / RELOAD = 0
+```
+
+⇒ **材料 URL 会话结构上只供「浏览器那一场绑定的档」**(服务端按那场会话签发的绑定供流),我们要的是
+阶梯选出来的档,只有碰巧重合才播得动;而**我们自己的 /player 会话供的正是我们要的档**(它就是这么
+签发的)。当初改用材料的前提(「自造会话跑到第 4 个请求必死」)是 P11-141 修掉的刷新未解码 bug
+⇒ 前提消失,材料路线的价值随之归零。
+
+**本轮动作(P11-143)**:`buildWebSabrFallback` 的 harvest **整段停用** —— 不采集、不用材料
+(开关 `USE_HARVEST_MATERIAL_FOR_SESSION = false`,分支保留可回退)。附带收益:**起播变快** ——
+r2026 自造从「用自造材料」到 playback ready **~2.6s**(n-solver 2.1s + /player),
+而 harvest 每场 9.3~9.5s(有时 30s+)。
+
+**判据(下一份日志)**:无 `harvest: captured SABR POST` / `USING HARVEST MATERIAL` / `SabrSession(bytes/harvest)`;
+`SabrSession:` 无标记 + `FORMAT_INITIALIZATION_METADATA itag=<我们的档>` + `chunk completed: media`;
+`status=3` 与 `Playback error` 保持 0;起播耗时应明显下降。
+
+**未动**:①`BiliWarmup` 的采集 WebView 预热(app 启动期,3~15s)仍在跑 —— 采集已停用后它是纯开销,
+下轮可一并摘掉;②provider 铸的 token 仍是占位形态(155→…,+65B/次)。
+
+### 5.9.5 r2028 → P11-144:单构建 A/B(材料派 vs 自造派)+ 停刷新 + 加厚取证
+
+**r2028 判读(P11-143 那版)**:P11-143 的判据**全部达成** —— `harvest 已停用(P11-143)` 出现、
+harvest 痕迹 0 行、`skip ad/unrequested` 0 次、`SabrSession:` 无标记、`solver ok` + `n transformed`、
+**服务端供了我们的档**(`FORMAT_INITIALIZATION_METADATA itag=302` + `itag=140`)、**两条轨都送出
+`first media chunk`**(audio seg 11 @109.8s、video seg 21 @115.6s,正好落在 seek 的 119s)。
+(起播 37.5s 不是回归:该场网络很慢 —— mint 14s、player.js 14s、首个响应 20.7s 只跑 2Mbps。)
+
+**但 `status=2 → 刷新 → status=3` 在这条视频上又回来了**,且 P11-141 的解码修复**没救下它**:
+
+| 场次 | 视频 | 刷新出的 token | 结果 |
+|---|---|---|---|
+| r2023 | LSnM | 208 字符(**未**解码) | **status=3** |
+| r2028 | LSnM | 同一枚 token(**已**解码 = 154B) | **status=3**(`potAge` 极小 ⇒ 不是过期) |
+| r2026 | GRbG | 同一枚 token(已解码 = 154B) | 被接受,继续 status=2、媒体照流 |
+
+⇒ 编码已修好,**问题在 token 内容/接受条件**:我们自己铸的那枚(154B、`50,151,1,…`、每次 +65B 的
+占位形态)时而被接受时而被拒;而**会话开头那枚 88B token 一直是被接受的**(r2028 rn=0 那笔 6.3MB
+响应里既有 status=2、也有我们的档与真媒体段)。
+
+**P11-144 三件事(一个构建)**:
+
+1. **单构建 A/B**:`SabrStreamRegistry.nextWebSabrArmUseMaterial(videoId)` 按 resolve 次数轮换 ——
+   同一视频第 1 次 = **材料派**、第 2 次 = **自造派**、第 3 次又材料 ⇒ **同一视频、同一网络、相隔数十秒**
+   拿到两派同条件对比(优于此前跨场拼接)。日志:`WEB-SABR A/B(P11-144): videoId=… resolve#N → 材料派/自造派`
+   + 会话行有/无 `(bytes/harvest)` 标记。开关 `USE_HARVEST_MATERIAL_FOR_SESSION` 已撤(轮换取代它)。
+2. **停刷新(keep-stale 实验)**:`SabrMediaFetcher.REFRESH_PO_TOKEN_ON_STATUS2 = false` —— status=2 时
+   **保留原 token**,打 `status=2 但**刻意不刷新** … keep NB (age=Nms); 下一笔请求的 status 即判据`。
+   两个假设据此分开:下一笔 status=1/2 且媒体在流 ⇒ **刷新才是凶手**;照样 status=3 ⇒ **status=2 是硬处决**
+   (方向转「同一条铸造链重铸真 token」)。
+3. **加厚取证**:①每笔响应打 `resp summary: req=… usable=NB/NB init=[…] pushed=[…]` —— **格式墙判据**
+   (usable=0 且 init 里没有 req ⇒ 服务端只供别的档);②请求日志加 `potAgeMs=`(分辨过期 vs 内容被拒);
+   ③`PoTokenState.currentPoTokenAtMs` 记录 token 起始时刻。
+
+**读日志的顺序**:先 `WEB-SABR A/B … → 材料派/自造派` 定派别 → 再看 `SabrSession` 有无 harvest 标记 →
+再看 `resp summary` 的 usable/init(格式墙)→ 再看 status 序列与 `potAgeMs`(token 线)→ 最后看
+`first media chunk` / `playerState=3(READY)`(是否真的播起来)。
+
+### 5.9.6 r2030 的 A/B 判读:两个变量彻底分开;token 线锁定「铸造上下文」(P11-145)
+
+真机 `logs_live_20260920_205125.log`(r2030 = P11-144 那版,同一视频 LSnMDFCe0lY,两派各一次 resolve)。
+
+| 派别 | token(pot/potAge) | 服务端供的档 | 可用字节 | status 序列 |
+|---|---|---|---|---|
+| **材料派** `SabrSession(bytes/harvest)` | 88B(harvest 页铸)/ 2018ms | 只有 251/399 | `usable=1214B/2416131B`、`init=[]` | **`status=1` ×19** |
+| **自造派** `SabrSession:` 无标记 | 87B(自铸)/ 839ms | **`init/pushed=[140,302]`** | **`usable=6297809B/6297809B`** | `status=2` ×1 → keep-stale → **`status=3`** |
+
+**结论一(格式墙与会话 URL 绑死、与 token 无关)**:材料派的 token 被服务端**完全接受**(`status=1` ×19),
+但服务端仍只推 251/399 ⇒ 我们的档从未被初始化 ⇒ `no seg` ×6 → evict。**这是 P11-143 前提最干净的一次证明。**
+
+**结论二(token 线 = 铸造上下文)**:自造派格式全对(6.3MB 全部可用 + 两条轨都送出 `first media chunk`),
+但自铸 token **第一笔就被当作占位级**(`potAgeMs=839` ⇒ 不是过期),给完 6.3MB 宽限转 `status=3`。
+**刻意不刷新(keep-stale)也照样死** ⇒ 之前的「刷新才是凶手」假设被证伪;与 BgUtils README 的
+「status=2 = 只当占位、1~2MB 宽限、快去拿**真** token」完全吻合(我们这次拿到 6.3MB,同量级)。
+
+**联网调研的定论(带出处,详见 §5.9.7)**:
+
+- BgUtils README:`status=2` = "can still request up to 1-2 MB of data **using a cold start token** …
+  request a **real** PO token as soon as possible";`status=3` = "cannot continue"。
+- **冷启桩**是 `packet[0]=34`(0x22)、定长 `2+8+len(identifier)` —— 与 harvest 采到的 **10B** 桩逐字节吻合;
+  我们自铸那串首字节是 **50**(0x32)= protobuf field 6,属 **minter 输出(真 token 类)**,不是桩。
+- **「每次 +65B 变长」是复用同一个 minter 的客户端故障态**(NewPipe PR #11955,2025-10-16:
+  "the potoken seems to get longer every time its requested … worked by **forceRecreate=true**")。
+- **关键杠杆是铸造上下文**:BgUtils #44 —— attestation challenge 已绑 `yt.config_.EVENT_ID`,
+  「tokens generated using challenges from `/att/get` are now **rejected**」;PipePipeClient #86 单变量实测:
+  **无 EVENT_ID → status 2 @60s;有匹配 EVENT_ID → status 1 @65s+**;bgutil #243:成功率 58% → 92%。
+- FreeTube/googlevideo **只对 status=3 反应**,LibreTube 是唯一「status=2 就重铸」的少数派(而那是我们踩的坑)。
+- 强制强度是**概率性 A/B**(bgutil #243)⇒ 跨场次对比无意义,只看当天日志。
+
+**本轮动作(P11-145:会话固定自造,token 三臂轮换)**:
+
+| 臂 | token 来源 | 实现 |
+|---|---|---|
+| **A** | 自铸(`ensureWebToken`) | 现况(`poToken` 字符串路径) |
+| **B** | **harvest 页铸的那枚**(唯一拿到过 `status=1` 的) | 只借 token:新参 `SabrSession.fromSabrData(poTokenBytesOverride=…)` **原始字节直传**(不经 base64 往返,避免 P11-118d 记过的往返坑);URL/ust/cpn 一概不用 |
+| **C** | **不带 token(pot-less)** | `webSabrPoToken=""`(非 null 过上游守卫;`fromSabrData` 对 blank → `ByteArray(0)`),连铸造都省 |
+
+配套:①会话侧删掉材料 URL 分支(`fromSabrBytes` 那条,已被 A/B 判死),`n-decrypt` 与 cpn 注入恢复为
+**一律执行**(不再因材料而跳过);②新增 `describeTokenShape` 与 `WEB-SABR token 形态(P11-145): 臂X …`
+日志(`34`=桩 / `50`=minter 输出 / `>128B` 判可疑超长)。
+
+**判据**:三臂各自的 `token 形态`(臂/大小/首字节)+ `resp summary`(格式)+ status 序列 + `first media chunk`。
+预期:臂 B/C 若有一臂全程 `status=1` 且 `usable` 满 ⇒ 拿到「既有我们的档、又不被 token 挡」的组合,即为可交付形态。
+
+### 5.9.7 历史复盘(2026-09-20 当天全部日志):**能播的两场都是「材料会话 + 页面 token」**;四臂重排(P11-146)
+
+**触发**:用户质疑方向。把当天所有真机日志按版本对齐后,结论与当时的判断**相反** —— P11-143
+「harvest 整段停用」砍掉的正是唯一被服务端稳定接受的 token 来源。
+
+| 场次(时间) | 会话 | token | 我们请求 | 服务端供 | status=1 / 3 | 媒体块 |
+|---|---|---|---|---|---|---|
+| **r1992**(09:12,§5.6「已打通」) | **材料** `bytes/harvest` | 页面 **87B** | 140 / 136 | ✓ | **10 / 0** | **35** |
+| **r2002**(13:59) | **材料** `bytes/harvest` | 页面 **88B** | 140 / 698 / 69x | ✓(694/698/140) | **100 / 0** | **115** |
+| r2006(14:48) | 材料 ×2 | 88B → 刷新 208B ×14 | — | — | 88 / **22** | 108 |
+| r2008(15:13,崩溃) | 材料 ×4 | 88B → 刷新 208B ×14 | — | — | 6 / **66** | **0** |
+| r2030 材料臂 | 材料 | 页面 88B | 302 / 140 | ✗ 只供 251/399 | 19 / 0 | 0 |
+| r2030 自造臂 | 自造 | **自铸 87B** | 140 / 302 | ✓ | 2 → 3 | 1 |
+
+**三条结论**:
+
+1. **服务端接受的是「harvest 页铸的 token」**(`pot=87/88B`,r1992/r2002/r2030 三场都 `status=1`)。
+   **我们自铸的那枚同尺寸 token 第一笔就被判 `status=2`**(r2008/r2028/r2030 自造臂)⇒ 与 BgUtils #44
+   的「铸造上下文 = `yt.config_.EVENT_ID`」逐条吻合(页面铸的带上下文)。
+2. **当天崩溃的真凶是刷新 bug**(P11-141 已修),相关性完美:`PO token refreshed` 次数
+   r2002=**0** → `status=3` **零次**;r2006=1 → **22** 次;r2008=3 → **66** 次(刷新后发的都是
+   「208 字节 = 未解码」的文本)。
+3. **材料会话的「格式墙」= 我们的阶梯选档没落进「那一场浏览器选中的档」**:r1992 请求 136 ✓、
+   r2002 请求 698/69x ✓ 就播;r2030 请求 302(VP9)而那一场选的是 399/251 ⇒ 0 块。**不是「只能供固定档」,
+   而是「供它那一场选中的档」** —— 这正是 C1(把候选收窄到服务端供的 itag)要解决的,**而 C1 一直被
+   起播锁夹回**(§5.9.2 记的结构死锁)。
+
+**本轮动作(P11-146)**:
+
+1. **修 C1 的结构死锁**:[HeightAwareAdaptiveTrackSelection](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/HeightAwareAdaptiveTrackSelection.kt)
+   新增 `servedIndexesInGroup()`,并让 **`applyStartupLock` 与 `initialSelectedIndex` 都服从 served 集合**
+   (锁高在集合内优先 → 否则集合内最高 ≤ 锁高 → 再否则集合内最优)。此前起播期必被夹回一个服务端不供的档
+   ⇒ 无首帧 ⇒ **锁永不释放** ⇒ 收窄永远没机会生效。日志新增 `startup lock <H>p[served|lock]: …`。
+2. **四臂轮换**(取代三臂):A 自造+自铸 / **B 自造+页面 token** / C 自造+pot-less / **D 完整材料会话 + C1 修复**
+   (`nextWebSabrTokenArm` 取 `%4`)。臂 D 恢复 `fromSabrBytes`(URL/ust/cpn/token 全借,`n-decrypt` 与
+   cpn 注入按材料门跳过);臂 B 用 `poTokenBytesOverride` 直传原始字节。
+3. **C3 核验**:`QUALITY_NUDGE_JS` 增补 ①`avail=`(可用档列表)②**+4s 二次回读**(注入点紧跟
+   `onPageFinished`,那一刻播放器常未起播,实测 `now=unknown/fmt=undefined` ⇒ 单看第一行判不出推没推上去)。
+
+**判据(下一份日志)**:四臂各自的 `WEB-SABR 四臂(P11-146): … → 臂X` + `token 形态` + `resp summary`
+(usable/init/pushed)+ status 序列 + `first media chunk` + `startup lock …[served]`(证明 C1 生效)。
+**预期**:臂 D 若出现「`startup lock …[served]` + `init=[<served 中的档>]` + 满 usable + `status=1`」,
+即为「历史基底 + C1 修复」的可交付形态;臂 B 若同样能播,则不必依赖材料会话。
+
+#### 5.9.7.1 r2032 实测:四臂设计的一个硬伤 —— **判死标记把后三臂全短路了**(P11-147)
+
+真机 `logs_live_20260920_210415.log`(r2032 = P11-145 三臂版):
+
+| 臂 | 结果 |
+|---|---|
+| 臂 A(自造+自铸 token,87B `first=0x32`) | **第 4 次复现**:`status=1` **0 次** / `status=2` ×4 / `status=3` ×22,`first media chunk` 2 块后死,`Playback error` |
+| 臂 B(自造+页面 token) | **从没跑**:`resolve#2 → 臂B` 的下一行就是 `WEB-SABR 优先:该视频 WEB-SABR 已判死 → 跳过,落 NewPipe 主链` |
+
+原因:臂 A 运行时判死置了 `markWebSabrFailed`,而 `webSabrFirst` 分支的闸门 `!isWebSabrFailed(videoId)`
+(P11-138 补的)直接把整条 WEB-SABR 跳过 ⇒ **轮换计数前进了,但路径被短路** —— 臂 C/D 同理永远轮不到。
+
+**修(P11-147)**:闸门改成「**本视频已试臂数 < 4**」优先 —— 四臂未试满时忽略判死标记(继续轮换),
+试满四臂后才恢复「失败即永久跳过」的产品语义(那时才该换到能播的路)。两条 WEB-SABR 分支
+(`webSabrFirst` 与兜底 `webSabrDue`)都改;新增日志 `该视频已判死,但**四臂实验未试满**(N/4)→ 继续轮换`。
+
+### 5.10 判决与收手线(2026-09-20 立,取代 §6 的口头停止条件)
+
+> **为什么单独立节**:§6 写了 S1/S2/S3,但当天 P11-128→P11-147 约 20 轮无人按它收手。教训是
+> **停止条件必须可机械判定**(能用日志字段算),否则等于没写。
+
+#### 5.10.1 判据:什么叫「WEB-SABR 通了」
+
+一轮四臂测试里,**任一条会话**满足下列**全部**条件即算通(字段都在日志里,不需要推断):
+
+| # | 字段 | 判据 |
+|---|---|---|
+| 1 | `WEB-SABR 四臂(P11-146): … → 臂X` | 四臂在**同一视频 + 连续重试**里都跑到过(证明实验本身可执行) |
+| 2 | `startup lock …[served]` | **出现过**(证明 C1 收窄真生效 —— 这是历史上从没生效过的那一环) |
+| 3 | `resp summary: init=[…]` | 含我们请求的档,且 `usable/size` **≥ 95%** |
+| 4 | status 序列 | **`status=3` 出现次数 = 0**,且连续播放 **> 60s** |
+| 5 | `first media chunk` / `playerState=3(READY)` | 两条轨都有,且无 `Playback error` / 无 `auto-retry` |
+
+**判别项(区分「我们的问题」还是「服务端强制态」)**:同一视频、同一臂、**同一天**内既出现「播通」
+又出现「`status=2` 首笔即来 → `status=3`」⇒ 判为服务端概率性强制(bgutil #243 已给出机制),**不算我们退步**;
+此时只记录「服务端宽松窗口出现过」。
+
+#### 5.10.2 收手线(机械触发)
+
+- **再给 ≤ 2 个构建**(自本节起算)。若两轮都拿不到 §5.10.1 的全部条件 ⇒ **WEB-SABR 降级为
+  「可选档 + 失败即让位」**(现状已是:失败一次即跳 NewPipe 主链),剩余精力转回用户可见收益
+  (主链稳定性、4K/画质、起播速度)。
+- **反例证据已足够**:主链(NewPipe pot-less SABR)**当天多次实测 `status=1`、零错误、媒体段 100% 可用**,
+  用户实际可用的从来不是 WEB-SABR ⇒ 「把它做通」的边际价值必须由 §5.10.1 的判据背书才继续投入。
+
+#### 5.10.3 文档机制(防止再引用坏结论)
+
+- 每条结论 → **`日期 + 当时配置 + 失效条件`** 三要素(§2.1 表已加「复核」栏)。
+- 「已证伪」清单**引用前必须核日期与当时的 bug 状态**:P11-141(刷新未解码)修好前的一切
+  token 相关结论**都不可信**。
+- 实验版本上线前先自检一句:**「这个实验真能跑到第 2 步吗?」** —— P11-145/P11-146 连续两版都因闸门
+  (判死标记短路后续臂)而跑不到第 2 步,装到机器上才发现。
+
+### 5.9.8 r2034 两条实证 + 两处可执行缺陷(P11-149)
+
+**实证 ①(正面):自造会话 + 自铸 token 在服务端宽松态下**真能播**。**
+`logs_live_20260920_211628.log`,GRbG-4Yqhwk,臂 A(sid `7xcLrqdPSA9kwnzqnn7gRg`):
+
+```
+WEB-SABR 优先(用户设置) → playback ready(video=itag315 audio=itag140)   ← 是 WEB-SABR,不是 NewPipe
+status=2 + resp summary: req=140 usable=6335153B/6335153B init=[140,302] pushed=[140,302]
+status=2 但刻意不刷新 → keep 87B(age=11348ms)                          ← keep-stale 在起作用
+first media chunk ×2 + playerState=3(READY) + startup lock released
+rn=1 → status=2 + usable=5042267B/5042267B ; rn=2 → status=2 + usable=4530418B/4530418B
+全场:chunk completed: media ×14、status=3 = 0、Playback error = 0
+```
+
+⇒ 服务端 **`status=2` 反复但不升级**时,会话照常供全量数据 —— **keep-stale(不刷新)正是这时候保住了它**
+(按老行为刷成另一枚自铸 token,会像 r2028 那样 0.5s 内被判 `status=3`)。这与同一配置早先 4 次必死并排,
+再次印证「决定因素是服务端当刻强制态」(§5.9.6 调研:概率性 A/B)。
+
+**实证 ②(负面,两个可执行缺陷)** —— `logs_live_20260920_212547.log`,视频 `-Tl1avLHa_I`:
+
+| 缺陷 | 日志 | 修(P11-149) |
+|---|---|---|
+| **臂 A 回落到已淘汰的桌面 token** | `resolve#1 → 臂A` 后 1.6s 取 token → `mobile minter 未产出 → 回落 botGuard token(128 chars)` → `/player` **`playability=UNPLAYABLE → abort`** | `awaitMobileMinter()`:等移动铸造器(冷启实测 4~6s,上限 6s),**等不到就跳过本臂**,不再回落桌面 botGuard(桌面挑战链 token 配移动 WEB 会话是 P11-127 明确淘汰的组合) |
+| **臂 B 桩-only 却白烧 36s** | `cold attempt 无捕获(6450ms)`(桩被丢弃,正确)→ **内置重试又跑 30s** → `NO CAPTURE after 36466ms` | harvester 新增 `lastStubOnly`;调用方见「只剩桩」即**跳过重试**(桩已判无用,再采不会变好) |
+
+外加一处**取证改进**:臂失败时打一行汇总 `WEB-SABR 臂X 本轮失败 → 落 NewPipe 主链(四臂进度 N/4)`,
+免得再靠 grep 拼四臂结果。
+
+同场还确认两处修复生效:**P11-147 闸门**(`该视频已判死,但四臂实验未试满(2/4)→ 继续轮换` —— 臂 B 真跑到了)、
+**P11-142 桩丢弃**(`丢弃冷启桩`)。
+
+### 5.10.4 取证实验必须与产品路径隔离(P11-150,r2038 实测后的硬教训)
+
+**现象**:P11-146/147 的四臂轮换装在默认路径上后,r2038 真机(`logs_live_20260920_214742.log`,21:43–21:47)出现
+**整场 0 个 NewPipe 兜底会话、完全没播**:
+
+```
+21:45:52  LSnM: resolve#1 → 臂A → 会话建起来了(playback ready)   ← 建成功 ⇒ resolve 当场返回,不走主链
+21:46:13  ExoPlayerImplInternal: Playback error(Source error)
+21:46:21  resolve#2 → 臂B(采集失败 34s,退化成用我们自己的 token)→ 会话又建起来了
+21:46:58  会话建起 → status=2 撑到 21:47 → status=3 风暴(21:47 共 16 次)
+```
+
+**机制(两层叠加)**:①每条 WEB 形状会话都能「建成功」,但**只能吃 ~20 秒宽限窗**就升 `status=3`
+(臂 A / 臂 B 退化成 A / 臂 C pot-less **三者数据侧完全一样**:`usable=4167931/4167931`、两条轨
+`first media chunk` —— 差别只在 token 线,结果都是 ~20 秒后死);②P11-147 的轮换闸门**压住了判死标记**
+(`未试满(2/4) → 继续轮换`)⇒ 播放器连续重试四条路线,**期间不让位给能播的主链**。
+
+**修(P11-150)**:加 `WEB_SABR_ARM_EXPERIMENT`(**默认 false**):
+- **关(默认/产品路径)**:只用臂 A(我们自己的会话 + 自铸 token,~2.6s,不采集);判死标记**完全生效**
+  ⇒ WEB-SABR 失败一次即**永久让位主链**(P11-138 语义,用户几秒内看到画面);
+- **开(dev)**:四臂轮换 + P11-147 闸门,复现取证日志。
+
+**通用教训(写进机制)**:凡是「为了取证而改变默认行为」的实验,**必须收进默认关闭的开关**,
+否则它会把用户可见的可播性当成本。本次代价是用户一整场看不了。
+
+### 5.11 另一条线:「降档钉死」(P11-151)
+
+**症状**(r2042 真机 `logs_live_20260920_220043.log`,主链 NewPipe 会话):缓冲**一直有 25~28 秒**,
+画面却被钉在 **144p**(`sel=13 itag160 b=112087`)约 2 分钟。
+
+**轨迹**:720p(`sel=5`)→ 缓冲涨到 **46s**(`sus=9530K cap=8823K`)→ 缓冲掉到 9.9s →
+**掉到 144p** → 之后 `sus` 衰减到 701K、`cap` 到 1368K、`bw` 冻结在 634~885K → 再没爬回。
+
+**三道既有护栏,逐条对照**:
+
+| 护栏 | 本场表现 |
+|---|---|
+| 快小样本过滤(`REAL_BW_MIN_BYTES=100KB` + `BW_SLOW_TINY_MS=2s`) | 生效(144p 的 66KB 段被滤掉)——**副作用**:掉到最低档后估计值再无可回升的样本 |
+| gap 滑行豁免(`recordFetchGap`:只把 `runway − 保留量` 之外算供给损失) | 正常工作:`bw gap counted: 9612ms (raw=42328ms coast=32716ms runway=42716)`(豁免 77%) |
+| **降档失败冷却** `markDowngradeFromTrial` | **就是它**:`downgrade fail cooldown: 720p excluded 180s (gated+trial blocked, survives reload)` |
+
+**根因**(代码事实):该冷却**降档即记、不区分原因**(注释原文「不区分试探/gated/普通降档」),
+且冷却期 **180 秒墙钟、跨重载有效**([SabrAbrMemory]) ⇒ 一次降档就把源档**从候选里剔掉 3 分钟**,
+期间任何升档路径都碰不到它。而这一次降档紧跟操作事件(缓冲 46s→9.9s),**并不是「该档不可持续」的证据**。
+
+**修(P11-151)**:
+- **(a) 按原因定时长**:操作事件(seek/手动选档,由 `recordFetchGap` 的操作分支经
+  `SabrAbrMemory.noteOperationEvent()` 上报)后 20 秒内的降档只记 **20s** 短冷却;
+  其余(真饥饿 / est 崩塌)记 `TRIAL_FAIL_COOLDOWN_MS`(**180s → 90s**);日志带 `reason=`。
+- **(b) 健康缓冲提前解除**:缓冲 ≥20s 且 `est ≥ 该档声明码率×1.1` ⇒ 调 `SabrAbrMemory.clearTrialFail()` 解
+  除冷却,日志 `cooldown cleared early: <H>p (bufS=… est=…K ≥ declared=…K×1.1, remain=Ns → 0)`。
+- **(d) 降档原因诊断行**(缺证据不盲改):每次降档打一行
+  `downgrade <from>p → <to>p: est=… sus=… bufS=… freeze=… blockedFrom=… opEvent=…` ——
+  22:00 那场只留下周期性 `sel=` 行,看不出「为什么连 720p 都不选」。**下一份日志据此定 (c)**。
+
+**留给下一轮(c,未做)**:est/sus 被「满缓冲空闲」稀释(`addSustainedGapSample(demandIdleMs)`)这条口径
+**本轮不动**(它经过 P11-134/135 多轮调校,盲改风险高)—— 等 (d) 的诊断行给出证据再定。
+
+#### 5.11.1 r2042 TV 实测:同一根因导致「**不升档**」自锁(P11-152)
+
+真机 `logs_live_20260920_224027.log`(BRAVIA_AE2 / Android 14):会话 **14 轨含 1080p / 1440p / 2160p**,
+带宽侧完全够(`est 3.8~5.3M`、`sus 4.4~5.6M`、`cap 4.8~5.9M`,1080p 声明仅 3.0M),缓冲峰值 **43~49s**,
+**却全程 `sel=5` = itag247(720p VP9)**,日志 `up=4` 说明它看得见上面 4 档却选不了。
+
+**根因(P11-146 引入的自锁)**:C1 的「收窄到服务端推过的 itag」**对所有会话生效**,而 served 集合 =
+「服务端推过的 itag」累积 —— 普通会话(自造 / NewPipe)服务端**要什么给什么**,集合因此恒等于「我们已请求的
+那一档」:
+
+```
+本场 pushed=[139, 247] ⇒ served={139,247} ⇒ 候选循环把 1080p/1440p/2160p 全部 continue
+⇒ 我们不去请求 1080p ⇒ 服务端也不推它 ⇒ 集合永远不变 ⇒ 死锁在 720p
+```
+
+手机端「钉死 144p」(§5.11,P11-151)同源 —— 冷却只是次要因素。
+
+**修(P11-152)**:`SabrSession.fromHarvestMaterial`(仅 `fromSabrBytes` 置 true)+
+`SabrStreamRegistry.hasMaterialSession(videoId)` + 在 selection 里
+`servedInGroup` **只在材料会话时才算** ⇒ 普通会话不再收窄(梯子自由爬),材料会话仍收窄(它的设计场景)。
+
+**通用教训**(与本轮 §5.10.4 同一条):**为 A 场景造的约束,必须显式绑定 A 场景**,否则它会静默地把 B 场景
+按死 —— 而且死法(「稳定但永远低档」)看起来不像 bug。
+
+#### 5.11.2 r2048 TV 实测:「视频定格、音频照播」33 秒(P11-153)
+
+真机 `logs_live_20260920_231653.log`(BRAVIA_AE2;会话 `source=NewPipe(primary)`,**不是 WEB-SABR**)。完整链条:
+
+```
+23:15:55.697  trial upshift (buffer-full probe): bufS=51s threshold=41s → itag302(720p) declared=18619097
+23:15:55.697  upshift reseed: est baseline → 18619097        ← est 被锚到 18.6M(实测容量 cap≈9M)
+23:15:59.166  cleanup dropped formats=[244] … video=302      ← 切轨:旧视频轨缓冲被丢
+23:15:59.235  chunk completed: media itag=302 bytes=1357413  ← 新轨只到这一块
+23:15:59 → 23:16:32(用户退出):**33 秒内一条 `fetch rn=` 都没有**
+```
+
+⇒ **视频轨**切轨后只拿到 1 块就再无数据(画面定格);**音频轨**缓冲未被切轨丢弃 ⇒ 靠自身缓冲继续播
+= 用户所见「视频卡住、音频正常」。
+
+**三条成因**:
+
+| # | 问题 | 证据 |
+|---|---|---|
+| ① | **声明码率失真**(ABR 的输入) | 本场 vp9 轨全部离谱:144p 声明 **4.7M**、720p60 **18.6M**、1080p60 27.8M、2160p **71.6M**。根因:`newPipeVideoRaw` 在 `stream.itagItem == null` 时**静默回落 VBR 峰值**(vp9 轨恰好缺 ItagItem)。它同时毒化两处:试探的目标选择 + 升档重锚(est→18.6M) |
+| ② | **满缓冲试探授权超容量跳档** | 试探按设计绕过 est/sus 闸(本意是绕过偏悲观估计),于是跳到 declared 18.6M 的轨,而实测容量仅 ~9M ⇒ 超容量 2× |
+| ③ | **挂死无兜底:冻结时长 ≈ 整调用上限本身** | 每个 SABR POST 有 40s 整调用上限(P11-134 为 4K 大段 28.2s 留的余量);慢滴占着单并发许可 ⇒ 低档请求也要等满 40s 才切;用户在第 33 秒退出 |
+
+**修(P11-153,三件)**:
+- **②** `TRIAL_MAX_OVER_CAPACITY_PERMILLE=1500`:试探目标不得超实测容量 ×1.5(日志 `trial refused (over-capacity): …`);
+- **③** 整调用上限**按档高自适应**:≤1080p → **18s**([SabrCallTimeoutMsLow]),≥1440p 保留 40s(4K 大段合法慢);
+- **①** ①b **重锚按实测容量夹住**(`RESEED_MAX_OVER_CAPACITY_PERMILLE=1200`,日志打出「声明失真,按实测容量夹住」);
+  ①a 峰值回落**加一次性诊断**(`declared falls back to VBR PEAK (itagItem 缺失…)`),让这类假数据在日志里可见
+  —— ① 的根治在 extractor 侧(为 vp9 轨补 `averageBitrate`),本轮先止血 + 留证据。
+
+### 5.11.3 r2048 晚场判读 + **arm A 的铸造上下文**(P11-154)
+
+**判读**(`logs_live_20260920_233731.log`,并把当天 41 场日志一起复核):
+
+- WEB-SABR 会话**每场首笔**响应就是 `STREAM_PROTECTION_STATUS status=2`(**7/7 场,无一例外**),
+  宽限 1~10MB 后升 `status=3 InvalidPoToken` → terminal → `markWebSabrFailed` → 落 NewPipe pot-less 主链
+  (主链健康:`status=1` 常态、零错误、媒体段满可用)。
+- 代价:23:32:58 起 → 23:33:12 判死 → 23:33:22 `Playback error` → 23:33:28 NewPipe 会话 →
+  23:33:46 出画面 ⇒ **~30s 起播税**,且判死标记只按 `videoId` 记在**本进程**内(每个新视频重交一次)。
+
+**机制定位(本轮新挖出,并更正了一处此前的误指):**
+
+| 组件 | 挑战来源 | 现状 |
+|---|---|---|
+| **arm A 的 token** = `NewPipePoTokenGenerator`→[`PoTokenWebView`](../app/src/main/java/com/kirin/mt/core/youtube/newpipe/PoTokenWebView.kt)(LibreTube 移植) | `[REQUEST_KEY]`→**`/api/jnn/v1/Create`** | `loadDataWithBaseURL` 合成文档 + `blockNetworkLoads=true` ⇒ **没有页面、没有 ytcfg、没有 EVENT_ID**。首笔必 `status=2` |
+| `YoutubeBotGuard.generatePoToken`(桌面链:桌面 watch 页 + `/att/get`) | `/att/get` | **P11-127 后已被淘汰**,现在只服务 NewPipe 主链。⚠️ 上一轮曾把**它**误指为「全移动下仍然可用的杠杆」,实际它正是被淘汰的那条 |
+
+**为什么押注页面上下文**(三条独立证据指向同一处):
+
+1. **历史账**(§5.9.7):唯一拿到 `status=1` 的 token **全部出自真 watch 页自铸** —— r1992 `status=1`×10 /
+   r2002 ×100 / r2030 材料臂 ×19;**3/3**。自铸的(同 87~88B)首笔一律 `status=2`。
+2. **那些页全是 MWEB**:真机 `harvest ident` **37/37 条** = `host=m.youtube.com cfgName=MWEB cfgOs=Android`
+   (身份自洽,正是 P11-127「全移动」期望的形态)。
+3. **外部调研**:BgUtils #44 —— challenge 已绑 `yt.config_.EVENT_ID`,「用 `/att/get` 的 challenge 铸的 token
+   现在会被拒」;PipePipeClient #86 单变量实测「无 EVENT_ID → status 2 @60s;有 → status 1 @65s+」;
+   bgutil #243 成功率 58% → 92%。
+
+**动作(P11-154)**:
+
+- [`YoutubeBotGuard.fetchArmAPageContext(videoId)`](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBotGuard.kt):
+  OkHttp 拉 `https://m.youtube.com/watch?v=`(移动 UA + `VISITOR_INFO1_LIVE`),复用既有 `findYtAtN`/`parseLooseJson`;
+  新增 `scanBalancedObject`(从 `findYtAtN` 原实现提出)与 `findMergedYtcfg`(**合并全部 `ytcfg.set` blob**——
+  旧的正则只取第一个,且非贪婪 `.+?` 在值含 `});` 时会截断)。
+  产出 `PoTokenPageContext(challengeJson, ytcfgJson, eventId, diag)`;**缺任一项即整体作废**(不交付半成品上下文)。
+- [`PoTokenWebView`](../app/src/main/java/com/kirin/mt/core/youtube/newpipe/PoTokenWebView.kt) 双分支:
+  有页面上下文 → **先**注入 `window.yt = {config_: …}`(必须**早于** interpreter eval——VM 启动时读 `window.yt.config_`)
+  **再**喂页面挑战(`interpreterJavascript.privateDoNotAccessOrElseSafeScriptWrappedValue` = interpreter JS 文本,
+  走 `new Function` 内联执行 ⇒ `blockNetworkLoads=true` 依然成立,CDN 取 JS 留在 Kotlin 侧);
+  否则逐字节走原来的 Create 路径。**取不到 ⇒ 整体回落 Create**(不产生半成品状态)。
+- 铸造失败 ⇒ `pageContextDisabled` 置位,本进程后续 mint 回落 Create(**实验自愈**,不让一次故障让 arm A 永久不可用)。
+- **只读探针** [`YoutubeBrowserSession.peekPageContext()`](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBrowserSession.kt):
+  读活 MWEB 文档的 `typeof window.ytAtN` / `EVENT_ID` / `ytcfg`。**不导航、不建会话**。
+  它回答的是 P11-103 的悬案——那句「移动 UA 抓 watch 页拿不到 `ytAtN`」是从 **OkHttp 302 后的 HTML** 推的,
+  而 MWEB 是 Polymer SPA,**启动后的活文档**与初始 HTML 不是一回事,从没测过。
+- `MINTER_WAIT_MS` **同 gate** 6s→9s:页面上下文拉取跑在被 await 的铸造窗口**内**,冷启超 6s 会让 arm A 被
+  **静默跳过**、实验根本没跑(§5.10.3 的自检项)。回退 = 开关置 false,自动恢复 6s。
+- 判据行:首笔 `STREAM_PROTECTION_STATUS` **单独一行**(带 pot 字节数/首字节),`InvalidPoToken diag` 加 `status3Count`
+  ⇒ §5.10.1 #4 的「`status=3` 计数 = 0」不必外部 grep。
+
+**全移动口径自检**:页面 = MWEB + 移动 UA;铸造文档本就 `MobileUserAgent`;会话本就 P11-127 移动 WEB
+(`/player` client=WEB + 移动 UA + Android ctx)。**无任何桌面件**;桌面链明确排除(它 r2034 实测配移动 `/player`
+得 `playability=UNPLAYABLE`,**够不到第 2 步**)。
+
+**两处残留口径差(本轮故意不动,守单变量)**:
+
+1. 页面自称 **MWEB(`clientName=2`)**,会话是 **WEB(`clientName=1`)+ 移动 UA** —— 同在 Android 移动侧,
+   不是「桌面 vs 移动」矛盾。若本轮证明「页面挑战有效但配对仍不够」,下一轮的变量正是**把会话也换成 MWEB client**。
+2. **历史被接受的配置同时换了两个变量**:被接受的 = 页面 URL + 页面 token(r1992/r2002 材料会话);
+   被拒的 = 我们的 URL + 我们的 token(自造会话)。本轮**只换 token 侧**。若 `status=2` 实由 URL/会话侧驱动,
+   本轮不会动它 —— 但日志能判(我们 URL 侧已证能供全量数据:`usable=6297809B/6297809B init/pushed=[140,302]`)。
+
+⇒ **阶梯:本轮测 token 轴;若不动,下一轮测 URL 轴**(即从没跑起来的臂 D / 材料会话)。两轮各守一个变量。
+
+**开关**:`NewPipePoTokenGenerator.ARM_A_PAGE_CONTEXT`(**默认 true**)。失败分支全部有界:
+取不到页 → Create(= 改动前);铸造抛错 → 进程内回落 Create;页面 token 更严 → 本臂中止 → 落健康主链
+(不是 r2038 那种「整场 0 个兜底会话、完全没播」)。
+
+**判据**:`armA 铸造上下文: challenge=page-bgChallenge ytcfg=page eventId=…` 出现 + **首笔 status 由 `2` 变 `1`**
++ `status=3` 计 0 且连续播放 >60s + 两轨 `first media chunk` + 无 `Playback error`。
+**判别项**照 §5.9.8 ①:服务端强制是概率性 A/B,单场 `status=2` 不构成反证;同一视频同一天内既通又死 ⇒ 判服务端强制态。
+
+### 5.11.4 r2053 判读:页面上下文**取得到**但铸造内核**吃不下**;方向校准回「借页面 token」(P11-156)
+
+**判读**(`logs_live_20260921_073305.log` / `_075030.log`,`dev.r2053`):
+
+| # | 结果 | 证据 |
+|---|---|---|
+| ① | **页面上下文取得到**(证伪 P11-103) | `armA page ctx: GET https://m.youtube.com/watch?v=… → 693467B (1343ms) ytcfg=true eventId=ymywau6h **ytAtN=true** program=42311B interpreter=63271B` |
+| ② | **铸造内核吃不下页面挑战** | `P11-154: 页面上下文铸造失败 → 本进程后续 mint 整体回落 Create: Error: **PMD:Undefined**` |
+| ③ | 失败自愈生效(无回归) | 回落 Create → `token 形态 臂A 87B first=0x32 ctx=create` → 首笔 `status=2` → `status=3` → `markWebSabrFailed` → 主链 `status=1` 正常播 |
+
+**② 的机制**:`PMD:Undefined` 出自 `po_token.html` 的 `obtainPoToken` —— `webPoSignalOutput[0]` 为空,即
+`runBotGuard(pageChallenge)` 之后 **snapshot 没把 minter 填进去**。该文件的 `snapshot()` 是**裸调用**
+(只传 `webPoSignalOutput`),那是 LibreTube 为 **Create 的 program** 定制的形态 —— Create 的 program
+确实产出 minter(所以今天照样铸出 87B、`first=0x32`),而**页面 `bgChallenge` 的 program 在这个调用形态下
+不产出**。⇒ 想用页面挑战,得换 snapshot 调用形态(bgutils 正版 `__runSnapshot` 带
+`contentBinding`/`signedTimestamp`),不是换挑战源。
+
+**⚠️ P11-154 的判据埋点也埋错了(已修,P11-155)**:那两行「首笔 status」与 `status3Count` 被写进
+[SabrClient.processUmpStream](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrClient.kt),而**活跃的媒体
+路径是 [SabrMediaFetcher](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt) 自己的
+UMP 解析**(`fetch rn= N REAL …` 那行就是它)⇒ 真机上**两行判据一行都没出**、`status3Count` 恒 0。
+已改为「计数与首笔标记放 **`Entry`**,由活跃路径写入」。**教训**:判据埋点必须落在**实际执行**的那条解析路径上,
+否则「零行日志」会被误读成「实验没生效」——这正是 §5.10.1 要求判据机械可判的原因。
+
+**方向校准(P11-156)**:
+
+到 09-21 为止,两条线的事实是:
+
+| | 产出被接受 token 的次数 |
+|---|---|
+| **我们自己的铸造内核** | **0 / 2** —— 臂 A 的 Create 挑战:每场首笔 `status=2`(7/7 场);P11-154 的页面挑战:连 minter 都产不出 |
+| **页面自己铸**(harvest 采到的 87~88B) | **3 / 3** —— r1992 `status=1`×10 / r2002 ×100 / r2030 材料臂 ×19(§5.9.7) |
+
+历史唯一完整成功场 **r1992** 的配方是「**材料会话 + 页面 token**」(§5.6 表 + §5.9.7 更正),我们离开它
+是因为**材料会话的格式墙**(§5.9.4:只供浏览器那一场选中的档)。而 **臂 B 正是这套配方里唯一缺的那一半**:
+**会话仍用我们自己的 `/player` URL**(服务端因此供**我们要的档**),只把**会话 token** 换成页面铸的那枚
+(`SabrSession.fromSabrData(poTokenBytesOverride=…)`,原始字节直传免 base64 往返)。
+
+**动作**:`WEB_SABR_ARM_B_ONLY`(**默认 true**)—— **只把臂号置 1**:
+
+- **不开轮换、不动 P11-147 闸门** ⇒ `armRotationOpen` 恒 false ⇒ **判死标记完全生效** ⇒ 臂 B 失败一次即
+  永久让位主链。**不会重演 r2038**(四臂轮换 + 闸门压住判死标记 → 连试四条路线、期间不让位 → 整场 0 个
+  兜底会话、完全没播)。
+- 采集腿没交东西(冷启桩/整场零捕获)时 `pageTokenBytes` 为 null ⇒ 会话回落自铸 token ⇒ **与臂 A 行为相同**。
+- 判据行:`臂B(自造+页面 token): 只借 token = NB <形态>` —— `87~88B first=0x32`(minter 输出)= 真 token;
+  `10B first=0x22` = 冷启桩(harvester 已丢弃);`-1B` = 采集腿没交东西。
+
+**判据**:`P11-118 harvest: captured SABR POST … poToken=87~88B → 真 token` + `臂B … 87B first=0x32`
++ **首笔 `STREAM_PROTECTION_STATUS status=1`** + `resp summary` 的 `init/pushed` 含**我们的** itag(格式墙绕开)
++ `status=3` 计 0 且连续 >60s。
+
+**若首笔仍为 `status=2`** ⇒ 判「**token 不是那个变量**」,杠杆在会话/URL 侧 ⇒ 下一轮测 URL 轴(臂 D / 材料会话)。
+
+**成本提示**:臂 B 每次起播先跑一次 harvest(`HarvestColdCapMs=40s` / 重试 `HarvestWarmCapMs=30s`,受
+`MinWebSabrFirstBudgetMs` 与 `FallbackReserveMs=12s` 夹住)。真机 prewarm 已实测 `ok: 9373ms`(WebView 热),
+故冷启那一笔通常只花 watch 页加载 + 播放器铸 token 的时间。
+
+#### 5.11.4.1 r2054 实测:**臂 B 打通**(WEB-SABR 自造会话首次全指标达标)
+
+真机 `logs_live_20260921_083216.log`(`dev.r2054`,视频 `GJj1TN73ZPQ`)。**§5.10.1 的判据全部达成**:
+
+| 判据 | 结果 |
+|---|---|
+| 臂跑到 | ✅ 臂 B(`WEB-SABR 臂B(自造+页面 token): 只借 token = 88B 88B first=0x32 minter 输出(0x32)`) |
+| 借到的是真 token | ✅ harvest `captured SABR POST … poToken=88B → 真 token,命中即返回`(不是 10B 冷启桩) |
+| **首笔 status** | ✅ **`status=1`** —— `首笔 STREAM_PROTECTION_STATUS status=1 (pot=88B first=0x32)` |
+| status 序列 | ✅ **`status=1` ×108,`status=3` ×0**(此前自造会话是 7/7 场首笔 `status=2`) |
+| 格式(绕开格式墙) | ✅ `resp summary: req=247 usable=2032742B/2032742B init=[140, 247] pushed=[140, 247]` —— 服务端供**我们的**档,`usable` 多数 **100%** |
+| 播放 | ✅ `first media chunk` 两轨都有;**281 个媒体块**;`playerState=3(READY)` |
+| 连续时长 | ✅ **08:18:07 → 08:31:31 ≈ 13 分 24 秒**,期间 `Playback error` / `auto-retry` / `stall` / `RELOAD` / `markWebSabrFailed` **全部 0** |
+| 画质 | ✅ ABR 升到 **itag248(1078p)**,末笔 `chunk completed: media itag=248 bytes=428510 sel=0(1078p)` |
+
+**结论**:**「token 就是那个变量」被证实** —— 同一套自造会话(我们自己的 `/player` URL、移动 WEB 身份),
+只把会话 token 从「自铸」换成「页面自铸的那枚 88B」,首笔即从 `status=2` 变 `status=1`,并连续播 13 分钟。
+这也把 §5.9.6「结论一(格式墙与会话 URL 绑死、与 token 无关)」精确化:**格式墙只在材料 URL 上;
+token 与格式两件事互相独立**。历史成功配方「材料会话 + 页面 token」里,**真正承重的是 token 那一半**。
+
+**尚未解决的残留**:
+
+1. **起播税 ~20s**:harvest 第一次尝试撞 `onPageFinished not fired within 8000ms (blank page)` → fail-fast +
+   `丢弃采集 WebView 实例` → 重建重试成功。两次的 `onPageFinished` 实测都在 **~8s**(第一次 8.2s 被杀、
+   重试 8.1s 刚好赶上)⇒ **`BLANK_PAGE_ABORT_MS=8000` 正卡在边界上**。修法候选:①阈值放宽(代价:真空页
+   fail-fast 变慢);②abort 前先看 `document.readyState`/文档长度,别只看时间;③把 watch 页导航并入
+   prewarm(prewarm 目前只加载首页)。
+2. **harvest 采集腿仍是唯一 token 来源**:自铸内核(臂 A / P11-154 的页面挑战)至今 **0/3** 产出被接受的
+   token。若日后要摆脱采集腿,得换 snapshot 调用形态走 bgutils 正版路径(见 §5.11.4 ②)。
+3. **降档/选档行为**:本场 `pushed=[134,140,160,247,248,278]`、`sel` 轨迹在 0(1080p)与其他档间摆动,
+   属 P11-151/152/153 那条「降档钉死 / 不升档」线,与本节的 token 结论无关。
+
+### 5.11.5 r2054 续播场判读:**假阴性空白页闸门把续播从「能成」变成「必败」**(P11-158)
+
+**现象**(`logs_live_20260921_083745.log`,臂 B 构建,续播 `startPos=196000`):续播失败 —— 走完 WEB-SABR
+→ 首笔 `status=2` → `status=3` → `markWebSabrFailed` → `Playback error` → 落 NewPipe 主链(主链 `status=1` 正常)。
+
+**链条(逐帧)**:
+
+| 时刻 | 事件 |
+|---|---|
+| 08:36:38.068 | harvest 第 1 次:导航 watch 页(`startMs=196000&t=196`) |
+| 08:36:46.132 | **`onPageFinished not fired within 8000ms` → fail fast + `invalidateWebView()`** |
+| 08:36:46.132 | 同刻 forensic:`dl=825863`、`rs=interactive` —— **页面完整、播放器在跑** |
+| 08:36:49.468 | 第 2 次(重建 WebView):导航同一页 |
+| ~08:36:53.7 | 页面在放**广告**(`pagead` CORS + 页内「赞助商广告 / 0:27」)→ SABR POST 只带 **10B 冷启桩** |
+| 08:36:59.811 | 桩宽限 [STUB_GRACE_MS]=6s 到期、真 token 未出现 → **丢弃冷启桩 → 返回 null** |
+| 08:36:59.816 | `臂B: 只借 token = -1B` → 回落自铸 token |
+| 08:37:07.622 | 首笔 `STREAM_PROTECTION_STATUS status=2` → 08:37:09 `status=3` → 判死 |
+
+**决定性对照(同一台机器、同一构建)**:
+
+| 场次 | 第 1 次尝试有广告吗 | 结果 |
+|---|---|---|
+| 成功场 `083216` | **无** | `onPageFinished` **8.1s** 才触发(离 8s 线差 **0.1s**)→ 采到 **88B 真 token** ✓ |
+| 续播场 `083745` | **无**(广告只在第 2 次) | 8.2s 触发闸门 → **被杀** ✗ |
+
+⇒ **第 1 次尝试本来能成**(条件与成功场一致:无广告 + 页面已就绪),是**假阴性闸门**把它杀了;而被迫的
+重建重试**正好撞上广告**,那才是真正采不到 token 的一笔。**一个闸门把续播从「能成」变成「必败」。**
+
+**机制**:`BLANK_PAGE_ABORT_MS=8000` 只看「`onPageFinished` 有没有在 8s 内触发」,不看**页面到底有没有内容**。
+而真机实测 `onPageFinished` 正常也要 **~8s**(成功场 8.1s),阈值正卡在边界上,于是**随机**假阴性。
+
+**修(P11-158)**:闸门改为**证据判据** —— 超时后先 eval `DOC_LEN_JS` 复查文档长度:
+
+- 文档 **非空壳**(`dl >= EMPTY_DOC_ABORT_CHARS=20000`)⇒ **不判死**,继续等 SABR POST(轮询窗口由本轮
+  `deadline` 兜底),并打一行 `onPageFinished 迟到(Nms)但文档非空壳(dl=NB) → 不判死`;
+- 文档**真的空/极短** ⇒ 才 fail-fast + 弃实例(原语义保留)。
+
+探测按新常量 `LATE_PAGE_PROBE_INTERVAL_MS=2000` 节流(轮询本身 200ms 一轮,eval 要跨 WebView 线程)。
+
+**判据**:续播场次日志应出现 `onPageFinished 迟到…但文档非空壳` + `harvest: captured SABR POST … poToken=88B
+→ 真 token` + `臂B … 88B first=0x32` + **首笔 `status=1`**;不再出现「8.2s 被杀 → 重建 → 撞广告」这条链。
+
+**仍未修的残留(下一轮候选)**:**广告期采不到 token** —— 移动 watch 页在**前贴片广告**期间只发 10B 冷启桩,
+而 `STUB_GRACE_MS=6s` 撑不过一条 27s 的广告 ⇒ 该场采集必败。候选:①把桩宽限改成**由本轮 deadline 兜底**
+(而不是固定 6s);②给臂 B 的采集多留预算。注:桩本身仍应丢弃(P11-142),这里要的是「**多等一会儿拿真
+token**」而不是「退桩」。
+
+### 5.11.6 r2054 续播场(第二份):P11-158 生效,卡到第二环 —— **桩宽限撑不过前贴片广告**(P11-159)
+
+真机 `logs_live_20260921_092228.log`(`dev.r2054` + P11-158,续播 `startPos=196000`)。
+
+**P11-158 生效(正面)**:
+
+```
+09:21:24.326  harvest: onPageFinished 迟到(8136ms)但**文档非空壳**(dl=682063B) → 不判死,继续等 SABR POST
+```
+
+⇒ 假阴性闸门不再杀好页,页面继续正常加载(`dl` 后续涨到 897691、`ytcfg=true`)。
+
+**但这次卡在第二环**:
+
+| 时刻 | 事件 |
+|---|---|
+| 采集全程 | `captures` 只到 **1**,且是 **10B 冷启桩**;同段 console 有 `赞助商广告` / `pagead` ×4 |
+| 09:21:32.457 | `STUB_GRACE_MS=6000` 到期 → `丢弃冷启桩 → return null`(采集共 **16.3s**) |
+| 09:21:32.460 | 因桩被丢弃置了 `lastStubOnly` → 上层**跳过热重试**(P11-149)⇒ 无第二次机会 |
+| 09:21:34.5 | `臂B: 只借 token = -1B` → 回落自铸 token(87B) |
+| 09:21:41.9 | 首笔 `status=2` → 09:21:42.3 `status=3` → 判死 → 落主链(`status=1` 正常播) |
+
+**机制**:移动 watch 页在**前贴片广告**播放期间,播放器只发**冷启桩**版本的 SABR POST(真 token 要等内容
+起播才铸)。而旧实现「拿到桩后再等固定 6s」到期即 `return null` —— 撑不过一条 27s 广告。
+
+**关键读数**:这一轮采集窗口其实有 **40s**(起播预算派生),却因 6s 提前退出**只用了 16.3s**
+⇒ 广告一结束本可拿到的真 token **永远等不到**。
+
+**修(P11-159)**:删掉那条 6s 提前出口 —— 桩**只作放弃信号,不再决定何时放弃**。拿到桩后继续轮询到本轮
+`deadline`(窗口本身已被 `MinWebSabrFirstBudgetMs` / `FallbackReserveMs` 夹住),期间任何带真 token 的 POST
+都被上面的「命中即返回」接走。**仍然不退桩**(P11-142 语义不变,到期处置不变)。
+`STUB_GRACE_MS` 标 `@Suppress("unused")` 保留 + 注释来龙去脉,便于后续检索。
+
+**代价(诚实记录)**:若页面**始终**铸不出真 token(非广告场景),现在会**等满窗口**(冷 40s / 热 30s)
+才落自造路径,而旧实现 ~6s 就落 —— 这是「多等」换「广告场景不再必败」。若真机上发现等满窗口的场次变多,
+下一轮把窗口按「是否处于广告」自适应(页内可探测广告态时再延长)。
+
+**判据**:续播应出现 `harvest: captured SABR POST … poToken=88B → 真 token` + `臂B … 88B first=0x32`
++ **首笔 `status=1`**;广告场景下应看到**桩之后继续等**、并在广告结束拿到真 token。
+
+#### 5.11.6.1 r2054 续播场(第三份)实测:**P11-158 + P11-159 双修生效,续播打通**
+
+真机 `logs_live_20260921_093758.log`(续播 `startPos=196000`):
+
+```
+09:36:38.082  onPageFinished 迟到(8167ms)但**文档非空壳**(dl=837328B) → 不判死        ← P11-158 生效
+09:36:39.089  SABR POST 只带冷启桩(poToken=10B) → 继续等真 token(P11-159:等满本轮窗口)  ← P11-159 生效
+09:36:47.625  captured SABR POST status=200 poToken=87B → 真 token,命中即返回           ← 广告结束后拿到
+09:36:47.648  臂B: 只借 token = 87B 87B first=0x32 minter 输出(0x32)
+09:36:59.272  首笔 STREAM_PROTECTION_STATUS status=1 (pot=87B first=0x32)               ← ★
+```
+
+**注意时间差**:桩 `09:36:39.089` → 真 token `09:36:47.625` = **8.5s**。旧的 6s 宽限会在 **09:36:45.089**
+放弃 ⇒ **差 2.5s 就漏掉**。这一轮不是「顺手修」,是**正好卡在成败边界上**。
+
+**会话健康度**:`status=1` ×10 / `status=3` **0**;`Playback error`/`auto-retry`/`stall`/`markWebSabrFailed`
+**全 0**;**续播位置正确接上**(`first media chunk loadPositionMs=196964`、`playerState=3(READY) pos=196974`);
+`resp summary` 全部 `usable = 100%` 且 `init/pushed` 含我们的档;末笔升到 **itag308(1440p)**。
+
+⇒ **WEB-SABR 现在「新播 + 续播」两条路都立住**(新播见 §5.11.4.1)。
+
+**起播耗时构成(同场实测,`loadRequest` → 首帧 = 51.4s)** —— 下一轮优化的靶子:
+
+| 阶段 | 时长 | 说明 |
+|---|---|---|
+| loadRequest → prewarm 完成 | 10.0s | 含 `youtubeIntro` + harvest WebView 冷启 5.6s |
+| 桌面 watch 页抓取 + **桌面 BotGuard 铸 token**(128 chars) | 5.1s | `YoutubeBotGuard.generatePoToken`(resolver 顶部,给主链兜底用;臂 B 用不到) |
+| → harvest 开始 | 6.8s | NewPipe getInfo 等 |
+| **harvest** | **17.7s** | 页面加载 8.2s + **广告等待 8.5s**(不可压缩的部分) |
+| 会话构建 | 2.3s | /player + n-solver |
+| 会话就绪 → 首帧 | **9.4s** | 第一笔 SABR 请求往返 |
+
+**优化候选(按收益)**:①**把 harvest 与前段(BotGuard 铸 token / getInfo)并行** —— 两段互不依赖,
+现在串行吃掉了 22s + 17.7s,重叠后约可省 10~17s;②桌面 BotGuard 那枚 token 在臂 B 路径上只是**兜底**,
+可惰性化或与 harvest 并行(省 5~13s,波动大);③首帧前 9.4s 是首笔 SABR 往返,属网络/服务端,暂无可为。
+
+### 5.11.7 r2054 续播多场实测:SABR 请求**继承了 15s readTimeout**,把自适应上限架空(P11-160)
+
+真机 `logs_live_20260921_094658.log`(连续续播 3 场:`iTY92w_uPys @415s` ×2 尝试 + `Ft917Ifvz2c @446s`)。
+
+**总体**:`status=1` ×32 / `status=3` **0**;`Playback error` / `markWebSabrFailed` **0**;末笔升到 **1080p/1440p**。
+**3 场里 2 场直接成功,1 场偶发失败后自愈**(stall 看门狗重试 → 新会话成功)。
+
+**失败那场的逐帧**(`iTY92w_uPys @415s` 第 1 次):
+
+```
+09:40:26.313  fetch rn=0 itag=140 seg=0 pot=87B …            ← 会话已建好、请求已发出
+09:40:42.862  fetch rn=0 exception: timeout (fail=16533ms bwNow=0K)   ← 零字节等满 16.5s 被杀
+09:40:42.864  SabrDataSource open: seg=0 itag=140 SocketTimeoutException → evict sid=…
+09:40:59.503  fetch rn=1 exception: timeout (fail=16622ms bwNow=0K)   ← 同一会话第 2 笔也一样
+09:40:52.406  stall detected, auto-retry #1 @pos=415523ms startup=true → 重建 → 09:41:19 首笔 status=1 ✓
+```
+
+**决定性对照**(同日其它正常会话的首包)**:
+
+| 会话 | `rn=0` | `rn=1` |
+|---|---|---|
+| 成功场 09:41 | `REAL 4569ms` | `REAL 3565ms` |
+| 成功场 09:46 | `REAL 7204ms` | `REAL 4457ms` |
+| **慢启动场 09:40** | `timeout fail=16533ms` | `timeout fail=16622ms` |
+
+⇒ 正常首包 **3.5~7.2s**,16.5s 不是常态,是**服务端偶发慢启动**(与既有记录「首包偶发 16~20s」一致)。
+
+**根因(配置事故,不是续播逻辑)**:SABR 走的是共享 YouTube client
+([BiliHttpClientFactory.baseBuilder](../app/src/main/java/com/kirin/mt/core/network/BiliHttpClientFactory.kt#L68-L76)),
+它带 `connect/read/write = 15s` —— 那是给**小 API 调用**定的。而 [SabrMediaFetcher](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt)
+**只覆盖了 `callTimeout`(P11-134/P11-153 的自适应上限),没覆盖 `readTimeout`** ⇒
+服务端首包一旦超 15s,**读超时抢先处决**,`callCapMs`(≤1080p 18s / ≥1440p 40s)**根本用不上**
+(16.5s ≈ 15s read + 建连,实测两次都落在这个数上)。P11-134 那段注释还写着「playback client 是
+`callTimeout(0)`、只有 per-read 15s」—— 那是加自适应上限**之前**的状态,注释与实现已经脱节。
+
+**修(P11-160)**:新增两个按档高**预建的 client 克隆**(`clientLowCap` / `clientHighCap`),
+把 `readTimeout` 抬到与 `callCapMs` **同一值**,于是唯一的界就是 P11-153 那个自适应上限 ——
+「零字节慢启动」与「慢滴」都归它管,不再有「与档高无关的 15s 暗规则」。克隆与父 client 共享连接池/
+Dispatcher,预建复用,不进热路径分配。
+
+**判据**:慢启动场次应看到 `fetch rn=0 REAL …`(而不是 `exception: timeout`)、不再 `evict`、
+不再触发 `stall detected … startup=true`;正常场次的带宽/耗时分布不变。
+
+**教训(与既有 `probe-timeout-check-before-fallback` 同类)**:**改「上限/回退」逻辑前,必须先确认这条链
+实际生效的超时是哪一个** —— 共享 client 的三件套(`connect/read/write`)很容易在只改 `callTimeout` 时
+被漏掉,而它往往**先**触发。
+
+---
+
+### 5.11.8 r2054 起播时间轴实测 + **harvest 提前并发启动**(P11-161,**已回退**)
+
+> ⚠️ **本节结论已作废(2026-09-21,回退提交 `5d22c181`)**。时间轴数据本身有效(仍是起播优化的靶子),
+> 但**不要照抄这里的改法** —— 真机实测该改动导致播放劣化,见下方「回退原因」。
+
+**实测时间轴**(`logs_live_20260921_093758.log` 续播场,`loadRequest → 首帧` = **51.4s**):
+
+| 起 | 止 | 阶段 | 时长 |
+|---|---|---|---|
+| 09:36:07.9 | 09:36:09.5 | 会话预热(cookie/visitor) | 1.6s |
+| 09:36:09.5 | 09:36:23.1 | **桌面 BotGuard 铸 token**(watch 页 1.27MB + `/att/get` + interpreter + snapshot + GenerateIT) | **13.6s** |
+| 09:36:23.1 | 09:36:29.9 | NewPipe getInfo 等 | 6.8s |
+| 09:36:29.9 | 09:36:47.6 | **harvest** | **17.7s** |
+| 09:36:47.6 | 09:36:49.9 | 会话构建(/player + n-solver) | 2.3s |
+| 09:36:49.9 | 09:36:59.3 | 会话就绪 → 首帧(首笔 SABR 往返) | 9.4s |
+
+(prewarm 的 10.0s 已在另一条协程里与上面重叠,不重复计。)
+
+**当时的判断**:后两段(20.4s)与 harvest(17.7s)**互不依赖**(harvest 只要 videoId/起始位置/预算)却
+串着跑 ⇒ 白付约 20s。改法是在**桌面 BotGuard 铸 token 之前**并发启动 harvest,`buildWebSabrFallback`
+改为 `await` 那一份;为避免 `withContext` 里 `async` 的 structured-child 语义(resolve 返回前会等它跑完),
+新增了独立的 `earlyWorkScope`(fire-and-forget)。
+
+**回退原因(真机 `logs_live_20260921_101056.log`)**:播放明显劣化 ——
+
+| 读数 | 值 |
+|---|---|
+| WEB-SABR 会话 | 3 场 |
+| `fetch rn=… exception: timeout (fail=18xxxms bwNow=0K)`(零字节等满 18s 被切) | **6 次** |
+| 拿到「首笔 `status=1`」的会话 | **仅 1 场** |
+| harvest 采到真 token(`88B → 真 token,命中即返回`) | 4 次(采集腿本身是好的) |
+| 取消异常 | `P11-161 提前 harvest await 失败: **The coroutine scope left the composition**` |
+
+两条同时出现:
+
+1. **提前 harvest 的 Deferred 被「composition 取消」干掉**。`The coroutine scope left the composition` 是
+   Compose 的 `LeftCompositionCancellationException`(见 [YoutubeRepository.kt:451](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeRepository.kt#L451)
+   的既有注释)—— 说明「用独立 scope 就与 UI 生命周期无关」这个假设**在某处不成立**:harvest 链或其调用方
+   仍带着 composition scope 的上下文。**这一条本身就是个待查的机制**。
+2. **会话侧大面积零字节超时**(6 次)。注意:`bwNow=0K` 这类零字节停顿**在 P11-161 之前就存在**
+   (见 §5.11.7 那笔 `fail=16533ms bwNow=0K`),所以「都不能播」**可能部分是服务端当刻的强制态**
+   —— 文档多处记过服务端强制是**概率性 A/B**、跨场次对比无意义(§5.9.6 / §5.9.8)。故回退后若**仍**不能播,
+   说明主因不在并发改动,而在那个零字节停顿(那是 P11-160 试图覆盖、但 18s 仍不够的场景)。
+
+**动作**:回退(提交 `5d22c181`,只回退代码逻辑;本条记录随后补回)。**下一步不建议盲目重试并发** ——
+先做两件取证:①那条 composition 取消到底从哪来(谁把 UI 的 Job 上下文带进后台 scope);
+②零字节停顿的真实上限(把 18s 抬到多少才够 / 是否该在停顿期不切会话)。
+
+---
+
+### 5.11.9 对 FreeTube 源码逐行核:**超时三处缺失**(P11-162)
+
+**起因**:r2054 真机 `logs_live_20260921_143130.log` 出现一次 **~99 秒静默卡顿**(见下),用户提示「看看
+FreeTube 是怎么解决加载速度问题」。遂对 `E:\GITHUB\FreeTubeMt`(桌面)与 `E:\GITHUB\FreeTubeAndroid`
+逐行核,结论:**FreeTube 在关键路径上处处显式设超时,而我们在三处漏了**。
+
+**(1) 99 秒卡顿的现场**:
+
+```
+12:08:43  YtBotGuard: watch page data → postJson /att/get
+12:08:46  YtBotGuard: challenge ok: source=att-get interpreter=63271B program=39003B global=trayride
+          ↓ 静默 99 秒,期间零 YtBotGuard 日志(interpreter 用 <script src> 加载中)
+12:10:25  YtJsExecutor: intercept failed: Broken pipe
+12:10:25  YtResolver: PO token unavailable; degrade to no-token      ← 整次解析被拖了近百秒
+12:10:32  用户重试 → 一切正常
+```
+
+`generatePoToken` 自己有 `withTimeoutOrNull(OverallTimeoutMs = 20s)`,**这次没兜住** —— 阻塞读占着线程,
+不在可取消的挂起点上。
+
+**(2) 三处缺失(对 FreeTube 逐行核出的差异)**:
+
+| # | 我们的实现 | FreeTube | 后果 |
+|---|---|---|---|
+| a | [`assets/youtube/bgutils.js`](../app/src/main/assets/youtube/bgutils.js) 的 `__runSnapshot` 调 `client.snapshot({ webPoSignalOutput })` —— **不传超时**,走 bgutils 默认 **3s**(`defaultTimeout = 3e3`);而它上面两行的注释**却写着**「对齐 FreeTube 的 `10_000`」 | `botGuardScript.js`:`snapshot({ webPoSignalOutput }, **10_000**)` | 注释与代码不符:**少 7 秒余量**,冷启/慢机上 VM 一旦 >3s 就 `BgError("VM operation timed out")` ⇒ 整次铸造失败(落在每次解析的关键路径上) |
+| b | [`po_token.html`](../app/src/main/assets/po_token.html) 的 `snapshot()` 直接调 `asyncSnapshotFunction`、**不设任何超时** | 同上(10s) | VM 不回调则 Promise **永不 settle** ⇒ 无界挂起 |
+| c | [`YoutubeJsExecutor.shouldInterceptRequest`](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeJsExecutor.kt) **自己把请求代发**(`URL(urlStr).openConnection() as HttpURLConnection`),而 `connectTimeout`/`readTimeout` **默认都是 0 = 无限** | 只用 `webRequest.onBeforeSendHeaders` **改请求头**,网络 I/O 交给 **Chromium 原生栈**(自带超时);只对 `google.com/js/*` + `youtubei/*` 两个模式生效 | **结构上不可能卡这么久** —— 这就是上面 99 秒的直接原因 |
+
+**(3) FreeTube 解决「加载慢」的四招**(比超时更值得借鉴,`FreeTubeAndroid/src/main/poTokenGenerator.js`):
+
+1. **只改头、不代发**(见上 #c);
+2. **mint 串行化**(Promise 队列 `enqueueAsyncFunction`)—— 不并发铸造;
+3. **拿到 token 就返回,不等清理** —— 原文注释:*"schedule the cleanup separately, so that we can return
+   the potoken without having to wait until the cleanup is done"*;
+4. **会话长期复用**(`session.fromPartition('potoken')`,不每次新建)。
+
+**(4) 本轮动作(P11-162,只做有界化,不动行为)**:
+
+- **a**:`bgutils.js` 的 snapshot 补上**显式 `10_000`**,并把注释改成与代码一致;
+  连带 `YoutubeBotGuard.PollTimeoutMs` **6s → 12s**(轮询上限**必须大于** snapshot 超时,否则会在 VM
+  还在跑时先放弃;整段仍由 `OverallTimeoutMs=20s` 兜住);
+- **b**:`po_token.html` 的 `snapshot()` 加 **10s 超时**(`PMD:SnapshotTimeout(10000ms)`);
+- **c**:拦截器代发的连接补 **`connectTimeout=8s` / `readTimeout=15s`**,超时即抛错 → catch 回落
+  `super.shouldInterceptRequest`(**交给 Chromium 原生栈自己取** —— 正是 FreeTube 的做法);
+  另加一行慢请求留证(`intercept slow: Nms <url>`,>2s 才打,便于区分「网络慢」与「真挂死」)。
+
+**未做(留待有证据再动)**:把 `google.com/js/*` 的 interpreter 加载改成**直接 `return null`**(完全不代发)。
+那是更贴近 FreeTube 的形态,但会丢掉我们目前注入的 `referer/origin/Sec-Fetch-*` 头,风险未验证 ——
+先用超时把它**变有界**,不赌行为变化。
+
+**判据**:慢网络场次下 `intercept failed: Broken pipe` 之前的静默时长应从 **99s 量级**降到 **≤15s**;
+`PO token unavailable; degrade to no-token` 不再拖慢整次解析;正常场次的铸造耗时分布不变。
+
+**教训(编译期踩的坑,记一笔)**:**Kotlin 的块注释是嵌套的**。本轮在 KDoc 里写了
+`` `google.com/js/*` `` —— 其中的 `/*` **开了一个嵌套注释**,于是外层 KDoc 永不闭合,CI 报
+`Unclosed comment` + 一串 `Unresolved reference`(所有 companion 常量"消失")。**写注释时避免在
+KDoc/块注释里出现 `/*` 字面量**(用"google.com/js 目录"这类写法)。JS 侧无此问题(JS 块注释不嵌套)。
+
+---
+
+### 5.11.10 r2054 三段连续重试判读 + **FreeTube 为什么"没问题"**(P11-163)
+
+**起因**:用户报「似乎还是很慢」,并问「FreeTube 为什么没问题」。
+
+#### (1) 真机判读(`logs_live_20260921_171235.log`,同一视频连着重试 3 次)
+
+| 尝试 | 关键序列 | 结果 |
+|---|---|---|
+| **第 1 次** 17:10:32 | `17:11:07.944 fetch rn=0 itag=140 seg=0 pot=87B` 发出 → **18 秒零字节** → `17:11:25.973 fetch rn=0 exception: timeout (fail=18006ms bwNow=0K)` → `SabrDataSource open: seg=0 InterruptedIOException: timeout → evict` → **`17:11:25.997 rn=1` 立刻重试** → `17:11:30.348 fetch rn=1 REAL 5114720B 4349ms → 9Mbps` → `首笔 status=1` | **58 秒**才出画面 |
+| 第 2 次 17:11:34 | `17:11:55.629 rn=0 REAL 4116ms` → 首笔 **`status=2`** → `17:11:56.148 rn=1 REAL 135B 462ms` → **`status=3`** → `markWebSabrFailed` → 连续 `135B + status=3` ×22 | 判死 → 落主链 |
+| 第 3 次 17:12:07 | 直接 `source=NewPipe(primary)` → 17:12:21 出帧 | 播了 |
+
+**决定性读数**:第 1 次里——**同一会话、同一 token、同一个段:第一笔 18 秒零字节,重试 4.3 秒就成了**。
+⇒ 这不是"服务端不给",是**第一笔请求偶发落在零字节停顿上,而重试有效**。
+
+**而那 18 秒是我们自己让它等的**:P11-160 把 `readTimeout` 抬到与 `callTimeout` 同值(18s/40s),于是每次
+遇到这种停顿都**老老实实等满 18 秒**才重试。
+
+**第 2 次是另一回事**:首笔 `status=2`(尽管借到真 88B token、`first=0x32`)→ `status=3` 判死 ——
+属文档 §5.9.8 ① 记过的**服务端概率性强制**,不是我们能改的(判别项:同一视频同一天内既通又死)。
+
+#### (2) FreeTube 为什么"没问题"——**它比我们更"能等",不是更"快"**
+
+对 `FreeTubeMt`(桌面,Shaka + SABR 插件)与 `FreeTubeAndroid` 逐行核:
+
+| | FreeTube | 我们 |
+|---|---|---|
+| 请求超时 | **`streaming.retryParameters.timeout = 30s`**(SABR/本地 API 路径 **60s**,`ft-shaka-video-player.js:2855-2868`) | 18s(≤1080p)/ 40s(≥1440p) |
+| 超时后的动作 | **只重试这一笔请求**(Shaka `NetworkingEngine` 按 `retryParameters` 自动重试) | **`evict` 整个会话** + 由播放器 error-retry 链重建 |
+| 静默重置 | 有 `createTimeoutController(cb, timeoutMs)` + `resetTimeoutOnce()`(`SabrSchemePlugin.js:264-274`)—— 但**只重置一次**,`nextRequestPolicy.backoff` 等待后重置 | 无(OkHttp `readTimeout` 天然按字节重置) |
+| snapshot 超时 | 显式 **10_000**(bgutils 默认只有 **3s**) | 本轮(P11-162)才补上 |
+
+**结论(校正用户的印象)**:**FreeTube 没有"固定 5 秒"** —— 它的数是 **30s / 60s**,bgutils 的默认是 **3s**,
+FreeTube 覆盖成 **10s**(§5.11.9)。也就是说在「第一笔零字节停顿」这个具体场景上,**FreeTube 比我们更能等**:
+它等到 30s 才动手,我们 18s 就切;若服务端 20s 才回,他们是**正常拿到数据**,我们是**切掉 + 重建会话**。
+
+⇒ **他们"没问题"更可能是两件事叠加**:①**超时后只重试单笔请求、不拆会话**(代价小得多);
+②桌面网络路径(非移动/非 CN 出口)本身遇到这种停顿的概率低。**不是他们解决了停顿。**
+
+#### (3) 据此的修法方向(P11-163,待确认)
+
+关键事实:**重试只要 4.3 秒就成** —— 所以"早切早重试"严格优于"等满 18 秒"。
+OkHttp 的 `readTimeout` 语义正是「**多久没有新字节**」(每字节重置),天然就是"静默超时",与"整调用上限"分离:
+
+- `readTimeout`(静默)→ **8s**:零字节停顿 8 秒即切、立刻重试;慢滴下载不受影响(字节一直在来);
+- `callTimeout`(整调用)→ 保持 P11-153 的自适应 18s/40s;
+- 依据分布:**成功的首笔总耗时 3.5~7.2s**,**停顿的都 ≥16.5s** —— 8s 正落在空档里。
+
+另有一条更接近 FreeTube 的思路(代价更小、可后做):**请求超时后不 `evict` 整个会话**,只重发这一笔
+(Shaka 的做法)—— 但真机第 1 次显示 `evict` 后同一 sid 的 `rn=1` 仍成功,故**当前 evict 未观测到额外代价**,
+优先级低于静默超时。
+
+---
+
+### 5.11.11 「开字幕 → 掉到 144p」:选择集重建时初值落最低档(P11-164)
+
+**起因**:用户报「又降档到底,手切没问题」(TV `BRAVIA_AE2`,`dev.r2067`,`logs_live_20260921_193433.log`)。
+
+**现象与相关性(2/3 次复现,精确到毫秒)**:
+
+| 字幕操作 | 紧跟着 |
+|---|---|
+| `19:17:04.271 BiliSubtitle: 字幕已选: id=0 lang=zh asr=false` | `19:17:04.305 YtSabrChunk: updateTrackSelection: sel 0(1080p) → **19(144p)** len=20` |
+| `19:19:17.910 BiliSubtitle: 字幕已选: id=0 lang=zh asr=false` | `19:19:17.941 updateTrackSelection: sel 0(1080p) → **19(144p)** len=20` |
+| `19:23:51.974` | `19:23:51.985 updateTrackSelection: sel 0(1080p) → 0(1080p) len=1`(这条是**音频**组,len=1,与视频无关) |
+
+**掉下去之后的连锁**(`19:17:06 → 19:17:17`,6 次切档):
+
+```
+19:17:06.434 cleanup dropped formats=[299] (audio=140 video=160)    ← 1080p 轨缓冲被丢
+19:17:14.776 cleanup dropped formats=[160] (video=133)             ← 每 0.6~8s 换一档
+19:17:15.385 cleanup dropped formats=[133] (video=134)
+19:17:16.011 cleanup dropped formats=[134] (video=135)
+19:17:16.976 cleanup dropped formats=[135] (video=298)
+```
+一路从 144p 爬回 720p;期间 `buffer-critical downgrade: bufS=0s` ×2(切档丢缓冲 ⇒ 缓冲读 0 ⇒ 再降档)、
+`downgrade fail cooldown: 720p excluded 90s` ×2 —— 即**用户看到的「砸到底再慢慢爬、还反复掉」**。
+
+**根因(一行代码)**:
+[HeightAwareAdaptiveTrackSelection.initialSelectedIndex()](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/HeightAwareAdaptiveTrackSelection.kt#L330-L331)
+
+```kotlin
+private fun initialSelectedIndex(): Int {
+  val lock = startupLockHeightProvider() ?: return length - 1   // ← 无起播锁 ⇒ 返回「最后一个」= 最低档
+  ...
+}
+```
+
+`startupLockHeight` 由 UI 在起播时置为 `startQualityHeight`(`MobilePlayerScreen.kt:1048` /
+`PlayerScreen.kt:2117`),**起播锁释放后置 null**;而**开字幕会改变 track group ⇒ ExoPlayer 重跑
+`selectTracks` ⇒ 新建一个 selection 实例**([SabrMediaPeriod.selectNewStreams](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaPeriod.kt#L256-L278))
+⇒ 新实例懒算 [selected](#L257-L263) ⇒ 锁已松 ⇒ **直接落最低档**。
+
+**为什么「手切没问题」**:手动选档走 `selected` 的 **setter**(`applyStartupLock(value)`),不经过
+`initialSelectedIndex()` ⇒ 不受重建影响。
+
+**修法(已实施,P11-164)**:新增进程级记忆 `SabrStreamRegistry.rememberedVideoItag(videoId)` /
+`rememberVideoItag(videoId, itag)`(按 videoId,`ConcurrentHashMap`),选档类的 `selected` **setter 在夹锁后
+回写**当前 itag,`initialSelectedIndex()` 在 `lock == null` 时**先按记忆 itag 精确匹配**、匹配不到才退回
+`length - 1`。接线在 `HeightAwareAdaptiveTrackSelectionFactory.createAdaptiveTrackSelection` 的两个闭包里
+(与既有 `serverServedItagsProvider` / `materialSessionProvider` 同一口径)。**记忆放在 registry 而不是
+selection 实例里 —— 因为实例正是会被重建的那个东西。**
+
+**判据**:开/关字幕时日志里**不再出现** `sel N(1080p) → 19(144p)`;`cleanup dropped formats` 不再被字幕
+触发连发;不再出现由切档引起的 `buffer-critical downgrade: bufS=0s`。
+
+---
+
+### 5.11.12 r2068 判读:**冷启桩绕过「丢弃」进了会话**(P11-165)
+
+**起因**:用户报「怎么重载了,SABR 兜底」(`logs_live_20260921_210436.log`,TV `BRAVIA_AE2`,`dev.r2068`)。
+两场都走「WEB-SABR 建好 → 死 → `Playback error` → auto-retry → 落 NewPipe 主链」,但死因不同:
+
+| 场次 | 首笔 | 结果 |
+|---|---|---|
+| 20:51:52(i2fGDdM21EM) | `首笔 status=2 (pot=**89B** first=0x32)` | 6.8s 后 `status=3` → 判死(**服务端概率性强制**,§5.9.8 ①) |
+| **21:00:31**(pRp2zSGDilY) | `首笔 status=2 (pot=**10B** first=0x22)` | 50s 后 `status=3` → 判死(**我们的 bug**,见下) |
+
+**21:00 那场的链条(决定性)**:
+
+```
+21:00:26.276  YtSabrHarvest: 轮询到期(本轮窗口用满),只有冷启桩 POST(poToken=10B)→ 丢弃,返回 null(落自造材料)
+21:00:26.284  YtResolver: P11-118 harvest: captured SABR POST status=200 bodyB64=2680B elapsed=30060ms   ← ★ 上层仍拿到「捕获」
+21:00:26.408  YtResolver: P11-118 harvest material: poToken=**10B** ustreamerCfg=1319B cpn=… audio=251 video=401
+21:00:26.409  臂B: 只借 token = **10B** 10B first=0x22 冷启桩(0x22)
+21:00:37.240  首笔 STREAM_PROTECTION_STATUS status=2 (pot=10B first=0x22) → status=3 → 判死
+```
+
+**根因**:**P11-142 的「丢弃冷启桩」被一条兜底路径绕过**。采集循环里那个兜底位
+(`nonPostCapture`,`P11-118` 引入,用途是「页只发了 GET(DASH)、无 SABR POST」时让调用方知道)
+**判断写在 POST 分支之外** ⇒ **桩 POST 也被记进兜底位**;到期处置先打「丢弃冷启桩」,**紧接着
+`nonPostCapture?.let { return it }` 把同一个桩 POST 交了出去**。上层
+`harvestSessionMaterial` 的材料判据只看「poToken/ustreamerCfg **非空**」—— 10B 桩两个字段都非空
+⇒ 被当材料 ⇒ 臂 B 把桩当**会话 token** ⇒ 首笔 `status=2` ⇒ 必然 `status=3`。
+
+**修(P11-165)**:
+
+1. **采集侧**:兜底位**只收非 POST**(`if (!isPost && nonPostCapture == null)`),并在到期处置再加一道
+   `takeIf { !isPost }` 防回归;
+2. **消费侧硬闸**:`harvestSessionMaterial` 在解出材料后**独立拦一次** `decoded.poToken.size <
+   [MIN_USABLE_HARVEST_PO_TOKEN_BYTES](80)`(日志 `P11-165 harvest: poToken 只有 10B … → 拒绝该材料`);
+3. **单一口径**:阈值提成**文件级 `internal const`**,采集侧与消费侧共用一份(原 `MIN_REAL_PO_TOKEN_BYTES`
+   改为引用它)—— 避免「采集侧判桩、消费侧照收」这类分叉。
+
+**判据**:日志不再出现 `harvest material: poToken=10B` / `臂B … 10B first=0x22`;只有桩的场次应看到
+`丢弃冷启桩 → 返回 null` **之后** `harvestSessionMaterial` 返回 null(会话用自铸 token,行为与臂 A 相同)。
+
+---
+
+### 5.11.13 SABR 请求:**静默超时与整调用上限分离**(P11-166)
+
+**起因**:§5.11.10 的判读 —— `logs_live_20260921_171235.log` 第 1 次尝试
+`17:11:07.944 fetch rn=0`(init 请求)→ **18 秒零字节** → `timeout (fail=18006ms bwNow=0K)` → evict →
+**`rn=1` 立刻重试 4.3 秒就成了**(`REAL 5114720B 4349ms`)。即**那 18 秒是我们自己在等的**,而重试只要 4 秒。
+
+**根因**:P11-160 把 `readTimeout` 抬到与 `callTimeout` 同值(18s/40s) —— 方向对(修掉"15s 读超时抢先
+处决"),但**代价没被算进去**:遇到零字节停顿时每次都老实等满 18 秒才重试。
+
+**修法(P11-166)**:**OkHttp 的 `readTimeout` 语义就是「多久没有新字节」**(每收到一字节即重置),正是
+"零字节停顿"的判据,与"整调用上限"本就该分开:
+
+| | 值 | 语义 |
+|---|---|---|
+| `readTimeout`([SabrSilenceTimeoutMs](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt)) | **8s** | 静默 8 秒 → 切断 → 立刻重试 |
+| `callTimeout`(P11-153) | 18s(≤1080p)/ 40s(≥1440p) | 整调用上限,**不变** |
+
+依据分布:**成功的首笔总耗时 3.5~7.2s**、**零字节停顿的都 ≥16.5s** ⇒ 8s 落在空档里。**慢滴下载不受影响**
+(字节一直在来,`readTimeout` 不断重置)。实现上把 P11-160 的两个克隆(`clientLowCap`/`clientHighCap`)
+合并为**一个** `sabrHttpClient`(readTimeout 固定 8s),`callTimeout` 仍由 `call.timeout()` 每次按档高设。
+
+**判据**:慢启动场次应看到 `fetch rn=0 exception: timeout (fail≈8xxxms bwNow=0K)`(而不是 18xxxms)后
+**立刻重试成功**;`loadRequest → first media chunk` 总耗时在那种场次下应缩短约 10 秒;正常场次的
+带宽/耗时分布不变。
+
+**对照 FreeTube(§5.11.10)**:它用 30s/60s 的**整请求**超时 + Shaka 自动重试,遇到同样的停顿只会
+**更慢**,而且超时后**不拆会话**。我们这条"静默 8s + 单笔重试"的形状比两者都优 —— 前提是重试确实有效
+(真机两条独立证据:4.3s / 4.1s 即成)。
+
+---
+
+### 5.11.14 「暂停一会儿 → 砸到 144p」:**用户暂停被当成零供给样本**(P11-167)
+
+**起因**:用户报「又降档 144 了,这次视频我手动暂停了一会儿」(`logs_live_20260921_214100.log`,TV
+`BRAVIA_AE2`,`dev.r2071`)。
+
+**现象与链条(决定性两行)**:
+
+```
+21:39:57.623  sel=1 bitrate=12106890(2160p) bufS=9.9 bw=16451K sus=4372K cap=19163K meas=11921K
+21:39:57.625  buffer-critical downgrade: bufS=9s itag401/2160p → 1440p@10520121     ← 先正常降一档
+21:40:04.963  bw gap counted: 30000ms (raw=113358ms backoff=0ms coast=38366ms runway=48366)   ← ★ 暂停 113 秒
+21:40:04.963  fetch rn=15 REAL 11549178B 7321ms → 12Mbps est=**0K**                  ← 12Mbps 的请求,est 却是 0
+21:40:05.026  downgrade 1440p → 144p: est=**0K** sus=-1 bufS=8s                      ← ★ 直落最低档
+21:40:06.106  sel=23 bitrate=62219 … bw=0K meas=0K
+（之后 est 长时间停在 1.1~1.7Mbps ⇒ 卡在 144p,因为新请求都是 144p 小段,多为 59~132KB,被
+ [REAL_BW_MIN_BYTES]=100KB 过滤或吞吐极低;用户体感「降档到底」）
+```
+
+**根因(两处叠加,都在 [SabrMediaFetcher](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt))**:
+
+1. **`recordFetchGap` 把用户暂停当零供给样本入账**:`addRealBwSample(0L, countedMs)` —— `coast` 只按
+   `runway - 10s` 扣,113 秒的暂停扣完还余 75 秒,再被 `BW_GAP_MAX_MS=30s` 截到 **30 秒**,
+   于是 active 窗口里出现一个「**0 字节 / 30 秒**」样本 ⇒ est = 0/30000 = **0**。
+   该通道本意是记「**被迫空转**」(服务端慢滴造成的供给空窗),**用户暂停不是供给不足**。
+2. **`getRealBitrateEstimate()` 把「无字节证据」返回成 `0`**(`if (realBwBytes <= 0L) return 0L`)——
+   于是下游读到的是「**实测带宽 = 0**」而不是「**证据不足**」。这与本仓已记过的同类坑一模一样
+   (`sus` 的 `-1` 曾被 `-1/1000` 整除打成 `0K`,把「无证据」误读成「证据为零」)。
+
+**修(P11-167)**:
+
+1. **超长 gap 一律按需求空闲处理**:新增 `BW_GAP_IGNORE_MS = 30_000`;`gapMs > 该值` ⇒ **不计 active est**
+   (并打 `bw gap ignored: raw=…ms → 按需求空闲处理(用户暂停/后台),不计 active est`),sustained 分母
+   也按「全额需求空闲」扣。依据:**供给不足时 loader 会立刻再要下一笔**(gap 量级≈秒级),113 秒只可能是
+   用户暂停/后台/切页;而十几秒的慢滴+重试 gap 仍照旧入账(真实供给证据)。
+2. **「无证据」不再报成 0**:`getRealBitrateEstimate()` 在 `realBwBytes <= 0` 时返回 **-1** ⇒
+   `SabrBandwidthMeter.getBitrateEstimate()` 回落 `delegate`(media3 默认计,免疫空转)。
+   同时新增 `fmtEstForLog()` 让 **-1 原样打印为 `-1`**(避免 `-1/1000` 又印成 `0K`);
+   上报服务端的 `bwEstimateBps` 仍按既有口径夹成 `0`(不改上传语义)。
+
+**判据**:暂停后恢复时**不再出现** `bw gap counted: 30000ms (raw=11xxxxms …)` 与
+`est=0K` / `downgrade … → 144p: est=0K`;应出现 `bw gap ignored: raw=…ms(> 30000ms)→ 按需求空闲处理`;
+恢复播放后画质应停在暂停前的档位附近,而不是砸到底再慢慢爬。
+
+---
+
+### 5.11.15 r2072 手机场判读:三处修复生效;**遗留「升档→降档→90s 门禁」循环**(P11-168)
+
+真机 `logs_live_20260922_085959.log`(XQ-EC72,`dev.r2072`,视频 `SwsvkhzYt5Y`,单会话 07:18:42 起播)。
+
+**(1) 本轮三处修复全部生效(证据)**:
+
+| 修复 | 日志证据 |
+|---|---|
+| P11-167 暂停/空转不计零供给 | **`bw gap ignored` ×24**(raw 48~59s)、**`bw gap counted` ×0** |
+| P11-167「无证据」不再报 0 | `est=-1` ×0(本场窗口始终有字节证据,未触发) |
+| P11-164 选择集重建继承当前档 | `updateTrackSelection: sel 0(1080p) → 19(144p)` **×0** |
+| P11-165 冷启桩不进会话 | `只借 token = 10B` **×0** |
+
+会话本身干净:`status=3` **0**、`Playback error` **0**、**167 个媒体块**、`首笔 status=1`。
+
+**(2) 遗留问题:画质钉在 720p**。带宽与缓冲都不缺,却爬不上去:
+
+```
+07:20:14  sel=3 bitrate=265230(720p) bufS=17.0 bw=12140K sus=-1 cap=14165K meas=301K up=2 down=4
+          fmts=248[1064942], 399[504614], 137[423018], 247[265230], …
+07:20:23  sel=3 … bufS=33.0 bw=6781K cap=12313K up=2 down=4          ← 一直不上
+```
+
+`up=2` = itag137(423 Kbps,1080p)是可升级候选,`bw` 6~12 Mbps、`bufS` 17~33s,却全程 `sel=3`。
+**原因在 `up=2` 之外**:同一场 07:20:12 有
+
+```
+07:20:12.888  buffer-critical downgrade: bufS=3s itag248/1078p@1064942 → 720p@265230
+07:20:12.888  downgrade fail cooldown: 1078p excluded 90s reason=supply(gated/普通降档)
+```
+
+即**它其实升到过 1078p(`sel=0` = itag248),但那一刻 `bufS=3s` ⇒ 被「水位急救降档」打回 720p,并把
+1078p **门禁 90 秒**;此后每轮升档都撞同一堵墙 ⇒ 用户体感「画质上不去」。
+
+**`bufS=3s` 的性质(需要下一轮确认)**:本场缓冲呈「涨到 ~46s → 停拉 → 落到 ~3s → 再拉」的循环
+(与 24 次 48~59s 的 `bw gap ignored` 同源,即**满缓冲主动停拉**的排空段)。若 ABR 恰在排空段评估,
+就会把**正常排空**读成「水位告急」⇒ 降档 + 门禁。**这是 P11-151/152/153 那条线的既有问题,不是本轮
+改动引入**;但它解释了「带宽充足却钉在低档」的观感。
+
+**修(P11-168,已实施)**:给「水位急救降档」加**带宽闸** —— `活跃 est ≥ 当前档声明码率` ⇒ **本枪不开**。
+
+理由是这条判据自己的设计分工:**真饿归 est 滞回(`required×0.85`)、水位是最后兜底**。既然活跃 est 连
+当前档的**全额**声明码率都撑得住,那低水位只可能来自①满缓冲主动停拉的排空段 ②刚切轨丢掉旧轨缓冲 ——
+这两种情况下降档**无益**,而随之而来的门禁(顶档 180s / 普通档 90s)**有害**(每轮升档撞同一堵墙)。
+真饿时 est 会跌破 `required×0.85`,由常规降档路径接管,反应不比水位慢多少。
+
+实现:`if (bufferCritical)` 块内先过闸 —— `getFormat(selected).bitrate > 0 && bandwidthMeter.getBitrateEstimate()
+>= 该码率` 时打 `buffer-critical downgrade **suppressed**(P11-168): bufS=Ns est=…K ≥ 当前档 …` 并
+**不置 `freezeEpisodeActive`**(这一枪根本没开,后续真饿仍可急救);否则走原有降档 + 冷却/门禁逻辑。
+
+**判据**:`bw` 明显高于当前档码率时不再出现 `buffer-critical downgrade`;真饿(est 低于当前档码率)时
+降档照旧发生。
+
+---
+
+### 5.11.16 r2074 手机场判读:**带宽闸生效,升档恢复正常** —— §5.11.15 的遗留消失(P11-170)
+
+真机 `logs_live_20260922_094353.log`(XQ-EC72,`dev.r2074`,续播起播 `loadPositionMs=430454`,单会话
+09:39:55 → 09:43:20,2641 行)。**这是 §5.11.15 遗留(「升档→水位急救降档→90s 门禁」把画质钉在 720p)的
+回归验证场,结论:遗留消失,升降档恢复正常。**
+
+**(1) 视频轨选择序列(全程只有一次升降 —— 一次升档,零降档)**。本场梯子 18 轨 = 6 高度 × 3 codec,
+按**码率降序**排列,索引 0 = `248[822936]`(VP9 1080p)= **本场顶档**;索引 1 = `247[456114]`(VP9 720p)。
+
+```
+09:39:58.169  sel=1 br=-1      bufS=0.0  chunkIndex=false  up=null down=null  ← 起播锁 720p,Format 未设故 up/down 恒 null
+09:40:02.746  sel=1 br=456114  bufS=0.0  bw=3003K  up=0 down=2              ← 首笔视频段;up=0=itag248(1080p)可升
+09:40:04.996  prefetch: 候选档 itag248 随下一请求预取(窗口 30s)              ← 升档候选被提前预取
+09:40:05.126  onRenderedFirstFrame + startup lock released(ABR 自由爬档, 零重建)
+09:40:07.008  sel=1 br=456114  bufS=23.9  bw=4348K  up=0 down=2              ← 松锁后仍在 720p(ABR 滞回)
+09:40:12.436  resp summary … init=[140, 247, 248] pushed=[140, 247, 248]
+09:40:12.436  cleanup dropped formats=[247] (audio=140 video=248 pending=[248] prefetch=248)  ← 切到 248
+09:40:12.447  chunk completed: init itag=248 bytes=3420 sel=0(1078p)         ← 升档完成
+09:40:12.448 → 09:43:20  sel=0 br=822936  up=null(顶档) down=1  全程 **3 分钟不变**
+```
+
+**升档是零重建的**:`bufS` 跨切换保持连续 `38.5 → 41.8 → 40.7 → 47.0 → 49.0`,**无第二次
+`onRenderedFirstFrame`、无 `playerState=2` 回缓冲、无 `init trackType=… trackSelLen=…` 重建行** ——
+即「预取候选档 → 无缝切换 → cleanup 旧档」这条设计路径按预期走完整(与 §5.11.14/P11-128 的零重建目标一致)。
+
+**(2) 唯一一次水位急救降档 = 被带宽闸挡下(§5.11.15 的修生效的直接证据)**:
+
+```
+09:40:02.746  buffer-critical downgrade **suppressed**(P11-168):
+              bufS=0s est=3003K ≥ 当前档 720p@456114 → 带宽撑得住,低水位来自排空/切轨而非供给不足
+```
+
+本场 `buffer-critical downgrade` 总命中 **1 次,且就是这条 suppressed** ⇒ **实际降档 0 次,
+`downgrade fail cooldown` 0 次**(§5.11.15 里那两条 90s 门禁行在本场完全不出现)。
+因果链正是 §5.11.15 预测的:起播瞬间 `bufS=0s`(缓冲尚未建立,属排空/切轨类)若照旧降档,就会连带给顶档
+置 90s 门禁 ⇒ 之后每轮升档撞墙;闸挡下之后**门禁从未被置**,7 秒后(09:40:12)升档顺利完成并稳住。
+
+**(3) 其余健康指标(全部干净)**:
+
+| 项 | 读数 |
+|---|---|
+| 会话 | `status=1` ×18、`status=2` ×3(token 例行刷新)、**`status=3` 0** |
+| 失败面 | `Playback error` / `auto-retry` / `markWebSabrFailed` / `stall detected` / `video freeze` **全 0** |
+| P11-167 空转不计零供给 | `bw gap ignored` ×4、**`bw gap counted` 0**;`est=-1` 0(窗口始终有字节证据) |
+| P11-164/165 | 无「选择集重建落最低档」、无 10B 冷启桩 |
+| 带宽 vs 需求 | `bw` 3.0 → 12.8 Mbps,当前档 822936 bps ⇒ **约 4~15 倍余量** |
+| 缓冲形态 | 涨到 ~47~51s → 落回 9.9s 再涨,周期 ~45s(满缓冲主动停拉的排空段)⇒ **排空段不再触发降档** |
+
+**(4) 边界与不确定(诚实标注,勿过度外推)**:
+
+1. **本场只取到「闸该挡时挡得住」这一侧**。`bw` 全程 4~15 倍于当前档码率、`bufS` 最低 9.9s(未撞水位线),
+   ⇒ **「真饿时闸不该挡」的另一侧没有证据**;需要在低带宽/劣化网络场次才能验证(判据见 §5.11.15)。
+2. **`up=null` 在 `sel=0` 是正确的,不是天花板 bug** —— 本场服务端只给了 6 个高度(1080p 为顶),
+   `fmts` 列表里没有任何 >822936 的轨。**该视频上游是否有 1440p/2160p,本场日志判不出**(与既有
+   「SABR 默认路径天花板 1080p」的记录一致,见 `youtube-4k-two-paths-dead-accept-1080p` 相关记档)。
+3. **单场、约 3.5 分钟**,且是网络良好的续播场;「升档正常」目前只在这一种条件下成立。
+
+---
+
+## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
+
+> 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。
+> 全程用真机日志判读,**G1 未达标不判 status**(13 轮的共同盲区就是在黑箱上投轮次)。
+
+### 阶段 0:埋点(与阶段 1 同一个构建,零行为风险)
+
+| # | 位置 | 改什么 |
+|---|---|---|
+| 0.1 | [InnerTubeClient.kt:99](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt#L99) | diag 门 `/player` → `/player \|\| /att/get`(这条链今天是黑的) |
+| 0.2 | [InnerTubeClient.kt:103-115](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt#L103-L115) | diag 行加 `ua=<实际发出的 UA 前 30 字符>`(判"桌面 UA 是否真上线"的唯一证据) |
+| 0.3 | [YoutubePlaybackResolver.kt:1894](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1894) 附近 | 打一条 `desktopVis=<桌面 visitor 前24> jarVis=<CookieManager 里 VISITOR_INFO1_LIVE 前24>` |
+| 0.4 | [YoutubePlaybackResolver.kt:1921-1924](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1921-L1924) | sabrUrl dump 加 `c=` / `n=` 存在性 |
+| 0.5 | [YoutubePlaybackResolver.kt:726-747](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L726-L747) | `resolvePlayerJsUrl` 的 jsUrl 打**内容**而非长度 |
+
+### 阶段 1:第一刀 —— 让桌面身份真正上线 + 挑战同源(一个构建)
+
+**1a. 新增 `uaOverride` 入口,让 `/player` 发出桌面 UA ⭐**
+`postJson`([InnerTubeClient.kt:68-79](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt#L68-L79))加参数 `uaOverride`;
+OkHttp 分支 [:140](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt#L140) 与 [buildWebViewHeaders:579](../app/src/main/java/com/kirin/mt/core/youtube/InnerTubeClient.kt#L579)
+都改 `uaOverride ?: client.userAgent`;`postPlayer`([:681-689](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L681-L689))透传,
+`buildWebSabrFallback` 传 `YoutubeConstants.UserAgent`(桌面)。
+
+**1b. `/att/get` 与挑战同源(对齐 FreeTube)** —— body 改 `{engagementType, context}`,传 context/visitor/ua override,去掉 `eacrToken`;
+挑战取源顺序改 **`/att/get` 优先**。
+
+**1c. `/player` 走 OkHttp** —— `postPlayer` 加 `forceOkHttp`,WEB-SABR 调用点传 `true`(今天 WEB 优先走 browserSession WebView,
+那里 UA 由移动 `settings.userAgentString` 决定、Cookie 被丢)。若被判「The page needs to be reloaded」→ 退化方案是把
+[YoutubeBrowserSession.kt:102](../app/src/main/java/com/kirin/mt/core/youtube/YoutubeBrowserSession.kt#L102) 的 UA 改桌面(注意会连带影响 feed 的 cookie)。
+
+### 阶段 1 的判据(按序,前档不达标不判后档)
+
+| 闸门 | 判据 |
+|---|---|
+| **G0** 埋点自证 | 新 diag 能打出 `ua=` / `desktopVis=` / `jarVis=` |
+| **G1** 身份上线 | diag `ua=` 含 `Windows NT 10.0` 且 `/att/get` 的 `ctxOs=Windows/10` |
+| **G2** 会话被接受 | `status=1` ≥1 次(强门槛:连续 3 次且 `status=3 ×0`) |
+| **G3** 寿命 | `InvalidPoToken diag: sessAgeMs > 30000` 或全程无 status=3 |
+| **G4** 播放 | 起播后 60s 内 `Playback error ×0`、`RELOAD ×0` |
+
+G1 达标但 G2 仍 0 → 第二刀:**关掉 status=2 刷新**(§5.5)。再 0 → 按 S1 停「身份」假设,转阶段 2。
+
+### 阶段 2:复活 harvest(已知可通配置 + 尺子)
+
+触发条件:S1(连续 2 个构建 `status=1 ×0` 且 G1 已达标)。
+
+- **取回**:`git show 1f55977d~1:app/src/main/java/com/kirin/mt/core/youtube/YoutubeSabrHarvester.kt`(396 行)。
+- **适配(每条都是坑)**:①**ustreamerConfig 字节形态** —— 退役代码用 STANDARD base64 编回,现在 [SabrClient.kt:150](../app/src/main/java/com/kirin/mt/core/youtube/sabr/SabrClient.kt#L150)
+  用 `URL_SAFE` 解码 → 第一轮必 `sabr.malformed_config`,修法是给 `fromSabrData` 加收**原始 bytes** 的重载;
+  ②`extractParam` → `queryParam`;③**cpn 必须用浏览器原 cpn**;④**选档按 `youtubeDefaultQuality.maxHeight` 对齐**(alpha.77 的 RELOAD 死循环旧 bug);
+  ⑤**不要恢复 60s 主动轮换**;⑥**不要 seed 移动 cookie**;⑦命门级前置原样保留(measure+layout 1080×1920、`mediaPlaybackRequiresUserGesture=false`、
+  长期存活 + 先加载真实首页、hook 注入 `onPageStarted`、body 走 `input.clone().arrayBuffer()`、必须从 watch 页采集)。
+- **接线**:`AppContainer` 加单例 + resolver 构造参数;复用现有两处调用点;`YoutubeLoadStep.HarvestWatch` 直接 emit。
+- **当尺子**:同一天同一视频跑 1 与 2,逐字段 diff —— sabrUrl 键集 / ustreamerConfig 前 32B hex / poToken 字节 / `clientInfo` / bodyHex field 号集合 / `rn=0..3` 的 status 序列。
+
+### 停止条件(钉死)
+
+> **结果(2026-09-20)**:S1 触发过(桌面身份上线仍 nag)→ 按 S1 转「身份」假设以外的方向,最终以**全移动**打通(§5.6);**S2 未触发**(harvest 腿与身份都活了),本线保持启用。
+
+- **S1** 连续 2 个构建 `status=1 ×0` 且 G1 已达标 → 停「身份」假设,转阶段 2。
+- **S2** harvest 复活当天也 `status=1 ×0` → **整条 WEB-SABR 线停**(同一天 visionOS 主路 `status=1 ×24` 是决定性反证)。
+- **S3 预算** 阶段 1 ≤3 次云编译;阶段 2 ≤2 次。超了写回 §2「已证伪」表。
+- **S4 风控熔断** 出现 `LOGIN_REQUIRED` → 当天停全部 WEB-SABR 实验,避免污染 visionOS 主路。
+
+### 不做
+
+`contentBinding` 的 `b/hh`(FreeTube 无此物)、`cver` 注入(FreeTube 无此物)、删 `fetchViaWebView` 的 Cookie 剥头(禁止头,删了也没用)、动 VM 指纹(变量不唯一)。
+
+---
+
+## 7. 清理清单(若触发 S2 把这条线降级为"可选档")
+
+1. [YoutubePlaybackResolver.kt:1982-1986](../app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L1982-L1986)
+   pot-less 硬编码要么回滚成正常传 token,要么加显式实验开关(不留"看不懂是实验还是正式"的中间态)。
+2. `WEBREQDUMP` 的 hex dump 保持 `rn<=1` 收敛即可,别扩大。
+3. Piped 支路:DEFAULT_PIPED_INSTANCE 的公共实例默认值建议去掉(空 = 不启用),只留「用户填自己实例」入口。
+4. §4 第 6/7 项的死代码(`buildSabrSessionFromReloadPlayer`、`YoutubeNDecryptor`)在 RELOAD 韧性改造时一并处理。
+
+---
+
+## 8. 外部参考
+
+- [GoogleVideo#52](https://github.com/LuanRT/GoogleVideo/issues/52):downloader 场景 60s 停,`status=2` 卡死,**有效 token 与无 token 停点一字节不差**(与我们的排除实验互证)。
+- **PipePipeExtractor #66**:完整 SABR 实现(Java/NewPipe 栈);`Track.bufferedThrough = next-1` 是 P11-111 的来源。
+- FreeTube(桌面)与 FreeTubeAndroid:身份/挑战/裸发 GenerateIT 的对照来源(见各轮 commit message)。
+- [Self-Hosting - Piped](https://docs.piped.video/docs/self-hosting/)(自建 Piped 需要 bg-helper + IP 轮换)。

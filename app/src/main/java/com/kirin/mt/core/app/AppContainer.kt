@@ -31,14 +31,17 @@ import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.core.youtube.YoutubeJsExecutor
 import com.kirin.mt.core.youtube.YoutubeNDecryptor
+import com.kirin.mt.core.youtube.YoutubeSolverDecipherer
 import com.kirin.mt.core.youtube.YoutubePlaybackResolver
 import com.kirin.mt.core.youtube.YoutubeSDecryptor
 import com.kirin.mt.core.youtube.YoutubeRepository
+import com.kirin.mt.core.youtube.YoutubeSabrHarvester
 import com.kirin.mt.core.youtube.newpipe.NewPipePoTokenGenerator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 import com.kirin.mt.core.player.CdnSelector
@@ -50,6 +53,7 @@ import com.kirin.mt.core.player.IptvSourceProber
 import com.kirin.mt.core.player.LiveQualityPreferenceStore
 import com.kirin.mt.core.player.PlaybackProgressStore
 import com.kirin.mt.core.player.PlaybackRepository
+import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.settings.AppSettingsStore
 import com.kirin.mt.core.storage.SearchHistoryStore
 import com.kirin.mt.core.storage.SessionStore
@@ -129,26 +133,54 @@ class AppContainer(context: Context) {
   // 铸造的 poToken 缓存供 SABR init 复用(init==extraction 同 minter)。内容绑定(contentBinding)正确,
   // 修复 visionOS SABR RELOAD 死循环(§6.17/alpha.80)。旧 BiliTvPoTokenProvider/YoutubeBotGuard 保留,
   // SABR 不再用,但 /player 等仍走 BotGuard。
+  /**
+   * P11-154:arm A 的**铸造上下文**供给(显式标注类型,避免 lambda 类型推断歧义)。
+   *
+   * 把挑战源从 `[REQUEST_KEY]`→`/api/jnn/v1/Create`(文档里没有页面/ytcfg/EVENT_ID)换成
+   * 「移动 watch 页自带的 ytAtN + 该页 `yt.config_`(EVENT_ID)」。依据:历史唯一拿到 `status=1` 的
+   * token 都出自真 watch 页自铸(MWEB,3/3);而我们自铸的首笔必被判占位级(`status=2`,今天 7/7 场)。
+   *
+   * 关(实验关)→ null ⇒ 回落路径与改动前**逐字节一致**。开关见 [NewPipePoTokenGenerator.ARM_A_PAGE_CONTEXT]。
+   */
+  private val armAPageContextSupplier: (suspend (String) -> YoutubeBotGuard.PoTokenPageContext?)? =
+    if (NewPipePoTokenGenerator.ARM_A_PAGE_CONTEXT) {
+      { videoId ->
+        youtubeBotGuard.fetchArmAPageContext(videoId, youtubeBrowserSession.readVisitorData())
+      }
+    } else {
+      null
+    }
+
   val biliTvPoTokenProvider: NewPipePoTokenGenerator = NewPipePoTokenGenerator(
     appContext = appContext,
     httpClient = youtubeHttpClient,
+    pageContextSupplier = armAPageContextSupplier,
   )
   val youtubeNDecryptor: YoutubeNDecryptor = YoutubeNDecryptor(appContext, youtubeJsExecutor, youtubeHttpClient)
   val youtubeSDecryptor: YoutubeSDecryptor = YoutubeSDecryptor(youtubeJsExecutor, youtubeHttpClient)
+  // P11-101:WebView 内 yt-dlp solver(n/s decipher,AST 结构匹配 + URL 类 transform)
+  val youtubeSolverDecipherer: YoutubeSolverDecipherer = YoutubeSolverDecipherer(appContext, youtubeJsExecutor)
   val youtubeRepository: YoutubeRepository = YoutubeRepository(
     client = youtubeInnerTubeClient,
   )
   val pipedClient: com.kirin.mt.core.youtube.piped.PipedClient =
     com.kirin.mt.core.youtube.piped.PipedClient(httpClient = youtubeHttpClient, json = json)
+  // P11-118 诊断(阶段 2 最小验证):复活 WebView harvest 采集器——真实桌面 WebView 加载 watch 页,
+  // hook fetch/XHR 截获浏览器自己发的 SABR POST(浏览器 WASM 做 n-transform + 全 WEB 一致 attested body)。
+  // 当前**只采集打日志、不接播放栈**(见 YoutubePlaybackResolver 的 harvest probe)。
+  val youtubeSabrHarvester: YoutubeSabrHarvester =
+    YoutubeSabrHarvester(appContext, youtubeInnerTubeClient)
   val youtubePlaybackResolver: YoutubePlaybackResolver = YoutubePlaybackResolver(
     innerTubeClient = youtubeInnerTubeClient,
     botGuard = youtubeBotGuard,
     nDecryptor = youtubeNDecryptor,
     sDecryptor = youtubeSDecryptor,
+    solverDecipherer = youtubeSolverDecipherer,
     httpClient = youtubeHttpClient,
     biliTvPoTokenProvider = biliTvPoTokenProvider,
     pipedClient = pipedClient,
     appSettingsStore = appSettingsStore,
+    sabrHarvester = youtubeSabrHarvester,
   )
   // 播放进度本地存储:VideoRepository 用它给普通卡片合入观看进度条,PlaybackRepository 用它续播。
   val playbackProgressStore: PlaybackProgressStore = PlaybackProgressStore(appContext)
@@ -304,9 +336,66 @@ class AppContainer(context: Context) {
     }
   }
 
+  /**
+   * P11-126:启动后台预热 harvest 采集 WebView(见 [YoutubeSabrHarvester.prewarm])。
+   *
+   * 真机 09-19:harvest WebView 的冷启(建实例 + 加载 youtube.com 首页建立浏览上下文)实测 **10.9s**,
+   * 而它整段都落在起播预算里(PO token 铸造 9.3s + player js 4.4s 之后才轮到它)⇒ watch 页还没开始
+   * 加载预算就到期,整条 launch 被取消,连已建好的 NewPipe 兜底会话也一起丢弃,用户黑屏 ~99s。
+   * 把冷启挪到播放之外,harvest 就只剩「导航 watch 页等捕获」那 1~2s。
+   *
+   * **只在「WEB-SABR 优先」档做**:只有这一档 harvest 在起播关键路径上(该档 90s 预算就是为它给的);
+   * SABR/DASH 档的 harvest 只做很晚的兜底,多等几秒无所谓 —— 不给不用它的用户白起一个 WebView +
+   * 拉一次首页(~1.4MB)。用户切档后重启即生效。
+   *
+   * fire-and-forget,失败静默(与 [warmupApiConnection] / [startIptvSourceProbe] 同款)。
+   */
+  fun startYoutubeHarvestPrewarm() {
+    applicationScope.launch {
+      val priority = runCatching { appSettingsStore.settings.first().youtubeDeliveryPriority }.getOrNull()
+      if (priority != YoutubeDeliveryPriority.WebSabr) {
+        Log.i(LogTag, "youtube harvest prewarm skipped (priority=$priority,只有 WEB-SABR 优先档在关键路径上)")
+        return@launch
+      }
+      delay(YoutubeHarvestPrewarmDelayMs)
+      runCatching { youtubeSabrHarvester.prewarm() }
+        .onSuccess { ms -> if (ms != null) Log.i(LogTag, "youtube harvest prewarm ok: ${ms}ms") }
+        .onFailure { error -> Log.w(LogTag, "youtube harvest prewarm failed: ${error.message}") }
+    }
+  }
+
+  /**
+   * P11-154(只读取证,零行为影响):探一次**真实浏览会话的活文档**里有没有 `window.ytAtN` / `EVENT_ID`。
+   *
+   * 要回答的悬案:P11-103 记的「移动 UA 抓 watch 页拿不到 ytAtN」是从 **OkHttp 302 后的 HTML** 推的,
+   * 而 MWEB 是 Polymer SPA——**启动后的活文档**与初始 HTML 不是一回事,从没测过。这条答案决定
+   * P11-154 的下一轮该把页面上下文的**供给源**换成活文档还是别的。
+   *
+   * 真实浏览会话是懒加载的(首次 /player 才建),故这里等它起来:每 [PageContextProbeIntervalMs] 探一次,
+   * 最多 [PageContextProbeAttempts] 次。只读、不导航、不建会话(见 [YoutubeBrowserSession.peekPageContext])。
+   */
+  fun startYoutubePageContextProbe() {
+    applicationScope.launch {
+      repeat(PageContextProbeAttempts) {
+        delay(PageContextProbeIntervalMs)
+        val result = runCatching { youtubeBrowserSession.peekPageContext() }.getOrNull()
+        if (result != null) {
+          Log.i(LogTag, "armA probe(live session): $result")
+          return@launch
+        }
+      }
+      Log.i(LogTag, "armA probe(live session): 无活会话/不在 youtube 域 → 本轮未取到")
+    }
+  }
+
   private companion object {
     const val LogTag = "BiliWarmup"
     /** IPTV 判活扫描的启动延迟:避开冷启动图片/接口流量高峰再动网络。 */
     const val IptvProbeStartupDelayMs = 15_000L
+    /** P11-126:harvest 预热的启动延迟——比 IPTV 探活早,因为预热自己还要再花 4~11s 建 WebView + 载首页。 */
+    const val YoutubeHarvestPrewarmDelayMs = 8_000L
+    /** P11-154:活文档探针的尝试次数 × 间隔(等真实浏览会话起来;每次 5s,共 ~60s)。 */
+    const val PageContextProbeAttempts = 12
+    const val PageContextProbeIntervalMs = 5_000L
   }
 }

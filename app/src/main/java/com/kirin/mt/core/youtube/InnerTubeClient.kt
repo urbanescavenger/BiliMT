@@ -61,12 +61,26 @@ class InnerTubeClient(
    * @param poToken  可选 PO token；非空时注入 context.serviceIntegrityDimensions。
    * @return 响应根 JsonObject。
    */
+  // P11-113 加 contextOverride;P11-115 加 cookie/visitorOverride——WEB-SABR 的 /player 用桌面
+  // watch 页身份(桌面 ytcfg context + 页面 Set-Cookie + 页面 visitorData)全链配对,消除
+  // 「桌面 body + 移动 cookie」混搭(r1947:服务端对我们混搭身份签发的 sabrUrl 缺 cpn/cver,
+  // 对 FT 完整身份签发全;混搭身份签发降级 URL → 会话被 status=2 nag)。
   suspend fun postJson(
     endpoint: String,
     payload: JsonObject = buildJsonObject {},
     client: Client = Client.WEB,
     poToken: String? = null,
     viaWebView: Boolean = false,
+    // P11-106:WEB-SABR 链用桌面 watch 页 ytcfg 的 INNERTUBE_CONTEXT 覆盖合成 context
+    //(FreeTube buildSessionFromYtConfig 同款——会话身份与挑战来源同源)。null=默认。
+    contextOverride: JsonObject? = null,
+    // P11-115:桌面 watch 页 Set-Cookie / 页面 visitorData——/player 的 HTTP 身份与 body 同源。
+    cookieOverride: String? = null,
+    visitorOverride: String? = null,
+    // P11-117:UA 覆盖。此前该链**没有 UA 入口**——UA 恒为 client.userAgent(WEB→MobileUserAgent),
+    // 于是「桌面身份」只进了 body context,HTTP 层一直是移动(WebView 分支更由 settings.userAgentString
+    // 决定)。WEB-SABR 链传桌面 UA 让四件套(body/visitor/cookie/UA)第一次同源。
+    uaOverride: String? = null,
   ): JsonObject = withContext(Dispatchers.IO) {
     // 先拉真实 visitorData（WEB /player 用合成 visitorData 会被拦，见 ensureRealSessionData）。
     // 仅 /player 走 WebView 时强制浏览器会话引导；feed 的 /browse、/search 等走快路径，
@@ -81,25 +95,29 @@ class InnerTubeClient(
       if (!poToken.isNullOrBlank()) {
         put("serviceIntegrityDimensions", buildJsonObject { put("poToken", poToken) })
       }
-      put("context", buildContext(client = client))
+      put("context", contextOverride ?: buildContext(client = client))
     }
 
     // 诊断:dump /player 请求体,确认 contentPoToken 真的在顶层 serviceIntegrityDimensions 里
     // (§6.7 row 26 真机 adaptive=0 定位:排除「token 没注入请求」分支)。
-    if (endpoint == "/player") {
+    // P11-117:/att/get 也进这道门——它是「挑战获取」链,此前零日志,是 13 轮的盲区之一;
+    // 并新增 ua=:判「桌面 UA 是否真上线」的唯一证据(此前从没有 UA 入口)。
+    if (endpoint == "/player" || endpoint == "/att/get") {
       val sid = body["serviceIntegrityDimensions"]?.jsonObject
       val sidToken = sid?.stringOrNull("poToken")
       val ctxClient = body["context"]?.jsonObject?.obj("client")
       Log.i(
         Tag,
-        "postJson /player client=$client viaWebView=$viaWebView " +
+        "postJson $endpoint client=$client viaWebView=$viaWebView " +
           "poTokenArg=${if (poToken.isNullOrBlank()) "null" else "${poToken.length}B"} " +
           "bodySID=${if (sid == null) "ABSENT" else "present"} " +
           "bodySIDToken=${if (sidToken.isNullOrBlank()) "EMPTY" else "${sidToken.length}B"} " +
           "cookieV1L=${currentVisitorData().take(24)} " +
+          "cookieOv=${if (cookieOverride != null) "${cookieOverride.length}B" else "null"} " +
           "ctxOs=${ctxClient?.stringOrNull("osName")}/${ctxClient?.stringOrNull("osVersion")} " +
           "ctxBrowser=${ctxClient?.stringOrNull("browserName")}/${ctxClient?.stringOrNull("browserVersion")} " +
           "ctxMem=${ctxClient?.stringOrNull("memoryTotalKbytes")} " +
+          "ua=${(uaOverride ?: client.userAgent).take(32)} " +
           "bodyLen=${body.toString().length}B"
       )
     }
@@ -113,9 +131,9 @@ class InnerTubeClient(
     // 方案 A：优先走真实浏览器会话 WebView（真实页上下文 + 真实 cookie/TLS），否则回退 jsExecutor 壳。
     if (viaWebView && (client == Client.WEB || client == Client.WEB_EMBEDDED || client == Client.TVHTML5)) {
       val text = if (browserSession != null) {
-        browserSession.fetchViaWebView(url, "POST", buildWebViewHeaders(client), body.toString())
+        browserSession.fetchViaWebView(url, "POST", buildWebViewHeaders(client, cookieOverride, visitorOverride, uaOverride), body.toString())
       } else {
-        jsExecutor?.fetchViaWebView(url, "POST", buildWebViewHeaders(client), body.toString())
+        jsExecutor?.fetchViaWebView(url, "POST", buildWebViewHeaders(client, cookieOverride, visitorOverride, uaOverride), body.toString())
           ?: throw YoutubeApiException(0, "", "InnerTube $endpoint: no WebView available for viaWebView")
       }
       return@withContext runCatching { json.parseToJsonElement(text).jsonObject }
@@ -126,13 +144,13 @@ class InnerTubeClient(
       .url(url)
       .post(body.toString().toRequestBody(JsonMediaType))
       .header("Content-Type", "application/json")
-      .header("User-Agent", client.userAgent)
+      .header("User-Agent", uaOverride ?: client.userAgent)
       .header("Referer", YoutubeConstants.Referer)
-      .header("X-Goog-Visitor-Id", currentVisitorData())
+      .header("X-Goog-Visitor-Id", visitorOverride ?: currentVisitorData())
       // PO token 生效前提：请求必须带与 visitorData 配对的 VISITOR_INFO1_LIVE cookie
       // （对齐 youtubei.js Session，cookie 值 == visitorData proto）。只有 visitorData、无配对
       // cookie → YouTube 无法把 token 绑定到真实会话 → adaptive URL 被剥空（§6.7 row 31）。
-      .header("Cookie", currentSessionCookies())
+      .header("Cookie", cookieOverride ?: currentSessionCookies())
     when (client) {
       Client.WEB, Client.WEB_EMBEDDED -> requestBuilder
         .header("X-Youtube-Client-Version", if (client == Client.WEB) currentClientVersion() else YoutubeConstants.WebEmbeddedClientVersion)
@@ -542,8 +560,16 @@ class InnerTubeClient(
     }
   }
 
-  /** WEB/WEB_EMBEDDED /player 走 WebView 时的请求头（对齐 OkHttp WEB 分支 + 会话配对 Cookie）。 */
-  private fun buildWebViewHeaders(client: Client = Client.WEB): Map<String, String> {
+  /** WEB/WEB_EMBEDDED /player 走 WebView 时的请求头（对齐 OkHttp WEB 分支 + 会话配对 Cookie）。
+   *  P11-115:cookie/visitor 覆盖——WEB-SABR 的 /player 用桌面 watch 页会话(body context 同源)。
+   *  P11-117:UA 覆盖。注意 WebView 分支的 UA 最终由 `settings.userAgentString` 决定,这里的头
+   *  只是尽力而为——要真正让桌面 UA 上线,WEB-SABR 需走 OkHttp(postPlayer forceOkHttp)。 */
+  private fun buildWebViewHeaders(
+    client: Client = Client.WEB,
+    cookieOverride: String? = null,
+    visitorOverride: String? = null,
+    uaOverride: String? = null,
+  ): Map<String, String> {
     val clientNameId = when (client) {
       Client.WEB -> YoutubeConstants.ClientNameId
       Client.WEB_EMBEDDED -> YoutubeConstants.WebEmbeddedClientNameId
@@ -560,9 +586,9 @@ class InnerTubeClient(
     }
     val headers = mutableMapOf(
       "Content-Type" to "application/json",
-      "User-Agent" to client.userAgent,
+      "User-Agent" to (uaOverride ?: client.userAgent),
       "Referer" to YoutubeConstants.Referer,
-      "X-Goog-Visitor-Id" to currentVisitorData(),
+      "X-Goog-Visitor-Id" to (visitorOverride ?: currentVisitorData()),
       "X-Youtube-Client-Version" to clientVersion,
       "X-Youtube-Client-Name" to clientNameId,
       "Origin" to YoutubeConstants.Referer,
@@ -574,7 +600,7 @@ class InnerTubeClient(
       // PO token 生效前提：/player 必须带与 visitorData 配对的 VISITOR_INFO1_LIVE cookie
       // （对齐 youtubei.js Session，cookie 值 == visitorData proto）。WebView cookie store 里是
       // botguard VM 页自己的不配对 cookie，须显式覆盖为会话 cookie（§6.7 row 31/32）。
-      "Cookie" to currentSessionCookies(),
+      "Cookie" to (cookieOverride ?: currentSessionCookies()),
     )
     return headers
   }

@@ -214,6 +214,18 @@
     <string name="settings_youtube_default_quality_description">Límite de calidad predeterminado para videos nuevos de YouTube. Automático usa la mayor disponible.</string>
     <string name="settings_youtube_start_quality_title">Calidad inicial de YouTube</string>
     <string name="settings_youtube_start_quality_description">Calidad mínima con la que inicia un video en Automático. Luego sube gradualmente hasta la calidad predeterminada. Automático inicia en el nivel más bajo.</string>
+    <string name="settings_youtube_group_title">Ajustes de YouTube</string>
+    <string name="settings_youtube_group_desc">Calidad / calidad inicial / velocidad / códec / canales / región / Piped / prioridad de entrega</string>
+    <string name="settings_youtube_codec_title">Decodificador de YouTube</string>
+    <string name="settings_youtube_codec_description">Qué códec usan las pistas de YouTube. VP9 es el códec principal de YouTube; elegirlo mantiene un solo decodificador durante toda la sesión y evita tirones al cambiar de decodificador. Las demás opciones solo listan códecs compatibles con este dispositivo. Independiente del decodificador de Reproducción.</string>
+    <string name="settings_youtube_default_speed_title">Velocidad predeterminada de YouTube</string>
+    <string name="settings_youtube_default_speed_description">Velocidad de reproducción al iniciar un video de YouTube, independiente de la velocidad predeterminada de Reproducción. Aún puedes ajustarla en el menú durante la reproducción.</string>
+    <string name="settings_youtube_codec_auto">Automático</string>
+    <string name="settings_youtube_codec_vp9">VP9</string>
+    <string name="settings_youtube_codec_av01">AV1</string>
+    <string name="settings_youtube_codec_h264">H.264</string>
+    <string name="settings_group_expand">Expandir</string>
+    <string name="settings_group_collapse">Contraer</string>
     <string name="settings_youtube_content_region_title">Región de contenido de YouTube</string>
     <string name="settings_youtube_content_region_description">Región/idioma de contenido de InnerTube (gl/hl). Predeterminado EE. UU.; no uses China (gl=CN probado que provoca antiscrap). Con VPN de otra región puedes hacer que gl la siga para evitar que IP y región discrepen y se marque como bot, y ver contenido de esa región. Nota: la ruta principal SABR la decide NewPipe; este ajuste afecta sobre todo a WEB /player y al respaldo DASH.</string>
     <string name="settings_default_speed_title">Velocidad de reproducción predeterminada</string>
@@ -430,7 +442,7 @@
     <string name="player_failed_with_message">Fallo al cargar la reproducción. %1$s</string>
     <string name="player_error_missing_cid">No se pudo obtener el CID del video</string>
     <string name="player_error_empty_tracks">La API de reproducción no devolvió pistas de audio y video disponibles</string>
-    <string name="player_error_launch_timeout">Tiempo de inicio agotado (30 s); inténtalo de nuevo</string>
+    <string name="player_error_launch_timeout">Tiempo de inicio agotado (%1$d s); inténtalo de nuevo</string>
     <string name="player_control_episodes">Seleccionar episodio</string>
     <string name="player_control_next_episode">Siguiente episodio</string>
     <string name="player_speed_label">Velocidad</string>
@@ -624,7 +636,7 @@
     <string name="settings_sabr_force_itag_title">Bloquear pista de video de la sesión</string>
     <string name="settings_sabr_force_itag_description">Diagnóstico SABR: fuerza el itag seleccionado de la sesión para descartar si un itag es la causa del RELOAD</string>
     <string name="settings_youtube_delivery_priority_title">Prioridad de reproducción</string>
-    <string name="settings_youtube_delivery_priority_description">SABR primero (predeterminado); ante ralentizaciones/fuentes lentas puedes cambiar a DASH autocompuesto primero, que puede dar 4K</string>
+    <string name="settings_youtube_delivery_priority_description">SABR primero (predeterminado); alternativas: DASH autocompuesto (escape ante lentitud, puede dar 4K) o WEB-SABR (ruta WEB autenticada forzada, para vídeos restringidos)</string>
     <string name="settings_iptv_connect_success">Conexión a la fuente IPTV correcta</string>
     <string name="settings_iptv_connect_failed">Fallo de conexión a la fuente IPTV</string>
     <!-- Fuente biblioteca de vídeo (config TVBox, P11-81) -->
@@ -726,6 +738,9 @@
     <string name="danmaku_network_error">Error de red HTTP %1$d</string>
     <string name="danmaku_send_failed">Fallo al enviar: %1$s</string>
     <string name="player_audio_track">Pista de audio</string>
+    <string name="player_subtitle">Subtítulos</string>
+    <string name="player_subtitle_off">Desactivados</string>
+    <string name="player_subtitle_auto">%1$s (generados automáticamente)</string>
     <string name="player_tab_intro">Introducción</string>
     <string name="player_comment_count_format">Comentarios %1$s</string>
     <string name="player_confirm">Aceptar</string>

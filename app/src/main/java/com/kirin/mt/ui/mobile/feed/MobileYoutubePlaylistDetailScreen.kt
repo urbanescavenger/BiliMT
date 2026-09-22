@@ -53,6 +53,7 @@ import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.CompletedBadge
 import com.kirin.mt.ui.mobile.home.LocalWatchedIds
+import com.kirin.mt.ui.mobile.home.SourceBadge
 import com.kirin.mt.ui.mobile.home.YoutubeSnapshotWatchProgress
 import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.mobile.home.rememberVideoCardRelativeText
@@ -335,10 +336,20 @@ private fun PlaylistVideoRow(
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxSize(),
       )
-      // 已看完角标(右上,右下让位给时长);未看完且历史里有上次播放位置时画底部进度细条。
+      // 源角标(会员/直播等):右上粉底 pill(对齐 TV YoutubePlaylistDetailScreen 的源角标位置与 TV VideoCard)。
+      if (video.badge.isNotBlank()) {
+        SourceBadge(
+          text = video.badge,
+          modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(4.dp),
+        )
+      }
+      // 已看完角标(左下,右下让位给时长;已看完时不画进度条,左下空着);
+      // 未看完且历史里有上次播放位置时画底部进度细条。
       val completed = video.bvid in LocalWatchedIds.current
       if (completed) {
-        CompletedBadge(modifier = Modifier.align(Alignment.TopEnd).padding(4.dp))
+        CompletedBadge(modifier = Modifier.align(Alignment.BottomStart).padding(4.dp))
       } else {
         YoutubeSnapshotWatchProgress(
           positionMs = watchEntry?.positionMs ?: 0L,

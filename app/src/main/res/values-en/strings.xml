@@ -213,6 +213,18 @@
     <string name="settings_youtube_default_quality_description">The quality cap used for new YouTube videos. Auto uses the highest available.</string>
     <string name="settings_youtube_start_quality_title">YouTube start quality</string>
     <string name="settings_youtube_start_quality_description">The lowest quality at which an Auto video starts. It then climbs up to the default quality as bandwidth allows. Auto starts at the lowest tier.</string>
+    <string name="settings_youtube_group_title">YouTube settings</string>
+    <string name="settings_youtube_group_desc">Quality / start quality / speed / codec / channels / region / Piped / delivery priority</string>
+    <string name="settings_youtube_codec_title">YouTube decoder</string>
+    <string name="settings_youtube_codec_description">Which codec YouTube tracks use. VP9 is the main codec on YouTube; picking it keeps one decoder for the whole session and avoids stutter when the decoder switches. Other options list only codecs this device supports. Independent of the decoder under Playback.</string>
+    <string name="settings_youtube_default_speed_title">YouTube default speed</string>
+    <string name="settings_youtube_default_speed_description">The playback speed used when starting a new YouTube video, independent of the default playback speed under Playback. You can still adjust it in the menu during playback.</string>
+    <string name="settings_youtube_codec_auto">Auto</string>
+    <string name="settings_youtube_codec_vp9">VP9</string>
+    <string name="settings_youtube_codec_av01">AV1</string>
+    <string name="settings_youtube_codec_h264">H.264</string>
+    <string name="settings_group_expand">Expand</string>
+    <string name="settings_group_collapse">Collapse</string>
     <string name="settings_youtube_content_region_title">YouTube content region</string>
     <string name="settings_youtube_content_region_description">InnerTube content region/language (gl/hl). Defaults to the US; do not set to China (gl=CN triggers anti-bot). When on a VPN for a different region, let gl follow to avoid IP/region mismatch being flagged as a bot, and see region-local content. Note: the primary SABR path is decided by NewPipe; this mainly affects WEB /player and DASH fallback.</string>
     <string name="settings_default_speed_title">Default playback speed</string>
@@ -431,7 +443,7 @@
     <string name="player_failed_with_message">Failed to load playback. %1$s</string>
     <string name="player_error_missing_cid">Could not get video CID</string>
     <string name="player_error_empty_tracks">Playback API returned no usable audio/video tracks</string>
-    <string name="player_error_launch_timeout">Start timeout (30s). Retry.</string>
+    <string name="player_error_launch_timeout">Start timeout (%1$d s). Retry.</string>
     <string name="player_control_episodes">Episodes</string>
     <string name="player_control_next_episode">Next episode</string>
     <string name="player_speed_label">Speed</string>
@@ -443,6 +455,14 @@
     <string name="player_control_favorite">Favorite</string>
     <string name="player_control_toview">Watch later</string>
     <string name="player_control_comment">Comments</string>
+    <!-- P11-124: B站 control row "refresh" (re-resolve + reload current video). -->
+    <string name="player_control_refresh">Refresh</string>
+    <!-- P11-124: control row "rotate video" (cycles +90°). -->
+    <string name="player_control_rotate">Rotate video</string>
+    <!-- P11-124: control row "play sequence" (list playback / single-video loop). -->
+    <string name="player_control_play_sequence">Play sequence</string>
+    <string name="player_sequence_list">List playback</string>
+    <string name="player_sequence_single">Single-video loop</string>
     <string name="player_panel_favorite">Favorite to folder</string>
     <string name="player_favorite_confirm">Confirm favorite</string>
     <string name="player_favorite_empty">No favorite folders</string>
@@ -507,6 +527,13 @@
     <string name="player_speed_value">%1$.1fx</string>
     <string name="player_meta_pubdate">Published %1$s</string>
     <string name="player_meta_view_count">%1$s views</string>
+    <string name="player_quality_badge">HD</string>
+    <!-- P11-124: B站 official-layout meta line. -->
+    <string name="player_meta_bili_view_count">%1$s plays</string>
+    <string name="player_meta_bili_danmaku_count">%1$s danmaku</string>
+    <string name="player_meta_bili_like_count">%1$s likes</string>
+    <string name="player_meta_bili_favorite_count">%1$s favorites</string>
+    <string name="player_meta_bili_coin_count">%1$s coins</string>
     <string name="player_seek_preview">Seek preview</string>
     <string name="player_air_jump_will_skip">Skipping ad</string>
     <string name="player_air_jump_skipped">Skipped ad</string>
@@ -624,7 +651,7 @@
     <string name="settings_sabr_force_itag_title">Lock session video track</string>
     <string name="settings_sabr_force_itag_description">SABR diagnostic: force the session-selected itag to disprove an itag as the RELOAD root cause.</string>
     <string name="settings_youtube_delivery_priority_title">Playback priority</string>
-    <string name="settings_youtube_delivery_priority_description">SABR first (default); switch to DASH self-compose for stuttering/slow sources, which can reach 4K.</string>
+    <string name="settings_youtube_delivery_priority_description">SABR first (default); alternatives: DASH self-compose (stutter/slow-source escape, can reach 4K) or WEB-SABR (forced WEB-attested path, for gated videos).</string>
     <string name="settings_iptv_connect_success">IPTV source connected</string>
     <string name="settings_iptv_connect_failed">IPTV source connection failed</string>
     <!-- TVBox config source (P11-81) -->
@@ -723,6 +750,9 @@
     <string name="danmaku_network_error">Network error HTTP %1$d</string>
     <string name="danmaku_send_failed">Send failed: %1$s</string>
     <string name="player_audio_track">Audio track</string>
+    <string name="player_subtitle">Subtitles</string>
+    <string name="player_subtitle_off">Off</string>
+    <string name="player_subtitle_auto">%1$s (auto-generated)</string>
     <string name="player_tab_intro">Intro</string>
     <string name="player_comment_count_format">Comments %1$s</string>
     <string name="player_confirm">Confirm</string>

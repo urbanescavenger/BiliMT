@@ -64,6 +64,7 @@ import com.kirin.mt.core.youtube.YoutubePlaylist
 import com.kirin.mt.core.youtube.YoutubePlaylistStore
 import com.kirin.mt.ui.mobile.home.CompletedBadge
 import com.kirin.mt.ui.mobile.home.LocalWatchedIds
+import com.kirin.mt.ui.mobile.home.SourceBadge
 import com.kirin.mt.ui.mobile.home.YoutubeSnapshotWatchProgress
 import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.mobile.home.rememberYoutubeWatchPositions
@@ -448,6 +449,16 @@ private fun PlaylistDetailScreen(
                 positionMs = entry?.positionMs ?: 0L,
                 durationMs = entry?.durationMs ?: 0L,
                 modifier = Modifier.align(Alignment.BottomStart),
+              )
+            }
+            // 源角标(会员等):右上粉底 pill,对齐 TV 播放列表行与 TV VideoCard。
+            // 编辑模式右上让位给「✕ 移除」按钮,此时不画(见下方 editMode 分支)。
+            if (!editMode && video.badge.isNotBlank()) {
+              SourceBadge(
+                text = video.badge,
+                modifier = Modifier
+                  .align(Alignment.TopEnd)
+                  .padding(2.dp),
               )
             }
             if (editMode) {

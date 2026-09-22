@@ -263,7 +263,22 @@ class YoutubeJsExecutor(context: Context) {
             return null
           }
           return try {
-            with(URL(urlStr).openConnection() as HttpURLConnection) {
+            val startedMs = System.currentTimeMillis()
+            val resp = with(URL(urlStr).openConnection() as HttpURLConnection) {
+              // ── P11-162(r2054 真机实锤):**这里必须设超时** ────────────────────────────────
+              // 本拦截器是**自己把请求代发**(而非只改头),而 `HttpURLConnection` 的
+              // `connectTimeout`/`readTimeout` **默认都是 0 = 无限**。真机 `logs_live_20260921_143130.log`:
+              //   12:08:46 `challenge ok: source=att-get` 之后**静默 99 秒**零日志 →
+              //   12:10:25 `YtJsExecutor: intercept failed: Broken pipe` → `PO token unavailable`
+              //   ⇒ 整次解析被拖到近百秒后才回落;而 `generatePoToken` 自己的 20s 兜底**没能触发**
+              //   (线程被这个阻塞读占住,不在可取消的挂起点上)。
+              // 对照 FreeTube(`FreeTubeAndroid/src/main/poTokenGenerator.js`):他们只用
+              // `webRequest.onBeforeSendHeaders` **改请求头**,网络 I/O 交给 Chromium 原生栈(自带超时)
+              // ⇒ 结构上不可能卡这么久。Android WebView 没有「只改头」的钩子,所以这里给代发的连接
+              // 补上**有界**超时:连接 8s、读 15s —— 网络抖动时最多等 15s 就抛错,
+              // 由下面的 catch 回落 `super.shouldInterceptRequest`(即交给 Chromium 自己取)。
+              connectTimeout = InterceptConnectTimeoutMs
+              readTimeout = InterceptReadTimeoutMs
               requestMethod = request.method
               request.requestHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
               when {
@@ -291,7 +306,12 @@ class YoutubeJsExecutor(context: Context) {
                 )
               }
             }
+            // P11-162:慢请求留证(>2s 就值得记一笔)——真机判读时能区分「网络慢」与「真挂死」。
+            val elapsed = System.currentTimeMillis() - startedMs
+            if (elapsed > SlowInterceptLogMs) Log.w(Tag, "intercept slow: ${elapsed}ms $urlStr")
+            resp
           } catch (e: Exception) {
+            // 超时/断流走这里 → 回落 super(交给 Chromium 原生栈自己取)。
             Log.w(Tag, "intercept failed: ${e.message}")
             super.shouldInterceptRequest(view, request)
           }
@@ -321,6 +341,19 @@ class YoutubeJsExecutor(context: Context) {
     const val Tag = "YtJsExecutor"
     const val ShellReadyTimeoutMs = 3_000L
     const val FetchTimeoutMs = 20_000L
+
+    /**
+     * P11-162:拦截器**代发请求**时的连接/读取超时(ms)。
+     *
+     * 此前完全没设 ⇒ `HttpURLConnection` 默认 0 = 无限 ⇒ 真机实测卡死 99 秒(见 [shouldInterceptRequest]
+     * 里的注释)。连接 8s / 读 15s:interpreter 的 google.com/js CDN 只有 63KB,15s 足够;
+     * 超时即抛错 → catch 回落 `super.shouldInterceptRequest`(交给 Chromium 原生栈)。
+     */
+    const val InterceptConnectTimeoutMs = 8_000
+    const val InterceptReadTimeoutMs = 15_000
+
+    /** P11-162:单笔拦截耗时超过它就留一行日志(区分「网络慢」与「真挂死」)。 */
+    const val SlowInterceptLogMs = 2_000L
     const val FetchPollIntervalMs = 100L
   }
 }

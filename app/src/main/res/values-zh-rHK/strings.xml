@@ -147,6 +147,18 @@
     <string name="settings_playback_cdn_description">切換影片串流嘅 CDN 節點。預設跟隨 B 站自動分配,喺繁忙時段或者跨網環境可以手動指定更快嘅節點。</string>
     <string name="settings_youtube_default_quality_title">YouTube 預設畫質</string>
     <string name="settings_youtube_default_quality_description">新開 YouTube 影片預設使用嘅畫質上限。自動為最高可用畫質。</string>
+    <string name="settings_youtube_group_title">YouTube 設定</string>
+    <string name="settings_youtube_group_desc">畫質 / 起播畫質 / 倍速 / 解碼器 / 頻道 / 內容區域 / Piped / 交付優先級</string>
+    <string name="settings_youtube_codec_title">YouTube 解碼器</string>
+    <string name="settings_youtube_codec_description">YouTube 軌道用邊種編碼。VP9 係 YouTube 嘅主力編碼,揀佢可以令全場播放保持同一個解碼器、避免換解碼器時嘅卡頓;其餘選項只列出本機支援嘅編碼。同「播放設定」入面嘅解碼器互相獨立。</string>
+    <string name="settings_youtube_default_speed_title">YouTube 預設倍速</string>
+    <string name="settings_youtube_default_speed_description">新開 YouTube 影片起播時用嘅播放倍速,同「播放設定」入面嘅預設播放倍速互相獨立。播放中仍然可以喺選單度臨時調整。</string>
+    <string name="settings_youtube_codec_auto">自動</string>
+    <string name="settings_youtube_codec_vp9">VP9</string>
+    <string name="settings_youtube_codec_av01">AV1</string>
+    <string name="settings_youtube_codec_h264">H.264</string>
+    <string name="settings_group_expand">展開</string>
+    <string name="settings_group_collapse">收起</string>
     <string name="settings_youtube_content_region_title">YouTube 內容地區</string>
     <string name="settings_youtube_content_region_description">InnerTube 嘅內容地區/語言(gl/hl)。預設美國;唔放中國(gl=CN 實測觸發反爬)。掛唔同地區 VPN 嘅時候可以令 gl 跟隨,避免 IP 同地區唔一致被判 bot,並睇對應地區內容。註:主 SABR 路徑由 NewPipe 決定,此項主要影響 WEB /player 同 DASH 兜底。</string>
     <string name="settings_speed_test_title">網絡測速</string>
@@ -381,6 +393,9 @@
     <string name="player_danmaku_capacity_unlimited">無限</string>
     <string name="player_value_on">開</string>
     <string name="player_value_off">關</string>
+    <string name="player_subtitle">字幕</string>
+    <string name="player_subtitle_off">關閉</string>
+    <string name="player_subtitle_auto">%1$s（自動產生）</string>
     <string name="player_value_current">目前</string>
     <string name="player_area_full">滿屏</string>
     <string name="player_area_three_quarters">3/4 屏</string>

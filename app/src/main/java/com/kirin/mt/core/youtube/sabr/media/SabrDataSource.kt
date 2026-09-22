@@ -31,6 +31,16 @@ internal class SabrDataSource(
   private var data: ByteArray = ByteArray(0)
   private var position: Int = 0
   private var uri: Uri? = null
+  /**
+   * P11-102b:transferStarted 是否已调。close() 的 transferEnded() 只在本标志为真时才调——
+   * fast-fail(customData 类型不符 / reload-killed)路径在 transferInitializing 之后、
+   * transferStarted 之前抛错,closeQuietly 仍会走 close();此时 DefaultBandwidthMeter 没收到过
+   * onTransferStart,onTransferEnd 里取 DataSpec 为 null → `isFlagSet` NPE,把干净的
+   * reload-killed IOException 升级成 UnexpectedLoaderException(真机 09-15 13:14:51
+   * KXXZbbnm9t0 实锤,Source error 直抛)。meter 对 onTransferInitializing 不记账(该事件
+   * 无需配对收尾),故 initialized-未-started 的 transferEnded 跳过即平衡。
+   */
+  private var transferStartedCalled = false
 
   class Factory(
     private val fetcher: SabrMediaFetcher,
@@ -43,12 +53,30 @@ internal class SabrDataSource(
     uri = dataSpec.uri
     val req = dataSpec.customData as? SabrSegmentRequest
       ?: throw IOException("SABR DataSpec.customData is not SabrSegmentRequest")
+    // ⚠️ 顺序铁律:transferInitializing/transferStarted 必须先于任何 open 抛错——BaseDataSource
+    // 未记 dataSpec 时收尾路径异常(P11-99 首版把 fast-fail 检查放 transferInitializing 之前,真机
+    // 09-15 00:01:56 UnexpectedNullPointerException 实锤)。P11-102b 起 close() 按配对守卫
+    // ([transferStartedCalled]),initialized-未-started 的抛错不再触发 transferEnded NPE。
     transferInitializing(dataSpec)
-    // alpha.9X(对齐 LibreTube `SabrDataSource.open`):transferStarted 移到 getNextSegment **之前**,让
-    // DefaultBandwidthMeter 把真实网络 POST 耗时计入带宽样本(否则只在 POST 之后才开始传输窗口,只量到内存
-    // 瞬时读 → 带宽估计失真 → AdaptiveTrackSelection 升档判定错误)。getNextSegment 失败时 transferStarted 已
-    // 调用、未收尾,交给 chunk load error 通路兜底(对齐 LibreTube)。
+    // alpha.9X(RELOAD 快速失败):会话已收过 RELOAD_PLAYER_RESPONSE(reloadCount>0)后,服务端对本
+    // 视频只会继续回 RELOAD 终止包(alpha.14 jNl6YkkzKxw / 09-14 Fhyu9sqcF-o 真机:8 连 chunk 重试
+    // 每次都是 RELOAD,首请求还可能是 15s ReadTimeout → 理论最坏 8×15s 白等)。不再发请求,立即抛错
+    // 让 ExoPlayer 尽快耗尽重试上抛 source error → UI error-retry 重 resolve → alpha.93 守卫
+    // (reloadCount>0 跳过 SABR)落 DASH/HLS 兜底。健康会话不受影响:RELOAD 即 terminal,本就 evict。
+    val vid = fetcher.videoId
+    if (vid != null && SabrStreamRegistry.reloadCount(vid) > 0) {
+      Log.w(
+        "YtSabr",
+        "SabrDataSource open: seg=${req.segment} itag=${req.formatItag} videoId=$vid " +
+          "reload-killed(reloadCount=${SabrStreamRegistry.reloadCount(vid)}) → fast-fail no-fetch",
+      )
+      throw IOException("SABR session reload-killed: videoId=$vid → resolver guard falls back to DASH")
+    }
+    // P11-99 首版教训:transferStarted 移到 fast-fail 检查**之后**仍必须在 getNextSegment 之前
+    // (让 DefaultBandwidthMeter 量到真实网络耗时;失败时 transferStarted 已调、未收尾,由 close()
+    // transferEnded 收尾——BaseDataSource 状态机要求 initializing/started 先行)。
     transferStarted(dataSpec)
+    transferStartedCalled = true
     val segment = try {
       fetcher.getNextSegment(req)
     } catch (e: SabrTerminalException) {
@@ -87,7 +115,11 @@ internal class SabrDataSource(
   override fun getUri(): Uri? = if (position >= data.size) null else uri
 
   override fun close() {
-    transferEnded()
+    // P11-102b:与 [transferStartedCalled] 配对(fast-fail 路径跳过,防 BandwidthMeter NPE)。
+    if (transferStartedCalled) {
+      transferEnded()
+      transferStartedCalled = false
+    }
     data = ByteArray(0)
     position = 0
   }

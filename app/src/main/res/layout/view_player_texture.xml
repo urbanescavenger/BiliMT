@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  P11-124(追加):旋转态专用的 PlayerView —— surface_type=texture_view。
+  SurfaceView 不支持旋转变换(只支持尺寸/位置),所以「画面旋转」在旋转态必须换 TextureView 承载;
+  0/180 仍走代码里 new PlayerView(context) 的默认 SurfaceView(保默认播放性能)。
+  resize_mode 这里给 fit 作初始值,运行时由 PlayerScreen 按旋转态覆盖为 ZOOM(90/270 铺满)。
+-->
+<androidx.media3.ui.PlayerView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    app:surface_type="texture_view"
+    app:use_controller="false"
+    app:resize_mode="fit"
+    app:shutter_background_color="@android:color/black" />

@@ -1058,8 +1058,8 @@ internal object YoutubeParsers {
     } else {
       Log.d("YtBadge", "lockup videoId=$videoId metadataRows=null topKeys=${node.keys.joinToString(",")}")
     }
-    // 会员专属视频(频道会员专属,非会员无法播放)直接过滤,不进 feed。
-    if (isMembersOnly(node)) return null
+    // 会员专属视频(频道会员专属)不再过滤,保留进 feed,打「会员」角标(P11-100:展示+角标,点进播放由既有报错兜底)。
+    val membersOnly = isMembersOnly(node)
     val title = node.obj("metadata")
       ?.obj("lockupMetadataViewModel")
       ?.obj("title")
@@ -1097,7 +1097,8 @@ internal object YoutubeParsers {
     // 诊断:确认最热排序(英文 lockup)解析出的播放量/时间。
     Log.d("YtBadge", "lockup videoId=$videoId viewCount=$viewCount publishedAt=$publishedAt " +
       "metaTexts=$metaTexts")
-    val badge = metaTexts.firstOrNull {
+    // 会员专属视频打「会员」角标;live/premiere 角标优先级更高时被会员覆盖——会员专属不可能是直播,直接置会员。
+    val badge = if (membersOnly) "会员" else metaTexts.firstOrNull {
       it.contains("LIVE", ignoreCase = true) ||
         it.contains("Premieres", ignoreCase = true)
     }.orEmpty()
@@ -1125,8 +1126,8 @@ internal object YoutubeParsers {
     node.array("badges")?.let { b ->
       Log.d("YtBadge", "videoId=$videoId badges=${b.toString().take(400)}")
     }
-    // 会员专属视频(频道会员专属,非会员无法播放)直接过滤,不进 feed。
-    if (isMembersOnly(node)) return null
+    // 会员专属视频(频道会员专属)不再过滤,保留进 feed,打「会员」角标(P11-100)。
+    val membersOnly = isMembersOnly(node)
 
     val title = runsText(node.obj("title")).ifBlank { simpleText(node.obj("title")) }
 
@@ -1172,7 +1173,8 @@ internal object YoutubeParsers {
     val isUpcoming = node.obj("upcomingEventData") != null ||
       lengthText.startsWith("Premiere", ignoreCase = true)
 
-    val badge = node.array("badges")
+    // 会员专属:metadataBadgeRenderer.label 是英文 "Members only",统一覆盖成中文「会员」。
+    val badge = if (membersOnly) "会员" else node.array("badges")
       ?.firstNotNullOfOrNull { (it as? JsonObject)?.obj("metadataBadgeRenderer")?.stringOrNull("label") }
       .orEmpty()
 
@@ -1212,7 +1214,7 @@ internal object YoutubeParsers {
 
   /**
    * 会员专属视频(频道会员专属,非会员无法播放)。对齐 NewPipe `YoutubeStreamInfoItemExtractor`:
-   * 命中即过滤,避免展示无法播放的视频。两种 renderer 结构不同:
+   * 命中不再过滤(仍进 feed),由调用处打「会员」角标。两种 renderer 结构不同:
    *  - videoRenderer:顶层 `badges[].metadataBadgeRenderer.style == BADGE_STYLE_TYPE_MEMBERS_ONLY`
    *  - lockupViewModel(频道页新格式):角标嵌套在
    *    `metadata.lockupMetadataViewModel.metadata.contentMetadataViewModel.metadataRows[].badges[].badgeViewModel`,

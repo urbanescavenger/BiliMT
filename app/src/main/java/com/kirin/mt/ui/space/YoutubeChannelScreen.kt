@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -97,6 +98,12 @@ import kotlinx.coroutines.launch
  * 视频 tab(TV 刻意)保留网格 + 「▶ 播放全部」+ 最新发布/最多播放排序(仅主页 tab 显示);播放列表 tab 走
  * [ChannelPlaylistGrid] 焦点卡片网格,OK 进 [YoutubePlaylistDetailScreen](AppShell 覆盖层)。
  */
+
+// P11-98:播放列表网格退出恢复的等布局/重试帧数(对齐 TvVideoGrid 的同名常量语义:
+// 冷重组时目标行首帧布局可能延迟,单发 requestFocus 必失败)。
+private const val ChannelGridRestoreWaitLayoutFrames = 360
+private const val ChannelGridRestoreRetryCount = 90
+
 @Composable
 internal fun YoutubeChannelScreen(
   request: YoutubeChannelRequest,
@@ -685,6 +692,9 @@ private fun YoutubeChannelFollowChip(
       .onFocusChanged { state -> focused = state.isFocused }
       .onPreviewKeyEvent { event ->
         when {
+          // P11-98c:↑ 在频道页最顶可聚焦节点处吞键——此前未处理落默认焦点遍历,焦点逃到
+          // sidebar(21:35:27.474 顶行 ↑ 经 sort→tab→follow 链,28.416 GAINED [sidebar] 实锤)。
+          event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp -> true
           event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown -> onMoveDown()
           event.type == KeyEventType.KeyDown && event.key == Key.DirectionLeft -> onMoveLeft()
           event.type == KeyEventType.KeyUp && event.key.isConfirmKey() -> {
@@ -791,16 +801,61 @@ private fun ChannelPlaylistGrid(
   onPlaylistSelected: (YoutubeParsers.YoutubePlaylist) -> Unit,
 ) {
   val restoreFocusRequester = remember { FocusRequester() }
-  // 从播放列表详情页/播放器返回时按记录索引恢复焦点(镜像 TvVideoGrid 的 restore 范式)。
-  LaunchedEffect(restoreFocusRequestKey) {
-    if (restoreFocusRequestKey != 0 && playlists.isNotEmpty()) {
-      withFrameNanos { }
-      runCatching { restoreFocusRequester.requestFocus() }
-      onRestoreFocusHandled(restoreFocusRequestKey)
+  val columns = 4
+  // P11-98:恢复目标行(restoreKey>0 时网格以目标行起始创建,对齐 TvVideoGrid 的
+  // initialFirstVisibleItemIndex 范式——目标行不在首屏时 requester 永远不挂节点)。
+  val restoreTargetRow = if (focusedIndex > 0) focusedIndex / columns else 0
+  val gridState = rememberLazyGridState(
+    initialFirstVisibleItemIndex = if (restoreFocusRequestKey > 0) restoreTargetRow else 0,
+  )
+  // P11-98:从播放列表详情页/播放器返回时按记录索引恢复焦点——对齐 TvVideoGrid 的完整防御
+  // (scrollRow + 等目标行进入视口布局 + 按帧重试)。此前是「等 1 帧单发 requestFocus」:
+  // 视频播放期间频道整页 dispose、返回后冷重组(20:41 channel open 重拉 tab 数据),
+  // 目标行不在首屏/未及组合 → requester 未挂节点 → "FocusRequester is not initialized"
+  // → 焦点丢到无主状态,按键全落空(20:40:40.397/433 两次实锤)。
+  LaunchedEffect(restoreFocusRequestKey, focusedIndex, playlists.size) {
+    if (restoreFocusRequestKey <= 0 || playlists.isEmpty()) {
+      if (restoreFocusRequestKey > 0) {
+        Log.w(
+          "BiliMT:Focus",
+          "channel-playlists restore skipped: key=$restoreFocusRequestKey items=${playlists.size} focusedIndex=$focusedIndex",
+        )
+      }
+      return@LaunchedEffect
     }
+    val targetIndex = focusedIndex.coerceIn(0, playlists.lastIndex)
+    val targetRow = targetIndex / columns
+    Log.d("BiliMT:Focus", "channel-playlists restore start: key=$restoreFocusRequestKey targetIndex=$targetIndex row=$targetRow items=${playlists.size}")
+    gridState.scrollToItem(targetRow)
+    // 等目标行进入视口布局(requester 才会挂上节点),再开始抢焦点。
+    var waitedFrames = 0
+    while (
+      gridState.layoutInfo.visibleItemsInfo.none { it.index == targetRow } &&
+      waitedFrames < ChannelGridRestoreWaitLayoutFrames
+    ) {
+      withFrameNanos { }
+      waitedFrames += 1
+    }
+    val rowVisible = gridState.layoutInfo.visibleItemsInfo.any { it.index == targetRow }
+    Log.d("BiliMT:Focus", "channel-playlists restore layout: rowVisible=$rowVisible waited=$waitedFrames/$ChannelGridRestoreWaitLayoutFrames")
+    repeat(ChannelGridRestoreRetryCount) { attempt ->
+      withFrameNanos { }
+      val focused = runCatching { restoreFocusRequester.requestFocus() }.getOrDefault(false)
+      if (focused) {
+        Log.d("BiliMT:Focus", "channel-playlists restore success: key=$restoreFocusRequestKey attempt=$attempt")
+        onRestoreFocusHandled(restoreFocusRequestKey)
+        return@LaunchedEffect
+      }
+    }
+    Log.w(
+      "BiliMT:Focus",
+      "channel-playlists restore failed: key=$restoreFocusRequestKey targetIndex=$targetIndex rowVisible=$rowVisible",
+    )
+    onRestoreFocusHandled(restoreFocusRequestKey)
   }
   LazyVerticalGrid(
-    columns = GridCells.Fixed(4),
+    columns = GridCells.Fixed(columns),
+    state = gridState,
     contentPadding = PaddingValues(
       horizontal = BiliSizing.VideoGridHorizontalPadding,
       vertical = BiliSpacing.Lg,

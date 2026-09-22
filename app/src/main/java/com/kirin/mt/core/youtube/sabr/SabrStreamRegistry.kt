@@ -4,7 +4,9 @@ import android.util.Base64
 import android.util.Log
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 进程级 SABR 流会话注册表——把 resolve 阶段 harvest+构造的 [SabrSession]/[SabrClient]
@@ -36,6 +38,145 @@ internal object SabrStreamRegistry {
   const val MAX_RELOADS = 3
   private val pendingReloads = ConcurrentHashMap<String, String>()
   private val reloadCounts = ConcurrentHashMap<String, Int>()
+
+  /**
+   * alpha.9X(P11-99b):自合成 DASH 兜底直链 403(BAD_HTTP_STATUS)已判死标记(videoId 集合)。
+   * attestation 门控视频(如 Fhyu9sqcF-o/irrSuCb3BhI)SABR RELOAD → DASH 兜底 → NewPipe ANDROID
+   * 未 attested 直链 403 → 重试只会原样再 403。播放器 error-retry 时标记,resolve 重进由
+   * [buildDashFallbackFromNewPipe] 检查跳过自合成 DASH,直落 dashMpdUrl/HLS(visionOS HLS manifest
+   * URL 不走 attestation 门控,LibreTube 次选兜底同源)。进程级,不随 evict 清(同 reloadCounts 语义)。
+   */
+  private val dashFallbackFailedVideos =
+    java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+  /**
+   * P11-102(guard 放开):WEB-SABR 兜底**已失败**标记(videoId 集合)。reloadCount>0 放行走
+   * WEB-SABR(pot>0 会话)后若仍失败(solver 失败/playability 非 OK 等),标记后本次进程不再
+   * 重试——每次 WEB-SABR 尝试要 WebView /player + solver n-decrypt(~25s),auto-retry 链里反复
+   * 烧无意义。成功时 [clearWebSabrFailed] 清除。进程级,同 [dashFallbackFailedVideos] 语义。
+   */
+  private val webSabrFailedVideos =
+    java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+  /**
+   * 2026-09-20(C1「跟着服务端走」):**该视频上服务端实际推过的 itag**(进程级,跨会话重建有效)。
+   *
+   * 为什么必须进程级 + 按 videoId:材料会话里服务端只服务它那场会话绑定的格式(r2022:只推 399/251,
+   * 而我们在请求 302)—— 而**首个 FORMAT_INIT 要几秒后才到**,rn=0 时收窄集合必然为空;更糟的是之后
+   * loader 卡在 `getNextSegment` 的 6 连重试里、`getNextChunk` 不再被调用(同步点被阻塞),evict 后新
+   * 会话又是空集合 ⇒ 永远收窄不到。挂在选档实例里同样会被"重建即丢"。故记在这里。
+   *
+   * 累积(不是覆盖):同一视频重新 harvest 出的材料可能服务不同格式,取并集只会更宽松、不会把候选清空;
+   * 非材料会话里服务端推的就是我们的档 ⇒ 并集≈我们的档 ⇒ 行为不变。
+   */
+  private val serverServedItagsByVideo =
+    java.util.concurrent.ConcurrentHashMap<String, MutableSet<Int>>()
+
+  fun noteServerServedItag(videoId: String?, itag: Int) {
+    if (videoId.isNullOrBlank()) return
+    serverServedItagsByVideo.getOrPut(videoId) { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add(itag)
+  }
+
+  fun serverServedItags(videoId: String?): Set<Int> =
+    if (videoId.isNullOrBlank()) emptySet() else serverServedItagsByVideo[videoId]?.toSet() ?: emptySet()
+
+  /**
+   * P11-164:该视频**当前选中的视频档 itag**(进程级记忆)。
+   *
+   * **为什么必须有它**:`HeightAwareAdaptiveTrackSelection.initialSelectedIndex()` 在「无起播锁」时
+   * 直接 `return length - 1`(≈最低档)。而**起播锁首帧后就释放**,此后任何**选择集重建**都会重算初值
+   * —— 真机 `logs_live_20260921_193433.log` 实锤:**开字幕**(改 track group ⇒ ExoPlayer 重跑
+   * `selectTracks` ⇒ `SabrMediaPeriod.selectNewStreams` 新建 selection 实例)⇒ 选档从
+   * `sel 0(1080p)` **直接跳到 `sel 19(144p)`**,随后一路切档丢缓冲(`cleanup dropped formats=[…]` ×5)
+   * + `buffer-critical downgrade: bufS=0s` ×2 才慢慢爬回来。手动选档不受影响(走 setter,不经过初值)。
+   *
+   * 记在这里(而不是 selection 实例里)是因为**实例会被重建**——这正是要修的场景。
+   */
+  private val rememberedVideoItagByVideo = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+  /** P11-164:选择集重建时继承的档(见 [rememberedVideoItagByVideo] 的说明)。无记录返回 null。 */
+  fun rememberedVideoItag(videoId: String?): Int? =
+    if (videoId.isNullOrBlank()) null else rememberedVideoItagByVideo[videoId]
+
+  /** P11-164:选档变化时回写(由选档类在 `selected` setter 里调用)。 */
+  fun rememberVideoItag(videoId: String?, itag: Int) {
+    if (videoId.isNullOrBlank() || itag <= 0) return
+    rememberedVideoItagByVideo[videoId] = itag
+  }
+
+  /**
+   * P11-152:该视频当前是否有**材料会话**在册(决定选档要不要收窄到 served 集合)。
+   *
+   * 收窄本身只对材料会话有意义(服务端只供浏览器那场绑定的档);对普通会话收窄会把梯子冻在
+   * 「已推过的档」上 —— r2042 TV 真机 `pushed=[139, 247]` ⇒ 全程停 720p(见 [SabrSession.fromHarvestMaterial])。
+   */
+  fun hasMaterialSession(videoId: String?): Boolean =
+    if (videoId.isNullOrBlank()) false
+    else sessions.values.any { it.videoId == videoId && it.session.fromHarvestMaterial }
+
+  /**
+   * P11-146(2026-09-20 历史复盘后的**四臂轮换**;取代 P11-145 的三臂)。
+   *
+   * 复盘发现(全部有日志,见 docs/youtube-web-sabr.md §5.9.7):当天**能播的两场都是「材料会话 +
+   * harvest 页铸的 token」**(r1992 `status=1`×10/媒体块 35;r2002 `status=1`×100/媒体块 115),
+   * 而「自铸 token」这条(r2008/r2028/r2030 自造臂)第一笔就被判 `status=2`;当天崩溃的真凶是
+   * 已修的刷新 bug(刷新次数 r2002=0→status3 零次、r2006=1→22 次、r2008=3→66 次)。
+   * 材料会话唯一的病是**它的格式集**:服务端只供「那一场浏览器选中的档」,我们的阶梯选档得落进去
+   * (r1992 请求 136 ✓、r2002 请求 698 ✓ 就播;r2030 请求 302 ✗ 就 0 块)—— 这正是 C1 要解决的,
+   * 而 C1 被起播锁夹回(P11-146 已修)。
+   *
+   * 故按 resolve 次数轮换四臂,一次构建覆盖全部假设:
+   *   臂 A(0)= 自造会话 + 自铸 token(现况,2.6s)
+   *   臂 B(1)= 自造会话 + **harvest 页 token**(只借 token;两边各一半的合成)
+   *   臂 C(2)= 自造会话 + **不带 token**(pot-less)
+   *   臂 D(3)= **完整材料会话**(URL/ust/cpn/token 全借)+ C1 起播锁修复 ⇒ 历史基底 + 新修
+   */
+  private val webSabrTokenArmCounters =
+    java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+
+  /** P11-147:本视频已试过的臂数(r2032 实测:不查这个,臂 A 一死就会把 B/C/D 全短路)。 */
+  fun webSabrArmsTried(videoId: String): Int = webSabrTokenArmCounters[videoId]?.get() ?: 0
+
+  /** 0=自造+自铸 / 1=自造+页面 token / 2=pot-less / 3=完整材料会话。 */
+  fun nextWebSabrTokenArm(videoId: String): Int {
+    val n = webSabrTokenArmCounters
+      .getOrPut(videoId) { java.util.concurrent.atomic.AtomicInteger() }
+      .incrementAndGet()
+    val arm = (n - 1) % 4
+    val label = when (arm) {
+      0 -> "A(自造+自铸 token)"
+      1 -> "B(自造+harvest 页 token)"
+      2 -> "C(自造+pot-less)"
+      else -> "D(完整材料会话+C1 修复)"
+    }
+    Log.i(tag, "WEB-SABR 四臂(P11-146): videoId=$videoId resolve#$n → 臂$label")
+    return arm
+  }
+
+  /** DASH 兜底直链 403 判死标记(播放器 onPlayerError 2004 + YouTube 请求时调)。 */
+  fun markDashFallbackFailed(videoId: String) {
+    if (dashFallbackFailedVideos.add(videoId)) {
+      Log.w(tag, "markDashFallbackFailed videoId=$videoId → 下次 resolve 跳过自合成 DASH,直落 dashMpdUrl/HLS")
+    }
+  }
+
+  fun isDashFallbackFailed(videoId: String): Boolean = dashFallbackFailedVideos.contains(videoId)
+
+  /** WEB-SABR 兜底失败标记(resolve 内 buildWebSabrFallback 返回 null 时调)。 */
+  fun markWebSabrFailed(videoId: String) {
+    if (webSabrFailedVideos.add(videoId)) {
+      Log.w(tag, "markWebSabrFailed videoId=$videoId → 本进程不再重试 WEB-SABR(防烧 WebView/solver)")
+    }
+  }
+
+  fun isWebSabrFailed(videoId: String): Boolean = webSabrFailedVideos.contains(videoId)
+
+  /** WEB-SABR 成功后清除失败标记(下次 resolve 可再走 WEB-SABR)。 */
+  fun clearWebSabrFailed(videoId: String) {
+    if (webSabrFailedVideos.remove(videoId)) {
+      Log.i(tag, "clearWebSabrFailed videoId=$videoId(WEB-SABR 已成功)")
+    }
+  }
 
   /** 存 reloadToken 停车 + 递增连续 reload 计数。由 [SabrMediaFetcher.processPart] RELOAD 分支调用。 */
   fun storeReloadToken(videoId: String, token: String) {
@@ -91,14 +232,66 @@ internal object SabrStreamRegistry {
   }
 
   /**
+   * P11-102c:status=2 PO token 刷新 **single-flight** 入口。
+   *
+   * 并发调用者共享同一会话 [PoTokenState.refreshMutex]:持锁者执行 [mint](完整 BotGuard 重铸,
+   * ~1-3s),其余排队;轮到时若 freshness 窗口([freshnessMs],默认 5s)内刚铸过则直接复用,
+   * 不再重复铸。铸成后统一写 [PoTokenState.currentPoToken](会话内所有 fetcher 下个请求带同一
+   * fresh token)。mint 失败/null 不写状态(keep stale),由调用方日志告警。
+   *
+   * 返回 fresh token(含 coalesce 复用);null=mint 失败或被并发者抢先铸出后复用失败(理论不可达,
+   * lastRefreshedToken 非空即返回)。
+   */
+  suspend fun refreshPoTokenSingleFlight(
+    state: PoTokenState,
+    mint: suspend () -> ByteArray?,
+    freshnessMs: Long = 5_000L,
+  ): ByteArray? {
+    return state.refreshMutex.withLock {
+      val lastToken = state.lastRefreshedToken
+      val lastAt = state.lastRefreshAtMs
+      val now = System.currentTimeMillis()
+      if (lastToken != null && lastAt > 0L && now - lastAt < freshnessMs) {
+        Log.i(tag, "PO token refresh coalesced (fresh age=${now - lastAt}ms, ${lastToken.size}B) → reuse")
+        return@withLock lastToken
+      }
+      val fresh = mint()
+      if (fresh != null && fresh.isNotEmpty()) {
+        state.currentPoToken = fresh
+        state.currentPoTokenAtMs = System.currentTimeMillis()
+        state.lastRefreshedToken = fresh
+        state.lastRefreshAtMs = System.currentTimeMillis()
+        fresh
+      } else {
+        null
+      }
+    }
+  }
+
+  /**
    * alpha.66/67:会话级 PO token 状态(holder,避免 data class [Entry] 加 var 破坏 equals)。
    * [currentPoToken] 初始=[SabrSession.poToken];status=2 时由 [SabrMediaFetcher.media] **同步**重铸
    * 换新(对齐 LibreTube,下个请求一定带新 token)。提升到会话级(非 fetcher 实例)——切清晰度重建
    * fetcher 时新 fetcher 仍读已刷新的 token(修 alpha.65 fetcher-instance currentPoToken 重建即丢的
    * 回归)。@Volatile 保证跨线程可见,单 ByteArray 引用读写无撕裂。
+   *
+   * P11-102c(single-flight 刷新):[refreshMutex] + [lastRefreshedToken]/[lastRefreshAtMs]。
+   * 会话里每个 fetcher(视频轨/音轨/多轨组)在自己响应里看到 status=2 都会调刷新——r1928 真机
+   * 13:30:04-08 实锤 4 个 fetcher **并发各铸一次**(完整 BotGuard 重铸),token(124/128B 混出)
+   * last-write-wins 互相踩 → 服务端判 InvalidPoToken(status=3)整会话死。single-flight:并发
+   * 刷新进同一把锁,锁内 freshness 窗口(5s)内刚铸过直接复用,4 次 mint 收敛 1 次。
    */
   class PoTokenState(initialPoToken: ByteArray) {
     @Volatile var currentPoToken: ByteArray = initialPoToken
+    /**
+     * P11-144(取证):当前 token 的**起始时刻**。请求日志打它的年龄 —— 用来分辨「后续请求被判
+     * status=3」到底是 **token 过期**(年龄大)还是 **token 内容被拒**(刚换上去就被拒)。
+     * r2028 实测:刷新后 0.5s 就被判 status=3 且 `potAge` 极小 ⇒ 内容问题,不是过期。
+     */
+    @Volatile var currentPoTokenAtMs: Long = System.currentTimeMillis()
+    val refreshMutex = kotlinx.coroutines.sync.Mutex()
+    @Volatile var lastRefreshedToken: ByteArray? = null
+    @Volatile var lastRefreshAtMs: Long = 0L
   }
 
   /** 一个 SABR 播放会话:SabrSession(会话参数)+ SabrClient(驱动器,持有 httpClient)+ 服务窗口起点。 */
@@ -164,6 +357,27 @@ internal object SabrStreamRegistry {
      */
     val videoFirstStartMs = AtomicLong(0L)
     val audioFirstStartMs = AtomicLong(0L)
+
+    // ── P11-102d 诊断:status=3(InvalidPoToken)终端取证计数 ──
+    // r1931 真机:同一 fresh token 一次收(seg=12)一次拒(seg=13, playerTimeMs=61440>60000),
+    // 3 会话不同 token 全死同一 playerTimeMs → token 无关。候选机制:60s 服务窗口(锚 0,续播
+    // 吃光)vs sabrContexts 全空(contexts=0/0,type 52/53 part 未处理)。本组计数给一次真机分辨:
+    // 窗口假设 → sessAgeMs/请求序号落在 ~60s 边界;contexts 假设 → unhandledParts(52/53/57)
+    // 非零且 ctxActive/ctxStored 恒 0。
+    val diagSessionStartMs = System.currentTimeMillis()
+    val diagStatus2Count = AtomicLong(0L)
+    val diagRequestCount = AtomicLong(0L)
+
+    /**
+     * P11-155:本会话累计 `status=3` 次数 + 「首笔已记」标记。
+     *
+     * **为什么放 Entry 而不是某个解析器**:活跃的媒体路径是 [SabrMediaFetcher](自有 UMP 解析),
+     * 而 [SabrClient.processUmpStream] 只服务 DataSource 路径 —— P11-154 曾把判据埋进后者,真机上
+     * 两行日志一个都没出(判据失效)。放 Entry 让两条路径共用一份,杜绝再次分叉。
+     */
+    val diagStatus3Count = AtomicLong(0L)
+    val diagFirstStatusLogged = AtomicBoolean(false)
+    val diagUnhandledParts = ConcurrentHashMap<Int, Int>()
   }
 
   /**

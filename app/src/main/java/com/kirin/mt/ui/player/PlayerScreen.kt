@@ -6,6 +6,8 @@ import android.content.ContextWrapper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import android.view.LayoutInflater
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -15,11 +17,13 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
@@ -29,6 +33,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -66,6 +71,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
@@ -78,6 +84,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.kirin.mt.R
+import com.kirin.mt.core.model.SourceBili
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
@@ -97,12 +104,15 @@ import com.kirin.mt.core.player.PlaybackInfo
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.DefaultPlaybackSpeed
 import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.YoutubeCodecPreference
 import com.kirin.mt.core.player.PlaybackQualityPreference
+import com.kirin.mt.core.player.YoutubeDeliveryPriority
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackEpisode
 import com.kirin.mt.core.player.PlaybackRepository
+import com.kirin.mt.core.player.SubtitleTracks
 import com.kirin.mt.core.player.LastPlayedStore
 import com.kirin.mt.core.player.PlaybackRequest
 import com.kirin.mt.core.player.PlaybackTrack
@@ -155,10 +165,18 @@ fun PlayerScreen(
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
   playbackCodecPreference: PlaybackCodecPreference,
+  /** P11-131/P11-133:YouTube 专用解码器(与 [playbackCodecPreference] 拆开,值域是 YouTube 自己的)。 */
+  youtubePlaybackCodecPreference: YoutubeCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
   youtubeDefaultQuality: YoutubeDefaultQuality,
   youtubeStartQuality: YoutubeStartQuality,
+  // P11-126:起播预算要按 YouTube 交付档分档(见 YoutubeLaunchBudget),而 PlaybackRequest 上没有
+  // delivery-priority 字段(该值本来只在 resolver 内部从 appSettingsStore 读,UI 层拿不到)。
+  // 故照本文件既有的 settings.* 透传范式(AppShell 已有 20+ 个同类入参)把它传进来,只用于算预算。
+  youtubeDeliveryPriority: YoutubeDeliveryPriority = YoutubeDeliveryPriority.Sabr,
   defaultPlaybackSpeed: DefaultPlaybackSpeed,
+  /** P11-131:YouTube 起播专用倍速(与 [defaultPlaybackSpeed] 拆开,互不影响)。 */
+  youtubeDefaultSpeed: DefaultPlaybackSpeed,
   bufferMaxMs: Int,
   playbackCdnPreference: PlaybackCdnPreference,
   seekPreviewSpritesEnabled: Boolean,
@@ -214,10 +232,6 @@ fun PlayerScreen(
   var favSelectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
   var favLoadedForAid by remember { mutableLongStateOf(0L) }
   var interactionToast by remember { mutableStateOf<Toast?>(null) }
-  var onlineCountText by remember { mutableStateOf("") }
-  var onlineCountRequestJob by remember { mutableStateOf<Job?>(null) }
-  var onlineCountRequestToken by remember { mutableLongStateOf(0L) }
-  var nextOnlineCountRefreshAtMs by remember { mutableLongStateOf(0L) }
   var clockText by remember { mutableStateOf(currentClockText()) }
   var clockMinuteKey by remember { mutableLongStateOf(currentClockMinuteKey()) }
   var currentCodecText by remember { mutableStateOf("") }
@@ -230,6 +244,15 @@ fun PlayerScreen(
   var lastAirJumpPositionMs by remember { mutableLongStateOf(0L) }
   var controlsVisible by remember { mutableStateOf(false) }
   var progressFocused by remember { mutableStateOf(false) }
+  // P11-124:三级焦点(动作行 → 进度条 → 控制行)。B站 版式顶部多了动作行(点赞/收藏/投币/稍后再看/评论),
+  // 故在 progressFocused 之上再加「焦点在动作行 + 当前项下标」两态;焦点唯一(actionFocused 为真时
+  // 进度条/控制行都不高亮)。YouTube 版式无动作行,这两个状态恒为 false/0,行为不变。
+  var actionFocused by remember { mutableStateOf(false) }
+  var focusedActionIndex by remember { mutableIntStateOf(0) }
+  // P11-124(追加):B站 控制行「画面旋转」——按一次循环 +90°,只转视频画面(弹幕/预览/控制层不跟转)。
+  var videoRotation by remember { mutableIntStateOf(0) }
+  // P11-124(追加):B站 控制行「播放序列」——false = 列表播放(默认),true = 单视频循环(REPEAT_MODE_ONE)。
+  var singleVideoLoop by remember { mutableStateOf(false) }
   var focusedControl by remember { mutableStateOf(PlayerControl.Episodes) }
   var activePanel by remember { mutableStateOf(PlayerPanel.None) }
   var focusedPanelIndex by remember { mutableIntStateOf(0) }
@@ -240,7 +263,11 @@ fun PlayerScreen(
   var actualQuality by remember { mutableStateOf<PlaybackQuality?>(null) }
   val storedDanmakuSettings by danmakuSettingsStore.settings.collectAsState(initial = DanmakuSettings())
   var danmakuSettings by remember { mutableStateOf(DanmakuSettings()) }
-  var playbackSpeed by remember { mutableFloatStateOf(defaultPlaybackSpeed.value) }
+  // P11-131:起播倍速按内容源取 B站 / YouTube 两份值之一。remember 保持**无 key**——沿用「每个播放器
+  // 实例只初始化一次」的既有语义;若按 request 上 key,播放中自动连播/换源会把用户在倍速菜单里临时
+  // 调过的值冲掉。用入参 request(而非 activeRequest)判源,同一实例内不随换源改速。
+  val initialPlaybackSpeed = if (request.isYoutube) youtubeDefaultSpeed else defaultPlaybackSpeed
+  var playbackSpeed by remember { mutableFloatStateOf(initialPlaybackSpeed.value) }
   var previewPositionMs by remember { mutableStateOf<Long?>(null) }
   val playbackPositionState = remember { mutableLongStateOf(0L) }
   val playbackDurationState = remember { mutableLongStateOf(0L) }
@@ -266,6 +293,10 @@ fun PlayerScreen(
   var pendingSABRSeekMs by remember { mutableStateOf<Long?>(null) }
   var sabrSeekReloadKey by remember { mutableIntStateOf(0) }
   var autoRetryCount by remember { mutableIntStateOf(0) }
+  // P11-99c:onPlayerError 专用重试预算(与 stall 看门狗的 autoRetryCount 分开)。降级链 SABR→DASH
+  // →HLS 有 3 级,共享 2 次预算会在 HLS 降级触发前烧完(09-15 00:22 真机:SABR 2000 用 #1、DASH
+  // 2001 网络抖动用 #2、DASH 403 无预算直接 Failed)。isPlaying 后清零。
+  var errorRetryCount by remember { mutableIntStateOf(0) }
   // P11-85 深度重试去重:每视频只放行一次(换视频重置),防无限重载。
   var sabrDeepRetryUsedForBvid by remember { mutableStateOf<String?>(null) }
   var lastPlaybackExitBackPressMs by remember { mutableLongStateOf(0L) }
@@ -289,6 +320,9 @@ fun PlayerScreen(
         .build()
     )
   }
+  // P11-128:工厂实例提到 composable 层(不能在下面 `remember(bufferMaxMs){}` 里再调 remember)——
+  // 起播锁高(替代 setMin/MaxVideoSize)通过它下发/释放,DisposableEffect 与 loadRequest 都要用。
+  val abrSelectionFactory = remember { HeightAwareAdaptiveTrackSelectionFactory() }
   val player = remember(bufferMaxMs) {
     // alpha.9X:YouTube SABR Auto 升档——视频 TrackGroup 是 H264+VP9 混合 mime 组,DefaultTrackSelector
     // 默认不允许混合 mime 进同一条 adaptive selection,把选组锁在选定轨的 mime 上(选定 VP9 就只剩 1 轨,
@@ -300,7 +334,7 @@ fun PlayerScreen(
     // alpha.97(修「Auto 永不升过 1080p」根因,同 MobilePlayerScreen):clearViewportSizeConstraints 置
     // isViewportSizeLimitedByPhysicalDisplaySize=false,解除「物理屏=视口」隐性约束,否则超屏分辨率
     // (1440p/2160p)永远拿不到 ADAPTIVE 资格。
-    val trackSelector = DefaultTrackSelector(context, HeightAwareAdaptiveTrackSelectionFactory())
+    val trackSelector = DefaultTrackSelector(context, abrSelectionFactory)
     trackSelector.setParameters(
       DefaultTrackSelector.Parameters.Builder()
         .setAllowVideoMixedMimeTypeAdaptiveness(true)
@@ -330,8 +364,6 @@ fun PlayerScreen(
     onDispose {
       completionActionJob?.cancel()
       completionActionJob = null
-      onlineCountRequestJob?.cancel()
-      onlineCountRequestJob = null
       playbackExitConfirmToast?.cancel()
       playbackCompletionToast?.cancel()
       interactionToast?.cancel()
@@ -370,16 +402,6 @@ fun PlayerScreen(
     cancelPlaybackCompletionToast()
   }
 
-  fun resetOnlineCountPolling() {
-    if (onlineCountText.isNotEmpty() || onlineCountRequestJob != null || nextOnlineCountRefreshAtMs != 0L) {
-      onlineCountRequestJob?.cancel()
-      onlineCountRequestJob = null
-      onlineCountRequestToken += 1L
-      nextOnlineCountRefreshAtMs = 0L
-      onlineCountText = ""
-    }
-  }
-
   fun acquirePlaybackWakeLock() {
     runCatching {
       if (playbackWakeLock?.isHeld != true) {
@@ -396,10 +418,20 @@ fun PlayerScreen(
     }
   }
 
+  /**
+   * P11-124:控制行重新出现时的初焦项。三份显式项集([BiliPlayerControls] / [YoutubePlayerControls] /
+   * [GenericPlayerControls])的首项都是「倍速文案」= Speed,故不再按源判断
+   * (entries 过滤路径已退场 —— 任何源都不再靠 [PlayerControl.entries] 的声明顺序取序)。
+   */
+  fun defaultFocusedControl(): PlayerControl = PlayerControl.Speed
+
   fun showControls() {
     if (!controlsVisible && activePanel == PlayerPanel.None) {
-      focusedControl = PlayerControl.Episodes
+      focusedControl = defaultFocusedControl()
       progressFocused = false
+      // P11-124:控制栏重新出现 = 焦点回到控制行(动作行/进度条让焦)。
+      actionFocused = false
+      focusedActionIndex = 0
     }
     controlsVisible = true
     pauseInteractionToken++
@@ -428,6 +460,9 @@ fun PlayerScreen(
     activePanel = PlayerPanel.None
     previewPositionMs = null
     progressFocused = false
+    // P11-124:控制层整块隐藏,动作行焦点一并复位。
+    actionFocused = false
+    focusedActionIndex = 0
     controlsVisible = false
   }
 
@@ -482,6 +517,7 @@ fun PlayerScreen(
       showControls()
     } else {
       progressFocused = false
+      actionFocused = false
     }
   }
 
@@ -500,9 +536,12 @@ fun PlayerScreen(
     activePanel = PlayerPanel.None
     if (revealControls) {
       progressFocused = true
+      // P11-124:焦点唯一——seek 预览把焦点拉到进度条,动作行让焦。
+      actionFocused = false
       showControls()
     } else {
       progressFocused = false
+      actionFocused = false
     }
   }
 
@@ -668,16 +707,46 @@ fun PlayerScreen(
     }
   }
 
+  // P11-120:当前选中的字幕轨 id(null=关闭)。**默认关闭**且每个视频重置——字幕轨是懒加载轨,
+  // 未选中时一个请求都不发,所以默认态零开销、零风险(防线④)。
+  // 声明位置必须在 openPanel/activateFocusedPanelItem 之前:那两个局部函数要引用它。
+  var selectedSubtitleTrackId by remember { mutableStateOf<Int?>(null) }
+  // 字幕专用短超时 client(共享主源连接池,只覆盖超时)。见 SubtitleTracks.createShortTimeoutClient。
+  val subtitleHttpClient = remember(playbackHttpClient) {
+    SubtitleTracks.createShortTimeoutClient(playbackHttpClient)
+  }
+
+  fun applySubtitleSelection(trackId: Int?) {
+    selectedSubtitleTrackId = trackId
+    val info = (playerState as? PlayerScreenState.Ready)?.info ?: return
+    SubtitleTracks.applySelection(player, info.subtitleTracks, trackId)
+  }
+
   fun openPanel(panel: PlayerPanel) {
     if (panel != PlayerPanel.UpVideos) {
       showUnfollowConfirm = false
       unfollowConfirmFocusedConfirm = false
     }
     activePanel = panel
+    // P11-124:面板夺焦 —— 动作行让焦,避免面板打开时动作行还挂着白描边。
+    actionFocused = false
     focusedPanelIndex = when (panel) {
       PlayerPanel.Quality -> actualQuality?.let { quality ->
         (playerState as? PlayerScreenState.Ready)?.info?.qualities?.indexOfFirst { it.id == quality.id }
       }?.takeIf { it >= 0 } ?: 0
+      PlayerPanel.Audio -> (playerState as? PlayerScreenState.Ready)?.info?.availableAudioTracks
+        // P11-119:初焦落到当前音轨(已选 → preferredAudioTrackId;未选 → 服务器声明默认轨)。
+        ?.indexOfFirst { t ->
+          t.id == activeRequest.preferredAudioTrackId ||
+            (activeRequest.preferredAudioTrackId == null && t.isDefault)
+        }
+        ?.takeIf { it >= 0 } ?: 0
+      PlayerPanel.Subtitle -> {
+        // P11-120:初焦落到当前选中轨(行号 = 轨下标 + 1,因为 index 0 是「关闭」);未开字幕则落到「关闭」。
+        val idx = (playerState as? PlayerScreenState.Ready)?.info?.subtitleTracks
+          ?.indexOfFirst { it.id == selectedSubtitleTrackId } ?: -1
+        if (idx >= 0) idx + 1 else 0
+      }
       PlayerPanel.Speed -> PlayerSpeedOptions.indexOf(playbackSpeed).takeIf { it >= 0 } ?: 2
       PlayerPanel.Episodes -> {
         val focusIdx = metadata?.pages
@@ -842,16 +911,41 @@ fun PlayerScreen(
     }
   }
 
-  /** 控制栏可见按钮:PGC 或无 aid 时隐藏点赞/投币/收藏/稍后再看;评论另有 aid>0 或 YouTube 判据。 */
-  fun availableControls(): List<PlayerControl> {
+  /**
+   * P11-124:B站 版式顶部动作行的项(可见项 + 顺序见 [BiliPlayerActions])。显隐判据与底栏那三个
+   * 互动按钮完全同源:PGC / 无 aid 时隐藏点赞/投币/收藏/稍后再看,评论另有判据。全隐时动作行整行不渲染,
+   * 焦点模型退回两级(与 YouTube 一致)。
+   */
+  fun biliActionControls(): List<PlayerControl> {
     val hideInteraction = displayRequest.isPgc || displayRequest.aid <= 0L
-    return PlayerControl.entries.filter { control ->
+    return BiliPlayerActions.filter { control ->
       when (control) {
         PlayerControl.Like, PlayerControl.Coin, PlayerControl.Favorite, PlayerControl.ToView -> !hideInteraction
         PlayerControl.Comment -> !displayRequest.isPgc && (displayRequest.aid > 0L || displayRequest.isYoutube)
         else -> true
       }
     }
+  }
+
+  /**
+   * P11-124:是否走「对齐官方」的 B站 版式(B站 顶栏 = 标题/元信息/动作行三行块)。判据必须与
+   * [PlayerOverlay] 里那次分叉**完全一致**(`request.source == SourceBili`)。底栏已是所有源共用,
+   * 这里只决定:顶栏形态 + 是否有顶部动作行 + 控制行用哪份显式项集。
+   */
+  fun alignedBiliLayout(): Boolean = displayRequest.source == SourceBili
+
+  /** P11-124:动作行是否可获焦(仅 B站 版式且至少有一项;YouTube 等无动作行 → 恒两级焦点)。 */
+  fun actionRowAvailable(): Boolean = alignedBiliLayout() && biliActionControls().isNotEmpty()
+
+  /**
+   * P11-124:当前源**实际渲染**的控制行项集。左右移动/初焦必须与传给 PlayerOverlay 的那份完全同源,
+   * 否则会在别的源的项集上移动(项对不上 → 焦点跑到没渲染的项/移不动)。
+   * B站 / YouTube 用各自的显式顺序,其余源(影视库/IPTV/红果)沿用 entries 过滤。
+   */
+  fun currentControls(): List<PlayerControl> = when {
+    alignedBiliLayout() -> BiliPlayerControls
+    displayRequest.isYoutube -> YoutubePlayerControls
+    else -> GenericPlayerControls
   }
 
   fun showInteractionToast(ok: Boolean, successMsg: String, error: Throwable? = null) {
@@ -1012,7 +1106,12 @@ fun PlayerScreen(
         progressFocused = false
       }
       activePanel != PlayerPanel.None -> openPanel(PlayerPanel.None)
-      controlsVisible -> controlsVisible = false
+      controlsVisible -> {
+        // P11-124:连控制层一起收,动作行焦点一并复位(下次 showControls 会重新给初焦)。
+        actionFocused = false
+        focusedActionIndex = 0
+        controlsVisible = false
+      }
       else -> requestExitPlayer()
     }
   }
@@ -1038,7 +1137,6 @@ fun PlayerScreen(
       metadata = null
     }
     cancelPendingCompletionAction()
-    resetOnlineCountPolling()
     sidePanelVideos = emptyList()
     activePanel = PlayerPanel.None
     progressFocused = false
@@ -1141,6 +1239,13 @@ fun PlayerScreen(
 
   fun reportPlaybackCompleted() {
     if (completionReported) return
+    // P11-124(追加):单视频循环下不触发播完链路(自动下一P / 自动相关推荐 / 播完退出)。
+    // REPEAT_MODE_ONE 正常不会走到 ENDED,但 SABR/DASH 这类 duration=LENGTH_UNSET 的源仍可能上报
+    // ENDED,故在链路唯一入口处显式兜一道(比逐处加判据稳)。
+    if (singleVideoLoop) {
+      Log.i(PlayerPlaybackLogTag, "STATE_ENDED ignored: play sequence is single-video loop")
+      return
+    }
     completionReported = true
     val completedDurationMs = maxDurationMs()
     if (completedDurationMs > 0L) {
@@ -1156,8 +1261,13 @@ fun PlayerScreen(
   fun panelItemCount(): Int {
     val info = (playerState as? PlayerScreenState.Ready)?.info
     return when (activePanel) {
-      PlayerPanel.Main -> 3
+      // P11-119:多音轨视频在 Main 末尾追加「音轨」项;P11-120:有字幕的视频再追加「字幕」项
+      // (顺序恒为 清晰度/弹幕/倍速 → 音轨 → 字幕,故各自 index 由前面几项是否存在决定)。
+      PlayerPanel.Main -> 3 + (if (hasAudioTrackChoice(info)) 1 else 0) + (if (hasSubtitleChoice(info)) 1 else 0)
       PlayerPanel.Quality -> info?.qualities?.size?.coerceAtLeast(1) ?: 1
+      PlayerPanel.Audio -> info?.availableAudioTracks?.size?.coerceAtLeast(1) ?: 1
+      // P11-120:字幕面板 = 「关闭」+ 每条字幕轨。
+      PlayerPanel.Subtitle -> subtitlePanelItemCount(info)
       PlayerPanel.Danmaku -> 8
       PlayerPanel.Speed -> PlayerSpeedOptions.size
       PlayerPanel.Episodes -> metadata?.pages?.size ?: 0
@@ -1189,11 +1299,31 @@ fun PlayerScreen(
     // alpha.9X(恢复清晰度选择):恢复本地 info(供 Quality 分支取 qualities)。
     val info = (playerState as? PlayerScreenState.Ready)?.info ?: return
     when (activePanel) {
-      PlayerPanel.Main -> when (focusedPanelIndex) {
-        // alpha.9X(恢复清晰度选择):Main 面板 index 0 = 清晰度 → Quality 面板;1 = 弹幕;2 = 倍速。
-        0 -> openPanel(PlayerPanel.Quality)
-        1 -> openPanel(PlayerPanel.Danmaku)
-        2 -> openPanel(PlayerPanel.Speed)
+      // alpha.9X(恢复清晰度选择):Main 面板 0 = 清晰度 → Quality;1 = 弹幕;2 = 倍速(前三项固定)。
+      // P11-119:音轨项(仅多音轨视频出现)→ Audio;P11-120:字幕项(仅有字幕的视频出现)→ Subtitle。
+      // 两个条件项的行号由 PlayerOverlay 的 MainAudioRowIndex/mainSubtitleRowIndex 统一算(与渲染同源);
+      // 用 when{} + 显式条件(而非 when(index) 字面量)是因为无音轨项时字幕项行号会等于音轨项行号。
+      PlayerPanel.Main -> when {
+        focusedPanelIndex == 0 -> openPanel(PlayerPanel.Quality)
+        focusedPanelIndex == 1 -> openPanel(PlayerPanel.Danmaku)
+        focusedPanelIndex == 2 -> openPanel(PlayerPanel.Speed)
+        focusedPanelIndex == MainAudioRowIndex && hasAudioTrackChoice(info) -> openPanel(PlayerPanel.Audio)
+        focusedPanelIndex == mainSubtitleRowIndex(info) && hasSubtitleChoice(info) -> openPanel(PlayerPanel.Subtitle)
+      }
+      PlayerPanel.Subtitle -> {
+        // P11-120:选字幕 = 纯客户端轨道选择(懒加载轨此刻才开始拉 WebVTT),不重跑 resolve、不重开会话。
+        // index 0 = 关闭。
+        val trackId = if (focusedPanelIndex == 0) null else info.subtitleTracks.getOrNull(focusedPanelIndex - 1)?.id
+        applySubtitleSelection(trackId)
+      }
+      PlayerPanel.Audio -> {
+        // P11-119:选音轨 → 带 preferredAudioTrackId 重跑 resolve(SABR 路径 = 用命中轨的 formatId
+        // 重建会话;与清晰度切换同一套机制,保持当前位置)。
+        val track = info.availableAudioTracks.getOrNull(focusedPanelIndex) ?: return
+        activeRequest = activeRequest.copy(
+          startPositionMs = player.currentPosition.takeIf { it > 0L } ?: playbackPositionState.longValue,
+          preferredAudioTrackId = track.id,
+        )
       }
       PlayerPanel.Quality -> {
         // alpha.9X(恢复清晰度选择):选中 Quality 面板某档 → 更新 selectedQuality + 用 preferredQualityId 重跑 resolve。
@@ -1345,11 +1475,57 @@ fun PlayerScreen(
   }
 
   fun moveFocusedControl(delta: Int) {
-    val controls = availableControls()
+    // P11-124:必须用 currentControls()(当前源实际渲染的项集)——三份显式列表的项/顺序各不相同,
+    // 错用别的源的列表会导致焦点跑到没渲染的项或移不动。
+    val controls = currentControls()
     val current = controls.indexOf(focusedControl).takeIf { it >= 0 } ?: 0
     val next = (current + delta).coerceIn(0, controls.lastIndex)
     focusedControl = controls[next]
     progressFocused = false
+    actionFocused = false
+    showControls()
+  }
+
+  /** P11-124:动作行内左右移动(夹在 0..lastIndex,不循环)。 */
+  fun moveFocusedAction(delta: Int) {
+    val actions = biliActionControls()
+    if (actions.isEmpty()) return
+    focusedActionIndex = (focusedActionIndex + delta).coerceIn(0, actions.lastIndex)
+    showControls()
+  }
+
+  /**
+   * P11-124:动作行 OK/Enter —— 复用既有行为,不另写一套。
+   * 点赞=直投;投币=弹确认框(与底栏 Coin 分支同款);收藏=收藏夹面板;稍后再看=直投;评论=评论页叠层。
+   */
+  fun activateFocusedAction() {
+    when (biliActionControls().getOrNull(focusedActionIndex)) {
+      PlayerControl.Like -> doLike()
+      PlayerControl.Favorite -> openFavoritePanel()
+      PlayerControl.Coin -> {
+        if (interactionBusy) return
+        coinDialogFocusedIndex = 0
+        showCoinDialog = true
+        showControls()
+      }
+      PlayerControl.ToView -> doAddToView()
+      PlayerControl.Comment -> onOpenComments(displayRequest)
+      else -> Unit
+    }
+  }
+
+  /**
+   * P11-124:控制行「刷新」——重新解析并重载当前视频,**位置保持在当前播放点**。
+   *
+   * 复用既有重载机制(与 onPlayerError 自动重试、stall 看门狗同一套):把当前位置写进 autoResumePositionMs,
+   * 再 bump retryKey 重跑 launch effect;effect 内 requestedStartPositionMs 会优先取它(SABR 源经 startMs
+   * 透传进 sabr:// URL,普通源走 player.seekTo)。计数预算(autoRetryCount/errorRetryCount)不动——
+   * 刷新是用户主动行为,不应吃掉自动重试预算。
+   */
+  fun refreshPlayback() {
+    autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
+    Log.i(PlayerPlaybackLogTag, "manual refresh, reload @pos=${autoResumePositionMs}ms")
+    retryKey += 1L
     showControls()
   }
 
@@ -1357,6 +1533,32 @@ fun PlayerScreen(
     when (focusedControl) {
       PlayerControl.Settings -> openPanel(PlayerPanel.Main)
       PlayerControl.Episodes -> openPanel(PlayerPanel.Episodes)
+      // P11-123:画质/字幕从底栏一键直达各自面板(初焦由 openPanel 落到当前档/当前轨)。
+      // Back 回退无需改层级:closePanelOrControls 对任何已打开面板都是「关面板 → 回控制栏」。
+      PlayerControl.Quality -> openPanel(PlayerPanel.Quality)
+      PlayerControl.Subtitle -> openPanel(PlayerPanel.Subtitle)
+      // P11-124:B站 控制行新增的三项 —— 倍速面板 / 重载当前视频 / 弹幕总开关(与设置面板那一项同源)。
+      PlayerControl.Speed -> openPanel(PlayerPanel.Speed)
+      PlayerControl.Refresh -> refreshPlayback()
+      PlayerControl.DanmakuToggle -> {
+        persistDanmakuSettings(danmakuSettings.copy(enabled = !danmakuSettings.enabled))
+        showControls()
+      }
+      // P11-124(追加):画面旋转 —— 循环 +90°(0 → 90 → 180 → 270 → 0)。
+      // 只改渲染层的旋转角:弹幕层/seek 预览/雪碧图/控制层都是独立浮层,位置与朝向不变。
+      PlayerControl.Rotate -> {
+        videoRotation = (videoRotation + 90) % 360
+        showControls()
+      }
+      // P11-124(追加):播放序列 —— 列表播放 / 单视频循环 两态,直接切 player.repeatMode。
+      // 注意 repeatMode 会被重解析(刷新/切清晰度/切音轨)重建会话时重置,故 launch effect 里
+      // prepare 之后按当前状态重设一次(见 player.playWhenReady = true 处)。
+      PlayerControl.PlaySequence -> {
+        singleVideoLoop = !singleVideoLoop
+        player.repeatMode = if (singleVideoLoop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+        Log.i(PlayerPlaybackLogTag, "play sequence: singleVideoLoop=$singleVideoLoop repeatMode=${player.repeatMode}")
+        showControls()
+      }
       PlayerControl.Up -> openUpVideos(UpVideoOrderLatest)
       PlayerControl.Related -> {
         // 播放列表场景:相关 = 队列后续(与自动连播同源同序,不依赖在线接口成败);
@@ -1395,6 +1597,8 @@ fun PlayerScreen(
     when {
       previewPositionMs != null -> commitPreviewSeek()
       activePanel != PlayerPanel.None -> activateFocusedPanelItem()
+      // P11-124:动作行夺焦时 OK 执行动作行项(优先于下面的「暂停态 OK = 播放/暂停」)。
+      actionFocused -> activateFocusedAction()
       playbackPaused && !completionReported -> togglePlayback()
       controlsVisible -> activateFocusedControl()
       else -> showControls()
@@ -1437,7 +1641,31 @@ fun PlayerScreen(
           "player error code=${error.errorCode} codeName=${error.errorCodeName} message=${error.message}",
           error,
         )
-        playerState = PlayerScreenState.Failed(error.message.orEmpty())
+        // alpha.9X:player error 自动重试(对齐 MobilePlayerScreen onPlayerErrorChanged)。SABR RELOAD
+        // PLAYER_RESPONSE 终止包路径:DataSource.open 抛 IOException → source error → 此前 TV 端只置
+        // Failed,重 resolve(alpha.93 守卫 → DASH/HLS 兜底)永远没机会跑 →「DASH 兜底不生效」。
+        // bump retryKey → launch effect 重 resolve:registry reloadCount>0 守卫跳过 SABR 落 DASH。
+        // 记当前位置进 autoResumePositionMs 续播(不回退 saved progress)。
+        // P11-99b:2004 BAD_HTTP_STATUS + YouTube = DASH 兜底直链 403(attestation 门控视频 NewPipe
+        // ANDROID 未 attested 直链必 403,重试只会原样再 403)→ 标记进 registry → 重 resolve 时
+        // buildDashFallbackFromNewPipe 跳过自合成 DASH 直落 dashMpdUrl/HLS。SABR 错误恒为 2000,不误标。
+        // P11-99c:标记移到预算判定**之前**(预算耗尽的最后一击也标记,手动重试同样能 HLS 接上);
+        // 重试用独立 errorRetryCount(MaxErrorAutoRetry=3,容纳 SABR→DASH→HLS 三级),不再烧
+        // stall 看门狗预算;isPlaying 清零;超限置 Failed 交用户手动重试。
+        if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube) {
+          SabrStreamRegistry.markDashFallbackFailed(activeRequest.bvid)
+        }
+        if (errorRetryCount < MaxErrorAutoRetry) {
+          errorRetryCount += 1
+          autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
+          Log.w(
+            PlayerPlaybackLogTag,
+            "playback error, auto-retry #${errorRetryCount} @pos=${autoResumePositionMs}ms: ${error.message}",
+          )
+          retryKey += 1L
+        } else {
+          playerState = PlayerScreenState.Failed(error.message.orEmpty())
+        }
       }
 
       override fun onPlayerErrorChanged(error: PlaybackException?) {
@@ -1452,6 +1680,28 @@ fun PlayerScreen(
 
       override fun onIsLoadingChanged(isLoading: Boolean) {
         Log.d(PlayerPlaybackLogTag, "player isLoading=$isLoading state=${player.playbackState}")
+      }
+
+      override fun onTracksChanged(tracks: Tracks) {
+        // P11-96 起播不出首帧诊断(09-13 真机两案:数据满 49s buffer、解码器已建,却 30s+ 停在
+        // BUFFERING 不转 READY 不出首帧,且 tracks 全程为 0)——onTracksChanged 是 TrackSelection
+        // 产出结果的唯一回调。零触发 = 轨选择从未完成;有触发但 selected 空 = 选了轨没喂 renderer。
+        // 与 startup probe / 首帧日志配对,定位卡在 selection 还是渲染层。
+        val selected = StringBuilder()
+        tracks.groups.forEach { group ->
+          for (i in 0..<group.length) {
+            if (group.isTrackSelected(i)) {
+              val f = group.getTrackFormat(i)
+              if (selected.isNotEmpty()) selected.append(',')
+              selected.append(group.type).append(':')
+                .append(f.id?.takeIf { s -> s.isNotBlank() } ?: f.codecs)
+            }
+          }
+        }
+        Log.i(
+          PlayerPlaybackLogTag,
+          "tracks changed groups=${tracks.groups.size} selected=[$selected]",
+        )
       }
 
       override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -1481,13 +1731,13 @@ fun PlayerScreen(
         // 2026-09-01 黑屏诊断:首帧渲染回执(07:22 案 5 轮会话此回调零触发)。
         frameRendered = true
         Log.i(PlayerPlaybackLogTag, "video first frame rendered")
-        // 起始挡位:首帧已渲染 = 实际运行起来,松开 selector 高度 cap,让 ABR 爬回默认画质上限。
+        // 起始挡位:首帧已渲染 = 实际运行起来,松开起播锁高,让 ABR 爬回默认画质上限。
+        // P11-128:改调 `releaseStartupLock()`(选择内部状态),不再改 selector 参数——改参数会换出新的
+        // 选择集 ⇒ ChunkSampleStream 重建(样本队列整丢)。此处零重建。
         if (!startQualityRelaxed) {
           startQualityRelaxed = true
-          val cur = player.trackSelectionParameters
-          if (cur is DefaultTrackSelector.Parameters) {
-            player.setTrackSelectionParameters(cur.buildUpon().clearVideoSizeConstraints().build())
-          }
+          abrSelectionFactory.releaseStartupLock()
+          Log.i(PlayerPlaybackLogTag, "startup lock released (ABR 自由爬档, 零重建)")
         }
       }
 
@@ -1502,6 +1752,10 @@ fun PlayerScreen(
         if (isPlaying && autoRetryCount > 0) {
           autoRetryCount = 0
           Log.i(PlayerPlaybackLogTag, "stall auto-retry recovered, counter reset")
+        }
+        if (isPlaying && errorRetryCount > 0) {
+          errorRetryCount = 0
+          Log.i(PlayerPlaybackLogTag, "playback error-retry recovered, counter reset")
         }
       }
 
@@ -1589,7 +1843,7 @@ fun PlayerScreen(
     if (playerState !is PlayerScreenState.Loading) YoutubeLoadProgress.clear()
   }
 
-  LaunchedEffect(activeRequest, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
+  LaunchedEffect(activeRequest, playbackCodecPreference, youtubePlaybackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
     val launchJob = coroutineContext[Job]
     playbackLaunchJob = launchJob
     try {
@@ -1687,16 +1941,32 @@ fun PlayerScreen(
       // Resolver/Constants/PlaybackModels),待修 viaWebView session 隔离后再启用下行 .let。
       // .let { if (isYoutube) it.copy(preferredYoutubeClient = com.kirin.mt.core.youtube.InnerTubeClient.Client.TVHTML5) else it }
     displayRequest = resolvedRequest
+    // P11-126:按源/交付档取起播预算(见 [YoutubeLaunchBudget] 的取值理由)。仅 YouTube 分档;
+    // 其它源(B站/影视库/IPTV/红果)起播实测 1~3s,保持原来的 30s。
+    val launchBudgetMs = if (resolvedRequest.isYoutube) {
+      com.kirin.mt.core.youtube.YoutubeLaunchBudget.forPriority(youtubeDeliveryPriority)
+    } else {
+      com.kirin.mt.core.youtube.YoutubeLaunchBudget.DefaultMs
+    }
+    // 预算同时作为 resolve 的绝对 deadline 传下去:resolver 据此算剩余预算,不够就不做注定失败的
+    // WEB-SABR 优先、直接落 NewPipe 主链,并把它自己那两层 harvest 超时(40s/30s,原本与外层
+    // 30s 完全互不感知)收敛到剩余预算内。0 = 不限。
+    val launchDeadlineMs = System.currentTimeMillis() + launchBudgetMs
     playerState = try {
-      withTimeoutOrNull(LaunchTimeoutMs) {
+      withTimeoutOrNull(launchBudgetMs) {
         launchStep = "playurl"
-        Log.i(PlayerPlaybackLogTag, "launch step: playurl")
+        // P11-126:把预算打进日志——真机判读时「预算多少」是第一现场信息(此前只能从
+        // `Timed out waiting for 30000 ms` 的异常栈倒推)。
+        Log.i(PlayerPlaybackLogTag, "launch step: playurl (budget=${launchBudgetMs}ms)")
         val info = playbackRepository.getPlaybackInfo(
           request = resolvedRequest,
           codecPreference = playbackCodecPreference,
           qualityPreference = playbackQualityPreference,
           youtubeDefaultQuality = youtubeDefaultQuality,
           youtubeStartQuality = youtubeStartQuality,
+          deadlineMs = launchDeadlineMs,
+          // P11-131:YouTube 走自己那份解码器;B站 路径在 repository 内部仍用 codecPreference。
+          youtubeCodecPreference = youtubePlaybackCodecPreference,
         )
       // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体),
       // 或远程 manifest 兜底(DASH/HLS manifest 自带 A/V 轨,dummy 视频轨非 progressive 但 audioTracks 合法为空)。
@@ -1763,6 +2033,15 @@ fun PlayerScreen(
             ).create(),
           ),
         )
+        // P11-120:字幕专用短超时数据源(不走 SabrAwareDataSourceFactory——字幕恒是 http(s) 的 timedtext URL,
+        // 与 sabr:// 无关)。5s/8s 超时是防线②:黑洞时快速失败,不长时间占住 loader。
+        val subtitleDataSourceFactory = DefaultDataSource.Factory(
+          context,
+          BiliMediaDataSourceFactory(
+            client = subtitleHttpClient,
+            headers = effectiveInfo.headers,
+          ).create(),
+        )
         // alpha.59(Phase 2 DASH):SABR 轨 isSabrDash=true(segmentBase 仍 null → isProgressive 为 true),
         // 须排除走 DASH 分支(SegmentTemplate MPD + SabrDashDataSource 逐段拉),而非 progressive MergingMediaSource。
         // alpha.64(单流移植):isSabrSingle=true → 走自定义 SabrMediaSource(单流,修 60s 断崖 + A/V 同步 + 后台音频)。
@@ -1808,18 +2087,26 @@ fun PlayerScreen(
           DashMediaSource.Factory(dataSourceFactory)
             .createMediaSource(buildDashMediaItem(effectiveInfo, playbackCdnPreference))
         }
-        // 字幕不再并入主源(P11-73,用户决策:字幕不重要,核心是音视频稳定):
-        // 旧实现把 WebVTT 字幕轨作为 ProgressiveMediaSource 并入 MergingMediaSource——媒体3 要等
-        // **全部** child prepare 完成才 selectTracks,timedtext 响应头被掐(直连黑洞,00:25 真机 81s
-        // 等头超时)时字幕 period 挂死拖死主源,视频转圈加载不出。字幕 URL 网络对播放不可信且非关键,
-        // 彻底移出 Merging,主源直进;字幕轨数据仍在 PlaybackInfo 传递(未来若回归,须先「可达预检+
-        // 失败不阻塞主源」再考虑恢复,参考 P11-72 的 probe 方案)。
-        val finalMediaSource = mediaSource
-        // 起始挡位:起播阶段用 min+max 精确锁在起始档(SABR 专属,非 SABR 不卡),保证首段落在起始档
-        // (不靠带宽,对齐 LibreTube AbstractPlayerService setMinVideoSize+setMaxVideoSize 锁法,比原 maxHeight
-        // 上限更精确,杜绝"起播即顶满 4K");首帧渲染后 onRenderedFirstFrame 松开,升降档交给 ABR+excludeTrack。
+        // P11-120:字幕以**懒加载**方式回归(P11-73 曾整块下线,原因见 [SubtitleTracks] 头注释)。
+        // 与旧实现的唯一但决定性的差别:每条字幕轨在 prepare 期**零读取**(media3 的
+        // enableLazyLoadingWithSingleTrack),只有被 track selection 选中才发请求;且用独立 5s/8s
+        // 短超时 client,拉不通只丢字幕、够不到主源。本轮 selectedSubtitleTrackId 被重置为 null,
+        // 下方 setMediaSource 后按它重新施加选择 —— 默认即「TEXT 轨禁用」,用户不开字幕连一个请求都没有。
+        val subtitleTracks = effectiveInfo.subtitleTracks
+        val finalMediaSource = SubtitleTracks.attach(
+          mainSource = mediaSource,
+          dataSourceFactory = subtitleDataSourceFactory,
+          subtitleTracks = subtitleTracks,
+        )
+        // 起始挡位:起播阶段锁在起始档(SABR 专属,非 SABR 不锁),保证首段落在起始档、杜绝"起播即顶满 4K"。
+        // P11-128:锁**搬到选择内部**([HeightAwareAdaptiveTrackSelectionFactory.startupLockHeight]),
+        // 不再用 `setMin/MaxVideoSize`——后者改的是 selector 的选择集,首帧后松开会换出新的选择集 ⇒
+        // ChunkSampleStream 重建(样本队列整丢 + 从当前位置重装,真机实测 1.16s 后才重新出帧)。改成内部
+        // 锁高后选择集恒定,松开只是允许选更高档 → 零重建。黑屏熔断压档同样走这个锁(与手动选档取小)。
         startQualityRelaxed = false
         frameRendered = false
+        // P11-120:换视频重置字幕为关闭(不跨视频继承用户的字幕选择)。
+        selectedSubtitleTrackId = null
         // 黑屏画质熔断:零帧重试 ≥2 次后启动,起始档压到 BlackFrameHeightCap(与手动选档取小)。
         val startQualityHeight = if (effectiveInfo.isSabrSingle()) {
           youtubeStartQuality.startHeight?.let { minOf(it, blackFrameHeightCap) }
@@ -1827,25 +2114,24 @@ fun PlayerScreen(
         } else {
           null
         }
-        if (startQualityHeight != null) {
-          // 在现有参数基础上叠加高度 min+max cap,保留其它配置(mixed-mime/non-seamless 等)。
-          val cur = player.trackSelectionParameters
-          if (cur is DefaultTrackSelector.Parameters) {
-            player.setTrackSelectionParameters(
-              cur.buildUpon()
-                .setMinVideoSize(Int.MIN_VALUE, startQualityHeight)
-                .setMaxVideoSize(Int.MAX_VALUE, startQualityHeight)
-                .build()
-            )
-          }
-        }
+        abrSelectionFactory.startupLockHeight = startQualityHeight
+      // C1(2026-09-20):同时把 videoId 给选档 —— 让它从进程级记忆里读到
+      // 「该视频上服务端推过的 itag」,首个请求就收窄(材料会话里服务端只服务它那场会话绑定的格式)。
+      abrSelectionFactory.serverServedVideoId = activeRequest.bvid
+        // P11-133:梯子的 codec 锚点跟着「YouTube 解码器」设置走(Auto = 历史行为:粘全组顶档 codec)。
+        abrSelectionFactory.preferredCodecFamily = youtubePlaybackCodecPreference.codecKey
         player.setMediaSource(finalMediaSource)
+        // P11-120:新 MediaSource 会重置轨道选择,重新施加字幕状态(默认关闭 = 禁用 TEXT 轨,
+        // 顺带压掉 media3 可能从系统 CaptioningManager 读到的偏好而自动选轨)。
+        SubtitleTracks.applySelection(player, subtitleTracks, selectedSubtitleTrackId)
         // alpha.97(修「Auto 永不升过 1080p」诊断):SABR 会话逐视频轨打硬解能力判定(I 级,live 日志可见)。
         if (effectiveInfo.isSabrSingle()) {
           com.kirin.mt.core.youtube.sabr.media.SabrCodecDiagnostics.logVideoCodecSupport(context, effectiveInfo)
         }
         launchStep = "prepare"
-        Log.i(PlayerPlaybackLogTag, "launch step: prepare")
+        // P11-96:prepare 带续播定位——起播卡死案(23:16:30/23:17:05)都发生在续播 pos=901000,
+        // 记下 startPos 供与探针/tracks 日志配对,判断是否 seek 位置相关。
+        Log.i(PlayerPlaybackLogTag, "launch step: prepare startPos=${startPositionMs}ms")
         player.prepare()
         player.setPlaybackSpeed(playbackSpeed)
         if (startPositionMs > 0L) {
@@ -1856,6 +2142,9 @@ fun PlayerScreen(
           danmakuSyncToken += 1L
         }
         player.playWhenReady = true
+        // P11-124(追加):重解析(手动刷新 / 切清晰度 / 切音轨 / 自动重试)都会重建会话,repeatMode 可能
+        // 被重置为 OFF → 在这里按当前「播放序列」状态重设一次,保证单视频循环跨会话不丢。
+        player.repeatMode = if (singleVideoLoop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
         playbackPaused = false
         // YouTube 起播即写入播放历史（含频道/封面元数据），供历史 tab 展示与续播。
         if (isYoutube) {
@@ -1888,7 +2177,18 @@ fun PlayerScreen(
         }
         PlayerScreenState.Ready(info)
       }
-      } ?: PlayerScreenState.Failed(context.getString(R.string.player_error_launch_timeout))
+      } ?: run {
+        // P11-126:预算耗尽必须**可见**。此前这一步是静默的——`withTimeoutOrNull` 返回 null 直接落
+        // Failed,日志里既没有"预算超了"也没有超在哪一步,只能靠 `Timed out waiting for 30000 ms`
+        // 的异常栈倒推(真机 09-19 就是这么花了半轮才定位)。同时注意 launch 超时**不会**触发任何
+        // 自动重试(`onPlayerError` 只在 prepare 之后才可能回调),用户只能手点重试按钮。
+        Log.w(
+          PlayerPlaybackLogTag,
+          "launch timeout after ${launchBudgetMs}ms (step=$launchStep) → Failed(起播超时)。" +
+            "若是 YouTube:检查是否 harvest 冷启吃掉了预算(见 BiliWarmup 的 prewarm 日志)",
+        )
+        PlayerScreenState.Failed(context.getString(R.string.player_error_launch_timeout, (launchBudgetMs / 1000L).toInt()))
+      }
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {
@@ -1905,20 +2205,24 @@ fun PlayerScreen(
     }
   }
 
-  val shouldPollOnlineCount = playerState is PlayerScreenState.Ready &&
-    playerActuallyPlaying &&
-    previewPositionMs == null &&
-    !completionReported
-  val shouldPollOnlineCountState = rememberUpdatedState(shouldPollOnlineCount)
   val displayRequestState = rememberUpdatedState(displayRequest)
 
   LaunchedEffect(player, playerState) {
     var stallBaselinePositionMs = 0L
     var stallSinceMs = 0L
+    // P11-96 起播探针节拍:未出首帧期间每 StartupProbeIntervalMs 打一行「为什么还没播」快照。
+    var startupProbeSinceMs = 0L
     // 2026-09-01 视频冻结看门狗:BUFFERING 窗口起点 + 窗口内位置是否前进过(音频活着)。
     var bufferingSinceMs = 0L
     var bufferingLastPosMs = 0L
     var bufferingPosAdvanced = false
+    // P11-122(09-17 真机:WEB-SABR 三个 harvest 会话全部在**首帧后 0.14-1.7s** 被自己的看门狗杀掉)
+    // 起播成功 = 首帧渲染那一刻。此前累积的 BUFFERING/位置冻结计时器必须在此清零——续播 SABR 要拉
+    // bootstrap + 大段(本案例 475s 续播点,prepare→首帧实测 12.1/16.3/32.6s)会把计时器灌满,首帧一
+    // 渲染阈值立刻被跨过(位置冻结看门狗还同时从 StartupStallThresholdMs 25s 档切到 StallThresholdMs
+    // 8s 档),于是「刚播起来」被判成「挂死」→ 重载 → 新一轮慢起播 → 死循环。宽限期从「开始播」起算,
+    // 不从「开始等」起算。真挂死(从未出帧、或出帧后位置不再前进)判据不受影响。
+    var frameRenderedSeen = frameRendered
     // 2026-09-01 黑屏看门狗(READY 态变体):READY+音频前进但 never 首帧(解码器出帧为零,07:22
     // 案 5 轮会话 onVideoSizeChanged/onRenderedFirstFrame 均零触发)——位置基+BUFFERING 基看门狗
     // 双双结构性失明的第三种故障态。独立预算计数,首帧真渲染后清零。
@@ -1960,42 +2264,19 @@ fun PlayerScreen(
           clockText = currentClockText()
         }
       }
-      val onlineRequest = displayRequestState.value
-      val canPollOnlineCount = shouldPollOnlineCountState.value &&
-        lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
-        onlineRequest.aid > 0L &&
-        onlineRequest.cid > 0L
-      if (!canPollOnlineCount) {
-        resetOnlineCountPolling()
-      } else if (nowMs >= nextOnlineCountRefreshAtMs && onlineCountRequestJob?.isActive != true) {
-        val aid = onlineRequest.aid
-        val cid = onlineRequest.cid
-        val requestToken = ++onlineCountRequestToken
-        nextOnlineCountRefreshAtMs = nowMs + OnlineCountRefreshMs
-        onlineCountRequestJob = coroutineScope.launch {
-          try {
-            val countText = runCatching {
-              playbackRepository.getOnlineCount(aid, cid).orEmpty()
-            }.getOrDefault("")
-            val currentRequest = displayRequestState.value
-            if (
-              onlineCountRequestToken == requestToken &&
-              shouldPollOnlineCountState.value &&
-              lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
-              currentRequest.aid == aid &&
-              currentRequest.cid == cid
-            ) {
-              onlineCountText = countText
-            }
-          } finally {
-            if (onlineCountRequestToken == requestToken) {
-              onlineCountRequestJob = null
-            }
-          }
-        }
-      }
       if (playerState is PlayerScreenState.Ready) {
         handleAirJumpPosition(currentPositionMs)
+      }
+      // P11-122:首帧渲染 = 起播真正成功——见 frameRenderedSeen 声明处的复盘。清零两个起播期计时器,
+      // 让看门狗从「开始播」重新计时(否则慢起播攒下的 12-33s 会在首帧那一轮立刻越过阈值开枪)。
+      if (frameRendered != frameRenderedSeen) {
+        frameRenderedSeen = frameRendered
+        if (frameRendered) {
+          stallSinceMs = 0L
+          stallBaselinePositionMs = currentPositionMs
+          bufferingSinceMs = 0L
+          bufferingPosAdvanced = false
+        }
       }
       // stall 检测:STATE_BUFFERING 且用户想播(playWhenReady)、进度连续 N 秒不前进 → 自动重载续播。
       // 排除:已暂停(playWhenReady=false)、已结束、非 Ready 态。seek/换段后 position 变化会清零基线。
@@ -2163,6 +2444,29 @@ fun PlayerScreen(
           }
         }
       }
+      // P11-96 起播探针(09-13 真机两案:23:16:30/23:17:05 数据满 49s buffer、解码器已建,却 30s+
+      // 停 BUFFERING 不转 READY 不出首帧;state 变迁日志只有两帧,中间卡在哪层无证据)。未出首帧
+      // 期间每 3s 打一行快照:state/pos/buffered/playWhenReady/suppression/轨选择。与
+      // onTracksChanged、onRenderedFirstFrame 配对——tracks 恒 0 = selection 没产出;tracks 有值
+      // 仍 BUFFERING = renderer 没喂上。首帧渲染后自动停,不产生稳态噪音。
+      if (!frameRendered && playerState is PlayerScreenState.Ready) {
+        if (nowMs - startupProbeSinceMs >= StartupProbeIntervalMs) {
+          startupProbeSinceMs = nowMs
+          Log.i(
+            PlayerPlaybackLogTag,
+            "startup probe state=${playbackStateName(player.playbackState)} " +
+              "pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% " +
+              "fwdBuf=${player.totalBufferedDuration}ms " +
+              "isLoading=${player.isLoading} playWhenReady=${player.playWhenReady} " +
+              "suppress=${suppressionReasonName(player.playbackSuppressionReason)} " +
+              "tracks=${player.currentTracks.groups.size} " +
+              "video=${player.videoFormat?.codecs} audio=${player.audioFormat?.codecs} " +
+              "rendered=${(player as? ExoPlayer)?.videoDecoderCounters?.renderedOutputBufferCount ?: -1}",
+          )
+        }
+      } else {
+        startupProbeSinceMs = 0L
+      }
       delay(BiliMotion.PlayerProgressUpdateMs)
     }
   }
@@ -2267,6 +2571,15 @@ fun PlayerScreen(
     if (playbackPaused) {
       delay(BiliMotion.PlayerPauseIndicatorAutoHideMs)
       showPauseIndicator = false
+    }
+  }
+
+  // P11-124:动作行项集随源/可交互性变化(切视频、PGC 判据),项数变少时把下标夹回末项,
+  // 否则会停在越界下标上 → 整行没有白描边(焦点「消失」)。
+  val actionControlCount = if (alignedBiliLayout()) biliActionControls().size else 0
+  LaunchedEffect(actionControlCount) {
+    if (actionControlCount > 0) {
+      focusedActionIndex = focusedActionIndex.coerceIn(0, actionControlCount - 1)
     }
   }
 
@@ -2384,6 +2697,8 @@ fun PlayerScreen(
                 }
               }
               previewPositionMs != null -> updatePreviewSeek(-SeekStepMs)
+              // P11-124:动作行内左右切换项(夹在 0..lastIndex)。
+              actionFocused -> moveFocusedAction(-1)
               progressFocused -> updatePreviewSeek(-SeekStepMs, revealControls = true)
               controlsVisible -> moveFocusedControl(-1)
               else -> updatePreviewSeek(-SeekStepMs, revealControls = false)
@@ -2407,6 +2722,8 @@ fun PlayerScreen(
                 }
               }
               previewPositionMs != null -> updatePreviewSeek(SeekStepMs)
+              // P11-124:动作行内左右切换项(夹在 0..lastIndex)。
+              actionFocused -> moveFocusedAction(1)
               progressFocused -> updatePreviewSeek(SeekStepMs, revealControls = true)
               controlsVisible -> moveFocusedControl(1)
               else -> updatePreviewSeek(SeekStepMs, revealControls = false)
@@ -2416,7 +2733,17 @@ fun PlayerScreen(
           Key.DirectionUp -> {
             when {
               activePanel != PlayerPanel.None -> changePanelFocus(-1)
-              controlsVisible && !progressFocused -> progressFocused = true
+              // P11-124:三级焦点 控制行 → 进度条 → 动作行(动作行只存在于 B站 版式;无动作行时保持现状)。
+              progressFocused && actionRowAvailable() -> {
+                // 若此刻正挂着 seek 预览,先落地(与 ↓/OK 语义一致),否则 previewPositionMs 会挡在
+                // 动作行的 ←/→ 分支前面(焦点已在动作行却还在 seek)。
+                if (previewPositionMs != null) commitPreviewSeek()
+                actionFocused = true
+                focusedActionIndex = 0
+                progressFocused = false
+                showControls()
+              }
+              controlsVisible && !progressFocused && !actionFocused -> progressFocused = true
               else -> Unit
             }
             true
@@ -2424,6 +2751,12 @@ fun PlayerScreen(
           Key.DirectionDown -> {
             when {
               activePanel != PlayerPanel.None -> changePanelFocus(1)
+              // P11-124:动作行 → 进度条。
+              actionFocused -> {
+                actionFocused = false
+                progressFocused = true
+                showControls()
+              }
               playbackPaused && controlsVisible && progressFocused -> progressFocused = false
               else -> toggleControlsFromRemoteMenu()
             }
@@ -2437,22 +2770,79 @@ fun PlayerScreen(
         }
       },
   ) {
-    AndroidView(
-      factory = { viewContext ->
-        PlayerView(viewContext).apply {
-          useController = false
-          keepScreenOn = true
-          resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-          setShutterBackgroundColor(android.graphics.Color.BLACK)
-          this.player = player
+    // P11-124(追加):视频画面旋转(仅 B站 控制行「画面旋转」驱动)。
+    // **关键约束:SurfaceView 不支持旋转变换**(只支持尺寸/位置变化)——真机实测上一版
+    // `Modifier.graphicsLayer { rotationZ }` 对画面完全无效。故旋转态改用 TextureView 承载
+    // (TextureView 是普通纹理层,跟随视图自身的变换),0° 时仍用默认 SurfaceView 保播放性能。
+    // 旋转交给**视图自己的 View.rotation**(不是 Compose 的 graphicsLayer);90/270 时容器长宽互换
+    // (size(maxHeight, maxWidth))—— 尺寸变化两种 surface 都吃,所以容器尺寸逻辑与上一版一致。
+    // 只有这一层转:弹幕层 / seek 预览 / 雪碧图 / 控制层都是 Box 的其它子节点,不跟转。
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+      // rotatedQuarter 只管「容器尺寸要不要互换 + 要不要 ZOOM」(尺寸变化 SurfaceView 也吃)。
+      val rotatedQuarter = videoRotation == 90 || videoRotation == 270
+      // 承载方式:**只要转了就得 TextureView**。SurfaceView 对旋转变换是全盘丢弃(不只是 90/270,
+      // `rotation = 180f` 同样无效),所以判据不能用 rotatedQuarter ——否则 180° 这一档按下去看不出任何变化。
+      // 0° 时仍用默认 SurfaceView,不牺牲默认播放性能。
+      val needsTextureSurface = videoRotation != 0
+      Box(
+        modifier = Modifier
+          .align(Alignment.Center)
+          .then(
+            if (rotatedQuarter) {
+              Modifier.size(maxHeight, maxWidth)
+            } else {
+              Modifier.size(maxWidth, maxHeight)
+            },
+          ),
+      ) {
+        // key(needsTextureSurface):SurfaceView ↔ TextureView 不能原地换,承载方式一变就整个重建
+        // PlayerView;旧实例经 onRelease 解绑 player,避免两个视图同时攥着同一个 player。
+        key(needsTextureSurface) {
+          AndroidView(
+            factory = { viewContext ->
+              val view = if (needsTextureSurface) {
+                LayoutInflater.from(viewContext)
+                  .inflate(R.layout.view_player_texture, null) as PlayerView
+              } else {
+                PlayerView(viewContext)
+              }
+              view.apply {
+                useController = false
+                keepScreenOn = true
+                // 初始值就按旋转态给,不能只写在 update 里:否则首帧会先按 FIT 排一次再跳成 ZOOM。
+                resizeMode = if (rotatedQuarter) {
+                  AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                } else {
+                  AspectRatioFrameLayout.RESIZE_MODE_FIT
+                }
+                setShutterBackgroundColor(android.graphics.Color.BLACK)
+                this.player = player
+              }
+            },
+            update = { view ->
+              view.keepScreenOn = true
+              // P11-124(追加):旋转后要「整个画面」铺满,不是缩成中间一条窄带 —— 90/270 时用 ZOOM,
+              // 让旋转后的画面盖住整屏(代价:16:9 源转 90° 后只看得到源的中间约 1/3 横条,这是
+              // 「铺满」的必然裁切);0/180 仍是 FIT,不裁切、完整显示。
+              view.resizeMode = if (rotatedQuarter) {
+                AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+              } else {
+                AspectRatioFrameLayout.RESIZE_MODE_FIT
+              }
+              // 旋转:视图自己的属性(TextureView 跟得上;SurfaceView 不支持,故旋转态已切 TextureView)。
+              view.rotation = videoRotation.toFloat()
+              // 旋转态下视图的可视矩形是「转过来的」960×540,而它所在的 Compose 承载盒只有 540×960,
+              // ViewGroup 默认 clipChildren=true 会把超出的两侧裁掉(表现为「转了但被切」)。
+              // 该承载盒只装这一个视图,关掉它的裁剪无副作用(不转时也不影响)。
+              (view.parent as? ViewGroup)?.clipChildren = false
+              view.player = player
+            },
+            onRelease = { view -> view.player = null },
+            modifier = Modifier.fillMaxSize(),
+          )
         }
-      },
-      update = { view ->
-        view.keepScreenOn = true
-        view.player = player
-      },
-      modifier = Modifier.fillMaxSize(),
-    )
+      }
+    }
 
     if (playerLogOverlayEnabled) {
       // 内联诊断：不走 PlayerLogOverlay 子组合，直接放 Box 早子节点。决定性测试——
@@ -2501,6 +2891,12 @@ fun PlayerScreen(
           request = displayRequest,
           info = state.info,
           actualQuality = actualQuality,
+          // P11-119:当前音轨 = 已选(preferredAudioTrackId)→ 否则服务器声明默认轨 → 否则第一条。
+          currentAudioTrackId = activeRequest.preferredAudioTrackId
+            ?: state.info.availableAudioTracks.firstOrNull { it.isDefault }?.id
+            ?: state.info.availableAudioTracks.firstOrNull()?.id,
+          // P11-120:当前字幕轨(null=关闭)——Main 面板字幕项显示 + 字幕面板打勾。
+          currentSubtitleTrackId = selectedSubtitleTrackId,
           metadata = metadata,
           sidePanelVideos = sidePanelVideos,
           sidePanelLoading = sidePanelLoading,
@@ -2512,14 +2908,22 @@ fun PlayerScreen(
           seekPreviewSpritesEnabled = seekPreviewSpritesEnabled,
           videoshotData = videoshotData,
           videoshotSprites = videoshotSprites,
-          onlineCountText = onlineCountText,
           currentCodecText = currentCodecText,
           showUnfollowConfirm = showUnfollowConfirm,
           unfollowConfirmFocusedConfirm = unfollowConfirmFocusedConfirm,
           controlsVisible = controlsVisible,
           focusedControl = focusedControl,
-          availableControls = availableControls(),
+          // P11-124:控制行项集/顺序按源分——YouTube 仍走 entries 过滤(一项不多、一项不少),
+          // B站 走官方版式的显式顺序 BiliPlayerControls(倍速文案 → 裸图标… → 画质值按钮 → 设置)。
+          availableControls = currentControls(),
           progressFocused = progressFocused,
+          // P11-124:顶部动作行(点赞/收藏/投币/稍后再看/评论),仅 B站 版式有;YouTube 传空。
+          actionControls = if (alignedBiliLayout()) biliActionControls() else emptyList(),
+          focusedActionIndex = focusedActionIndex,
+          actionFocused = actionFocused,
+          // P11-124(追加):旋转角 / 播放序列状态 —— B站 控制行两枚图标的状态着色与播报文案。
+          videoRotation = videoRotation,
+          singleVideoLoop = singleVideoLoop,
           activePanel = activePanel,
           focusedPanelIndex = focusedPanelIndex,
           playbackSpeed = playbackSpeed,
@@ -3005,7 +3409,7 @@ private sealed interface PlayerScreenState {
 }
 
 private const val SeekStepMs = 10_000L
-private const val OnlineCountRefreshMs = 60_000L
+
 private const val ExitConfirmWindowMs = 3_000L
 private const val CompletedProgressSeconds = -1
 private const val CompletionActionDelayMs = 3_000L
@@ -3041,10 +3445,18 @@ private const val VideoFreezeThresholdMs = 12_000L
 private const val BlackFrameHeightCap = 1080
 /** 单次播放会话内 stall 自动重试上限,超过则交用户手动重试,避免死循环刷 CDN。 */
 private const val MaxStallAutoRetry = 2
+// P11-99c:onPlayerError 重试独立预算——降级链 SABR→DASH→HLS 三级各需一击(09-15 真机:SABR 2000
+// + DASH 2001 网络抖动 + DASH 403,共享 2 次预算在 HLS 降级前烧完)。
+private const val MaxErrorAutoRetry = 3
 /** P11-85 SABR 深度重试续播点前推量:覆盖一个视频段(~5-6s)并换段对齐,重置服务端段锚点。 */
 private const val SabrDeepRetryNudgeMs = 10_000L
-/** 起播整体超时：callTimeout 兜住单次 HTTP，withTimeout 兜住整条 launch（含串行调用叠加）。 */
-private const val LaunchTimeoutMs = 30_000L
+// P11-126:起播整体超时已按源/交付档取值,见 com.kirin.mt.core.youtube.YoutubeLaunchBudget
+// (B站/影视库/IPTV/红果 30s、YouTube SABR/DASH 45s、YouTube WEB-SABR 优先 90s)。
+// 原来的 `LaunchTimeoutMs = 30_000L` 单一常量已删 —— WEB-SABR 优先链的固定开销就有 ~21-28s,
+// 30s 必然超时(真机 09-19:整条 launch 被取消,连已建好的兜底会话也一起丢弃,用户黑屏 ~99s)。
+
+/** P11-96 起播探针间隔:未出首帧期间的「为什么还没播」快照周期。3s 足够看清卡死形态,不刷屏。 */
+private const val StartupProbeIntervalMs = 3_000L
 
 private fun playbackStateName(state: Int): String = when (state) {
   Player.STATE_IDLE -> "IDLE"
@@ -3052,6 +3464,13 @@ private fun playbackStateName(state: Int): String = when (state) {
   Player.STATE_READY -> "READY"
   Player.STATE_ENDED -> "ENDED"
   else -> "UNKNOWN($state)"
+}
+
+/** P11-96 起播探针用:播放抑制原因名(UNsuitable audio route/focus loss 等会让 BUFFERING 永不转 READY)。 */
+private fun suppressionReasonName(reason: Int): String = when (reason) {
+  Player.PLAYBACK_SUPPRESSION_REASON_NONE -> "NONE"
+  Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS -> "AUDIO_FOCUS_LOSS"
+  else -> "OTHER($reason)"
 }
 
 private val DanmakuOpacityOptions = listOf(0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f)

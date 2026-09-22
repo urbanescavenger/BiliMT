@@ -8,6 +8,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.annotation.MainThread
 import com.kirin.mt.BuildConfig
+import com.kirin.mt.core.youtube.YoutubeBotGuard
 import com.kirin.mt.core.youtube.YoutubeConstants
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.serialization.encodeToString
@@ -47,7 +48,11 @@ import kotlin.coroutines.resumeWithException
 class PoTokenWebView private constructor(
     context: Context,
     private val httpClient: OkHttpClient,
-    private val generatorContinuation: Continuation<PoTokenWebView>
+    private val generatorContinuation: Continuation<PoTokenWebView>,
+    /** P11-154:铸造上下文取自该视频的移动 watch 页(`downloadAndRunBotguard` 里用)。 */
+    private val videoId: String,
+    /** P11-154:页面上下文供给。**null ⇒ 与改动前逐字节一致的 Create 路径**。 */
+    private val pageContextSupplier: (suspend (String) -> YoutubeBotGuard.PoTokenPageContext?)? = null,
 ) {
     private val webView = WebView(context)
     private val poTokenContinuations = mutableMapOf<String, Continuation<String>>()
@@ -55,6 +60,19 @@ class PoTokenWebView private constructor(
         onInitializationError(exception)
     }
     private lateinit var expirationInstant: Instant
+
+    /**
+     * P11-154:本实例是否走了「页面上下文」铸造分支。上层在建失败时据此把后续 mint 整体回落到 Create
+     * ——避免一次页面上下文故障让 arm A 永久不可用。
+     */
+    @Volatile
+    var usedPageContext = false
+        private set
+
+    /** P11-154:本实例的铸造上下文一行摘要(供 resolver 的 `token 形态` 日志带上,作判据)。 */
+    @Volatile
+    var mintContext = "unknown"
+        private set
 
     //region Initialization
     init {
@@ -113,15 +131,40 @@ class PoTokenWebView private constructor(
         }
 
         CoroutineScope(Dispatchers.IO).launch(exceptionHandler) {
-            val responseBody = makeBotguardServiceRequest(
-                "https://www.youtube.com/api/jnn/v1/Create",
-                listOf(REQUEST_KEY)
-            )
-            val parsedChallengeData = parseChallengeData(responseBody)
+            // ── P11-154:优先用「真页面上下文」铸造(挑战 + 该挑战所绑定的那份 ytcfg) ──────────────
+            // 依据:历史唯一拿到 `status=1` 的 token 都出自真 watch 页自铸(r1992 ×10 / r2002 ×100 /
+            // r2030 材料臂 ×19),而那些页全是 MWEB;本类此前的挑战是 `[REQUEST_KEY]`→
+            // `/api/jnn/v1/Create`,文档里**没有页面、没有 ytcfg、没有 EVENT_ID** ⇒ 服务端每场首笔就
+            // 判占位级(`status=2`,今天 7/7 场)。调研(BgUtils #44 / PipePipeClient #86 / bgutil #243)
+            // 指出 challenge 绑的是 `yt.config_.EVENT_ID` ⇒ 挑战与那份 ytcfg 必须**成对且同页同源**。
+            // 取不到 ⇒ **整体回落 Create**(与改动前逐字节一致,不产生半成品状态)。
+            val pageCtx = runCatching { pageContextSupplier?.invoke(videoId) }.getOrNull()
+            val challengeData = if (pageCtx != null) {
+                usedPageContext = true
+                mintContext = "page-bgChallenge ytcfg=page eventId=${pageCtx.eventId} ${pageCtx.diag}"
+                Log.i(TAG, "armA 铸造上下文(P11-154): challenge=$mintContext")
+                pageCtx.challengeJson
+            } else {
+                mintContext = if (pageContextSupplier == null) {
+                    "create ytcfg=none eventId=NONE (未启用页面上下文)"
+                } else {
+                    "create ytcfg=none eventId=NONE (页面上下文不可用→整体回落)"
+                }
+                Log.i(TAG, "armA 铸造上下文(P11-154): challenge=$mintContext")
+                val responseBody = makeBotguardServiceRequest(
+                    "https://www.youtube.com/api/jnn/v1/Create",
+                    listOf(REQUEST_KEY)
+                )
+                parseChallengeData(responseBody)
+            }
+            // 有页面上下文时,`window.yt = {config_: …}` 必须**先于** interpreter eval——BotGuard VM 在
+            // 启动时读 `window.yt.config_`(同 [YoutubeBotGuard.mintPoToken] 的既有做法;缺它则铸出的
+            // token attestation 链占位)。两条语句同一次 eval ⇒ 顺序确定。
+            val ytInject = pageCtx?.let { "window.yt = {config_: ${it.ytcfgJson}};\n" } ?: ""
             withContext(Dispatchers.Main) {
                 webView.evaluateJavascript(
                     """try {
-                             data = $parsedChallengeData
+                             ${ytInject}data = $challengeData
                              runBotGuard(data).then(function (result) {
                                  this.webPoSignalOutput = result.webPoSignalOutput
                                  $JS_INTERFACE.onRunBotguardResult(result.botguardResponse)
@@ -308,10 +351,16 @@ class PoTokenWebView private constructor(
         val JsonProtobufMediaType = "application/json+protobuf".toMediaType()
         const val WaaApiKey = "AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw"
 
-        suspend fun newPoTokenGenerator(context: Context, httpClient: OkHttpClient): PoTokenWebView {
+        suspend fun newPoTokenGenerator(
+            context: Context,
+            httpClient: OkHttpClient,
+            videoId: String,
+            pageContextSupplier: (suspend (String) -> YoutubeBotGuard.PoTokenPageContext?)? = null,
+        ): PoTokenWebView {
             return suspendCancellableCoroutine { continuation ->
                 Handler(Looper.getMainLooper()).post {
-                    val poTokenWebView = PoTokenWebView(context, httpClient, continuation)
+                    val poTokenWebView =
+                        PoTokenWebView(context, httpClient, continuation, videoId, pageContextSupplier)
                     poTokenWebView.loadHtmlAndObtainBotguard(context)
                 }
             }

@@ -956,3 +956,299 @@ endSegmentIndex 带偏),也证实 P11-92 修复①(retainAll 清非当前格式)
    出帧后仍 8s。
 3. 起播 stall 判死时立即 evict SABR 会话(重载 resolve 铸新会话,热路径 ~4-5s,别让重试复用同一个
    慢会话);播放中(已出帧)stall 不动会话——保 ~6h 会话复用(alpha.29)。
+
+## 31. 2026-09-14「续播满缓冲黑屏死锁」:media3 1.10 initial-discontinuity 协议不兼容 (P11-96)
+
+**日志**:logs_live_20260914_000747(00:06 死锁两轮,P11-96 诊断版 dev.r1896)+ 20260914_005734(00:57 复测通过 dev.r1898)。
+
+**现象与 P11-95 的本质区别**:数据层全绿(41-51Mbps、init+resume 段全到、tfdt 相对化正常),
+探针实锤 `BUFFERING fwdBuf=52000ms isLoading=false playWhenReady=true tracks=2 video=avc1.64001F rendered=0`
+冻死 20+s——轨选了、格式读了、**52s 真实前向缓冲在手**,视频解码器 allocate 后从未 start,一帧未喂。
+**触发条件**:续播点落在 chunk 中间(`first media chunk` 打点对比:死锁案 clip 落段内 3s 深
+823000-820000,正常案 1s 811000-810000/段起点)。alpha.11 日志的 buffered=48%/bufS=49s 均为假象
+(位置百分比/ABR 估算),真凭据只有探针 fwdBuf+rendered(P11-96 诊断打点新增)。
+
+**根因**(tmp/ 留的 media3 1.10 源码逐行核):1.10 ChunkSampleStream 新增 initial-discontinuity
+协议——首 chunk 开载时 `chunkStart < pendingResetPositionUs`(mid-chunk 续播)→
+`hasInitialDiscontinuity=true` → readData/skipData 恒 NOTHING_READ,唯一解锁是 period
+readDiscontinuity()→consumeInitialDiscontinuity()。core 无外部调用者(ExoPlayerImplInternal 每轮
+doSomeWork 调 updatePlaybackPositions→readDiscontinuity),消费方只有 dash 库自带 DashMediaPeriod
+(select 时全流 setSuppressRead(true) 压读 + tryConsumeInitialDiscontinuityFromStreams 全量消费 +
+manifest 段表预算 firstChunkStartTimeUs 立即评估)。从 LibreTube(锁 media3 **1.9.2**,无此协议)
+移植的 SabrMediaPeriod 踩雷两处:①handleInitialDiscontinuity 传 true + firstChunkStartTimeUs=UNSET
+(评估推迟到 chunk 开载);②readDiscontinuity 消费到第一个 true 就 early-return,顺序在后的流永不
+消费——视频流 consume 返回 true 后 return,音频流 hasInitialDiscontinuity 永不清 → 读通道死锁。
+
+**修复演进**:P11-96b(402ee541)先退出协议(handleInitialDiscontinuity=false 恢复 1.9.2 语义);
+P11-96c(3c61ff90)按用户定方向改**完整适配**(对齐 DashMediaPeriod 全套):①readDiscontinuity 全量
+消费;②selectTracks 首次选轨任一流 may-have 即 setSuppressReadOnAllStreams(true);③消费完且无
+may-have 才解除(consume 不清 needToEvaluate,评估未完继续压读等下一轮 doSomeWork——防「早调
+扑空」的核心);④handleInitialDiscontinuity=首次选轨 && !all-sync(AAC-LC mp4a.40.x 按 MimeTypes
+判 all-sync 不参与,视频参与);⑤firstChunkStartTimeUs 维持 UNSET(SABR 段表 init 加载前不可得,
+上游 segmentIndex==null 同款分支)。
+
+**状态:已修,真机验证通过**(00:57 死锁点 pnsTunF6LM0@823000ms prepare→首帧 5.5s→二次 first
+media chunk seg164(=初始不连续被消费后 resetRendererPosition 重对齐重喂首段,协议设计行为)
+→READY,零 stall;2b3D1GLctLM@34000ms 续播 6s 首帧正常)。
+
+## 32. 2026-09-14 会话绑定档与自动选轨对齐(P11-97,判别实验待真机)
+
+**背景**:4K 视频 irrSuCb3BhI(23:58/00:56 两晚)SABR 会话逐请求回 154B RELOAD_PLAYER_RESPONSE
+→ 死循环守卫(reloadCount=8)→ 自合成 DASH 兜底正常构建(14 视频轨)→ NewPipe 直链 4 连 403
+(n-param)→ 全链失败。该视频之外其它视频正常——特异性绑定**会话绑定档=最高可用 itag313**。
+
+**两个归因理论**(各有真机证据,互斥待判):alpha.14「2160p 会话必 RELOAD,≤1080p 会话可播」
+(绑定档高度);alpha.83「RELOAD 与 itag 无关,根因 visionOS 未 attested ustreamerConfig」
+(响应级)。关键事实:sabrUrl/ustreamerConfig 均为 player 响应级、不随绑定档变;videoFormatId 仅
+请求兜底(请求体 preferredVideoFormatIds 按 itag 查 videoFormats 全表,alpha.29)。
+
+**修复**(fc4f22a8):会话绑定档从「默认画质上限」改为「自动选轨实际首轨」——起始画质
+startHeight 下最高档(枚举≤720,恒在 alpha.14 安全区);起始=自动时绑最低档(自动选轨起点);
+未设起始但设了默认上限时按上限。首 fetch(唯一 RELOAD 暴露时刻)请求的就是起始档 → 绑它=
+身份与首请求逐 itag 一致,无 alpha.77 式错位。
+
+**状态:代码完成,判别实验待真机**——irrSuCb3BhI 复测:仍 RELOAD → alpha.83 成立,走 DASH-first
+方案(P11-98,顺带修直链 403);能播 → 绑定档高度成立,问题关死。
+
+## 33. 2026-09-20「降档到 144p 后再也不升档」:一段饥饿连降四档 + 180s 冷却锁死下一级 (P11-135)
+
+> **读日志前置**(首轮复盘踩过):本仓 `playerState=` 打的是 ExoPlayer 原始常量
+> **1=IDLE / 2=BUFFERING / 3=READY / 4=ENDED**。`3` 是 READY 不是 BUFFERING——把两者读反会把
+> 「正常播放的窗口」误当成「冻结窗口」,进而把因果讲反。
+
+### 现象(真机 `logs_live_20260920_135925.log`,r2002,移动端,视频时长 527s)
+
+播放到 pos≈63s 起:**32.8 秒零 ABR 评估**(13:57:36.057 → 13:58:08.889),水位从 31.9s 漏到 0;
+13:58:07.853 首次 BUFFERING;数据到达后 13:58:08.935 复播(READY,pos=63284)——**此时水位只剩 5.8s**。
+接下来 **5.7 秒是正常播放**(pos 63284→69016 **恰以 1x 前进**),但 ABR 在这 5.7s 里**连做 4 次水位急救
+降档**(08.889 / 10.444 / 11.167 / 14.568),把仅剩的 5.8s 吃光 → **13:58:14.635 再次 BUFFERING
+(pos=69016),3.48 秒卡顿**。落 144p 后水位 13:58:22 回满 30.3s。此后 **112 秒零升档**直到日志结束
+(用户手动退出)。同期带宽 `bw` 3.0–11.3M、`sus` 4.0–21.7M、`cap` 3.9–5.0M、bufS 峰值 **34.8s**
+(多次 ≥30s,`canUpgrade` 达标),144p 之上任何一档的门槛都只有几百 K —— **门全开,就是不动**。
+
+### 触发链(三段,根因与症状分离)
+
+**① 服务端改推白名单外的 itag(真正根因,独立问题)**:播放到 `playerTimeMs=63360` 请求
+`seg=12 itag=698`,服务端改推 **itag=335**:12 次请求(6 次 → `terminal → evict` → 新会话再来 6 次)
+每次都把 **7.89–8.22MB 以 22–36Mbps 完整下完**,却全部因 `whitelist=[140,698]` 打
+`skip ad/unrequested FORMAT_INIT itag=335` **整段丢弃**,698 的 seg=12 永不出现。
+`grep MEDIA_HEADER` 印证:该窗口只进了 `itag=140`(音频)与 12 条 335 的跳过告警。
+→ 属 §29「服务端跳段」家族的另一形态(改推**别的 itag** 而非跳段号),**待单独一轮处理**。
+同一形态在 r2003 再次复现(`logs_live_20260920_142332.log`:`no seg 31 itag 698` × 12,同样每次下满
+7.87–8.2MB 全丢),见 §33.1。
+
+**② 一段饥饿连降四档(本 commit 主症状)**:4 次降档全发生在**正常播放的 5.7 秒内**(不是冻结窗口内):
+
+| 评估时刻 | bufS | 动作 | 与上次评估 |
+|---|---|---|---|
+| 13:58:08.889 | 5.8s | →480p | (①的 32.8s 零数据漏下来的存量,刚复播) |
+| 13:58:10.444 | 4.3s | →360p | 掉 1.5s / 隔 1.555s |
+| 13:58:11.167 | 3.5s | →240p | 掉 0.8s / 隔 0.723s |
+| 13:58:14.568 | 0.1s | →144p | 掉 3.4s / 隔 3.401s |
+
+**机制**:水位急救的「仍在下漏」判据是**每次评估重新判一遍**
+(`bufferedDurationUs <= prevEvalBufferedUs`),而**没有任何「降档后宽限」**
+——`lastDowngradeElapsedMs` 全场只被 `canUpgrade` 读,水位急救分支从不读它。于是同一段饥饿被
+拆成 4 个独立评估、**算了 4 次账(饥饿时间在累加)**。而每次降档自身还要 1.5–3.4s 拉新档 init
+(1856B 小请求 + 服务端 `NEXT_REQUEST_POLICY backoff=2000ms`),期间**零可用数据** → 5.8s 的存量
+被 3 次纯开销切档吃光,直接导致 13:58:14.635 那次 3.48s 卡顿。
+**对照**:144p 稳定后**不再切档**,水位 13:58:15(0.1s)→ 13:58:22(30.3s)**7 秒回满**。
+
+**③ 落 144p 后被 180s 冷却锁死(症状放大器)**:每次降档经 `markDowngradeFromTrial` 写一笔
+`SabrAbrMemory.noteTrialFail(height, 180s)`,级联沿途把 720p/480p/360p/**240p** 逐档各记一笔
+(13:58:08.889 / 10.445 / 11.168 / 14.568)。该记忆是**单槽**(`trialFailedHeight` 只存一个 height),
+**最后写入者胜出 → 留下 240p,解禁 14:01:14.568**。而逐级爬把升档候选限死在「下一个更高分辨率档」
+= 240p,`isUpgrade && isTrialFailBlocked(240) → continue`(**静默,无日志**)→ **唯一出口被封**,
+144p 硬锁到 14:01:14。其余门全开(见「现象」段的实测数字)。
+
+### 修法(本 commit,两处)
+
+**A. 饥饿 episode(`HeightAwareAdaptiveTrackSelection`)**:首次跌破急救阈值 → 降一档并置
+`freezeEpisodeActive`;episode 内不再触发第二次水位降档;水位回到阈值以上(恢复)才清位。
+**同一段饥饿整段只算一次账,与时长无关(不做任何时长累加)**。
+真饿(供给持续不足)不靠本路径兜底:**est 降档路径完全不受本闸影响**——总供给不足时窗口被失败/零
+样本填满 → est 塌到当前档 `required×0.85` 以下 → 候选循环照常逐级下探;水位急救的定位本就是
+「est 反应太慢时的快速一档」,一 episode 一档符合其定位。级联链上的 180s 冷却误伤随之消失。
+另补一行**诊断日志**(`freeze episode: … water-level downgrade suppressed`):
+水位急救此前是唯一静默生效的路径,被闸住时日志里什么都没发生,无法区分「闸生效」与「ABR 没在评估」
+(本次 144p 锁死复盘就吃过这个亏——②的 240p 候选被静默 continue,整段日志一片安静)。
+
+**B. 服务端 backoff 不入账(`SabrMediaFetcher.recordFetchGap`)**:`NEXT_REQUEST_POLICY` 要求的
+睡眠发生在 `fetchStreamData` 开头、`fetchStartMs` 在它之后才取 → 全额落进 `rawGapMs`。但那是
+**服务端叫停**,既非链路供给不足也非需求驱动空闲——计进 `addRealBwSample(0L, …)` 等于自己拽低 est。
+真机两笔:13:58:11 / 13:58:15 各 **2010ms / 2015ms**(`coast=0`,因 runway 4305/172 < 10s 余量),
+**est 23752K→17926K→13836K**。修:新增 `serverBackoffSleepMs` 由 `fetchStreamData` 传入,原样扣除后
+再算 coast/counted/sustained;扣除量**两边都不偏袒**(不计 0 供给样本,也不作需求空闲扣减);
+日志保留 `raw=` 与 `backoff=` 双值供取证。
+
+**同类账(未动,留档)**:`isTrialFailBlocked` 的静默 `continue` 已由 A 的日志补齐同类可观测性,
+但「单槽冷却被最后一笔覆盖」本身未改 —— 若将来再遇级联,应重新评估是否改成多档集合。
+
+### §33.1 真机复测闭环(r2003,`logs_live_20260920_142332.log`,同日 14:20-14:23 续播会话)
+
+**A 生效**:14:23:03.402 降一档到 480p 后,14:23:04.967 打出
+`freeze episode: bufS=4s held at 480p — water-level downgrade suppressed`,**不再级联到
+360p/240p/144p**。该次真切档耗时 **2.855s**(决策 → 新档首个 media chunk `itag=697`),被决策时的
+5.8s 水位覆盖,**切换前后均未进 BUFFERING**,水位 4.2 → 8.6 → 14.4s 立即回填 ⇒ **降档本身没有卡顿**。
+另一次降档(14:22:26.275)被**起播锁夹回 720p**(日志 `held at 720p`,随后到达的 chunk 仍是
+`itag=698`),**压根没切档**,零切换代价。
+
+**本场真正的卡顿(4.8s)与降档无关**:14:22:28.285 READY(pos=143220)起正常播放,14:22:32.938 →
+14:22:57.312 出现 **12 次 `no seg 31 itag 698`**(每次下满 7.87–8.2MB 全丢弃,与 ① 同形态),25 秒
+拿不到 seg 31 → 水位在 172698 漏干 → **14:22:58.600 BUFFERING → 14:23:03.402 READY,4.8 秒**。
+降档发生在 READY 那一刻(14:23:03.402),**晚于卡顿起点**。
+(4.8s < `StallThresholdMs` 8s,看门狗未触发属正确行为。)
+
+**暴露的两点待办**:① 服务端改推白名单外 itag / 跳段仍是这条链的根因,两场日志同签名,需单独一轮;
+② `playerState=` 语义已在本文档开头标注,避免再读反。
+
+### 待真机复测(alpha.8x)
+
+- 日志应见 `freeze episode: … suppressed` 一行(每 episode 一次),且**同一段饥饿只出现一次**
+  `buffer-critical downgrade`。← r2003 已闭环(§33.1)
+- 级联场景下 `downgrade fail cooldown` 应**只记一笔**(源档),不再有 240p/360p/480p 沿途各一笔。
+- ①的服务端改推 335/跳段若复现,本修法**不能**阻止第一次降档(那是正确反应),但应止步一档。
+
+## 34. 2026-09-20「无效流量从哪来」:8MB 全丢弃是**我们自己点名要的** —— 预取窗口改成可撤销 (P11-136)
+
+### 起因
+
+§33 的 ①(服务端改推白名单外 itag、每次下满 ~8MB 全丢)当时只记为「服务端行为,待单独处理」。
+追下去发现:**服务端不是乱推,是照我们的要求推的**。
+
+### 机制(四步,全在代码里)
+
+1. `DefaultSabrChunkSource.maybePrefetchNextTier` 选「比当前档分辨率更高的下一档」——播 720p(698)时
+   就是 **1080p itag335**,`prefetchFormat(335)` 把它塞进 `preferredVideoFormatIds` **第二位**。
+2. 并且**故意不报它的 bufferedRange**([SabrMediaFetcher.kt](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt)
+   的 bufferedRanges filter,注释原话「报'没有' = 请把数据推给我」)——这是在明确要求服务端推它。
+3. 服务端**照办**:每个响应都带 `FORMAT_INIT itag=335` + 5 个 335 段(≈**7.87MB**)+ 音频段;
+   实测该笔 8.2MB = 335×5 + 140×2,**我们请求的 698 seg 一个字节都没有**。
+4. 但白名单是 `{当前音频, 当前视频} + pendingRequestItags` ——**335 不在里面** → 直接 `return`,
+   **连 `initializedFormats[335]` 都不建**(所以 P11-130 想要的「缓存进 initializedFormats 以便切档命中」
+   **结构上永不可能发生**),335 的 MEDIA part 找不到 headerId 全部丢弃。
+
+**代码里的自相矛盾**(一处漏接线):P11-130 作者**知道**预取档的缓存要保住——
+`initializedFormats.keys.retainAll { … || f == activePrefetchItag() }`(注释:「预取候选档的缓存要保住,
+否则刚预取到就被清」)——**但白名单不含 `activePrefetchItag()`,而白名单是更早的一道闸**。
+那句保护的是一个从未被创建过的缓存。
+
+### 闭环证据:两场日志的「零可用数据窗口」= 预取窗口本身
+
+| | `logs_live_20260920_135925.log` | `logs_live_20260920_142332.log` |
+|---|---|---|
+| 宣布预取 335 | 13:57:35.977 | 14:22:29.994 |
+| 30s 窗口到期 | ≈13:58:05.98 | ≈14:22:59.99 |
+| 最后一笔 skip 335 | 13:58:05.978 | 14:22:57.301 |
+| 窗口**内**发出的请求 | rn=3..14 全 `no seg` | rn=3..15 全 `no seg` |
+| 窗口到期后**第一笔** | rn=15 **13:58:08.843 立刻拿到 698 seg 12/13/14** | rn=16 **14:23:01.206 立刻拿到 698 段** |
+
+两场各 12/13 次 `skip ad/unrequested FORMAT_INIT`,**全部是 itag=335、没有别的 itag** ⇒ 这道 alpha.71
+广告防线在实测里一次广告都没拦到,**拦的全是我们自己点名要的预取档**。
+
+### 为什么"丢弃"这么贵(三重代价)
+
+- **响应预算被占满**:335 吃掉 7.87MB 后,当次请求的段挤不进来 → `no seg` → 重试 `MAX_ATTEMPTS=6`
+  (每次再下 ~8MB)→ `terminal → evict` → 新会话(窗口还在)**再问一次 335**。
+- **丢弃发生在下载之后**:`response.body?.bytes()` 先拿完整 8MB 再逐 part 解析 —— 判断「要不要」时钱已花掉。
+- **恶性闭环**:丢掉的字节照进 `est`(无条件喂 `recordRealBandwidthSample`),`bandwidthEstimate`
+  被抬到 32Mbps 再**上报服务端** → 服务端更确信该推高分辨率 → 更多无效流量。
+
+### 修法(本 commit,C 段;A 段另开一轮)
+
+**预取窗口改成「持续条件」**:进入线仍是缓冲 ≥20s(`PREFETCH_MIN_BUFFERED_US`,不变),但**新增撤销线
+15s**(`PREFETCH_REVOKE_BUFFERED_US`)——窗口期内缓冲跌破即由 `fetcher.cancelPrefetch()` 立刻撤销。
+滞回带 5s 防缓冲在 20s 上下自然抖动时被一次轻微回落永久关掉。撤销是**单向**的(该档仍留在
+chunk source 的 `prefetchedTiers`,保持「同一档只报一次、不持续白吃带宽」的原意):本会话不再重试该档。
+诊断日志 `prefetch canceled: itagN 撤销(缓冲 Ns 跌破撤销线)`(每档一次)。
+`prefetchUntilMs` 加 `@Volatile`——写入方从此有两个(loading 线程 + chunk-source 评估线程)。
+
+> 修复前:14:22:29.994 在缓冲爬升到 ≥20s 时合法进入,此后 30s 一路照问,缓冲塌到 0 也照问 →
+> 14:22:58.600 BUFFERING(4.8s 卡顿)。修复后缓冲跌破 15s 即撤销,当次段得以正常送达。
+
+### A 段(待验证,另开一轮)
+
+**白名单并入 `activePrefetchItag()`** —— 让预取数据真进 `initializedFormats`,P11-130 的原意才成立。
+单独上之前要先验三件事:
+1. **主害是否真消除**:白名单放行只是把浪费的 8MB 变成有用,但响应预算仍被它占 ——当次要的段能否送来,
+   取决于服务端怎么分预算,需实测(这正是 C 段先做的原因)。
+2. **能否被选中**:ABR 有 codec 粘性,可能选同 height 的别的变体 ——实测 14:23:06 的候选是
+   `itag248`,而缓存里会是 `335`;预取 335、升档选 248 就白预取(r1995 已有 AV1 vs VP9 错配先例)。
+3. **请求形状**:335 一旦进 `initializedFormats`,`selected = initializedFormats.values.map{}` 会把它
+   报进 `selectedFormatIds` —— 请求体形状是逐字节对齐换来的(P11-104/P11-109),动它要单独验。
+
+### 待真机复测
+
+- 日志应见 `prefetch canceled: itagN 撤销(缓冲 Ns 跌破撤销线)`,且**此后不再有该 itag 的
+  `skip ad/unrequested`** 与 `no seg` 重试风暴。
+- 预取窗口期内若缓冲始终 ≥15s,行为与旧版一致(不误撤)。
+- 反例防线:若某场预取窗口期内**没有**撤销、缓冲却仍塌 —— 说明触发点不在预取,需重查。
+
+### §34.1 r2006 复测:第一版撤销**没生效**,而且原因可证(2026-09-20 14:45-14:49)
+
+`logs_live_20260920_144844.log`(dev.r2006,含 P11-136)。同签名暴风**复现**,整场**零条**
+`prefetch canceled`:
+
+```
+14:46:32.714  新会话 rn=0/1/2 → 6.76/6.57/6.37MB,缓冲爬到 29.5s
+14:46:36.472  prefetch 335(bufS 23.7 ≥ 20,合法进入;窗口 → 14:47:06.472)
+14:46:38.775  rn=3 7.94MB → no seg 39        ← 预取后 2.3 秒的第一笔
+14:46:38.8–14:46:59.6   6 次尝试 × ~7.6MB → terminal → evict
+14:46:51.4–14:47:01.7   再来 6 次 × ~7.6MB
+             合计 12 次 ≈ 91MB 全丢;skip FORMAT_INIT itag=335 共 14 次 = 暴风里的 14 笔请求
+14:47:05.932  BUFFERING(缓冲已被打穿 29.5s → 5.8s)
+14:47:08.522  READY → 2.6s 卡顿
+```
+
+**两个原因叠加,都不是实现 bug 而是设计挂错点**:
+
+1. **钩子错位**:水位撤销挂在 `maybePrefetchNextTier`(只由 `getNextChunk` 调),而暴风期 loader
+   卡在**同一个段的 6 连重试循环**里,`getNextChunk` 不被调用。铁证:14:46:36.508(bufS=29.5)→
+   14:47:08.488(bufS=5.8)之间**只有 1 个评估点**,32 秒盲窗。那条路**结构上够不着故障现场**。
+2. **判据也不相关**:唯一那个评估点上,30s 窗口已在 2 秒前(14:47:06.472)自然到期 →
+   `cancelPrefetch` 发现无生效窗口,早退,连日志都没打。
+
+**前提被日志否证**:第一版假设「缓冲变薄才该撤销」,但伤害发生在**请求被拒的那一刻**(服务端把响应
+预算给了 335,当次要的段直接不来),与缓冲厚薄无关 —— 这次缓冲 **29.5s 照样被打穿**。
+
+### §34.2 阶段 1(本 commit,主钩子 + 取证)
+
+| # | 改动 | 钩子 | 为什么它一定会跑到 |
+|---|---|---|---|
+| 1a | `no seg` 即撤销预取 | `getNextSegment` 重试路径(紧接 P11-92 分支之后)| **每笔尝试都经过这里** —— 暴风期唯一在跑的路径 |
+| 1b | 丢弃字节取证(只观测,**不改** est/sus/上报口径)| `PART_MEDIA` 找不到 header 处 + `MEDIA_HEADER` 跳过处 | 每笔响应都解析 |
+| 1c | 观测性三项 | 两端播放器 / 本类注释 | —— |
+
+- **1a**:`cancelPrefetch("请求 seg N itag X 未送达(attempt M)")`。预期下一次 `no seg` 即撤销 →
+  第 2–3 次尝试把段拿回来 → 省掉 ~76MB 与 ~19s,缓冲不被打穿。
+  (误撤销代价当前为 **0** —— 预取数据反正被丢弃;等白名单放行后才是"该档本次会话不再预取"。)
+- **1b**:`DiscardTracker` 做成**调用内局部量**——fetcher 跨轨共享(SabrMediaPeriod 注释:「底层共享
+  同一 SABR 会话/fetcher」),视频与音频两个 loader 并发进 `media()`,实例字段会串场。
+  只统计能归因到白名单跳过的字节(`discard.headerItags` 有记录才计),否则无从归因的字节
+  (MEDIA_END 之后的重复块)会把数抬高 —— 这个数是拿去判断口径要不要改的,必须可信。
+  日志:`discarded media: XB of YB (itags=[…])`。
+- **1c**:①移动端 `playerState=` 补状态名——**TV 端早就有** `playbackStateName`,是移动端漏了,
+  这次补齐且逐字与 TV 一致(这正是 §33 复盘读反的直接原因);②两个重试计数器日志分开喊名
+  (`stall-watchdog retry budget` vs `playback error-retry budget`,并带上各自上限);
+  ③`no seg` 路径注释补上**第三种成因**(服务端把响应预算给了别的 itag),原文只写了
+  「服务端只回了 context+backoff 或 redirect」。
+
+### §34.3 阶段 2 决策线(未做,先验后定)
+
+> **能不能在 SABR 的响应预算下,同时给我们正在播的段**和**预取档?
+
+- **2a(能)**:白名单并入 `activePrefetchItag()` + 候选档与实际升档目标对齐(实测候选 `itag248`
+  vs 缓存 `335` 是错配)。
+- **2b(不能)**:**删掉预取**,把 8MB 还给正在播的格式,升档维持现拉(2.9/6.6/14.3s)。
+
+倾向 **2b**:机制是"用响应预算换"而非"额外给",而换来的是个 1856B 的 init —— 用 8MB 抢预算换
+1.8KB,代价结构本身不划算。但判断交给实验。
+
+### §34.4 验收/否证线
+
+| 改动 | 应看到 | 反例(说明判断错) |
+|---|---|---|
+| 1a | `prefetch canceled` 出现在**第一次** `no seg`,此后 `no seg` ≤ 1–2 次 | 撤销后仍 6 连重试 → 与服务端行为无关,转阶段 3a |
+| 1a | 缓冲不再被打穿(29.5s → 5.8s 那种) | 撤销了缓冲仍塌 → 主害另有来源 |
+| 1b | `discarded media:` 每笔 ~7.6MB、itags=[335] | 数值与响应体量级不符 → 归因有漏 |
+| 2a | 预取生效时当次段仍送达 + 切档命中缓存(无 `fetch rn=` 直接出 chunk) | 段被挤掉 → 2b |

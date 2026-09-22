@@ -1,0 +1,27 @@
+<!-- P11-124:B站 控制行「字幕」的 CC 形状图标(圆角框 + 两个 c 弧线)。
+     原 ic_player_subtitles 是三横线(字幕文本形),不是 CC;用户要求字幕入口用 CC 形状。
+     Vector drawable 无 strokeDasharray,两个 c 用 270° 弧线描边画(开口朝右,弧段 45°→315°)。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.7"
+        android:strokeLineJoin="round"
+        android:pathData="M5.5,5H18.5A2.5,2.5 0 0 1 21,7.5V16.5A2.5,2.5 0 0 1 18.5,19H5.5A2.5,2.5 0 0 1 3,16.5V7.5A2.5,2.5 0 0 1 5.5,5Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:pathData="M11.2,13.7A2.4,2.4 0 1 1 11.2,10.3" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:pathData="M18.2,13.7A2.4,2.4 0 1 1 18.2,10.3" />
+</vector>

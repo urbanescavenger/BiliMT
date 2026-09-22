@@ -69,6 +69,17 @@ internal data class SabrSession(
    */
   @Volatile var playbackCookie: ByteArray? = null,
   /**
+   * 2026-09-20(A2 形状对齐):harvest 材料里 `client_abr_state` 的原始字节。非空时
+   * [SabrMediaFetcher] 会把它作为本请求 f1 **之前**的一份发出(protobuf 合并语义 ⇒ 我们的实时值覆盖
+   * 标量、材料独有的未知字段保留)。null = 不发,非材料会话行为不变。
+   */
+  @Volatile var leadingClientAbrStateBytes: ByteArray? = null,
+  /**
+   * 2026-09-20(A1 身份对齐):材料 streamerContext.client_info 的原始字节。非空时由 [SabrMediaFetcher]
+   * 发在本会话 clientInfo **之后**(合并语义 ⇒ 材料赢:clientName=2/MWEB、deviceMake/Model、f1 全落地)。
+   */
+  @Volatile var leadingClientInfoBytes: ByteArray? = null,
+  /**
    * alpha.31:SABR 上下文握手状态机——服务端用 SABR_CONTEXT_UPDATE(part 57)下发上下文,要求客户端
    * 把 {type, value} 回传进下次请求 streamerContext.sabr_contexts(field5)+ unsent_sabr_contexts(field6)。
    * **不回传 → 服务端判定握手未完成 → 只回 context+backoff 不发 media → 8 次重试后 EOF → 视频打不开
@@ -82,6 +93,16 @@ internal data class SabrSession(
    */
   val sabrContexts: MutableMap<Int, ByteArray> = ConcurrentHashMap(),
   val activeSabrContextTypes: MutableSet<Int> = ConcurrentHashMap.newKeySet(),
+  /**
+   * P11-152:**本会话是否由 harvest 材料构建**([fromSabrBytes])。
+   *
+   * 只用于一件事:选档要不要「收窄到服务端推过的 itag」。材料会话**只供浏览器那一场绑定的档**
+   * (服务端按那场会话签发的绑定供流),我们的档若不在其中会 `no seg` 死循环 ⇒ 材料会话必须收窄;
+   * 而**普通会话(自造 / NewPipe)服务端是要什么给什么**,对它收窄会把梯子冻在「已推过的档」上:
+   * r2042 TV 真机(`logs_live_20260920_224027.log`)`pushed=[139, 247]` ⇒ 集合只有 720p ⇒
+   * 全程停在 720p(日志 `up=4` 说明它看得见上面 4 档却选不了);手机端「钉死 144p」同源。
+   */
+  val fromHarvestMaterial: Boolean = false,
 ) {
   /** alpha.29:按 itag 查多清晰度 FormatId;查不到回退默认 [videoFormatId](同 itag 时)。 */
   /** alpha.29:按 itag 查多清晰度 FormatId;查不到回退默认 [videoFormatId](同 itag 时)。 */
@@ -133,16 +154,78 @@ internal data class SabrSession(
       videoFormats: List<FormatId> = emptyList(),
       /** 多语言配音:全部可选音频轨(供播放器音轨切换菜单)。默认空(单音轨)。 */
       audioTracks: List<SabrAudioTrack> = emptyList(),
+      /**
+       * P11-145:**token 原始字节直传**(绕过 base64 往返)。给「用 harvest 页铸的那枚 token 建我们自己的
+       * 会话」这条臂用 —— 材料那边的 token 本来就是字节,编回 base64 再解只会重蹈 P11-118d 记过的往返坑
+       * (STANDARD/URL_SAFE 不一致 → `sabr.malformed_config`)。null = 走 [poTokenB64] 解码(老行为)。
+       */
+      poTokenBytesOverride: ByteArray? = null,
     ): SabrSession {
       // sabrUrl 加 alr=yes + cpn(对齐 FreeTube Watch.js L1619-1620 + SabrSchemePlugin 追加 rn)。cpn = 16 随机字节 base64url
       val usedCpn = cpn ?: randomCpn()
       val withParams = sabrUrlWithParams(sabrUrl, usedCpn)
-      val po = Base64.decode(poTokenB64, Base64.DEFAULT)
+      // P11-117(纠正 P11-101 的前提):poToken 必须**解码成字节**再进 proto。
+      // FreeTube `SabrSchemePlugin.js:636` 是 `const poToken = base64ToU8(sabrData.poToken)`——
+      // 它的 poToken 是 `mintAsWebsafeString(videoId)` 产出的 websafe 串,进 proto 前**解码**;
+      // base64ToU8 先 `-`→`+`、`_`→`/` 再补 `=`(googlevideo/utils)。
+      // P11-101 写的「FreeTube 用 po_token string bytes」是误读 → 我们此前对含 '-'/'_' 的 web64
+      // 串 DEFAULT 解码抛错后落 UTF-8 **原文**,把 128 字节的字符串当 token 发出去(r1951 真机
+      // `SabrSession: poToken=128B`,而 FreeTube 同路径解出 ~90B)。此处按 FreeTube 归一化解码。
+      val po = poTokenBytesOverride
+        ?: if (poTokenB64.isBlank()) ByteArray(0) else websafeBase64ToBytes(poTokenB64)
       // ustreamerConfig 是 YouTube 的 URL-safe base64(含 -/_),DEFAULT 解码会丢弃非法字符→损坏字节
       // → 服务端判 sabr.malformed_config(alpha.72 真机全黑)。对齐 LibreTube SabrManifest URL_SAFE 解码。
       val ustreamer = Base64.decode(ustreamerConfigB64, Base64.URL_SAFE)
       Log.i(tag, "SabrSession: sabrUrl=${withParams.take(200)}... poToken=${po.size}B ustreamerCfg=${ustreamer.size}B cpn=$usedCpn audio=$audioFormatId video=$videoFormatId videoFormats=${videoFormats.size} audioTracks=${audioTracks.size} ua=${userAgent.take(40)} cookie=${cookieHeader.length}B visitor=${visitorData.length}B")
       return SabrSession(withParams, po, ustreamer, clientInfo, audioFormatId, videoFormatId, videoFormats, audioTracks, userAgent, cookieHeader, visitorData, usedCpn)
+    }
+
+    /**
+     * P11-118d:直接吃**原始字节**的入口(harvest 材料专用)。
+     *
+     * 退役的 harvest 代码把 poToken/ustreamerConfig 用 STANDARD base64 编回字符串再交给 [fromSabrData],
+     * 而 [fromSabrData] 现在按 URL_SAFE 解 ustreamerConfig → 往返必坏(`sabr.malformed_config`,全黑)。
+     * 这里直接收字节,消除 base64 往返,也消除「创建路径 vs 刷新路径字节形态不一致」的历史坑。
+     */
+    fun fromSabrBytes(
+      sabrUrl: String,
+      poTokenBytes: ByteArray,
+      ustreamerConfigBytes: ByteArray,
+      clientInfo: ClientInfoInput,
+      audioFormatId: FormatId,
+      videoFormatId: FormatId,
+      userAgent: String,
+      cookieHeader: String,
+      visitorData: String,
+      cpn: String? = null,
+      videoFormats: List<FormatId> = emptyList(),
+      audioTracks: List<SabrAudioTrack> = emptyList(),
+      /**
+       * 2026-09-20(A2 形状对齐):材料 body 里 client_abr_state 的原始字节(见 SabrProto.DecodedAbrRequest)。
+       * 非材料会话传 null ⇒ 行为与改动前逐字节一致。
+       */
+      leadingClientAbrStateBytes: ByteArray? = null,
+      /** 2026-09-20(A1):材料 client_info 原始字节,见 [SabrSession.leadingClientInfoBytes]。 */
+      leadingClientInfoBytes: ByteArray? = null,
+    ): SabrSession {
+      val usedCpn = cpn ?: randomCpn()
+      val withParams = sabrUrlWithParams(sabrUrl, usedCpn)
+      Log.i(
+        tag,
+        "SabrSession(bytes/harvest): sabrUrl=${withParams.take(200)}... poToken=${poTokenBytes.size}B " +
+          "ustreamerCfg=${ustreamerConfigBytes.size}B cpn=$usedCpn audio=$audioFormatId video=$videoFormatId " +
+          "videoFormats=${videoFormats.size} audioTracks=${audioTracks.size} ua=${userAgent.take(40)} " +
+          "cookie=${cookieHeader.length}B visitor=${visitorData.length}B",
+      )
+      return SabrSession(
+        withParams, poTokenBytes, ustreamerConfigBytes, clientInfo, audioFormatId, videoFormatId,
+        videoFormats, audioTracks, userAgent, cookieHeader, visitorData, usedCpn,
+        // P11-152:材料会话标记 —— 只有它才收窄选档(见 [SabrSession.fromHarvestMaterial])。
+        fromHarvestMaterial = true,
+      ).also {
+        it.leadingClientAbrStateBytes = leadingClientAbrStateBytes
+        it.leadingClientInfoBytes = leadingClientInfoBytes
+      }
     }
 
     /** 16 字节随机 → base64url 无 padding(对齐 youtubei.js generateRandomString 16 位 cpn)。 */
@@ -158,6 +241,22 @@ internal data class SabrSession(
       return "$url${sep}alr=yes&cpn=$cpn"
     }
   }
+}
+
+/**
+ * websafe base64 → bytes(对齐 googlevideo `base64ToU8`):先 `-`→`+`、`_`→`/` 归一化,再按标准表解码,
+ * 无 padding 变体也放行;两者都失败才回退原始 UTF-8 字节(兼容 harvest 时代「传入已 encodeToString 的
+ * 字节」的路径)。
+ *
+ * P11-117:poToken 的**创建路径**(`fromSabrData`)与 status=2 **刷新路径**必须用同一套转换——
+ * 此前创建路径 DEFAULT 解码失败即落原文、刷新路径固定 `toByteArray(UTF_8)`,同一枚 token 在两条路上
+ * 字节形态不一致(r1949 真机:创建 89B、刷新 124B;r1951:创建 128B = 128 字节的字符串)。
+ */
+internal fun websafeBase64ToBytes(value: String): ByteArray {
+  val normalized = value.replace('-', '+').replace('_', '/')
+  return runCatching { Base64.decode(normalized, Base64.DEFAULT) }
+    .recoverCatching { Base64.decode(normalized, Base64.DEFAULT or Base64.NO_PADDING) }
+    .getOrElse { value.toByteArray(Charsets.UTF_8) }
 }
 
 /**

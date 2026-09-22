@@ -96,6 +96,9 @@ private const val TvGridRestoreFocusRetryCount = 90
 // 循环即刻退出;360 帧(60fps≈6s、30fps≈12s)只在慢布局兜底,不拖累正常路径。
 private const val TvGridRestoreFocusWaitLayoutFrames = 360
 
+/** P11-98c:焦点转移(scrollThenFocusItem)的按帧重试上限——滚动后目标行慢组合时单发必败。 */
+private const val FocusItemRetryFrames = 30
+
 internal const val TvFocusLogTag = "BiliMT:Focus"
 
 // Keys that confirm a card selection; holding one for this long opens the card's long-press action menu.
@@ -420,18 +423,29 @@ internal fun TvVideoGrid(
     focusScrollJob = coroutineScope.launch {
       val smoothScroll = performancePolicy.smoothScrollingEnabled
       try {
+        // P11-98c:焦点转移加按帧重试——此前单帧等待+单发 requestFocus,慢组合(滚动后目标行
+        // 未及布局)时 requester 未挂节点必失败,焦点留在原卡而按键已被吞,表现为「按 ↑ 没反应、
+        // 连按多次才挪一格」(21:35:26.292 not-initialized + index=8 连按 4 次实锤)。
+        // 正常路径首帧即中,循环立即退出不拖慢。
+        suspend fun focusWithRetry() {
+          var tries = 0
+          while (tries < FocusItemRetryFrames && !focusItem(index)) {
+            withFrameNanos { }
+            tries++
+          }
+        }
         if (smoothScroll) {
           val scrollJob = launch {
             scrollRow(row, smoothScroll = true)
           }
           delay(BiliMotion.FocusScrollDelayMs)
-          focusItem(index)
+          focusWithRetry()
           scrollJob.join()
           delay(BiliMotion.FocusScrollSettleMs)
         } else {
           scrollRow(row, smoothScroll = false)
           withFrameNanos { }
-          focusItem(index)
+          focusWithRetry()
         }
       } finally {
         if (rowScrollGeneration == scrollGeneration) {
@@ -442,6 +456,8 @@ internal fun TvVideoGrid(
   }
 
   fun moveFocus(fromIndex: Int, direction: Key): Boolean {
+    // P11-98b:按键级取证(此前该层零日志,焦点逃逸只能靠 LOST/GAINED 时间轴倒推)。
+    Log.d(TvFocusLogTag, "grid-key label=$debugLabel index=$fromIndex dir=$direction")
     val currentRow = fromIndex / columns
     val currentColumn = fromIndex % columns
     val lastIndex = videos.lastIndex
@@ -449,11 +465,18 @@ internal fun TvVideoGrid(
 
     if (direction == Key.DirectionUp && currentRow == 0) {
       commitFocusedItem(fromIndex)
-      return onMoveUpFromFirstRow()
+      // P11-98b:顶行 ↑ 的边界回调若未处理(目标 requester 未挂载,如 tab 栏未组合),吞掉
+      // 按键、焦点留在原卡——绝不能把 false 漏给默认焦点遍历:遍历按几何找 grid 外的
+      // focusable,正是逃逸路径(21:11:09 连按 ↑ 4 连发 FocusRequester not initialized +
+      // 焦点逃到 sidebar/avatar 实锤)。回调成功时焦点已去 tab 栏,同样返回 true。
+      onMoveUpFromFirstRow()
+      return true
     }
     if (direction == Key.DirectionLeft && currentColumn == 0) {
       commitFocusedItem(fromIndex)
-      return onMoveLeftToNav()
+      // P11-98b:首列 ← 同理——nav requester 未挂时吞掉,不漏给默认遍历逃逸。
+      onMoveLeftToNav()
+      return true
     }
 
     val targetIndex = when (direction) {

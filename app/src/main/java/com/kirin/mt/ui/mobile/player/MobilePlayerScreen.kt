@@ -44,6 +44,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.AlertDialog
@@ -141,6 +142,7 @@ import com.kirin.mt.core.network.FavoriteFolder
 import com.kirin.mt.core.network.BiliApiCodeException
 import com.kirin.mt.core.network.BiliNetworkException
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
+import com.kirin.mt.ui.mobile.home.SourceBadge
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
@@ -157,7 +159,10 @@ import com.kirin.mt.core.player.DanmakuPostResult
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.player.PlaybackCdnPreference
 import com.kirin.mt.core.player.PlaybackCodecPreference
+import com.kirin.mt.core.player.YoutubeCodecPreference
 import com.kirin.mt.core.player.PlaybackInfo
+import com.kirin.mt.core.player.PlaybackTrack
+import com.kirin.mt.core.player.SubtitleTracks
 import com.kirin.mt.core.player.PlaybackEpisode
 import com.kirin.mt.core.player.PlaybackQuality
 import com.kirin.mt.core.player.PlaybackQualityPreference
@@ -205,11 +210,41 @@ private const val MobilePlayerLogTag = "BiliMT:MobilePlayer"
 
 /** alpha.67:单次播放会话内 error-retry 上限(onPlayerErrorChanged),超过则交用户手动重试,避免死循环。 */
 private const val MaxStallAutoRetry = 2
+/**
+ * P11-134:stall 看门狗阈值(逐字对齐 TV `PlayerScreen`,那边这套跑了很久、阈值都带真机复盘)。
+ *
+ * - [StallThresholdMs]:已出首帧后,`BUFFERING` 且**位置连续 8s 不前进** → 判挂死。
+ * - [StartupStallThresholdMs]:未出首帧时用 25s 宽限——续播/慢首包起播实测要 12~33s,
+ *   用 8s 会把正常慢起播判成挂死(重载 → 又一轮慢起播 → 死循环)。
+ * - [VideoFreezeThresholdMs]:`BUFFERING` 但位置**仍在前进**(音频驱动时钟活着、视频渲染器挂死,
+ *   典型是跨 codec 换解码器撞 codec 强制回收)时用。位置基看门狗对这类故障结构性失明,
+ *   因为每次轮询位置都变了、基线一直被重置。必须让过合法重建(~8s),只兜不自愈的真挂死。
+ */
+private const val StallThresholdMs = 8_000L
+private const val StartupStallThresholdMs = 25_000L
+private const val VideoFreezeThresholdMs = 12_000L
+// P11-99c:onPlayerError 重试独立预算(对齐 TV)——降级链 SABR→DASH→HLS 三级,2 次不够。
+private const val MaxErrorAutoRetry = 3
 // 空降助手阈值(镜像 TV PlayerScreen)
 private const val AirJumpWarningLeadMs = 3_500L
 private const val AirJumpCompletionToastSuppressMs = 1_500L
 private const val AirJumpRewindResetThresholdMs = 2_000L
 private const val AirJumpRewindResetLeadMs = 1_000L
+
+/**
+ * 2026-09-20:ExoPlayer `playbackState` 常量 → 状态名,供日志可读。
+ *
+ * 为什么值得为此加一个函数:本文件同时打两种重试计数(`errorRetryCount` 与 `autoRetryCount`)、
+ * 又打裸 `playbackState` Int,复盘时极易读反 —— P11-135 就是既读反了状态(把 READY 当 BUFFERING)、
+ * 又分不清是哪个计数器,白追一轮。
+ */
+private fun playbackStateName(state: Int): String = when (state) {
+  Player.STATE_IDLE -> "IDLE"
+  Player.STATE_BUFFERING -> "BUFFERING"
+  Player.STATE_READY -> "READY"
+  Player.STATE_ENDED -> "ENDED"
+  else -> "UNKNOWN($state)"
+}
 
 private sealed interface MobilePlayerState {
   data object Loading : MobilePlayerState
@@ -320,6 +355,8 @@ fun MobilePlayerScreen(
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
   playbackCodecPreference: PlaybackCodecPreference,
+  /** P11-131/P11-133:YouTube 专用解码器(与 [playbackCodecPreference] 拆开,值域是 YouTube 自己的)。 */
+  youtubePlaybackCodecPreference: YoutubeCodecPreference,
   playbackQualityPreference: PlaybackQualityPreference,
   playbackCdnPreference: PlaybackCdnPreference,
   youtubeDefaultQuality: YoutubeDefaultQuality,
@@ -369,10 +406,24 @@ fun MobilePlayerScreen(
   var pendingSABRSeekMs by remember { mutableStateOf<Long?>(null) }
   var sabrSeekReloadKey by remember { mutableIntStateOf(0) }
   var autoRetryCount by remember { mutableIntStateOf(0) }
+  /**
+   * P11-134:本会话是否已渲染过首帧。stall 看门狗的**档位开关**——未出首帧用宽限档
+   * ([StartupStallThresholdMs]),出帧后用严格档([StallThresholdMs])。此前移动端只有一行日志、
+   * 没有这个状态,故补一个。
+   */
+  var frameRendered by remember { mutableStateOf(false) }
+  // P11-99c:onPlayerError 专用重试预算(与 stall 看门狗分开,对齐 TV)——降级链三级需 3 击,isPlaying 清零。
+  var errorRetryCount by remember { mutableIntStateOf(0) }
   var danmakuEntries by remember { mutableStateOf<List<com.kirin.mt.core.player.DanmakuEntry>>(emptyList()) }
   var fullscreen by rememberSaveable { mutableStateOf(false) }
   // 听视频模式(音频-only):禁用视频轨,只播音频。顶栏右上角耳机按钮切换。
   var audioOnly by rememberSaveable { mutableStateOf(false) }
+  // P11-120:当前选中的字幕轨 id(null=关闭)。默认关闭且每个视频重置——字幕轨是懒加载轨,
+  // 未选中时零请求(见 core/player/SubtitleTracks)。
+  var selectedSubtitleTrackId by remember { mutableStateOf<Int?>(null) }
+  val subtitleHttpClient = remember(playbackHttpClient) {
+    SubtitleTracks.createShortTimeoutClient(playbackHttpClient)
+  }
   // 画质/分P 切换:activeRequest 驱动 load effect(镜像 TV),metadata 供选集,selectedQualityId 供画质高亮
   var activeRequest by remember(request) { mutableStateOf(request) }
   var metadata by remember { mutableStateOf<PlaybackVideoMetadata?>(null) }
@@ -478,12 +529,15 @@ fun MobilePlayerScreen(
         .build()
     )
   }
+  // P11-128:工厂实例提到 composable 层(不能在下面 `remember(bufferMaxMs){}` 里再调 remember)——
+  // 起播锁高(替代 setMin/MaxVideoSize)通过它下发/释放,DisposableEffect 与 loadRequest 都要用。
+  val abrSelectionFactory = remember { HeightAwareAdaptiveTrackSelectionFactory() }
   val player = remember(bufferMaxMs) {
     // alpha.9X(对齐 PlayerScreen):YouTube SABR Auto 升档——H264+VP9 混合 TrackGroup 默认不进一条
     // adaptive selection(坍缩成 1 轨永不升档)。显式 DefaultTrackSelector 开视频混合 mime + 非无缝 + 多自适应。
     // alpha.9Y(分辨率优先选档,对齐 PlayerScreen):媒体3 原生按 bitrate 选档会被 YouTube bitrate/height
     // 错位卡在 1080p 不升。注入按 height 选档的自定义 selection,带宽只当门槛。
-    val trackSelector = DefaultTrackSelector(context, HeightAwareAdaptiveTrackSelectionFactory())
+    val trackSelector = DefaultTrackSelector(context, abrSelectionFactory)
     trackSelector.setParameters(
       DefaultTrackSelector.Parameters.Builder()
         .setAllowVideoMixedMimeTypeAdaptiveness(true)
@@ -733,6 +787,8 @@ fun MobilePlayerScreen(
     )
     playerState = MobilePlayerState.Loading
     completionReported = false
+    // P11-134:新一轮加载 = 首帧还没来。看门狗据此切回起播宽限档。
+    frameRendered = false
     userPaused = false
     seekPreviewMs = null
     playbackPositionState.longValue = 0L
@@ -853,6 +909,8 @@ fun MobilePlayerScreen(
         qualityPreference = playbackQualityPreference,
         youtubeDefaultQuality = youtubeDefaultQuality,
         youtubeStartQuality = youtubeStartQuality,
+        // P11-131:YouTube 走自己那份解码器;B站 路径在 repository 内部仍用 codecPreference。
+        youtubeCodecPreference = youtubePlaybackCodecPreference,
       )
       selectedQualityId = info.selectedQuality.id
       actualQualityId = info.selectedQuality.id
@@ -961,25 +1019,46 @@ fun MobilePlayerScreen(
           .build()
         DashMediaSource.Factory(dataSourceFactory).createMediaSource(dashItem)
       }
-      // 起始挡位:起播阶段用 min+max 精确锁在起始档(SABR 专属,非 SABR 不卡),保证首段落在起始档
-      // (不靠带宽,对齐 LibreTube AbstractPlayerService setMinVideoSize+setMaxVideoSize 锁法,比原 maxHeight
-      // 上限更精确,杜绝"起播即顶满 4K");首帧渲染后 onRenderedFirstFrame 松开,升降档交给 ABR+excludeTrack。
+      // P11-120:字幕以**懒加载**方式挂载(P11-73 曾整块下线,原因见 SubtitleTracks 头注释)——
+      // prepare 期零读取、未选中不发请求、独立 5s/8s 短超时、懒加载开不起来就整条不挂。
+      // 默认不选中任何字幕轨(见下方 applySelection(null)),用户不开字幕时零请求。
+      val subtitleDataSourceFactory = DefaultDataSource.Factory(
+        context,
+        BiliMediaDataSourceFactory(
+          client = subtitleHttpClient,
+          headers = sabrEffectiveInfo.headers,
+        ).create(),
+      )
+      val finalMediaSource = SubtitleTracks.attach(
+        mainSource = mediaSource,
+        dataSourceFactory = subtitleDataSourceFactory,
+        subtitleTracks = sabrEffectiveInfo.subtitleTracks,
+      )
+      // 起始挡位:起播阶段锁在起始档(SABR 专属,非 SABR 不锁),保证首段落在起始档、杜绝"起播即顶满 4K"。
+      // P11-128:锁**搬到选择内部**([HeightAwareAdaptiveTrackSelectionFactory.startupLockHeight]),
+      // 不再用 `TrackSelectionParameters.setMin/MaxVideoSize`。旧做法改的是 selector 的**选择集**,
+      // 首帧后松开 ⇒ 换出「轨道集不同的新 selection」⇒ media3 不能沿用 ⇒ ChunkSampleStream 重建
+      // (样本队列整丢、`bufS=0.0`、`videoFmt=null`、从当前位置重装,真机实测 1.16s 后才重新出帧;
+      // 文档 §19.2 记作「每次会话必经的队列整丢点」)。改成内部锁高后选择集恒定不变,松开只是允许选更高档
+      // → **原地换档,零重建**。升降档在松开后照旧交给 ABR(带宽门槛 + 内部排除 + 滞回)。
       startQualityRelaxed = false
+      // P11-120:换视频重置字幕为关闭(不跨视频继承)。
+      selectedSubtitleTrackId = null
       val startQualityHeight = if (effectiveInfo.isSabrSingle()) youtubeStartQuality.startHeight else null
-      if (startQualityHeight != null) {
-        // 在现有参数基础上叠加高度 min+max cap,保留其它配置(mixed-mime/non-seamless/audioOnly 禁用视频轨等)。
-        val cur = player.trackSelectionParameters
-        if (cur is DefaultTrackSelector.Parameters) {
-          player.setTrackSelectionParameters(
-            cur.buildUpon()
-              .setMinVideoSize(Int.MIN_VALUE, startQualityHeight)
-              .setMaxVideoSize(Int.MAX_VALUE, startQualityHeight)
-              .build()
-          )
-        }
-      }
-      player.setMediaSource(mediaSource)
+      abrSelectionFactory.startupLockHeight = startQualityHeight
+      // C1(2026-09-20):同时把 videoId 给选档 —— 让它从进程级记忆里读到
+      // 「该视频上服务端推过的 itag」,首个请求就收窄(材料会话里服务端只服务它那场会话绑定的格式)。
+      abrSelectionFactory.serverServedVideoId = activeRequest.bvid
+      // P11-133:梯子的 codec 锚点跟着「YouTube 解码器」设置走(Auto = 历史行为:粘全组顶档 codec)。
+      abrSelectionFactory.preferredCodecFamily = youtubePlaybackCodecPreference.codecKey
+      player.setMediaSource(finalMediaSource)
       player.prepare()
+      // P11-120:新 MediaSource 会重置轨道选择,重新施加字幕状态(默认关闭 = 禁用 TEXT 轨)。
+      SubtitleTracks.applySelection(
+        player,
+        sabrEffectiveInfo.subtitleTracks,
+        selectedSubtitleTrackId,
+      )
       // 听视频模式:新 MediaSource prepare 会重置轨道选择为全开,需重新禁用视频轨。
       // 自动连播/切集/切画质都走 loadRequest,此处理覆盖所有重载路径,保证听视频模式持续生效。
       if (audioOnly) {
@@ -1047,13 +1126,15 @@ fun MobilePlayerScreen(
     val listener = object : Player.Listener {
       override fun onRenderedFirstFrame() {
         Log.i(MobilePlayerLogTag, "onRenderedFirstFrame (视频首帧已渲染)")
-        // 起始挡位:首帧已渲染 = 实际运行起来,松开 selector 高度 cap,让 ABR 爬回默认画质上限。
+        // P11-134:看门狗从「开始播」重新计时(见 StallThresholdMs 档位说明)。
+        frameRendered = true
+        // 起始挡位:首帧已渲染 = 实际运行起来,松开起播锁高,让 ABR 爬回默认画质上限。
+        // P11-128:改调 `releaseStartupLock()`(选择内部状态),**不再**改 selector 参数——
+        // 改参数会换出新的选择集 ⇒ ChunkSampleStream 重建(队列整丢 1.16s)。此处零重建。
         if (!startQualityRelaxed) {
           startQualityRelaxed = true
-          val cur = player.trackSelectionParameters
-          if (cur is DefaultTrackSelector.Parameters) {
-            player.setTrackSelectionParameters(cur.buildUpon().clearVideoSizeConstraints().build())
-          }
+          abrSelectionFactory.releaseStartupLock()
+          Log.i(MobilePlayerLogTag, "startup lock released (ABR 自由爬档, 零重建)")
         }
       }
 
@@ -1079,17 +1160,27 @@ fun MobilePlayerScreen(
 
       override fun onIsPlayingChanged(playing: Boolean) {
         isPlaying = playing
+        // 2026-09-20:两条日志都要点明**清的是哪个计数器**——本文件有两个独立预算
+        // (`autoRetryCount` 看门狗档,上限 MaxStallAutoRetry=2;`errorRetryCount` 错误档,
+        // 上限 MaxErrorAutoRetry=3),此前两行都写「counter reset」,复盘时分不清。
         if (playing && autoRetryCount > 0) {
           autoRetryCount = 0
-          Log.i(MobilePlayerLogTag, "playback error auto-retry recovered, counter reset")
+          Log.i(MobilePlayerLogTag, "stall-watchdog retry budget reset (autoRetryCount 0/$MaxStallAutoRetry)")
+        }
+        if (playing && errorRetryCount > 0) {
+          errorRetryCount = 0
+          Log.i(MobilePlayerLogTag, "playback error-retry budget reset (errorRetryCount 0/$MaxErrorAutoRetry)")
         }
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {
         // alpha.74 诊断:确认音频轨是否被选中(videoFormat/audioFormat)+ 播放器最终状态。
+        // 2026-09-20:括号里补**状态名**。此前只打裸 Int,而 ExoPlayer 的常量是 1=IDLE/2=BUFFERING/
+        // 3=READY/4=ENDED ——「3」不是 BUFFERING。P11-135 复盘时读反了它,把「正常播放的窗口」当成
+        // 「冻结窗口」,整条因果讲反、白追了一轮。Int 保留(便于沿用既有 grep)。
         Log.i(
           MobilePlayerLogTag,
-          "playerState=$playbackState pos=${player.currentPosition} videoFmt=${player.videoFormat} audioFmt=${player.audioFormat}",
+          "playerState=$playbackState(${playbackStateName(playbackState)}) pos=${player.currentPosition} videoFmt=${player.videoFormat} audioFmt=${player.audioFormat}",
         )
         // alpha.97(修「Auto 永不升过 1080p」决定性诊断,镜像 TV PlayerScreen YtSabrTracks):READY 时
         // dump ①trackSelectionParameters 真实 min/max/viewport 值(验证起始档锁/首帧释放后的实际状态);
@@ -1152,12 +1243,21 @@ fun MobilePlayerScreen(
           // 记当前位置进 autoResumePositionMs,重载后续播点 = 卡住位置(不回退到 saved progress,
           // 避免重播已看过的一段——status=3 已被同步刷新消除,此路径仅真终端错误偶发)。
           // 计数上限(MaxStallAutoRetry)防不可恢复错误无限重试。同步刷新后 status=3 不再触发本路径。
-          if (autoRetryCount < MaxStallAutoRetry) {
-            autoRetryCount += 1
+          // P11-99b:对齐 TV——2004 BAD_HTTP_STATUS + YouTube = DASH 兜底直链 403,标记进 registry
+          // → 重 resolve 跳过自合成 DASH 直落 dashMpdUrl/HLS。SABR 错误恒为 2000,不误标。
+          // P11-99c:标记移到预算判定**之前**(预算耗尽的最后一击也标记);重试用独立
+          // errorRetryCount(MaxErrorAutoRetry=3,容纳 SABR→DASH→HLS 三级)。
+          if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube) {
+            SabrStreamRegistry.markDashFallbackFailed(activeRequest.bvid)
+          }
+          if (errorRetryCount < MaxErrorAutoRetry) {
+            errorRetryCount += 1
             autoResumePositionMs = player.currentPosition.coerceAtLeast(0L)
+            // 2026-09-20:点明是**错误档**预算(与看门狗档 autoRetryCount 区分开,见 onIsPlayingChanged)。
             Log.w(
               MobilePlayerLogTag,
-              "playback error, auto-retry #${autoRetryCount} @pos=${autoResumePositionMs}ms: ${error.message}",
+              "playback error, error-retry #${errorRetryCount}/$MaxErrorAutoRetry " +
+                "@pos=${autoResumePositionMs}ms: ${error.message}",
             )
             retryKey += 1L
           } else {
@@ -1217,15 +1317,34 @@ fun MobilePlayerScreen(
   // 加载(镜像 TV PlayerScreen 的 load 序列)。key 不含 activeRequest:自动连播/用户切集/切画质
   // 由显式 loadRequest 调用触发(见 ExoPlayer 监听器与各 onClick),避免后台重组被推迟时无法加载;
   // 本 effect 只处理初始加载、新视频(request 变)、设置变更、error-retry(retryKey 变)。
-  LaunchedEffect(request, playbackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
+  LaunchedEffect(request, playbackCodecPreference, youtubePlaybackCodecPreference, playbackQualityPreference, playbackCdnPreference, retryKey, sabrSeekReloadKey) {
     loadRequest(activeRequest)
   }
 
   // 进度轮询
   LaunchedEffect(player, playerState) {
+    // P11-134:补回 stall 看门狗(对齐 TV PlayerScreen,那边这套已跑很久)。
+    //
+    // alpha.67 曾把它整个删掉,理由是「它逼得 status=2 的 PO token 刷新改异步、异步又引入 status=3
+    // 竞态」,于是当时把「同步刷新」与「看门狗」当成**二选一**。但 P11-127 Stage 2 之后 token 刷新
+    // 本来就是同步的了 —— 那条因果链的起点已不存在,两者可以并存。
+    //
+    // 删掉留下的空洞已在真机复现(2026-09-20 13:32,`logs_live_20260920_133411.log`,视频 UblCOS7McLg):
+    // SABR POST 慢滴挂死(`fetch rn=2` 发出后既无 REAL 也无 exception),缓冲耗尽(最后一个已缓冲段止于
+    // 34560ms,播放头走到 34466ms 撞上段尾)→ BUFFERING **54 秒无人救**,用户手动退出。同一份代码的
+    // TV 端有这套看门狗,会在 8 秒时自愈;移动端缺的只是这段判定。
+    var stallBaselinePositionMs = 0L
+    var stallSinceMs = 0L
+    var bufferingSinceMs = 0L
+    var bufferingLastPosMs = 0L
+    var bufferingPosAdvanced = false
+    // 起播成功 = 首帧渲染那一刻;此前累积的计时器必须清零。续播/慢起播会先灌满计时器,首帧一渲染
+    // 就立刻越过阈值 →「刚播起来」被判挂死 → 重载 → 又一轮慢起播 → 死循环(同 TV P11-122 复盘)。
+    var frameRenderedSeen = frameRendered
     while (true) {
       delay(ProgressUpdateMs)
       val ready = playerState as? MobilePlayerState.Ready ?: continue
+      // 下面看门狗块用 ready.info 取会话信息(sabrInfo),故 ready 仍被消费。
       val currentPositionMs = player.currentPosition.coerceAtLeast(0L)
       if (seekPreviewMs == null) {
         playbackPositionState.longValue = currentPositionMs
@@ -1234,11 +1353,101 @@ fun MobilePlayerScreen(
       if (dur > 0L) playbackDurationState.longValue = dur
       // 空降助手:seekPreviewMs 期间 handleAirJumpPosition 内部早退,不与手动拖拽冲突
       handleAirJumpPosition(currentPositionMs)
-      // alpha.67:取消 8s stall 看门狗(原 STATE_BUFFERING + 进度连续 8s 不前进 → retryKey 重载)。
-      // 它是当初逼 alpha.66 把 status=2 PO token 刷新改异步(怕同步阻塞被看门狗 cancel→evict)的元凶;
-      // 异步又引入竞态(刷新晚一拍,请求带旧 token 撞 status=3 → 全量重载 → 重播前 60s + 音频先现)。
-      // 改回同步刷新(对齐 LibreTube,下个请求一定带新 token)+ 取消看门狗 = 正解。status=3 不再出现。
-      // 真终端错误(RELOAD_PLAYER/SABR_ERROR)由 onPlayerErrorChanged 的 error-retry 处理(非看门狗)。
+
+      if (frameRendered != frameRenderedSeen) {
+        frameRenderedSeen = frameRendered
+        if (frameRendered) {
+          stallSinceMs = 0L
+          stallBaselinePositionMs = currentPositionMs
+          bufferingSinceMs = 0L
+          bufferingPosAdvanced = false
+        }
+      }
+
+      val nowMs = android.os.SystemClock.elapsedRealtime()
+      // 排除:已暂停(playWhenReady=false 是用户意图)、已完成。非 Ready 态在循环开头已 `?: continue` 掉,
+      // 故这里不必再判态(注意本文件 `ready` 是 `MobilePlayerState.Ready` **对象**而非布尔,
+      // 不能直接进 `&&` 链——与 TV 那边 `playerState is PlayerScreenState.Ready` 的写法不同)。
+      val isStallBuffering =
+        player.playbackState == Player.STATE_BUFFERING &&
+        player.playWhenReady &&
+        !completionReported
+      if (isStallBuffering) {
+        // ①视频冻结看门狗:BUFFERING 但位置仍前进 = 音频时钟活着、视频渲染挂死。
+        if (bufferingSinceMs == 0L) {
+          bufferingSinceMs = nowMs
+          bufferingLastPosMs = currentPositionMs
+          bufferingPosAdvanced = false
+        } else {
+          if (currentPositionMs != bufferingLastPosMs) {
+            bufferingPosAdvanced = true
+            bufferingLastPosMs = currentPositionMs
+          }
+          if (bufferingPosAdvanced &&
+            nowMs - bufferingSinceMs >= VideoFreezeThresholdMs &&
+            autoRetryCount < MaxStallAutoRetry
+          ) {
+            autoResumePositionMs = currentPositionMs
+            autoRetryCount += 1
+            Log.w(
+              MobilePlayerLogTag,
+              "video freeze: BUFFERING ${(nowMs - bufferingSinceMs) / 1000}s with pos advancing, " +
+                "auto-retry #$autoRetryCount @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
+            )
+            bufferingSinceMs = 0L
+            stallSinceMs = 0L
+            stallBaselinePositionMs = 0L
+            retryKey += 1L
+          }
+        }
+        // ②位置冻结看门狗:BUFFERING 且位置连续不动 —— 本次真机故障(缓冲耗尽 + 请求挂死)正是这一类。
+        if (currentPositionMs == stallBaselinePositionMs) {
+          if (stallSinceMs == 0L) {
+            stallSinceMs = nowMs
+          } else if (nowMs - stallSinceMs >=
+            if (!frameRendered) StartupStallThresholdMs else StallThresholdMs
+          ) {
+            if (autoRetryCount < MaxStallAutoRetry) {
+              autoResumePositionMs = currentPositionMs
+              autoRetryCount += 1
+              // 起播期(未出首帧)的 stall 多为**会话级慢首包** → evict 会话、重载 resolve 铸新会话,
+              // 别复用同一个慢会话(同 TV P11-95)。播放中(已出帧)的 stall 不动会话——多为瞬态网络,
+              // 保住长会话复用。
+              if (!frameRendered) {
+                val sabrInfo = ready.info
+                if (sabrInfo != null && sabrInfo.isSabrSingle()) {
+                  SabrStreamRegistry.getByVideoId(sabrInfo.bvid)?.let { sid ->
+                    SabrStreamRegistry.evict(sid)
+                    Log.w(MobilePlayerLogTag, "startup stall: evict sabr session sid=$sid, retry with fresh session")
+                  }
+                }
+              }
+              Log.w(
+                MobilePlayerLogTag,
+                "stall detected, auto-retry #$autoRetryCount @pos=${currentPositionMs}ms " +
+                  "buffered=${player.bufferedPercentage}% startup=${!frameRendered}",
+              )
+              stallSinceMs = 0L
+              stallBaselinePositionMs = 0L
+              // 视频冻结窗口一并清零:重载后若立刻又 BUFFERING,残留的窗口起点会让
+              // `nowMs - bufferingSinceMs` 一上来就 ≥12s,位置一动就误判「视频冻结」。
+              bufferingSinceMs = 0L
+              retryKey += 1L
+            }
+            // 预算(MaxStallAutoRetry)耗尽后**有意不再重试**:交用户手动重试/退出。
+            // TV 那边还有一层「深度重试」(evict 会话 + 续播点前推 10s),移动端暂不搬——
+            // 那套是为「历史续播卡死」那一类故障做的,与本条要兜的「请求挂死」不是同一根因;
+            // 真机再遇到预算耗尽仍不自愈的场景,再按那时的证据决定要不要补。
+          }
+        } else {
+          stallBaselinePositionMs = currentPositionMs
+          stallSinceMs = 0L
+        }
+      } else {
+        stallBaselinePositionMs = currentPositionMs
+        stallSinceMs = 0L
+        bufferingSinceMs = 0L
+      }
     }
   }
 
@@ -2116,6 +2325,17 @@ fun MobilePlayerScreen(
               playbackSpeed = rate
               player.setPlaybackSpeed(rate)
             },
+            subtitleTracks = (playerState as? MobilePlayerState.Ready)?.info?.subtitleTracks.orEmpty(),
+            selectedSubtitleTrackId = selectedSubtitleTrackId,
+            onSubtitleSelected = { trackId ->
+              // P11-120:纯客户端轨道选择(懒加载轨此刻才开始拉 WebVTT),不重载源、位置不变。
+              selectedSubtitleTrackId = trackId
+              SubtitleTracks.applySelection(
+                player,
+                (playerState as? MobilePlayerState.Ready)?.info?.subtitleTracks.orEmpty(),
+                trackId,
+              )
+            },
             danmakuSettings = danmakuSettings,
             onDanmakuEnabled = { scope.launch { danmakuSettingsStore.setEnabled(it) } },
             onDanmakuOpacity = { scope.launch { danmakuSettingsStore.setOpacity(it) } },
@@ -2324,6 +2544,20 @@ private fun SlimSeekSlider(
   }
 }
 
+/**
+ * P11-120:字幕轨按钮文案。显示名缺省回落语言码;自动生成(asr)轨加本地化后缀
+ * (同语言常有 en 与 en-asr 两条,不标分不清)。
+ */
+@Composable
+private fun subtitleTrackLabel(track: PlaybackTrack): String {
+  val label = com.kirin.mt.ui.i18n.convertChineseText(SubtitleTracks.labelOf(track))
+  return if (track.isAutoGenerated) {
+    stringResource(R.string.player_subtitle_auto, label)
+  } else {
+    label
+  }
+}
+
 private fun formatMs(ms: Long): String {
   val totalSeconds = (ms / 1000L).coerceAtLeast(0L)
   val m = totalSeconds / 60
@@ -2342,6 +2576,11 @@ private val PlaybackSpeedOptions = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 
 private fun PlayerSettingsSheet(
   playbackSpeed: Float,
   onSpeedSelected: (Float) -> Unit,
+  /** P11-120:可选字幕轨(空=该视频无字幕,整段不显示)。 */
+  subtitleTracks: List<PlaybackTrack>,
+  /** P11-120:当前字幕轨 id(null=关闭)。 */
+  selectedSubtitleTrackId: Int?,
+  onSubtitleSelected: (Int?) -> Unit,
   danmakuSettings: com.kirin.mt.core.player.DanmakuSettings,
   onDanmakuEnabled: (Boolean) -> Unit,
   onDanmakuOpacity: (Float) -> Unit,
@@ -2368,6 +2607,32 @@ private fun PlayerSettingsSheet(
             text = "${rate}x",
             color = if (selected) Color(0xFFFB7299) else Color.White,
           )
+        }
+      }
+    }
+
+    // P11-120:字幕(仅该视频有字幕轨时显示)。行内横排按钮,与倍速/弹幕容量同一形态。
+    // 字幕轨是懒加载轨:选中才去拉 WebVTT,「关闭」时一个请求都不发。
+    if (subtitleTracks.isNotEmpty()) {
+      SectionTitle(stringResource(R.string.player_subtitle))
+      Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        TextButton(onClick = { onSubtitleSelected(null) }) {
+          Text(
+            text = stringResource(R.string.player_subtitle_off),
+            color = if (selectedSubtitleTrackId == null) Color(0xFFFB7299) else Color.White,
+          )
+        }
+        subtitleTracks.forEach { track ->
+          val selected = track.id == selectedSubtitleTrackId
+          TextButton(onClick = { onSubtitleSelected(track.id) }) {
+            Text(
+              text = subtitleTrackLabel(track),
+              color = if (selected) Color(0xFFFB7299) else Color.White,
+            )
+          }
         }
       }
     }
@@ -2657,15 +2922,28 @@ private fun MobileYoutubeIntroTab(
             .padding(vertical = 6.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          AsyncImage(
-            model = v.pic,
-            contentDescription = v.title,
-            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+          Box(
             modifier = Modifier
               .width(110.dp)
               .height(62.dp)
               .clip(RoundedCornerShape(8.dp)),
-          )
+          ) {
+            AsyncImage(
+              model = v.pic,
+              contentDescription = v.title,
+              contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+              modifier = Modifier.fillMaxSize(),
+            )
+            // 源角标(会员等):右上粉底 pill——这段「播放列表后续」原先整块没有角标(P11-121 补齐,对齐 TV VideoCard)。
+            if (v.badge.isNotBlank()) {
+              SourceBadge(
+                text = v.badge,
+                modifier = Modifier
+                  .align(Alignment.TopEnd)
+                  .padding(2.dp),
+              )
+            }
+          }
           Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
             Text(
               text = v.title,

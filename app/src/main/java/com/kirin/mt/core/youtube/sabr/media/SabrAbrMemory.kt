@@ -73,6 +73,49 @@ object SabrAbrMemory {
     trialFailedUntilWallMs = nowWallMs + cooldownMs
   }
 
+  /**
+   * P11-151(a,2026-09-20 真机「降档钉死 144p」):**最近一次「操作事件」**(seek / 手动选档)的墙钟时间。
+   *
+   * 依据(`logs_live_20260920_220043.log`):22:00:09 打出
+   * `downgrade fail cooldown: 720p excluded 180s (gated+trial blocked, survives reload)` ——
+   * 而**「降档即记冷却」不区分原因**(见 [HeightAwareAdaptiveTrackSelection.markDowngradeFromTrial] 注释):
+   * 一次降档就把源档锁 180 秒,期间任何升档路径都碰不到它 ⇒ 画面钉在 144p,而缓冲一直有 25~28 秒。
+   * 但 seek / 手动选档引起的降档**不是「该档不可持续」的证据**,是操作开销。
+   * 故:操作事件后 [OPERATION_EVENT_GRACE_MS] 内的降档只记 [OPERATION_EVENT_COOLDOWN_MS] 的短冷却。
+   */
+  @Volatile
+  private var lastOperationEventWallMs = 0L
+
+  /** 操作事件后这段时间内的降档不按「供给不足」惩罚。 */
+  const val OPERATION_EVENT_GRACE_MS = 20_000L
+
+  /** 操作事件专用短冷却(它不代表该档不可持续,只是给窗口重建留时间)。 */
+  const val OPERATION_EVENT_COOLDOWN_MS = 20_000L
+
+  /** seek / 手动选档发生时调用(由 [SabrMediaFetcher.recordFetchGap] 的操作分支触发)。 */
+  fun noteOperationEvent(nowWallMs: Long = System.currentTimeMillis()) {
+    lastOperationEventWallMs = nowWallMs
+  }
+
+  /** 最近 [withinMs] 内是否发生过操作事件(降档冷却据此选时长)。 */
+  fun recentOperationEvent(
+    withinMs: Long = OPERATION_EVENT_GRACE_MS,
+    nowWallMs: Long = System.currentTimeMillis(),
+  ): Boolean =
+    lastOperationEventWallMs > 0L && nowWallMs - lastOperationEventWallMs < withinMs
+
+  /**
+   * P11-151(b):**提前解除**某档的降档冷却。给「缓冲健康 + 带宽已达标」的早解条件用 ——
+   * 冷却的本意是「该档扛不住」,而当缓冲已重建到健康水位、且实测带宽已超过该档声明码率,
+   * 死等 90 秒只会把画面按在最低档。
+   */
+  fun clearTrialFail(height: Int) {
+    if (trialFailedHeight == height) {
+      trialFailedHeight = -1
+      trialFailedUntilWallMs = 0L
+    }
+  }
+
   /** 该 height 是否处于试探失败冷却中(跨重载有效)。 */
   fun isTrialFailBlocked(height: Int, nowWallMs: Long = System.currentTimeMillis()): Boolean =
     height == trialFailedHeight && nowWallMs < trialFailedUntilWallMs

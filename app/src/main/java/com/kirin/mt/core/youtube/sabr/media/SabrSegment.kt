@@ -85,29 +85,33 @@ internal class InitializedFormat(
    * 位置冻结黑屏**。有网格([seqStartMsBySeq])时按段号查真实绝对时间;无网格(首请求 init
    * 未解出前)维持旧行为(该窗口本就只有 init 请求,不含媒体范围语义)。
    */
-  fun buildBufferedRanges(): List<BufferedRangeInput> =
+  fun buildBufferedRanges(capSeq: Long = Long.MAX_VALUE): List<BufferedRangeInput> =
     bufferedSegments.entries.union(downloadedSegments.entries).sortedBy { it.key }
       .fold(mutableListOf<MutableList<Pair<Long, SabrSegment>>>()) { acc, (id, segment) ->
         val previousId = acc.lastOrNull()?.lastOrNull()?.first
         if (previousId?.plus(1) != id) acc.add(mutableListOf())
         acc.lastOrNull()!!.add(id to segment)
         acc
-      }.map { partition ->
-        val firstId = partition.first().first
-        val lastId = partition.last().first
+      }.mapNotNull { partition ->
+        // P11-111:capSeq 截断——只报到请求段之前(PipePipe Track.bufferedThrough = next-1 同款,
+        // 服务端多段推送的预取缓存不上报;6s 墙钟在协议里"已缓冲"60s+ 破坏播放进度语义 → 60s 窗口撞墙)。
+        val lastId = minOf(partition.last().first, capSeq - 1)
+        val capped = partition.takeWhile { it.first <= lastId }
+        if (capped.isEmpty()) return@mapNotNull null
+        val firstId = capped.first().first
         // 真实时间:wire seq N 覆盖网格第 N-1 段(网格=ChunkIndex.timesMs,init 占 seq 0)。
         val startMs = segmentStartMs(firstId)
         val endMs = segmentStartMs(lastId + 1)
         val duration = if (startMs != null && endMs != null && endMs > startMs) {
           endMs - startMs
         } else {
-          partition.sumOf { it.second.duration }
+          capped.sumOf { it.second.duration }
         }
         BufferedRangeInput(
           itag = id.itag,
           lastModified = id.lastModified,
           xtags = id.xtags,
-          startTimeMs = startMs ?: partition.first().second.header.startMs,
+          startTimeMs = startMs ?: capped.first().second.header.startMs,
           durationMs = duration,
           startSegmentIndex = firstId.toInt(),
           endSegmentIndex = lastId.toInt(),

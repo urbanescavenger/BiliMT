@@ -48,6 +48,11 @@ class BiliTvApplication : Application(), ImageLoaderFactory {
     appContainer.warmupApiConnection()
     // IPTV 源判活扫描(延迟 15s 后台跑,判活一次本次启动全程复用,仅 TV 路径消费)。
     appContainer.startIptvSourceProbe()
+    // P11-126:预热 harvest 采集 WebView(延迟 8s;仅「WEB-SABR 优先」档会真做)。把冷启
+    // (建 WebView + 载 youtube.com 首页,真机实测 10.9s)移出起播预算。
+    appContainer.startYoutubeHarvestPrewarm()
+    // P11-154:只读探一次真实浏览会话的活文档(ytAtN/EVENT_ID),供 arm A 页面上下文实验判读。
+    appContainer.startYoutubePageContextProbe()
   }
 
   override fun newImageLoader(): ImageLoader {

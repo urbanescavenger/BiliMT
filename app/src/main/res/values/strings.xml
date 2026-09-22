@@ -217,6 +217,18 @@
     <string name="settings_youtube_default_quality_description">新开 YouTube 视频默认使用的画质上限。自动为最高可用画质。</string>
     <string name="settings_youtube_start_quality_title">YouTube 起步画质</string>
     <string name="settings_youtube_start_quality_description">自动画质时视频起播的最低清晰度档,网络实测后会逐档爬升到默认画质。自动为最低档起播。</string>
+    <string name="settings_youtube_group_title">YouTube 设置</string>
+    <string name="settings_youtube_group_desc">画质 / 起播画质 / 倍速 / 解码器 / 频道 / 内容区域 / Piped / 交付优先级</string>
+    <string name="settings_youtube_codec_title">YouTube 解码器</string>
+    <string name="settings_youtube_codec_description">YouTube 轨道用哪种编码。VP9 是 YouTube 的主力编码,选它可让整场播放保持同一解码器、避免换解码器时的卡顿;其余选项只列出本机支持的编码。与「播放设置」里的解码器相互独立。</string>
+    <string name="settings_youtube_default_speed_title">YouTube 默认倍速</string>
+    <string name="settings_youtube_default_speed_description">新开 YouTube 视频起播时使用的播放倍速,与「播放设置」里的默认播放倍速相互独立。播放中仍可在菜单里临时调整。</string>
+    <string name="settings_youtube_codec_auto">自动</string>
+    <string name="settings_youtube_codec_vp9">VP9</string>
+    <string name="settings_youtube_codec_av01">AV1</string>
+    <string name="settings_youtube_codec_h264">H.264</string>
+    <string name="settings_group_expand">展开</string>
+    <string name="settings_group_collapse">收起</string>
     <string name="settings_youtube_content_region_title">YouTube 内容地区</string>
     <string name="settings_youtube_content_region_description">InnerTube 的内容地区/语言(gl/hl)。默认美国;不放中国(gl=CN 实测触发反爬)。挂不同地区 VPN 时可让 gl 跟随,避免 IP 与地区不一致被判 bot,并看对应地区内容。注:主 SABR 路径由 NewPipe 决定,此项主要影响 WEB /player 与 DASH 兜底。</string>
     <string name="settings_default_speed_title">默认播放倍速</string>
@@ -442,7 +454,7 @@
     <string name="player_failed_with_message">&#25773;&#25918;&#21152;&#36733;&#22833;&#36133;&#12290;%1$s</string>
     <string name="player_error_missing_cid">&#26410;&#33021;&#33719;&#21462;&#35270;&#39057; CID</string>
     <string name="player_error_empty_tracks">&#25773;&#25918;&#25509;&#21475;&#26410;&#36820;&#22238;&#21487;&#29992;&#38899;&#35270;&#39057;&#36712;</string>
-    <string name="player_error_launch_timeout">起播超时（30s），请重试</string>
+    <string name="player_error_launch_timeout">起播超时（%1$d 秒），请重试</string>
     <string name="player_control_episodes">&#x9009;&#x96C6;</string>
     <string name="player_control_next_episode">&#x4E0B;&#x4E00;&#x96C6;</string>
     <string name="player_speed_label">&#x500D;&#x901F;</string>
@@ -454,6 +466,14 @@
     <string name="player_control_favorite">&#x6536;&#x85CF;</string>
     <string name="player_control_toview">稍后再看</string>
     <string name="player_control_comment">评论</string>
+    <!-- P11-124:B站 控制行「刷新」——重新解析并重载当前视频(YouTube 老路径不出现该项)。 -->
+    <string name="player_control_refresh">刷新</string>
+    <!-- P11-124(追加):控制行「画面旋转」(点击循环 +90°)。 -->
+    <string name="player_control_rotate">画面旋转</string>
+    <!-- P11-124(追加):控制行「播放序列」(列表播放 / 单视频循环 两态)。 -->
+    <string name="player_control_play_sequence">播放序列</string>
+    <string name="player_sequence_list">列表播放</string>
+    <string name="player_sequence_single">单视频循环</string>
     <string name="player_panel_favorite">&#x6536;&#x85CF;&#x5230;&#x6536;&#x85CF;&#x5939;</string>
     <string name="player_favorite_confirm">&#x786E;&#x8BA4;&#x6536;&#x85CF;</string>
     <string name="player_favorite_empty">&#x6682;&#x65E0;&#x6536;&#x85CF;&#x5939;</string>
@@ -518,6 +538,16 @@
     <string name="player_speed_value">%1$.1f &#x500D;</string>
     <string name="player_meta_pubdate">&#x53D1;&#x5E03;&#x4E8E;%1$s</string>
     <string name="player_meta_view_count">%1$s&#x6B21;&#x89C2;&#x770B;</string>
+    <!-- P11-124:B站 控制行「画质」槽的屏上文案——只显示 HD,真实档位由 contentDescription 承载。 -->
+    <string name="player_quality_badge">HD</string>
+    <!-- P11-124:B站 官方版式元信息行(单项一段,用 player_meta_separator 串联)。计数段后缀对齐官方
+         「1.3万播放 / 13弹幕 / 544点赞」:播放量与弹幕数走缩写(调用处传 formatCompactCountText 结果),
+         点赞/收藏/投币直接传原数字(官方三连不缩写、不带「万」),值为 0 时整段由调用处跳过。 -->
+    <string name="player_meta_bili_view_count">%1$s播放</string>
+    <string name="player_meta_bili_danmaku_count">%1$s弹幕</string>
+    <string name="player_meta_bili_like_count">%1$s点赞</string>
+    <string name="player_meta_bili_favorite_count">%1$s收藏</string>
+    <string name="player_meta_bili_coin_count">%1$s投币</string>
     <string name="player_seek_preview">&#x5FEB;&#x8FDB;&#x9884;&#x89C8;</string>
     <string name="player_air_jump_will_skip">&#x5373;&#x5C06;&#x8DF3;&#x8FC7;&#x5E7F;&#x544A;</string>
     <string name="player_air_jump_skipped">&#x5DF2;&#x8DF3;&#x8FC7;&#x5E7F;&#x544A;</string>
@@ -636,7 +666,7 @@
     <string name="settings_sabr_force_itag_title">锁定会话视频轨</string>
     <string name="settings_sabr_force_itag_description">SABR 诊断：强制用会话选中 itag，证伪某 itag 是 RELOAD 根因</string>
     <string name="settings_youtube_delivery_priority_title">播放优先级</string>
-    <string name="settings_youtube_delivery_priority_description">SABR 优先（默认）；卡顿/慢源可切 DASH 自合成优先，能出 4K</string>
+    <string name="settings_youtube_delivery_priority_description">SABR 优先（默认）；可选 DASH 自合成（卡顿/慢源逃生，能出 4K）或 WEB-SABR（强制 WEB 认证路径，适用门控视频）</string>
     <string name="settings_iptv_connect_success">IPTV 源连接成功</string>
     <string name="settings_iptv_connect_failed">IPTV 源连接失败</string>
     <!-- TVBox 源(P11-81,原称「影视库」):配置 URL 驱动,type 0/1 采集站 -->
@@ -738,6 +768,9 @@
     <string name="danmaku_network_error">网络错误 HTTP %1$d</string>
     <string name="danmaku_send_failed">发送失败:%1$s</string>
     <string name="player_audio_track">音轨</string>
+    <string name="player_subtitle">字幕</string>
+    <string name="player_subtitle_off">关闭</string>
+    <string name="player_subtitle_auto">%1$s（自动生成）</string>
     <string name="player_tab_intro">简介</string>
     <string name="player_comment_count_format">评论 %1$s</string>
     <string name="player_confirm">确认</string>

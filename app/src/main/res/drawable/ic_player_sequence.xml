@@ -1,0 +1,11 @@
+<!-- P11-124:B站 控制行「播放序列」的**列表播放**态——Material Icons `repeat`(Apache-2.0),取官方 pathData。
+     另一态「单视频循环」见 ic_player_sequence_one.xml(同一枚按钮按状态换图标,和弹幕/字幕按状态压暗同一套思路)。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M7,7h10v3l4,-4 -4,-4v3H5v6h2V7zM17,17H7v-3l-4,4 4,4v-3h12v-6h-2v4z" />
+</vector>

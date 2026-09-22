@@ -178,12 +178,6 @@ object BiliSizing {
   val PlayerTopTimeReservedWidth = 150.dp
   val PlayerTopGradientHeight = 132.dp
   val PlayerBottomGradientHeight = 196.dp
-  val PlayerBottomPadding = 25.dp
-  val PlayerProgressTouchHeight = 40.dp
-  val PlayerProgressHeight = 4.dp
-  val PlayerProgressFocusedHeight = 6.dp
-  val PlayerProgressKnobSize = 16.dp
-  val PlayerProgressFocusedKnobSize = 20.dp
   val PlayerMiniProgressHeight = 3.dp
   val PlayerControlIconButtonSize = 60.dp
   val PlayerControlIconSize = 36.dp
@@ -208,6 +202,34 @@ object BiliSizing {
   val PlayerSeekPreviewWidth = 240.dp
   val PlayerSeekPreviewHeight = 96.dp
   val PlayerPauseIndicatorSize = 96.dp
+  // P11-124(追加):暂停图标挪到右下角后离屏幕底边的高度。照片量出的位置(图标中心 ≈24% 屏高)对应 96dp;
+  // B站 薄底栏的进度条行顶边 ≈100-105dp,96dp 恰好落在其上方(最多蹭到时间文案行盒顶部几 dp 的空白)。
+  val PlayerPauseIndicatorBottomPadding = 96.dp
+
+  // ── P11-124:B站 官方版式(仅 SourceBili 路径)────────────────────────────────
+  // 数值全部取自设计稿 tmp/p11-124-bili-align-official.html 的 calc(N * var(--u))(1 单位 = 1dp)。
+  // 注意:版式/几何照官方,但**配色仍用我们原来的**(进度条 ProgressTrack/ProgressBuffered/BiliPink,
+  // 焦点态 PlayerControlFocused 粉色玻璃),不走设计稿的浅蓝 --bar-blue 与白描边。
+  // 顶部信息块:标题 2 行 + 元信息 1 行 + 动作行,内容比 YouTube 版高,渐变高度须同步放大。
+  val PlayerOfficialTopPadding = 30.dp
+  val PlayerOfficialTopGradientHeight = 196.dp
+  val PlayerOfficialTitleMetaGap = 10.dp
+  val PlayerOfficialMetaActionsGap = 12.dp
+  val PlayerOfficialActionSpacing = 34.dp
+  val PlayerOfficialActionIconSize = 23.dp
+  val PlayerOfficialActionIconGap = 7.dp
+  // 底部:细进度条 + 控制行
+  val PlayerOfficialBottomPadding = 26.dp
+  val PlayerOfficialRowsGap = 14.dp
+  val PlayerOfficialProgressHeight = 5.dp
+  val PlayerOfficialProgressRadius = 3.dp
+  val PlayerOfficialProgressKnobSize = 13.dp
+  // 进度条行高:容下 13dp 滑块(条本体 5dp 居中),高度不影响视觉,只是给行留出滑块空间。
+  val PlayerOfficialProgressRowHeight = 21.dp
+  // 控制行:各项按内容宽排布,项间距 8dp(靠左紧挨;曾是 56dp 等宽槽 + 26dp 间距,真机反馈「不需要分散」后撤掉)。
+  val PlayerOfficialControlSpacing = 8.dp
+  val PlayerOfficialControlBoxSize = 34.dp
+  val PlayerOfficialControlIconSize = 30.dp
 }
 
 object BiliTypography {
@@ -239,6 +261,12 @@ object BiliTypography {
   val PlayerSettingTitle = 15.sp
   val PlayerSettingValue = 13.sp
   val PlayerSeekPreview = 28.sp
+
+  // P11-124:B站 官方版式字号(设计稿 calc(N * var(--u)) 同源)。
+  val PlayerOfficialTitle = 28.sp
+  val PlayerOfficialMeta = 14.sp
+  val PlayerOfficialAction = 15.sp
+  val PlayerOfficialControlValue = 19.sp
 }
 
 object BiliMotion {

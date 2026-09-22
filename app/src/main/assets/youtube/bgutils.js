@@ -403,9 +403,16 @@
             // 带占位符 c(b=PLACEHOLDER&hh=PLACEHOLDER) 的 contentBinding 会让 VM 不产生 minter,
             // 导致 webPoSignalOutput 空 → WebPoMinter.create 报 PMD:Undefined。
             // 视频绑定在 mint 阶段用 videoId 完成(mintAsWebsafeString(videoId))。
-            // 对齐 FreeTube botGuardScript.js:snapshot({ webPoSignalOutput }, 10_000) 不带
-            // skipPrivacyBuffer(§6.7 row 26 真机 adaptive=0 定位:token 判无效,先去掉该差异重测)。
-            const botguardResponse = await client.snapshot({ webPoSignalOutput });
+            //
+            // P11-162(2026-09-21,对 FreeTube 源码逐行核):**超时必须显式传**。
+            // FreeTube(`FreeTubeAndroid/src/botGuardScript.js`)是 `snapshot({ webPoSignalOutput }, 10_000)`;
+            // 而 bgutils 自己的默认只有 **3s**(见本文件 `defaultTimeout = 3e3`)。
+            // 此前这里写成 `client.snapshot({ webPoSignalOutput })`(不传 ⇒ 3s),上面注释却声称「对齐
+            // FreeTube 的 10_000」—— **注释与代码不符,我们比 FreeTube 少 7 秒余量**:冷启/慢机上 VM
+            // 一旦超过 3s 就 `BgError("VM operation timed out")` → 整次铸造失败(而它落在每次解析的关键路径上)。
+            // 现在补上显式 10_000(且 [YoutubeBotGuard.PollTimeoutMs] 同步抬到 12s,否则轮询会先于它放弃)。
+            // 不传 skipPrivacyBuffer 的理由见 §6.7 row 26(去掉该差异重测)。
+            const botguardResponse = await client.snapshot({ webPoSignalOutput }, 10_000);
             // 诊断:确认 minter 是否真的产生(UA 修正后应 length>0 且 [0] 是 function)。
             // console.log 会被 evaluateJavascript 捕获为 null,改用 __diag。
             window.__diag = { length: webPoSignalOutput.length, isFunc: typeof webPoSignalOutput[0] };

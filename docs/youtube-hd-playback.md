@@ -641,6 +641,25 @@ FormatId 字符串解析:`"<itag>-<lastModified>-<xtags>"`。
 
 **去重关键**:单音轨视频有多个 itag(251/140)但 `audioTrackId` 均为 null → 折叠成 `"default"` 一条 + `.distinctBy { it.id }`,避免误显示多音轨菜单。
 
+### P11-119 / 119b / 119c:音轨面板与「哪条路能切」的完整清单(2026-09)
+
+**背景**:用户报「TV 端没有选轨位置」→ 修完面板(119)又报「音轨切换不成功、而且一直英文」(119b)→ 再报「WEB-SABR 能切、**SABR 不能**」(119c)。三轮的根因各不相同,**别把它们读成同一个 bug**:
+
+| 轮次 | 症状 | 根因 | 修复 |
+|---|---|---|---|
+| P11-119 | TV 端没有音轨入口;WEB-SABR 档下移动端也没菜单 | ①TV 播放器只有 清晰度/弹幕/倍速 三个面板;②`buildWebSabrFallback` 建会话时**没传 `audioTracks`** ⇒ `availableAudioTracks` 恒空 | TV 加 index 3「音轨」面板(镜像 Quality);WEB-SABR 从 `/player` `adaptiveFormats[].audioTrack{id,displayName,audioIsDefault}` + `language` 构造音轨列表 |
+| P11-119b | 恒播英语配音 + 切轨无效(r1962) | ①旧判定 `xtags contains "acont=original"` 是拿 **base64 串**做子串匹配,**恒不命中** → 永远落 `audioRaws.first()`(列表第一条=英语配音);②WEB-SABR 路径**完全不消费** `preferredAudioTrackId` | `SabrProto.parseFormatXtags(base64(proto) → {acont,lang})` + `isOriginalAudioRaw()` 统一三处原声判定;WEB-SABR 建会话消费偏好(打 `WEB-SABR audio switch:`) |
+| P11-119c | **WEB-SABR 优先**档能切,**SABR 优先**(默认档)不能 | `buildSabrSessionFromNewPipe(videoId, poToken, …)` 签名里**没有 `request`** ⇒ 看不到 `preferredAudioTrackId`,音频恒由 `audioStreams.firstOrNull { audioTrackType == ORIGINAL }` 决定。默认档走的正是这条主链 | 该函数(及 `buildSabrSessionFromPiped`)加 `preferredAudioTrackId` 形参并消费,两处调用点透传 |
+
+**关键事实(判据用)**:
+- **同一 itag 承载多条音轨**——r1963 实测 `en-US 配音` 与 `zh-Hant 原声` **都是 itag140/139**,靠 `xtags`(`acont=dubbed-auto` / `acont=original` + `lang`)区分。⇒ 任何「切换是否生效」的判据**必须比 xtags**,只比 itag 会把切轨判成无变化(缓存会话复用那条老路就踩了这个坑,119c 一并修)。
+- **YouTube 的 `audioIsDefault` 不可信**——r1962 该字段标的是英语**配音**轨。App 里 `SabrAudioTrack.isDefault` 的语义是「默认播这条」= **原声轨**(与 NewPipe `AudioTrackType.ORIGINAL` 同义),不要与服务端字段对齐。
+- **哪条路消费偏好**(119c 后):WEB-SABR(119b)、NewPipe 主链(119c)、Piped(119c)、缓存会话复用(WEB 分支内)。**仍未消费**:`buildSabrSessionFromReloadPlayer`(RELOAD 闭环)。
+- **排障日志**:两条 SABR 路都会打音轨列表(`WEB-SABR audioTracks(N): …*orig@itag…`)与切换行(`… audio switch: track=… → audio=itag…`);NewPipe 主链在 119c 之前只有会话里单条 `audio=itag`,失败时看不出「可选 id 有哪些 / 是否命中」,119c 已补齐。
+
+**真机对照(r1963,`Ft917Ifvz2c`,logs_live_20260916_234353.log)**:23:41 `WEB-SABR 优先` → 点选后 `WEB-SABR audio switch: track=en-US.10 → audio=itag140`,会话 xtags 变 `acont=dubbed-auto/lang=en-US` ✓;23:42-23:43 切到 `SABR 优先` → 两次 resolve 都是 `source=NewPipe(primary)` + `audio=FormatId(itag=139, xtags=…acont=original…zh-Hant)`,**`audio switch` 一次都没打**。
+
+
 ## 6.12 播放历史 + 断电续播(2026-08)
 
 **背景**:YouTube 播放进度从未落盘——`PlaybackRequest` 的 `bvid` 承载 videoId、`cid` 恒为 0,而 `PlaybackProgressStore.saveProgress` 有 `cid <= 0L → return` 守卫,导致 YouTube 进度被静默丢弃,重开无法续播,也没有历史列表。

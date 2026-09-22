@@ -120,13 +120,55 @@ params 原样传，不额外 URL 编码。
 
 ---
 
-## 4.9 字幕（WebVTT URL 直拉，不走 SABR 服务端）
+## 4.9 字幕（WebVTT URL 直拉，不走 SABR 服务端；**必须懒加载**）
 
-YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕（服务端行为未验证）。实测用 NewPipe fork（`com.github.libre-tube:NewPipeExtractor` `738c3d4`）`StreamInfo.getInfo` 时 `info.subtitles` 直接给出可拉取的 WebVTT URL，播放器层合并渲染：
+YouTube 字幕不经过 `/player` streamingData，也不用 SABR 服务端字幕（`preferredSubtitleFormatIds` 字段在协议里存在，但服务端行为未验证，LibreTube 也没做——它的 `SabrManifest` 只建 A/V 两个 AdaptationSet）。实测用 NewPipe fork（`com.github.libre-tube:NewPipeExtractor` `738c3d4`）`StreamInfo.getInfo` 时 `info.subtitles` 直接给出可拉取的 WebVTT URL。
 
-- **fork 类型注意**：`info.subtitles` 返回 `List<SubtitlesStream>`（fork 改名，非上游 `SubtitleInfo`）。语言访问器是 **`getLanguageTag()`**（无 `getLanguageCode()`），`Stream.getUrl()` 返回 `String?`（`baseUrl` 赋值需 `orEmpty()`）。
-- **合并渲染**：media3 1.10 的默认 `DefaultExtractorsFactory` **不含字幕 Extractor**，必须显式传 `ExtractorsFactory { arrayOf(SubtitleExtractor(DefaultSubtitleParserFactory().create(format), format)) }`（对齐 LibreTube `OnlinePlayerService`），`ProgressiveMediaSource` 拉 WebVTT → `SubtitleExtractor` 转 MEDIA3_CUES → `MergingMediaSource` 合并进主源 → PlayerView 内置 SubtitleView 自动渲染。
-- `PlaybackInfo.subtitleTracks` 槽位（非 YouTube/无字幕为空）+ `PlaybackTrack.languageCode`（字幕轨用，A/V 轨 null）。字幕轨选择/语言切换 UI 后续迭代。
+### 4.9.1 三段落历史（别再把「下线」当成结论）
+
+| 阶段 | 事实 |
+| --- | --- |
+| 接入（08-10） | 每条字幕轨 → `ProgressiveMediaSource` + `SubtitleExtractor` → `MergingMediaSource` 合并进主源 |
+| 下线（08-31，P11-72/73） | 真机视频转圈加载不出、官方可播：零条 `fetch rn=`、`ProgressiveMediaPeriod` + `Http2Stream.takeHeaders` 81s。**根因是语义而非网络**：media3 要**全部** child prepare 完才 selectTracks，而 `SubtitleExtractor` 要**读完整个文件**才声明轨 → 任一字幕 child 卡在读数据 → 整片黑 |
+| 回归（09-17，P11-120） | 改**懒加载**（下节），四道防线后重新挂载 |
+
+**可达性复测（2026-09-17，本机 curl 直连无代理）**：ANDROID 与 visionOS 两条 `/player` 的 `captionTracks[].baseUrl` 都是签名 URL（`signature=` + `sparams=ip,ipbits,expire,v,ei,caps,opi,xoaf`，`ip=0.0.0.0` 不锁 IP，**无 `pot`**），加 `&fmt=vtt` 后 **200 / 0.6~1.8s / 真 WEBVTT**（4263B，`WEBVTT\nKind: captions\nLanguage: en`；`fmt=json3` 8325B、`fmt=srv3` 4123B 同样可用）。
+**无签名**的旧式 URL 才是 `200` + **空 body（0 字节）**——即「缺签名=空 200」，不是挂。
+⇒ P11-72 当时属**偶发黑洞**（HTTP/2 流已开、响应头不回，与 DNS 污染/RELOAD 偶发同族），**不是结构性封禁**。
+
+**⚠️ WEB 客户端的 captionTracks 是另一个物种（2026-09-17，P11-119e 真机实锤）**：WEB `/player` 签发的
+`captionTracks[].baseUrl` 带 **`exp=xpe`**，这是 YouTube「该视频字幕在 PO token 灰度内」的标记 ——
+**不带 `pot` 时 `/api/timedtext` 回 `200` + 空 body（0 字节）**，与「缺签名」的失败长得一模一样但根因不同。
+
+- 真机症状（r1968，视频 `iTY92w_uPys`，WEB-SABR 档）：4 条字幕轨全部挂载成功、点选后
+  `WebvttParser: Expected WEBVTT. Got null` → media3 `Disabling track due to error`，字幕永不出现（主源不受影响）。
+- 修法（对齐 yt-dlp [#13075](https://github.com/yt-dlp/yt-dlp/issues/13075) / [PR #13234](https://github.com/yt-dlp/yt-dlp/pull/13234)）：
+  URL 的 `exp` 值含 `xpe`/`xpv` 时追加 **`potc=1&pot=<token>&c=<clientName>`**；`pot` 取 **websafe base64
+  原样**（不解码），token 绑定与 PLAYER 同款 = **videoId 内容绑定** ⇒ 复用同一视频已有的 content-bound
+  poToken，不必另铸 subs 上下文 token。实现在 `YoutubePlaybackResolver.withSubsPotToken`。
+- 判据顺序：**先看 `exp`**（决定要不要 pot）→ 再看签名（决定要不要 `fmt` 之外的改写）。两条路的字幕
+  URL 不能互相套用结论：ANDROID/visionOS 加 `fmt=vtt` 就好，WEB 还得补 `pot`。
+
+### 4.9.2 懒加载：让 prepare 期零读取（P11-120 的关键）
+
+media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack(int trackId, Format format)`，javadoc 原文：*"Allows the ProgressiveMediaSource to complete preparation without reading any data"* —— 数据只在**该轨被 track selection 选中**时才开始读。这就是外挂字幕轨需要的语义，且 **media3 自己的 `DefaultMediaSourceFactory` 处理 `MediaItem.SubtitleConfiguration` 时正是这么调的**（同包直调 + `setLoadOnlySelectedTracks`）。注意它 **package-private**：
+
+- LibreTube 的做法是**反射**调用（`OnlinePlayerService.kt:238-289`，失败仅打 warning 后继续跑非懒加载源——即它自己也没有护栏）。
+- 我们改**同包直调**：`app/src/main/java/androidx/media3/exoplayer/source/SubtitleLazyLoadingSupport.kt` 故意声明在 media3 的包名下（Kotlin 对 Java 符号按**声明包名**判可见性，同包即可访问），**编译期就能校验方法存在**；`catch (Throwable)` 时退回反射兜底。
+- **R8**：release 是 `isMinifyEnabled=true`。运行期包访问要求「调用方与 media3 的 `Factory` 同属一个 runtime package」，故 `proguard-rules.pro` 对本类加 `-keep`（钉住包名/类名，防 R8 挪包或跨包内联）+ keep 被调方法名（供反射兜底）。
+- 前置契约：source 必须只产出一条、id/format 与传入值一致的轨 —— 用 `SubtitleExtractor` + `SubtitleExtractor.TRACK_ID` 构建天然满足。传给懒加载的是**转码后**的 format：`APPLICATION_MEDIA3_CUES` + `codecs=原 mimeType` + `setCueReplacementBehavior(parserFactory.getCueReplacementBehavior(fmt))`。
+
+四道防线（`core/player/SubtitleTracks.kt`）：①懒加载（prepare 零读取）；②独立短超时 client（connect/read 5s、callTimeout 8s，`OkHttpClient.newBuilder()` 覆盖超时、共享主源连接池）；③**懒加载开不起来就整条不挂字幕**（宁可不显示，也不给主源留阻塞机会）；④默认关闭（换视频重置，`setTrackTypeDisabled(TEXT, true)` 顺带压掉 media3 从系统 `CaptioningManager` 读偏好而自动选轨）。
+
+### 4.9.3 选轨语义与数据层
+
+- **按语言 + role flags 选**（`SubtitleTracks.applySelection`）：人工轨 `C.ROLE_FLAG_CAPTION`、asr 轨 `C.ROLE_FLAG_SUPPLEMENTARY`。同语言双轨（`en` 与 `en-asr`）靠 role flags 精确区分 —— media3 `getRoleFlagMatchScore` 对「完全匹配」给 `Integer.MAX_VALUE`，非完全匹配给 popcount。语言是**硬门槛**（`isWithinConstraints` 要求 `preferredLanguageScore > 0`），role flags 只参与打分排序。
+- 切字幕是**纯客户端轨道选择**，不重跑 resolve、不重开会话（懒加载轨在被选中时才拉 WebVTT）——比切音轨（P11-119，会话级参数、要重建会话）轻一个量级。
+- **fork 类型注意**：`info.subtitles` 返回 `List<SubtitlesStream>`（fork 改名，非上游 `SubtitleInfo`）。语言 `getLanguageTag()`（无 `getLanguageCode()`）、显示名 `getDisplayLanguageName()`、`isAutoGenerated()`；`Stream.getUrl()` 返回 `String?`（`baseUrl` 赋值需 `orEmpty()`）。
+- **⚠️ 格式陷阱（P11-120 真机翻车点）**：`StreamInfo.subtitles` 来自 `getSubtitlesDefault()` → 拿的是**默认格式 TTML/XML** 的 URL（`…&fmt=ttml`）。若播放端按 `text/vtt` 建 Format，`SubtitleExtractor` 加载后立刻抛 `ParserException: Expected WEBVTT. Got <?xml version="1.0" …>`（`WebvttParser.parse:84`），media3 把它当**轨级错误**处理（`ExoPlayerImplInternal: Disabling track due to error: id=…, language=zh, roleFlags=[caption]`）——**播放完全不受影响、字幕永不出现**，用户视角就是「字幕有选项没效果」。修法：取 URL 后把 `fmt` 改写成 `vtt`（`forceWebVttUrl`，与 NewPipe 内部 `getSubtitles(MediaFormat.VTT)` 同款）。**改写是安全的**：`fmt` 不在 `sparams=ip,ipbits,expire,v,ei,caps,opi,xoaf` 里 → 签名不受影响；本机 curl 复核 ANDROID/visionOS 两条签名 URL 加 `&fmt=vtt` 均 200 且是真 WEBVTT。诊断入口：`BiliSubtitle` 标签的「字幕轨 id=… fmt=…」逐轨日志。
+- **数据层**：`PlaybackInfo.subtitleTracks`（非 YouTube/无字幕为空）+ `PlaybackTrack.languageCode/displayName/isAutoGenerated`。
+- **渲染**：media3 1.10 的默认 `DefaultExtractorsFactory` **不含字幕 Extractor**，必须显式传 `ExtractorsFactory { arrayOf(SubtitleExtractor(DefaultSubtitleParserFactory().create(fmt), fmt)) }`；TV/移动都用 `PlayerView`，其 `exo_subtitles`→`SubtitleView` 默认在 `onCues` 里渲染，**与 `useController` 无关**；`DefaultRenderersFactory` 无条件加 `TextRenderer`。
+- **UI**：TV —— Main 面板「音轨 → 字幕」条件项 + `PlayerPanel.Subtitle` 面板（index 0「关闭」+ 各语言，镜像 Audio 面板）；移动端 —— 播放器设置弹层「字幕」段（关闭 + 语言按钮行）。字符串 `player_subtitle` / `player_subtitle_off` / `player_subtitle_auto`（含自动生成后缀）。
 
 ---
 
