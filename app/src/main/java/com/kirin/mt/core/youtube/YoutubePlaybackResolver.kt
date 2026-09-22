@@ -333,7 +333,7 @@ class YoutubePlaybackResolver(
     }
     if (webSabrFirst && poToken != null && !webSabrFirstBudgetShort && !webSabrFirstBlocked) {
       val webSabr = runCatching {
-        buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs, webSabrTokenArm)
+        buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, youtubeStartQuality, deadlineMs, webSabrTokenArm)
       }.onFailure {
         // P11-125:这条链整条包 runCatching——不落证就等于「失败且不知道为什么」。
         Log.w(Tag, "WEB-SABR(优先)链异常: ${it::class.simpleName}: ${it.message}", it)
@@ -436,7 +436,7 @@ class YoutubePlaybackResolver(
             (SabrStreamRegistry.reloadCount(videoId) > 0 && poToken != null))
       if (webSabrDue) {
         val webSabr = runCatching {
-          buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, deadlineMs, webSabrTokenArm)
+          buildWebSabrFallback(videoId, webSabrPoToken, signatureTimestamp, request, youtubeDefaultQuality, youtubeStartQuality, deadlineMs, webSabrTokenArm)
         }.onFailure {
           // P11-125:同上——兜底段失败也必须留证。
           Log.w(Tag, "WEB-SABR(兜底)链异常: ${it::class.simpleName}: ${it.message}", it)
@@ -2622,6 +2622,8 @@ class YoutubePlaybackResolver(
     signatureTimestamp: Int?,
     request: PlaybackRequest,
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+    // P11-173:起播画质(与 NewPipe 分支同序的选档/绑定口径需要它 —— 见函数内 defaultItag)。
+    youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Auto,
     // P11-126:起播给的绝对 deadline(0=不限),透传给 [harvestSessionMaterial] 收敛 harvest 超时。
     deadlineMs: Long = 0L,
     /** P11-145:token 臂(0=自铸 / 1=harvest 页铸 / 2=pot-less),由 [SabrStreamRegistry.nextWebSabrTokenArm] 轮换。 */
