@@ -315,6 +315,12 @@ fun BiliTvApp(
   // 详情页在播放期间整页 dispose,remember 全丢,落点必须 hoist 到这里才能跨播放存活。
   var playlistDetailFocusRestoreRequestKey by remember { mutableIntStateOf(0) }
   var playlistDetailFocusTarget by remember { mutableStateOf<String?>(null) }
+  // P11-175:详情页**数据**也 hoist(此前只 hoist 了落点):起播整页 dispose 后返回,没有它就只能
+  // 空表重拉,「回到原来那一行」无从谈起(真机 2026-09-22「有重新加载列表的显示,列表出来了没焦点」)。
+  // 只在「点开某个播放列表」时清空 ⇒ 缓存仅服务于「起播后返回」这一场景,不会让重新打开拿到旧数据。
+  var playlistDetailSnapshot by remember {
+    mutableStateOf<com.kirin.mt.ui.space.YoutubePlaylistDetailSnapshot?>(null)
+  }
   // YouTube 播放列表详情页(TV):频道页"播放列表" tab 点卡片进入,覆盖在频道页之上。
   var youtubePlaylistRequest by remember { mutableStateOf<YoutubeParsers.YoutubePlaylist?>(null) }
   var playlistPlaybackBehind by remember { mutableStateOf(false) }
@@ -1813,6 +1819,8 @@ fun BiliTvApp(
             onOpenPlaylist = { playlist ->
               youtubePlaylistRequest = playlist
               playlistPlaybackBehind = false
+              // P11-175:每次「点开」都清缓存 —— 缓存只为「起播后返回」服务,重新打开要拿新数据。
+              playlistDetailSnapshot = null
             },
             // 「▶ 播放全部」:整份已加载视频作连播队列,第一条起播(对齐移动端)。
             onPlayAll = { queue ->
@@ -1852,6 +1860,9 @@ fun BiliTvApp(
               if (key == playlistDetailFocusRestoreRequestKey) playlistDetailFocusRestoreRequestKey = 0
             },
             onFocusTargetChange = { playlistDetailFocusTarget = it },
+            // P11-175:数据快照双向接线(见 AppShell 顶部 playlistDetailSnapshot 注释)。
+            initialSnapshot = playlistDetailSnapshot,
+            onSnapshotChange = { playlistDetailSnapshot = it },
             onBack = {
               youtubePlaylistRequest = null
               playlistPlaybackBehind = false

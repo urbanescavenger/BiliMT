@@ -77,6 +77,24 @@ import kotlinx.coroutines.launch
 /** 距末尾 2s 内视为已看完(对齐播放器「播到结尾」判定裕量)。 */
 private const val CompletedThresholdMs = 2_000L
 
+/**
+ * P11-175:详情页数据快照(hoist 到 AppShell,跨「起播整页 dispose」存活)。
+ *
+ * 为什么必须 hoist:起播瞬间 `AppShell` 的内容层整体卸载([AppShell.kt] `if (visiblePlaybackRequest
+ * == null)`),本页所有 `remember` 归零 ⇒ 返回时必然「空表 + 重拉 /browse」。真机
+ * `logs_live_20260922_224548` 22:32:24 返回后 **`YtPlaylist: getPlaylistVideos` 再没出现过**
+ * (重拉没等到结果),用户视角两连:①返回后整页没有合法落点(P11-171 加占位后先落返回 chip);
+ * ②「回到原来那一行」不可能发生(行还不存在)。有快照 ⇒ 返回即还原整份列表与翻页进度,
+ * 行恢复当场可做、也不用再等一次网络。
+ */
+internal data class YoutubePlaylistDetailSnapshot(
+  val browseId: String,
+  val videos: List<VideoSummary>,
+  val header: YoutubePlaylistHeader?,
+  val continuation: String?,
+  val endReached: Boolean,
+)
+
 /** 初焦重试上限(帧):覆盖层初焦单发在低端盒子上会撞「FocusRequester is not initialized」,失败即整页无焦点。 */
 private const val InitialFocusMaxFrames = 30
 
@@ -130,15 +148,26 @@ internal fun YoutubePlaylistDetailScreen(
   restoreFocusTarget: String? = null,
   onRestoreFocusHandled: (Int) -> Unit = {},
   onFocusTargetChange: (String?) -> Unit = {},
+  // P11-175:跨播放存活的数据快照(hoist 到 AppShell)。起播期间本页整页 dispose,没有快照时
+  // 返回必然「空表 + 重拉 /browse」——真机 logs_live_20260922_224548 里 22:32:24 返回后
+  // `YtPlaylist: getPlaylistVideos` 再没出现过(重拉没等到结果),于是「回到原来那一行」不可能
+  // 发生,用户视角=返回列表后焦点丢了(只剩返回 chip 或干脆没落点)。有快照 ⇒ 返回即还原整份
+  // 列表(含翻页进度),行恢复当场可做,也不用再等一次网络。
+  initialSnapshot: YoutubePlaylistDetailSnapshot? = null,
+  onSnapshotChange: (YoutubePlaylistDetailSnapshot) -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   val coroutineScope = rememberCoroutineScope()
-  var videos by remember { mutableStateOf<List<VideoSummary>>(emptyList()) }
-  var header by remember { mutableStateOf<YoutubePlaylistHeader?>(null) }
-  var continuation by remember { mutableStateOf<String?>(null) }
-  var loading by remember { mutableStateOf(true) }
+  // 快照只在 browseId 对得上且确实有内容时采用(否则照旧首屏拉取,行为与旧版一致)。
+  val usableSnapshot = initialSnapshot?.takeIf {
+    it.browseId == playlist.browseId && it.videos.isNotEmpty()
+  }
+  var videos by remember { mutableStateOf(usableSnapshot?.videos ?: emptyList()) }
+  var header by remember { mutableStateOf(usableSnapshot?.header) }
+  var continuation by remember { mutableStateOf(usableSnapshot?.continuation) }
+  var loading by remember { mutableStateOf(usableSnapshot == null) }
   var loadingMore by remember { mutableStateOf(false) }
-  var endReached by remember { mutableStateOf(false) }
+  var endReached by remember { mutableStateOf(usableSnapshot?.endReached ?: false) }
   var failed by remember { mutableStateOf<String?>(null) }
   var descExpanded by remember { mutableStateOf(false) }
   var playAllFocused by remember { mutableStateOf(false) }
@@ -223,7 +252,22 @@ internal fun YoutubePlaylistDetailScreen(
     }
   }
 
-  LaunchedEffect(playlist.browseId) { loadFirst() }
+  // 有可用快照就不重拉(返回场景);没有(首次进入/换列表)照旧首屏拉取。
+  LaunchedEffect(playlist.browseId) { if (usableSnapshot == null) loadFirst() }
+
+  // P11-175:把当前数据上报给 AppShell 保存(供起播后返回还原)。只在内容真的变化时报一次。
+  LaunchedEffect(playlist.browseId, videos, header, continuation, endReached) {
+    if (videos.isEmpty()) return@LaunchedEffect
+    onSnapshotChange(
+      YoutubePlaylistDetailSnapshot(
+        browseId = playlist.browseId,
+        videos = videos,
+        header = header,
+        continuation = continuation,
+        endReached = endReached,
+      ),
+    )
+  }
 
   // 本地播放历史按 videoId 索引:视频行缩略图底部进度条 + 「已看完」角标的数据源。
   // collectAsState 持续订阅:播放器写入进度返回本页即刷新,无需手动刷新。
@@ -327,8 +371,13 @@ internal fun YoutubePlaylistDetailScreen(
       onRestoreFocusHandled(restoreFocusRequestKey)
       return@LaunchedEffect
     }
-    if (restorePlaceholderActive && !backFocused) {
-      // 占位期间用户已自己移动焦点(或已离开本屏)→ 让位,不抢。
+    // P11-175:占位期间「用户真的动了焦点」才让位 —— 判据必须是「**别处有合法落点**」(播放全部/某行),
+    // 不能只看 backFocused:无关节点重组时会补发一次 isFocused=false(P11-93 同款假回调),返回 chip
+    // 的这个 false 会被误读成「用户移走了」⇒ 精确行恢复被跳过、整页零焦点。真机
+    // 2026-09-22「有重新加载列表的显示,列表出来了没焦点」就是这条:占位把焦点放 chip → 列表数据到达
+    // 重启本 effect → 假回调令 backFocused=false → 跳过 ⇒ 列表在屏上但没有任何高亮。
+    val userMovedToOtherTarget = playAllFocused || focusedRowIndexes.isNotEmpty()
+    if (restorePlaceholderActive && userMovedToOtherTarget) {
       Log.i(
         "BiliMT:FocusDiag",
         "playlist-detail restore skipped(user moved): key=$restoreFocusRequestKey " +
@@ -388,6 +437,14 @@ internal fun YoutubePlaylistDetailScreen(
       "playlist-detail restore done attempts=$attempt confirmed=$confirmed target=$target " +
         "playAll=$playAllFocused rows=$focusedRowIndexes back=$backFocused",
     )
+    if (!confirmed) {
+      // P11-175 兜底:精确恢复没成功也必须有落点 —— 退到「播放全部」/返回 chip,绝不让整页零焦点
+      // (恢复失败会把 key 消费掉、初焦 effect 又因 key 已变化不再重跑,不兜底就是黑着没法操作)。
+      runCatching {
+        if (videos.isNotEmpty()) playAllFocusRequester.requestFocus() else backFocusRequester.requestFocus()
+      }
+      Log.w("BiliMT:Focus", "playlist-detail restore fallback → playall/back (target=$target)")
+    }
     onRestoreFocusHandled(restoreFocusRequestKey)
   }
 
