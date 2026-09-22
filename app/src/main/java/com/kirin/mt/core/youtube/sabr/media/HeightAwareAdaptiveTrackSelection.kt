@@ -624,49 +624,76 @@ class HeightAwareAdaptiveTrackSelection(
       else (0 until length).filter { itagOf(getFormat(it)) in servedNow }.toSet()
     val restrictToServed = servedInGroup != null && servedInGroup.isNotEmpty()
     if (bufferCritical) {
-      var lower = -1
-      var lowerHeight = -1
-      for (i in 0 until length) {
-        if (isTrackExcluded(i, nowMs)) continue
-        if (restrictToServed && i !in servedInGroup!!) continue
-        val f = getFormat(i)
-        // 2026-09-01 VP9 粘性:同 height 多 codec 变体粘顶档 codec——水位急救降档(如 1440p→1080p)
-        // 旧规则会选中 299(avc,码率更高),把 vp9→avc 跨 codec 换解码器引进降档路径。
-        if (f.height in 1 until currentHeight &&
-          (f.height > lowerHeight ||
-            (f.height == lowerHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(lower))))
-        ) {
-          lower = i
-          lowerHeight = f.height
-        }
-      }
-      if (lower >= 0) {
-        val current = getFormat(selected)
-        val leavingIndex = selected
+      // ── P11-168:**带宽撑得住当前档时,低水位不是供给不足** ──────────────────────────────────
+      // 真机 `logs_live_20260922_085959.log`(手机 `SwsvkhzYt5Y`):
+      //   07:19:33.463  升到 1078p(`fetch rn=5 REAL 4094232B 892ms → 36Mbps`)
+      //   07:19:33.494  `cleanup dropped formats=[247]` ← 切轨把 720p 的缓冲丢了
+      //   07:19:34.255  `fetch rn=6 REAL 3328010B 718ms → 37Mbps`
+      //   … 之后 39 秒零 fetch(满缓冲主动停拉的**排空段**)…
+      //   07:20:12.888  `sel=0(1078p) bufS=3.0 **bw=12714K** → buffer-critical downgrade → 720p`
+      //                 + `downgrade fail cooldown: 1078p excluded 90s`
+      // 即:**带宽估到 12.7Mbps(当前档只要 1.06Mbps,12 倍余量)** 却因为「水位 3 秒」降档,还把 1078p
+      // 门禁 90 秒 ⇒ 此后每轮升档撞同一堵墙 ⇒ 用户体感「带宽充足却钉在 720p」。
+      // 水位急救降档的设计分工是「真饿归 est 滞回(required×0.85),水位是最后兜底」——
+      // 既然**活跃 est 连当前档的全额声明码率都撑得住**,那低水位只可能来自
+      // ①满缓冲主动停拉的排空段 ②刚切轨丢掉旧轨缓冲;这两种情况下降档**无益**,而门禁**有害**。
+      // 故加这道带宽闸:est ≥ 当前档声明码率 ⇒ 本枪不开(真饿时 est 会跌破 required×0.85,由常规
+      // 降档路径接管,反应并不比水位慢多少)。
+      val curBitrateForGate = getFormat(selected).bitrate
+      val estForGate = bandwidthMeter.getBitrateEstimate()
+      if (curBitrateForGate > 0 && estForGate >= curBitrateForGate) {
         Log.i(
           "YtSabrAbr",
-          "buffer-critical downgrade: bufS=${bufferedDurationUs / 1_000_000}s " +
-            "itag${current.id}/${current.height}p@${current.bitrate} → " +
-            "${getFormat(lower).height}p@${getFormat(lower).bitrate}"
+          "buffer-critical downgrade **suppressed**(P11-168): bufS=${bufferedDurationUs / 1_000_000}s " +
+            "est=${estForGate / 1000}K ≥ 当前档 ${getFormat(selected).height}p@$curBitrateForGate" +
+            " → 带宽撑得住,低水位来自排空/切轨而非供给不足(不降档、不门禁)",
         )
-        selected = lower
-        lastDowngradeElapsedMs = nowMs
-        // 2026-09-20 冻结 episode 置位:本段饥饿已用掉这一枪,水位回到阈值以上前不再开第二枪
-        // (旧实现无此闸 → 一段饥饿内连降四档到地板,见类头)。
-        freezeEpisodeActive = true
-        markDowngradeFromTrial(nowMs, currentHeight)
-        // 2026-08-30 顶档定向冷却:从顶档(2160p)水位降下后把该顶档 excludeTrack 3 分钟,防
-        // 「重填突发过门槛→升 4K→贴地漏光→又降」边缘横跳反复切档卡顿;只锁顶档,低档升降照常
-        // (与已取消的全档冷却不同)。非顶档(可持续档)的急救降档不加冷却。
-        if (currentHeight >= TOP_TIER_MIN_HEIGHT) {
-          excludeTrack(leavingIndex, TOP_TIER_BUFFER_CRITICAL_COOLDOWN_MS)
+        // 不置 freezeEpisodeActive:这一枪根本没开,后续真饿时仍可急救。
+      } else {
+        var lower = -1
+        var lowerHeight = -1
+        for (i in 0 until length) {
+          if (isTrackExcluded(i, nowMs)) continue
+          if (restrictToServed && i !in servedInGroup!!) continue
+          val f = getFormat(i)
+          // 2026-09-01 VP9 粘性:同 height 多 codec 变体粘顶档 codec——水位急救降档(如 1440p→1080p)
+          // 旧规则会选中 299(avc,码率更高),把 vp9→avc 跨 codec 换解码器引进降档路径。
+          if (f.height in 1 until currentHeight &&
+            (f.height > lowerHeight ||
+              (f.height == lowerHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(lower))))
+          ) {
+            lower = i
+            lowerHeight = f.height
+          }
+        }
+        if (lower >= 0) {
+          val current = getFormat(selected)
+          val leavingIndex = selected
           Log.i(
             "YtSabrAbr",
-            "top-tier cooldown: itag${current.id}(${current.height}p) excluded " +
-              "${TOP_TIER_BUFFER_CRITICAL_COOLDOWN_MS / 1000}s"
+            "buffer-critical downgrade: bufS=${bufferedDurationUs / 1_000_000}s " +
+              "itag${current.id}/${current.height}p@${current.bitrate} → " +
+              "${getFormat(lower).height}p@${getFormat(lower).bitrate}"
           )
-        }
+          selected = lower
+          lastDowngradeElapsedMs = nowMs
+          // 2026-09-20 冻结 episode 置位:本段饥饿已用掉这一枪,水位回到阈值以上前不再开第二枪
+          // (旧实现无此闸 → 一段饥饿内连降四档到地板,见类头)。
+          freezeEpisodeActive = true
+          markDowngradeFromTrial(nowMs, currentHeight)
+          // 2026-08-30 顶档定向冷却:从顶档(2160p)水位降下后把该顶档 excludeTrack 3 分钟,防
+          // 「重填突发过门槛→升 4K→贴地漏光→又降」边缘横跳反复切档卡顿;只锁顶档,低档升降照常
+          // (与已取消的全档冷却不同)。非顶档(可持续档)的急救降档不加冷却。
+          if (currentHeight >= TOP_TIER_MIN_HEIGHT) {
+            excludeTrack(leavingIndex, TOP_TIER_BUFFER_CRITICAL_COOLDOWN_MS)
+            Log.i(
+              "YtSabrAbr",
+              "top-tier cooldown: itag${current.id}(${current.height}p) excluded " +
+                "${TOP_TIER_BUFFER_CRITICAL_COOLDOWN_MS / 1000}s"
+            )
+          }
         return
+        }
       }
     }
     // 带宽门槛:活跃传输 est(滑动窗口,含 gap/慢小样本)管「当前扛不扛得住」——降档用它,反应快。
