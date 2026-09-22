@@ -870,6 +870,9 @@ class HeightAwareAdaptiveTrackSelection(
       getFormat(selected).height > currentHeight -> {
         lastUpgradeElapsedMs = nowMs
         lastUpgradeWasTrial = bestIsTrial
+        // P11-173:记「本场爬上去过」的最高档(跨重载记忆) —— stall 重载时这一档进冷却,
+        // 新实例不再 40~90s 内爬回同一堵墙(只记升上来的档,seed 起始档最高 720P 不记)。
+        SabrAbrMemory.noteReachedHeight(getFormat(selected).height)
         if (bestIsTrial) {
           // 2026-09-01 满缓冲试探取证:est/sus 此刻仍是低档 pacing 失真值,升入后服务端按新档
           // pace 供流,sus/cap 被喂到真实量级(1440p 手切会话 cap=22475K 实证)。active 记入

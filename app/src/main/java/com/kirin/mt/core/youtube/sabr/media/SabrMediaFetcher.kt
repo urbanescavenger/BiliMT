@@ -1124,7 +1124,24 @@ internal class SabrMediaFetcher(
       //   ≤1080p:收紧到 [SabrCallTimeoutMsLow](18s)——低档段小,慢滴到这个量级已无供给价值,
       //          早切早让 error-retry 链接管(4K 大段不受影响)。
       val reqHeight = session.videoFormats.firstOrNull { it.itag == req.formatItag }?.height ?: 0
-      val callCapMs = if (reqHeight >= 1440) SabrCallTimeoutMs else SabrCallTimeoutMsLow
+      // P11-173:饥饿快切 —— 缓冲已知见底(< SabrStarvingBufferMs)时把整调用上限收到 8s/12s。
+      // 这条通道存在的唯一理由:让请求在 **8s stall 看门狗把整场重载之前**失败,把「零字节/慢滴」
+      // 变成一笔失败样本喂带宽计(recordRealBandwidthFailure)⇒ ABR 有机会先降档自救。
+      val starving = bufferedAheadNoteMs in 0..SabrStarvingBufferMs
+      val callCapMs = when {
+        starving && reqHeight >= 1440 -> SabrStarvingCallTimeoutMsHigh
+        starving -> SabrStarvingCallTimeoutMs
+        reqHeight >= 1440 -> SabrCallTimeoutMs
+        else -> SabrCallTimeoutMsLow
+      }
+      if (starving) {
+        Log.i(
+          tag,
+          "fetch rn=$rn starving-fast-fail: bufAhead=${bufferedAheadNoteMs}ms ≤ " +
+            "${SabrStarvingBufferMs}ms → callCap=${callCapMs}ms (base=" +
+            "${if (reqHeight >= 1440) SabrCallTimeoutMs else SabrCallTimeoutMsLow}ms, P11-173)",
+        )
+      }
       // ── P11-160(r2054 续播多场实测):**readTimeout 必须一起抬,否则上面那个上限有一半是纸面的** ──
       // 共享的 YouTube client(`BiliHttpClientFactory.baseBuilder`)带的是 `readTimeout(15s)` /
       // `writeTimeout(15s)` / `connectTimeout(15s)` —— 那是给**小 API 调用**定的;而本方法此前只覆盖了
@@ -1492,6 +1509,29 @@ internal class SabrMediaFetcher(
      * 再重试"。慢滴(字节持续到来)不受影响。
      */
     const val SabrSilenceTimeoutMs = 8_000L
+
+    /**
+     * P11-173:判定「视频缓冲已见底(饥饿)」的水位阈值(ms)—— [noteBufferedAheadMs] 最近一次喂进来的值
+     * 低于它就进入饥饿快切口径。
+     */
+    const val SabrStarvingBufferMs = 10_000L
+
+    /**
+     * P11-173:**饥饿快切的整调用上限**(ms,≤1080p / ≥1440p 两档)。
+     *
+     * 依据(真机 `logs_live_20260922_224548.log`):场1 `rn=3`(1080p)发出后零字节挂死,`callCapMs=18s`
+     * 还没到、8s 静默超时也没触发(服务端在挤小包),而视频缓冲已被吃空 ⇒ **22:30:20 8s stall 看门狗
+     * 把整场重载了**(重 harvest ≈16s,且第三次重载连 harvest 都没采到)。场2 同签名(`rn=8 20MB/22s`、
+     * `rn=9 11.9MB/23.1s`)。
+     *
+     * 口径:只在**已知缓冲见底**时收短上限 —— 此时「等满 18s/40s」几乎没有收益(播放器本来就撑不过),
+     * 而早切能让失败样本立刻喂带宽计 → ABR 在缓冲耗尽前降档(既有 `recordRealBandwidthFailure` 语义),
+     * 避免整场重载。非饥饿时口径完全不变(4K 大段 28s 合法慢不受影响)。
+     */
+    const val SabrStarvingCallTimeoutMs = 8_000L
+
+    /** P11-173:饥饿快切的 ≥1440p 上限 —— 大段本身更慢,给到 12s(仍早于 18s/40s 原口径)。 */
+    const val SabrStarvingCallTimeoutMsHigh = 12_000L
 
     /** transient 重试上限(耗尽→SabrTerminalException→evict)。对齐旧 SabrDashDataSource BACKOFF_MAX_ATTEMPTS。 */
     const val MAX_ATTEMPTS = 6

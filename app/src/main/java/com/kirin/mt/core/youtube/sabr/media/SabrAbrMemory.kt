@@ -139,4 +139,58 @@ object SabrAbrMemory {
       trialFailedUntilWallMs = System.currentTimeMillis() + TOP_TIER_STARTUP_STALL_COOLDOWN_MS
     }
   }
+
+  // ── P11-173:跨重载「到达档」冷却(治「重载 → 重爬同一档 → 再饿死」循环)────────────────────
+  //
+  // 真机 logs_live_20260922_224548(BRAVIA,8yVhEAPMJ-E)两场同签名:
+  //   场1 22:29:53 冷启梯子升 1080p → 22:30:08 `rn=2 6586130B/14951ms→3Mbps` → rn=3 **零字节挂死
+  //   18s** → 22:30:20 `stall detected #1 @24941ms buffered=2%` → 整场重载;
+  //   场2 22:30:48/50 `upshift reseed → 1080p/1440p` → rn=5/6 突发 20~27Mbps 让 ABR 钉 1440p →
+  //   22:31:50/22:32:13 `rn=8 20MB/22s→7Mbps`、`rn=9 11.9MB/23.1s→4Mbps` 链路塌方 →
+  //   22:32:14 `stall #1 @109574ms` → 再重载(第三次连 harvest 都没采到,落 NewPipe 兜底)。
+  // 即:**重载把带宽窗口清零 → 新会话又从突发估计起步 → 40~90s 内爬回同一档 → 同一堵墙**。
+  // 现状只有顶档(≥2160)有跨重载记忆([noteStartupStall]/[isTopTierStartupBlocked]),到过 1440p
+  // 的场次裸奔。故:stall 重载时把**本场实际升上去过的最高档**记进 [isTrialFailBlocked] 的冷却
+  // (跨重载存活、到期自动解除、被 [clearTrialFail] 的「缓冲健康 + 带宽达标」提前放行),
+  // 新实例的升档候选循环(HeightAwareAdaptiveTrackSelection 内 `isTrialFailBlocked(f.height)`)
+  // 自然跳过它 —— 逐级爬约束下,跳过该档即等于把梯子封在这一档以下。
+
+  /** 本场(跨重载)ABR 实际升上去过的最高视频档高度;0=未知。 */
+  @Volatile
+  private var reachedHeight = 0
+
+  /** P11-173 冷却时长:与既有 `downgrade fail cooldown`(90s)同量级——真机两场都在重载后 40~90s 内爬回。 */
+  const val STALL_REACHED_HEIGHT_COOLDOWN_MS = 90_000L
+
+  /**
+   * P11-173 只冷却「够高的档」:低于此高度不冷却。理由:起播档由带宽 seed 决定(起播画质最高 720P),
+   * 把 720p 及以下冷却掉只会让画面更低、并不解决供给问题;真机会饿死的档从 1080p 起。
+   */
+  const val STALL_REACHED_MIN_HEIGHT = 1080
+
+  /** P11-173:ABR 每次升档成功后调用(单调取最大,调用廉价;只记「爬上去过」的档,不记 seed 起始档)。 */
+  fun noteReachedHeight(height: Int) {
+    if (height > reachedHeight) reachedHeight = height
+  }
+
+  /**
+   * P11-173:看门狗 stall 重载时调用(替代裸 [onStallReload]) —— 先走既有「试探在身 → 转失败冷却」,
+   * 再把本场到达档(≥ [STALL_REACHED_MIN_HEIGHT])冷却 [STALL_REACHED_HEIGHT_COOLDOWN_MS]。
+   * 只处理档位记忆本身,起播顶档记忆仍由 [noteStartupStall] 负责。
+   */
+  fun onStallReloadWithReachedHeight(
+    nowWallMs: Long = System.currentTimeMillis(),
+    log: (String) -> Unit = {},
+  ) {
+    onStallReload()
+    val reached = reachedHeight
+    reachedHeight = 0
+    if (reached < STALL_REACHED_MIN_HEIGHT) return
+    trialFailedHeight = reached
+    trialFailedUntilWallMs = nowWallMs + STALL_REACHED_HEIGHT_COOLDOWN_MS
+    log(
+      "stall-reached cooldown: ${reached}p excluded ${STALL_REACHED_HEIGHT_COOLDOWN_MS / 1000}s " +
+        "(survives reload; 重载后新 ABR 不再爬回同一档,P11-173)",
+    )
+  }
 }

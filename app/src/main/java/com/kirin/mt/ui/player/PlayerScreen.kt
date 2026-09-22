@@ -2238,7 +2238,10 @@ fun PlayerScreen(
       // 2026-09-01 试探跨重载记忆:任何 stall 重载时,若正有试探在身(试探期被重载打死,降档路径
       // 没跑、180s 失败冷却没记),转记失败冷却——新 ABR 实例不立即重试同一堵墙(21:13 真机案例)。
       // 与起播顶档记忆(pos 条件)独立,无条件执行。
-      SabrAbrMemory.onStallReload()
+      // P11-173:同一次调用里把**本场实际爬上去过的最高档**(≥1080p)也冷却 90s —— 真机
+      // logs_live_20260922_224548 两场都在重载后 40~90s 内爬回同一档再饿死(1440p 旧逻辑无任何
+      // 跨重载保护,只有顶档 2160 有)。
+      SabrAbrMemory.onStallReloadWithReachedHeight { line -> Log.i(PlayerPlaybackLogTag, line) }
       if (displayRequestState.value.isYoutube && posMs <= SabrAbrMemory.STARTUP_STALL_POS_MAX_MS) {
         SabrAbrMemory.noteStartupStall()
         Log.i(

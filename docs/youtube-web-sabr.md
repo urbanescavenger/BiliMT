@@ -2123,6 +2123,21 @@ selection 实例里 —— 因为实例正是会被重建的那个东西。**
 - 判据:`SABR PlaybackInfo … selected=` 与 `video size:` 一致;harvest 材料 itag 与会话绑定轨同高。
 - 风险:绑定档变动会影响「首 fetch 暴露 RELOAD」的口径(P11-97),需按同一场的 RELOAD 计数回归。
 
+**⑤(待定方向,建议单独一轮)单响应体量 10–30MB + 整包读取** —— 本场真正的「饿死」机制可能是这个:
+
+- 本场单笔响应体量:`rn=5 18858124B`、`rn=6 **29946763B**`、`rn=7 19645414B`、`rn=8 20174812B`、
+  `rn=9 11944875B`;且**服务端会把已切走的旧档一起推**(`resp summary: req=400 usable=11944875B
+  init=[140,308,400] **pushed=[140,302,303,308,400]**`,同一响应里 itag400 的 seq1–4 就占 11.3MB),
+  客户端随后 `cleanup dropped formats=[308]/[302]` 把它们丢掉 = 白流量。
+- 而 fetcher 是**整包读**(`SabrMediaFetcher` `response.body?.bytes()` 之后才解析)⇒ 10–30MB 全部到齐前
+  播放器**拿不到任何一个段**;链路实测 4–10Mbps 时这就是 **10–60s 的零交付**,缓冲必然被吃空 →
+  8s stall 看门狗 → 整场重载。两场 stall 都落在这种大响应期间(rn=8/9 用了 22s/23s)。
+- **对照 LibreTube 已核**(`SabrClient.kt:431 return response.body.bytes()`):它**也是整包读**,
+  请求体结构(playerTimeMs/bufferedRanges/preferredFormatIds/clientAbrState)与我们也同源 ⇒
+  「流式消费响应体」不是照抄能得来的改动,也不能拿它证伪;更可能有效的是**让服务端少推**
+  (收紧请求里上报的 initialized/bufferedRanges,只喂当前档),或饥饿时主动丢弃旧档推送 + 快速失败。
+  这块要单独一轮取证(先加「单响应体量/被丢档字节数」打点),本轮不动。
+
 #### (4) 复测方法
 
 同一条视频(`8yVhEAPMJ-E`,2160p 可用)+ 同一起播设置(起播 720P / 默认画质不限),看三样:

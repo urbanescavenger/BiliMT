@@ -2733,11 +2733,17 @@ class YoutubePlaybackResolver(
     val raws = sd.raws
     val videoRaws = raws.filter { (it.intOrNull("height") ?: 0) > 0 }
     val audioRaws = raws.filter { (it.stringOrNull("mimeType") ?: "").startsWith("audio/") }
-    val maxHeight = youtubeDefaultQuality.maxHeight
-    val defaultItag = maxHeight?.let { cap ->
+    // P11-173(对齐 P11-97,与 NewPipe 分支同序):绑定档按 **起播画质 startHeight > 默认画质上限 >
+    // 最低档** 选,不再直接取最高档。真机 logs_live_20260922_224548:本场 defaultQualityMax=null(不限)
+    // ⇒ 旧逻辑绑 itag315(2160p),而自动选轨实际从 720p 起(起播画质=720P)、NewPipe 兜底也绑 298(720p)
+    // ⇒ 屏上清晰度显示 2160p 却播 720p,且 harvest 材料是 1080p(399) 与会话声明 2160p 错位。
+    val startHeight = youtubeStartQuality.startHeight
+    val defaultMaxHeight = youtubeDefaultQuality.maxHeight
+    val heightCap = startHeight ?: defaultMaxHeight
+    val defaultItag = heightCap?.let { cap ->
       videoRaws.filter { (it.intOrNull("height") ?: 0) in 1..cap }.maxByOrNull { it.intOrNull("height") ?: 0 }
         ?.intOrNull("itag")
-    } ?: videoRaws.maxByOrNull { it.intOrNull("height") ?: 0 }?.intOrNull("itag")
+    } ?: videoRaws.minByOrNull { it.intOrNull("height") ?: 0 }?.intOrNull("itag")
     val firstVideo = defaultItag?.let { t -> videoRaws.firstOrNull { (it.intOrNull("itag") ?: 0) == t } }
       ?: videoRaws.firstOrNull()
     // P11-119:默认音轨 = **原声轨**(isOriginalAudioRaw 解 xtags proto),不再用恒不命中的字面量判断。
@@ -3011,16 +3017,22 @@ class YoutubePlaybackResolver(
       PlaybackQuality(id = itag, description = if (h > 0) "${h}p" else "itag $itag")
     }
     // 选档:preferredQualityId 命中该分辨率 → 用它的代表轨(换「解码器」设置后仍停在同一分辨率);
-    // 否则按默认画质设置选:
-    //  - maxHeight != null:height <= maxHeight 的最高档(全部超上限时取最低档保证可播);
-    //  - Auto:最高可用(与 DASH 分支 pickVideo 的 Auto 语义一致——最大化分辨率)。
+    // 否则按 P11-173 口径(与 NewPipe 分支及上面的会话绑定档同序):
+    //  - 起播画质 startHeight != null:height <= startHeight 的最高档(全部超上限时取最低档保证可播);
+    //  - 否则默认画质上限 maxHeight != null:同上限语义;
+    //  - 双自动:取最低档(起播画质=自动 的语义就是最低档起播,seedBps 也按 Auto 给最低档)。
+    //  旧口径是「Auto → 最高可用」,真机 logs_live_20260922_224548 里屏上显示 2160p 而实际播 720p 就是它。
     //  同 sid 换 itag 即换清晰度(见上 alpha.29 注释),选非首条 itag 安全,无需重 harvest。
+    val startHeight = youtubeStartQuality.startHeight
     val maxHeight = youtubeDefaultQuality.maxHeight
     val defaultItag = when {
+      startHeight != null ->
+        heightsDesc.firstOrNull { it in 1..startHeight }?.let { repItagByHeight.getValue(it) }
+          ?: heightsDesc.lastOrNull()?.let { repItagByHeight.getValue(it) } // 全部超过上限 → 取最低档
       maxHeight != null ->
         heightsDesc.firstOrNull { it in 1..maxHeight }?.let { repItagByHeight.getValue(it) }
-          ?: heightsDesc.lastOrNull()?.let { repItagByHeight.getValue(it) } // 全部超过上限 → 取最低档
-      else -> heightsDesc.firstOrNull()?.let { repItagByHeight.getValue(it) } // Auto → 最高可用
+          ?: heightsDesc.lastOrNull()?.let { repItagByHeight.getValue(it) }
+      else -> heightsDesc.lastOrNull()?.let { repItagByHeight.getValue(it) } // 双自动 → 最低档
     } ?: sabrSession.videoFormatId.itag
     val preferredHeight = request.preferredQualityId
       ?.let { pid -> videoFmts.firstOrNull { it.itag == pid }?.height }
@@ -3047,7 +3059,7 @@ class YoutubePlaybackResolver(
     // DefaultBandwidthMeter.setInitialBitrateEstimate),本块排序对 media3 1.10.0 初始选轨无效
     // (BaseTrackSelection 构造器内部强制按码率降序重排,AdaptiveTrackSelection 初始选轨=≤带宽估计×0.7的
     // 最高码率档,纯带宽驱动、不看 index0)。保留排序仅作轨道顺序呈现,勿再依赖它控制起播档。
-    val startHeight = youtubeStartQuality.startHeight
+    // startHeight 复用上面选档块的同名 val(P11-173 口径:起播画质优先),此处不再重复声明。
     val cappedVideoFmts = if (startHeight == null) sortedVideoFmts
     else sortedVideoFmts.firstOrNull { it.height >= startHeight }
       ?.let { start -> listOf(start) + sortedVideoFmts.filterNot { it === start } }
