@@ -2039,6 +2039,98 @@ selection 实例里 —— 因为实例正是会被重建的那个东西。**
 
 ---
 
+### 5.11.17 TV 2160 起播场:**两次 stall 全量重载**的判读 + 四条候选修法(P11-173,**方案待实施**)
+
+**场次**:真机 `logs_live_20260922_224548.log`(BRAVIA 4K AE2,dev.r2081 = `601da7e5`),
+视频 `8yVhEAPMJ-E`,单会话 22:28:56 起播 → 22:32:32 结束,时长 879s。
+用户报告:「为什么多次重载,起播 2160」。
+
+#### (1) 「起播 2160」是**显示/绑定**层,不是真在放 4K
+
+- `SABR PlaybackInfo: sid=… sessionVideo=itag315(2160p) qualities=8 selected=itag315(2160p)`
+  —— 播放器清晰度指示读的就是 `selectedQuality`(`PlayerScreen.kt:1977`),所以屏上显示 2160p;
+- `SabrSession: video=FormatId(itag=315, height=2160)` —— 会话绑定轨也是 2160p;
+- **实际下载/渲染:720p ×15 块、1440p ×9 块;itag315/401 零块;`video size` 只有 1280x720 → 2560x1440。**
+
+选档口径两条路径不一致(WEB-SABR 按**默认画质**、NewPipe 按**起播画质**):
+
+| 路径 | 代码 | 本场取值 |
+|---|---|---|
+| WEB-SABR 选档 + 会话绑定 | `YoutubePlaybackResolver.kt:3018-3028`(selectedItag)、`:2732-2745`(firstVideo 绑定)用 `youtubeDefaultQuality.maxHeight` | `defaultQualityMax=null`(不限)⇒ 最高档 = itag315(2160p) |
+| NewPipe 兜底 | `YoutubePlaybackResolver.kt:1263` 用 `youtubeStartQuality.startHeight` | `startHeight=720` ⇒ itag298(720p) |
+
+即 P11-97 的「绑定档对齐自动选轨首轨」只落到了 NewPipe 那条。附带错位:harvest 材料是 **1080p**
+(`harvest quality nudge: range=hd1080` → `P11-118 harvest decoded: video=FormatIdLite(itag=399…)`),
+会话却声明 2160p。
+
+#### (2) 两次重载都是 **stall 看门狗全量重载**,链条一致
+
+| 时刻 | 日志 | 说明 |
+|---|---|---|
+| 22:29:39 | prepare,ABR 冷启 `sel=8`(302/720p) | 起播档由带宽 seed 决定(与绑定档无关) |
+| 22:29:53 | `upshift (cold-start ladder, reseed skipped): itag303(1080p) declared=3002165` | 冷启梯子升 1080p |
+| 22:30:08 | `fetch rn=2 REAL 6586130B 14951ms → 3Mbps est=3086K` | 一笔请求 15s |
+| 22:30:08→26 | rn=3(seg=6)发出后**零字节挂死**,`fetch rn=3 exception: timeout (fail=18004ms bwNow=-1)` | 18s 静默超时 |
+| 22:30:20 | `stall detected, auto-retry #1 @pos=24941ms buffered=2%` | `StallThresholdMs=8s` ⇒ **整场重载** |
+| 22:30:34 | 重载后新会话(首个 ABR 行 `bw=116660K` = 上一场膨胀估计带过来的 seed) | 重 harvest ≈16s |
+| 22:30:37/38 | `fetch rn=0 … 2279ms → 13Mbps`、`rn=1 … 922ms → 35Mbps` | **突发很快** |
+| 22:30:48/50 | `upshift reseed: est baseline → 3002165`(1080p)、`→ 8696101`(1440p) | 重锚直接用**声明值** |
+| 22:30:56→22:31:23 | `rn=5 18858124B/5584ms → 27Mbps`、`rn=6 29946763B/10970ms → 21Mbps` | 单笔 18–30MB 多段大包 |
+| 22:31:07 | `sel=2 bitrate=8696101 … bw=23585K sus=16010..20159K cap=24693K` | 钉在 1440p(声明 8.7M) |
+| 22:31:50 / 22:32:13 | `rn=8 20174812B/22039ms → 7Mbps`、`rn=9 11944875B/23143ms → 4Mbps` | **链路塌方** |
+| 22:32:14 | `buffer-critical downgrade: bufS=0s 1440p@5501332 → 1080p` + `downgrade fail cooldown: 1440p excluded 90s` + `stall detected #1 @pos=109574ms buffered=12%` | 第二次整场重载 |
+| 22:32:25 | `P11-118 harvest: NO CAPTURE after 7899ms` → `markWebSabrFailed` | 重载连 harvest 都失败 |
+| 22:32:29/32 | NewPipe 兜底 720p → `fetch rn=10 exception: timeout (fail=18004ms)` | 兜底会话也挂死,用户退出 |
+
+**结论**:重载不是 2160 播放造成的(2160p 一块都没下),是「**突发估计把 ABR 拉高 → 链路塌方 →
+缓冲见底 → stall 看门狗整场重载 → 重载把带宽窗口清零 → 又从突发估计起步**」的循环;
+两次重载各花 ≈14–25s 死时间,第三次连 harvest 都没采到。
+
+#### (3) 四条候选修法(按优先级;每条给代码位置/改法/判据/风险)
+
+**① 跨重载「上过的高档」冷却(治循环,优先)**
+- 现状:只有顶档有记忆保护 —— `TOP_TIER_MIN_HEIGHT=2160`(`HeightAwareAdaptiveTrackSelection.kt:987`)
+  + `SabrAbrMemory.isTopTierStartupBlocked()`(同文件 ~740),而本场到过 1440p 却不在保护内。
+- 改法:stall 重载时把**本场实际选中的最高档**记进 `SabrAbrMemory`(现成 API:
+  `noteTrialFail(height, cooldownMs)` / `isTrialFailBlocked(height)`,进程级、跨重载存活),
+  新 ABR 实例对该档及以上加冷却(建议 60–90s,与 `downgrade fail cooldown` 同量级)。
+- 判据:重载后 60s 内不再出现 `sel` 落到该档;`bw/cap` 达标且缓冲健康时才逐步放行。
+- 风险:冷却期内「带宽真恢复了也不升」—— 需保留出口(如 sustained ≥ 声明×1.1 立即放行)。
+
+**② `upgradeEstFloor` 加缓冲健康闸(治拉高)**
+- 现状:`HeightAwareAdaptiveTrackSelection.kt:713-714` `upgradeEstFloor = maxOf(effective, capacityFloor)`
+  —— `capacity` 是**瞬时吞吐中位数**(免疫墙钟空转),突发 25–35Mbps 直接当容量用。
+- 改法:仅当 `bufferedDurationUs ≥ UPGRADE_MIN_BUFFERED_US`(已有常量)时并入 cap;
+  低缓冲(饥饿风险期)只信 sustained/effective,并把该分支写进 `YtSabrAbr` 日志便于判读。
+- 判据:`bufS` 低位时不再出现基于 cap 的升档;满缓冲期升档能力不退化(§5.11.16 的「满缓冲不升档」
+  回归必须不复发 —— 这条通道本来就是为它加的,改动要盯住这一点)。
+- 风险:与 P11-168/170 的带宽闸语义打架(那条是「降档加带宽闸」,这条是「升档加缓冲闸」),
+  两者都动时要一起跑一场满缓冲排空的场次验证。
+
+**③ 挂死即换会话(治 18s 死等)**
+- 现状:P11-166 已把「静默超时」与「整调用上限」分离(§5.11.13),但本场仍是 18s 超时后才失败;
+  8s stall 看门狗先把整场重载了。
+- 改法:对**已出首帧后的 0 字节挂死**用更短的静默阈值(建议 5–6s,参照 `VideoFreezeThresholdMs=12s`
+  的范式)⇒ 先 evict/换会话或降档,而不是整场重载(重载代价 14–25s + 重 harvest 可能失败)。
+- 判据:`fetch rn=N exception: timeout` 之前出现「挂死 → 换会话/降档」日志,且该轮不产生
+  `stall detected`。
+- 风险:阈值太短会误杀慢首包(起播期已有 `StartupStallThresholdMs=25s` 的教训),故只对**已出帧后**
+  且**零字节**的请求生效。
+
+**④ 2160 显示/绑定对齐 P11-97(治错位,不治重载)**
+- 改法:WEB-SABR 的 `selectedItag` 与 `firstVideo` 绑定的高度上限改用 `youtubeStartQuality.startHeight`
+  (与 NewPipe 路径同口径),消掉「屏上 2160 / 实播 720」与「材料 1080 / 会话 2160」两处错位。
+- 判据:`SABR PlaybackInfo … selected=` 与 `video size:` 一致;harvest 材料 itag 与会话绑定轨同高。
+- 风险:绑定档变动会影响「首 fetch 暴露 RELOAD」的口径(P11-97),需按同一场的 RELOAD 计数回归。
+
+#### (4) 复测方法
+
+同一条视频(`8yVhEAPMJ-E`,2160p 可用)+ 同一起播设置(起播 720P / 默认画质不限),看三样:
+`stall detected` 次数、`upshift reseed` 的目标档、`fetch … → XMbps` 的末段是否仍塌到 <5Mbps。
+若②单独上线,必须同时跑一场「满缓冲 → 排空 → 再升档」的手机场(§5.11.16 的场景)防回归。
+
+---
+
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。
