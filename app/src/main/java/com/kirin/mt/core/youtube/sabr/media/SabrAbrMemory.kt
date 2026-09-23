@@ -37,6 +37,21 @@ object SabrAbrMemory {
   @Volatile
   private var activeTrialHeight = -1
 
+  /**
+   * P11-178(2026-09-23 TV 真机 `logs_live_20260923_233549`):P11-173 的「stall 到达档」冷却**独占一格**,
+   * 不再与上面 [trialFailedHeight] 共用。
+   *
+   * 真机证据:23:34:51.9 stall 写进 2160p(90s, remain 64s),23:35:17.9 新会话第一次评估
+   * `downgrade fail cooldown: 720p excluded 90s (remain 64s,…)` —— 即启动锁那次降档调
+   * [noteTrialFail] 把**同一个槽**覆盖成 720p ⇒ stall 冷却只活了 26 秒就被清掉。两个机制目的不同
+   * (试探/降档失败 vs 跨重载不再爬回同一堵墙),共用一格必然互相踩。
+   */
+  @Volatile
+  private var stallReachedHeight = -1
+
+  @Volatile
+  private var stallReachedUntilWallMs = 0L
+
   /** 起播期判定阈值:pos 在此之内 stall 视为起播 stall(冷启动误跳期,sustained 证据尚未成熟)。 */
   const val STARTUP_STALL_POS_MAX_MS = 30_000L
 
@@ -114,17 +129,25 @@ object SabrAbrMemory {
       trialFailedHeight = -1
       trialFailedUntilWallMs = 0L
     }
+    if (stallReachedHeight == height) {
+      stallReachedHeight = -1
+      stallReachedUntilWallMs = 0L
+    }
   }
 
-  /** 该 height 是否处于试探失败冷却中(跨重载有效)。 */
+  /** 该 height 是否处于降档失败冷却中(跨重载有效)。P11-178:stall 到达档冷却走独立一格,一并算。 */
   fun isTrialFailBlocked(height: Int, nowWallMs: Long = System.currentTimeMillis()): Boolean =
-    height == trialFailedHeight && nowWallMs < trialFailedUntilWallMs
+    (height == trialFailedHeight && nowWallMs < trialFailedUntilWallMs) ||
+      (height == stallReachedHeight && nowWallMs < stallReachedUntilWallMs)
 
-  /** 冷却剩余秒数(诊断日志用);不在冷却中返回 0。 */
-  fun trialFailBlockedRemainSec(nowWallMs: Long = System.currentTimeMillis()): Int =
-    if (trialFailedHeight >= 0 && nowWallMs < trialFailedUntilWallMs)
-      ((trialFailedUntilWallMs - nowWallMs) / 1000L).toInt()
-    else 0
+  /** 冷却剩余秒数(诊断日志用);不在冷却中返回 0。两格取大。 */
+  fun trialFailBlockedRemainSec(nowWallMs: Long = System.currentTimeMillis()): Int {
+    val trial = if (trialFailedHeight >= 0 && nowWallMs < trialFailedUntilWallMs)
+      ((trialFailedUntilWallMs - nowWallMs) / 1000L).toInt() else 0
+    val stall = if (stallReachedHeight >= 0 && nowWallMs < stallReachedUntilWallMs)
+      ((stallReachedUntilWallMs - nowWallMs) / 1000L).toInt() else 0
+    return maxOf(trial, stall)
+  }
 
   /**
    * 看门狗 stall 重载时调用(播放器侧 auto-retry 路径):若正有试探在身(试探期直接被重载打死,
@@ -175,22 +198,44 @@ object SabrAbrMemory {
 
   /**
    * P11-173:看门狗 stall 重载时调用(替代裸 [onStallReload]) —— 先走既有「试探在身 → 转失败冷却」,
-   * 再把本场到达档(≥ [STALL_REACHED_MIN_HEIGHT])冷却 [STALL_REACHED_HEIGHT_COOLDOWN_MS]。
+   * 再把「本场到达档」(≥ [STALL_REACHED_MIN_HEIGHT])冷却 [STALL_REACHED_HEIGHT_COOLDOWN_MS]。
    * 只处理档位记忆本身,起播顶档记忆仍由 [noteStartupStall] 负责。
+   *
+   * ── P11-178(2026-09-23 TV 真机 `logs_live_20260923_233549`):目标档改取**饿死瞬间正在播的档** ──────
+   * 那场 stall 记的是 `reachedHeight=2160p`(23:30:12 那次 reseed 曾爬到 itag401),可**真正漏光的是
+   * 1440p**(itag400,6.04M,rn=27/28 挂死),而 2160p 当时本来就被 `trial refused (over-capacity)`
+   * (25384K > floor 8747K)挡着 ⇒ 这条 90s 冷却当场是空操作,新会话照样能爬回 1440p 那堵墙。
+   * 语义纠正:到达档只是「爬过」,饿死档才是「这堵墙」;且逐级爬约束下封住饿死档即封住它以上所有档,
+   * 故目标档优先取 [starvedHeight],仅当它低于 [STALL_REACHED_MIN_HEIGHT](把 720p 及以下冷却掉只会
+   * 让画面更低,口径不变)时退回 [reachedHeight]。
    */
   fun onStallReloadWithReachedHeight(
+    starvedHeight: Int = 0,
     nowWallMs: Long = System.currentTimeMillis(),
     log: (String) -> Unit = {},
   ) {
     onStallReload()
     val reached = reachedHeight
     reachedHeight = 0
-    if (reached < STALL_REACHED_MIN_HEIGHT) return
-    trialFailedHeight = reached
-    trialFailedUntilWallMs = nowWallMs + STALL_REACHED_HEIGHT_COOLDOWN_MS
+    val starved = if (starvedHeight > 0) starvedHeight else 0
+    val target = when {
+      starved >= STALL_REACHED_MIN_HEIGHT -> starved
+      reached >= STALL_REACHED_MIN_HEIGHT -> reached
+      else -> -1
+    }
+    if (target < 0) {
+      log(
+        "stall-reached cooldown skipped: starved=${starved}p reached=${reached}p " +
+          "均 < ${STALL_REACHED_MIN_HEIGHT}p(冷却低档只会让画面更低)",
+      )
+      return
+    }
+    // P11-178:写独立一格,不被后续 markDowngradeFromTrial(试探/降档失败)覆盖。
+    stallReachedHeight = target
+    stallReachedUntilWallMs = nowWallMs + STALL_REACHED_HEIGHT_COOLDOWN_MS
     log(
-      "stall-reached cooldown: ${reached}p excluded ${STALL_REACHED_HEIGHT_COOLDOWN_MS / 1000}s " +
-        "(survives reload; 重载后新 ABR 不再爬回同一档,P11-173)",
+      "stall-reached cooldown: ${target}p excluded ${STALL_REACHED_HEIGHT_COOLDOWN_MS / 1000}s " +
+        "(starved=${starved}p reached=${reached}p; survives reload; 重载后新 ABR 不再爬回同一档,P11-173/178)",
     )
   }
 }

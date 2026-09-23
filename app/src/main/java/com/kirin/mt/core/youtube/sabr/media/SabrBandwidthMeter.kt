@@ -82,6 +82,21 @@ internal class SabrBandwidthMeter(
   fun getMeasuredSegmentCount(itag: Int): Long = measuredSegCountProvider?.invoke(itag) ?: 0L
 
   /**
+   * P11-178:注入「本 itag 最近一次零字节挂死」的墙钟来源(SabrMediaFetcher.getLastSilenceHangWallMs)。
+   * 与实测吞吐走同一条既有通道(选择类拿不到 fetcher)——挂死证据要让水位急救在「挂死后重试成功」的
+   * 那一刻仍然成立,不能被重试那笔成功样本抹平,详见 HeightAwareAdaptiveTrackSelection 的证据注释。
+   */
+  @Volatile
+  private var silenceHangProvider: ((Int) -> Long)? = null
+
+  fun setSilenceHangProvider(provider: (Int) -> Long) {
+    silenceHangProvider = provider
+  }
+
+  /** 该 itag 最近一次零字节挂死的墙钟(epoch ms);未接线/从未挂死返回 0。 */
+  fun getLastSilenceHangWallMs(itag: Int): Long = silenceHangProvider?.invoke(itag) ?: 0L
+
+  /**
    * 2026-08-30 升档重锚:升入新档后把活跃 est 窗口重锚到该档声明码率——原窗口里旧档/重填期的突发高估
    * 样本(60-70M)会顶住降档门槛,新档扛不住时 est 迟迟跌不过声明码率,缓冲漏光前不降档只能看门狗重载。
    * 重锚后 est 从声明码率起步、真实样本平滑接管。委托给 fetcher(窗口在它那),未接线时静默忽略。

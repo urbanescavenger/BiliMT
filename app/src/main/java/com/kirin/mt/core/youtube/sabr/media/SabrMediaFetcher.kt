@@ -33,6 +33,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
@@ -568,6 +569,24 @@ internal class SabrMediaFetcher(
     if (itag <= 0) return 0L
     return synchronized(measuredLock) { measuredTracks[itag]?.segs ?: 0L }
   }
+
+  // ── P11-178:按 itag 记「零字节挂死」墙钟(供给证据,见 HeightAwareAdaptiveTrackSelection)──────────
+  //
+  // 需求(真机 logs_live_20260923_233549,TV 1440p):rn=27 对本档零字节静默 8s → 静默超时 → 重试
+  // rn=28 **17.3s 才吐字节**;而评估只在 getNextChunk 发生,挂死期间一次都没有(23:34:30→23:34:52 零评估)
+  // ⇒ 等重试成功,est 已被那笔 6.35Mbps 重新撑起、meas 也「够」了,挂死证据被抹平,下一次评估仍不降档。
+  // 故把挂死时间记在这里,**跨评估周期存活**,由选择类读它(证据窗口见 SILENCE_HANG_EVIDENCE_MS)。
+  private val silenceHangWallMsByItag = ConcurrentHashMap<Int, Long>()
+
+  /** 记一笔「本 itag 的请求零字节挂死(静默超时/连不上)」——只记,不做决策。 */
+  fun noteSilenceHang(itag: Int, wallMs: Long = System.currentTimeMillis()) {
+    if (itag <= 0) return
+    silenceHangWallMsByItag[itag] = wallMs
+  }
+
+  /** 该 itag 最近一次零字节挂死的墙钟(epoch ms);从未挂死返回 0。 */
+  fun getLastSilenceHangWallMs(itag: Int): Long =
+    if (itag <= 0) 0L else silenceHangWallMsByItag[itag] ?: 0L
 
   /** 真实带宽估计(bps)= 窗口内累计下载量/累计耗时(含卡住与被迫空转)。无样本返回 -1;窗口内全是空转(量=0)返回 0,不回退底层高估。 */
   /**
@@ -1195,11 +1214,21 @@ internal class SabrMediaFetcher(
     } catch (e: Exception) {
       // 网络失败/超时:下载量=0、耗时计满 → 窗口带宽下探,让 ABR 有依据降档自救
       val failMs = SystemClock.elapsedRealtime() - t0
+      // P11-178:「零字节挂死」单独记一笔(itag 维度,跨评估周期存活)。SocketTimeoutException =
+      // `sabrHttpClient` 的 readTimeout(8s)语义「多久没有新字节」,connectTimeout 同类型同属「拿不到
+      // 字节」;两者都是「本档这条请求根本没被供上」的直接证据。callTimeout(按档高 18s/40s)是
+      // InterruptedIOException,不走这条(它可能已收过字节,是慢滴而非零字节)。
+      val silentHang = e is java.net.SocketTimeoutException
+      if (silentHang) noteSilenceHang(req.formatItag)
       recordRealBandwidthFailure(failMs)
       recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
-      Log.w(tag, "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${fmtEstForLog(getRealBitrateEstimate())})")
+      Log.w(
+        tag,
+        "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${fmtEstForLog(getRealBitrateEstimate())}" +
+          (if (silentHang) " silence-hang itag=${req.formatItag} recorded, P11-178" else "") + ")",
+      )
       throw e
     }
   }

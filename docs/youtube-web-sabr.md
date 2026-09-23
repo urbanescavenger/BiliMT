@@ -2146,6 +2146,73 @@ selection 实例里 —— 因为实例正是会被重建的那个东西。**
 
 ---
 
+### 5.11.18 TV 1440p 挂死场:**P11-177 复测(降档路径已恢复)** + 残留「挂死期间无评估点」缺口(P11-178,**已实施**)
+
+**场次**:真机 `logs_live_20260923_233549.log`(BRAVIA AE2,dev.r2090,`c9ALnYFiDQ4`,23:07 起播)。
+该构建**已含 P11-177**——日志里可见新文案 `buffer-critical downgrade **suppressed**(P11-168/177)`。
+
+#### (1) P11-177 复测:降档路径确实回来了
+
+| 时刻 | 日志 | 判读 |
+|---|---|---|
+| 23:29:40 | `buffer-critical downgrade: bufS=4s itag308/1440p@11384271 → 1080p` | 急救降档开火(P11-177 前会被「est ≥ 声明」恒真 suppress) |
+| 23:32:08 / 23:32:36 | `1440p → 1080p` / `1080p → 720p` | 连续两枪都开 |
+| 23:35:23 等 | `cooldown cleared early: … est ≥ declared×1.1` | 提前解除通道正常 |
+| 全天 | `stall detected` **仅 1 次**(23:34:51) | 「60~90s 一轮连续重载」未复现 |
+
+即 P11-177 的目标(「est 被重锚/突发撑高、实测远低于声明」的真饿场景能自救)达成。
+
+#### (2) 残留缺口:挂死期间**一次评估都没有**
+
+| 时刻 | 日志 | 判读 |
+|---|---|---|
+| 23:33:48 | `sel=3 … 1440p bufS=47.6 bw=10568K sus=9740K meas=5660K` | 满缓冲,`meas` 已低于声明 6038680 = 隐患已现 |
+| 23:33:48→23:34:30 | 42s 零 fetch(`bw gap ignored: raw=43298ms`) | 满缓冲停拉排空;**`sel=` 一行都没有** = ABR 零评估 |
+| 23:34:30.1 | `sel=3 bufS=9.9 … est=10568K` | 唯一一次评估:`9.9s > 8s` 水位线(差 0.9s)不开枪;est 被突发撑高 ⇒ est 滞回也不降 |
+| 23:34:30.4→38.4 | `fetch rn=27 …` → `exception: timeout (fail=8009ms)` | **零字节静默 8s**(readTimeout 语义) |
+| 23:34:38.4→55.7 | `fetch rn=28 REAL 13723186B 17293ms → 6Mbps status=1` | 重试**17.3s 才吐字节** —— 管道活着,只是慢 |
+| 23:34:43.4 | `player state=BUFFERING` | 缓冲见底 |
+| 23:34:51.9 | `stall detected … buffered=20%` + `stall-reached cooldown: 2160p excluded 90s` | 8s 位置冻结 → **整场重载** |
+| 23:34:52→23:35:10 | botguard 铸 token(~5s)+ **harvest 重采 12.8s**(上次采集已 369s 超窗) | 重载代价 |
+| 23:35:17.9 / 23:35:21.1 | 新会话首块(起播锁 720p)/ `stall auto-retry recovered` | 断流 23:34:43→23:35:18 ≈ **35s**;若不重载,rn=28 落地只差 4s ⇒ 约 13s |
+
+三条独立缺陷:
+
+1. **评估只在 `getNextChunk` 发生**(`DefaultSabrChunkSource.kt:257` 起,`updateSelectedTrack` 在 `:336`)
+   —— 满缓冲停拉期与挂死阻塞期**都没有评估点**;挂死结束后重试那笔成功样本(6.35Mbps)又把
+   `est`/`meas` 喂真 ⇒ 挂死证据被抹平,下一次评估照旧不降档。**P11-177 那道闸本身没错,是没有开火的
+   机会**(本场 23:34:30→23:34:52 零评估)。
+2. **冷却记错档**:`stall-reached` 记的是「本场爬过的最高档」=2160p,而 2160p 当时已被
+   `trial refused (over-capacity)`(25384K > floor 8747K)挡着 ⇒ 该冷却当场空操作;真正漏光的 1440p 没有
+   任何冷却。附带:23:35:17.9 新会话启动锁那次降档调 `noteTrialFail` **把同一格覆盖成 720p** ⇒ stall
+   冷却只活了 26s(`remain 64s` 那行是覆盖前的旧值)。
+3. **两个 8s 叠在一起**:fetcher 静默超时 8s 已切一刀并重试(重试需 17.3s 才交付),玩家看门狗的 8s 又从
+   缓冲见底重新起算 ⇒ 「网络慢而不死」时看门狗**必然**先开火。
+
+#### (3) 修法(P11-178,已实施)
+
+- **① 挂死证据进 ABR 判据**:`SabrMediaFetcher` 按 itag 记「零字节挂死」墙钟
+  (`noteSilenceHang` / `getLastSilenceHangWallMs`,只认 `SocketTimeoutException` = 读超时/连不上),
+  经 `SabrBandwidthMeter` 既有 provider 通道交给选择类;`HeightAwareAdaptiveTrackSelection` 把
+  「本档 20s 内挂死过」当**独立供给证据** —— 视同跌破水位线、免掉「仍在回落」判据、**且不受 P11-168/177
+  带宽闸否决**(闸的判据恰好会被「挂死后重试成功」那笔样本喂真)。
+- **② 冷却目标档改取饿死瞬间正在播的档**:`PlayerScreen` 读 `currentTracks` 选中视频轨高度,传给
+  `SabrAbrMemory.onStallReloadWithReachedHeight(starvedHeight)`;目标档优先取饿死档(逐级爬约束下封住
+  它即封住它以上所有档),低于 1080p 时退回「本场到达档」;**并给 stall 冷却独立一格**,不再被
+  `markDowngradeFromTrial` 覆盖。
+- **③ 未做(需产品权衡)**:给看门狗对「在途且有进展的 fetch」加宽限。本场看门狗只比 rn=28 早 4s 动手,
+  但放宽阈值会牺牲「慢滴挂死」的兜底(那条兜底是 P11-167 专门补回来的),留待用户定。
+
+#### (4) 判据
+
+- 同场景应出现 `buffer-critical downgrade: … silenceHang=true(P11-178)`,且该轮不再产生 `stall detected`;
+- stall 仍发生时,日志应为 `stall-reached cooldown: 1440p excluded 90s (starved=1440p reached=2160p;…)`,
+  此后 90s 内不再出现 1440p 档(除非 `cooldown cleared early: 1440p` = 缓冲健康 + 带宽达标,属正常放行);
+- 回归面:满缓冲排空场次(§5.11.16 的场景)不得因本改出现 `silenceHang=true` 的误降档 —— 那些场次本来
+  就没有挂死记录。
+
+---
+
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。

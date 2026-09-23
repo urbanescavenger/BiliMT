@@ -160,6 +160,10 @@ internal class DefaultSabrChunkSource(
     (bandwidthMeter as? SabrBandwidthMeter)?.setMeasuredSegCountProvider { itag ->
       fetcher.getMeasuredSegmentCount(itag)
     }
+    // P11-178:零字节挂死证据(按 itag 的墙钟)——水位急救据此在「挂死后重试成功」那一刻仍能降档。
+    (bandwidthMeter as? SabrBandwidthMeter)?.setSilenceHangProvider { itag ->
+      fetcher.getLastSilenceHangWallMs(itag)
+    }
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {

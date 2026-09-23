@@ -2241,7 +2241,11 @@ fun PlayerScreen(
       // P11-173:同一次调用里把**本场实际爬上去过的最高档**(≥1080p)也冷却 90s —— 真机
       // logs_live_20260922_224548 两场都在重载后 40~90s 内爬回同一档再饿死(1440p 旧逻辑无任何
       // 跨重载保护,只有顶档 2160 有)。
-      SabrAbrMemory.onStallReloadWithReachedHeight { line -> Log.i(PlayerPlaybackLogTag, line) }
+      // P11-178:目标档改取**饿死瞬间正在播的档**(本场爬到过 2160p、漏光在 1440p ⇒ 冷却 1440p 才是
+      // 堵住那堵墙;冷却 2160p 是空操作,见 SabrAbrMemory 注释)。
+      SabrAbrMemory.onStallReloadWithReachedHeight(selectedVideoHeight(player)) { line ->
+        Log.i(PlayerPlaybackLogTag, line)
+      }
       if (displayRequestState.value.isYoutube && posMs <= SabrAbrMemory.STARTUP_STALL_POS_MAX_MS) {
         SabrAbrMemory.noteStartupStall()
         Log.i(
@@ -3425,6 +3429,20 @@ private const val PlayerDanmakuLogTag = "BiliMT:Danmaku"
 private const val PlayerPlaybackLogTag = "BiliMT:Player"
 /** BUFFERING 且进度不前进超过此阈值判定为 stall,触发自动重载续播。 */
 private const val StallThresholdMs = 8_000L
+
+/**
+ * P11-178:当前**正在播**的视频轨高度(0=未知)。stall 重载的跨重载冷却据此选目标档——
+ * 「饿死瞬间的档」才是那堵墙,而不是「本场爬过的最高档」(`logs_live_20260923_233549`:爬到过 2160p、
+ * 漏光在 1440p,旧口径冷却 2160p 当场空操作)。见 [SabrAbrMemory.onStallReloadWithReachedHeight]。
+ */
+private fun selectedVideoHeight(player: ExoPlayer): Int {
+  val video = player.currentTracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO } ?: return 0
+  for (i in 0 until video.length) {
+    if (video.isTrackSelected(i)) return video.getTrackFormat(i).height
+  }
+  return 0
+}
+
 /**
  * P11-95(09-13 黑屏复盘):起播阶段(首帧未渲染)的 stall 判定阈值。续播起播要先拉 SABR bootstrap
  * (1.67MB 恒定包)再二次请求目标段,服务端偶发慢首包实测 20.5s/16.4s(09-13,rr5 节点),8s 看门狗在

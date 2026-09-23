@@ -584,7 +584,28 @@ class HeightAwareAdaptiveTrackSelection(
     }
     // 2026-09-20 冻结 episode(见类头):水位回到阈值以上 = 这段饥饿结束,清位——下次跌破才重新开一段,
     // 期间(含持续下漏)不再开第二枪。**不做任何时长累加**:整段饥饿只记一次,与它持续多久无关。
-    val belowCriticalUs = bufferedDurationUs < criticalBufferedUs || trialAbort
+    // ── P11-178(2026-09-23 TV 真机 `logs_live_20260923_233549`):**零字节挂死本身也要算供给证据** ──
+    // 那场 1440p:23:33:48 满缓冲(47.6s)→ 42s 零 fetch(满缓冲停拉)期间**一次评估都没有** → 23:34:30
+    // 唯一一次评估 `bufS=9.9s` 只比 8s 水位线高 0.9s(不开枪)、`est=10568K` 被前段突发撑高(est 滞回也不
+    // 降)→ rn=27 零字节静默 8s → 静默超时 → 重试 rn=28 **17.3s 才吐字节**(13.7M/6.35Mbps)→ 缓冲漏光
+    // → 23:34:51.9 `stall detected … buffered=20%` → 整场重载(黑屏 35s,而 rn=28 落地只差 4s)。
+    // 缺口是结构性的:评估只在 `getNextChunk` 发生,挂死时 chunk source 正阻塞在 `open()` 里(本场
+    // 23:34:30→23:34:52 零评估);等重试把字节吐回来,est 已被那笔 6.35Mbps 重新撑起、`meas` 也「够」
+    // 了 ⇒ 挂死证据被抹平,下一次评估照样不降档。
+    // 故:把「本档最近零字节挂死过」当作**独立的一条供给证据**(fetcher 按 itag 记,选择类读)——
+    //   · 它视同跌破水位线(挂死期间水位读数还会抖动上跳,故同时免掉「两次评估间仍在回落/持平」这条);
+    //   · 它**不**受 P11-168/177 那道带宽闸否决:闸的判据(est/meas ≥ 声明×余量)恰恰会被「挂死后重试
+    //     成功」这笔样本喂真,而「8s 零字节 + 17.3s 才交付」本身就是本档不可持续的直接证据——那道闸防的
+    //     是「排空段/切轨丢缓冲」这类假饿,不是真挂死。
+    // 仍然一次只降一档:不受影响的 [freezeEpisodeActive](一段饥饿一枪)与 5s 升档宽限照旧生效。
+    // 证据窗口取 20s:评估最早发生在静默超时后(重试成功即评估),最长也不会拖过一轮饥饿——期间水位
+    // 若真见底,8s 那条判据本来就会接管,不依赖本窗口。
+    val nowWallMs = System.currentTimeMillis()
+    val silenceHangWallMs = (bandwidthMeter as? SabrBandwidthMeter)
+      ?.getLastSilenceHangWallMs(itagOf(getFormat(selected))) ?: 0L
+    val silenceHang = silenceHangWallMs > 0L &&
+      nowWallMs - silenceHangWallMs in 0 until SILENCE_HANG_EVIDENCE_MS
+    val belowCriticalUs = bufferedDurationUs < criticalBufferedUs || trialAbort || silenceHang
     if (!belowCriticalUs) {
       freezeEpisodeActive = false
       freezeEpisodeSuppressLogged = false
@@ -600,7 +621,7 @@ class HeightAwareAdaptiveTrackSelection(
     val bufferCritical = !bufferCollapseArtifact &&
       belowCriticalUs &&
       !freezeEpisodeActive &&
-      bufferedDurationUs <= prevEvalBufferedUs &&
+      (bufferedDurationUs <= prevEvalBufferedUs || silenceHang) &&
       (trialAbort || nowMs - lastUpgradeElapsedMs >= DOWNGRADE_AFTER_UPGRADE_GRACE_MS)
     prevEvalBufferedUs = bufferedDurationUs
     prevEvalElapsedMs = nowMs
@@ -667,7 +688,9 @@ class HeightAwareAdaptiveTrackSelection(
       val estHasMargin = estForGate >= curBitrateForGate.toLong() *
         BUFFER_CRITICAL_GATE_MARGIN_PERMILLE / 1000L
       val measCoversTier = measForGate <= 0L || measForGate >= curBitrateForGate
-      if (curBitrateForGate > 0 && estHasMargin && measCoversTier) {
+      // P11-178:本档刚零字节挂死过 ⇒ 这道闸不适用(闸防假饿;挂死是真饿,且挂死后重试那笔成功样本
+      // 正好会把 est/meas 喂真,让闸误判「撑得住」)。理由详见上面 silenceHang 的证据注释。
+      if (curBitrateForGate > 0 && estHasMargin && measCoversTier && !silenceHang) {
         Log.i(
           "YtSabrAbr",
           "buffer-critical downgrade **suppressed**(P11-168/177): bufS=${bufferedDurationUs / 1_000_000}s " +
@@ -701,7 +724,8 @@ class HeightAwareAdaptiveTrackSelection(
             "YtSabrAbr",
             "buffer-critical downgrade: bufS=${bufferedDurationUs / 1_000_000}s " +
               "itag${current.id}/${current.height}p@${current.bitrate} → " +
-              "${getFormat(lower).height}p@${getFormat(lower).bitrate}"
+              "${getFormat(lower).height}p@${getFormat(lower).bitrate} " +
+              "silenceHang=$silenceHang(P11-178)"
           )
           selected = lower
           lastDowngradeElapsedMs = nowMs
@@ -888,7 +912,7 @@ class HeightAwareAdaptiveTrackSelection(
             "sus=${if (sustained >= 0L) "${sustained / 1000}K" else "-1"} " +
             "bufS=${bufferedDurationUs / 1_000_000}s freeze=$freezeEpisodeActive " +
             "blockedFrom=${SabrAbrMemory.isTrialFailBlocked(currentHeight)} " +
-            "opEvent=${SabrAbrMemory.recentOperationEvent()}",
+            "opEvent=${SabrAbrMemory.recentOperationEvent()} silenceHang=$silenceHang(P11-178)",
         )
         markDowngradeFromTrial(nowMs, currentHeight)
       }
@@ -1020,6 +1044,15 @@ class HeightAwareAdaptiveTrackSelection(
      * 都必然 suppress 掉急救降档(真机 2026-09-23 连成 60~90s 一轮的重载循环)。
      */
     const val BUFFER_CRITICAL_GATE_MARGIN_PERMILLE = 1150L
+
+    /**
+     * P11-178:零字节挂死证据的有效窗口(ms)——本档最近一次静默超时在此窗口内,即视同供给证据
+     * (视同跌破水位线 + 免掉带宽闸 + 免掉「仍在回落」判据)。见 updateSelectedTrack 的证据注释:
+     * 窗口存在的原因是「挂死期间不会有评估」,证据必须在**挂死结束后的第一次评估**仍然成立;20s
+     * 覆盖静默超时(8s)+ 重试交付(实测 17.3s)这一段,更长则由 8s 水位线判据自然接管。
+     */
+    const val SILENCE_HANG_EVIDENCE_MS = 20_000L
+
     /** 2026-08-30:升档后禁止 est 回降宽限(ms)——重锚精确锚在新档门槛,起步期小样本会立刻打回。 */
     const val UPGRADE_DOWNGRADE_GRACE_MS = 10_000L
     /** 2026-08-30 方案B:顶档(4K 级)定义高度门槛——组内最高档 height ≥ 此值时启顶档 sustained 加码。 */
