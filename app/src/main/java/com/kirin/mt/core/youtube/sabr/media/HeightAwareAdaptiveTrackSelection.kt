@@ -639,14 +639,42 @@ class HeightAwareAdaptiveTrackSelection(
       // ①满缓冲主动停拉的排空段 ②刚切轨丢掉旧轨缓冲;这两种情况下降档**无益**,而门禁**有害**。
       // 故加这道带宽闸:est ≥ 当前档声明码率 ⇒ 本枪不开(真饿时 est 会跌破 required×0.85,由常规
       // 降档路径接管,反应并不比水位慢多少)。
+      //
+      // ── P11-177(2026-09-23,TV 发布版真机):上面那条闸门有**结构性盲区** ────────────────────
+      // 真机 `logs_live_20260923_214024.log`(3.0.13-alpha.25,com.kirin.mt)一轮完整循环:
+      //   21:36:13.447  `fetch rn=2 REAL 4265758B 4419ms → 7Mbps`(720p,est=7151K sus=10902K)
+      //   21:36:13.586  `upshift reseed: est baseline → 3801810`(= itag303/1080p **声明值**)
+      //   21:36:13.589  升 1080p 的请求发出 → **18 秒零字节挂死**
+      //   21:36:27.982  `updateTrackSelection: sel 5(1080p) → 5(1080p)` ← 评估了但**不降档**
+      //   21:36:31.592  `fetch rn=3 exception: timeout (fail=18002ms)` → evict
+      //   21:36:39.611  `stall detected, auto-retry #1 … buffered=6%` → 整场重载 → 又爬同一档
+      // 即:**升档重锚把 est 设成「恰好等于」新档声明值**(3801810),于是 `est >= 声明` 恒真 ⇒
+      // 本闸必然 suppress;而常规 est 降档又要求 `est < required` —— 两条降档路同时被堵死,
+      // 只剩 8s stall 看门狗整场重载,形成 60~90s 一轮的「连续重载且不降档」。
+      // 新口径:闸门的判据必须是**「真给过多少」**——
+      //   ①est 要留余量(≥ 声明 × [BUFFER_CRITICAL_GATE_MARGIN_PERMILLE]/1000)⇒ 刚重锚成声明值的
+      //     那一刻不算「撑得住」;
+      //   ②当前档的**实测吞吐**([SabrMediaFetcher.getMeasuredBitrateBps],按 itag 累计的真实采样)
+      //     也必须 ≥ 声明;实测未知(-1,采样不足)时不参与,退回 ① 单判据。
+      // 两个方向都不吃亏:满缓冲排空段(刚下完一整批,实测远高于声明)照旧不误降档;
+      // 而「est 被重锚/突发撑高、实测却远低于声明」的真饿场景能正常降档自救。
       val curBitrateForGate = getFormat(selected).bitrate
       val estForGate = bandwidthMeter.getBitrateEstimate()
-      if (curBitrateForGate > 0 && estForGate >= curBitrateForGate) {
+      // 实测吞吐走带宽计已接线的 provider(DefaultSabrChunkSource.setMeasuredBitrateProvider →
+      // fetcher.getMeasuredBitrateBps):选择类拿不到 fetcher,这条是既有且同源的通道。
+      val measForGate = (bandwidthMeter as? SabrBandwidthMeter)
+        ?.getMeasuredBitrateBps(itagOf(getFormat(selected))) ?: -1L
+      val estHasMargin = estForGate >= curBitrateForGate.toLong() *
+        BUFFER_CRITICAL_GATE_MARGIN_PERMILLE / 1000L
+      val measCoversTier = measForGate <= 0L || measForGate >= curBitrateForGate
+      if (curBitrateForGate > 0 && estHasMargin && measCoversTier) {
         Log.i(
           "YtSabrAbr",
-          "buffer-critical downgrade **suppressed**(P11-168): bufS=${bufferedDurationUs / 1_000_000}s " +
+          "buffer-critical downgrade **suppressed**(P11-168/177): bufS=${bufferedDurationUs / 1_000_000}s " +
             "est=${estForGate / 1000}K ≥ 当前档 ${getFormat(selected).height}p@$curBitrateForGate" +
-            " → 带宽撑得住,低水位来自排空/切轨而非供给不足(不降档、不门禁)",
+            "×${BUFFER_CRITICAL_GATE_MARGIN_PERMILLE / 1000.0} " +
+            "meas=${if (measForGate > 0) "${measForGate / 1000}K" else "未知"}" +
+            " → 带宽真撑得住,低水位来自排空/切轨而非供给不足(不降档、不门禁)",
         )
         // 不置 freezeEpisodeActive:这一枪根本没开,后续真饿时仍可急救。
       } else {
@@ -984,6 +1012,14 @@ class HeightAwareAdaptiveTrackSelection(
     const val TOP_TIER_CRITICAL_BUFFERED_US = 20_000_000L
     /** 2026-08-30:升档后的水位急救宽限(ms)——新档刚起步缓冲未回填,不能立刻按同一水位反弹降档。 */
     const val DOWNGRADE_AFTER_UPGRADE_GRACE_MS = 5_000L
+
+    /**
+     * P11-177:水位急救降档的带宽闸余量(千分比)。`est` 必须 ≥ 当前档声明码率 × 1.15 才算
+     * 「带宽真撑得住」。理由:升档重锚会把 est 基线设成**恰好等于**新档声明值
+     * (`upshift reseed: est baseline → 3801810`),旧口径 `est >= 声明` 因此恒真 ⇒ 每次升档后
+     * 都必然 suppress 掉急救降档(真机 2026-09-23 连成 60~90s 一轮的重载循环)。
+     */
+    const val BUFFER_CRITICAL_GATE_MARGIN_PERMILLE = 1150L
     /** 2026-08-30:升档后禁止 est 回降宽限(ms)——重锚精确锚在新档门槛,起步期小样本会立刻打回。 */
     const val UPGRADE_DOWNGRADE_GRACE_MS = 10_000L
     /** 2026-08-30 方案B:顶档(4K 级)定义高度门槛——组内最高档 height ≥ 此值时启顶档 sustained 加码。 */
