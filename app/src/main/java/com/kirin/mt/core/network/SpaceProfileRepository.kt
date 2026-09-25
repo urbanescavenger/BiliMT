@@ -7,6 +7,7 @@ import com.kirin.mt.core.model.SpaceUserProfile
 import com.kirin.mt.core.storage.SessionStore
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonObject
 
@@ -14,6 +15,11 @@ import kotlinx.serialization.json.JsonObject
  * Fetches a UP主's profile: core info via `x/space/acc/info` (wbi-signed) and fan/following counts
  * via `x/relation/stat` (best-effort, `vmid` param). Mirrors [SpaceVideoRepository]'s wbi sign +
  * refresh fallback + buvid cookie handling (via [SpaceHttpSupport]).
+ *
+ * 两条请求都走 [SpaceHttpSupport] 的退避重试:进一次 UP 页会在同一秒发出 acc/info + relation/stat
+ * + wbi/arc/search,足以撞上 B站 对 space 接口的频控(-799)/风控(412),退避 2s 后即恢复。
+ * acc/info 最终失败时不再连坐丢弃已经成功的 relation/stat —— 页面用视频卡带的昵称头像兜底,
+ * 统计行仍给出真实数字(P11-179)。
  */
 internal class SpaceProfileRepository(
   private val apiClient: BiliApiClient,
@@ -30,14 +36,32 @@ internal class SpaceProfileRepository(
     val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
 
     return coroutineScope {
-      val accInfoDeferred = async { fetchAccInfo(mid, sessData, biliJct, session.mid, buvid3, buvid4) }
+      val accInfoDeferred = async {
+        runCatching { fetchAccInfo(mid, sessData, biliJct, session.mid, buvid3, buvid4) }
+      }
       val statDeferred = async {
         runCatching { fetchRelationStat(mid, sessData, biliJct, session.mid, buvid3, buvid4) }
           .onFailure { error -> Log.w(LogTag, "relation/stat failed: ${error.toSpaceProfileBrief()}") }
           .getOrNull()
       }
-      val accInfo = accInfoDeferred.await()
-      SpaceProfileMappers.mergeRelationStat(accInfo, statDeferred.await())
+      val accInfoResult = accInfoDeferred.await()
+      val stat = statDeferred.await()
+      val accInfo = accInfoResult.getOrNull()
+      if (accInfo == null) {
+        // acc/info 最终失败但统计成功:返回「空资料 + 真统计」的降级结果,而不是让统计也变 0。
+        val accInfoError = accInfoResult.exceptionOrNull()
+        if (stat == null) throw accInfoError ?: IllegalStateException("space acc/info failed")
+        Log.w(LogTag, "acc/info failed, keep relation/stat only: ${accInfoError?.toSpaceProfileBrief().orEmpty()}")
+        val statsOnly = SpaceProfileMappers.mergeRelationStat(
+          SpaceProfileMappers.fromAccInfo(JsonObject(emptyMap()), mid),
+          stat,
+        )
+        Log.i(LogTag, "profile mid=$mid partial fans=${statsOnly.fans} following=${statsOnly.following}")
+        return@coroutineScope statsOnly
+      }
+      val merged = SpaceProfileMappers.mergeRelationStat(accInfo, stat)
+      Log.i(LogTag, "profile mid=$mid ok hasStats=${stat != null} fans=${merged.fans} following=${merged.following}")
+      merged
     }
   }
 
@@ -55,11 +79,6 @@ internal class SpaceProfileRepository(
       "platform" to "web",
       "web_location" to SpaceHttpSupport.SpaceWebLocation,
     )
-    val signedParams = if (keys != null) {
-      wbiSigner.sign(params, keys.imgKey, keys.subKey)
-    } else {
-      params
-    }
     val headers = SpaceHttpSupport.headers(
       mid = mid.toString(),
       sessData = sessData,
@@ -69,43 +88,94 @@ internal class SpaceProfileRepository(
       buvid4 = buvid4,
     )
     return runCatching {
-      val root = apiClient.getJsonWithHeaders(
-        url = BiliApiEndpoints.SpaceAccInfo,
-        params = signedParams,
+      fetchAccInfoWithRetry(
+        mid = mid,
+        params = params,
+        imgKey = keys?.imgKey,
+        subKey = keys?.subKey,
         headers = headers,
-      ).rootObject()
-      root.requireBiliCodeOk("space acc/info")
-      SpaceProfileMappers.fromAccInfo(root.obj("data") ?: JsonObject(emptyMap()), mid)
+        context = "signed",
+        retryDelaysMs = SpaceHttpSupport.InteractiveRetryDelaysMs,
+      )
     }.getOrElse { signedError ->
       logAccInfoFailure("signed", signedError)
       val refreshedKeys = wbiKeyRepository.refreshKeys(sessData)
       if (refreshedKeys != null) {
-        val refreshedSignedParams = wbiSigner.sign(params, refreshedKeys.imgKey, refreshedKeys.subKey)
         runCatching {
-          val root = apiClient.getJsonWithHeaders(
-            url = BiliApiEndpoints.SpaceAccInfo,
-            params = refreshedSignedParams,
+          fetchAccInfoWithRetry(
+            mid = mid,
+            params = params,
+            imgKey = refreshedKeys.imgKey,
+            subKey = refreshedKeys.subKey,
             headers = headers,
-          ).rootObject()
-          root.requireBiliCodeOk("space acc/info refreshed")
-          SpaceProfileMappers.fromAccInfo(root.obj("data") ?: JsonObject(emptyMap()), mid)
+            context = "refreshed",
+            retryDelaysMs = SpaceHttpSupport.RecoveryRetryDelaysMs,
+          )
         }.onFailure { refreshedError -> logAccInfoFailure("refreshed", refreshedError) }
           .getOrThrow()
-      } else if (signedParams !== params) {
+      } else if (keys != null) {
         runCatching {
-          val root = apiClient.getJsonWithHeaders(
-            url = BiliApiEndpoints.SpaceAccInfo,
+          fetchAccInfoWithRetry(
+            mid = mid,
             params = params,
+            imgKey = null,
+            subKey = null,
             headers = headers,
-          ).rootObject()
-          root.requireBiliCodeOk("space acc/info fallback")
-          SpaceProfileMappers.fromAccInfo(root.obj("data") ?: JsonObject(emptyMap()), mid)
+            context = "unsigned fallback",
+            retryDelaysMs = SpaceHttpSupport.RecoveryFallbackRetryDelaysMs,
+          )
         }.onFailure { fallbackError -> logAccInfoFailure("unsigned fallback", fallbackError) }
           .getOrNull() ?: throw signedError
       } else {
         throw signedError
       }
     }
+  }
+
+  /**
+   * Signs with a fresh `wts`/`w_rid` per attempt and retries the transient 风控/频控 codes
+   * ([SpaceHttpSupport.isRetryableFailure]) with backoff — same ladder as [SpaceVideoRepository].
+   */
+  private suspend fun fetchAccInfoWithRetry(
+    mid: Long,
+    params: Map<String, String>,
+    imgKey: String?,
+    subKey: String?,
+    headers: Map<String, String>,
+    context: String,
+    retryDelaysMs: LongArray,
+  ): SpaceUserProfile {
+    var lastError: Throwable? = null
+    repeat(retryDelaysMs.size + 1) { attempt ->
+      if (attempt > 0) {
+        val delayMs = retryDelaysMs[attempt - 1]
+        Log.i(LogTag, "space acc/info $context retry attempt=${attempt + 1} delayMs=$delayMs mid=$mid")
+        delay(delayMs)
+      }
+      val signedParams = if (imgKey != null && subKey != null) {
+        wbiSigner.sign(params, imgKey, subKey)
+      } else {
+        params
+      }
+      val result = runCatching {
+        val root = apiClient.getJsonWithHeaders(
+          url = BiliApiEndpoints.SpaceAccInfo,
+          params = signedParams,
+          headers = headers,
+        ).rootObject()
+        root.requireBiliCodeOk("space acc/info $context")
+        SpaceProfileMappers.fromAccInfo(root.obj("data") ?: JsonObject(emptyMap()), mid)
+      }
+      result.onSuccess { return it }
+      val error = result.exceptionOrNull() ?: return@repeat
+      lastError = error
+      if (!SpaceHttpSupport.isRetryableFailure(error)) throw error
+      Log.w(
+        LogTag,
+        "space acc/info $context retryable failure attempt=${attempt + 1}: ${error.toSpaceProfileBrief()}",
+      )
+    }
+    throw lastError ?: IllegalStateException("space acc/info $context failed")
   }
 
   private suspend fun fetchRelationStat(
@@ -116,20 +186,38 @@ internal class SpaceProfileRepository(
     buvid3: String?,
     buvid4: String?,
   ): JsonObject {
-    val root = apiClient.getJsonWithHeaders(
-      url = BiliApiEndpoints.RelationStat,
-      params = mapOf("vmid" to mid.toString()),
-      headers = SpaceHttpSupport.headers(
-        mid = mid.toString(),
-        sessData = sessData,
-        biliJct = biliJct,
-        dedeUserId = dedeUserId,
-        buvid3 = buvid3,
-        buvid4 = buvid4,
-      ),
-    ).rootObject()
-    root.requireBiliCodeOk("relation stat")
-    return root.obj("data") ?: JsonObject(emptyMap())
+    val headers = SpaceHttpSupport.headers(
+      mid = mid.toString(),
+      sessData = sessData,
+      biliJct = biliJct,
+      dedeUserId = dedeUserId,
+      buvid3 = buvid3,
+      buvid4 = buvid4,
+    )
+    val retryDelaysMs = SpaceHttpSupport.InteractiveRetryDelaysMs
+    var lastError: Throwable? = null
+    repeat(retryDelaysMs.size + 1) { attempt ->
+      if (attempt > 0) {
+        val delayMs = retryDelaysMs[attempt - 1]
+        Log.i(LogTag, "space relation/stat retry attempt=${attempt + 1} delayMs=$delayMs mid=$mid")
+        delay(delayMs)
+      }
+      val result = runCatching {
+        val root = apiClient.getJsonWithHeaders(
+          url = BiliApiEndpoints.RelationStat,
+          params = mapOf("vmid" to mid.toString()),
+          headers = headers,
+        ).rootObject()
+        root.requireBiliCodeOk("relation stat")
+        root.obj("data") ?: JsonObject(emptyMap())
+      }
+      result.onSuccess { return it }
+      val error = result.exceptionOrNull() ?: return@repeat
+      lastError = error
+      if (!SpaceHttpSupport.isRetryableFailure(error)) throw error
+      Log.w(LogTag, "space relation/stat retryable failure attempt=${attempt + 1}: ${error.toSpaceProfileBrief()}")
+    }
+    throw lastError ?: IllegalStateException("relation stat failed")
   }
 
   private fun logAccInfoFailure(stage: String, error: Throwable) {
