@@ -1,0 +1,112 @@
+# B站图文动态(图片 + 长文)在移动端显示的可行性
+
+研究日期:2026-09-25。结论基于**实测**(本机 wbi 签名复现接口)+ 本地 BV 源码(`E:\GITHUB\bv`)对照。
+
+## 0. 结论
+
+**可行,成本中等,接口侧零新增。** 现在看不到图文不是接口不给,而是**我们自己丢掉了**:
+
+| 丢弃点 | 位置 | 现在 |
+| --- | --- | --- |
+| 服务端只取视频动态 | `UserFeedRepository.getDynamicFeed(type = "video")` | B站 直接不返回图文 |
+| 客户端只收两种类型 | `VideoSummaryMappers.fromDynamicItem`(第 46-52 行) | 只收 `MAJOR_TYPE_ARCHIVE` / `live_rcmd`,图文/纯文字/转发/专栏一律 `null` drop |
+| 数据模型是视频形态 | `core/model/VideoSummary.kt` | 只有 bvid/pic/duration,图文的正文与多图无处安放 |
+
+主要成本集中在三处:① 图文卡片(文本 + 九宫格 + 展开全文);② 动态流的分页/去重/列表 key 全都绑在 `bvid` 上,图文没有 bvid,必须换成 `dynId`;③ `type=all` 后混进来的转发/纯文字/专栏要有明确处置策略(见 §4)。
+
+## 1. 接口事实(实测)
+
+### 1.1 取数
+
+| 项 | 事实 |
+| --- | --- |
+| 关注流 | `x/polymer/web-dynamic/v1/feed/all`,`type=video`(**现状**)/ `type=all`,**必须登录**(未登录 `-101`)。BV 默认 `all` + `timezone_offset=-480`,Cookie 只发 SESSDATA |
+| 空间动态 | `x/polymer/web-dynamic/v1/feed/space?host_mid=`,**未登录可读**(需 wbi 签名 + buvid3/4 + Linux UA + `dm_img_*` 风控参数),可拿来离线核对字段 |
+| 动态详情 | `x/polymer/web-dynamic/v1/detail?id={dynId}`(BV 还带 `features`) |
+
+### 1.2 图文(DRAW)载荷有**两条分支** —— 这是最容易踩的坑
+
+`features` 参数决定文案落在哪:
+
+| 请求 | 文案 | 图片 |
+| --- | --- | --- |
+| 不带 `features` | `modules.module_dynamic.desc.text` | `module_dynamic.major.draw.items[]{src,width,height,size}`,**width/height/size 是字符串** |
+| 带 `features=itemOpusStyle,opusBigCover,...` | `module_dynamic.major.opus.summary.text` | `major.opus.pics[]{url,width,height,size}`,**是数字** |
+
+实测同一条动态:不带 features 时 `desc` 为 null(那批样本拿不到文案),带上 features 后返回
+
+```
+major.opus.summary.text = "【Q&A问题征集】我们频道已经来到1800w关注了！…"(完整长文)
+major.opus.summary.rich_text_nodes[]  → type=RICH_TEXT_NODE_TYPE_TEXT(还有 EMOJI 等,带 icon_url)
+major.opus.summary.has_more / paragraphs
+major.opus.fold_action = ["展开", "收起"]      ← 官方折叠按钮文案
+major.opus.jump_url = //www.bilibili.com/opus/{dynId}
+major.opus.pics[] = {url,width:2000,height:1063,size:937.2}
+```
+
+BV 的 web 映射正是两分支兜底(**照抄即可**):
+
+```kotlin
+// bili-api/.../entity/user/Dynamic.kt:377  DynamicDrawModule.fromModuleDynamic
+text   = moduleDynamic.desc?.text ?: moduleDynamic.major?.opus?.summary?.text ?: "empty text"
+images = (moduleDynamic.major?.draw?.items ?: moduleDynamic.major?.opus?.pics)?.distinctBy { it.url } ?: emptyList()
+```
+
+### 1.3 其它可用字段
+
+- **评论**:`basic.comment_type = 11` + `basic.comment_id_str = {dynId}` → 评论接口 `x/v2/reply/wbi/main?type=11&oid={dynId}`。
+  注意:现有 `ui/feed/CommentScreen` 走的是 `oid=aid&type=1`(视频),**不能直接复用**,要参数化。
+- **计数**:`modules.module_stat.like/comment/forward.count`(现状已在 `fromArchiveDynamic` 里解析,可复用)。
+- **图片 CDN 尺寸后缀实测可用**:原图 62,285 B(image/jpeg)→ `@480w_270h_1c.webp` = 5,944 B、`@320w_200h_1c.webp` = 4,302 B、`@60w_60h_1c.webp` = 1,248 B。
+  项目已有 `String.biliCdnResizedImageUrl(w,h)`(`core/image/BiliImageRequest.kt:124`)负责拼这个后缀。
+- **类型分布**(空间动态代理样本,8 个 UP、3 页):`DYNAMIC_TYPE_AV` 27 / `DRAW` 16 / `FORWARD` 5。
+  图文占 1/3 —— 是显著缺口。**注意**:这是空间动态,不是关注流;关注流真实占比需登录态核对。
+
+## 2. 实现落点(文件级)
+
+| 改动 | 文件 | 说明 |
+| --- | --- | --- |
+| 新增图文/文字项模型 | `core/model/`(新文件) | 建议 `DynamicFeedItem`(sealed:`Video` / `Draw` / `Word`),或给 `VideoSummary` 加 `kind`,前者更干净 |
+| 取数放开类型 | `core/network/UserFeedRepository.getDynamicFeed` | `type` 参数化(默认改 `all`)+ 加 `timezone_offset` |
+| 新增映射 | `core/network/VideoSummaryMappers`(或新 `DynamicMappers.kt`) | `fromDrawDynamic` / `fromWordDynamic`,两分支兜底 + 字符串/数字容错解析(用 `BiliNumberParser`) |
+| 新卡片 | `ui/mobile/feed/`(新文件) | 头像 + 昵称 + 时间 → 正文(默认折叠 N 行)→ 九宫格 → 点赞/评论/转发计数 |
+| 九宫格布局 | 同上 | BV 规则可直接照抄:1 图 = 2:1 单卡;2 图 = 两个 1:1;≥3 取前 3 张 1:1 + 右下 `+N` 角标 |
+| 列表接入 | `ui/mobile/feed/MobileDynamicScreen` | **key / `distinctBy` / `endReached` 全部从 `bvid` 换 `dynId`**;与 YouTube 项混排仍走 `pubdate` 排序 |
+| 图片尺寸 | `core/image/BiliImageRequest.kt` + `BiliTokens` | 九宫格每格显式拼尺寸后缀;新视觉值先进 token |
+| 性能档 | 遵循 `LocalBiliPerformancePolicy` 现有范式 | 流畅档关内存缓存 + `RGB_565`;精致档可放宽 |
+| 文案 | `res/values*/strings.xml` × **6 个 locale** | 展开/收起、图片序号等 |
+
+现有视频卡封面走的是**裸 URL**(`MobileVideoCard.kt:119` `model = coverOverride ?: video.pic`,由 Coil 按测量尺寸解码),所以九宫格必须**显式**拼尺寸后缀 —— 否则一条九图动态会拉 9 张原图(实测单张 62KB,九张 ≈ 560KB)。
+
+## 3. 风险 / 需要产品决策
+
+1. **`type=all` 会带回转发的、纯文字的、专栏的、番剧的**。只渲染图文+视频+直播 → 每页"看得见的条数"变少;要全渲染则工作量翻倍。建议 V1:能渲染的渲染 + 其余**静默 drop**(对齐现状口径,风险最低),或折成一行提示(需你定)。
+2. **列表 key / 去重 / 翻页判据必须同步换 `dynId`**,否则图文项 bvid 为空 → Compose key 冲突(崩溃或错位)。
+3. **点击行为**:图文不可播放。V1 建议"不响应"或"点图进 opus 网页";真正的详情页放 V2。
+4. **无大图查看器**:项目里没有任何 image previewer / zoom 能力,点图放大需要新做(建议 V2)。
+5. **展开全文**:长文默认折叠(用 `fold_action` 的官方文案);移动端触摸无 D-pad 问题。
+6. **TV 端一致性**:TV 的动态流(`ui/feed/UserVideoFeedScreen`)共用同一仓库,放开 `type` 后也会收到图文;要么 TV 显式过滤,要么同步实现(TV 九宫格还涉及 D-pad 焦点模型,是独立工作量)。
+7. **两分支兜底是硬要求**:服务端 `features` 行为已证明会变(同一条动态文案位置不同),解析必须两处都试。
+
+## 4. 建议分期
+
+- **V1(最小可用,移动端)**:动态 tab 内联显示图文 —— 文本(折叠/展开)+ 九宫格(尺寸后缀 + 性能档);点击不动作;`type=all` 下其余类型静默 drop。TV 保持现状(显式过滤)。
+- **V2**:动态详情页(opus 全文 + 评论 `type=11` + 点赞复用 `likeDynamic`)+ 大图查看。
+- **V3**:TV 端图文卡(D-pad 焦点模型)+ 转发卡嵌套(`orig` 递归,`DYNAMIC_TYPE_FORWARD`)。
+
+## 5. 参考
+
+- 本地 BV 源码(同栈 Kotlin/Compose,可直接对照):
+  `bili-api/src/main/kotlin/dev/aaa1115910/biliapi/entity/user/Dynamic.kt:377`(web 字段映射)、
+  `app/mobile/src/main/kotlin/dev/aaa1115910/bv/mobile/component/home/dynamic/DynamicItem.kt:432-600`(图文卡 + 九宫格 + 折叠)、
+  `app/mobile/src/main/kotlin/dev/aaa1115910/bv/mobile/screen/DynamicDetailScreen.kt`(详情页)。
+- 实测样本(含 opus 全文 + pics 的完整 JSON):
+  `C:\Users\Mort\AppData\Local\Temp\dynamic_opus_with_features.json`(临时文件,需要长期留档可移入 `docs/samples/`)。
+- B站 space 接口频控(本轮另一件事):`docs/bilibili-space-risk-control.md`。
+
+## 6. 待核实(真机/登录态)
+
+- [ ] 登录态 `feed/all?type=all` 里图文的实际占比与 `desc`/`opus` 哪条分支为主。
+- [ ] 转发动态(`DYNAMIC_TYPE_FORWARD`)的 `orig` 嵌套深度与图片归属(自己无图时是否要展示被转发的图)。
+- [ ] 九图动态的真实样张(本次样本最多 2 图,`+N` 角标未实测)。
+- [ ] `opus.summary.paragraphs` 富段落结构(加粗/图片混排)是否要还原。
