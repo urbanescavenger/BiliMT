@@ -1,6 +1,8 @@
 package com.kirin.mt.core.network
 
+import android.util.Log
 import com.kirin.mt.core.model.Comment
+import com.kirin.mt.core.model.DynamicKindDraw
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
 import kotlinx.coroutines.flow.first
@@ -30,13 +32,25 @@ internal class UserFeedRepository(
 
     val data = root.obj("data") ?: return DynamicFeedPage(videos = emptyList(), offset = "", hasMore = false)
     val items = data["items"] as? JsonArray ?: return DynamicFeedPage(videos = emptyList(), offset = "", hasMore = false)
-    val videos = items
-      .mapNotNull { it.asObjectOrNull() }
-      .mapNotNull(VideoSummaryMappers::fromDynamicItem)
-      .filter { it.bvid.isNotBlank() }
+    val rawItems = items.mapNotNull { it.asObjectOrNull() }
+    // 图文(P11-180)已能解析,但卡片还没做,所以这里仍只放行可播放项 —— 行为与历史一致。
+    // 放行图文时注意:它没有 bvid,列表 key/去重/翻页判据要一并回退到 dynId。
+    val mapped = rawItems.mapNotNull(VideoSummaryMappers::fromDynamicItem)
+    val feedVideos = mapped.filter { it.bvid.isNotBlank() }
+    val draws = mapped.filter { it.dynamicKind == DynamicKindDraw }
+    // 每页类型占比打点:确认真实关注流里图文/纯文字/转发各占多少、哪些类型被 drop。
+    // kinds 是服务端原始 type 计数(含未渲染的类型),returned 是最终进入列表的条数。
+    // drawWithText 是判断「要不要给请求加 features=itemOpusStyle」的依据:实测同一条带正文的图文,
+    // 不带 features 时 desc 为空、正文只在 major.opus.summary 里 ⇒ 该计数长期为 0 就得加 features。
+    Log.i(
+      LogTag,
+      "dynamic feed type=$type items=${rawItems.size} returned=${feedVideos.size} " +
+        "draw=${draws.size} drawWithText=${draws.count { it.dynamicText.isNotBlank() }} " +
+        "kinds=${rawItems.groupingBy { it.string("type") }.eachCount()}",
+    )
 
     return DynamicFeedPage(
-      videos = videos,
+      videos = feedVideos,
       offset = data.string("offset"),
       hasMore = data.boolean("has_more"),
     )
@@ -403,6 +417,10 @@ internal class UserFeedRepository(
     val total = data.int("total")
     val hasMore = page * pageSize < total && seasons.isNotEmpty()
     return FollowingSeasonPage(seasons = seasons, hasMore = hasMore)
+  }
+
+  private companion object {
+    const val LogTag = "BiliDynamicFeed"
   }
 }
 

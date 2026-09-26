@@ -41,6 +41,13 @@ data class VideoSummary(
   val likeCount: Int = 0,
   val commentCount: Int = 0,
   val forwardCount: Int = 0,
+  // 图文/纯文字动态专属(仅 fromDynamicItem 的 DRAW/WORD 分支填充,其余来源保持空)。
+  // 图文**没有 bvid**,所以它一旦进入列表,key/去重/翻页判据都要回退到 dynId。
+  val dynamicKind: String = DynamicKindNone,
+  val dynamicText: String = "",
+  val dynamicImages: List<DynamicImage> = emptyList(),
+  /** 正文是否被服务端截断(opus.summary.has_more),决定卡片要不要给「展开」。 */
+  val dynamicTextHasMore: Boolean = false,
   /** 内容来源：[SourceBili]（默认）/ [SourceYoutube] / [SourceIptv] / [SourceTvbox] / [SourceHongguo]。YouTube 卡片 bvid 字段承载 videoId。 */
   val source: String = SourceBili,
   /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 卡片填充，用于进 UP 主页；B 站卡片为空串。 */
@@ -50,6 +57,19 @@ data class VideoSummary(
   /** TVBox(影视库)线路表（仅 [SourceTvbox] 卡片填充）：每线路=一个采集站的完整分集列表。选集在线路内换 index。 */
   val tvboxLines: List<TvboxLine> = emptyList(),
 )
+
+/** 动态图文单张图片。宽高来自接口:`major.draw.items` 是字符串、`major.opus.pics` 是数字,解析层已统一成 Int。 */
+@Serializable
+data class DynamicImage(
+  val url: String,
+  val width: Int = 0,
+  val height: Int = 0,
+)
+
+/** [VideoSummary.dynamicKind] 取值:非图文动态 / 图文 / 纯文字。 */
+const val DynamicKindNone = ""
+const val DynamicKindDraw = "draw"
+const val DynamicKindWord = "word"
 
 /** TVBox(影视库)线路：一个采集站 + 其分集列表(线路=清晰度面板档位,选集=线路内换 index)。 */
 @Serializable
