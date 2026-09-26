@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.mobile.feed
 
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,6 +50,9 @@ import kotlinx.coroutines.launch
 
 /** 关注动态取数口径:只有 `all` 会带回图文(图文占比约 1/3,见 docs/bilibili-dynamic-draw-feasibility.md)。 */
 private const val DynamicFeedTypeAll = "all"
+
+/** 与 UserFeedRepository 同一个 tag,方便一次 grep 出「取数 + 渲染列表」两段。 */
+private const val LogTag = "BiliDynamicFeed"
 
 private sealed interface DynamicState {
   data object Loading : DynamicState
@@ -216,6 +220,24 @@ fun MobileDynamicScreen(
   }
 
   val gridState = rememberLazyGridState()
+
+  // 列表侧打点(P11-181):真机报告「看不到图文」时用来区分「图文卡在列表里但没翻到」与
+  // 「压根没进渲染列表」——记下图文在第几张、正文长度、图片数与发布时间。
+  LaunchedEffect(state) {
+    val success = state as? DynamicState.Success ?: return@LaunchedEffect
+    val draws = success.videos.withIndex().filter { it.value.dynamicKind == DynamicKindDraw }
+    Log.i(
+      LogTag,
+      "dynamic list total=${success.videos.size} draws=${draws.size} indexes=${draws.map { it.index }}",
+    )
+    draws.forEach { (index, video) ->
+      Log.i(
+        LogTag,
+        "dynamic draw at index=$index textLen=${video.dynamicText.length} " +
+          "images=${video.dynamicImages.size} pubdate=${video.pubdate} hasMore=${video.dynamicTextHasMore}",
+      )
+    }
+  }
 
   fun loadNextPage() {
     val current = state as? DynamicState.Success ?: return
