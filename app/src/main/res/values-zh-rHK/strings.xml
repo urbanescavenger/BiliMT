@@ -250,8 +250,8 @@
     <string name="search_failed_with_message">搜尋失敗。%1$s</string>
     <string name="dynamic_loading">正在載入動態...</string>
     <string name="dynamic_empty">暫無動態</string>
-    <string <string name="mobile_dynamic_detail_title">動態詳情</string>
-    <string <string name="mobile_dynamic_detail_truncated">正文較長,這裡是伺服器回傳的截斷版本</string>
+    <string name="mobile_dynamic_detail_title">動態詳情</string>
+    <string name="mobile_dynamic_detail_truncated">正文較長,這裡是伺服器回傳的截斷版本</string>
     <string name="mobile_dynamic_expand">展開</string>
     <string name="mobile_dynamic_collapse">收起</string>
     <string name="mobile_dynamic_forward_count">轉發 %1$s</string>
