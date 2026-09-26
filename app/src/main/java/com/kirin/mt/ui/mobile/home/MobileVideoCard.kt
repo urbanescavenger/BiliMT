@@ -55,6 +55,7 @@ import com.kirin.mt.core.model.pubdateText
 import com.kirin.mt.core.model.watchProgressRatio
 import com.kirin.mt.ui.i18n.formatCompactCount
 import com.kirin.mt.ui.i18n.localeFromResources
+import com.kirin.mt.ui.mobile.feed.DynamicRichText
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliSizing
 
@@ -248,12 +249,11 @@ private fun FeedStyleCardContent(
     }
     // 动态正文(UP 自己的话):官方动态卡放在缩略图上方 —— 映射层此前把视频动态的这段文案丢了(P11-182)。
     if (video.dynamicText.isNotBlank()) {
-      Text(
-        text = video.dynamicText,
+      DynamicRichText(
+        video = video,
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurface,
         maxLines = 3,
-        overflow = TextOverflow.Ellipsis,
         modifier = Modifier.padding(bottom = 6.dp),
       )
     }

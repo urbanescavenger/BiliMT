@@ -76,6 +76,9 @@ images = (moduleDynamic.major?.draw?.items ?: moduleDynamic.major?.opus?.pics)?.
 
 - **评论**:`basic.comment_type = 11` + `basic.comment_id_str = {dynId}` → 评论接口 `x/v2/reply/wbi/main?type=11&oid={dynId}`。
   注意:现有 `ui/feed/CommentScreen` 走的是 `oid=aid&type=1`(视频),**不能直接复用**,要参数化。
+- **富文本**:正文是 `rich_text_nodes[]`,类型 `TEXT / EMOJI / AT / TOPIC / WEB`(实测 8 个 UP:TEXT 37 / EMOJI 12 / AT 2 / TOPIC 1 / WEB 1)。
+  除表情外都自带可读 `text`;**表情的 `text` 只是 `[保佑]` 这类占位文案**,真图在 `emoji.icon_url`(hdslb emote URL,吃 CDN 尺寸后缀:原图 PNG 1989B → `@60w_60h_1c.webp` 1202B)。
+  `emoji.size` 是**档位不是像素**(样本值 1)。P11-183 已按 Compose `InlineTextContent` 内联渲染。
 - **计数**:`modules.module_stat.like/comment/forward.count`(现状已在 `fromArchiveDynamic` 里解析,可复用)。
 - **图片 CDN 尺寸后缀实测可用**:原图 62,285 B(image/jpeg)→ `@480w_270h_1c.webp` = 5,944 B、`@320w_200h_1c.webp` = 4,302 B、`@60w_60h_1c.webp` = 1,248 B。
   项目已有 `String.biliCdnResizedImageUrl(w,h)`(`core/image/BiliImageRequest.kt:124`)负责拼这个后缀。

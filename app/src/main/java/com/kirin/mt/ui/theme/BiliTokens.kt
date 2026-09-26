@@ -148,6 +148,9 @@ object BiliSizing {
   val VideoBadgeMinHeight = 22.dp
   val VideoProgressBarHeight = 3.dp
   val VideoOverlayIconSize = 14.dp
+  // 动态正文里 B站 表情的内联尺寸。接口的 emoji.size 是**档位**不是像素(实测样本值 1),
+  // 所以这里用固定值,和正文 bodyMedium 行高相当。
+  val DynamicEmojiSize = 20.dp
   val OwnerAvatarSize = 20.dp
   val SettingsRowHeight = 96.dp
   val SettingsChipHeight = 44.dp

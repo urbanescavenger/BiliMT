@@ -3,6 +3,7 @@ package com.kirin.mt.core.network
 import com.kirin.mt.core.model.Comment
 import com.kirin.mt.core.model.DynamicImage
 import com.kirin.mt.core.model.DynamicKindDraw
+import com.kirin.mt.core.model.DynamicTextNode
 import com.kirin.mt.core.model.SourceBili
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
@@ -18,6 +19,9 @@ internal object VideoSummaryMappers {
 
   /** 图文动态的顶层 type 值(B站也用它自身做类型分流,比逐字段探测更稳)。 */
   private const val DynamicTypeDraw = "DYNAMIC_TYPE_DRAW"
+
+  /** 正文富文本里的表情节点类型。 */
+  private const val RichTextTypeEmoji = "RICH_TEXT_NODE_TYPE_EMOJI"
 
   /** 用于二次解析动态 live_rcmd.content 这类内嵌 JSON 字符串字段。宽松配置,失败由调用处兜底。 */
   private val nestedJson = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -78,8 +82,10 @@ internal object VideoSummaryMappers {
   ): VideoSummary? {
     val opus = major.obj("opus")
     val opusSummary = opus?.obj("summary")
-    val text = modules.obj("module_dynamic")?.obj("desc")?.string("text").orEmpty()
+    val desc = modules.obj("module_dynamic")?.obj("desc")
+    val text = desc?.string("text").orEmpty()
       .ifBlank { opusSummary?.string("text").orEmpty() }
+    val textNodes = textNodesOf(desc, opusSummary)
     val images = picturesOf(major.obj("draw")?.get("items"))
       .ifEmpty { picturesOf(opus?.get("pics")) }
     if (text.isBlank() && images.isEmpty()) return null
@@ -104,9 +110,31 @@ internal object VideoSummaryMappers {
       forwardCount = dynStat?.obj("forward")?.int("count") ?: 0,
       dynamicKind = DynamicKindDraw,
       dynamicText = text,
+      dynamicTextNodes = textNodes,
       dynamicImages = images,
       dynamicTextHasMore = opusSummary?.boolean("has_more") ?: false,
     )
+  }
+
+  /**
+   * 解析正文富文本节点。只有表情需要特殊处理(`emoji.icon_url` 内联成图),其余节点直接用 `text`
+   * (话题自带 `#xx#`、@ 自带 `@名字`、网页链接自带可读文案)。
+   * 全为普通文字时不返回节点列表,交给调用方按平文本渲染。
+   */
+  private fun textNodesOf(vararg holders: JsonObject?): List<DynamicTextNode> {
+    val nodes = holders.firstNotNullOfOrNull { holder ->
+      (holder?.get("rich_text_nodes") as? JsonArray)?.takeIf { it.isNotEmpty() }
+    } ?: return emptyList()
+    val parsed = nodes.mapNotNull { element ->
+      val node = element.asObjectOrNull() ?: return@mapNotNull null
+      val text = node.string("text")
+      if (node.string("type") == RichTextTypeEmoji) {
+        val emojiUrl = fixPicUrl(node.obj("emoji")?.string("icon_url").orEmpty())
+        if (emojiUrl.isNotBlank()) return@mapNotNull DynamicTextNode(text = text, emojiUrl = emojiUrl)
+      }
+      text.takeIf { it.isNotEmpty() }?.let { DynamicTextNode(text = it) }
+    }
+    return if (parsed.any { it.emojiUrl.isNotBlank() }) parsed else emptyList()
   }
 
   /** 解析 `major.draw.items` / `major.opus.pics` 两种图片数组:字段名(src/url)与宽高类型都要兜底。 */
@@ -134,8 +162,11 @@ internal object VideoSummaryMappers {
     val stat = archive.obj("stat")
     // 动态自己的文案(UP 的话),与视频标题是两码事:官方动态卡在缩略图上方显示它。
     // 此前只有图文分支取 desc,视频动态这块文案被丢掉了(P11-182)。
-    val dynamicText = modules.obj("module_dynamic")?.obj("desc")?.string("text").orEmpty()
-      .ifBlank { major.obj("opus")?.obj("summary")?.string("text").orEmpty() }
+    val desc = modules.obj("module_dynamic")?.obj("desc")
+    val opusSummary = major.obj("opus")?.obj("summary")
+    val dynamicText = desc?.string("text").orEmpty()
+      .ifBlank { opusSummary?.string("text").orEmpty() }
+    val dynamicTextNodes = textNodesOf(desc, opusSummary)
     // module_stat 是动态本身的社交计数(点赞/评论/转发),区别于 archive.stat 的播放/弹幕。
     val dynStat = modules.obj("module_stat")
     return VideoSummary(
@@ -156,6 +187,7 @@ internal object VideoSummaryMappers {
       commentCount = dynStat?.obj("comment")?.int("count") ?: 0,
       forwardCount = dynStat?.obj("forward")?.int("count") ?: 0,
       dynamicText = dynamicText,
+      dynamicTextNodes = dynamicTextNodes,
     )
   }
 

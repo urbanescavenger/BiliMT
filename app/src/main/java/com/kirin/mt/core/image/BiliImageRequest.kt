@@ -18,6 +18,8 @@ object BiliImageSizing {
   const val DynamicDrawSingleWidthPx = 640
   const val DynamicDrawSingleHeightPx = 320
   const val DynamicDrawGridSizePx = 320
+  // 表情图:hdslb 的 emote URL 同样吃尺寸后缀(实测原图 PNG 1989B → @60w_60h_1c.webp 1202B)。
+  const val DynamicEmojiSizePx = 60
 }
 
 fun buildVideoThumbnailRequest(

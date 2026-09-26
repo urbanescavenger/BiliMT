@@ -98,12 +98,12 @@ internal fun MobileDynamicDrawCard(
     }
 
     if (video.dynamicText.isNotBlank()) {
-      Text(
-        text = video.dynamicText,
+      // 走富文本渲染:B站 正文里的表情必须内联成图,否则只显示 [保佑] 这类占位文字(P11-183)。
+      DynamicRichText(
+        video = video,
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurface,
         maxLines = if (expanded) Int.MAX_VALUE else DynamicTextCollapsedLines,
-        overflow = TextOverflow.Ellipsis,
         onTextLayout = { layout ->
           val overflowed = layout.hasVisualOverflow
           if (textOverflowed != overflowed) textOverflowed = overflowed

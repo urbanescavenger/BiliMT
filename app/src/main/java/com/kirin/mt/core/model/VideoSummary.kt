@@ -45,6 +45,8 @@ data class VideoSummary(
   // 图文**没有 bvid**,所以它一旦进入列表,key/去重/翻页判据都要回退到 dynId。
   val dynamicKind: String = DynamicKindNone,
   val dynamicText: String = "",
+  /** 正文富文本片段;为空时按 [dynamicText] 平文本渲染。表情片段带 [DynamicTextNode.emojiUrl]。 */
+  val dynamicTextNodes: List<DynamicTextNode> = emptyList(),
   val dynamicImages: List<DynamicImage> = emptyList(),
   /** 正文是否被服务端截断(opus.summary.has_more),决定卡片要不要给「展开」。 */
   val dynamicTextHasMore: Boolean = false,
@@ -56,6 +58,18 @@ data class VideoSummary(
   val iptvUrls: List<String> = emptyList(),
   /** TVBox(影视库)线路表（仅 [SourceTvbox] 卡片填充）：每线路=一个采集站的完整分集列表。选集在线路内换 index。 */
   val tvboxLines: List<TvboxLine> = emptyList(),
+)
+
+/**
+ * 动态正文的一个富文本片段。B站 的正文是 `rich_text_nodes[]`:普通文字/话题/@ 都自带可读 `text`,
+ * 只有**表情**(`RICH_TEXT_NODE_TYPE_EMOJI`)必须靠 `emoji.icon_url` 内联成小图 —— 否则界面上只会
+ * 显示 `[保佑]` 这类占位文字。
+ */
+@Serializable
+data class DynamicTextNode(
+  val text: String,
+  /** 非空 = 这是一枚表情,值是表情图 URL(`emoji.icon_url`)。 */
+  val emojiUrl: String = "",
 )
 
 /** 动态图文单张图片。宽高来自接口:`major.draw.items` 是字符串、`major.opus.pics` 是数字,解析层已统一成 Int。 */
