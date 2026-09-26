@@ -287,34 +287,45 @@ private fun FeedStyleCardContent(
       if (!video.isLive && (video.duration > 0 || video.view > 0 || video.danmaku > 0)) {
         val resources = LocalContext.current.resources
         Row(
-          modifier = Modifier
-            .align(Alignment.BottomStart)
-            .padding(6.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
-            .padding(horizontal = 6.dp, vertical = 2.dp),
-          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier.align(Alignment.BottomStart).padding(6.dp),
+          horizontalArrangement = Arrangement.spacedBy(4.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
+          // 时长与「播放/弹幕」拆成**两个独立徽标**:纯数字走拉丁字体、中文回退 CJK 字体族,
+          // 两者的笔画粗细与基线度量本就不同,挤进同一个徽标会显得「字体不一样、也不对齐」。
+          // 参照官方动态卡也是时长单独一个徽标。
           if (video.duration > 0) {
             Text(
               text = video.durationText(),
               style = MaterialTheme.typography.labelSmall,
               color = BiliColors.TextPrimary,
+              modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
+                .padding(horizontal = 6.dp, vertical = 2.dp),
             )
           }
-          if (video.view > 0) {
+          if (video.view > 0 || video.danmaku > 0) {
+            // 合成一个 Text:同一段文字内部的中英文混排由系统统一处理,不会再出现跨 Text 的基线偏移。
+            // (字符串先在 composable 作用域取好 —— stringResource 不能在 buildList 这类非 inline lambda 里调。)
+            val viewText = if (video.view > 0) {
+              stringResource(R.string.player_meta_bili_view_count, formatCount(video.view, resources))
+            } else {
+              ""
+            }
+            val danmakuText = if (video.danmaku > 0) {
+              stringResource(R.string.player_meta_bili_danmaku_count, formatCount(video.danmaku, resources))
+            } else {
+              ""
+            }
             Text(
-              text = stringResource(R.string.player_meta_bili_view_count, formatCount(video.view, resources)),
+              text = listOf(viewText, danmakuText).filter { it.isNotBlank() }.joinToString(" "),
               style = MaterialTheme.typography.labelSmall,
               color = BiliColors.TextPrimary,
-            )
-          }
-          if (video.danmaku > 0) {
-            Text(
-              text = stringResource(R.string.player_meta_bili_danmaku_count, formatCount(video.danmaku, resources)),
-              style = MaterialTheme.typography.labelSmall,
-              color = BiliColors.TextPrimary,
+              modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
+                .padding(horizontal = 6.dp, vertical = 2.dp),
             )
           }
         }
