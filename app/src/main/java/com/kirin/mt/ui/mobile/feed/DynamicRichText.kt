@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
@@ -63,17 +64,19 @@ internal fun DynamicRichText(
   }
 
   val context = LocalContext.current
+  // Placeholder 的宽高是 TextUnit(相对文本的单位),token 是 Dp ⇒ 按当前密度换算。
+  val emojiSide = with(LocalDensity.current) { BiliSizing.DynamicEmojiSize.toSp() }
   val policy = LocalBiliPerformancePolicy.current
   val allowRgb565 = policy.videoThumbnailRgb565Enabled
   val memoryCacheEnabled = policy.imageMemoryCacheEnabled
-  val inlineContent = remember(nodes, allowRgb565, memoryCacheEnabled) {
+  val inlineContent = remember(nodes, allowRgb565, memoryCacheEnabled, emojiSide) {
     nodes.withIndex()
       .filter { it.value.emojiUrl.isNotBlank() }
       .associate { (index, node) ->
         (EmojiInlineIdPrefix + index) to InlineTextContent(
           placeholder = Placeholder(
-            width = BiliSizing.DynamicEmojiSize,
-            height = BiliSizing.DynamicEmojiSize,
+            width = emojiSide,
+            height = emojiSide,
             placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
           ),
         ) {
