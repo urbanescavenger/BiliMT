@@ -73,10 +73,7 @@
       "Bash(git -C e:/GITHUB/BiliTVNative push origin v1.0.5-alpha.11)",
       "Bash(sort -k2)",
       "Bash(python3 -)",
-      "Bash(python -V)",
-      "Bash(echo \"fty exit=$?\")",
-      "Bash(echo \"exit=$?\")",
-      "WebSearch"
+      "Bash(python -V)"
     ]
   }
 }
