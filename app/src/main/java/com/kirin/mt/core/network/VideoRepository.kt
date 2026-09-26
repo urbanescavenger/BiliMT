@@ -1,6 +1,8 @@
 package com.kirin.mt.core.network
 
+import android.util.Log
 import com.kirin.mt.core.auth.WbiKeyRepository
+import com.kirin.mt.core.auth.WbiKeys
 import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.ProgressUnset
@@ -40,6 +42,9 @@ const val DynamicCommentType = 11
 const val DynamicCommentPageSize = 20
 const val DynamicCommentModeHot = 3
 const val DynamicCommentModeLatest = 2
+
+/** 动态评论的诊断日志 tag(失败只写进 UI 会查不到原因,故两条路都打点)。 */
+const val DynamicCommentLogTag = "BiliDynamicComment"
 
 /** 把 B 站动态与 YouTube 关注流按发布时间倒序合并成统一流。 */
 fun mergeByPubdate(bili: List<VideoSummary>, youtube: List<VideoSummary>): List<VideoSummary> =
@@ -487,15 +492,36 @@ class VideoRepository(
       // 游标:首次空串,之后填上一页返回的 next_offset。
       "pagination_str" to """{"offset":"$offset"}""",
     )
+    val headers = buildMap {
+      BiliHeaders.cookie(sessData = sessData, buvid3 = buvid3, buvid4 = buvid4)?.let { put("Cookie", it) }
+      put("User-Agent", BiliHeaders.UserAgent)
+      put("Referer", "https://www.bilibili.com/")
+    }
+    // 先按缓存 key 签一次;失败(**w_rid 被拒多半是缓存 key 过期**)刷新 key 再试一次 ——
+    // 与 fetchAccInfo / space 系列同一套「刷新 key 重试」范式。
+    val first = runCatching { requestDynamicComments(params, keys, headers) }
+      .onFailure { logDynamicCommentsFailure("cached keys", it) }
+    first.onSuccess { return it }
+    val refreshedKeys = wbiKeyRepository.refreshKeys(sessData)
+    if (refreshedKeys != null) {
+      runCatching { requestDynamicComments(params, refreshedKeys, headers) }
+        .onFailure { logDynamicCommentsFailure("refreshed keys", it) }
+        .onSuccess { return it }
+    }
+    throw first.exceptionOrNull() ?: IllegalStateException("dynamic comments failed")
+  }
+
+  /** 一次动态评论请求 + 解析 + 打点(code / 条数 / 游标)。 */
+  private suspend fun requestDynamicComments(
+    params: Map<String, String>,
+    keys: WbiKeys?,
+    headers: Map<String, String>,
+  ): DynamicCommentPage {
     val signedParams = if (keys != null) wbiSigner.sign(params, keys.imgKey, keys.subKey) else params
     val root = apiClient.getJsonWithHeaders(
       url = BiliApiEndpoints.CommentReplyWbiMain,
       params = signedParams,
-      headers = buildMap {
-        BiliHeaders.cookie(sessData = sessData, buvid3 = buvid3, buvid4 = buvid4)?.let { put("Cookie", it) }
-        put("User-Agent", BiliHeaders.UserAgent)
-        put("Referer", "https://www.bilibili.com/")
-      },
+      headers = headers,
     ).rootObject()
     root.requireBiliCodeOk("dynamic comments")
 
@@ -505,12 +531,28 @@ class VideoRepository(
       ?.mapNotNull { it.asObjectOrNull() }
       ?.map(VideoSummaryMappers::fromComment)
       .orEmpty()
+    val nextOffset = cursor?.obj("pagination_reply")?.string("next_offset").orEmpty()
+    Log.i(
+      DynamicCommentLogTag,
+      "dynamic comments ok oid=${params["oid"].orEmpty()} mode=${params["mode"].orEmpty()} " +
+        "hasKeys=${keys != null} replies=${comments.size} isEnd=${cursor?.boolean("is_end")} " +
+        "allCount=${cursor?.int("all_count")} nextOffset=${if (nextOffset.isBlank()) "empty" else "set"}",
+    )
     return DynamicCommentPage(
       comments = comments,
-      nextOffset = cursor?.obj("pagination_reply")?.string("next_offset").orEmpty(),
+      nextOffset = nextOffset,
       isEnd = cursor?.boolean("is_end") ?: true,
       totalCount = cursor?.int("all_count") ?: comments.size,
     )
+  }
+
+  private fun logDynamicCommentsFailure(stage: String, error: Throwable) {
+    val brief = when (error) {
+      is BiliApiCodeException -> "code=${error.code} message=${error.biliMessage}"
+      is BiliNetworkException -> "http=${error.statusCode} body=${error.responseBody.take(160)}"
+      else -> "${error.javaClass.simpleName}: ${error.message.orEmpty()}"
+    }
+    Log.w(DynamicCommentLogTag, "dynamic comments $stage failed: $brief")
   }
 
   suspend fun getHistoryPage(
