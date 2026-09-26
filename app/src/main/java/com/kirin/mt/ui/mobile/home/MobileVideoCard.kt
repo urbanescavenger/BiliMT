@@ -304,17 +304,19 @@ private fun FeedStyleCardContent(
         Row(
           modifier = Modifier.align(Alignment.BottomStart).padding(6.dp),
           horizontalArrangement = Arrangement.spacedBy(4.dp),
-          verticalAlignment = Alignment.CenterVertically,
         ) {
           // 时长与「播放/弹幕」是**两个独立元素**(纯数字走拉丁字体、中文回退 CJK 字体族,笔画粗细与
-          // 基线度量不同,挤在一处会显得「字体不一样、也不对齐」);底板只给时长,「播放/弹幕」是纯文字,
-          // 靠上面那条底部渐变保证可读 —— 与官方动态卡一致。
+          // 基线度量不同,挤在一处会显得「字体不一样」);底板只给时长,「播放/弹幕」是纯文字,靠上面
+          // 那条底部渐变保证可读 —— 与官方动态卡一致。
+          // 对齐方式:两者**按基线对齐**(alignByBaseline)—— 字体族不同时按盒子居中会让视觉基线错开,
+          // 这是同一行文字的正确对齐方式。
           if (video.duration > 0) {
             Text(
               text = video.durationText(),
               style = MaterialTheme.typography.labelSmall,
               color = BiliColors.TextPrimary,
               modifier = Modifier
+                .alignByBaseline()
                 .clip(RoundedCornerShape(4.dp))
                 .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
                 .padding(horizontal = 6.dp, vertical = 2.dp),
@@ -337,6 +339,7 @@ private fun FeedStyleCardContent(
               text = listOf(viewText, danmakuText).filter { it.isNotBlank() }.joinToString(" "),
               style = MaterialTheme.typography.labelSmall,
               color = BiliColors.TextPrimary,
+              modifier = Modifier.alignByBaseline(),
             )
           }
         }
