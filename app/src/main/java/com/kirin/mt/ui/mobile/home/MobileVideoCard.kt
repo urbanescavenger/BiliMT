@@ -39,6 +39,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -288,6 +289,11 @@ private fun FeedStyleCardContent(
       // **不加整条底部渐变蒙版**(用户要求),右下的白字靠阴影保证亮封面上的可读性。
       if (!video.isLive && (video.duration > 0 || video.view > 0 || video.danmaku > 0)) {
         val resources = LocalContext.current.resources
+        // 三个元素统一:纯白字 + 阴影,都**不带底板**(用户要求);不加渐变蒙版,
+        // 可读性全靠阴影 —— 亮封面若仍看不清,再考虑恢复一层薄蒙版或给整行加底板。
+        val overlayTextStyle = MaterialTheme.typography.labelSmall.copy(
+          shadow = Shadow(color = Color.Black, blurRadius = 4f),
+        )
         Row(
           modifier = Modifier
             .align(Alignment.BottomStart)
@@ -298,21 +304,27 @@ private fun FeedStyleCardContent(
           if (video.duration > 0) {
             Text(
               text = video.durationText(),
-              style = MaterialTheme.typography.labelSmall,
+              style = overlayTextStyle,
               color = BiliColors.TextPrimary,
-              modifier = Modifier
-                .clip(RoundedCornerShape(4.dp))
-                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
-                .padding(horizontal = 6.dp, vertical = 2.dp),
             )
           }
           Spacer(modifier = Modifier.weight(1f))
           if (video.view > 0) {
-            MobileCoverMetric(iconRes = R.drawable.ic_video_play_count, count = video.view, resources = resources)
+            MobileCoverMetric(
+              iconRes = R.drawable.ic_video_play_count,
+              count = video.view,
+              resources = resources,
+              textStyle = overlayTextStyle,
+            )
           }
           if (video.danmaku > 0) {
             Spacer(modifier = Modifier.width(8.dp))
-            MobileCoverMetric(iconRes = R.drawable.ic_video_danmaku_count, count = video.danmaku, resources = resources)
+            MobileCoverMetric(
+              iconRes = R.drawable.ic_video_danmaku_count,
+              count = video.danmaku,
+              resources = resources,
+              textStyle = overlayTextStyle,
+            )
           }
         }
       }
@@ -334,7 +346,12 @@ private fun FeedStyleCardContent(
 
 /** 缩略图右下的度量(播放/弹幕):图标 + 紧凑计数,对齐 TV 端动态卡的度量样式。 */
 @Composable
-private fun MobileCoverMetric(iconRes: Int, count: Int, resources: android.content.res.Resources) {
+private fun MobileCoverMetric(
+  iconRes: Int,
+  count: Int,
+  resources: android.content.res.Resources,
+  textStyle: TextStyle,
+) {
   Row(verticalAlignment = Alignment.CenterVertically) {
     Icon(
       painter = painterResource(iconRes),
@@ -345,9 +362,7 @@ private fun MobileCoverMetric(iconRes: Int, count: Int, resources: android.conte
     Spacer(modifier = Modifier.width(3.dp))
     Text(
       text = formatCount(count, resources),
-      style = MaterialTheme.typography.labelSmall.copy(
-        shadow = Shadow(color = Color.Black, blurRadius = 4f),
-      ),
+      style = textStyle,
       color = BiliColors.TextPrimary,
       maxLines = 1,
     )

@@ -267,7 +267,7 @@ internal class UserFeedRepository(
       url = BiliApiEndpoints.CommentReply,
       params = mapOf(
         "oid" to aid.toString(),
-        "type" to CommentTypeVideo,
+        "type" to CommentTypeVideo.toString(),
         "pn" to page.toString(),
         "ps" to pageSize.toString(),
         "sort" to sort.toString(),
