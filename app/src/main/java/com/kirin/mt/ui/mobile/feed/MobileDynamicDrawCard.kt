@@ -34,8 +34,8 @@ import com.kirin.mt.core.image.buildVideoThumbnailRequest
 import com.kirin.mt.core.model.DynamicImage
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.pubdateText
+import com.kirin.mt.ui.mobile.home.DynamicActionRow
 import com.kirin.mt.ui.mobile.home.OwnerAvatar
-import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.mobile.home.rememberVideoCardRelativeText
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 
@@ -60,7 +60,6 @@ internal fun MobileDynamicDrawCard(
   modifier: Modifier = Modifier,
   onOpenOwner: ((VideoSummary) -> Unit)? = null,
 ) {
-  val context = LocalContext.current
   val policy = LocalBiliPerformancePolicy.current
   val relativeText = rememberVideoCardRelativeText()
   val pubdate = video.pubdateText(relativeText)
@@ -140,28 +139,9 @@ internal fun MobileDynamicDrawCard(
       )
     }
 
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(top = 6.dp),
-      horizontalArrangement = Arrangement.spacedBy(12.dp),
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      DynamicCountText(stringResource(R.string.player_like_count_format, formatCount(video.likeCount, context.resources)))
-      DynamicCountText(stringResource(R.string.player_comment_count_format, formatCount(video.commentCount, context.resources)))
-      DynamicCountText(stringResource(R.string.mobile_dynamic_forward_count, formatCount(video.forwardCount, context.resources)))
-    }
+    // 与视频动态卡共用同一计数行(转发/评论/点赞),保证两类卡片观感一致。
+    DynamicActionRow(video = video, modifier = Modifier.padding(top = 6.dp))
   }
-}
-
-@Composable
-private fun DynamicCountText(text: String) {
-  Text(
-    text = text,
-    style = MaterialTheme.typography.labelSmall,
-    color = MaterialTheme.colorScheme.onSurfaceVariant,
-    maxLines = 1,
-  )
 }
 
 /**

@@ -132,6 +132,10 @@ internal object VideoSummaryMappers {
   ): VideoSummary? {
     val archive = major.obj("archive") ?: return null
     val stat = archive.obj("stat")
+    // 动态自己的文案(UP 的话),与视频标题是两码事:官方动态卡在缩略图上方显示它。
+    // 此前只有图文分支取 desc,视频动态这块文案被丢掉了(P11-182)。
+    val dynamicText = modules.obj("module_dynamic")?.obj("desc")?.string("text").orEmpty()
+      .ifBlank { major.obj("opus")?.obj("summary")?.string("text").orEmpty() }
     // module_stat 是动态本身的社交计数(点赞/评论/转发),区别于 archive.stat 的播放/弹幕。
     val dynStat = modules.obj("module_stat")
     return VideoSummary(
@@ -151,6 +155,7 @@ internal object VideoSummaryMappers {
       likeCount = dynStat?.obj("like")?.int("count") ?: 0,
       commentCount = dynStat?.obj("comment")?.int("count") ?: 0,
       forwardCount = dynStat?.obj("forward")?.int("count") ?: 0,
+      dynamicText = dynamicText,
     )
   }
 

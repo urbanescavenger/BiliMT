@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -45,6 +46,7 @@ import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.model.SourceIptv
+import com.kirin.mt.core.model.durationText
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoCardRelativeText
 import com.kirin.mt.core.model.VideoSummary
@@ -204,9 +206,9 @@ private fun FeedStyleCardContent(
   completed: Boolean = false,
 ) {
   val relativeText = rememberVideoCardRelativeText()
-  val count = formatCount(if (video.view > 0) video.view else video.likeCount, LocalContext.current.resources)
   val pubdate = video.pubdateText(relativeText)
-  val meta = if (pubdate.isBlank()) count else "$pubdate · $count"
+  // 对齐 B站 官方动态卡:作者行只留发布时间,播放/弹幕挪到缩略图左下角覆盖行。
+  val meta = pubdate
   Column(modifier = modifier) {
     // 顶行作者块:头像跨两行,右侧第一行 UP 名、第二行发布时间 + 播放量。整块可点进 UP 主页。
     Row(
@@ -242,6 +244,17 @@ private fun FeedStyleCardContent(
         }
       }
     }
+    // 动态正文(UP 自己的话):官方动态卡放在缩略图上方 —— 映射层此前把视频动态的这段文案丢了(P11-182)。
+    if (video.dynamicText.isNotBlank()) {
+      Text(
+        text = video.dynamicText,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurface,
+        maxLines = 3,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(bottom = 6.dp),
+      )
+    }
     // 缩略图独占整行(16:10、直播角标、YouTube 绿框保留)。
     Box(
       modifier = Modifier
@@ -270,6 +283,42 @@ private fun FeedStyleCardContent(
         CompletedBadge(modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
       }
       MobileWatchProgress(video = video, modifier = Modifier.align(Alignment.BottomCenter))
+      // 时长 + 播放 + 弹幕覆盖(对齐官方动态卡缩略图左下角「13:08 · 4.2万播放 · 55弹幕」)。
+      if (!video.isLive && (video.duration > 0 || video.view > 0 || video.danmaku > 0)) {
+        val resources = LocalContext.current.resources
+        Row(
+          modifier = Modifier
+            .align(Alignment.BottomStart)
+            .padding(6.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          if (video.duration > 0) {
+            Text(
+              text = video.durationText(),
+              style = MaterialTheme.typography.labelSmall,
+              color = BiliColors.TextPrimary,
+            )
+          }
+          if (video.view > 0) {
+            Text(
+              text = stringResource(R.string.player_meta_bili_view_count, formatCount(video.view, resources)),
+              style = MaterialTheme.typography.labelSmall,
+              color = BiliColors.TextPrimary,
+            )
+          }
+          if (video.danmaku > 0) {
+            Text(
+              text = stringResource(R.string.player_meta_bili_danmaku_count, formatCount(video.danmaku, resources)),
+              style = MaterialTheme.typography.labelSmall,
+              color = BiliColors.TextPrimary,
+            )
+          }
+        }
+      }
     }
     // 标题在底部。
     Text(
@@ -278,6 +327,55 @@ private fun FeedStyleCardContent(
       maxLines = 2,
       overflow = TextOverflow.Ellipsis,
       modifier = Modifier.padding(top = 6.dp),
+    )
+    // 卡底互动计数(转发/评论/点赞):动态条目才有这三个计数,非动态条目(dynId 空)不显示。
+    if (video.dynId.isNotBlank()) {
+      DynamicActionRow(video = video, modifier = Modifier.padding(top = 6.dp))
+    }
+  }
+}
+
+/** 动态卡底部互动计数行(转发/评论/点赞):图文卡与视频动态卡共用,对齐官方动态卡。 */
+@Composable
+internal fun DynamicActionRow(video: VideoSummary, modifier: Modifier = Modifier) {
+  val resources = LocalContext.current.resources
+  Row(
+    modifier = modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(20.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    DynamicActionCount(
+      iconRes = R.drawable.ic_player_share,
+      text = stringResource(R.string.mobile_dynamic_forward_count, formatCount(video.forwardCount, resources)),
+    )
+    DynamicActionCount(
+      iconRes = R.drawable.ic_player_comment,
+      text = stringResource(R.string.player_comment_count_format, formatCount(video.commentCount, resources)),
+    )
+    DynamicActionCount(
+      iconRes = R.drawable.ic_player_like,
+      text = stringResource(R.string.player_like_count_format, formatCount(video.likeCount, resources)),
+    )
+  }
+}
+
+@Composable
+private fun DynamicActionCount(iconRes: Int, text: String) {
+  Row(
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(4.dp),
+  ) {
+    Icon(
+      painter = painterResource(iconRes),
+      contentDescription = null,
+      tint = MaterialTheme.colorScheme.onSurfaceVariant,
+      modifier = Modifier.size(14.dp),
+    )
+    Text(
+      text = text,
+      style = MaterialTheme.typography.labelSmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+      maxLines = 1,
     )
   }
 }
