@@ -71,6 +71,12 @@ const val DynamicKindNone = ""
 const val DynamicKindDraw = "draw"
 const val DynamicKindWord = "word"
 
+/**
+ * 列表 key / 去重用的稳定标识。图文动态**没有 bvid**,必须回退到 dynId,否则整列 key 都为空串
+ * (Compose 抛 key 冲突、`distinctBy` 会把所有图文当成同一条)。
+ */
+val VideoSummary.feedKey: String get() = dynId.ifBlank { bvid }
+
 /** TVBox(影视库)线路：一个采集站 + 其分集列表(线路=清晰度面板档位,选集=线路内换 index)。 */
 @Serializable
 data class TvboxLine(

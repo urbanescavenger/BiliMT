@@ -12,6 +12,12 @@ object BiliImageSizing {
   const val StandardOwnerAvatarSizePx = 72
   const val AccountAvatarSizePx = 96
   const val AccountProfileAvatarSizePx = 192
+
+  // 动态图文九宫格:单图整宽(约 2:1)、其余按方格取。九图动态必须限尺寸,否则一条动态会拉 9 张原图
+  // (实测单张原图 62KB、@480w_270h_1c.webp 仅 5.9KB)。
+  const val DynamicDrawSingleWidthPx = 640
+  const val DynamicDrawSingleHeightPx = 320
+  const val DynamicDrawGridSizePx = 320
 }
 
 fun buildVideoThumbnailRequest(

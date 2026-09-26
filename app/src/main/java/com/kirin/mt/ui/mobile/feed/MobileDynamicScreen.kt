@@ -31,9 +31,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
+import com.kirin.mt.core.model.DynamicKindDraw
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.model.feedKey
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.network.mergeByPubdate
+
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeFeedCacheStore
@@ -43,6 +46,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+
+/** 关注动态取数口径:只有 `all` 会带回图文(图文占比约 1/3,见 docs/bilibili-dynamic-draw-feasibility.md)。 */
+private const val DynamicFeedTypeAll = "all"
 
 private sealed interface DynamicState {
   data object Loading : DynamicState
@@ -56,8 +62,11 @@ private sealed interface DynamicState {
 }
 
 /**
- * 移动端动态 tab:关注动态视频网格 + offset 分页。复用 VideoRepository.getDynamicFeed
- * 与 MobileVideoCard。未登录时显示登录入口。
+ * 移动端动态 tab:关注动态 + offset 分页。复用 VideoRepository.getDynamicFeed、MobileVideoCard
+ * (视频/直播)与 MobileDynamicDrawCard(图文)。未登录时显示登录入口。
+ *
+ * 取数用 `type=all` + `includeDraw=true`:服务端 `type=video` 时根本不会返回图文动态。
+ * **列表 key/去重一律用 `VideoSummary.feedKey`(图文没有 bvid,回退 dynId)**,否则 key 冲突。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -152,7 +161,7 @@ fun MobileDynamicScreen(
       var biliEndReached = true
       var biliError: String? = null
       val biliVideos = try {
-        val page = videoRepository.getDynamicFeed(type = "video")
+        val page = videoRepository.getDynamicFeed(type = DynamicFeedTypeAll, includeDraw = true)
         nextOffset = page.offset
         biliEndReached = !page.hasMore
         page.videos
@@ -215,9 +224,9 @@ fun MobileDynamicScreen(
     state = current.copy(loadingMore = true)
     scope.launch {
       val next = try {
-        val page = videoRepository.getDynamicFeed(offset = offsetToLoad, type = "video")
+        val page = videoRepository.getDynamicFeed(offset = offsetToLoad, type = DynamicFeedTypeAll, includeDraw = true)
         nextOffset = page.offset
-        val merged = (current.videos + page.videos).distinctBy { it.bvid }
+        val merged = (current.videos + page.videos).distinctBy { it.feedKey }
         current.copy(
           videos = merged,
           loadingMore = false,
@@ -305,7 +314,15 @@ fun MobileDynamicScreen(
                 )
               }
             }
-            items(s.videos, key = { it.bvid }) { video ->
+            items(s.videos, key = { it.feedKey }) { video ->
+              // 图文动态不可播放:走图文卡(本轮整卡与图片都不响应点击,详情页/大图在后续切片接)。
+              if (video.dynamicKind == DynamicKindDraw) {
+                MobileDynamicDrawCard(
+                  video = video,
+                  onOpenOwner = onOpenOwner,
+                )
+                return@items
+              }
               MobileVideoCard(
                 video = video,
                 onClick = onVideoSelected,

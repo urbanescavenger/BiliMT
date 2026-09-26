@@ -413,8 +413,12 @@ class VideoRepository(
     return page.items.map(youtubeRepository::toVideoSummary).withLocalProgress()
   }
 
-  suspend fun getDynamicFeed(offset: String = "", type: String = "video"): DynamicFeedPage {
-    val page = userFeedRepository.getDynamicFeed(offset = offset, type = type)
+  suspend fun getDynamicFeed(
+    offset: String = "",
+    type: String = "video",
+    includeDraw: Boolean = false,
+  ): DynamicFeedPage {
+    val page = userFeedRepository.getDynamicFeed(offset = offset, type = type, includeDraw = includeDraw)
     return page.copy(videos = page.videos.withLocalProgress())
   }
 

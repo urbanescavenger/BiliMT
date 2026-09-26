@@ -250,6 +250,9 @@
     <string name="search_failed_with_message">搜尋失敗。%1$s</string>
     <string name="dynamic_loading">正在載入動態...</string>
     <string name="dynamic_empty">暫無動態</string>
+    <string name="mobile_dynamic_expand">展開</string>
+    <string name="mobile_dynamic_collapse">收起</string>
+    <string name="mobile_dynamic_forward_count">轉發 %1$s</string>
     <string name="dynamic_failed_with_message">動態載入失敗。%1$s</string>
     <string name="dynamic_signed_out">請先登入，登入後可查看關注動態。</string>
     <string name="history_loading">正在載入觀看歷史...</string>

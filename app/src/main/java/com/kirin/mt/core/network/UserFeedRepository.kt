@@ -12,7 +12,18 @@ internal class UserFeedRepository(
   private val apiClient: BiliApiClient,
   private val sessionStore: SessionStore,
 ) {
-  suspend fun getDynamicFeed(offset: String = "", type: String = "video"): DynamicFeedPage {
+  /**
+   * 关注动态一页。
+   *
+   * [includeDraw] 为 false(默认)时只返回可播放项(行为同历史);置 true 时额外保留图文项。
+   * **放行图文前,调用方的列表 key / 去重 / 翻页判据必须换成 `dynId`(图文没有 bvid)**,
+   * 否则 Compose key 冲突;`VideoSummary.feedKey` 就是给这个用的。
+   */
+  suspend fun getDynamicFeed(
+    offset: String = "",
+    type: String = "video",
+    includeDraw: Boolean = false,
+  ): DynamicFeedPage {
     val sessData = sessionStore.sessData.first()
     if (sessData.isNullOrBlank()) {
       return DynamicFeedPage(videos = emptyList(), offset = "", hasMore = false)
@@ -22,6 +33,7 @@ internal class UserFeedRepository(
       url = BiliApiEndpoints.DynamicFeed,
       params = buildMap {
         put("type", type)
+        put("features", DynamicFeedFeatures)
         if (offset.isNotBlank()) {
           put("offset", offset)
         }
@@ -33,24 +45,25 @@ internal class UserFeedRepository(
     val data = root.obj("data") ?: return DynamicFeedPage(videos = emptyList(), offset = "", hasMore = false)
     val items = data["items"] as? JsonArray ?: return DynamicFeedPage(videos = emptyList(), offset = "", hasMore = false)
     val rawItems = items.mapNotNull { it.asObjectOrNull() }
-    // 图文(P11-180)已能解析,但卡片还没做,所以这里仍只放行可播放项 —— 行为与历史一致。
-    // 放行图文时注意:它没有 bvid,列表 key/去重/翻页判据要一并回退到 dynId。
     val mapped = rawItems.mapNotNull(VideoSummaryMappers::fromDynamicItem)
-    val feedVideos = mapped.filter { it.bvid.isNotBlank() }
-    val draws = mapped.filter { it.dynamicKind == DynamicKindDraw }
+    val feedItems = if (includeDraw) {
+      mapped.filter { it.bvid.isNotBlank() || it.dynamicKind == DynamicKindDraw }
+    } else {
+      mapped.filter { it.bvid.isNotBlank() }
+    }
     // 每页类型占比打点:确认真实关注流里图文/纯文字/转发各占多少、哪些类型被 drop。
-    // kinds 是服务端原始 type 计数(含未渲染的类型),returned 是最终进入列表的条数。
-    // drawWithText 是判断「要不要给请求加 features=itemOpusStyle」的依据:实测同一条带正文的图文,
-    // 不带 features 时 desc 为空、正文只在 major.opus.summary 里 ⇒ 该计数长期为 0 就得加 features。
+    // kinds 是服务端原始 type 计数(含未渲染的类型),returned 是最终进入列表的条数;
+    // drawWithText 长期为 0 说明 features 没生效(图文正文只在 major.opus.summary 里)。
     Log.i(
       LogTag,
-      "dynamic feed type=$type items=${rawItems.size} returned=${feedVideos.size} " +
-        "draw=${draws.size} drawWithText=${draws.count { it.dynamicText.isNotBlank() }} " +
+      "dynamic feed type=$type items=${rawItems.size} returned=${feedItems.size} " +
+        "draw=${mapped.count { it.dynamicKind == DynamicKindDraw }} " +
+        "drawWithText=${mapped.count { it.dynamicKind == DynamicKindDraw && it.dynamicText.isNotBlank() }} " +
         "kinds=${rawItems.groupingBy { it.string("type") }.eachCount()}",
     )
 
     return DynamicFeedPage(
-      videos = feedVideos,
+      videos = feedItems,
       offset = data.string("offset"),
       hasMore = data.boolean("has_more"),
     )
@@ -421,6 +434,15 @@ internal class UserFeedRepository(
 
   private companion object {
     const val LogTag = "BiliDynamicFeed"
+
+    /**
+     * 让服务端按 opus 形态返回动态内容。**不加这一项,图文正文永远是空的** —— 正文只存在于
+     * `major.opus.summary.text`(2026-09-25 本机两次独立采样:不带 features 的图文正文长度全为 0,
+     * 带上后拿到 231/132/115… 字)。取 BV 的同款最小取值(BiliHttpApi 的 features 参数),
+     * 实测带上它视频动态既有字段完整度不变(bvid/title/cover/play/duration_text/badge/
+     * module_stat/author 各 5/5),且 archive 项没有被挪进 opus。
+     */
+    const val DynamicFeedFeatures = "itemOpusStyle"
   }
 }
 

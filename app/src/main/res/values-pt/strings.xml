@@ -20,6 +20,9 @@
     <string name="mobile_follows_empty">Sem seguidores</string>
     <string name="mobile_follows_load_failed">Falha ao carregar a lista de seguidores</string>
     <string name="mobile_dynamic_empty">Sem atualizações</string>
+    <string name="mobile_dynamic_expand">Expandir</string>
+    <string name="mobile_dynamic_collapse">Recolher</string>
+    <string name="mobile_dynamic_forward_count">%1$s reposts</string>
     <string name="mobile_dialog_choose">Escolher</string>
     <string name="mobile_dialog_cancel">Cancelar</string>
     <string name="login_mobile_title">Início de sessão por código QR</string>

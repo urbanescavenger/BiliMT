@@ -19,6 +19,9 @@
     <string name="mobile_follows_empty">No follows yet</string>
     <string name="mobile_follows_load_failed">Failed to load follows</string>
     <string name="mobile_dynamic_empty">No moments yet</string>
+    <string name="mobile_dynamic_expand">Expand</string>
+    <string name="mobile_dynamic_collapse">Collapse</string>
+    <string name="mobile_dynamic_forward_count">%1$s reposts</string>
     <string name="mobile_dialog_choose">Choose</string>
     <string name="mobile_dialog_cancel">Cancel</string>
     <string name="login_mobile_title">QR code sign-in</string>

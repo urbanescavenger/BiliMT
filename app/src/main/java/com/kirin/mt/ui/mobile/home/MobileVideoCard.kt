@@ -472,7 +472,7 @@ private fun LiveOnlineCount(online: Int, areaName: String, modifier: Modifier = 
 /** UP 主圆形头像:默认 20dp(紧凑卡),动态 feed 用 40dp(跨两行);空 face 或加载失败显示默认人形占位。
  *  复用 buildOwnerAvatarRequest 带 Bili 头与 CDN 尺寸。 */
 @Composable
-private fun OwnerAvatar(face: String, isLive: Boolean = false, size: Dp = 20.dp) {
+internal fun OwnerAvatar(face: String, isLive: Boolean = false, size: Dp = 20.dp) {
   // 正直播的 UP 头像套红色环(BiliPink),作为"直播头像"视觉信号;20dp 太小不放"直播"文字,
   // 封面已有 LiveBadge 文字,头像用红环标识即可。
   val modifier = Modifier
