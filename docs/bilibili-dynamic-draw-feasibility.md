@@ -22,7 +22,7 @@
 | 详情页评论 | **楼中楼(二级评论)先不做**,只做一级评论 |
 | TV 端 | 本轮不动(其「动态·全部」tab 目前静默丢图文,属已知缺口) |
 
-**切片进度**:切片1(数据层,纯诊断)= P11-180 **已真机复测**(`dev.r2093` 打点正常;**`type=video` 只回视频,占比数据必须切 `all`**)→ 切片2(图文卡 + 九宫格 + 展开/收起 + 移动端切 `type=all`) = P11-181 实施中 → 切片3(详情页 + 动态评论 `type=11`,不含楼中楼)→ 点图看大图(自研最小看图器)随后。
+**切片进度**:切片1(数据层,纯诊断)= P11-180 **已真机复测** → 切片2(图文卡 + 九宫格 + 展开/收起 + 移动端切 `type=all`)= P11-181 **云编译绿,已真机复测数据侧**(`dev.r2094`:`type=all` 图文进流、`drawWithText=2` 证实 features 生效)→ 下一步:点图看大图(自研最小看图器)→ 再切片3(详情页 + 动态评论 `type=11`,不含楼中楼)。
 
 **features 问号已结清(切片2 的取数依据)**:4 个 UP、两次独立采样对比 —
 
@@ -79,8 +79,7 @@ images = (moduleDynamic.major?.draw?.items ?: moduleDynamic.major?.opus?.pics)?.
 - **计数**:`modules.module_stat.like/comment/forward.count`(现状已在 `fromArchiveDynamic` 里解析,可复用)。
 - **图片 CDN 尺寸后缀实测可用**:原图 62,285 B(image/jpeg)→ `@480w_270h_1c.webp` = 5,944 B、`@320w_200h_1c.webp` = 4,302 B、`@60w_60h_1c.webp` = 1,248 B。
   项目已有 `String.biliCdnResizedImageUrl(w,h)`(`core/image/BiliImageRequest.kt:124`)负责拼这个后缀。
-- **类型分布**(空间动态代理样本,8 个 UP、3 页):`DYNAMIC_TYPE_AV` 27 / `DRAW` 16 / `FORWARD` 5。
-  图文占 1/3 —— 是显著缺口。**注意**:这是空间动态,不是关注流;关注流真实占比需登录态核对。
+- **类型分布**:两套样本 —— ① 空间动态代理样本(8 个 UP、3 页):`DYNAMIC_TYPE_AV` 27 / `DRAW` 16 / `FORWARD` 5;② **关注流实测**(2026-09-26,真机 `dev.r2094`,`type=all` 一页 19 条):`AV` 14 / `FORWARD` 2 / `DRAW` 2 / `ARTICLE` 1 ⇒ 图文 **2/19 ≈ 10.5%**、转发 10.5%、专栏 5%,渲染后 `returned=16`(丢 2 转发 + 1 专栏)。**关注流的口径以 ② 为准**(样本仅一页,量级参考);同一行日志里 `drawWithText=2` 也实测证实了 features 生效 —— 关注流的图文正文确实能拿到。
 
 ## 2. 实现落点(文件级)
 
@@ -110,8 +109,9 @@ images = (moduleDynamic.major?.draw?.items ?: moduleDynamic.major?.opus?.pics)?.
 
 ## 4. 分期(已拍板,见 §0.1)
 
-- **切片 1(进行中,P11-180)**:数据层 —— 模型 + 两分支映射 + 占比打点。**UI/行为零变化**(图文仍被 `bvid.isNotBlank()` 过滤)。
-- **切片 2**:图文卡(文本折叠/展开 + 九宫格)+ 图片显式限尺寸 + 性能档 + **点图看大图**(自研最小看图器);同时把移动端动态 tab 切 `type=all` 并同步改 key/去重/翻页判据。
+- **切片 1(完成,P11-180)**:数据层 —— 模型 + 两分支映射 + 占比打点。
+- **切片 2(P11-181,云编译绿)**:图文卡(文本折叠/展开 + 九宫格)+ 图片显式限尺寸 + 性能档 + 移动端动态 tab 切 `type=all` + key/去重换 `feedKey`。
+- **切片 2b(下一步)**:**点图看大图**(自研最小看图器)。
 - **切片 3**:动态详情页(opus 全文 + 计数)+ 动态评论 `type=11`(**不含楼中楼**)+ 点卡片进详情页 → 到此与 BV 点击行为对齐。
 - **后置可选**:看图器补齐 BV 高级项(下拉关闭/共享元素过渡/渐进解码)、纯文字卡、转发卡嵌套(`orig`)、TV 端图文卡(D-pad 焦点模型)。
 
@@ -127,7 +127,7 @@ images = (moduleDynamic.major?.draw?.items ?: moduleDynamic.major?.opus?.pics)?.
 
 ## 6. 待核实(真机/登录态)
 
-- [ ] 登录态 `feed/all?type=all` 里图文的实际占比与 `desc`/`opus` 哪条分支为主。
+- [x] 登录态 `feed/all?type=all` 的图文占比与文案分支 —— **已实测**(2026-09-26,`dev.r2094`):一页 19 条里图文 2 条(≈10.5%)、转发 2、专栏 1;`drawWithText=2` 说明走的是 `major.opus.summary` 分支(features 生效)。
 - [ ] 转发动态(`DYNAMIC_TYPE_FORWARD`)的 `orig` 嵌套深度与图片归属(自己无图时是否要展示被转发的图)。
 - [ ] 九图动态的真实样张(本次样本最多 2 图,`+N` 角标未实测)。
 - [ ] `opus.summary.paragraphs` 富段落结构(加粗/图片混排)是否要还原。
