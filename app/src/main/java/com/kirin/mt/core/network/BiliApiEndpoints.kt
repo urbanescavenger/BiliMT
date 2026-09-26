@@ -46,6 +46,8 @@ object BiliApiEndpoints {
   const val DmPost = "$ApiBase/x/v2/dm/post"
   const val CommentBase = "https://comment.bilibili.com"
   const val CommentReply = "$ApiBase/x/v2/reply"
+  /** 动态评论(旧 /x/v2/reply + type=11 实测回 -404「啥都木有」,必须走 wbi 版)。 */
+  const val CommentReplyWbiMain = "$ApiBase/x/v2/reply/wbi/main"
   const val SponsorBlockSkipSegments = "https://bsbsb.top/api/skipSegments"
   const val PlayerOnlineTotal = "$ApiBase/x/player/online/total"
   const val PlayerHeartbeat = "$ApiBase/x/click-interface/web/heartbeat"

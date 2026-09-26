@@ -35,6 +35,12 @@ import kotlinx.serialization.json.JsonArray
  */
 const val YoutubeFeedCacheTtlMs = 10 * 60 * 1000L
 
+/** 动态评论:wbi/main 的 type 值(11=动态)、每页条数,以及 mode(3=仅热度、2=仅时间)。 */
+const val DynamicCommentType = 11
+const val DynamicCommentPageSize = 20
+const val DynamicCommentModeHot = 3
+const val DynamicCommentModeLatest = 2
+
 /** 把 B 站动态与 YouTube 关注流按发布时间倒序合并成统一流。 */
 fun mergeByPubdate(bili: List<VideoSummary>, youtube: List<VideoSummary>): List<VideoSummary> =
   (bili + youtube).sortedByDescending { it.pubdate }
@@ -454,9 +460,57 @@ class VideoRepository(
     return userFeedRepository.getComments(aid = aid, page = page, sort = sort)
   }
 
-  /** 动态评论(oid=dynId,type=11);详情页用,与视频评论同端点。 */
-  suspend fun getDynamicComments(dynId: String, page: Int, sort: Int): CommentPage {
-    return userFeedRepository.getDynamicComments(dynId = dynId, page = page, sort = sort)
+  /**
+   * 动态评论:`/x/v2/reply/wbi/main`(旧 `/x/v2/reply` + type=11 实测回 `-404 啥都木有`)。
+   *
+   * 与视频评论的差别:① 走 **wbi 签名** + SESSDATA/buvid(对齐 BV `BiliHttpApi.getComments`);
+   * ② 分页是**游标**(`pagination_str={"offset":"…"}` + `cursor.is_end`),首次传空串、
+   * 之后用上次返回的 `nextOffset`,不是页码;③ `mode`:3=仅热度、2=仅时间(对应 UI 的热门/最新)。
+   */
+  suspend fun getDynamicComments(
+    dynId: String,
+    mode: Int,
+    offset: String = "",
+    pageSize: Int = DynamicCommentPageSize,
+  ): DynamicCommentPage {
+    if (dynId.isBlank()) return DynamicCommentPage(comments = emptyList(), nextOffset = "", isEnd = true)
+    val session = sessionStore.session.first()
+    val sessData = session.sessData
+    val keys = wbiKeyRepository.ensureKeys(sessData)
+    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
+
+    val params = mutableMapOf(
+      "type" to DynamicCommentType.toString(),
+      "oid" to dynId,
+      "mode" to mode.toString(),
+      "ps" to pageSize.toString(),
+      // 游标:首次空串,之后填上一页返回的 next_offset。
+      "pagination_str" to """{"offset":"$offset"}""",
+    )
+    val signedParams = if (keys != null) wbiSigner.sign(params, keys.imgKey, keys.subKey) else params
+    val root = apiClient.getJsonWithHeaders(
+      url = BiliApiEndpoints.CommentReplyWbiMain,
+      params = signedParams,
+      headers = buildMap {
+        BiliHeaders.cookie(sessData = sessData, buvid3 = buvid3, buvid4 = buvid4)?.let { put("Cookie", it) }
+        put("User-Agent", BiliHeaders.UserAgent)
+        put("Referer", "https://www.bilibili.com/")
+      },
+    ).rootObject()
+    root.requireBiliCodeOk("dynamic comments")
+
+    val data = root.obj("data") ?: return DynamicCommentPage(comments = emptyList(), nextOffset = "", isEnd = true)
+    val cursor = data.obj("cursor")
+    val comments = (data["replies"] as? JsonArray)
+      ?.mapNotNull { it.asObjectOrNull() }
+      ?.map(VideoSummaryMappers::fromComment)
+      .orEmpty()
+    return DynamicCommentPage(
+      comments = comments,
+      nextOffset = cursor?.obj("pagination_reply")?.string("next_offset").orEmpty(),
+      isEnd = cursor?.boolean("is_end") ?: true,
+      totalCount = cursor?.int("all_count") ?: comments.size,
+    )
   }
 
   suspend fun getHistoryPage(

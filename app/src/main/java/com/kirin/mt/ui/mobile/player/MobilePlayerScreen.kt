@@ -3087,9 +3087,8 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
           )
         } else {
           MobileCommentList(
-            // PGC 走 epId、没有 aid ⇒ 不支持评论(target=null 显示占位);
-            // 其余用视频目标(metadata 未到位时 aid=0,组件显示加载圈)。
-            target = if (isPgc) null else CommentTarget.Video(metadata?.aid ?: 0L),
+            aid = metadata?.aid ?: 0L,
+            isPgc = isPgc,
             videoRepository = videoRepository,
             modifier = Modifier.fillMaxSize(),
             onTotalCountChange = { commentTotalCount = it },
