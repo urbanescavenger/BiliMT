@@ -1,13 +1,10 @@
 package com.kirin.mt.ui.mobile.feed
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -22,15 +19,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.kirin.mt.R
-import com.kirin.mt.core.image.BiliImageSizing
-import com.kirin.mt.core.image.buildVideoThumbnailRequest
 import com.kirin.mt.core.model.DynamicImage
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.pubdateText
@@ -42,9 +34,6 @@ import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 /** 正文默认折叠到这个行数,超出给「展开」(B站 官方也是折叠到几行 + 展开)。 */
 private const val DynamicTextCollapsedLines = 6
 
-/** 九宫格最多平铺几张,其余收进「+N」角标(对齐 BV DynamicItem 的 1/2/3+ 布局)。 */
-private const val DynamicGridVisibleCount = 3
-
 /**
  * 动态图文卡(P11-181):顶行作者块 → 正文(可折叠)→ 九宫格 → 点赞/评论/转发计数。
  *
@@ -52,7 +41,7 @@ private const val DynamicGridVisibleCount = 3
  * 图片**一律显式拼 CDN 尺寸后缀**(九图动态否则会拉 9 张原图),并跟随性能档:低配/RGB_565 档
  * 用 RGB_565 且关内存缓存(与视频卡同一套 [LocalBiliPerformancePolicy])。
  *
- * 本轮(V1)整卡与图片都不可点:点卡片进详情页、点图看大图分别在后续切片接入;作者块可点进 UP 主页。
+ * 交互:点图 → 大图查看器;点正文/计数区 → 动态详情页;点作者块 → UP 主页。
  */
 @Composable
 internal fun MobileDynamicDrawCard(
@@ -61,6 +50,8 @@ internal fun MobileDynamicDrawCard(
   onOpenOwner: ((VideoSummary) -> Unit)? = null,
   /** 点图片回调(图片列表 + 起始下标),由调用方打开大图查看器。 */
   onImageClick: ((List<DynamicImage>, Int) -> Unit)? = null,
+  /** 点正文/计数区回调:打开动态详情页(点图片仍走查看器)。 */
+  onOpenDetail: (() -> Unit)? = null,
 ) {
   val policy = LocalBiliPerformancePolicy.current
   val relativeText = rememberVideoCardRelativeText()
@@ -105,6 +96,7 @@ internal fun MobileDynamicDrawCard(
         video = video,
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier.clickable(enabled = onOpenDetail != null) { onOpenDetail?.invoke() },
         maxLines = if (expanded) Int.MAX_VALUE else DynamicTextCollapsedLines,
         onTextLayout = { layout ->
           val overflowed = layout.hasVisualOverflow
@@ -143,90 +135,9 @@ internal fun MobileDynamicDrawCard(
     }
 
     // 与视频动态卡共用同一计数行(转发/评论/点赞),保证两类卡片观感一致。
-    DynamicActionRow(video = video, modifier = Modifier.padding(top = 6.dp))
-  }
-}
-
-/**
- * 九宫格:1 图整宽(2:1)、2 图并排方格、≥3 取前 3 张方格 + 「+N」角标。
- * 每张都按格子尺寸拼 CDN 后缀再请求。
- */
-@Composable
-private fun DynamicDrawPictures(
-  images: List<DynamicImage>,
-  allowRgb565: Boolean,
-  memoryCacheEnabled: Boolean,
-  onImageClick: ((List<DynamicImage>, Int) -> Unit)? = null,
-  modifier: Modifier = Modifier,
-) {
-  val shape = RoundedCornerShape(8.dp)
-  Box(modifier = modifier.fillMaxWidth()) {
-    when {
-      images.size == 1 -> DynamicPicture(
-        image = images.first(),
-        widthPx = BiliImageSizing.DynamicDrawSingleWidthPx,
-        heightPx = BiliImageSizing.DynamicDrawSingleHeightPx,
-        allowRgb565 = allowRgb565,
-        memoryCacheEnabled = memoryCacheEnabled,
-        onClick = onImageClick?.let { click -> { click(images, 0) } },
-        modifier = Modifier.fillMaxWidth().aspectRatio(2f).clip(shape),
-      )
-
-      else -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        images.take(DynamicGridVisibleCount).forEachIndexed { index, image ->
-          DynamicPicture(
-            image = image,
-            widthPx = BiliImageSizing.DynamicDrawGridSizePx,
-            heightPx = BiliImageSizing.DynamicDrawGridSizePx,
-            allowRgb565 = allowRgb565,
-            memoryCacheEnabled = memoryCacheEnabled,
-            onClick = onImageClick?.let { click -> { click(images, index) } },
-            modifier = Modifier.weight(1f).aspectRatio(1f).clip(shape),
-          )
-        }
-      }
-    }
-    if (images.size > DynamicGridVisibleCount) {
-      Text(
-        text = "+${images.size - DynamicGridVisibleCount}",
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.surface,
-        modifier = Modifier
-          .align(Alignment.BottomEnd)
-          .clip(RoundedCornerShape(bottomEnd = 8.dp, topStart = 8.dp))
-          .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
-          // 点「+N」直接看第 4 张起(与点前 3 张同一个查看器)。
-          .clickable(enabled = onImageClick != null) { onImageClick?.invoke(images, DynamicGridVisibleCount) }
-          .padding(horizontal = 6.dp, vertical = 1.dp),
-      )
+    // 整行可点进详情(点「评论 N」想进详情是最自然的直觉);图片区在上层,不受影响。
+    Box(modifier = Modifier.clickable(enabled = onOpenDetail != null) { onOpenDetail?.invoke() }) {
+      DynamicActionRow(video = video, modifier = Modifier.padding(top = 6.dp))
     }
   }
-}
-
-@Composable
-private fun DynamicPicture(
-  image: DynamicImage,
-  widthPx: Int,
-  heightPx: Int,
-  allowRgb565: Boolean,
-  memoryCacheEnabled: Boolean,
-  onClick: (() -> Unit)? = null,
-  modifier: Modifier = Modifier,
-) {
-  val context = LocalContext.current
-  AsyncImage(
-    model = remember(context, image.url, widthPx, heightPx, allowRgb565, memoryCacheEnabled) {
-      buildVideoThumbnailRequest(
-        context = context,
-        url = image.url,
-        widthPx = widthPx,
-        heightPx = heightPx,
-        allowRgb565 = allowRgb565,
-        memoryCacheEnabled = memoryCacheEnabled,
-      )
-    },
-    contentDescription = null,
-    contentScale = ContentScale.Crop,
-    modifier = modifier.clickable(enabled = onClick != null) { onClick?.invoke() },
-  )
 }

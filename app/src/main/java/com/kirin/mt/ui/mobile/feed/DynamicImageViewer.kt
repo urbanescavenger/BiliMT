@@ -37,6 +37,9 @@ import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
 
+/** 大图查看器的打开目标:这一组图片 + 起始下标。列表卡与详情页共用。 */
+internal data class DynamicViewerTarget(val images: List<DynamicImage>, val index: Int)
+
 /**
  * 动态大图查看器(P11-184):点图文图片打开,全屏黑底 + 左右翻页 + 双指缩放 / 双击放大 / 放大后拖动。
  *

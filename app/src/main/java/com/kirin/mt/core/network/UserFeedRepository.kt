@@ -254,6 +254,7 @@ internal class UserFeedRepository(
     return true
   }
 
+  /** 视频评论(oid=aid,type=1)。 */
   suspend fun getComments(
     aid: Long,
     page: Int,
@@ -261,20 +262,59 @@ internal class UserFeedRepository(
     pageSize: Int = 20,
   ): CommentPage {
     if (aid <= 0L) return CommentPage(comments = emptyList(), currentPage = page, hasMore = false)
+    return getReplyPage(
+      oid = aid.toString(),
+      commentType = CommentTypeVideo,
+      page = page,
+      sort = sort,
+      pageSize = pageSize,
+      context = "comments",
+    )
+  }
+
+  /**
+   * 动态评论(oid=动态 id,type=11)。与视频评论同一个 /x/v2/reply 端点,只是 oid/type 不同。
+   * 失败时 context 会带进异常信息,详情页据此提示(真机若回 -403 说明该路需要 wbi 版端点)。
+   */
+  suspend fun getDynamicComments(
+    dynId: String,
+    page: Int,
+    sort: Int,
+    pageSize: Int = 20,
+  ): CommentPage {
+    if (dynId.isBlank()) return CommentPage(comments = emptyList(), currentPage = page, hasMore = false)
+    return getReplyPage(
+      oid = dynId,
+      commentType = CommentTypeDynamic,
+      page = page,
+      sort = sort,
+      pageSize = pageSize,
+      context = "dynamic comments",
+    )
+  }
+
+  private suspend fun getReplyPage(
+    oid: String,
+    commentType: Int,
+    page: Int,
+    sort: Int,
+    pageSize: Int,
+    context: String,
+  ): CommentPage {
     val sessData = sessionStore.sessData.first()
 
     val root = apiClient.getJson(
       url = BiliApiEndpoints.CommentReply,
       params = mapOf(
-        "oid" to aid.toString(),
-        "type" to "1",
+        "oid" to oid,
+        "type" to commentType.toString(),
         "pn" to page.toString(),
         "ps" to pageSize.toString(),
         "sort" to sort.toString(),
       ),
       sessData = sessData,
     ).rootObject()
-    root.requireBiliCodeOk("comments")
+    root.requireBiliCodeOk(context)
 
     val data = root.obj("data") ?: return CommentPage(comments = emptyList(), currentPage = page, hasMore = false)
     val replies = data["replies"] as? JsonArray
@@ -434,6 +474,10 @@ internal class UserFeedRepository(
 
   private companion object {
     const val LogTag = "BiliDynamicFeed"
+
+    /** 评论 type:1=视频(oid=aid)、11=动态(oid=dynId)。 */
+    const val CommentTypeVideo = 1
+    const val CommentTypeDynamic = 11
 
     /**
      * 让服务端按 opus 形态返回动态内容。**不加这一项,图文正文永远是空的** —— 正文只存在于

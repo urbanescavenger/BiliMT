@@ -454,6 +454,11 @@ class VideoRepository(
     return userFeedRepository.getComments(aid = aid, page = page, sort = sort)
   }
 
+  /** 动态评论(oid=dynId,type=11);详情页用,与视频评论同端点。 */
+  suspend fun getDynamicComments(dynId: String, page: Int, sort: Int): CommentPage {
+    return userFeedRepository.getDynamicComments(dynId = dynId, page = page, sort = sort)
+  }
+
   suspend fun getHistoryPage(
     pageSize: Int = HistoryPageSize,
     viewAt: Long = 0L,

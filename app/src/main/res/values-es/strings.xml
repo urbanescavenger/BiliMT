@@ -20,6 +20,8 @@
     <string name="mobile_follows_empty">Sin seguidos</string>
     <string name="mobile_follows_load_failed">Fallo al cargar la lista de seguidos</string>
     <string name="mobile_dynamic_empty">Sin novedades</string>
+    <string <string name="mobile_dynamic_detail_title">Detalle</string>
+    <string <string name="mobile_dynamic_detail_truncated">Este texto es la version truncada que devuelve el servidor</string>
     <string name="mobile_dynamic_expand">Expandir</string>
     <string name="mobile_dynamic_collapse">Contraer</string>
     <string name="mobile_dynamic_forward_count">%1$s reenvios</string>

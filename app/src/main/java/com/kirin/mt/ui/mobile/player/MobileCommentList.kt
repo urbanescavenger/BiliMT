@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.Comment
+import com.kirin.mt.core.network.CommentPage
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.youtube.YoutubeComment
 import com.kirin.mt.ui.theme.BiliColors
@@ -87,11 +88,37 @@ private object CommentColor {
   val Divider = Color(0xFFEEEEEE)
 }
 
+/**
+ * 评论目标:视频(oid=aid,type=1)与动态(oid=dynId,type=11)共用一个 `/x/v2/reply` 端点,
+ * 只有 oid/type 不同 —— 抽出来让播放器与动态详情页复用同一套评论 UI。
+ */
+internal sealed interface CommentTarget {
+  data class Video(val aid: Long) : CommentTarget
+  data class Dynamic(val dynId: String) : CommentTarget
+}
+
+/** 目标是否具备拉取条件(视频要 aid>0,动态要 dynId 非空)。 */
+private val CommentTarget.isLoadable: Boolean
+  get() = when (this) {
+    is CommentTarget.Video -> aid > 0L
+    is CommentTarget.Dynamic -> dynId.isNotBlank()
+  }
+
+private suspend fun loadCommentPage(
+  videoRepository: VideoRepository,
+  target: CommentTarget,
+  page: Int,
+  sort: Int,
+): CommentPage = when (target) {
+  is CommentTarget.Video -> videoRepository.getComments(aid = target.aid, page = page, sort = sort)
+  is CommentTarget.Dynamic -> videoRepository.getDynamicComments(dynId = target.dynId, page = page, sort = sort)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun MobileCommentList(
-  aid: Long,
-  isPgc: Boolean,
+  /** null = 该来源不支持评论(PGC 无 aid);Video(aid=0) 表示 metadata 还没到位,显示加载圈。 */
+  target: CommentTarget?,
   videoRepository: VideoRepository,
   modifier: Modifier = Modifier,
   onTotalCountChange: ((Int) -> Unit)? = null,
@@ -102,18 +129,18 @@ internal fun MobileCommentList(
       .background(Color.White),
   ) {
     when {
-      // PGC 用 epId 无 aid,/x/v2/reply type=1 取不到,本期不接 PGC 评论,占位。
-      isPgc -> Text(
+      // 不支持的来源(PGC 用 epId 无 aid,/x/v2/reply type=1 取不到):占位,本期不接。
+      target == null -> Text(
         text = stringResource(R.string.comment_empty),
         color = CommentColor.TextSecondary,
         modifier = Modifier.align(Alignment.Center),
       )
-      // metadata 未加载完(aid=0):显示加载圈,而非"暂无评论",避免误判。
-      aid <= 0L -> CircularProgressIndicator(
+      // metadata 未加载完(视频 aid=0):显示加载圈,而非"暂无评论",避免误判。
+      !target.isLoadable -> CircularProgressIndicator(
         color = BiliColors.BiliPink,
         modifier = Modifier.align(Alignment.Center),
       )
-      else -> CommentListContent(aid = aid, videoRepository = videoRepository, onTotalCountChange = onTotalCountChange)
+      else -> CommentListContent(target = target, videoRepository = videoRepository, onTotalCountChange = onTotalCountChange)
     }
   }
 }
@@ -121,7 +148,7 @@ internal fun MobileCommentList(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CommentListContent(
-  aid: Long,
+  target: CommentTarget,
   videoRepository: VideoRepository,
   onTotalCountChange: ((Int) -> Unit)? = null,
 ) {
@@ -134,8 +161,8 @@ private fun CommentListContent(
     onTotalCountChange?.invoke(state.totalCount)
   }
 
-  LaunchedEffect(aid, state.sort) {
-    loadCommentFirstPage(videoRepository, state, aid)
+  LaunchedEffect(target, state.sort) {
+    loadCommentFirstPage(videoRepository, state, target)
   }
 
   // 触屏翻页:可见末尾临近时触发下一页。
@@ -146,7 +173,7 @@ private fun CommentListContent(
     }
   }
   LaunchedEffect(nearEnd) {
-    if (nearEnd) loadCommentNextPage(videoRepository, coroutineScope, state, aid)
+    if (nearEnd) loadCommentNextPage(videoRepository, coroutineScope, state, target)
   }
 
   Column(modifier = Modifier.fillMaxSize()) {
@@ -214,7 +241,7 @@ private fun CommentListContent(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SortChip(
+internal fun SortChip(
   label: String,
   selected: Boolean,
   onClick: () -> Unit,
@@ -233,7 +260,7 @@ private fun SortChip(
 }
 
 @Composable
-private fun CommentListFooter(state: MobileCommentListState) {
+internal fun CommentListFooter(state: MobileCommentListState) {
   Row(
     modifier = Modifier
       .fillMaxWidth()
@@ -260,7 +287,7 @@ private fun CommentListFooter(state: MobileCommentListState) {
 }
 
 @Composable
-private fun CommentItem(comment: Comment) {
+internal fun CommentItem(comment: Comment) {
   Row(modifier = Modifier.fillMaxWidth()) {
     AsyncImage(
       model = comment.avatar,
@@ -334,10 +361,10 @@ private fun formatRelativeTime(ctimeSeconds: Long, resources: Resources): String
   }
 }
 
-private suspend fun loadCommentFirstPage(
+internal suspend fun loadCommentFirstPage(
   videoRepository: VideoRepository,
   state: MobileCommentListState,
-  aid: Long,
+  target: CommentTarget,
 ) {
   state.loading = true
   state.error = ""
@@ -346,7 +373,7 @@ private suspend fun loadCommentFirstPage(
   state.currentPage = 0
   state.comments = emptyList()
   try {
-    val page = videoRepository.getComments(aid = aid, page = 1, sort = state.sort)
+    val page = loadCommentPage(videoRepository, target, page = 1, sort = state.sort)
     state.currentPage = 1
     state.comments = page.comments
     state.endReached = !page.hasMore
@@ -360,11 +387,11 @@ private suspend fun loadCommentFirstPage(
   }
 }
 
-private fun loadCommentNextPage(
+internal fun loadCommentNextPage(
   videoRepository: VideoRepository,
   coroutineScope: CoroutineScope,
   state: MobileCommentListState,
-  aid: Long,
+  target: CommentTarget,
 ) {
   if (state.loadingMore || state.endReached || state.loading) return
   val nextPage = state.currentPage + 1
@@ -373,7 +400,7 @@ private fun loadCommentNextPage(
   state.loadMoreError = ""
   coroutineScope.launch {
     try {
-      val page = videoRepository.getComments(aid = aid, page = nextPage, sort = sort)
+      val page = loadCommentPage(videoRepository, target, page = nextPage, sort = sort)
       state.currentPage = nextPage
       val known = state.comments.mapTo(mutableSetOf()) { it.id }
       val fresh = page.comments.filter { known.add(it.id) }

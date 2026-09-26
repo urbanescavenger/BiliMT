@@ -19,6 +19,8 @@
     <string name="mobile_follows_empty">暂无关注</string>
     <string name="mobile_follows_load_failed">关注列表加载失败</string>
     <string name="mobile_dynamic_empty">暂无动态</string>
+    <string <string name="mobile_dynamic_detail_title">动态详情</string>
+    <string <string name="mobile_dynamic_detail_truncated">正文较长,这里是服务端返回的截断版本</string>
     <string name="mobile_dynamic_expand">展开</string>
     <string name="mobile_dynamic_collapse">收起</string>
     <string name="mobile_dynamic_forward_count">转发 %1$s</string>

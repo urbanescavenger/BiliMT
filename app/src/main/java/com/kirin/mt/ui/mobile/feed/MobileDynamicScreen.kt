@@ -55,8 +55,6 @@ private const val DynamicFeedTypeAll = "all"
 /** 与 UserFeedRepository 同一个 tag,方便一次 grep 出「取数 + 渲染列表」两段。 */
 private const val LogTag = "BiliDynamicFeed"
 
-/** 大图查看器的打开目标:这一组图片 + 起始下标。 */
-private data class DynamicViewerTarget(val images: List<DynamicImage>, val index: Int)
 
 private sealed interface DynamicState {
   data object Loading : DynamicState
@@ -121,6 +119,8 @@ fun MobileDynamicScreen(
   var isRefreshing by remember { mutableStateOf(false) }
   // 大图查看器:非空时以全屏 Dialog 盖在最上层(点图文图片打开)。
   var viewerTarget by remember { mutableStateOf<DynamicViewerTarget?>(null) }
+  // 动态详情页:非空时全屏盖住(点图文卡正文/计数区打开)。
+  var detailVideo by remember { mutableStateOf<VideoSummary?>(null) }
 
   /** 全量拉取 YouTube 关注流(等全部查完),失败用缓存兜底。 */
   suspend fun fetchYoutubeAll(): List<VideoSummary> {
@@ -287,6 +287,13 @@ fun MobileDynamicScreen(
         onDismiss = { viewerTarget = null },
       )
     }
+    detailVideo?.let { detail ->
+      MobileDynamicDetailScreen(
+        video = detail,
+        videoRepository = videoRepository,
+        onDismiss = { detailVideo = null },
+      )
+    }
     // PullToRefreshLayout 提到 when 外,isRefreshing 顶层求值真值;刷新时 state→Loading 不再卸载容器,
     // 列表滚动位置与指示器保留,各状态内联为 grid item(照 MobileUserSpaceScreen 范式)。
     PullToRefreshLayout(
@@ -356,6 +363,7 @@ fun MobileDynamicScreen(
                   video = video,
                   onOpenOwner = onOpenOwner,
                   onImageClick = { images, index -> viewerTarget = DynamicViewerTarget(images, index) },
+                  onOpenDetail = { detailVideo = video },
                 )
                 return@items
               }
