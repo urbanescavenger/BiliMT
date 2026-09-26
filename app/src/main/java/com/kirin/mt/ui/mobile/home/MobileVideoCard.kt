@@ -58,6 +58,7 @@ import com.kirin.mt.ui.i18n.formatCompactCount
 import com.kirin.mt.ui.i18n.localeFromResources
 import com.kirin.mt.ui.mobile.feed.DynamicRichText
 import com.kirin.mt.ui.theme.BiliColors
+import com.kirin.mt.ui.theme.BiliSizing
 
 /** YouTube 卡片绿框颜色(Material Green 600),动态页区分 YouTube 与 B 站内容。 */
 private val YoutubeBorderColor = Color(0xFF00C853)
@@ -311,7 +312,7 @@ private fun FeedStyleCardContent(
           Spacer(modifier = Modifier.weight(1f))
           if (video.view > 0) {
             MobileCoverMetric(
-              iconRes = R.drawable.ic_video_play_count,
+              iconRes = R.drawable.ic_video_play_outline,
               count = video.view,
               resources = resources,
               textStyle = overlayTextStyle,
@@ -320,7 +321,7 @@ private fun FeedStyleCardContent(
           if (video.danmaku > 0) {
             Spacer(modifier = Modifier.width(8.dp))
             MobileCoverMetric(
-              iconRes = R.drawable.ic_video_danmaku_count,
+              iconRes = R.drawable.ic_player_danmaku_toggle,
               count = video.danmaku,
               resources = resources,
               textStyle = overlayTextStyle,
@@ -357,7 +358,7 @@ private fun MobileCoverMetric(
       painter = painterResource(iconRes),
       contentDescription = null,
       tint = BiliColors.TextPrimary,
-      modifier = Modifier.size(14.dp),
+      modifier = Modifier.size(BiliSizing.VideoOverlayIconSize),
     )
     Spacer(modifier = Modifier.width(3.dp))
     Text(
@@ -403,7 +404,7 @@ private fun DynamicActionCount(iconRes: Int, text: String) {
       painter = painterResource(iconRes),
       contentDescription = null,
       tint = MaterialTheme.colorScheme.onSurfaceVariant,
-      modifier = Modifier.size(14.dp),
+      modifier = Modifier.size(BiliSizing.VideoOverlayIconSize),
     )
     Text(
       text = text,
