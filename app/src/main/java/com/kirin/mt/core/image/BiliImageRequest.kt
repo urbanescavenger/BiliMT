@@ -46,6 +46,31 @@ fun buildVideoThumbnailRequest(
     .build()
 }
 
+/**
+ * 大图查看器用请求:按屏宽拼 `@Wx.webp`(**只给宽、不给高** —— 带高会追加 `_1c` 变成居中裁切,
+ * 大图必须保持整图比例)。缩略图那套 [buildVideoThumbnailRequest] 带高裁切,不能直接用在这里。
+ */
+fun buildFullImageRequest(
+  context: Context,
+  url: String,
+  widthPx: Int,
+  allowRgb565: Boolean = false,
+  memoryCacheEnabled: Boolean = true,
+): ImageRequest {
+  if (url.isYoutubeImageUrl()) {
+    return buildYoutubeImageRequest(context, url, widthPx, widthPx, allowRgb565, memoryCacheEnabled)
+  }
+  return ImageRequest.Builder(context)
+    .data(url.biliCdnResizedImageUrl(widthPx))
+    .addBiliImageHeaders()
+    .size(widthPx)
+    .precision(Precision.INEXACT)
+    .allowRgb565(allowRgb565)
+    .memoryCachePolicy(if (memoryCacheEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED)
+    .crossfade(false)
+    .build()
+}
+
 fun buildOwnerAvatarRequest(
   context: Context,
   url: String,

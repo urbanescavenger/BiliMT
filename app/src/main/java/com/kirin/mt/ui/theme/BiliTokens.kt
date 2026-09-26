@@ -306,6 +306,9 @@ object BiliFocus {
   const val CardScale = 1.055f
   const val CinematicCardScale = 1.072f
   const val CinematicNavScale = 1.035f
+  // 大图查看器缩放:双击放大档 + 双指缩放上限。
+  const val ImageViewerDoubleTapScale = 2.5f
+  const val ImageViewerMaxScale = 5f
   const val CoverHighlightAlpha = 0.08f
   const val CinematicCoverHighlightAlpha = 0.06f
   const val FocusedCoverBlurAlpha = 0.10f

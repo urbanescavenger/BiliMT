@@ -32,6 +32,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
+import com.kirin.mt.core.model.DynamicImage
 import com.kirin.mt.core.model.DynamicKindDraw
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.feedKey
@@ -53,6 +54,9 @@ private const val DynamicFeedTypeAll = "all"
 
 /** 与 UserFeedRepository 同一个 tag,方便一次 grep 出「取数 + 渲染列表」两段。 */
 private const val LogTag = "BiliDynamicFeed"
+
+/** 大图查看器的打开目标:这一组图片 + 起始下标。 */
+private data class DynamicViewerTarget(val images: List<DynamicImage>, val index: Int)
 
 private sealed interface DynamicState {
   data object Loading : DynamicState
@@ -115,6 +119,8 @@ fun MobileDynamicScreen(
   var feedJob by remember { mutableStateOf<Job?>(null) }
   // 保留旧数据刷新时驱动下拉指示器(区别于初始 Loading 的网格内 spinner)。
   var isRefreshing by remember { mutableStateOf(false) }
+  // 大图查看器:非空时以全屏 Dialog 盖在最上层(点图文图片打开)。
+  var viewerTarget by remember { mutableStateOf<DynamicViewerTarget?>(null) }
 
   /** 全量拉取 YouTube 关注流(等全部查完),失败用缓存兜底。 */
   suspend fun fetchYoutubeAll(): List<VideoSummary> {
@@ -274,6 +280,13 @@ fun MobileDynamicScreen(
   }
 
   Box(modifier = modifier.fillMaxSize()) {
+    viewerTarget?.let { target ->
+      DynamicImageViewer(
+        images = target.images,
+        initialIndex = target.index,
+        onDismiss = { viewerTarget = null },
+      )
+    }
     // PullToRefreshLayout 提到 when 外,isRefreshing 顶层求值真值;刷新时 state→Loading 不再卸载容器,
     // 列表滚动位置与指示器保留,各状态内联为 grid item(照 MobileUserSpaceScreen 范式)。
     PullToRefreshLayout(
@@ -342,6 +355,7 @@ fun MobileDynamicScreen(
                 MobileDynamicDrawCard(
                   video = video,
                   onOpenOwner = onOpenOwner,
+                  onImageClick = { images, index -> viewerTarget = DynamicViewerTarget(images, index) },
                 )
                 return@items
               }

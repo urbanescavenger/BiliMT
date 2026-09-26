@@ -59,6 +59,8 @@ internal fun MobileDynamicDrawCard(
   video: VideoSummary,
   modifier: Modifier = Modifier,
   onOpenOwner: ((VideoSummary) -> Unit)? = null,
+  /** 点图片回调(图片列表 + 起始下标),由调用方打开大图查看器。 */
+  onImageClick: ((List<DynamicImage>, Int) -> Unit)? = null,
 ) {
   val policy = LocalBiliPerformancePolicy.current
   val relativeText = rememberVideoCardRelativeText()
@@ -135,6 +137,7 @@ internal fun MobileDynamicDrawCard(
         images = video.dynamicImages,
         allowRgb565 = policy.videoThumbnailRgb565Enabled,
         memoryCacheEnabled = policy.imageMemoryCacheEnabled,
+        onImageClick = onImageClick,
         modifier = Modifier.padding(top = 6.dp),
       )
     }
@@ -153,6 +156,7 @@ private fun DynamicDrawPictures(
   images: List<DynamicImage>,
   allowRgb565: Boolean,
   memoryCacheEnabled: Boolean,
+  onImageClick: ((List<DynamicImage>, Int) -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
   val shape = RoundedCornerShape(8.dp)
@@ -164,17 +168,19 @@ private fun DynamicDrawPictures(
         heightPx = BiliImageSizing.DynamicDrawSingleHeightPx,
         allowRgb565 = allowRgb565,
         memoryCacheEnabled = memoryCacheEnabled,
+        onClick = onImageClick?.let { click -> { click(images, 0) } },
         modifier = Modifier.fillMaxWidth().aspectRatio(2f).clip(shape),
       )
 
       else -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        images.take(DynamicGridVisibleCount).forEach { image ->
+        images.take(DynamicGridVisibleCount).forEachIndexed { index, image ->
           DynamicPicture(
             image = image,
             widthPx = BiliImageSizing.DynamicDrawGridSizePx,
             heightPx = BiliImageSizing.DynamicDrawGridSizePx,
             allowRgb565 = allowRgb565,
             memoryCacheEnabled = memoryCacheEnabled,
+            onClick = onImageClick?.let { click -> { click(images, index) } },
             modifier = Modifier.weight(1f).aspectRatio(1f).clip(shape),
           )
         }
@@ -189,6 +195,8 @@ private fun DynamicDrawPictures(
           .align(Alignment.BottomEnd)
           .clip(RoundedCornerShape(bottomEnd = 8.dp, topStart = 8.dp))
           .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
+          // 点「+N」直接看第 4 张起(与点前 3 张同一个查看器)。
+          .clickable(enabled = onImageClick != null) { onImageClick?.invoke(images, DynamicGridVisibleCount) }
           .padding(horizontal = 6.dp, vertical = 1.dp),
       )
     }
@@ -202,6 +210,7 @@ private fun DynamicPicture(
   heightPx: Int,
   allowRgb565: Boolean,
   memoryCacheEnabled: Boolean,
+  onClick: (() -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -218,6 +227,6 @@ private fun DynamicPicture(
     },
     contentDescription = null,
     contentScale = ContentScale.Crop,
-    modifier = modifier,
+    modifier = modifier.clickable(enabled = onClick != null) { onClick?.invoke() },
   )
 }
