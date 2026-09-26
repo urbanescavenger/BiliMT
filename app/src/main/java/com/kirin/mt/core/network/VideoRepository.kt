@@ -2,7 +2,7 @@ package com.kirin.mt.core.network
 
 import android.util.Log
 import com.kirin.mt.core.auth.WbiKeyRepository
-import com.kirin.mt.core.auth.WbiKeys
+import com.kirin.mt.core.storage.WbiKeys
 import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.ProgressUnset
