@@ -33,8 +33,8 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -57,7 +57,6 @@ import com.kirin.mt.ui.i18n.formatCompactCount
 import com.kirin.mt.ui.i18n.localeFromResources
 import com.kirin.mt.ui.mobile.feed.DynamicRichText
 import com.kirin.mt.ui.theme.BiliColors
-import com.kirin.mt.ui.theme.BiliSizing
 
 /** YouTube 卡片绿框颜色(Material Green 600),动态页区分 YouTube 与 B 站内容。 */
 private val YoutubeBorderColor = Color(0xFF00C853)
@@ -270,19 +269,6 @@ private fun FeedStyleCardContent(
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxWidth(),
       )
-      // 底部渐变蒙版:官方动态卡的「播放/弹幕」是**无底板**纯文字,靠这条渐变压在亮封面上才看得清
-      // (复用 TV VideoCard 同款 token)。
-      Box(
-        modifier = Modifier
-          .align(Alignment.BottomCenter)
-          .fillMaxWidth()
-          .height(BiliSizing.VideoCoverGradientHeight)
-          .background(
-            Brush.verticalGradient(
-              colors = listOf(BiliColors.OverlayTransparent, BiliColors.OverlayScrim),
-            ),
-          ),
-      )
       if (video.isLive) {
         LiveBadge(text = video.badge.ifBlank { stringResource(R.string.mobile_live) }, modifier = Modifier.align(Alignment.TopStart))
       } else if (video.badge.isNotEmpty() && video.source != SourceIptv) {
@@ -298,49 +284,35 @@ private fun FeedStyleCardContent(
         CompletedBadge(modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
       }
       MobileWatchProgress(video = video, modifier = Modifier.align(Alignment.BottomCenter))
-      // 时长 + 播放 + 弹幕覆盖(对齐官方动态卡):**时长带底板、「播放/弹幕」不带**(官方就是一个有底板一个没有)。
+      // 覆盖行对齐 TV 端动态卡:**时长最左**(带底板)、**播放/弹幕最右**(图标 + 紧凑计数);
+      // **不加整条底部渐变蒙版**(用户要求),右下的白字靠阴影保证亮封面上的可读性。
       if (!video.isLive && (video.duration > 0 || video.view > 0 || video.danmaku > 0)) {
         val resources = LocalContext.current.resources
         Row(
-          modifier = Modifier.align(Alignment.BottomStart).padding(6.dp),
-          horizontalArrangement = Arrangement.spacedBy(4.dp),
+          modifier = Modifier
+            .align(Alignment.BottomStart)
+            .fillMaxWidth()
+            .padding(6.dp),
+          verticalAlignment = Alignment.CenterVertically,
         ) {
-          // 时长与「播放/弹幕」是**两个独立元素**(纯数字走拉丁字体、中文回退 CJK 字体族,笔画粗细与
-          // 基线度量不同,挤在一处会显得「字体不一样」);底板只给时长,「播放/弹幕」是纯文字,靠上面
-          // 那条底部渐变保证可读 —— 与官方动态卡一致。
-          // 对齐方式:两者**按基线对齐**(alignByBaseline)—— 字体族不同时按盒子居中会让视觉基线错开,
-          // 这是同一行文字的正确对齐方式。
           if (video.duration > 0) {
             Text(
               text = video.durationText(),
               style = MaterialTheme.typography.labelSmall,
               color = BiliColors.TextPrimary,
               modifier = Modifier
-                .alignByBaseline()
                 .clip(RoundedCornerShape(4.dp))
                 .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
                 .padding(horizontal = 6.dp, vertical = 2.dp),
             )
           }
-          if (video.view > 0 || video.danmaku > 0) {
-            // 合成一个 Text:同一段文字内部的中英文混排由系统统一处理,不会再出现跨 Text 的基线偏移。
-            // (字符串先在 composable 作用域取好 —— stringResource 不能在 buildList 这类非 inline lambda 里调。)
-            val viewText = if (video.view > 0) {
-              stringResource(R.string.player_meta_bili_view_count, formatCount(video.view, resources))
-            } else {
-              ""
-            }
-            val danmakuText = if (video.danmaku > 0) {
-              stringResource(R.string.player_meta_bili_danmaku_count, formatCount(video.danmaku, resources))
-            } else {
-              ""
-            }
-            Text(
-              text = listOf(viewText, danmakuText).filter { it.isNotBlank() }.joinToString(" "),
-              style = MaterialTheme.typography.labelSmall,
-              color = BiliColors.TextPrimary,
-              modifier = Modifier.alignByBaseline(),
-            )
+          Spacer(modifier = Modifier.weight(1f))
+          if (video.view > 0) {
+            MobileCoverMetric(iconRes = R.drawable.ic_video_play_count, count = video.view, resources = resources)
+          }
+          if (video.danmaku > 0) {
+            Spacer(modifier = Modifier.width(8.dp))
+            MobileCoverMetric(iconRes = R.drawable.ic_video_danmaku_count, count = video.danmaku, resources = resources)
           }
         }
       }
@@ -357,6 +329,28 @@ private fun FeedStyleCardContent(
     if (video.dynId.isNotBlank()) {
       DynamicActionRow(video = video, modifier = Modifier.padding(top = 6.dp))
     }
+  }
+}
+
+/** 缩略图右下的度量(播放/弹幕):图标 + 紧凑计数,对齐 TV 端动态卡的度量样式。 */
+@Composable
+private fun MobileCoverMetric(iconRes: Int, count: Int, resources: android.content.res.Resources) {
+  Row(verticalAlignment = Alignment.CenterVertically) {
+    Icon(
+      painter = painterResource(iconRes),
+      contentDescription = null,
+      tint = BiliColors.TextPrimary,
+      modifier = Modifier.size(14.dp),
+    )
+    Spacer(modifier = Modifier.width(3.dp))
+    Text(
+      text = formatCount(count, resources),
+      style = MaterialTheme.typography.labelSmall.copy(
+        shadow = Shadow(color = Color.Black, blurRadius = 4f),
+      ),
+      color = BiliColors.TextPrimary,
+      maxLines = 1,
+    )
   }
 }
 
