@@ -74,6 +74,9 @@ internal fun MobileDynamicDetailScreen(
   // 评论:state 只用于渲染(行/页脚),分页由下面的游标状态驱动。
   val commentState = remember { MobileCommentListState() }
   var commentMode by remember(video.dynId) { mutableStateOf(DynamicCommentModeHot) }
+  // **在途标志用自己的**:`MobileCommentListState.loading` 初始就是 true(播放器那边靠它先显示 spinner),
+  // 拿它当闸门会把首次加载直接拦掉 —— 真机日志里 `loading=true` 正是此前"评论永远不加载"的真因。
+  var commentLoading by remember(video.dynId) { mutableStateOf(false) }
   var commentOffset by remember(video.dynId) { mutableStateOf("") }
   var commentEnd by remember(video.dynId) { mutableStateOf(false) }
   val relativeText = rememberVideoCardRelativeText()
@@ -87,10 +90,11 @@ internal fun MobileDynamicDetailScreen(
       "detail comment load start dynId=${video.dynId} reset=$reset " +
         "loading=${commentState.loading} loadingMore=${commentState.loadingMore} end=$commentEnd",
     )
-    if (commentState.loadingMore || commentState.loading) return
+    if (commentLoading) return
     if (!reset && commentEnd) return
     val mode = commentMode
     val offset = if (reset) "" else commentOffset
+    commentLoading = true
     if (reset) {
       commentState.loading = true
       commentState.error = ""
@@ -119,6 +123,7 @@ internal fun MobileDynamicDetailScreen(
       val brief = error.message.orEmpty()
       if (reset) commentState.error = brief else commentState.loadMoreError = brief
     } finally {
+      commentLoading = false
       commentState.loading = false
       commentState.loadingMore = false
     }
@@ -138,7 +143,9 @@ internal fun MobileDynamicDetailScreen(
       total > 0 && last >= total - 3
     }
       .distinctUntilChanged()
-      .collect { nearEnd -> if (nearEnd) loadComments(reset = false) }
+      .collect { nearEnd ->
+        if (nearEnd && commentState.comments.isNotEmpty()) loadComments(reset = false)
+      }
   }
 
   viewerTarget?.let { target ->
