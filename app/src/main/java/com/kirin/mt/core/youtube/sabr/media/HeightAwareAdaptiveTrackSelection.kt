@@ -542,12 +542,19 @@ class HeightAwareAdaptiveTrackSelection(
       val estNow = bandwidthMeter.getBitrateEstimate()
       for (i in 0 until length) {
         val f = getFormat(i)
-        if (f.height > 0 && SabrAbrMemory.isTrialFailBlocked(f.height) && estNow >= f.bitrate * 11 / 10) {
+        // P11-188:判据用 [SabrAbrMemory.isDowngradeFailBlocked](只查降档那一格)—— 用两格合一的
+        // isTrialFailBlocked 会在「只有 stall 冷却」时条件恒真,每次评估刷一行且日志说「→ 0」却清不动,
+        // 真机刷了 89 条。条件与动作现在同格,打印一次即真清、下轮不再进。
+        if (f.height > 0 &&
+          SabrAbrMemory.isDowngradeFailBlocked(f.height) &&
+          estNow >= f.bitrate * 11 / 10
+        ) {
           Log.i(
             "YtSabrAbr",
             "cooldown cleared early: ${f.height}p " +
               "(bufS=${bufferedDurationUs / 1_000_000}s est=${estNow / 1000}K ≥ " +
-              "declared=${f.bitrate / 1000}K×1.1, remain=${SabrAbrMemory.trialFailBlockedRemainSec()}s → 0)",
+              "declared=${f.bitrate / 1000}K×1.1, remain=" +
+                "${SabrAbrMemory.downgradeFailBlockedRemainSec(f.height)}s → 0)",
           )
           SabrAbrMemory.clearTrialFail(f.height)
         }
@@ -611,7 +618,17 @@ class HeightAwareAdaptiveTrackSelection(
       ?.getLastSilenceHangWallMs(itagOf(getFormat(selected))) ?: 0L
     val silenceHang = silenceHangWallMs > 0L &&
       nowWallMs - silenceHangWallMs in 0 until SILENCE_HANG_EVIDENCE_MS
-    val belowCriticalUs = bufferedDurationUs < criticalBufferedUs || trialAbort || silenceHang
+    // ── P11-188(2026-09-27 真机 `logs_live_20260927_210358`):**读数无效不算「水位低」** ──────────
+    // 20:58:33.390 出现 `bufS=-1.0`(media3/SABR own-range-null 家族给的无效读数),旧口径下
+    // `-1 < criticalBufferedUs` 直接开了一枪水位急救(2160p→1440p),紧接着 `top-tier cooldown 180s`
+    // + 服务端 `sleeping backoff 2000 ms`,切轨开销把剩余供给吃光 → 20:58:39 `stall detected`。
+    // 读数无效 = **没有证据**:既不能证明水位低、也不能证明水位够 —— 交给 ④ 的 est 滞回路径
+    // (它不看水位),水位急救不开枪。
+    // 零字节挂死(silenceHang)是**独立**证据(fetcher 按 itag 记的墙钟),不受本判定影响;
+    // 试探熔断(trialAbort)本身依赖水位读数,读数无效时一并失效(否则 -1 恒 < 15s 会误熔断)。
+    val bufferReadoutValid = bufferedDurationUs >= 0L
+    val belowCriticalUs = silenceHang ||
+      (bufferReadoutValid && (bufferedDurationUs < criticalBufferedUs || trialAbort))
     if (!belowCriticalUs) {
       freezeEpisodeActive = false
       freezeEpisodeSuppressLogged = false
@@ -629,7 +646,9 @@ class HeightAwareAdaptiveTrackSelection(
       !freezeEpisodeActive &&
       (bufferedDurationUs <= prevEvalBufferedUs || silenceHang) &&
       (trialAbort || nowMs - lastUpgradeElapsedMs >= DOWNGRADE_AFTER_UPGRADE_GRACE_MS)
-    prevEvalBufferedUs = bufferedDurationUs
+    // P11-188:读数无效时保留上一次有效读数 —— 塌方守门(bufferCollapseArtifact)与试探水位线都以它
+    // 为基准,把 -1 记进去会让下一轮拿「上次有效 → -1」当成一次塌方,污染判据。
+    if (bufferReadoutValid) prevEvalBufferedUs = bufferedDurationUs
     prevEvalElapsedMs = nowMs
     if (bufferedDurationUs > maxObservedBufferedUs) maxObservedBufferedUs = bufferedDurationUs
     // C1:把候选收窄到「服务端真的会推的 itag」——**必须在水位急救降档循环之前算好**

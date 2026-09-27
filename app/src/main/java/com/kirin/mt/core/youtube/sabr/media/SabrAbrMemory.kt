@@ -167,6 +167,27 @@ object SabrAbrMemory {
     (height == trialFailedHeight && nowWallMs < trialFailedUntilWallMs) ||
       (height == stallReachedHeight && nowWallMs < stallReachedUntilWallMs)
 
+  /**
+   * P11-188:该 height 是否处于**降档/试探失败**那一格的冷却中(不含 stall 到达档)。
+   *
+   * [clearTrialFail] 的早解路径只该判这一格。拿 [isTrialFailBlocked] 去判会出两件事:
+   * ①只有 stall 格在冷却时条件恒真(它俩都 true),于是**每次评估都打一行** `cooldown cleared early`;
+   * ②那行还写着 `remain=Ns → 0` —— 其实根本清不动 stall 格,**日志撒谎**。
+   * 真机 `logs_live_20260927_210358`:2160p 的 180s stall 冷却期间刷了 **89 条**这种行。
+   */
+  fun isDowngradeFailBlocked(height: Int, nowWallMs: Long = System.currentTimeMillis()): Boolean =
+    height == trialFailedHeight && nowWallMs < trialFailedUntilWallMs
+
+  /**
+   * P11-188:[isDowngradeFailBlocked] 那一格的剩余秒数(诊断日志用);不在冷却中返回 0。
+   * 与 [trialFailBlockedRemainSec](两格取大)分开,是为了让 `cooldown cleared early` 那行打印的
+   * 是**真正被解的那一格**的剩余 —— 早解路径只动降档格,拿两格最大值去打印会显示 stall 格的数字。
+   */
+  fun downgradeFailBlockedRemainSec(height: Int, nowWallMs: Long = System.currentTimeMillis()): Int =
+    if (height == trialFailedHeight && nowWallMs < trialFailedUntilWallMs)
+      ((trialFailedUntilWallMs - nowWallMs) / 1000L).toInt()
+    else 0
+
   /** 冷却剩余秒数(诊断日志用);不在冷却中返回 0。两格取大。 */
   fun trialFailBlockedRemainSec(nowWallMs: Long = System.currentTimeMillis()): Int {
     val trial = if (trialFailedHeight >= 0 && nowWallMs < trialFailedUntilWallMs)
