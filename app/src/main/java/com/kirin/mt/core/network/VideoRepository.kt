@@ -16,6 +16,7 @@ import com.kirin.mt.core.model.SpaceUserProfile
 import com.kirin.mt.core.model.UgcBannerItem
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.model.feedKey
 import com.kirin.mt.core.player.PlaybackProgressStore
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.youtube.YoutubeChannel
@@ -46,9 +47,27 @@ const val DynamicCommentModeLatest = 2
 /** 动态评论的诊断日志 tag(失败只写进 UI 会查不到原因,故两条路都打点)。 */
 const val DynamicCommentLogTag = "BiliDynamicComment"
 
-/** 把 B 站动态与 YouTube 关注流按发布时间倒序合并成统一流。 */
-fun mergeByPubdate(bili: List<VideoSummary>, youtube: List<VideoSummary>): List<VideoSummary> =
-  (bili + youtube).sortedByDescending { it.pubdate }
+/**
+ * 把 B 站动态与 YouTube 关注流按发布时间倒序合并成统一流。
+ *
+ * **YouTube 项按「当前拉到的最早一条 B 站动态」截断**(P11-186):B站 动态拉到头(或还没翻到更早的页)时,
+ * 不再让更旧的 YouTube 内容成片占满列表尾部;后续 B站 翻页拉到更早的动态后边界随之后移,那些更旧的
+ * YouTube 项自然重新出现 —— 即「以最早的 B 站动态为准,后续再拉再叠加」。
+ * B站 一条都没有时(未登录 / 拉取失败)保持原样直接给 YouTube,不清空列表。
+ *
+ * 顺带按 [feedKey] 去重:图文没有 bvid 必须回退 dynId,且 B站 offset 翻页偶有重叠。
+ */
+fun mergeByPubdate(bili: List<VideoSummary>, youtube: List<VideoSummary>): List<VideoSummary> {
+  val oldestBiliPubdate = bili.minOfOrNull { it.pubdate }
+  val visibleYoutube = if (oldestBiliPubdate == null) {
+    youtube
+  } else {
+    youtube.filter { it.pubdate >= oldestBiliPubdate }
+  }
+  return (bili + visibleYoutube)
+    .distinctBy { it.feedKey }
+    .sortedByDescending { it.pubdate }
+}
 
 class VideoRepository(
   private val apiClient: BiliApiClient,

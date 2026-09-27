@@ -64,6 +64,8 @@ private sealed interface DynamicState {
     val videos: List<VideoSummary>,
     val loadingMore: Boolean,
     val endReached: Boolean,
+    /** 本次拉到的 YouTube 关注流:翻页时要用它**重新合并**(边界随 B 站页后移),不能只存合并结果。 */
+    val youtubeVideos: List<VideoSummary> = emptyList(),
   ) : DynamicState
 }
 
@@ -198,6 +200,7 @@ fun MobileDynamicScreen(
           videos = merged,
           loadingMore = false,
           endReached = biliEndReached,
+          youtubeVideos = youtubeVideos,
         )
       }
     } finally {
@@ -254,7 +257,10 @@ fun MobileDynamicScreen(
       val next = try {
         val page = videoRepository.getDynamicFeed(offset = offsetToLoad, type = DynamicFeedTypeAll, includeDraw = true)
         nextOffset = page.offset
-        val merged = (current.videos + page.videos).distinctBy { it.feedKey }
+        // 只把「B 站条目」累加,再用留存的 YouTube 集**整体重合并** —— B 站拉到更早的页后,
+        // 边界随之后移,更旧的 YouTube 项这时才进入列表(P11-186)。
+        val biliItems = current.videos.filter { it.dynId.isNotBlank() } + page.videos
+        val merged = mergeByPubdate(biliItems, current.youtubeVideos)
         current.copy(
           videos = merged,
           loadingMore = false,
