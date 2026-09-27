@@ -37,6 +37,13 @@ data class VideoSummary(
   // 动态专属字段:仅 fromDynamicItem 填充,其它来源保持默认 0/空。
   // dynId 用于点赞等动态操作;aid 用于稍后再看;三个计数用于卡片展示动态本身的社交数据。
   val dynId: String = "",
+  /**
+   * 动态**评论区的 oid 与类型** —— 取自 `basic.comment_id_str` / `basic.comment_type`,
+   * **不是 dynId**:实测拿 dynId 当 oid 请求评论会回 `-404 啥都木有`(那个 oid 下没有评论区)。
+   * 视频/图文/直播推荐三类动态都会带 basic。
+   */
+  val commentId: Long = 0L,
+  val commentType: Int = 0,
   val aid: Long = 0L,
   val likeCount: Int = 0,
   val commentCount: Int = 0,

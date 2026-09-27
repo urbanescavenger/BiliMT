@@ -92,6 +92,7 @@ internal object VideoSummaryMappers {
 
     // module_stat 是动态本身的社交计数(点赞/评论/转发),与视频的 stat 不是一回事。
     val dynStat = modules.obj("module_stat")
+    val basic = json.obj("basic")
     return VideoSummary(
       bvid = "",
       title = text,
@@ -105,6 +106,8 @@ internal object VideoSummaryMappers {
       pubdate = author?.long("pub_ts") ?: 0L,
       badge = "",
       dynId = json.string("id_str"),
+      commentId = basic?.long("comment_id_str") ?: 0L,
+      commentType = basic?.int("comment_type") ?: 0,
       likeCount = dynStat?.obj("like")?.int("count") ?: 0,
       commentCount = dynStat?.obj("comment")?.int("count") ?: 0,
       forwardCount = dynStat?.obj("forward")?.int("count") ?: 0,
@@ -169,6 +172,7 @@ internal object VideoSummaryMappers {
     val dynamicTextNodes = textNodesOf(desc, opusSummary)
     // module_stat 是动态本身的社交计数(点赞/评论/转发),区别于 archive.stat 的播放/弹幕。
     val dynStat = modules.obj("module_stat")
+    val basic = json.obj("basic")
     return VideoSummary(
       bvid = archive.string("bvid"),
       title = archive.string("title"),
@@ -182,6 +186,8 @@ internal object VideoSummaryMappers {
       pubdate = author?.long("pub_ts") ?: 0L,
       badge = filterBadge(archive.obj("badge")?.string("text").orEmpty()),
       dynId = json.string("id_str"),
+      commentId = basic?.long("comment_id_str") ?: 0L,
+      commentType = basic?.int("comment_type") ?: 0,
       aid = archive.long("aid"),
       likeCount = dynStat?.obj("like")?.int("count") ?: 0,
       commentCount = dynStat?.obj("comment")?.int("count") ?: 0,

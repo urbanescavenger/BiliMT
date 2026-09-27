@@ -38,8 +38,10 @@ import kotlinx.serialization.json.JsonArray
  */
 const val YoutubeFeedCacheTtlMs = 10 * 60 * 1000L
 
-/** 动态评论:wbi/main 的 type 值(11=动态)、每页条数,以及 mode(3=仅热度、2=仅时间)。 */
-const val DynamicCommentType = 11
+/**
+ * 动态评论:wbi/main 的每页条数,以及 mode(3=仅热度、2=仅时间)。
+ * 评论 **type 不在这里写死** —— 它随动态走 `basic.comment_type`(动态为 11),与 oid 配对使用。
+ */
 const val DynamicCommentPageSize = 20
 const val DynamicCommentModeHot = 3
 const val DynamicCommentModeLatest = 2
@@ -490,16 +492,22 @@ class VideoRepository(
    * 与视频评论的差别:① 走 **wbi 签名** + SESSDATA/buvid(对齐 BV `BiliHttpApi.getComments`);
    * ② 分页是**游标**(`pagination_str={"offset":"…"}` + `cursor.is_end`),首次传空串、
    * 之后用上次返回的 `nextOffset`,不是页码;③ `mode`:3=仅热度、2=仅时间(对应 UI 的热门/最新)。
+   *
+   * **[commentId] 是动态的 `basic.comment_id_str`,不是 dynId** —— 拿 dynId 当 oid 实测回
+   * `-404 啥都木有`(该 oid 下没有评论区);[commentType] 取 `basic.comment_type`(动态为 11)。
    */
   suspend fun getDynamicComments(
-    dynId: String,
+    commentId: Long,
+    commentType: Int,
     mode: Int,
     offset: String = "",
     pageSize: Int = DynamicCommentPageSize,
   ): DynamicCommentPage {
-    if (dynId.isBlank()) {
-      // 早退也留痕:此前这条静默路径会伪装成「暂无评论」,排查时完全看不到请求发生过。
-      Log.w(DynamicCommentLogTag, "dynamic comments skipped: blank dynId")
+    if (commentId <= 0L || commentType <= 0) {
+      Log.w(
+        DynamicCommentLogTag,
+        "dynamic comments skipped: bad target commentId=$commentId commentType=$commentType",
+      )
       return DynamicCommentPage(comments = emptyList(), nextOffset = "", isEnd = true)
     }
     val session = sessionStore.session.first()
@@ -508,8 +516,8 @@ class VideoRepository(
     val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
 
     val params = mutableMapOf(
-      "type" to DynamicCommentType.toString(),
-      "oid" to dynId,
+      "type" to commentType.toString(),
+      "oid" to commentId.toString(),
       "mode" to mode.toString(),
       "ps" to pageSize.toString(),
       // 游标:首次空串,之后填上一页返回的 next_offset。

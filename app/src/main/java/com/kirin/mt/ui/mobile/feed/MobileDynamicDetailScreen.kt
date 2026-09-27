@@ -87,7 +87,8 @@ internal fun MobileDynamicDetailScreen(
     // 入口就打点(在任何闸门之前):用来分辨「详情页没触发评论」与「触发了但被闸门拦下」。
     Log.i(
       DynamicCommentLogTag,
-      "detail comment load start dynId=${video.dynId} reset=$reset " +
+      "detail comment load start dynId=${video.dynId} commentId=${video.commentId} " +
+        "commentType=${video.commentType} reset=$reset " +
         "loading=${commentState.loading} loadingMore=${commentState.loadingMore} end=$commentEnd",
     )
     if (commentLoading) return
@@ -105,7 +106,12 @@ internal fun MobileDynamicDetailScreen(
     }
     commentState.loadMoreError = ""
     try {
-      val page = videoRepository.getDynamicComments(dynId = video.dynId, mode = mode, offset = offset)
+      val page = videoRepository.getDynamicComments(
+        commentId = video.commentId,
+        commentType = video.commentType,
+        mode = mode,
+        offset = offset,
+      )
       commentState.comments = if (reset) {
         page.comments
       } else {
