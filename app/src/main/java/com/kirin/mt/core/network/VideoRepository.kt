@@ -497,7 +497,11 @@ class VideoRepository(
     offset: String = "",
     pageSize: Int = DynamicCommentPageSize,
   ): DynamicCommentPage {
-    if (dynId.isBlank()) return DynamicCommentPage(comments = emptyList(), nextOffset = "", isEnd = true)
+    if (dynId.isBlank()) {
+      // 早退也留痕:此前这条静默路径会伪装成「暂无评论」,排查时完全看不到请求发生过。
+      Log.w(DynamicCommentLogTag, "dynamic comments skipped: blank dynId")
+      return DynamicCommentPage(comments = emptyList(), nextOffset = "", isEnd = true)
+    }
     val session = sessionStore.session.first()
     val sessData = session.sessData
     val keys = wbiKeyRepository.ensureKeys(sessData)

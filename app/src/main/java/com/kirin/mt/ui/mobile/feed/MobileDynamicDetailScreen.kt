@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.mobile.feed
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +36,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.kirin.mt.R
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.pubdateText
+import com.kirin.mt.core.network.DynamicCommentLogTag
 import com.kirin.mt.core.network.DynamicCommentModeHot
 import com.kirin.mt.core.network.DynamicCommentModeLatest
 import com.kirin.mt.core.network.VideoRepository
@@ -79,6 +81,12 @@ internal fun MobileDynamicDetailScreen(
 
   /** 拉一页评论:reset=true 换排序/首次进页时重来,否则按游标续拉。 */
   suspend fun loadComments(reset: Boolean) {
+    // 入口就打点(在任何闸门之前):用来分辨「详情页没触发评论」与「触发了但被闸门拦下」。
+    Log.i(
+      DynamicCommentLogTag,
+      "detail comment load start dynId=${video.dynId} reset=$reset " +
+        "loading=${commentState.loading} loadingMore=${commentState.loadingMore} end=$commentEnd",
+    )
     if (commentState.loadingMore || commentState.loading) return
     if (!reset && commentEnd) return
     val mode = commentMode
