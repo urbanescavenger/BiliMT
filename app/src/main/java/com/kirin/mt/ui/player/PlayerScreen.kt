@@ -2243,7 +2243,12 @@ fun PlayerScreen(
       // 跨重载保护,只有顶档 2160 有)。
       // P11-178:目标档改取**饿死瞬间正在播的档**(本场爬到过 2160p、漏光在 1440p ⇒ 冷却 1440p 才是
       // 堵住那堵墙;冷却 2160p 是空操作,见 SabrAbrMemory 注释)。
-      SabrAbrMemory.onStallReloadWithReachedHeight(selectedVideoHeight(player)) { line ->
+      // P11-188:带上 bvid —— 连击(反复撞同一档 ⇒ 冷却 90→180→300s)按视频归属,换视频从 1 重算;
+      // 取不到(状态还没到 Ready)时传 null,退化为只按档位+时间窗口判连击。
+      SabrAbrMemory.onStallReloadWithReachedHeight(
+        starvedHeight = selectedVideoHeight(player),
+        videoId = (playerState as? PlayerScreenState.Ready)?.info?.bvid,
+      ) { line ->
         Log.i(PlayerPlaybackLogTag, line)
       }
       if (displayRequestState.value.isYoutube && posMs <= SabrAbrMemory.STARTUP_STALL_POS_MAX_MS) {

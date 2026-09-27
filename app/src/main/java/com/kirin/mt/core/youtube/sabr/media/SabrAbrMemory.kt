@@ -52,6 +52,22 @@ object SabrAbrMemory {
   @Volatile
   private var stallReachedUntilWallMs = 0L
 
+  /**
+   * P11-188:上一次 stall 冷却的「目标档 / 连击数 / 所属视频 / 发生墙钟」(跨重载)。
+   * 同档 + 同视频 + 在 [STALL_REPEAT_RESET_MS] 窗口内 ⇒ 连击 +1,冷却按 [stallRepeatCooldownMs] 逐级加重。
+   */
+  @Volatile
+  private var stallRepeatHeight = -1
+
+  @Volatile
+  private var stallRepeatCount = 0
+
+  @Volatile
+  private var stallRepeatVideoId: String? = null
+
+  @Volatile
+  private var lastStallCooldownWallMs = 0L
+
   /** 起播期判定阈值:pos 在此之内 stall 视为起播 stall(冷启动误跳期,sustained 证据尚未成熟)。 */
   const val STARTUP_STALL_POS_MAX_MS = 30_000L
 
@@ -123,15 +139,26 @@ object SabrAbrMemory {
    * P11-151(b):**提前解除**某档的降档冷却。给「缓冲健康 + 带宽已达标」的早解条件用 ——
    * 冷却的本意是「该档扛不住」,而当缓冲已重建到健康水位、且实测带宽已超过该档声明码率,
    * 死等 90 秒只会把画面按在最低档。
+   *
+   * ── P11-188(2026-09-27 真机 `logs_live_20260927_201351`):**只管降档/试探失败那一格** ─────────
+   * [stallReachedHeight] 那格**不由本方法解除**(旧实现顺手一起清,是 P11-178 拆格时漏掉的半边)。
+   * 真机:19:42:38 stall 写 2160p 冷却 90s → 19:42:53(重载后 4.6s)`cooldown cleared early: 2160p
+   * (bufS=24s est=23861K ≥ declared=16278K×1.1, remain=75s → 0)` → ABR 随即爬回 2160p → 69s 后
+   * 再 stall;全场 9 次重载**每一次**都紧跟一条 early-clear,90s 冷却实际寿命只有 4~5s。
+   *
+   * 原因是早解判据在**重载后天然成立**,两条证据都失效:
+   * ①`bufferedDurationUs` 是低档回填的证据,不是高档可持续的证据 —— 重载由起播档(720p,1.5Mbps)
+   *   起步,链路 23Mbps ⇒ **4 秒回填到 24s**,而这 24s 对 2160p(16.3Mbps)零信息量;
+   * ②`est` 同源虚高 —— 同一时刻 `meas=1414K` 而 `est=23861K`,是低档段 bulk 下载推出的窗口值。
+   *
+   * 与 P11-178 是同一教训(两机制共用一格必然互相踩),这次共用的不是格而是一个 clear 入口。
+   * stall 冷却的语义是「实测已饿死」,不该被「低档回填」翻案 —— 它的解除只走自然到期
+   * (基数 90s 起,反复撞同一档时逐级加重,见 [stallRepeatCooldownMs])。
    */
   fun clearTrialFail(height: Int) {
     if (trialFailedHeight == height) {
       trialFailedHeight = -1
       trialFailedUntilWallMs = 0L
-    }
-    if (stallReachedHeight == height) {
-      stallReachedHeight = -1
-      stallReachedUntilWallMs = 0L
     }
   }
 
@@ -174,7 +201,7 @@ object SabrAbrMemory {
   // 即:**重载把带宽窗口清零 → 新会话又从突发估计起步 → 40~90s 内爬回同一档 → 同一堵墙**。
   // 现状只有顶档(≥2160)有跨重载记忆([noteStartupStall]/[isTopTierStartupBlocked]),到过 1440p
   // 的场次裸奔。故:stall 重载时把**本场实际升上去过的最高档**记进 [isTrialFailBlocked] 的冷却
-  // (跨重载存活、到期自动解除、被 [clearTrialFail] 的「缓冲健康 + 带宽达标」提前放行),
+  // (跨重载存活、到期自动解除;**P11-188 起不再被 [clearTrialFail] 的「缓冲健康 + 带宽达标」提前放行**),
   // 新实例的升档候选循环(HeightAwareAdaptiveTrackSelection 内 `isTrialFailBlocked(f.height)`)
   // 自然跳过它 —— 逐级爬约束下,跳过该档即等于把梯子封在这一档以下。
 
@@ -182,7 +209,10 @@ object SabrAbrMemory {
   @Volatile
   private var reachedHeight = 0
 
-  /** P11-173 冷却时长:与既有 `downgrade fail cooldown`(90s)同量级——真机两场都在重载后 40~90s 内爬回。 */
+  /**
+   * P11-173 冷却时长:与既有 `downgrade fail cooldown`(90s)同量级——真机两场都在重载后 40~90s 内爬回。
+   * P11-188 起它是 [STALL_REPEAT_COOLDOWNS_MS] 的**基数**(第一次撞墙 90s,连击逐级加)。
+   */
   const val STALL_REACHED_HEIGHT_COOLDOWN_MS = 90_000L
 
   /**
@@ -191,6 +221,30 @@ object SabrAbrMemory {
    */
   const val STALL_REACHED_MIN_HEIGHT = 1080
 
+  /**
+   * P11-188:同一档**反复** stall 时的连击冷却序列(ms)。基数沿用 P11-173 的 90s,连击逐级加到 300s 封顶。
+   *
+   * 依据(2026-09-27 真机,同 `logs_live_20260927_201351`):9 次 stall 的间隔 81~94s 几乎等于 90s 冷却
+   * —— 说明冷却一到期 ABR 就爬回同一档再饿死。把 early-clear 那条泄漏堵上(见 [clearTrialFail])后
+   * 单靠 90s 也只是把循环周期从 84s 拉到 ~150s,反复撞同一堵墙的档必须逐次加重惩罚,而不是每次
+   * 都重新给 90 秒。
+   */
+  private val STALL_REPEAT_COOLDOWNS_MS = longArrayOf(
+    STALL_REACHED_HEIGHT_COOLDOWN_MS,
+    180_000L,
+    300_000L,
+  )
+
+  /**
+   * P11-188:连击复位窗口(ms)——距上次 stall 超过这段时间(或换了视频、换了档),视为「已经稳过一段」,
+   * 连击从 1 重算。10min 取「一次成功播放明显长于一个误批-回填周期(~55~85s)」的量级。
+   */
+  const val STALL_REPEAT_RESET_MS = 600_000L
+
+  /** P11-188:第 [repeat] 次连击对应的冷却时长(1 起算,超过序列长度取封顶值)。 */
+  private fun stallRepeatCooldownMs(repeat: Int): Long =
+    STALL_REPEAT_COOLDOWNS_MS[minOf(repeat - 1, STALL_REPEAT_COOLDOWNS_MS.lastIndex)]
+
   /** P11-173:ABR 每次升档成功后调用(单调取最大,调用廉价;只记「爬上去过」的档,不记 seed 起始档)。 */
   fun noteReachedHeight(height: Int) {
     if (height > reachedHeight) reachedHeight = height
@@ -198,7 +252,7 @@ object SabrAbrMemory {
 
   /**
    * P11-173:看门狗 stall 重载时调用(替代裸 [onStallReload]) —— 先走既有「试探在身 → 转失败冷却」,
-   * 再把「本场到达档」(≥ [STALL_REACHED_MIN_HEIGHT])冷却 [STALL_REACHED_HEIGHT_COOLDOWN_MS]。
+   * 再把「本场到达档」(≥ [STALL_REACHED_MIN_HEIGHT])冷却 90s 起(连击递增,见 [STALL_REPEAT_COOLDOWNS_MS])。
    * 只处理档位记忆本身,起播顶档记忆仍由 [noteStartupStall] 负责。
    *
    * ── P11-178(2026-09-23 TV 真机 `logs_live_20260923_233549`):目标档改取**饿死瞬间正在播的档** ──────
@@ -208,10 +262,15 @@ object SabrAbrMemory {
    * 语义纠正:到达档只是「爬过」,饿死档才是「这堵墙」;且逐级爬约束下封住饿死档即封住它以上所有档,
    * 故目标档优先取 [starvedHeight],仅当它低于 [STALL_REACHED_MIN_HEIGHT](把 720p 及以下冷却掉只会
    * 让画面更低,口径不变)时退回 [reachedHeight]。
+   *
+   * ── P11-188(2026-09-27):冷却时长改为**连击递增** ────────────────────────────────────────
+   * [videoId] 用于连击归属:换了视频就重算(否则上一个视频攒下的连击会让新视频第一次 stall 就吃 300s)。
+   * 判据与效果见 [STALL_REPEAT_COOLDOWNS_MS]。
    */
   fun onStallReloadWithReachedHeight(
     starvedHeight: Int = 0,
     nowWallMs: Long = System.currentTimeMillis(),
+    videoId: String? = null,
     log: (String) -> Unit = {},
   ) {
     onStallReload()
@@ -230,12 +289,28 @@ object SabrAbrMemory {
       )
       return
     }
+    // P11-188:同档 + 同视频 + 在复位窗口内 ⇒ 连击 +1,冷却逐级加重;否则从 1 重算。
+    val repeat = if (target == stallRepeatHeight &&
+      videoId == stallRepeatVideoId &&
+      nowWallMs - lastStallCooldownWallMs <= STALL_REPEAT_RESET_MS
+    ) {
+      stallRepeatCount + 1
+    } else {
+      1
+    }
+    stallRepeatHeight = target
+    stallRepeatCount = repeat
+    stallRepeatVideoId = videoId
+    lastStallCooldownWallMs = nowWallMs
+    val cooldownMs = stallRepeatCooldownMs(repeat)
     // P11-178:写独立一格,不被后续 markDowngradeFromTrial(试探/降档失败)覆盖。
+    // P11-188:也不被 clearTrialFail 的早解路径解除(见该函数注释)。
     stallReachedHeight = target
-    stallReachedUntilWallMs = nowWallMs + STALL_REACHED_HEIGHT_COOLDOWN_MS
+    stallReachedUntilWallMs = nowWallMs + cooldownMs
     log(
-      "stall-reached cooldown: ${target}p excluded ${STALL_REACHED_HEIGHT_COOLDOWN_MS / 1000}s " +
-        "(starved=${starved}p reached=${reached}p; survives reload; 重载后新 ABR 不再爬回同一档,P11-173/178)",
+      "stall-reached cooldown: ${target}p excluded ${cooldownMs / 1000}s" +
+        (if (repeat > 1) " (repeat #$repeat)" else "") +
+        " (starved=${starved}p reached=${reached}p; survives reload; 重载后新 ABR 不再爬回同一档,P11-173/178/188)",
     )
   }
 }

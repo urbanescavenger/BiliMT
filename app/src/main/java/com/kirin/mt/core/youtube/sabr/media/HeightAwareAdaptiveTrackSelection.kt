@@ -532,6 +532,12 @@ class HeightAwareAdaptiveTrackSelection(
     // 22:00 真机:一次降档把 720p 锁了 180 秒(墙钟、跨重载),而当时缓冲有 25~28 秒 ⇒ 画面钉在 144p。
     // 冷却的本意是「该档扛不住」;缓冲既已回到 [EARLY_CLEAR_BUFFERED_US] 且实测带宽超过该档声明码率
     // ×1.1,就没有理由继续等 —— 提前解除并留一行日志(便于验收)。
+    // ── P11-188(2026-09-27 真机 `logs_live_20260927_201351`):**只解降档/试探失败那一格** ──────
+    // [SabrAbrMemory.clearTrialFail] 不再顺手清 stall 到达档冷却(P11-178 拆格时漏掉的半边)。
+    // 那场 9 次整场重载,每一次都紧跟一条 `cooldown cleared early`:stall 刚写下 90s 冷却,重载后
+    // 4~5s 就被本判据清成 0 ⇒ ABR 爬回 2160p ⇒ 69~90s 后再饿死。本条判据在**重载后天然成立**
+    // (起播档 720p 只要 1.5Mbps,链路 23Mbps ⇒ 4 秒回填到 24s;est 同源虚高,`meas=1414K` 时
+    // `est` 报 23861K),拿它给 stall 冷却翻案等于让冷却永远活不过 5 秒。详见该函数注释。
     if (bufferedDurationUs >= EARLY_CLEAR_BUFFERED_US) {
       val estNow = bandwidthMeter.getBitrateEstimate()
       for (i in 0 until length) {
@@ -676,9 +682,16 @@ class HeightAwareAdaptiveTrackSelection(
       //   ①est 要留余量(≥ 声明 × [BUFFER_CRITICAL_GATE_MARGIN_PERMILLE]/1000)⇒ 刚重锚成声明值的
       //     那一刻不算「撑得住」;
       //   ②当前档的**实测吞吐**([SabrMediaFetcher.getMeasuredBitrateBps],按 itag 累计的真实采样)
-      //     也必须 ≥ 声明;实测未知(-1,采样不足)时不参与,退回 ① 单判据。
-      // 两个方向都不吃亏:满缓冲排空段(刚下完一整批,实测远高于声明)照旧不误降档;
-      // 而「est 被重锚/突发撑高、实测却远低于声明」的真饿场景能正常降档自救。
+      //     也必须 ≥ 声明。
+      // ── P11-188(2026-09-27 真机 `logs_live_20260927_201351`):**实测未知(-1)不再放行** ──────
+      // 旧口径把「采样不足」当成「实测覆盖」(meas <= 0 → true),于是闸只剩虚高 est 一条腿。那场
+      // 552 次 suppress 里 **534 次 meas=未知**,而 `getMeasuredBitrateBps` 要求「段数 ≥3 且已解出
+      // INIT metadata」—— 高档**恰恰最不满足**(它总在被切来切去、挂账段数攒不够)⇒ 这条腿结构性
+      // 缺席,闸形同只判 est。改后:未知 = 证据不足 ⇒ 闸不成立 ⇒ 水位急救照常降档。
+      // 代价说清:本闸原本防 P11-168 那种「切轨丢了旧轨缓冲」的假饿,改成不放行后**排空段也可能
+      // 误降一档**;兜底是冻结 episode(一段饥饿只开一枪)+ 降出即记冷却 —— 一次切档的卡顿 vs 一次
+      // 整场重载的 10~22s 黑屏,不对称,值得。
+      // 满缓冲排空段(刚下完一整批,实测远高于声明)仍照旧不误降档。
       val curBitrateForGate = getFormat(selected).bitrate
       val estForGate = bandwidthMeter.getBitrateEstimate()
       // 实测吞吐走带宽计已接线的 provider(DefaultSabrChunkSource.setMeasuredBitrateProvider →
@@ -687,7 +700,8 @@ class HeightAwareAdaptiveTrackSelection(
         ?.getMeasuredBitrateBps(itagOf(getFormat(selected))) ?: -1L
       val estHasMargin = estForGate >= curBitrateForGate.toLong() *
         BUFFER_CRITICAL_GATE_MARGIN_PERMILLE / 1000L
-      val measCoversTier = measForGate <= 0L || measForGate >= curBitrateForGate
+      // P11-188:未知(-1)与「低于声明」一视同仁 —— 都是「没有证据说明撑得住」,闸不成立。
+      val measCoversTier = measForGate >= curBitrateForGate
       // P11-178:本档刚零字节挂死过 ⇒ 这道闸不适用(闸防假饿;挂死是真饿,且挂死后重试那笔成功样本
       // 正好会把 est/meas 喂真,让闸误判「撑得住」)。理由详见上面 silenceHang 的证据注释。
       if (curBitrateForGate > 0 && estHasMargin && measCoversTier && !silenceHang) {

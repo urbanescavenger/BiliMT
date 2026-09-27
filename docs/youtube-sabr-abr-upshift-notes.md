@@ -1252,3 +1252,176 @@ chunk source 的 `prefetchedTiers`,保持「同一档只报一次、不持续白
 | 1a | 缓冲不再被打穿(29.5s → 5.8s 那种) | 撤销了缓冲仍塌 → 主害另有来源 |
 | 1b | `discarded media:` 每笔 ~7.6MB、itags=[335] | 数值与响应体量级不符 → 归因有漏 |
 | 2a | 预取生效时当次段仍送达 + 切档命中缓存(无 `fetch rn=` 直接出 chunk) | 段被挤掉 → 2b |
+
+---
+
+## §35 P11-173/178 跨重载冷却被 P11-151(b) 秒清(2026-09-27 真机,`logs_live_20260927_201351.log`)
+
+### §35.1 现象:同一视频 9 次整场重载,间隔 81~94s
+
+设备 BRAVIA_AE2(Sony 4K,Mtk,`c2.mtk.*` 全硬解),r2113 前后构建。19:41:26 续播同一视频
+(prepare `startPos=169472ms`)起,到 20:13:33 共 **9 次** `stall detected, auto-retry #1` → 整场
+重载;19:53 换视频(`z8oBzo0LyKY`)后循环照旧:
+
+```
+19:42:38 stall → 19:42:48 prepare → 19:42:52 首帧    (10s 黑屏)
+19:44:02 stall → 19:44:23 prepare → 19:44:26 首帧    (21s)
+19:45:32 stall → 19:45:54 prepare                    (22s)
+19:54:30 stall → 19:54:41 prepare  (新视频)           (11s)
+19:55:52 stall → 19:56:10 prepare                    (18s)
+20:09:10 stall → 20:09:32 prepare                    (22s)
+20:10:44 stall → 20:11:00 prepare                    (16s)
+20:12:09 stall → 20:12:24 prepare                    (15s)
+20:13:33 stall → (日志结束)
+```
+
+每次 stall 的 cooldown 行都是 `2160p excluded 90s (starved=480p reached=2160p)`,即 P11-173/178
+的到达档冷却**确实写了**。
+
+### §35.2 根因:每次冷却都在 4~5 秒后被 `cooldown cleared early` 清掉
+
+全日志 15 条 `cooldown cleared early`,其中 **19:42 之后 9 次 stall 一一对应 9 条**:
+
+```
+19:42:38 stall(2160p 冷却 90s,到期 19:44:08)
+19:42:53.571 cooldown cleared early: 2160p (bufS=24s est=23861K ≥ declared=16278K×1.1, remain=75s → 0)
+19:43:42 升 1080p → 19:43:48 升 1440p(+reseed) → 19:43:56 升 2160p
+19:44:02 stall  ← 冷却被清后 69 秒
+19:44:27.682 cooldown cleared early: 2160p (bufS=24s est=31653K, remain=65s → 0)  ← 重载后仅 4.7s
+19:45:32 stall
+```
+
+即 **90 秒冷却实际寿命 4~5 秒**,ABR 随即爬回同一档,再饿死 → 再整场重载。这解释了循环间隔
+(81~94s)与 `STALL_REACHED_HEIGHT_COOLDOWN_MS`(90s)几乎同长:间隔本来就是"爬回去再饿死"的时间,
+不是冷却撑满的时间。
+
+### §35.3 判据为什么在"重载后"必然成立(两条证据都失效)
+
+`HeightAwareAdaptiveTrackSelection.updateSelectedTrack`(early-clear 块):
+
+```kotlin
+if (bufferedDurationUs >= EARLY_CLEAR_BUFFERED_US) {      // 20s
+  val estNow = bandwidthMeter.getBitrateEstimate()
+  if (isTrialFailBlocked(f.height) && estNow >= f.bitrate * 11 / 10) clearTrialFail(f.height)
+}
+```
+
+1. **`bufferedDurationUs` 是低档回填的证据,不是高档可持续的证据。** 重载后由起播档(720p,
+   1.5Mbps)起步,链路 23Mbps ⇒ **4 秒回填到 24s**。这 24s 缓冲对 2160p(16.3Mbps)零信息量。
+2. **`estNow` 同源虚高。** 同一时刻 `meas=1414K`(单笔实测)而 `est=23861K`,差 17 倍 —— est 是
+   低档段 bulk 下载(`chunk completed: media itag=398 bytes=850259` 类几十 ms 单笔)推出的窗口值。
+   拿它比 `16278K×1.1` 判"带宽已达标",必然过。
+
+同一虚高 est 还在 `buffer-critical downgrade **suppressed**(P11-168/177)` 上二次生效:19:42:35
+`sel=0(2160p) bufS=0.0` 被判"带宽真撑得住"不降档,3.5 秒后即 stall。
+
+### §35.4 机制冲突(不是实现 bug)
+
+`clearTrialFail(height)` 同时清 `trialFailedHeight` 与 `stallReachedHeight`(P11-178 特意分开的两格)。
+P11-151(b)(2026-09-20,治"降档钉死 144p")与 P11-173/178(2026-09-23,治"重载后爬回同一堵墙")
+**目标相反**:前者要在缓冲健康时尽快解锁,后者要在重载后坚决锁住。而**重载场景恰好让前者的判据
+无条件成立**,于是后者永远活不过 5 秒。
+
+### §35.5 待定修法(未做,先验后定)
+
+- **35a**:early-clear 对 `stallReachedHeight` 一格不适用(只放 `trialFailedHeight`)—— stall 冷却
+  是"实测已证实饿死"的证据,不该被"低档回填"翻案。
+- **35b**:early-clear 的 est 判据改用 `meas`/`getRefillCapacityEstimate()`(单笔实测口径),不用窗口 est。
+- **35c**:early-clear 加"当前档 ≥ 被清档"前提(用低档回填去解锁高档在语义上就不成立)。
+
+验收:重载后 `cooldown cleared early` 不再在 5s 内出现;同一视频连续 stall 间隔 > 90s(或不再复现);
+反例是画面被按在 720p 过久(那说明 35a 收得过紧,退回 35c 组合)。
+
+---
+
+## §36 SABR 升降档链路全景 + 2026-09-27 实测分布
+
+本轮把整条链路通读了一遍,记在这里做后续改动的底图(全部 file:line 见正文各节,此处只记结构与口径)。
+
+### §36.1 候选池
+
+全部**真视频轨塞进一个 AdaptationSet**([SabrManifest.kt:65-75](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrManifest.kt#L65-L75))
+→ TrackGroup 全组 24 轨 = ABR 候选池。Auto 走 `HeightAwareAdaptiveTrackSelection`;
+**手动选档只建选中 itag 单轨 = 精确锁档**(刻意设计,勿"修正"成全轨自适应)。
+
+### §36.2 一次评估的顺序(`updateSelectedTrack`)
+
+```
+① 起播锁 / served 收窄     (served 收窄仅材料会话生效,P11-152)
+② early-clear              缓冲≥20s 且 est≥声明×1.1 → 清冷却          ← §35 问题点
+③ 水位急救降档             bufferCritical … 命中即 return(快速通道)
+④ 主候选循环               est 滞回降档 + 逐级升档 + 冷却封锁 + 试探
+⑤ 升档后处理               重锚(稳态)/ 跳过重锚(冷启动)+ noteReachedHeight
+```
+
+③ 命中即 `return`,不再走 ④ —— 快速通道与常规通道互斥。
+
+### §36.3 四条降档路径
+
+| 路径 | 判据 | 步长 | 附带 |
+|---|---|---|---|
+| 水位急救 | `bufS<8s`(顶档 `<20s`)且仍下漏 | 一 episode 一档 | `markDowngradeFromTrial` |
+| est 滞回 | `est < 声明×0.85` | 逐级 | 同上 |
+| 试探熔断 | 试探档 `bufS<15s` 且下漏 | 一档 | 同上 |
+| 顶档定向 | 水位从 2160p 降下 | — | `excludeTrack` 180s |
+
+水位急救身上另叠**四道闸**(全放行才真降档):读数塌方守门 / 冻结 episode /
+**P11-168/177 带宽闸** / P11-178 静默挂死免闸。
+
+### §36.4 升档的门
+
+冷启动锁 10s → 降档后 `bufS≥30s` → 逐级爬(只许下一档) → 容量门 `required≤max(est,近8笔中位)`
+→ 持续门 `sustained≥required` → 顶档 `sustained≥声明×1.1`(只认原值,-1 不回退) → 冷却封锁。
+满缓冲**试探升档**可绕过容量/持续门,但受 `≤容量×1.5` 上限。升档后稳态重锚(锚值被实测容量 ×1.2 夹住),
+冷启动梯子跳过重锚。
+
+### §36.5 带宽口径(全部由 fetcher 提供,meter 只是转发壳)
+
+| 口径 | 窗口/算法 | 喂给 |
+|---|---|---|
+| `est` 活跃 | 20s **耗时累计窗**,`bytes×8000/timeMs`;失败段入 0 字节、gap 扣滑行余量 | 降档 + 水位闸 |
+| `sustained` | 60s **墙钟**交付,扣满缓冲空窗;顶档滑行余量 10s→20s | 升档持续门 |
+| `capacity` | 近 8 笔成功请求瞬时吞吐中位样本,无衰减 | 升档容量门 |
+| `meas` | 按 itag:挂账 bytes ÷ 段数×平均段长,**段数<3 或未解出 INIT metadata 返回 -1** | 水位闸第二条 |
+| `silenceHang` | 按 itag 记最近零字节挂死墙钟 | 免闸证据 |
+
+### §36.6 2026-09-27 实测:降档通道基本瘫痪
+
+同日日志(`logs_live_20260927_201351.log`)决策行分布:
+
+```
+552  buffer-critical downgrade **suppressed**     ← 水位急救被闸掉
+  9  buffer-critical downgrade                    ← 真降档
+  1  downgrade (est 路径)                          ← est 降档几乎不触发
+118  buffered-range collapse artifact ignored     ← 读数塌方守门
+ 16  cooldown cleared early
+ 20  upshift (cold-start ladder) / 23 upshift reseed
+```
+
+**两道降档通道合计只真降 10 次,闸掉 552 次**;闸内分布:
+
+```
+534 / 552  meas=未知      ← P11-177 加的实测判据 96.7% 不参与
+509 / 552  当前档 = 2160p
+est 实测 54M/58M/84M/92M…(该档声明 19.7M~23.5M)
+```
+
+即 P11-177 想补的"实测腿"结构性缺席(`getMeasuredBitrateBps` 要求段数 ≥3 且有 INIT metadata,
+而**高档恰恰最不满足**——它总在被切来切去、挂账段数攒不够),闸只剩虚高 est 一条腿 ⇒ 必过。
+结果:水位急救被闸死、est 滞回被同一个虚高 est 堵死,唯一出口只剩 8s stall 看门狗整场重载。
+这是 §35 那 9 次重载的另一半成因 —— §35 治"冷却被秒清",本条治"闸让降档根本不发生"。
+
+### §36.7 日志读法更正:`seg=0` = init 请求,不是"请求错段"
+
+`DefaultSabrChunkSource` 的媒体段号恒为 `segmentNum+1 ≥ 1`;**只有新格式首请求**
+(`representationHolder.chunkIndex == null`)走 init 分支,`SabrSegmentRequest.initRequest`
+硬编码 `segment=0, segmentStartTimeMs=0`。故 `fetch rn=N itag=X seg=0 playerTimeMs=0`
+**等价于"新轨 init"**,与播放位置无关;它后面 `REAL xxMB` 是**服务端对该 init 的多段推送**
+(`pushed=[…]`),不是我们请求了那些段。
+
+切轨的真实代价因此表述为:切轨 → 新轨 init → 服务端推窗重置到片子开头并一次吐几十 MB
+(2026-09-27 实测 48.8MB/8588ms)→ 这 8.6s 播放器无可用数据 ≈ `StallThresholdMs`(8s)⇒ 判死重载。
+
+另注意:该行日志的 `playerTimeMs` 打的是**原始值**;材料会话真正发进 proto 的是位置锚,只在
+`material session: init 请求用真实播放位置作锚` 那行体现 —— 排查锚问题时必须先区分这两行,
+否则会把"锚已生效但日志显示 0"误判成"请求真的发 0"。
