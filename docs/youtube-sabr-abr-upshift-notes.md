@@ -1425,3 +1425,50 @@ est 实测 54M/58M/84M/92M…(该档声明 19.7M~23.5M)
 另注意:该行日志的 `playerTimeMs` 打的是**原始值**;材料会话真正发进 proto 的是位置锚,只在
 `material session: init 请求用真实播放位置作锚` 那行体现 —— 排查锚问题时必须先区分这两行,
 否则会把"锚已生效但日志显示 0"误判成"请求真的发 0"。
+
+---
+
+## §37 起播期 InvalidPoToken(status=3)会话判死 + 早判死(P11-190)
+
+真机 `logs_live_20260927_214503.log`(dev.r2118 = run 2118,与 P11-188/189 同版本;设备 BRAVIA_AE2)。
+
+### §37.1 现象与代价
+
+起播 17 秒后 `player error code=2000 ERROR_CODE_IO_UNSPECIFIED`,
+`Caused by: IOException: SABR terminal: InvalidPoToken (StreamProtectionStatus status=3)`
+(@`SabrDataSource.kt:85`)→ `playback error, auto-retry #1 @pos=112000ms` → 整场重载,21:28:55 → 21:29:37
+共 **42 秒**。重载后新会话立刻正常,此后 16 分钟零重载(偶发,对齐 §`reload-player-response-flaky-not-deterministic`)。
+
+### §37.2 完整序列:服务端拒的是**整个会话**
+
+```
+21:28:34.263  harvest 采到 poToken=89B(真 token,非桩)
+21:28:45.170  首笔 STREAM_PROTECTION_STATUS status=2 (pot=89B first=0x32)
+21:28:45.289  status=2 但刻意不刷新(P11-144 keep-stale 实验)→ keep 89B (age=6482ms)
+21:28:45.848  rn=1 REAL 71B → status=3 → diag(status3Count=1) → evict   ← 同毫秒
+21:28:47.990  rn=2 REAL 71B → status=3 …        之后 rn=3..7 每笔同样只回 71B
+21:28:50.608  InvalidPoToken diag: sessAgeMs=11801 sessReqN=5 status2Seen=1
+                status3Count=4 pot=89B ctxActive=0 ctxStored=0
+21:28:55.965  耗尽重试 → 上抛 player error
+```
+
+**三个要点**:
+
+1. **服务端在拒会话,不是挑 token** —— 每笔响应只有 **71B**(纯 status,零媒体),`ctxActive=0 ctxStored=0`
+   (SABR context 根本没建立)。与 P11-116 的结论(token 洗清,残留是身份链)以及它记的
+   「**第 4 请求必转终态 3**」精确吻合:本次 `status3Count=4 @ sessReqN=5`。
+2. token 是 6.5 秒前刚 harvest 到的 89B 真 token,**不是过期**(`potAgeMs` 极小)。
+3. P11-144 keep-stale 实验的判据行(「下一笔请求的 status 即判据」)本次答案是 **下一笔照样 status=3**;
+   但成因更像会话级拒绝,而非 token 质量 —— 该实验是否结案需再攒同签名样本。
+
+### §37.3 P11-190:「早判死」把 10 秒白等压到毫秒级
+
+旧实现的判死点其实**已经立即抛**(`.848 diag → .854 evict`,同毫秒),慢的是**后续请求还照发**:
+`invalidPo` 只在 `media()` **之后**查,而 media3 Loader 的重试会把 fetcher 拉回来 ⇒ 每次重试先真发一次
+HTTP、再吃服务端 `NEXT_REQUEST_POLICY backoff=2000ms`,rn=1..7 **连撞 10 秒**(45.8→55.9)才耗尽上抛。
+
+修:把 `invalidPo` 检查提到 `getNextSegment` **入口**(与既有的 `fatalError` 检查并列)——
+会话级判死是终态(逐笔只回 status、零媒体),重试没有胜算,立即失败让 Loader 尽快耗尽重试上抛。
+首次判死时已打过完整 diag,入口处静默以免刷屏。
+
+预期:这段 10 秒 → 毫秒级,整次重载 42 秒 → ~32 秒。

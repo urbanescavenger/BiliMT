@@ -645,6 +645,16 @@ internal class SabrMediaFetcher(
    */
   fun getNextSegment(req: SabrSegmentRequest): SabrSegment {
     fatalError?.let { throw SabrTerminalException("SABR error: $it") }
+    // ── P11-190(2026-09-27 真机 `logs_live_20260927_214503`):**会话判死后不再真发请求** ──────────
+    // 那场起播首笔就 status=2(P11-144 keep-stale 不刷新)→ 下一笔起每笔只回 **71B 的 status=3**
+    // (`ctxActive=0 ctxStored=0`,服务端拒整个会话)。`media()` 里其实已经立即 throw + evict 了
+    // (21:28:45.848 diag → .854 evict,同毫秒),但 **media3 Loader 的重试会把 fetcher 拉回来**:
+    // 旧实现只在 `media()` **之后**查 invalidPo,于是每次重试都先真发一次 HTTP、再吃服务端
+    // NEXT_REQUEST_POLICY 的 `sleeping backoff 2000 ms`,rn=1..7 连撞 **10 秒**(45.8→55.9)才耗尽
+    // 上抛 player error → auto-retry。会话级判死是终态(服务端逐笔只回 status、零媒体),重试没有
+    // 任何胜算 —— 提到入口立即失败,让 Loader 尽快耗尽重试上抛,把这段白等压到毫秒级。
+    // 首次判死时已打过完整 diag(`InvalidPoToken diag: sessAgeMs…`),此处静默以免刷屏。
+    if (invalidPo) throw SabrTerminalException("InvalidPoToken (session dead, fast-fail no-fetch)")
     val itag = req.formatItag
     // 2026-08-31:在途 itag 入白名单(修重建后旧在途请求响应被广告过滤丢弃的死循环),finally 移除。
     pendingRequestItags.add(itag)
