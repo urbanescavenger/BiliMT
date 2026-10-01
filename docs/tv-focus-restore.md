@@ -57,6 +57,7 @@ Box(root, focusDiag("root"))
 | **onFocusChanged 放错位置** | 节点零回调而子树 `hasFocus=true`、requestFocus 静默失败 | `onFocusChanged`/`onPreviewKeyEvent` 必须写在 `focusable()` **之前**(只监听其后第一个 focusTarget) |
 | **单布尔跟踪焦点** | 下键「弹回顶部/原地不动」,无关行入场补发 `isFocused=false` 清零 | 行聚焦按**行号集合**增删,不用 last-writer-wins 单布尔 |
 | **requester 单发** | `FocusRequester is not initialized` 一闪而过,焦点落 sidebar | 一律「等一帧 + 校验 + 重试 N 帧」,不要单发 requestFocus |
+| **列表整表换新把网格焦点清掉(P11-191)** | 无任何按键,`LOST [dynamic-grid]` → **同一帧** `avatar focused … openMyPage=true`;紧挨在前的是 `YoutubeFeed: getSubscriptionsFeed done …`(3 行内 ≤15ms) | 网格行 key 是 `row-$row-<**行首项** key>` ⇒ 合并/刷新重排后**即使被聚焦的那张卡 index 没变**,行首换人也会让整行被 LazyColumn 销毁重建,焦点被清→掉到布局第一个可聚焦节点(侧栏头像)。修:①`TvVideoGrid` 在 `videos` 变化且变更前网格持焦时,按 `focusedKey` 解析新 index、按行 key 判断行是否真被重建,再滚过去重抢焦点(`merge refocus` 行);②头像 autoConfirm 只认「侧栏内刚按过方向键」的落焦(`keyDriven=`);③首屏合并在途期间压住头像 autoConfirm(`firstPageInFlight`) |
 
 ## 4. 排障顺序(照这个顺序看日志)
 
@@ -76,5 +77,6 @@ Box(root, focusDiag("root"))
 - P11-148:TV 设置页 D-pad 丢焦点
 - **P11-171**:播放列表详情页返回零焦点(**空表死锁** + 数据未 hoist + 下层频道网格恢复全败)
 - **P11-172**:返回丢焦第二场 —— 详情页被弹掉后**头像 autoConfirm 劫持**用户(抑制条件漏覆盖层 restore key)+ 被中断的恢复把 key 挂死;另记录「返回瞬间主线程卡死 ~850ms 让占位 effect 来不及跑」
+- **P11-191**:动态页**无按键**丢焦并跳「我的」页 —— 真因是动态首屏把 YouTube 关注流并进来时整表换新、行首换人导致聚焦行被 rebuild(见上表);`logs_live_20261001_173435`:09-29 20:38:53 / 10-01 11:08:47 / 10-01 17:34:24 三场都是 `getSubscriptionsFeed done` 之后 ≤15ms;另两场(09-30 19:54/21:41)因 `suppress=true` 只丢焦没跳页,213ms 后被网格恢复拉回。旧守卫只判「聚焦项 index 变没变」,这一类整个漏网
 
 判断「用户到底按了几次 Back」只能看各层 onBack 自己的日志;**层切换警告不可作证**(见上表)。

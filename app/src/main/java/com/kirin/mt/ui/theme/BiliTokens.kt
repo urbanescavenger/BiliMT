@@ -306,6 +306,11 @@ object BiliFocus {
   const val CardScale = 1.055f
   const val CinematicCardScale = 1.072f
   const val CinematicNavScale = 1.035f
+  /**
+   * P11-191:头像 autoConfirm 的「按键宽限」。侧栏内按下方向键后这么久内落到头像的焦点,
+   * 才算用户主动移过去;超时(或根本不是侧栏里按的键)一律视为被动落焦,不跳「我的」页。
+   */
+  const val AutoConfirmKeyGraceMs = 300L
   // 大图查看器缩放:双击放大档 + 双指缩放上限。
   const val ImageViewerDoubleTapScale = 2.5f
   const val ImageViewerMaxScale = 5f

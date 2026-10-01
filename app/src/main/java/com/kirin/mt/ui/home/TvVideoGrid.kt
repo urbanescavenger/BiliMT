@@ -106,6 +106,17 @@ private val VideoCardOwnerConfirmKeys = setOf(Key.DirectionCenter, Key.Enter, Ke
 private const val VideoCardOwnerLongPressMs = 500L
 
 /**
+ * P11-191:网格「此刻是否持焦」的持有对象。
+ *
+ * 用普通字段而不是快照状态:焦点每次进出网格都会写它,做成快照状态会让整个 4 列 LazyColumn
+ * 跟着重组一遍。调用方只在**组合期**取值(见下方 `LaunchedEffect(videos)` 的 `gridHadFocus`),
+ * 那一刻本帧的行销毁还没发生,拿到的正是「变更前网格有没有焦点」。
+ */
+private class GridFocusHolder {
+  var value: Boolean = false
+}
+
+/**
  * 网格尾部状态:展示加载更多进度/到底/失败重试。None 时不渲染 footer。
  */
 internal sealed interface GridFooterState {
@@ -214,6 +225,12 @@ internal fun TvVideoGrid(
   // 供「异步增量合并重排」时把焦点拉回同一视频的新 index:只监听显式聚焦写入,
   // 不随 videos 变化自更新,否则重排后就不知道原本聚焦的是谁了。
   var focusedKey by remember { mutableStateOf<Any?>(null) }
+  // P11-191:聚焦时那一行的行 key。重排后若这一行的行 key 变了,说明整行被 LazyColumn 重建,
+  // 焦点一定被清掉了(行 key 由「行首项」决定,详见 rowKeyOf)。
+  var focusedRowKey by remember { mutableStateOf("") }
+  val gridFocus = remember { GridFocusHolder() }
+  // 组合期快照:本帧的重排/行销毁还没发生,拿到的就是「这次 videos 变更前网格是否持焦」。
+  val gridHadFocus = gridFocus.value
   var rowScrollActive by remember { mutableStateOf(false) }
   var rowScrollGeneration by remember { mutableIntStateOf(0) }
   val focusScale = when {
@@ -227,6 +244,16 @@ internal fun TvVideoGrid(
     focusedIndex = if (focusedIndex >= 0) focusedIndex else restoredFocusIndex,
     enabled = !rowScrollActive,
   )
+
+  /**
+   * P11-191:LazyColumn 的行 key。整行身份由「行首项的 key」决定 —— 行首换人 ⇒ 整行被销毁重建
+   * ⇒ 行内被聚焦的卡片连节点一起没了,Compose 只能把焦点交给布局里第一个可聚焦节点(侧栏头像)。
+   * 与 items(key = ...) 共用同一份实现,免得两处公式走偏。
+   */
+  fun rowKeyOf(row: Int): String {
+    val firstIndex = row * columns
+    return "row-$row-${keyFactory(firstIndex, videos[firstIndex])}"
+  }
 
   suspend fun scrollRow(row: Int, smoothScroll: Boolean) {
     listState.scrollRowIntoStablePosition(
@@ -304,33 +331,60 @@ internal fun TvVideoGrid(
     }
   }
 
-  // 异步增量合并重排时保焦点:动态(视频)把 B 站动态先渲染出来,YouTube 关注流随后分批
-  // 按 pubdate 插入中间重排(mergeByPubdate),改动了行 key → LazyColumn 销毁重建聚焦行 → 焦点丢。
-  // 这里监听 videos 变化:若聚焦视频仍在列表但换了 index(被新条目顶到别处),滚到新位置并重新
-  // 抢焦点,让焦点跟着同一视频走而不是掉回侧栏/根。
-  // 与 focusFirstItemKey / focusRestoredItemKey 不同,这里正是需要在「列表内容被外部刷新」时
-  // 主动把焦点拉回,而不是等显式 key 触发;append 加载更多(聚焦项 index 不变)不触发。
+  // 列表被外层换新(合并 YouTube 关注流 / 刷新首屏)时保焦点。
+  // 行 key 是 `row-$row-<行首项 key>`:重排后**即使被聚焦的那张卡 index 没变**,它所在行的
+  // 行首项也可能换人 ⇒ LazyColumn 销毁重建整行 ⇒ 焦点被清,掉到布局里第一个可聚焦节点
+  // (侧栏头像),再被头像 autoConfirm 送进「我的」页。
+  // P11-191 真机实锤(logs_live_20261001_173435):17:34:24.740 合并落地 → 24.748 焦点已到头像,
+  // 全程无按键;旧实现只判「聚焦项 index 变没变」,这一类(index 没变、行重建)整个漏网。
+  // 判据用 gridHadFocus:变更前焦点已在别处(用户在侧栏/设置里)时绝不许抢回来。
+  // 与 focusFirstItemKey / focusRestoredItemKey 不同,这里正是要在「列表内容被外部刷新」时
+  // 主动把焦点拉回,而不是等显式 key 触发。
   LaunchedEffect(videos) {
+    if (!gridHadFocus) return@LaunchedEffect
     val key = focusedKey ?: return@LaunchedEffect
     if (videos.isEmpty()) return@LaunchedEffect
     val oldIndex = focusedIndex
     if (oldIndex < 0) return@LaunchedEffect
-    val newIndex = videos.indices.firstOrNull { i -> keyFactory(i, videos[i]) == key }
-    if (newIndex == null || newIndex == oldIndex) return@LaunchedEffect
     // 用户正在做纵向翻页(滚到别行)时让位,避免跟用户的移动抢焦点;
     // 空闲时(YouTube 增量合并落地)才把焦点拉回。
     if (rowScrollActive) return@LaunchedEffect
-    val targetRow = newIndex / columns
-    scrollRow(targetRow, smoothScroll = false)
-    repeat(TvGridRestoreFocusRetryCount) {
+    val newIndex = videos.indices.firstOrNull { i -> keyFactory(i, videos[i]) == key }
+    if (newIndex == null) {
+      // YouTube 条目的 feedKey 内含 index,重排后按旧 key 找不到;退回旧 index 就近落回,
+      // 总之不能让焦点留在网格外面。
+      Log.d(TvFocusLogTag, "merge refocus: key=$key 已不在 ${videos.size} 条里,退回 index=$oldIndex")
+    }
+    val targetIndex = (newIndex ?: oldIndex).coerceIn(0, videos.lastIndex)
+    val targetRow = targetIndex / columns
+    // 行 key 没变、且网格手里还攥着焦点 ⇒ 这一行根本没被重建,焦点好端端在原卡上,不必动。
+    // (append 加载更多就是这种:行首没换人,别每次翻页都白抢一遍、白刷日志。)
+    // 两个判据并列而非只取一个:行 key 判据不依赖焦点事件派发时机,gridFocus 判据则能兜住
+    // 「行 key 没变但焦点确实被别的路径清掉」的情况。
+    if (rowKeyOf(targetRow) == focusedRowKey && gridFocus.value) return@LaunchedEffect
+    // 只有真的换了行才需要滚(index 没变时行位置不变,重建后的节点一帧后即可聚焦)。
+    if (newIndex != null && newIndex != oldIndex) {
+      scrollRow(targetRow, smoothScroll = false)
+    }
+    repeat(TvGridRestoreFocusRetryCount) { attempt ->
       withFrameNanos { }
       val focused = runCatching {
-        itemFocusRequesters[newIndex].requestFocus()
+        itemFocusRequesters[targetIndex].requestFocus()
       }.getOrDefault(false)
       if (focused) {
+        if (newIndex != oldIndex) {
+          Log.d(
+            TvFocusLogTag,
+            "merge refocus: $oldIndex → $targetIndex attempt=$attempt videos=${videos.size}",
+          )
+        }
         return@LaunchedEffect
       }
     }
+    Log.w(
+      TvFocusLogTag,
+      "merge refocus failed: key=$key target=$targetIndex videos=${videos.size} (focus likely on avatar)",
+    )
   }
 
   // 只在显式触发（tab 按下键）时滚回并聚焦首项；不要监听 videos.size，
@@ -504,6 +558,8 @@ internal fun TvVideoGrid(
       modifier = modifier
         .fillMaxSize()
         .focusDiag(debugLabel)
+        // P11-191:记录网格是否持焦(普通字段,不触发重组),供「列表被换新」时判断该不该抢回焦点。
+        .onFocusChanged { gridFocus.value = it.hasFocus }
         // focusRestorer 兜底:恢复目标卡(restoredItemFocusRequester,即进入覆盖层/播放器前
         // 最后聚焦的那张卡)在焦点树重建后由 Compose 自动恢复焦点,比下方手写 restore effect
         // 更快更稳。仅当目标卡已组合(在视口内)时生效——焦点曾在它上面且节点被移除过才会触发,
@@ -546,10 +602,7 @@ internal fun TvVideoGrid(
     ) {
       items(
         count = rowCount,
-        key = { row ->
-          val firstIndex = row * columns
-          "row-$row-${keyFactory(firstIndex, videos[firstIndex])}"
-        },
+        key = { row -> rowKeyOf(row) },
         contentType = { "video-row" },
       ) { row ->
         Row(
@@ -620,6 +673,7 @@ internal fun TvVideoGrid(
                 onFocused = {
                   focusedIndex = index
                   focusedKey = keyFactory(index, video)
+                  focusedRowKey = rowKeyOf(row)
                   centerDownMs = 0L
                   commitFocusedItem(index)
                   if (index.shouldLoadMore(

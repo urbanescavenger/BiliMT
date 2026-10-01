@@ -116,6 +116,9 @@ internal class DynamicFeedUiState {
   // 等频道发出来后再重启 LaunchedEffect 时,loadedOnce 会挡住 YouTube 合并 → 初始空、手动刷新才出。
   // 用该标志区分「频道首次就绪需补拉 YouTube」与「后续头像回填等频道变化(不应重载)」。
   var youtubeMerged by mutableStateOf(false)
+  // P11-191:首屏(B站动态 + YouTube 关注流)合并在途。合并落地会整表换新把网格焦点清掉,
+  // 这段时间里头像 autoConfirm 要压住(见 AppShell 的 suppressAvatarAutoConfirm)。
+  var firstPageInFlight by mutableStateOf(false)
   var handledManualRefreshKey by mutableIntStateOf(0)
   var focusRestoredItemKey by mutableIntStateOf(0)
 }
@@ -493,6 +496,26 @@ private suspend fun loadDynamicFirstPage(
     return
   }
 
+  // P11-191:整段首屏(含 YouTube 关注流那 3~4 秒)都算「合并窗口」。合并落地那一刻整表换新,
+  // 会把网格里被聚焦的卡片连行一起销毁、焦点掉到布局第一个可聚焦节点(侧栏头像);头像
+  // autoConfirm 于是把用户凭空送进「我的」页。旧口径只在播放器返回后压 400ms,而合并要
+  // 3.2~3.7s 才回来,窗口完全错开 ⇒ 改成整段压住(真机 logs_live_20261001_173435:
+  // 21.522 解除 suppression → 24.740 合并落地 → 24.748 已跳页)。
+  state.firstPageInFlight = true
+  try {
+    fetchAndApplyDynamicFirstPage(videoRepository, state, type, youtubeChannels, youtubeChannelStore)
+  } finally {
+    state.firstPageInFlight = false
+  }
+}
+
+private suspend fun fetchAndApplyDynamicFirstPage(
+  videoRepository: VideoRepository,
+  state: DynamicFeedUiState,
+  type: String,
+  youtubeChannels: List<YoutubeChannel>,
+  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
+) {
   // force-refresh 且已有内容时保留旧 videos 与焦点,不切骨架、不清焦点,
   // 避免网格销毁重建后跳到第一个视频(对齐推荐页刷新策略)。
   if (state.state !is UserFeedState.Success) {

@@ -849,6 +849,9 @@ fun BiliTvApp(
             userSession = userSession,
             autoConfirmOnFocus = autoConfirmOnFocus,
             suppressAccountAutoConfirm = suppressAccountAutoConfirm,
+            // P11-191:动态首屏(含 YouTube 关注流合并)在途时,合并落地会整表换新、把网格焦点
+            // 清掉;这段时间头像不许 autoConfirm 跳「我的」页(导航项不受影响)。
+            suppressAvatarAutoConfirm = userFeedState.dynamicVideo.firstPageInFlight,
             accountFocusRequester = accountFocusRequester,
             navFocusRequesters = navFocusRequesters,
             dynamicUnread = dynamicUnread,
