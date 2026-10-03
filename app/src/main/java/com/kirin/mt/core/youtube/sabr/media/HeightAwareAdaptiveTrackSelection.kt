@@ -644,6 +644,9 @@ class HeightAwareAdaptiveTrackSelection(
   /** P11-153:试探被「超容量」拒绝的一次性日志(每实例一次,防每 chunk 刷屏)。 */
   private var trialOverCapacityLogged = false
 
+  /** P11-193:升档被「缓冲地板」按住的一次性日志(每实例一次,防每评估刷屏)。 */
+  private var climbBufferFloorLogged = false
+
   /** 2026-09-01 满缓冲试探:本实例见过的最高缓冲水位(us)——试探水位线 = max(地板, 0.8×此值)。 */
   private var maxObservedBufferedUs = 0L
 
@@ -1004,6 +1007,10 @@ class HeightAwareAdaptiveTrackSelection(
     // 先完整回填一轮才许试探;bufferMax=30s 用户档(fill ~28s)仍可用。失败冷却的封锁在候选
     // 循环里统一做(gated+trial 一起挡,见循环注释),此处不再单查。
     val trialThresholdUs = maxOf(TRIAL_FLOOR_BUFFERED_US, maxObservedBufferedUs * 8 / 10)
+    // P11-193:升档缓冲地板 = min(30s, 试探线)——复用试探线同形公式(照顾「用户把缓冲目标调小」的
+    // 档位:那时 0.8×maxObserved 才是合理线,写死 30s 会永远爬不上去),上盖 30s 防高水位档放水。
+    // 口径与用例见候选循环里的 P11-193 注释。
+    val climbBufferFloorUs = minOf(UPGRADE_MIN_BUFFERED_US, trialThresholdUs)
     val trialUpgrade = canUpgrade &&
       maxObservedBufferedUs >= TRIAL_MIN_CEILING_US &&
       bufferedDurationUs >= trialThresholdUs &&
@@ -1045,6 +1052,38 @@ class HeightAwareAdaptiveTrackSelection(
         // 降档口径不变(alpha.9Z「卡死不降档」防线):当前档与低档候选仍用 effective。
         if (required > effective) continue
       } else {
+        // ── P11-193:升档的**缓冲地板**(理判据链后补上的那条缺口)────────────────────────────
+        // 缺口:`canUpgrade` 里 `lastDowngradeElapsedMs == 0L` 的豁免本意是「起播首爬别被 30s 门槛卡」,
+        // 但它与门槛是**或**关系 ⇒ 只要本实例从未真正降过档(饥饿那一枪被 P11-168/177 闸 suppress、
+        // 或读数无效没开枪),豁免**永久成立** ⇒ 10 秒缓冲也能爬 4K。
+        // 真机 `logs_live_20261003_212240.log`(`jeHP-rT5E7U`,alpha.4)两次 stall 都是这条:
+        //   21:19:43 实例创建后 66s,`bufS=3.8s`(随后 -1.0 无效)时 1080p→1440p→**2160p**;
+        //   21:22:05 实例创建后 122s,`bufS=10.4s` 时 1440p→**2160p**;
+        // 换轨又 `cleanup dropped formats` 丢光旧轨缓冲 ⇒ 新 4K 档要从零拉(实测单笔 26~47MB /
+        // 11.8~24s)⇒ 8s 看门狗整场重载 ⇒ 重载后梯子再爬同一堵墙 = **连续重载**。
+        // 口径:地板 [climbBufferFloorUs] = min(30s, 试探线) —— 与试探线同形,顺带照顾「用户把缓冲
+        // 目标调小」的档位(那时 0.8×maxObserved 才是合理线,30s 会永远爬不上去)。
+        // 读数无效(`bufS=-1`,own-range-null 家族)按**不达标**处理:证明不了缓冲够就不爬。
+        // 与 P11-188「无效 = 没有证据」同源但方向相反 —— P11-188 是「不因无效读数降档」,此处是
+        // 「不因无效读数升档」;升降档的保守方向本就相反。
+        // **豁免只给真起播首爬**:实例创建 [STARTUP_CLIMB_WINDOW_MS] 内且目标 ≤ [STARTUP_CLIMB_MAX_HEIGHT]
+        // (1080p)。重载后的实例同样从头算,但重载后爬 4K 发生在 1~2 分钟后 ⇒ 必被本闸拦住,
+        // 爬档改由「缓冲真的填起来」驱动(填够地板即放行,不是永久封锁)。
+        val startupClimb = nowMs - createdElapsedMs < STARTUP_CLIMB_WINDOW_MS &&
+          f.height <= STARTUP_CLIMB_MAX_HEIGHT
+        if (!startupClimb && !trialUpgrade && bufferedDurationUs < climbBufferFloorUs) {
+          if (!climbBufferFloorLogged) {
+            climbBufferFloorLogged = true
+            Log.i(
+              "YtSabrAbr",
+              "upshift held (buffer floor, P11-193): itag${itagOf(f)}(${f.height}p) " +
+                "bufS=${bufferedDurationUs / 1_000_000}s < floor=${climbBufferFloorUs / 1_000_000}s " +
+                "(=min(30s, max(15s, 0.8×maxObserved=${maxObservedBufferedUs / 1_000_000}s)), " +
+                "startupClimb=$startupClimb trial=$trialUpgrade; 等缓冲填起来再爬)",
+            )
+          }
+          continue
+        }
         // 2026-09-01 满缓冲试探:容量/持续闸失真(服务端 pacing,见类头)时凭满缓冲放行;
         // ×1.1 顶档闸与起播 stall 冷却不试探(4K 死亡行军/起播死循环防线不松)。
         val capacityGateFail = required > upgradeEstFloor
@@ -1271,6 +1310,16 @@ class HeightAwareAdaptiveTrackSelection(
 
     /** P11-192:换出后原组的冷静期(ms)——与顶档冷却同量级,期满允许回退(用户拍板)。 */
     const val FAMILY_SWITCH_COOLDOWN_MS = 180_000L
+
+    /**
+     * P11-193:升档缓冲地板的**豁免窗口**(ms)——selection 实例创建后这段窗口内,爬到
+     * [STARTUP_CLIMB_MAX_HEIGHT] 及以下不需要 [UPGRADE_MIN_BUFFERED_US] 缓冲,保住「起播首爬不被卡」。
+     * 取 30s:真机两次致死的 4K 攀爬分别发生在实例创建后 66s / 122s,均在窗口外。
+     */
+    const val STARTUP_CLIMB_WINDOW_MS = 30_000L
+
+    /** P11-193:豁免窗口内允许免缓冲爬到的最高档。再往上(1440p/2160p)一律要缓冲地板。 */
+    const val STARTUP_CLIMB_MAX_HEIGHT = 1080
     /**
      * 2026-08-30 修正:顶档升档 sustained 门槛系数千分位——sustained ≥ 声明×1.1 才许升 4K。
      * 旧 ×0.6 是对 peak 虚高(~2×)的折算;declared 换 averageBitrate=真平均后,1.1 是 60s 均值
