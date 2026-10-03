@@ -375,10 +375,14 @@ class HeightAwareAdaptiveTrackSelection(
     return (0 until length).firstOrNull { itagOf(getFormat(it)) == itag }
   }
 
-  /** 满足条件者里挑一个:顶档 codec 优先,其次码率高者;无满足者返回 null。 */
+  /** 满足条件者里挑一个:当前编码组优先(P11-192),其次顶档 codec,再次码率高者;无满足者返回 null。 */
   private fun bestIndexOf(predicate: (Int) -> Boolean): Int? =
     (0 until length).filter(predicate).maxWithOrNull(
-      compareBy({ if (isTopCodecVariant(getFormat(it))) 1 else 0 }, { getFormat(it).bitrate }),
+      compareBy(
+        { if (inActiveFamily(getFormat(it))) 1 else 0 },
+        { if (isTopCodecVariant(getFormat(it))) 1 else 0 },
+        { getFormat(it).bitrate },
+      ),
     )
 
   /**
@@ -435,6 +439,146 @@ class HeightAwareAdaptiveTrackSelection(
     } else {
       f.sampleMimeType != null && f.sampleMimeType == topGroupCodec
     }
+  }
+
+  // ── P11-192:编码组(codec family)= ABR 的切换单元 ──────────────────────────────────────────
+  // 病象(2026-10-03 TV 真机 `logs_live_20261003_155810.log`,video `FL8-Sw8PjJA`):14 分钟里
+  //   `upshift → itag315(2160p **VP9**,24.9M) → buffer-critical downgrade → 顶档冷却只锁 **itag 315**
+  //   → **19 秒后** upshift 挑中 itag401(2160p **AV01**,20.6M) → 再饿 → 再挑回 315 …`
+  // 6 轮之间渲染分辨率在 3840x2160 ↔ 2560x1440 跳了 11 次;315/401 的交替时刻与各自 180s 冷却
+  // 到期**逐一吻合** —— 旧逻辑把「同高度的另一个 codec 变体」当成了降档之外的免费选项,于是每次
+  // 饥饿都顺手换一次解码器(最贵的那种切换)。最后一轮 401 的段请求零字节挂死 40s → 整场重载。
+  //
+  // 口径(用户拍板):**itag 没问题,把 codec 逻辑独立出来** ——
+  //   ①梯子按 codec 族分组,ABR 平时**只在当前组内**升降档(组内换高度 = 同解码器,便宜);
+  //   ②换组(VP9→AV01/AVC)是一次**独立、显式**的决定,只有当前组被判「不合适」才发生;
+  //   ③换出后给原组冷却,期满允许回退。
+  // 实现取**偏好序**而非硬过滤:所有候选比较器把「是否属于当前组」放在第一关键字。硬过滤会制造
+  // 「组内该高度无档 ⇒ 候选集空 ⇒ 不降档 ⇒ 卡死」,正是 P11-146 那个结构性死锁的另一副面孔。
+  /** 组的**锚点族**:用户显式选族优先(P11-133),否则取全组顶档那一档的族(Auto;YouTube 通常 VP9)。 */
+  private val anchorFamily: String? by lazy {
+    preferredCodecFamilyProvider()?.takeIf { hasPreferredFamily } ?: run {
+      var top: Format? = null
+      for (i in 0 until fullGroup.length) {
+        val g = fullGroup.getFormat(i)
+        if (top == null || g.height > top.height || (g.height == top.height && g.bitrate > top.bitrate)) {
+          top = g
+        }
+      }
+      top?.let { codecFamilyOf(it) }
+    }
+  }
+
+  /** 当前编码组;null(尚未定族)= 首次访问时落到 [anchorFamily]。 */
+  private var activeFamily: String? = null
+
+  /**
+   * 换出后原组的冷却到期墙钟(ms)。语义 = **允许**被再次选中,而不是**主动**回退:
+   * 到期后判据①(该组在候选集里无档)或②(当前组也饿)都可能落回原族,但不会仅因到期就切回去 ——
+   * 那会立刻把族级振荡(本次要修的 315↔401)搬到「族」这个粒度上重演一遍。
+   */
+  private val familyBlockedUntilMs = HashMap<String, Long>()
+
+  /** 各族在滑窗内的「不可持续」次数(饥饿降档 / 零字节挂死)——换组判据的原料。 */
+  private val familyFailCount = HashMap<String, Int>()
+  private var familyFailWindowStartMs = 0L
+
+  /** 本轮评估的 served 收窄集 —— 供族候选计数复用,由 updateSelectedTrack 每轮写入(见 C1)。 */
+  private var evalServedInGroup: Set<Int>? = null
+  private var evalRestrictToServed = false
+
+  private fun familyOfIndex(i: Int): String? = codecFamilyOf(getFormat(i))
+
+  /** 当前组(首次访问落锚点族)。 */
+  private fun activeFamilyNow(): String? = activeFamily ?: anchorFamily?.also { activeFamily = it }
+
+  /** P11-192:候选 format 是否与当前编码组同族(候选比较器的第一关键字)。 */
+  private fun inActiveFamily(f: Format): Boolean {
+    val act = activeFamilyNow() ?: return true
+    return codecFamilyOf(f) == act
+  }
+
+  /**
+   * 本族在**当前候选集**里还剩几档(served 收窄生效时只数集合内的)。刻意**不**看
+   * [isTrackExcluded]:90/180s 冷却只是暂时的,把它算成「本族无档」会导致一次抖动就误换组。
+   */
+  private fun familyCandidateCount(family: String): Int {
+    val served = evalServedInGroup
+    val restrict = evalRestrictToServed
+    return (0 until length).count { i ->
+      familyOfIndex(i) == family && getFormat(i).height > 0 &&
+        !(restrict && served != null && i !in served)
+    }
+  }
+
+  /**
+   * P11-192:换组评估。每轮 `updateSelectedTrack` 一次,**必须在候选循环之前**(循环读 [activeFamily])。
+   *
+   * 只有两条判据(换组 = 换解码器,一次抖动不值得):
+   *   ①**当前组在候选集里一档都没有**:服务端不推该组(served 收窄把该族全滤掉)、或该族档被解码器
+   *     能力探测整族过滤掉(设备解不了)—— 留在组内只能一路降到地板,换组是唯一出路。
+   *   ②**当前组滑窗内饥饿/挂死 ≥ [FAMILY_FAIL_THRESHOLD] 次**,且另一族**在同一高度有更省的档**
+   *     (声明码率更低)。真机场景即 315(VP9 2160p@24.9M)反复饿 → 401(AV01 2160p@20.6M)更省。
+   *     刻意**不做**「换到天花板更低的族」:两个 4K 族都饿过之后会掉进 AVC(天花板 1080p),而 AVC
+   *     永不饥饿 ⇒ 整场钉死在 1080p。没有「同高度更省」的族 ⇒ 宁可在组内升降档。
+   */
+  private fun maybeSwitchFamily(nowMs: Long) {
+    val active = activeFamilyNow() ?: return
+    if (familyCandidateCount(active) == 0) {
+      switchFamily(active, pickFamilyAnyHeight(active, nowMs), nowMs, "active family has no candidate")
+      return
+    }
+    val fails = familyFailCount[active] ?: 0
+    if (fails >= FAMILY_FAIL_THRESHOLD) {
+      pickFamilyCheaperAtSameHeight(active, nowMs)?.let {
+        switchFamily(
+          active, it, nowMs,
+          "family starved x$fails in ${FAMILY_FAIL_WINDOW_MS / 60_000}min -> cheaper same-height tier",
+        )
+      }
+    }
+  }
+
+  /** 判据①的目标族:其余族里**天花板最高**者,忽略仍在冷却的族(同为最高天花板时取先出现者)。 */
+  private fun pickFamilyAnyHeight(from: String, nowMs: Long): String? =
+    (0 until length).mapNotNull { familyOfIndex(it) }.distinct()
+      .filter { it != from && (familyBlockedUntilMs[it] ?: 0L) <= nowMs && familyCandidateCount(it) > 0 }
+      .maxByOrNull { fam ->
+        (0 until length).filter { familyOfIndex(it) == fam }.maxOf { getFormat(it).height }
+      }
+
+  /** 判据②的目标族:在当前档**同一高度**上有可用且更省的档的族,取其中最省的那个。 */
+  private fun pickFamilyCheaperAtSameHeight(from: String, nowMs: Long): String? {
+    val curH = getFormat(selected).height
+    val curB = getFormat(selected).bitrate
+    return (0 until length).filter { i ->
+      val fam = familyOfIndex(i) ?: return@filter false
+      fam != from && (familyBlockedUntilMs[fam] ?: 0L) <= nowMs &&
+        getFormat(i).height == curH && getFormat(i).bitrate < curB && !isTrackExcluded(i, nowMs)
+    }.minByOrNull { getFormat(it).bitrate }?.let { familyOfIndex(it) }
+  }
+
+  private fun switchFamily(from: String, to: String?, nowMs: Long, reason: String) {
+    if (to == null || to == from) return
+    activeFamily = to
+    familyBlockedUntilMs[from] = nowMs + FAMILY_SWITCH_COOLDOWN_MS
+    familyFailCount[from] = 0
+    Log.i(
+      "YtSabrAbr",
+      "codec group switch: $from → $to (reason=$reason, $from back-off " +
+        "${FAMILY_SWITCH_COOLDOWN_MS / 1000}s, ${to} candidates=${familyCandidateCount(to)}, " +
+        "cur=${getFormat(selected).height}p@${getFormat(selected).bitrate})",
+    )
+  }
+
+  /** P11-192:记一次「本族不可持续」(饥饿降档 / 零字节挂死);滑窗过期即整表清零重开。 */
+  private fun noteFamilyFailure(family: String?, nowMs: Long) {
+    if (family == null) return
+    if (nowMs - familyFailWindowStartMs > FAMILY_FAIL_WINDOW_MS) {
+      familyFailCount.clear()
+      familyFailWindowStartMs = nowMs
+    }
+    familyFailCount[family] = (familyFailCount[family] ?: 0) + 1
   }
 
   /**
@@ -669,6 +813,11 @@ class HeightAwareAdaptiveTrackSelection(
     val servedInGroup = if (!materialSession || servedNow.isEmpty()) null
       else (0 until length).filter { itagOf(getFormat(it)) in servedNow }.toSet()
     val restrictToServed = servedInGroup != null && servedInGroup.isNotEmpty()
+    // P11-192:本轮的 served 收窄集给族候选计数用,并在此**先**做一次换组评估 ——
+    // 必须在两条降档路径与主候选循环之前:它们都读 activeFamily 当比较器首关键字。
+    evalServedInGroup = servedInGroup
+    evalRestrictToServed = restrictToServed
+    maybeSwitchFamily(nowMs)
     if (bufferCritical) {
       // ── P11-168:**带宽撑得住当前档时,低水位不是供给不足** ──────────────────────────────────
       // 真机 `logs_live_20260922_085959.log`(手机 `SwsvkhzYt5Y`):
@@ -742,9 +891,18 @@ class HeightAwareAdaptiveTrackSelection(
           val f = getFormat(i)
           // 2026-09-01 VP9 粘性:同 height 多 codec 变体粘顶档 codec——水位急救降档(如 1440p→1080p)
           // 旧规则会选中 299(avc,码率更高),把 vp9→avc 跨 codec 换解码器引进降档路径。
+          // ── P11-192:候选序改为「当前编码组 → 高度 → 顶档 codec」─────────────────────────────
+          // 旧序把「同高度的另一个 codec 变体」当成免费选项(315 被冷却挡住就挑 401),每次饥饿都顺手
+          // 换解码器。同族优先后,315 被冷却 → 退到族内 308(1440p);只有 [maybeSwitchFamily] 显式
+          // 判本组不合适才换组。
           if (f.height in 1 until currentHeight &&
-            (f.height > lowerHeight ||
-              (f.height == lowerHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(lower))))
+            (
+              lower < 0 ||
+                (inActiveFamily(f) && !inActiveFamily(getFormat(lower))) ||
+                (inActiveFamily(f) == inActiveFamily(getFormat(lower)) &&
+                  (f.height > lowerHeight ||
+                    (f.height == lowerHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(lower)))))
+              )
           ) {
             lower = i
             lowerHeight = f.height
@@ -766,6 +924,10 @@ class HeightAwareAdaptiveTrackSelection(
           // (旧实现无此闸 → 一段饥饿内连降四档到地板,见类头)。
           freezeEpisodeActive = true
           markDowngradeFromTrial(nowMs, currentHeight)
+          // P11-192:饥饿降档(含 silenceHang 挂死触发的这一枪)记一次「本族不可持续」——
+          // 换组判据②的原料。按**族**记而非按 itag/高度:要判的是「VP9 这一族在本机撑不住」,
+          // 而不是「2160p 这一档撑不住」;后者由既有的顶档冷却负责。
+          noteFamilyFailure(codecFamilyOf(current), nowMs)
           // 2026-08-30 顶档定向冷却:从顶档(2160p)水位降下后把该顶档 excludeTrack 3 分钟,防
           // 「重填突发过门槛→升 4K→贴地漏光→又降」边缘横跳反复切档卡顿;只锁顶档,低档升降照常
           // (与已取消的全档冷却不同)。非顶档(可持续档)的急救降档不加冷却。
@@ -914,8 +1076,14 @@ class HeightAwareAdaptiveTrackSelection(
       // 选声明码率可负担的最高分辨率档;同 height 多 codec(VP9/H264)2026-09-01 起改粘全组顶档
       // codec(VP9 粘性,见 isTopCodecVariant——旧「保留高码率变体」让 1080p 选 avc(299>303),爬到
       // 1440p(仅 VP9)必然跨 codec 换解码器,赌设备 codec 回收坑)。
-      if (f.height > bestHeight ||
-        (f.height == bestHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(best)))
+      // ── P11-192:比较器首关键字换成「是否当前编码组」────────────────────────────────────
+      // 同族优先后,315(VP9 2160p)被冷却挡住时选中的是族内 308(1440p),而不是跨族的 401
+      // (AV01 2160p)—— 换组只由 [maybeSwitchFamily] 显式决定。activeFamily 为 null(梯子无可辨族,
+      // 如纯 avc)时 inActiveFamily 恒真 ⇒ 与旧行为逐字节等价。
+      if ((inActiveFamily(f) && !inActiveFamily(getFormat(best))) ||
+        (inActiveFamily(f) == inActiveFamily(getFormat(best)) &&
+          (f.height > bestHeight ||
+            (f.height == bestHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(best)))))
       ) {
         best = i
         bestHeight = f.height
@@ -1090,6 +1258,19 @@ class HeightAwareAdaptiveTrackSelection(
     const val UPGRADE_DOWNGRADE_GRACE_MS = 10_000L
     /** 2026-08-30 方案B:顶档(4K 级)定义高度门槛——组内最高档 height ≥ 此值时启顶档 sustained 加码。 */
     const val TOP_TIER_MIN_HEIGHT = 2160
+
+    /**
+     * P11-192:换组的滑窗(ms)——窗口内某族被记满 [FAMILY_FAIL_THRESHOLD] 次「不可持续」才考虑换组。
+     * 取 10min 是**刻意跨过 90/180s 冷却**:同一族的两枪常被冷却隔到几分钟开外(真机 15:44:52 与
+     * 15:50:22 相隔 5.5min),窗口短了就永远攒不到两枪。
+     */
+    const val FAMILY_FAIL_WINDOW_MS = 600_000L
+
+    /** P11-192:换组阈值(次)。1 次太敏感(一次抖动就换解码器),2 次 = 同一堵墙撞两回。 */
+    const val FAMILY_FAIL_THRESHOLD = 2
+
+    /** P11-192:换出后原组的冷静期(ms)——与顶档冷却同量级,期满允许回退(用户拍板)。 */
+    const val FAMILY_SWITCH_COOLDOWN_MS = 180_000L
     /**
      * 2026-08-30 修正:顶档升档 sustained 门槛系数千分位——sustained ≥ 声明×1.1 才许升 4K。
      * 旧 ×0.6 是对 peak 虚高(~2×)的折算;declared 换 averageBitrate=真平均后,1.1 是 60s 均值

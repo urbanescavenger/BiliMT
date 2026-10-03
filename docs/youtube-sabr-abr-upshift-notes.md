@@ -1472,3 +1472,84 @@ HTTP、再吃服务端 `NEXT_REQUEST_POLICY backoff=2000ms`,rn=1..7 **连撞 10 
 首次判死时已打过完整 diag,入口处静默以免刷屏。
 
 预期:这段 10 秒 → 毫秒级,整次重载 42 秒 → ~32 秒。
+
+---
+
+## §38 P11-192 同高度跨 codec 变体 = 「降档之外的免费选项」(2026-10-03 真机,`logs_live_20261003_155810.log`)
+
+### §38.1 现象:14 分钟里爬 4K→饿→降档 6 轮,渲染分辨率跳 11 次
+
+视频 `FL8-Sw8PjJA`(1237s,24 轨混 VP9/AV01/AVC),15:43:26 起播 → 15:57:49 重载:
+
+```
+15:43:31  起播 720p 出帧
+15:44:19  冷启动梯子 →1080p      15:44:22 →1440p
+15:44:34  upshift reseed → itag315(2160p VP9, 24.9M)
+15:44:52  buffer-critical downgrade 2160p→1440p  bufS=13s   ← top-tier cooldown: itag315 锁 180s
+15:45:11  upshift → itag401(2160p AV01, 20.6M)               ← 仅隔 19 秒
+15:46:16  downgrade  bufS=9s                                 ← itag401 也锁 180s
+15:49:21  →401   15:49:49 downgrade bufS=19s
+15:50:01  →315   15:50:22 downgrade bufS=12s
+15:53:29  →401   15:54:04 downgrade bufS=4s
+15:54:37  →315   15:55:05 downgrade bufS=5s
+15:57:04  →401   → seg=179 请求零字节挂死 40s → 15:57:49 stall → 整场重载
+```
+
+同场统计:分辨率切换 **11 次**(3840x2160 ↔ 2560x1440)、`player state=BUFFERING` **5 次**、
+`isLoading=true` **8 次**;最密一段 15:50:05→15:50:42 **37 秒切 4 次**。
+
+**不是带宽不够**:同场实测吞吐 43~72Mbps(单笔 `REAL 33376367B 3701ms → 72Mbps`),
+1440p VP9(11.4M)缓冲长期 20~48s。4K 侧的真实矛盾是吞吐贴地——一笔 79.9MB 的 4K 响应
+`24126ms → 26Mbps`,而 315 档需要 24.9Mbps(余量 4%),所以一上 4K 就漏光。
+
+### §38.2 根因:顶档冷却只锁 itag,不锁高度 ⇒ 顺手换一次解码器
+
+`buffer-critical downgrade` 分支在顶档降下来时写的是(现 `HeightAwareAdaptiveTrackSelection.kt:921`):
+
+```kotlin
+if (currentHeight >= TOP_TIER_MIN_HEIGHT) {
+  excludeTrack(leavingIndex, TOP_TIER_BUFFER_CRITICAL_COOLDOWN_MS)   // ← 只锁这一个 itag
+  Log.i("YtSabrAbr", "top-tier cooldown: itag${current.id}(${current.height}p) excluded 180s")
+}
+```
+
+于是 **315 被锁 ≠ 2160p 被锁**:候选集里 401(AV01 2160p)照常可选,而 `isTopCodecVariant`
+只在**同高度**做平手判据(`f.height == bestHeight && …`),挡不住「更高的高度 + 另一个族」。
+日志里 315/401 的交替时刻与各自 180s 冷却到期**逐一吻合**(401 于 15:46:16 被锁 → 15:49:16 到期
+→ 15:49:21 立刻被选中),可证不是随机抖动。
+
+代价:每次饥饿都换来一次**跨 codec 解码器重建**(VP9 ↔ AV01),这是所有切档里最贵的一种。
+
+### §38.3 口径(P11-192,用户拍板)
+
+> **itag 没问题,编码逻辑独立处理,将 itag 按编码分组,VP9 不合适换组。**
+
+- 梯子按 **codec 族**分组(`codecFamilyOf`:`vp9` / `av01` / `avc`),ABR 平时**只在当前组内**升降档
+  ——组内换高度是同解码器,便宜;
+- **换组**是一次独立、显式的决定,只在当前组被判「不合适」时发生;
+- 换出后原组冷却 180s,**期满允许回退**(但不主动回退,见下)。
+
+### §38.4 实现要点
+
+| 件 | 说明 |
+|---|---|
+| `anchorFamily` | 用户显式选族优先(P11-133),否则取**全组顶档那一档**的族(Auto;YouTube 通常 VP9) |
+| `activeFamily` | 当前组;首次访问落锚点族 |
+| 偏好序 | `bestIndexOf` / 水位急救降档循环 / 主候选循环的**比较器首关键字**改成「是否属于当前组」。**取偏好序而非硬过滤** —— 硬过滤会制造「组内该高度无档 ⇒ 候选集空 ⇒ 不降档 ⇒ 卡死」,正是 P11-146 结构性死锁的镜像 |
+| `maybeSwitchFamily` | 每轮 `updateSelectedTrack` 一次,位置在两条降档路径与主候选循环**之前**(它们都读 `activeFamily`) |
+| 判据① | 当前组在候选集里**一档都没有**(served 收窄把该族滤空 / 整族被解码器能力过滤)→ 换到天花板最高的族 |
+| 判据② | 当前组滑窗(10min)内饥饿降档 ≥ **2** 次,且另一族在**同高度有更省的档**(声明码率更低)。真机场景即 315(VP9 2160p@24.9M)→ 401(AV01 2160p@20.6M) |
+| 刻意不做 | 不做「换到天花板更低的族」:两个 4K 族都饿过之后会掉进 AVC(天花板 1080p),而 AVC 永不饥饿 ⇒ 整场钉死在 1080p。没有「同高度更省」的族就宁可在组内升降档 |
+| `familyFailCount` | 在饥饿降档那一枪按**族**记账(不按 itag/高度)——要判的是「VP9 这一族在本机撑不住」,不是「2160p 这一档撑不住」(后者归既有的顶档冷却) |
+| 回退语义 | `familyBlockedUntilMs` 到期只表示**允许**被再次选中(判据①②都可能落回原族),不主动切回 —— 否则族级振荡会以「族」为粒度重演一遍 |
+| 常量 | `FAMILY_FAIL_WINDOW_MS=600_000`(要跨过 90/180s 冷却:真机两枪相隔 5.5min)、`FAMILY_FAIL_THRESHOLD=2`、`FAMILY_SWITCH_COOLDOWN_MS=180_000` |
+| 兼容 | `activeFamily` 为 null(梯子无可辨族,如纯 avc)时 `inActiveFamily` 恒真 ⇒ 与旧行为逐字节等价 |
+
+### §38.5 验收 / 否证线
+
+- **验收**:不再出现「315 被锁 → 19s 内 upshift 到 401」这类**同高度跨 codec**跳跃;若 VP9 2160p 反复饿,
+  应见**一条** `codec group switch: vp9 → av01 (reason=family starved x2 …, back-off 180s)`;
+  此后分辨率切换全部落在同族内(2160p↔1440p),跨 codec 重建应为 0~1 次。
+- **否证**:①若换组后 AV01 也反复饿、且日志出现反复 `vp9 → av01` / `av01 → vp9` 的往返 ⇒ 判据②太松,
+  提高阈值或加大冷却;②若某视频只有单一族却出现「组内无候选」误判 ⇒ 查 `familyCandidateCount` 的
+  served 口径(`restrictToServed` 只对材料会话生效)。
