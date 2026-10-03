@@ -647,6 +647,9 @@ class HeightAwareAdaptiveTrackSelection(
   /** P11-193:升档被「缓冲地板」按住的一次性日志(每实例一次,防每评估刷屏)。 */
   private var climbBufferFloorLogged = false
 
+  /** P11-194:顶档 ×1.1 sustained 闸拒绝的一次性日志(每实例一次)——这道闸此前无日志可验收。 */
+  private var topTierGateRefusedLogged = false
+
   /** 2026-09-01 满缓冲试探:本实例见过的最高缓冲水位(us)——试探水位线 = max(地板, 0.8×此值)。 */
   private var maxObservedBufferedUs = 0L
 
@@ -985,7 +988,7 @@ class HeightAwareAdaptiveTrackSelection(
     // 实需,起步窄选期低档样本对 4K 无参考价值,且 4K 的 pacing 有效供给本就贴地 — 边缘反复获批/
     // 漏光/急救 → 315↔308 分钟级抖动。顶档要求 sustained ≥ declared×1.1(declared 已是真平均,
     // 1.1 挡的是 60s 均值口径下的 VBR 尖峰余量;千兆管道不受损,夜间塌方段 sus 8M 永不批 23M 的 4K)。
-    val isTopTier = length > 1 && getFormat(0).height >= TOP_TIER_MIN_HEIGHT
+    val isTopTier = length > 1 && (0 until length).any { getFormat(it).height >= TOP_TIER_MIN_HEIGHT }
     // 2026-08-31 ②stall 重载记忆:起播期 stall 重载后冷却期内跳过顶档(SabrAbrMemory,跨重载单例)。
     val topTierStallBlocked = isTopTier && SabrAbrMemory.isTopTierStartupBlocked()
     // 2026-08-31 ①逐级爬:升档候选只允许「下一个更高分辨率档」(未排除轨中最小的、严格高于当前的
@@ -1088,8 +1091,32 @@ class HeightAwareAdaptiveTrackSelection(
         // ×1.1 顶档闸与起播 stall 冷却不试探(4K 死亡行军/起播死循环防线不松)。
         val capacityGateFail = required > upgradeEstFloor
         val sustainedGateFail = !canUpgrade || (sustained in 0 until required)
-        val topTierGateFail = isTopTier && i == 0 &&
+        // ── P11-194:顶档 ×1.1 sustained 闸 —— 两处判据都写错了,这道闸一直是死的 ──────────────
+        // 旧写法 `isTopTier && i == 0 && …`,两处都建立在「组索引 0 = 最高码率档」这个**错误假设**上:
+        //   · `isTopTier`(见上)= `getFormat(0).height >= 2160` —— 实测第 0 档是**会话 primary**
+        //     (真机两组:`135(0)`/480p 与 `136(0)`/720p)⇒ 恒 false;
+        //   · `i == 0` 同样指 primary 档,不是顶档候选。
+        // 两者叠加 ⇒ 闸**从未开过一枪**:真机 `logs_live_20261003_214158.log`(dev.r2127,`XjqafXGN3ck`)
+        // 21:39:26 `trial upshift (buffer-full probe) … → itag401(2160p) declared=9127940
+        // est=8844K sus=6679K` —— 持续供给 6.7M 明显低于该档要的 9.1M(更低于 ×1.1 门槛 10.0M),
+        // 而「×1.1 顶档闸与起播 stall 冷却**不试探**」本是设计明写的 4K 死亡行军防线 ⇒ 于是进了 4K,
+        // 随即 `REAL 46371131B 22888ms` / `REAL 25583811B 26383ms`(单笔 46MB/22.9s、25MB/26.4s)把
+        // 缓冲从 41s 抽到 6.6s,降档换轨又丢缓冲 ⇒ 9s 空窗 ⇒ 8s 看门狗整场重载。
+        // 修:`isTopTier` 改判「组内存在顶档」,本行改判「**该候选**是顶档候选」。
+        val topTierGateFail = isTopTier && f.height >= TOP_TIER_MIN_HEIGHT &&
           sustained < f.bitrate * TOP_TIER_SUSTAINED_PERMILLE / 1000L
+        // P11-194 取证:这道闸此前一整类日志都没有(修了也无从验收),故补一次性打点。
+        if (topTierGateFail && !topTierGateRefusedLogged) {
+          topTierGateRefusedLogged = true
+          Log.i(
+            "YtSabrAbr",
+            "top-tier gate refused (P11-194): itag${itagOf(f)}(${f.height}p) declared=${f.bitrate / 1000}K " +
+              "sustained=${if (sustained >= 0L) "${sustained / 1000}K" else "-1(证据不足)"} < " +
+              "需要=${f.bitrate * TOP_TIER_SUSTAINED_PERMILLE / 1000L / 1000}K " +
+              "(est=${bandwidthMeter.getBitrateEstimate() / 1000}K, trial=$trialUpgrade) — " +
+              "顶档不试探,实测供给没到位就不进 4K",
+          )
+        }
         // P11-153(②,r2048 TV 真机):**试探放行也要有上限** —— 满缓冲只该"绕过偏悲观的估计",
         // 不该授权"超过实测容量 1.5 倍"的跳档。依据:23:15:55 `trial upshift … → itag302(720p)
         // declared=18619097`(18.6M)而实测容量 `cap≈9M` ⇒ 超容量 2 倍 ⇒ 切轨后新轨喂不动、老轨缓冲

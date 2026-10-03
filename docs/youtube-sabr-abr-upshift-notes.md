@@ -1605,11 +1605,11 @@ P11-168/177 的闸在 `est/meas ≥ 声明×1.15` 时 suppress 水位急救降�
 P11-188 已经把闸的盲区补对了:「实测未知(-1)= 证据不足 ⇒ 闸不成立 ⇒ 照常降档」——
 即「新档还没交付任何段」的情形本来就放行,而「已交付且达标」的情形不该降档。**闸不动**。
 
-**(3) `isTopTier` 判据 ⟂ 三条顶档保护(整类失效,未修)**
+**(3) `isTopTier` 判据 ⟂ 三条顶档保护(整类失效,**已修 P11-194**)——真机实锤见 §39.6**
 `isTopTier = length > 1 && getFormat(0).height >= 2160` —— 而 SABR 组的第 0 档是**会话 primary 档**
 (真机两组实测为 itag135/480p 与 itag136/720p),不是顶档 ⇒ 该式恒 false ⇒ #3、#8 两条关卡形同没有。
 #8 还叠了第二处错:`i == 0` 是照「索引 0 = 最高码率」写的,而实测索引 0 是 primary(最低档之一)。
-**待办**:判据改「组内存在 ≥2160 的档」、去掉 `i == 0`(改判「该候选是顶档候选」)。
+**已修(P11-194)**:`isTopTier` 改判「组内存在 ≥2160 的档」、`topTierGateFail` 去掉 `i == 0` 改判「该候选是顶档候选」,并补了一次性取证日志 `top-tier gate refused (P11-194)`(这道闸此前一类日志都没有,修了也无从验收)。
 
 **(4) `sustained == -1` ⟂ sustained 闸**
 `sustained in 0 until required` 在 `sustained = -1` 时为 false ⇒ **不拦**。这是刻意的(冷启动证据不足
@@ -1640,3 +1640,42 @@ P11-192(alpha.5)的编码组锚定把这一跳去掉(锚在 VP9 就直接 271→
   且 `bufS` 达到地板后才见 `upshift (cold-start ladder …)`;不再出现「爬 4K → `bufS≈0` → 8s stall」。
 - **否证**:①若缓冲目标调小的档位(fill <30s、≥15s)从此爬不过 1080p ⇒ 地板公式要按用户目标再压;
   ②若 `bufS=-1` 长时间无效导致整场钉在 1080p ⇒ 无效读数的处理要从「不达标」改成「按上一次有效值判」。
+
+### §39.6 P11-194:顶档闸复活(2026-10-03 真机实锤,`logs_live_20261003_214158.log` / dev.r2127)
+
+**这是 P11-192 + P11-193 都已生效的那一版**(日志里可见 `codec group switch: vp9 → av01 (reason=family
+starved x2 …)` 与 `upshift held (buffer floor, P11-193) … bufS=14s < floor=24s`,两条新机制都按设计工作),
+**但仍有一次整场重载**,原因正是 §39.2-(3) 那条死判据 —— 于是它从「待办」升级为「实锤」:
+
+```
+21:39:26  trial refused (over-capacity): itag315(2160p) declared=21108K > floor=8844K×1   ← 贵的那档被拦了
+21:39:26  trial upshift (buffer-full probe): bufS=38s threshold=35s → itag401(2160p)
+          declared=9127940 est=8844K sus=6679K            ← 持续供给 6.7M < 该档 9.1M(更低于 ×1.1=10.0M)
+21:40:09  fetch rn=16 REAL 46371131B 22888ms                ← 4K 单笔 46MB / 22.9s
+21:40:57  fetch rn=17 REAL 25583811B 26383ms → 7Mbps        ← 单笔 26.4 秒;缓冲 41s → 6.6s
+21:40:59  buffer-critical downgrade: 2160p@9127940 → 1440p@4184860   ← ABR 判得对
+21:41:05  cleanup dropped formats=[401] (video=400 pending=[400])     ← 降档换轨把 4K 缓冲丢光
+21:41:15  stall detected, auto-retry #1 @pos=599543ms → 整场重载      ← 9s 空窗 > 8s 看门狗
+```
+
+**要点**:放 4K 进来的唯一依据是 `est=8844K`,而 `sustained=6679K` 当场就说明供给不够——本该由
+「×1.1 顶档 sustained 闸(且**不试探**)」拦下,但该闸因 `isTopTier` 取组内第 0 档(会话 primary)
++ `i == 0`(也指 primary)双重写错而**从未开过一枪**。
+
+**修法(P11-194,两处判据 + 一条取证日志)**:见 §39.2-(3)。复活的两条防线:×1.1 顶档闸(gated 与
+试探两路都挡)、起播 stall 后 180s 禁爬顶档(P11-173/178,同一 `isTopTier` 的另一个消费者)。
+
+**副作用(已知且接受)**:VP9 4K(21.1M)要求 `sustained ≥ 23.2M`,AV01 4K(9.1M)要求 ≥10.0M ⇒
+这台电视上「4K 自动档」会明显更难上,但实测数据支持这个保守(26.4 秒一笔 25MB 的供给撑不住 9.1M 的 4K)。
+手动选 4K 不受影响(手切走 resolver 锁单轨,不经 ABR)。
+
+**仍然开放的洞(不在本轮)**:降档换轨时 `cleanup dropped formats` 丢掉旧轨缓冲 ⇒ 新档首个段落地前
+>8s 就吃看门狗(本次最后一步)。它的入口正是「4K 进去了」;顶档闸修好后剩余换档都发生在 ≤1440p
+(响应 3~11MB / 2~6s,小于阈值),先观察。若仍在**非顶档**换档处 stall,再按「刚换档 N 秒内给 stall
+判死加宽限」(与既有「视频冻结 12s 让过解码器重建」同一套思路)单独开一条,**不去动带宽闸**
+(理由见 §39.2-(2))。
+
+**验收 / 否证线**:日志出现 `top-tier gate refused (P11-194) … sustained=…K < 需要=…K` 与
+`top-tier startup-stall cooldown: skip itag…(2160p)`(后者此前从未出现过);不再出现「试升 2160p → 饿死」。
+否证:①`sustained` 明明 ≥ 门槛(4K 稳跑过)却仍爬不上去 ⇒ 复核 sustained 口径是否被「满缓冲停拉期」
+拖低;②若想要自动 4K,下调 `TOP_TIER_SUSTAINED_PERMILLE`(1100 → 如 950)或按族分档。
