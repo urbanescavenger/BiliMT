@@ -66,6 +66,15 @@ import com.google.common.collect.ImmutableList
  *   本视频:315 声明 32.3M→~23M,顶档门槛 19.4M→~25.3M,夜间塌方段(sus 8M)永不批准。
  * 其余机制(升档重锚、水位急救、升档冷却、10s 禁回降、逐步候选升降)语义不变,锚点改裸声明。
  *
+ * **P11-200(2026-10-05,上面的「①calib 整体取消」被部分推翻)**:那次取消的前提是
+ * 「declared = averageBitrate = 真平均」,而 declared 只在 `stream.itagItem != null` 时才由
+ * contentLength/approxDurationMs 算出 —— **itagItem 缺失时回落 `bitrate`(VBR 峰值)**,
+ * [YoutubePlaybackResolver.newPipeVideoRaw] 的 P11-153 警告即此。真机 `logs_live_20261005_213214.log`
+ * 那个视频 **19 个 itag 全部命中回落** ⇒ 整条梯子的「实需」都是峰值(720p VP9 声明 8.24M,实测交付
+ * 只有 2.7M)⇒ 买得起的档被判成买不起、suppress 闸的 `meas ≥ declared` 腿结构性恒 false。
+ * 补法不是恢复旧的采样折算系数,而是**直接取 app 自己的实测交付码率**(`getMeasuredBitrateBps`):
+ * 见 [tierNeedBps]。口径:只降权不抬权、不叠余量、证据不足退回声明值。详见 docs §39.10/§39.11。
+ *
  * 2026-08-30(顶档定向冷却,修「4K 边缘档反复横跳」,23:28-23:31 真机):供给(27-42M)贴着 4K
  * 真实消耗(~30M)与声明门槛(32.3M+顶档×1.1=35.5M)边缘,重填期突发 est/sus 过门槛升 4K →
  * 边播边吸 pacing 供给 ~30M → buffer 漏到 5-6s → 水位急救级联(315→308→299)→ 低档重填 →
@@ -690,6 +699,9 @@ class HeightAwareAdaptiveTrackSelection(
   /** P11-195:判据②被「天花板守卫」挡下的一次性日志(每实例一次)——否则钉在低分辨率又是一段安静。 */
   private var familyCeilingGuardLogged = false
 
+  /** P11-200:「档位实需」被实测交付码率校准过的一次性日志,按 itag 去重(否则每评估刷屏)。 */
+  private val tierNeedCalibratedLogged = mutableSetOf<Int>()
+
   /** 2026-09-01 满缓冲试探:本实例见过的最高缓冲水位(us)——试探水位线 = max(地板, 0.8×此值)。 */
   private var maxObservedBufferedUs = 0L
 
@@ -906,7 +918,13 @@ class HeightAwareAdaptiveTrackSelection(
       // 误降一档**;兜底是冻结 episode(一段饥饿只开一枪)+ 降出即记冷却 —— 一次切档的卡顿 vs 一次
       // 整场重载的 10~22s 黑屏,不对称,值得。
       // 满缓冲排空段(刚下完一整批,实测远高于声明)仍照旧不误降档。
-      val curBitrateForGate = getFormat(selected).bitrate
+      // ── P11-200:基准换成 [tierNeedBps](min(declared, 实测交付码率))──────────────────────────
+      // `meas ≥ declared` 这条腿在**峰值声明**下结构性恒 false ⇒ 本闸整类失效(真机 33s 缓冲照降,
+      // 见 §39.10.4)。换基准后:②的语义从「按名义速率交付」收窄为「**有实测证据**」——因为基准本身
+      // 已取自 meas,再拿 meas 去比基准就成了自证;真正做区分的是①`estHasMargin`。
+      // P11-188「未知 = 证据不足 ⇒ 闸不成立」原样保留:meas ≤ 0 时 need 退回 declared ⇒ measCoversTier
+      // 仍为 false。
+      val curBitrateForGate = tierNeedBps(getFormat(selected))
       val estForGate = bandwidthMeter.getBitrateEstimate()
       // 实测吞吐走带宽计已接线的 provider(DefaultSabrChunkSource.setMeasuredBitrateProvider →
       // fetcher.getMeasuredBitrateBps):选择类拿不到 fetcher,这条是既有且同源的通道。
@@ -924,6 +942,7 @@ class HeightAwareAdaptiveTrackSelection(
           "buffer-critical downgrade **suppressed**(P11-168/177): bufS=${bufferedDurationUs / 1_000_000}s " +
             "est=${estForGate / 1000}K ≥ 当前档 ${getFormat(selected).height}p@$curBitrateForGate" +
             "×${BUFFER_CRITICAL_GATE_MARGIN_PERMILLE / 1000.0} " +
+            "(declared=${getFormat(selected).bitrate},P11-200 已校准) " +
             "meas=${if (measForGate > 0) "${measForGate / 1000}K" else "未知"}" +
             " → 带宽真撑得住,低水位来自排空/切轨而非供给不足(不降档、不门禁)",
         )
@@ -1082,8 +1101,11 @@ class HeightAwareAdaptiveTrackSelection(
       // 2026-08-31 降档滞回:仅当前档的降档判据放宽 ×0.85(15% 死区),升档/降档候选档保持全额
       // required——est 巡航骑在门槛 ±10% 时(declared=真平均后常态)不再每周期穿线切档。
       // 两分支统一 Long(Int×Long 若不显式 toLong 会推断成 Number&Comparable<*> 星投影,CompareTo 禁用)。
+      // ── P11-200:基准由裸 declared 换成 [tierNeedBps](min(declared, 实测交付码率))──────────────
+      // declared 在 itagItem 缺失的视频上是 VBR 峰值(§39.11.1),拿它当"实需"会把买得起的档判成买不起;
+      // 系数(当前档 ×0.85 滞回)与两侧闸(est 门、容量门、超容量门)全部不动。
       val required: Long =
-        if (i == selected) f.bitrate * DOWNSHIFT_MARGIN_PERMILLE / 1000L else f.bitrate.toLong()
+        if (i == selected) tierNeedBps(f) * DOWNSHIFT_MARGIN_PERMILLE / 1000L else tierNeedBps(f)
       // 2026-09-01 晚(失败冷却统一封锁,gated 与试探一起挡):降档已证明该档不可持续(饥饿或 est
       // 崩塌),而冷却期 est/sus/cap 读到的恰是试探期/旧档 pacing 样本(虚高,22:17:14 真机 14s 后
       // 绕冷却重批 1440p)——两种路都不批,期满恢复原判据。锁的是「被降出的那一档」,非全梯子
@@ -1143,8 +1165,10 @@ class HeightAwareAdaptiveTrackSelection(
         // 随即 `REAL 46371131B 22888ms` / `REAL 25583811B 26383ms`(单笔 46MB/22.9s、25MB/26.4s)把
         // 缓冲从 41s 抽到 6.6s,降档换轨又丢缓冲 ⇒ 9s 空窗 ⇒ 8s 看门狗整场重载。
         // 修:`isTopTier` 改判「组内存在顶档」,本行改判「**该候选**是顶档候选」。
+        // P11-200:基准同样换成 [tierNeedBps](§39.11.4-#3)——峰值声明下顶档闸也会按假数据判。
+        val topTierNeed = tierNeedBps(f)
         val topTierGateFail = isTopTier && f.height >= TOP_TIER_MIN_HEIGHT &&
-          sustained < f.bitrate * TOP_TIER_SUSTAINED_PERMILLE / 1000L
+          sustained < topTierNeed * TOP_TIER_SUSTAINED_PERMILLE / 1000L
         // P11-194 取证:这道闸此前一整类日志都没有(修了也无从验收),故补一次性打点。
         if (topTierGateFail && !topTierGateRefusedLogged) {
           topTierGateRefusedLogged = true
@@ -1152,7 +1176,7 @@ class HeightAwareAdaptiveTrackSelection(
             "YtSabrAbr",
             "top-tier gate refused (P11-194): itag${itagOf(f)}(${f.height}p) declared=${f.bitrate / 1000}K " +
               "sustained=${if (sustained >= 0L) "${sustained / 1000}K" else "-1(证据不足)"} < " +
-              "需要=${f.bitrate * TOP_TIER_SUSTAINED_PERMILLE / 1000L / 1000}K " +
+              "需要=${topTierNeed * TOP_TIER_SUSTAINED_PERMILLE / 1000L / 1000}K " +
               "(est=${bandwidthMeter.getBitrateEstimate() / 1000}K, trial=$trialUpgrade) — " +
               "顶档不试探,实测供给没到位就不进 4K",
           )
@@ -1293,6 +1317,49 @@ class HeightAwareAdaptiveTrackSelection(
   private fun itagOf(f: Format): Int {
     val id = f.id ?: return -1
     return id.substringAfterLast(':', id).toIntOrNull() ?: -1
+  }
+
+  /**
+   * P11-200:**档位实需基准** —— 这一档到底要多少带宽。
+   *
+   * 背景(§39.10/§39.11,真机 `logs_live_20261005_213214.log`):`f.bitrate` 是
+   * [YoutubePlaybackResolver] 给的 declared,而 declared 在 `stream.itagItem == null` 时**回落 VBR
+   * 峰值**(见 `newPipeVideoRaw` 的 P11-153 警告)。该视频 19 个 itag 全部命中回落 ⇒ 整条梯子的
+   * 「实需」都是峰值:720p VP9(302)声明 8243818,而 app 自算的实测交付码率只有 2677~2772K
+   * (逐段字节复算 1.84MB/5.33s 段 = 2.76Mbps)。后果两条同源:
+   *   ①降档/trial-fail 判据 `required=8243818 > est`(3.2~4.9M)⇒ 720p 永远"买不起",钉死 480p;
+   *   ②P11-168/177 的 suppress 闸要求 `meas ≥ declared` ⇒ 峰值声明下**结构性恒 false**,闸形同虚设。
+   * 2026-08-30 的「声明口径修正」把 calib 折算整个删掉,前提是 declared=averageBitrate=真平均 ——
+   * 该前提在 itagItem 缺失的视频上不成立,本函数即补回那层折算,只是数据源换成**app 自己的实测**。
+   *
+   * 口径:
+   *   · **只降权不抬权** —— `min(declared, meas)`。实测高于声明时不抬高门槛(抬高会让本该保留的档
+   *     被误降;真断流由活跃 est 与水位急救接管,不需要这里加码)。
+   *   · **不叠余量** —— meas 已是「真需求」,余量交给各闸自己的系数(estHasMargin ×1.15、顶档 ×1.1、
+   *     试探超容量 ×1.5),在这里再乘一次会与它们重复放大(§39.11.3-2)。
+   *   · **证据不足即退回旧行为** —— `meas ≤ 0`(`MEASURED_MIN_SEGS=3` 段未满)⇒ 返回 declared,
+   *     与 P11-188「未知 = 没有证据」同向:不拿未知去放宽任何判据。
+   *
+   * 刻意**不用**于:升档重锚锚点(已有 `cap×1.2` 夹取,P11-153①b)与冷却「提前解除」判据(那是
+   * 「要不要给刚判失败的档翻案」,宁严勿松 —— 见 §39.11.3-6)。
+   */
+  private fun tierNeedBps(f: Format): Long {
+    val declared = f.bitrate.toLong()
+    if (declared <= 0L) return declared
+    val itag = itagOf(f)
+    val meas = (bandwidthMeter as? SabrBandwidthMeter)?.getMeasuredBitrateBps(itag) ?: -1L
+    if (meas <= 0L) return declared
+    val need = minOf(declared, meas)
+    if (need < declared && tierNeedCalibratedLogged.add(itag)) {
+      // 比值用整数十分位拼,避免 String.format 走默认 Locale(某些区域会输出逗号小数点)。
+      val ratioTenths = (declared * 10L + meas / 2L) / meas
+      Log.i(
+        "YtSabrAbr",
+        "tier need calibrated (P11-200): itag$itag(${f.height}p) declared=$declared meas=$meas → " +
+          "need=$need(声明虚高 ${ratioTenths / 10}.${ratioTenths % 10}×)",
+      )
+    }
+    return need
   }
 
   /**

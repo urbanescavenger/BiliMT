@@ -1865,3 +1865,214 @@ suppress 只是没帮上忙,不是病因)。
 
 **否证**:①门槛抬到 25s 仍 stall ⇒ 往返不是唯一缺口,回到交付/交接侧(§39.8.3 否证线);
 ②4K 多驻留 40~80MB 若引发内存告警/GC 卡顿(alpha.11 前科)⇒ 降门槛上限或与 maxBuffer 设置联动。
+
+---
+
+## §39.10 P11-199:2026-10-05 真机「一直 480p」复盘 —— **声明码率虚高 ~3×,720p 明明喂得动却被判买不起**
+
+> 触发:用户报「看下 log,一直 480」。日志 `logs_live_20261005_213214.log`(dev.r2137,SONY BRAVIA 4K AE2,
+> `6Tx9e1D-5Oc` 20 分钟)。本轮**纯判读,未改行为**。
+
+### §39.10.1 现象
+
+20 分钟内 8 个 SABR 会话,**渲染分辨率绝大多数时间停在 854x480**(其间 360p↔480p 反复,末尾一度掉到 240p);
+`video size: 1280x720` 全场只出现两次、每次仅数秒:
+
+```
+21:16:06 video size: 1280x720 → 21:16:12 video size: 854x480   (6s)
+21:21:39 video size: 1280x720 → 21:21:53 video size: 640x360   (14s)
+```
+
+每次爬到 720p 都在数秒内被撤:
+
+```
+21:16:05 buffer-critical downgrade: bufS=0s itag302/720p@5965652 → 480p@1853490(P11-178)
+21:20:17 buffer-critical downgrade: bufS=0s itag302/720p@5965652 → 480p@1853490(P11-178)
+21:21:31 buffer-critical downgrade: bufS=0s itag302/720p@5965652 → 480p@1853490(P11-178)
+21:21:44 downgrade 720p → 480p: est=3269K sus=6563K bufS=9s
+21:29:09 buffer-critical downgrade: bufS=0s itag0:302/720p@8243818 → 480p@1834466(P11-178)
+21:29:24 buffer-critical downgrade: bufS=5s itag0:302/720p@8243818 → 480p@1834466(P11-178)
+21:31:35 downgrade 720p → 480p: est=3227K … meas=2729K … reason=trial-fail   ← 见 §39.10.2
+```
+
+### §39.10.2 主因:降档/试探判据拿**声明码率**当真,而声明码率虚高约 3 倍
+
+`itag302`(VP9 1280x720@60)本场声明 **8243818 bps**(21:29 / 21:31 两个会话;21:15/21:20 两会话为
+5965652;21:14 会话更是 2115288 —— **同一视频同一 itag 的声明值会在会话间跳 4 倍**)。ABR 的升降档判据
+`required = f.bitrate` 用的就是这个声明值。
+
+而**实际交付码率**(app 自己算的 `meas` 字段 = MEDIA_END bytes ÷ 段数÷名义段长)只有 **2.6~2.8 Mbps**:
+
+```
+21:29:24 sel=3 bitrate=8243818 bw=3262K sus=4100K meas=2772K
+21:31:25 sel=3 bitrate=8243818 bw=4537K sus=-1     cap=8018K meas=2677K
+21:31:35 sel=3 bitrate=8243818 bw=3227K sus=-1     cap=7937K meas=2729K   ← meas < bw,这档喂得动
+```
+
+逐段字节数也吻合(`itag=302 endSegNum=225 duration=1200000ms` ⇒ 5.33s/段):
+
+```
+seq=27 1841301B → 2.76M   seq=28 1166286B → 1.75M   seq=29 1135251B → 1.70M
+seq=1  3246935B → 4.87M   seq=2  1983460B → 2.98M
+```
+
+即 **720p VP9 的真需求 ≈2.7 Mbps,而本场活跃 est 长期在 3.2~4.9 Mbps** —— 这条管子**喂得动 720p**。
+但因为判据比的是 `est` vs **声明 8.24M**,结论永远是「买不起」:21:31:17 靠 `cap=8018K` 过闸试升 302
+(`trial upshift (buffer-full probe): bufS=42s → itag302(720p) declared=8243818 est=4486K`),18 秒后
+21:31:35 就 `downgrade 720p → 480p: est=3227K … meas=2729K reason=trial-fail` —— **同一行里 `meas` 已经
+写明这档只要 2.7M,判据却只看声明值把它打回 480p**,随后 `720p excluded 90s`。
+
+`meas` 通道早就有(`getMeasuredBitrateBps` / `measCoversTier`),但只挂在 P11-168/177 的
+**suppress 闸**上(而那道闸还要求 `estHasMargin` 先成立 —— `est 3227K < 8243818×0.85` 故当场失效);
+**降档与 trial-fail 这条主路径从不读 `meas`**。
+
+### §39.10.3 帮凶:编码组锚定在 VP9 ⇒ 更省的同高度档够不着
+
+本场会话只有 AVC + VP9 两族(无 AV01)。同高度两族的声明码率:
+
+| 高度 | VP9(锚定族) | AVC |
+|---|---|---|
+| 480p | `244` 1834466 | `135` 1186074 |
+| 720p | `302` 8243818 | `298` 3509144 |
+| 1080p | `303` 15406188 | `299` 6002173 |
+| 1440p | `308` 16260822 | — |
+| 2160p | `315` 31366469 | — |
+
+锚定族取「全组顶档那一档的族」⇒ VP9(天花板 2160p)。于是:①P11-192 的「同族优先」比较器在同一高度
+上偏向 VP9 档 ⇒ 从 480p 往上,候选是 `302`(声明 8.24M)而不是 `298`(声明 3.5M);②P11-195 的
+**天花板守卫**又把「换到 AVC 族」这条唯一能拿到便宜 720p 的路封死 —— 本场实锤两次:
+
+```
+21:21:50 codec group switch held (ceiling guard, P11-195): vp9 ceiling=2160p,
+         更省的同高度候选族=[avc](天花板 avc=1080p)—— 换过去会砍掉画面上限,不换
+21:29:26 (同上)
+```
+
+两边叠加后,梯子在 480p 与 720p 之间**只剩 VP9 的 1.83M → 8.24M 这一跳**,而链路恰好落在中间的空洞里。
+(P11-195 §39.7 修的是「切到 AVC 之后 1440p 选不上」,本次是它的镜像面:**钉在 VP9 就拿不到便宜的 720p**。)
+
+### §39.10.4 附带缺陷:单笔超时吃掉 20s 窗口 60% ⇒ 33s 缓冲仍两连降
+
+```
+21:31:47 fetch rn=21 exception: timeout (fail=11976ms bwNow=-1 silence-hang itag=244 recorded)
+21:31:51 fetch rn=22 REAL 1253830B 4385ms → 2Mbps est=613K
+21:31:51 sel=6 bitrate=1834466 bufS=33.6 … bw=613K cap=6601K
+21:31:51 buffer-critical downgrade: bufS=33s itag0:244/480p@1834466 → 360p@1099340 silenceHang=true
+21:31:52 downgrade 360p → 240p: est=613K sus=-1 bufS=32s
+```
+
+`est=613K` 可逐字节复算:`REAL_BW_WINDOW_MS=20_000` 的窗口里只剩两笔样本 —— 失败笔 0B/11976ms +
+成功笔 1253830B/4385ms ⇒ `1253830×8000/16361 = 613,0xx bps`。**一笔读超时(8s 静默超时触发、计满
+11976ms)就吃掉 20s 窗口的 73%**,把 est 从 3227K 砸到 613K(5.3 倍),于是 `silenceHang=true` 又让
+P11-168/177 的 suppress 闸失效 ⇒ `bufS=33s`(远未饥饿)仍两连降到 240p,并给 480p/360p 各锁 90s。
+
+### §39.10.5 候选修法(未实施,待拍板)
+
+1. **降档主路径改读 `meas`(推荐,直击 §39.10.2)**:`required` 对**已交付过 ≥`MEASURED_MIN_SEGS` 段**的
+   档改用 `min(declared, meas × 余量)`(或 `meas` 有证据时直接以它为准)。本场 `meas=2729K < est=3227K`,
+   改完 720p 不会被 trial-fail 打回。风险:虚高只出现在 VP9 高档(§39.8.5-(a) 记过另一场 `meas ≈ declared×1.2`
+   的反例)⇒ 需按 itag 攒样本再采信,且**升档仍保守**(升错了代价是卡顿,降错了代价是画面白降)。
+2. **给 P11-195 天花板守卫加「买不起」例外**:当前族**下一高度档声明 > est×k**、而低天花板族在同高度有
+   **est 买得起**的档时,放行换族(宁要 720p AVC 也不要 480p VP9)。需同时决定换族后是否允许「回切」。
+3. **声明的会话间漂移本身要记账**:同一 itag 声明 2.1M/5.97M/8.24M 三值说明它不是稳定物理量;升档判据
+   若继续依赖它,至少要在本会话内做一次「与 meas 的一致性检查」,不一致就降权。
+4. **失败样本别独占窗口(§39.10.4)**:`addRealBwSample(0, elapsed)` 的单笔超时样本按 `min(elapsed, 5s)` 计入,
+   或要求同一档连续 ≥2 笔零字节才允许把 est 压到当前档声明以下。
+
+### §39.10.6 验收 / 否证线
+
+- **验收**:①日志出现「降档/trial-fail 判据引用 meas」的痕迹(改法 1)或「ceiling guard 放行(买不起)」
+  (改法 2);②`6Tx9e1D-5Oc` 这类「VP9 720p 声明虚高、实测够喂」的视频不再长时间钉在 480p;
+  ③单笔超时不再让 `est` 跌破「当前档声明」并触发两连降。
+- **否证**:①按 `meas` 降权后仍钉 480p ⇒ 病因不在声明虚高,回到链路本身(本场 link 峰值只 8~11M 突发、
+  长期 3~4.5M,可能确实只到 480p);②改法 2 放行换族后 1440p 又选不上(P11-195 回归)⇒ 必须保留「换族后
+  仍允许回切到高天花板族」的路径;③失败样本封顶后出现「真断流也不降档」⇒ 封顶值与条数阈值调紧。
+
+---
+
+## §39.11 P11-200 实施轮:档位基准改用「实测交付码率」—— 判据链复核 + 冲突清单(改代码前)
+
+> 依据 §39.10。AGENTS.md 要求「调 ABR 升降档判据前先把整条判据链理一遍、把冲突写进本文档再改代码」,
+> 本节即该复核。**改动只动「一档需要多少带宽」这个基准值,不动任何闸的门槛系数、不动豁免与冷却。**
+
+### §39.11.1 病根坐实:声明的来源本身是「VBR 峰值」
+
+```
+21:15:49 YtResolver: declared falls back to VBR PEAK (itagItem 缺失,无 averageBitrate): itag=302 720p codec=vp9 peak=5965K
+                     … itag=244 480p codec=vp9 peak=1853K / itag=135 480p peak=1301K …(本场共 19 行,含全部 avc 轨)
+```
+
+[YoutubePlaybackResolver.newPipeVideoRaw](app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L2216)
+只在 `stream.itagItem != null` 时算得出 `averageBitrate`(= contentLength/approxDurationMs);
+缺失时 `averageBitrate=0` ⇒ [buildSabrTrack](app/src/main/java/com/kirin/mt/core/youtube/YoutubePlaybackResolver.kt#L3124)
+回落 `bitrate`。**本视频 19 个 itag 全部缺失 ItagItem** ⇒ 全梯子的 declared 都是 VBR 峰值。
+
+于是 2026-08-30「声明口径修正」的前提(**declared = averageBitrate = 真平均**)在本视频**不成立**;
+那次修正顺手删掉的 calib 折算(类头 L56-64 记:「①**calib 机制整体取消** —— declared=真实平均后
+required=f.bitrate 即实需」)因此留下一个空洞:**当 declared 是峰值时,没有任何机制把它拉回真实需求**。
+
+### §39.11.2 用 declared 当「需要多少」的判据全清单(复核对象)
+
+| # | 位置 | 判据 | 现状口径 | 本场失效方式 |
+|---|---|---|---|---|
+| 1 | [L1086](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/HeightAwareAdaptiveTrackSelection.kt#L1086) | 主候选循环 `required`(当前档 ×0.85,其余全额) | declared | 720p 判成 8.24M > est(3.2~4.9M)⇒ 降档候选/升档候选同时被压 |
+| 2 | [L909-921](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/HeightAwareAdaptiveTrackSelection.kt#L909-L921) | P11-168/177 suppress 闸:`estHasMargin`(est ≥ declared×1.15)与 `measCoversTier`(meas ≥ declared) | declared | `meas ≥ declared` 在峰值声明下**结构性恒 false** ⇒ 闸形同虚设(33s 缓冲照降) |
+| 3 | [L1147](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/HeightAwareAdaptiveTrackSelection.kt#L1147) | 顶档 ×1.1 sustained 闸 | declared | same 病:VP9 4K 声明 60.6M/31.4M ⇒ 永不批(本次保守,不单独修) |
+| 4 | [L1165](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/HeightAwareAdaptiveTrackSelection.kt#L1165) | trial「超容量 1.5×」 | 经 `required`(=#1) | 随 #1 一起校准 |
+| 5 | [L1253](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/HeightAwareAdaptiveTrackSelection.kt#L1253) | 升档重锚锚点 | declared,已由 `cap×1.2` 夹住 | **不动**(P11-153①b 已有夹取) |
+| 6 | [L740](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/HeightAwareAdaptiveTrackSelection.kt#L740) | 冷却「提前解除」`est ≥ declared×1.1` | declared | 峰值声明下几乎永不成立 ⇒ 冷却跑满 90s。**刻意不动**(见 §39.11.4) |
+| 7 | L1245/1273/1279/307 等 | 日志打印 | declared | **不动**(打印原始声明,便于与校准值对照) |
+
+### §39.11.3 冲突与互相抵消(改之前必须标出来的)
+
+1. **#1 ⟂ #2 同源**:两者都以 declared 为基准,#1 把档判成买不起、#2 又以「meas ≥ declared」否决翻案
+   ⇒ 同一份假数据把**降档**和**防降档**两条路同时带偏(方向相反、结论一致:掉档)。
+2. **#2 的 `estHasMargin` 已含 ×1.15**,若再在基准里叠余量会与 #3 的 ×1.1、#4 的 ×1.5 重复放大 ⇒
+   **校准值本身不再叠任何余量**(实测交付码率已是「真需求」,余量交给各闸自己的系数)。
+3. **与 P11-153①b(重锚夹取)不冲突**:那条防的是「锚到垃圾声明值把 est 抬一夜」,方向是**限高**;
+   本轮的 `min(declared, meas)` 方向也是**限高**,同向叠加,不抵消。
+4. **与 P11-188「未知(-1)不算证据」不冲突**:校准只在 `meas > 0` 时生效,`-1` 全额退回 declared
+   ⇒ P11-188 那条腿的语义(证据不足 ⇒ 闸不成立)原样保留。
+5. **与 P11-195(天花板守卫)不冲突但相邻**:#1 校准后「VP9 720p 买得起」,则 AVC 720p 那条更省的路
+   不再是唯一出路,P11-195 的守卫得以维持原样(§39.10.5 方案 2 本轮**不做**)。
+6. **#6 与 #1 的刻意不对称**:#1 判「当下扛不扛得住」(需要放宽,否则钉死);#6 判「要不要给刚判失败的
+   档提前翻案」(宁严勿松,放宽会让刚失败的档立刻回爬)。两者用不同基准是**故意**的,写在此处防后人
+   顺手统一。
+
+### §39.11.4 本轮改动清单(P11-200)
+
+- 新增 [HeightAwareAdaptiveTrackSelection.tierNeedBps]:**档位实需基准** = `min(declared, meas)`,
+  `meas ≤ 0`(段数 < `MEASURED_MIN_SEGS=3`)⇒ 退回 declared(= 完全旧行为)。走既有
+  `SabrBandwidthMeter.getMeasuredBitrateBps` 通道(与 #2 的 meas 同源)。
+- #1 `required` 基准由 `f.bitrate` 改为 `tierNeedBps(f)`(当前档的 ×0.85 滞回系数不变)。
+- #2 `curBitrateForGate` 改为 `tierNeedBps(getFormat(selected))`;`measForGate` 保持读原始 meas
+  (它是「证据存在性」判据,不是基准)。
+- #3 顶档 ×1.1 闸的基准改为 `tierNeedBps(f)`(系数 1.1 不变)。
+- #4 随 #1(经 `required`)。
+- 新增一次性取证日志 `tier need calibrated (P11-200): itag… declared=… meas=… → need=…(声明虚高 N.N×)`,
+  **每 itag 一次**,否则「判据换基准」在日志里无从验收。
+- **不动**:#5 重锚、#6 冷却提前解除、#7 日志、所有闸的系数/豁免/冷却时长。
+
+### §39.11.4.1 改动前的前证:那次 trial 里缓冲**是在涨的**
+
+判 `trial-fail` 撤回 720p 的那一刻(21:31:35),实测交付码率 2729K **低于**链路 est(3227K),
+而同段的水位走势直接反证「720p 可持续」:
+
+```
+21:31:17 trial upshift → itag302(720p)   bufS=42.7   est=4486K cap=8018K
+21:31:25 sel=3(720p)                     bufS=38.9 / 45.8 / 49.2   bw=4537K meas=2677K
+21:31:35 sel=3(720p) → downgrade 720p → 480p   bufS=46.7 meas=2729K   ← 缓冲满着被撤回
+```
+
+18 秒里水位 33.6s → 49.2s **单调上升**,即「服务端按 2.7Mbps 供 720p、链路给得起」。
+判据只看声明 8243818 就把它打回 480p —— 这正是本轮要修的那一枪。
+
+### §39.11.5 验收 / 否证线
+
+- **验收**:①日志出现 `tier need calibrated (P11-200)` 且 `need < declared`(本视频 itag302 应见
+  `declared=8243818 meas≈2.7M → need≈2.7M`);②同一视频不再出现「est 3.2~4.9M 却 `downgrade 720p → 480p`
+  / `reason=trial-fail`」这种「meas < est 仍判买不起」的降档;③低水位 suppress 闸开始生效
+  (`buffer-critical downgrade suppressed … meas=…K` 且 bufS 明明有 30s+)。
+- **否证**:①出现「升到 720p 后立刻饥饿降档」的循环 ⇒ 实测交付码率低估了真实需求(服务端按当前档
+  pace 供流,meas 是「它愿给多少」而非「这档要多少」)⇒ 退回 `min(declared, meas×1.25)` 或按视频
+  维度取 P90;②VP9 4K 顶档闸(#3)校准后开始批进 4K 又饿死 ⇒ #3 单独退回 declared 基准。
