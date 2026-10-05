@@ -1096,7 +1096,13 @@ internal class SabrMediaFetcher(
     val rn = requestNumber.getAndIncrement()
     lastRequestMs.set(now)
     val url = "${session.sabrUrl}&rn=$rn"
-    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs shape=${if (webShape) "ft" else "libre"} bitfield=${clientAbrState.enabledTrackTypesBitfield ?: 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B potAgeMs=${System.currentTimeMillis() - poTokenState.currentPoTokenAtMs} cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} bw=${bwEstimateBps}bps body=${body.size}B")
+    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs shape=${if (webShape) "ft" else "libre"} bitfield=${clientAbrState.enabledTrackTypesBitfield ?: 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B potAgeMs=${System.currentTimeMillis() - poTokenState.currentPoTokenAtMs} cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} bw=${bwEstimateBps}bps body=${body.size}B" +
+      // P11-197 诊断(请求节奏,见 docs/youtube-sabr-abr-upshift-notes.md §39.8):把「距上一笔响应
+      // 完成多久」与「发请求那一刻的前方缓冲」打在请求行上。真机 `logs_live_20261005_193932.log`
+      // 19:07:31 那次 stall 的形状是「上一笔 61MB(≈21s 4K 媒体)到手的 17s 后才发下一笔请求,
+      // 那笔往返 7.9s 直接踩在缓冲 0 上」—— 这两个数就是「读前量够不够」的直接证据,ABR 闸怎么调
+      // 都改不了它。sincePrevRespMs=-1 表示本会话还没有过完成的响应。
+      " sincePrevRespMs=${if (lastFetchEndMs > 0L) System.currentTimeMillis() - lastFetchEndMs else -1} bufAheadMs=$bufferedAheadNoteMs")
     // P11-108(字节级取证):WEB 会话前 2 个请求 dump body hex + token hex——与 FreeTube HAR
     // (tmp/bundle.har,已解码)逐字节对比用。协议层已全对齐(P11-104..107)仍 nag,剩最后
     // 检查手段:本地 diff 真实字节。
