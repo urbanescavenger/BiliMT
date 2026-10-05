@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.feed
 
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Box
@@ -585,7 +586,7 @@ private suspend fun fetchYoutubePage(
   } catch (error: CancellationException) {
     throw error
   } catch (error: Exception) {
-    Log.e(PreloadLogTag, "dynamic youtube fetch failed: ${error.message}")
+    Log.e(DynamicFeedLogTag, "dynamic youtube fetch failed: ${error.message}")
     null
   }
 }
@@ -619,7 +620,8 @@ private fun loadDynamicNextPage(
         null
       }
       val youtubeVideos = if (ytPage != null) {
-        (state.youtubeVideos + ytPage.videos).distinctBy { it.feedKey }
+        // 去重键用 dynId 回退 bvid(= core.model.feedKey 的定义);本文件的 feedKey(index) 是网格 key,不能在此复用。
+        (state.youtubeVideos + ytPage.videos).distinctBy { it.dynId.ifBlank { it.bvid } }
       } else {
         state.youtubeVideos
       }
@@ -1601,6 +1603,9 @@ private fun Int.shouldLoadMore(totalItems: Int, threshold: Int): Boolean {
 }
 
 private const val RestoreFocusRetryCount = 8
+
+/** 动态 feed 取数日志 tag(与 UserFeedRepository 的 BiliDynamicFeed 同一主题,便于一次 grep)。 */
+private const val DynamicFeedLogTag = "BiliMT:DynamicFeed"
 
 internal sealed interface UserFeedState {
   data object Loading : UserFeedState
