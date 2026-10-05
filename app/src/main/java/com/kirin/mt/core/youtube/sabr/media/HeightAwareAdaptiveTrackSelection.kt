@@ -530,10 +530,27 @@ class HeightAwareAdaptiveTrackSelection(
     }
     val fails = familyFailCount[active] ?: 0
     if (fails >= FAMILY_FAIL_THRESHOLD) {
-      pickFamilyCheaperAtSameHeight(active, nowMs)?.let {
+      val target = pickFamilyCheaperAtSameHeight(active, nowMs)
+      if (target != null) {
         switchFamily(
-          active, it, nowMs,
-          "family starved x$fails in ${FAMILY_FAIL_WINDOW_MS / 60_000}min -> cheaper same-height tier",
+          active, target, nowMs,
+          "family starved x$fails in ${FAMILY_FAIL_WINDOW_MS / 60_000}min -> cheaper same-height tier " +
+            "(ceiling ${familyCeiling(active)}p → ${familyCeiling(target)}p)",
+        )
+      } else if (!familyCeilingGuardLogged) {
+        // P11-195:判据②本可换(有更省的同高度档)但被天花板守卫挡下时的取证——一行一次,
+        // 否则「为什么一直钉在 1080p」在日志里依然是一段安静(2026-10-05 真机就是吃这个亏)。
+        familyCeilingGuardLogged = true
+        val cheaper = (0 until length).filter { idx ->
+          val fam = familyOfIndex(idx)
+          fam != null && fam != active && getFormat(idx).height == getFormat(selected).height &&
+            getFormat(idx).bitrate < getFormat(selected).bitrate
+        }.mapNotNull { familyOfIndex(it) }.distinct()
+        Log.i(
+          "YtSabrAbr",
+          "codec group switch held (ceiling guard, P11-195): $active ceiling=${familyCeiling(active)}p, " +
+            "更省的同高度候选族=$cheaper(天花板 " +
+            "${cheaper.joinToString { "$it=${familyCeiling(it)}p" }})—— 换过去会砍掉画面上限,不换",
         )
       }
     }
@@ -548,12 +565,32 @@ class HeightAwareAdaptiveTrackSelection(
       }
 
   /** 判据②的目标族:在当前档**同一高度**上有可用且更省的档的族,取其中最省的那个。 */
+  /** 该族在梯子里的**天花板**(最高 height);无档返回 0。换组判据的天花板守卫用。 */
+  private fun familyCeiling(family: String): Int =
+    (0 until length).filter { familyOfIndex(it) == family }.maxOfOrNull { getFormat(it).height } ?: 0
+
+  /**
+   * 判据②的目标族:在当前档**同一高度**上有可用且更省的档的族,取其中最省的那个。
+   *
+   * ── P11-195:「天花板不得低于当前族」是**必须**的守卫 ────────────────────────────────────────
+   * 判据②的本意是「同一档位换个更省的族」(真机原型:2160p 的 VP9@22.1M 换成 AV01@12.4M)。
+   * 但「更省」在任何高度都成立——包括 480p 这种双方只差 2% 的档。少了天花板守卫时,真机
+   * `logs_live_20261005_104903.log`(dev.r2129,10:22:05)在 **480p**(cur=493567)上把 anchor
+   * 从 VP9 换到了 **AVC**——AVC 是唯一没有 1440p/2160p 的族 ⇒ 之后同族优先(见类头 P11-192)
+   * 只认 AVC 档 ⇒ **画面上限被砍到 1080p**,10:23:05 起连续 23 分钟钉在 1920x1080
+   * (该时段 bufS 中位数 29s、最高 53s,缓冲充足、est 27~43M,sustained 也够,纯粹是族天花板挡住),
+   * 而用户手动选 1440p 立刻正常(手切走 resolver 锁单轨,不经 ABR)。
+   * 故:目标族天花板 < 当前族天花板 ⇒ 不换(宁可在族内升降档)。原型场景不受影响:
+   * VP9 与 AV01 的天花板同为 2160p。
+   */
   private fun pickFamilyCheaperAtSameHeight(from: String, nowMs: Long): String? {
     val curH = getFormat(selected).height
     val curB = getFormat(selected).bitrate
+    val fromCeiling = familyCeiling(from)
     return (0 until length).filter { i ->
       val fam = familyOfIndex(i) ?: return@filter false
       fam != from && (familyBlockedUntilMs[fam] ?: 0L) <= nowMs &&
+        familyCeiling(fam) >= fromCeiling &&
         getFormat(i).height == curH && getFormat(i).bitrate < curB && !isTrackExcluded(i, nowMs)
     }.minByOrNull { getFormat(it).bitrate }?.let { familyOfIndex(it) }
   }
@@ -649,6 +686,9 @@ class HeightAwareAdaptiveTrackSelection(
 
   /** P11-194:顶档 ×1.1 sustained 闸拒绝的一次性日志(每实例一次)——这道闸此前无日志可验收。 */
   private var topTierGateRefusedLogged = false
+
+  /** P11-195:判据②被「天花板守卫」挡下的一次性日志(每实例一次)——否则钉在低分辨率又是一段安静。 */
+  private var familyCeilingGuardLogged = false
 
   /** 2026-09-01 满缓冲试探:本实例见过的最高缓冲水位(us)——试探水位线 = max(地板, 0.8×此值)。 */
   private var maxObservedBufferedUs = 0L
