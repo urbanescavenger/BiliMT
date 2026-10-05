@@ -149,6 +149,7 @@ import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import com.kirin.mt.core.youtube.sabr.media.HeightAwareAdaptiveTrackSelectionFactory
+import com.kirin.mt.core.youtube.sabr.media.SabrAbrMemory
 import com.kirin.mt.core.youtube.sabr.media.SabrBandwidthMeter
 import com.kirin.mt.core.youtube.sabr.media.SabrManifest
 import com.kirin.mt.core.youtube.sabr.media.SabrMediaFetcher
@@ -553,7 +554,7 @@ fun MobilePlayerScreen(
         .build()
     )
     ExoPlayer.Builder(context)
-      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
+      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs) { SabrAbrMemory.readAheadMinBufferUs() })
       // 后台播放优化: 别的应用抢音频资源抢自动暂停,焦点回来→自动续播;
       // 耳机/蓝牙音频设备断开(AUDIO_BECOMING_NOISY)→自动暂停。Media3 内部管理焦点
       // 请求/放弃与 becoming-noisy receiver 的注册/反注册(随 player release 自动清理)。

@@ -1807,3 +1807,61 @@ INIT+段往返,这次降档确实救不了)。缺的是**读前量**:上一笔�
 - **否证线**:若新日志显示 `sincePrevRespMs` 都很小(如 <2s)且 `bufAheadMs` 健康(≥15s)却仍在 0 处 stall
   ⇒ 读前量假设不成立,转向 fetcher 的**交付/交接侧**(chunk hand-off 节奏:61MB 到手却分三笔在
   19:07:16/22/27 才交给播放器)。
+
+### §39.9 P11-197 诊断落地即实锤:读前量确实不足 —— 续拉门槛 MinBufferMs=10s < SABR 往返 7.5~12s
+
+新日志 `logs_live_20261005_203023.log`(dev.r2136,含 P11-197 的 `sincePrevRespMs`/`bufAheadMs`)一场
+`p3fYRhADLRI`,20:28:27 起播 → 20:28:45 冷启动梯子爬到 itag315(2160p VP9 26.3M)→ 20:29:53 stall 重载。
+
+**铁证:每次发请求都恰好踩在「前方缓冲 ≈ 10s」上**(请求行新字段):
+
+```
+20:21:09 fetch rn=12 itag=137  sincePrevRespMs=431    bufAheadMs=37915
+20:21:56 fetch rn=13 itag=137  sincePrevRespMs=44180  bufAheadMs=9994    ← 空档 44s,到 10s 才续拉
+20:22:00 fetch rn=15 itag=137  sincePrevRespMs=345    bufAheadMs=44376
+20:23:39 fetch rn=18 itag=137  sincePrevRespMs=44875  bufAheadMs=9992    ← 又是 44s / 10s
+20:29:39 fetch rn=7  itag=315  sincePrevRespMs=37295  bufAheadMs=5922    ← 4K:空档 37s,只省 5.9s 就拉
+20:29:51 fetch rn=7 exception: timeout (fail=12010ms)                    ← 12s 上限切断,数据没到
+20:29:53 stall detected → 整场重载
+```
+
+**机制**(media3 1.10 `DefaultLoadControl`,我们用 [createTvPlaybackLoadControl](app/src/main/java/com/kirin/mt/core/player/TvPlaybackLoadControl.kt)
+配 `setBufferDurationsMs(MinBufferMs=10s, maxBufferMs=设置值(默认 50s), …)`):
+`shouldContinueLoading` 的语义是「**buffered < minBufferUs 才继续拉**;buffered ≥ maxBufferUs 就停」——
+所以一次响应到手(缓冲 25~50s)后 loader **停止取段**,一直等到缓冲掉到 **10s** 才回来要下一段。
+10s 是 alpha.58 为「请求节奏与墙钟同步(paced)」刻意调小的;但 SABR 单笔往返实测 **7.5~12s**
+(70MB/7.5s、另一场 12s 超时),**10s 的余量结构性不够** ⇒ 请求发出时缓冲已所剩无几,往返一抖就归零 ⇒
+stall → 重载。itag137(4.4M)那几笔之所以没死,只是因为它掉 10s 的绝对耗时更长、往返更短。
+
+**结论**:§39.8.3 记的「读前量不足」由疑似变成实锤;**降档判据与本病无关**(P11-168/177 那四枪
+suppress 只是没帮上忙,不是病因)。
+
+**候选修法**(待用户拍板;都有取舍,故先记录口径再改):
+1. **按往返时长的动态续拉门槛**(推荐):给 SABR 走一层薄 LoadControl 包装,`shouldContinueLoading` 的
+   续拉门槛改成 `max(10s, 最近一次本档 SABR 往返 × 1.5 + 3s)`(实测 7.5s ⇒ ~14s;12s ⇒ ~21s),
+   其余照走 media3 默认。取舍:4K 档会多驻留 40~80MB(alpha.11 记过 50s×26Mbps≈162MB 的 GC/黑屏风险,
+   已有 largeHeap + 单流分段缓解),要盯内存。
+2. **固定抬高 MinBufferMs**(如 20~25s):一行改动,但所有内容源(含 B 站)一起变,且失去 alpha.58 的
+   paced 意图;4K 内存代价同上。
+3. **降单笔响应体量**(把上报的 bufferedRanges 收得更紧,让服务端少推):往返随之变短 ⇒ 10s 够用;
+   但会改动 P11-111 已闭环的那条链,风险最高。
+
+#### §39.9.1 本轮实现(方案 A:按往返时长的动态续拉门槛)
+
+- [SabrAbrMemory](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrAbrMemory.kt):新增往返样本
+  `noteSabrResponseMs(elapsedMs)` + 门槛 `readAheadMinBufferUs()` = `max(10s, 最近往返×1.5+3s)`,
+  封顶 **25s**、样本保鲜 **15 分钟**;无 SABR 活动 ⇒ 返回 0(完全退回 media3 原生,纯 B 站/本地/离线不受影响)。
+- 新增 [SabrReadAheadLoadControl](app/src/main/java/com/kirin/mt/core/player/SabrReadAheadLoadControl.kt):
+  包装 `DefaultLoadControl`,**只**拦 `shouldContinueLoading`(`bufferedDurationUs < 门槛 ⇒ 继续取段`),
+  起播门槛/分配器/停止取段等全部原样委托 —— 不碰任何 ABR 档位判据。
+- [createTvPlaybackLoadControl](app/src/main/java/com/kirin/mt/core/player/TvPlaybackLoadControl.kt) 增
+  `readAheadMinBufferUs` 参数;TV/移动端播放器传 `{ SabrAbrMemory.readAheadMinBufferUs() }`
+  (core.player 不反向依赖 sabr 包,故用 provider 注入;离线播放器不传 = 原生行为)。
+- `SabrMediaFetcher` 在 **REAL**(成功)与 **异常/超时**两处喂样本 —— 超时按最坏情况(≈调用上限)记,门槛宁大勿小。
+
+**验收**(真机):①日志出现 `YtSabrReadAhead: read-ahead threshold = Ns (last SABR round trip Mms …)`;
+②此后请求行的 `bufAheadMs` 应 ≥ 该门槛(不再恒为 `9992/9994` 这一类"恰好 10s");③4K 档不再出现
+「请求发出时缓冲 <10s → 往返 7.5~12s → 归零 stall → 整场重载」。
+
+**否证**:①门槛抬到 25s 仍 stall ⇒ 往返不是唯一缺口,回到交付/交接侧(§39.8.3 否证线);
+②4K 多驻留 40~80MB 若引发内存告警/GC 卡顿(alpha.11 前科)⇒ 降门槛上限或与 maxBuffer 设置联动。

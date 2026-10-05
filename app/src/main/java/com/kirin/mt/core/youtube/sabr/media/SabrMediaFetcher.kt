@@ -1222,6 +1222,8 @@ internal class SabrMediaFetcher(
       recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
+      // P11-197:把这次往返耗时交给读前量门槛(下次续拉不许等到缓冲只剩 10s)。
+      SabrAbrMemory.noteSabrResponseMs(elapsed)
       Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps est=${fmtEstForLog(getRealBitrateEstimate())}")
       resp
     } catch (e: SabrTerminalException) {
@@ -1240,6 +1242,8 @@ internal class SabrMediaFetcher(
       recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
+      // P11-197:超时/失败也算一次「往返耗时 ≥ failMs」——读前量门槛要按最坏情况留余量。
+      SabrAbrMemory.noteSabrResponseMs(failMs)
       Log.w(
         tag,
         "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${fmtEstForLog(getRealBitrateEstimate())}" +

@@ -1,5 +1,7 @@
 package com.kirin.mt.core.youtube.sabr.media
 
+import android.util.Log
+
 /**
  * 2026-08-31(stall 重载记忆,修「起播 4K 死循环」):真机 20:04 复盘——ABR 冷启动被 2 个 720p 段的
  * 爆发速率(33-58M)骗过顶档门槛,起播(pos=0,首帧前)直跳 itag315(2160p)→ 切轨后 loader 停发
@@ -334,4 +336,70 @@ object SabrAbrMemory {
         " (starved=${starved}p reached=${reached}p; survives reload; 重载后新 ABR 不再爬回同一档,P11-173/178/188)",
     )
   }
+
+  // ── P11-197:读前量证据(续拉门槛)────────────────────────────────────────────────────────────
+  /**
+   * 最近一次 SABR 响应的往返耗时(ms;-1 = 无样本)。
+   *
+   * 真机 `logs_live_20261005_203023.log`(dev.r2136):每次发请求都恰好等前方缓冲掉到 media3 的
+   * `MinBufferMs = 10s` 才发出(P11-197 新字段实测 `sincePrevRespMs=44180 bufAheadMs=9994`),
+   * 而 SABR 单笔往返实测 7.5~12s(70MB/7.5s;另一场 `timeout (fail=12010ms)`)⇒ 10s 余量结构性不够,
+   * 往返一抖缓冲即归零 → stall → 整场重载。这里只做**证据**:记下往返耗时,由
+   * [readAheadMinBufferUs] 折算成续拉门槛交给 LoadControl(见 SabrReadAheadLoadControl)。
+   */
+  @Volatile
+  private var lastSabrResponseMs = -1L
+
+  @Volatile
+  private var lastSabrResponseWallMs = 0L
+
+  @Volatile
+  private var readAheadLoggedUs = -1L
+
+  /** SABR 响应完成(含超时/异常)时调用,记录这一次的往返耗时。 */
+  fun noteSabrResponseMs(elapsedMs: Long, nowWallMs: Long = System.currentTimeMillis()) {
+    if (elapsedMs <= 0L) return
+    lastSabrResponseMs = elapsedMs
+    lastSabrResponseWallMs = nowWallMs
+  }
+
+  /**
+   * 续拉门槛(us):让 media3 的 loader 在缓冲掉到「够撑住一次 SABR 往返」之前就继续取段,
+   * 而不是等它掉到内置的 10s。
+   *
+   * 口径 = `max(默认 10s, 最近往返 × 1.5 + 3s)`,封顶 [READ_AHEAD_MAX_BUFFER_MS]——再往上要同时抬高
+   * maxBuffer 设置,且 4K 档会多驻留几十 MB(alpha.11 有 50s×26Mbps≈162MB 撑爆堆的 GC 黑屏前科)。
+   * 样本新鲜度 [READ_AHEAD_SAMPLE_TTL_MS]:太久没有 SABR 播放(纯 B 站/本地/离线)时返回 0,
+   * 即**完全不改** media3 原生行为。
+   */
+  fun readAheadMinBufferUs(nowWallMs: Long = System.currentTimeMillis()): Long {
+    val roundTripMs = lastSabrResponseMs
+    if (roundTripMs <= 0L || nowWallMs - lastSabrResponseWallMs > READ_AHEAD_SAMPLE_TTL_MS) return 0L
+    val neededMs = (roundTripMs * 3 / 2 + READ_AHEAD_SAFETY_MS)
+      .coerceAtMost(READ_AHEAD_MAX_BUFFER_MS)
+    if (neededMs <= READ_AHEAD_DEFAULT_MIN_BUFFER_MS) return 0L
+    val neededUs = neededMs * 1000L
+    if (readAheadLoggedUs != neededUs) {
+      readAheadLoggedUs = neededUs
+      Log.i(
+        "YtSabrReadAhead",
+        "read-ahead threshold = ${neededMs / 1000}s (last SABR round trip ${roundTripMs}ms, " +
+          "默认 ${READ_AHEAD_DEFAULT_MIN_BUFFER_MS / 1000}s → 抬高, P11-197)",
+      )
+    }
+    return neededUs
+  }
+
+  /** media3 内置的续拉门槛(createTvPlaybackLoadControl 的 MinBufferMs)。 */
+  private const val READ_AHEAD_DEFAULT_MIN_BUFFER_MS = 10_000L
+
+  /** 往返之外再留的安全量(起播/解析/交接开销)。 */
+  private const val READ_AHEAD_SAFETY_MS = 3_000L
+
+  /** 门槛上限:再高就需要同时抬高 maxBuffer 设置(内存代价见函数注释)。 */
+  private const val READ_AHEAD_MAX_BUFFER_MS = 25_000L
+
+  /** 样本新鲜度:超过这段时间没有 SABR 活动 ⇒ 门槛回落到 media3 原生。 */
+  private const val READ_AHEAD_SAMPLE_TTL_MS = 15 * 60_000L
+
 }

@@ -344,7 +344,8 @@ fun PlayerScreen(
         .build()
     )
     ExoPlayer.Builder(context)
-      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
+      // P11-197:SABR 续拉门槛按最近一次实测往返抬高(非 SABR / 无样本时返回 0 = 原生行为)。
+      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs) { SabrAbrMemory.readAheadMinBufferUs() })
       .setTrackSelector(trackSelector)
       // 起始挡位:seed 初始带宽估计到目标档码率/0.7 → 目标挡命中起始档,之后带宽实测自然爬升。
       // (media3 1.10.0 初始选轨纯带宽驱动,resolver 挪 index0 无效;同一 [bandwidthMeter] 实例复用给
