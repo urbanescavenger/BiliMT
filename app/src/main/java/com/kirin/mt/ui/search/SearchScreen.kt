@@ -1038,7 +1038,10 @@ private fun SearchResultsView(
           }
           val mergedUsers = latestState.users.appendUniqueByMid(nextUsers)
           endReached = if (source == SourceYoutube) {
-            nextContinuation == null || mergedUsers.size == latestState.users.size
+            // token 为 null 才一定到底;零新增但 token 换了新值 ⇒ 流仍在推进,只是本页与已有重合,
+            // 不能判死(否则「到底后再也不加载」)。token 原样返回才算死循环。
+            nextContinuation == null ||
+              (mergedUsers.size == latestState.users.size && nextContinuation == continuation)
           } else {
             nextUsers.size < PageSize || mergedUsers.size == latestState.users.size
           }
@@ -1084,7 +1087,9 @@ private fun SearchResultsView(
           }
           val mergedVideos = latestState.videos.appendUniqueByBvid(nextVideos)
           endReached = if (source == SourceYoutube) {
-            nextContinuation == null || mergedVideos.size == latestState.videos.size
+            // 同 UP主分支:token 为 null 才一定到底;零新增但 token 换了新值 ⇒ 流仍在推进,不判死。
+            nextContinuation == null ||
+              (mergedVideos.size == latestState.videos.size && nextContinuation == continuation)
           } else {
             nextVideos.size < PageSize ||
               mergedVideos.size == latestState.videos.size
@@ -1538,15 +1543,16 @@ private fun UserResultList(
       onFirstResultFocused()
     }
   }
-  // 滚到底自动翻页。
+  // 滚到底自动翻页。发射 (last,total) 对而不是布尔:布尔去重只在翻转时发射一次,首屏 Loading
+  // 阶段就把唯一的 true 消耗掉,之后近底值不再变化 ⇒ 续页永不触发(§4.10.3 同款坑)。
   LaunchedEffect(users.size) {
     snapshotFlow {
       val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
       val total = listState.layoutInfo.totalItemsCount
-      total > 0 && last >= total - 3
+      last to total
     }
       .distinctUntilChanged()
-      .collect { nearEnd -> if (nearEnd) onLoadMore() }
+      .collect { (last, total) -> if (total > 0 && last >= total - 3) onLoadMore() }
   }
 
   LazyColumn(

@@ -420,29 +420,29 @@ fun BiliTvApp(
         Log.e(PreloadLogTag, "dynamic bili fetch failed: ${error.message}")
         null
       }
-      val youtubeVideos = if (youtubeChannels.isNotEmpty()) {
+      // 走 youtubeHomeFeedPage(而非 youtubeSubscriptionsFeed):只有它回传每频道续页 token,
+      // 屏幕侧翻页才能继续推进 YouTube 关注流(否则第二屏起只有 B 站视频,见 P11-186 收口)。
+      val youtubePage = if (youtubeChannels.isNotEmpty()) {
         try {
-          videoRepository.youtubeSubscriptionsFeed(
-            youtubeChannels,
-            onChannelAvatarResolved = { channel ->
-              youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-            },
-          )
+          videoRepository.youtubeHomeFeedPage()
         } catch (error: CancellationException) {
           throw error
         } catch (error: Exception) {
           Log.e(PreloadLogTag, "dynamic youtube fetch failed: ${error.message}")
-          emptyList()
+          null
         }
       } else {
-        emptyList()
+        null
       }
+      val youtubeVideos = youtubePage?.videos.orEmpty()
       val merged = mergeByPubdate(biliVideos.orEmpty(), youtubeVideos)
       if (youtubeChannels.isNotEmpty()) {
         dynamicState.youtubeMerged = true
       }
       // 屏幕已自行加载(非 Loading)则不覆盖。
       if (dynamicState.state is UserFeedState.Loading) {
+        dynamicState.youtubeVideos = youtubeVideos
+        dynamicState.youtubeContinuation = youtubePage?.perChannelContinuation
         dynamicState.state = when {
           merged.isEmpty() && biliError != null -> UserFeedState.Failed(biliError)
           merged.isEmpty() -> UserFeedState.Empty
@@ -451,7 +451,7 @@ fun BiliTvApp(
             UserFeedState.Success(
               videos = merged,
               loadingMore = false,
-              endReached = biliEndReached,
+              endReached = biliEndReached && youtubePage?.endReached != false,
               loadMoreError = "",
             )
           }

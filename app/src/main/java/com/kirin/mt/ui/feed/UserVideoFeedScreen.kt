@@ -47,6 +47,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.YoutubeHistoryEntry
+import com.kirin.mt.core.youtube.YoutubeSubscriptionsPage
 import com.kirin.mt.core.youtube.resolveChannelAvatarUrl
 import com.kirin.mt.core.youtube.resolveThumbnailUrl
 import com.kirin.mt.core.network.FollowingSeason
@@ -116,6 +117,10 @@ internal class DynamicFeedUiState {
   // 等频道发出来后再重启 LaunchedEffect 时,loadedOnce 会挡住 YouTube 合并 → 初始空、手动刷新才出。
   // 用该标志区分「频道首次就绪需补拉 YouTube」与「后续头像回填等频道变化(不应重载)」。
   var youtubeMerged by mutableStateOf(false)
+  // P11-186 已知差异收口:YouTube 关注流每频道续页 token + 留存视频集。翻页时与 B 站页同步推进一页
+  // (原实现只 appendUnique B 站条目,第二屏起整片只有 B 站视频,边界不随后移)。
+  var youtubeVideos by mutableStateOf<List<VideoSummary>>(emptyList())
+  var youtubeContinuation by mutableStateOf<Map<String, String?>?>(null)
   // P11-191:首屏(B站动态 + YouTube 关注流)合并在途。合并落地会整表换新把网格焦点清掉,
   // 这段时间里头像 autoConfirm 要压住(见 AppShell 的 suppressAvatarAutoConfirm)。
   var firstPageInFlight by mutableStateOf(false)
@@ -244,7 +249,6 @@ internal fun UserFeedScreen(
         feedState.dynamicVideo,
         "video",
         youtubeChannels,
-        youtubeChannelStore,
         // 频道首次就绪(非空且尚未合并 YouTube)时强制补拉,把 YouTube 关注并进首载;
         // 之后频道变化(头像回填)不再强制,靠 loadedOnce 去重。
         forceRefresh = autoRefreshOnSwitch ||
@@ -255,7 +259,6 @@ internal fun UserFeedScreen(
         feedState.dynamicAll,
         "all",
         emptyList(),
-        youtubeChannelStore,
         forceRefresh = autoRefreshOnSwitch,
       )
       UserFeedTab.History -> loadHistoryFirstPage(
@@ -295,11 +298,11 @@ internal fun UserFeedScreen(
       when (selectedTab) {
         UserFeedTab.DynamicVideo -> {
           feedState.dynamicVideo.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, feedState.dynamicVideo, "video", youtubeChannels, youtubeChannelStore, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, feedState.dynamicVideo, "video", youtubeChannels, forceRefresh = true)
         }
         UserFeedTab.DynamicAll -> {
           feedState.dynamicAll.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, feedState.dynamicAll, "all", emptyList(), youtubeChannelStore, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, feedState.dynamicAll, "all", emptyList(), forceRefresh = true)
         }
         UserFeedTab.History -> {
           feedState.history.handledManualRefreshKey = manualRefreshKey
@@ -362,7 +365,6 @@ internal fun UserFeedScreen(
             state = feedState.dynamicVideo,
             type = "video",
             youtubeChannels = youtubeChannels,
-            youtubeChannelStore = youtubeChannelStore,
             cardMode = VideoCardMode.Dynamic,
             firstItemFocusRequester = firstItemFocusRequester,
             tabFocusRequester = tabFocusRequester,
@@ -379,7 +381,6 @@ internal fun UserFeedScreen(
             state = feedState.dynamicAll,
             type = "all",
             youtubeChannels = emptyList(),
-            youtubeChannelStore = youtubeChannelStore,
             cardMode = VideoCardMode.Dynamic,
             firstItemFocusRequester = firstItemFocusRequester,
             tabFocusRequester = tabFocusRequester,
@@ -489,7 +490,6 @@ private suspend fun loadDynamicFirstPage(
   state: DynamicFeedUiState,
   type: String,
   youtubeChannels: List<YoutubeChannel>,
-  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   forceRefresh: Boolean,
 ) {
   if (!forceRefresh && state.loadedOnce) {
@@ -503,7 +503,7 @@ private suspend fun loadDynamicFirstPage(
   // 21.522 解除 suppression → 24.740 合并落地 → 24.748 已跳页)。
   state.firstPageInFlight = true
   try {
-    fetchAndApplyDynamicFirstPage(videoRepository, state, type, youtubeChannels, youtubeChannelStore)
+    fetchAndApplyDynamicFirstPage(videoRepository, state, type, youtubeChannels)
   } finally {
     state.firstPageInFlight = false
   }
@@ -514,7 +514,6 @@ private suspend fun fetchAndApplyDynamicFirstPage(
   state: DynamicFeedUiState,
   type: String,
   youtubeChannels: List<YoutubeChannel>,
-  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
 ) {
   // force-refresh 且已有内容时保留旧 videos 与焦点,不切骨架、不清焦点,
   // 避免网格销毁重建后跳到第一个视频(对齐推荐页刷新策略)。
@@ -541,11 +540,17 @@ private suspend fun fetchAndApplyDynamicFirstPage(
     null
   }
 
-  // 2. 拉 YouTube 关注(仅「动态(视频)」,等查完再一次性合并,不再分批增量叠加)
-  val youtubeVideos = if (type == "video" && youtubeChannels.isNotEmpty()) {
-    fetchYoutubeAll(videoRepository, youtubeChannels, youtubeChannelStore)
+  // 2. 拉 YouTube 关注首屏(仅「动态(视频)」),记下每频道续页 token 供翻页同步推进。
+  // 拉取失败时沿用上一次的 YouTube 集,不让 YouTube 卡片在刷新瞬间凭空消失。
+  val youtubePage = if (type == "video" && youtubeChannels.isNotEmpty()) {
+    fetchYoutubePage(videoRepository, previous = null)
   } else {
-    emptyList()
+    null
+  }
+  val youtubeVideos = youtubePage?.videos ?: state.youtubeVideos
+  if (youtubePage != null) {
+    state.youtubeVideos = youtubeVideos
+    state.youtubeContinuation = youtubePage.perChannelContinuation
   }
 
   // 3. 合并一次
@@ -562,30 +567,26 @@ private suspend fun fetchAndApplyDynamicFirstPage(
       UserFeedState.Success(
         videos = merged,
         loadingMore = false,
-        endReached = biliEndReached,
+        // 两侧都到底才算到底:YouTube 侧还有续页 token 时,列表仍可继续向下长。
+        endReached = biliEndReached && youtubePage?.endReached != false,
         loadMoreError = "",
       )
     }
   }
 }
 
-/** 全量拉取 YouTube 关注流(等全部查完),失败返回空(单频道已容错)。 */
-private suspend fun fetchYoutubeAll(
+/** 拉一页 YouTube 关注流(previous=null 首屏),失败返回 null 由调用方降级(不打断本次合并)。 */
+private suspend fun fetchYoutubePage(
   videoRepository: VideoRepository,
-  channels: List<YoutubeChannel>,
-  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
-): List<VideoSummary> {
+  previous: Map<String, String?>?,
+): YoutubeSubscriptionsPage? {
   return try {
-    videoRepository.youtubeSubscriptionsFeed(
-      channels,
-      onChannelAvatarResolved = { channel ->
-        youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-      },
-    )
+    videoRepository.youtubeHomeFeedPage(previousContinuation = previous)
   } catch (error: CancellationException) {
     throw error
   } catch (error: Exception) {
-    emptyList()
+    Log.e(PreloadLogTag, "dynamic youtube fetch failed: ${error.message}")
+    null
   }
 }
 
@@ -610,15 +611,38 @@ private fun loadDynamicNextPage(
       )
       state.nextOffset = page.offset
       val latestState = state.state as? UserFeedState.Success ?: return@launch
-      val mergedVideos = latestState.videos.appendUnique(nextVideos = page.videos)
+      // YouTube 关注流与 B 站页同步推进一页(仅「动态(视频)」);失败静默保留现有集合,不拖累本次落地。
+      val ytContinuation = state.youtubeContinuation
+      val ytPage = if (type == "video" && ytContinuation?.values?.any { it != null } == true) {
+        fetchYoutubePage(videoRepository, previous = ytContinuation)
+      } else {
+        null
+      }
+      val youtubeVideos = if (ytPage != null) {
+        (state.youtubeVideos + ytPage.videos).distinctBy { it.feedKey }
+      } else {
+        state.youtubeVideos
+      }
+      val ytContinuationNext = ytPage?.perChannelContinuation ?: ytContinuation
+      // 「动态(视频)」:B 站条目(dynId 非空,与移动端同口径)累加后与 YouTube 集**整体重合并**
+      // (P11-186 收口 TV —— 原实现只把新页 append 到尾部,第二屏起整片只有 B 站视频)。
+      // 「动态(全部)」无 YouTube 合成,保持原追加口径不动。
+      val mergedVideos = if (type == "video") {
+        val biliItems = latestState.videos.filter { it.dynId.isNotBlank() } + page.videos
+        mergeByPubdate(biliItems, youtubeVideos)
+      } else {
+        latestState.videos.appendUnique(nextVideos = page.videos)
+      }
       if (mergedVideos.isNotEmpty()) {
         state.hasLoadedContent = true
       }
+      state.youtubeVideos = youtubeVideos
+      state.youtubeContinuation = ytContinuationNext
       latestState.copy(
         videos = mergedVideos,
         loadingMore = false,
-        endReached = !page.hasMore ||
-          page.videos.isEmpty() ||
+        // 两侧都到底才算到底(YouTube 侧还能续页时列表仍可继续长);去重后零新增也视为到底,防死循环。
+        endReached = (!page.hasMore && ytContinuationNext?.values?.any { it != null } != true) ||
           mergedVideos.size == latestState.videos.size,
         loadMoreError = "",
       )
@@ -933,7 +957,6 @@ private fun DynamicFeedContent(
   state: DynamicFeedUiState,
   type: String,
   youtubeChannels: List<YoutubeChannel>,
-  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   cardMode: VideoCardMode,
   firstItemFocusRequester: FocusRequester,
   tabFocusRequester: FocusRequester,
@@ -965,7 +988,7 @@ private fun DynamicFeedContent(
       },
       onRetry = {
         coroutineScope.launch {
-          loadDynamicFirstPage(videoRepository, state, type, youtubeChannels, youtubeChannelStore, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, state, type, youtubeChannels, forceRefresh = true)
         }
       },
       onLoadMore = { loadDynamicNextPage(videoRepository, coroutineScope, state, type) },

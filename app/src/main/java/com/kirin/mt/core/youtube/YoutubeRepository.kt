@@ -69,7 +69,16 @@ class YoutubeRepository(
         if (params.isNotBlank()) put("params", params)
       }
     }
-    return client.postJson("/search", payload).let(YoutubeParsers::parseFeedPage)
+    val root = client.postJson("/search", payload)
+    val feed = YoutubeParsers.parseFeedPage(root)
+    // 诊断(搜索续页静默无结果时定位):首屏/续页都在这一条日志里 —— items 数、是否带 token、
+    // 用的哪种排序 params。两端搜索都走这里(TV + 移动端)。
+    Log.i(
+      "YtSearch",
+      "video search continuation=${continuation != null} params=${params.take(16)} " +
+        "items=${feed.items.size} nextToken=${if (feed.continuation != null) "yes" else "null"}",
+    )
+    return feed
   }
 
   /** 频道搜索（params=TypeChannel），返回原始频道模型 + 续页 token。 */
@@ -85,7 +94,13 @@ class YoutubeRepository(
         put("params", YoutubeSearchParams.TypeChannel)
       }
     }
-    return client.postJson("/search", payload).let(YoutubeParsers::parseChannelSearchPage)
+    val page = client.postJson("/search", payload).let(YoutubeParsers::parseChannelSearchPage)
+    Log.i(
+      "YtSearch",
+      "channel search continuation=${continuation != null} items=${page.items.size} " +
+        "nextToken=${if (page.continuation != null) "yes" else "null"}",
+    )
+    return page
   }
 
   /** 热门(趋势)，返回映射后的卡片。 */
