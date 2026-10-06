@@ -250,9 +250,12 @@ class YoutubeRepository(
     // 频道页,按 videoId 并回(见 YoutubeParsers.parseChannelTileQualityBadges)。只在「视频 tab +
     // 首屏」发这一路(Shorts/直播/播放列表/续页不需要);TV 客户端无视排序 params,最新/最热返回
     // 同一份频道页,故两种排序共用这一路。失败静默降级为无角标(不影响列表)。
-    val qualityDeferred =
+    // 显式标泛型:`if (…) async {…} else null` 会让 Kotlin 从 null 那一支把类型定成 Nothing?。
+    val qualityDeferred: Deferred<Map<String, String>>? =
       if (withQualityBadges && continuation == null && browseId == null && params in ChannelVideoTabParams) {
-        async { feedCatching(emptyMap(), "TVQualityBadges", channelId) { getChannelTvQualityBadges(channelId) } }
+        async {
+          feedCatching(emptyMap(), "TVQualityBadges", channelId) { getChannelTvQualityBadges(channelId) }
+        }
       } else {
         null
       }
