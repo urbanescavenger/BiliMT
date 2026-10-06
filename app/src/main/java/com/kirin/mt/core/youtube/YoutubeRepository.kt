@@ -214,6 +214,12 @@ class YoutubeRepository(
 
     /** 防节流随机暂停范围(ms)（对齐 LibreTube CHANNEL_BATCH_DELAY=500..1500）。 */
     val BatchDelayMs = 500L..1500L
+
+    /** 频道"视频"tab 的两种排序 params(最新/最热)——只有这两种首屏才补拉 TV 画质角标。 */
+    val ChannelVideoTabParams = setOf(
+      YoutubeConstants.ChannelVideoOrder.Latest.params,
+      YoutubeConstants.ChannelVideoOrder.Popular.params,
+    )
   }
 
   /**
@@ -228,7 +234,10 @@ class YoutubeRepository(
     continuation: String? = null,
     params: String = YoutubeConstants.ChannelVideosParams,
     browseId: String? = null,
-  ): YoutubeVideoPage {
+    // 是否补拉 TV 客户端那一路画质角标(见下方注释)。频道页传 true;播放器 UP 面板等
+    // 播放路径传 false——那条路径刻意不加请求,也不让面板等一个更大的响应。
+    withQualityBadges: Boolean = true,
+  ): YoutubeVideoPage = coroutineScope {
     val payload = buildJsonObject {
       if (continuation != null) {
         put("continuation", continuation)
@@ -237,6 +246,16 @@ class YoutubeRepository(
         if (browseId == null) put("params", params)
       }
     }
+    // 画质角标(4K/8K)只在 TV 客户端的数据里,频道页 WEB 响应没有 → 首屏额外并行拉一路 TVHTML5
+    // 频道页,按 videoId 并回(见 YoutubeParsers.parseChannelTileQualityBadges)。只在「视频 tab +
+    // 首屏」发这一路(Shorts/直播/播放列表/续页不需要);TV 客户端无视排序 params,最新/最热返回
+    // 同一份频道页,故两种排序共用这一路。失败静默降级为无角标(不影响列表)。
+    val qualityDeferred =
+      if (withQualityBadges && continuation == null && browseId == null && params in ChannelVideoTabParams) {
+        async { feedCatching(emptyMap(), "TVQualityBadges", channelId) { getChannelTvQualityBadges(channelId) } }
+      } else {
+        null
+      }
     val root = client.postJson("/browse", payload)
     val feed = YoutubeParsers.parseFeedPage(root)
     // 诊断:频道视频 0 条时,打印 channelId + 空响应根因(alert / 缺 contents)。排除「频道不存在」/
@@ -257,9 +276,41 @@ class YoutubeRepository(
           "browseId=${browseId ?: "channel"} items=${feed.items.size} next=${feed.continuation?.take(12) ?: "null"}",
       )
     }
-    return YoutubeVideoPage(
-      items = feed.items.map(::toVideoSummary),
+    val qualityBadges = qualityDeferred?.await().orEmpty()
+    val items = if (qualityBadges.isEmpty()) {
+      feed.items
+    } else {
+      // 已有角标(会员/直播/首映)优先保留,画质角标只补空位——会员专属是功能性标记,不能被 4K 顶掉。
+      feed.items.map { video ->
+        val quality = qualityBadges[video.videoId]
+        if (quality.isNullOrBlank() || video.badge.isNotBlank()) video
+        else video.copy(badge = quality)
+      }
+    }
+    if (qualityDeferred != null) {
+      Log.d(
+        "YoutubeChannel",
+        "getChannelVideos qualityBadges channelId=$channelId tiled=${qualityBadges.size} " +
+          "matched=${items.count { qualityBadges.containsKey(it.videoId) }}",
+      )
+    }
+    YoutubeVideoPage(
+      items = items.map(::toVideoSummary),
       continuation = feed.continuation,
+    )
+  }
+
+  /**
+   * 拉一路 TV 客户端(TVHTML5)的频道页,取画质角标(4K/8K/HD)。仅 [getChannelVideos] 首屏调用;
+   * 失败抛异常由调用方降级(无角标,不影响列表)。见 [YoutubeParsers.parseChannelTileQualityBadges]。
+   */
+  private suspend fun getChannelTvQualityBadges(channelId: String): Map<String, String> {
+    val payload = buildJsonObject {
+      put("browseId", channelId)
+      put("params", YoutubeConstants.ChannelVideosParams)
+    }
+    return YoutubeParsers.parseChannelTileQualityBadges(
+      client.postJson("/browse", payload, client = InnerTubeClient.Client.TVHTML5),
     )
   }
 

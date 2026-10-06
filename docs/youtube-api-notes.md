@@ -271,6 +271,34 @@ media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack
   - **封面 + 视频数字段已迁移（实测 2026-08-27，curl 复现 21/21 卡）**：封面在 `contentImage.collectionThumbnailViewModel.primaryThumbnail.thumbnailViewModel.image.sources[]`（多包一层 `collectionThumbnailViewModel`，旧直连 `contentImage.thumbnailViewModel` 拿空 → 播放列表卡只剩 "▶" 占位块、无缩略图）；视频数在缩略图角标 `thumbnailViewModel.overlays[].thumbnailOverlayBadgeViewModel.thumbnailBadges[].thumbnailBadgeViewModel.text`（"100 videos"）。**metadataRows 已不是视频数**——现在只有 "Updated X ago"（更新时间）/"View full playlist"（含 VL browseId），旧解析取首行会错显示更新时间。`parseChannelPlaylists` 已修：封面新路径优先旧直连兜底，视频数 badge 优先 metadataRows 兜底。onTap 仍为空 → browseId 落 contentId(PL...)，靠 normalize 补 VL。同构确认：搜索播放列表筛选（`/search params=EgIQAw%3D%3D`，type=3）的 lockup 卡字段同此形状（`Eg9QAQ%3D%3D` 被服务端无视返回普通视频，勿用）。
 - **播放列表详情头部 + 纵向列表**：首屏 `/browse` 的 header 有完整元数据，但 **真机实测（2026-08-27 YtPlaylist 诊断日志）header 是 `pageHeaderRenderer`，没有 `playlistHeaderRenderer`**——简介/作者/视频数取不到的真因就是解析只走旧路径。新布局实际结构：`header.pageHeaderRenderer.content.pageHeaderViewModel` 下——简介 `description.descriptionPreviewViewModel.description.content`；作者在 `metadata.contentMetadataViewModel.metadataRows[].metadataParts[].avatarStack.avatarStackViewModel.text.content`（"by xxx"）；视频数在同 rows 的文本 parts（"N videos"）；封面 `heroImage`（递归取 image.sources[].url）。`parsePlaylistHeader` 先走新路径、旧 `playlistHeaderRenderer`（descriptionText/ownerText/numVideosText/primaryThumbnail，对齐 NewPipe `PlaylistInfo`）保留兜底。**作者/视频数语言前缀坑（实测 2026-08-27，真机 owner/count 恒 null + curl hl=zh 复现）**：avatarStack 文本带语言前缀——英文 `by xxx`、简中 `创建者：xxx`、繁中 `建立者：xxx`——`startsWith("by ")` 中文恒不匹配；视频数是 `141 个视频`（英文 `141 videos`），旧正则只认英文 `video`。已改结构性判定：avatarStack part 即创建者行（剥前缀留名字）、视频数=含数字且含 video/视频/影片/動画 词的文本。**另一个坑（诊断 dump 实锤）**：`pageHeaderViewModel` 下的 text 节点是 viewModel 形状 `{"content":"...","commandRuns":[...]}`——`runsText`（只认 `runs` 键）/`simpleText`（只认 `simpleText` 键，**不读 content**）都取不到，必须先读 `content` 键；旧写法 avatarText 恒空串 → owner=""、count=null，且设备与 curl 复现响应一致，差异全在解析侧。另：部分播放列表**本身没简介**（`descriptionPreviewViewModel` 只有 `truncationText`"…更多"无 `description.content`），desc=null 是正确行为非 bug。解析成 `YoutubePlaylistHeader(description/owner/videoCountText/cover)`，仅首屏（续页是纯 continuation 无 header），随 `YoutubeVideoPage.playlistHeader` 传给移动端详情页。详情页 2026-08-27 改**纵向列表**（对齐 LibreTube）：顶部全宽封面 + 标题 + 作者·视频数 + 「播放全部」+ 可展开简介（>120 字截断），下方带序号 + 封面（右下角时长）/ 标题 / 作者 / 播放量·时间的视频行列表（非网格）。
 
+### 4.16 频道页画质角标（4K/8K）：**只有 TV 客户端的数据里有**（2026-10-06，P11-201）
+
+需求：YouTube 频道页卡片要显示「4K」这类画质角标（用户对齐 YouTube TV app 的频道页）。**结论：这个角标在频道页的 WEB 数据里根本不存在，必须另拉一路 TVHTML5。**
+
+**实测矩阵**（同一天、同一 guest 会话、`hl=en&gl=US` 逐端比对，2026-10-06）：
+
+| 来源 | 画质角标 | 频道页里实际有的角标 |
+|---|---|---|
+| `WEB`（项目频道页现用客户端）`/browse` 频道 videos tab | ❌ 零 | `badgeViewModel.badgeText`：Members only / Premium / Fundraiser / Free with ads / CC |
+| `WEB` 频道 popular tab | ❌ 零 | 同上（CC 更多） |
+| youtube.com `@mkbhd/videos` 网页 ytInitialData | ❌ 零 | Members only |
+| **`TVHTML5`** `/browse` 同一频道 | ✅ **120 个 `4K`**（MKBHD） | `tileRenderer` 里 `label`：4K / CC |
+| `/search`（WEB） | ✅ 有 `4K` | `videoRenderer.badges[].metadataBadgeRenderer.label`（`BADGE_STYLE_TYPE_MEDIA`）——**这是 BiliMT 搜索页能看到 4K 胶囊的原因** |
+
+抽查频道：MKBHD / LinusTechTips / Mrwhosetheboss / UnboxTherapy / T-Series / PewDiePie，videos tab 的 `metadataRows[].badges[]` 全部零 4K。故「频道页没有 4K 角标」不是解析漏字段，是**数据源没有**。
+
+**TV 端结构**（`tileRenderer`，与频道页 WEB 的 `lockupViewModel` 完全两套）：
+`contents.tvBrowseRenderer.content.tvSurfaceContentRenderer.content.sectionListRenderer.contents[].shelfRenderer.content.horizontalListRenderer.items[].tileRenderer{ contentId, header.tileHeaderRenderer.thumbnail, metadata.tileMetadataRenderer{ title.simpleText, lines[].lineRenderer.items[].lineItemRenderer: text.simpleText | badge.metadataBadgeRenderer.label } }`。
+一次响应 ~326 个 tile（152 个唯一 videoId，跨「最新/最热/…」多个 shelf，同一 videoId 会重复）。
+
+**实施**（`YoutubeParsers.parseChannelTileQualityBadges` + `YoutubeRepository.getChannelTvQualityBadges`）：`getChannelVideos` **首屏 + 视频 tab** 时并行发这一路 TVHTML5 `/browse`（`Client.TVHTML5`，OkHttp 直连、无需 PO token、guest visitorData 即可 200），把 `4K/8K/HD/HDR` 按 videoId 并回 WEB 列表；**已有角标（会员/直播/首映）优先保留，画质角标只补空位**（会员是功能性标记，不能被 4K 顶掉）。失败走 `feedCatching` 静默降级为空 map（列表照常）。续页 / Shorts / 直播 / 播放列表 tab 不发这一路。
+- **TV 无视排序 params**：同频道发 `EgZ2aWRlb3PyBgQKAjoA`(最新) 与 `EgZwb3B1bGFy`(最热) 返回同一份多 shelf 频道页（152 vs 151 个唯一 videoId，4K 均 120）⇒ 两种排序共用这一路（`ChannelVideoTabParams`）。
+- **覆盖**：TV 一路 152 个 videoId vs WEB 首屏 30 条，命中 25/30。TV 响应不含 continuation、不认排序、不返回 tab 列表 ⇒ **不能拿它替换 WEB 主列表**，只能做角标补充。
+- **成本**：每次进频道页首屏 +1 个请求（与 WEB 请求并行，不串行等待）。
+
+**验收**（真机）：日志 `YoutubeChannel: getChannelVideos qualityBadges channelId=… tiled=N matched=M`，M>0；频道页卡片右上角出现「4K」胶囊（TV 与移动端共用同一数据层，两端同时生效）。
+**否证**：①`tiled=0` ⇒ TVHTML5 `/browse` 在真机被拦（probe 是 PC 直连），回退方案是改走 WebView 或放弃；②`matched` 远小于 M ⇒ TV 的 shelf 覆盖与「最新」列表错位太多，角标大面积缺失，需改按 shelf 定位「最新」那一条。
+
 ---
 
 ## 5. 播放（Phase 2，未实现）

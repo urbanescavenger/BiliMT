@@ -78,7 +78,9 @@ internal fun CoroutineScope.launchUpVideosPanelLoad(
 
   val networkResult = when {
     channelId != null -> runCatching {
-      youtubeRepository.getChannelVideos(channelId).items
+      // withQualityBadges=false:播放路径不补拉 TV 画质角标那一路(P11-201),面板少一个请求、
+      // 也不用等一个更大的响应;角标只在频道页要。
+      youtubeRepository.getChannelVideos(channelId, withQualityBadges = false).items
     }
     ownerMid <= 0L -> {
       Log.w(

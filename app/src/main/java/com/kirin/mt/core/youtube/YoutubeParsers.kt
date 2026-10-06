@@ -150,6 +150,44 @@ internal object YoutubeParsers {
   }
 
   /**
+   * TV 客户端(TVHTML5)频道页里的**画质角标**:videoId → 角标文案(如 "4K"/"8K"/"HD")。
+   *
+   * 为什么单独拉一路:频道页 WEB 客户端(lockupViewModel)的数据里**没有画质角标**——实测
+   * (2026-10)MKBHD/LTT/Mrwhosetheboss/T-Series/PewDiePie 等频道的 videos tab,`metadataRows`
+   * 里的 `badgeViewModel.badgeText` 只有 会员(Members only)/Premium/Fundraiser/Free with ads/CC,
+   * 零 4K;youtube.com 自己的频道页网页同样不画 4K。只有 YouTube 官方 **TV 端**(TVHTML5)的
+   * 同一频道页把 `4K`/`CC` 带在 `tileRenderer` 上(对齐 YouTube TV app 频道页的角标)。
+   * 故 [YoutubeRepository.getChannelVideos] 首屏额外并行拉一路 TVHTML5 频道页,按 videoId
+   * 把画质角标并回 WEB 列表;失败静默降级为无角标。
+   *
+   * 结构(实测 2026-10):contents.tvBrowseRenderer.content.tvSurfaceContentRenderer.content
+   * .sectionListRenderer.contents[].shelfRenderer.content.horizontalListRenderer.items[]
+   * .tileRenderer{ contentId, header.tileHeaderRenderer.thumbnail, metadata.tileMetadataRenderer
+   * .lines[].lineRenderer.items[].lineItemRenderer: text 行 | badge.metadataBadgeRenderer.label }。
+   * 一个频道页含多个 shelf(最新/最热…),同一 videoId 会重复出现,取先命中的画质角标。
+   */
+  fun parseChannelTileQualityBadges(root: JsonObject): Map<String, String> {
+    val badges = LinkedHashMap<String, String>()
+    collectByKey(root, KEY_TILE_RENDERER) { node ->
+      val videoId = node.stringOrNull("contentId")?.takeIf { it.isNotBlank() } ?: return@collectByKey
+      if (badges.containsKey(videoId)) return@collectByKey
+      val lines = node.obj("metadata")?.obj("tileMetadataRenderer")?.array("lines") ?: return@collectByKey
+      for (line in lines) {
+        val items = (line as? JsonObject)?.obj("lineRenderer")?.array("items") ?: continue
+        for (item in items) {
+          val label = (item as? JsonObject)?.obj("lineItemRenderer")?.obj("badge")
+            ?.obj("metadataBadgeRenderer")?.stringOrNull("label") ?: continue
+          if (QualityBadgeRegex.matches(label)) {
+            badges[videoId] = label
+            return@collectByKey
+          }
+        }
+      }
+    }
+    return badges
+  }
+
+  /**
    * 频道页 header 解析结果。含订阅数/banner/简介/认证，供频道页头部展示
    *（对齐 LibreTube `ChannelResponse` 的 subscriberCount/banner/description/verified）。
    */
@@ -1538,6 +1576,7 @@ internal object YoutubeParsers {
   private const val KEY_PLAYLIST_RENDERER = "playlistRenderer"
   private const val KEY_PLAYLIST_VIDEO_RENDERER = "playlistVideoRenderer"
   private const val KEY_REEL_ITEM_RENDERER = "reelItemRenderer"
+  private const val KEY_TILE_RENDERER = "tileRenderer"
   private const val KEY_CONTINUATION_ITEM_RENDERER = "continuationItemRenderer"
   private const val KEY_CHANNEL_RENDERER = "channelRenderer"
   private const val KEY_TAB_RENDERER = "tabRenderer"
@@ -1545,6 +1584,9 @@ internal object YoutubeParsers {
   private const val KEY_COMMENT_RENDERER = "commentRenderer"
   private const val KEY_COMMENT_SECTION_RENDERER = "commentSectionRenderer"
   private const val KEY_COMMENT_THREAD_RENDERER = "commentThreadRenderer"
+
+  /** TV 端画质角标文案(4K/8K/HD/HDR);同一行里的 CC/会员等非画质角标不取。 */
+  private val QualityBadgeRegex = Regex("""^(?:\d+K|HD|HDR)$""")
 }
 
 /**
