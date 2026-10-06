@@ -164,6 +164,10 @@ internal class DefaultSabrChunkSource(
     (bandwidthMeter as? SabrBandwidthMeter)?.setSilenceHangProvider { itag ->
       fetcher.getLastSilenceHangWallMs(itag)
     }
+    // P11-203:交付节奏证据(按 itag 的往返耗时)——带宽闸第四腿,防「平均带宽够却供不上」把档位钉死。
+    (bandwidthMeter as? SabrBandwidthMeter)?.setRoundTripProvider { itag ->
+      fetcher.getLastRoundTripMs(itag)
+    }
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {

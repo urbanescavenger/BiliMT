@@ -224,6 +224,17 @@ private const val MaxStallAutoRetry = 2
 private const val StallThresholdMs = 8_000L
 private const val StartupStallThresholdMs = 25_000L
 private const val VideoFreezeThresholdMs = 12_000L
+
+/**
+ * P11-203:seek 之后的 stall 判死宽限(ms)——期内位置冻结改用起播阈值([StartupStallThresholdMs]),
+ * 不按「已出帧」的 [StallThresholdMs] 算。镜像 TV `PlayerScreen` 同名常量(那边有完整复盘)。
+ *
+ * 依据(真机 `logs_live_20261006_164353`,TV 侧):SABR 单流源走原生 `player.seekTo`,`routeSeek` 后
+ * **位置停在目标点不动**、服务端从新位置重发段 —— 那笔段在 4K 档实测往返 7208ms(39.3MB),看门狗
+ * 在 16:22:11.76 开枪,数据 16:22:10.07 就落地了,**只差 1.7 秒** ⇒ 一次正常 seek 被判成挂死整场重载。
+ * 取 15s:4K 单笔往返 7.2~7.4s + 解析/交接,留一倍余量;真挂死仍被 15s 兜住。**只覆盖 seek**,不覆盖换档。
+ */
+private const val SeekStallGraceMs = 15_000L
 // P11-99c:onPlayerError 重试独立预算(对齐 TV)——降级链 SABR→DASH→HLS 三级,2 次不够。
 private const val MaxErrorAutoRetry = 3
 // 空降助手阈值(镜像 TV PlayerScreen)
@@ -474,6 +485,8 @@ fun MobilePlayerScreen(
   var verticalBubbleHideJob by remember { mutableStateOf<Job?>(null) }
   // 诊断:最近一次 routeSeek 的时间戳(毫秒),用于 ENDED 时区分"自然播完"还是"seek 到末尾误触"
   var lastSeekAtMs by remember { mutableLongStateOf(0L) }
+  // P11-203:seek 后的 stall 判死宽限截止时刻(elapsedRealtime,与进度轮询的 nowMs 同钟)。见 [SeekStallGraceMs]。
+  var seekStallGraceUntilMs by remember { mutableLongStateOf(0L) }
   // 空降助手(AirJump):SponsorBlock 风格自动跳过广告/片头/片尾段,镜像 TV PlayerScreen
   var airJumpSegments by remember { mutableStateOf<List<AirJumpSegment>>(emptyList()) }
   var warnedAirJumpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -695,6 +708,8 @@ fun MobilePlayerScreen(
       targetMs
     }
     lastSeekAtMs = System.currentTimeMillis()
+    // P11-203:两条分支都会让「位置停在目标点等数据」——置一次 stall 判死宽限,别把重新缓冲判成挂死。
+    seekStallGraceUntilMs = android.os.SystemClock.elapsedRealtime() + SeekStallGraceMs
     Log.i(MobilePlayerLogTag, "routeSeek target=$targetMs maxMs=$maxMs clamped=$clamped")
     if ((playerState as? MobilePlayerState.Ready)?.info?.isSabrProgressive() == true) {
       pendingSABRSeekMs = clamped
@@ -1406,7 +1421,7 @@ fun MobilePlayerScreen(
           if (stallSinceMs == 0L) {
             stallSinceMs = nowMs
           } else if (nowMs - stallSinceMs >=
-            if (!frameRendered) StartupStallThresholdMs else StallThresholdMs
+            if (!frameRendered || nowMs < seekStallGraceUntilMs) StartupStallThresholdMs else StallThresholdMs
           ) {
             if (autoRetryCount < MaxStallAutoRetry) {
               autoResumePositionMs = currentPositionMs
@@ -1426,7 +1441,8 @@ fun MobilePlayerScreen(
               Log.w(
                 MobilePlayerLogTag,
                 "stall detected, auto-retry #$autoRetryCount @pos=${currentPositionMs}ms " +
-                  "buffered=${player.bufferedPercentage}% startup=${!frameRendered}",
+                  "buffered=${player.bufferedPercentage}% startup=${!frameRendered} " +
+                  "seekGrace=${nowMs < seekStallGraceUntilMs}(P11-203)",
               )
               stallSinceMs = 0L
               stallBaselinePositionMs = 0L

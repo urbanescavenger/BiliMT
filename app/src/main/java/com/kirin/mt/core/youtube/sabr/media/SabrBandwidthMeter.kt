@@ -97,6 +97,21 @@ internal class SabrBandwidthMeter(
   fun getLastSilenceHangWallMs(itag: Int): Long = silenceHangProvider?.invoke(itag) ?: 0L
 
   /**
+   * P11-203:注入「本 itag 最近一次请求往返耗时」来源(SabrMediaFetcher.getLastRoundTripMs)。
+   * 与实测吞吐/silenceHang 走同一条既有通道(选择类拿不到 fetcher)——带宽闸据此判「平均带宽够 ≠
+   * 供得上」,见 HeightAwareAdaptiveTrackSelection 的第四腿注释。
+   */
+  @Volatile
+  private var roundTripProvider: ((Int) -> Long)? = null
+
+  fun setRoundTripProvider(provider: (Int) -> Long) {
+    roundTripProvider = provider
+  }
+
+  /** 该 itag 最近一次往返耗时(ms);未接线/无样本/样本过期返回 -1。 */
+  fun getLastRoundTripMs(itag: Int): Long = roundTripProvider?.invoke(itag) ?: -1L
+
+  /**
    * 2026-08-30 升档重锚:升入新档后把活跃 est 窗口重锚到该档声明码率——原窗口里旧档/重填期的突发高估
    * 样本(60-70M)会顶住降档门槛,新档扛不住时 est 迟迟跌不过声明码率,缓冲漏光前不降档只能看门狗重载。
    * 重锚后 est 从声明码率起步、真实样本平滑接管。委托给 fetcher(窗口在它那),未接线时静默忽略。

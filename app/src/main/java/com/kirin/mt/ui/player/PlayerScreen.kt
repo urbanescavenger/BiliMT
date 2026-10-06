@@ -292,6 +292,8 @@ fun PlayerScreen(
   // pendingSABRSeekMs 由 launch effect 消费后置空,避免重复 seek。
   var pendingSABRSeekMs by remember { mutableStateOf<Long?>(null) }
   var sabrSeekReloadKey by remember { mutableIntStateOf(0) }
+  // P11-203:seek 后的 stall 判死宽限截止时刻(elapsedRealtime)。见 [SeekStallGraceMs]。
+  var seekStallGraceUntilMs by remember { mutableLongStateOf(0L) }
   var autoRetryCount by remember { mutableIntStateOf(0) }
   // P11-99c:onPlayerError 专用重试预算(与 stall 看门狗的 autoRetryCount 分开)。降级链 SABR→DASH
   // →HLS 有 3 级,共享 2 次预算会在 HLS 降级触发前烧完(09-15 00:22 真机:SABR 2000 用 #1、DASH
@@ -500,6 +502,8 @@ fun PlayerScreen(
   fun routeSeek(targetMs: Long) {
     val maxMs = maxDurationMs().takeIf { it > 0L } ?: Long.MAX_VALUE
     val clamped = targetMs.coerceIn(0L, maxMs)
+    // P11-203:两条分支都会让「位置停在目标点等数据」——置一次 stall 判死宽限,别把这次重新缓冲判成挂死。
+    seekStallGraceUntilMs = SystemClock.elapsedRealtime() + SeekStallGraceMs
     if ((playerState as? PlayerScreenState.Ready)?.info?.isSabrProgressive() == true) {
       pendingSABRSeekMs = clamped
       sabrSeekReloadKey++
@@ -2333,7 +2337,9 @@ fun PlayerScreen(
         if (currentPositionMs == stallBaselinePositionMs) {
           if (stallSinceMs == 0L) {
             stallSinceMs = nowMs
-          } else if (nowMs - stallSinceMs >= if (!frameRendered) StartupStallThresholdMs else StallThresholdMs) {
+          } else if (nowMs - stallSinceMs >=
+            if (!frameRendered || nowMs < seekStallGraceUntilMs) StartupStallThresholdMs else StallThresholdMs
+          ) {
             if (autoRetryCount < MaxStallAutoRetry) {
               autoResumePositionMs = currentPositionMs
               autoRetryCount += 1
@@ -2352,7 +2358,7 @@ fun PlayerScreen(
               }
               Log.w(
                 PlayerPlaybackLogTag,
-                "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% startup=${!frameRendered}",
+                "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% startup=${!frameRendered} seekGrace=${nowMs < seekStallGraceUntilMs}(P11-203)",
               )
               noteStartupStallMemory(currentPositionMs)
               stallSinceMs = 0L
@@ -3435,6 +3441,21 @@ private const val PlayerDanmakuLogTag = "BiliMT:Danmaku"
 private const val PlayerPlaybackLogTag = "BiliMT:Player"
 /** BUFFERING 且进度不前进超过此阈值判定为 stall,触发自动重载续播。 */
 private const val StallThresholdMs = 8_000L
+
+/**
+ * P11-203:seek 之后的 stall 判死宽限(ms)——期内位置冻结改用起播阈值([StartupStallThresholdMs]),
+ * 不按「已出帧」的 [StallThresholdMs] 算。
+ *
+ * 依据(真机 `logs_live_20261006_164353`,dev.r2146):SABR 单流源走原生 `player.seekTo`(见 [routeSeek]),
+ * seek 后**位置停在目标点不动**、服务端要从新位置重发段 —— 而那笔段在 4K 档实测往返 **7208ms**
+ * (39.3MB),看门狗在 16:22:11.76 开枪,而数据 16:22:10.07 就落地了,**只差 1.7 秒** ⇒ 一次正常 seek
+ * 被判成挂死、整场重载(重载本身要 10~22s 黑屏)。
+ *
+ * 与 P11-122(慢起播攒满计时器、首帧一到立刻开枪)同源:都是「位置冻结」这条判据在**合法的重新缓冲
+ * 期**里被当成挂死。取 15s:4K 单笔往返 7.2~7.4s + 解析/交接,留一倍余量;而真挂死仍会被 15s 兜住
+ * (比完全不判死只慢 7s)。**只覆盖 seek**,不覆盖换档(换档宽限按 §39.6 的结论另行观察)。
+ */
+private const val SeekStallGraceMs = 15_000L
 
 /**
  * P11-178:当前**正在播**的视频轨高度(0=未知)。stall 重载的跨重载冷却据此选目标档——

@@ -2076,3 +2076,110 @@ required=f.bitrate 即实需」)因此留下一个空洞:**当 declared 是峰�
 - **否证**:①出现「升到 720p 后立刻饥饿降档」的循环 ⇒ 实测交付码率低估了真实需求(服务端按当前档
   pace 供流,meas 是「它愿给多少」而非「这档要多少」)⇒ 退回 `min(declared, meas×1.25)` 或按视频
   维度取 P90;②VP9 4K 顶档闸(#3)校准后开始批进 4K 又饿死 ⇒ #3 单独退回 declared 基准。
+
+---
+
+## §39.12 P11-203:2026-10-06 真机「4K 连续三轮整场重载」复盘 —— **带宽够 ≠ 供得上**,闸缺「交付节奏」那一腿
+
+> 触发:用户「看下日志为什么重载」。日志 `logs_live_20261006_164353.log`(dev.r2146,BRAVIA AE2 4K,
+> 视频 `pxnVBckDNXA` 38min,pid 9537)。本轮按规矩**先理判据链再改代码**(AGENTS.md)。
+
+### §39.12.1 事实:4 次重载全是 stall 看门狗,没有一次是 ABR/trial/ExoPlayer 报错
+
+判据:[PlayerScreen.kt](../../app/src/main/java/com/kirin/mt/ui/player/PlayerScreen.kt)
+`StallThresholdMs=8_000`(未出首帧 `StartupStallThresholdMs=25_000`)——STATE_BUFFERING +
+playWhenReady + **位置连续 8s 不前进** ⇒ `stall detected, auto-retry #1` ⇒ `retryKey++` ⇒ 整场重载。
+日志里每次都是同一条链:`stall detected` → `player ENDED @pos=0ms` → `launch step: metadata/playurl`
+→ `prepare startPos=<冻结位置>`。
+
+| # | 时刻 | 冻结位置 | 当时档位 | 8s 内没进数据的直接原因 |
+|---|---|---|---|---|
+| 1 | 16:04:44 | 535805ms | 1440p(`308`) | `fetch rn=42 exception: timeout (fail=18007ms)`;前两笔 17MB 就要 6.6s/8.9s(est 21.7M→17.9M),重试又 `connection closed` ⇒ 音频段始终没到。**之后 resolve 也全线超时**(`att/get failed: timeout` / `NewPipe getInfo failed: timeout` / `postPlayer WEB … Timeout 45000ms`),16:04:44→16:07:31 黑了近 3 分钟才续上 |
+| 2 | 16:22:11 | 715451ms | 2160p(`315`) | **误杀**:16:21:47 刚升 4K,16:22:02 用户 seek(209s→715s),seek 后首个 4K 段 39.3MB 往返 **7208ms**,数据 16:22:10.07 到齐,看门狗 16:22:11.76 开枪 —— **差 1.7 秒** |
+| 3 | 16:32:10 | 1280217ms | 2160p(25.5M) | 4K 水位一路漏到 **3.5s**,往返 4.6~7.4s,`rn=67`(33MB/7.4s)之后到重载前**没有新请求发出** |
+| 4 | 16:43:33 | 1933327ms | 1440p(`308`) | `fetch rn=75 timeout (fail=40002ms)`;重试服务端只回 971B 的 `SABR_REDIRECT`,`getNextSegment: no seg 416 itag 308`(服务端没这个段),再重试即挂死 |
+
+即:**看门狗的枪是结果不是原因**;要修的是「为什么 8s 之内没有字节」。#1/#4 是链路与服务端(不属本轮),
+**#2/#3 是 App 侧判据可修的**,两条各不相同:#2 = 阈值选择错(seek 后仍按「已出帧」的 8s 算),
+#3 = 带宽闸把 4K 钉住不让降档。
+
+### §39.12.2 「是不是升 4K 失败」——不是升失败,是升上去撑不住
+
+升档本身**成功**:16:31:47 有 `video size: 3840x2160`,ABR 也确实稳在 `sel=0 itag315`。但 4 次里 3 次
+死在 4K 上或紧随 4K 升档(#2/#3 明确 2160p,#4 是顶档冷却后回到 1440p)。4K 的问题是**升上去之后水位
+被压在 3~16s**:itag315 单段 10~40MB、往返 4.6~7.4s,实测交付 28~30Mbps 对 25.5Mbps 的需求只剩 ~10% 余量。
+循环形态(与 §39.6/§39.8 同签名,但触发闸不同):
+
+```
+16:21:47  upshift reseed: est baseline → 26666501 (itag315)     ← 升 4K
+16:22:11  stall detected @715451ms → 整场重载 + `2160p excluded 90s`
+16:25:14  upshift reseed → 25551738 (itag315)                    ← 2.5min 后又爬回 4K
+16:31:38  sel=0(2160p) bufS=16.1 est=31681K meas=29903K → suppress
+16:31:52  bufS=9.9 → fetch rn=67 往返 7392ms(33MB) → bufS=3.5
+16:32:03  buffer-critical downgrade **suppressed** … bufS=3s est=31146K meas=28362K
+16:32:10  stall detected @1280217ms → 整场重载
+```
+
+### §39.12.3 判据链复核(把 §39.1/§39.3 的表逐条对今天的状态)
+
+| 关卡 | 今天实际 |
+|---|---|
+| 升 #11 `climbBufferFloorUs`(P11-193) | **在拦**:16:19:20 / 16:23:15 / 16:33:19 都有 `upshift held (buffer floor, P11-193) … bufS=9s < floor=30s` |
+| 升 #5/#6/#7/#8(冷启动梯子 + est/sustained 闸) | 爬梯正常,4K 是**合法升上去的**(est 31~35M 确实过闸) |
+| 降 A 水位急救 | **每轮都触发**:`bufS=3.5s < TOP_TIER_CRITICAL_BUFFERED_US=20s` ⇒ `bufferCritical` 成立 |
+| 降 B 带宽闸(P11-168/177/200) | **连续 suppress**:`bufS=3~16s` 全被 `est 31~35M ≥ 25.5M×1.15`(29.4M)+ `meas 28.3~29.9M ≥ 25.5M` 挡下 ⇒ 4K 在位不动 |
+| 降 C est 滞回 | 不成立(est 31~35M > required×0.85) |
+| 降 D 升档后 5s 宽限 | 早已过期(升档在 16:31:16,stall 在 16:32:10) |
+| 看门狗 | 每轮 8s 位置冻结 → 整场重载;**这是本轮唯一真正落地的「降档」** |
+| `stall-reached cooldown` | 90s / 180s(repeat #2),而重载 24s + 爬梯几分钟 ⇒ 冷却到期即爬回同一堵墙 |
+
+### §39.12.4 冲突清单(改之前必须标出来的)
+
+**(1) 闸的第三条腿(`meas`)与 P11-200 校准**同源:今天 `curBitrateForGate = tierNeedBps = min(declared,
+meas)` = declared(25551738,因为 meas 28362K > declared),`estHasMargin`(31.1M ≥ 29.4M)与 `measCoversTier`
+(28.4M ≥ 25.5M)**同时为真** ⇒ 闸成立。注意这不是 P11-200 引入的:**校准只降权不抬权**,今天 meas 高于
+declared,校准前后判据完全一致 ⇒ 病因是闸**少了一条腿**,不是基准错。
+
+**(2) 与 §39.2-(2)「闸不动」的结论 —— 本轮为何仍要动它。**
+§39.2-(2) 否掉的是「给闸开一个『刚切轨丢缓冲』的**例外**」(理由:那一刻 meas 已知且达标,降档要再切一次
+格式、再丢一次缓冲)。本轮不是开例外,是**收紧闸的前提**:闸的语义是「带宽真撑得住 ⇒ 低水位只可能来自
+排空/切轨」,而今天有它**没看的一手证据**——本档自己的请求往返 4.6~7.4s,水位只有 3s ⇒ 下一段结构性来不及,
+低水位就是**真饿**,前提被证伪。新增一腿只可能**放宽降档**(永不增加 suppress),方向与 P11-188「未知 = 证据
+不足 ⇒ 闸不成立」、与 §39.6 那句「一次切档的卡顿 vs 一次整场重载的 10~22s 黑屏,不对称,值得」一致。
+
+**(3) 与 §39.11.5 否证线②**(「4K 校准后开始批进 4K 又饿死 ⇒ 顶档闸 #3 单独退回 declared」)**不冲突**:
+那条说的是**升档侧**该不该放 4K 进来;本轮改的是**降档侧**该不该从 4K 退出去——4K 已经进来了(合法),退不出去才是今天的病。
+
+**(4) 与 §39.6 末段「换档宽限另开一条,不去动带宽闸」**的分工:本轮**两条都做**,但各管各的——
+①闸加「交付节奏」腿管**档位**(该不该降),②看门狗加 seek 宽限管**判定阈值**(该不该判死),
+互不代偿。换档(非 seek)的 stall 宽限**仍不做**(§39.6 已论证先观察)。
+
+**(5) seek 宽限与 P11-122(首帧宽限)同源不冲突**:P11-122 解决「慢起播把计时器灌满,首帧一到立刻开枪」;
+本条解决「seek 后位置**停在目标点不动**,而数据要 5~8s 才到」——同一个看门狗、同一类假阳性、不同触发条件。
+
+**(6) 与降档「一 episode 一枪」(`freezeEpisodeActive`)不冲突**:新腿只决定**能不能开这一枪**,开完依旧一次只降一档。
+
+### §39.12.5 改动清单(P11-203)
+
+1. **按 itag 记「最近一次 SABR 往返耗时」**(`SabrMediaFetcher`):成功记实际下载耗时、失败记计满时长
+   (超时=最坏情况);证据保鲜 **90s**(超期视同无样本),与既有 `silenceHangWallMsByItag`(P11-178)同一套
+   「fetcher 只记、选择类判」的分工。经 `SabrBandwidthMeter` 既有 provider 通道暴露(`getLastRoundTripMs`)。
+2. **带宽闸加第四腿**(`HeightAwareAdaptiveTrackSelection`):`arrivalCoversBuffer = roundTrip ∈ (0, 水位/2]`
+   —— 水位必须容得下**至少两次往返**;未知/过期(-1)按「证据不足 ⇒ 闸不成立」(P11-188 同向)。
+   新增常量 `ROUND_TRIP_RUNWAY_FACTOR = 2`。**不改**任何既有系数(`×1.15`/`×1.1`/`×1.5`)、豁免、冷却时长。
+3. **seek 后的 stall 宽限**(TV `PlayerScreen` + 移动 `MobilePlayerScreen`,`routeSeek` 两条分支都置位):
+   新增 `SeekStallGraceMs = 15_000` —— 期内位置冻结改用起播阈值(25s)。依据:4K 单笔往返实测 7.2~7.4s,
+   seek 后位置停在目标点不动 ⇒ 8s 判据在数据到手前 1.7s 就开枪。**只覆盖 seek**,不覆盖换档(§39.12.4-(4))。
+4. 日志:闸的两行(suppress / downgrade)与 stall 行各补一个字段(`roundTrip=`/`seekGrace=`),否则新判据在日志里无从验收。
+
+### §39.12.6 验收 / 否证线
+
+- **验收**:①日志出现 `… suppressed` 与 `… buffer-critical downgrade` 时都能看到 `roundTrip=`,且 4K 在位
+  时 `roundTrip > bufS/2` 的情形**不再**出现 `suppressed`(出现 `buffer-critical downgrade: 2160p → 1440p` 才是对的);
+  ②`stall detected` 行出现 `seekGrace=true`,且 seek 后 8~15s 才落地的段不再触发整场重载;
+  ③`pxnVBckDNXA` 这类「4K ↔ 重载」循环不再出现。
+- **否证**:①降档变密(1080p/1440p 之间横跳)⇒ `ROUND_TRIP_RUNWAY_FACTOR=2` 太严,或往返样本被音频请求
+  污染 ⇒ 退回只认视频主流的样本;
+  ②seek 宽限期内真挂死(用户看到 15s 无反应才重载)⇒ 宽限值下调到 10s 或与「本档往返 ×2」联动;
+  ③4K 从此再也爬不上去(刚升档时新档无往返样本 ⇒ 闸不成立 ⇒ 立刻被降回)⇒ 与既有
+  `DOWNGRADE_AFTER_UPGRADE_GRACE_MS=5s` 叠加过紧,升档宽限要抬到 ≥ 一次往返。

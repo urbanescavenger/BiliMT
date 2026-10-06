@@ -934,9 +934,27 @@ class HeightAwareAdaptiveTrackSelection(
         BUFFER_CRITICAL_GATE_MARGIN_PERMILLE / 1000L
       // P11-188:未知(-1)与「低于声明」一视同仁 —— 都是「没有证据说明撑得住」,闸不成立。
       val measCoversTier = measForGate >= curBitrateForGate
+      // ── P11-203(2026-10-06 真机 `logs_live_20261006_164353`):**平均带宽够 ≠ 供得上** ────────────
+      // 那场 4K(itag315,25.5M)连续三轮「爬到 4K → 水位漏光 → 8s 看门狗整场重载」,而每一轮降档都被
+      // 本闸挡下:
+      //   16:31:38  sel=0(2160p) bufS=16.1 est=31681K meas=29903K → suppress
+      //   16:31:52  bufS=9.9 → fetch rn=67 往返 **7392ms**(33MB) → bufS=3.5
+      //   16:32:03  `buffer-critical downgrade **suppressed** … bufS=3s est=31146K` ← 水位 3 秒仍不降档
+      //   16:32:10  `stall detected @pos=1280217ms` → 整场重载
+      // est/meas 都过了「≥ 25.5M×1.15」,但那**只是平均带宽**;同一时段本档自己的请求往返 4.6~7.4s,
+      // 而水位只有 3s ⇒ 下一段结构性来不及落地,低水位就是**真饿**,闸的前提(「低水位来自排空/切轨」)
+      // 被证伪。故闸多一条**交付节奏**腿:水位必须容得下**至少两次往返**(下一段在路上时手里还得有货)。
+      // 证据来自 fetcher 按 itag 记的往返(成功=下载耗时、失败=计满,见 SabrMediaFetcher.getLastRoundTripMs);
+      // 未知/过期(-1)按 P11-188 同向处理 —— 证据不足 ⇒ 闸不成立 ⇒ 水位急救照常降档。
+      // 注意这条腿**只放宽降档**(永远不会多 suppress 一次),与 §39.2-(2)「闸不动」的结论不冲突:
+      // 那里否掉的是「给刚切轨丢缓冲开例外」,这里补的是闸自己缺的一手证据(见 docs §39.12.4-(2))。
+      val roundTripForGate = (bandwidthMeter as? SabrBandwidthMeter)
+        ?.getLastRoundTripMs(itagOf(getFormat(selected))) ?: -1L
+      val arrivalCoversBuffer = roundTripForGate > 0L &&
+        roundTripForGate * ROUND_TRIP_RUNWAY_FACTOR <= bufferedDurationUs / 1000L
       // P11-178:本档刚零字节挂死过 ⇒ 这道闸不适用(闸防假饿;挂死是真饿,且挂死后重试那笔成功样本
       // 正好会把 est/meas 喂真,让闸误判「撑得住」)。理由详见上面 silenceHang 的证据注释。
-      if (curBitrateForGate > 0 && estHasMargin && measCoversTier && !silenceHang) {
+      if (curBitrateForGate > 0 && estHasMargin && measCoversTier && arrivalCoversBuffer && !silenceHang) {
         Log.i(
           "YtSabrAbr",
           "buffer-critical downgrade **suppressed**(P11-168/177): bufS=${bufferedDurationUs / 1_000_000}s " +
@@ -944,6 +962,7 @@ class HeightAwareAdaptiveTrackSelection(
             "×${BUFFER_CRITICAL_GATE_MARGIN_PERMILLE / 1000.0} " +
             "(declared=${getFormat(selected).bitrate},P11-200 已校准) " +
             "meas=${if (measForGate > 0) "${measForGate / 1000}K" else "未知"}" +
+            " roundTrip=${if (roundTripForGate > 0) "${roundTripForGate}ms" else "未知"}" +
             " → 带宽真撑得住,低水位来自排空/切轨而非供给不足(不降档、不门禁)",
         )
         // 不置 freezeEpisodeActive:这一枪根本没开,后续真饿时仍可急救。
@@ -981,7 +1000,8 @@ class HeightAwareAdaptiveTrackSelection(
             "buffer-critical downgrade: bufS=${bufferedDurationUs / 1_000_000}s " +
               "itag${current.id}/${current.height}p@${current.bitrate} → " +
               "${getFormat(lower).height}p@${getFormat(lower).bitrate} " +
-              "silenceHang=$silenceHang(P11-178)"
+              "silenceHang=$silenceHang(P11-178) " +
+              "roundTrip=${if (roundTripForGate > 0) "${roundTripForGate}ms" else "未知"}(P11-203 交付节奏腿)"
           )
           selected = lower
           lastDowngradeElapsedMs = nowMs
@@ -1418,6 +1438,14 @@ class HeightAwareAdaptiveTrackSelection(
      * 都必然 suppress 掉急救降档(真机 2026-09-23 连成 60~90s 一轮的重载循环)。
      */
     const val BUFFER_CRITICAL_GATE_MARGIN_PERMILLE = 1150L
+
+    /**
+     * P11-203:水位急救降档闸的**交付节奏**余量(倍)。闸除「平均带宽够」之外还要求
+     * `水位 ≥ 最近一次本档往返 × 本系数` —— 即水位至少容得下两次往返(下一段在路上时手里还得有货)。
+     * 依据(真机 2026-10-06):4K 档单笔往返 4.6~7.4s、水位 3s,`est/meas` 全达标却结构性供不上,
+     * 每轮都以 8s 看门狗整场重载收场(见 docs §39.12)。取 2:一次往返在途、一次兜底。
+     */
+    const val ROUND_TRIP_RUNWAY_FACTOR = 2L
 
     /**
      * P11-178:零字节挂死证据的有效窗口(ms)——本档最近一次静默超时在此窗口内,即视同供给证据

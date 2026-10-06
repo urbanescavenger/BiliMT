@@ -588,6 +588,34 @@ internal class SabrMediaFetcher(
   fun getLastSilenceHangWallMs(itag: Int): Long =
     if (itag <= 0) 0L else silenceHangWallMsByItag[itag] ?: 0L
 
+  // ── P11-203:按 itag 记「最近一次请求往返耗时」(交付节奏证据,见 docs §39.12)────────────────────
+  //
+  // 需求(真机 logs_live_20261006_164353,TV 4K):带宽闸(P11-168/177/200)按「平均带宽够不够」判
+  // 「低水位是不是真饿」,但 4K 档单次往返 4.6~7.4s 而水位只有 3s ⇒ 下一段结构性来不及,**平均带宽
+  // 够 ≠ 供得上**。闸需要一手「交付节奏」证据:本档自己的请求从发出到拿到字节要多久。
+  // 记法与 silenceHang 同分工:fetcher 只记(按请求的 itag),窗口与判据在选择类里。
+  // 失败/超时记**计满时长**(最坏情况)——它正是「本档这批数据没供上」的证据。
+  private class RoundTripSample(val elapsedMs: Long, val wallMs: Long)
+
+  private val lastRoundTripByItag = ConcurrentHashMap<Int, RoundTripSample>()
+
+  /** 记一笔本 itag 的往返耗时(成功=实际下载耗时,失败=计满到超时/异常)。 */
+  private fun noteRoundTrip(itag: Int, elapsedMs: Long, wallMs: Long = System.currentTimeMillis()) {
+    if (itag <= 0 || elapsedMs <= 0L) return
+    lastRoundTripByItag[itag] = RoundTripSample(elapsedMs, wallMs)
+  }
+
+  /**
+   * 该 itag 最近一次往返耗时(ms);无样本或样本过期(见 [ROUND_TRIP_EVIDENCE_MS])返回 -1。
+   * 语义是「现在再向这一档要一段,大概多久能到手」——过期样本对当下没有解释力,故视同无样本。
+   */
+  fun getLastRoundTripMs(itag: Int): Long {
+    if (itag <= 0) return -1L
+    val sample = lastRoundTripByItag[itag] ?: return -1L
+    if (System.currentTimeMillis() - sample.wallMs > ROUND_TRIP_EVIDENCE_MS) return -1L
+    return sample.elapsedMs
+  }
+
   /** 真实带宽估计(bps)= 窗口内累计下载量/累计耗时(含卡住与被迫空转)。无样本返回 -1;窗口内全是空转(量=0)返回 0,不回退底层高估。 */
   /**
    * P11-167:估计值打日志用 —— **-1 原样显示为 `-1`**,不要走 `-1 / 1000`(Kotlin 整除得 0,
@@ -1224,6 +1252,8 @@ internal class SabrMediaFetcher(
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
       // P11-197:把这次往返耗时交给读前量门槛(下次续拉不许等到缓冲只剩 10s)。
       SabrAbrMemory.noteSabrResponseMs(elapsed)
+      // P11-203:同时按 itag 记一笔往返(带宽闸「交付节奏」腿的证据,见 getLastRoundTripMs)。
+      noteRoundTrip(req.formatItag, elapsed)
       Log.i(tag, "fetch rn=$rn REAL ${resp.size}B ${elapsed}ms → ${mbps}Mbps est=${fmtEstForLog(getRealBitrateEstimate())}")
       resp
     } catch (e: SabrTerminalException) {
@@ -1244,6 +1274,9 @@ internal class SabrMediaFetcher(
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
       // P11-197:超时/失败也算一次「往返耗时 ≥ failMs」——读前量门槛要按最坏情况留余量。
       SabrAbrMemory.noteSabrResponseMs(failMs)
+      // P11-203:失败照记(P11-197 同口径:按最坏情况)。它正是「本档这批数据没供上」的证据,
+      // 带宽闸的第四腿据此不再 suppress 水位急救(真机 16:43 那笔 40s 超时把 1440p 钉在档位上)。
+      noteRoundTrip(req.formatItag, failMs)
       Log.w(
         tag,
         "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${fmtEstForLog(getRealBitrateEstimate())}" +
@@ -1658,6 +1691,13 @@ internal class SabrMediaFetcher(
      * 评到(20:28 真机:首次升档拖到 53s,1440p 拖到 115s)。10s 让顶档证据在首灌窗口内成熟。
      */
     const val SUSTAINED_MIN_SPAN_MS = 10_000L
+    /**
+     * P11-203:往返耗时样本的保鲜窗口(ms)。超期即视同无样本(返回 -1)——带宽闸的第四腿
+     * (`arrivalCoversBuffer`)要判的是「**现在**再向这一档要一段多久到手」,几分钟前的往返对当下
+     * 没有解释力(链路状态可以整段翻转,见 docs §39.12.6 否证线①)。取 90s:与顶档/试探失败的
+     * 冷却同量级(一段饥饿及其降档冷却的完整周期),且远大于 SABR 正常请求间隔(实测 2~7s)。
+     */
+    const val ROUND_TRIP_EVIDENCE_MS = 90_000L
   }
 }
 
