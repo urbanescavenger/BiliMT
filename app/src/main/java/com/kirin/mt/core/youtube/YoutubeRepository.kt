@@ -55,6 +55,12 @@ class YoutubeRepository(
   private val client: InnerTubeClient,
 ) {
 
+  /** P11-201 频道页 TV 画质角标缓存(按 channelId),见 [tvQualityBadges]。 */
+  private val tvQualityCaches = LinkedHashMap<String, TvQualityCache>()
+
+  /** 同一时刻只让一条频道页去翻 TV 页(翻页是串行的,并发进来只会白翻)。 */
+  private val tvQualityGate = Semaphore(1)
+
   /** 搜索，返回原始模型。@param params 排序/筛选参数串，见 [YoutubeSearchParams]。 */
   suspend fun search(
     query: String,
@@ -215,11 +221,20 @@ class YoutubeRepository(
     /** 防节流随机暂停范围(ms)（对齐 LibreTube CHANNEL_BATCH_DELAY=500..1500）。 */
     val BatchDelayMs = 500L..1500L
 
-    /** 频道"视频"tab 的两种排序 params(最新/最热)——只有这两种首屏才补拉 TV 画质角标。 */
+    /** 频道"视频"tab 的两种排序 params(最新/最热)——只有这两种才补拉 TV 画质角标。 */
     val ChannelVideoTabParams = setOf(
       YoutubeConstants.ChannelVideoOrder.Latest.params,
       YoutubeConstants.ChannelVideoOrder.Popular.params,
     )
+
+    /** TV 画质角标缓存有效期:过期重拉基页(分页 token 会失效,不能长期存)。 */
+    const val TvQualityCacheTtlMs = 10 * 60 * 1000L
+
+    /** 单次调用最多翻几页 TV(防御:token 异常时别空转刷请求)。 */
+    const val TvQualityMaxPagesPerCall = 4
+
+    /** 最多缓存几个频道的 TV 角标(超出按最久未更新淘汰)。 */
+    const val TvQualityCacheMaxChannels = 4
   }
 
   /**
@@ -246,16 +261,16 @@ class YoutubeRepository(
         if (browseId == null) put("params", params)
       }
     }
-    // 画质角标(4K/8K)只在 TV 客户端的数据里,频道页 WEB 响应没有 → 首屏额外并行拉一路 TVHTML5
-    // 频道页,按 videoId 并回(见 YoutubeParsers.parseChannelTileQualityBadges)。只在「视频 tab +
-    // 首屏」发这一路(Shorts/直播/播放列表/续页不需要);TV 客户端无视排序 params,最新/最热返回
-    // 同一份频道页,故两种排序共用这一路。失败静默降级为无角标(不影响列表)。
+    // 画质角标(4K/8K)只在 TV 客户端的数据里,频道页 WEB 响应没有 → 额外拉一路 TVHTML5 频道页,
+    // 按 videoId 并回(见 YoutubeParsers.parseChannelTilePage)。只在「视频 tab」发这一路
+    // (Shorts/直播/播放列表不需要);TV 客户端无视排序 params,最新/最热返回同一份频道页,故两种
+    // 排序共用。首屏这一路基页与 WEB 请求**并行**;更早的视频靠沿 TV 上传列表继续翻页补
+    // ([tvQualityBadges],缓存里按需翻)。失败静默降级为无角标(不影响列表)。
     // 显式标泛型:`if (…) async {…} else null` 会让 Kotlin 从 null 那一支把类型定成 Nothing?。
-    val qualityDeferred: Deferred<Map<String, String>>? =
-      if (withQualityBadges && continuation == null && browseId == null && params in ChannelVideoTabParams) {
-        async {
-          feedCatching(emptyMap(), "TVQualityBadges", channelId) { getChannelTvQualityBadges(channelId) }
-        }
+    val qualityVideoTab = withQualityBadges && browseId == null && params in ChannelVideoTabParams
+    val tvBaseDeferred: Deferred<YoutubeParsers.TvTilePage?>? =
+      if (qualityVideoTab && continuation == null) {
+        async { fetchTvTilePage(channelId, continuation = null) }
       } else {
         null
       }
@@ -279,7 +294,16 @@ class YoutubeRepository(
           "browseId=${browseId ?: "channel"} items=${feed.items.size} next=${feed.continuation?.take(12) ?: "null"}",
       )
     }
-    val qualityBadges = qualityDeferred?.await().orEmpty()
+    val qualityBadges = if (qualityVideoTab) {
+      tvQualityBadges(
+        channelId = channelId,
+        webVideoIds = feed.items.map { it.videoId },
+        pageItems = feed.items.size,
+        basePage = tvBaseDeferred,
+      )
+    } else {
+      emptyMap()
+    }
     val items = if (qualityBadges.isEmpty()) {
       feed.items
     } else {
@@ -290,11 +314,11 @@ class YoutubeRepository(
         else video.copy(badge = quality)
       }
     }
-    if (qualityDeferred != null) {
+    if (qualityVideoTab) {
       Log.d(
         "YoutubeChannel",
         "getChannelVideos qualityBadges channelId=$channelId tiled=${qualityBadges.size} " +
-          "matched=${items.count { qualityBadges.containsKey(it.videoId) }}",
+          "matched=${items.count { qualityBadges.containsKey(it.videoId) }} page=${feed.items.size}",
       )
     }
     YoutubeVideoPage(
@@ -303,18 +327,131 @@ class YoutubeRepository(
     )
   }
 
+  // ---- P11-201 频道页画质角标:TV 客户端补充路(基页 + 沿上传列表翻页) ----
+
+  /** 单频道 TV 画质角标缓存:基页解析出的角标 + 沿上传列表继续翻页的游标。 */
+  private class TvQualityCache {
+    val badges = LinkedHashMap<String, String>()
+
+    /** 沿 TV 上传列表已走过的 videoId(去重),用来判断还要不要继续翻页。 */
+    val walked = LinkedHashSet<String>()
+
+    var nextToken: String? = null
+
+    /** 基页挑中的 shelf 目标(UC…);翻页时优先认同一个,免得在续页响应里挑错 shelf。 */
+    var shelfTarget: String? = null
+
+    /** 已交给 UI 的物品数——角标要覆盖到「已加载的最旧那一条」那么深。 */
+    var served = 0
+
+    var updatedAtMs = 0L
+  }
+
   /**
-   * 拉一路 TV 客户端(TVHTML5)的频道页,取画质角标(4K/8K/HD)。仅 [getChannelVideos] 首屏调用;
-   * 失败抛异常由调用方降级(无角标,不影响列表)。见 [YoutubeParsers.parseChannelTileQualityBadges]。
+   * 取该频道的 TV 画质角标(videoId → "4K"),不够深就沿 TV 上传列表继续翻页。
+   *
+   * 为什么是「翻页」而不是「换客户端」:频道页 WEB 列表分页 30 条/页,而 TV 频道页首屏的
+   * 「Videos」shelf 只给最新 24 条 —— 只拉首屏的话,越往后越没有角标(P11-201 真机反馈
+   * 「只有最新的一部分有角标」)。该 shelf 带旧格式分页 token,逐页 24 条翻下去能一直翻到更早的
+   * 视频,所以按「已加载条数」决定翻到第几页,结果整个会话内缓存复用(每多翻一页 ≈ 多覆盖 24 条)。
+   *
+   * [basePage] 是调用方与 WEB 请求并行发出的基页(首屏才有);无缓存且拿不到基页时自己补一次。
+   * 任何失败都只降级为「角标少一点」,不抛给调用方。
    */
-  private suspend fun getChannelTvQualityBadges(channelId: String): Map<String, String> {
-    val payload = buildJsonObject {
-      put("browseId", channelId)
-      put("params", YoutubeConstants.ChannelVideosParams)
+  private suspend fun tvQualityBadges(
+    channelId: String,
+    webVideoIds: List<String>,
+    pageItems: Int,
+    basePage: Deferred<YoutubeParsers.TvTilePage?>?,
+  ): Map<String, String> = tvQualityGate.withPermit {
+    val now = System.currentTimeMillis()
+    val cached = tvQualityCaches[channelId]?.takeIf { now - it.updatedAtMs <= TvQualityCacheTtlMs }
+    val cache: TvQualityCache
+    if (cached != null) {
+      cache = cached
+    } else {
+      val page = basePage?.let { deferred -> runCatching { deferred.await() }.getOrNull() }
+        ?: feedCatching(null, "TVQualityBadges", channelId) { fetchTvTilePage(channelId, null) }
+      if (page == null) {
+        return@withPermit tvQualityCaches[channelId]?.badges?.let { LinkedHashMap(it) }.orEmpty()
+      }
+      cache = TvQualityCache().apply {
+        badges.putAll(page.qualityBadges)
+        val shelf = pickUploadShelf(page.shelves, webVideoIds)
+        nextToken = shelf?.nextToken ?: page.fallbackNextToken
+        shelfTarget = shelf?.targetBrowseId
+        walked.addAll(shelf?.videoIds ?: page.videoIds)
+        updatedAtMs = now
+      }
+      tvQualityCaches.remove(channelId)
+      tvQualityCaches[channelId] = cache
+      while (tvQualityCaches.size > TvQualityCacheMaxChannels) {
+        val oldest = tvQualityCaches.minByOrNull { it.value.updatedAtMs }?.key ?: break
+        tvQualityCaches.remove(oldest)
+      }
     }
-    return YoutubeParsers.parseChannelTileQualityBadges(
-      client.postJson("/browse", payload, client = InnerTubeClient.Client.TVHTML5),
-    )
+    // 已加载 pageItems 条 ⇒ 角标至少要覆盖到 served + pageItems 那么深的视频。
+    val target = cache.served + pageItems
+    var pages = 0
+    while (cache.walked.size < target && cache.nextToken != null && pages < TvQualityMaxPagesPerCall) {
+      pages++
+      val token = cache.nextToken ?: break
+      val page = feedCatching(null, "TVQualityBadgesNext", channelId) {
+        fetchTvTilePage(channelId, continuation = token)
+      } ?: break
+      cache.badges.putAll(page.qualityBadges)
+      val shelf = pickUploadShelf(page.shelves, webVideoIds, cache.shelfTarget)
+      val before = cache.walked.size
+      cache.walked.addAll(shelf?.videoIds ?: page.videoIds)
+      cache.nextToken = shelf?.nextToken ?: page.fallbackNextToken
+      // 翻了一页却没推进(服务端回同一批 / 形状不认识)⇒ 收手,免得空转刷请求。
+      if (cache.walked.size == before) {
+        cache.nextToken = null
+        break
+      }
+    }
+    cache.served = target
+    cache.updatedAtMs = System.currentTimeMillis()
+    // 返回快照:缓存随时可能被下一次翻页继续写,别把可变 map 递出去。
+    LinkedHashMap(cache.badges)
+  }
+
+  /**
+   * 从 TV 页里的 shelf 中挑「上传列表」那条:先认同一个目标([preferTarget],翻页时用),
+   * 否则在「带分页 token 且目标是频道(UC…)」的候选里按与 WEB 当前页 id 的重叠度取最大
+   * (播放列表/Shorts shelf 几乎零重叠);全零时取第一条(TV 布局里 Videos shelf 排在
+   * For You 之后、Shorts 与各播放列表之前)。
+   */
+  private fun pickUploadShelf(
+    shelves: List<YoutubeParsers.TvTileShelf>,
+    webVideoIds: List<String>,
+    preferTarget: String? = null,
+  ): YoutubeParsers.TvTileShelf? {
+    if (!preferTarget.isNullOrBlank()) {
+      shelves.firstOrNull { it.nextToken != null && it.targetBrowseId == preferTarget }?.let { return it }
+    }
+    val candidates = shelves.filter { it.nextToken != null && it.targetBrowseId.startsWith("UC") }
+    if (candidates.isEmpty()) return null
+    val wanted = webVideoIds.toHashSet()
+    val best = candidates.maxByOrNull { shelf -> shelf.videoIds.count { it in wanted } } ?: return null
+    return best.takeIf { shelf -> shelf.videoIds.any { it in wanted } } ?: candidates.first()
+  }
+
+  /** 拉一页 TV 客户端(TVHTML5)数据并解析:首屏发 browseId+params,翻页发 continuation。失败抛异常。 */
+  private suspend fun fetchTvTilePage(
+    channelId: String,
+    continuation: String?,
+  ): YoutubeParsers.TvTilePage {
+    val payload = buildJsonObject {
+      if (continuation != null) {
+        put("continuation", continuation)
+      } else {
+        put("browseId", channelId)
+        put("params", YoutubeConstants.ChannelVideosParams)
+      }
+    }
+    val root = client.postJson("/browse", payload, client = InnerTubeClient.Client.TVHTML5)
+    return YoutubeParsers.parseChannelTilePage(root)
   }
 
   /**

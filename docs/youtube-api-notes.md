@@ -291,13 +291,18 @@ media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack
 `contents.tvBrowseRenderer.content.tvSurfaceContentRenderer.content.sectionListRenderer.contents[].shelfRenderer.content.horizontalListRenderer.items[].tileRenderer{ contentId, header.tileHeaderRenderer.thumbnail, metadata.tileMetadataRenderer{ title.simpleText, lines[].lineRenderer.items[].lineItemRenderer: text.simpleText | badge.metadataBadgeRenderer.label } }`。
 一次响应 ~326 个 tile（152 个唯一 videoId，跨「最新/最热/…」多个 shelf，同一 videoId 会重复）。
 
-**实施**（`YoutubeParsers.parseChannelTileQualityBadges` + `YoutubeRepository.getChannelTvQualityBadges`）：`getChannelVideos` **首屏 + 视频 tab** 时并行发这一路 TVHTML5 `/browse`（`Client.TVHTML5`，OkHttp 直连、无需 PO token、guest visitorData 即可 200），把 `4K/8K/HD/HDR` 按 videoId 并回 WEB 列表；**已有角标（会员/直播/首映）优先保留，画质角标只补空位**（会员是功能性标记，不能被 4K 顶掉）。失败走 `feedCatching` 静默降级为空 map（列表照常）。续页 / Shorts / 直播 / 播放列表 tab 不发这一路。
-- **TV 无视排序 params**：同频道发 `EgZ2aWRlb3PyBgQKAjoA`(最新) 与 `EgZwb3B1bGFy`(最热) 返回同一份多 shelf 频道页（152 vs 151 个唯一 videoId，4K 均 120）⇒ 两种排序共用这一路（`ChannelVideoTabParams`）。
-- **覆盖**：TV 一路 152 个 videoId vs WEB 首屏 30 条，命中 25/30。TV 响应不含 continuation、不认排序、不返回 tab 列表 ⇒ **不能拿它替换 WEB 主列表**，只能做角标补充。
-- **成本**：每次进频道页首屏 +1 个请求（与 WEB 请求并行，不串行等待）。
+**TV 频道页能翻页（关键，2026-10-06 二次实测）**：首屏只有 For You / Videos / Shorts / 各播放列表等 shelf，**「Videos」shelf 只给最新 24 条**——只拉首屏，越往后的视频越没角标（真机反馈「只有最新的一部分有角标，更早的还没有」）。翻页 token 在 **`shelfRenderer.content.horizontalListRenderer.continuations[].nextContinuationData.continuation`**（**旧格式**，不是新格式 `continuationCommand`——按后者找会得出「TV 响应没有 continuation」的错误结论，踩过一次）。顺着「Videos」shelf 翻，**每页 24 条全新、全部带 4K**，可一直翻到更早的视频。
 
-**验收**（真机）：日志 `YoutubeChannel: getChannelVideos qualityBadges channelId=… tiled=N matched=M`，M>0；频道页卡片右上角出现「4K」胶囊（TV 与移动端共用同一数据层，两端同时生效）。
-**否证**：①`tiled=0` ⇒ TVHTML5 `/browse` 在真机被拦（probe 是 PC 直连），回退方案是改走 WebView 或放弃；②`matched` 远小于 M ⇒ TV 的 shelf 覆盖与「最新」列表错位太多，角标大面积缺失，需改按 shelf 定位「最新」那一条。
+**实施**：
+- `YoutubeParsers.parseChannelTilePage`：一页 TV 响应 → `TvTilePage(qualityBadges, videoIds, shelves[], fallbackNextToken)`；`shelves` 含每个横向 shelf 的顺序 id + 分页 token + 目标 browseId（频道 `UC…` / 播放列表 `VL…`）。
+- `YoutubeRepository.tvQualityBadges`：**基页与 WEB 请求并行**发（首屏），按 videoId 并回列表；`4K/8K/HD/HDR` 只补空位，**已有角标（会员/直播/首映）优先保留**（会员是功能性标记，不能被 4K 顶掉）。失败走 `feedCatching` 静默降级（列表照常）。
+- **按需翻页 + 会话内缓存**（`TvQualityCache`，TTL 10min、最多 4 频道、`Semaphore(1)` 串行）：记录「已交给 UI 的物品数 `served`」与「沿 TV 上传列表已走到的条数 `walked`」，`walked < served + 本页条数` 就继续翻（单次最多 4 页）。翻一页没推进（服务端回同一批/形状不认识）立即收手，免得空转刷请求。挑 shelf 用「目标 UC… + 与 WEB 当前页 id 重叠最大」，翻页时认第一次挑中的那个目标。
+- **TV 无视排序 params**：同频道发 `EgZ2aWRlb3PyBgQKAjoA`(最新) 与 `EgZwb3B1bGFy`(最热) 返回同一份多 shelf 频道页 ⇒ 两种排序共用这一路（`ChannelVideoTabParams`）。
+- **不能拿 TV 替换 WEB 主列表**：TV 页不返回 tab 列表、不认排序，结构（`tileRenderer`）与 `lockupViewModel` 完全两套，只能做角标补充。
+- **成本**：首屏 +2 个请求（基页并行 + 1 页续页，覆盖 48 条）；此后每多滚一页（30 条）≈ 多 1 个续页请求。Shorts/直播/播放列表 tab 与播放器 UP 面板（`withQualityBadges=false`）都不发这一路。
+
+**验收**（真机）：日志 `YoutubeChannel: getChannelVideos qualityBadges channelId=… tiled=N matched=M page=P`，M 随 P 增长且不再「只有最新一部分有角标」；频道页卡片右上角出现「4K」胶囊（TV 与移动端共用同一数据层，两端同时生效）。
+**否证**：①`tiled=0` ⇒ TVHTML5 `/browse` 在真机被拦（probe 是 PC 直连），回退方案是改走 WebView 或放弃；②`matched` 不随滚动增长 ⇒ 翻页 token 或 shelf 挑错（看 `TVQualityBadgesNext failed`），需回看该频道的 shelf 结构。
 
 ---
 

@@ -164,12 +164,20 @@ internal object YoutubeParsers {
    * .sectionListRenderer.contents[].shelfRenderer.content.horizontalListRenderer.items[]
    * .tileRenderer{ contentId, header.tileHeaderRenderer.thumbnail, metadata.tileMetadataRenderer
    * .lines[].lineRenderer.items[].lineItemRenderer: text 行 | badge.metadataBadgeRenderer.label }。
-   * 一个频道页含多个 shelf(最新/最热…),同一 videoId 会重复出现,取先命中的画质角标。
+   * 一个频道页含多个 shelf(For You / Videos / Shorts / 各播放列表),同一 videoId 会重复出现,
+   * 取先命中的画质角标。
+   *
+   * **能翻页(实测 2026-10)**:每个 shelf 的横向列表带
+   * `content.horizontalListRenderer.continuations[].nextContinuationData.continuation`(旧格式,
+   * **不是**新格式 continuationCommand——照后者找会得出「TV 无 continuation」的错误结论)。
+   * 「Videos」shelf 顺着翻,每页 24 条全新、全部带 4K,可一直翻到更早的视频 ⇒ 老视频的角标靠它补。
    */
-  fun parseChannelTileQualityBadges(root: JsonObject): Map<String, String> {
+  fun parseChannelTilePage(root: JsonObject): TvTilePage {
     val badges = LinkedHashMap<String, String>()
+    val videoIds = LinkedHashSet<String>()
     collectByKey(root, KEY_TILE_RENDERER) { node ->
       val videoId = node.stringOrNull("contentId")?.takeIf { it.isNotBlank() } ?: return@collectByKey
+      videoIds.add(videoId)
       if (badges.containsKey(videoId)) return@collectByKey
       val lines = node.obj("metadata")?.obj("tileMetadataRenderer")?.array("lines") ?: return@collectByKey
       for (line in lines) {
@@ -184,8 +192,66 @@ internal object YoutubeParsers {
         }
       }
     }
-    return badges
+    val shelves = mutableListOf<TvTileShelf>()
+    collectByKey(root, KEY_SHELF_RENDERER) { shelf ->
+      val horizontal = shelf.obj("content")?.obj("horizontalListRenderer") ?: return@collectByKey
+      val ids = LinkedHashSet<String>()
+      collectByKey(horizontal, KEY_TILE_RENDERER) { tile ->
+        tile.stringOrNull("contentId")?.takeIf { it.isNotBlank() }?.let(ids::add)
+      }
+      if (ids.isEmpty()) return@collectByKey
+      // 翻页 token 在 shelf 的横向列表上(旧格式 nextContinuationData,不是新格式 continuationCommand)。
+      val token = horizontal.array("continuations")?.firstOrNull()
+        ?.let { (it as? JsonObject)?.obj("nextContinuationData")?.stringOrNull("continuation") }
+      // shelf 目标:browseEndpoint.browseId(频道=UC…;播放列表=VL…);部分 shelf 只在标题的导航端点里。
+      val target = shelf.obj("endpoint")?.obj("browseEndpoint")?.stringOrNull("browseId")
+        ?: shelf.obj("headerRenderer")?.obj("shelfHeaderRenderer")?.obj("avatarLockup")
+          ?.obj("avatarLockupRenderer")?.obj("title")?.array("runs")?.firstOrNull()
+          ?.let { (it as? JsonObject)?.obj("navigationEndpoint")?.obj("browseEndpoint")?.stringOrNull("browseId") }
+          .orEmpty()
+      shelves.add(TvTileShelf(ids.toList(), token, target))
+    }
+    // 兜底:整页第一个 nextContinuationData(续页响应若不是 shelfRenderer 形状时仍能继续翻页)。
+    val fallbackToken = firstNextContinuationData(root)
+    return TvTilePage(badges, videoIds.toList(), shelves, fallbackToken)
   }
+
+  /** 递归取整棵树里第一个 `continuations[].nextContinuationData.continuation`(TV 旧格式分页 token)。 */
+  private fun firstNextContinuationData(root: JsonElement): String? {
+    when (root) {
+      is JsonObject -> {
+        val token = root.array("continuations")?.firstOrNull()
+          ?.let { (it as? JsonObject)?.obj("nextContinuationData")?.stringOrNull("continuation") }
+        if (!token.isNullOrBlank()) return token
+        for ((_, value) in root) firstNextContinuationData(value)?.let { return it }
+      }
+      is JsonArray -> for (item in root) firstNextContinuationData(item)?.let { return it }
+      else -> Unit
+    }
+    return null
+  }
+
+  /** TV 频道页(或其后继页)的 tile 解析结果,见 [parseChannelTilePage]。 */
+  data class TvTilePage(
+    /** 全页画质角标:videoId → "4K"/"8K"/"HD"。 */
+    val qualityBadges: Map<String, String>,
+    /** 本页所有 tile 的 videoId(含无画质角标的),用于判断翻页有没有推进。 */
+    val videoIds: List<String>,
+    /** 可继续翻页的横向 shelf。 */
+    val shelves: List<TvTileShelf>,
+    /** 整页兜底分页 token(续页响应不是 shelfRenderer 形状时用)。 */
+    val fallbackNextToken: String?,
+  )
+
+  /**
+   * TV 频道页里的一个横向 shelf:[videoIds] 按显示顺序,[nextToken] 非空表示还能往更早翻,
+   * [targetBrowseId] 是 shelf 目标(频道 `UC…` / 播放列表 `VL…`)——上传列表 shelf 用它区分。
+   */
+  data class TvTileShelf(
+    val videoIds: List<String>,
+    val nextToken: String?,
+    val targetBrowseId: String,
+  )
 
   /**
    * 频道页 header 解析结果。含订阅数/banner/简介/认证，供频道页头部展示
@@ -1577,6 +1643,7 @@ internal object YoutubeParsers {
   private const val KEY_PLAYLIST_VIDEO_RENDERER = "playlistVideoRenderer"
   private const val KEY_REEL_ITEM_RENDERER = "reelItemRenderer"
   private const val KEY_TILE_RENDERER = "tileRenderer"
+  private const val KEY_SHELF_RENDERER = "shelfRenderer"
   private const val KEY_CONTINUATION_ITEM_RENDERER = "continuationItemRenderer"
   private const val KEY_CHANNEL_RENDERER = "channelRenderer"
   private const val KEY_TAB_RENDERER = "tabRenderer"
