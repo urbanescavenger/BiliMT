@@ -391,6 +391,16 @@ internal fun TvVideoGrid(
   // (反复抢会把两层拖进互抢)。主路径与接力路径共用,只有日志前缀不同。
   suspend fun runMemoryFocusRestore(targetIndex: Int, logPrefix: String) {
     val targetRow = targetIndex / columns
+    // ── P11-204(2026-10-06 真机 alpha.10,UP 页连续下翻)──让位判据必须在**滚动之前** ────────────
+    // 契约本来就是「用户一动按键立刻让位」,但旧实现把它放在滚动之后:先 scrollRow(旧目标行)、再在
+    // 重试循环里发现该让位 —— 于是「让位」只挡住了 requestFocus,**没挡住那次滚动**。UP 页入场卡是
+    // 第 4 张,用户一路下翻到第 115 张时,每次翻页都触发一次恢复 ⇒ 视口被反复拽回入场那行 ⇒ 用户看到
+    // 的就是「焦点突然上跳」(日志 18:28:15.906 / 19.512 / 22.445 … 都是 `restore start … abort` 成对
+    // 出现,abort 比 start 晚 ~150ms —— 那 150ms 正是白白滚过去又滚回来)。
+    if (userKeyedSinceCompose) {
+      Log.d(TvFocusLogTag, "$logPrefix abort(before-scroll): id=$focusMemoryId reason=user-key")
+      return
+    }
     Log.d(
       TvFocusLogTag,
       "$logPrefix start: id=$focusMemoryId target=$targetIndex videos=${videos.size}",
@@ -433,6 +443,19 @@ internal fun TvVideoGrid(
 
   // P11-202 主路径:没有显式恢复 key 的冷组合(管线不介入),意图在组合期已消费。
   // 这里**不调用** onRestoreFocusHandled —— 那是显式管线的契约。
+  //
+  // ── P11-204(2026-10-06 真机 alpha.10,UP 页连续下翻「焦点突然上跳」)─────────────────────────
+  // 本 effect 以 `videos.size` 为 key(原本是为了「首帧数据还没到 → 数据到了再补一次」),而
+  // `memoryIntent` 是**组合期 remember 的固定值**(指向入场那张卡)⇒ 之后**每翻一页**都会重跑一次
+  // 恢复,把已经在很下面的视口拽回入场卡那行。真机 `logs_live_20261006_182944`(UP 页 `grid:space`):
+  //   18:27:45.971 `grid-memory restore start: id=grid:space target=4 videos=30` → `success`(入场,正确)
+  //   18:27:48.368 `… target=4 videos=60`  / 18:28:15.906 `… videos=90` / 19.512 `… videos=120`
+  //   / 22.445 `… videos=150` / 31.193 `… videos=180` / 44.568 `… videos=210` / 55.116 `… videos=240`
+  //   —— 每一行 start 后面都跟着 `abort: reason=user-key`,而此刻用户已在第 115 张卡上。
+  // 两道闸:①用户已经自己动过手(userKeyedSinceCompose 在 moveFocus 里置位,永不回退)⇒ 本次组合
+  // 不再碰列表;②已经真正兑现过一次(焦点确实落在目标卡上)⇒ 不重复。**数据未到(key 未出现)** 的
+  // skip 不置闸,仍然保留「数据到了再补一次」的原意。
+  var memoryRestoreDone by remember { mutableStateOf(false) }
   LaunchedEffect(memoryTargetIndex, memorySkipReason, videos.size) {
     if (memoryIntent == null) return@LaunchedEffect
     // 管线在身时让位给下面的接力 effect:它要等管线跑完才知道该不该补。
@@ -441,7 +464,9 @@ internal fun TvVideoGrid(
       Log.d(TvFocusLogTag, "grid-memory skip: id=$focusMemoryId reason=$memorySkipReason")
       return@LaunchedEffect
     }
+    if (userKeyedSinceCompose || memoryRestoreDone) return@LaunchedEffect
     runMemoryFocusRestore(memoryTargetIndex, "grid-memory restore")
+    memoryRestoreDone = gridFocus.value && focusedIndex == memoryTargetIndex
   }
 
   // P11-202 接力:显式管线已经覆盖了「点卡 → 跳转 → 返回」的绝大多数情况,只有在它跑完(成功失败

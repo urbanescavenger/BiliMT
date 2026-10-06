@@ -171,3 +171,57 @@ expectReturn == true  ⇔  网格里某张卡被点击后跳转出去了,且焦�
   (`autoConfirmOnFocus && !selected && !suppressAutoConfirm && keyDriven`)已挡住被动落焦。
 - **后续简化路径**:等锚定链真机稳定若干轮后,再评估删 7 处 `restoreFocusRequestKey`(它承载了 §2 五要素
   与 P11-172「先清本层 key 再 arm 下层」,删它是一次独立的、需真机证据的改造)。
+
+### 6.7 P11-204:UP 页连续下翻时视口被反复拽回入场卡(2026-10-06 真机 alpha.10)
+
+> 用户报「在 B 站 UP 页,连续下翻,焦点会突然上跳」。日志 `logs_live_20261006_182944.log`
+> (`3.1.0-alpha.10`,BRAVIA AE2,UP 页网格 id `grid:space`)。
+
+**症状签名**(一次访问里成对出现,间隔 140~190ms):
+
+```
+18:27:45.971  grid-memory restore start: id=grid:space target=4 videos=30   ← 入场恢复,正确
+18:27:46.015  grid-memory restore success: id=grid:space attempt=0
+18:27:48.368  grid-memory restore start: id=grid:space target=4 videos=60   ← 翻一页就重跑一次
+18:27:48.510  grid-memory abort: id=grid:space reason=user-key
+18:28:15.906  grid-memory restore start: id=grid:space target=4 videos=90
+18:28:16.095  grid-memory abort: id=grid:space reason=user-key
+18:28:19.512  … videos=120   18:28:22.445  … videos=150   18:28:31.193  … videos=180
+18:28:44.568  … videos=210   18:28:55.116  … videos=240
+```
+
+此刻用户已在第 115 张卡上(`grid-key label=space-grid index=115`),而 target 恒为 **4**。
+同一签名在当天另两次 UP 页访问里复现(`target=9`、`target=61`)。
+
+**两个各自独立的缺陷叠在一起:**
+
+1. **effect 以 `videos.size` 为 key + `memoryIntent` 是组合期固定值 ⇒ 每翻一页重跑一次恢复。**
+   `memoryIntent = remember { consumeIntent(...) }` 没有 key,是整个组合生命周期里的固定值(指向
+   **入场那张卡**);而主路径 effect 的 key 含 `videos.size`,原本意图是「首帧数据还没到 → 数据到了
+   再补一次」。两者叠起来 = 之后**每一次分页合并**都会再跑一遍恢复,目标永远是入场卡。
+2. **让位判据在滚动之后 ⇒ abort 只挡住了 requestFocus,没挡住 scrollRow。**
+   `runMemoryFocusRestore` 的顺序是「记日志 → `scrollRow(目标行)` → 等目标行进入视口 → 重试循环里
+   才检查 `userKeyedSinceCompose`」。所以那 140~190ms 里列表已经被滚到目标行(UP 页第 4 张卡在第 1 行
+   ⇒ 视口直接跳到顶部),然后才 abort 返回、把视口留在原处 —— 用户看到的就是「焦点突然上跳」。
+   `userKeyedSinceCompose` 在 `moveFocus` 一进来就置位且**永不回退**(用户接管即终局),所以入场恢复
+   之后的每一次滚动都必然命中这条废路径。
+
+**修法(P11-204,两处,都在 `TvVideoGrid`):**
+
+- `runMemoryFocusRestore` 开头(记日志/滚动**之前**)加 `userKeyedSinceCompose` 早退,日志
+  `grid-memory restore|relay abort(before-scroll): id=… reason=user-key`。
+- 主路径 effect 加两道闸:①`userKeyedSinceCompose` ⇒ 本组合不再碰列表;②`memoryRestoreDone`
+  (焦点**确实落到**目标卡才算兑现,用 `gridFocus && focusedIndex == memoryTargetIndex` 判)⇒ 不重复。
+  **`memorySkipReason != null`(数据未到 / key 未出现)的 skip 不置闸**,保留「数据到了再补一次」的原意。
+
+**验收**(真机):UP 页连续下翻时**不得**再出现 `grid-memory restore start: id=grid:space`(最多一条
+入场 `success`);整段无 `abort(before-scroll)`(该行只应在「用户已接管」时出现,出现即说明还有路径在
+滚)。**否证**:①入场恢复被跳过(该回到入场卡时回到第 0 行)⇒ 说明 `userKeyedSinceCompose` 在新组合
+里不是 false,需改成显式的一次性 token;②`memoryRestoreDone` 因 `focusedIndex` 时序未及时更新而恒
+false ⇒ 退化为「只靠 userKeyed 闸」。
+
+**留看的孪生隐患(本轮不改)**:管线 effect(`LaunchedEffect(restoreFocusRequestKey, restoredFocusIndex,
+videos.size)`)同样以 `videos.size` 为 key、同样无条件 `scrollRow`。它没有复现,是因为 UP 页传入的
+`restoredFocusIndex` 由页面 `focusedVideoKey/Index` 实时解析(跟踪用户当前卡),重跑等于滚回当前行;
+若哪天某个页面传的是**导航时刻的旧下标**,就会以同样的方式跳。改动它会碰 §2 五要素的主路径,留待有
+真机证据再单独开。
