@@ -89,6 +89,8 @@ import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.util.FirebaseLogSender
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.feed.UserFeedScreen
+import com.kirin.mt.ui.focus.GridFocusMemory
+import com.kirin.mt.ui.focus.LocalGridFocusMemory
 import com.kirin.mt.ui.focus.focusDiag
 import com.kirin.mt.ui.feed.UserFeedState
 import com.kirin.mt.ui.feed.UserFeedUiState
@@ -283,6 +285,9 @@ fun BiliTvApp(
   val userFeedState = remember { UserFeedUiState() }
   val searchUiState = remember { SearchUiState() }
   val liveUiState = remember { com.kirin.mt.ui.live.LiveUiState() }
+  // P11-202:网格身份锚定焦点记忆。挂在 AppShell 作用域(跨页面 dispose 存活),经
+  // LocalGridFocusMemory 下发给所有 TvVideoGrid;网格据此在冷重建时把焦点放回原来那张卡。
+  val gridFocusMemory = remember { GridFocusMemory() }
   var initialHomeFocusPending by remember { mutableStateOf(true) }
   var recommendManualRefreshKey by rememberSaveable { mutableStateOf(0) }
   var dynamicManualRefreshKey by rememberSaveable { mutableStateOf(0) }
@@ -722,6 +727,7 @@ fun BiliTvApp(
     LocalChineseTextConverter provides textConverter,
     LocalHomeColors provides homeColors,
     LocalLiquidGlassBackdrop provides activeLiquidGlassBackdrop,
+    LocalGridFocusMemory provides gridFocusMemory,
   ) {
     val activePlaybackRequest = playbackRequest
     var visiblePlaybackRequest by remember { mutableStateOf<PlaybackRequest?>(null) }

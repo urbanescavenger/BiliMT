@@ -68,6 +68,11 @@ import com.kirin.mt.ui.common.BiliCapsuleTabRow
 import com.kirin.mt.ui.common.BiliPillTab
 import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.VideoGridSkeleton
+import com.kirin.mt.ui.common.appendUniqueByBvid
+import com.kirin.mt.ui.common.focusRestoreKey
+import com.kirin.mt.ui.common.resolveFocusIndex
+import com.kirin.mt.ui.focus.GridFocusIds
+import com.kirin.mt.ui.focus.LocalGridFocusMemory
 import com.kirin.mt.ui.glass.biliLiquidGlassSurface
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
 import com.kirin.mt.ui.theme.BiliColors
@@ -128,6 +133,9 @@ internal fun RecommendScreen(
   DisposableEffect(Unit) {
     onDispose { Log.d(LoadLogTag, "screen dispose inst=$screenInstanceTag") }
   }
+  // P11-202:身份锚定记忆。必须在这里取成 val 再被下面的局部函数闭包捕获(局部函数不能直接读
+  // CompositionLocal)。切分区 / 侧栏重点击刷新都要丢弃待兑现意图,否则下次冷组合会误把焦点拉回旧卡。
+  val gridFocusMemory = LocalGridFocusMemory.current
   val sections = remember(enabledHomeSections, homeSectionsOrder) {
     homeSectionsOrder.filter { section -> section in enabledHomeSections }
       .ifEmpty { listOf(HomeSection.Recommend) }
@@ -356,6 +364,11 @@ internal fun RecommendScreen(
 
   fun selectSection(section: HomeSection, forceRefresh: Boolean) {
     val isSameSection = uiState.activeSectionKey == section.key
+    // P11-202:切分区(含首次进入)/ 侧栏重点击刷新 = 用户主动改变列表上下文,焦点应从第 0 行重来,
+    // 丢弃待兑现意图,免得下次冷组合把焦点拉回旧分区/旧位置的那张卡。
+    if (!isSameSection || forceRefresh) {
+      gridFocusMemory.clear(GridFocusIds.Recommend, "select-section")
+    }
     uiState.selectedSectionKey = section.key
     uiState.activeSectionKey = section.key
     // 切到不同分区回顶部;同一分区被显式 force-refresh(重点击当前顶栏 tab /
@@ -573,6 +586,7 @@ private fun RecommendGrid(
   TvVideoGrid(
     videos = videos,
     firstItemFocusRequester = firstItemFocusRequester,
+    focusMemoryId = GridFocusIds.Recommend,
     restoredFocusIndex = restoredFocusIndex,
     restoreFocusRequestKey = restoreFocusRequestKey,
     onRestoreFocusHandled = onRestoreFocusHandled,
@@ -702,32 +716,6 @@ private fun androidx.compose.foundation.lazy.grid.LazyGridLayoutInfo.estimatedCo
 
 private val LazyGridItemInfo.columnAnchor: Int
   get() = offset.x
-
-private fun List<VideoSummary>.appendUniqueByBvid(nextVideos: List<VideoSummary>): List<VideoSummary> {
-  if (nextVideos.isEmpty()) {
-    return this
-  }
-  val knownBvids = mapTo(mutableSetOf()) { video -> video.bvid }
-  return this + nextVideos.filter { video -> knownBvids.add(video.bvid) }
-}
-
-private fun List<VideoSummary>.resolveFocusIndex(focusKey: String, fallbackIndex: Int): Int {
-  val keyIndex = focusKey
-    .takeIf { key -> key.isNotBlank() }
-    ?.let { key -> indexOfFirst { video -> video.focusRestoreKey() == key } }
-    ?.takeIf { index -> index >= 0 }
-  return keyIndex ?: fallbackIndex.coerceIn(0, lastIndex)
-}
-
-private fun VideoSummary.focusRestoreKey(): String {
-  return bvid.ifBlank {
-    when {
-      cid > 0L -> "cid-$cid"
-      historyPage > 0 -> "p-$historyPage"
-      else -> ""
-    }
-  }
-}
 
 private fun Int.shouldLoadMore(totalItems: Int, threshold: Int): Boolean {
   return totalItems - this <= threshold

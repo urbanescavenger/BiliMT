@@ -77,6 +77,97 @@ Box(root, focusDiag("root"))
 - P11-148:TV 设置页 D-pad 丢焦点
 - **P11-171**:播放列表详情页返回零焦点(**空表死锁** + 数据未 hoist + 下层频道网格恢复全败)
 - **P11-172**:返回丢焦第二场 —— 详情页被弹掉后**头像 autoConfirm 劫持**用户(抑制条件漏覆盖层 restore key)+ 被中断的恢复把 key 挂死;另记录「返回瞬间主线程卡死 ~850ms 让占位 effect 来不及跑」
-- **P11-191**:动态页**无按键**丢焦并跳「我的」页 —— 真因是动态首屏把 YouTube 关注流并进来时整表换新、行首换人导致聚焦行被 rebuild(见上表);`logs_live_20261001_173435`:09-29 20:38:53 / 10-01 11:08:47 / 10-01 17:34:24 三场都是 `getSubscriptionsFeed done` 之后 ≤15ms;另两场(09-30 19:54/21:41)因 `suppress=true` 只丢焦没跳页,213ms 后被网格恢复拉回。旧守卫只判「聚焦项 index 变没变」,这一类整个漏网
+- **P11-191**:动态页**无按键**丢焦并跳「我的」页 —— 真因是动态首屏把 YouTube 关注流并进来时整表换新、行首换人导致聚焦行被 rebuild(见上表);`logs_live_20261001_173435`:09-29 20:38:53 / 10-01 11:08:47 / 10-01 17:34:24 三场都是 `getSubscriptionsFeed done …` 之后 ≤15ms;另两场(09-30 19:54/21:41)因 `suppress=true` 只丢焦没跳页,213ms 后被网格恢复拉回。旧守卫只判「聚焦项 index 变没变」,这一类整个漏网
+- **P11-202**:网格身份锚定 —— 卡片按公共 `focusRestoreKey()` 记焦点,网格冷重建/列表重排后回到**原来那张卡**。见 §6
 
 判断「用户到底按了几次 Back」只能看各层 onBack 自己的日志;**层切换警告不可作证**(见上表)。
+
+## 6. 网格身份锚定(GridFocusMemory,P11-202)
+
+上面 §2 那条「显式恢复管线」仍然是主路径。§6 是它的**兜底层**:给共用网格 `TvVideoGrid` 加一份
+「卡片记住自己 id」的焦点记忆,解决两件事 —— ①管线跑完仍没把焦点落到目标卡(慢布局把 90 帧重试
+耗尽、被头像/覆盖层抢走、被页面初焦 effect 落到第 0 张卡);②列表被外部刷新/合并重排后要回到
+**同一张卡**而不是「同一个下标」。
+
+### 6.1 判据:`expectReturn`,不是「持焦」
+
+```
+expectReturn == true  ⇔  网格里某张卡被点击后跳转出去了,且焦点再没回到任何卡片
+```
+
+- **为什么不是「焦点获得即 arm」**:焦点会在**非点击**情况下滑出网格(末行 `DirectionDown` 返回
+  false 漏给默认遍历、落到 footer 重试按钮、Search 按 Back 回键盘、`onBackKey`),arm 残留会误恢复。
+- **为什么不用 `onFocusChanged { hasFocus=false }`**:三种成因无法区分 —— ①网格被 dispose(应恢复);
+  ②焦点移到侧栏(用户主动,**应拒绝**);③覆盖层抢焦(**网格仍组合、仍应恢复**)。②③语义相反。
+- 网格被销毁时 `expectReturn` 必然还是 true ⇒ **不需要在 dispose 时读任何焦点状态**。
+
+### 6.2 置位 / 清零全表
+
+| 动作 | 位置 | 效果 |
+|---|---|---|
+| `onClick` → `onVideoSelected` 前 | `TvVideoGrid` 卡片 | 置位(`onGridNavigate`) |
+| `onOwnerTap` → `onOwnerSelected` 前 | 同上 | 置位 |
+| OK 长按 → `onCardLongPress` 前 | 同上 | 置位 |
+| 顶行 ↑ / 首列 ← 边界分支 | `moveFocus` | 清零 `explicit-leave-up/left` |
+| `Key.Back` | 卡片 `onPreviewKeyEvent` | 清零 `back-key` |
+| 卡片重新获得焦点 | `onFocused` | 清零(焦点回到卡片本身就是「回来了」) |
+| 组合期捕获 | `remember { consumeIntent }` | 消费(key>0 时改 peek,见 6.3) |
+| 切分区 / 切子 tab / 手动刷新 / 换搜索词 | 各页面 | 清零(页面级 clear,见 6.4) |
+| 接力完成 | 接力 effect 的 `finally` | 清零 `relay-done` |
+
+### 6.3 优先级:管线为主,锚定接力
+
+门槛:`restoreFocusRequestKey > 0 || requestInitialFocus`(**管线在身**)时**只 `peekIntent` 不消费**,
+等管线跑完(`onRestoreFocusHandled` 之后,`pipelineRestoreFinishedKey` 被置位)再观察
+`TvGridRelayWatchFrames = 30` 帧:
+
+- 网格持焦**且** `focusedIndex == 目标卡` → 管线成了,锚定让位;
+- 否则打 `grid-memory relay` 并补一刀(滚到目标行 → 等布局 → 按帧重试 → 成功后一帧校验
+  `gridFocus.value && focusedIndex == target`,不符打 `lost-to-layer` 并**放弃**,不重试)。
+
+⚠️ 判据必须是「持焦**且**在目标卡上」,不是笼统的 `hasFocus`:页面初焦 effect 可能把焦点落到第 0 张
+卡(网格确实有焦,但不是原来那张),那种情况**必须**接力。
+
+**为什么要有这道门槛**:`AppShell` 里**全部 5 处** `playbackRequest = null`(直播 1 处 + 点播 4 分支)
+**每一处都 bump 了恢复 key** ⇒「点卡 → 跳转 → 返回」在管线里 `key` 恒 > 0。若锚定同时抢,就是两套
+机制同帧抢同一张卡。**顺序不变式**:意图在网格**组合期**写入(`remember`),页面级 clear 都在
+`LaunchedEffect`(组合之后)⇒ clear 只影响**下一次**冷组合,永不打断本次恢复。把 clear 挪进组合期
+会炸掉主路径。
+
+### 6.4 页面级 clear 点
+
+| 页面 | 网格 id | clear 点 |
+|---|---|---|
+| 推荐 | `GridFocusIds.Recommend` | 局部 `selectSection`(覆盖切分区 + 侧栏重点击刷新) |
+| 动态/历史/收藏/追番 | `GridFocusIds.Dynamic` | `UserFeedTabRow.onSelect`、`LaunchedEffect(manualRefreshKey)` 命中支 |
+| 搜索 | `GridFocusIds.Search` | `activeQuery` 变化(**带首次组合守卫**) |
+| 直播 | `GridFocusIds.Live` | 局部 `selectSection` |
+| UP 主页 | `GridFocusIds.Space` | 无(覆盖层整体重建) |
+| YouTube 频道 | `GridFocusIds.Channel` | `uiState.tab` 变化(**带首次组合守卫**) |
+
+动态页**必须**显式 clear:`key(selectedTab, manualRefreshKey)` 强制整页重建,网格 `remember` 全丢而
+记忆槽在 `remember` 之外,结构性地一定会残留。**冷组合时绝不清**(`LaunchedEffect(Unit) { resetFeedTabFocus }`
+里若也 clear 会误杀主路径)。
+
+### 6.5 日志指纹(`BiliMT:Focus`,统一前缀 `grid-memory`)
+
+`grid-memory relay` / `grid-memory relay success|failed` / `grid-memory restore start|success|failed` /
+`grid-memory lost-to-layer` / `grid-memory abort: reason=user-key` / `grid-memory skip: reason=…` /
+`grid-memory clear: id=… reason=…`
+
+判读:**该恢复**的场合要有 `relay` → `success` → 紧随 `GAINED [<debugLabel>]`,且整段**不得**出现
+`avatar focused … openMyPage=true`;**不该恢复**的场合必须有 `clear` 且整轮无 `relay/restore`;
+同一次冷组合里**不允许**管线 `restore start` 与 `grid-memory relay` 同帧双抢;空闲时不允许有任何
+`grid-memory` 行(置位刻意不打日志,只有决策点打)。
+
+### 6.6 已知限制(不在 P11-202 修)
+
+- **IPTV 分区天然不生效**:`LiveScreen` 的 `keyFactory = { _, v -> v.liveRoomId }`,而 IPTV 卡
+  `liveRoomId == 0` ⇒ `focusRestoreKey()` 返回 `""` ⇒ 视作不可锚定,行为等同今天(从第 0 行开始)。
+  `iptvUrls.firstOrNull()` 因判活重排会动 `first`,稳定性不足。
+- **与上层覆盖层抢焦**:靠「成功后一帧校验 + 让位即停」兜;若真机反复 `lost-to-layer` 或可见跳动,
+  升级为 AppShell 层全局静默闸。
+- **头像 autoConfirm**:本轮**不开**新 suppress 条件 —— `AppSidebar` 的 `keyDriven` 闸
+  (`autoConfirmOnFocus && !selected && !suppressAutoConfirm && keyDriven`)已挡住被动落焦。
+- **后续简化路径**:等锚定链真机稳定若干轮后,再评估删 7 处 `restoreFocusRequestKey`(它承载了 §2 五要素
+  与 P11-172「先清本层 key 再 arm 下层」,删它是一次独立的、需真机证据的改造)。

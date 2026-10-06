@@ -79,6 +79,8 @@ import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.home.VideoCardMode
 import com.kirin.mt.ui.home.GridFooterState
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
+import com.kirin.mt.ui.focus.GridFocusIds
+import com.kirin.mt.ui.focus.LocalGridFocusMemory
 import com.kirin.mt.ui.focus.focusDiag
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
@@ -130,6 +132,15 @@ internal fun YoutubeChannelScreen(
     YoutubeConstants.ChannelContentTab.entries.associateWith { FocusRequester() }
   }
   val playlistFirstItemFocusRequester = remember { FocusRequester() }
+  // P11-202:身份锚定记忆。切子 tab(视频/Short/直播/播放列表)时清掉待兑现意图,否则切回来会
+  // 误把焦点拉回上一个 tab 的卡。带首次组合守卫 —— 冷组合那次正是本机制要服务的场景。
+  val gridFocusMemory = LocalGridFocusMemory.current
+  val lastMemoryTab = remember { mutableStateOf(uiState.tab) }
+  LaunchedEffect(uiState.tab) {
+    if (uiState.tab == lastMemoryTab.value) return@LaunchedEffect
+    lastMemoryTab.value = uiState.tab
+    gridFocusMemory.clear(GridFocusIds.Channel, "switch-tab")
+  }
 
   BackHandler { onBack() }
 
@@ -446,6 +457,7 @@ internal fun YoutubeChannelScreen(
               TvVideoGrid(
                 videos = displayItems,
                 debugLabel = "channel-grid",
+                focusMemoryId = GridFocusIds.Channel,
                 firstItemFocusRequester = firstItemFocusRequester,
                 restoredFocusIndex = displayItems.resolveFocusIndex(uiState.focusedVideoKey, uiState.focusedVideoIndex),
                 restoreFocusRequestKey = restoreFocusRequestKey,

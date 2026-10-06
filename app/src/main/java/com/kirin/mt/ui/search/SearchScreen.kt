@@ -101,6 +101,8 @@ import com.kirin.mt.ui.common.dedupKey
 import com.kirin.mt.ui.common.focusRestoreKey
 import com.kirin.mt.ui.common.resolveFocusIndex
 import com.kirin.mt.ui.focus.BiliFocusableSurface
+import com.kirin.mt.ui.focus.GridFocusIds
+import com.kirin.mt.ui.focus.LocalGridFocusMemory
 import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.home.VideoCard
 import com.kirin.mt.ui.i18n.convertChineseText
@@ -248,6 +250,8 @@ internal fun SearchScreen(
   val searchHistory by searchHistoryStore.history.collectAsState(initial = emptyList())
   var suggestions by remember { mutableStateOf<List<String>>(emptyList()) }
   var returnFocusToKeyboard by remember { mutableStateOf(false) }
+  // P11-202:身份锚定记忆(见下方 activeQuery 变化时的 clear)。
+  val gridFocusMemory = LocalGridFocusMemory.current
   val screenFocusRequester = remember { FocusRequester() }
   val sourceToggleFocusRequester = remember { FocusRequester() }
   val inputFocusRequester = remember { FocusRequester() }
@@ -276,6 +280,15 @@ internal fun SearchScreen(
       }
       returnFocusToKeyboard = false
     }
+  }
+
+  // P11-202:换搜索词 = 用户主动改上下文,结果从头看起,丢弃待兑现意图(否则下次冷组合会
+  // 把焦点拉回上一轮搜索的那张卡)。带首次组合守卫,避免进页面就清掉本机制的主路径意图。
+  val lastMemoryQuery = remember { mutableStateOf(uiState.activeQuery) }
+  LaunchedEffect(uiState.activeQuery) {
+    if (uiState.activeQuery == lastMemoryQuery.value) return@LaunchedEffect
+    lastMemoryQuery.value = uiState.activeQuery
+    gridFocusMemory.clear(GridFocusIds.Search, "query-change")
   }
 
   val query = uiState.activeQuery
@@ -1499,6 +1512,7 @@ private fun SearchResultGrid(
 
   TvVideoGrid(
     videos = videos,
+    focusMemoryId = GridFocusIds.Search,
     firstItemFocusRequester = firstResultFocusRequester,
     restoredFocusIndex = restoredFocusIndex,
     restoreFocusRequestKey = restoreFocusRequestKey,

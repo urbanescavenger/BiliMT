@@ -33,6 +33,8 @@ import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.VideoGridSkeleton
 import com.kirin.mt.ui.common.focusRestoreKey
 import com.kirin.mt.ui.common.resolveFocusIndex
+import com.kirin.mt.ui.focus.GridFocusIds
+import com.kirin.mt.ui.focus.LocalGridFocusMemory
 import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.player.toVideoSummary
 import com.kirin.mt.ui.theme.BiliSizing
@@ -131,6 +133,8 @@ internal fun LiveScreen(
   onVideoSelected: (VideoSummary) -> Unit,
 ) {
   val coroutineScope = rememberCoroutineScope()
+  // P11-202:身份锚定记忆(见 selectSection 里的 clear)。
+  val gridFocusMemory = LocalGridFocusMemory.current
 
   // 首次进入加载分区树(构建 tab);失败则仅保留"推荐"tab,推荐流仍可用。
   LaunchedEffect(liveRepository) {
@@ -333,6 +337,10 @@ internal fun LiveScreen(
 
   fun selectSection(section: LiveSection, forceRefresh: Boolean) {
     val isSameSection = uiState.activeSectionKey == section.key
+    // P11-202:切分区 / 侧栏重点击刷新 = 用户主动改上下文,焦点从头来,丢弃待兑现意图。
+    if (!isSameSection || forceRefresh) {
+      gridFocusMemory.clear(GridFocusIds.Live, "select-section")
+    }
     uiState.selectedSectionKey = section.key
     uiState.activeSectionKey = section.key
     // 切到不同分区回顶部;同一分区被显式 force-refresh(重点击当前顶栏 tab /
@@ -413,6 +421,7 @@ internal fun LiveScreen(
           )
           TvVideoGrid(
             videos = currentState.videos,
+            focusMemoryId = GridFocusIds.Live,
             firstItemFocusRequester = firstItemFocusRequester,
             restoredFocusIndex = restoredFocusIndex,
             restoreFocusRequestKey = restoreFocusRequestKey,

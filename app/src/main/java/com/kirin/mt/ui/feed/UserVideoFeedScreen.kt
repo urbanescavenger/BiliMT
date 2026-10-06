@@ -59,7 +59,11 @@ import com.kirin.mt.ui.common.BiliCapsuleTabRow
 import com.kirin.mt.ui.common.BiliPillTab
 import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.VideoGridSkeleton
+import com.kirin.mt.ui.common.focusRestoreKey
+import com.kirin.mt.ui.common.resolveFocusIndex
 import com.kirin.mt.ui.focus.BiliFocusableSurface
+import com.kirin.mt.ui.focus.GridFocusIds
+import com.kirin.mt.ui.focus.LocalGridFocusMemory
 import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.home.GridFooterState
 import com.kirin.mt.ui.home.VideoCard
@@ -214,6 +218,10 @@ internal fun UserFeedScreen(
 ) {
   val coroutineScope = rememberCoroutineScope()
   val selectedTab = feedState.selectedTab
+  // P11-202:身份锚定记忆。必须在组合体里取成 val 再被下面的局部闭包/回调捕获。
+  // ⚠️ 只在「切子 tab / 手动刷新」这两个用户主动改上下文的点 clear,**冷组合里绝不清** ——
+  // 「点卡 → 播放器 → 返回」正是 restoreFocusRequestKey <= 0 的场景,清了就把主路径炸了。
+  val gridFocusMemory = LocalGridFocusMemory.current
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   // 本地 YouTube 播放历史(免登录):合并进 History tab,与 B 站历史按播放时间倒序混合。
   val youtubeHistory by youtubeHistoryStore.history.collectAsState(initial = emptyList())
@@ -295,6 +303,8 @@ internal fun UserFeedScreen(
       // 侧栏重点击"动态"(当前目的地)= 显式刷新当前子 tab。重置当前子 tab 焦点回顶,
       // 配合下方 key(selectedTab, manualRefreshKey) 重建网格(initialFirstVisibleItemIndex=0)
       // → 视口回顶;之后 Down(focusRestoredItemKey)落第 0 行、视频返回也回顶。
+      // P11-202:网格会被 key(...) 整页重建而记忆槽在 remember 之外 ⇒ 不清就会误恢复旧卡。
+      gridFocusMemory.clear(GridFocusIds.Dynamic, "manual-refresh")
       resetFeedTabFocus(feedState, selectedTab)
       when (selectedTab) {
         UserFeedTab.DynamicVideo -> {
@@ -326,6 +336,9 @@ internal fun UserFeedScreen(
       selectedTab = selectedTab,
       onSelect = { tab ->
         if (tab != selectedTab) {
+          // P11-202:切子 tab = 用户主动改上下文,焦点从头来,丢弃待兑现意图(网格被
+          // key(selectedTab, …) 整页重建,不清就会误恢复上一个 tab 的卡)。
+          gridFocusMemory.clear(GridFocusIds.Dynamic, "switch-tab")
           resetFeedTabFocus(feedState, tab)
           feedState.selectedTab = tab
         }
@@ -1370,6 +1383,7 @@ private fun UserFeedGrid(
   TvVideoGrid(
     videos = videos,
     debugLabel = "dynamic-grid",
+    focusMemoryId = GridFocusIds.Dynamic,
     firstItemFocusRequester = firstItemFocusRequester,
     restoredFocusIndex = restoredFocusIndex,
     restoreFocusRequestKey = restoreFocusRequestKey,
@@ -1407,6 +1421,7 @@ private fun BangumiGrid(
   TvVideoGrid(
     videos = videos,
     cardMode = VideoCardMode.Bangumi,
+    focusMemoryId = GridFocusIds.Dynamic,
     firstItemFocusRequester = firstItemFocusRequester,
     restoredFocusIndex = restoredFocusIndex,
     restoreFocusRequestKey = restoreFocusRequestKey,
@@ -1565,14 +1580,6 @@ private fun YoutubeHistoryEntry.toVideoSummary(avatarFallback: String = ""): Vid
   )
 }
 
-private fun List<VideoSummary>.resolveFocusIndex(focusKey: String, fallbackIndex: Int): Int {
-  val keyIndex = focusKey
-    .takeIf { key -> key.isNotBlank() }
-    ?.let { key -> indexOfFirst { video -> video.focusRestoreKey() == key } }
-    ?.takeIf { index -> index >= 0 }
-  return keyIndex ?: fallbackIndex.coerceIn(0, lastIndex)
-}
-
 private fun List<com.kirin.mt.core.network.FollowingSeason>.appendSeasonsUnique(
   nextSeasons: List<com.kirin.mt.core.network.FollowingSeason>,
 ): List<com.kirin.mt.core.network.FollowingSeason> {
@@ -1581,17 +1588,13 @@ private fun List<com.kirin.mt.core.network.FollowingSeason>.appendSeasonsUnique(
   return this + nextSeasons.filter { knownIds.add(it.seasonId) }
 }
 
-private fun VideoSummary.focusRestoreKey(): String {
-  return bvid.ifBlank {
-    when {
-      cid > 0L -> "cid-$cid"
-      historyPage > 0 -> "p-$historyPage"
-      viewAt > 0L -> "view-$viewAt"
-      else -> ""
-    }
-  }
-}
-
+/**
+ * LazyColumn 的**行身份**专用 key(含 index)。
+ *
+ * P11-202 起这里只负责「行 key 唯一」这一件事:`rowKeyOf` 与 `items(key=)` 依赖它在 bvid/cid/viewAt
+ * 全空时仍给出唯一值(否则 Compose 抛 key 冲突)。焦点**身份**解析不再走它 —— 那个用公共
+ * `focusRestoreKey()`(不含 index),否则重排后 key 必变、焦点锚不回原来那条视频。别再当 bug 修。
+ */
 private fun VideoSummary.feedKey(index: Int): String {
   return bvid.ifBlank {
     "cid-$cid-view-$viewAt-$index"
