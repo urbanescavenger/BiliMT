@@ -2211,6 +2211,241 @@ selection 实例里 —— 因为实例正是会被重建的那个东西。**
 - 回归面:满缓冲排空场次(§5.11.16 的场景)不得因本改出现 `silenceHang=true` 的误降档 —— 那些场次本来
   就没有挂死记录。
 
+### 5.11.19 手机场「切 2160p 后约 37 秒断流」判读:会话建在**自铸 token** 上,status=2 又不刷新(P11-205,判读,方案待拍板)
+
+用户报「看下日志 为什么 4k 会突然断流」。日志 `logs_live_20261009_002203.log`
+(App 3.1.0-alpha.11 / 3100111,XQ-EC72)。
+
+**时间线(同一视频 `IlsFcWOKGvo`,同一进程 24863)**
+
+| 时刻 | 事件 | 关键字段 |
+| --- | --- | --- |
+| 00:20:22.33 | 起播会话 `sid=WFJqaZww…` | `只借 token = 90B`(harvest 页面 token)/ `SabrSession … poToken=90B` / `首笔 status=1` |
+| 00:20:24–27 | rn=0..13 **全 `status=1`**,媒体照流(480p) | `resp summary: req=244 usable=1464792B/1464792B` |
+| 00:20:27.47 | **用户手点清晰度 → 2160p** | `点清晰度: 点=313 '2160p' 现播档=135` → `loadRequest quality=313` |
+| 00:20:30.9–33.1 | 本次 resolve **借不到页面 token**,回落**自铸** | `只借 token = -1B 0B(pot-less)` → `PO token minted (128 chars)` / `token 形态: … 88B first=0x32 minter 输出` / 新会话 `sid=bHw2c5JQ… poToken=88B` |
+| 00:20:38.78 | **首笔就 `status=2`** | `首笔 STREAM_PROTECTION_STATUS status=2 (pot=88B first=0x32)` |
+| 00:20:51 / 00:21:07 | 仍 `status=2`,代码**刻意不刷新** | `status=2 但**刻意不刷新**(P11-144 keep-stale 实验)→ keep 88B (age=18168ms / 34346ms)` |
+| 00:20:38 / 51 / 21:07 | 三笔响应各推 4K 大批段 | `fetch rn=0/1/2 REAL 48107220B / 49136539B / 48236769B`(≈145MB / 37s) |
+| 00:21:10.50 | 第 4 笔 → **判死整会话** | `status=3` + `InvalidPoToken diag: sessAgeMs=37420 sessReqN=4 status2Seen=3 status3Count=1 pot=88B ctxActive=0 ctxStored=0 … req=[itag=313 seg=13 playerTimeMs=66066]` |
+| 00:21:10–43 | 每笔 `terminal … → evict`,**服务端不再收到请求** | `SabrDataSource open: terminal … (session dead, fast-fail no-fetch)` ⇒ P11-190 生效,但**卡死 33 秒**后才 `playback error, error-retry #1/3 @pos=65962ms: Source error` |
+| 00:21:52 | 重载:四臂试满 + WEB 判死 → **pot-less 主链**,自愈 | `该视频 WEB-SABR 已判死 … 落 NewPipe 主链` / 新会话 `poToken=0B`(visionOS UA)/ `首笔 status=1` → 65962ms 续播,itag=313 |
+
+**判读**
+
+1. **断的是整个 SABR 会话**,不是某个档或某段:判死后服务端逐笔只回 71B 的 status,零媒体。与带宽、
+   解码、4K 分辨率本身无关(bw 当时 23~70Mbps,`CCodec`/`Adreno` 无异常)。
+2. **触发路径固定 = 切清晰度 → 重建会话 → 那一刻 harvest 材料不可用 → 走自铸 token 臂**。
+   全日志统计:`首笔 status=2` 只出现 2 次,两次都是 `pot=88B`(自铸),且都由「点清晰度」触发
+   (10-09 00:20:38 / 10-08 17:38:19);而 `pot=90B`(harvest)与 `pot=0B`(pot-less)的会话一律
+   `首笔 status=1`,本文件 2 条 `InvalidPoToken diag` **全部**出自上述自铸会话。
+3. **4K 只是放大器**:占位级 token 的宽限在 3 笔响应 / 37 秒内被烧穿(每笔 48MB);同一枚 token 在
+   480p 下 3 笔只推 ~4MB,用户往往在第 4 笔之前就切走了 ⇒ 症状看起来像「4K 一放就断」。
+4. P11-144 keep-stale 的判据行本轮答案是「下一笔照样 `status=3`」——与 P11-145 / P11-190 的既有记录
+   一致:**刷新与否不是主因**(自铸 token 本身就是占位级);`REFRESH_PO_TOKEN_ON_STATUS2=false` 可以
+   继续留着,但它不构成防线。
+5. 现有自愈链有效:判死 → 四臂轮换到 pot-less → `status=1` 续播。代价是一次 33 秒卡死 + 一次整场重载。
+
+**候选修法(未实施,待拍板)**
+
+- ①**切清晰度不重建会话**(同会话内换档),从源头避开「resolve 时借不到材料」这个窗口;需先复核换档
+  请求段语义(服务端跳段 / §格式墙,见 P11-92)。
+- ②起播/切档时若 harvest 材料不可用,**不要**用自铸 token 建 WEB 会话,直接落 pot-less 臂(实测状态全绿)。
+- ③把判死后的 33 秒压短:P11-190 只消掉了服务端 backoff 那段,现在这 33 秒是 media3 Loader 自己的重试节拍。
+
+### 5.11.20 「材料取不到就不建 WEB 会话」(候选修法 ②)判据链复核 —— 真凶是 45s 窗口**把材料丢了**(P11-206,改代码前)
+
+**起因**:§5.11.19 判出「切 2160p → 重建会话 → 那一刻材料不可用 → 走自铸 token → status=2 → 第 4 笔
+status=3」。用户点名把候选修法 ②(材料不可用时**不建 WEB 会话**,直接落 pot-less)的逻辑先理一遍。
+
+**现状判据链(默认 `WEB_SABR_ARM_B_ONLY=true` ⇒ 恒臂 B)**
+
+| # | 步骤 | 位置 | 本次真机取值 |
+| --- | --- | --- | --- |
+| 1 | 触发:`webSabrFirst` / `reloadCount>0` / `isDashFallbackFailed` ⇒ `webSabrInPlay` | `YoutubePlaybackResolver.kt:239` | 点清晰度 → 重建 resolve |
+| 2 | 臂号:`WEB_SABR_ARM_EXPERIMENT=false` + `WEB_SABR_ARM_B_ONLY=true` ⇒ **恒 1** | `:265` | 臂 B |
+| 3 | 铸造:`webSabrPoToken = awaitMobileMinter()`(≤6s)→ 交给 **postPlayer** | `:271-278` | 00:20:30.9 `att/get` → 00:20:32.1 minted(128 chars / 88B) |
+| 4 | 采集:`harvestSessionMaterial(videoId)` | `:2335` | 落出口 (a) ⇒ null |
+| 5 | `pageTokenBytes = material?.poTokenBytes`;null ⇒ `fromSabrData(poTokenBytesOverride=null)` ⇒ **会话 token = 第 3 步那枚自铸** | `:2653` / `:2881` | `-1B` ⇒ 88B 自铸 |
+| 6 | 服务端判占位级:首笔 `status=2` → 第 4 笔 `status=3` → 整会话判死 | `YtSabr` | 00:20:38 / 00:21:10 |
+
+**第 4 步的四个出口**(全部 `return null` = 日志口径的「回退自造材料」):
+
+- **(a) 45s 窗口去重**:`harvestProbed[videoId]` 在窗口内 → `return null`
+  (日志「刚采集过(Nms 前,窗口 45000ms)→ 用自造材料」,`:2338-2342`);
+- (b) 预算不足 / 无捕获 / 只剩冷启桩 / 非 POST → null;
+- (c) 解码失败或 cpn 缺失 → null;
+- (d) token < 80B(P11-165 桩硬闸)→ null。
+
+⇒ **(a) 是本次真凶,而且是结构性的**:`harvestProbed` 只存**时间戳**,成功采到的 `HarvestMaterial`
+当场就被丢掉。于是「45s 内的第二次 attempt」= **必然回落自铸**;而"第二次 attempt"正是切清晰度 /
+auto-retry / reload 的常态。
+
+**同一份材料的直接对照(本场日志)**
+
+- 00:20:20.969 采到材料:`poToken=90B` / `bodyB64=2908B` / URL `rr5---sn-a5mekndz … expire=1791498018&ei=wsLHaqr4…`;
+- 00:20:22.33 用它建会话 → **`status=1` ×14**(rn=0..13),正常播放;
+- 00:20:32.14 切 2160p 后的 resolve 落进窗口 (a) → `-1B` → 建**自铸 88B** 会话 → 00:21:10 判死;
+- 00:21:48.617(判死后)**重放同一份材料**:`P11-118 harvest replay: start … expire=1791498018&ei=wsLHaqr4…`
+  → 00:21:49.476 `UMP: type=58(STREAM_PROTECTION_STATUS) status=1`。
+  ⇒ **材料没坏,89 秒后仍被服务端接受;是我们自己在 00:20:32 把它扔了。**
+
+**冲突清单(改之前必须标出来的)**
+
+1. **②-2(材料取不到就 bail + 判死)与 P11-138 / P11-156 直接冲突**:`buildWebSabrFallback` 返回 null 的
+   调用点会 `markWebSabrFailed`,而 `armRotationOpen` 因 `WEB_SABR_ARM_EXPERIMENT=false` **恒 false**
+   ⇒ 本进程内该视频**永久放弃 WEB-SABR**。把「45s 采集节流」当判死信号 = 用**纯时序假失败**关掉唯一有
+   `status=1` 战绩的臂。
+2. **②-2 的日志会撒谎**:现有那行「臂B 本轮失败 → 落 NewPipe 主链 … 四臂进度 N/4」在"没失败、只是没
+   材料"时也会打 ⇒ 判读的人必然误判(需独立日志行)。
+3. **去重是防风控的采集节流,不是「没有材料」的判据**(见 `:2331` 注释「防风控 + 防 auto-retry 立刻重打」)。
+4. **成本顺序**:`mint(≤6s)` 在 resolve 里、`harvest(冷 4~11s / 热 ~2s)` 在 `buildWebSabrFallback` 里
+   —— **顺序是 mint → harvest**。要"不建会话就省掉铸造等待"必须把 harvest 提到 mint 之前(跨函数搬
+   控制流);只 bail 在 `postPlayer` 之前仍会白等一次 mint。
+5. **「pot-less」在代码里有三个不同的东西,只有一个有 `status=1` 战绩** ⇒ ② 要落的必须是
+   **NewPipe 主链(visionOS)**,不能实现成"把臂号改成 2 走臂 C":
+
+   | pot-less 路径 | 身份 | 会话 token | 实测 status | 证据 |
+   | --- | --- | --- | --- | --- |
+   | WEB-SABR 臂 C(`tokenArm==2`) | WEB 移动(Pixel 7 UA + WEB clientInfo) | `""` | **首笔 `status=2`** → 21s 后 startup stall evict | `logs_live_20260920_214742.log` 21:45:05(唯一一场臂 C) |
+   | NewPipe 主链 | `com.google.visionos.youtube/1.02` | `""` | **首笔 `status=1`**;本文件 `status=3` **零次** | 10-09 00:21:54 / 10-08 00:15:40 · 00:16:19 · 00:17:14 · 00:17:56 · 17:40:28 |
+   | 材料会话(臂 D) | WEB | 材料 token | 历史能播,但有格式墙 | §5.9.4 |
+
+**候选修法(按推荐序)**
+
+- **②-1(推荐,证据最强、零冲突)—— 复用材料**:`harvestProbed[videoId]: Long` 改成
+  `harvestMaterials[videoId]: Pair<HarvestMaterial, Long>`,窗口内**直接复用那份材料**而不是 `return null`。
+  不动判死标记、不动臂号、不动身份。
+  - **判据**:出现「P11-118 harvest: 复用 Ns 前材料(poToken=90B)」且会话 `poToken≈90B`、首笔 `status=1`;
+    类似 00:20:32 的场合**不再**出现 `-1B`;`InvalidPoToken diag` 里不再有 `pot=88B`。
+- **②-3(第二道保险)—— 取不到材料就跳过本臂但不判死**:用独立计数器 / 独立日志,不复用
+  `markWebSabrFailed`。代价:每次切档重跑一次 harvest(窗口内瞬时 null、窗口外 2~11s),
+  「WEB-SABR 优先」下反复空转。
+- **②-2(不做)**:材料取不到 ⇒ 直接判死 + 落 NewPipe。冲突 1~4 全中。
+
+**否证线(②-1)**
+
+1. 复用后首笔变 `status=2`(token 到期)⇒ 复用窗下调到 20~30s,或加 `potAge` 闸;
+2. 复用了材料却出现服务端改供别的档(格式墙回归)—— 臂 B 只借 token、URL 是自己的,理论上不引入;
+   若出现则说明 token 真与 URL 绑定。
+
+**附带记录**:自铸 token 在 **/player** 上是可用的(00:20:20 那场 `postPlayer` 带的就是自铸 88B,拿回了完整
+sabrData),被 nag 的只是它当 **SABR 会话 token** 的场合 ⇒「自铸」这条腿不必整个下线,只是不能当**会话**
+token 的兜底。
+
+### 5.11.21 「用 SABR 播就是正常 4K」复核:属实,但**是概率性**(P11-207,新日志 `logs_live_20261009_003150`)
+
+用户反馈「用 sabr 播就是正常 4k」。新日志(App 3.1.0-alpha.11 / XQ-EC72,视频 `IlsFcWOKGvo`)逐条核对后
+**属实**,同时拿到一条**同条件反例**。
+
+**① 健康场:SABR 主链手选 2160p,真 4K,零判死**
+
+| 时刻 | 证据 |
+| --- | --- |
+| 00:29:30.980 | 上一会话判死后的 `playback error, error-retry #1/3 @pos=65963ms` → `loadRequest quality=313` |
+| 00:29:37.277 | `SABR playback ready: sid=lk0n5XqKP4dkKF95KY1Kjg source=NewPipe(primary)`(visionOS,`poToken=0B`) |
+| 00:29:37.462 | `SabrManifest fromSession: rawVideoTracks=1 itags=[313]`(手选档**单轨锁档**,刻意设计) |
+| 00:29:38.779 | `fetch rn=0 REAL 20154312B` → **`首笔 status=1`** |
+| 00:29:47.048 | **`playerState=3(READY) videoFmt=Format(313, … [3840, 2160, 30.0 …])`** |
+| 00:29:37→00:31:12 | `rn=0..16` 全部 `status=1`(18 次)、**28 个 `itag=313` 媒体块**、无一次判死/卡死/重载 |
+
+**② 同条件反例:同一路径、同一视频、同一形状,4.4 秒被判死**
+
+- 00:29:16.150 用户再次点 `2160p` → 00:29:22.403 `SABR playback ready: sid=UVR34STlx2RgBP6CSS2ZfQ`
+  —— 同样 `NewPipe(primary)` / visionOS / `poToken=0B` / `shape=libre` / 单轨 `[313]`,
+  首响字节数与健康场**一模一样**(`REAL 20154312B`);
+- 00:29:24.295 **`首笔 status=2`** → 00:29:26.850 **`status=3`**
+  (`InvalidPoToken diag: sessAgeMs=4447 sessReqN=3 status2Seen=2 status3Count=1 pot=0B`) → 判死;
+- 00:29:37 由 App 自己的 error-retry 重建 → 立刻 `status=1` 正常 4K。
+  ⇒ **客户端侧(shape/token/身份/档位/首响字节)没有任何可分辨的差别**,服务端判词是**概率性**的
+  (与 `reload-player-response-flaky-not-deterministic` 记的同一条规律一致)。
+
+**③ 全量统计**(所有 `logs_live_2026*.log` 的 `首笔 STREAM_PROTECTION_STATUS` 行,跨构建,仅作量级参考)
+
+| 会话 token | status=1 | status=2 | status=2 占比 |
+| --- | --- | --- | --- |
+| `pot=0B`(pot-less:WEB 臂 C / NewPipe 主链) | 70 | 2 | **≈2.8%** |
+| `pot=87~90B`(harvest 页 token / 自铸) | 97 | 14 | ≈12.6% |
+| `pot=10B`(冷启桩,P11-142/165 已拦) | 0 | 1 | 100% |
+
+⇒ 与 §5.11.20 的结论一致方向:pot-less 是**最不容易**被 nag 的那条;
+但**注意这只是「首笔」**,判死发生在第 2~4 笔,单看首笔统计会**低估**带 token 会话的死法
+(§5.11.19 那场首笔 status=2 之后第 4 笔才转 3)。
+
+**④ 待攒样本的弱观察(不足以当判据)**:判死场落在 `rr5---sn-a5msen76`(该 node 3 场:pot=90→1 /
+pot=88→2 / pot=0→2),健康场多落 `rr5---sn-a5mekndz`(同视频多场全 `status=1`)。n 太小,先记着。
+
+**对 §5.11.20 候选修法 ② 的意义**
+
+- 方向被证实:**NewPipe SABR 主链是"能播真 4K"的那条路**(3840x2160 READY + 313 单轨连续 28 块);
+- 但它**不是"永不失败"的保险** —— 只是把「WEB 臂 B 回落自铸 ⇒ 基本必死 + 33s 卡死 + 整场重载」
+  换成「偶尔被判死 ⇒ 自动重试即恢复」。②-1(复用材料)仍然是首选:它保留的是**历史上拿到
+  `status=1` 最多的那枚页面 token**,而 ② 的兜底语义只是"死得少一点"。
+
+### 5.11.22 P11-208 实施:harvest 窗口内**复用材料**(②-1)—— 动手前的判据链复核 + 改动清单
+
+**目标行为**:`harvestSessionMaterial` 在 45s 窗口内命中时,上次**有材料**就把那份材料交回去;
+只有上次没产出材料时才像改动前一样 `return null`(回退自造)。
+
+**逐出口对照(改动前 → 改动后)**
+
+| 出口 | 改动前 | 改动后 | 依据 |
+| --- | --- | --- | --- |
+| **(a) 窗口内命中** | 一律 `null`(日志「用自造材料」) | 有材料且允许复用 → **返回材料**;否则 `null` | §5.11.20 的真凶 |
+| (b) 预算只够 <3s | `remove` + `null` | 不变 | 让兜底有时间落地(P11-126) |
+| (b′) 无捕获 / 只剩桩 / 非 POST | `remove` + `null` | 不变 | 允许立刻重探 |
+| (c) 解码失败 / cpn 缺失 | 写时间戳(保留节流)+ `null` | 写 `(now, null)`(节流保留)+ `null` | 语义等价,只是把「无材料」记明白 |
+| (d) token <80B(桩硬闸) | 同上 | 同上 | 缓存里只会是真 token,不会有桩 |
+| 成功 | 写时间戳 + 返回材料 | 写 `(now, 材料)` + 返回材料 | 材料本身入窗 |
+
+**动手前先确认的 8 件事**
+
+1. **复用安全**:臂 B 只从材料取 `poTokenBytes`;token 是 content-bound 绑 videoId(P11-117),
+   不绑 itag(P11-29)**也不绑起播位置** ⇒ 跨 `startMs` 复用无风险。
+2. **寿命**:同一份材料在 **+89s** 重放仍是 `status=1`(§5.11.20 实测);窗口 45s ⇒ 余量充足。
+   真机若见「复用后首笔 status=2」⇒ 下调窗口到 20~30s,或给复用加 potAge 闸。
+3. **桩不会进缓存**:(d) 硬闸在写缓存**之前** ⇒ 缓存只含 ≥`MIN_USABLE_HARVEST_PO_TOKEN_BYTES` 的真 token。
+4. **不会成环**:复用失败 → 运行时判死 → `markWebSabrFailed`(本进程对该视频永久)⇒ 上界一次。
+5. **节流语义不变,并发下也一样**:只有**成功**写材料;失败分支要么 `remove`(同前),要么写
+   `(now, null)`(同前)。占位 `(now, null)` 在采集**之前**写 ⇒ 采集期间第二个 caller 得到 `null`,
+   与改动前 `harvestProbed[videoId] = now` 的行为一致。
+6. **共享安全**:map 值是不可变 data class;`HarvestMaterial` 里的 ByteArray 建好后只读
+   (`poTokenBytesOverride` 直接引用同一数组,不拷贝、不改写)。
+7. **臂 D 刻意不复用**:它借的是**整份会话配方**(`baseSabrUrl`/`ustreamerConfig`/`cpn`/
+   `clientAbrStateRaw`/`clientInfoRaw`),绑采集那一刻的浏览器会话与播放位置 —— 45s 前的
+   `clientAbrState` 拿去开新位置的会话,正是会搅乱服务端推送游标的那类输入。用 `allowReuse`
+   (默认 `false`)门控,调用点传 `tokenArm == 1`。(臂 D 现在不可达:实验开关关 +
+   `WEB_SABR_ARM_B_ONLY=true`,但门控写死比依赖「不可达」稳。)
+8. **内存**:`HarvestProbe` 多带一份 ~3KB 材料;键集合与改动前的 `harvestProbed` 一致(本就**没有淘汰**,
+   只在失败分支 remove)。**本轮不加淘汰**,与现状同口径,记一笔。
+
+**改动清单(全部在 `YoutubePlaybackResolver.kt`)**
+
+1. `harvestProbed: ConcurrentHashMap<String, Long>` → `harvestProbes: ConcurrentHashMap<String, HarvestProbe>`,
+   新私有类 `HarvestProbe(atMs: Long, material: HarvestMaterial?)`;
+2. 窗口内命中:有材料 + `allowReuse` → 新日志
+   `P11-208 harvest: <videoId> 复用 Nms 前采到的材料(poToken=90B …)` + 返回;否则走原 `null` 路径,
+   日志把原因分开(「上次没有可用材料」/「本臂不复用材料」);
+3. 采集前写占位 `(now, null)`;三个 `remove` 出口原样保留;三个「保留节流」出口靠占位天然保留;
+4. 成功路径:把 `lastHarvestCapture[videoId] = cap` 从 `.also{}` 提出来,再写
+   `harvestProbes[videoId] = HarvestProbe(now, material)`;
+5. `harvestSessionMaterial` 新增 `allowReuse: Boolean = false`,调用点(`buildWebSabrFallback`)传
+   `tokenArm == 1`;
+6. `HARVEST_RETRY_WINDOW_MS` 注释补一句:这个窗**同时是「复用 token 的最大年龄」**。
+
+**判据(真机)**
+
+- 出现 `P11-208 harvest: … 复用 Nms 前采到的材料(poToken=90B…)`;
+- 「切清晰度 → 重建会话」的场合**不再**出现 `只借 token = -1B` + `WEB-SABR token 形态 … 88B`;
+- `InvalidPoToken diag` 不再出自「自铸 88B 当**会话** token」那条路径(§5.11.19 的 00:20:38 → 00:21:10)。
+
+**否证线**
+
+1. 复用后首笔仍 `status=2` ⇒ token 有寿命墙 ⇒ 窗口下调 20~30s 或加 `potAge` 闸(不改方向);
+2. 复用后服务端改供别的档(格式墙回归)⇒ 臂 B 只借 token、URL 是我们自己的,理论不成立;若出现说明
+   token 真的与 URL 绑定;
+3. 日志量 / 内存明显上涨 ⇒ 给 `harvestProbes` 加淘汰(按 `atMs` 过期清理)。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)

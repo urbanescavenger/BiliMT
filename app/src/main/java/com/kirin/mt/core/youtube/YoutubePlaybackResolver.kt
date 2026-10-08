@@ -95,11 +95,23 @@ class YoutubePlaybackResolver(
   /** 缓存的 base.js URL（避免 resolvePlayerJsUrl 重复拉 watch 页）。 */
   private var cachedPlayerJsUrl: String? = null
 
-  /** P11-118 诊断:已跑过 harvest 的 videoId → 上次采集时刻(进程内防风控)。
-   *  P11-118g:改**时间窗**去重(45s)——原先一次性去重导致「会话被看门狗/错误重载后不再 harvest,
-   *  只能用已知会死的自造材料」(r1959 真机:harvest 会话被 stall 重载后,新会话用自造材料,
-   *  60s 处 status=3 处决 → 又一轮重载)。 */
-  private val harvestProbed = java.util.concurrent.ConcurrentHashMap<String, Long>()
+  /**
+   * P11-118 诊断:已跑过 harvest 的 videoId → 上次采集(**时刻 + 材料**)。进程内防风控。
+   * P11-118g:改**时间窗**去重(45s)——原先一次性去重导致「会话被看门狗/错误重载后不再 harvest,
+   * 只能用已知会死的自造材料」(r1959 真机:harvest 会话被 stall 重载后,新会话用自造材料,
+   * 60s 处 status=3 处决 → 又一轮重载)。
+   *
+   * **P11-208(2026-10-09)**:窗口内从「一律丢弃、回退自造材料」改成**复用材料本身**。
+   * 起因(§5.11.19/§5.11.20):`harvestProbed` 只存时间戳,成功采到的那份材料当场丢掉 ⇒ 45s 内
+   * **第二次 attempt 必然回落自铸 token**,而"第二次 attempt"正是切清晰度 / auto-retry / reload 的常态
+   * (真机 10-09 00:20:32:14.7s 前刚采到 90B 真 token 并用它播了 14 笔 status=1,窗口一挡就换成
+   * 自铸 88B → 首笔 status=2 → 第 4 笔 status=3 判死;而那同一份材料在 89s 后重放仍是 status=1)。
+   * 复用安全性:臂 B 只取 [HarvestMaterial.poTokenBytes](content-bound 绑 videoId,P11-117;不绑 itag
+   * 与起播位置,P11-29),`atMs` 取**采集开始时刻**(偏保守,年龄只多不少)。
+   */
+  private class HarvestProbe(val atMs: Long, val material: HarvestMaterial?)
+
+  private val harvestProbes = java.util.concurrent.ConcurrentHashMap<String, HarvestProbe>()
 
   /**
    * 2026-09-20(补 P11-118c 判别实验):该视频**最近一次成功** harvest 到的浏览器原始捕获
@@ -2331,18 +2343,55 @@ class YoutubePlaybackResolver(
    * **时间窗去重(45s)**:窗口内不重复采集(防风控 + 防 auto-retry 立刻重打);窗口外允许重新采集——
    * 会话被看门狗/错误重载后必须能拿到新材料,否则只能退回已知会死的自造材料。
    * 拿到 POST 但解不出材料时顺带跑 [replayHarvestCapture] 留证据(那正是 20:57 判出 status=1 的手段)。
+   *
+   * **P11-208(2026-10-09)**:窗口内**不再一律返回 null** —— 上次采集**有材料**就把那份材料交回去
+   * (复用 token,见 [harvestProbes]),只有上次没产出材料时才回退自造材料(保持原语义)。
+   * **节流语义不变**:只有**成功**才写材料;失败分支照旧 `remove`(允许立刻重探)或留下无材料记录
+   * (保留节流)。桩硬闸在写材料**之前**,故缓存里只会有 ≥[MIN_USABLE_HARVEST_PO_TOKEN_BYTES] 的真 token。
+   * 复用失败不会成环:运行时判死 → `markWebSabrFailed`(本进程对该视频永久生效)⇒ 上界一次。
    */
-  private suspend fun harvestSessionMaterial(videoId: String, startMs: Long, deadlineMs: Long = 0L): HarvestMaterial? {
+  private suspend fun harvestSessionMaterial(
+    videoId: String,
+    startMs: Long,
+    deadlineMs: Long = 0L,
+    /**
+     * P11-208:窗口内是否**复用**上次采到的材料(默认 false = 保持改动前的行为)。
+     *
+     * 只对**臂 B**放行(调用点传 `tokenArm == 1`):臂 B 从材料里只取 [HarvestMaterial.poTokenBytes],
+     * 而那枚 token 是 content-bound 绑 videoId 的(P11-117)、不绑 itag 与起播位置(P11-29)⇒ 复用安全。
+     * **臂 D 刻意不复用**:它借的是**整份会话配方**(baseSabrUrl / ustreamerCfg / cpn / clientAbrStateRaw /
+     * clientInfoRaw),这些都绑采集那一刻的浏览器会话与播放位置 —— 45s 前的 clientAbrState 拿去开新位置,
+     * 正是会搅乱服务端推送游标的那类输入。臂 D 保持「窗口内不复用」= 改动前语义。
+     */
+    allowReuse: Boolean = false,
+  ): HarvestMaterial? {
     val harvester = sabrHarvester ?: return null
     val now = System.currentTimeMillis()
-    harvestProbed[videoId]?.let { last ->
-      if (now - last < HARVEST_RETRY_WINDOW_MS) {
-        Log.i(Tag, "P11-118 harvest: $videoId 刚采集过(${now - last}ms 前,窗口 ${HARVEST_RETRY_WINDOW_MS}ms)→ 用自造材料")
+    harvestProbes[videoId]?.let { prev ->
+      if (now - prev.atMs < HARVEST_RETRY_WINDOW_MS) {
+        val cached = prev.material
+        if (cached != null && allowReuse) {
+          Log.i(
+            Tag,
+            "P11-208 harvest: $videoId 复用 ${now - prev.atMs}ms 前采到的材料" +
+              "(poToken=${cached.poTokenBytes.size}B ustreamerCfg=${cached.ustreamerConfigBytes.size}B " +
+              "cpn=${cached.cpn})→ 不重复采集(防风控,P11-118g 窗 ${HARVEST_RETRY_WINDOW_MS}ms)",
+          )
+          return cached
+        }
+        val noReuseReason =
+          if (cached != null) "但本臂不复用材料(P11-208:只有臂 B 复用 token)→ 回退自造材料"
+          else "但上次没有可用材料 → 回退自造材料"
+        Log.i(
+          Tag,
+          "P11-118 harvest: $videoId 刚采集过(${now - prev.atMs}ms 前,窗口 ${HARVEST_RETRY_WINDOW_MS}ms)" + noReuseReason,
+        )
         return null
       }
-      Log.i(Tag, "P11-118 harvest: $videoId 上次采集已 ${now - last}ms(超窗口)→ 重新采集")
+      Log.i(Tag, "P11-118 harvest: $videoId 上次采集已 ${now - prev.atMs}ms(超窗口)→ 重新采集")
     }
-    harvestProbed[videoId] = now
+    // 占位:采集期间与「采集到但材料不可用」的失败分支都靠它保留节流(与 P11-118g 同口径)。
+    harvestProbes[videoId] = HarvestProbe(now, null)
     val t0 = System.currentTimeMillis()
     // P11-126:把 harvest 的两层超时收敛进剩余预算——原来 40s+30s 是硬编码,与外层起播预算完全
     // 互不感知(真机 09-19:harvest 冷启烧到一半外层 30s 到期,整条 launch 被取消)。
@@ -2357,7 +2406,7 @@ class YoutubePlaybackResolver(
     val firstBudget = harvestBudgetMs(HarvestColdCapMs)
     if (firstBudget < MinHarvestAttemptMs) {
       Log.w(Tag, "P11-118 harvest: 剩余预算只够 ${firstBudget}ms(< ${MinHarvestAttemptMs}ms)→ 放弃采集,直接自造材料(让兜底有时间落地)")
-      harvestProbed.remove(videoId)
+      harvestProbes.remove(videoId)
       return null
     }
     var cap = runCatching { harvester.harvest(videoId, startMs = startMs, timeoutMs = firstBudget) }.getOrNull()
@@ -2380,12 +2429,12 @@ class YoutubePlaybackResolver(
     val ms = System.currentTimeMillis() - t0
     if (cap == null) {
       Log.w(Tag, "P11-118 harvest: NO CAPTURE after ${ms}ms(风控空白页/超时)→ 回退自造材料")
-      harvestProbed.remove(videoId)
+      harvestProbes.remove(videoId)
       return null
     }
     if (!cap.method.equals("POST", ignoreCase = true)) {
       Log.w(Tag, "P11-118 harvest: only ${cap.method} status=${cap.status} (no SABR POST) after ${ms}ms → 回退自造材料,允许重探")
-      harvestProbed.remove(videoId)
+      harvestProbes.remove(videoId)
       return null
     }
     Log.i(Tag, "P11-118 harvest: captured SABR POST status=${cap.status} bodyB64=${cap.bodyB64.length}B elapsed=${ms}ms")
@@ -2452,14 +2501,19 @@ class YoutubePlaybackResolver(
         "cpn=$cpn audio=${decoded.audioFormatId?.itag ?: "ladder-default"} video=${decoded.videoFormatId?.itag ?: "ladder-default"} " +
         "urlHasCver=${base.contains("cver=")}",
     )
-    return HarvestMaterial(
+    val material = HarvestMaterial(
       base, cpn, decoded.poToken, decoded.ustreamerConfig,
       decoded.audioFormatId, decoded.videoFormatId, decoded.clientAbrStateRaw, decoded.clientInfoRaw,
     )
-      // 2026-09-20(补 P11-118c 判别实验):材料**解得出**时也把这份原始捕获存下来。此前 `cap` 只在
-      // 「解不出材料」的三个失败分支里被 replay 取证,成功那份直接丢掉 —— 于是「会话建起来了、却在
-      // 运行时被判死」这种形态(真机 15:09-15:18)手里没有任何可比对的材料。见 [WebReplayOnce]。
-      .also { lastHarvestCapture[videoId] = cap }
+    // 2026-09-20(补 P11-118c 判别实验):材料**解得出**时也把这份原始捕获存下来。此前 `cap` 只在
+    // 「解不出材料」的三个失败分支里被 replay 取证,成功那份直接丢掉 —— 于是「会话建起来了、却在
+    // 运行时被判死」这种形态(真机 15:09-15:18)手里没有任何可比对的材料。见 [WebReplayOnce]。
+    lastHarvestCapture[videoId] = cap
+    // P11-208:把材料**本身**入窗(此前只存时间戳,材料当场丢)⇒ 45s 内的下一次 attempt 复用这枚
+    // 页面 token,不再回落自铸。桩硬闸(上面那条 <MIN_USABLE_HARVEST_PO_TOKEN_BYTES)在写之前,
+    // 故缓存里只有真 token。
+    harvestProbes[videoId] = HarvestProbe(now, material)
+    return material
   }
 
   /**
@@ -2643,7 +2697,12 @@ class YoutubePlaybackResolver(
     //   臂 A=自造+自铸 / B=自造+harvest 页 token / C=自造+pot-less / D=**完整材料会话 + C1 修复**。
     val harvestNeeded = tokenArm == 1 || tokenArm == 3
     val material: HarvestMaterial? = if (harvestNeeded) {
-      harvestSessionMaterial(videoId, request.startPositionMs, deadlineMs)
+      // P11-208:只有臂 B 允许在 45s 窗口内复用上次的材料(它只借 content-bound 的 token);
+      // 臂 D 借整份会话配方(URL/ust/cpn/clientAbrState 绑采集时刻的位置)⇒ 不复用,保持原语义。
+      harvestSessionMaterial(
+        videoId, request.startPositionMs, deadlineMs,
+        allowReuse = tokenArm == 1,
+      )
     } else {
       null
     }
@@ -3384,7 +3443,9 @@ class YoutubePlaybackResolver(
     const val DEFAULT_PIPED_INSTANCE = "https://pipedapi.kavin.rocks"
 
     /** P11-118g:harvest 重新采集的时间窗——窗口内不重复采集(防风控/防 auto-retry 立刻重打),
-     *  窗口外允许重采(会话被重载后必须能拿到新材料)。取值覆盖一次典型重载(错误/看门狗 → 重新 resolve)。 */
+     *  窗口外允许重采(会话被重载后必须能拿到新材料)。取值覆盖一次典型重载(错误/看门狗 → 重新 resolve)。
+     *  P11-208:窗口内**复用上次采到的材料**(此前只去重、材料被丢);同时这也是「复用 token 的最大年龄」,
+     *  真机若出现「复用后首笔 status=2」(token 到期)⇒ 下调到 20~30s,或给复用加 potAge 闸。 */
     private const val HARVEST_RETRY_WINDOW_MS = 45_000L
 
     /**
