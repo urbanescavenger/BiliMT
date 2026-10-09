@@ -2927,6 +2927,79 @@ init 这一笔,不碰中段语义;②alpha.36 / alpha.39 两次翻车是**全局
 **健康度对比**(同视频,修前/修后):修前那几场 `playback error, error-retry` 连着来;修后
 `10:26` 场 stall=2 / **error-retry=0** / InvalidPoToken=0,`10:31` 场 stall=3 / error-retry=0 / InvalidPoToken=1。
 
+### 5.11.32 P11-217 实施计划:流式解析 + 拿够就停(分两增量)
+
+**为什么现在做**:§5.11.31 已证明锚不再是瓶颈 —— 剩下的是「**一次收太多、收完才肯用**」:
+真机那一笔响应 **64.95MB / 31073ms**(16Mbps),而 25 秒启动看门狗先把它 evict 了。
+改成"段一到就用"之后,首帧的等待从"整批 31 秒"降到"第一个段到手"。
+
+**前置发现(让这一刀比预想小)**:[UmpReader.kt](app/src/main/java/com/kirin/mt/core/youtube/sabr/UmpReader.kt) 本来就支持增量 ——
+`append(bytes)` + `readParts{}`,注释写明"不完整的 part(头或负载未收齐)保留在 buffer 里,等下次 append 后再续"。
+所以解析器**不用改**,只要把喂给它的数据从"整包 ByteArray"换成"流式分块"。
+
+**增量 1(本轮:边收边解 + 拿够就停,保持同步结构)**
+
+- `SabrMediaFetcher.fetchStreamData`:把 `response.body?.bytes()` 换成
+  `while { stream.read(buf); ump.append(chunk); ump.readParts(onPart); if (拿够) break }`,
+  `onPart` 复用现有 `processPart`(整段完成的段**立刻**进 `downloadedSegments`)。
+- **拿够的判据**:`initializedFormats[req.formatItag]` 里**请求段与其后继段都在**即停
+  (init 请求 `req.segment<=0` 时取"第一个媒体段 + 后继");另设**已读 ≥ 512KB** 的地板 ——
+  因为控制类 part(`PLAYBACK_START_POLICY` / `NEXT_REQUEST_POLICY` / `STREAM_PROTECTION_STATUS` / `SABR_REDIRECT`)
+  都在响应**头部**(日志实测顺序即如此),地板保证它们已经过手。
+- **不改**:并发结构(仍是 loader 线程同步等这一笔)、重试次数语义、上报口径(`bufferedRanges` 仍只算完整段)、
+  不提前 abort 服务端还没发完的"我们还要的部分"。
+
+**增量 2(下一轮:发布即唤醒)**:把 POST 放到会话级 coroutine,`getNextSegment` 改成"等段落位"
+(而不是"再发一笔 POST"),这样**响应还在流**时播放器就能用第一段,后台把缓存继续填深。
+本轮不做,先拿到增量 1 的真机数据再决定。
+
+**风险逐条对(§5.11.28.1 的清单)**
+
+| # | 风险 | 本轮处理 |
+| --- | --- | --- |
+| 1 | 上报口径被带偏 | 不变:只有**完整段**进 `downloadedSegments`,半段留在 `UmpReader` 的 buffer 里 |
+| 2 | 控制类 part 落在已发布段之后 | 只在读过 ≥512KB **且**请求段+后继段到位时才停;控制类 part 在响应头部(实测)
+| 3 | 在途请求单飞 | 不变(仍是同步单笔) |
+| 4 | 超时口径 | 不变(仍按 `callCapMs`);早停只是提前正常结束 |
+| 5 | 长度前缀校验 | 不变(`UmpReader.readVarint` 已有边界判断;分块 append 不会放大它) |
+| 6 | 多 itag 交错 | `UmpReader` 按 part 顺序解;按 itag 各自累积(不变) |
+| 7 | 提前 abort 响应 | **只停"我们已拿够"的那部分**,不会在需求未满足时切断 |
+| 8 | 既有判据保同义 | `fetch rn=N REAL` 那行的字节数从"整批"变成"实读",并**新增** `早停` 一行,便于对照 |
+
+**判据(真机)**:4K 场次的 `fetch rn=0` 应出现"实读字节 < 服务端本可推的字节"、
+耗时明显下降(31s → 个位数秒),且首帧时间前移;`早停` 日志行可数。
+**否证**:①首帧没变快 ⇒ 说明瓶颈不在"整批读完"而在别处;②出现"服务端没推完就断"导致的额外重发风暴 ⇒ 退回整批读;
+③`RELOAD/InvalidPoToken` 这类终态**变晚或丢失** ⇒ 早停地板值上抬,或改成"只在非终态时早停"。
+
+### 5.11.33 P11-217 增量 1 实施:流式读 + 边收边解 + 拿够就停
+
+**改动**(全在 `SabrMediaFetcher`):
+
+- `fetchStreamData(req)` → `fetchStreamData(req, onPart)`,返回 `StreamResult(bytes, elapsedMs, earlyStop)`
+  (不再是整包 `ByteArray`);解析**搬进读流循环**:
+  `while { stream.read(readBuf); ump.append(readBuf.copyOf(n)); ump.readParts(onPart); if (拿够) break }`。
+- 新增 `streamNeedSatisfied(req)`:请求段**与后继段**都已入库即停(init 请求以"本响应第一个媒体段"为基准);
+  另有**已读地板** [StreamStopMinBytes]=512KB —— 保证头部的控制类 part(47/35/58/43)都已过手。
+- `media()` 只给回调 + 用 `resp.bytes` 打那两行既有日志(`discarded media` / `resp summary`)。
+- `UmpReader` **一行未改** —— 它本来就支持增量(注释明写"不完整的 part 保留在 buffer 里等下次 append")。
+
+**为什么复制缓冲**:`CompositeBuffer.append` 是 `chunks.addLast(data)`(**直接持有数组**),
+复用 `readBuf` 会把已入队数据冲掉 —— 所以每块都要 `copyOf(n)`。
+
+**行为变化(需要真机确认的三处)**
+
+1. 请求**频次会上升**:从"一笔带 4~5 段"变成"一笔 2 段",随后更早发下一笔。这与 alpha.58 的 paced 目标一致,
+   且昨天健康那场本来就是"一笔 1 段 / 每 7 秒一笔、连续 70 秒";但要盯有没有变成请求风暴。
+2. **预取档(P11-130)可能被截断**:预取是"随下一请求捎带"的,早停可能把它切掉 ⇒ 切档时命中不到缓存
+   (只是优化损失,不是故障)。先记着,不额外处理。
+3. **中途异常时已发布的段会留下**(不再是"整批作废")—— 这正是收益之一,但重试时会看到"本次尝试前就已存在"
+   的段(`preExistingSeqs`),P11-92 的"服务端跳段"判据据此看的是**本次**新到的段,语义未破。
+
+**判据(真机)**:4K 场 `fetch rn=0 REAL` 应带 `(早停:…)` 且实读字节明显小于修前(真机修前 64.95MB/31073ms),
+首帧时间前移;`stall detected` 次数下降。
+**否证**:①带早停却首帧没快 ⇒ 瓶颈不在整批读;②请求风暴 ⇒ 把"后继段"那段余量去掉(只拿请求段)或提高地板;
+③终态判据丢失/变晚 ⇒ 地板上调或改成"终态优先"。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
