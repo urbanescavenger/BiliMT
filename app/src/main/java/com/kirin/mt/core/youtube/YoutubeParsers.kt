@@ -400,6 +400,72 @@ internal object YoutubeParsers {
   }
 
   /**
+   * 从频道「视频」tab 的 /browse 响应里摘**排序 chip 的 continuation token**(最新/最热)。
+   *
+   * 今天 YouTube 的排序 chip 是「实体化」的:`listItemViewModel{title.content="Latest"|"Popular"}`
+   * 子树里紧跟一条 `continuationCommand.token`。该 token **由服务端铸造**(内含随机 targetId),
+   * 直接以 `{"continuation": token}` 发回即得该排序的列表。
+   *
+   * 2026-10-10 直连 InnerTube 实测(频道 UCXuqSBlHAE6Xw-yeJA0Tunw):
+   *  - Popular 首屏按播放量**严格递减**(23M → 16M → 15M …),Oldest 首屏 17 年前在前 ⇒ token 真的带排序;
+   *  - token 必须**原样**发回(它自带 `%3D%3D` 转义),再 URL 编码一次 → 400;
+   *  - 参数法(`params="EgZwb3B1bGFy"`)与本地铸造的 rustypipe `order_ctoken` **都不再有效**
+   *    (前者让服务端回 Home tab,后者 400)—— 详见 docs/youtube-api-notes.md §4.13。
+   *
+   * 按「chip 文案与 token 同处一个节点」取:视频卡片节点即使标题恰好叫 Popular 也没有
+   * continuationCommand,不会误配;旧布局(feedFilterChipBarRenderer 的 text.simpleText)同样命中。
+   */
+  fun parseChannelOrderTokens(root: JsonObject): Map<YoutubeConstants.ChannelVideoOrder, String> {
+    val tokens = mutableMapOf<YoutubeConstants.ChannelVideoOrder, String>()
+    collectOrderTokens(root, tokens)
+    return tokens
+  }
+
+  private fun collectOrderTokens(
+    element: JsonElement,
+    out: MutableMap<YoutubeConstants.ChannelVideoOrder, String>,
+  ) {
+    when (element) {
+      is JsonObject -> {
+        // 先认文案(廉价),命中才去找 token(遍历子树)——避免在整份响应上做 O(n²)。
+        val order = orderLabelOf(element)
+        if (order != null) {
+          val token = firstNestedContinuationToken(element)
+          if (!token.isNullOrBlank()) out[order] = token
+        }
+        for ((_, value) in element) collectOrderTokens(value, out)
+      }
+      is JsonArray -> for (item in element) collectOrderTokens(item, out)
+      else -> Unit
+    }
+  }
+
+  /** 节点自身的排序 chip 文案:新布局 `title.content`,旧布局 `text.simpleText`。 */
+  private fun orderLabelOf(node: JsonObject): YoutubeConstants.ChannelVideoOrder? {
+    val label = (node["title"] as? JsonObject)?.stringOrNull("content")
+      ?: (node["text"] as? JsonObject)?.stringOrNull("simpleText")
+      ?: node.stringOrNull("content")
+      ?: node.stringOrNull("simpleText")
+      ?: return null
+    return when (label.trim().lowercase()) {
+      "latest" -> YoutubeConstants.ChannelVideoOrder.Latest
+      "popular" -> YoutubeConstants.ChannelVideoOrder.Popular
+      else -> null
+    }
+  }
+
+  /** 子树里第一条 `continuationCommand.token`(排序 chip 的 token 在 commandExecutorCommand.commands[] 里)。 */
+  private fun firstNestedContinuationToken(element: JsonElement): String? {
+    var token: String? = null
+    collectByKey(element, "continuationCommand") { node ->
+      if (token == null) {
+        node.stringOrNull("token")?.takeIf { it.isNotBlank() }?.let { token = it }
+      }
+    }
+    return token
+  }
+
+  /**
    * 从单个 tab(旧 tabRenderer 或新 expandableTabRenderer)取 name + params。
    *
    * 名字优先从 params 解码的 protobuf field1 取(如 "videos"/"shorts"/"streams"/"playlists"/

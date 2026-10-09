@@ -147,8 +147,13 @@ internal fun MobileYoutubeChannelScreen(
           uiState.playlistContinuation = page.continuation
           uiState.endReached = page.continuation == null
         } else {
-          // 视频/Shorts/直播:拉视频列表(Shorts/直播走系统播放列表 browseId)。
-          val page = youtubeRepository.getChannelVideos(channelId, params = channelParams(), browseId = channelBrowseId())
+          // 视频/Shorts/直播:拉视频列表。「视频」tab 走排序感知入口(最新=1 条请求;最热=摘服务端
+          // 排序 chip token 再续页),Shorts/直播无排序仍用服务端 tab params。
+          val page = if (uiState.tab.hasSort) {
+            youtubeRepository.getChannelVideosOrdered(channelId, uiState.order)
+          } else {
+            youtubeRepository.getChannelVideos(channelId, params = channelParams(), browseId = channelBrowseId())
+          }
           uiState.items = page.items.distinctBy { it.bvid }
           uiState.continuation = page.continuation
           uiState.endReached = page.continuation == null

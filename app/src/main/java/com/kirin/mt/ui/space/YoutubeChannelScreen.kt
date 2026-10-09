@@ -248,7 +248,13 @@ internal fun YoutubeChannelScreen(
     } else {
       setVideoStateFor(tab, ChannelVideoState.Loading)
       val state = try {
-        val page = youtubeRepository.getChannelVideos(channelId, params = channelParams())
+        // 「视频」tab 走排序感知入口(最新=1 条请求;最热=摘 chip token 再续页);Shorts/直播无排序,
+        // 仍用服务端 tab params。
+        val page = if (tab.hasSort) {
+          youtubeRepository.getChannelVideosOrdered(channelId, uiState.order)
+        } else {
+          youtubeRepository.getChannelVideos(channelId, params = channelParams())
+        }
         if (page.items.isEmpty()) {
           ChannelVideoState.Empty
         } else {

@@ -239,15 +239,26 @@ media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack
 
 相关视频 rail 在 `contents.twoColumnWatchNextResults.secondaryResults.secondaryResults.results[]`。**实测每项是 `lockupViewModel`（非 compactVideoRenderer，与频道页新格式一致）**，曾因只 collectByKey `compactVideoRenderer` 导致相关视频解析 0 根因。`parseRelatedVideos` 需**同时** collectByKey `compactVideoRenderer` + `lockupViewModel`（`parseLockupViewModel`）。续页 token 从该 section 内 continuationItemRenderer 取；防御：无 secondaryResults 容器时回退全根收集。
 
-### 4.13 频道页「最新 / 最热」排序（2026-08-20）
+### 4.13 频道页「最新 / 最热」排序（2026-08-20；**2026-10-10 修正实现路线**）
 
-频道页视频 tab 支持 **Newest（最新）/ Popular（最热）** 双档排序，对齐 B站 UP 空间。两排序共用 `/browse + browseId`，**仅初始 `params` 不同**：
-- 最新：`EgZ2aWRlb3PyBgQKAjoA`（`ChannelVideosParams`，项目原用值）
-- 最热：`EgZwb3B1bGFy`（`ChannelPopularParams`，解码 field1=`"popular"`，来源 rustypipe/invidious 文档）
+频道页视频 tab 支持 **Newest（最新）/ Popular（最热）** 双档排序，对齐 B站 UP 空间。
 
-**continuation 翻页与排序无关**（续页只带 continuation token 即保持当前排序），故排序差异收敛到初始 `params` 一个点。`YoutubeRepository.getChannelVideos` 增 `params: String = ChannelVideosParams` 参数；TV（`YoutubeChannelScreen` sort chips）与移动端（`MobileYoutubeChannelScreen` 两个 OutlinedButton）频道页各加「最新发布 / 最热门」切换，切排序**强制重拉第一页**（`loadedOrder` 守卫，镜像 B站 `UpSpaceUiState.videoLoadedOrder`）。`PlayerSidePanelLoader` 仍用默认最新。
+**❌ 已作废的两条路（2026-10-10 直连 InnerTube 实测，频道 UCXuqSBlHAE6Xw-yeJA0Tunw）：**
+- **`params = "EgZwb3B1bGFy"`（`ChannelPopularParams`）**：服务端把它当无效参数 —— 响应的 `tabRenderer.selected` 落在 **Home tab**（`Videos` tab 的 `content` 是空 `{}`），列表根本不是按播放量排的。也就是说 2026-08-20 那次实现**从来没真的排序过**，两端频道页的「最热」一直是「最新 + 多了几个 shelf」。
+- **rustypipe 的 `order_ctoken`（protobuf field `80226972` 包装本地铸造）**：本仓库把它的编码逐字节复现（对齐 rustypipe 单测向量 `4qmFsgJgEhhVQ1h1cVNCbEhBRTZYdy15ZUpBMFR1bncaRDhnWXdHaTU2TEJJbUNpUTJORFl4WkRkak9DMHdNREF3TFRJd05EQXRPRGRoWVMwd09EbGxNRGd5TjJVME1qQVlBaUFD` 一致）后发回：当 `continuation` 发 → **400 invalid argument**；当 `params` 发 → 被忽略（回 Home tab）。该 token 格式**已过期**。
 
-**风险**：`EgZwb3B1bGFy` 未在本仓库实测，若真机首屏不按播放量排序，需改用「构造带 sort 的 order continuation token」（protobuf `80226972` 包装，对齐 rustypipe `order_ctoken`），项目暂无此代码需新写。
+**✅ 现在唯一可用的路：服务端下发的排序 chip token**
+1. 先按「最新」请求一次：`{"browseId": <UC…>, "params": "EgZ2aWRlb3PyBgQKAjoA"}`（`Videos` tab 选中，`richGridRenderer` 30 条）。
+2. 从响应里摘排序 chip：新布局是**实体化**的 `listItemViewModel{title.content="Latest"|"Popular"|"Oldest", entityKey=":Popular"}`，其 `rendererContext.commandContext.onTap.innertubeCommand.commandExecutorCommand.commands[1].continuationCommand.token` 就是该排序的 token（旧布局 `feedFilterChipBarRenderer`/`chipCloudChipRenderer` 的 `text.simpleText` 同理）。
+3. 用该 token 发 `{"continuation": token}` → 得到该排序的列表。
+
+**实测结果**：`Popular` 首屏 **23M → 16M → 15M → 15M → 13M …（按播放量严格递减）**；`Oldest` 首屏 17 年前在前 ⇒ token 真的带排序。两个坑：
+- **token 必须原样发回**（它自带 `%3D%3D` 百分号转义）；再 `quote()` 一次 → 400。
+- token 是**每次响应现铸**的（内含随机 `targetId`，"\\n$<uuid>"），所以不能硬编码、也不能本地造；本仓库按 channelId 缓存 10 分钟（`ChannelOrderTokenTtlMs`），切「最热」只多一条请求、来回切只第一条多一次。
+
+**代码落点**：`YoutubeParsers.parseChannelOrderTokens`（摘 token）+ `YoutubeRepository.getChannelVideosOrdered`（最新=1 条请求；最热=摘 token→续页；缺 token 降级最新）+ TV/移动频道页首屏 + 播放器 UP 面板（`youtubeChannelOrderFor` 把面板 chip 的 B站 order key 映射过去）。翻页 continuation 与排序无关（续页只带 token），故 `loadMore` 不用改。
+
+**风险**：chip 布局是 A/B 化的（同一天两次请求，实体化 chip 出现位置不同）。摘不到 chip → 记一条 `channelOrderTokens … got=[]` 并按最新页降级（不会空列表），只是「最热」退回「最新」。
 
 ### 4.14 视频点赞数主源 `/player microformat.likeCount`（2026-08-23，v3.0.5-alpha.7）
 

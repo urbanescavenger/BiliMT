@@ -907,60 +907,6 @@ fun PlayerScreen(
   }
 
   /**
-   * UP 面板「关注」:B站 UP 走 relation 接口(需登录);YouTube 频道写本地
-   * [com.kirin.mt.core.youtube.YoutubeChannelStore](免登录)。
-   *
-   * 此前只处理 B站(`ownerMid <= 0` 直接 return):YouTube 视频 ownerMid 恒为 0,那颗「关注」是死按钮
-   * ——按下去连「处理中…」都不闪(2026-10-09 用户报「UP 按钮 关注无效」)。失败不再静默:B站 失败
-   * (含未登录)给一次与点赞/投币同款的 toast。
-   */
-  fun setUpFollowStatus(follow: Boolean) {
-    val isYoutube = displayRequest.isYoutube
-    val ownerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
-    if (upFollowLoading) return
-    if (!isYoutube && ownerMid <= 0L) return
-    if (isYoutube && displayRequest.bvid.isBlank()) return
-    upFollowLoading = true
-    coroutineScope.launch {
-      val success = if (isYoutube) {
-        runCatching {
-          // 播放器 videoId 常不带 channelId(搜索/历史等路径),从 /player 权威 videoDetails 解析
-          // (同 UpFocusHome 分支与 UP 面板列表加载)。
-          val channelId = displayRequest.channelId.takeIf { it.isNotBlank() }
-            ?: youtubeRepository.getVideoDetail(displayRequest.bvid)
-              ?.channelId?.takeIf { it.isNotBlank() }
-            ?: return@runCatching false
-          if (follow) {
-            youtubeChannelStore.add(
-              YoutubeChannel(
-                channelId = channelId,
-                name = displayRequest.ownerName,
-                avatar = displayRequest.ownerFace,
-              ),
-            )
-          } else {
-            youtubeChannelStore.remove(channelId)
-          }
-          true
-        }.getOrDefault(false)
-      } else {
-        runCatching {
-          videoRepository.setFollowStatus(ownerMid, follow)
-        }.getOrDefault(false)
-      }
-      if (success) {
-        upFollowed = follow
-      } else {
-        showInteractionToast(false, "")
-      }
-      upFollowLoading = false
-      showUnfollowConfirm = false
-      unfollowConfirmFocusedConfirm = false
-      showControls()
-    }
-  }
-
-  /**
    * P11-124:B站 版式顶部动作行的项(可见项 + 顺序见 [BiliPlayerActions])。显隐判据与底栏那三个
    * 互动按钮完全同源:PGC / 无 aid 时隐藏点赞/投币/收藏/稍后再看,评论另有判据。全隐时动作行整行不渲染,
    * 焦点模型退回两级(与 YouTube 一致)。
@@ -1009,6 +955,63 @@ fun PlayerScreen(
     }
     interactionToast?.cancel()
     interactionToast = Toast.makeText(context, message, Toast.LENGTH_SHORT).also { it.show() }
+  }
+
+  /**
+   * UP 面板「关注」:B站 UP 走 relation 接口(需登录);YouTube 频道写本地
+   * [com.kirin.mt.core.youtube.YoutubeChannelStore](免登录)。
+   *
+   * 此前只处理 B站(`ownerMid <= 0` 直接 return):YouTube 视频 ownerMid 恒为 0,那颗「关注」是死按钮
+   * ——按下去连「处理中…」都不闪(2026-10-09 用户报「UP 按钮 关注无效」)。失败不再静默:B站 失败
+   * (含未登录)给一次与点赞/投币同款的 toast。
+   *
+   * 位置在 [showInteractionToast] **之后**是硬要求:Kotlin 的局部函数不能前置引用(此前放前面,
+   * 云编译 `Unresolved reference 'showInteractionToast'` 报错)。
+   */
+  fun setUpFollowStatus(follow: Boolean) {
+    val isYoutube = displayRequest.isYoutube
+    val ownerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
+    if (upFollowLoading) return
+    if (!isYoutube && ownerMid <= 0L) return
+    if (isYoutube && displayRequest.bvid.isBlank()) return
+    upFollowLoading = true
+    coroutineScope.launch {
+      val success = if (isYoutube) {
+        runCatching {
+          // 播放器 videoId 常不带 channelId(搜索/历史等路径),从 /player 权威 videoDetails 解析
+          // (同 UpFocusHome 分支与 UP 面板列表加载)。
+          val channelId = displayRequest.channelId.takeIf { it.isNotBlank() }
+            ?: youtubeRepository.getVideoDetail(displayRequest.bvid)
+              ?.channelId?.takeIf { it.isNotBlank() }
+            ?: return@runCatching false
+          if (follow) {
+            youtubeChannelStore.add(
+              YoutubeChannel(
+                channelId = channelId,
+                name = displayRequest.ownerName,
+                avatar = displayRequest.ownerFace,
+              ),
+            )
+          } else {
+            youtubeChannelStore.remove(channelId)
+          }
+          true
+        }.getOrDefault(false)
+      } else {
+        runCatching {
+          videoRepository.setFollowStatus(ownerMid, follow)
+        }.getOrDefault(false)
+      }
+      if (success) {
+        upFollowed = follow
+      } else {
+        showInteractionToast(false, "")
+      }
+      upFollowLoading = false
+      showUnfollowConfirm = false
+      unfollowConfirmFocusedConfirm = false
+      showControls()
+    }
   }
 
   fun doLike() {

@@ -61,6 +61,13 @@ class YoutubeRepository(
   /** 同一时刻只让一条频道页去翻 TV 页(翻页是串行的,并发进来只会白翻)。 */
   private val tvQualityGate = Semaphore(1)
 
+  /**
+   * 频道排序 chip token 缓存(channelId → 铸造时间 + 各排序 token),见 [getChannelVideosOrdered]。
+   * 命中即省掉「为摘 token 而多拉一次最新页」那条请求。
+   */
+  private val channelOrderTokenCaches =
+    LinkedHashMap<String, Pair<Long, Map<YoutubeConstants.ChannelVideoOrder, String>>>()
+
   /** 搜索，返回原始模型。@param params 排序/筛选参数串，见 [YoutubeSearchParams]。 */
   suspend fun search(
     query: String,
@@ -235,6 +242,12 @@ class YoutubeRepository(
 
     /** 最多缓存几个频道的 TV 角标(超出按最久未更新淘汰)。 */
     const val TvQualityCacheMaxChannels = 4
+
+    /** 排序 chip token 缓存有效期(同 TV 角标:token 里有随机 targetId,别长期存)。 */
+    const val ChannelOrderTokenTtlMs = 10 * 60 * 1000L
+
+    /** 最多缓存几个频道的排序 chip token。 */
+    const val ChannelOrderTokenMaxChannels = 8
   }
 
   /**
@@ -325,6 +338,79 @@ class YoutubeRepository(
       items = items.map(::toVideoSummary),
       continuation = feed.continuation,
     )
+  }
+
+  // ---- 频道页排序(最新/最热):排序 chip token 路线 ----
+
+  /**
+   * 频道「视频」tab 按排序取一页。**最新** = 一条请求;「最热」= 先取最新页摘服务端铸造的排序
+   * chip token([YoutubeParsers.parseChannelOrderTokens]),再用该 token 发一条 continuation。
+   *
+   * 为什么不是「换个 params」:2026-10-10 实测 `params="EgZwb3B1bGFy"`(与 rustypipe 本地铸造的
+   * `order_ctoken` 一样)**都不再有效** —— 前者服务端直接回 Home tab(列表不是按播放量排的),
+   * 后者作为 continuation 一律 400。唯一可用的路是响应里那条 chip token,且必须原样发回
+   * (自带 `%3D%3D`,别再编码)。失败/缺 token 一律**降级为最新页**,不抛给调用方。
+   *
+   * 只管**首屏**:翻页继续走 [getChannelVideos] 的 continuation(排序已烘进 token,续页与排序无关)。
+   */
+  suspend fun getChannelVideosOrdered(
+    channelId: String,
+    order: YoutubeConstants.ChannelVideoOrder,
+    withQualityBadges: Boolean = true,
+  ): YoutubeVideoPage {
+    if (order == YoutubeConstants.ChannelVideoOrder.Latest) {
+      return getChannelVideos(channelId, params = order.params, withQualityBadges = withQualityBadges)
+    }
+    val token = channelOrderToken(channelId, order)
+    if (token == null) {
+      Log.w(
+        "YoutubeChannel",
+        "getChannelVideosOrdered channelId=$channelId order=${order.name}: 排序 chip token 缺失 → 降级最新",
+      )
+      return getChannelVideos(
+        channelId,
+        params = YoutubeConstants.ChannelVideoOrder.Latest.params,
+        withQualityBadges = withQualityBadges,
+      )
+    }
+    return getChannelVideos(channelId, continuation = token, withQualityBadges = withQualityBadges)
+  }
+
+  /**
+   * 排序 chip token:先查缓存(TTL [ChannelOrderTokenTtlMs]),未命中就拉一次最新页从响应里摘。
+   *
+   * 摘 token 的这一路**不补画质角标**(`withQualityBadges = false` 那套语义):它只为拿 token,
+   * 页面列表随后由 continuation 那条路取,角标也由那条路按 videoId 匹配。
+   */
+  private suspend fun channelOrderToken(
+    channelId: String,
+    order: YoutubeConstants.ChannelVideoOrder,
+  ): String? {
+    val now = System.currentTimeMillis()
+    val cachedTokens = synchronized(channelOrderTokenCaches) {
+      channelOrderTokenCaches[channelId]?.takeIf { now - it.first <= ChannelOrderTokenTtlMs }?.second
+    }
+    cachedTokens?.get(order)?.let { return it }
+    val payload = buildJsonObject {
+      put("browseId", channelId)
+      put("params", YoutubeConstants.ChannelVideoOrder.Latest.params)
+    }
+    val root = feedCatching<JsonObject?>(null, "ChannelOrderTokens", channelId) {
+      client.postJson("/browse", payload)
+    } ?: return null
+    val tokens = YoutubeParsers.parseChannelOrderTokens(root)
+    Log.d(
+      "YoutubeChannel",
+      "channelOrderTokens channelId=$channelId got=[${tokens.keys.joinToString(",") { it.name }}]",
+    )
+    if (tokens.isEmpty()) return null
+    synchronized(channelOrderTokenCaches) {
+      channelOrderTokenCaches[channelId] = now to tokens
+      while (channelOrderTokenCaches.size > ChannelOrderTokenMaxChannels) {
+        channelOrderTokenCaches.remove(channelOrderTokenCaches.keys.first())
+      }
+    }
+    return tokens[order]
   }
 
   // ---- P11-201 频道页画质角标:TV 客户端补充路(基页 + 沿上传列表翻页) ----
