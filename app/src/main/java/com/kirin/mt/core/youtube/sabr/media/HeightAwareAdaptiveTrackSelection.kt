@@ -1376,6 +1376,9 @@ class HeightAwareAdaptiveTrackSelection(
   /** P11-225:当前选中档的高度(0 = 未知)—— 供 fetcher 的早停余量按档位分叉。 */
   fun selectedHeightNow(): Int = getFormat(selected).height
 
+  /** P11-232:当前选中**视频档的 itag**(-1 = 未知)。早停余量只对这一档生效,见 SabrMediaFetcher.marginFor。 */
+  fun selectedItagNow(): Int = itagOf(getFormat(selected))
+
   /**
    * 2026-08-30:从 media3 Format.id 解析 itag。id 不保证是裸 itag——media3 的 Merging/TrackGroup 层
    * 会给子源格式加序号前缀(真机重锚日志实证 id="0:302",ToInt 直接失败 → 校准系数恒 1.0 死锁)。

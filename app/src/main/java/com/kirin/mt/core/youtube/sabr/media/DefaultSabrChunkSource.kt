@@ -289,6 +289,12 @@ internal class DefaultSabrChunkSource(
       fetcher.noteSelectedVideoHeight(
         (trackSelection as? HeightAwareAdaptiveTrackSelection)?.selectedHeightNow() ?: 0,
       )
+      // P11-232:当前选中**视频档的 itag** —— 早停余量只对这一档生效(音频/非选中档一律 margin 0):
+      // 否则音频请求会为了等"下一个音频段"把唯一的流押在 17MB 视频段上,撞 8s 饥饿上限 ⇒ 读超时
+      // ⇒ evict 整条会话(真机 logs_live_20261010_003517.log 那次重载)。
+      fetcher.noteSelectedVideoItag(
+        (trackSelection as? HeightAwareAdaptiveTrackSelection)?.selectedItagNow() ?: 0,
+      )
       // P11-230:同一档高也喂给 SabrAbrMemory —— 供 LoadControl 的「高档缓冲上限」判据取用。
       SabrAbrMemory.noteSelectedHeight(
         (trackSelection as? HeightAwareAdaptiveTrackSelection)?.selectedHeightNow() ?: 0,

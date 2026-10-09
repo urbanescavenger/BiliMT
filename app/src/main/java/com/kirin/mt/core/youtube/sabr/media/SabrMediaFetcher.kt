@@ -357,7 +357,15 @@ internal class SabrMediaFetcher(
    */
   @Volatile private var selectedVideoHeight = 0
 
+  /** P11-232:当前选中视频档的 itag(-1/0 = 未知)—— [marginFor] 用它区分"视频档"与"音频/非选中档"。 */
+  @Volatile private var selectedVideoItagNote = 0
+
   fun noteSelectedVideoHeight(height: Int) {
+
+  /** P11-232:当前选中视频档的 itag(见 [marginFor])。 */
+  fun noteSelectedVideoItag(itag: Int) {
+    selectedVideoItagNote = itag
+  }
     selectedVideoHeight = height
   }
 
@@ -992,6 +1000,31 @@ internal class SabrMediaFetcher(
    * - **已开播**:下一轮续拉要等一个往返,只拿一段会让缓冲在往返期间见底(§5.11.25 那条"差一口气"),
    *   故保留一层余量。
    */
+  /**
+   * P11-232:**早停余量只对「当前选中的视频档」生效**(其余格式一律 0)。
+   *
+   * 真机 `logs_live_20261010_003517.log`(dev.r2176,4K)那一笔:
+   * ```
+   * 00:34:40.549  fetch rn=4 itag=139 seg=5 playerTimeMs=39938     ← 音频请求(目标段仅 60KB)
+   * 00:34:40.555  fetch rn=4 starving-fast-fail: bufAhead=5369ms → callCap=8000ms
+   * 00:34:45.231  MEDIA_END itag=139 seq=5 bytes=60704            ← 目标段 4.7s 就齐了
+   * 00:34:44.122  MEDIA_END itag=315 seq=8 bytes=18446492          ← 同一响应里在推 4K seg 8
+   * 00:34:48.565  fetch rn=4 exception: timeout (fail=8009ms)
+   * 00:34:48.566  SabrDataSource open: seg=5 itag=139 timeout → evict sid=…   ← 连视频会话一起扔
+   * 00:34:54.825  stall detected @pos=37263ms buffered=2%
+   * ```
+   * 链路:**单流串行**下音频与视频共用一条会话,而 [streamMargin]=1 要求「请求段 **+ 后继段**」——
+   * 音频的"后继段"是**下一个音频段**,这笔 POST 里没有 ⇒ 读循环死等,顺手把同一响应里的视频字节
+   * (seg 9 = 17.4MB)一起读下去 ⇒ 撞 8s 饥饿上限 ⇒ 读超时 ⇒ `SabrDataSource` evict 整条会话
+   * (连同播放器正要消费的视频段)⇒ 视频断流 ⇒ 8s stall 看门狗 ⇒ auto-retry ⇒ ENDED ⇒ 整场重载。
+   * ⇒ **一个音频的"多等一段"把唯一的流押在 17MB 视频段上,最后赔掉整条会话。**
+   *
+   * 音频/非选中档的段都很小(音频 60KB/5.3s),一段就够;视频侧的「多搬一段」(P11-225)完全不动。
+   * [selectedVideoItagNote] <= 0(尚未喂到)⇒ 退回原行为,不改变未知态下的语义。
+   */
+  private fun marginFor(req: SabrSegmentRequest): Long =
+    if (selectedVideoItagNote <= 0 || req.formatItag == selectedVideoItagNote) streamMargin() else 0L
+
   private fun streamMargin(): Long = when {
     // 起播期:只等请求段本身(P11-218 —— 播放器此刻无事可做,早一拍到手早一拍出画)。
     bufferedAheadNoteMs <= 0L -> 0L
@@ -1035,7 +1068,7 @@ internal class SabrMediaFetcher(
     val f = initializedFormats[req.formatItag] ?: return false
     val segs = f.downloadedSegments.keys
     val want = if (req.segment <= 0L) segs.filter { it > 0L }.minOrNull() ?: return false else req.segment
-    val margin = streamMargin()
+    val margin = marginFor(req)
     return segs.contains(want) && (margin <= 0L || segs.contains(want + 1L))
   }
 
@@ -1465,7 +1498,7 @@ internal class SabrMediaFetcher(
         "fetch rn=$rn REAL ${readBytes}B ${elapsed}ms → ${mbps}Mbps est=${fmtEstForLog(getRealBitrateEstimate())}" +
           // P11-217:早停时字节数=**实读**,不是服务端本来会推的总量 —— 不打标记会与"这一笔很小"混淆。
           // P11-218:带上余量(0=起播期只等请求段 / 1=已开播多等一层),便于真机核对判据。
-          (if (earlyStop) " (早停:请求段${if (streamMargin() > 0L) "+后继段" else "本身"}已到手,P11-217/218)" else ""),
+          (if (earlyStop) " (早停:请求段${if (marginFor(req) > 0L) "+后继段" else "本身"}已到手,P11-217/218)" else ""),
       )
       // P11-221:「有请求没有回复」—— 200 但只回了状态/头部,没有任何媒体段。
       if (readBytes < ZeroReplyMaxBytes) {

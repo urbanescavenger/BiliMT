@@ -2579,3 +2579,45 @@ GC 暂停 26~29ms > 60fps 帧预算 16.7ms ⇒ 渲染被打穿 ⇒ 位置冻结 
 ③4K 连续播 ≥1 分钟不 stall;④`fetch rn=` 行里 `bufferedRanges=` 的数量下降(段缓存清了 ⇒ 上报范围变少)。
 **否证**:①上限 20s 后出现"停拉-续拉"请求风暴 ⇒ 上限抬到 25s;②段缓存即释后 seek 回退明显变慢 ⇒
 改成"保留最近 2 段";③移动端(未挂上限)也出现同样卡顿 ⇒ 主因不在样本缓冲,得另找。
+
+### §40.11 P11-232 实施:早停余量只对「当前选中视频档」生效(治「音频请求赔掉整条会话」)
+
+**起因**:§40.10 之后真机复测(`dev.r2176`,4K)最后仍重载,但**不是内存那条链**,而是:
+
+```
+00:34:40.549  fetch rn=4 itag=139 seg=5 playerTimeMs=39938    ← 音频请求(目标段仅 60KB)
+00:34:40.555  fetch rn=4 starving-fast-fail: bufAhead=5369ms ≤ 10000ms → callCap=8000ms (base=18000ms)
+00:34:40.731  MEDIA_HEADER itag=315 seq=8 contentLen=18446492  ← 同一响应里推来 4K seg 8(18.4MB)
+00:34:44.122  MEDIA_END itag=315 seq=8 chunks=564 bytes=18446492
+00:34:45.231  MEDIA_END itag=139 seq=5 chunks=2 bytes=60704    ← **音频目标段 4.7s 就齐了**
+00:34:48.565  fetch rn=4 exception: timeout (fail=8009ms)
+00:34:48.566  SabrDataSource open: seg=5 itag=139 timeout → **evict sid=fkUCJKXK…**  ← 连视频会话一起扔
+00:34:48.582  chunk completed: media itag=139 bytes=60704       ← 重试 16ms 从缓存命中
+00:34:54.825  stall detected, auto-retry #1 @pos=37263ms buffered=2%
+00:34:54.850  player state=ENDED → 整场重载(playurl + BotGuard + 铸 token)
+```
+
+**判据链(改前复核)**:`streamNeedSatisfied` 用 `streamMargin()`,而 margin=1 的条件是「请求段 **+ 后继段**」
+(§40.9/P11-225)。对**音频**请求,"后继段"= 下一个音频段 —— 这笔 POST 里根本没有 ⇒ 读循环死等;
+而**单流串行**下这条流是音频与视频共用的,循环顺手把同一响应里的视频 seg 9(17.4MB)一起读下去
+⇒ 撞 8s 饥饿上限 ⇒ 读超时 ⇒ `SabrDataSource` `evict` **整条会话**(active=0),把播放器正要消费的
+视频段一并丢掉 ⇒ 视频断流 ⇒ 8s stall 看门狗 ⇒ auto-retry ⇒ ENDED ⇒ 重载。
+⇒ **一个音频的"多等一段",把唯一的流押在 17MB 视频段上,最后赔掉整条会话。**
+
+**改动**:`marginFor(req)` —— 余量只对 `req.formatItag == selectedVideoItagNote`(当前选中视频档)生效,
+其余格式一律 **0**(请求段到手即停)。`selectedVideoItagNote` 由视频 chunk source 每次 `getNextChunk` 喂
+(`HeightAwareAdaptiveTrackSelection.selectedItagNow()`);**未喂到(≤0)时退回原行为**,未知态语义不变。
+早停日志同步改用 `marginFor`,免得日志说"请求段+后继段"而实际只等了请求段。
+视频侧 P11-225「多搬一段」、P11-217/218 早停、起播期 margin=0 全部不动。
+
+**预期**:音频请求在 ~0.1~1s 内完成(不再等 4.7s、不再撞 8s 上限);`timeout → evict` 归零;
+P11-221 的 `bw gap` 不再被音频这笔独占的 13s 空档污染;视频会话不再被音频连累。
+
+**判据(真机)**:①`fetch rn=… itag=139/140` 的耗时 <1.5s 且不再出现 `starving-fast-fail` 触发的 timeout;
+②`SabrDataSource … timeout → evict` 次数 0;③4K 连续播 ≥1 分钟无 `stall detected`;④`sel=0 bitrate=-1 bufS=0.0`
+(会话重建签名)不再出现。**否证**:①音频缓冲被饿到断音(`AudioTrack` underrun)⇒ 给音频单独留 margin 1 但
+**限制等待时间**,而不是无条件 0;②早停让服务端窗口/`bufferedRanges` 上报变窄,导致下一笔请求被服务端跳段
+⇒ 说明早停窗口需要按"服务端已推段"而非"到手段"计。
+
+**未做(第二步候选)**:读超时**不再无条件 evict 会话**(本次日志证明"这笔慢"与"会话死"可以分开:
+重试 16ms 就从缓存完成)。判据要能区分 `STREAM_PROTECTION_STATUS=3`/session 真失效,风险较大,单独一轮。
