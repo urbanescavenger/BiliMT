@@ -319,6 +319,30 @@ media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack
 **验收**（真机）：日志 `YoutubeChannel: getChannelVideos qualityBadges channelId=… tiled=N matched=M page=P`，M 随 P 增长且不再「只有最新一部分有角标」；频道页卡片右上角出现「4K」胶囊（TV 与移动端共用同一数据层，两端同时生效）。
 **否证**：①`tiled=0` ⇒ TVHTML5 `/browse` 在真机被拦（probe 是 PC 直连），回退方案是改走 WebView 或放弃；②`matched` 不随滚动增长 ⇒ 翻页 token 或 shelf 挑错（看 `TVQualityBadgesNext failed`），需回看该频道的 shelf 结构。
 
+#### 4.16.1 翻页判据换成「覆盖」+ 基页退化重取（2026-10-10，P11-229）
+
+**真机现象**（BRAVIA 4K AE2，v3.1.0-alpha.14，2026-10-09 23:33-00:02，频道 `UCx6kUcig2P2j5GnxrMiNMDA`）：**首屏（最新 30 条）没有 4K 胶囊，往下翻页后新卡片才有**。日志里同一场两行判据对比极清楚：
+
+| 调用 | tiled | matched | 说明 |
+|---|---|---|---|
+| 首屏（2 次打开） | 23 / 71 | **6** / **6** | 首屏 30 条只覆盖 6 条 |
+| 续页（每次滚动） | 47 / 95 / 132 | 29 / 30 / 30 | 更早的视频几乎全覆盖 |
+
+`tiled` 一路涨（23→47→71→95→132，每页 +24 = 正好一个 shelf 页）而**首屏覆盖纹丝不动（6）**，说明翻页顺着一条与 WEB 列表无关的 shelf 走 —— 判据失效，不是数据没拉回。
+
+**根因：翻页判据是计数代理，不是覆盖。** 初版用「已翻条数 `walked` ≥ 已交给 UI 的条数 `served + 本页条数`」决定要不要继续翻：`pickUploadShelf` 挑不到 shelf 时会把**整页所有 tile 的 id**（含 For You 等推荐位）算进 `walked`，于是「深度」瞬间达标 → 一次都不翻；若挑到的是别的 shelf（如 Most viewed），翻页会把 `walked` 每页 +24 却全是无关视频，代理永远判「够深了」，**首屏那些 videoId 一辈子等不到角标**。
+
+**修复（`YoutubeRepository`）**：
+1. **判据换成覆盖**：缓存累积 UI 已收到的 WEB videoId（`TvQualityCache.wanted`），`walkForCoverage` 只在「未覆盖的在显示视频」确实变少时才继续，**一页没推进立即收手**（错 shelf 最多花一页请求）。`served`/`walked` 计数代理删除。
+2. **挑 shelf 不再卡 `UC…` 前缀**：候选 = 所有带分页 token 的 shelf，按与在显示视频的重叠度取最大（实测上传列表 shelf 的 target 可能是 UC、也可能缺省）。
+3. **基页退化重取**：覆盖不到在显示视频的一半（`TvQualityCoverageFloor=0.5`）时，再取一次同一形状的基页并并集 —— 实测同频道同一请求的 shelf 组合会变（同一会话里 23 条的退化页与 71 条的正常页并存），重取一次能整屏救回角标；每缓存代只重取一次（最多 +1 请求），正常场（基页覆盖 26/30）不触发。
+4. **诊断**：新增一行 `YoutubeChannel: qualityBadgesDetail channelId=… wanted=… covered=… baseTiles=… baseShelves=… baseOverlap=… walkedPages=… baseRetry=…`——P11-201 那行的 `tiled/matched` 只见「并回几条」，退化时看不出是谁的锅。
+
+**PC 直连复核（2026-10-10，`hl=en&gl=US`，同频道，8 次连发 + 12 并发突发）**：TV 频道页稳定返回 **104 个 `tileRenderer` / 7 条 shelf / 56-60 条带角标**，其中「Videos」shelf 恰好等于 WEB 最新 24 条（overlap 24/24），基页对首屏 30 条的覆盖 **26-28/30**；`hl/gl` 换成 zh-TW/zh-HK、带 visitorData、带/不带 `params`、并发突发都不改变结果 —— 即**正常基页覆盖 87%+**，真机那场的 6/30 是响应形状退化（基页无上传列表），不是解析或身份问题。
+
+**验收**（真机）：`qualityBadgesDetail` 的 `covered/wanted` 应随翻页涨到 ≥90%，首屏卡片出现 4K 胶囊；退化场应见 `baseRetry=true` 且该行 `covered` 明显高于同场未重取时的值。
+**否证**：①`baseOverlap=0` 且重取后 `covered` 仍不涨 ⇒ TVHTML5 真机对该频道返回的就是无上传列表的退化页，需换源（例如按 `UULF…` 上传播放列表单独取一路验证）；②`covered` 涨了而界面仍无胶囊 ⇒ 问题在 UI 侧（卡片角标渲染/合并条件），不在取数侧。
+
 ---
 
 ## 5. 播放（Phase 2，未实现）
