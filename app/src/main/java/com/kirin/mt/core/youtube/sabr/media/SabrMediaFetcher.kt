@@ -939,9 +939,20 @@ internal class SabrMediaFetcher(
   private class StreamResult(val bytes: Long, val elapsedMs: Long, val earlyStop: Boolean)
 
   /**
-   * P11-217:**本笔响应是否已经拿够**(请求段 + 其后继段都已入库)⇒ 可以停止读流。
+   * P11-218:**早停余量**(段数)—— 起播期 0(只等请求段本身),已开播后 1(多等一层)。
    *
-   * 留一段余量(后继段)是因为下一轮续拉要等一个往返;只拿请求段会让缓冲在往返期间见底。
+   * 依据 [bufferedAheadNoteMs](由视频 chunk source 每次 getNextChunk 喂):
+   * - **起播期 `bufAhead <= 0`**:播放器此刻无事可做,早一个段到手就早一拍出画 —— 只等请求段本身。
+   *   真机(dev.r2159,4K60)那一笔 `rn=0` 实读 **38.49MB / 6498ms** 才拿到第一个可用段,
+   *   而第一段(21.4MB)在 ~29.6s 的响应里更早就完成了;砍掉余量这一段可以直接省下"第二段"的等待。
+   * - **已开播**:下一轮续拉要等一个往返,只拿一段会让缓冲在往返期间见底(§5.11.25 那条"差一口气"),
+   *   故保留一层余量。
+   */
+  private fun streamMargin(): Long = if (bufferedAheadNoteMs > 0L) 1L else 0L
+
+  /**
+   * P11-217:**本笔响应是否已经拿够**(请求段 + [streamMargin] 层余量都已入库)⇒ 可以停止读流。
+   *
    * init 请求(`req.segment <= 0`)以"本响应推来的第一个媒体段"为基准 —— 锚(P11-213/215)已经保证
    * 它落在播放头附近,所以第一个媒体段正是播放器要的那一段。
    */
@@ -949,7 +960,8 @@ internal class SabrMediaFetcher(
     val f = initializedFormats[req.formatItag] ?: return false
     val segs = f.downloadedSegments.keys
     val want = if (req.segment <= 0L) segs.filter { it > 0L }.minOrNull() ?: return false else req.segment
-    return segs.contains(want) && segs.contains(want + 1L)
+    val margin = streamMargin()
+    return segs.contains(want) && (margin <= 0L || segs.contains(want + 1L))
   }
 
   private suspend fun fetchStreamData(
@@ -1359,7 +1371,8 @@ internal class SabrMediaFetcher(
         tag,
         "fetch rn=$rn REAL ${readBytes}B ${elapsed}ms → ${mbps}Mbps est=${fmtEstForLog(getRealBitrateEstimate())}" +
           // P11-217:早停时字节数=**实读**,不是服务端本来会推的总量 —— 不打标记会与"这一笔很小"混淆。
-          (if (earlyStop) " (早停:请求段+后继段已到手,P11-217)" else ""),
+          // P11-218:带上余量(0=起播期只等请求段 / 1=已开播多等一层),便于真机核对判据。
+          (if (earlyStop) " (早停:请求段${if (streamMargin() > 0L) "+后继段" else "本身"}已到手,P11-217/218)" else ""),
       )
       StreamResult(readBytes, elapsed, earlyStop)
     } catch (e: SabrTerminalException) {
