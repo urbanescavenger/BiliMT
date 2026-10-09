@@ -1044,11 +1044,18 @@ internal class SabrMediaFetcher(
     // (49.9MB / 29.3 秒,随后 26 秒启动看门狗 evict)。故补一条**已知输入**兜底:建会话时由
     // [SabrMediaPeriod.prepare] 种入的 [sessionStartPositionMs]。优先级:实时播放头 > 续播位置,
     // 且后者**用一次即失效**(只服务会话首包;否则用户 seek 回开头后,换档 init 会被锚到很久以前的点)。
+    // P11-216:sessionStart 的**有效期末端** = 播放头注入口第一次变有效(说明播放已经起来)。
+    //
+    // 为什么不能"用一次即失效"(P11-215 初版):会话首包其实是 **A/V 两条 init 各发一次**
+    // (真机 dev.r2155 10:25:14 音频 init 先吃掉种子 ⇒ 18 秒后的视频 init `sessionStart=-1` ⇒ 又推
+    // `seq=1..4` / 49.9MB)。以「播放头有效」为界既能覆盖两条 init,又能在此后失效 ——
+    // 且失效**不会削弱覆盖**:播放头一旦有效,它自己就是优先级更高的锚(见下),
+    // 而用户中途 seek 回开头(播放头 <5s)时也不再回退到旧的续播点(避免锚到很久以前)。
+    if (playbackPositionNoteMs >= InitPositionAnchorMinMs) sessionStartPositionMs = -1L
     val playheadAnchor = playbackPositionNoteMs.takeIf { it >= InitPositionAnchorMinMs }
-    val sessionAnchor = if (playheadAnchor == null) sessionStartPositionMs else -1L
-    val sessionAnchorUsable = sessionAnchor.takeIf { it >= InitPositionAnchorMinMs }
-    // 用一次即失效:只服务"会话首包",之后的 init(会话内换档)一律用实时播放头。
-    if (sessionAnchorUsable != null) sessionStartPositionMs = -1L
+    val sessionAnchorUsable = if (playheadAnchor == null) {
+      sessionStartPositionMs.takeIf { it >= InitPositionAnchorMinMs }
+    } else null
     val noteAnchor = playheadAnchor ?: sessionAnchorUsable
     val positionAnchorMs = if (playerTimeMs == 0L) noteAnchor else null
     if (positionAnchorMs != null) {
@@ -1063,7 +1070,7 @@ internal class SabrMediaFetcher(
       Log.i(
         tag,
         "P11-213 init 位置锚未生效: playerTimeMs=0 但 note=${playbackPositionNoteMs}ms " +
-          "sessionStart=$sessionAnchor(均 < ${InitPositionAnchorMinMs}ms) " +
+          "sessionStart=${sessionStartPositionMs}ms(均 < ${InitPositionAnchorMinMs}ms) " +
           "shape=${if (materialAligned) "material" else if (webShape) "web" else "libre"}",
       )
     }
