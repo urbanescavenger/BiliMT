@@ -263,6 +263,8 @@ media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack
 
 **风险**：chip 布局是 A/B 化的（同一天两次请求，实体化 chip 出现位置不同）。摘不到 chip → 记一条 `channelOrderTokens … got=[]` 并按最新页降级（不会空列表），只是「最热/最早」退回「最新」。
 
+**踩坑（2026-10-10 真机，v3.1.0-alpha.14/dev.r2174）：切档直接把频道页打成「视频加载失败」** —— 报错文案 `视频加载失败。Element class kotlinx.serialization.json.JsonObject (Kotlin reflection is not available) is not a JsonPrimitive`。根因：摘 token 是**整棵响应树**的通用探查（对每个节点探 `content` / `simpleText`），而 `YoutubeParsers.stringOrNull` 实现是 `this[name]?.jsonPrimitive?.contentOrNull` —— kotlinx.serialization 的 `JsonElement.jsonPrimitive` 遇到**对象值会抛** `IllegalArgumentException`（`content` 是对象在锁屏卡/缩略图上遍地都是）。且 `parseChannelOrderTokens` 的调用**不在** `feedCatching` 里，异常一路上抛成整页 `ChannelVideoState.Failed`。修法（P11-231）：①文案/token 取值一律走 `as? JsonPrimitive` 的安全取值器 `stringValueOrNull()`（非字符串返回 null）；②`parseChannelOrderTokens` 整体 `runCatching`，失败只记 `YtOrder … failed` 并退空表 ⇒ 回归「摘不到就降级最新」的契约。**教训**：对**未定型节点**做全树探针时，绝不可以用会抛的取值器（`.jsonPrimitive`）；只有针对特定 renderer 的定型取值才可以。
+
 ### 4.14 视频点赞数主源 `/player microformat.likeCount`（2026-08-23，v3.0.5-alpha.7）
 
 点赞数原靠 `getVideoDetail` 在 `/player` 之外**另发 `/next`** 从 `videoPrimaryInfoRenderer.videoActions` 工具栏解析回写（对齐 NewPipe `getLikeCount`），但真机**该 `/next` 取不到**（诊断日志 `likes videoId=` 不出现），`detail.likeCount` 恒 null → 移动端简介「点赞」段被 `likeCountInt > 0` 丢弃，只显示「观看 · 时间」。

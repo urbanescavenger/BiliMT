@@ -424,7 +424,12 @@ internal object YoutubeParsers {
    */
   fun parseChannelOrderTokens(root: JsonObject): Map<YoutubeConstants.ChannelVideoOrder, String> {
     val tokens = mutableMapOf<YoutubeConstants.ChannelVideoOrder, String>()
-    collectOrderTokens(root, tokens)
+    // 这趟是**整棵响应树**的通用探查(拿排序 chip 只是锦上添花),任何节点形状都不能让它抛出去
+    // ——抛出去会把整个频道页变成「视频加载失败」。真机 2026-10-10 就是这么挂的:某节点的
+    // `content` 是对象,`stringOrNull` 里的 `.jsonPrimitive` 直接抛
+    // 「Element class ...JsonObject ... is not a JsonPrimitive」。取不到就退回空表(调用方降级最新)。
+    runCatching { collectOrderTokens(root, tokens) }
+      .onFailure { Log.w("YtOrder", "parseChannelOrderTokens failed: ${it.message}", it) }
     return tokens
   }
 
@@ -447,12 +452,17 @@ internal object YoutubeParsers {
     }
   }
 
-  /** 节点自身的排序 chip 文案:新布局 `title.content`,旧布局 `text.simpleText`。 */
+  /**
+   * 节点自身的排序 chip 文案:新布局 `title.content`,旧布局 `text.simpleText`。
+   *
+   * ⚠️ 只认**字符串**值:这趟会探整棵树的每个节点,`content`/`simpleText` 是对象(封面、缩略图等
+   * 到处都有)时 `jsonPrimitive` 会抛异常 ⇒ 一律走 [stringValueOrNull] 的 `as? JsonPrimitive`。
+   */
   private fun orderLabelOf(node: JsonObject): YoutubeConstants.ChannelVideoOrder? {
-    val label = (node["title"] as? JsonObject)?.stringOrNull("content")
-      ?: (node["text"] as? JsonObject)?.stringOrNull("simpleText")
-      ?: node.stringOrNull("content")
-      ?: node.stringOrNull("simpleText")
+    val label = (node["title"] as? JsonObject)?.get("content").stringValueOrNull()
+      ?: (node["text"] as? JsonObject)?.get("simpleText").stringValueOrNull()
+      ?: node["content"].stringValueOrNull()
+      ?: node["simpleText"].stringValueOrNull()
       ?: return null
     return when (label.trim().lowercase()) {
       "latest" -> YoutubeConstants.ChannelVideoOrder.Latest
@@ -462,12 +472,16 @@ internal object YoutubeParsers {
     }
   }
 
+  /** 取字符串值;非字符串(对象/数组/数字/布尔)一律 null,绝不抛。 */
+  private fun JsonElement?.stringValueOrNull(): String? =
+    (this as? JsonPrimitive)?.takeIf { it.isString }?.content
+
   /** 子树里第一条 `continuationCommand.token`(排序 chip 的 token 在 commandExecutorCommand.commands[] 里)。 */
   private fun firstNestedContinuationToken(element: JsonElement): String? {
     var token: String? = null
     collectByKey(element, "continuationCommand") { node ->
       if (token == null) {
-        node.stringOrNull("token")?.takeIf { it.isNotBlank() }?.let { token = it }
+        node["token"].stringValueOrNull()?.takeIf { it.isNotBlank() }?.let { token = it }
       }
     }
     return token
