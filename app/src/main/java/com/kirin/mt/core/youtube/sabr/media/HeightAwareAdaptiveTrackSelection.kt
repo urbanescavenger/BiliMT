@@ -705,6 +705,9 @@ class HeightAwareAdaptiveTrackSelection(
   /** 2026-09-01 满缓冲试探:本实例见过的最高缓冲水位(us)——试探水位线 = max(地板, 0.8×此值)。 */
   private var maxObservedBufferedUs = 0L
 
+  /** P11-219:起播期「从未缓冲过 ⇒ 不做水位急救」的抑制日志每实例只打一次。 */
+  private var startupNoBufferHoldLogged = false
+
   /**
    * 2026-09-01 满缓冲试探:最近一次升档是否试探批准——降档离开该档时据此记失败冷却 + 熔断判定用。
    * (试探失败冷却本体在 [SabrAbrMemory],跨重载有效——实例字段会被看门狗重载洗掉,21:13 真机案例。)
@@ -843,7 +846,27 @@ class HeightAwareAdaptiveTrackSelection(
           "(one step per starvation episode)",
       )
     }
-    val bufferCritical = !bufferCollapseArtifact &&
+    // ── P11-219(修复①):**起播期不做水位急救** ──────────────────────────────────────────────
+    // 起播时 `buffered == 0` 是**必然状态**(一段都还没下完),它不构成「供给不足」的证据。
+    // 真机 dev.r2160(`logs_live_20261009_114649.log`)实证那一枪的代价:
+    //   11:44:05.735  `buffer-critical downgrade: bufS=0s itag247/720p → 480p`
+    //   11:44:05.735  `downgrade fail cooldown: 720p excluded 90s`
+    // ⇒ **中间层被关掉 90 秒** ⇒ 此后降档只能挑"下一个未排除的档"(跨级跳 1080p→480p)、升档多爬一级,
+    // 用户体感「清晰度来回跳」。判据用「本实例是否曾缓冲过」([maxObservedBufferedUs],已有字段):
+    // 从没缓冲过 ⇒ 不算低水位,等首段(起播的自救归 25s 启动看门狗)。
+    // **silenceHang 例外**:零字节挂死是**独立证据**(fetcher 按 itag 记的墙钟),与水位无关 ⇒
+    // 起播期真挂死(20s 零字节)照旧允许降档自救。
+    val lowBufferIsEvidence = maxObservedBufferedUs > 0L || silenceHang
+    if (!lowBufferIsEvidence && belowCriticalUs && !startupNoBufferHoldLogged) {
+      startupNoBufferHoldLogged = true
+      Log.i(
+        "YtSabrAbr",
+        "water-level rescue held (startup, P11-219): bufS=${bufferedDurationUs / 1_000_000}s " +
+          "从未缓冲过 ⇒ 等首段(不算低水位)",
+      )
+    }
+    val bufferCritical = lowBufferIsEvidence &&
+      !bufferCollapseArtifact &&
       belowCriticalUs &&
       !freezeEpisodeActive &&
       (bufferedDurationUs <= prevEvalBufferedUs || silenceHang) &&

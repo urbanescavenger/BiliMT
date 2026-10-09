@@ -2254,3 +2254,31 @@ declared,校准前后判据完全一致 ⇒ 病因是闸**少了一条腿**,不�
 `downgrade` 的交替次数下降;用户体感"清晰度不再来回跳"。
 **否证**:①起播变慢或起播档偏高一档导致饿 ⇒ 起播期仍需要一次降档,但应**不锁冷却**(退一步:只降档不冷却);
 ②滞后一轮后出现真饿死 ⇒ 把滞回限定在"bufS ≥ 8s"时才等。
+
+### §40.4 P11-220 实施:修复①(起播期不做水位急救)
+
+**改动**(`HeightAwareAdaptiveTrackSelection.updateSelectedTrack`):
+
+```kotlin
+val lowBufferIsEvidence = maxObservedBufferedUs > 0L || silenceHang     // 新增
+val bufferCritical = lowBufferIsEvidence && !bufferCollapseArtifact && belowCriticalUs && …
+```
+
+- **判据**「本实例是否曾缓冲过」用**已有字段** [maxObservedBufferedUs](:706,满缓冲试探用的"见过的最
+  高水位")—— 从没缓冲过(起播期)⇒ 不算低水位,等首段。**零代码新增语义**,只是给既有水位急救加一道前置。
+- **silenceHang 例外**:零字节挂死是**独立证据**(fetcher 按 itag 记的墙钟),与水位无关 ⇒ 起播期真挂死
+  (20s 零字节)照旧允许降档自救。这与 P11-173 对"饥饿快切"的起播期豁免**同源同向**。
+- **一次性日志**:`water-level rescue held (startup, P11-219): bufS=0s 从未缓冲过 ⇒ 等首段(不算低水位)`
+  (每实例一次,便于真机核对本判据生效)。
+- **时间细节**:`maxObservedBufferedUs` 的更新在 `bufferCritical` **之后** ⇒ 首个"有缓冲"的评估轮仍被挡一次,
+  下一轮放行 —— 正好是我们想要的"等一拍"。
+
+**连带效果**:起播期不再开那一枪 ⇒ **不再产生 `downgrade fail cooldown: 720p excluded 90s`** ⇒
+中间层不会被关 ⇒ 消除"降档跨级跳"与"升档多爬一级"(§40.2 冲突①的整条后果链)。
+
+**判据(真机)**:起播场次不得再出现 `buffer-critical downgrade: bufS=0s`;应出现
+`water-level rescue held (startup, P11-219)`;此后同一 session 内 `downgrade` 的 from→to **高度差为一档**;
+`降档 fail cooldown` 不再在起播 1 秒内出现。
+**否证**:①起播变慢或起播档偏高一档后饿死 ⇒ 退一步:**仍降档但不锁冷却**(只放开 P11-220 的冷却部分);
+②`water-level rescue held` 出现后紧跟 `stall detected` ⇒ 起播期确实需要那一枪,但应改用更早的判据
+(例如"首段往返耗时 > 起播档段时长×1.5"这类供给证据),而不是"水位=0"。
