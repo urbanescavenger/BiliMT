@@ -2489,3 +2489,31 @@ val bufferCritical = lowBufferIsEvidence && !bufferCollapseArtifact && belowCrit
 **否证**:①静默收到 3s 后**正常慢滴**也被切(即 readTimeout 被误用成整调用上限)⇒ 说明 OkHttp 的
 readTimeout 在这条链路上不是"每字节重置"⇒ 退回 8s 固定值;②`silence` 收到 3s 后没有减少 evict ⇒
 病根在"一超时就 evict 会话"这条(应改成"超时不 evict、重试同会话")——那是下一步。
+
+#### §40.8.1 真机结果(dev.r2168,`logs_live_20261009_150632.log`)—— 回退成功,回归消失
+
+| 指标 | 上一版 dev.r2167(错向那版) | 本版 dev.r2168 |
+| --- | --- | --- |
+| 超时耗时分布 | **11 笔聚集 3001~3011ms**(被 3s 下限误切) | **仅 2 笔 8002ms**(= 零字节静默,正常) |
+| `timeout → evict` | **15 次** | **2 次** |
+| `stall` / `error-retry` | 1 / 2 | **0 / 0** |
+| READY / 早停 | 1 / 11 | 4 / **32** |
+
+**`silence=` 字段生效**:39 笔 `8000ms`(健康,不收紧) + 少数按余量收紧(`7533/7497/7341/6597/6507/6412…ms`)
++ 2 笔到下限 `3000ms`。⇒ 判据①②③全部达成。
+
+**档位行为(两个视频都跑了一遍同样的健康剧本)**:
+
+```
+water-level rescue held (startup, P11-219)                 ← 起播期不降档
+upshift held (buffer floor, P11-222): 1080p bufS=9s < floor=15s
+upshift 1080p → 1440p                                       ← 1~3 秒一级
+top-tier gate refused: 313 sus=-1(证据不足)                  ← 起播早期必然拒一次(非死锁)
+upshift reseed → itag313                                    ← **4K 自动升上去**
+buffer-critical downgrade: bufS=10s 2160p → 1440p roundTrip=92xxms   ← 降得对(往返 > bufS/2)
+top-tier cooldown 180s → cooldown cleared early(4 秒后)      ← 提前解除,非死锁
+```
+
+第二个视频同样爬到 4K(先被顶档闸按持续带宽 `sus=24324K < 34233K` 拒,之后 `upshift reseed → itag315`)。
+**两场都没有出现上一版那种"降完 3 秒又升回"的抖动** —— 这次的回升(4~6 秒后)走的是 `cooldown cleared early`
+(bufS 20s + est 26.7M ≥ 声明×1.1),理由充分。
