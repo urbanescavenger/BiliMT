@@ -12,7 +12,7 @@ import com.kirin.mt.core.youtube.YoutubeParsers
 /**
  * 移动端 YouTube 频道主页状态持有器:在 shell 层(MobileApp.kt)remember,离开组合仍存活,
  * 从频道起播后退出播放器回到频道时不重载(镜像 MobileUpSpaceUiState)。
- * 守卫:loadedChannelId 管频道名解析;loadedOrder 管排序(最新/最热,切排序重拉)。
+ * 守卫:loadedChannelId 管频道名解析;loadedOrder 管排序(最新/最热/最早,切排序重拉)。
  */
 @Stable
 internal class MobileYoutubeChannelUiState {

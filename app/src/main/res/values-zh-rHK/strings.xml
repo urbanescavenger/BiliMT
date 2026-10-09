@@ -358,6 +358,7 @@
     <string name="player_panel_unknown_up">UP 主</string>
     <string name="player_up_sort_latest">最新發布</string>
     <string name="player_up_sort_hot">最熱門</string>
+    <string name="player_up_sort_oldest">最早發布</string>
     <string name="player_up_follow">關注</string>
     <string name="player_up_followed">已關注</string>
     <string name="player_up_follow_loading">處理中...</string>

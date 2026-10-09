@@ -117,17 +117,6 @@ object YoutubeConstants {
   /** 频道"视频"tab 的 protobuf 参数（YouTube 实际使用的值，去掉会失效）。 */
   const val ChannelVideosParams = "EgZ2aWRlb3PyBgQKAjoA"
 
-  /**
-   * 频道"最热"排序的 protobuf 参数（解码 field1="popular"，来源 rustypipe/invidious 文档）。
-   *
-   * **2026-10-10 实测已失效**：把它当 `params` 发 /browse，服务端直接回 **Home tab**
-   * （`tabRenderer.selected` 落在 Home，列表不是按播放量排的）；本地铸造 rustypipe 式
-   * `order_ctoken`（field 80226972 包装）当 continuation 发一律 **400**。
-   * 现在可用的路是**服务端下发的排序 chip token**，见 [YoutubeRepository.getChannelVideosOrdered]。
-   * 本常量保留仅为兼容旧调用形状，不要再用于新代码。
-   */
-  const val ChannelPopularParams = "EgZwb3B1bGFy"
-
   /** 频道"直播"tab 的 protobuf 参数。 */
   const val ChannelLiveParams = "EgdzdHJlYW1z8gYECgJ6AA%3D%3D"
 
@@ -138,17 +127,20 @@ object YoutubeConstants {
   const val ChannelPlaylistsParams = "EgZwbGF5bGlzdHM%3D"
 
   /**
-   * 频道"视频"排序（对齐 B站 UP 最新/最热）。两排序共用 /browse + browseId，
-   * 仅初始 params 不同；continuation 翻页与排序无关，各自独立。
+   * 频道"视频"排序:最新 / 最热 / 最早（对齐 B站 UP 最新/最热，另加 YouTube 自带的「最早」）。
+   *
+   * 三档都**不由 params 表达**:排序由服务端在响应里下发的排序 chip token 承载
+   * （[YoutubeRepository.getChannelVideosOrdered] 摘 token 再续页），首屏请求恒用
+   * [ChannelVideosParams]；continuation 翻页与排序无关。
+   *
+   * 历史:最热曾用 `params = "EgZwb3B1bGFy"`（原 `ChannelPopularParams`），2026-10-10 实测已失效
+   * （服务端回 Home tab，列表不是按播放量排的），该常量随之删除。详见 docs/youtube-api-notes.md §4.13。
    */
-  enum class ChannelVideoOrder(val params: String) {
-    Latest(ChannelVideosParams),
-    Popular(ChannelPopularParams),
-  }
+  enum class ChannelVideoOrder { Latest, Popular, Oldest }
 
   /**
    * 频道内容 Tab（对齐 LibreTube 频道页 Videos/Shorts/Livestreams/Playlists）。各 Tab 用不同
-   * protobuf params 请求 /browse；Videos 额外有最新/最热排序([ChannelVideoOrder])。
+   * protobuf params 请求 /browse；Videos 额外有最新/最热/最早排序([ChannelVideoOrder])。
    * 注意:实际切换 Tab 时优先用服务端返回的 params([YoutubeParsers.parseChannelTabs]),
    * 硬编码值仅在服务端缺该 Tab 时回退(见 MobileYoutubeChannelScreen.channelParams)。
    */

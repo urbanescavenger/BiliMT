@@ -475,6 +475,7 @@
     <string name="player_panel_unknown_up">Criador</string>
     <string name="player_up_sort_latest">Mais recente</string>
     <string name="player_up_sort_hot">Mais popular</string>
+    <string name="player_up_sort_oldest">Mais antigo</string>
     <string name="player_up_follow">Seguir</string>
     <string name="player_up_followed">A seguir</string>
     <string name="player_up_follow_loading">A processar...</string>

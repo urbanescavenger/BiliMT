@@ -64,6 +64,7 @@ import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeConstants
 import com.kirin.mt.core.youtube.YoutubeParsers
 import com.kirin.mt.core.youtube.YoutubeRepository
+import com.kirin.mt.ui.common.sortLabelRes
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.ui.mobile.home.SourceBadge
@@ -108,10 +109,11 @@ internal fun MobileYoutubeChannelScreen(
   // 主页 tab 官方式视频行的相对时间文案(今天/昨天/N天前),与首页卡片同一实现。
   val relativeText = rememberVideoCardRelativeText()
 
-  // 当前内容的 /browse params:Videos Tab 用排序(最新/最热)params;Shorts/直播用服务端提供的
-  // tab params(有则用,对齐 LibreTube 从 header 取;无则回退硬编码)。硬编码对部分频道/新布局失效。
+  // 当前内容的 /browse params:Videos Tab 恒用 Videos 首屏 params(排序由服务端 chip token 表达,
+  // 不在这里);Shorts/直播用服务端提供的 tab params(有则用,对齐 LibreTube 从 header 取;
+  // 无则回退硬编码)。硬编码对部分频道/新布局失效。
   fun channelParams(): String {
-    if (uiState.tab.hasSort) return uiState.order.params
+    if (uiState.tab.hasSort) return YoutubeConstants.ChannelVideosParams
     val keys = when (uiState.tab) {
       YoutubeConstants.ChannelContentTab.Videos -> listOf("videos")
       YoutubeConstants.ChannelContentTab.Shorts -> listOf("shorts")
@@ -475,13 +477,7 @@ internal fun MobileYoutubeChannelScreen(
                 Box {
                   TextButton(onClick = { sortMenuOpen = true }) {
                     Text(
-                      text = "≡ " + stringResource(
-                        if (uiState.order == YoutubeConstants.ChannelVideoOrder.Latest) {
-                          R.string.player_up_sort_latest
-                        } else {
-                          R.string.player_up_sort_hot
-                        },
-                      ),
+                      text = "≡ " + stringResource(uiState.order.sortLabelRes),
                       color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                   }
@@ -503,6 +499,16 @@ internal fun MobileYoutubeChannelScreen(
                       },
                       onClick = {
                         uiState.order = YoutubeConstants.ChannelVideoOrder.Popular
+                        sortMenuOpen = false
+                      },
+                    )
+                    DropdownMenuItem(
+                      text = { Text(stringResource(R.string.player_up_sort_oldest)) },
+                      trailingIcon = {
+                        if (uiState.order == YoutubeConstants.ChannelVideoOrder.Oldest) Text("✓")
+                      },
+                      onClick = {
+                        uiState.order = YoutubeConstants.ChannelVideoOrder.Oldest
                         sortMenuOpen = false
                       },
                     )

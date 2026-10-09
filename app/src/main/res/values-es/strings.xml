@@ -475,6 +475,7 @@
     <string name="player_panel_unknown_up">UP</string>
     <string name="player_up_sort_latest">Publicados recientemente</string>
     <string name="player_up_sort_hot">Más populares</string>
+    <string name="player_up_sort_oldest">Más antiguos</string>
     <string name="player_up_follow">Seguir</string>
     <string name="player_up_followed">Seguido</string>
     <string name="player_up_follow_loading">Procesando...</string>

@@ -400,17 +400,24 @@ internal object YoutubeParsers {
   }
 
   /**
-   * 从频道「视频」tab 的 /browse 响应里摘**排序 chip 的 continuation token**(最新/最热)。
+   * 从频道「视频」tab 的 /browse 响应里摘**排序 chip 的 continuation token**(最新/最热/最早)。
    *
-   * 今天 YouTube 的排序 chip 是「实体化」的:`listItemViewModel{title.content="Latest"|"Popular"}`
+   * 今天 YouTube 的排序 chip 是「实体化」的:`listItemViewModel{title.content="Latest"|"Popular"|"Oldest"}`
    * 子树里紧跟一条 `continuationCommand.token`。该 token **由服务端铸造**(内含随机 targetId),
-   * 直接以 `{"continuation": token}` 发回即得该排序的列表。
+   * 直接以 `{"continuation": token}` 发回即得该排序的列表。两种 chip 形状都命中:
+   *  - 平铺 chip:`richGridRenderer.header.chipBarViewModel.chips[]`,每项 `chipViewModel.text`(MKBHD 等多数频道);
+   *  - 下拉 chip:`displayType=CHIP_VIEW_MODEL_DISPLAY_TYPE_DROP_DOWN` 的单颗 chip,三档在其
+   *    `showSheetCommand…sheetViewModel.content.listViewModel.listItems[]` 里(LTT)。
    *
-   * 2026-10-10 直连 InnerTube 实测(频道 UCXuqSBlHAE6Xw-yeJA0Tunw):
-   *  - Popular 首屏按播放量**严格递减**(23M → 16M → 15M …),Oldest 首屏 17 年前在前 ⇒ token 真的带排序;
+   * 2026-10-10 直连 InnerTube 实测(频道 UCXuqSBlHAE6Xw-yeJA0Tunw 等 6 个:5 个平铺 chip + LTT 下拉):
+   *  - Popular 首屏按播放量**严格递减**(23M → 16M → 15M …),Oldest 首屏即频道最旧视频
+   *    (MKBHD 18 年前 / LTT 17 / Veritasium 16 / MrBeast 14 / T-Series 15 / 3Blue1Brown 11),
+   *    沿响应自带 continuation 翻第二页仍是 17 年前且与首页无重复 ⇒ token 真的带排序、也能续页;
    *  - token 必须**原样**发回(它自带 `%3D%3D` 转义),再 URL 编码一次 → 400;
    *  - 参数法(`params="EgZwb3B1bGFy"`)与本地铸造的 rustypipe `order_ctoken` **都不再有效**
-   *    (前者让服务端回 Home tab,后者 400)—— 详见 docs/youtube-api-notes.md §4.13。
+   *    (前者让服务端回 Home tab,后者 400);按解出的结构伪造 chipBar targetId 静态造 token
+   *    → 三种排序全部 **0 条** ⇒ 只能从响应里摘,不能硬编码。
+   *    详见 docs/youtube-api-notes.md §4.13。
    *
    * 按「chip 文案与 token 同处一个节点」取:视频卡片节点即使标题恰好叫 Popular 也没有
    * continuationCommand,不会误配;旧布局(feedFilterChipBarRenderer 的 text.simpleText)同样命中。
@@ -450,6 +457,7 @@ internal object YoutubeParsers {
     return when (label.trim().lowercase()) {
       "latest" -> YoutubeConstants.ChannelVideoOrder.Latest
       "popular" -> YoutubeConstants.ChannelVideoOrder.Popular
+      "oldest" -> YoutubeConstants.ChannelVideoOrder.Oldest
       else -> null
     }
   }

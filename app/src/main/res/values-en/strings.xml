@@ -484,6 +484,7 @@
     <string name="player_panel_unknown_up">UP</string>
     <string name="player_up_sort_latest">Latest</string>
     <string name="player_up_sort_hot">Popular</string>
+    <string name="player_up_sort_oldest">Oldest</string>
     <string name="player_up_follow">Follow</string>
     <string name="player_up_followed">Following</string>
     <string name="player_up_follow_loading">Processing…</string>

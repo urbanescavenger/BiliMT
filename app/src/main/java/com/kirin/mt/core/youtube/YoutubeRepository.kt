@@ -228,17 +228,21 @@ class YoutubeRepository(
     /** 防节流随机暂停范围(ms)（对齐 LibreTube CHANNEL_BATCH_DELAY=500..1500）。 */
     val BatchDelayMs = 500L..1500L
 
-    /** 频道"视频"tab 的两种排序 params(最新/最热)——只有这两种才补拉 TV 画质角标。 */
-    val ChannelVideoTabParams = setOf(
-      YoutubeConstants.ChannelVideoOrder.Latest.params,
-      YoutubeConstants.ChannelVideoOrder.Popular.params,
-    )
+    /** 频道"视频"tab 的首屏 params——只有走这条的才是视频 tab、才补拉 TV 画质角标
+     *  (排序不由 params 表达,三档共用这一个首屏 params,见 [YoutubeConstants.ChannelVideoOrder])。 */
+    val ChannelVideoTabParams = setOf(YoutubeConstants.ChannelVideosParams)
 
     /** TV 画质角标缓存有效期:过期重拉基页(分页 token 会失效,不能长期存)。 */
     const val TvQualityCacheTtlMs = 10 * 60 * 1000L
 
     /** 单次调用最多翻几页 TV(防御:token 异常时别空转刷请求)。 */
     const val TvQualityMaxPagesPerCall = 4
+
+    /**
+     * 基页退化重取的覆盖率下限:在显示的视频被覆盖的比例低于它,就判定这次基页不完整
+     * (实测退化场只覆盖 6/30),再取一次基页。正常场基页覆盖 26/30 以上 ⇒ 不触发。
+     */
+    const val TvQualityCoverageFloor = 0.5
 
     /** 最多缓存几个频道的 TV 角标(超出按最久未更新淘汰)。 */
     const val TvQualityCacheMaxChannels = 4
@@ -251,9 +255,10 @@ class YoutubeRepository(
   }
 
   /**
-   * 频道"视频"tab 的最新视频，返回映射后的卡片 + 续页 token。
-   * [params] 决定排序（[YoutubeConstants.ChannelVideoOrder.Latest] 最新 /
-   * [YoutubeConstants.ChannelVideoOrder.Popular] 最热）；翻页 continuation 与排序无关。
+   * 频道"视频"tab 的一页视频，返回映射后的卡片 + 续页 token。
+   * [params] 只选**哪个 tab**（视频 tab 恒为 [YoutubeConstants.ChannelVideosParams]），**不再表达排序**
+   * ——排序（最新/最热/最早）由 [getChannelVideosOrdered] 摘服务端 chip token 再做，翻页 continuation
+   * 与排序无关（排序已烘进 token）。
    * [browseId] 非空时覆盖 [channelId] 作为 browseId 且不发 params。Shorts/直播统一用
    * channelId + 服务端 tab params（系统播放列表 UUSH/UULV 实测 /browse 返回 400，已废弃）。
    */
@@ -276,7 +281,7 @@ class YoutubeRepository(
     }
     // 画质角标(4K/8K)只在 TV 客户端的数据里,频道页 WEB 响应没有 → 额外拉一路 TVHTML5 频道页,
     // 按 videoId 并回(见 YoutubeParsers.parseChannelTilePage)。只在「视频 tab」发这一路
-    // (Shorts/直播/播放列表不需要);TV 客户端无视排序 params,最新/最热返回同一份频道页,故两种
+    // (Shorts/直播/播放列表不需要);TV 客户端无视排序 params,最新/最热/最早返回同一份频道页,故三档
     // 排序共用。首屏这一路基页与 WEB 请求**并行**;更早的视频靠沿 TV 上传列表继续翻页补
     // ([tvQualityBadges],缓存里按需翻)。失败静默降级为无角标(不影响列表)。
     // 显式标泛型:`if (…) async {…} else null` 会让 Kotlin 从 null 那一支把类型定成 Nothing?。
@@ -311,7 +316,6 @@ class YoutubeRepository(
       tvQualityBadges(
         channelId = channelId,
         webVideoIds = feed.items.map { it.videoId },
-        pageItems = feed.items.size,
         basePage = tvBaseDeferred,
       )
     } else {
@@ -340,16 +344,17 @@ class YoutubeRepository(
     )
   }
 
-  // ---- 频道页排序(最新/最热):排序 chip token 路线 ----
+  // ---- 频道页排序(最新/最热/最早):排序 chip token 路线 ----
 
   /**
-   * 频道「视频」tab 按排序取一页。**最新** = 一条请求;「最热」= 先取最新页摘服务端铸造的排序
-   * chip token([YoutubeParsers.parseChannelOrderTokens]),再用该 token 发一条 continuation。
+   * 频道「视频」tab 按排序取一页。**最新** = 一条请求;「最热」/「最早」= 先取最新页摘服务端铸造的
+   * 排序 chip token([YoutubeParsers.parseChannelOrderTokens]),再用该 token 发一条 continuation。
    *
    * 为什么不是「换个 params」:2026-10-10 实测 `params="EgZwb3B1bGFy"`(与 rustypipe 本地铸造的
    * `order_ctoken` 一样)**都不再有效** —— 前者服务端直接回 Home tab(列表不是按播放量排的),
-   * 后者作为 continuation 一律 400。唯一可用的路是响应里那条 chip token,且必须原样发回
-   * (自带 `%3D%3D`,别再编码)。失败/缺 token 一律**降级为最新页**,不抛给调用方。
+   * 后者作为 continuation 一律 400;按解出的结构静态造 token(伪造 chipBar targetId)三种排序全部
+   * 0 条。唯一可用的路是响应里那条 chip token,且必须原样发回(自带 `%3D%3D`,别再编码)。
+   * 失败/缺 token 一律**降级为最新页**,不抛给调用方。
    *
    * 只管**首屏**:翻页继续走 [getChannelVideos] 的 continuation(排序已烘进 token,续页与排序无关)。
    */
@@ -359,7 +364,8 @@ class YoutubeRepository(
     withQualityBadges: Boolean = true,
   ): YoutubeVideoPage {
     if (order == YoutubeConstants.ChannelVideoOrder.Latest) {
-      return getChannelVideos(channelId, params = order.params, withQualityBadges = withQualityBadges)
+      // 最新 = Videos tab 首屏本身,免去摘 token 的那次往返。
+      return getChannelVideos(channelId, withQualityBadges = withQualityBadges)
     }
     val token = channelOrderToken(channelId, order)
     if (token == null) {
@@ -369,7 +375,7 @@ class YoutubeRepository(
       )
       return getChannelVideos(
         channelId,
-        params = YoutubeConstants.ChannelVideoOrder.Latest.params,
+        params = YoutubeConstants.ChannelVideosParams,
         withQualityBadges = withQualityBadges,
       )
     }
@@ -393,7 +399,7 @@ class YoutubeRepository(
     cachedTokens?.get(order)?.let { return it }
     val payload = buildJsonObject {
       put("browseId", channelId)
-      put("params", YoutubeConstants.ChannelVideoOrder.Latest.params)
+      put("params", YoutubeConstants.ChannelVideosParams)
     }
     val root = feedCatching<JsonObject?>(null, "ChannelOrderTokens", channelId) {
       client.postJson("/browse", payload)
@@ -415,22 +421,36 @@ class YoutubeRepository(
 
   // ---- P11-201 频道页画质角标:TV 客户端补充路(基页 + 沿上传列表翻页) ----
 
-  /** 单频道 TV 画质角标缓存:基页解析出的角标 + 沿上传列表继续翻页的游标。 */
+  /**
+   * 单频道 TV 画质角标缓存:累积的角标 + 沿上传列表继续翻页的游标 + 「在显示的视频」集合。
+   *
+   * 翻页判据是**覆盖**,所以缓存记的是 UI 已收到的 WEB 视频 id([wanted]),而不是 P11-201
+   * 初版那个「已交给 UI 的条数」代理 —— 代理在基页与 WEB 列表错位时会判错(见 [tvQualityBadges])。
+   */
   private class TvQualityCache {
     val badges = LinkedHashMap<String, String>()
 
-    /** 沿 TV 上传列表已走过的 videoId(去重),用来判断还要不要继续翻页。 */
-    val walked = LinkedHashSet<String>()
+    /** UI 已收到的 WEB 视频 id(跨页累积)。角标够不够,只看它被覆盖了多少。 */
+    val wanted = LinkedHashSet<String>()
 
     var nextToken: String? = null
 
     /** 基页挑中的 shelf 目标(UC…);翻页时优先认同一个,免得在续页响应里挑错 shelf。 */
     var shelfTarget: String? = null
 
-    /** 已交给 UI 的物品数——角标要覆盖到「已加载的最旧那一条」那么深。 */
-    var served = 0
+    // 基页形状(base* 三项只作诊断与退化重取判据,不参与翻页决策)。
+    var baseTiles = 0
+    var baseShelves = 0
+    var baseOverlap = 0
+
+    var baseLoaded = false
+    var baseRetried = false
+    var walkedPages = 0
 
     var updatedAtMs = 0L
+
+    /** 在显示的视频里还差多少条没有角标。 */
+    fun missingCount(): Int = wanted.count { !badges.containsKey(it) }
   }
 
   /**
@@ -439,7 +459,19 @@ class YoutubeRepository(
    * 为什么是「翻页」而不是「换客户端」:频道页 WEB 列表分页 30 条/页,而 TV 频道页首屏的
    * 「Videos」shelf 只给最新 24 条 —— 只拉首屏的话,越往后越没有角标(P11-201 真机反馈
    * 「只有最新的一部分有角标」)。该 shelf 带旧格式分页 token,逐页 24 条翻下去能一直翻到更早的
-   * 视频,所以按「已加载条数」决定翻到第几页,结果整个会话内缓存复用(每多翻一页 ≈ 多覆盖 24 条)。
+   * 视频,结果整个会话内缓存复用(每多翻一页 ≈ 多覆盖 24 条)。
+   *
+   * **继续翻页的判据是覆盖,不是条数**(P11-228):缓存累积 UI 已收到的 WEB 视频 id
+   * ([TvQualityCache.wanted]),只在「还没覆盖到的在显示视频」确实被填上时才算推进。初版用的是
+   * 「已翻条数 ≥ 已交给 UI 条数」这个计数代理,基页形状与 WEB 列表一错位就判错 —— 真机
+   * 2026-10-09 那场(tiled 23→47→71→95→132 一路涨,首屏 30 条却始终只覆盖 6 条)就是基页没含
+   * 上传列表、翻页顺着别的 shelf 走:条数每页 +24 看着「够深了」,覆盖纹丝不动,于是首屏那些视频
+   * **永远**没有角标(用户报「首屏没有 4K,翻页后才有」)。
+   *
+   * 基页还会做一次**退化重取**:覆盖不到在显示的视频时(不足 [TvQualityCoverageFloor])再取一次
+   * 基页并并集 —— 同频道同一形状的请求实测会返回不同的 shelf 组合(同一会话里既有 23 条的退化页,
+   * 也有 71 条的正常页),重取一次能整屏救回角标。每个缓存代只重取一次(最多 +1 请求),正常情况
+   * (基页覆盖 26/30)不触发。
    *
    * [basePage] 是调用方与 WEB 请求并行发出的基页(首屏才有);无缓存且拿不到基页时自己补一次。
    * 任何失败都只降级为「角标少一点」,不抛给调用方。
@@ -447,7 +479,6 @@ class YoutubeRepository(
   private suspend fun tvQualityBadges(
     channelId: String,
     webVideoIds: List<String>,
-    pageItems: Int,
     basePage: Deferred<YoutubeParsers.TvTilePage?>?,
   ): Map<String, String> = tvQualityGate.withPermit {
     val now = System.currentTimeMillis()
@@ -456,19 +487,7 @@ class YoutubeRepository(
     if (cached != null) {
       cache = cached
     } else {
-      val page = basePage?.let { deferred -> runCatching { deferred.await() }.getOrNull() }
-        ?: feedCatching(null, "TVQualityBadges", channelId) { fetchTvTilePage(channelId, null) }
-      if (page == null) {
-        return@withPermit tvQualityCaches[channelId]?.badges?.let { LinkedHashMap(it) }.orEmpty()
-      }
-      cache = TvQualityCache().apply {
-        badges.putAll(page.qualityBadges)
-        val shelf = pickUploadShelf(page.shelves, webVideoIds)
-        nextToken = shelf?.nextToken ?: page.fallbackNextToken
-        shelfTarget = shelf?.targetBrowseId
-        walked.addAll(shelf?.videoIds ?: page.videoIds)
-        updatedAtMs = now
-      }
+      cache = TvQualityCache()
       tvQualityCaches.remove(channelId)
       tvQualityCaches[channelId] = cache
       while (tvQualityCaches.size > TvQualityCacheMaxChannels) {
@@ -476,37 +495,96 @@ class YoutubeRepository(
         tvQualityCaches.remove(oldest)
       }
     }
-    // 已加载 pageItems 条 ⇒ 角标至少要覆盖到 served + pageItems 那么深的视频。
-    val target = cache.served + pageItems
-    var pages = 0
-    while (cache.walked.size < target && cache.nextToken != null && pages < TvQualityMaxPagesPerCall) {
-      pages++
-      val token = cache.nextToken ?: break
-      val page = feedCatching(null, "TVQualityBadgesNext", channelId) {
-        fetchTvTilePage(channelId, continuation = token)
-      } ?: break
-      cache.badges.putAll(page.qualityBadges)
-      val shelf = pickUploadShelf(page.shelves, webVideoIds, cache.shelfTarget)
-      val before = cache.walked.size
-      cache.walked.addAll(shelf?.videoIds ?: page.videoIds)
-      cache.nextToken = shelf?.nextToken ?: page.fallbackNextToken
-      // 翻了一页却没推进(服务端回同一批 / 形状不认识)⇒ 收手,免得空转刷请求。
-      if (cache.walked.size == before) {
-        cache.nextToken = null
-        break
+    cache.wanted.addAll(webVideoIds)
+
+    // ①基页:一个缓存代只取一次(与 WEB 请求并行的 deferred 优先,拿不到才自己补)。
+    if (!cache.baseLoaded) {
+      cache.baseLoaded = true
+      val page = basePage?.let { deferred -> runCatching { deferred.await() }.getOrNull() }
+        ?: feedCatching(null, "TVQualityBadges", channelId) { fetchTvTilePage(channelId, null) }
+      page?.let { absorbTilePage(cache, it, preferTarget = null, isBase = true) }
+    }
+    // ②按覆盖翻页:填不动就收手(walkForCoverage 里判),错 shelf 最多花一页请求。
+    walkForCoverage(channelId, cache)
+    // ③基页退化 ⇒ 重取一次;真救回覆盖才继续翻(否则白翻)。
+    val coveredNow = cache.wanted.size - cache.missingCount()
+    if (!cache.baseRetried && cache.wanted.isNotEmpty() &&
+      coveredNow < cache.wanted.size * TvQualityCoverageFloor
+    ) {
+      cache.baseRetried = true
+      val page = feedCatching(null, "TVQualityBadgesRetry", channelId) { fetchTvTilePage(channelId, null) }
+      if (page != null) {
+        absorbTilePage(cache, page, preferTarget = cache.shelfTarget, isBase = false)
+        if (cache.wanted.size - cache.missingCount() > coveredNow) walkForCoverage(channelId, cache)
       }
     }
-    cache.served = target
     cache.updatedAtMs = System.currentTimeMillis()
+    // 诊断:P11-201 那行的 tiled/matched 只说「并回了几条」,基页退化时看不出是谁的锅 ——
+    // 这里把 wanted/covered 与基页形状(baseTiles/baseShelves/baseOverlap)一并打出来,
+    // 下一次退化场只看日志就能判「基页没含上传列表」还是「翻页挑错 shelf」。
+    Log.d(
+      "YoutubeChannel",
+      "qualityBadgesDetail channelId=$channelId wanted=${cache.wanted.size} " +
+        "covered=${cache.wanted.size - cache.missingCount()} baseTiles=${cache.baseTiles} " +
+        "baseShelves=${cache.baseShelves} baseOverlap=${cache.baseOverlap} " +
+        "walkedPages=${cache.walkedPages} baseRetry=${cache.baseRetried} tiled=${cache.badges.size}",
+    )
     // 返回快照:缓存随时可能被下一次翻页继续写,别把可变 map 递出去。
     LinkedHashMap(cache.badges)
   }
 
   /**
+   * 顺上传列表往下翻:只在**还没覆盖到的在显示视频**被填上时继续,一页填不动就收手 ——
+   * 基页与 WEB 列表错位时挑错的 shelf 最多只花一页请求就会被判「没用」。
+   */
+  private suspend fun walkForCoverage(channelId: String, cache: TvQualityCache) {
+    var pages = 0
+    while (pages < TvQualityMaxPagesPerCall) {
+      val missing = cache.missingCount()
+      if (missing == 0) break
+      val token = cache.nextToken ?: break
+      pages++
+      val page = feedCatching(null, "TVQualityBadgesNext", channelId) {
+        fetchTvTilePage(channelId, continuation = token)
+      } ?: break
+      absorbTilePage(cache, page, preferTarget = cache.shelfTarget, isBase = false)
+      if (cache.missingCount() >= missing) break
+    }
+    cache.walkedPages += pages
+  }
+
+  /**
+   * 把一页 TV 解析结果并进缓存:角标只补空位(会员/直播等已有角标由调用方优先保留);
+   * 带 token 的 shelf 里挑「与在显示视频重叠最多」的那条当下一跳游标。
+   *
+   * [isBase]=true 时顺带记基页形状(诊断 + 退化重取判据)。
+   */
+  private fun absorbTilePage(
+    cache: TvQualityCache,
+    page: YoutubeParsers.TvTilePage,
+    preferTarget: String?,
+    isBase: Boolean,
+  ) {
+    page.qualityBadges.forEach { (videoId, label) -> cache.badges.putIfAbsent(videoId, label) }
+    if (isBase) {
+      cache.baseTiles = page.videoIds.size
+      cache.baseShelves = page.shelves.size
+      cache.baseOverlap = page.shelves.maxOfOrNull { shelf ->
+        shelf.videoIds.count { it in cache.wanted }
+      } ?: 0
+    }
+    val shelf = pickUploadShelf(page.shelves, cache.wanted.toList(), preferTarget)
+    cache.nextToken = shelf?.nextToken ?: page.fallbackNextToken
+    if (shelf != null) cache.shelfTarget = shelf.targetBrowseId
+  }
+
+  /**
    * 从 TV 页里的 shelf 中挑「上传列表」那条:先认同一个目标([preferTarget],翻页时用),
-   * 否则在「带分页 token 且目标是频道(UC…)」的候选里按与 WEB 当前页 id 的重叠度取最大
-   * (播放列表/Shorts shelf 几乎零重叠);全零时取第一条(TV 布局里 Videos shelf 排在
-   * For You 之后、Shorts 与各播放列表之前)。
+   * 否则在**带分页 token** 的候选里按与在显示视频的重叠度取最大(播放列表/Shorts shelf 几乎零重叠);
+   * 全零时取第一条(TV 布局里 Videos shelf 排在 For You 之后、Shorts 与各播放列表之前)。
+   *
+   * 候选**不再要求目标是频道(UC…)**(P11-228):上传列表 shelf 的目标实测可能是 UC、也可能缺省,
+   * 卡 UC 前缀会把真正能翻到更早视频的那条 shelf 直接排除在外。
    */
   private fun pickUploadShelf(
     shelves: List<YoutubeParsers.TvTileShelf>,
@@ -516,7 +594,7 @@ class YoutubeRepository(
     if (!preferTarget.isNullOrBlank()) {
       shelves.firstOrNull { it.nextToken != null && it.targetBrowseId == preferTarget }?.let { return it }
     }
-    val candidates = shelves.filter { it.nextToken != null && it.targetBrowseId.startsWith("UC") }
+    val candidates = shelves.filter { it.nextToken != null }
     if (candidates.isEmpty()) return null
     val wanted = webVideoIds.toHashSet()
     val best = candidates.maxByOrNull { shelf -> shelf.videoIds.count { it in wanted } } ?: return null

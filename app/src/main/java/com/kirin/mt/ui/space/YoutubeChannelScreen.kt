@@ -75,6 +75,7 @@ import com.kirin.mt.ui.common.VideoGridSkeleton
 import com.kirin.mt.ui.common.appendUniqueByBvid
 import com.kirin.mt.ui.common.focusRestoreKey
 import com.kirin.mt.ui.common.resolveFocusIndex
+import com.kirin.mt.ui.common.sortLabelRes
 import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.home.VideoCardMode
 import com.kirin.mt.ui.home.GridFooterState
@@ -98,7 +99,7 @@ import kotlinx.coroutines.launch
  * continuation 分页），关注写入 [YoutubeChannelStore]（免登录）。点视频起播，卡片 owner 点击留在本频道。
  *
  * 2026-08-27 对齐移动端加内容 tab（主页/Shorts/直播/播放列表,tab chip 聚焦只高亮、OK 才切换）；
- * 视频 tab(TV 刻意)保留网格 + 「▶ 播放全部」+ 最新发布/最多播放排序(仅主页 tab 显示);播放列表 tab 走
+ * 视频 tab(TV 刻意)保留网格 + 「▶ 播放全部」+ 最新发布/最多播放/最早发布排序(仅主页 tab 显示);播放列表 tab 走
  * [ChannelPlaylistGrid] 焦点卡片网格,OK 进 [YoutubePlaylistDetailScreen](AppShell 覆盖层)。
  */
 
@@ -144,10 +145,10 @@ internal fun YoutubeChannelScreen(
 
   BackHandler { onBack() }
 
-  // 当前 tab 的内容 /browse params:主页用排序(最新发布/最多播放)params;Shorts/直播/播放列表
-  // 优先用服务端 tab params(对齐移动端 channelParams,硬编码兜底)。
+  // 当前 tab 的内容 /browse params:主页(视频 tab)恒用 Videos 首屏 params(排序由 chip token 表达,
+  // 不在这里);Shorts/直播/播放列表优先用服务端 tab params(对齐移动端 channelParams,硬编码兜底)。
   fun channelParams(): String {
-    if (uiState.tab.hasSort) return uiState.order.params
+    if (uiState.tab.hasSort) return YoutubeConstants.ChannelVideosParams
     val keys = when (uiState.tab) {
       YoutubeConstants.ChannelContentTab.Videos -> listOf("videos")
       YoutubeConstants.ChannelContentTab.Shorts -> listOf("shorts")
@@ -623,8 +624,8 @@ private fun YoutubeChannelHeader(
         )
       }
     }
-    // 排序栏(仅主页 tab,对齐移动端头部行):「▶ 播放全部」居左 +「≡ 最新/最热」单按钮切换居右。
-    // 切换按钮 OK 在 最新发布↔最多播放 间翻转,切档重新拉取;Shorts/直播/播放列表无排序。
+    // 排序栏(仅主页 tab,对齐移动端头部行):「▶ 播放全部」居左 +「≡ 最新/最热/最早」单按钮循环居右。
+    // OK 在 最新发布→最多播放→最早发布 间循环,切档重新拉取;Shorts/直播/播放列表无排序。
     if (tab.hasSort) {
       Row(
         modifier = Modifier.fillMaxWidth(),
@@ -645,23 +646,9 @@ private fun YoutubeChannelHeader(
         )
         Spacer(Modifier.weight(1f))
         TvSortToggleChip(
-          label = "≡ " + stringResource(
-            if (order == YoutubeConstants.ChannelVideoOrder.Latest) {
-              R.string.player_up_sort_latest
-            } else {
-              R.string.player_up_sort_hot
-            },
-          ),
+          label = "≡ " + stringResource(order.sortLabelRes),
           modifier = Modifier.focusRequester(sortFocusRequester),
-          onActivate = {
-            onOrderSelected(
-              if (order == YoutubeConstants.ChannelVideoOrder.Latest) {
-                YoutubeConstants.ChannelVideoOrder.Popular
-              } else {
-                YoutubeConstants.ChannelVideoOrder.Latest
-              },
-            )
-          },
+          onActivate = { onOrderSelected(order.nextOrder()) },
           onMoveUp = {
             runCatching { tabFocusRequesters.getValue(tab).requestFocus() }.isSuccess
           },
@@ -1030,3 +1017,16 @@ private fun ChannelPlaylistCard(
 private fun Key.isConfirmKey(): Boolean {
   return this == Key.Enter || this == Key.NumPadEnter || this == Key.DirectionCenter
 }
+
+/**
+ * 排序三档循环:最新 → 最热 → 最早 → 最新。
+ *
+ * TV 头部只有一颗排序 chip(单焦点节点,D-pad 左右连接「播放全部」),故用循环而不是并排三颗,
+ * 免得动焦点图;移动端是下拉菜单,三档直接平铺(见 MobileYoutubeChannelScreen)。
+ */
+private fun YoutubeConstants.ChannelVideoOrder.nextOrder(): YoutubeConstants.ChannelVideoOrder =
+  when (this) {
+    YoutubeConstants.ChannelVideoOrder.Latest -> YoutubeConstants.ChannelVideoOrder.Popular
+    YoutubeConstants.ChannelVideoOrder.Popular -> YoutubeConstants.ChannelVideoOrder.Oldest
+    YoutubeConstants.ChannelVideoOrder.Oldest -> YoutubeConstants.ChannelVideoOrder.Latest
+  }

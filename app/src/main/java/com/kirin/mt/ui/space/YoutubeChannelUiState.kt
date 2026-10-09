@@ -48,7 +48,7 @@ internal sealed interface ChannelPlaylistState {
  * 主页/Shorts/直播走 [ChannelVideoState]（各自独立 state），播放列表走 [ChannelPlaylistState]；
  * 服务端 tab params 来自 getChannelHeader 的 header.tabs（对齐移动端 serverTabParams）。
  *
- * 与 [UpSpaceUiState] 的差异：排序为"最新发布/最多播放"双档（[YoutubeConstants.ChannelVideoOrder]，
+ * 与 [UpSpaceUiState] 的差异：排序为"最新发布/最多播放/最早发布"三档（[YoutubeConstants.ChannelVideoOrder]，
  * 对齐 B站 UP 空间；非 B站整数 order 维度）、无取关二次确认（本地 DataStore 写入无副作用）、
  * `continuation: String?` 替代 `nextPage: Int`。
  */
