@@ -2183,3 +2183,74 @@ declared,校准前后判据完全一致 ⇒ 病因是闸**少了一条腿**,不�
   ②seek 宽限期内真挂死(用户看到 15s 无反应才重载)⇒ 宽限值下调到 10s 或与「本档往返 ×2」联动;
   ③4K 从此再也爬不上去(刚升档时新档无往返样本 ⇒ 闸不成立 ⇒ 立刻被降回)⇒ 与既有
   `DOWNGRADE_AFTER_UPGRADE_GRACE_MS=5s` 叠加过紧,升档宽限要抬到 ≥ 一次往返。
+
+---
+
+## §40 P11-219:升降档判据链全列 + 真机「来回跳」复盘(改代码前,用户「升降档为什么不对」)
+
+**起因**:真机 `logs_live_20261009_114649.log`(dev.r2160)里抓到一个完整的来回跳:
+
+```
+11:44:05.735  buffer-critical downgrade: bufS=0s  itag247/720p → 480p     ← 起播期水位=0 就降一档
+11:44:05.735  downgrade fail cooldown: 720p excluded 90s                  ← 并把 720p 关 90 秒
+11:44:52.920  upshift (cold-start ladder): itag248(1080p)
+11:45:27.770  downgrade 1080p → 480p: est=1469K  bufS=13s freeze=false     ← 12 秒后又掉，跨过 720p
+11:45:36.955  upshift: itag247(720p)
+11:45:39.043  upshift: itag248(1080p)                                     ← 再过 2 秒又回 1080p
+```
+
+用户体感 = **清晰度来回跳**。以下是把 `HeightAwareAdaptiveTrackSelection.updateSelectedTrack`(:714-1330)
+里**所有**允许/否决升档与降档的规则逐条列出(每条都对应一个日志点,便于真机核对)。
+
+### §40.1 判据链(按代码执行顺序)
+
+| # | 规则 | 位置(日志点) | 触发条件 | 作用 |
+| --- | --- | --- | --- | --- |
+| 0 | 非视频组直通 | `:714` 头 | 组里没有 height>0 的轨 | 交给父类 |
+| 1 | **提前解除冷却** | `cooldown cleared early` `:754` | `bufS ≥ EARLY_CLEAR_BUFFERED_US(20s)` 且 `est ≥ 声明×1.1` | 清掉"降档失败冷却" |
+| 2 | 塌方守门 | `bufferCollapseArtifact` | 水位读数周期性 reset(own-range-null 家族) | 该轮不算"低水位",`bufferCritical=false` |
+| 3 | 冻结 episode | `freeze episode` `:839` | `belowCritical` 且 `freezeEpisodeActive` | 一次饥荒**只降一档**,后续 suppress |
+| 4 | **水位急救带宽闸** | `buffer-critical downgrade **suppressed**` `:958` | `est ≥ 需要×1.15` **且** `meas ≥ 需要` **且** `roundTrip ∈ (0, bufS/2]` **且** `!silenceHang` | 撑得住 ⇒ **不开枪**(P11-168/177/188/203 四条腿) |
+| 5 | **水位急救降档** | `buffer-critical downgrade` `:1000` | `bufferCritical = !塌方 && belowCritical && !冻结 && (水位不升 \|\| silenceHang) && (trialAbort \|\| 距升档 ≥5s)` | 降到**下一个未被排除**的档 |
+| 6 | 顶档冷却 | `top-tier cooldown` `:1023` / `top-tier startup-stall cooldown` `:1115` | 顶档(≥2160)水位急救或起播 stall 后 | 顶档排除 `TOP_TIER_BUFFER_CRITICAL_COOLDOWN_MS=180s` |
+| 7 | 降档失败冷却 | `downgrade fail cooldown` `:1408` | 某档降档后仍饿(`markDowngradeFromTrial`) | 该档**排除 90s**(`TRIAL_FAIL_COOLDOWN_MS`),跨重载存活 |
+| 8 | 编码族天花板守卫 | `codec group switch held` `:560` | 当前族天花板 ≥ 目标族 | 挡"换族"这条拿便宜档的路(P11-195) |
+| 9 | **升档缓冲地板** | `upshift held (buffer floor)` `:1164` | `bufS < floor=min(30s, max(15s, 0.8×maxObserved))` | 不开升档(P11-193) |
+| 10 | 试探超容 | `trial refused (over-capacity)` `:1215` | 试探档声明 > 当前容量×1.5 | 不开试探 |
+| 11 | **常规 est 滞回降档** | `downgrade A → B` `:1261` | `est < 当前档需要 × DOWNSHIFT_MARGIN_PERMILLE(850)/1000` | 降到下一个**未排除**的档 |
+| 12 | 满缓冲试探升档 | `trial upshift (buffer-full probe)` `:1286` | 缓冲满 + 试探档不超容 | 升一档试探(失败则 90s 冷却) |
+| 13 | 升档 + 重锚 | `upshift reseed` `:1315` / `upshift (cold-start ladder…)` `:1322` | 带宽地板达标 | 升档并把 est 重锚到新档声明值 |
+| 14 | 起播锁 | `startup lock` `:316` | 首帧前 | 锁在起始档,首帧后释放(P11-128:锁内部,不换选择集) |
+
+### §40.2 冲突 / 互相抵消(逐条标出)
+
+1. **规则 5(水位急救)没有"起播期"豁免** —— 起播时 `buffered == 0` 是**必然状态**,`belowCriticalUs` 天然成立
+   ⇒ 起播必开一枪。真机实证:`bufS=0s itag247/720p → 480p`,**并把 720p 用规则 7 关了 90 秒**。
+   ⇒ 后果不是"降一档",而是**中间层消失 90 秒**:此后规则 5/11 都只能挑"下一个未排除的档" ⇒ **跨级跳**
+   (`1080p → 480p`),升档也得多爬一级(11:45:36 720p → 11:45:39 1080p)。
+2. **规则 11(est 滞回)不看水位** —— 真机 `downgrade 1080p → 480p: est=1469K **bufS=13s**`:
+   缓冲很健康,仅凭 est 塌陷就降档。而那条链路的 est 是"一阵 1Mbps(三笔慢样本)、一阵 36Mbps"
+   ⇒ **一次塌陷就能砍档位**,10 秒后又靠规则 13 爬回来 = 抖动。
+3. **规则 4(带宽闸)只作用于规则 5**,不作用于规则 11 —— P11-168 的立论("带宽撑得住时低水位不是供给不足")
+   在 est 路径上没有对应物;两条降档路的守卫**不对称**。
+4. **规则 7(90s 冷却)是放大器** —— 它把"一次假降档"变成"90 秒内少一层梯子",而规则 1 的提前解除要求
+   `bufS ≥ 20s`(起播/抖动场景里往往不到)。
+5. **规则 3(一次饥荒只降一档)与规则 5 的分级挑选互相抵消** —— 前者想"一次只降一档",后者却因为
+   冷却档位被排除而**一步跳两档**。两条同时成立时,用户看到的是"跳级"。
+
+### §40.3 候选修法(未实施,待拍板)
+
+- **① 起播期不开水位急救**:加一条"本会话曾有过缓冲"的前置(`maxObservedBufferedUs > 0`,该变量已有),
+  即**从没缓冲过 ⇒ 不算低水位** —— 起播该等首段,而不是降档。同时消除规则 7 的假阳性冷却
+  (连带消除跨级跳)。**风险**:真·慢启动(服务端慢滴)时少一次自救;但起播的自救本应由
+  25s 启动看门狗兜底(与 P11-173 对"饥饿快切"的豁免同源)。
+- **② est 滞回加缓冲健康豁免**:规则 11 在 `bufS ≥ DOWNGRADE_BUFFERED_US(8s)` 且 est 只跌了一轮时**再等一轮**
+  (滞回),避免"三笔慢样本砍档位"。**风险**:真·带宽塌陷时降档晚 1 个评估周期(评估周期 = 每次 getNextChunk)。
+- **③ 冷却档位不参与"下一步降档"挑选?** —— 不建议:它会让"降到哪都饿"时无档可降。
+  ① 修好之后 ③ 自然不需要。
+
+**判据(真机)**:起播场次不得再出现 `buffer-critical downgrade: bufS=0s`;
+`downgrade … → …` 的 from/to 高度差应为**一档**(不再跨级);同一 session 内 `upshift` 与
+`downgrade` 的交替次数下降;用户体感"清晰度不再来回跳"。
+**否证**:①起播变慢或起播档偏高一档导致饿 ⇒ 起播期仍需要一次降档,但应**不锁冷却**(退一步:只降档不冷却);
+②滞后一轮后出现真饿死 ⇒ 把滞回限定在"bufS ≥ 8s"时才等。
