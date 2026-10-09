@@ -2861,6 +2861,18 @@ init 这一笔,不碰中段语义;②alpha.36 / alpha.39 两次翻车是**全局
 「锚未生效时把 `note` 原值打出来」诊断**只加在 material 分支** —— 于是本轮只能靠"没有那行"反推,
 故要顺手给 web/libre 也补上。
 
+**「那是 ExoPlayer 的问题吗」(用户追问)——不是**,两处都在我们这边:
+
+1. **第一笔请求本身就是我们提前发的**:它是 init/bootstrap(`seg=0`、`selectedFmts=0`),因为我们**需要
+   `FORMAT_INITIALIZATION_METADATA` 才能建轨道组** —— ExoPlayer 还没开始要段,我们自己去要的。
+2. **我们只从时序最不确定的那条通道取位置**。ExoPlayer 其实有**两个明示入口**带着位置:
+   `MediaPeriod.prepare(callback, positionUs)`([SabrMediaPeriod.kt:82](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaPeriod.kt#L82))与
+   `selectTracks(selections, …, positionUs)`(:119);而我们现在用的 `getNextChunk` 的 `playbackPositionUs`
+   **语义是「播放器当前所在位置」**,seek 尚未落定时它就是 0 —— **这符合 media3 的语义,不是 bug**。
+3. **⚠️ 别顺手改用 `loadPositionUs`**:它语义是"要加载到哪里"(满缓冲时领先播放头十几秒),
+   拿它当锚正好复刻 alpha.52 喂 `cumulativeDurationMs` 触发 `maxTimeSinceReq` 软拒那个坑。
+   ⇒ 正确来源是**本次播放请求的 `startPositionMs`**(我们已知、且正是用户想续播的位置)。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
