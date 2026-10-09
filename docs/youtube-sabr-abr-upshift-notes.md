@@ -2426,3 +2426,33 @@ val bufferCritical = lowBufferIsEvidence && !bufferCollapseArtifact && belowCrit
    `14:22:05.924 zero-reply #1 itag=139 实读=942B (200 但只回状态)` 与 `14:22:05.922 首笔 status=3`
    **同毫秒** —— 正是用户要的那类"有请求没有回复";而这些笔**没有混进 est**(同时段 est 仍 18~25M)✓ 判据②成立。
    本次 error-retry 的原因也就是这个:**pot-less 会话生下来就是死的**(首笔 status=3,`sessAgeMs=364`,连 nag 阶段都没有)。
+
+### §40.7 P11-223 实施:①单笔上限 ≤ 缓冲余量 ②判死立即上抛(两项模拟后的落地)
+
+**模拟先行(用真实日志跑出来的数,见 P11-222 那轮的判读)**
+
+| 项 | 目标场次 | 现状 | 改后 | 收益 |
+| --- | --- | --- | --- | --- |
+| **① 单笔上限** | 09:23 同段吊死(`rn=1/2/3 seg=5`,cap 恒 12s) | 27 秒窗口里**完整重试 1 次**;单笔白等 12s;且 **12s > 8s 看门狗** ⇒ 一笔都没重试完就被整场重载 | 27 秒里**完整重试 9 次**;单笔白等 3s | 机会 **×9**、单笔等待 −9s(**概率性**,服务端不给就是不给) |
+| **② 判死立即上抛** | 14:22 / 13:21 / 11:19 | 判死→上抛延迟 **3.05 / 13.96 / 31.87 秒**(中位 ~14s) | ≈0 | **−3~32 秒,每场都吃到(确定)** |
+
+**① 的改动**(`SabrMediaFetcher.fetchStreamData`):基础档不变,再叠加一道
+`callCap = min(base, max(3000, bufAhead/2))` —— 即"**至多半个缓冲余量**"(下限 3s,`MinStarvingCallTimeoutMs`)。
+真机算例:`bufAhead=6935ms ⇒ cap=3467ms`;`bufAhead=65ms ⇒ cap=3000ms`。日志行尾补 `P11-222 余量一半=<ms>`。
+**它买到的是「快失败 + 机会翻倍」,不是"必然修好"** —— 服务端就是不给那一段时重试全挂,那属于"换段/换会话"。
+
+**② 的改动**:
+- 新增 [SabrLoadErrorHandlingPolicy](app/src/main/java/com/kirin/mt/core/player/SabrLoadErrorHandlingPolicy.kt):
+  `getRetryDelayMsFor` 对 **SABR 终态错误**([SabrTerminalException])返回 `C.TIME_UNSET`(= 不可重试 ⇒
+  Loader 立即判致命上抛);其余错误原样交给 `DefaultLoadErrorHandlingPolicy`(**瞬态重试不能动**)。
+- **`getMinimumLoadableRetryCount` 保持默认** —— 设 0 会把"瞬态错误也只试一次",而瞬态重试是 SABR 拉流的正常兜底。
+- [SabrDataSource](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrDataSource.kt) 包终态错误时**挂上 cause**
+  (`IOException("SABR terminal: …", e)`)⇒ policy 能按**类型**识别,不再依赖消息前缀(前缀仍留作兜底)。
+- 两个播放器(`MobilePlayerScreen` :584 / `PlayerScreen` :353)挂上该 policy。
+
+**判据(真机)**:①判死后**立即**(同毫秒级)出现 `playback error, error-retry #N` —— 不再出现"判死 → 等 3~32 秒";
+②`starving-fast-fail` 行的 `callCap` 应随 `bufAhead` 缩(6935ms ⇒ **3467ms** 量级),且同一段能连续看到多次
+真实重发(而不是一笔都没超时就被看门狗收掉);③瞬态错误(超时/断连)的**重试行为不变**(仍按默认退避)。
+**否证**:①终态上抛后 error-retry 立刻又撞同一个死会话(标记/evict 没生效)⇒ 要查 evict 与重载的时序;
+②`callCap` 缩到 3s 后**正常慢滴大段(4K 单笔 7~13s)被误切** ⇒ 下限要按档高抬(例如 ≥1440p 用 5s),或只对
+"零字节静默"生效;③重试次数上升但**请求风暴**明显(同一秒多笔)⇒ 加退避。

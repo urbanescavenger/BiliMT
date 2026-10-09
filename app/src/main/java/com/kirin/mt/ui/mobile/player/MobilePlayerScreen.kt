@@ -178,6 +178,7 @@ import com.kirin.mt.core.player.startPlaybackService
 import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.PlayerHolder
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
+import com.kirin.mt.core.player.SabrLoadErrorHandlingPolicy
 import com.kirin.mt.ui.player.PlayerDanmakuLayer
 import com.kirin.mt.ui.player.appendSabrStartMs
 import com.kirin.mt.ui.player.buildDashMediaItem
@@ -579,6 +580,9 @@ fun MobilePlayerScreen(
     )
     ExoPlayer.Builder(context)
       .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs) { SabrAbrMemory.readAheadMinBufferUs() })
+      // P11-223:SABR **终态**错误(InvalidPoToken/RELOAD/SABR_ERROR)立即上抛,不走 Loader 重试节拍 ——
+      // 真机判死→上抛实测 3.05 / 13.96 / 31.87 秒,那段时间用户黑屏干等(见 docs §40.7)。
+      .setLoadErrorHandlingPolicy(SabrLoadErrorHandlingPolicy())
       // 后台播放优化: 别的应用抢音频资源抢自动暂停,焦点回来→自动续播;
       // 耳机/蓝牙音频设备断开(AUDIO_BECOMING_NOISY)→自动暂停。Media3 内部管理焦点
       // 请求/放弃与 becoming-noisy receiver 的注册/反注册(随 player release 自动清理)。

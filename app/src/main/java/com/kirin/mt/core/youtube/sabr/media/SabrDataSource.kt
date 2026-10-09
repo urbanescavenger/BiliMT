@@ -82,7 +82,9 @@ internal class SabrDataSource(
     } catch (e: SabrTerminalException) {
       Log.w("YtSabr", "SabrDataSource open: terminal seg=${req.segment} itag=${req.formatItag}: ${e.message} → evict sid=$sessionId")
       SabrStreamRegistry.evict(sessionId)
-      throw IOException("SABR terminal: ${e.message}")
+      // P11-223:挂上 cause —— SabrLoadErrorHandlingPolicy 据此按**类型**识别终态错误
+      // (不再依赖消息前缀;前缀仍保留作兜底,兼容旧路径)。
+      throw IOException("SABR terminal: ${e.message}", e)
     } catch (e: CancellationException) {
       // P11-91:chunk 加载被取消(media3 seek/丢弃打断在途拉流,runBlocking 中断以
       // CancellationException 浮出)是良性取消——此前落进通用 catch 当会话死亡整会话 evict,

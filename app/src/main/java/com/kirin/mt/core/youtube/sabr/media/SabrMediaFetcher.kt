@@ -1317,18 +1317,36 @@ internal class SabrMediaFetcher(
       // 只对「已开播之后」的请求生效:起播期水位恒为 0,而首包偶发 16~20s 是常态(P11-160),
       // 那种情况该由 StartupStallThresholdMs=25s 的起播看门狗兜底,不该在这里被砍到 8s。
       val starving = deliveredRealMedia && bufferedAheadNoteMs in 0..SabrStarvingBufferMs
-      val callCapMs = when {
+      val baseCapMs = when {
         starving && reqHeight >= 1440 -> SabrStarvingCallTimeoutMsHigh
         starving -> SabrStarvingCallTimeoutMs
         reqHeight >= 1440 -> SabrCallTimeoutMs
         else -> SabrCallTimeoutMsLow
       }
+      // ── P11-222(判据链 §40.7):**单笔上限不得超过手上的缓冲余量** ────────────────────────────
+      // 旧的固定档(饥饿 8s / ≥1440p 12s)有两个结构性毛病:
+      //  ①**12s > 8s 看门狗**:≥1440p 的饥饿档上限晚于播放器的 stall 看门狗 ⇒ 一笔挂住时,看门狗先把
+      //    整个会话扔掉,那一笔**一次重试机会都没有**(真机 09:23:`rn=1/2/3 seg=5` 各 12s,3 笔 36 秒里
+      //    看门狗在 8s 就开枪了);
+      //  ②**12s > 缓冲余量**:真机 09:22 `bufAhead=6935ms` 而 cap=12000 ⇒ 缓冲在 7.2s 耗尽、上限还没到,
+      //    "等死"不可避免(§5.11.25)。
+      // 改成"至多半个缓冲余量"(下限 3s):挂住的那笔在缓冲还剩一半时就被切断 → 立刻重发。
+      // 同一段 09:23 那 27 秒窗口里的**完整重试次数 1 → 9**,单笔白等 12s → 3s。
+      // 注意它买到的是「快失败 + 机会翻倍」,**不是"必然修好"** —— 服务端就是不给那一段时重试全挂,
+      // 那属于"换段/换会话"的活(见 §40.6-(3))。
+      val runwayCapMs = if (bufferedAheadNoteMs > 0L) {
+        (bufferedAheadNoteMs / 2).coerceAtLeast(MinStarvingCallTimeoutMs)
+      } else {
+        baseCapMs
+      }
+      val callCapMs = minOf(baseCapMs, runwayCapMs)
       if (starving) {
         Log.i(
           tag,
           "fetch rn=$rn starving-fast-fail: bufAhead=${bufferedAheadNoteMs}ms ≤ " +
             "${SabrStarvingBufferMs}ms → callCap=${callCapMs}ms (base=" +
-            "${if (reqHeight >= 1440) SabrCallTimeoutMs else SabrCallTimeoutMsLow}ms, P11-173)",
+            "${if (reqHeight >= 1440) SabrCallTimeoutMs else SabrCallTimeoutMsLow}ms, P11-173; " +
+            "P11-222 余量一半=${if (bufferedAheadNoteMs > 0L) bufferedAheadNoteMs / 2 else -1}ms)",
         )
       }
       // ── P11-160(r2054 续播多场实测):**readTimeout 必须一起抬,否则上面那个上限有一半是纸面的** ──
@@ -1812,6 +1830,9 @@ internal class SabrMediaFetcher(
      * 而早切能让失败样本立刻喂带宽计 → ABR 在缓冲耗尽前降档(既有 `recordRealBandwidthFailure` 语义),
      * 避免整场重载。非饥饿时口径完全不变(4K 大段 28s 合法慢不受影响)。
      */
+    /** P11-222:单笔上限的**下限**(ms) —— 缓冲余量的一半低于它时仍给这么多(往返本身有物理下限)。 */
+    const val MinStarvingCallTimeoutMs = 3_000L
+
     const val SabrStarvingCallTimeoutMs = 8_000L
 
     /** P11-173:饥饿快切的 ≥1440p 上限 —— 大段本身更慢,给到 12s(仍早于 18s/40s 原口径)。 */
