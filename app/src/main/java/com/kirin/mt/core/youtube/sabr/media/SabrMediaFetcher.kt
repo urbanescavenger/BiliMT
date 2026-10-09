@@ -77,6 +77,26 @@ internal class SabrMediaFetcher(
   private val tag = "YtSabr"
 
   /**
+   * P11-221(用户口径):**「有请求没有回复」单独成一类证据** —— 不混进 est。
+   *
+   * 与 `silenceHang` 的分工:那条只在 `SocketTimeoutException`(零字节读超时)时记;
+   * 本计数器**与异常类型无关**:只要这一笔**一个媒体字节都没拿到**(200 但只回状态、或直接失败)就计一次。
+   * 用途见 docs/youtube-sabr-abr-upshift-notes.md §40.5。
+   */
+  private val zeroReplyCount = java.util.concurrent.atomic.AtomicInteger()
+
+  private fun noteZeroReply(itag: Int, gotBytes: Long, why: String) {
+    val n = zeroReplyCount.incrementAndGet()
+    Log.w(
+      tag,
+      "zero-reply #$n itag=$itag 实读=${gotBytes}B ($why) —— 本笔没有任何媒体字节(P11-221)",
+    )
+  }
+
+  /** P11-221:本会话累计「有请求没回复」笔数(供判据/日志取用)。 */
+  fun getZeroReplyCount(): Int = zeroReplyCount.get()
+
+  /**
    * P11-166:SABR 请求专用的 client 克隆 —— **把「静默超时」与「整调用上限」分开**。
    *
    * 共享的 YouTube client([BiliHttpClientFactory.baseBuilder])是给**小 API 调用**定的
@@ -437,11 +457,16 @@ internal class SabrMediaFetcher(
         (gapMs - coastMs).coerceIn(0L, BW_GAP_MAX_MS)
       }
       if (countedMs >= BW_GAP_MIN_MS) {
-        addRealBwSample(0L, countedMs)
+        // ── P11-221(用户口径):**空窗不再入 est** ────────────────────────────────────────────
+        // 「两次请求之间不会产生新流量」——那段窗口里**没有在途请求**,它给不出任何链路证据;
+        // 而旧口径把它按 `bytes=0` 注入 est(alpha.9Z 为"GC 卡死"加的补救),副作用是每次
+        // **满缓冲停拉 / 降档后停拉**都被当成一次低带宽事件(P11-197 记过 `bufAhead≈9992~9994`
+        // 那种踩点)。改为只记日志、不入账:见 [BW_GAP_FEED_EST]。
+        if (BW_GAP_FEED_EST) addRealBwSample(0L, countedMs)
         Log.i(
           tag,
           "bw gap counted: ${countedMs}ms (raw=${rawGapMs}ms backoff=${backoffMs}ms " +
-            "coast=${coastMs}ms runway=$runwayMs)",
+            "coast=${coastMs}ms runway=$runwayMs)" + if (BW_GAP_FEED_EST) "" else " [P11-221 不入 est]",
         )
       }
       // 需求驱动空闲扣减(2026-08-30):滑行部分(满缓冲主动停闸)= 需求驱动的管道空闲 → 记入持续分母扣除量。
@@ -1269,6 +1294,8 @@ internal class SabrMediaFetcher(
     val prevSeekMs = lastSeekMs
     val prevManualMs = lastManualFormatSelectionMs
     val runwayMs = bufferedAheadMsAtLastFetch
+    // P11-221:实读字节数提到 try 之外 —— catch 也要用它判「有请求没回复」。
+    var readBytes = 0L
     return try {
       // P11-134:SABR POST **整调用上限**。playback client 是 `callTimeout(0)`(为不切掉长分片),
       // 只有 per-read 15s ⇒ 服务端「慢滴」(每次 read 都在 15s 内挤一点)时**永不超时**。
@@ -1325,7 +1352,6 @@ internal class SabrMediaFetcher(
       // 拿够([streamNeedSatisfied])即停:请求段+后继段到手就够下一轮续拉,剩下的字节不再收。
       val ump = UmpReader()
       val readBuf = ByteArray(StreamReadChunkBytes)
-      var readBytes = 0L
       var earlyStop = false
       call.execute().use { response ->
         val code = response.code
@@ -1374,6 +1400,10 @@ internal class SabrMediaFetcher(
           // P11-218:带上余量(0=起播期只等请求段 / 1=已开播多等一层),便于真机核对判据。
           (if (earlyStop) " (早停:请求段${if (streamMargin() > 0L) "+后继段" else "本身"}已到手,P11-217/218)" else ""),
       )
+      // P11-221:「有请求没有回复」—— 200 但只回了状态/头部,没有任何媒体段。
+      if (readBytes < ZeroReplyMaxBytes) {
+        noteZeroReply(req.formatItag, readBytes, "200 但只回状态/无媒体段")
+      }
       StreamResult(readBytes, elapsed, earlyStop)
     } catch (e: SabrTerminalException) {
       // 致命错误(RELOAD/InvalidPoToken/重试耗尽)不算普通网络降级,不喂带宽样本
@@ -1387,6 +1417,10 @@ internal class SabrMediaFetcher(
       // InterruptedIOException,不走这条(它可能已收过字节,是慢滴而非零字节)。
       val silentHang = e is java.net.SocketTimeoutException
       if (silentHang) noteSilenceHang(req.formatItag)
+      // P11-221:零字节失败也是「有请求没有回复」的一笔(与异常类型无关)。
+      if (readBytes < ZeroReplyMaxBytes) {
+        noteZeroReply(req.formatItag, readBytes, "失败:${e::class.simpleName}(零媒体字节)")
+      }
       recordRealBandwidthFailure(failMs)
       recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
@@ -1725,6 +1759,19 @@ internal class SabrMediaFetcher(
      * 再重试"。慢滴(字节持续到来)不受影响。
      */
     const val SabrSilenceTimeoutMs = 8_000L
+
+    /**
+     * P11-221:**空窗是否计入 est** —— false = 不计(当前值)。
+     *
+     * 依据(用户口径):两次请求之间不会有新流量 ⇒ 那段窗口**没有在途请求**,给不出链路证据。
+     * 旧值 true(alpha.9Z 为"GC 卡死时 est 钉高位"补的)会连带把「满缓冲停拉 / 降档后停拉」也
+     * 当成低带宽事件 ⇒ est 被需求侧的空转拉低。改 false 后,响应性由**失败笔**(零交付)负责 ——
+     * 那才是"有请求没回复"的清晰证据(见 zeroReply 计数)。置 true 一行回退。
+     */
+    const val BW_GAP_FEED_EST = false
+
+    /** P11-221:一笔响应**小于这个字节数**视作「没有媒体字节」(只回了状态/头部)。 */
+    const val ZeroReplyMaxBytes = 64 * 1024L
 
     /** P11-217:流式读的块大小 —— 每读到这么多就喂一次 [UmpReader],段一完成即可交付。 */
     const val StreamReadChunkBytes = 64 * 1024
