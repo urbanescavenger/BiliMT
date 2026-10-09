@@ -1036,8 +1036,24 @@ internal class SabrMediaFetcher(
     // 4K 3 段 ≈47MB,在 20Mbps 下要 ~19 秒,而饥饿档 `callCap` 只有 12 秒 ⇒ 一笔必被切断
     // (就是 P11-224 刚回退的那个坑换个形式回来)。水位薄时退回 1 段(2 段 ≈31MB/~12s)正好贴住上限。
     bufferedAheadNoteMs >= HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS &&
-      selectedVideoHeight >= HIGH_TIER_MIN_HEIGHT -> 2L
+      selectedVideoHeight >= HIGH_TIER_MIN_HEIGHT &&
+      !lowHeapDevice -> 2L
     else -> 1L
+  }
+
+  /**
+   * P11-234:**小堆设备不做「多搬」**(见 §40.12)。
+   *
+   * 真机取证(同一份代码、同一协议、同一段大小):4K 大段的「字节到手 → 交给播放器」在 TV 上
+   * 2.5~18s、在移动端亚秒级 ⇒ 差别只在堆/GC。而 P11-225 的「≥1440p 一笔多搬一段」把单笔
+   * 从 ~14MB 提到 ~26~40MB,GC 窗口更长 ⇒ 尾巴从 r2168 的 5s 级拉到 alpha.14 的 **10~22s** 级。
+   * 即:**多搬在 720p/1080p 是赚的(1.26MB 装载 0.15s),在 4K 上净亏。**
+   *
+   * 判据用**进程位宽 + 堆上限**(core 层拿不到 Context,不引 Android UI 依赖):
+   * 32 位进程堆上限 ~448MB(真机 GC 日志 `448MB/448MB` 顶格)、无压缩指针,GC 明显更慢。
+   */
+  private val lowHeapDevice: Boolean by lazy {
+    !android.os.Process.is64Bit() || Runtime.getRuntime().maxMemory() < LOW_HEAP_MAX_BYTES
   }
 
   /**
@@ -1451,7 +1467,6 @@ internal class SabrMediaFetcher(
       // 所以这里只要把"喂整包"换成"喂分块",段一完成就立刻进 [initializedFormats] ⇒ 播放器不必等整批。
       // 拿够([streamNeedSatisfied])即停:请求段+后继段到手就够下一轮续拉,剩下的字节不再收。
       val ump = UmpReader()
-      val readBuf = ByteArray(StreamReadChunkBytes)
       var earlyStop = false
       call.execute().use { response ->
         val code = response.code
@@ -1462,12 +1477,19 @@ internal class SabrMediaFetcher(
         }
         val stream = response.body?.byteStream() ?: throw IOException("SABR empty body")
         while (true) {
+          // P11-234:读块从池里借(见 ByteChunkPool)—— 读满则**零拷贝**入队,消费后由
+          // CompositeBuffer.drop/clear 归还池。此前每读一块 `readBuf.copyOf(n)` 新建大对象:
+          // 4K 一段 13.5MB = 206 个对象、每轮两段 ~54MB 全进 Java LOS ⇒ GC 每 250ms 扫 100~200MB,
+          // 把「字节已在内存 → 交给播放器」拖到 3.5~18s(720p 只 0.15s)。`n <= 0` 时 append 只负责归还。
+          val readBuf = ump.obtainReadBuffer(StreamReadChunkBytes)
           val n = stream.read(readBuf)
-          if (n < 0) break
+          if (n < 0) {
+            ump.append(readBuf, 0)
+            break
+          }
+          ump.append(readBuf, n)
           if (n == 0) continue
           readBytes += n
-          // 必须复制:CompositeBuffer 直接持有该数组,复用 readBuf 会把已入队数据冲掉。
-          ump.append(readBuf.copyOf(n))
           ump.readParts(onPart)
           if (readBytes >= StreamStopMinBytes && streamNeedSatisfied(req)) {
             earlyStop = true
@@ -1913,6 +1935,9 @@ internal class SabrMediaFetcher(
      * 避免整场重载。非饥饿时口径完全不变(4K 大段 28s 合法慢不受影响)。
      */
     /** P11-225:多搬(3 段)要求的**最低水位**(ms)—— 水位不够时退回 2 段,避免撞饥饿档的 12s 单笔上限。 */
+    /** P11-234:堆上限低于此值(或非 64 位进程)视为小堆设备,不做「多搬」。 */
+    const val LOW_HEAP_MAX_BYTES = 256L * 1024 * 1024
+
     const val HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS = 15_000L
 
     /** P11-225:「高档」的起始高度 —— 早停余量按档位分叉(≥1440p 一笔多搬一段)。 */
