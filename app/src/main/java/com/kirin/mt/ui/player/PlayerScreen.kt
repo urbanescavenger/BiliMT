@@ -120,6 +120,7 @@ import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.VideoshotData
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.core.player.SabrLoadErrorHandlingPolicy
+import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.core.youtube.YoutubeLoadProgress
 import com.kirin.mt.core.youtube.YoutubeLoadStep
@@ -147,6 +148,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -162,6 +164,8 @@ fun PlayerScreen(
   playbackRepository: PlaybackRepository,
   youtubeRepository: com.kirin.mt.core.youtube.YoutubeRepository,
   youtubeHistoryStore: YoutubeHistoryStore,
+  /** UP 面板「关注」的 YouTube 侧数据源(免登录,与频道主页那颗关注按钮同一份列表)。 */
+  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
@@ -891,6 +895,9 @@ fun PlayerScreen(
       applyFollowed = { followed ->
         upFollowed = followed
       },
+      readYoutubeFollowed = { channelId ->
+        youtubeChannelStore.channels.first().any { it.channelId == channelId }
+      },
       showControls = ::showControls,
     )
   }
@@ -899,16 +906,52 @@ fun PlayerScreen(
     openUpVideos(if (upVideoOrder == UpVideoOrderLatest) UpVideoOrderHot else UpVideoOrderLatest)
   }
 
+  /**
+   * UP 面板「关注」:B站 UP 走 relation 接口(需登录);YouTube 频道写本地
+   * [com.kirin.mt.core.youtube.YoutubeChannelStore](免登录)。
+   *
+   * 此前只处理 B站(`ownerMid <= 0` 直接 return):YouTube 视频 ownerMid 恒为 0,那颗「关注」是死按钮
+   * ——按下去连「处理中…」都不闪(2026-10-09 用户报「UP 按钮 关注无效」)。失败不再静默:B站 失败
+   * (含未登录)给一次与点赞/投币同款的 toast。
+   */
   fun setUpFollowStatus(follow: Boolean) {
+    val isYoutube = displayRequest.isYoutube
     val ownerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
-    if (ownerMid <= 0L || upFollowLoading) return
+    if (upFollowLoading) return
+    if (!isYoutube && ownerMid <= 0L) return
+    if (isYoutube && displayRequest.bvid.isBlank()) return
     upFollowLoading = true
     coroutineScope.launch {
-      val success = runCatching {
-        videoRepository.setFollowStatus(ownerMid, follow)
-      }.getOrDefault(false)
+      val success = if (isYoutube) {
+        runCatching {
+          // 播放器 videoId 常不带 channelId(搜索/历史等路径),从 /player 权威 videoDetails 解析
+          // (同 UpFocusHome 分支与 UP 面板列表加载)。
+          val channelId = displayRequest.channelId.takeIf { it.isNotBlank() }
+            ?: youtubeRepository.getVideoDetail(displayRequest.bvid)
+              ?.channelId?.takeIf { it.isNotBlank() }
+            ?: return@runCatching false
+          if (follow) {
+            youtubeChannelStore.add(
+              YoutubeChannel(
+                channelId = channelId,
+                name = displayRequest.ownerName,
+                avatar = displayRequest.ownerFace,
+              ),
+            )
+          } else {
+            youtubeChannelStore.remove(channelId)
+          }
+          true
+        }.getOrDefault(false)
+      } else {
+        runCatching {
+          videoRepository.setFollowStatus(ownerMid, follow)
+        }.getOrDefault(false)
+      }
       if (success) {
         upFollowed = follow
+      } else {
+        showInteractionToast(false, "")
       }
       upFollowLoading = false
       showUnfollowConfirm = false

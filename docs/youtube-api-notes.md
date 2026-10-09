@@ -182,6 +182,7 @@ media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack
 - **降级**：任一路失败用另一路（RSS 失败→InnerTube 近似时间；InnerTube 失败→RSS 无 duration/live，降级可用），两者都失败该频道返回空、不影响其它频道。
 - **并发**：RSS 用独立信号量放宽（8），InnerTube 仍受 4 限并发防风控；关注多时按批次放宽超时（`youtubeFeedTimeoutMs`，上限 10s）。
 - **合并时序（2026-08-18）**：动态 tab 等 YouTube 关注**全量查完再与 B 站一次性合并**，去掉 `onChunkReady` 分批增量叠加（避免二次重排导致顺序抖动）。
+- **关注（订阅）的唯一真源 = 本地 `YoutubeChannelStore`**（DataStore 里的频道列表，免登录）：写入口有频道主页关注按钮、设置→关注管理、播放器 UP 面板「关注」。**读**入口（首页/动态订阅流、UP 面板关注态）都必须是同一份列表——播放器 UP 面板此前只回查 B站 relation 接口（`ownerMid > 0`），YouTube 视频 `ownerMid` 恒为 0 ⇒ 那颗「关注」是死按钮（2026-10-09 修，P11-226：`readYoutubeFollowed` 按 `channelId` 读 store）。
 
 ### 4.10.1 首页订阅流 continuation 分页（2026-08-18，alpha.94+）
 

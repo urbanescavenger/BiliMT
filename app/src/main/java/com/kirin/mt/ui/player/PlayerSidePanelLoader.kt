@@ -44,6 +44,8 @@ internal fun CoroutineScope.launchUpVideosPanelLoad(
   applyResolvedCachedVideos: (List<VideoSummary>) -> Unit,
   applyLoadedVideos: (List<VideoSummary>) -> Unit,
   applyFollowed: (Boolean) -> Unit,
+  /** YouTube 频道关注态(读本地 [com.kirin.mt.core.youtube.YoutubeChannelStore],免登录)。 */
+  readYoutubeFollowed: suspend (String) -> Boolean,
   showControls: () -> Unit,
 ): Job = launch {
   val resolvedMetadata = resolveDisplayMetadata()
@@ -161,15 +163,20 @@ internal fun CoroutineScope.launchUpVideosPanelLoad(
     }
   }
 
-  // 关注仅对 B 站 UP(ownerMid>0)有意义;YouTube 关注走 YoutubeChannelStore,这里不回查。
-  val followed = if (ownerMid > 0L) {
-    runCatching {
+  // 关注态:B站 UP 走 relation 接口(未登录即 false);YouTube 频道查本地关注列表
+  // (YoutubeChannelStore,免登录;与频道主页那颗关注按钮同一份数据源)。
+  val followed = when {
+    ownerMid > 0L -> runCatching {
       videoRepository.checkFollowStatus(ownerMid)
     }.onFailure { error ->
       Log.w(PlayerUpVideosLogTag, "follow check failed token=$loadToken mid=$ownerMid: ${error.toLogBrief()}")
     }.getOrDefault(false)
-  } else {
-    false
+    channelId != null -> runCatching {
+      readYoutubeFollowed(channelId)
+    }.onFailure { error ->
+      Log.w(PlayerUpVideosLogTag, "youtube follow check failed token=$loadToken channelId=$channelId: ${error.toLogBrief()}")
+    }.getOrDefault(false)
+    else -> false
   }
   if (!isCurrentUpVideosLoad(loadToken)) {
     return@launch
