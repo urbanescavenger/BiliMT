@@ -361,12 +361,12 @@ internal class SabrMediaFetcher(
   @Volatile private var selectedVideoItagNote = 0
 
   fun noteSelectedVideoHeight(height: Int) {
+    selectedVideoHeight = height
+  }
 
   /** P11-232:当前选中视频档的 itag(见 [marginFor])。 */
   fun noteSelectedVideoItag(itag: Int) {
     selectedVideoItagNote = itag
-  }
-    selectedVideoHeight = height
   }
 
   /**
