@@ -1011,6 +1011,11 @@ fun MobilePlayerScreen(
           throw IllegalStateException("SABR single-stream session not found for ${sabrEffectiveInfo.bvid}")
         }
         val fetcher = SabrMediaFetcher(entry, playbackHttpClient)
+        // P11-215(见 docs/youtube-web-sabr.md §5.11.29):把**本次播放的续播位置**种进 fetcher。
+        // 会话的第一个 SABR 请求是 init/bootstrap(我们提前发的,为拿 FORMAT_INITIALIZATION_METADATA),
+        // 它早于任何 getNextChunk ⇒ media3 那时还给不出有效位置(seek 未落定)⇒ 位置锚失效 ⇒
+        // 服务端从 seg 0 推、首包一半到全部作废(真机 dev.r2154:49.9MB/29.3 秒)。这里给的是我们**已知**的值。
+        fetcher.noteSessionStartPositionMs(startPositionMs)
         val manifest = SabrManifest.fromSession(entry.session, sabrEffectiveInfo)
         val sabrItem = androidx.media3.common.MediaItem.Builder()
           .setUri(manifest.sabrUrl)

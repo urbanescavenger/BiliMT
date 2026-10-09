@@ -346,6 +346,24 @@ internal class SabrMediaFetcher(
     playbackPositionNoteMs = ms
   }
 
+  /**
+   * P11-215:**本次播放的续播位置**(ms,由 [SabrMediaPeriod.prepare] 的 `positionUs` 种入;
+   * 未种过 = -1)。用途见 [fetchStreamData] 的位置锚 —— 会话的**第一个**请求(init/bootstrap)
+   * 早于任何 `getNextChunk`,那时 [playbackPositionNoteMs] 还是 0(seek 未落定)⇒ 必须靠这个已知输入兜底。
+   *
+   * **用一次即失效**:只服务"会话首包",之后的 init(会话内换档)一律用实时播放头 [playbackPositionNoteMs]
+   * —— 否则用户中途 seek 回开头后,一次换档的 init 会被锚到很久以前的续播点(反而更糟)。
+   */
+  @Volatile private var sessionStartPositionMs = -1L
+
+  /**
+   * **只接受正值**:0 或负值意味着"来源不知道续播点"(例如 media3 在 seek 落定前调 `prepare(positionUs=0)`,
+   * 或本次就是从 0 开播),此时**不得覆盖**已知值 —— 否则又会退回"锚被 0 冲掉"的老坑。
+   */
+  fun noteSessionStartPositionMs(ms: Long) {
+    if (ms > 0L) sessionStartPositionMs = ms
+  }
+
 
 
   /**
@@ -1020,19 +1038,34 @@ internal class SabrMediaFetcher(
     // 所以只动 init 这一笔;②alpha.36/alpha.39 两次翻车是**全局**改 `playerTimeMs` 语义(中段一起改坏,
     // 服务端对 seq=2 永远重发 seq=1 ⇒ 5/10s 断崖),这里不碰中段;③材料会话早已用同一机制验证过。
     // 阈值 [InitPositionAnchorMinMs]:从 0 开始播的场次(位置≈0)保持原样(web 省略字段 / libre 写 0)。
-    val positionAnchorMs =
-      if (playerTimeMs == 0L && playbackPositionNoteMs >= InitPositionAnchorMinMs) playbackPositionNoteMs
-      else null
+    //
+    // P11-215(2026-10-09 真机 dev.r2154):**会话第一个请求那一笔锚不上** —— 它早于任何 `getNextChunk`,
+    // 那时 [playbackPositionNoteMs] 还是 0(seek 未落定)⇒ 被 5s 阈值挡住 ⇒ 服务端照样 `seq=1..4` 从 0 推
+    // (49.9MB / 29.3 秒,随后 26 秒启动看门狗 evict)。故补一条**已知输入**兜底:建会话时由
+    // [SabrMediaPeriod.prepare] 种入的 [sessionStartPositionMs]。优先级:实时播放头 > 续播位置,
+    // 且后者**用一次即失效**(只服务会话首包;否则用户 seek 回开头后,换档 init 会被锚到很久以前的点)。
+    val playheadAnchor = playbackPositionNoteMs.takeIf { it >= InitPositionAnchorMinMs }
+    val sessionAnchor = if (playheadAnchor == null) sessionStartPositionMs else -1L
+    val sessionAnchorUsable = sessionAnchor.takeIf { it >= InitPositionAnchorMinMs }
+    // 用一次即失效:只服务"会话首包",之后的 init(会话内换档)一律用实时播放头。
+    if (sessionAnchorUsable != null) sessionStartPositionMs = -1L
+    val noteAnchor = playheadAnchor ?: sessionAnchorUsable
+    val positionAnchorMs = if (playerTimeMs == 0L) noteAnchor else null
     if (positionAnchorMs != null) {
       Log.i(
         tag,
         "P11-213 init 位置锚: playerTimeMs=$positionAnchorMs(替代 0) " +
+          "shape=${if (materialAligned) "material" else if (webShape) "web" else "libre"} " +
+          "src=${if (playheadAnchor != null) "playhead" else "sessionStart"}",
+      )
+    } else if (playerTimeMs == 0L) {
+      // P11-215(诊断,原只加在 material 分支 ⇒ 本轮只能靠"没有那行"反推):把锚没生效的原因打出来。
+      Log.i(
+        tag,
+        "P11-213 init 位置锚未生效: playerTimeMs=0 但 note=${playbackPositionNoteMs}ms " +
+          "sessionStart=$sessionAnchor(均 < ${InitPositionAnchorMinMs}ms) " +
           "shape=${if (materialAligned) "material" else if (webShape) "web" else "libre"}",
       )
-    } else if (materialAligned && playerTimeMs == 0L) {
-      // 2026-09-20(诊断):锚没生效时**把原因打出来** —— r2018 首次实测只看到「0 次命中」,分不清是
-      // 「位置注入口还没被喂(-1)」还是「条件不成立」,白烧一轮。打 note 原值即可一次定性。
-      Log.i(tag, "material session: init 位置锚未生效(note=${playbackPositionNoteMs}ms,>0 才用)")
     }
     val clientAbrState = if (materialAligned) {
       ClientAbrStateInput(

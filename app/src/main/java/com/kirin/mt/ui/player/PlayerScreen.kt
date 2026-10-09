@@ -2071,6 +2071,10 @@ fun PlayerScreen(
             throw IllegalStateException("SABR single-stream session not found for ${effectiveInfo.bvid}")
           }
           val fetcher = SabrMediaFetcher(entry, playbackHttpClient)
+          // P11-215(见 docs/youtube-web-sabr.md §5.11.29):把**本次播放的续播位置**种进 fetcher ——
+          // 会话首个 SABR 请求(init/bootstrap)早于任何 getNextChunk,那时 media3 给不出有效位置 ⇒
+          // init 位置锚失效 ⇒ 服务端从 seg 0 推、首包一半到全部作废。
+          fetcher.noteSessionStartPositionMs(startPositionMs)
           val manifest = SabrManifest.fromSession(entry.session, effectiveInfo)
           Log.i(PlayerPlaybackLogTag, "SABR single-stream: sid=$sid qualities=${effectiveInfo.qualities.size} duration=${effectiveInfo.durationMs}ms")
           SabrMediaSource.Factory(manifest, fetcher, sid, bufferMaxMs.toLong(), bandwidthMeter)

@@ -2873,6 +2873,26 @@ init 这一笔,不碰中段语义;②alpha.36 / alpha.39 两次翻车是**全局
    拿它当锚正好复刻 alpha.52 喂 `cumulativeDurationMs` 触发 `maxTimeSinceReq` 软拒那个坑。
    ⇒ 正确来源是**本次播放请求的 `startPositionMs`**(我们已知、且正是用户想续播的位置)。
 
+### 5.11.30 P11-215 实施:续播位置**建会话时种入**(会话首包也带锚)
+
+**改什么**
+
+1. `SabrMediaFetcher` 新增 `sessionStartPositionMs`(未种 = -1)与 `noteSessionStartPositionMs(ms)`,
+   **只接受正值**(0/负 = "来源不知道续播点",不得覆盖已知值 —— 否则又退回"锚被 0 冲掉"的老坑)。
+2. **两个播放器在建 fetcher 处直接种**:`MobilePlayerScreen`(fetcher 创建点)与 TV `PlayerScreen` 同点,
+   种的是本次播放的 `startPositionMs`(与随后 `player.seekTo(...)` 用的同一个值)。
+3. `SabrMediaPeriod.prepare(callback, positionUs)` 也种一次(media3 的明示入口,覆盖其它路径)。
+4. 锚的取值优先级:**实时播放头(`playbackPositionNoteMs` ≥5s)> 续播位置(≥5s)**,后者**用一次即失效**
+   —— 只服务"会话首包";之后的 init(会话内换档)一律用实时播放头,否则用户中途 seek 回开头后,
+   一次换档的 init 会被锚到很久以前的续播点(反而更糟)。
+5. 诊断补齐:**web / libre 形状也打**「锚未生效(note=… sessionStart=… shape=…)」——
+   原先这行只在 material 分支,本轮只能靠"没有那行"反推。生效时打 `src=playhead|sessionStart`。
+
+**判据(真机)**:手动切 2160p / 卡了重载后续播的场次,首包应见
+`P11-213 init 位置锚: playerTimeMs=<续播点> … src=sessionStart`,且 `MEDIA_HEADER seq` 贴近续播点(不再 `seq=1..4`);
+若仍见 `锚未生效 … sessionStart=0`,说明连 `startPositionMs` 都是 0(那就是真从 0 开播,属预期)。
+**否证**:①首笔 `status=2` ⇒ 回退;②仍从 `seq=1` 推 ⇒ body 锚不被认,转 URL 锚。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)

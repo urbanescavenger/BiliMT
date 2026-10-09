@@ -81,6 +81,16 @@ internal class SabrMediaPeriod(
 
   override fun prepare(callback: MediaPeriod.Callback, positionUs: Long) {
     this.callback = callback
+    // P11-215(见 docs/youtube-web-sabr.md §5.11.29):**把「从哪开始播」在轨道选择之前告诉 fetcher**。
+    //
+    // 为什么必须在这里种:会话的**第一个** SABR 请求是 init/bootstrap(我们要 `FORMAT_INITIALIZATION_METADATA`
+    // 才能建轨道组,所以自己提前发),它早于任何 `getNextChunk` —— 而那时 `getNextChunk` 拿到的
+    // `playbackPositionUs` 还是 0(seek 尚未落定,这在 media3 里是正确语义)⇒ 位置注入口被喂成 0
+    // ⇒ init 的位置锚不生效 ⇒ 服务端从 seg 0 起推,续播/切档/重载的首包一半到全部作废。
+    // 真机两次同签名:r2018(注入口是 -1:第一个请求走音频轨、位置只在视频轨喂)与 dev.r2154
+    // (注入口是 0:第一笔请求早于 getNextChunk)。共性都是"赌 ExoPlayer 会先喂有效位置",两次都赌输
+    // ⇒ 改成**依赖已知输入**:`prepare` 的 `positionUs` 就是本次播放的续播位置(ExoPlayer 明示入口)。
+    fetcher.noteSessionStartPositionMs(Util.usToMs(positionUs))
     callback.onPrepared(this)
   }
 
