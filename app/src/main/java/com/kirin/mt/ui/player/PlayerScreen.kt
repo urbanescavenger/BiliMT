@@ -1634,6 +1634,17 @@ fun PlayerScreen(
   // 画面黑」(MTK codec 回收/零帧渲染,00:31 与 07:22 两案)只发生在 READY 态,READY+位置前进
   // 正好看门狗盲区,必须显式记首帧才能兜。launch 每轮重置。
   var frameRendered by remember { mutableStateOf(false) }
+  /**
+   * P11-210:**真正起播 = 进过 `Player.STATE_READY`**(每轮 launch 重置),与 [frameRendered] 刻意分开。
+   *
+   * 真机 2026-10-09 08:51(`logs_live_20261009_085228.log`,手选 2160p 的 SABR 单轨会话)实证:渲染器
+   * 渲染了**首帧**(`onRenderedFirstFrame`),但播放器**从未进 READY**(同场只有一个 ExoPlayer 实例,
+   * `onPlaybackStateChanged` 每次变化都打,8.2 秒里一次都没打),位置钉在 seek 落点一动不动 ——
+   * 那一帧只是 **seek 后的 preroll 渲染**。于是位置冻结看门狗从 [StartupStallThresholdMs] 25s 档掉到
+   * [StallThresholdMs] 8s 档开枪,而它开枪前 1.4 秒刚收到一笔 36.5MB 的响应。起播未完成时该用宽限档、
+   * 也该 evict 慢会话,故这一块一律以本标志为准。移动端 `MobilePlayerScreen` 同改。
+   */
+  var playbackStarted by remember { mutableStateOf(false) }
   // 黑屏画质熔断:视频零帧自动重试 ≥2 次仍黑,把起始档压到此高度(1080p,00:31 对照中 avc 1080p
   // 可出画)重试;恢复出帧后不再动它(防在坏档上来回弹)。Int.MAX_VALUE=未触发。
   var blackFrameHeightCap by remember { mutableIntStateOf(Int.MAX_VALUE) }
@@ -1788,6 +1799,8 @@ fun PlayerScreen(
         // 混合 mime 关闭导致只组 1 轨。isSupported=false → renderer 拒载(H264 字段问题);isSupported=true 但
         // isAdaptive=false → renderer 单轨可播但不可自适应切轨(混合 mime/自适应能力)。
         if (playbackState == Player.STATE_READY) {
+          // P11-210:真正起播(见 playbackStarted 声明处的复盘)。首帧渲染 ≠ 起播。
+          playbackStarted = true
           val g = player.currentTracks.groups
           Log.i(
             "YtSabrTracks",
@@ -2110,6 +2123,8 @@ fun PlayerScreen(
         // 锁高后选择集恒定,松开只是允许选更高档 → 零重建。黑屏熔断压档同样走这个锁(与手动选档取小)。
         startQualityRelaxed = false
         frameRendered = false
+        // P11-210:同上——真正起播要重新等 READY(preroll 首帧不算)。
+        playbackStarted = false
         // P11-120:换视频重置字幕为关闭(不跨视频继承用户的字幕选择)。
         selectedSubtitleTrackId = null
         // 黑屏画质熔断:零帧重试 ≥2 次后启动,起始档压到 BlackFrameHeightCap(与手动选档取小)。
@@ -2338,7 +2353,9 @@ fun PlayerScreen(
           if (stallSinceMs == 0L) {
             stallSinceMs = nowMs
           } else if (nowMs - stallSinceMs >=
-            if (!frameRendered || nowMs < seekStallGraceUntilMs) StartupStallThresholdMs else StallThresholdMs
+            // P11-210:宽限档的判据是「**真正起播**过没有」(进过 READY),不是「出没出首帧」——
+            // preroll 首帧之后播放器可能仍在 BUFFERING、位置钉在 seek 落点(见 playbackStarted 声明处复盘)。
+            if (!playbackStarted || nowMs < seekStallGraceUntilMs) StartupStallThresholdMs else StallThresholdMs
           ) {
             if (autoRetryCount < MaxStallAutoRetry) {
               autoResumePositionMs = currentPositionMs
@@ -2347,7 +2364,8 @@ fun PlayerScreen(
               // SABR 会话连两轮 bootstrap 20.5s/16.4s(rr5 慢首包),换新会话 2s 即愈。立即 evict,重载
               // resolve 铸新会话(热路径 ~4-5s),别让重试复用同一个慢会话。播放中(已出帧)的 stall 不动
               // 会话——多为瞬态网络,保 ~6h 会话复用(alpha.29)。
-              if (!frameRendered) {
+              // P11-210:判据从 `!frameRendered` 改为 `!playbackStarted`(preroll 首帧不再算已起播)。
+              if (!playbackStarted) {
                 val sabrInfo = (playerState as? PlayerScreenState.Ready)?.info
                 if (sabrInfo != null && sabrInfo.isSabrSingle()) {
                   SabrStreamRegistry.getByVideoId(sabrInfo.bvid)?.let { sid ->
@@ -2358,7 +2376,7 @@ fun PlayerScreen(
               }
               Log.w(
                 PlayerPlaybackLogTag,
-                "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% startup=${!frameRendered} seekGrace=${nowMs < seekStallGraceUntilMs}(P11-203)",
+                "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% startup=${!playbackStarted} frame=$frameRendered seekGrace=${nowMs < seekStallGraceUntilMs}(P11-203/P11-210)",
               )
               noteStartupStallMemory(currentPositionMs)
               stallSinceMs = 0L

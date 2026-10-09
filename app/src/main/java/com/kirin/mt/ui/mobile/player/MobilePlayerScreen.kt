@@ -424,6 +424,17 @@ fun MobilePlayerScreen(
    * 没有这个状态,故补一个。
    */
   var frameRendered by remember { mutableStateOf(false) }
+  /**
+   * P11-210:**真正起播 = 进过 `Player.STATE_READY`**(每轮加载重置)。
+   *
+   * 与 [frameRendered] 刻意分开:真机 2026-10-09 08:51(`logs_live_20261009_085228.log`,手选 2160p
+   * 的 SABR 单轨会话)实证 —— 渲染器渲染了**首帧**(`onRenderedFirstFrame` 08:51:35.156),但播放器
+   * **从未进 READY**(同场只有一个 ExoPlayer 实例,`onPlaybackStateChanged` 每次变化都打,8.2 秒里一次
+   * 都没打),位置钉在 seek 落点 `pos=315669` 一动不动。那一帧只是 **seek 后的 preroll 渲染**。
+   * 于是位置冻结看门狗从 25s 档掉到 8s 档开枪,而它在开枪前 1.4 秒刚收到一笔 36.5MB 的响应。
+   * 起播未完成时该用宽限档 + 该 evict 慢会话,故这一块一律以本标志为准,不看 [frameRendered]。
+   */
+  var playbackStarted by remember { mutableStateOf(false) }
   // P11-99c:onPlayerError 专用重试预算(与 stall 看门狗分开,对齐 TV)——降级链三级需 3 击,isPlaying 清零。
   var errorRetryCount by remember { mutableIntStateOf(0) }
   var danmakuEntries by remember { mutableStateOf<List<com.kirin.mt.core.player.DanmakuEntry>>(emptyList()) }
@@ -805,6 +816,8 @@ fun MobilePlayerScreen(
     completionReported = false
     // P11-134:新一轮加载 = 首帧还没来。看门狗据此切回起播宽限档。
     frameRendered = false
+    // P11-210:同上——真正起播要重新等 READY(preroll 首帧不算)。
+    playbackStarted = false
     userPaused = false
     seekPreviewMs = null
     playbackPositionState.longValue = 0L
@@ -1202,6 +1215,8 @@ fun MobilePlayerScreen(
         // dump ①trackSelectionParameters 真实 min/max/viewport 值(验证起始档锁/首帧释放后的实际状态);
         // ②currentTracks 每轨 renderer 判定(trackSupport/sup/sel)——DefaultTrackSelector 建组真相。
         if (playbackState == Player.STATE_READY) {
+          // P11-210:真正起播(见 playbackStarted 声明处的复盘)。首帧渲染 ≠ 起播。
+          playbackStarted = true
           Log.i("YtSabrTracks", "params=${player.trackSelectionParameters}")
           val groups = player.currentTracks.groups
           Log.i(
@@ -1421,15 +1436,17 @@ fun MobilePlayerScreen(
           if (stallSinceMs == 0L) {
             stallSinceMs = nowMs
           } else if (nowMs - stallSinceMs >=
-            if (!frameRendered || nowMs < seekStallGraceUntilMs) StartupStallThresholdMs else StallThresholdMs
+            // P11-210:宽限档的判据是「**真正起播**过没有」,不是「出没出首帧」——
+            // preroll 首帧之后播放器可能仍在 BUFFERING、位置钉在 seek 落点(见 playbackStarted 声明处复盘)。
+            if (!playbackStarted || nowMs < seekStallGraceUntilMs) StartupStallThresholdMs else StallThresholdMs
           ) {
             if (autoRetryCount < MaxStallAutoRetry) {
               autoResumePositionMs = currentPositionMs
               autoRetryCount += 1
-              // 起播期(未出首帧)的 stall 多为**会话级慢首包** → evict 会话、重载 resolve 铸新会话,
-              // 别复用同一个慢会话(同 TV P11-95)。播放中(已出帧)的 stall 不动会话——多为瞬态网络,
-              // 保住长会话复用。
-              if (!frameRendered) {
+              // 起播期(**未真正起播**)的 stall 多为**会话级慢首包** → evict 会话、重载 resolve 铸新会话,
+              // 别复用同一个慢会话(同 TV P11-95)。播放中的 stall 不动会话——多为瞬态网络,保住长会话复用。
+              // P11-210:判据从 `!frameRendered` 改为 `!playbackStarted`(preroll 首帧不再算已起播)。
+              if (!playbackStarted) {
                 val sabrInfo = ready.info
                 if (sabrInfo != null && sabrInfo.isSabrSingle()) {
                   SabrStreamRegistry.getByVideoId(sabrInfo.bvid)?.let { sid ->
@@ -1441,8 +1458,8 @@ fun MobilePlayerScreen(
               Log.w(
                 MobilePlayerLogTag,
                 "stall detected, auto-retry #$autoRetryCount @pos=${currentPositionMs}ms " +
-                  "buffered=${player.bufferedPercentage}% startup=${!frameRendered} " +
-                  "seekGrace=${nowMs < seekStallGraceUntilMs}(P11-203)",
+                  "buffered=${player.bufferedPercentage}% startup=${!playbackStarted} frame=$frameRendered " +
+                  "seekGrace=${nowMs < seekStallGraceUntilMs}(P11-203/P11-210)",
               )
               stallSinceMs = 0L
               stallBaselinePositionMs = 0L

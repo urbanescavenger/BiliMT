@@ -2562,13 +2562,35 @@ pot=88→2 / pot=0→2),健康场多落 `rr5---sn-a5mekndz`(同视频多场全 `
 
 **候选修法(按可验证性排序,均未实施)**
 
-1. **(A) 阈值判据改 `READY`**:`MobilePlayerScreen`(以及镜像的 TV `PlayerScreen`)里,冻结/视频冻结看门狗用
-   「本次播放是否**进过** READY」决定用 8s 还是 25s,而不是 `frameRendered`。计时器**仍在首帧清零**(保留
-   P11-122 的用意:慢起播别在刚出画时被判挂死)。
-   判据:4K 起播场 `stall detected` 行应带 `startup=true`(READY 未到)并按 25s 计时;真挂死仍会被收掉。
+1. **(A) 阈值判据改 `READY`** —— **已实施,见 §5.11.24**。`MobilePlayerScreen` + TV `PlayerScreen` 的
+   位置冻结看门狗改用「本次播放是否**进过** READY」决定 8s / 25s,而不是 `frameRendered`;计时器**仍在首帧
+   清零**(保留 P11-122 的用意:慢起播别在刚出画时被判挂死)。
 2. **(B) 重试退避 + 不整场重载**:起播慢窗口里,重试前先看「在途 fetch 有无进展 / 上次响应距今多少」;
    有进展就延迟重试而不是立刻重载(这条要先把 P11-173/178 的判据链理清再动)。
 3. **(C) 日志把「带宽差一口气」与「请求挂死」分开打**(现在两者都长成 `stall detected`)。
+
+### 5.11.24 P11-210 实施:看门狗「起播」判据改 `READY`(`frameRendered` → `playbackStarted`)
+
+**改什么**(`MobilePlayerScreen` + TV `PlayerScreen` 对称两处):新增 `var playbackStarted by remember`,
+在 `onPlaybackStateChanged(STATE_READY)` 置真、每轮 load 重置(与 `frameRendered` 完全同生命周期);
+位置冻结看门狗里三处改判据:
+
+| 位置 | 旧 | 新 |
+| --- | --- | --- |
+| 阈值选择 | `if (!frameRendered \|\| seekGrace) 25s else 8s` | `if (!playbackStarted \|\| seekGrace) 25s else 8s` |
+| 起播 stall 的 evict | `if (!frameRendered) evict(sid)` | `if (!playbackStarted) evict(sid)` |
+| 日志 | `startup=${!frameRendered}` | `startup=${!playbackStarted} frame=$frameRendered` |
+
+**刻意不动的**:①P11-122 的「首帧清零计时器」原样保留(那条解决的是"慢起播攒满计时器、首帧一渲染立刻开枪",
+与本条互补);②TV 的 `isReadyNoFrame` 黑屏看门狗仍用 `!frameRendered`(它判的正是"READY 了却一帧没出",
+与 `playbackStarted` 的语义正交);③起播探针仍按 `!frameRendered` 打(P11-96)。
+
+**判据(真机)**:4K/慢起播场的 `stall detected` 行应出现
+`startup=true frame=true`(出过 preroll 首帧但没进过 READY)并按 **25 秒**计时(而不是 8 秒);
+正常播放中的冻结 stall 仍是 `startup=false frame=true`、按 8 秒计时。
+**否证**:①真挂死(首帧后彻底不动)现在要多等 17 秒才被收掉 —— 若因此出现"用户先手动退出"的场次,
+把宽限档改成可配置或按「在途 fetch 有无进展」联动;②`startup=true` 的行里出现"位置其实在前进"⇒
+判据又被别的分支污染,回退到 `frameRendered`。
 
 ---
 
