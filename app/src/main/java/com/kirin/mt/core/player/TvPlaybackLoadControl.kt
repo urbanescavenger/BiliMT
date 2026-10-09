@@ -13,6 +13,8 @@ import androidx.media3.exoplayer.LoadControl
 fun createTvPlaybackLoadControl(
   maxBufferMs: Int = PlaybackBufferMax.Standard.ms,
   readAheadMinBufferUs: () -> Long = { 0L },
+  /** P11-230:本档缓冲上限(us,0=不限)。调用方传 `{ SabrAbrMemory.heavyTierBufferedCapUs() }` —— 见 [SabrReadAheadLoadControl]。 */
+  bufferedCapUs: () -> Long = { 0L },
 ): LoadControl {
   val base = DefaultLoadControl.Builder()
     .setBufferDurationsMs(
@@ -23,7 +25,11 @@ fun createTvPlaybackLoadControl(
     )
     .setPrioritizeTimeOverSizeThresholds(true)
     .build()
-  return SabrReadAheadLoadControl(delegate = base, readAheadMinBufferUs = readAheadMinBufferUs)
+  return SabrReadAheadLoadControl(
+    delegate = base,
+    readAheadMinBufferUs = readAheadMinBufferUs,
+    bufferedCapUs = bufferedCapUs,
+  )
 }
 
 private const val MinBufferMs = 10_000

@@ -2543,3 +2543,39 @@ top-tier cooldown 180s → cooldown cleared early(4 秒后)      ← 提前解�
 
 **结论**:一处真冲突已修(多搬加水位门);其余逐条无冲突,且多数**同向**(读前量门槛抬高、防抖动加固、预取受益)。
 ⇒ 两处改动可以落地。
+
+### §40.10 P11-230 实施:TV 高档缓冲上限 20s + 段缓存消费即释(**治 Java 堆,不是带宽**)
+
+**起因(真机 `logs_live_20261010_000859.log`,v3.1.0-alpha.14,BRAVIA AE2,TV)**
+
+```
+4K 大段实测 15 笔,平均 60Mbps(单笔 13~39MB / 1.4~6.5s)⇒ 对 4K60 声明 28.6Mbps 余量 2 倍以上
+  ⇒ **不是带宽不够**
+00:07:25.339  com.kirin.mt: GC … **0% free, 407MB/407MB**, paused **26.156ms, 27.310ms**
+00:07:25.953  … **0% free, 423MB/423MB**, paused 27.7ms
+00:07:28.535  … **0% free, 448MB/448MB**(顶格)
+00:07:25.743  **stall detected** ← 同一秒
+```
+GC 暂停 26~29ms > 60fps 帧预算 16.7ms ⇒ 渲染被打穿 ⇒ 位置冻结 ⇒ 整场重载(冷却 90→180→300s 递增)。
+
+**为什么吃满**:SABR 的三份媒体数据全在 **Java 堆**(其他播放器在 native ⇒ 所以它们放 4K 没事):
+
+| 层 | 4K 下的量 | 结论 |
+| --- | --- | --- |
+| 响应缓冲(`UmpReader`/`CompositeBuffer`) | — | ✅ `drop` 会 `removeFirst()` 真释放,无问题 |
+| **段缓存 `downloadedSegments`** | 单段 12~16MB;**消费后无释放点**,攒 1~3 段(P11-225 多搬后 2~4 段) | ❌ 24~64MB |
+| **media3 样本缓冲(`Allocator`)** | `MaxBufferMs` = 用户设置默认 **50s** ⇒ 50s × 28.6Mbps ≈ **180MB** | ❌ 主因(alpha.11 记过同一前科) |
+
+**改动**:
+1. **TV 高档缓冲上限**(`SabrReadAheadLoadControl` 新增 `bufferedCapUs` provider +
+   `SabrAbrMemory.heavyTierBufferedCapUs()`):`≥1440p ⇒ 20s`(≈72MB)。在 `shouldContinueLoading` 里
+   **上限优先** —— 到顶停拉,漏到 P11-197 门槛(4K 往返 9.2s ⇒ ~17s)以下再续拉(门槛 < 上限,自洽)。
+   **移动端刻意不挂**(用户口径:移动端内存够)⇒ 上限只上 TV。
+2. **段缓存消费即释**(`SabrMediaFetcher.getNextSegment` 入口):删除**同 itag** 中 `seq < 本次请求段` 的段
+   (播放顺序 ⇒ 更早的段不再需要;seek 回退会重拉,代价一次请求)。init 段单独存,不在此列;预取档在别的
+   itag 上,不受影响。
+
+**判据(真机,TV)**:①堆峰值不再顶格(448MB→ <300MB)、不再出现 `0% free`;②GC 暂停不再到 26~29ms;
+③4K 连续播 ≥1 分钟不 stall;④`fetch rn=` 行里 `bufferedRanges=` 的数量下降(段缓存清了 ⇒ 上报范围变少)。
+**否证**:①上限 20s 后出现"停拉-续拉"请求风暴 ⇒ 上限抬到 25s;②段缓存即释后 seek 回退明显变慢 ⇒
+改成"保留最近 2 段";③移动端(未挂上限)也出现同样卡顿 ⇒ 主因不在样本缓冲,得另找。

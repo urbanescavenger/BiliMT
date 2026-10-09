@@ -289,6 +289,10 @@ internal class DefaultSabrChunkSource(
       fetcher.noteSelectedVideoHeight(
         (trackSelection as? HeightAwareAdaptiveTrackSelection)?.selectedHeightNow() ?: 0,
       )
+      // P11-230:同一档高也喂给 SabrAbrMemory —— 供 LoadControl 的「高档缓冲上限」判据取用。
+      SabrAbrMemory.noteSelectedHeight(
+        (trackSelection as? HeightAwareAdaptiveTrackSelection)?.selectedHeightNow() ?: 0,
+      )
       // P11-130(升档预加载):下一档可负担 + 缓冲健康 → 让 fetcher 提前把它的 init(+段)取回来,
       // 切档那刻直接命中缓存(否则每次升档现拉 2.5–7.2s,视频轨断流而音频照播)。
       maybePrefetchNextTier(bufferedDurationUs)

@@ -30,6 +30,21 @@ import androidx.media3.exoplayer.upstream.Allocator
 internal class SabrReadAheadLoadControl(
   private val delegate: LoadControl,
   private val readAheadMinBufferUs: () -> Long,
+  /**
+   * P11-230:**本档的缓冲上限**(us,0 = 不限)—— 到了就停止续拉。
+   *
+   * 为什么需要:media3 的 `MaxBufferMs` 是**用户设置**(默认 50s),而 4K 的样本缓冲
+   * (media3 `Allocator`,Java 数组)按 `50s × 28.6Mbps ≈ 180MB` 算 —— TV 盒子(`largeHeap` 上限 448MB)
+   * 上实测 `0% free, 448MB/448MB`,GC 暂停 **26~29ms**(60fps 帧预算只有 16.7ms)⇒ 渲染被打穿 ⇒
+   * 位置冻结 ⇒ 看门狗整场重载(真机 `logs_live_20261010_000859.log`,BRAVIA AE2)。
+   * 其他播放器(Kodi/MX/SmartTube)不受这个影响,是因为它们的媒体缓冲在 **native**;
+   * 而 SABR 的解析/段缓存/样本队列**三份都在 Java 堆**,所以只能靠"别堆那么多"。
+   *
+   * **只收上限、不动下限**:`readAheadMinBufferUs`(P11-197 续拉门槛)照旧;两者的关系是
+   * 「上限优先」—— 缓冲到上限就停拉,漏到下限以下再续拉(实测 4K 往返 9.2s ⇒ 门槛 ~17s < 上限 20s,自洽)。
+   * 非 SABR / 无样本 ⇒ provider 返回 0 ⇒ 整层退化成原生行为。
+   */
+  private val bufferedCapUs: () -> Long = { 0L },
 ) : LoadControl {
 
   override fun onPrepared(playerId: PlayerId) {
@@ -71,6 +86,9 @@ internal class SabrReadAheadLoadControl(
   ): Boolean = delegate.shouldContinuePreloading(playerId, timeline, mediaPeriodId, bufferedDurationUs)
 
   override fun shouldContinueLoading(parameters: LoadControl.Parameters): Boolean {
+    // P11-230:上限优先 —— 到本档上限就停止续拉(把 Java 堆里的样本量压住)。
+    val capUs = bufferedCapUs()
+    if (capUs > 0L && parameters.bufferedDurationUs >= capUs) return false
     val minBufferUs = readAheadMinBufferUs()
     if (minBufferUs > 0L && parameters.bufferedDurationUs < minBufferUs) return true
     return delegate.shouldContinueLoading(parameters)

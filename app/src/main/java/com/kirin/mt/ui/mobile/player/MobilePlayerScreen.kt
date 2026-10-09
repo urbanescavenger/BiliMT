@@ -579,6 +579,8 @@ fun MobilePlayerScreen(
         .build()
     )
     ExoPlayer.Builder(context)
+      // P11-230:**移动端刻意不挂"高档缓冲上限"**(用户口径:移动端内存够)—— 上限只上 TV(BRAVIA 等
+      // 盒子,`largeHeap` 448MB 上 4K 的 50s 样本缓冲 ≈180MB 会把堆吃到 0% free、GC 暂停 26~29ms)。
       .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs) { SabrAbrMemory.readAheadMinBufferUs() })
       // 后台播放优化: 别的应用抢音频资源抢自动暂停,焦点回来→自动续播;
       // 耳机/蓝牙音频设备断开(AUDIO_BECOMING_NOISY)→自动暂停。Media3 内部管理焦点

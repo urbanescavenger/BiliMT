@@ -748,6 +748,15 @@ internal class SabrMediaFetcher(
             // 同步 bufferedSegments:按 req.bufferedSegments 保留(清除已不缓冲的,防内存泄漏)
             initializedFormats[itag]?.bufferedSegments?.keys?.retainAll(req.bufferedSegments)
 
+            // ── P11-230(用户口径「无效段及时丢弃了吗」):**已消费的段即释** ──────────────────────
+            // 此前 downloadedSegments **只在**「该格式下一次需要发新请求」(下面的 clear)或整格式被
+            // retainAll 清掉时才释放 ⇒ **已被播放器读过的段一直驻留**。4K 下服务端一笔推 2~4 段
+            // (每段 12~16MB)⇒ 攒 1~3 段 = 12~48MB;P11-225「多搬一段」后变 2~4 段 = 24~64MB。
+            // 播放是顺序的:比"本次请求段"更早的段不再需要(seek 回退会重拉,代价一次请求)。
+            // 只删**同 itag** 且 seq < 本次请求段的段(预取档在别的 itag 上,不受影响);
+            // init 段单独存([SabrFormatInfo.initSegment]),不在此列。
+            initializedFormats[itag]?.downloadedSegments?.keys?.removeAll { it < req.segment }
+
             var fmt = initializedFormats[itag]
             var preExistingSeqs: Set<Long> = emptySet()
             if (fmt == null || !fmt.hasSegment(req.segment)) {

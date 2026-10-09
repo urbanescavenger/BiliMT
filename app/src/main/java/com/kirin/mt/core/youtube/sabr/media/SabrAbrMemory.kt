@@ -356,6 +356,30 @@ object SabrAbrMemory {
   @Volatile
   private var readAheadLoggedUs = -1L
 
+  /**
+   * P11-230:**当前选中视频档的高度**(0=未知),由视频 chunk source 每次 getNextChunk 喂。
+   * 用于 [heavyTierBufferedCapUs] —— 高档的样本缓冲在 Java 堆里太占地方。
+   */
+  @Volatile
+  private var selectedHeight = 0
+
+  fun noteSelectedHeight(height: Int) {
+    selectedHeight = height
+  }
+
+  /**
+   * P11-230:**高档(≥1440p)的缓冲上限**(us,0 = 不限)。
+   *
+   * media3 的 `MaxBufferMs` 是用户设置(默认 50s),4K 的样本缓冲按 50s×28.6Mbps ≈ **180MB** 算;
+   * TV 盒子(`largeHeap` 448MB)上实测 `0% free` + GC 暂停 26~29ms(帧预算 16.7ms)⇒ 画面被打穿 ⇒
+   * 看门狗整场重载。其他播放器不受此影响是因为媒体缓冲在 native,而 SABR 这边解析/段缓存/样本队列
+   * 三份都占 Java 堆 ⇒ 只能"别堆那么多"。20s × 28.6Mbps ≈ **72MB**,与 P11-225 的 20s 升档地板同量级。
+   *
+   * 未知档高(0,如纯音频/未选轨)⇒ 返回 0 = 退化成原生行为。
+   */
+  fun heavyTierBufferedCapUs(): Long =
+    if (selectedHeight >= HEAVY_TIER_MIN_HEIGHT) HEAVY_TIER_BUFFERED_CAP_MS * 1000L else 0L
+
   /** SABR 响应完成(含超时/异常)时调用,记录这一次的往返耗时。 */
   fun noteSabrResponseMs(elapsedMs: Long, nowWallMs: Long = System.currentTimeMillis()) {
     if (elapsedMs <= 0L) return
@@ -391,6 +415,10 @@ object SabrAbrMemory {
   }
 
   /** media3 内置的续拉门槛(createTvPlaybackLoadControl 的 MinBufferMs)。 */
+  /** P11-230:高档的起始高度 / 缓冲上限(ms)。 */
+  private const val HEAVY_TIER_MIN_HEIGHT = 1440
+  private const val HEAVY_TIER_BUFFERED_CAP_MS = 20_000L
+
   private const val READ_AHEAD_DEFAULT_MIN_BUFFER_MS = 10_000L
 
   /** 往返之外再留的安全量(起播/解析/交接开销)。 */
