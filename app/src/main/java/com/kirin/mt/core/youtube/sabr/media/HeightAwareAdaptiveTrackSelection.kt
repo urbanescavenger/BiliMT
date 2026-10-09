@@ -1112,10 +1112,14 @@ class HeightAwareAdaptiveTrackSelection(
     // 先完整回填一轮才许试探;bufferMax=30s 用户档(fill ~28s)仍可用。失败冷却的封锁在候选
     // 循环里统一做(gated+trial 一起挡,见循环注释),此处不再单查。
     val trialThresholdUs = maxOf(TRIAL_FLOOR_BUFFERED_US, maxObservedBufferedUs * 8 / 10)
-    // P11-193:升档缓冲地板 = min(30s, 试探线)——复用试探线同形公式(照顾「用户把缓冲目标调小」的
-    // 档位:那时 0.8×maxObserved 才是合理线,写死 30s 会永远爬不上去),上盖 30s 防高水位档放水。
-    // 口径与用例见候选循环里的 P11-193 注释。
-    val climbBufferFloorUs = minOf(UPGRADE_MIN_BUFFERED_US, trialThresholdUs)
+    // P11-222:升档缓冲地板**改写**:不再用 `min(30s, 0.8×maxObserved)`,改成
+    // **「水位容得下两次本档往返」**——见候选循环内的口径(= max(15s, 2×往返))。
+    // 依据(判据链 §40.5.1,dev.r2164 14:05):普通升档被 30s 地板挡住(`bufS=9s < floor=30s`),
+    // 而实测缓冲常驻 **9~18s** ⇒ 4K 永远进不了普通路,只有偶然堆到 35s+ 才走「试探」;而
+    // 0.8×maxObserved 那一条(本意"防高水位档放水")在 maxObserved=44s 时把地板钉在 30s 上盖,
+    // 反而成了"永远爬不上去"的真凶(P11-193 立论的反面)。P11-193 的实质是
+    // 「升档后新档要现拉 init+段,往返一抖就饿」——那件事可以直接量化:**容得下两次往返**即可
+    // (与 P11-203 在降档闸用的 ROUND_TRIP_RUNWAY_FACTOR=2 同一口径)。
     val trialUpgrade = canUpgrade &&
       maxObservedBufferedUs >= TRIAL_MIN_CEILING_US &&
       bufferedDurationUs >= trialThresholdUs &&
@@ -1169,8 +1173,9 @@ class HeightAwareAdaptiveTrackSelection(
         //   21:22:05 实例创建后 122s,`bufS=10.4s` 时 1440p→**2160p**;
         // 换轨又 `cleanup dropped formats` 丢光旧轨缓冲 ⇒ 新 4K 档要从零拉(实测单笔 26~47MB /
         // 11.8~24s)⇒ 8s 看门狗整场重载 ⇒ 重载后梯子再爬同一堵墙 = **连续重载**。
-        // 口径:地板 [climbBufferFloorUs] = min(30s, 试探线) —— 与试探线同形,顺带照顾「用户把缓冲
-        // 目标调小」的档位(那时 0.8×maxObserved 才是合理线,30s 会永远爬不上去)。
+        // 口径(P11-222 改写):地板 = **max(15s, 2×本候选档往返)** —— 见循环内的实现注释;
+        // 旧口径 `min(30s, 0.8×maxObserved)` 会在 maxObserved 高时把地板钉在 30s 上盖,而缓冲常驻
+        // 9~18s ⇒ 普通升档结构性进不去(dev.r2164 实证)。「容得下两次往返」才是 P11-193 立论的量化版。
         // 读数无效(`bufS=-1`,own-range-null 家族)按**不达标**处理:证明不了缓冲够就不爬。
         // 与 P11-188「无效 = 没有证据」同源但方向相反 —— P11-188 是「不因无效读数降档」,此处是
         // 「不因无效读数升档」;升降档的保守方向本就相反。
@@ -1179,15 +1184,23 @@ class HeightAwareAdaptiveTrackSelection(
         // 爬档改由「缓冲真的填起来」驱动(填够地板即放行,不是永久封锁)。
         val startupClimb = nowMs - createdElapsedMs < STARTUP_CLIMB_WINDOW_MS &&
           f.height <= STARTUP_CLIMB_MAX_HEIGHT
-        if (!startupClimb && !trialUpgrade && bufferedDurationUs < climbBufferFloorUs) {
+        // P11-222:地板按**本候选档**的往返算 —— 证据来自 fetcher 按 itag 记的往返(成功=下载耗时、
+        // 失败=计满;`getLastRoundTripMs`)。未知(-1)⇒ 退回 15s 基础地板(不再像旧口径那样用
+        // maxObserved 把它抬到 30s 上盖)。
+        val rtForClimbMs = (bandwidthMeter as? SabrBandwidthMeter)?.getLastRoundTripMs(itagOf(f)) ?: -1L
+        val climbFloorUs = maxOf(
+          TRIAL_FLOOR_BUFFERED_US,
+          if (rtForClimbMs > 0L) rtForClimbMs * ROUND_TRIP_RUNWAY_FACTOR * 1000L else 0L,
+        )
+        if (!startupClimb && !trialUpgrade && bufferedDurationUs < climbFloorUs) {
           if (!climbBufferFloorLogged) {
             climbBufferFloorLogged = true
             Log.i(
               "YtSabrAbr",
-              "upshift held (buffer floor, P11-193): itag${itagOf(f)}(${f.height}p) " +
-                "bufS=${bufferedDurationUs / 1_000_000}s < floor=${climbBufferFloorUs / 1_000_000}s " +
-                "(=min(30s, max(15s, 0.8×maxObserved=${maxObservedBufferedUs / 1_000_000}s)), " +
-                "startupClimb=$startupClimb trial=$trialUpgrade; 等缓冲填起来再爬)",
+              "upshift held (buffer floor, P11-222): itag${itagOf(f)}(${f.height}p) " +
+                "bufS=${bufferedDurationUs / 1_000_000}s < floor=${climbFloorUs / 1_000_000}s " +
+                "(=max(15s, 2×往返${if (rtForClimbMs > 0L) "${rtForClimbMs}ms" else "未知"})); " +
+                "startupClimb=$startupClimb trial=$trialUpgrade; 等缓冲填起来再爬",
             )
           }
           continue
