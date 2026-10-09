@@ -2461,3 +2461,31 @@ val bufferCritical = lowBufferIsEvidence && !bufferCollapseArtifact && belowCrit
 **否证**:①终态上抛后 error-retry 立刻又撞同一个死会话(标记/evict 没生效)⇒ 要查 evict 与重载的时序;
 ②`callCap` 缩到 3s 后**正常慢滴大段(4K 单笔 7~13s)被误切** ⇒ 下限要按档高抬(例如 ≥1440p 用 5s),或只对
 "零字节静默"生效;③重试次数上升但**请求风暴**明显(同一秒多笔)⇒ 加退避。
+
+### §40.8 P11-224:**回退 P11-223①**(整调用上限不得随缓冲缩)并把余量逻辑移到「静默」上
+
+**真机证据(dev.r2167,`logs_live_20261009_145028.log`)—— 那一刀是错的方向**(正好命中 §40.7 否证线②):
+
+| 观察 | 数据 |
+| --- | --- |
+| 超时耗时分布 | **11 笔恰好 3001~3011ms**(= 新加的下限),另 2 笔旧 18s、1 笔 4268ms、1 笔 8559ms |
+| 后果 | `SabrDataSource open: … InterruptedIOException: timeout → **evict sid=…**` **15 次** ⇒ 会话被反复扔掉 ⇒ 反复重建 ⇒ `error-retry` |
+
+被 3 秒切断的**不是"挂死",是 4K/1440p 的大段慢传**(本来就 7~13 秒,旧 cap 18s/40s 下**会成功**)
+⇒ 切断了本来能成功的传输,**净负**。
+
+**改动**:
+1. **回退**:`callCapMs` 恢复固定档(饥饿 8s/12s、≥1440p 40s、其余 18s),不再与 `bufAhead` 挂钩。
+2. **余量逻辑改落在「静默」上**:新增 `sabrSilenceTimeoutMsFor() =
+   min(SabrSilenceTimeoutMs(8s), max(3s, bufAhead/2))`,仅在需要收紧时克隆 client 设 `readTimeout`
+   (`OkHttpClient.newBuilder()` 共享连接池,代价可忽略)。
+   - 语义:readTimeout = "**多久没有新字节**"(每收到一字节即重置)⇒ **慢滴有字节在传时不会触发** ⇒
+     不会被误切;真挂死(零字节)时按缓冲余量提前切断(缓冲只剩一半就等不起了)。
+   - `fetch rn=` 行补 `silence=<ms>ms` 字段便于核对。
+
+**判据(真机)**:①`fetch rn=` 行出现 `silence=…ms`,且薄缓冲场次它是 3000~5000ms、健康场次仍是 8000ms;
+②**超时耗时不再聚集在 3 秒**(`fail=` 分布应回到"慢滴不被切"的样子);③`InterruptedIOException: timeout → evict`
+的次数明显下降;④真挂死(零字节)仍能被按余量提前切断。
+**否证**:①静默收到 3s 后**正常慢滴**也被切(即 readTimeout 被误用成整调用上限)⇒ 说明 OkHttp 的
+readTimeout 在这条链路上不是"每字节重置"⇒ 退回 8s 固定值;②`silence` 收到 3s 后没有减少 evict ⇒
+病根在"一超时就 evict 会话"这条(应改成"超时不 evict、重试同会话")——那是下一步。

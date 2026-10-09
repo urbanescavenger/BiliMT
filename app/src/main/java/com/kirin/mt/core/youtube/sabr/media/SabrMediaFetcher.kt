@@ -976,6 +976,24 @@ internal class SabrMediaFetcher(
   private fun streamMargin(): Long = if (bufferedAheadNoteMs > 0L) 1L else 0L
 
   /**
+   * P11-224:**本笔的「静默」上限**(ms)—— 「多久没有新字节」,不是整调用上限。
+   *
+   * 余量逻辑的**正确落点**在这里:`readTimeout` 语义是「多久没有新字节」(每收到一字节即重置),
+   * 所以**慢滴有字节在传时它不会触发** ⇒ 不会被误切;而真挂死(零字节)时,它按缓冲余量提前切断
+   * (缓冲只剩一半就说明等不起了)。下限 [MinStarvingCallTimeoutMs]=3s(往返的物理下限)。
+   *
+   * 为什么**不能**把这个逻辑放在整调用上限上(P11-223①的教训,dev.r2167 实测):那会把
+   * 4K/1440p 的**大段慢传**(本来就 7~13 秒)在 3 秒时切掉,而每次读超时都会
+   * `SabrDataSource … timeout → evict sid=…`(真机 15 次)⇒ 会话反复被扔 ⇒ error-retry。
+   */
+  private fun sabrSilenceTimeoutMsFor(): Long =
+    if (bufferedAheadNoteMs > 0L) {
+      minOf(SabrSilenceTimeoutMs, (bufferedAheadNoteMs / 2).coerceAtLeast(MinStarvingCallTimeoutMs))
+    } else {
+      SabrSilenceTimeoutMs
+    }
+
+  /**
    * P11-217:**本笔响应是否已经拿够**(请求段 + [streamMargin] 层余量都已入库)⇒ 可以停止读流。
    *
    * init 请求(`req.segment <= 0`)以"本响应推来的第一个媒体段"为基准 —— 锚(P11-213/215)已经保证
@@ -1236,7 +1254,7 @@ internal class SabrMediaFetcher(
     val rn = requestNumber.getAndIncrement()
     lastRequestMs.set(now)
     val url = "${session.sabrUrl}&rn=$rn"
-    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs shape=${if (webShape) "ft" else "libre"} bitfield=${clientAbrState.enabledTrackTypesBitfield ?: 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B potAgeMs=${System.currentTimeMillis() - poTokenState.currentPoTokenAtMs} cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} bw=${bwEstimateBps}bps body=${body.size}B" +
+    Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs shape=${if (webShape) "ft" else "libre"} bitfield=${clientAbrState.enabledTrackTypesBitfield ?: 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B potAgeMs=${System.currentTimeMillis() - poTokenState.currentPoTokenAtMs} silence=${sabrSilenceTimeoutMsFor()}ms cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} bw=${bwEstimateBps}bps body=${body.size}B" +
       // P11-213(诊断):init 请求的 `playerTimeMs` 打的是**段起点**(恒 0),而真正进 body 的是位置锚 ——
       // 不打出来就会和 `P11-213 init 位置锚` 那行自相矛盾(续播场次 body 里带的其实是播放位置)。
       (if (positionAnchorMs != null) " anchor=$positionAnchorMs(进 body)" else "") +
@@ -1317,29 +1335,19 @@ internal class SabrMediaFetcher(
       // 只对「已开播之后」的请求生效:起播期水位恒为 0,而首包偶发 16~20s 是常态(P11-160),
       // 那种情况该由 StartupStallThresholdMs=25s 的起播看门狗兜底,不该在这里被砍到 8s。
       val starving = deliveredRealMedia && bufferedAheadNoteMs in 0..SabrStarvingBufferMs
-      val baseCapMs = when {
+      val callCapMs = when {
         starving && reqHeight >= 1440 -> SabrStarvingCallTimeoutMsHigh
         starving -> SabrStarvingCallTimeoutMs
         reqHeight >= 1440 -> SabrCallTimeoutMs
         else -> SabrCallTimeoutMsLow
       }
-      // ── P11-222(判据链 §40.7):**单笔上限不得超过手上的缓冲余量** ────────────────────────────
-      // 旧的固定档(饥饿 8s / ≥1440p 12s)有两个结构性毛病:
-      //  ①**12s > 8s 看门狗**:≥1440p 的饥饿档上限晚于播放器的 stall 看门狗 ⇒ 一笔挂住时,看门狗先把
-      //    整个会话扔掉,那一笔**一次重试机会都没有**(真机 09:23:`rn=1/2/3 seg=5` 各 12s,3 笔 36 秒里
-      //    看门狗在 8s 就开枪了);
-      //  ②**12s > 缓冲余量**:真机 09:22 `bufAhead=6935ms` 而 cap=12000 ⇒ 缓冲在 7.2s 耗尽、上限还没到,
-      //    "等死"不可避免(§5.11.25)。
-      // 改成"至多半个缓冲余量"(下限 3s):挂住的那笔在缓冲还剩一半时就被切断 → 立刻重发。
-      // 同一段 09:23 那 27 秒窗口里的**完整重试次数 1 → 9**,单笔白等 12s → 3s。
-      // 注意它买到的是「快失败 + 机会翻倍」,**不是"必然修好"** —— 服务端就是不给那一段时重试全挂,
-      // 那属于"换段/换会话"的活(见 §40.6-(3))。
-      val runwayCapMs = if (bufferedAheadNoteMs > 0L) {
-        (bufferedAheadNoteMs / 2).coerceAtLeast(MinStarvingCallTimeoutMs)
-      } else {
-        baseCapMs
-      }
-      val callCapMs = minOf(baseCapMs, runwayCapMs)
+      // ── P11-224:**整调用上限不得随缓冲余量缩**(回退 P11-223①的错向改动)─────────────────────
+      // 真机 dev.r2167 实测那一刀是**错的方向**:cap 随余量缩到 3s 下限后,11 笔超时**恰好落在
+      // 3001~3011ms** —— 被切掉的不是"挂死",而是 **4K/1440p 的大段慢传**(本来就 7~13 秒,旧 cap
+      // 18s/40s 下会成功)。而每次读超时都会 `SabrDataSource … timeout → evict sid=…`(真机 15 次)
+      // ⇒ 会话被反复扔掉 ⇒ 反复重建 ⇒ `error-retry`。**切断了本来能成功的传输**,净负。
+      // 正确落点见下面 [sabrSilenceTimeoutMsFor]:余量逻辑改用在**静默**(多久没有新字节)上 ——
+      // 慢滴有字节在传 ⇒ 静默超时不触发 ⇒ 不会被误切。
       if (starving) {
         Log.i(
           tag,
@@ -1360,7 +1368,16 @@ internal class SabrMediaFetcher(
       // 是服务端偶发的慢启动(与既有记录「首包偶发 16-20s」一致);正常情况本来就不该被杀,慢启动更不该。
       // 修法:用**静默超时 8s** 的 client 克隆(见 [sabrHttpClient]),`callTimeout` 仍按档高自适应 ——
       // 零字节停顿 8 秒即切、立刻重试(真机实测重试 ~4s 即成),慢滴下载不受影响。
-      val call = sabrHttpClient.newCall(request)
+      // P11-224:静默上限按缓冲余量收(下限 3s)—— 见 [sabrSilenceTimeoutMsFor]。
+      val silenceCapMs = sabrSilenceTimeoutMsFor()
+      val client = if (silenceCapMs != SabrSilenceTimeoutMs) {
+        sabrHttpClient.newBuilder()
+          .readTimeout(silenceCapMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+          .build()
+      } else {
+        sabrHttpClient
+      }
+      val call = client.newCall(request)
       call.timeout().timeout(callCapMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       // ── P11-217:流式读 + 边收边解 + 拿够就停 ────────────────────────────────────────────────
       // 以前是 `response.body?.bytes()`:**整批读完才开始解析** ⇒ 服务端一次推 25~65MB 时,播放器
