@@ -2724,6 +2724,34 @@ pot=88→2 / pot=0→2),健康场多落 `rr5---sn-a5mekndz`(同视频多场全 `
 2. **挂住的那笔要早切**(§5.11.25 末尾):单笔上限 ≤ 手上缓冲余量,而不是固定 12s(还 > 8s 看门狗)。
    **判据**:日志出现 `callCap≈bufAhead/2`,同段能看到多次真实重发,`stall detected` 次数下降。
 
+### 5.11.27 P11-213 实施:init 位置锚**放开到所有形状**(续播首包不再从 0 推)
+
+**改什么**(全在 `SabrMediaFetcher.fetchStreamData`):`positionAnchorMs` 的取用条件从「**仅材料会话**」放开到所有形状 ——
+
+| | 旧 | 新 |
+| --- | --- | --- |
+| 条件 | `materialAligned && playerTimeMs == 0L` → `note.takeIf { it > 0 }` | `playerTimeMs == 0L && note >= InitPositionAnchorMinMs(5_000)` → `note` |
+| **web 形状**(臂 B) | `playerTimeMs = 0` 时**省略**该字段(P11-109 对齐 FreeTube rn=0-3) | 0 时用**位置锚**;从 0 开播时仍省略 |
+| **libre 形状**(NewPipe) | 显式写 `0` | 0 时用**位置锚**;从 0 开播时仍写 0 |
+| material | 已用锚(不变) | 不变(仅阈值从 `>0` 变 `≥5s`) |
+
+**为什么敢放开**:①**中段请求本来就对齐**(实测 `fetch rn=4 itag=315 seg=72` → 推 `seq=72,73`),所以只动
+init 这一笔,不碰中段语义;②alpha.36 / alpha.39 两次翻车是**全局**改 `playerTimeMs` 语义(把中段请求一起
+改坏 ⇒ 服务端对 seq=2 永远重发 seq=1 ⇒ 5/10s 断崖),与本条正交;③材料会话早已用**同一机制**验证过
+(r2017 的 `MEDIA_END seq=0..4` 全是片头 → `no seg` 死循环,加锚后解决);④阈值 5s 保证「从 0 开始播」
+的场次行为逐字节不变(`startPos=3003` 那场只废 ~3 秒,不值当动)。
+
+**日志**:新增 `P11-213 init 位置锚: playerTimeMs=N(替代 0) shape=web|libre|material`;
+请求行补 `anchor=N(进 body)` —— 否则请求行里那个 `playerTimeMs=0`(段起点)会与它自相矛盾。
+
+**判据(真机)**:续播 / 手动切档 / 重载续播的场次应出现 `P11-213 init 位置锚`,且**首包的 `MEDIA_HEADER seq`
+贴近续播点**(而不是从 1 起),`bufS` 明显变大(4K 续播应从 6.9s 变成十几秒)。
+
+**否证线**:①首笔变 `status=2`(P11-109 当年怀疑「首请求带 `playerTimeMs` 字段会触发 nag」)⇒ 回退 web 分支;
+②服务端仍从 `seq=1` 推(不认这个锚)⇒ 说明只改 body 不够,转 **URL 锚**(`&startTimeMs=&sq=`,alpha.51/52
+真机验证过「realSeq 跟进 reqSeq」那条);③锚生效但首包仍含播放头之前的内容 ⇒ 需要"两步走"
+(init 之后立刻按续播点要第一笔)。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)

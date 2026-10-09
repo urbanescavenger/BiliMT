@@ -1008,14 +1008,27 @@ internal class SabrMediaFetcher(
     // 我们给当前值:材料那份是**采集那一刻的快照**(它的 playerTimeMs=0),照抄等于向服务端谎报播放进度。
     // 编码器本就跳过 null ⇒ 合并结果 = 材料的静态 + 我们的动态,不需要任何字段级滤波。
     val materialAligned = session.leadingClientAbrStateBytes != null
-    // 2026-09-20(位置锚,见 notePlaybackPositionMs):材料会话的 **init 请求**(playerTimeMs 按定义为 0)
-    // 改用真实播放位置 —— 否则材料那份 CAS 的 playerTimeMs=0 会让服务端从 seg 0 起推,而续播时要的是
-    // 当前位置附近(r2017 真机:`MEDIA_END seq=0..4` 全是片子开头 → 请求段与推送游标对不上 → no seg 死循环)。
-    val positionAnchorMs = if (materialAligned && playerTimeMs == 0L) {
-      playbackPositionNoteMs.takeIf { it > 0L }
-    } else null
+    // 2026-09-20(位置锚,见 notePlaybackPositionMs):init 请求的 `playerTimeMs` 按定义为 0,改用**真实
+    // 播放位置** —— 否则服务端从 seg 0 起推,而续播/切档/重载时要的是当前位置附近(r2017 真机:
+    // `MEDIA_END seq=0..4` 全是片子开头 → 请求段与推送游标对不上 → no seg 死循环)。
+    //
+    // P11-213(2026-10-09):**从「仅材料会话」放开到所有形状**。起因是真机 `logs_live_20261009_092351.log`:
+    // 手动切 2160p(续播 15657)→ 重建会话 → init 请求依旧 0 → 服务端推 `seq=1..4`(0→21.6s,49.9MB),
+    // **其中只有 25.2MB 落在播放头之后**(`bufS=6.9`),一个 11.7 秒的往返全花在废内容上,随后一笔被
+    // 服务端吊住就必然饿死;08:49 那场续播 301276 更是**整包全废**。而续播点不变 ⇒ 每轮重载都废同样多。
+    // 之所以敢放开:①中段请求**本来就对齐**(实测 `fetch rn=4 itag=315 seg=72` → 推 `seq=72,73`),
+    // 所以只动 init 这一笔;②alpha.36/alpha.39 两次翻车是**全局**改 `playerTimeMs` 语义(中段一起改坏,
+    // 服务端对 seq=2 永远重发 seq=1 ⇒ 5/10s 断崖),这里不碰中段;③材料会话早已用同一机制验证过。
+    // 阈值 [InitPositionAnchorMinMs]:从 0 开始播的场次(位置≈0)保持原样(web 省略字段 / libre 写 0)。
+    val positionAnchorMs =
+      if (playerTimeMs == 0L && playbackPositionNoteMs >= InitPositionAnchorMinMs) playbackPositionNoteMs
+      else null
     if (positionAnchorMs != null) {
-      Log.i(tag, "material session: init 请求用真实播放位置作锚 playerTimeMs=$positionAnchorMs(替代 0)")
+      Log.i(
+        tag,
+        "P11-213 init 位置锚: playerTimeMs=$positionAnchorMs(替代 0) " +
+          "shape=${if (materialAligned) "material" else if (webShape) "web" else "libre"}",
+      )
     } else if (materialAligned && playerTimeMs == 0L) {
       // 2026-09-20(诊断):锚没生效时**把原因打出来** —— r2018 首次实测只看到「0 次命中」,分不清是
       // 「位置注入口还没被喂(-1)」还是「条件不成立」,白烧一轮。打 note 原值即可一次定性。
@@ -1051,7 +1064,9 @@ internal class SabrMediaFetcher(
         bandwidthEstimate = bwEstimateBps.takeIf { it > 0 } ?: 1_000_000L,
         // P11-109:playerTimeMs=0 时省略(init 请求)——FreeTube rn=0-3 的 f28 全缺席,
         // 我们此前显式写 0(proto2 存在语义下=「会话已开始计时」,疑为 status=2 从首请求起 nag 触发点)。
-        playerTimeMs = playerTimeMs.takeIf { it != 0L },
+        // P11-213:续播场次的 init 用位置锚(见上);从 0 开始播时 positionAnchorMs=null ⇒ 仍省略,
+        // P11-109 的原意(不在首请求显式写 0)保持不变。
+        playerTimeMs = playerTimeMs.takeIf { it != 0L } ?: positionAnchorMs,
         playbackRate = req.playbackSpeed,
         enabledTrackTypesBitfield = if (videoFormat == null) 1 else null, // video→省略(=0,FreeTube 同)
       )
@@ -1065,7 +1080,8 @@ internal class SabrMediaFetcher(
         clientViewportIsFlexible = false,
         bandwidthEstimate = 0L,
         // 请求体 playerTimeMs = 段起点(对齐 LibreTube setPlayerTimeMs(segmentStartTimeMs))
-        playerTimeMs = playerTimeMs,
+        // P11-213:续播场次的 init 段起点=0 时改用位置锚(见上),否则服务端从 seg 0 起推、首包一半作废。
+        playerTimeMs = playerTimeMs.takeIf { it != 0L } ?: positionAnchorMs ?: 0L,
         timeSinceLastSeekMs = lastSeekMs?.let { now - it } ?: 0L,
         visibility = 1,
         playbackRate = req.playbackSpeed,
@@ -1125,6 +1141,9 @@ internal class SabrMediaFetcher(
     lastRequestMs.set(now)
     val url = "${session.sabrUrl}&rn=$rn"
     Log.i(tag, "fetch rn=$rn itag=${req.formatItag} seg=${req.segment} playerTimeMs=$playerTimeMs shape=${if (webShape) "ft" else "libre"} bitfield=${clientAbrState.enabledTrackTypesBitfield ?: 0} selectedFmts=${selected.size} bufferedRanges=${bufferedRanges.size} pot=${poTokenState.currentPoToken.size}B potAgeMs=${System.currentTimeMillis() - poTokenState.currentPoTokenAtMs} cookie=${session.playbackCookie != null && session.playbackCookie!!.isNotEmpty()} contexts=${activeCtxs.size}/${unsentCtxTypes.size} bw=${bwEstimateBps}bps body=${body.size}B" +
+      // P11-213(诊断):init 请求的 `playerTimeMs` 打的是**段起点**(恒 0),而真正进 body 的是位置锚 ——
+      // 不打出来就会和 `P11-213 init 位置锚` 那行自相矛盾(续播场次 body 里带的其实是播放位置)。
+      (if (positionAnchorMs != null) " anchor=$positionAnchorMs(进 body)" else "") +
       // P11-197 诊断(请求节奏,见 docs/youtube-sabr-abr-upshift-notes.md §39.8):把「距上一笔响应
       // 完成多久」与「发请求那一刻的前方缓冲」打在请求行上。真机 `logs_live_20261005_193932.log`
       // 19:07:31 那次 stall 的形状是「上一笔 61MB(≈21s 4K 媒体)到手的 17s 后才发下一笔请求,
@@ -1606,6 +1625,16 @@ internal class SabrMediaFetcher(
      * 再重试"。慢滴(字节持续到来)不受影响。
      */
     const val SabrSilenceTimeoutMs = 8_000L
+
+    /**
+     * P11-213:init 位置锚的最小播放位置(ms)—— [playbackPositionNoteMs] 只有 ≥ 它才用作 init 请求的
+     * `playerTimeMs`(替代按定义为 0 的值)。
+     *
+     * 为什么有阈值:从 0 开始播的场次位置≈0,锚了等于没锚,却会改变请求体形状(web 形状原本**省略**
+     * 该字段,见 P11-109)——那是另一条已经踩过的坑,不碰。5s 足以把「真续播/切档/重载续播」和
+     * 「从头播」分开(真机从头播那场 `startPos=3003`,只废 ~3 秒,不值当动它)。
+     */
+    const val InitPositionAnchorMinMs = 5_000L
 
     /**
      * P11-173:判定「视频缓冲已见底(饥饿)」的水位阈值(ms)—— [noteBufferedAheadMs] 最近一次喂进来的值
