@@ -2831,6 +2831,23 @@ init 这一笔,不碰中段语义;②alpha.36 / alpha.39 两次翻车是**全局
 (`notePlaybackPositionMs(startPositionMs)`),不要依赖 ExoPlayer 在 `getNextChunk` 里喂 —— 时序上那一笔总是太早。
 配套:给 **web 形状**也补一行「锚未生效(note=…)」诊断(material 分支已有,web 没有,这次只能靠"没有那行"反推)。
 
+**归属:这些病灶**不是** WEB-SABR 专属**(用户追问「是 web sabr 的问题吗」)。逐条对:
+
+| 病灶 | 在哪一层 | WEB 专属? |
+| --- | --- | --- |
+| init 从 seg 0 推(首包报废) | `SabrMediaFetcher` 请求构造(共用) | ❌ — web 是**省略** `playerTimeMs`、libre 是**显式写 0**,两边都从 0 推;P11-213 两边都改 |
+| 单笔上限 12s > 缓冲 6.9s | fetcher 饥饿快切(共用) | ❌ |
+| `response.body().bytes()` 整批读完才解析 | fetcher(共用) | ❌ |
+| preroll 首帧被当起播(8s/25s 档) | 播放器看门狗(共用) | ❌ |
+| 同一段被吊死 12s | 服务端行为 + fetcher 重试(共用) | ❌(样本都是 web,但机制与形状无关) |
+| `status=2 → status=3` 判死 | token/会话配方 | ❌ — pot-less(NewPipe/visionOS)同样中招(见 §5.11.21) |
+
+**那为什么体感上"总是 WEB-SABR 出问题"**:①你开着「**WEB-SABR 优先**」,每次 resolve 都先走 WEB ⇒ **手动切档 / 重载
+都落在 WEB 会话上**;②"复播 / Auto"那次走的是 **NewPipe(14 轨梯子)**,天然有降档余地,所以显得耐操。
+**本场 WEB 会话的首笔状态全是 `status=1`**(09:55:41 / 09:55:42 / 09:55:47 / 09:56:27 / 09:56:57 / 09:58:13 / 09:58:46)
+⇒ **WEB-SABR 的鉴权与 token 这一层今天是好的**,别去动会话配方(P11-156 押的臂 B 是对的);
+要修就修**共用层**(锚的种入 / 单笔上限 / 流式解析),两条路一起受益。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
