@@ -2752,6 +2752,29 @@ init 这一笔,不碰中段语义;②alpha.36 / alpha.39 两次翻车是**全局
 真机验证过「realSeq 跟进 reqSeq」那条);③锚生效但首包仍含播放头之前的内容 ⇒ 需要"两步走"
 (init 之后立刻按续播点要第一笔)。
 
+### 5.11.28 「必须单段全部下载完成吗」—— 段是原子的,**而且整批响应也必须下完**(P11-214,判读,未实施)
+
+用户追问。分三层,答案不一样:
+
+| 层 | 现在是否必须"下完才可用" | 证据 |
+| --- | --- | --- |
+| **段(segment)** | **是** | `DefaultSabrChunkSource.getNextSegment` 从 `initializedFormats[itag].downloadedSegments[seq]` 取**整段**;段在 `SabrMediaFetcher.processPart` 收到 `MEDIA_END` 时才组装进 `downloadedSegments`(日志 `chunk completed: media itag=… bytes=…`) |
+| **整批响应** | **是 —— 这才是真正的痛点** | [SabrMediaFetcher.kt:1256](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L1256) `response.body?.bytes()`:**整个响应体读完**才开始解析 ⇒ 一次 POST 的 25~50MB 全部到位前,播放器拿不到**任何**一个字节 |
+| 其实**不必**如此 | —— | UMP 响应本身就是「长度前缀 + 段边界」的分片流(`MEDIA_HEADER` / `MEDIA` / `MEDIA_END` 依次到达),`MEDIA_END` 就是「这一段完成」的信号 ⇒ 完全可以**边收边解、段一到就交** |
+
+**代价量化(2026-10-09 09:22 那场,4K60 `itag=315`,单段 ≈5.5s ≈12.6MB)**:
+
+- 首包 49.9MB / 11.7s ≈ **4.27MB/s**;第一段大约 **3 秒**就能到手,而现在要等**整批 11.7 秒**才解析;
+- 实测该会话首帧在 `09:22:29.940`(会话 09:22:16 起)⇒ **13.7 秒**;若段一到就交,首帧应在 **~3.5 秒** ⇒ **差 ~10 秒**。
+
+**三条收益**:①首帧提前(上面这 10 秒);②响应中途被吊住时,`response.body.bytes()` 一超时**整批作废**(那笔 12 秒超时丢掉的正是已经到手的字节)——
+流式的话已到的段仍可播;③峰值内存从"一整批 50MB + 解析副本"降到"一两个段"。
+
+**代价**:解析器要改成流式(`readParts`/`processPart` 从"完整 ByteArray"改成"读 `byteStream` 的增量缓冲"),段的交付要改成**发布即唤醒**
+(现在 `getNextSegment` 找不到段就**再发一次 POST**,最多 6 连——`MAX_ATTEMPTS`),这既是重构也是行为变更,不是一行改动。
+
+**顺序建议**:先做 §5.11.25 末尾那条「单笔上限 ≤ 缓冲余量」(一行量级、直接消掉"等死"),再评估本条(收益最大但要动解析与交付两处)。
+
 ---
 
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
