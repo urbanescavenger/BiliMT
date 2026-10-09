@@ -1188,8 +1188,15 @@ class HeightAwareAdaptiveTrackSelection(
         // 失败=计满;`getLastRoundTripMs`)。未知(-1)⇒ 退回 15s 基础地板(不再像旧口径那样用
         // maxObserved 把它抬到 30s 上盖)。
         val rtForClimbMs = (bandwidthMeter as? SabrBandwidthMeter)?.getLastRoundTripMs(itagOf(f)) ?: -1L
+        // P11-225(用户口径「升 4K 要更厚的垫子,缓冲延长到 20」):**顶档(≥2160)地板 = 20s**。
+        // 依据(dev.r2168 实测):4K 一笔往返 4.9~9.2s ⇒ 判据要的垫子是 2×往返 ≈ **18.4~20s**;
+        // 而 15s 地板让它在"水位 10s、往返 9.2s"时也升上去 ⇒ 10 秒后必被水位急救降回(纯抖动、白切一次轨)。
+        // 20s 与「一笔搬 3 段」配套(见 SabrMediaFetcher.streamMargin 的 P11-225):先让水位真能到 20s,
+        // 再要求 20s ⇒ 升上去就站得住。非顶档维持 15s 基础地板(它们的往返 0.7~2s,垫子绰绰有余)。
+        val heightFloorUs =
+          if (f.height >= TOP_TIER_MIN_HEIGHT) TOP_TIER_CLIMB_FLOOR_US else TRIAL_FLOOR_BUFFERED_US
         val climbFloorUs = maxOf(
-          TRIAL_FLOOR_BUFFERED_US,
+          heightFloorUs,
           if (rtForClimbMs > 0L) rtForClimbMs * ROUND_TRIP_RUNWAY_FACTOR * 1000L else 0L,
         )
         if (!startupClimb && !trialUpgrade && bufferedDurationUs < climbFloorUs) {
@@ -1197,9 +1204,10 @@ class HeightAwareAdaptiveTrackSelection(
             climbBufferFloorLogged = true
             Log.i(
               "YtSabrAbr",
-              "upshift held (buffer floor, P11-222): itag${itagOf(f)}(${f.height}p) " +
-                "bufS=${bufferedDurationUs / 1_000_000}s < floor=${climbFloorUs / 1_000_000}s " +
-                "(=max(15s, 2×往返${if (rtForClimbMs > 0L) "${rtForClimbMs}ms" else "未知"})); " +
+              "upshift held (buffer floor, ${if (f.height >= TOP_TIER_MIN_HEIGHT) "P11-225 顶档 20s" else "P11-222 15s"}): " +
+                "itag${itagOf(f)}(${f.height}p) bufS=${bufferedDurationUs / 1_000_000}s " +
+                "< floor=${climbFloorUs / 1_000_000}s " +
+                "(=max(${heightFloorUs / 1_000_000}s, 2×往返${if (rtForClimbMs > 0L) "${rtForClimbMs}ms" else "未知"})); " +
                 "startupClimb=$startupClimb trial=$trialUpgrade; 等缓冲填起来再爬",
             )
           }
@@ -1364,6 +1372,9 @@ class HeightAwareAdaptiveTrackSelection(
   }
 
   override fun getSelectedIndex(): Int = selected
+
+  /** P11-225:当前选中档的高度(0 = 未知)—— 供 fetcher 的早停余量按档位分叉。 */
+  fun selectedHeightNow(): Int = getFormat(selected).height
 
   /**
    * 2026-08-30:从 media3 Format.id 解析 itag。id 不保证是裸 itag——media3 的 Merging/TrackGroup 层
@@ -1555,6 +1566,9 @@ class HeightAwareAdaptiveTrackSelection(
      * 2026-09-01:试探水位线地板(us)——「满缓冲=供给富余」证据的最低可信线;30s bufferMax 档
      * (0.8×28s≈22s)也在线上,地板只在更小水位时兜底。
      */
+    /** P11-225:顶档(≥2160)升档的**缓冲地板** —— 4K 一笔往返 4.9~9.2s,垫子要 2×往返 ≈ 18~20s。 */
+    const val TOP_TIER_CLIMB_FLOOR_US = 20_000_000L
+
     const val TRIAL_FLOOR_BUFFERED_US = 15_000_000L
     /**
      * 2026-09-01:试探失败档冷却(ms)——试探扛不住的档冷却这段时间,防每轮回填都重试同一堵墙;

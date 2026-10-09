@@ -352,6 +352,16 @@ internal class SabrMediaFetcher(
   }
 
   /**
+   * P11-225:**当前选中视频档的高度**——由视频 [DefaultSabrChunkSource] 每次 getNextChunk 喂。
+   * 用途:[streamMargin] 按档位决定"一笔搬几段"。
+   */
+  @Volatile private var selectedVideoHeight = 0
+
+  fun noteSelectedVideoHeight(height: Int) {
+    selectedVideoHeight = height
+  }
+
+  /**
    * 2026-09-20(材料会话的**位置锚**,见 fetchStreamData):由视频 [DefaultSabrChunkSource] 每次
    * getNextChunk 喂当前播放位置(ms)。
    *
@@ -973,7 +983,20 @@ internal class SabrMediaFetcher(
    * - **已开播**:下一轮续拉要等一个往返,只拿一段会让缓冲在往返期间见底(§5.11.25 那条"差一口气"),
    *   故保留一层余量。
    */
-  private fun streamMargin(): Long = if (bufferedAheadNoteMs > 0L) 1L else 0L
+  private fun streamMargin(): Long = when {
+    // 起播期:只等请求段本身(P11-218 —— 播放器此刻无事可做,早一拍到手早一拍出画)。
+    bufferedAheadNoteMs <= 0L -> 0L
+    // P11-225:≥1440p 一笔**多搬一段**。依据(dev.r2168 实测):4K 一笔只搬 2 段(≈11s 内容)而往返
+    // 9.2s ⇒ **净攒只有 +1.8s** ⇒ 水位常驻 6~12s、永远到不了升档门槛要的 20s(「够不到」空转)。
+    // 搬 3 段(≈16.5s)⇒ 净攒 +7.3s ⇒ 水位能爬到 20s 量级,升档门槛(见 HeightAware 的 P11-225 地板)
+    // 才有意义;代价是单笔响应更大(4K ≈47MB)——流式读 + 早停(P11-217)已让"更大"不再等于"更慢出画"。
+    // ⚠️冲突复核(P11-225):**多搬只在"水位有余力"时才做** —— 否则会和饥饿档的单笔上限顶在一起:
+    // 4K 3 段 ≈47MB,在 20Mbps 下要 ~19 秒,而饥饿档 `callCap` 只有 12 秒 ⇒ 一笔必被切断
+    // (就是 P11-224 刚回退的那个坑换个形式回来)。水位薄时退回 1 段(2 段 ≈31MB/~12s)正好贴住上限。
+    bufferedAheadNoteMs >= HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS &&
+      selectedVideoHeight >= HIGH_TIER_MIN_HEIGHT -> 2L
+    else -> 1L
+  }
 
   /**
    * P11-224:**本笔的「静默」上限**(ms)—— 「多久没有新字节」,不是整调用上限。
@@ -1847,6 +1870,12 @@ internal class SabrMediaFetcher(
      * 而早切能让失败样本立刻喂带宽计 → ABR 在缓冲耗尽前降档(既有 `recordRealBandwidthFailure` 语义),
      * 避免整场重载。非饥饿时口径完全不变(4K 大段 28s 合法慢不受影响)。
      */
+    /** P11-225:多搬(3 段)要求的**最低水位**(ms)—— 水位不够时退回 2 段,避免撞饥饿档的 12s 单笔上限。 */
+    const val HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS = 15_000L
+
+    /** P11-225:「高档」的起始高度 —— 早停余量按档位分叉(≥1440p 一笔多搬一段)。 */
+    const val HIGH_TIER_MIN_HEIGHT = 1440
+
     /** P11-222:单笔上限的**下限**(ms) —— 缓冲余量的一半低于它时仍给这么多(往返本身有物理下限)。 */
     const val MinStarvingCallTimeoutMs = 3_000L
 

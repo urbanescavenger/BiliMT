@@ -285,6 +285,10 @@ internal class DefaultSabrChunkSource(
     (trackSelection as? HeightAwareAdaptiveTrackSelection)?.noteServerServedItags(fetcher.serverServedVideoItags())
     if (trackType == C.TRACK_TYPE_VIDEO) {
       fetcher.noteBufferedAheadMs(Util.usToMs(bufferedDurationUs))
+      // P11-225:当前选中档高 —— 早停余量按档位分叉(≥1440p 一笔多搬一段)。
+      fetcher.noteSelectedVideoHeight(
+        (trackSelection as? HeightAwareAdaptiveTrackSelection)?.selectedHeightNow() ?: 0,
+      )
       // P11-130(升档预加载):下一档可负担 + 缓冲健康 → 让 fetcher 提前把它的 init(+段)取回来,
       // 切档那刻直接命中缓存(否则每次升档现拉 2.5–7.2s,视频轨断流而音频照播)。
       maybePrefetchNextTier(bufferedDurationUs)
