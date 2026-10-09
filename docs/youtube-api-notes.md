@@ -265,6 +265,16 @@ media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack
 
 **踩坑（2026-10-10 真机，v3.1.0-alpha.14/dev.r2174）：切档直接把频道页打成「视频加载失败」** —— 报错文案 `视频加载失败。Element class kotlinx.serialization.json.JsonObject (Kotlin reflection is not available) is not a JsonPrimitive`。根因：摘 token 是**整棵响应树**的通用探查（对每个节点探 `content` / `simpleText`），而 `YoutubeParsers.stringOrNull` 实现是 `this[name]?.jsonPrimitive?.contentOrNull` —— kotlinx.serialization 的 `JsonElement.jsonPrimitive` 遇到**对象值会抛** `IllegalArgumentException`（`content` 是对象在锁屏卡/缩略图上遍地都是）。且 `parseChannelOrderTokens` 的调用**不在** `feedCatching` 里，异常一路上抛成整页 `ChannelVideoState.Failed`。修法（P11-231）：①文案/token 取值一律走 `as? JsonPrimitive` 的安全取值器 `stringValueOrNull()`（非字符串返回 null）；②`parseChannelOrderTokens` 整体 `runCatching`，失败只记 `YtOrder … failed` 并退空表 ⇒ 回归「摘不到就降级最新」的契约。**教训**：对**未定型节点**做全树探针时，绝不可以用会抛的取值器（`.jsonPrimitive`）；只有针对特定 renderer 的定型取值才可以。
 
+**再一坑（同日，dev.r2178）：排序 chip 文案随 `hl` 本地化，按英文硬匹配 ⇒ `got=[]` 静默降级最新**。真机日志 `channelOrderTokens channelId=UCzu9Auz… got=[]` + `getChannelVideosOrdered … order=Oldest: 排序 chip token 缺失 → 降级最新`，用户看到的就是「切了没反应、显示的还是最新」。原因：`orderLabelOf` 只认 `latest/popular/oldest`，而 app 的 `hl` 跟随用户设置的内容地区（[YoutubeContentRegion]：US/GB→`en`、JP→`ja`、HK/TW→`zh-Hant`、KR→`ko`、DE→`de`），港/台节点下 chip 文案是「最新 / 熱門 / 最早」。**文案表必须覆盖这 5 种 hl**（2026-10-10 直连实测，6 频道 × 5 语言，平铺 chip 与下拉 listItem 两种形状文案一致）：
+
+| 档位 | en | ja | zh-Hant | ko | de |
+|---|---|---|---|---|---|
+| 最新 `Latest` | Latest | 新しい順 | 最新 | 최신순 | Neueste |
+| 最热 `Popular` | Popular | 人気の動画 | 熱門 | 인기순 | Beliebt |
+| 最早 `Oldest` | Oldest | 古い順 | 最早 | 날짜순 | Älteste |
+
+`entityKey`（下拉项上的 `:最新順` / `:Popular` 之类）**也随语言走**，不能当语言无关判据；token 内层那个排序 varint（`4/2/5`）理论上语言无关，但实测取字段不稳（同一响应几个 chip 解出同一个值），未采用。认不出文案时 `parseChannelOrderTokens` 会打一行 `YtOrder … 认不出排序 chip 文案 labels=[…]`（把真实文案原样带出来），以后 YouTube 换措辞/A-B 时照它抄即可。
+
 ### 4.14 视频点赞数主源 `/player microformat.likeCount`（2026-08-23，v3.0.5-alpha.7）
 
 点赞数原靠 `getVideoDetail` 在 `/player` 之外**另发 `/next`** 从 `videoPrimaryInfoRenderer.videoActions` 工具栏解析回写（对齐 NewPipe `getLikeCount`），但真机**该 `/next` 取不到**（诊断日志 `likes videoId=` 不出现），`detail.likeCount` 恒 null → 移动端简介「点赞」段被 `likeCountInt > 0` 丢弃，只显示「观看 · 时间」。

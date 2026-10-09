@@ -424,53 +424,97 @@ internal object YoutubeParsers {
    */
   fun parseChannelOrderTokens(root: JsonObject): Map<YoutubeConstants.ChannelVideoOrder, String> {
     val tokens = mutableMapOf<YoutubeConstants.ChannelVideoOrder, String>()
+    val seenLabels = linkedSetOf<String>()
     // 这趟是**整棵响应树**的通用探查(拿排序 chip 只是锦上添花),任何节点形状都不能让它抛出去
     // ——抛出去会把整个频道页变成「视频加载失败」。真机 2026-10-10 就是这么挂的:某节点的
     // `content` 是对象,`stringOrNull` 里的 `.jsonPrimitive` 直接抛
     // 「Element class ...JsonObject ... is not a JsonPrimitive」。取不到就退回空表(调用方降级最新)。
-    runCatching { collectOrderTokens(root, tokens) }
+    runCatching { collectOrderTokens(root, tokens, seenLabels) }
       .onFailure { Log.w("YtOrder", "parseChannelOrderTokens failed: ${it.message}", it) }
+    if (tokens.isEmpty() && seenLabels.isNotEmpty()) {
+      // 认不出文案时不猜:把 chip 上真实的文案原样打出来(下次改文案表就有据可依)。
+      Log.w("YtOrder", "parseChannelOrderTokens 认不出排序 chip 文案 labels=$seenLabels")
+    }
     return tokens
   }
 
   private fun collectOrderTokens(
     element: JsonElement,
     out: MutableMap<YoutubeConstants.ChannelVideoOrder, String>,
+    seenLabels: MutableSet<String>,
   ) {
     when (element) {
       is JsonObject -> {
+        chipNodeLabel(element)?.let(seenLabels::add)
         // 先认文案(廉价),命中才去找 token(遍历子树)——避免在整份响应上做 O(n²)。
         val order = orderLabelOf(element)
         if (order != null) {
           val token = firstNestedContinuationToken(element)
           if (!token.isNullOrBlank()) out[order] = token
         }
-        for ((_, value) in element) collectOrderTokens(value, out)
+        for ((_, value) in element) collectOrderTokens(value, out, seenLabels)
       }
-      is JsonArray -> for (item in element) collectOrderTokens(item, out)
+      is JsonArray -> for (item in element) collectOrderTokens(item, out, seenLabels)
       else -> Unit
     }
   }
 
+  /** chip 节点(`chipViewModel` / 下拉的 `listItemViewModel`)上的文案,仅用于诊断日志。 */
+  private fun chipNodeLabel(node: JsonObject): String? {
+    val cv = node["chipViewModel"] as? JsonObject
+    val li = node["listItemViewModel"] as? JsonObject
+    val inner = cv ?: li
+    return if (inner != null) labelTextOf(inner) ?: labelTextOf(node) else null
+  }
+
+  /** 节点的候选文案:新布局 `title.content`,旧布局 `text.simpleText`,再退裸 `content`/`simpleText`/`text`。 */
+  private fun labelTextOf(node: JsonObject): String? =
+    (node["title"] as? JsonObject)?.get("content").stringValueOrNull()
+      ?: (node["text"] as? JsonObject)?.get("simpleText").stringValueOrNull()
+      ?: node["content"].stringValueOrNull()
+      ?: node["simpleText"].stringValueOrNull()
+      ?: node["text"].stringValueOrNull()
+
   /**
-   * 节点自身的排序 chip 文案:新布局 `title.content`,旧布局 `text.simpleText`。
+   * 排序 chip 文案 → 档位。**文案随 hl 本地化**(zh-Hant 是「最新 / 熱門 / 最早」),不是恒英文
+   * —— 按英文硬匹配会让 zh-Hant 用户永远 `got=[]` 静默降级最新(2026-10-10 真机实锤:用户选的是
+   * 港/台节点,点「最早」列表纹丝不动)。
+   *
+   * app 只可能产生 5 种 hl([YoutubeContentRegion]:US/GB→en、JP→ja、HK/TW→zh-Hant、KR→ko、DE→de),
+   * 下表逐条取自同日直连实测(6 个频道 × 5 语言,含真机失败的那个频道),别凭印象改。de 那三个
+   * 走小写比对(Neueste→neueste)。
+   */
+  private val ChannelOrderLabels: Map<String, YoutubeConstants.ChannelVideoOrder> = mapOf(
+    // en
+    "latest" to YoutubeConstants.ChannelVideoOrder.Latest,
+    "popular" to YoutubeConstants.ChannelVideoOrder.Popular,
+    "oldest" to YoutubeConstants.ChannelVideoOrder.Oldest,
+    // ja
+    "新しい順" to YoutubeConstants.ChannelVideoOrder.Latest,
+    "人気の動画" to YoutubeConstants.ChannelVideoOrder.Popular,
+    "古い順" to YoutubeConstants.ChannelVideoOrder.Oldest,
+    // zh-Hant(HK/TW)
+    "最新" to YoutubeConstants.ChannelVideoOrder.Latest,
+    "熱門" to YoutubeConstants.ChannelVideoOrder.Popular,
+    "最早" to YoutubeConstants.ChannelVideoOrder.Oldest,
+    // ko
+    "최신순" to YoutubeConstants.ChannelVideoOrder.Latest,
+    "인기순" to YoutubeConstants.ChannelVideoOrder.Popular,
+    "날짜순" to YoutubeConstants.ChannelVideoOrder.Oldest,
+    // de
+    "neueste" to YoutubeConstants.ChannelVideoOrder.Latest,
+    "beliebt" to YoutubeConstants.ChannelVideoOrder.Popular,
+    "älteste" to YoutubeConstants.ChannelVideoOrder.Oldest,
+  )
+
+  /**
+   * 节点自身的排序 chip 文案 → 档位,见 [ChannelOrderLabels]。
    *
    * ⚠️ 只认**字符串**值:这趟会探整棵树的每个节点,`content`/`simpleText` 是对象(封面、缩略图等
    * 到处都有)时 `jsonPrimitive` 会抛异常 ⇒ 一律走 [stringValueOrNull] 的 `as? JsonPrimitive`。
    */
-  private fun orderLabelOf(node: JsonObject): YoutubeConstants.ChannelVideoOrder? {
-    val label = (node["title"] as? JsonObject)?.get("content").stringValueOrNull()
-      ?: (node["text"] as? JsonObject)?.get("simpleText").stringValueOrNull()
-      ?: node["content"].stringValueOrNull()
-      ?: node["simpleText"].stringValueOrNull()
-      ?: return null
-    return when (label.trim().lowercase()) {
-      "latest" -> YoutubeConstants.ChannelVideoOrder.Latest
-      "popular" -> YoutubeConstants.ChannelVideoOrder.Popular
-      "oldest" -> YoutubeConstants.ChannelVideoOrder.Oldest
-      else -> null
-    }
-  }
+  private fun orderLabelOf(node: JsonObject): YoutubeConstants.ChannelVideoOrder? =
+    labelTextOf(node)?.let { ChannelOrderLabels[it.trim().lowercase()] }
 
   /** 取字符串值;非字符串(对象/数组/数字/布尔)一律 null,绝不抛。 */
   private fun JsonElement?.stringValueOrNull(): String? =
