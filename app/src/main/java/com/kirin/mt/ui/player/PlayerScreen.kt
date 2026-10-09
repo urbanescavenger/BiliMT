@@ -349,9 +349,6 @@ fun PlayerScreen(
     ExoPlayer.Builder(context)
       // P11-197:SABR 续拉门槛按最近一次实测往返抬高(非 SABR / 无样本时返回 0 = 原生行为)。
       .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs) { SabrAbrMemory.readAheadMinBufferUs() })
-      // P11-223:SABR **终态**错误(InvalidPoToken/RELOAD/SABR_ERROR)立即上抛,不走 Loader 重试节拍 ——
-      // 真机判死→上抛实测 3.05 / 13.96 / 31.87 秒,那段时间用户黑屏干等(见 docs §40.7)。
-      .setLoadErrorHandlingPolicy(SabrLoadErrorHandlingPolicy())
       .setTrackSelector(trackSelector)
       // 起始挡位:seed 初始带宽估计到目标档码率/0.7 → 目标挡命中起始档,之后带宽实测自然爬升。
       // (media3 1.10.0 初始选轨纯带宽驱动,resolver 挪 index0 无效;同一 [bandwidthMeter] 实例复用给
@@ -2082,6 +2079,7 @@ fun PlayerScreen(
           val manifest = SabrManifest.fromSession(entry.session, effectiveInfo)
           Log.i(PlayerPlaybackLogTag, "SABR single-stream: sid=$sid qualities=${effectiveInfo.qualities.size} duration=${effectiveInfo.durationMs}ms")
           SabrMediaSource.Factory(manifest, fetcher, sid, bufferMaxMs.toLong(), bandwidthMeter)
+            .setLoadErrorHandlingPolicy(SabrLoadErrorHandlingPolicy()) // P11-223:SABR 终态错误立即上抛(挂 MediaSource.Factory,不是 ExoPlayer.Builder)
             .createMediaSource(MediaItem.fromUri(manifest.sabrUrl))
         } else if (effectiveInfo.isHlsManifest()) {
           // alpha.90:HLS 兜底——SABR RELOAD 闭环未回 SABR 且 dashMpdUrl 空(android 无 manifest)时,落 visionOS

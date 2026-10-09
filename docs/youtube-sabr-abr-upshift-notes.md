@@ -2448,7 +2448,12 @@ val bufferCritical = lowBufferIsEvidence && !bufferCollapseArtifact && belowCrit
 - **`getMinimumLoadableRetryCount` 保持默认** —— 设 0 会把"瞬态错误也只试一次",而瞬态重试是 SABR 拉流的正常兜底。
 - [SabrDataSource](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrDataSource.kt) 包终态错误时**挂上 cause**
   (`IOException("SABR terminal: …", e)`)⇒ policy 能按**类型**识别,不再依赖消息前缀(前缀仍留作兜底)。
-- 两个播放器(`MobilePlayerScreen` :584 / `PlayerScreen` :353)挂上该 policy。
+- **挂载点修正(CI 首轮红)**:policy 挂 **`SabrMediaSource.Factory.setLoadErrorHandlingPolicy`**
+  (`MobilePlayerScreen` / `PlayerScreen` 各一处构造点)—— **不是 `ExoPlayer.Builder`**(它没有这个方法;
+  挂错会让整条 builder 链类型推断失败,报出一串 `Unresolved reference 'currentPosition'/'seekTo'` 的级联错误)。
+  项目里已有这条通路:`Factory.setLoadErrorHandlingPolicy → SabrMediaSource → createPeriod →
+  SabrMediaPeriod(loadErrorHandlingPolicy) → ChunkSampleStream` ✓。挂在这里还有个好处:只作用于 **SABR** 路,
+  B 站/IPTV 等其它源保持默认策略不变。
 
 **判据(真机)**:①判死后**立即**(同毫秒级)出现 `playback error, error-retry #N` —— 不再出现"判死 → 等 3~32 秒";
 ②`starving-fast-fail` 行的 `callCap` 应随 `bufAhead` 缩(6935ms ⇒ **3467ms** 量级),且同一段能连续看到多次

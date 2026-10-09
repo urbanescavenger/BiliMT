@@ -580,9 +580,6 @@ fun MobilePlayerScreen(
     )
     ExoPlayer.Builder(context)
       .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs) { SabrAbrMemory.readAheadMinBufferUs() })
-      // P11-223:SABR **终态**错误(InvalidPoToken/RELOAD/SABR_ERROR)立即上抛,不走 Loader 重试节拍 ——
-      // 真机判死→上抛实测 3.05 / 13.96 / 31.87 秒,那段时间用户黑屏干等(见 docs §40.7)。
-      .setLoadErrorHandlingPolicy(SabrLoadErrorHandlingPolicy())
       // 后台播放优化: 别的应用抢音频资源抢自动暂停,焦点回来→自动续播;
       // 耳机/蓝牙音频设备断开(AUDIO_BECOMING_NOISY)→自动暂停。Media3 内部管理焦点
       // 请求/放弃与 becoming-noisy receiver 的注册/反注册(随 player release 自动清理)。
@@ -1026,6 +1023,7 @@ fun MobilePlayerScreen(
           .setMediaMetadata(metadata)
           .build()
         SabrMediaSource.Factory(manifest, fetcher, sid, bufferMaxMs.toLong(), bandwidthMeter)
+          .setLoadErrorHandlingPolicy(SabrLoadErrorHandlingPolicy()) // P11-223:SABR 终态错误立即上抛(挂 MediaSource.Factory,不是 ExoPlayer.Builder)
           .createMediaSource(sabrItem)
       } else if (sabrEffectiveInfo.isHlsManifest()) {
         // alpha.90:HLS 兜底——SABR RELOAD 闭环未回 SABR 且 dashMpdUrl 空(android 无 manifest)时,落 visionOS
