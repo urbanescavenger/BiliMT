@@ -348,7 +348,12 @@ internal class DefaultSabrChunkSource(
         "meas=${
           fetcher.getMeasuredBitrateBps(preSelectionHolder.representation.formatId.itag).div(1000)
         }K " +
-        "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
+        "up=$upgradeCandidateIndex down=$downgradeCandidateIndex " +
+        // P11-237:上一次评估「本档是否被缓冲标准守住」——hold=true 时 est 不得降档(与降档行互斥,
+        // 否则「缓冲够却降档」或「hold=true 却降档」一眼可见)。
+        "hold=${
+          (trackSelection as? HeightAwareAdaptiveTrackSelection)?.downgradeHeldByBufferNow() ?: false
+        } fmts=${
           (0..<trackSelection.length()).joinToString { i ->
             val f = trackSelection.getFormat(i)
             "${representationHolders[i].representation.formatId.itag}[${if (f.bitrate > 0) f.bitrate else "NA"}]"

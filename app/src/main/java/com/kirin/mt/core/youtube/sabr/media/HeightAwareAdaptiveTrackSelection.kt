@@ -696,6 +696,12 @@ class HeightAwareAdaptiveTrackSelection(
   /** P11-194:顶档 ×1.1 sustained 闸拒绝的一次性日志(每实例一次)——这道闸此前无日志可验收。 */
   private var topTierGateRefusedLogged = false
 
+  /** P11-237:est 滞回降档被「缓冲标准」拦下的一次性日志(不再 hold 时复位)。 */
+  private var downgradeHoldLogged = false
+
+  /** P11-237:最近一次评估里「本档被缓冲标准守住」——供 `sel=` 行日志取证(见 [downgradeHeldByBufferNow])。 */
+  private var lastDowngradeHeldByBuffer = false
+
   /** P11-195:判据②被「天花板守卫」挡下的一次性日志(每实例一次)——否则钉在低分辨率又是一段安静。 */
   private var familyCeilingGuardLogged = false
 
@@ -1028,6 +1034,8 @@ class HeightAwareAdaptiveTrackSelection(
           )
           selected = lower
           lastDowngradeElapsedMs = nowMs
+          // P11-237:水位急救这一枪是真降档 ⇒ `sel=` 行的 hold 字段必须报 false(否则「hold=true 却降档」)。
+          lastDowngradeHeldByBuffer = false
           // 2026-09-20 冻结 episode 置位:本段饥饿已用掉这一枪,水位回到阈值以上前不再开第二枪
           // (旧实现无此闸 → 一段饥饿内连降四档到地板,见类头)。
           freezeEpisodeActive = true
@@ -1053,6 +1061,26 @@ class HeightAwareAdaptiveTrackSelection(
     }
     // 带宽门槛:活跃传输 est(滑动窗口,含 gap/慢小样本)管「当前扛不扛得住」——降档用它,反应快。
     val effective = bandwidthMeter.getBitrateEstimate()
+    // ── P11-237(用户口径「**缓冲时长是强制标准,缓冲够就不需要降档**」)────────────────────────
+    // 病根(docs §41 真机 `logs_live_20261010_072808.log`):est 滞回(C 路径)是唯一**完全不看水位**
+    // 的降档路径 —— 20s 活跃窗口跌破 `tierNeed×0.85` 就降档,哪怕缓冲 30s 且**在涨**:
+    //   07:24:26.236  `downgrade 2160p → 1440p: est=19287K **sus=33014K** bufS=30s`
+    // 4K 期逐笔复算:交付 ≈29.7Mbps vs 实需 ≈24.8Mbps、缓冲 25.7s→30.0s **净涨** ⇒ 供给够,判决错。
+    // 同时 §42.2-(2):升进一档要求 `bufS ≥ max(20s/15s, 2×往返)`(升档地板 #6),守住同一个档却
+    // 允许在任意水位被 est 打掉 ⇒ **升要垫子、守不要垫子**,两套标准。
+    // 新口径:**守档地板 = max(本档水位急救线, 本档升档地板)** = 「爬上来要多少垫子,守住它就要多少
+    // 垫子」。`bufS ≥ 守档地板` ⇒ 本档与全部低档候选都不因 est 被刷掉(比较器只向上取,`best` 因此
+    // 不会落到当前档之下;升档闸 #0~#11 一条不动)。
+    // 出口仍在 A 路径:供给真崩时 est 会跌破 `tierNeed×1.15` ⇒ B 闸不 suppress ⇒ 水位急救在
+    // 急救线上(顶档 20s / 非顶档 8s)照常降档(§42.2-(6))。
+    // 读数无效(`bufS=-1`):按 P11-188 明写的分工**放行**(那条注释原话:读数无效时水位急救不开枪,
+    // 「交给 ④ 的 est 滞回路径(它不看水位)」)——若不慎也 hold,读数无效会变成两条路都走不了。
+    val holdCriticalUs = criticalBufferedUs
+    val holdClimbFloorUs = climbFloorUsFor(currentHeight, itagOf(getFormat(selected)))
+    val downgradeHoldFloorUs = maxOf(holdCriticalUs, holdClimbFloorUs)
+    val bufferHoldsCurrentTier = bufferReadoutValid && bufferedDurationUs >= downgradeHoldFloorUs
+    lastDowngradeHeldByBuffer = bufferHoldsCurrentTier
+    if (!bufferHoldsCurrentTier) downgradeHoldLogged = false
     // alpha.9Z(升档用持续带宽):突发速率 est 在重填缓冲期间会冲到 40-70M(2026-08-27 真机:一笔
     // 74Mbps 突发把 est 从 16M 抬到 40M 过 4K 门槛 → 升完必卡,pacing 有效供给只有 16-20M)。持续带宽
     // = 过去 60s 墙钟实际交付(SabrMediaFetcher.getSustainedBitrateEstimate),要求 ≥ 声明码率才许升。
@@ -1162,7 +1190,24 @@ class HeightAwareAdaptiveTrackSelection(
       // 仍用 effective——降档口径不变(alpha.9Z「卡死不降档」防线)。
       if (!isUpgrade) {
         // 降档口径不变(alpha.9Z「卡死不降档」防线):当前档与低档候选仍用 effective。
-        if (required > effective) continue
+        // ── P11-237:「缓冲够就不降档」——本档 **est 滞回**降档再叠一道缓冲标准 ──────────────────
+        // `bufferHoldsCurrentTier`(`bufS ≥ max(本档急救线, 本档升档地板)`)为真时,本分支不刷掉任何
+        // 候选 ⇒ 本档留在 `best` 上(比较器只向上取 height);缓冲真的低到地板以下时,est 照旧反应,
+        // 更低则交给水位急救 A(见函数外 P11-237 注释与 docs §42)。
+        if (required > effective) {
+          if (!bufferHoldsCurrentTier) continue
+          if (i == selected && !downgradeHoldLogged) {
+            downgradeHoldLogged = true
+            Log.i(
+              "YtSabrAbr",
+              "est-hysteresis downgrade held (P11-237 缓冲标准): " +
+                "itag${itagOf(f)}(${f.height}p) bufS=${bufferedDurationUs / 1_000_000}s " +
+                "≥ floor=${downgradeHoldFloorUs / 1_000_000}s " +
+                "(=max(急救线 ${holdCriticalUs / 1_000_000}s, 升档地板 ${holdClimbFloorUs / 1_000_000}s)); " +
+                "est=${effective / 1000}K < required=${required / 1000}K ⇒ 缓冲够,不降档",
+            )
+          }
+        }
       } else {
         // ── P11-193:升档的**缓冲地板**(理判据链后补上的那条缺口)────────────────────────────
         // 缺口:`canUpgrade` 里 `lastDowngradeElapsedMs == 0L` 的豁免本意是「起播首爬别被 30s 门槛卡」,
@@ -1193,12 +1238,10 @@ class HeightAwareAdaptiveTrackSelection(
         // 而 15s 地板让它在"水位 10s、往返 9.2s"时也升上去 ⇒ 10 秒后必被水位急救降回(纯抖动、白切一次轨)。
         // 20s 与「一笔搬 3 段」配套(见 SabrMediaFetcher.streamMargin 的 P11-225):先让水位真能到 20s,
         // 再要求 20s ⇒ 升上去就站得住。非顶档维持 15s 基础地板(它们的往返 0.7~2s,垫子绰绰有余)。
-        val heightFloorUs =
-          if (f.height >= TOP_TIER_MIN_HEIGHT) TOP_TIER_CLIMB_FLOOR_US else TRIAL_FLOOR_BUFFERED_US
-        val climbFloorUs = maxOf(
-          heightFloorUs,
-          if (rtForClimbMs > 0L) rtForClimbMs * ROUND_TRIP_RUNWAY_FACTOR * 1000L else 0L,
-        )
+        // P11-237:算式抽成 [climbFloorUsFor] —— **守档**用的是同一把尺子(见函数外 downgradeHoldFloorUs),
+        // 单点定义避免两处漂移;此处保留 `rtForClimbMs` 仅供日志显示。
+        val heightFloorLabel = if (f.height >= TOP_TIER_MIN_HEIGHT) "顶档 20s" else "15s"
+        val climbFloorUs = climbFloorUsFor(f.height, itagOf(f))
         if (!startupClimb && !trialUpgrade && bufferedDurationUs < climbFloorUs) {
           if (!climbBufferFloorLogged) {
             climbBufferFloorLogged = true
@@ -1207,7 +1250,7 @@ class HeightAwareAdaptiveTrackSelection(
               "upshift held (buffer floor, ${if (f.height >= TOP_TIER_MIN_HEIGHT) "P11-225 顶档 20s" else "P11-222 15s"}): " +
                 "itag${itagOf(f)}(${f.height}p) bufS=${bufferedDurationUs / 1_000_000}s " +
                 "< floor=${climbFloorUs / 1_000_000}s " +
-                "(=max(${heightFloorUs / 1_000_000}s, 2×往返${if (rtForClimbMs > 0L) "${rtForClimbMs}ms" else "未知"})); " +
+                "(=max($heightFloorLabel, 2×往返${if (rtForClimbMs > 0L) "${rtForClimbMs}ms" else "未知"})); " +
                 "startupClimb=$startupClimb trial=$trialUpgrade; 等缓冲填起来再爬",
             )
           }
@@ -1388,6 +1431,30 @@ class HeightAwareAdaptiveTrackSelection(
     val id = f.id ?: return -1
     return id.substringAfterLast(':', id).toIntOrNull() ?: -1
   }
+
+  /**
+   * P11-237:**本档的缓冲地板**(升档与守档**共用同一把尺子**)。
+   *
+   * = `max(顶档 20s / 非顶档 15s, 2×本档最近一次往返)` —— 与升档侧 P11-222/225 的算式逐字一致,
+   * 抽出来是为了让「守住这一档」也能用同一个口径(见 `updateSelectedTrack` 里的 `downgradeHoldFloorUs`):
+   * 升进 4K 要 20s 垫子,守住 4K 同样要 20s 垫子 —— 不再出现「升要垫子、守不要垫子」。
+   * 往返未知(-1)按 0 处理(只剩基础地板),与升档侧一致。
+   */
+  private fun climbFloorUsFor(height: Int, itag: Int): Long {
+    val heightFloorUs =
+      if (height >= TOP_TIER_MIN_HEIGHT) TOP_TIER_CLIMB_FLOOR_US else TRIAL_FLOOR_BUFFERED_US
+    val rtMs = (bandwidthMeter as? SabrBandwidthMeter)?.getLastRoundTripMs(itag) ?: -1L
+    return maxOf(
+      heightFloorUs,
+      if (rtMs > 0L) rtMs * ROUND_TRIP_RUNWAY_FACTOR * 1000L else 0L,
+    )
+  }
+
+  /**
+   * P11-237:本次评估「本档是否被缓冲标准守住」(est 因此不得降档)。供 `sel=` 那行日志取证 ——
+   * 没有它,「这一次评估为什么没降档」在日志里就是一段安静(吃过 P11-194 无日志的亏)。
+   */
+  fun downgradeHeldByBufferNow(): Boolean = lastDowngradeHeldByBuffer
 
   /**
    * P11-200:**档位实需基准** —— 这一档到底要多少带宽。
