@@ -1079,13 +1079,26 @@ class HeightAwareAdaptiveTrackSelection(
     // 新口径:**守档地板 = max(本档水位急救线, 本档升档地板)** = 「爬上来要多少垫子,守住它就要多少
     // 垫子」。`bufS ≥ 守档地板` ⇒ 本档与全部低档候选都不因 est 被刷掉(比较器只向上取,`best` 因此
     // 不会落到当前档之下;升档闸 #0~#11 一条不动)。
+    // ⚠ **本句已被 P11-240 取代**(见下):守档地板不再叠升档地板,只取本档水位急救线。
     // 出口仍在 A 路径:供给真崩时 est 会跌破 `tierNeed×1.15` ⇒ B 闸不 suppress ⇒ 水位急救在
     // 急救线(所有档统一 8s,P11-239 起)照常降档(§42.2-(6))。
     // 读数无效(`bufS=-1`):按 P11-188 明写的分工**放行**(那条注释原话:读数无效时水位急救不开枪,
     // 「交给 ④ 的 est 滞回路径(它不看水位)」)——若不慎也 hold,读数无效会变成两条路都走不了。
-    val holdCriticalUs = criticalBufferedUs
-    val holdClimbFloorUs = climbFloorUsFor(currentHeight, itagOf(getFormat(selected)))
-    val downgradeHoldFloorUs = maxOf(holdCriticalUs, holdClimbFloorUs)
+    // ── P11-240(2026-10-10 手机真机 `logs_live_20261010_155639.log`;用户拍板「① 守档地板对齐」)──
+    // **守档地板 = 本档水位急救线(所有档 8s),不再叠本档升档地板。**
+    // P11-237 原口径是「max(急救线, 升档地板)」(同一把尺子)。真机证明这条对顶档是**最后一处不对称**:
+    //   15:54:29.232(dev.r2186)`sel=0 bufS=11.1 bw=14343K meas=18711K hold=false`
+    //   → `downgrade 2160p → 1080p: est=14343K < need×0.85 = 18711K×0.85 = 15904K`
+    // 那一刻 `bufS=11.1s` **远高于急救线 8s**(根本不算饿),却低于「升档地板 20s」(= P11-225 的顶档垫子)
+    // ⇒ 守档闸放行、est 补刀。而 est 之所以塌,只是**一笔音频请求**按设计 fast-fail 超时(8.003s 零字节)
+    // 砸进了 20s 窗口(同瞬间 4K 视频段 18.2MB 成功入队,同排 `cap=39367K`)——低档同样遇到这笔却不受伤,
+    // 因为它们的门槛(`need×0.85`:1080p 2.39M / 1440p 6.9~8.0M)离塌陷后的 14.3M 还有 1.8~6 倍富余,
+    // **只有 4K 的门槛 15.90M 落在它下方**(§45.7)。
+    // 口径:**「缓冲够(≥ 本档急救线)就不降档」** —— 「升进这一档要多少垫子」与「当前算不算饿」是两个
+    // 不同的问题,守档只回答后者。升档侧的 `max(15s/20s, 2×往返)` 地板一动不动(那是切换成本)。
+    // 出口不变:水位跌破 8s 且仍在下漏 ⇒ 水位急救照常降档(§42.2-(6));读数无效(`bufS=-1`)仍放行
+    // (P11-188 分工)。副作用:est 滞回(C)此后只在缓冲 < 8s 时才可能开火 —— 即「降档由水位唯一决定」。
+    val downgradeHoldFloorUs = criticalBufferedUs
     val bufferHoldsCurrentTier = bufferReadoutValid && bufferedDurationUs >= downgradeHoldFloorUs
     lastDowngradeHeldByBuffer = bufferHoldsCurrentTier
     if (!bufferHoldsCurrentTier) downgradeHoldLogged = false
@@ -1208,10 +1221,10 @@ class HeightAwareAdaptiveTrackSelection(
             downgradeHoldLogged = true
             Log.i(
               "YtSabrAbr",
-              "est-hysteresis downgrade held (P11-237 缓冲标准): " +
+              "est-hysteresis downgrade held (P11-237/240 缓冲标准): " +
                 "itag${itagOf(f)}(${f.height}p) bufS=${bufferedDurationUs / 1_000_000}s " +
                 "≥ floor=${downgradeHoldFloorUs / 1_000_000}s " +
-                "(=max(急救线 ${holdCriticalUs / 1_000_000}s, 升档地板 ${holdClimbFloorUs / 1_000_000}s)); " +
+                "(=本档水位急救线,P11-240:不再叠升档地板); " +
                 "est=${effective / 1000}K < required=${required / 1000}K ⇒ 缓冲够,不降档",
             )
           }
@@ -1246,8 +1259,9 @@ class HeightAwareAdaptiveTrackSelection(
         // 而 15s 地板让它在"水位 10s、往返 9.2s"时也升上去 ⇒ 10 秒后必被水位急救降回(纯抖动、白切一次轨)。
         // 20s 与「一笔搬 3 段」配套(见 SabrMediaFetcher.streamMargin 的 P11-225):先让水位真能到 20s,
         // 再要求 20s ⇒ 升上去就站得住。非顶档维持 15s 基础地板(它们的往返 0.7~2s,垫子绰绰有余)。
-        // P11-237:算式抽成 [climbFloorUsFor] —— **守档**用的是同一把尺子(见函数外 downgradeHoldFloorUs),
-        // 单点定义避免两处漂移;此处保留 `rtForClimbMs` 仅供日志显示。
+        // P11-237/240:算式抽成 [climbFloorUsFor](单点定义防漂移);此处保留 `rtForClimbMs` 仅供日志显示。
+        // **只用于升档** —— 守档地板已改为「本档水位急救线」(P11-240,见函数外 downgradeHoldFloorUs):
+        // 「升进这一档要多少垫子」是切换成本,与「当前算不算饿」是两个问题。
         val heightFloorLabel = if (f.height >= TOP_TIER_MIN_HEIGHT) "顶档 20s" else "15s"
         val climbFloorUs = climbFloorUsFor(f.height, itagOf(f))
         if (!startupClimb && !trialUpgrade && bufferedDurationUs < climbFloorUs) {
@@ -1441,12 +1455,13 @@ class HeightAwareAdaptiveTrackSelection(
   }
 
   /**
-   * P11-237:**本档的缓冲地板**(升档与守档**共用同一把尺子**)。
+   * P11-237:**本档的升档缓冲地板**。
    *
-   * = `max(顶档 20s / 非顶档 15s, 2×本档最近一次往返)` —— 与升档侧 P11-222/225 的算式逐字一致,
-   * 抽出来是为了让「守住这一档」也能用同一个口径(见 `updateSelectedTrack` 里的 `downgradeHoldFloorUs`):
-   * 升进 4K 要 20s 垫子,守住 4K 同样要 20s 垫子 —— 不再出现「升要垫子、守不要垫子」。
-   * 往返未知(-1)按 0 处理(只剩基础地板),与升档侧一致。
+   * = `max(顶档 20s / 非顶档 15s, 2×本档最近一次往返)` —— P11-222/225 的口径,抽成单点定义防漂移。
+   * **只服务升档**:回答「升进这一档要预留多少垫子」(切换要现拉 init + 首次段,往返一抖就饿)。
+   * 守档(「当前算不算饿」)在 P11-240 起改用本档水位急救线,见 `updateSelectedTrack` 的
+   * `downgradeHoldFloorUs` —— 真机证明把升档垫子当守档闸会把 4K 在 `bufS=11.1s` 时判成「可以让 est 补刀」。
+   * 往返未知(-1)按 0 处理(只剩基础地板)。
    */
   private fun climbFloorUsFor(height: Int, itag: Int): Long {
     val heightFloorUs =
