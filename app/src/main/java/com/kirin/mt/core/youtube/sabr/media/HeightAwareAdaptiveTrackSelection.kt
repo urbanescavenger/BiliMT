@@ -120,9 +120,10 @@ import com.google.common.collect.ImmutableList
  *   ——即用户所见「后面降档正常」。修法三件(详见各处注释):
  *   A(SabrMediaFetcher)——顶档在位时 sustained 分母的滑行余量 10s→20s:4K 失败证据进 sus,
  *     防冷却到期后被同一批低档突发样本「合法」重准入;est 口径不动(防千兆满缓冲滑行误伤)。
- *   B1(本类 TOP_TIER_CRITICAL_BUFFERED_US)——顶档水位急救阈值 8s→20s:急救必须提前一个完整
- *     chunk 循环(评估盲窗 ~14s + staged 积压排空 ~8s + 替换段传输 ~4s)触发,8s 在串行管道里
- *     结构性来不及;非顶档维持 8s。
+ *   B1(**已于 P11-239 撤回**)—— 顶档水位急救阈值曾 8s→20s(提前一个完整 chunk 循环:评估盲窗
+ *     ~14s + staged 积压排空 ~8s + 替换段传输 ~4s);实测该线与 P11-197 的补货线(11~17s)相撞,
+ *     顶档每个补货周期都被判一次饿 ⇒ 2026-10-10 起**顶档与所有档共用 8s**,当年的「来不及」由
+ *     P11-188/200/203 修掉(见 updateSelectedTrack 的 P11-239 注释与 docs §43.7/§43.8)。
  *   B2(DefaultSabrChunkSource)——getNextChunk 的 holder/selectFormat 改到 updateSelectedTrack
  *     **之后**重读(对齐上游 media3 DashChunkSource):原顺序用切换前 selectedIndex 取 holder,
  *     切档决策对同一次调用 staged 的段无效,每次切档白吃一个循环生效延迟。
@@ -774,19 +775,26 @@ class HeightAwareAdaptiveTrackSelection(
     val currentHeight = getFormat(selected).height
     // 2026-09-01 满缓冲试探:先留上一评估的水位(试探用「升穿水位线」判定,防首填单调期骑线常真误触发)
     val prevBufferedUsForTrial = prevEvalBufferedUs
-    // 2026-08-31 B1(顶档水位急救阈值 8s→20s):SABR 串行管道下急救必须提前一个完整循环触发——
-    // ①评估只在 getNextChunk 发生,4K 段循环 10-14s → 两次评估间最长 ~14s 盲窗;②急救只影响后续
-    // getNextChunk staged 的段,已 staged 的 4K 段积压(rn 一票 ~39MB/7.6s)仍占死串行 fetcher;
-    // ③替换段传输还要 ~4s。23:24 真机:水位 7.0s 才触发,输给在途 7.6s 差 0.6s → 缓冲见底 → 看门狗
-    // 整段重载。顶档在位时阈值提为 20s(覆盖 ①+②+③ 的最坏 ~26s 供给线,本例会在 23:24:24 评估
-    // bufS=14.5 自 20.5 回落时触发 → 23:24:48 的请求载 1440p,谷底 ~3-5s 活着);非顶档维持 8s
-    // 不动。假阳性代价=180s 顶档冷却(升 4K 本就要求缓冲 ≥30s,重爬周期天然重叠),假阴性代价=看门狗
-    // 重载(~11s 冻结+整链重启),不对称性支持提前触发;千兆管道 4K 缓冲只涨不跌穿 20s,不受损。
-    val criticalBufferedUs =
-      if (currentHeight >= TOP_TIER_MIN_HEIGHT) TOP_TIER_CRITICAL_BUFFERED_US else DOWNGRADE_BUFFERED_US
+    // ── P11-239(2026-10-10 手机真机 `logs_live_20261010_151809.log`;用户口径「**先与其他对齐,
+    // 只保留冲顶失败二次升档的坎**」):**顶档水位急救阈值 20s 撤回,与所有档共用 8s** ──────────────
+    // 9/6 的 B1(8s→20s)立论是「SABR 串行管道下急救要提前一个完整循环(评估盲窗 + staged 积压 +
+    // 替换段传输 ≈ 26s 最坏线)」,但它与**补货线**撞了:补货线 = `max(10s, 1.5×往返+3s)`(P11-197,
+    // **与档位无关**),顶档往返常态 5~9s ⇒ 补货线只有 11~17s ⇒ **只要往返 < 11.3s,补货线就恒 < 20s**。
+    // 4K 缓冲是锯齿(下沿 ≈ 补货线、上沿 = 下沿 + 一笔响应带回的段量),而 ABR 评估**只发生在锯齿低点**
+    // (loader 只在低点醒来要段)⇒ 20s 线落在锯齿内部 ⇒ **每个补货周期判一次「饿」**。
+    // 同场同机实证(§43.8):1440p 锯齿低点 11.5s **> 8s** ⇒ 全程零降档;2160p 锯齿低点 10.9s
+    // **< 20s** ⇒ 升上去 13s 就被判饿降回,还顺带打 180s 顶档冷却。
+    // 撤回后顶档与低档同一条线(8s),锯齿低点(≥11s)落在线上 ⇒ 只有**补货真失败**(水位仍往下掉)
+    // 才急救。§39.6 当年要防的「8s 在串行管道里来不及」已由后续几轮补掉:P11-188(实测未知 ⇒ 闸不
+    // 成立)、P11-200(基准改实测交付码率)、P11-203(闸加「水位 ≥ 2×往返」的交付节奏腿)——B 闸不会再
+    // 在往返慢时错误 suppress,故 8s 的提前量够用。
+    // **顶档独有的差别此后只剩「冲顶失败后二次升档的坎」**(用户明确保留):`excludeTrack(顶档,180s)`
+    // (§17)+ `downgrade fail cooldown 90s` + `canUpgrade` 的「降档后缓冲 ≥30s」+ 顶档 sustained×1.1 闸
+    // + 顶档升档地板 20s(P11-225)。全部原样,本轮一条未动。
+    val criticalBufferedUs = DOWNGRADE_BUFFERED_US
     // 2026-09-01 试探熔断(trial abort,21:14 真机案例):试探是自己批准进去的,亏空要能秒退——
-    // 缓冲 <15s 且仍在下漏时无视 8s/20s 阈值与 5s 宽限立即降档。1440p 级亏空(~9M/s)下 20s 缓冲
-    // 1-2s 穿底,5s 宽限+8s 阈值来不及救(bufS=0s 才触发)。宽限仅 2s(一个评估循环)。
+    // 缓冲 <15s 且仍在下漏时无视 [criticalBufferedUs] 阈值与 5s 宽限立即降档。1440p 级亏空(~9M/s)下
+    // 20s 缓冲 1-2s 穿底,5s 宽限+阈值来不及救(bufS=0s 才触发)。宽限仅 2s(一个评估循环)。
     val trialAbort = lastUpgradeWasTrial &&
       bufferedDurationUs < TRIAL_ABORT_BUFFERED_US &&
       nowMs - lastUpgradeElapsedMs >= TRIAL_ABORT_GRACE_MS
@@ -1072,7 +1080,7 @@ class HeightAwareAdaptiveTrackSelection(
     // 垫子」。`bufS ≥ 守档地板` ⇒ 本档与全部低档候选都不因 est 被刷掉(比较器只向上取,`best` 因此
     // 不会落到当前档之下;升档闸 #0~#11 一条不动)。
     // 出口仍在 A 路径:供给真崩时 est 会跌破 `tierNeed×1.15` ⇒ B 闸不 suppress ⇒ 水位急救在
-    // 急救线上(顶档 20s / 非顶档 8s)照常降档(§42.2-(6))。
+    // 急救线(所有档统一 8s,P11-239 起)照常降档(§42.2-(6))。
     // 读数无效(`bufS=-1`):按 P11-188 明写的分工**放行**(那条注释原话:读数无效时水位急救不开枪,
     // 「交给 ④ 的 est 滞回路径(它不看水位)」)——若不慎也 hold,读数无效会变成两条路都走不了。
     val holdCriticalUs = criticalBufferedUs
@@ -1540,11 +1548,9 @@ class HeightAwareAdaptiveTrackSelection(
     const val COLD_START_LADDER_LOCK_MS = 10_000L
     /** alpha.9Z:降档后升档所需最低缓冲水位(us)——缓冲重建到这一水位前不允许弹回高档。 */
     const val DOWNGRADE_BUFFERED_US = 8_000_000L
-    /**
-     * 2026-08-31 B1:顶档(≥2160)在位时的水位急救阈值(us)——见 updateSelectedTrack 的 B1 注释。
-     * 与 SabrMediaFetcher.TOP_TIER_GAP_RUNWAY_RESERVE_MS(A)同值同语义:水位 <20s 即顶档供给线失守。
-     */
-    const val TOP_TIER_CRITICAL_BUFFERED_US = 20_000_000L
+    // P11-239:**`TOP_TIER_CRITICAL_BUFFERED_US = 20s`(2026-08-31 B1)已删除** —— 它与补货线
+    // (P11-197,11~17s)相撞,导致顶档每个补货周期被判一次饿(§43.7/§43.8)。顶档自此与所有档
+    // 共用 [DOWNGRADE_BUFFERED_US];顶档独有的差别只剩「冲顶失败后二次升档的坎」(见其注释)。
     /** 2026-08-30:升档后的水位急救宽限(ms)——新档刚起步缓冲未回填,不能立刻按同一水位反弹降档。 */
     const val DOWNGRADE_AFTER_UPGRADE_GRACE_MS = 5_000L
 
@@ -1659,7 +1665,7 @@ class HeightAwareAdaptiveTrackSelection(
     const val TRIAL_MIN_CEILING_US = 25_000_000L
     /**
      * 2026-09-01 晚(试探熔断,21:14 真机 bufS=0s 案例):试探档缓冲跌破此线且仍在下漏 → 无视
-     * 8s/20s 水位急救阈值与 5s 宽限立即降档。试探是自己批准的,亏空秒退。
+     * 水位急救阈值与 5s 宽限立即降档。试探是自己批准的,亏空秒退。
      */
     const val TRIAL_ABORT_BUFFERED_US = 15_000_000L
     /** 2026-09-01 晚:试探熔断宽限(ms)——升档后首个评估循环内不熔断(防重锚瞬间误判)。 */
