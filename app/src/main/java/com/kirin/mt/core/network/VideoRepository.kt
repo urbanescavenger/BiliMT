@@ -1,6 +1,8 @@
 package com.kirin.mt.core.network
 
+import android.util.Log
 import com.kirin.mt.core.auth.WbiKeyRepository
+import com.kirin.mt.core.storage.WbiKeys
 import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.ProgressUnset
@@ -14,6 +16,7 @@ import com.kirin.mt.core.model.SpaceUserProfile
 import com.kirin.mt.core.model.UgcBannerItem
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.model.feedKey
 import com.kirin.mt.core.player.PlaybackProgressStore
 import com.kirin.mt.core.storage.SessionStore
 import com.kirin.mt.core.youtube.YoutubeChannel
@@ -35,9 +38,38 @@ import kotlinx.serialization.json.JsonArray
  */
 const val YoutubeFeedCacheTtlMs = 10 * 60 * 1000L
 
-/** 把 B 站动态与 YouTube 关注流按发布时间倒序合并成统一流。 */
-fun mergeByPubdate(bili: List<VideoSummary>, youtube: List<VideoSummary>): List<VideoSummary> =
-  (bili + youtube).sortedByDescending { it.pubdate }
+/**
+ * 动态评论:wbi/main 的每页条数,以及 mode(3=仅热度、2=仅时间)。
+ * 评论 **type 不在这里写死** —— 它随动态走 `basic.comment_type`(动态为 11),与 oid 配对使用。
+ */
+const val DynamicCommentPageSize = 20
+const val DynamicCommentModeHot = 3
+const val DynamicCommentModeLatest = 2
+
+/** 动态评论的诊断日志 tag(失败只写进 UI 会查不到原因,故两条路都打点)。 */
+const val DynamicCommentLogTag = "BiliDynamicComment"
+
+/**
+ * 把 B 站动态与 YouTube 关注流按发布时间倒序合并成统一流。
+ *
+ * **YouTube 项按「当前拉到的最早一条 B 站动态」截断**(P11-186):B站 动态拉到头(或还没翻到更早的页)时,
+ * 不再让更旧的 YouTube 内容成片占满列表尾部;后续 B站 翻页拉到更早的动态后边界随之后移,那些更旧的
+ * YouTube 项自然重新出现 —— 即「以最早的 B 站动态为准,后续再拉再叠加」。
+ * B站 一条都没有时(未登录 / 拉取失败)保持原样直接给 YouTube,不清空列表。
+ *
+ * 顺带按 [feedKey] 去重:图文没有 bvid 必须回退 dynId,且 B站 offset 翻页偶有重叠。
+ */
+fun mergeByPubdate(bili: List<VideoSummary>, youtube: List<VideoSummary>): List<VideoSummary> {
+  val oldestBiliPubdate = bili.minOfOrNull { it.pubdate }
+  val visibleYoutube = if (oldestBiliPubdate == null) {
+    youtube
+  } else {
+    youtube.filter { it.pubdate >= oldestBiliPubdate }
+  }
+  return (bili + visibleYoutube)
+    .distinctBy { it.feedKey }
+    .sortedByDescending { it.pubdate }
+}
 
 class VideoRepository(
   private val apiClient: BiliApiClient,
@@ -413,8 +445,12 @@ class VideoRepository(
     return page.items.map(youtubeRepository::toVideoSummary).withLocalProgress()
   }
 
-  suspend fun getDynamicFeed(offset: String = "", type: String = "video"): DynamicFeedPage {
-    val page = userFeedRepository.getDynamicFeed(offset = offset, type = type)
+  suspend fun getDynamicFeed(
+    offset: String = "",
+    type: String = "video",
+    includeDraw: Boolean = false,
+  ): DynamicFeedPage {
+    val page = userFeedRepository.getDynamicFeed(offset = offset, type = type, includeDraw = includeDraw)
     return page.copy(videos = page.videos.withLocalProgress())
   }
 
@@ -448,6 +484,106 @@ class VideoRepository(
 
   suspend fun getComments(aid: Long, page: Int, sort: Int): CommentPage {
     return userFeedRepository.getComments(aid = aid, page = page, sort = sort)
+  }
+
+  /**
+   * 动态评论:`/x/v2/reply/wbi/main`(旧 `/x/v2/reply` + type=11 实测回 `-404 啥都木有`)。
+   *
+   * 与视频评论的差别:① 走 **wbi 签名** + SESSDATA/buvid(对齐 BV `BiliHttpApi.getComments`);
+   * ② 分页是**游标**(`pagination_str={"offset":"…"}` + `cursor.is_end`),首次传空串、
+   * 之后用上次返回的 `nextOffset`,不是页码;③ `mode`:3=仅热度、2=仅时间(对应 UI 的热门/最新)。
+   *
+   * **[commentId] 是动态的 `basic.comment_id_str`,不是 dynId** —— 拿 dynId 当 oid 实测回
+   * `-404 啥都木有`(该 oid 下没有评论区);[commentType] 取 `basic.comment_type`(动态为 11)。
+   */
+  suspend fun getDynamicComments(
+    commentId: Long,
+    commentType: Int,
+    mode: Int,
+    offset: String = "",
+    pageSize: Int = DynamicCommentPageSize,
+  ): DynamicCommentPage {
+    if (commentId <= 0L || commentType <= 0) {
+      Log.w(
+        DynamicCommentLogTag,
+        "dynamic comments skipped: bad target commentId=$commentId commentType=$commentType",
+      )
+      return DynamicCommentPage(comments = emptyList(), nextOffset = "", isEnd = true)
+    }
+    val session = sessionStore.session.first()
+    val sessData = session.sessData
+    val keys = wbiKeyRepository.ensureKeys(sessData)
+    val (buvid3, buvid4) = SpaceHttpSupport.ensureBuvidCookies(sessionStore, apiClient)
+
+    val params = mutableMapOf(
+      "type" to commentType.toString(),
+      "oid" to commentId.toString(),
+      "mode" to mode.toString(),
+      "ps" to pageSize.toString(),
+      // 游标:首次空串,之后填上一页返回的 next_offset。
+      "pagination_str" to """{"offset":"$offset"}""",
+    )
+    val headers = buildMap {
+      BiliHeaders.cookie(sessData = sessData, buvid3 = buvid3, buvid4 = buvid4)?.let { put("Cookie", it) }
+      put("User-Agent", BiliHeaders.UserAgent)
+      put("Referer", "https://www.bilibili.com/")
+    }
+    // 先按缓存 key 签一次;失败(**w_rid 被拒多半是缓存 key 过期**)刷新 key 再试一次 ——
+    // 与 fetchAccInfo / space 系列同一套「刷新 key 重试」范式。
+    val first = runCatching { requestDynamicComments(params, keys, headers) }
+      .onFailure { logDynamicCommentsFailure("cached keys", it) }
+    first.onSuccess { return it }
+    val refreshedKeys = wbiKeyRepository.refreshKeys(sessData)
+    if (refreshedKeys != null) {
+      runCatching { requestDynamicComments(params, refreshedKeys, headers) }
+        .onFailure { logDynamicCommentsFailure("refreshed keys", it) }
+        .onSuccess { return it }
+    }
+    throw first.exceptionOrNull() ?: IllegalStateException("dynamic comments failed")
+  }
+
+  /** 一次动态评论请求 + 解析 + 打点(code / 条数 / 游标)。 */
+  private suspend fun requestDynamicComments(
+    params: Map<String, String>,
+    keys: WbiKeys?,
+    headers: Map<String, String>,
+  ): DynamicCommentPage {
+    val signedParams = if (keys != null) wbiSigner.sign(params, keys.imgKey, keys.subKey) else params
+    val root = apiClient.getJsonWithHeaders(
+      url = BiliApiEndpoints.CommentReplyWbiMain,
+      params = signedParams,
+      headers = headers,
+    ).rootObject()
+    root.requireBiliCodeOk("dynamic comments")
+
+    val data = root.obj("data") ?: return DynamicCommentPage(comments = emptyList(), nextOffset = "", isEnd = true)
+    val cursor = data.obj("cursor")
+    val comments = (data["replies"] as? JsonArray)
+      ?.mapNotNull { it.asObjectOrNull() }
+      ?.map(VideoSummaryMappers::fromComment)
+      .orEmpty()
+    val nextOffset = cursor?.obj("pagination_reply")?.string("next_offset").orEmpty()
+    Log.i(
+      DynamicCommentLogTag,
+      "dynamic comments ok oid=${params["oid"].orEmpty()} mode=${params["mode"].orEmpty()} " +
+        "hasKeys=${keys != null} replies=${comments.size} isEnd=${cursor?.boolean("is_end")} " +
+        "allCount=${cursor?.int("all_count")} nextOffset=${if (nextOffset.isBlank()) "empty" else "set"}",
+    )
+    return DynamicCommentPage(
+      comments = comments,
+      nextOffset = nextOffset,
+      isEnd = cursor?.boolean("is_end") ?: true,
+      totalCount = cursor?.int("all_count") ?: comments.size,
+    )
+  }
+
+  private fun logDynamicCommentsFailure(stage: String, error: Throwable) {
+    val brief = when (error) {
+      is BiliApiCodeException -> "code=${error.code} message=${error.biliMessage}"
+      is BiliNetworkException -> "http=${error.statusCode} body=${error.responseBody.take(160)}"
+      else -> "${error.javaClass.simpleName}: ${error.message.orEmpty()}"
+    }
+    Log.w(DynamicCommentLogTag, "dynamic comments $stage failed: $brief")
   }
 
   suspend fun getHistoryPage(

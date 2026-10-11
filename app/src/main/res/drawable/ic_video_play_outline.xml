@@ -1,0 +1,14 @@
+<!-- 缩略图覆盖行的「播放数」图标:线框三角,笔画与 ic_player_danmaku_toggle 一致(1.8 @24vp),
+     与并列的小号白字粗细相匹配(原 ic_video_play_count 是实心三角,压在亮封面上比文字重很多)。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineJoin="round"
+        android:pathData="M7.5,5.5L18.5,12L7.5,18.5Z" />
+</vector>

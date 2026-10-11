@@ -182,6 +182,7 @@ media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack
 - **降级**：任一路失败用另一路（RSS 失败→InnerTube 近似时间；InnerTube 失败→RSS 无 duration/live，降级可用），两者都失败该频道返回空、不影响其它频道。
 - **并发**：RSS 用独立信号量放宽（8），InnerTube 仍受 4 限并发防风控；关注多时按批次放宽超时（`youtubeFeedTimeoutMs`，上限 10s）。
 - **合并时序（2026-08-18）**：动态 tab 等 YouTube 关注**全量查完再与 B 站一次性合并**，去掉 `onChunkReady` 分批增量叠加（避免二次重排导致顺序抖动）。
+- **关注（订阅）的唯一真源 = 本地 `YoutubeChannelStore`**（DataStore 里的频道列表，免登录）：写入口有频道主页关注按钮、设置→关注管理、播放器 UP 面板「关注」。**读**入口（首页/动态订阅流、UP 面板关注态）都必须是同一份列表——播放器 UP 面板此前只回查 B站 relation 接口（`ownerMid > 0`），YouTube 视频 `ownerMid` 恒为 0 ⇒ 那颗「关注」是死按钮（2026-10-09 修，P11-226：`readYoutubeFollowed` 按 `channelId` 读 store）。
 
 ### 4.10.1 首页订阅流 continuation 分页（2026-08-18，alpha.94+）
 
@@ -238,15 +239,41 @@ media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack
 
 相关视频 rail 在 `contents.twoColumnWatchNextResults.secondaryResults.secondaryResults.results[]`。**实测每项是 `lockupViewModel`（非 compactVideoRenderer，与频道页新格式一致）**，曾因只 collectByKey `compactVideoRenderer` 导致相关视频解析 0 根因。`parseRelatedVideos` 需**同时** collectByKey `compactVideoRenderer` + `lockupViewModel`（`parseLockupViewModel`）。续页 token 从该 section 内 continuationItemRenderer 取；防御：无 secondaryResults 容器时回退全根收集。
 
-### 4.13 频道页「最新 / 最热」排序（2026-08-20）
+### 4.13 频道页「最新 / 最热 / 最早」排序（2026-08-20；**2026-10-10 修正实现路线 + 补第三档「最早」**）
 
-频道页视频 tab 支持 **Newest（最新）/ Popular（最热）** 双档排序，对齐 B站 UP 空间。两排序共用 `/browse + browseId`，**仅初始 `params` 不同**：
-- 最新：`EgZ2aWRlb3PyBgQKAjoA`（`ChannelVideosParams`，项目原用值）
-- 最热：`EgZwb3B1bGFy`（`ChannelPopularParams`，解码 field1=`"popular"`，来源 rustypipe/invidious 文档）
+频道页视频 tab 支持 **Newest（最新）/ Popular（最热）/ Oldest（最早）** 三档排序，对齐 B站 UP 空间（B站 只有前两档，「最早」是 YouTube 自带档位）。
 
-**continuation 翻页与排序无关**（续页只带 continuation token 即保持当前排序），故排序差异收敛到初始 `params` 一个点。`YoutubeRepository.getChannelVideos` 增 `params: String = ChannelVideosParams` 参数；TV（`YoutubeChannelScreen` sort chips）与移动端（`MobileYoutubeChannelScreen` 两个 OutlinedButton）频道页各加「最新发布 / 最热门」切换，切排序**强制重拉第一页**（`loadedOrder` 守卫，镜像 B站 `UpSpaceUiState.videoLoadedOrder`）。`PlayerSidePanelLoader` 仍用默认最新。
+**❌ 已作废的两条路（2026-10-10 直连 InnerTube 实测，频道 UCXuqSBlHAE6Xw-yeJA0Tunw）：**
+- **`params = "EgZwb3B1bGFy"`（原 `ChannelPopularParams`，2026-10-10 已随实现删除）**：服务端把它当无效参数 —— 响应的 `tabRenderer.selected` 落在 **Home tab**（`Videos` tab 的 `content` 是空 `{}`），列表根本不是按播放量排的。也就是说 2026-08-20 那次实现**从来没真的排序过**，两端频道页的「最热」一直是「最新 + 多了几个 shelf」。
+- **rustypipe 的 `order_ctoken`（protobuf field `80226972` 包装本地铸造）**：本仓库把它的编码逐字节复现（对齐 rustypipe 单测向量 `4qmFsgJgEhhVQ1h1cVNCbEhBRTZYdy15ZUpBMFR1bncaRDhnWXdHaTU2TEJJbUNpUTJORFl4WkRkak9DMHdNREF3TFRJd05EQXRPRGRoWVMwd09EbGxNRGd5TjJVME1qQVlBaUFD` 一致）后发回：当 `continuation` 发 → **400 invalid argument**；当 `params` 发 → 被忽略（回 Home tab）。该 token 格式**已过期**。
 
-**风险**：`EgZwb3B1bGFy` 未在本仓库实测，若真机首屏不按播放量排序，需改用「构造带 sort 的 order continuation token」（protobuf `80226972` 包装，对齐 rustypipe `order_ctoken`），项目暂无此代码需新写。
+**✅ 现在唯一可用的路：服务端下发的排序 chip token**
+1. 先按「最新」请求一次：`{"browseId": <UC…>, "params": "EgZ2aWRlb3PyBgQKAjoA"}`（`Videos` tab 选中，`richGridRenderer` 30 条）。
+2. 从响应里摘排序 chip：三档 `Latest`/`Popular`/`Oldest`，**两种形状都要认**（2026-10-10 六频道普查：5 个平铺、LTT 是下拉）：
+   - **平铺 chip**：`richGridRenderer.header.chipBarViewModel.chips[]`，每项 `chipViewModel.text`（MKBHD / Veritasium / MrBeast / T-Series / 3Blue1Brown）；
+   - **下拉 chip**：单颗 chip `displayType=CHIP_VIEW_MODEL_DISPLAY_TYPE_DROP_DOWN`，三档在其 `tapCommand.innertubeCommand.showSheetCommand.panelLoadingStrategy.inlineContent.sheetViewModel.content.listViewModel.listItems[]`（LTT）。新布局实体化形态即 `listItemViewModel{title.content="Latest"|"Popular"|"Oldest", entityKey=":Popular"}`，token 在其 `rendererContext.commandContext.onTap.innertubeCommand.commandExecutorCommand.commands[].continuationCommand.token`（旧布局 `feedFilterChipBarRenderer`/`chipCloudChipRenderer` 的 `text.simpleText` 同理）。
+3. 用该 token 发 `{"continuation": token}` → 得到该排序的列表。
+
+**实测结果**：`Popular` 首屏 **23M → 16M → 15M → 15M → 13M …（按播放量严格递减）**；`Oldest` 首屏即频道最旧视频 —— 六频道 18 / 17 / 16 / 14 / 15 / 11 年前，且沿响应自带 continuation 翻第二页仍是 17 年前、与首页无重复（**排序能续页**）。三个坑：
+- **token 必须原样发回**（它自带 `%3D%3D` 百分号转义）；再 `quote()` 一次 → 400。
+- token 是**每次响应现铸**的（内含随机 `targetId`，"\\n$<uuid>"），所以不能硬编码、也不能本地造：按解出的结构 `80226972{ f2: channelId, f3: <URL 编码 base64 params> }`（内层 `f110{f3{f15{f8{f1: chipBar targetId(UUID), f3: 排序值 4=Latest/2=Popular/5=Oldest}}}}`，逐字节解出）**伪造 UUID 静态造 token → 三种排序全部 0 条**；本仓库按 channelId 缓存 10 分钟（`ChannelOrderTokenTtlMs`），切档只多一条请求、来回切只第一条多一次。
+- 有的频道**不给排序入口**（实测不存在的频道直接回 `alerts[].alertRenderer`、无 `contents`；A/B 版也可能只给 filter chip）⇒ 必须保留「摘不到就回落最新」的降级。
+
+**代码落点**：`YoutubeParsers.parseChannelOrderTokens`（摘 token，按文案+token 同节点匹配，两种 chip 形状都命中）+ `YoutubeRepository.getChannelVideosOrdered`（最新=1 条请求；最热/最早=摘 token→续页；缺 token 降级最新）+ TV/移动频道页首屏 + 播放器 UP 面板（`youtubeChannelOrderFor` 把面板 chip 的 B站 order key 映射过去，**面板保持两档**——B站 UP 空间没有「最早」）。排序档位枚举 `ChannelVideoOrder Latest/Popular/Oldest` **不再带 params 字段**（排序不由 params 表达；首屏恒为 `ChannelVideosParams`），档位文案映射集中在 `ui/common/ChannelOrderLabel.kt`，TV 那颗 chip 是三态循环、移动端是下拉三选一。翻页 continuation 与排序无关（续页只带 token），故 `loadMore` 不用改。
+
+**风险**：chip 布局是 A/B 化的（同一天两次请求，实体化 chip 出现位置不同）。摘不到 chip → 记一条 `channelOrderTokens … got=[]` 并按最新页降级（不会空列表），只是「最热/最早」退回「最新」。
+
+**踩坑（2026-10-10 真机，v3.1.0-alpha.14/dev.r2174）：切档直接把频道页打成「视频加载失败」** —— 报错文案 `视频加载失败。Element class kotlinx.serialization.json.JsonObject (Kotlin reflection is not available) is not a JsonPrimitive`。根因：摘 token 是**整棵响应树**的通用探查（对每个节点探 `content` / `simpleText`），而 `YoutubeParsers.stringOrNull` 实现是 `this[name]?.jsonPrimitive?.contentOrNull` —— kotlinx.serialization 的 `JsonElement.jsonPrimitive` 遇到**对象值会抛** `IllegalArgumentException`（`content` 是对象在锁屏卡/缩略图上遍地都是）。且 `parseChannelOrderTokens` 的调用**不在** `feedCatching` 里，异常一路上抛成整页 `ChannelVideoState.Failed`。修法（P11-231）：①文案/token 取值一律走 `as? JsonPrimitive` 的安全取值器 `stringValueOrNull()`（非字符串返回 null）；②`parseChannelOrderTokens` 整体 `runCatching`，失败只记 `YtOrder … failed` 并退空表 ⇒ 回归「摘不到就降级最新」的契约。**教训**：对**未定型节点**做全树探针时，绝不可以用会抛的取值器（`.jsonPrimitive`）；只有针对特定 renderer 的定型取值才可以。
+
+**再一坑（同日，dev.r2178）：排序 chip 文案随 `hl` 本地化，按英文硬匹配 ⇒ `got=[]` 静默降级最新**。真机日志 `channelOrderTokens channelId=UCzu9Auz… got=[]` + `getChannelVideosOrdered … order=Oldest: 排序 chip token 缺失 → 降级最新`，用户看到的就是「切了没反应、显示的还是最新」。原因：`orderLabelOf` 只认 `latest/popular/oldest`，而 app 的 `hl` 跟随用户设置的内容地区（[YoutubeContentRegion]：US/GB→`en`、JP→`ja`、HK/TW→`zh-Hant`、KR→`ko`、DE→`de`），港/台节点下 chip 文案是「最新 / 熱門 / 最早」。**文案表必须覆盖这 5 种 hl**（2026-10-10 直连实测，6 频道 × 5 语言，平铺 chip 与下拉 listItem 两种形状文案一致）：
+
+| 档位 | en | ja | zh-Hant | ko | de |
+|---|---|---|---|---|---|
+| 最新 `Latest` | Latest | 新しい順 | 最新 | 최신순 | Neueste |
+| 最热 `Popular` | Popular | 人気の動画 | 熱門 | 인기순 | Beliebt |
+| 最早 `Oldest` | Oldest | 古い順 | 最早 | 날짜순 | Älteste |
+
+`entityKey`（下拉项上的 `:最新順` / `:Popular` 之类）**也随语言走**，不能当语言无关判据；token 内层那个排序 varint（`4/2/5`）理论上语言无关，但实测取字段不稳（同一响应几个 chip 解出同一个值），未采用。认不出文案时 `parseChannelOrderTokens` 会打一行 `YtOrder … 认不出排序 chip 文案 labels=[…]`（把真实文案原样带出来），以后 YouTube 换措辞/A-B 时照它抄即可。
 
 ### 4.14 视频点赞数主源 `/player microformat.likeCount`（2026-08-23，v3.0.5-alpha.7）
 
@@ -270,6 +297,63 @@ media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack
 - **Playlists 卡**（新布局）用 `lockupViewModel`（`contentType=PLAYLIST`）而非旧 `playlistRenderer`：`diagnosticPlaylistShape` 实测 15 个 `LOCKUP_CONTENT_TYPE_PLAYLIST` 但 `playlistRenderer=0`。播放列表详情 `/browse` 的 browseId **必须带 `VL` 前缀**（裸 `PL...` 返 400，`normalizePlaylistBrowseId` 自动补 `VL`）。
   - **封面 + 视频数字段已迁移（实测 2026-08-27，curl 复现 21/21 卡）**：封面在 `contentImage.collectionThumbnailViewModel.primaryThumbnail.thumbnailViewModel.image.sources[]`（多包一层 `collectionThumbnailViewModel`，旧直连 `contentImage.thumbnailViewModel` 拿空 → 播放列表卡只剩 "▶" 占位块、无缩略图）；视频数在缩略图角标 `thumbnailViewModel.overlays[].thumbnailOverlayBadgeViewModel.thumbnailBadges[].thumbnailBadgeViewModel.text`（"100 videos"）。**metadataRows 已不是视频数**——现在只有 "Updated X ago"（更新时间）/"View full playlist"（含 VL browseId），旧解析取首行会错显示更新时间。`parseChannelPlaylists` 已修：封面新路径优先旧直连兜底，视频数 badge 优先 metadataRows 兜底。onTap 仍为空 → browseId 落 contentId(PL...)，靠 normalize 补 VL。同构确认：搜索播放列表筛选（`/search params=EgIQAw%3D%3D`，type=3）的 lockup 卡字段同此形状（`Eg9QAQ%3D%3D` 被服务端无视返回普通视频，勿用）。
 - **播放列表详情头部 + 纵向列表**：首屏 `/browse` 的 header 有完整元数据，但 **真机实测（2026-08-27 YtPlaylist 诊断日志）header 是 `pageHeaderRenderer`，没有 `playlistHeaderRenderer`**——简介/作者/视频数取不到的真因就是解析只走旧路径。新布局实际结构：`header.pageHeaderRenderer.content.pageHeaderViewModel` 下——简介 `description.descriptionPreviewViewModel.description.content`；作者在 `metadata.contentMetadataViewModel.metadataRows[].metadataParts[].avatarStack.avatarStackViewModel.text.content`（"by xxx"）；视频数在同 rows 的文本 parts（"N videos"）；封面 `heroImage`（递归取 image.sources[].url）。`parsePlaylistHeader` 先走新路径、旧 `playlistHeaderRenderer`（descriptionText/ownerText/numVideosText/primaryThumbnail，对齐 NewPipe `PlaylistInfo`）保留兜底。**作者/视频数语言前缀坑（实测 2026-08-27，真机 owner/count 恒 null + curl hl=zh 复现）**：avatarStack 文本带语言前缀——英文 `by xxx`、简中 `创建者：xxx`、繁中 `建立者：xxx`——`startsWith("by ")` 中文恒不匹配；视频数是 `141 个视频`（英文 `141 videos`），旧正则只认英文 `video`。已改结构性判定：avatarStack part 即创建者行（剥前缀留名字）、视频数=含数字且含 video/视频/影片/動画 词的文本。**另一个坑（诊断 dump 实锤）**：`pageHeaderViewModel` 下的 text 节点是 viewModel 形状 `{"content":"...","commandRuns":[...]}`——`runsText`（只认 `runs` 键）/`simpleText`（只认 `simpleText` 键，**不读 content**）都取不到，必须先读 `content` 键；旧写法 avatarText 恒空串 → owner=""、count=null，且设备与 curl 复现响应一致，差异全在解析侧。另：部分播放列表**本身没简介**（`descriptionPreviewViewModel` 只有 `truncationText`"…更多"无 `description.content`），desc=null 是正确行为非 bug。解析成 `YoutubePlaylistHeader(description/owner/videoCountText/cover)`，仅首屏（续页是纯 continuation 无 header），随 `YoutubeVideoPage.playlistHeader` 传给移动端详情页。详情页 2026-08-27 改**纵向列表**（对齐 LibreTube）：顶部全宽封面 + 标题 + 作者·视频数 + 「播放全部」+ 可展开简介（>120 字截断），下方带序号 + 封面（右下角时长）/ 标题 / 作者 / 播放量·时间的视频行列表（非网格）。
+
+### 4.16 频道页画质角标（4K/8K）：**只有 TV 客户端的数据里有**（2026-10-06，P11-201）
+
+需求：YouTube 频道页卡片要显示「4K」这类画质角标（用户对齐 YouTube TV app 的频道页）。**结论：这个角标在频道页的 WEB 数据里根本不存在，必须另拉一路 TVHTML5。**
+
+**实测矩阵**（同一天、同一 guest 会话、`hl=en&gl=US` 逐端比对，2026-10-06）：
+
+| 来源 | 画质角标 | 频道页里实际有的角标 |
+|---|---|---|
+| `WEB`（项目频道页现用客户端）`/browse` 频道 videos tab | ❌ 零 | `badgeViewModel.badgeText`：Members only / Premium / Fundraiser / Free with ads / CC |
+| `WEB` 频道 popular tab | ❌ 零 | 同上（CC 更多） |
+| youtube.com `@mkbhd/videos` 网页 ytInitialData | ❌ 零 | Members only |
+| **`TVHTML5`** `/browse` 同一频道 | ✅ **120 个 `4K`**（MKBHD） | `tileRenderer` 里 `label`：4K / CC |
+| `/search`（WEB） | ✅ 有 `4K` | `videoRenderer.badges[].metadataBadgeRenderer.label`（`BADGE_STYLE_TYPE_MEDIA`）——**这是 BiliMT 搜索页能看到 4K 胶囊的原因** |
+
+抽查频道：MKBHD / LinusTechTips / Mrwhosetheboss / UnboxTherapy / T-Series / PewDiePie，videos tab 的 `metadataRows[].badges[]` 全部零 4K。故「频道页没有 4K 角标」不是解析漏字段，是**数据源没有**。
+
+**TV 端结构**（`tileRenderer`，与频道页 WEB 的 `lockupViewModel` 完全两套）：
+`contents.tvBrowseRenderer.content.tvSurfaceContentRenderer.content.sectionListRenderer.contents[].shelfRenderer.content.horizontalListRenderer.items[].tileRenderer{ contentId, header.tileHeaderRenderer.thumbnail, metadata.tileMetadataRenderer{ title.simpleText, lines[].lineRenderer.items[].lineItemRenderer: text.simpleText | badge.metadataBadgeRenderer.label } }`。
+一次响应 ~326 个 tile（152 个唯一 videoId，跨「最新/最热/…」多个 shelf，同一 videoId 会重复）。
+
+**TV 频道页能翻页（关键，2026-10-06 二次实测）**：首屏只有 For You / Videos / Shorts / 各播放列表等 shelf，**「Videos」shelf 只给最新 24 条**——只拉首屏，越往后的视频越没角标（真机反馈「只有最新的一部分有角标，更早的还没有」）。翻页 token 在 **`shelfRenderer.content.horizontalListRenderer.continuations[].nextContinuationData.continuation`**（**旧格式**，不是新格式 `continuationCommand`——按后者找会得出「TV 响应没有 continuation」的错误结论，踩过一次）。顺着「Videos」shelf 翻，**每页 24 条全新、全部带 4K**，可一直翻到更早的视频。
+
+**实施**：
+- `YoutubeParsers.parseChannelTilePage`：一页 TV 响应 → `TvTilePage(qualityBadges, videoIds, shelves[], fallbackNextToken)`；`shelves` 含每个横向 shelf 的顺序 id + 分页 token + 目标 browseId（频道 `UC…` / 播放列表 `VL…`）。
+- `YoutubeRepository.tvQualityBadges`：**基页与 WEB 请求并行**发（首屏），按 videoId 并回列表；`4K/8K/HD/HDR` 只补空位，**已有角标（会员/直播/首映）优先保留**（会员是功能性标记，不能被 4K 顶掉）。失败走 `feedCatching` 静默降级（列表照常）。
+- **按需翻页 + 会话内缓存**（`TvQualityCache`，TTL 10min、最多 4 频道、`Semaphore(1)` 串行）：记录「已交给 UI 的物品数 `served`」与「沿 TV 上传列表已走到的条数 `walked`」，`walked < served + 本页条数` 就继续翻（单次最多 4 页）。翻一页没推进（服务端回同一批/形状不认识）立即收手，免得空转刷请求。挑 shelf 用「目标 UC… + 与 WEB 当前页 id 重叠最大」，翻页时认第一次挑中的那个目标。
+- **TV 无视排序 params**：同频道发 `EgZ2aWRlb3PyBgQKAjoA`(最新) 与 `EgZwb3B1bGFy`(最热) 返回同一份多 shelf 频道页 ⇒ 两种排序共用这一路（`ChannelVideoTabParams`）。
+- **不能拿 TV 替换 WEB 主列表**：TV 页不返回 tab 列表、不认排序，结构（`tileRenderer`）与 `lockupViewModel` 完全两套，只能做角标补充。
+- **成本**：首屏 +2 个请求（基页并行 + 1 页续页，覆盖 48 条）；此后每多滚一页（30 条）≈ 多 1 个续页请求。Shorts/直播/播放列表 tab 与播放器 UP 面板（`withQualityBadges=false`）都不发这一路。
+
+**验收**（真机）：日志 `YoutubeChannel: getChannelVideos qualityBadges channelId=… tiled=N matched=M page=P`，M 随 P 增长且不再「只有最新一部分有角标」；频道页卡片右上角出现「4K」胶囊（TV 与移动端共用同一数据层，两端同时生效）。
+**否证**：①`tiled=0` ⇒ TVHTML5 `/browse` 在真机被拦（probe 是 PC 直连），回退方案是改走 WebView 或放弃；②`matched` 不随滚动增长 ⇒ 翻页 token 或 shelf 挑错（看 `TVQualityBadgesNext failed`），需回看该频道的 shelf 结构。
+
+#### 4.16.1 翻页判据换成「覆盖」+ 基页退化重取（2026-10-10，P11-229）
+
+**真机现象**（BRAVIA 4K AE2，v3.1.0-alpha.14，2026-10-09 23:33-00:02，频道 `UCx6kUcig2P2j5GnxrMiNMDA`）：**首屏（最新 30 条）没有 4K 胶囊，往下翻页后新卡片才有**。日志里同一场两行判据对比极清楚：
+
+| 调用 | tiled | matched | 说明 |
+|---|---|---|---|
+| 首屏（2 次打开） | 23 / 71 | **6** / **6** | 首屏 30 条只覆盖 6 条 |
+| 续页（每次滚动） | 47 / 95 / 132 | 29 / 30 / 30 | 更早的视频几乎全覆盖 |
+
+`tiled` 一路涨（23→47→71→95→132，每页 +24 = 正好一个 shelf 页）而**首屏覆盖纹丝不动（6）**，说明翻页顺着一条与 WEB 列表无关的 shelf 走 —— 判据失效，不是数据没拉回。
+
+**根因：翻页判据是计数代理，不是覆盖。** 初版用「已翻条数 `walked` ≥ 已交给 UI 的条数 `served + 本页条数`」决定要不要继续翻：`pickUploadShelf` 挑不到 shelf 时会把**整页所有 tile 的 id**（含 For You 等推荐位）算进 `walked`，于是「深度」瞬间达标 → 一次都不翻；若挑到的是别的 shelf（如 Most viewed），翻页会把 `walked` 每页 +24 却全是无关视频，代理永远判「够深了」，**首屏那些 videoId 一辈子等不到角标**。
+
+**修复（`YoutubeRepository`）**：
+1. **判据换成覆盖**：缓存累积 UI 已收到的 WEB videoId（`TvQualityCache.wanted`），`walkForCoverage` 只在「未覆盖的在显示视频」确实变少时才继续，**一页没推进立即收手**（错 shelf 最多花一页请求）。`served`/`walked` 计数代理删除。
+2. **挑 shelf 不再卡 `UC…` 前缀**：候选 = 所有带分页 token 的 shelf，按与在显示视频的重叠度取最大（实测上传列表 shelf 的 target 可能是 UC、也可能缺省）。
+3. **基页退化重取**：覆盖不到在显示视频的一半（`TvQualityCoverageFloor=0.5`）时，再取一次同一形状的基页并并集 —— 实测同频道同一请求的 shelf 组合会变（同一会话里 23 条的退化页与 71 条的正常页并存），重取一次能整屏救回角标；每缓存代只重取一次（最多 +1 请求），正常场（基页覆盖 26/30）不触发。
+4. **诊断**：新增一行 `YoutubeChannel: qualityBadgesDetail channelId=… wanted=… covered=… baseTiles=… baseShelves=… baseOverlap=… walkedPages=… baseRetry=…`——P11-201 那行的 `tiled/matched` 只见「并回几条」，退化时看不出是谁的锅。
+
+**PC 直连复核（2026-10-10，`hl=en&gl=US`，同频道，8 次连发 + 12 并发突发）**：TV 频道页稳定返回 **104 个 `tileRenderer` / 7 条 shelf / 56-60 条带角标**，其中「Videos」shelf 恰好等于 WEB 最新 24 条（overlap 24/24），基页对首屏 30 条的覆盖 **26-28/30**；`hl/gl` 换成 zh-TW/zh-HK、带 visitorData、带/不带 `params`、并发突发都不改变结果 —— 即**正常基页覆盖 87%+**，真机那场的 6/30 是响应形状退化（基页无上传列表），不是解析或身份问题。
+
+**验收**（真机）：`qualityBadgesDetail` 的 `covered/wanted` 应随翻页涨到 ≥90%，首屏卡片出现 4K 胶囊；退化场应见 `baseRetry=true` 且该行 `covered` 明显高于同场未重取时的值。
+**否证**：①`baseOverlap=0` 且重取后 `covered` 仍不涨 ⇒ TVHTML5 真机对该频道返回的就是无上传列表的退化页，需换源（例如按 `UULF…` 上传播放列表单独取一路验证）；②`covered` 涨了而界面仍无胶囊 ⇒ 问题在 UI 侧（卡片角标渲染/合并条件），不在取数侧。
 
 ---
 

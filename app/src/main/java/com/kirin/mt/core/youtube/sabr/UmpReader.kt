@@ -22,6 +22,14 @@ internal class UmpReader {
     buffer.append(data)
   }
 
+  /** P11-234:借一块读缓冲([size] = 读块大小),见 [CompositeBuffer.obtain]。 */
+  fun obtainReadBuffer(size: Int): ByteArray = buffer.obtain(size)
+
+  /** P11-234:[data] 只有前 [length] 字节有效(短读);[length] <= 0 表示只归还缓冲。 */
+  fun append(data: ByteArray, length: Int) {
+    buffer.append(data, length)
+  }
+
   /**
    * 尽可能多地解析完整 part,对每个完整 part 调 [onPart]。
    * 不完整的 part(头或负载未收齐)保留在 buffer 里,等下次 [append] 后再续。

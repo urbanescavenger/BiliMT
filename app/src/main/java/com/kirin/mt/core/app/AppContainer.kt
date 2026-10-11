@@ -323,6 +323,36 @@ class AppContainer(context: Context) {
   }
 
   /**
+   * P11-176:预热 WebDAV 主机连接(已配置才做)。
+   *
+   * 真机 `logs_live_20260922_234839.log`:`cf.19961226.xyz`(Cloudflare 前)空闲后第一笔请求
+   * **8.9s 超时**、第二笔 **15.0s 超时**,而紧接着第三次 6.7s 成、第四次 1.3s —— 边缘/源站冷启,
+   * 不是网络不通。备份/还原/保存配置都要先 ping 一次,冷启成本全砸在用户按键那一下 ⇒ 启动后台
+   * 先打一枪(与 [warmupApiConnection] 同款 fire-and-forget),把 DNS+TCP+TLS 与边缘冷启挪到
+   * 播放之外;之后用户的探测第一档(8s)即可命中热连接(实测 1.3s)。
+   *
+   * 未配置 WebDAV 时直接跳过(不打扰用户网络)。失败静默 —— 逐次尝试的码/异常在
+   * [WebDavRepository.WebDavLogTag] 日志里。
+   */
+  fun startWebDavPrewarm() {
+    applicationScope.launch {
+      val cfg = runCatching { webdavConfigStore.config.first() }.getOrNull()
+      if (cfg == null || !cfg.isConfigured) {
+        Log.i(LogTag, "webdav prewarm skipped (未配置)")
+        return@launch
+      }
+      val started = System.currentTimeMillis()
+      val ok = runCatching { webdavBackupService.ping(cfg.url, cfg.username, cfg.password) }
+        .getOrDefault(false)
+      Log.i(
+        LogTag,
+        "webdav prewarm ${if (ok) "ok" else "failed"}: ${System.currentTimeMillis() - started}ms " +
+          "url=${cfg.url}(逐次码/异常见 ${WebDavRepository.WebDavLogTag})",
+      )
+    }
+  }
+
+  /**
    * 启动后台 IPTV 源判活扫描(见 docs/iptv-feasibility.md 三期):延迟 15s 避开冷启动
    * 图片/接口流量高峰,然后对多源频道廉价 m3u8 探活(约 50 MB/千频道,KB 级 GET),
    * 结果写 [iptvSourceProbeStore] 供 TV 列表/播放器活源前置复用。fire-and-forget:

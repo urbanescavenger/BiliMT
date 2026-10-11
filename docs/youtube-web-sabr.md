@@ -2039,6 +2039,996 @@ selection 实例里 —— 因为实例正是会被重建的那个东西。**
 
 ---
 
+### 5.11.17 TV 2160 起播场:**两次 stall 全量重载**的判读 + 四条候选修法(P11-173,**方案待实施**)
+
+**场次**:真机 `logs_live_20260922_224548.log`(BRAVIA 4K AE2,dev.r2081 = `601da7e5`),
+视频 `8yVhEAPMJ-E`,单会话 22:28:56 起播 → 22:32:32 结束,时长 879s。
+用户报告:「为什么多次重载,起播 2160」。
+
+#### (1) 「起播 2160」是**显示/绑定**层,不是真在放 4K
+
+- `SABR PlaybackInfo: sid=… sessionVideo=itag315(2160p) qualities=8 selected=itag315(2160p)`
+  —— 播放器清晰度指示读的就是 `selectedQuality`(`PlayerScreen.kt:1977`),所以屏上显示 2160p;
+- `SabrSession: video=FormatId(itag=315, height=2160)` —— 会话绑定轨也是 2160p;
+- **实际下载/渲染:720p ×15 块、1440p ×9 块;itag315/401 零块;`video size` 只有 1280x720 → 2560x1440。**
+
+选档口径两条路径不一致(WEB-SABR 按**默认画质**、NewPipe 按**起播画质**):
+
+| 路径 | 代码 | 本场取值 |
+|---|---|---|
+| WEB-SABR 选档 + 会话绑定 | `YoutubePlaybackResolver.kt:3018-3028`(selectedItag)、`:2732-2745`(firstVideo 绑定)用 `youtubeDefaultQuality.maxHeight` | `defaultQualityMax=null`(不限)⇒ 最高档 = itag315(2160p) |
+| NewPipe 兜底 | `YoutubePlaybackResolver.kt:1263` 用 `youtubeStartQuality.startHeight` | `startHeight=720` ⇒ itag298(720p) |
+
+即 P11-97 的「绑定档对齐自动选轨首轨」只落到了 NewPipe 那条。附带错位:harvest 材料是 **1080p**
+(`harvest quality nudge: range=hd1080` → `P11-118 harvest decoded: video=FormatIdLite(itag=399…)`),
+会话却声明 2160p。
+
+#### (2) 两次重载都是 **stall 看门狗全量重载**,链条一致
+
+| 时刻 | 日志 | 说明 |
+|---|---|---|
+| 22:29:39 | prepare,ABR 冷启 `sel=8`(302/720p) | 起播档由带宽 seed 决定(与绑定档无关) |
+| 22:29:53 | `upshift (cold-start ladder, reseed skipped): itag303(1080p) declared=3002165` | 冷启梯子升 1080p |
+| 22:30:08 | `fetch rn=2 REAL 6586130B 14951ms → 3Mbps est=3086K` | 一笔请求 15s |
+| 22:30:08→26 | rn=3(seg=6)发出后**零字节挂死**,`fetch rn=3 exception: timeout (fail=18004ms bwNow=-1)` | 18s 静默超时 |
+| 22:30:20 | `stall detected, auto-retry #1 @pos=24941ms buffered=2%` | `StallThresholdMs=8s` ⇒ **整场重载** |
+| 22:30:34 | 重载后新会话(首个 ABR 行 `bw=116660K` = 上一场膨胀估计带过来的 seed) | 重 harvest ≈16s |
+| 22:30:37/38 | `fetch rn=0 … 2279ms → 13Mbps`、`rn=1 … 922ms → 35Mbps` | **突发很快** |
+| 22:30:48/50 | `upshift reseed: est baseline → 3002165`(1080p)、`→ 8696101`(1440p) | 重锚直接用**声明值** |
+| 22:30:56→22:31:23 | `rn=5 18858124B/5584ms → 27Mbps`、`rn=6 29946763B/10970ms → 21Mbps` | 单笔 18–30MB 多段大包 |
+| 22:31:07 | `sel=2 bitrate=8696101 … bw=23585K sus=16010..20159K cap=24693K` | 钉在 1440p(声明 8.7M) |
+| 22:31:50 / 22:32:13 | `rn=8 20174812B/22039ms → 7Mbps`、`rn=9 11944875B/23143ms → 4Mbps` | **链路塌方** |
+| 22:32:14 | `buffer-critical downgrade: bufS=0s 1440p@5501332 → 1080p` + `downgrade fail cooldown: 1440p excluded 90s` + `stall detected #1 @pos=109574ms buffered=12%` | 第二次整场重载 |
+| 22:32:25 | `P11-118 harvest: NO CAPTURE after 7899ms` → `markWebSabrFailed` | 重载连 harvest 都失败 |
+| 22:32:29/32 | NewPipe 兜底 720p → `fetch rn=10 exception: timeout (fail=18004ms)` | 兜底会话也挂死,用户退出 |
+
+**结论**:重载不是 2160 播放造成的(2160p 一块都没下),是「**突发估计把 ABR 拉高 → 链路塌方 →
+缓冲见底 → stall 看门狗整场重载 → 重载把带宽窗口清零 → 又从突发估计起步**」的循环;
+两次重载各花 ≈14–25s 死时间,第三次连 harvest 都没采到。
+
+#### (3) 四条候选修法(按优先级;每条给代码位置/改法/判据/风险)
+
+**① 跨重载「上过的高档」冷却(治循环,优先)**
+- 现状:只有顶档有记忆保护 —— `TOP_TIER_MIN_HEIGHT=2160`(`HeightAwareAdaptiveTrackSelection.kt:987`)
+  + `SabrAbrMemory.isTopTierStartupBlocked()`(同文件 ~740),而本场到过 1440p 却不在保护内。
+- 改法:stall 重载时把**本场实际选中的最高档**记进 `SabrAbrMemory`(现成 API:
+  `noteTrialFail(height, cooldownMs)` / `isTrialFailBlocked(height)`,进程级、跨重载存活),
+  新 ABR 实例对该档及以上加冷却(建议 60–90s,与 `downgrade fail cooldown` 同量级)。
+- 判据:重载后 60s 内不再出现 `sel` 落到该档;`bw/cap` 达标且缓冲健康时才逐步放行。
+- 风险:冷却期内「带宽真恢复了也不升」—— 需保留出口(如 sustained ≥ 声明×1.1 立即放行)。
+
+**② `upgradeEstFloor` 加缓冲健康闸(治拉高)**
+- 现状:`HeightAwareAdaptiveTrackSelection.kt:713-714` `upgradeEstFloor = maxOf(effective, capacityFloor)`
+  —— `capacity` 是**瞬时吞吐中位数**(免疫墙钟空转),突发 25–35Mbps 直接当容量用。
+- 改法:仅当 `bufferedDurationUs ≥ UPGRADE_MIN_BUFFERED_US`(已有常量)时并入 cap;
+  低缓冲(饥饿风险期)只信 sustained/effective,并把该分支写进 `YtSabrAbr` 日志便于判读。
+- 判据:`bufS` 低位时不再出现基于 cap 的升档;满缓冲期升档能力不退化(§5.11.16 的「满缓冲不升档」
+  回归必须不复发 —— 这条通道本来就是为它加的,改动要盯住这一点)。
+- 风险:与 P11-168/170 的带宽闸语义打架(那条是「降档加带宽闸」,这条是「升档加缓冲闸」),
+  两者都动时要一起跑一场满缓冲排空的场次验证。
+
+**③ 挂死即换会话(治 18s 死等)**
+- 现状:P11-166 已把「静默超时」与「整调用上限」分离(§5.11.13),但本场仍是 18s 超时后才失败;
+  8s stall 看门狗先把整场重载了。
+- 改法:对**已出首帧后的 0 字节挂死**用更短的静默阈值(建议 5–6s,参照 `VideoFreezeThresholdMs=12s`
+  的范式)⇒ 先 evict/换会话或降档,而不是整场重载(重载代价 14–25s + 重 harvest 可能失败)。
+- 判据:`fetch rn=N exception: timeout` 之前出现「挂死 → 换会话/降档」日志,且该轮不产生
+  `stall detected`。
+- 风险:阈值太短会误杀慢首包(起播期已有 `StartupStallThresholdMs=25s` 的教训),故只对**已出帧后**
+  且**零字节**的请求生效。
+
+**④ 2160 显示/绑定对齐 P11-97(治错位,不治重载)**
+- 改法:WEB-SABR 的 `selectedItag` 与 `firstVideo` 绑定的高度上限改用 `youtubeStartQuality.startHeight`
+  (与 NewPipe 路径同口径),消掉「屏上 2160 / 实播 720」与「材料 1080 / 会话 2160」两处错位。
+- 判据:`SABR PlaybackInfo … selected=` 与 `video size:` 一致;harvest 材料 itag 与会话绑定轨同高。
+- 风险:绑定档变动会影响「首 fetch 暴露 RELOAD」的口径(P11-97),需按同一场的 RELOAD 计数回归。
+
+**⑤(待定方向,建议单独一轮)单响应体量 10–30MB + 整包读取** —— 本场真正的「饿死」机制可能是这个:
+
+- 本场单笔响应体量:`rn=5 18858124B`、`rn=6 **29946763B**`、`rn=7 19645414B`、`rn=8 20174812B`、
+  `rn=9 11944875B`;且**服务端会把已切走的旧档一起推**(`resp summary: req=400 usable=11944875B
+  init=[140,308,400] **pushed=[140,302,303,308,400]**`,同一响应里 itag400 的 seq1–4 就占 11.3MB),
+  客户端随后 `cleanup dropped formats=[308]/[302]` 把它们丢掉 = 白流量。
+- 而 fetcher 是**整包读**(`SabrMediaFetcher` `response.body?.bytes()` 之后才解析)⇒ 10–30MB 全部到齐前
+  播放器**拿不到任何一个段**;链路实测 4–10Mbps 时这就是 **10–60s 的零交付**,缓冲必然被吃空 →
+  8s stall 看门狗 → 整场重载。两场 stall 都落在这种大响应期间(rn=8/9 用了 22s/23s)。
+- **对照 LibreTube 已核**(`SabrClient.kt:431 return response.body.bytes()`):它**也是整包读**,
+  请求体结构(playerTimeMs/bufferedRanges/preferredFormatIds/clientAbrState)与我们也同源 ⇒
+  「流式消费响应体」不是照抄能得来的改动,也不能拿它证伪;更可能有效的是**让服务端少推**
+  (收紧请求里上报的 initialized/bufferedRanges,只喂当前档),或饥饿时主动丢弃旧档推送 + 快速失败。
+  这块要单独一轮取证(先加「单响应体量/被丢档字节数」打点),本轮不动。
+
+#### (4) 复测方法
+
+同一条视频(`8yVhEAPMJ-E`,2160p 可用)+ 同一起播设置(起播 720P / 默认画质不限),看三样:
+`stall detected` 次数、`upshift reseed` 的目标档、`fetch … → XMbps` 的末段是否仍塌到 <5Mbps。
+若②单独上线,必须同时跑一场「满缓冲 → 排空 → 再升档」的手机场(§5.11.16 的场景)防回归。
+
+---
+
+### 5.11.18 TV 1440p 挂死场:**P11-177 复测(降档路径已恢复)** + 残留「挂死期间无评估点」缺口(P11-178,**已实施**)
+
+**场次**:真机 `logs_live_20260923_233549.log`(BRAVIA AE2,dev.r2090,`c9ALnYFiDQ4`,23:07 起播)。
+该构建**已含 P11-177**——日志里可见新文案 `buffer-critical downgrade **suppressed**(P11-168/177)`。
+
+#### (1) P11-177 复测:降档路径确实回来了
+
+| 时刻 | 日志 | 判读 |
+|---|---|---|
+| 23:29:40 | `buffer-critical downgrade: bufS=4s itag308/1440p@11384271 → 1080p` | 急救降档开火(P11-177 前会被「est ≥ 声明」恒真 suppress) |
+| 23:32:08 / 23:32:36 | `1440p → 1080p` / `1080p → 720p` | 连续两枪都开 |
+| 23:35:23 等 | `cooldown cleared early: … est ≥ declared×1.1` | 提前解除通道正常 |
+| 全天 | `stall detected` **仅 1 次**(23:34:51) | 「60~90s 一轮连续重载」未复现 |
+
+即 P11-177 的目标(「est 被重锚/突发撑高、实测远低于声明」的真饿场景能自救)达成。
+
+#### (2) 残留缺口:挂死期间**一次评估都没有**
+
+| 时刻 | 日志 | 判读 |
+|---|---|---|
+| 23:33:48 | `sel=3 … 1440p bufS=47.6 bw=10568K sus=9740K meas=5660K` | 满缓冲,`meas` 已低于声明 6038680 = 隐患已现 |
+| 23:33:48→23:34:30 | 42s 零 fetch(`bw gap ignored: raw=43298ms`) | 满缓冲停拉排空;**`sel=` 一行都没有** = ABR 零评估 |
+| 23:34:30.1 | `sel=3 bufS=9.9 … est=10568K` | 唯一一次评估:`9.9s > 8s` 水位线(差 0.9s)不开枪;est 被突发撑高 ⇒ est 滞回也不降 |
+| 23:34:30.4→38.4 | `fetch rn=27 …` → `exception: timeout (fail=8009ms)` | **零字节静默 8s**(readTimeout 语义) |
+| 23:34:38.4→55.7 | `fetch rn=28 REAL 13723186B 17293ms → 6Mbps status=1` | 重试**17.3s 才吐字节** —— 管道活着,只是慢 |
+| 23:34:43.4 | `player state=BUFFERING` | 缓冲见底 |
+| 23:34:51.9 | `stall detected … buffered=20%` + `stall-reached cooldown: 2160p excluded 90s` | 8s 位置冻结 → **整场重载** |
+| 23:34:52→23:35:10 | botguard 铸 token(~5s)+ **harvest 重采 12.8s**(上次采集已 369s 超窗) | 重载代价 |
+| 23:35:17.9 / 23:35:21.1 | 新会话首块(起播锁 720p)/ `stall auto-retry recovered` | 断流 23:34:43→23:35:18 ≈ **35s**;若不重载,rn=28 落地只差 4s ⇒ 约 13s |
+
+三条独立缺陷:
+
+1. **评估只在 `getNextChunk` 发生**(`DefaultSabrChunkSource.kt:257` 起,`updateSelectedTrack` 在 `:336`)
+   —— 满缓冲停拉期与挂死阻塞期**都没有评估点**;挂死结束后重试那笔成功样本(6.35Mbps)又把
+   `est`/`meas` 喂真 ⇒ 挂死证据被抹平,下一次评估照旧不降档。**P11-177 那道闸本身没错,是没有开火的
+   机会**(本场 23:34:30→23:34:52 零评估)。
+2. **冷却记错档**:`stall-reached` 记的是「本场爬过的最高档」=2160p,而 2160p 当时已被
+   `trial refused (over-capacity)`(25384K > floor 8747K)挡着 ⇒ 该冷却当场空操作;真正漏光的 1440p 没有
+   任何冷却。附带:23:35:17.9 新会话启动锁那次降档调 `noteTrialFail` **把同一格覆盖成 720p** ⇒ stall
+   冷却只活了 26s(`remain 64s` 那行是覆盖前的旧值)。
+3. **两个 8s 叠在一起**:fetcher 静默超时 8s 已切一刀并重试(重试需 17.3s 才交付),玩家看门狗的 8s 又从
+   缓冲见底重新起算 ⇒ 「网络慢而不死」时看门狗**必然**先开火。
+
+#### (3) 修法(P11-178,已实施)
+
+- **① 挂死证据进 ABR 判据**:`SabrMediaFetcher` 按 itag 记「零字节挂死」墙钟
+  (`noteSilenceHang` / `getLastSilenceHangWallMs`,只认 `SocketTimeoutException` = 读超时/连不上),
+  经 `SabrBandwidthMeter` 既有 provider 通道交给选择类;`HeightAwareAdaptiveTrackSelection` 把
+  「本档 20s 内挂死过」当**独立供给证据** —— 视同跌破水位线、免掉「仍在回落」判据、**且不受 P11-168/177
+  带宽闸否决**(闸的判据恰好会被「挂死后重试成功」那笔样本喂真)。
+- **② 冷却目标档改取饿死瞬间正在播的档**:`PlayerScreen` 读 `currentTracks` 选中视频轨高度,传给
+  `SabrAbrMemory.onStallReloadWithReachedHeight(starvedHeight)`;目标档优先取饿死档(逐级爬约束下封住
+  它即封住它以上所有档),低于 1080p 时退回「本场到达档」;**并给 stall 冷却独立一格**,不再被
+  `markDowngradeFromTrial` 覆盖。
+- **③ 未做(需产品权衡)**:给看门狗对「在途且有进展的 fetch」加宽限。本场看门狗只比 rn=28 早 4s 动手,
+  但放宽阈值会牺牲「慢滴挂死」的兜底(那条兜底是 P11-167 专门补回来的),留待用户定。
+
+#### (4) 判据
+
+- 同场景应出现 `buffer-critical downgrade: … silenceHang=true(P11-178)`,且该轮不再产生 `stall detected`;
+- stall 仍发生时,日志应为 `stall-reached cooldown: 1440p excluded 90s (starved=1440p reached=2160p;…)`,
+  此后 90s 内不再出现 1440p 档(除非 `cooldown cleared early: 1440p` = 缓冲健康 + 带宽达标,属正常放行);
+- 回归面:满缓冲排空场次(§5.11.16 的场景)不得因本改出现 `silenceHang=true` 的误降档 —— 那些场次本来
+  就没有挂死记录。
+
+### 5.11.19 手机场「切 2160p 后约 37 秒断流」判读:会话建在**自铸 token** 上,status=2 又不刷新(P11-205,判读,方案待拍板)
+
+用户报「看下日志 为什么 4k 会突然断流」。日志 `logs_live_20261009_002203.log`
+(App 3.1.0-alpha.11 / 3100111,XQ-EC72)。
+
+**时间线(同一视频 `IlsFcWOKGvo`,同一进程 24863)**
+
+| 时刻 | 事件 | 关键字段 |
+| --- | --- | --- |
+| 00:20:22.33 | 起播会话 `sid=WFJqaZww…` | `只借 token = 90B`(harvest 页面 token)/ `SabrSession … poToken=90B` / `首笔 status=1` |
+| 00:20:24–27 | rn=0..13 **全 `status=1`**,媒体照流(480p) | `resp summary: req=244 usable=1464792B/1464792B` |
+| 00:20:27.47 | **用户手点清晰度 → 2160p** | `点清晰度: 点=313 '2160p' 现播档=135` → `loadRequest quality=313` |
+| 00:20:30.9–33.1 | 本次 resolve **借不到页面 token**,回落**自铸** | `只借 token = -1B 0B(pot-less)` → `PO token minted (128 chars)` / `token 形态: … 88B first=0x32 minter 输出` / 新会话 `sid=bHw2c5JQ… poToken=88B` |
+| 00:20:38.78 | **首笔就 `status=2`** | `首笔 STREAM_PROTECTION_STATUS status=2 (pot=88B first=0x32)` |
+| 00:20:51 / 00:21:07 | 仍 `status=2`,代码**刻意不刷新** | `status=2 但**刻意不刷新**(P11-144 keep-stale 实验)→ keep 88B (age=18168ms / 34346ms)` |
+| 00:20:38 / 51 / 21:07 | 三笔响应各推 4K 大批段 | `fetch rn=0/1/2 REAL 48107220B / 49136539B / 48236769B`(≈145MB / 37s) |
+| 00:21:10.50 | 第 4 笔 → **判死整会话** | `status=3` + `InvalidPoToken diag: sessAgeMs=37420 sessReqN=4 status2Seen=3 status3Count=1 pot=88B ctxActive=0 ctxStored=0 … req=[itag=313 seg=13 playerTimeMs=66066]` |
+| 00:21:10–43 | 每笔 `terminal … → evict`,**服务端不再收到请求** | `SabrDataSource open: terminal … (session dead, fast-fail no-fetch)` ⇒ P11-190 生效,但**卡死 33 秒**后才 `playback error, error-retry #1/3 @pos=65962ms: Source error` |
+| 00:21:52 | 重载:四臂试满 + WEB 判死 → **pot-less 主链**,自愈 | `该视频 WEB-SABR 已判死 … 落 NewPipe 主链` / 新会话 `poToken=0B`(visionOS UA)/ `首笔 status=1` → 65962ms 续播,itag=313 |
+
+**判读**
+
+1. **断的是整个 SABR 会话**,不是某个档或某段:判死后服务端逐笔只回 71B 的 status,零媒体。与带宽、
+   解码、4K 分辨率本身无关(bw 当时 23~70Mbps,`CCodec`/`Adreno` 无异常)。
+2. **触发路径固定 = 切清晰度 → 重建会话 → 那一刻 harvest 材料不可用 → 走自铸 token 臂**。
+   全日志统计:`首笔 status=2` 只出现 2 次,两次都是 `pot=88B`(自铸),且都由「点清晰度」触发
+   (10-09 00:20:38 / 10-08 17:38:19);而 `pot=90B`(harvest)与 `pot=0B`(pot-less)的会话一律
+   `首笔 status=1`,本文件 2 条 `InvalidPoToken diag` **全部**出自上述自铸会话。
+3. **4K 只是放大器**:占位级 token 的宽限在 3 笔响应 / 37 秒内被烧穿(每笔 48MB);同一枚 token 在
+   480p 下 3 笔只推 ~4MB,用户往往在第 4 笔之前就切走了 ⇒ 症状看起来像「4K 一放就断」。
+4. P11-144 keep-stale 的判据行本轮答案是「下一笔照样 `status=3`」——与 P11-145 / P11-190 的既有记录
+   一致:**刷新与否不是主因**(自铸 token 本身就是占位级);`REFRESH_PO_TOKEN_ON_STATUS2=false` 可以
+   继续留着,但它不构成防线。
+5. 现有自愈链有效:判死 → 四臂轮换到 pot-less → `status=1` 续播。代价是一次 33 秒卡死 + 一次整场重载。
+
+**候选修法(未实施,待拍板)**
+
+- ①**切清晰度不重建会话**(同会话内换档),从源头避开「resolve 时借不到材料」这个窗口;需先复核换档
+  请求段语义(服务端跳段 / §格式墙,见 P11-92)。
+- ②起播/切档时若 harvest 材料不可用,**不要**用自铸 token 建 WEB 会话,直接落 pot-less 臂(实测状态全绿)。
+- ③把判死后的 33 秒压短:P11-190 只消掉了服务端 backoff 那段,现在这 33 秒是 media3 Loader 自己的重试节拍。
+
+### 5.11.20 「材料取不到就不建 WEB 会话」(候选修法 ②)判据链复核 —— 真凶是 45s 窗口**把材料丢了**(P11-206,改代码前)
+
+**起因**:§5.11.19 判出「切 2160p → 重建会话 → 那一刻材料不可用 → 走自铸 token → status=2 → 第 4 笔
+status=3」。用户点名把候选修法 ②(材料不可用时**不建 WEB 会话**,直接落 pot-less)的逻辑先理一遍。
+
+**现状判据链(默认 `WEB_SABR_ARM_B_ONLY=true` ⇒ 恒臂 B)**
+
+| # | 步骤 | 位置 | 本次真机取值 |
+| --- | --- | --- | --- |
+| 1 | 触发:`webSabrFirst` / `reloadCount>0` / `isDashFallbackFailed` ⇒ `webSabrInPlay` | `YoutubePlaybackResolver.kt:239` | 点清晰度 → 重建 resolve |
+| 2 | 臂号:`WEB_SABR_ARM_EXPERIMENT=false` + `WEB_SABR_ARM_B_ONLY=true` ⇒ **恒 1** | `:265` | 臂 B |
+| 3 | 铸造:`webSabrPoToken = awaitMobileMinter()`(≤6s)→ 交给 **postPlayer** | `:271-278` | 00:20:30.9 `att/get` → 00:20:32.1 minted(128 chars / 88B) |
+| 4 | 采集:`harvestSessionMaterial(videoId)` | `:2335` | 落出口 (a) ⇒ null |
+| 5 | `pageTokenBytes = material?.poTokenBytes`;null ⇒ `fromSabrData(poTokenBytesOverride=null)` ⇒ **会话 token = 第 3 步那枚自铸** | `:2653` / `:2881` | `-1B` ⇒ 88B 自铸 |
+| 6 | 服务端判占位级:首笔 `status=2` → 第 4 笔 `status=3` → 整会话判死 | `YtSabr` | 00:20:38 / 00:21:10 |
+
+**第 4 步的四个出口**(全部 `return null` = 日志口径的「回退自造材料」):
+
+- **(a) 45s 窗口去重**:`harvestProbed[videoId]` 在窗口内 → `return null`
+  (日志「刚采集过(Nms 前,窗口 45000ms)→ 用自造材料」,`:2338-2342`);
+- (b) 预算不足 / 无捕获 / 只剩冷启桩 / 非 POST → null;
+- (c) 解码失败或 cpn 缺失 → null;
+- (d) token < 80B(P11-165 桩硬闸)→ null。
+
+⇒ **(a) 是本次真凶,而且是结构性的**:`harvestProbed` 只存**时间戳**,成功采到的 `HarvestMaterial`
+当场就被丢掉。于是「45s 内的第二次 attempt」= **必然回落自铸**;而"第二次 attempt"正是切清晰度 /
+auto-retry / reload 的常态。
+
+**同一份材料的直接对照(本场日志)**
+
+- 00:20:20.969 采到材料:`poToken=90B` / `bodyB64=2908B` / URL `rr5---sn-a5mekndz … expire=1791498018&ei=wsLHaqr4…`;
+- 00:20:22.33 用它建会话 → **`status=1` ×14**(rn=0..13),正常播放;
+- 00:20:32.14 切 2160p 后的 resolve 落进窗口 (a) → `-1B` → 建**自铸 88B** 会话 → 00:21:10 判死;
+- 00:21:48.617(判死后)**重放同一份材料**:`P11-118 harvest replay: start … expire=1791498018&ei=wsLHaqr4…`
+  → 00:21:49.476 `UMP: type=58(STREAM_PROTECTION_STATUS) status=1`。
+  ⇒ **材料没坏,89 秒后仍被服务端接受;是我们自己在 00:20:32 把它扔了。**
+
+**冲突清单(改之前必须标出来的)**
+
+1. **②-2(材料取不到就 bail + 判死)与 P11-138 / P11-156 直接冲突**:`buildWebSabrFallback` 返回 null 的
+   调用点会 `markWebSabrFailed`,而 `armRotationOpen` 因 `WEB_SABR_ARM_EXPERIMENT=false` **恒 false**
+   ⇒ 本进程内该视频**永久放弃 WEB-SABR**。把「45s 采集节流」当判死信号 = 用**纯时序假失败**关掉唯一有
+   `status=1` 战绩的臂。
+2. **②-2 的日志会撒谎**:现有那行「臂B 本轮失败 → 落 NewPipe 主链 … 四臂进度 N/4」在"没失败、只是没
+   材料"时也会打 ⇒ 判读的人必然误判(需独立日志行)。
+3. **去重是防风控的采集节流,不是「没有材料」的判据**(见 `:2331` 注释「防风控 + 防 auto-retry 立刻重打」)。
+4. **成本顺序**:`mint(≤6s)` 在 resolve 里、`harvest(冷 4~11s / 热 ~2s)` 在 `buildWebSabrFallback` 里
+   —— **顺序是 mint → harvest**。要"不建会话就省掉铸造等待"必须把 harvest 提到 mint 之前(跨函数搬
+   控制流);只 bail 在 `postPlayer` 之前仍会白等一次 mint。
+5. **「pot-less」在代码里有三个不同的东西,只有一个有 `status=1` 战绩** ⇒ ② 要落的必须是
+   **NewPipe 主链(visionOS)**,不能实现成"把臂号改成 2 走臂 C":
+
+   | pot-less 路径 | 身份 | 会话 token | 实测 status | 证据 |
+   | --- | --- | --- | --- | --- |
+   | WEB-SABR 臂 C(`tokenArm==2`) | WEB 移动(Pixel 7 UA + WEB clientInfo) | `""` | **首笔 `status=2`** → 21s 后 startup stall evict | `logs_live_20260920_214742.log` 21:45:05(唯一一场臂 C) |
+   | NewPipe 主链 | `com.google.visionos.youtube/1.02` | `""` | **首笔 `status=1`**;本文件 `status=3` **零次** | 10-09 00:21:54 / 10-08 00:15:40 · 00:16:19 · 00:17:14 · 00:17:56 · 17:40:28 |
+   | 材料会话(臂 D) | WEB | 材料 token | 历史能播,但有格式墙 | §5.9.4 |
+
+**候选修法(按推荐序)**
+
+- **②-1(推荐,证据最强、零冲突)—— 复用材料**:`harvestProbed[videoId]: Long` 改成
+  `harvestMaterials[videoId]: Pair<HarvestMaterial, Long>`,窗口内**直接复用那份材料**而不是 `return null`。
+  不动判死标记、不动臂号、不动身份。
+  - **判据**:出现「P11-118 harvest: 复用 Ns 前材料(poToken=90B)」且会话 `poToken≈90B`、首笔 `status=1`;
+    类似 00:20:32 的场合**不再**出现 `-1B`;`InvalidPoToken diag` 里不再有 `pot=88B`。
+- **②-3(第二道保险)—— 取不到材料就跳过本臂但不判死**:用独立计数器 / 独立日志,不复用
+  `markWebSabrFailed`。代价:每次切档重跑一次 harvest(窗口内瞬时 null、窗口外 2~11s),
+  「WEB-SABR 优先」下反复空转。
+- **②-2(不做)**:材料取不到 ⇒ 直接判死 + 落 NewPipe。冲突 1~4 全中。
+
+**否证线(②-1)**
+
+1. 复用后首笔变 `status=2`(token 到期)⇒ 复用窗下调到 20~30s,或加 `potAge` 闸;
+2. 复用了材料却出现服务端改供别的档(格式墙回归)—— 臂 B 只借 token、URL 是自己的,理论上不引入;
+   若出现则说明 token 真与 URL 绑定。
+
+**附带记录**:自铸 token 在 **/player** 上是可用的(00:20:20 那场 `postPlayer` 带的就是自铸 88B,拿回了完整
+sabrData),被 nag 的只是它当 **SABR 会话 token** 的场合 ⇒「自铸」这条腿不必整个下线,只是不能当**会话**
+token 的兜底。
+
+### 5.11.21 「用 SABR 播就是正常 4K」复核:属实,但**是概率性**(P11-207,新日志 `logs_live_20261009_003150`)
+
+用户反馈「用 sabr 播就是正常 4k」。新日志(App 3.1.0-alpha.11 / XQ-EC72,视频 `IlsFcWOKGvo`)逐条核对后
+**属实**,同时拿到一条**同条件反例**。
+
+**① 健康场:SABR 主链手选 2160p,真 4K,零判死**
+
+| 时刻 | 证据 |
+| --- | --- |
+| 00:29:30.980 | 上一会话判死后的 `playback error, error-retry #1/3 @pos=65963ms` → `loadRequest quality=313` |
+| 00:29:37.277 | `SABR playback ready: sid=lk0n5XqKP4dkKF95KY1Kjg source=NewPipe(primary)`(visionOS,`poToken=0B`) |
+| 00:29:37.462 | `SabrManifest fromSession: rawVideoTracks=1 itags=[313]`(手选档**单轨锁档**,刻意设计) |
+| 00:29:38.779 | `fetch rn=0 REAL 20154312B` → **`首笔 status=1`** |
+| 00:29:47.048 | **`playerState=3(READY) videoFmt=Format(313, … [3840, 2160, 30.0 …])`** |
+| 00:29:37→00:31:12 | `rn=0..16` 全部 `status=1`(18 次)、**28 个 `itag=313` 媒体块**、无一次判死/卡死/重载 |
+
+**② 同条件反例:同一路径、同一视频、同一形状,4.4 秒被判死**
+
+- 00:29:16.150 用户再次点 `2160p` → 00:29:22.403 `SABR playback ready: sid=UVR34STlx2RgBP6CSS2ZfQ`
+  —— 同样 `NewPipe(primary)` / visionOS / `poToken=0B` / `shape=libre` / 单轨 `[313]`,
+  首响字节数与健康场**一模一样**(`REAL 20154312B`);
+- 00:29:24.295 **`首笔 status=2`** → 00:29:26.850 **`status=3`**
+  (`InvalidPoToken diag: sessAgeMs=4447 sessReqN=3 status2Seen=2 status3Count=1 pot=0B`) → 判死;
+- 00:29:37 由 App 自己的 error-retry 重建 → 立刻 `status=1` 正常 4K。
+  ⇒ **客户端侧(shape/token/身份/档位/首响字节)没有任何可分辨的差别**,服务端判词是**概率性**的
+  (与 `reload-player-response-flaky-not-deterministic` 记的同一条规律一致)。
+
+**③ 全量统计**(所有 `logs_live_2026*.log` 的 `首笔 STREAM_PROTECTION_STATUS` 行,跨构建,仅作量级参考)
+
+| 会话 token | status=1 | status=2 | status=2 占比 |
+| --- | --- | --- | --- |
+| `pot=0B`(pot-less:WEB 臂 C / NewPipe 主链) | 70 | 2 | **≈2.8%** |
+| `pot=87~90B`(harvest 页 token / 自铸) | 97 | 14 | ≈12.6% |
+| `pot=10B`(冷启桩,P11-142/165 已拦) | 0 | 1 | 100% |
+
+⇒ 与 §5.11.20 的结论一致方向:pot-less 是**最不容易**被 nag 的那条;
+但**注意这只是「首笔」**,判死发生在第 2~4 笔,单看首笔统计会**低估**带 token 会话的死法
+(§5.11.19 那场首笔 status=2 之后第 4 笔才转 3)。
+
+**④ 待攒样本的弱观察(不足以当判据)**:判死场落在 `rr5---sn-a5msen76`(该 node 3 场:pot=90→1 /
+pot=88→2 / pot=0→2),健康场多落 `rr5---sn-a5mekndz`(同视频多场全 `status=1`)。n 太小,先记着。
+
+**对 §5.11.20 候选修法 ② 的意义**
+
+- 方向被证实:**NewPipe SABR 主链是"能播真 4K"的那条路**(3840x2160 READY + 313 单轨连续 28 块);
+- 但它**不是"永不失败"的保险** —— 只是把「WEB 臂 B 回落自铸 ⇒ 基本必死 + 33s 卡死 + 整场重载」
+  换成「偶尔被判死 ⇒ 自动重试即恢复」。②-1(复用材料)仍然是首选:它保留的是**历史上拿到
+  `status=1` 最多的那枚页面 token**,而 ② 的兜底语义只是"死得少一点"。
+
+### 5.11.22 P11-208 实施:harvest 窗口内**复用材料**(②-1)—— 动手前的判据链复核 + 改动清单
+
+**目标行为**:`harvestSessionMaterial` 在 45s 窗口内命中时,上次**有材料**就把那份材料交回去;
+只有上次没产出材料时才像改动前一样 `return null`(回退自造)。
+
+**逐出口对照(改动前 → 改动后)**
+
+| 出口 | 改动前 | 改动后 | 依据 |
+| --- | --- | --- | --- |
+| **(a) 窗口内命中** | 一律 `null`(日志「用自造材料」) | 有材料且允许复用 → **返回材料**;否则 `null` | §5.11.20 的真凶 |
+| (b) 预算只够 <3s | `remove` + `null` | 不变 | 让兜底有时间落地(P11-126) |
+| (b′) 无捕获 / 只剩桩 / 非 POST | `remove` + `null` | 不变 | 允许立刻重探 |
+| (c) 解码失败 / cpn 缺失 | 写时间戳(保留节流)+ `null` | 写 `(now, null)`(节流保留)+ `null` | 语义等价,只是把「无材料」记明白 |
+| (d) token <80B(桩硬闸) | 同上 | 同上 | 缓存里只会是真 token,不会有桩 |
+| 成功 | 写时间戳 + 返回材料 | 写 `(now, 材料)` + 返回材料 | 材料本身入窗 |
+
+**动手前先确认的 8 件事**
+
+1. **复用安全**:臂 B 只从材料取 `poTokenBytes`;token 是 content-bound 绑 videoId(P11-117),
+   不绑 itag(P11-29)**也不绑起播位置** ⇒ 跨 `startMs` 复用无风险。
+2. **寿命**:同一份材料在 **+89s** 重放仍是 `status=1`(§5.11.20 实测);窗口 45s ⇒ 余量充足。
+   真机若见「复用后首笔 status=2」⇒ 下调窗口到 20~30s,或给复用加 potAge 闸。
+3. **桩不会进缓存**:(d) 硬闸在写缓存**之前** ⇒ 缓存只含 ≥`MIN_USABLE_HARVEST_PO_TOKEN_BYTES` 的真 token。
+4. **不会成环**:复用失败 → 运行时判死 → `markWebSabrFailed`(本进程对该视频永久)⇒ 上界一次。
+5. **节流语义不变,并发下也一样**:只有**成功**写材料;失败分支要么 `remove`(同前),要么写
+   `(now, null)`(同前)。占位 `(now, null)` 在采集**之前**写 ⇒ 采集期间第二个 caller 得到 `null`,
+   与改动前 `harvestProbed[videoId] = now` 的行为一致。
+6. **共享安全**:map 值是不可变 data class;`HarvestMaterial` 里的 ByteArray 建好后只读
+   (`poTokenBytesOverride` 直接引用同一数组,不拷贝、不改写)。
+7. **臂 D 刻意不复用**:它借的是**整份会话配方**(`baseSabrUrl`/`ustreamerConfig`/`cpn`/
+   `clientAbrStateRaw`/`clientInfoRaw`),绑采集那一刻的浏览器会话与播放位置 —— 45s 前的
+   `clientAbrState` 拿去开新位置的会话,正是会搅乱服务端推送游标的那类输入。用 `allowReuse`
+   (默认 `false`)门控,调用点传 `tokenArm == 1`。(臂 D 现在不可达:实验开关关 +
+   `WEB_SABR_ARM_B_ONLY=true`,但门控写死比依赖「不可达」稳。)
+8. **内存**:`HarvestProbe` 多带一份 ~3KB 材料;键集合与改动前的 `harvestProbed` 一致(本就**没有淘汰**,
+   只在失败分支 remove)。**本轮不加淘汰**,与现状同口径,记一笔。
+
+**改动清单(全部在 `YoutubePlaybackResolver.kt`)**
+
+1. `harvestProbed: ConcurrentHashMap<String, Long>` → `harvestProbes: ConcurrentHashMap<String, HarvestProbe>`,
+   新私有类 `HarvestProbe(atMs: Long, material: HarvestMaterial?)`;
+2. 窗口内命中:有材料 + `allowReuse` → 新日志
+   `P11-208 harvest: <videoId> 复用 Nms 前采到的材料(poToken=90B …)` + 返回;否则走原 `null` 路径,
+   日志把原因分开(「上次没有可用材料」/「本臂不复用材料」);
+3. 采集前写占位 `(now, null)`;三个 `remove` 出口原样保留;三个「保留节流」出口靠占位天然保留;
+4. 成功路径:把 `lastHarvestCapture[videoId] = cap` 从 `.also{}` 提出来,再写
+   `harvestProbes[videoId] = HarvestProbe(now, material)`;
+5. `harvestSessionMaterial` 新增 `allowReuse: Boolean = false`,调用点(`buildWebSabrFallback`)传
+   `tokenArm == 1`;
+6. `HARVEST_RETRY_WINDOW_MS` 注释补一句:这个窗**同时是「复用 token 的最大年龄」**。
+
+**判据(真机)**
+
+- 出现 `P11-208 harvest: … 复用 Nms 前采到的材料(poToken=90B…)`;
+- 「切清晰度 → 重建会话」的场合**不再**出现 `只借 token = -1B` + `WEB-SABR token 形态 … 88B`;
+- `InvalidPoToken diag` 不再出自「自铸 88B 当**会话** token」那条路径(§5.11.19 的 00:20:38 → 00:21:10)。
+
+**否证线**
+
+1. 复用后首笔仍 `status=2` ⇒ token 有寿命墙 ⇒ 窗口下调 20~30s 或加 `potAge` 闸(不改方向);
+2. 复用后服务端改供别的档(格式墙回归)⇒ 臂 B 只借 token、URL 是我们自己的,理论不成立;若出现说明
+   token 真的与 URL 绑定;
+3. 日志量 / 内存明显上涨 ⇒ 给 `harvestProbes` 加淘汰(按 `atMs` 过期清理)。
+
+### 5.11.23 真机复测(dev.r2152):「切换起不来 + 首播重载一次」判读 —— 两现象都与 P11-208 无关,4K60 供不上(P11-209)
+
+日志 `logs_live_20261009_085228.log`,App **dev.r2152**(= P11-208 那版),视频 `-Tl1avLHa_I`(手机端 XQ-EC72)。
+
+**结论先行:P11-208 在本场一次都没触发**(`P11-208 harvest` 行数 = **0**):首播那次 harvest 是**新鲜成功**的
+(窗口里没有旧材料)⇒ 没走到复用分支;首播判死后该视频 `markWebSabrFailed` ⇒ 之后每次 resolve 都
+`跳过,落 NewPipe 主链`,**`buildWebSabrFallback` 压根没被调用** ⇒ 复用分支没有机会跑。
+
+**① 首播重载一次:臂 B 的「新鲜页面 token」首笔就 status=2,第 2 笔判死**
+
+| 时刻 | 事件 |
+| --- | --- |
+| 08:48:37.730 | 点播(`quality=null startPos=301000`) |
+| 08:48:46–08:48:53 | watch 页 + `/att/get` 挑战 → 08:48:49.8 铸出 128 字符 token;08:48:52.5 arm A **页面上下文**铸造 → 08:48:53.0 `PMD:Undefined` 失败 → 本进程回落 Create;08:48:55.6 `mobile minter (120 chars)` |
+| 08:49:05.699 | harvest 采到 **89B 页面 token**(elapsed 6431ms) |
+| 08:49:08.016 | 臂 B 建会话 `WEB-SABR playback ready` |
+| 08:49:13.473 | **首笔 status=2 (pot=89B)** |
+| 08:49:13.775 | **status=3**(`sessReqN=2 status2Seen=1 status3Count=1 sessAgeMs=5759`)→ 判死 + `markWebSabrFailed` |
+| 08:49:16.804 | `playback error, error-retry #1/3` |
+| 08:49:29.8 → 08:49:39.779 | 跳过 WEB → NewPipe pot-less → 首笔 status=1 → READY(720p) |
+
+**点播到出画 62 秒**:~18s resolve 前段(watch 页 + arm A 页面上下文铸造失败后回落 Create)+ 6.4s harvest
++ 2.3s 建会话 + 判死只花 5.7s + error-retry ~13s。
+
+⇒ 记一笔:**页面 token 这次也被拒**(历史 87~90B 是 83:6 偏 `status=1`),且判死从「第 4 笔」提前到「第 2 笔」。
+与 §5.11.21 的「概率性」一致,但今天偏坏的一侧。
+
+**② 切换起不来:手动选 2160p = itag 315(3840x2160@60 @26.8Mbps),这条链路供不上**
+
+| 尝试 | 结果 |
+| --- | --- |
+| 08:50:34 | `rn=0 REAL 25014418B 13120ms → 15Mbps`;音频 `rn=1` 8s 超时;`rn=2` 到 08:51:06.6 才回(29.9MB/10.7s)⇒ **26.1s 无首帧**,08:51:00.827 `stall detected #1 startup=true` 收掉 |
+| 08:51:14 | `rn=0` 25MB/**12.1s** + `rn=1` **41.5MB**/7.4s → 08:51:35.156 出首帧;之后 **8.2s 位置停在 315669 不动**(期间只落 1 个音频块,36MB 视频块 7 秒才回)⇒ 08:51:43.374 `stall detected #2 startup=false` |
+| 08:51:55 | `rn=0` 25MB/13.05s…(日志止于 08:52:28) |
+
+- 参照:昨天能播的 `IlsFcWOKGvo` 手选档是 **itag 313 = 4K30 @18Mbps**;本条是 **4K60 @26.8Mbps(1.5×)**。
+- 手动选档 = **单轨锁档**(刻意设计,见 `sabr-single-track-lock-is-intended`)⇒ ABR 没有逃生路,供不上只会反复重载。
+- **不是新问题**:09-20 21:45 同一视频那场(默认档 2160p)同样是 `startup stall: evict sabr session`。
+
+**③ 本场没有验到 P11-208**。要验它,得在「**起播成功后 45 秒内切清晰度**」那种场合 —— 第一个 WEB 会话还活着、
+没被判死,第二次 resolve 才会再进 WEB-SABR 并命中窗口(= §5.11.20 的 00:20 形态)。
+
+**④ 待决(产品口径,未实施)**:手动选档供不上时要不要兜底?候选:连续 2 次起播超时(未出首帧)⇒ 自动退回
+上一档 + 提示(日志至少打一行显式原因),**不动**单轨锁档本身。
+
+#### 5.11.23.1 「有首帧却播不出来」:`onRenderedFirstFrame` **不等于**开始播放(判据订正)
+
+用户追问「有首帧为什么加载不出」。查 `MobilePlayerScreen` 的状态日志(1197 行,`onPlaybackStateChanged`
+**每次状态变化都打**)后可以定死:
+
+| 会话 | 首帧 | 紧随其后 | 结论 |
+| --- | --- | --- | --- |
+| 08:49:39 720p(`itag 298`) | 08:49:39.472 | **08:49:39.779 `playerState=3(READY)`**(+0.3s) | 真起播 |
+| 08:51:14 **4K60**(`itag 315`) | 08:51:35.156 | **到 08:51:43.374 被看门狗收掉为止,`playerState` 一次都没打** ⇒ 全程停在 `playerState=2(BUFFERING)` | **只是 preroll 渲染** |
+
+- **首帧是 seek 后的 preroll 渲染**(渲染器把 seek 落点那一帧解出来显示),不是"开始播放";播放器没进 `READY`,
+  位置就一直钉在 seek 落点(`pos=315669`)——ExoPlayer 在 pending seek 期间 `currentPosition` 恒等于 seek 位置。
+- 所以判「起播成功」**只能看 `playerState=3(READY)`**;`onRenderedFirstFrame` 单独成立时会骗人
+  (`startup lock released` 也跟着提前放开了)。这一条与 §39.12.2 的 `video size` 一样,属于「别拿错凭据」。
+- 看门狗本身没误判:它的两个判据(冻结窗口/视频冻结)都只在 `playbackState == STATE_BUFFERING` 分支里攒时间,
+  能连攒 8.2 秒 ⇒ 这 8.2 秒确实全程 BUFFERING + `playWhenReady=true`。
+
+**「差一口气」的量化**(同一会话三个请求,`fetch rn=N REAL …`):
+
+| 请求 | 字节/耗时 | 折合 |
+| --- | --- | --- |
+| rn=0 | 25,014,437B / 12,067ms | **16.6Mbps** ← 冷启动 |
+| rn=1 | 41,497,193B / 7,417ms | 44.7Mbps |
+| rn=2 | 36,489,424B / 7,059ms | 41.4Mbps |
+
+内容需求 **26.8Mbps**(`itag 315` 3840x2160@60)。合计 103MB/27.2s ≈ 30Mbps,**对 26.8Mbps 只剩 ~13% 余量**;
+且起播要先连拿两个大响应(25MB + 41MB)才凑出首帧(20.8s),首笔又只有 16.6Mbps ⇒ 头 12 秒净亏。
+**两次都不是"卡死",是"差一口气"**:第 1 次 26.1s 无首帧撞启动阈值(25s),第 2 次出了 preroll 首帧但缓冲没到
+起播门槛,8.2s 撞冻结阈值(8s)。
+
+对照:同一台机器前一天 4K30(`itag 313`)那场首包 **20MB/2.27s ≈ 70Mbps**(§5.11.21)⇒ 今天这条链路/服务端
+本身就慢了一大截,4K60 才彻底供不上。
+
+**候选方向(未实施,产品口径)**:(a) 起播看门狗对「数据在到、只是没到起播门槛」的场合给宽限 —— 代价是真挂死
+时兜底变慢;(b) 手动选档时若**声明码率明显高于近期实测带宽**就先提示/回退(复用既有 `est`/`meas` 通道,
+但要**先按 §39.11 的规矩把整个判据链理一遍**再动);(c) 至少在日志里把「带宽差一口气」与「请求挂死」分开打。
+
+#### 5.11.23.2 复播就好了 ⇒ 不是「4K 供不上」,是**慢窗口 + 重载式重试**(用户「看下日志,复播就没问题」)
+
+新日志 `logs_live_20261009_090231.log`(同机同视频,08:59 之后)。
+
+**复播场(09:00:49 手动 2160p,与 08:50 那次**完全同一操作**)全程正常**:
+
+| 时刻 | 证据 |
+| --- | --- |
+| 09:01:03.933 | `first media chunk: trackType=2 … itag=315 clipMs=329926`(单轨锁档) |
+| 09:01:18.370 | `首笔 status=1` |
+| 09:01:19.811 | `onRenderedFirstFrame` |
+| 09:01:19.964 | **`playerState=3(READY) pos=329955 videoFmt=Format(315 … [3840,2160,60])`** ← 真起播 |
+| 09:01:19 → 09:02:26 | **连续 70 秒 4K60**:每 ~7 秒一对 ~13MB 的 `itag=315` 块,`bufS` 在 **4.7~12.3s** 之间稳住,`status=1` 一路;中途 09:01:27→09:01:34 进过一次 BUFFERING(7.2s,**位置前进了 90ms ⇒ 冻结计时器被重置,没被误杀**),随即回 READY |
+
+⇒ 同一视频、同一操作、同一台机器,9 分钟后就稳了。**「4K 供不上」这个结论要收回**:
+08:50~08:52 那 90 秒是**链路/服务端的慢窗口**(首笔 25MB 要 12~13s ≈ 16Mbps),而 09:01 起实测交付
+`meas` 21.6→25.0→24.7→24.1→23.7→24.0Mbps 就足够养活这条 26.8Mbps 声明的流(VBR:真实均值低于声明峰值)。
+
+**真正的连续性问题(两个,都定位到代码)**
+
+- **(A) 看门狗把「preroll 首帧」当成「起播」** —— 第 2 次尝试 08:51:35.156 渲染了一帧,但播放器**从未进
+  `playerState=3(READY)`**(本场只有**一个** ExoPlayer 实例,`onPlaybackStateChanged` 每次变化都打 ⇒ 没打就是没进),
+  位置钉在 seek 落点 `pos=315669` 一动不动 ⇒ 8 秒**冻结**阈值开枪;而**启动**阈值是 **25 秒**。
+  `frameRendered` 一翻真,宽限就从 25s 掉到 8s,而这恰恰是「还没真正起播」的时刻。
+  **判据应是 `playerState=3(READY)`,不是 `onRenderedFirstFrame`**(见 §5.11.23.1)。
+  **多给那 8 秒会怎样**:开枪前 1.4s(08:51:41.93)刚落地一笔 36.5MB(segs 66+67)⇒ 大概率就起来了。
+- **(B) 重试 = 整场重载,而重载自己就要 30~40 秒** —— 三次尝试 08:50:34 / 08:51:14 / 08:51:55 挤在 90 秒内,
+  每次都要重新 resolve + 新会话 + 12~13 秒首包 ⇒ **整个慢窗口都花在「重建」上**,一次都没熬过去;
+  随后 `MaxStallAutoRetry=2` 用尽,**有意不再重试** ⇒ 播放器变死,只能等用户手动复播(而那时链路自己好了)。
+- **(C) 看门狗不看「数据在不在到」** —— 开枪前 1.4s 刚有一笔大响应落地。P11-173/P11-178 记的「给在途且有进展的
+  fetch 加宽限」当时被列为「未做(需产品权衡)」,正是这一条。
+
+**候选修法(按可验证性排序,均未实施)**
+
+1. **(A) 阈值判据改 `READY`** —— **已实施,见 §5.11.24**。`MobilePlayerScreen` + TV `PlayerScreen` 的
+   位置冻结看门狗改用「本次播放是否**进过** READY」决定 8s / 25s,而不是 `frameRendered`;计时器**仍在首帧
+   清零**(保留 P11-122 的用意:慢起播别在刚出画时被判挂死)。
+2. **(B) 重试退避 + 不整场重载**:起播慢窗口里,重试前先看「在途 fetch 有无进展 / 上次响应距今多少」;
+   有进展就延迟重试而不是立刻重载(这条要先把 P11-173/178 的判据链理清再动)。
+3. **(C) 日志把「带宽差一口气」与「请求挂死」分开打**(现在两者都长成 `stall detected`)。
+
+### 5.11.24 P11-210 实施:看门狗「起播」判据改 `READY`(`frameRendered` → `playbackStarted`)
+
+**改什么**(`MobilePlayerScreen` + TV `PlayerScreen` 对称两处):新增 `var playbackStarted by remember`,
+在 `onPlaybackStateChanged(STATE_READY)` 置真、每轮 load 重置(与 `frameRendered` 完全同生命周期);
+位置冻结看门狗里三处改判据:
+
+| 位置 | 旧 | 新 |
+| --- | --- | --- |
+| 阈值选择 | `if (!frameRendered \|\| seekGrace) 25s else 8s` | `if (!playbackStarted \|\| seekGrace) 25s else 8s` |
+| 起播 stall 的 evict | `if (!frameRendered) evict(sid)` | `if (!playbackStarted) evict(sid)` |
+| 日志 | `startup=${!frameRendered}` | `startup=${!playbackStarted} frame=$frameRendered` |
+
+**刻意不动的**:①P11-122 的「首帧清零计时器」原样保留(那条解决的是"慢起播攒满计时器、首帧一渲染立刻开枪",
+与本条互补);②TV 的 `isReadyNoFrame` 黑屏看门狗仍用 `!frameRendered`(它判的正是"READY 了却一帧没出",
+与 `playbackStarted` 的语义正交);③起播探针仍按 `!frameRendered` 打(P11-96)。
+
+**判据(真机)**:4K/慢起播场的 `stall detected` 行应出现
+`startup=true frame=true`(出过 preroll 首帧但没进过 READY)并按 **25 秒**计时(而不是 8 秒);
+正常播放中的冻结 stall 仍是 `startup=false frame=true`、按 8 秒计时。
+**否证**:①真挂死(首帧后彻底不动)现在要多等 17 秒才被收掉 —— 若因此出现"用户先手动退出"的场次,
+把宽限档改成可配置或按「在途 fetch 有无进展」联动;②`startup=true` 的行里出现"位置其实在前进"⇒
+判据又被别的分支污染,回退到 `frameRendered`。
+
+### 5.11.25 真机复测(dev.r2153):**两处修复都验到**;这次卡在「4K 请求被吊死」(P11-211)
+
+日志 `logs_live_20261009_092351.log`,App **dev.r2153**(= P11-210 那版),视频 `_m7SBVHJ1HU`(4K60 = itag 315 @22.9Mbps)。
+
+**① P11-208 验到了 ✅**(首个真机样本)
+
+- 09:21:15 起播 → harvest 采到 **89B 页面 token**(09:21:45.639)→ WEB 会话 → `首笔 status=1`(09:21:52.369)→ READY(720p);
+- 09:22:08.738 用户点 **2160p**(距 harvest **40.3s**,仍在 45s 窗内)→ 09:22:14.659
+  **`P11-208 harvest: _m7SBVHJ1HU 复用 40310ms 前采到的材料(poToken=89B …)`**(不再回落自铸)→
+  09:22:28.563 `首笔 status=1` → 09:22:30.923 **`playerState=3(READY) Format(315 … [3840,2160,60])`**。
+- ⇒「45s 内第二次 attempt 复用材料、不再自铸」**成立**,该路径的判死没有再出现。
+
+**② P11-210 生效 ✅**
+
+第二次重载(09:23:02 会话)首帧 09:23:16.891 之后**没进 READY**,看门狗行是
+`stall detected, auto-retry #2 … startup=true frame=true …(P11-203/P11-210)`,从首帧起算 **25.4 秒**才开枪
+—— 判据确实从 `frameRendered` 换成了 `playbackStarted`(旧版这里会是 `startup=false`、8 秒开枪)。
+
+**③ 本次病灶是第三个:对 `itag=315` 的后续请求被**吊死****
+
+| 会话 | 请求 | 结果 |
+| --- | --- | --- |
+| A(09:22:16,sid=2NVGKZyd…) | `rn=0 itag=315 seg=0` | `REAL 49914785B 11701ms`(34Mbps)✅ |
+| A | `rn=1 itag=315 seg=5 playerTimeMs=21555` | **无 REAL** |
+| A | `rn=2 itag=315 seg=5`(同上) | **无 REAL** → 8s 看门狗收掉 |
+| B(09:23:02,sid=06pBpQr3…) | `rn=0 itag=315 seg=0` | `REAL 49913968B 10941ms`(36Mbps)✅ |
+| B | `rn=1 / rn=2 / rn=3 itag=315 seg=5` | **timeout 12011ms ×2**,第三次发出 1.7s 后被看门狗收掉 |
+
+**排除法**:
+
+1. **不是「段不存在」**:同一台节点(`rn=0` 的 `SABR_REDIRECT` 把两边都指到 `rr5---sn-a5mekndk`)、
+   **同一段号 `seg=5`、同一 `playerTimeMs=21555`** 的 **720p(`itag=302`)** 请求,3754ms 就回了 8.4MB;
+2. **不是带宽**:首笔 49.9MB/11s ≈ 34~36Mbps,远高于该档的 22.9Mbps;
+3. **不是请求形状**:今天更早(`-Tl1avLHa_I` 那场)4K 的第二次请求(`rn=1`)是正常的 13.3MB。
+
+⇒ 服务端对**这一笔 4K 请求**不回(或吊着),而**重载解决不了**:新会话仍落在同一段
+(09:23:40 已是同段第 3 次请求)⇒ 用户看到的「播一会 → 重载 → 缓冲失败 → 再重载」。
+「播了一会」= 首包给的 7.0MB + 18.2MB ≈ **8.5 秒**的 4K 内容,播到 pos≈21490 就耗尽。
+
+**④ 出路(候选,未实施)**:移动端**缺 TV 已有的「深度重试」**——TV `PlayerScreen` 有
+`sabrDeepRetryUsedForBvid` + `SabrDeepRetryNudgeMs = 10_000L`(每视频一次:常规重试耗尽后
+**evict 会话 + 续播点前推 10s 换段对齐**),注释里记着同类实证「同一位置连续 8+ 次重载全挂,
+换会话/换位置后 ~2s 起播」。移动端 `grep SabrDeepRetry` = **0 命中**(当年注释写着"移动端暂不搬")。
+**这次正是它要兜的形态:卡在固定一段上,重载无用。**
+
+另:单笔 12s 上限在本场触发 3 次(36 秒),而 8s 看门狗早已把会话扔掉 —— 两条节奏需要对齐,
+或让「同段连续超时」先走**段级前推**而不是整场重载。
+
+**⑤ 用户补充:「网速从 8M/s 突然掉到几十 k」** —— 与日志吻合:首笔 49.9MB/11s ≈ **4.5MB/s**,
+紧接着那一笔就是 `timeout (fail=12011ms bwNow=-1)`(12 秒收不到字节)。⇒ **链路在会话中途塌了**,
+不是"带宽一直不够"。而这一次之所以**塌了就起不来**,是因为:
+
+| 会话 | 档位 | 轨道数 | 结果 |
+| --- | --- | --- | --- |
+| 09:00:11(复播,`quality=null`) | **Auto** | **14 轨** | 一路正常(§5.11.23.2:70s 4K 零 stall) |
+| 09:22:16 / 09:23:02 | **手动 2160p** | **1 轨**(`rawVideoTracks=1 itags=[315]`) | 链路一塌就**没有降档逃生路** → 反复超时 → 整场重载 |
+
+**手动选档 = 单轨锁档是刻意设计**(精确锁档),但链路中途塌陷时它就没有任何回旋余地:ABR 连"降到 1440p
+继续播"这个选项都不存在。⇒ 候选:**保留锁档,但给"持续供不上"一条让位路**(例如同一档连续 N 次
+单笔超时 ⇒ 回退上一档或转 Auto + 提示),而不是无限整场重载。
+
+### 5.11.26 「给了那么多缓冲数据,为什么播不了」—— 续播场次的首包**一半到全部用不上**(P11-212,判读)
+
+用户追问。把 09:22 那次 49.9MB 的首包逐段摊开,答案很清楚:
+
+| 服务端推来的段 | startMs | dur | 字节 | 对本次播放有没有用 |
+| --- | --- | --- | --- | --- |
+| `itag=315 seq=1` | 0 | 5038ms | 8,877,356B | ✗ 在续播点之前 |
+| `itag=315 seq=2` | 5038 | 5473ms | 15,301,139B | ✗ 在续播点之前 |
+| `itag=315 seq=3` | 10511 | 5538ms | 7,040,207B | ✓(播放器从 **14620** 续播) |
+| `itag=315 seq=4` | 16049 | 5506ms | 18,192,624B | ✓ |
+
+- 合计 **49.4MB / 21.6 秒**的 4K 内容,但**只有 seq3+seq4 = 25.2MB ≈ 6.9 秒**可用 —— 与 ABR 行
+  `sel=0 … bufS=6.9` **完全吻合**。所以「给了那么多」其实只有 6.9 秒缓冲,播 7.2 秒就必然饿。
+- 而 08:49 那场更极端:播放器要 **301276ms** 处,服务端推的是 `seq=1..4`(0 → 17518ms),
+  **整包一点没用上**(那一场随后又是 WEB 的 `status=2/3` 判死,所以没暴露成"卡"而是暴露成"起播慢")。
+
+**为什么首包会从 0 开始推**:我们的**首个请求就是 `seg=0 / playerTimeMs=0`**,没有把续播位置告诉服务端。
+
+- `DefaultSabrChunkSource.getNextChunk` 构造请求时:`SabrSegmentRequest(itag, playbackPositionMs, speed,`
+  **`segmentNum + 1`**, `Util.usToMs(startTimeUs)`, `bufferedSegments)`(:444-452);首次取块的段号让它变成
+  init/seg0,段起始时刻 = 0;
+- `SabrMediaFetcher.fetchStreamData` 里 `val playerTimeMs = req.segmentStartTimeMs` ⇒ 首个请求恒
+  `playerTimeMs=0`(后续请求才是"本段起始时刻",日志里能看到 21555 这种值)。
+- **订正(同轮复核)**:先前记的"NewPipe(`shape=libre`)同样首请求却从 `seq 63`(≈续播点)推"是**看错了** ——
+  那场(`logs_live_20261009_090231.log` 09:01:03)的第一块来自**复用会话的已缓存段**,不是首包推的。
+  重新核对 09:00:58 那场(`shape=libre`,续播 343022):`rn=0 seg=0 playerTimeMs=0` → **同样从 `seq=1,2` 推**。
+  ⇒ **首包从 0 推与请求体形状无关,是两种形状共有的行为**;而**中段请求完全对齐**
+  (同场 `fetch rn=4 itag=315 seg=72` → 推 `seq=72, 73`)。
+
+**暴露面(用日志钉死)**:只有「**播放头 ≠ 0 的那一次首个请求**」才浪费 ——
+
+| 场次 | 首请求 | 服务端推 | 浪费 |
+| --- | --- | --- | --- |
+| 从头播(00:20 场 `startPos=3003`) | `seg=0/playerTimeMs=0` | `seq=1..4`(0→21.6s) | ~3s(播放头在 0 附近,几乎无感) |
+| 从头播(09:21 场 `startPos=0`) | 同上 | 从 0 推 | 0(正好是要的) |
+| **续播**(08:49 场 `startPos=301276`) | 同上 | `seq=1..4`(0→17.5s) | **整包** |
+| **续播**(09:22 场 `startPos=14620`) | 同上 | `seq=1..4`(0→21.6s) | **一半(10.5s)** |
+
+⇒ 这正是**续播/切档/重载续播**这类操作的专属缺陷;而**重载后续播点不变 ⇒ 每次重载都废掉同样多**,
+有效缓冲永远只有 ~7 秒 —— 这就是"重载也救不回来"的来源。
+
+**哪种"换档"会踩到它**(用户追问"升降档切换时也有这个问题吗"):
+
+| 换档方式 | 会不会踩 | 依据 |
+| --- | --- | --- |
+| **会话内自动升降档**(ABR 换轨) | **不会** | 换轨后新流的首个请求段号由**播放头**决定(`DefaultSabrChunkSource` 用 `segmentNum + 1` + 该段起始时刻),与中段请求同形;实测中段请求**完全对齐**(`fetch seg=66` → 推 `seq=66,67`)。它有自己的已知坑:服务端跳段(P11-92)、切轨后首段要现拉 |
+| **手动切清晰度** | **会** | 走 `loadRequest` **重建会话** ⇒ 首个请求又变回 `seg=0`(09:22 那场 4K 废掉 49.9MB 里的一半;09:00 那场 720p 废掉 1.6MB) |
+| **整场重载后续播**(stall / error retry) | **会** | 重载 = 重建会话 + 同一续播点 ⇒ 每轮废掉同样多 |
+
+**而"废包"的代价随档位放大**(同一台机器实测):
+
+| 场次 | 废包内容 | 字节 / 耗时 |
+| --- | --- | --- |
+| 720p 续播(09:00:15,`startPos=315000`) | `seq=1,2`(0→9.5s) | **1.6MB / 3.3s** |
+| 4K 续播(09:22,`startPos=15657`) | `seq=1..4`(0→21.6s) | **49.9MB / 11.7s** |
+| 4K 续播(08:49,`startPos=301276`) | `seq=1..4`(0→17.5s) | **4.2MB / 3.8s**(整包废) |
+
+⇒ 档位越高,这一笔"废包"越贵 —— 这就是**为什么 4K 续播/切档特别容易崩**:一个往返的时间全花在播放头之前
+的内容上,真正能用的只剩一半甚至零。
+
+**两个可修点(都未实施,优先级从高到低)**
+
+1. **别浪费首包**:续播场次的首请求按续播位置要段(或让请求体带上位置),服务端从续播点开始推 ⇒
+   同样一笔大响应,可用缓冲从 6.9s 变成 ~17s,抗"挂一笔"的能力翻倍。**实验判据**:续播场次首包
+   `resp summary` 里 pushed 的 `seq` 应贴近续播点(而不是从 1 起),且 `bufS` 明显变大。
+   **只改首请求这一个点** —— 当年 alpha.36/alpha.39 是**全局**把 `playerTimeMs` 锚成 `startMs`/0,
+   把**中段**请求一起改坏(服务端对 `seq=2` 永远重发 `seq=1` ⇒ 5/10s 断崖,两次回退);
+   而中段语义现在是**正确的**(`playerTimeMs=本段起始`,实测 pushed seq == 请求 seg),不能碰。
+2. **挂住的那笔要早切**(§5.11.25 末尾):单笔上限 ≤ 手上缓冲余量,而不是固定 12s(还 > 8s 看门狗)。
+   **判据**:日志出现 `callCap≈bufAhead/2`,同段能看到多次真实重发,`stall detected` 次数下降。
+
+### 5.11.27 P11-213 实施:init 位置锚**放开到所有形状**(续播首包不再从 0 推)
+
+**改什么**(全在 `SabrMediaFetcher.fetchStreamData`):`positionAnchorMs` 的取用条件从「**仅材料会话**」放开到所有形状 ——
+
+| | 旧 | 新 |
+| --- | --- | --- |
+| 条件 | `materialAligned && playerTimeMs == 0L` → `note.takeIf { it > 0 }` | `playerTimeMs == 0L && note >= InitPositionAnchorMinMs(5_000)` → `note` |
+| **web 形状**(臂 B) | `playerTimeMs = 0` 时**省略**该字段(P11-109 对齐 FreeTube rn=0-3) | 0 时用**位置锚**;从 0 开播时仍省略 |
+| **libre 形状**(NewPipe) | 显式写 `0` | 0 时用**位置锚**;从 0 开播时仍写 0 |
+| material | 已用锚(不变) | 不变(仅阈值从 `>0` 变 `≥5s`) |
+
+**为什么敢放开**:①**中段请求本来就对齐**(实测 `fetch rn=4 itag=315 seg=72` → 推 `seq=72,73`),所以只动
+init 这一笔,不碰中段语义;②alpha.36 / alpha.39 两次翻车是**全局**改 `playerTimeMs` 语义(把中段请求一起
+改坏 ⇒ 服务端对 seq=2 永远重发 seq=1 ⇒ 5/10s 断崖),与本条正交;③材料会话早已用**同一机制**验证过
+(r2017 的 `MEDIA_END seq=0..4` 全是片头 → `no seg` 死循环,加锚后解决);④阈值 5s 保证「从 0 开始播」
+的场次行为逐字节不变(`startPos=3003` 那场只废 ~3 秒,不值当动)。
+
+**日志**:新增 `P11-213 init 位置锚: playerTimeMs=N(替代 0) shape=web|libre|material`;
+请求行补 `anchor=N(进 body)` —— 否则请求行里那个 `playerTimeMs=0`(段起点)会与它自相矛盾。
+
+**判据(真机)**:续播 / 手动切档 / 重载续播的场次应出现 `P11-213 init 位置锚`,且**首包的 `MEDIA_HEADER seq`
+贴近续播点**(而不是从 1 起),`bufS` 明显变大(4K 续播应从 6.9s 变成十几秒)。
+
+**否证线**:①首笔变 `status=2`(P11-109 当年怀疑「首请求带 `playerTimeMs` 字段会触发 nag」)⇒ 回退 web 分支;
+②服务端仍从 `seq=1` 推(不认这个锚)⇒ 说明只改 body 不够,转 **URL 锚**(`&startTimeMs=&sq=`,alpha.51/52
+真机验证过「realSeq 跟进 reqSeq」那条);③锚生效但首包仍含播放头之前的内容 ⇒ 需要"两步走"
+(init 之后立刻按续播点要第一笔)。
+
+### 5.11.28 「必须单段全部下载完成吗」—— 段是原子的,**而且整批响应也必须下完**(P11-214,判读,未实施)
+
+用户追问。分三层,答案不一样:
+
+| 层 | 现在是否必须"下完才可用" | 证据 |
+| --- | --- | --- |
+| **段(segment)** | **是** | `DefaultSabrChunkSource.getNextSegment` 从 `initializedFormats[itag].downloadedSegments[seq]` 取**整段**;段在 `SabrMediaFetcher.processPart` 收到 `MEDIA_END` 时才组装进 `downloadedSegments`(日志 `chunk completed: media itag=… bytes=…`) |
+| **整批响应** | **是 —— 这才是真正的痛点** | [SabrMediaFetcher.kt:1256](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L1256) `response.body?.bytes()`:**整个响应体读完**才开始解析 ⇒ 一次 POST 的 25~50MB 全部到位前,播放器拿不到**任何**一个字节 |
+| 其实**不必**如此 | —— | UMP 响应本身就是「长度前缀 + 段边界」的分片流(`MEDIA_HEADER` / `MEDIA` / `MEDIA_END` 依次到达),`MEDIA_END` 就是「这一段完成」的信号 ⇒ 完全可以**边收边解、段一到就交** |
+
+**代价量化(2026-10-09 09:22 那场,4K60 `itag=315`,单段 ≈5.5s ≈12.6MB)**:
+
+- 首包 49.9MB / 11.7s ≈ **4.27MB/s**;第一段大约 **3 秒**就能到手,而现在要等**整批 11.7 秒**才解析;
+- 实测该会话首帧在 `09:22:29.940`(会话 09:22:16 起)⇒ **13.7 秒**;若段一到就交,首帧应在 **~3.5 秒** ⇒ **差 ~10 秒**。
+
+**三条收益**:①首帧提前(上面这 10 秒);②响应中途被吊住时,`response.body.bytes()` 一超时**整批作废**(那笔 12 秒超时丢掉的正是已经到手的字节)——
+流式的话已到的段仍可播;③峰值内存从"一整批 50MB + 解析副本"降到"一两个段"。
+
+**代价**:解析器要改成流式(`readParts`/`processPart` 从"完整 ByteArray"改成"读 `byteStream` 的增量缓冲"),段的交付要改成**发布即唤醒**
+(现在 `getNextSegment` 找不到段就**再发一次 POST**,最多 6 连——`MAX_ATTEMPTS`),这既是重构也是行为变更,不是一行改动。
+
+**顺序建议**:先做 §5.11.25 末尾那条「单笔上限 ≤ 缓冲余量」(一行量级、直接消掉"等死"),再评估本条(收益最大但要动解析与交付两处)。
+
+#### 5.11.28.1 流式的风险清单(改之前必须逐条对上)
+
+**结论先行**:协议层没问题 —— UMP 本来就是分片的;风险**全在"半批状态"引发的连锁**。按严重度排:
+
+1. **🔴 上报口径被带偏(最危险,历史上反复踩)** —— 今天"整批原子"保证了 `initializedFormats[].downloadedSegments` 里**只有完整批**;
+   流式后会出现"响应中断但已发布 3 段"。而 `buildBufferedRanges` 会把这些段算进 **上报给服务端的 bufferedRanges** ——
+   服务端据此判「已给过」就不再重发(P11-111 / P11-130 那一类坑的同源)。**不变量**:仍然**只有完整段**进 `downloadedSegments`,
+   上报永远只看完整段(现状即是如此,别破坏它);半段一律留在独立的 pending 缓冲里,超时即丢。
+2. **🔴 控制类 part 可能出现在已发布段之后** —— `RELOAD_PLAYER_RESPONSE`(46)、`SABR_REDIRECT`(43)、
+   `NEXT_REQUEST_POLICY.backoff`(35)、`SABR_ERROR` 今天都在"整批解析完"之后统一处理,顺序天然安全;
+   流式下如果先发布了段、后读到 part 46,**已经交给播放器的段撤不回来**(渲染器可能已解码)。
+   需要明确:流式只在**本批读完之后**才处理控制类 part(即"边发布段、控制语义延后到批尾"),否则要设计撤回路径(不值得)。
+3. **🟠 在途请求必须单飞** —— 今天 `getNextSegment` 找不到目标段就**再发一笔 POST**(最多 6 连),
+   靠"整批原子"避免了同一格式缓存被两笔并发写。改成"发布即唤醒"后,必须保证**同一 itag 只允许一笔在途 POST**
+   (否则重演 P11-102c 那类并发互踩)。
+4. **🟠 超时口径要重定** —— 现在 `SabrCallTimeoutMs`(40s)/饥饿快切(8s/12s)是"**整笔调用**上限";
+   流式下应改成"**多久没有新字节/没有新段**"(即 P11-166 的 `SabrSilenceTimeoutMs` 语义)。
+   这正好与 §5.11.25 想做的「上限 ≤ 缓冲余量」同源,一举两得 —— 但必须保证:静默超时后**已发布的段保留、未完成的段丢弃**,
+   且**绝不把半段当段发布**。
+5. **🟠 长度前缀必须校验** —— 从"一次 `.bytes()`"改成"按 part 长度分配",就要给 part 长度设上限 +
+   校验剩余字节;一个损坏/半包的超大长度前缀会直接 OOM(今天 `.bytes()` 是单一分配,天然没有这个面)。
+6. **🟡 响应是"多 itag 交错"的** —— 实测一笔响应里 `itag=139 seq=32` / `itag=315 seq=63` / `itag=140 seq=33` 交替出现,
+   所以流式发布必须**按 itag 各自累积 pending 段**,不能假设"一个段读到底再读下一个"。
+7. **🟡 别提前 abort 响应** —— "段到手就 abort 剩余响应"看起来省带宽,但服务端的"已服务量/会话窗口"计数可能与
+   未读完的响应有关(P11-111 的 ~60s 服务窗口就是按服务端自己的计数)。**保守做法:继续读完,只是边读边发布。**
+8. **🟡 回归面** —— 依赖"这一笔返回了哪些段"的既有判据(`resp summary usable=… pushed=[…]`、`MEDIA_END` 统计、
+   `serverServedVideoItags`、`maxCountedSeq`)在流式下必须保持同义,否则前面几十轮的判读方法全部失效。
+
+**最小可行版本(建议)**:只做「**边读边发布 + 同一 itag 单飞 + 控制类 part 延后到批尾 + 静默超时口径**」,
+不提前 abort、不改重试次数语义、不碰上报口径。这样收益(首帧提前、抗中断)全拿,风险面最小。
+
+### 5.11.29 P11-213 真机结果(dev.r2154):**锚本身成立**,但没盖住「会话第一个请求」(P11-215,判读)
+
+日志 `logs_live_20261009_100215.log`(dev.r2154,视频 `_m7SBVHJ1HU` 4K60)。**同一会话内的 A/B 铁证**:
+
+| 请求 | 有无锚 | 服务端推回来 | 播放头 |
+| --- | --- | --- | --- |
+| `09:55:37` init `itag=302`(**无锚**) | —— | `seq=1,2,3,4`(**从 0 起**) | ~19s |
+| `09:55:43.060` init `itag=303`(**有锚**) | `P11-213 init 位置锚: playerTimeMs=19297(替代 0) shape=web` | **`seq=0(init), 4,5,6,7,8`** —— 第 4 段正好是 `startMs=16049..21555`,**精确对齐播放头** | 19297ms |
+
+⇒ **机制成立**:body 里 init 的 `playerTimeMs` 一改,服务端就从播放头附近回段(这正是 alpha.48 row 73 当年"改不动"的反例 —— 那是**中段**请求,而这里是 **init**)。
+
+**但它没盖住最关键的那一笔** —— 会话的**第一个**请求:
+
+- `09:55:58` 手动切 2160p → `rn=0 itag=315 seg=0 playerTimeMs=0`(`selectedFmts=0 bufferedRanges=0`,即 track 选择之前的 bootstrap)
+  **没有** `P11-213` 行 ⇒ 服务端推 `seq=1..4`(0→21.6s,**49.9MB**),而且这一笔**耗时 29.3 秒**(13Mbps)
+  ⇒ 26 秒启动看门狗 `startup=true frame=false` 把会话 evict 掉。
+- 原因:**那一刻位置注入口还是 0**(seek 尚未应用,`getNextChunk` 拿到的 `playbackPositionUs=0`),
+  被 5s 阈值挡在门外。⇒ **这是设计盲点,不是阈值错**:阈值本身是为了别动"从 0 开播"的场次。
+- 之后的老循环照旧:每次重载首包仍从 0 推、4K60 单笔 10~29 秒、`seg=5` 依旧 `timeout`
+  (P11-211 记的那个"同一段被吊死")。**P11-210 起作用了**:`startup=true frame=false` 走满 25 秒才开枪。
+
+**修法(小,建议)**:**建会话时把本次播放请求的 `startPositionMs` 直接种进 fetcher 的位置注入口**
+(`notePlaybackPositionMs(startPositionMs)`),不要依赖 ExoPlayer 在 `getNextChunk` 里喂 —— 时序上那一笔总是太早。
+配套:给 **web 形状**也补一行「锚未生效(note=…)」诊断(material 分支已有,web 没有,这次只能靠"没有那行"反推)。
+
+**归属:这些病灶**不是** WEB-SABR 专属**(用户追问「是 web sabr 的问题吗」)。逐条对:
+| 病灶 | 在哪一层 | WEB 专属? |
+| --- | --- | --- |
+| init 从 seg 0 推(首包报废) | `SabrMediaFetcher` 请求构造(共用) | ❌ — web 是**省略** `playerTimeMs`、libre 是**显式写 0**,两边都从 0 推;P11-213 两边都改 |
+| 单笔上限 12s > 缓冲 6.9s | fetcher 饥饿快切(共用) | ❌ |
+| `response.body().bytes()` 整批读完才解析 | fetcher(共用) | ❌ |
+| preroll 首帧被当起播(8s/25s 档) | 播放器看门狗(共用) | ❌ |
+| 同一段被吊死 12s | 服务端行为 + fetcher 重试(共用) | ❌(样本都是 web,但机制与形状无关) |
+| `status=2 → status=3` 判死 | token/会话配方 | ❌ — pot-less(NewPipe/visionOS)同样中招(见 §5.11.21) |
+
+**那为什么体感上"总是 WEB-SABR 出问题"**:①你开着「**WEB-SABR 优先**」,每次 resolve 都先走 WEB ⇒ **手动切档 / 重载
+都落在 WEB 会话上**;②"复播 / Auto"那次走的是 **NewPipe(14 轨梯子)**,天然有降档余地,所以显得耐操。
+**本场 WEB 会话的首笔状态全是 `status=1`**(09:55:41 / 09:55:42 / 09:55:47 / 09:56:27 / 09:56:57 / 09:58:13 / 09:58:46)
+⇒ **WEB-SABR 的鉴权与 token 这一层今天是好的**,别去动会话配方(P11-156 押的臂 B 是对的);
+要修就修**共用层**(锚的种入 / 单笔上限 / 流式解析),两条路一起受益。
+
+**「之前这样修过吗」(用户追问)**:修过两次,而且今天是**同一类症状的第三次** ——
+
+| 轮次 | 现象 | 根因 | 修法 |
+| --- | --- | --- | --- |
+| 2026-09-20(材料会话加锚) | —— | 材料会话的 CAS 也是 `playerTimeMs=0` ⇒ 两边都说"我在 0" ⇒ 服务端从 seg 0 起推 | 加位置锚(`notePlaybackPositionMs`) |
+| **r2018 真机** | **「位置锚 0 次命中」+ 服务端照旧从 seg 0 起推** | 本场**第一个请求是音频轨的 init**,而位置只在**视频轨**分支里喂 ⇒ 那一笔时注入口还是 **-1** | **两条轨都喂**(`DefaultSabrChunkSource.kt:277-282` 的注释即此) |
+| **dev.r2154(本轮)** | **锚对 in-session 换档生效,但会话第一个请求没生效** | 会话**第一个**请求早于任何 `getNextChunk`(seek 尚未应用)⇒ 注入口是 **0** | 待做:**建会话时把 `startPositionMs` 直接种进去** |
+
+⇒ 两次翻车的**共性**都是:**赌「ExoPlayer 会在第一笔请求之前把有效位置喂进来」,两次都赌输**
+(一次喂成 `-1`、一次喂成 `0`)。所以第三轮不该再补一条"喂的路径",而是把供给方式从**依赖时序**
+换成**依赖已知输入**(建会话时就种入)。另一份教训:r2018 那次留下的
+「锚未生效时把 `note` 原值打出来」诊断**只加在 material 分支** —— 于是本轮只能靠"没有那行"反推,
+故要顺手给 web/libre 也补上。
+
+**「那是 ExoPlayer 的问题吗」(用户追问)——不是**,两处都在我们这边:
+
+1. **第一笔请求本身就是我们提前发的**:它是 init/bootstrap(`seg=0`、`selectedFmts=0`),因为我们**需要
+   `FORMAT_INITIALIZATION_METADATA` 才能建轨道组** —— ExoPlayer 还没开始要段,我们自己去要的。
+2. **我们只从时序最不确定的那条通道取位置**。ExoPlayer 其实有**两个明示入口**带着位置:
+   `MediaPeriod.prepare(callback, positionUs)`([SabrMediaPeriod.kt:82](app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaPeriod.kt#L82))与
+   `selectTracks(selections, …, positionUs)`(:119);而我们现在用的 `getNextChunk` 的 `playbackPositionUs`
+   **语义是「播放器当前所在位置」**,seek 尚未落定时它就是 0 —— **这符合 media3 的语义,不是 bug**。
+3. **⚠️ 别顺手改用 `loadPositionUs`**:它语义是"要加载到哪里"(满缓冲时领先播放头十几秒),
+   拿它当锚正好复刻 alpha.52 喂 `cumulativeDurationMs` 触发 `maxTimeSinceReq` 软拒那个坑。
+   ⇒ 正确来源是**本次播放请求的 `startPositionMs`**(我们已知、且正是用户想续播的位置)。
+
+### 5.11.30 P11-215 实施:续播位置**建会话时种入**(会话首包也带锚)
+
+**改什么**
+
+1. `SabrMediaFetcher` 新增 `sessionStartPositionMs`(未种 = -1)与 `noteSessionStartPositionMs(ms)`,
+   **只接受正值**(0/负 = "来源不知道续播点",不得覆盖已知值 —— 否则又退回"锚被 0 冲掉"的老坑)。
+2. **两个播放器在建 fetcher 处直接种**:`MobilePlayerScreen`(fetcher 创建点)与 TV `PlayerScreen` 同点,
+   种的是本次播放的 `startPositionMs`(与随后 `player.seekTo(...)` 用的同一个值)。
+3. `SabrMediaPeriod.prepare(callback, positionUs)` 也种一次(media3 的明示入口,覆盖其它路径)。
+4. 锚的取值优先级:**实时播放头(`playbackPositionNoteMs` ≥5s)> 续播位置(≥5s)**,后者**用一次即失效**
+   —— 只服务"会话首包";之后的 init(会话内换档)一律用实时播放头,否则用户中途 seek 回开头后,
+   一次换档的 init 会被锚到很久以前的续播点(反而更糟)。
+5. 诊断补齐:**web / libre 形状也打**「锚未生效(note=… sessionStart=… shape=…)」——
+   原先这行只在 material 分支,本轮只能靠"没有那行"反推。生效时打 `src=playhead|sessionStart`。
+
+**判据(真机)**:手动切 2160p / 卡了重载后续播的场次,首包应见
+`P11-213 init 位置锚: playerTimeMs=<续播点> … src=sessionStart`,且 `MEDIA_HEADER seq` 贴近续播点(不再 `seq=1..4`);
+若仍见 `锚未生效 … sessionStart=0`,说明连 `startPositionMs` 都是 0(那就是真从 0 开播,属预期)。
+**否证**:①首笔 `status=2` ⇒ 回退;②仍从 `seq=1` 推 ⇒ body 锚不被认,转 URL 锚。
+
+### 5.11.31 P11-215 真机结果(dev.r2155):**锚生效且可量化**;剩余瓶颈换人(P11-216)
+
+日志 `logs_live_20261009_102641 / 103104.log`(dev.r2155,视频 `_m7SBVHJ1HU`)。
+
+**✅ 锚在「会话首包」上生效(可量化)**
+
+| 观察 | 修前(dev.r2154) | 修后(dev.r2155) |
+| --- | --- | --- |
+| 锚行 | 会话首包**没有** `P11-213` 行 | `10:23:47.172 … playerTimeMs=14620(替代 0) shape=web **src=sessionStart**` |
+| 首包推来的段 | `seq=1,2,3,4`(**从 0 起**) | **`seq=3,4,5,6`**(从 `startMs=10511` 起 —— 正是含锚点 14620 的段) |
+| 首包字节 | 49.9MB(4K)/ 一半落在播放头之前 | **7.99MB**(720p 场,全是播放头之后) |
+
+- 两个形状都覆盖:web `src=sessionStart`/`src=playhead`,libre 也有 4 条;`锚未生效` 那些都是
+  `sessionStart=-1`(**真从 0 开播**,预期)。
+- ⇒ **P11-213/215 这条闭环了**:续播/切档/重载的首包不再从 seg 0 推。
+
+**❗ 但 4K 起播仍失败,而瓶颈换了人**(与锚无关):
+
+1. **一次推太多 + 链路慢**:`10:26:04` 那次带锚的 4K bootstrap → `REAL 64951391B`(**64.95MB**)/ **31073ms**
+   (16Mbps)⇒ 25 秒启动看门狗在 `10:26:30.146` 就把它 evict 了(响应 10:26:35 才回来)。
+   即:**锚修好了"废包",但服务端从锚点起一口气推 65MB / 31 秒**,慢链路里照样必死
+   ⇒ 这正是 §5.11.25(单笔上限 ≤ 缓冲余量)与 §5.11.28(边收边发布)要解决的。
+2. **A/V 两条 init 都要锚**(P11-216):`10:25:14.642` 音频 init 先吃掉了种子(见下),
+   18 秒后的**视频 init** 就 `sessionStart=-1` ⇒ 又推 `seq=1..4` / 49.9MB。
+3. **pot-less 仍会概率性判死**:`10:27:43 首笔 status=2 (pot=0B)` → `10:28:12 InvalidPoToken
+   sessAgeMs=33474 sessReqN=9 status2Seen=8 status3Count=1`(§5.11.21 那条)。
+
+**P11-216(本轮一并改)**:把 sessionStart 的失效点从「用一次即失效」(P11-215 初版 ⇒ A/V 两条 init 只够一条用)
+改成「**播放头第一次变有效**为止」—— 既能覆盖两条 init,又在此后失效;且失效**不削弱覆盖**
+(播放头一旦有效,它自己就是优先级更高的锚),同时避免用户中途 seek 回开头后被锚到旧的续播点。
+
+**健康度对比**(同视频,修前/修后):修前那几场 `playback error, error-retry` 连着来;修后
+`10:26` 场 stall=2 / **error-retry=0** / InvalidPoToken=0,`10:31` 场 stall=3 / error-retry=0 / InvalidPoToken=1。
+
+### 5.11.32 P11-217 实施计划:流式解析 + 拿够就停(分两增量)
+
+**为什么现在做**:§5.11.31 已证明锚不再是瓶颈 —— 剩下的是「**一次收太多、收完才肯用**」:
+真机那一笔响应 **64.95MB / 31073ms**(16Mbps),而 25 秒启动看门狗先把它 evict 了。
+改成"段一到就用"之后,首帧的等待从"整批 31 秒"降到"第一个段到手"。
+
+**前置发现(让这一刀比预想小)**:[UmpReader.kt](app/src/main/java/com/kirin/mt/core/youtube/sabr/UmpReader.kt) 本来就支持增量 ——
+`append(bytes)` + `readParts{}`,注释写明"不完整的 part(头或负载未收齐)保留在 buffer 里,等下次 append 后再续"。
+所以解析器**不用改**,只要把喂给它的数据从"整包 ByteArray"换成"流式分块"。
+
+**增量 1(本轮:边收边解 + 拿够就停,保持同步结构)**
+
+- `SabrMediaFetcher.fetchStreamData`:把 `response.body?.bytes()` 换成
+  `while { stream.read(buf); ump.append(chunk); ump.readParts(onPart); if (拿够) break }`,
+  `onPart` 复用现有 `processPart`(整段完成的段**立刻**进 `downloadedSegments`)。
+- **拿够的判据**:`initializedFormats[req.formatItag]` 里**请求段与其后继段都在**即停
+  (init 请求 `req.segment<=0` 时取"第一个媒体段 + 后继");另设**已读 ≥ 512KB** 的地板 ——
+  因为控制类 part(`PLAYBACK_START_POLICY` / `NEXT_REQUEST_POLICY` / `STREAM_PROTECTION_STATUS` / `SABR_REDIRECT`)
+  都在响应**头部**(日志实测顺序即如此),地板保证它们已经过手。
+- **不改**:并发结构(仍是 loader 线程同步等这一笔)、重试次数语义、上报口径(`bufferedRanges` 仍只算完整段)、
+  不提前 abort 服务端还没发完的"我们还要的部分"。
+
+**增量 2(下一轮:发布即唤醒)**:把 POST 放到会话级 coroutine,`getNextSegment` 改成"等段落位"
+(而不是"再发一笔 POST"),这样**响应还在流**时播放器就能用第一段,后台把缓存继续填深。
+本轮不做,先拿到增量 1 的真机数据再决定。
+
+**风险逐条对(§5.11.28.1 的清单)**
+
+| # | 风险 | 本轮处理 |
+| --- | --- | --- |
+| 1 | 上报口径被带偏 | 不变:只有**完整段**进 `downloadedSegments`,半段留在 `UmpReader` 的 buffer 里 |
+| 2 | 控制类 part 落在已发布段之后 | 只在读过 ≥512KB **且**请求段+后继段到位时才停;控制类 part 在响应头部(实测)
+| 3 | 在途请求单飞 | 不变(仍是同步单笔) |
+| 4 | 超时口径 | 不变(仍按 `callCapMs`);早停只是提前正常结束 |
+| 5 | 长度前缀校验 | 不变(`UmpReader.readVarint` 已有边界判断;分块 append 不会放大它) |
+| 6 | 多 itag 交错 | `UmpReader` 按 part 顺序解;按 itag 各自累积(不变) |
+| 7 | 提前 abort 响应 | **只停"我们已拿够"的那部分**,不会在需求未满足时切断 |
+| 8 | 既有判据保同义 | `fetch rn=N REAL` 那行的字节数从"整批"变成"实读",并**新增** `早停` 一行,便于对照 |
+
+**判据(真机)**:4K 场次的 `fetch rn=0` 应出现"实读字节 < 服务端本可推的字节"、
+耗时明显下降(31s → 个位数秒),且首帧时间前移;`早停` 日志行可数。
+**否证**:①首帧没变快 ⇒ 说明瓶颈不在"整批读完"而在别处;②出现"服务端没推完就断"导致的额外重发风暴 ⇒ 退回整批读;
+③`RELOAD/InvalidPoToken` 这类终态**变晚或丢失** ⇒ 早停地板值上抬,或改成"只在非终态时早停"。
+
+### 5.11.33 P11-217 增量 1 实施:流式读 + 边收边解 + 拿够就停
+
+**改动**(全在 `SabrMediaFetcher`):
+
+- `fetchStreamData(req)` → `fetchStreamData(req, onPart)`,返回 `StreamResult(bytes, elapsedMs, earlyStop)`
+  (不再是整包 `ByteArray`);解析**搬进读流循环**:
+  `while { stream.read(readBuf); ump.append(readBuf.copyOf(n)); ump.readParts(onPart); if (拿够) break }`。
+- 新增 `streamNeedSatisfied(req)`:请求段**与后继段**都已入库即停(init 请求以"本响应第一个媒体段"为基准);
+  另有**已读地板** [StreamStopMinBytes]=512KB —— 保证头部的控制类 part(47/35/58/43)都已过手。
+- `media()` 只给回调 + 用 `resp.bytes` 打那两行既有日志(`discarded media` / `resp summary`)。
+- `UmpReader` **一行未改** —— 它本来就支持增量(注释明写"不完整的 part 保留在 buffer 里等下次 append")。
+
+**为什么复制缓冲**:`CompositeBuffer.append` 是 `chunks.addLast(data)`(**直接持有数组**),
+复用 `readBuf` 会把已入队数据冲掉 —— 所以每块都要 `copyOf(n)`。
+
+**行为变化(需要真机确认的三处)**
+
+1. 请求**频次会上升**:从"一笔带 4~5 段"变成"一笔 2 段",随后更早发下一笔。这与 alpha.58 的 paced 目标一致,
+   且昨天健康那场本来就是"一笔 1 段 / 每 7 秒一笔、连续 70 秒";但要盯有没有变成请求风暴。
+2. **预取档(P11-130)可能被截断**:预取是"随下一请求捎带"的,早停可能把它切掉 ⇒ 切档时命中不到缓存
+   (只是优化损失,不是故障)。先记着,不额外处理。
+3. **中途异常时已发布的段会留下**(不再是"整批作废")—— 这正是收益之一,但重试时会看到"本次尝试前就已存在"
+   的段(`preExistingSeqs`),P11-92 的"服务端跳段"判据据此看的是**本次**新到的段,语义未破。
+
+**判据(真机)**:4K 场 `fetch rn=0 REAL` 应带 `(早停:…)` 且实读字节明显小于修前(真机修前 64.95MB/31073ms),
+首帧时间前移;`stall detected` 次数下降。
+**否证**:①带早停却首帧没快 ⇒ 瓶颈不在整批读;②请求风暴 ⇒ 把"后继段"那段余量去掉(只拿请求段)或提高地板;
+③终态判据丢失/变晚 ⇒ 地板上调或改成"终态优先"。
+
+### 5.11.34 P11-218 实施:早停余量随「手上有没有缓冲」变(起播期只等请求段本身)
+
+**真机结果(dev.r2159)先说**:早停 8 次、`4K 手选档一次起播成功`(点 2160p → 15.8 秒出画,
+修前同一操作是 64.95MB/31 秒被 25 秒看门狗打死)。但那一笔仍是 **38.49MB / 6498ms** ——
+因为余量要求"请求段 **+ 后继段**",而**延迟大头恰恰在那个后继段**。
+(注:那场链路也恰好从 16Mbps 变 47Mbps,**不能把改善全归给流式**;能归因的只有字节:64.95MB→38.49MB。)
+
+**为什么不做异步版(增量 2)**:`getNextSegment` 跑在 `Dispatchers.IO.limitedParallelism(1)` 上**串行化**
+(这是"两个 loader 不并发改 `initializedFormats`"的基石)。把 POST 挪到后台、让 waiter 提前返回,
+等于**让缓存被并发读写** —— 要么给整个缓存加锁(大改),要么冒撕裂风险。而延迟的大头不在"异步",
+在"**等几个段**":起播期我们本可以只要**请求段本身**就到手就用。
+
+**改动(`SabrMediaFetcher`)**:
+
+- 新增 `streamMargin()` = `if (bufferedAheadNoteMs > 0) 1 else 0`
+  ([bufferedAheadNoteMs] 由视频 chunk source 每次 `getNextChunk` 喂,语义就是"播放位置前方还有多少缓冲")。
+- `streamNeedSatisfied` 的余量由固定 1 改为 `streamMargin()`:
+  **起播期(缓冲 0/-1)只等请求段本身** —— 播放器此刻无事可做,早一拍到手早一拍出画;
+  **已开播**仍留一层余量(下一轮往返要时间,只拿一段会让缓冲在往返期间见底,§5.11.25 那条"差一口气")。
+- `REAL` 行的早停标记区分两种:`早停:请求段本身已到手` / `早停:请求段+后继段已到手`。
+
+**判据(真机)**:起播场次 `fetch rn=0 REAL … (早停:请求段**本身**已到手)` 且实读字节 ≈ 单段
+(4K60 约 21MB,而非 38MB),首帧前移;已开播场次仍是 `+后继段`。
+**否证**:①起播变快但随后立刻饥饿/频繁重载 ⇒ 起播期也该留余量(把 margin 退回恒 1);
+②已开播场次出现"只等请求段本身" ⇒ 说明 `bufferedAheadNoteMs` 没被喂上(它仅由视频轨喂,
+音频轨的请求靠它兜底,要查是不是音频先跑)。
+
+---
+
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。

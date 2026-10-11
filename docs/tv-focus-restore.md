@@ -1,0 +1,227 @@
+# TV 焦点恢复(D-pad)机制与排障
+
+TV 端所有「起播 → 返回 → 焦点丢」类问题的判读与修法都落在这份文档的模型里。
+日志 tag:`BiliMT:Focus`(关键节点)、`BiliMT:FocusDiag`(按键级 + GAINED/LOST 节点级)。
+
+## 1. 分层与 dispose 模型(AppShell)
+
+`AppShell` 的层级(自上而下):
+
+```
+Box(root, focusDiag("root"))
+├── if (visiblePlaybackRequest == null) { …Home/Sidebar/各 destination 内容… }   ← 播放期间整体卸载
+├── if (visiblePlaybackRequest != null)  { PlayerScreen / LivePlayerScreen }      ← 兄弟层,盖在上面
+├── space / youtubeChannel / youtubePlaylistDetail 覆盖层                          ← 兄弟层,条件里带 xxxPlaybackBehind
+├── comment / 对话框 / 过渡 scrim
+└── 侧栏 sidebar(内容层内,永远是默认焦点搜索的第一落点)
+```
+
+要点:
+
+- **内容层在起播瞬间被 dispose**(`if (visiblePlaybackRequest == null)`,切换延后 `PlaybackTransitionScrimInMs=30ms`)。
+  页面内 `remember`/`rememberSaveable` 之外的一切状态(列表、滚动位置、`LazyListState`)全部丢弃。
+- 要跨播放存活的**数据**必须 hoist 到 AppShell:`youtubeChannelUiState`(频道页)、`upSpaceUiState`(UP 主页)。
+  **反例**:`YoutubePlaylistDetailScreen` 的 `videos/header/listState` 是页面内 `remember`,
+  返回后必然冷重组为「空 + 重拉 `/browse`」(P11-171 的直接成因)。
+- 覆盖层(`space / channel / playlistDetail`)是**兄弟层**,`visiblePlaybackRequest == null` 分支里那些
+  `|| xxxPlaybackBehind` 判断在内容层内部恒真,别拿它当「层可见」的判据。
+- 层被卸载时被盖住的下层**仍在组合**(兄弟层同时存在),下层的 restore effect 照样会跑 ——
+  下层的恢复失败/抢焦也是本层问题的常见帮凶(P11-171 里频道页 90 帧全败)。
+
+## 2. 一条恢复链的标准要素
+
+每个「从播放器返回」的页面都要齐这五件,缺一个就出「整页零焦点 / 按键逃到 sidebar」:
+
+1. **arm**:起播前把离开时的落点 hoist 到 AppShell(`onFocusTargetChange("playall"/"back"/"row:N")`),
+   播放器 `onBack` 里按「从哪层起播」分支 bump 对应的 `xxxFocusRestoreRequestKey += 1`(分支顺序:
+   upSpace(Content) → **playlistDetail** → youtubeChannel(Content) → 默认 destination;
+   从详情页起播时频道请求也非空,**详情页分支必须排在频道分支之前**)。
+2. **冷重组后定位**:`rememberLazyListState(initialFirstVisibleItemIndex = if (key>0) targetRow else 0)`
+   + `scrollToItem(targetRow)`,否则目标行不在首屏、requester 永不挂节点。
+3. **等布局**:按帧等目标行进入 `layoutInfo.visibleItemsInfo`(上限 `…WaitLayoutFrames`,常用 360)。
+4. **按帧重试**:`requestFocus()` 包 `runCatching`(requester 未挂节点会抛
+   `FocusRequester is not initialized`,被 runCatching 吞成 false),上限 `…RetryCount`(常用 90)。
+5. **闭环**:无论成功失败都要 `onRestoreFocusHandled(key)` 把 key 归零 ——
+   否则初焦 effect 的守卫 `restoreFocusRequestKey != 0` 会让它永远让位。
+
+## 3. 已知陷阱(每条都有真机实锤)
+
+| 陷阱 | 症状/日志指纹 | 修法 |
+|---|---|---|
+| **空数据早退造成双向死锁** | `restore skipped: key=… videos=0` 之后该页**再无任何按键日志**,按键落 `avatar focused … openMyPage=true` | 数据未到时不要静默 return:先「占位」聚焦一个必然存在的落点(返回 chip),按帧等数据(`RestoreDataWaitFrames`);数据到了且用户没自己动过再做精确恢复,否则只消费 key |
+| **恢复判据用「任一合法落点」** | 占位已持焦 → 精确恢复一拍都不试就 `restore done confirmed=true`,焦点留在占位 | 判据必须是**恢复目标本身**有焦点(按 `target` 分派:playall/back/行号集合) |
+| **一次返回弹两层(待证)** | 下层 restore key 被莫名 bump(只有该层自己的 onBack 能 bump)而该层 onBack 无日志 ⇒ 用户停在下下层页面 | 先补日志:各层 onBack 分支**都要打日志**,否则判读无指纹。⚠️**别拿 `WindowOnBackDispatcher: OnBackInvokedCallback is not enabled` 当「用户按了 Back」的证据**——它是 BackHandler 注册/注销的产物:老日志 `logs_live_20260921_210436.log` 20:58:28.519 退出播放器后 20:58:28.819 也出现,而那次单层干净返回 |
+| **焦点落头像 → autoConfirm 把用户抢走** | `avatar focused: autoConfirm=true suppress=false -> openMyPage=true`,后续 `GAINED [sidebar]`;再往后内容层的 `requestContentGridRestore` **一次都没跑**(没有 `TvVideoGrid restore` 行),因为 `accountSelected=true` 让内容层不再组合 | 任何「层栈返回」期间都必须抑制头像 autoConfirm:抑制条件要覆盖**所有**恢复在身的路径(`playbackFocusRestoreDestination`/`contentFocusRestoreDestination`/**各覆盖层自己的 restore key**),否则覆盖层返回时两个 destination 都是 null ⇒ 头像一抢焦就开「我的」页(P11-172) |
+| **被中断的恢复把 key 挂死** | 某层 restore 开跑后被 Back 弹掉 ⇒ 该层 key 永远 >0(抑制条件/恢复 effect 都不收敛) | 各层 `onBack` 先把**本层** key 清零,再 arm 下层;恢复正常完成走 `onRestoreFocusHandled` 清零 |
+| **下层恢复失败** | `channel-playlists restore failed … attached=false` + 90 次 `FocusRequester is not initialized`,而同一行 `rowVisible=true` | 目标卡 requester 挂不上:核对 requester 挂载条件(`playlist.id == focusedKey \|\| index == focusedIndex`)与目标项是否真的组合 |
+| **onFocusChanged 放错位置** | 节点零回调而子树 `hasFocus=true`、requestFocus 静默失败 | `onFocusChanged`/`onPreviewKeyEvent` 必须写在 `focusable()` **之前**(只监听其后第一个 focusTarget) |
+| **单布尔跟踪焦点** | 下键「弹回顶部/原地不动」,无关行入场补发 `isFocused=false` 清零 | 行聚焦按**行号集合**增删,不用 last-writer-wins 单布尔 |
+| **requester 单发** | `FocusRequester is not initialized` 一闪而过,焦点落 sidebar | 一律「等一帧 + 校验 + 重试 N 帧」,不要单发 requestFocus |
+| **列表整表换新把网格焦点清掉(P11-191)** | 无任何按键,`LOST [dynamic-grid]` → **同一帧** `avatar focused … openMyPage=true`;紧挨在前的是 `YoutubeFeed: getSubscriptionsFeed done …`(3 行内 ≤15ms) | 网格行 key 是 `row-$row-<**行首项** key>` ⇒ 合并/刷新重排后**即使被聚焦的那张卡 index 没变**,行首换人也会让整行被 LazyColumn 销毁重建,焦点被清→掉到布局第一个可聚焦节点(侧栏头像)。修:①`TvVideoGrid` 在 `videos` 变化且变更前网格持焦时,按 `focusedKey` 解析新 index、按行 key 判断行是否真被重建,再滚过去重抢焦点(`merge refocus` 行);②头像 autoConfirm 只认「侧栏内刚按过方向键」的落焦(`keyDriven=`);③首屏合并在途期间压住头像 autoConfirm(`firstPageInFlight`) |
+
+## 4. 排障顺序(照这个顺序看日志)
+
+1. 起播前:`playlist-focus initial done` / `… restore success … attempt=0` —— 进页面时焦点正常吗?
+2. 起播瞬间有没有 `LOST [该页 focusDiag label]` —— 确认这一层被卸载(而不是只失焦)。
+3. 退出播放器的 `video exit via …` 是哪一支 —— **arm 的层和实际可见层对得上吗**?
+4. 该层自己的 restore 日志:`start` → `layout` → `success/failed`,还是一片空白(说明 effect 没跑或早退)?
+5. 兄弟层(`channel-playlists` 等)在这次返回里跑没跑、成没成?
+6. 用户第一次按键的落点(`grid-key` / `playlist-key` / `… focused` / `GAINED [sidebar]`)。
+7. 全程有没有 `FocusRequester is not initialized` 风暴(计数对上哪个 `…RetryCount` 就锁定是哪条链)。
+
+## 5. 历史轮次
+
+- P11-72 / 72c-e:详情页初焦与「合法落点」判据、onFocusChanged 位置
+- P11-93:行聚焦改行号集合(下键反弹)
+- P11-98 / 98b / 98c:详情页 restore 上链、频道网格完整防御、网格边界逃逸
+- P11-148:TV 设置页 D-pad 丢焦点
+- **P11-171**:播放列表详情页返回零焦点(**空表死锁** + 数据未 hoist + 下层频道网格恢复全败)
+- **P11-172**:返回丢焦第二场 —— 详情页被弹掉后**头像 autoConfirm 劫持**用户(抑制条件漏覆盖层 restore key)+ 被中断的恢复把 key 挂死;另记录「返回瞬间主线程卡死 ~850ms 让占位 effect 来不及跑」
+- **P11-191**:动态页**无按键**丢焦并跳「我的」页 —— 真因是动态首屏把 YouTube 关注流并进来时整表换新、行首换人导致聚焦行被 rebuild(见上表);`logs_live_20261001_173435`:09-29 20:38:53 / 10-01 11:08:47 / 10-01 17:34:24 三场都是 `getSubscriptionsFeed done …` 之后 ≤15ms;另两场(09-30 19:54/21:41)因 `suppress=true` 只丢焦没跳页,213ms 后被网格恢复拉回。旧守卫只判「聚焦项 index 变没变」,这一类整个漏网
+- **P11-202**:网格身份锚定 —— 卡片按公共 `focusRestoreKey()` 记焦点,网格冷重建/列表重排后回到**原来那张卡**。见 §6
+
+判断「用户到底按了几次 Back」只能看各层 onBack 自己的日志;**层切换警告不可作证**(见上表)。
+
+## 6. 网格身份锚定(GridFocusMemory,P11-202)
+
+上面 §2 那条「显式恢复管线」仍然是主路径。§6 是它的**兜底层**:给共用网格 `TvVideoGrid` 加一份
+「卡片记住自己 id」的焦点记忆,解决两件事 —— ①管线跑完仍没把焦点落到目标卡(慢布局把 90 帧重试
+耗尽、被头像/覆盖层抢走、被页面初焦 effect 落到第 0 张卡);②列表被外部刷新/合并重排后要回到
+**同一张卡**而不是「同一个下标」。
+
+### 6.1 判据:`expectReturn`,不是「持焦」
+
+```
+expectReturn == true  ⇔  网格里某张卡被点击后跳转出去了,且焦点再没回到任何卡片
+```
+
+- **为什么不是「焦点获得即 arm」**:焦点会在**非点击**情况下滑出网格(末行 `DirectionDown` 返回
+  false 漏给默认遍历、落到 footer 重试按钮、Search 按 Back 回键盘、`onBackKey`),arm 残留会误恢复。
+- **为什么不用 `onFocusChanged { hasFocus=false }`**:三种成因无法区分 —— ①网格被 dispose(应恢复);
+  ②焦点移到侧栏(用户主动,**应拒绝**);③覆盖层抢焦(**网格仍组合、仍应恢复**)。②③语义相反。
+- 网格被销毁时 `expectReturn` 必然还是 true ⇒ **不需要在 dispose 时读任何焦点状态**。
+
+### 6.2 置位 / 清零全表
+
+| 动作 | 位置 | 效果 |
+|---|---|---|
+| `onClick` → `onVideoSelected` 前 | `TvVideoGrid` 卡片 | 置位(`onGridNavigate`) |
+| `onOwnerTap` → `onOwnerSelected` 前 | 同上 | 置位 |
+| OK 长按 → `onCardLongPress` 前 | 同上 | 置位 |
+| 顶行 ↑ / 首列 ← 边界分支 | `moveFocus` | 清零 `explicit-leave-up/left` |
+| `Key.Back` | 卡片 `onPreviewKeyEvent` | 清零 `back-key` |
+| 卡片重新获得焦点 | `onFocused` | 清零(焦点回到卡片本身就是「回来了」) |
+| 组合期捕获 | `remember { consumeIntent }` | 消费(key>0 时改 peek,见 6.3) |
+| 切分区 / 切子 tab / 手动刷新 / 换搜索词 | 各页面 | 清零(页面级 clear,见 6.4) |
+| 接力完成 | 接力 effect 的 `finally` | 清零 `relay-done` |
+
+### 6.3 优先级:管线为主,锚定接力
+
+门槛:`restoreFocusRequestKey > 0 || requestInitialFocus`(**管线在身**)时**只 `peekIntent` 不消费**,
+等管线跑完(`onRestoreFocusHandled` 之后,`pipelineRestoreFinishedKey` 被置位)再观察
+`TvGridRelayWatchFrames = 30` 帧:
+
+- 网格持焦**且** `focusedIndex == 目标卡` → 管线成了,锚定让位;
+- 否则打 `grid-memory relay` 并补一刀(滚到目标行 → 等布局 → 按帧重试 → 成功后一帧校验
+  `gridFocus.value && focusedIndex == target`,不符打 `lost-to-layer` 并**放弃**,不重试)。
+
+⚠️ 判据必须是「持焦**且**在目标卡上」,不是笼统的 `hasFocus`:页面初焦 effect 可能把焦点落到第 0 张
+卡(网格确实有焦,但不是原来那张),那种情况**必须**接力。
+
+**为什么要有这道门槛**:`AppShell` 里**全部 5 处** `playbackRequest = null`(直播 1 处 + 点播 4 分支)
+**每一处都 bump 了恢复 key** ⇒「点卡 → 跳转 → 返回」在管线里 `key` 恒 > 0。若锚定同时抢,就是两套
+机制同帧抢同一张卡。**顺序不变式**:意图在网格**组合期**写入(`remember`),页面级 clear 都在
+`LaunchedEffect`(组合之后)⇒ clear 只影响**下一次**冷组合,永不打断本次恢复。把 clear 挪进组合期
+会炸掉主路径。
+
+### 6.4 页面级 clear 点
+
+| 页面 | 网格 id | clear 点 |
+|---|---|---|
+| 推荐 | `GridFocusIds.Recommend` | 局部 `selectSection`(覆盖切分区 + 侧栏重点击刷新) |
+| 动态/历史/收藏/追番 | `GridFocusIds.Dynamic` | `UserFeedTabRow.onSelect`、`LaunchedEffect(manualRefreshKey)` 命中支 |
+| 搜索 | `GridFocusIds.Search` | `activeQuery` 变化(**带首次组合守卫**) |
+| 直播 | `GridFocusIds.Live` | 局部 `selectSection` |
+| UP 主页 | `GridFocusIds.Space` | 无(覆盖层整体重建) |
+| YouTube 频道 | `GridFocusIds.Channel` | `uiState.tab` 变化(**带首次组合守卫**) |
+
+动态页**必须**显式 clear:`key(selectedTab, manualRefreshKey)` 强制整页重建,网格 `remember` 全丢而
+记忆槽在 `remember` 之外,结构性地一定会残留。**冷组合时绝不清**(`LaunchedEffect(Unit) { resetFeedTabFocus }`
+里若也 clear 会误杀主路径)。
+
+### 6.5 日志指纹(`BiliMT:Focus`,统一前缀 `grid-memory`)
+
+`grid-memory relay` / `grid-memory relay success|failed` / `grid-memory restore start|success|failed` /
+`grid-memory lost-to-layer` / `grid-memory abort: reason=user-key` / `grid-memory skip: reason=…` /
+`grid-memory clear: id=… reason=…`
+
+判读:**该恢复**的场合要有 `relay` → `success` → 紧随 `GAINED [<debugLabel>]`,且整段**不得**出现
+`avatar focused … openMyPage=true`;**不该恢复**的场合必须有 `clear` 且整轮无 `relay/restore`;
+同一次冷组合里**不允许**管线 `restore start` 与 `grid-memory relay` 同帧双抢;空闲时不允许有任何
+`grid-memory` 行(置位刻意不打日志,只有决策点打)。
+
+### 6.6 已知限制(不在 P11-202 修)
+
+- **IPTV 分区天然不生效**:`LiveScreen` 的 `keyFactory = { _, v -> v.liveRoomId }`,而 IPTV 卡
+  `liveRoomId == 0` ⇒ `focusRestoreKey()` 返回 `""` ⇒ 视作不可锚定,行为等同今天(从第 0 行开始)。
+  `iptvUrls.firstOrNull()` 因判活重排会动 `first`,稳定性不足。
+- **与上层覆盖层抢焦**:靠「成功后一帧校验 + 让位即停」兜;若真机反复 `lost-to-layer` 或可见跳动,
+  升级为 AppShell 层全局静默闸。
+- **头像 autoConfirm**:本轮**不开**新 suppress 条件 —— `AppSidebar` 的 `keyDriven` 闸
+  (`autoConfirmOnFocus && !selected && !suppressAutoConfirm && keyDriven`)已挡住被动落焦。
+- **后续简化路径**:等锚定链真机稳定若干轮后,再评估删 7 处 `restoreFocusRequestKey`(它承载了 §2 五要素
+  与 P11-172「先清本层 key 再 arm 下层」,删它是一次独立的、需真机证据的改造)。
+
+### 6.7 P11-204:UP 页连续下翻时视口被反复拽回入场卡(2026-10-06 真机 alpha.10)
+
+> 用户报「在 B 站 UP 页,连续下翻,焦点会突然上跳」。日志 `logs_live_20261006_182944.log`
+> (`3.1.0-alpha.10`,BRAVIA AE2,UP 页网格 id `grid:space`)。
+
+**症状签名**(一次访问里成对出现,间隔 140~190ms):
+
+```
+18:27:45.971  grid-memory restore start: id=grid:space target=4 videos=30   ← 入场恢复,正确
+18:27:46.015  grid-memory restore success: id=grid:space attempt=0
+18:27:48.368  grid-memory restore start: id=grid:space target=4 videos=60   ← 翻一页就重跑一次
+18:27:48.510  grid-memory abort: id=grid:space reason=user-key
+18:28:15.906  grid-memory restore start: id=grid:space target=4 videos=90
+18:28:16.095  grid-memory abort: id=grid:space reason=user-key
+18:28:19.512  … videos=120   18:28:22.445  … videos=150   18:28:31.193  … videos=180
+18:28:44.568  … videos=210   18:28:55.116  … videos=240
+```
+
+此刻用户已在第 115 张卡上(`grid-key label=space-grid index=115`),而 target 恒为 **4**。
+同一签名在当天另两次 UP 页访问里复现(`target=9`、`target=61`)。
+
+**两个各自独立的缺陷叠在一起:**
+
+1. **effect 以 `videos.size` 为 key + `memoryIntent` 是组合期固定值 ⇒ 每翻一页重跑一次恢复。**
+   `memoryIntent = remember { consumeIntent(...) }` 没有 key,是整个组合生命周期里的固定值(指向
+   **入场那张卡**);而主路径 effect 的 key 含 `videos.size`,原本意图是「首帧数据还没到 → 数据到了
+   再补一次」。两者叠起来 = 之后**每一次分页合并**都会再跑一遍恢复,目标永远是入场卡。
+2. **让位判据在滚动之后 ⇒ abort 只挡住了 requestFocus,没挡住 scrollRow。**
+   `runMemoryFocusRestore` 的顺序是「记日志 → `scrollRow(目标行)` → 等目标行进入视口 → 重试循环里
+   才检查 `userKeyedSinceCompose`」。所以那 140~190ms 里列表已经被滚到目标行(UP 页第 4 张卡在第 1 行
+   ⇒ 视口直接跳到顶部),然后才 abort 返回、把视口留在原处 —— 用户看到的就是「焦点突然上跳」。
+   `userKeyedSinceCompose` 在 `moveFocus` 一进来就置位且**永不回退**(用户接管即终局),所以入场恢复
+   之后的每一次滚动都必然命中这条废路径。
+
+**修法(P11-204,两处,都在 `TvVideoGrid`):**
+
+- `runMemoryFocusRestore` 开头(记日志/滚动**之前**)加 `userKeyedSinceCompose` 早退,日志
+  `grid-memory restore|relay abort(before-scroll): id=… reason=user-key`。
+- 主路径 effect 加两道闸:①`userKeyedSinceCompose` ⇒ 本组合不再碰列表;②`memoryRestoreDone`
+  (焦点**确实落到**目标卡才算兑现,用 `gridFocus && focusedIndex == memoryTargetIndex` 判)⇒ 不重复。
+  **`memorySkipReason != null`(数据未到 / key 未出现)的 skip 不置闸**,保留「数据到了再补一次」的原意。
+
+**验收**(真机):UP 页连续下翻时**不得**再出现 `grid-memory restore start: id=grid:space`(最多一条
+入场 `success`);整段无 `abort(before-scroll)`(该行只应在「用户已接管」时出现,出现即说明还有路径在
+滚)。**否证**:①入场恢复被跳过(该回到入场卡时回到第 0 行)⇒ 说明 `userKeyedSinceCompose` 在新组合
+里不是 false,需改成显式的一次性 token;②`memoryRestoreDone` 因 `focusedIndex` 时序未及时更新而恒
+false ⇒ 退化为「只靠 userKeyed 闸」。
+
+**留看的孪生隐患(本轮不改)**:管线 effect(`LaunchedEffect(restoreFocusRequestKey, restoredFocusIndex,
+videos.size)`)同样以 `videos.size` 为 key、同样无条件 `scrollRow`。它没有复现,是因为 UP 页传入的
+`restoredFocusIndex` 由页面 `focusedVideoKey/Index` 实时解析(跟踪用户当前卡),重跑等于滚回当前行;
+若哪天某个页面传的是**导航时刻的旧下标**,就会以同样的方式跳。改动它会碰 §2 五要素的主路径,留待有
+真机证据再单独开。

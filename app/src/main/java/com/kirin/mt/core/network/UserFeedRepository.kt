@@ -1,6 +1,8 @@
 package com.kirin.mt.core.network
 
+import android.util.Log
 import com.kirin.mt.core.model.Comment
+import com.kirin.mt.core.model.DynamicKindDraw
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.storage.SessionStore
 import kotlinx.coroutines.flow.first
@@ -10,7 +12,18 @@ internal class UserFeedRepository(
   private val apiClient: BiliApiClient,
   private val sessionStore: SessionStore,
 ) {
-  suspend fun getDynamicFeed(offset: String = "", type: String = "video"): DynamicFeedPage {
+  /**
+   * 关注动态一页。
+   *
+   * [includeDraw] 为 false(默认)时只返回可播放项(行为同历史);置 true 时额外保留图文项。
+   * **放行图文前,调用方的列表 key / 去重 / 翻页判据必须换成 `dynId`(图文没有 bvid)**,
+   * 否则 Compose key 冲突;`VideoSummary.feedKey` 就是给这个用的。
+   */
+  suspend fun getDynamicFeed(
+    offset: String = "",
+    type: String = "video",
+    includeDraw: Boolean = false,
+  ): DynamicFeedPage {
     val sessData = sessionStore.sessData.first()
     if (sessData.isNullOrBlank()) {
       return DynamicFeedPage(videos = emptyList(), offset = "", hasMore = false)
@@ -20,6 +33,7 @@ internal class UserFeedRepository(
       url = BiliApiEndpoints.DynamicFeed,
       params = buildMap {
         put("type", type)
+        put("features", DynamicFeedFeatures)
         if (offset.isNotBlank()) {
           put("offset", offset)
         }
@@ -30,13 +44,26 @@ internal class UserFeedRepository(
 
     val data = root.obj("data") ?: return DynamicFeedPage(videos = emptyList(), offset = "", hasMore = false)
     val items = data["items"] as? JsonArray ?: return DynamicFeedPage(videos = emptyList(), offset = "", hasMore = false)
-    val videos = items
-      .mapNotNull { it.asObjectOrNull() }
-      .mapNotNull(VideoSummaryMappers::fromDynamicItem)
-      .filter { it.bvid.isNotBlank() }
+    val rawItems = items.mapNotNull { it.asObjectOrNull() }
+    val mapped = rawItems.mapNotNull(VideoSummaryMappers::fromDynamicItem)
+    val feedItems = if (includeDraw) {
+      mapped.filter { it.bvid.isNotBlank() || it.dynamicKind == DynamicKindDraw }
+    } else {
+      mapped.filter { it.bvid.isNotBlank() }
+    }
+    // 每页类型占比打点:确认真实关注流里图文/纯文字/转发各占多少、哪些类型被 drop。
+    // kinds 是服务端原始 type 计数(含未渲染的类型),returned 是最终进入列表的条数;
+    // drawWithText 长期为 0 说明 features 没生效(图文正文只在 major.opus.summary 里)。
+    Log.i(
+      LogTag,
+      "dynamic feed type=$type items=${rawItems.size} returned=${feedItems.size} " +
+        "draw=${mapped.count { it.dynamicKind == DynamicKindDraw }} " +
+        "drawWithText=${mapped.count { it.dynamicKind == DynamicKindDraw && it.dynamicText.isNotBlank() }} " +
+        "kinds=${rawItems.groupingBy { it.string("type") }.eachCount()}",
+    )
 
     return DynamicFeedPage(
-      videos = videos,
+      videos = feedItems,
       offset = data.string("offset"),
       hasMore = data.boolean("has_more"),
     )
@@ -240,7 +267,7 @@ internal class UserFeedRepository(
       url = BiliApiEndpoints.CommentReply,
       params = mapOf(
         "oid" to aid.toString(),
-        "type" to "1",
+        "type" to CommentTypeVideo.toString(),
         "pn" to page.toString(),
         "ps" to pageSize.toString(),
         "sort" to sort.toString(),
@@ -404,6 +431,22 @@ internal class UserFeedRepository(
     val hasMore = page * pageSize < total && seasons.isNotEmpty()
     return FollowingSeasonPage(seasons = seasons, hasMore = hasMore)
   }
+
+  private companion object {
+    const val LogTag = "BiliDynamicFeed"
+
+    /** 评论 type:1=视频(oid=aid);动态是 11 且必须走 wbi/main(见 VideoRepository.getDynamicComments)。 */
+    const val CommentTypeVideo = 1
+
+    /**
+     * 让服务端按 opus 形态返回动态内容。**不加这一项,图文正文永远是空的** —— 正文只存在于
+     * `major.opus.summary.text`(2026-09-25 本机两次独立采样:不带 features 的图文正文长度全为 0,
+     * 带上后拿到 231/132/115… 字)。取 BV 的同款最小取值(BiliHttpApi 的 features 参数),
+     * 实测带上它视频动态既有字段完整度不变(bvid/title/cover/play/duration_text/badge/
+     * module_stat/author 各 5/5),且 archive 项没有被挪进 opus。
+     */
+    const val DynamicFeedFeatures = "itemOpusStyle"
+  }
 }
 
 data class DynamicFeedPage(
@@ -435,6 +478,17 @@ data class FavoriteFolder(
 data class FavoriteFolderPage(
   val videos: List<VideoSummary>,
   val hasMore: Boolean,
+)
+
+/**
+ * 动态评论一页。`/x/v2/reply/wbi/main` 用**游标**分页(`pagination_str` 的 offset + `cursor.is_end`),
+ * 与视频评论 `CommentPage` 的页码分页不是一套,故单列。
+ */
+data class DynamicCommentPage(
+  val comments: List<Comment>,
+  val nextOffset: String,
+  val isEnd: Boolean,
+  val totalCount: Int = 0,
 )
 
 data class CommentPage(

@@ -150,6 +150,110 @@ internal object YoutubeParsers {
   }
 
   /**
+   * TV 客户端(TVHTML5)频道页里的**画质角标**:videoId → 角标文案(如 "4K"/"8K"/"HD")。
+   *
+   * 为什么单独拉一路:频道页 WEB 客户端(lockupViewModel)的数据里**没有画质角标**——实测
+   * (2026-10)MKBHD/LTT/Mrwhosetheboss/T-Series/PewDiePie 等频道的 videos tab,`metadataRows`
+   * 里的 `badgeViewModel.badgeText` 只有 会员(Members only)/Premium/Fundraiser/Free with ads/CC,
+   * 零 4K;youtube.com 自己的频道页网页同样不画 4K。只有 YouTube 官方 **TV 端**(TVHTML5)的
+   * 同一频道页把 `4K`/`CC` 带在 `tileRenderer` 上(对齐 YouTube TV app 频道页的角标)。
+   * 故 [YoutubeRepository.getChannelVideos] 首屏额外并行拉一路 TVHTML5 频道页,按 videoId
+   * 把画质角标并回 WEB 列表;失败静默降级为无角标。
+   *
+   * 结构(实测 2026-10):contents.tvBrowseRenderer.content.tvSurfaceContentRenderer.content
+   * .sectionListRenderer.contents[].shelfRenderer.content.horizontalListRenderer.items[]
+   * .tileRenderer{ contentId, header.tileHeaderRenderer.thumbnail, metadata.tileMetadataRenderer
+   * .lines[].lineRenderer.items[].lineItemRenderer: text 行 | badge.metadataBadgeRenderer.label }。
+   * 一个频道页含多个 shelf(For You / Videos / Shorts / 各播放列表),同一 videoId 会重复出现,
+   * 取先命中的画质角标。
+   *
+   * **能翻页(实测 2026-10)**:每个 shelf 的横向列表带
+   * `content.horizontalListRenderer.continuations[].nextContinuationData.continuation`(旧格式,
+   * **不是**新格式 continuationCommand——照后者找会得出「TV 无 continuation」的错误结论)。
+   * 「Videos」shelf 顺着翻,每页 24 条全新、全部带 4K,可一直翻到更早的视频 ⇒ 老视频的角标靠它补。
+   */
+  fun parseChannelTilePage(root: JsonObject): TvTilePage {
+    val badges = LinkedHashMap<String, String>()
+    val videoIds = LinkedHashSet<String>()
+    collectByKey(root, KEY_TILE_RENDERER) { node ->
+      val videoId = node.stringOrNull("contentId")?.takeIf { it.isNotBlank() } ?: return@collectByKey
+      videoIds.add(videoId)
+      if (badges.containsKey(videoId)) return@collectByKey
+      val lines = node.obj("metadata")?.obj("tileMetadataRenderer")?.array("lines") ?: return@collectByKey
+      for (line in lines) {
+        val items = (line as? JsonObject)?.obj("lineRenderer")?.array("items") ?: continue
+        for (item in items) {
+          val label = (item as? JsonObject)?.obj("lineItemRenderer")?.obj("badge")
+            ?.obj("metadataBadgeRenderer")?.stringOrNull("label") ?: continue
+          if (QualityBadgeRegex.matches(label)) {
+            badges[videoId] = label
+            return@collectByKey
+          }
+        }
+      }
+    }
+    val shelves = mutableListOf<TvTileShelf>()
+    collectByKey(root, KEY_SHELF_RENDERER) { shelf ->
+      val horizontal = shelf.obj("content")?.obj("horizontalListRenderer") ?: return@collectByKey
+      val ids = LinkedHashSet<String>()
+      collectByKey(horizontal, KEY_TILE_RENDERER) { tile ->
+        tile.stringOrNull("contentId")?.takeIf { it.isNotBlank() }?.let(ids::add)
+      }
+      if (ids.isEmpty()) return@collectByKey
+      // 翻页 token 在 shelf 的横向列表上(旧格式 nextContinuationData,不是新格式 continuationCommand)。
+      val token = horizontal.array("continuations")?.firstOrNull()
+        ?.let { (it as? JsonObject)?.obj("nextContinuationData")?.stringOrNull("continuation") }
+      // shelf 目标:browseEndpoint.browseId(频道=UC…;播放列表=VL…);部分 shelf 只在标题的导航端点里。
+      val target = shelf.obj("endpoint")?.obj("browseEndpoint")?.stringOrNull("browseId")
+        ?: shelf.obj("headerRenderer")?.obj("shelfHeaderRenderer")?.obj("avatarLockup")
+          ?.obj("avatarLockupRenderer")?.obj("title")?.array("runs")?.firstOrNull()
+          ?.let { (it as? JsonObject)?.obj("navigationEndpoint")?.obj("browseEndpoint")?.stringOrNull("browseId") }
+          .orEmpty()
+      shelves.add(TvTileShelf(ids.toList(), token, target))
+    }
+    // 兜底:整页第一个 nextContinuationData(续页响应若不是 shelfRenderer 形状时仍能继续翻页)。
+    val fallbackToken = firstNextContinuationData(root)
+    return TvTilePage(badges, videoIds.toList(), shelves, fallbackToken)
+  }
+
+  /** 递归取整棵树里第一个 `continuations[].nextContinuationData.continuation`(TV 旧格式分页 token)。 */
+  private fun firstNextContinuationData(root: JsonElement): String? {
+    when (root) {
+      is JsonObject -> {
+        val token = root.array("continuations")?.firstOrNull()
+          ?.let { (it as? JsonObject)?.obj("nextContinuationData")?.stringOrNull("continuation") }
+        if (!token.isNullOrBlank()) return token
+        for ((_, value) in root) firstNextContinuationData(value)?.let { return it }
+      }
+      is JsonArray -> for (item in root) firstNextContinuationData(item)?.let { return it }
+      else -> Unit
+    }
+    return null
+  }
+
+  /** TV 频道页(或其后继页)的 tile 解析结果,见 [parseChannelTilePage]。 */
+  data class TvTilePage(
+    /** 全页画质角标:videoId → "4K"/"8K"/"HD"。 */
+    val qualityBadges: Map<String, String>,
+    /** 本页所有 tile 的 videoId(含无画质角标的),用于判断翻页有没有推进。 */
+    val videoIds: List<String>,
+    /** 可继续翻页的横向 shelf。 */
+    val shelves: List<TvTileShelf>,
+    /** 整页兜底分页 token(续页响应不是 shelfRenderer 形状时用)。 */
+    val fallbackNextToken: String?,
+  )
+
+  /**
+   * TV 频道页里的一个横向 shelf:[videoIds] 按显示顺序,[nextToken] 非空表示还能往更早翻,
+   * [targetBrowseId] 是 shelf 目标(频道 `UC…` / 播放列表 `VL…`)——上传列表 shelf 用它区分。
+   */
+  data class TvTileShelf(
+    val videoIds: List<String>,
+    val nextToken: String?,
+    val targetBrowseId: String,
+  )
+
+  /**
    * 频道页 header 解析结果。含订阅数/banner/简介/认证，供频道页头部展示
    *（对齐 LibreTube `ChannelResponse` 的 subscriberCount/banner/description/verified）。
    */
@@ -293,6 +397,138 @@ internal object YoutubeParsers {
     // 诊断:打印解析到的 tab 名字 + params 前缀,便于真机核验服务端 tab params 是否取到。
     Log.d("Ytabs", "parseChannelTabs found=${result.map { "${it.name}:${it.params.take(10)}" }}")
     return result
+  }
+
+  /**
+   * 从频道「视频」tab 的 /browse 响应里摘**排序 chip 的 continuation token**(最新/最热/最早)。
+   *
+   * 今天 YouTube 的排序 chip 是「实体化」的:`listItemViewModel{title.content="Latest"|"Popular"|"Oldest"}`
+   * 子树里紧跟一条 `continuationCommand.token`。该 token **由服务端铸造**(内含随机 targetId),
+   * 直接以 `{"continuation": token}` 发回即得该排序的列表。两种 chip 形状都命中:
+   *  - 平铺 chip:`richGridRenderer.header.chipBarViewModel.chips[]`,每项 `chipViewModel.text`(MKBHD 等多数频道);
+   *  - 下拉 chip:`displayType=CHIP_VIEW_MODEL_DISPLAY_TYPE_DROP_DOWN` 的单颗 chip,三档在其
+   *    `showSheetCommand…sheetViewModel.content.listViewModel.listItems[]` 里(LTT)。
+   *
+   * 2026-10-10 直连 InnerTube 实测(频道 UCXuqSBlHAE6Xw-yeJA0Tunw 等 6 个:5 个平铺 chip + LTT 下拉):
+   *  - Popular 首屏按播放量**严格递减**(23M → 16M → 15M …),Oldest 首屏即频道最旧视频
+   *    (MKBHD 18 年前 / LTT 17 / Veritasium 16 / MrBeast 14 / T-Series 15 / 3Blue1Brown 11),
+   *    沿响应自带 continuation 翻第二页仍是 17 年前且与首页无重复 ⇒ token 真的带排序、也能续页;
+   *  - token 必须**原样**发回(它自带 `%3D%3D` 转义),再 URL 编码一次 → 400;
+   *  - 参数法(`params="EgZwb3B1bGFy"`)与本地铸造的 rustypipe `order_ctoken` **都不再有效**
+   *    (前者让服务端回 Home tab,后者 400);按解出的结构伪造 chipBar targetId 静态造 token
+   *    → 三种排序全部 **0 条** ⇒ 只能从响应里摘,不能硬编码。
+   *    详见 docs/youtube-api-notes.md §4.13。
+   *
+   * 按「chip 文案与 token 同处一个节点」取:视频卡片节点即使标题恰好叫 Popular 也没有
+   * continuationCommand,不会误配;旧布局(feedFilterChipBarRenderer 的 text.simpleText)同样命中。
+   */
+  fun parseChannelOrderTokens(root: JsonObject): Map<YoutubeConstants.ChannelVideoOrder, String> {
+    val tokens = mutableMapOf<YoutubeConstants.ChannelVideoOrder, String>()
+    val seenLabels = linkedSetOf<String>()
+    // 这趟是**整棵响应树**的通用探查(拿排序 chip 只是锦上添花),任何节点形状都不能让它抛出去
+    // ——抛出去会把整个频道页变成「视频加载失败」。真机 2026-10-10 就是这么挂的:某节点的
+    // `content` 是对象,`stringOrNull` 里的 `.jsonPrimitive` 直接抛
+    // 「Element class ...JsonObject ... is not a JsonPrimitive」。取不到就退回空表(调用方降级最新)。
+    runCatching { collectOrderTokens(root, tokens, seenLabels) }
+      .onFailure { Log.w("YtOrder", "parseChannelOrderTokens failed: ${it.message}", it) }
+    if (tokens.isEmpty() && seenLabels.isNotEmpty()) {
+      // 认不出文案时不猜:把 chip 上真实的文案原样打出来(下次改文案表就有据可依)。
+      Log.w("YtOrder", "parseChannelOrderTokens 认不出排序 chip 文案 labels=$seenLabels")
+    }
+    return tokens
+  }
+
+  private fun collectOrderTokens(
+    element: JsonElement,
+    out: MutableMap<YoutubeConstants.ChannelVideoOrder, String>,
+    seenLabels: MutableSet<String>,
+  ) {
+    when (element) {
+      is JsonObject -> {
+        chipNodeLabel(element)?.let(seenLabels::add)
+        // 先认文案(廉价),命中才去找 token(遍历子树)——避免在整份响应上做 O(n²)。
+        val order = orderLabelOf(element)
+        if (order != null) {
+          val token = firstNestedContinuationToken(element)
+          if (!token.isNullOrBlank()) out[order] = token
+        }
+        for ((_, value) in element) collectOrderTokens(value, out, seenLabels)
+      }
+      is JsonArray -> for (item in element) collectOrderTokens(item, out, seenLabels)
+      else -> Unit
+    }
+  }
+
+  /** chip 节点(`chipViewModel` / 下拉的 `listItemViewModel`)上的文案,仅用于诊断日志。 */
+  private fun chipNodeLabel(node: JsonObject): String? {
+    val cv = node["chipViewModel"] as? JsonObject
+    val li = node["listItemViewModel"] as? JsonObject
+    val inner = cv ?: li
+    return if (inner != null) labelTextOf(inner) ?: labelTextOf(node) else null
+  }
+
+  /** 节点的候选文案:新布局 `title.content`,旧布局 `text.simpleText`,再退裸 `content`/`simpleText`/`text`。 */
+  private fun labelTextOf(node: JsonObject): String? =
+    (node["title"] as? JsonObject)?.get("content").stringValueOrNull()
+      ?: (node["text"] as? JsonObject)?.get("simpleText").stringValueOrNull()
+      ?: node["content"].stringValueOrNull()
+      ?: node["simpleText"].stringValueOrNull()
+      ?: node["text"].stringValueOrNull()
+
+  /**
+   * 排序 chip 文案 → 档位。**文案随 hl 本地化**(zh-Hant 是「最新 / 熱門 / 最早」),不是恒英文
+   * —— 按英文硬匹配会让 zh-Hant 用户永远 `got=[]` 静默降级最新(2026-10-10 真机实锤:用户选的是
+   * 港/台节点,点「最早」列表纹丝不动)。
+   *
+   * app 只可能产生 5 种 hl([YoutubeContentRegion]:US/GB→en、JP→ja、HK/TW→zh-Hant、KR→ko、DE→de),
+   * 下表逐条取自同日直连实测(6 个频道 × 5 语言,含真机失败的那个频道),别凭印象改。de 那三个
+   * 走小写比对(Neueste→neueste)。
+   */
+  private val ChannelOrderLabels: Map<String, YoutubeConstants.ChannelVideoOrder> = mapOf(
+    // en
+    "latest" to YoutubeConstants.ChannelVideoOrder.Latest,
+    "popular" to YoutubeConstants.ChannelVideoOrder.Popular,
+    "oldest" to YoutubeConstants.ChannelVideoOrder.Oldest,
+    // ja
+    "新しい順" to YoutubeConstants.ChannelVideoOrder.Latest,
+    "人気の動画" to YoutubeConstants.ChannelVideoOrder.Popular,
+    "古い順" to YoutubeConstants.ChannelVideoOrder.Oldest,
+    // zh-Hant(HK/TW)
+    "最新" to YoutubeConstants.ChannelVideoOrder.Latest,
+    "熱門" to YoutubeConstants.ChannelVideoOrder.Popular,
+    "最早" to YoutubeConstants.ChannelVideoOrder.Oldest,
+    // ko
+    "최신순" to YoutubeConstants.ChannelVideoOrder.Latest,
+    "인기순" to YoutubeConstants.ChannelVideoOrder.Popular,
+    "날짜순" to YoutubeConstants.ChannelVideoOrder.Oldest,
+    // de
+    "neueste" to YoutubeConstants.ChannelVideoOrder.Latest,
+    "beliebt" to YoutubeConstants.ChannelVideoOrder.Popular,
+    "älteste" to YoutubeConstants.ChannelVideoOrder.Oldest,
+  )
+
+  /**
+   * 节点自身的排序 chip 文案 → 档位,见 [ChannelOrderLabels]。
+   *
+   * ⚠️ 只认**字符串**值:这趟会探整棵树的每个节点,`content`/`simpleText` 是对象(封面、缩略图等
+   * 到处都有)时 `jsonPrimitive` 会抛异常 ⇒ 一律走 [stringValueOrNull] 的 `as? JsonPrimitive`。
+   */
+  private fun orderLabelOf(node: JsonObject): YoutubeConstants.ChannelVideoOrder? =
+    labelTextOf(node)?.let { ChannelOrderLabels[it.trim().lowercase()] }
+
+  /** 取字符串值;非字符串(对象/数组/数字/布尔)一律 null,绝不抛。 */
+  private fun JsonElement?.stringValueOrNull(): String? =
+    (this as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+  /** 子树里第一条 `continuationCommand.token`(排序 chip 的 token 在 commandExecutorCommand.commands[] 里)。 */
+  private fun firstNestedContinuationToken(element: JsonElement): String? {
+    var token: String? = null
+    collectByKey(element, "continuationCommand") { node ->
+      if (token == null) {
+        node["token"].stringValueOrNull()?.takeIf { it.isNotBlank() }?.let { token = it }
+      }
+    }
+    return token
   }
 
   /**
@@ -1538,6 +1774,8 @@ internal object YoutubeParsers {
   private const val KEY_PLAYLIST_RENDERER = "playlistRenderer"
   private const val KEY_PLAYLIST_VIDEO_RENDERER = "playlistVideoRenderer"
   private const val KEY_REEL_ITEM_RENDERER = "reelItemRenderer"
+  private const val KEY_TILE_RENDERER = "tileRenderer"
+  private const val KEY_SHELF_RENDERER = "shelfRenderer"
   private const val KEY_CONTINUATION_ITEM_RENDERER = "continuationItemRenderer"
   private const val KEY_CHANNEL_RENDERER = "channelRenderer"
   private const val KEY_TAB_RENDERER = "tabRenderer"
@@ -1545,6 +1783,9 @@ internal object YoutubeParsers {
   private const val KEY_COMMENT_RENDERER = "commentRenderer"
   private const val KEY_COMMENT_SECTION_RENDERER = "commentSectionRenderer"
   private const val KEY_COMMENT_THREAD_RENDERER = "commentThreadRenderer"
+
+  /** TV 端画质角标文案(4K/8K/HD/HDR);同一行里的 CC/会员等非画质角标不取。 */
+  private val QualityBadgeRegex = Regex("""^(?:\d+K|HD|HDR)$""")
 }
 
 /**

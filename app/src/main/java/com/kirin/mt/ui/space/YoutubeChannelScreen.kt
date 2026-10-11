@@ -32,6 +32,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -74,10 +75,13 @@ import com.kirin.mt.ui.common.VideoGridSkeleton
 import com.kirin.mt.ui.common.appendUniqueByBvid
 import com.kirin.mt.ui.common.focusRestoreKey
 import com.kirin.mt.ui.common.resolveFocusIndex
+import com.kirin.mt.ui.common.sortLabelRes
 import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.home.VideoCardMode
 import com.kirin.mt.ui.home.GridFooterState
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
+import com.kirin.mt.ui.focus.GridFocusIds
+import com.kirin.mt.ui.focus.LocalGridFocusMemory
 import com.kirin.mt.ui.focus.focusDiag
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliFocus
@@ -95,7 +99,7 @@ import kotlinx.coroutines.launch
  * continuation 分页），关注写入 [YoutubeChannelStore]（免登录）。点视频起播，卡片 owner 点击留在本频道。
  *
  * 2026-08-27 对齐移动端加内容 tab（主页/Shorts/直播/播放列表,tab chip 聚焦只高亮、OK 才切换）；
- * 视频 tab(TV 刻意)保留网格 + 「▶ 播放全部」+ 最新发布/最多播放排序(仅主页 tab 显示);播放列表 tab 走
+ * 视频 tab(TV 刻意)保留网格 + 「▶ 播放全部」+ 最新发布/最多播放/最早发布排序(仅主页 tab 显示);播放列表 tab 走
  * [ChannelPlaylistGrid] 焦点卡片网格,OK 进 [YoutubePlaylistDetailScreen](AppShell 覆盖层)。
  */
 
@@ -129,13 +133,22 @@ internal fun YoutubeChannelScreen(
     YoutubeConstants.ChannelContentTab.entries.associateWith { FocusRequester() }
   }
   val playlistFirstItemFocusRequester = remember { FocusRequester() }
+  // P11-202:身份锚定记忆。切子 tab(视频/Short/直播/播放列表)时清掉待兑现意图,否则切回来会
+  // 误把焦点拉回上一个 tab 的卡。带首次组合守卫 —— 冷组合那次正是本机制要服务的场景。
+  val gridFocusMemory = LocalGridFocusMemory.current
+  val lastMemoryTab = remember { mutableStateOf(uiState.tab) }
+  LaunchedEffect(uiState.tab) {
+    if (uiState.tab == lastMemoryTab.value) return@LaunchedEffect
+    lastMemoryTab.value = uiState.tab
+    gridFocusMemory.clear(GridFocusIds.Channel, "switch-tab")
+  }
 
   BackHandler { onBack() }
 
-  // 当前 tab 的内容 /browse params:主页用排序(最新发布/最多播放)params;Shorts/直播/播放列表
-  // 优先用服务端 tab params(对齐移动端 channelParams,硬编码兜底)。
+  // 当前 tab 的内容 /browse params:主页(视频 tab)恒用 Videos 首屏 params(排序由 chip token 表达,
+  // 不在这里);Shorts/直播/播放列表优先用服务端 tab params(对齐移动端 channelParams,硬编码兜底)。
   fun channelParams(): String {
-    if (uiState.tab.hasSort) return uiState.order.params
+    if (uiState.tab.hasSort) return YoutubeConstants.ChannelVideosParams
     val keys = when (uiState.tab) {
       YoutubeConstants.ChannelContentTab.Videos -> listOf("videos")
       YoutubeConstants.ChannelContentTab.Shorts -> listOf("shorts")
@@ -236,7 +249,13 @@ internal fun YoutubeChannelScreen(
     } else {
       setVideoStateFor(tab, ChannelVideoState.Loading)
       val state = try {
-        val page = youtubeRepository.getChannelVideos(channelId, params = channelParams())
+        // 「视频」tab 走排序感知入口(最新=1 条请求;最热=摘 chip token 再续页);Shorts/直播无排序,
+        // 仍用服务端 tab params。
+        val page = if (tab.hasSort) {
+          youtubeRepository.getChannelVideosOrdered(channelId, uiState.order)
+        } else {
+          youtubeRepository.getChannelVideos(channelId, params = channelParams())
+        }
         if (page.items.isEmpty()) {
           ChannelVideoState.Empty
         } else {
@@ -445,6 +464,7 @@ internal fun YoutubeChannelScreen(
               TvVideoGrid(
                 videos = displayItems,
                 debugLabel = "channel-grid",
+                focusMemoryId = GridFocusIds.Channel,
                 firstItemFocusRequester = firstItemFocusRequester,
                 restoredFocusIndex = displayItems.resolveFocusIndex(uiState.focusedVideoKey, uiState.focusedVideoIndex),
                 restoreFocusRequestKey = restoreFocusRequestKey,
@@ -604,8 +624,8 @@ private fun YoutubeChannelHeader(
         )
       }
     }
-    // 排序栏(仅主页 tab,对齐移动端头部行):「▶ 播放全部」居左 +「≡ 最新/最热」单按钮切换居右。
-    // 切换按钮 OK 在 最新发布↔最多播放 间翻转,切档重新拉取;Shorts/直播/播放列表无排序。
+    // 排序栏(仅主页 tab,对齐移动端头部行):「▶ 播放全部」居左 +「≡ 最新/最热/最早」单按钮循环居右。
+    // OK 在 最新发布→最多播放→最早发布 间循环,切档重新拉取;Shorts/直播/播放列表无排序。
     if (tab.hasSort) {
       Row(
         modifier = Modifier.fillMaxWidth(),
@@ -626,23 +646,9 @@ private fun YoutubeChannelHeader(
         )
         Spacer(Modifier.weight(1f))
         TvSortToggleChip(
-          label = "≡ " + stringResource(
-            if (order == YoutubeConstants.ChannelVideoOrder.Latest) {
-              R.string.player_up_sort_latest
-            } else {
-              R.string.player_up_sort_hot
-            },
-          ),
+          label = "≡ " + stringResource(order.sortLabelRes),
           modifier = Modifier.focusRequester(sortFocusRequester),
-          onActivate = {
-            onOrderSelected(
-              if (order == YoutubeConstants.ChannelVideoOrder.Latest) {
-                YoutubeConstants.ChannelVideoOrder.Popular
-              } else {
-                YoutubeConstants.ChannelVideoOrder.Latest
-              },
-            )
-          },
+          onActivate = { onOrderSelected(order.nextOrder()) },
           onMoveUp = {
             runCatching { tabFocusRequesters.getValue(tab).requestFocus() }.isSuccess
           },
@@ -808,6 +814,8 @@ private fun ChannelPlaylistGrid(
   val gridState = rememberLazyGridState(
     initialFirstVisibleItemIndex = if (restoreFocusRequestKey > 0) restoreTargetRow else 0,
   )
+  // P11-171 诊断:目标卡是否真的把 restoreFocusRequester 挂上了节点(失败日志里区分成因)。
+  var restoreRequesterAttached by remember { mutableStateOf(false) }
   // P11-98:从播放列表详情页/播放器返回时按记录索引恢复焦点——对齐 TvVideoGrid 的完整防御
   // (scrollRow + 等目标行进入视口布局 + 按帧重试)。此前是「等 1 帧单发 requestFocus」:
   // 视频播放期间频道整页 dispose、返回后冷重组(20:41 channel open 重拉 tab 数据),
@@ -823,6 +831,11 @@ private fun ChannelPlaylistGrid(
       }
       return@LaunchedEffect
     }
+    // P11-171 诊断:目标卡到底有没有把 restore requester 挂上节点。真机 logs_live_20260922_213906
+    // 21:25:16.7→18.2 连抛 90 次「FocusRequester is not initialized」(=ChannelGridRestoreRetryCount)
+    // 后 restore failed,而同一行日志却说 rowVisible=true——即「目标行在屏上、requester 却没节点」,
+    // 靠 attached 标记区分「条件没命中目标项」和「项没组合」两种成因。
+    restoreRequesterAttached = false
     val targetIndex = focusedIndex.coerceIn(0, playlists.lastIndex)
     val targetRow = targetIndex / columns
     Log.d("BiliMT:Focus", "channel-playlists restore start: key=$restoreFocusRequestKey targetIndex=$targetIndex row=$targetRow items=${playlists.size}")
@@ -849,7 +862,8 @@ private fun ChannelPlaylistGrid(
     }
     Log.w(
       "BiliMT:Focus",
-      "channel-playlists restore failed: key=$restoreFocusRequestKey targetIndex=$targetIndex rowVisible=$rowVisible",
+      "channel-playlists restore failed: key=$restoreFocusRequestKey targetIndex=$targetIndex rowVisible=$rowVisible " +
+        "attached=$restoreRequesterAttached focusedKey=$focusedKey items=${playlists.size}",
     )
     onRestoreFocusHandled(restoreFocusRequestKey)
   }
@@ -871,6 +885,10 @@ private fun ChannelPlaylistGrid(
         restoreFocusRequestKey != 0 && (playlist.id == focusedKey || index == focusedIndex) -> restoreFocusRequester
         index == 0 -> firstItemFocusRequester
         else -> null
+      }
+      // P11-171 诊断:目标卡组合到就把标记立起来(requester 挂节点=组合成功)。
+      if (requester === restoreFocusRequester) {
+        SideEffect { restoreRequesterAttached = true }
       }
       ChannelPlaylistCard(
         playlist = playlist,
@@ -999,3 +1017,16 @@ private fun ChannelPlaylistCard(
 private fun Key.isConfirmKey(): Boolean {
   return this == Key.Enter || this == Key.NumPadEnter || this == Key.DirectionCenter
 }
+
+/**
+ * 排序三档循环:最新 → 最热 → 最早 → 最新。
+ *
+ * TV 头部只有一颗排序 chip(单焦点节点,D-pad 左右连接「播放全部」),故用循环而不是并排三颗,
+ * 免得动焦点图;移动端是下拉菜单,三档直接平铺(见 MobileYoutubeChannelScreen)。
+ */
+private fun YoutubeConstants.ChannelVideoOrder.nextOrder(): YoutubeConstants.ChannelVideoOrder =
+  when (this) {
+    YoutubeConstants.ChannelVideoOrder.Latest -> YoutubeConstants.ChannelVideoOrder.Popular
+    YoutubeConstants.ChannelVideoOrder.Popular -> YoutubeConstants.ChannelVideoOrder.Oldest
+    YoutubeConstants.ChannelVideoOrder.Oldest -> YoutubeConstants.ChannelVideoOrder.Latest
+  }

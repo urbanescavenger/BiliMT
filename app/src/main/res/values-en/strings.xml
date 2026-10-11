@@ -19,6 +19,11 @@
     <string name="mobile_follows_empty">No follows yet</string>
     <string name="mobile_follows_load_failed">Failed to load follows</string>
     <string name="mobile_dynamic_empty">No moments yet</string>
+    <string name="mobile_dynamic_detail_title">Moment</string>
+    <string name="mobile_dynamic_detail_truncated">This text is the truncated version returned by the server</string>
+    <string name="mobile_dynamic_expand">Expand</string>
+    <string name="mobile_dynamic_collapse">Collapse</string>
+    <string name="mobile_dynamic_forward_count">%1$s reposts</string>
     <string name="mobile_dialog_choose">Choose</string>
     <string name="mobile_dialog_cancel">Cancel</string>
     <string name="login_mobile_title">QR code sign-in</string>
@@ -479,6 +484,7 @@
     <string name="player_panel_unknown_up">UP</string>
     <string name="player_up_sort_latest">Latest</string>
     <string name="player_up_sort_hot">Popular</string>
+    <string name="player_up_sort_oldest">Oldest</string>
     <string name="player_up_follow">Follow</string>
     <string name="player_up_followed">Following</string>
     <string name="player_up_follow_loading">Processing…</string>

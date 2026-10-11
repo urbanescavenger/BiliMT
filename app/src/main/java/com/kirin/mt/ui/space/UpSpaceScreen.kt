@@ -65,6 +65,7 @@ import com.kirin.mt.ui.common.VideoGridSkeleton
 import com.kirin.mt.ui.common.appendUniqueByBvid
 import com.kirin.mt.ui.common.focusRestoreKey
 import com.kirin.mt.ui.common.resolveFocusIndex
+import com.kirin.mt.ui.focus.GridFocusIds
 import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.i18n.convertChineseText
 import com.kirin.mt.ui.i18n.formatCompactCount
@@ -267,6 +268,7 @@ internal fun UpSpaceScreen(
           is SpaceVideoState.Success -> TvVideoGrid(
             videos = state.videos,
             debugLabel = "space-grid",
+            focusMemoryId = GridFocusIds.Space,
             firstItemFocusRequester = firstItemFocusRequester,
             restoredFocusIndex = state.videos.resolveFocusIndex(uiState.focusedVideoKey, uiState.focusedVideoIndex),
             restoreFocusRequestKey = restoreFocusRequestKey,

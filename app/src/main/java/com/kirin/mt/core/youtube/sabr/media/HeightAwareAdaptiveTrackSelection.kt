@@ -66,6 +66,15 @@ import com.google.common.collect.ImmutableList
  *   本视频:315 声明 32.3M→~23M,顶档门槛 19.4M→~25.3M,夜间塌方段(sus 8M)永不批准。
  * 其余机制(升档重锚、水位急救、升档冷却、10s 禁回降、逐步候选升降)语义不变,锚点改裸声明。
  *
+ * **P11-200(2026-10-05,上面的「①calib 整体取消」被部分推翻)**:那次取消的前提是
+ * 「declared = averageBitrate = 真平均」,而 declared 只在 `stream.itagItem != null` 时才由
+ * contentLength/approxDurationMs 算出 —— **itagItem 缺失时回落 `bitrate`(VBR 峰值)**,
+ * [YoutubePlaybackResolver.newPipeVideoRaw] 的 P11-153 警告即此。真机 `logs_live_20261005_213214.log`
+ * 那个视频 **19 个 itag 全部命中回落** ⇒ 整条梯子的「实需」都是峰值(720p VP9 声明 8.24M,实测交付
+ * 只有 2.7M)⇒ 买得起的档被判成买不起、suppress 闸的 `meas ≥ declared` 腿结构性恒 false。
+ * 补法不是恢复旧的采样折算系数,而是**直接取 app 自己的实测交付码率**(`getMeasuredBitrateBps`):
+ * 见 [tierNeedBps]。口径:只降权不抬权、不叠余量、证据不足退回声明值。详见 docs §39.10/§39.11。
+ *
  * 2026-08-30(顶档定向冷却,修「4K 边缘档反复横跳」,23:28-23:31 真机):供给(27-42M)贴着 4K
  * 真实消耗(~30M)与声明门槛(32.3M+顶档×1.1=35.5M)边缘,重填期突发 est/sus 过门槛升 4K →
  * 边播边吸 pacing 供给 ~30M → buffer 漏到 5-6s → 水位急救级联(315→308→299)→ 低档重填 →
@@ -111,9 +120,10 @@ import com.google.common.collect.ImmutableList
  *   ——即用户所见「后面降档正常」。修法三件(详见各处注释):
  *   A(SabrMediaFetcher)——顶档在位时 sustained 分母的滑行余量 10s→20s:4K 失败证据进 sus,
  *     防冷却到期后被同一批低档突发样本「合法」重准入;est 口径不动(防千兆满缓冲滑行误伤)。
- *   B1(本类 TOP_TIER_CRITICAL_BUFFERED_US)——顶档水位急救阈值 8s→20s:急救必须提前一个完整
- *     chunk 循环(评估盲窗 ~14s + staged 积压排空 ~8s + 替换段传输 ~4s)触发,8s 在串行管道里
- *     结构性来不及;非顶档维持 8s。
+ *   B1(**已于 P11-239 撤回**)—— 顶档水位急救阈值曾 8s→20s(提前一个完整 chunk 循环:评估盲窗
+ *     ~14s + staged 积压排空 ~8s + 替换段传输 ~4s);实测该线与 P11-197 的补货线(11~17s)相撞,
+ *     顶档每个补货周期都被判一次饿 ⇒ 2026-10-10 起**顶档与所有档共用 8s**,当年的「来不及」由
+ *     P11-188/200/203 修掉(见 updateSelectedTrack 的 P11-239 注释与 docs §43.7/§43.8)。
  *   B2(DefaultSabrChunkSource)——getNextChunk 的 holder/selectFormat 改到 updateSelectedTrack
  *     **之后**重读(对齐上游 media3 DashChunkSource):原顺序用切换前 selectedIndex 取 holder,
  *     切档决策对同一次调用 staged 的段无效,每次切档白吃一个循环生效延迟。
@@ -375,10 +385,14 @@ class HeightAwareAdaptiveTrackSelection(
     return (0 until length).firstOrNull { itagOf(getFormat(it)) == itag }
   }
 
-  /** 满足条件者里挑一个:顶档 codec 优先,其次码率高者;无满足者返回 null。 */
+  /** 满足条件者里挑一个:当前编码组优先(P11-192),其次顶档 codec,再次码率高者;无满足者返回 null。 */
   private fun bestIndexOf(predicate: (Int) -> Boolean): Int? =
     (0 until length).filter(predicate).maxWithOrNull(
-      compareBy({ if (isTopCodecVariant(getFormat(it))) 1 else 0 }, { getFormat(it).bitrate }),
+      compareBy(
+        { if (inActiveFamily(getFormat(it))) 1 else 0 },
+        { if (isTopCodecVariant(getFormat(it))) 1 else 0 },
+        { getFormat(it).bitrate },
+      ),
     )
 
   /**
@@ -435,6 +449,183 @@ class HeightAwareAdaptiveTrackSelection(
     } else {
       f.sampleMimeType != null && f.sampleMimeType == topGroupCodec
     }
+  }
+
+  // ── P11-192:编码组(codec family)= ABR 的切换单元 ──────────────────────────────────────────
+  // 病象(2026-10-03 TV 真机 `logs_live_20261003_155810.log`,video `FL8-Sw8PjJA`):14 分钟里
+  //   `upshift → itag315(2160p **VP9**,24.9M) → buffer-critical downgrade → 顶档冷却只锁 **itag 315**
+  //   → **19 秒后** upshift 挑中 itag401(2160p **AV01**,20.6M) → 再饿 → 再挑回 315 …`
+  // 6 轮之间渲染分辨率在 3840x2160 ↔ 2560x1440 跳了 11 次;315/401 的交替时刻与各自 180s 冷却
+  // 到期**逐一吻合** —— 旧逻辑把「同高度的另一个 codec 变体」当成了降档之外的免费选项,于是每次
+  // 饥饿都顺手换一次解码器(最贵的那种切换)。最后一轮 401 的段请求零字节挂死 40s → 整场重载。
+  //
+  // 口径(用户拍板):**itag 没问题,把 codec 逻辑独立出来** ——
+  //   ①梯子按 codec 族分组,ABR 平时**只在当前组内**升降档(组内换高度 = 同解码器,便宜);
+  //   ②换组(VP9→AV01/AVC)是一次**独立、显式**的决定,只有当前组被判「不合适」才发生;
+  //   ③换出后给原组冷却,期满允许回退。
+  // 实现取**偏好序**而非硬过滤:所有候选比较器把「是否属于当前组」放在第一关键字。硬过滤会制造
+  // 「组内该高度无档 ⇒ 候选集空 ⇒ 不降档 ⇒ 卡死」,正是 P11-146 那个结构性死锁的另一副面孔。
+  /** 组的**锚点族**:用户显式选族优先(P11-133),否则取全组顶档那一档的族(Auto;YouTube 通常 VP9)。 */
+  private val anchorFamily: String? by lazy {
+    preferredCodecFamilyProvider()?.takeIf { hasPreferredFamily } ?: run {
+      var top: Format? = null
+      for (i in 0 until fullGroup.length) {
+        val g = fullGroup.getFormat(i)
+        if (top == null || g.height > top.height || (g.height == top.height && g.bitrate > top.bitrate)) {
+          top = g
+        }
+      }
+      top?.let { codecFamilyOf(it) }
+    }
+  }
+
+  /** 当前编码组;null(尚未定族)= 首次访问时落到 [anchorFamily]。 */
+  private var activeFamily: String? = null
+
+  /**
+   * 换出后原组的冷却到期墙钟(ms)。语义 = **允许**被再次选中,而不是**主动**回退:
+   * 到期后判据①(该组在候选集里无档)或②(当前组也饿)都可能落回原族,但不会仅因到期就切回去 ——
+   * 那会立刻把族级振荡(本次要修的 315↔401)搬到「族」这个粒度上重演一遍。
+   */
+  private val familyBlockedUntilMs = HashMap<String, Long>()
+
+  /** 各族在滑窗内的「不可持续」次数(饥饿降档 / 零字节挂死)——换组判据的原料。 */
+  private val familyFailCount = HashMap<String, Int>()
+  private var familyFailWindowStartMs = 0L
+
+  /** 本轮评估的 served 收窄集 —— 供族候选计数复用,由 updateSelectedTrack 每轮写入(见 C1)。 */
+  private var evalServedInGroup: Set<Int>? = null
+  private var evalRestrictToServed = false
+
+  private fun familyOfIndex(i: Int): String? = codecFamilyOf(getFormat(i))
+
+  /** 当前组(首次访问落锚点族)。 */
+  private fun activeFamilyNow(): String? = activeFamily ?: anchorFamily?.also { activeFamily = it }
+
+  /** P11-192:候选 format 是否与当前编码组同族(候选比较器的第一关键字)。 */
+  private fun inActiveFamily(f: Format): Boolean {
+    val act = activeFamilyNow() ?: return true
+    return codecFamilyOf(f) == act
+  }
+
+  /**
+   * 本族在**当前候选集**里还剩几档(served 收窄生效时只数集合内的)。刻意**不**看
+   * [isTrackExcluded]:90/180s 冷却只是暂时的,把它算成「本族无档」会导致一次抖动就误换组。
+   */
+  private fun familyCandidateCount(family: String): Int {
+    val served = evalServedInGroup
+    val restrict = evalRestrictToServed
+    return (0 until length).count { i ->
+      familyOfIndex(i) == family && getFormat(i).height > 0 &&
+        !(restrict && served != null && i !in served)
+    }
+  }
+
+  /**
+   * P11-192:换组评估。每轮 `updateSelectedTrack` 一次,**必须在候选循环之前**(循环读 [activeFamily])。
+   *
+   * 只有两条判据(换组 = 换解码器,一次抖动不值得):
+   *   ①**当前组在候选集里一档都没有**:服务端不推该组(served 收窄把该族全滤掉)、或该族档被解码器
+   *     能力探测整族过滤掉(设备解不了)—— 留在组内只能一路降到地板,换组是唯一出路。
+   *   ②**当前组滑窗内饥饿/挂死 ≥ [FAMILY_FAIL_THRESHOLD] 次**,且另一族**在同一高度有更省的档**
+   *     (声明码率更低)。真机场景即 315(VP9 2160p@24.9M)反复饿 → 401(AV01 2160p@20.6M)更省。
+   *     刻意**不做**「换到天花板更低的族」:两个 4K 族都饿过之后会掉进 AVC(天花板 1080p),而 AVC
+   *     永不饥饿 ⇒ 整场钉死在 1080p。没有「同高度更省」的族 ⇒ 宁可在组内升降档。
+   */
+  private fun maybeSwitchFamily(nowMs: Long) {
+    val active = activeFamilyNow() ?: return
+    if (familyCandidateCount(active) == 0) {
+      switchFamily(active, pickFamilyAnyHeight(active, nowMs), nowMs, "active family has no candidate")
+      return
+    }
+    val fails = familyFailCount[active] ?: 0
+    if (fails >= FAMILY_FAIL_THRESHOLD) {
+      val target = pickFamilyCheaperAtSameHeight(active, nowMs)
+      if (target != null) {
+        switchFamily(
+          active, target, nowMs,
+          "family starved x$fails in ${FAMILY_FAIL_WINDOW_MS / 60_000}min -> cheaper same-height tier " +
+            "(ceiling ${familyCeiling(active)}p → ${familyCeiling(target)}p)",
+        )
+      } else if (!familyCeilingGuardLogged) {
+        // P11-195:判据②本可换(有更省的同高度档)但被天花板守卫挡下时的取证——一行一次,
+        // 否则「为什么一直钉在 1080p」在日志里依然是一段安静(2026-10-05 真机就是吃这个亏)。
+        familyCeilingGuardLogged = true
+        val cheaper = (0 until length).filter { idx ->
+          val fam = familyOfIndex(idx)
+          fam != null && fam != active && getFormat(idx).height == getFormat(selected).height &&
+            getFormat(idx).bitrate < getFormat(selected).bitrate
+        }.mapNotNull { familyOfIndex(it) }.distinct()
+        Log.i(
+          "YtSabrAbr",
+          "codec group switch held (ceiling guard, P11-195): $active ceiling=${familyCeiling(active)}p, " +
+            "更省的同高度候选族=$cheaper(天花板 " +
+            "${cheaper.joinToString { "$it=${familyCeiling(it)}p" }})—— 换过去会砍掉画面上限,不换",
+        )
+      }
+    }
+  }
+
+  /** 判据①的目标族:其余族里**天花板最高**者,忽略仍在冷却的族(同为最高天花板时取先出现者)。 */
+  private fun pickFamilyAnyHeight(from: String, nowMs: Long): String? =
+    (0 until length).mapNotNull { familyOfIndex(it) }.distinct()
+      .filter { it != from && (familyBlockedUntilMs[it] ?: 0L) <= nowMs && familyCandidateCount(it) > 0 }
+      .maxByOrNull { fam ->
+        (0 until length).filter { familyOfIndex(it) == fam }.maxOf { getFormat(it).height }
+      }
+
+  /** 判据②的目标族:在当前档**同一高度**上有可用且更省的档的族,取其中最省的那个。 */
+  /** 该族在梯子里的**天花板**(最高 height);无档返回 0。换组判据的天花板守卫用。 */
+  private fun familyCeiling(family: String): Int =
+    (0 until length).filter { familyOfIndex(it) == family }.maxOfOrNull { getFormat(it).height } ?: 0
+
+  /**
+   * 判据②的目标族:在当前档**同一高度**上有可用且更省的档的族,取其中最省的那个。
+   *
+   * ── P11-195:「天花板不得低于当前族」是**必须**的守卫 ────────────────────────────────────────
+   * 判据②的本意是「同一档位换个更省的族」(真机原型:2160p 的 VP9@22.1M 换成 AV01@12.4M)。
+   * 但「更省」在任何高度都成立——包括 480p 这种双方只差 2% 的档。少了天花板守卫时,真机
+   * `logs_live_20261005_104903.log`(dev.r2129,10:22:05)在 **480p**(cur=493567)上把 anchor
+   * 从 VP9 换到了 **AVC**——AVC 是唯一没有 1440p/2160p 的族 ⇒ 之后同族优先(见类头 P11-192)
+   * 只认 AVC 档 ⇒ **画面上限被砍到 1080p**,10:23:05 起连续 23 分钟钉在 1920x1080
+   * (该时段 bufS 中位数 29s、最高 53s,缓冲充足、est 27~43M,sustained 也够,纯粹是族天花板挡住),
+   * 而用户手动选 1440p 立刻正常(手切走 resolver 锁单轨,不经 ABR)。
+   * 故:目标族天花板 < 当前族天花板 ⇒ 不换(宁可在族内升降档)。原型场景不受影响:
+   * VP9 与 AV01 的天花板同为 2160p。
+   */
+  private fun pickFamilyCheaperAtSameHeight(from: String, nowMs: Long): String? {
+    val curH = getFormat(selected).height
+    val curB = getFormat(selected).bitrate
+    val fromCeiling = familyCeiling(from)
+    return (0 until length).filter { i ->
+      val fam = familyOfIndex(i) ?: return@filter false
+      fam != from && (familyBlockedUntilMs[fam] ?: 0L) <= nowMs &&
+        familyCeiling(fam) >= fromCeiling &&
+        getFormat(i).height == curH && getFormat(i).bitrate < curB && !isTrackExcluded(i, nowMs)
+    }.minByOrNull { getFormat(it).bitrate }?.let { familyOfIndex(it) }
+  }
+
+  private fun switchFamily(from: String, to: String?, nowMs: Long, reason: String) {
+    if (to == null || to == from) return
+    activeFamily = to
+    familyBlockedUntilMs[from] = nowMs + FAMILY_SWITCH_COOLDOWN_MS
+    familyFailCount[from] = 0
+    Log.i(
+      "YtSabrAbr",
+      "codec group switch: $from → $to (reason=$reason, $from back-off " +
+        "${FAMILY_SWITCH_COOLDOWN_MS / 1000}s, ${to} candidates=${familyCandidateCount(to)}, " +
+        "cur=${getFormat(selected).height}p@${getFormat(selected).bitrate})",
+    )
+  }
+
+  /** P11-192:记一次「本族不可持续」(饥饿降档 / 零字节挂死);滑窗过期即整表清零重开。 */
+  private fun noteFamilyFailure(family: String?, nowMs: Long) {
+    if (family == null) return
+    if (nowMs - familyFailWindowStartMs > FAMILY_FAIL_WINDOW_MS) {
+      familyFailCount.clear()
+      familyFailWindowStartMs = nowMs
+    }
+    familyFailCount[family] = (familyFailCount[family] ?: 0) + 1
   }
 
   /**
@@ -500,8 +691,32 @@ class HeightAwareAdaptiveTrackSelection(
   /** P11-153:试探被「超容量」拒绝的一次性日志(每实例一次,防每 chunk 刷屏)。 */
   private var trialOverCapacityLogged = false
 
+  /** P11-193:升档被「缓冲地板」按住的一次性日志(每实例一次,防每评估刷屏)。 */
+  private var climbBufferFloorLogged = false
+
+  /** P11-194:顶档 ×1.1 sustained 闸拒绝的一次性日志(每实例一次)——这道闸此前无日志可验收。 */
+  private var topTierGateRefusedLogged = false
+
+  /** P11-237:est 滞回降档被「缓冲标准」拦下的一次性日志(不再 hold 时复位)。 */
+  private var downgradeHoldLogged = false
+
+  /** P11-237:最近一次评估里「本档被缓冲标准守住」——供 `sel=` 行日志取证(见 [downgradeHeldByBufferNow])。 */
+  private var lastDowngradeHeldByBuffer = false
+
+  /** P11-195:判据②被「天花板守卫」挡下的一次性日志(每实例一次)——否则钉在低分辨率又是一段安静。 */
+  private var familyCeilingGuardLogged = false
+
+  /** P11-200:「档位实需」被实测交付码率校准过的一次性日志,按 itag 去重(否则每评估刷屏)。 */
+  private val tierNeedCalibratedLogged = mutableSetOf<Int>()
+
+  /** P11-247:「初次」借同族实测比例折算过的一次性日志,按 itag 去重。 */
+  private val borrowedNeedLogged = mutableSetOf<Int>()
+
   /** 2026-09-01 满缓冲试探:本实例见过的最高缓冲水位(us)——试探水位线 = max(地板, 0.8×此值)。 */
   private var maxObservedBufferedUs = 0L
+
+  /** P11-219:起播期「从未缓冲过 ⇒ 不做水位急救」的抑制日志每实例只打一次。 */
+  private var startupNoBufferHoldLogged = false
 
   /**
    * 2026-09-01 满缓冲试探:最近一次升档是否试探批准——降档离开该档时据此记失败冷却 + 熔断判定用。
@@ -532,16 +747,29 @@ class HeightAwareAdaptiveTrackSelection(
     // 22:00 真机:一次降档把 720p 锁了 180 秒(墙钟、跨重载),而当时缓冲有 25~28 秒 ⇒ 画面钉在 144p。
     // 冷却的本意是「该档扛不住」;缓冲既已回到 [EARLY_CLEAR_BUFFERED_US] 且实测带宽超过该档声明码率
     // ×1.1,就没有理由继续等 —— 提前解除并留一行日志(便于验收)。
+    // ── P11-188(2026-09-27 真机 `logs_live_20260927_201351`):**只解降档/试探失败那一格** ──────
+    // [SabrAbrMemory.clearTrialFail] 不再顺手清 stall 到达档冷却(P11-178 拆格时漏掉的半边)。
+    // 那场 9 次整场重载,每一次都紧跟一条 `cooldown cleared early`:stall 刚写下 90s 冷却,重载后
+    // 4~5s 就被本判据清成 0 ⇒ ABR 爬回 2160p ⇒ 69~90s 后再饿死。本条判据在**重载后天然成立**
+    // (起播档 720p 只要 1.5Mbps,链路 23Mbps ⇒ 4 秒回填到 24s;est 同源虚高,`meas=1414K` 时
+    // `est` 报 23861K),拿它给 stall 冷却翻案等于让冷却永远活不过 5 秒。详见该函数注释。
     if (bufferedDurationUs >= EARLY_CLEAR_BUFFERED_US) {
       val estNow = bandwidthMeter.getBitrateEstimate()
       for (i in 0 until length) {
         val f = getFormat(i)
-        if (f.height > 0 && SabrAbrMemory.isTrialFailBlocked(f.height) && estNow >= f.bitrate * 11 / 10) {
+        // P11-188:判据用 [SabrAbrMemory.isDowngradeFailBlocked](只查降档那一格)—— 用两格合一的
+        // isTrialFailBlocked 会在「只有 stall 冷却」时条件恒真,每次评估刷一行且日志说「→ 0」却清不动,
+        // 真机刷了 89 条。条件与动作现在同格,打印一次即真清、下轮不再进。
+        if (f.height > 0 &&
+          SabrAbrMemory.isDowngradeFailBlocked(f.height) &&
+          estNow >= f.bitrate * 11 / 10
+        ) {
           Log.i(
             "YtSabrAbr",
             "cooldown cleared early: ${f.height}p " +
               "(bufS=${bufferedDurationUs / 1_000_000}s est=${estNow / 1000}K ≥ " +
-              "declared=${f.bitrate / 1000}K×1.1, remain=${SabrAbrMemory.trialFailBlockedRemainSec()}s → 0)",
+              "declared=${f.bitrate / 1000}K×1.1, remain=" +
+                "${SabrAbrMemory.downgradeFailBlockedRemainSec(f.height)}s → 0)",
           )
           SabrAbrMemory.clearTrialFail(f.height)
         }
@@ -550,19 +778,26 @@ class HeightAwareAdaptiveTrackSelection(
     val currentHeight = getFormat(selected).height
     // 2026-09-01 满缓冲试探:先留上一评估的水位(试探用「升穿水位线」判定,防首填单调期骑线常真误触发)
     val prevBufferedUsForTrial = prevEvalBufferedUs
-    // 2026-08-31 B1(顶档水位急救阈值 8s→20s):SABR 串行管道下急救必须提前一个完整循环触发——
-    // ①评估只在 getNextChunk 发生,4K 段循环 10-14s → 两次评估间最长 ~14s 盲窗;②急救只影响后续
-    // getNextChunk staged 的段,已 staged 的 4K 段积压(rn 一票 ~39MB/7.6s)仍占死串行 fetcher;
-    // ③替换段传输还要 ~4s。23:24 真机:水位 7.0s 才触发,输给在途 7.6s 差 0.6s → 缓冲见底 → 看门狗
-    // 整段重载。顶档在位时阈值提为 20s(覆盖 ①+②+③ 的最坏 ~26s 供给线,本例会在 23:24:24 评估
-    // bufS=14.5 自 20.5 回落时触发 → 23:24:48 的请求载 1440p,谷底 ~3-5s 活着);非顶档维持 8s
-    // 不动。假阳性代价=180s 顶档冷却(升 4K 本就要求缓冲 ≥30s,重爬周期天然重叠),假阴性代价=看门狗
-    // 重载(~11s 冻结+整链重启),不对称性支持提前触发;千兆管道 4K 缓冲只涨不跌穿 20s,不受损。
-    val criticalBufferedUs =
-      if (currentHeight >= TOP_TIER_MIN_HEIGHT) TOP_TIER_CRITICAL_BUFFERED_US else DOWNGRADE_BUFFERED_US
+    // ── P11-239(2026-10-10 手机真机 `logs_live_20261010_151809.log`;用户口径「**先与其他对齐,
+    // 只保留冲顶失败二次升档的坎**」):**顶档水位急救阈值 20s 撤回,与所有档共用 8s** ──────────────
+    // 9/6 的 B1(8s→20s)立论是「SABR 串行管道下急救要提前一个完整循环(评估盲窗 + staged 积压 +
+    // 替换段传输 ≈ 26s 最坏线)」,但它与**补货线**撞了:补货线 = `max(10s, 1.5×往返+3s)`(P11-197,
+    // **与档位无关**),顶档往返常态 5~9s ⇒ 补货线只有 11~17s ⇒ **只要往返 < 11.3s,补货线就恒 < 20s**。
+    // 4K 缓冲是锯齿(下沿 ≈ 补货线、上沿 = 下沿 + 一笔响应带回的段量),而 ABR 评估**只发生在锯齿低点**
+    // (loader 只在低点醒来要段)⇒ 20s 线落在锯齿内部 ⇒ **每个补货周期判一次「饿」**。
+    // 同场同机实证(§43.8):1440p 锯齿低点 11.5s **> 8s** ⇒ 全程零降档;2160p 锯齿低点 10.9s
+    // **< 20s** ⇒ 升上去 13s 就被判饿降回,还顺带打 180s 顶档冷却。
+    // 撤回后顶档与低档同一条线(8s),锯齿低点(≥11s)落在线上 ⇒ 只有**补货真失败**(水位仍往下掉)
+    // 才急救。§39.6 当年要防的「8s 在串行管道里来不及」已由后续几轮补掉:P11-188(实测未知 ⇒ 闸不
+    // 成立)、P11-200(基准改实测交付码率)、P11-203(闸加「水位 ≥ 2×往返」的交付节奏腿)——B 闸不会再
+    // 在往返慢时错误 suppress,故 8s 的提前量够用。
+    // **顶档独有的差别此后只剩「冲顶失败后二次升档的坎」**(用户明确保留):`excludeTrack(顶档,180s)`
+    // (§17)+ `downgrade fail cooldown 90s` + `canUpgrade` 的「降档后缓冲 ≥30s」+ 顶档 sustained×1.1 闸
+    // + 顶档升档地板 20s(P11-225)。全部原样,本轮一条未动。
+    val criticalBufferedUs = DOWNGRADE_BUFFERED_US
     // 2026-09-01 试探熔断(trial abort,21:14 真机案例):试探是自己批准进去的,亏空要能秒退——
-    // 缓冲 <15s 且仍在下漏时无视 8s/20s 阈值与 5s 宽限立即降档。1440p 级亏空(~9M/s)下 20s 缓冲
-    // 1-2s 穿底,5s 宽限+8s 阈值来不及救(bufS=0s 才触发)。宽限仅 2s(一个评估循环)。
+    // 缓冲 <15s 且仍在下漏时无视 [criticalBufferedUs] 阈值与 5s 宽限立即降档。1440p 级亏空(~9M/s)下
+    // 20s 缓冲 1-2s 穿底,5s 宽限+阈值来不及救(bufS=0s 才触发)。宽限仅 2s(一个评估循环)。
     val trialAbort = lastUpgradeWasTrial &&
       bufferedDurationUs < TRIAL_ABORT_BUFFERED_US &&
       nowMs - lastUpgradeElapsedMs >= TRIAL_ABORT_GRACE_MS
@@ -584,7 +819,38 @@ class HeightAwareAdaptiveTrackSelection(
     }
     // 2026-09-20 冻结 episode(见类头):水位回到阈值以上 = 这段饥饿结束,清位——下次跌破才重新开一段,
     // 期间(含持续下漏)不再开第二枪。**不做任何时长累加**:整段饥饿只记一次,与它持续多久无关。
-    val belowCriticalUs = bufferedDurationUs < criticalBufferedUs || trialAbort
+    // ── P11-178(2026-09-23 TV 真机 `logs_live_20260923_233549`):**零字节挂死本身也要算供给证据** ──
+    // 那场 1440p:23:33:48 满缓冲(47.6s)→ 42s 零 fetch(满缓冲停拉)期间**一次评估都没有** → 23:34:30
+    // 唯一一次评估 `bufS=9.9s` 只比 8s 水位线高 0.9s(不开枪)、`est=10568K` 被前段突发撑高(est 滞回也不
+    // 降)→ rn=27 零字节静默 8s → 静默超时 → 重试 rn=28 **17.3s 才吐字节**(13.7M/6.35Mbps)→ 缓冲漏光
+    // → 23:34:51.9 `stall detected … buffered=20%` → 整场重载(黑屏 35s,而 rn=28 落地只差 4s)。
+    // 缺口是结构性的:评估只在 `getNextChunk` 发生,挂死时 chunk source 正阻塞在 `open()` 里(本场
+    // 23:34:30→23:34:52 零评估);等重试把字节吐回来,est 已被那笔 6.35Mbps 重新撑起、`meas` 也「够」
+    // 了 ⇒ 挂死证据被抹平,下一次评估照样不降档。
+    // 故:把「本档最近零字节挂死过」当作**独立的一条供给证据**(fetcher 按 itag 记,选择类读)——
+    //   · 它视同跌破水位线(挂死期间水位读数还会抖动上跳,故同时免掉「两次评估间仍在回落/持平」这条);
+    //   · 它**不**受 P11-168/177 那道带宽闸否决:闸的判据(est/meas ≥ 声明×余量)恰恰会被「挂死后重试
+    //     成功」这笔样本喂真,而「8s 零字节 + 17.3s 才交付」本身就是本档不可持续的直接证据——那道闸防的
+    //     是「排空段/切轨丢缓冲」这类假饿,不是真挂死。
+    // 仍然一次只降一档:不受影响的 [freezeEpisodeActive](一段饥饿一枪)与 5s 升档宽限照旧生效。
+    // 证据窗口取 20s:评估最早发生在静默超时后(重试成功即评估),最长也不会拖过一轮饥饿——期间水位
+    // 若真见底,8s 那条判据本来就会接管,不依赖本窗口。
+    val nowWallMs = System.currentTimeMillis()
+    val silenceHangWallMs = (bandwidthMeter as? SabrBandwidthMeter)
+      ?.getLastSilenceHangWallMs(itagOf(getFormat(selected))) ?: 0L
+    val silenceHang = silenceHangWallMs > 0L &&
+      nowWallMs - silenceHangWallMs in 0 until SILENCE_HANG_EVIDENCE_MS
+    // ── P11-188(2026-09-27 真机 `logs_live_20260927_210358`):**读数无效不算「水位低」** ──────────
+    // 20:58:33.390 出现 `bufS=-1.0`(media3/SABR own-range-null 家族给的无效读数),旧口径下
+    // `-1 < criticalBufferedUs` 直接开了一枪水位急救(2160p→1440p),紧接着 `top-tier cooldown 180s`
+    // + 服务端 `sleeping backoff 2000 ms`,切轨开销把剩余供给吃光 → 20:58:39 `stall detected`。
+    // 读数无效 = **没有证据**:既不能证明水位低、也不能证明水位够 —— 交给 ④ 的 est 滞回路径
+    // (它不看水位),水位急救不开枪。
+    // 零字节挂死(silenceHang)是**独立**证据(fetcher 按 itag 记的墙钟),不受本判定影响;
+    // 试探熔断(trialAbort)本身依赖水位读数,读数无效时一并失效(否则 -1 恒 < 15s 会误熔断)。
+    val bufferReadoutValid = bufferedDurationUs >= 0L
+    val belowCriticalUs = silenceHang ||
+      (bufferReadoutValid && (bufferedDurationUs < criticalBufferedUs || trialAbort))
     if (!belowCriticalUs) {
       freezeEpisodeActive = false
       freezeEpisodeSuppressLogged = false
@@ -597,12 +863,34 @@ class HeightAwareAdaptiveTrackSelection(
           "(one step per starvation episode)",
       )
     }
-    val bufferCritical = !bufferCollapseArtifact &&
+    // ── P11-219(修复①):**起播期不做水位急救** ──────────────────────────────────────────────
+    // 起播时 `buffered == 0` 是**必然状态**(一段都还没下完),它不构成「供给不足」的证据。
+    // 真机 dev.r2160(`logs_live_20261009_114649.log`)实证那一枪的代价:
+    //   11:44:05.735  `buffer-critical downgrade: bufS=0s itag247/720p → 480p`
+    //   11:44:05.735  `downgrade fail cooldown: 720p excluded 90s`
+    // ⇒ **中间层被关掉 90 秒** ⇒ 此后降档只能挑"下一个未排除的档"(跨级跳 1080p→480p)、升档多爬一级,
+    // 用户体感「清晰度来回跳」。判据用「本实例是否曾缓冲过」([maxObservedBufferedUs],已有字段):
+    // 从没缓冲过 ⇒ 不算低水位,等首段(起播的自救归 25s 启动看门狗)。
+    // **silenceHang 例外**:零字节挂死是**独立证据**(fetcher 按 itag 记的墙钟),与水位无关 ⇒
+    // 起播期真挂死(20s 零字节)照旧允许降档自救。
+    val lowBufferIsEvidence = maxObservedBufferedUs > 0L || silenceHang
+    if (!lowBufferIsEvidence && belowCriticalUs && !startupNoBufferHoldLogged) {
+      startupNoBufferHoldLogged = true
+      Log.i(
+        "YtSabrAbr",
+        "water-level rescue held (startup, P11-219): bufS=${bufferedDurationUs / 1_000_000}s " +
+          "从未缓冲过 ⇒ 等首段(不算低水位)",
+      )
+    }
+    val bufferCritical = lowBufferIsEvidence &&
+      !bufferCollapseArtifact &&
       belowCriticalUs &&
       !freezeEpisodeActive &&
-      bufferedDurationUs <= prevEvalBufferedUs &&
+      (bufferedDurationUs <= prevEvalBufferedUs || silenceHang) &&
       (trialAbort || nowMs - lastUpgradeElapsedMs >= DOWNGRADE_AFTER_UPGRADE_GRACE_MS)
-    prevEvalBufferedUs = bufferedDurationUs
+    // P11-188:读数无效时保留上一次有效读数 —— 塌方守门(bufferCollapseArtifact)与试探水位线都以它
+    // 为基准,把 -1 记进去会让下一轮拿「上次有效 → -1」当成一次塌方,污染判据。
+    if (bufferReadoutValid) prevEvalBufferedUs = bufferedDurationUs
     prevEvalElapsedMs = nowMs
     if (bufferedDurationUs > maxObservedBufferedUs) maxObservedBufferedUs = bufferedDurationUs
     // C1:把候选收窄到「服务端真的会推的 itag」——**必须在水位急救降档循环之前算好**
@@ -623,6 +911,11 @@ class HeightAwareAdaptiveTrackSelection(
     val servedInGroup = if (!materialSession || servedNow.isEmpty()) null
       else (0 until length).filter { itagOf(getFormat(it)) in servedNow }.toSet()
     val restrictToServed = servedInGroup != null && servedInGroup.isNotEmpty()
+    // P11-192:本轮的 served 收窄集给族候选计数用,并在此**先**做一次换组评估 ——
+    // 必须在两条降档路径与主候选循环之前:它们都读 activeFamily 当比较器首关键字。
+    evalServedInGroup = servedInGroup
+    evalRestrictToServed = restrictToServed
+    maybeSwitchFamily(nowMs)
     if (bufferCritical) {
       // ── P11-168:**带宽撑得住当前档时,低水位不是供给不足** ──────────────────────────────────
       // 真机 `logs_live_20260922_085959.log`(手机 `SwsvkhzYt5Y`):
@@ -639,14 +932,78 @@ class HeightAwareAdaptiveTrackSelection(
       // ①满缓冲主动停拉的排空段 ②刚切轨丢掉旧轨缓冲;这两种情况下降档**无益**,而门禁**有害**。
       // 故加这道带宽闸:est ≥ 当前档声明码率 ⇒ 本枪不开(真饿时 est 会跌破 required×0.85,由常规
       // 降档路径接管,反应并不比水位慢多少)。
-      val curBitrateForGate = getFormat(selected).bitrate
+      //
+      // ── P11-177(2026-09-23,TV 发布版真机):上面那条闸门有**结构性盲区** ────────────────────
+      // 真机 `logs_live_20260923_214024.log`(3.0.13-alpha.25,com.kirin.mt)一轮完整循环:
+      //   21:36:13.447  `fetch rn=2 REAL 4265758B 4419ms → 7Mbps`(720p,est=7151K sus=10902K)
+      //   21:36:13.586  `upshift reseed: est baseline → 3801810`(= itag303/1080p **声明值**)
+      //   21:36:13.589  升 1080p 的请求发出 → **18 秒零字节挂死**
+      //   21:36:27.982  `updateTrackSelection: sel 5(1080p) → 5(1080p)` ← 评估了但**不降档**
+      //   21:36:31.592  `fetch rn=3 exception: timeout (fail=18002ms)` → evict
+      //   21:36:39.611  `stall detected, auto-retry #1 … buffered=6%` → 整场重载 → 又爬同一档
+      // 即:**升档重锚把 est 设成「恰好等于」新档声明值**(3801810),于是 `est >= 声明` 恒真 ⇒
+      // 本闸必然 suppress;而常规 est 降档又要求 `est < required` —— 两条降档路同时被堵死,
+      // 只剩 8s stall 看门狗整场重载,形成 60~90s 一轮的「连续重载且不降档」。
+      // 新口径:闸门的判据必须是**「真给过多少」**——
+      //   ①est 要留余量(≥ 声明 × [BUFFER_CRITICAL_GATE_MARGIN_PERMILLE]/1000)⇒ 刚重锚成声明值的
+      //     那一刻不算「撑得住」;
+      //   ②当前档的**实测吞吐**([SabrMediaFetcher.getMeasuredBitrateBps],按 itag 累计的真实采样)
+      //     也必须 ≥ 声明。
+      // ── P11-188(2026-09-27 真机 `logs_live_20260927_201351`):**实测未知(-1)不再放行** ──────
+      // 旧口径把「采样不足」当成「实测覆盖」(meas <= 0 → true),于是闸只剩虚高 est 一条腿。那场
+      // 552 次 suppress 里 **534 次 meas=未知**,而 `getMeasuredBitrateBps` 要求「段数 ≥3 且已解出
+      // INIT metadata」—— 高档**恰恰最不满足**(它总在被切来切去、挂账段数攒不够)⇒ 这条腿结构性
+      // 缺席,闸形同只判 est。改后:未知 = 证据不足 ⇒ 闸不成立 ⇒ 水位急救照常降档。
+      // 代价说清:本闸原本防 P11-168 那种「切轨丢了旧轨缓冲」的假饿,改成不放行后**排空段也可能
+      // 误降一档**;兜底是冻结 episode(一段饥饿只开一枪)+ 降出即记冷却 —— 一次切档的卡顿 vs 一次
+      // 整场重载的 10~22s 黑屏,不对称,值得。
+      // 满缓冲排空段(刚下完一整批,实测远高于声明)仍照旧不误降档。
+      // ── P11-200:基准换成 [tierNeedBps](min(declared, 实测交付码率))──────────────────────────
+      // `meas ≥ declared` 这条腿在**峰值声明**下结构性恒 false ⇒ 本闸整类失效(真机 33s 缓冲照降,
+      // 见 §39.10.4)。换基准后:②的语义从「按名义速率交付」收窄为「**有实测证据**」——因为基准本身
+      // 已取自 meas,再拿 meas 去比基准就成了自证;真正做区分的是①`estHasMargin`。
+      // P11-188「未知 = 证据不足 ⇒ 闸不成立」原样保留:meas ≤ 0 时 need 退回 declared ⇒ measCoversTier
+      // 仍为 false。
+      val curBitrateForGate = tierNeedBps(getFormat(selected))
       val estForGate = bandwidthMeter.getBitrateEstimate()
-      if (curBitrateForGate > 0 && estForGate >= curBitrateForGate) {
+      // 实测吞吐走带宽计已接线的 provider(DefaultSabrChunkSource.setMeasuredBitrateProvider →
+      // fetcher.getMeasuredBitrateBps):选择类拿不到 fetcher,这条是既有且同源的通道。
+      val measForGate = (bandwidthMeter as? SabrBandwidthMeter)
+        ?.getMeasuredBitrateBps(itagOf(getFormat(selected))) ?: -1L
+      val estHasMargin = estForGate >= curBitrateForGate.toLong() *
+        BUFFER_CRITICAL_GATE_MARGIN_PERMILLE / 1000L
+      // P11-188:未知(-1)与「低于声明」一视同仁 —— 都是「没有证据说明撑得住」,闸不成立。
+      val measCoversTier = measForGate >= curBitrateForGate
+      // ── P11-203(2026-10-06 真机 `logs_live_20261006_164353`):**平均带宽够 ≠ 供得上** ────────────
+      // 那场 4K(itag315,25.5M)连续三轮「爬到 4K → 水位漏光 → 8s 看门狗整场重载」,而每一轮降档都被
+      // 本闸挡下:
+      //   16:31:38  sel=0(2160p) bufS=16.1 est=31681K meas=29903K → suppress
+      //   16:31:52  bufS=9.9 → fetch rn=67 往返 **7392ms**(33MB) → bufS=3.5
+      //   16:32:03  `buffer-critical downgrade **suppressed** … bufS=3s est=31146K` ← 水位 3 秒仍不降档
+      //   16:32:10  `stall detected @pos=1280217ms` → 整场重载
+      // est/meas 都过了「≥ 25.5M×1.15」,但那**只是平均带宽**;同一时段本档自己的请求往返 4.6~7.4s,
+      // 而水位只有 3s ⇒ 下一段结构性来不及落地,低水位就是**真饿**,闸的前提(「低水位来自排空/切轨」)
+      // 被证伪。故闸多一条**交付节奏**腿:水位必须容得下**至少两次往返**(下一段在路上时手里还得有货)。
+      // 证据来自 fetcher 按 itag 记的往返(成功=下载耗时、失败=计满,见 SabrMediaFetcher.getLastRoundTripMs);
+      // 未知/过期(-1)按 P11-188 同向处理 —— 证据不足 ⇒ 闸不成立 ⇒ 水位急救照常降档。
+      // 注意这条腿**只放宽降档**(永远不会多 suppress 一次),与 §39.2-(2)「闸不动」的结论不冲突:
+      // 那里否掉的是「给刚切轨丢缓冲开例外」,这里补的是闸自己缺的一手证据(见 docs §39.12.4-(2))。
+      val roundTripForGate = (bandwidthMeter as? SabrBandwidthMeter)
+        ?.getLastRoundTripMs(itagOf(getFormat(selected))) ?: -1L
+      val arrivalCoversBuffer = roundTripForGate > 0L &&
+        roundTripForGate * ROUND_TRIP_RUNWAY_FACTOR <= bufferedDurationUs / 1000L
+      // P11-178:本档刚零字节挂死过 ⇒ 这道闸不适用(闸防假饿;挂死是真饿,且挂死后重试那笔成功样本
+      // 正好会把 est/meas 喂真,让闸误判「撑得住」)。理由详见上面 silenceHang 的证据注释。
+      if (curBitrateForGate > 0 && estHasMargin && measCoversTier && arrivalCoversBuffer && !silenceHang) {
         Log.i(
           "YtSabrAbr",
-          "buffer-critical downgrade **suppressed**(P11-168): bufS=${bufferedDurationUs / 1_000_000}s " +
+          "buffer-critical downgrade **suppressed**(P11-168/177): bufS=${bufferedDurationUs / 1_000_000}s " +
             "est=${estForGate / 1000}K ≥ 当前档 ${getFormat(selected).height}p@$curBitrateForGate" +
-            " → 带宽撑得住,低水位来自排空/切轨而非供给不足(不降档、不门禁)",
+            "×${BUFFER_CRITICAL_GATE_MARGIN_PERMILLE / 1000.0} " +
+            "(declared=${getFormat(selected).bitrate},P11-200 已校准) " +
+            "meas=${if (measForGate > 0) "${measForGate / 1000}K" else "未知"}" +
+            " roundTrip=${if (roundTripForGate > 0) "${roundTripForGate}ms" else "未知"}" +
+            " → 带宽真撑得住,低水位来自排空/切轨而非供给不足(不降档、不门禁)",
         )
         // 不置 freezeEpisodeActive:这一枪根本没开,后续真饿时仍可急救。
       } else {
@@ -658,9 +1015,18 @@ class HeightAwareAdaptiveTrackSelection(
           val f = getFormat(i)
           // 2026-09-01 VP9 粘性:同 height 多 codec 变体粘顶档 codec——水位急救降档(如 1440p→1080p)
           // 旧规则会选中 299(avc,码率更高),把 vp9→avc 跨 codec 换解码器引进降档路径。
+          // ── P11-192:候选序改为「当前编码组 → 高度 → 顶档 codec」─────────────────────────────
+          // 旧序把「同高度的另一个 codec 变体」当成免费选项(315 被冷却挡住就挑 401),每次饥饿都顺手
+          // 换解码器。同族优先后,315 被冷却 → 退到族内 308(1440p);只有 [maybeSwitchFamily] 显式
+          // 判本组不合适才换组。
           if (f.height in 1 until currentHeight &&
-            (f.height > lowerHeight ||
-              (f.height == lowerHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(lower))))
+            (
+              lower < 0 ||
+                (inActiveFamily(f) && !inActiveFamily(getFormat(lower))) ||
+                (inActiveFamily(f) == inActiveFamily(getFormat(lower)) &&
+                  (f.height > lowerHeight ||
+                    (f.height == lowerHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(lower)))))
+              )
           ) {
             lower = i
             lowerHeight = f.height
@@ -673,14 +1039,22 @@ class HeightAwareAdaptiveTrackSelection(
             "YtSabrAbr",
             "buffer-critical downgrade: bufS=${bufferedDurationUs / 1_000_000}s " +
               "itag${current.id}/${current.height}p@${current.bitrate} → " +
-              "${getFormat(lower).height}p@${getFormat(lower).bitrate}"
+              "${getFormat(lower).height}p@${getFormat(lower).bitrate} " +
+              "silenceHang=$silenceHang(P11-178) " +
+              "roundTrip=${if (roundTripForGate > 0) "${roundTripForGate}ms" else "未知"}(P11-203 交付节奏腿)"
           )
           selected = lower
           lastDowngradeElapsedMs = nowMs
+          // P11-237:水位急救这一枪是真降档 ⇒ `sel=` 行的 hold 字段必须报 false(否则「hold=true 却降档」)。
+          lastDowngradeHeldByBuffer = false
           // 2026-09-20 冻结 episode 置位:本段饥饿已用掉这一枪,水位回到阈值以上前不再开第二枪
           // (旧实现无此闸 → 一段饥饿内连降四档到地板,见类头)。
           freezeEpisodeActive = true
           markDowngradeFromTrial(nowMs, currentHeight)
+          // P11-192:饥饿降档(含 silenceHang 挂死触发的这一枪)记一次「本族不可持续」——
+          // 换组判据②的原料。按**族**记而非按 itag/高度:要判的是「VP9 这一族在本机撑不住」,
+          // 而不是「2160p 这一档撑不住」;后者由既有的顶档冷却负责。
+          noteFamilyFailure(codecFamilyOf(current), nowMs)
           // 2026-08-30 顶档定向冷却:从顶档(2160p)水位降下后把该顶档 excludeTrack 3 分钟,防
           // 「重填突发过门槛→升 4K→贴地漏光→又降」边缘横跳反复切档卡顿;只锁顶档,低档升降照常
           // (与已取消的全档冷却不同)。非顶档(可持续档)的急救降档不加冷却。
@@ -698,6 +1072,39 @@ class HeightAwareAdaptiveTrackSelection(
     }
     // 带宽门槛:活跃传输 est(滑动窗口,含 gap/慢小样本)管「当前扛不扛得住」——降档用它,反应快。
     val effective = bandwidthMeter.getBitrateEstimate()
+    // ── P11-237(用户口径「**缓冲时长是强制标准,缓冲够就不需要降档**」)────────────────────────
+    // 病根(docs §41 真机 `logs_live_20261010_072808.log`):est 滞回(C 路径)是唯一**完全不看水位**
+    // 的降档路径 —— 20s 活跃窗口跌破 `tierNeed×0.85` 就降档,哪怕缓冲 30s 且**在涨**:
+    //   07:24:26.236  `downgrade 2160p → 1440p: est=19287K **sus=33014K** bufS=30s`
+    // 4K 期逐笔复算:交付 ≈29.7Mbps vs 实需 ≈24.8Mbps、缓冲 25.7s→30.0s **净涨** ⇒ 供给够,判决错。
+    // 同时 §42.2-(2):升进一档要求 `bufS ≥ max(20s/15s, 2×往返)`(升档地板 #6),守住同一个档却
+    // 允许在任意水位被 est 打掉 ⇒ **升要垫子、守不要垫子**,两套标准。
+    // 新口径:**守档地板 = max(本档水位急救线, 本档升档地板)** = 「爬上来要多少垫子,守住它就要多少
+    // 垫子」。`bufS ≥ 守档地板` ⇒ 本档与全部低档候选都不因 est 被刷掉(比较器只向上取,`best` 因此
+    // 不会落到当前档之下;升档闸 #0~#11 一条不动)。
+    // ⚠ **本句已被 P11-240 取代**(见下):守档地板不再叠升档地板,只取本档水位急救线。
+    // 出口仍在 A 路径:供给真崩时 est 会跌破 `tierNeed×1.15` ⇒ B 闸不 suppress ⇒ 水位急救在
+    // 急救线(所有档统一 8s,P11-239 起)照常降档(§42.2-(6))。
+    // 读数无效(`bufS=-1`):按 P11-188 明写的分工**放行**(那条注释原话:读数无效时水位急救不开枪,
+    // 「交给 ④ 的 est 滞回路径(它不看水位)」)——若不慎也 hold,读数无效会变成两条路都走不了。
+    // ── P11-240(2026-10-10 手机真机 `logs_live_20261010_155639.log`;用户拍板「① 守档地板对齐」)──
+    // **守档地板 = 本档水位急救线(所有档 8s),不再叠本档升档地板。**
+    // P11-237 原口径是「max(急救线, 升档地板)」(同一把尺子)。真机证明这条对顶档是**最后一处不对称**:
+    //   15:54:29.232(dev.r2186)`sel=0 bufS=11.1 bw=14343K meas=18711K hold=false`
+    //   → `downgrade 2160p → 1080p: est=14343K < need×0.85 = 18711K×0.85 = 15904K`
+    // 那一刻 `bufS=11.1s` **远高于急救线 8s**(根本不算饿),却低于「升档地板 20s」(= P11-225 的顶档垫子)
+    // ⇒ 守档闸放行、est 补刀。而 est 之所以塌,只是**一笔音频请求**按设计 fast-fail 超时(8.003s 零字节)
+    // 砸进了 20s 窗口(同瞬间 4K 视频段 18.2MB 成功入队,同排 `cap=39367K`)——低档同样遇到这笔却不受伤,
+    // 因为它们的门槛(`need×0.85`:1080p 2.39M / 1440p 6.9~8.0M)离塌陷后的 14.3M 还有 1.8~6 倍富余,
+    // **只有 4K 的门槛 15.90M 落在它下方**(§45.7)。
+    // 口径:**「缓冲够(≥ 本档急救线)就不降档」** —— 「升进这一档要多少垫子」与「当前算不算饿」是两个
+    // 不同的问题,守档只回答后者。升档侧的 `max(15s/20s, 2×往返)` 地板一动不动(那是切换成本)。
+    // 出口不变:水位跌破 8s 且仍在下漏 ⇒ 水位急救照常降档(§42.2-(6));读数无效(`bufS=-1`)仍放行
+    // (P11-188 分工)。副作用:est 滞回(C)此后只在缓冲 < 8s 时才可能开火 —— 即「降档由水位唯一决定」。
+    val downgradeHoldFloorUs = criticalBufferedUs
+    val bufferHoldsCurrentTier = bufferReadoutValid && bufferedDurationUs >= downgradeHoldFloorUs
+    lastDowngradeHeldByBuffer = bufferHoldsCurrentTier
+    if (!bufferHoldsCurrentTier) downgradeHoldLogged = false
     // alpha.9Z(升档用持续带宽):突发速率 est 在重填缓冲期间会冲到 40-70M(2026-08-27 真机:一笔
     // 74Mbps 突发把 est 从 16M 抬到 40M 过 4K 门槛 → 升完必卡,pacing 有效供给只有 16-20M)。持续带宽
     // = 过去 60s 墙钟实际交付(SabrMediaFetcher.getSustainedBitrateEstimate),要求 ≥ 声明码率才许升。
@@ -735,7 +1142,7 @@ class HeightAwareAdaptiveTrackSelection(
     // 实需,起步窄选期低档样本对 4K 无参考价值,且 4K 的 pacing 有效供给本就贴地 — 边缘反复获批/
     // 漏光/急救 → 315↔308 分钟级抖动。顶档要求 sustained ≥ declared×1.1(declared 已是真平均,
     // 1.1 挡的是 60s 均值口径下的 VBR 尖峰余量;千兆管道不受损,夜间塌方段 sus 8M 永不批 23M 的 4K)。
-    val isTopTier = length > 1 && getFormat(0).height >= TOP_TIER_MIN_HEIGHT
+    val isTopTier = length > 1 && (0 until length).any { getFormat(it).height >= TOP_TIER_MIN_HEIGHT }
     // 2026-08-31 ②stall 重载记忆:起播期 stall 重载后冷却期内跳过顶档(SabrAbrMemory,跨重载单例)。
     val topTierStallBlocked = isTopTier && SabrAbrMemory.isTopTierStartupBlocked()
     // 2026-08-31 ①逐级爬:升档候选只允许「下一个更高分辨率档」(未排除轨中最小的、严格高于当前的
@@ -757,6 +1164,14 @@ class HeightAwareAdaptiveTrackSelection(
     // 先完整回填一轮才许试探;bufferMax=30s 用户档(fill ~28s)仍可用。失败冷却的封锁在候选
     // 循环里统一做(gated+trial 一起挡,见循环注释),此处不再单查。
     val trialThresholdUs = maxOf(TRIAL_FLOOR_BUFFERED_US, maxObservedBufferedUs * 8 / 10)
+    // P11-222:升档缓冲地板**改写**:不再用 `min(30s, 0.8×maxObserved)`,改成
+    // **「水位容得下两次本档往返」**——见候选循环内的口径(= max(15s, 2×往返))。
+    // 依据(判据链 §40.5.1,dev.r2164 14:05):普通升档被 30s 地板挡住(`bufS=9s < floor=30s`),
+    // 而实测缓冲常驻 **9~18s** ⇒ 4K 永远进不了普通路,只有偶然堆到 35s+ 才走「试探」;而
+    // 0.8×maxObserved 那一条(本意"防高水位档放水")在 maxObserved=44s 时把地板钉在 30s 上盖,
+    // 反而成了"永远爬不上去"的真凶(P11-193 立论的反面)。P11-193 的实质是
+    // 「升档后新档要现拉 init+段,往返一抖就饿」——那件事可以直接量化:**容得下两次往返**即可
+    // (与 P11-203 在降档闸用的 ROUND_TRIP_RUNWAY_FACTOR=2 同一口径)。
     val trialUpgrade = canUpgrade &&
       maxObservedBufferedUs >= TRIAL_MIN_CEILING_US &&
       bufferedDurationUs >= trialThresholdUs &&
@@ -785,8 +1200,11 @@ class HeightAwareAdaptiveTrackSelection(
       // 2026-08-31 降档滞回:仅当前档的降档判据放宽 ×0.85(15% 死区),升档/降档候选档保持全额
       // required——est 巡航骑在门槛 ±10% 时(declared=真平均后常态)不再每周期穿线切档。
       // 两分支统一 Long(Int×Long 若不显式 toLong 会推断成 Number&Comparable<*> 星投影,CompareTo 禁用)。
+      // ── P11-200:基准由裸 declared 换成 [tierNeedBps](min(declared, 实测交付码率))──────────────
+      // declared 在 itagItem 缺失的视频上是 VBR 峰值(§39.11.1),拿它当"实需"会把买得起的档判成买不起;
+      // 系数(当前档 ×0.85 滞回)与两侧闸(est 门、容量门、超容量门)全部不动。
       val required: Long =
-        if (i == selected) f.bitrate * DOWNSHIFT_MARGIN_PERMILLE / 1000L else f.bitrate.toLong()
+        if (i == selected) tierNeedBps(f) * DOWNSHIFT_MARGIN_PERMILLE / 1000L else tierNeedBps(f)
       // 2026-09-01 晚(失败冷却统一封锁,gated 与试探一起挡):降档已证明该档不可持续(饥饿或 est
       // 崩塌),而冷却期 est/sus/cap 读到的恰是试探期/旧档 pacing 样本(虚高,22:17:14 真机 14s 后
       // 绕冷却重批 1440p)——两种路都不批,期满恢复原判据。锁的是「被降出的那一档」,非全梯子
@@ -796,14 +1214,105 @@ class HeightAwareAdaptiveTrackSelection(
       // 仍用 effective——降档口径不变(alpha.9Z「卡死不降档」防线)。
       if (!isUpgrade) {
         // 降档口径不变(alpha.9Z「卡死不降档」防线):当前档与低档候选仍用 effective。
-        if (required > effective) continue
+        // ── P11-237:「缓冲够就不降档」——本档 **est 滞回**降档再叠一道缓冲标准 ──────────────────
+        // `bufferHoldsCurrentTier`(`bufS ≥ max(本档急救线, 本档升档地板)`)为真时,本分支不刷掉任何
+        // 候选 ⇒ 本档留在 `best` 上(比较器只向上取 height);缓冲真的低到地板以下时,est 照旧反应,
+        // 更低则交给水位急救 A(见函数外 P11-237 注释与 docs §42)。
+        if (required > effective) {
+          if (!bufferHoldsCurrentTier) continue
+          if (i == selected && !downgradeHoldLogged) {
+            downgradeHoldLogged = true
+            Log.i(
+              "YtSabrAbr",
+              "est-hysteresis downgrade held (P11-237/240 缓冲标准): " +
+                "itag${itagOf(f)}(${f.height}p) bufS=${bufferedDurationUs / 1_000_000}s " +
+                "≥ floor=${downgradeHoldFloorUs / 1_000_000}s " +
+                "(=本档水位急救线,P11-240:不再叠升档地板); " +
+                "est=${effective / 1000}K < required=${required / 1000}K ⇒ 缓冲够,不降档",
+            )
+          }
+        }
       } else {
+        // ── P11-193:升档的**缓冲地板**(理判据链后补上的那条缺口)────────────────────────────
+        // 缺口:`canUpgrade` 里 `lastDowngradeElapsedMs == 0L` 的豁免本意是「起播首爬别被 30s 门槛卡」,
+        // 但它与门槛是**或**关系 ⇒ 只要本实例从未真正降过档(饥饿那一枪被 P11-168/177 闸 suppress、
+        // 或读数无效没开枪),豁免**永久成立** ⇒ 10 秒缓冲也能爬 4K。
+        // 真机 `logs_live_20261003_212240.log`(`jeHP-rT5E7U`,alpha.4)两次 stall 都是这条:
+        //   21:19:43 实例创建后 66s,`bufS=3.8s`(随后 -1.0 无效)时 1080p→1440p→**2160p**;
+        //   21:22:05 实例创建后 122s,`bufS=10.4s` 时 1440p→**2160p**;
+        // 换轨又 `cleanup dropped formats` 丢光旧轨缓冲 ⇒ 新 4K 档要从零拉(实测单笔 26~47MB /
+        // 11.8~24s)⇒ 8s 看门狗整场重载 ⇒ 重载后梯子再爬同一堵墙 = **连续重载**。
+        // 口径(P11-222 改写):地板 = **max(15s, 2×本候选档往返)** —— 见循环内的实现注释;
+        // 旧口径 `min(30s, 0.8×maxObserved)` 会在 maxObserved 高时把地板钉在 30s 上盖,而缓冲常驻
+        // 9~18s ⇒ 普通升档结构性进不去(dev.r2164 实证)。「容得下两次往返」才是 P11-193 立论的量化版。
+        // 读数无效(`bufS=-1`,own-range-null 家族)按**不达标**处理:证明不了缓冲够就不爬。
+        // 与 P11-188「无效 = 没有证据」同源但方向相反 —— P11-188 是「不因无效读数降档」,此处是
+        // 「不因无效读数升档」;升降档的保守方向本就相反。
+        // **豁免只给真起播首爬**:实例创建 [STARTUP_CLIMB_WINDOW_MS] 内且目标 ≤ [STARTUP_CLIMB_MAX_HEIGHT]
+        // (1080p)。重载后的实例同样从头算,但重载后爬 4K 发生在 1~2 分钟后 ⇒ 必被本闸拦住,
+        // 爬档改由「缓冲真的填起来」驱动(填够地板即放行,不是永久封锁)。
+        val startupClimb = nowMs - createdElapsedMs < STARTUP_CLIMB_WINDOW_MS &&
+          f.height <= STARTUP_CLIMB_MAX_HEIGHT
+        // P11-222:地板按**本候选档**的往返算 —— 证据来自 fetcher 按 itag 记的往返(成功=下载耗时、
+        // 失败=计满;`getLastRoundTripMs`)。未知(-1)⇒ 退回 15s 基础地板(不再像旧口径那样用
+        // maxObserved 把它抬到 30s 上盖)。
+        val rtForClimbMs = (bandwidthMeter as? SabrBandwidthMeter)?.getLastRoundTripMs(itagOf(f)) ?: -1L
+        // P11-225(用户口径「升 4K 要更厚的垫子,缓冲延长到 20」):**顶档(≥2160)地板 = 20s**。
+        // 依据(dev.r2168 实测):4K 一笔往返 4.9~9.2s ⇒ 判据要的垫子是 2×往返 ≈ **18.4~20s**;
+        // 而 15s 地板让它在"水位 10s、往返 9.2s"时也升上去 ⇒ 10 秒后必被水位急救降回(纯抖动、白切一次轨)。
+        // 20s 与「一笔搬 3 段」配套(见 SabrMediaFetcher.streamMargin 的 P11-225):先让水位真能到 20s,
+        // 再要求 20s ⇒ 升上去就站得住。非顶档维持 15s 基础地板(它们的往返 0.7~2s,垫子绰绰有余)。
+        // P11-237/240:算式抽成 [climbFloorUsFor](单点定义防漂移);此处保留 `rtForClimbMs` 仅供日志显示。
+        // **只用于升档** —— 守档地板已改为「本档水位急救线」(P11-240,见函数外 downgradeHoldFloorUs):
+        // 「升进这一档要多少垫子」是切换成本,与「当前算不算饿」是两个问题。
+        val heightFloorLabel = if (f.height >= TOP_TIER_MIN_HEIGHT) "顶档 20s" else "15s"
+        val climbFloorUs = climbFloorUsFor(f.height, itagOf(f))
+        if (!startupClimb && !trialUpgrade && bufferedDurationUs < climbFloorUs) {
+          if (!climbBufferFloorLogged) {
+            climbBufferFloorLogged = true
+            Log.i(
+              "YtSabrAbr",
+              "upshift held (buffer floor, ${if (f.height >= TOP_TIER_MIN_HEIGHT) "P11-225 顶档 20s" else "P11-222 15s"}): " +
+                "itag${itagOf(f)}(${f.height}p) bufS=${bufferedDurationUs / 1_000_000}s " +
+                "< floor=${climbFloorUs / 1_000_000}s " +
+                "(=max($heightFloorLabel, 2×往返${if (rtForClimbMs > 0L) "${rtForClimbMs}ms" else "未知"})); " +
+                "startupClimb=$startupClimb trial=$trialUpgrade; 等缓冲填起来再爬",
+            )
+          }
+          continue
+        }
         // 2026-09-01 满缓冲试探:容量/持续闸失真(服务端 pacing,见类头)时凭满缓冲放行;
         // ×1.1 顶档闸与起播 stall 冷却不试探(4K 死亡行军/起播死循环防线不松)。
         val capacityGateFail = required > upgradeEstFloor
         val sustainedGateFail = !canUpgrade || (sustained in 0 until required)
-        val topTierGateFail = isTopTier && i == 0 &&
-          sustained < f.bitrate * TOP_TIER_SUSTAINED_PERMILLE / 1000L
+        // ── P11-194:顶档 ×1.1 sustained 闸 —— 两处判据都写错了,这道闸一直是死的 ──────────────
+        // 旧写法 `isTopTier && i == 0 && …`,两处都建立在「组索引 0 = 最高码率档」这个**错误假设**上:
+        //   · `isTopTier`(见上)= `getFormat(0).height >= 2160` —— 实测第 0 档是**会话 primary**
+        //     (真机两组:`135(0)`/480p 与 `136(0)`/720p)⇒ 恒 false;
+        //   · `i == 0` 同样指 primary 档,不是顶档候选。
+        // 两者叠加 ⇒ 闸**从未开过一枪**:真机 `logs_live_20261003_214158.log`(dev.r2127,`XjqafXGN3ck`)
+        // 21:39:26 `trial upshift (buffer-full probe) … → itag401(2160p) declared=9127940
+        // est=8844K sus=6679K` —— 持续供给 6.7M 明显低于该档要的 9.1M(更低于 ×1.1 门槛 10.0M),
+        // 而「×1.1 顶档闸与起播 stall 冷却**不试探**」本是设计明写的 4K 死亡行军防线 ⇒ 于是进了 4K,
+        // 随即 `REAL 46371131B 22888ms` / `REAL 25583811B 26383ms`(单笔 46MB/22.9s、25MB/26.4s)把
+        // 缓冲从 41s 抽到 6.6s,降档换轨又丢缓冲 ⇒ 9s 空窗 ⇒ 8s 看门狗整场重载。
+        // 修:`isTopTier` 改判「组内存在顶档」,本行改判「**该候选**是顶档候选」。
+        // P11-200:基准同样换成 [tierNeedBps](§39.11.4-#3)——峰值声明下顶档闸也会按假数据判。
+        val topTierNeed = tierNeedBps(f)
+        val topTierGateFail = isTopTier && f.height >= TOP_TIER_MIN_HEIGHT &&
+          sustained < topTierNeed * TOP_TIER_SUSTAINED_PERMILLE / 1000L
+        // P11-194 取证:这道闸此前一整类日志都没有(修了也无从验收),故补一次性打点。
+        if (topTierGateFail && !topTierGateRefusedLogged) {
+          topTierGateRefusedLogged = true
+          Log.i(
+            "YtSabrAbr",
+            "top-tier gate refused (P11-194): itag${itagOf(f)}(${f.height}p) declared=${f.bitrate / 1000}K " +
+              "sustained=${if (sustained >= 0L) "${sustained / 1000}K" else "-1(证据不足)"} < " +
+              "需要=${topTierNeed * TOP_TIER_SUSTAINED_PERMILLE / 1000L / 1000}K " +
+              "(est=${bandwidthMeter.getBitrateEstimate() / 1000}K, trial=$trialUpgrade) — " +
+              "顶档不试探,实测供给没到位就不进 4K",
+          )
+        }
         // P11-153(②,r2048 TV 真机):**试探放行也要有上限** —— 满缓冲只该"绕过偏悲观的估计",
         // 不该授权"超过实测容量 1.5 倍"的跳档。依据:23:15:55 `trial upshift … → itag302(720p)
         // declared=18619097`(18.6M)而实测容量 `cap≈9M` ⇒ 超容量 2 倍 ⇒ 切轨后新轨喂不动、老轨缓冲
@@ -829,8 +1338,14 @@ class HeightAwareAdaptiveTrackSelection(
       // 选声明码率可负担的最高分辨率档;同 height 多 codec(VP9/H264)2026-09-01 起改粘全组顶档
       // codec(VP9 粘性,见 isTopCodecVariant——旧「保留高码率变体」让 1080p 选 avc(299>303),爬到
       // 1440p(仅 VP9)必然跨 codec 换解码器,赌设备 codec 回收坑)。
-      if (f.height > bestHeight ||
-        (f.height == bestHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(best)))
+      // ── P11-192:比较器首关键字换成「是否当前编码组」────────────────────────────────────
+      // 同族优先后,315(VP9 2160p)被冷却挡住时选中的是族内 308(1440p),而不是跨族的 401
+      // (AV01 2160p)—— 换组只由 [maybeSwitchFamily] 显式决定。activeFamily 为 null(梯子无可辨族,
+      // 如纯 avc)时 inActiveFamily 恒真 ⇒ 与旧行为逐字节等价。
+      if ((inActiveFamily(f) && !inActiveFamily(getFormat(best))) ||
+        (inActiveFamily(f) == inActiveFamily(getFormat(best)) &&
+          (f.height > bestHeight ||
+            (f.height == bestHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(best)))))
       ) {
         best = i
         bestHeight = f.height
@@ -860,7 +1375,7 @@ class HeightAwareAdaptiveTrackSelection(
             "sus=${if (sustained >= 0L) "${sustained / 1000}K" else "-1"} " +
             "bufS=${bufferedDurationUs / 1_000_000}s freeze=$freezeEpisodeActive " +
             "blockedFrom=${SabrAbrMemory.isTrialFailBlocked(currentHeight)} " +
-            "opEvent=${SabrAbrMemory.recentOperationEvent()}",
+            "opEvent=${SabrAbrMemory.recentOperationEvent()} silenceHang=$silenceHang(P11-178)",
         )
         markDowngradeFromTrial(nowMs, currentHeight)
       }
@@ -870,6 +1385,9 @@ class HeightAwareAdaptiveTrackSelection(
       getFormat(selected).height > currentHeight -> {
         lastUpgradeElapsedMs = nowMs
         lastUpgradeWasTrial = bestIsTrial
+        // P11-173:记「本场爬上去过」的最高档(跨重载记忆) —— stall 重载时这一档进冷却,
+        // 新实例不再 40~90s 内爬回同一堵墙(只记升上来的档,seed 起始档最高 720P 不记)。
+        SabrAbrMemory.noteReachedHeight(getFormat(selected).height)
         if (bestIsTrial) {
           // 2026-09-01 满缓冲试探取证:est/sus 此刻仍是低档 pacing 失真值,升入后服务端按新档
           // pace 供流,sus/cap 被喂到真实量级(1440p 手切会话 cap=22475K 实证)。active 记入
@@ -923,6 +1441,12 @@ class HeightAwareAdaptiveTrackSelection(
 
   override fun getSelectedIndex(): Int = selected
 
+  /** P11-225:当前选中档的高度(0 = 未知)—— 供 fetcher 的早停余量按档位分叉。 */
+  fun selectedHeightNow(): Int = getFormat(selected).height
+
+  /** P11-232:当前选中**视频档的 itag**(-1 = 未知)。早停余量只对这一档生效,见 SabrMediaFetcher.marginFor。 */
+  fun selectedItagNow(): Int = itagOf(getFormat(selected))
+
   /**
    * 2026-08-30:从 media3 Format.id 解析 itag。id 不保证是裸 itag——media3 的 Merging/TrackGroup 层
    * 会给子源格式加序号前缀(真机重锚日志实证 id="0:302",ToInt 直接失败 → 校准系数恒 1.0 死锁)。
@@ -931,6 +1455,136 @@ class HeightAwareAdaptiveTrackSelection(
   private fun itagOf(f: Format): Int {
     val id = f.id ?: return -1
     return id.substringAfterLast(':', id).toIntOrNull() ?: -1
+  }
+
+  /**
+   * P11-237:**本档的升档缓冲地板**。
+   *
+   * = `max(顶档 20s / 非顶档 15s, 2×本档最近一次往返)` —— P11-222/225 的口径,抽成单点定义防漂移。
+   * **只服务升档**:回答「升进这一档要预留多少垫子」(切换要现拉 init + 首次段,往返一抖就饿)。
+   * 守档(「当前算不算饿」)在 P11-240 起改用本档水位急救线,见 `updateSelectedTrack` 的
+   * `downgradeHoldFloorUs` —— 真机证明把升档垫子当守档闸会把 4K 在 `bufS=11.1s` 时判成「可以让 est 补刀」。
+   * 往返未知(-1)按 0 处理(只剩基础地板)。
+   */
+  private fun climbFloorUsFor(height: Int, itag: Int): Long {
+    val heightFloorUs =
+      if (height >= TOP_TIER_MIN_HEIGHT) TOP_TIER_CLIMB_FLOOR_US else TRIAL_FLOOR_BUFFERED_US
+    val rtMs = (bandwidthMeter as? SabrBandwidthMeter)?.getLastRoundTripMs(itag) ?: -1L
+    return maxOf(
+      heightFloorUs,
+      if (rtMs > 0L) rtMs * ROUND_TRIP_RUNWAY_FACTOR * 1000L else 0L,
+    )
+  }
+
+  /**
+   * P11-237:本次评估「本档是否被缓冲标准守住」(est 因此不得降档)。供 `sel=` 那行日志取证 ——
+   * 没有它,「这一次评估为什么没降档」在日志里就是一段安静(吃过 P11-194 无日志的亏)。
+   */
+  fun downgradeHeldByBufferNow(): Boolean = lastDowngradeHeldByBuffer
+
+  /**
+   * P11-200:**档位实需基准** —— 这一档到底要多少带宽。
+   *
+   * 背景(§39.10/§39.11,真机 `logs_live_20261005_213214.log`):`f.bitrate` 是
+   * [YoutubePlaybackResolver] 给的 declared,而 declared 在 `stream.itagItem == null` 时**回落 VBR
+   * 峰值**(见 `newPipeVideoRaw` 的 P11-153 警告)。该视频 19 个 itag 全部命中回落 ⇒ 整条梯子的
+   * 「实需」都是峰值:720p VP9(302)声明 8243818,而 app 自算的实测交付码率只有 2677~2772K
+   * (逐段字节复算 1.84MB/5.33s 段 = 2.76Mbps)。后果两条同源:
+   *   ①降档/trial-fail 判据 `required=8243818 > est`(3.2~4.9M)⇒ 720p 永远"买不起",钉死 480p;
+   *   ②P11-168/177 的 suppress 闸要求 `meas ≥ declared` ⇒ 峰值声明下**结构性恒 false**,闸形同虚设。
+   * 2026-08-30 的「声明口径修正」把 calib 折算整个删掉,前提是 declared=averageBitrate=真平均 ——
+   * 该前提在 itagItem 缺失的视频上不成立,本函数即补回那层折算,只是数据源换成**app 自己的实测**。
+   *
+   * 口径:
+   *   · **只降权不抬权** —— `min(declared, meas)`。实测高于声明时不抬高门槛(抬高会让本该保留的档
+   *     被误降;真断流由活跃 est 与水位急救接管,不需要这里加码)。
+   *   · **不叠余量** —— meas 已是「真需求」,余量交给各闸自己的系数(estHasMargin ×1.15、顶档 ×1.1、
+   *     试探超容量 ×1.5),在这里再乘一次会与它们重复放大(§39.11.3-2)。
+   *   · **本档无实测时借同族实测比例**(P11-247,原口径「`meas ≤ 0` ⇒ 返回 declared」已改)——
+   *     见 [borrowedNeedAnchorIndex] 的注释:那是「初次」才有的事,而初次恰恰是最需要修正的一刻。
+   *
+   * 刻意**不用**于:升档重锚锚点(已有 `cap×1.2` 夹取,P11-153①b)与冷却「提前解除」判据(那是
+   * 「要不要给刚判失败的档翻案」,宁严勿松 —— 见 §39.11.3-6)。
+   */
+  private fun tierNeedBps(f: Format): Long {
+    val declared = f.bitrate.toLong()
+    if (declared <= 0L) return declared
+    val itag = itagOf(f)
+    val meas = (bandwidthMeter as? SabrBandwidthMeter)?.getMeasuredBitrateBps(itag) ?: -1L
+    // ── P11-247(用户口径「改吧,但是只针对初次,按实测修正」)──────────────────────────────────
+    // 本档**还没有自己的实测**(=「初次」,`meas ≤ 0`)时,不再直接退回 VBR 峰值声明,而是借
+    // **同编码族里已实测档的「实测/声明」比例**把它折回真实量级。原口径「证据不足即退回旧行为」
+    // (§39.11)在**顶档**上成了死锁:顶档进不去 ⇒ 永远没有自己的 meas ⇒ 基准永远是峰值 ⇒ 更进不去
+    // (§48/§50 真机:TV 该视频声明 46.49M 而实测只有 7.3M,虚高 6.4×,顶档两道闸全按 46.49M 立)。
+    // 只对「初次」生效:一旦本档有了 `meas`,下面走原口径 `min(declared, meas)`,行为不变。
+    if (meas <= 0L) {
+      val anchorIdx = borrowedNeedAnchorIndex(f)
+      if (anchorIdx < 0) return declared
+      val anchor = getFormat(anchorIdx)
+      val anchorItag = itagOf(anchor)
+      val anchorMeas = (bandwidthMeter as? SabrBandwidthMeter)?.getMeasuredBitrateBps(anchorItag) ?: -1L
+      if (anchorMeas <= 0L || anchor.bitrate <= 0L) return declared
+      val borrowed = declared * anchorMeas / anchor.bitrate
+      val borrowedNeed = minOf(declared, borrowed) // 只降权不抬权(P11-200 口径不变)
+      if (borrowedNeed < declared && borrowedNeedLogged.add(itag)) {
+        Log.i(
+          "YtSabrAbr",
+          "tier need borrowed (P11-247 同族实测折算·仅初次): itag$itag(${f.height}p) " +
+            "declared=$declared × ${anchorMeas.toDouble() / anchor.bitrate} " +
+            "(锚 itag$anchorItag(${anchor.height}p) meas=$anchorMeas/declared=${anchor.bitrate}) " +
+            "→ need=$borrowedNeed",
+        )
+      }
+      return borrowedNeed
+    }
+    val need = minOf(declared, meas)
+    if (need < declared && tierNeedCalibratedLogged.add(itag)) {
+      // 比值用整数十分位拼,避免 String.format 走默认 Locale(某些区域会输出逗号小数点)。
+      val ratioTenths = (declared * 10L + meas / 2L) / meas
+      Log.i(
+        "YtSabrAbr",
+        "tier need calibrated (P11-200): itag$itag(${f.height}p) declared=$declared meas=$meas → " +
+          "need=$need(声明虚高 ${ratioTenths / 10}.${ratioTenths % 10}×)",
+      )
+    }
+    return need
+  }
+
+  /**
+   * P11-247:**「初次」折算的锚档** —— 找一个「同编码族 + 已有实测(`meas > 0`)+ 声明可用」的档,
+   * 用它把本档的峰值声明折回真实量级。返回索引,`-1` = 找不到(那就只能退回声明)。
+   *
+   * **为什么是「同族」**:峰值/平均的比值是**编码侧的属性**(该 rendition 的 VBR 配置),所以同族
+   * (同 codec)的档最有参考价值 —— 真机两条实测:TV 该视频同族各档的比例是 0.179/0.333/0.237
+   * (720p/1080p/1440p),手机另一场是 0.585(720p)/0.729(1440p)。跨族(如 avc 对 vp9)比例差得远,不用。
+   *
+   * **为什么取「高度最接近」**:越是同分辨率的档,编码配置越相近(同一档的变体尤其)。平手时取
+   * **实测段数更多**的(样本更成熟;`meas` 是运行中累积量,刚过 3 段时偏低估)。
+   *
+   * **不做的事**:不抬权(调用方仍 `min(declared, …)`)、不动有实测的档(调用方只在 `meas ≤ 0` 时走这里)、
+   * 不跨族、不看冷却表(冷却与否不影响「这一档真实要多少」这件事)。
+   */
+  private fun borrowedNeedAnchorIndex(f: Format): Int {
+    val fam = codecFamilyOf(f) ?: return -1
+    val meter = bandwidthMeter as? SabrBandwidthMeter
+    var best = -1
+    var bestHeightDelta = Int.MAX_VALUE
+    var bestSegs = -1L
+    for (i in 0 until length) {
+      val o = getFormat(i)
+      if (codecFamilyOf(o) != fam) continue
+      if (o.bitrate <= 0L) continue
+      val oItag = itagOf(o)
+      if ((meter?.getMeasuredBitrateBps(oItag) ?: -1L) <= 0L) continue
+      val delta = kotlin.math.abs(o.height - f.height)
+      val segs = meter?.getMeasuredSegmentCount(oItag) ?: 0L
+      if (delta < bestHeightDelta || (delta == bestHeightDelta && segs > bestSegs)) {
+        best = i
+        bestHeightDelta = delta
+        bestSegs = segs
+      }
+    }
+    return best
   }
 
   /**
@@ -974,17 +1628,63 @@ class HeightAwareAdaptiveTrackSelection(
     const val COLD_START_LADDER_LOCK_MS = 10_000L
     /** alpha.9Z:降档后升档所需最低缓冲水位(us)——缓冲重建到这一水位前不允许弹回高档。 */
     const val DOWNGRADE_BUFFERED_US = 8_000_000L
-    /**
-     * 2026-08-31 B1:顶档(≥2160)在位时的水位急救阈值(us)——见 updateSelectedTrack 的 B1 注释。
-     * 与 SabrMediaFetcher.TOP_TIER_GAP_RUNWAY_RESERVE_MS(A)同值同语义:水位 <20s 即顶档供给线失守。
-     */
-    const val TOP_TIER_CRITICAL_BUFFERED_US = 20_000_000L
+    // P11-239:**`TOP_TIER_CRITICAL_BUFFERED_US = 20s`(2026-08-31 B1)已删除** —— 它与补货线
+    // (P11-197,11~17s)相撞,导致顶档每个补货周期被判一次饿(§43.7/§43.8)。顶档自此与所有档
+    // 共用 [DOWNGRADE_BUFFERED_US];顶档独有的差别只剩「冲顶失败后二次升档的坎」(见其注释)。
     /** 2026-08-30:升档后的水位急救宽限(ms)——新档刚起步缓冲未回填,不能立刻按同一水位反弹降档。 */
     const val DOWNGRADE_AFTER_UPGRADE_GRACE_MS = 5_000L
+
+    /**
+     * P11-177:水位急救降档的带宽闸余量(千分比)。`est` 必须 ≥ 当前档声明码率 × 1.15 才算
+     * 「带宽真撑得住」。理由:升档重锚会把 est 基线设成**恰好等于**新档声明值
+     * (`upshift reseed: est baseline → 3801810`),旧口径 `est >= 声明` 因此恒真 ⇒ 每次升档后
+     * 都必然 suppress 掉急救降档(真机 2026-09-23 连成 60~90s 一轮的重载循环)。
+     */
+    const val BUFFER_CRITICAL_GATE_MARGIN_PERMILLE = 1150L
+
+    /**
+     * P11-203:水位急救降档闸的**交付节奏**余量(倍)。闸除「平均带宽够」之外还要求
+     * `水位 ≥ 最近一次本档往返 × 本系数` —— 即水位至少容得下两次往返(下一段在路上时手里还得有货)。
+     * 依据(真机 2026-10-06):4K 档单笔往返 4.6~7.4s、水位 3s,`est/meas` 全达标却结构性供不上,
+     * 每轮都以 8s 看门狗整场重载收场(见 docs §39.12)。取 2:一次往返在途、一次兜底。
+     */
+    const val ROUND_TRIP_RUNWAY_FACTOR = 2L
+
+    /**
+     * P11-178:零字节挂死证据的有效窗口(ms)——本档最近一次静默超时在此窗口内,即视同供给证据
+     * (视同跌破水位线 + 免掉带宽闸 + 免掉「仍在回落」判据)。见 updateSelectedTrack 的证据注释:
+     * 窗口存在的原因是「挂死期间不会有评估」,证据必须在**挂死结束后的第一次评估**仍然成立;20s
+     * 覆盖静默超时(8s)+ 重试交付(实测 17.3s)这一段,更长则由 8s 水位线判据自然接管。
+     */
+    const val SILENCE_HANG_EVIDENCE_MS = 20_000L
+
     /** 2026-08-30:升档后禁止 est 回降宽限(ms)——重锚精确锚在新档门槛,起步期小样本会立刻打回。 */
     const val UPGRADE_DOWNGRADE_GRACE_MS = 10_000L
     /** 2026-08-30 方案B:顶档(4K 级)定义高度门槛——组内最高档 height ≥ 此值时启顶档 sustained 加码。 */
     const val TOP_TIER_MIN_HEIGHT = 2160
+
+    /**
+     * P11-192:换组的滑窗(ms)——窗口内某族被记满 [FAMILY_FAIL_THRESHOLD] 次「不可持续」才考虑换组。
+     * 取 10min 是**刻意跨过 90/180s 冷却**:同一族的两枪常被冷却隔到几分钟开外(真机 15:44:52 与
+     * 15:50:22 相隔 5.5min),窗口短了就永远攒不到两枪。
+     */
+    const val FAMILY_FAIL_WINDOW_MS = 600_000L
+
+    /** P11-192:换组阈值(次)。1 次太敏感(一次抖动就换解码器),2 次 = 同一堵墙撞两回。 */
+    const val FAMILY_FAIL_THRESHOLD = 2
+
+    /** P11-192:换出后原组的冷静期(ms)——与顶档冷却同量级,期满允许回退(用户拍板)。 */
+    const val FAMILY_SWITCH_COOLDOWN_MS = 180_000L
+
+    /**
+     * P11-193:升档缓冲地板的**豁免窗口**(ms)——selection 实例创建后这段窗口内,爬到
+     * [STARTUP_CLIMB_MAX_HEIGHT] 及以下不需要 [UPGRADE_MIN_BUFFERED_US] 缓冲,保住「起播首爬不被卡」。
+     * 取 30s:真机两次致死的 4K 攀爬分别发生在实例创建后 66s / 122s,均在窗口外。
+     */
+    const val STARTUP_CLIMB_WINDOW_MS = 30_000L
+
+    /** P11-193:豁免窗口内允许免缓冲爬到的最高档。再往上(1440p/2160p)一律要缓冲地板。 */
+    const val STARTUP_CLIMB_MAX_HEIGHT = 1080
     /**
      * 2026-08-30 修正:顶档升档 sustained 门槛系数千分位——sustained ≥ 声明×1.1 才许升 4K。
      * 旧 ×0.6 是对 peak 虚高(~2×)的折算;declared 换 averageBitrate=真平均后,1.1 是 60s 均值
@@ -1022,6 +1722,9 @@ class HeightAwareAdaptiveTrackSelection(
      * 2026-09-01:试探水位线地板(us)——「满缓冲=供给富余」证据的最低可信线;30s bufferMax 档
      * (0.8×28s≈22s)也在线上,地板只在更小水位时兜底。
      */
+    /** P11-225:顶档(≥2160)升档的**缓冲地板** —— 4K 一笔往返 4.9~9.2s,垫子要 2×往返 ≈ 18~20s。 */
+    const val TOP_TIER_CLIMB_FLOOR_US = 20_000_000L
+
     const val TRIAL_FLOOR_BUFFERED_US = 15_000_000L
     /**
      * 2026-09-01:试探失败档冷却(ms)——试探扛不住的档冷却这段时间,防每轮回填都重试同一堵墙;
@@ -1042,7 +1745,7 @@ class HeightAwareAdaptiveTrackSelection(
     const val TRIAL_MIN_CEILING_US = 25_000_000L
     /**
      * 2026-09-01 晚(试探熔断,21:14 真机 bufS=0s 案例):试探档缓冲跌破此线且仍在下漏 → 无视
-     * 8s/20s 水位急救阈值与 5s 宽限立即降档。试探是自己批准的,亏空秒退。
+     * 水位急救阈值与 5s 宽限立即降档。试探是自己批准的,亏空秒退。
      */
     const val TRIAL_ABORT_BUFFERED_US = 15_000_000L
     /** 2026-09-01 晚:试探熔断宽限(ms)——升档后首个评估循环内不熔断(防重锚瞬间误判)。 */

@@ -1,16 +1,27 @@
 package com.kirin.mt.core.network
 
 import com.kirin.mt.core.model.Comment
+import com.kirin.mt.core.model.DynamicImage
+import com.kirin.mt.core.model.DynamicKindDraw
+import com.kirin.mt.core.model.DynamicTextNode
 import com.kirin.mt.core.model.SourceBili
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 internal object VideoSummaryMappers {
+
+  /** 图文动态的顶层 type 值(B站也用它自身做类型分流,比逐字段探测更稳)。 */
+  private const val DynamicTypeDraw = "DYNAMIC_TYPE_DRAW"
+
+  /** 正文富文本里的表情节点类型。 */
+  private const val RichTextTypeEmoji = "RICH_TEXT_NODE_TYPE_EMOJI"
 
   /** 用于二次解析动态 live_rcmd.content 这类内嵌 JSON 字符串字段。宽松配置,失败由调用处兜底。 */
   private val nestedJson = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -44,11 +55,103 @@ internal object VideoSummaryMappers {
     val author = modules.obj("module_author")
 
     // 按 major 类型分流:普通视频动态走 archive;直播推荐卡走 live_rcmd(原生带 live_status);
-    // 其余类型(图文/PGC/专栏等)暂不收入。用 live_rcmd 字段存在性判定,避免依赖 type 字符串。
+    // 图文走 draw(见 fromDrawDynamic);其余类型(纯文字/转发/PGC/专栏等)暂不收入。
     return when {
       major.string("type") == "MAJOR_TYPE_ARCHIVE" -> fromArchiveDynamic(json, modules, major, author)
       major.obj("live_rcmd") != null -> fromLiveRcmdDynamic(json, major, author)
+      json.string("type") == DynamicTypeDraw -> fromDrawDynamic(json, modules, major, author)
       else -> null
+    }
+  }
+
+  /**
+   * 图文动态(DYNAMIC_TYPE_DRAW)。
+   *
+   * 文案与图片各有**两条载荷分支**(2026-09-25 实测):不带 `features` 时文案在 `module_dynamic.desc`、
+   * 图在 `major.draw.items`;带 `features=itemOpusStyle` 时文案在 `major.opus.summary`、图在
+   * `major.opus.pics`。服务端会随请求参数切换位置,所以两处都要兜底(对齐 BV Dynamic.kt:377)。
+   * 宽高类型也不一致:`draw.items` 是字符串、`opus.pics` 是数字 —— 统一走 BiliNumberParser。
+   *
+   * 图文没有 bvid:bvid 留空、dynId 承载身份;正文/图片为空(被删/审核中)时返回 null 丢掉。
+   */
+  private fun fromDrawDynamic(
+    json: JsonObject,
+    modules: JsonObject,
+    major: JsonObject,
+    author: JsonObject?,
+  ): VideoSummary? {
+    val opus = major.obj("opus")
+    val opusSummary = opus?.obj("summary")
+    val desc = modules.obj("module_dynamic")?.obj("desc")
+    val text = desc?.string("text").orEmpty()
+      .ifBlank { opusSummary?.string("text").orEmpty() }
+    val textNodes = textNodesOf(desc, opusSummary)
+    val images = picturesOf(major.obj("draw")?.get("items"))
+      .ifEmpty { picturesOf(opus?.get("pics")) }
+    if (text.isBlank() && images.isEmpty()) return null
+
+    // module_stat 是动态本身的社交计数(点赞/评论/转发),与视频的 stat 不是一回事。
+    val dynStat = modules.obj("module_stat")
+    val basic = json.obj("basic")
+    return VideoSummary(
+      bvid = "",
+      title = text,
+      pic = images.firstOrNull()?.url.orEmpty(),
+      ownerName = author?.string("name").orEmpty(),
+      ownerFace = fixPicUrl(author?.string("face").orEmpty()),
+      ownerMid = author?.long("mid") ?: 0L,
+      view = 0,
+      danmaku = 0,
+      duration = 0,
+      pubdate = author?.long("pub_ts") ?: 0L,
+      badge = "",
+      dynId = json.string("id_str"),
+      commentId = basic?.long("comment_id_str") ?: 0L,
+      commentType = basic?.int("comment_type") ?: 0,
+      likeCount = dynStat?.obj("like")?.int("count") ?: 0,
+      commentCount = dynStat?.obj("comment")?.int("count") ?: 0,
+      forwardCount = dynStat?.obj("forward")?.int("count") ?: 0,
+      dynamicKind = DynamicKindDraw,
+      dynamicText = text,
+      dynamicTextNodes = textNodes,
+      dynamicImages = images,
+      dynamicTextHasMore = opusSummary?.boolean("has_more") ?: false,
+    )
+  }
+
+  /**
+   * 解析正文富文本节点。只有表情需要特殊处理(`emoji.icon_url` 内联成图),其余节点直接用 `text`
+   * (话题自带 `#xx#`、@ 自带 `@名字`、网页链接自带可读文案)。
+   * 全为普通文字时不返回节点列表,交给调用方按平文本渲染。
+   */
+  private fun textNodesOf(vararg holders: JsonObject?): List<DynamicTextNode> {
+    val nodes = holders.firstNotNullOfOrNull { holder ->
+      (holder?.get("rich_text_nodes") as? JsonArray)?.takeIf { it.isNotEmpty() }
+    } ?: return emptyList()
+    val parsed = nodes.mapNotNull { element ->
+      val node = element.asObjectOrNull() ?: return@mapNotNull null
+      val text = node.string("text")
+      if (node.string("type") == RichTextTypeEmoji) {
+        val emojiUrl = fixPicUrl(node.obj("emoji")?.string("icon_url").orEmpty())
+        if (emojiUrl.isNotBlank()) return@mapNotNull DynamicTextNode(text = text, emojiUrl = emojiUrl)
+      }
+      text.takeIf { it.isNotEmpty() }?.let { DynamicTextNode(text = it) }
+    }
+    return if (parsed.any { it.emojiUrl.isNotBlank() }) parsed else emptyList()
+  }
+
+  /** 解析 `major.draw.items` / `major.opus.pics` 两种图片数组:字段名(src/url)与宽高类型都要兜底。 */
+  private fun picturesOf(element: JsonElement?): List<DynamicImage> {
+    val array = element as? JsonArray ?: return emptyList()
+    return array.mapNotNull { item ->
+      val pic = item.asObjectOrNull() ?: return@mapNotNull null
+      val url = fixPicUrl(pic.string("src").ifBlank { pic.string("url") })
+      if (url.isBlank()) return@mapNotNull null
+      DynamicImage(
+        url = url,
+        width = BiliNumberParser.toInt(pic["width"]),
+        height = BiliNumberParser.toInt(pic["height"]),
+      )
     }
   }
 
@@ -60,8 +163,16 @@ internal object VideoSummaryMappers {
   ): VideoSummary? {
     val archive = major.obj("archive") ?: return null
     val stat = archive.obj("stat")
+    // 动态自己的文案(UP 的话),与视频标题是两码事:官方动态卡在缩略图上方显示它。
+    // 此前只有图文分支取 desc,视频动态这块文案被丢掉了(P11-182)。
+    val desc = modules.obj("module_dynamic")?.obj("desc")
+    val opusSummary = major.obj("opus")?.obj("summary")
+    val dynamicText = desc?.string("text").orEmpty()
+      .ifBlank { opusSummary?.string("text").orEmpty() }
+    val dynamicTextNodes = textNodesOf(desc, opusSummary)
     // module_stat 是动态本身的社交计数(点赞/评论/转发),区别于 archive.stat 的播放/弹幕。
     val dynStat = modules.obj("module_stat")
+    val basic = json.obj("basic")
     return VideoSummary(
       bvid = archive.string("bvid"),
       title = archive.string("title"),
@@ -75,10 +186,14 @@ internal object VideoSummaryMappers {
       pubdate = author?.long("pub_ts") ?: 0L,
       badge = filterBadge(archive.obj("badge")?.string("text").orEmpty()),
       dynId = json.string("id_str"),
+      commentId = basic?.long("comment_id_str") ?: 0L,
+      commentType = basic?.int("comment_type") ?: 0,
       aid = archive.long("aid"),
       likeCount = dynStat?.obj("like")?.int("count") ?: 0,
       commentCount = dynStat?.obj("comment")?.int("count") ?: 0,
       forwardCount = dynStat?.obj("forward")?.int("count") ?: 0,
+      dynamicText = dynamicText,
+      dynamicTextNodes = dynamicTextNodes,
     )
   }
 

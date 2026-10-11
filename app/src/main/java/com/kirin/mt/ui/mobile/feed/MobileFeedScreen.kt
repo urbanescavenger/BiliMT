@@ -120,7 +120,6 @@ fun MobileFeedScreen(
         0 -> MobileDynamicScreen(
           videoRepository = videoRepository,
           youtubeFeedCacheStore = youtubeFeedCacheStore,
-          youtubeChannelStore = youtubeChannelStore,
           isLoggedIn = true,
           dynamicRefreshKey = dynamicRefreshKey,
           youtubeChannels = channels,

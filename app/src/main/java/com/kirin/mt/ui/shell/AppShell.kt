@@ -89,6 +89,8 @@ import com.kirin.mt.core.update.UpdateManager
 import com.kirin.mt.core.util.FirebaseLogSender
 import com.kirin.mt.core.util.LogCatcherUtil
 import com.kirin.mt.ui.feed.UserFeedScreen
+import com.kirin.mt.ui.focus.GridFocusMemory
+import com.kirin.mt.ui.focus.LocalGridFocusMemory
 import com.kirin.mt.ui.focus.focusDiag
 import com.kirin.mt.ui.feed.UserFeedState
 import com.kirin.mt.ui.feed.UserFeedUiState
@@ -283,6 +285,9 @@ fun BiliTvApp(
   val userFeedState = remember { UserFeedUiState() }
   val searchUiState = remember { SearchUiState() }
   val liveUiState = remember { com.kirin.mt.ui.live.LiveUiState() }
+  // P11-202:网格身份锚定焦点记忆。挂在 AppShell 作用域(跨页面 dispose 存活),经
+  // LocalGridFocusMemory 下发给所有 TvVideoGrid;网格据此在冷重建时把焦点放回原来那张卡。
+  val gridFocusMemory = remember { GridFocusMemory() }
   var initialHomeFocusPending by remember { mutableStateOf(true) }
   var recommendManualRefreshKey by rememberSaveable { mutableStateOf(0) }
   var dynamicManualRefreshKey by rememberSaveable { mutableStateOf(0) }
@@ -315,6 +320,12 @@ fun BiliTvApp(
   // 详情页在播放期间整页 dispose,remember 全丢,落点必须 hoist 到这里才能跨播放存活。
   var playlistDetailFocusRestoreRequestKey by remember { mutableIntStateOf(0) }
   var playlistDetailFocusTarget by remember { mutableStateOf<String?>(null) }
+  // P11-175:详情页**数据**也 hoist(此前只 hoist 了落点):起播整页 dispose 后返回,没有它就只能
+  // 空表重拉,「回到原来那一行」无从谈起(真机 2026-09-22「有重新加载列表的显示,列表出来了没焦点」)。
+  // 只在「点开某个播放列表」时清空 ⇒ 缓存仅服务于「起播后返回」这一场景,不会让重新打开拿到旧数据。
+  var playlistDetailSnapshot by remember {
+    mutableStateOf<com.kirin.mt.ui.space.YoutubePlaylistDetailSnapshot?>(null)
+  }
   // YouTube 播放列表详情页(TV):频道页"播放列表" tab 点卡片进入,覆盖在频道页之上。
   var youtubePlaylistRequest by remember { mutableStateOf<YoutubeParsers.YoutubePlaylist?>(null) }
   var playlistPlaybackBehind by remember { mutableStateOf(false) }
@@ -414,29 +425,29 @@ fun BiliTvApp(
         Log.e(PreloadLogTag, "dynamic bili fetch failed: ${error.message}")
         null
       }
-      val youtubeVideos = if (youtubeChannels.isNotEmpty()) {
+      // 走 youtubeHomeFeedPage(而非 youtubeSubscriptionsFeed):只有它回传每频道续页 token,
+      // 屏幕侧翻页才能继续推进 YouTube 关注流(否则第二屏起只有 B 站视频,见 P11-186 收口)。
+      val youtubePage = if (youtubeChannels.isNotEmpty()) {
         try {
-          videoRepository.youtubeSubscriptionsFeed(
-            youtubeChannels,
-            onChannelAvatarResolved = { channel ->
-              youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-            },
-          )
+          videoRepository.youtubeHomeFeedPage()
         } catch (error: CancellationException) {
           throw error
         } catch (error: Exception) {
           Log.e(PreloadLogTag, "dynamic youtube fetch failed: ${error.message}")
-          emptyList()
+          null
         }
       } else {
-        emptyList()
+        null
       }
+      val youtubeVideos = youtubePage?.videos.orEmpty()
       val merged = mergeByPubdate(biliVideos.orEmpty(), youtubeVideos)
       if (youtubeChannels.isNotEmpty()) {
         dynamicState.youtubeMerged = true
       }
       // 屏幕已自行加载(非 Loading)则不覆盖。
       if (dynamicState.state is UserFeedState.Loading) {
+        dynamicState.youtubeVideos = youtubeVideos
+        dynamicState.youtubeContinuation = youtubePage?.perChannelContinuation
         dynamicState.state = when {
           merged.isEmpty() && biliError != null -> UserFeedState.Failed(biliError)
           merged.isEmpty() -> UserFeedState.Empty
@@ -445,7 +456,7 @@ fun BiliTvApp(
             UserFeedState.Success(
               videos = merged,
               loadingMore = false,
-              endReached = biliEndReached,
+              endReached = biliEndReached && youtubePage?.endReached != false,
               loadMoreError = "",
             )
           }
@@ -716,6 +727,7 @@ fun BiliTvApp(
     LocalChineseTextConverter provides textConverter,
     LocalHomeColors provides homeColors,
     LocalLiquidGlassBackdrop provides activeLiquidGlassBackdrop,
+    LocalGridFocusMemory provides gridFocusMemory,
   ) {
     val activePlaybackRequest = playbackRequest
     var visiblePlaybackRequest by remember { mutableStateOf<PlaybackRequest?>(null) }
@@ -825,14 +837,27 @@ fun BiliTvApp(
           // 让 TvVideoGrid 的网格恢复 effect 有机会把焦点拉回原视频卡片。
           // 内容覆盖层(UP 主页 / YouTube 频道)返回走网格恢复时同样抑制,防覆盖层关闭后的
           // 延迟焦点回落把焦点丢到头像并 autoConfirm。
+          // P11-172:覆盖层自身的返回恢复(播放列表详情 / 频道 / UP 主页三层的 restore key)同样要抑制。
+          // 真机 logs_live_20260922_224548 实锤:22:32:24.958 从播放列表详情退出播放器 → 详情页被
+          // Back 弹掉(25.899)→ 焦点落头像且当时 suppress=false(这两个 destination 都是 null)
+          // ⇒ 26.068 直接 `openMyPage=true` 把用户送进「我的」页;此后 accountSelected=true 让内容层
+          // 不再组合,27.452 频道页返回触发的 requestContentGridRestore 失去目标(日志里没有任何
+          // TvVideoGrid restore 行)⇒ Dynamic 网格永不回焦,用户视角=「返回后焦点丢失」。
+          // 三层 key 在各自的 onBack 里清零、在各自恢复完成时由 onRestoreFocusHandled 清零,
+          // 故本条件随层栈自动收敛,不会长期关掉头像 autoConfirm。
           val suppressAccountAutoConfirm =
-            playbackFocusRestoreDestination != null || contentFocusRestoreDestination != null
+            playbackFocusRestoreDestination != null || contentFocusRestoreDestination != null ||
+              playlistDetailFocusRestoreRequestKey > 0 || channelFocusRestoreRequestKey > 0 ||
+              spaceFocusRestoreRequestKey > 0
           AppSidebar(
             selectedDestination = selectedDestination,
             accountSelected = accountSelected,
             userSession = userSession,
             autoConfirmOnFocus = autoConfirmOnFocus,
             suppressAccountAutoConfirm = suppressAccountAutoConfirm,
+            // P11-191:动态首屏(含 YouTube 关注流合并)在途时,合并落地会整表换新、把网格焦点
+            // 清掉;这段时间头像不许 autoConfirm 跳「我的」页(导航项不受影响)。
+            suppressAvatarAutoConfirm = userFeedState.dynamicVideo.firstPageInFlight,
             accountFocusRequester = accountFocusRequester,
             navFocusRequesters = navFocusRequesters,
             dynamicUnread = dynamicUnread,
@@ -1627,6 +1652,7 @@ fun BiliTvApp(
               playbackRepository = playbackRepository,
               youtubeRepository = youtubeRepository,
               youtubeHistoryStore = youtubeHistoryStore,
+              youtubeChannelStore = youtubeChannelStore,
               danmakuSettingsStore = danmakuSettingsStore,
               playbackHttpClient = playbackHttpClient,
               cdnSelector = cdnSelector,
@@ -1731,6 +1757,9 @@ fun BiliTvApp(
               val origin = spaceOrigin
               spaceOrigin = null
               spacePlaybackBehind = false
+              // P11-172:本层被弹掉=本层待恢复作废,先清零再按 origin 决定下层(否则中断的恢复
+              // 会把 key 挂在 >0 上,头像 autoConfirm 抑制不收敛)。
+              spaceFocusRestoreRequestKey = 0
               when (origin) {
                 SpaceOrigin.Player -> spaceFocusRestoreRequestKey += 1
                 SpaceOrigin.Content -> requestContentGridRestore(selectedDestination)
@@ -1778,6 +1807,13 @@ fun BiliTvApp(
               val origin = channelOrigin
               channelOrigin = null
               channelPlaybackBehind = false
+              // P11-172:本层被弹掉=本层待恢复作废(真机 logs_live_20260922_224548 频道页 restore
+              // 26.633 开跑、27.452 被 Back 弹掉后 key 永远挂在 1),先清零再按 origin 决定下层。
+              channelFocusRestoreRequestKey = 0
+              // P11-171 诊断:与详情页 onBack 同批补日志——这两处是本层 restore key 的全部 bump 点,
+              // 此前都零日志,回不到「谁把下层 restore key 顶起来了」(真机 logs_live_20260922_213906
+              // 21:25:16.716 频道页 restore 拿到 key=1,而 21:16:22 已归零)。
+              Log.d(FocusLogTag, "youtubeChannel back: request=null origin=$origin")
               when (origin) {
                 SpaceOrigin.Player -> channelFocusRestoreRequestKey += 1
                 SpaceOrigin.Content -> requestContentGridRestore(selectedDestination)
@@ -1793,6 +1829,8 @@ fun BiliTvApp(
             onOpenPlaylist = { playlist ->
               youtubePlaylistRequest = playlist
               playlistPlaybackBehind = false
+              // P11-175:每次「点开」都清缓存 —— 缓存只为「起播后返回」服务,重新打开要拿新数据。
+              playlistDetailSnapshot = null
             },
             // 「▶ 播放全部」:整份已加载视频作连播队列,第一条起播(对齐移动端)。
             onPlayAll = { queue ->
@@ -1832,10 +1870,21 @@ fun BiliTvApp(
               if (key == playlistDetailFocusRestoreRequestKey) playlistDetailFocusRestoreRequestKey = 0
             },
             onFocusTargetChange = { playlistDetailFocusTarget = it },
+            // P11-175:数据快照双向接线(见 AppShell 顶部 playlistDetailSnapshot 注释)。
+            initialSnapshot = playlistDetailSnapshot,
+            onSnapshotChange = { playlistDetailSnapshot = it },
             onBack = {
               youtubePlaylistRequest = null
               playlistPlaybackBehind = false
+              // P11-172:本层被弹掉=本层待恢复作废,清零后 arm 下层(频道页)的恢复。
+              playlistDetailFocusRestoreRequestKey = 0
               channelFocusRestoreRequestKey += 1
+              // P11-171 诊断:此分支此前零日志,是「返回后焦点消失」判读的盲区——本处与频道页
+              // onBack 是该层 restore key 的全部 bump 点。真机 logs_live_20260922_213906 里
+              // 21:25:16.716 频道页 restore 拿到 key=1(21:16:22 已归零),而频道页 onBack 会连
+              // youtubeChannelRequest 一起置空(与「频道页 restore 活到 18.241」矛盾)⇒ 唯一可能是
+              // 详情页被弹了一层;这行日志就是下轮判读的唯一指纹。
+              Log.d(FocusLogTag, "youtubePlaylistDetail back: request=null channelRestoreKey=$channelFocusRestoreRequestKey")
               true
             },
           )

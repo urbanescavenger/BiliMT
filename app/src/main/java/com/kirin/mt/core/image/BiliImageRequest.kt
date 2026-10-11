@@ -12,6 +12,14 @@ object BiliImageSizing {
   const val StandardOwnerAvatarSizePx = 72
   const val AccountAvatarSizePx = 96
   const val AccountProfileAvatarSizePx = 192
+
+  // 动态图文九宫格:单图整宽(约 2:1)、其余按方格取。九图动态必须限尺寸,否则一条动态会拉 9 张原图
+  // (实测单张原图 62KB、@480w_270h_1c.webp 仅 5.9KB)。
+  const val DynamicDrawSingleWidthPx = 640
+  const val DynamicDrawSingleHeightPx = 320
+  const val DynamicDrawGridSizePx = 320
+  // 表情图:hdslb 的 emote URL 同样吃尺寸后缀(实测原图 PNG 1989B → @60w_60h_1c.webp 1202B)。
+  const val DynamicEmojiSizePx = 60
 }
 
 fun buildVideoThumbnailRequest(
@@ -31,6 +39,31 @@ fun buildVideoThumbnailRequest(
     .data(url.biliCdnResizedImageUrl(widthPx, heightPx))
     .addBiliImageHeaders()
     .size(widthPx, heightPx)
+    .precision(Precision.INEXACT)
+    .allowRgb565(allowRgb565)
+    .memoryCachePolicy(if (memoryCacheEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED)
+    .crossfade(false)
+    .build()
+}
+
+/**
+ * 大图查看器用请求:按屏宽拼 `@Wx.webp`(**只给宽、不给高** —— 带高会追加 `_1c` 变成居中裁切,
+ * 大图必须保持整图比例)。缩略图那套 [buildVideoThumbnailRequest] 带高裁切,不能直接用在这里。
+ */
+fun buildFullImageRequest(
+  context: Context,
+  url: String,
+  widthPx: Int,
+  allowRgb565: Boolean = false,
+  memoryCacheEnabled: Boolean = true,
+): ImageRequest {
+  if (url.isYoutubeImageUrl()) {
+    return buildYoutubeImageRequest(context, url, widthPx, widthPx, allowRgb565, memoryCacheEnabled)
+  }
+  return ImageRequest.Builder(context)
+    .data(url.biliCdnResizedImageUrl(widthPx))
+    .addBiliImageHeaders()
+    .size(widthPx)
     .precision(Precision.INEXACT)
     .allowRgb565(allowRgb565)
     .memoryCachePolicy(if (memoryCacheEnabled) CachePolicy.ENABLED else CachePolicy.DISABLED)

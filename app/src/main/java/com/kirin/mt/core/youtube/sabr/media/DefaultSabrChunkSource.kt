@@ -101,6 +101,9 @@ internal class DefaultSabrChunkSource(
   /** P11-130:已上报预取过的档(itag)——同一档只预取一次,避免持续白吃带宽。 */
   private val prefetchedTiers = mutableSetOf<Int>()
 
+  /** P11-244:带宽闸拦下一次预取的一次性日志(按 itag 去重)——此前这道闸一声不响。 */
+  private val prefetchGateRefusedLogged = mutableSetOf<Int>()
+
   init {
     val representations =
       adaptationSetIndices.flatMap { manifest.adaptationSets[it].representations }.toList()
@@ -160,6 +163,14 @@ internal class DefaultSabrChunkSource(
     (bandwidthMeter as? SabrBandwidthMeter)?.setMeasuredSegCountProvider { itag ->
       fetcher.getMeasuredSegmentCount(itag)
     }
+    // P11-178:零字节挂死证据(按 itag 的墙钟)——水位急救据此在「挂死后重试成功」那一刻仍能降档。
+    (bandwidthMeter as? SabrBandwidthMeter)?.setSilenceHangProvider { itag ->
+      fetcher.getLastSilenceHangWallMs(itag)
+    }
+    // P11-203:交付节奏证据(按 itag 的往返耗时)——带宽闸第四腿,防「平均带宽够却供不上」把档位钉死。
+    (bandwidthMeter as? SabrBandwidthMeter)?.setRoundTripProvider { itag ->
+      fetcher.getLastRoundTripMs(itag)
+    }
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {
@@ -198,7 +209,7 @@ internal class DefaultSabrChunkSource(
    *
    * 条件(全部满足才报,宁缺勿滥):①视频轨;②缓冲水位 ≥ [PREFETCH_MIN_BUFFERED_US](预取会占用串行
    * fetcher,缓冲薄时不许抢);③存在比当前档**分辨率更高**的下一档(阶梯是码率降序,index 越小越高档,
-   * 故从 sel-1 往上找第一条 height 更大的);④该档声明码率 ≤ 实测带宽 × [PREFETCH_BW_MARGIN_PERMILLE]
+   * 故从 sel-1 往上找第一条 height 更大的);④该档声明码率 ≤ 实测带宽 × [PREFETCH_MAX_OVER_EST_PERMILLE]
    * (够不着就别预取);⑤同一档只报一次(避免持续白吃带宽)。
    *
    * 2026-09-20:②**是持续条件不是一次性检查**——生效窗口期内缓冲跌破
@@ -219,10 +230,42 @@ internal class DefaultSabrChunkSource(
     } ?: return
     val holder = representationHolders[nextIdx]
     val nextItag = holder.representation.formatId.itag
-    if (!prefetchedTiers.add(nextItag)) return
+    // ── P11-244:登记必须放在带宽测试**之后**(原顺序把 `add` 写在测试之前)────────────────────────
+    // 原实现的后果:「一次评估失败」就等于「本场永不再试」,而失败既没有日志、也不会重试。
+    // 真机 `logs_live_20261011_210610.log`(视频 `DwWwXEeiumg`,手机 dev.r2187):21:04:45.890 是
+    // 本场**唯一**一次 `bufS ≥ PREFETCH_MIN_BUFFERED_US(20s)` 的窗口,评估 315 时
+    // `bw=20918K` 未过闸 ⇒ 315 被登记为「已预取」⇒ 13 秒后缓冲跌破撤销线,整场再没评估过它
+    // ⇒ `meas(315)` 恒 0 ⇒ `tierNeedBps(315)` 退回 VBR 峰值 27.45M ⇒ **4K 的两道测量闸全部按假数据立着**
+    // (容量闸 required 27.45M > max(est 22.8M, cap 21.0M)、sustained 闸要 30.20M)⇒ 自动档永远停在 1440p,
+    // 用户手切才上得去。低档不存在这个问题(它们 declared 远低于 est,一评就过)。
+    if (nextItag in prefetchedTiers) return
     val nextBitrate = holder.representation.format.bitrate
     val bw = bandwidthMeter.getBitrateEstimate()
-    if (bw <= 0L || nextBitrate > bw * PREFETCH_BW_MARGIN_PERMILLE / 1000L) return
+    // ── P11-244:预取闸余量 0.8× → 1.5×(用户口径「实测修正应该跟其他一样生效」)──────────────
+    // 旧口径要求 `nextBitrate ≤ 0.8 × est`,即「**已经买得起**才许预取」。但预取的本意正是
+    // 「提前把下一档的 init+段取回来」以便测量/秒切(P11-130)—— 拿「已买得起」当准入,等于
+    // **把「测量」变成「升档」的前提**,而升档闸又读这份测量 ⇒ 鸡生蛋(§24 同源)。
+    // 对顶档尤其致命:升档闸要 `sustained ≥ declared×1.1`(本场 30.20M)、旧预取闸要 `est ≥ declared/0.8`
+    // (34.32M)—— **预取闸比升档闸还严 14%** ⇒ `est ∈ [30.2M, 34.3M)` 区间里「升档闸过了、预取闸过不了」;
+    // 等 est 到 34.3M 时早就不需要预取来测了 ⇒ 顶档**永远慢一步**,是唯一进不去这条通道的档
+    // (本场 303/308 都预取到了,315 一次没有,见 §48.10)。
+    // 新口径改用既有常量 `TRIAL_MAX_OVER_CAPACITY_PERMILLE = 1500` 的同值口径(允许「看起来超估 1.5×」
+    // 的候选先取回来测):本场 315 只要 `est ≥ 18.3M` 即可预取,而 21:03:40 之后 est 多在 18~22M ⇒ 会预取到。
+    // 代价与兜底不变:白吃带宽由 [PREFETCH_REVOKE_BUFFERED_US](缓冲 <15s 立即撤销)和「同档只预取一次」约束。
+    if (bw <= 0L || nextBitrate > bw * PREFETCH_MAX_OVER_EST_PERMILLE / 1000L) {
+      // P11-244 取证:这道闸此前一声不响,「为什么没预取」在日志里无从判读(P11-194 同款教训)。
+      if (prefetchGateRefusedLogged.add(nextItag)) {
+        Log.i(
+          "YtSabr",
+          "prefetch held (P11-244 带宽闸): itag$nextItag(${holder.representation.format.height}p) " +
+            "declared=${nextBitrate / 1000}K > est=${bw / 1000}K×" +
+            "${PREFETCH_MAX_OVER_EST_PERMILLE / 1000.0} — 够不着先不预取(白吃带宽)," +
+            "但**不再一次性放弃**,est 起来后会重试",
+        )
+      }
+      return
+    }
+    prefetchedTiers.add(nextItag)
     fetcher.prefetchFormat(nextItag)
   }
 
@@ -277,6 +320,20 @@ internal class DefaultSabrChunkSource(
     (trackSelection as? HeightAwareAdaptiveTrackSelection)?.noteServerServedItags(fetcher.serverServedVideoItags())
     if (trackType == C.TRACK_TYPE_VIDEO) {
       fetcher.noteBufferedAheadMs(Util.usToMs(bufferedDurationUs))
+      // P11-225:当前选中档高 —— 早停余量按档位分叉(≥1440p 一笔多搬一段)。
+      fetcher.noteSelectedVideoHeight(
+        (trackSelection as? HeightAwareAdaptiveTrackSelection)?.selectedHeightNow() ?: 0,
+      )
+      // P11-232:当前选中**视频档的 itag** —— 早停余量只对这一档生效(音频/非选中档一律 margin 0):
+      // 否则音频请求会为了等"下一个音频段"把唯一的流押在 17MB 视频段上,撞 8s 饥饿上限 ⇒ 读超时
+      // ⇒ evict 整条会话(真机 logs_live_20261010_003517.log 那次重载)。
+      fetcher.noteSelectedVideoItag(
+        (trackSelection as? HeightAwareAdaptiveTrackSelection)?.selectedItagNow() ?: 0,
+      )
+      // P11-230:同一档高也喂给 SabrAbrMemory —— 供 LoadControl 的「高档缓冲上限」判据取用。
+      SabrAbrMemory.noteSelectedHeight(
+        (trackSelection as? HeightAwareAdaptiveTrackSelection)?.selectedHeightNow() ?: 0,
+      )
       // P11-130(升档预加载):下一档可负担 + 缓冲健康 → 让 fetcher 提前把它的 init(+段)取回来,
       // 切档那刻直接命中缓存(否则每次升档现拉 2.5–7.2s,视频轨断流而音频照播)。
       maybePrefetchNextTier(bufferedDurationUs)
@@ -326,7 +383,12 @@ internal class DefaultSabrChunkSource(
         "meas=${
           fetcher.getMeasuredBitrateBps(preSelectionHolder.representation.formatId.itag).div(1000)
         }K " +
-        "up=$upgradeCandidateIndex down=$downgradeCandidateIndex fmts=${
+        "up=$upgradeCandidateIndex down=$downgradeCandidateIndex " +
+        // P11-237:上一次评估「本档是否被缓冲标准守住」——hold=true 时 est 不得降档(与降档行互斥,
+        // 否则「缓冲够却降档」或「hold=true 却降档」一眼可见)。
+        "hold=${
+          (trackSelection as? HeightAwareAdaptiveTrackSelection)?.downgradeHeldByBufferNow() ?: false
+        } fmts=${
           (0..<trackSelection.length()).joinToString { i ->
             val f = trackSelection.getFormat(i)
             "${representationHolders[i].representation.formatId.itag}[${if (f.bitrate > 0) f.bitrate else "NA"}]"
@@ -601,7 +663,8 @@ internal class DefaultSabrChunkSource(
  *
  * [PREFETCH_MIN_BUFFERED_US]:缓冲水位门槛——预取占用**串行** fetcher,缓冲薄时不许抢(与"满缓冲试探"
  * 同源的思路:有富余才做额外动作)。
- * [PREFETCH_BW_MARGIN_PERMILLE]:下一档声明码率相对实测带宽的上限(0.8×)——够不着就别预取,白吃带宽。
+ * [PREFETCH_MAX_OVER_EST_PERMILLE]:下一档声明码率相对实测带宽的上限(1.5×)——超过就别预取(白吃带宽),
+ * 但**不一次性放弃**:P11-244 起该档不进 `prefetchedTiers`,est 起来后会重试。
  *
  * 2026-09-20([PREFETCH_REVOKE_BUFFERED_US],修「预取窗口期内抢响应预算 → 正在播的格式饿死」):
  * 上面两条此前**只在进入时检查一次**,此后 30s 窗口(SabrMediaFetcher 的 PREFETCH_WINDOW_MS)一路照问不误
@@ -621,4 +684,13 @@ internal class DefaultSabrChunkSource(
  */
 private const val PREFETCH_MIN_BUFFERED_US = 20_000_000L
 private const val PREFETCH_REVOKE_BUFFERED_US = 15_000_000L
-private const val PREFETCH_BW_MARGIN_PERMILLE = 800L
+
+/**
+ * P11-244:下一档「声明码率 / 实测带宽」的上限(千分位)。**旧值是 800(要求 ≤0.8×,即已经买得起才许预取)**,
+ * 被真机证明对顶档构成死锁:升档闸要 `sustained ≥ declared×1.1`、旧预取闸要 `est ≥ declared/0.8`,
+ * 后者更严 14% ⇒ 顶档永远慢一步,是唯一进不去预取通道的档(§48.10)。
+ * 改为 1500(与 [com.kirin.mt.core.youtube.sabr.media.HeightAwareAdaptiveTrackSelection] 的
+ * `TRIAL_MAX_OVER_CAPACITY_PERMILLE` 同值口径):允许「看起来超估 1.5×」的候选**先取回来测** ——
+ * 预取的本意就是测量/秒切,不该要求「已买得起」。白吃带宽仍由撤销线 + 同档只预取一次约束。
+ */
+private const val PREFETCH_MAX_OVER_EST_PERMILLE = 1500L

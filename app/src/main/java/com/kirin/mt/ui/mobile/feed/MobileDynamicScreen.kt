@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.mobile.feed
 
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,18 +32,29 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
+import com.kirin.mt.core.model.DynamicImage
+import com.kirin.mt.core.model.DynamicKindDraw
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.model.feedKey
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.network.mergeByPubdate
+
 import com.kirin.mt.core.youtube.YoutubeChannel
-import com.kirin.mt.core.youtube.YoutubeChannelStore
 import com.kirin.mt.core.youtube.YoutubeFeedCacheStore
+import com.kirin.mt.core.youtube.YoutubeSubscriptionsPage
 import com.kirin.mt.ui.mobile.common.PullToRefreshLayout
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+
+/** 关注动态取数口径:只有 `all` 会带回图文(图文占比约 1/3,见 docs/bilibili-dynamic-draw-feasibility.md)。 */
+private const val DynamicFeedTypeAll = "all"
+
+/** 与 UserFeedRepository 同一个 tag,方便一次 grep 出「取数 + 渲染列表」两段。 */
+private const val LogTag = "BiliDynamicFeed"
+
 
 private sealed interface DynamicState {
   data object Loading : DynamicState
@@ -52,19 +64,28 @@ private sealed interface DynamicState {
     val videos: List<VideoSummary>,
     val loadingMore: Boolean,
     val endReached: Boolean,
+    /** 本次拉到的 YouTube 关注流:翻页时要用它**重新合并**(边界随 B 站页后移),不能只存合并结果。 */
+    val youtubeVideos: List<VideoSummary> = emptyList(),
+    /**
+     * YouTube 关注流每频道续页 token(首屏拿到)。翻页时与 B 站页**同步推进一页**,否则 YouTube 侧
+     * 永远只有首屏那一次快照(P11-186:每频道只取最新 N 条),第二屏起就再也合不出新的 YouTube 项。
+     */
+    val youtubeContinuation: Map<String, String?>? = null,
   ) : DynamicState
 }
 
 /**
- * 移动端动态 tab:关注动态视频网格 + offset 分页。复用 VideoRepository.getDynamicFeed
- * 与 MobileVideoCard。未登录时显示登录入口。
+ * 移动端动态 tab:关注动态 + offset 分页。复用 VideoRepository.getDynamicFeed、MobileVideoCard
+ * (视频/直播)与 MobileDynamicDrawCard(图文)。未登录时显示登录入口。
+ *
+ * 取数用 `type=all` + `includeDraw=true`:服务端 `type=video` 时根本不会返回图文动态。
+ * **列表 key/去重一律用 `VideoSummary.feedKey`(图文没有 bvid,回退 dynId)**,否则 key 冲突。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MobileDynamicScreen(
   videoRepository: VideoRepository,
   youtubeFeedCacheStore: YoutubeFeedCacheStore,
-  youtubeChannelStore: YoutubeChannelStore,
   isLoggedIn: Boolean,
   dynamicRefreshKey: Int = 0,
   youtubeChannels: List<YoutubeChannel>,
@@ -102,37 +123,39 @@ fun MobileDynamicScreen(
   var feedJob by remember { mutableStateOf<Job?>(null) }
   // 保留旧数据刷新时驱动下拉指示器(区别于初始 Loading 的网格内 spinner)。
   var isRefreshing by remember { mutableStateOf(false) }
+  // 大图查看器:非空时以全屏 Dialog 盖在最上层(点图文图片打开)。
+  var viewerTarget by remember { mutableStateOf<DynamicViewerTarget?>(null) }
+  // 动态详情页:非空时全屏盖住(点图文卡正文/计数区打开)。
+  var detailVideo by remember { mutableStateOf<VideoSummary?>(null) }
 
-  /** 全量拉取 YouTube 关注流(等全部查完),失败用缓存兜底。 */
-  suspend fun fetchYoutubeAll(): List<VideoSummary> {
+  /**
+   * 拉一页 YouTube 关注流:`previous == null` 即首屏(每频道最新若干条),否则用留存 token 拉更早一页。
+   * 失败返回 null(首屏额外置超时提示 + 用缓存快照兜底;续页静默保留现有列表,不打断本次合并)。
+   * 走 [VideoRepository.youtubeHomeFeedPage] 而不是 youtubeSubscriptionsFeed:只有前者回传每频道
+   * 续页 token,翻页才能继续推进 YouTube 侧。
+   */
+  suspend fun fetchYoutubePage(previous: Map<String, String?>?): YoutubeSubscriptionsPage? {
     val currentIds = youtubeChannels.map { it.channelId }
-    val cached = youtubeFeedCacheStore.read()
-    val cacheValid = cached != null && cached.channelIds == currentIds
-    // 门控:用缓存每频道最新 pubdate 判断 RSS 有无新内容,无则跳过 InnerTube(对齐 LibreTube)。
-    // 仅缓存有效时传,避免用错频道集合的旧缓存做门控。
-    val cachedLatestByChannel = if (cacheValid) {
-      cached!!.videos.groupBy { it.channelId }.mapValues { (_, vs) -> vs.maxOf { it.pubdate } }
-    } else {
-      emptyMap()
-    }
     return try {
-      val result = videoRepository.youtubeSubscriptionsFeed(
-        youtubeChannels,
-        onChannelAvatarResolved = { channel ->
-          youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-        },
-        cachedLatestByChannel = cachedLatestByChannel,
-      )
-      if (result.isNotEmpty()) {
+      val page = videoRepository.youtubeHomeFeedPage(previousContinuation = previous)
+      if (page.videos.isNotEmpty()) {
         youtubeTimeoutNotice = false
-        youtubeFeedCacheStore.write(currentIds, result)
+        // 只有首屏需要写缓存(续页是更早的页,写进去会把缓存快照变成残缺集)。
+        if (previous == null) youtubeFeedCacheStore.write(currentIds, page.videos)
       }
-      result
+      page
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
+      if (previous != null) return null
       youtubeTimeoutNotice = true
-      if (cacheValid && cached.videos.isNotEmpty()) cached.videos else emptyList()
+      val cached = youtubeFeedCacheStore.read()
+      if (cached != null && cached.channelIds == currentIds && cached.videos.isNotEmpty()) {
+        // 缓存兜底:空 continuation map ⇒ endReached,不会拿旧快照去续页。
+        YoutubeSubscriptionsPage(videos = cached.videos, perChannelContinuation = emptyMap())
+      } else {
+        null
+      }
     }
   }
 
@@ -152,7 +175,7 @@ fun MobileDynamicScreen(
       var biliEndReached = true
       var biliError: String? = null
       val biliVideos = try {
-        val page = videoRepository.getDynamicFeed(type = "video")
+        val page = videoRepository.getDynamicFeed(type = DynamicFeedTypeAll, includeDraw = true)
         nextOffset = page.offset
         biliEndReached = !page.hasMore
         page.videos
@@ -163,12 +186,14 @@ fun MobileDynamicScreen(
         null
       }
 
-      // 2. 拉 YouTube 关注(全量,等查完再一次性合并,不再分批增量叠加)
-      val youtubeVideos = if (youtubeChannels.isNotEmpty()) {
-        fetchYoutubeAll()
+      // 2. 拉 YouTube 关注首屏(全量,等查完再一次性合并,不再分批增量叠加);记下每频道续页 token。
+      // 拉取失败(youtubePage==null)时沿用上一次的 YouTube 集,不让卡片在刷新瞬间凭空消失。
+      val youtubePage = if (youtubeChannels.isNotEmpty()) {
+        fetchYoutubePage(previous = null)
       } else {
-        emptyList()
+        null
       }
+      val youtubeVideos = youtubePage?.videos ?: prev?.youtubeVideos.orEmpty()
 
       // 3. 合并一次
       val merged = mergeByPubdate(biliVideos.orEmpty(), youtubeVideos)
@@ -178,7 +203,9 @@ fun MobileDynamicScreen(
         else -> DynamicState.Success(
           videos = merged,
           loadingMore = false,
-          endReached = biliEndReached,
+          endReached = biliEndReached && youtubePage?.endReached != false,
+          youtubeVideos = youtubeVideos,
+          youtubeContinuation = youtubePage?.perChannelContinuation ?: prev?.youtubeContinuation,
         )
       }
     } finally {
@@ -208,6 +235,24 @@ fun MobileDynamicScreen(
 
   val gridState = rememberLazyGridState()
 
+  // 列表侧打点(P11-181):真机报告「看不到图文」时用来区分「图文卡在列表里但没翻到」与
+  // 「压根没进渲染列表」——记下图文在第几张、正文长度、图片数与发布时间。
+  LaunchedEffect(state) {
+    val success = state as? DynamicState.Success ?: return@LaunchedEffect
+    val draws = success.videos.withIndex().filter { it.value.dynamicKind == DynamicKindDraw }
+    Log.i(
+      LogTag,
+      "dynamic list total=${success.videos.size} draws=${draws.size} indexes=${draws.map { it.index }}",
+    )
+    draws.forEach { (index, video) ->
+      Log.i(
+        LogTag,
+        "dynamic draw at index=$index textLen=${video.dynamicText.length} " +
+          "images=${video.dynamicImages.size} pubdate=${video.pubdate} hasMore=${video.dynamicTextHasMore}",
+      )
+    }
+  }
+
   fun loadNextPage() {
     val current = state as? DynamicState.Success ?: return
     if (current.loadingMore || current.endReached) return
@@ -215,13 +260,34 @@ fun MobileDynamicScreen(
     state = current.copy(loadingMore = true)
     scope.launch {
       val next = try {
-        val page = videoRepository.getDynamicFeed(offset = offsetToLoad, type = "video")
+        val page = videoRepository.getDynamicFeed(offset = offsetToLoad, type = DynamicFeedTypeAll, includeDraw = true)
         nextOffset = page.offset
-        val merged = (current.videos + page.videos).distinctBy { it.bvid }
+        // YouTube 关注流同步推进一页:否则第二屏起只有 B 站条目(YouTube 侧只有首屏快照,合不出新项)。
+        // 失败静默(null)保留现有 YouTube 集,不拖累本次 B 站页落地。
+        val ytContinuation = current.youtubeContinuation
+        val ytPage = if (youtubeChannels.isNotEmpty() && ytContinuation?.values?.any { it != null } == true) {
+          fetchYoutubePage(previous = ytContinuation)
+        } else {
+          null
+        }
+        val youtubeVideos = if (ytPage != null) {
+          (current.youtubeVideos + ytPage.videos).distinctBy { it.feedKey }
+        } else {
+          current.youtubeVideos
+        }
+        // 只把「B 站条目」累加,再用 YouTube 集**整体重合并** —— B 站拉到更早的页后,
+        // 边界随之后移,更旧的 YouTube 项这时才进入列表(P11-186)。
+        val biliItems = current.videos.filter { it.dynId.isNotBlank() } + page.videos
+        val merged = mergeByPubdate(biliItems, youtubeVideos)
+        val ytContinuationNext = ytPage?.perChannelContinuation ?: ytContinuation
+        val ytHasMore = ytContinuationNext?.values?.any { it != null } == true
         current.copy(
           videos = merged,
           loadingMore = false,
-          endReached = !page.hasMore || merged.size == current.videos.size,
+          // 两侧都到底才算到底:YouTube 侧还能续页时,列表仍可继续向下长。
+          endReached = (!page.hasMore && !ytHasMore) || merged.size == current.videos.size,
+          youtubeVideos = youtubeVideos,
+          youtubeContinuation = ytContinuationNext,
         )
       } catch (e: CancellationException) {
         throw e
@@ -243,6 +309,20 @@ fun MobileDynamicScreen(
   }
 
   Box(modifier = modifier.fillMaxSize()) {
+    viewerTarget?.let { target ->
+      DynamicImageViewer(
+        images = target.images,
+        initialIndex = target.index,
+        onDismiss = { viewerTarget = null },
+      )
+    }
+    detailVideo?.let { detail ->
+      MobileDynamicDetailScreen(
+        video = detail,
+        videoRepository = videoRepository,
+        onDismiss = { detailVideo = null },
+      )
+    }
     // PullToRefreshLayout 提到 when 外,isRefreshing 顶层求值真值;刷新时 state→Loading 不再卸载容器,
     // 列表滚动位置与指示器保留,各状态内联为 grid item(照 MobileUserSpaceScreen 范式)。
     PullToRefreshLayout(
@@ -305,7 +385,17 @@ fun MobileDynamicScreen(
                 )
               }
             }
-            items(s.videos, key = { it.bvid }) { video ->
+            items(s.videos, key = { it.feedKey }) { video ->
+              // 图文动态不可播放:走图文卡(本轮整卡与图片都不响应点击,详情页/大图在后续切片接)。
+              if (video.dynamicKind == DynamicKindDraw) {
+                MobileDynamicDrawCard(
+                  video = video,
+                  onOpenOwner = onOpenOwner,
+                  onImageClick = { images, index -> viewerTarget = DynamicViewerTarget(images, index) },
+                  onOpenDetail = { detailVideo = video },
+                )
+                return@items
+              }
               MobileVideoCard(
                 video = video,
                 onClick = onVideoSelected,

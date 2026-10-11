@@ -48,6 +48,9 @@ class BiliTvApplication : Application(), ImageLoaderFactory {
     appContainer.warmupApiConnection()
     // IPTV 源判活扫描(延迟 15s 后台跑,判活一次本次启动全程复用,仅 TV 路径消费)。
     appContainer.startIptvSourceProbe()
+    // P11-176:预热 WebDAV 主机(已配置才做)。真机实测该服务器空闲后第一笔要 >15s 才回(边缘冷启),
+    // 不预热就把这段等待全砸在用户按「备份/还原/保存」那一下。fire-and-forget。
+    appContainer.startWebDavPrewarm()
     // P11-126:预热 harvest 采集 WebView(延迟 8s;仅「WEB-SABR 优先」档会真做)。把冷启
     // (建 WebView + 载 youtube.com 首页,真机实测 10.9s)移出起播预算。
     appContainer.startYoutubeHarvestPrewarm()

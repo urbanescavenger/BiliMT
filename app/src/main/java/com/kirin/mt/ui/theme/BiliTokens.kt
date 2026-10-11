@@ -148,6 +148,9 @@ object BiliSizing {
   val VideoBadgeMinHeight = 22.dp
   val VideoProgressBarHeight = 3.dp
   val VideoOverlayIconSize = 14.dp
+  // 动态正文里 B站 表情的内联尺寸。接口的 emoji.size 是**档位**不是像素(实测样本值 1),
+  // 所以这里用固定值,和正文 bodyMedium 行高相当。
+  val DynamicEmojiSize = 20.dp
   val OwnerAvatarSize = 20.dp
   val SettingsRowHeight = 96.dp
   val SettingsChipHeight = 44.dp
@@ -303,6 +306,14 @@ object BiliFocus {
   const val CardScale = 1.055f
   const val CinematicCardScale = 1.072f
   const val CinematicNavScale = 1.035f
+  /**
+   * P11-191:头像 autoConfirm 的「按键宽限」。侧栏内按下方向键后这么久内落到头像的焦点,
+   * 才算用户主动移过去;超时(或根本不是侧栏里按的键)一律视为被动落焦,不跳「我的」页。
+   */
+  const val AutoConfirmKeyGraceMs = 300L
+  // 大图查看器缩放:双击放大档 + 双指缩放上限。
+  const val ImageViewerDoubleTapScale = 2.5f
+  const val ImageViewerMaxScale = 5f
   const val CoverHighlightAlpha = 0.08f
   const val CinematicCoverHighlightAlpha = 0.06f
   const val FocusedCoverBlurAlpha = 0.10f

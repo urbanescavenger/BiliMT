@@ -34,9 +34,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -45,6 +48,7 @@ import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.image.buildOwnerAvatarRequest
 import com.kirin.mt.core.model.SourceIptv
+import com.kirin.mt.core.model.durationText
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoCardRelativeText
 import com.kirin.mt.core.model.VideoSummary
@@ -52,7 +56,9 @@ import com.kirin.mt.core.model.pubdateText
 import com.kirin.mt.core.model.watchProgressRatio
 import com.kirin.mt.ui.i18n.formatCompactCount
 import com.kirin.mt.ui.i18n.localeFromResources
+import com.kirin.mt.ui.mobile.feed.DynamicRichText
 import com.kirin.mt.ui.theme.BiliColors
+import com.kirin.mt.ui.theme.BiliSizing
 
 /** YouTube 卡片绿框颜色(Material Green 600),动态页区分 YouTube 与 B 站内容。 */
 private val YoutubeBorderColor = Color(0xFF00C853)
@@ -204,9 +210,9 @@ private fun FeedStyleCardContent(
   completed: Boolean = false,
 ) {
   val relativeText = rememberVideoCardRelativeText()
-  val count = formatCount(if (video.view > 0) video.view else video.likeCount, LocalContext.current.resources)
   val pubdate = video.pubdateText(relativeText)
-  val meta = if (pubdate.isBlank()) count else "$pubdate · $count"
+  // 对齐 B站 官方动态卡:作者行只留发布时间,播放/弹幕挪到缩略图左下角覆盖行。
+  val meta = pubdate
   Column(modifier = modifier) {
     // 顶行作者块:头像跨两行,右侧第一行 UP 名、第二行发布时间 + 播放量。整块可点进 UP 主页。
     Row(
@@ -242,6 +248,16 @@ private fun FeedStyleCardContent(
         }
       }
     }
+    // 动态正文(UP 自己的话):官方动态卡放在缩略图上方 —— 映射层此前把视频动态的这段文案丢了(P11-182)。
+    if (video.dynamicText.isNotBlank()) {
+      DynamicRichText(
+        video = video,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurface,
+        maxLines = 3,
+        modifier = Modifier.padding(bottom = 6.dp),
+      )
+    }
     // 缩略图独占整行(16:10、直播角标、YouTube 绿框保留)。
     Box(
       modifier = Modifier
@@ -270,6 +286,49 @@ private fun FeedStyleCardContent(
         CompletedBadge(modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp))
       }
       MobileWatchProgress(video = video, modifier = Modifier.align(Alignment.BottomCenter))
+      // 覆盖行对齐 TV 端动态卡:**时长最左**(带底板)、**播放/弹幕最右**(图标 + 紧凑计数);
+      // **不加整条底部渐变蒙版**(用户要求),右下的白字靠阴影保证亮封面上的可读性。
+      if (!video.isLive && (video.duration > 0 || video.view > 0 || video.danmaku > 0)) {
+        val resources = LocalContext.current.resources
+        // 三个元素统一:纯白字 + 阴影,都**不带底板**(用户要求);不加渐变蒙版,
+        // 可读性全靠阴影 —— 亮封面若仍看不清,再考虑恢复一层薄蒙版或给整行加底板。
+        val overlayTextStyle = MaterialTheme.typography.labelSmall.copy(
+          shadow = Shadow(color = Color.Black, blurRadius = 4f),
+        )
+        Row(
+          modifier = Modifier
+            .align(Alignment.BottomStart)
+            .fillMaxWidth()
+            .padding(6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          if (video.duration > 0) {
+            Text(
+              text = video.durationText(),
+              style = overlayTextStyle,
+              color = BiliColors.TextPrimary,
+            )
+          }
+          Spacer(modifier = Modifier.weight(1f))
+          if (video.view > 0) {
+            MobileCoverMetric(
+              iconRes = R.drawable.ic_video_play_outline,
+              count = video.view,
+              resources = resources,
+              textStyle = overlayTextStyle,
+            )
+          }
+          if (video.danmaku > 0) {
+            Spacer(modifier = Modifier.width(8.dp))
+            MobileCoverMetric(
+              iconRes = R.drawable.ic_player_danmaku_toggle,
+              count = video.danmaku,
+              resources = resources,
+              textStyle = overlayTextStyle,
+            )
+          }
+        }
+      }
     }
     // 标题在底部。
     Text(
@@ -278,6 +337,80 @@ private fun FeedStyleCardContent(
       maxLines = 2,
       overflow = TextOverflow.Ellipsis,
       modifier = Modifier.padding(top = 6.dp),
+    )
+    // 卡底互动计数(转发/评论/点赞):动态条目才有这三个计数,非动态条目(dynId 空)不显示。
+    if (video.dynId.isNotBlank()) {
+      DynamicActionRow(video = video, modifier = Modifier.padding(top = 6.dp))
+    }
+  }
+}
+
+/** 缩略图右下的度量(播放/弹幕):图标 + 紧凑计数,对齐 TV 端动态卡的度量样式。 */
+@Composable
+private fun MobileCoverMetric(
+  iconRes: Int,
+  count: Int,
+  resources: android.content.res.Resources,
+  textStyle: TextStyle,
+) {
+  Row(verticalAlignment = Alignment.CenterVertically) {
+    Icon(
+      painter = painterResource(iconRes),
+      contentDescription = null,
+      tint = BiliColors.TextPrimary,
+      modifier = Modifier.size(BiliSizing.VideoOverlayIconSize),
+    )
+    Spacer(modifier = Modifier.width(3.dp))
+    Text(
+      text = formatCount(count, resources),
+      style = textStyle,
+      color = BiliColors.TextPrimary,
+      maxLines = 1,
+    )
+  }
+}
+
+/** 动态卡底部互动计数行(转发/评论/点赞):图文卡与视频动态卡共用,对齐官方动态卡。 */
+@Composable
+internal fun DynamicActionRow(video: VideoSummary, modifier: Modifier = Modifier) {
+  val resources = LocalContext.current.resources
+  Row(
+    modifier = modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(20.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    DynamicActionCount(
+      iconRes = R.drawable.ic_player_share,
+      text = stringResource(R.string.mobile_dynamic_forward_count, formatCount(video.forwardCount, resources)),
+    )
+    DynamicActionCount(
+      iconRes = R.drawable.ic_player_comment,
+      text = stringResource(R.string.player_comment_count_format, formatCount(video.commentCount, resources)),
+    )
+    DynamicActionCount(
+      iconRes = R.drawable.ic_player_like,
+      text = stringResource(R.string.player_like_count_format, formatCount(video.likeCount, resources)),
+    )
+  }
+}
+
+@Composable
+private fun DynamicActionCount(iconRes: Int, text: String) {
+  Row(
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(4.dp),
+  ) {
+    Icon(
+      painter = painterResource(iconRes),
+      contentDescription = null,
+      tint = MaterialTheme.colorScheme.onSurfaceVariant,
+      modifier = Modifier.size(BiliSizing.VideoOverlayIconSize),
+    )
+    Text(
+      text = text,
+      style = MaterialTheme.typography.labelSmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+      maxLines = 1,
     )
   }
 }
@@ -472,7 +605,7 @@ private fun LiveOnlineCount(online: Int, areaName: String, modifier: Modifier = 
 /** UP 主圆形头像:默认 20dp(紧凑卡),动态 feed 用 40dp(跨两行);空 face 或加载失败显示默认人形占位。
  *  复用 buildOwnerAvatarRequest 带 Bili 头与 CDN 尺寸。 */
 @Composable
-private fun OwnerAvatar(face: String, isLive: Boolean = false, size: Dp = 20.dp) {
+internal fun OwnerAvatar(face: String, isLive: Boolean = false, size: Dp = 20.dp) {
   // 正直播的 UP 头像套红色环(BiliPink),作为"直播头像"视觉信号;20dp 太小不放"直播"文字,
   // 封面已有 LiveBadge 文字,头像用红环标识即可。
   val modifier = Modifier

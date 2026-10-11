@@ -5,6 +5,7 @@ import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.SpaceVideoRetryMode
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.PlaybackRequest
+import com.kirin.mt.core.youtube.YoutubeConstants
 import com.kirin.mt.core.youtube.YoutubeRepository
 import com.kirin.mt.core.player.PlaybackVideoMetadata
 import kotlinx.coroutines.CoroutineScope
@@ -44,6 +45,8 @@ internal fun CoroutineScope.launchUpVideosPanelLoad(
   applyResolvedCachedVideos: (List<VideoSummary>) -> Unit,
   applyLoadedVideos: (List<VideoSummary>) -> Unit,
   applyFollowed: (Boolean) -> Unit,
+  /** YouTube 频道关注态(读本地 [com.kirin.mt.core.youtube.YoutubeChannelStore],免登录)。 */
+  readYoutubeFollowed: suspend (String) -> Boolean,
   showControls: () -> Unit,
 ): Job = launch {
   val resolvedMetadata = resolveDisplayMetadata()
@@ -78,7 +81,15 @@ internal fun CoroutineScope.launchUpVideosPanelLoad(
 
   val networkResult = when {
     channelId != null -> runCatching {
-      youtubeRepository.getChannelVideos(channelId).items
+      // withQualityBadges=false:播放路径不补拉 TV 画质角标那一路(P11-201),面板少一个请求、
+      // 也不用等一个更大的响应;角标只在频道页要。
+      // 排序感知入口:面板头部那颗「最新发布/最多播放」chip 传下来的 order(B站 key)在此映射成
+      // YouTube 排序 —— 此前这里把 order 丢了,chip 只翻文案、列表恒最新(P11-227)。
+      youtubeRepository.getChannelVideosOrdered(
+        channelId = channelId,
+        order = youtubeChannelOrderFor(order),
+        withQualityBadges = false,
+      ).items
     }
     ownerMid <= 0L -> {
       Log.w(
@@ -159,15 +170,20 @@ internal fun CoroutineScope.launchUpVideosPanelLoad(
     }
   }
 
-  // 关注仅对 B 站 UP(ownerMid>0)有意义;YouTube 关注走 YoutubeChannelStore,这里不回查。
-  val followed = if (ownerMid > 0L) {
-    runCatching {
+  // 关注态:B站 UP 走 relation 接口(未登录即 false);YouTube 频道查本地关注列表
+  // (YoutubeChannelStore,免登录;与频道主页那颗关注按钮同一份数据源)。
+  val followed = when {
+    ownerMid > 0L -> runCatching {
       videoRepository.checkFollowStatus(ownerMid)
     }.onFailure { error ->
       Log.w(PlayerUpVideosLogTag, "follow check failed token=$loadToken mid=$ownerMid: ${error.toLogBrief()}")
     }.getOrDefault(false)
-  } else {
-    false
+    channelId != null -> runCatching {
+      readYoutubeFollowed(channelId)
+    }.onFailure { error ->
+      Log.w(PlayerUpVideosLogTag, "youtube follow check failed token=$loadToken channelId=$channelId: ${error.toLogBrief()}")
+    }.getOrDefault(false)
+    else -> false
   }
   if (!isCurrentUpVideosLoad(loadToken)) {
     return@launch
@@ -180,6 +196,17 @@ internal fun List<VideoSummary>.withoutCurrentVideo(request: PlaybackRequest): L
   if (request.bvid.isBlank()) return this
   return filterNot { video -> video.bvid.equals(request.bvid, ignoreCase = true) }
 }
+
+/**
+ * UP 面板排序 chip 的 order(B站 key:[UpVideoOrderLatest] / [UpVideoOrderHot])→ YouTube 频道页排序。
+ * 面板头那颗 chip 两种源共用同一份文案,故这里是「同一颗 chip、两套后端」的接缝。
+ */
+internal fun youtubeChannelOrderFor(order: String): YoutubeConstants.ChannelVideoOrder =
+  if (order == UpVideoOrderHot) {
+    YoutubeConstants.ChannelVideoOrder.Popular
+  } else {
+    YoutubeConstants.ChannelVideoOrder.Latest
+  }
 
 internal fun upVideoCacheKey(ownerMid: Long, order: String): String {
   return "$ownerMid:$order"

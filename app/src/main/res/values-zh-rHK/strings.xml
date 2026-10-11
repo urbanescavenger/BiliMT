@@ -250,6 +250,11 @@
     <string name="search_failed_with_message">搜尋失敗。%1$s</string>
     <string name="dynamic_loading">正在載入動態...</string>
     <string name="dynamic_empty">暫無動態</string>
+    <string name="mobile_dynamic_detail_title">動態詳情</string>
+    <string name="mobile_dynamic_detail_truncated">正文較長,這裡是伺服器回傳的截斷版本</string>
+    <string name="mobile_dynamic_expand">展開</string>
+    <string name="mobile_dynamic_collapse">收起</string>
+    <string name="mobile_dynamic_forward_count">轉發 %1$s</string>
     <string name="dynamic_failed_with_message">動態載入失敗。%1$s</string>
     <string name="dynamic_signed_out">請先登入，登入後可查看關注動態。</string>
     <string name="history_loading">正在載入觀看歷史...</string>
@@ -353,6 +358,7 @@
     <string name="player_panel_unknown_up">UP 主</string>
     <string name="player_up_sort_latest">最新發布</string>
     <string name="player_up_sort_hot">最熱門</string>
+    <string name="player_up_sort_oldest">最早發布</string>
     <string name="player_up_follow">關注</string>
     <string name="player_up_followed">已關注</string>
     <string name="player_up_follow_loading">處理中...</string>

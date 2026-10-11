@@ -119,6 +119,8 @@ import com.kirin.mt.core.player.PlaybackTrack
 import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.VideoshotData
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
+import com.kirin.mt.core.player.SabrLoadErrorHandlingPolicy
+import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.core.youtube.YoutubeLoadProgress
 import com.kirin.mt.core.youtube.YoutubeLoadStep
@@ -146,6 +148,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -161,6 +164,8 @@ fun PlayerScreen(
   playbackRepository: PlaybackRepository,
   youtubeRepository: com.kirin.mt.core.youtube.YoutubeRepository,
   youtubeHistoryStore: YoutubeHistoryStore,
+  /** UP 面板「关注」的 YouTube 侧数据源(免登录,与频道主页那颗关注按钮同一份列表)。 */
+  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   danmakuSettingsStore: DanmakuSettingsStore,
   playbackHttpClient: OkHttpClient,
   cdnSelector: CdnSelector,
@@ -292,6 +297,8 @@ fun PlayerScreen(
   // pendingSABRSeekMs 由 launch effect 消费后置空,避免重复 seek。
   var pendingSABRSeekMs by remember { mutableStateOf<Long?>(null) }
   var sabrSeekReloadKey by remember { mutableIntStateOf(0) }
+  // P11-203:seek 后的 stall 判死宽限截止时刻(elapsedRealtime)。见 [SeekStallGraceMs]。
+  var seekStallGraceUntilMs by remember { mutableLongStateOf(0L) }
   var autoRetryCount by remember { mutableIntStateOf(0) }
   // P11-99c:onPlayerError 专用重试预算(与 stall 看门狗的 autoRetryCount 分开)。降级链 SABR→DASH
   // →HLS 有 3 级,共享 2 次预算会在 HLS 降级触发前烧完(09-15 00:22 真机:SABR 2000 用 #1、DASH
@@ -344,7 +351,13 @@ fun PlayerScreen(
         .build()
     )
     ExoPlayer.Builder(context)
-      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
+      // P11-197:SABR 续拉门槛按最近一次实测往返抬高(非 SABR / 无样本时返回 0 = 原生行为)。
+      .setLoadControl(createTvPlaybackLoadControl(
+        bufferMaxMs,
+        readAheadMinBufferUs = { SabrAbrMemory.readAheadMinBufferUs() },
+        // P11-230:按档位的缓冲上限(≥1440p 收到 20s)—— 压住 Java 堆里的样本量(4K 50s ≈ 180MB)。
+        bufferedCapUs = { SabrAbrMemory.heavyTierBufferedCapUs() },
+      ))
       .setTrackSelector(trackSelector)
       // 起始挡位:seed 初始带宽估计到目标档码率/0.7 → 目标挡命中起始档,之后带宽实测自然爬升。
       // (media3 1.10.0 初始选轨纯带宽驱动,resolver 挪 index0 无效;同一 [bandwidthMeter] 实例复用给
@@ -499,6 +512,8 @@ fun PlayerScreen(
   fun routeSeek(targetMs: Long) {
     val maxMs = maxDurationMs().takeIf { it > 0L } ?: Long.MAX_VALUE
     val clamped = targetMs.coerceIn(0L, maxMs)
+    // P11-203:两条分支都会让「位置停在目标点等数据」——置一次 stall 判死宽限,别把这次重新缓冲判成挂死。
+    seekStallGraceUntilMs = SystemClock.elapsedRealtime() + SeekStallGraceMs
     if ((playerState as? PlayerScreenState.Ready)?.info?.isSabrProgressive() == true) {
       pendingSABRSeekMs = clamped
       sabrSeekReloadKey++
@@ -885,30 +900,15 @@ fun PlayerScreen(
       applyFollowed = { followed ->
         upFollowed = followed
       },
+      readYoutubeFollowed = { channelId ->
+        youtubeChannelStore.channels.first().any { it.channelId == channelId }
+      },
       showControls = ::showControls,
     )
   }
 
   fun toggleUpOrder() {
     openUpVideos(if (upVideoOrder == UpVideoOrderLatest) UpVideoOrderHot else UpVideoOrderLatest)
-  }
-
-  fun setUpFollowStatus(follow: Boolean) {
-    val ownerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
-    if (ownerMid <= 0L || upFollowLoading) return
-    upFollowLoading = true
-    coroutineScope.launch {
-      val success = runCatching {
-        videoRepository.setFollowStatus(ownerMid, follow)
-      }.getOrDefault(false)
-      if (success) {
-        upFollowed = follow
-      }
-      upFollowLoading = false
-      showUnfollowConfirm = false
-      unfollowConfirmFocusedConfirm = false
-      showControls()
-    }
   }
 
   /**
@@ -960,6 +960,63 @@ fun PlayerScreen(
     }
     interactionToast?.cancel()
     interactionToast = Toast.makeText(context, message, Toast.LENGTH_SHORT).also { it.show() }
+  }
+
+  /**
+   * UP 面板「关注」:B站 UP 走 relation 接口(需登录);YouTube 频道写本地
+   * [com.kirin.mt.core.youtube.YoutubeChannelStore](免登录)。
+   *
+   * 此前只处理 B站(`ownerMid <= 0` 直接 return):YouTube 视频 ownerMid 恒为 0,那颗「关注」是死按钮
+   * ——按下去连「处理中…」都不闪(2026-10-09 用户报「UP 按钮 关注无效」)。失败不再静默:B站 失败
+   * (含未登录)给一次与点赞/投币同款的 toast。
+   *
+   * 位置在 [showInteractionToast] **之后**是硬要求:Kotlin 的局部函数不能前置引用(此前放前面,
+   * 云编译 `Unresolved reference 'showInteractionToast'` 报错)。
+   */
+  fun setUpFollowStatus(follow: Boolean) {
+    val isYoutube = displayRequest.isYoutube
+    val ownerMid = displayRequest.ownerMid.takeIf { it > 0L } ?: metadata?.ownerMid ?: 0L
+    if (upFollowLoading) return
+    if (!isYoutube && ownerMid <= 0L) return
+    if (isYoutube && displayRequest.bvid.isBlank()) return
+    upFollowLoading = true
+    coroutineScope.launch {
+      val success = if (isYoutube) {
+        runCatching {
+          // 播放器 videoId 常不带 channelId(搜索/历史等路径),从 /player 权威 videoDetails 解析
+          // (同 UpFocusHome 分支与 UP 面板列表加载)。
+          val channelId = displayRequest.channelId.takeIf { it.isNotBlank() }
+            ?: youtubeRepository.getVideoDetail(displayRequest.bvid)
+              ?.channelId?.takeIf { it.isNotBlank() }
+            ?: return@runCatching false
+          if (follow) {
+            youtubeChannelStore.add(
+              YoutubeChannel(
+                channelId = channelId,
+                name = displayRequest.ownerName,
+                avatar = displayRequest.ownerFace,
+              ),
+            )
+          } else {
+            youtubeChannelStore.remove(channelId)
+          }
+          true
+        }.getOrDefault(false)
+      } else {
+        runCatching {
+          videoRepository.setFollowStatus(ownerMid, follow)
+        }.getOrDefault(false)
+      }
+      if (success) {
+        upFollowed = follow
+      } else {
+        showInteractionToast(false, "")
+      }
+      upFollowLoading = false
+      showUnfollowConfirm = false
+      unfollowConfirmFocusedConfirm = false
+      showControls()
+    }
   }
 
   fun doLike() {
@@ -1629,6 +1686,17 @@ fun PlayerScreen(
   // 画面黑」(MTK codec 回收/零帧渲染,00:31 与 07:22 两案)只发生在 READY 态,READY+位置前进
   // 正好看门狗盲区,必须显式记首帧才能兜。launch 每轮重置。
   var frameRendered by remember { mutableStateOf(false) }
+  /**
+   * P11-210:**真正起播 = 进过 `Player.STATE_READY`**(每轮 launch 重置),与 [frameRendered] 刻意分开。
+   *
+   * 真机 2026-10-09 08:51(`logs_live_20261009_085228.log`,手选 2160p 的 SABR 单轨会话)实证:渲染器
+   * 渲染了**首帧**(`onRenderedFirstFrame`),但播放器**从未进 READY**(同场只有一个 ExoPlayer 实例,
+   * `onPlaybackStateChanged` 每次变化都打,8.2 秒里一次都没打),位置钉在 seek 落点一动不动 ——
+   * 那一帧只是 **seek 后的 preroll 渲染**。于是位置冻结看门狗从 [StartupStallThresholdMs] 25s 档掉到
+   * [StallThresholdMs] 8s 档开枪,而它开枪前 1.4 秒刚收到一笔 36.5MB 的响应。起播未完成时该用宽限档、
+   * 也该 evict 慢会话,故这一块一律以本标志为准。移动端 `MobilePlayerScreen` 同改。
+   */
+  var playbackStarted by remember { mutableStateOf(false) }
   // 黑屏画质熔断:视频零帧自动重试 ≥2 次仍黑,把起始档压到此高度(1080p,00:31 对照中 avc 1080p
   // 可出画)重试;恢复出帧后不再动它(防在坏档上来回弹)。Int.MAX_VALUE=未触发。
   var blackFrameHeightCap by remember { mutableIntStateOf(Int.MAX_VALUE) }
@@ -1783,6 +1851,8 @@ fun PlayerScreen(
         // 混合 mime 关闭导致只组 1 轨。isSupported=false → renderer 拒载(H264 字段问题);isSupported=true 但
         // isAdaptive=false → renderer 单轨可播但不可自适应切轨(混合 mime/自适应能力)。
         if (playbackState == Player.STATE_READY) {
+          // P11-210:真正起播(见 playbackStarted 声明处的复盘)。首帧渲染 ≠ 起播。
+          playbackStarted = true
           val g = player.currentTracks.groups
           Log.i(
             "YtSabrTracks",
@@ -2053,9 +2123,14 @@ fun PlayerScreen(
             throw IllegalStateException("SABR single-stream session not found for ${effectiveInfo.bvid}")
           }
           val fetcher = SabrMediaFetcher(entry, playbackHttpClient)
+          // P11-215(见 docs/youtube-web-sabr.md §5.11.29):把**本次播放的续播位置**种进 fetcher ——
+          // 会话首个 SABR 请求(init/bootstrap)早于任何 getNextChunk,那时 media3 给不出有效位置 ⇒
+          // init 位置锚失效 ⇒ 服务端从 seg 0 推、首包一半到全部作废。
+          fetcher.noteSessionStartPositionMs(startPositionMs)
           val manifest = SabrManifest.fromSession(entry.session, effectiveInfo)
           Log.i(PlayerPlaybackLogTag, "SABR single-stream: sid=$sid qualities=${effectiveInfo.qualities.size} duration=${effectiveInfo.durationMs}ms")
           SabrMediaSource.Factory(manifest, fetcher, sid, bufferMaxMs.toLong(), bandwidthMeter)
+            .setLoadErrorHandlingPolicy(SabrLoadErrorHandlingPolicy()) // P11-223:SABR 终态错误立即上抛(挂 MediaSource.Factory,不是 ExoPlayer.Builder)
             .createMediaSource(MediaItem.fromUri(manifest.sabrUrl))
         } else if (effectiveInfo.isHlsManifest()) {
           // alpha.90:HLS 兜底——SABR RELOAD 闭环未回 SABR 且 dashMpdUrl 空(android 无 manifest)时,落 visionOS
@@ -2105,6 +2180,8 @@ fun PlayerScreen(
         // 锁高后选择集恒定,松开只是允许选更高档 → 零重建。黑屏熔断压档同样走这个锁(与手动选档取小)。
         startQualityRelaxed = false
         frameRendered = false
+        // P11-210:同上——真正起播要重新等 READY(preroll 首帧不算)。
+        playbackStarted = false
         // P11-120:换视频重置字幕为关闭(不跨视频继承用户的字幕选择)。
         selectedSubtitleTrackId = null
         // 黑屏画质熔断:零帧重试 ≥2 次后启动,起始档压到 BlackFrameHeightCap(与手动选档取小)。
@@ -2238,7 +2315,19 @@ fun PlayerScreen(
       // 2026-09-01 试探跨重载记忆:任何 stall 重载时,若正有试探在身(试探期被重载打死,降档路径
       // 没跑、180s 失败冷却没记),转记失败冷却——新 ABR 实例不立即重试同一堵墙(21:13 真机案例)。
       // 与起播顶档记忆(pos 条件)独立,无条件执行。
-      SabrAbrMemory.onStallReload()
+      // P11-173:同一次调用里把**本场实际爬上去过的最高档**(≥1080p)也冷却 90s —— 真机
+      // logs_live_20260922_224548 两场都在重载后 40~90s 内爬回同一档再饿死(1440p 旧逻辑无任何
+      // 跨重载保护,只有顶档 2160 有)。
+      // P11-178:目标档改取**饿死瞬间正在播的档**(本场爬到过 2160p、漏光在 1440p ⇒ 冷却 1440p 才是
+      // 堵住那堵墙;冷却 2160p 是空操作,见 SabrAbrMemory 注释)。
+      // P11-188:带上 bvid —— 连击(反复撞同一档 ⇒ 冷却 90→180→300s)按视频归属,换视频从 1 重算;
+      // 取不到(状态还没到 Ready)时传 null,退化为只按档位+时间窗口判连击。
+      SabrAbrMemory.onStallReloadWithReachedHeight(
+        starvedHeight = selectedVideoHeight(player),
+        videoId = (playerState as? PlayerScreenState.Ready)?.info?.bvid,
+      ) { line ->
+        Log.i(PlayerPlaybackLogTag, line)
+      }
       if (displayRequestState.value.isYoutube && posMs <= SabrAbrMemory.STARTUP_STALL_POS_MAX_MS) {
         SabrAbrMemory.noteStartupStall()
         Log.i(
@@ -2320,7 +2409,11 @@ fun PlayerScreen(
         if (currentPositionMs == stallBaselinePositionMs) {
           if (stallSinceMs == 0L) {
             stallSinceMs = nowMs
-          } else if (nowMs - stallSinceMs >= if (!frameRendered) StartupStallThresholdMs else StallThresholdMs) {
+          } else if (nowMs - stallSinceMs >=
+            // P11-210:宽限档的判据是「**真正起播**过没有」(进过 READY),不是「出没出首帧」——
+            // preroll 首帧之后播放器可能仍在 BUFFERING、位置钉在 seek 落点(见 playbackStarted 声明处复盘)。
+            if (!playbackStarted || nowMs < seekStallGraceUntilMs) StartupStallThresholdMs else StallThresholdMs
+          ) {
             if (autoRetryCount < MaxStallAutoRetry) {
               autoResumePositionMs = currentPositionMs
               autoRetryCount += 1
@@ -2328,7 +2421,8 @@ fun PlayerScreen(
               // SABR 会话连两轮 bootstrap 20.5s/16.4s(rr5 慢首包),换新会话 2s 即愈。立即 evict,重载
               // resolve 铸新会话(热路径 ~4-5s),别让重试复用同一个慢会话。播放中(已出帧)的 stall 不动
               // 会话——多为瞬态网络,保 ~6h 会话复用(alpha.29)。
-              if (!frameRendered) {
+              // P11-210:判据从 `!frameRendered` 改为 `!playbackStarted`(preroll 首帧不再算已起播)。
+              if (!playbackStarted) {
                 val sabrInfo = (playerState as? PlayerScreenState.Ready)?.info
                 if (sabrInfo != null && sabrInfo.isSabrSingle()) {
                   SabrStreamRegistry.getByVideoId(sabrInfo.bvid)?.let { sid ->
@@ -2339,7 +2433,7 @@ fun PlayerScreen(
               }
               Log.w(
                 PlayerPlaybackLogTag,
-                "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% startup=${!frameRendered}",
+                "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% startup=${!playbackStarted} frame=$frameRendered seekGrace=${nowMs < seekStallGraceUntilMs}(P11-203/P11-210)",
               )
               noteStartupStallMemory(currentPositionMs)
               stallSinceMs = 0L
@@ -3422,6 +3516,35 @@ private const val PlayerDanmakuLogTag = "BiliMT:Danmaku"
 private const val PlayerPlaybackLogTag = "BiliMT:Player"
 /** BUFFERING 且进度不前进超过此阈值判定为 stall,触发自动重载续播。 */
 private const val StallThresholdMs = 8_000L
+
+/**
+ * P11-203:seek 之后的 stall 判死宽限(ms)——期内位置冻结改用起播阈值([StartupStallThresholdMs]),
+ * 不按「已出帧」的 [StallThresholdMs] 算。
+ *
+ * 依据(真机 `logs_live_20261006_164353`,dev.r2146):SABR 单流源走原生 `player.seekTo`(见 [routeSeek]),
+ * seek 后**位置停在目标点不动**、服务端要从新位置重发段 —— 而那笔段在 4K 档实测往返 **7208ms**
+ * (39.3MB),看门狗在 16:22:11.76 开枪,而数据 16:22:10.07 就落地了,**只差 1.7 秒** ⇒ 一次正常 seek
+ * 被判成挂死、整场重载(重载本身要 10~22s 黑屏)。
+ *
+ * 与 P11-122(慢起播攒满计时器、首帧一到立刻开枪)同源:都是「位置冻结」这条判据在**合法的重新缓冲
+ * 期**里被当成挂死。取 15s:4K 单笔往返 7.2~7.4s + 解析/交接,留一倍余量;而真挂死仍会被 15s 兜住
+ * (比完全不判死只慢 7s)。**只覆盖 seek**,不覆盖换档(换档宽限按 §39.6 的结论另行观察)。
+ */
+private const val SeekStallGraceMs = 15_000L
+
+/**
+ * P11-178:当前**正在播**的视频轨高度(0=未知)。stall 重载的跨重载冷却据此选目标档——
+ * 「饿死瞬间的档」才是那堵墙,而不是「本场爬过的最高档」(`logs_live_20260923_233549`:爬到过 2160p、
+ * 漏光在 1440p,旧口径冷却 2160p 当场空操作)。见 [SabrAbrMemory.onStallReloadWithReachedHeight]。
+ */
+private fun selectedVideoHeight(player: ExoPlayer): Int {
+  val video = player.currentTracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO } ?: return 0
+  for (i in 0 until video.length) {
+    if (video.isTrackSelected(i)) return video.getTrackFormat(i).height
+  }
+  return 0
+}
+
 /**
  * P11-95(09-13 黑屏复盘):起播阶段(首帧未渲染)的 stall 判定阈值。续播起播要先拉 SABR bootstrap
  * (1.67MB 恒定包)再二次请求目标段,服务端偶发慢首包实测 20.5s/16.4s(09-13,rr5 节点),8s 看门狗在

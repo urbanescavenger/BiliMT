@@ -435,7 +435,10 @@ fun MobileSearchScreen(
             continuation = nextContinuation,
             loadingMore = false,
             endReached = if (uiState.source == SourceYoutube) {
-              nextContinuation == null || mergedUsers.size == current.users.size
+              // token 为 null 才一定到底;零新增但 token 换了新值 ⇒ 流在推进,只是这一页与已有重合,
+              // 不能就此判死(否则「滑到底再也不加载」)。token 原样返回才算死循环。
+              nextContinuation == null ||
+                (mergedUsers.size == current.users.size && nextContinuation == current.continuation)
             } else {
               moreUsers.size < PageSize || mergedUsers.size == current.users.size
             },
@@ -476,7 +479,9 @@ fun MobileSearchScreen(
             continuation = nextContinuation,
             loadingMore = false,
             endReached = if (uiState.source == SourceYoutube) {
-              nextContinuation == null || merged.size == current.videos.size
+              // 同 UP主分支:token 为 null 才一定到底;零新增但 token 换了新值 ⇒ 流在推进,不判死。
+              nextContinuation == null ||
+                (merged.size == current.videos.size && nextContinuation == current.continuation)
             } else {
               more.size < PageSize || merged.size == current.videos.size
             },
@@ -513,16 +518,19 @@ fun MobileSearchScreen(
     }
   }
 
-  // 结果态滚到底自动翻页。
-  LaunchedEffect(uiState.submittedQuery, uiState.orderKey) {
+  // 结果态滚到底自动翻页。发射 (last,total) 对而不是布尔:布尔去重只在翻转时发射一次,首屏
+  // Loading 阶段(网格里只有一行 spinner)就把唯一的 true 消耗掉,之后近底值不再变化 ⇒
+  // 续页永不触发(§4.10.3 同款坑,移动端频道页已改)。source/searchType 进 key:切源/切类型时
+  // 重启采集,避免沿用上一份结果的滞留值。
+  LaunchedEffect(uiState.submittedQuery, uiState.orderKey, uiState.source, uiState.searchType) {
     if (uiState.submittedQuery == null) return@LaunchedEffect
     snapshotFlow {
       val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
       val total = gridState.layoutInfo.totalItemsCount
-      total > 0 && last >= total - 6
+      last to total
     }
       .distinctUntilChanged()
-      .collect { nearEnd -> if (nearEnd) loadNextPage() }
+      .collect { (last, total) -> if (total > 0 && last >= total - 6) loadNextPage() }
   }
 
   // 结果态切搜索类型(视频/UP主)或来源时重搜。selectType/selectSource 只重置 resultState 为 Loading,

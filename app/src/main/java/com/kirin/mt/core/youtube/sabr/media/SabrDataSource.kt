@@ -82,7 +82,9 @@ internal class SabrDataSource(
     } catch (e: SabrTerminalException) {
       Log.w("YtSabr", "SabrDataSource open: terminal seg=${req.segment} itag=${req.formatItag}: ${e.message} → evict sid=$sessionId")
       SabrStreamRegistry.evict(sessionId)
-      throw IOException("SABR terminal: ${e.message}")
+      // P11-223:挂上 cause —— SabrLoadErrorHandlingPolicy 据此按**类型**识别终态错误
+      // (不再依赖消息前缀;前缀仍保留作兜底,兼容旧路径)。
+      throw IOException("SABR terminal: ${e.message}", e)
     } catch (e: CancellationException) {
       // P11-91:chunk 加载被取消(media3 seek/丢弃打断在途拉流,runBlocking 中断以
       // CancellationException 浮出)是良性取消——此前落进通用 catch 当会话死亡整会话 evict,
@@ -96,8 +98,27 @@ internal class SabrDataSource(
       throw IOException("SABR open failed: ${e.message}")
     }
     // 拍平段字节(多 MEDIA part 块 → 单连续流),喂 ChunkExtractor
-    data = if (segment.data.size == 1) segment.data[0]
-    else segment.data.fold(ByteArray(0)) { acc, c -> acc + c }
+    //
+    // P11-235(真机 `logs_live_20261010_011322.log` 取证的**平方级分配爆炸**):一段 4K 由
+    // **507~704 个 MEDIA part** 组成(每块 ~32.7KB;720p 只有 24~31 块),原来是
+    // `fold(ByteArray(0)) { acc, c -> acc + c }` —— **每步都新建一个累计数组**,
+    // 总分配 = 段大小 × 块数 ÷ 2:18.4MB×564/2 ≈ **5.2GB**(23MB/704 块那笔 ≈ 8.1GB),
+    // 每 ~5.3s 一段 ⇒ ~1GB/s 的 Java LOS 分配 ⇒ GC 每 ~250ms 回收 200MB、**平均单个对象
+    // 13MB**(正是这些中间累计数组)、`Suspending all threads 19→24ms`、
+    // 「字节已在内存 → 交给播放器」被拖到 **10~18s**(720p 同流程只要 0.15s)。
+    // 线性化:一次分配 + arraycopy ⇒ 5.2GB → 18.4MB/段。
+    data = if (segment.data.size == 1) {
+      segment.data[0]
+    } else {
+      val total = segment.data.sumOf { it.size }
+      val out = ByteArray(total)
+      var off = 0
+      for (c in segment.data) {
+        System.arraycopy(c, 0, out, off, c.size)
+        off += c.size
+      }
+      out
+    }
     // P11-90(修续播位置冻结连环重载):把段内所有 tfdt 的 baseMediaDecodeTime 相对化(首个→0,
     // 其余减首值)。media3 1.10 移除了老 ChunkExtractorWrapper 的「首样本自校准到 startTimeUs +
     // seekTimeUs 裁剪」逻辑(BundledChunkExtractor 时间戳纯透传 tfdt),续播时若服务端段 tfdt 与

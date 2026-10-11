@@ -214,7 +214,7 @@ private fun CommentListContent(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SortChip(
+internal fun SortChip(
   label: String,
   selected: Boolean,
   onClick: () -> Unit,
@@ -233,7 +233,7 @@ private fun SortChip(
 }
 
 @Composable
-private fun CommentListFooter(state: MobileCommentListState) {
+internal fun CommentListFooter(state: MobileCommentListState) {
   Row(
     modifier = Modifier
       .fillMaxWidth()
@@ -260,7 +260,7 @@ private fun CommentListFooter(state: MobileCommentListState) {
 }
 
 @Composable
-private fun CommentItem(comment: Comment) {
+internal fun CommentItem(comment: Comment) {
   Row(modifier = Modifier.fillMaxWidth()) {
     AsyncImage(
       model = comment.avatar,
@@ -334,7 +334,7 @@ private fun formatRelativeTime(ctimeSeconds: Long, resources: Resources): String
   }
 }
 
-private suspend fun loadCommentFirstPage(
+internal suspend fun loadCommentFirstPage(
   videoRepository: VideoRepository,
   state: MobileCommentListState,
   aid: Long,
@@ -360,7 +360,7 @@ private suspend fun loadCommentFirstPage(
   }
 }
 
-private fun loadCommentNextPage(
+internal fun loadCommentNextPage(
   videoRepository: VideoRepository,
   coroutineScope: CoroutineScope,
   state: MobileCommentListState,

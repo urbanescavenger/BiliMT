@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.shell
 
+import android.os.SystemClock
 import android.util.Log
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -23,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -65,6 +67,14 @@ import com.kirin.mt.ui.theme.LocalHomeColors
 
 private const val FocusLogTag = "BiliMT:Focus"
 
+/** P11-191:能在侧栏内把焦点移向头像的方向键——只有这些键算「用户主动移过去」。 */
+private val SidebarNavigationKeys = setOf(
+  Key.DirectionUp,
+  Key.DirectionDown,
+  Key.DirectionLeft,
+  Key.DirectionRight,
+)
+
 @Composable
 internal fun AppSidebar(
   selectedDestination: AppDestination,
@@ -72,6 +82,12 @@ internal fun AppSidebar(
   userSession: UserSession,
   autoConfirmOnFocus: Boolean,
   suppressAccountAutoConfirm: Boolean = false,
+  /**
+   * P11-191:只压头像的 autoConfirm(导航项不受影响)。用于「动态首屏合并 YouTube 关注流」
+   * 这类会把网格换表、进而可能把焦点掉到头像的窗口——那段时间里落焦头像不该跳「我的」页,
+   * 但用户主动按方向键切目的地仍然照常。
+   */
+  suppressAvatarAutoConfirm: Boolean = false,
   accountFocusRequester: FocusRequester,
   navFocusRequesters: Map<AppDestination, FocusRequester>,
   dynamicUnread: Int,
@@ -121,6 +137,13 @@ internal fun AppSidebar(
       .map { navFocusRequesters.getValue(it) }
   }
   var focusedSidebarIndex by remember { mutableIntStateOf(-1) }
+  // P11-191:头像 autoConfirm 只认「在侧栏里按出来的焦点移动」。
+  // 焦点被动掉到头像(内容网格被外层换表销毁 → 焦点被清 → 落回布局里第一个可聚焦节点)时,
+  // 若照样确认,用户就被凭空送进「我的」页(真机 logs_live_20261001_173435:17:34:24.748
+  // 网格丢焦同一帧头像 openMyPage=true,全程无按键)。
+  // 侧栏这层 onPreviewKeyEvent 只在焦点位于侧栏内时才收到按键 —— 内容网格里按的方向键到不了
+  // 这里,所以「最近有没有侧栏按键」天然区分「按键移过来」与「被动掉过来」。
+  var lastSidebarKeyMs by remember { mutableLongStateOf(0L) }
   Column(
     modifier = Modifier
       .width(BiliSizing.SidebarWidth)
@@ -128,6 +151,12 @@ internal fun AppSidebar(
       .focusDiag("sidebar")
       .clip(sidebarShape)
       .onPreviewKeyEvent { event ->
+        if (
+          event.type == KeyEventType.KeyDown &&
+          event.key in SidebarNavigationKeys
+        ) {
+          lastSidebarKeyMs = SystemClock.uptimeMillis()
+        }
         // 循环导航:仅在边界拦截(最上按上→最底,最底按下→最上),其余交给默认焦点遍历。
         if (event.type == KeyEventType.KeyDown && focusedSidebarIndex >= 0) {
           when (event.key) {
@@ -176,7 +205,11 @@ internal fun AppSidebar(
       selected = accountSelected,
       userSession = userSession,
       autoConfirmOnFocus = autoConfirmOnFocus,
-      suppressAutoConfirm = suppressAccountAutoConfirm,
+      suppressAutoConfirm = suppressAccountAutoConfirm || suppressAvatarAutoConfirm,
+      isKeyDrivenFocus = {
+        // 在回调里取值(不是组合期),避免每次按键都把侧栏重组一遍。
+        SystemClock.uptimeMillis() - lastSidebarKeyMs <= BiliFocus.AutoConfirmKeyGraceMs
+      },
       modifier = Modifier.focusRequester(accountFocusRequester),
       onClick = onAccountSelected,
       onMoveRight = {
@@ -220,6 +253,8 @@ private fun AccountNavItem(
   userSession: UserSession,
   autoConfirmOnFocus: Boolean,
   suppressAutoConfirm: Boolean = false,
+  /** P11-191:这次落焦是不是「刚在侧栏里按了方向键」的结果;被动落焦返回 false。 */
+  isKeyDrivenFocus: () -> Boolean = { true },
   modifier: Modifier,
   onClick: () -> Unit,
   onMoveRight: () -> Boolean,
@@ -270,10 +305,12 @@ private fun AccountNavItem(
     onClick = onClick,
     onFocusChanged = { if (it) onSidebarItemFocused(0) },
     onFocused = {
-      val shouldOpen = autoConfirmOnFocus && !selected && !suppressAutoConfirm
+      val keyDriven = isKeyDrivenFocus()
+      val shouldOpen = autoConfirmOnFocus && !selected && !suppressAutoConfirm && keyDriven
       Log.d(
         FocusLogTag,
-        "avatar focused: autoConfirm=$autoConfirmOnFocus suppress=$suppressAutoConfirm selected=$selected -> openMyPage=$shouldOpen",
+        "avatar focused: autoConfirm=$autoConfirmOnFocus suppress=$suppressAutoConfirm selected=$selected " +
+          "keyDriven=$keyDriven -> openMyPage=$shouldOpen",
       )
       if (shouldOpen) {
         onClick()

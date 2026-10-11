@@ -101,6 +101,8 @@ import com.kirin.mt.ui.common.dedupKey
 import com.kirin.mt.ui.common.focusRestoreKey
 import com.kirin.mt.ui.common.resolveFocusIndex
 import com.kirin.mt.ui.focus.BiliFocusableSurface
+import com.kirin.mt.ui.focus.GridFocusIds
+import com.kirin.mt.ui.focus.LocalGridFocusMemory
 import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.home.VideoCard
 import com.kirin.mt.ui.i18n.convertChineseText
@@ -248,6 +250,8 @@ internal fun SearchScreen(
   val searchHistory by searchHistoryStore.history.collectAsState(initial = emptyList())
   var suggestions by remember { mutableStateOf<List<String>>(emptyList()) }
   var returnFocusToKeyboard by remember { mutableStateOf(false) }
+  // P11-202:身份锚定记忆(见下方 activeQuery 变化时的 clear)。
+  val gridFocusMemory = LocalGridFocusMemory.current
   val screenFocusRequester = remember { FocusRequester() }
   val sourceToggleFocusRequester = remember { FocusRequester() }
   val inputFocusRequester = remember { FocusRequester() }
@@ -276,6 +280,15 @@ internal fun SearchScreen(
       }
       returnFocusToKeyboard = false
     }
+  }
+
+  // P11-202:换搜索词 = 用户主动改上下文,结果从头看起,丢弃待兑现意图(否则下次冷组合会
+  // 把焦点拉回上一轮搜索的那张卡)。带首次组合守卫,避免进页面就清掉本机制的主路径意图。
+  val lastMemoryQuery = remember { mutableStateOf(uiState.activeQuery) }
+  LaunchedEffect(uiState.activeQuery) {
+    if (uiState.activeQuery == lastMemoryQuery.value) return@LaunchedEffect
+    lastMemoryQuery.value = uiState.activeQuery
+    gridFocusMemory.clear(GridFocusIds.Search, "query-change")
   }
 
   val query = uiState.activeQuery
@@ -1038,7 +1051,10 @@ private fun SearchResultsView(
           }
           val mergedUsers = latestState.users.appendUniqueByMid(nextUsers)
           endReached = if (source == SourceYoutube) {
-            nextContinuation == null || mergedUsers.size == latestState.users.size
+            // token 为 null 才一定到底;零新增但 token 换了新值 ⇒ 流仍在推进,只是本页与已有重合,
+            // 不能判死(否则「到底后再也不加载」)。token 原样返回才算死循环。
+            nextContinuation == null ||
+              (mergedUsers.size == latestState.users.size && nextContinuation == continuation)
           } else {
             nextUsers.size < PageSize || mergedUsers.size == latestState.users.size
           }
@@ -1084,7 +1100,9 @@ private fun SearchResultsView(
           }
           val mergedVideos = latestState.videos.appendUniqueByBvid(nextVideos)
           endReached = if (source == SourceYoutube) {
-            nextContinuation == null || mergedVideos.size == latestState.videos.size
+            // 同 UP主分支:token 为 null 才一定到底;零新增但 token 换了新值 ⇒ 流仍在推进,不判死。
+            nextContinuation == null ||
+              (mergedVideos.size == latestState.videos.size && nextContinuation == continuation)
           } else {
             nextVideos.size < PageSize ||
               mergedVideos.size == latestState.videos.size
@@ -1494,6 +1512,7 @@ private fun SearchResultGrid(
 
   TvVideoGrid(
     videos = videos,
+    focusMemoryId = GridFocusIds.Search,
     firstItemFocusRequester = firstResultFocusRequester,
     restoredFocusIndex = restoredFocusIndex,
     restoreFocusRequestKey = restoreFocusRequestKey,
@@ -1538,15 +1557,16 @@ private fun UserResultList(
       onFirstResultFocused()
     }
   }
-  // 滚到底自动翻页。
+  // 滚到底自动翻页。发射 (last,total) 对而不是布尔:布尔去重只在翻转时发射一次,首屏 Loading
+  // 阶段就把唯一的 true 消耗掉,之后近底值不再变化 ⇒ 续页永不触发(§4.10.3 同款坑)。
   LaunchedEffect(users.size) {
     snapshotFlow {
       val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
       val total = listState.layoutInfo.totalItemsCount
-      total > 0 && last >= total - 3
+      last to total
     }
       .distinctUntilChanged()
-      .collect { nearEnd -> if (nearEnd) onLoadMore() }
+      .collect { (last, total) -> if (total > 0 && last >= total - 3) onLoadMore() }
   }
 
   LazyColumn(

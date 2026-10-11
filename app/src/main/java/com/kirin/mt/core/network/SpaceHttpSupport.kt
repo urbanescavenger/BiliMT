@@ -21,6 +21,33 @@ internal object SpaceHttpSupport {
   const val SpaceWebLocation = "333.1387"
 
   /**
+   * space 接口的瞬态风控/频控码 —— 退避后重试即可过,不该当致命错误:
+   * -352/-452/452:风控校验失败 / 首进 warm-up 软拦截;-799 请求过于频繁。
+   *
+   * -799 是 **B站对 space 接口的频控**:进一次 UP 页会在同一秒里发 acc/info + relation/stat +
+   * wbi/arc/search 三四个请求,足以撞上它。实测该窗口 ~2s 即恢复(2026-09-25 真机日志里同一秒
+   * `arc/search http=412` 退避 2s 重试成功,而 acc/info 只在 65ms 后再打一发 ⇒ 必失败)。
+   * 所以两条路径共用同一套退避策略,别再各自判定。
+   */
+  val RetryableApiCodes = setOf(-352, -799, 452, -452)
+
+  /** HTTP 层可重试码:412=风控页,其余为网关类瞬态。 */
+  val RetryableHttpCodes = setOf(412, 429, 500, 502, 503, 504)
+
+  /** 初始 + 3 次重试 = 4 次尝试,累计 12s:覆盖首进 warm-up / 频控窗口,UI 停在 loading 直到成功。 */
+  val InteractiveRetryDelaysMs = longArrayOf(2_000L, 4_000L, 6_000L)
+
+  /** 换 key 后的恢复档:窗口已被前一档等掉大半,退避可以短一些。 */
+  val RecoveryRetryDelaysMs = longArrayOf(1_200L, 2_400L)
+  val RecoveryFallbackRetryDelaysMs = longArrayOf(1_200L)
+
+  fun isRetryableFailure(error: Throwable): Boolean {
+    if (error is BiliNetworkException && error.statusCode in RetryableHttpCodes) return true
+    if (error is BiliApiCodeException && error.code in RetryableApiCodes) return true
+    return false
+  }
+
+  /**
    * Ensures buvid3/buvid4 cookies exist (fetches via spi + activates, caching into the session
    * store). Returns the cookies to attach to subsequent space requests.
    */

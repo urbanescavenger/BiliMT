@@ -149,6 +149,7 @@ import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import com.kirin.mt.core.youtube.sabr.media.HeightAwareAdaptiveTrackSelectionFactory
+import com.kirin.mt.core.youtube.sabr.media.SabrAbrMemory
 import com.kirin.mt.core.youtube.sabr.media.SabrBandwidthMeter
 import com.kirin.mt.core.youtube.sabr.media.SabrManifest
 import com.kirin.mt.core.youtube.sabr.media.SabrMediaFetcher
@@ -177,6 +178,7 @@ import com.kirin.mt.core.player.startPlaybackService
 import com.kirin.mt.core.player.PlaybackVideoMetadata
 import com.kirin.mt.core.player.PlayerHolder
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
+import com.kirin.mt.core.player.SabrLoadErrorHandlingPolicy
 import com.kirin.mt.ui.player.PlayerDanmakuLayer
 import com.kirin.mt.ui.player.appendSabrStartMs
 import com.kirin.mt.ui.player.buildDashMediaItem
@@ -223,6 +225,17 @@ private const val MaxStallAutoRetry = 2
 private const val StallThresholdMs = 8_000L
 private const val StartupStallThresholdMs = 25_000L
 private const val VideoFreezeThresholdMs = 12_000L
+
+/**
+ * P11-203:seek 之后的 stall 判死宽限(ms)——期内位置冻结改用起播阈值([StartupStallThresholdMs]),
+ * 不按「已出帧」的 [StallThresholdMs] 算。镜像 TV `PlayerScreen` 同名常量(那边有完整复盘)。
+ *
+ * 依据(真机 `logs_live_20261006_164353`,TV 侧):SABR 单流源走原生 `player.seekTo`,`routeSeek` 后
+ * **位置停在目标点不动**、服务端从新位置重发段 —— 那笔段在 4K 档实测往返 7208ms(39.3MB),看门狗
+ * 在 16:22:11.76 开枪,数据 16:22:10.07 就落地了,**只差 1.7 秒** ⇒ 一次正常 seek 被判成挂死整场重载。
+ * 取 15s:4K 单笔往返 7.2~7.4s + 解析/交接,留一倍余量;真挂死仍被 15s 兜住。**只覆盖 seek**,不覆盖换档。
+ */
+private const val SeekStallGraceMs = 15_000L
 // P11-99c:onPlayerError 重试独立预算(对齐 TV)——降级链 SABR→DASH→HLS 三级,2 次不够。
 private const val MaxErrorAutoRetry = 3
 // 空降助手阈值(镜像 TV PlayerScreen)
@@ -412,6 +425,17 @@ fun MobilePlayerScreen(
    * 没有这个状态,故补一个。
    */
   var frameRendered by remember { mutableStateOf(false) }
+  /**
+   * P11-210:**真正起播 = 进过 `Player.STATE_READY`**(每轮加载重置)。
+   *
+   * 与 [frameRendered] 刻意分开:真机 2026-10-09 08:51(`logs_live_20261009_085228.log`,手选 2160p
+   * 的 SABR 单轨会话)实证 —— 渲染器渲染了**首帧**(`onRenderedFirstFrame` 08:51:35.156),但播放器
+   * **从未进 READY**(同场只有一个 ExoPlayer 实例,`onPlaybackStateChanged` 每次变化都打,8.2 秒里一次
+   * 都没打),位置钉在 seek 落点 `pos=315669` 一动不动。那一帧只是 **seek 后的 preroll 渲染**。
+   * 于是位置冻结看门狗从 25s 档掉到 8s 档开枪,而它在开枪前 1.4 秒刚收到一笔 36.5MB 的响应。
+   * 起播未完成时该用宽限档 + 该 evict 慢会话,故这一块一律以本标志为准,不看 [frameRendered]。
+   */
+  var playbackStarted by remember { mutableStateOf(false) }
   // P11-99c:onPlayerError 专用重试预算(与 stall 看门狗分开,对齐 TV)——降级链三级需 3 击,isPlaying 清零。
   var errorRetryCount by remember { mutableIntStateOf(0) }
   var danmakuEntries by remember { mutableStateOf<List<com.kirin.mt.core.player.DanmakuEntry>>(emptyList()) }
@@ -473,6 +497,8 @@ fun MobilePlayerScreen(
   var verticalBubbleHideJob by remember { mutableStateOf<Job?>(null) }
   // 诊断:最近一次 routeSeek 的时间戳(毫秒),用于 ENDED 时区分"自然播完"还是"seek 到末尾误触"
   var lastSeekAtMs by remember { mutableLongStateOf(0L) }
+  // P11-203:seek 后的 stall 判死宽限截止时刻(elapsedRealtime,与进度轮询的 nowMs 同钟)。见 [SeekStallGraceMs]。
+  var seekStallGraceUntilMs by remember { mutableLongStateOf(0L) }
   // 空降助手(AirJump):SponsorBlock 风格自动跳过广告/片头/片尾段,镜像 TV PlayerScreen
   var airJumpSegments by remember { mutableStateOf<List<AirJumpSegment>>(emptyList()) }
   var warnedAirJumpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -553,7 +579,9 @@ fun MobilePlayerScreen(
         .build()
     )
     ExoPlayer.Builder(context)
-      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs))
+      // P11-230:**移动端刻意不挂"高档缓冲上限"**(用户口径:移动端内存够)—— 上限只上 TV(BRAVIA 等
+      // 盒子,`largeHeap` 448MB 上 4K 的 50s 样本缓冲 ≈180MB 会把堆吃到 0% free、GC 暂停 26~29ms)。
+      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs) { SabrAbrMemory.readAheadMinBufferUs() })
       // 后台播放优化: 别的应用抢音频资源抢自动暂停,焦点回来→自动续播;
       // 耳机/蓝牙音频设备断开(AUDIO_BECOMING_NOISY)→自动暂停。Media3 内部管理焦点
       // 请求/放弃与 becoming-noisy receiver 的注册/反注册(随 player release 自动清理)。
@@ -694,6 +722,8 @@ fun MobilePlayerScreen(
       targetMs
     }
     lastSeekAtMs = System.currentTimeMillis()
+    // P11-203:两条分支都会让「位置停在目标点等数据」——置一次 stall 判死宽限,别把重新缓冲判成挂死。
+    seekStallGraceUntilMs = android.os.SystemClock.elapsedRealtime() + SeekStallGraceMs
     Log.i(MobilePlayerLogTag, "routeSeek target=$targetMs maxMs=$maxMs clamped=$clamped")
     if ((playerState as? MobilePlayerState.Ready)?.info?.isSabrProgressive() == true) {
       pendingSABRSeekMs = clamped
@@ -789,6 +819,8 @@ fun MobilePlayerScreen(
     completionReported = false
     // P11-134:新一轮加载 = 首帧还没来。看门狗据此切回起播宽限档。
     frameRendered = false
+    // P11-210:同上——真正起播要重新等 READY(preroll 首帧不算)。
+    playbackStarted = false
     userPaused = false
     seekPreviewMs = null
     playbackPositionState.longValue = 0L
@@ -982,12 +1014,18 @@ fun MobilePlayerScreen(
           throw IllegalStateException("SABR single-stream session not found for ${sabrEffectiveInfo.bvid}")
         }
         val fetcher = SabrMediaFetcher(entry, playbackHttpClient)
+        // P11-215(见 docs/youtube-web-sabr.md §5.11.29):把**本次播放的续播位置**种进 fetcher。
+        // 会话的第一个 SABR 请求是 init/bootstrap(我们提前发的,为拿 FORMAT_INITIALIZATION_METADATA),
+        // 它早于任何 getNextChunk ⇒ media3 那时还给不出有效位置(seek 未落定)⇒ 位置锚失效 ⇒
+        // 服务端从 seg 0 推、首包一半到全部作废(真机 dev.r2154:49.9MB/29.3 秒)。这里给的是我们**已知**的值。
+        fetcher.noteSessionStartPositionMs(startPositionMs)
         val manifest = SabrManifest.fromSession(entry.session, sabrEffectiveInfo)
         val sabrItem = androidx.media3.common.MediaItem.Builder()
           .setUri(manifest.sabrUrl)
           .setMediaMetadata(metadata)
           .build()
         SabrMediaSource.Factory(manifest, fetcher, sid, bufferMaxMs.toLong(), bandwidthMeter)
+          .setLoadErrorHandlingPolicy(SabrLoadErrorHandlingPolicy()) // P11-223:SABR 终态错误立即上抛(挂 MediaSource.Factory,不是 ExoPlayer.Builder)
           .createMediaSource(sabrItem)
       } else if (sabrEffectiveInfo.isHlsManifest()) {
         // alpha.90:HLS 兜底——SABR RELOAD 闭环未回 SABR 且 dashMpdUrl 空(android 无 manifest)时,落 visionOS
@@ -1186,6 +1224,8 @@ fun MobilePlayerScreen(
         // dump ①trackSelectionParameters 真实 min/max/viewport 值(验证起始档锁/首帧释放后的实际状态);
         // ②currentTracks 每轨 renderer 判定(trackSupport/sup/sel)——DefaultTrackSelector 建组真相。
         if (playbackState == Player.STATE_READY) {
+          // P11-210:真正起播(见 playbackStarted 声明处的复盘)。首帧渲染 ≠ 起播。
+          playbackStarted = true
           Log.i("YtSabrTracks", "params=${player.trackSelectionParameters}")
           val groups = player.currentTracks.groups
           Log.i(
@@ -1405,15 +1445,17 @@ fun MobilePlayerScreen(
           if (stallSinceMs == 0L) {
             stallSinceMs = nowMs
           } else if (nowMs - stallSinceMs >=
-            if (!frameRendered) StartupStallThresholdMs else StallThresholdMs
+            // P11-210:宽限档的判据是「**真正起播**过没有」,不是「出没出首帧」——
+            // preroll 首帧之后播放器可能仍在 BUFFERING、位置钉在 seek 落点(见 playbackStarted 声明处复盘)。
+            if (!playbackStarted || nowMs < seekStallGraceUntilMs) StartupStallThresholdMs else StallThresholdMs
           ) {
             if (autoRetryCount < MaxStallAutoRetry) {
               autoResumePositionMs = currentPositionMs
               autoRetryCount += 1
-              // 起播期(未出首帧)的 stall 多为**会话级慢首包** → evict 会话、重载 resolve 铸新会话,
-              // 别复用同一个慢会话(同 TV P11-95)。播放中(已出帧)的 stall 不动会话——多为瞬态网络,
-              // 保住长会话复用。
-              if (!frameRendered) {
+              // 起播期(**未真正起播**)的 stall 多为**会话级慢首包** → evict 会话、重载 resolve 铸新会话,
+              // 别复用同一个慢会话(同 TV P11-95)。播放中的 stall 不动会话——多为瞬态网络,保住长会话复用。
+              // P11-210:判据从 `!frameRendered` 改为 `!playbackStarted`(preroll 首帧不再算已起播)。
+              if (!playbackStarted) {
                 val sabrInfo = ready.info
                 if (sabrInfo != null && sabrInfo.isSabrSingle()) {
                   SabrStreamRegistry.getByVideoId(sabrInfo.bvid)?.let { sid ->
@@ -1425,7 +1467,8 @@ fun MobilePlayerScreen(
               Log.w(
                 MobilePlayerLogTag,
                 "stall detected, auto-retry #$autoRetryCount @pos=${currentPositionMs}ms " +
-                  "buffered=${player.bufferedPercentage}% startup=${!frameRendered}",
+                  "buffered=${player.bufferedPercentage}% startup=${!playbackStarted} frame=$frameRendered " +
+                  "seekGrace=${nowMs < seekStallGraceUntilMs}(P11-203/P11-210)",
               )
               stallSinceMs = 0L
               stallBaselinePositionMs = 0L

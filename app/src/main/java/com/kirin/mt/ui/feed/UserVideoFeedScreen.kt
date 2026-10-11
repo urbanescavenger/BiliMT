@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.feed
 
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Box
@@ -47,6 +48,7 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.youtube.YoutubeHistoryEntry
+import com.kirin.mt.core.youtube.YoutubeSubscriptionsPage
 import com.kirin.mt.core.youtube.resolveChannelAvatarUrl
 import com.kirin.mt.core.youtube.resolveThumbnailUrl
 import com.kirin.mt.core.network.FollowingSeason
@@ -57,7 +59,11 @@ import com.kirin.mt.ui.common.BiliCapsuleTabRow
 import com.kirin.mt.ui.common.BiliPillTab
 import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.VideoGridSkeleton
+import com.kirin.mt.ui.common.focusRestoreKey
+import com.kirin.mt.ui.common.resolveFocusIndex
 import com.kirin.mt.ui.focus.BiliFocusableSurface
+import com.kirin.mt.ui.focus.GridFocusIds
+import com.kirin.mt.ui.focus.LocalGridFocusMemory
 import com.kirin.mt.ui.home.TvVideoGrid
 import com.kirin.mt.ui.home.GridFooterState
 import com.kirin.mt.ui.home.VideoCard
@@ -116,6 +122,13 @@ internal class DynamicFeedUiState {
   // 等频道发出来后再重启 LaunchedEffect 时,loadedOnce 会挡住 YouTube 合并 → 初始空、手动刷新才出。
   // 用该标志区分「频道首次就绪需补拉 YouTube」与「后续头像回填等频道变化(不应重载)」。
   var youtubeMerged by mutableStateOf(false)
+  // P11-186 已知差异收口:YouTube 关注流每频道续页 token + 留存视频集。翻页时与 B 站页同步推进一页
+  // (原实现只 appendUnique B 站条目,第二屏起整片只有 B 站视频,边界不随后移)。
+  var youtubeVideos by mutableStateOf<List<VideoSummary>>(emptyList())
+  var youtubeContinuation by mutableStateOf<Map<String, String?>?>(null)
+  // P11-191:首屏(B站动态 + YouTube 关注流)合并在途。合并落地会整表换新把网格焦点清掉,
+  // 这段时间里头像 autoConfirm 要压住(见 AppShell 的 suppressAvatarAutoConfirm)。
+  var firstPageInFlight by mutableStateOf(false)
   var handledManualRefreshKey by mutableIntStateOf(0)
   var focusRestoredItemKey by mutableIntStateOf(0)
 }
@@ -205,6 +218,10 @@ internal fun UserFeedScreen(
 ) {
   val coroutineScope = rememberCoroutineScope()
   val selectedTab = feedState.selectedTab
+  // P11-202:身份锚定记忆。必须在组合体里取成 val 再被下面的局部闭包/回调捕获。
+  // ⚠️ 只在「切子 tab / 手动刷新」这两个用户主动改上下文的点 clear,**冷组合里绝不清** ——
+  // 「点卡 → 播放器 → 返回」正是 restoreFocusRequestKey <= 0 的场景,清了就把主路径炸了。
+  val gridFocusMemory = LocalGridFocusMemory.current
   val youtubeChannels by youtubeChannelStore.channels.collectAsState(initial = emptyList())
   // 本地 YouTube 播放历史(免登录):合并进 History tab,与 B 站历史按播放时间倒序混合。
   val youtubeHistory by youtubeHistoryStore.history.collectAsState(initial = emptyList())
@@ -241,7 +258,6 @@ internal fun UserFeedScreen(
         feedState.dynamicVideo,
         "video",
         youtubeChannels,
-        youtubeChannelStore,
         // 频道首次就绪(非空且尚未合并 YouTube)时强制补拉,把 YouTube 关注并进首载;
         // 之后频道变化(头像回填)不再强制,靠 loadedOnce 去重。
         forceRefresh = autoRefreshOnSwitch ||
@@ -252,7 +268,6 @@ internal fun UserFeedScreen(
         feedState.dynamicAll,
         "all",
         emptyList(),
-        youtubeChannelStore,
         forceRefresh = autoRefreshOnSwitch,
       )
       UserFeedTab.History -> loadHistoryFirstPage(
@@ -288,15 +303,17 @@ internal fun UserFeedScreen(
       // 侧栏重点击"动态"(当前目的地)= 显式刷新当前子 tab。重置当前子 tab 焦点回顶,
       // 配合下方 key(selectedTab, manualRefreshKey) 重建网格(initialFirstVisibleItemIndex=0)
       // → 视口回顶;之后 Down(focusRestoredItemKey)落第 0 行、视频返回也回顶。
+      // P11-202:网格会被 key(...) 整页重建而记忆槽在 remember 之外 ⇒ 不清就会误恢复旧卡。
+      gridFocusMemory.clear(GridFocusIds.Dynamic, "manual-refresh")
       resetFeedTabFocus(feedState, selectedTab)
       when (selectedTab) {
         UserFeedTab.DynamicVideo -> {
           feedState.dynamicVideo.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, feedState.dynamicVideo, "video", youtubeChannels, youtubeChannelStore, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, feedState.dynamicVideo, "video", youtubeChannels, forceRefresh = true)
         }
         UserFeedTab.DynamicAll -> {
           feedState.dynamicAll.handledManualRefreshKey = manualRefreshKey
-          loadDynamicFirstPage(videoRepository, feedState.dynamicAll, "all", emptyList(), youtubeChannelStore, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, feedState.dynamicAll, "all", emptyList(), forceRefresh = true)
         }
         UserFeedTab.History -> {
           feedState.history.handledManualRefreshKey = manualRefreshKey
@@ -319,6 +336,9 @@ internal fun UserFeedScreen(
       selectedTab = selectedTab,
       onSelect = { tab ->
         if (tab != selectedTab) {
+          // P11-202:切子 tab = 用户主动改上下文,焦点从头来,丢弃待兑现意图(网格被
+          // key(selectedTab, …) 整页重建,不清就会误恢复上一个 tab 的卡)。
+          gridFocusMemory.clear(GridFocusIds.Dynamic, "switch-tab")
           resetFeedTabFocus(feedState, tab)
           feedState.selectedTab = tab
         }
@@ -359,7 +379,6 @@ internal fun UserFeedScreen(
             state = feedState.dynamicVideo,
             type = "video",
             youtubeChannels = youtubeChannels,
-            youtubeChannelStore = youtubeChannelStore,
             cardMode = VideoCardMode.Dynamic,
             firstItemFocusRequester = firstItemFocusRequester,
             tabFocusRequester = tabFocusRequester,
@@ -376,7 +395,6 @@ internal fun UserFeedScreen(
             state = feedState.dynamicAll,
             type = "all",
             youtubeChannels = emptyList(),
-            youtubeChannelStore = youtubeChannelStore,
             cardMode = VideoCardMode.Dynamic,
             firstItemFocusRequester = firstItemFocusRequester,
             tabFocusRequester = tabFocusRequester,
@@ -486,13 +504,31 @@ private suspend fun loadDynamicFirstPage(
   state: DynamicFeedUiState,
   type: String,
   youtubeChannels: List<YoutubeChannel>,
-  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   forceRefresh: Boolean,
 ) {
   if (!forceRefresh && state.loadedOnce) {
     return
   }
 
+  // P11-191:整段首屏(含 YouTube 关注流那 3~4 秒)都算「合并窗口」。合并落地那一刻整表换新,
+  // 会把网格里被聚焦的卡片连行一起销毁、焦点掉到布局第一个可聚焦节点(侧栏头像);头像
+  // autoConfirm 于是把用户凭空送进「我的」页。旧口径只在播放器返回后压 400ms,而合并要
+  // 3.2~3.7s 才回来,窗口完全错开 ⇒ 改成整段压住(真机 logs_live_20261001_173435:
+  // 21.522 解除 suppression → 24.740 合并落地 → 24.748 已跳页)。
+  state.firstPageInFlight = true
+  try {
+    fetchAndApplyDynamicFirstPage(videoRepository, state, type, youtubeChannels)
+  } finally {
+    state.firstPageInFlight = false
+  }
+}
+
+private suspend fun fetchAndApplyDynamicFirstPage(
+  videoRepository: VideoRepository,
+  state: DynamicFeedUiState,
+  type: String,
+  youtubeChannels: List<YoutubeChannel>,
+) {
   // force-refresh 且已有内容时保留旧 videos 与焦点,不切骨架、不清焦点,
   // 避免网格销毁重建后跳到第一个视频(对齐推荐页刷新策略)。
   if (state.state !is UserFeedState.Success) {
@@ -518,11 +554,17 @@ private suspend fun loadDynamicFirstPage(
     null
   }
 
-  // 2. 拉 YouTube 关注(仅「动态(视频)」,等查完再一次性合并,不再分批增量叠加)
-  val youtubeVideos = if (type == "video" && youtubeChannels.isNotEmpty()) {
-    fetchYoutubeAll(videoRepository, youtubeChannels, youtubeChannelStore)
+  // 2. 拉 YouTube 关注首屏(仅「动态(视频)」),记下每频道续页 token 供翻页同步推进。
+  // 拉取失败时沿用上一次的 YouTube 集,不让 YouTube 卡片在刷新瞬间凭空消失。
+  val youtubePage = if (type == "video" && youtubeChannels.isNotEmpty()) {
+    fetchYoutubePage(videoRepository, previous = null)
   } else {
-    emptyList()
+    null
+  }
+  val youtubeVideos = youtubePage?.videos ?: state.youtubeVideos
+  if (youtubePage != null) {
+    state.youtubeVideos = youtubeVideos
+    state.youtubeContinuation = youtubePage.perChannelContinuation
   }
 
   // 3. 合并一次
@@ -539,30 +581,26 @@ private suspend fun loadDynamicFirstPage(
       UserFeedState.Success(
         videos = merged,
         loadingMore = false,
-        endReached = biliEndReached,
+        // 两侧都到底才算到底:YouTube 侧还有续页 token 时,列表仍可继续向下长。
+        endReached = biliEndReached && youtubePage?.endReached != false,
         loadMoreError = "",
       )
     }
   }
 }
 
-/** 全量拉取 YouTube 关注流(等全部查完),失败返回空(单频道已容错)。 */
-private suspend fun fetchYoutubeAll(
+/** 拉一页 YouTube 关注流(previous=null 首屏),失败返回 null 由调用方降级(不打断本次合并)。 */
+private suspend fun fetchYoutubePage(
   videoRepository: VideoRepository,
-  channels: List<YoutubeChannel>,
-  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
-): List<VideoSummary> {
+  previous: Map<String, String?>?,
+): YoutubeSubscriptionsPage? {
   return try {
-    videoRepository.youtubeSubscriptionsFeed(
-      channels,
-      onChannelAvatarResolved = { channel ->
-        youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
-      },
-    )
+    videoRepository.youtubeHomeFeedPage(previousContinuation = previous)
   } catch (error: CancellationException) {
     throw error
   } catch (error: Exception) {
-    emptyList()
+    Log.e(DynamicFeedLogTag, "dynamic youtube fetch failed: ${error.message}")
+    null
   }
 }
 
@@ -587,15 +625,39 @@ private fun loadDynamicNextPage(
       )
       state.nextOffset = page.offset
       val latestState = state.state as? UserFeedState.Success ?: return@launch
-      val mergedVideos = latestState.videos.appendUnique(nextVideos = page.videos)
+      // YouTube 关注流与 B 站页同步推进一页(仅「动态(视频)」);失败静默保留现有集合,不拖累本次落地。
+      val ytContinuation = state.youtubeContinuation
+      val ytPage = if (type == "video" && ytContinuation?.values?.any { it != null } == true) {
+        fetchYoutubePage(videoRepository, previous = ytContinuation)
+      } else {
+        null
+      }
+      val youtubeVideos = if (ytPage != null) {
+        // 去重键用 dynId 回退 bvid(= core.model.feedKey 的定义);本文件的 feedKey(index) 是网格 key,不能在此复用。
+        (state.youtubeVideos + ytPage.videos).distinctBy { it.dynId.ifBlank { it.bvid } }
+      } else {
+        state.youtubeVideos
+      }
+      val ytContinuationNext = ytPage?.perChannelContinuation ?: ytContinuation
+      // 「动态(视频)」:B 站条目(dynId 非空,与移动端同口径)累加后与 YouTube 集**整体重合并**
+      // (P11-186 收口 TV —— 原实现只把新页 append 到尾部,第二屏起整片只有 B 站视频)。
+      // 「动态(全部)」无 YouTube 合成,保持原追加口径不动。
+      val mergedVideos = if (type == "video") {
+        val biliItems = latestState.videos.filter { it.dynId.isNotBlank() } + page.videos
+        mergeByPubdate(biliItems, youtubeVideos)
+      } else {
+        latestState.videos.appendUnique(nextVideos = page.videos)
+      }
       if (mergedVideos.isNotEmpty()) {
         state.hasLoadedContent = true
       }
+      state.youtubeVideos = youtubeVideos
+      state.youtubeContinuation = ytContinuationNext
       latestState.copy(
         videos = mergedVideos,
         loadingMore = false,
-        endReached = !page.hasMore ||
-          page.videos.isEmpty() ||
+        // 两侧都到底才算到底(YouTube 侧还能续页时列表仍可继续长);去重后零新增也视为到底,防死循环。
+        endReached = (!page.hasMore && ytContinuationNext?.values?.any { it != null } != true) ||
           mergedVideos.size == latestState.videos.size,
         loadMoreError = "",
       )
@@ -910,7 +972,6 @@ private fun DynamicFeedContent(
   state: DynamicFeedUiState,
   type: String,
   youtubeChannels: List<YoutubeChannel>,
-  youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   cardMode: VideoCardMode,
   firstItemFocusRequester: FocusRequester,
   tabFocusRequester: FocusRequester,
@@ -942,7 +1003,7 @@ private fun DynamicFeedContent(
       },
       onRetry = {
         coroutineScope.launch {
-          loadDynamicFirstPage(videoRepository, state, type, youtubeChannels, youtubeChannelStore, forceRefresh = true)
+          loadDynamicFirstPage(videoRepository, state, type, youtubeChannels, forceRefresh = true)
         }
       },
       onLoadMore = { loadDynamicNextPage(videoRepository, coroutineScope, state, type) },
@@ -1322,6 +1383,7 @@ private fun UserFeedGrid(
   TvVideoGrid(
     videos = videos,
     debugLabel = "dynamic-grid",
+    focusMemoryId = GridFocusIds.Dynamic,
     firstItemFocusRequester = firstItemFocusRequester,
     restoredFocusIndex = restoredFocusIndex,
     restoreFocusRequestKey = restoreFocusRequestKey,
@@ -1359,6 +1421,7 @@ private fun BangumiGrid(
   TvVideoGrid(
     videos = videos,
     cardMode = VideoCardMode.Bangumi,
+    focusMemoryId = GridFocusIds.Dynamic,
     firstItemFocusRequester = firstItemFocusRequester,
     restoredFocusIndex = restoredFocusIndex,
     restoreFocusRequestKey = restoreFocusRequestKey,
@@ -1517,14 +1580,6 @@ private fun YoutubeHistoryEntry.toVideoSummary(avatarFallback: String = ""): Vid
   )
 }
 
-private fun List<VideoSummary>.resolveFocusIndex(focusKey: String, fallbackIndex: Int): Int {
-  val keyIndex = focusKey
-    .takeIf { key -> key.isNotBlank() }
-    ?.let { key -> indexOfFirst { video -> video.focusRestoreKey() == key } }
-    ?.takeIf { index -> index >= 0 }
-  return keyIndex ?: fallbackIndex.coerceIn(0, lastIndex)
-}
-
 private fun List<com.kirin.mt.core.network.FollowingSeason>.appendSeasonsUnique(
   nextSeasons: List<com.kirin.mt.core.network.FollowingSeason>,
 ): List<com.kirin.mt.core.network.FollowingSeason> {
@@ -1533,17 +1588,13 @@ private fun List<com.kirin.mt.core.network.FollowingSeason>.appendSeasonsUnique(
   return this + nextSeasons.filter { knownIds.add(it.seasonId) }
 }
 
-private fun VideoSummary.focusRestoreKey(): String {
-  return bvid.ifBlank {
-    when {
-      cid > 0L -> "cid-$cid"
-      historyPage > 0 -> "p-$historyPage"
-      viewAt > 0L -> "view-$viewAt"
-      else -> ""
-    }
-  }
-}
-
+/**
+ * LazyColumn 的**行身份**专用 key(含 index)。
+ *
+ * P11-202 起这里只负责「行 key 唯一」这一件事:`rowKeyOf` 与 `items(key=)` 依赖它在 bvid/cid/viewAt
+ * 全空时仍给出唯一值(否则 Compose 抛 key 冲突)。焦点**身份**解析不再走它 —— 那个用公共
+ * `focusRestoreKey()`(不含 index),否则重排后 key 必变、焦点锚不回原来那条视频。别再当 bug 修。
+ */
 private fun VideoSummary.feedKey(index: Int): String {
   return bvid.ifBlank {
     "cid-$cid-view-$viewAt-$index"
@@ -1555,6 +1606,9 @@ private fun Int.shouldLoadMore(totalItems: Int, threshold: Int): Boolean {
 }
 
 private const val RestoreFocusRetryCount = 8
+
+/** 动态 feed 取数日志 tag(与 UserFeedRepository 的 BiliDynamicFeed 同一主题,便于一次 grep)。 */
+private const val DynamicFeedLogTag = "BiliMT:DynamicFeed"
 
 internal sealed interface UserFeedState {
   data object Loading : UserFeedState
