@@ -709,6 +709,9 @@ class HeightAwareAdaptiveTrackSelection(
   /** P11-200:「档位实需」被实测交付码率校准过的一次性日志,按 itag 去重(否则每评估刷屏)。 */
   private val tierNeedCalibratedLogged = mutableSetOf<Int>()
 
+  /** P11-247:「初次」借同族实测比例折算过的一次性日志,按 itag 去重。 */
+  private val borrowedNeedLogged = mutableSetOf<Int>()
+
   /** 2026-09-01 满缓冲试探:本实例见过的最高缓冲水位(us)——试探水位线 = max(地板, 0.8×此值)。 */
   private var maxObservedBufferedUs = 0L
 
@@ -1497,8 +1500,8 @@ class HeightAwareAdaptiveTrackSelection(
    *     被误降;真断流由活跃 est 与水位急救接管,不需要这里加码)。
    *   · **不叠余量** —— meas 已是「真需求」,余量交给各闸自己的系数(estHasMargin ×1.15、顶档 ×1.1、
    *     试探超容量 ×1.5),在这里再乘一次会与它们重复放大(§39.11.3-2)。
-   *   · **证据不足即退回旧行为** —— `meas ≤ 0`(`MEASURED_MIN_SEGS=3` 段未满)⇒ 返回 declared,
-   *     与 P11-188「未知 = 没有证据」同向:不拿未知去放宽任何判据。
+   *   · **本档无实测时借同族实测比例**(P11-247,原口径「`meas ≤ 0` ⇒ 返回 declared」已改)——
+   *     见 [borrowedNeedAnchorIndex] 的注释:那是「初次」才有的事,而初次恰恰是最需要修正的一刻。
    *
    * 刻意**不用**于:升档重锚锚点(已有 `cap×1.2` 夹取,P11-153①b)与冷却「提前解除」判据(那是
    * 「要不要给刚判失败的档翻案」,宁严勿松 —— 见 §39.11.3-6)。
@@ -1508,7 +1511,32 @@ class HeightAwareAdaptiveTrackSelection(
     if (declared <= 0L) return declared
     val itag = itagOf(f)
     val meas = (bandwidthMeter as? SabrBandwidthMeter)?.getMeasuredBitrateBps(itag) ?: -1L
-    if (meas <= 0L) return declared
+    // ── P11-247(用户口径「改吧,但是只针对初次,按实测修正」)──────────────────────────────────
+    // 本档**还没有自己的实测**(=「初次」,`meas ≤ 0`)时,不再直接退回 VBR 峰值声明,而是借
+    // **同编码族里已实测档的「实测/声明」比例**把它折回真实量级。原口径「证据不足即退回旧行为」
+    // (§39.11)在**顶档**上成了死锁:顶档进不去 ⇒ 永远没有自己的 meas ⇒ 基准永远是峰值 ⇒ 更进不去
+    // (§48/§50 真机:TV 该视频声明 46.49M 而实测只有 7.3M,虚高 6.4×,顶档两道闸全按 46.49M 立)。
+    // 只对「初次」生效:一旦本档有了 `meas`,下面走原口径 `min(declared, meas)`,行为不变。
+    if (meas <= 0L) {
+      val anchorIdx = borrowedNeedAnchorIndex(f)
+      if (anchorIdx < 0) return declared
+      val anchor = getFormat(anchorIdx)
+      val anchorItag = itagOf(anchor)
+      val anchorMeas = (bandwidthMeter as? SabrBandwidthMeter)?.getMeasuredBitrateBps(anchorItag) ?: -1L
+      if (anchorMeas <= 0L || anchor.bitrate <= 0L) return declared
+      val borrowed = declared * anchorMeas / anchor.bitrate
+      val borrowedNeed = minOf(declared, borrowed) // 只降权不抬权(P11-200 口径不变)
+      if (borrowedNeed < declared && borrowedNeedLogged.add(itag)) {
+        Log.i(
+          "YtSabrAbr",
+          "tier need borrowed (P11-247 同族实测折算·仅初次): itag$itag(${f.height}p) " +
+            "declared=$declared × ${anchorMeas.toDouble() / anchor.bitrate} " +
+            "(锚 itag$anchorItag(${anchor.height}p) meas=$anchorMeas/declared=${anchor.bitrate}) " +
+            "→ need=$borrowedNeed",
+        )
+      }
+      return borrowedNeed
+    }
     val need = minOf(declared, meas)
     if (need < declared && tierNeedCalibratedLogged.add(itag)) {
       // 比值用整数十分位拼,避免 String.format 走默认 Locale(某些区域会输出逗号小数点)。
@@ -1520,6 +1548,43 @@ class HeightAwareAdaptiveTrackSelection(
       )
     }
     return need
+  }
+
+  /**
+   * P11-247:**「初次」折算的锚档** —— 找一个「同编码族 + 已有实测(`meas > 0`)+ 声明可用」的档,
+   * 用它把本档的峰值声明折回真实量级。返回索引,`-1` = 找不到(那就只能退回声明)。
+   *
+   * **为什么是「同族」**:峰值/平均的比值是**编码侧的属性**(该 rendition 的 VBR 配置),所以同族
+   * (同 codec)的档最有参考价值 —— 真机两条实测:TV 该视频同族各档的比例是 0.179/0.333/0.237
+   * (720p/1080p/1440p),手机另一场是 0.585(720p)/0.729(1440p)。跨族(如 avc 对 vp9)比例差得远,不用。
+   *
+   * **为什么取「高度最接近」**:越是同分辨率的档,编码配置越相近(同一档的变体尤其)。平手时取
+   * **实测段数更多**的(样本更成熟;`meas` 是运行中累积量,刚过 3 段时偏低估)。
+   *
+   * **不做的事**:不抬权(调用方仍 `min(declared, …)`)、不动有实测的档(调用方只在 `meas ≤ 0` 时走这里)、
+   * 不跨族、不看冷却表(冷却与否不影响「这一档真实要多少」这件事)。
+   */
+  private fun borrowedNeedAnchorIndex(f: Format): Int {
+    val fam = codecFamilyOf(f) ?: return -1
+    val meter = bandwidthMeter as? SabrBandwidthMeter
+    var best = -1
+    var bestHeightDelta = Int.MAX_VALUE
+    var bestSegs = -1L
+    for (i in 0 until length) {
+      val o = getFormat(i)
+      if (codecFamilyOf(o) != fam) continue
+      if (o.bitrate <= 0L) continue
+      val oItag = itagOf(o)
+      if ((meter?.getMeasuredBitrateBps(oItag) ?: -1L) <= 0L) continue
+      val delta = kotlin.math.abs(o.height - f.height)
+      val segs = meter?.getMeasuredSegmentCount(oItag) ?: 0L
+      if (delta < bestHeightDelta || (delta == bestHeightDelta && segs > bestSegs)) {
+        best = i
+        bestHeightDelta = delta
+        bestSegs = segs
+      }
+    }
+    return best
   }
 
   /**
