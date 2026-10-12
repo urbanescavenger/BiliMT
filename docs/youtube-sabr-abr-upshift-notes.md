@@ -3894,3 +3894,169 @@ initializedFormats.keys.retainAll { f -> f == audioFormat?.itag || f == videoFor
 **P11-247 的主场仍未复测**:两场 4K 的折算比例分别是 0.9787 / 0.9688(≈1,几乎没修),
 因为这两个视频的 **4K 声明本来就准**。§50 那个 **4K 声明 46.49M、实需 7.26M(虚高 6.4×)** 的视频
 需要再放一次,才能验证折算在极端虚高下真能把它救回来。
+
+---
+
+## §53 P11-250:2026-10-12 TV「连续重载」真因 —— UMP 解析层的 headerId 生命周期缺陷(改码前先理逻辑链)
+
+> 触发:用户「检查下最新日志 为什么连续重载,手切 2160 没问题」。
+> 日志 `logs_live_20261012_204149.log`(**BRAVIA AE2,3.1.0-alpha.18 / 3100118**,20:22:25~20:41:44;
+> 同进程先后三个视频:`S0tsqad4KJY`、`tdK7gxH4aqQ`、`RlVRxMCfdXQ`)。只判读 + 定修法。
+
+### §53.1 事实
+
+```
+20:27:25  session1 S0tsqad4KJY(5 格式,最高 1080p)起播 720p(298)
+20:28:12  切 298 → 299(1080p);此后 8 分钟零错误、零重载        ← 全程只切一次,平安
+20:36:56  SabrDataSource open: seg=132 itag=299 InterruptedException → evict  ← 换视频(非重载)
+20:37:42  session3 RlVRxMCfdXQ(14 格式,含 1440p/2160p)起播 720p(302)
+20:38:35  302 → 303(1080p)
+20:38:37  303 → 308(1440p)
+20:38:39  308 → 315(2160p)                                    ← 4 秒内三连切
+20:38:40  chunk load error: itag=139 type=media error=dj3: Skipping atom with length > 2147483647
+20:39:01  player error code=3003 CONTAINER_UNSUPPORTED → auto-retry #1 @pos=733154ms
+20:39:55  303 → 20:39:56 308                                     ← 重载后又爬档
+20:39:57~20:40:21  chunk load error: itag=139 … EOFException ×5
+20:40:23  player error code=2000 IO_UNSPECIFIED → auto-retry #1 @pos=808658ms
+20:40:37  state=ENDED
+20:40:41  SABR PlaybackInfo selected=itag315(2160p) videoTracks=1(all=14)   ← 用户手切
+20:40:43  init itag=315 + first media chunk itag=315
+20:40:45  video size: 3840x2160 → 到日志尾(20:41:44)零错误、bufS 涨到 40s+、meas≈27M
+```
+
+**手切干净不是巧合**:`videoTracks=1(all=14)` = 单轨锁档(§41 同源),会话从**第一笔请求起**
+白名单就是 `[139, 315]`,**全程不切轨** ⇒ 下面这个缺陷没有触发入口。
+
+### §53.2 真因:被跳过的 MEDIA_HEADER,把视频字节灌进了上一笔响应的残留段
+
+音频段 itag=139 正常是 **60 779 B / 2 chunks**;炸之前它变成了 **2 478 617 B / 114 chunks**。
+
+```
+── 20:38:38.197(响应 rn=11,白名单=[139,308])──
+MEDIA_HEADER headerId=2 itag=139 seq=74 contentLen=60865      ← 登记进 partialSegments[2]
+20:38:39.292  fetch rn=11 … (早停:请求段+后继段已到手,P11-217/218)   ← 响应到此为止
+                                                                      ⇒ [2] 成了残留(它永远等不到自己的 MEDIA_END)
+
+── 20:38:39.5(已切档,白名单翻成 [139,315];响应 rn=12)──
+20:38:39.571  MEDIA_HEADER headerId=0 itag=139 seq=74 contentLen=60865   ← 新响应的正牌音频段
+20:38:39.572  skip ad/unrequested MEDIA_HEADER itag=308 headerId=1 (whitelist=[139, 315])   ← 308 被跳过(hid=1 当时是空的,无害)
+20:38:39.801  MEDIA_END headerId=0 itag=139 seq=74 chunks=2 bytes=60865               ← 正确,60865
+20:38:40.521  skip ad/unrequested MEDIA_HEADER itag=308 headerId=2 (whitelist=[139, 315])   ← ★ 撞上残留的 [2]
+20:38:40.924  MEDIA_END headerId=2 itag=139 seq=74 chunks=114 bytes=2478617             ← ★ 308 的 2.4MB 被记成了 139
+20:38:40.931  tfdt relativized: found=1 v0=32143360ms→0 (bytes=2478617)                  ← 按 fMP4 修补这块假音频
+20:38:40.932  chunk load error: itag=139 type=media … Skipping atom with length > 2147483647
+20:39:01.235  ExoPlayerImplInternal Playback error (同一条 dj3) → Source error → auto-retry
+```
+
+cycle 2 是同一形状(残留来自 20:39:55.921 的 `headerId=1 itag=139 seq=81`,被下一笔的
+`skip … itag=303 headerId=1` 灌进 2.1MB),只是下游症状从 atom 解析错变成 **EOFException ×5**。
+
+一句话:**`skip ad/unrequested` 分支 `return` 时只跳过了 header,没有清掉同一 headerId 上的残留段;
+服务端每笔响应把 headerId 从 0 重排,于是这一笔「被跳过的格式」的 MEDIA 负载,全部追加进了上一笔
+遗留的音频段。**
+
+### §53.3 为什么以前没有——早停(P11-217/218)是解锁键
+
+| 签名 | 出现范围 |
+| --- | --- |
+| `skip` 打到残留 headerId(本缺陷的直接成因) | **只有 2026-10-12 那份,2 次**(正好对应 2 次 auto-retry) |
+| `MEDIA_END … itag=139 … bytes=2478617/2155549` | 只有 2026-10-12 |
+| `Skipping atom with length > 2147483647` | 只有 2026-10-12 |
+| itag=139 media 的 `EOFException` | 只有 2026-10-12(其余各场都是 `IOException: SABR open failed: timeout`,网络,两回事) |
+| `MEDIA_HEADER duplicate headerId=`(= 残留存在的直接证据) | **r2159(2026-10-09 11:21)起每份都有;r1873~r2155 全月零出现** |
+
+前三行是对留存全部 **213 份**日志(r1873,2026-09-09 起)逐条追踪 headerId 生命周期的扫描结果。
+最后一行是关键:该告警由 **alpha.64(2026-08-09,`5ad6d759`)** 引入,到 r2155 为止**一次没响过**;
+r2159 起突然每份都响 —— 而 r2155→r2159 之间落地的正是 **P11-217/218(响应改流式读 + 拿够就停)**。
+
+链路:
+
+1. **alpha.71(2026-08-09)** 加白名单 skip 分支 —— `return` 时不清 `partialSegments[headerId]`,缺陷潜伏。
+   当时响应是**整包读完**的,每段都能配上 MEDIA_END,表在响应结束时必空 ⇒ 撞不上。
+2. **2026-10-09 P11-217/218** 改成边收边停 ⇒ 响应会被**拦腰截断**,登记了 header 却等不到 MEDIA_END
+   的段成了常态 ⇒ 残留从「例外」变「必然」。而且早停判据 `streamNeedSatisfied` **只看请求的那条轨**,
+   一笔响应却是 A+V 共用 ⇒ **另一条轨的段经常被主动放弃**,残留几乎每笔都有。
+3. **2026-10-11 P11-244** 让服务端开始主动推候选档(`pushed=[139, 302, 303, 308]`)⇒ 白名单外的
+   格式被 skip 的次数暴增 ⇒ 撞上残留的概率被放大。
+4. **2026-10-12** 三个条件第一次同时命中(残留 id + 被跳的格式 + 恰好落在切轨那一刻)⇒ 连续重载。
+
+⇒ **不是新引入的 bug,是早停上线后被解锁的潜伏缺陷;今天首次真正命中。**
+
+### §53.4 逻辑链:三个 id 空间与各自的生命周期
+
+UMP 解析层有**三个不同作用域的标识**,混用就是这次事故的形态:
+
+| 标识 | 作用域 | 生命周期 | 维护在哪 | 会跨「响应」复用吗 |
+| --- | --- | --- | --- | --- |
+| **headerId** | **一笔响应内** | MEDIA_HEADER → MEDIA_END | `partialSegments` | **会**——服务端按小 id 池滑动复用(20:27 一场里 hid 0/1/2 反复重现,`duplicate` 告警即此) |
+| itag | 整个 SABR 会话 | 会话存续 | `initializedFormats` / `measuredTracks` / `serverPushedVideoItags` | 不会 |
+| seq | 一个格式 | 格式存续 | `downloadedSegments` / `bufferedSegments` | 不会 |
+
+**缺陷的形态 = 唯一短生命周期的标识(headerId),被存进了长生命周期的表(`partialSegments` 是 fetcher 字段)。**
+LibreTube 同样把它写成字段(`SabrClient.kt:198`),但它是**整包读完再解析**的,响应结束时表必空 ⇒
+这个字段的"生命周期"事实上等于"一笔响应"。**BiliMT 把「整包」换成「早停」(P11-217)时,
+没把「响应作用域」这个隐含前提一起搬过来。**
+
+### §53.5 不变量清单与冲突清单(改码前逐条核)
+
+| # | 不变量 | 现状 |
+| --- | --- | --- |
+| **I1** | headerId 的配对必须在**同一笔响应内**闭合 | **已破**:残留跨响应存活 |
+| **I2** | 段字节数必须等于 `header.contentLength` | **未校验**——`SabrSegment.length()` 的注释写着「应等于 …(媒体端校验)」,但代码里没有任何校验,只有一行日志 |
+| **I3** | 一个段的字节只能来自它自己的 itag | 被 I1 连带破(本次事故) |
+| **I4** | 被丢弃(未白名单)的字节不得计入交付量与带宽样本 | **已破且是刻意的**:`recordRealBandwidthSample(readBytes…)` 收的是实读总量,丢弃的 2.4~7.9MB 照进 est(§P11-130 已记) |
+| **I5** | 早停只对「请求的那条轨」判定,而响应是 A+V 共用 | **结构如此**——这正是残留常态化的机制 |
+
+互相抵消/冲突的两组:
+
+- **「skip 不登记」× 「早停留残留」**:单独看各自都对(白名单挡广告、早停省往返),
+  合起来就是「被跳过的 header 的字节,注入了别人的段」。
+- **「白名单 = 选中 + 在途」× 「P11-244 预取推送」**:一边用 `preferredVideoFormatIds` 点名要候选档、
+  一边在解析时把它判成 `ad/unrequested` 整段丢弃(`resp summary: req=139 usable=2509428B/7485460B`)
+  ——**花带宽买回来再扔**,同时源源不断制造 skip 事件(也正是本次事故的弹药)。
+- 同一根因的**另一种丢数据路径**:`duplicate headerId (overwrite)` 会静默丢掉旧的部分段。它是同一
+  个「残留」现象的另一面,本次一并由 L1 覆盖。
+
+### §53.6 修法
+
+**L1(治本主刀)—— 把 `partialSegments` 降级为「每笔响应的局部状态」。**
+`media()` 每次调用建一张新表、传进 `processPart`,fetcher 上不再留字段。响应边界即状态边界。
+
+- 语义依据:headerId 只在一笔响应内有定义;没在该响应内闭合的段,其 MEDIA_END 永远不会来
+  (服务端下笔重排 id),留着就是死数据。
+- 一次消掉三类问题:①skip 撞残留(本次重载)②同格式跨响应合体(会污染 `measuredTracks` 的实测码率账)
+  ③`duplicate headerId` 静默丢数据。
+- 该改动**天然包含**此前设想的「skip 时 tombstone」补丁 —— 新表里被跳过的 headerId 根本不存在条目。
+
+**L2(完整性不变量 + 告警器)—— 在 MEDIA_END 校验 `seg.length() == header.contentLength`。**
+LibreTube 同位置直接 `throw`(`SabrClient.kt:485-497`);BiliMT 取**丢弃该段 + 告警**而不是抛异常,理由:
+
+- 该段字节已经错了,喂给解码器 = 必然的 Source error + 整场重载(正是本次的结果);丢弃只损失一段内容。
+- `fetchStreamData` 的 `catch (e: Exception)` **分不清「网络故障」和「协议错误」**——任何从这里抛出的
+  解析异常都会被记成一次网络失败(`recordRealBandwidthFailure` + `noteRoundTrip`)**把带宽估计带偏**。
+  要抛异常就必须先引入独立异常类型并排除出带宽记账,那是另一件事,不在本轮。
+- 口径成立:早停只停在 part 边界,已闭合段长度精确(全日志正常段 `bytes` 与 `contentLen` 逐笔相等,
+  init 段亦然);SABR 路径**没有 gzip 解压**(全包 grep 无 `gzip/decompress`),`contentLength` 就是原始字节数。
+- 定位:这是「不可能分支」的告警器 —— L1 之后不应再触发,触发即说明又出现了新的 id 生命周期问题。
+
+**L3(单独立项,本轮不动)—— 白名单与预取解耦。** 见 §53.5 第二组冲突。方向是把预取窗口内的候选档
+并入白名单,让推来的数据真进 `initializedFormats`(P11-244 想要的「预取→实测」闭环);但 P11-130
+已记反面证据(推来的数据会挤掉当次请求的段,两场 32.8s/25s 零数据 = 预取窗口本身)⇒ 必须同时做
+「窗口可撤销」,否则等于把 09-20 那次卡顿重新打开。**要有实测证据再动。**
+
+### §53.7 判据与否证
+
+**判据(真机)**:
+1. 同一视频(14 格式、含 1440p/2160p)自动爬档到 2160p **不出现** `auto-retry` / `player error`;
+2. 全日志 `MEDIA_HEADER duplicate headerId=` **归零**(残留消失的直接信号);
+3. 全日志**不再出现**「`MEDIA_END … itag=139 … bytes=` 远大于 `contentLen`」的行;
+4. 手切路径行为不变(它本就干净)。
+
+**否证**:
+1. 若仍在爬档时重载,但 `duplicate headerId` 已归零 ⇒ 是另一条路径,回来重理 id 生命周期;
+2. 若 L2 的告警在正常会话里频繁触发 ⇒ 说明「`contentLength` 与实收字节相等」这个口径本身有例外
+   (例如服务端对某些形状发的是压缩字节),需先查清再决定是否放宽;
+3. 若丢弃该段导致 `no seg` 六连 → terminal evict ⇒ 说明「丢弃」比「抛异常」更坏,改回 LibreTube 的
+   throw + 独立异常类型排除出带宽记账。
+
+

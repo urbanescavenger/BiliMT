@@ -203,8 +203,11 @@ internal class SabrMediaFetcher(
     Log.i(tag, "prefetch canceled: itag$cur 撤销($reason) — 不再与正在播的格式抢响应预算")
   }
 
-  /** 正在处理的 partial 段(headerId → Segment,MEDIA 累积/MEDIA_END 收尾)。 */
-  private val partialSegments = mutableMapOf<Int, SabrSegment>()
+  // 2026-10-12(P11-250):原 `partialSegments` 是**这里的实例字段**,已删——见 [ResponseParseState]。
+  // headerId 是**单笔响应内**的序号(服务端每笔从 0 重排,并按 0/1/2 小池滑动复用),而字段是
+  // fetcher(会话)生命周期的 ⇒ 早停(P11-217/218)掐断响应后残留的段会跨响应存活,被下一笔
+  // 「被白名单跳过的格式」的 MEDIA 负载灌进来(真机 2026-10-12:音频段 60 779B 变 2 478 617B
+  // → `Skipping atom with length > 2147483647` → Source error → 连续重载)。详见 §53。
 
   /**
    * 当前选中的音频/视频 FormatId(由 [SabrMediaPeriod] selectTracks→[selectFormat] 设)。
@@ -906,9 +909,13 @@ internal class SabrMediaFetcher(
   private suspend fun media(req: SabrSegmentRequest) {
     // 2026-09-20(无效流量取证):一次响应内的丢弃统计——见 DiscardTracker 为何必须是调用内局部量。
     val discard = DiscardTracker()
+    // P11-250(2026-10-12):**响应作用域**的解析状态(partial 段表)。headerId 只在一笔响应内有定义
+    // (服务端每笔从 0 重排),所以这张表必须与响应同生共死 —— 放在 fetcher 字段上会让早停掐断的
+    // 残留段被下一笔响应同 headerId 的负载灌进来。见 [ResponseParseState] 与 §53。
+    val parseState = ResponseParseState()
     // P11-217:解析搬进 [fetchStreamData] 的读流循环(边收边解 + 拿够就停),这里只给 part 回调;
     // 返回值也从「整包字节」变成「实读字节 + 耗时 + 是否早停」。
-    val resp = fetchStreamData(req) { type, payload -> processPart(type, payload, discard) }
+    val resp = fetchStreamData(req) { type, payload -> processPart(type, payload, discard, parseState) }
     // 2026-09-20(无效流量取证,只观测不改口径):本响应里被整段丢弃的媒体字节。
     // 真机三场「预取窗口 = 零可用数据窗口」期间每笔响应丢 7.6–7.9MB,而这些字节照进
     // `recordRealBandwidthSample` → est 一路抬到 32Mbps → 又作为 `bandwidthEstimate` **上报服务端**
@@ -1562,7 +1569,13 @@ internal class SabrMediaFetcher(
   }
 
   /** 处理一个 UMP part(对齐 LibreTube processPart)。[discard] 只用于 2026-09-20 的无效流量取证。 */
-  private fun processPart(type: Int, payload: ByteArray, discard: DiscardTracker) {
+  private fun processPart(
+    type: Int,
+    payload: ByteArray,
+    discard: DiscardTracker,
+    state: ResponseParseState,
+  ) {
+    val partialSegments = state.partialSegments
     when (type) {
       PART_MEDIA_HEADER -> {
         val mh = SabrProto.decodeMediaHeader(payload)
@@ -1576,6 +1589,8 @@ internal class SabrMediaFetcher(
         }
         // alpha.71 广告防御层:跳过非白名单 itag 的 MEDIA_HEADER(广告段)。不入 partialSegments
         // → 其后续 MEDIA/MEDIA_END 按 headerId 找不到段自动丢弃。
+        // P11-250:跳过的 headerId 若在本响应内另有条目,`duplicate` 分支会 overwrite——同一响应内
+        // 服务端复用 id 时这是正常的(skip 的字节按 [DiscardTracker] 归因后丢弃)。
         // 2026-08-31:白名单=当前选中格式+在途段请求 itag——选轨切换后旧在途请求的响应不再被误丢
         // (21:01 真机:videoFormat 翻 302 后 298 在途段响应全被丢,六连重试独占 fetcher 8.5s)。
         val hdrWhitelist = setOfNotNull(audioFormat?.itag, videoFormat?.itag) + pendingRequestItags
@@ -1621,6 +1636,27 @@ internal class SabrMediaFetcher(
           return
         }
         Log.i(tag, "MEDIA_END headerId=$headerId itag=${seg.header.itag} seq=${seg.sequenceNumber} chunks=${seg.data.size} bytes=${seg.length()}")
+        // P11-250(不变量 I2,对齐 LibreTube SabrClient.kt 的 content-length 断言):实收字节必须
+        // 等于 header 声明的 contentLength。2026-10-12 真机:音频段收到 2 478 617B 而声明 60 865B
+        // (被跳过格式的 MEDIA 灌进了残留段),这块假音频一路喂到解码器 → `Skipping atom with
+        // length > 2147483647` → Source error → 整场重载。
+        //
+        // 这里**丢弃该段并告警**,不抛异常(LibreTube 抛):①抛出去会被 fetchStreamData 的
+        // `catch (e: Exception)` 当成一次**网络失败**记账(recordRealBandwidthFailure/noteRoundTrip),
+        // 把带宽估计带偏;要抛就得先有独立异常类型并排除出带宽记账,那是另一件事;
+        // ②丢一段只损失几秒内容,喂错字节则是必然的整场重载。
+        // 口径成立的前提:早停只停在 part 边界(已闭合段长度精确,正常段 bytes 与 contentLen 逐笔相等),
+        // 且 SABR 路径不做 gzip 解压 ⇒ contentLength 即原始字节数。
+        // **这是「不可能分支」的告警器**:L1 之后不应再触发;一旦触发,说明又出现了新的 id 生命周期问题。
+        val declaredLen = seg.header.contentLength
+        if (declaredLen > 0L && seg.length().toLong() != declaredLen) {
+          Log.e(
+            tag,
+            "MEDIA_END length mismatch headerId=$headerId itag=${seg.header.itag} seq=${seg.sequenceNumber} " +
+              "declared=$declaredLen got=${seg.length()} chunks=${seg.data.size} (P11-250) — 段字节与声明不符,整段丢弃(不喂解码器)",
+          )
+          return
+        }
         fmt.downloadedSegments[seg.sequenceNumber] = seg
         if (seg.header.isInitSeg) fmt.initSegment = seg
         // 2026-08-30 实测消耗码率挂账:只计非 init 段、只按单调 seq 增量(重传旧段不重复计入)。
@@ -2027,6 +2063,28 @@ internal class SabrMediaFetcher(
  * [SabrDataSource.open] 捕获 → [com.kirin.mt.core.youtube.sabr.SabrStreamRegistry.evict] → 播放器 error-retry 重 harvest。
  */
 internal class SabrTerminalException(message: String) : Exception(message)
+
+/**
+ * 2026-10-12(P11-250):**一笔响应**的解析状态。
+ *
+ * `headerId` 是 UMP 在一笔响应内给媒体段编的序号 —— 服务端**每笔响应从 0 重排**,并且按 0/1/2 这种
+ * 小池滑动复用(所以同一场会话里反复出现 `MEDIA_HEADER duplicate headerId=`)。
+ * 也就是说:它的作用域是**一笔响应**,不是 fetcher、不是会话。
+ *
+ * 把 [partialSegments] 放进这个"与响应同生命周期"的容器,而不是挂在 fetcher 上,修的是
+ * 2026-10-12 真机那次连续重载:响应被早停(P11-217/218)掐断后,登记了 header 却等不到 MEDIA_END
+ * 的段留在表里跨到了下一笔;下一笔服务端把同一个 headerId 给了**被白名单跳过的格式**,而 skip 分支
+ * 只跳过 header、不登记 —— 于是那些字节被 `PART_MEDIA` 追加进了上一笔遗留的音频段
+ * (60 779B → 2 478 617B),假音频喂到解码器 → `Skipping atom with length > 2147483647`
+ * → Source error → 整场重载。判读全文见 docs/youtube-sabr-abr-upshift-notes.md §53。
+ *
+ * 为什么必须是调用内局部量:与 [DiscardTracker] 同因 —— fetcher 是**跨轨共享**的(音频/视频两个
+ * loader 并发进 `media()`,由 `dispatcher` 串行),实例字段会串场。
+ */
+private class ResponseParseState {
+  /** 正在处理的 partial 段(headerId → Segment,MEDIA 累积/MEDIA_END 收尾)。 */
+  val partialSegments = mutableMapOf<Int, SabrSegment>()
+}
 
 /**
  * 2026-09-20(无效流量取证):**一次响应内**被整段丢弃的媒体字节与来源 itag。
