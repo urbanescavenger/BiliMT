@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.1.1-alpha.5](#v311-alpha5)
 - [v3.1.1-alpha.4](#v311-alpha4)
 - [v3.1.1-alpha.3](#v311-alpha3)
 - [v3.1.1-alpha.2](#v311-alpha2)
@@ -404,6 +405,43 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v3.1.1-alpha.5
+
+**WebDAV 备份不再「按好几次才成」** —— 探测早就有三档重试(8s→15s→25s),但真正搬数据的上传/下载是**单发一次**;这次把同一套阶梯补到传输路径上(P11-256)。
+
+### 变更
+
+- **问题**:备份到 WebDAV 常要按好几次才成功。真机(`logs_live_20261012_235118.log`,主机经 Cloudflare 前置)
+  同一份 **5MB** 实时日志:`put code=201 bytes=5050714 elapsed=12090ms`(边缘热,12 秒一次成)
+  vs `put failed elapsed=169824ms SocketTimeoutException`、`32051ms`、`36234ms`(边缘冷),
+  **同一分钟内试了 3~4 次**才成;探测侧同签名 —— `ping attempt=1/3 failed elapsed=8753ms timeout=8s`
+  → `attempt=2/3 ok elapsed=2498ms timeout=15s`。
+- **根因**:连通探测(`ping`)早就有 8s→15s→25s 的三档阶梯(就是为了「一次用户操作内熬过冷启动,而不是
+  让用户反复按键撞运气」),但上传 `put` / 下载 `get` 是**单发无重试** —— 冷边缘一次超时,整轮备份就失败,
+  用户只能自己再按一次。
+- **改法**:`put`/`get` 接上同一套阶梯重试。① 只有**网络异常**(超时/断连)和 **5xx**(Cloudflare 边缘
+  冷启常见的 502/503/504)才重试;其余 HTTP 码(401/403/404 等)是服务器的明确回答,**立即返回不空耗**;
+  ② 失败语义统一:阶梯跑完仍失败就返回失败,**不再向上抛异常** —— 调用方给出带上下文的提示
+  (如「日志上传失败:logs_live_xxx.log」),细节留在日志里:`put attempt=2/3 failed elapsed=… timeout=15s …`
+  / `put give-up attempts=3 last=…`;③ 同名 **PUT 覆盖是幂等的**,所以「服务端已收但响应超时」时重发整包
+  不会损坏数据。
+
+### 待验证(真机)
+
+- 对冷边缘连按三次「备份」:**每次要么一次成功、要么同一条档案里自己跨到第 2/3 档成功**,不该再需要手动再按。
+- 日志应能看到 `put attempt=N/M …` 的阶梯轨迹;彻底失败时是 `put give-up attempts=3 last=…`,
+  而不是旧的裸 `put failed … SocketTimeoutException` 单行。
+- 热连接下行为不变:第 1 档 8 秒内 `code=201`。
+
+### 已知
+
+- **未做**:分块 / 可续传(dufs 支持 `PATCH + X-Update-Range`、copyparty 支持分块上传,客户端侧还没接)、
+  建目录 `mkcol` 未上阶梯(紧跟成功的探测、请求体为空,实测从未失败)、传输超时未按文件体积自适应。
+- 服务端选型与契约整理进了新文档 `docs/webdav-backup.md`:有 VPS/NAS 推荐 **dufs**(要续传/校验用
+  **copyparty**);聚合型 **OpenList** 谨慎(安全评分偏低);**不建议**用 Nextcloud/Seafile/Cloudreve
+  这类完整网盘做这件事(小文件上传吞吐慢 1~2 个数量级);另建议**别套 Cloudflare** —— 上面那串超时就是
+  边缘回源冷启。
 
 ## v3.1.1-alpha.4
 
