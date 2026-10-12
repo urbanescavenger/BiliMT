@@ -225,3 +225,66 @@ videos.size)`)同样以 `videos.size` 为 key、同样无条件 `scrollRow`。�
 `restoredFocusIndex` 由页面 `focusedVideoKey/Index` 实时解析(跟踪用户当前卡),重跑等于滚回当前行;
 若哪天某个页面传的是**导航时刻的旧下标**,就会以同样的方式跳。改动它会碰 §2 五要素的主路径,留待有
 真机证据再单独开。
+
+### 6.8 P11-253:动态页「返回播放器」触发的首屏重载把列表截断 → 焦点掉出网格(2026-10-12 真机 3.1.0-alpha.18)
+
+> 用户报「当动态再加载时,焦点移到未加载出卡片位置,焦点会丢失」。取证
+> `logs_live_20261012_213427.log`(发布包 `com.kirin.mt`,**3.1.0-alpha.18**,BRAVIA AE2,同一份日志里
+> 20:41 ~ 21:23 连续可读)。
+
+**症状签名**(一条线读完):
+
+```
+21:22:57.090  video exit: restoreDest=Dynamic suppress=on restoreKey=1      ← 从播放器返回
+21:22:57.672  restore start: key=1 targetIndex=42 targetRow=10 videos=75    ← 返回时列表 75 条
+21:22:57.969  BiliDynamicFeed: dynamic feed type=video items=20             ← B 站首屏一页
+21:22:58.9x   YoutubeFeed: <每频道> RSS 15 + InnerTube 30 → merged 30        ← 首屏 YouTube 在拉
+21:22:59.101  grid-key label=dynamic-grid index=42 dir=DOWN                  ← 用户按 ↓(目标第 46 位)
+21:23:00.593  getSubscriptionsPage first done: elapsed=2621ms               ← 首屏 YouTube 完成
+21:23:00.633  LOST [dynamic-grid] → GAINED [sidebar]                         ← 聚焦行被销毁,焦点掉侧栏
+21:23:00.800  merge refocus: stable=BV1iZpK6TEij 已不在 21 条里,退回 index=46
+21:23:00.816  merge refocus: 46 → 20 attempt=0 videos=21                     ← 兜底把它夹到末卡
+21:23:01.040  又一条 items=20 + 每频道 next page → 30                        ← 夹到末卡立刻触发 loadMore
+```
+
+**判据(不是「加载更多」引起的):**
+
+- **21 条 = 首屏指纹**:同进程启动预加载 `Preload: dynamic preloaded: 21 videos -> Success`(20:22:30)
+  与它逐字对应 —— `mergeByPubdate` 按「最早一条 B 站动态」截 YouTube
+  (`VideoRepository.kt:62-72`)⇒ 首屏 20 + 1 = 21。加载更多给不出这个数。
+- **`first done` 只可能来自首屏**:`YoutubeRepository.kt:1094` 只有 `previousContinuation == null` 才打
+  `first`;视频流里 `previous = null` 的调用只有 AppShell 预加载(受 `loadedOnce` 挡,且本时段没有
+  `Preload: dynamic preload start`)与 `fetchAndApplyDynamicFirstPage`。加载更多走
+  `fetchYoutubePage(previous = ytContinuation)` ⇒ 打 `next`(21:23:01 那批就是)。
+- **加载更多数学上不可能缩表**:B 站侧恒为「已有条目 + 新页」(单调增),YouTube 侧只随「最早 B 站动态」
+  变老而**放宽** ⇒ 越翻越长。75 → 21 只能来自首屏**替换**。
+
+**根因**:`UserFeedScreen` 的首屏 effect 把「冷组合」当成了「切换」。
+`LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab, youtubeChannelIds)`
+每次冷组合都必跑一遍(LaunchedEffect 语义),而 `forceRefresh = autoRefreshOnSwitch || …`;内容层在
+播放期间被 dispose(§1)⇒ **从播放器返回 = 冷组合 ⇒ 当场重拉首屏** ⇒ 已翻的页整片丢掉。焦点若落在
+深处的卡片上(这里第 46 位),那一行被 `LazyColumn` 销毁(行 key = `row-$row-<行首项 key>`)⇒ 焦点掉到
+布局里第一个可聚焦节点(侧栏头像),兜底 `LaunchedEffect(videos)` 只能在 ~180ms 后把它夹到
+`oldIndex.coerceIn(0, lastIndex)` = **末卡**(另一张视频)。
+`loadedOnce` 全工程只置 true、从不复位 ⇒ 能绕过 `loadDynamicFirstPage` 的 early-return 只剩
+forceRefresh=true;真机 `avatar focused: autoConfirm=true`(20:22 起)= 该用户开着「切换时自动确认 +
+切换时自动刷新」。同一机制在**每次进动态页**都触发(20:26:44 / 21:18:31 / 21:23:05 各一次首屏),
+只是那几处焦点被 `resetFeedTabFocus` 归零,不表现为丢焦。
+
+**天然对照组(同一天更晚的会话)**:`logs_live_20261012_215132.log`(debug 包 `com.kirin.mt.debug`,
+独立 DataStore,日志里 `autoConfirm=false` ⇒ `autoRefreshOnSwitch=false`)从播放器返回时是
+`restore start: … videos=108`、**全程零 `BiliDynamicFeed` 请求**、恢复一次成功 —— 即「不重载 ⇒ 已翻的页
+还在 ⇒ 深处的恢复照常成立」,与上面的根因互为印证。
+
+**修法(P11-253,只在 `UserVideoFeedScreen` 一处)**:冷组合不刷,刷新只认后续动作。
+`remember` 一个「本组合是否已跑过」标记(= 组合生命周期):**首次运行(冷组合)不再 force-refresh**,
+按 `loadedOnce` 走「有就沿用、没有才首载」;此后同组合内的重跑(切子 tab / 频道增删 / 登录态变化)
+照旧按 `autoRefreshOnSwitch` 刷。两条明路不动:侧栏重点击当前目的地(`manualRefreshKey`)、
+以及「频道首次就绪需补拉 YouTube」。
+
+**验收(真机)**:①从动态页点卡看视频再返回:日志 `video exit` 与 `restore success` 之间**不得**出现
+`BiliDynamicFeed … items=20` 或 `getSubscriptionsPage first done`;②返回后焦点回到原来那张卡(不得出现
+`merge refocus: … 已不在 N 条里`,也不得出现 `LOST [dynamic-grid]`);③列表长度不缩水(返回前后
+`videos=` 相同);④切子 tab、侧栏重点击「动态」仍会刷新。
+**否证**:①返回后内容陈旧且侧栏重点击也刷不出来 ⇒ `manualRefreshKey` 那条路被切断;②冷组合下
+「频道首次就绪」也不再补拉 YouTube(动态页只剩 B 站条目)⇒ 首次运行标记误伤了那个分支。

@@ -247,11 +247,21 @@ internal fun UserFeedScreen(
   // youtubeChannels(头像字段),若 key 用全量会重启 LaunchedEffect 取消在途拉取 → 无限重启循环。
   // channelId 不变则 key 稳定,头像回填不触发重启。
   val youtubeChannelIds = youtubeChannels.map { it.channelId }
+  // P11-253:「切换时自动刷新」不认**冷组合**这个触发源 —— 冷组合一律沿用已有列表。
+  // 本 effect 每次冷组合都必跑一遍,而内容层在播放期间被 dispose(docs/tv-focus-restore.md §1)
+  // ⇒ 从播放器返回 = 冷组合 ⇒ 旧写法当场重拉首屏、已翻的页全丢(真机 logs_live_20261012_213427:
+  // 21:22:57 返回时列表 75 条 → 21:23:00.6 首屏落地只剩 21 条),落在深处的焦点行被销毁 ⇒ 焦点掉出
+  // 网格到侧栏(§6.8)。首次运行 = 冷组合 ⇒ 不刷;此后同组合内的重跑(切子 tab / 频道增删 /
+  // 登录态变化)照旧按设置刷;没数据(loadedOnce=false)时照常首载,不受本标记影响。
+  val feedEffectFirstRun = remember { mutableStateOf(true) }
   LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab, youtubeChannelIds) {
+    val firstRunInComposition = feedEffectFirstRun.value
+    feedEffectFirstRun.value = false
     // 统一动态「动态(视频)」合并了 YouTube 关注(免登录,手动配置频道);其余 tab 需要登录。
     if (!isLoggedIn && !(selectedTab == UserFeedTab.DynamicVideo && youtubeChannels.isNotEmpty())) {
       return@LaunchedEffect
     }
+    val autoRefresh = autoRefreshOnSwitch && !firstRunInComposition
     when (selectedTab) {
       UserFeedTab.DynamicVideo -> loadDynamicFirstPage(
         videoRepository,
@@ -260,7 +270,7 @@ internal fun UserFeedScreen(
         youtubeChannels,
         // 频道首次就绪(非空且尚未合并 YouTube)时强制补拉,把 YouTube 关注并进首载;
         // 之后频道变化(头像回填)不再强制,靠 loadedOnce 去重。
-        forceRefresh = autoRefreshOnSwitch ||
+        forceRefresh = autoRefresh ||
           (youtubeChannels.isNotEmpty() && !feedState.dynamicVideo.youtubeMerged),
       )
       UserFeedTab.DynamicAll -> loadDynamicFirstPage(
@@ -268,22 +278,22 @@ internal fun UserFeedScreen(
         feedState.dynamicAll,
         "all",
         emptyList(),
-        forceRefresh = autoRefreshOnSwitch,
+        forceRefresh = autoRefresh,
       )
       UserFeedTab.History -> loadHistoryFirstPage(
         videoRepository,
         feedState.history,
-        forceRefresh = autoRefreshOnSwitch,
+        forceRefresh = autoRefresh,
       )
      UserFeedTab.Favorite -> loadFavoriteFolders(
        videoRepository,
        feedState.favorite,
-      forceRefresh = autoRefreshOnSwitch,
+      forceRefresh = autoRefresh,
      )
      UserFeedTab.Bangumi -> loadBangumiFirstPage(
        videoRepository,
        feedState.bangumi,
-       forceRefresh = autoRefreshOnSwitch,
+       forceRefresh = autoRefresh,
      )
     }
   }
