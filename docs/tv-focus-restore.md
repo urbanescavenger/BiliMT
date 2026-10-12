@@ -288,3 +288,22 @@ forceRefresh=true;真机 `avatar focused: autoConfirm=true`(20:22 起)= 该用�
 `videos=` 相同);④切子 tab、侧栏重点击「动态」仍会刷新。
 **否证**:①返回后内容陈旧且侧栏重点击也刷不出来 ⇒ `manualRefreshKey` 那条路被切断;②冷组合下
 「频道首次就绪」也不再补拉 YouTube(动态页只剩 B 站条目)⇒ 首次运行标记误伤了那个分支。
+
+**P11-253 第一次尝试(alpha.2)被打回 —— 判据必须是「子 tab 真的换了」,不能是「本组合是否已跑过」**:
+
+alpha.2 用 `remember { mutableStateOf(true) }` 记「本组合是否已跑过」,让冷组合的**首次**运行不刷。
+真机 `logs_live_20261012_230948`(**3.1.1-alpha.2**,发布包)实测:每次从播放器返回 **0.2~0.5s 后照旧重拉
+首屏**(23:07:53.241 `video exit` → 53.755 `restore start … videos=75` → **53.967 `BiliDynamicFeed items=20`**
+→ 56.187 `getSubscriptionsPage first done`),列表 75→21 后 56.205 焦点掉侧栏、56.333 被夹到末卡
+(`merge refocus: 34 → 20 … videos=21`)。同场 22:29:52、22:30:22、23:08:01、23:09:24 每次返回都一样。
+
+**根因(键抖动)**:本 effect 的键含 `youtubeChannelIds`,它来自 **DataStore Flow**
+(`YoutubeChannelStore.kt:31` `context.biliDataStore.data.map { … }`)+ `collectAsState(initial = emptyList())`
+⇒ **新组合首帧 channels 是空表、随后必然再发出真实频道表** ⇒ 同一组合里**必定多跑一次**;那一跑已把
+「首次运行」标记清掉 ⇒ `autoRefresh` 又成立 ⇒ 冷组合照样重拉首屏。(debug 包不复现是因为那里没配频道、
+channels 恒空 ⇒ 没有这次重跑。)
+
+**换判据**:记住「上次真正刷新过的子 tab」,**只有子 tab 真的换了才刷**(`selectedTab` 全工程只有
+`UserFeedTabRow` 的 onClick 会写)⇒ 与任何键抖动解耦(频道表首帧 / 头像回填 / 登录态都不算「切换」)。
+另留一行判据打点 `feed first-page decision: tab=… tabSwitched=… autoRefresh=… switchOn=… channels=N loggedIn=…`,
+每次重跑都记下决策,后续判读直接看这行(返回播放器后不应出现任何 `autoRefresh=true`)。

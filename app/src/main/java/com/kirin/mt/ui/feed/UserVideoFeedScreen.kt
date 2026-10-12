@@ -247,21 +247,33 @@ internal fun UserFeedScreen(
   // youtubeChannels(头像字段),若 key 用全量会重启 LaunchedEffect 取消在途拉取 → 无限重启循环。
   // channelId 不变则 key 稳定,头像回填不触发重启。
   val youtubeChannelIds = youtubeChannels.map { it.channelId }
-  // P11-253:「切换时自动刷新」不认**冷组合**这个触发源 —— 冷组合一律沿用已有列表。
-  // 本 effect 每次冷组合都必跑一遍,而内容层在播放期间被 dispose(docs/tv-focus-restore.md §1)
-  // ⇒ 从播放器返回 = 冷组合 ⇒ 旧写法当场重拉首屏、已翻的页全丢(真机 logs_live_20261012_213427:
-  // 21:22:57 返回时列表 75 条 → 21:23:00.6 首屏落地只剩 21 条),落在深处的焦点行被销毁 ⇒ 焦点掉出
-  // 网格到侧栏(§6.8)。首次运行 = 冷组合 ⇒ 不刷;此后同组合内的重跑(切子 tab / 频道增删 /
-  // 登录态变化)照旧按设置刷;没数据(loadedOnce=false)时照常首载,不受本标记影响。
-  val feedEffectFirstRun = remember { mutableStateOf(true) }
+  // P11-253:自动刷新只认**用户切子 tab**这一个动作(selectedTab 全工程只有 UserFeedTabRow 的
+  // onClick 会写);冷组合(从播放器/覆盖层返回、进目的地)一律沿用已有列表。
+  //
+  // 不能拿「本组合是否已跑过」当判据 —— alpha.2 实测被打回:本 effect 的键里有 youtubeChannelIds,
+  // 它来自 DataStore Flow(`YoutubeChannelStore.channels`)+ `collectAsState(initial = emptyList())`
+  // ⇒ 新组合首帧 channels 是空表、随后必然再发出真实频道表 ⇒ 同一组合里**必定多跑一次**;那一跑
+  // 把「首次运行」标记清掉,autoRefresh 又成立 ⇒ 冷组合照样重拉首屏(真机 logs_live_20261012_230948:
+  // 每次从播放器返回 0.2~0.5s 后必重拉,23:07:53.241 返回 → 53.967 首屏落地、列表 75→21 →
+  // 56.2 焦点掉侧栏)。换成「子 tab 真换了」就与键抖动解耦:非用户键变化(channels 首帧 / 头像回填 /
+  // 登录态)都不会被误判成「切换」。
+  val lastAutoRefreshedFeedTab = remember { mutableStateOf(selectedTab) }
   LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab, youtubeChannelIds) {
-    val firstRunInComposition = feedEffectFirstRun.value
-    feedEffectFirstRun.value = false
+    val tabSwitchedForAutoRefresh = selectedTab != lastAutoRefreshedFeedTab.value
+    lastAutoRefreshedFeedTab.value = selectedTab
     // 统一动态「动态(视频)」合并了 YouTube 关注(免登录,手动配置频道);其余 tab 需要登录。
     if (!isLoggedIn && !(selectedTab == UserFeedTab.DynamicVideo && youtubeChannels.isNotEmpty())) {
       return@LaunchedEffect
     }
-    val autoRefresh = autoRefreshOnSwitch && !firstRunInComposition
+    val autoRefresh = autoRefreshOnSwitch && tabSwitchedForAutoRefresh
+    // 判据打点:每次重跑都记下这一跑的决策与各键当前值(channels 数 = 频道表键,可据此看出是哪次
+    // 重跑;本行也是「冷组合不刷」的验收依据 —— 返回播放器后不应出现任何 autoRefresh=true)。
+    Log.d(
+      DynamicFeedLogTag,
+      "feed first-page decision: tab=$selectedTab tabSwitched=$tabSwitchedForAutoRefresh " +
+        "autoRefresh=$autoRefresh switchOn=$autoRefreshOnSwitch channels=${youtubeChannelIds.size} " +
+        "loggedIn=$isLoggedIn",
+    )
     when (selectedTab) {
       UserFeedTab.DynamicVideo -> loadDynamicFirstPage(
         videoRepository,
