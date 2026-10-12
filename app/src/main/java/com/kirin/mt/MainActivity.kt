@@ -12,6 +12,17 @@ import com.kirin.mt.ui.shell.BiliTvApp
 import com.kirin.mt.ui.theme.BiliTvTheme
 
 class MainActivity : ComponentActivity() {
+  /**
+   * P11-254:首个拿到窗口焦点的时刻 = UI 真的上屏了。启动后台任务(harvest 采集 WebView 预热)据此
+   * 判「启动是否已稳定」,不再拿「进程启动了几秒」当判据(旧判据撞上启动高峰 → ANR → 连崩)。
+   */
+  override fun onWindowFocusChanged(hasFocus: Boolean) {
+    super.onWindowFocusChanged(hasFocus)
+    if (hasFocus) {
+      (application as? BiliTvApplication)?.appContainer?.markUiReady()
+    }
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     val appContainer = (application as BiliTvApplication).appContainer

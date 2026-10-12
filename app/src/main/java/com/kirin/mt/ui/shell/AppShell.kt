@@ -32,6 +32,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
@@ -42,12 +43,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import coil.imageLoader
 import com.kirin.mt.R
+import com.kirin.mt.core.app.AppActivitySignal
 import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.cache.AppCacheManager
 import com.kirin.mt.core.cache.formatCacheSize
@@ -793,7 +796,20 @@ fun BiliTvApp(
       }
     }
 
-    Box(modifier = Modifier.fillMaxSize().focusDiag("root")) {
+    // P11-254:把「有没有视频在播」同步给启动后台任务(harvest 预热等空闲窗口用,见 [AppActivitySignal])。
+    SideEffect { AppActivitySignal.playbackActive = visiblePlaybackRequest != null }
+
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .focusDiag("root")
+        // P11-254:根节点只记「最近一次按键时刻」,不消费事件(false 照常下发)—— 启动后台任务据此
+        // 挑「用户没在按遥控器」的空档,免得主线程几秒的重活撞上输入分发超时(ANR)。
+        .onPreviewKeyEvent {
+          AppActivitySignal.markKey()
+          false
+        },
+    ) {
       if (visiblePlaybackRequest == null) {
         Box(modifier = Modifier.fillMaxSize()) {
         Box(
