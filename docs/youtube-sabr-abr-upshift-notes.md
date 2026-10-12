@@ -2916,6 +2916,8 @@ est 滞回路径」——故本轮 C 的新闸**在读数无效时必须放行**
 **刻意不动**:A/B/D/E/F 全部判据与系数、`DOWNSHIFT_MARGIN_PERMILLE=850`、所有冷却时长、
 升档侧 #0~#11、`ROUND_TRIP_RUNWAY_FACTOR`、`TOP_TIER_CLIMB_FLOOR_US`、`TRIAL_FLOOR_BUFFERED_US`
 (守档地板**全部复用**现成常量,**零新增常量**)。
+> ⚠️ P11-251(2026-10-12)后:`TOP_TIER_CLIMB_FLOOR_US` 已**删除**,升档地板全档统一为
+> `max(15s, 2×往返)`(见 §54);上面这行是 P11-237 当时的记录,保留作对照。
 
 ### §42.4 验收 / 否证线(P11-237)
 
@@ -4058,5 +4060,142 @@ LibreTube 同位置直接 `throw`(`SabrClient.kt:485-497`);BiliMT 取**丢弃该
    (例如服务端对某些形状发的是压缩字节),需先查清再决定是否放宽;
 3. 若丢弃该段导致 `no seg` 六连 → terminal evict ⇒ 说明「丢弃」比「抛异常」更坏,改回 LibreTube 的
    throw + 独立异常类型排除出带宽记账。
+
+---
+
+## §54 P11-251:顶档升档地板撤回「与其他档一致」—— **20s 地板撞 20s 缓冲上限**(改码前先理判据链)
+
+> 触发:P11-250 真机验证轮,用户「看下日志,为什么没有升 2160」→ 判读后用户拍板
+> **「顶档地板与其他一致吧」**。
+> 日志 `logs_live_20261012_211617.log`(**BRAVIA AE2,dev.r2194 = P11-250 已入包**,21:11:33~21:16)。
+
+### §54.1 先确认:P11-250 的验收全过
+
+| 验收项(§53.7) | 本场 |
+| --- | --- |
+| `auto-retry` / player error | **0** |
+| `MEDIA_HEADER duplicate headerId=` | **0** |
+| `MEDIA_END length mismatch`(L2 告警) | **0** |
+| `skip ad/unrequested` | **0**(本场一次都没触发) |
+
+⇒ 残留段那条路彻底消失,整场零重载。**4K 没升是另一个问题。**
+
+### §54.2 事实:两道拦截点,先后各拦一次
+
+```
+21:11:35  startup lock 720p(302)
+21:11:43  升 1080p(303)
+21:11:46  升 1440p(308)                       ← 此刻 bufS 仍带着 720p/1080p 攒下的高水位
+21:11:48  ★ top-tier gate refused (P11-194): itag315(2160p) declared=28119K sustained=17980K
+            < 需要=30931K (est=19686K)        ← meas(315)=0 ⇒ need 退回声明 28.12M,闸要 sus ≥ 30.93M
+21:12:08  tier need borrowed (P11-247): itag315 declared=28119832 × 0.8346(锚 308)→ need=23467575
+21:12:08  ★ upshift held (buffer floor, P11-225 顶档 20s): itag315(2160p) bufS=19s < floor=20s
+21:12:08 → 21:14:5x   视频轨 bufS 一直 = 19.9s(80+ 秒不动),sustained 却涨到 24.7~32.2M
+21:14:55  用户手切 → video size 3840x2160(单轨会话,meas 27.5M、bufS 后来涨到 43s)
+```
+
+拦截点 1(**瞬时**):顶档 ×1.1 sustained 闸,因 `meas(315)=0` 时 need 退回声明 ⇒ 门槛 30.93M,而实测 17.98M。
+拦截点 2(**永久**):P11-247 的折算把门槛降到 25.81M(sustained 后来确实越过了),**但缓冲地板 20s 从此按死**。
+
+### §54.3 真因:两个 20s 相撞,而窗口只有 ~20 秒
+
+**两处 20s,分属两个机制、两个所有者:**
+
+| | 常量 | 所有者 | 作用 |
+| --- | --- | --- | --- |
+| **A 升档地板** | `TOP_TIER_CLIMB_FLOOR_US = 20s`(`HeightAwareAdaptiveTrackSelection.kt:1726`) | P11-225 | 升进 2160 的门槛:`climbFloorUsFor` = `max(20s, 2×本档往返)` |
+| **B 高档缓冲上限** | `HEAVY_TIER_BUFFERED_CAP_MS = 20s`(`SabrAbrMemory.kt:420`) | P11-230 | ≥1440p 时 `SabrReadAheadLoadControl:91` 到 20s 就**停止续拉** |
+
+**相撞**:B 的生效下界是 **1440**,恰好是顶档下面那一档 ⇒ 只要停在 1440p,`bufferedDurationUs` 被压在
+**< 20s**(本场实测钉在 19.9s)⇒ A 永不满足。
+
+**为什么是「窗口」而不是「永远」——B 不排空,只停续拉;排空靠播放。**
+所以从 720p/1080p 带上来的高水位,会在进入 1440p 之后约 20 秒内被播放消费到 20s 线。
+**这 ~20 秒是升 4K 的唯一窗口**,窗口内 A 满足、窗口外 A 按死。这解释了「有时能升有时不能」:
+
+| | §52 那场(dev.r2190,成功了) | 本场(dev.r2194) |
+| --- | --- | --- |
+| 进 1440p | 00:30:01 | 21:11:46 |
+| 顶档闸第一次评 | 00:30:06 **拒**(29.67M < 30.80M) | 21:11:48 **拒**(17.98M < 30.93M) |
+| 拿到 1440p 实测锚 | 00:30:06(meas=13798K,**距进 1440p 仅 5s**) | 21:12:08(meas=11813K,**距进 1440p 已 22s**) |
+| 折算后升档那一刻 bufS | **28.4s ≥ 20s** ⇒ 放行 | **19.9s < 20s** ⇒ 按死 |
+| 结果 | 00:30:14 上 4K | 到 21:14:5x 仍 1440p |
+
+两场差别只在**锚到手的时间**:P11-247 的折算锚必须是「同族(1440p)已交付段」,而它到手要等 1440p 第一段
+交付完成;§52 那场 5 秒就到、本场 22 秒才到 —— 正好跨过 20 秒窗口。**差 0.1s,永久性。**
+
+### §54.4 判据链复核(改码前,逐条)
+
+`updateSelectedTrack` 的候选循环(升档路径)按执行顺序:
+
+| # | 规则 | 位置 | 条件 | 作用 |
+| --- | --- | --- | --- | --- |
+| 1 | 轨排除 | `:1153` | `isTrackExcluded` | 顶档 180s 冷却等 |
+| 2 | 服务集合限定 | `:1154` | `restrictToServed && i !in servedInGroup` | 材料会话 |
+| 3 | 逐级爬 | `:1187` | `isUpgrade && f.height > nextUpgradeHeight` | 只允许下一档 |
+| 4 | 顶档起播 stall 冷却 | `:1189` | 顶档 + `isTopTierStartupBlocked()` | 3min 内不进 4K |
+| 5 | 失败冷却 | `:1212` | `isTrialFailBlocked(f.height)` | 该档排除 90s |
+| **6** | **升档缓冲地板(A)** | `:1270` | `!startupClimb && !trialUpgrade && bufS < climbFloorUs` → `continue` | 垫子不够不爬 |
+| 7 | 试探超容 | `:1320/:1332` | `required > upgradeEstFloor × 1.5` | 试探不授权超容跳档 |
+| 8 | 容量闸 | `:1286` | `required > upgradeEstFloor` | est 门 |
+| 9 | sustained 闸 | `:1287` | `sustained in 0 until required` | 持续供给门 |
+| **10** | **顶档 ×1.1 闸** | `:1302` | `sustained < tierNeedBps(候选) × 1.1` | 4K 死亡行军防线 |
+| 11 | 试探放行 | `:1175/:1332` | 满缓冲且非顶档/未超容 | 绕过偏悲观估计 |
+
+**冲突清单(逐条标出):**
+
+1. **A × B 同值 20s**(本次事故,决定性)——见 §54.3。且 B 只挂在 TV
+   (`PlayerScreen.kt:359` 传 `bufferedCapUs`);移动端 `MobilePlayerScreen.kt:584` **没挂** ⇒
+   手机场不撞这条,这也解释了为什么这个坑在 TV 上才现形。
+2. **A 排在所有闸之前**(`:1270` 在 `:1286/:1302` 之前)⇒ A 一拦,`top-tier gate refused` 连日志
+   都不会打(那是**一次性**打点),现场表现为「安静」——本场 21:12:08 之后再无第二条 held/gate 行。
+3. **A 的立论与自身实现重复**:P11-225 给 A=20s 的依据是「4K 一笔往返 4.9~9.2s ⇒ 垫子要
+   `2×往返` ≈ 18.4~20s」——而 `2×往返` 在 `climbFloorUsFor`(`:1473-1476`)里**本来就是独立一项**。
+   20s 是给这一项加的**固定上盖**,与 §40.6 撤掉的那个「固定 30s 上盖」同形态。
+   ⇒ 撤回 20s **不丢立论**:`2×往返` 把「水位 10s、往返 9.2s 也升上去」那条原样挡住。
+4. **守档路径早已不再用它**:`downgradeHoldFloorUs = criticalBufferedUs`(`:1104`,P11-240)⇒
+   `climbFloorUsFor` **只服务升档**(§41 的 20s 守档垫子已废),所以本改动不波及降档判据。
+
+### §54.5 改动(用户口径「顶档地板与其他一致」)
+
+```diff
+- private fun climbFloorUsFor(height: Int, itag: Int): Long {
+-   val heightFloorUs =
+-     if (height >= TOP_TIER_MIN_HEIGHT) TOP_TIER_CLIMB_FLOOR_US else TRIAL_FLOOR_BUFFERED_US
++ private fun climbFloorUsFor(itag: Int): Long {
+    val rtMs = (bandwidthMeter as? SabrBandwidthMeter)?.getLastRoundTripMs(itag) ?: -1L
+    return maxOf(
+-     heightFloorUs,
++     TRIAL_FLOOR_BUFFERED_US,          // 15s —— 全档一致(P11-251)
+      if (rtMs > 0L) rtMs * ROUND_TRIP_RUNWAY_FACTOR * 1000L else 0L,
+    )
+  }
+```
+
+- 删 `TOP_TIER_CLIMB_FLOOR_US`(:1726 起那块注释里改为「P11-225 曾并列、P11-251 已删」),消除漂移源;
+  `height` 形参随之删除(唯一调用点同步改为 `climbFloorUsFor(itagOf(f))`)。
+- 日志标签去掉「顶档 20s / P11-222 15s」分支 → 统一 `upshift held (buffer floor, P11-251 全档一致)`
+  且算式固定显示 `max(15s, 2×往返…)`。
+- **4K 的防线一字未动**:×1.1 sustained 闸(#10)、起播 stall 冷却(#4)、顶档不试探(`:1332`)。
+  本场折算后 `need=23.47M` ⇒ 闸要 `sustained ≥ 25.81M` —— 这正是「4K 买不买得起」的判据,
+  与缓冲垫子是两个问题。
+
+### §54.6 判据与否证(真机)
+
+**判据**:①同视频(14 格式、含 1440p/2160p)自动档能升到 2160 并上屏;②升档那一刻
+`bufS` 可以 < 20s(预期 15~20s 区间);③全程零降档零 stall(4K 在这台电视上实测只需 3.5~5.5M,
+交付 47.9Mbps);④无 `upshift held (buffer floor, 顶档 20s)` 行。
+
+**否证**:①升进 4K 后 10 秒内被水位急救降回(即 P11-225 当初要防的「白切一次轨」)⇒ 说明
+`2×往返` 项在 `rt(315)` 未知(-1)时确实不够,应改成「未知时用同族往返」而不是退回固定 20s;
+②4K 升上去后持续饿、`no seg`/stall ⇒ ×1.1 闸的基准(borrowed 折算)偏乐观,回到 §50.4-②/③;
+③低档(≤1080p)行为变化 ⇒ bug(`TRIAL_FLOOR_BUFFERED_US` 路径本应逐字节等价)。
+
+### §54.7 附:§40.1 判据表 #9 行早已过期
+
+§40.1 表里 #9「升档缓冲地板」写的还是 `min(30s, max(15s, 0.8×maxObserved))` —— 该式在 **§40.6
+(P11-222)** 就已被 `max(15s, 2×往返)` 取代,本轮(P11-251)再把顶档的 20s 上盖撤掉。
+现口径:**全档 `max(15s, 2×本档往返)`**。
+
 
 

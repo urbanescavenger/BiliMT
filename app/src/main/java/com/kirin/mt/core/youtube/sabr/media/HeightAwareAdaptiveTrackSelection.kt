@@ -1262,20 +1262,25 @@ class HeightAwareAdaptiveTrackSelection(
         // 而 15s 地板让它在"水位 10s、往返 9.2s"时也升上去 ⇒ 10 秒后必被水位急救降回(纯抖动、白切一次轨)。
         // 20s 与「一笔搬 3 段」配套(见 SabrMediaFetcher.streamMargin 的 P11-225):先让水位真能到 20s,
         // 再要求 20s ⇒ 升上去就站得住。非顶档维持 15s 基础地板(它们的往返 0.7~2s,垫子绰绰有余)。
+        // ── P11-251(2026-10-12 真机)**撤回上面的顶档 20s**:它与 P11-230 的「高档缓冲上限 20s」同值相撞,
+        // 而 1440 正好是上限生效的最低档 ⇒ 停在 1440p 时缓冲被压在 19.9s,顶档候选连闸都不评就被
+        // continue ⇒ 4K 结构性进不去(真机 `logs_live_20261012_211617.log`,dev.r2194)。P11-225 立论里
+        // 真正量化的那一项是 `2×往返`,它在 [climbFloorUsFor] 里是独立一项、原样保留;20s 只是它的固定
+        // 上盖(与 §40.6 撤掉的「固定 30s 上盖」同形态)。4K 的防线改由 ×1.1 sustained 闸 + 起播 stall
+        // 冷却 + 不试探三条独立把守。判据链全文见 docs/youtube-sabr-abr-upshift-notes.md §54。
         // P11-237/240:算式抽成 [climbFloorUsFor](单点定义防漂移);此处保留 `rtForClimbMs` 仅供日志显示。
         // **只用于升档** —— 守档地板已改为「本档水位急救线」(P11-240,见函数外 downgradeHoldFloorUs):
         // 「升进这一档要多少垫子」是切换成本,与「当前算不算饿」是两个问题。
-        val heightFloorLabel = if (f.height >= TOP_TIER_MIN_HEIGHT) "顶档 20s" else "15s"
-        val climbFloorUs = climbFloorUsFor(f.height, itagOf(f))
+        val climbFloorUs = climbFloorUsFor(itagOf(f))
         if (!startupClimb && !trialUpgrade && bufferedDurationUs < climbFloorUs) {
           if (!climbBufferFloorLogged) {
             climbBufferFloorLogged = true
             Log.i(
               "YtSabrAbr",
-              "upshift held (buffer floor, ${if (f.height >= TOP_TIER_MIN_HEIGHT) "P11-225 顶档 20s" else "P11-222 15s"}): " +
+              "upshift held (buffer floor, P11-251 全档一致): " +
                 "itag${itagOf(f)}(${f.height}p) bufS=${bufferedDurationUs / 1_000_000}s " +
                 "< floor=${climbFloorUs / 1_000_000}s " +
-                "(=max($heightFloorLabel, 2×往返${if (rtForClimbMs > 0L) "${rtForClimbMs}ms" else "未知"})); " +
+                "(=max(15s, 2×往返${if (rtForClimbMs > 0L) "${rtForClimbMs}ms" else "未知"})); " +
                 "startupClimb=$startupClimb trial=$trialUpgrade; 等缓冲填起来再爬",
             )
           }
@@ -1460,18 +1465,30 @@ class HeightAwareAdaptiveTrackSelection(
   /**
    * P11-237:**本档的升档缓冲地板**。
    *
-   * = `max(顶档 20s / 非顶档 15s, 2×本档最近一次往返)` —— P11-222/225 的口径,抽成单点定义防漂移。
+   * = `max(15s, 2×本档最近一次往返)` —— **全档一致**(顶档的 20s 上盖已由 P11-251 撤回,见下)。
    * **只服务升档**:回答「升进这一档要预留多少垫子」(切换要现拉 init + 首次段,往返一抖就饿)。
    * 守档(「当前算不算饿」)在 P11-240 起改用本档水位急救线,见 `updateSelectedTrack` 的
    * `downgradeHoldFloorUs` —— 真机证明把升档垫子当守档闸会把 4K 在 `bufS=11.1s` 时判成「可以让 est 补刀」。
    * 往返未知(-1)按 0 处理(只剩基础地板)。
+   *
+   * ── P11-251(2026-10-12 真机,撤回顶档 20s)──────────────────────────────────────────────
+   * 原实现顶档(≥2160)用 `TOP_TIER_CLIMB_FLOOR_US = 20s` 作基础地板,依据是 P11-225 的
+   * 「4K 一笔往返 4.9~9.2s ⇒ 垫子要 `2×往返` ≈ 18.4~20s」。但 **`2×往返` 本来就是下面独立的一项**,
+   * 20s 只是给这一项加的**固定上盖** —— 而它与 P11-230 的**高档缓冲上限 20s**(`SabrAbrMemory.
+   * heavyTierBufferedCapUs`,≥1440p 生效)同值相撞:1440 恰好是顶档下面那一档,停在 1440p 时
+   * `bufferedDurationUs` 被压在 <20s(真机实测钉在 **19.9s** 80+ 秒)⇒ 顶档候选**连闸都不评**就被
+   * `continue`(地板判据排在所有闸之前),4K 结构性进不去。
+   * 真机 `logs_live_20261012_211617.log`(dev.r2194):进 1440p 后顶档闸先拒(`meas(315)=0` ⇒ need
+   * 退回声明 28.12M),P11-247 的同族折算锚要到 1440p 首段交付(进 1440p 后 22s)才到手,而那时
+   * 缓冲已被播放消费到 19.9s ⇒ **差 0.1s,永久按死**;对照 §52 那场锚 5s 就到、升档时 bufS=28.4s ⇒ 过。
+   * 撤回后 4K 的门槛仍由三条独立防线守着(一字未动):`topTierGateFail`(`sustained ≥ tierNeedBps×1.1`)、
+   * 起播 stall 后 3min 顶档冷却、以及「顶档不试探」。判据链全文见
+   * docs/youtube-sabr-abr-upshift-notes.md §54。
    */
-  private fun climbFloorUsFor(height: Int, itag: Int): Long {
-    val heightFloorUs =
-      if (height >= TOP_TIER_MIN_HEIGHT) TOP_TIER_CLIMB_FLOOR_US else TRIAL_FLOOR_BUFFERED_US
+  private fun climbFloorUsFor(itag: Int): Long {
     val rtMs = (bandwidthMeter as? SabrBandwidthMeter)?.getLastRoundTripMs(itag) ?: -1L
     return maxOf(
-      heightFloorUs,
+      TRIAL_FLOOR_BUFFERED_US,
       if (rtMs > 0L) rtMs * ROUND_TRIP_RUNWAY_FACTOR * 1000L else 0L,
     )
   }
@@ -1721,10 +1738,12 @@ class HeightAwareAdaptiveTrackSelection(
     /**
      * 2026-09-01:试探水位线地板(us)——「满缓冲=供给富余」证据的最低可信线;30s bufferMax 档
      * (0.8×28s≈22s)也在线上,地板只在更小水位时兜底。
+     *
+     * P11-225 曾在此并列一个 `TOP_TIER_CLIMB_FLOOR_US = 20s`(顶档升档地板)—— **P11-251 已删**:
+     * 它与 P11-230 的「高档缓冲上限 20s」同值相撞(1440 是上限生效的最低档)⇒ 停在 1440p 时缓冲
+     * 被压在 19.9s,顶档永远凑不够地板 ⇒ 4K 结构性进不去。全档统一用 [TRIAL_FLOOR_BUFFERED_US],
+     * 顶档的 `2×往返` 项由 [climbFloorUsFor] 独立给出。见 docs §54。
      */
-    /** P11-225:顶档(≥2160)升档的**缓冲地板** —— 4K 一笔往返 4.9~9.2s,垫子要 2×往返 ≈ 18~20s。 */
-    const val TOP_TIER_CLIMB_FLOOR_US = 20_000_000L
-
     const val TRIAL_FLOOR_BUFFERED_US = 15_000_000L
     /**
      * 2026-09-01:试探失败档冷却(ms)——试探扛不住的档冷却这段时间,防每轮回填都重试同一堵墙;
