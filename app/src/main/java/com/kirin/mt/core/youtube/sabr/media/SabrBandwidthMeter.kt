@@ -126,6 +126,49 @@ internal class SabrBandwidthMeter(
   fun getLastRoundTripMs(itag: Int): Long = roundTripProvider?.invoke(itag) ?: -1L
 
   /**
+   * P11-259:换源清场。上面**全部** provider 都是**会话级**的 —— 每一个都指向某一场 SABR 会话的
+   * [SabrMediaFetcher],由 [DefaultSabrChunkSource] 接线,**拆线这一侧从来没人做**。
+   *
+   * 病象(2026-10-15 TV 真机 `logs_live_20261015_205216.log`):同一个 player 先播 YouTube SABR
+   * (20:49:29 收尾 `bw=8800K sus=8357K`),**不退出播放器**接着播 B 站 DASH
+   * `BV1QMJ16AEWJ`(20:50:22)。B 站是 http(s) 源、根本不经过 SABR chunk source ⇒ 没有任何人
+   * 重新接线,`realBpsProvider` 仍指着上一场那个已结束的 fetcher;窗口过期后它返回 -1
+   * (`SabrMediaFetcher.getRealBitrateEstimate`),于是 [getBitrateEstimate] 回落到 delegate,
+   * ABR 读到 `est=1270K`,而当前档实需 1469K ⇒ **每轮评估都判「买不起」**。
+   *
+   * 后果不是"判低一点"这么轻:B 站梯子只有**一档两种编码**(见 `PlaybackRepository` 的
+   * `selectedQualityTracks`),按 height 的降档判据恒空 ⇒ 唯一还能"降"的动作变成**换 codec**
+   * ⇒ 每 ~5s 拆建一次 MTK 解码器(真机 20:51:39~20:51:54 换 4 次 AVC↔HEVC),视频轨挂死后
+   * **音频一起停、黑屏**,用户只能手动退出;而退出重进 = 新 player = 干净计 ⇒ "重载一次就正常"。
+   *
+   * 故:**非 SABR 源加载前必须清**。SABR 源不必清(会话由 `DefaultSabrChunkSource` 当场重新接线)。
+   */
+  fun clearSessionProviders() {
+    realBpsProvider = null
+    sustainedBpsProvider = null
+    sustainedRawBpsProvider = null
+    reseedBandwidthProvider = null
+    measuredBitrateProvider = null
+    measuredSegCountProvider = null
+    silenceHangProvider = null
+    refillCapacityProvider = null
+    roundTripProvider = null
+  }
+
+  /**
+   * P11-259 诊断:[getBitrateEstimate] 的两个来源并排打出来 —— 这是区分两种竞争解释的唯一手段:
+   * ①`wired=true` 且 `real` 与 [getBitrateEstimate] 同值 ⇒ **provider 污染**(本类要修的那条);
+   * ②`real=unwired`(或 -1)且 `delegate` 就是那个低值 ⇒ 底层计真的只测到这么点(链路/CDN 节点慢,
+   * 不是本类的问题)。只读,不改任何状态。**不打印任何 URL/token。**
+   */
+  fun diagEstimateSources(): String {
+    val real = realBpsProvider?.invoke()
+    return "est=${getBitrateEstimate() / 1000}K " +
+      "real=${real?.let { "${it / 1000}K" } ?: "unwired"} " +
+      "delegate=${delegate.getBitrateEstimate() / 1000}K wired=${realBpsProvider != null}"
+  }
+
+  /**
    * 2026-08-30 升档重锚:升入新档后把活跃 est 窗口重锚到该档声明码率——原窗口里旧档/重填期的突发高估
    * 样本(60-70M)会顶住降档门槛,新档扛不住时 est 迟迟跌不过声明码率,缓冲漏光前不降档只能看门狗重载。
    * 重锚后 est 从声明码率起步、真实样本平滑接管。委托给 fetcher(窗口在它那),未接线时静默忽略。

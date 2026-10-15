@@ -2197,6 +2197,21 @@ fun PlayerScreen(
       abrSelectionFactory.serverServedVideoId = activeRequest.bvid
         // P11-133:梯子的 codec 锚点跟着「YouTube 解码器」设置走(Auto = 历史行为:粘全组顶档 codec)。
         abrSelectionFactory.preferredCodecFamily = youtubePlaybackCodecPreference.codecKey
+        // P11-259:换源清场 —— 非 SABR 源(如 B 站 DASH)不走 SabrChunkSource,没有任何人会重新接线
+        // 那些会话级 provider,它们会一直指着上一场 SABR 那个**已结束的 fetcher** ⇒ ABR 的 est 不是
+        // 本源的测量值(病象复盘见 SabrBandwidthMeter.clearSessionProviders)。
+        val sabrSource = effectiveInfo.isSabrSingle() || effectiveInfo.isSabrDash()
+        if (!sabrSource) bandwidthMeter.clearSessionProviders()
+        // P11-259 取证:每次换源打一行「est 的两个来源 + CDN 主机名」。host 之外的 URL 内容(带
+        // token/签名)一律不打。判据:①`wired=true` 且 real 与 est 同值 ⇒ provider 污染;②`unwired`
+        // 且 delegate 就是低值 ⇒ 计真的只测到这么点(链路/节点问题),两条走不同修法。
+        val launchCdnHost = effectiveInfo.videoTracks.firstOrNull()?.baseUrl
+          ?.let { url -> runCatching { android.net.Uri.parse(url).host }.getOrNull() }
+          .orEmpty()
+        Log.i(
+          PlayerPlaybackLogTag,
+          "launch bw: sabr=$sabrSource cdnHost=$launchCdnHost ${bandwidthMeter.diagEstimateSources()}",
+        )
         player.setMediaSource(finalMediaSource)
         // P11-120:新 MediaSource 会重置轨道选择,重新施加字幕状态(默认关闭 = 禁用 TEXT 轨,
         // 顺带压掉 media3 可能从系统 CaptioningManager 读到的偏好而自动选轨)。
@@ -2289,6 +2304,11 @@ fun PlayerScreen(
     var stallSinceMs = 0L
     // P11-96 起播探针节拍:未出首帧期间每 StartupProbeIntervalMs 打一行「为什么还没播」快照。
     var startupProbeSinceMs = 0L
+    // P11-259 稳态探针节拍(诊断,取证后删):起播后每 SteadyProbeIntervalMs 打一行「画面是否真的在
+    // 推进 + ABR 拿到的 est 是多少」。真机 2026-10-15 那场的关键盲区:20:50:26~20:51:16 状态一直
+    // READY、只有 isLoading 在翻,现有看门狗与日志都判不出画面到底冻没冻 —— `rendered` 帧计数是
+    // 唯一硬凭据(音频活着时位置照走,位置类判据结构性失明)。
+    var steadyProbeSinceMs = 0L
     // 2026-09-01 视频冻结看门狗:BUFFERING 窗口起点 + 窗口内位置是否前进过(音频活着)。
     var bufferingSinceMs = 0L
     var bufferingLastPosMs = 0L
@@ -2560,6 +2580,24 @@ fun PlayerScreen(
         }
       } else {
         startupProbeSinceMs = 0L
+      }
+      // P11-259 稳态探针(诊断,取证后删):与起播探针互补 —— 它只在"还没出首帧"时打,起播成功即静音,
+      // 恰好漏掉「起播成功之后视频轨挂死」这一类(本次真机 20:51:39~20:52:03 全程无一行快照)。
+      // 与 ABR heartbeat(`est=`)配对,才能把「判据低 ⇒ 换 codec ⇒ 黑屏」整条链在一条时间线上读出来。
+      if (frameRendered && playbackStarted && playerState is PlayerScreenState.Ready) {
+        if (nowMs - steadyProbeSinceMs >= SteadyProbeIntervalMs) {
+          steadyProbeSinceMs = nowMs
+          Log.i(
+            PlayerPlaybackLogTag,
+            "steady probe state=${playbackStateName(player.playbackState)} " +
+              "pos=${currentPositionMs}ms fwdBuf=${player.totalBufferedDuration}ms " +
+              "rendered=${(player as? ExoPlayer)?.videoDecoderCounters?.renderedOutputBufferCount ?: -1} " +
+              "isLoading=${player.isLoading} video=${player.videoFormat?.codecs} " +
+              "bw[${bandwidthMeter.diagEstimateSources()}]",
+          )
+        }
+      } else {
+        steadyProbeSinceMs = 0L
       }
       delay(BiliMotion.PlayerProgressUpdateMs)
     }
@@ -3580,6 +3618,12 @@ private const val SabrDeepRetryNudgeMs = 10_000L
 
 /** P11-96 起播探针间隔:未出首帧期间的「为什么还没播」快照周期。3s 足够看清卡死形态,不刷屏。 */
 private const val StartupProbeIntervalMs = 3_000L
+
+/**
+ * P11-259 稳态探针间隔(诊断,取证后删)。取 5s = 与 DASH 分片节拍同量级:真机那场解码器每 ~5.1s
+ * 拆建一次,5s 一行才能把「换 codec 前后 rendered 帧计数是否停住」逐轮对上;更长会漏掉单轮。
+ */
+private const val SteadyProbeIntervalMs = 5_000L
 
 private fun playbackStateName(state: Int): String = when (state) {
   Player.STATE_IDLE -> "IDLE"

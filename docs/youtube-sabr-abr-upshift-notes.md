@@ -4651,3 +4651,95 @@ sus          = sustainedBytes × 8000 / activeSpanMs
 
 **扣减语义是否还在**(判据③):21:11:55.797 那笔 `bw gap counted: 6041ms(coast=3521ms)` 的空窗区间
 `[21:11:44.27, 21:11:50.31]` 完全落在当时的窗口内 ⇒ 仍**全额扣减**,`sus > susRaw` ✓(不是把扣减整体吃掉)。
+
+---
+
+## §58 P11-259:换源清场(非 SABR 源清**会话级** provider)+ 稳态探针 —— B 站「网速正常却播不了、黑屏无音」判读
+
+**触发**:用户 2026-10-15「检查下日志,为什么 B 站播放会卡住」→ 追加「一般重载一次就正常了」「音频也断了 黑屏」「为什么网速正常 播不了」。
+**日志**:`logs_live_20261015_205216.log`(**SONY BRAVIA 4K AE2 / mt5897**,3.1.1-alpha.6(3101106)= P11-258 已入包,20:42~20:52)。
+**一句话**:卡的不是网络 —— 是 ABR 的 `est` 读到了一个**不属于本源**的值,而 B 站梯子只有一档、降无可降,于是"降档"退化成**换 codec**,撞上 MTK 解码器回收 ⇒ 视频轨挂死;整体挂死时音频一起停 ⇒ 黑屏无声,只能手动退出重进。
+
+### §58.1 现场(时间线,均为真机日志原文)
+
+| 时刻 | 事件 | 读数 |
+|---|---|---|
+| 20:42:23~20:46:12 | YouTube SABR 视频1(`IsCr756XVaU`) | `bw` 5~15M,4K 段正常 |
+| 20:46:16~20:50:22 | YouTube SABR 视频2(`T0DVBru_6GY`,单流 `sid=scO6I6TtWbP7ZESMUjP1HA`) | 20:49:29 收尾 `bw=8800K sus=8357K` |
+| 20:50:22.394 | **同一个 player 内**换源 → B 站 `BV1QMJ16AEWJ`(`launch step: metadata (youtube=false)`) | 全程到 20:52:03.815 才 `ExoPlayerImpl: Release` |
+| 20:50:22.528 | `playurl ugc qn requested=127 returned=112 … (accepted=10/10) tracks=112:1080x1920:hvc1…, 112:1080x1920:avc1…` | 响应有 10 条轨,**只喂了同一档的 2 条** |
+| 20:50:23.777 | `video size: 1080x1920` + `video first frame rendered` | **起播 1.25s** ⇒ 链路与 CDN 节点当刻没问题 |
+| 20:50:26~20:51:16 | `isLoading` 每 5.0s 翻一次(11 次),`player state` **恒为 READY** | 现有探针/看门狗都判不出画面冻没冻 |
+| 20:51:24.088 | `est-hysteresis downgrade held … itag-1(1920p) bufS=10s ≥ floor=8s; est=1270K < required=1469K` | **`est` 全日志唯一一次现身** |
+| 20:51:39.249~20:51:54.542 | 视频解码器拆建 **4 次、AVC↔HEVC 交替**(每 ~5.1s;`MediaCodec::reclaim` → `Released by resource manager` → `Created component`) | 同高度换 codec;音频解码器全程未动 |
+| 20:51:55.578 | `Surface: setFrameRate() frameRate=0.0` + `player state=BUFFERING`,此后 **无 READY、无帧输出、无音频时间戳** | 视频输出停 |
+| 20:52:03.815 | 用户手动退出(`Release`)→ .831 `[c2.android.aac.decoder] Client returned a buffer it does not own` | **音频也没了**:BUFFERING 下 media3 连音频 sink 一起停 ⇒ 黑屏 + 无声 |
+
+### §58.2 `est` 在判据链里的位置(**按规矩,先理一遍再改**)
+
+`est` = `bandwidthMeter.getBitrateEstimate()`,在 `HeightAwareAdaptiveTrackSelection.updateSelectedTrack` 里叫 `effective`。整条链上用到它的地方:
+
+①**降档 C 路径** `required > effective`(每轮评估,本场就是它:1469K > 1270K);
+②**水位急救**(`bufferedDurationUs < DOWNGRADE_BUFFERED_US` 8s 且水位不涨 ⇒ 无视 est 直接降);
+③**升档** est 门 / 升档地板 / 满缓冲 trial 的 est 地板(`upgradeEstFloor`);
+④`canUpgrade` 的缓冲腿与降档后 30s 缓冲门槛;
+⑤**冷却提前解除**(P11-151(b):`estNow ≥ declared×1.1`);
+⑥顶档 sustained/容量闸的对照量(P11-255 后顶档已不与低档分家,但闸仍读 est)。
+
+**本轮只改"换源之后 ABR 读到的第一个值",不动 ①~⑥ 的任何阈值、冷却、口径、优先级** ⇒ 不引入新的判据冲突(冲突面在 §58.7 列的那几项,另开一轮)。
+
+### §58.3 缺陷:会话级 provider **只接线、不拆线**
+
+`SabrBandwidthMeter` 里 9 个 provider(`realBpsProvider` / `sustainedBpsProvider` / `sustainedRawBpsProvider` / `reseedBandwidthProvider` / `measuredBitrateProvider` / `measuredSegCountProvider` / `silenceHangProvider` / `refillCapacityProvider` / `roundTripProvider`)**全部是会话级的** —— 每一个都指向某一场 SABR 会话的 `SabrMediaFetcher`。接线点全仓只有一处:`DefaultSabrChunkSource.kt:154`(拿到 fetcher 时注入);**拆线点一个都没有**。
+
+于是同一个 player 播下一个视频时(真机就是"SABR → B 站 DASH"):
+- B 站是 http(s) 源,根本不经过 Sabr chunk source ⇒ 没人重新接线;
+- `realBpsProvider` 仍指向上一场**已结束**的 fetcher;窗口过期后 `getRealBitrateEstimate()` 返回 -1(`realBwBytes <= 0`,P11-167 起不再返回 0);
+- `getBitrateEstimate()` 于是回落到 delegate = `DefaultBandwidthMeter`,而它**每个 PlayerScreen 实例只建一次**(`PlayerScreen.kt:320` 的 `remember{}`)、**跨视频不重置**,滑窗里混着上一场 SABR 的 paced 读取样本(上一场日志单笔 POST 实测 `REAL 1685052B 6373ms → 2Mbps`,是服务端 pacing 不是链路速度;本仓注释早已记过它 `1M↔437M` 跳变);
+- 实测:上一场收尾 est=**8800K** → B 站起播 62s 后 est=**1270K**,而链路没变(起播 1.25s 出首帧)。
+
+### §58.4 为什么这一条会升级成"黑屏 + 无声"
+
+1. `est(1270K) < required(1469K)` ⇒ 每轮评估都想降档;
+2. 但 B 站梯子只有**一档两种编码**(见 §58.7-①)⇒ 降档候选 `f.height in 1 until currentHeight` 恒空,水位急救算出 `lower < 0` 后**静默 return**;
+3. ⇒ 唯一还能"降"的动作变成**换 codec**(同高度、跨族)⇒ 每 ~5s 拆建一次 MTK 解码器。这正是本仓已记过的坑(`HeightAwareAdaptiveTrackSelection.kt` 类头:"MTK codec2 回收脏实例 ~5s×2 … 视频冻住、用户被迫手动退出");
+4. 20:51:55.58 进 BUFFERING 后再没出来,**音频一起停** ⇒ 黑屏 + 无声。
+5. **兜底为什么没赶上**:整体挂死判据是"位置冻结 8s(`StallThresholdMs`)且先进入 STATE_BUFFERING";从 20:51:55.58 起算,开枪 ≈ **20:52:04.1**,比用户 20:52:03.815 退出**只晚 ~0.3s**。而 20:50:26~20:51:16 那 **50 秒恒为 READY**(位置在走)⇒ 位置冻结看门狗结构性失明;视频冻结看门狗要 BUFFERING + 12s,那段里两次 BUFFERING 各只有 ~0.2s ⇒ 也攒不够。
+6. **而且 app 自己的自动重载救不了**:`retryKey` 只重跑同一个 player 的 `setMediaSource`(`PlayerScreen.kt:1916`),`bandwidthMeter` 是 `remember{}`(一个 PlayerScreen 一个)⇒ **自动重载不重置计**,污染的 est 原样还在;只有退出播放器再进(新 player → 新计)才干净 —— 这就是用户说的"重载一次就正常"。
+
+### §58.5 两条竞争解释与判别式(本轮只解决一半)
+
+- **①provider 污染**(§58.3):est 的来源根本不是本源 ⇒ 本类要修的 bug。
+- **②底层计真的只测到 1.27Mbps**(CDN 节点慢):`CdnSelector` 每次 resolve 会重选节点,退出重进可能换到好节点 ⇒ "重载一次就正常"也解释得通。
+
+**判别式** = 本轮新增的 `launch bw:` 行:`wired=true` 且 `real ≈ est` ⇒ ①;`wired=false`(unwired)且 `est == delegate` ⇒ ②。
+**必须先说清**:`est=1270K` **也可能是 ② 的真实读数**,本仓现有日志无法区分(单 PID 抓取,看不到 audio HAL;也没有周期性帧计数)。本轮只堵死 ① —— 它无论如何都是 bug;②要等 `launch bw:` + `steady probe` 的真机数据再判。若 ② 成立,则"换 codec"这条路仍是错的解法(应该走"重新 resolve 低一档"),但那是 §58.9-②。
+
+### §58.6 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `SabrBandwidthMeter.kt` | 新增 `clearSessionProviders()`(清 9 个会话级 provider)+ `diagEstimateSources()`(只读;打印 `est/real/delegate/wired` 四项) |
+| `PlayerScreen.kt` | 换源处:非 SABR ⇒ `clearSessionProviders()`;新增一行 `launch bw: sabr=… cdnHost=… est=… real=… delegate=… wired=…`(**只打 host,不打带 token/签名的完整 URL**);新增稳态探针 `steady probe`(5s):`state/pos/fwdBuf/rendered 帧计数/isLoading/video codec/bw[…]` |
+
+### §58.7 本轮**不修**什么(必须说清)
+
+①**B 站梯子只有一档**(`PlaybackRepository` 的 `selectedQualityTracks` 只留 `track.id == selectedQuality.id`,而 playurl 返回 10 条)—— 这是"降无可降"的根源,但属结构变更:要把 5 档 10 条轨进合成 MPD,且 Representation id 必须加 codec 后缀(**现在同档两条轨 id 都是 `0_112`**,违反 MPD 的 AdaptationSet 内 id 唯一性);
+②`HeightAwareAdaptiveTrackSelection` 的 `var best = length - 1` / `bestHeight = -1` **幽灵初值**(让同高度跨族换轨成为可能;本仓已在 `initialSelectedIndex` 修过同一脚枪,候选循环里这份还在);
+③`isTopCodecVariant` 靠 `sampleMimeType` 区分 codec —— 对 YouTube 成立(VP9=webm vs AVC=mp4),对 B 站两条 `video/mp4` 轨**恒真 ⇒ 粘 codec 判据失效**;
+④竖屏 height 语义(1080x1920 被读成 `1920p`;4K 竖屏 2160x3840 会 ≥ `TOP_TIER_MIN_HEIGHT` 被当顶档);
+⑤看门狗阈值/口径(8s 与 12s、"只认 BUFFERING"、READY 期视频输出被停无法识别)。
+
+### §58.8 判据 / 否证线
+
+**判据**:①B 站(非 SABR)起播那行 `launch bw:` 为 `wired=false`;②SABR 源那行 `wired=true` 且 `real ≈ est`(没误伤 SABR);③`steady probe` 的 `rendered` 能区分"逐行递增(画面在动)"与"停住(画面冻)";④若复现时 `wired=true` 且 `real` 是一个明显不属于本源的陈旧值 ⇒ ①解释成立。
+**否证**:①B 站那行仍 `wired=true` ⇒ 清场没生效;②SABR 会话出现 `real=unwired` ⇒ 把 SABR 的线也拆了(误伤,必须回退);③`launch bw:` 行里出现完整 URL/token ⇒ 取证红线,立即改。
+
+### §58.9 待办
+
+①`MobilePlayerScreen.kt` 有同一个 provider 洞(本轮未动);
+②B 站全档梯子 + Representation id 唯一化;
+③`best` 幽灵初值 + `isTopCodecVariant` 的容器 mime 盲区;
+④竖屏 height 语义;
+⑤看门狗口径(READY 期 + "视频输出被停"判据);
+⑥`steady probe` 取证完成后删除。
