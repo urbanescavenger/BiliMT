@@ -47,6 +47,20 @@ internal class SabrBandwidthMeter(
     sustainedBpsProvider = provider
   }
 
+  /**
+   * P11-258:注入持续带宽的**裸值**来源(不扣需求空闲),仅供日志取证 —— 与 [getSustainedBitrateEstimateRaw]
+   * 并排打印,才能用真机判断分母扣减是否落在窗口内(见 SabrMediaFetcher.getSustainedRawBitrateEstimate)。
+   */
+  @Volatile
+  private var sustainedRawBpsProvider: (() -> Long)? = null
+
+  fun setSustainedRawBandwidthProvider(provider: () -> Long) {
+    sustainedRawBpsProvider = provider
+  }
+
+  /** 持续带宽裸值(bps);未接线/证据不足返回 -1。仅诊断,不参与判决。 */
+  fun getSustainedBitrateEstimateRawUndeducted(): Long = sustainedRawBpsProvider?.invoke() ?: -1L
+
   /** 2026-08-30:接线升档重锚执行方。 */
   fun setReseedBandwidthProvider(provider: (Long) -> Unit) {
     reseedBandwidthProvider = provider

@@ -291,7 +291,16 @@ internal class SabrMediaFetcher(
   // 服务端 pacing 把长期有效供给压回 16-20M)。持续带宽 = 过去 60s 墙钟内成功交付的媒体字节 / 墙钟
   // 时长(固定分母,空闲/pacing 全摊入),专供升档判定「这条管子长期扛不扛得住」;降档仍用滑动窗口
   // est(反应快)。
-  private class SustainedSample(val endWallMs: Long, val bytes: Long)
+  // ── P11-258(2026-10-15):样本必须带**区间**而不只是记录时刻 ──────────────────────────────────
+  // 病根(§56.9-B / §57.2):旧版把字节样本按「结束时刻」、空窗样本也按「记录时刻」各自滚出 60s 窗口,
+  // 而空窗样本记的是 `[上次响应结束 → 本次请求发出]` 那段、记录时刻却是**本次请求完成**的时刻 ⇒
+  // **它覆盖的空闲区间整体落在分母窗口起点之前**,于是「减掉了不在分母里的时间」。
+  // 真机 `logs_live_20261014_212516.log` 21:16:07 实证:`sus=127204K` 而同一窗口字节÷墙钟只有
+  // **38.4 Mbps**(逐笔在途 31~38M)—— 反推分母 17.9s,少掉的 41.4s 正是那笔 `raw=41189ms` 空窗,
+  // 而它整体在窗口起点(21:15:07.8)之前。⇒ 38 Mbps 的管子上报 127 Mbps。
+  // 不变量(修后):分子里每个字节都在 `[spanStart, now]` 内产生,分母里被扣的每一秒也都是该区间内
+  // 无在途请求的秒。详见 docs §57。
+  private class SustainedSample(val startWallMs: Long, val endWallMs: Long, val bytes: Long)
   private val sustainedSamples = ArrayDeque<SustainedSample>()
   private var sustainedBytes = 0L
 
@@ -299,31 +308,45 @@ internal class SabrMediaFetcher(
   // 所致,管道容量与它无关)也摊进去 → pinned 低档时 sustained≈当前档消耗(定点死锁),永不满足高
   // 一档门槛。这里与 active est 的 gap 滑行量扣减同口径:满缓冲停闸部分不计入持续分母;真供给中断
   // (runway 小、滑行扣不掉)仍留在分母里,315 防卡意图不变。
-  private class SustainedGapSample(val endWallMs: Long, val ms: Long)
+  /** 需求驱动空闲的**区间**(P11-258):滑行段位于请求间隔的尾部 ⇒ `endWallMs` = 本次请求发出的墙钟,
+   *  `startWallMs = endWallMs − ms`。扣减时按区间求交,只扣与分母窗口重叠的那部分(见 [getSustainedBitrateEstimate])。 */
+  private class SustainedGapSample(val startWallMs: Long, val endWallMs: Long, val ms: Long)
   private val sustainedGapSamples = ArrayDeque<SustainedGapSample>()
-  private var sustainedGapMs = 0L
 
-  private fun addSustainedSample(bytes: Long) {
+  private fun addSustainedSample(bytes: Long, elapsedMs: Long) {
     val now = System.currentTimeMillis()
     synchronized(realBandwidthLock) {
-      sustainedSamples.addLast(SustainedSample(now, bytes))
+      // start = 本次请求发出时刻(≈ now − 在途时长):这一笔字节是在 [start, now] 内交付的,
+      // 窗口按 **start** 滚动,分母才不会短算掉最老样本自己的在途时长(P11-258)。
+      sustainedSamples.addLast(SustainedSample(now - elapsedMs, now, bytes))
       sustainedBytes += bytes
-      while (sustainedSamples.size > 1 && now - sustainedSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
+      while (sustainedSamples.size > 1 && now - sustainedSamples.first().startWallMs > SUSTAINED_WINDOW_MS) {
         sustainedBytes -= sustainedSamples.removeFirst().bytes
       }
     }
   }
 
-  private fun addSustainedGapSample(ms: Long) {
+  private fun addSustainedGapSample(ms: Long, idleEndWallMs: Long) {
     if (ms <= 0L) return
     val now = System.currentTimeMillis()
     synchronized(realBandwidthLock) {
-      sustainedGapSamples.addLast(SustainedGapSample(now, ms))
-      sustainedGapMs += ms
+      sustainedGapSamples.addLast(SustainedGapSample(idleEndWallMs - ms, idleEndWallMs, ms))
+      // 按**区间结束**滚出:结束时刻早于窗口起点的空窗不可能与窗口有交集,留着也只会白算。
       while (sustainedGapSamples.size > 1 && now - sustainedGapSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
-        sustainedGapMs -= sustainedGapSamples.removeFirst().ms
+        sustainedGapSamples.removeFirst()
       }
     }
+  }
+
+  /** 与 `[spanStartMs, nowMs]` 有交集的空闲量(逐条求交;各空窗区间互不相交)。调用方须持 [realBandwidthLock]。 */
+  private fun idleInsideWindowLocked(spanStartMs: Long, nowMs: Long): Long {
+    var sum = 0L
+    for (g in sustainedGapSamples) {
+      val from = maxOf(g.startWallMs, spanStartMs)
+      val to = minOf(g.endWallMs, nowMs)
+      if (to > from) sum += to - from
+    }
+    return sum
   }
 
   // alpha.9Z(gap 计时归总到带宽):样本分母原先只计「传输活跃耗时」,fetch 与 fetch 之间的空窗一律不计。
@@ -499,7 +522,8 @@ internal class SabrMediaFetcher(
       val countedForSustainedMs = (gapMs - sustainedCoastMs).coerceIn(0L, BW_GAP_MAX_MS)
       demandIdleMs = (gapMs - countedForSustainedMs).coerceAtLeast(0L)
     }
-    addSustainedGapSample(demandIdleMs)
+    // P11-258:空闲区间按「滑行段在请求间隔尾部」归集 —— 它的结束时刻就是本次请求发出的墙钟(fetchStartMs)。
+    addSustainedGapSample(demandIdleMs, fetchStartMs)
   }
 
   /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。快小样本(init/retry/音频段)过滤;但慢小样本(2026-08-27 真机:服务端挂 8.5s 只回 939B)是真实供给中断,必须入账。 */
@@ -508,7 +532,7 @@ internal class SabrMediaFetcher(
     if (bytes < REAL_BW_MIN_BYTES && elapsedMs < BW_SLOW_TINY_MS) return
     addRealBwSample(bytes, elapsedMs)
     if (bytes >= REAL_BW_MIN_BYTES) {
-      addSustainedSample(bytes)
+      addSustainedSample(bytes, elapsedMs)
       addCapacitySample(bytes, elapsedMs)
     }
   }
@@ -551,22 +575,58 @@ internal class SabrMediaFetcher(
    * 2026-08-30 修 sus 垃圾尖峰(真机实测 500-635M 物理不可能):gap 扣减后跨度原被 coerceIn 夹到
    * 下限 1s,停闸空窗接近全跨度时(bytes/1s)直接爆炸。现改为:扣减后跨度不足 SUSTAINED_MIN_SPAN_MS
    * (证据不足)返回 -1,由调用方回退活跃 est,不再出垃圾值。
+   *
+   * ── P11-258(2026-10-15,**分母归属修正**)──────────────────────────────────────────────
+   * 上面那条「不再出垃圾值」的修**没修全**:空窗样本与字节样本各自按自己的记录时刻滚出窗口,而空窗
+   * 覆盖的区间落在窗口起点之前 ⇒ 减掉了不在分母里的时间,尖峰从 500M 降级成 100M 量级继续存在。
+   * 真机 `logs_live_20261014_212516.log` 21:16:07:`sus=127204K` vs 同窗口字节÷墙钟 **38.4 Mbps**
+   * (逐笔在途 31~38M),反推分母 17.9s,少掉的 41.4s 正是那笔 `raw=41189ms` 空窗(整体在窗口起点前)。
+   * 现口径(不变量):分母窗口 = `[最老字节样本的**起始**时刻, now]`;分子每个字节都产生在该区间内,
+   * 分母里被扣的每一秒也都是该区间内**无在途请求**的秒(`idleInsideWindowLocked` 逐条求交)。
+   * 只改「空窗如何落进窗口」,**不改**「一个间隔里多少算滑行」(顶档 20s 余量那条不动)。
+   * 取证:`susRaw=`(字节 ÷ 未扣减跨度)与 `sus=` 并排看,扣减量一眼可见。详见 docs §57。
    */
+  /**
+   * P11-258:把两串样本滚进 60s 窗口(单点定义,防两处口径漂移)。调用方须持 [realBandwidthLock]。
+   * 字节样本按**起始**滚(它自己的在途时长也属于窗口内);空窗样本按**区间结束**滚(结束早于窗口起点的
+   * 空窗不可能与窗口有交集,留着也只会白算)。
+   */
+  private fun trimSustainedWindowLocked(now: Long) {
+    while (sustainedSamples.size > 1 && now - sustainedSamples.first().startWallMs > SUSTAINED_WINDOW_MS) {
+      sustainedBytes -= sustainedSamples.removeFirst().bytes
+    }
+    while (sustainedGapSamples.size > 1 && now - sustainedGapSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
+      sustainedGapSamples.removeFirst()
+    }
+  }
+
   fun getSustainedBitrateEstimate(): Long {
     synchronized(realBandwidthLock) {
       val now = System.currentTimeMillis()
-      while (sustainedSamples.size > 1 && now - sustainedSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
-        sustainedBytes -= sustainedSamples.removeFirst().bytes
-      }
-      while (sustainedGapSamples.size > 1 && now - sustainedGapSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
-        sustainedGapMs -= sustainedGapSamples.removeFirst().ms
-      }
+      trimSustainedWindowLocked(now)
       if (sustainedSamples.isEmpty() || sustainedBytes <= 0L) return -1L
-      val rawSpanMs = now - sustainedSamples.first().endWallMs
+      val spanStartMs = sustainedSamples.first().startWallMs
+      val rawSpanMs = now - spanStartMs
       if (rawSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
-      val activeSpanMs = rawSpanMs - sustainedGapMs
+      val activeSpanMs = (rawSpanMs - idleInsideWindowLocked(spanStartMs, now)).coerceAtLeast(0L)
       if (activeSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
-      return sustainedBytes * 8000L / activeSpanMs.coerceAtMost(SUSTAINED_WINDOW_MS)
+      return sustainedBytes * 8000L / activeSpanMs
+    }
+  }
+
+  /**
+   * P11-258 取证:`sus` 扣减前的**裸值**(字节 ÷ 未扣减墙钟跨度)。真机上与 `sus=` 并排看 ——
+   * 扣减量为 0 时二者相等(空窗整体在窗口外),真滑行场次 `sus > susRaw`(扣减语义还在)。
+   * 证据不足(< [SUSTAINED_MIN_SPAN_MS])返回 -1。仅诊断,不参与判决。
+   */
+  fun getSustainedRawBitrateEstimate(): Long {
+    synchronized(realBandwidthLock) {
+      val now = System.currentTimeMillis()
+      trimSustainedWindowLocked(now)
+      if (sustainedSamples.isEmpty() || sustainedBytes <= 0L) return -1L
+      val rawSpanMs = (now - sustainedSamples.first().startWallMs).coerceAtMost(SUSTAINED_WINDOW_MS)
+      if (rawSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
+      return sustainedBytes * 8000L / rawSpanMs
     }
   }
 

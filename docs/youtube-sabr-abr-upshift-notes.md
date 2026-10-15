@@ -4542,3 +4542,112 @@ sus          = sustainedBytes × 8000 / activeSpanMs
 **结论**:判据**算式**基本正确;**输入量 `sus` 有一处确定的记账 bug(虚高 + 假 -1)**;阈值口径(est 排除空窗、
 -1 放行)是设计选择且偏乐观。§56.8 那三条环扣里,环扣② 的量化偏高,**一半来自口径、一半来自这个 bug**。
 修 B 是**低风险且方向明确**的一处(记账修正,不动任何阈值),可优先于 §56.6 的阈值改动。
+
+## §57 P11-258 实施:修 `sus`(持续带宽)的分母记账 —— **只扣与窗口有交集的空闲**
+
+> 触发:用户「判据计算的对不对」→ 判读见 §56.9 → 用户拍板「**先修计算问题**」。
+> **本轮只修记账,不动任何阈值/冷却/口径**(§56.6 的①②③ 全部不碰)。
+
+### §57.1 判据链复核(改码前,先看这条算式喂给谁)
+
+`sus` 是**唯一**一条「长期扛不扛得住」的证据,升档路径上承重:
+
+| 消费点 | 位置 | 语义 |
+| --- | --- | --- |
+| 升档 sustained 闸 | `HeightAwareAdaptiveTrackSelection:1287` `sustained in 0 until required` | 高估 ⇒ 放行买不起的档(本场横跳的直接驱动);`-1` 也是放行 |
+| 降档/换组取证 | 各处日志的 `sus=` 字段(如 §55.1「sus=23.35M 授权了一次实际只有 9.9Mbps 的切换」) | 高估 ⇒ **也会掩盖**该降档的证据 |
+
+⇒ 它是**输入量**,不是阈值。**阈值不能在坏输入上标定**,所以先修它。
+
+### §57.2 缺陷(§56.9-B 的正式记账)与不变量
+
+**旧:`activeSpanMs = (now − 最老字节样本的结束时刻) − sustainedGapMs`** —— 两个减数**各自按自己的记录时刻**
+滚出 60s 窗口,而空窗样本记的是 `[上次响应结束 → 本次请求发出]` 那段,它的记录时刻却是**本次请求完成**的时刻
+⇒ **它覆盖的空闲区间整体落在分母窗口起点之前**,减了不在分母里的时间。
+
+**新口径(不变量,可逐条核)**:分母窗口写成 `[spanStart, now]`,其中 `spanStart` = 最老字节样本的**起始**
+时刻;分子里每一个字节都产生在 `[spanStart, now]` 内,分母里**每一秒被扣掉的空闲也都落在** `[spanStart, now]` 内。
+空闲样本按「滑行段位于请求间隔的**尾部**」(loader 一直滑到决定发请求才发)归集成区间 `[t0Wall − ms, t0Wall]`,
+求交后求和。
+
+### §57.3 冲突/副作用清单(逐条标出)
+
+1. **与 `TOP_TIER_GAP_RUNWAY_RESERVE_MS`(P11-2023 A,顶档 20s 余量)的关系**:那条决定「一个间隔里
+   多少算滑行」,本轮**只改这些滑行量如何落进窗口**,不改它们的量——顶档重准入防线语义不变。
+2. **与 P11-221(`BW_GAP_FEED_EST=false`,空窗不入 est)**:`est` 通道一字不动;本轮只动 `sus` 分母的**归属**。
+3. **与早期「全墙钟分母」版本**:没有回退——仍是「扣滑行」,只是把扣减**限制在窗口内**;满缓冲停闸
+   依旧不计入分母(§57.2 不变量)。
+4. **`-1` 的产生条件会变**:旧版常因「扣完 activeSpan < 10s」出假 `-1`;新版 activeSpan 只会**变大**,
+   ⇒ 假 `-1` 减少、给出真实读数的机会变多。`-1 → 放行`那条例外语义(P11-255)不动。
+5. **可能变保守**:`spanStart` 从「最老样本结束」改成「起始」,分母最多多出**一笔请求的在途时长**(本场 5~11s)
+   ⇒ 修好后读数会比现在**低**约 10~20%(在途 ~35M 的场子里 `sus` 从虚高的 127M 落回 ~38M)。
+   **这是对的**:在途 35 Mbps 的管子上 127 Mbps 是物理不可能值。
+6. **不动**:水位急救线、缓冲地板、180s/90s 冷却、P11-221、`reseedActiveWindow`、顶档不试探。
+
+### §57.4 改动(单文件 `SabrMediaFetcher.kt`,四处)
+
+```diff
+- private class SustainedSample(val endWallMs: Long, val bytes: Long)
++ private class SustainedSample(val startWallMs: Long, val endWallMs: Long, val bytes: Long)
+
+- private class SustainedGapSample(val endWallMs: Long, val ms: Long)
++ /** 空闲区间 = [startWallMs, endWallMs](滑行段位于请求间隔的尾部)。 */
++ private class SustainedGapSample(val startWallMs: Long, val endWallMs: Long, val ms: Long)
+
+- private fun addSustainedSample(bytes: Long) {
++ private fun addSustainedSample(bytes: Long, elapsedMs: Long) {   // start = now − 本次请求在途时长
+    ...
+-   while (sustainedSamples.size > 1 && now - sustainedSamples.first().endWallMs > SUSTAINED_WINDOW_MS)
++   while (sustainedSamples.size > 1 && now - sustainedSamples.first().startWallMs > SUSTAINED_WINDOW_MS)
+
+- private fun addSustainedGapSample(ms: Long) {
++ private fun addSustainedGapSample(ms: Long, idleEndWallMs: Long) {   // = 本次请求发出的墙钟(t0Wall)
+
+  fun getSustainedBitrateEstimate(): Long {
+-     val rawSpanMs = now - sustainedSamples.first().endWallMs
++     val spanStartMs = sustainedSamples.first().startWallMs
++     val rawSpanMs = now - spanStartMs
+      if (rawSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
+-     val activeSpanMs = rawSpanMs - sustainedGapMs
++     val activeSpanMs = rawSpanMs - idleInsideWindowLocked(spanStartMs, now)   // 只扣有交集的部分
+      if (activeSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
+-     return sustainedBytes * 8000L / activeSpanMs.coerceAtMost(SUSTAINED_WINDOW_MS)
++     return sustainedBytes * 8000L / activeSpanMs
+  }
+```
+
+- 新增 `idleInsideWindowLocked(spanStartMs, nowMs)`(调用方须持 `realBandwidthLock`,逐条求交、区间不相交)。
+- 新增 `trimSustainedWindowLocked(now)` —— 两串样本的窗口滚动**单点定义**:旧版在 adder 与 getter 里
+  各写一份(且已互相漂移),这正是 P11-258 这类记账 bug 的温床。
+- `sustainedGapMs` 累加器**删除**(不再有标量意义,避免两套账)。
+- **取证**:heartbeat 加一个 `susRaw=`(字节 ÷ 未扣减墙钟跨度),真机上与 `sus=` 并排看,
+  扣减量一眼可见(否则「修好了没」只能靠猜)。
+
+### §57.5 这次改动**不修**什么(必须说清)
+
+按 §56 的量化:**本场三处 4K 放行的判决不会翻转** —— 修好后 `sus ≈ 38M`(在途)仍 ≥ 4K 实需
+`need ≈ 23~26M`,仍是放行。**横跳的主因是口径(`est` 排空窗 + `sus` 扣滑行 ⇒ 只看在途、不看占空比),
+那是 §56.6-① 的阈值口径改动,本轮不做。** 本轮收益是:**拿掉一个物理不可能的输入量**(38 Mbps 的管子上报
+127 Mbps)与假 `-1` 家族,让下一步的阈值标定有干净底数。若修完横跳周期不变,**是预期结果**,不该据此认为"修错了"。
+
+### §57.6 判据 / 否证线
+
+**判据**:①真机日志 `sus=` 不再出现物理不可能值(与 `susRaw=`、`est=`、同类 `cap=` 同量级,不再 3 倍背离);
+②`bw gap ignored/counted` 与 `sus` 的背离消失(空窗整体在窗口外时,`sus ≈ susRaw`);
+③真滑行窗口(满缓冲停闸 30~40s)里 `sus` 仍显著高于 `susRaw`(扣减语义**没丢**);
+④升降档判决与改前同向(本场:三处放行、两处水位急救不变)。
+
+**否证**:①`sus` 出现 > `susRaw` 或为负 ⇒ 求交写错;②满缓冲场次 `sus ≈ susRaw` ⇒ 扣减被整体吃掉,
+顶档重准入防线(2026-08-31 A)失效;③低档(≤1440p)升降档时序变化 ⇒ 越界(本轮只动 `sus`,不该波及)。
+
+### §57.7 离线自检(本地无 Android SDK,不做本地编译;此处为手算复核)
+
+用真机日志同一时刻的数(21:16:07.151,字节样本 rn=48~56,共 284 444 676B)分别喂新旧两版记账:
+
+| | 分母窗口 | 扣减 | 结果 |
+| --- | --- | --- | --- |
+| **旧版**(按 end 滚 + 标量扣减) | `now − rn48.end` = 59.33s | −41.189s(那笔 `raw=41189ms` 空窗,整体在窗口起点之前) | **125.5 Mbps**(日志实测 **127.2M**,差 1.3%,模型吻合) |
+| **新版**(按 start 滚 + 区间求交) | rn=48 的 start 已 64.0s > 60s ⇒ 滚出;窗口 = `now − rn49.start` = 59.28s | 该空窗结束于 21:15:03.12 < 窗口起点 21:15:07.88 ⇒ **交集 0** | **35.6 Mbps**(与逐笔在途 31~38M、`est=37394K`、`cap=35838K` 同量级 ✓) |
+
+**扣减语义是否还在**(判据③):21:11:55.797 那笔 `bw gap counted: 6041ms(coast=3521ms)` 的空窗区间
+`[21:11:44.27, 21:11:50.31]` 完全落在当时的窗口内 ⇒ 仍**全额扣减**,`sus > susRaw` ✓(不是把扣减整体吃掉)。
