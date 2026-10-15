@@ -4759,13 +4759,23 @@ sus          = sustainedBytes × 8000 / activeSpanMs
 **②同一 player / 同一 bandwidthMeter 实例跨视频复用**(设计如此,但放大了 ①③);
 **③高度键的冷却记忆跨视频存活**(`trialFail` / `topTierStartupBlocked` / `readAhead` / 最近操作事件,均为 `SabrAbrMemory` 单例字段)。
 
-**关于 `est=1270K` 到底是不是 YouTube 留下的 —— 本日志区分不了,三个候选**:
-- **(a) 陈旧 SABR fetcher 的最后聚合值**:`getRealBitrateEstimate()` = `realBwBytes×8000/realBwTimeMs`(窗口 20s、按**样本耗时**滚、至少留 1 笔);
-  上一场收尾那几笔是 paced 的 `REAL 1685052B 6373ms → 2Mbps`,若再叠一笔零字节静默样本(`addRealBwSample(0L, elapsedMs)`,日志里确有 `silence=8000ms`),
-  聚合会被拉到 ~1M 量级 ⇒ **完全可能就是 1.27M**;
-- **(b) DefaultBandwidthMeter 的滑窗**(62s 后还剩不剩 YouTube 样本,取决于 media3 的权重口径;本地无 Android SDK / 无 media3 源码,**不凭空断言**);
-- **(c) B 站 CDN 当刻真的只有 1.27Mbps**(节点慢)。
+**关于 `est=1270K` 的归属 —— (a) 已被本日志排除,剩 (b)/(c) 分不开**:
+- **(a) 陈旧 SABR fetcher 的窗口值 —— 已排除**,三条硬证据:
+  ①heartbeat 的 `bw=` 就是 ABR 读的同一个量(`DefaultSabrChunkSource.kt:372` 打的正是 `bandwidthMeter.getBitrateEstimate()`);
+  ②`fetch … REAL … est=8800K`(`SabrMediaFetcher.kt:1585`)打在 `recordRealBandwidthSample`(`:1571`)**之后** ⇒ 它是**加完样本**的窗口值;
+  ③20:49:29 之后到换源(20:50:22)**一笔新样本都没有**(无 `fetch rn=` / `MEDIA_END`),而 realBw 窗口全仓只有四处写(声明 / `reseedActiveWindow` / `addRealBwSample` / trim)、**没有任何拆除清零路径**
+  ⇒ 该 fetcher 的冻结值 = **8800K**。若 `realBpsProvider` 当时生效,ABR 在 20:51:24 就该读到 8800K;它读到 1270K ⇒ **provider 返回的是 -1,`est` 来自 delegate**。
+- **(b) delegate 滑窗里还留着 YouTube 样本** vs **(c) B 站 CDN 当刻真的只有 1.27Mbps** —— 这两条本日志**分不开**(本地无 Android SDK / 无 media3 源码,其窗口权重与淘汰口径不凭空断言)。
+- **两处已撤回的错误论证**(2026-10-15 二次复核):
+  ①"(a) 的最后聚合值可能被 paced 样本拉到 ~1M,所以可能就是 1.27M" —— **错**:冻结值就是 8800K,它报不出这个数;
+  ②"(b) 的话读数会偏高,所以指向 (c)" —— **错**:`DefaultBandwidthMeter` 取的是**样本中位数**而非聚合吞吐,窗口里混着 paced 的 2Mbps 样本时中位数可以很低 ⇒ (b) 不能被这样削弱。
 
-**(a)/(b) 都是"YouTube 残留"⇒ 方向很可能成立,但本日志不足以断言其一**。判别式 = §58.6 新增的 `launch bw:` 行:
-(a) ⇒ `wired=true` 且 `real ≈ est`;(b) ⇒ `real=unwired`(provider 返回 -1)且 `delegate = est`;(c) ⇒ `real`/`delegate` 都低且与 B 站自身读数吻合。
-**注意 (a) 的反证**:`bw=8800K` 是 20:49:29 那次 heartbeat 的读数,之后到 20:50:22 之间还有 paced 样本与会话收尾 ⇒ "最后聚合值"与 8800K 不是同一个数,不能拿 8800K 直接否掉 (a)。
+**下次复现的预测表**(判据 = `launch bw:` + `steady probe`):
+
+| 观察 | 结论 |
+|---|---|
+| 起播行 `real=unwired`(-1)、`delegate ≈ 8.8M`,随后 `est` 掉到 ~1.2M | YouTube 的窗口**确实被带进来了**(前段是 (b)),随后被 B 站样本冲掉 ⇒ 稳态转 (c) |
+| 起播行 `delegate` 就已经 ~1.2M | 直接是 **(c)**:节点/链路当刻真的慢 ⇒ 修法走 §58.9-②(降无可降时重新 resolve 低一档 / 换节点),不是内存式清理 |
+| `wired=true` 且 `real ≈ est` | 推翻上面 (a) 的排除,回来重查 |
+
+**副产品**:"`realBpsProvider` 指向已结束会话"这个 bug 无论如何都要修(P11-259 已修),但它**不是**本次播放失败的成因 —— 成因在 delegate 那一侧(或链路)。
