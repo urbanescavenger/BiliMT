@@ -4742,4 +4742,30 @@ sus          = sustainedBytes × 8000 / activeSpanMs
 ③`best` 幽灵初值 + `isTopCodecVariant` 的容器 mime 盲区;
 ④竖屏 height 语义;
 ⑤看门狗口径(READY 期 + "视频输出被停"判据);
-⑥`steady probe` 取证完成后删除。
+⑥`steady probe` 取证完成后删除;
+⑦**让 DASH 路径也喂 `SabrAbrMemory.noteSelectedHeight`**(见 §58.10-①),并复核"竖屏 height=1920 落进重档"。
+
+### §58.10 追加(同日二次判读,用户追问「问题是 YouTube 影响 B 站吗」):跨源残留**不止带宽计一条**
+
+**①`SabrAbrMemory` 是进程级单例,而 `selectedHeight` 只有 SABR 侧在喂** ——
+`noteSelectedHeight()` 全仓唯一调用点是 `DefaultSabrChunkSource.kt:338`(视频 chunk source 每次 `getNextChunk` 喂)。
+⇒ B 站是 `DashMediaSource` 路径,**没有任何人更新它**,于是 B 站播放期间 `selectedHeight` 仍是**上一场 YouTube 的档高**(本场 4K 段 ⇒ 2160/1440)。
+⇒ `heavyTierBufferedCapUs()`(`HEAVY_TIER_MIN_HEIGHT = 1440`、`HEAVY_TIER_BUFFERED_CAP_MS = 20_000`)按"重档"返回 **20s**,
+经 `PlayerScreen` 建 player 时接的 `createTvPlaybackLoadControl(bufferedCapUs = { SabrAbrMemory.heavyTierBufferedCapUs() })` 生效
+⇒ **B 站播放被套上"20s 缓冲上限"**。该上限的立论(P11-230)是 4K 的 Java 堆样本占用(50s×28.6Mbps≈180MB),
+而 B 站这条只有 ~1.7Mbps ⇒ **纯属跨源残留,不是内存安全需要**。
+且即使正确喂:竖屏 1080x1920 的 `height = 1920 ≥ 1440`,照样落进重档 ⇒ 与 §58.7-④ 的竖屏 height 语义是同一个坑的两个面。
+
+**②同一 player / 同一 bandwidthMeter 实例跨视频复用**(设计如此,但放大了 ①③);
+**③高度键的冷却记忆跨视频存活**(`trialFail` / `topTierStartupBlocked` / `readAhead` / 最近操作事件,均为 `SabrAbrMemory` 单例字段)。
+
+**关于 `est=1270K` 到底是不是 YouTube 留下的 —— 本日志区分不了,三个候选**:
+- **(a) 陈旧 SABR fetcher 的最后聚合值**:`getRealBitrateEstimate()` = `realBwBytes×8000/realBwTimeMs`(窗口 20s、按**样本耗时**滚、至少留 1 笔);
+  上一场收尾那几笔是 paced 的 `REAL 1685052B 6373ms → 2Mbps`,若再叠一笔零字节静默样本(`addRealBwSample(0L, elapsedMs)`,日志里确有 `silence=8000ms`),
+  聚合会被拉到 ~1M 量级 ⇒ **完全可能就是 1.27M**;
+- **(b) DefaultBandwidthMeter 的滑窗**(62s 后还剩不剩 YouTube 样本,取决于 media3 的权重口径;本地无 Android SDK / 无 media3 源码,**不凭空断言**);
+- **(c) B 站 CDN 当刻真的只有 1.27Mbps**(节点慢)。
+
+**(a)/(b) 都是"YouTube 残留"⇒ 方向很可能成立,但本日志不足以断言其一**。判别式 = §58.6 新增的 `launch bw:` 行:
+(a) ⇒ `wired=true` 且 `real ≈ est`;(b) ⇒ `real=unwired`(provider 返回 -1)且 `delegate = est`;(c) ⇒ `real`/`delegate` 都低且与 B 站自身读数吻合。
+**注意 (a) 的反证**:`bw=8800K` 是 20:49:29 那次 heartbeat 的读数,之后到 20:50:22 之间还有 paced 样本与会话收尾 ⇒ "最后聚合值"与 8800K 不是同一个数,不能拿 8800K 直接否掉 (a)。
