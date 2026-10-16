@@ -63,7 +63,7 @@ class YoutubeRepository(
 
   /**
    * 订阅流补角标([tvQualityBadgesFor])每轮的起始频道下标:每轮从上次的下一个频道接着补,
-   * 保证频道数超过 [YoutubeConstants.TvQualityBadgeChannelsPerRound] 时逐个轮转、不会永远只有前几个被补。
+   * 保证频道数超过 [TvQualityBadgeChannelsPerRound] 时逐个轮转、不会永远只有前几个被补。
    * 只在主线程之外的单个调用里读写,最坏情况是两轮撞同一批(白补一次,无害),故不加锁。
    */
   private var tvQualityBadgeRoundStart = 0
