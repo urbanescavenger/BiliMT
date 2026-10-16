@@ -434,6 +434,17 @@ class VideoRepository(
     return youtubeRepository.getVideoDetail(videoId)
   }
 
+  /**
+   * 给一批 YouTube 卡片补 TV 客户端画质角标(4K/8K/HD/HDR),返回 videoId → 角标文案。
+   *
+   * 动态页在首屏/翻页落地后**后台**调用:订阅流(RSS + WEB InnerTube)从不发 TVHTML5 那一路,
+   * 而画质角标只在 TVHTML5 的响应里(见 docs/youtube-api-notes.md §4.16),所以订阅流的卡片默认
+   * 没有任何画质角标。失败/拿不到一律退回空表或少数几条,由调用方按「角标少一点」降级。
+   */
+  suspend fun youtubeTvQualityBadges(videos: List<VideoSummary>): Map<String, String> {
+    return youtubeRepository.tvQualityBadgesFor(videos)
+  }
+
   /** YouTube 评论列表（/next + continuation 续页）。 */
   suspend fun getYoutubeComments(videoId: String, continuation: String? = null): YoutubeCommentPage {
     return youtubeRepository.getComments(videoId, continuation)
