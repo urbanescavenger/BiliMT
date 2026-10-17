@@ -73,8 +73,6 @@ import com.kirin.mt.core.youtube.YoutubeContentLocale
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
-import com.kirin.mt.core.model.isWatchCompleted
-import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceHongguo
@@ -106,6 +104,7 @@ import com.kirin.mt.ui.i18n.localizedContext
 import com.kirin.mt.ui.login.TvAccountSettingsDialog
 import com.kirin.mt.ui.login.TvQrLoginDialog
 import com.kirin.mt.ui.player.PlayerScreen
+import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.search.SearchScreen
 import com.kirin.mt.ui.search.SearchUiState
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
@@ -617,77 +616,6 @@ fun BiliTvApp(
       requestContentFocusRestore(destination)
     }
     return true
-  }
-
-  fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false): PlaybackRequest {
-    // IPTV 卡片:直链 m3u8,走直播播放器(LivePlayerScreen)的 IPTV 分支,带镜像源列表。
-    if (source == SourceIptv) {
-      return PlaybackRequest(
-        bvid = "",
-        cid = 0L,
-        title = title,
-        ownerName = ownerName,
-        coverUrl = pic,
-        source = SourceIptv,
-        iptvUrls = iptvUrls,
-      )
-    }
-    // TVBox(影视库)卡片:点播,VOD 播放器(PlayerScreen),线路表带每站完整分集(选集在线路内)。
-    if (source == SourceTvbox) {
-      return PlaybackRequest(
-        bvid = "",
-        cid = 0L,
-        title = title,
-        ownerName = ownerName,
-        coverUrl = pic,
-        source = SourceTvbox,
-        tvboxLines = tvboxLines,
-      )
-    }
-    // 红果短剧卡片(P11-83):点播,VOD 播放器,单线路分集=播放页 URL(播放时懒解析 MP4 直链)。
-    if (source == SourceHongguo) {
-      return PlaybackRequest(
-        bvid = "",
-        cid = 0L,
-        title = title,
-        ownerName = ownerName,
-        coverUrl = pic,
-        source = SourceHongguo,
-        tvboxLines = tvboxLines,
-      )
-    }
-    // 直播卡片:走直播播放(独立 LivePlayerScreen),不带点播字段。
-    if (liveRoomId > 0L) {
-      return PlaybackRequest(
-        bvid = "",
-        cid = 0L,
-        title = title,
-        ownerName = ownerName,
-        ownerFace = ownerFace,
-        ownerMid = ownerMid,
-        coverUrl = pic,
-        liveRoomId = liveRoomId,
-      )
-    }
-    val advanceToNextEpisode = shouldAdvanceToNextHistoryEpisode()
-    return PlaybackRequest(
-      bvid = bvid,
-      cid = cid,
-      title = title,
-      startPositionMs = progress
-        .takeIf { progress -> progress > 0 && !isWatchCompleted() && !advanceToNextEpisode }
-        ?.times(1000L) ?: 0L,
-      ownerName = ownerName,
-      ownerFace = ownerFace,
-      ownerMid = ownerMid,
-      viewCount = view,
-      danmakuCount = danmaku,
-      pubdate = pubdate,
-      forceStartPosition = forceStartPosition,
-      historyPage = historyPage,
-      advanceToNextHistoryEpisode = advanceToNextEpisode,
-      source = source,
-    )
   }
 
   LaunchedEffect(userSession.isLoggedIn) {
