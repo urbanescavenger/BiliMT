@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.1.1-alpha.8](#v311-alpha8)
 - [v3.1.1-alpha.7](#v311-alpha7)
 - [v3.1.1-alpha.6](#v311-alpha6)
 - [v3.1.1-alpha.5](#v311-alpha5)
@@ -405,6 +406,33 @@
 - **普通卡片真实观看进度条**(alpha.1/3):本地按 bvid 记忆播放位置,首页/推荐/搜索/频道/动态等卡片显示看过比例,无进度数据不显示。
 - **YouTube 订阅流提速**(alpha.1):~6.8s→~2.8s(会话预热后台化 + RSS 改 UULF uploads feed)。
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
+
+---
+
+## v3.1.1-alpha.8
+
+**TV 历史里点番剧卡报 -400,从番剧页进却正常** —— 同一个「卡片 → 播放请求」的构造函数在 TV 上有两份,
+历史 tab 用的那份漏了番剧分支(P11-262)。
+
+### 变更
+
+- **根因(P11-262)**:TV 端存在两份 `VideoSummary.toPlaybackRequest` —— 带番剧(PGC)分支的共享版
+  (`PlayerLaunchSupport.kt`),与 `AppShell.kt` 文件内那份私有实现(只有 IPTV / 影视库 / 红果 / 直播 /
+  普通稿件五条分支)。AppShell 只 import 了播放器组件、没 import 共享版,于是 TV 上所有
+  `video.toPlaybackRequest()` 都落到私有版,历史 tab 的点击也在其中。
+- **为什么是 400**:历史接口里番剧条目的 `history.bvid` 是空的,映射层为了给网格当稳定 key,把它
+  伪造成 `"ep{epId}"`。私有版没有番剧分支,就把这个假 BV 号当真稿件号打给了普通
+  `/x/player/wbi/playurl` ⇒ 服务端返回 `code -400 请求错误`。(那次元数据请求同样是拿假 bvid 打的,
+  只是它的报错被 `runCatching` 吞掉了,所以冒到失败页的只有播放接口这条。)
+- **从番剧页为什么没事**:番剧页选集走的是另一条构造,带真实的 `bvid/cid/aid` 与
+  `epId/seasonId/subType` ⇒ 判定为番剧 ⇒ 走 `/pgc/player/web/playurl`(带 `ep_id`)。两条路径的差异
+  **只在入口构造**,之后的 playurl 解析完全同路。移动端历史用的是共享版,所以一直正常。
+- **改动**:删掉 AppShell 文件内那份私有实现,改用共享版(它是超集:多 `coverUrl`(后台播放通知封面)、
+  `channelId`(频道跳转),以及本就需要补上的番剧分支),并清掉随之失效的两个 import。
+- **真机判据**:TV 历史点番剧卡能起播;日志出现 `playurl pgc qn requested=… epId=… cid=…`;
+  失败页 `isPgc=` 为 true(修复前为 false),不再出现 `Bilibili playurl failed with code -400`。
+- **未动**:`PlayerScreen.kt` 里还有第三份同名私有实现(只服务播放器内的相关视频/队列切换),不在本
+  问题路径上,留待单独评估。
 
 ---
 
