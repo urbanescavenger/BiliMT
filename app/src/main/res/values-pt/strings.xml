@@ -307,8 +307,10 @@
     <string name="search_empty">Nenhum vídeo relevante encontrado</string>
     <string name="search_empty_user">Nenhum criador/canal encontrado</string>
     <string name="search_empty_bangumi">Nenhum anime relevante encontrado</string>
+    <string name="search_empty_media_ft">Nenhum filme ou série relevante encontrado</string>
     <string name="search_type_video">Vídeos</string>
     <string name="search_type_bangumi">Anime</string>
+    <string name="search_type_media_ft">Filmes e TV</string>
     <string name="search_type_comprehensive">Destaques</string>
     <string name="search_filter">Filtrar</string>
     <string name="search_filter_sort">Ordenar por</string>

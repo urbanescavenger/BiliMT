@@ -123,10 +123,14 @@ internal class SearchVideoRepository(
       .map(VideoSummaryMappers::fromSearchUser)
   }
 
-  /** 搜索番剧（search_type=media_bangumi）。番剧搜索无排序，不带 order 参数。 */
-  suspend fun searchBangumi(
+  /**
+   * 搜索番剧/影视（search_type=media_bangumi / media_ft）。两者响应字段一致
+   * （season_id / cover / title / cv / index_show…），共用一套映射。均无排序，不带 order 参数。
+   */
+  suspend fun searchPgc(
     keyword: String,
     page: Int,
+    searchType: String,
   ): List<VideoSummary> {
     if (keyword.isBlank()) return emptyList()
 
@@ -134,7 +138,7 @@ internal class SearchVideoRepository(
     val keys = wbiKeyRepository.ensureKeys(sessData)
     val params = mutableMapOf(
       "keyword" to keyword,
-      "search_type" to "media_bangumi",
+      "search_type" to searchType,
       "page" to page.toString(),
       "pagesize" to "20",
     )
@@ -151,7 +155,7 @@ internal class SearchVideoRepository(
         params = signedParams,
         sessData = sessData,
       ).rootObject()
-      signedRoot.requireBiliCodeOk("search bangumi")
+      signedRoot.requireBiliCodeOk("search pgc")
       signedRoot.searchResultOrNull()
     }.getOrNull()
       ?: runCatching {
@@ -159,7 +163,7 @@ internal class SearchVideoRepository(
           url = BiliApiEndpoints.Search,
           params = params,
         ).rootObject()
-        unsignedRoot.requireBiliCodeOk("search bangumi fallback")
+        unsignedRoot.requireBiliCodeOk("search pgc fallback")
         unsignedRoot.searchResultOrNull()
       }.getOrNull()
       ?: return emptyList()
@@ -167,7 +171,7 @@ internal class SearchVideoRepository(
     return result
       .mapNotNull { it.asObjectOrNull() }
       .filter { (it.int("season_id") ?: 0) > 0 }
-      .map(VideoSummaryMappers::fromSearchBangumi)
+      .map(VideoSummaryMappers::fromSearchPgc)
   }
 
   suspend fun getSearchSuggestions(keyword: String): List<String> {

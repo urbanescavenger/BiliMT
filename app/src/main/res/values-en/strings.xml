@@ -306,8 +306,10 @@
     <string name="search_empty">No videos found</string>
     <string name="search_empty_user">No matching creators/channels</string>
     <string name="search_empty_bangumi">No matching anime</string>
+    <string name="search_empty_media_ft">No matching movies or shows</string>
     <string name="search_type_video">Videos</string>
     <string name="search_type_bangumi">Anime</string>
+    <string name="search_type_media_ft">Movies and TV</string>
     <string name="search_type_comprehensive">Featured</string>
     <string name="search_filter">Filter</string>
     <string name="search_filter_sort">Sort by</string>

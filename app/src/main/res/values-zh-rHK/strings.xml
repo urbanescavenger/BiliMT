@@ -228,8 +228,10 @@
     <string name="search_empty">未找到相關影片</string>
     <string name="search_empty_user">未找到相關UP主/頻道</string>
     <string name="search_empty_bangumi">未找到相關番劇</string>
+    <string name="search_empty_media_ft">未找到相關影視</string>
     <string name="search_type_video">影片</string>
     <string name="search_type_bangumi">番劇</string>
+    <string name="search_type_media_ft">影視</string>
     <string name="search_type_comprehensive">綜合</string>
     <string name="search_filter">篩選</string>
     <string name="search_filter_sort">排序方式</string>

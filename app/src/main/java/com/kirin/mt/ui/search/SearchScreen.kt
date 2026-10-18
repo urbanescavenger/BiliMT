@@ -155,8 +155,8 @@ internal class SearchUiState {
       return
     }
     source = newSource
-    // 番剧类型仅 B 站源提供,切到其它源回退视频类型(YouTube 类型循环只有 视频⇄频道)。
-    if (searchType == SearchTypeBangumi) {
+    // 番剧/影视类型仅 B 站源提供,切到其它源回退视频类型(YouTube 类型只有 视频/频道)。
+    if (searchType == SearchTypeBangumi || searchType == SearchTypeMediaFt) {
       searchType = SearchTypeVideo
     }
     // 排序 key 与来源耦合(B站 totalrank/click…,YouTube params 串),切源重置为该源默认「综合」。
@@ -963,9 +963,13 @@ private fun SearchResultsView(
             )
           }
         }
-      } else if (searchType == SearchTypeBangumi) {
-        // 番剧搜索:无排序,结果卡带 seasonId,点击进 PGC 季详情(壳层拦截)。
-        val seasons = videoRepository.searchBangumi(keyword = query, page = FirstPage)
+      } else if (searchType == SearchTypeBangumi || searchType == SearchTypeMediaFt) {
+        // 番剧/影视搜索:无排序,结果卡带 seasonId,点击进 PGC 季详情(壳层拦截)。
+        val seasons = if (searchType == SearchTypeMediaFt) {
+          videoRepository.searchMediaFt(keyword = query, page = FirstPage)
+        } else {
+          videoRepository.searchBangumi(keyword = query, page = FirstPage)
+        }
         if (seasons.isEmpty()) {
           SearchResultState.Empty
         } else {
@@ -1071,9 +1075,13 @@ private fun SearchResultsView(
             endReached = endReached,
             loadMoreError = "",
           )
-        } else if (searchType == SearchTypeBangumi) {
-          // 番剧搜索翻页:无排序。
-          val nextSeasons = videoRepository.searchBangumi(keyword = query, page = pageToLoad)
+        } else if (searchType == SearchTypeBangumi || searchType == SearchTypeMediaFt) {
+          // 番剧/影视搜索翻页:无排序。
+          val nextSeasons = if (searchType == SearchTypeMediaFt) {
+            videoRepository.searchMediaFt(keyword = query, page = pageToLoad)
+          } else {
+            videoRepository.searchBangumi(keyword = query, page = pageToLoad)
+          }
           val mergedSeasons = latestState.videos.appendUniqueByBvid(nextSeasons)
           nextContinuation = null
           endReached = nextSeasons.size < PageSize ||
@@ -1920,6 +1928,9 @@ private const val SearchTypeUser = "user"
 /** 搜索类型：番剧（B站 search_type=media_bangumi,仅 B 站源提供）。 */
 private const val SearchTypeBangumi = "media_bangumi"
 
+/** 搜索类型：影视（B站 search_type=media_ft：电影/纪录片/综艺等,仅 B 站源提供）。 */
+private const val SearchTypeMediaFt = "media_ft"
+
 private val BiliSearchSortOptions = listOf(
   SearchSortOption("totalrank", R.string.search_sort_totalrank),
   SearchSortOption("click", R.string.search_sort_click),
@@ -1954,7 +1965,7 @@ private fun sortOptionsFor(source: String): List<SearchSortOption> =
 /** 各来源默认排序(综合)的 key,切换来源时用于重置选中项。 */
 private fun defaultOrderKey(source: String): String = sortOptionsFor(source).first().key
 
-/** 搜索类型选项：视频 + 番剧 + UP主（B站）/ 频道（YouTube）。key 即 [SearchTypeVideo]/[SearchTypeBangumi]/[SearchTypeUser]。 */
+/** 搜索类型选项：视频 + 番剧 + 影视 + UP主（B站）/ 频道（YouTube）。key 即 [SearchTypeVideo]/[SearchTypeBangumi]/[SearchTypeMediaFt]/[SearchTypeUser]。 */
 private fun typeOptionsFor(source: String): List<SearchSortOption> =
   if (source == SourceYoutube) {
     listOf(
@@ -1965,14 +1976,16 @@ private fun typeOptionsFor(source: String): List<SearchSortOption> =
     listOf(
       SearchSortOption(SearchTypeVideo, R.string.search_type_video),
       SearchSortOption(SearchTypeBangumi, R.string.search_type_bangumi),
+      SearchSortOption(SearchTypeMediaFt, R.string.search_type_media_ft),
       SearchSortOption(SearchTypeUser, R.string.search_type_user_bili),
     )
   }
 
-/** 空结果文案按类型区分:UP主/番剧/视频。 */
+/** 空结果文案按类型区分:UP主/番剧/影视/视频。 */
 private fun emptyMessageResFor(searchType: String): Int = when (searchType) {
   SearchTypeUser -> R.string.search_empty_user
   SearchTypeBangumi -> R.string.search_empty_bangumi
+  SearchTypeMediaFt -> R.string.search_empty_media_ft
   else -> R.string.search_empty
 }
 

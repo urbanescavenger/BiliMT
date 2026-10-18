@@ -342,9 +342,22 @@ class VideoRepository(
     keyword: String,
     page: Int = 1,
   ): List<VideoSummary> {
-    return searchVideoRepository.searchBangumi(
+    return searchVideoRepository.searchPgc(
       keyword = keyword,
       page = page,
+      searchType = "media_bangumi",
+    )
+  }
+
+  /** 搜索影视（B站 search_type=media_ft：电影/纪录片/综艺等）。同样带 seasonId,进 PGC 季详情。 */
+  suspend fun searchMediaFt(
+    keyword: String,
+    page: Int = 1,
+  ): List<VideoSummary> {
+    return searchVideoRepository.searchPgc(
+      keyword = keyword,
+      page = page,
+      searchType = "media_ft",
     )
   }
 
