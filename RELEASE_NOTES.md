@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.1.1-alpha.10](#v311-alpha10)
 - [v3.1.1-alpha.9](#v311-alpha9)
 - [v3.1.1-alpha.8](#v311-alpha8)
 - [v3.1.1-alpha.7](#v311-alpha7)
@@ -407,6 +408,28 @@
 - **普通卡片真实观看进度条**(alpha.1/3):本地按 bvid 记忆播放位置,首页/推荐/搜索/频道/动态等卡片显示看过比例,无进度数据不显示。
 - **YouTube 订阅流提速**(alpha.1):~6.8s→~2.8s(会话预热后台化 + RSS 改 UULF uploads feed)。
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
+
+---
+
+## v3.1.1-alpha.10
+
+**B站搜索补上「影视」类型**(P11-264)。B站官方搜索的媒体分类除了番剧(`media_bangumi`),
+还有影视(`media_ft`:电影 / 纪录片 / 综艺等),之前只接了前者。
+
+### 变更
+
+- **类型选项**:B站源下第二行现在是 视频 / 番剧 / **影视** / UP主 四枚并排(TV 与移动端一致);
+  YouTube 仍是 视频 / 频道。切到非 B 站源时,番剧与影视都会回退成视频类型。
+- **数据层**:`SearchVideoRepository.searchBangumi` 泛化为 `searchPgc(keyword, page, searchType)`,
+  番剧与影视共用同一套 WBI 签名 + 无签名回退;`VideoRepository` 新增 `searchMediaFt`。
+  两者响应字段一致(`season_id` / `cover` / `title` / `cv` / `index_show`),映射合并为
+  `fromSearchPgc`,bvid 仍用 `ss{season_id}` 作网格去重 key。
+- **首屏 / 翻页 / 空态文案**三处分支同时接上影视,空态复用新文案(未找到相关影视)。
+- **点击链路不变**:影视卡 `seasonId > 0`,与番剧卡同走 PGC 季详情,选集播放复用现有链路。
+- **资源**:6 locale 新增 `search_type_media_ft` / `search_empty_media_ft`。
+- **真机判据**:TV 搜索第二行出现 4 枚类型 chip;搜影视名出季卡,点击进季详情并可选集播放;
+  翻页正常;切到 YouTube / 影视库源类型回到视频。
+- **待观察**:若个别 `media_ft` 条目不带 `season_id`,该卡无法进季详情,后续按 `media_id` 兜底。
 
 ---
 
