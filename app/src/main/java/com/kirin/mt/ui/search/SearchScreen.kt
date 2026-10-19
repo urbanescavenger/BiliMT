@@ -882,13 +882,21 @@ private fun SearchResultsView(
   val sortFocusRequesters = remember(uiState.source) {
     sortOptionsFor(uiState.source).associate { option -> option.key to FocusRequester() }
   }
-  // 类型改为并排 chip(P11-263):每个类型一个焦点落点。源切换时选项集不同(YouTube 无番剧)。
+  // 非视频类型 chip 的焦点落点(P11-265 单行版:视频类型由排序 chip 承担,不在这里)。
+  // 源切换时选项集不同(YouTube 只有 频道)。
   val typeFocusRequesters = remember(uiState.source) {
     typeOptionsFor(uiState.source).associate { option -> option.key to FocusRequester() }
   }
   val selectedOrderKey = uiState.selectedOrderKey
   val source = uiState.source
   val searchType = uiState.searchType
+  // 结果网格 ↑ 的落点:视频类型回选中排序 chip;非视频类型回当前类型 chip。
+  // 不能回排序 chip —— 排序 chip 是「焦点即选中」,会把类型切回视频。
+  val resultUpFocusRequester = if (searchType == SearchTypeVideo) {
+    sortFocusRequesters.getValue(selectedOrderKey)
+  } else {
+    typeFocusRequesters[searchType] ?: sortFocusRequesters.getValue(selectedOrderKey)
+  }
 
   LaunchedEffect(videoRepository, query, selectedOrderKey, source, searchType, uiState.retryKey) {
     if (
@@ -1219,7 +1227,7 @@ private fun SearchResultsView(
             SearchResultGrid(
               videos = currentState.videos,
               firstResultFocusRequester = firstResultFocusRequester,
-              selectedSortFocusRequester = sortFocusRequesters.getValue(selectedOrderKey),
+              selectedSortFocusRequester = resultUpFocusRequester,
               titleFocusRequester = titleFocusRequester,
               restoredFocusIndex = currentState.videos.resolveFocusIndex(
                 focusKey = uiState.focusedResultKey,
@@ -1265,10 +1273,9 @@ private fun SearchResultsHeader(
 ) {
   val homeColors = LocalHomeColors.current
   var titleFocused by remember { mutableStateOf(false) }
-  // P11-263:类型改成两行并排 —— 第一行排序(仅视频类型),第二行类型(视频/番剧/UP主 常驻)。
-  // 非视频类型时第一行整行不组合(= 不可选);影视库/红果源两行都不组合,标题 Down 直接落结果网格。
+  // P11-265:单行 —— 排序 chip 与类型 chip 同排。视频类型不单独占 chip:排序项就是视频域,
+  // 聚焦/选中任一排序 chip 即等于选中视频。影视库/红果源整行不组合,标题 Down 直接落结果网格。
   val isTvboxSource = source == SourceTvbox || source == SourceHongguo
-  val showSort = searchType == SearchTypeVideo && !isTvboxSource
   val typeOptions = typeOptionsFor(source)
   val chipRowModifier = Modifier
     .padding(horizontal = BiliSizing.SearchVideoGridHorizontalPadding)
@@ -1276,9 +1283,9 @@ private fun SearchResultsHeader(
     .height(BiliSizing.HomeSectionTabHeight + BiliSpacing.Xs)
     .padding(BiliSpacing.Xs)
 
-  // 类型焦点落点:当前类型不在选项集时(理论只在源切换瞬间)回退视频,避免 Down 落空。
+  // 非视频类型的焦点落点(视频类型由排序 chip 承担,不在 typeFocusRequesters 里)。
   fun focusType(type: String): Boolean {
-    val requester = typeFocusRequesters[type] ?: typeFocusRequesters[SearchTypeVideo] ?: return false
+    val requester = typeFocusRequesters[type] ?: return false
     return runCatching { requester.requestFocus() }.isSuccess
   }
   Column(
@@ -1296,9 +1303,9 @@ private fun SearchResultsHeader(
         .onFocusChanged { titleFocused = it.isFocused }
         .onPreviewKeyEvent { event ->
           if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
-            // 第一行排序(仅视频类型) → 第二行类型;非视频类型第一行不在组合树,直接落当前类型 chip。
-            // 影视库 源两行都不在组合树,直接落结果网格首卡。
-            val moved = if (showSort) {
+            // 视频类型落当前选中排序 chip;非视频类型落当前类型 chip。
+            // 影视库 源整行不在组合树,直接落结果网格首卡。
+            val moved = if (searchType == SearchTypeVideo) {
               runCatching { sortFocusRequesters.getValue(selectedOrderKey).requestFocus() }.getOrDefault(false)
             } else {
               false
@@ -1339,8 +1346,13 @@ private fun SearchResultsHeader(
       }
     }
     val sortOptions = sortOptionsFor(source)
-    // 第一行:排序 chip(仅视频类型)。非视频类型整行不组合 ⇒ 不可选,焦点从标题直接落第二行。
-    if (showSort) LazyRow(
+    // 单行:排序 chip + 类型 chip 同排。
+    // 视频类型不设独立 chip —— 排序项本身就是视频域:聚焦/选中任一排序 chip 即等于选中视频
+    // (排序 chip 沿用「焦点即选中」,所以焦点落到排序项就切回视频)。
+    // 类型 chip(番剧/影视/UP主,YouTube 为 频道)聚焦只高亮、OK 才切(P11-53 教训)。
+    // 显式 key:切类型时排序 chip 仍在,但稳定 key 保证节点跨重组存活、焦点不掉到侧栏头像。
+    // 影视库/红果源无排序/类型概念,整行不组合。
+    if (!isTvboxSource) LazyRow(
       modifier = chipRowModifier,
       horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
       contentPadding = PaddingValues(horizontal = BiliSpacing.Xs),
@@ -1348,31 +1360,22 @@ private fun SearchResultsHeader(
       itemsIndexed(sortOptions, key = { _, option -> option.key }) { index, option ->
         SearchSortButton(
           option = option,
-          selected = selectedOrderKey == option.key,
+          selected = searchType == SearchTypeVideo && selectedOrderKey == option.key,
           modifier = Modifier.focusRequester(sortFocusRequesters.getValue(option.key)),
           onMoveLeftToNav = if (index == 0) onMoveLeftToNav else null,
           onMoveUp = {
             runCatching { titleFocusRequester.requestFocus() }.isSuccess
           },
-          onMoveDown = { focusType(searchType) },
-          consumeRight = index == sortOptions.lastIndex,
+          onMoveDown = {
+            runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
+          },
           onSelected = {
+            // 排序项属于视频域:先切回视频(若当前不是),再落排序。
+            if (searchType != SearchTypeVideo) onTypeSelected(SearchTypeVideo)
             onOrderSelected(option.key)
           },
         )
       }
-    }
-    // 第二行:类型 chip(视频/番剧/UP主;YouTube 为 视频/频道),常驻可见。
-    // 选中态由 searchType 决定;聚焦只高亮、OK 才切(P11-53 教训:焦点扫过触发重搜)。
-    // 显式 key:切类型时第一行整组出入组合树,无 key 的 item 按位置挪位会被 LazyRow
-    // 当作新 item 销毁重建 → 聚焦中的类型 chip 节点被 detach → 焦点逃出搜索屏落到侧栏头像,
-    // autoConfirm 直接打开「我的」页(即「切频道退到头像」bug)。稳定 key 令节点跨重组存活,焦点不掉。
-    // 影视库/红果源无类型概念,整行隐藏。
-    if (!isTvboxSource) LazyRow(
-      modifier = chipRowModifier,
-      horizontalArrangement = Arrangement.spacedBy(BiliSpacing.Lg),
-      contentPadding = PaddingValues(horizontal = BiliSpacing.Xs),
-    ) {
       itemsIndexed(typeOptions, key = { _, option -> option.key }) { index, option ->
         SearchSortButton(
           option = option,
@@ -1380,14 +1383,8 @@ private fun SearchResultsHeader(
           selectOnFocus = false,
           consumeRight = index == typeOptions.lastIndex,
           modifier = Modifier.focusRequester(typeFocusRequesters.getValue(option.key)),
-          onMoveLeftToNav = if (index == 0) onMoveLeftToNav else null,
           onMoveUp = {
-            // 第一行可见时往上落当前选中排序 chip;非视频类型第一行不可选,直接回标题。
-            if (showSort) {
-              runCatching { sortFocusRequesters.getValue(selectedOrderKey).requestFocus() }.isSuccess
-            } else {
-              runCatching { titleFocusRequester.requestFocus() }.isSuccess
-            }
+            runCatching { titleFocusRequester.requestFocus() }.isSuccess
           },
           onMoveDown = {
             runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
@@ -1407,7 +1404,7 @@ private fun SearchSortButton(
   selected: Boolean,
   modifier: Modifier = Modifier,
   onMoveLeftToNav: (() -> Boolean)? = null,
-  // Up/Down 的落点按行不同(排序行↓→类型行,类型行↓→结果网格),由调用方决定。
+  // Up/Down 的落点由调用方决定(排序/类型 chip 同排,↑→标题,↓→结果网格)。
   onMoveUp: () -> Boolean,
   onMoveDown: () -> Boolean,
   onSelected: () -> Unit,
@@ -1948,7 +1945,7 @@ private val YoutubeSearchSortOptions = listOf(
 
 /**
  * 按来源返回排序选项(B站/YouTube 各一套)。影视库(TVBox)无排序:给单枚幽灵「综合」选项——
- * chip 因 showSort=false 不渲染,但 sortFocusRequesters map 非空,结果网格首卡 Up 落空后
+ * chip 因 isTvboxSource 整行不渲染,但 sortFocusRequesters map 非空,结果网格首卡 Up 落空后
  * 自然回退到标题(重新搜索),且 selectSource 的 defaultOrderKey 取得到 key。
  */
 private val TvboxSearchSortOptions = listOf(
@@ -1965,16 +1962,18 @@ private fun sortOptionsFor(source: String): List<SearchSortOption> =
 /** 各来源默认排序(综合)的 key,切换来源时用于重置选中项。 */
 private fun defaultOrderKey(source: String): String = sortOptionsFor(source).first().key
 
-/** 搜索类型选项：视频 + 番剧 + 影视 + UP主（B站）/ 频道（YouTube）。key 即 [SearchTypeVideo]/[SearchTypeBangumi]/[SearchTypeMediaFt]/[SearchTypeUser]。 */
+/**
+ * 类型 chip 选项(P11-265 单行版):视频类型不单独占 chip —— 排序项本身就是视频域,
+ * 聚焦/选中任一排序 chip 即等于选中视频。所以这里只列非视频类型。
+ * key 即 [SearchTypeBangumi]/[SearchTypeMediaFt]/[SearchTypeUser]。
+ */
 private fun typeOptionsFor(source: String): List<SearchSortOption> =
   if (source == SourceYoutube) {
     listOf(
-      SearchSortOption(SearchTypeVideo, R.string.search_type_video),
       SearchSortOption(SearchTypeUser, R.string.search_type_user_youtube),
     )
   } else {
     listOf(
-      SearchSortOption(SearchTypeVideo, R.string.search_type_video),
       SearchSortOption(SearchTypeBangumi, R.string.search_type_bangumi),
       SearchSortOption(SearchTypeMediaFt, R.string.search_type_media_ft),
       SearchSortOption(SearchTypeUser, R.string.search_type_user_bili),
