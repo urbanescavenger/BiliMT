@@ -1313,9 +1313,13 @@ private fun SearchResultsHeader(
             if (moved) {
               true
             } else if (isTvboxSource) {
-              runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
+              runCatching { firstResultFocusRequester.requestFocus() }
+              true
             } else {
+              // requester 未挂载(结果还在 Loading)也吞掉按键:漏给默认遍历会把焦点
+              // 按几何甩到侧栏分区(P11-267)。
               focusType(searchType)
+              true
             }
           } else {
             false
@@ -1367,7 +1371,10 @@ private fun SearchResultsHeader(
             runCatching { titleFocusRequester.requestFocus() }.isSuccess
           },
           onMoveDown = {
-            runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
+            // 结果区可能还在 Loading(requester 未挂载):吞掉按键,绝不能让默认遍历
+            // 按几何把焦点甩到侧栏分区(P11-267)。
+            runCatching { firstResultFocusRequester.requestFocus() }
+            true
           },
           onSelected = {
             // 排序项属于视频域:先切回视频(若当前不是),再落排序。
@@ -1387,7 +1394,9 @@ private fun SearchResultsHeader(
             runCatching { titleFocusRequester.requestFocus() }.isSuccess
           },
           onMoveDown = {
-            runCatching { firstResultFocusRequester.requestFocus() }.isSuccess
+            // 同上:requester 未挂载也吞掉,防焦点逃到侧栏(P11-267)。
+            runCatching { firstResultFocusRequester.requestFocus() }
+            true
           },
           onSelected = {
             onTypeSelected(option.key)
