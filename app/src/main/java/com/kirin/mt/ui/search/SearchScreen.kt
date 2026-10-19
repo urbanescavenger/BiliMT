@@ -897,6 +897,17 @@ private fun SearchResultsView(
   } else {
     typeFocusRequesters[searchType] ?: sortFocusRequesters.getValue(selectedOrderKey)
   }
+  // P11-268:从标题/排序/类型 chip 按 ↓ 落结果首卡。首项在结果刚落地时可能尚未挂载,
+  // 单次 requestFocus 会落空,按帧重试一小段;成败都不返回 false —— 漏给默认焦点遍历
+  // 会按几何把焦点甩到侧栏分区(P11-267)。
+  fun focusFirstResultWithRetry() {
+    coroutineScope.launch {
+      for (attempt in 0 until FirstResultFocusRetryCount) {
+        if (runCatching { firstResultFocusRequester.requestFocus() }.isSuccess) return@launch
+        withFrameNanos { }
+      }
+    }
+  }
 
   LaunchedEffect(videoRepository, query, selectedOrderKey, source, searchType, uiState.retryKey) {
     if (
@@ -1169,9 +1180,9 @@ private fun SearchResultsView(
       sortFocusRequesters = sortFocusRequesters,
       typeFocusRequesters = typeFocusRequesters,
       titleFocusRequester = titleFocusRequester,
-      firstResultFocusRequester = firstResultFocusRequester,
       onMoveLeftToNav = onMoveLeftToNav,
       onBackToKeyboard = onBackToKeyboard,
+      onFocusFirstResult = ::focusFirstResultWithRetry,
       onOrderSelected = { orderKey ->
         uiState.selectOrder(orderKey)
       },
@@ -1265,9 +1276,9 @@ private fun SearchResultsHeader(
   sortFocusRequesters: Map<String, FocusRequester>,
   typeFocusRequesters: Map<String, FocusRequester>,
   titleFocusRequester: FocusRequester,
-  firstResultFocusRequester: FocusRequester,
   onMoveLeftToNav: () -> Boolean,
   onBackToKeyboard: () -> Unit,
+  onFocusFirstResult: () -> Unit,
   onOrderSelected: (String) -> Unit,
   onTypeSelected: (String) -> Unit,
 ) {
@@ -1313,7 +1324,7 @@ private fun SearchResultsHeader(
             if (moved) {
               true
             } else if (isTvboxSource) {
-              runCatching { firstResultFocusRequester.requestFocus() }
+              onFocusFirstResult()
               true
             } else {
               // requester 未挂载(结果还在 Loading)也吞掉按键:漏给默认遍历会把焦点
@@ -1371,9 +1382,9 @@ private fun SearchResultsHeader(
             runCatching { titleFocusRequester.requestFocus() }.isSuccess
           },
           onMoveDown = {
-            // 结果区可能还在 Loading(requester 未挂载):吞掉按键,绝不能让默认遍历
-            // 按几何把焦点甩到侧栏分区(P11-267)。
-            runCatching { firstResultFocusRequester.requestFocus() }
+            // 首项可能刚落地尚未挂载:按帧重试;同时吞掉按键,绝不能让默认遍历
+            // 按几何把焦点甩到侧栏分区(P11-267/268)。
+            onFocusFirstResult()
             true
           },
           onSelected = {
@@ -1394,8 +1405,8 @@ private fun SearchResultsHeader(
             runCatching { titleFocusRequester.requestFocus() }.isSuccess
           },
           onMoveDown = {
-            // 同上:requester 未挂载也吞掉,防焦点逃到侧栏(P11-267)。
-            runCatching { firstResultFocusRequester.requestFocus() }
+            // 同上:按帧重试并吞掉按键,防焦点逃到侧栏(P11-267/268)。
+            onFocusFirstResult()
             true
           },
           onSelected = {
@@ -1532,9 +1543,12 @@ private fun SearchResultGrid(
 ) {
   LaunchedEffect(videos, focusFirstResult) {
     if (videos.isNotEmpty() && focusFirstResult) {
-      withFrameNanos { }
-      runCatching {
-        firstResultFocusRequester.requestFocus()
+      // P11-268:首项可能还没挂载(LazyColumn 刚重建/行正在布局),单帧请求会落空;
+      // 而且旧实现落空后照样消费 focusFirstResult ⇒ 焦点永远停在类型 chip 上。
+      // 按帧重试一小段,成功后立刻返回;仍失败才放弃。
+      for (attempt in 0 until FirstResultFocusRetryCount) {
+        withFrameNanos { }
+        if (runCatching { firstResultFocusRequester.requestFocus() }.isSuccess) break
       }
       onFirstResultFocused()
     }
@@ -1924,6 +1938,8 @@ private const val SearchSuggestionDebounceMs = 250L
 private const val RestoreFocusRetryCount = 8
 private const val FirstPage = 1
 private const val PageSize = 20
+// 结果首卡聚焦按帧重试次数(~200ms@60Hz):首项刚落地时 FocusRequester 可能尚未挂载(P11-268)。
+private const val FirstResultFocusRetryCount = 12
 
 /** 搜索类型：视频。 */
 private const val SearchTypeVideo = "video"
