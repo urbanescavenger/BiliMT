@@ -32,6 +32,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
@@ -42,12 +43,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import coil.imageLoader
 import com.kirin.mt.R
+import com.kirin.mt.core.app.AppActivitySignal
 import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.cache.AppCacheManager
 import com.kirin.mt.core.cache.formatCacheSize
@@ -70,8 +73,6 @@ import com.kirin.mt.core.youtube.YoutubeContentLocale
 import com.kirin.mt.core.player.DanmakuSettingsStore
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
-import com.kirin.mt.core.model.isWatchCompleted
-import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
 import com.kirin.mt.core.model.HomeSection
 import com.kirin.mt.core.model.SourceIptv
 import com.kirin.mt.core.model.SourceHongguo
@@ -103,6 +104,7 @@ import com.kirin.mt.ui.i18n.localizedContext
 import com.kirin.mt.ui.login.TvAccountSettingsDialog
 import com.kirin.mt.ui.login.TvQrLoginDialog
 import com.kirin.mt.ui.player.PlayerScreen
+import com.kirin.mt.ui.player.toPlaybackRequest
 import com.kirin.mt.ui.search.SearchScreen
 import com.kirin.mt.ui.search.SearchUiState
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
@@ -616,77 +618,6 @@ fun BiliTvApp(
     return true
   }
 
-  fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false): PlaybackRequest {
-    // IPTV 卡片:直链 m3u8,走直播播放器(LivePlayerScreen)的 IPTV 分支,带镜像源列表。
-    if (source == SourceIptv) {
-      return PlaybackRequest(
-        bvid = "",
-        cid = 0L,
-        title = title,
-        ownerName = ownerName,
-        coverUrl = pic,
-        source = SourceIptv,
-        iptvUrls = iptvUrls,
-      )
-    }
-    // TVBox(影视库)卡片:点播,VOD 播放器(PlayerScreen),线路表带每站完整分集(选集在线路内)。
-    if (source == SourceTvbox) {
-      return PlaybackRequest(
-        bvid = "",
-        cid = 0L,
-        title = title,
-        ownerName = ownerName,
-        coverUrl = pic,
-        source = SourceTvbox,
-        tvboxLines = tvboxLines,
-      )
-    }
-    // 红果短剧卡片(P11-83):点播,VOD 播放器,单线路分集=播放页 URL(播放时懒解析 MP4 直链)。
-    if (source == SourceHongguo) {
-      return PlaybackRequest(
-        bvid = "",
-        cid = 0L,
-        title = title,
-        ownerName = ownerName,
-        coverUrl = pic,
-        source = SourceHongguo,
-        tvboxLines = tvboxLines,
-      )
-    }
-    // 直播卡片:走直播播放(独立 LivePlayerScreen),不带点播字段。
-    if (liveRoomId > 0L) {
-      return PlaybackRequest(
-        bvid = "",
-        cid = 0L,
-        title = title,
-        ownerName = ownerName,
-        ownerFace = ownerFace,
-        ownerMid = ownerMid,
-        coverUrl = pic,
-        liveRoomId = liveRoomId,
-      )
-    }
-    val advanceToNextEpisode = shouldAdvanceToNextHistoryEpisode()
-    return PlaybackRequest(
-      bvid = bvid,
-      cid = cid,
-      title = title,
-      startPositionMs = progress
-        .takeIf { progress -> progress > 0 && !isWatchCompleted() && !advanceToNextEpisode }
-        ?.times(1000L) ?: 0L,
-      ownerName = ownerName,
-      ownerFace = ownerFace,
-      ownerMid = ownerMid,
-      viewCount = view,
-      danmakuCount = danmaku,
-      pubdate = pubdate,
-      forceStartPosition = forceStartPosition,
-      historyPage = historyPage,
-      advanceToNextHistoryEpisode = advanceToNextEpisode,
-      source = source,
-    )
-  }
-
   LaunchedEffect(userSession.isLoggedIn) {
     if (userSession.isLoggedIn && accountSelected) {
       // 登录成功后留在「我的」页(头像+设置合并页),把焦点交给设置列表首项。
@@ -793,7 +724,20 @@ fun BiliTvApp(
       }
     }
 
-    Box(modifier = Modifier.fillMaxSize().focusDiag("root")) {
+    // P11-254:把「有没有视频在播」同步给启动后台任务(harvest 预热等空闲窗口用,见 [AppActivitySignal])。
+    SideEffect { AppActivitySignal.playbackActive = visiblePlaybackRequest != null }
+
+    Box(
+      modifier = Modifier
+        .fillMaxSize()
+        .focusDiag("root")
+        // P11-254:根节点只记「最近一次按键时刻」,不消费事件(false 照常下发)—— 启动后台任务据此
+        // 挑「用户没在按遥控器」的空档,免得主线程几秒的重活撞上输入分发超时(ANR)。
+        .onPreviewKeyEvent {
+          AppActivitySignal.markKey()
+          false
+        },
+    ) {
       if (visiblePlaybackRequest == null) {
         Box(modifier = Modifier.fillMaxSize()) {
         Box(

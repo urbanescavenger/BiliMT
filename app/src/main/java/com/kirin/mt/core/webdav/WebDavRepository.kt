@@ -62,7 +62,26 @@ class WebDavRepository(private val client: OkHttpClient) {
     probeClientSlow to 25,
   )
 
-  /** PUT 上传文件内容,2xx 视为成功。 */
+  /**
+   * P11-256:传输层的瞬时失败判据 —— 只有**网络异常**(超时/断连/重置,由调用方在 catch 里判)和
+   * **5xx**(Cloudflare 边缘/源站冷启时常见的 502/503/504)值得重试;其余 HTTP 码(401/403/404/409…)
+   * 是服务器的明确回答,重试纯属浪费用户时间。
+   */
+  private fun isTransientTransferCode(code: Int): Boolean = code in 500..599
+
+  /**
+   * PUT 上传文件内容,2xx 视为成功。
+   *
+   * **P11-256:走 [probeLadder](8s→15s→25s)重试。** 此前只有 [ping] 有阶梯,`put`/`get` 是单发 ——
+   * 于是「边缘冷启 + 大 body」一次超时就整轮备份失败,用户只能自己再按一次。真机
+   * `logs_live_20261012_235118`(debug r2201,cf.19961226.xyz):**同一份 5MB 实时日志 23:49:51 挂 32s、
+   * 23:51:03 挂 36s 失败,而边缘热起来后同样的包 12s 就 201 成功**(`bytes=5050714 elapsed=12090ms`)
+   * ⇒ 用户视角就是「备份多次才成功」。现在一次用户操作内自己把冷启熬过去,与 [ping] 同一套理由与档位。
+   *
+   * 失败语义(P11-256 起统一):**不再向上抛 IOException** —— 阶梯跑完仍失败就返回 false,由调用方
+   * ([WebDavBackupService] 各入口)生成带上下文的失败消息(如「日志上传失败:logs_live_xxx.log」),
+   * 判读细节(第几次、什么原因)全在日志里。非瞬态 HTTP 码立即返回 false,不空耗三档。
+   */
   suspend fun put(url: String, username: String, password: String, body: ByteArray): Boolean =
     withContext(Dispatchers.IO) {
       val request = Request.Builder()
@@ -70,26 +89,45 @@ class WebDavRepository(private val client: OkHttpClient) {
         .put(body.toRequestBody(jsonMediaType))
         .header("Authorization", Credentials.basic(username, password))
         .build()
-      val started = System.currentTimeMillis()
-      try {
-        client.newCall(request).execute().use { response ->
-          val ok = response.isSuccessful
-          Log.i(
+      var lastReason = "未尝试"
+      probeLadder.forEachIndexed { index, (callClient, timeoutSec) ->
+        val attempt = index + 1
+        val started = System.currentTimeMillis()
+        try {
+          callClient.newCall(request).execute().use { response ->
+            val elapsed = System.currentTimeMillis() - started
+            val ok = response.isSuccessful
+            Log.i(
+              WebDavLogTag,
+              "put attempt=$attempt/${probeLadder.size} code=${response.code} ok=$ok bytes=${body.size} " +
+                "elapsed=${elapsed}ms timeout=${timeoutSec}s url=$url",
+            )
+            if (ok) return@withContext true
+            lastReason = "HTTP ${response.code}"
+            if (!isTransientTransferCode(response.code)) {
+              Log.w(WebDavLogTag, "put give-up (non-transient) attempt=$attempt code=${response.code} url=$url")
+              return@withContext false
+            }
+          }
+        } catch (e: IOException) {
+          lastReason = "${e::class.simpleName}: ${e.message}"
+          Log.w(
             WebDavLogTag,
-            "put code=${response.code} ok=$ok bytes=${body.size} elapsed=${System.currentTimeMillis() - started}ms url=$url",
+            "put attempt=$attempt/${probeLadder.size} failed elapsed=${System.currentTimeMillis() - started}ms " +
+              "timeout=${timeoutSec}s $lastReason url=$url",
           )
-          ok
         }
-      } catch (e: IOException) {
-        Log.w(
-          WebDavLogTag,
-          "put failed elapsed=${System.currentTimeMillis() - started}ms ${e::class.simpleName}: ${e.message} url=$url",
-        )
-        throw e
       }
+      Log.w(WebDavLogTag, "put give-up attempts=${probeLadder.size} last=$lastReason url=$url")
+      false
     }
 
-  /** GET 下载文件内容,非 2xx 返回 null。 */
+  /**
+   * GET 下载文件内容,非 2xx 返回 null。
+   *
+   * **P11-256:与 [put] 同一套阶梯重试**(理由/档位/失败语义见 [put] 的注释;下载同样是「冷边缘 +
+   * 大 body」会挂,日志下载失败也走这条路)。
+   */
   suspend fun get(url: String, username: String, password: String): ByteArray? =
     withContext(Dispatchers.IO) {
       val request = Request.Builder()
@@ -97,24 +135,37 @@ class WebDavRepository(private val client: OkHttpClient) {
         .get()
         .header("Authorization", Credentials.basic(username, password))
         .build()
-      val started = System.currentTimeMillis()
-      try {
-        client.newCall(request).execute().use { response ->
-          val body = if (!response.isSuccessful) null else response.body?.bytes()
-          Log.i(
+      var lastReason = "未尝试"
+      probeLadder.forEachIndexed { index, (callClient, timeoutSec) ->
+        val attempt = index + 1
+        val started = System.currentTimeMillis()
+        try {
+          callClient.newCall(request).execute().use { response ->
+            val elapsed = System.currentTimeMillis() - started
+            val body = if (!response.isSuccessful) null else response.body?.bytes()
+            Log.i(
+              WebDavLogTag,
+              "get attempt=$attempt/${probeLadder.size} code=${response.code} ok=${response.isSuccessful} " +
+                "bytes=${body?.size ?: 0} elapsed=${elapsed}ms timeout=${timeoutSec}s url=$url",
+            )
+            if (response.isSuccessful) return@withContext body
+            lastReason = "HTTP ${response.code}"
+            if (!isTransientTransferCode(response.code)) {
+              Log.w(WebDavLogTag, "get give-up (non-transient) attempt=$attempt code=${response.code} url=$url")
+              return@withContext null
+            }
+          }
+        } catch (e: IOException) {
+          lastReason = "${e::class.simpleName}: ${e.message}"
+          Log.w(
             WebDavLogTag,
-            "get code=${response.code} ok=${response.isSuccessful} bytes=${body?.size ?: 0} " +
-              "elapsed=${System.currentTimeMillis() - started}ms url=$url",
+            "get attempt=$attempt/${probeLadder.size} failed elapsed=${System.currentTimeMillis() - started}ms " +
+              "timeout=${timeoutSec}s $lastReason url=$url",
           )
-          body
         }
-      } catch (e: IOException) {
-        Log.w(
-          WebDavLogTag,
-          "get failed elapsed=${System.currentTimeMillis() - started}ms ${e::class.simpleName}: ${e.message} url=$url",
-        )
-        throw e
       }
+      Log.w(WebDavLogTag, "get give-up attempts=${probeLadder.size} last=$lastReason url=$url")
+      null
     }
 
   /**

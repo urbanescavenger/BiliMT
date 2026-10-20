@@ -126,6 +126,9 @@ internal class DynamicFeedUiState {
   // (原实现只 appendUnique B 站条目,第二屏起整片只有 B 站视频,边界不随后移)。
   var youtubeVideos by mutableStateOf<List<VideoSummary>>(emptyList())
   var youtubeContinuation by mutableStateOf<Map<String, String?>?>(null)
+  // 4K 画质角标后台补拉:每次「YouTube 集有变化」的列表落地(首屏/翻页)自增一次,页面据此起一轮
+  // 补拉(键变化即取消在途那轮)。补写只改 badge 字段、不动这个计数,故不会自触发。
+  var youtubeBadgeGeneration by mutableIntStateOf(0)
   // P11-191:首屏(B站动态 + YouTube 关注流)合并在途。合并落地会整表换新把网格焦点清掉,
   // 这段时间里头像 autoConfirm 要压住(见 AppShell 的 suppressAvatarAutoConfirm)。
   var firstPageInFlight by mutableStateOf(false)
@@ -247,11 +250,33 @@ internal fun UserFeedScreen(
   // youtubeChannels(头像字段),若 key 用全量会重启 LaunchedEffect 取消在途拉取 → 无限重启循环。
   // channelId 不变则 key 稳定,头像回填不触发重启。
   val youtubeChannelIds = youtubeChannels.map { it.channelId }
+  // P11-253:自动刷新只认**用户切子 tab**这一个动作(selectedTab 全工程只有 UserFeedTabRow 的
+  // onClick 会写);冷组合(从播放器/覆盖层返回、进目的地)一律沿用已有列表。
+  //
+  // 不能拿「本组合是否已跑过」当判据 —— alpha.2 实测被打回:本 effect 的键里有 youtubeChannelIds,
+  // 它来自 DataStore Flow(`YoutubeChannelStore.channels`)+ `collectAsState(initial = emptyList())`
+  // ⇒ 新组合首帧 channels 是空表、随后必然再发出真实频道表 ⇒ 同一组合里**必定多跑一次**;那一跑
+  // 把「首次运行」标记清掉,autoRefresh 又成立 ⇒ 冷组合照样重拉首屏(真机 logs_live_20261012_230948:
+  // 每次从播放器返回 0.2~0.5s 后必重拉,23:07:53.241 返回 → 53.967 首屏落地、列表 75→21 →
+  // 56.2 焦点掉侧栏)。换成「子 tab 真换了」就与键抖动解耦:非用户键变化(channels 首帧 / 头像回填 /
+  // 登录态)都不会被误判成「切换」。
+  val lastAutoRefreshedFeedTab = remember { mutableStateOf(selectedTab) }
   LaunchedEffect(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab, youtubeChannelIds) {
+    val tabSwitchedForAutoRefresh = selectedTab != lastAutoRefreshedFeedTab.value
+    lastAutoRefreshedFeedTab.value = selectedTab
     // 统一动态「动态(视频)」合并了 YouTube 关注(免登录,手动配置频道);其余 tab 需要登录。
     if (!isLoggedIn && !(selectedTab == UserFeedTab.DynamicVideo && youtubeChannels.isNotEmpty())) {
       return@LaunchedEffect
     }
+    val autoRefresh = autoRefreshOnSwitch && tabSwitchedForAutoRefresh
+    // 判据打点:每次重跑都记下这一跑的决策与各键当前值(channels 数 = 频道表键,可据此看出是哪次
+    // 重跑;本行也是「冷组合不刷」的验收依据 —— 返回播放器后不应出现任何 autoRefresh=true)。
+    Log.d(
+      DynamicFeedLogTag,
+      "feed first-page decision: tab=$selectedTab tabSwitched=$tabSwitchedForAutoRefresh " +
+        "autoRefresh=$autoRefresh switchOn=$autoRefreshOnSwitch channels=${youtubeChannelIds.size} " +
+        "loggedIn=$isLoggedIn",
+    )
     when (selectedTab) {
       UserFeedTab.DynamicVideo -> loadDynamicFirstPage(
         videoRepository,
@@ -260,7 +285,7 @@ internal fun UserFeedScreen(
         youtubeChannels,
         // 频道首次就绪(非空且尚未合并 YouTube)时强制补拉,把 YouTube 关注并进首载;
         // 之后频道变化(头像回填)不再强制,靠 loadedOnce 去重。
-        forceRefresh = autoRefreshOnSwitch ||
+        forceRefresh = autoRefresh ||
           (youtubeChannels.isNotEmpty() && !feedState.dynamicVideo.youtubeMerged),
       )
       UserFeedTab.DynamicAll -> loadDynamicFirstPage(
@@ -268,22 +293,22 @@ internal fun UserFeedScreen(
         feedState.dynamicAll,
         "all",
         emptyList(),
-        forceRefresh = autoRefreshOnSwitch,
+        forceRefresh = autoRefresh,
       )
       UserFeedTab.History -> loadHistoryFirstPage(
         videoRepository,
         feedState.history,
-        forceRefresh = autoRefreshOnSwitch,
+        forceRefresh = autoRefresh,
       )
      UserFeedTab.Favorite -> loadFavoriteFolders(
        videoRepository,
        feedState.favorite,
-      forceRefresh = autoRefreshOnSwitch,
+      forceRefresh = autoRefresh,
      )
      UserFeedTab.Bangumi -> loadBangumiFirstPage(
        videoRepository,
        feedState.bangumi,
-       forceRefresh = autoRefreshOnSwitch,
+       forceRefresh = autoRefresh,
      )
     }
   }
@@ -329,6 +354,16 @@ internal fun UserFeedScreen(
        }
       }
     }
+  }
+
+  // 「动态(视频)」的 YouTube 卡画质角标(4K/8K/HD/HDR)只能**事后补**:订阅流不拉 TVHTML5 那一路
+  // (画质角标只在 TV 客户端的响应里,见 docs/youtube-api-notes.md §4.16),只有频道页视频 tab 会拉。
+  // 键用「YouTube 集落地代数」:新一页落地重启本 effect 并取消在途补拉;补写只改 badge 字段 ——
+  // 不重排、不换表、不碰 loadedOnce / nextOffset / firstPageInFlight ⇒ 首屏不重拉,网格行 key
+  // (row-$row-<行首项 key>)不变 ⇒ 焦点不动。
+  LaunchedEffect(feedState.dynamicVideo.youtubeBadgeGeneration, selectedTab) {
+    if (selectedTab != UserFeedTab.DynamicVideo) return@LaunchedEffect
+    applyDynamicYoutubeQualityBadges(videoRepository, feedState.dynamicVideo)
   }
 
   Column(modifier = Modifier.fillMaxSize()) {
@@ -587,6 +622,8 @@ private suspend fun fetchAndApplyDynamicFirstPage(
       )
     }
   }
+  // 列表落地后通知画质角标补拉(仅「动态(视频)」带 YouTube 集)。
+  if (type == "video") state.youtubeBadgeGeneration++
 }
 
 /** 拉一页 YouTube 关注流(previous=null 首屏),失败返回 null 由调用方降级(不打断本次合并)。 */
@@ -667,7 +704,63 @@ private fun loadDynamicNextPage(
       val latestState = state.state as? UserFeedState.Success ?: return@launch
       latestState.copy(loadingMore = false, loadMoreError = error.message.orEmpty())
     }
+    // 新一页落地:通知画质角标补拉(键变化会取消上一轮在途补拉)。
+    if (type == "video") state.youtubeBadgeGeneration++
   }
+}
+
+/**
+ * 后台给动态(视频)里的 YouTube 卡片补 TV 画质角标(4K/8K/HD/HDR)。
+ *
+ * 取数路径决定这件事只能事后补:动态的 YouTube 侧走订阅流(RSS + WEB InnerTube),而画质角标
+ * **只在 TVHTML5 的响应里**(WEB 频道页 `metadataRows[].badges[]` 实测零条,见
+ * docs/youtube-api-notes.md §4.16)—— 只有频道页视频 tab 会额外拉那一路。
+ *
+ * 写回是**原位只改 badge**:顺序、条数、bvid/dynId 全不动 ⇒ TvVideoGrid 的行 key
+ * (`row-$row-<行首项 key>`)不变 ⇒ LazyColumn 不重建行、焦点不动;也不碰 loadedOnce / nextOffset /
+ * firstPageInFlight,首屏那条 LaunchedEffect 的键里没有列表 ⇒ 不触发重拉首屏。
+ * 写入前**重新读一次当前 state**(期间可能又翻页/手动刷新过),只按 videoId 补空位 ——
+ * 不拿发起请求时的旧快照覆盖,否则会把新翻出来的条目截掉(同 P11-253 那类事故)。
+ */
+private suspend fun applyDynamicYoutubeQualityBadges(
+  videoRepository: VideoRepository,
+  state: DynamicFeedUiState,
+) {
+  val pending = (state.state as? UserFeedState.Success)?.videos.orEmpty().filter { video ->
+    video.source == SourceYoutube && video.bvid.isNotBlank() &&
+      video.badge.isBlank() && video.channelId.isNotBlank()
+  }
+  if (pending.isEmpty()) return
+  val generation = state.youtubeBadgeGeneration
+  val badges = try {
+    videoRepository.youtubeTvQualityBadges(pending)
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    Log.e(DynamicFeedLogTag, "dynamic quality badges failed: ${error.message}")
+    return
+  }
+  // 期间又落了新一页 ⇒ 这一轮结果已过期(新列表会自己再起一轮),直接丢。
+  if (badges.isEmpty() || state.youtubeBadgeGeneration != generation) return
+  val latest = state.state as? UserFeedState.Success ?: return
+  val patched = latest.videos.map { video -> video.withQualityBadge(badges) }
+  // 一条都没补上就别白写一次 state(白触发一次全网格重组)。
+  if (patched.count { it.badge.isNotBlank() } == latest.videos.count { it.badge.isNotBlank() }) return
+  state.state = latest.copy(videos = patched)
+  // 留存集一并补:翻页会把 state.youtubeVideos 与 B 站页整体重合并,不补的话新页会把已补好的角标
+  // 换回没有角标的旧对象。
+  state.youtubeVideos = state.youtubeVideos.map { video -> video.withQualityBadge(badges) }
+  Log.d(
+    DynamicFeedLogTag,
+    "dynamic quality badges applied: matched=${badges.size} videos=${pending.size}",
+  )
+}
+
+/** 画质角标只补空位:会员/直播/首映等功能性角标优先保留(与频道页画质角标同口径)。 */
+private fun VideoSummary.withQualityBadge(badges: Map<String, String>): VideoSummary {
+  if (source != SourceYoutube || bvid.isBlank() || badge.isNotBlank()) return this
+  val label = badges[bvid] ?: return this
+  return copy(badge = label)
 }
 
 private suspend fun loadHistoryFirstPage(

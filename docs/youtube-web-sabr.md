@@ -3029,6 +3029,45 @@ init 这一笔,不碰中段语义;②alpha.36 / alpha.39 两次翻车是**全局
 
 ---
 
+### 5.11.35 P11-254:WEB-SABR 预热时机修正 —— 别再撞启动高峰(2026-10-12 真机「连续崩溃」)
+
+> 用户报「连续崩溃了」。取证 `logs_live_20261012_232242.log`(debug 包 **dev.r2197**,BRAVIA AE2)。
+
+**现象**:23:21:31 之后应用 40 秒内换了三个进程(PID 18227 → 3663 → 5113 → 5792),每次都活不过
+7~15 秒;日志里没有 Java 崩溃栈、没有 native signal,但每个短命进程都留了
+`Wrote stack traces to tombstoned`(ANR 痕迹)与 `Choreographer: Skipped 246~287 frames`(4~5s 冻结),
+其中一个还带 `Davey! duration=6702ms`。
+
+**定位**:
+- 22:04 那个进程(活满 77 分钟)启动时是 `BiliWarmup: youtube harvest prewarm skipped (priority=Sabr,…)`
+  —— 没预热,一切正常。
+- 23:20:28 用户把焦点停在设置第 **38 项「YouTube 交付优先级」**,23:21:28 出现
+  `OpenGLRenderer: … swap behavior`(WebView 表面),3 秒后进程没了 ⇒ 那一下把档位切到了 **WEB-SABR 优先**。
+- 之后每次启动都走预热:`YtSabrHarvest: prewarm: 采集 WebView 冷启完成 7029ms` +
+  `BiliWarmup: youtube harvest prewarm ok: 7029ms`。
+
+**机制(旧时机错在哪)**:`AppContainer.startYoutubeHarvestPrewarm` 是「进程启动后延迟 **8s**」再跑
+`YoutubeSabrHarvester.prewarm()`(`withContext(Dispatchers.Main)` —— WebView 冷启只能主线程),
+于是这块主线程重活正好砸在启动后 10~15s —— 自家首页/动态/YouTube 三路首屏最挤、主线程本来就在连跳
+200+ 帧的窗口。两者叠加超过输入分发超时 ⇒ 用户一按键就 ANR ⇒ 应用被关 ⇒ 重启又撞。
+**决定性反证**:三个短命进程都死在「8s 延迟 + 7s 冷启」这个窗口内,而唯一把预热**跑完**的 5792 活了下来。
+
+**修法(P11-254)**:预热改成「等启动稳定 + 挑空闲窗口」(新增 `core/app/AppActivitySignal.kt` 承载信号):
+1. **启动稳定**:`MainActivity.onWindowFocusChanged(true)` 打「UI 已上屏」基准,预热再等
+   `YoutubeHarvestPrewarmSettleMs = 20s`(首屏那波请求落地之后再动);
+2. **用户没在动**:要求「距上次按键 ≥ `YoutubeHarvestPrewarmKeyQuietMs = 3s`」且**没有视频在播**
+   (`AppShell` 根节点只记按键时刻、不消费事件;播放态随 `visiblePlaybackRequest` 同步);
+   不满足就 2s 轮询等,最多让 `YoutubeHarvestPrewarmIdleWaitMaxMs = 2min`,到点照做 ——
+   **绝不跳过**(跳过等于让「WEB-SABR 优先」档首次起播自己付 10.9s 冷启,P11-126 那次黑屏 99s 的成因)。
+3. 档位闸不变:仍只在「WEB-SABR 优先」档做。
+
+**判据(真机)**:①切到 WEB-SABR 优先档后重启:启动 20s 内**不得**出现
+`prewarm: 采集 WebView 冷启完成`,且启动期不得再出现「冻 4s+ 后 ANR 痕迹」;
+②预热开始前应有 `youtube harvest prewarm start: 启动已稳定,等空闲 <N>ms`;
+③WEB-SABR 首次起播仍不应自己付冷启(harvest 只剩导航 watch 页那 1~2s)。
+**否证**:①预热迟迟不来(WEB-SABR 首次起播又变慢)⇒ settle/空闲阈值太保守;
+②等待期仍出现 ANR ⇒ 主线程占用本身超输入分发超时,需要把冷启拆块或另想办法。
+
 ## 6. 实现计划:打通 WEB-SABR(P11-117 / P11-118)
 
 > 验收目标:`STREAM_PROTECTION_STATUS status=1` 出现在 WEB 会话,会话寿命 >30s,起播后 60s 内零 `Playback error`。

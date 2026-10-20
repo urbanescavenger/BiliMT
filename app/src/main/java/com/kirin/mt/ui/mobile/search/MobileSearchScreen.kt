@@ -94,10 +94,11 @@ private const val FirstPage = 1
 private const val PageSize = 20
 private const val SearchSuggestionDebounceMs = 250L
 
-/** 搜索类型:视频 / 番剧(仅 B 站) / UP主(频道)。 */
+/** 搜索类型:视频 / 番剧(仅 B 站) / 影视(仅 B 站) / UP主(频道)。 */
 private const val SearchTypeVideo = "video"
 private const val SearchTypeUser = "user"
 private const val SearchTypeBangumi = "media_bangumi"
+private const val SearchTypeMediaFt = "media_ft"
 
 /** 搜索结果分页状态。 */
 private sealed interface SearchResultState {
@@ -147,7 +148,7 @@ private fun sortOptionsFor(source: String): List<SearchSortOption> =
 /** 各来源默认排序(综合)的 key,切换来源时用于重置选中项;影视库 无排序,空 key。 */
 private fun defaultOrderKey(source: String): String = sortOptionsFor(source).firstOrNull()?.key.orEmpty()
 
-/** 移动端结果页类型 tab(对齐官方 综合/番剧/UP主 并排):视频 tab 标「综合」。key 即类型 key。 */
+/** 移动端结果页类型 tab(对齐官方 综合/番剧/影视/UP主 并排):视频 tab 标「综合」。key 即类型 key。 */
 private fun typeTabsFor(source: String): List<SearchSortOption> =
   if (source == SourceYoutube) {
     listOf(
@@ -158,6 +159,7 @@ private fun typeTabsFor(source: String): List<SearchSortOption> =
     listOf(
       SearchSortOption(SearchTypeVideo, R.string.search_type_comprehensive),
       SearchSortOption(SearchTypeBangumi, R.string.search_type_bangumi),
+      SearchSortOption(SearchTypeMediaFt, R.string.search_type_media_ft),
       SearchSortOption(SearchTypeUser, R.string.search_type_user_bili),
     )
   }
@@ -179,10 +181,11 @@ private val SearchDurationOptions = listOf(
   4 to R.string.search_filter_duration_60p,
 )
 
-/** 空结果文案按类型区分:UP主/番剧/视频。 */
+/** 空结果文案按类型区分:UP主/番剧/影视/视频。 */
 private fun emptyMessageResFor(searchType: String): Int = when (searchType) {
   SearchTypeUser -> R.string.search_empty_user
   SearchTypeBangumi -> R.string.search_empty_bangumi
+  SearchTypeMediaFt -> R.string.search_empty_media_ft
   else -> R.string.search_empty
 }
 
@@ -229,8 +232,8 @@ private class MobileSearchUiState {
   fun selectSource(newSource: String) {
     if (source == newSource) return
     source = newSource
-    // 番剧类型仅 B 站源提供,切到其它源回退视频类型(YouTube 类型循环只有 视频⇄频道)。
-    if (searchType == SearchTypeBangumi) {
+    // 番剧/影视类型仅 B 站源提供,切到其它源回退视频类型(YouTube 类型只有 视频/频道)。
+    if (searchType == SearchTypeBangumi || searchType == SearchTypeMediaFt) {
       searchType = SearchTypeVideo
     }
     // 排序 key 与来源耦合(B站 totalrank/click…,YouTube params 串),切源重置为该源默认「综合」。
@@ -335,9 +338,13 @@ fun MobileSearchScreen(
               endReached = users.size < PageSize,
             )
           }
-        } else if (uiState.searchType == SearchTypeBangumi) {
-          // 番剧搜索:无排序,结果卡带 seasonId,点击进 PGC 季详情(MobileApp 拦截)。
-          val seasons = videoRepository.searchBangumi(keyword = query, page = FirstPage)
+        } else if (uiState.searchType == SearchTypeBangumi || uiState.searchType == SearchTypeMediaFt) {
+          // 番剧/影视搜索:无排序,结果卡带 seasonId,点击进 PGC 季详情(MobileApp 拦截)。
+          val seasons = if (uiState.searchType == SearchTypeMediaFt) {
+            videoRepository.searchMediaFt(keyword = query, page = FirstPage)
+          } else {
+            videoRepository.searchBangumi(keyword = query, page = FirstPage)
+          }
           if (seasons.isEmpty()) SearchResultState.Empty
           else SearchResultState.Success(
             videos = seasons,
@@ -443,9 +450,13 @@ fun MobileSearchScreen(
               moreUsers.size < PageSize || mergedUsers.size == current.users.size
             },
           )
-        } else if (uiState.searchType == SearchTypeBangumi) {
-          // 番剧搜索翻页:无排序。
-          val more = videoRepository.searchBangumi(keyword = q, page = current.nextPage)
+        } else if (uiState.searchType == SearchTypeBangumi || uiState.searchType == SearchTypeMediaFt) {
+          // 番剧/影视搜索翻页:无排序。
+          val more = if (uiState.searchType == SearchTypeMediaFt) {
+            videoRepository.searchMediaFt(keyword = q, page = current.nextPage)
+          } else {
+            videoRepository.searchBangumi(keyword = q, page = current.nextPage)
+          }
           val merged = (current.videos + more).distinctBy { it.bvid }
           current.copy(
             videos = merged,

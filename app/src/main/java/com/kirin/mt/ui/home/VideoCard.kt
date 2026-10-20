@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -98,6 +99,9 @@ enum class VideoCardMode {
 /** YouTube 卡片识别绿框(与移动端 MobileVideoCard 一致)。 */
 private val YoutubeBorderColor = Color(0xFF00C853)
 
+/** 绿框线宽(与移动端 MobileVideoCard 的 2.dp 一致)。 */
+private val YoutubeBorderWidth = 2.dp
+
 @Composable
 fun VideoCard(
   video: VideoSummary,
@@ -141,19 +145,15 @@ fun VideoCard(
   }
   // 动态/历史里的 YouTube 卡片标绿框识别(与移动端 MobileVideoCard 一致)。Favorite 虽用 Dynamic 模式
   // 但只有 B 站内容(source != SourceYoutube),不会误标;Standard(首页/搜索/频道)不标。
+  // 注意画的位置:必须画在**内容层**(见下方内容 Box),不能挂在传给 BiliFocusableSurface 的 modifier 上 ——
+  // 那个组件会在调用方 modifier **之后**再画一层不透明的 surfaceColor 背景 + 自己的焦点边框色
+  // (同一条 2dp 边环),画在外层会被整条盖掉(聚焦态 3dp 的 accent 边框更是完全压住)。
   val youtubeBorder =
     (mode == VideoCardMode.Dynamic || mode == VideoCardMode.History) && video.source == SourceYoutube
 
   BiliFocusableSurface(
     modifier = modifier
       .fillMaxWidth()
-      .then(
-        if (youtubeBorder) {
-          Modifier.border(2.dp, YoutubeBorderColor, RoundedCornerShape(BiliRadius.Card))
-        } else {
-          Modifier
-        },
-      )
       .then(
         if (liquidGlassActive) {
           Modifier.padding(BiliFocus.LiquidGlassCardFocusPadding)
@@ -226,7 +226,28 @@ fun VideoCard(
       else -> null
     },
   ) {
-    Box {
+    // YouTube 绿框必须画在**内容之上**(drawWithContent 在 drawContent() 之后描边):
+    // ①BiliFocusableSurface 的背景与焦点边框色画在调用方 modifier 之后、内容之下,挂在那种位置会被整条盖掉;
+    // ②卡内封面(不透明)与信息条(半透明)本身也会盖住「在子内容之下」画的边框。
+    // 描边内缩半个线宽,保证整条线落在卡片边界内(与移动端 Modifier.border 的贴合方式一致)。
+    Box(
+      modifier = if (youtubeBorder) {
+        Modifier.drawWithContent {
+          drawContent()
+          val width = YoutubeBorderWidth.toPx()
+          val inset = width / 2f
+          drawRoundRect(
+            color = YoutubeBorderColor,
+            topLeft = Offset(inset, inset),
+            size = Size(size.width - width, size.height - width),
+            cornerRadius = CornerRadius(BiliRadius.Card.toPx(), BiliRadius.Card.toPx()),
+            style = Stroke(width = width),
+          )
+        }
+      } else {
+        Modifier
+      },
+    ) {
       Column {
         VideoCover(
           video = video,

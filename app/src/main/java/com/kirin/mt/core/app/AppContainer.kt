@@ -378,8 +378,22 @@ class AppContainer(context: Context) {
    * SABR/DASH 档的 harvest 只做很晚的兜底,多等几秒无所谓 —— 不给不用它的用户白起一个 WebView +
    * 拉一次首页(~1.4MB)。用户切档后重启即生效。
    *
+   * **时机(P11-254,真机 2026-10-12 修正)**:旧值是「进程启动后 8s」,实测那正撞在自家启动最挤的
+   * 窗口(启动后 10~15s 主线程连跳 246~287 帧)⇒ 用户一按键就输入分发超时 ANR、应用被关、重启又撞,
+   * 40 秒连崩三次。现在改成「UI 上屏 + [YoutubeHarvestPrewarmSettleMs] 稳定窗口 + 挑一个用户没在按
+   * 遥控器、也没在播视频的空档」(见 [AppActivitySignal]);等不到空档就等到上限照做,绝不让
+   * 「WEB-SABR 优先」档的首次起播自己付冷启。
+   *
    * fire-and-forget,失败静默(与 [warmupApiConnection] / [startIptvSourceProbe] 同款)。
    */
+  /**
+   * P11-254:UI 首个窗口获得焦点时由 `MainActivity` 调用 = 「启动已上屏」基准打点。
+   * 只喂给 [AppActivitySignal],供启动后台任务(harvest 预热)判断启动是否已稳定。
+   */
+  fun markUiReady() {
+    AppActivitySignal.markUiReady()
+  }
+
   fun startYoutubeHarvestPrewarm() {
     applicationScope.launch {
       val priority = runCatching { appSettingsStore.settings.first().youtubeDeliveryPriority }.getOrNull()
@@ -387,7 +401,23 @@ class AppContainer(context: Context) {
         Log.i(LogTag, "youtube harvest prewarm skipped (priority=$priority,只有 WEB-SABR 优先档在关键路径上)")
         return@launch
       }
-      delay(YoutubeHarvestPrewarmDelayMs)
+      // P11-254:不再「进程启动 8s 就跑」——等 UI 真的上屏、启动那波首屏请求落地,再挑一个用户没在动
+      // 的空档开跑(见 [AppActivitySignal] 的起因注释:旧时机正是启动最挤的窗口,实测连崩三次)。
+      AppActivitySignal.awaitStartupSettled(YoutubeHarvestPrewarmSettleMs)
+      var waitedMs = 0L
+      while (waitedMs < YoutubeHarvestPrewarmIdleWaitMaxMs &&
+        !AppActivitySignal.isIdle(YoutubeHarvestPrewarmKeyQuietMs)
+      ) {
+        delay(YoutubeHarvestPrewarmIdlePollMs)
+        waitedMs += YoutubeHarvestPrewarmIdlePollMs
+      }
+      // 等到上限仍不空闲也照做(不让「WEB-SABR 优先」档的首次起播自己付 10.9s 冷启 —— P11-126 那
+      // 次黑屏 99s 的成因)。这条分支只在日志里留痕,便于后续判读到底等了多久。
+      Log.i(
+        LogTag,
+        "youtube harvest prewarm start: 启动已稳定,等空闲 ${waitedMs}ms" +
+          if (waitedMs >= YoutubeHarvestPrewarmIdleWaitMaxMs) "(超时,照做)" else "",
+      )
       runCatching { youtubeSabrHarvester.prewarm() }
         .onSuccess { ms -> if (ms != null) Log.i(LogTag, "youtube harvest prewarm ok: ${ms}ms") }
         .onFailure { error -> Log.w(LogTag, "youtube harvest prewarm failed: ${error.message}") }
@@ -422,8 +452,20 @@ class AppContainer(context: Context) {
     const val LogTag = "BiliWarmup"
     /** IPTV 判活扫描的启动延迟:避开冷启动图片/接口流量高峰再动网络。 */
     const val IptvProbeStartupDelayMs = 15_000L
-    /** P11-126:harvest 预热的启动延迟——比 IPTV 探活早,因为预热自己还要再花 4~11s 建 WebView + 载首页。 */
-    const val YoutubeHarvestPrewarmDelayMs = 8_000L
+    /**
+     * P11-254:harvest 预热在「UI 上屏」之后还要再等多久。
+     *
+     * 旧值(P11-126)是「进程启动后 8s」,真机 2026-10-12 实测那正撞在自家启动最挤的窗口:启动后
+     * 10~15s 主线程连跳 246~287 帧(4~5s),harvest 的主线程冷启(7029ms)压上去 ⇒ 一按键就 ANR。
+     * 改成从「UI 真的上屏」起算、等首屏那波请求落地之后再动手。
+     */
+    const val YoutubeHarvestPrewarmSettleMs = 20_000L
+    /** P11-254:起跑前要求「距上次按键 ≥ 这么久」(用户此刻没在按遥控器)。 */
+    const val YoutubeHarvestPrewarmKeyQuietMs = 3_000L
+    /** P11-254:等空闲窗口的轮询间隔。 */
+    const val YoutubeHarvestPrewarmIdlePollMs = 2_000L
+    /** P11-254:最多让这么久;到点照做(不让「WEB-SABR 优先」档首次起播自己付 10.9s 冷启)。 */
+    const val YoutubeHarvestPrewarmIdleWaitMaxMs = 2 * 60_000L
     /** P11-154:活文档探针的尝试次数 × 间隔(等真实浏览会话起来;每次 5s,共 ~60s)。 */
     const val PageContextProbeAttempts = 12
     const val PageContextProbeIntervalMs = 5_000L

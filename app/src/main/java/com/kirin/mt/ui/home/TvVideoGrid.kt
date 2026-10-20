@@ -738,10 +738,11 @@ internal fun TvVideoGrid(
       Key.DirectionLeft -> (fromIndex - 1).takeIf { currentColumn > 0 }
       Key.DirectionRight -> (fromIndex + 1).takeIf { currentColumn < columns - 1 && it <= lastIndex && it / columns == currentRow }
       else -> null
-    } ?: return direction == Key.DirectionRight
-    // Down on the last row falls through (returns false) so default focus traversal can
-    // reach a focusable footer below (e.g. the load-more retry button). When there is no
-    // focusable footer, traversal finds nothing below and focus stays — same as before.
+    } ?: return direction == Key.DirectionRight ||
+      // 末行 ↓:有 footer 时漏给默认遍历,让「加载失败/重试」按钮可聚焦;
+      // 没有 footer 时必须吞掉 —— 漏给遍历会按几何找到网格外的 focusable(侧栏分区),
+      // 焦点直接逃出网格(P11-267:影视搜索结果只有一行时 ↓ 跳到侧栏「番剧」)。
+      (direction == Key.DirectionDown && footer == GridFooterState.None)
 
     if (direction == Key.DirectionLeft || direction == Key.DirectionRight) {
       return focusItem(targetIndex)

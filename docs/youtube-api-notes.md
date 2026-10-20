@@ -355,6 +355,26 @@ media3 1.10 有 `ProgressiveMediaSource.Factory.enableLazyLoadingWithSingleTrack
 **验收**（真机）：`qualityBadgesDetail` 的 `covered/wanted` 应随翻页涨到 ≥90%，首屏卡片出现 4K 胶囊；退化场应见 `baseRetry=true` 且该行 `covered` 明显高于同场未重取时的值。
 **否证**：①`baseOverlap=0` 且重取后 `covered` 仍不涨 ⇒ TVHTML5 真机对该频道返回的就是无上传列表的退化页，需换源（例如按 `UULF…` 上传播放列表单独取一路验证）；②`covered` 涨了而界面仍无胶囊 ⇒ 问题在 UI 侧（卡片角标渲染/合并条件），不在取数侧。
 
+#### 4.16.2 订阅流（动态/首页）的画质角标：**只补 TV 基页 + 每轮限频道 + 轮转**（2026-10-16，P11-260）
+
+**起因**（用户「检查下 TV端角标在动态里是不是没显示」→「似乎不显示 4K 角标」）：动态的 YouTube 卡从来没有 4K/8K 胶囊。
+
+**判读**：4K 角标只走**频道页视频 tab** 那一路 —— `getChannelVideos(withQualityBadges=true)`（`YoutubeRepository.kt:272/288`）并行发 TVHTML5 基页 + `tvQualityBadges()` 续翻（`:479`）。而动态「视频」子 tab 的 YouTube 侧走订阅流：`UserVideoFeedScreen.fetchYoutubePage` → `VideoRepository.youtubeHomeFeedPage` → `YoutubeRepository.getSubscriptionsPage`，每频道只拉 **RSS + WEB InnerTube**（`getChannelVideosRawPage`，`:1122`）—— 那条路从不发 TVHTML5，而 WEB 频道页的 `metadataRows[].badges[]` 里 4K **零条**（§4.16 实测矩阵）⇒ 订阅流的卡片只会有 WEB 自带的会员/直播/首映角标。同一函数也是 TV 首页 YouTube 流、移动端首页/动态的来源，故这三处同样没有画质角标；能看见 4K 的只有频道页视频 tab 与 YouTube 搜索页（WEB `/search` 自带 `badges[].label`）。
+
+**修复（事后补，不动首屏）**：`YoutubeRepository.tvQualityBadgesFor(videos)` 按 channelId 分组补角标；动态页在首屏/翻页落地后**后台**调用（`UserVideoFeedScreen.applyDynamicYoutubeQualityBadges`），拿到 `videoId → 文案` 后**原位只改 `badge`**、只补空位（会员/直播不被顶掉）。两道闸，因为订阅流的频道数是用户配的（可能几十上百），而原实现是按单频道设计的：
+
+| 闸 | 做法 | 代价 |
+|---|---|---|
+| 只补基页 | `tvQualityBadges(walkForOlder = false)`：不翻页、也不做基页退化重取 | 每频道每轮 ≤1 个请求（同缓存代内 0 个）；更早的视频不补 |
+| 每轮限 8 个频道 + 起点轮转 | `TvQualityBadgeChannelsPerRound = 8` + `tvQualityBadgeRoundStart` | 请求量恒定；频道多时逐轮轮转覆盖，不会永远只补前排那几个 |
+
+缓存与频道页**共用**（`tvQualityCaches`，TTL 10min、最多 4 频道）：先进过频道页再进动态几乎零请求。
+
+**为什么不重拉首屏、不丢焦**：①首屏加载的 `LaunchedEffect` 键是 `(videoRepository, isLoggedIn, autoRefreshOnSwitch, selectedTab, youtubeChannelIds)`（`UserVideoFeedScreen.kt:261`），**不含列表** ⇒ 写 `state.state` 只重组、不重跑；②补丁不改顺序/条数/bvid ⇒ 网格行 key `row-$row-<行首项 key>`（`TvVideoGrid.kt:316`）不变 ⇒ LazyColumn 不重建行，且保焦 effect 的早退判据（`:558`「行 key 没变 + 仍持焦 → return」）直接放行；③不碰 `loadedOnce`/`youtubeMerged`/`nextOffset`/`firstPageInFlight`。防的是**竞态覆盖**：写入前重读当前 `state`、只按 videoId 补空位、并按「列表落地代数」（`youtubeBadgeGeneration`，每次首屏/翻页 +1）丢弃过期结果。
+
+**验收**（真机）：动态（视频）tab 的 YouTube 卡右上角出现 4K 胶囊；日志 `BiliMT:DynamicFeed: dynamic quality badges applied: matched=… videos=…`，且**不出现**任何 `feed first-page decision: autoRefresh=true`（无重拉）、列表条数与焦点位置不变。频道多时 `YoutubeChannel: qualityBadgesDetail` 的 `channelId` 每轮换一批。
+**否证**：①`matched=0` 且 `qualityBadgesDetail` 的 `baseTiles=0` ⇒ TVHTML5 在真机被拦（同 §4.16 的否证①）；②补了角标但界面不显示 ⇒ 问题在卡片渲染（见 P11-261：TV 卡片内容把边框/角标画在下面那类）。
+
 ---
 
 ## 5. 播放（Phase 2，未实现）

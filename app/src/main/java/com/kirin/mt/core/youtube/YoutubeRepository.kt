@@ -62,6 +62,13 @@ class YoutubeRepository(
   private val tvQualityGate = Semaphore(1)
 
   /**
+   * 订阅流补角标([tvQualityBadgesFor])每轮的起始频道下标:每轮从上次的下一个频道接着补,
+   * 保证频道数超过 [TvQualityBadgeChannelsPerRound] 时逐个轮转、不会永远只有前几个被补。
+   * 只在主线程之外的单个调用里读写,最坏情况是两轮撞同一批(白补一次,无害),故不加锁。
+   */
+  private var tvQualityBadgeRoundStart = 0
+
+  /**
    * 频道排序 chip token 缓存(channelId → 铸造时间 + 各排序 token),见 [getChannelVideosOrdered]。
    * 命中即省掉「为摘 token 而多拉一次最新页」那条请求。
    */
@@ -246,6 +253,13 @@ class YoutubeRepository(
 
     /** 最多缓存几个频道的 TV 角标(超出按最久未更新淘汰)。 */
     const val TvQualityCacheMaxChannels = 4
+
+    /**
+     * 订阅流补画质角标时**每轮最多处理几个频道**(见 [tvQualityBadgesFor])。
+     * 订阅流的频道数是用户配的(可能几十上百),而频道页那套是按单频道设计的 —— 不加这道闸,
+     * 一次列表落地就会按频道数打出成倍请求。
+     */
+    const val TvQualityBadgeChannelsPerRound = 8
 
     /** 排序 chip token 缓存有效期(同 TV 角标:token 里有随机 targetId,别长期存)。 */
     const val ChannelOrderTokenTtlMs = 10 * 60 * 1000L
@@ -475,11 +489,15 @@ class YoutubeRepository(
    *
    * [basePage] 是调用方与 WEB 请求并行发出的基页(首屏才有);无缓存且拿不到基页时自己补一次。
    * 任何失败都只降级为「角标少一点」,不抛给调用方。
+   *
+   * [walkForOlder]=false 时**只补基页**(最新 ~24 条)就返回,不翻页、也不做退化重取 —— 订阅流
+   * ([tvQualityBadgesFor])用它把「每频道每轮 ≤1 个请求」变成硬保证(频道数不确定,翻页会成倍放大)。
    */
   private suspend fun tvQualityBadges(
     channelId: String,
     webVideoIds: List<String>,
     basePage: Deferred<YoutubeParsers.TvTilePage?>?,
+    walkForOlder: Boolean = true,
   ): Map<String, String> = tvQualityGate.withPermit {
     val now = System.currentTimeMillis()
     val cached = tvQualityCaches[channelId]?.takeIf { now - it.updatedAtMs <= TvQualityCacheTtlMs }
@@ -504,18 +522,20 @@ class YoutubeRepository(
         ?: feedCatching(null, "TVQualityBadges", channelId) { fetchTvTilePage(channelId, null) }
       page?.let { absorbTilePage(cache, it, preferTarget = null, isBase = true) }
     }
-    // ②按覆盖翻页:填不动就收手(walkForCoverage 里判),错 shelf 最多花一页请求。
-    walkForCoverage(channelId, cache)
-    // ③基页退化 ⇒ 重取一次;真救回覆盖才继续翻(否则白翻)。
-    val coveredNow = cache.wanted.size - cache.missingCount()
-    if (!cache.baseRetried && cache.wanted.isNotEmpty() &&
-      coveredNow < cache.wanted.size * TvQualityCoverageFloor
-    ) {
-      cache.baseRetried = true
-      val page = feedCatching(null, "TVQualityBadgesRetry", channelId) { fetchTvTilePage(channelId, null) }
-      if (page != null) {
-        absorbTilePage(cache, page, preferTarget = cache.shelfTarget, isBase = false)
-        if (cache.wanted.size - cache.missingCount() > coveredNow) walkForCoverage(channelId, cache)
+    if (walkForOlder) {
+      // ②按覆盖翻页:填不动就收手(walkForCoverage 里判),错 shelf 最多花一页请求。
+      walkForCoverage(channelId, cache)
+      // ③基页退化 ⇒ 重取一次;真救回覆盖才继续翻(否则白翻)。
+      val coveredNow = cache.wanted.size - cache.missingCount()
+      if (!cache.baseRetried && cache.wanted.isNotEmpty() &&
+        coveredNow < cache.wanted.size * TvQualityCoverageFloor
+      ) {
+        cache.baseRetried = true
+        val page = feedCatching(null, "TVQualityBadgesRetry", channelId) { fetchTvTilePage(channelId, null) }
+        if (page != null) {
+          absorbTilePage(cache, page, preferTarget = cache.shelfTarget, isBase = false)
+          if (cache.wanted.size - cache.missingCount() > coveredNow) walkForCoverage(channelId, cache)
+        }
       }
     }
     cache.updatedAtMs = System.currentTimeMillis()
@@ -531,6 +551,51 @@ class YoutubeRepository(
     )
     // 返回快照:缓存随时可能被下一次翻页继续写,别把可变 map 递出去。
     LinkedHashMap(cache.badges)
+  }
+
+  /**
+   * 给一批已解析的 YouTube 卡片补 TV 客户端画质角标(4K/8K/HD/HDR),返回 videoId → 角标文案。
+   *
+   * 订阅流(动态/首页的 YouTube 侧)与频道页走两条取数路:订阅流只用 RSS + WEB InnerTube
+   * ([getChannelVideosRawPage]),而**画质角标只存在于 TVHTML5 的响应里**(WEB 频道页的
+   * `metadataRows[].badges[]` 实测零条,见 docs/youtube-api-notes.md §4.16)⇒ 订阅流的卡片默认
+   * 一个画质角标都没有(只有 WEB 自带的会员/直播/首映)。本方法按 channelId 分组,逐频道复用
+   * 频道页那套 [tvQualityBadges],**与频道页共用同一份缓存**(先进过频道页再进来几乎零成本)。
+   *
+   * **两道闸**(订阅流频道数不确定,不像频道页只面对一个频道):
+   * ①只补 TV **基页**、不沿上传列表翻页([tvQualityBadges] 的 `walkForOlder=false`) ⇒ 每频道每轮
+   * 最多 1 个请求(缓存代内更是一次都不会再发);更早的视频不补 —— 那些卡片本来也不在首屏。
+   * ②每轮最多处理 [TvQualityBadgeChannelsPerRound] 个频道,起点轮转 ⇒ 频道多时请求量恒定、且不会
+   * 永远只补同一批频道;没轮到的频道在下一次列表落地时补。
+   *
+   * [videos] 传**需要补角标**的卡片(调用方已滤掉带会员/直播等角标的);频道间顺 [tvQualityGate]
+   * 串行发。任何失败都只降级为「角标少一点」——单频道失败退回空表,整体不抛。
+   */
+  suspend fun tvQualityBadgesFor(videos: List<VideoSummary>): Map<String, String> {
+    val byChannel = videos
+      .filter { it.channelId.isNotBlank() && it.bvid.isNotBlank() }
+      .groupBy { it.channelId }
+    if (byChannel.isEmpty()) return emptyMap()
+    val channels = byChannel.keys.toList()
+    val count = minOf(channels.size, TvQualityBadgeChannelsPerRound)
+    val start = tvQualityBadgeRoundStart % channels.size
+    val result = LinkedHashMap<String, String>()
+    for (offset in 0 until count) {
+      val channelId = channels[(start + offset) % channels.size]
+      val items = byChannel.getValue(channelId)
+      val badges: Map<String, String> = feedCatching(
+        emptyMap<String, String>(),
+        "TVQualityBadgesFor",
+        channelId,
+      ) {
+        // basePage=null:调用方没有与 WEB 请求并行的 TV 基页,由 tvQualityBadges 自己补一次。
+        tvQualityBadges(channelId, items.map { it.bvid }, basePage = null, walkForOlder = false)
+      }
+      badges.forEach { (videoId, label) -> result.putIfAbsent(videoId, label) }
+    }
+    // 下一轮的起点:保证频道数 > 每轮配额时逐个轮转,不让前排频道一直霸占配额。
+    tvQualityBadgeRoundStart = (start + count) % channels.size
+    return result
   }
 
   /**

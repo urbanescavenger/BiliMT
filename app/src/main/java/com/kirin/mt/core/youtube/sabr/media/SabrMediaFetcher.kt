@@ -203,8 +203,11 @@ internal class SabrMediaFetcher(
     Log.i(tag, "prefetch canceled: itag$cur 撤销($reason) — 不再与正在播的格式抢响应预算")
   }
 
-  /** 正在处理的 partial 段(headerId → Segment,MEDIA 累积/MEDIA_END 收尾)。 */
-  private val partialSegments = mutableMapOf<Int, SabrSegment>()
+  // 2026-10-12(P11-250):原 `partialSegments` 是**这里的实例字段**,已删——见 [ResponseParseState]。
+  // headerId 是**单笔响应内**的序号(服务端每笔从 0 重排,并按 0/1/2 小池滑动复用),而字段是
+  // fetcher(会话)生命周期的 ⇒ 早停(P11-217/218)掐断响应后残留的段会跨响应存活,被下一笔
+  // 「被白名单跳过的格式」的 MEDIA 负载灌进来(真机 2026-10-12:音频段 60 779B 变 2 478 617B
+  // → `Skipping atom with length > 2147483647` → Source error → 连续重载)。详见 §53。
 
   /**
    * 当前选中的音频/视频 FormatId(由 [SabrMediaPeriod] selectTracks→[selectFormat] 设)。
@@ -288,7 +291,16 @@ internal class SabrMediaFetcher(
   // 服务端 pacing 把长期有效供给压回 16-20M)。持续带宽 = 过去 60s 墙钟内成功交付的媒体字节 / 墙钟
   // 时长(固定分母,空闲/pacing 全摊入),专供升档判定「这条管子长期扛不扛得住」;降档仍用滑动窗口
   // est(反应快)。
-  private class SustainedSample(val endWallMs: Long, val bytes: Long)
+  // ── P11-258(2026-10-15):样本必须带**区间**而不只是记录时刻 ──────────────────────────────────
+  // 病根(§56.9-B / §57.2):旧版把字节样本按「结束时刻」、空窗样本也按「记录时刻」各自滚出 60s 窗口,
+  // 而空窗样本记的是 `[上次响应结束 → 本次请求发出]` 那段、记录时刻却是**本次请求完成**的时刻 ⇒
+  // **它覆盖的空闲区间整体落在分母窗口起点之前**,于是「减掉了不在分母里的时间」。
+  // 真机 `logs_live_20261014_212516.log` 21:16:07 实证:`sus=127204K` 而同一窗口字节÷墙钟只有
+  // **38.4 Mbps**(逐笔在途 31~38M)—— 反推分母 17.9s,少掉的 41.4s 正是那笔 `raw=41189ms` 空窗,
+  // 而它整体在窗口起点(21:15:07.8)之前。⇒ 38 Mbps 的管子上报 127 Mbps。
+  // 不变量(修后):分子里每个字节都在 `[spanStart, now]` 内产生,分母里被扣的每一秒也都是该区间内
+  // 无在途请求的秒。详见 docs §57。
+  private class SustainedSample(val startWallMs: Long, val endWallMs: Long, val bytes: Long)
   private val sustainedSamples = ArrayDeque<SustainedSample>()
   private var sustainedBytes = 0L
 
@@ -296,31 +308,45 @@ internal class SabrMediaFetcher(
   // 所致,管道容量与它无关)也摊进去 → pinned 低档时 sustained≈当前档消耗(定点死锁),永不满足高
   // 一档门槛。这里与 active est 的 gap 滑行量扣减同口径:满缓冲停闸部分不计入持续分母;真供给中断
   // (runway 小、滑行扣不掉)仍留在分母里,315 防卡意图不变。
-  private class SustainedGapSample(val endWallMs: Long, val ms: Long)
+  /** 需求驱动空闲的**区间**(P11-258):滑行段位于请求间隔的尾部 ⇒ `endWallMs` = 本次请求发出的墙钟,
+   *  `startWallMs = endWallMs − ms`。扣减时按区间求交,只扣与分母窗口重叠的那部分(见 [getSustainedBitrateEstimate])。 */
+  private class SustainedGapSample(val startWallMs: Long, val endWallMs: Long, val ms: Long)
   private val sustainedGapSamples = ArrayDeque<SustainedGapSample>()
-  private var sustainedGapMs = 0L
 
-  private fun addSustainedSample(bytes: Long) {
+  private fun addSustainedSample(bytes: Long, elapsedMs: Long) {
     val now = System.currentTimeMillis()
     synchronized(realBandwidthLock) {
-      sustainedSamples.addLast(SustainedSample(now, bytes))
+      // start = 本次请求发出时刻(≈ now − 在途时长):这一笔字节是在 [start, now] 内交付的,
+      // 窗口按 **start** 滚动,分母才不会短算掉最老样本自己的在途时长(P11-258)。
+      sustainedSamples.addLast(SustainedSample(now - elapsedMs, now, bytes))
       sustainedBytes += bytes
-      while (sustainedSamples.size > 1 && now - sustainedSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
+      while (sustainedSamples.size > 1 && now - sustainedSamples.first().startWallMs > SUSTAINED_WINDOW_MS) {
         sustainedBytes -= sustainedSamples.removeFirst().bytes
       }
     }
   }
 
-  private fun addSustainedGapSample(ms: Long) {
+  private fun addSustainedGapSample(ms: Long, idleEndWallMs: Long) {
     if (ms <= 0L) return
     val now = System.currentTimeMillis()
     synchronized(realBandwidthLock) {
-      sustainedGapSamples.addLast(SustainedGapSample(now, ms))
-      sustainedGapMs += ms
+      sustainedGapSamples.addLast(SustainedGapSample(idleEndWallMs - ms, idleEndWallMs, ms))
+      // 按**区间结束**滚出:结束时刻早于窗口起点的空窗不可能与窗口有交集,留着也只会白算。
       while (sustainedGapSamples.size > 1 && now - sustainedGapSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
-        sustainedGapMs -= sustainedGapSamples.removeFirst().ms
+        sustainedGapSamples.removeFirst()
       }
     }
+  }
+
+  /** 与 `[spanStartMs, nowMs]` 有交集的空闲量(逐条求交;各空窗区间互不相交)。调用方须持 [realBandwidthLock]。 */
+  private fun idleInsideWindowLocked(spanStartMs: Long, nowMs: Long): Long {
+    var sum = 0L
+    for (g in sustainedGapSamples) {
+      val from = maxOf(g.startWallMs, spanStartMs)
+      val to = minOf(g.endWallMs, nowMs)
+      if (to > from) sum += to - from
+    }
+    return sum
   }
 
   // alpha.9Z(gap 计时归总到带宽):样本分母原先只计「传输活跃耗时」,fetch 与 fetch 之间的空窗一律不计。
@@ -496,7 +522,8 @@ internal class SabrMediaFetcher(
       val countedForSustainedMs = (gapMs - sustainedCoastMs).coerceIn(0L, BW_GAP_MAX_MS)
       demandIdleMs = (gapMs - countedForSustainedMs).coerceAtLeast(0L)
     }
-    addSustainedGapSample(demandIdleMs)
+    // P11-258:空闲区间按「滑行段在请求间隔尾部」归集 —— 它的结束时刻就是本次请求发出的墙钟(fetchStartMs)。
+    addSustainedGapSample(demandIdleMs, fetchStartMs)
   }
 
   /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。快小样本(init/retry/音频段)过滤;但慢小样本(2026-08-27 真机:服务端挂 8.5s 只回 939B)是真实供给中断,必须入账。 */
@@ -505,7 +532,7 @@ internal class SabrMediaFetcher(
     if (bytes < REAL_BW_MIN_BYTES && elapsedMs < BW_SLOW_TINY_MS) return
     addRealBwSample(bytes, elapsedMs)
     if (bytes >= REAL_BW_MIN_BYTES) {
-      addSustainedSample(bytes)
+      addSustainedSample(bytes, elapsedMs)
       addCapacitySample(bytes, elapsedMs)
     }
   }
@@ -548,22 +575,58 @@ internal class SabrMediaFetcher(
    * 2026-08-30 修 sus 垃圾尖峰(真机实测 500-635M 物理不可能):gap 扣减后跨度原被 coerceIn 夹到
    * 下限 1s,停闸空窗接近全跨度时(bytes/1s)直接爆炸。现改为:扣减后跨度不足 SUSTAINED_MIN_SPAN_MS
    * (证据不足)返回 -1,由调用方回退活跃 est,不再出垃圾值。
+   *
+   * ── P11-258(2026-10-15,**分母归属修正**)──────────────────────────────────────────────
+   * 上面那条「不再出垃圾值」的修**没修全**:空窗样本与字节样本各自按自己的记录时刻滚出窗口,而空窗
+   * 覆盖的区间落在窗口起点之前 ⇒ 减掉了不在分母里的时间,尖峰从 500M 降级成 100M 量级继续存在。
+   * 真机 `logs_live_20261014_212516.log` 21:16:07:`sus=127204K` vs 同窗口字节÷墙钟 **38.4 Mbps**
+   * (逐笔在途 31~38M),反推分母 17.9s,少掉的 41.4s 正是那笔 `raw=41189ms` 空窗(整体在窗口起点前)。
+   * 现口径(不变量):分母窗口 = `[最老字节样本的**起始**时刻, now]`;分子每个字节都产生在该区间内,
+   * 分母里被扣的每一秒也都是该区间内**无在途请求**的秒(`idleInsideWindowLocked` 逐条求交)。
+   * 只改「空窗如何落进窗口」,**不改**「一个间隔里多少算滑行」(顶档 20s 余量那条不动)。
+   * 取证:`susRaw=`(字节 ÷ 未扣减跨度)与 `sus=` 并排看,扣减量一眼可见。详见 docs §57。
    */
+  /**
+   * P11-258:把两串样本滚进 60s 窗口(单点定义,防两处口径漂移)。调用方须持 [realBandwidthLock]。
+   * 字节样本按**起始**滚(它自己的在途时长也属于窗口内);空窗样本按**区间结束**滚(结束早于窗口起点的
+   * 空窗不可能与窗口有交集,留着也只会白算)。
+   */
+  private fun trimSustainedWindowLocked(now: Long) {
+    while (sustainedSamples.size > 1 && now - sustainedSamples.first().startWallMs > SUSTAINED_WINDOW_MS) {
+      sustainedBytes -= sustainedSamples.removeFirst().bytes
+    }
+    while (sustainedGapSamples.size > 1 && now - sustainedGapSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
+      sustainedGapSamples.removeFirst()
+    }
+  }
+
   fun getSustainedBitrateEstimate(): Long {
     synchronized(realBandwidthLock) {
       val now = System.currentTimeMillis()
-      while (sustainedSamples.size > 1 && now - sustainedSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
-        sustainedBytes -= sustainedSamples.removeFirst().bytes
-      }
-      while (sustainedGapSamples.size > 1 && now - sustainedGapSamples.first().endWallMs > SUSTAINED_WINDOW_MS) {
-        sustainedGapMs -= sustainedGapSamples.removeFirst().ms
-      }
+      trimSustainedWindowLocked(now)
       if (sustainedSamples.isEmpty() || sustainedBytes <= 0L) return -1L
-      val rawSpanMs = now - sustainedSamples.first().endWallMs
+      val spanStartMs = sustainedSamples.first().startWallMs
+      val rawSpanMs = now - spanStartMs
       if (rawSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
-      val activeSpanMs = rawSpanMs - sustainedGapMs
+      val activeSpanMs = (rawSpanMs - idleInsideWindowLocked(spanStartMs, now)).coerceAtLeast(0L)
       if (activeSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
-      return sustainedBytes * 8000L / activeSpanMs.coerceAtMost(SUSTAINED_WINDOW_MS)
+      return sustainedBytes * 8000L / activeSpanMs
+    }
+  }
+
+  /**
+   * P11-258 取证:`sus` 扣减前的**裸值**(字节 ÷ 未扣减墙钟跨度)。真机上与 `sus=` 并排看 ——
+   * 扣减量为 0 时二者相等(空窗整体在窗口外),真滑行场次 `sus > susRaw`(扣减语义还在)。
+   * 证据不足(< [SUSTAINED_MIN_SPAN_MS])返回 -1。仅诊断,不参与判决。
+   */
+  fun getSustainedRawBitrateEstimate(): Long {
+    synchronized(realBandwidthLock) {
+      val now = System.currentTimeMillis()
+      trimSustainedWindowLocked(now)
+      if (sustainedSamples.isEmpty() || sustainedBytes <= 0L) return -1L
+      val rawSpanMs = (now - sustainedSamples.first().startWallMs).coerceAtMost(SUSTAINED_WINDOW_MS)
+      if (rawSpanMs < SUSTAINED_MIN_SPAN_MS) return -1L
+      return sustainedBytes * 8000L / rawSpanMs
     }
   }
 
@@ -906,9 +969,13 @@ internal class SabrMediaFetcher(
   private suspend fun media(req: SabrSegmentRequest) {
     // 2026-09-20(无效流量取证):一次响应内的丢弃统计——见 DiscardTracker 为何必须是调用内局部量。
     val discard = DiscardTracker()
+    // P11-250(2026-10-12):**响应作用域**的解析状态(partial 段表)。headerId 只在一笔响应内有定义
+    // (服务端每笔从 0 重排),所以这张表必须与响应同生共死 —— 放在 fetcher 字段上会让早停掐断的
+    // 残留段被下一笔响应同 headerId 的负载灌进来。见 [ResponseParseState] 与 §53。
+    val parseState = ResponseParseState()
     // P11-217:解析搬进 [fetchStreamData] 的读流循环(边收边解 + 拿够就停),这里只给 part 回调;
     // 返回值也从「整包字节」变成「实读字节 + 耗时 + 是否早停」。
-    val resp = fetchStreamData(req) { type, payload -> processPart(type, payload, discard) }
+    val resp = fetchStreamData(req) { type, payload -> processPart(type, payload, discard, parseState) }
     // 2026-09-20(无效流量取证,只观测不改口径):本响应里被整段丢弃的媒体字节。
     // 真机三场「预取窗口 = 零可用数据窗口」期间每笔响应丢 7.6–7.9MB,而这些字节照进
     // `recordRealBandwidthSample` → est 一路抬到 32Mbps → 又作为 `bandwidthEstimate` **上报服务端**
@@ -1562,7 +1629,13 @@ internal class SabrMediaFetcher(
   }
 
   /** 处理一个 UMP part(对齐 LibreTube processPart)。[discard] 只用于 2026-09-20 的无效流量取证。 */
-  private fun processPart(type: Int, payload: ByteArray, discard: DiscardTracker) {
+  private fun processPart(
+    type: Int,
+    payload: ByteArray,
+    discard: DiscardTracker,
+    state: ResponseParseState,
+  ) {
+    val partialSegments = state.partialSegments
     when (type) {
       PART_MEDIA_HEADER -> {
         val mh = SabrProto.decodeMediaHeader(payload)
@@ -1576,6 +1649,8 @@ internal class SabrMediaFetcher(
         }
         // alpha.71 广告防御层:跳过非白名单 itag 的 MEDIA_HEADER(广告段)。不入 partialSegments
         // → 其后续 MEDIA/MEDIA_END 按 headerId 找不到段自动丢弃。
+        // P11-250:跳过的 headerId 若在本响应内另有条目,`duplicate` 分支会 overwrite——同一响应内
+        // 服务端复用 id 时这是正常的(skip 的字节按 [DiscardTracker] 归因后丢弃)。
         // 2026-08-31:白名单=当前选中格式+在途段请求 itag——选轨切换后旧在途请求的响应不再被误丢
         // (21:01 真机:videoFormat 翻 302 后 298 在途段响应全被丢,六连重试独占 fetcher 8.5s)。
         val hdrWhitelist = setOfNotNull(audioFormat?.itag, videoFormat?.itag) + pendingRequestItags
@@ -1621,6 +1696,27 @@ internal class SabrMediaFetcher(
           return
         }
         Log.i(tag, "MEDIA_END headerId=$headerId itag=${seg.header.itag} seq=${seg.sequenceNumber} chunks=${seg.data.size} bytes=${seg.length()}")
+        // P11-250(不变量 I2,对齐 LibreTube SabrClient.kt 的 content-length 断言):实收字节必须
+        // 等于 header 声明的 contentLength。2026-10-12 真机:音频段收到 2 478 617B 而声明 60 865B
+        // (被跳过格式的 MEDIA 灌进了残留段),这块假音频一路喂到解码器 → `Skipping atom with
+        // length > 2147483647` → Source error → 整场重载。
+        //
+        // 这里**丢弃该段并告警**,不抛异常(LibreTube 抛):①抛出去会被 fetchStreamData 的
+        // `catch (e: Exception)` 当成一次**网络失败**记账(recordRealBandwidthFailure/noteRoundTrip),
+        // 把带宽估计带偏;要抛就得先有独立异常类型并排除出带宽记账,那是另一件事;
+        // ②丢一段只损失几秒内容,喂错字节则是必然的整场重载。
+        // 口径成立的前提:早停只停在 part 边界(已闭合段长度精确,正常段 bytes 与 contentLen 逐笔相等),
+        // 且 SABR 路径不做 gzip 解压 ⇒ contentLength 即原始字节数。
+        // **这是「不可能分支」的告警器**:L1 之后不应再触发;一旦触发,说明又出现了新的 id 生命周期问题。
+        val declaredLen = seg.header.contentLength
+        if (declaredLen > 0L && seg.length().toLong() != declaredLen) {
+          Log.e(
+            tag,
+            "MEDIA_END length mismatch headerId=$headerId itag=${seg.header.itag} seq=${seg.sequenceNumber} " +
+              "declared=$declaredLen got=${seg.length()} chunks=${seg.data.size} (P11-250) — 段字节与声明不符,整段丢弃(不喂解码器)",
+          )
+          return
+        }
         fmt.downloadedSegments[seg.sequenceNumber] = seg
         if (seg.header.isInitSeg) fmt.initSegment = seg
         // 2026-08-30 实测消耗码率挂账:只计非 init 段、只按单调 seq 增量(重传旧段不重复计入)。
@@ -2027,6 +2123,28 @@ internal class SabrMediaFetcher(
  * [SabrDataSource.open] 捕获 → [com.kirin.mt.core.youtube.sabr.SabrStreamRegistry.evict] → 播放器 error-retry 重 harvest。
  */
 internal class SabrTerminalException(message: String) : Exception(message)
+
+/**
+ * 2026-10-12(P11-250):**一笔响应**的解析状态。
+ *
+ * `headerId` 是 UMP 在一笔响应内给媒体段编的序号 —— 服务端**每笔响应从 0 重排**,并且按 0/1/2 这种
+ * 小池滑动复用(所以同一场会话里反复出现 `MEDIA_HEADER duplicate headerId=`)。
+ * 也就是说:它的作用域是**一笔响应**,不是 fetcher、不是会话。
+ *
+ * 把 [partialSegments] 放进这个"与响应同生命周期"的容器,而不是挂在 fetcher 上,修的是
+ * 2026-10-12 真机那次连续重载:响应被早停(P11-217/218)掐断后,登记了 header 却等不到 MEDIA_END
+ * 的段留在表里跨到了下一笔;下一笔服务端把同一个 headerId 给了**被白名单跳过的格式**,而 skip 分支
+ * 只跳过 header、不登记 —— 于是那些字节被 `PART_MEDIA` 追加进了上一笔遗留的音频段
+ * (60 779B → 2 478 617B),假音频喂到解码器 → `Skipping atom with length > 2147483647`
+ * → Source error → 整场重载。判读全文见 docs/youtube-sabr-abr-upshift-notes.md §53。
+ *
+ * 为什么必须是调用内局部量:与 [DiscardTracker] 同因 —— fetcher 是**跨轨共享**的(音频/视频两个
+ * loader 并发进 `media()`,由 `dispatcher` 串行),实例字段会串场。
+ */
+private class ResponseParseState {
+  /** 正在处理的 partial 段(headerId → Segment,MEDIA 累积/MEDIA_END 收尾)。 */
+  val partialSegments = mutableMapOf<Int, SabrSegment>()
+}
 
 /**
  * 2026-09-20(无效流量取证):**一次响应内**被整段丢弃的媒体字节与来源 itag。

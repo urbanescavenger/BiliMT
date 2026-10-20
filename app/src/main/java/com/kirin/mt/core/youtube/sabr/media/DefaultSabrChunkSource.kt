@@ -153,6 +153,10 @@ internal class DefaultSabrChunkSource(
     // 不再需要 ceiling/force-climb 排除补丁。见 SabrBandwidthMeter / SabrMediaFetcher。
     (bandwidthMeter as? SabrBandwidthMeter)?.setRealBandwidthProvider { fetcher.getRealBitrateEstimate() }
     (bandwidthMeter as? SabrBandwidthMeter)?.setSustainedBandwidthProvider { fetcher.getSustainedBitrateEstimate() }
+    // P11-258:裸值通道,只喂日志(susRaw=),用于真机核对分母扣减是否落在窗口内。
+    (bandwidthMeter as? SabrBandwidthMeter)?.setSustainedRawBandwidthProvider {
+      fetcher.getSustainedRawBitrateEstimate()
+    }
     (bandwidthMeter as? SabrBandwidthMeter)?.setRefillCapacityProvider { fetcher.getRefillCapacityBps() }
     (bandwidthMeter as? SabrBandwidthMeter)?.setReseedBandwidthProvider { bitrateBps ->
       fetcher.reseedActiveWindow(bitrateBps)
@@ -373,6 +377,13 @@ internal class DefaultSabrChunkSource(
         // 误读成「证据为零」;负值原样显示。
         "sus=${
           (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw()
+            ?.let { if (it >= 0) "${it / 1000}K" else "-1" } ?: "-1"
+        } " +
+        // P11-258 取证:`sus` 扣减前的裸值。二者相等 ⇒ 空窗整体在窗口外(扣减应为 0);
+        // `sus > susRaw` ⇒ 真滑行场次,扣减语义仍在。修 §56.9-B 那个「扣了不在窗口里的时间」后,
+        // 正常场次应与 sus 同量级(旧版会看到 sus 比 susRaw 高 2~3 倍)。
+        "susRaw=${
+          (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRawUndeducted()
             ?.let { if (it >= 0) "${it / 1000}K" else "-1" } ?: "-1"
         } " +
         // 2026-09-01 重填容量取证:近 N 笔成功请求瞬时吞吐中位数(免疫墙钟空转),升档判据用它与 bw 取大。

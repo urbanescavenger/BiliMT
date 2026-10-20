@@ -164,7 +164,26 @@ fun MobileSettingsScreen(
   // 末尾补 Unit 强制成 () -> Unit;且不可用双层 lambda({ { ... } })——外层 body 是内层 lambda 字面量,
   // 被求值后丢弃,内层永不执行。
   val checkAction: () -> Unit = { scope.launch { updateManager.refresh() }; Unit }
-  val downloadAction: () -> Unit = { scope.launch { updateManager.download() }; Unit }
+  // download() 失败会把最后一个 IOException rethrow 出来(供调用方提示);这里必须接住,
+  // 否则未捕获异常从 rememberCoroutineScope().launch 逃逸 → FATAL EXCEPTION: main
+  // → 进程被杀、Activity 重启(app 看起来像"重载")。TV 端 AppShell 一直有同样的 try/catch。
+  val downloadAction: () -> Unit = {
+    scope.launch {
+      try {
+        updateManager.download()
+      } catch (e: Exception) {
+        Toast.makeText(
+          context,
+          context.getString(
+            R.string.settings_update_download_failed_with_message,
+            e.message ?: e.javaClass.simpleName,
+          ),
+          Toast.LENGTH_LONG,
+        ).show()
+      }
+    }
+    Unit
+  }
   val installAction: () -> Unit = { installDownloadedApk() }
   val updateVersionOnClick: (() -> Unit)? = when (val s = updateState.status) {
     is UpdateUiState.Status.Available -> downloadAction

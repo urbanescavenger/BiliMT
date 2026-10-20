@@ -1262,55 +1262,72 @@ class HeightAwareAdaptiveTrackSelection(
         // 而 15s 地板让它在"水位 10s、往返 9.2s"时也升上去 ⇒ 10 秒后必被水位急救降回(纯抖动、白切一次轨)。
         // 20s 与「一笔搬 3 段」配套(见 SabrMediaFetcher.streamMargin 的 P11-225):先让水位真能到 20s,
         // 再要求 20s ⇒ 升上去就站得住。非顶档维持 15s 基础地板(它们的往返 0.7~2s,垫子绰绰有余)。
+        // ── P11-251(2026-10-12 真机)**撤回上面的顶档 20s**:它与 P11-230 的「高档缓冲上限 20s」同值相撞,
+        // 而 1440 正好是上限生效的最低档 ⇒ 停在 1440p 时缓冲被压在 19.9s,顶档候选连闸都不评就被
+        // continue ⇒ 4K 结构性进不去(真机 `logs_live_20261012_211617.log`,dev.r2194)。P11-225 立论里
+        // 真正量化的那一项是 `2×往返`,它在 [climbFloorUsFor] 里是独立一项、原样保留;20s 只是它的固定
+        // 上盖(与 §40.6 撤掉的「固定 30s 上盖」同形态)。4K 的防线改由 ×1.1 sustained 闸 + 起播 stall
+        // 冷却 + 不试探三条独立把守。判据链全文见 docs/youtube-sabr-abr-upshift-notes.md §54。
         // P11-237/240:算式抽成 [climbFloorUsFor](单点定义防漂移);此处保留 `rtForClimbMs` 仅供日志显示。
         // **只用于升档** —— 守档地板已改为「本档水位急救线」(P11-240,见函数外 downgradeHoldFloorUs):
         // 「升进这一档要多少垫子」是切换成本,与「当前算不算饿」是两个问题。
-        val heightFloorLabel = if (f.height >= TOP_TIER_MIN_HEIGHT) "顶档 20s" else "15s"
-        val climbFloorUs = climbFloorUsFor(f.height, itagOf(f))
+        val climbFloorUs = climbFloorUsFor(itagOf(f))
         if (!startupClimb && !trialUpgrade && bufferedDurationUs < climbFloorUs) {
           if (!climbBufferFloorLogged) {
             climbBufferFloorLogged = true
             Log.i(
               "YtSabrAbr",
-              "upshift held (buffer floor, ${if (f.height >= TOP_TIER_MIN_HEIGHT) "P11-225 顶档 20s" else "P11-222 15s"}): " +
+              "upshift held (buffer floor, P11-251 全档一致): " +
                 "itag${itagOf(f)}(${f.height}p) bufS=${bufferedDurationUs / 1_000_000}s " +
                 "< floor=${climbFloorUs / 1_000_000}s " +
-                "(=max($heightFloorLabel, 2×往返${if (rtForClimbMs > 0L) "${rtForClimbMs}ms" else "未知"})); " +
+                "(=max(15s, 2×往返${if (rtForClimbMs > 0L) "${rtForClimbMs}ms" else "未知"})); " +
                 "startupClimb=$startupClimb trial=$trialUpgrade; 等缓冲填起来再爬",
             )
           }
           continue
         }
         // 2026-09-01 满缓冲试探:容量/持续闸失真(服务端 pacing,见类头)时凭满缓冲放行;
-        // ×1.1 顶档闸与起播 stall 冷却不试探(4K 死亡行军/起播死循环防线不松)。
+        // 起播 stall 冷却不试探、顶档不试探(4K 死亡行军/起播死循环防线不松)。
+        // P11-255:顶档那条「不试探」从原来的 `topTierGateFail` 摘出来,改由 `isTopTierCandidate`
+        // 独立表达(见下)——撤掉的是顶档专属的**判据**,不是它的**路径限制**。
         val capacityGateFail = required > upgradeEstFloor
         val sustainedGateFail = !canUpgrade || (sustained in 0 until required)
-        // ── P11-194:顶档 ×1.1 sustained 闸 —— 两处判据都写错了,这道闸一直是死的 ──────────────
-        // 旧写法 `isTopTier && i == 0 && …`,两处都建立在「组索引 0 = 最高码率档」这个**错误假设**上:
-        //   · `isTopTier`(见上)= `getFormat(0).height >= 2160` —— 实测第 0 档是**会话 primary**
+        // ── P11-194 的顶档 ×1.1 sustained 闸:**已由 P11-255 撤销**(保留这段只为记住来龙去脉)──────
+        // 这道闸的旧写法 `isTopTier && i == 0 && …` 建立在「组索引 0 = 最高码率档」的**错误假设**上:
+        //   · `isTopTier` 旧义 = `getFormat(0).height >= 2160`,而实测第 0 档是**会话 primary**
         //     (真机两组:`135(0)`/480p 与 `136(0)`/720p)⇒ 恒 false;
         //   · `i == 0` 同样指 primary 档,不是顶档候选。
-        // 两者叠加 ⇒ 闸**从未开过一枪**:真机 `logs_live_20261003_214158.log`(dev.r2127,`XjqafXGN3ck`)
-        // 21:39:26 `trial upshift (buffer-full probe) … → itag401(2160p) declared=9127940
-        // est=8844K sus=6679K` —— 持续供给 6.7M 明显低于该档要的 9.1M(更低于 ×1.1 门槛 10.0M),
-        // 而「×1.1 顶档闸与起播 stall 冷却**不试探**」本是设计明写的 4K 死亡行军防线 ⇒ 于是进了 4K,
-        // 随即 `REAL 46371131B 22888ms` / `REAL 25583811B 26383ms`(单笔 46MB/22.9s、25MB/26.4s)把
-        // 缓冲从 41s 抽到 6.6s,降档换轨又丢缓冲 ⇒ 9s 空窗 ⇒ 8s 看门狗整场重载。
-        // 修:`isTopTier` 改判「组内存在顶档」,本行改判「**该候选**是顶档候选」。
-        // P11-200:基准同样换成 [tierNeedBps](§39.11.4-#3)——峰值声明下顶档闸也会按假数据判。
-        val topTierNeed = tierNeedBps(f)
-        val topTierGateFail = isTopTier && f.height >= TOP_TIER_MIN_HEIGHT &&
-          sustained < topTierNeed * TOP_TIER_SUSTAINED_PERMILLE / 1000L
-        // P11-194 取证:这道闸此前一整类日志都没有(修了也无从验收),故补一次性打点。
-        if (topTierGateFail && !topTierGateRefusedLogged) {
+        // P11-194 把它修活(`isTopTier` 改判「组内存在顶档」、本行改判「该候选是顶档候选」),
+        // 让「实测供给没到位就不进 4K」这条防线真正开火。
+        // P11-255 撤销它的理由见下方长注释:它与其他档的**真实差别**是「-1(证据不足)时挡住顶档」,
+        // 而真机上它既没挡住该挡的(22 秒后照样放行)、又是个特例。**顶档死亡行军的防线现在靠
+        // `isTopTierCandidate` 的「不试探」与起播 stall 冷却两条,以及与其他档相同的底链。**
+        // ── P11-255(2026-10-12,用户口径「升档与其他档依据一致」):**顶档升档不再另设依据** ──────────
+        // 原实现顶档候选额外要求 `sustained ≥ tierNeedBps(候选) × TOP_TIER_SUSTAINED_PERMILLE(1100)`。
+        // 与其他档的**真实差别**不在那 10%,而在 `sustained = -1`(证据不足)时:
+        //   · 其他档:`sustained in 0 until required` 为 false ⇒ **放行**(设计明写「非顶档升档在冷启动
+        //     sustained=-1 也放行,梯子靠活跃 est 门 + 逐级约束跑」);
+        //   · 顶档:`-1 < need×1.1` 为 true ⇒ **挡住**。
+        // 真机 `logs_live_20261012_232409.log`(alpha.2,`Ji0JA2CqpRw`)23:15:23 那一拒正是它;22 秒后
+        // `sus` 被**过去 60 秒墙钟平均**(含低档时段的小段突发)抬到 23.35M 才放行,而放行那笔 4K 实测
+        // 只有 **9.9Mbps**(14.5MB/11.7s)⇒ 缓冲抽到 7s 被降回、一帧没上屏,还赔上 180s+90s 冷却。
+        // 即:这条依据既没挡住该挡的,又是个特例 —— 故撤掉,顶档回到底链
+        // (`逐级爬 → 冷却/排除 → 缓冲地板 → 容量闸 → sustained 闸`,与其他档逐条相同)。
+        // **保留的顶档特例只剩两条,都不是「依据」**:起播 stall 后 3min 冷却(`:1189`,冷却类)、
+        // 以及「不参与满缓冲试探」(`isTopTierCandidate` 那两处,路径选择类)。
+        // ⚠️ 这条改动**不修**本场那个失败(链路只有 ~10Mbps 喂不动 4K)—— 见 docs §55.4/§55.6。
+        val isTopTierCandidate = isTopTier && f.height >= TOP_TIER_MIN_HEIGHT
+        // P11-194 取证保留口径、P11-255 改挂点:原来挂在被撤掉的那道闸上,现改挂「顶档候选被底链刷掉」。
+        // **撤掉判据不能连观测一起撤**(吃过 P11-194「这道闸一类日志都没有」的亏),四个分量一次打全。
+        if (isTopTierCandidate && (capacityGateFail || sustainedGateFail) && !topTierGateRefusedLogged) {
           topTierGateRefusedLogged = true
           Log.i(
             "YtSabrAbr",
-            "top-tier gate refused (P11-194): itag${itagOf(f)}(${f.height}p) declared=${f.bitrate / 1000}K " +
-              "sustained=${if (sustained >= 0L) "${sustained / 1000}K" else "-1(证据不足)"} < " +
-              "需要=${topTierNeed * TOP_TIER_SUSTAINED_PERMILLE / 1000L / 1000}K " +
-              "(est=${bandwidthMeter.getBitrateEstimate() / 1000}K, trial=$trialUpgrade) — " +
-              "顶档不试探,实测供给没到位就不进 4K",
+            "top-tier candidate skipped (P11-255): itag${itagOf(f)}(${f.height}p) declared=${f.bitrate / 1000}K " +
+              "need=${tierNeedBps(f) / 1000}K sustained=${if (sustained >= 0L) "${sustained / 1000}K" else "-1(证据不足)"} " +
+              "est=${bandwidthMeter.getBitrateEstimate() / 1000}K cap=${upgradeEstFloor / 1000}K " +
+              "(capacityFail=$capacityGateFail sustainedFail=$sustainedGateFail, trial=$trialUpgrade) — " +
+              "顶档与其他档同一条底链;顶档仍不试探",
           )
         }
         // P11-153(②,r2048 TV 真机):**试探放行也要有上限** —— 满缓冲只该"绕过偏悲观的估计",
@@ -1329,10 +1346,8 @@ class HeightAwareAdaptiveTrackSelection(
                 "满缓冲只绕过悲观估计,不授权超容量跳档(P11-153)",
             )
           }
-          if (topTierGateFail || !trialUpgrade || trialOverCapacity) continue
+          if (isTopTierCandidate || !trialUpgrade || trialOverCapacity) continue
           bestIsTrial = true
-        } else if (topTierGateFail) {
-          continue
         }
       }
       // 选声明码率可负担的最高分辨率档;同 height 多 codec(VP9/H264)2026-09-01 起改粘全组顶档
@@ -1460,18 +1475,32 @@ class HeightAwareAdaptiveTrackSelection(
   /**
    * P11-237:**本档的升档缓冲地板**。
    *
-   * = `max(顶档 20s / 非顶档 15s, 2×本档最近一次往返)` —— P11-222/225 的口径,抽成单点定义防漂移。
+   * = `max(15s, 2×本档最近一次往返)` —— **全档一致**(顶档的 20s 上盖已由 P11-251 撤回,见下)。
    * **只服务升档**:回答「升进这一档要预留多少垫子」(切换要现拉 init + 首次段,往返一抖就饿)。
    * 守档(「当前算不算饿」)在 P11-240 起改用本档水位急救线,见 `updateSelectedTrack` 的
    * `downgradeHoldFloorUs` —— 真机证明把升档垫子当守档闸会把 4K 在 `bufS=11.1s` 时判成「可以让 est 补刀」。
    * 往返未知(-1)按 0 处理(只剩基础地板)。
+   *
+   * ── P11-251(2026-10-12 真机,撤回顶档 20s)──────────────────────────────────────────────
+   * 原实现顶档(≥2160)用 `TOP_TIER_CLIMB_FLOOR_US = 20s` 作基础地板,依据是 P11-225 的
+   * 「4K 一笔往返 4.9~9.2s ⇒ 垫子要 `2×往返` ≈ 18.4~20s」。但 **`2×往返` 本来就是下面独立的一项**,
+   * 20s 只是给这一项加的**固定上盖** —— 而它与 P11-230 的**高档缓冲上限 20s**(`SabrAbrMemory.
+   * heavyTierBufferedCapUs`,≥1440p 生效)同值相撞:1440 恰好是顶档下面那一档,停在 1440p 时
+   * `bufferedDurationUs` 被压在 <20s(真机实测钉在 **19.9s** 80+ 秒)⇒ 顶档候选**连闸都不评**就被
+   * `continue`(地板判据排在所有闸之前),4K 结构性进不去。
+   * 真机 `logs_live_20261012_211617.log`(dev.r2194):进 1440p 后顶档闸先拒(`meas(315)=0` ⇒ need
+   * 退回声明 28.12M),P11-247 的同族折算锚要到 1440p 首段交付(进 1440p 后 22s)才到手,而那时
+   * 缓冲已被播放消费到 19.9s ⇒ **差 0.1s,永久按死**;对照 §52 那场锚 5s 就到、升档时 bufS=28.4s ⇒ 过。
+   * 撤回后 4K 的门槛仍由三条独立防线守着(**当时**一字未动):`topTierGateFail`(`sustained ≥ tierNeedBps×1.1`)、
+   * 起播 stall 后 3min 顶档冷却、以及「顶档不试探」。判据链全文见
+   * docs/youtube-sabr-abr-upshift-notes.md §54。
+   * ⚠️ 其中第一条(`topTierGateFail`)已由 **P11-255 撤销**(顶档升档与其他档统一依据,见 §55),
+   * 现存的顶档特例只剩「起播 stall 冷却」与「不试探」两条。
    */
-  private fun climbFloorUsFor(height: Int, itag: Int): Long {
-    val heightFloorUs =
-      if (height >= TOP_TIER_MIN_HEIGHT) TOP_TIER_CLIMB_FLOOR_US else TRIAL_FLOOR_BUFFERED_US
+  private fun climbFloorUsFor(itag: Int): Long {
     val rtMs = (bandwidthMeter as? SabrBandwidthMeter)?.getLastRoundTripMs(itag) ?: -1L
     return maxOf(
-      heightFloorUs,
+      TRIAL_FLOOR_BUFFERED_US,
       if (rtMs > 0L) rtMs * ROUND_TRIP_RUNWAY_FACTOR * 1000L else 0L,
     )
   }
@@ -1685,12 +1714,9 @@ class HeightAwareAdaptiveTrackSelection(
 
     /** P11-193:豁免窗口内允许免缓冲爬到的最高档。再往上(1440p/2160p)一律要缓冲地板。 */
     const val STARTUP_CLIMB_MAX_HEIGHT = 1080
-    /**
-     * 2026-08-30 修正:顶档升档 sustained 门槛系数千分位——sustained ≥ 声明×1.1 才许升 4K。
-     * 旧 ×0.6 是对 peak 虚高(~2×)的折算;declared 换 averageBitrate=真平均后,1.1 是 60s 均值
-     * 口径下的 VBR 尖峰余量(本视频 315 声明 ~23M → 门槛 ~25.3M)。
-     */
-    const val TOP_TIER_SUSTAINED_PERMILLE = 1100L
+    // P11-255:原 `TOP_TIER_SUSTAINED_PERMILLE = 1100L`(顶档升档 sustained ≥ 声明×1.1)已删 ——
+    // 顶档升档不再另设依据,与其他档同一条底链。理由见 updateSelectedTrack 里 P11-255 的长注释与
+    // docs/youtube-sabr-abr-upshift-notes.md §55。
 
     /**
      * P11-153:满缓冲试探允许的最大「超容量」倍率(千分比)。
@@ -1721,10 +1747,12 @@ class HeightAwareAdaptiveTrackSelection(
     /**
      * 2026-09-01:试探水位线地板(us)——「满缓冲=供给富余」证据的最低可信线;30s bufferMax 档
      * (0.8×28s≈22s)也在线上,地板只在更小水位时兜底。
+     *
+     * P11-225 曾在此并列一个 `TOP_TIER_CLIMB_FLOOR_US = 20s`(顶档升档地板)—— **P11-251 已删**:
+     * 它与 P11-230 的「高档缓冲上限 20s」同值相撞(1440 是上限生效的最低档)⇒ 停在 1440p 时缓冲
+     * 被压在 19.9s,顶档永远凑不够地板 ⇒ 4K 结构性进不去。全档统一用 [TRIAL_FLOOR_BUFFERED_US],
+     * 顶档的 `2×往返` 项由 [climbFloorUsFor] 独立给出。见 docs §54。
      */
-    /** P11-225:顶档(≥2160)升档的**缓冲地板** —— 4K 一笔往返 4.9~9.2s,垫子要 2×往返 ≈ 18~20s。 */
-    const val TOP_TIER_CLIMB_FLOOR_US = 20_000_000L
-
     const val TRIAL_FLOOR_BUFFERED_US = 15_000_000L
     /**
      * 2026-09-01:试探失败档冷却(ms)——试探扛不住的档冷却这段时间,防每轮回填都重试同一堵墙;

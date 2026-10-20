@@ -319,11 +319,11 @@ internal object VideoSummaryMappers {
   }
 
   /**
-   * 搜索番剧（search_type=media_bangumi）结果映射。字段：season_id / cover / title(带 <em>) /
-   * cv / index_show 等。bvid 承载 `ss{season_id}` 作网格去重 key;seasonId>0 是番剧卡标记,
-   * 点击进 PGC 季详情(壳层拦截),不走 UGC 播放器。
+   * 搜索番剧/影视（search_type=media_bangumi / media_ft）结果映射。两者字段一致：season_id /
+   * cover / title(带 <em>) / cv / index_show 等。bvid 承载 `ss{season_id}` 作网格去重 key;
+   * seasonId>0 是 PGC 卡标记,点击进 PGC 季详情(壳层拦截),不走 UGC 播放器。
    */
-  fun fromSearchBangumi(json: JsonObject): VideoSummary {
+  fun fromSearchPgc(json: JsonObject): VideoSummary {
     val seasonId = json.int("season_id") ?: 0
     return VideoSummary(
       bvid = "ss$seasonId",
