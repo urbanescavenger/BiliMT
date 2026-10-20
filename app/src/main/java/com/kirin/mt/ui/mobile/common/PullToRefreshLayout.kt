@@ -52,10 +52,25 @@ fun PullToRefreshLayout(
 
   val connection = remember {
     object : NestedScrollConnection {
+      override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+        // 手指上滑(y<0)且已有下拉距离时,先把手势下拉量退回(对齐 material3 PullToRefresh 的
+        // "Swiping up" 分支)。否则拉一半又推回去、松手仍按最大距离误触发刷新。
+        // 只在 pullPx>0 时消费,平时上滑滚动列表不受影响。
+        if (source == NestedScrollSource.UserInput && available.y < 0f && pullPx > 0f && !refreshState.value) {
+          val newPull = (pullPx + available.y).coerceAtLeast(0f)
+          val consumed = newPull - pullPx
+          pullPx = newPull
+          return Offset(0f, consumed)
+        }
+        return Offset.Zero
+      }
+
       override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-        // available.y > 0 => 列表到顶后继续下拉(overscroll),累加拉动距离并消费,避免子控件回弹。
+        // available.y > 0 => 列表到顶后子级消费不掉的下拉(overscroll),累加拉动距离并消费,避免子控件回弹。
         // (Compose 约定:y>0=手指下拖/内容下移=下拉,见官方 PullToRefresh 样板 onPostScroll)
-        if (available.y > 0f && !refreshState.value) {
+        // 必须限定 UserInput:惯性 fling 的剩余量也走 onPostScroll(SideEffect),下滑甩回顶部时
+        // 若一并累加,列表刚到顶就会被 fling 余量顶过阈值而自动刷新——这正是"下滑就触发刷新"的来源。
+        if (source == NestedScrollSource.UserInput && available.y > 0f && !refreshState.value) {
           pullPx = (pullPx + available.y).coerceAtMost(maxPullPx)
           return Offset(0f, available.y)
         }
