@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.1.1-alpha.15](#v311-alpha15)
 - [v3.1.1-alpha.14](#v311-alpha14)
 - [v3.1.1-alpha.13](#v311-alpha13)
 - [v3.1.1-alpha.12](#v311-alpha12)
@@ -412,6 +413,31 @@
 - **普通卡片真实观看进度条**(alpha.1/3):本地按 bvid 记忆播放位置,首页/推荐/搜索/频道/动态等卡片显示看过比例,无进度数据不显示。
 - **YouTube 订阅流提速**(alpha.1):~6.8s→~2.8s(会话预热后台化 + RSS 改 UULF uploads feed)。
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
+
+---
+
+## v3.1.1-alpha.15
+
+**WebDAV / IPTV「连续连不上服务器」:DNS 结果优选 + 坏 IP 短期拉黑**(P11-269)。
+
+### 变更
+
+- **现象**:21:00–21:12 期间 WebDAV ping 63 次全失败、84 条 `Connection reset`,IPTV 频道表同主机
+  也失败;整段只有 21:24 一次成功。B站 / YouTube 不受影响。
+- **定位**:不是解析失败(没有 `UnknownHostException`,连接在 ~200ms 内被 RST)。本机同局域网直连
+  复现:`cf.19961226.xyz` 解析出两个 Cloudflare A —— `104.21.3.225` 正常、`172.67.153.187`
+  3/3 被 reset(TLS 都没开始,SNI 直接用 IP 也 reset ⇒ IP 级);IPv6 正常。
+- **根因**:DNS 答案里含一个被本网络 RST 的任播 IP,Android DNS 缓存保持同一顺序,而 OkHttp 的
+  默认 Dns + 单次调用内路由重试让应用侧 3 次阶梯重试**全撞同一个坏 IP**。
+- **改动**:新增 `core/network/HealthyDns.kt`:
+  - `HealthyDns` 包装 `Dns.SYSTEM`,`connectFailed` 的地址按 IP 拉黑 5 分钟并排到最后(全部拉黑时
+    仍返回全部,防整域锁死),`connectionAcquired` 自动解除;
+  - `HealthyDnsEventListener` 把实际 TCP/TLS 失败地址喂给它;
+  - `createDownloadClient()`(WebDAV / IPTV 频道表 / 下载 / 更新)接上二者;
+  - 新增 `BiliMT:Dns` 日志(lookup 顺序 + 拉黑/恢复),此前这一层零可观测性。
+- **真机判据**:坏 IP 环境下第一轮 ping 的第 2 次重试即成功;日志出现
+  `lookup … (bad=172.67.153.187)`、`ip marked bad` / `ip recovered`。
+- **未动**:IPTV 拉流的 `Ipv4OnlyDns`(可后续复用同一健康排序);B站 / YouTube client。
 
 ---
 
