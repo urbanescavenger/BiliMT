@@ -54,6 +54,12 @@ class BiliHttpClientFactory {
 
   fun createDownloadClient(): OkHttpClient {
     return OkHttpClient.Builder()
+      // P11-269:DNS 结果优选 + 坏 IP 短期拉黑。自建 WebDAV/IPTV 域名解析出多个 Cloudflare
+      // 任播 IP,其中一个在特定网络会秒 RST;默认 Dns + 单次调用内重试会让阶梯重试全撞同一个
+      // 坏 IP。eventListener 在 connectFailed 时按实际地址拉黑,后续 lookup 把它排到最后。
+      // 同时补上 DNS/实际 IP 的日志(此前这一层没有可观测性)。
+      .dns(HealthyDns)
+      .eventListener(HealthyDnsEventListener())
       .connectTimeout(DownloadConnectTimeoutSeconds, TimeUnit.SECONDS)
       // readTimeout 300s→30s:每次 read 都重置,300s 意味着连接半死断流时下载要挂满 5 分钟
       // 才报错,UI 停在 Downloading 看着像卡死。30s 断流即抛错,由 UpdateDownloader 的
