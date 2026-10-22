@@ -3,7 +3,8 @@ package com.kirin.mt.core.player
 /**
  * YouTube 播放路径优先级(P11-114,按 [YoutubePlaybackResolver.resolve] 的实际分层)。
  *
- * - [Sabr](默认):NewPipe SABR 主路(visionOS pot-less)→ WEB-SABR 兜底 → DASH 兜底,历史行为。
+ * - [Sabr](默认,UI 显示为「NewPipe」):NewPipe 主路(visionOS `/player` + SABR pot-less)→
+ *   WEB-SABR 兜底 → DASH 兜底,历史行为。[key] 保持 `sabr` 以兼容已持久化的设置。
  * - [Dash]:慢源/卡顿逃生——慢 SABR 首段(googlevideo 服务器 >10s 才送首段)会被 8s stall
  *   看门狗误判触发完整重建(见 `iptv-thumb-stall-watchdog-kills-slow-sources` 同类),切 Dash 让
  *   DASH 自合成优先(NewPipe 已解密直链拼 MPD,实测能出 4K VP9)。
@@ -16,7 +17,7 @@ package com.kirin.mt.core.player
  * @see com.kirin.mt.core.settings.AppSettings.youtubeDeliveryPriority
  */
 enum class YoutubeDeliveryPriority(val key: String, val label: String) {
-  Sabr("sabr", "SABR 优先"),
+  Sabr("sabr", "NewPipe 优先"),
   Dash("dash", "DASH 优先"),
   WebSabr("websabr", "WEB-SABR 优先");
 
