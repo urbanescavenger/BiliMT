@@ -131,6 +131,12 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 ## 版本更新
 
+### v3.1.2-alpha
+
+| tag | 内容 |
+| --- | --- |
+| v3.1.2-alpha.1 | **播放优先级按实际参考实现命名 + NewPipe 取流层同步更新**(P11-271)。设置「播放优先级」的 `SABR 优先`→**`NewPipe 优先`**、`WEB-SABR 优先`→**`FreeTube 优先`**(DataStore key 不变,已选设置不丢),描述同步 4 个 locale。NewPipeExtractor 由 `738c3d4` 升级到 LibreTube fork dev HEAD `3e863d7c`:只有 SABR 流时不再误抛 `Could not get any stream`;playability 非 OK 时报具体原因而非笼统的 `VISIONOS player response is not valid`。同时确认「能播放不能下载」的根因是**出口 IP 声誉**(换出口节点即恢复,播放走 FreeTube 档的 WebView 会话不受影响),判读写入 `docs/youtube-hd-playback.md` §6.7 row 102。注意:升级不改变 `isPlayerResponseNotValid` 判据,被标记 IP 下下载仍会失败 |
+
 ### v3.1.1
 
 稳定版：YouTube 4K 全自动播放收口（切档不再整场重载、升档垫子全档统一、带宽记账修正、WEB-SABR 预热避开启动高峰），网络层抗坏 IP（WebDAV 传输补阶梯重试、DNS 结果优选 + 坏 IP 短期拉黑）、移动端下载更新不再崩溃、移动端下拉刷新只认用户手势；搜索补「影视」类型、TV 搜索类型与结果焦点收口、TV 历史番剧 -400 修复；动态页返回不再丢焦/重拉，YouTube 卡补齐 4K 角标与绿框。整合 v3.1.1-alpha.1~16。

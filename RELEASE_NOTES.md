@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.1.2-alpha.1](#v312-alpha1)
 - [v3.1.1](#v311)
 - [v3.1.1-alpha.16](#v311-alpha16)
 - [v3.1.1-alpha.15](#v311-alpha15)
@@ -415,6 +416,30 @@
 - **普通卡片真实观看进度条**(alpha.1/3):本地按 bvid 记忆播放位置,首页/推荐/搜索/频道/动态等卡片显示看过比例,无进度数据不显示。
 - **YouTube 订阅流提速**(alpha.1):~6.8s→~2.8s(会话预热后台化 + RSS 改 UULF uploads feed)。
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
+
+---
+
+## v3.1.2-alpha.1
+
+**播放优先级按实际参考实现命名 + NewPipe 取流层同步更新**(P11-271)。
+
+### 变更
+
+- **设置命名更准确**:「播放优先级」的 `SABR 优先` 改为 **`NewPipe 优先`**,`WEB-SABR 优先` 改为
+  **`FreeTube 优先`**。两项原本就分别对应 NewPipe 取流层与 FreeTube 对齐的 WEB 认证路径,只是名称
+  没体现;DataStore key 保持 `sabr`/`websabr` 不变,已选设置不会丢。设置描述同步更新 4 个 locale。
+- **NewPipeExtractor 升级**:`738c3d4` → LibreTube fork dev HEAD `3e863d7c`。
+  - `Allow extraction of SABR-only streams`:只有 SABR 流时不再误抛 `Could not get any stream`。
+  - `Add missing playability check`:playability 非 OK 时报告具体原因,而不是笼统的
+    `VISIONOS player response is not valid`。
+- **下载失败判读**:排查「能播放不能下载」时确认,`VISIONOS player response is not valid` 的根因是
+  **出口 IP 声誉**——同一构建换出口节点后下载立即恢复;播放因走 FreeTube 档的 WebView 真实会话,
+  不受该拦截影响。判读与诊断规则已写入 `docs/youtube-hd-playback.md` §6.7 row 102。
+
+### 注意
+
+- 本次 NewPipeExtractor 升级**不改变** `isPlayerResponseNotValid` 判据:被标记的出口 IP 仍会让
+  NewPipe 下载失败,遇到时先换出口 IP(或关 IPv6 只走 IPv4)复测。
 
 ---
 
