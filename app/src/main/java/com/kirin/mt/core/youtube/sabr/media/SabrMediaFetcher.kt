@@ -129,8 +129,24 @@ internal class SabrMediaFetcher(
    */
   val videoId: String? get() = entry.videoId
 
-  /** 已初始化格式(itag → InitializedFormat)。FORMAT_INITIALIZATION_METADATA part 建表。 */
-  private val initializedFormats = mutableMapOf<Int, InitializedFormat>()
+  /**
+   * 已初始化格式(itag → InitializedFormat)。FORMAT_INITIALIZATION_METADATA part 建表。
+   * P11-274:改 ConcurrentHashMap —— 切档预判的 [hasRealSegment] 从 loader 线程读，而音频/视频
+   * 两个 loader 的写发生在 fetcher 串行 dispatcher 上，普通 HashMap 存在读写竞争。
+   */
+  private val initializedFormats =
+    java.util.concurrent.ConcurrentHashMap<Int, InitializedFormat>()
+
+  // ── P11-274(切档 grace 缓存):切走的那一档只保留最近 3 段 ────────────────────────────────────
+  // 目的:4K 升档被打回/回切时,新档请求的段已被服务端游标越过(只回 N+1/N+2),旧代码插空段占位
+  // ⇒ 视频缺一段 + 解码器重配 = 5–10s 画面冻住音频照走(§60)。这里把旧档切换点附近的真实段单独留住,
+  // 让 DefaultSabrChunkSource 在“新档还没供上”时先用旧档顶这一段,切换点顺延到新档真正能供的段。
+  //
+  // **刻意不放进 initializedFormats**:那会被 `selectedFormatIds` / `bufferedRanges` 重新编码进请求,
+  // 回退 P11-92 的“旧档 bufferedRange 把服务端游标拖到旧档缓冲尾”死循环。这里只给本地播放用。
+  private val graceLock = Any()
+  private var graceItag: Int = 0
+  private val graceSegments = LinkedHashMap<Long, SabrSegment>()
 
   /**
    * 2026-09-20(C1「跟着服务端走」):**服务端实际推来的视频 itag 集合**(FORMAT_INITIALIZATION_METADATA
@@ -771,8 +787,89 @@ internal class SabrMediaFetcher(
     if (MimeTypes.isAudio(mime)) {
       if (audioFormat != representation.formatId) audioFormat = representation.formatId
     } else if (MimeTypes.isVideo(mime)) {
-      if (videoFormat != representation.formatId) videoFormat = representation.formatId
+      if (videoFormat != representation.formatId) {
+        // P11-274:切走前把旧档切换点附近的真实段抄进 grace 缓存(旧档随后会被 retainAll 整条丢掉,
+        // 而回切/急救往往正好要它的当前段)。只抄真实段,跳过 P11-92 的空段占位。
+        videoFormat?.let { captureGraceCache(it.itag) }
+        videoFormat = representation.formatId
+        // 立刻按「当前 A/V + 在途 + 预取」清一次:旧档不能再留在 initializedFormats 里参与
+        // selectedFormatIds / bufferedRanges 编码(否则回退 P11-92“旧档缓冲尾拖住服务端游标”)。
+        val dropped = retainActiveFormats()
+        if (dropped.isNotEmpty()) {
+          Log.i(tag, "selectFormat: dropped formats=$dropped (P11-274, 切换点段已在 grace 缓存)")
+        }
+      }
     }
+  }
+
+  /**
+   * P11-274:把 [oldItag] 最近 [GRACE_KEEP_SEGMENTS] 段真实媒体抄进 grace 缓存(带字节上限)。
+   * 只在视频档切换时调用一次;下一次切换会整体替换。
+   */
+  private fun captureGraceCache(oldItag: Int) {
+    val fmt = initializedFormats[oldItag] ?: return
+    val keep = ArrayList<Pair<Long, SabrSegment>>(GRACE_KEEP_SEGMENTS)
+    var bytes = 0L
+    // 取序号最大的几段(切换点附近);空段占位(data 为空/contentLength=0)一律不抄。
+    for ((seq, seg) in fmt.downloadedSegments.entries.sortedByDescending { it.key }) {
+      if (seq <= 0L) continue
+      if (seg.data.isEmpty() && seg.header.contentLength <= 0L) continue
+      if (keep.size >= GRACE_KEEP_SEGMENTS) break
+      val segBytes = seg.length().toLong()
+      if (keep.isNotEmpty() && bytes + segBytes > graceMaxBytes()) break
+      keep += seq to seg
+      bytes += segBytes
+    }
+    synchronized(graceLock) {
+      graceItag = if (keep.isEmpty()) 0 else oldItag
+      graceSegments.clear()
+      keep.sortedBy { it.first }.forEach { graceSegments[it.first] = it.second }
+    }
+    if (keep.isNotEmpty()) {
+      Log.i(
+        tag,
+        "grace cache(P11-274): itag$oldItag keep=${keep.map { it.first }.sorted()} bytes=$bytes",
+      )
+    }
+  }
+
+  /** P11-274:该格式是否已有**真实**该段(排除 P11-92 的空段占位)。只查缓存,不发请求。 */
+  fun hasRealSegment(itag: Int, sequenceNumber: Long): Boolean {
+    initializedFormats[itag]?.downloadedSegments?.get(sequenceNumber)?.let { seg ->
+      return seg.data.isNotEmpty() || seg.header.contentLength > 0L
+    }
+    synchronized(graceLock) {
+      if (graceItag == itag) {
+        graceSegments[sequenceNumber]?.let { seg ->
+          return seg.data.isNotEmpty() || seg.header.contentLength > 0L
+        }
+      }
+    }
+    return false
+  }
+
+  /** P11-274:grace 字节上限——小堆设备(同 P11-234 口径)再压到 16MB,避免 4K 旧档滞留挤爆堆。 */
+  private fun graceMaxBytes(): Long =
+    if (Runtime.getRuntime().maxMemory() < LOW_HEAP_MAX_BYTES) 16L * 1024 * 1024 else GRACE_MAX_BYTES
+
+  /** P11-274:从 grace 缓存取走一段(不发请求、不进 initializedFormats);取走即删。 */
+  private fun takeGraceSegment(itag: Int, sequenceNumber: Long): SabrSegment? =
+    synchronized(graceLock) {
+      if (graceItag != itag) null else graceSegments.remove(sequenceNumber)
+    }
+
+  /**
+   * 按「当前 A/V + 在途请求 + 预取候选」清理 [initializedFormats],返回被清掉的 itag。
+   * 与 `getNextSegment` 里 media() 后的清理同一口径(P11-92 / P11-130);P11-274 起在
+   * [selectFormat] 切档时也调用一次,确保切走的旧档不会继续出现在请求的 bufferedRanges 里。
+   */
+  private fun retainActiveFormats(): List<Int> {
+    val before = initializedFormats.keys.toList()
+    initializedFormats.keys.retainAll { f ->
+      f == audioFormat?.itag || f == videoFormat?.itag || f in pendingRequestItags ||
+        f == activePrefetchItag() // P11-130:预取候选档的缓存要保住,否则刚预取到就被清
+    }
+    return before.filter { it !in initializedFormats }
   }
 
   /** 末段序号([SabrChunkSource] 判 endOfStream 用)。 */
@@ -808,6 +905,15 @@ internal class SabrMediaFetcher(
     // 首次判死时已打过完整 diag(`InvalidPoToken diag: sessAgeMs…`),此处静默以免刷屏。
     if (invalidPo) throw SabrTerminalException("InvalidPoToken (session dead, fast-fail no-fetch)")
     val itag = req.formatItag
+    // P11-274:旧档 grace 缓存直出——切档后新档还没供上时,chunk source 会让旧档顶 1–2 段。
+    // 这段数据来自切走前的真实缓存,不发请求、不写回 initializedFormats(避免 P11-92 的 bufferedRange 回退)。
+    takeGraceSegment(itag, req.segment)?.let { seg ->
+      Log.i(
+        tag,
+        "getNextSegment: grace hit itag$itag seg=${req.segment} bytes=${seg.length()} (P11-274, 旧档缓存直出)",
+      )
+      return seg
+    }
     // 2026-08-31:在途 itag 入白名单(修重建后旧在途请求响应被广告过滤丢弃的死循环),finally 移除。
     pendingRequestItags.add(itag)
     return runBlocking {
@@ -846,12 +952,7 @@ internal class SabrMediaFetcher(
               // 2026-09-20(诊断):这道清理会**静默**丢格式,而丢了之后所有请求都变 `no seg`
               // (r2017 真机:140/302 的 init 登记过、也成功交付过一次,之后却 `no seg 0` 6 连 → evict)。
               // 打点把「丢了谁、当时 audioFormat/videoFormat/在途 是什么」一次说清,避免再靠猜。
-              val beforeKeys = initializedFormats.keys.toList()
-              initializedFormats.keys.retainAll { f ->
-                f == audioFormat?.itag || f == videoFormat?.itag || f in pendingRequestItags ||
-                  f == activePrefetchItag() // P11-130:预取候选档的缓存要保住,否则刚预取到就被清
-              }
-              val dropped = beforeKeys - initializedFormats.keys
+              val dropped = retainActiveFormats()
               if (dropped.isNotEmpty()) {
                 Log.w(
                   tag,
@@ -2035,6 +2136,12 @@ internal class SabrMediaFetcher(
     const val LOW_HEAP_MAX_BYTES = 256L * 1024 * 1024
 
     const val HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS = 15_000L
+
+    /** P11-274:切档 grace 缓存最多保留的旧档段数(覆盖“当前段 + 2 段顺延”)。 */
+    const val GRACE_KEEP_SEGMENTS = 3
+
+    /** P11-274:grace 缓存字节上限(4K 段 ~12–16MB,最多 3 段;超限则只保留更新的段)。 */
+    const val GRACE_MAX_BYTES = 48L * 1024 * 1024
 
     /** P11-225:「高档」的起始高度 —— 早停余量按档位分叉(≥1440p 一笔多搬一段)。 */
     const val HIGH_TIER_MIN_HEIGHT = 1440

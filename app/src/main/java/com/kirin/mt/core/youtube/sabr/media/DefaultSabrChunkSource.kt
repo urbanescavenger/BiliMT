@@ -104,6 +104,16 @@ internal class DefaultSabrChunkSource(
   /** P11-244:带宽闸拦下一次预取的一次性日志(按 itag 去重)——此前这道闸一声不响。 */
   private val prefetchGateRefusedLogged = mutableSetOf<Int>()
 
+  // ── P11-274(切档 grace):ABR 已选中新档,但新档的当前段还没被服务端供上时,先用旧档顶 1–2 段 ──
+  // 病象(§60):4K 升档被打回/回切,服务端只推 N+1/N+2,旧代码插空段占位 ⇒ 视频缺一段 + 解码器重配
+  // = 5–10s 画面冻住、音频照走。这里把切换点顺延到“新档真正有真实段”的那一段,旧档从 grace 缓存补洞。
+  /** 正在等待供段的目标档 index;−1 = 无。 */
+  private var pendingSwitchIndex = -1
+  /** grace 期间顶替播放的旧档 index。 */
+  private var graceFromIndex = -1
+  /** 还能顶几段(防止新档永远供不上时无限拖)。 */
+  private var graceSegmentsLeft = 0
+
   init {
     val representations =
       adaptationSetIndices.flatMap { manifest.adaptationSets[it].representations }.toList()
@@ -273,6 +283,112 @@ internal class DefaultSabrChunkSource(
     fetcher.prefetchFormat(nextItag)
   }
 
+  /**
+   * P11-274:切档预判——决定本 chunk 实际用哪一档。
+   *
+   * 正常切换(新档已有真实当前段)直接返回新档;新档当前段还没供上时,先向目标档发一次正常请求
+   * (服务端会把游标处的 N+1/N+2 推来),再用旧档 grace 缓存顶住 N,把切换点顺延到新档真正有
+   * 真实段的那一段。两条都不成立时返回新档(接受一个空段,回到 P11-92 旧行为)。
+   */
+  private fun resolveSwitchTarget(
+    selectedIndex: Int,
+    loadPositionUs: Long,
+    playbackPositionUs: Long,
+    playbackSpeed: Float,
+    queue: List<MediaChunk>,
+  ): Int {
+    if (pendingSwitchIndex < 0) return selectedIndex
+    // 起播/seek 后队列为空:不做 grace(此时“旧档还没真正在播”,顶位没有意义,也会拖慢起播)。
+    if (queue.isEmpty()) {
+      pendingSwitchIndex = -1
+      return selectedIndex
+    }
+    if (pendingSwitchIndex != selectedIndex) {
+      pendingSwitchIndex = -1
+      return selectedIndex
+    }
+    if (graceSegmentsLeft <= 0) {
+      pendingSwitchIndex = -1
+      return selectedIndex
+    }
+    val target = representationHolders.getOrNull(selectedIndex) ?: return selectedIndex
+    // 新档 init 还没完成:先让 init chunk 走(init 没有媒体段,不产生空隙),下一次再预判。
+    if (target.chunkIndex == null) return selectedIndex
+    val from = representationHolders.getOrNull(graceFromIndex) ?: return selectedIndex
+    if (from.chunkIndex == null || from.chunkExtractor == null) {
+      pendingSwitchIndex = -1
+      return selectedIndex
+    }
+    val targetItag = target.representation.formatId.itag
+    val fromItag = from.representation.formatId.itag
+    val previousChunk = queue.lastOrNull()
+    val targetSeg = currentSegmentNum(target, loadPositionUs, previousChunk)
+    val fromSeg = currentSegmentNum(from, loadPositionUs, previousChunk)
+    if (fetcher.hasRealSegment(targetItag, targetSeg + 1)) {
+      pendingSwitchIndex = -1
+      return selectedIndex
+    }
+    // 目标档还没有当前段:向它发一次正常请求,让服务端把游标处的真实段推来(响应本身可能是空段占位)。
+    warmSegment(target, targetSeg, playbackPositionUs, playbackSpeed, queue)
+    if (fetcher.hasRealSegment(targetItag, targetSeg + 1)) {
+      pendingSwitchIndex = -1
+      return selectedIndex
+    }
+    // 新档的真实段在更后面(N+1/N+2);旧档 grace 缓存能顶当前段 → 顺延切换点。
+    if (fetcher.hasRealSegment(fromItag, fromSeg + 1)) {
+      graceSegmentsLeft--
+      Log.i(
+        "YtSabrChunk",
+        "switch grace(P11-274): target itag$targetItag seg=${targetSeg + 1} 未供上, " +
+          "旧档 itag$fromItag seg=${fromSeg + 1} 顶位(left=$graceSegmentsLeft, " +
+          "targetNext=${fetcher.hasRealSegment(targetItag, targetSeg + 2)})",
+      )
+      return graceFromIndex
+    }
+    pendingSwitchIndex = -1
+    return selectedIndex
+  }
+
+  /** P11-274:与 [getNextChunk] 主路径同一口径的当前段号(previousChunk 优先,其次时间映射)。 */
+  private fun currentSegmentNum(
+    holder: RepresentationHolder,
+    loadPositionUs: Long,
+    previousChunk: MediaChunk?,
+  ): Long =
+    previousChunk?.nextChunkIndex ?: Util.constrainValue(
+      holder.getSegmentNum(loadPositionUs),
+      0,
+      holder.getLastAvailableSegmentNum(),
+    )
+
+  /** P11-274:向目标档预发一次媒体请求(响应可能只是空段占位;真实段 N+1/N+2 会被服务端推来)。 */
+  private fun warmSegment(
+    holder: RepresentationHolder,
+    segmentNum: Long,
+    playbackPositionUs: Long,
+    playbackSpeed: Float,
+    queue: List<MediaChunk>,
+  ) {
+    val itag = holder.representation.formatId.itag
+    val req = SabrSegmentRequest(
+      itag,
+      Util.usToMs(playbackPositionUs),
+      playbackSpeed,
+      segmentNum + 1,
+      Util.usToMs(holder.getSegmentStartTimeUs(segmentNum)),
+      queue.mapNotNull { (it.dataSpec.customData as? SabrSegmentRequest)?.segment },
+    )
+    try {
+      fetcher.getNextSegment(req)
+    } catch (e: Exception) {
+      // 预判失败不在此处处理:真正的失败会在随后的正常 chunk 加载里按原路径抛出/evict。
+      Log.w(
+        "YtSabrChunk",
+        "switch warm(P11-274) itag$itag seg=${segmentNum + 1} 失败: ${e::class.simpleName}: ${e.message}",
+      )
+    }
+  }
+
   override fun maybeThrowError() {
     // fatalError 由 fetcher.getNextSegment 抛 SabrTerminalException → DataSource open → chunk load error 通路,
     // 这里不重复 throw(对齐 LibreTube fatalError 走 getNextSegment throw)。
@@ -345,7 +461,8 @@ internal class DefaultSabrChunkSource(
 
     // 2026-08-31 B2:决策前快照——升/降档候选与合成 iterator 都基于「当前档」构(ABR 看到的是切换前
     // 状态,语义不变);staging 的 holder 与 fetcher 格式改到 updateSelectedTrack 之后重读(见下)。
-    val preSelectionHolder = representationHolders[trackSelection.selectedIndex]
+    val preSelectionIndex = trackSelection.selectedIndex
+    val preSelectionHolder = representationHolders[preSelectionIndex]
     // 增量升/降档(alpha.9X,修「Auto 起播低档后永不升档」):Auto 全轨自适应原把所有未下载轨的 iterator
     // 填 MediaChunkIterator.EMPTY,AdaptiveTrackSelection 看不到任何备选数据 → selectedIndex 冻结在低档
     // (默认带宽估计 ~1Mbps 起步如 itag244=480p),带宽涨了也无新轨可切。这里只给「当前档的下一高码率档」
@@ -434,8 +551,19 @@ internal class DefaultSabrChunkSource(
     // 原实现在决策前取 holder 并喂 fetcher.selectFormat → 切档决策对同一次调用 staged 的段无效
     // (23:24:48.052 水位急救 315→308,2ms 后 staged 的请求仍载 315 段),每次切档(含急救/升档)
     // 白吃一个循环的生效延迟。决策后重读:急救/切档当次 staged 的段立即按新档发出。
-    val representationHolder = representationHolders[trackSelection.selectedIndex]
-    fetcher.selectFormat(representationHolder.representation)
+    val selectedIndex = trackSelection.selectedIndex
+    if (selectedIndex != preSelectionIndex) {
+      // P11-274:记下这次切档。真正用哪一档由 [resolveSwitchTarget] 预判(新档没供上时先用旧档顶)。
+      pendingSwitchIndex = selectedIndex
+      graceFromIndex = preSelectionIndex
+      graceSegmentsLeft = SWITCH_GRACE_MAX_SEGMENTS
+    }
+    // 注意:selectFormat 必须喂**ABR 选中的档**(而不是下面 grace 临时顶替的旧档)——它同时负责
+    // 把旧档切换点附近的真实段抄进 fetcher 的 grace 缓存(P11-274),喂错会把缓存又抄回去。
+    fetcher.selectFormat(representationHolders[selectedIndex].representation)
+    val representationHolder = representationHolders[
+      resolveSwitchTarget(selectedIndex, loadPositionUs, playbackPositionUs, loadingInfo.playbackSpeed, queue)
+    ]
 
     if (representationHolder.chunkExtractor != null && representationHolder.chunkIndex == null) {
       // 新格式首请求:init 段(服务端按 isInitSeg 发 fMP4 init,ChunkExtractor 从中解 ChunkIndex)
@@ -521,7 +649,9 @@ internal class DefaultSabrChunkSource(
     out.chunk = ContainerMediaChunk(
       dataSource,
       dataSpec,
-      trackSelection.selectedFormat,
+      // P11-274:grace 期间本 chunk 来自旧档 → trackFormat 必须用实际 holder 的格式(与 extractor 一致);
+      // 否则 sample queue 会按 ABR 新档的格式解析旧档字节。
+      representationHolder.representation.format,
       trackSelection.selectionReason,
       trackSelection.selectionData,
       startTimeUs,
@@ -535,7 +665,7 @@ internal class DefaultSabrChunkSource(
       // P11-91 修了 tfdt 采集遍历 bug(此前补丁全程 no-op,offset 叠在原始绝对 tfdt 上时间轴
       // 翻倍,「播3秒跳10s」)。webm(VP9/AV1)轨无 tfdt,MatroskaExtractor 的 cluster 时间戳
       // 是绝对值(与网格一致),offset 必须保持 0,否则同样翻倍——按容器分流。
-      if (trackSelection.selectedFormat.containerMimeType?.endsWith("webm") == true) 0L else startTimeUs,
+      if (representationHolder.representation.format.containerMimeType?.endsWith("webm") == true) 0L else startTimeUs,
       representationHolder.chunkExtractor!!,
     )
   }
@@ -543,11 +673,16 @@ internal class DefaultSabrChunkSource(
   override fun onChunkLoadCompleted(chunk: Chunk) {
     // 2026-08-31 切轨停发诊断(log add):chunk 交付回执——真机 20:04 里 315 的 init+2 段全部
     // 交付后 loader 再无 getNextChunk(6s 空窗→看门狗),此日志界定「数据到位 vs media3 不再来要」。
+    val chunkItag = (chunk.dataSpec.customData as? SabrSegmentRequest)?.formatItag
+    val selectedItag = representationHolders.getOrNull(trackSelection.selectedIndex)
+      ?.representation?.formatId?.itag
     Log.i(
       "YtSabrChunk",
       "chunk completed: ${if (chunk is InitializationChunk) "init" else "media"}" +
-        " itag=${(chunk.dataSpec.customData as? SabrSegmentRequest)?.formatItag}" +
-        " bytes=${chunk.bytesLoaded()} sel=${trackSelection.selectedIndex}(${trackSelection.selectedFormat?.height}p)"
+        " itag=${chunkItag}" +
+        " bytes=${chunk.bytesLoaded()} sel=${trackSelection.selectedIndex}(${trackSelection.selectedFormat?.height}p)" +
+        // P11-274:grace 期间 chunk 来自旧档(sel 仍是 ABR 新档),一眼可辨。
+        (if (chunkItag != null && selectedItag != null && chunkItag != selectedItag) " [grace]" else "")
     )
     if (chunk is InitializationChunk) {
       val trackIndex = trackSelection.indexOf(chunk.trackFormat)
@@ -705,3 +840,12 @@ private const val PREFETCH_REVOKE_BUFFERED_US = 15_000_000L
  * 预取的本意就是测量/秒切,不该要求「已买得起」。白吃带宽仍由撤销线 + 同档只预取一次约束。
  */
 private const val PREFETCH_MAX_OVER_EST_PERMILLE = 1500L
+
+/**
+ * P11-274:切档 grace 最多顶替几段。
+ *
+ * 依据(§60 真机 6/6):服务端跳过请求段时通常只顺延 1–2 段(11:51 4K seg16 跳过 → 推 17/18;
+ * 回切 1440p seg17 跳过 → 推 19/20,即 N+2)。2 段足以覆盖观测到的全部场景;再长说明服务端游标
+ * 离得太远,旧档缓存也补不满,不如按旧行为切过去(接受一个空段),避免把画面钉在低档。
+ */
+private const val SWITCH_GRACE_MAX_SEGMENTS = 2

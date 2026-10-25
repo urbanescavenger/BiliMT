@@ -4779,3 +4779,145 @@ sus          = sustainedBytes × 8000 / activeSpanMs
 | `wired=true` 且 `real ≈ est` | 推翻上面 (a) 的排除,回来重查 |
 
 **副产品**:"`realBpsProvider` 指向已结束会话"这个 bug 无论如何都要修(P11-259 已修),但它**不是**本次播放失败的成因 —— 成因在 delegate 那一侧(或链路)。
+
+---
+
+## §59 P11-272:2026-10-25 晚场「连续重载」判读 —— 线路真的塌到 ~1Mbps,不是 ABR 幻觉
+
+**日志**:`logs_live_20261025_225501.log`(进程 8434,视频 `k0PzNmERKPM`)。用户问「是不是真的网速带宽不够」+「连续重载」。
+
+### §59.1 现场(原文数字)
+
+| 时刻 | 事实 |
+|---|---|
+| 22:47:11–22:48:19 | 正常场:1080p60 `itag=303`(10,139,944bps),`fetch REAL` 5–23Mbps(`6,556,598B/2,301ms→22Mbps`、`5,648,548B/1,946ms→23Mbps`),`bufS` 1.2s→**47.5s** |
+| 22:48:19→22:50:35 | gap **135,688ms**;`steady probe` 的 `pos=796113ms` 在 22:49:44–22:50:19 完全不动 ⇒ 用户暂停 |
+| 22:50:24 恢复 | `fwdBuf` 20,802ms → 22:50:49 只剩 **92ms**(几乎零供给) |
+| 22:50:35 | `fetch rn=15` → 22:50:53 `timeout (fail=18002ms bwNow=-1)`,零字节 |
+| 22:50:53 | `buffer-critical downgrade 1080p → 720p60(itag=302)` |
+| 22:51:09.577→22:51:15.485 | `itag=139 seq=84 contentLen=60,994` → 同一段 `MEDIA_END 60,994B`:60KB 用了 **5.9s ≈ 83kbps** |
+| 22:51:48 / 22:52:45 / 22:53:45 / 22:54:31 | 4 次自动重载(每次新 sid)。每次 `rn=0 REAL`:1,290,010B/9,632ms(**1Mbps**)、1,290,014B/13,770ms(**<1Mbps**)、2,185,953B/10,048ms(**1Mbps**)、2,185,953B/15,885ms(**1Mbps**) |
+| 之后每笔 | `itag=302 seg=168/169/170` 与 `itag=139 seg=84/85` 全部 6–8s 超时;`zero-reply` 实读 17,412B / 0B |
+| 22:54:55 | 用户退出播放器进设置页,没有一场自己恢复 |
+
+### §59.2 判据:是真的带宽不够(四条硬证据)
+
+1. **同一份响应的耗时直接掉了 7–20 倍**:起播 init 1.0MB/1,355ms(5Mbps)→ 重载后 1.29MB/9,632ms(1Mbps);前一小时同一进程还有 12–23Mbps 的连续样本。
+2. **不是"档位要太高"**:51kbps 的音频段 `itag=139` 60,994B 都要 5.9s(83kbps);4 场里连音频也 `Read timed out`。管道本身就几乎不供数。
+3. **不是某个会话/URL 粘住**:4 次重载都是新 `sid`(aTgk…/Tjdq…/XGs_…/BnMg…)+ 新 URL,慢速形状完全一致。
+4. **同一台机器当天能跑多快**:12:29–13:08 中位数 32–88Mbps,20:39–20:50 27–53Mbps ⇒ 不是设备/解码/应用上限;20:51–21:06 与 22:51–22:54 两次塌到 <1Mbps 并同样进入重载环,是**时段性的线路/节点拥塞**。22:55:00 同期普通网络正常(`BiliWebDav ping code=200 elapsed=1500ms`)⇒ 塌的是 **googlevideo 这条路**,不是整条宽带断。
+
+**读数纠偏**:`est=5,561,418K / 2,437,690K / 3,419,583K` 这类值是 media3 `DefaultBandwidthMeter` 被 `SabrDataSource` 的内存瞬时读污染的 delegate 值,**不是真实带宽**;本场真实吞吐只看 `fetch rn=N REAL …B …ms → xMbps`。
+
+### §59.3 为什么变成「连续重载」(应用侧放大器,本轮只记录不改)
+
+- 每次重载后选中档恒为 `itag=302`(4,992,150bps):ABR 行 `sel=4 bitrate=4992150`,同场 `bw=1,071K / 749K / 1,740K / 1,100K` 时仍未落到 480p/360p(只记录观察,未判死因)。
+- **起始档是 720p(用户设置)**:每场都在 `NewPipe SABR harvest … startHeight=720 defaultQualityMax=null defaultItag=298` ⇒ `YoutubeStartQuality=Q720`(默认是 Q480),`startupLockHeight=720`;`bestIndexOf` 在同高度先偏好顶档 codec(VP9)再比码率 ⇒ 选中 `302`(4,991,150)而不是 `298`(3,943,175)。首帧后 `releaseStartupLock()` 会松开,但整场 `sel` 一直停在 4。**因果**:720p 决定"塌网后每次重载都以 5Mbps 开局",链路 1Mbps 是根因;两者叠加才是无限重载。弱网下 480p(1.21–1.37Mbps)仍不够,只有 ≤360p(0.63–0.74Mbps)能稳。
+- 一个 `contentLen=2,114,525` 的 720p60 段在 ~1Mbps 下要约 17s;饥饿期 `callCap=8,000ms`(P11-173)+ `silence=3,000ms`(`min(8s, bufAhead/2)`,bufAhead<6s 时)⇒ 每段必被切;`evict → stall auto-retry → 新会话 → 还是 302` ⇒ 约每 50–60s 重载一次。
+- 因此即使 1Mbps 链路本可播 360p,这条链也永远落不到能播的档。
+
+### §59.4 结论
+
+- **对用户问题的回答:是,这段窗口里线到 YouTube 的可用带宽真的不够 720p60**(实测 0.8–1.7Mbps,720p60 要 5Mbps),不是播放器误判、也不是解码/GC。
+- **本轮不改 ABR**:按 §39 规矩,改升/降档前要先把整条判据链重新走一遍并写结论;本轮只留证据。后续若要修「重载后落不到可播档」,候选方向写在 §59.3,单独立项。
+- **下次复现的判别式**:连续 2 场新会话 `fetch REAL` 都 <2Mbps ⇒ 链路问题(换节点/等时段);`REAL` 有 5Mbps+ 但段仍超时 ⇒ 回到 silence/callCap 与 ABR 档位查。
+
+---
+
+## §60 P11-273:2026-10-25 "不时画面卡顿/冻住、音频正常" —— 4K 升档被打回时的**空段占位 + 解码器重配**,不是网络
+
+**日志**:`logs_live_20261025_225501.log`(进程 3141/19871,YouTube SABR,VP9)。用户问「不时有画面卡顿音频正常的现象 检查下原因」。
+
+### §60.1 现场:视频解码器 0 帧,音频时钟照走
+
+以 11:51 这场最完整(单位均为日志原文):
+
+| 时刻 | `steady probe` |
+|---|---|
+| 11:51:16.527 | READY pos=65368 rendered=**3927** fwdBuf=11631 |
+| 11:51:21.534 | READY pos=70372 rendered=**4228**(+301,60fps 正常) |
+| 11:51:26.539 | READY pos=75377 rendered=**4528**(+300,正常) |
+| 11:51:31.546 | BUFFERING pos=76910 rendered=**4620**(+92,已开始掉) |
+| 11:51:36.553 | READY pos=80560 rendered=**4620**(**+0**) fwdBuf=**27239** |
+| 11:51:41.560 | READY pos=85569 rendered=**4620**(**+0**) fwdBuf=**42763** |
+| 11:51:46.565 | READY pos=90567 rendered=**4822**(+202,恢复) |
+
+`rendered` 取自 `ExoPlayer.videoDecoderCounters.renderedOutputBufferCount`(`PlayerScreen.kt:2578`)⇒ **10 秒内视频解码器输出 0 帧**;同一时间 `pos` 前进 8.66s、`fwdBuf` 从 10s 涨到 43s。音频轨道继续(`AudioTrack getTimestamp_l(341)` 在 11:51:32 仍有活动)⇒ 用户看到的就是"画面冻住、声音照走"。**排除网络/缓冲**:冻结期间缓冲 27–43 秒,下载吞吐 23–29Mbps。
+
+### §60.2 触发链(6/6 同签名)
+
+每次冻结前都出现同一条链:**ABR 升 2160p → 缓冲水位急救打回 1440p → 服务端跳过切换点请求的段 → 空段占位 → 视频解码器重配 → 掉帧/冻帧**。
+
+| 时刻 | 4K→1440p 打回 | `server skipped seg`(P11-92) | 解码器重配 | 掉帧(probe 实测) |
+|---|---|---|---|---|
+| 11:51:25–41 | `buffer-critical downgrade 2160p@48904126 → 1440p`;`top-tier cooldown 180s` | seg16 itag315 + seg17 itag308(两笔 `bytes=0`) | 1080→1440(`CCodecConfig raw.crop/size`) | **10s 0 帧** |
+| 12:41:31–42 | 2160p→1440p | seg176 itag308 `bytes=0` | 1440 reconfig + `video size: 2560x1440` | 60→28→44fps,约 10s |
+| 12:53:13–33 | `buffer-critical downgrade 2160p@36237578 → 1440p` | seg314 itag308 `bytes=0` | 1440 reconfig | 20→13fps,约 10s |
+| 13:06:14–24 | `buffer-critical downgrade 2160p@29140203 → 1440p` | seg16 itag308 `bytes=0` | 2160→1440 reconfig | 21fps,约 5s |
+| 20:46:50–47:02 | `buffer-critical downgrade 2160p@33169739 → 1440p` | seg100 itag308 `bytes=0` | 1440 reconfig | 23.6fps,约 5s |
+
+日志全文 `server skipped seg` 恰好 **6 次**,6 次都紧跟 `chunk completed: media ... bytes=0`,6 次都紧邻 `CCodecConfig: c2 config diff ... raw.crop.height` 与 `video size:` 变化,6 次之后都出现 `rendered` 增速下降或归零。**没有一次发生在纯网络慢的会话**(22:51 那场是 `stall detected`+整场重载,不是本症状)。
+
+### §60.3 机制与排除项
+
+- **不是网络**:冻结窗口 `fwdBuf` 27–43s、`fetch REAL` 23–29Mbps;而 22:51 的重载场是 `fwdBuf=83ms`+超时,形状完全不同。
+- **不是 codec 族切换**:全程 `video=vp9`,`c2.mtk.vp9.decoder` 同一实例,只有 `raw.crop/raw.size` 分辨率变化(1080↔1440↔2160)。所以 P11 "VP9 粘性梯子" 挡不住这一类。
+- **不是解码器重建**:期间没有 `CCodec allocate`/`Release`,是同一 VP9 解码器内的格式重配。
+- **空段是关键导火索**:`getNextSegment: server skipped seg N itag 315/308 (fresh ahead=[N+2,N+3]) → 空段占位跳过(P11-92)`,即 SABR 切轨时服务端只肯从更后面的段开始推,我们插了一个 0 字节占位段。该空段本身不产生样本,而随后的 `video size:`/`c2 config diff` 说明视频渲染器正在跨分辨率重配 —— 两者叠加时,视频管线会有 5–10 秒不吐帧;音频缓冲独立,所以声音不断。
+- **为什么"不时"而不是每次**:4K 每次被打回都会 `top-tier cooldown 180s`,即约每 3 分钟才再试一次;每次再试就是这个窗口 ⇒ 观感为隔一阵卡一次。
+
+### §60.4 本轮结论
+
+- **根因不在"网速"**,在**4K 升档被打回时的切轨路径**:空段占位 + 分辨率重配让视频渲染停 5–10 秒。
+- **不修改代码**:按 §39 规矩,动 4K 升降/冷却前需先重走判据链;且真正该动的是"切轨空段"与"重配期渲染"这条独立链路,不是带宽判据。
+- **后续候选方向(未实施,单独立项)**:
+  ① 切轨后遇到 `server skipped seg` 时,直接用服务端已推来的段(fresh ahead)而不是插空占位,避免解码器在"空段+新分辨率"之间重配;
+  ② 跨分辨率切换时,等首个真实样本到手再做 format 切换(或把切换点固定到下个完整段),避免解码器空转;
+  ③ 复核 4K 冷却到期后的再试是否值得(每次再试都换一次 5–10 秒卡顿);若保留,至少让再试不触发分辨率重配。
+- **判别式(下次真机)**:出现卡顿时,先看 `steady probe` 的 `rendered` 是否停住而 `pos` 继续;若停住,再看前后 10 秒内是否有 `server skipped seg` + `bytes=0` + `CCodecConfig c2 config diff`。三者齐 = 本症状,不要再往网络方向查。
+
+### §60.5 优化方案(用户追问「有优化方案吗 正常切换时没有空隙的」「没有预判吗」)
+
+**先确认事实:正常切换本来是无缝的** —— 11:51:01/06 的 `720→1080→1440` 两次切档,`init` 后直接拿到真实媒体段,`rendered` 全程 300/5s,没有空段。有间隙的只有**切到"服务端游标已越过请求段"的档**这一种(4K 试探、刚播过的档回切):服务端只推 N+1/N+2,当前代码在 [SabrMediaFetcher.kt:906-934](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L906-L934) 插**空段占位**(P11-92) → 视频缺一段 + 解码器重配 → 5–10s 无帧。
+
+**现状没有"事前预判"**:`fresh ahead` 是**服务端响应之后**才算出来的,拿到后只能插空段补救;`P11-130` 预取是唯一的事前动作,但被判定会抢响应预算、已收窄;`servedIndexesInGroup` 只约束材料会话的可选档,不解决切换点。所以现在全是事后补救。
+
+**方案 A(推荐,预判式切换点)**
+1. `SabrMediaFetcher` 暴露两个只读量:`hasSegment(itag, seq)`(包一层 [SabrFormatInfo.hasSegment](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrSegment.kt#L123))与 `sessionPushCursor`(最近一笔响应里跨格式推到的最大 seq)。
+2. [DefaultSabrChunkSource.getNextChunk](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/DefaultSabrChunkSource.kt#L409) 在 `updateSelectedTrack` 之后加"切换预判":`selectedIndex` 变了 → 算新档当前 `segmentNum`;若新档 `!hasSegment(segmentNum)` 而旧档有该段(或旧档 chunkIndex 覆盖该段)→ **本次仍从旧档出 chunk**,记 `pendingSwitch=newIndex`;下一轮新档能供段(或游标已到 N+1)→ 从新档出 chunk。切换点自然落在 N+1,旧档补 N,**时间线没有洞**。
+3. 新档首笔媒体请求直接用 `max(segmentNum, sessionPushCursor)`,不再请求已被游标越过的 N —— 这是"预判跳段",替代现在的"响应后插空段"。
+- 约束:grace 只在旧档该段**已在缓存**时生效,且最多 1–2 段;降档急救时若旧档也没有该段,不 grace(直接切,接受一个段的重配)。
+
+**方案 B(降档优先命中缓存)**
+- `retainAll` 现在每次响应后清掉非当前格式的缓存([SabrMediaFetcher.kt:839-853](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L839-L853))。保留"上一个选中档"最近 1–2 段(按字节上限,4K 段 12–16MB 要并入 P11-230 的内存预算),降档时优先用缓存段,不再请求已被游标越过的段。
+
+**方案 C(减少触发,不是无缝)**
+- 4K 冷却(180s)到期再试时抬高门槛(缓冲 ≥ N 秒、sustained ≥ declared×margin),或把 4K 试探改成"不改变播放档的静默测量"。这只能减少卡顿次数,不解决切换路径本身。
+
+**方案 D(关键帧对齐)**
+- 空段之后剩下的 5–10s 很可能是在等下一个关键帧:新档首段不是 sync frame 时继续用旧档,直到下一个关键帧。需要从 `ChunkIndex`/首样本 flags 取。
+
+**优先级**:A(必做,直接消掉空段)→ B(降档体验)→ D(残余卡顿)→ C(止损)。
+**验证判据**:同一 4K 试探场景下,切换边界不得再出现 `bytes=0`;`rendered` 在切换前后任意 5s 窗口 ≥280(60fps 源);`720→1080→1440` 正常切换行为不变。**验收对照**:升档允许最多多等 1 段;降档在旧档段已缓存时不允许等。
+
+### §60.6 P11-274 实施(方案 A + B 的合并最小版)
+
+**改动文件**:`SabrMediaFetcher.kt`、`DefaultSabrChunkSource.kt`。
+
+**`SabrMediaFetcher`(旧档 grace 缓存,方案 B)**
+1. 视频档切换时(`selectFormat`)把切走那一档**最近 3 段真实媒体**抄进独立 grace 缓存(`downloadedSegments` 已被 `getSegment` 消费掉的不抄;空段占位不抄);上限 48MB,小堆(<256MB)压到 16MB。
+2. 切档后立刻 `retainActiveFormats()` 清一次 `initializedFormats`,保证旧档不再进 `selectedFormatIds` / `bufferedRanges`(**P11-92 回归防线**);grace 缓存独立存放,不参与请求编码。
+3. 新增 `hasRealSegment(itag, seq)`(排除空段占位)与 grace 直出:旧档请求命中 grace 缓存时**不发网络、不写回 `initializedFormats`**。
+4. `initializedFormats` 改 `ConcurrentHashMap`——`hasRealSegment` 在 loader 线程读,普通 HashMap 有读写竞争。
+
+**`DefaultSabrChunkSource`(切档预判,方案 A)**
+1. `updateSelectedTrack` 检测到切档后,记 `pendingSwitchIndex` / `graceFromIndex` / `graceSegmentsLeft = 2`。
+2. `resolveSwitchTarget()`:新档已有真实当前段 → 正常切;没有 → **先向新档预发一次请求**(把服务端游标处的 N+1/N+2 推来),再用旧档 grace 缓存顶当前段,切换点顺延;两者都不成立才回落到旧行为。
+3. grace 期间 chunk 的 `trackFormat` 改用**实际 holder 的 format**(否则 sample queue 会按新档格式解旧档字节);`[grace]` 标记打进 `chunk completed` 日志。
+4. 起播/seek 队列为空时不 grace;最多顶 2 段。
+
+**验证判据(下次真机)**:
+- `switch grace(P11-274)` 出现时,`chunk completed ... [grace]` 与 `getNextSegment: grace hit` 成对出现;
+- 切换边界不再出现落地的 `bytes=0` 空段;`rendered` 前后 5s 窗口 ≥280(60fps 源);
+- `720→1080→1440` 正常切换不变(不出现 grace 行);
+- grace 缓存日志 `keep=[...] bytes=...` 不超过 48MB(小堆 16MB)。
