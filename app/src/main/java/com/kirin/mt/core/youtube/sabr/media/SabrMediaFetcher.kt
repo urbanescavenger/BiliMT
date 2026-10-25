@@ -869,7 +869,9 @@ internal class SabrMediaFetcher(
       f == audioFormat?.itag || f == videoFormat?.itag || f in pendingRequestItags ||
         f == activePrefetchItag() // P11-130:预取候选档的缓存要保住,否则刚预取到就被清
     }
-    return before.filter { it !in initializedFormats }
+    // 显式 containsKey:ConcurrentHashMap 的 `in` 会解析成 containsValue(KT-18053),
+    // 项目 warnings-as-errors 下直接编译失败。
+    return before.filterNot { initializedFormats.containsKey(it) }
   }
 
   /** 末段序号([SabrChunkSource] 判 endOfStream 用)。 */
