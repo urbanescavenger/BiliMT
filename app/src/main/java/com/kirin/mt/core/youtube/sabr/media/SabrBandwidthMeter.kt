@@ -26,6 +26,24 @@ internal class SabrBandwidthMeter(
   @Volatile
   private var realBpsProvider: (() -> Long)? = null
 
+  /**
+   * P11-282:构造时的初始 seed(PlayerScreen/MobilePlayerScreen 传 `youtubeStartQuality.seedBps()`)。
+   * SABR 会话在拿到第一笔真实样本前用它,而不是回退 delegate —— 见 [getBitrateEstimate]。
+   */
+  private val initialSeedBps: Long = delegate.getBitrateEstimate()
+
+  /**
+   * P11-282:最后一次**有效**的真实带宽(bps),-1 = 尚未测到。
+   *
+   * 为什么需要它:P11-167 定下「窗口零字节 → 返回 -1」,P11-259 又证实 delegate 会被
+   * `SabrDataSource` 的内存瞬时读样本污染且跨视频不重置。两者相遇就是真机 r2249 的病象:
+   * 连续 8s 超时 → real=-1 → 回退 delegate → **est=1307182K(1.3Gbps)** → ABR 不降档 → 缓冲漏光 stall。
+   * 这里保留最后一次真实样本:既不像 0 那样把「证据不足」当成「带宽为零」(P11-167 的 144p),
+   * 也不像 delegate 那样给出污染高估。
+   */
+  @Volatile
+  private var lastRealBps: Long = -1L
+
   @Volatile
   private var sustainedBpsProvider: (() -> Long)? = null
 
@@ -144,6 +162,8 @@ internal class SabrBandwidthMeter(
    * 故:**非 SABR 源加载前必须清**。SABR 源不必清(会话由 `DefaultSabrChunkSource` 当场重新接线)。
    */
   fun clearSessionProviders() {
+    // P11-282:换源后 lastRealBps 也失效;下一次 SABR 会话从 seed 重新起步。
+    lastRealBps = -1L
     realBpsProvider = null
     sustainedBpsProvider = null
     sustainedRawBpsProvider = null
@@ -163,8 +183,14 @@ internal class SabrBandwidthMeter(
    */
   fun diagEstimateSources(): String {
     val real = realBpsProvider?.invoke()
-    return "est=${getBitrateEstimate() / 1000}K " +
-      "real=${real?.let { "${it / 1000}K" } ?: "unwired"} " +
+    // P11-167 的教训:整数除法会把 -1 打成 0K,把「证据不足」误读成「带宽为零」。
+    val realText = when {
+      real == null -> "unwired"
+      real < 0L -> "-1(证据不足)"
+      else -> "${real / 1000}K"
+    }
+    return "est=${getBitrateEstimate() / 1000}K real=$realText " +
+      "last=${if (lastRealBps >= 0L) "${lastRealBps / 1000}K" else "-1"} " +
       "delegate=${delegate.getBitrateEstimate() / 1000}K wired=${realBpsProvider != null}"
   }
 
@@ -194,10 +220,22 @@ internal class SabrBandwidthMeter(
   fun getSustainedBitrateEstimateRaw(): Long = sustainedBpsProvider?.invoke() ?: -1L
 
   override fun getBitrateEstimate(): Long {
-    // alpha.9Z:real=0(窗口内全是被迫空转,供给归零)也是有效判定——回落 delegate 会用传输期高估
-    // 把选轨器弹回高档,正好复现「卡死不降档」。仅 -1(尚无任何样本)才回退底层估计。
-    val real = realBpsProvider?.invoke() ?: -1L
-    return if (real >= 0L) real else delegate.getBitrateEstimate()
+    // 非 SABR 源(provider 已拆线):沿用 media3 默认计,行为不变。
+    val provider = realBpsProvider ?: return delegate.getBitrateEstimate()
+    // alpha.9Z:real=0(窗口内全是被迫空转,供给归零)也是有效判定,不再回退 delegate。
+    val real = provider()
+    if (real >= 0L) {
+      lastRealBps = real
+      return real
+    }
+    // ── P11-282:real=-1(窗口内零字节,如连续 8s 超时)────────────────────────────────────
+    // 不能回退 delegate:它被 SabrDataSource 内存读样本污染过,真机 r2249 出现 est=1307182K
+    // (1.3Gbps),ABR 因此不降档、缓冲漏光 → stall(P11-167 当时以为 delegate 免疫空转,
+    // P11-259 已证实并非如此,但只给非 SABR 源拆了线)。
+    // 也不能返回 0:那会把「证据不足」当「带宽为零」,直接砸最低档(P11-167 的 144p 病)。
+    // 取最后一次有效真实值;会话内还没测到过就用构造 seed(≈起播画质),都比污染值可靠。
+    if (lastRealBps >= 0L) return lastRealBps
+    return initialSeedBps
   }
 
   override fun getTimeToFirstByteEstimateUs(): Long = delegate.getTimeToFirstByteEstimateUs()

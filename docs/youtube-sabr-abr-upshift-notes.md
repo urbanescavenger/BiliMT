@@ -5001,3 +5001,61 @@ C est 滞回、D 升档后 10s 宽限(本例已过 13s)、E 提前解除未参�
 - **否证**:①若旧档顶位期间服务端把游标拖在旧档上、目标档迟迟不推 ⇒ 检查 `bufferedRanges` 是否仍包含
   旧档(应被排除);②若 2 段 grace 用尽仍切换卡顿 ⇒ 目标档预取未生效,需评估把 `SWITCH_GRACE_MAX_SEGMENTS`
   提到 3 或改异步 warm;③若升档路径出现新的 P11-92 回退 ⇒ 检查 `graceSourceItag` 是否在升档完成时被清。
+
+## §62 P11-282 SABR 带宽估计不再回退被污染的 delegate(2026-10-27,3.1.2-alpha.3)
+
+**起因**:用户「看看最新日志 只是带宽不够吗」→「先看看历史有没有处理过 再改」。
+真机 `logs_live_20261027_004122.log`(3.1.2-alpha.3,`dur=1733000ms`,续播 ~1198s)。
+
+### §62.1 历史:处理过两次,但留着当前这条缝
+
+1. **P11-167(2026-09-21,`docs/youtube-web-sabr.md` §5.11.14)**:用户暂停被当成零供给 →
+   `est=0K` → 直落 144p。修法:超长 gap 不计 active est;`getRealBitrateEstimate()` 在
+   `realBwBytes <= 0` 时返回 **-1**,由 `SabrBandwidthMeter` **回退 delegate**;当时的判断是
+   「delegate 天然免疫空转」。同时加 `fmtEstForLog()` 把 -1 原样打成 -1。
+2. **P11-259(2026-10-15,本文件 §58.3)**:真机证实 **delegate 不免疫** —— 它被 `SabrDataSource`
+   的内存瞬时读样本污染(1M↔437M),每个 PlayerScreen 只建一次、跨视频不重置,自动重载也不重置。
+   修法:新增 `clearSessionProviders()`,**只对非 SABR 源拆线**;SABR 的 `real=-1 → delegate`
+   回退**原样保留**。新增 `diagEstimateSources()` 打印 est/real/delegate/wired。
+3. **残留缺口(本条)**:SABR 源、窗口零字节(连续 8s 超时)→ `real=-1` → 回退 delegate →
+   读到污染值。P11-167 的「delegate 免疫」前提被 P11-259 推翻,但回退路径没跟着改。
+
+### §62.2 本次证据
+
+```
+00:37:06.649  fetch rn=2 exception: timeout (fail=8001ms bwNow=-1)
+00:37:07.658  YtSabrAbr: ... bw=1307182K
+00:37:08.121  steady probe ... bw[est=1307182K real=0K delegate=1307182K wired=true]
+00:37:13      fwdBuf=1957ms
+00:37:18      fwdBuf=92ms
+00:37:23      stall detected @pos=1198056ms buffered=69%   (buffered=总缓冲百分比 1198/1733;fwdBuf 才是 92ms)
+```
+
+- `real=0K` 是 `diagEstimateSources()` 把 `-1 / 1000` 整除打出来的,实际是 `-1(证据不足)`;
+  P11-167 的 `fmtEstForLog()` 没被这个新诊断复用 —— 显示口径回退。
+- 同一场 00:39:57 行 `delegate=683040K`(683Mbps),再次证明 delegate 滑窗里是内存读样本。
+- 真实链路本身也差:720p 首段 `1598890B / 8657ms ≈ 1.5Mbps`,随后连续 8s/12s 超时零字节;
+  1440p 场 `9147228B / 21153ms ≈ 3.4Mbps`。**但假 est 让 ABR 在漏光前没有降档**。
+
+### §62.3 修法(避免重蹈两次旧坑)
+
+`SabrBandwidthMeter`:
+- 新增 `lastRealBps`:每次 `real >= 0` 记录;**`real == -1` 时返回最后一次有效真实值**;
+- 新增 `initialSeedBps = delegate.getBitrateEstimate()`(构造时 = `youtubeStartQuality.seedBps()`);
+  会话内从未测到真实值 → 返回 seed,**不回退 delegate**;
+- `realBpsProvider == null`(非 SABR 源)→ 仍走 delegate(行为不变);
+- `clearSessionProviders()` 一并重置 `lastRealBps`;
+- `diagEstimateSources()` 把 `-1` 打成 `-1(证据不足)`,并新增 `last=` 一项。
+
+**为什么不是 0 / 不是 delegate**:0 = 把「证据不足」当「带宽为零」→ P11-167 的 144p;delegate =
+P11-259 已证实的污染值(本次 1.3Gbps)。last-valid 是唯一同时避开两者的取值:最坏是沿用一个
+稍旧的乐观值,但会被后续真实样本/水位急救/往返闸校正,不会出现 1000 倍高估。
+
+### §62.4 验收 / 否证线
+
+- **验收**:连续超时后 `steady probe` 的 `est` 应停在最后一笔真实值(百 K~数 M),不再出现
+  `est=1307182K` 这类 >100M 的跳变;`launch bw` 行出现 `real=-1(证据不足) last=<…> delegate=<…>`,
+  且 SABR 会话的 `est` 不等于 delegate;ABR 应在 `fwdBuf` 漏光前降档。
+- **否证**:①若 `real=-1` 且 `last=-1` 时 est 恒等于 seed、导致冷启动迟迟不升档 ⇒ 可接受(起播画质
+  本来就该稳),但若长时间不升需查真实样本是否根本没进来;②若非 SABR 源(B 站)行为变化 ⇒ 说明
+  provider=null 分支被误改,必须回退;③若仍出现 >100M 的 est ⇒ 检查是否还有别处直接读 delegate。
