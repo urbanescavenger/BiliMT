@@ -1108,6 +1108,12 @@ Auto 升降档三连修(当日 4 轮真机迭代):①声明码率在高码率源
 
 §6.25/§23 的 cap 重填容量通道首验证伪:cap 测的仍是服务端供给节奏(SABR 按 selectedFmts 的档位 pace 供流)——Auto 480p 会话 est/sus/cap 全钉在 ~3M,70 秒后手切 1440 同网络实测 22-24Mbps(cap 3129K→22475K)。播 X 档永远只能测到 ~X 档量级「容量」,测量型门槛结构性看不到真管道。修法:满缓冲试探升档——缓冲升穿 max(15s 地板, 0.8×历史最高水位)(跨线判定防首填误触发)+ canUpgrade 不豁免 + 下一档不在失败冷却时,容量/持续闸失真也升一档;试探本身治愈测量(新档 pacing 把 sus/cap 喂到真实量级);失败由重锚+滞回+水位急救回收并记 3min 失败冷却;×1.1 顶档 sustained 闸与起播 stall 冷却不试探(4K/起播防线不松)。
 
+## 6.27 首次握手超时把 SABR 打成 DASH 兜底(2026-10,debug r2248)
+
+**状态:已实施(P11-278;`BiliHttpClientFactory.createYoutubeClient` 的 `connectTimeout` 15s→5s)。**
+
+真机 `logs_live_20261026_224821.log` 的起播链:SABR 会话构建调 NewPipe `StreamInfo.getInfo`,首次请求连 `youtubei.googleapis.com` 的首个 IPv6 地址 `2001:4860:4845:400::` 卡满 15s;`baseBuilder()` 的 `callTimeout` 同为 15s,OkHttp 还没轮到 DNS 里下一个 A/AAAA 地址整发调用就被取消(`SocketException: Socket closed`)→ `NewPipe getInfo failed: timeout`(无「兜底:」前缀,即 SABR 路径)。紧接着兜底 `buildDashFallbackFromNewPipe` 再发一次同一请求,同一地址 0.42s 连上(`proto=h2`)并 200,于是本次播放走自合成 DASH,按「默认画质」锁定 2160p。**不是坏 IP / DNS 污染**:同一地址第二次即通,同会话里 www.youtube.com / m.youtube.com / www.google.com 的 IPv6 建连全部秒连。**修法**:connectTimeout 管的是单个路由的建连+TLS 握手(OkHttp 在 `connectSocket` 内完成 TLS),降到 5s 后同一次 call 内仍有约 10s 换地址/重连,整体预算仍由 callTimeout=15s 兜住。**验证判据**:复现时日志应出现「connect failed 某地址(5s 左右)→ 下一个地址 connected」后仍走 `SABR playback ready`;若不再出现首连吃满 15s 的 `Socket closed`,即生效。
+
 ## 7. 关键文件
 
 | 文件 | 作用 |

@@ -52,6 +52,14 @@ class BiliHttpClientFactory {
     // P11-275:临时诊断(排查完删除)。此前 YouTube 链路只看到 429 / 重定向环,看不到解析到的 IP、
     // 实际连接地址与 HTTP 状态,无法区分 DNS 污染 / 出口节点 / 请求被拦。
     return baseBuilder()
+      // P11-278:首次握手超时防护。真机 r2248 日志(`logs_live_20261026_224821.log`):
+      // `youtubei.googleapis.com` 的首个 IPv6 地址(2001:4860:4845:400::)在 TCP/TLS 握手上卡满
+      // 15s,而 baseBuilder 的 callTimeout **也是 15s** ⇒ OkHttp 还没轮到 DNS 里下一个 A/AAAA
+      // 地址,整流就被取消(`SocketException: Socket closed`)→ SABR 的 getInfo 直接 timeout,
+      // 落兜底 DASH;15s 后同一地址第二次只花 0.42s 就连上(瞬时抖动,不是坏 IP/污染)。
+      // connectTimeout 管的是**单个路由**的建连 + TLS 握手(OkHttp 在 connectSocket 内完成 TLS),
+      // 降到 5s 后同一次 call 内还有 ~10s 去试下一个地址;整体预算仍由 callTimeout=15s 兜住。
+      .connectTimeout(YoutubeConnectTimeoutSeconds, TimeUnit.SECONDS)
       .dns(YoutubeNetDiag.dns)
       .eventListener(YoutubeNetDiag.listener)
       .build()
@@ -89,6 +97,8 @@ class BiliHttpClientFactory {
 
   private companion object {
     const val NetworkTimeoutSeconds = 15L
+    /** YouTube 单个路由的建连+TLS 握手上限;必须明显小于 [NetworkTimeoutSeconds],留出换地址的余量。 */
+    const val YoutubeConnectTimeoutSeconds = 5L
     const val DownloadConnectTimeoutSeconds = 30L
     const val DownloadReadTimeoutSeconds = 30L
     const val DownloadWriteTimeoutSeconds = 60L
