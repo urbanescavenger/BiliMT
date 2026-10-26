@@ -148,6 +148,15 @@ internal class SabrMediaFetcher(
   private var graceItag: Int = 0
   private val graceSegments = LinkedHashMap<Long, SabrSegment>()
 
+  // ── P11-281(降档无缝):切换进行中仍要能拉旧档的下一段 ──────────────────────────────────────
+  // 真机 r2249(`logs_live_20261026_234019.log` 23:35:52):720→1080 试升 13s 后带宽不够,
+  // `buffer-critical downgrade` 1080→720。旧档 303 还有 13.3s 缓冲,但 P11-274 在 selectFormat 时
+  // 立刻 retainActiveFormats 把 303 整条丢掉,而 grace 只留了切换点 [33,34] 两段(当前要的是 38/39)
+  // ⇒ resolveSwitchTarget 无旧档可顶,只能同步 warm 新档,新档首段 5.3s 才到 ⇒ 画面+位置双冻结 5s。
+  // 这里把「正在切走的旧档」记为 graceSource:切换期间 retainActiveFormats 保它、请求 bufferedRanges
+  // 排除它(P11-92 防线不变),让 chunk source 能继续拉旧档下一段顶住播放,新档在后台/后续请求里预热。
+  @Volatile private var graceSourceItag: Int = -1
+
   /**
    * 2026-09-20(C1「跟着服务端走」):**服务端实际推来的视频 itag 集合**(FORMAT_INITIALIZATION_METADATA
    * 里出现过的,含被白名单跳过的)。
@@ -788,15 +797,32 @@ internal class SabrMediaFetcher(
       if (audioFormat != representation.formatId) audioFormat = representation.formatId
     } else if (MimeTypes.isVideo(mime)) {
       if (videoFormat != representation.formatId) {
-        // P11-274:切走前把旧档切换点附近的真实段抄进 grace 缓存(旧档随后会被 retainAll 整条丢掉,
-        // 而回切/急救往往正好要它的当前段)。只抄真实段,跳过 P11-92 的空段占位。
+        // P11-274:切走前把旧档切换点附近的真实段抄进 grace 缓存(只抄真实段,跳过 P11-92 空段占位)。
         videoFormat?.let { captureGraceCache(it.itag) }
         videoFormat = representation.formatId
-        // 立刻按「当前 A/V + 在途 + 预取」清一次:旧档不能再留在 initializedFormats 里参与
-        // selectedFormatIds / bufferedRanges 编码(否则回退 P11-92“旧档缓冲尾拖住服务端游标”)。
+        // P11-281:不再在这里立刻 retainActiveFormats。切换进行中旧档还要继续供 chunk 顶住播放
+        // (见 [graceSourceItag]);旧档已从请求 bufferedRanges 里排除,P11-92 防线不变。
+        // 真正清理由 chunk source 在切换完成时 setGraceSourceItag(-1) + 下次 media() 后的
+        // retainActiveFormats 完成。
+      }
+    }
+  }
+
+  /**
+   * P11-281:标记「正在切走的旧档」。非 -1 期间:
+   * - [retainActiveFormats] 保住它,允许 chunk source 继续拉它的下一段顶住播放;
+   * - 请求的 `bufferedRanges` 排除它(P11-92:旧档缓冲尾不能拖服务端游标)。
+   * 切换完成(或放弃)时传 -1。
+   */
+  fun setGraceSourceItag(itag: Int) {
+    if (graceSourceItag != itag) {
+      Log.i(tag, "switch source(P11-281): graceSourceItag $graceSourceItag → $itag")
+      graceSourceItag = itag
+      // 切换完成/放弃:立刻恢复 P11-274 的清理口径,旧档不再参与 bufferedRanges。
+      if (itag < 0) {
         val dropped = retainActiveFormats()
         if (dropped.isNotEmpty()) {
-          Log.i(tag, "selectFormat: dropped formats=$dropped (P11-274, 切换点段已在 grace 缓存)")
+          Log.i(tag, "switch source cleared(P11-281): dropped formats=$dropped")
         }
       }
     }
@@ -867,7 +893,8 @@ internal class SabrMediaFetcher(
     val before = initializedFormats.keys.toList()
     initializedFormats.keys.retainAll { f ->
       f == audioFormat?.itag || f == videoFormat?.itag || f in pendingRequestItags ||
-        f == activePrefetchItag() // P11-130:预取候选档的缓存要保住,否则刚预取到就被清
+        f == activePrefetchItag() || // P11-130:预取候选档的缓存要保住,否则刚预取到就被清
+        f == graceSourceItag // P11-281:切换进行中,旧档还要供 chunk 顶住播放
     }
     // 显式 containsKey:ConcurrentHashMap 的 `in` 会解析成 containsValue(KT-18053),
     // 项目 warnings-as-errors 下直接编译失败。
@@ -1296,8 +1323,10 @@ internal class SabrMediaFetcher(
     // P11-130(升档预加载):预取档**不报缓冲**(报"没有" = 请把数据推给我),否则服务端按我们的
     // bufferedRange 判「已给过」就不再推。其余轨维持自身缓存形态(P11-92 已实证裁掉当前轨不破坏推送游标)。
     val prefetchActive = activePrefetchItag()
+    val graceSource = graceSourceItag
     val bufferedRanges = initializedFormats.values
-      .filter { it.id.itag != prefetchActive }
+      // P11-281:切换中的旧档不报缓冲(它还在供 chunk,但缓冲尾不能拖服务端游标,同 P11-92 口径)。
+      .filter { it.id.itag != prefetchActive && it.id.itag != graceSource }
       .flatMap { fmt ->
         val cap = if (fmt.id.itag == req.formatItag) req.segment.toLong() else Long.MAX_VALUE
         fmt.buildBufferedRanges(cap)

@@ -4921,3 +4921,83 @@ sus          = sustainedBytes × 8000 / activeSpanMs
 - 切换边界不再出现落地的 `bytes=0` 空段;`rendered` 前后 5s 窗口 ≥280(60fps 源);
 - `720→1080→1440` 正常切换不变(不出现 grace 行);
 - grace 缓存日志 `keep=[...] bytes=...` 不超过 48MB(小堆 16MB)。
+
+## §61 P11-281 起播 30s 降档冻结判读 + 判据链复核(2026-10-26,dev.r2249)
+
+**起因**:用户「好像 最开始30s播放都有卡顿 都是网络问题吗」→「之前起播30s不太会出现卡顿」→「做吧」。
+真机 `logs_live_20261026_234019.log`(dev.r2249)23:34 段:续播 159s,720p 起播。
+
+### §61.1 现象(证据)
+
+```
+23:35:39.632  trial upshift (buffer-full probe): bufS=26s threshold=20s → itag303(1080p) declared=5352805 est=3351K sus=1272K
+23:35:39.622  prefetch held (P11-244 带宽闸): itag303(1080p) declared=5352K > est=3351K×1.5 — 够不着先不预取
+23:35:52.363  buffer-critical downgrade: bufS=13s itag303/1080p@5352805 → 720p@3162748 roundTrip=8095ms
+23:35:52.364  grace cache(P11-274): itag303 keep=[33, 34] bytes=3368667
+23:35:52.365  selectFormat: dropped formats=[303] (P11-274)
+23:35:52.369  fetch rn=9 itag=302 seg=38 ... → 23:35:57.725 REAL 1872788B 5345ms
+23:35:52.524  steady probe pos=189277ms rendered=1821
+23:35:57.538  steady probe pos=189277ms rendered=1821   ← 5.0s 双冻结
+23:35:57.772  BUFFERING → .828 READY,恢复 30fps
+```
+
+同场对照:23:11 段 720p 稳定、fwdBuf 48s、rendered 每 5s +150(30fps)、零 BUFFERING;23:13 段带宽
+17–30M、1080→1440 升档只有 14–46ms 的 BUFFERING。**所以不是「每次起播都卡」,也不是纯网络**。
+
+### §61.2 判据链复核(按 §39 口径逐条对)
+
+升档侧(#0–#11):#0 冷却/#1 served/#2 逐级/**#4 trial-fail 冷却**/#5 canUpgrade/#6 capacityGate/#7 sustainedGate/
+#8 顶档闸/#9 trialOverCapacity/#10 trialUpgrade/#11 climbBufferFloor。本例:#2–#5 通过;#6/#7 拦下普通升档,
+但 **#10 试探绕过 #6/#7**;#9 用 `required`(tier need,不一定是 declared)比 `upgradeEstFloor×1.5`,
+本例日志的 `×1` 是整数除法显示问题(`TRIAL_MAX_OVER_CAPACITY_PERMILLE=1500 / 1000 = 1`),实际门槛是 1.5×;
+303 未被拒 ⇒ 说明 303 的 `required` ≤ 5080K(declared 5352K)。**#10 与 P11-244 预取闸直接冲突**:
+预取闸用 `declared > est×1.5` 判定「够不着、不预取」,试探却用 `required` 判定「可以试」⇒ 切过去时
+目标档一个字节都没预取。
+
+降档侧(A–E):A 水位急救(`bufS<8s`、下漏、5s 宽限)在本例 `bufS=13.3s` 本不该触发,实际触发的是
+**P11-203 的交付节奏腿**(roundTrip=8095ms);B 带宽闸(`est≥声明×1.15 && meas≥声明`)不成立;
+C est 滞回、D 升档后 10s 宽限(本例已过 13s)、E 提前解除未参与。降档本身是对的(3.3M 撑不住 5.35M)。
+
+### §61.3 冲突清单(单独看都对,叠起来成 5s 冻结)
+
+1. **#10 试探 ⟂ P11-244 预取闸**:预取拒绝目标档,试探仍切 ⇒ 切换无预取数据。
+2. **P11-274 grace ⟂ 「旧档 N+1 必须已下载」**:`resolveSwitchTarget` 只有
+   `hasRealSegment(fromItag, fromSeg + 1)` 才肯用旧档顶位;但播放器可能还有 13.3s **已进 sample queue**
+   的旧档数据,N+1 没下载不代表不能继续播。本例 grace 只有 [33,34](当前要 38/39)⇒ 不顶位。
+3. **P11-274 立即清档 ⟂ 无缝切换**:`selectFormat` 立刻 `retainActiveFormats()` 把旧档整条丢掉,
+   旧档的 13.3s 数据在 fetcher 侧已不可用;而 `resolveSwitchTarget` 又只能同步 `warmSegment` 新档
+   (5.3s),loader 被阻塞 ⇒ pos/rendered 双冻结。
+4. **P11-92 缓冲尾防线 ⟂ 保留旧档**:P11-274 立即清档是为了旧档 bufferedRange 不拖服务端游标;
+   保留旧档供 chunk 又必须让它不进 `bufferedRanges`。
+5. **单槽 grace ⟂ 快速升→降往返**:`captureGraceCache` 每次 `graceSegments.clear()`,降档时旧档 303 的
+   grace 覆盖了升档时 302 的 grace;但即便多槽,13s 后的当前段(38/39)也不在切换点那 2–3 段里
+   ⇒ **多槽不是本病的解**,真正的解是切换期间保留旧档可继续供 chunk。
+
+### §61.4 修法(P11-281,最小改动)
+
+- `SabrMediaFetcher` 新增 `graceSourceItag`(正在切走的旧档):
+  - `retainActiveFormats` 保它;请求 `bufferedRanges` **排除**它(P11-92 防线不变);
+  - `selectFormat` **不再**立即 `retainActiveFormats`(旧档留到切换完成);
+  - `setGraceSourceItag(-1)`(切换完成/放弃)时立刻 `retainActiveFormats()` 恢复 P11-274 清理口径。
+- `DefaultSabrChunkSource.resolveSwitchTarget`:
+  - 切档时记 `graceSourceItag = 旧档`;
+  - **降档**(target.height < from.height)且目标档当前段未供上:**不**同步 `warmSegment`,
+    改为 `fetcher.prefetchFormat(target)` 把目标档挂到下一笔请求的 preferred,然后用旧档顶位
+    (`SWITCH_GRACE_MAX_SEGMENTS` 仍为 2);旧档的下一段请求会顺带把目标档推来,新档有真实当前段
+    后下一次预判自然切换;
+  - 升档路径保持原样(先 warm 再 grace),避免动已验收的 4K 升档行为;
+  - 所有「完成/放弃切换」出口清 `graceSourceItag`;
+  - 新增日志 `switch grace(P11-281 downgrade)` / `switch source(P11-281)`。
+
+**刻意不改**:#10 试探门槛、#9 的 1.5× 口径(它用 `required`,不是 declared)、`upshift reseed` 的
+1.2× 容量夹(均属既有设计);单槽 grace(§61.3-5 证明加槽不解决本路径)。
+
+### §61.5 验收 / 否证线
+
+- **验收**:同类降档(1080→720/1440→1080)时日志出现
+  `switch grace(P11-281 downgrade): ... 继续顶位`,且前后 5s `rendered` 增量 ≥280(60fps)/≥140(30fps),
+  不再出现 `pos` 与 `rendered` 同时不动;随后出现 `switch source(P11-281): ... → -1` 与
+  `switch source cleared(P11-281): dropped formats=[旧档]`。
+- **否证**:①若旧档顶位期间服务端把游标拖在旧档上、目标档迟迟不推 ⇒ 检查 `bufferedRanges` 是否仍包含
+  旧档(应被排除);②若 2 段 grace 用尽仍切换卡顿 ⇒ 目标档预取未生效,需评估把 `SWITCH_GRACE_MAX_SEGMENTS`
+  提到 3 或改异步 warm;③若升档路径出现新的 P11-92 回退 ⇒ 检查 `graceSourceItag` 是否在升档完成时被清。

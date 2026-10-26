@@ -301,14 +301,17 @@ internal class DefaultSabrChunkSource(
     // 起播/seek 后队列为空:不做 grace(此时“旧档还没真正在播”,顶位没有意义,也会拖慢起播)。
     if (queue.isEmpty()) {
       pendingSwitchIndex = -1
+      fetcher.setGraceSourceItag(-1)
       return selectedIndex
     }
     if (pendingSwitchIndex != selectedIndex) {
       pendingSwitchIndex = -1
+      fetcher.setGraceSourceItag(-1)
       return selectedIndex
     }
     if (graceSegmentsLeft <= 0) {
       pendingSwitchIndex = -1
+      fetcher.setGraceSourceItag(-1)
       return selectedIndex
     }
     val target = representationHolders.getOrNull(selectedIndex) ?: return selectedIndex
@@ -317,6 +320,7 @@ internal class DefaultSabrChunkSource(
     val from = representationHolders.getOrNull(graceFromIndex) ?: return selectedIndex
     if (from.chunkIndex == null || from.chunkExtractor == null) {
       pendingSwitchIndex = -1
+      fetcher.setGraceSourceItag(-1)
       return selectedIndex
     }
     val targetItag = target.representation.formatId.itag
@@ -326,12 +330,33 @@ internal class DefaultSabrChunkSource(
     val fromSeg = currentSegmentNum(from, loadPositionUs, previousChunk)
     if (fetcher.hasRealSegment(targetItag, targetSeg + 1)) {
       pendingSwitchIndex = -1
+      fetcher.setGraceSourceItag(-1)
       return selectedIndex
+    }
+    // ── P11-281(降档无缝)──────────────────────────────────────────────────────────────
+    // 真机 r2249 23:35:52:1080→720 急救降档时旧档还有 13.3s 缓冲,但旧档被立刻清掉、grace 只留
+    // 切换点两段(当前要的是 38/39),只能同步 warm 新档 → 5.3s 画面+位置双冻结。
+    // 降档目标更便宜、且旧档还能继续供段:先把目标档挂到预取(P11-130 preferred),让旧档的下一笔
+    // 请求顺带把目标档推来;这段时间用旧档继续顶住播放,不再同步 warm 阻塞 loader。
+    val isDowngrade = target.representation.format.height < from.representation.format.height
+    if (isDowngrade) {
+      fetcher.prefetchFormat(targetItag)
+      if (graceSegmentsLeft > 0) {
+        graceSegmentsLeft--
+        Log.i(
+          "YtSabrChunk",
+          "switch grace(P11-281 downgrade): target itag$targetItag(${target.representation.format.height}p) " +
+            "seg=${targetSeg + 1} 未供上, 旧档 itag$fromItag(${from.representation.format.height}p) " +
+            "继续顶位(left=$graceSegmentsLeft, prefetch=$targetItag)",
+        )
+        return graceFromIndex
+      }
     }
     // 目标档还没有当前段:向它发一次正常请求,让服务端把游标处的真实段推来(响应本身可能是空段占位)。
     warmSegment(target, targetSeg, playbackPositionUs, playbackSpeed, queue)
     if (fetcher.hasRealSegment(targetItag, targetSeg + 1)) {
       pendingSwitchIndex = -1
+      fetcher.setGraceSourceItag(-1)
       return selectedIndex
     }
     // 新档的真实段在更后面(N+1/N+2);旧档 grace 缓存能顶当前段 → 顺延切换点。
@@ -346,6 +371,7 @@ internal class DefaultSabrChunkSource(
       return graceFromIndex
     }
     pendingSwitchIndex = -1
+    fetcher.setGraceSourceItag(-1)
     return selectedIndex
   }
 
@@ -557,6 +583,11 @@ internal class DefaultSabrChunkSource(
       pendingSwitchIndex = selectedIndex
       graceFromIndex = preSelectionIndex
       graceSegmentsLeft = SWITCH_GRACE_MAX_SEGMENTS
+      // P11-281:切换期间保住旧档(见 SabrMediaFetcher.graceSourceItag),否则降档时旧档刚被清掉,
+      // 新档首段没到就整段冻结。
+      fetcher.setGraceSourceItag(
+        representationHolders[preSelectionIndex].representation.formatId.itag,
+      )
     }
     // 注意:selectFormat 必须喂**ABR 选中的档**(而不是下面 grace 临时顶替的旧档)——它同时负责
     // 把旧档切换点附近的真实段抄进 fetcher 的 grace 缓存(P11-274),喂错会把缓存又抄回去。
