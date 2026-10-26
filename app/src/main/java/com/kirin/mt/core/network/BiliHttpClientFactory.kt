@@ -49,7 +49,12 @@ class BiliHttpClientFactory {
    * 由 InnerTubeClient 显式设置自己的 headers（referer 必须为 youtube.com）。
    */
   fun createYoutubeClient(): OkHttpClient {
-    return baseBuilder().build()
+    // P11-275:临时诊断(排查完删除)。此前 YouTube 链路只看到 429 / 重定向环,看不到解析到的 IP、
+    // 实际连接地址与 HTTP 状态,无法区分 DNS 污染 / 出口节点 / 请求被拦。
+    return baseBuilder()
+      .dns(YoutubeNetDiag.dns)
+      .eventListener(YoutubeNetDiag.listener)
+      .build()
   }
 
   fun createDownloadClient(): OkHttpClient {
