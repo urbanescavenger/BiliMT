@@ -5697,3 +5697,103 @@ if (fmt == null || !fmt.hasSegment(req.segment)) {
   所以看起来「1440 也不行」;这是 P11-173/178/188 防止刚饿死的档立刻爬回去的设计。
 - 对照:23:36 那次是 4K 升档失败,**没有** 1440 冷却;23:36:49 重载后 23:37:31 就回到 1440p
   并正常播到 23:39:45。⇒ 冷却存在与否,决定重载后多久看到 1440。
+
+---
+
+## §68 P11-300 降档/升档判据链核对与改动(2026-10-28)
+
+### §68.1 现状判据表(只列与本次相关的)
+
+**升档(候选 f)**
+
+1. 排除轨 / 服务端集合 / 逐级爬(`f.height ≤ nextUpgradeHeight`)
+2. settle(P11-286;P11-295 起播 60s 内非顶档豁免)
+3. 冷却 `isTrialFailBlocked(f.height)` / 顶档起播 stall 冷却
+4. 缓冲地板 `climbFloorUsFor(itag)` = `max(15s, 2×往返)`(P11-222/P11-251)
+5. 容量闸 `capacityGateFail = required > upgradeEstFloor`
+6. 持续闸 `sustainedGateFail = !canUpgrade || sustained in [0, required)`
+7. **试探放行**(`trialUpgrade`):满缓冲 + 上穿阈值;放行条件 = 非顶档 && 不超容量
+   (`required ≤ upgradeEstFloor×1.5`)—— **可绕过 5/6**
+8. 选可行档中最高
+
+**降档(候选 f,`i == selected`)**
+
+1. 水位急救:`bufS` 跌破 `criticalBufferedUs`(8s)→ 直接降
+2. est 滞回:`required(=need×0.85) > effective` 时,若 `bufferHoldsCurrentTier`(`bufS ≥ 8s`)
+   ⇒ 不降;否则跳过当前档 → 降
+3. 降档后冷却 90s(supply/gated/trial 分档)
+4. 升档后 10s 禁止 est 回降(`UPGRADE_DOWNGRADE_GRACE_MS`)
+
+### §68.2 冲突/缺口(真机 2026-10-28 00:17)
+
+**缺口 1:试探可绕过持续闸。**
+`00:17:25` 升 1440p 时 `sus=5870K`、`need(1440p)≈13330K` ⇒ `sustainedGateFail=true`;但
+`trialUpgrade=true` 且不超容量(13330 ≤ 13425×1.5),于是 `bestIsTrial=true` 放行。下一笔
+1440p 请求 23s 超时,缓冲 28→0,8s 看门狗重载。
+冲突本质:试探的理由是「满缓冲证明供给富余」,但满缓冲是**历史**,`sustained` 是**过去 60s 的真实
+交付**;两者矛盾时应以 sustained 为准。
+
+**缺口 2:缓冲 hold 没有时间上限。**
+`required > effective` 持续时,只要 `bufS ≥ 8s` 就一直不降;而切档本身要 `2×往返`(本场
+rt≈17–23s)⇒ 降档在 `bufS=5s` 才发生,切换没有跑道。
+`23:03` 真机:`downgrade bufS=5s roundTrip=16910ms` → 新档首段 8.2s 后才到 → 看门狗判死。
+
+### §68.3 改动(P11-300)
+
+**A. 试探不再绕过「sustained 有值但不足」**
+
+```kotlin
+val sustainedRefusesTrial = sustained >= 0L && sustained < required
+if (isTopTierCandidate || !trialUpgrade || trialOverCapacity || sustainedRefusesTrial) continue
+```
+
+日志 `trial refused (sustained low): … sustained=… need=…`。`sustained = -1`(证据不足)时仍放行,
+保持 P11-255「非顶档冷启动放行」语义。
+
+**B. 缓冲 hold 加时间上限**
+
+- 选中档 `required > effective` 连续 ≥ `DOWNGRADE_SHORTFALL_MAX_MS`(10s)⇒ 即使 `bufS ≥ 8s`
+  也允许降档(跳过当前档);
+- est 回到 need 以上、或发生切档 ⇒ 计时清零;
+- 日志 `downgrade hold released (P11-300): shortfall=…s est=… need=… bufS=…`。
+
+### §68.4 为什么两个都要
+
+- 只改 A:本场能避免边际升档;但若已经在 1440(手切/起播),仍要等 `bufS<8s` 才降。
+- 只改 B:本场 00:17:25 的升档仍会发生,随后 23s 超时期间 ABR 无评估点,B 来不及。
+- 两个一起:A 挡住边际升档;B 让已进入高估档的会话在持续不足时尽早降。
+
+**风险 / 否证**:
+
+- A 可能拖慢「带宽刚恢复、sustained 仍低」的升档(sustained 是 60s 均值)。验收:是否出现长时间
+  停在同一档不升;若停 >60s 且 est 明显高于 need,再评估放宽。
+- B 可能增加降档抖动。缓解:只在 `required > effective` 连续成立时累加,恢复即清零;90s 降档冷却
+  仍在。
+
+### §68.5 P11-301 会话/节点判定(同批实施)
+
+**判据(fetcher 内,播放器探针每 5s 查一次)**
+
+- 会话龄 > 20s(排慢启动);
+- 缓冲 ≤ 12s(在下漏,还有余量时先交给 ABR 降档);
+- 本会话**零交付超时 ≥ 2**(单次算抖动);
+- 会话峰值 ≥ 10Mbps(没有断崖可比就说明本来就很慢,不是节点问题);
+- 最近两笔成功吞吐的**最小值 < 峰值 × 0.35**。
+
+**动作**:整场重建(带续播位置)—— 只有整场重载会重新 resolve,可能换 host。
+`evict sid` 不换 host,不用。
+
+**护栏(缺一不可)**
+
+| 护栏 | 值 | 依据 |
+|---|---|---|
+| 冷却 | 3min(跨重载,SabrAbrMemory) | 避免连续重建 |
+| 重建后校验 | 新会话前 3 笔均值 < 5Mbps ⇒ `link-bad` 10min | 10-25 20:50–21:02:换 host 仍 2–6Mbps,链路整体坏 |
+| 每会话一次 | `sessionRebuildMarked` | 防同一会话重复触发 |
+| 起播豁免 | 会话龄 < 20s | 慢启动已知 |
+
+**日志**:`session degraded → rebuild(P11-301): pos=… fwdBuf=…`;
+`session rebuild ineffective → link-bad for 600s (P11-301)`。
+
+**预期收益的边界**:只在「链路本身没坏、单纯当前节点/会话慢」时有效(2026-10-28 00:18 手切
+rr5→rr3,44–60Mbps 即此类);链路整体坏时,第一次重建后就会标 link-bad 并停手。

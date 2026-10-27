@@ -2598,6 +2598,20 @@ fun PlayerScreen(
               "isLoading=${player.isLoading} video=${player.videoFormat?.codecs} " +
               "bw[${bandwidthMeter.diagEstimateSources()}]",
           )
+          // ── P11-301(2026-10-28 真机):会话/节点可疑 → 整场重建(带续播)──────────────────────
+          // 判据在 fetcher(峰值塌陷 + 零交付超时,会话龄/缓冲/冷却都在那里),这里只执行动作。
+          // 重载会重新 resolve → 可能换 host(今天 00:18 手切 rr5→rr3 正是这样恢复的);
+          // 若重建后新会话仍慢,fetcher 会标 link-bad(10min),本判据自动静默,不会变成重载风暴。
+          if (bandwidthMeter.isSessionDegraded(player.totalBufferedDuration)) {
+            Log.w(
+              PlayerPlaybackLogTag,
+              "session degraded → rebuild(P11-301): pos=${currentPositionMs}ms " +
+                "fwdBuf=${player.totalBufferedDuration}ms; 换会话/节点重来",
+            )
+            bandwidthMeter.markSessionRebuild()
+            autoResumePositionMs = currentPositionMs
+            retryKey += 1L
+          }
         }
       } else {
         steadyProbeSinceMs = 0L

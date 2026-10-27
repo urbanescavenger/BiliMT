@@ -430,4 +430,53 @@ object SabrAbrMemory {
   /** 样本新鲜度:超过这段时间没有 SABR 活动 ⇒ 门槛回落到 media3 原生。 */
   private const val READ_AHEAD_SAMPLE_TTL_MS = 15 * 60_000L
 
+  // ── P11-301(2026-10-28):会话重建护栏(跨重载持久)─────────────────────────────────────────
+  // 历史教训(`logs_live_20261025_225501.log` 20:50–21:02):链路整体坏时,重建会话/换 host 都不会
+  // 恢复(2–6Mbps 持续),而当时已经连续 stall/重载 15 分钟。故:重建必须有冷却,并且重建后新会话
+  // 仍慢时标 link-bad,停止再做 —— 否则判定逻辑本身会变成重载风暴。
+
+  /** 最近一次会话重建的墙钟(0=从未)。 */
+  @Volatile
+  private var lastSessionRebuildWallMs = 0L
+
+  /** 最近一次重建时解析到的 host(只用于日志/去重,不含 token/URL 参数)。 */
+  @Volatile
+  private var lastSessionRebuildHost: String? = null
+
+  /** link-bad 截止墙钟:链路整体坏时不再重建。 */
+  @Volatile
+  private var linkBadUntilWallMs = 0L
+
+  /** 记录一次整场重建(播放器侧动作完成后调用)。 */
+  fun noteSessionRebuild(host: String?) {
+    lastSessionRebuildWallMs = System.currentTimeMillis()
+    lastSessionRebuildHost = host
+  }
+
+  /** 距上次重建的毫秒数;从未重建返回 -1。 */
+  fun msSinceSessionRebuild(nowWallMs: Long = System.currentTimeMillis()): Long =
+    if (lastSessionRebuildWallMs <= 0L) -1L else nowWallMs - lastSessionRebuildWallMs
+
+  /** 重建冷却剩余毫秒(0=可用)。 */
+  fun sessionRebuildCooldownRemainMs(nowWallMs: Long = System.currentTimeMillis()): Long =
+    if (lastSessionRebuildWallMs <= 0L) 0L
+    else (lastSessionRebuildWallMs + SESSION_REBUILD_COOLDOWN_MS - nowWallMs).coerceAtLeast(0L)
+
+  fun lastSessionRebuildHost(): String? = lastSessionRebuildHost
+
+  /** 重建后新会话仍慢 ⇒ 判「链路坏」,一段时间内不再重建。 */
+  fun noteLinkBad(nowWallMs: Long = System.currentTimeMillis()) {
+    linkBadUntilWallMs = nowWallMs + LINK_BAD_HOLD_MS
+    Log.i("YtSabrAbr", "session rebuild ineffective → link-bad for ${LINK_BAD_HOLD_MS / 1000}s (P11-301)")
+  }
+
+  fun isLinkBad(nowWallMs: Long = System.currentTimeMillis()): Boolean =
+    nowWallMs < linkBadUntilWallMs
+
+  /** 会话重建冷却(跨重载):3min。 */
+  private const val SESSION_REBUILD_COOLDOWN_MS = 180_000L
+
+  /** 重建无效后的 link-bad 保持时长:10min。 */
+  private const val LINK_BAD_HOLD_MS = 600_000L
+
 }

@@ -127,6 +127,32 @@ internal class SabrBandwidthMeter(
 
   fun getMeasuredSegmentCount(itag: Int): Long = measuredSegCountProvider?.invoke(itag) ?: 0L
 
+  // ── P11-301(2026-10-28 真机):会话质量判定与重建 ─────────────────────────────────────────────
+  // 判定(零交付超时 + 吞吐相对峰值塌陷 + 缓冲在下漏)在 fetcher 内做,这里只做转发:选择类/播放器
+  // 都拿不到 fetcher,沿用既有 provider 通道。
+  @Volatile
+  private var sessionHealthProvider: ((Long) -> Boolean)? = null
+
+  @Volatile
+  private var sessionRebuildProvider: (() -> Unit)? = null
+
+  fun setSessionHealthProvider(provider: (Long) -> Boolean) {
+    sessionHealthProvider = provider
+  }
+
+  fun setSessionRebuildProvider(provider: () -> Unit) {
+    sessionRebuildProvider = provider
+  }
+
+  /** `bufferedAheadMs` 由调用方(播放器探针)给;true = 本会话已判为「节点/会话可疑」。 */
+  fun isSessionDegraded(bufferedAheadMs: Long): Boolean =
+    sessionHealthProvider?.invoke(bufferedAheadMs) ?: false
+
+  /** 通知 fetcher「即将整场重建」——记 host 与冷却(跨重载)。 */
+  fun markSessionRebuild() {
+    sessionRebuildProvider?.invoke()
+  }
+
   /**
    * P11-178:注入「本 itag 最近一次零字节挂死」的墙钟来源(SabrMediaFetcher.getLastSilenceHangWallMs)。
    * 与实测吞吐走同一条既有通道(选择类拿不到 fetcher)——挂死证据要让水位急救在「挂死后重试成功」的
@@ -188,6 +214,8 @@ internal class SabrBandwidthMeter(
     silenceHangProvider = null
     refillCapacityProvider = null
     roundTripProvider = null
+    sessionHealthProvider = null
+    sessionRebuildProvider = null
   }
 
   /**

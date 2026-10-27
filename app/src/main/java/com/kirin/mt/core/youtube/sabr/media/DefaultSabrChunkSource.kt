@@ -206,6 +206,13 @@ internal class DefaultSabrChunkSource(
     (bandwidthMeter as? SabrBandwidthMeter)?.setRoundTripProvider { itag ->
       fetcher.getLastRoundTripMs(itag)
     }
+    // P11-301:会话质量判定 + 重建护栏。判据在 fetcher 内(它才有逐笔吞吐/超时),播放器探针每 5s 查。
+    (bandwidthMeter as? SabrBandwidthMeter)?.setSessionHealthProvider { bufferedAheadMs ->
+      fetcher.isSessionDegraded(bufferedAheadMs)
+    }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setSessionRebuildProvider {
+      fetcher.markSessionRebuild()
+    }
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {

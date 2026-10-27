@@ -693,7 +693,6 @@ class HeightAwareAdaptiveTrackSelection(
 
   /** P11-153:试探被「超容量」拒绝的一次性日志(每实例一次,防每 chunk 刷屏)。 */
   private var trialOverCapacityLogged = false
-
   /** P11-193:升档被「缓冲地板」按住的一次性日志(每实例一次,防每评估刷屏)。 */
   private var climbBufferFloorLogged = false
 
@@ -705,6 +704,16 @@ class HeightAwareAdaptiveTrackSelection(
 
   /** P11-237:最近一次评估里「本档被缓冲标准守住」——供 `sel=` 行日志取证(见 [downgradeHeldByBufferNow])。 */
   private var lastDowngradeHeldByBuffer = false
+
+  // ── P11-300(2026-10-28 真机):持续不足超时后解除「缓冲够就不降档」 ─────────────────────────
+  // 真机 23:03:00:`est=6301K < need`,但 `bufS=5s` 之前一直因 ≥8s 地板不降;降档时 roundTrip=16910ms,
+  // 新档首段 8.2s 后才到 ⇒ 看门狗判死。切档本身要 2×往返,缓冲 hold 必须有时间上限。
+  private var shortfallSinceMs = 0L
+  private var shortfallTierItag = -1
+  private var shortfallReleaseLogged = false
+
+  /** P11-300:试探被「sustained 有值但不足」拒绝的一次性日志(每实例一次)。 */
+  private var sustainedTrialRefusedLogged = false
 
   /** P11-195:判据②被「天花板守卫」挡下的一次性日志(每实例一次)——否则钉在低分辨率又是一段安静。 */
   private var familyCeilingGuardLogged = false
@@ -1256,7 +1265,30 @@ class HeightAwareAdaptiveTrackSelection(
         // 候选 ⇒ 本档留在 `best` 上(比较器只向上取 height);缓冲真的低到地板以下时,est 照旧反应,
         // 更低则交给水位急救 A(见函数外 P11-237 注释与 docs §42)。
         if (required > effective) {
-          if (!bufferHoldsCurrentTier) continue
+          // ── P11-300:持续不足 ≥10s ⇒ 解除缓冲 hold ────────────────────────────────────────────
+          // 计时只跟「选中档」;est 回到 need 以上即清零(见下面 else 分支)。切档(升/降)也清零。
+          if (i == selected) {
+            if (shortfallTierItag != itagOf(f)) {
+              shortfallTierItag = itagOf(f)
+              shortfallSinceMs = nowMs
+              shortfallReleaseLogged = false
+            }
+          }
+          val shortfallLong = i == selected && shortfallSinceMs > 0L &&
+            nowMs - shortfallSinceMs >= DOWNGRADE_SHORTFALL_MAX_MS
+          if (!bufferHoldsCurrentTier || shortfallLong) {
+            if (shortfallLong && !shortfallReleaseLogged) {
+              shortfallReleaseLogged = true
+              Log.i(
+                "YtSabrAbr",
+                "downgrade hold released (P11-300): shortfall=${(nowMs - shortfallSinceMs) / 1000}s " +
+                  "≥ ${DOWNGRADE_SHORTFALL_MAX_MS / 1000}s, est=${effective / 1000}K " +
+                  "required=${required / 1000}K bufS=${bufferedDurationUs / 1_000_000}s; " +
+                  "缓冲够也要降 —— 切档要 2×往返,hold 到 8s 已没有跑道",
+              )
+            }
+            continue
+          }
           if (i == selected && !downgradeHoldLogged) {
             downgradeHoldLogged = true
             Log.i(
@@ -1268,6 +1300,11 @@ class HeightAwareAdaptiveTrackSelection(
                 "est=${effective / 1000}K < required=${required / 1000}K ⇒ 缓冲够,不降档",
             )
           }
+        } else if (i == selected) {
+          // est 恢复 ⇒ 持续不足计时清零(P11-300)。
+          shortfallSinceMs = 0L
+          shortfallTierItag = -1
+          shortfallReleaseLogged = false
         }
       } else {
         // ── P11-193:升档的**缓冲地板**(理判据链后补上的那条缺口)────────────────────────────
@@ -1383,7 +1420,25 @@ class HeightAwareAdaptiveTrackSelection(
                 "满缓冲只绕过悲观估计,不授权超容量跳档(P11-153)",
             )
           }
-          if (isTopTierCandidate || !trialUpgrade || trialOverCapacity) continue
+          // ── P11-300:试探不得绕过「sustained 有证据但低于需求」────────────────────────────────
+          // 真机 2026-10-28 00:17:25:`sus=5870K`、1440p need≈13330K,持续闸已判不足;但试探路径
+          // (满缓冲上穿)放行 → 下一笔 1440p 请求 23s 超时,缓冲 28→0,看门狗重载。
+          // 满缓冲是**历史**,sustained 是**过去 60s 的真实交付**;两者矛盾时以 sustained 为准。
+          // sustained = -1(证据不足)时仍放行,保持 P11-255「非顶档冷启动放行」语义。
+          val sustainedRefusesTrial = sustained >= 0L && sustained < required
+          if ((isTopTierCandidate || !trialUpgrade || trialOverCapacity || sustainedRefusesTrial)) {
+            if (sustainedRefusesTrial && !sustainedTrialRefusedLogged) {
+              sustainedTrialRefusedLogged = true
+              Log.i(
+                "YtSabrAbr",
+                "trial refused (sustained low, P11-300): itag${itagOf(f)}(${f.height}p) " +
+                  "sustained=${sustained / 1000}K < need=${required / 1000}K " +
+                  "est=${bandwidthMeter.getBitrateEstimate() / 1000}K bufS=${bufferedDurationUs / 1_000_000}s — " +
+                  "满缓冲不能替代持续带宽证据",
+              )
+            }
+            continue
+          }
           bestIsTrial = true
         }
       }
@@ -1430,6 +1485,10 @@ class HeightAwareAdaptiveTrackSelection(
             "opEvent=${SabrAbrMemory.recentOperationEvent()} silenceHang=$silenceHang(P11-178)",
         )
         markDowngradeFromTrial(nowMs, currentHeight)
+        // P11-300:切档后「持续不足」计时归零(新档重新累积)。
+        shortfallSinceMs = 0L
+        shortfallTierItag = -1
+        shortfallReleaseLogged = false
       }
       // 2026-08-30 升档重锚:est 基准重锚到「新档声明码率」。declared 已是 averageBitrate=真实平均
       // 消耗,无需再校准折算;锚在实需值后,扛不住时真实带宽样本塌下来 est 快速下探降档,扛得住才
@@ -1437,6 +1496,10 @@ class HeightAwareAdaptiveTrackSelection(
       getFormat(selected).height > currentHeight -> {
         lastUpgradeElapsedMs = nowMs
         lastUpgradeWasTrial = bestIsTrial
+        // P11-300:升档后「持续不足」计时也归零(新档需要重新累积证据)。
+        shortfallSinceMs = 0L
+        shortfallTierItag = -1
+        shortfallReleaseLogged = false
         // P11-286:新升档开始 → 重置 settle 一次性日志,下一段被拦时再打。
         upgradeSettleHoldLogged = false
         // P11-173:记「本场爬上去过」的最高档(跨重载记忆) —— stall 重载时这一档进冷却,
@@ -1780,6 +1843,13 @@ class HeightAwareAdaptiveTrackSelection(
      * 超过实测容量这一倍率的跳档已被真机证明会把画面冻住(见 [trialOverCapacity] 处注释)。
      */
     const val TRIAL_MAX_OVER_CAPACITY_PERMILLE = 1500L
+
+    /**
+     * P11-300(2026-10-28 真机):选中档 `required > effective` 连续该时长后,解除「缓冲够就不降档」
+     * 的 hold。切档要 `2×往返`(本场 roundTrip=16.9s,2×≈34s;缓冲 hold 到 8s 才降已没有跑道)。
+     * 取 10s:足够排除单笔抖动(P11-240 的原始顾虑),又能在缓冲见底前留出切换时间。
+     */
+    const val DOWNGRADE_SHORTFALL_MAX_MS = 10_000L
 
     /**
      * P11-153(①b):重锚(升档重锚 est 基线)允许的最大「超实测容量」倍率(千分比)。

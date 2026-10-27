@@ -390,6 +390,19 @@ internal class SabrMediaFetcher(
   @Volatile private var bufferedAheadNoteMs = -1L
   @Volatile private var bufferedAheadMsAtLastFetch = -1L
 
+  // ── P11-301(2026-10-28 真机):会话质量判定 ──────────────────────────────────────────────────
+  // 真机 2026-10-28 00:17:旧会话 peak 30Mbps → 18/13 → 18s/23s 两笔零交付超时 → 6Mbps,缓冲漏光重载;
+  // 手切新会话 44–60Mbps。历史(10-25 20:50–21:02)又证明链路整体坏时重建无效、会变重载风暴。
+  // 判定 = 「有峰值证据 + 最近两笔相对峰值塌陷 + 零交付超时 ≥2 + 缓冲在下漏 + 会话龄 >20s」;
+  // 动作 = 整场重建(带续播);护栏 = SabrAbrMemory(冷却 3min / 重建后仍慢标 link-bad 10min)。
+  private val sessionStartWallMs = System.currentTimeMillis()
+  @Volatile private var sessionPeakBps = 0L
+  @Volatile private var sessionTimeoutCount = 0
+  private val recentSessionBps = ArrayDeque<Long>()
+  private var postRebuildSamples = 0
+  private var postRebuildBpsSum = 0L
+  @Volatile private var sessionRebuildMarked = false
+
   /**
    * P11-173:本会话是否已交付过**真实媒体段**(≥ [REAL_BW_MIN_BYTES])。
    * 饥饿快切([SabrStarvingCallTimeoutMs])只在此之后生效 —— 起播时水位必然是 0,若不排除会把
@@ -737,6 +750,67 @@ internal class SabrMediaFetcher(
   fun getMeasuredSegmentCount(itag: Int): Long {
     if (itag <= 0) return 0L
     return synchronized(measuredLock) { measuredTracks[itag]?.segs ?: 0L }
+  }
+
+  /**
+   * P11-301:本 SABR 会话是否「节点/会话可疑」——由播放器探针每 5s 调用一次(拿不到 fetcher 的
+   * 选择类/UI 走 [SabrBandwidthMeter] 的 provider 通道)。
+   *
+   * 判据(见 docs §67.15 / §68.5):会话龄 >20s(排除慢启动)+ 缓冲 ≤12s(在下漏)+ 零交付超时 ≥2
+   * + 峰值 ≥10Mbps + 最近两笔成功吞吐的最小值 < 峰值×0.35。历史 10-25 证明链路整体坏时换 host
+   * 也救不回来,所以这里只「判定」;**动作与冷却/link-bad 护栏在调用方**(SabrAbrMemory)。
+   */
+  fun isSessionDegraded(bufferedAheadMs: Long): Boolean {
+    if (sessionRebuildMarked) return false
+    if (SabrAbrMemory.isLinkBad()) return false
+    if (SabrAbrMemory.sessionRebuildCooldownRemainMs() > 0L) return false
+    if (System.currentTimeMillis() - sessionStartWallMs < SessionHealthMinAgeMs) return false
+    if (bufferedAheadMs > SessionHealthMaxBufferMs) return false
+    if (sessionTimeoutCount < SessionHealthMinTimeouts) return false
+    val peak = sessionPeakBps
+    if (peak < SessionHealthMinPeakBps) return false
+    val snapshot = synchronized(recentSessionBps) { recentSessionBps.toList() }
+    if (snapshot.size < 2) return false
+    val recentMin = snapshot.takeLast(2).minOrNull() ?: return false
+    return recentMin * 1000L < peak * SessionHealthRatioPermille
+  }
+
+  /** P11-301:播放器决定整场重建时调用 —— 记 host 与冷却(跨重载),本会话不再重复判定。 */
+  fun markSessionRebuild() {
+    sessionRebuildMarked = true
+    SabrAbrMemory.noteSessionRebuild(hostOf(session.sabrUrl))
+  }
+
+  private fun hostOf(url: String): String? {
+    val scheme = url.indexOf("://")
+    if (scheme < 0) return null
+    return url.substring(scheme + 3).substringBefore('/').ifEmpty { null }
+  }
+
+  /** P11-301:成功/失败各记一笔会话样本;重建后的新会话前 3 笔仍慢 ⇒ 判链路坏。 */
+  private fun noteSessionFetch(bytes: Long, elapsedMs: Long, success: Boolean) {
+    if (!success) {
+      sessionTimeoutCount++
+      return
+    }
+    if (bytes <= 0L || elapsedMs <= 0L) return
+    val bps = bytes * 8_000L / elapsedMs
+    if (bps <= 0L) return
+    synchronized(recentSessionBps) {
+      if (bps > sessionPeakBps) sessionPeakBps = bps
+      recentSessionBps.addLast(bps)
+      while (recentSessionBps.size > SessionHealthRecentSamples) recentSessionBps.removeFirst()
+      // 重建后校验:新会话前 3 笔的吞吐 < 5Mbps ⇒ 不是单节点问题,标 link-bad。
+      val sinceRebuild = SabrAbrMemory.msSinceSessionRebuild()
+      if (sinceRebuild in 0..SessionRebuildVerifyWindowMs && postRebuildSamples < SessionHealthRecentSamples) {
+        postRebuildSamples++
+        postRebuildBpsSum += bps
+        if (postRebuildSamples == SessionHealthRecentSamples) {
+          val avg = postRebuildBpsSum / SessionHealthRecentSamples
+          if (avg < LinkBadBps) SabrAbrMemory.noteLinkBad()
+        }
+      }
+    }
   }
 
   // ── P11-178:按 itag 记「零字节挂死」墙钟(供给证据,见 HeightAwareAdaptiveTrackSelection)──────────
@@ -1820,6 +1894,8 @@ internal class SabrMediaFetcher(
       SabrAbrMemory.noteSabrResponseMs(elapsed)
       // P11-203:同时按 itag 记一笔往返(带宽闸「交付节奏」腿的证据,见 getLastRoundTripMs)。
       noteRoundTrip(req.formatItag, elapsed)
+      // P11-301:会话质量样本(峰值/最近两笔/重建后校验)。
+      noteSessionFetch(readBytes, elapsed, success = true)
       Log.i(
         tag,
         "fetch rn=$rn REAL ${readBytes}B ${elapsed}ms → ${mbps}Mbps est=${fmtEstForLog(getRealBitrateEstimate())}" +
@@ -1871,6 +1947,8 @@ internal class SabrMediaFetcher(
       // P11-203:失败照记(P11-197 同口径:按最坏情况)。它正是「本档这批数据没供上」的证据,
       // 带宽闸的第四腿据此不再 suppress 水位急救(真机 16:43 那笔 40s 超时把 1440p 钉在档位上)。
       noteRoundTrip(req.formatItag, failMs)
+      // P11-301:零交付失败计入会话质量(重建判据的硬证据)。
+      noteSessionFetch(readBytes, failMs, success = false)
       Log.w(
         tag,
         "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${fmtEstForLog(getRealBitrateEstimate())}" +
@@ -2235,6 +2313,24 @@ internal class SabrMediaFetcher(
      * 正常单笔 2–8s(4K 大段可到 12–17s);取 5s 只抓明显的等待,用来分辨「等错段/被长请求卡住」。
      */
     const val LoaderDiagSlowMs = 5_000L
+
+    // ── P11-301(2026-10-28):会话质量判据阈值 ─────────────────────────────────────────────────
+    /** 会话龄低于此值不判(慢启动/首包偶发 16–20s 是已知现象,P11-160/P11-284)。 */
+    const val SessionHealthMinAgeMs = 20_000L
+    /** 缓冲高于此值不判 —— 还有余量,先让 ABR 降档,不轻易整场重载。 */
+    const val SessionHealthMaxBufferMs = 12_000L
+    /** 零交付超时次数门槛(单次可能是抖动;连续两次才是会话/路径在停)。 */
+    const val SessionHealthMinTimeouts = 2
+    /** 峰值低于此值没有「断崖」可比 —— 整体慢不是节点问题。 */
+    const val SessionHealthMinPeakBps = 10_000_000L
+    /** 最近两笔成功吞吐的最小值 < 峰值 × 35% ⇒ 判塌陷。 */
+    const val SessionHealthRatioPermille = 350L
+    /** 会话吞吐环形窗口长度。 */
+    const val SessionHealthRecentSamples = 3
+    /** 重建后校验窗口(新会话前几笔在此窗口内才算「重建后样本」)。 */
+    const val SessionRebuildVerifyWindowMs = 30_000L
+    /** 重建后新会话前 3 笔均值低于此值 ⇒ 判链路坏(停止重建)。 */
+    const val LinkBadBps = 5_000_000L
 
     /**
      * P11-221:**空窗是否计入 est** —— false = 不计(当前值)。
