@@ -60,6 +60,20 @@ internal class SabrBandwidthMeter(
     realBpsProvider = provider
   }
 
+  /**
+   * P11-286:最后**真正交付过视频 media** 的 itag 来源。ABR 的升档 settle 用它判「当前选中档
+   * 是否已经供上数据」——没供上就不许继续爬下一档(真机 alpha.5 起播 480→720→1080 连跳)。
+   */
+  @Volatile
+  private var lastDeliveredVideoItagProvider: (() -> Int)? = null
+
+  fun setLastDeliveredVideoItagProvider(provider: () -> Int) {
+    lastDeliveredVideoItagProvider = provider
+  }
+
+  /** -2 = 未接线; -1 = 尚无视频媒体交付; >=0 = itag。未接线时调用方按"不拦"处理。 */
+  fun getLastDeliveredVideoItag(): Int = lastDeliveredVideoItagProvider?.invoke() ?: -2
+
   /** alpha.9Z:注入持续带宽来源(60s 墙钟交付,升档判据用)。 */
   fun setSustainedBandwidthProvider(provider: () -> Long) {
     sustainedBpsProvider = provider
@@ -165,6 +179,7 @@ internal class SabrBandwidthMeter(
     // P11-282:换源后 lastRealBps 也失效;下一次 SABR 会话从 seed 重新起步。
     lastRealBps = -1L
     realBpsProvider = null
+    lastDeliveredVideoItagProvider = null
     sustainedBpsProvider = null
     sustainedRawBpsProvider = null
     reseedBandwidthProvider = null

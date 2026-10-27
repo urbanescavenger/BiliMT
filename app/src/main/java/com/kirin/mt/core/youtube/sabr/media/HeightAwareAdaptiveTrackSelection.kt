@@ -637,6 +637,9 @@ class HeightAwareAdaptiveTrackSelection(
   /** alpha.9Z:上次降档时间(elapsedRealtime ms)——升档冷却基准。 */
   private var lastDowngradeElapsedMs = 0L
 
+  /** P11-286:升档 settle 的"被拦"一次性日志(每次升档后复位,便于逐段核对)。 */
+  private var upgradeSettleHoldLogged = false
+
   /** 2026-08-30:上次升档时间(elapsedRealtime ms)——水位急救降档的宽限基准,0=从未升过。 */
   private var lastUpgradeElapsedMs = 0L
 
@@ -1155,6 +1158,18 @@ class HeightAwareAdaptiveTrackSelection(
       val h = getFormat(i).height
       if (h > currentHeight && h < nextUpgradeHeight) nextUpgradeHeight = h
     }
+    // ── P11-286(升档 settle)──────────────────────────────────────────────────────────────
+    // 真机 alpha.5 起播(§64):10s 冷启动锁一过,480→720→1080 连跳(目标档只有 init,media 还在途),
+    // 播放器实际仍在 480p;每次切档解码器重配 + 旧档被清 → 13s/19.8s BUFFERING。
+    // 升档前要求:①当前选中档已经真正交付过视频 media(lastDeliveredVideoItag,-2=通道未接线);
+    // ②距上次升档 ≥ UPGRADE_SETTLE_MS。只挡 isUpgrade(普通+试探),降档/同档换 codec 不受影响。
+    val lastDeliveredVideoItag =
+      (bandwidthMeter as? SabrBandwidthMeter)?.getLastDeliveredVideoItag() ?: -2
+    val selectedVideoItag = itagOf(getFormat(selected))
+    val currentTierDelivered =
+      lastDeliveredVideoItag == -2 || lastDeliveredVideoItag == selectedVideoItag
+    val upgradeSettled = currentTierDelivered &&
+      (lastUpgradeElapsedMs == 0L || nowMs - lastUpgradeElapsedMs >= UPGRADE_SETTLE_MS)
     // 2026-09-01 满缓冲试探升档(trial upshift):canUpgrade 已含冷启动锁 10s + 降档后缓冲 ≥30s;
     // 试探水位线 = max(15s 地板, 0.8×历史最高水位),要求「升穿」(上一评估在线下)——满缓冲本身
     // 就是供给富余于当前档的硬证据,也是测量型门槛在服务端 pacing 下唯一可补的盲区。
@@ -1185,6 +1200,20 @@ class HeightAwareAdaptiveTrackSelection(
       // 也放行——`sustained in 0 until required` 对 -1 不成立,梯子靠活跃 est 门(required>effective)
       // + 本逐级约束跑,最坏多升一档(便宜可回退);顶档由下方 ×1.1 闸(-1 恒被挡)单独看死。
       if (isUpgrade && f.height > nextUpgradeHeight) continue
+      // P11-286:settle —— 当前档 media 还没到 / 距上次升档太近,本轮不允许再爬。
+      if (isUpgrade && !upgradeSettled) {
+        if (!upgradeSettleHoldLogged) {
+          upgradeSettleHoldLogged = true
+          Log.i(
+            "YtSabrAbr",
+            "upshift held (settle, P11-286): current itag$selectedVideoItag " +
+              "delivered=$lastDeliveredVideoItag " +
+              "age=${nowMs - lastUpgradeElapsedMs}ms < settle=${UPGRADE_SETTLE_MS}ms " +
+              "— 等当前档 media 到手/退避",
+          )
+        }
+        continue
+      }
       // 2026-08-31 ②顶档 stall 冷却:起播 stall 重载后 3min 内顶档不进候选(低档升降照常)。
       if (isUpgrade && topTierStallBlocked && f.height >= TOP_TIER_MIN_HEIGHT) {
         if (!topTierStallBlockLogged) {
@@ -1400,6 +1429,8 @@ class HeightAwareAdaptiveTrackSelection(
       getFormat(selected).height > currentHeight -> {
         lastUpgradeElapsedMs = nowMs
         lastUpgradeWasTrial = bestIsTrial
+        // P11-286:新升档开始 → 重置 settle 一次性日志,下一段被拦时再打。
+        upgradeSettleHoldLogged = false
         // P11-173:记「本场爬上去过」的最高档(跨重载记忆) —— stall 重载时这一档进冷却,
         // 新实例不再 40~90s 内爬回同一堵墙(只记升上来的档,seed 起始档最高 720P 不记)。
         SabrAbrMemory.noteReachedHeight(getFormat(selected).height)
@@ -1689,6 +1720,13 @@ class HeightAwareAdaptiveTrackSelection(
 
     /** 2026-08-30:升档后禁止 est 回降宽限(ms)——重锚精确锚在新档门槛,起步期小样本会立刻打回。 */
     const val UPGRADE_DOWNGRADE_GRACE_MS = 10_000L
+
+    /**
+     * P11-286:两次升档之间的最小间隔(ms)+「当前档必须已交付 media」的 settle 窗口。
+     * 真机 alpha.5 起播 480→720→1080 在 3s 内连跳,新档 media 全挤在途 → 13s/19.8s BUFFERING。
+     * 4s 覆盖一次 init+首段的正常往返;快速链路只是晚几秒到 1440p,换取起播不抖。
+     */
+    const val UPGRADE_SETTLE_MS = 4_000L
     /** 2026-08-30 方案B:顶档(4K 级)定义高度门槛——组内最高档 height ≥ 此值时启顶档 sustained 加码。 */
     const val TOP_TIER_MIN_HEIGHT = 2160
 

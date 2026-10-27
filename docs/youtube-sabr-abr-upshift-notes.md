@@ -5126,3 +5126,62 @@ P11-259 已证实的污染值(本次 1.3Gbps)。last-valid 是唯一同时避开
   若发生,查 `preDeliveryVideoFailures` 是否被会话重建重置;②若首包成功后 est 仍偏低 ⇒ 检查
   `sessionVideoItags` 是否漏了同高度 codec(如只认 135 漏 244);③若非 SABR 源受影响 ⇒ 本改动只在
   `SabrMediaFetcher`,不应波及。
+
+## §64 P11-286 起播升档 settle + 保留最后交付档(2026-10-27,3.1.2-alpha.5)
+
+**触发**:用户「看下最新日志 开始30s多次卡顿 明明之后升到了1440」→「做吧」。
+
+### §64.1 证据(`logs_live_20261027_095655.log`,XQ-EC72,`h2va6oiQTRU`)
+
+```
+09:54:58.352  SABR ready (480p)
+09:55:00.731  first frame; startup lock released
+09:55:08.820  10s 冷启动锁期满:480p → 720p(只有 init)
+09:55:12.731  cleanup dropped formats=[244] (audio=139 video=303 pending=[303] prefetch=303)  ← ★
+09:55:09.7    720p init; 09:55:12.7 1080p init; 09:55:20.7 1080p media
+09:55:17.708  BUFFERING pos=13096 videoFmt=244(仍渲染 480p)
+09:55:23.7    1440p init; 09:55:27.5 1440p media(11.6MB)
+09:55:27.435  BUFFERING pos=19783 videoFmt=244
+之后稳定 1440p;09:56:47 已爬 2160p 又降回 1440p(P11-281 降档 grace 生效)
+```
+
+带宽 `est 10→30Mbps`,1440p 段正常交付 ⇒ **不是带宽、也不是 P11-284 首包**(本场无慢首包)。
+
+### §64.2 判据链冲突
+
+1. **升档无 settle**:`canUpgrade` 只有「实例创建 10s」+「降档后缓冲≥30s」;`nextUpgradeHeight`
+   只保证一次一档。**目标档只要 init 到、media 还没到,下一轮评估就能继续升下一档** ⇒ 09:55:09/12
+   连跳两级,新档 media 全挤在途。
+2. **清档口径看 ABR 选择、不看实际交付**:`retainActiveFormats` 保 `videoFormat`(ABR 已选 303)、
+   pending、prefetch、graceSource;`lastDelivered=244` 不在其中 ⇒ 09:55:12.731 把**播放器仍在渲染**
+   的 480p 清掉。播放器的 `videoFmt` 到 09:55:27 还是 244,源却已没了 ⇒ 13s/19.8s 两次 BUFFERING。
+3. **P11-281 graceSource 也跟着 ABR 走**:09:55:08 记为 244,09:55:09 就被改成 302,09:55:17 清掉;
+   真正在播的 244 早已不在保护范围。
+4. 每次换分辨率触发解码器重配 —— 数据无缝也挡不住这一下(用户体感的"多次卡顿")。
+
+### §64.3 修法(最小改动,只碰 settle 与保档口径)
+
+**A. 升档 settle(`HeightAwareAdaptiveTrackSelection`)**
+- 新增 `UPGRADE_SETTLE_MS = 4000`:距上次升档不足 4s 不许再升;
+- 新增「当前选中档必须已经真正交付过视频 media」:`SabrBandwidthMeter.getLastDeliveredVideoItag()
+  == 当前 selected 的 itag` 才放行升档;未交付 ⇒ 本轮到下一轮都不升(等 media 到);
+- 只挡 `isUpgrade` 候选(普通 + 试探),降档/同档换 codec 不受影响;
+- 日志 `upshift held (settle, P11-286): ...`(每实例一次)。
+
+**B. 保留最后交付档(`SabrMediaFetcher`)**
+- 新增 `lastDeliveredVideoItag`:任何**视频媒体**成功交付(≥ [REAL_BW_MIN_BYTES])就更新;
+- `retainActiveFormats` 保它(即使已不是 ABR 选中档);新档交付后该值更新,旧档下一次 cleanup 自然清掉;
+- 请求 `bufferedRanges` 在它 ≠ 当前 `videoFormat` 时**排除**它(P11-92 口径:旧档缓冲尾不能拖游标);
+- 与 P11-274 grace / P11-281 graceSource 并存,互不替代。
+
+**不动**:10s 冷启动锁、逐级爬、缓冲地板、试探水位线、降档滞回、冷却、P11-281 降档 grace。
+
+### §64.4 验收 / 否证线
+
+- **验收**:起播升档日志应满足:①每次 `sel=` 升档之间 ≥4s;②升档前当前档已有
+  `chunk completed: media`;③不再出现 `cleanup dropped formats=[仍在播的档]`;④13s/19.8s 那种
+  BUFFERING 消失;最终仍能爬到 1440p(只是晚几秒)。
+- **否证**:①若当前档 media 永远不到 ⇒ 升档永久卡住(这是正确行为:当前档都没供上,不该继续爬;
+  真挂死由 stall/水位兜底);②若快速链路 4s dwell 导致 1440p 明显变慢(>60s) ⇒ 把
+  `UPGRADE_SETTLE_MS` 降到 3s;③若 `lastDeliveredVideoItag` 让旧档在 `bufferedRanges` 里拖游标 ⇒
+  检查排除条件是否把 `videoFormat` 也排了。

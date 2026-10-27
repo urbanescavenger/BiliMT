@@ -168,6 +168,10 @@ internal class DefaultSabrChunkSource(
       fetcher.getSustainedRawBitrateEstimate()
     }
     (bandwidthMeter as? SabrBandwidthMeter)?.setRefillCapacityProvider { fetcher.getRefillCapacityBps() }
+    // P11-286:升档 settle —— ABR 用「最后真正交付过 media 的档」判断当前档是否已经供上数据。
+    (bandwidthMeter as? SabrBandwidthMeter)?.setLastDeliveredVideoItagProvider {
+      fetcher.getLastDeliveredVideoItag()
+    }
     (bandwidthMeter as? SabrBandwidthMeter)?.setReseedBandwidthProvider { bitrateBps ->
       fetcher.reseedActiveWindow(bitrateBps)
     }

@@ -410,6 +410,13 @@ internal class SabrMediaFetcher(
   /** 首段交付前的视频请求失败次数(第一次豁免,第二次起入账)。 */
   @Volatile private var preDeliveryVideoFailures = 0
 
+  // ── P11-286(保留最后实际交付档)────────────────────────────────────────────────────────────
+  // 真机 alpha.5 09:55:12.731:`cleanup dropped formats=[244] (video=303)` —— 把播放器仍在渲染的
+  // 480p 源清掉(`playerState` 到 09:55:27 还是 videoFmt=244)⇒ 13s/19.8s 两次 BUFFERING。
+  // `retainActiveFormats` 此前只保 ABR 选中档/pending/prefetch/graceSource,而播放器的实际轨道
+  // 可能还没跟上 ABR。这里单独记「最后真正交付过视频 media 的档」,新档交付前一直保它。
+  @Volatile private var lastDeliveredVideoItag: Int = -1
+
   /** 由视频 [DefaultSabrChunkSource] 每次 getNextChunk 喂:播放位置前方缓冲水位(ms)。仅视频轨喂(音频轨缓冲远超需求,会污染滑行量判定)。 */
   fun noteBufferedAheadMs(ms: Long) {
     bufferedAheadNoteMs = ms
@@ -821,6 +828,9 @@ internal class SabrMediaFetcher(
     }
   }
 
+  /** P11-286:最后真正交付过视频 media 的 itag(-1 = 还没有)。供 ABR 的升档 settle 判据。 */
+  fun getLastDeliveredVideoItag(): Int = lastDeliveredVideoItag
+
   /**
    * P11-281:标记「正在切走的旧档」。非 -1 期间:
    * - [retainActiveFormats] 保住它,允许 chunk source 继续拉它的下一段顶住播放;
@@ -907,7 +917,8 @@ internal class SabrMediaFetcher(
     initializedFormats.keys.retainAll { f ->
       f == audioFormat?.itag || f == videoFormat?.itag || f in pendingRequestItags ||
         f == activePrefetchItag() || // P11-130:预取候选档的缓存要保住,否则刚预取到就被清
-        f == graceSourceItag // P11-281:切换进行中,旧档还要供 chunk 顶住播放
+        f == graceSourceItag || // P11-281:切换进行中,旧档还要供 chunk 顶住播放
+        f == lastDeliveredVideoItag // P11-286:播放器实际在用的最后交付档,新档交付前不能清
     }
     // 显式 containsKey:ConcurrentHashMap 的 `in` 会解析成 containsValue(KT-18053),
     // 项目 warnings-as-errors 下直接编译失败。
@@ -1337,9 +1348,15 @@ internal class SabrMediaFetcher(
     // bufferedRange 判「已给过」就不再推。其余轨维持自身缓存形态(P11-92 已实证裁掉当前轨不破坏推送游标)。
     val prefetchActive = activePrefetchItag()
     val graceSource = graceSourceItag
+    val lastDelivered = lastDeliveredVideoItag
+    val selectedVideo = videoFormat?.itag
     val bufferedRanges = initializedFormats.values
       // P11-281:切换中的旧档不报缓冲(它还在供 chunk,但缓冲尾不能拖服务端游标,同 P11-92 口径)。
-      .filter { it.id.itag != prefetchActive && it.id.itag != graceSource }
+      // P11-286:最后交付档若不是当前选中档(播放器还没切过去),同样不报 —— 但它是选中档时照常报。
+      .filter {
+        it.id.itag != prefetchActive && it.id.itag != graceSource &&
+          !(it.id.itag == lastDelivered && it.id.itag != selectedVideo)
+      }
       .flatMap { fmt ->
         val cap = if (fmt.id.itag == req.formatItag) req.segment.toLong() else Long.MAX_VALUE
         fmt.buildBufferedRanges(cap)
@@ -1720,6 +1737,11 @@ internal class SabrMediaFetcher(
       // 16~20s 是服务端慢启动,不该被杀」。用「是否已交付过真实段」把起播的 bootstrap 段
       // 排除在快切口径之外(起播的兜底是 StartupStallThresholdMs=25s 那条看门狗)。
       if (readBytes >= REAL_BW_MIN_BYTES) deliveredRealMedia = true
+      // P11-286:记「最后真正交付过视频 media 的档」—— 新档交付前它是播放器的实际数据源,
+      // retainActiveFormats 必须保它(见字段注释)。
+      if (readBytes >= REAL_BW_MIN_BYTES && req.formatItag in sessionVideoItags) {
+        lastDeliveredVideoItag = req.formatItag
+      }
       // P11-284:首段视频真正交付 —— 之后的失败不再享受「首包慢启动」豁免。
       if (readBytes >= REAL_BW_MIN_BYTES &&
         req.formatItag in sessionVideoItags &&
