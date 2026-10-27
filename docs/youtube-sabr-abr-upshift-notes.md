@@ -5425,3 +5425,32 @@ MediaTek `c2.mtk.vp9.decoder`)。21:39:53 SABR 会话 `sSFNoD6C88gNQKjFTX5Z5w` �
 **否证 / 残留风险**:若仍出现「请求旧档 → no seg」(说明还有别的创建路径,例如切换前已创建、之后被
 media3 重试的旧档 chunk),下一步在 `SabrMediaFetcher.getNextSegment` 重试循环加防线(请求格式 ==
 `graceSourceItag` 且响应只推来目标档 ⇒ 立即放弃)。本次按最小改动只改创建点。
+
+### §67.8 真机验证(dev.r2264,2026-10-27 23:05)
+
+日志 `logs_live_20261027_230518.log`(alpha.8 之后的首个 debug,含 P11-297)。
+
+**P11-297 通过**:
+
+- `switch grace skipped(P11-297)` **5 次**、grace 行带「旧档段已在本地」**3 次**;
+- `no seg … after attempt` **0**、`exhausted N attempts` **0** —— 旧死锁未再出现;
+- 决定性一场:23:02:57 缓冲 79ms → 23:03:00.7 `buffer-critical downgrade 1440p→1080p`(
+  旧档 seg 65 在本地 → grace;seg 66 不在本地 → skipped)→ 23:03:08.9
+  `switch source cleared(P11-291): selected itag303 media delivered → drop old itag308`。
+  切换正常完成,**没有** 6 连空转 / terminal。
+
+**仍存在(均与 P11-297 无关)**:
+
+1. **22:38:59 4K 切档后播放管线冻结 10s**(新问题,最值得查):22:38:28.671 cold-start ladder
+   升 315 → 22:38:44.808 `switch source cleared … drop old itag308` → **22:38:45.9 起
+   `pos=623250ms` / `rendered=17113` 双冻结**,`state` 一直是 READY(`fwdBuf=15888ms` 不变);
+   期间**没有**任何 `CCodecConfig config diff` / `video size: 3840x2160` / `chunk completed:
+   media itag=315`,同刻 fetcher 在流式收 `rn=42` 38MB/23s。10s 后 media3 内置
+   `StuckPlayerDetector` 抛 `StuckPlayerException`(code=1003)→ 整场重载。
+   判断:播放线程卡在解码器/渲染侧(MTK VP9 4K 重配),不是网络(缓冲 15.9s、带宽 38M)。
+   注:我们自己的 8s 看门狗只覆盖 BUFFERING,「READY 但位置不动」由 media3 的 10s 检测兜底。
+2. **22:39:04 `auto-retry #2 @pos=0ms`**:在 `ExoPlayerImpl.release()` 内由
+   `PlayerScreen.forceExitPlayer`(Back 键)触发 —— 退出路径上错误监听器仍执行了重试,误重载。
+3. **23:03:05 stall 重载**:老 1440p 悬崖(est=6301K vs itag308 实测 ~11.9M);ABR 到 bufS=5s
+   才降档,新档首段 23:03:08.9 才到,比 8s 看门狗晚 3.4s。P11-297 的 skipped 正常生效,不是死锁。
+4. **23:03:14 新会话 `InvalidPoToken (status=3)`** → 再重试,23:03:24 恢复(已知 PoToken 问题,单独)。
