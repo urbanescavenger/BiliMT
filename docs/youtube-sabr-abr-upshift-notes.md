@@ -5283,3 +5283,145 @@ settle 把每档都变成实际播放,重配次数 2→3–4,叠加 P11-274+ 切
 - **否证**:①若快速连跳导致目标档没数据、画面卡住 ⇒ 说明正常 chunk 流来不及,需要对非顶档
   恢复「当前档 media 已到」这一条(但不必 4s dwell);②若 2160 仍重载 ⇒ 检查顶档 warm/settle
   是否被误豁免;③若稳态升档变回连跳 ⇒ 检查 `startupRamp` 的 60s 窗口是否按实例创建计时。
+
+---
+
+## §67 2026-10-27 21:47 TV 两次重载判读:1440p 悬崖 + 降档 grace 被服务端格式切换打死
+
+**场次**:`logs_live_20261027_214727.log`(3.1.2-alpha.8 / 3102108,BRAVIA 4K AE2,Android 14,
+MediaTek `c2.mtk.vp9.decoder`)。21:39:53 SABR 会话 `sSFNoD6C88gNQKjFTX5Z5w` 起播(itag298 720p),
+同进程 `30599` 内两次整场重载:
+
+| # | 时刻 | 入口 | 位置 |
+|---|------|------|------|
+| 1 | 21:42:42.000 | `stall detected, auto-retry #1` `buffered=10%` | 149675ms |
+| 2 | 21:47:00.531 | `playback error, auto-retry #1: Source error`(code=2000) | 396307ms |
+
+两次都是同一根因的两个阶段:**1440p VP9(声明 25692513bps,实测 8.4–11.2Mbps)在 6–8Mbps 链路上**。
+
+### §67.1 重载 #1:试升 1440p 后,18s 整调用上限把在途视频段整笔作废(供给端)
+
+```
+21:40:17.452  trial upshift 1080→1440(itag308 declared=25692513)
+              upshift reseed: est baseline → 24701K(seed 12348000B/4000ms)   ← 突发口径,非稳态
+21:41:04.050  video size: 2560x1440(解码器已上屏)
+21:41:50.489  fetch rn=18 REAL 9500721B 12385ms → 6Mbps est=6136K
+21:42:08.532  fetch rn=19 exception: timeout (fail=18003ms bwNow=-1) → evict
+21:42:26.561  fetch rn=20 exception: timeout (fail=18003ms bwNow=-1) → evict
+21:42:33.234  player state=BUFFERING
+21:42:42.000  stall detected, auto-retry #1 @pos=149675ms buffered=10%
+              stall-reached cooldown: 1440p excluded 90s
+```
+
+- **两笔超时都是「请求音频段、响应里塞着 1440p」**:`rn=19 itag=139 seg=15`、`rn=20 itag=139
+  seg=16`,`reqHeight=0` ⇒ 走 `SabrCallTimeoutMsLow=18s`;而响应里推的是 308 的 8.7MB / 5.9MB
+  段(21:42:13 `MEDIA_HEADER itag=308 seq=29 contentLen=8740920`、21:42:26 `seq=30 5893226`)。
+  6Mbps 下 8.7MB ≈ 12s、两段连推 >18s ⇒ 整笔被砍,在途视频段全部作废(21:42:40 才落地的
+  `MEDIA_END seq=29` 也救不回来)。
+- **ABR 在这 25s 里没有评估点**:ABR 只在 chunk 完成后评估;21:42:08 之后直到 21:42:40 没有
+  新段完成。唯一一次判定 21:42:08 `est=6136K < required=21838K` 被 est-hysteresis 缓冲标准
+  压住(`bufS=23.6s ≥ floor=8s ⇒ 不降档`)。
+- 结果:`fwdBuf 24400 → 19391 → 14372 → 9350 → 4337 → 92ms`(21:42:08→21:42:33),8s 后看门狗
+  判死 ⇒ 整场重载,`startPos=149675`。
+
+### §67.2 重载 #2(新形态):降档 grace 求旧档,服务端已切新档 ⇒ 6 连空转 ⇒ terminal
+
+```
+21:45:56.388  trial upshift 1080→1440(bufS=41s ≥ threshold 39s)
+21:46:38.152  video size: 2560x1440
+21:46:49.519  buffer-critical downgrade: bufS=5s 1440p→1080p roundTrip=22601ms
+              switch source(P11-281): graceSourceItag -1 → 308
+              prefetch: 候选档 itag303 随下一请求预取(窗口 30s)
+21:46:49.727  FORMAT_INITIALIZATION_METADATA itag=303 ... (服务端从这笔起只推 303)
+21:46:52.488  attempt 1: prefetch canceled(此时撤销已晚,会话游标已切到 303)
+21:46:52.5~55.8  attempt 2..6: 全是 `no seg 73 itag 308`(响应 372–433KB 全是 303 seq 73/74)
+21:46:55.821  SabrDataSource open: terminal seg=73 itag=308 → evict
+21:47:00.531  ExoPlayer Source error(ERROR_CODE_IO_UNSPECIFIED)→ auto-retry 整场重载
+```
+
+- 降档走 P11-281 grace:旧档 308 `left=2→0` 继续顶位,目标 303 挂 `prefetchFormat`。**下一笔请求
+  (rn=28)的 `preferredVideoFormatIds` 里因此同时出现 308 与 303**,服务端随即把会话切到 303,
+  此后每笔都只回 `303 init + 303 seq 73/74 + 139`,**308 一段都不给**。
+- 请求格式仍是 308(grace 旧档在播,chunk source 要 seg 73),6 次重试零退避、每次 0.3–0.7s,
+  全部落空 ⇒ `SabrTerminalException` ⇒ `SabrLoadErrorHandlingPolicy` 对 terminal 返回
+  `C.TIME_UNSET` ⇒ ExoPlayer 立即致命 ⇒ 应用 auto-retry 整场重载。
+- **P11-92 空段顶位救不了**:它只认「同格式更新的段」(`fmt.downloadedSegments` 里 `it > req.segment`);
+  这次新鲜段属于**另一个 itag**(303),`fmt`(308)里没有 ahead ⇒ 不走该分支。
+- **结构死锁(本次要记的点)**:`graceSegmentsLeft` 在 seg 72/73 两次 `resolveSwitchTarget` 后已归零,
+  按理下一次 `getNextChunk` 就会切到 303 自愈;但 loader 卡死在 `getNextSegment` 的 6 次重试循环里,
+  chunk source 根本没机会再被调用 ⇒ **切换自救路径被自己的重试循环锁死**。P11-281 引入
+  `graceSourceItag`,P11-130 预取又恰好是掰动服务端格式的那根杠杆,两者叠加才出现这条。
+
+### §67.3 结论
+
+同一根因(1440p 在 6–8Mbps 上)的两个死法:
+
+1. **供给端**:18s 整调用上限按 `req.formatItag` 的高度选档,音频请求承载 1440p 大段 ⇒ 必被砍;
+   ABR 又只在段完成时评估 ⇒ 来不及降档。
+2. **逃生路径**:降档 grace 请求旧档 + 服务端已被 prefetch 掰到新档 ⇒ 旧档永远拿不到,
+   6 连空转直接 terminal 判死整场。**这不是网络抖动,是代码路径能自愈却没自愈。**
+
+### §67.4 候选修法(未实施,按项目规则先落判据再改)
+
+1. **(小,直击重载 #2)**`getNextSegment` 重试循环:请求格式 == `graceSourceItag` 且响应只推来
+   切换目标档 ⇒ 立即放弃(抛瞬态错误回 chunk source),让 `graceSegmentsLeft=0` 后的切换生效;
+   或对 grace 旧档把 `MAX_ATTEMPTS` 降到 1–2。
+2. **(更稳)**grace 期间不给目标档挂 `prefetchFormat`(P11-281 的那一句),避免请求体里出现新档
+   把服务端会话掰过去;等旧档段到手再预热。
+3. **(ABR,需先补判据链)**`est < 校准 need` 时用**预计耗尽时间**(`bufS / (need/est − 1)`)而不是
+   `bufS < 8s` 才降档;`callCap` 按响应里实际推来的最高档算,而不是只按 `req.formatItag`。
+   这一条会改 §39 的滞回/地板,必须先按 §39 口径逐条对完再动。
+
+### §67.5 历史对照:以前有这个问题吗
+
+全量扫 `Y:\download\bilitv\logs` 247 份日志(2026-09-09 ~ 2026-10-27):
+
+| 现象 | 历史 |
+|------|------|
+| `exhausted N attempts`(6 连空转 → terminal → 整场重载) | **老形态**:09-09~09-20 高频(09-13 两场 14/10 次、09-20 多场单场 4~22 次),当时成因是 WEB-SABR「服务端只推 251/396,我们选 140/302」+ 预取抢响应预算;`cancelPrefetch`(P11-136/137)与 P11-92 之后**9-21 至 10-26 的 60+ 份日志里 0 次**。今天 21:47 是**回归**,不是新机制。 |
+| 降档 grace 请求旧档(P11-281) | **新路径**,10-26 才落地。日志库里只跑过两次:`10-27 09:56`(2160→1440)旧档下一段命中 grace 缓存(`grace hit itag315 seg=19`)**没向服务端要旧档** ⇒ 切换正常完成、无 `no seg`;`10-27 21:46`(本场)旧档下一段 308 seg 73 **不在**缓存 ⇒ 必须问服务端 ⇒ 服务端已被 prefetch 掰到 303 ⇒ 死锁。 |
+| `stall detected` 整场重载 | **常见**:10 月 32 份日志共 94 次;1440p 试升后漏光的同族此前也有(如 10-25 20:42 段)。 |
+
+**判据**:降档 grace 是否安全,取决于「旧档下一段是否已在 grace 缓存」。在缓存 → 安全(09:56 场);
+不在缓存 + prefetch 已随请求发出 → 服务端切档后旧档永远拿不到 ⇒ **必死**。今天 21:46 正好落在后者。
+
+### §67.6 归因:是不是改动导致的
+
+构建确认:`v3.1.2-alpha.8` tag 指向 `0bb5e0d2`(HEAD),包含 P11-295 的两个提交
+(`ff8474de` 起播快速连跳 + `0bb5e0d2` companion internal)。
+
+| 重载 | 归因 | 依据 |
+|------|------|------|
+| **#2(terminal)** | **是,P11-281 引入的回归**(2026-10-26) | P11-274 的 grace 分支带守卫 `hasRealSegment(fromItag, fromSeg+1)` —— 旧档下一段**已在缓存**才顶位,结构上不会向服务端要旧档;P11-281 的降档分支删掉了这个守卫(`DefaultSabrChunkSource.kt` `if (isDowngrade) { prefetchFormat(targetItag); if (graceSegmentsLeft > 0) return graceFromIndex }`),同时把目标档挂进 `preferredVideoFormatIds`。两个条件叠加才可能出现「请求旧档 + 服务端已被掰到新档」。P11-281 之前,降档走的是同步 `warmSegment(target)` 并立即切到目标档,没有这条路径。 |
+| **#1(stall)** | **否,不是新改动引入的失败模式** | 1440p 试探(P11-130 时代)、`est-hysteresis held`(P11-237/240)、18s 整调用上限(P11-153)都不在近期改动里。P11-295 只把起播梯子加快了;同一动作在 **21:45:56(起播 3 分钟后、60s 快速窗口早已结束)** 照样发生并照样崩 ⇒ 与 P11-295 无关。 |
+
+**结论**:#2 是回归,应修(修法见 §67.4 第 1/2 条);#1 是老悬崖,P11-295 只是可能把 1440p 试升提前了几秒,
+不是成因。两件事叠在同一会话里才显得像「连续两次」。修 #2 之后,#1 仍会以 stall 形式出现(除非动 ABR)。
+
+### §67.7 修复(P11-297,2026-10-27)
+
+**位置**:`DefaultSabrChunkSource.resolveSwitchTarget` 的降档分支。
+
+**改法**:grace 的前置条件增加 `fetcher.hasRealSegment(fromItag, fromSeg + 1)` —— 旧档**下一段**
+必须已在本地(`initializedFormats` 或 grace 缓存,`hasRealSegment` 两处都查)。不满足时:
+
+- 不进 grace(`graceSegmentsLeft` 不扣);
+- **不调用 `prefetchFormat(targetItag)`** —— 目标档不再进入本笔请求的 `preferredVideoFormatIds`;
+- 直接落到下面的 `warmSegment(target)` + `return selectedIndex`,回到 P11-281 之前「同步 warm 新档」
+  的行为。
+
+**为什么是这条**:降档 grace 的安全性完全等价于「旧档下一段在本地」——
+在本地时 chunk 不碰服务端,P11-281「不阻塞 warm」的收益成立;不在本地时唯一出路是向服务端要
+旧档,而请求体里的目标档会把会话掰走(本场实测),必死。用「在本地」这一个判据同时挡掉死锁,
+并把代价限制在「最坏一次切换停顿」,而不是整场重载。
+
+**日志**:
+- grace 生效:`switch grace(P11-281 downgrade): ... (旧档段已在本地)`(新增后缀);
+- 跳过:`switch grace skipped(P11-297): 旧档 itagX(Yp) seg=N 不在本地 —— 不求服务端(...),直接切 itagZ`。
+
+**验收**:缓冲临界降档时出现 `switch grace skipped(P11-297)`,随后正常 `switch source cleared(P11-291)`,
+不再出现 `no seg … itag <旧档>` 连试、`SABR terminal` 或整场重载;旧档段在本地时仍走原 grace(日志带新后缀)。
+
+**否证 / 残留风险**:若仍出现「请求旧档 → no seg」(说明还有别的创建路径,例如切换前已创建、之后被
+media3 重试的旧档 chunk),下一步在 `SabrMediaFetcher.getNextSegment` 重试循环加防线(请求格式 ==
+`graceSourceItag` 且响应只推来目标档 ⇒ 立即放弃)。本次按最小改动只改创建点。

@@ -351,8 +351,21 @@ internal class DefaultSabrChunkSource(
     // 切换点两段(当前要的是 38/39),只能同步 warm 新档 → 5.3s 画面+位置双冻结。
     // 降档目标更便宜、且旧档还能继续供段:先把目标档挂到预取(P11-130 preferred),让旧档的下一笔
     // 请求顺带把目标档推来;这段时间用旧档继续顶住播放,不再同步 warm 阻塞 loader。
+    // P11-297 起这一条只在「旧档下一段已在本地」时成立(见下),否则退回同步 warm。
     val isDowngrade = target.representation.format.height < from.representation.format.height
-    if (isDowngrade) {
+    // ── P11-297(2026-10-27 真机):降档 grace 的前提是「旧档下一段已在本地」────────────────────
+    // `logs_live_20261027_214727.log` 21:46:49(alpha.8):1440p 缓冲漏光 → buffer-critical 降档
+    // 308→303。P11-281 grace 让旧档 308 继续顶位、同时把 303 挂进下一笔请求的 prefetch。
+    // 旧档 seg 72 命中 grace 缓存,但 seg 73 **不在本地** ⇒ chunk 流只能向服务端要 308;
+    // 而这笔请求的 preferred 里已带着 303 ⇒ 服务端把会话切到 303,此后只回 303/139,
+    // 308 seg 73 永远拿不到 → 6 连空转 → SabrTerminalException → ExoPlayer 致命 → 整场重载。
+    //
+    // 判据:grace 的安全性等价于「旧档下一段在本地」——
+    //   · 在本地:chunk 不碰服务端,P11-281 的收益(不阻塞 warm)全部成立;
+    //   · 不在本地:唯一出路是求服务端,而请求体里的目标档会把它掰走 ⇒ 必死(本场实测)。
+    // 因此不在本地时不进 grace、也不挂 prefetch,直接落到下面的 warmSegment(目标档):
+    // 回到 P11-281 之前「同步 warm 新档」的行为 —— 最坏是一次切换停顿,而不是整场重载。
+    if (isDowngrade && fetcher.hasRealSegment(fromItag, fromSeg + 1)) {
       fetcher.prefetchFormat(targetItag)
       if (graceSegmentsLeft > 0) {
         graceSegmentsLeft--
@@ -360,10 +373,16 @@ internal class DefaultSabrChunkSource(
           "YtSabrChunk",
           "switch grace(P11-281 downgrade): target itag$targetItag(${target.representation.format.height}p) " +
             "seg=${targetSeg + 1} 未供上, 旧档 itag$fromItag(${from.representation.format.height}p) " +
-            "继续顶位(left=$graceSegmentsLeft, prefetch=$targetItag)",
+            "继续顶位(left=$graceSegmentsLeft, prefetch=$targetItag, 旧档段已在本地)",
         )
         return graceFromIndex
       }
+    } else if (isDowngrade) {
+      Log.i(
+        "YtSabrChunk",
+        "switch grace skipped(P11-297): 旧档 itag$fromItag(${from.representation.format.height}p) " +
+          "seg=${fromSeg + 1} 不在本地 —— 不求服务端(请求里的目标档会把会话掰走),直接切 itag$targetItag",
+      )
     }
     // 目标档还没有当前段:向它发一次正常请求,让服务端把游标处的真实段推来(响应本身可能是空段占位)。
     warmSegment(target, targetSeg, playbackPositionUs, playbackSpeed, queue)
