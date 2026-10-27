@@ -5482,3 +5482,55 @@ media3 重试的旧档 chunk),下一步在 `SabrMediaFetcher.getNextSegment` 重
 
 清理清单:`YtSabrSwitchDiag`(2 处)、`getNextSegment slow`(1 处)、`LoaderDiagSlowMs`、
 `SWITCH_DIAG_WINDOW_MS`、`switchDiagUntilMs`、probe 的 `bufPos`/`vfmt` 两字段。
+
+### §67.10 诊断结果(dev.r2265,2026-10-27 23:40):冻结 = 切换路径的同步 warm 阻塞 loader
+
+日志 `logs_live_20261027_234041.log`。两次冻结**都不是 4K 特有**,共同点是「切档时同步 warm 卡住」。
+
+**事件 A:23:36:49 撞 10s 判死(1440p→2160p 升档)**
+
+```
+23:36:29.504  switch source(P11-281): graceSourceItag -1 → 308
+23:36:29.519  fetch rn=18 itag=315 seg=0 (init, anchor=91104) → 16.8MB, 33.046 完成
+23:36:33.047  switch source cleared → drop old 308
+23:36:33.078  chunk completed: init itag=315
+23:36:33.094  fetch rn=19 itag=315 seg=22 playerTimeMs=111100   ← warmSegment(同步,loader 线程)
+23:36:33.793  probe pos=94694 bufPos=111100 rendered=5686 vfmt=1440p/308  ← 三值冻结
+23:36:48.831  仍然冻结(15s)
+23:36:49.524  media3 StuckPlayerDetector: no progress for 10000 ms → error
+23:37:13.102  getNextSegment slow(P11-298): itag=315 seg=22 cost=40012ms  ← 40s 整调用上限
+```
+
+**事件 B:23:39:58 撞 10s 判死(1440p→1080p 降档,P11-297 skip 路径)**
+
+```
+23:39:45.379  switch grace(P11-281): 旧档 308 seg 48 在本地 → grace 顶位
+23:39:45.413  switch grace skipped(P11-297): 旧档 seg 50 不在本地 → 直接切 303
+23:39:45.418  fetch rn=29 itag=303 seg=50 (warmSegment,同步)
+23:39:47.134  probe pos=236704 bufPos=246334 rendered=8495 vfmt=1440p/308 ← 冻结
+23:39:58.136  StuckPlayerDetector 10s → error
+23:40:03.426  getNextSegment slow: itag=303 seg=50 cost=18013ms
+```
+
+**判读**:
+
+- 两条 `slow` 行的 itag/seg 正是切档后 `warmSegment` 发出的那一笔 —— **`resolveSwitchTarget` 的同步
+  warm 把 loader 线程阻塞了 18–40s**。这是 P11-289/274 的已知同步代价,不是新改动。
+- 冻结期间 `bufPos - pos` = 9.6–16.4s(**数据在**),`rendered`/`pos` 不动,`vfmt` 仍是旧档,
+  **无任何 CCodec config / video size 日志** ⇒ 不是解码器重配,也不是供给端没数据;播放管线停在
+  切档边界,等 loader 返回。
+- 我们自己的 8s stall 看门狗只认 `BUFFERING`;这两次 `state=READY`,由 media3 内置的 10s
+  `StuckPlayerDetector` 判死 → 整场重载。
+- 诊断设计里「切档后 chunk 创建打一行」的 **缺失本身就是证据**:这两次的阻塞请求来自
+  `warmSegment`(`getNextChunk` 里、media chunk 创建之前),所以没有 `YtSabrSwitchDiag: chunk` 行。
+
+**结论**:
+
+1. P11-297 的降档死锁**没有再出现**(`no seg`/`exhausted` 均为 0);
+2. 但「旧档段不在本地」时退到**同步 warm**,在慢链路上会阻塞 loader 18–40s → 被 media3 10s 判死。
+   也就是说 P11-297 把「会话级 terminal」换成了「切换窗口的同步阻塞」,慢网下仍会重载;
+3. 4K 升档(顶档,一直走同步 warm)有同样的问题(P11-289 遗留)。
+
+**下一步候选**:把 `warmSegment` 改成**有界 + 非阻塞**(独立协程/线程发请求,或给 warm 单独 ≤3s
+上限),让 `getNextChunk` 立即返回、由正常 chunk 流取段;这样播放器不会在切档边界等 18–40s。
+需要先按 §39 口径核一遍它与 P11-91/92/274/281/291 的判据关系再动。
