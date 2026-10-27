@@ -5613,6 +5613,42 @@ if (fmt == null || !fmt.hasSegment(req.segment)) {
 **建议顺序**:①warm 异步/有界(直接修冻结);②drop 判据加 `downloadedSegments`/`hasSegment` 校验
 (防 9 月那类「响应空但旧档被丢」);③最后再评估是否把切换就绪判据从「缓冲末端段」改为更强约束。
 
+### §67.14 修复(P11-299,2026-10-27)
+
+**A. `warmSegment` 后台化(不阻塞 loader)**
+
+`DefaultSabrChunkSource.warmSegment` 从同步 `fetcher.getNextSegment(req)` 改为
+`warmScope.launch { … }`(SupervisorJob + Dispatchers.IO),`release()` 时 `warmScope.cancel()`。
+同一 `(itag, seg)` 在途时去重(`warmInFlight`),避免 warm 之间重复发同一笔。
+日志:`switch warm(P11-274/P11-299) itagX seg=N 后台预取,不阻塞 loader`。
+
+**B. P11-291 的「到位判断」收紧**
+
+`SabrMediaFetcher.getNextSegment` 的 drop 条件由「选中档这一笔收到响应」改为
+「选中档这一笔真的拿到了可用媒体」:
+
+- 媒体请求(`seg>0`):该段存在且 `data` 非空 / `contentLength>0`;
+- init 请求(`seg=0`):响应里至少有一个真实媒体段(init 本身不算);
+- 不满足时**不 drop**,旧档继续保留(`retainActiveFormats` 本来就会保 `graceSourceItag`),
+  日志 `switch source hold(P11-299): selected itagX 响应无可用段 (seg=N) → 暂留旧档 itagY`。
+
+**判据链核对(§39 口径)**:
+
+| 既有规则 | 与 P11-299 的关系 |
+|---|---|
+| P11-92(清旧档防 bufferedRange 拖游标) | 清的理由不变,只是把时机推后到「新档确有可用媒体」,更符合原意 |
+| P11-274 / P11-281 / P11-297 grace | 不变;P11-297 的 skip 分支仍直接切目标档 |
+| P11-289 顶档同步 warm 防首段漏光 | 同步阻塞部分被移除;`hasRealSegment` 就绪判定保留 |
+| P11-295 非顶档升档直接返回 | 不受影响 |
+| P11-286 settle / P11-251 缓冲地板 | 不涉及 |
+
+**风险 / 否证**:
+
+- warm 后台化后,它与正常 chunk 流可能并发请求同一段(去重只覆盖 warm 之间)。若日志出现
+  两笔同 itag+seg 的 `fetch rn=`,再补 loader 侧去重。
+- **若切档后仍被 media3 10s 判死**,说明冻结不来自 warm,而来自切档边界那次正常 chunk 加载;
+  下一步做「切换成本闸」:预计切换耗时(段大小/实测吞吐)超过当前缓冲时,先不切、继续吃旧档。
+
 **(2) 重载之后:1440p 被 90s 冷却挡住,是刻意的。**
 
 ```

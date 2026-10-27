@@ -30,6 +30,11 @@ import androidx.media3.exoplayer.upstream.BandwidthMeter
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy.FallbackOptions
 import androidx.media3.extractor.ChunkIndex
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import java.time.Instant
 
 /**
@@ -116,6 +121,15 @@ internal class DefaultSabrChunkSource(
 
   /** P11-298(临时诊断,取证后删):切档后到这一刻之前,每次 chunk 创建都打一行诊断。 */
   private var switchDiagUntilMs = 0L
+
+  // ── P11-299(2026-10-27 真机):warm 不再同步阻塞 loader ─────────────────────────────────────
+  // `logs_live_20261027_234041.log`:切档时同步 warm 拉 15.7MB 段,慢链路下阻塞 loader 18–40s
+  // (`getNextSegment slow itag=315 seg=22 cost=40012ms` / `itag=303 seg=50 cost=18013ms`),
+  // 播放器在切档边界停 10s 后被 media3 StuckPlayerDetector 判死 → 整场重载。
+  // warm 的作用只是「提前把目标档那段拉回来」,不需要 loader 等它;改成后台 fire-and-forget,
+  // 同一 (itag,seg) 在途时去重,避免与正常 chunk 流重复发同一笔请求。
+  private val warmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+  private val warmInFlight: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
   init {
     val representations =
@@ -420,7 +434,14 @@ internal class DefaultSabrChunkSource(
       holder.getLastAvailableSegmentNum(),
     )
 
-  /** P11-274:向目标档预发一次媒体请求(响应可能只是空段占位;真实段 N+1/N+2 会被服务端推来)。 */
+  /**
+   * P11-274:向目标档预发一次媒体请求(响应可能只是空段占位;真实段 N+1/N+2 会被服务端推来)。
+   *
+   * P11-299:改**后台执行**。此前是 `fetcher.getNextSegment(req)` 直接同步调用 —— 慢链路下单笔
+   * 15.7MB 的 warm 会把 loader 线程堵 18–40s,播放器在切档边界等不到 chunk,10s 后被 media3
+   * `StuckPlayerDetector` 判死(真机 2026-10-27 23:36/23:39 两场)。warm 只是提前取数,
+   * 不需要 loader 等它;正常 chunk 流随后会自己取需要的段。同 (itag,seg) 在途时去重。
+   */
   private fun warmSegment(
     holder: RepresentationHolder,
     segmentNum: Long,
@@ -437,14 +458,21 @@ internal class DefaultSabrChunkSource(
       Util.usToMs(holder.getSegmentStartTimeUs(segmentNum)),
       queue.mapNotNull { (it.dataSpec.customData as? SabrSegmentRequest)?.segment },
     )
-    try {
-      fetcher.getNextSegment(req)
-    } catch (e: Exception) {
-      // 预判失败不在此处处理:真正的失败会在随后的正常 chunk 加载里按原路径抛出/evict。
-      Log.w(
-        "YtSabrChunk",
-        "switch warm(P11-274) itag$itag seg=${segmentNum + 1} 失败: ${e::class.simpleName}: ${e.message}",
-      )
+    val key = "$itag:${segmentNum + 1}"
+    if (!warmInFlight.add(key)) return
+    Log.i("YtSabrChunk", "switch warm(P11-274/P11-299) itag$itag seg=${segmentNum + 1} 后台预取,不阻塞 loader")
+    warmScope.launch {
+      try {
+        fetcher.getNextSegment(req)
+      } catch (e: Exception) {
+        // 预判失败不在此处处理:真正的失败会在随后的正常 chunk 加载里按原路径抛出/evict。
+        Log.w(
+          "YtSabrChunk",
+          "switch warm(P11-274) itag$itag seg=${segmentNum + 1} 失败: ${e::class.simpleName}: ${e.message}",
+        )
+      } finally {
+        warmInFlight.remove(key)
+      }
     }
   }
 
@@ -830,6 +858,9 @@ internal class DefaultSabrChunkSource(
   }
 
   override fun release() {
+    // P11-299:warm 后台协程随 chunk source 一起取消,避免已释放的播放器还在发请求。
+    warmScope.cancel()
+    warmInFlight.clear()
     for (representationHolder in representationHolders) {
       representationHolder.chunkExtractor?.release()
     }

@@ -1020,12 +1020,35 @@ internal class SabrMediaFetcher(
               // P11-291:选中档(新档)的 media 响应已到 —— 这才是旧代码「旧档保到新档 pending」的
               // 清理时机。切换完成时不再立刻清(见 setGraceSourceItag 注释),旧档在这里才让位。
               if (graceSourceItag >= 0 && req.formatItag == videoFormat?.itag) {
-                Log.i(
-                  tag,
-                  "switch source cleared(P11-291): selected itag${req.formatItag} media delivered " +
-                    "→ drop old itag$graceSourceItag",
-                )
-                graceSourceItag = -1
+                // ── P11-299(2026-10-27 真机):到位判据收紧 ──────────────────────────────────
+                // 原条件只看「选中档的这一笔请求收到了响应」就 drop 旧档;zero-reply / 只推别的格式 /
+                // 只回状态(usable=0)时同样成立 ⇒ 旧档被整条清掉(9 月 `no seg` 风暴的机制)。
+                // 现在要求「这一笔真的拿到了可用媒体」:媒体请求看请求段是否有真实数据;
+                // init 请求(segment=0)则要求响应里至少带了一个真实媒体段(init 本身不算)。
+                val newFmt = initializedFormats[req.formatItag]
+                val newFormatReady = if (req.segment > 0) {
+                  newFmt?.downloadedSegments?.get(req.segment)?.let {
+                    it.data.isNotEmpty() || it.header.contentLength > 0L
+                  } == true
+                } else {
+                  newFmt?.downloadedSegments?.values?.any {
+                    it.data.isNotEmpty() || it.header.contentLength > 0L
+                  } == true
+                }
+                if (newFormatReady) {
+                  Log.i(
+                    tag,
+                    "switch source cleared(P11-291): selected itag${req.formatItag} media delivered " +
+                      "→ drop old itag$graceSourceItag",
+                  )
+                  graceSourceItag = -1
+                } else {
+                  Log.i(
+                    tag,
+                    "switch source hold(P11-299): selected itag${req.formatItag} 响应无可用段 " +
+                      "(seg=${req.segment}) → 暂留旧档 itag$graceSourceItag",
+                  )
+                }
               }
               val dropped = retainActiveFormats()
               if (dropped.isNotEmpty()) {
