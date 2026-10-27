@@ -397,6 +397,19 @@ internal class SabrMediaFetcher(
    */
   @Volatile private var deliveredRealMedia = false
 
+  // ── P11-284(首包稳定性)────────────────────────────────────────────────────────────────────
+  // 真机 alpha.4 手机场(`logs_live_20261027_011218.log` 01:07:52):新会话第一发视频请求
+  // `timeout (fail=18003ms)` 零字节,重试 1.36s 就成功(3Mbps) —— 典型的服务端慢启动(P11-160:
+  // 首笔成功总耗时 3.5~7.2s,零字节停顿都 ≥16.5s)。但那 18s 失败样本进了 active est 窗口,est 被
+  // 砸到 223K ⇒ 01:08:12 `downgrade 480p → 144p` + `480p excluded 90s`,而随后几笔实测 2~8Mbps。
+  // 判据(用户口径「1 要判的是首包稳定」):**首段真正交付前的第一次视频请求失败按慢启动处理,
+  // 不计入 active est 窗口**;第二发及以后、或已交付过首段后的失败照常记账(真挂死仍会降档)。
+  private val sessionVideoItags: Set<Int> = session.videoFormats.mapTo(HashSet()) { it.itag }
+  /** 本会话是否已交付过**视频**真实段(≥ [REAL_BW_MIN_BYTES])。 */
+  @Volatile private var firstVideoPacketDelivered = false
+  /** 首段交付前的视频请求失败次数(第一次豁免,第二次起入账)。 */
+  @Volatile private var preDeliveryVideoFailures = 0
+
   /** 由视频 [DefaultSabrChunkSource] 每次 getNextChunk 喂:播放位置前方缓冲水位(ms)。仅视频轨喂(音频轨缓冲远超需求,会污染滑行量判定)。 */
   fun noteBufferedAheadMs(ms: Long) {
     bufferedAheadNoteMs = ms
@@ -1707,6 +1720,20 @@ internal class SabrMediaFetcher(
       // 16~20s 是服务端慢启动,不该被杀」。用「是否已交付过真实段」把起播的 bootstrap 段
       // 排除在快切口径之外(起播的兜底是 StartupStallThresholdMs=25s 那条看门狗)。
       if (readBytes >= REAL_BW_MIN_BYTES) deliveredRealMedia = true
+      // P11-284:首段视频真正交付 —— 之后的失败不再享受「首包慢启动」豁免。
+      if (readBytes >= REAL_BW_MIN_BYTES &&
+        req.formatItag in sessionVideoItags &&
+        !firstVideoPacketDelivered
+      ) {
+        firstVideoPacketDelivered = true
+        if (preDeliveryVideoFailures > 0) {
+          Log.i(
+            tag,
+            "first video packet delivered after $preDeliveryVideoFailures slow-start failure(s) " +
+              "(${elapsed}ms/${readBytes}B) — first-packet stable, failures now count (P11-284)",
+          )
+        }
+      }
       recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
@@ -1742,7 +1769,21 @@ internal class SabrMediaFetcher(
       if (readBytes < ZeroReplyMaxBytes) {
         noteZeroReply(req.formatItag, readBytes, "失败:${e::class.simpleName}(零媒体字节)")
       }
-      recordRealBandwidthFailure(failMs)
+      // P11-284:首段视频交付前的**第一次**失败按服务端慢启动处理,不计入 active est 窗口
+      // (P11-160 已记「首笔零字节停顿 ≥16.5s 是服务端慢启动」);第二发起照常入账,真挂死仍能降档。
+      val isVideoFailure = req.formatItag in sessionVideoItags
+      val firstPacketSlowStart =
+        isVideoFailure && !firstVideoPacketDelivered && preDeliveryVideoFailures == 0
+      if (isVideoFailure && !firstVideoPacketDelivered) preDeliveryVideoFailures++
+      if (firstPacketSlowStart) {
+        Log.w(
+          tag,
+          "first video packet failed before delivery (fail=${failMs}ms) — server slow-start, " +
+            "NOT counted in active est (P11-284)",
+        )
+      } else {
+        recordRealBandwidthFailure(failMs)
+      }
       recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs

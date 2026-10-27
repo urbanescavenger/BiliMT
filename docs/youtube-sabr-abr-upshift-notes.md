@@ -5059,3 +5059,70 @@ P11-259 已证实的污染值(本次 1.3Gbps)。last-valid 是唯一同时避开
 - **否证**:①若 `real=-1` 且 `last=-1` 时 est 恒等于 seed、导致冷启动迟迟不升档 ⇒ 可接受(起播画质
   本来就该稳),但若长时间不升需查真实样本是否根本没进来;②若非 SABR 源(B 站)行为变化 ⇒ 说明
   provider=null 分支被误改,必须回退;③若仍出现 >100M 的 est ⇒ 检查是否还有别处直接读 delegate。
+
+## §63 P11-284 首包稳定性:首段交付前的第一次失败不计入 active est(2026-10-27,3.1.2-alpha.4)
+
+**触发**:用户「看下最新日志 起播还是卡顿」→「1 要判的是首包稳定」。真机
+`logs_live_20261027_011218.log`(XQ-EC72/Android 16,3.1.2-alpha.4)。
+
+### §63.1 现象
+
+```
+01:07:52.546  MobilePlayer: playerState=2(BUFFERING) pos=0
+01:08:10.562  fetch rn=0 exception: timeout (fail=18003ms bwNow=-1)     ← 首包零字节
+01:08:11.925  fetch rn=1 REAL 540752B 1357ms → 3Mbps est=223K           ← 重试 1.36s 就成功
+01:08:12.114  downgrade 480p → 144p: est=223K sus=-1 bufS=5s
+01:08:12.114  downgrade fail cooldown: 480p excluded 90s reason=supply
+01:08:12.114  MobilePlayer: playerState=3(READY)                        ← 起播 19.6s
+```
+
+随后实测 2~8Mbps,但 480p 已进 90s 冷却,梯子只能 144p→720→1080→1440→2160 乱跳。
+**不是 P11-281 的切档冻结,也不是 P11-282 的 delegate 污染**;是首包慢启动被当成链路容量。
+
+### §63.2 判据链复核(§39 口径)
+
+- **降档 A 水位急救**:本例 bufS=5s 但重试后水位在涨,未触发(起播期 P11-219 也要求
+  `maxObserved>0` 才参与);
+- **降档 C est 滞回**:`required(480p×0.85) > est(223K)` 且 `bufferHoldsCurrentTier=false`
+  (bufS 5s < 本档急救线 8s)⇒ 当前档被 `continue` 刷掉,最高可负担只剩 144p。**这是本次主路径**;
+- **冷却**:降档即记 `480p excluded 90s`(supply),随后即使 est 回到 4~8M 也不让回 480p;
+- **升档侧**:与本次无关(还没进升档)。
+
+### §63.3 冲突 / 缺口
+
+1. **P11-160 已记「首笔零字节停顿 ≥16.5s 是服务端慢启动,不该被杀」**,但 `recordRealBandwidthFailure`
+   在首包失败时仍按「0 字节 / 18s」记入 active est 窗口 ⇒ est=223K,与已知结论直接矛盾。
+2. P11-167 的「无证据不是零带宽」只处理了**窗口内完全没有字节**(-1),没处理「窗口里混了一笔
+   18s 零字节慢启动 + 一笔 1.36s 正常交付」这种**混合窗口**。
+3. P11-282 的 last-valid/seed 兜底只在 `real == -1` 生效;本例窗口已有字节(所以 est=223K),
+   兜底不参与。
+4. P11-237 的「缓冲够就不降档」要求 `bufS ≥ 本档急救线(8s)`,起播 bufS=5s 不满足 ⇒ 拦不住。
+
+### §63.4 修法(用户口径:判首包稳定)
+
+`SabrMediaFetcher`(只动带宽样本记账,不动任何 ABR 阈值/冷却/优先级):
+
+- 新增 `sessionVideoItags`(会话视频 itag 集合,含同高度多 codec,避免只认 primary itag);
+- 新增 `firstVideoPacketDelivered`(本会话是否已交付过 ≥ [REAL_BW_MIN_BYTES] 的**视频**真实段)
+  与 `preDeliveryVideoFailures`;
+- **首段交付前的第一次视频请求失败**:仍记 silence-hang / zero-reply / round-trip / fetch-gap
+  (这些是「本档没供上」的证据,真挂死要靠它们),但**不调用 `recordRealBandwidthFailure`**
+  ⇒ 不污染 active est;打日志 `first video packet failed before delivery ... NOT counted in active est`;
+- **第二发及以后、或已交付过首段后的失败**:照旧入账 ⇒ 真挂死/连续失败仍会降档;
+- 首段真正交付时打 `first video packet delivered after N slow-start failure(s) — first-packet stable`。
+
+**为什么不是「起播 N 秒内一律不降档」**:那会把真挂死的起播也钉在原档(用户明确要的是
+「判首包稳定」,不是按时间一刀切)。这里只豁免**第一次、且尚未交付任何视频段**的失败:
+- 一次慢启动 + 快速重试 ⇒ 稳定,不降;
+- 两次连续失败、或重试虽成功但交付速率低 ⇒ est 仍会塌,照常降档(重试成功那笔本身会计入 est)。
+
+### §63.5 验收 / 否证线
+
+- **验收**:同场景日志出现
+  `first video packet failed before delivery (fail=…ms) — server slow-start, NOT counted in active est`
+  → `first video packet delivered after 1 slow-start failure(s) … first-packet stable`;
+  随后 **不再出现**`downgrade 480p → 144p: est=…` 与 `480p excluded 90s`;画质应停在起播档附近。
+- **否证**:①若真挂死场景(首包失败 + 重试也失败)被豁免挡住 ⇒ 第二发失败已在入账,不应发生;
+  若发生,查 `preDeliveryVideoFailures` 是否被会话重建重置;②若首包成功后 est 仍偏低 ⇒ 检查
+  `sessionVideoItags` 是否漏了同高度 codec(如只认 135 漏 244);③若非 SABR 源受影响 ⇒ 本改动只在
+  `SabrMediaFetcher`,不应波及。
