@@ -5229,3 +5229,57 @@ P11-274 起把旧档段放进独立 grace 缓存(天然不进请求);P11-281/286
   下一次 getNextChunk 强制 cleanup(可加一次性超时);②若重新出现请求 N 回 N+1/N+2 ⇒ 检查旧档是否
   仍被编码进 bufferedRanges(graceSource/lastDelivered 的排除条件);③若起播/seek 变慢 ⇒ 检查
   queue 为空时旧档是否被误留。
+
+## §66 P11-295 起播梯子恢复老「快速连跳」:非顶档升档不逐档 settle + 不走同步 warm(2026-10-27)
+
+**触发**:用户「看看移动端日志,以前切档没有这么明显的卡顿」→「做吧」。
+
+### §66.1 对照证据(同一台手机 XQ-EC72)
+
+**老 r2187/r2188(2026-10-11/12,`startHeight=720`)**
+
+```
+20:47:27.169  upshift itag303(1080p)
+20:47:27.580  cleanup dropped formats=[302] (video=303 pending=[139,303])
+20:47:28.821  upshift itag308(1440p)          ← 1.6s 内连跳
+20:47:30.365  cleanup dropped formats=[303] (video=308 pending=[308])
+解码器实际 crop:720(20:46:39)→1440(20:47:52)→2160(20:47:57)  ← 1080 从未上屏
+全场 BUFFERING:1 次(起播 pos=0),换档处 0
+```
+
+**alpha.7(2026-10-27,`startHeight=480`)**
+
+```
+11:09:45 480→720; 11:09:50 720→1080; 11:10:26 1080→1440
+11:10:17 CCodec→720; 11:10:32→1080; 11:10:59→1440   ← 每档都上屏
+每次 switch source 后各有一次 BUFFERING(22/12/16ms)
+```
+
+**结论**:老代码 ABR 跑在播放器前面,深缓冲下中间档被 cleanup 丢掉、从未解码;P11-286 的逐档
+settle 把每档都变成实际播放,重配次数 2→3–4,叠加 P11-274+ 切换路径的 brief BUFFERING。
+
+### §66.2 改动
+
+**A. `HeightAwareAdaptiveTrackSelection`**
+- 新增 `STARTUP_RAMP_MS = 60s`:起播窗口内,**非顶档**升档不套 settle(`upgradeSettled`),
+  允许 ABR 快速连跳;顶档(≥2160)仍走 settle。
+- 稳态(60s 后)与非顶档/顶档规则不变。
+
+**B. `DefaultSabrChunkSource.resolveSwitchTarget`**
+- 非顶档**升档**直接 `pendingSwitchIndex=-1; return selectedIndex` —— 不调用同步 `warmSegment`、
+  不做 grace,交给正常 chunk 流去取(对齐 P11-274 前)。旧档仍由 `graceSourceItag` 保留到新档
+  media 到达(P11-291)。
+- **降档**保持 P11-281 的 grace/prefetch 非阻塞路径;**顶档升档**保持 `hasRealSegment`/warm 保护
+  (防 P11-289 的 15.9MB 首段漏光重载)。
+
+**不动**:P11-281 降档 grace、P11-291 清理时序、P11-286 `lastDelivered` 保留、P11-92 范围排除、
+顶部 10s 冷启动锁、缓冲地板、试探/冷却。
+
+### §66.3 验收 / 否证线
+
+- **验收**:起播 60s 内 ABR 在 1–2 个评估周期内连跳到可负担档(日志 `sel=` 快速变化),播放器
+  解码器 crop 只停在少数档位(如 480→1440,跳过 720/1080),换档 BUFFERING 次数下降;稳态
+  (60s 后)升档仍受 settle(间隔 ≥4s + 当前档 media);无 stall/重载。
+- **否证**:①若快速连跳导致目标档没数据、画面卡住 ⇒ 说明正常 chunk 流来不及,需要对非顶档
+  恢复「当前档 media 已到」这一条(但不必 4s dwell);②若 2160 仍重载 ⇒ 检查顶档 warm/settle
+  是否被误豁免;③若稳态升档变回连跳 ⇒ 检查 `startupRamp` 的 60s 窗口是否按实例创建计时。

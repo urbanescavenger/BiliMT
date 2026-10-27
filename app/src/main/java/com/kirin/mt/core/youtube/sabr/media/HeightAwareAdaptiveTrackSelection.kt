@@ -1170,6 +1170,12 @@ class HeightAwareAdaptiveTrackSelection(
       lastDeliveredVideoItag == -2 || lastDeliveredVideoItag == selectedVideoItag
     val upgradeSettled = currentTierDelivered &&
       (lastUpgradeElapsedMs == 0L || nowMs - lastUpgradeElapsedMs >= UPGRADE_SETTLE_MS)
+    // ── P11-295(起播梯子恢复老行为)──────────────────────────────────────────────────────────
+    // 真机对照(§66):老 r2187/r2188 在同一台手机上,ABR 1.6s 内连跳 1080→1440,播放器在深缓冲下
+    // 只解码 720→1440(中间档被 cleanup 丢掉、从未上屏),换档处零 BUFFERING;P11-286 的逐档 settle
+    // 让每档都落地,反而把重配次数从 2 次变成 3–4 次。故:起播前 [STARTUP_RAMP_MS] 内,**非顶档**
+    // 升档不套 settle,允许快速连跳;顶档仍走 settle/warm 保护(防 2160 首段漏光重载)。
+    val startupRamp = nowMs - createdElapsedMs < STARTUP_RAMP_MS
     // 2026-09-01 满缓冲试探升档(trial upshift):canUpgrade 已含冷启动锁 10s + 降档后缓冲 ≥30s;
     // 试探水位线 = max(15s 地板, 0.8×历史最高水位),要求「升穿」(上一评估在线下)——满缓冲本身
     // 就是供给富余于当前档的硬证据,也是测量型门槛在服务端 pacing 下唯一可补的盲区。
@@ -1201,7 +1207,9 @@ class HeightAwareAdaptiveTrackSelection(
       // + 本逐级约束跑,最坏多升一档(便宜可回退);顶档由下方 ×1.1 闸(-1 恒被挡)单独看死。
       if (isUpgrade && f.height > nextUpgradeHeight) continue
       // P11-286:settle —— 当前档 media 还没到 / 距上次升档太近,本轮不允许再爬。
-      if (isUpgrade && !upgradeSettled) {
+      // P11-295:起播梯子(前 STARTUP_RAMP_MS)的非顶档升档豁免 settle —— 恢复老的快速连跳,
+      // 让播放器深缓冲下跳过中间档、减少解码器重配;顶档仍受 settle 保护。
+      if (isUpgrade && !upgradeSettled && !(startupRamp && f.height < TOP_TIER_MIN_HEIGHT)) {
         if (!upgradeSettleHoldLogged) {
           upgradeSettleHoldLogged = true
           Log.i(
@@ -1727,6 +1735,13 @@ class HeightAwareAdaptiveTrackSelection(
      * 4s 覆盖一次 init+首段的正常往返;快速链路只是晚几秒到 1440p,换取起播不抖。
      */
     const val UPGRADE_SETTLE_MS = 4_000L
+
+    /**
+     * P11-295:起播梯子快速连跳窗口(ms)。窗口内**非顶档**升档不套 settle,恢复 P11-286 前
+     * 「ABR 跑在播放器前面、深缓冲下中间档被跳过」的行为(老日志 r2187/r2188 实测 1.6s 连跳
+     * 1080→1440、解码器只重配 720→1440)。稳态与顶档仍走 settle。
+     */
+    const val STARTUP_RAMP_MS = 60_000L
     /** 2026-08-30 方案B:顶档(4K 级)定义高度门槛——组内最高档 height ≥ 此值时启顶档 sustained 加码。 */
     const val TOP_TIER_MIN_HEIGHT = 2160
 

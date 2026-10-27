@@ -331,6 +331,17 @@ internal class DefaultSabrChunkSource(
     val previousChunk = queue.lastOrNull()
     val targetSeg = currentSegmentNum(target, loadPositionUs, previousChunk)
     val fromSeg = currentSegmentNum(from, loadPositionUs, previousChunk)
+    // ── P11-295:非顶档升档恢复老代码行为 ──────────────────────────────────────────────────
+    // 老 r2187/r2188(§66):ABR 1.6s 内连跳 1080→1440,播放器深缓冲下只解码 720→1440;
+    // 靠的是「选中即交给正常 chunk 流去取」——没有同步 warm、没有 grace,旧档保留到新档
+    // media 到达(P11-291)。这里照做:非顶档升档直接返回选中档,让 chunk 流自然取新档。
+    // 顶档(≥2160)仍走下面 hasRealSegment/warm 保护,防 15.9MB 首段漏光重载(P11-289)。
+    if (target.representation.format.height > from.representation.format.height &&
+      target.representation.format.height < HeightAwareAdaptiveTrackSelection.TOP_TIER_MIN_HEIGHT
+    ) {
+      pendingSwitchIndex = -1
+      return selectedIndex
+    }
     if (fetcher.hasRealSegment(targetItag, targetSeg + 1)) {
       pendingSwitchIndex = -1
       return selectedIndex
