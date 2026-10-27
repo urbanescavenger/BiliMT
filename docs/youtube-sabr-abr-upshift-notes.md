@@ -5576,11 +5576,13 @@ media3 重试的旧档 chunk),下一步在 `SabrMediaFetcher.getNextSegment` 重
 - **丢的时机本身没错**:P11-291 的判据是「选中档的 media 响应到达」,日志里 315 seq 18 确实先到
   (`switch source cleared: selected itag315 media delivered`)才 drop 308。不是「没到位就丢」。
 - 卡点在紧接着的下一跳:`resolveSwitchTarget` 用「上一 chunk 的 `nextChunkIndex`」(= **缓冲末端**,
-  本例 seg 22 ≈ 116s)去判断新档是否有数据;播放头附近(94.7s)的 seg 18 已在缓存,却不参与这个
-  判断 ⇒ 判成「没数据」⇒ 同步 `warmSegment` 拉 seg 22 ⇒ loader 阻塞 40s。修法应是把 warm 改成
-  非阻塞 + 判据锚点改成播放头段,而不是「旧档多留一会儿」。
+  本例 seg 22 ≈ 116s)判断新档是否有数据;播放头附近(94.7s)的 seg 18 已在缓存,却不参与这个
+  判断 ⇒ 判成「没数据」⇒ 同步 `warmSegment` 拉 seg 22 ⇒ loader 阻塞 40s。
+  (注:顺序加载本来就该往前取,`nextChunkIndex` 锚在缓冲末端是正常的;**问题只是这一步被做成了
+  同步阻塞**,不是取段位置错。)
 - 仍未闭环的一点:`bufPos=111100`(还有 16.4s 数据)与 `pos=94694`/`rendered` 同时冻结。数据在却
   不消费,只能说明播放管线没推进;要确认是卡在 format change 还是渲染侧,需要再补「播放线程心跳」诊断。
+- 因此下一步修法应聚焦**把 warm 改成异步/有界**,而不是改取段锚点或「旧档多留」。
 
 **(2) 重载之后:1440p 被 90s 冷却挡住,是刻意的。**
 
