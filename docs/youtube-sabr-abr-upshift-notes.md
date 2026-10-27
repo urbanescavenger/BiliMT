@@ -5584,6 +5584,35 @@ media3 重试的旧档 chunk),下一步在 `SabrMediaFetcher.getNextSegment` 重
   不消费,只能说明播放管线没推进;要确认是卡在 format change 还是渲染侧,需要再补「播放线程心跳」诊断。
 - 因此下一步修法应聚焦**把 warm 改成异步/有界**,而不是改取段锚点或「旧档多留」。
 
+### §67.13 「到位判断」确实有问题:判的是「响应回来了」,不是「段到位」
+
+`SabrMediaFetcher.getNextSegment` 的 P11-291 清理条件(真机事件 A 由 **init 请求**触发):
+
+```kotlin
+if (fmt == null || !fmt.hasSegment(req.segment)) {
+  media(req)                                   // 发一笔请求
+  if (graceSourceItag >= 0 && req.formatItag == videoFormat?.itag) {
+    // ← 只要「选中档的这一笔请求收到响应」就成立
+    graceSourceItag = -1
+  }
+  retainActiveFormats()                        // 旧档在这里被清掉
+}
+```
+
+问题:
+
+1. **没有校验这笔请求要的段是否真的到了**。`rn=18` 是 `itag=315 seg=0`(init)请求,响应里恰好带了
+   seq 18 的媒体段,所以这次 drop 结果不算灾难;但同一条件在 zero-reply / 只推别的格式 / 只回状态
+   (`usable=0`)时同样成立 —— 那正是 9 月 `no seg` 风暴里「旧档被整条丢掉」的机制。
+2. **判据粒度是「响应」不是「可用数据」**。最小收紧:drop 前要求选中档
+   `initializedFormats[itag]?.downloadedSegments?.isNotEmpty() == true`(媒体请求可再加
+   `hasSegment(req.segment)`);init 请求则至少要确认 init 已登记。
+3. 注意:**收紧 drop 判据并不能单独修掉本次冻结** —— 事件 A 里新档确实有 seq 18。冻结的直接原因是
+   紧随其后的**同步 warm 阻塞 40s**;到位判据只是另一处应当收紧的防线。
+
+**建议顺序**:①warm 异步/有界(直接修冻结);②drop 判据加 `downloadedSegments`/`hasSegment` 校验
+(防 9 月那类「响应空但旧档被丢」);③最后再评估是否把切换就绪判据从「缓冲末端段」改为更强约束。
+
 **(2) 重载之后:1440p 被 90s 冷却挡住,是刻意的。**
 
 ```
