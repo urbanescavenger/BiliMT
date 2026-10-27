@@ -1685,7 +1685,9 @@ class HeightAwareAdaptiveTrackSelection(
     lastUpgradeWasTrial = false
   }
 
-  private companion object {
+  // P11-295:companion 改 internal —— DefaultSabrChunkSource 要读 TOP_TIER_MIN_HEIGHT
+  // 判断「非顶档升档走快速路径」。仅模块内可见,不扩大公开 API。
+  internal companion object {
     /** alpha.9Z:升档所需的最低缓冲水位(us)——降档自救后缓冲重建到这一水位前,不允许弹回高档。 */
     const val UPGRADE_MIN_BUFFERED_US = 30_000_000L
     /**
