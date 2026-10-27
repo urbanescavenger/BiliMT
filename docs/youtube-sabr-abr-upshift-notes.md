@@ -5454,3 +5454,31 @@ media3 重试的旧档 chunk),下一步在 `SabrMediaFetcher.getNextSegment` 重
 3. **23:03:05 stall 重载**:老 1440p 悬崖(est=6301K vs itag308 实测 ~11.9M);ABR 到 bufS=5s
    才降档,新档首段 23:03:08.9 才到,比 8s 看门狗晚 3.4s。P11-297 的 skipped 正常生效,不是死锁。
 4. **23:03:14 新会话 `InvalidPoToken (status=3)`** → 再重试,23:03:24 恢复(已知 PoToken 问题,单独)。
+
+### §67.9 诊断补丁(P11-298,2026-10-27)
+
+目的:§67.8-1 的 4K 切档冻结有两个候选机制(段号落到播放头之后 vs 播放线程/渲染卡住),
+现有日志分不开。**只加日志、不改行为**,取证后按 `grep P11-298` 全部删除。
+
+1. `YtSabrSwitchDiag: chunk itag=… seg=… playheadMs=… loadMs=… startMs=… queue=… prevItag=… prevNext=… selIdx=…`
+   - 触发:每次 ABR 切档后 30s 内(`SWITCH_DIAG_WINDOW_MS`)的 chunk 创建。
+   - 读法:`seg` 的 `startMs` 明显大于 `playheadMs`(如播放头 623s、请求段起点 649s)⇒ 段号选到了
+     播放头之后;若 `playheadMs ≈ loadMs` 且段对得上 ⇒ 段选择正常。
+2. `YtSabrSwitchDiag: request non-selected itag=… seg=… video=… audio=… grace=…`
+   - 触发:loader 请求的 itag 不是当前选中的视频/音频档(切档/grace 现场)。
+3. `getNextSegment slow(P11-298): itag=… seg=… cost=…ms cached=… video=… audio=… grace=…`
+   - 触发:单次 `getNextSegment` ≥ 5s。与 `fetch rn=` 行对照 = loader 在等哪一段、等多久、是否本有缓存。
+4. steady probe 增加 `bufPos=…ms vfmt=…p/itag`
+   - `bufPos` 前进而 `pos` 不动 ⇒ 播放线程/渲染卡住(数据是有的);
+   - `pos`/`bufPos` 一起不动 ⇒ 供给端没数据。
+
+**判读组合**:
+
+| 日志组合 | 结论 |
+|---|---|
+| `chunk` 行 `startMs` ≫ `playheadMs` | A:切档后段号选到播放头之后(改段选择) |
+| 段号正确、无 slow 行,但 pos/bufPos/rendered 三冻结 | B:解码器/渲染侧卡住 |
+| `getNextSegment slow` 长耗时且 `cached=false` | C:网络/供给慢 |
+
+清理清单:`YtSabrSwitchDiag`(2 处)、`getNextSegment slow`(1 处)、`LoaderDiagSlowMs`、
+`SWITCH_DIAG_WINDOW_MS`、`switchDiagUntilMs`、probe 的 `bufPos`/`vfmt` 两字段。

@@ -114,6 +114,9 @@ internal class DefaultSabrChunkSource(
   /** 还能顶几段(防止新档永远供不上时无限拖)。 */
   private var graceSegmentsLeft = 0
 
+  /** P11-298(临时诊断,取证后删):切档后到这一刻之前,每次 chunk 创建都打一行诊断。 */
+  private var switchDiagUntilMs = 0L
+
   init {
     val representations =
       adaptationSetIndices.flatMap { manifest.adaptationSets[it].representations }.toList()
@@ -613,6 +616,8 @@ internal class DefaultSabrChunkSource(
       pendingSwitchIndex = selectedIndex
       graceFromIndex = preSelectionIndex
       graceSegmentsLeft = SWITCH_GRACE_MAX_SEGMENTS
+      // P11-298(临时诊断,取证后删):切档后一段时间内把每次 chunk 创建打出来。
+      switchDiagUntilMs = System.currentTimeMillis() + SWITCH_DIAG_WINDOW_MS
       // P11-281:切换期间保住旧档(见 SabrMediaFetcher.graceSourceItag),否则降档时旧档刚被清掉,
       // 新档首段没到就整段冻结。
       fetcher.setGraceSourceItag(
@@ -681,6 +686,22 @@ internal class DefaultSabrChunkSource(
 
     val seekTimeUs = if (queue.isEmpty()) loadPositionUs else C.TIME_UNSET
     val startTimeUs = representationHolder.getSegmentStartTimeUs(segmentNum)
+    // ── P11-298(2026-10-27 临时诊断,取证后删)───────────────────────────────────────────────
+    // 4K 切档后出现「pos/rendered 双冻结 10s、state 一直 READY」(`logs_live_20261027_230518.log`
+    // 22:38:45.9)。要分清是「选中档的段号落到播放头之后,播放器等样本」还是「loader 卡在长请求」:
+    // 切档后 30s 内每次 chunk 创建打一行,把播放头 / 装载点 / 实际段号 / 上一 chunk 段号放在同一行,
+    // 与 fetcher 的 `fetch rn=`(itag+seg)和 `getNextSegment slow(P11-298)` 对照即可定位。
+    if (switchDiagUntilMs > System.currentTimeMillis()) {
+      val prevItag = previousChunk?.let { (it.dataSpec.customData as? SabrSegmentRequest)?.formatItag } ?: -1
+      val prevNext = previousChunk?.nextChunkIndex ?: -1L
+      Log.i(
+        "YtSabrSwitchDiag",
+        "chunk itag=${representationHolder.representation.formatId.itag} seg=$segmentNum " +
+          "playheadMs=${Util.usToMs(playbackPositionUs)} loadMs=${Util.usToMs(loadPositionUs)} " +
+          "startMs=${Util.usToMs(startTimeUs)} queue=${queue.size} " +
+          "prevItag=$prevItag prevNext=$prevNext selIdx=$selectedIndex",
+      )
+    }
     // P11-85 诊断:续播黑屏(位置冻结、数据就位、永不 READY)取证——每轨首 media chunk 打点:
     // loadPosition(裁剪起点)与段号/段起点的映射关系,下轮复盘首段裁剪是否吃掉关键帧。
     if (queue.isEmpty()) {
@@ -910,3 +931,9 @@ private const val PREFETCH_MAX_OVER_EST_PERMILLE = 1500L
  * 离得太远,旧档缓存也补不满,不如按旧行为切过去(接受一个空段),避免把画面钉在低档。
  */
 private const val SWITCH_GRACE_MAX_SEGMENTS = 2
+
+/**
+ * P11-298(2026-10-27 临时诊断,取证后删):切档后多久内继续打 `YtSabrSwitchDiag` 行。
+ * 30s 足以覆盖「切档 → 新档首段落地 → 解码器重配」的整段(实测顶档 warm 11.5–16.9s)。
+ */
+private const val SWITCH_DIAG_WINDOW_MS = 30_000L

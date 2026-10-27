@@ -2591,6 +2591,9 @@ fun PlayerScreen(
             PlayerPlaybackLogTag,
             "steady probe state=${playbackStateName(player.playbackState)} " +
               "pos=${currentPositionMs}ms fwdBuf=${player.totalBufferedDuration}ms " +
+              // P11-298(临时诊断,取证后删):bufPos/vfmt 用来分辨「播放器自身卡住(pos 不前但 bufPos 有富余)」
+              // 与「等新档样本(bufPos≈pos)」;vfmt 是播放器当前实际在解的视频档(与 ABR 选中档区分)。
+              "bufPos=${player.bufferedPosition}ms vfmt=${player.videoFormat?.let { "${it.height}p/${it.id}" }} " +
               "rendered=${(player as? ExoPlayer)?.videoDecoderCounters?.renderedOutputBufferCount ?: -1} " +
               "isLoading=${player.isLoading} video=${player.videoFormat?.codecs} " +
               "bw[${bandwidthMeter.diagEstimateSources()}]",

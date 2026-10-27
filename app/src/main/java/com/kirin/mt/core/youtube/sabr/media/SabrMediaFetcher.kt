@@ -959,6 +959,16 @@ internal class SabrMediaFetcher(
     // 首次判死时已打过完整 diag(`InvalidPoToken diag: sessAgeMs…`),此处静默以免刷屏。
     if (invalidPo) throw SabrTerminalException("InvalidPoToken (session dead, fast-fail no-fetch)")
     val itag = req.formatItag
+    // ── P11-298(2026-10-27 临时诊断,取证后删)───────────────────────────────────────────────
+    // 4K 切档冻结取证:loader 线程要的是「非当前选中档」时,说明 chunk source 正在拉切档前后的段。
+    // 与 `YtSabrSwitchDiag: chunk …`(播放头/装载点/段号)和 `fetch rn=`(真实请求)对照。
+    if (itag != videoFormat?.itag && itag != audioFormat?.itag) {
+      Log.i(
+        "YtSabrSwitchDiag",
+        "request non-selected itag=$itag seg=${req.segment} " +
+          "video=${videoFormat?.itag} audio=${audioFormat?.itag} grace=$graceSourceItag",
+      )
+    }
     // P11-274:旧档 grace 缓存直出——切档后新档还没供上时,chunk source 会让旧档顶 1–2 段。
     // 这段数据来自切走前的真实缓存,不发请求、不写回 initializedFormats(避免 P11-92 的 bufferedRange 回退)。
     takeGraceSegment(itag, req.segment)?.let { seg ->
@@ -969,6 +979,7 @@ internal class SabrMediaFetcher(
       return seg
     }
     // 2026-08-31:在途 itag 入白名单(修重建后旧在途请求响应被广告过滤丢弃的死循环),finally 移除。
+    val diagStartMs = System.currentTimeMillis()
     pendingRequestItags.add(itag)
     return runBlocking {
       try {
@@ -1123,6 +1134,18 @@ internal class SabrMediaFetcher(
         }
       } finally {
         pendingRequestItags.remove(itag)
+        // P11-298(临时诊断,取证后删):loader 线程在 getNextSegment 里待了多久。长耗时 =
+        // 播放器等这一笔(含整笔流式下载,见 P11-217/218 早停);与 `YtSabrSwitchDiag: chunk …`
+        // 的段号一起看,可分辨「等错段」还是「段对但下得慢」。
+        val costMs = System.currentTimeMillis() - diagStartMs
+        if (costMs >= LoaderDiagSlowMs) {
+          val cached = initializedFormats[itag]?.let { it.hasSegment(req.segment) } ?: false
+          Log.w(
+            tag,
+            "getNextSegment slow(P11-298): itag=$itag seg=${req.segment} cost=${costMs}ms " +
+              "cached=$cached video=${videoFormat?.itag} audio=${audioFormat?.itag} grace=$graceSourceItag",
+          )
+        }
       }
     }
   }
@@ -2183,6 +2206,12 @@ internal class SabrMediaFetcher(
      * 再重试"。慢滴(字节持续到来)不受影响。
      */
     const val SabrSilenceTimeoutMs = 8_000L
+
+    /**
+     * P11-298(2026-10-27 临时诊断,取证后删):loader 侧 `getNextSegment` 超过该耗时即打一行。
+     * 正常单笔 2–8s(4K 大段可到 12–17s);取 5s 只抓明显的等待,用来分辨「等错段/被长请求卡住」。
+     */
+    const val LoaderDiagSlowMs = 5_000L
 
     /**
      * P11-221:**空窗是否计入 est** —— false = 不计(当前值)。
