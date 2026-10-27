@@ -820,10 +820,9 @@ internal class SabrMediaFetcher(
         // P11-274:切走前把旧档切换点附近的真实段抄进 grace 缓存(只抄真实段,跳过 P11-92 空段占位)。
         videoFormat?.let { captureGraceCache(it.itag) }
         videoFormat = representation.formatId
-        // P11-281:不再在这里立刻 retainActiveFormats。切换进行中旧档还要继续供 chunk 顶住播放
+        // P11-281/291:不再在这里立刻 retainActiveFormats。切换进行中旧档还要继续供 chunk 顶住播放
         // (见 [graceSourceItag]);旧档已从请求 bufferedRanges 里排除,P11-92 防线不变。
-        // 真正清理由 chunk source 在切换完成时 setGraceSourceItag(-1) + 下次 media() 后的
-        // retainActiveFormats 完成。
+        // 真正清理在 getNextSegment 里「选中档 media 响应到达」时做(旧代码的"保到新档 pending")。
       }
     }
   }
@@ -835,19 +834,21 @@ internal class SabrMediaFetcher(
    * P11-281:标记「正在切走的旧档」。非 -1 期间:
    * - [retainActiveFormats] 保住它,允许 chunk source 继续拉它的下一段顶住播放;
    * - 请求的 `bufferedRanges` 排除它(P11-92:旧档缓冲尾不能拖服务端游标)。
-   * 切换完成(或放弃)时传 -1。
+   *
+   * P11-291:只在切换**开始**时传旧档;切换完成/放弃都**不**在这里清 —— 旧档保留到
+   * 「选中档的 media 响应到达」,由 [getNextSegment] 的 cleanup 统一清(对齐 P11-274 前
+   * 「旧档保到新档 pending」的时序)。
    */
   fun setGraceSourceItag(itag: Int) {
     if (graceSourceItag != itag) {
       Log.i(tag, "switch source(P11-281): graceSourceItag $graceSourceItag → $itag")
       graceSourceItag = itag
-      // 切换完成/放弃:立刻恢复 P11-274 的清理口径,旧档不再参与 bufferedRanges。
-      if (itag < 0) {
-        val dropped = retainActiveFormats()
-        if (dropped.isNotEmpty()) {
-          Log.i(tag, "switch source cleared(P11-281): dropped formats=$dropped")
-        }
-      }
+      // ── P11-291:切换完成时**不立刻清档** ────────────────────────────────────────────────────
+      // 旧代码(P11-274 前)的语义是「旧档保到新档 pending,下一次 media() 后 cleanup 才丢」。
+      // alpha.6 的立即清档在 player 仍渲染旧档时就把它删了(10:39:30 `dropped formats=[244]`
+      // 时 player videoFmt 仍 244)⇒ 换档瞬间 BUFFERING。这里只记录切换来源;
+      // 真正清理放到 getNextSegment 里「选中档 media 响应到达」的那一刻(见 P11-291 注释)。
+      // 期间旧档在 retainActiveFormats 的 keep 集合里、且被 bufferedRanges 排除(P11-92 防线不变)。
     }
   }
 
@@ -1005,6 +1006,16 @@ internal class SabrMediaFetcher(
               // 2026-09-20(诊断):这道清理会**静默**丢格式,而丢了之后所有请求都变 `no seg`
               // (r2017 真机:140/302 的 init 登记过、也成功交付过一次,之后却 `no seg 0` 6 连 → evict)。
               // 打点把「丢了谁、当时 audioFormat/videoFormat/在途 是什么」一次说清,避免再靠猜。
+              // P11-291:选中档(新档)的 media 响应已到 —— 这才是旧代码「旧档保到新档 pending」的
+              // 清理时机。切换完成时不再立刻清(见 setGraceSourceItag 注释),旧档在这里才让位。
+              if (graceSourceItag >= 0 && req.formatItag == videoFormat?.itag) {
+                Log.i(
+                  tag,
+                  "switch source cleared(P11-291): selected itag${req.formatItag} media delivered " +
+                    "→ drop old itag$graceSourceItag",
+                )
+                graceSourceItag = -1
+              }
               val dropped = retainActiveFormats()
               if (dropped.isNotEmpty()) {
                 Log.w(

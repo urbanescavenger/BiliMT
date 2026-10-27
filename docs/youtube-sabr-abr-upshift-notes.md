@@ -5185,3 +5185,47 @@ P11-259 已证实的污染值(本次 1.3Gbps)。last-valid 是唯一同时避开
   真挂死由 stall/水位兜底);②若快速链路 4s dwell 导致 1440p 明显变慢(>60s) ⇒ 把
   `UPGRADE_SETTLE_MS` 降到 3s;③若 `lastDeliveredVideoItag` 让旧档在 `bufferedRanges` 里拖游标 ⇒
   检查排除条件是否把 `videoFormat` 也排了。
+
+## §65 P11-291 恢复「旧档保到新档 pending」的清理时序(2026-10-27,3.1.2-alpha.6 后)
+
+**触发**:用户「旧档保留到新档 pending 应该沿用」→「为什么之前要清掉旧档」。
+
+### §65.1 旧档为什么要清(P11-92,2026-09-13)
+
+SABR 请求体**没有显式目标段号**;服务端按请求里**全部 `bufferedRanges` 的最大 endSegmentIndex+1**
+起推。切档后旧档若还在 `initializedFormats` 里,它的 bufferedRange 会被编码进请求 ⇒ 服务端从旧档
+缓冲尾起推,只回 N+1/N+2,请求的 N 永不到 ⇒ 6 连试 → `SABR terminal: exhausted` → evict → 整场
+重载。真机 `logs_live_20260913_124126`:三轮重载、`no seg` 60 次全 itag308;请求 14→回 15/16、
+21→22/23、34→35/36。反证:手切 1440 重建播放器、请求只带自身格式(`selectedFmts=2`),服务端
+**精确回请求段**(35→35),215 段零 `no seg`。所以 P11-92 清旧档的目的是**让它不进 bufferedRanges**,
+不是省内存。
+
+### §65.2 为什么现在可以不清
+
+P11-274 起把旧档段放进独立 grace 缓存(天然不进请求);P11-281/286 把旧档留在
+`initializedFormats` 但**显式从 bufferedRanges 排除**(`graceSourceItag` / `lastDeliveredVideoItag`)。
+既然「不进 bufferedRanges」已经做到,就没必要在切换完成的瞬间删数据。
+
+### §65.3 改动(P11-291)
+
+- `DefaultSabrChunkSource.resolveSwitchTarget`:**删除所有出口的 `fetcher.setGraceSourceItag(-1)`**
+  (7 处)。切换完成/放弃都不在 chunk source 清旧档。
+- `SabrMediaFetcher.setGraceSourceItag(-1)`:**不再立即 `retainActiveFormats()`**,只记状态。
+- 真正清理挪到 `getNextSegment` 的 `media()` 收尾:当 `req.formatItag == videoFormat?.itag`
+  (选中的新档真的发起并拿到了 media 响应)时,先清 `graceSourceItag`,再跑 `retainActiveFormats()`
+  丢掉旧档。日志:
+  `switch source cleared(P11-291): selected itagX media delivered → drop old itagY`。
+- 期间旧档仍在 `retainActiveFormats` 的 keep 集合里,且被 `bufferedRanges` 排除(P11-92 不变)。
+
+**语义**:P11-274 前的「旧档保到新档 pending,下一次 media() 后 cleanup 才丢」;不同点是旧档数据
+在等待期仍可被播放器使用,而不是靠 3 段 grace 缓存。
+
+### §65.4 验收 / 否证线
+
+- **验收**:`switch source cleared(P11-291): … media delivered` 出现在**新档 media 响应**那一行
+  之后,而不是切换完成的瞬间;不再出现「刚 `dropped formats=[X]`,紧接着 playerState=BUFFERING 且
+  videoFmt=X」;升档/降档切换的短 BUFFERING 减少;无 `no seg` / terminal / 整场重载(P11-92)。
+- **否证**:①若旧档长时间不被清(memory 涨、日志无 cleanup)⇒ 选中档一直命中缓存不发 media;需在
+  下一次 getNextChunk 强制 cleanup(可加一次性超时);②若重新出现请求 N 回 N+1/N+2 ⇒ 检查旧档是否
+  仍被编码进 bufferedRanges(graceSource/lastDelivered 的排除条件);③若起播/seek 变慢 ⇒ 检查
+  queue 为空时旧档是否被误留。

@@ -302,20 +302,20 @@ internal class DefaultSabrChunkSource(
     queue: List<MediaChunk>,
   ): Int {
     if (pendingSwitchIndex < 0) return selectedIndex
+    // P11-291:本函数所有出口都**不**清 graceSource —— 旧档保留到「选中档的 media 响应到达」,
+    // 由 SabrMediaFetcher.getNextSegment 的 cleanup 统一清。这就是 P11-274 前「旧档保到新档
+    // pending」的时序;立即清会让播放器仍在渲染旧档时把它删掉(alpha.6 10:39:30 的 BUFFERING)。
     // 起播/seek 后队列为空:不做 grace(此时“旧档还没真正在播”,顶位没有意义,也会拖慢起播)。
     if (queue.isEmpty()) {
       pendingSwitchIndex = -1
-      fetcher.setGraceSourceItag(-1)
       return selectedIndex
     }
     if (pendingSwitchIndex != selectedIndex) {
       pendingSwitchIndex = -1
-      fetcher.setGraceSourceItag(-1)
       return selectedIndex
     }
     if (graceSegmentsLeft <= 0) {
       pendingSwitchIndex = -1
-      fetcher.setGraceSourceItag(-1)
       return selectedIndex
     }
     val target = representationHolders.getOrNull(selectedIndex) ?: return selectedIndex
@@ -324,7 +324,6 @@ internal class DefaultSabrChunkSource(
     val from = representationHolders.getOrNull(graceFromIndex) ?: return selectedIndex
     if (from.chunkIndex == null || from.chunkExtractor == null) {
       pendingSwitchIndex = -1
-      fetcher.setGraceSourceItag(-1)
       return selectedIndex
     }
     val targetItag = target.representation.formatId.itag
@@ -334,7 +333,6 @@ internal class DefaultSabrChunkSource(
     val fromSeg = currentSegmentNum(from, loadPositionUs, previousChunk)
     if (fetcher.hasRealSegment(targetItag, targetSeg + 1)) {
       pendingSwitchIndex = -1
-      fetcher.setGraceSourceItag(-1)
       return selectedIndex
     }
     // ── P11-281(降档无缝)──────────────────────────────────────────────────────────────
@@ -360,7 +358,6 @@ internal class DefaultSabrChunkSource(
     warmSegment(target, targetSeg, playbackPositionUs, playbackSpeed, queue)
     if (fetcher.hasRealSegment(targetItag, targetSeg + 1)) {
       pendingSwitchIndex = -1
-      fetcher.setGraceSourceItag(-1)
       return selectedIndex
     }
     // 新档的真实段在更后面(N+1/N+2);旧档 grace 缓存能顶当前段 → 顺延切换点。
@@ -375,7 +372,6 @@ internal class DefaultSabrChunkSource(
       return graceFromIndex
     }
     pendingSwitchIndex = -1
-    fetcher.setGraceSourceItag(-1)
     return selectedIndex
   }
 
