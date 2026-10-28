@@ -352,11 +352,19 @@ fun PlayerScreen(
     )
     ExoPlayer.Builder(context)
       // P11-197:SABR 续拉门槛按最近一次实测往返抬高(非 SABR / 无样本时返回 0 = 原生行为)。
+      // P11-303:显式按 source 收口 —— SabrAbrMemory 是单例且样本 15 分钟内有效,若全局接线,
+      // B站/直播/TVBox 在看完 YouTube 后的一段时间里会继承 SABR 门槛与档位 cap(含 P11-302 的
+      // draining 状态),语义越界。非 SABR 源一律返回 0,交回 media3 原生行为。
       .setLoadControl(createTvPlaybackLoadControl(
         bufferMaxMs,
-        readAheadMinBufferUs = { SabrAbrMemory.readAheadMinBufferUs() },
+        readAheadMinBufferUs = {
+          if (activeRequest.isYoutube) SabrAbrMemory.readAheadMinBufferUs() else 0L
+        },
         // P11-230:按档位的缓冲上限(≥1440p 收到 20s)—— 压住 Java 堆里的样本量(4K 50s ≈ 180MB)。
-        bufferedCapUs = { SabrAbrMemory.heavyTierBufferedCapUs() },
+        // P11-303:同上,只对 SABR 生效;B站不继承上一场 YouTube 的档位 cap。
+        bufferedCapUs = {
+          if (activeRequest.isYoutube) SabrAbrMemory.heavyTierBufferedCapUs() else 0L
+        },
       ))
       .setTrackSelector(trackSelector)
       // 起始挡位:seed 初始带宽估计到目标档码率/0.7 → 目标挡命中起始档,之后带宽实测自然爬升。

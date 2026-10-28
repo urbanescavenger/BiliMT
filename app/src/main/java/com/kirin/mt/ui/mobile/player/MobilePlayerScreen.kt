@@ -581,7 +581,12 @@ fun MobilePlayerScreen(
     ExoPlayer.Builder(context)
       // P11-230:**移动端刻意不挂"高档缓冲上限"**(用户口径:移动端内存够)—— 上限只上 TV(BRAVIA 等
       // 盒子,`largeHeap` 448MB 上 4K 的 50s 样本缓冲 ≈180MB 会把堆吃到 0% free、GC 暂停 26~29ms)。
-      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs) { SabrAbrMemory.readAheadMinBufferUs() })
+      // P11-303:读前量门槛只对 SABR(YouTube)生效 —— SabrAbrMemory 是单例、样本 15 分钟内有效,
+      // 若全局接线,B站/直播/TVBox 在看完 YouTube 后会继承 SABR 门槛(含 P11-302 draining 状态)。
+      // 非 SABR 源返回 0 = 不改 media3 原生行为。
+      .setLoadControl(createTvPlaybackLoadControl(bufferMaxMs) {
+        if (activeRequest.isYoutube) SabrAbrMemory.readAheadMinBufferUs() else 0L
+      })
       // 后台播放优化: 别的应用抢音频资源抢自动暂停,焦点回来→自动续播;
       // 耳机/蓝牙音频设备断开(AUDIO_BECOMING_NOISY)→自动暂停。Media3 内部管理焦点
       // 请求/放弃与 becoming-noisy receiver 的注册/反注册(随 player release 自动清理)。

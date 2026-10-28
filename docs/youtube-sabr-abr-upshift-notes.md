@@ -5847,3 +5847,20 @@ loader 读前量空转 `G`);它交付的媒体时长 `m = bytes / need`。
   不出现长时间堆在 25s 导致的额外内存/带宽问题(档位 cap 仍在)。
 - 否证:若出现 `buffer draining` 时缓冲反而堆到 cap、ABR 无法升档(门槛与 cap 同值),
   或空转没减少 ⇒ 说明瓶颈不是空转,回到「整调用上限」或「缩短单笔」方案。
+
+### §69.5 P11-303 收口:读前量/档位 cap 只对 SABR 生效
+
+`SabrAbrMemory` 是单例,`readAheadMinBufferUs` 的样本 15 分钟内有效,而 `createTvPlaybackLoadControl`
+在所有源上都接线 —— 因此看完 YouTube 后切 B站/直播/TVBox 时,这些源会继承 SABR 的读前量门槛
+(以及 P11-302 新加的 draining 状态);TV 端还会继承上一场 SABR 的 `heavyTierBufferedCapUs` 档位 cap。
+B站是 DASH 分片 + 多 loader,不该套用 SABR 的串行节奏。
+
+改法(TV `PlayerScreen` 与移动 `MobilePlayerScreen` 两处):
+
+```kotlin
+readAheadMinBufferUs = { if (activeRequest.isYoutube) SabrAbrMemory.readAheadMinBufferUs() else 0L }
+bufferedCapUs        = { if (activeRequest.isYoutube) SabrAbrMemory.heavyTierBufferedCapUs() else 0L }
+```
+
+非 SABR 源返回 0 = 不改 media3 原生行为。验收:B站播放日志里不再出现
+`YtSabrReadAhead: read-ahead threshold …`;YouTube 播放仍出现 P11-197/P11-302 的门槛日志。
