@@ -433,6 +433,8 @@ internal class SabrMediaFetcher(
   /** 由视频 [DefaultSabrChunkSource] 每次 getNextChunk 喂:播放位置前方缓冲水位(ms)。仅视频轨喂(音频轨缓冲远超需求,会污染滑行量判定)。 */
   fun noteBufferedAheadMs(ms: Long) {
     bufferedAheadNoteMs = ms
+    // P11-302:缓冲趋势喂给续拉门槛控制器(缓冲在掉 ⇒ 不空转,详 SabrAbrMemory.readAheadMinBufferUs)。
+    SabrAbrMemory.noteBufferedAhead(ms)
   }
 
   /**
