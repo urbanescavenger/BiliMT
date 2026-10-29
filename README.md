@@ -135,6 +135,7 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 | tag | 内容 |
 | --- | --- |
+| v3.1.2-alpha.10 | **WebDAV/IPTV 连不上:系统 DNS 只回坏 IP 时用 DoH 补全候选**(P11-304)。真机 10-28 22:59–23:00 `lookup cf.19961226.xyz` 只返回 `172.67.153.187`(被网络 RST 的那个),P11-269 的健康排序在「全部拉黑仍原样返回」下无处施展,ping 三档 9.0s / 15.0s / 1.2s 全失败。改为:系统答案里没有健康地址时用 DoH(`223.5.5.5`,IP 字面量端点)补查 A,必要时补 AAAA,缓存 300s 合并进候选;系统答案健康时不触发,正常解析零开销。日志判据 `doh supplement …` |
 | v3.1.2-alpha.9 | **SABR 切档/重载链修复 + 缓冲趋势控制**(P11-296~303)。①降档 grace 加「旧档下一段必须在本地」前提(P11-297,修 P11-281 回归:慢网下求旧档→服务端已切新档→6 连空转 terminal→整场重载);②切档 warm 后台化,不再同步阻塞 loader 18–40s(P11-299);③ABR 试探不再绕过 sustained 不足,持续不足 10s 解除「缓冲够就不降档」hold(P11-300);④会话/节点判定 + 带护栏整场重建(P11-301,3min 冷却、重建后仍慢标 link-bad 10min);⑤缓冲趋势控制:缓冲在掉时抬高续拉门槛、不让 loader 空转(P11-302);⑥读前量/档位 cap 只对 YouTube 生效(P11-303)。判读与判据链见 `docs/youtube-sabr-abr-upshift-notes.md` §67–§69。注意:手动锁 1440p 在实测带宽低于该档真实码率(如链路 2–6Mbps vs 码率 9Mbps)时仍会 stall,当前无自动回落 |
 | v3.1.2-alpha.1 | **播放优先级按实际参考实现命名 + NewPipe 取流层同步更新**(P11-271)。设置「播放优先级」的 `SABR 优先`→**`NewPipe 优先`**、`WEB-SABR 优先`→**`FreeTube 优先`**(DataStore key 不变,已选设置不丢),描述同步 4 个 locale。NewPipeExtractor 由 `738c3d4` 升级到 LibreTube fork dev HEAD `3e863d7c`:只有 SABR 流时不再误抛 `Could not get any stream`;playability 非 OK 时报具体原因而非笼统的 `VISIONOS player response is not valid`。同时确认「能播放不能下载」的根因是**出口 IP 声誉**(换出口节点即恢复,播放走 FreeTube 档的 WebView 会话不受影响),判读写入 `docs/youtube-hd-playback.md` §6.7 row 102。注意:升级不改变 `isPlayerResponseNotValid` 判据,被标记 IP 下下载仍会失败 |
 
