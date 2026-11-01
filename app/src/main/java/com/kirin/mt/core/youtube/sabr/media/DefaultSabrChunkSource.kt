@@ -213,6 +213,10 @@ internal class DefaultSabrChunkSource(
     (bandwidthMeter as? SabrBandwidthMeter)?.setSessionRebuildProvider {
       fetcher.markSessionRebuild()
     }
+    // P11-305:在途视频段 ETA —— stall 看门狗据此决定「让路(慢滴快落地)还是重载」,见 docs §70。
+    (bandwidthMeter as? SabrBandwidthMeter)?.setInFlightVideoEtaProvider {
+      fetcher.getInFlightVideoEtaMs()
+    }
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {

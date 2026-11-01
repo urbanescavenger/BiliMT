@@ -153,6 +153,19 @@ internal class SabrBandwidthMeter(
     sessionRebuildProvider?.invoke()
   }
 
+  // ── P11-305(2026-11-01 TV 真机):在途视频段的 ETA —— stall 看门狗据此决定「让路还是重载」──────
+  // 慢滴期间 loader 阻塞在 open(),ABR 没有评估点;历史日志 7/7 这类段在 stall 后 ≤9s 落地,
+  // 让路最多 12s 比整场重载(10~22s 黑屏)划算。见 docs §70。
+  @Volatile
+  private var inFlightVideoEtaProvider: (() -> Long)? = null
+
+  fun setInFlightVideoEtaProvider(provider: () -> Long) {
+    inFlightVideoEtaProvider = provider
+  }
+
+  /** 在途视频段剩余时间估算(ms);-1 = 无在途视频段/证据不足,0 = 请求段已到手或刚落地。 */
+  fun getInFlightVideoEtaMs(): Long = inFlightVideoEtaProvider?.invoke() ?: -1L
+
   /**
    * P11-178:注入「本 itag 最近一次零字节挂死」的墙钟来源(SabrMediaFetcher.getLastSilenceHangWallMs)。
    * 与实测吞吐走同一条既有通道(选择类拿不到 fetcher)——挂死证据要让水位急救在「挂死后重试成功」的

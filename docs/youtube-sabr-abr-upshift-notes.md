@@ -5864,3 +5864,87 @@ bufferedCapUs        = { if (activeRequest.isYoutube) SabrAbrMemory.heavyTierBuf
 
 非 SABR 源返回 0 = 不改 media3 原生行为。验收:B站播放日志里不再出现
 `YtSabrReadAhead: read-ahead threshold …`;YouTube 播放仍出现 P11-197/P11-302 的门槛日志。
+
+---
+
+## §70 P11-305:2026-11-01 TV「连续重载为什么不降档」判读 + 两处改动(改码前判据链复核)
+
+### §70.1 现场(`logs_live_20261101_205931.log`,BRAVIA)
+
+```
+20:53:58  重载后 720p 起播
+20:56:00/04/25  upshift reseed → 1080p → 1440p → 2160p
+20:58:04  4K 持续不足 10s → downgrade hold released(P11-300)→ 2160p→1440p,2160p 冷却 90s
+20:58:44  最后一次 ABR 评估 sel=1(1440p) est=3823K sus=7707K cap=8620K bufS=11.2→15.3s
+20:58:45  发 seg=59(itag308,contentLen=10,996,883)
+20:58:53→20:59:03  fwdBuf 7.2→2.2→0.08s,期间零 ABR 评估
+20:59:00  state=BUFFERING
+20:59:09  stall detected,auto-retry #1(BUFFERING 已 8.9s)
+20:59:09  stall-reached cooldown: 2160p excluded 90s(starved=720p reached=2160p)  ← 打错档
+20:59:17  seg59 才 MEDIA_END(32.5s ≈ 2.7Mbps)
+```
+
+### §70.2 降档判据链复核(§39.3 / §68.1 的降档侧)
+
+| 路径 | 本场为什么没开火 |
+|---|---|
+| A 水位急救 `bufS < 8s` | 唯一一次评估(20:58:44)时 `bufS=11.2/15.3s` ≥ 8s;之后 **26~32s 零评估**,没机会 |
+| B 带宽闸 | 只是 suppress 通道,且当时不成立(与本案无关) |
+| C est 滞回 | 20:58:44 时 `est=3823K < need×0.85`,但 `bufferHoldsCurrentTier=true`(`bufS≥8s`)⇒ hold(P11-237/240 设计如此) |
+| D 升档后 10s 宽限 | 升档发生在 20:56,早已过窗 |
+| E 提前解除冷却 | 不适用 |
+| P11-300 持续不足 10s 解除 hold | 计时从 20:58:44 才开始;下一次评估要 ≥10s 后,而 20:58:44→20:59:14 零评估 ⇒ 没机会 |
+
+### §70.3 评估点为什么是空的(结构原因)
+
+1. `YtSabrAbr: sel=` 与 `trackSelection.updateSelectedTrack(...)` **只在**
+   [DefaultSabrChunkSource.getNextChunk] 里发生;
+2. loader 这段一直阻塞在 `SabrMediaChunk.load → SabrDataSource.open → getNextSegment`(seg59 的 32.5s);
+3. media3 `ChunkSampleStream.onLoadError`:`cancelable = bytesLoaded==0 || !isMediaChunk ||
+   !haveReadFromMediaChunk(...)`(tmp/ChunkSampleStream.java:578-579)——**已经送进解码器的媒体块不能取消**,
+   超时/断流只会重试同一段,不会回到 `getNextChunk`;
+4. 故:慢滴期间 ABR 结构性没有评估点,**降档不可能发生在段边界之前**。P11-178 的 `silenceHang` 只认
+   「零字节停顿」,本场是**有字节的慢滴**(每 ~100ms 来一块),不触发。
+
+### §70.4 历史日志验证(python 扫描 `Y:\download\bilitv\logs`,319 份 / 259MB)
+
+| 口径 | 结果 |
+|---|---|
+| 全部 `stall detected` | **255** 次 |
+| stall 时正有一段 ≥8s 的非 init 视频段在 open | **7** 次(3%) |
+| 那 7 段在 stall 之后多久落地 | **2 / 3 / 5 / 8 / 8 / 9 / 9 s**(全部 ≤9s) |
+| stall 距上一次 ABR 评估 | p50 **16.1s**、p90 29.2s,≥8s 的 **192/254** |
+| 「交付速率 < 声明×0.5 就 abort」(段≥6s) | 命中 **189** 段,其中随后 stall 仅 **14** ⇒ 精确率 **7%** |
+| 再加「估算缓冲在段结束前 ≤0」 | 命中 37 段、stall 9 ⇒ **24%** |
+
+**结论**:
+- **否掉主动 abort**:速率触发的切断会把大量本来能成功的慢传砍掉(精确率 7~24%),正是 P11-224 记过的
+  「切断了本来能成功的传输,净负」;而且 §70.3 证明切断也换不来回 `getNextChunk`(媒体块不可取消)。
+- **改用「看门狗让路」**:7/7 历史慢滴段都在 stall 后 ≤9s 落地 ⇒ 给 stall 重载加一个 ETA 门:
+  在途视频段 **ETA ≤10s 且最近 3s 仍有字节**时,先不重载,最多让 12s。段落地后 ABR 在段边界评估,
+  `bufS<8s` 走水位急救降档,避免整场重载(10~22s 黑屏)。
+
+### §70.5 改动(两处)
+
+**A. `starvedHeight` 取真实在播档(修「重载后爬回同一堵墙」)**
+
+`selectedVideoHeight()` 原来取 `currentTracks` 视频组里**第一个 isTrackSelected** 的格式;SABR 自适应组
+里 14 个格式全部 selected、第一个恒为 298/720p ⇒ `starved=720p` < `STALL_REACHED_MIN_HEIGHT(1080)`
+⇒ 目标回退到 `reachedHeight`(本场 2160p),**真正饿死的 1440p 一格冷却都没有**。
+本日志四次 stall(20:22/20:25/20:40/20:59)全部打 `starved=720p`,而 ABR 实际在 1080p/1440p(`sel=3`/`sel=1`)。
+改为优先 `player.videoFormat?.height`(稳态探针的 `vfmt=1440p/308` 就是它),再回退旧逻辑。
+
+**B. stall 重载让路(slow-drip grace)**
+
+- `SabrMediaFetcher` 记录在途请求的 `start/readBytes/lastByteMs/首个视频段 contentLen`,暴露
+  `getInFlightVideoEtaMs()`(剩余时间估算;-1=无在途视频段,0=刚落地 2s 内);
+- `SabrBandwidthMeter` 加 provider;
+- `PlayerScreen` stall 分支:已起播且出过帧时,若 `eta ∈ [0,10s]` 且请求仍活跃,推迟重载,
+  总让路 ≤12s;到期或 ETA 失去意义则照常重载。日志 `stall reload deferred (slow-drip in flight …)`。
+
+### §70.6 验收 / 否证
+
+- **验收**:再遇慢滴 stall,日志出现 `stall reload deferred (slow-drip in flight …)`,随后段落地、
+  ABR 在段边界降档,不再出现整场重载;`stall-reached cooldown` 的 `starved=` 等于实际在播高度。
+- **否证**:①让路后 12s 内段仍未落地 ⇒ 照常重载,日志应同时有 deferred 与 stall detected(可接受);
+  ②让路把「重载黑屏」换成「更长的卡顿」且用户体感更差 ⇒ 回退 B,只保留 A。

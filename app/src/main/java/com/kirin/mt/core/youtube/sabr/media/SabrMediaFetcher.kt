@@ -488,6 +488,70 @@ internal class SabrMediaFetcher(
     if (ms > 0L) sessionStartPositionMs = ms
   }
 
+  // ── P11-305(2026-11-01 TV 真机):在途视频段进度 —— 供 stall 看门狗判「慢滴是否快落地」──────────
+  // 背景(见 docs §70):慢滴期间 loader 阻塞在 `SabrDataSource.open`,ABR 只在 `getNextChunk` 评估,
+  // 8s stall 看门狗会先整场重载;而历史日志里 7/7 这类慢滴段都在 stall 后 ≤9s 落地 ⇒
+  // 让路最多 12s 比整场重载(10~22s 黑屏)划算。
+  @Volatile private var inFlightStartMs = 0L
+  @Volatile private var inFlightReadBytes = 0L
+  @Volatile private var inFlightLastByteMs = 0L
+  /** 本笔响应里**第一个**非 init 视频段的 contentLength(请求段本身的字节数)。 */
+  @Volatile private var inFlightVideoExpectedBytes = 0L
+  /** 最近一笔请求结束的墙钟(用于「刚落地」2s 宽限,避免落地瞬间被看门狗判死)。 */
+  @Volatile private var inFlightEndMs = 0L
+
+  private fun noteInFlightStart() {
+    inFlightStartMs = SystemClock.elapsedRealtime()
+    inFlightReadBytes = 0L
+    inFlightLastByteMs = 0L
+    inFlightVideoExpectedBytes = 0L
+    inFlightEndMs = 0L
+  }
+
+  private fun noteInFlightEnd() {
+    inFlightEndMs = SystemClock.elapsedRealtime()
+    inFlightStartMs = 0L
+  }
+
+  private fun noteInFlightProgress(readBytes: Long) {
+    inFlightReadBytes = readBytes
+    inFlightLastByteMs = SystemClock.elapsedRealtime()
+  }
+
+  /** 记本笔响应里第一个非 init 视频段的期望字节数(后续同类 header 不覆盖)。 */
+  private fun noteInFlightVideoSegment(itag: Int, contentLen: Long) {
+    if (itag in sessionVideoItags && contentLen > 0L && inFlightVideoExpectedBytes <= 0L) {
+      inFlightVideoExpectedBytes = contentLen
+    }
+  }
+
+  /**
+   * P11-305:在途视频请求还差多久落地(ms)。
+   * -1 = 没有在途视频请求 / 证据不足(无字节、静默 >[IN_FLIGHT_ETA_MAX_SILENCE_MS] 等);
+   * 0  = 请求段已到手,或请求刚结束 ≤[IN_FLIGHT_ETA_END_GRACE_MS](视为即将落地)。
+   */
+  fun getInFlightVideoEtaMs(): Long {
+    val now = SystemClock.elapsedRealtime()
+    val start = inFlightStartMs
+    if (start <= 0L) {
+      val end = inFlightEndMs
+      return if (end > 0L && now - end <= IN_FLIGHT_ETA_END_GRACE_MS) 0L else -1L
+    }
+    val elapsed = now - start
+    if (elapsed < IN_FLIGHT_ETA_MIN_ELAPSED_MS) return -1L
+    val lastByte = inFlightLastByteMs
+    if (lastByte <= 0L || now - lastByte > IN_FLIGHT_ETA_MAX_SILENCE_MS) return -1L
+    val read = inFlightReadBytes
+    if (read < IN_FLIGHT_ETA_MIN_BYTES) return -1L
+    val expected = inFlightVideoExpectedBytes
+    // 本笔响应里还没出现视频段的 MEDIA_HEADER ⇒ 没有「视频段快落地」的证据(纯音频请求也算 -1)。
+    if (expected <= 0L) return -1L
+    if (expected <= read) return 0L
+    val rateBps = read * 8000L / elapsed
+    if (rateBps <= 0L) return -1L
+    return (expected - read) * 8000L / rateBps
+  }
+
 
 
   /**
@@ -1758,6 +1822,8 @@ internal class SabrMediaFetcher(
     // P11-221:实读字节数提到 try 之外 —— catch 也要用它判「有请求没回复」。
     var readBytes = 0L
     return try {
+      // P11-305:本笔在途请求的进度起点(供 stall 看门狗估算 ETA,见 [getInFlightVideoEtaMs])。
+      noteInFlightStart()
       // P11-134:SABR POST **整调用上限**。playback client 是 `callTimeout(0)`(为不切掉长分片),
       // 只有 per-read 15s ⇒ 服务端「慢滴」(每次 read 都在 15s 内挤一点)时**永不超时**。
       // 真机 2026-09-20 13:32 就是这样挂死的:`fetch rn=2` 发出后既无 REAL 也无 exception,缓冲耗尽、
@@ -1852,6 +1918,7 @@ internal class SabrMediaFetcher(
           ump.append(readBuf, n)
           if (n == 0) continue
           readBytes += n
+          noteInFlightProgress(readBytes)
           ump.readParts(onPart)
           if (readBytes >= StreamStopMinBytes && streamNeedSatisfied(req)) {
             earlyStop = true
@@ -1957,6 +2024,9 @@ internal class SabrMediaFetcher(
           (if (silentHang) " silence-hang itag=${req.formatItag} recorded, P11-178" else "") + ")",
       )
       throw e
+    } finally {
+      // P11-305:请求结束(成功/失败/早停)都要清在途标记,否则看门狗会以为还有视频段在途。
+      noteInFlightEnd()
     }
   }
 
@@ -1997,6 +2067,8 @@ internal class SabrMediaFetcher(
           Log.w(tag, "MEDIA_HEADER duplicate headerId=${mh.headerId} (overwrite)")
         }
         Log.i(tag, "MEDIA_HEADER headerId=${mh.headerId} itag=${mh.itag} seq=${mh.sequenceNumber} isInit=${mh.isInitSeg} startMs=${mh.startMs} dur=${duration}ms contentLen=${mh.contentLength}")
+        // P11-305:在途视频段的期望字节数(供 stall 看门狗估算 ETA)。
+        if (!mh.isInitSeg) noteInFlightVideoSegment(mh.itag, mh.contentLength)
         partialSegments[mh.headerId] = SabrSegment(
           header = mh,
           sequenceNumber = mh.sequenceNumber.toLong(),
@@ -2408,6 +2480,16 @@ internal class SabrMediaFetcher(
 
     /** P11-173:饥饿快切的 ≥1440p 上限 —— 大段本身更慢,给到 12s(仍早于 18s/40s 原口径)。 */
     const val SabrStarvingCallTimeoutMsHigh = 12_000L
+
+    // ── P11-305:stall 看门狗让路的「在途视频段 ETA」估算参数(见 docs §70)──────────────────
+    /** 起算门槛:请求发出不到这个时长不估 ETA(起播/首包阶段交给既有看门狗)。 */
+    const val IN_FLIGHT_ETA_MIN_ELAPSED_MS = 5_000L
+    /** 最近一次收到字节距今超过它 ⇒ 视为静默挂死(交给 8s 静默超时),不参与让路。 */
+    const val IN_FLIGHT_ETA_MAX_SILENCE_MS = 3_000L
+    /** 已读字节少于此值不估 ETA(只有 part 头/状态包时算不出速率)。 */
+    const val IN_FLIGHT_ETA_MIN_BYTES = 256_000L
+    /** 请求刚结束的宽限:段落地瞬间看门狗可能仍看到 BUFFERING,别立刻判死。 */
+    const val IN_FLIGHT_ETA_END_GRACE_MS = 2_000L
 
     /** transient 重试上限(耗尽→SabrTerminalException→evict)。对齐旧 SabrDashDataSource BACKOFF_MAX_ATTEMPTS。 */
     const val MAX_ATTEMPTS = 6
