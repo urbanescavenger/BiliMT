@@ -5912,7 +5912,7 @@ bufferedCapUs        = { if (activeRequest.isYoutube) SabrAbrMemory.heavyTierBuf
 |---|---|
 | 全部 `stall detected` | **255** 次 |
 | stall 时正有一段 ≥8s 的非 init 视频段在 open | **7** 次(3%) |
-| 那 7 段在 stall 之后多久落地 | **2 / 3 / 5 / 8 / 8 / 9 / 9 s**(全部 ≤9s) |
+| 那 7 段在 stall 之后多久落地 | **2 / 3 / 5 / 8 / 8 / 9 s**(7 条日志行含 1 份同场重复;全部 ≤9s) |
 | stall 距上一次 ABR 评估 | p50 **16.1s**、p90 29.2s,≥8s 的 **192/254** |
 | 「交付速率 < 声明×0.5 就 abort」(段≥6s) | 命中 **189** 段,其中随后 stall 仅 **14** ⇒ 精确率 **7%** |
 | 再加「估算缓冲在段结束前 ≤0」 | 命中 37 段、stall 9 ⇒ **24%** |
