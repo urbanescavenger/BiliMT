@@ -6094,3 +6094,75 @@ val sustainedRefusesTrial = sustained >= 0L && sustained < required && !serverPa
 **否证**:①出现 `trial refused (sustained low)` 但 `pace≥1.0` 持续 >60s ⇒ 判据或接线有误;
 ②`serverPaced` 下试探 1440p 仍 18s+ 超时/整场重载 ⇒ 回退(把 `!serverPaced` 改回原式);
 ③窄管道路上每 3min 一次可见卡顿 ⇒ 提高 `PACING_MIN_SAMPLES` 或要求 `ahead≥1.2`。
+
+### §71.10 真机验证(dev.r2279,2026-11-02 00:29,`logs_live_20261102_003207.log`)
+
+**结论:接线生效(`pace=` 出现),但本场没有走到「试探解除 sustained 否决」那条分支。** 本场自动爬档
+走的是另外两条已存在的路径,且 4K 尝试因会话抖动被打回。
+
+| 时刻 | 事件 | 关键读数 |
+|---|---|---|
+| 00:29:59 | 720p 起播(续播 pos=29s) | **没有**再出现 alpha.10 的 720→480 起步降档 |
+| 00:30:02 | 冷启动梯子 → 1080p(itag303) | `upshift (cold-start ladder, reseed skipped)` |
+| 00:30:03 | 1440p 试探被 P11-300 拒 | `sustained=9770K < need=14170K`,**`pace=-`**(该档视频请求样本 <3) |
+| 00:30:08 | `tier need borrowed` 把 1440p need 校准为 **8.2M** | 1080p `meas=4092K/declared=7070K`(0.579)⇒ 直接过 gated 门,**不是 P11-306** |
+| 00:30:43 | 1440p 上屏 | `vfmt=1440p/308` |
+| 00:31:05 | gated 升 2160p | `sus=38338K`(60s 突发)> need≈19.5M,缓冲 18s |
+| 00:31:30 | **BUFFERING** | `fwdBuf=92ms`;4K 段 21MB 在途 |
+| 00:31:40 | 4K→1440p 水位急救 | `bufS=3.4s`;同刻 `rn=18 timeout(fail=8005ms)` → `evict sid`,2160p 冷却 90s/180s |
+| 00:31:48/50 | 1440p 恢复,证据出现 | `pace=3.5x` / `4.3x`,缓冲 17→27s,`cap=42641K` |
+
+**判读**:
+
+1. **P11-306 证据链工作**:`pace` 从 `-` 变为 3.5x/4.3x,与「同轨最近 4 笔请求全部早停且
+   `mediaMs/elapsed≥1`」一致。
+2. **样本累积偏慢是设计使然**:`recordPacingSample` 只记「请求格式是视频」的请求;本场大量
+   音频请求(`itag=139`)的响应里顺带推了 308 段,但不产生视频样本 ⇒ 1440p 切换后要等视频
+   loader 再发满 4 笔才有证据。保守方向,不影响正确性。
+3. **本场爬升不是新判据的功**:1080p→1440p 是 `tier need borrowed` 校准(昨天 alpha.10 同位置
+   need=11.38M、sus 5~9M 仍过不去;今天 need=8.2M 才过),1440p→2160p 是 gated sus 门。
+   `trial sustained-veto lifted` 一行都没有 —— 需要「停在某档 + 满缓冲 + pace≥1」的场景才能触发。
+4. **4K 打回不是带宽判据错**:4K 在位时 `bw=26~38M`、`sus=22~38M`,按数字应站得住;实际是
+   共享响应上一笔音频请求 8s 静默超时 → `evict sid`,在途 21MB 段被截断,缓冲 18→0.09→3.4s
+   ⇒ 水位急救降 1440p。属会话/CDN 抖动(P11-301 的 `isSessionDegraded` 只记到 1 次超时,未达 2 次门槛)。
+5. **无整场重载**:全场只有 1 次 BUFFERING(约 6s)与 1 次 evict,没有 `stall detected`/auto-retry;
+   相比 P11-305 的慢滴让路,这次降档接管得及时。
+
+### §71.11 音频请求被同响应视频段拖死:提前返回 + 交付后超时不 evict(P11-307)
+
+**真因**(`logs_live_20261102_003207.log` 00:31:32,rn=18):
+
+```
+fetch rn=18 itag=139 seg=14  starving-fast-fail: bufAhead=8438ms → callCap=8000ms
+00:31:36 MEDIA_END itag=139 seq=14 61KB          ← 请求段 4.2s 已到手
+00:31:37 MEDIA_END itag=315 seq=28 17.7MB        ← 同一响应继续推 4K
+00:31:37 MEDIA_HEADER itag=315 seq=29 21MB
+00:31:40 fetch rn=18 timeout (fail=8005ms) → SabrDataSource evict
+```
+
+两个问题叠加:
+
+1. **音频不该有 margin**:`marginFor` 原式在 `selectedVideoItagNote <= 0`(视频 chunk source 还没刷新)
+   时让音频也走 `streamMargin()=1`,即音频请求要等「下一个音频段」;而服务端这份响应里只有
+   当前音频段 + 视频段,永远等不到 ⇒ 只能一直读到 8s 上限。
+2. **请求段已到手却按失败处理**:`fetchStreamData` 的通用 catch 把任何超时都记成失败并 throw,
+   `SabrDataSource` 于是 evict **整条会话**(A+V 共享),在途视频段被截断,4K 缓冲 18→3.4s。
+
+**改动(两处,只动音频/失败收尾,不碰请求协议与 ABR)**:
+
+- `marginFor`:非当前选中视频轨一律 **0**;「位置未知」的旧行为只对**视频格式**保留。
+- `fetchStreamData` catch:若 `req.segment > 0` 且该段已入库 ⇒ 打
+  `timeout after requested seg delivered: … margin=… selectedVideoNote=… → treat as success (P11-306)`,
+  按成功返回 `StreamResult(earlyStop=true)`;记真实 `readBytes/failMs` 带宽样本与往返,
+  **不** `recordRealBandwidthFailure`、**不** evict。后续段由下一次请求补,下一次失败会走正常 evict。
+
+**为什么不是"提前再次请求"**:这一笔对播放器已经交付了请求段,再发一次只会重复拿同一段;
+真正该做的是**马上把这次调用结束**,让排在 dispatcher 后面的请求(视频 loader)立刻执行。
+早停 + 交付后不 evict 就是这个语义。
+
+**验收**:再遇「音频请求 + 同响应推大视频段 + 超时」:日志出现 `timeout after requested seg delivered`,
+且**没有** `SabrDataSource open: … → evict`;播放不再因音频超时断流/降档。
+
+**否证**:①若请求段到手但返回成功后,连续多笔都超时 ⇒ 会话确实坏了,正常路径会在下一次失败 evict,
+不掩盖问题;②若早停后视频 loader 的下一笔请求拿不到段 ⇒ 说明服务端游标被音频请求带走,需再评估
+请求体 `bufferedRanges` 口径。

@@ -1526,8 +1526,15 @@ internal class SabrMediaFetcher(
    * 音频/非选中档的段都很小(音频 60KB/5.3s),一段就够;视频侧的「多搬一段」(P11-225)完全不动。
    * [selectedVideoItagNote] <= 0(尚未喂到)⇒ 退回原行为,不改变未知态下的语义。
    */
-  private fun marginFor(req: SabrSegmentRequest): Long =
-    if (selectedVideoItagNote <= 0 || req.formatItag == selectedVideoItagNote) streamMargin() else 0L
+  private fun marginFor(req: SabrSegmentRequest): Long = when {
+    req.formatItag == selectedVideoItagNote -> streamMargin()
+    // P11-307:音频/非选中格式**永远** margin=0。原式在 selectedVideoItagNote 尚未喂到时会
+    // 让音频也走 streamMargin()=1，于是音频请求去等一个服务端根本没推的"下一个音频段"，
+    // 同一响应里的大视频段被一起读下去 ⇒ 撞 8s 饥饿上限 ⇒ evict 整条会话。
+    // 未知态的保护只对「视频格式」保留。
+    req.formatItag in sessionVideoItags && selectedVideoItagNote <= 0 -> streamMargin()
+    else -> 0L
+  }
 
   private fun streamMargin(): Long = when {
     // 起播期:只等请求段本身(P11-218 —— 播放器此刻无事可做,早一拍到手早一拍出画)。
@@ -2083,6 +2090,30 @@ internal class SabrMediaFetcher(
     } catch (e: Exception) {
       // 网络失败/超时:下载量=0、耗时计满 → 窗口带宽下探,让 ABR 有依据降档自救
       val failMs = SystemClock.elapsedRealtime() - t0
+      // ── P11-307:超时/异常时若**请求段已经到手**,这一笔对播放器已是可用交付 ────────────────
+      // 真机 rn=18(`logs_live_20261102_003207.log` 00:31:32):音频 seg=14 在 4.2s 已入库,
+      // 同一响应还在推 4K seq28(17.7MB)/seq29(21MB),读循环没早停,8s callTimeout 到点。
+      // 旧逻辑记一次失败并 throw → SabrDataSource evict 整条会话(连视频),4K 缓冲 18→3.4s。
+      // 请求段到手 ⇒ 后续段由下一次请求补,不该把会话扔掉。
+      val requestedDelivered = req.segment > 0L &&
+        initializedFormats[req.formatItag]?.hasSegment(req.segment) == true
+      if (requestedDelivered) {
+        Log.w(
+          tag,
+          "fetch rn=$rn timeout after requested seg delivered: itag=${req.formatItag} seg=${req.segment} " +
+            "read=${readBytes}B fail=${failMs}ms margin=${marginFor(req)} " +
+            "video=${videoFormat?.itag} audio=${audioFormat?.itag} selectedVideoNote=$selectedVideoItagNote " +
+            "→ treat as success (P11-307, 不 evict)",
+        )
+        recordRealBandwidthSample(readBytes, failMs)
+        SabrAbrMemory.noteSabrResponseMs(failMs)
+        noteRoundTrip(req.formatItag, failMs)
+        if (readBytes >= REAL_BW_MIN_BYTES) deliveredRealMedia = true
+        if (readBytes >= REAL_BW_MIN_BYTES && req.formatItag in sessionVideoItags) {
+          lastDeliveredVideoItag = req.formatItag
+        }
+        return StreamResult(readBytes, failMs, earlyStop = true)
+      }
       // P11-178:「零字节挂死」单独记一笔(itag 维度,跨评估周期存活)。SocketTimeoutException =
       // `sabrHttpClient` 的 readTimeout(8s)语义「多久没有新字节」,connectTimeout 同类型同属「拿不到
       // 字节」;两者都是「本档这条请求根本没被供上」的直接证据。callTimeout(按档高 18s/40s)是
