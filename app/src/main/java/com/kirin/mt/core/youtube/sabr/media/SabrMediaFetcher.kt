@@ -295,6 +295,28 @@ internal class SabrMediaFetcher(
   /** 2026-09-01 重填容量环(每次成功媒体请求一笔,无墙钟衰减),中位数喂升档判据。 */
   private val capacityWindow = ArrayDeque<RealBwSample>()
 
+  // ── P11-306(2026-11-02 TV 真机):服务端按档位供流(pacing)证据 ──────────────────────────────
+  // 病根(§71):播放 1080p 时服务端只按 ~1080p 的节奏供流,est/sus/cap 全被钉在 6~10M,而手切
+  // 1440/2160 实测 15~57M ⇒ 测量型闸看不到真管道。逐笔证据不看墙钟均值:只要**请求段每次都提前
+  // 到手**(早停)+ 交付内容时长 ≥ 实际耗时,就说明「供给是被我们的请求窗口限住的,不是链路」。
+  // 仅解除 P11-300-A 对试探的否决,不动容量闸/超容量闸/顶档不试探。
+  private class PacingSample(
+    val itag: Int,
+    val wallMs: Long,
+    val elapsedMs: Long,
+    val mediaMs: Long,
+    val satisfied: Boolean,
+    val failed: Boolean,
+  )
+
+  private val pacingLock = Any()
+  private val pacingSamples = ArrayDeque<PacingSample>()
+  // 当前响应作用域:请求在 dispatcher 上串行,processPart/fetchStreamData 同线程 ⇒ 普通字段即可。
+  private var respPacingItag: Int = 0
+  private var respPacingSeg: Long = -1L
+  private var respPacingMediaMs: Long = 0L
+  private var respPacingRequestedDelivered: Boolean = false
+
   // 2026-08-30(实测消耗码率,升降档门槛换地基):声明码率在高码率源上虚高约 2×(真机 302 声明 11.25M
   // 实测 6.3M、303 声明 22.26M 实测 ~11.5M),声明×est 双失真让乘数门槛(1.25/1.1)连续两轮卡在临界。
   // 这里从 MEDIA_END 挂账(itag → bytes + 已计段数),实测消耗码率 = bytes×8000 / 段数×平均段时长
@@ -816,6 +838,70 @@ internal class SabrMediaFetcher(
   fun getMeasuredSegmentCount(itag: Int): Long {
     if (itag <= 0) return 0L
     return synchronized(measuredLock) { measuredTracks[itag]?.segs ?: 0L }
+  }
+
+  /** P11-306:段时长(ms)——优先 ChunkIndex 网格,缺失时取 INIT metadata 的平均段时长。 */
+  private fun pacingSegmentDurationMs(fmt: InitializedFormat, seq: Long): Long {
+    val grid = fmt.seqStartMsBySeq
+    if (grid != null) {
+      val i = (seq - 1).toInt()
+      if (i >= 0 && i + 1 < grid.size) {
+        val d = grid[i + 1] - grid[i]
+        if (d > 0L) return d
+      }
+    }
+    if (fmt.duration > 0L && fmt.endSegmentNumber > 0L) {
+      return fmt.duration / fmt.endSegmentNumber
+    }
+    return 0L
+  }
+
+  private fun recordPacingSample(
+    req: SabrSegmentRequest,
+    elapsedMs: Long,
+    mediaMs: Long,
+    satisfied: Boolean,
+    failed: Boolean,
+  ) {
+    if (req.segment <= 0L || req.formatItag !in sessionVideoItags) return
+    val now = System.currentTimeMillis()
+    synchronized(pacingLock) {
+      pacingSamples.addLast(
+        PacingSample(
+          itag = req.formatItag,
+          wallMs = now,
+          elapsedMs = elapsedMs,
+          mediaMs = mediaMs,
+          satisfied = satisfied,
+          failed = failed,
+        )
+      )
+      while (pacingSamples.size > PACING_EVIDENCE_HISTORY_SAMPLES) pacingSamples.removeFirst()
+    }
+  }
+
+  /**
+   * P11-306:服务端按档位供流的证据 —— 当前选中视频档最近几笔请求是否「全部提前满足」。
+   *
+   * @return `mediaMs/elapsed` 的中位数(千分比,≥1000 即交付比实时快);-1 = 证据不足或窗口内有
+   *   失败/未到手/段时长未知。调用方只用它解除「试探被 sustained 否决」这一条(见 docs §71.9)。
+   */
+  fun getServerPacedSpeedPermille(): Long {
+    val itag = videoFormat?.itag ?: return -1L
+    if (itag <= 0) return -1L
+    val now = System.currentTimeMillis()
+    val recent = synchronized(pacingLock) {
+      pacingSamples
+        .filter { it.itag == itag && now - it.wallMs <= PACING_EVIDENCE_WINDOW_MS }
+        .takeLast(PACING_EVIDENCE_MAX_SAMPLES)
+    }
+    if (recent.size < PACING_EVIDENCE_MIN_SAMPLES) return -1L
+    if (recent.any { it.failed || !it.satisfied || it.mediaMs <= 0L || it.elapsedMs <= 0L }) {
+      return -1L
+    }
+    val speeds = recent.map { it.mediaMs * 1000L / it.elapsedMs }.sorted()
+    val median = speeds[speeds.size / 2]
+    return if (median >= PACING_EVIDENCE_MIN_SPEED_PERMILLE) median else -1L
   }
 
   /**
@@ -1510,6 +1596,12 @@ internal class SabrMediaFetcher(
     req: SabrSegmentRequest,
     onPart: (type: Int, payload: ByteArray) -> Unit,
   ): StreamResult {
+    // P11-306:响应作用域的 pacing 计数(见字段注释);只记视频媒体请求,init/音频不参与。
+    respPacingItag =
+      if (req.segment > 0L && req.formatItag in sessionVideoItags) req.formatItag else 0
+    respPacingSeg = req.segment
+    respPacingMediaMs = 0L
+    respPacingRequestedDelivered = false
     // 2026-09-20(服务端 backoff 不入账,见 recordFetchGap):本次睡眠是**服务端 NEXT_REQUEST_POLICY
     // 要求我们等的**,不是链路供给不足——时长要原样剔除,否则被计成 bytes=0 样本把 est 拽低。
     var serverBackoffSleepMs = 0L
@@ -1931,6 +2023,14 @@ internal class SabrMediaFetcher(
       // 节奏非带宽不足),吞吐 = 窗口累计量/累计耗时。带宽充足时贴近真实下载速率,断流时靠失败段计时下探。
       val mbps = if (elapsed > 0) readBytes * 8 / (elapsed * 1000L) else -1L
       recordRealBandwidthSample(readBytes, elapsed)
+      // P11-306:服务端 pacing 证据 —— 本笔请求段提前到手且交付内容时长 ≥ 实际耗时(见 docs §71.9)。
+      recordPacingSample(
+        req,
+        elapsed,
+        respPacingMediaMs,
+        satisfied = earlyStop && respPacingRequestedDelivered,
+        failed = false,
+      )
       // P11-173(修正):记「本会话已交付过真实媒体段」—— 饥饿快切只在此之后生效。
       // 依据(真机 logs_live_20260923_000311,r2087):起播时 `bufAhead=0ms` 本来就会命中
       // `SabrStarvingBufferMs`,把首笔请求上限从 18s 砍到 8s —— 而 P11-160 记过「首包偶发
@@ -2008,6 +2108,8 @@ internal class SabrMediaFetcher(
       } else {
         recordRealBandwidthFailure(failMs)
       }
+      // P11-306:失败/超时一律进 pacing 窗口 —— 有失败就不能判「服务端在按档供流」。
+      recordPacingSample(req, failMs, 0L, satisfied = false, failed = true)
       recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
@@ -2123,6 +2225,11 @@ internal class SabrMediaFetcher(
         }
         fmt.downloadedSegments[seg.sequenceNumber] = seg
         if (seg.header.isInitSeg) fmt.initSegment = seg
+        // P11-306:本响应内该视频档实际到手的媒体时长(服务端 pacing 证据,见 PacingSample)。
+        if (respPacingItag != 0 && !seg.header.isInitSeg && seg.header.itag == respPacingItag) {
+          respPacingMediaMs += pacingSegmentDurationMs(fmt, seg.sequenceNumber)
+          if (seg.sequenceNumber == respPacingSeg) respPacingRequestedDelivered = true
+        }
         // 2026-08-30 实测消耗码率挂账:只计非 init 段、只按单调 seq 增量(重传旧段不重复计入)。
         if (!seg.header.isInitSeg) {
           synchronized(measuredLock) {
@@ -2501,6 +2608,18 @@ internal class SabrMediaFetcher(
     const val CAPACITY_WINDOW_SAMPLES = 8
     /** 2026-09-01 重填容量最少样本数,不足 -1(证据不足,升档判据回退活跃 est)。 */
     const val CAPACITY_MIN_SAMPLES = 3
+
+    // ── P11-306(2026-11-02):服务端按档位供流(pacing)证据 —— 见 docs §71.9 ─────────────────────
+    /** 证据窗口(墙钟):只看最近 60s 内同轨的媒体请求。 */
+    const val PACING_EVIDENCE_WINDOW_MS = 60_000L
+    /** 参与判定的最近样本数上限(取最后 4 笔)。 */
+    const val PACING_EVIDENCE_MAX_SAMPLES = 4
+    /** 环形历史长度(切档瞬间旧档样本会混入,留余量防止把新档样本挤掉)。 */
+    const val PACING_EVIDENCE_HISTORY_SAMPLES = 12
+    /** 最少样本数(不足视为证据不足)。 */
+    const val PACING_EVIDENCE_MIN_SAMPLES = 3
+    /** `mediaMs/elapsed` 中位数下限(千分比):1000 = 交付内容时长 ≥ 实际耗时。 */
+    const val PACING_EVIDENCE_MIN_SPEED_PERMILLE = 1_000L
     /**
      * 滑动窗口时间跨度(ms):窗口内累计下载量/累计耗时计带宽。约一两个段时长,能让一次 15s 卡死(0量/满耗时)
      * 显著压低带宽又不过度被历史稀释。卡死时长超窗口时窗口只留该失败段 → 带宽=0 → ABR 彻底降档。

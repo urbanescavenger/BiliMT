@@ -109,6 +109,19 @@ internal class SabrBandwidthMeter(
   /** 重填容量(bps);未接线/样本不足 -1,调用方回退活跃 est。仅供升档判据。 */
   fun getRefillCapacityEstimate(): Long = refillCapacityProvider?.invoke() ?: -1L
 
+  // ── P11-306(2026-11-02 TV 真机):服务端按档位供流(pacing)证据 ──────────────────────────────
+  // est/sus/cap 在 pacing 会话里都被封在「当前档消耗的 1.5~3×」,不能用来否决升档;这里转发
+  // fetcher 的逐笔证据:「请求段是否早停到手 + 交付内容时长/实际耗时 ≥1」。——见 docs §71.9。
+  @Volatile
+  private var serverPacedProvider: (() -> Long)? = null
+
+  fun setServerPacedProvider(provider: () -> Long) {
+    serverPacedProvider = provider
+  }
+
+  /** 同轨最近几笔请求的 `mediaMs/elapsed` 中位数(千分比);-1 = 证据不足/窗口内有失败。 */
+  fun getServerPacedSpeedPermille(): Long = serverPacedProvider?.invoke() ?: -1L
+
   /** 2026-08-30:接线实测码率来源。 */
   fun setMeasuredBitrateProvider(provider: (Int) -> Long) {
     measuredBitrateProvider = provider

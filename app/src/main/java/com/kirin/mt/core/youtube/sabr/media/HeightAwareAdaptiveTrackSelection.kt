@@ -715,6 +715,9 @@ class HeightAwareAdaptiveTrackSelection(
   /** P11-300:试探被「sustained 有值但不足」拒绝的一次性日志(每实例一次)。 */
   private var sustainedTrialRefusedLogged = false
 
+  /** P11-306:服务端 pacing 证据解除 sustained 否决的一次性日志(证据消失时复位)。 */
+  private var pacingOverrideLogged = false
+
   /** P11-195:判据②被「天花板守卫」挡下的一次性日志(每实例一次)——否则钉在低分辨率又是一段安静。 */
   private var familyCeilingGuardLogged = false
 
@@ -1123,6 +1126,13 @@ class HeightAwareAdaptiveTrackSelection(
     // 2026-08-31 改用原值(-1=证据不足**不回退**):旧 getSustainedBitrateEstimate 在冷启动把 -1 回退成
     // 被爆发样本撑高的活跃 est,sustained 闸门整体失效(720p 2 段爆发 33-58M 直接过 4K 门槛)。
     val sustained = (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw() ?: -1L
+    // ── P11-306(2026-11-02 TV 真机,见 docs §71.9)──────────────────────────────────────────────
+    // 服务端按档位供流时,est/sus/cap 全被封在「当前档消耗的 1.5~3×」(1080p 实测 sus 5~9M,
+    // 手切 1440 同一网络 15~30M)。这条逐笔证据看的是「请求段是否每次提前到手 + 交付内容时长 ≥
+    // 实际耗时」,不受墙钟均值稀释 ⇒ 只用来解除 P11-300-A 对**试探**的否决,不动其他闸。
+    val serverPacedSpeedPermille =
+      (bandwidthMeter as? SabrBandwidthMeter)?.getServerPacedSpeedPermille() ?: -1L
+    if (serverPacedSpeedPermille <= 0L) pacingOverrideLogged = false
     // 2026-09-01 重填容量通道(修「Auto 满缓冲后结构性不升档」):effective 含被迫空转(alpha.9Z gap
     // 入账),满缓冲停闸 30-40s 后衰减到 ≈播放消耗码率(720p 玩出 ~3.4-4.5M 的 sus/bw 顶)——当前档
     // playing 时升档门 required > effective 被定点锁死,手动切 1440 却实测 14-24Mbps(12:05/12:12 真机)。
@@ -1425,7 +1435,12 @@ class HeightAwareAdaptiveTrackSelection(
           // (满缓冲上穿)放行 → 下一笔 1440p 请求 23s 超时,缓冲 28→0,看门狗重载。
           // 满缓冲是**历史**,sustained 是**过去 60s 的真实交付**;两者矛盾时以 sustained 为准。
           // sustained = -1(证据不足)时仍放行,保持 P11-255「非顶档冷启动放行」语义。
-          val sustainedRefusesTrial = sustained >= 0L && sustained < required
+          // P11-306:服务端 pacing 证据成立时,sustained 是「请求窗口」封顶的产物,不作否决 ——
+          // 这正是 §71 的 1080p 钉死场景(请求每笔 2~4s 早停、交付 ~10s 内容,但 sus 只有 5~9M)。
+          val pacingOverridesSustained =
+            serverPacedSpeedPermille > 0L && sustained >= 0L && sustained < required
+          val sustainedRefusesTrial =
+            sustained >= 0L && sustained < required && !pacingOverridesSustained
           if ((isTopTierCandidate || !trialUpgrade || trialOverCapacity || sustainedRefusesTrial)) {
             if (sustainedRefusesTrial && !sustainedTrialRefusedLogged) {
               sustainedTrialRefusedLogged = true
@@ -1440,6 +1455,16 @@ class HeightAwareAdaptiveTrackSelection(
             continue
           }
           bestIsTrial = true
+          if (pacingOverridesSustained && !pacingOverrideLogged) {
+            pacingOverrideLogged = true
+            Log.i(
+              "YtSabrAbr",
+              "trial sustained-veto lifted (server pacing, P11-306): " +
+                "itag${itagOf(f)}(${f.height}p) sustained=${sustained / 1000}K < need=${required / 1000}K " +
+                "但 pace=${serverPacedSpeedPermille / 1000}.${(serverPacedSpeedPermille % 1000) / 100}x " +
+                "(最近几笔请求段均提前到手且交付时长 ≥ 实际耗时) — 服务端按档位供流,持续带宽不作否决",
+            )
+          }
         }
       }
       // 选声明码率可负担的最高分辨率档;同 height 多 codec(VP9/H264)2026-09-01 起改粘全组顶档
@@ -1517,7 +1542,14 @@ class HeightAwareAdaptiveTrackSelection(
               "itag${itagOf(getFormat(selected))}(${getFormat(selected).height}p) " +
               "declared=${getFormat(selected).bitrate} " +
               "est=${bandwidthMeter.getBitrateEstimate() / 1000}K " +
-              "sus=${if (sustained >= 0L) "${sustained / 1000}K" else "-1"}"
+              "sus=${if (sustained >= 0L) "${sustained / 1000}K" else "-1"} " +
+              "pace=${
+                if (serverPacedSpeedPermille > 0L) {
+                  "${serverPacedSpeedPermille / 1000}.${(serverPacedSpeedPermille % 1000) / 100}x"
+                } else {
+                  "-"
+                }
+              }"
           )
         } else {
           // 2026-09-01:试探档向上离开(gated 升档)→ 试探成功闭环,清 active 不记冷却。

@@ -185,6 +185,10 @@ internal class DefaultSabrChunkSource(
       fetcher.getSustainedRawBitrateEstimate()
     }
     (bandwidthMeter as? SabrBandwidthMeter)?.setRefillCapacityProvider { fetcher.getRefillCapacityBps() }
+    // P11-306:服务端按档位供流的逐笔证据 —— pacing 会话里 est/sus/cap 都被封顶,不能用来否决试探。
+    (bandwidthMeter as? SabrBandwidthMeter)?.setServerPacedProvider {
+      fetcher.getServerPacedSpeedPermille()
+    }
     // P11-286:升档 settle —— ABR 用「最后真正交付过 media 的档」判断当前档是否已经供上数据。
     (bandwidthMeter as? SabrBandwidthMeter)?.setLastDeliveredVideoItagProvider {
       fetcher.getLastDeliveredVideoItag()
@@ -609,6 +613,11 @@ internal class DefaultSabrChunkSource(
         "meas=${
           fetcher.getMeasuredBitrateBps(preSelectionHolder.representation.formatId.itag).div(1000)
         }K " +
+        // P11-306:服务端 pacing 证据(mediaMs/elapsed 中位数);- = 证据不足/窗口内有失败。
+        "pace=${
+          (bandwidthMeter as? SabrBandwidthMeter)?.getServerPacedSpeedPermille()
+            ?.let { if (it > 0L) "${it / 1000}.${(it % 1000) / 100}x" else "-" } ?: "-"
+        } " +
         "up=$upgradeCandidateIndex down=$downgradeCandidateIndex " +
         // P11-237:上一次评估「本档是否被缓冲标准守住」——hold=true 时 est 不得降档(与降档行互斥,
         // 否则「缓冲够却降档」或「hold=true 却降档」一眼可见)。
