@@ -6166,3 +6166,42 @@ fetch rn=18 itag=139 seg=14  starving-fast-fail: bufAhead=8438ms → callCap=800
 **否证**:①若请求段到手但返回成功后,连续多笔都超时 ⇒ 会话确实坏了,正常路径会在下一次失败 evict,
 不掩盖问题;②若早停后视频 loader 的下一笔请求拿不到段 ⇒ 说明服务端游标被音频请求带走,需再评估
 请求体 `bufferedRanges` 口径。
+
+### §71.12 P11-308:会话重建判据改用「持续低缓冲」,撤掉吞吐峰值塌陷
+
+**现场**(`logs_live_20261102_234155.log`,alpha.11,`ajFm8D4NROQ`):23:41:17 在 1440p 上
+`session degraded → rebuild(P11-301)`,但当时:
+
+- 1440p 校准实需 **10.39Mbps**,最近两笔成功吞吐 **19.7/16.6Mbps**;
+- 峰值 67.3Mbps 来自 `rn=85` 一笔 9.77MB/1.16s 的小/顺带响应;
+- 缓冲 7.1s 是满缓冲停闸 42.3s 后排空的底部,`rn=91` 的 10.8MB 响应在重建后 **1 秒**落地。
+
+**为什么原判据错**:`recentMin < sessionPeak × 35%` 拿“本会话最快一笔”当基线。服务端按**当前档
+需求** pacing(1080p/1440p/2160p 每档吞吐本就不同),峰值是突发/小响应撑出来的;用它做分母,正常
+回落到 1440p 的 16~20M 也会被判塌陷。
+
+**新判据**(只改 `isSessionDegraded`,动作不变):
+
+```
+会话龄 > 20s
+且 连续 2 次探针(5s/次 ≈ 10s)bufferedAheadMs ≤ 8s(水位急救线)
+且 零交付超时 ≥ 2
+```
+
+- 不再看吞吐、不再看峰值;
+- 连续命中才能触发:满缓冲排空到底部只会让**一次**探针 ≤8s,下一笔在途响应几秒内落地、下一次
+  探针缓冲已回填 ⇒ streak 清零;
+- 真坏会话(持续 <8s + 2 次超时)仍会重建,只是比原来晚约 10s;期间 ABR 水位急救/降档与 stall
+  看门狗仍然生效。
+
+**注意重载成本**:`session degraded → rebuild` 不是只换 fetcher,而是
+`tracks changed groups=0 → player ENDED → launch metadata/playurl/cdn → prepare startPos=…`,
+即**整场播放器重载 + 重新 resolve + 续播**(本次间隔约 7s,且新会话从 720p 重新爬)。所以判据必须
+偏保守,宁可晚 10s 也不能被一次排空误触发。
+
+**验收**:同场景(1440p、7s 缓冲、2 次流截断、下一笔在途响应即将落地)不再出现
+`session degraded → rebuild`;日志最多出现 `session degraded criteria(P11-308 buffer): … streak=1`
+然后下一次探针缓冲回填、streak 清零。
+
+**否证**:①真坏会话缓冲持续 <8s 且 2 次超时,但 10s 后仍未重建、直接 stall ⇒ 阈值/探针间隔需收紧;
+②正常播放中缓冲频繁在 8s 上下抖动导致 streak 反复累加并误重建 ⇒ 临界线或探针次数需调整。

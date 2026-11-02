@@ -421,6 +421,9 @@ internal class SabrMediaFetcher(
   @Volatile private var sessionPeakBps = 0L
   @Volatile private var sessionTimeoutCount = 0
   private val recentSessionBps = ArrayDeque<Long>()
+
+  /** P11-308:连续「低缓冲」探针次数(缓冲回到 >8s 时清零)。 */
+  private var lowBufferProbeStreak = 0
   private var postRebuildSamples = 0
   private var postRebuildBpsSum = 0L
   @Volatile private var sessionRebuildMarked = false
@@ -908,23 +911,38 @@ internal class SabrMediaFetcher(
    * P11-301:本 SABR 会话是否「节点/会话可疑」——由播放器探针每 5s 调用一次(拿不到 fetcher 的
    * 选择类/UI 走 [SabrBandwidthMeter] 的 provider 通道)。
    *
-   * 判据(见 docs §67.15 / §68.5):会话龄 >20s(排除慢启动)+ 缓冲 ≤12s(在下漏)+ 零交付超时 ≥2
-   * + 峰值 ≥10Mbps + 最近两笔成功吞吐的最小值 < 峰值×0.35。历史 10-25 证明链路整体坏时换 host
-   * 也救不回来,所以这里只「判定」;**动作与冷却/link-bad 护栏在调用方**(SabrAbrMemory)。
+   * 判据(见 docs §67.15 / §68.5,2026-11-02 按 P11-308 改):会话龄 >20s(排除慢启动)
+   * + **连续 2 次探针缓冲 ≤8s**(约 10s,排掉满缓冲排空到底部的一次性命中)+ 零交付超时 ≥2。
+   * 原先的「最近吞吐 < 峰值×35%」已撤掉:服务端按当前档 pacing 供流,吞吐本来就随档位变化,
+   * 峰值是突发/小响应撑出来的,不能当塌陷基线。
+   * 历史 10-25 证明链路整体坏时换 host 也救不回来,所以这里只「判定」;
+   * **动作与冷却/link-bad 护栏在调用方**(SabrAbrMemory)。
    */
   fun isSessionDegraded(bufferedAheadMs: Long): Boolean {
     if (sessionRebuildMarked) return false
     if (SabrAbrMemory.isLinkBad()) return false
     if (SabrAbrMemory.sessionRebuildCooldownRemainMs() > 0L) return false
     if (System.currentTimeMillis() - sessionStartWallMs < SessionHealthMinAgeMs) return false
-    if (bufferedAheadMs > SessionHealthMaxBufferMs) return false
+    if (bufferedAheadMs > SessionHealthCriticalBufferMs) {
+      lowBufferProbeStreak = 0
+      return false
+    }
+    lowBufferProbeStreak++
+    if (lowBufferProbeStreak < SessionHealthMinLowBufferProbes) return false
     if (sessionTimeoutCount < SessionHealthMinTimeouts) return false
-    val peak = sessionPeakBps
-    if (peak < SessionHealthMinPeakBps) return false
-    val snapshot = synchronized(recentSessionBps) { recentSessionBps.toList() }
-    if (snapshot.size < 2) return false
-    val recentMin = snapshot.takeLast(2).minOrNull() ?: return false
-    return recentMin * 1000L < peak * SessionHealthRatioPermille
+    // ── P11-308(2026-11-02 真机):塌陷判决改成**持续低缓冲**,不再看吞吐峰值 ───────────────
+    // 吞吐由服务端按当前档 pacing 给(1080p/1440p/2160p 每档不同),一笔 1s 级快响应就能把
+    // sessionPeakBps 抬到 60~70M;拿它×35% 当塌陷线,会把 1440p 正常补货 16~20M(实需 10.4M)
+    // 判成塌陷。真正能回答「这个会话还撑不撑得住」的是缓冲:连续 [SessionHealthMinLowBufferProbes]
+    // 次探针(约 10s)缓冲都 ≤ [SessionHealthCriticalBufferMs](8s,水位急救线),且已有 ≥2 次
+    // 零交付超时,才重建。满缓冲排空到底部只会让一次探针命中(下一笔在途响应通常几秒内落地),
+    // 下一次探针缓冲已回填 ⇒ streak 清零,不会触发重载。
+    Log.w(
+      tag,
+      "session degraded criteria(P11-308 buffer): buf=${bufferedAheadMs}ms " +
+        "streak=$lowBufferProbeStreak timeouts=$sessionTimeoutCount",
+    )
+    return true
   }
 
   /** P11-301:播放器决定整场重建时调用 —— 记 host 与冷却(跨重载),本会话不再重复判定。 */
@@ -2529,14 +2547,18 @@ internal class SabrMediaFetcher(
     // ── P11-301(2026-10-28):会话质量判据阈值 ─────────────────────────────────────────────────
     /** 会话龄低于此值不判(慢启动/首包偶发 16–20s 是已知现象,P11-160/P11-284)。 */
     const val SessionHealthMinAgeMs = 20_000L
-    /** 缓冲高于此值不判 —— 还有余量,先让 ABR 降档,不轻易整场重载。 */
-    const val SessionHealthMaxBufferMs = 12_000L
+    /**
+     * P11-308:会话重建只认**持续低缓冲**。临界线取水位急救线 8s(与 ABR `criticalBufferedUs`
+     * 同值):高于它说明还有跑道,先让 ABR 降档,不轻易整场重载。
+     */
+    const val SessionHealthCriticalBufferMs = 8_000L
     /** 零交付超时次数门槛(单次可能是抖动;连续两次才是会话/路径在停)。 */
     const val SessionHealthMinTimeouts = 2
-    /** 峰值低于此值没有「断崖」可比 —— 整体慢不是节点问题。 */
-    const val SessionHealthMinPeakBps = 10_000_000L
-    /** 最近两笔成功吞吐的最小值 < 峰值 × 35% ⇒ 判塌陷。 */
-    const val SessionHealthRatioPermille = 350L
+    /**
+     * P11-308:缓冲 ≤ [SessionHealthCriticalBufferMs] 需连续命中的探针次数。
+     * 播放器探针 5s 一次 ⇒ 2 次约 10s;满缓冲排空到底部通常只命中一次(下一笔在途响应几秒内落地)。
+     */
+    const val SessionHealthMinLowBufferProbes = 2
     /** 会话吞吐环形窗口长度。 */
     const val SessionHealthRecentSamples = 3
     /** 重建后校验窗口(新会话前几笔在此窗口内才算「重建后样本」)。 */
