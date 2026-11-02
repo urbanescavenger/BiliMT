@@ -422,7 +422,7 @@ internal class SabrMediaFetcher(
   @Volatile private var sessionTimeoutCount = 0
   private val recentSessionBps = ArrayDeque<Long>()
 
-  /** P11-308:连续「低缓冲」探针次数(缓冲回到 >8s 时清零)。 */
+  /** P11-308:连续「缓冲见底」探针次数(缓冲回到 >1s 时清零)。 */
   private var lowBufferProbeStreak = 0
   private var postRebuildSamples = 0
   private var postRebuildBpsSum = 0L
@@ -912,7 +912,8 @@ internal class SabrMediaFetcher(
    * 选择类/UI 走 [SabrBandwidthMeter] 的 provider 通道)。
    *
    * 判据(见 docs §67.15 / §68.5,2026-11-02 按 P11-308 改):会话龄 >20s(排除慢启动)
-   * + **连续 2 次探针缓冲 ≤8s**(约 10s,排掉满缓冲排空到底部的一次性命中)+ 零交付超时 ≥2。
+   * + **缓冲见底(≤1s)** + 零交付超时 ≥2 + 在途视频段 ETA 不短。还有缓冲就不重建,
+   * 交给 ABR 降档;8s stall 看门狗是硬重载兜底。
    * 原先的「最近吞吐 < 峰值×35%」已撤掉:服务端按当前档 pacing 供流,吞吐本来就随档位变化,
    * 峰值是突发/小响应撑出来的,不能当塌陷基线。
    * 历史 10-25 证明链路整体坏时换 host 也救不回来,所以这里只「判定」;
@@ -930,17 +931,19 @@ internal class SabrMediaFetcher(
     lowBufferProbeStreak++
     if (lowBufferProbeStreak < SessionHealthMinLowBufferProbes) return false
     if (sessionTimeoutCount < SessionHealthMinTimeouts) return false
-    // ── P11-308(2026-11-02 真机):塌陷判决改成**持续低缓冲**,不再看吞吐峰值 ───────────────
+    // 缓冲已经见底,但视频段正在路上(ETA 很短)⇒ 先等它落地,别把一次正常补货当成坏会话。
+    val eta = getInFlightVideoEtaMs()
+    if (eta in 0L..SessionHealthInFlightEtaDeferMs) return false
+    // ── P11-308(2026-11-02 真机):塌陷判决改成**缓冲见底**,不再看吞吐峰值 ──────────────────
     // 吞吐由服务端按当前档 pacing 给(1080p/1440p/2160p 每档不同),一笔 1s 级快响应就能把
     // sessionPeakBps 抬到 60~70M;拿它×35% 当塌陷线,会把 1440p 正常补货 16~20M(实需 10.4M)
-    // 判成塌陷。真正能回答「这个会话还撑不撑得住」的是缓冲:连续 [SessionHealthMinLowBufferProbes]
-    // 次探针(约 10s)缓冲都 ≤ [SessionHealthCriticalBufferMs](8s,水位急救线),且已有 ≥2 次
-    // 零交付超时,才重建。满缓冲排空到底部只会让一次探针命中(下一笔在途响应通常几秒内落地),
-    // 下一次探针缓冲已回填 ⇒ streak 清零,不会触发重载。
+    // 判成塌陷。真正能回答「这个会话还撑不撑得住」的是缓冲:**见底**(≤1s)+ 已有 ≥2 次零交付
+    // 超时,才重建;还有缓冲就交给 ABR 降档,8s stall 看门狗是硬重载兜底。缓冲见底但视频段
+    // 正在路上(ETA 短)时先等落地,避免把正常补货当坏会话。
     Log.w(
       tag,
-      "session degraded criteria(P11-308 buffer): buf=${bufferedAheadMs}ms " +
-        "streak=$lowBufferProbeStreak timeouts=$sessionTimeoutCount",
+      "session degraded criteria(P11-308 buffer-end): buf=${bufferedAheadMs}ms " +
+        "eta=$eta timeouts=$sessionTimeoutCount",
     )
     return true
   }
@@ -2548,17 +2551,19 @@ internal class SabrMediaFetcher(
     /** 会话龄低于此值不判(慢启动/首包偶发 16–20s 是已知现象,P11-160/P11-284)。 */
     const val SessionHealthMinAgeMs = 20_000L
     /**
-     * P11-308:会话重建只认**持续低缓冲**。临界线取水位急救线 8s(与 ABR `criticalBufferedUs`
-     * 同值):高于它说明还有跑道,先让 ABR 降档,不轻易整场重载。
+     * P11-308:会话重建只认**缓冲见底**。还有缓冲就交给 ABR/水位急救;8s stall 看门狗是硬重载兜底。
+     * 取 1s(探针粒度内的“见底”,不是 8s):用户口径「有缓冲没必要重载」,且 2 次 5s 探针会晚于
+     * 8s 看门狗。
      */
-    const val SessionHealthCriticalBufferMs = 8_000L
+    const val SessionHealthCriticalBufferMs = 1_000L
     /** 零交付超时次数门槛(单次可能是抖动;连续两次才是会话/路径在停)。 */
     const val SessionHealthMinTimeouts = 2
     /**
-     * P11-308:缓冲 ≤ [SessionHealthCriticalBufferMs] 需连续命中的探针次数。
-     * 播放器探针 5s 一次 ⇒ 2 次约 10s;满缓冲排空到底部通常只命中一次(下一笔在途响应几秒内落地)。
+     * P11-308:缓冲见底需命中的探针次数。探针 5s 一次;一次见底即可,要求 2 次会晚于 8s 硬重载。
      */
-    const val SessionHealthMinLowBufferProbes = 2
+    const val SessionHealthMinLowBufferProbes = 1
+    /** P11-308:缓冲见底但在途视频段 ETA 在此范围内 ⇒ 先等它落地,不算坏会话。 */
+    const val SessionHealthInFlightEtaDeferMs = 5_000L
     /** 会话吞吐环形窗口长度。 */
     const val SessionHealthRecentSamples = 3
     /** 重建后校验窗口(新会话前几笔在此窗口内才算「重建后样本」)。 */
