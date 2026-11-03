@@ -2084,9 +2084,11 @@ fun PlayerScreen(
           autoResumePositionMs >= 0L -> autoResumePositionMs.also { autoResumePositionMs = -1L }
           resolvedRequest.preferredQualityId != null || resolvedRequest.forceStartPosition ->
             resolvedRequest.startPositionMs
-          else ->
-            playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
-              ?: resolvedRequest.startPositionMs
+          // 已看完的本地进度不再续播:上次停在尾部(距末尾 ≤ [PlaybackCompletedToleranceMs])时
+          // 从 0 重播,否则 seek 到尾部会立刻 ENDED,用户看到的是「再点开又直接结束」。
+          else -> playbackRepository.getSavedProgress(info.bvid, info.cid)
+            ?.takeUnless { it.isCompleted }?.positionMs
+            ?: resolvedRequest.startPositionMs
         }
         val startPositionMs = requestedStartPositionMs
         // alpha.34:SABR 源不可 seek(LENGTH_UNSET)。把续播点 startMs 透传进 sabr:// URL,

@@ -173,6 +173,7 @@ import com.kirin.mt.core.download.DownloadWithItems
 import com.kirin.mt.core.player.YoutubeDefaultQuality
 import com.kirin.mt.core.player.YoutubeStartQuality
 import com.kirin.mt.core.player.PlaybackRequest
+import com.kirin.mt.core.player.PlaybackCompletedToleranceMs
 import com.kirin.mt.core.player.PlaybackService
 import com.kirin.mt.core.player.startPlaybackService
 import com.kirin.mt.core.player.PlaybackVideoMetadata
@@ -614,7 +615,7 @@ fun MobilePlayerScreen(
     // 播放到结尾(距末尾 2s 内)视为「已看完」,写入本地 watched 集合供卡片右下角标角标。
     // 直播/IPTV/TVBox/红果(bvid 为合成 key 或空串)时长语义不同,不标记。幂等写入。
     val reachedEnd = !activeRequest.isLive && !activeRequest.isIptv && !activeRequest.isTvbox &&
-      durationMs > 0 && positionMs >= durationMs - 2000L
+      durationMs > 0 && positionMs >= durationMs - PlaybackCompletedToleranceMs
     scope.launch {
       if (reachedEnd) {
         runCatching { watchedStore.markCompleted(info.bvid) }
@@ -812,6 +813,20 @@ fun MobilePlayerScreen(
   // 声明须在 loadRequest(其 prepare 卡档处引用)之前。
   var startQualityRelaxed by remember { mutableStateOf(false) }
 
+  /**
+   * 续播起点。上次已播到结尾(距末尾 [PlaybackCompletedToleranceMs] 内)时改为从 0 起播:
+   * 清除卡片「已看完」角标,并把本地进度重置到 0(否则中途退出后再进又跳回尾部立刻结束)。
+   * 返回 null 表示该 bvid/cid 没有本地进度,调用方回落到 `request.startPositionMs`。
+   */
+  suspend fun resolvedStartPositionMs(bvid: String, cid: Long): Long? {
+    val saved = runCatching { playbackRepository.getSavedProgress(bvid, cid) }.getOrNull() ?: return null
+    if (!saved.isCompleted) return saved.positionMs
+    runCatching { watchedStore.remove(bvid) }
+    runCatching { playbackRepository.saveProgress(bvid, cid, positionMs = 0L, durationMs = saved.durationMs) }
+    Log.i(MobilePlayerLogTag, "已看完再次播放,从头开始 bvid=$bvid cid=$cid savedPos=${saved.positionMs}ms")
+    return 0L
+  }
+
   // 加载(镜像 TV PlayerScreen 的 load 序列)。抽成独立 suspend 函数,使自动连播/用户切集/切画质
   // 都能在"不依赖 Compose 重组"的协程作用域里直接调用——后台播放时帧时钟暂停、重组被推迟,
   // 若仍靠 LaunchedEffect(activeRequest) 触发加载,后台播完当前视频后下一集永远不会加载。
@@ -873,7 +888,7 @@ fun MobilePlayerScreen(
         Log.i(MobilePlayerLogTag, "缓存命中: videoId=${cachedInfo.bvid} cid=$cid quality='${cachedInfo.selectedQuality.description}' qualities=${cachedInfo.qualities.size}")
         selectedQualityId = cachedInfo.selectedQuality.id
         actualQualityId = cachedInfo.selectedQuality.id
-        val startPositionMs = playbackRepository.getSavedProgress(cachedInfo.bvid, cachedInfo.cid)?.positionMs
+        val startPositionMs = resolvedStartPositionMs(cachedInfo.bvid, cachedInfo.cid)
           ?: request.startPositionMs
         // 后台播放 MediaStyle 通知封面:下载 coverUrl bytes(IO),失败忽略。
         val coverBytes = request.coverUrl.takeIf { it.isNotEmpty() }?.let { url ->
@@ -974,7 +989,7 @@ fun MobilePlayerScreen(
         pendingSABRSeek != null -> pendingSABRSeek
         // error-retry 续播:优先用卡住时的当前位置,而非 saved progress(可能更旧)。
         autoResumePositionMs >= 0L -> autoResumePositionMs.also { autoResumePositionMs = -1L }
-        else -> playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
+        else -> resolvedStartPositionMs(info.bvid, info.cid)
           ?: request.startPositionMs
       }
       // alpha.34:SABR 源不可 seek(LENGTH_UNSET)。把续播点 startMs 透传进 sabr:// URL,

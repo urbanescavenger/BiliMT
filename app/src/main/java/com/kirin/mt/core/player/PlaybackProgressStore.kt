@@ -11,7 +11,17 @@ data class PlaybackProgress(
   val positionMs: Long,
   val durationMs: Long,
   val updatedAtMs: Long,
-)
+) {
+  /**
+   * 上次是否已播到结尾(距末尾 [PlaybackCompletedToleranceMs] 内)。播放器据此在「再次播放」时
+   * 从 0 起播、清除「已看完」角标,而不是续播回尾部立刻结束。时长未知时不算已看完。
+   */
+  val isCompleted: Boolean
+    get() = durationMs > 0L && positionMs >= durationMs - PlaybackCompletedToleranceMs
+}
+
+/** 距末尾 ≤ 该值即视为「已看完」;玩家标记已看完、角标与续播判定共用同一阈值。 */
+const val PlaybackCompletedToleranceMs = 2_000L
 
 class PlaybackProgressStore(private val context: Context) {
   suspend fun getProgress(bvid: String, cid: Long): PlaybackProgress? {
