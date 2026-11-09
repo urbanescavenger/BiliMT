@@ -127,6 +127,7 @@ internal fun SettingsPipedDialog(
         onValueChange = { urlValue = it },
         label = { Text(stringResource(R.string.settings_piped_instance_label)) },
         singleLine = true,
+        colors = rememberSettingsTextFieldColors(),
         modifier = Modifier
           .fillMaxWidth()
           .then(confirmImeModifier(urlFocusRequester)),

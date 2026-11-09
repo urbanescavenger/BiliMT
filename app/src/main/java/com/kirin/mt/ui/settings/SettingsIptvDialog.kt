@@ -136,6 +136,7 @@ internal fun SettingsIptvDialog(
         onValueChange = { urlValue = it },
         label = { Text(stringResource(R.string.settings_iptv_url_label)) },
         singleLine = true,
+        colors = rememberSettingsTextFieldColors(),
         modifier = Modifier
           .fillMaxWidth()
           .then(confirmImeModifier(urlFocusRequester)),
@@ -145,6 +146,7 @@ internal fun SettingsIptvDialog(
         onValueChange = { usernameValue = it },
         label = { Text(stringResource(R.string.settings_iptv_username_label)) },
         singleLine = true,
+        colors = rememberSettingsTextFieldColors(),
         modifier = Modifier
           .fillMaxWidth()
           .then(confirmImeModifier(usernameFocusRequester)),
@@ -154,6 +156,7 @@ internal fun SettingsIptvDialog(
         onValueChange = { passwordValue = it },
         label = { Text(stringResource(R.string.settings_iptv_password_label)) },
         singleLine = true,
+        colors = rememberSettingsTextFieldColors(),
         visualTransformation = PasswordVisualTransformation(),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
         modifier = Modifier

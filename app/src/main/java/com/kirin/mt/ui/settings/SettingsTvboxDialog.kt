@@ -127,6 +127,7 @@ internal fun SettingsTvboxDialog(
         onValueChange = { urlValue = it },
         label = { Text(stringResource(R.string.settings_tvbox_url_label)) },
         singleLine = true,
+        colors = rememberSettingsTextFieldColors(),
         modifier = Modifier
           .fillMaxWidth()
           .then(confirmImeModifier(urlFocusRequester)),
