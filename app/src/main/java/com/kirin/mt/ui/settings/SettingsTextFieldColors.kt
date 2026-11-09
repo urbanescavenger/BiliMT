@@ -3,7 +3,6 @@ package com.kirin.mt.ui.settings
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.TextFieldColors
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import com.kirin.mt.ui.theme.LocalHomeColors
 
 /**
@@ -17,30 +16,30 @@ import com.kirin.mt.ui.theme.LocalHomeColors
  * - 文字/光标用 textPrimary / accent;
  * - 容器参照 TV 搜索框(focused=accent 12%,resting=glassSurfaceStrong);
  * - 边框 focused 用 accent、未聚焦用 glassBorder。
+ *
+ * 注意:OutlinedTextFieldDefaults.colors() 本身是 @Composable,不能包在 remember 里。
  */
 @Composable
-internal fun rememberSettingsTextFieldColors(): TextFieldColors {
+internal fun settingsTextFieldColors(): TextFieldColors {
   val homeColors = LocalHomeColors.current
-  return remember(homeColors) {
-    OutlinedTextFieldDefaults.colors(
-      focusedTextColor = homeColors.textPrimary,
-      unfocusedTextColor = homeColors.textPrimary,
-      disabledTextColor = homeColors.textTertiary,
-      focusedContainerColor = homeColors.accent.copy(alpha = 0.12f),
-      unfocusedContainerColor = homeColors.glassSurfaceStrong,
-      disabledContainerColor = homeColors.glassSurfaceStrong,
-      cursorColor = homeColors.accent,
-      focusedBorderColor = homeColors.accent,
-      unfocusedBorderColor = homeColors.glassBorder,
-      disabledBorderColor = homeColors.glassBorder,
-      focusedLabelColor = homeColors.accent,
-      unfocusedLabelColor = homeColors.textSecondary,
-      disabledLabelColor = homeColors.textTertiary,
-      focusedPlaceholderColor = homeColors.textTertiary,
-      unfocusedPlaceholderColor = homeColors.textTertiary,
-      disabledPlaceholderColor = homeColors.textTertiary,
-      focusedSupportingTextColor = homeColors.textTertiary,
-      unfocusedSupportingTextColor = homeColors.textTertiary,
-    )
-  }
+  return OutlinedTextFieldDefaults.colors(
+    focusedTextColor = homeColors.textPrimary,
+    unfocusedTextColor = homeColors.textPrimary,
+    disabledTextColor = homeColors.textTertiary,
+    focusedContainerColor = homeColors.accent.copy(alpha = 0.12f),
+    unfocusedContainerColor = homeColors.glassSurfaceStrong,
+    disabledContainerColor = homeColors.glassSurfaceStrong,
+    cursorColor = homeColors.accent,
+    focusedBorderColor = homeColors.accent,
+    unfocusedBorderColor = homeColors.glassBorder,
+    disabledBorderColor = homeColors.glassBorder,
+    focusedLabelColor = homeColors.accent,
+    unfocusedLabelColor = homeColors.textSecondary,
+    disabledLabelColor = homeColors.textTertiary,
+    focusedPlaceholderColor = homeColors.textTertiary,
+    unfocusedPlaceholderColor = homeColors.textTertiary,
+    disabledPlaceholderColor = homeColors.textTertiary,
+    focusedSupportingTextColor = homeColors.textTertiary,
+    unfocusedSupportingTextColor = homeColors.textTertiary,
+  )
 }

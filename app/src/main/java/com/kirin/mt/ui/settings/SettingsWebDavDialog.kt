@@ -154,7 +154,7 @@ internal fun SettingsWebDavDialog(
         onValueChange = { url = it },
         label = { Text(stringResource(R.string.settings_webdav_url_label)) },
         singleLine = true,
-        colors = rememberSettingsTextFieldColors(),
+        colors = settingsTextFieldColors(),
         modifier = Modifier
           .fillMaxWidth()
           .then(confirmImeModifier(urlFocusRequester)),
@@ -164,7 +164,7 @@ internal fun SettingsWebDavDialog(
         onValueChange = { username = it },
         label = { Text(stringResource(R.string.settings_webdav_username_label)) },
         singleLine = true,
-        colors = rememberSettingsTextFieldColors(),
+        colors = settingsTextFieldColors(),
         modifier = Modifier
           .fillMaxWidth()
           .then(confirmImeModifier(usernameFocusRequester)),
@@ -174,7 +174,7 @@ internal fun SettingsWebDavDialog(
         onValueChange = { password = it },
         label = { Text(stringResource(R.string.settings_webdav_password_label)) },
         singleLine = true,
-        colors = rememberSettingsTextFieldColors(),
+        colors = settingsTextFieldColors(),
         visualTransformation = PasswordVisualTransformation(),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
         modifier = Modifier
