@@ -637,6 +637,15 @@ class HeightAwareAdaptiveTrackSelection(
   /** alpha.9Z:上次降档时间(elapsedRealtime ms)——升档冷却基准。 */
   private var lastDowngradeElapsedMs = 0L
 
+  /**
+   * P11-312:上次降档落到的 track index。B 闸(刚切档 meas 未知按切换伪影处理)只对**这一档**生效;
+   * 同高度换 codec / 手动选到别档时 index 不同 ⇒ 不会误套。
+   */
+  private var lastDowngradeTargetIndex = -1
+
+  /** P11-312(A):普通降档后水位急救被 grace 按住的一次性日志(grace 到期复位)。 */
+  private var postDowngradeGraceLogged = false
+
   /** P11-286:升档 settle 的"被拦"一次性日志(每次升档后复位,便于逐段核对)。 */
   private var upgradeSettleHoldLogged = false
 
@@ -897,10 +906,32 @@ class HeightAwareAdaptiveTrackSelection(
           "从未缓冲过 ⇒ 等首段(不算低水位)",
       )
     }
+    // ── P11-312(A):普通降档后的水位急救宽限 ────────────────────────────────────────────────
+    // 历史校核(§72.6,336 份日志):现行判据下 29 次 `buffer-critical → 360p` 里 15 次(52%)是过度降档,
+    // 失败链固定为「720→480 普通降档 → 新档 0 段/meas 未知 → 缓冲<8s → 再降 360」,两次降档多数 <2s。
+    // 切档本身会丢旧档缓冲(`cleanup dropped formats=[旧档]`),这一枪的“低水位”不是新档供给不足。
+    // **只挡水位急救这条快速通道**:同一次评估里的 est 降档(C 路径)照常跑;真挂死(silenceHang)、
+    // 试探熔断(trialAbort)不受影响;8s/25s 看门狗仍是最终兜底。
+    val sinceLastDowngradeMs =
+      if (lastDowngradeElapsedMs == 0L) Long.MAX_VALUE else nowMs - lastDowngradeElapsedMs
+    val postDowngradeGrace = !silenceHang && !trialAbort &&
+      sinceLastDowngradeMs < DOWNGRADE_AFTER_DOWNGRADE_GRACE_MS
+    if (postDowngradeGrace && belowCriticalUs && !postDowngradeGraceLogged) {
+      postDowngradeGraceLogged = true
+      Log.i(
+        "YtSabrAbr",
+        "water-level rescue held (post-downgrade grace, P11-312): bufS=" +
+          "${bufferedDurationUs / 1_000_000}s, last downgrade ${sinceLastDowngradeMs}ms ago < " +
+          "${DOWNGRADE_AFTER_DOWNGRADE_GRACE_MS}ms — 切档丢缓冲不算新档供给不足",
+      )
+    } else if (!postDowngradeGrace) {
+      postDowngradeGraceLogged = false
+    }
     val bufferCritical = lowBufferIsEvidence &&
       !bufferCollapseArtifact &&
       belowCriticalUs &&
       !freezeEpisodeActive &&
+      !postDowngradeGrace &&
       (bufferedDurationUs <= prevEvalBufferedUs || silenceHang) &&
       (trialAbort || nowMs - lastUpgradeElapsedMs >= DOWNGRADE_AFTER_UPGRADE_GRACE_MS)
     // P11-188:读数无效时保留上一次有效读数 —— 塌方守门(bufferCollapseArtifact)与试探水位线都以它
@@ -989,6 +1020,16 @@ class HeightAwareAdaptiveTrackSelection(
         BUFFER_CRITICAL_GATE_MARGIN_PERMILLE / 1000L
       // P11-188:未知(-1)与「低于声明」一视同仁 —— 都是「没有证据说明撑得住」,闸不成立。
       val measCoversTier = measForGate >= curBitrateForGate
+      // ── P11-312(B):刚降档的新档 meas 未知 = 切换伪影 ───────────────────────────────────────
+      // P11-188 的「未知 ⇒ 闸不成立」防的是「高档被切来切去、永远攒不够 3 段」;但历史校核(§72.6)
+      // 35 次 360 降档里约一半发生在**刚降到 480p、新档只有 init/0 段**的时刻 —— 这个未知是切换本身
+      // 造成的,不是链路没能力。故只对「**本档就是上次降档目标** 且距降档 ≤5s」的未知放行;
+      // est 有余量 + 往返容得下缓冲两条照旧要过;试探熔断(trialAbort)不受豁免。超过窗口仍按 P11-188。
+      val justDowngradedToCurrent = lastDowngradeTargetIndex == selected &&
+        lastDowngradeElapsedMs != 0L &&
+        nowMs - lastDowngradeElapsedMs < SWITCH_ARTIFACT_MEAS_GRACE_MS
+      val measUnknownSwitchArtifact = !trialAbort && measForGate <= 0L && justDowngradedToCurrent
+      val measEvidenceOk = measCoversTier || measUnknownSwitchArtifact
       // ── P11-203(2026-10-06 真机 `logs_live_20261006_164353`):**平均带宽够 ≠ 供得上** ────────────
       // 那场 4K(itag315,25.5M)连续三轮「爬到 4K → 水位漏光 → 8s 看门狗整场重载」,而每一轮降档都被
       // 本闸挡下:
@@ -1009,15 +1050,20 @@ class HeightAwareAdaptiveTrackSelection(
         roundTripForGate * ROUND_TRIP_RUNWAY_FACTOR <= bufferedDurationUs / 1000L
       // P11-178:本档刚零字节挂死过 ⇒ 这道闸不适用(闸防假饿;挂死是真饿,且挂死后重试那笔成功样本
       // 正好会把 est/meas 喂真,让闸误判「撑得住」)。理由详见上面 silenceHang 的证据注释。
-      if (curBitrateForGate > 0 && estHasMargin && measCoversTier && arrivalCoversBuffer && !silenceHang) {
+      if (curBitrateForGate > 0 && estHasMargin && measEvidenceOk && arrivalCoversBuffer && !silenceHang) {
         Log.i(
           "YtSabrAbr",
-          "buffer-critical downgrade **suppressed**(P11-168/177): bufS=${bufferedDurationUs / 1_000_000}s " +
+          "buffer-critical downgrade **suppressed**(" +
+            (if (measUnknownSwitchArtifact) "P11-312 switch artifact" else "P11-168/177") + "): " +
+            "bufS=${bufferedDurationUs / 1_000_000}s " +
             "est=${estForGate / 1000}K ≥ 当前档 ${getFormat(selected).height}p@$curBitrateForGate" +
             "×${BUFFER_CRITICAL_GATE_MARGIN_PERMILLE / 1000.0} " +
             "(declared=${getFormat(selected).bitrate},P11-200 已校准) " +
             "meas=${if (measForGate > 0) "${measForGate / 1000}K" else "未知"}" +
             " roundTrip=${if (roundTripForGate > 0) "${roundTripForGate}ms" else "未知"}" +
+            (if (measUnknownSwitchArtifact)
+              " sinceDowngrade=${sinceLastDowngradeMs}ms(新档尚未攒够实测段,按切换伪影放行)"
+            else "") +
             " → 带宽真撑得住,低水位来自排空/切轨而非供给不足(不降档、不门禁)",
         )
         // 不置 freezeEpisodeActive:这一枪根本没开,后续真饿时仍可急救。
@@ -1060,6 +1106,7 @@ class HeightAwareAdaptiveTrackSelection(
           )
           selected = lower
           lastDowngradeElapsedMs = nowMs
+          lastDowngradeTargetIndex = lower
           // P11-237:水位急救这一枪是真降档 ⇒ `sel=` 行的 hold 字段必须报 false(否则「hold=true 却降档」)。
           lastDowngradeHeldByBuffer = false
           // 2026-09-20 冻结 episode 置位:本段饥饿已用掉这一枪,水位回到阈值以上前不再开第二枪
@@ -1498,6 +1545,7 @@ class HeightAwareAdaptiveTrackSelection(
       // 降档(height 变小)记时间,驱动升档冷却
       getFormat(selected).height < currentHeight -> {
         lastDowngradeElapsedMs = nowMs
+        lastDowngradeTargetIndex = selected
         // P11-151(诊断):降档**原因**一行 —— 22:00 那场真机里降档只留下周期性的 `sel=` 行,
         // 看不出「为什么连 720p 都不选」(是被锁 / 被 served 收窄 / est 太低 / 饥饿)。
         Log.i(
@@ -1798,6 +1846,20 @@ class HeightAwareAdaptiveTrackSelection(
     // 共用 [DOWNGRADE_BUFFERED_US];顶档独有的差别只剩「冲顶失败后二次升档的坎」(见其注释)。
     /** 2026-08-30:升档后的水位急救宽限(ms)——新档刚起步缓冲未回填,不能立刻按同一水位反弹降档。 */
     const val DOWNGRADE_AFTER_UPGRADE_GRACE_MS = 5_000L
+
+    /**
+     * P11-312(A):普通降档后的水位急救宽限(ms)。历史校核(§72.6):35 次 `buffer-critical → 360p`
+     * 里大多数是「720→480 普通降档 → 1~2s 内再降 360」;切档丢旧档缓冲造成的低水位不是新档供给不足。
+     * 2s 覆盖历史上绝大多数双降间隔;超过 2s 的残余由 [SWITCH_ARTIFACT_MEAS_GRACE_MS] 那条兜。
+     */
+    const val DOWNGRADE_AFTER_DOWNGRADE_GRACE_MS = 2_000L
+
+    /**
+     * P11-312(B):刚降到的新档「meas 未知」按切换伪影处理的窗口(ms)。新档从 init 到攒够
+     * 3 条实测需要时间;窗口内若 est 有余量且往返容得下缓冲,不再按 P11-188
+     * 的「未知 ⇒ 不 suppress」放行水位急救。只对上次降档的目标档生效(index 精确匹配)。
+     */
+    const val SWITCH_ARTIFACT_MEAS_GRACE_MS = 5_000L
 
     /**
      * P11-177:水位急救降档的带宽闸余量(千分比)。`est` 必须 ≥ 当前档声明码率 × 1.15 才算
