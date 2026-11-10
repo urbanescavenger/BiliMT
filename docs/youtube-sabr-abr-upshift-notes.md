@@ -6424,3 +6424,43 @@ fetch rn=18 itag=139 seg=14  starving-fast-fail: bufAhead=8438ms → callCap=800
 - ②B 在「非刚降档目标档」上出现 `switch artifact` ⇒ index 判据失效,立即回退 B;
 - ③A/B 生效后 360 下降事件消失,但 480p 上 stall 率上升 ⇒ 说明该降的没降,需把 A 缩到 1s 或只对
   「刚降档且旧档缓冲被 cleanup」生效。
+
+### §73 P11-313:TV / 移动端播放看门狗同源(移动端补 P11-305)
+
+**现场(2026-11-10,`logs_live_20261110_134944.log`)**:4K itag315(声明 26.56Mbps)以 ~30Mbps
+起播,13:49:03 起链路掉到 16.9Mbps。13:49:09.836 发出 rn=23(seg62 + margin 后继段),seg62 于
+13:49:15.428 已完整入库,但 `getNextSegment` 要等后继段 seg63 到 13:49:30.871 才返回;播放器
+13:49:21.597 缓冲耗尽,看门狗 13:49:30.258 开枪(**比数据落地早 0.6s**)→ 整场重载。TV 端当时
+已有 P11-305(在途视频段 ETA≤10s 先让路 ≤12s,§70),移动端 `MobilePlayerScreen` **没有**这段判定。
+
+**历史校验(`tmp/verify_margin_stalls.py`,2026-11-10;338 份日志 / 13,212 笔 `fetch REAL` /
+316 次 `stall detected`)**:
+
+- stall 时无 SABR 请求在途 138 次;仅有 init(seg=0)请求 43 次;有**媒体**请求在途 135 次。
+- 135 次中「请求段在 stall 前已落地」12 次(去重后 7 个事件);提前 ≥2s 的仅 **2 个事件**
+  (本次 14.8s、11-08 起播 115.5s),其余 0.1~1.3s,早返回也来不及。
+- 4K 早停 94% 会等后继段;margin tax p50=1.8s / p75=2.6s / p90=4.6s / max=16.4s。
+- 单笔 fetch 耗时超过请求时缓冲的:全部 2%,4K 3%(27/975)。
+
+⇒ margin **不是** stall 主因(91% 的在途 stall 是请求段根本没到),但移动端缺 P11-305 会把这一个
+尾部个案放大成整场重载。故本轮只做「同源 + 补让路」,不改 margin 策略、不做后台续读。
+
+**改动**:
+
+- 新增 `app/src/main/java/com/kirin/mt/ui/player/common/PlaybackStallWatchdog.kt`:
+  纯逻辑状态机(位置冻结 / 视频冻结 / 慢滴让路),时间由调用方传入(`elapsedRealtime` 口径)。
+- `PlayerScreen`(TV)与 `MobilePlayerScreen` 的看门狗全部委托它;日志格式与判据不变。
+- TV 独占的深度重试(P11-85)经 `Action.RETRY_EXHAUSTED` 暴露,行为不变;移动端忽略。
+- 两端行为统一:重载时清零视频冻结窗口(此前只有移动端做)、位置恢复时清零让路窗口
+  (此前只有 TV 做)、首帧清零起播计时器(P11-122)。
+
+**验收日志**:
+
+- 移动端同场景应出现 `stall reload deferred (slow-drip in flight, P11-305): eta=… deferMax=12000ms`,
+  且 12s 内不出现 `stall detected`;
+- TV 端原有 deferred 行、深度重试行(`stall retries exhausted, deep retry`)保持不变。
+
+**否证线**:
+
+- ①移动端出现 deferred 但 12s 后仍 `stall detected` ⇒ 让路窗口或慢滴 ETA 估计失准;
+- ②移动端 `stall detected` 的 buffered/retry 编号与改动前不一致 ⇒ 状态机迁移有偏差,回退。
