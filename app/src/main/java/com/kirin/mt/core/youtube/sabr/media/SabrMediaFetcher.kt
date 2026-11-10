@@ -1695,18 +1695,29 @@ internal class SabrMediaFetcher(
    * [selectedVideoItagNote] <= 0(尚未喂到)⇒ 退回原行为,不改变未知态下的语义。
    */
   private fun marginFor(req: SabrSegmentRequest): Long = when {
-    req.formatItag == selectedVideoItagNote -> streamMargin()
+    req.formatItag == selectedVideoItagNote -> streamMargin(req.formatItag)
     // P11-307:音频/非选中格式**永远** margin=0。原式在 selectedVideoItagNote 尚未喂到时会
     // 让音频也走 streamMargin()=1，于是音频请求去等一个服务端根本没推的"下一个音频段"，
     // 同一响应里的大视频段被一起读下去 ⇒ 撞 8s 饥饿上限 ⇒ evict 整条会话。
     // 未知态的保护只对「视频格式」保留。
-    req.formatItag in sessionVideoItags && selectedVideoItagNote <= 0 -> streamMargin()
+    req.formatItag in sessionVideoItags && selectedVideoItagNote <= 0 -> streamMargin(req.formatItag)
     else -> 0L
   }
 
-  private fun streamMargin(): Long = when {
+  /**
+   * P11-317(Stage B1):早停余量 = min(档位期望, 水位能覆盖的段数)。
+   *
+   * 背景:margin 只看档位/水位,不看「这笔响应要多久」。2026-11-10 的两场 4K 真机
+   * (dev.r2302/r2304)里,请求段 5~7s 到手、整笔 9~14s,而缓冲只有 5~10s —— 等后继段
+   * 把整笔拖过 runway,播放器只能空等。
+   *
+   * 估计:实测带宽([getRealBitrateEstimate]) + 该 itag 已交付段的平均字节
+   * ([getAverageSegmentBytes]) ⇒ 每段墙钟;整笔再按 ×1.2 + 1s 留往返/排队安全量。
+   * 证据不足(段数/带宽未知)时保持原档位行为。
+   */
+  private fun streamMargin(itag: Int): Long {
     // 起播期:只等请求段本身(P11-218 —— 播放器此刻无事可做,早一拍到手早一拍出画)。
-    bufferedAheadNoteMs <= 0L -> 0L
+    if (bufferedAheadNoteMs <= 0L) return 0L
     // P11-225:≥1440p 一笔**多搬一段**。依据(dev.r2168 实测):4K 一笔只搬 2 段(≈11s 内容)而往返
     // 9.2s ⇒ **净攒只有 +1.8s** ⇒ 水位常驻 6~12s、永远到不了升档门槛要的 20s(「够不到」空转)。
     // 搬 3 段(≈16.5s)⇒ 净攒 +7.3s ⇒ 水位能爬到 20s 量级,升档门槛(见 HeightAware 的 P11-225 地板)
@@ -1714,10 +1725,32 @@ internal class SabrMediaFetcher(
     // ⚠️冲突复核(P11-225):**多搬只在"水位有余力"时才做** —— 否则会和饥饿档的单笔上限顶在一起:
     // 4K 3 段 ≈47MB,在 20Mbps 下要 ~19 秒,而饥饿档 `callCap` 只有 12 秒 ⇒ 一笔必被切断
     // (就是 P11-224 刚回退的那个坑换个形式回来)。水位薄时退回 1 段(2 段 ≈31MB/~12s)正好贴住上限。
-    bufferedAheadNoteMs >= HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS &&
-      selectedVideoHeight >= HIGH_TIER_MIN_HEIGHT &&
-      !lowHeapDevice -> 2L
-    else -> 1L
+    val desired =
+      if (bufferedAheadNoteMs >= HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS &&
+        selectedVideoHeight >= HIGH_TIER_MIN_HEIGHT &&
+        !lowHeapDevice
+      ) 2L else 1L
+    val avgBytes = getAverageSegmentBytes(itag)
+    val estBps = getRealBitrateEstimate()
+    if (avgBytes <= 0L || estBps <= 0L) return desired
+    val segWallMs = avgBytes * 8000L / estBps
+    var margin = desired
+    while (margin > 0L) {
+      val needMs = segWallMs * (margin + 1L) * 6L / 5L + 1_000L
+      if (bufferedAheadNoteMs >= needMs) return margin
+      margin--
+    }
+    return 0L
+  }
+
+  /** P11-317:某 itag 已交付媒体段的平均字节数(与实测消耗码率同一本账);证据不足返回 -1。 */
+  private fun getAverageSegmentBytes(itag: Int): Long {
+    if (itag <= 0) return -1L
+    return synchronized(measuredLock) {
+      val st = measuredTracks[itag] ?: return -1L
+      if (st.segs <= 0L || st.bytes <= 0L) return -1L
+      st.bytes / st.segs
+    }
   }
 
   /**
