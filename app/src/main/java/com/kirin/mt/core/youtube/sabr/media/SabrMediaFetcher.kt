@@ -36,7 +36,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -1485,12 +1484,17 @@ internal class SabrMediaFetcher(
         val farSeek = prevReq != null &&
           req.formatItag == prevReq.formatItag &&
           (req.segment < prevReq.segment || req.segment > prevReq.segment + DRAIN_JOIN_AHEAD_SEGMENTS)
-        val finished = if (farSeek) null else withTimeoutOrNull(DRAIN_JOIN_TIMEOUT_MS) { prev.join() }
-        if (finished == null) {
-          // 远距离 seek,或旧 drain 迟迟不结束(慢滴/服务端持续推流):不能让它拖住新请求。
+        if (farSeek) {
+          // 同轨远距离 seek:取消旧响应而不是等它把 margin 读完。
           // cancel call 会立刻打断阻塞读;join 等它把 finally 跑完,避免响应级字段串场。
           activeCall?.cancel()
           prev.cancel()
+          prev.join()
+        } else {
+          // 顺序请求/A-V 另一路:必须等上一笔 drain 结束再发新请求(单流语义)。
+          // ⚠️ 这里**不能**加超时取消:audio 加入 video drain 时超时会 cancel 掉 video 的
+          // 在途响应 → SocketException → 整会话 evict,形成 1.5s 一次的取消风暴
+          // (2026-11-10 dev.r2300 真机实测)。
           prev.join()
         }
       }
@@ -2781,9 +2785,6 @@ internal class SabrMediaFetcher(
      * 直接取消旧响应。取 8 段 ≈ 服务端单笔可能前推的深度(4K 约 40~50s 内容)。
      */
     const val DRAIN_JOIN_AHEAD_SEGMENTS = 8L
-
-    /** P11-315:顺序请求等上一笔 drain 的上限;超时说明旧响应尾巴很慢,取消它发新请求。 */
-    const val DRAIN_JOIN_TIMEOUT_MS = 1_500L
     /** 单次 backoff 最大 sleep(ms,<8s stall watchdog)。对齐旧 MAX_BACKOFF_SLEEP_MS。 */
     const val MAX_BACKOFF_SLEEP_MS = 2_500L
     /** 过滤阈值:小于此字节数的样本视为 init/retry/非媒体段,不进真实带宽统计(真实媒体段 ≥ ~300KB)。 */

@@ -190,6 +190,11 @@ internal class SabrResponse(
     直接 `activeCall.cancel() + job.cancel() + join`，避免 seek 被慢响应拖住；
   - `downloadedSegments` / `bufferedSegments` 改 `ConcurrentHashMap`；
   - `SabrMediaSource.releaseSourceInternal` 取消后台读。
+  - **2026-11-10 dev.r2300 真机回滚修正**：顺序请求等待上一笔 drain 的 1.5s 超时**不能**
+    取消在途响应当作兜底——audio 请求加入 video drain 时超时会 cancel 掉 video 的 call，
+    产生 `SocketException: Socket closed` → 整会话 evict 的 1.5s 取消风暴（2160 一直起不来、
+    1440 也反复重载）。已移除该超时路径：顺序请求/A-V 另一路一律 `join()` 到底（与改造前
+    「串行等整笔响应」行为一致），只有同轨远距离 seek 才 cancel。
   - 待验证：云编译；真机 4K 掉速场应看到「段交付时间 = `MEDIA_END`」且卡顿窗口消失；
     Stage B（队列水位驱动、去掉 margin 阻塞）未动。
 
