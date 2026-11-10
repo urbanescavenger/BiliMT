@@ -75,6 +75,7 @@ import com.kirin.mt.core.player.PlaybackService
 import com.kirin.mt.core.player.PlayerHolder
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.core.player.startPlaybackService
+import com.kirin.mt.core.storage.WatchedStore
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.ui.theme.BiliColors
 import java.io.File
@@ -96,6 +97,7 @@ fun MobileOfflinePlayerScreen(
   downloadId: Long,
   downloadManager: DownloadManager,
   playbackRepository: PlaybackRepository,
+  watchedStore: WatchedStore,
   onBack: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -272,11 +274,15 @@ fun MobileOfflinePlayerScreen(
     }
   }
 
-  // 续播:进入时读 Room 保存的进度,若在有效区间内 seek 过去。
+  // 续播:进入时读保存的进度,若在有效区间内 seek 过去。上次已播到结尾则改为从头开始,
+  // 并清除「已看完」角标(与在线播放器一致;否则 seek 到尾部会立刻结束)。
   LaunchedEffect(player, videoId, cid) {
     if (videoId.isNotBlank() && cid > 0L) {
       val saved = runCatching { playbackRepository.getSavedProgress(videoId, cid) }.getOrNull()
-      if (saved != null && saved.positionMs > 0L) {
+      if (saved != null && saved.isCompleted) {
+        runCatching { watchedStore.remove(videoId) }
+        runCatching { playbackRepository.saveProgress(videoId, cid, positionMs = 0L, durationMs = saved.durationMs) }
+      } else if (saved != null && saved.positionMs > 0L) {
         val dur = saved.durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE
         if (saved.positionMs < dur) {
           player.seekTo(saved.positionMs)

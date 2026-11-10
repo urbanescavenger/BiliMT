@@ -131,6 +131,24 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 
 ## 版本更新
 
+### v3.1.2
+
+稳定版：YouTube 起播/切档/带宽链路收口（慢首包不再砸 144p、切档 grace 与清理时序修复、服务端 pacing 证据）、
+SABR 音频与会话稳定性（音频 margin=0、会话重建只认缓冲见底）、起播 360 宽限、DNS 坏 IP 用 DoH 补全、
+移动端看门狗与 TV 同源。整合 v3.1.2-alpha.1~14 及 alpha.14 之后的 P11-312/313。
+
+### v3.1.2-alpha
+
+| tag | 内容 |
+| --- | --- |
+| v3.1.2-alpha.14 | **TV 设置弹窗输入框「暗底黑字」完全不可读修复**(P11-310)。TV 壳 `BiliTvTheme` 不包 `MaterialTheme`，弹窗里的 Material3 `OutlinedTextField` 回落到默认 `lightColorScheme`：文字/标签/边框全是近黑色，而输入框容器默认透明、透出深色玻璃面板。新增 `settingsTextFieldColors()` 按 `LocalHomeColors` 显式给深色配色（文字 `textPrimary`、聚焦容器 accent 12%、未聚焦 `glassSurfaceStrong`、边框 focused accent / 未聚焦 `glassBorder`、光标与聚焦标签 accent），WebDAV / IPTV / TVBox / Piped 四个 TV 弹窗全部接入。 |
+| v3.1.2-alpha.13 | **已看完视频再次播放从头开始 + 清除「已看完」角标**(P11-309)。播到结尾时本地进度落在尾部(距末尾 ≤2s),再次点开会被 `getSavedProgress` 直接 seek 回尾部立刻 `ENDED`,`WatchedStore` 角标也一直保留。①`PlaybackProgress` 新增 `isCompleted`(统一阈值 `PlaybackCompletedToleranceMs=2000`);②移动在线播放器(缓存命中 + 网络两条续播路径)与离线播放器:上次已看完 → 起点改 0、移除 `watchedStore` 标记、本地进度重置 0,中途退出后再进不会跳回尾部;③TV 播放器续播回落分支跳过已看完进度、从 0 起播。 |
+| v3.1.2-alpha.12 | **SABR 音频请求不再被同响应视频段拖死 + 会话重建只在缓冲见底时触发**(P11-307/308)。①音频/非选中格式的早停余量恒 0(不再等服务端没推的“下一个音频段”);`fetchStreamData` 超时/异常时若请求段已入库 ⇒ 按成功返回,不再 `evict` 整条会话。②撤掉「最近吞吐 < 本会话峰值×35%」的塌陷判决(服务端按档位 pacing,峰值是小响应撑出来的),会话重建改为「会话龄>20s + 缓冲见底(≤1s)+ 零交付超时≥2 + 在途视频 ETA 不短」;有缓冲交给 ABR 降档,8s stall 看门狗仍是硬重载。322 份历史日志校核:旧 P11-301 重建 5 次全部不会复现;全量模拟 30 会话触发,26 次 120s 内 stall(中位提前 8s)、2 次缓冲回填。判读见 `docs/youtube-sabr-abr-upshift-notes.md` §71.11–§71.12.1 |
+| v3.1.2-alpha.11 | **SABR 自动升档补「服务端按档供流」证据 + 音频请求不再被同响应视频段拖死**(P11-306/307)。真机 `logs_live_20261102_000017.log`:1080p 在位时服务端按档 pacing,`REAL 5~16Mbps / cap 6~10M`,而手切 1440/2160 同一网络实测 15~57M ⇒ 测量型门槛看不到真管道,满缓冲试探又被 P11-300 用同一个被封顶的 sustained 否决。新增逐笔证据 `pace = 交付内容时长/实际耗时`:同轨最近 4 笔全部早停、≥1.0 且无失败才成立;只解除试探的 sustained 否决,不动容量闸/超容量闸/顶档不试探。另修音频超时:音频/非选中格式 `margin` 恒 0(不再等服务端没推的“下一个音频段”);请求段已入库后超时按成功返回,不再 `evict` 整条会话。判读见 `docs/youtube-sabr-abr-upshift-notes.md` §71。 |
+| v3.1.2-alpha.10 | **WebDAV/IPTV 连不上:系统 DNS 只回坏 IP 时用 DoH 补全候选**(P11-304)。真机 10-28 22:59–23:00 `lookup cf.19961226.xyz` 只返回 `172.67.153.187`(被网络 RST 的那个),P11-269 的健康排序在「全部拉黑仍原样返回」下无处施展,ping 三档 9.0s / 15.0s / 1.2s 全失败。改为:系统答案里没有健康地址时用 DoH(`223.5.5.5`,IP 字面量端点)补查 A,必要时补 AAAA,缓存 300s 合并进候选;系统答案健康时不触发,正常解析零开销。日志判据 `doh supplement …` |
+| v3.1.2-alpha.9 | **SABR 切档/重载链修复 + 缓冲趋势控制**(P11-296~303)。①降档 grace 加「旧档下一段必须在本地」前提(P11-297,修 P11-281 回归:慢网下求旧档→服务端已切新档→6 连空转 terminal→整场重载);②切档 warm 后台化,不再同步阻塞 loader 18–40s(P11-299);③ABR 试探不再绕过 sustained 不足,持续不足 10s 解除「缓冲够就不降档」hold(P11-300);④会话/节点判定 + 带护栏整场重建(P11-301,3min 冷却、重建后仍慢标 link-bad 10min);⑤缓冲趋势控制:缓冲在掉时抬高续拉门槛、不让 loader 空转(P11-302);⑥读前量/档位 cap 只对 YouTube 生效(P11-303)。判读与判据链见 `docs/youtube-sabr-abr-upshift-notes.md` §67–§69。注意:手动锁 1440p 在实测带宽低于该档真实码率(如链路 2–6Mbps vs 码率 9Mbps)时仍会 stall,当前无自动回落 |
+| v3.1.2-alpha.1 | **播放优先级按实际参考实现命名 + NewPipe 取流层同步更新**(P11-271)。设置「播放优先级」的 `SABR 优先`→**`NewPipe 优先`**、`WEB-SABR 优先`→**`FreeTube 优先`**(DataStore key 不变,已选设置不丢),描述同步 4 个 locale。NewPipeExtractor 由 `738c3d4` 升级到 LibreTube fork dev HEAD `3e863d7c`:只有 SABR 流时不再误抛 `Could not get any stream`;playability 非 OK 时报具体原因而非笼统的 `VISIONOS player response is not valid`。同时确认「能播放不能下载」的根因是**出口 IP 声誉**(换出口节点即恢复,播放走 FreeTube 档的 WebView 会话不受影响),判读写入 `docs/youtube-hd-playback.md` §6.7 row 102。注意:升级不改变 `isPlayerResponseNotValid` 判据,被标记 IP 下下载仍会失败 |
+
 ### v3.1.1
 
 稳定版：YouTube 4K 全自动播放收口（切档不再整场重载、升档垫子全档统一、带宽记账修正、WEB-SABR 预热避开启动高峰），网络层抗坏 IP（WebDAV 传输补阶梯重试、DNS 结果优选 + 坏 IP 短期拉黑）、移动端下载更新不再崩溃、移动端下拉刷新只认用户手势；搜索补「影视」类型、TV 搜索类型与结果焦点收口、TV 历史番剧 -400 修复；动态页返回不再丢焦/重拉，YouTube 卡补齐 4K 角标与绿框。整合 v3.1.1-alpha.1~16。

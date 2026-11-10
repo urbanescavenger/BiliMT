@@ -193,6 +193,7 @@ class SettingsActivity : ComponentActivity() {
               downloadId = playingId,
               downloadManager = appContainer.downloadManager,
               playbackRepository = appContainer.playbackRepository,
+              watchedStore = appContainer.watchedStore,
               onBack = { playingDownloadId = null },
               modifier = Modifier.fillMaxSize(),
             )

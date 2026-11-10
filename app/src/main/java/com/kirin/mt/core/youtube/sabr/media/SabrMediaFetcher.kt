@@ -129,8 +129,33 @@ internal class SabrMediaFetcher(
    */
   val videoId: String? get() = entry.videoId
 
-  /** 已初始化格式(itag → InitializedFormat)。FORMAT_INITIALIZATION_METADATA part 建表。 */
-  private val initializedFormats = mutableMapOf<Int, InitializedFormat>()
+  /**
+   * 已初始化格式(itag → InitializedFormat)。FORMAT_INITIALIZATION_METADATA part 建表。
+   * P11-274:改 ConcurrentHashMap —— 切档预判的 [hasRealSegment] 从 loader 线程读，而音频/视频
+   * 两个 loader 的写发生在 fetcher 串行 dispatcher 上，普通 HashMap 存在读写竞争。
+   */
+  private val initializedFormats =
+    java.util.concurrent.ConcurrentHashMap<Int, InitializedFormat>()
+
+  // ── P11-274(切档 grace 缓存):切走的那一档只保留最近 3 段 ────────────────────────────────────
+  // 目的:4K 升档被打回/回切时,新档请求的段已被服务端游标越过(只回 N+1/N+2),旧代码插空段占位
+  // ⇒ 视频缺一段 + 解码器重配 = 5–10s 画面冻住音频照走(§60)。这里把旧档切换点附近的真实段单独留住,
+  // 让 DefaultSabrChunkSource 在“新档还没供上”时先用旧档顶这一段,切换点顺延到新档真正能供的段。
+  //
+  // **刻意不放进 initializedFormats**:那会被 `selectedFormatIds` / `bufferedRanges` 重新编码进请求,
+  // 回退 P11-92 的“旧档 bufferedRange 把服务端游标拖到旧档缓冲尾”死循环。这里只给本地播放用。
+  private val graceLock = Any()
+  private var graceItag: Int = 0
+  private val graceSegments = LinkedHashMap<Long, SabrSegment>()
+
+  // ── P11-281(降档无缝):切换进行中仍要能拉旧档的下一段 ──────────────────────────────────────
+  // 真机 r2249(`logs_live_20261026_234019.log` 23:35:52):720→1080 试升 13s 后带宽不够,
+  // `buffer-critical downgrade` 1080→720。旧档 303 还有 13.3s 缓冲,但 P11-274 在 selectFormat 时
+  // 立刻 retainActiveFormats 把 303 整条丢掉,而 grace 只留了切换点 [33,34] 两段(当前要的是 38/39)
+  // ⇒ resolveSwitchTarget 无旧档可顶,只能同步 warm 新档,新档首段 5.3s 才到 ⇒ 画面+位置双冻结 5s。
+  // 这里把「正在切走的旧档」记为 graceSource:切换期间 retainActiveFormats 保它、请求 bufferedRanges
+  // 排除它(P11-92 防线不变),让 chunk source 能继续拉旧档下一段顶住播放,新档在后台/后续请求里预热。
+  @Volatile private var graceSourceItag: Int = -1
 
   /**
    * 2026-09-20(C1「跟着服务端走」):**服务端实际推来的视频 itag 集合**(FORMAT_INITIALIZATION_METADATA
@@ -270,6 +295,28 @@ internal class SabrMediaFetcher(
   /** 2026-09-01 重填容量环(每次成功媒体请求一笔,无墙钟衰减),中位数喂升档判据。 */
   private val capacityWindow = ArrayDeque<RealBwSample>()
 
+  // ── P11-306(2026-11-02 TV 真机):服务端按档位供流(pacing)证据 ──────────────────────────────
+  // 病根(§71):播放 1080p 时服务端只按 ~1080p 的节奏供流,est/sus/cap 全被钉在 6~10M,而手切
+  // 1440/2160 实测 15~57M ⇒ 测量型闸看不到真管道。逐笔证据不看墙钟均值:只要**请求段每次都提前
+  // 到手**(早停)+ 交付内容时长 ≥ 实际耗时,就说明「供给是被我们的请求窗口限住的,不是链路」。
+  // 仅解除 P11-300-A 对试探的否决,不动容量闸/超容量闸/顶档不试探。
+  private class PacingSample(
+    val itag: Int,
+    val wallMs: Long,
+    val elapsedMs: Long,
+    val mediaMs: Long,
+    val satisfied: Boolean,
+    val failed: Boolean,
+  )
+
+  private val pacingLock = Any()
+  private val pacingSamples = ArrayDeque<PacingSample>()
+  // 当前响应作用域:请求在 dispatcher 上串行,processPart/fetchStreamData 同线程 ⇒ 普通字段即可。
+  private var respPacingItag: Int = 0
+  private var respPacingSeg: Long = -1L
+  private var respPacingMediaMs: Long = 0L
+  private var respPacingRequestedDelivered: Boolean = false
+
   // 2026-08-30(实测消耗码率,升降档门槛换地基):声明码率在高码率源上虚高约 2×(真机 302 声明 11.25M
   // 实测 6.3M、303 声明 22.26M 实测 ~11.5M),声明×est 双失真让乘数门槛(1.25/1.1)连续两轮卡在临界。
   // 这里从 MEDIA_END 挂账(itag → bytes + 已计段数),实测消耗码率 = bytes×8000 / 段数×平均段时长
@@ -365,6 +412,22 @@ internal class SabrMediaFetcher(
   @Volatile private var bufferedAheadNoteMs = -1L
   @Volatile private var bufferedAheadMsAtLastFetch = -1L
 
+  // ── P11-301(2026-10-28 真机):会话质量判定 ──────────────────────────────────────────────────
+  // 真机 2026-10-28 00:17:旧会话 peak 30Mbps → 18/13 → 18s/23s 两笔零交付超时 → 6Mbps,缓冲漏光重载;
+  // 手切新会话 44–60Mbps。历史(10-25 20:50–21:02)又证明链路整体坏时重建无效、会变重载风暴。
+  // 判定 = 「有峰值证据 + 最近两笔相对峰值塌陷 + 零交付超时 ≥2 + 缓冲在下漏 + 会话龄 >20s」;
+  // 动作 = 整场重建(带续播);护栏 = SabrAbrMemory(冷却 3min / 重建后仍慢标 link-bad 10min)。
+  private val sessionStartWallMs = System.currentTimeMillis()
+  @Volatile private var sessionPeakBps = 0L
+  @Volatile private var sessionTimeoutCount = 0
+  private val recentSessionBps = ArrayDeque<Long>()
+
+  /** P11-308:连续「缓冲见底」探针次数(缓冲回到 >1s 时清零)。 */
+  private var lowBufferProbeStreak = 0
+  private var postRebuildSamples = 0
+  private var postRebuildBpsSum = 0L
+  @Volatile private var sessionRebuildMarked = false
+
   /**
    * P11-173:本会话是否已交付过**真实媒体段**(≥ [REAL_BW_MIN_BYTES])。
    * 饥饿快切([SabrStarvingCallTimeoutMs])只在此之后生效 —— 起播时水位必然是 0,若不排除会把
@@ -372,9 +435,31 @@ internal class SabrMediaFetcher(
    */
   @Volatile private var deliveredRealMedia = false
 
+  // ── P11-284(首包稳定性)────────────────────────────────────────────────────────────────────
+  // 真机 alpha.4 手机场(`logs_live_20261027_011218.log` 01:07:52):新会话第一发视频请求
+  // `timeout (fail=18003ms)` 零字节,重试 1.36s 就成功(3Mbps) —— 典型的服务端慢启动(P11-160:
+  // 首笔成功总耗时 3.5~7.2s,零字节停顿都 ≥16.5s)。但那 18s 失败样本进了 active est 窗口,est 被
+  // 砸到 223K ⇒ 01:08:12 `downgrade 480p → 144p` + `480p excluded 90s`,而随后几笔实测 2~8Mbps。
+  // 判据(用户口径「1 要判的是首包稳定」):**首段真正交付前的第一次视频请求失败按慢启动处理,
+  // 不计入 active est 窗口**;第二发及以后、或已交付过首段后的失败照常记账(真挂死仍会降档)。
+  private val sessionVideoItags: Set<Int> = session.videoFormats.mapTo(HashSet()) { it.itag }
+  /** 本会话是否已交付过**视频**真实段(≥ [REAL_BW_MIN_BYTES])。 */
+  @Volatile private var firstVideoPacketDelivered = false
+  /** 首段交付前的视频请求失败次数(第一次豁免,第二次起入账)。 */
+  @Volatile private var preDeliveryVideoFailures = 0
+
+  // ── P11-286(保留最后实际交付档)────────────────────────────────────────────────────────────
+  // 真机 alpha.5 09:55:12.731:`cleanup dropped formats=[244] (video=303)` —— 把播放器仍在渲染的
+  // 480p 源清掉(`playerState` 到 09:55:27 还是 videoFmt=244)⇒ 13s/19.8s 两次 BUFFERING。
+  // `retainActiveFormats` 此前只保 ABR 选中档/pending/prefetch/graceSource,而播放器的实际轨道
+  // 可能还没跟上 ABR。这里单独记「最后真正交付过视频 media 的档」,新档交付前一直保它。
+  @Volatile private var lastDeliveredVideoItag: Int = -1
+
   /** 由视频 [DefaultSabrChunkSource] 每次 getNextChunk 喂:播放位置前方缓冲水位(ms)。仅视频轨喂(音频轨缓冲远超需求,会污染滑行量判定)。 */
   fun noteBufferedAheadMs(ms: Long) {
     bufferedAheadNoteMs = ms
+    // P11-302:缓冲趋势喂给续拉门槛控制器(缓冲在掉 ⇒ 不空转,详 SabrAbrMemory.readAheadMinBufferUs)。
+    SabrAbrMemory.noteBufferedAhead(ms)
   }
 
   /**
@@ -426,6 +511,70 @@ internal class SabrMediaFetcher(
    */
   fun noteSessionStartPositionMs(ms: Long) {
     if (ms > 0L) sessionStartPositionMs = ms
+  }
+
+  // ── P11-305(2026-11-01 TV 真机):在途视频段进度 —— 供 stall 看门狗判「慢滴是否快落地」──────────
+  // 背景(见 docs §70):慢滴期间 loader 阻塞在 `SabrDataSource.open`,ABR 只在 `getNextChunk` 评估,
+  // 8s stall 看门狗会先整场重载;而历史日志里 7/7 这类慢滴段都在 stall 后 ≤9s 落地 ⇒
+  // 让路最多 12s 比整场重载(10~22s 黑屏)划算。
+  @Volatile private var inFlightStartMs = 0L
+  @Volatile private var inFlightReadBytes = 0L
+  @Volatile private var inFlightLastByteMs = 0L
+  /** 本笔响应里**第一个**非 init 视频段的 contentLength(请求段本身的字节数)。 */
+  @Volatile private var inFlightVideoExpectedBytes = 0L
+  /** 最近一笔请求结束的墙钟(用于「刚落地」2s 宽限,避免落地瞬间被看门狗判死)。 */
+  @Volatile private var inFlightEndMs = 0L
+
+  private fun noteInFlightStart() {
+    inFlightStartMs = SystemClock.elapsedRealtime()
+    inFlightReadBytes = 0L
+    inFlightLastByteMs = 0L
+    inFlightVideoExpectedBytes = 0L
+    inFlightEndMs = 0L
+  }
+
+  private fun noteInFlightEnd() {
+    inFlightEndMs = SystemClock.elapsedRealtime()
+    inFlightStartMs = 0L
+  }
+
+  private fun noteInFlightProgress(readBytes: Long) {
+    inFlightReadBytes = readBytes
+    inFlightLastByteMs = SystemClock.elapsedRealtime()
+  }
+
+  /** 记本笔响应里第一个非 init 视频段的期望字节数(后续同类 header 不覆盖)。 */
+  private fun noteInFlightVideoSegment(itag: Int, contentLen: Long) {
+    if (itag in sessionVideoItags && contentLen > 0L && inFlightVideoExpectedBytes <= 0L) {
+      inFlightVideoExpectedBytes = contentLen
+    }
+  }
+
+  /**
+   * P11-305:在途视频请求还差多久落地(ms)。
+   * -1 = 没有在途视频请求 / 证据不足(无字节、静默 >[IN_FLIGHT_ETA_MAX_SILENCE_MS] 等);
+   * 0  = 请求段已到手,或请求刚结束 ≤[IN_FLIGHT_ETA_END_GRACE_MS](视为即将落地)。
+   */
+  fun getInFlightVideoEtaMs(): Long {
+    val now = SystemClock.elapsedRealtime()
+    val start = inFlightStartMs
+    if (start <= 0L) {
+      val end = inFlightEndMs
+      return if (end > 0L && now - end <= IN_FLIGHT_ETA_END_GRACE_MS) 0L else -1L
+    }
+    val elapsed = now - start
+    if (elapsed < IN_FLIGHT_ETA_MIN_ELAPSED_MS) return -1L
+    val lastByte = inFlightLastByteMs
+    if (lastByte <= 0L || now - lastByte > IN_FLIGHT_ETA_MAX_SILENCE_MS) return -1L
+    val read = inFlightReadBytes
+    if (read < IN_FLIGHT_ETA_MIN_BYTES) return -1L
+    val expected = inFlightVideoExpectedBytes
+    // 本笔响应里还没出现视频段的 MEDIA_HEADER ⇒ 没有「视频段快落地」的证据(纯音频请求也算 -1)。
+    if (expected <= 0L) return -1L
+    if (expected <= read) return 0L
+    val rateBps = read * 8000L / elapsed
+    if (rateBps <= 0L) return -1L
+    return (expected - read) * 8000L / rateBps
   }
 
 
@@ -694,6 +843,149 @@ internal class SabrMediaFetcher(
     return synchronized(measuredLock) { measuredTracks[itag]?.segs ?: 0L }
   }
 
+  /** P11-306:段时长(ms)——优先 ChunkIndex 网格,缺失时取 INIT metadata 的平均段时长。 */
+  private fun pacingSegmentDurationMs(fmt: InitializedFormat, seq: Long): Long {
+    val grid = fmt.seqStartMsBySeq
+    if (grid != null) {
+      val i = (seq - 1).toInt()
+      if (i >= 0 && i + 1 < grid.size) {
+        val d = grid[i + 1] - grid[i]
+        if (d > 0L) return d
+      }
+    }
+    if (fmt.duration > 0L && fmt.endSegmentNumber > 0L) {
+      return fmt.duration / fmt.endSegmentNumber
+    }
+    return 0L
+  }
+
+  private fun recordPacingSample(
+    req: SabrSegmentRequest,
+    elapsedMs: Long,
+    mediaMs: Long,
+    satisfied: Boolean,
+    failed: Boolean,
+  ) {
+    if (req.segment <= 0L || req.formatItag !in sessionVideoItags) return
+    val now = System.currentTimeMillis()
+    synchronized(pacingLock) {
+      pacingSamples.addLast(
+        PacingSample(
+          itag = req.formatItag,
+          wallMs = now,
+          elapsedMs = elapsedMs,
+          mediaMs = mediaMs,
+          satisfied = satisfied,
+          failed = failed,
+        )
+      )
+      while (pacingSamples.size > PACING_EVIDENCE_HISTORY_SAMPLES) pacingSamples.removeFirst()
+    }
+  }
+
+  /**
+   * P11-306:服务端按档位供流的证据 —— 当前选中视频档最近几笔请求是否「全部提前满足」。
+   *
+   * @return `mediaMs/elapsed` 的中位数(千分比,≥1000 即交付比实时快);-1 = 证据不足或窗口内有
+   *   失败/未到手/段时长未知。调用方只用它解除「试探被 sustained 否决」这一条(见 docs §71.9)。
+   */
+  fun getServerPacedSpeedPermille(): Long {
+    val itag = videoFormat?.itag ?: return -1L
+    if (itag <= 0) return -1L
+    val now = System.currentTimeMillis()
+    val recent = synchronized(pacingLock) {
+      pacingSamples
+        .filter { it.itag == itag && now - it.wallMs <= PACING_EVIDENCE_WINDOW_MS }
+        .takeLast(PACING_EVIDENCE_MAX_SAMPLES)
+    }
+    if (recent.size < PACING_EVIDENCE_MIN_SAMPLES) return -1L
+    if (recent.any { it.failed || !it.satisfied || it.mediaMs <= 0L || it.elapsedMs <= 0L }) {
+      return -1L
+    }
+    val speeds = recent.map { it.mediaMs * 1000L / it.elapsedMs }.sorted()
+    val median = speeds[speeds.size / 2]
+    return if (median >= PACING_EVIDENCE_MIN_SPEED_PERMILLE) median else -1L
+  }
+
+  /**
+   * P11-301:本 SABR 会话是否「节点/会话可疑」——由播放器探针每 5s 调用一次(拿不到 fetcher 的
+   * 选择类/UI 走 [SabrBandwidthMeter] 的 provider 通道)。
+   *
+   * 判据(见 docs §67.15 / §68.5,2026-11-02 按 P11-308 改):会话龄 >20s(排除慢启动)
+   * + **缓冲见底(≤1s)** + 零交付超时 ≥2 + 在途视频段 ETA 不短。还有缓冲就不重建,
+   * 交给 ABR 降档;8s stall 看门狗是硬重载兜底。
+   * 原先的「最近吞吐 < 峰值×35%」已撤掉:服务端按当前档 pacing 供流,吞吐本来就随档位变化,
+   * 峰值是突发/小响应撑出来的,不能当塌陷基线。
+   * 历史 10-25 证明链路整体坏时换 host 也救不回来,所以这里只「判定」;
+   * **动作与冷却/link-bad 护栏在调用方**(SabrAbrMemory)。
+   */
+  fun isSessionDegraded(bufferedAheadMs: Long): Boolean {
+    if (sessionRebuildMarked) return false
+    if (SabrAbrMemory.isLinkBad()) return false
+    if (SabrAbrMemory.sessionRebuildCooldownRemainMs() > 0L) return false
+    if (System.currentTimeMillis() - sessionStartWallMs < SessionHealthMinAgeMs) return false
+    if (bufferedAheadMs > SessionHealthCriticalBufferMs) {
+      lowBufferProbeStreak = 0
+      return false
+    }
+    lowBufferProbeStreak++
+    if (lowBufferProbeStreak < SessionHealthMinLowBufferProbes) return false
+    if (sessionTimeoutCount < SessionHealthMinTimeouts) return false
+    // 缓冲已经见底,但视频段正在路上(ETA 很短)⇒ 先等它落地,别把一次正常补货当成坏会话。
+    val eta = getInFlightVideoEtaMs()
+    if (eta in 0L..SessionHealthInFlightEtaDeferMs) return false
+    // ── P11-308(2026-11-02 真机):塌陷判决改成**缓冲见底**,不再看吞吐峰值 ──────────────────
+    // 吞吐由服务端按当前档 pacing 给(1080p/1440p/2160p 每档不同),一笔 1s 级快响应就能把
+    // sessionPeakBps 抬到 60~70M;拿它×35% 当塌陷线,会把 1440p 正常补货 16~20M(实需 10.4M)
+    // 判成塌陷。真正能回答「这个会话还撑不撑得住」的是缓冲:**见底**(≤1s)+ 已有 ≥2 次零交付
+    // 超时,才重建;还有缓冲就交给 ABR 降档,8s stall 看门狗是硬重载兜底。缓冲见底但视频段
+    // 正在路上(ETA 短)时先等落地,避免把正常补货当坏会话。
+    Log.w(
+      tag,
+      "session degraded criteria(P11-308 buffer-end): buf=${bufferedAheadMs}ms " +
+        "eta=$eta timeouts=$sessionTimeoutCount",
+    )
+    return true
+  }
+
+  /** P11-301:播放器决定整场重建时调用 —— 记 host 与冷却(跨重载),本会话不再重复判定。 */
+  fun markSessionRebuild() {
+    sessionRebuildMarked = true
+    SabrAbrMemory.noteSessionRebuild(hostOf(session.sabrUrl))
+  }
+
+  private fun hostOf(url: String): String? {
+    val scheme = url.indexOf("://")
+    if (scheme < 0) return null
+    return url.substring(scheme + 3).substringBefore('/').ifEmpty { null }
+  }
+
+  /** P11-301:成功/失败各记一笔会话样本;重建后的新会话前 3 笔仍慢 ⇒ 判链路坏。 */
+  private fun noteSessionFetch(bytes: Long, elapsedMs: Long, success: Boolean) {
+    if (!success) {
+      sessionTimeoutCount++
+      return
+    }
+    if (bytes <= 0L || elapsedMs <= 0L) return
+    val bps = bytes * 8_000L / elapsedMs
+    if (bps <= 0L) return
+    synchronized(recentSessionBps) {
+      if (bps > sessionPeakBps) sessionPeakBps = bps
+      recentSessionBps.addLast(bps)
+      while (recentSessionBps.size > SessionHealthRecentSamples) recentSessionBps.removeFirst()
+      // 重建后校验:新会话前 3 笔的吞吐 < 5Mbps ⇒ 不是单节点问题,标 link-bad。
+      val sinceRebuild = SabrAbrMemory.msSinceSessionRebuild()
+      if (sinceRebuild in 0..SessionRebuildVerifyWindowMs && postRebuildSamples < SessionHealthRecentSamples) {
+        postRebuildSamples++
+        postRebuildBpsSum += bps
+        if (postRebuildSamples == SessionHealthRecentSamples) {
+          val avg = postRebuildBpsSum / SessionHealthRecentSamples
+          if (avg < LinkBadBps) SabrAbrMemory.noteLinkBad()
+        }
+      }
+    }
+  }
+
   // ── P11-178:按 itag 记「零字节挂死」墙钟(供给证据,见 HeightAwareAdaptiveTrackSelection)──────────
   //
   // 需求(真机 logs_live_20260923_233549,TV 1440p):rn=27 对本档零字节静默 8s → 静默超时 → 重试
@@ -771,8 +1063,114 @@ internal class SabrMediaFetcher(
     if (MimeTypes.isAudio(mime)) {
       if (audioFormat != representation.formatId) audioFormat = representation.formatId
     } else if (MimeTypes.isVideo(mime)) {
-      if (videoFormat != representation.formatId) videoFormat = representation.formatId
+      if (videoFormat != representation.formatId) {
+        // P11-274:切走前把旧档切换点附近的真实段抄进 grace 缓存(只抄真实段,跳过 P11-92 空段占位)。
+        videoFormat?.let { captureGraceCache(it.itag) }
+        videoFormat = representation.formatId
+        // P11-281/291:不再在这里立刻 retainActiveFormats。切换进行中旧档还要继续供 chunk 顶住播放
+        // (见 [graceSourceItag]);旧档已从请求 bufferedRanges 里排除,P11-92 防线不变。
+        // 真正清理在 getNextSegment 里「选中档 media 响应到达」时做(旧代码的"保到新档 pending")。
+      }
     }
+  }
+
+  /** P11-286:最后真正交付过视频 media 的 itag(-1 = 还没有)。供 ABR 的升档 settle 判据。 */
+  fun getLastDeliveredVideoItag(): Int = lastDeliveredVideoItag
+
+  /**
+   * P11-281:标记「正在切走的旧档」。非 -1 期间:
+   * - [retainActiveFormats] 保住它,允许 chunk source 继续拉它的下一段顶住播放;
+   * - 请求的 `bufferedRanges` 排除它(P11-92:旧档缓冲尾不能拖服务端游标)。
+   *
+   * P11-291:只在切换**开始**时传旧档;切换完成/放弃都**不**在这里清 —— 旧档保留到
+   * 「选中档的 media 响应到达」,由 [getNextSegment] 的 cleanup 统一清(对齐 P11-274 前
+   * 「旧档保到新档 pending」的时序)。
+   */
+  fun setGraceSourceItag(itag: Int) {
+    if (graceSourceItag != itag) {
+      Log.i(tag, "switch source(P11-281): graceSourceItag $graceSourceItag → $itag")
+      graceSourceItag = itag
+      // ── P11-291:切换完成时**不立刻清档** ────────────────────────────────────────────────────
+      // 旧代码(P11-274 前)的语义是「旧档保到新档 pending,下一次 media() 后 cleanup 才丢」。
+      // alpha.6 的立即清档在 player 仍渲染旧档时就把它删了(10:39:30 `dropped formats=[244]`
+      // 时 player videoFmt 仍 244)⇒ 换档瞬间 BUFFERING。这里只记录切换来源;
+      // 真正清理放到 getNextSegment 里「选中档 media 响应到达」的那一刻(见 P11-291 注释)。
+      // 期间旧档在 retainActiveFormats 的 keep 集合里、且被 bufferedRanges 排除(P11-92 防线不变)。
+    }
+  }
+
+  /**
+   * P11-274:把 [oldItag] 最近 [GRACE_KEEP_SEGMENTS] 段真实媒体抄进 grace 缓存(带字节上限)。
+   * 只在视频档切换时调用一次;下一次切换会整体替换。
+   */
+  private fun captureGraceCache(oldItag: Int) {
+    val fmt = initializedFormats[oldItag] ?: return
+    val keep = ArrayList<Pair<Long, SabrSegment>>(GRACE_KEEP_SEGMENTS)
+    var bytes = 0L
+    // 取序号最大的几段(切换点附近);空段占位(data 为空/contentLength=0)一律不抄。
+    for ((seq, seg) in fmt.downloadedSegments.entries.sortedByDescending { it.key }) {
+      if (seq <= 0L) continue
+      if (seg.data.isEmpty() && seg.header.contentLength <= 0L) continue
+      if (keep.size >= GRACE_KEEP_SEGMENTS) break
+      val segBytes = seg.length().toLong()
+      if (keep.isNotEmpty() && bytes + segBytes > graceMaxBytes()) break
+      keep += seq to seg
+      bytes += segBytes
+    }
+    synchronized(graceLock) {
+      graceItag = if (keep.isEmpty()) 0 else oldItag
+      graceSegments.clear()
+      keep.sortedBy { it.first }.forEach { graceSegments[it.first] = it.second }
+    }
+    if (keep.isNotEmpty()) {
+      Log.i(
+        tag,
+        "grace cache(P11-274): itag$oldItag keep=${keep.map { it.first }.sorted()} bytes=$bytes",
+      )
+    }
+  }
+
+  /** P11-274:该格式是否已有**真实**该段(排除 P11-92 的空段占位)。只查缓存,不发请求。 */
+  fun hasRealSegment(itag: Int, sequenceNumber: Long): Boolean {
+    initializedFormats[itag]?.downloadedSegments?.get(sequenceNumber)?.let { seg ->
+      return seg.data.isNotEmpty() || seg.header.contentLength > 0L
+    }
+    synchronized(graceLock) {
+      if (graceItag == itag) {
+        graceSegments[sequenceNumber]?.let { seg ->
+          return seg.data.isNotEmpty() || seg.header.contentLength > 0L
+        }
+      }
+    }
+    return false
+  }
+
+  /** P11-274:grace 字节上限——小堆设备(同 P11-234 口径)再压到 16MB,避免 4K 旧档滞留挤爆堆。 */
+  private fun graceMaxBytes(): Long =
+    if (Runtime.getRuntime().maxMemory() < LOW_HEAP_MAX_BYTES) 16L * 1024 * 1024 else GRACE_MAX_BYTES
+
+  /** P11-274:从 grace 缓存取走一段(不发请求、不进 initializedFormats);取走即删。 */
+  private fun takeGraceSegment(itag: Int, sequenceNumber: Long): SabrSegment? =
+    synchronized(graceLock) {
+      if (graceItag != itag) null else graceSegments.remove(sequenceNumber)
+    }
+
+  /**
+   * 按「当前 A/V + 在途请求 + 预取候选」清理 [initializedFormats],返回被清掉的 itag。
+   * 与 `getNextSegment` 里 media() 后的清理同一口径(P11-92 / P11-130);P11-274 起在
+   * [selectFormat] 切档时也调用一次,确保切走的旧档不会继续出现在请求的 bufferedRanges 里。
+   */
+  private fun retainActiveFormats(): List<Int> {
+    val before = initializedFormats.keys.toList()
+    initializedFormats.keys.retainAll { f ->
+      f == audioFormat?.itag || f == videoFormat?.itag || f in pendingRequestItags ||
+        f == activePrefetchItag() || // P11-130:预取候选档的缓存要保住,否则刚预取到就被清
+        f == graceSourceItag || // P11-281:切换进行中,旧档还要供 chunk 顶住播放
+        f == lastDeliveredVideoItag // P11-286:播放器实际在用的最后交付档,新档交付前不能清
+    }
+    // 显式 containsKey:ConcurrentHashMap 的 `in` 会解析成 containsValue(KT-18053),
+    // 项目 warnings-as-errors 下直接编译失败。
+    return before.filterNot { initializedFormats.containsKey(it) }
   }
 
   /** 末段序号([SabrChunkSource] 判 endOfStream 用)。 */
@@ -808,7 +1206,27 @@ internal class SabrMediaFetcher(
     // 首次判死时已打过完整 diag(`InvalidPoToken diag: sessAgeMs…`),此处静默以免刷屏。
     if (invalidPo) throw SabrTerminalException("InvalidPoToken (session dead, fast-fail no-fetch)")
     val itag = req.formatItag
+    // ── P11-298(2026-10-27 临时诊断,取证后删)───────────────────────────────────────────────
+    // 4K 切档冻结取证:loader 线程要的是「非当前选中档」时,说明 chunk source 正在拉切档前后的段。
+    // 与 `YtSabrSwitchDiag: chunk …`(播放头/装载点/段号)和 `fetch rn=`(真实请求)对照。
+    if (itag != videoFormat?.itag && itag != audioFormat?.itag) {
+      Log.i(
+        "YtSabrSwitchDiag",
+        "request non-selected itag=$itag seg=${req.segment} " +
+          "video=${videoFormat?.itag} audio=${audioFormat?.itag} grace=$graceSourceItag",
+      )
+    }
+    // P11-274:旧档 grace 缓存直出——切档后新档还没供上时,chunk source 会让旧档顶 1–2 段。
+    // 这段数据来自切走前的真实缓存,不发请求、不写回 initializedFormats(避免 P11-92 的 bufferedRange 回退)。
+    takeGraceSegment(itag, req.segment)?.let { seg ->
+      Log.i(
+        tag,
+        "getNextSegment: grace hit itag$itag seg=${req.segment} bytes=${seg.length()} (P11-274, 旧档缓存直出)",
+      )
+      return seg
+    }
     // 2026-08-31:在途 itag 入白名单(修重建后旧在途请求响应被广告过滤丢弃的死循环),finally 移除。
+    val diagStartMs = System.currentTimeMillis()
     pendingRequestItags.add(itag)
     return runBlocking {
       try {
@@ -846,12 +1264,40 @@ internal class SabrMediaFetcher(
               // 2026-09-20(诊断):这道清理会**静默**丢格式,而丢了之后所有请求都变 `no seg`
               // (r2017 真机:140/302 的 init 登记过、也成功交付过一次,之后却 `no seg 0` 6 连 → evict)。
               // 打点把「丢了谁、当时 audioFormat/videoFormat/在途 是什么」一次说清,避免再靠猜。
-              val beforeKeys = initializedFormats.keys.toList()
-              initializedFormats.keys.retainAll { f ->
-                f == audioFormat?.itag || f == videoFormat?.itag || f in pendingRequestItags ||
-                  f == activePrefetchItag() // P11-130:预取候选档的缓存要保住,否则刚预取到就被清
+              // P11-291:选中档(新档)的 media 响应已到 —— 这才是旧代码「旧档保到新档 pending」的
+              // 清理时机。切换完成时不再立刻清(见 setGraceSourceItag 注释),旧档在这里才让位。
+              if (graceSourceItag >= 0 && req.formatItag == videoFormat?.itag) {
+                // ── P11-299(2026-10-27 真机):到位判据收紧 ──────────────────────────────────
+                // 原条件只看「选中档的这一笔请求收到了响应」就 drop 旧档;zero-reply / 只推别的格式 /
+                // 只回状态(usable=0)时同样成立 ⇒ 旧档被整条清掉(9 月 `no seg` 风暴的机制)。
+                // 现在要求「这一笔真的拿到了可用媒体」:媒体请求看请求段是否有真实数据;
+                // init 请求(segment=0)则要求响应里至少带了一个真实媒体段(init 本身不算)。
+                val newFmt = initializedFormats[req.formatItag]
+                val newFormatReady = if (req.segment > 0) {
+                  newFmt?.downloadedSegments?.get(req.segment)?.let {
+                    it.data.isNotEmpty() || it.header.contentLength > 0L
+                  } == true
+                } else {
+                  newFmt?.downloadedSegments?.values?.any {
+                    it.data.isNotEmpty() || it.header.contentLength > 0L
+                  } == true
+                }
+                if (newFormatReady) {
+                  Log.i(
+                    tag,
+                    "switch source cleared(P11-291): selected itag${req.formatItag} media delivered " +
+                      "→ drop old itag$graceSourceItag",
+                  )
+                  graceSourceItag = -1
+                } else {
+                  Log.i(
+                    tag,
+                    "switch source hold(P11-299): selected itag${req.formatItag} 响应无可用段 " +
+                      "(seg=${req.segment}) → 暂留旧档 itag$graceSourceItag",
+                  )
+                }
               }
-              val dropped = beforeKeys - initializedFormats.keys
+              val dropped = retainActiveFormats()
               if (dropped.isNotEmpty()) {
                 Log.w(
                   tag,
@@ -958,6 +1404,18 @@ internal class SabrMediaFetcher(
         }
       } finally {
         pendingRequestItags.remove(itag)
+        // P11-298(临时诊断,取证后删):loader 线程在 getNextSegment 里待了多久。长耗时 =
+        // 播放器等这一笔(含整笔流式下载,见 P11-217/218 早停);与 `YtSabrSwitchDiag: chunk …`
+        // 的段号一起看,可分辨「等错段」还是「段对但下得慢」。
+        val costMs = System.currentTimeMillis() - diagStartMs
+        if (costMs >= LoaderDiagSlowMs) {
+          val cached = initializedFormats[itag]?.let { it.hasSegment(req.segment) } ?: false
+          Log.w(
+            tag,
+            "getNextSegment slow(P11-298): itag=$itag seg=${req.segment} cost=${costMs}ms " +
+              "cached=$cached video=${videoFormat?.itag} audio=${audioFormat?.itag} grace=$graceSourceItag",
+          )
+        }
       }
     }
   }
@@ -1089,8 +1547,15 @@ internal class SabrMediaFetcher(
    * 音频/非选中档的段都很小(音频 60KB/5.3s),一段就够;视频侧的「多搬一段」(P11-225)完全不动。
    * [selectedVideoItagNote] <= 0(尚未喂到)⇒ 退回原行为,不改变未知态下的语义。
    */
-  private fun marginFor(req: SabrSegmentRequest): Long =
-    if (selectedVideoItagNote <= 0 || req.formatItag == selectedVideoItagNote) streamMargin() else 0L
+  private fun marginFor(req: SabrSegmentRequest): Long = when {
+    req.formatItag == selectedVideoItagNote -> streamMargin()
+    // P11-307:音频/非选中格式**永远** margin=0。原式在 selectedVideoItagNote 尚未喂到时会
+    // 让音频也走 streamMargin()=1，于是音频请求去等一个服务端根本没推的"下一个音频段"，
+    // 同一响应里的大视频段被一起读下去 ⇒ 撞 8s 饥饿上限 ⇒ evict 整条会话。
+    // 未知态的保护只对「视频格式」保留。
+    req.formatItag in sessionVideoItags && selectedVideoItagNote <= 0 -> streamMargin()
+    else -> 0L
+  }
 
   private fun streamMargin(): Long = when {
     // 起播期:只等请求段本身(P11-218 —— 播放器此刻无事可做,早一拍到手早一拍出画)。
@@ -1159,6 +1624,12 @@ internal class SabrMediaFetcher(
     req: SabrSegmentRequest,
     onPart: (type: Int, payload: ByteArray) -> Unit,
   ): StreamResult {
+    // P11-306:响应作用域的 pacing 计数(见字段注释);只记视频媒体请求,init/音频不参与。
+    respPacingItag =
+      if (req.segment > 0L && req.formatItag in sessionVideoItags) req.formatItag else 0
+    respPacingSeg = req.segment
+    respPacingMediaMs = 0L
+    respPacingRequestedDelivered = false
     // 2026-09-20(服务端 backoff 不入账,见 recordFetchGap):本次睡眠是**服务端 NEXT_REQUEST_POLICY
     // 要求我们等的**,不是链路供给不足——时长要原样剔除,否则被计成 bytes=0 样本把 est 拽低。
     var serverBackoffSleepMs = 0L
@@ -1193,8 +1664,16 @@ internal class SabrMediaFetcher(
     // P11-130(升档预加载):预取档**不报缓冲**(报"没有" = 请把数据推给我),否则服务端按我们的
     // bufferedRange 判「已给过」就不再推。其余轨维持自身缓存形态(P11-92 已实证裁掉当前轨不破坏推送游标)。
     val prefetchActive = activePrefetchItag()
+    val graceSource = graceSourceItag
+    val lastDelivered = lastDeliveredVideoItag
+    val selectedVideo = videoFormat?.itag
     val bufferedRanges = initializedFormats.values
-      .filter { it.id.itag != prefetchActive }
+      // P11-281:切换中的旧档不报缓冲(它还在供 chunk,但缓冲尾不能拖服务端游标,同 P11-92 口径)。
+      // P11-286:最后交付档若不是当前选中档(播放器还没切过去),同样不报 —— 但它是选中档时照常报。
+      .filter {
+        it.id.itag != prefetchActive && it.id.itag != graceSource &&
+          !(it.id.itag == lastDelivered && it.id.itag != selectedVideo)
+      }
       .flatMap { fmt ->
         val cap = if (fmt.id.itag == req.formatItag) req.segment.toLong() else Long.MAX_VALUE
         fmt.buildBufferedRanges(cap)
@@ -1463,6 +1942,8 @@ internal class SabrMediaFetcher(
     // P11-221:实读字节数提到 try 之外 —— catch 也要用它判「有请求没回复」。
     var readBytes = 0L
     return try {
+      // P11-305:本笔在途请求的进度起点(供 stall 看门狗估算 ETA,见 [getInFlightVideoEtaMs])。
+      noteInFlightStart()
       // P11-134:SABR POST **整调用上限**。playback client 是 `callTimeout(0)`(为不切掉长分片),
       // 只有 per-read 15s ⇒ 服务端「慢滴」(每次 read 都在 15s 内挤一点)时**永不超时**。
       // 真机 2026-09-20 13:32 就是这样挂死的:`fetch rn=2` 发出后既无 REAL 也无 exception,缓冲耗尽、
@@ -1557,6 +2038,7 @@ internal class SabrMediaFetcher(
           ump.append(readBuf, n)
           if (n == 0) continue
           readBytes += n
+          noteInFlightProgress(readBytes)
           ump.readParts(onPart)
           if (readBytes >= StreamStopMinBytes && streamNeedSatisfied(req)) {
             earlyStop = true
@@ -1569,12 +2051,39 @@ internal class SabrMediaFetcher(
       // 节奏非带宽不足),吞吐 = 窗口累计量/累计耗时。带宽充足时贴近真实下载速率,断流时靠失败段计时下探。
       val mbps = if (elapsed > 0) readBytes * 8 / (elapsed * 1000L) else -1L
       recordRealBandwidthSample(readBytes, elapsed)
+      // P11-306:服务端 pacing 证据 —— 本笔请求段提前到手且交付内容时长 ≥ 实际耗时(见 docs §71.9)。
+      recordPacingSample(
+        req,
+        elapsed,
+        respPacingMediaMs,
+        satisfied = earlyStop && respPacingRequestedDelivered,
+        failed = false,
+      )
       // P11-173(修正):记「本会话已交付过真实媒体段」—— 饥饿快切只在此之后生效。
       // 依据(真机 logs_live_20260923_000311,r2087):起播时 `bufAhead=0ms` 本来就会命中
       // `SabrStarvingBufferMs`,把首笔请求上限从 18s 砍到 8s —— 而 P11-160 记过「首包偶发
       // 16~20s 是服务端慢启动,不该被杀」。用「是否已交付过真实段」把起播的 bootstrap 段
       // 排除在快切口径之外(起播的兜底是 StartupStallThresholdMs=25s 那条看门狗)。
       if (readBytes >= REAL_BW_MIN_BYTES) deliveredRealMedia = true
+      // P11-286:记「最后真正交付过视频 media 的档」—— 新档交付前它是播放器的实际数据源,
+      // retainActiveFormats 必须保它(见字段注释)。
+      if (readBytes >= REAL_BW_MIN_BYTES && req.formatItag in sessionVideoItags) {
+        lastDeliveredVideoItag = req.formatItag
+      }
+      // P11-284:首段视频真正交付 —— 之后的失败不再享受「首包慢启动」豁免。
+      if (readBytes >= REAL_BW_MIN_BYTES &&
+        req.formatItag in sessionVideoItags &&
+        !firstVideoPacketDelivered
+      ) {
+        firstVideoPacketDelivered = true
+        if (preDeliveryVideoFailures > 0) {
+          Log.i(
+            tag,
+            "first video packet delivered after $preDeliveryVideoFailures slow-start failure(s) " +
+              "(${elapsed}ms/${readBytes}B) — first-packet stable, failures now count (P11-284)",
+          )
+        }
+      }
       recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
@@ -1582,6 +2091,8 @@ internal class SabrMediaFetcher(
       SabrAbrMemory.noteSabrResponseMs(elapsed)
       // P11-203:同时按 itag 记一笔往返(带宽闸「交付节奏」腿的证据,见 getLastRoundTripMs)。
       noteRoundTrip(req.formatItag, elapsed)
+      // P11-301:会话质量样本(峰值/最近两笔/重建后校验)。
+      noteSessionFetch(readBytes, elapsed, success = true)
       Log.i(
         tag,
         "fetch rn=$rn REAL ${readBytes}B ${elapsed}ms → ${mbps}Mbps est=${fmtEstForLog(getRealBitrateEstimate())}" +
@@ -1600,6 +2111,30 @@ internal class SabrMediaFetcher(
     } catch (e: Exception) {
       // 网络失败/超时:下载量=0、耗时计满 → 窗口带宽下探,让 ABR 有依据降档自救
       val failMs = SystemClock.elapsedRealtime() - t0
+      // ── P11-307:超时/异常时若**请求段已经到手**,这一笔对播放器已是可用交付 ────────────────
+      // 真机 rn=18(`logs_live_20261102_003207.log` 00:31:32):音频 seg=14 在 4.2s 已入库,
+      // 同一响应还在推 4K seq28(17.7MB)/seq29(21MB),读循环没早停,8s callTimeout 到点。
+      // 旧逻辑记一次失败并 throw → SabrDataSource evict 整条会话(连视频),4K 缓冲 18→3.4s。
+      // 请求段到手 ⇒ 后续段由下一次请求补,不该把会话扔掉。
+      val requestedDelivered = req.segment > 0L &&
+        initializedFormats[req.formatItag]?.hasSegment(req.segment) == true
+      if (requestedDelivered) {
+        Log.w(
+          tag,
+          "fetch rn=$rn timeout after requested seg delivered: itag=${req.formatItag} seg=${req.segment} " +
+            "read=${readBytes}B fail=${failMs}ms margin=${marginFor(req)} " +
+            "video=${videoFormat?.itag} audio=${audioFormat?.itag} selectedVideoNote=$selectedVideoItagNote " +
+            "→ treat as success (P11-307, 不 evict)",
+        )
+        recordRealBandwidthSample(readBytes, failMs)
+        SabrAbrMemory.noteSabrResponseMs(failMs)
+        noteRoundTrip(req.formatItag, failMs)
+        if (readBytes >= REAL_BW_MIN_BYTES) deliveredRealMedia = true
+        if (readBytes >= REAL_BW_MIN_BYTES && req.formatItag in sessionVideoItags) {
+          lastDeliveredVideoItag = req.formatItag
+        }
+        return StreamResult(readBytes, failMs, earlyStop = true)
+      }
       // P11-178:「零字节挂死」单独记一笔(itag 维度,跨评估周期存活)。SocketTimeoutException =
       // `sabrHttpClient` 的 readTimeout(8s)语义「多久没有新字节」,connectTimeout 同类型同属「拿不到
       // 字节」;两者都是「本档这条请求根本没被供上」的直接证据。callTimeout(按档高 18s/40s)是
@@ -1610,7 +2145,23 @@ internal class SabrMediaFetcher(
       if (readBytes < ZeroReplyMaxBytes) {
         noteZeroReply(req.formatItag, readBytes, "失败:${e::class.simpleName}(零媒体字节)")
       }
-      recordRealBandwidthFailure(failMs)
+      // P11-284:首段视频交付前的**第一次**失败按服务端慢启动处理,不计入 active est 窗口
+      // (P11-160 已记「首笔零字节停顿 ≥16.5s 是服务端慢启动」);第二发起照常入账,真挂死仍能降档。
+      val isVideoFailure = req.formatItag in sessionVideoItags
+      val firstPacketSlowStart =
+        isVideoFailure && !firstVideoPacketDelivered && preDeliveryVideoFailures == 0
+      if (isVideoFailure && !firstVideoPacketDelivered) preDeliveryVideoFailures++
+      if (firstPacketSlowStart) {
+        Log.w(
+          tag,
+          "first video packet failed before delivery (fail=${failMs}ms) — server slow-start, " +
+            "NOT counted in active est (P11-284)",
+        )
+      } else {
+        recordRealBandwidthFailure(failMs)
+      }
+      // P11-306:失败/超时一律进 pacing 窗口 —— 有失败就不能判「服务端在按档供流」。
+      recordPacingSample(req, failMs, 0L, satisfied = false, failed = true)
       recordFetchGap(prevFetchEndMs, prevSeekMs, prevManualMs, runwayMs, t0Wall, serverBackoffSleepMs)
       lastFetchEndMs = System.currentTimeMillis()
       bufferedAheadMsAtLastFetch = bufferedAheadNoteMs
@@ -1619,12 +2170,17 @@ internal class SabrMediaFetcher(
       // P11-203:失败照记(P11-197 同口径:按最坏情况)。它正是「本档这批数据没供上」的证据,
       // 带宽闸的第四腿据此不再 suppress 水位急救(真机 16:43 那笔 40s 超时把 1440p 钉在档位上)。
       noteRoundTrip(req.formatItag, failMs)
+      // P11-301:零交付失败计入会话质量(重建判据的硬证据)。
+      noteSessionFetch(readBytes, failMs, success = false)
       Log.w(
         tag,
         "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${fmtEstForLog(getRealBitrateEstimate())}" +
           (if (silentHang) " silence-hang itag=${req.formatItag} recorded, P11-178" else "") + ")",
       )
       throw e
+    } finally {
+      // P11-305:请求结束(成功/失败/早停)都要清在途标记,否则看门狗会以为还有视频段在途。
+      noteInFlightEnd()
     }
   }
 
@@ -1665,6 +2221,8 @@ internal class SabrMediaFetcher(
           Log.w(tag, "MEDIA_HEADER duplicate headerId=${mh.headerId} (overwrite)")
         }
         Log.i(tag, "MEDIA_HEADER headerId=${mh.headerId} itag=${mh.itag} seq=${mh.sequenceNumber} isInit=${mh.isInitSeg} startMs=${mh.startMs} dur=${duration}ms contentLen=${mh.contentLength}")
+        // P11-305:在途视频段的期望字节数(供 stall 看门狗估算 ETA)。
+        if (!mh.isInitSeg) noteInFlightVideoSegment(mh.itag, mh.contentLength)
         partialSegments[mh.headerId] = SabrSegment(
           header = mh,
           sequenceNumber = mh.sequenceNumber.toLong(),
@@ -1719,6 +2277,11 @@ internal class SabrMediaFetcher(
         }
         fmt.downloadedSegments[seg.sequenceNumber] = seg
         if (seg.header.isInitSeg) fmt.initSegment = seg
+        // P11-306:本响应内该视频档实际到手的媒体时长(服务端 pacing 证据,见 PacingSample)。
+        if (respPacingItag != 0 && !seg.header.isInitSeg && seg.header.itag == respPacingItag) {
+          respPacingMediaMs += pacingSegmentDurationMs(fmt, seg.sequenceNumber)
+          if (seg.sequenceNumber == respPacingSeg) respPacingRequestedDelivered = true
+        }
         // 2026-08-30 实测消耗码率挂账:只计非 init 段、只按单调 seq 增量(重传旧段不重复计入)。
         if (!seg.header.isInitSeg) {
           synchronized(measuredLock) {
@@ -1979,6 +2542,36 @@ internal class SabrMediaFetcher(
     const val SabrSilenceTimeoutMs = 8_000L
 
     /**
+     * P11-298(2026-10-27 临时诊断,取证后删):loader 侧 `getNextSegment` 超过该耗时即打一行。
+     * 正常单笔 2–8s(4K 大段可到 12–17s);取 5s 只抓明显的等待,用来分辨「等错段/被长请求卡住」。
+     */
+    const val LoaderDiagSlowMs = 5_000L
+
+    // ── P11-301(2026-10-28):会话质量判据阈值 ─────────────────────────────────────────────────
+    /** 会话龄低于此值不判(慢启动/首包偶发 16–20s 是已知现象,P11-160/P11-284)。 */
+    const val SessionHealthMinAgeMs = 20_000L
+    /**
+     * P11-308:会话重建只认**缓冲见底**。还有缓冲就交给 ABR/水位急救;8s stall 看门狗是硬重载兜底。
+     * 取 1s(探针粒度内的“见底”,不是 8s):用户口径「有缓冲没必要重载」,且 2 次 5s 探针会晚于
+     * 8s 看门狗。
+     */
+    const val SessionHealthCriticalBufferMs = 1_000L
+    /** 零交付超时次数门槛(单次可能是抖动;连续两次才是会话/路径在停)。 */
+    const val SessionHealthMinTimeouts = 2
+    /**
+     * P11-308:缓冲见底需命中的探针次数。探针 5s 一次;一次见底即可,要求 2 次会晚于 8s 硬重载。
+     */
+    const val SessionHealthMinLowBufferProbes = 1
+    /** P11-308:缓冲见底但在途视频段 ETA 在此范围内 ⇒ 先等它落地,不算坏会话。 */
+    const val SessionHealthInFlightEtaDeferMs = 5_000L
+    /** 会话吞吐环形窗口长度。 */
+    const val SessionHealthRecentSamples = 3
+    /** 重建后校验窗口(新会话前几笔在此窗口内才算「重建后样本」)。 */
+    const val SessionRebuildVerifyWindowMs = 30_000L
+    /** 重建后新会话前 3 笔均值低于此值 ⇒ 判链路坏(停止重建)。 */
+    const val LinkBadBps = 5_000_000L
+
+    /**
      * P11-221:**空窗是否计入 est** —— false = 不计(当前值)。
      *
      * 依据(用户口径):两次请求之间不会有新流量 ⇒ 那段窗口**没有在途请求**,给不出链路证据。
@@ -2036,6 +2629,12 @@ internal class SabrMediaFetcher(
 
     const val HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS = 15_000L
 
+    /** P11-274:切档 grace 缓存最多保留的旧档段数(覆盖“当前段 + 2 段顺延”)。 */
+    const val GRACE_KEEP_SEGMENTS = 3
+
+    /** P11-274:grace 缓存字节上限(4K 段 ~12–16MB,最多 3 段;超限则只保留更新的段)。 */
+    const val GRACE_MAX_BYTES = 48L * 1024 * 1024
+
     /** P11-225:「高档」的起始高度 —— 早停余量按档位分叉(≥1440p 一笔多搬一段)。 */
     const val HIGH_TIER_MIN_HEIGHT = 1440
 
@@ -2047,6 +2646,16 @@ internal class SabrMediaFetcher(
     /** P11-173:饥饿快切的 ≥1440p 上限 —— 大段本身更慢,给到 12s(仍早于 18s/40s 原口径)。 */
     const val SabrStarvingCallTimeoutMsHigh = 12_000L
 
+    // ── P11-305:stall 看门狗让路的「在途视频段 ETA」估算参数(见 docs §70)──────────────────
+    /** 起算门槛:请求发出不到这个时长不估 ETA(起播/首包阶段交给既有看门狗)。 */
+    const val IN_FLIGHT_ETA_MIN_ELAPSED_MS = 5_000L
+    /** 最近一次收到字节距今超过它 ⇒ 视为静默挂死(交给 8s 静默超时),不参与让路。 */
+    const val IN_FLIGHT_ETA_MAX_SILENCE_MS = 3_000L
+    /** 已读字节少于此值不估 ETA(只有 part 头/状态包时算不出速率)。 */
+    const val IN_FLIGHT_ETA_MIN_BYTES = 256_000L
+    /** 请求刚结束的宽限:段落地瞬间看门狗可能仍看到 BUFFERING,别立刻判死。 */
+    const val IN_FLIGHT_ETA_END_GRACE_MS = 2_000L
+
     /** transient 重试上限(耗尽→SabrTerminalException→evict)。对齐旧 SabrDashDataSource BACKOFF_MAX_ATTEMPTS。 */
     const val MAX_ATTEMPTS = 6
     /** 单次 backoff 最大 sleep(ms,<8s stall watchdog)。对齐旧 MAX_BACKOFF_SLEEP_MS。 */
@@ -2057,6 +2666,18 @@ internal class SabrMediaFetcher(
     const val CAPACITY_WINDOW_SAMPLES = 8
     /** 2026-09-01 重填容量最少样本数,不足 -1(证据不足,升档判据回退活跃 est)。 */
     const val CAPACITY_MIN_SAMPLES = 3
+
+    // ── P11-306(2026-11-02):服务端按档位供流(pacing)证据 —— 见 docs §71.9 ─────────────────────
+    /** 证据窗口(墙钟):只看最近 60s 内同轨的媒体请求。 */
+    const val PACING_EVIDENCE_WINDOW_MS = 60_000L
+    /** 参与判定的最近样本数上限(取最后 4 笔)。 */
+    const val PACING_EVIDENCE_MAX_SAMPLES = 4
+    /** 环形历史长度(切档瞬间旧档样本会混入,留余量防止把新档样本挤掉)。 */
+    const val PACING_EVIDENCE_HISTORY_SAMPLES = 12
+    /** 最少样本数(不足视为证据不足)。 */
+    const val PACING_EVIDENCE_MIN_SAMPLES = 3
+    /** `mediaMs/elapsed` 中位数下限(千分比):1000 = 交付内容时长 ≥ 实际耗时。 */
+    const val PACING_EVIDENCE_MIN_SPEED_PERMILLE = 1_000L
     /**
      * 滑动窗口时间跨度(ms):窗口内累计下载量/累计耗时计带宽。约一两个段时长,能让一次 15s 卡死(0量/满耗时)
      * 显著压低带宽又不过度被历史稀释。卡死时长超窗口时窗口只留该失败段 → 带宽=0 → ABR 彻底降档。

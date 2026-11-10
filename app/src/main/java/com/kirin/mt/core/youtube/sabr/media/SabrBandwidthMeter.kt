@@ -26,6 +26,24 @@ internal class SabrBandwidthMeter(
   @Volatile
   private var realBpsProvider: (() -> Long)? = null
 
+  /**
+   * P11-282:构造时的初始 seed(PlayerScreen/MobilePlayerScreen 传 `youtubeStartQuality.seedBps()`)。
+   * SABR 会话在拿到第一笔真实样本前用它,而不是回退 delegate —— 见 [getBitrateEstimate]。
+   */
+  private val initialSeedBps: Long = delegate.getBitrateEstimate()
+
+  /**
+   * P11-282:最后一次**有效**的真实带宽(bps),-1 = 尚未测到。
+   *
+   * 为什么需要它:P11-167 定下「窗口零字节 → 返回 -1」,P11-259 又证实 delegate 会被
+   * `SabrDataSource` 的内存瞬时读样本污染且跨视频不重置。两者相遇就是真机 r2249 的病象:
+   * 连续 8s 超时 → real=-1 → 回退 delegate → **est=1307182K(1.3Gbps)** → ABR 不降档 → 缓冲漏光 stall。
+   * 这里保留最后一次真实样本:既不像 0 那样把「证据不足」当成「带宽为零」(P11-167 的 144p),
+   * 也不像 delegate 那样给出污染高估。
+   */
+  @Volatile
+  private var lastRealBps: Long = -1L
+
   @Volatile
   private var sustainedBpsProvider: (() -> Long)? = null
 
@@ -41,6 +59,20 @@ internal class SabrBandwidthMeter(
   fun setRealBandwidthProvider(provider: () -> Long) {
     realBpsProvider = provider
   }
+
+  /**
+   * P11-286:最后**真正交付过视频 media** 的 itag 来源。ABR 的升档 settle 用它判「当前选中档
+   * 是否已经供上数据」——没供上就不许继续爬下一档(真机 alpha.5 起播 480→720→1080 连跳)。
+   */
+  @Volatile
+  private var lastDeliveredVideoItagProvider: (() -> Int)? = null
+
+  fun setLastDeliveredVideoItagProvider(provider: () -> Int) {
+    lastDeliveredVideoItagProvider = provider
+  }
+
+  /** -2 = 未接线; -1 = 尚无视频媒体交付; >=0 = itag。未接线时调用方按"不拦"处理。 */
+  fun getLastDeliveredVideoItag(): Int = lastDeliveredVideoItagProvider?.invoke() ?: -2
 
   /** alpha.9Z:注入持续带宽来源(60s 墙钟交付,升档判据用)。 */
   fun setSustainedBandwidthProvider(provider: () -> Long) {
@@ -77,6 +109,19 @@ internal class SabrBandwidthMeter(
   /** 重填容量(bps);未接线/样本不足 -1,调用方回退活跃 est。仅供升档判据。 */
   fun getRefillCapacityEstimate(): Long = refillCapacityProvider?.invoke() ?: -1L
 
+  // ── P11-306(2026-11-02 TV 真机):服务端按档位供流(pacing)证据 ──────────────────────────────
+  // est/sus/cap 在 pacing 会话里都被封在「当前档消耗的 1.5~3×」,不能用来否决升档;这里转发
+  // fetcher 的逐笔证据:「请求段是否早停到手 + 交付内容时长/实际耗时 ≥1」。——见 docs §71.9。
+  @Volatile
+  private var serverPacedProvider: (() -> Long)? = null
+
+  fun setServerPacedProvider(provider: () -> Long) {
+    serverPacedProvider = provider
+  }
+
+  /** 同轨最近几笔请求的 `mediaMs/elapsed` 中位数(千分比);-1 = 证据不足/窗口内有失败。 */
+  fun getServerPacedSpeedPermille(): Long = serverPacedProvider?.invoke() ?: -1L
+
   /** 2026-08-30:接线实测码率来源。 */
   fun setMeasuredBitrateProvider(provider: (Int) -> Long) {
     measuredBitrateProvider = provider
@@ -94,6 +139,45 @@ internal class SabrBandwidthMeter(
   }
 
   fun getMeasuredSegmentCount(itag: Int): Long = measuredSegCountProvider?.invoke(itag) ?: 0L
+
+  // ── P11-301(2026-10-28 真机):会话质量判定与重建 ─────────────────────────────────────────────
+  // 判定(零交付超时 + 吞吐相对峰值塌陷 + 缓冲在下漏)在 fetcher 内做,这里只做转发:选择类/播放器
+  // 都拿不到 fetcher,沿用既有 provider 通道。
+  @Volatile
+  private var sessionHealthProvider: ((Long) -> Boolean)? = null
+
+  @Volatile
+  private var sessionRebuildProvider: (() -> Unit)? = null
+
+  fun setSessionHealthProvider(provider: (Long) -> Boolean) {
+    sessionHealthProvider = provider
+  }
+
+  fun setSessionRebuildProvider(provider: () -> Unit) {
+    sessionRebuildProvider = provider
+  }
+
+  /** `bufferedAheadMs` 由调用方(播放器探针)给;true = 本会话已判为「节点/会话可疑」。 */
+  fun isSessionDegraded(bufferedAheadMs: Long): Boolean =
+    sessionHealthProvider?.invoke(bufferedAheadMs) ?: false
+
+  /** 通知 fetcher「即将整场重建」——记 host 与冷却(跨重载)。 */
+  fun markSessionRebuild() {
+    sessionRebuildProvider?.invoke()
+  }
+
+  // ── P11-305(2026-11-01 TV 真机):在途视频段的 ETA —— stall 看门狗据此决定「让路还是重载」──────
+  // 慢滴期间 loader 阻塞在 open(),ABR 没有评估点;历史日志 7/7 这类段在 stall 后 ≤9s 落地,
+  // 让路最多 12s 比整场重载(10~22s 黑屏)划算。见 docs §70。
+  @Volatile
+  private var inFlightVideoEtaProvider: (() -> Long)? = null
+
+  fun setInFlightVideoEtaProvider(provider: () -> Long) {
+    inFlightVideoEtaProvider = provider
+  }
+
+  /** 在途视频段剩余时间估算(ms);-1 = 无在途视频段/证据不足,0 = 请求段已到手或刚落地。 */
+  fun getInFlightVideoEtaMs(): Long = inFlightVideoEtaProvider?.invoke() ?: -1L
 
   /**
    * P11-178:注入「本 itag 最近一次零字节挂死」的墙钟来源(SabrMediaFetcher.getLastSilenceHangWallMs)。
@@ -144,7 +228,10 @@ internal class SabrBandwidthMeter(
    * 故:**非 SABR 源加载前必须清**。SABR 源不必清(会话由 `DefaultSabrChunkSource` 当场重新接线)。
    */
   fun clearSessionProviders() {
+    // P11-282:换源后 lastRealBps 也失效;下一次 SABR 会话从 seed 重新起步。
+    lastRealBps = -1L
     realBpsProvider = null
+    lastDeliveredVideoItagProvider = null
     sustainedBpsProvider = null
     sustainedRawBpsProvider = null
     reseedBandwidthProvider = null
@@ -153,6 +240,8 @@ internal class SabrBandwidthMeter(
     silenceHangProvider = null
     refillCapacityProvider = null
     roundTripProvider = null
+    sessionHealthProvider = null
+    sessionRebuildProvider = null
   }
 
   /**
@@ -163,8 +252,14 @@ internal class SabrBandwidthMeter(
    */
   fun diagEstimateSources(): String {
     val real = realBpsProvider?.invoke()
-    return "est=${getBitrateEstimate() / 1000}K " +
-      "real=${real?.let { "${it / 1000}K" } ?: "unwired"} " +
+    // P11-167 的教训:整数除法会把 -1 打成 0K,把「证据不足」误读成「带宽为零」。
+    val realText = when {
+      real == null -> "unwired"
+      real < 0L -> "-1(证据不足)"
+      else -> "${real / 1000}K"
+    }
+    return "est=${getBitrateEstimate() / 1000}K real=$realText " +
+      "last=${if (lastRealBps >= 0L) "${lastRealBps / 1000}K" else "-1"} " +
       "delegate=${delegate.getBitrateEstimate() / 1000}K wired=${realBpsProvider != null}"
   }
 
@@ -194,10 +289,22 @@ internal class SabrBandwidthMeter(
   fun getSustainedBitrateEstimateRaw(): Long = sustainedBpsProvider?.invoke() ?: -1L
 
   override fun getBitrateEstimate(): Long {
-    // alpha.9Z:real=0(窗口内全是被迫空转,供给归零)也是有效判定——回落 delegate 会用传输期高估
-    // 把选轨器弹回高档,正好复现「卡死不降档」。仅 -1(尚无任何样本)才回退底层估计。
-    val real = realBpsProvider?.invoke() ?: -1L
-    return if (real >= 0L) real else delegate.getBitrateEstimate()
+    // 非 SABR 源(provider 已拆线):沿用 media3 默认计,行为不变。
+    val provider = realBpsProvider ?: return delegate.getBitrateEstimate()
+    // alpha.9Z:real=0(窗口内全是被迫空转,供给归零)也是有效判定,不再回退 delegate。
+    val real = provider()
+    if (real >= 0L) {
+      lastRealBps = real
+      return real
+    }
+    // ── P11-282:real=-1(窗口内零字节,如连续 8s 超时)────────────────────────────────────
+    // 不能回退 delegate:它被 SabrDataSource 内存读样本污染过,真机 r2249 出现 est=1307182K
+    // (1.3Gbps),ABR 因此不降档、缓冲漏光 → stall(P11-167 当时以为 delegate 免疫空转,
+    // P11-259 已证实并非如此,但只给非 SABR 源拆了线)。
+    // 也不能返回 0:那会把「证据不足」当「带宽为零」,直接砸最低档(P11-167 的 144p 病)。
+    // 取最后一次有效真实值;会话内还没测到过就用构造 seed(≈起播画质),都比污染值可靠。
+    if (lastRealBps >= 0L) return lastRealBps
+    return initialSeedBps
   }
 
   override fun getTimeToFirstByteEstimateUs(): Long = delegate.getTimeToFirstByteEstimateUs()

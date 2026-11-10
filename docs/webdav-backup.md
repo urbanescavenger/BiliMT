@@ -65,6 +65,31 @@ CF 边缘冷启);挂现成网盘用商业的坚果云,自建聚合才用 OpenLis
   `put give-up attempts=3 last=…`。
 - **覆盖写是幂等的**:`PUT` 同名覆盖,所以「服务端已收但响应超时」时重发整包不会损坏数据。
 
+### 补充:系统 DNS 只回一个坏 IP 时(P11-304)
+
+`HealthyDns`(P11-269)的「坏 IP 排到最后」有个前提——候选集里得有健康地址。真机
+`logs_live_20261029_230839.log` 10-28 22:59–23:00 打破了它:
+
+```
+22:59:55  lookup cf.19961226.xyz -> 172.67.153.187 (bad=)
+23:00:03  ip marked bad (300s): 172.67.153.187
+23:00:03  ping attempt=1/3 failed elapsed=9022ms  timeout=8s
+23:00:18  ping attempt=2/3 failed elapsed=15021ms timeout=15s
+23:00:19  ping attempt=3/3 failed elapsed=1248ms  SocketException: Connection reset
+23:00:19  webdav prewarm failed: 25291ms
+```
+
+系统这次**只回了一个地址**,而且正是被网络 RST 的那个;「全部拉黑仍原样返回」的防锁死逻辑
+于是只能把同一个坏 IP 再交出去。同一时刻在 PC 上用四个公共解析器查,该域名还有
+`104.21.3.225` 与 `2606:4700:…:6815:3e1`(实测可用)⇒ 是**系统解析结果缺项**。
+
+改动:系统答案里没有任何健康地址时,`HealthyDns` 用 DoH(`https://223.5.5.5/resolve`,
+IP 字面量端点,避免在 DNS 已不可信时再去做主机名自举)补查 A;A 没给出新地址再查 AAAA。
+结果缓存 300s,按 IP 去重合并进候选集,仍按健康优先排序。
+
+判据:`doh supplement cf.19961226.xyz -> …` 只在系统答案全坏时出现;随后 ping 应落到补全地址
+并成功。系统答案健康时**不触发** DoH,正常解析没有额外开销。
+
 ### 未做(留待有实测需求再开)
 
 - **分块/可续传**:dufs 的 `PATCH + X-Update-Range`、copyparty 的分块上传客户端侧都还没接;当前靠

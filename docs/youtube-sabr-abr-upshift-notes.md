@@ -1579,6 +1579,7 @@ if (currentHeight >= TOP_TIER_MIN_HEIGHT) {
 | 9 | `trialOverCapacity` | 试探路径 `> 容量×1.5` 拒 | — |
 | 10 | `trialUpgrade` | 缓冲**升穿** `max(15s, 0.8×maxObserved)` 且 `maxObserved ≥ 25s` | 与 6/7 是「或」关系(试探可绕过两道测量闸) |
 | 11 | **`climbBufferFloorUs`(P11-193 新增)** | 非首爬/非试探时 `bufS ≥ min(30s, 试探线)` | 补 #5 的缺口,见 §39.2 |
+| 12 | **`serverPaced`(P11-306 新增)** | 同轨最近 4 笔请求全部早停、`mediaMs/elapsed≥1`、窗口内无失败 | **只解除 #7 对试探的否决**;不动 #6/#9/顶档不试探/逐级爬。见 §71.9 |
 
 ### §39.2 冲突清单(单独看都有理,叠起来成死循环)
 
@@ -1604,6 +1605,9 @@ P11-168/177 的闸在 `est/meas ≥ 声明×1.15` 时 suppress 水位急救降�
 再等一次 refetch**,只会更糟;真正致命的是紧接着那次**同高度换档**(401 → 313,见 §39.4)。
 P11-188 已经把闸的盲区补对了:「实测未知(-1)= 证据不足 ⇒ 闸不成立 ⇒ 照常降档」——
 即「新档还没交付任何段」的情形本来就放行,而「已交付且达标」的情形不该降档。**闸不动**。
+**2026-11-09 补(P11-312)**:上面否掉的是「给刚切轨丢缓冲开**无差别**例外」;现按 §72.7 只对
+「刚降档的目标档 + meas 未知 + ≤5s + est 有余量 + 往返容得下缓冲」开一个窄例外,并给普通降档后
+加 2s 水位急救宽限。历史 35 次 360 降档中约一半由此拦下。
 
 **(3) `isTopTier` 判据 ⟂ 三条顶档保护(整类失效,**已修 P11-194**)——真机实锤见 §39.6**
 `isTopTier = length > 1 && getFormat(0).height >= 2160` —— 而 SABR 组的第 0 档是**会话 primary 档**
@@ -1625,6 +1629,8 @@ P11-188 已经把闸的盲区补对了:「实测未知(-1)= 证据不足 ⇒ 闸
 | C est 滞回 | `required(当前档×0.85) > effective` | 重锚把 est 锚在声明值 ⇒ 需真塌方 |
 | D 升档后宽限 | 升档后 10s 禁止 est 回降 | 与 C 互抵(那 10s 只能靠 A) |
 | E 提前解除冷却 | `bufS≥20s && est≥声明×1.1` ⇒ 清降档冷却 | 与 #4 互抵(P11-188 已收口) |
+| F 降档后宽限(P11-312 A) | `now-lastDowngrade < 2s && !silenceHang && !trialAbort` ⇒ suppress | 只挡水位急救;同一次评估的 est 降档 C 照常 |
+| G 切档伪影(P11-312 B) | `meas≤0 && selected==lastDowngradeTarget && now-lastDowngrade < 5s && est≥need×1.15 && 2×往返≤bufS && !silenceHang && !trialAbort` ⇒ suppress | **对 P11-188「未知即不 suppress」的窄例外**;窗口外/非降档目标档仍按 P11-188 |
 
 ### §39.4 本次未修但已定位:21:22 的同高度换档
 
@@ -4779,3 +4785,1682 @@ sus          = sustainedBytes × 8000 / activeSpanMs
 | `wired=true` 且 `real ≈ est` | 推翻上面 (a) 的排除,回来重查 |
 
 **副产品**:"`realBpsProvider` 指向已结束会话"这个 bug 无论如何都要修(P11-259 已修),但它**不是**本次播放失败的成因 —— 成因在 delegate 那一侧(或链路)。
+
+---
+
+## §59 P11-272:2026-10-25 晚场「连续重载」判读 —— 线路真的塌到 ~1Mbps,不是 ABR 幻觉
+
+**日志**:`logs_live_20261025_225501.log`(进程 8434,视频 `k0PzNmERKPM`)。用户问「是不是真的网速带宽不够」+「连续重载」。
+
+### §59.1 现场(原文数字)
+
+| 时刻 | 事实 |
+|---|---|
+| 22:47:11–22:48:19 | 正常场:1080p60 `itag=303`(10,139,944bps),`fetch REAL` 5–23Mbps(`6,556,598B/2,301ms→22Mbps`、`5,648,548B/1,946ms→23Mbps`),`bufS` 1.2s→**47.5s** |
+| 22:48:19→22:50:35 | gap **135,688ms**;`steady probe` 的 `pos=796113ms` 在 22:49:44–22:50:19 完全不动 ⇒ 用户暂停 |
+| 22:50:24 恢复 | `fwdBuf` 20,802ms → 22:50:49 只剩 **92ms**(几乎零供给) |
+| 22:50:35 | `fetch rn=15` → 22:50:53 `timeout (fail=18002ms bwNow=-1)`,零字节 |
+| 22:50:53 | `buffer-critical downgrade 1080p → 720p60(itag=302)` |
+| 22:51:09.577→22:51:15.485 | `itag=139 seq=84 contentLen=60,994` → 同一段 `MEDIA_END 60,994B`:60KB 用了 **5.9s ≈ 83kbps** |
+| 22:51:48 / 22:52:45 / 22:53:45 / 22:54:31 | 4 次自动重载(每次新 sid)。每次 `rn=0 REAL`:1,290,010B/9,632ms(**1Mbps**)、1,290,014B/13,770ms(**<1Mbps**)、2,185,953B/10,048ms(**1Mbps**)、2,185,953B/15,885ms(**1Mbps**) |
+| 之后每笔 | `itag=302 seg=168/169/170` 与 `itag=139 seg=84/85` 全部 6–8s 超时;`zero-reply` 实读 17,412B / 0B |
+| 22:54:55 | 用户退出播放器进设置页,没有一场自己恢复 |
+
+### §59.2 判据:是真的带宽不够(四条硬证据)
+
+1. **同一份响应的耗时直接掉了 7–20 倍**:起播 init 1.0MB/1,355ms(5Mbps)→ 重载后 1.29MB/9,632ms(1Mbps);前一小时同一进程还有 12–23Mbps 的连续样本。
+2. **不是"档位要太高"**:51kbps 的音频段 `itag=139` 60,994B 都要 5.9s(83kbps);4 场里连音频也 `Read timed out`。管道本身就几乎不供数。
+3. **不是某个会话/URL 粘住**:4 次重载都是新 `sid`(aTgk…/Tjdq…/XGs_…/BnMg…)+ 新 URL,慢速形状完全一致。
+4. **同一台机器当天能跑多快**:12:29–13:08 中位数 32–88Mbps,20:39–20:50 27–53Mbps ⇒ 不是设备/解码/应用上限;20:51–21:06 与 22:51–22:54 两次塌到 <1Mbps 并同样进入重载环,是**时段性的线路/节点拥塞**。22:55:00 同期普通网络正常(`BiliWebDav ping code=200 elapsed=1500ms`)⇒ 塌的是 **googlevideo 这条路**,不是整条宽带断。
+
+**读数纠偏**:`est=5,561,418K / 2,437,690K / 3,419,583K` 这类值是 media3 `DefaultBandwidthMeter` 被 `SabrDataSource` 的内存瞬时读污染的 delegate 值,**不是真实带宽**;本场真实吞吐只看 `fetch rn=N REAL …B …ms → xMbps`。
+
+### §59.3 为什么变成「连续重载」(应用侧放大器,本轮只记录不改)
+
+- 每次重载后选中档恒为 `itag=302`(4,992,150bps):ABR 行 `sel=4 bitrate=4992150`,同场 `bw=1,071K / 749K / 1,740K / 1,100K` 时仍未落到 480p/360p(只记录观察,未判死因)。
+- **起始档是 720p(用户设置)**:每场都在 `NewPipe SABR harvest … startHeight=720 defaultQualityMax=null defaultItag=298` ⇒ `YoutubeStartQuality=Q720`(默认是 Q480),`startupLockHeight=720`;`bestIndexOf` 在同高度先偏好顶档 codec(VP9)再比码率 ⇒ 选中 `302`(4,991,150)而不是 `298`(3,943,175)。首帧后 `releaseStartupLock()` 会松开,但整场 `sel` 一直停在 4。**因果**:720p 决定"塌网后每次重载都以 5Mbps 开局",链路 1Mbps 是根因;两者叠加才是无限重载。弱网下 480p(1.21–1.37Mbps)仍不够,只有 ≤360p(0.63–0.74Mbps)能稳。
+- 一个 `contentLen=2,114,525` 的 720p60 段在 ~1Mbps 下要约 17s;饥饿期 `callCap=8,000ms`(P11-173)+ `silence=3,000ms`(`min(8s, bufAhead/2)`,bufAhead<6s 时)⇒ 每段必被切;`evict → stall auto-retry → 新会话 → 还是 302` ⇒ 约每 50–60s 重载一次。
+- 因此即使 1Mbps 链路本可播 360p,这条链也永远落不到能播的档。
+
+### §59.4 结论
+
+- **对用户问题的回答:是,这段窗口里线到 YouTube 的可用带宽真的不够 720p60**(实测 0.8–1.7Mbps,720p60 要 5Mbps),不是播放器误判、也不是解码/GC。
+- **本轮不改 ABR**:按 §39 规矩,改升/降档前要先把整条判据链重新走一遍并写结论;本轮只留证据。后续若要修「重载后落不到可播档」,候选方向写在 §59.3,单独立项。
+- **下次复现的判别式**:连续 2 场新会话 `fetch REAL` 都 <2Mbps ⇒ 链路问题(换节点/等时段);`REAL` 有 5Mbps+ 但段仍超时 ⇒ 回到 silence/callCap 与 ABR 档位查。
+
+---
+
+## §60 P11-273:2026-10-25 "不时画面卡顿/冻住、音频正常" —— 4K 升档被打回时的**空段占位 + 解码器重配**,不是网络
+
+**日志**:`logs_live_20261025_225501.log`(进程 3141/19871,YouTube SABR,VP9)。用户问「不时有画面卡顿音频正常的现象 检查下原因」。
+
+### §60.1 现场:视频解码器 0 帧,音频时钟照走
+
+以 11:51 这场最完整(单位均为日志原文):
+
+| 时刻 | `steady probe` |
+|---|---|
+| 11:51:16.527 | READY pos=65368 rendered=**3927** fwdBuf=11631 |
+| 11:51:21.534 | READY pos=70372 rendered=**4228**(+301,60fps 正常) |
+| 11:51:26.539 | READY pos=75377 rendered=**4528**(+300,正常) |
+| 11:51:31.546 | BUFFERING pos=76910 rendered=**4620**(+92,已开始掉) |
+| 11:51:36.553 | READY pos=80560 rendered=**4620**(**+0**) fwdBuf=**27239** |
+| 11:51:41.560 | READY pos=85569 rendered=**4620**(**+0**) fwdBuf=**42763** |
+| 11:51:46.565 | READY pos=90567 rendered=**4822**(+202,恢复) |
+
+`rendered` 取自 `ExoPlayer.videoDecoderCounters.renderedOutputBufferCount`(`PlayerScreen.kt:2578`)⇒ **10 秒内视频解码器输出 0 帧**;同一时间 `pos` 前进 8.66s、`fwdBuf` 从 10s 涨到 43s。音频轨道继续(`AudioTrack getTimestamp_l(341)` 在 11:51:32 仍有活动)⇒ 用户看到的就是"画面冻住、声音照走"。**排除网络/缓冲**:冻结期间缓冲 27–43 秒,下载吞吐 23–29Mbps。
+
+### §60.2 触发链(6/6 同签名)
+
+每次冻结前都出现同一条链:**ABR 升 2160p → 缓冲水位急救打回 1440p → 服务端跳过切换点请求的段 → 空段占位 → 视频解码器重配 → 掉帧/冻帧**。
+
+| 时刻 | 4K→1440p 打回 | `server skipped seg`(P11-92) | 解码器重配 | 掉帧(probe 实测) |
+|---|---|---|---|---|
+| 11:51:25–41 | `buffer-critical downgrade 2160p@48904126 → 1440p`;`top-tier cooldown 180s` | seg16 itag315 + seg17 itag308(两笔 `bytes=0`) | 1080→1440(`CCodecConfig raw.crop/size`) | **10s 0 帧** |
+| 12:41:31–42 | 2160p→1440p | seg176 itag308 `bytes=0` | 1440 reconfig + `video size: 2560x1440` | 60→28→44fps,约 10s |
+| 12:53:13–33 | `buffer-critical downgrade 2160p@36237578 → 1440p` | seg314 itag308 `bytes=0` | 1440 reconfig | 20→13fps,约 10s |
+| 13:06:14–24 | `buffer-critical downgrade 2160p@29140203 → 1440p` | seg16 itag308 `bytes=0` | 2160→1440 reconfig | 21fps,约 5s |
+| 20:46:50–47:02 | `buffer-critical downgrade 2160p@33169739 → 1440p` | seg100 itag308 `bytes=0` | 1440 reconfig | 23.6fps,约 5s |
+
+日志全文 `server skipped seg` 恰好 **6 次**,6 次都紧跟 `chunk completed: media ... bytes=0`,6 次都紧邻 `CCodecConfig: c2 config diff ... raw.crop.height` 与 `video size:` 变化,6 次之后都出现 `rendered` 增速下降或归零。**没有一次发生在纯网络慢的会话**(22:51 那场是 `stall detected`+整场重载,不是本症状)。
+
+### §60.3 机制与排除项
+
+- **不是网络**:冻结窗口 `fwdBuf` 27–43s、`fetch REAL` 23–29Mbps;而 22:51 的重载场是 `fwdBuf=83ms`+超时,形状完全不同。
+- **不是 codec 族切换**:全程 `video=vp9`,`c2.mtk.vp9.decoder` 同一实例,只有 `raw.crop/raw.size` 分辨率变化(1080↔1440↔2160)。所以 P11 "VP9 粘性梯子" 挡不住这一类。
+- **不是解码器重建**:期间没有 `CCodec allocate`/`Release`,是同一 VP9 解码器内的格式重配。
+- **空段是关键导火索**:`getNextSegment: server skipped seg N itag 315/308 (fresh ahead=[N+2,N+3]) → 空段占位跳过(P11-92)`,即 SABR 切轨时服务端只肯从更后面的段开始推,我们插了一个 0 字节占位段。该空段本身不产生样本,而随后的 `video size:`/`c2 config diff` 说明视频渲染器正在跨分辨率重配 —— 两者叠加时,视频管线会有 5–10 秒不吐帧;音频缓冲独立,所以声音不断。
+- **为什么"不时"而不是每次**:4K 每次被打回都会 `top-tier cooldown 180s`,即约每 3 分钟才再试一次;每次再试就是这个窗口 ⇒ 观感为隔一阵卡一次。
+
+### §60.4 本轮结论
+
+- **根因不在"网速"**,在**4K 升档被打回时的切轨路径**:空段占位 + 分辨率重配让视频渲染停 5–10 秒。
+- **不修改代码**:按 §39 规矩,动 4K 升降/冷却前需先重走判据链;且真正该动的是"切轨空段"与"重配期渲染"这条独立链路,不是带宽判据。
+- **后续候选方向(未实施,单独立项)**:
+  ① 切轨后遇到 `server skipped seg` 时,直接用服务端已推来的段(fresh ahead)而不是插空占位,避免解码器在"空段+新分辨率"之间重配;
+  ② 跨分辨率切换时,等首个真实样本到手再做 format 切换(或把切换点固定到下个完整段),避免解码器空转;
+  ③ 复核 4K 冷却到期后的再试是否值得(每次再试都换一次 5–10 秒卡顿);若保留,至少让再试不触发分辨率重配。
+- **判别式(下次真机)**:出现卡顿时,先看 `steady probe` 的 `rendered` 是否停住而 `pos` 继续;若停住,再看前后 10 秒内是否有 `server skipped seg` + `bytes=0` + `CCodecConfig c2 config diff`。三者齐 = 本症状,不要再往网络方向查。
+
+### §60.5 优化方案(用户追问「有优化方案吗 正常切换时没有空隙的」「没有预判吗」)
+
+**先确认事实:正常切换本来是无缝的** —— 11:51:01/06 的 `720→1080→1440` 两次切档,`init` 后直接拿到真实媒体段,`rendered` 全程 300/5s,没有空段。有间隙的只有**切到"服务端游标已越过请求段"的档**这一种(4K 试探、刚播过的档回切):服务端只推 N+1/N+2,当前代码在 [SabrMediaFetcher.kt:906-934](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L906-L934) 插**空段占位**(P11-92) → 视频缺一段 + 解码器重配 → 5–10s 无帧。
+
+**现状没有"事前预判"**:`fresh ahead` 是**服务端响应之后**才算出来的,拿到后只能插空段补救;`P11-130` 预取是唯一的事前动作,但被判定会抢响应预算、已收窄;`servedIndexesInGroup` 只约束材料会话的可选档,不解决切换点。所以现在全是事后补救。
+
+**方案 A(推荐,预判式切换点)**
+1. `SabrMediaFetcher` 暴露两个只读量:`hasSegment(itag, seq)`(包一层 [SabrFormatInfo.hasSegment](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrSegment.kt#L123))与 `sessionPushCursor`(最近一笔响应里跨格式推到的最大 seq)。
+2. [DefaultSabrChunkSource.getNextChunk](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/DefaultSabrChunkSource.kt#L409) 在 `updateSelectedTrack` 之后加"切换预判":`selectedIndex` 变了 → 算新档当前 `segmentNum`;若新档 `!hasSegment(segmentNum)` 而旧档有该段(或旧档 chunkIndex 覆盖该段)→ **本次仍从旧档出 chunk**,记 `pendingSwitch=newIndex`;下一轮新档能供段(或游标已到 N+1)→ 从新档出 chunk。切换点自然落在 N+1,旧档补 N,**时间线没有洞**。
+3. 新档首笔媒体请求直接用 `max(segmentNum, sessionPushCursor)`,不再请求已被游标越过的 N —— 这是"预判跳段",替代现在的"响应后插空段"。
+- 约束:grace 只在旧档该段**已在缓存**时生效,且最多 1–2 段;降档急救时若旧档也没有该段,不 grace(直接切,接受一个段的重配)。
+
+**方案 B(降档优先命中缓存)**
+- `retainAll` 现在每次响应后清掉非当前格式的缓存([SabrMediaFetcher.kt:839-853](../app/src/main/java/com/kirin/mt/core/youtube/sabr/media/SabrMediaFetcher.kt#L839-L853))。保留"上一个选中档"最近 1–2 段(按字节上限,4K 段 12–16MB 要并入 P11-230 的内存预算),降档时优先用缓存段,不再请求已被游标越过的段。
+
+**方案 C(减少触发,不是无缝)**
+- 4K 冷却(180s)到期再试时抬高门槛(缓冲 ≥ N 秒、sustained ≥ declared×margin),或把 4K 试探改成"不改变播放档的静默测量"。这只能减少卡顿次数,不解决切换路径本身。
+
+**方案 D(关键帧对齐)**
+- 空段之后剩下的 5–10s 很可能是在等下一个关键帧:新档首段不是 sync frame 时继续用旧档,直到下一个关键帧。需要从 `ChunkIndex`/首样本 flags 取。
+
+**优先级**:A(必做,直接消掉空段)→ B(降档体验)→ D(残余卡顿)→ C(止损)。
+**验证判据**:同一 4K 试探场景下,切换边界不得再出现 `bytes=0`;`rendered` 在切换前后任意 5s 窗口 ≥280(60fps 源);`720→1080→1440` 正常切换行为不变。**验收对照**:升档允许最多多等 1 段;降档在旧档段已缓存时不允许等。
+
+### §60.6 P11-274 实施(方案 A + B 的合并最小版)
+
+**改动文件**:`SabrMediaFetcher.kt`、`DefaultSabrChunkSource.kt`。
+
+**`SabrMediaFetcher`(旧档 grace 缓存,方案 B)**
+1. 视频档切换时(`selectFormat`)把切走那一档**最近 3 段真实媒体**抄进独立 grace 缓存(`downloadedSegments` 已被 `getSegment` 消费掉的不抄;空段占位不抄);上限 48MB,小堆(<256MB)压到 16MB。
+2. 切档后立刻 `retainActiveFormats()` 清一次 `initializedFormats`,保证旧档不再进 `selectedFormatIds` / `bufferedRanges`(**P11-92 回归防线**);grace 缓存独立存放,不参与请求编码。
+3. 新增 `hasRealSegment(itag, seq)`(排除空段占位)与 grace 直出:旧档请求命中 grace 缓存时**不发网络、不写回 `initializedFormats`**。
+4. `initializedFormats` 改 `ConcurrentHashMap`——`hasRealSegment` 在 loader 线程读,普通 HashMap 有读写竞争。
+
+**`DefaultSabrChunkSource`(切档预判,方案 A)**
+1. `updateSelectedTrack` 检测到切档后,记 `pendingSwitchIndex` / `graceFromIndex` / `graceSegmentsLeft = 2`。
+2. `resolveSwitchTarget()`:新档已有真实当前段 → 正常切;没有 → **先向新档预发一次请求**(把服务端游标处的 N+1/N+2 推来),再用旧档 grace 缓存顶当前段,切换点顺延;两者都不成立才回落到旧行为。
+3. grace 期间 chunk 的 `trackFormat` 改用**实际 holder 的 format**(否则 sample queue 会按新档格式解旧档字节);`[grace]` 标记打进 `chunk completed` 日志。
+4. 起播/seek 队列为空时不 grace;最多顶 2 段。
+
+**验证判据(下次真机)**:
+- `switch grace(P11-274)` 出现时,`chunk completed ... [grace]` 与 `getNextSegment: grace hit` 成对出现;
+- 切换边界不再出现落地的 `bytes=0` 空段;`rendered` 前后 5s 窗口 ≥280(60fps 源);
+- `720→1080→1440` 正常切换不变(不出现 grace 行);
+- grace 缓存日志 `keep=[...] bytes=...` 不超过 48MB(小堆 16MB)。
+
+## §61 P11-281 起播 30s 降档冻结判读 + 判据链复核(2026-10-26,dev.r2249)
+
+**起因**:用户「好像 最开始30s播放都有卡顿 都是网络问题吗」→「之前起播30s不太会出现卡顿」→「做吧」。
+真机 `logs_live_20261026_234019.log`(dev.r2249)23:34 段:续播 159s,720p 起播。
+
+### §61.1 现象(证据)
+
+```
+23:35:39.632  trial upshift (buffer-full probe): bufS=26s threshold=20s → itag303(1080p) declared=5352805 est=3351K sus=1272K
+23:35:39.622  prefetch held (P11-244 带宽闸): itag303(1080p) declared=5352K > est=3351K×1.5 — 够不着先不预取
+23:35:52.363  buffer-critical downgrade: bufS=13s itag303/1080p@5352805 → 720p@3162748 roundTrip=8095ms
+23:35:52.364  grace cache(P11-274): itag303 keep=[33, 34] bytes=3368667
+23:35:52.365  selectFormat: dropped formats=[303] (P11-274)
+23:35:52.369  fetch rn=9 itag=302 seg=38 ... → 23:35:57.725 REAL 1872788B 5345ms
+23:35:52.524  steady probe pos=189277ms rendered=1821
+23:35:57.538  steady probe pos=189277ms rendered=1821   ← 5.0s 双冻结
+23:35:57.772  BUFFERING → .828 READY,恢复 30fps
+```
+
+同场对照:23:11 段 720p 稳定、fwdBuf 48s、rendered 每 5s +150(30fps)、零 BUFFERING;23:13 段带宽
+17–30M、1080→1440 升档只有 14–46ms 的 BUFFERING。**所以不是「每次起播都卡」,也不是纯网络**。
+
+### §61.2 判据链复核(按 §39 口径逐条对)
+
+升档侧(#0–#11):#0 冷却/#1 served/#2 逐级/**#4 trial-fail 冷却**/#5 canUpgrade/#6 capacityGate/#7 sustainedGate/
+#8 顶档闸/#9 trialOverCapacity/#10 trialUpgrade/#11 climbBufferFloor。本例:#2–#5 通过;#6/#7 拦下普通升档,
+但 **#10 试探绕过 #6/#7**;#9 用 `required`(tier need,不一定是 declared)比 `upgradeEstFloor×1.5`,
+本例日志的 `×1` 是整数除法显示问题(`TRIAL_MAX_OVER_CAPACITY_PERMILLE=1500 / 1000 = 1`),实际门槛是 1.5×;
+303 未被拒 ⇒ 说明 303 的 `required` ≤ 5080K(declared 5352K)。**#10 与 P11-244 预取闸直接冲突**:
+预取闸用 `declared > est×1.5` 判定「够不着、不预取」,试探却用 `required` 判定「可以试」⇒ 切过去时
+目标档一个字节都没预取。
+
+降档侧(A–E):A 水位急救(`bufS<8s`、下漏、5s 宽限)在本例 `bufS=13.3s` 本不该触发,实际触发的是
+**P11-203 的交付节奏腿**(roundTrip=8095ms);B 带宽闸(`est≥声明×1.15 && meas≥声明`)不成立;
+C est 滞回、D 升档后 10s 宽限(本例已过 13s)、E 提前解除未参与。降档本身是对的(3.3M 撑不住 5.35M)。
+
+### §61.3 冲突清单(单独看都对,叠起来成 5s 冻结)
+
+1. **#10 试探 ⟂ P11-244 预取闸**:预取拒绝目标档,试探仍切 ⇒ 切换无预取数据。
+2. **P11-274 grace ⟂ 「旧档 N+1 必须已下载」**:`resolveSwitchTarget` 只有
+   `hasRealSegment(fromItag, fromSeg + 1)` 才肯用旧档顶位;但播放器可能还有 13.3s **已进 sample queue**
+   的旧档数据,N+1 没下载不代表不能继续播。本例 grace 只有 [33,34](当前要 38/39)⇒ 不顶位。
+3. **P11-274 立即清档 ⟂ 无缝切换**:`selectFormat` 立刻 `retainActiveFormats()` 把旧档整条丢掉,
+   旧档的 13.3s 数据在 fetcher 侧已不可用;而 `resolveSwitchTarget` 又只能同步 `warmSegment` 新档
+   (5.3s),loader 被阻塞 ⇒ pos/rendered 双冻结。
+4. **P11-92 缓冲尾防线 ⟂ 保留旧档**:P11-274 立即清档是为了旧档 bufferedRange 不拖服务端游标;
+   保留旧档供 chunk 又必须让它不进 `bufferedRanges`。
+5. **单槽 grace ⟂ 快速升→降往返**:`captureGraceCache` 每次 `graceSegments.clear()`,降档时旧档 303 的
+   grace 覆盖了升档时 302 的 grace;但即便多槽,13s 后的当前段(38/39)也不在切换点那 2–3 段里
+   ⇒ **多槽不是本病的解**,真正的解是切换期间保留旧档可继续供 chunk。
+
+### §61.4 修法(P11-281,最小改动)
+
+- `SabrMediaFetcher` 新增 `graceSourceItag`(正在切走的旧档):
+  - `retainActiveFormats` 保它;请求 `bufferedRanges` **排除**它(P11-92 防线不变);
+  - `selectFormat` **不再**立即 `retainActiveFormats`(旧档留到切换完成);
+  - `setGraceSourceItag(-1)`(切换完成/放弃)时立刻 `retainActiveFormats()` 恢复 P11-274 清理口径。
+- `DefaultSabrChunkSource.resolveSwitchTarget`:
+  - 切档时记 `graceSourceItag = 旧档`;
+  - **降档**(target.height < from.height)且目标档当前段未供上:**不**同步 `warmSegment`,
+    改为 `fetcher.prefetchFormat(target)` 把目标档挂到下一笔请求的 preferred,然后用旧档顶位
+    (`SWITCH_GRACE_MAX_SEGMENTS` 仍为 2);旧档的下一段请求会顺带把目标档推来,新档有真实当前段
+    后下一次预判自然切换;
+  - 升档路径保持原样(先 warm 再 grace),避免动已验收的 4K 升档行为;
+  - 所有「完成/放弃切换」出口清 `graceSourceItag`;
+  - 新增日志 `switch grace(P11-281 downgrade)` / `switch source(P11-281)`。
+
+**刻意不改**:#10 试探门槛、#9 的 1.5× 口径(它用 `required`,不是 declared)、`upshift reseed` 的
+1.2× 容量夹(均属既有设计);单槽 grace(§61.3-5 证明加槽不解决本路径)。
+
+### §61.5 验收 / 否证线
+
+- **验收**:同类降档(1080→720/1440→1080)时日志出现
+  `switch grace(P11-281 downgrade): ... 继续顶位`,且前后 5s `rendered` 增量 ≥280(60fps)/≥140(30fps),
+  不再出现 `pos` 与 `rendered` 同时不动;随后出现 `switch source(P11-281): ... → -1` 与
+  `switch source cleared(P11-281): dropped formats=[旧档]`。
+- **否证**:①若旧档顶位期间服务端把游标拖在旧档上、目标档迟迟不推 ⇒ 检查 `bufferedRanges` 是否仍包含
+  旧档(应被排除);②若 2 段 grace 用尽仍切换卡顿 ⇒ 目标档预取未生效,需评估把 `SWITCH_GRACE_MAX_SEGMENTS`
+  提到 3 或改异步 warm;③若升档路径出现新的 P11-92 回退 ⇒ 检查 `graceSourceItag` 是否在升档完成时被清。
+
+## §62 P11-282 SABR 带宽估计不再回退被污染的 delegate(2026-10-27,3.1.2-alpha.3)
+
+**起因**:用户「看看最新日志 只是带宽不够吗」→「先看看历史有没有处理过 再改」。
+真机 `logs_live_20261027_004122.log`(3.1.2-alpha.3,`dur=1733000ms`,续播 ~1198s)。
+
+### §62.1 历史:处理过两次,但留着当前这条缝
+
+1. **P11-167(2026-09-21,`docs/youtube-web-sabr.md` §5.11.14)**:用户暂停被当成零供给 →
+   `est=0K` → 直落 144p。修法:超长 gap 不计 active est;`getRealBitrateEstimate()` 在
+   `realBwBytes <= 0` 时返回 **-1**,由 `SabrBandwidthMeter` **回退 delegate**;当时的判断是
+   「delegate 天然免疫空转」。同时加 `fmtEstForLog()` 把 -1 原样打成 -1。
+2. **P11-259(2026-10-15,本文件 §58.3)**:真机证实 **delegate 不免疫** —— 它被 `SabrDataSource`
+   的内存瞬时读样本污染(1M↔437M),每个 PlayerScreen 只建一次、跨视频不重置,自动重载也不重置。
+   修法:新增 `clearSessionProviders()`,**只对非 SABR 源拆线**;SABR 的 `real=-1 → delegate`
+   回退**原样保留**。新增 `diagEstimateSources()` 打印 est/real/delegate/wired。
+3. **残留缺口(本条)**:SABR 源、窗口零字节(连续 8s 超时)→ `real=-1` → 回退 delegate →
+   读到污染值。P11-167 的「delegate 免疫」前提被 P11-259 推翻,但回退路径没跟着改。
+
+### §62.2 本次证据
+
+```
+00:37:06.649  fetch rn=2 exception: timeout (fail=8001ms bwNow=-1)
+00:37:07.658  YtSabrAbr: ... bw=1307182K
+00:37:08.121  steady probe ... bw[est=1307182K real=0K delegate=1307182K wired=true]
+00:37:13      fwdBuf=1957ms
+00:37:18      fwdBuf=92ms
+00:37:23      stall detected @pos=1198056ms buffered=69%   (buffered=总缓冲百分比 1198/1733;fwdBuf 才是 92ms)
+```
+
+- `real=0K` 是 `diagEstimateSources()` 把 `-1 / 1000` 整除打出来的,实际是 `-1(证据不足)`;
+  P11-167 的 `fmtEstForLog()` 没被这个新诊断复用 —— 显示口径回退。
+- 同一场 00:39:57 行 `delegate=683040K`(683Mbps),再次证明 delegate 滑窗里是内存读样本。
+- 真实链路本身也差:720p 首段 `1598890B / 8657ms ≈ 1.5Mbps`,随后连续 8s/12s 超时零字节;
+  1440p 场 `9147228B / 21153ms ≈ 3.4Mbps`。**但假 est 让 ABR 在漏光前没有降档**。
+
+### §62.3 修法(避免重蹈两次旧坑)
+
+`SabrBandwidthMeter`:
+- 新增 `lastRealBps`:每次 `real >= 0` 记录;**`real == -1` 时返回最后一次有效真实值**;
+- 新增 `initialSeedBps = delegate.getBitrateEstimate()`(构造时 = `youtubeStartQuality.seedBps()`);
+  会话内从未测到真实值 → 返回 seed,**不回退 delegate**;
+- `realBpsProvider == null`(非 SABR 源)→ 仍走 delegate(行为不变);
+- `clearSessionProviders()` 一并重置 `lastRealBps`;
+- `diagEstimateSources()` 把 `-1` 打成 `-1(证据不足)`,并新增 `last=` 一项。
+
+**为什么不是 0 / 不是 delegate**:0 = 把「证据不足」当「带宽为零」→ P11-167 的 144p;delegate =
+P11-259 已证实的污染值(本次 1.3Gbps)。last-valid 是唯一同时避开两者的取值:最坏是沿用一个
+稍旧的乐观值,但会被后续真实样本/水位急救/往返闸校正,不会出现 1000 倍高估。
+
+### §62.4 验收 / 否证线
+
+- **验收**:连续超时后 `steady probe` 的 `est` 应停在最后一笔真实值(百 K~数 M),不再出现
+  `est=1307182K` 这类 >100M 的跳变;`launch bw` 行出现 `real=-1(证据不足) last=<…> delegate=<…>`,
+  且 SABR 会话的 `est` 不等于 delegate;ABR 应在 `fwdBuf` 漏光前降档。
+- **否证**:①若 `real=-1` 且 `last=-1` 时 est 恒等于 seed、导致冷启动迟迟不升档 ⇒ 可接受(起播画质
+  本来就该稳),但若长时间不升需查真实样本是否根本没进来;②若非 SABR 源(B 站)行为变化 ⇒ 说明
+  provider=null 分支被误改,必须回退;③若仍出现 >100M 的 est ⇒ 检查是否还有别处直接读 delegate。
+
+## §63 P11-284 首包稳定性:首段交付前的第一次失败不计入 active est(2026-10-27,3.1.2-alpha.4)
+
+**触发**:用户「看下最新日志 起播还是卡顿」→「1 要判的是首包稳定」。真机
+`logs_live_20261027_011218.log`(XQ-EC72/Android 16,3.1.2-alpha.4)。
+
+### §63.1 现象
+
+```
+01:07:52.546  MobilePlayer: playerState=2(BUFFERING) pos=0
+01:08:10.562  fetch rn=0 exception: timeout (fail=18003ms bwNow=-1)     ← 首包零字节
+01:08:11.925  fetch rn=1 REAL 540752B 1357ms → 3Mbps est=223K           ← 重试 1.36s 就成功
+01:08:12.114  downgrade 480p → 144p: est=223K sus=-1 bufS=5s
+01:08:12.114  downgrade fail cooldown: 480p excluded 90s reason=supply
+01:08:12.114  MobilePlayer: playerState=3(READY)                        ← 起播 19.6s
+```
+
+随后实测 2~8Mbps,但 480p 已进 90s 冷却,梯子只能 144p→720→1080→1440→2160 乱跳。
+**不是 P11-281 的切档冻结,也不是 P11-282 的 delegate 污染**;是首包慢启动被当成链路容量。
+
+### §63.2 判据链复核(§39 口径)
+
+- **降档 A 水位急救**:本例 bufS=5s 但重试后水位在涨,未触发(起播期 P11-219 也要求
+  `maxObserved>0` 才参与);
+- **降档 C est 滞回**:`required(480p×0.85) > est(223K)` 且 `bufferHoldsCurrentTier=false`
+  (bufS 5s < 本档急救线 8s)⇒ 当前档被 `continue` 刷掉,最高可负担只剩 144p。**这是本次主路径**;
+- **冷却**:降档即记 `480p excluded 90s`(supply),随后即使 est 回到 4~8M 也不让回 480p;
+- **升档侧**:与本次无关(还没进升档)。
+
+### §63.3 冲突 / 缺口
+
+1. **P11-160 已记「首笔零字节停顿 ≥16.5s 是服务端慢启动,不该被杀」**,但 `recordRealBandwidthFailure`
+   在首包失败时仍按「0 字节 / 18s」记入 active est 窗口 ⇒ est=223K,与已知结论直接矛盾。
+2. P11-167 的「无证据不是零带宽」只处理了**窗口内完全没有字节**(-1),没处理「窗口里混了一笔
+   18s 零字节慢启动 + 一笔 1.36s 正常交付」这种**混合窗口**。
+3. P11-282 的 last-valid/seed 兜底只在 `real == -1` 生效;本例窗口已有字节(所以 est=223K),
+   兜底不参与。
+4. P11-237 的「缓冲够就不降档」要求 `bufS ≥ 本档急救线(8s)`,起播 bufS=5s 不满足 ⇒ 拦不住。
+
+### §63.4 修法(用户口径:判首包稳定)
+
+`SabrMediaFetcher`(只动带宽样本记账,不动任何 ABR 阈值/冷却/优先级):
+
+- 新增 `sessionVideoItags`(会话视频 itag 集合,含同高度多 codec,避免只认 primary itag);
+- 新增 `firstVideoPacketDelivered`(本会话是否已交付过 ≥ [REAL_BW_MIN_BYTES] 的**视频**真实段)
+  与 `preDeliveryVideoFailures`;
+- **首段交付前的第一次视频请求失败**:仍记 silence-hang / zero-reply / round-trip / fetch-gap
+  (这些是「本档没供上」的证据,真挂死要靠它们),但**不调用 `recordRealBandwidthFailure`**
+  ⇒ 不污染 active est;打日志 `first video packet failed before delivery ... NOT counted in active est`;
+- **第二发及以后、或已交付过首段后的失败**:照旧入账 ⇒ 真挂死/连续失败仍会降档;
+- 首段真正交付时打 `first video packet delivered after N slow-start failure(s) — first-packet stable`。
+
+**为什么不是「起播 N 秒内一律不降档」**:那会把真挂死的起播也钉在原档(用户明确要的是
+「判首包稳定」,不是按时间一刀切)。这里只豁免**第一次、且尚未交付任何视频段**的失败:
+- 一次慢启动 + 快速重试 ⇒ 稳定,不降;
+- 两次连续失败、或重试虽成功但交付速率低 ⇒ est 仍会塌,照常降档(重试成功那笔本身会计入 est)。
+
+### §63.5 验收 / 否证线
+
+- **验收**:同场景日志出现
+  `first video packet failed before delivery (fail=…ms) — server slow-start, NOT counted in active est`
+  → `first video packet delivered after 1 slow-start failure(s) … first-packet stable`;
+  随后 **不再出现**`downgrade 480p → 144p: est=…` 与 `480p excluded 90s`;画质应停在起播档附近。
+- **否证**:①若真挂死场景(首包失败 + 重试也失败)被豁免挡住 ⇒ 第二发失败已在入账,不应发生;
+  若发生,查 `preDeliveryVideoFailures` 是否被会话重建重置;②若首包成功后 est 仍偏低 ⇒ 检查
+  `sessionVideoItags` 是否漏了同高度 codec(如只认 135 漏 244);③若非 SABR 源受影响 ⇒ 本改动只在
+  `SabrMediaFetcher`,不应波及。
+
+## §64 P11-286 起播升档 settle + 保留最后交付档(2026-10-27,3.1.2-alpha.5)
+
+**触发**:用户「看下最新日志 开始30s多次卡顿 明明之后升到了1440」→「做吧」。
+
+### §64.1 证据(`logs_live_20261027_095655.log`,XQ-EC72,`h2va6oiQTRU`)
+
+```
+09:54:58.352  SABR ready (480p)
+09:55:00.731  first frame; startup lock released
+09:55:08.820  10s 冷启动锁期满:480p → 720p(只有 init)
+09:55:12.731  cleanup dropped formats=[244] (audio=139 video=303 pending=[303] prefetch=303)  ← ★
+09:55:09.7    720p init; 09:55:12.7 1080p init; 09:55:20.7 1080p media
+09:55:17.708  BUFFERING pos=13096 videoFmt=244(仍渲染 480p)
+09:55:23.7    1440p init; 09:55:27.5 1440p media(11.6MB)
+09:55:27.435  BUFFERING pos=19783 videoFmt=244
+之后稳定 1440p;09:56:47 已爬 2160p 又降回 1440p(P11-281 降档 grace 生效)
+```
+
+带宽 `est 10→30Mbps`,1440p 段正常交付 ⇒ **不是带宽、也不是 P11-284 首包**(本场无慢首包)。
+
+### §64.2 判据链冲突
+
+1. **升档无 settle**:`canUpgrade` 只有「实例创建 10s」+「降档后缓冲≥30s」;`nextUpgradeHeight`
+   只保证一次一档。**目标档只要 init 到、media 还没到,下一轮评估就能继续升下一档** ⇒ 09:55:09/12
+   连跳两级,新档 media 全挤在途。
+2. **清档口径看 ABR 选择、不看实际交付**:`retainActiveFormats` 保 `videoFormat`(ABR 已选 303)、
+   pending、prefetch、graceSource;`lastDelivered=244` 不在其中 ⇒ 09:55:12.731 把**播放器仍在渲染**
+   的 480p 清掉。播放器的 `videoFmt` 到 09:55:27 还是 244,源却已没了 ⇒ 13s/19.8s 两次 BUFFERING。
+3. **P11-281 graceSource 也跟着 ABR 走**:09:55:08 记为 244,09:55:09 就被改成 302,09:55:17 清掉;
+   真正在播的 244 早已不在保护范围。
+4. 每次换分辨率触发解码器重配 —— 数据无缝也挡不住这一下(用户体感的"多次卡顿")。
+
+### §64.3 修法(最小改动,只碰 settle 与保档口径)
+
+**A. 升档 settle(`HeightAwareAdaptiveTrackSelection`)**
+- 新增 `UPGRADE_SETTLE_MS = 4000`:距上次升档不足 4s 不许再升;
+- 新增「当前选中档必须已经真正交付过视频 media」:`SabrBandwidthMeter.getLastDeliveredVideoItag()
+  == 当前 selected 的 itag` 才放行升档;未交付 ⇒ 本轮到下一轮都不升(等 media 到);
+- 只挡 `isUpgrade` 候选(普通 + 试探),降档/同档换 codec 不受影响;
+- 日志 `upshift held (settle, P11-286): ...`(每实例一次)。
+
+**B. 保留最后交付档(`SabrMediaFetcher`)**
+- 新增 `lastDeliveredVideoItag`:任何**视频媒体**成功交付(≥ [REAL_BW_MIN_BYTES])就更新;
+- `retainActiveFormats` 保它(即使已不是 ABR 选中档);新档交付后该值更新,旧档下一次 cleanup 自然清掉;
+- 请求 `bufferedRanges` 在它 ≠ 当前 `videoFormat` 时**排除**它(P11-92 口径:旧档缓冲尾不能拖游标);
+- 与 P11-274 grace / P11-281 graceSource 并存,互不替代。
+
+**不动**:10s 冷启动锁、逐级爬、缓冲地板、试探水位线、降档滞回、冷却、P11-281 降档 grace。
+
+### §64.4 验收 / 否证线
+
+- **验收**:起播升档日志应满足:①每次 `sel=` 升档之间 ≥4s;②升档前当前档已有
+  `chunk completed: media`;③不再出现 `cleanup dropped formats=[仍在播的档]`;④13s/19.8s 那种
+  BUFFERING 消失;最终仍能爬到 1440p(只是晚几秒)。
+- **否证**:①若当前档 media 永远不到 ⇒ 升档永久卡住(这是正确行为:当前档都没供上,不该继续爬;
+  真挂死由 stall/水位兜底);②若快速链路 4s dwell 导致 1440p 明显变慢(>60s) ⇒ 把
+  `UPGRADE_SETTLE_MS` 降到 3s;③若 `lastDeliveredVideoItag` 让旧档在 `bufferedRanges` 里拖游标 ⇒
+  检查排除条件是否把 `videoFormat` 也排了。
+
+## §65 P11-291 恢复「旧档保到新档 pending」的清理时序(2026-10-27,3.1.2-alpha.6 后)
+
+**触发**:用户「旧档保留到新档 pending 应该沿用」→「为什么之前要清掉旧档」。
+
+### §65.1 旧档为什么要清(P11-92,2026-09-13)
+
+SABR 请求体**没有显式目标段号**;服务端按请求里**全部 `bufferedRanges` 的最大 endSegmentIndex+1**
+起推。切档后旧档若还在 `initializedFormats` 里,它的 bufferedRange 会被编码进请求 ⇒ 服务端从旧档
+缓冲尾起推,只回 N+1/N+2,请求的 N 永不到 ⇒ 6 连试 → `SABR terminal: exhausted` → evict → 整场
+重载。真机 `logs_live_20260913_124126`:三轮重载、`no seg` 60 次全 itag308;请求 14→回 15/16、
+21→22/23、34→35/36。反证:手切 1440 重建播放器、请求只带自身格式(`selectedFmts=2`),服务端
+**精确回请求段**(35→35),215 段零 `no seg`。所以 P11-92 清旧档的目的是**让它不进 bufferedRanges**,
+不是省内存。
+
+### §65.2 为什么现在可以不清
+
+P11-274 起把旧档段放进独立 grace 缓存(天然不进请求);P11-281/286 把旧档留在
+`initializedFormats` 但**显式从 bufferedRanges 排除**(`graceSourceItag` / `lastDeliveredVideoItag`)。
+既然「不进 bufferedRanges」已经做到,就没必要在切换完成的瞬间删数据。
+
+### §65.3 改动(P11-291)
+
+- `DefaultSabrChunkSource.resolveSwitchTarget`:**删除所有出口的 `fetcher.setGraceSourceItag(-1)`**
+  (7 处)。切换完成/放弃都不在 chunk source 清旧档。
+- `SabrMediaFetcher.setGraceSourceItag(-1)`:**不再立即 `retainActiveFormats()`**,只记状态。
+- 真正清理挪到 `getNextSegment` 的 `media()` 收尾:当 `req.formatItag == videoFormat?.itag`
+  (选中的新档真的发起并拿到了 media 响应)时,先清 `graceSourceItag`,再跑 `retainActiveFormats()`
+  丢掉旧档。日志:
+  `switch source cleared(P11-291): selected itagX media delivered → drop old itagY`。
+- 期间旧档仍在 `retainActiveFormats` 的 keep 集合里,且被 `bufferedRanges` 排除(P11-92 不变)。
+
+**语义**:P11-274 前的「旧档保到新档 pending,下一次 media() 后 cleanup 才丢」;不同点是旧档数据
+在等待期仍可被播放器使用,而不是靠 3 段 grace 缓存。
+
+### §65.4 验收 / 否证线
+
+- **验收**:`switch source cleared(P11-291): … media delivered` 出现在**新档 media 响应**那一行
+  之后,而不是切换完成的瞬间;不再出现「刚 `dropped formats=[X]`,紧接着 playerState=BUFFERING 且
+  videoFmt=X」;升档/降档切换的短 BUFFERING 减少;无 `no seg` / terminal / 整场重载(P11-92)。
+- **否证**:①若旧档长时间不被清(memory 涨、日志无 cleanup)⇒ 选中档一直命中缓存不发 media;需在
+  下一次 getNextChunk 强制 cleanup(可加一次性超时);②若重新出现请求 N 回 N+1/N+2 ⇒ 检查旧档是否
+  仍被编码进 bufferedRanges(graceSource/lastDelivered 的排除条件);③若起播/seek 变慢 ⇒ 检查
+  queue 为空时旧档是否被误留。
+
+## §66 P11-295 起播梯子恢复老「快速连跳」:非顶档升档不逐档 settle + 不走同步 warm(2026-10-27)
+
+**触发**:用户「看看移动端日志,以前切档没有这么明显的卡顿」→「做吧」。
+
+### §66.1 对照证据(同一台手机 XQ-EC72)
+
+**老 r2187/r2188(2026-10-11/12,`startHeight=720`)**
+
+```
+20:47:27.169  upshift itag303(1080p)
+20:47:27.580  cleanup dropped formats=[302] (video=303 pending=[139,303])
+20:47:28.821  upshift itag308(1440p)          ← 1.6s 内连跳
+20:47:30.365  cleanup dropped formats=[303] (video=308 pending=[308])
+解码器实际 crop:720(20:46:39)→1440(20:47:52)→2160(20:47:57)  ← 1080 从未上屏
+全场 BUFFERING:1 次(起播 pos=0),换档处 0
+```
+
+**alpha.7(2026-10-27,`startHeight=480`)**
+
+```
+11:09:45 480→720; 11:09:50 720→1080; 11:10:26 1080→1440
+11:10:17 CCodec→720; 11:10:32→1080; 11:10:59→1440   ← 每档都上屏
+每次 switch source 后各有一次 BUFFERING(22/12/16ms)
+```
+
+**结论**:老代码 ABR 跑在播放器前面,深缓冲下中间档被 cleanup 丢掉、从未解码;P11-286 的逐档
+settle 把每档都变成实际播放,重配次数 2→3–4,叠加 P11-274+ 切换路径的 brief BUFFERING。
+
+### §66.2 改动
+
+**A. `HeightAwareAdaptiveTrackSelection`**
+- 新增 `STARTUP_RAMP_MS = 60s`:起播窗口内,**非顶档**升档不套 settle(`upgradeSettled`),
+  允许 ABR 快速连跳;顶档(≥2160)仍走 settle。
+- 稳态(60s 后)与非顶档/顶档规则不变。
+
+**B. `DefaultSabrChunkSource.resolveSwitchTarget`**
+- 非顶档**升档**直接 `pendingSwitchIndex=-1; return selectedIndex` —— 不调用同步 `warmSegment`、
+  不做 grace,交给正常 chunk 流去取(对齐 P11-274 前)。旧档仍由 `graceSourceItag` 保留到新档
+  media 到达(P11-291)。
+- **降档**保持 P11-281 的 grace/prefetch 非阻塞路径;**顶档升档**保持 `hasRealSegment`/warm 保护
+  (防 P11-289 的 15.9MB 首段漏光重载)。
+
+**不动**:P11-281 降档 grace、P11-291 清理时序、P11-286 `lastDelivered` 保留、P11-92 范围排除、
+顶部 10s 冷启动锁、缓冲地板、试探/冷却。
+
+### §66.3 验收 / 否证线
+
+- **验收**:起播 60s 内 ABR 在 1–2 个评估周期内连跳到可负担档(日志 `sel=` 快速变化),播放器
+  解码器 crop 只停在少数档位(如 480→1440,跳过 720/1080),换档 BUFFERING 次数下降;稳态
+  (60s 后)升档仍受 settle(间隔 ≥4s + 当前档 media);无 stall/重载。
+- **否证**:①若快速连跳导致目标档没数据、画面卡住 ⇒ 说明正常 chunk 流来不及,需要对非顶档
+  恢复「当前档 media 已到」这一条(但不必 4s dwell);②若 2160 仍重载 ⇒ 检查顶档 warm/settle
+  是否被误豁免;③若稳态升档变回连跳 ⇒ 检查 `startupRamp` 的 60s 窗口是否按实例创建计时。
+
+---
+
+## §67 2026-10-27 21:47 TV 两次重载判读:1440p 悬崖 + 降档 grace 被服务端格式切换打死
+
+**场次**:`logs_live_20261027_214727.log`(3.1.2-alpha.8 / 3102108,BRAVIA 4K AE2,Android 14,
+MediaTek `c2.mtk.vp9.decoder`)。21:39:53 SABR 会话 `sSFNoD6C88gNQKjFTX5Z5w` 起播(itag298 720p),
+同进程 `30599` 内两次整场重载:
+
+| # | 时刻 | 入口 | 位置 |
+|---|------|------|------|
+| 1 | 21:42:42.000 | `stall detected, auto-retry #1` `buffered=10%` | 149675ms |
+| 2 | 21:47:00.531 | `playback error, auto-retry #1: Source error`(code=2000) | 396307ms |
+
+两次都是同一根因的两个阶段:**1440p VP9(声明 25692513bps,实测 8.4–11.2Mbps)在 6–8Mbps 链路上**。
+
+### §67.1 重载 #1:试升 1440p 后,18s 整调用上限把在途视频段整笔作废(供给端)
+
+```
+21:40:17.452  trial upshift 1080→1440(itag308 declared=25692513)
+              upshift reseed: est baseline → 24701K(seed 12348000B/4000ms)   ← 突发口径,非稳态
+21:41:04.050  video size: 2560x1440(解码器已上屏)
+21:41:50.489  fetch rn=18 REAL 9500721B 12385ms → 6Mbps est=6136K
+21:42:08.532  fetch rn=19 exception: timeout (fail=18003ms bwNow=-1) → evict
+21:42:26.561  fetch rn=20 exception: timeout (fail=18003ms bwNow=-1) → evict
+21:42:33.234  player state=BUFFERING
+21:42:42.000  stall detected, auto-retry #1 @pos=149675ms buffered=10%
+              stall-reached cooldown: 1440p excluded 90s
+```
+
+- **两笔超时都是「请求音频段、响应里塞着 1440p」**:`rn=19 itag=139 seg=15`、`rn=20 itag=139
+  seg=16`,`reqHeight=0` ⇒ 走 `SabrCallTimeoutMsLow=18s`;而响应里推的是 308 的 8.7MB / 5.9MB
+  段(21:42:13 `MEDIA_HEADER itag=308 seq=29 contentLen=8740920`、21:42:26 `seq=30 5893226`)。
+  6Mbps 下 8.7MB ≈ 12s、两段连推 >18s ⇒ 整笔被砍,在途视频段全部作废(21:42:40 才落地的
+  `MEDIA_END seq=29` 也救不回来)。
+- **ABR 在这 25s 里没有评估点**:ABR 只在 chunk 完成后评估;21:42:08 之后直到 21:42:40 没有
+  新段完成。唯一一次判定 21:42:08 `est=6136K < required=21838K` 被 est-hysteresis 缓冲标准
+  压住(`bufS=23.6s ≥ floor=8s ⇒ 不降档`)。
+- 结果:`fwdBuf 24400 → 19391 → 14372 → 9350 → 4337 → 92ms`(21:42:08→21:42:33),8s 后看门狗
+  判死 ⇒ 整场重载,`startPos=149675`。
+
+### §67.2 重载 #2(新形态):降档 grace 求旧档,服务端已切新档 ⇒ 6 连空转 ⇒ terminal
+
+```
+21:45:56.388  trial upshift 1080→1440(bufS=41s ≥ threshold 39s)
+21:46:38.152  video size: 2560x1440
+21:46:49.519  buffer-critical downgrade: bufS=5s 1440p→1080p roundTrip=22601ms
+              switch source(P11-281): graceSourceItag -1 → 308
+              prefetch: 候选档 itag303 随下一请求预取(窗口 30s)
+21:46:49.727  FORMAT_INITIALIZATION_METADATA itag=303 ... (服务端从这笔起只推 303)
+21:46:52.488  attempt 1: prefetch canceled(此时撤销已晚,会话游标已切到 303)
+21:46:52.5~55.8  attempt 2..6: 全是 `no seg 73 itag 308`(响应 372–433KB 全是 303 seq 73/74)
+21:46:55.821  SabrDataSource open: terminal seg=73 itag=308 → evict
+21:47:00.531  ExoPlayer Source error(ERROR_CODE_IO_UNSPECIFIED)→ auto-retry 整场重载
+```
+
+- 降档走 P11-281 grace:旧档 308 `left=2→0` 继续顶位,目标 303 挂 `prefetchFormat`。**下一笔请求
+  (rn=28)的 `preferredVideoFormatIds` 里因此同时出现 308 与 303**,服务端随即把会话切到 303,
+  此后每笔都只回 `303 init + 303 seq 73/74 + 139`,**308 一段都不给**。
+- 请求格式仍是 308(grace 旧档在播,chunk source 要 seg 73),6 次重试零退避、每次 0.3–0.7s,
+  全部落空 ⇒ `SabrTerminalException` ⇒ `SabrLoadErrorHandlingPolicy` 对 terminal 返回
+  `C.TIME_UNSET` ⇒ ExoPlayer 立即致命 ⇒ 应用 auto-retry 整场重载。
+- **P11-92 空段顶位救不了**:它只认「同格式更新的段」(`fmt.downloadedSegments` 里 `it > req.segment`);
+  这次新鲜段属于**另一个 itag**(303),`fmt`(308)里没有 ahead ⇒ 不走该分支。
+- **结构死锁(本次要记的点)**:`graceSegmentsLeft` 在 seg 72/73 两次 `resolveSwitchTarget` 后已归零,
+  按理下一次 `getNextChunk` 就会切到 303 自愈;但 loader 卡死在 `getNextSegment` 的 6 次重试循环里,
+  chunk source 根本没机会再被调用 ⇒ **切换自救路径被自己的重试循环锁死**。P11-281 引入
+  `graceSourceItag`,P11-130 预取又恰好是掰动服务端格式的那根杠杆,两者叠加才出现这条。
+
+### §67.3 结论
+
+同一根因(1440p 在 6–8Mbps 上)的两个死法:
+
+1. **供给端**:18s 整调用上限按 `req.formatItag` 的高度选档,音频请求承载 1440p 大段 ⇒ 必被砍;
+   ABR 又只在段完成时评估 ⇒ 来不及降档。
+2. **逃生路径**:降档 grace 请求旧档 + 服务端已被 prefetch 掰到新档 ⇒ 旧档永远拿不到,
+   6 连空转直接 terminal 判死整场。**这不是网络抖动,是代码路径能自愈却没自愈。**
+
+### §67.4 候选修法(未实施,按项目规则先落判据再改)
+
+1. **(小,直击重载 #2)**`getNextSegment` 重试循环:请求格式 == `graceSourceItag` 且响应只推来
+   切换目标档 ⇒ 立即放弃(抛瞬态错误回 chunk source),让 `graceSegmentsLeft=0` 后的切换生效;
+   或对 grace 旧档把 `MAX_ATTEMPTS` 降到 1–2。
+2. **(更稳)**grace 期间不给目标档挂 `prefetchFormat`(P11-281 的那一句),避免请求体里出现新档
+   把服务端会话掰过去;等旧档段到手再预热。
+3. **(ABR,需先补判据链)**`est < 校准 need` 时用**预计耗尽时间**(`bufS / (need/est − 1)`)而不是
+   `bufS < 8s` 才降档;`callCap` 按响应里实际推来的最高档算,而不是只按 `req.formatItag`。
+   这一条会改 §39 的滞回/地板,必须先按 §39 口径逐条对完再动。
+
+### §67.5 历史对照:以前有这个问题吗
+
+全量扫 `Y:\download\bilitv\logs` 247 份日志(2026-09-09 ~ 2026-10-27):
+
+| 现象 | 历史 |
+|------|------|
+| `exhausted N attempts`(6 连空转 → terminal → 整场重载) | **老形态**:09-09~09-20 高频(09-13 两场 14/10 次、09-20 多场单场 4~22 次),当时成因是 WEB-SABR「服务端只推 251/396,我们选 140/302」+ 预取抢响应预算;`cancelPrefetch`(P11-136/137)与 P11-92 之后**9-21 至 10-26 的 60+ 份日志里 0 次**。今天 21:47 是**回归**,不是新机制。 |
+| 降档 grace 请求旧档(P11-281) | **新路径**,10-26 才落地。日志库里只跑过两次:`10-27 09:56`(2160→1440)旧档下一段命中 grace 缓存(`grace hit itag315 seg=19`)**没向服务端要旧档** ⇒ 切换正常完成、无 `no seg`;`10-27 21:46`(本场)旧档下一段 308 seg 73 **不在**缓存 ⇒ 必须问服务端 ⇒ 服务端已被 prefetch 掰到 303 ⇒ 死锁。 |
+| `stall detected` 整场重载 | **常见**:10 月 32 份日志共 94 次;1440p 试升后漏光的同族此前也有(如 10-25 20:42 段)。 |
+
+**判据**:降档 grace 是否安全,取决于「旧档下一段是否已在 grace 缓存」。在缓存 → 安全(09:56 场);
+不在缓存 + prefetch 已随请求发出 → 服务端切档后旧档永远拿不到 ⇒ **必死**。今天 21:46 正好落在后者。
+
+### §67.6 归因:是不是改动导致的
+
+构建确认:`v3.1.2-alpha.8` tag 指向 `0bb5e0d2`(HEAD),包含 P11-295 的两个提交
+(`ff8474de` 起播快速连跳 + `0bb5e0d2` companion internal)。
+
+| 重载 | 归因 | 依据 |
+|------|------|------|
+| **#2(terminal)** | **是,P11-281 引入的回归**(2026-10-26) | P11-274 的 grace 分支带守卫 `hasRealSegment(fromItag, fromSeg+1)` —— 旧档下一段**已在缓存**才顶位,结构上不会向服务端要旧档;P11-281 的降档分支删掉了这个守卫(`DefaultSabrChunkSource.kt` `if (isDowngrade) { prefetchFormat(targetItag); if (graceSegmentsLeft > 0) return graceFromIndex }`),同时把目标档挂进 `preferredVideoFormatIds`。两个条件叠加才可能出现「请求旧档 + 服务端已被掰到新档」。P11-281 之前,降档走的是同步 `warmSegment(target)` 并立即切到目标档,没有这条路径。 |
+| **#1(stall)** | **否,不是新改动引入的失败模式** | 1440p 试探(P11-130 时代)、`est-hysteresis held`(P11-237/240)、18s 整调用上限(P11-153)都不在近期改动里。P11-295 只把起播梯子加快了;同一动作在 **21:45:56(起播 3 分钟后、60s 快速窗口早已结束)** 照样发生并照样崩 ⇒ 与 P11-295 无关。 |
+
+**结论**:#2 是回归,应修(修法见 §67.4 第 1/2 条);#1 是老悬崖,P11-295 只是可能把 1440p 试升提前了几秒,
+不是成因。两件事叠在同一会话里才显得像「连续两次」。修 #2 之后,#1 仍会以 stall 形式出现(除非动 ABR)。
+
+### §67.7 修复(P11-297,2026-10-27)
+
+**位置**:`DefaultSabrChunkSource.resolveSwitchTarget` 的降档分支。
+
+**改法**:grace 的前置条件增加 `fetcher.hasRealSegment(fromItag, fromSeg + 1)` —— 旧档**下一段**
+必须已在本地(`initializedFormats` 或 grace 缓存,`hasRealSegment` 两处都查)。不满足时:
+
+- 不进 grace(`graceSegmentsLeft` 不扣);
+- **不调用 `prefetchFormat(targetItag)`** —— 目标档不再进入本笔请求的 `preferredVideoFormatIds`;
+- 直接落到下面的 `warmSegment(target)` + `return selectedIndex`,回到 P11-281 之前「同步 warm 新档」
+  的行为。
+
+**为什么是这条**:降档 grace 的安全性完全等价于「旧档下一段在本地」——
+在本地时 chunk 不碰服务端,P11-281「不阻塞 warm」的收益成立;不在本地时唯一出路是向服务端要
+旧档,而请求体里的目标档会把会话掰走(本场实测),必死。用「在本地」这一个判据同时挡掉死锁,
+并把代价限制在「最坏一次切换停顿」,而不是整场重载。
+
+**日志**:
+- grace 生效:`switch grace(P11-281 downgrade): ... (旧档段已在本地)`(新增后缀);
+- 跳过:`switch grace skipped(P11-297): 旧档 itagX(Yp) seg=N 不在本地 —— 不求服务端(...),直接切 itagZ`。
+
+**验收**:缓冲临界降档时出现 `switch grace skipped(P11-297)`,随后正常 `switch source cleared(P11-291)`,
+不再出现 `no seg … itag <旧档>` 连试、`SABR terminal` 或整场重载;旧档段在本地时仍走原 grace(日志带新后缀)。
+
+**否证 / 残留风险**:若仍出现「请求旧档 → no seg」(说明还有别的创建路径,例如切换前已创建、之后被
+media3 重试的旧档 chunk),下一步在 `SabrMediaFetcher.getNextSegment` 重试循环加防线(请求格式 ==
+`graceSourceItag` 且响应只推来目标档 ⇒ 立即放弃)。本次按最小改动只改创建点。
+
+### §67.8 真机验证(dev.r2264,2026-10-27 23:05)
+
+日志 `logs_live_20261027_230518.log`(alpha.8 之后的首个 debug,含 P11-297)。
+
+**P11-297 通过**:
+
+- `switch grace skipped(P11-297)` **5 次**、grace 行带「旧档段已在本地」**3 次**;
+- `no seg … after attempt` **0**、`exhausted N attempts` **0** —— 旧死锁未再出现;
+- 决定性一场:23:02:57 缓冲 79ms → 23:03:00.7 `buffer-critical downgrade 1440p→1080p`(
+  旧档 seg 65 在本地 → grace;seg 66 不在本地 → skipped)→ 23:03:08.9
+  `switch source cleared(P11-291): selected itag303 media delivered → drop old itag308`。
+  切换正常完成,**没有** 6 连空转 / terminal。
+
+**仍存在(均与 P11-297 无关)**:
+
+1. **22:38:59 4K 切档后播放管线冻结 10s**(新问题,最值得查):22:38:28.671 cold-start ladder
+   升 315 → 22:38:44.808 `switch source cleared … drop old itag308` → **22:38:45.9 起
+   `pos=623250ms` / `rendered=17113` 双冻结**,`state` 一直是 READY(`fwdBuf=15888ms` 不变);
+   期间**没有**任何 `CCodecConfig config diff` / `video size: 3840x2160` / `chunk completed:
+   media itag=315`,同刻 fetcher 在流式收 `rn=42` 38MB/23s。10s 后 media3 内置
+   `StuckPlayerDetector` 抛 `StuckPlayerException`(code=1003)→ 整场重载。
+   判断:播放线程卡在解码器/渲染侧(MTK VP9 4K 重配),不是网络(缓冲 15.9s、带宽 38M)。
+   注:我们自己的 8s 看门狗只覆盖 BUFFERING,「READY 但位置不动」由 media3 的 10s 检测兜底。
+2. **22:39:04 `auto-retry #2 @pos=0ms`**:在 `ExoPlayerImpl.release()` 内由
+   `PlayerScreen.forceExitPlayer`(Back 键)触发 —— 退出路径上错误监听器仍执行了重试,误重载。
+3. **23:03:05 stall 重载**:老 1440p 悬崖(est=6301K vs itag308 实测 ~11.9M);ABR 到 bufS=5s
+   才降档,新档首段 23:03:08.9 才到,比 8s 看门狗晚 3.4s。P11-297 的 skipped 正常生效,不是死锁。
+4. **23:03:14 新会话 `InvalidPoToken (status=3)`** → 再重试,23:03:24 恢复(已知 PoToken 问题,单独)。
+
+### §67.9 诊断补丁(P11-298,2026-10-27)
+
+目的:§67.8-1 的 4K 切档冻结有两个候选机制(段号落到播放头之后 vs 播放线程/渲染卡住),
+现有日志分不开。**只加日志、不改行为**,取证后按 `grep P11-298` 全部删除。
+
+1. `YtSabrSwitchDiag: chunk itag=… seg=… playheadMs=… loadMs=… startMs=… queue=… prevItag=… prevNext=… selIdx=…`
+   - 触发:每次 ABR 切档后 30s 内(`SWITCH_DIAG_WINDOW_MS`)的 chunk 创建。
+   - 读法:`seg` 的 `startMs` 明显大于 `playheadMs`(如播放头 623s、请求段起点 649s)⇒ 段号选到了
+     播放头之后;若 `playheadMs ≈ loadMs` 且段对得上 ⇒ 段选择正常。
+2. `YtSabrSwitchDiag: request non-selected itag=… seg=… video=… audio=… grace=…`
+   - 触发:loader 请求的 itag 不是当前选中的视频/音频档(切档/grace 现场)。
+3. `getNextSegment slow(P11-298): itag=… seg=… cost=…ms cached=… video=… audio=… grace=…`
+   - 触发:单次 `getNextSegment` ≥ 5s。与 `fetch rn=` 行对照 = loader 在等哪一段、等多久、是否本有缓存。
+4. steady probe 增加 `bufPos=…ms vfmt=…p/itag`
+   - `bufPos` 前进而 `pos` 不动 ⇒ 播放线程/渲染卡住(数据是有的);
+   - `pos`/`bufPos` 一起不动 ⇒ 供给端没数据。
+
+**判读组合**:
+
+| 日志组合 | 结论 |
+|---|---|
+| `chunk` 行 `startMs` ≫ `playheadMs` | A:切档后段号选到播放头之后(改段选择) |
+| 段号正确、无 slow 行,但 pos/bufPos/rendered 三冻结 | B:解码器/渲染侧卡住 |
+| `getNextSegment slow` 长耗时且 `cached=false` | C:网络/供给慢 |
+
+清理清单:`YtSabrSwitchDiag`(2 处)、`getNextSegment slow`(1 处)、`LoaderDiagSlowMs`、
+`SWITCH_DIAG_WINDOW_MS`、`switchDiagUntilMs`、probe 的 `bufPos`/`vfmt` 两字段。
+
+### §67.10 诊断结果(dev.r2265,2026-10-27 23:40):冻结 = 切换路径的同步 warm 阻塞 loader
+
+日志 `logs_live_20261027_234041.log`。两次冻结**都不是 4K 特有**,共同点是「切档时同步 warm 卡住」。
+
+**事件 A:23:36:49 撞 10s 判死(1440p→2160p 升档)**
+
+```
+23:36:29.504  switch source(P11-281): graceSourceItag -1 → 308
+23:36:29.519  fetch rn=18 itag=315 seg=0 (init, anchor=91104) → 16.8MB, 33.046 完成
+23:36:33.047  switch source cleared → drop old 308
+23:36:33.078  chunk completed: init itag=315
+23:36:33.094  fetch rn=19 itag=315 seg=22 playerTimeMs=111100   ← warmSegment(同步,loader 线程)
+23:36:33.793  probe pos=94694 bufPos=111100 rendered=5686 vfmt=1440p/308  ← 三值冻结
+23:36:48.831  仍然冻结(15s)
+23:36:49.524  media3 StuckPlayerDetector: no progress for 10000 ms → error
+23:37:13.102  getNextSegment slow(P11-298): itag=315 seg=22 cost=40012ms  ← 40s 整调用上限
+```
+
+**事件 B:23:39:58 撞 10s 判死(1440p→1080p 降档,P11-297 skip 路径)**
+
+```
+23:39:45.379  switch grace(P11-281): 旧档 308 seg 48 在本地 → grace 顶位
+23:39:45.413  switch grace skipped(P11-297): 旧档 seg 50 不在本地 → 直接切 303
+23:39:45.418  fetch rn=29 itag=303 seg=50 (warmSegment,同步)
+23:39:47.134  probe pos=236704 bufPos=246334 rendered=8495 vfmt=1440p/308 ← 冻结
+23:39:58.136  StuckPlayerDetector 10s → error
+23:40:03.426  getNextSegment slow: itag=303 seg=50 cost=18013ms
+```
+
+**判读**:
+
+- 两条 `slow` 行的 itag/seg 正是切档后 `warmSegment` 发出的那一笔 —— **`resolveSwitchTarget` 的同步
+  warm 把 loader 线程阻塞了 18–40s**。这是 P11-289/274 的已知同步代价,不是新改动。
+- 冻结期间 `bufPos - pos` = 9.6–16.4s(**数据在**),`rendered`/`pos` 不动,`vfmt` 仍是旧档,
+  **无任何 CCodec config / video size 日志** ⇒ 不是解码器重配,也不是供给端没数据;播放管线停在
+  切档边界,等 loader 返回。
+- 我们自己的 8s stall 看门狗只认 `BUFFERING`;这两次 `state=READY`,由 media3 内置的 10s
+  `StuckPlayerDetector` 判死 → 整场重载。
+- 诊断设计里「切档后 chunk 创建打一行」的 **缺失本身就是证据**:这两次的阻塞请求来自
+  `warmSegment`(`getNextChunk` 里、media chunk 创建之前),所以没有 `YtSabrSwitchDiag: chunk` 行。
+
+**结论**:
+
+1. P11-297 的降档死锁**没有再出现**(`no seg`/`exhausted` 均为 0);
+2. 但「旧档段不在本地」时退到**同步 warm**,在慢链路上会阻塞 loader 18–40s → 被 media3 10s 判死。
+   也就是说 P11-297 把「会话级 terminal」换成了「切换窗口的同步阻塞」,慢网下仍会重载;
+3. 4K 升档(顶档,一直走同步 warm)有同样的问题(P11-289 遗留)。
+
+**下一步候选**:把 `warmSegment` 改成**有界 + 非阻塞**(独立协程/线程发请求,或给 warm 单独 ≤3s
+上限),让 `getNextChunk` 立即返回、由正常 chunk 流取段;这样播放器不会在切档边界等 18–40s。
+需要先按 §39 口径核一遍它与 P11-91/92/274/281/291 的判据关系再动。
+
+### §67.11 「为什么以前正常」
+
+同一段 `warmSegment` 同步阻塞代码从 P11-274/289 起就在,**这次不是新代码**,变的是**链路**:
+
+| 场次 | 实测链路 | 切档 warm 的数据量 / 耗时 | 结果 |
+|---|---|---|---|
+| 10-12 21:14(旧 TV 4K 场) | 30–45 Mbps | 12–16MB / **2–3s** | 正常 |
+| 10-27 22:57–23:03 | 10–40 Mbps | 30.6MB / 16.9s | 冻结 ~10s,刚好恢复 |
+| 10-27 22:38 | 6–38 Mbps 波动 | 42.8MB / 11.5s | 冻结 >10s → 判死 |
+| 10-27 23:36 | 掉到 ~3 Mbps | 15.7MB / **40s**(撞整调用上限) | 判死 |
+| 10-27 23:39 | ~6 Mbps | 15.7MB / **18s** | 判死 |
+
+- warm 的阻塞时长 ≈ 段大小 / 吞吐;4K 段 12–23MB,在 30Mbps 上 2–5s(安全),在 3–6Mbps 上
+  18–60s(必超 10s)。
+- 全量扫 247 份日志:`Player stuck playing with no progress` **只在 2026-10-27 的两份日志出现**
+  (共 6 行)。这条失败路径以前从未被触发过 —— 不是代码退化,是第一次有「warm 阻塞 >10s 且播放器
+  停在 READY」同时成立。
+- 以前 warm 超时的常见表现是**旧档缓冲被吃光 → BUFFERING → 我们自己的 8s stall 看门狗重载**
+  (历史日志里大量 `stall detected`)。这次冻结时仍有 9.6–16.4s 缓冲、`state=READY`,
+  8s 看门狗结构性看不见,才轮到 media3 的 10s 检测兜底。
+- 降档那一次(P11-297 的 skip → warm 回退)也是同一台机器上的既有同步 warm(P11-279/280 实测过
+  5.3s 冻结);慢网把它放大到 18s 才越线。
+
+### §67.12 「切失败后为什么 1440 也不行」
+
+两个不同的问题,别混:
+
+**(1) 切档当场:不是 1440 不能播,是切档已经把旧档丢掉、且没有回退分支。**
+事件 A 的时序:
+
+```
+23:36:33.047  switch source cleared(P11-291): selected itag315 media delivered → drop old itag308
+23:36:33.048  cleanup dropped formats=[308]          ← 旧档(1440p)缓存已清,chunk source 之后只供 315
+23:36:33.094  fetch rn=19 itag=315 seg=22 ...        ← 同步 warm,阻塞 40s
+23:36:49.524  media3 stuck 10s → 整个 player 判死 → 整场重载
+```
+
+- 1440p 刚才已经连续播了 2 分多钟,链路/数据都没问题;死的是**播放器实例**,不是 1440 档。
+- **丢的时机本身没错**:P11-291 的判据是「选中档的 media 响应到达」,日志里 315 seq 18 确实先到
+  (`switch source cleared: selected itag315 media delivered`)才 drop 308。不是「没到位就丢」。
+- 卡点在紧接着的下一跳:`resolveSwitchTarget` 用「上一 chunk 的 `nextChunkIndex`」(= **缓冲末端**,
+  本例 seg 22 ≈ 116s)判断新档是否有数据;播放头附近(94.7s)的 seg 18 已在缓存,却不参与这个
+  判断 ⇒ 判成「没数据」⇒ 同步 `warmSegment` 拉 seg 22 ⇒ loader 阻塞 40s。
+  (注:顺序加载本来就该往前取,`nextChunkIndex` 锚在缓冲末端是正常的;**问题只是这一步被做成了
+  同步阻塞**,不是取段位置错。)
+- 仍未闭环的一点:`bufPos=111100`(还有 16.4s 数据)与 `pos=94694`/`rendered` 同时冻结。数据在却
+  不消费,只能说明播放管线没推进;要确认是卡在 format change 还是渲染侧,需要再补「播放线程心跳」诊断。
+- 因此下一步修法应聚焦**把 warm 改成异步/有界**,而不是改取段锚点或「旧档多留」。
+
+### §67.13 「到位判断」确实有问题:判的是「响应回来了」,不是「段到位」
+
+`SabrMediaFetcher.getNextSegment` 的 P11-291 清理条件(真机事件 A 由 **init 请求**触发):
+
+```kotlin
+if (fmt == null || !fmt.hasSegment(req.segment)) {
+  media(req)                                   // 发一笔请求
+  if (graceSourceItag >= 0 && req.formatItag == videoFormat?.itag) {
+    // ← 只要「选中档的这一笔请求收到响应」就成立
+    graceSourceItag = -1
+  }
+  retainActiveFormats()                        // 旧档在这里被清掉
+}
+```
+
+问题:
+
+1. **没有校验这笔请求要的段是否真的到了**。`rn=18` 是 `itag=315 seg=0`(init)请求,响应里恰好带了
+   seq 18 的媒体段,所以这次 drop 结果不算灾难;但同一条件在 zero-reply / 只推别的格式 / 只回状态
+   (`usable=0`)时同样成立 —— 那正是 9 月 `no seg` 风暴里「旧档被整条丢掉」的机制。
+2. **判据粒度是「响应」不是「可用数据」**。最小收紧:drop 前要求选中档
+   `initializedFormats[itag]?.downloadedSegments?.isNotEmpty() == true`(媒体请求可再加
+   `hasSegment(req.segment)`);init 请求则至少要确认 init 已登记。
+3. 注意:**收紧 drop 判据并不能单独修掉本次冻结** —— 事件 A 里新档确实有 seq 18。冻结的直接原因是
+   紧随其后的**同步 warm 阻塞 40s**;到位判据只是另一处应当收紧的防线。
+
+**建议顺序**:①warm 异步/有界(直接修冻结);②drop 判据加 `downloadedSegments`/`hasSegment` 校验
+(防 9 月那类「响应空但旧档被丢」);③最后再评估是否把切换就绪判据从「缓冲末端段」改为更强约束。
+
+### §67.14 修复(P11-299,2026-10-27)
+
+**A. `warmSegment` 后台化(不阻塞 loader)**
+
+`DefaultSabrChunkSource.warmSegment` 从同步 `fetcher.getNextSegment(req)` 改为
+`warmScope.launch { … }`(SupervisorJob + Dispatchers.IO),`release()` 时 `warmScope.cancel()`。
+同一 `(itag, seg)` 在途时去重(`warmInFlight`),避免 warm 之间重复发同一笔。
+日志:`switch warm(P11-274/P11-299) itagX seg=N 后台预取,不阻塞 loader`。
+
+**B. P11-291 的「到位判断」收紧**
+
+`SabrMediaFetcher.getNextSegment` 的 drop 条件由「选中档这一笔收到响应」改为
+「选中档这一笔真的拿到了可用媒体」:
+
+- 媒体请求(`seg>0`):该段存在且 `data` 非空 / `contentLength>0`;
+- init 请求(`seg=0`):响应里至少有一个真实媒体段(init 本身不算);
+- 不满足时**不 drop**,旧档继续保留(`retainActiveFormats` 本来就会保 `graceSourceItag`),
+  日志 `switch source hold(P11-299): selected itagX 响应无可用段 (seg=N) → 暂留旧档 itagY`。
+
+**判据链核对(§39 口径)**:
+
+| 既有规则 | 与 P11-299 的关系 |
+|---|---|
+| P11-92(清旧档防 bufferedRange 拖游标) | 清的理由不变,只是把时机推后到「新档确有可用媒体」,更符合原意 |
+| P11-274 / P11-281 / P11-297 grace | 不变;P11-297 的 skip 分支仍直接切目标档 |
+| P11-289 顶档同步 warm 防首段漏光 | 同步阻塞部分被移除;`hasRealSegment` 就绪判定保留 |
+| P11-295 非顶档升档直接返回 | 不受影响 |
+| P11-286 settle / P11-251 缓冲地板 | 不涉及 |
+
+**风险 / 否证**:
+
+- warm 后台化后,它与正常 chunk 流可能并发请求同一段(去重只覆盖 warm 之间)。若日志出现
+  两笔同 itag+seg 的 `fetch rn=`,再补 loader 侧去重。
+- **若切档后仍被 media3 10s 判死**,说明冻结不来自 warm,而来自切档边界那次正常 chunk 加载;
+  下一步做「切换成本闸」:预计切换耗时(段大小/实测吞吐)超过当前缓冲时,先不切、继续吃旧档。
+
+### §67.15 真机判读(dev.r2266,2026-10-28 00:18):手切 1440 正常、自动升档失败的差别在「会话」
+
+同一份日志里两个会话,都是 itag308(1440p),结果相反:
+
+**A. 自动升档(旧会话,host `rr5---sn-3pm7dn7d`)**
+
+```
+00:17:17  fetch rn=18 timeout (fail=18003ms bwNow=1131K)
+00:17:25  switch source cleared → drop old 303(升到 1440)
+00:17:48  fetch rn=22 Read timed out (fail=23042ms, silence-hang itag=308)
+00:17:57  BUFFERING vfmt=1440p/308 fwdBuf=67ms      ← 切上去了,但立刻饿死
+00:18:02  stall detected @181499 → 整场重载
+```
+
+**B. 手切 1440(新会话,host `rr3---sn-oj3pm5-54`,单轨锁)**
+
+```
+00:18:23  SABR single-stream sid=q2Zk… / init trackSelLen=1 sets=[set0[2]=308]（只有 308）
+00:18:24  rn=0  5.0MB / 0.9s = 44Mbps
+00:18:28  rn=1 20.0MB / 3.4s = 46Mbps
+00:18:30  rn=2 14.9MB / 2.0s = 58Mbps
+00:18:32  rn=3 17.2MB / 2.3s = 60Mbps   ← 6 秒内 bufS 2→23s，1440p 全程正常
+```
+
+**结论**:
+
+1. **不是 1440 档的问题** —— 两边同一个 itag、同一码率;自动升档其实**切成功了**(`vfmt=1440p/308`),
+   失败的是切上去之后 **17–23s 才拿到段**,缓冲漏光被 8s 看门狗判死。
+2. **手切顺带换了会话和 CDN 节点**(rr5 → rr3)。旧会话当时已经在
+   `timeout 18s (bwNow=1131K)` / `Read timed out 23s` 里,est 只有 6–13M;新会话一上来 44–60M。
+3. 手切是**新会话 + 单轨锁 308**,从起播就在 308,没有中途切轨;自动升档是在烂掉的会话内切轨,
+   切轨请求正好撞在停顿上。
+4. 本场是 dev.r2266(P11-299 生效):`后台预取` 5 次、media3 `Player stuck playing` **0 次** ——
+   上次的 10s 判死路径已被拆掉;剩下的是「旧会话链路烂 → 缓冲漏光 → 8s 看门狗重载」。
+5. 后续可评估(未做):同会话连续慢滴/多次超时后**主动重建 SABR 会话**(相当于自动做一次手切);
+   或给切轨加「切换成本闸」(预计切换耗时 > 当前缓冲则不切)。
+
+**(2) 重载之后:1440p 被 90s 冷却挡住,是刻意的。**
+
+```
+23:39:45.378  downgrade fail cooldown: 1440p excluded 90s
+              reason=supply(gated/普通降档)(remain 13s, survives reload)
+```
+
+- `survives reload` = 冷却跨重载保留。23:39:58 重载后到 ~23:41:15 之前,ABR 不会选 1440p,
+  所以看起来「1440 也不行」;这是 P11-173/178/188 防止刚饿死的档立刻爬回去的设计。
+- 对照:23:36 那次是 4K 升档失败,**没有** 1440 冷却;23:36:49 重载后 23:37:31 就回到 1440p
+  并正常播到 23:39:45。⇒ 冷却存在与否,决定重载后多久看到 1440。
+
+---
+
+## §68 P11-300 降档/升档判据链核对与改动(2026-10-28)
+
+### §68.1 现状判据表(只列与本次相关的)
+
+**升档(候选 f)**
+
+1. 排除轨 / 服务端集合 / 逐级爬(`f.height ≤ nextUpgradeHeight`)
+2. settle(P11-286;P11-295 起播 60s 内非顶档豁免)
+3. 冷却 `isTrialFailBlocked(f.height)` / 顶档起播 stall 冷却
+4. 缓冲地板 `climbFloorUsFor(itag)` = `max(15s, 2×往返)`(P11-222/P11-251)
+5. 容量闸 `capacityGateFail = required > upgradeEstFloor`
+6. 持续闸 `sustainedGateFail = !canUpgrade || sustained in [0, required)`
+7. **试探放行**(`trialUpgrade`):满缓冲 + 上穿阈值;放行条件 = 非顶档 && 不超容量
+   (`required ≤ upgradeEstFloor×1.5`)—— **可绕过 5/6**
+8. 选可行档中最高
+
+**降档(候选 f,`i == selected`)**
+
+1. 水位急救:`bufS` 跌破 `criticalBufferedUs`(8s)→ 直接降
+2. est 滞回:`required(=need×0.85) > effective` 时,若 `bufferHoldsCurrentTier`(`bufS ≥ 8s`)
+   ⇒ 不降;否则跳过当前档 → 降
+3. 降档后冷却 90s(supply/gated/trial 分档)
+4. 升档后 10s 禁止 est 回降(`UPGRADE_DOWNGRADE_GRACE_MS`)
+
+### §68.2 冲突/缺口(真机 2026-10-28 00:17)
+
+**缺口 1:试探可绕过持续闸。**
+`00:17:25` 升 1440p 时 `sus=5870K`、`need(1440p)≈13330K` ⇒ `sustainedGateFail=true`;但
+`trialUpgrade=true` 且不超容量(13330 ≤ 13425×1.5),于是 `bestIsTrial=true` 放行。下一笔
+1440p 请求 23s 超时,缓冲 28→0,8s 看门狗重载。
+冲突本质:试探的理由是「满缓冲证明供给富余」,但满缓冲是**历史**,`sustained` 是**过去 60s 的真实
+交付**;两者矛盾时应以 sustained 为准。
+
+**缺口 2:缓冲 hold 没有时间上限。**
+`required > effective` 持续时,只要 `bufS ≥ 8s` 就一直不降;而切档本身要 `2×往返`(本场
+rt≈17–23s)⇒ 降档在 `bufS=5s` 才发生,切换没有跑道。
+`23:03` 真机:`downgrade bufS=5s roundTrip=16910ms` → 新档首段 8.2s 后才到 → 看门狗判死。
+
+### §68.3 改动(P11-300)
+
+**A. 试探不再绕过「sustained 有值但不足」**
+
+```kotlin
+val sustainedRefusesTrial = sustained >= 0L && sustained < required
+if (isTopTierCandidate || !trialUpgrade || trialOverCapacity || sustainedRefusesTrial) continue
+```
+
+日志 `trial refused (sustained low): … sustained=… need=…`。`sustained = -1`(证据不足)时仍放行,
+保持 P11-255「非顶档冷启动放行」语义。
+
+**B. 缓冲 hold 加时间上限**
+
+- 选中档 `required > effective` 连续 ≥ `DOWNGRADE_SHORTFALL_MAX_MS`(10s)⇒ 即使 `bufS ≥ 8s`
+  也允许降档(跳过当前档);
+- est 回到 need 以上、或发生切档 ⇒ 计时清零;
+- 日志 `downgrade hold released (P11-300): shortfall=…s est=… need=… bufS=…`。
+
+### §68.4 为什么两个都要
+
+- 只改 A:本场能避免边际升档;但若已经在 1440(手切/起播),仍要等 `bufS<8s` 才降。
+- 只改 B:本场 00:17:25 的升档仍会发生,随后 23s 超时期间 ABR 无评估点,B 来不及。
+- 两个一起:A 挡住边际升档;B 让已进入高估档的会话在持续不足时尽早降。
+
+**风险 / 否证**:
+
+- A 可能拖慢「带宽刚恢复、sustained 仍低」的升档(sustained 是 60s 均值)。验收:是否出现长时间
+  停在同一档不升;若停 >60s 且 est 明显高于 need,再评估放宽。
+- B 可能增加降档抖动。缓解:只在 `required > effective` 连续成立时累加,恢复即清零;90s 降档冷却
+  仍在。
+
+### §68.5 P11-301 会话/节点判定(同批实施)
+
+**判据(fetcher 内,播放器探针每 5s 查一次)**
+
+- 会话龄 > 20s(排慢启动);
+- 缓冲 ≤ 12s(在下漏,还有余量时先交给 ABR 降档);
+- 本会话**零交付超时 ≥ 2**(单次算抖动);
+- 会话峰值 ≥ 10Mbps(没有断崖可比就说明本来就很慢,不是节点问题);
+- 最近两笔成功吞吐的**最小值 < 峰值 × 0.35**。
+
+**动作**:整场重建(带续播位置)—— 只有整场重载会重新 resolve,可能换 host。
+`evict sid` 不换 host,不用。
+
+**护栏(缺一不可)**
+
+| 护栏 | 值 | 依据 |
+|---|---|---|
+| 冷却 | 3min(跨重载,SabrAbrMemory) | 避免连续重建 |
+| 重建后校验 | 新会话前 3 笔均值 < 5Mbps ⇒ `link-bad` 10min | 10-25 20:50–21:02:换 host 仍 2–6Mbps,链路整体坏 |
+| 每会话一次 | `sessionRebuildMarked` | 防同一会话重复触发 |
+| 起播豁免 | 会话龄 < 20s | 慢启动已知 |
+
+**日志**:`session degraded → rebuild(P11-301): pos=… fwdBuf=…`;
+`session rebuild ineffective → link-bad for 600s (P11-301)`。
+
+**预期收益的边界**:只在「链路本身没坏、单纯当前节点/会话慢」时有效(2026-10-28 00:18 手切
+rr5→rr3,44–60Mbps 即此类);链路整体坏时,第一次重建后就会标 link-bad 并停手。
+
+---
+
+## §69 P11-302 缓冲趋势控制:缓冲在掉就不让 loader 空转(2026-10-28)
+
+### §69.1 模型
+
+一笔 SABR 请求的墙钟 `w = F + bytes/throughput`,其中 `F` = 固定开销(首包 ~0.2–0.5s +
+loader 读前量空转 `G`);它交付的媒体时长 `m = bytes / need`。
+一个周期的缓冲净变化 = `m − w`:
+
+- `m − w ≥ 0` ⇒ 缓冲在延长,**不需要动**(允许空转,省带宽/内存);
+- `m − w < 0` ⇒ 缓冲在缩短,连续几个周期就会被吃穿。
+
+真机 08:58–08:59(`logs_live_20261028_085956.log`,1440p need≈5.4Mbps):
+
+| 请求 | 耗时 | 下载 | 折合媒体 m | 笔间空转 G | 周期 w | m−w |
+|---|---|---|---|---|---|---|
+| rn=13 | 7.3s | 3.27MB | 4.8s | 5.6s | 12.9s | **−8.1s** |
+| rn=14 | 5.9s | 3.77MB | 5.6s | 6.1s | 12.0s | **−6.4s** |
+| rn=15 | 6.7s | 5.54MB | 8.2s | ~0s | 6.8s | +1.4s |
+
+空转来自读前量门槛:门槛 = `1.5×上一笔往返+3s`(P11-197),缓冲高于门槛时 loader 不续拉;
+而链路变慢时门槛反而变小(往返 7.3s→门槛 13s),跑道越来越短 —— 自反馈。
+
+### §69.2 改动
+
+`SabrAbrMemory.readAheadMinBufferUs` 增加**趋势分支**:
+
+- `SabrMediaFetcher.noteBufferedAheadMs` 把前方缓冲喂给 `SabrAbrMemory.noteBufferedAhead`;
+- 采样最快每 2s 一次;变化 ≥1s 才改趋势(防噪声);
+- 缓冲**在掉**且当前缓冲 < `READ_AHEAD_MAX_BUFFER_MS`(25s)⇒ 返回 25s 门槛,
+  `SabrReadAheadLoadControl` 会持续续拉,由档位 cap(1440p=20s,P11-230)兜住;
+- 缓冲**在延长/稳定** ⇒ 回到原 `1.5×往返+3s` 门槛,该空转就空转。
+
+日志:`read-ahead threshold = 25s (buffer draining, buffered=…ms, P11-302: 不空转, 续拉到目标/档位 cap)`。
+
+### §69.3 为什么不改请求大小/整调用上限
+
+- 缩短单笔只是把同一份数据拆成更多笔,总吞吐不变,固定开销反而变多;
+- 整调用上限收紧会重踩 P11-224(把本来能成功的 4K 慢传切断);
+- 空转是**纯损失**(0 字节在传),先消它收益最大、风险最小。
+
+### §69.4 验收 / 否证
+
+- 验收:慢链路下 `sincePrevRespMs` 的空转段显著减少(目标是接近 0);
+  `read-ahead threshold = 25s (buffer draining …)` 出现;缓冲不再单向漏到 0;
+  不出现长时间堆在 25s 导致的额外内存/带宽问题(档位 cap 仍在)。
+- 否证:若出现 `buffer draining` 时缓冲反而堆到 cap、ABR 无法升档(门槛与 cap 同值),
+  或空转没减少 ⇒ 说明瓶颈不是空转,回到「整调用上限」或「缩短单笔」方案。
+
+### §69.5 P11-303 收口:读前量/档位 cap 只对 SABR 生效
+
+`SabrAbrMemory` 是单例,`readAheadMinBufferUs` 的样本 15 分钟内有效,而 `createTvPlaybackLoadControl`
+在所有源上都接线 —— 因此看完 YouTube 后切 B站/直播/TVBox 时,这些源会继承 SABR 的读前量门槛
+(以及 P11-302 新加的 draining 状态);TV 端还会继承上一场 SABR 的 `heavyTierBufferedCapUs` 档位 cap。
+B站是 DASH 分片 + 多 loader,不该套用 SABR 的串行节奏。
+
+改法(TV `PlayerScreen` 与移动 `MobilePlayerScreen` 两处):
+
+```kotlin
+readAheadMinBufferUs = { if (activeRequest.isYoutube) SabrAbrMemory.readAheadMinBufferUs() else 0L }
+bufferedCapUs        = { if (activeRequest.isYoutube) SabrAbrMemory.heavyTierBufferedCapUs() else 0L }
+```
+
+非 SABR 源返回 0 = 不改 media3 原生行为。验收:B站播放日志里不再出现
+`YtSabrReadAhead: read-ahead threshold …`;YouTube 播放仍出现 P11-197/P11-302 的门槛日志。
+
+---
+
+## §70 P11-305:2026-11-01 TV「连续重载为什么不降档」判读 + 两处改动(改码前判据链复核)
+
+### §70.1 现场(`logs_live_20261101_205931.log`,BRAVIA)
+
+```
+20:53:58  重载后 720p 起播
+20:56:00/04/25  upshift reseed → 1080p → 1440p → 2160p
+20:58:04  4K 持续不足 10s → downgrade hold released(P11-300)→ 2160p→1440p,2160p 冷却 90s
+20:58:44  最后一次 ABR 评估 sel=1(1440p) est=3823K sus=7707K cap=8620K bufS=11.2→15.3s
+20:58:45  发 seg=59(itag308,contentLen=10,996,883)
+20:58:53→20:59:03  fwdBuf 7.2→2.2→0.08s,期间零 ABR 评估
+20:59:00  state=BUFFERING
+20:59:09  stall detected,auto-retry #1(BUFFERING 已 8.9s)
+20:59:09  stall-reached cooldown: 2160p excluded 90s(starved=720p reached=2160p)  ← 打错档
+20:59:17  seg59 才 MEDIA_END(32.5s ≈ 2.7Mbps)
+```
+
+### §70.2 降档判据链复核(§39.3 / §68.1 的降档侧)
+
+| 路径 | 本场为什么没开火 |
+|---|---|
+| A 水位急救 `bufS < 8s` | 唯一一次评估(20:58:44)时 `bufS=11.2/15.3s` ≥ 8s;之后 **26~32s 零评估**,没机会 |
+| B 带宽闸 | 只是 suppress 通道,且当时不成立(与本案无关) |
+| C est 滞回 | 20:58:44 时 `est=3823K < need×0.85`,但 `bufferHoldsCurrentTier=true`(`bufS≥8s`)⇒ hold(P11-237/240 设计如此) |
+| D 升档后 10s 宽限 | 升档发生在 20:56,早已过窗 |
+| E 提前解除冷却 | 不适用 |
+| P11-300 持续不足 10s 解除 hold | 计时从 20:58:44 才开始;下一次评估要 ≥10s 后,而 20:58:44→20:59:14 零评估 ⇒ 没机会 |
+
+### §70.3 评估点为什么是空的(结构原因)
+
+1. `YtSabrAbr: sel=` 与 `trackSelection.updateSelectedTrack(...)` **只在**
+   [DefaultSabrChunkSource.getNextChunk] 里发生;
+2. loader 这段一直阻塞在 `SabrMediaChunk.load → SabrDataSource.open → getNextSegment`(seg59 的 32.5s);
+3. media3 `ChunkSampleStream.onLoadError`:`cancelable = bytesLoaded==0 || !isMediaChunk ||
+   !haveReadFromMediaChunk(...)`(tmp/ChunkSampleStream.java:578-579)——**已经送进解码器的媒体块不能取消**,
+   超时/断流只会重试同一段,不会回到 `getNextChunk`;
+4. 故:慢滴期间 ABR 结构性没有评估点,**降档不可能发生在段边界之前**。P11-178 的 `silenceHang` 只认
+   「零字节停顿」,本场是**有字节的慢滴**(每 ~100ms 来一块),不触发。
+
+### §70.4 历史日志验证(python 扫描 `Y:\download\bilitv\logs`,319 份 / 259MB)
+
+| 口径 | 结果 |
+|---|---|
+| 全部 `stall detected` | **255** 次 |
+| stall 时正有一段 ≥8s 的非 init 视频段在 open | **7** 次(3%) |
+| 那 7 段在 stall 之后多久落地 | **2 / 3 / 5 / 8 / 8 / 9 s**(7 条日志行含 1 份同场重复;全部 ≤9s) |
+| stall 距上一次 ABR 评估 | p50 **16.1s**、p90 29.2s,≥8s 的 **192/254** |
+| 「交付速率 < 声明×0.5 就 abort」(段≥6s) | 命中 **189** 段,其中随后 stall 仅 **14** ⇒ 精确率 **7%** |
+| 再加「估算缓冲在段结束前 ≤0」 | 命中 37 段、stall 9 ⇒ **24%** |
+
+**结论**:
+- **否掉主动 abort**:速率触发的切断会把大量本来能成功的慢传砍掉(精确率 7~24%),正是 P11-224 记过的
+  「切断了本来能成功的传输,净负」;而且 §70.3 证明切断也换不来回 `getNextChunk`(媒体块不可取消)。
+- **改用「看门狗让路」**:7/7 历史慢滴段都在 stall 后 ≤9s 落地 ⇒ 给 stall 重载加一个 ETA 门:
+  在途视频段 **ETA ≤10s 且最近 3s 仍有字节**时,先不重载,最多让 12s。段落地后 ABR 在段边界评估,
+  `bufS<8s` 走水位急救降档,避免整场重载(10~22s 黑屏)。
+
+### §70.5 改动(两处)
+
+**A. `starvedHeight` 取真实在播档(修「重载后爬回同一堵墙」)**
+
+`selectedVideoHeight()` 原来取 `currentTracks` 视频组里**第一个 isTrackSelected** 的格式;SABR 自适应组
+里 14 个格式全部 selected、第一个恒为 298/720p ⇒ `starved=720p` < `STALL_REACHED_MIN_HEIGHT(1080)`
+⇒ 目标回退到 `reachedHeight`(本场 2160p),**真正饿死的 1440p 一格冷却都没有**。
+本日志四次 stall(20:22/20:25/20:40/20:59)全部打 `starved=720p`,而 ABR 实际在 1080p/1440p(`sel=3`/`sel=1`)。
+改为优先 `player.videoFormat?.height`(稳态探针的 `vfmt=1440p/308` 就是它),再回退旧逻辑。
+
+**B. stall 重载让路(slow-drip grace)**
+
+- `SabrMediaFetcher` 记录在途请求的 `start/readBytes/lastByteMs/首个视频段 contentLen`,暴露
+  `getInFlightVideoEtaMs()`(剩余时间估算;-1=无在途视频段,0=刚落地 2s 内);
+- `SabrBandwidthMeter` 加 provider;
+- `PlayerScreen` stall 分支:已起播且出过帧时,若 `eta ∈ [0,10s]` 且请求仍活跃,推迟重载,
+  总让路 ≤12s;到期或 ETA 失去意义则照常重载。日志 `stall reload deferred (slow-drip in flight …)`。
+
+### §70.6 验收 / 否证
+
+- **验收**:再遇慢滴 stall,日志出现 `stall reload deferred (slow-drip in flight …)`,随后段落地、
+  ABR 在段边界降档,不再出现整场重载;`stall-reached cooldown` 的 `starved=` 等于实际在播高度。
+- **否证**:①让路后 12s 内段仍未落地 ⇒ 照常重载,日志应同时有 deferred 与 stall detected(可接受);
+  ②让路把「重载黑屏」换成「更长的卡顿」且用户体感更差 ⇒ 回退 B,只保留 A。
+
+---
+
+## §71 P11-306:2026-11-02 TV「手切 1440/2160 都行、自动不升、起步还降」判读(不改码)
+
+**现场**:`logs_live_20261102_000017.log`(alpha.10,BRAVIA AE2,mt5897),23:55:35 起播,23:58:42
+手切 1440p,23:59:25 手切 2160p。用户口径:「手切 1440 2160 都行 为什么没有升 起步还降了」。
+
+### §71.1 时间线
+
+| 时刻 | 事件 | 关键读数 |
+|---|---|---|
+| 23:55:35 | 起播 | `vfmt=720p/302` |
+| 23:55:43.613 | **720p → 480p**(水位急救) | `bufS=7.7s < 8s`;该笔 fetch `1,863,839B/5732ms ≈ 2.6Mbps`;`est=3667K` |
+| 23:55:57.878 | 升 720p | `upshift reseed: est baseline → 2018444 (itag302)` |
+| 23:55:59.265 | 升 1080p | `upshift reseed: est baseline → 3805656 (itag303)` |
+| 23:55:59 → 23:58:42 | **钉死 1080p(2m43s)** | 见 §71.2/§71.3 |
+| 23:58:42 | 手切 1440p(单轨新会话) | 组里只剩 `fmts=308[13222917]`;bw 3.1M→15.4M→21M→25.3M→**30.3M**;buffer 6.4→50s,无降档 |
+| 23:59:25 | 手切 2160p(单轨新会话) | `fmts=315[26496736]`;bw 29M→42M→48M→50.8M→56.8M→**57.5M**,无降档 |
+
+⇒ 真管道 ≥ 50Mbps。**不是带宽不够**。
+
+### §71.2 起步为什么降(720p → 480p)
+
+- 触发的是**水位急救 A**(`bufS < criticalBufferedUs = 8s`),不是 est 判据;
+- 当时 `bufS=7.7s`、`roundTrip=5732ms`,而这一笔 720p 请求只有 2.6Mbps —— 是一笔慢滴把缓冲压到
+  急救线下;`est=3667K` 其实高于 720p 的 `need≈1313~2018K`;
+- 设计上「水位跌破 8s 且仍在下漏」就该降(§42.2-(6)),所以这一枪**不是误判**,是**起播首包慢**
+  的直接后果。它随后在 14s 内 480→720→1080 爬回,印证链路本身没坏。
+
+### §71.3 为什么没升 1440p:标准路两侧都被 pacing 钉死
+
+23:55:59 起 `sel=3`(itag303/1080p)的稳态读数:
+
+```
+bw=6392~9411K  sus=5085~9319K  susRaw=1570~9284K  cap=5931~10200K  meas=3104~3589K
+```
+
+- 升档候选 1440p:`required = tierNeedBps(itag308) = 13,222,917`;
+- **容量闸** `capacityGateFail = required > upgradeEstFloor`:13.2M > cap(6~10.2M) ⇒ true;
+- **持续闸** `sustainedGateFail`:sus 5.1~9.3M < 13.2M ⇒ true;
+- 两条独立测量闸同时不过 ⇒ 标准路无候选。
+
+测量为什么这么低:SABR 服务端**按当前档 pace**,1080p 在位时每次只回 ~1~4MB(REAL 5~16Mbps,
+`cap` 中位 6~10M);`meas≈3.1~3.6M` 与 1080p 实耗几乎相等。满缓冲停闸期间(23:56:40→23:57:23,
+43s 零 fetch)ABR 连评估点都没有,est 停在 6392K 不涨。这正是 §24 记录的「pacing 鸡生蛋」死锁。
+
+### §71.4 为什么满缓冲试探(trial)也没开火
+
+- 23:57:23 buffer 从 47.2s 漏到 9.9s,先被 `upshift held (buffer floor)` 拦住(`9s < 15s`);
+- 之后缓冲回填,23:57:38.615 `bufS=40.0s` **升穿**试探线
+  `max(15s, 0.8×maxObserved≈37.8s)`(上一评估 34.9s)⇒ `trialUpgrade=true` 本应成立;
+- 但 P11-300 的 `sustainedRefusesTrial`(§68.3-A)成立:`sustained=8838K < required=13222K`
+  ⇒ 试探被否决;
+- **日志缺口**:`trial refused (sustained low)` 是**每实例一次性**标志
+  (`sustainedTrialRefusedLogged`),23:55:50 已为 720p 用掉,故此后 2.5 分钟**一行拒绝日志都没有**,
+  看起来像「ABR 根本没评估」。
+
+### §71.5 根因:同一测量量既制造问题又否决解药
+
+| 量 | 1080p 在位(自动会话) | 手切 1440/2160(新单轨会话) |
+|---|---|---|
+| `sus` | 5.1~9.3M | —(新会话) |
+| `cap` | 6~10.2M | 11.8~28M / 28~58M |
+| REAL | 5~16Mbps | 15~30M / 42~57Mbps |
+| 结果 | 标准路 + 试探路都不放行 | 稳定播完,无降档 |
+
+与 §67.15 同一结论:**手切换了会话与 pacing 模式(单轨锁),自动升档要留在原会话里**。原会话的
+服务端供给节奏把 `est/sus/cap` 全部封在「当前档消耗的 1.5~3×」,真实管道无法被测到;而 P11-300
+又规定「满缓冲不能替代持续带宽证据」,用**同一个被封顶的 sus** 否决唯一能治愈测量的试探。
+⇒ 判据链自锁:试探的设计目的(绕过失真测量)被 P11-300 部分撤销。
+
+### §71.6 判据链冲突(改码前必须先解决)
+
+| # | 规则 | 冲突点 |
+|---|---|---|
+| 1 | §24 试探:「容量/持续闸失真也升」 | 与 #2 直接矛盾 |
+| 2 | P11-300-A:`trial` 不得绕过 `sustained < required` | 在 pacing 会话里 sus 结构性低于下一档 → 试探永不触发 |
+| 3 | P11-300-A 的验收线「停 >60s 且 **est 明显高于** need 再放宽」 | 本场 est 也被 pacing 封顶,**该验收线永远不触发**,等于永久锁死 |
+| 4 | P11-300 的立论案例(§68.2):sus=5870K/need=13330K(0.44×)试探 23s 超时 | 本场 sus/need = 0.67~0.83×,手切实测 15~30M ⇒ 同一个「sus<need」里混着两种完全不同的物理状态 |
+
+### §71.7 候选修法(未实施,待用户选)
+
+- **A. 试探的 sustained 否决改成相对阈值**:`sustained < required×k`(k≈0.6~0.7)才拒。
+  §68.2 的 0.44 仍被挡,本场 0.67~0.83 放行。代价 = 纯启发式,边界靠日志调。
+- **B. 缓冲「持续满」探测**:`bufS` 连续 ≥ 试探线 N 秒(如 10s)且窗口内无失败 ⇒ 允许试探,
+  不看 sus。理由:缓冲持续满 = 供给 ≥ 消耗的硬证据;切换风险由既有 trial abort(`bufS<15s`
+  且下漏立即降)兜底。比 A 更贴物理,但要防「满缓冲骑线反复试探」。
+- **C. 自动重建会话(等价手切)**:ABR 在档 T + 满缓冲 + pacing 锁定 ≥60s 时,按 §67.15-(5)/
+  P11-301 的护栏重建 SABR 会话并把首选轨设为 T+1。今日证据(新会话 15~57Mbps)最支持这条,
+  但改动最大、有重载/续播成本。
+- **D. 只补诊断**:把 `trial refused` / `upshift held` 改成**每候选每状态变化**打一次,先拿全量
+  证据再改判据(最低风险)。
+
+### §71.8 验收 / 否证(适用 A/B/C)
+
+- **验收**:同场景(1080p、`bufS≥38s`、手切可 1440/2160)下,自动会话在 ≤60s 内出现
+  `trial upshift` → 1440p,切后 `cap/sus` 被喂到 ≥15M,不再钉死 1080p;
+- **否证**:①试探后 1440p 请求 >20s 超时、缓冲 28→0 或触发整场重载 ⇒ 该修法回退;
+  ②窄管道(手切 1440 也只有 5~6Mbps)下试探不收敛、每 3min 撞同一堵墙 ⇒ 冷却/阈值需收紧。
+
+### §71.9 实施口径(P11-306):「请求提前满足」= 服务端按档位供流的证据
+
+**动机**:§71.5 —— `est/sus/cap` 在 pacing 会话里全被封顶,不能拿它们否决升档。用户口径
+「请求的数据不是知道吗,如果每次请求都提前满足,那应该是了」。
+
+**判据**(fetcher 内,按**当前选中视频 itag**逐笔记账,只记媒体请求 `req.segment > 0`):
+
+每笔成功响应:
+
+- `satisfied` = 请求段已交付(早停 `streamNeedSatisfied` 成立,且该 seq 的 MEDIA_END 已到);
+- `mediaMs` = 本响应为该 itag 完成的**非 init 段数 × 段时长**(段时长优先取 ChunkIndex 网格
+  `start(seq+1)-start(seq)`,缺失时取 INIT metadata 的 `duration/endSegmentNumber`);
+- `ahead` = `mediaMs / elapsed ≥ 1.0` —— 交付的内容时长 ≥ 实际耗时(比实时快);
+- 失败/超时直接记一条 `failed` 样本。
+
+**`serverPaced` 成立条件**(全部满足):
+
+1. 该 itag 最近 60s 内 ≥3 笔样本,且最近 4 笔全部 `satisfied && ahead`;
+2. 窗口内无 `failed`;
+3. 这 4 笔的 `mediaMs/elapsed` 中位数 ≥ 1.0×。
+
+**接入点(只改一处)**:
+
+```kotlin
+val sustainedRefusesTrial = sustained >= 0L && sustained < required && !serverPaced
+```
+
+即 `serverPaced` **只解除 P11-300-A 对试探的否决**。其余不动:容量闸 #6、`trialOverCapacity` #9、
+顶档不试探(#10 的路径限制)、逐级爬 #2、缓冲地板 #11、trial abort、3min 失败冷却。
+
+**为什么能区分 §68.2 的坏案例**:那场试探后的 1440p 请求 18~23s 超时/慢滴,窗口内会产生
+`failed` 或 `satisfied=false` 样本;本场 1080p 每次请求 2~4s 早停、交付 ~10s 内容
+(`REAL 3.66MB/3916ms`,2 段 × 4.77s ≈ 9.5s,`mediaMs/elapsed≈2.4×`)⇒ 全部 ahead。
+
+**刻意接受的代价**:链路刚好只够当前档(如 5Mbps 上的 1080p)也会被判 `serverPaced` → 试探 1440p
+失败。由既有 trial abort(2s 宽限、`bufS<15s` 立即降)+ 3min 失败冷却兜底;最坏是每 ~3min 撞一次,
+不是整场重载。§68.2 的「零交付/慢滴」场景已由样本 `failed` 挡住。
+
+**验收**:同场景(1080p、`bufS≥38s`、手切可 1440/2160)下,自动会话 ≤60s 内出现
+`trial upshift … pacing=…` → 1440p;切后 `cap/sus` 被喂到 ≥15M,不再钉死 1080p。
+
+**否证**:①出现 `trial refused (sustained low)` 但 `pace≥1.0` 持续 >60s ⇒ 判据或接线有误;
+②`serverPaced` 下试探 1440p 仍 18s+ 超时/整场重载 ⇒ 回退(把 `!serverPaced` 改回原式);
+③窄管道路上每 3min 一次可见卡顿 ⇒ 提高 `PACING_MIN_SAMPLES` 或要求 `ahead≥1.2`。
+
+### §71.10 真机验证(dev.r2279,2026-11-02 00:29,`logs_live_20261102_003207.log`)
+
+**结论:接线生效(`pace=` 出现),但本场没有走到「试探解除 sustained 否决」那条分支。** 本场自动爬档
+走的是另外两条已存在的路径,且 4K 尝试因会话抖动被打回。
+
+| 时刻 | 事件 | 关键读数 |
+|---|---|---|
+| 00:29:59 | 720p 起播(续播 pos=29s) | **没有**再出现 alpha.10 的 720→480 起步降档 |
+| 00:30:02 | 冷启动梯子 → 1080p(itag303) | `upshift (cold-start ladder, reseed skipped)` |
+| 00:30:03 | 1440p 试探被 P11-300 拒 | `sustained=9770K < need=14170K`,**`pace=-`**(该档视频请求样本 <3) |
+| 00:30:08 | `tier need borrowed` 把 1440p need 校准为 **8.2M** | 1080p `meas=4092K/declared=7070K`(0.579)⇒ 直接过 gated 门,**不是 P11-306** |
+| 00:30:43 | 1440p 上屏 | `vfmt=1440p/308` |
+| 00:31:05 | gated 升 2160p | `sus=38338K`(60s 突发)> need≈19.5M,缓冲 18s |
+| 00:31:30 | **BUFFERING** | `fwdBuf=92ms`;4K 段 21MB 在途 |
+| 00:31:40 | 4K→1440p 水位急救 | `bufS=3.4s`;同刻 `rn=18 timeout(fail=8005ms)` → `evict sid`,2160p 冷却 90s/180s |
+| 00:31:48/50 | 1440p 恢复,证据出现 | `pace=3.5x` / `4.3x`,缓冲 17→27s,`cap=42641K` |
+
+**判读**:
+
+1. **P11-306 证据链工作**:`pace` 从 `-` 变为 3.5x/4.3x,与「同轨最近 4 笔请求全部早停且
+   `mediaMs/elapsed≥1`」一致。
+2. **样本累积偏慢是设计使然**:`recordPacingSample` 只记「请求格式是视频」的请求;本场大量
+   音频请求(`itag=139`)的响应里顺带推了 308 段,但不产生视频样本 ⇒ 1440p 切换后要等视频
+   loader 再发满 4 笔才有证据。保守方向,不影响正确性。
+3. **本场爬升不是新判据的功**:1080p→1440p 是 `tier need borrowed` 校准(昨天 alpha.10 同位置
+   need=11.38M、sus 5~9M 仍过不去;今天 need=8.2M 才过),1440p→2160p 是 gated sus 门。
+   `trial sustained-veto lifted` 一行都没有 —— 需要「停在某档 + 满缓冲 + pace≥1」的场景才能触发。
+4. **4K 打回不是带宽判据错**:4K 在位时 `bw=26~38M`、`sus=22~38M`,按数字应站得住;实际是
+   共享响应上一笔音频请求 8s 静默超时 → `evict sid`,在途 21MB 段被截断,缓冲 18→0.09→3.4s
+   ⇒ 水位急救降 1440p。属会话/CDN 抖动(P11-301 的 `isSessionDegraded` 只记到 1 次超时,未达 2 次门槛)。
+5. **无整场重载**:全场只有 1 次 BUFFERING(约 6s)与 1 次 evict,没有 `stall detected`/auto-retry;
+   相比 P11-305 的慢滴让路,这次降档接管得及时。
+
+### §71.11 音频请求被同响应视频段拖死:提前返回 + 交付后超时不 evict(P11-307)
+
+**真因**(`logs_live_20261102_003207.log` 00:31:32,rn=18):
+
+```
+fetch rn=18 itag=139 seg=14  starving-fast-fail: bufAhead=8438ms → callCap=8000ms
+00:31:36 MEDIA_END itag=139 seq=14 61KB          ← 请求段 4.2s 已到手
+00:31:37 MEDIA_END itag=315 seq=28 17.7MB        ← 同一响应继续推 4K
+00:31:37 MEDIA_HEADER itag=315 seq=29 21MB
+00:31:40 fetch rn=18 timeout (fail=8005ms) → SabrDataSource evict
+```
+
+两个问题叠加:
+
+1. **音频不该有 margin**:`marginFor` 原式在 `selectedVideoItagNote <= 0`(视频 chunk source 还没刷新)
+   时让音频也走 `streamMargin()=1`,即音频请求要等「下一个音频段」;而服务端这份响应里只有
+   当前音频段 + 视频段,永远等不到 ⇒ 只能一直读到 8s 上限。
+2. **请求段已到手却按失败处理**:`fetchStreamData` 的通用 catch 把任何超时都记成失败并 throw,
+   `SabrDataSource` 于是 evict **整条会话**(A+V 共享),在途视频段被截断,4K 缓冲 18→3.4s。
+
+**改动(两处,只动音频/失败收尾,不碰请求协议与 ABR)**:
+
+- `marginFor`:非当前选中视频轨一律 **0**;「位置未知」的旧行为只对**视频格式**保留。
+- `fetchStreamData` catch:若 `req.segment > 0` 且该段已入库 ⇒ 打
+  `timeout after requested seg delivered: … margin=… selectedVideoNote=… → treat as success (P11-306)`,
+  按成功返回 `StreamResult(earlyStop=true)`;记真实 `readBytes/failMs` 带宽样本与往返,
+  **不** `recordRealBandwidthFailure`、**不** evict。后续段由下一次请求补,下一次失败会走正常 evict。
+
+**为什么不是"提前再次请求"**:这一笔对播放器已经交付了请求段,再发一次只会重复拿同一段;
+真正该做的是**马上把这次调用结束**,让排在 dispatcher 后面的请求(视频 loader)立刻执行。
+早停 + 交付后不 evict 就是这个语义。
+
+**验收**:再遇「音频请求 + 同响应推大视频段 + 超时」:日志出现 `timeout after requested seg delivered`,
+且**没有** `SabrDataSource open: … → evict`;播放不再因音频超时断流/降档。
+
+**否证**:①若请求段到手但返回成功后,连续多笔都超时 ⇒ 会话确实坏了,正常路径会在下一次失败 evict,
+不掩盖问题;②若早停后视频 loader 的下一笔请求拿不到段 ⇒ 说明服务端游标被音频请求带走,需再评估
+请求体 `bufferedRanges` 口径。
+
+### §71.12 P11-308:会话重建判据改成「缓冲见底」,撤掉吞吐峰值塌陷
+
+**现场**(`logs_live_20261102_234155.log`,alpha.11,`ajFm8D4NROQ`):23:41:17 在 1440p 上
+`session degraded → rebuild(P11-301)`,但当时:
+
+- 1440p 校准实需 **10.39Mbps**,最近两笔成功吞吐 **19.7/16.6Mbps**;
+- 峰值 67.3Mbps 来自 `rn=85` 一笔 9.77MB/1.16s 的小/顺带响应;
+- 缓冲 7.1s 是满缓冲停闸 42.3s 后排空的底部,`rn=91` 的 10.8MB 响应在重建后 **1 秒**落地。
+
+**为什么原判据错**:`recentMin < sessionPeak × 35%` 拿“本会话最快一笔”当基线。服务端按**当前档
+需求** pacing(1080p/1440p/2160p 每档吞吐本就不同),峰值是突发/小响应撑出来的;用它做分母,正常
+回落到 1440p 的 16~20M 也会被判塌陷。
+
+**新判据**(只改 `isSessionDegraded`,动作不变):
+
+```
+会话龄 > 20s
+且 bufferedAheadMs ≤ 1s          // 探针粒度内的“缓冲见底”,不是 8s
+且 零交付超时 ≥ 2
+且 在途视频段 ETA 不在 0~5s       // 正在落地就先等
+```
+
+- 不再看吞吐、不再看峰值;
+- **还有缓冲就不重建**:交给 ABR 水位急救/降档;8s stall 看门狗是**硬重载**兜底;
+- 缓冲见底但视频段 ETA 很短 ⇒ 先等它落地,下一次探针缓冲回填就不触发;
+- 两种重载方式共存:P11-301 在**缓冲见底**时带会话质量证据提前触发(软);8s 看门狗是位置冻结
+  后的硬重载。P11-301 最多提前约一个 stall 阈值(8s)。
+
+**注意重载成本**:`session degraded → rebuild` 不是只换 fetcher,而是
+`tracks changed groups=0 → player ENDED → launch metadata/playurl/cdn → prepare startPos=…`,
+即**整场播放器重载 + 重新 resolve + 续播**(本次间隔约 7s,且新会话从 720p 重新爬)。所以只要还有
+缓冲就不该触发。
+
+**验收**:同场景(1440p、7s 缓冲、2 次流截断、下一笔在途响应即将落地)不再出现
+`session degraded → rebuild`;真坏会话缓冲见底 + 2 次超时仍会重建;缓冲见底但在途 ETA≤5s 时推迟。
+
+**否证**:①缓冲见底、2 次超时,但在途 ETA 一直 ≤5s(数据实际不来)⇒ ETA 门需收紧;
+②缓冲见底后 5s 探针才到,8s 看门狗已先硬重载 ⇒ P11-301 失去意义,需把探针间隔/阈值对齐。
+
+### §71.12.1 历史日志校核(2026-11-03,322 份日志)
+
+按用户规矩「每次升降档/重载判据调整都要用历史日志校核」,扫 `Y:\download\bilitv\logs`:
+
+**旧 P11-301 重载事件(5 次)**
+
+| 文件 | 触发时 fwdBuf | 新判据(≤1s) |
+|---|---|---|
+| 10-31 17:04:45 | 7565ms | 不触发(还有缓冲,等见底) |
+| 10-31 21:45:41 | 9240ms | 不触发 |
+| 11-01 09:55:43 | 11743ms | 不触发 |
+| 11-01 20:51:47 | 11690ms | 不触发 |
+| 11-02 23:41:17 | 7073ms | 不触发——**本次要避免的误重建** |
+
+⇒ 旧 5 次全部是“缓冲 7.5~11.7s 就预判重建”;新判据不再预判,等缓冲真正见底。若会话确实坏,
+由 P11-301 在见底时触发,或由 8s 看门狗硬重载。
+
+**全量模拟(按 `registerByVideoId` 分会话,steady probe 5s 一次;阈值 ≤1s、1 次命中、超时≥2)**
+
+| 口径 | 触发会话数 | 120s 内 stall | 无 stall 且回填 | 未知 | fire→stall 中位 |
+|---|---|---|---|---|---|
+| **缓冲见底(≤1s,当前实现)** | 30 | 26 | 2 | 2 | **8s** |
+
+- 26 次 stall 样本中 21 次在 10s 内、24 次在 30s 内;中位提前 8s ≈ 一个 stall 阈值,即
+  “缓冲见底就触发”与“8s 看门狗硬重载”之间最多差一个看门狗周期。
+- 无 stall 回填只有 2 次(6.7%),明显少于 8s×2 变体的 5 次。
+- 8s×2 变体曾模拟为 35 触发/28 stall/5 回填;它仍会在有 7~8s 缓冲时重载,不符合
+  「有缓冲没必要重载」,故放弃。
+- 在途 ETA 门无法从历史 probe 日志精确回放(没有 ETA 字段),但它只在缓冲已经见底时生效,
+  方向是“再等几秒”,不会把已见底的坏会话漏掉。
+
+## §72 2026-11-09 判读:起播「720→480→360」连降两级,**360 是证据不足的过度降档**(诊断,不改码)
+
+**现场**:`logs_live_20261109_220244.log`(alpha.14,BRAVIA AE2,mt5897)最后两个视频:
+`L6cHCRIP_iU`(21:57:25 起播,最终画面停在 360p)与 `RS9LP7Oo-Dc`(21:59:27 起播,720→1080→1440→2160)。
+用户口径:「看看倒数第二个日志 最后两个视频 一个360 一个从720涨到2160」「起步的360判定有没有问题」。
+
+### §72.1 时间线:第一个视频(停在 360p)
+
+| 时刻 | 事件 | 关键读数 |
+|---|---|---|
+| 21:57:25.594 | resolve,会话首选 `itag298(720p)` | `videoFormats=14` |
+| 21:57:30.296 | startup lock 720p | `480p@1872180(itag244) → 720p@4176691(itag302)` |
+| 21:57:32.982 | startup lock released | ABR 自由爬档 |
+| 21:57:33.220 | **720p → 480p**(est 普通降档) | `est=2939K sus=-1 bufS=5s`;720p 声明 4176K |
+| 21:57:34.825 | 480p `init` 落地 | `itag244 bytes=3950` |
+| 21:57:34.830 | **480p → 360p**(水位急救) | `bufS=3.6s < 8s`;`roundTrip=1509ms`;`meas=0K`(未知) |
+| 21:57:37.659 | freeze episode held at 360p | 一段饥饿只开一枪 |
+| 21:57:39–21:58:25 | 360p 持续拉流 | `bw=2566→6328K`、`sus=2435→5257K`、`pace=7.7→19.2x`、`bufS=30~48s` |
+| 21:58:25.553 | 才升 480p | `upshift reseed → 1872180(itag244)` |
+| 21:58:26.215 | 升 720p 被 settle 拦 | `age=664ms < settle=4000ms` |
+| 21:58:29–21:58:54 | **画面仍是 360p** | `steady probe vfmt=360p/243`、`est=real=4039K` 冻结 |
+| 21:58:55.130 | 解码器才切到 854x480 | 之后未再升 720p,用户切到下一个视频 |
+
+### §72.2 时间线:第二个视频(正常爬梯)
+
+| 时刻 | 事件 | 关键读数 |
+|---|---|---|
+| 21:59:27.9 | resolve,startup lock 720p | `720p@6574229(itag302)` |
+| 21:59:38.538 | 升 1080p | `upshift reseed → 11809549(itag303)` |
+| 21:59:42.619 | 升 1440p | `upshift reseed → 13880292(itag308)` |
+| 22:00:58.021 | 升 2160p 被缓冲地板拦 | `bufS=9s < floor=15s` |
+| 22:01:07.754 | 升 2160p | `upshift reseed → 26795299(itag315)` |
+
+⇒ 同一条链路、相邻时间,第二个视频能爬到 2160p;第一个视频停在 360p **不是管道能力问题**。
+
+### §72.3 360 那一枪的判据逐条对账
+
+`buffer-critical` 的 suppress 闸需要四条腿同时成立
+(`HeightAwareAdaptiveTrackSelection` P11-168/177/188/203):
+
+| 腿 | 本次读数 | 结果 |
+|---|---|---|
+| `estHasMargin`(est ≥ need×1.15) | `est≈2913K` ≥ 480p need 1872K×1.15=2153K | ✅ |
+| `measCoversTier`(本档实测 ≥ need) | 480p 只有 `init`,媒体段 0 ⇒ `getMeasuredBitrateBps=-1` | ❌ **未知** |
+| `arrivalCoversBuffer`(2×往返 ≤ 水位) | `1509×2=3018ms ≤ 3600ms` | ✅ |
+| `silenceHang` | false | ✅(不豁免闸) |
+
+⇒ **唯一失败的是「实测未知」这条腿**。P11-188 明确规定「未知 = 证据不足 ⇒ 闸不成立 ⇒ 水位急救照常降档」,
+所以代码按设计执行了;但这一次「未知」不是链路没能力,而是**档刚切过来、媒体段还没攒够 3 条**的结构性
+空缺 —— 与 P11-188 要防的「高档被切来切去攒不够样本」同源,代价落到了刚降下来的新档上。
+
+同时,`DOWNGRADE_AFTER_UPGRADE_GRACE_MS=5s` 只保护**升档后**,普通降档后没有 grace;
+`freezeEpisodeActive` 又是在**这一枪之后**才置位 ⇒ 33.220 的 720→480 不阻止 34.830 的 480→360。
+结果 1.6 秒内连降两级,而 480p 的 est 余量其实是 1.57×。
+
+### §72.4 为什么停在 360 不爬回去
+
+- 360p 在位时拉流很快:`fetch rn=73 REAL 430149B/473ms ≈ 7Mbps`,`pace=14.7~19.2x`,缓冲回填到 48s;
+- 但缓冲满后 fetcher 主动停拉,**ABR 没有新评估点**,`est` 冻结在 `4039K`;
+- 下一档 720p 声明 `4176691` > 冻结 est `4039K` ⇒ 容量闸恒不过;`sus=5257K` 虽然够,但
+  capacity 腿看 est ⇒ 只能升到 480p,无法回 720p。
+- 即「360 的过度降档」+「满缓冲停拉冻结 est」叠加,把一个本可 720p 的会话钉在 360p 画面约 1.5 分钟。
+
+### §72.5 结论与候选修法(未实施)
+
+**结论**:360 这一枪不是带宽判定,是「刚切档 + 实测未知 + 缓冲正好跌破 8s」三者叠加的过度降档。
+判据执行无误,但判据链在「普通降档后的第二个水位枪」上缺一个保护。
+
+候选(按改动从小到大):
+
+- **A. 降档后短 grace**:普通降档后 `DOWNGRADE_AFTER_DOWNGRADE_GRACE_MS`(1.5~2s 或「新档首个 media 段落地」)
+  内不允许水位急救再降一级;真挂死(`silenceHang`)或水位 < 2s 硬地板仍放行。
+- **B. 刚切档的 meas 未知按「切换伪影」处理**:仅当 `now - lastDowngrade < Ns` 且本档 est 有余量、
+  往返容得下缓冲时,suppress 这一枪;超过窗口仍按 P11-188 的「未知=不 suppress」。
+- **C. 水位急救要求新档至少 1 条 media 段**:`init` 不算证据;真饿由 8s/25s 看门狗兜底。
+  最贴物理,但可能让极端慢源多卡 1~2s。
+- **D. 只补诊断**:在 `buffer-critical` 行打印 `sinceLastDowngradeMs`、新档 `segs`,先量化历史命中率再改判据。
+
+**验收**(A/B/C):同场景(720→480 后 1~2s、bufS<8s、新档 meas 未知、est≥480p need×1.15)不再出现
+480→360;若新档 3 段实测仍低于 need,则照常降档。**否证**:真慢源(手切 480p 也只有 ~1Mbps)下
+480p 继续漏光且不降档 ⇒ 该保护过宽,需收紧窗口或保留 `silenceHang` 豁免。
+
+### §72.6 历史校核(2026-11-09,336 份日志 / 322MB)
+
+按 §39 规矩扫 `Y:\download\bilitv\logs`。口径:`buffer-critical downgrade: ... → 360p` 为一次命中;
+同一事件在滚动切片里重复出现(如 `20261107_184637/184736/184701` 是同一份日志的三份切片),按
+「日期+时刻+from/to+bufS+roundTrip」去重。
+
+**总量**:49 次原始命中 / 26 个文件 ⇒ **35 个去重事件**,时间跨度 09-20 → 11-09。
+**当前判据链(P11-203 roundTrip 上线后,10-06 起)**:29 个事件。
+
+| 分类标准(以 480p 声明码率为基准) | 事件数 | 占比 |
+|---|---|---|
+| **过度降档**:est ≥ 1.5× 480p 声明(最高 27×);失败腿是「新档 meas 未知」或「2×往返 > 水位」(都是刚切档的结构性证据空缺) | **15** | 52% |
+| **边缘**:est = 1.15~1.5× 声明 | 7 | 24% |
+| **真饿**:est < 声明、`roundTrip` 超时(18s)或 `silenceHang=true` | 7 | 24% |
+
+⇒ **约一半的“起步 360”不是带宽判定,是“刚切 480p + 实测未知 + 缓冲跌破 8s”的切换伪影**,
+与 §72.1/§72.2 的 alpha.14 现场同源;真饿只占约四分之一。
+
+**典型过度降档事件**:
+
+| 时刻 | est / 480p 声明 | meas | bufS | roundTrip | 后果 |
+|---|---|---|---|---|---|
+| 10-09 00:20:23 | 13513K / 494K(27×) | 470K | 0s | 1045ms | 360p |
+| 10-09 00:29:12 | 10303K / 1074K(9.6×) | 0K | 0s | 585ms | 1ms 后被 startup lock 拉回 480p(无害) |
+| 10-10 00:33:41 | 11488K / 4478K(2.57×) | 0K | 4.6s | 607ms | **480p 冷却 1.3s 就 early-clear,但仍无 upshift;缓冲涨到 29s 仍钉 360p,73s 后 `stall detected` 重载** |
+| 11-01 16:45:27 | 3044K / 977K(3.1×) | 0K | 2.0s | 2078ms | 360p |
+| 11-05 21:14:37 | 4274K / 1497K(2.86×) | 0K | 6.1s | 2448ms | 12s 内 360→480→720→1080 自愈 |
+| 11-06 20:46:06 | 2790K / 1497K(1.86×) | 0K | 3.0s | 2674ms | 后续升回 |
+| 11-09 22:26:47 | 2120K / 1059K(2.0×) | 0K | 7.2s | 790ms | ~11s 后 360→480→720→1080→1440 自愈 |
+| 11-09 21:57:34 | 2913K / 1872K(1.56×) | 0K | 3.6s | 1509ms | 480p 冷却 6s 后 early-clear,但 45s 后才升 480p;画面停在 360p ~1.5min |
+
+**结论**:
+- 该模式**不是 alpha.14 新增**,09-20 起就有,10-06 现行判据后仍占一半以上;
+- 失败链固定为「**普通 720→480 降档 → 新档只有 init/0 段 → 缓冲 <8s → 再降 360**」,两次降档间隔
+  多数 < 2s;此时 B 闸要么因 `meas=-1` 不成立,要么因 `2×往返 > 水位` 不成立;
+- 自愈与否取决于两件事:①480p 的 90s 冷却能否 early-clear;②升档判据是否仍要求 `sus/meas` 证据
+  (10-10 00:33 那场 480p 冷却已 early-clear、est 11~13M、缓冲 29s,但仍无 upshift,直到 stall)。
+  ⇒ 只修“第二枪”还不够,**还要保证降档后能凭 est+缓冲重新升回**;否则 360 会因冷却/证据门槛被钉住。
+
+**修法排序(基于历史证据)**:
+1. **A(降档后 grace)**:直接切断「两次降档间隔 <2s」这条主链,历史 35 次里大多数会消失;
+2. **B(刚切档 meas 未知按切换伪影 suppress)**:与 A 重叠,但能覆盖“隔了 2~5s 才评估”的残余;
+3. **C(要求新档 ≥1 条 media 段)**:最保守,但 10-10 00:33 这类“init 后 media 未落地”仍会命中;
+4. **D(只补诊断)**:不改判据,先量化;历史证据已足够,优先级最低。
+
+**验收**:同场景(720→480 后 ≤2s、bufS<8s、新档 meas=0、est ≥ 480p 声明×1.15)不再出现
+480→360;真饿(est<声明、roundTrip≥18s、silenceHang)仍照常降档。**否证**:窄管道下 480p 继续
+漏光且不降档 ⇒ 窗口/阈值过宽,需收紧并保留 `silenceHang` 豁免。
+
+### §72.7 A+B 判据链核对与实施(2026-11-09,用户「一起吧 验下合理性」)
+
+**实施点**:`HeightAwareAdaptiveTrackSelection.kt`
+- 新增 `lastDowngradeTargetIndex`(降档落点)与 `postDowngradeGraceLogged`;
+- 常量 `DOWNGRADE_AFTER_DOWNGRADE_GRACE_MS = 2000`、`SWITCH_ARTIFACT_MEAS_GRACE_MS = 5000`;
+- `bufferCritical` 增加 `!postDowngradeGrace`;
+- suppress 闸的 `measCoversTier` 改为 `measEvidenceOk = measCoversTier || measUnknownSwitchArtifact`。
+
+**判据链逐条对账**(只列与水位急救/降档相交的规则):
+
+| # | 规则 | 与 A/B 的关系 / 冲突检查 |
+|---|---|---|
+| 1 | P11-219 起播未缓冲不急救 | A/B 都在 `maxObservedBufferedUs > 0` 之后才可能生效,不冲突 |
+| 2 | P11-203 交付节奏腿(2×往返 ≤ 水位) | **B 必须过这条**,A 不要求(2s 内一律先等);A 期间 est 降档 C 路径照常 |
+| 3 | P11-188 meas 未知=证据不足 ⇒ 不 suppress | **B 是刻意收窄**:只对「`selected == lastDowngradeTargetIndex` 且 ≤5s」放行;高档反复切、窗口外的未知仍按 P11-188 |
+| 4 | P11-178 silenceHang | A/B 都显式豁免;零字节挂死仍立即降档 |
+| 5 | P11-300 trialAbort | A/B 都显式豁免;试探熔断仍立即降档 |
+| 6 | `freezeEpisodeActive`(一段饥饿一枪) | A 只是额外前置闸;不重置 freeze;grace 到期后仍可开第二枪 |
+| 7 | P11-237 est 滞回 + 守档地板 | 只影响水位急救;C 路径与缓冲 hold 完全不动 |
+| 8 | 降档后 90s 冷却 + early-clear | A/B 拦住第二枪 ⇒ **新档不再被排除**;旧档冷却仍在,但新档可继续用,避免历史「两档都被锁 90s」 |
+| 9 | P11-251/P11-286 升档地板/settle | 不涉及;A/B 只改降档侧 |
+
+**为什么不会过度 suppress(合理性)**:
+- **真饿**:`est < 480p need` ⇒ `estHasMargin=false`,B 不成立;A 仅 2s,且同一次评估的 est 降档
+  (C 路径)仍会立即落档——A 只挡「est 明明够、只因切档丢缓冲」的那一枪。
+- **真挂死**:`silenceHang=true` ⇒ A/B 都豁免。
+- **试探熔断**:`trialAbort=true` ⇒ A/B 都豁免。
+- **慢滴/往返慢**:B 的 `arrivalCoversBuffer` 不过(如 10-27 18s、11-08 11s 的案例)⇒ 不 suppress;
+  A 2s 后自动失效。
+- **高档反复切**:B 要求 `selected == lastDowngradeTargetIndex`;同高度换 codec / 升档后 index 不同
+  ⇒ 不会把 P11-188 要防的「高档永远攒不够 3 段」重新放进来。
+
+**历史回归预期(§72.6 的 29 个现行事件)**:
+- 15 个过度降档中,已知典型双降间隔 **0.75~1.61s**,全部落在 A 的 2s 内 ⇒ 不再降 360;
+- 间隔 2~5s 且新档 `meas=0` 的残余由 B 兜(仍需 est 余量 + 往返容得下缓冲);
+- 7 个真饿(est<声明、18s 往返、silenceHang)不受影响;
+- 7 个边缘(1.15~1.5×)不强行豁免:若在 2s 内由 A 暂缓,2s 后/下一次评估仍按原判据;
+  10-10 00:33 这类「480p 冷却已 early-clear、est 11~13M、缓冲 29s 仍钉 360」的回升问题不在 A/B
+  范围内,需另修升档侧的 sus/meas 门槛(见 §72.6 结论)。
+
+**验收日志**:
+- A 触发:`water-level rescue held (post-downgrade grace, P11-312): ... last downgrade <2000ms`
+- B 触发:`buffer-critical downgrade **suppressed**(P11-312 switch artifact): ... sinceDowngrade=<5000ms`
+- 真饿仍出现原有 `buffer-critical downgrade: ...`。
+
+**否证线**:
+- ①降档后 ≤2s 内、est 高、无 silenceHang、无 trialAbort,但确实 8s 内 stall ⇒ A 的 2s 太宽,收紧到
+  单次评估或要求「新档首段已发出」;
+- ②B 在「非刚降档目标档」上出现 `switch artifact` ⇒ index 判据失效,立即回退 B;
+- ③A/B 生效后 360 下降事件消失,但 480p 上 stall 率上升 ⇒ 说明该降的没降,需把 A 缩到 1s 或只对
+  「刚降档且旧档缓冲被 cleanup」生效。
+
+### §73 P11-313:TV / 移动端播放看门狗同源(移动端补 P11-305)
+
+**现场(2026-11-10,`logs_live_20261110_134944.log`)**:4K itag315(声明 26.56Mbps)以 ~30Mbps
+起播,13:49:03 起链路掉到 16.9Mbps。13:49:09.836 发出 rn=23(seg62 + margin 后继段),seg62 于
+13:49:15.428 已完整入库,但 `getNextSegment` 要等后继段 seg63 到 13:49:30.871 才返回;播放器
+13:49:21.597 缓冲耗尽,看门狗 13:49:30.258 开枪(**比数据落地早 0.6s**)→ 整场重载。TV 端当时
+已有 P11-305(在途视频段 ETA≤10s 先让路 ≤12s,§70),移动端 `MobilePlayerScreen` **没有**这段判定。
+
+**历史校验(`tmp/verify_margin_stalls.py`,2026-11-10;338 份日志 / 13,212 笔 `fetch REAL` /
+316 次 `stall detected`)**:
+
+- stall 时无 SABR 请求在途 138 次;仅有 init(seg=0)请求 43 次;有**媒体**请求在途 135 次。
+- 135 次中「请求段在 stall 前已落地」12 次(去重后 7 个事件);提前 ≥2s 的仅 **2 个事件**
+  (本次 14.8s、11-08 起播 115.5s),其余 0.1~1.3s,早返回也来不及。
+- 4K 早停 94% 会等后继段;margin tax p50=1.8s / p75=2.6s / p90=4.6s / max=16.4s。
+- 单笔 fetch 耗时超过请求时缓冲的:全部 2%,4K 3%(27/975)。
+
+⇒ margin **不是** stall 主因(91% 的在途 stall 是请求段根本没到),但移动端缺 P11-305 会把这一个
+尾部个案放大成整场重载。故本轮只做「同源 + 补让路」,不改 margin 策略、不做后台续读。
+
+**改动**:
+
+- 新增 `app/src/main/java/com/kirin/mt/ui/player/common/PlaybackStallWatchdog.kt`:
+  纯逻辑状态机(位置冻结 / 视频冻结 / 慢滴让路),时间由调用方传入(`elapsedRealtime` 口径)。
+- `PlayerScreen`(TV)与 `MobilePlayerScreen` 的看门狗全部委托它;日志格式与判据不变。
+- TV 独占的深度重试(P11-85)经 `Action.RETRY_EXHAUSTED` 暴露,行为不变;移动端忽略。
+- 两端行为统一:重载时清零视频冻结窗口(此前只有移动端做)、位置恢复时清零让路窗口
+  (此前只有 TV 做)、首帧清零起播计时器(P11-122)。
+
+**验收日志**:
+
+- 移动端同场景应出现 `stall reload deferred (slow-drip in flight, P11-305): eta=… deferMax=12000ms`,
+  且 12s 内不出现 `stall detected`;
+- TV 端原有 deferred 行、深度重试行(`stall retries exhausted, deep retry`)保持不变。
+
+**否证线**:
+
+- ①移动端出现 deferred 但 12s 后仍 `stall detected` ⇒ 让路窗口或慢滴 ETA 估计失准;
+- ②移动端 `stall detected` 的 buffered/retry 编号与改动前不一致 ⇒ 状态机迁移有偏差,回退。

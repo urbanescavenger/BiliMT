@@ -138,6 +138,7 @@ import com.kirin.mt.ui.common.FeedStatusScreen
 import com.kirin.mt.ui.common.currentClockMinuteKey
 import com.kirin.mt.ui.common.currentClockText
 import com.kirin.mt.ui.i18n.LocalChineseTextConverter
+import com.kirin.mt.ui.player.common.PlaybackStallWatchdog
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.ui.theme.BiliMotion
 import com.kirin.mt.ui.theme.BiliSizing
@@ -352,11 +353,19 @@ fun PlayerScreen(
     )
     ExoPlayer.Builder(context)
       // P11-197:SABR 续拉门槛按最近一次实测往返抬高(非 SABR / 无样本时返回 0 = 原生行为)。
+      // P11-303:显式按 source 收口 —— SabrAbrMemory 是单例且样本 15 分钟内有效,若全局接线,
+      // B站/直播/TVBox 在看完 YouTube 后的一段时间里会继承 SABR 门槛与档位 cap(含 P11-302 的
+      // draining 状态),语义越界。非 SABR 源一律返回 0,交回 media3 原生行为。
       .setLoadControl(createTvPlaybackLoadControl(
         bufferMaxMs,
-        readAheadMinBufferUs = { SabrAbrMemory.readAheadMinBufferUs() },
+        readAheadMinBufferUs = {
+          if (activeRequest.isYoutube) SabrAbrMemory.readAheadMinBufferUs() else 0L
+        },
         // P11-230:按档位的缓冲上限(≥1440p 收到 20s)—— 压住 Java 堆里的样本量(4K 50s ≈ 180MB)。
-        bufferedCapUs = { SabrAbrMemory.heavyTierBufferedCapUs() },
+        // P11-303:同上,只对 SABR 生效;B站不继承上一场 YouTube 的档位 cap。
+        bufferedCapUs = {
+          if (activeRequest.isYoutube) SabrAbrMemory.heavyTierBufferedCapUs() else 0L
+        },
       ))
       .setTrackSelector(trackSelector)
       // 起始挡位:seed 初始带宽估计到目标档码率/0.7 → 目标挡命中起始档,之后带宽实测自然爬升。
@@ -2076,9 +2085,11 @@ fun PlayerScreen(
           autoResumePositionMs >= 0L -> autoResumePositionMs.also { autoResumePositionMs = -1L }
           resolvedRequest.preferredQualityId != null || resolvedRequest.forceStartPosition ->
             resolvedRequest.startPositionMs
-          else ->
-            playbackRepository.getSavedProgress(info.bvid, info.cid)?.positionMs
-              ?: resolvedRequest.startPositionMs
+          // 已看完的本地进度不再续播:上次停在尾部(距末尾 ≤ [PlaybackCompletedToleranceMs])时
+          // 从 0 重播,否则 seek 到尾部会立刻 ENDED,用户看到的是「再点开又直接结束」。
+          else -> playbackRepository.getSavedProgress(info.bvid, info.cid)
+            ?.takeUnless { it.isCompleted }?.positionMs
+            ?: resolvedRequest.startPositionMs
         }
         val startPositionMs = requestedStartPositionMs
         // alpha.34:SABR 源不可 seek(LENGTH_UNSET)。把续播点 startMs 透传进 sabr:// URL,
@@ -2300,8 +2311,14 @@ fun PlayerScreen(
   val displayRequestState = rememberUpdatedState(displayRequest)
 
   LaunchedEffect(player, playerState) {
-    var stallBaselinePositionMs = 0L
-    var stallSinceMs = 0L
+    // P11-313(同源):TV 与移动端共用同一套 stall / 视频冻结 / 慢滴让路状态机
+    // (见 PlaybackStallWatchdog)。阈值仍取本文件常量,两端行为保持一致。
+    val stallWatchdog = PlaybackStallWatchdog(
+      stallThresholdMs = StallThresholdMs,
+      startupStallThresholdMs = StartupStallThresholdMs,
+      videoFreezeThresholdMs = VideoFreezeThresholdMs,
+      maxAutoRetry = MaxStallAutoRetry,
+    )
     // P11-96 起播探针节拍:未出首帧期间每 StartupProbeIntervalMs 打一行「为什么还没播」快照。
     var startupProbeSinceMs = 0L
     // P11-259 稳态探针节拍(诊断,取证后删):起播后每 SteadyProbeIntervalMs 打一行「画面是否真的在
@@ -2309,17 +2326,8 @@ fun PlayerScreen(
     // READY、只有 isLoading 在翻,现有看门狗与日志都判不出画面到底冻没冻 —— `rendered` 帧计数是
     // 唯一硬凭据(音频活着时位置照走,位置类判据结构性失明)。
     var steadyProbeSinceMs = 0L
-    // 2026-09-01 视频冻结看门狗:BUFFERING 窗口起点 + 窗口内位置是否前进过(音频活着)。
-    var bufferingSinceMs = 0L
-    var bufferingLastPosMs = 0L
-    var bufferingPosAdvanced = false
-    // P11-122(09-17 真机:WEB-SABR 三个 harvest 会话全部在**首帧后 0.14-1.7s** 被自己的看门狗杀掉)
-    // 起播成功 = 首帧渲染那一刻。此前累积的 BUFFERING/位置冻结计时器必须在此清零——续播 SABR 要拉
-    // bootstrap + 大段(本案例 475s 续播点,prepare→首帧实测 12.1/16.3/32.6s)会把计时器灌满,首帧一
-    // 渲染阈值立刻被跨过(位置冻结看门狗还同时从 StartupStallThresholdMs 25s 档切到 StallThresholdMs
-    // 8s 档),于是「刚播起来」被判成「挂死」→ 重载 → 新一轮慢起播 → 死循环。宽限期从「开始播」起算,
-    // 不从「开始等」起算。真挂死(从未出帧、或出帧后位置不再前进)判据不受影响。
-    var frameRenderedSeen = frameRendered
+    // 视频冻结窗口 / 慢滴让路窗口 / 首帧清零判据(P11-122)均已收进 PlaybackStallWatchdog,
+    // 与移动端同源。
     // 2026-09-01 黑屏看门狗(READY 态变体):READY+音频前进但 never 首帧(解码器出帧为零,07:22
     // 案 5 轮会话 onVideoSizeChanged/onRenderedFirstFrame 均零触发)——位置基+BUFFERING 基看门狗
     // 双双结构性失明的第三种故障态。独立预算计数,首帧真渲染后清零。
@@ -2376,122 +2384,91 @@ fun PlayerScreen(
       if (playerState is PlayerScreenState.Ready) {
         handleAirJumpPosition(currentPositionMs)
       }
-      // P11-122:首帧渲染 = 起播真正成功——见 frameRenderedSeen 声明处的复盘。清零两个起播期计时器,
-      // 让看门狗从「开始播」重新计时(否则慢起播攒下的 12-33s 会在首帧那一轮立刻越过阈值开枪)。
-      if (frameRendered != frameRenderedSeen) {
-        frameRenderedSeen = frameRendered
-        if (frameRendered) {
-          stallSinceMs = 0L
-          stallBaselinePositionMs = currentPositionMs
-          bufferingSinceMs = 0L
-          bufferingPosAdvanced = false
-        }
-      }
-      // stall 检测:STATE_BUFFERING 且用户想播(playWhenReady)、进度连续 N 秒不前进 → 自动重载续播。
-      // 排除:已暂停(playWhenReady=false)、已结束、非 Ready 态。seek/换段后 position 变化会清零基线。
+      // stall / 视频冻结 / 慢滴让路判定全部交给共用状态机（P11-313，与移动端同源）。
       val isStallBuffering = playerState is PlayerScreenState.Ready &&
         player.playbackState == Player.STATE_BUFFERING &&
         player.playWhenReady &&
         !completionReported
-      if (isStallBuffering) {
-        // 2026-09-01 视频冻结看门狗(与下方位置冻结看门狗互补):BUFFERING 期间位置仍在前
-        // 进 = 音频驱动时钟活着、视频渲染器层挂死——升档跨 codec(avc→vp9)换解码器时卡在
-        // codec 强制回收(00:31 真机两次各 ~5s,音频照播画面冻死,用户被迫手动退出)。位置基
-        // 看门狗对这类故障结构性失明:每次轮询位置都变、基线被重置。见 VideoFreezeThresholdMs
-        // 的阈值标定——必须让过合法重建(~8s),只兜不自愈的真挂死。
-        if (bufferingSinceMs == 0L) {
-          bufferingSinceMs = nowMs
-          bufferingLastPosMs = currentPositionMs
-          bufferingPosAdvanced = false
-        } else {
-          if (currentPositionMs != bufferingLastPosMs) {
-            bufferingPosAdvanced = true
-            bufferingLastPosMs = currentPositionMs
-          }
-          if (bufferingPosAdvanced &&
-            nowMs - bufferingSinceMs >= VideoFreezeThresholdMs &&
-            autoRetryCount < MaxStallAutoRetry
-          ) {
-            autoResumePositionMs = currentPositionMs
-            autoRetryCount += 1
-            Log.w(
-              PlayerPlaybackLogTag,
-              "video freeze: BUFFERING ${(nowMs - bufferingSinceMs) / 1000}s with pos advancing, " +
-                "auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
-            )
-            noteStartupStallMemory(currentPositionMs)
-            bufferingSinceMs = 0L
-            stallSinceMs = 0L
-            stallBaselinePositionMs = 0L
-            retryKey += 1L
-          }
+      val decision = stallWatchdog.onTick(
+        nowMs = nowMs,
+        positionMs = currentPositionMs,
+        isStallBuffering = isStallBuffering,
+        playbackStarted = playbackStarted,
+        frameRendered = frameRendered,
+        seekGraceActive = nowMs < seekStallGraceUntilMs,
+        inFlightEtaMs = bandwidthMeter.getInFlightVideoEtaMs(),
+        autoRetryCount = autoRetryCount,
+      )
+      when (decision.action) {
+        PlaybackStallWatchdog.Action.VIDEO_FREEZE -> {
+          autoResumePositionMs = decision.resumePositionMs
+          autoRetryCount = decision.nextAutoRetryCount
+          Log.w(
+            PlayerPlaybackLogTag,
+            "video freeze: BUFFERING ${decision.frozenMs / 1000}s with pos advancing, " +
+              "auto-retry #$autoRetryCount @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
+          )
+          noteStartupStallMemory(currentPositionMs)
+          retryKey += 1L
         }
-        if (currentPositionMs == stallBaselinePositionMs) {
-          if (stallSinceMs == 0L) {
-            stallSinceMs = nowMs
-          } else if (nowMs - stallSinceMs >=
-            // P11-210:宽限档的判据是「**真正起播**过没有」(进过 READY),不是「出没出首帧」——
-            // preroll 首帧之后播放器可能仍在 BUFFERING、位置钉在 seek 落点(见 playbackStarted 声明处复盘)。
-            if (!playbackStarted || nowMs < seekStallGraceUntilMs) StartupStallThresholdMs else StallThresholdMs
-          ) {
-            if (autoRetryCount < MaxStallAutoRetry) {
-              autoResumePositionMs = currentPositionMs
-              autoRetryCount += 1
-              // P11-95(09-13 黑屏复盘):起播阶段(未出首帧)的 stall 根因是会话级慢首包——09-13 实测同一
-              // SABR 会话连两轮 bootstrap 20.5s/16.4s(rr5 慢首包),换新会话 2s 即愈。立即 evict,重载
-              // resolve 铸新会话(热路径 ~4-5s),别让重试复用同一个慢会话。播放中(已出帧)的 stall 不动
-              // 会话——多为瞬态网络,保 ~6h 会话复用(alpha.29)。
-              // P11-210:判据从 `!frameRendered` 改为 `!playbackStarted`(preroll 首帧不再算已起播)。
-              if (!playbackStarted) {
-                val sabrInfo = (playerState as? PlayerScreenState.Ready)?.info
-                if (sabrInfo != null && sabrInfo.isSabrSingle()) {
-                  SabrStreamRegistry.getByVideoId(sabrInfo.bvid)?.let { sid ->
-                    SabrStreamRegistry.evict(sid)
-                    Log.w(PlayerPlaybackLogTag, "startup stall: evict sabr session sid=$sid, retry with fresh session")
-                  }
-                }
-              }
-              Log.w(
-                PlayerPlaybackLogTag,
-                "stall detected, auto-retry #${autoRetryCount} @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% startup=${!playbackStarted} frame=$frameRendered seekGrace=${nowMs < seekStallGraceUntilMs}(P11-203/P11-210)",
-              )
-              noteStartupStallMemory(currentPositionMs)
-              stallSinceMs = 0L
-              stallBaselinePositionMs = 0L
-              retryKey += 1L
-            } else {
-              // P11-85 深度重试:常规重试(2 次)耗尽后位置仍冻结,若是 YouTube SABR 单流会话,
-              // 做一次「深度重试」——evict SABR 会话(重试 playurl 重建新会话,轨解析重跑)+
-              // 续播点前推 ~10s(换段对齐)。09-07 真机复盘:历史续播卡死时数据/解码器全就位却
-              // 永不 READY,同一位置连续 8+ 次重载全挂,换会话/换位置后 ~2s 起播——疑服务端段
-              // 锚点与首段裁剪(clippedStartTimeUs=loadPositionUs)竞态,重置会话+换位置实证能解。
-              // 每视频限一次,防无限重载。
-              val sabrInfo = (playerState as? PlayerScreenState.Ready)?.info
-              if (sabrInfo != null && sabrInfo.isSabrSingle() && sabrDeepRetryUsedForBvid != sabrInfo.bvid) {
-                sabrDeepRetryUsedForBvid = sabrInfo.bvid
-                SabrStreamRegistry.getByVideoId(sabrInfo.bvid)?.let { SabrStreamRegistry.evict(it) }
-                val nudged = minOf(currentPositionMs + SabrDeepRetryNudgeMs, sabrInfo.durationMs - 1000L)
-                autoResumePositionMs = if (nudged > currentPositionMs) nudged else currentPositionMs
-                autoRetryCount = 0
-                Log.w(
-                  PlayerPlaybackLogTag,
-                  "stall retries exhausted, deep retry: evict sabr session, resume @" +
-                    "${autoResumePositionMs}ms (frozen at $currentPositionMs buffered=${player.bufferedPercentage}%)",
-                )
-                stallSinceMs = 0L
-                stallBaselinePositionMs = 0L
-                retryKey += 1L
+        PlaybackStallWatchdog.Action.RELOAD -> {
+          autoResumePositionMs = decision.resumePositionMs
+          autoRetryCount = decision.nextAutoRetryCount
+          // P11-95(09-13 黑屏复盘):起播阶段(未出首帧)的 stall 根因是会话级慢首包——09-13 实测同一
+          // SABR 会话连两轮 bootstrap 20.5s/16.4s(rr5 慢首包),换新会话 2s 即愈。立即 evict,重载
+          // resolve 铸新会话(热路径 ~4-5s),别让重试复用同一个慢会话。播放中(已出帧)的 stall 不动
+          // 会话——多为瞬态网络,保 ~6h 会话复用(alpha.29)。
+          // P11-210:判据从 `!frameRendered` 改为 `!playbackStarted`(preroll 首帧不再算已起播)。
+          if (!playbackStarted) {
+            val sabrInfo = (playerState as? PlayerScreenState.Ready)?.info
+            if (sabrInfo != null && sabrInfo.isSabrSingle()) {
+              SabrStreamRegistry.getByVideoId(sabrInfo.bvid)?.let { sid ->
+                SabrStreamRegistry.evict(sid)
+                Log.w(PlayerPlaybackLogTag, "startup stall: evict sabr session sid=$sid, retry with fresh session")
               }
             }
           }
-        } else {
-          stallBaselinePositionMs = currentPositionMs
-          stallSinceMs = 0L
+          Log.w(
+            PlayerPlaybackLogTag,
+            "stall detected, auto-retry #$autoRetryCount @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% startup=${!playbackStarted} frame=$frameRendered seekGrace=${nowMs < seekStallGraceUntilMs}(P11-203/P11-210)",
+          )
+          noteStartupStallMemory(currentPositionMs)
+          retryKey += 1L
         }
-      } else {
-        stallBaselinePositionMs = currentPositionMs
-        stallSinceMs = 0L
-        bufferingSinceMs = 0L
+        PlaybackStallWatchdog.Action.RETRY_EXHAUSTED -> {
+          // P11-85 深度重试:常规重试(2 次)耗尽后位置仍冻结,若是 YouTube SABR 单流会话,
+          // 做一次「深度重试」——evict SABR 会话(重试 playurl 重建新会话,轨解析重跑)+
+          // 续播点前推 ~10s(换段对齐)。09-07 真机复盘:历史续播卡死时数据/解码器全就位却
+          // 永不 READY,同一位置连续 8+ 次重载全挂,换会话/换位置后 ~2s 起播——疑服务端段
+          // 锚点与首段裁剪(clippedStartTimeUs=loadPositionUs)竞态,重置会话+换位置实证能解。
+          // 每视频限一次,防无限重载。
+          val sabrInfo = (playerState as? PlayerScreenState.Ready)?.info
+          if (sabrInfo != null && sabrInfo.isSabrSingle() && sabrDeepRetryUsedForBvid != sabrInfo.bvid) {
+            sabrDeepRetryUsedForBvid = sabrInfo.bvid
+            SabrStreamRegistry.getByVideoId(sabrInfo.bvid)?.let { SabrStreamRegistry.evict(it) }
+            val nudged = minOf(currentPositionMs + SabrDeepRetryNudgeMs, sabrInfo.durationMs - 1000L)
+            autoResumePositionMs = if (nudged > currentPositionMs) nudged else currentPositionMs
+            autoRetryCount = 0
+            Log.w(
+              PlayerPlaybackLogTag,
+              "stall retries exhausted, deep retry: evict sabr session, resume @" +
+                "${autoResumePositionMs}ms (frozen at $currentPositionMs buffered=${player.bufferedPercentage}%)",
+            )
+            retryKey += 1L
+          }
+        }
+        PlaybackStallWatchdog.Action.NONE -> {
+          if (decision.deferStarted) {
+            Log.w(
+              PlayerPlaybackLogTag,
+              "stall reload deferred (slow-drip in flight, P11-305): eta=${decision.etaMs}ms " +
+                "@pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% " +
+                "deferMax=${StallDripDeferMaxMs}ms",
+            )
+          }
+        }
+      }
+      if (!isStallBuffering) {
         // 2026-09-01 黑屏看门狗(READY 态):audio 时钟活着(位置前进)但本会话从未渲染过首帧,
         // 超黑屏阈值走 auto-retry 链;重试 ≥2 次仍黑则熔断压画质(BlackFrameHeightCap)重试,
         // 熔断后仍黑则停止重试(避免同一坏档无限重载),交用户手动重试/退出。
@@ -2591,10 +2568,27 @@ fun PlayerScreen(
             PlayerPlaybackLogTag,
             "steady probe state=${playbackStateName(player.playbackState)} " +
               "pos=${currentPositionMs}ms fwdBuf=${player.totalBufferedDuration}ms " +
+              // P11-298(临时诊断,取证后删):bufPos/vfmt 用来分辨「播放器自身卡住(pos 不前但 bufPos 有富余)」
+              // 与「等新档样本(bufPos≈pos)」;vfmt 是播放器当前实际在解的视频档(与 ABR 选中档区分)。
+              "bufPos=${player.bufferedPosition}ms vfmt=${player.videoFormat?.let { "${it.height}p/${it.id}" }} " +
               "rendered=${(player as? ExoPlayer)?.videoDecoderCounters?.renderedOutputBufferCount ?: -1} " +
               "isLoading=${player.isLoading} video=${player.videoFormat?.codecs} " +
               "bw[${bandwidthMeter.diagEstimateSources()}]",
           )
+          // ── P11-301(2026-10-28 真机):会话/节点可疑 → 整场重建(带续播)──────────────────────
+          // 判据在 fetcher(峰值塌陷 + 零交付超时,会话龄/缓冲/冷却都在那里),这里只执行动作。
+          // 重载会重新 resolve → 可能换 host(今天 00:18 手切 rr5→rr3 正是这样恢复的);
+          // 若重建后新会话仍慢,fetcher 会标 link-bad(10min),本判据自动静默,不会变成重载风暴。
+          if (bandwidthMeter.isSessionDegraded(player.totalBufferedDuration)) {
+            Log.w(
+              PlayerPlaybackLogTag,
+              "session degraded → rebuild(P11-301): pos=${currentPositionMs}ms " +
+                "fwdBuf=${player.totalBufferedDuration}ms; 换会话/节点重来",
+            )
+            bandwidthMeter.markSessionRebuild()
+            autoResumePositionMs = currentPositionMs
+            retryKey += 1L
+          }
         }
       } else {
         steadyProbeSinceMs = 0L
@@ -3556,6 +3550,16 @@ private const val PlayerPlaybackLogTag = "BiliMT:Player"
 private const val StallThresholdMs = 8_000L
 
 /**
+ * P11-305:慢滴让路 —— stall 判死时若 SABR 有在途视频段、且估算剩余时间不超过此值,先不重载。
+ * 依据(docs §70):历史 319 份日志里,stall 时正有 ≥8s 视频段在 open 的 7 次,该段全部在 stall 后
+ * 2~9s 落地;整场重载本身要 10~22s 黑屏。
+ */
+private const val StallDripDeferMaxEtaMs = 10_000L
+
+/** P11-305:慢滴让路的**总时长上限** —— 超过它无论 ETA 如何都照常重载,防止无限等待。 */
+private const val StallDripDeferMaxMs = 12_000L
+
+/**
  * P11-203:seek 之后的 stall 判死宽限(ms)——期内位置冻结改用起播阈值([StartupStallThresholdMs]),
  * 不按「已出帧」的 [StallThresholdMs] 算。
  *
@@ -3574,8 +3578,17 @@ private const val SeekStallGraceMs = 15_000L
  * P11-178:当前**正在播**的视频轨高度(0=未知)。stall 重载的跨重载冷却据此选目标档——
  * 「饿死瞬间的档」才是那堵墙,而不是「本场爬过的最高档」(`logs_live_20260923_233549`:爬到过 2160p、
  * 漏光在 1440p,旧口径冷却 2160p 当场空操作)。见 [SabrAbrMemory.onStallReloadWithReachedHeight]。
+ *
+ * ── P11-305(2026-11-01 TV 真机 `logs_live_20261101_205931.log`):旧实现取错了轨 ──────────────
+ * 旧实现返回视频组里**第一个 isTrackSelected** 的格式。SABR 自适应组把整条梯子都标成 selected
+ * (`tracks changed … selected=[2:0:298, 2:0:160, …, 2:0:315]`),第一个恒为 298/720p ⇒ 饿死档
+ * 永远记成 720p < [SabrAbrMemory.STALL_REACHED_MIN_HEIGHT],目标回退到 `reachedHeight`(本场 2160p),
+ * **真正饿死的 1440p 一格冷却都没有** ⇒ 重载后立刻爬回同一堵墙。本日志四次 stall 全部
+ * `starved=720p`,而 ABR 实际在 1080p/1440p(`sel=3`/`sel=1`)。
+ * 改用 `player.videoFormat`(视频渲染器当前实际在解的格式,稳态探针的 `vfmt=1440p/308` 即它)。
  */
 private fun selectedVideoHeight(player: ExoPlayer): Int {
+  player.videoFormat?.height?.takeIf { it > 0 }?.let { return it }
   val video = player.currentTracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO } ?: return 0
   for (i in 0 until video.length) {
     if (video.isTrackSelected(i)) return video.getTrackFormat(i).height

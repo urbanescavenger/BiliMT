@@ -356,6 +356,40 @@ object SabrAbrMemory {
   @Volatile
   private var readAheadLoggedUs = -1L
 
+  // ── P11-302(2026-10-28):缓冲趋势(给 [readAheadMinBufferUs] 做目标控制)──────────────────────
+  // 采样由视频 chunk source 每次 getNextChunk 喂(`SabrMediaFetcher.noteBufferedAheadMs`),
+  // 最快每 2s 采一次;掉 ≥1s 记「在掉」,涨 ≥1s 解除。只影响续拉门槛,不进 ABR 判据。
+  private val bufferTrendLock = Any()
+  @Volatile
+  private var bufferSampleMs = -1L
+  @Volatile
+  private var bufferSampleWallMs = 0L
+  private var prevBufferSampleMs = -1L
+  private var prevBufferSampleWallMs = 0L
+  @Volatile
+  private var bufferDraining = false
+
+  /** P11-302:喂前方缓冲(ms)。同一时刻只有一个 chunk source 会喂;加锁只为趋势字段的一致性。 */
+  fun noteBufferedAhead(bufferMs: Long, nowWallMs: Long = System.currentTimeMillis()) {
+    if (bufferMs < 0L) return
+    synchronized(bufferTrendLock) {
+      if (nowWallMs - bufferSampleWallMs < BUFFER_TREND_MIN_INTERVAL_MS) return
+      prevBufferSampleMs = bufferSampleMs
+      prevBufferSampleWallMs = bufferSampleWallMs
+      bufferSampleMs = bufferMs
+      bufferSampleWallMs = nowWallMs
+      if (prevBufferSampleMs >= 0L &&
+        nowWallMs - prevBufferSampleWallMs <= BUFFER_TREND_MAX_GAP_MS
+      ) {
+        val delta = bufferMs - prevBufferSampleMs
+        when {
+          delta <= -BUFFER_TREND_DROP_MS -> bufferDraining = true
+          delta >= BUFFER_TREND_DROP_MS -> bufferDraining = false
+        }
+      }
+    }
+  }
+
   /**
    * P11-230:**当前选中视频档的高度**(0=未知),由视频 chunk source 每次 getNextChunk 喂。
    * 用于 [heavyTierBufferedCapUs] —— 高档的样本缓冲在 Java 堆里太占地方。
@@ -399,6 +433,24 @@ object SabrAbrMemory {
   fun readAheadMinBufferUs(nowWallMs: Long = System.currentTimeMillis()): Long {
     val roundTripMs = lastSabrResponseMs
     if (roundTripMs <= 0L || nowWallMs - lastSabrResponseWallMs > READ_AHEAD_SAMPLE_TTL_MS) return 0L
+    // ── P11-302(2026-10-28 真机):缓冲趋势控制 —— 缓冲在掉就不让 loader 空转 ────────────────
+    // 真机 08:58–08:59(`logs_live_20261028_085956.log`):每笔请求 6–10s,笔间还空转
+    // 3.4/5.6/6.1s(读前量门槛等缓冲掉到阈值才发下一笔),交付率只有 0.38–0.47× ⇒ 缓冲连续
+    // 下滑被吃穿。策略:**缓冲在延长(趋势 ≥0)⇒ 保持原门槛**,该空转就空转(省带宽/省内存);
+    // **缓冲在掉且还没到目标 ⇒ 门槛抬到上限**,让 LoadControl 持续续拉,由档位 cap(1440p=20s)兜住。
+    val bufferedNowMs = bufferSampleMs
+    if (bufferDraining && bufferedNowMs in 1 until READ_AHEAD_MAX_BUFFER_MS) {
+      val targetUs = READ_AHEAD_MAX_BUFFER_MS * 1000L
+      if (readAheadLoggedUs != targetUs) {
+        readAheadLoggedUs = targetUs
+        Log.i(
+          "YtSabrReadAhead",
+          "read-ahead threshold = ${READ_AHEAD_MAX_BUFFER_MS / 1000}s " +
+            "(buffer draining, buffered=${bufferedNowMs}ms, P11-302: 不空转, 续拉到目标/档位 cap)",
+        )
+      }
+      return targetUs
+    }
     val neededMs = (roundTripMs * 3 / 2 + READ_AHEAD_SAFETY_MS)
       .coerceAtMost(READ_AHEAD_MAX_BUFFER_MS)
     if (neededMs <= READ_AHEAD_DEFAULT_MIN_BUFFER_MS) return 0L
@@ -429,5 +481,62 @@ object SabrAbrMemory {
 
   /** 样本新鲜度:超过这段时间没有 SABR 活动 ⇒ 门槛回落到 media3 原生。 */
   private const val READ_AHEAD_SAMPLE_TTL_MS = 15 * 60_000L
+
+  // P11-302:缓冲趋势采样参数(见 [noteBufferedAhead])。
+  /** 两次采样最小间隔:chunk 完成瞬间可能连喂多次,2s 足以滤掉同一次评估的重复值。 */
+  private const val BUFFER_TREND_MIN_INTERVAL_MS = 2_000L
+  /** 变化 ≥1s 才改趋势(防噪声抖动)。 */
+  private const val BUFFER_TREND_DROP_MS = 1_000L
+  /** 两次采样间隔超过 15s(loader 长时间没动)⇒ 趋势不可比,跳过本次判定。 */
+  private const val BUFFER_TREND_MAX_GAP_MS = 15_000L
+
+  // ── P11-301(2026-10-28):会话重建护栏(跨重载持久)─────────────────────────────────────────
+  // 历史教训(`logs_live_20261025_225501.log` 20:50–21:02):链路整体坏时,重建会话/换 host 都不会
+  // 恢复(2–6Mbps 持续),而当时已经连续 stall/重载 15 分钟。故:重建必须有冷却,并且重建后新会话
+  // 仍慢时标 link-bad,停止再做 —— 否则判定逻辑本身会变成重载风暴。
+
+  /** 最近一次会话重建的墙钟(0=从未)。 */
+  @Volatile
+  private var lastSessionRebuildWallMs = 0L
+
+  /** 最近一次重建时解析到的 host(只用于日志/去重,不含 token/URL 参数)。 */
+  @Volatile
+  private var lastSessionRebuildHost: String? = null
+
+  /** link-bad 截止墙钟:链路整体坏时不再重建。 */
+  @Volatile
+  private var linkBadUntilWallMs = 0L
+
+  /** 记录一次整场重建(播放器侧动作完成后调用)。 */
+  fun noteSessionRebuild(host: String?) {
+    lastSessionRebuildWallMs = System.currentTimeMillis()
+    lastSessionRebuildHost = host
+  }
+
+  /** 距上次重建的毫秒数;从未重建返回 -1。 */
+  fun msSinceSessionRebuild(nowWallMs: Long = System.currentTimeMillis()): Long =
+    if (lastSessionRebuildWallMs <= 0L) -1L else nowWallMs - lastSessionRebuildWallMs
+
+  /** 重建冷却剩余毫秒(0=可用)。 */
+  fun sessionRebuildCooldownRemainMs(nowWallMs: Long = System.currentTimeMillis()): Long =
+    if (lastSessionRebuildWallMs <= 0L) 0L
+    else (lastSessionRebuildWallMs + SESSION_REBUILD_COOLDOWN_MS - nowWallMs).coerceAtLeast(0L)
+
+  fun lastSessionRebuildHost(): String? = lastSessionRebuildHost
+
+  /** 重建后新会话仍慢 ⇒ 判「链路坏」,一段时间内不再重建。 */
+  fun noteLinkBad(nowWallMs: Long = System.currentTimeMillis()) {
+    linkBadUntilWallMs = nowWallMs + LINK_BAD_HOLD_MS
+    Log.i("YtSabrAbr", "session rebuild ineffective → link-bad for ${LINK_BAD_HOLD_MS / 1000}s (P11-301)")
+  }
+
+  fun isLinkBad(nowWallMs: Long = System.currentTimeMillis()): Boolean =
+    nowWallMs < linkBadUntilWallMs
+
+  /** 会话重建冷却(跨重载):3min。 */
+  private const val SESSION_REBUILD_COOLDOWN_MS = 180_000L
+
+  /** 重建无效后的 link-bad 保持时长:10min。 */
+  private const val LINK_BAD_HOLD_MS = 600_000L
 
 }

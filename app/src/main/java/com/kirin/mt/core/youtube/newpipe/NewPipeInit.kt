@@ -1,6 +1,7 @@
 package com.kirin.mt.core.youtube.newpipe
 
 import android.util.Log
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.schabi.newpipe.extractor.NewPipe
@@ -91,6 +92,19 @@ private class BiliTvNewPipeDownloader(private val httpClient: OkHttpClient) : Do
 
     val response = httpClient.newCall(requestBuilder.build()).execute()
 
+    // P11-275:临时诊断(排查完删除)。NewPipe 的 429 / 重定向环此前看不到端点与跳转链;
+    // 只打 host + path,不打 query(可能带签名/token)、请求头与响应体。
+    val redirects = redirectCount(response)
+    if (response.code !in 200..299 || redirects > 0) {
+      val from = url.toHttpUrlOrNull()?.let { "${it.host}${it.encodedPath}" } ?: "-"
+      val to = "${response.request.url.host}${response.request.url.encodedPath}"
+      Log.w(
+        TAG,
+        "NewPipe http ${response.code} $httpMethod $from -> $to redirects=$redirects " +
+          "retryAfter=${response.header("Retry-After")}",
+      )
+    }
+
     return when (response.code) {
       429 -> {
         response.close()
@@ -111,9 +125,22 @@ private class BiliTvNewPipeDownloader(private val httpClient: OkHttpClient) : Do
   }
 
   private companion object {
+    private const val TAG = "BiliMT:YtNet"
+
     // 桌面 Firefox UA(与 LibreTube NewPipeDownloaderImpl 一致);NewPipe 各 InnerTube 客户端
     // 请求会自带 UA 覆盖此默认。
     private const val DEFAULT_UA =
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0"
   }
+}
+
+/** P11-275:OkHttp 跟随的重定向次数(>0 说明服务端要求跳转;≥20 会抛 Too many follow-up requests)。 */
+private fun redirectCount(response: okhttp3.Response): Int {
+  var count = 0
+  var prior = response.priorResponse
+  while (prior != null) {
+    count++
+    prior = prior.priorResponse
+  }
+  return count
 }

@@ -1890,7 +1890,7 @@ class YoutubePlaybackResolver(
       )
     }
     // Phase 2 自合成 DASH(对齐 LibreTube `createDashSource`):NewPipe 流顶层暴露已解密 URL(content)
-    // + initStart/initEnd/indexStart/indexEnd(同一 fork 738c3d4,LibreTube `toPipedStream` 直读)。
+    // + initStart/initEnd/indexStart/indexEnd(同一 LibreTube fork,`toPipedStream` 直读)。
     // 用这些拼 <SegmentBase> 合成 MPD,提为主兜底(优先于 dashMpdUrl[已知恒空]/hlsUrl)。
     // range 守卫:任一轨 content/initStart/indexStart 为空则不自合成,落回 dashMpdUrl → hlsUrl(零回归)。
     // 诊断:打印候选流 range,真机确认 visionOS 流是否带 init/index range(验证可行性)。
