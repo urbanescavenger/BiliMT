@@ -1597,7 +1597,8 @@ internal class SabrMediaFetcher(
     Log.i(
       tag,
       "resp summary: req=${req.formatItag} usable=${resp.bytes - discard.bytes}B/${resp.bytes}B " +
-        "init=${initializedFormats.keys.sorted()} pushed=${serverPushedVideoItags.sorted()}",
+        "init=${initializedFormats.keys.sorted()} pushed=${serverPushedVideoItags.sorted()} " +
+        "early=${resp.earlyStop} media=${respPacingMediaMs}ms",
     )
     // alpha.67(对齐 LibreTube processPart status==2 `poToken = generatePoToken()` 同步):status=2 在
     // 本响应里出现 → 此处(下个请求发出前)同步重铸 PO token,下个请求一定带新 token → status=3 不再出现。
@@ -2131,6 +2132,10 @@ internal class SabrMediaFetcher(
     val runwayMs = bufferedAheadMsAtLastFetch
     // P11-221:实读字节数提到 try 之外 —— catch 也要用它判「有请求没回复」。
     var readBytes = 0L
+    // P11-319(诊断,取证后删):区分「延迟型(服务端响应慢)」与「带宽型(吞吐真不够)」。
+    // firstByteMs = 请求发出 → 首个正文字节;body = 首字节 → 本次读结束。
+    // bodyRate = 正文吞吐(剔除首包等待);pace = 交付媒体时长 / 墙钟耗时(>1 = 服务端供得比播放快)。
+    var firstByteMs = 0L
     return try {
       // P11-305:本笔在途请求的进度起点(供 stall 看门狗估算 ETA,见 [getInFlightVideoEtaMs])。
       noteInFlightStart()
@@ -2229,6 +2234,7 @@ internal class SabrMediaFetcher(
           ump.append(readBuf, n)
           if (n == 0) continue
           readBytes += n
+          if (firstByteMs == 0L) firstByteMs = SystemClock.elapsedRealtime() - t0
           noteInFlightProgress(readBytes)
           ump.readParts(onPart)
           if (readBytes >= StreamStopMinBytes && streamNeedSatisfied(req)) {
@@ -2241,6 +2247,14 @@ internal class SabrMediaFetcher(
       // alpha.9X(带宽驱动,滑动窗口累计):成功段只计「实际下载耗时」(不再混入缓冲等待 gap,那个是主动
       // 节奏非带宽不足),吞吐 = 窗口累计量/累计耗时。带宽充足时贴近真实下载速率,断流时靠失败段计时下探。
       val mbps = if (elapsed > 0) readBytes * 8 / (elapsed * 1000L) else -1L
+      // P11-319(诊断):把「等首包」和「正文吞吐」拆开,用于区分延迟型/带宽型。
+      val bodyMs = if (firstByteMs > 0L) (elapsed - firstByteMs).coerceAtLeast(1L) else 0L
+      val bodyRateK = if (bodyMs > 0L) readBytes * 8000L / bodyMs / 1000L else -1L
+      val paceX = if (elapsed > 0L && respPacingMediaMs > 0L) {
+        respPacingMediaMs.toDouble() / elapsed
+      } else {
+        -1.0
+      }
       recordRealBandwidthSample(readBytes, elapsed)
       // P11-306:服务端 pacing 证据 —— 本笔请求段提前到手且交付内容时长 ≥ 实际耗时(见 docs §71.9)。
       recordPacingSample(
@@ -2287,6 +2301,9 @@ internal class SabrMediaFetcher(
       Log.i(
         tag,
         "fetch rn=$rn REAL ${readBytes}B ${elapsed}ms → ${mbps}Mbps est=${fmtEstForLog(getRealBitrateEstimate())}" +
+          " ttfb=${if (firstByteMs > 0L) firstByteMs else -1}ms body=${bodyMs}ms bodyRate=${bodyRateK}K" +
+          " pace=${if (paceX >= 0) String.format(java.util.Locale.US, "%.2f", paceX) else "-"}x" +
+          " media=${respPacingMediaMs}ms" +
           // P11-217:早停时字节数=**实读**,不是服务端本来会推的总量 —— 不打标记会与"这一笔很小"混淆。
           // P11-218:带上余量(0=起播期只等请求段 / 1=已开播多等一层),便于真机核对判据。
           (if (earlyStop) " (早停:请求段${if (marginFor(req) > 0L) "+后继段" else "本身"}已到手,P11-217/218)" else ""),
@@ -2365,7 +2382,8 @@ internal class SabrMediaFetcher(
       noteSessionFetch(readBytes, failMs, success = false)
       Log.w(
         tag,
-        "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${fmtEstForLog(getRealBitrateEstimate())}" +
+        "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms ttfb=${firstByteMs}ms read=${readBytes}B " +
+          "bwNow=${fmtEstForLog(getRealBitrateEstimate())}" +
           (if (silentHang) " silence-hang itag=${req.formatItag} recorded, P11-178" else "") + ")",
       )
       throw e

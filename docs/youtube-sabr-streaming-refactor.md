@@ -216,6 +216,12 @@ internal class SabrResponse(
     - 水位 ≥20s 且档位 720~1440 且非小堆 → margin=3（4 段）；
     - 4K 按 P11-225 的 2 段/水位门；
     - 仅当缓冲 < 3/4 段墙钟时才砍到 0（其余保留档位余量）。
+  - **P11-319：补“请求/反馈/解析”三面诊断日志**。`fetch rn=… REAL` 行追加
+    `ttfb=…ms body=…ms bodyRate=…K pace=…x media=…ms`；异常行追加 `ttfb/read`；
+    `resp summary` 追加 `early/media`。判读：
+    - `TTFB` 占比高 + `bodyRate` 明显高于整体 Mbps ⇒ **延迟型**（服务端响应慢，应加大批次摊薄 RTT）；
+    - `bodyRate ≈ 整体 Mbps < 码率` ⇒ **带宽型**（应保缓冲/降档，多要无益）；
+    - `pace > 1` ⇒ 服务端供得比播放快，容量在；`pace ≤ 1` ⇒ 供给不足。
   - 待验证：云编译；真机 4K 掉速场应看到「段交付时间 = `MEDIA_END`」且卡顿窗口消失；
     Stage B 第二步（reader 水位预取）未动。
 
