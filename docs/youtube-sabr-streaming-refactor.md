@@ -1,6 +1,6 @@
 # SABR 流式消费改造计划（P11-314）
 
-> 状态：**计划 + 历史验证完成，未改代码**
+> 状态：**计划 + 历史验证完成；Stage A（交接面）已落地（P11-315），待云编译/真机验证**
 > 触发：2026-11-10 真机 `logs_live_20261110_142010.log`（4K 手选 2160p，无重载但 4 次
 > 0.5~6.6s 卡顿）
 > 关联：P11-217/218（流式读 + 早停）、P11-305（慢滴让路）、P11-313（两端看门狗同源）
@@ -179,6 +179,19 @@ internal class SabrResponse(
 - 仅在“音频饥饿且视频队列已满”时允许第二条 POST；YouTube 自家基本也是单流，先不做。
 
 ---
+
+## 4.1 实施进度
+
+- **2026-11-10，P11-315：Stage A（交接面）已落地**：
+  - 读循环从 `getNextSegment` 的调用栈移到会话级 `readerScope`（单通道 `dispatcher`）；
+  - `getNextSegment` 只等「请求段 `MEDIA_END`」（`CompletableDeferred`），不再等整笔响应；
+  - margin 后继段由后台 drain 继续读进缓存，下一笔请求可在 `hasSegment` 命中后直接返回；
+  - 单流语义不变：`fetchMutex` 串行化「等上一笔 drain + 发新请求」；同轨远距离 seek
+    直接 `activeCall.cancel() + job.cancel() + join`，避免 seek 被慢响应拖住；
+  - `downloadedSegments` / `bufferedSegments` 改 `ConcurrentHashMap`；
+  - `SabrMediaSource.releaseSourceInternal` 取消后台读。
+  - 待验证：云编译；真机 4K 掉速场应看到「段交付时间 = `MEDIA_END`」且卡顿窗口消失；
+    Stage B（队列水位驱动、去掉 margin 阻塞）未动。
 
 ## 5. 风险与迁移点
 

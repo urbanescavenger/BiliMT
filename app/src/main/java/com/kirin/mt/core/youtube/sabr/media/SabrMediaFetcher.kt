@@ -23,10 +23,20 @@ import com.kirin.mt.core.youtube.sabr.SabrSession
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import com.kirin.mt.core.youtube.sabr.StreamerContextInput
 import com.kirin.mt.core.youtube.sabr.UmpReader
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -58,8 +68,13 @@ import kotlin.math.min
  *  - RELOAD_PLAYER_RESPONSE / InvalidPoToken(status3)/ SABR_ERROR → 抛 [SabrTerminalException]
  *    → [SabrDataSource] evict 会话 → 播放器 error-retry 走新 harvest。
  *
- * 线程安全:[getNextSegment] 用 runBlocking{withContext(Dispatchers.IO.limitedParallelism(1)){...}}
- * 串行化(同 LibreTube),两个 ChunkSampleStream 的 loader 线程不会并发改 [initializedFormats]。
+ * 线程安全(P11-315 后):
+ *  - [getNextSegment] 仍用 runBlocking{withContext(loaderDispatcher){...}} 串行化,A/V 两路不会
+ *    并发进重试/清表/retainActiveFormats。
+ *  - 网络读循环移到会话级 [readerScope](单通道 [dispatcher]);同一时刻只有一笔响应。
+ *  - [InitializedFormat.downloadedSegments]/[bufferedSegments] 已改 ConcurrentHashMap:
+ *    reader 线程写、loader 线程读/取走。
+ *  - 请求段 `MEDIA_END` 一到就交还 loader,margin 后继段由后台 drain 继续收完。
  *
  * 对齐 LibreTube `parser/SabrClient.kt`(MIT)。
  */
@@ -278,6 +293,34 @@ internal class SabrMediaFetcher(
   @Volatile var lastActionMs: Long? = null
 
   private val dispatcher = Dispatchers.IO.limitedParallelism(1)
+
+  // ── P11-315:响应读取移出 loader 调用栈 ────────────────────────────────────────────────
+  // 现状:getNextSegment 在 loader 线程同步跑完整个读循环,请求段 MEDIA_END 之后还要等
+  // margin 后继段,整笔响应结束才把段交还播放器(2026-11-10 4K 真机:请求段 4.2~6.7s 到手,
+  // 整笔 9~13.7s,每次多等 3.6~7s → 缓冲见底卡顿)。
+  // 这里把读循环放到会话级 [readerScope]:请求段一到 complete handoff,loader 立刻返回;
+  // margin 后继段继续在后台读进缓存。服务端「同一会话同一时刻一条流」的语义由 [fetchMutex]
+  // + drainJob.join() 保持(下一笔请求仍等上一笔 drain 结束)。
+  private val readerScope = CoroutineScope(SupervisorJob() + dispatcher)
+  private val fetchMutex = Mutex()
+  @Volatile private var drainJob: Job? = null
+  /**
+   * loader 侧仍保持「同一时刻只有一个 getNextSegment 在跑」——A/V 两路的重试、清表、
+   * retainActiveFormats 语义不用重审。它与 [dispatcher] 分开,避免等 handoff 时占住
+   * 后台读的通道。
+   */
+  private val loaderDispatcher = Dispatchers.IO.limitedParallelism(1)
+
+  /** 当前响应的 OkHttp call —— seek/释放时从别的线程 cancel,让阻塞读立刻退出。 */
+  @Volatile private var activeCall: okhttp3.Call? = null
+  /** 当前 drain 的请求,用于判断新请求是不是同轨的远距离 seek。 */
+  @Volatile private var drainRequest: SabrSegmentRequest? = null
+
+  /** MediaSource 释放时取消后台读,避免播放结束后还在读 socket。 */
+  fun release() {
+    activeCall?.cancel()
+    readerScope.cancel()
+  }
 
   // alpha.9X(真实带宽判断机制):媒体3 DefaultBandwidthMeter 从 SabrDataSource 上报的样本波动离谱
   // (2026-08-24 真机 bw= 在 1M↔437M 之间 1000 倍跳变),effectiveBitrate 不可信 → AdaptiveTrackSelection 选档
@@ -1230,7 +1273,9 @@ internal class SabrMediaFetcher(
     pendingRequestItags.add(itag)
     return runBlocking {
       try {
-        withContext(dispatcher) {
+        // P11-315:读循环已移到 readerScope;这里仍单通道串行(A/V 不并发进清理逻辑),
+        // 但不再占住后台读的 [dispatcher]。
+        withContext(loaderDispatcher) {
           var attempt = 0
           while (attempt < MAX_ATTEMPTS) {
             attempt++
@@ -1247,13 +1292,13 @@ internal class SabrMediaFetcher(
             initializedFormats[itag]?.downloadedSegments?.keys?.removeAll { it < req.segment }
 
             var fmt = initializedFormats[itag]
-            var preExistingSeqs: Set<Long> = emptySet()
+            val preExistingSeqs: Set<Long> = emptySet()
             if (fmt == null || !fmt.hasSegment(req.segment)) {
-              // 已下载但播放器不再要的段(seek 后)清掉,防泄漏
-              fmt?.downloadedSegments?.clear()
-              preExistingSeqs = fmt?.downloadedSegments?.keys?.toSet() ?: emptySet()
-              // 单流 POST——服务端推多段,缓存进 initializedFormats
-              media(req)
+              // P11-315:「等上一笔 drain + 清旧段 + 发新请求」全部收进 fetchAndAwaitHandoff
+              // 的互斥区——否则清表会与上一笔后台续读并发,把它刚推进来的段清掉。
+              // 单流 POST——服务端推多段,缓存进 initializedFormats。
+              // P11-315:只等请求段落地,不等整笔响应;margin 后继段后台继续读。
+              fetchAndAwaitHandoff(req)
               // P11-92(对齐 LibreTube getNextSegment 收尾 retainAll):media() 后清掉非当前选中
               // 格式的已初始化缓存。此前切档后旧格式(如 302)的 bufferedRange 一直随请求上报——
               // 真机 2026-09-13 三轮 308 死循环实锤:请求体没显式段号,服务端按「全部 bufferedRange
@@ -1421,10 +1466,69 @@ internal class SabrMediaFetcher(
   }
 
   /**
+   * P11-315:启动一笔响应,并等「请求段」落地(而不是整笔响应)。
+   *
+   * - 读循环跑在会话级 [readerScope] 上;下一笔请求先 join 上一笔 drain,保持
+   *   「同一会话同一时刻只有一条流」的服务端语义(不会并发两笔 POST)。
+   * - 请求段 `MEDIA_END` 一到就 complete handoff,loader 立刻拿到段;
+   *   margin 后继段继续在后台读进缓存,下一笔可直接命中。
+   * - 响应结束仍没拿到请求段时 handoff 正常完成,调用方沿用原有的跳段/重试逻辑。
+   * - 请求段交付之后的失败只发生在 margin 尾巴上:记日志,不打断当前播放。
+   */
+  private suspend fun fetchAndAwaitHandoff(req: SabrSegmentRequest) {
+    val handoff = CompletableDeferred<Unit>()
+    var launched = false
+    fetchMutex.withLock {
+      val prev = drainJob
+      val prevReq = drainRequest
+      if (prev != null && prev.isActive) {
+        val farSeek = prevReq != null &&
+          req.formatItag == prevReq.formatItag &&
+          (req.segment < prevReq.segment || req.segment > prevReq.segment + DRAIN_JOIN_AHEAD_SEGMENTS)
+        val finished = if (farSeek) null else withTimeoutOrNull(DRAIN_JOIN_TIMEOUT_MS) { prev.join() }
+        if (finished == null) {
+          // 远距离 seek,或旧 drain 迟迟不结束(慢滴/服务端持续推流):不能让它拖住新请求。
+          // cancel call 会立刻打断阻塞读;join 等它把 finally 跑完,避免响应级字段串场。
+          activeCall?.cancel()
+          prev.cancel()
+          prev.join()
+        }
+      }
+      val fmt = initializedFormats[req.formatItag]
+      if (fmt != null && fmt.hasSegment(req.segment)) {
+        // 上一笔 drain 已经把它读进来了,不必再发请求。
+        return@withLock
+      }
+      // 已下载但播放器不再要的段(seek 后)清掉,防泄漏
+      fmt?.downloadedSegments?.clear()
+      val job = readerScope.launch {
+        try {
+          media(req) { handoff.complete(Unit) }
+        } catch (e: CancellationException) {
+          handoff.completeExceptionally(e)
+          throw e
+        } catch (e: Throwable) {
+          if (!handoff.isCompleted) {
+            handoff.completeExceptionally(e)
+          } else {
+            Log.w(tag, "background drain failed after handoff: ${e::class.simpleName}: ${e.message}")
+          }
+        } finally {
+          if (!handoff.isCompleted) handoff.complete(Unit)
+        }
+      }
+      drainRequest = req
+      drainJob = job
+      launched = true
+    }
+    if (launched) handoff.await()
+  }
+
+  /**
    * 发一次单流 POST + 处理 UMP 响应(对齐 LibreTube media + processUmpStream)。
    * backoff 起始 sleep(封顶 2.5s);redirect 写回 session;cookie/contexts 写回 session。
    */
-  private suspend fun media(req: SabrSegmentRequest) {
+  private suspend fun media(req: SabrSegmentRequest, onRequestedDelivered: () -> Unit) {
     // 2026-09-20(无效流量取证):一次响应内的丢弃统计——见 DiscardTracker 为何必须是调用内局部量。
     val discard = DiscardTracker()
     // P11-250(2026-10-12):**响应作用域**的解析状态(partial 段表)。headerId 只在一笔响应内有定义
@@ -1433,7 +1537,17 @@ internal class SabrMediaFetcher(
     val parseState = ResponseParseState()
     // P11-217:解析搬进 [fetchStreamData] 的读流循环(边收边解 + 拿够就停),这里只给 part 回调;
     // 返回值也从「整包字节」变成「实读字节 + 耗时 + 是否早停」。
-    val resp = fetchStreamData(req) { type, payload -> processPart(type, payload, discard, parseState) }
+    // P11-315:请求段一进缓存就唤醒 loader;后继(margin)段继续在后台读,不再拖住出画。
+    var requestedDelivered = false
+    val resp = fetchStreamData(req) { type, payload ->
+      processPart(type, payload, discard, parseState)
+      if (!requestedDelivered &&
+        initializedFormats[req.formatItag]?.hasSegment(req.segment) == true
+      ) {
+        requestedDelivered = true
+        onRequestedDelivered()
+      }
+    }
     // 2026-09-20(无效流量取证,只观测不改口径):本响应里被整段丢弃的媒体字节。
     // 真机三场「预取窗口 = 零可用数据窗口」期间每笔响应丢 7.6–7.9MB,而这些字节照进
     // `recordRealBandwidthSample` → est 一路抬到 32Mbps → 又作为 `bandwidthEstimate` **上报服务端**
@@ -2007,6 +2121,7 @@ internal class SabrMediaFetcher(
         sabrHttpClient
       }
       val call = client.newCall(request)
+      activeCall = call
       call.timeout().timeout(callCapMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       // ── P11-217:流式读 + 边收边解 + 拿够就停 ────────────────────────────────────────────────
       // 以前是 `response.body?.bytes()`:**整批读完才开始解析** ⇒ 服务端一次推 25~65MB 时,播放器
@@ -2181,6 +2296,7 @@ internal class SabrMediaFetcher(
     } finally {
       // P11-305:请求结束(成功/失败/早停)都要清在途标记,否则看门狗会以为还有视频段在途。
       noteInFlightEnd()
+      activeCall = null
     }
   }
 
@@ -2658,6 +2774,16 @@ internal class SabrMediaFetcher(
 
     /** transient 重试上限(耗尽→SabrTerminalException→evict)。对齐旧 SabrDashDataSource BACKOFF_MAX_ATTEMPTS。 */
     const val MAX_ATTEMPTS = 6
+
+    /**
+     * P11-315:同一轨的新请求若目标段在「当前 drain 请求段 + 这个窗口」之内,认为播放仍在
+     * 顺序推进,等 drain 收完(响应里很可能已经/即将有这一段);超出即视为远距离 seek,
+     * 直接取消旧响应。取 8 段 ≈ 服务端单笔可能前推的深度(4K 约 40~50s 内容)。
+     */
+    const val DRAIN_JOIN_AHEAD_SEGMENTS = 8L
+
+    /** P11-315:顺序请求等上一笔 drain 的上限;超时说明旧响应尾巴很慢,取消它发新请求。 */
+    const val DRAIN_JOIN_TIMEOUT_MS = 1_500L
     /** 单次 backoff 最大 sleep(ms,<8s stall watchdog)。对齐旧 MAX_BACKOFF_SLEEP_MS。 */
     const val MAX_BACKOFF_SLEEP_MS = 2_500L
     /** 过滤阈值:小于此字节数的样本视为 init/retry/非媒体段,不进真实带宽统计(真实媒体段 ≥ ~300KB)。 */

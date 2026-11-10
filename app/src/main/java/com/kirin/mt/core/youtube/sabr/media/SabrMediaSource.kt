@@ -149,6 +149,8 @@ internal class SabrMediaSource(
   override fun releaseSourceInternal() {
     elapsedRealtimeOffsetMs = C.TIME_UNSET
     drmSessionManager.release()
+    // P11-315:取消会话级后台读,避免播放结束后还在读 socket。
+    fetcher.release()
   }
 
   private fun processManifest() {
