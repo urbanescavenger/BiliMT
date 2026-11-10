@@ -1711,9 +1711,9 @@ internal class SabrMediaFetcher(
    * (dev.r2302/r2304)里,请求段 5~7s 到手、整笔 9~14s,而缓冲只有 5~10s —— 等后继段
    * 把整笔拖过 runway,播放器只能空等。
    *
-   * 估计:实测带宽([getRealBitrateEstimate]) + 该 itag 已交付段的平均字节
-   * ([getAverageSegmentBytes]) ⇒ 每段墙钟;整笔再按 ×1.2 + 1s 留往返/排队安全量。
-   * 证据不足(段数/带宽未知)时保持原档位行为。
+   * P11-318 修正:handoff 之后 margin 不再拖住请求段交付,只延长后台 drain(预取)。
+   * 因此不再用「整笔耗时」逐级降档,而是:缓冲 < 3/4 段墙钟才砍到 0,否则保留档位余量
+   * (摊薄 RTT、提高每笔净攒)。证据不足(段数/带宽未知)时保持原档位行为。
    */
   private fun streamMargin(itag: Int): Long {
     // 起播期:只等请求段本身(P11-218 —— 播放器此刻无事可做,早一拍到手早一拍出画)。
@@ -1725,22 +1725,27 @@ internal class SabrMediaFetcher(
     // ⚠️冲突复核(P11-225):**多搬只在"水位有余力"时才做** —— 否则会和饥饿档的单笔上限顶在一起:
     // 4K 3 段 ≈47MB,在 20Mbps 下要 ~19 秒,而饥饿档 `callCap` 只有 12 秒 ⇒ 一笔必被切断
     // (就是 P11-224 刚回退的那个坑换个形式回来)。水位薄时退回 1 段(2 段 ≈31MB/~12s)正好贴住上限。
-    val desired =
-      if (bufferedAheadNoteMs >= HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS &&
+    val desired = when {
+      // P11-318:低档段太小(720p 单段 0.3~1MB),margin=0/1 时每笔请求被 RTT 主导,
+      // 实测只有 1~5Mbps,既跑不满带宽也把 est 压低。水位充足时多搬几段摊薄 RTT。
+      bufferedAheadNoteMs >= LOW_TIER_FAT_FETCH_MIN_RUNWAY_MS &&
+        selectedVideoHeight in LOW_TIER_FAT_FETCH_MIN_HEIGHT..HIGH_TIER_MIN_HEIGHT &&
+        !lowHeapDevice -> 3L
+      bufferedAheadNoteMs >= HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS &&
         selectedVideoHeight >= HIGH_TIER_MIN_HEIGHT &&
-        !lowHeapDevice
-      ) 2L else 1L
+        !lowHeapDevice -> 2L
+      else -> 1L
+    }
     val avgBytes = getAverageSegmentBytes(itag)
     val estBps = getRealBitrateEstimate()
     if (avgBytes <= 0L || estBps <= 0L) return desired
     val segWallMs = avgBytes * 8000L / estBps
-    var margin = desired
-    while (margin > 0L) {
-      val needMs = segWallMs * (margin + 1L) * 6L / 5L + 1_000L
-      if (bufferedAheadNoteMs >= needMs) return margin
-      margin--
-    }
-    return 0L
+    // P11-318(修正 P11-317 的保守闸):handoff 之后 margin **不再拖住请求段交付**,
+    // 它只延长后台 drain(预取后继段),下一笔请求等 drain 结束才发。因此:
+    // - 缓冲还撑得住一段的下载时间 ⇒ 保留档位余量,摊薄 RTT、提高每笔净攒
+    //   (同视频对照:旧版 margin=1 的 4K 卡顿频率低于 margin=0 的新版);
+    // - 只剩不足 3/4 段墙钟 ⇒ 砍到 0,让下一笔请求尽快发出。
+    return if (bufferedAheadNoteMs < segWallMs * 3L / 4L) 0L else desired
   }
 
   /** P11-317:某 itag 已交付媒体段的平均字节数(与实测消耗码率同一本账);证据不足返回 -1。 */
@@ -2815,6 +2820,10 @@ internal class SabrMediaFetcher(
     const val LOW_HEAP_MAX_BYTES = 256L * 1024 * 1024
 
     const val HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS = 15_000L
+
+    /** P11-318:低档(720~1440)水位充足时一次多搬几段,摊薄 RTT、提高带宽利用率。 */
+    const val LOW_TIER_FAT_FETCH_MIN_RUNWAY_MS = 20_000L
+    const val LOW_TIER_FAT_FETCH_MIN_HEIGHT = 720
 
     /** P11-274:切档 grace 缓存最多保留的旧档段数(覆盖“当前段 + 2 段顺延”)。 */
     const val GRACE_KEEP_SEGMENTS = 3
