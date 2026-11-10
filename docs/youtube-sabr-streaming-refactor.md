@@ -198,6 +198,11 @@ internal class SabrResponse(
   - **早停判据同步修正**:`streamNeedSatisfied` 原来只查 `downloadedSegments`;早交付后 loader
     会把请求段取走（转 `bufferedSegments`），判据会在交付瞬间变 false，后台 drain 永远不早停、
     把整笔响应读完。现在 `downloaded` 与 `buffered` 都算「已到手」。
+  - **Stage C 第一步（P11-316）：按需抢占，不做并发 POST**。dev.r2302 真机里视频被音频
+    drain 挡住 5s（音频 60KB 要 7.6s，同一响应先推视频字节），导致 50.76s 的 2.25s 卡顿。
+    现在：视频缓冲 <10s 且挡路的是音频请求、音频已跑 ≥800ms 时，取消音频 drain 让视频先走
+    （视频响应本来就会顺带推音频段）。**不做第二条并发 POST**——同一会话两条流会破坏服务端
+    游标（重复推送/跳段），计划里 Stage C 的完整并发仍默认关闭。
   - 待验证：云编译；真机 4K 掉速场应看到「段交付时间 = `MEDIA_END`」且卡顿窗口消失；
     Stage B（队列水位驱动、去掉 margin 阻塞）未动。
 

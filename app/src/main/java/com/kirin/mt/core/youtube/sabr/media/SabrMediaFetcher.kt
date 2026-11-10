@@ -314,6 +314,8 @@ internal class SabrMediaFetcher(
   @Volatile private var activeCall: okhttp3.Call? = null
   /** 当前 drain 的请求,用于判断新请求是不是同轨的远距离 seek。 */
   @Volatile private var drainRequest: SabrSegmentRequest? = null
+  /** 当前 drain 的启动时刻(elapsedRealtime),供「视频饥饿时抢占音频 drain」判断。 */
+  @Volatile private var drainStartMs = 0L
 
   /** MediaSource 释放时取消后台读,避免播放结束后还在读 socket。 */
   fun release() {
@@ -1497,11 +1499,31 @@ internal class SabrMediaFetcher(
           prev.cancel()
           prev.join()
         } else {
-          // 顺序请求/A-V 另一路:必须等上一笔 drain 结束再发新请求(单流语义)。
-          // ⚠️ 这里**不能**加超时取消:audio 加入 video drain 时超时会 cancel 掉 video 的
-          // 在途响应 → SocketException → 整会话 evict,形成 1.5s 一次的取消风暴
-          // (2026-11-10 dev.r2300 真机实测)。
-          prev.join()
+          // P11-316(Stage C 第一步,按需抢占而非并发第二条 POST):
+          // 视频缓冲见底、而挡在前面的是音频请求时,取消音频 drain 让视频先走。
+          // 依据(dev.r2302):15:26:45.2 音频 rn=7 占流 7.6s,视频下一段请求被挡到 53.0
+          // 才发出,播放器在 50.76 因音频欠载卡 2.25s;而视频响应本来就会顺带推音频段。
+          // 不并发第二笔 POST——同一会话两条流会破坏服务端游标(见 Stage C 文档)。
+          val prevIsAudio = prevReq?.formatItag == audioFormat?.itag
+          val videoStarving = req.formatItag == videoFormat?.itag &&
+            bufferedAheadNoteMs in 1L..VIDEO_PREEMPT_AUDIO_RUNWAY_MS
+          val audioAgeMs = SystemClock.elapsedRealtime() - drainStartMs
+          if (prevIsAudio && videoStarving && audioAgeMs >= AUDIO_PREEMPT_MIN_AGE_MS) {
+            Log.i(
+              tag,
+              "drain preempt: video starving (bufAhead=${bufferedAheadNoteMs}ms), " +
+                "cancel audio drain itag=${prevReq?.formatItag} age=${audioAgeMs}ms",
+            )
+            activeCall?.cancel()
+            prev.cancel()
+            prev.join()
+          } else {
+            // 顺序请求/A-V 另一路:等上一笔 drain 结束再发新请求(单流语义)。
+            // ⚠️ 这里**不能**加超时取消:audio 加入 video drain 时超时会 cancel 掉 video 的
+            // 在途响应 → SocketException → 整会话 evict,形成 1.5s 一次的取消风暴
+            // (2026-11-10 dev.r2300 真机实测)。
+            prev.join()
+          }
         }
       }
       val fmt = initializedFormats[req.formatItag]
@@ -1528,6 +1550,7 @@ internal class SabrMediaFetcher(
         }
       }
       drainRequest = req
+      drainStartMs = SystemClock.elapsedRealtime()
       drainJob = job
       launched = true
     }
@@ -2796,6 +2819,12 @@ internal class SabrMediaFetcher(
      * 直接取消旧响应。取 8 段 ≈ 服务端单笔可能前推的深度(4K 约 40~50s 内容)。
      */
     const val DRAIN_JOIN_AHEAD_SEGMENTS = 8L
+
+    /** P11-316:视频缓冲低于此值时,允许取消挡路的音频 drain(Stage C 第一步:按需抢占)。 */
+    const val VIDEO_PREEMPT_AUDIO_RUNWAY_MS = 10_000L
+
+    /** P11-316:音频 drain 至少跑了这么久才值得抢占,避免刚发出就取消。 */
+    const val AUDIO_PREEMPT_MIN_AGE_MS = 800L
     /** 单次 backoff 最大 sleep(ms,<8s stall watchdog)。对齐旧 MAX_BACKOFF_SLEEP_MS。 */
     const val MAX_BACKOFF_SLEEP_MS = 2_500L
     /** 过滤阈值:小于此字节数的样本视为 init/retry/非媒体段,不进真实带宽统计(真实媒体段 ≥ ~300KB)。 */
