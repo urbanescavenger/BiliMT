@@ -195,6 +195,9 @@ internal class SabrResponse(
     产生 `SocketException: Socket closed` → 整会话 evict 的 1.5s 取消风暴（2160 一直起不来、
     1440 也反复重载）。已移除该超时路径：顺序请求/A-V 另一路一律 `join()` 到底（与改造前
     「串行等整笔响应」行为一致），只有同轨远距离 seek 才 cancel。
+  - **早停判据同步修正**:`streamNeedSatisfied` 原来只查 `downloadedSegments`;早交付后 loader
+    会把请求段取走（转 `bufferedSegments`），判据会在交付瞬间变 false，后台 drain 永远不早停、
+    把整笔响应读完。现在 `downloaded` 与 `buffered` 都算「已到手」。
   - 待验证：云编译；真机 4K 掉速场应看到「段交付时间 = `MEDIA_END`」且卡顿窗口消失；
     Stage B（队列水位驱动、去掉 margin 阻塞）未动。
 

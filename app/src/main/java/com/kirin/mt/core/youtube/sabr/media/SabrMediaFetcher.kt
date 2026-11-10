@@ -1735,7 +1735,12 @@ internal class SabrMediaFetcher(
     val segs = f.downloadedSegments.keys
     val want = if (req.segment <= 0L) segs.filter { it > 0L }.minOrNull() ?: return false else req.segment
     val margin = marginFor(req)
-    return segs.contains(want) && (margin <= 0L || segs.contains(want + 1L))
+    // P11-315:早交付后 loader 会把请求段从 downloadedSegments 取走(remove → bufferedSegments)。
+    // 只查 downloaded 会让「请求段已到手」在交付瞬间变成 false,后台 drain 永远等不到早停,
+    // 被迫把整笔响应读完(白占带宽 + 下一笔请求被迫 join 到响应结束)。
+    fun have(seq: Long): Boolean =
+      f.downloadedSegments.containsKey(seq) || f.bufferedSegments.containsKey(seq)
+    return have(want) && (margin <= 0L || have(want + 1L))
   }
 
   private suspend fun fetchStreamData(
