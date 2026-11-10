@@ -1481,10 +1481,16 @@ internal class SabrMediaFetcher(
       val prev = drainJob
       val prevReq = drainRequest
       if (prev != null && prev.isActive) {
-        val farSeek = prevReq != null &&
+        // init 请求(seg=0)之后的第一笔媒体请求天然"跳很远",不算 seek——init 响应通常还在推
+        // 首个媒体段,取消它是纯损失(dev.r2302 日志里 rn=6 init → rn=7 seg166 被误判)。
+        val farSeek = prevReq != null && prevReq.segment > 0 &&
           req.formatItag == prevReq.formatItag &&
           (req.segment < prevReq.segment || req.segment > prevReq.segment + DRAIN_JOIN_AHEAD_SEGMENTS)
         if (farSeek) {
+          Log.i(
+            tag,
+            "drain cancel on far seek: itag=${req.formatItag} seg ${prevReq?.segment}→${req.segment}",
+          )
           // 同轨远距离 seek:取消旧响应而不是等它把 margin 读完。
           // cancel call 会立刻打断阻塞读;join 等它把 finally 跑完,避免响应级字段串场。
           activeCall?.cancel()
