@@ -1093,20 +1093,75 @@ class HeightAwareAdaptiveTrackSelection(
             lowerHeight = f.height
           }
         }
+        // ── P11-321(2026-11-11 23:25 真机):只跳相邻低档会把档位钉在「仍超供给」的一档 ──────
+        // 23:22:22 `buffer-critical downgrade 1440p@13428288 → 1080p@9224875`,当时 est=5913K、
+        // susRaw=6317K、最近两笔 bodyRate 5974K/5857K;切换段 1.6MB、实测 ~0.1MB/s,8s/12s 都落不了地,
+        // 缓冲耗尽 → 8s 看门狗整场重载。触发条件(P11-240 缓冲唯一决定)不动,只改「降到哪一档」:
+        // 相邻档若明显高于实测供给(>1.15×),改选「码率 ≤ 供给」的最高低档;否则保持相邻档。
+        // 历史校核(299 份日志/去重 128 次可评估降档):严格口径只改 14 次,1 次真修复、1 次疑似误伤。
+        val supplyForTargetBps = listOf(
+          estForGate,
+          (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw() ?: -1L,
+        ).filter { it > 0L }.maxOrNull() ?: -1L
+        val target = if (lower >= 0 && supplyForTargetBps > 0L &&
+          getFormat(lower).bitrate >
+          supplyForTargetBps * DOWNGRADE_TARGET_SUPPLY_MARGIN_PERMILLE / 1000L
+        ) {
+          var fit = -1
+          var fitHeight = -1
+          var lowest = -1
+          var lowestBitrate = Long.MAX_VALUE
+          for (i in 0 until length) {
+            if (isTrackExcluded(i, nowMs)) continue
+            if (restrictToServed && i !in servedInGroup!!) continue
+            val f = getFormat(i)
+            if (f.height !in 1 until currentHeight || f.bitrate <= 0L) continue
+            if (f.bitrate <= supplyForTargetBps &&
+              (
+                fit < 0 ||
+                  (inActiveFamily(f) && !inActiveFamily(getFormat(fit))) ||
+                  (inActiveFamily(f) == inActiveFamily(getFormat(fit)) &&
+                    (f.height > fitHeight ||
+                      (f.height == fitHeight && isTopCodecVariant(f) && !isTopCodecVariant(getFormat(fit)))))
+                )
+            ) {
+              fit = i
+              fitHeight = f.height
+            }
+            if (f.bitrate < lowestBitrate) {
+              lowestBitrate = f.bitrate
+              lowest = i
+            }
+          }
+          when {
+            fit >= 0 -> fit
+            lowest >= 0 -> lowest
+            else -> lower
+          }
+        } else {
+          lower
+        }
         if (lower >= 0) {
           val current = getFormat(selected)
           val leavingIndex = selected
+          val supplyNote = if (target != lower) {
+            " [P11-321 supply=${supplyForTargetBps / 1000}K, adjacent=" +
+              "${getFormat(lower).height}p@${getFormat(lower).bitrate}]"
+          } else {
+            ""
+          }
           Log.i(
             "YtSabrAbr",
             "buffer-critical downgrade: bufS=${bufferedDurationUs / 1_000_000}s " +
               "itag${current.id}/${current.height}p@${current.bitrate} → " +
-              "${getFormat(lower).height}p@${getFormat(lower).bitrate} " +
+              "${getFormat(target).height}p@${getFormat(target).bitrate} " +
               "silenceHang=$silenceHang(P11-178) " +
-              "roundTrip=${if (roundTripForGate > 0) "${roundTripForGate}ms" else "未知"}(P11-203 交付节奏腿)"
+              "roundTrip=${if (roundTripForGate > 0) "${roundTripForGate}ms" else "未知"}(P11-203 交付节奏腿)" +
+              supplyNote
           )
-          selected = lower
+          selected = target
           lastDowngradeElapsedMs = nowMs
-          lastDowngradeTargetIndex = lower
+          lastDowngradeTargetIndex = target
           // P11-237:水位急救这一枪是真降档 ⇒ `sel=` 行的 hold 字段必须报 false(否则「hold=true 却降档」)。
           lastDowngradeHeldByBuffer = false
           // 2026-09-20 冻结 episode 置位:本段饥饿已用掉这一枪,水位回到阈值以上前不再开第二枪
@@ -1868,6 +1923,16 @@ class HeightAwareAdaptiveTrackSelection(
      * 都必然 suppress 掉急救降档(真机 2026-09-23 连成 60~90s 一轮的重载循环)。
      */
     const val BUFFER_CRITICAL_GATE_MARGIN_PERMILLE = 1150L
+
+    /**
+     * P11-321:水位急救降档**改选目标档**的门槛(千分比)。相邻低档的声明码率 >
+     * 实测供给 × 本系数才改选「码率 ≤ 供给」的最高低档;否则保持相邻档,避免边界多降。
+     * 实测供给 = max(活跃 est, 60s susRaw)。历史校核(299 份日志,去重后 128 次可评估
+     * `buffer-critical downgrade`):严格口径只改 14 次,1 次真修复(23:22:22 1440p→1080p@9.2M,
+     * 而 est=5913K/susRaw=6317K)、1 次疑似误伤;若 cap 再留 0.9 余量会多降 27 次、7 次 est
+     * 边界多降 ⇒ 取 1.15、不留额外余量。
+     */
+    const val DOWNGRADE_TARGET_SUPPLY_MARGIN_PERMILLE = 1150L
 
     /**
      * P11-203:水位急救降档闸的**交付节奏**余量(倍)。闸除「平均带宽够」之外还要求

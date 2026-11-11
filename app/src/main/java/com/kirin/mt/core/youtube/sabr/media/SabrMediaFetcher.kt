@@ -570,6 +570,8 @@ internal class SabrMediaFetcher(
   @Volatile private var inFlightStartMs = 0L
   @Volatile private var inFlightReadBytes = 0L
   @Volatile private var inFlightLastByteMs = 0L
+  /** P11-321:首个正文字节到达的墙钟 —— ETA 速率按「首字节→现在」算,不再把 TTFB 计进分母。 */
+  @Volatile private var inFlightFirstByteMs = 0L
   /** 本笔响应里**第一个**非 init 视频段的 contentLength(请求段本身的字节数)。 */
   @Volatile private var inFlightVideoExpectedBytes = 0L
   /** 最近一笔请求结束的墙钟(用于「刚落地」2s 宽限,避免落地瞬间被看门狗判死)。 */
@@ -579,6 +581,7 @@ internal class SabrMediaFetcher(
     inFlightStartMs = SystemClock.elapsedRealtime()
     inFlightReadBytes = 0L
     inFlightLastByteMs = 0L
+    inFlightFirstByteMs = 0L
     inFlightVideoExpectedBytes = 0L
     inFlightEndMs = 0L
   }
@@ -589,8 +592,10 @@ internal class SabrMediaFetcher(
   }
 
   private fun noteInFlightProgress(readBytes: Long) {
+    val now = SystemClock.elapsedRealtime()
+    if (inFlightFirstByteMs <= 0L) inFlightFirstByteMs = now
     inFlightReadBytes = readBytes
-    inFlightLastByteMs = SystemClock.elapsedRealtime()
+    inFlightLastByteMs = now
   }
 
   /** 记本笔响应里第一个非 init 视频段的期望字节数(后续同类 header 不覆盖)。 */
@@ -622,7 +627,11 @@ internal class SabrMediaFetcher(
     // 本笔响应里还没出现视频段的 MEDIA_HEADER ⇒ 没有「视频段快落地」的证据(纯音频请求也算 -1)。
     if (expected <= 0L) return -1L
     if (expected <= read) return 0L
-    val rateBps = read * 8000L / elapsed
+    // P11-321:速率分母改「首字节→现在」。旧口径从请求发出算,TTFB 1~4s 会把速率算低,
+    // 21:19:17 真机在途 3.6s、已读 3.19/4.18MB(bwNow=4122K,ETA≈1s)却因 5s 门槛返回 -1。
+    val rateElapsed = inFlightFirstByteMs.takeIf { it > 0L }?.let { now - it } ?: elapsed
+    if (rateElapsed <= 0L) return -1L
+    val rateBps = read * 8000L / rateElapsed
     if (rateBps <= 0L) return -1L
     return (expected - read) * 8000L / rateBps
   }
@@ -2204,7 +2213,19 @@ internal class SabrMediaFetcher(
       // 只对「已开播之后」的请求生效:起播期水位恒为 0,而首包偶发 16~20s 是常态(P11-160),
       // 那种情况该由 StartupStallThresholdMs=25s 的起播看门狗兜底,不该在这里被砍到 8s。
       val starving = deliveredRealMedia && bufferedAheadNoteMs in 0..SabrStarvingBufferMs
+      // P11-321:切档/降档目标请求是**救火请求**——目标段必须落地才有效果,而 8s 饥饿 cap 与 8s
+      // 位置冻结看门狗同值,会把这段和重载一起切掉(23:22:30 itag303 seg26 8s 只读 683KB;
+      // 21:41:42 同段已读 92%、差 724ms)。只在「视频轨 + 与最后交付过的视频 itag 不同」时放宽到 12s,
+      // 其余 ≤1080p 仍是 8s、≥1440p 仍是 12s。历史 7 次 8s 切断中 4 次再给 4s 能读完。
+      // 切换进行中(graceSourceItag 仍是旧档)与「请求档 != 最后交付档」都算切档目标;
+      // 前者覆盖首笔切换请求失败后的重试(重试时 lastDeliveredVideoItag 可能已被推来的字节更新)。
+      val switchingVideo = req.formatItag in sessionVideoItags && (
+        (graceSourceItag >= 0 && req.formatItag != graceSourceItag) ||
+          (lastDeliveredVideoItag > 0 && req.formatItag != lastDeliveredVideoItag)
+        )
+      val switchTarget = starving && switchingVideo
       val callCapMs = when {
+        starving && switchTarget -> SabrStarvingSwitchCallTimeoutMs
         starving && reqHeight >= 1440 -> SabrStarvingCallTimeoutMsHigh
         starving -> SabrStarvingCallTimeoutMs
         reqHeight >= 1440 -> SabrCallTimeoutMs
@@ -2221,7 +2242,7 @@ internal class SabrMediaFetcher(
         Log.i(
           tag,
           "fetch rn=$rn starving-fast-fail: bufAhead=${bufferedAheadNoteMs}ms ≤ " +
-            "${SabrStarvingBufferMs}ms → callCap=${callCapMs}ms (base=" +
+            "${SabrStarvingBufferMs}ms → callCap=${callCapMs}ms switchTarget=$switchTarget (base=" +
             "${if (reqHeight >= 1440) SabrCallTimeoutMs else SabrCallTimeoutMsLow}ms, P11-173; " +
             "P11-222 余量一半=${if (bufferedAheadNoteMs > 0L) bufferedAheadNoteMs / 2 else -1}ms)",
         )
@@ -2908,9 +2929,19 @@ internal class SabrMediaFetcher(
     /** P11-173:饥饿快切的 ≥1440p 上限 —— 大段本身更慢,给到 12s(仍早于 18s/40s 原口径)。 */
     const val SabrStarvingCallTimeoutMsHigh = 12_000L
 
+    /**
+     * P11-321:饥饿档里**切档/降档目标请求**的整调用上限(ms)。这是救火请求,目标段不落地
+     * 降档就白降;而 8s 与看门狗同值会把它和重载一起切掉。历史 7 次 8s 切断里 4 次再给 4s 能读完。
+     */
+    const val SabrStarvingSwitchCallTimeoutMs = 12_000L
+
     // ── P11-305:stall 看门狗让路的「在途视频段 ETA」估算参数(见 docs §70)──────────────────
-    /** 起算门槛:请求发出不到这个时长不估 ETA(起播/首包阶段交给既有看门狗)。 */
-    const val IN_FLIGHT_ETA_MIN_ELAPSED_MS = 5_000L
+    /**
+     * 起算门槛:请求发出不到这个时长不估 ETA(起播/首包阶段交给既有看门狗)。
+     * P11-321:5_000 → 1_500。历史 299 份日志:stall 时在途视频 1.5~5s 的 36 次里 3 次可让路
+     * (21:19:17 ETA≈1.1s、23:18:43 ETA≈5.6s);静默 3s + 最小 256KB 两道保护仍在。
+     */
+    const val IN_FLIGHT_ETA_MIN_ELAPSED_MS = 1_500L
     /** 最近一次收到字节距今超过它 ⇒ 视为静默挂死(交给 8s 静默超时),不参与让路。 */
     const val IN_FLIGHT_ETA_MAX_SILENCE_MS = 3_000L
     /** 已读字节少于此值不估 ETA(只有 part 头/状态包时算不出速率)。 */
