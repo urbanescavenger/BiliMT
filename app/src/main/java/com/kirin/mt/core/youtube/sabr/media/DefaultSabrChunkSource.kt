@@ -179,6 +179,10 @@ internal class DefaultSabrChunkSource(
     // 改为向带宽计返回 SabrMediaFetcher 实测真实带宽(中位数)。AdaptiveTrackSelection 据此原生 ABR 选档,
     // 不再需要 ceiling/force-climb 排除补丁。见 SabrBandwidthMeter / SabrMediaFetcher。
     (bandwidthMeter as? SabrBandwidthMeter)?.setRealBandwidthProvider { fetcher.getRealBitrateEstimate() }
+    // P11-320 M2:会话首笔样本暂存期间,est 回退到起播 seed,防止重建后 1~2s 内被单笔样本降档。
+    (bandwidthMeter as? SabrBandwidthMeter)?.setStartupProvisionalProvider {
+      fetcher.isBandwidthStartupProvisional()
+    }
     (bandwidthMeter as? SabrBandwidthMeter)?.setSustainedBandwidthProvider { fetcher.getSustainedBitrateEstimate() }
     // P11-258:裸值通道,只喂日志(susRaw=),用于真机核对分母扣减是否落在窗口内。
     (bandwidthMeter as? SabrBandwidthMeter)?.setSustainedRawBandwidthProvider {

@@ -47,6 +47,14 @@ internal class SabrBandwidthMeter(
   @Volatile
   private var sustainedBpsProvider: (() -> Long)? = null
 
+  /**
+   * P11-320 M2:会话首笔样本暂存期间为 true(SabrMediaFetcher.isBandwidthStartupProvisional)。
+   * 此窗口内 est 用 [initialSeedBps],不用 [lastRealBps] —— 重建后的 lastRealBps 可能还是
+   * 上一场慢滴时的低值,拿它判档会让 ABR 在 1~2s 内直接 720p→480p。
+   */
+  @Volatile
+  private var startupProvisionalProvider: (() -> Boolean)? = null
+
   /** 2026-08-30:注入升档重锚执行方(SabrMediaFetcher.reseedActiveWindow)。 */
   @Volatile
   private var reseedBandwidthProvider: ((Long) -> Unit)? = null
@@ -54,6 +62,11 @@ internal class SabrBandwidthMeter(
   /** 2026-08-30:注入实测消耗码率来源(SabrMediaFetcher.getMeasuredBitrateBps,降/升档门槛校准底座)。 */
   @Volatile
   private var measuredBitrateProvider: ((Int) -> Long)? = null
+
+  /** P11-320 M2:注入「启动首笔样本暂存中」来源(DefaultSabrChunkSource)。 */
+  fun setStartupProvisionalProvider(provider: () -> Boolean) {
+    startupProvisionalProvider = provider
+  }
 
   /** 由持有 [SabrMediaFetcher] 的一方(DefaultSabrChunkSource)注入真实带宽来源。 */
   fun setRealBandwidthProvider(provider: () -> Long) {
@@ -231,6 +244,7 @@ internal class SabrBandwidthMeter(
     // P11-282:换源后 lastRealBps 也失效;下一次 SABR 会话从 seed 重新起步。
     lastRealBps = -1L
     realBpsProvider = null
+    startupProvisionalProvider = null
     lastDeliveredVideoItagProvider = null
     sustainedBpsProvider = null
     sustainedRawBpsProvider = null
@@ -303,6 +317,8 @@ internal class SabrBandwidthMeter(
     // P11-259 已证实并非如此,但只给非 SABR 源拆了线)。
     // 也不能返回 0:那会把「证据不足」当「带宽为零」,直接砸最低档(P11-167 的 144p 病)。
     // 取最后一次有效真实值;会话内还没测到过就用构造 seed(≈起播画质),都比污染值可靠。
+    // P11-320 M2:会话首笔样本暂存期间用起播 seed,不用上一场的 lastRealBps(可能是慢滴低值)。
+    if (startupProvisionalProvider?.invoke() == true) return initialSeedBps
     if (lastRealBps >= 0L) return lastRealBps
     return initialSeedBps
   }

@@ -338,6 +338,12 @@ internal class SabrMediaFetcher(
   private var realBwTimeMs = 0L
   /** 2026-09-01 重填容量环(每次成功媒体请求一笔,无墙钟衰减),中位数喂升档判据。 */
   private val capacityWindow = ArrayDeque<RealBwSample>()
+  // ── P11-320 M2(2026-11-11):会话重建后的首笔样本先暂存,等第二笔一起入账 ────────────────────
+  // 重建后的首笔常带 0.5~1.5s TTFB 或服务端慢启动;窗口只有这一笔时 ABR 会在一两秒内直接
+  // 720p→480p + 90s 冷却。暂存期间 getRealBitrateEstimate 返回 -1(证据不足),meter 回退
+  // seed/last,不会把「证据不足」当「带宽为零」。两个字段都只在 realBandwidthLock 内读写。
+  private var acceptedBwSampleCount = 0
+  private var pendingStartupBwSample: RealBwSample? = null
 
   // ── P11-306(2026-11-02 TV 真机):服务端按档位供流(pacing)证据 ──────────────────────────────
   // 病根(§71):播放 1080p 时服务端只按 ~1080p 的节奏供流,est/sus/cap 全被钉在 6~10M,而手切
@@ -719,14 +725,50 @@ internal class SabrMediaFetcher(
     addSustainedGapSample(demandIdleMs, fetchStartMs)
   }
 
-  /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。快小样本(init/retry/音频段)过滤;但慢小样本(2026-08-27 真机:服务端挂 8.5s 只回 939B)是真实供给中断,必须入账。 */
-  fun recordRealBandwidthSample(bytes: Long, elapsedMs: Long) {
-    if (elapsedMs <= 0) return
-    if (bytes < REAL_BW_MIN_BYTES && elapsedMs < BW_SLOW_TINY_MS) return
-    addRealBwSample(bytes, elapsedMs)
-    if (bytes >= REAL_BW_MIN_BYTES) {
-      addSustainedSample(bytes, elapsedMs)
-      addCapacitySample(bytes, elapsedMs)
+  /** P11-320 M2:首笔样本仍在暂存 ⇒ 会话处于「启动带宽未定」状态。 */
+  fun isBandwidthStartupProvisional(): Boolean = synchronized(realBandwidthLock) {
+    pendingStartupBwSample != null
+  }
+
+  /**
+   * 记录一次真实段下载样本(fetchStreamData 成功时调用)。
+   *
+   * P11-320 M1(2026-11-11):分母用**正文时间**(首字节→末字节),不是整笔请求耗时。
+   * 真机 r2309 的 244 笔成功请求里,整笔口径把 TTFB 算进带宽:<1MB 响应的 bodyRate
+   * 中位数是总耗时的 **2.73 倍**(65% ≥2 倍),而 ≥1MB 只有 1.29 倍。重建后的首笔
+   * 小响应因此把 est 从 9Mbps 压到 1.5~2.5Mbps,直接触发 720p→480p。
+   * TTFB 是延迟证据,已经由 [noteRoundTrip] 和静默超时通道负责,不该重复算进带宽。
+   *
+   * 同时:**小于 [REAL_BW_MIN_BYTES] 的响应一律不进带宽账**。init / 纯音频段不代表
+   * 链路容量;旧实现把「慢小响应」也入账(4KB init 耗时 2s ⇒ 极低样本),是重建后
+   * est 被砸穿的第二个来源。真实供给中断由失败样本([recordRealBandwidthFailure])
+   * 和静默超时负责。
+   *
+   * P11-320 M2:会话**第一笔**样本先暂存,等第二笔一起入账(见上文字段注释)。
+   */
+  fun recordRealBandwidthSample(bytes: Long, bodyMs: Long) {
+    if (bodyMs <= 0L) return
+    if (bytes < REAL_BW_MIN_BYTES) return
+    synchronized(realBandwidthLock) {
+      if (acceptedBwSampleCount == 0) {
+        pendingStartupBwSample = RealBwSample(bytes, bodyMs)
+        acceptedBwSampleCount = 1
+        Log.i(
+          tag,
+          "bw startup sample held (M2): ${bytes}B/${bodyMs}ms → 等第二笔一起入账",
+        )
+        return
+      }
+      pendingStartupBwSample?.let { held ->
+        addRealBwSample(held.bytes, held.timeMs)
+        addSustainedSample(held.bytes, held.timeMs)
+        addCapacitySample(held.bytes, held.timeMs)
+        pendingStartupBwSample = null
+      }
+      acceptedBwSampleCount++
+      addRealBwSample(bytes, bodyMs)
+      addSustainedSample(bytes, bodyMs)
+      addCapacitySample(bytes, bodyMs)
     }
   }
 
@@ -844,6 +886,9 @@ internal class SabrMediaFetcher(
       realBwWindow.clear()
       realBwBytes = 0L
       realBwTimeMs = 0L
+      // P11-320 M2:重锚属于旧窗口的收尾;暂存样本不再补入,后续样本直接入账。
+      pendingStartupBwSample = null
+      if (acceptedBwSampleCount < 2) acceptedBwSampleCount = 2
       addRealBwSample(seedBytes, REAL_BW_RESEED_MS)
     }
     Log.i(tag, "bw reseeded: active est baseline → ${bitrateBps / 1000}K (seed ${seedBytes}B/${REAL_BW_RESEED_MS}ms)")
@@ -2255,7 +2300,8 @@ internal class SabrMediaFetcher(
       } else {
         -1.0
       }
-      recordRealBandwidthSample(readBytes, elapsed)
+      // P11-320 M1:带宽样本只计正文时间(首字节→末字节);TTFB 归延迟证据,不重复算进带宽。
+      recordRealBandwidthSample(readBytes, bodyMs)
       // P11-306:服务端 pacing 证据 —— 本笔请求段提前到手且交付内容时长 ≥ 实际耗时(见 docs §71.9)。
       recordPacingSample(
         req,
@@ -2334,6 +2380,8 @@ internal class SabrMediaFetcher(
             "video=${videoFormat?.itag} audio=${audioFormat?.itag} selectedVideoNote=$selectedVideoItagNote " +
             "→ treat as success (P11-307, 不 evict)",
         )
+        // P11-307 分支保留**整笔耗时**口径:超时前的静默尾部正是「这批数据没供上」的证据,
+        // 与成功路径的 M1(bodyRate 口径)分工不同。
         recordRealBandwidthSample(readBytes, failMs)
         SabrAbrMemory.noteSabrResponseMs(failMs)
         noteRoundTrip(req.formatItag, failMs)
@@ -2887,7 +2935,11 @@ internal class SabrMediaFetcher(
     const val AUDIO_PREEMPT_MIN_AGE_MS = 800L
     /** 单次 backoff 最大 sleep(ms,<8s stall watchdog)。对齐旧 MAX_BACKOFF_SLEEP_MS。 */
     const val MAX_BACKOFF_SLEEP_MS = 2_500L
-    /** 过滤阈值:小于此字节数的样本视为 init/retry/非媒体段,不进真实带宽统计(真实媒体段 ≥ ~300KB)。 */
+    /**
+     * 过滤阈值:小于此字节数的响应(init/纯音频/无效段)一律不进带宽账(P11-320 M1)。
+     * 这类响应不代表链路容量 —— 4KB init 即使耗时 2s 也不能说明带宽只有 16kbps。
+     * 真实供给中断由失败样本与静默超时通道负责。
+     */
     const val REAL_BW_MIN_BYTES = 100_000L
     /** 2026-09-01 重填容量环容量(笔)——近 8 笔成功请求,中位数抗单笔 TCP 爬升/小段噪声。 */
     const val CAPACITY_WINDOW_SAMPLES = 8
@@ -2936,13 +2988,6 @@ internal class SabrMediaFetcher(
      * 「慢滴 + 重试」造成的十几秒 gap 照旧入账(那是真实供给证据)。
      */
     const val BW_GAP_IGNORE_MS = 30_000L
-    /**
-     * alpha.9Z:快小样本过滤的时间上限(ms)——bytes<100KB 且耗时低于它视为 init/retry/音频噪声丢弃;
-     * 超过它视为「慢小响应」(服务端挂住只回极小体)真实供给中断,按实际 (bytes, elapsed) 入账。
-     * 2026-08-27 真机:rn=18 8.5s 只回 939B 被过滤,est 钉 52M,31s 墙钟仅交付 67.6MB(有效 17M),
-     * 缓冲 19.6s→2% 看门狗重载——供给中断发生在传输内,原过滤器全盲。
-     */
-    const val BW_SLOW_TINY_MS = 2_000L
     /** alpha.9Z:持续带宽窗口(墙钟 ms)——升档判据「60s 内实际交付字节/墙钟」。 */
     const val SUSTAINED_WINDOW_MS = 60_000L
     /** 2026-08-30:升档重锚合成样本时长(ms)——est 从「声明码率」起步,随后真实样本平滑接管。 */
