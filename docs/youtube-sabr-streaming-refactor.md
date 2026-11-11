@@ -164,6 +164,21 @@ SabrDataSource.open()                     [loader 线程]
 `never recovered` 包含会话正常结束。改后观察点：启动 8s 内 `downgrade` 应为 0；启动 10s 内
 `downgrade fail cooldown` 应为 0；`timeout → evict` 应变成 `retry same seg`；`stall detected` 应下降。
 
+**dev.r2310 真机首场验证（2026-11-11 18:53，同视频 `OwGemVUAUOQ`，Auto）**
+
+- 18:53:31 `bw startup sample held (M2): 528783B/498ms`：该笔整笔口径 528KB/1127ms=3.75Mbps，
+  bodyRate=8.49Mbps；暂存期间 `est=-1`（meter 回退 seed 5000K），没有触发 720p→480p。
+- 第二笔 2.04MB/1521ms（bodyRate 16.9Mbps）入账后 est=14054K；18:53:41 升 1080p、
+  18:53:42 升 1440p、18:53:48 升 2160p（**会话开始后 18.3s**）。
+- 全程 172.8s 无 `downgrade` / `downgrade fail cooldown` / `stall detected`；2160p 播放
+  154s，`bw` 30–42Mbps、`meas` 21–34Mbps、pace 1.5–2.4x。
+- 对照 r2309 同视频 09:15 场：启动 8s 内 720p→480p（est 1542K），49.3s <720p，
+  2160p 用了约 59s。
+- 判读注意：本场链路本身很好（2160 `meas` 21–34Mbps），2160 能播**主要是带宽够**；
+  首笔整笔口径 3.75Mbps 也刚好高于 720p 阈值 3.54，这一场不能单独证明「从 480 陷阱救回」。
+  修复的直接证据是：M2 暂存生效、`est=-1→14Mbps`、启动零降档；M1 把第二笔后的 est 从
+  旧口径约 7.8Mbps 抬到 14Mbps，爬档明显更快。
+
 ---
 
 ## 2. 历史日志验证（只读，脚本在 `tmp/`）
