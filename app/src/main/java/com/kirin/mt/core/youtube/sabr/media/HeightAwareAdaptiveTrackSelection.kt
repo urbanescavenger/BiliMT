@@ -1110,7 +1110,7 @@ class HeightAwareAdaptiveTrackSelection(
           var fit = -1
           var fitHeight = -1
           var lowest = -1
-          var lowestBitrate = Long.MAX_VALUE
+          var lowestBitrate = Int.MAX_VALUE
           for (i in 0 until length) {
             if (isTrackExcluded(i, nowMs)) continue
             if (restrictToServed && i !in servedInGroup!!) continue
