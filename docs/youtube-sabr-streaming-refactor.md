@@ -191,6 +191,32 @@ SabrDataSource.open()                     [loader 线程]
 - 同样不是受控对照：该视频 720p 声明 3.38Mbps，首笔整笔口径 4.09Mbps 也高于它。两场共同
   证明的是「M2 暂存生效 + 启动零降档 + 自动爬档未被拖慢」，不是「旧版在这两场必卡 480」。
 
+### 1.7 2026-11-11 21:00 TV alpha.2：bot 风控 + 格式降级 + 手切 1080 重载
+
+`logs_live_20261111_212100.log`（`com.kirin.mt` 3.1.3-alpha.2，Sony BRAVIA 4K AE2 / Android 14）：
+
+- **初始 2160**：20:54:59 首次 launch 走 DASH（`launch bw: sabr=false`），选轨 itag315 →
+  `video size: 3840x2160`；但只渲染 21 帧，20:55:20 `player ENDED @pos=0ms duration=Long.MIN`
+  （DASH 流异常结束），随后重试。
+- **bot 提示**：20:54:40/45、20:55:23/24 `YtResolver … LOGIN_REQUIRED: "Sign in to confirm
+  that you're not a bot"`；`BiliMT:Player: playback launch failed: YouTube playback blocked:
+  登入帳戶以確認你不是機器人`。20:54:52 / 20:55:26 两次重试后，20:55:31 SABR 建会话成功。
+- **格式降级**：20:55:31 harvest `videoFormats=14`，SABR 选 308（1440p）单轨；21:16:20 新会话
+  `videoFormats=5`（299/298/134/243/160，最高 1080p）、`qualities=4`。1440/2160 从可用档位
+  消失——是 bot 风控/匿名访问降级的结果，不是播放器丢轨。
+- **360/144 锁定**：21:16:27 首笔 bodyRate=2005K、21:16:29 第二笔 4974K → est=2686K <
+  720p 4163K → 21:16:31 `downgrade 720p→360p`；21:16:33 缓冲 2.4s → `buffer-critical
+  downgrade 360p→144p` + 90s 冷却。之后 144p（21:16:35–59）→ 360p（21:16:59）→ 720p
+  （21:17:55）；恢复慢的卡点是 `trial refused (sustained low): 1.29Mbps < need 2.975Mbps`
+  与 `upshift held (buffer floor 9s < 15s)`，当时 est=3.8Mbps、cap=6.6Mbps——低档小段 +
+  满缓冲停闸导致 sustained 虚低，不是链路只有 360p 的吞吐。
+- **手切 1080 重载**：21:18:14 手选 1080p（单轨 299）；实测 5–7Mbps body、pace 0.49–1.33
+  （多数 <1，低于 1080p 实时码率 6.98Mbps）→ 缓冲耗尽 → 21:18:39 / 21:19:17 / 21:20:48
+  三次 `stall detected, auto-retry`；21:20:06 / 21:20:35 两次 `timeout → evict`（含
+  silence-hang）。这次确实是带宽不够 1080p，手动锁档让 ABR 无法降档，所以反复重载到退出。
+- **M1/M2 表现**：两段 SABR 会话首笔都是 `est=-1`（暂存生效），启动没有误降；本次问题与
+  M1/M2 无关，属 bot 风控 + 低档 sustained 低估 + 真实带宽不足三类叠加。
+
 ---
 
 ## 2. 历史日志验证（只读，脚本在 `tmp/`）
