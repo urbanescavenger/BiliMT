@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.1.3-alpha.2](#v313-alpha2)
 - [v3.1.3-alpha.1](#v313-alpha1)
 - [v3.1.2](#v312)
 - [v3.1.2-alpha.1](#v312-alpha1)
@@ -420,6 +421,16 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v3.1.3-alpha.2
+
+**低档多搬 + 三面诊断 + 带宽口径修正。** 接在 alpha.1 的交付面重构之后，修「启动被单笔样本误判降档」和「低档小段被 RTT 主导、升档估计偏低」。
+
+- **低档多搬 + handoff 感知 margin 闸（P11-318）**：水位 ≥20s、档位 720–1440 且非小堆时 margin=3（一次 4 段），4K 仍按 2 段/水位门；修正 P11-317 过保守的 runway 闸——handoff 后 margin 只延长后台预取，不再拖住请求段交付，只有缓冲 < 3/4 段墙钟才砍到 0。同视频对照：旧版 margin=1 单笔 30~44MB、4K 实测 20~42Mbps、自动档到 1440p；B1 margin=0 单笔 13~23MB、4K 仅 11~30Mbps、自动档只到 1080p。
+- **三面诊断日志（P11-319）**：`fetch rn=… REAL` 追加 `ttfb/body/bodyRate/pace/media`，异常行追加 `ttfb/read`，`resp summary` 追加 `early/media`。判读：TTFB 占比高且 bodyRate ≫ 整体 Mbps ⇒ 延迟型；bodyRate ≈ 整体 < 码率 ⇒ 带宽型；pace > 1 表示服务端供得比播放快。
+- **带宽样本改正文口径（P11-320 M1）**：分母改用首字节→末字节，TTFB 只作延迟证据；<100KB 的 init/纯音频/慢小响应不再进带宽账。r2309 的 244 笔成功请求中，<1MB 响应的 bodyRate/总耗时中位 2.73×（65% ≥2×），≥1MB 仅 1.29×。
+- **启动首笔样本暂存（P11-320 M2）**：会话第一笔成功样本先暂存，第二笔到达时一起入账；暂存期间 est 回退起播 seed，不再用上一场 `lastRealBps` 的低值。r2309 的 14 个会话中 4 个在启动 8s 内 720p→480p（est 1.54–2.51Mbps，同会话前 3 笔 bodyRate 5.1–11.5Mbps），造成 <720p 约 72s（≈5.5% 播放时间）；r2310 真机两场 Auto 均无启动降档，720p→2160 分别约 18.3s / 19.8s。
+- **验证**：云编译 run 42982269846 绿（969e6d93）；真机 dev.r2310 两场（`OwGemVUAUOQ` 18:53、`SmteHN8UZoY` 19:00）均 Auto 自动到 2160，无 downgrade/cooldown/stall；2160 期间 est 38–53Mbps、meas 22–26Mbps。判读见 `docs/youtube-sabr-streaming-refactor.md` §1.6。
 
 ## v3.1.3-alpha.1
 
