@@ -18,7 +18,9 @@ object BiliColors {
   val OverlayStrong = Color(0xCC000000)
   val OverlayTransparent = Color(0x00000000)
   val ProgressTrack = Color(0x4DFFFFFF)
-  val ProgressBuffered = Color(0x3DFFFFFF)
+  // P11-327:缓冲段必须比轨道**亮**、但**不能亮过已播段(BiliPink)**。旧值 0x3D(24%) 比轨道
+  // 0x4D(30%) 还暗,叠上去等于不可见 ⇒ 用户看到「进度条没有缓冲部分」。取 0x66(40%) 卡在两者之间。
+  val ProgressBuffered = Color(0x66FFFFFF)
   val PlayerPanel = Color(0xF21F1F1F)
   val PlayerPanelDivider = Color(0x1AFFFFFF)
   val PlayerPanelFocused = Color(0x4DFB7299)

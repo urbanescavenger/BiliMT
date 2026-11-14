@@ -2076,6 +2076,7 @@ fun MobilePlayerScreen(
                 seekPreviewMs = null
               },
               modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+              bufferedFraction = (player.bufferedPercentage / 100f).coerceIn(0f, 1f),
             )
             Row(
               verticalAlignment = Alignment.CenterVertically,
@@ -2236,6 +2237,7 @@ fun MobilePlayerScreen(
                 seekPreviewMs = null
               },
               modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+              bufferedFraction = (player.bufferedPercentage / 100f).coerceIn(0f, 1f),
             )
             Text(formatMs(durationMs), color = Color.White)
             // 上一个/下一个(◀▶)按钮已移除:播放列表里紧挨缓存清晰度静态文字,点"清晰度"易误触切下一集。
@@ -2521,9 +2523,11 @@ private fun SlimSeekSlider(
   onValueChange: (Float) -> Unit,
   onValueChangeFinished: () -> Unit,
   modifier: Modifier = Modifier,
+  bufferedFraction: Float = 0f,
 ) {
   val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(0f)
   val fraction = if (span > 0f) ((value - valueRange.start) / span).coerceIn(0f, 1f) else 0f
+  val buffered = bufferedFraction.coerceIn(0f, 1f)
   var widthPx by remember { mutableStateOf(1f) }
   var dragFraction by remember { mutableStateOf<Float?>(null) }
   val current = dragFraction ?: fraction
@@ -2562,6 +2566,15 @@ private fun SlimSeekSlider(
         size = Size(size.width, trackPx),
         cornerRadius = corner,
       )
+      // P11-327:缓冲段(已缓冲到哪)用比轨道更亮的 token,和 TV 进度条同语义。
+      if (buffered > 0f) {
+        drawRoundRect(
+          color = BiliColors.ProgressBuffered,
+          topLeft = Offset(0f, cy - trackPx / 2f),
+          size = Size(size.width * buffered, trackPx),
+          cornerRadius = corner,
+        )
+      }
       drawRoundRect(
         color = BiliColors.BiliPink,
         topLeft = Offset(0f, cy - trackPx / 2f),

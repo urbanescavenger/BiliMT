@@ -517,6 +517,7 @@ fun MobileOfflinePlayerScreen(
                   seekPreviewMs = -1L
                 },
                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                bufferedFraction = (player.bufferedPercentage / 100f).coerceIn(0f, 1f),
               )
               Text(formatMs(durationMs), color = Color.White)
             }
@@ -633,9 +634,11 @@ private fun SlimSeekSlider(
   onValueChange: (Float) -> Unit,
   onValueChangeFinished: () -> Unit,
   modifier: Modifier = Modifier,
+  bufferedFraction: Float = 0f,
 ) {
   val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(0f)
   val fraction = if (span > 0f) ((value - valueRange.start) / span).coerceIn(0f, 1f) else 0f
+  val buffered = bufferedFraction.coerceIn(0f, 1f)
   var widthPx by remember { mutableStateOf(1f) }
   var dragFraction by remember { mutableStateOf<Float?>(null) }
   val current = dragFraction ?: fraction
@@ -674,6 +677,15 @@ private fun SlimSeekSlider(
         size = Size(size.width, trackPx),
         cornerRadius = corner,
       )
+      // P11-327:缓冲段(与在线播放器 SlimSeekSlider 同语义)。
+      if (buffered > 0f) {
+        drawRoundRect(
+          color = BiliColors.ProgressBuffered,
+          topLeft = Offset(0f, cy - trackPx / 2f),
+          size = Size(size.width * buffered, trackPx),
+          cornerRadius = corner,
+        )
+      }
       drawRoundRect(
         color = BiliColors.BiliPink,
         topLeft = Offset(0f, cy - trackPx / 2f),
