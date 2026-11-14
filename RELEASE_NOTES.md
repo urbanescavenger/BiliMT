@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v3.1.3-alpha.3](#v313-alpha3)
 - [v3.1.3-alpha.2](#v313-alpha2)
 - [v3.1.3-alpha.1](#v313-alpha1)
 - [v3.1.2](#v312)
@@ -421,6 +422,15 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v3.1.3-alpha.3
+
+**B站播放稳定性三修：弹幕、卡顿恢复、空降助手。**
+
+- **stall 重试后弹幕永久消失（P11-322）**：launch effect 每次重跑都清空 `danmakuEntries`，而弹幕加载 effect 的键是 `(enabled, cid)`，自动重试不改这两个键 ⇒ 不再重新加载，只能手动关/开弹幕开关找回。改为重载保留弹幕，并用 `danmakuLoadedCid` 标记归属（换视频且新 cid 未解析时不会把上一支视频的弹幕漏到新画面）。真机证据：20:55:19 / 20:57:27 两次 `stall detected, auto-retry` 后到下次手动切开关前无任何 `Loaded danmaku`，渲染引擎零 draw 记录。
+- **B站直连 DASH 卡顿恢复（P11-323）**：stall 重载原本重放同一个 playurl（缓存命中同一 CDN），节点与画质都不变，4K 贴边码率会反复补缓冲（真机 124 个探针 9 次 BUFFERING、`fwdBuf` 中位 6.5s/最低 0ms、两次重载）。①`CdnSelector` 新增 `avoidHosts()`：stall 时把当前主用 host 拉黑 3 分钟，缓存按 miss 重测、候选过滤，真正换到备用节点（手动指定 CDN 不受影响）；②已起播的 stall 再把请求画质降一档（从服务端 `accept_quality` 里取低一档，2160 → 1080P60 → 1080P+ → 1080P → 720P），每次只降一档，续播位置保持卡住点。
+- **空降助手「有些加载不出」（P11-324）**：①三次重试全打同一个 `bsbsb.top` + 共享客户端 15s 超时，节点抖动时 45s+ 全失败；改为 `bsbsb.top → bsbsb.cc → IP mirror` 轮换、单次 6s 超时，失败上限约 20s。②请求不带 `cid` 时镜像返回所有分P的段，多分P视频会提前跳到别的分P的广告起点；改为按 `bvid+cid` 请求与缓存，响应带 cid 时再过滤一次，TV/Mobile 的 effect 键补 `cid`。
+- **验证**：云编译 run 43577454195（d5af0318）绿；真机验收见 `docs/bilibili-stall-recovery.md`、`docs/airjump-segments.md` 与 `DEVELOPMENT_PROGRESS.md` P11-322/323/324。
 
 ## v3.1.3-alpha.2
 
