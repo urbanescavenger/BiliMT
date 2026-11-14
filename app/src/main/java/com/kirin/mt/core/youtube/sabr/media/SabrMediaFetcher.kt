@@ -2369,6 +2369,8 @@ internal class SabrMediaFetcher(
       // 拿够([streamNeedSatisfied])即停:请求段+后继段到手就够下一轮续拉,剩下的字节不再收。
       val ump = UmpReader()
       var earlyStop = false
+      // P11-328:本笔是否因「后继段等待上限」提前结束(请求段已到手,后继段没等满)。
+      var successorCapStop = false
       call.execute().use { response ->
         val code = response.code
         if (code != 200) {
@@ -2410,6 +2412,7 @@ internal class SabrMediaFetcher(
             SystemClock.elapsedRealtime() - requestedReadyAtMs >= EARLY_STOP_SUCCESSOR_CAP_MS
           ) {
             earlyStop = true
+            successorCapStop = true
             Log.i(
               tag,
               "early stop (successor cap, P11-328): requested seg in hand for " +
@@ -2484,7 +2487,15 @@ internal class SabrMediaFetcher(
           " media=${respPacingMediaMs}ms" +
           // P11-217:早停时字节数=**实读**,不是服务端本来会推的总量 —— 不打标记会与"这一笔很小"混淆。
           // P11-218:带上余量(0=起播期只等请求段 / 1=已开播多等一层),便于真机核对判据。
-          (if (earlyStop) " (早停:请求段${if (marginFor(req) > 0L) "+后继段" else "本身"}已到手,P11-217/218)" else ""),
+          (
+            if (successorCapStop) {
+              " (早停:请求段已到手,后继段等满 ${EARLY_STOP_SUCCESSOR_CAP_MS}ms 上限,P11-328)"
+            } else if (earlyStop) {
+              " (早停:请求段${if (marginFor(req) > 0L) "+后继段" else "本身"}已到手,P11-217/218)"
+            } else {
+              ""
+            }
+            ),
       )
       // P11-221:「有请求没有回复」—— 200 但只回了状态/头部,没有任何媒体段。
       if (readBytes < ZeroReplyMaxBytes) {
