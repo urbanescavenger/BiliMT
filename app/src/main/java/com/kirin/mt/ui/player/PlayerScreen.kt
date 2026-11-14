@@ -242,6 +242,11 @@ fun PlayerScreen(
   var clockMinuteKey by remember { mutableLongStateOf(currentClockMinuteKey()) }
   var currentCodecText by remember { mutableStateOf("") }
   var danmakuEntries by remember { mutableStateOf<List<DanmakuEntry>>(emptyList()) }
+  // danmakuEntries 所属 cid。stall 自动重试会重跑 launch effect，若在那里清空 entries，
+  // 而下方的弹幕加载 effect 键是 (enabled, cid) 不会重跑，弹幕就永久消失、只能手动
+  // 关/开弹幕开关找回（2026-11-13 真机 20:55:19、20:57:27 两次重试后续均无弹幕）。
+  // 这里用 cid 标记归属：渲染层只在 cid 匹配时下发，换视频时不显示上一支视频的弹幕。
+  var danmakuLoadedCid by remember { mutableLongStateOf(0L) }
   var videoshotData by remember { mutableStateOf<VideoshotData?>(null) }
   var videoshotSprites by remember { mutableStateOf<Map<String, ImageBitmap>>(emptyMap()) }
   var airJumpSegments by remember { mutableStateOf<List<AirJumpSegment>>(emptyList()) }
@@ -1935,7 +1940,8 @@ fun PlayerScreen(
     playbackBufferedPercentageState.longValue = 0L
     playbackPaused = false
     currentCodecText = ""
-    danmakuEntries = emptyList()
+    // 弹幕不在此清空：同 cid 的 stall 重试/切码率重建后弹幕加载 effect 不会重跑，
+    // 清空即永久丢弹幕（2026-11-13 真机复现）。换视频由弹幕加载 effect 的 cid 键负责。
     // airJumpSegments 不在此重置:同 bvid 重试/切码率时段仍有效,且 AirJump 效果(键=开关+bvid)
     // 不会重启,清掉后整轮无段;重置责任全在 AirJump 效果,bvid 变化必然重启覆盖。
     warnedAirJumpIds = emptySet()
@@ -2621,6 +2627,7 @@ fun PlayerScreen(
 
   LaunchedEffect(danmakuSettings.enabled, displayRequest.cid) {
     danmakuEntries = emptyList()
+    danmakuLoadedCid = 0L
     val cid = displayRequest.cid
     if (!danmakuSettings.enabled || cid <= 0L) {
       return@LaunchedEffect
@@ -2632,6 +2639,7 @@ fun PlayerScreen(
       Log.w(PlayerDanmakuLogTag, "Failed to load danmaku cid=$cid", error)
     }
     danmakuEntries = result.getOrDefault(emptyList())
+    danmakuLoadedCid = cid
     Log.i(PlayerDanmakuLogTag, "Loaded danmaku cid=$cid count=${danmakuEntries.size}")
   }
 
@@ -3005,7 +3013,9 @@ fun PlayerScreen(
       )
       is PlayerScreenState.Ready -> {
         PlayerDanmakuLayer(
-          entries = danmakuEntries,
+          // 只下发属于当前 cid 的弹幕：换视频且新 cid 未解析时（displayRequest.cid=0），
+          // 内存里上一支视频的 entries 不能漏到新画面上。
+          entries = if (danmakuLoadedCid == displayRequest.cid) danmakuEntries else emptyList(),
           settings = danmakuSettings,
           positionState = playbackPositionState,
           syncToken = danmakuSyncToken,
