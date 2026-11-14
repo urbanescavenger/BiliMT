@@ -192,6 +192,39 @@ internal class SabrBandwidthMeter(
   /** 在途视频段剩余时间估算(ms);-1 = 无在途视频段/证据不足,0 = 请求段已到手或刚落地。 */
   fun getInFlightVideoEtaMs(): Long = inFlightVideoEtaProvider?.invoke() ?: -1L
 
+  // ── P11-326(2026-11-14 TV 真机):局部断流证据,供 ABR 在挂死期间及时降档(见 docs §76)─────
+  // ABR 只在 getNextChunk 评估,大段挂死时零评估;shouldCancelChunkLoad(reevaluateBuffer 周期性调用)
+  // 通过本通道读到「还供不供得上」,命中即取消在途段换低档。
+  @Volatile
+  private var inFlightSilenceProvider: (() -> Long)? = null
+
+  fun setInFlightSilenceProvider(provider: () -> Long) {
+    inFlightSilenceProvider = provider
+  }
+
+  /** 在途请求首字节后的静默时长(ms);-1 = 无在途/证据不足。 */
+  fun getInFlightVideoSilenceMs(): Long = inFlightSilenceProvider?.invoke() ?: -1L
+
+  @Volatile
+  private var inFlightDeliveryProvider: (() -> Long)? = null
+
+  fun setInFlightDeliveryProvider(provider: () -> Long) {
+    inFlightDeliveryProvider = provider
+  }
+
+  /** 在途请求实时交付速率(bps);无在途时返回最近一笔实测值,-1 = 无证据。 */
+  fun getInFlightVideoDeliveryBps(): Long = inFlightDeliveryProvider?.invoke() ?: -1L
+
+  @Volatile
+  private var supplyGapProvider: (() -> Long)? = null
+
+  fun setSupplyGapProvider(provider: () -> Long) {
+    supplyGapProvider = provider
+  }
+
+  /** 最近一次局部断流的墙钟(ms);0 = 从未发生。仅升档稳定闸使用。 */
+  fun getLastSupplyGapWallMs(): Long = supplyGapProvider?.invoke() ?: 0L
+
   /**
    * P11-178:注入「本 itag 最近一次零字节挂死」的墙钟来源(SabrMediaFetcher.getLastSilenceHangWallMs)。
    * 与实测吞吐走同一条既有通道(选择类拿不到 fetcher)——挂死证据要让水位急救在「挂死后重试成功」的
@@ -256,6 +289,10 @@ internal class SabrBandwidthMeter(
     roundTripProvider = null
     sessionHealthProvider = null
     sessionRebuildProvider = null
+    // P11-326:断流证据同样不能跨源存活(旧会话的 gap 会误否决新源升档)。
+    inFlightSilenceProvider = null
+    inFlightDeliveryProvider = null
+    supplyGapProvider = null
   }
 
   /**

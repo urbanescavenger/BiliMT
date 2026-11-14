@@ -225,6 +225,17 @@ internal class DefaultSabrChunkSource(
     (bandwidthMeter as? SabrBandwidthMeter)?.setInFlightVideoEtaProvider {
       fetcher.getInFlightVideoEtaMs()
     }
+    // P11-326:局部断流证据 —— 选择类在 shouldCancelChunkLoad(挂死期间唯一评估点)判「来不及落地」,
+    // 主动取消在途段换低档;升档稳定闸也用 supply gap 否决抖动期爬档。见 docs §76。
+    (bandwidthMeter as? SabrBandwidthMeter)?.setInFlightSilenceProvider {
+      fetcher.getInFlightVideoSilenceMs()
+    }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setInFlightDeliveryProvider {
+      fetcher.getInFlightVideoDeliveryBps()
+    }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setSupplyGapProvider {
+      fetcher.getLastSupplyGapWallMs()
+    }
   }
 
   override fun getAdjustedSeekPositionUs(positionUs: Long, seekParameters: SeekParameters): Long {

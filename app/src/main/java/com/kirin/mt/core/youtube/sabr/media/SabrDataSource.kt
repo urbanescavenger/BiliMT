@@ -92,6 +92,18 @@ internal class SabrDataSource(
       // 只按普通 load 取消上抛,不 evict。
       Log.i("YtSabr", "SabrDataSource open: seg=${req.segment} itag=${req.formatItag} cancelled (chunk load cancelled) → 不 evict")
       throw IOException("SABR fetch cancelled: ${e.message}")
+    } catch (e: InterruptedException) {
+      // ── P11-326(2026-11-14):ABR 主动降档会经 shouldCancelChunkLoad 取消在途段。
+      // loader.cancelLoading() 中断的若正好是阻塞读取,runBlocking 可能以 InterruptedException
+      // (而非 CancellationException)浮出;旧实现落进通用 catch → **整会话 evict**,
+      // 一次及时降档反而退化成完整重 resolve(真机 19:48:26 / 19:49:50 都见
+      // `InterruptedException: null → evict`)。与 P11-91 同语义:良性取消,不 evict。
+      Log.i(
+        "YtSabr",
+        "SabrDataSource open: seg=${req.segment} itag=${req.formatItag} interrupted " +
+          "(chunk load cancelled) → 不 evict",
+      )
+      throw IOException("SABR fetch interrupted: ${e.message}")
     } catch (e: Exception) {
       Log.w("YtSabr", "SabrDataSource open: seg=${req.segment} itag=${req.formatItag} ${e::class.simpleName}: ${e.message} → evict sid=$sessionId")
       SabrStreamRegistry.evict(sessionId)

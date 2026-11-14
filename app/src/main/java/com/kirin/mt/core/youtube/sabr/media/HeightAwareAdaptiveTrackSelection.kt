@@ -4,9 +4,11 @@ package com.kirin.mt.core.youtube.sabr.media
 
 import android.os.SystemClock
 import android.util.Log
+import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.TrackGroup
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.source.chunk.Chunk
 import androidx.media3.exoplayer.source.chunk.MediaChunk
 import androidx.media3.exoplayer.source.chunk.MediaChunkIterator
 import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
@@ -670,6 +672,19 @@ class HeightAwareAdaptiveTrackSelection(
    */
   private var freezeEpisodeActive = false
 
+  // ── P11-326(2026-11-14 TV 真机,docs §76):挂死期间强制评估/降档 ───────────────────────────────
+  // ABR 只在 getNextChunk 评估;大段挂死时 loader 阻塞在 open(),整个饥饿窗口零评估。Media3 的
+  // ChunkSampleStream.reevaluateBuffer 在挂死期间仍周期性调 shouldCancelChunkLoad —— 在那里判
+  // 「这段来不及落地」并返回 true,取消在途段后 loader 会立刻重新 getNextChunk,从而恢复评估点。
+  /** shouldCancelChunkLoad 命中时置位;下一次 updateSelectedTrack 消费一次(视同 silenceHang 证据)。 */
+  @Volatile private var pendingForcedStarvation = false
+  /** 本饥饿 episode 是否已强制取消过(一次饥饿一枪;缓冲恢复到急救线以上复位)。 */
+  private var forcedStarvationEpisodeActive = false
+  /** 上次强制取消的 elapsedRealtime(ms)——最小间隔,防连续取消打散会话。 */
+  private var lastForcedCancelElapsedMs = 0L
+  /** 强制降档触发的一次性日志(与 freezeEpisodeSuppressLogged 同风格)。 */
+  private var forcedDowngradeLogged = false
+
   /**
    * 2026-09-20:冻结 episode 闸住第二枪时的取证日志是否已打过(每 episode 一次,防每评估刷屏)。
    *
@@ -727,6 +742,9 @@ class HeightAwareAdaptiveTrackSelection(
   /** P11-306:服务端 pacing 证据解除 sustained 否决的一次性日志(证据消失时复位)。 */
   private var pacingOverrideLogged = false
 
+  /** P11-326:高档(≥1440p)升档被稳定闸挡下的一次性日志(每实例一次)。 */
+  private var stableUpshiftGateLogged = false
+
   /** P11-195:判据②被「天花板守卫」挡下的一次性日志(每实例一次)——否则钉在低分辨率又是一段安静。 */
   private var familyCeilingGuardLogged = false
 
@@ -747,6 +765,67 @@ class HeightAwareAdaptiveTrackSelection(
    * (试探失败冷却本体在 [SabrAbrMemory],跨重载有效——实例字段会被看门狗重载洗掉,21:13 真机案例。)
    */
   private var lastUpgradeWasTrial = false
+
+  /**
+   * P11-326:挂死期间唯一的评估点(Media3 `ChunkSampleStream.reevaluateBuffer` 周期性调到这里)。
+   *
+   * 判据只看「这段请求来不来得及在缓冲见底前落地」,不看平均带宽(抖动期的 est/cap 都是断流前的旧值):
+   * - `eta > runway×0.8` ⇒ 按当前速率到缓冲耗尽也拉不完这一段;
+   * - 首字节后静默 ≥3s 且 runway ≤12s ⇒ 硬挂死,ETA 已失效(此时 fetcher 的 ETA 返回 -1)。
+   * 命中 → 置 [pendingForcedStarvation] 并返回 true:取消在途段后 loader 重新 getNextChunk,
+   * 选择类把该标志视同 P11-178 `silenceHang`(真饿证据),走既有 buffer-critical 降档路径。
+   *
+   * 边界:一次饥饿一枪 + 4s 最小间隔(防连降到底);缓冲恢复到急救线以上复位 episode。
+   * 与 P11-305 让路互补——让路前提是「ETA 小且仍在收字节」,这里要求「来不及落地」。
+   */
+  override fun shouldCancelChunkLoad(
+    positionUs: Long,
+    loadingChunk: Chunk,
+    queue: MutableList<out MediaChunk>,
+  ): Boolean {
+    if (super.shouldCancelChunkLoad(positionUs, loadingChunk, queue)) return true
+    // 音频组(无 height 语义)不参与:只有视频轨的挂死才值得为它降档。
+    if ((0 until length).none { getFormat(it).height > 0 }) return false
+    val startUs = loadingChunk.startTimeUs
+    if (startUs == C.TIME_UNSET || positionUs == C.TIME_UNSET) return false
+    val runwayMs = (startUs - positionUs) / 1000L
+    if (runwayMs <= 0L) return false
+    val meter = bandwidthMeter as? SabrBandwidthMeter ?: return false
+    val etaMs = meter.getInFlightVideoEtaMs()
+    val silenceMs = meter.getInFlightVideoSilenceMs()
+    // 只在缓冲接近急救线时才动手(两条腿同一门槛):缓冲还厚时给慢滴机会,别为一段在途数据
+    // 提前丢掉已下载字节;真到 12s 才开始算「来不来得及」,仍比 8s 看门狗早一个评估窗口。
+    if (runwayMs > FORCED_STARVE_MAX_RUNWAY_MS) return false
+    val etaStarves = etaMs >= 0L && etaMs * 1000L > runwayMs * FORCED_STARVE_ETA_PERMILLE
+    val silentStarves = silenceMs >= FORCED_STARVE_SILENCE_MS
+    if (!etaStarves && !silentStarves) return false
+    val currentHeight = getFormat(selected).height
+    val nowMs = SystemClock.elapsedRealtime()
+    if (forcedStarvationEpisodeActive) return false
+    val hasLower = (0 until length).any {
+      getFormat(it).height in 1 until currentHeight && !isTrackExcluded(it, nowMs)
+    }
+    if (!hasLower) return false
+    if (lastForcedCancelElapsedMs != 0L &&
+      nowMs - lastForcedCancelElapsedMs < FORCED_CANCEL_MIN_INTERVAL_MS
+    ) {
+      return false
+    }
+    pendingForcedStarvation = true
+    forcedStarvationEpisodeActive = true
+    lastForcedCancelElapsedMs = nowMs
+    if (!forcedDowngradeLogged) {
+      forcedDowngradeLogged = true
+      Log.i(
+        "YtSabrAbr",
+        "forced downgrade trigger (starvation, P11-326): itag${itagOf(getFormat(selected))}" +
+          "(${currentHeight}p) runway=${runwayMs}ms eta=$etaMs silence=$silenceMs(" +
+          (if (etaStarves) "eta>runway×${FORCED_STARVE_ETA_PERMILLE / 1000.0}" else "silent-hang") +
+          ") bps=${meter.getInFlightVideoDeliveryBps() / 1000}K → cancel in-flight + re-evaluate",
+      )
+    }
+    return true
+  }
 
   override fun updateSelectedTrack(
     playbackPositionUs: Long,
@@ -864,6 +943,13 @@ class HeightAwareAdaptiveTrackSelection(
       ?.getLastSilenceHangWallMs(itagOf(getFormat(selected))) ?: 0L
     val silenceHang = silenceHangWallMs > 0L &&
       nowWallMs - silenceHangWallMs in 0 until SILENCE_HANG_EVIDENCE_MS
+    // ── P11-326(2026-11-14 TV 真机):「正在挂死/来不及落地」同属真饿证据 ─────────────────────
+    // shouldCancelChunkLoad 在挂死期间命中后置位,这里消费一次。语义与 silenceHang 完全一致:
+    // 免「读数无效不算饿」、免 P11-168/177 的 est/meas 抑制闸。区别只是证据发生在**当前**而非事后
+    // (P11-178 那条要等重试成功那一刻才读得到,而那时缓冲往往已经漏光)。
+    val forcedStarvation = pendingForcedStarvation
+    pendingForcedStarvation = false
+    val starvationEvidence = silenceHang || forcedStarvation
     // ── P11-188(2026-09-27 真机 `logs_live_20260927_210358`):**读数无效不算「水位低」** ──────────
     // 20:58:33.390 出现 `bufS=-1.0`(media3/SABR own-range-null 家族给的无效读数),旧口径下
     // `-1 < criticalBufferedUs` 直接开了一枪水位急救(2160p→1440p),紧接着 `top-tier cooldown 180s`
@@ -873,10 +959,13 @@ class HeightAwareAdaptiveTrackSelection(
     // 零字节挂死(silenceHang)是**独立**证据(fetcher 按 itag 记的墙钟),不受本判定影响;
     // 试探熔断(trialAbort)本身依赖水位读数,读数无效时一并失效(否则 -1 恒 < 15s 会误熔断)。
     val bufferReadoutValid = bufferedDurationUs >= 0L
-    val belowCriticalUs = silenceHang ||
+    val belowCriticalUs = starvationEvidence ||
       (bufferReadoutValid && (bufferedDurationUs < criticalBufferedUs || trialAbort))
     if (!belowCriticalUs) {
       freezeEpisodeActive = false
+      // P11-326:缓冲回到急救线以上 = 这段饥饿结束,下一次强制取消重新允许。
+      forcedStarvationEpisodeActive = false
+      forcedDowngradeLogged = false
       freezeEpisodeSuppressLogged = false
     } else if (freezeEpisodeActive && !bufferCollapseArtifact && !freezeEpisodeSuppressLogged) {
       freezeEpisodeSuppressLogged = true
@@ -897,7 +986,7 @@ class HeightAwareAdaptiveTrackSelection(
     // 从没缓冲过 ⇒ 不算低水位,等首段(起播的自救归 25s 启动看门狗)。
     // **silenceHang 例外**:零字节挂死是**独立证据**(fetcher 按 itag 记的墙钟),与水位无关 ⇒
     // 起播期真挂死(20s 零字节)照旧允许降档自救。
-    val lowBufferIsEvidence = maxObservedBufferedUs > 0L || silenceHang
+    val lowBufferIsEvidence = maxObservedBufferedUs > 0L || starvationEvidence
     if (!lowBufferIsEvidence && belowCriticalUs && !startupNoBufferHoldLogged) {
       startupNoBufferHoldLogged = true
       Log.i(
@@ -914,7 +1003,7 @@ class HeightAwareAdaptiveTrackSelection(
     // 试探熔断(trialAbort)不受影响;8s/25s 看门狗仍是最终兜底。
     val sinceLastDowngradeMs =
       if (lastDowngradeElapsedMs == 0L) Long.MAX_VALUE else nowMs - lastDowngradeElapsedMs
-    val postDowngradeGrace = !silenceHang && !trialAbort &&
+    val postDowngradeGrace = !starvationEvidence && !trialAbort &&
       sinceLastDowngradeMs < DOWNGRADE_AFTER_DOWNGRADE_GRACE_MS
     if (postDowngradeGrace && belowCriticalUs && !postDowngradeGraceLogged) {
       postDowngradeGraceLogged = true
@@ -928,12 +1017,13 @@ class HeightAwareAdaptiveTrackSelection(
       postDowngradeGraceLogged = false
     }
     val bufferCritical = lowBufferIsEvidence &&
-      !bufferCollapseArtifact &&
+      (!bufferCollapseArtifact || forcedStarvation) &&
       belowCriticalUs &&
       !freezeEpisodeActive &&
       !postDowngradeGrace &&
-      (bufferedDurationUs <= prevEvalBufferedUs || silenceHang) &&
-      (trialAbort || nowMs - lastUpgradeElapsedMs >= DOWNGRADE_AFTER_UPGRADE_GRACE_MS)
+      (bufferedDurationUs <= prevEvalBufferedUs || starvationEvidence) &&
+      (trialAbort || forcedStarvation ||
+        nowMs - lastUpgradeElapsedMs >= DOWNGRADE_AFTER_UPGRADE_GRACE_MS)
     // P11-188:读数无效时保留上一次有效读数 —— 塌方守门(bufferCollapseArtifact)与试探水位线都以它
     // 为基准,把 -1 记进去会让下一轮拿「上次有效 → -1」当成一次塌方,污染判据。
     if (bufferReadoutValid) prevEvalBufferedUs = bufferedDurationUs
@@ -1050,7 +1140,9 @@ class HeightAwareAdaptiveTrackSelection(
         roundTripForGate * ROUND_TRIP_RUNWAY_FACTOR <= bufferedDurationUs / 1000L
       // P11-178:本档刚零字节挂死过 ⇒ 这道闸不适用(闸防假饿;挂死是真饿,且挂死后重试那笔成功样本
       // 正好会把 est/meas 喂真,让闸误判「撑得住」)。理由详见上面 silenceHang 的证据注释。
-      if (curBitrateForGate > 0 && estHasMargin && measEvidenceOk && arrivalCoversBuffer && !silenceHang) {
+      if (curBitrateForGate > 0 && estHasMargin && measEvidenceOk && arrivalCoversBuffer &&
+        !starvationEvidence
+      ) {
         Log.i(
           "YtSabrAbr",
           "buffer-critical downgrade **suppressed**(" +
@@ -1099,10 +1191,18 @@ class HeightAwareAdaptiveTrackSelection(
         // 缓冲耗尽 → 8s 看门狗整场重载。触发条件(P11-240 缓冲唯一决定)不动,只改「降到哪一档」:
         // 相邻档若明显高于实测供给(>1.15×),改选「码率 ≤ 供给」的最高低档;否则保持相邻档。
         // 历史校核(299 份日志/去重 128 次可评估降档):严格口径只改 14 次,1 次真修复、1 次疑似误伤。
-        val supplyForTargetBps = listOf(
-          estForGate,
-          (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw() ?: -1L,
-        ).filter { it > 0L }.maxOrNull() ?: -1L
+        // P11-326:强制降档场次优先用「本次在途实测交付速率」——断流期间 est/sus 都还是断流前的旧值,
+        // 拿它们挑目标档会挑出仍然供不上的档(19:49 真机 est=7020K 而实际只有 2.3Mbps)。
+        val inFlightDeliveryBps =
+          (bandwidthMeter as? SabrBandwidthMeter)?.getInFlightVideoDeliveryBps() ?: -1L
+        val supplyForTargetBps = if (forcedStarvation && inFlightDeliveryBps > 0L) {
+          inFlightDeliveryBps
+        } else {
+          listOf(
+            estForGate,
+            (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw() ?: -1L,
+          ).filter { it > 0L }.maxOrNull() ?: -1L
+        }
         val target = if (lower >= 0 && supplyForTargetBps > 0L &&
           getFormat(lower).bitrate >
           supplyForTargetBps * DOWNGRADE_TARGET_SUPPLY_MARGIN_PERMILLE / 1000L
@@ -1476,7 +1576,15 @@ class HeightAwareAdaptiveTrackSelection(
         // 起播 stall 冷却不试探、顶档不试探(4K 死亡行军/起播死循环防线不松)。
         // P11-255:顶档那条「不试探」从原来的 `topTierGateFail` 摘出来,改由 `isTopTierCandidate`
         // 独立表达(见下)——撤掉的是顶档专属的**判据**,不是它的**路径限制**。
-        val capacityGateFail = required > upgradeEstFloor
+        // ── P11-326(2026-11-14,用户口径「升档用稳定判断,主要是 2160,画质越高越严」)──────────
+        // 旧口径对所有档统一 `required > max(est, cap)` ⇒ 峰值/突发即可爬档(19:47 真机 cap=58447K
+        // 让 2160p 在 8s 内合法通过,随后供给塌到 3.2Mbps)。本轮按目标档高度分级:
+        //   ≤1080p:维持旧口径(低档段小、切换便宜,快速爬档利大于弊);
+        //   1440p :供给改用 60s sustained(证据不足退回 cap),并否决近 15s 有断流的轮次;
+        //   2160p :要求 sustained 有原值证据,且 min(sustained, cap) ≥ need×1.1,并否决近 20s 断流。
+        // 满缓冲试探(trial)仍可绕过本闸(顶档除外)——它是 pacing 会话唯一的测量治愈口。
+        val stableGateFail = stableUpshiftGateFail(f, required, nowWallMs)
+        val capacityGateFail = required > upgradeEstFloor || stableGateFail
         val sustainedGateFail = !canUpgrade || (sustained in 0 until required)
         // ── P11-194 的顶档 ×1.1 sustained 闸:**已由 P11-255 撤销**(保留这段只为记住来龙去脉)──────
         // 这道闸的旧写法 `isTopTier && i == 0 && …` 建立在「组索引 0 = 最高码率档」的**错误假设**上:
@@ -1749,6 +1857,57 @@ class HeightAwareAdaptiveTrackSelection(
   fun downgradeHeldByBufferNow(): Boolean = lastDowngradeHeldByBuffer
 
   /**
+   * P11-326:升档稳定闸(docs §76)。只对目标档 ≥[STABLE_UPSHIFT_MIN_HEIGHT] 生效;≤1080p 返回 false
+   * (维持旧的 `max(est, cap)` 口径)。
+   *
+   * 为什么要按高度分级:低档段小、切一次轨道只丢几秒缓冲,快速爬档收益大;高档段大(2160p 单段
+   * 10~20MB),一次误升就是 30s 缓冲漏光 + 8s 看门狗整场重载。用户口径「画质越高越严」。
+   *
+   * 供给口径:
+   *   · 1440p:`sustained`(60s 墙钟、已扣被迫空转);证据不足(-1)退回 `cap`(近期请求吞吐中位数)。
+   *   · 2160p:必须 `sustained ≥ 0`,且 `min(sustained, cap)` 容得下 `need×1.1` —— 均值与近期容量
+   *     两条腿都要过,任一条被突发撑高都不够。
+   * 断流否决:近 [STABLE_UPSHIFT_GAP_WINDOW_MS]/[TOP_TIER_STABLE_GAP_WINDOW_MS] 内有一次
+   * 「在途中途断流或请求失败」⇒ 本轮不爬档(抖动期不升,等它稳定下来再说)。
+   */
+  private fun stableUpshiftGateFail(f: Format, required: Long, nowWallMs: Long): Boolean {
+    val height = f.height
+    if (height < STABLE_UPSHIFT_MIN_HEIGHT) return false
+    val meter = bandwidthMeter as? SabrBandwidthMeter ?: return false
+    val sus = meter.getSustainedBitrateEstimateRaw()
+    val cap = meter.getRefillCapacityEstimate()
+    val isTopTierCandidate = height >= TOP_TIER_MIN_HEIGHT
+    val gapWindowMs =
+      if (isTopTierCandidate) TOP_TIER_STABLE_GAP_WINDOW_MS else STABLE_UPSHIFT_GAP_WINDOW_MS
+    val lastGapWallMs = meter.getLastSupplyGapWallMs()
+    val recentGap = lastGapWallMs > 0L && nowWallMs - lastGapWallMs in 0 until gapWindowMs
+    val fail = if (isTopTierCandidate) {
+      if (sus < 0L) {
+        true
+      } else {
+        val supply = if (cap > 0L) minOf(sus, cap) else sus
+        recentGap || required * TOP_TIER_STABLE_MARGIN_PERMILLE / 1000L > supply
+      }
+    } else {
+      val supply = if (sus >= 0L) sus else cap
+      // 两条证据都缺(刚起播)⇒ 交给旧口径,不在冷启动额外加一道死闸。
+      supply > 0L && (recentGap || required > supply)
+    }
+    if (fail && !stableUpshiftGateLogged) {
+      stableUpshiftGateLogged = true
+      Log.i(
+        "YtSabrAbr",
+        "upshift held (stable gate, P11-326): itag${itagOf(f)}(${height}p) " +
+          "need=${required / 1000}K sus=${if (sus >= 0L) "${sus / 1000}K" else "-1(证据不足)"} " +
+          "cap=${if (cap > 0L) "${cap / 1000}K" else "-1"} " +
+          "gap=${if (recentGap) "${nowWallMs - lastGapWallMs}ms ago" else "none"} " +
+          "est=${bandwidthMeter.getBitrateEstimate() / 1000}K — 高档要稳定供给证据,抖动期不爬",
+      )
+    }
+    return fail
+  }
+
+  /**
    * P11-200:**档位实需基准** —— 这一档到底要多少带宽。
    *
    * 背景(§39.10/§39.11,真机 `logs_live_20261005_213214.log`):`f.bitrate` 是
@@ -1902,6 +2061,19 @@ class HeightAwareAdaptiveTrackSelection(
     /** 2026-08-30:升档后的水位急救宽限(ms)——新档刚起步缓冲未回填,不能立刻按同一水位反弹降档。 */
     const val DOWNGRADE_AFTER_UPGRADE_GRACE_MS = 5_000L
 
+    // ── P11-326:挂死期间强制评估/降档(docs §76)──────────────────────────────────────────────
+    /**
+     * 在途视频段 ETA > runway × 本系数(千分比)⇒ 判「来不及落地」。
+     * 0.8 与 P11-203 的 `ROUND_TRIP_RUNWAY_FACTOR=2` 同思路:手里要留有裕量,不能等 ETA 恰好等于缓冲。
+     */
+    const val FORCED_STARVE_ETA_PERMILLE = 800L
+    /** 首字节后静默 ≥ 此值 = 硬挂死(此时 fetcher 的 ETA 已返回 -1,只能靠静默本身判)。 */
+    const val FORCED_STARVE_SILENCE_MS = 3_000L
+    /** 硬挂死分支只在 runway ≤ 此值时才取消(缓冲还厚时给慢滴一点机会,交给 P11-305 让路)。 */
+    const val FORCED_STARVE_MAX_RUNWAY_MS = 12_000L
+    /** 两次强制取消的最小间隔(ms):防同一段反复 cancel → 反复重发。 */
+    const val FORCED_CANCEL_MIN_INTERVAL_MS = 4_000L
+
     /**
      * P11-312(A):普通降档后的水位急救宽限(ms)。历史校核(§72.6):35 次 `buffer-critical → 360p`
      * 里大多数是「720→480 普通降档 → 1~2s 内再降 360」;切档丢旧档缓冲造成的低水位不是新档供给不足。
@@ -1968,6 +2140,16 @@ class HeightAwareAdaptiveTrackSelection(
     const val STARTUP_RAMP_MS = 60_000L
     /** 2026-08-30 方案B:顶档(4K 级)定义高度门槛——组内最高档 height ≥ 此值时启顶档 sustained 加码。 */
     const val TOP_TIER_MIN_HEIGHT = 2160
+
+    // ── P11-326:升档分级稳定闸(docs §76)──────────────────────────────────────────────────────
+    /** 从这个高度起启稳定闸(≤1080p 维持旧的 max(est, cap) 口径)。 */
+    const val STABLE_UPSHIFT_MIN_HEIGHT = 1440
+    /** 1440p 升档的断流否决窗口(ms):窗口内有过在途中途断流/请求失败 ⇒ 本轮不爬。 */
+    const val STABLE_UPSHIFT_GAP_WINDOW_MS = 15_000L
+    /** 2160p 升档的断流否决窗口(ms):顶档段更大,窗口取更长。 */
+    const val TOP_TIER_STABLE_GAP_WINDOW_MS = 20_000L
+    /** 2160p 的稳定供给余量(千分比):need×1.1 ≤ min(sustained, cap) 才许升。 */
+    const val TOP_TIER_STABLE_MARGIN_PERMILLE = 1100L
 
     /**
      * P11-192:换组的滑窗(ms)——窗口内某族被记满 [FAMILY_FAIL_THRESHOLD] 次「不可持续」才考虑换组。

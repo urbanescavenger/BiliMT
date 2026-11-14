@@ -576,23 +576,56 @@ internal class SabrMediaFetcher(
   @Volatile private var inFlightVideoExpectedBytes = 0L
   /** 最近一笔请求结束的墙钟(用于「刚落地」2s 宽限,避免落地瞬间被看门狗判死)。 */
   @Volatile private var inFlightEndMs = 0L
+  // ── P11-326(2026-11-14 TV 真机):局部断流证据 —— 供 ABR 在挂死期间主动降档 ──────────────
+  // 背景(docs §76):ABR 只在 getNextChunk 评估,大段挂死时整个饥饿窗口零评估,只能等 8s 看门狗
+  // 整场重载。Media3 的 reevaluateBuffer 在挂死期间仍会调 shouldCancelChunkLoad —— 但那里读不到
+  // 「这笔请求到底还供不供得上」,故由 fetcher 暴露:首字节后静默时长、在途实测交付速率、
+  // 以及最近一次「中途断流」的墙钟(升档稳定闸用)。
+  /** 本笔在途请求**首字节后**观察到的最长静默(ms);ttfb 不计入(那是延迟不是中途断流)。 */
+  @Volatile private var inFlightMaxSilenceMs = 0L
+  /** 最近一笔在途请求的实测交付速率(bytes / 首字节→现在);请求结束后保留,供取消后的评估读。 */
+  @Volatile private var lastInFlightDeliveryBps = -1L
+  /** 最近一次「局部断流」的墙钟(0 = 从未发生):中途静默 ≥ [SUPPLY_GAP_SILENCE_MS] 或请求失败/超时。 */
+  @Volatile private var lastSupplyGapWallMs = 0L
 
   private fun noteInFlightStart() {
     inFlightStartMs = SystemClock.elapsedRealtime()
     inFlightReadBytes = 0L
     inFlightLastByteMs = 0L
     inFlightFirstByteMs = 0L
+    inFlightMaxSilenceMs = 0L
+    lastInFlightDeliveryBps = -1L
     inFlightVideoExpectedBytes = 0L
     inFlightEndMs = 0L
   }
 
   private fun noteInFlightEnd() {
-    inFlightEndMs = SystemClock.elapsedRealtime()
+    val now = SystemClock.elapsedRealtime()
+    // P11-326:保留「本笔实测交付速率」——取消在途段后的下一次 ABR 评估读它(此时 inFlightStartMs
+    // 已清 0,实时 getter 会返回 -1)。速率按「首字节→请求结束」算,与 ETA 同口径。
+    val firstByte = inFlightFirstByteMs
+    if (firstByte > 0L && inFlightReadBytes > 0L && inFlightVideoExpectedBytes > 0L) {
+      val span = now - firstByte
+      if (span > 0L) lastInFlightDeliveryBps = inFlightReadBytes * 8000L / span
+    }
+    // 中途静默 ≥ 阈值 = 一次局部断流(供升档稳定闸否决;满缓冲主动停拉不经过本路径,不会误记)。
+    // 末尾这段静默没有后续 read,不会进 noteInFlightProgress ⇒ 在这里用「结束时刻−最后字节」补算。
+    val lastByte = inFlightLastByteMs
+    val trailingSilence = if (lastByte > 0L) (now - lastByte).coerceAtLeast(0L) else 0L
+    if (firstByte > 0L && maxOf(inFlightMaxSilenceMs, trailingSilence) >= SUPPLY_GAP_SILENCE_MS) {
+      lastSupplyGapWallMs = System.currentTimeMillis()
+    }
+    inFlightEndMs = now
     inFlightStartMs = 0L
   }
 
   private fun noteInFlightProgress(readBytes: Long) {
     val now = SystemClock.elapsedRealtime()
+    val lastByte = inFlightLastByteMs
+    if (lastByte > 0L) {
+      val silence = now - lastByte
+      if (silence > inFlightMaxSilenceMs) inFlightMaxSilenceMs = silence
+    }
     if (inFlightFirstByteMs <= 0L) inFlightFirstByteMs = now
     inFlightReadBytes = readBytes
     inFlightLastByteMs = now
@@ -636,7 +669,39 @@ internal class SabrMediaFetcher(
     return (expected - read) * 8000L / rateBps
   }
 
+  /**
+   * P11-326:在途视频请求**首字节后**的静默时长(ms)。-1 = 无在途/尚未收到首字节。
+   * 与 [getInFlightVideoEtaMs] 互补:静默 > 3s 时 ETA 返回 -1(无速率证据),本值仍能量出「硬挂死」。
+   */
+  fun getInFlightVideoSilenceMs(): Long {
+    val lastByte = inFlightLastByteMs
+    if (inFlightStartMs <= 0L || inFlightFirstByteMs <= 0L || lastByte <= 0L) return -1L
+    // 只认视频请求:音频挂死不该触发视频降档(本 fetcher 串行,同一时刻只有一笔在途)。
+    if (inFlightVideoExpectedBytes <= 0L) return -1L
+    return (SystemClock.elapsedRealtime() - lastByte).coerceAtLeast(0L)
+  }
 
+  /**
+   * P11-326:在途请求的实时交付速率(bps,首字节→现在);无在途时返回**最近一笔**的实测速率。
+   * 用途:ABR 被强制取消后立即做降档决策——那刻实时窗口已关闭,不能用断流前的旧 est。
+   */
+  fun getInFlightVideoDeliveryBps(): Long {
+    val start = inFlightStartMs
+    if (start <= 0L) return lastInFlightDeliveryBps
+    val firstByte = inFlightFirstByteMs
+    if (firstByte <= 0L || inFlightReadBytes <= 0L) return -1L
+    if (inFlightVideoExpectedBytes <= 0L) return -1L
+    val span = SystemClock.elapsedRealtime() - firstByte
+    if (span <= 0L) return -1L
+    return inFlightReadBytes * 8000L / span
+  }
+
+  /**
+   * P11-326:最近一次「局部断流」的墙钟(ms);0 = 从未发生。
+   * 只记**在途中途**断流(首字节后静默 ≥ [SUPPLY_GAP_SILENCE_MS])与请求失败/超时——
+   * 满缓冲主动停拉、服务端 NEXT_REQUEST_POLICY 睡眠都不经过这些路径,不会误记。
+   */
+  fun getLastSupplyGapWallMs(): Long = lastSupplyGapWallMs
 
   /**
    * 2026-08-31 A(顶档 sustained 分母收紧):当前视频档是否顶档(≥2160)——顶档在位时 [recordFetchGap]
@@ -878,6 +943,8 @@ internal class SabrMediaFetcher(
   fun recordRealBandwidthFailure(elapsedMs: Long) {
     if (elapsedMs <= 0) return
     addRealBwSample(0L, elapsedMs)
+    // P11-326:失败/超时也是一次局部断流 —— 升档稳定闸据此在抖动期否决爬档。
+    lastSupplyGapWallMs = System.currentTimeMillis()
   }
 
   /**
@@ -2948,6 +3015,12 @@ internal class SabrMediaFetcher(
     const val IN_FLIGHT_ETA_MIN_BYTES = 256_000L
     /** 请求刚结束的宽限:段落地瞬间看门狗可能仍看到 BUFFERING,别立刻判死。 */
     const val IN_FLIGHT_ETA_END_GRACE_MS = 2_000L
+
+    /**
+     * P11-326:一次「局部断流」判定线(ms)——在途请求**首字节后**静默超过它即记一次 supply gap。
+     * 只用于升档稳定闸的否决;不参与降档(降档走 ETA/静默的实时触发)。
+     */
+    const val SUPPLY_GAP_SILENCE_MS = 2_000L
 
     /** transient 重试上限(耗尽→SabrTerminalException→evict)。对齐旧 SabrDashDataSource BACKOFF_MAX_ATTEMPTS。 */
     const val MAX_ATTEMPTS = 6
