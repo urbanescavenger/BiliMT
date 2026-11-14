@@ -1484,9 +1484,9 @@ fun MobilePlayerScreen(
   }
 
   // 空降助手:按 bvid 拉 SponsorBlock 段;开关/bvid 变化时重置四组状态(镜像 TV)。
-  // 键不放 cid:段按视频缓存,自动连播 cid 0→真实值两次赋值会让效果中途重启,
-  // 并发 fetch 互相覆盖(后者重置+被 scope-left 杀掉),整轮播放无段。
-  LaunchedEffect(airJumpAssistantEnabled, activeRequest.bvid) {
+  // P11-324:键加 cid（多分P的段按 cid 归属）。cid 0→真实值会重启一次效果，但仓库缓存
+  // 已按 bvid+cid 分键、落状态前又校验 bvid+cid 一致，不会再把另一分P的段套进来。
+  LaunchedEffect(airJumpAssistantEnabled, activeRequest.bvid, activeRequest.cid) {
     airJumpSegments = emptyList()
     warnedAirJumpIds = emptySet()
     skippedAirJumpIds = emptySet()
@@ -1495,11 +1495,12 @@ fun MobilePlayerScreen(
       return@LaunchedEffect
     }
     val targetBvid = activeRequest.bvid
+    val targetCid = activeRequest.cid
     val segments = runCatching {
-      playbackRepository.getAirJumpSegments(targetBvid)
+      playbackRepository.getAirJumpSegments(targetBvid, targetCid)
     }.getOrDefault(emptyList())
     // 期间换了视频(本协程已被取消重启)就不落状态,别把新实例已拉到的段覆盖成空。
-    if (activeRequest.bvid == targetBvid) {
+    if (activeRequest.bvid == targetBvid && activeRequest.cid == targetCid) {
       airJumpSegments = segments
     }
   }

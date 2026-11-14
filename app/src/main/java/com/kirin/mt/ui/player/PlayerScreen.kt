@@ -2642,7 +2642,8 @@ fun PlayerScreen(
   // 之前键含 cid,自动连播换视频时 cid 经历 0→真实值两次赋值,效果中途重启出两个并发 fetch,
   // 后者先重置 airJumpSegments、前者的成功赋值被覆盖,自己又被 scope-left 异常杀掉,
   // 整轮播放段为空(真机 19:14:26.229 loaded=1 后 .249 scope-left,重进才 hit cache)。
-  LaunchedEffect(airJumpAssistantEnabled, displayRequest.bvid) {
+  // P11-324:键加 cid——多分P视频的段按 cid 归属,只按 bvid 会在切分P后继续套用上一分P的段。
+  LaunchedEffect(airJumpAssistantEnabled, displayRequest.bvid, displayRequest.cid) {
     airJumpSegments = emptyList()
     warnedAirJumpIds = emptySet()
     skippedAirJumpIds = emptySet()
@@ -2651,11 +2652,12 @@ fun PlayerScreen(
       return@LaunchedEffect
     }
     val targetBvid = displayRequest.bvid
+    val targetCid = displayRequest.cid
     val segments = runCatching {
-      playbackRepository.getAirJumpSegments(targetBvid)
+      playbackRepository.getAirJumpSegments(targetBvid, targetCid)
     }.getOrDefault(emptyList())
     // 期间换了视频(本协程已被取消重启)就不落状态,别把新实例已拉到的段覆盖成空。
-    if (displayRequest.bvid == targetBvid) {
+    if (displayRequest.bvid == targetBvid && displayRequest.cid == targetCid) {
       airJumpSegments = segments
     }
   }

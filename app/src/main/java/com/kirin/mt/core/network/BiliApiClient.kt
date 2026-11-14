@@ -18,6 +18,9 @@ class BiliApiClient(
     params: Map<String, String> = emptyMap(),
     sessData: String? = null,
     biliJct: String? = null,
+    // 非空时给本次调用单独设 callTimeout（毫秒）。共享客户端默认 15s（NetworkTimeoutSeconds），
+    // 对第三方轻量接口（空降助手分段）太长：超时要尽快失败好换下一个节点。
+    callTimeoutMs: Long? = null,
   ): JsonElement = withContext(Dispatchers.IO) {
     val httpUrlBuilder = url.toHttpUrl().newBuilder()
     params.forEach { (key, value) ->
@@ -32,7 +35,12 @@ class BiliApiClient(
       requestBuilder.header("Cookie", cookie)
     }
 
-    client.newCall(requestBuilder.build()).execute().use { response ->
+    val callClient = if (callTimeoutMs != null && callTimeoutMs > 0L) {
+      client.newBuilder().callTimeout(callTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS).build()
+    } else {
+      client
+    }
+    callClient.newCall(requestBuilder.build()).execute().use { response ->
       val body = response.body?.string().orEmpty()
       if (!response.isSuccessful) {
         throw BiliNetworkException(response.code, body)
