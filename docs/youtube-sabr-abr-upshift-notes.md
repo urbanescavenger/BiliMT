@@ -6730,3 +6730,39 @@ supply gap 记账全部以它为前提;**音频请求的响应体不再参与任
 **验收**:`forced downgrade trigger` 必定对应一笔 `fetch rn=… itag=<视频 itag>`;音频 rn 行之后
 不再出现视频降档;240p 误降消失。**否证**:真视频断流场次因该门槛漏触发 ⇒ 回退到
 「请求类型 OR 视频段头」并加「响应内视频字节占比 > 50%」限定。
+
+## §80 P11-331(2026-11-14):挂死证据不再无条件绕过缓冲标准
+
+真机 `logs_live_20261114_220452.log`(dev.r2329)22:01:31:1440p 的 **init 请求 8s 零字节超时**
+(SocketTimeoutException)→ `silence-hang itag=308 recorded` → 尽管 `bufS=30s`、缓冲还有 30 秒,
+ABR 仍 `buffer-critical downgrade 1440p → 1080p silenceHang=true`,并给 1440p 90s 冷却。
+
+### §80.1 历史校核(304 份日志)
+
+`buffer-critical downgrade … silenceHang=true` 共 **32 次**:
+
+| 降档时缓冲 | 次数 |
+|---|---|
+| < 8s | 15 |
+| 8~14s | 3(10s / 10s / 11s) |
+| **≥ 15s** | **约 14(去重后)** |
+
+≥15s 样本:30s 1440→1080(今天)、32s/38s 720→480、33s 480→360、37s 1080→720、41s 1080→720、
+20s 2160→1440、20s 720→480、18s 2160→1440、15s 1440→1080、16s 1080→720。
+挂死请求多数是**媒体段**(`rn=7 seg=11`、`rn=33 seg=31`、`rn=73 seg=98`),不是 init 特有 ——
+问题是 P11-178 的挂死证据**无条件**绕过缓冲标准,健康缓冲也被一笔挂死降档。
+
+### §80.2 改动
+
+- `silenceHang`(决定用)增加缓冲上限:`bufferedDurationUs < SILENCE_HANG_MAX_BUFFER_US(12s)`,
+  或读数无效(-1,无法证明健康)时保留原行为。
+- 12s 覆盖历史全部 <8s 与 10~11s 场次(含 P11-178 原始 9.9s 案例),剔除 ≥15s 的误降。
+- 被 hold 时打一行 `silence-hang downgrade held (healthy buffer, P11-331)`(一 episode 一次)。
+- `forcedStarvation`(P11-326)不受影响(它自己的触发要求 runway ≤12s,本就是低缓冲场景)。
+
+### §80.3 验收 / 否证
+
+- 验收:`silenceHang=true` 的降档只出现在 `bufS<12s`;出现 `held (healthy buffer)` 后不再降档;
+  健康缓冲场次不再因单笔挂死掉档。
+- 否证:①真饿场次因 12s 门槛漏降、重新出现 stall ⇒ 提高到 15s;
+  ②健康缓冲场次仍被降档 ⇒ 该场走的是别的路径(est/forced),需单独看日志。

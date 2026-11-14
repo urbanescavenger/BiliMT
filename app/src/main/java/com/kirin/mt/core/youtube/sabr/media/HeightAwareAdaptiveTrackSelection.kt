@@ -745,6 +745,9 @@ class HeightAwareAdaptiveTrackSelection(
   /** P11-326:高档(≥1440p)升档被稳定闸挡下的一次性日志(每实例一次)。 */
   private var stableUpshiftGateLogged = false
 
+  /** P11-331:健康缓冲下挂死证据被 hold 的一次性日志(挂死窗口消失时复位)。 */
+  private var silenceHangHeldByBufferLogged = false
+
   /** P11-195:判据②被「天花板守卫」挡下的一次性日志(每实例一次)——否则钉在低分辨率又是一段安静。 */
   private var familyCeilingGuardLogged = false
 
@@ -949,8 +952,28 @@ class HeightAwareAdaptiveTrackSelection(
     val nowWallMs = System.currentTimeMillis()
     val silenceHangWallMs = (bandwidthMeter as? SabrBandwidthMeter)
       ?.getLastSilenceHangWallMs(itagOf(getFormat(selected))) ?: 0L
-    val silenceHang = silenceHangWallMs > 0L &&
+    val silenceHangRaw = silenceHangWallMs > 0L &&
       nowWallMs - silenceHangWallMs in 0 until SILENCE_HANG_EVIDENCE_MS
+    // ── P11-331(2026-11-14,历史 304 份日志校核)──────────────────────────────────────────────
+    // P11-178 的挂死证据旧口径**无条件**绕过缓冲标准 ⇒ 健康缓冲也会被一笔挂死降档。
+    // 历史 32 次 silenceHang=true 降档:15 次缓冲<8s、3 次 10~11s,其余约 14 次在 **15~41s**
+    // (30s 1440→1080、32/38s 720→480、41s 1080→720、33s 480→360、20s 2160→1440…),
+    // 且挂死请求多数是媒体段(非 init)。真机 dev.r2329 22:01:31 是 30s 缓冲被 init 挂死降回 1080p。
+    // 新口径:缓冲**健康时不降档**;读数无效(-1)无法证明健康,保留原行为。
+    // 12s 门槛覆盖历史全部 <8s/10~11s 场次(含 P11-178 原始 9.9s 案例),并剔除 ≥15s 的误降。
+    val silenceHang = silenceHangRaw &&
+      (bufferedDurationUs < 0L || bufferedDurationUs < SILENCE_HANG_MAX_BUFFER_US)
+    if (silenceHangRaw && !silenceHang && !silenceHangHeldByBufferLogged) {
+      silenceHangHeldByBufferLogged = true
+      Log.i(
+        "YtSabrAbr",
+        "silence-hang downgrade held (healthy buffer, P11-331): bufS=" +
+          "${bufferedDurationUs / 1_000_000}s ≥ ${SILENCE_HANG_MAX_BUFFER_US / 1_000_000}s — " +
+          "一笔挂死不构成降档证据,交给常规 est/水位判据",
+      )
+    } else if (!silenceHangRaw) {
+      silenceHangHeldByBufferLogged = false
+    }
     // ── P11-326(2026-11-14 TV 真机):「正在挂死/来不及落地」同属真饿证据 ─────────────────────
     // shouldCancelChunkLoad 在挂死期间命中后置位,这里消费一次。语义与 silenceHang 完全一致:
     // 免「读数无效不算饿」、免 P11-168/177 的 est/meas 抑制闸。区别只是证据发生在**当前**而非事后
@@ -2134,6 +2157,13 @@ class HeightAwareAdaptiveTrackSelection(
      * 覆盖静默超时(8s)+ 重试交付(实测 17.3s)这一段,更长则由 8s 水位线判据自然接管。
      */
     const val SILENCE_HANG_EVIDENCE_MS = 20_000L
+
+    /**
+     * P11-331:挂死证据能绕过缓冲标准的上限(us)。缓冲 ≥ 此值时,一笔挂死不足以降档。
+     * 历史 32 次 `silenceHang=true` 降档:15 次 <8s、3 次 10~11s、约 14 次 ≥15s(最大 41s);
+     * 12s 覆盖前两组(含 P11-178 原始 9.9s 案例),剔除健康缓冲误降。
+     */
+    const val SILENCE_HANG_MAX_BUFFER_US = 12_000_000L
 
     /** 2026-08-30:升档后禁止 est 回降宽限(ms)——重锚精确锚在新档门槛,起步期小样本会立刻打回。 */
     const val UPGRADE_DOWNGRADE_GRACE_MS = 10_000L
