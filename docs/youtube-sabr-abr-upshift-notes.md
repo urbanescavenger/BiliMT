@@ -6629,3 +6629,48 @@ ABR 只在 `DefaultSabrChunkSource.getNextChunk()` 里 `updateSelectedTrack`(类
 - 否证:①正常满缓冲排空段出现 forced 触发 ⇒ 断流证据口径过激,回退 A;
   ②1440p/2160p 连续多场「整场钉在低档」⇒ 稳定闸过严,放宽为「近 60s 容量中位数」;
   ③取消后出现 SABR 会话 evict 或黑屏变多 ⇒ 回退 A 的取消腿,只保留「提前记失败样本」。
+
+## §77 P11-328(2026-11-14):后继段等待收口 —— ETA 覆盖早停目标 + 请求段到手后最多等 5s
+
+承接 §76.3 的两个遗留缺口(都在最新 `logs_live_20261114_202106.log` 20:16 那场直接命中):
+
+1. **ETA 只看请求段**:`inFlightVideoExpectedBytes` 只记响应里**第一个**视频段的 contentLen
+   (`noteInFlightVideoSegment`),请求段一到手 `expected <= read` ⇒ `getInFlightVideoEtaMs()` 返回 0。
+   而 1440p/2160p 的早停目标是「请求段 + 后继段」(`streamNeedSatisfied` 要求 `want+1`),
+   于是「请求段已到手、仍在等 7.26MB 后继段」的 32.6s 里,看门狗以为段快落地
+   (`stall reload deferred ... eta=0ms`)。真机 20:16:27 rn=119:请求段 5MB 6s 到手,响应占槽 32.6s,
+   缓冲 18.4s→0,20:17:00 重载。
+
+2. **后继段等待没有上限**:单发 fetcher 只有一笔在途;只要后继段慢,请求段早已到手也继续占着唯一
+   串行槽,下一笔请求发不出去。5s 上限能把这个尾巴砍掉,把槽让给下一笔。
+
+### §77.1 历史日志校核(304 份日志 / 28,616 笔请求)
+
+| 指标 | 结果 |
+|---|---|
+| 长请求(≥8s) | 1,927 |
+| 请求段到手后仍等后继段 | 985 |
+| 后继段等待 p50 / p75 / p90 / max | **4.8s / 8.1s / 13.4s / 39.6s** |
+| 等待 ≥3s / ≥5s / ≥8s | 683 / 464 / 257 |
+| 等待 ≥3s 且请求开始时缓冲 <15s | **298** |
+| stall 总数 | 368 |
+| stall 时在途请求的请求段**已到手**(ETA 盲区) | **91(25%)** |
+| `stall reload deferred eta=0ms` | 9 |
+
+### §77.2 改动
+
+- `SabrMediaFetcher.noteInFlightVideoSegment`:由「只记第一个视频段」改为**累加**本响应已宣告的
+  全部非 init 视频段 contentLen ⇒ ETA 表示「把当前已宣告的段读完还要多久」,请求段到手后不再归零。
+- `SabrMediaFetcher` 读循环新增**后继段等待上限**:`streamRequestedSatisfied(req)`(只判请求段)为真
+  后开始计时;`margin > 0` 且请求开始时缓冲 `1..20s` 时,等待达到 `EARLY_STOP_SUCCESSOR_CAP_MS=5s`
+  即早停返回,日志 `early stop (successor cap, P11-328)`。缓冲 ≥20s 或 margin=0(起播/音频)不设上限,
+  保留「一笔多搬」的摊薄收益。
+- 不改变早停的正常路径(`streamNeedSatisfied` 先判),不改变降档判据、不改变 margin 的档位语义。
+
+### §77.3 验收 / 否证
+
+- 验收:长后继段场次出现 `early stop (successor cap, P11-328)`;同段不再出现
+  `stall reload deferred ... eta=0ms`;`stall detected` 前 30s 内该请求已让出槽位。
+- 否证:①快链路(后继段 <1s)出现 cap 早停 ⇒ 门槛过激,增大到 8s;
+  ②cap 后请求数明显上升但平均吞吐下降 ⇒ 缓冲门槛 20s 太低,提高到 30s;
+  ③ETA 累加导致 `stall reload deferred` 在「后继段快落地」时不再让路 ⇒ 回退累加,只保留 cap。

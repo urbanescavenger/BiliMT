@@ -631,10 +631,18 @@ internal class SabrMediaFetcher(
     inFlightLastByteMs = now
   }
 
-  /** 记本笔响应里第一个非 init 视频段的期望字节数(后续同类 header 不覆盖)。 */
+  /**
+   * P11-328:累加本笔响应里**每个**非 init 视频段的 contentLen(原实现只记第一个)。
+   *
+   * `getInFlightVideoEtaMs()` 的语义是「还差多久读完本笔请求的目标字节」。早停目标是
+   * 「请求段 + 后继段」(`streamNeedSatisfied` 要求 `want+1`),只记第一个会让请求段一到手就
+   * `expected <= read` ⇒ ETA=0 ⇒ P11-305 让路误判「段快落地」,而后继段可能还要几十秒
+   * (真机 2026-11-14 20:16:请求段 5MB 6s 到手,后继段 7.26MB 把单发槽占到 32.6s)。
+   * 累加后 ETA 覆盖所有已宣告的段,后继段在途时不再归零。
+   */
   private fun noteInFlightVideoSegment(itag: Int, contentLen: Long) {
-    if (itag in sessionVideoItags && contentLen > 0L && inFlightVideoExpectedBytes <= 0L) {
-      inFlightVideoExpectedBytes = contentLen
+    if (itag in sessionVideoItags && contentLen > 0L) {
+      inFlightVideoExpectedBytes += contentLen
     }
   }
 
@@ -1932,6 +1940,20 @@ internal class SabrMediaFetcher(
     return have(want) && (margin <= 0L || have(want + 1L))
   }
 
+  /**
+   * P11-328:只判「请求段本身」是否到手(不含早停要求的后继段)。
+   * 用于「请求段到手后最多等后继段 5s」的计时起点;与 [streamNeedSatisfied] 共用同一 want 口径。
+   */
+  private fun streamRequestedSatisfied(req: SabrSegmentRequest): Boolean {
+    val f = initializedFormats[req.formatItag] ?: return false
+    val want = if (req.segment <= 0L) {
+      f.downloadedSegments.keys.filter { it > 0L }.minOrNull() ?: return false
+    } else {
+      req.segment
+    }
+    return f.downloadedSegments.containsKey(want) || f.bufferedSegments.containsKey(want)
+  }
+
   private suspend fun fetchStreamData(
     req: SabrSegmentRequest,
     onPart: (type: Int, payload: ByteArray) -> Unit,
@@ -2253,6 +2275,8 @@ internal class SabrMediaFetcher(
     val runwayMs = bufferedAheadMsAtLastFetch
     // P11-221:实读字节数提到 try 之外 —— catch 也要用它判「有请求没回复」。
     var readBytes = 0L
+    // P11-328:请求段(不含后继段)到手的墙钟;0=还没到手。供「后继段等待上限」。
+    var requestedReadyAtMs = 0L
     // P11-319(诊断,取证后删):区分「延迟型(服务端响应慢)」与「带宽型(吞吐真不够)」。
     // firstByteMs = 请求发出 → 首个正文字节;body = 首字节 → 本次读结束。
     // bodyRate = 正文吞吐(剔除首包等待);pace = 交付媒体时长 / 墙钟耗时(>1 = 服务端供得比播放快)。
@@ -2370,8 +2394,28 @@ internal class SabrMediaFetcher(
           if (firstByteMs == 0L) firstByteMs = SystemClock.elapsedRealtime() - t0
           noteInFlightProgress(readBytes)
           ump.readParts(onPart)
+          // ── P11-328:请求段到手后最多再等后继段 5s ────────────────────────────────────────────
+          // 单发 fetcher 只有一笔在途;1440p/2160p 的早停目标是「请求段+后继段」,后继段一慢
+          // 就把唯一串行槽占死(真机 20:16:请求段 5MB 6s 到手,响应又等 7.26MB 后继段 32.6s,
+          // 缓冲 18.4s→0 → stall)。请求段已到手且缓冲不厚时,到点直接早停,把槽让给下一笔。
+          if (requestedReadyAtMs == 0L && streamRequestedSatisfied(req)) {
+            requestedReadyAtMs = SystemClock.elapsedRealtime()
+          }
           if (readBytes >= StreamStopMinBytes && streamNeedSatisfied(req)) {
             earlyStop = true
+            break
+          }
+          if (requestedReadyAtMs > 0L && marginFor(req) > 0L &&
+            bufferedAheadNoteMs in 1L..EARLY_STOP_SUCCESSOR_CAP_MAX_BUFFER_MS &&
+            SystemClock.elapsedRealtime() - requestedReadyAtMs >= EARLY_STOP_SUCCESSOR_CAP_MS
+          ) {
+            earlyStop = true
+            Log.i(
+              tag,
+              "early stop (successor cap, P11-328): requested seg in hand for " +
+                "${SystemClock.elapsedRealtime() - requestedReadyAtMs}ms, margin=${marginFor(req)} " +
+                "bufAhead=${bufferedAheadNoteMs}ms read=${readBytes}B — 让出串行槽给下一笔",
+            )
             break
           }
         }
@@ -3021,6 +3065,17 @@ internal class SabrMediaFetcher(
      * 只用于升档稳定闸的否决;不参与降档(降档走 ETA/静默的实时触发)。
      */
     const val SUPPLY_GAP_SILENCE_MS = 2_000L
+
+    /**
+     * P11-328:请求段到手后,最多再等后继段多久(ms)。单发 fetcher 下后继段慢会把唯一串行槽
+     * 占死;历史校核(304 份日志)里长请求的“等后继段”p50=4.8s / p90=13.4s / 464 次 ≥5s。
+     */
+    const val EARLY_STOP_SUCCESSOR_CAP_MS = 5_000L
+    /**
+     * P11-328:只在请求开始时缓冲 < 此值(ms)才套后继段上限。缓冲厚时保留「一笔多搬」的摊薄收益;
+     * 低缓冲(危险人群)才需要尽快把槽让给下一笔。
+     */
+    const val EARLY_STOP_SUCCESSOR_CAP_MAX_BUFFER_MS = 20_000L
 
     /** transient 重试上限(耗尽→SabrTerminalException→evict)。对齐旧 SabrDashDataSource BACKOFF_MAX_ATTEMPTS。 */
     const val MAX_ATTEMPTS = 6
