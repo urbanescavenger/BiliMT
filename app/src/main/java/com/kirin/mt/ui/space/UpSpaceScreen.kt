@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.space
 
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -83,6 +84,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val FirstPage = 1
+private const val SpaceLogTag = "BiliMT:Space"
+/** 资料请求未落定时，投稿列表最多错峰等这么久（见 P11-326）。 */
+private const val ProfileStaggerWaitMs = 800L
 
 @Composable
 internal fun UpSpaceScreen(
@@ -141,7 +145,13 @@ internal fun UpSpaceScreen(
       return@LaunchedEffect
     }
     if (uiState.profileLoadedMid != mid || uiState.profileLoadedRetryKey != uiState.retryKey) {
-      return@LaunchedEffect
+      // P11-326:资料/关注命中 -799 频控时会重试到十几秒，不能把投稿主内容一起拖住。
+      // 只让资料先走一段错峰时间；期间资料若落定，上面 profileLoaded* 键变化会重启本效果、
+      // 取消这段 delay 并立即开跑。资料一直慢就 800ms 后照常拉投稿，避免整页空等。
+      delay(ProfileStaggerWaitMs)
+      if (uiState.profileLoadedMid != mid || uiState.profileLoadedRetryKey != uiState.retryKey) {
+        Log.d(SpaceLogTag, "videos start before profile ready (stagger ${ProfileStaggerWaitMs}ms) mid=$mid")
+      }
     }
     uiState.videoState = SpaceVideoState.Loading
     uiState.focusedVideoIndex = 0

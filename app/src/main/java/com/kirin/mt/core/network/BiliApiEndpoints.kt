@@ -22,6 +22,9 @@ object BiliApiEndpoints {
   const val ArchiveCoins = "$ApiBase/x/web-interface/archive/coins"
   const val FavVideoFavoured = "$ApiBase/x/v2/fav/video/favoured"
   const val SpaceArcSearch = "$ApiBase/x/space/wbi/arc/search"
+  // 社区方案(RSSHub 26c5fa2):space 投稿接口被 412 风控时的免签名兜底,返回同一 UP 的投稿列表。
+  // 只支持按发布时间(orderby=senddate),不支持 click/stow 排序。
+  const val SpaceArchivesByKeywords = "$ApiBase/x/series/recArchivesByKeywords"
   const val SpaceAccInfo = "$ApiBase/x/space/acc/info"
   const val Relation = "$ApiBase/x/relation"
   const val RelationModify = "$ApiBase/x/relation/modify"

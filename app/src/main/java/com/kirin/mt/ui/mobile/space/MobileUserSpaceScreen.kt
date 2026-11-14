@@ -1,5 +1,6 @@
 package com.kirin.mt.ui.mobile.space
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -59,11 +60,15 @@ import com.kirin.mt.ui.mobile.home.formatCount
 import com.kirin.mt.ui.mobile.home.rememberVideoCardRelativeText
 import com.kirin.mt.ui.theme.BiliColors
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 private const val FirstPage = 1
 private const val PageSize = 30
+private const val SpaceLogTag = "BiliMT:Space"
+/** 资料请求未落定时，投稿列表最多错峰等这么久（见 P11-326）。 */
+private const val ProfileStaggerWaitMs = 800L
 
 sealed interface SpaceState {
   data object Loading : SpaceState
@@ -157,11 +162,16 @@ fun MobileUserSpaceScreen(
   }
 
   // 投稿列表:mid 或 order 变化时拉取(从播放器返回同 mid+order 跳过)。
-  // P11-325:等资料/关注请求落定后再打投稿接口——进页同秒并发会同时触发 -799 与 412
-  // (2026-11-14 真机 17:01:00 同秒 acc/info -799 + arc/search 412×4);profileLoadedMid 作键触发续跑。
+  // P11-325/326:投稿请求先给资料/关注让路（避免同秒并发同时触发 -799 与 412），但最多只等
+  // ProfileStaggerWaitMs——资料命中频控重试十几秒时不能把主内容一起拖住。
   LaunchedEffect(mid, order, uiState.profileLoadedMid) {
     if (uiState.profileLoadedMid != mid) {
-      return@LaunchedEffect
+      // P11-326:资料/关注命中 -799 频控时会重试到十几秒，不能把投稿主内容一起拖住。
+      // 只让资料先走一段错峰时间；期间资料若落定，profileLoadedMid 键变化会重启本效果并立即开跑。
+      delay(ProfileStaggerWaitMs)
+      if (uiState.profileLoadedMid != mid) {
+        Log.d(SpaceLogTag, "videos start before profile ready (stagger ${ProfileStaggerWaitMs}ms) mid=$mid")
+      }
     }
     if (uiState.videoLoadedMid != mid || uiState.videoLoadedOrder != order) {
       loadFirst(order)
