@@ -783,7 +783,8 @@ class HeightAwareAdaptiveTrackSelection(
     loadingChunk: Chunk,
     queue: MutableList<out MediaChunk>,
   ): Boolean {
-    if (super.shouldCancelChunkLoad(positionUs, loadingChunk, queue)) return true
+    // 父类(AdaptiveTrackSelection)没有 override 该方法,接口默认实现恒 false(media3 1.10),
+    // 故这里不调 super,全部判据在本类内表达。
     // 音频组(无 height 语义)不参与:只有视频轨的挂死才值得为它降档。
     if ((0 until length).none { getFormat(it).height > 0 }) return false
     val startUs = loadingChunk.startTimeUs
