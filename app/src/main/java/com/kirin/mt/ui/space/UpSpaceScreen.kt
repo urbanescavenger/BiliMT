@@ -130,11 +130,17 @@ internal fun UpSpaceScreen(
   }
 
   // Video first page: reload when mid/order/retryKey changes.
-  LaunchedEffect(mid, uiState.order, uiState.retryKey) {
+  // P11-325:等资料请求（acc/info + relation）落定后再打投稿接口——进页同秒并发三四个
+  // space 请求会同时触发 -799 频控与 412 风控（2026-11-14 真机 17:01:00 同秒 acc/info -799
+  // + arc/search 412×4）。profileLoadedMid/RetryKey 作为键保证资料完成后本效果再启动。
+  LaunchedEffect(mid, uiState.order, uiState.retryKey, uiState.profileLoadedMid, uiState.profileLoadedRetryKey) {
     if (uiState.videoLoadedMid == mid && uiState.videoLoadedOrder == uiState.order &&
       uiState.videoLoadedRetryKey == uiState.retryKey &&
       uiState.videoState !is SpaceVideoState.Loading
     ) {
+      return@LaunchedEffect
+    }
+    if (uiState.profileLoadedMid != mid || uiState.profileLoadedRetryKey != uiState.retryKey) {
       return@LaunchedEffect
     }
     uiState.videoState = SpaceVideoState.Loading

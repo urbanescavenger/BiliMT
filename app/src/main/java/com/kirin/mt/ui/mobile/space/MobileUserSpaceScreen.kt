@@ -157,7 +157,12 @@ fun MobileUserSpaceScreen(
   }
 
   // 投稿列表:mid 或 order 变化时拉取(从播放器返回同 mid+order 跳过)。
-  LaunchedEffect(mid, order) {
+  // P11-325:等资料/关注请求落定后再打投稿接口——进页同秒并发会同时触发 -799 与 412
+  // (2026-11-14 真机 17:01:00 同秒 acc/info -799 + arc/search 412×4);profileLoadedMid 作键触发续跑。
+  LaunchedEffect(mid, order, uiState.profileLoadedMid) {
+    if (uiState.profileLoadedMid != mid) {
+      return@LaunchedEffect
+    }
     if (uiState.videoLoadedMid != mid || uiState.videoLoadedOrder != order) {
       loadFirst(order)
       uiState.videoLoadedMid = mid
