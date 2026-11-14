@@ -787,6 +787,8 @@ class HeightAwareAdaptiveTrackSelection(
     // 故这里不调 super,全部判据在本类内表达。
     // 音频组(无 height 语义)不参与:只有视频轨的挂死才值得为它降档。
     if ((0 until length).none { getFormat(it).height > 0 }) return false
+    // 起播期(本实例从未缓冲过)不做强制降档:首包偶发慢是常态(P11-160/219),自救归 25s 起播看门狗。
+    if (maxObservedBufferedUs <= 0L) return false
     val startUs = loadingChunk.startTimeUs
     if (startUs == C.TIME_UNSET || positionUs == C.TIME_UNSET) return false
     val runwayMs = (startUs - positionUs) / 1000L
