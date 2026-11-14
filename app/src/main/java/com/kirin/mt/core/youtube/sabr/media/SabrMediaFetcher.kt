@@ -587,6 +587,15 @@ internal class SabrMediaFetcher(
   @Volatile private var lastInFlightDeliveryBps = -1L
   /** 最近一次「局部断流」的墙钟(0 = 从未发生):中途静默 ≥ [SUPPLY_GAP_SILENCE_MS] 或请求失败/超时。 */
   @Volatile private var lastSupplyGapWallMs = 0L
+  /**
+   * P11-330:本笔在途请求**本身**是不是视频请求(req.formatItag ∈ sessionVideoItags)。
+   *
+   * 音频请求的响应里常会**顺带推视频段**(SABR 服务端 pushed),旧口径用「响应里出现过视频
+   * MEDIA_HEADER」判视频请求 ⇒ 音频请求被当成视频请求,音频静默 3s 就把**视频档位**降了。
+   * 真机 dev.r2328 21:33:21:在途是 `itag=139`(音频),silence=3001ms/elapsed=3495ms,
+   * 结果 720p 被 P11-321 用音频的 350K 选出 240p。
+   */
+  @Volatile private var inFlightRequestIsVideo = false
 
   private fun noteInFlightStart() {
     inFlightStartMs = SystemClock.elapsedRealtime()
@@ -604,7 +613,9 @@ internal class SabrMediaFetcher(
     // P11-326:保留「本笔实测交付速率」——取消在途段后的下一次 ABR 评估读它(此时 inFlightStartMs
     // 已清 0,实时 getter 会返回 -1)。速率按「首字节→请求结束」算,与 ETA 同口径。
     val firstByte = inFlightFirstByteMs
-    if (firstByte > 0L && inFlightReadBytes > 0L && inFlightVideoExpectedBytes > 0L) {
+    // P11-330:只记视频请求的交付速率 / 断流 —— 音频请求的响应体常夹杂推送的视频段,不能拿来
+    // 当「视频档位的供给」证据(真机 21:33:21 就是这样把 720p 降到 240p)。
+    if (inFlightRequestIsVideo && firstByte > 0L && inFlightReadBytes > 0L) {
       val span = now - firstByte
       if (span > 0L) lastInFlightDeliveryBps = inFlightReadBytes * 8000L / span
     }
@@ -612,7 +623,9 @@ internal class SabrMediaFetcher(
     // 末尾这段静默没有后续 read,不会进 noteInFlightProgress ⇒ 在这里用「结束时刻−最后字节」补算。
     val lastByte = inFlightLastByteMs
     val trailingSilence = if (lastByte > 0L) (now - lastByte).coerceAtLeast(0L) else 0L
-    if (firstByte > 0L && maxOf(inFlightMaxSilenceMs, trailingSilence) >= SUPPLY_GAP_SILENCE_MS) {
+    if (inFlightRequestIsVideo && firstByte > 0L &&
+      maxOf(inFlightMaxSilenceMs, trailingSilence) >= SUPPLY_GAP_SILENCE_MS
+    ) {
       lastSupplyGapWallMs = System.currentTimeMillis()
     }
     inFlightEndMs = now
@@ -652,6 +665,8 @@ internal class SabrMediaFetcher(
    * 0  = 请求段已到手,或请求刚结束 ≤[IN_FLIGHT_ETA_END_GRACE_MS](视为即将落地)。
    */
   fun getInFlightVideoEtaMs(): Long {
+    // P11-330:音频请求(即使响应里顺带推了视频段)不参与视频 ETA。
+    if (!inFlightRequestIsVideo) return -1L
     val now = SystemClock.elapsedRealtime()
     val start = inFlightStartMs
     if (start <= 0L) {
@@ -685,7 +700,8 @@ internal class SabrMediaFetcher(
     val lastByte = inFlightLastByteMs
     if (inFlightStartMs <= 0L || inFlightFirstByteMs <= 0L || lastByte <= 0L) return -1L
     // 只认视频请求:音频挂死不该触发视频降档(本 fetcher 串行,同一时刻只有一笔在途)。
-    if (inFlightVideoExpectedBytes <= 0L) return -1L
+    // P11-330:必须看「请求本身」而非响应里有没有视频段头 —— 音频请求的响应常顺带推视频段。
+    if (!inFlightRequestIsVideo) return -1L
     return (SystemClock.elapsedRealtime() - lastByte).coerceAtLeast(0L)
   }
 
@@ -697,7 +713,7 @@ internal class SabrMediaFetcher(
    */
   fun getInFlightVideoElapsedMs(): Long {
     val start = inFlightStartMs
-    if (start <= 0L || inFlightVideoExpectedBytes <= 0L) return -1L
+    if (start <= 0L || !inFlightRequestIsVideo) return -1L
     return (SystemClock.elapsedRealtime() - start).coerceAtLeast(0L)
   }
 
@@ -706,11 +722,11 @@ internal class SabrMediaFetcher(
    * 用途:ABR 被强制取消后立即做降档决策——那刻实时窗口已关闭,不能用断流前的旧 est。
    */
   fun getInFlightVideoDeliveryBps(): Long {
+    if (!inFlightRequestIsVideo) return -1L
     val start = inFlightStartMs
     if (start <= 0L) return lastInFlightDeliveryBps
     val firstByte = inFlightFirstByteMs
     if (firstByte <= 0L || inFlightReadBytes <= 0L) return -1L
-    if (inFlightVideoExpectedBytes <= 0L) return -1L
     val span = SystemClock.elapsedRealtime() - firstByte
     if (span <= 0L) return -1L
     return inFlightReadBytes * 8000L / span
@@ -2296,6 +2312,8 @@ internal class SabrMediaFetcher(
     return try {
       // P11-305:本笔在途请求的进度起点(供 stall 看门狗估算 ETA,见 [getInFlightVideoEtaMs])。
       noteInFlightStart()
+      // P11-330:在途证据只对**视频请求**生效;音频请求响应里顺带推的视频段不算。
+      inFlightRequestIsVideo = req.formatItag in sessionVideoItags
       // P11-134:SABR POST **整调用上限**。playback client 是 `callTimeout(0)`(为不切掉长分片),
       // 只有 per-read 15s ⇒ 服务端「慢滴」(每次 read 都在 15s 内挤一点)时**永不超时**。
       // 真机 2026-09-20 13:32 就是这样挂死的:`fetch rn=2` 发出后既无 REAL 也无 exception,缓冲耗尽、

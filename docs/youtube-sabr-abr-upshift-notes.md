@@ -6709,3 +6709,24 @@ P11-321 的目标档选择用 `supply = 在途实测速率`(1.1~1.5M)⇒ 选出 
   「请求开始 <2s 就触发」;正常链路不再掉 480p,真慢请求仍在 5s 后正常降档。
 - 否证:①真断流场次因为 5s 窗口错过降档时机、重新出现 stall ⇒ 降到 4s;
   ②5s 后仍频繁误降 ⇒ 目标档的 supply 改为 `max(在途速率, susRaw)`,不只信单一在途样本。
+
+## §79 P11-330(2026-11-14):在途证据必须绑定“视频请求”,修音频静默误降视频档
+
+真机 `logs_live_20261114_214549.log`(dev.r2328 = P11-329)21:33:21:
+`forced downgrade trigger (starvation): itag302(720p) runway=5127ms **elapsed=3495**
+**silence=3001(silent-hang)** bps=**350K**` → `buffer-critical downgrade 720p@2137230 → **240p@200436**`
+(`P11-321 supply=349K`)。
+
+**根因**:在途请求其实是 **`fetch rn=11 itag=139`(音频)**(21:33:18.013 发出,21:33:21.537
+`Socket closed fail=3515ms read=148656B`)。SABR 音频请求的响应里**顺带推视频段**,而
+`getInFlightVideoSilenceMs/EtaMs/DeliveryBps` 旧口径用「响应里出现过视频 MEDIA_HEADER」
+(`inFlightVideoExpectedBytes > 0`)判视频请求 ⇒ 音频请求被当成视频请求:
+音频静默 3s 触发视频档位的强制降档,再用音频那笔 350K 的速率选出 240p。
+
+**改动**:新增 `inFlightRequestIsVideo`(在 `fetchStreamData` 起点按 `req.formatItag ∈ sessionVideoItags`
+置位),`getInFlightVideoEtaMs/SilenceMs/DeliveryBps/ElapsedMs` 与 `noteInFlightEnd` 的交付速率、
+supply gap 记账全部以它为前提;**音频请求的响应体不再参与任何视频档位判据**。
+
+**验收**:`forced downgrade trigger` 必定对应一笔 `fetch rn=… itag=<视频 itag>`;音频 rn 行之后
+不再出现视频降档;240p 误降消失。**否证**:真视频断流场次因该门槛漏触发 ⇒ 回退到
+「请求类型 OR 视频段头」并加「响应内视频字节占比 > 50%」限定。
