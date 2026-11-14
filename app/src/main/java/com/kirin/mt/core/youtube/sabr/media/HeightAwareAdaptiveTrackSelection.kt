@@ -1222,19 +1222,24 @@ class HeightAwareAdaptiveTrackSelection(
         // 缓冲耗尽 → 8s 看门狗整场重载。触发条件(P11-240 缓冲唯一决定)不动,只改「降到哪一档」:
         // 相邻档若明显高于实测供给(>1.15×),改选「码率 ≤ 供给」的最高低档;否则保持相邻档。
         // 历史校核(299 份日志/去重 128 次可评估降档):严格口径只改 14 次,1 次真修复、1 次疑似误伤。
-        // P11-326:强制降档场次优先用「本次在途实测交付速率」——断流期间 est/sus 都还是断流前的旧值,
-        // 拿它们挑目标档会挑出仍然供不上的档(19:49 真机 est=7020K 而实际只有 2.3Mbps)。
+        // ── P11-332(2026-11-14,dev.r2330 真机):强制降档只下一档 ──────────────────────────────
+        // P11-326 曾让强制降档用「本次在途实测速率」挑目标;但 5s 观察窗内的单笔速率仍会被慢启动/
+        // 服务端 pacing 压低:22:24:08 `bps=706K` → 1080p 一步跳到 **240p**;22:27:19 `bps=597K`
+        // → 再跳 240p,而同一时刻 est=12~15M、随后链路恢复到 7~9M、240p 白降。
+        // 新口径:proactive 的强制降档**只降相邻一档**;深降留给缓冲真的 <8s 时的常规水位急救
+        // (P11-321 fit-to-supply 原样保留),由它按 est/sus 选目标档。
         val inFlightDeliveryBps =
           (bandwidthMeter as? SabrBandwidthMeter)?.getInFlightVideoDeliveryBps() ?: -1L
-        val supplyForTargetBps = if (forcedStarvation && inFlightDeliveryBps > 0L) {
-          inFlightDeliveryBps
+        val forcedOneStep = forcedStarvation
+        val supplyForTargetBps = if (forcedOneStep) {
+          -1L
         } else {
           listOf(
             estForGate,
             (bandwidthMeter as? SabrBandwidthMeter)?.getSustainedBitrateEstimateRaw() ?: -1L,
           ).filter { it > 0L }.maxOrNull() ?: -1L
         }
-        val target = if (lower >= 0 && supplyForTargetBps > 0L &&
+        val target = if (!forcedOneStep && lower >= 0 && supplyForTargetBps > 0L &&
           getFormat(lower).bitrate >
           supplyForTargetBps * DOWNGRADE_TARGET_SUPPLY_MARGIN_PERMILLE / 1000L
         ) {
@@ -1275,11 +1280,12 @@ class HeightAwareAdaptiveTrackSelection(
         if (lower >= 0) {
           val current = getFormat(selected)
           val leavingIndex = selected
-          val supplyNote = if (target != lower) {
-            " [P11-321 supply=${supplyForTargetBps / 1000}K, adjacent=" +
+          val supplyNote = when {
+            forcedOneStep -> " [P11-332 forced one-step, inFlight=" +
+              "${inFlightDeliveryBps / 1000}K est=${estForGate / 1000}K]"
+            target != lower -> " [P11-321 supply=${supplyForTargetBps / 1000}K, adjacent=" +
               "${getFormat(lower).height}p@${getFormat(lower).bitrate}]"
-          } else {
-            ""
+            else -> ""
           }
           Log.i(
             "YtSabrAbr",
