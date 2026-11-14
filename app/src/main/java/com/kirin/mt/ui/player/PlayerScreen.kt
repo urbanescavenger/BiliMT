@@ -247,6 +247,9 @@ fun PlayerScreen(
   // 关/开弹幕开关找回（2026-11-13 真机 20:55:19、20:57:27 两次重试后续均无弹幕）。
   // 这里用 cid 标记归属：渲染层只在 cid 匹配时下发，换视频时不显示上一支视频的弹幕。
   var danmakuLoadedCid by remember { mutableLongStateOf(0L) }
+  // 本次 launch 实际下发的主用视频 URL。stall 重载时用它把当前 CDN host 临时拉黑，
+  // 下一次 launch 才会真正换节点（B站直连 DASH 没有 SABR 的换会话能力）。
+  var currentPrimaryVideoUrls by remember { mutableStateOf<List<String>>(emptyList()) }
   var videoshotData by remember { mutableStateOf<VideoshotData?>(null) }
   var videoshotSprites by remember { mutableStateOf<Map<String, ImageBitmap>>(emptyMap()) }
   var airJumpSegments by remember { mutableStateOf<List<AirJumpSegment>>(emptyList()) }
@@ -1940,6 +1943,8 @@ fun PlayerScreen(
     playbackBufferedPercentageState.longValue = 0L
     playbackPaused = false
     currentCodecText = ""
+    // 主用 URL 随本轮 launch 重建；stall 分支在 retryKey 递增**之前**已用它拉黑旧 host。
+    currentPrimaryVideoUrls = emptyList()
     // 弹幕不在此清空：同 cid 的 stall 重试/切码率重建后弹幕加载 effect 不会重跑，
     // 清空即永久丢弹幕（2026-11-13 真机复现）。换视频由弹幕加载 effect 的 cid 键负责。
     // airJumpSegments 不在此重置:同 bvid 重试/切码率时段仍有效,且 AirJump 效果(键=开关+bvid)
@@ -2082,6 +2087,7 @@ fun PlayerScreen(
           }
           videoDeferred.await() to audioDeferred.await()
         }
+        currentPrimaryVideoUrls = resolvedVideoTracks.map { it.baseUrl }
         var effectiveInfo = info.copy(
           videoTracks = resolvedVideoTracks,
           audioTracks = resolvedAudioTracks,
@@ -2371,6 +2377,33 @@ fun PlayerScreen(
         )
       }
     }
+    // P11-323:B站直连 DASH 的 stall 恢复——先换 CDN，再按档逐级降画质。
+    // stall 重载原本只是重放同一个 playurl（缓存命中同一 CDN），既换不了节点也不降档，
+    // 4K 在带宽边缘会反复补缓冲（2026-11-13 真机 12 分钟 9 次 BUFFERING + 2 次 stall 重载）。
+    // 这里在重载前把当前主用 host 拉黑（下一次 CdnSelector.select 重新测量换节点），
+    // 播放中（已出首帧）的 stall 再把请求画质降一档，下一档从服务端返回的 accept_quality 里取。
+    // 只对 B站 生效：YouTube 有自己的 SABR 档位链，TVBox 的 preferredQualityId 是线路索引不能动。
+    fun recoverBiliPlaybackAfterStall(started: Boolean, reason: String) {
+      if (displayRequestState.value.source != SourceBili) return
+      if (currentPrimaryVideoUrls.isNotEmpty()) {
+        cdnSelector.avoidHosts(currentPrimaryVideoUrls)
+      }
+      if (!started) return
+      val info = (playerState as? PlayerScreenState.Ready)?.info ?: return
+      if (info.isSabrSingle() || info.isSabrDash()) return
+      val currentId = info.selectedQuality.id
+      val nextId = info.qualities.asSequence()
+        .map { it.id }
+        .filter { it > 0 && it < currentId }
+        .maxOrNull()
+        ?: return
+      if (nextId == activeRequest.preferredQualityId) return
+      activeRequest = activeRequest.copy(preferredQualityId = nextId)
+      Log.w(
+        PlayerPlaybackLogTag,
+        "stall quality step-down ($reason): ${currentId}(${info.selectedQuality.description}) → $nextId",
+      )
+    }
     while (isActive) {
       val nowMs = SystemClock.elapsedRealtime()
       val currentPositionMs = player.currentPosition.takeIf { it >= 0L } ?: 0L
@@ -2415,6 +2448,7 @@ fun PlayerScreen(
               "auto-retry #$autoRetryCount @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}%",
           )
           noteStartupStallMemory(currentPositionMs)
+          recoverBiliPlaybackAfterStall(started = true, reason = "video-freeze")
           retryKey += 1L
         }
         PlaybackStallWatchdog.Action.RELOAD -> {
@@ -2439,6 +2473,7 @@ fun PlayerScreen(
             "stall detected, auto-retry #$autoRetryCount @pos=${currentPositionMs}ms buffered=${player.bufferedPercentage}% startup=${!playbackStarted} frame=$frameRendered seekGrace=${nowMs < seekStallGraceUntilMs}(P11-203/P11-210)",
           )
           noteStartupStallMemory(currentPositionMs)
+          recoverBiliPlaybackAfterStall(started = playbackStarted, reason = "stall")
           retryKey += 1L
         }
         PlaybackStallWatchdog.Action.RETRY_EXHAUSTED -> {

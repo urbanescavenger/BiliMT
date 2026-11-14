@@ -23,6 +23,16 @@ class CdnSelector(
   private val cache = LinkedHashMap<String, CacheEntry>()
 
   /**
+   * 因播放卡顿被临时拉黑的 CDN 主机（host → 解禁时间戳）。
+   *
+   * B站直连 DASH 没有 SABR 那套换节点能力：卡顿重载时若只重放同一个 playurl，
+   * 缓存（[CacheTtlMs]）会把选择钉在同一个 host 上，整场都换不了节点。
+   * 播放器在 stall 重载前调用 [avoidHosts] 把当前主用 host 拉黑一段时间，
+   * 下一次 [select] 的缓存直接 miss、候选里也过滤掉它，从而真正换到备用 CDN。
+   */
+  private val avoidedHosts = HashMap<String, Long>()
+
+  /**
    * Returns a primary URL and an ordered list of fallback URLs for [track].
    */
   suspend fun select(track: PlaybackTrack, preference: PlaybackCdnPreference): CdnSelection {
@@ -39,7 +49,11 @@ class CdnSelector(
     }
 
     val baseUrl = track.baseUrl
-    val candidates = candidatesFor(track, preference)
+    val allCandidates = candidatesFor(track, preference)
+    // 被 [avoidHosts] 拉黑的主机优先剔除；全被拉黑时退回完整候选（宁可重试坏节点也不能无 URL 可播）。
+    val candidates = allCandidates
+      .filterNot { isAvoided(it) }
+      .ifEmpty { allCandidates }
 
     if (candidates.isEmpty()) {
       return CdnSelection(baseUrl, emptyList())
@@ -172,7 +186,42 @@ class CdnSelector(
     synchronized(cache) {
       val now = System.currentTimeMillis()
       cache.entries.removeAll { it.value.expiresAt <= now }
-      return cache[baseUrl]?.selection
+      val entry = cache[baseUrl] ?: return null
+      // 缓存里的主用 host 正被拉黑（stall 换节点）⇒ 当 miss 处理，重新测量候选。
+      if (isAvoided(entry.selection.primaryUrl)) {
+        cache.remove(baseUrl)
+        return null
+      }
+      return entry.selection
+    }
+  }
+
+  /**
+   * 把 [urls] 里出现的主机临时拉黑 [durationMs]（默认 [AvoidHostMs]），
+   * 用于 stall 重载时强制换 CDN。只影响 [PlaybackCdnPreference.Auto] 的自动选择，
+   * 手动指定 CDN 的设置优先，不会被覆盖。
+   */
+  fun avoidHosts(urls: Collection<String>, durationMs: Long = AvoidHostMs) {
+    val now = System.currentTimeMillis()
+    synchronized(cache) {
+      avoidedHosts.entries.removeAll { it.value <= now }
+      urls.forEach { url ->
+        val host = url.toHttpUrlOrNull()?.host ?: return@forEach
+        avoidedHosts[host] = now + durationMs
+        Log.w(LogTag, "avoid CDN host $host for ${durationMs / 1000}s (stall)")
+      }
+    }
+  }
+
+  private fun isAvoided(url: String): Boolean {
+    val host = url.toHttpUrlOrNull()?.host ?: return false
+    synchronized(cache) {
+      val until = avoidedHosts[host] ?: return false
+      if (until <= System.currentTimeMillis()) {
+        avoidedHosts.remove(host)
+        return false
+      }
+      return true
     }
   }
 
@@ -192,6 +241,8 @@ class CdnSelector(
 
   private companion object {
     const val CacheTtlMs = 5 * 60 * 1000L
+    /** stall 换节点拉黑时长：短于 [CacheTtlMs]，避免一场播放把好节点也永久排掉。 */
+    const val AvoidHostMs = 3 * 60 * 1000L
     const val LogTag = "BiliMT:CdnSelector"
 
     val BareIpPattern = Regex("""^(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?$""")
