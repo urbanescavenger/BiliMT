@@ -233,6 +233,9 @@ internal class DefaultSabrChunkSource(
     (bandwidthMeter as? SabrBandwidthMeter)?.setInFlightDeliveryProvider {
       fetcher.getInFlightVideoDeliveryBps()
     }
+    (bandwidthMeter as? SabrBandwidthMeter)?.setInFlightElapsedProvider {
+      fetcher.getInFlightVideoElapsedMs()
+    }
     (bandwidthMeter as? SabrBandwidthMeter)?.setSupplyGapProvider {
       fetcher.getLastSupplyGapWallMs()
     }

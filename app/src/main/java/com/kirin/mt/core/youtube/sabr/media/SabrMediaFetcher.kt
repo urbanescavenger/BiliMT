@@ -690,6 +690,18 @@ internal class SabrMediaFetcher(
   }
 
   /**
+   * P11-329:在途**视频**请求已持续多久(ms);-1 = 无在途/尚未出现视频段头。
+   * ABR 用它给「强制降档」加最小观察窗口:请求刚发出 1~2s 时 TCP 还在慢启动,
+   * 拿这段速率算 ETA 会严重高估(真机 dev.r2326:请求开始 1.6s 就判 ETA=29~77s →
+   * 1440p/2160p 被误降到 480p,随后又爬回来)。
+   */
+  fun getInFlightVideoElapsedMs(): Long {
+    val start = inFlightStartMs
+    if (start <= 0L || inFlightVideoExpectedBytes <= 0L) return -1L
+    return (SystemClock.elapsedRealtime() - start).coerceAtLeast(0L)
+  }
+
+  /**
    * P11-326:在途请求的实时交付速率(bps,首字节→现在);无在途时返回**最近一笔**的实测速率。
    * 用途:ABR 被强制取消后立即做降档决策——那刻实时窗口已关闭,不能用断流前的旧 est。
    */

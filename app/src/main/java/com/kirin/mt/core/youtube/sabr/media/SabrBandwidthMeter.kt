@@ -216,6 +216,16 @@ internal class SabrBandwidthMeter(
   fun getInFlightVideoDeliveryBps(): Long = inFlightDeliveryProvider?.invoke() ?: -1L
 
   @Volatile
+  private var inFlightElapsedProvider: (() -> Long)? = null
+
+  fun setInFlightElapsedProvider(provider: () -> Long) {
+    inFlightElapsedProvider = provider
+  }
+
+  /** P11-329:在途视频请求已持续多久(ms);-1 = 无在途/证据不足。 */
+  fun getInFlightVideoElapsedMs(): Long = inFlightElapsedProvider?.invoke() ?: -1L
+
+  @Volatile
   private var supplyGapProvider: (() -> Long)? = null
 
   fun setSupplyGapProvider(provider: () -> Long) {
@@ -292,6 +302,7 @@ internal class SabrBandwidthMeter(
     // P11-326:断流证据同样不能跨源存活(旧会话的 gap 会误否决新源升档)。
     inFlightSilenceProvider = null
     inFlightDeliveryProvider = null
+    inFlightElapsedProvider = null
     supplyGapProvider = null
   }
 

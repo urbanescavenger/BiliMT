@@ -796,10 +796,15 @@ class HeightAwareAdaptiveTrackSelection(
     val meter = bandwidthMeter as? SabrBandwidthMeter ?: return false
     val etaMs = meter.getInFlightVideoEtaMs()
     val silenceMs = meter.getInFlightVideoSilenceMs()
+    val elapsedMs = meter.getInFlightVideoElapsedMs()
     // 只在缓冲接近急救线时才动手(两条腿同一门槛):缓冲还厚时给慢滴机会,别为一段在途数据
     // 提前丢掉已下载字节;真到 12s 才开始算「来不来得及」,仍比 8s 看门狗早一个评估窗口。
     if (runwayMs > FORCED_STARVE_MAX_RUNWAY_MS) return false
-    val etaStarves = etaMs >= 0L && etaMs * 1000L > runwayMs * FORCED_STARVE_ETA_PERMILLE
+    // P11-329:ETA 腿必须有最小观察窗口。请求刚发出 1~2s 时 TCP 还在慢启动,速率只有 1~1.5Mbps,
+    // 拿它算 ETA 会得到 29~77s 的假象 ⇒ 1440p/2160p 被误降到 480p、再爬回来(dev.r2326 真机)。
+    // 硬挂死(首字节后静默 ≥3s)是独立证据,不受此窗口限制。
+    val etaStarves = elapsedMs >= FORCED_STARVE_MIN_ELAPSED_MS &&
+      etaMs >= 0L && etaMs * 1000L > runwayMs * FORCED_STARVE_ETA_PERMILLE
     val silentStarves = silenceMs >= FORCED_STARVE_SILENCE_MS
     if (!etaStarves && !silentStarves) return false
     val currentHeight = getFormat(selected).height
@@ -822,7 +827,7 @@ class HeightAwareAdaptiveTrackSelection(
       Log.i(
         "YtSabrAbr",
         "forced downgrade trigger (starvation, P11-326): itag${itagOf(getFormat(selected))}" +
-          "(${currentHeight}p) runway=${runwayMs}ms eta=$etaMs silence=$silenceMs(" +
+          "(${currentHeight}p) runway=${runwayMs}ms elapsed=$elapsedMs eta=$etaMs silence=$silenceMs(" +
           (if (etaStarves) "eta>runway×${FORCED_STARVE_ETA_PERMILLE / 1000.0}" else "silent-hang") +
           ") bps=${meter.getInFlightVideoDeliveryBps() / 1000}K → cancel in-flight + re-evaluate",
       )
@@ -2072,6 +2077,11 @@ class HeightAwareAdaptiveTrackSelection(
     const val FORCED_STARVE_ETA_PERMILLE = 800L
     /** 首字节后静默 ≥ 此值 = 硬挂死(此时 fetcher 的 ETA 已返回 -1,只能靠静默本身判)。 */
     const val FORCED_STARVE_SILENCE_MS = 3_000L
+    /**
+     * P11-329:ETA 腿的最小观察窗口(ms)。请求刚发出 1~2s 时 TCP 慢启动,速率 1~1.5Mbps,
+     * ETA 会被高估到 29~77s ⇒ 误降 480p(dev.r2326 真机连续三次)。静默腿不受此限。
+     */
+    const val FORCED_STARVE_MIN_ELAPSED_MS = 5_000L
     /** 硬挂死分支只在 runway ≤ 此值时才取消(缓冲还厚时给慢滴一点机会,交给 P11-305 让路)。 */
     const val FORCED_STARVE_MAX_RUNWAY_MS = 12_000L
     /** 两次强制取消的最小间隔(ms):防同一段反复 cancel → 反复重发。 */
