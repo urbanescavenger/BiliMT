@@ -46,6 +46,7 @@
   - [9.2 关键源码 URL(raw.githubusercontent.com)](#92-关键源码-urlrawgithubusercontentcom)
   - [9.3 FreeTube PR](#93-freetube-pr)
   - [9.4 内部文档](#94-内部文档)
+  - [9.5 ReVanced 对照(2026-10 核查:无 SABR/ABR 可抄)](#95-revanced-对照2026-10-核查无-sabrabr-可抄)
 
 ## 1. 一句话方案
 
@@ -349,3 +350,48 @@ type=20(MEDIA_HEADER) itag=251 isInit=false seq=1 contentLen=101540 dur=6041ms  
 - [youtube-hd-playback.md](youtube-hd-playback.md):逐 alpha 调试记录(§6.7 row 1-53)+ FreeTube 核对(§6.8)+ SABR 调研(§6.9)。
 - [DEVELOPMENT_PROGRESS.md](../../DEVELOPMENT_PROGRESS.md):P11-14 YouTube 播放进度。
 - memory `youtube-plasma-wasm-n-decrypt`:plasma WASM 根因 + alpha.17-33 跨阶段突破记录(含 alpha.32 URL 类方式推翻「锁死」结论)。
+
+### 9.5 ReVanced 对照(2026-10 核查:无 SABR/ABR 可抄)
+
+**仓库位置**:`ReVanced/revanced-patches` 的 GitHub 仓库已下线,现行源在 GitLab 临时镜像 `https://gitlab.com/ReVanced/revanced-patches`(`main` + `dev`,`dev` HEAD 2026-09-30 `12487bc0`);`ReVanced/revanced-integrations` 2024-10 已归档,扩展并入 patches 仓库 `extensions/`。核查用的浅克隆放在 `%TEMP%\rv_patches`(非工程内)。
+
+**ReVanced 不实现 SABR,而是关掉它**:
+- `extensions/shared/library/.../spoof/SpoofVideoStreamsPatch.java:177` `disableSABR()` 在开启 "Spoof video streams" 时返回 true;`patches/.../shared/misc/spoof/SpoofVideoStreamsPatch.kt:269-308` 把播放器取 SABR-URI 的方法改成直接返回 `DISABLED_BY_SABR_STREAMING_URI`。
+- 同一补丁拦截 `/att/get`(PoToken challenge)、`/initplayback`、`/get_watch`;注释 `SpoofVideoStreamsPatch.java:109` 明说「a valid PoToken cannot be obtained」。`removeVideoPlaybackPostBody`(L287)删掉 videoplayback 的 POST body(Kotlin 注释 L213:body 是按 Android 调的,拿别的平台流会 400)。
+- 取流靠 `StreamingDataRequest` 自己 POST `/player` 或 `/reel/reel_item_watch`(`alt=proto`,只取 `streamingData`),成功即替换 App 内的 PlayerResponse;失败按客户端列表逐个重试。客户端表见 `extensions/shared/library/.../spoof/ClientType.java`:ANDROID_REEL(20.44.38,id=3,reel 端点)、ANDROID_VR 1.61.48 / 1.43.32(id=28,Quest 3)、ANDROID_CREATOR(23.47.101,id=14)、VISIONOS(1.3.21O771,id=101);YouTube 默认 VR 1.43.32。
+
+**实测(2026-10-30,guest 无 poToken,`aqz-KE-bpKQ`,按 ReVanced 的 body/头逐字复刻)**:
+| 请求 | 结果 |
+| --- | --- |
+| ANDROID_REEL + `/reel/reel_item_watch` | 200,status=OK,adaptive **39 条全部无 url/signatureCipher**,有 `serverAbrStreamingUrl`;progressive 只有 itag18(360p,有直链)。补 `X-Goog-Api-Format-Version: 1` 变 45 条,仍全 SABR-only |
+| ANDROID_VR 1.61.48 / 1.43.32 + `/player` | `LOGIN_REQUIRED`,0 格式 |
+| ANDROID_CREATOR | HTTP 400 |
+| VISIONOS(101) | HTTP 404(该请求形态下) |
+
+即 **2026-10 已没有客户端能在无 token 下给出可直接播放的 adaptive 直链**;ReVanced 这条路的实际产出就是 itag18 360p,与它自己的用户报告一致。这也再次对上我们 alpha.14/§6.5 的结论,不是请求头或 client 版本没调对。
+
+**ReVanced 自己承认的现状**:
+- 设置页 `revanced_spoof_video_streams_about_playback_failure` = "Video may stop at 1:00, or may not be available in some regions",ANDROID_REEL / VR / VISIONOS 三档都挂这条。
+- `ReVanced/revanced-manager#3534`(2026-09-24):大量用户「播到 1:00 停、画质锁 360/480、could not fetch any client streams」;logcat 显示 stock 流 60s 时 403、回退 itag18;评论明确 visionOS / Android Reel 也 1:00 停,只有 Android VR 偶尔过 93s。
+- `#3541`(2026-10-06):提案称「Google 开始强制 SABR,所有 revanced 端点很快作废」,并点名 PipePipe(InfinityLoop1308/Priveetee)已完成 SABR 逆向——正是我们已移植的 PipePipe 路线。
+- 2025-09-15 `abe3943f` 删掉 Android TV / iOS TV 客户端,2026-03 `4b6c3e3` 才加 Android Reel;说明「换 client」是持续失血的补丁,不是稳定解。
+
+**登录能解决吗(「用他的 API + 登录」)?——不能,证据如下**:
+- ReVanced 本身不做 Google 登录:登录由官方 YouTube App 完成(ReVanced 环境用 GmsCore/microG 提供账号),补丁只把 App 请求里的 `Authorization: Bearer <access token>` 转发给自己发的 InnerTube 请求。`ClientType.java`:ANDROID_REEL / ANDROID_CREATOR `useAuth=true`,ANDROID_VR / VISIONOS `useAuth=false`;`StreamingDataRequest.java:74,185` 在未登录时直接跳过 `useAuth` 客户端。`ANDROID_REEL` 注释还警告:带 access token 反而让 GVS 更容易识别请求来自 ReVanced,可能强化对 REEL 客户端的校验。
+- `revanced-manager#3534` 2026-10-09 的长评(OnePlus 15,60+ 次 72s 以上脚本播放,带 logcat)测了登录态:ANDROID_REEL **带登录**能取到流,但**照样 1:00 停**,与 stock 同款 403;ANDROID_VR 1.43/1.61 对多数视频 `LOGIN_REQUIRED`("Sign in to confirm you're not a bot");可登录的 ANDROID_CREATOR 每次 400("Precondition check failed");年龄限制视频全部客户端无解。
+- 同一长评的真正分水岭不是登录,而是 **VISIONOS 直链**:ANDROID/IOS 的流 URL 在 0:20 返回 206、1:30 返回 403;VISIONOS 的 URL 全程 206(它当时是唯一不需要 PO token 的客户端)。且 `/player` 是否被接受取决于**请求 IP 族**(同分钟 `curl -4` 全 OK、`curl -6` 全 UNPLAYABLE,晚些又全 OK)和 **visitorData**(坏 visitor 会 400/UNPLAYABLE);`fields=streamingData` 会吞掉 playabilityStatus,拒绝时只看到空 body。
+- 另:made-for-kids 视频 ANDROID_KIDS(id=18)能出流且 1:00 不停;普通视频它快速报错,可作 fallback。
+- 对我们的含义:登录不是缺的那块拼图。我们 guest + WEB PoToken + visionOS DASH 自合成 + SABR 已比它靠前;若为登录引入 Google OAuth(device flow / refresh token)与账号风控,成本高,且没有任何证据表明能换到直链。
+
+**「直接用官方 App」可行吗?——只能当参考实现,不能当后端/登录源**:
+- 官方 App 能播是三件事叠加:账号 + 设备完整性(DroidGuard / Play Integrity,必须在 Google 签名的 App 进程内产生)+ 内置 SABR(自己铸 poToken/ustreamerConfig)。它没有供第三方调用的取流 API;它发的请求就是我们已经实现的 SABR 协议。
+- 复刻不了的是完整性信号:换包名/重签名即失效,这正是 ReVanced 只能关掉 SABR 的根因。登录态也导不出来:Android 沙箱读不到官方 App 的 Cookie/OAuth token;AccountManager 能拿 Google OAuth token,但播放还绑 poToken/ustreamerConfig/attestation,单有 token 不够(ReVanced 实测带 token 的 ANDROID_REEL 仍 1:00 停)。
+- 唯一可操作的「借官方」是行为对照:抓官方 App/网页的 SABR 会话参数。网页侧我们已用 WebView harvest 做过(浏览器原生网络栈抓 POST body);TV 官方 App 侧需 root/VPN 抓包,且 cpn/poToken 与会话绑定、复用价值低。
+
+**ReVanced Manager 的模型 = 官方手机版 APK 打补丁**:它不分发 YouTube APK(版权),要用户自备或用 downloader 拉官方 APK;支持的手机版 YouTube 为 20.14.43 / 20.21.37 / 20.26.46 / 20.31.42 / 20.37.48 / 20.40.45。产物包名仍是 `com.google.android.youtube`,但重签 + 用 GmsCore 冒充 Play 服务,官方 App 的 Play Integrity / DroidGuard 链路失效。登录能用(GmsCore 给 App 发 Google token)不等于取流能用。另外 Android TV 的 YouTube 是另一个包 `com.google.android.youtube.tv`,不在 ReVanced 支持列表——电视端没有现成可借路径。
+
+**唯一可借鉴的两点(均不改变现有判据)**:
+1. **回落响应要排除 SABR-only**:MR `!6983` 描述要求 fallback 响应「requires direct URLs or signature ciphers / skips SABR-only fallback responses」,否则拿到只有 `serverAbrStreamingUrl` 的 streamingData → 60s 后 403 → 落 itag18。合并后的 diff 只保留了 VP9 单档时的 AVC 阶梯修正(`preferMultipleAvcQualities`),**直链校验并未进 main/dev**,所以他们现在仍会接受 SABR-only。我们 `buildDashFallbackFromNewPipe` 只在拿到 url/cipher 时才建 MPD,语义已等价,无需改。
+2. `/reel/reel_item_watch` 的请求形态与上表客户端指纹,留作将来 SABR 全断时的取证对照;实测不给直链,不作为方案。
+
+**结论**:ReVanced 没有 UMP/SABR 实现、没有 ABR、没有 n-transform、没有 PoToken 铸造;SABR 相关唯一「解法」是关闭 SABR。我们的 SABR + 自建 DASH + ABR 判据链在它那里没有可抄的东西;同栈参考仍是 LibreTube / FreeTubeAndroid / PipePipe。
