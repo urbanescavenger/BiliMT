@@ -1,5 +1,6 @@
 package com.kirin.mt.core.network
 
+import android.util.Log
 import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.model.TvboxEpisode
 import com.kirin.mt.core.model.TvboxLine
@@ -66,11 +67,13 @@ class HongguoRepository(
         // 纯文本/HTML 应答(改版、风控页)直接弃,只收 JSON。
         if (!body.trimStart().startsWith("{")) return@withContext emptyList()
         val page = json.decodeFromString(HongguoSearchPage.serializer(), body)
-        page.searchList
+        val items = page.searchList
           .filter { it.doc_type == DocTypeSeries }
           .mapNotNull { it.video_data }
           .filter { it.series_id.isNotBlank() && it.vid_list.isNotEmpty() }
           .map(::toVideoSummary)
+        Log.i(Tag, "旧网页搜索 kw=$keyword count=${items.size}")
+        items
       }
     } catch (e: CancellationException) {
       throw e
@@ -121,6 +124,7 @@ class HongguoRepository(
     /** 搜索条目 doc_type=23 为剧集(其余为用户/话题等,弃)。 */
     const val DocTypeSeries = 23
     const val OwnerName = "红果短剧"
+    const val Tag = "HongguoWeb"
     const val LineName = "红果短剧"
     const val BadgeFallback = "短剧"
   }

@@ -3,6 +3,7 @@ package com.kirin.mt.core.network
 import android.content.Context
 import android.util.Log
 import com.hongguotv.core.ContentRepository
+import com.hongguotv.core.ContentType
 import com.hongguotv.core.MemoryCookies
 import com.hongguotv.core.PlayerDeviceStore
 import com.hongguotv.core.Rendition
@@ -55,14 +56,32 @@ class HongguoAppRepository(
   }
 
   suspend fun search(keyword: String): List<VideoSummary> = withContext(Dispatchers.IO) {
-    runCatching {
-      content.search(keyword).items
-        // 详情/取流接口只认数字 series_id；book_id/搜索结果 id 混入的条目直接丢掉。
-        .filter { it.id.matches(Regex("[0-9]{1,30}")) }
-        .map { toSummary(it, emptyList()) }
+    // App 搜索、网页搜索各走一条链：App 结果通常更准但条数少，网页 searchAll 支持分页。
+    // 两边都失败时由 HongguoRepository 再回退旧 __loader 网页搜索。
+    val app = runCatching { content.search(keyword) }
+      .onFailure { Log.w(Tag, "App 搜索失败 kw=$keyword: ${it.message}") }
+      .getOrNull()
+    val web1 = runCatching { content.searchAll(keyword, page = 1, type = ContentType.SHORT) }
+      .onFailure { Log.w(Tag, "网页搜索失败 kw=$keyword: ${it.message}") }
+      .getOrNull()
+    val web2 = if (web1?.hasMore == true) {
+      runCatching { content.searchAll(keyword, page = 2, type = ContentType.SHORT) }
+        .onFailure { Log.w(Tag, "网页搜索第2页失败 kw=$keyword: ${it.message}") }
+        .getOrNull()
+    } else {
+      null
     }
-      .onFailure { Log.w(Tag, "搜索失败: ${it.message}") }
-      .getOrDefault(emptyList())
+    val merged = (app?.items.orEmpty() + web1?.items.orEmpty() + web2?.items.orEmpty())
+      // 详情/取流接口只认数字 series_id；book_id/搜索结果 id 混入的条目直接丢掉。
+      .filter { it.id.matches(Regex("[0-9]{1,30}")) }
+      .distinctBy { it.id }
+      .map { toSummary(it, emptyList()) }
+    Log.i(
+      Tag,
+      "搜索 kw=$keyword app=${app?.items?.size ?: -1} web1=${web1?.items?.size ?: -1} " +
+        "web2=${web2?.items?.size ?: -1} merged=${merged.size}",
+    )
+    merged
   }
 
   suspend fun detail(seriesId: String): VideoSummary? = withContext(Dispatchers.IO) {
