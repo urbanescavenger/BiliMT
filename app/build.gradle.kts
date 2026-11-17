@@ -151,6 +151,7 @@ dependencies {
   implementation(platform(libs.firebase.bom))
   implementation(libs.firebase.crashlytics)
 
+  implementation(project(":hongguo-core"))
   implementation(libs.activity.compose)
   implementation(libs.androidx.core.ktx)
   implementation(libs.androidx.datastore.preferences)

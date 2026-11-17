@@ -562,11 +562,13 @@ fun MobileSearchScreen(
       modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
       horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-      // 红果短剧源已从搜索源摘除(网页匿名端只放开前 3 集,暂不上前端),后端链路保留。
+      // 红果短剧走 App 端 core（匿名设备 + v5 签名），免费分集可播超过网页端 3 集；
+      // 搜索卡点开时再补详情拿全量分集。
       listOf(
         SourceBili to stringResource(R.string.search_source_bili),
         SourceYoutube to stringResource(R.string.search_source_youtube),
         SourceTvbox to stringResource(R.string.search_source_tvbox),
+        SourceHongguo to stringResource(R.string.search_source_hongguo),
       ).forEach { (value, label) ->
         FilterChip(
           selected = uiState.source == value,

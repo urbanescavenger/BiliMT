@@ -6,6 +6,7 @@ import com.kirin.mt.core.auth.WbiSigner
 import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliApiEndpoints
+import com.kirin.mt.core.network.HongguoAppRepository
 import com.kirin.mt.core.network.BiliNumberParser
 import com.kirin.mt.core.network.PgcMappers
 import com.kirin.mt.core.network.SpaceHttpSupport
@@ -39,6 +40,7 @@ class PlaybackRepository(
   private val progressStore: PlaybackProgressStore,
   private val youtubePlaybackResolver: YoutubePlaybackResolver,
   private val tvboxRepository: TvboxRepository,
+  private val hongguoAppRepository: HongguoAppRepository,
 ) {
   private val videoshotRepository = VideoshotRepository(
     apiClient = apiClient,
@@ -204,7 +206,15 @@ class PlaybackRepository(
       if (episodes.isEmpty()) continue
       val episode = episodes.getOrNull(resolvedEpisode)
         ?: episodes.get(resolvedEpisode.coerceIn(0, episodes.lastIndex))
-      val resolved = tvboxRepository.resolveLineUrl(episode.url)
+      // 红果 App 端分集：`hongguo-app:<vid>` → v5 取流 + CENC 解密到本地缓存；
+      // 其余 URL 仍走 TVBox/网页的懒解析。
+      val resolved = if (episode.url.startsWith(HongguoAppRepository.EpisodePrefix)) {
+        hongguoAppRepository.resolveEpisode(
+          episode.url.removePrefix(HongguoAppRepository.EpisodePrefix),
+        )
+      } else {
+        tvboxRepository.resolveLineUrl(episode.url)
+      }
       if (resolved != null) {
         // m3u8 存活预检(P11-81d):解析成功但 CDN 404 的死链(采集站老资源常态)也顺延下一线路。
         if (tvboxRepository.probePlayable(resolved)) {

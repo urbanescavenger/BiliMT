@@ -506,7 +506,10 @@ v2.0.0 稳定版后的继续迭代线（patch 线 alpha），单 APK 通吃 TV +
 
 BiliMT 基于 [BiliTVNative 1.0.0](https://github.com/Hyper-Beast/BiliTVNative) 继续开发，沿用了上游项目的整体架构、TV 焦点系统、播放器集成、弹幕叠加层和大量基础能力。感谢原作者及贡献者。
 
-上游项目采用 MIT License，本项目同样以 MIT License 发布。
+上游项目采用 MIT License，BiliMT 自有代码的原始授权文本保留在 [LICENSE-MIT](LICENSE-MIT)。因
+`:hongguo-core` 模块移植自 GPL-3.0-only 的 [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV)，
+包含该模块的 BiliMT 发行物整体按 **GPL-3.0-only** 分发，详见 [LICENSE](LICENSE) 与
+[hongguo-core/NOTICE.md](hongguo-core/NOTICE.md)。
 
 ## 免责声明
 
@@ -516,4 +519,6 @@ BiliMT 基于 [BiliTVNative 1.0.0](https://github.com/Hyper-Beast/BiliTVNative) 
 
 ## License
 
-本项目代码使用 MIT License。详见 [LICENSE](LICENSE)。
+本项目自有代码的原始授权为 MIT（见 [LICENSE-MIT](LICENSE-MIT)）；因 `:hongguo-core` 移植自
+GPL-3.0-only 上游，包含该模块的发行物整体按 **GPL-3.0-only** 分发。详见 [LICENSE](LICENSE)、
+[hongguo-core/LICENSE](hongguo-core/LICENSE) 与 [hongguo-core/NOTICE.md](hongguo-core/NOTICE.md)。

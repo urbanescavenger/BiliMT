@@ -52,6 +52,7 @@ import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.UserSummary
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.IptvRepository
+import com.kirin.mt.core.network.HongguoAppRepository
 import com.kirin.mt.core.network.LiveRepository
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.PlaybackCdnPreference
@@ -366,6 +367,20 @@ fun BiliMobileApp(
               // 番剧搜索卡(seasonId>0):进 PGC 季详情,epId=0 由季详情自行选首集。
               pgcSeasonRequest = PgcSeasonRequest(seasonId = video.seasonId)
               pgcPlaybackBehind = false
+            } else if (video.source == SourceHongguo && video.tvboxLines.isEmpty()) {
+              // 红果 App 端搜索卡只带剧集元数据；点开时补详情拿全量分集，再进播放器。
+              Toast.makeText(context, "正在解析红果剧集…", Toast.LENGTH_SHORT).show()
+              scope.launch {
+                val resolved = videoRepository.hongguoDetail(
+                  video.bvid.removePrefix(HongguoAppRepository.SeriesPrefix),
+                )
+                if (resolved != null) {
+                  playQueue = emptyList()
+                  playbackRequest = resolved.toPlaybackRequest()
+                } else {
+                  Toast.makeText(context, "红果剧集解析失败，请稍后重试", Toast.LENGTH_SHORT).show()
+                }
+              }
             } else {
               playQueue = emptyList()
               playbackRequest = video.toPlaybackRequest()

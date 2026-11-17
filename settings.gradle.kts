@@ -19,3 +19,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "BiliMT"
 include(":app")
+// GPL-3.0-only 红果 App 端 core(移植自 N3urda/hongguoTV),与 MIT 应用代码隔离成独立模块。
+include(":hongguo-core")

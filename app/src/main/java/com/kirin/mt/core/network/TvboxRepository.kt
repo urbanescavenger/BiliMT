@@ -450,6 +450,8 @@ class TvboxRepository(
    * 自动重试/重进不重复探测。裸头(无 Referer/Origin),与播放头一致。
    */
   suspend fun probePlayable(url: String): Boolean {
+    // 红果 App 端解出来的本地明文 MP4：没有网络端点可探，按可播处理。
+    if (url.startsWith("file://")) return true
     deadUntilCache[url]?.let { until -> if (System.currentTimeMillis() < until) return false }
     return withContext(Dispatchers.IO) {
       try {

@@ -16,6 +16,7 @@ import com.kirin.mt.core.download.DownloadUrlResolver
 import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.BiliHttpClientFactory
+import com.kirin.mt.core.network.HongguoAppRepository
 import com.kirin.mt.core.network.HongguoRepository
 import com.kirin.mt.core.network.IptvRepository
 import com.kirin.mt.core.network.LiveRepository
@@ -188,8 +189,13 @@ class AppContainer(context: Context) {
     client = downloadHttpClient,
     appSettingsStore = appSettingsStore,
   )
+  // GPL-3.0 App 端 core：匿名设备 + v5 签名 + 全量分集 + CENC 解密。
+  val hongguoAppRepository: HongguoAppRepository = HongguoAppRepository(
+    context = appContext,
+  )
   val hongguoRepository: HongguoRepository = HongguoRepository(
     client = downloadHttpClient,
+    appRepository = hongguoAppRepository,
   )
   val videoRepository: VideoRepository = VideoRepository(
     apiClient = apiClient,
@@ -228,6 +234,7 @@ class AppContainer(context: Context) {
     progressStore = playbackProgressStore,
     youtubePlaybackResolver = youtubePlaybackResolver,
     tvboxRepository = tvboxRepository,
+    hongguoAppRepository = hongguoAppRepository,
   )
   val danmakuSettingsStore: DanmakuSettingsStore = DanmakuSettingsStore(appContext)
   val liveQualityPreferenceStore: LiveQualityPreferenceStore = LiveQualityPreferenceStore(appContext)

@@ -399,11 +399,16 @@ class VideoRepository(
   }
 
   /**
-   * 红果短剧搜索(P11-83):网页端一步直出剧集列表(含分集),无排序/无翻页(10 条/次)。
-   * 见 [HongguoRepository]。
+   * 红果短剧搜索：优先 App 端（免费分集可完整播放），失败回退网页端 3 集链路。
+   * 见 [HongguoRepository] / [HongguoAppRepository]。
    */
   suspend fun hongguoSearch(keyword: String): List<VideoSummary> {
     return hongguoRepository.search(keyword)
+  }
+
+  /** 搜索结果点开时补全完整分集；App 链路不可用时返回 null。 */
+  suspend fun hongguoDetail(seriesId: String): VideoSummary? {
+    return hongguoRepository.detail(seriesId)
   }
 
   suspend fun youtubeSubscriptionsFeed(

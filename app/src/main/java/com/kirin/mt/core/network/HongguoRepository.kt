@@ -31,7 +31,11 @@ import java.util.concurrent.TimeUnit
  * 卡片复用 TVBox 线路心智:单线路 [TvboxLine],分集 URL=播放页地址(播放时懒解析直链)。
  * 失败静默(网页改版/网络抖动按「无结果」落地,UI 落空态)。
  */
-class HongguoRepository(private val client: OkHttpClient) {
+class HongguoRepository(
+  private val client: OkHttpClient,
+  /** App 端数据源(GPL-3.0 `:hongguo-core`)；失败/为空时回退网页 3 集链路。 */
+  private val appRepository: HongguoAppRepository? = null,
+) {
 
   /** 搜索放宽到 10s/15s(单请求链路,SSR 数据路由 ~15KB 响应)。 */
   private val httpClient = client.newBuilder()
@@ -50,6 +54,8 @@ class HongguoRepository(private val client: OkHttpClient) {
    * 字面加号,统一改 `%20`。永不抛错(最差空列表)。
    */
   suspend fun search(keyword: String): List<VideoSummary> = withContext(Dispatchers.IO) {
+    // 优先 App 端搜索：免费分集可完整播放，不再受网页匿名端 3 集限制。
+    appRepository?.search(keyword)?.takeIf { it.isNotEmpty() }?.let { return@withContext it }
     try {
       val encoded = URLEncoder.encode(keyword, "UTF-8").replace("+", "%20")
       val url = "$Site/search/$encoded?__loader=$SearchLoaderId"
@@ -72,6 +78,9 @@ class HongguoRepository(private val client: OkHttpClient) {
       emptyList()
     }
   }
+
+  /** 搜索结果点开时补全完整分集（App 端详情页 SSR 的 vid_list 是全量）。 */
+  suspend fun detail(seriesId: String): VideoSummary? = appRepository?.detail(seriesId)
 
   /** 一部剧 → 一张卡:单线路「红果短剧」,分集=播放页 URL(播放时懒解析 main_url 直链)。 */
   private fun toVideoSummary(series: HongguoVideoData): VideoSummary {
