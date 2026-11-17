@@ -117,6 +117,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.common.VideoSize
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.ExoPlayer
@@ -144,6 +145,7 @@ import com.kirin.mt.core.network.BiliNetworkException
 import com.kirin.mt.ui.mobile.home.MobileVideoCard
 import com.kirin.mt.ui.mobile.home.SourceBadge
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
+import com.kirin.mt.core.player.HongguoDataSource
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.CdnSelector
 import com.kirin.mt.core.youtube.sabr.SabrAwareDataSourceFactory
@@ -1019,12 +1021,16 @@ fun MobilePlayerScreen(
         .build()
       // alpha.27:包一层 SabrAwareDataSourceFactory——sabr:// URI(YouTube SABR 流)交 SabrStreamingDataSource
       //(走 SabrStreamRegistry 查表 + SabrClient 驱动 init/seg),其余 http/https(B站 + YouTube 回退)走 OkHttp。
-      val dataSourceFactory = DefaultDataSource.Factory(
-        context,
-        SabrAwareDataSourceFactory(
-          BiliMediaDataSourceFactory(client = playbackHttpClient, headers = sabrEffectiveInfo.headers).create(),
-        ),
-      )
+      // 红果 App 端：改用 HongguoDataSource 边读边解 CENC，首帧不再等整集下载；
+      // 其余来源（B 站/YouTube/网页红果）仍走原来的 OkHttp 数据源。
+      val dataSourceFactory: DataSource.Factory =
+        sabrEffectiveInfo.hongguoStream?.let { HongguoDataSource.Factory(it) }
+          ?: DefaultDataSource.Factory(
+            context,
+            SabrAwareDataSourceFactory(
+              BiliMediaDataSourceFactory(client = playbackHttpClient, headers = sabrEffectiveInfo.headers).create(),
+            ),
+          )
       // alpha.59(Phase 2 DASH):SABR 轨 isSabrDash=true(segmentBase 仍 null → isProgressive 为 true),
       // 须排除走 DASH 分支(SegmentTemplate MPD + SabrDashDataSource 逐段拉),而非 progressive MergingMediaSource。
       // alpha.64(单流移植):isSabrSingle=true → 走自定义 SabrMediaSource(单流,修 60s 断崖 + A/V 同步 + 后台音频)。

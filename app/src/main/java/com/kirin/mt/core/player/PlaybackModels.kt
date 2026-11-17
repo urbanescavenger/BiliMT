@@ -143,6 +143,11 @@ data class PlaybackInfo(
    * 非兜底场景为 null。
    */
   val remoteHlsManifestUrl: String? = null,
+  /**
+   * 红果 App 端流式播放：非空时播放器改用 [HongguoDataSource.Factory]，
+   * 按 Range 边读边解 CENC，不再走 `file://` 整集下载。
+   */
+  val hongguoStream: HongguoStream? = null,
 )
 
 /** YouTube 一条可选音轨(多语言配音)。id 为 audioTrack.id(如 "en.4"),非 itag。 */

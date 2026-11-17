@@ -73,6 +73,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
@@ -93,6 +94,7 @@ import com.kirin.mt.core.network.FavoriteFolder
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
+import com.kirin.mt.core.player.HongguoDataSource
 import com.kirin.mt.core.player.CdnRewriter
 import com.kirin.mt.core.player.CdnSelection
 import com.kirin.mt.core.player.CdnSelector
@@ -2117,15 +2119,17 @@ fun PlayerScreen(
         // alpha.27:包一层 SabrAwareDataSourceFactory——sabr:// URI(YouTube SABR 流)交 SabrStreamingDataSource
         //(走 SabrStreamRegistry 查表 + SabrClient 驱动 init/seg),其余 http/https(B站 + YouTube 回退)走 OkHttp。
         // 一处包装,非 sabr 流不受影响;SABR track segmentBase=null → 走下方 progressive MergingMediaSource 分支。
-        val dataSourceFactory = DefaultDataSource.Factory(
-          context,
-          SabrAwareDataSourceFactory(
-            BiliMediaDataSourceFactory(
-              client = playbackHttpClient,
-              headers = effectiveInfo.headers,
-            ).create(),
-          ),
-        )
+        val dataSourceFactory: DataSource.Factory =
+          effectiveInfo.hongguoStream?.let { HongguoDataSource.Factory(it) }
+            ?: DefaultDataSource.Factory(
+              context,
+              SabrAwareDataSourceFactory(
+                BiliMediaDataSourceFactory(
+                  client = playbackHttpClient,
+                  headers = effectiveInfo.headers,
+                ).create(),
+              ),
+            )
         // P11-120:字幕专用短超时数据源(不走 SabrAwareDataSourceFactory——字幕恒是 http(s) 的 timedtext URL,
         // 与 sabr:// 无关)。5s/8s 超时是防线②:黑洞时快速失败,不长时间占住 loader。
         val subtitleDataSourceFactory = DefaultDataSource.Factory(

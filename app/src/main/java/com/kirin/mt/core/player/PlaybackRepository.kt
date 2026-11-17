@@ -199,6 +199,7 @@ class PlaybackRepository(
       addAll((0..lines.lastIndex).filter { it != lineIndex })
     }
     var resolvedUrl: String? = null
+    var resolvedStream: HongguoStream? = null
     var resolvedLine = lineIndex
     var resolvedEpisode = request.tvboxEpisodeIndex
     for (candidate in order) {
@@ -206,21 +207,26 @@ class PlaybackRepository(
       if (episodes.isEmpty()) continue
       val episode = episodes.getOrNull(resolvedEpisode)
         ?: episodes.get(resolvedEpisode.coerceIn(0, episodes.lastIndex))
-      // 红果 App 端分集：`hongguo-app:<vid>` → v5 取流 + CENC 解密到本地缓存；
+      // 红果 App 端分集：`hongguo-app:<vid>` → v5 取流，播放器用 HongguoDataSource 边读边解；
       // 其余 URL 仍走 TVBox/网页的懒解析。
-      val resolved = if (episode.url.startsWith(HongguoAppRepository.EpisodePrefix)) {
-        hongguoAppRepository.resolveEpisode(
+      val isHongguoApp = episode.url.startsWith(HongguoAppRepository.EpisodePrefix)
+      val stream = if (isHongguoApp) {
+        hongguoAppRepository.resolveStream(
           episode.url.removePrefix(HongguoAppRepository.EpisodePrefix),
         )
       } else {
-        tvboxRepository.resolveLineUrl(episode.url)
+        null
       }
+      val resolved = stream?.url ?: if (!isHongguoApp) tvboxRepository.resolveLineUrl(episode.url) else null
       if (resolved != null) {
         // m3u8 存活预检(P11-81d):解析成功但 CDN 404 的死链(采集站老资源常态)也顺延下一线路。
-        if (tvboxRepository.probePlayable(resolved)) {
+        // 红果 App 流跳过这层裸 Range 探测：取流接口已成功，CDN 需要红果 UA/Referer，
+        // 裸探测会误判死链；真正的读取由 HongguoDataSource 带着 UA/Referer 做。
+        if (isHongguoApp || tvboxRepository.probePlayable(resolved)) {
           resolvedLine = candidate
           resolvedEpisode = episodes.indexOf(episode)
           resolvedUrl = resolved
+          resolvedStream = stream
           break
         }
         Log.w(PlaybackLogTag, "tvbox line #$candidate episode#$resolvedEpisode m3u8 probe dead: $resolved")
@@ -230,7 +236,8 @@ class PlaybackRepository(
     }
     val streamUrl = resolvedUrl
       ?: throw IllegalStateException("tvbox: 全部线路解析失败或 m3u8 已失效(${lines.size} 条线路)")
-    Log.i(PlaybackLogTag, "tvbox playback resolved line=#$resolvedLine/${lines.lastIndex} episode=#$resolvedEpisode url=$streamUrl")
+    val loggedUrl = if (request.source == SourceHongguo) "<hongguo-stream>" else streamUrl
+    Log.i(PlaybackLogTag, "tvbox playback resolved line=#$resolvedLine/${lines.lastIndex} episode=#$resolvedEpisode url=$loggedUrl")
     val qualities = lines.mapIndexed { index, line ->
       PlaybackQuality(index, line.name.ifBlank { "线路${index + 1}" })
     }
@@ -271,6 +278,7 @@ class PlaybackRepository(
         BiliPlaybackHeaders(sessData = null, biliJct = null, referer = "", origin = "")
       },
       remoteHlsManifestUrl = if (isHongguo) null else streamUrl,
+      hongguoStream = resolvedStream,
     )
   }
 

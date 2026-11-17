@@ -24,7 +24,7 @@
 ```
 移动端搜索
   → HongguoRepository.search
-  → HongguoAppRepository.search（App 搜索，v3 签名，静态设备参数）
+  → HongguoAppRepository.search（App 搜索 + 网页 searchAll 前两页合并，不按 genre 过滤）
   → 卡片（bvid=hongguo:<series_id>，无分集）
 
 点开卡片
@@ -35,18 +35,20 @@
 
 播放某集
   → PlaybackRepository.getTvboxPlaybackInfo
-  → hongguo-app:<vid> → HongguoAppRepository.resolveEpisode
+  → hongguo-app:<vid> → HongguoAppRepository.resolveStream
   → ContentRepository.streamLadderWithCompatibility（v5 签名 + 匿名设备）
-  → RemoteVideo 读流 + MediaCrypto CENC 解密，顺序写缓存 .part → rename .mp4
-  → file:// 本地 MP4 → 现有 ProgressiveMediaSource
+  → HongguoStream(url, key) → PlaybackInfo.hongguoStream
+  → HongguoDataSource（Media3 BaseDataSource）按 Range 读取
+  → RemoteVideo 解析 moov/样本表 + MediaCrypto 边读边解
+  → ProgressiveMediaSource 直接播放
 ```
 
 ## 已知边界
 
 - VIP/付费分集仍然锁定；匿名身份只覆盖免费分集。
-- 第一版是「整集下载解密后播放」，起播等待取决于集大小与网络；后续可把
-  `VideoDataSource` 移植进 Media3，改成流式边读边解。
-- 搜索只取第一页（App 搜索分页游标未接入）；分集表来自详情 `vid_list`。
+- 流式播放首帧只等 moov/样本表 + 首段 Range，通常远小于整集；seek 会发新的 Range。
+- 旧的整集下载缓存（`cacheDir/hongguo`）已不再使用，可手动清理。
+- 搜索合并 App + 网页 `searchAll` 前两页；App 搜索分页游标仍未接入，网页分页按 `hasMore` 取第 2 页。
 - 设备身份存 `SharedPreferences`（`hongguo_app_device`），换进程复用，减少注册频控。
 - 上游接口/签名版本变化时可能整体失效；`HongguoRepository` 会回退网页 3 集。
 - TV 端暂未把红果加入搜索源轮换；本阶段只做移动端。
