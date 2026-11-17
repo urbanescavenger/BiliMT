@@ -588,6 +588,7 @@
     <string name="search_source_tvbox">TVBox</string>
     <string name="search_source_hongguo">Hongguo</string>
     <string name="home_section_youtube_trending">YouTube trending</string>
+    <string name="home_section_hongguo">Hongguo</string>
     <string name="feed_tab_youtube">YouTube follows</string>
     <string name="feed_tab_playlist">Playlists</string>
     <string name="feed_youtube_empty">No YouTube channels configured. Add them in Settings.</string>

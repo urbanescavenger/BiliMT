@@ -572,6 +572,7 @@
     <string name="search_source_tvbox">TVBox</string>
     <string name="search_source_hongguo">Hongguo</string>
     <string name="home_section_youtube_trending">Tendências do YouTube</string>
+    <string name="home_section_hongguo">Hongguo</string>
     <string name="feed_tab_youtube">Seguidores do YouTube</string>
     <string name="feed_tab_playlist">Listas de reprodução</string>
     <string name="feed_youtube_empty">Nenhum canal do YouTube configurado; adicione nas definições</string>

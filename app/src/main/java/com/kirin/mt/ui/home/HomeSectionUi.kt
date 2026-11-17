@@ -10,6 +10,7 @@ fun HomeSection.titleRes(): Int {
     HomeSection.Recommend -> R.string.home_section_recommend
     HomeSection.Popular -> R.string.home_section_popular
     HomeSection.YoutubeTrending -> R.string.home_section_youtube_trending
+    HomeSection.Hongguo -> R.string.home_section_hongguo
     HomeSection.Douga -> R.string.home_section_douga
     HomeSection.Game -> R.string.home_section_game
     HomeSection.Kichiku -> R.string.home_section_kichiku

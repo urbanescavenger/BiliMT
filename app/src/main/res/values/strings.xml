@@ -602,6 +602,7 @@
     <string name="search_source_tvbox">TVBox</string>
     <string name="search_source_hongguo">红果短剧</string>
     <string name="home_section_youtube_trending">YouTube 热门</string>
+    <string name="home_section_hongguo">红果推荐</string>
     <string name="feed_tab_youtube">YouTube 关注</string>
     <string name="feed_tab_playlist">播放列表</string>
     <string name="feed_youtube_empty">尚未配置 YouTube 频道，去设置里添加</string>

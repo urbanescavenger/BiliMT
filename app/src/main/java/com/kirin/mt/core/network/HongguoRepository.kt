@@ -82,7 +82,10 @@ class HongguoRepository(
     }
   }
 
-  /** 搜索结果点开时补全完整分集（App 端详情页 SSR 的 vid_list 是全量）。 */
+  /** 红果推荐 Tab：官方 App 推荐流；失败时 [HongguoAppRepository] 内部回退网页首页。 */
+  suspend fun feed(page: Int = 1): List<VideoSummary> = appRepository?.feed(page).orEmpty()
+
+  /** 搜索结果/推荐卡点开时补全完整分集（App 端详情页 SSR 的 vid_list 是全量）。 */
   suspend fun detail(seriesId: String): VideoSummary? = appRepository?.detail(seriesId)
 
   /** 一部剧 → 一张卡:单线路「红果短剧」,分集=播放页 URL(播放时懒解析 main_url 直链)。 */

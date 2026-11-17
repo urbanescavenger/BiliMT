@@ -55,6 +55,7 @@ import com.kirin.mt.core.auth.AuthRepository
 import com.kirin.mt.core.cache.AppCacheManager
 import com.kirin.mt.core.cache.formatCacheSize
 import com.kirin.mt.core.i18n.ChineseTextConverters
+import com.kirin.mt.core.network.HongguoAppRepository
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.network.mergeByPubdate
 import com.kirin.mt.core.player.CdnSelector
@@ -1309,8 +1310,23 @@ fun BiliTvApp(
                     }.isSuccess
                   },
                   onVideoSelected = { video ->
-                    playQueue = emptyList()
-                    playbackRequest = video.toPlaybackRequest()
+                    if (video.source == SourceHongguo && video.tvboxLines.isEmpty()) {
+                      // 红果推荐卡只带元数据；点开时补详情拿全量分集。
+                      coroutineScope.launch {
+                        val resolved = videoRepository.hongguoDetail(
+                          video.bvid.removePrefix(HongguoAppRepository.SeriesPrefix),
+                        )
+                        if (resolved != null) {
+                          playQueue = emptyList()
+                          playbackRequest = resolved.toPlaybackRequest()
+                        } else {
+                          android.util.Log.w("BiliMT:Playback", "hongguo detail failed bvid=${video.bvid}")
+                        }
+                      }
+                    } else {
+                      playQueue = emptyList()
+                      playbackRequest = video.toPlaybackRequest()
+                    }
                   },
                   onOwnerSelected = { video ->
                     if (video.source == SourceYoutube && video.channelId.isNotBlank()) {

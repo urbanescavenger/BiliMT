@@ -152,6 +152,10 @@ class VideoRepository(
         youtubeChannelStore.updateAvatar(channel.channelId, channel.avatar)
       }).withLocalProgress()
     }
+    if (section == HomeSection.Hongguo) {
+      // 红果推荐：官方 App 推荐流；卡片只带元数据，点击时再补完整分集。
+      return hongguoRepository.feed(page).withLocalProgress()
+    }
     return homeVideoRepository.getHomeSectionVideos(
       section = section,
       page = page,

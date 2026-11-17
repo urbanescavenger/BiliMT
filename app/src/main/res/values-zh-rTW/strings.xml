@@ -264,6 +264,7 @@
     <string name="history_failed_with_message">歷史紀錄載入失敗。%1$s</string>
     <string name="history_signed_out">請先登入，登入後可查看觀看歷史。</string>
     <string name="home_section_recommend">推薦</string>
+    <string name="home_section_hongguo">紅果推薦</string>
     <string name="home_section_popular">熱門</string>
     <string name="home_section_douga">動畫</string>
     <string name="home_section_game">遊戲</string>

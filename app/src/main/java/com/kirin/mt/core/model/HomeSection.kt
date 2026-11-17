@@ -13,6 +13,8 @@ enum class HomeSection(
   Recommend("recommend"),
   Popular("popular"),
   YoutubeTrending("youtube_trending"),
+  /** 红果 App 推荐流；无 B 站分区 tid。 */
+  Hongguo("hongguo"),
   Douga("douga", 1005),
   Game("game", 1008),
   Kichiku("kichiku", 1007),

@@ -509,6 +509,13 @@ constructor(
         return CatalogPage(items, items.isNotEmpty() && page < minOf(lastPage, 100))
     }
 
+    /**
+     * 官方 App 首页推荐流（匿名设备 + v5，推荐页不需要登录）。
+     * 调用方保持同一个实例以延续翻页游标；刷新时重新创建。
+     */
+    fun createRecommendationFeed(): RecommendationFeed =
+        RecommendationFeed(http, null, RecommendationCursor(), null, playbackSession)
+
     fun filteredDiscovery(
         selection: DiscoverySelection,
         cursor: DiscoveryCursor? = null,

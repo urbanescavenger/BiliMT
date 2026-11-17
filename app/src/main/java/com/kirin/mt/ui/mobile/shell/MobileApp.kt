@@ -242,6 +242,9 @@ fun BiliMobileApp(
   // Android 13+ 需运行时请求 POST_NOTIFICATIONS,否则后台播放通知(及控件)不显示。
   val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
   LaunchedEffect(Unit) {
+    // 与 TV AppShell 同源：老安装升级后一次性启用新增分区（红果推荐），并保持 enabled-first 排序。
+    appSettingsStore.ensureHomeSectionsMigration()
+    appSettingsStore.ensureEnabledSectionsFirst()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
       androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
         PackageManager.PERMISSION_GRANTED
@@ -318,8 +321,24 @@ fun BiliMobileApp(
             .ifEmpty { listOf(HomeSection.Recommend) },
           refreshKey = recommendRefreshKey,
           onVideoSelected = { video ->
-            playQueue = emptyList()
-            playbackRequest = video.toPlaybackRequest()
+            if (video.source == SourceHongguo && video.tvboxLines.isEmpty()) {
+              // 红果推荐卡只带元数据；点开时补详情拿全量分集。
+              Toast.makeText(context, "正在解析红果剧集…", Toast.LENGTH_SHORT).show()
+              scope.launch {
+                val resolved = videoRepository.hongguoDetail(
+                  video.bvid.removePrefix(HongguoAppRepository.SeriesPrefix),
+                )
+                if (resolved != null) {
+                  playQueue = emptyList()
+                  playbackRequest = resolved.toPlaybackRequest()
+                } else {
+                  Toast.makeText(context, "红果剧集解析失败，请稍后重试", Toast.LENGTH_SHORT).show()
+                }
+              }
+            } else {
+              playQueue = emptyList()
+              playbackRequest = video.toPlaybackRequest()
+            }
           },
           onOpenOwner = { video -> openOwner(video) },
           onLongPress = onLongPress,

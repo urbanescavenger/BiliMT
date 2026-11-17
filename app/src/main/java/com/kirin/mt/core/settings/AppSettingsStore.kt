@@ -411,6 +411,18 @@ class AppSettingsStore(private val context: Context) {
         }
         preferences[Keys.HomeSectionsYoutubeMigrationV1] = true
       }
+      // 一次性启用红果推荐 Tab(仅对已存在安装;全新安装 DefaultOrder 已含)。
+      if (preferences[Keys.HomeSectionsHongguoMigrationV1] != true) {
+        val current = preferences[Keys.EnabledHomeSections]
+          ?.mapNotNull(HomeSection::fromKey)
+          ?.toMutableSet()
+          ?: HomeSection.DefaultOrder.toMutableSet()
+        if (HomeSection.Hongguo !in current) {
+          current.add(HomeSection.Hongguo)
+          preferences[Keys.EnabledHomeSections] = current.map { it.key }.toSet()
+        }
+        preferences[Keys.HomeSectionsHongguoMigrationV1] = true
+      }
     }
   }
 
@@ -490,6 +502,7 @@ class AppSettingsStore(private val context: Context) {
     val HomeSectionsOrder = stringPreferencesKey("home_sections_order")
     val HomeSectionsUgcMigrationV1 = booleanPreferencesKey("home_sections_ugc_migration_v1")
     val HomeSectionsYoutubeMigrationV1 = booleanPreferencesKey("home_sections_youtube_migration_v1")
+    val HomeSectionsHongguoMigrationV1 = booleanPreferencesKey("home_sections_hongguo_migration_v1")
     val IptvSourceUrl = stringPreferencesKey("iptv_source_url")
     val IptvSourceUsername = stringPreferencesKey("iptv_source_username")
     val IptvSourcePassword = stringPreferencesKey("iptv_source_password")

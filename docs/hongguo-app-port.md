@@ -43,6 +43,16 @@
   → ProgressiveMediaSource 直接播放
 ```
 
+## 推荐 Tab
+
+- 新增 `HomeSection.Hongguo`（独立分区，类似 YouTube 热门），TV 与移动端共用。
+- 数据：`HongguoAppRepository.feed(page)` → `ContentRepository.createRecommendationFeed()`
+  官方 App 推荐流（匿名设备，无需登录）；空页/异常回退 `ContentRepository.home(page)` 网页首页推荐。
+- 卡片只带剧集元数据；TV `AppShell` / 移动 `MobileApp` 点击时走 `hongguoDetail` 补全
+  `vid_list` 再进播放器。
+- `AppSettingsStore` 增加 `HomeSectionsHongguoMigrationV1`：老安装升级后自动启用一次，
+  之后用户可在设置里关闭；新装用户由 `DefaultOrder` 默认包含。
+
 ## 已知边界
 
 - VIP/付费分集仍然锁定；匿名身份只覆盖免费分集。
