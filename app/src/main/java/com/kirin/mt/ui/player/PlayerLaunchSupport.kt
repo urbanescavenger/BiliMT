@@ -7,6 +7,7 @@ import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
+import com.kirin.mt.core.network.HongguoAppRepository
 import com.kirin.mt.core.network.IptvChannel
 import com.kirin.mt.core.player.PlaybackRequest
 
@@ -49,6 +50,7 @@ internal fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false)
       coverUrl = pic,
       source = SourceHongguo,
       tvboxLines = tvboxLines,
+      hongguoSeriesId = this.bvid.removePrefix(HongguoAppRepository.SeriesPrefix),
     )
   }
   // 直播卡片:走直播播放(独立 LivePlayerScreen),不带点播字段。

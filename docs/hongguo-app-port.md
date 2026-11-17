@@ -54,6 +54,16 @@
 - `AppSettingsStore` 增加 `HomeSectionsHongguoMigrationV1`：老安装升级后自动启用一次，
   之后用户可在设置里关闭；新装用户由 `DefaultOrder` 默认包含。
 
+## 弹幕与评论
+
+- **弹幕**：`TimedComments.read(series, episode, start, duration, cursor)` 按播放时间窗返回；播放器
+  预取前 5 分钟（最多 20 个窗口），映射为 `DanmakuEntry`，复用现有 DanmakuRenderEngine。
+- **评论**：`AppCommentPages.read(series, episode, cursor)` 游标分页；首屏失败回退
+  `PublicComments`（公开网页评论/剧评）。复用 TV `CommentScreen` / 移动 `MobileCommentList`
+  的评论行。
+- **入口**：TV 红果控制行新增「弹幕开关」「评论」；移动播放器评论区自动切红果列表。
+- **边界**：只读，不发弹幕/评论；弹幕只预取前 5 分钟，长剧后续时间窗未加载。
+
 ## 已知边界
 
 - VIP/付费分集仍然锁定；匿名身份只覆盖免费分集。

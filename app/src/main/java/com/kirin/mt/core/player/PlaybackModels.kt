@@ -44,6 +44,8 @@ data class PlaybackRequest(
   val tvboxLines: List<TvboxLine> = emptyList(),
   /** TVBox 当前选集索引（当前线路内；选集面板/自动连播切集用）。 */
   val tvboxEpisodeIndex: Int = 0,
+  /** 红果剧集 series_id（仅 [SourceHongguo] 填充）；用于弹幕/评论。 */
+  val hongguoSeriesId: String = "",
   /** YouTube 频道 id（UC 开头）。仅 [SourceYoutube] 请求填充，用于播放历史进频道主页；B 站为空串。 */
   val channelId: String = "",
   /**
@@ -70,6 +72,13 @@ data class PlaybackRequest(
   /** 这是 TVBox 式点播请求(影视库采集站 / 红果短剧 P11-83):MacCMS 直链/懒解析 m3u8 或红果播放页懒解析 MP4,线路=清晰度档,线路内可切集。 */
   val isTvbox: Boolean
     get() = source == SourceTvbox || source == SourceHongguo
+
+  /** 当前选集对应的红果 vid（仅 [SourceHongguo]；从唯一线路 + 选集索引推导）。 */
+  fun currentHongguoEpisodeId(): String {
+    val url = tvboxLines.firstOrNull()?.episodes?.getOrNull(tvboxEpisodeIndex)?.url.orEmpty()
+    // 网页回退分集是 hongguoduanju.com 播放页 URL，不是 App vid；不能当弹幕/评论 id。
+    return if (url.startsWith("hongguo-app:")) url.removePrefix("hongguo-app:") else ""
+  }
 
   /** TVBox 当前线路(线路索引=preferredQualityId);非 TVBox 或无线路表为 null。 */
   val tvboxCurrentLine: TvboxLine?

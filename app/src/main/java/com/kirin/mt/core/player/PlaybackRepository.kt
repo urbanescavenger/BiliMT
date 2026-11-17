@@ -698,6 +698,15 @@ class PlaybackRepository(
     return danmakuRepository.getDanmaku(cid)
   }
 
+  /** 红果定时弹幕（匿名只读）；按播放时间窗预取前 5 分钟。 */
+  suspend fun getHongguoDanmaku(
+    seriesId: String,
+    episodeId: String,
+    durationMs: Long = 0L,
+  ): List<DanmakuEntry> {
+    return hongguoAppRepository.timedDanmaku(seriesId, episodeId, durationMs)
+  }
+
   /**
    * 发送弹幕(web /x/v2/dm/post)。镜像 likeVideoArchive 的 POST+csrf+buvid 风控范式,
    * 额外对 URL query 做 WBI 签名(w_rid/wts 只签 query,body 不参与签名)。

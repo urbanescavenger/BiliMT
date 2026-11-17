@@ -54,6 +54,7 @@ import coil.compose.AsyncImage
 import com.kirin.mt.R
 import com.kirin.mt.core.model.Comment
 import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.network.VideoRepository
 import com.kirin.mt.core.youtube.YoutubeComment
@@ -80,6 +81,8 @@ internal class CommentUiState {
   // 1=按热度, 0=按时间(bilibili reply sort)
   var sort by mutableIntStateOf(1)
   var currentPage by mutableIntStateOf(0)
+  /** 红果评论游标（B 站/YouTube 不用）。 */
+  var hongguoCursor by mutableStateOf("")
 }
 
 internal data class CommentRequest(
@@ -89,6 +92,9 @@ internal data class CommentRequest(
   val source: String = SourceBili,
   /** YouTube 视频 id（仅 [SourceYoutube] 填充，bvid 字段承载）。 */
   val videoId: String = "",
+  /** 红果剧集/分集 id（仅 [SourceHongguo] 填充）。 */
+  val hongguoSeriesId: String = "",
+  val hongguoEpisodeId: String = "",
 )
 
 /**
@@ -103,13 +109,18 @@ internal fun CommentScreen(
   onDismiss: () -> Unit,
 ) {
   val isYoutube = request.source == SourceYoutube
+  val isHongguo = request.source == SourceHongguo
   val state = remember { CommentUiState() }
   val youtubeState = remember { YoutubeCommentUiState() }
   val coroutineScope = rememberCoroutineScope()
   val sortFocusRequester = remember { FocusRequester() }
 
-  LaunchedEffect(request.aid, state.sort) {
-    if (!isYoutube) loadCommentsFirstPage(videoRepository, state, request.aid)
+  LaunchedEffect(request.aid, state.sort, request.hongguoSeriesId, request.hongguoEpisodeId) {
+    when {
+      isYoutube -> Unit
+      isHongguo -> loadHongguoCommentsFirstPage(videoRepository, state, request)
+      else -> loadCommentsFirstPage(videoRepository, state, request.aid)
+    }
   }
 
   LaunchedEffect(request.videoId) {
@@ -118,7 +129,7 @@ internal fun CommentScreen(
 
   LaunchedEffect(state.sort) {
     // 切换排序或首次打开后,焦点落到排序行选中项(B 站)。
-    if (!isYoutube) runCatching { sortFocusRequester.requestFocus() }
+    if (!isYoutube && !isHongguo) runCatching { sortFocusRequester.requestFocus() }
   }
 
   Dialog(
@@ -136,6 +147,9 @@ internal fun CommentScreen(
         .background(BiliColors.OverlayScrim.copy(alpha = 0.9f)),
     ) {
       if (isYoutube) {
+        YoutubeCommentHeader(title = request.title)
+      } else if (isHongguo) {
+        // 红果没有热门/最新排序，复用无排序的标题头。
         YoutubeCommentHeader(title = request.title)
       } else {
         CommentHeader(
@@ -161,6 +175,25 @@ internal fun CommentScreen(
             loadYoutubeCommentNextPage(videoRepository, coroutineScope, youtubeState, request.videoId)
           },
         )
+        isHongguo -> when {
+          state.loading -> FeedStatusScreen(message = stringResource(R.string.comment_loading))
+          state.error.isNotBlank() -> FeedStatusScreen(
+            message = stringResource(R.string.comment_failed_with_message, state.error),
+            actionLabel = stringResource(R.string.action_retry),
+            onAction = {
+              coroutineScope.launch {
+                loadHongguoCommentsFirstPage(videoRepository, state, request)
+              }
+            },
+          )
+          state.comments.isEmpty() -> FeedStatusScreen(message = stringResource(R.string.comment_empty))
+          else -> CommentList(
+            state = state,
+            onLoadMore = {
+              loadHongguoCommentsNextPage(videoRepository, coroutineScope, state, request)
+            },
+          )
+        }
         state.loading -> FeedStatusScreen(message = stringResource(R.string.comment_loading))
         state.error.isNotBlank() -> FeedStatusScreen(
           message = stringResource(R.string.comment_failed_with_message, state.error),
@@ -482,6 +515,68 @@ private fun loadCommentsNextPage(
       val known = state.comments.mapTo(mutableSetOf()) { it.id }
       val fresh = page.comments.filter { known.add(it.id) }
       state.comments = state.comments + fresh
+      state.endReached = !page.hasMore || fresh.isEmpty()
+    } catch (error: CancellationException) {
+      throw error
+    } catch (error: Exception) {
+      state.loadMoreError = error.message.orEmpty()
+    } finally {
+      state.loadingMore = false
+    }
+  }
+}
+
+// ---- 红果评论（游标分页，无排序） ----
+
+private suspend fun loadHongguoCommentsFirstPage(
+  videoRepository: VideoRepository,
+  state: CommentUiState,
+  request: CommentRequest,
+) {
+  state.loading = true
+  state.error = ""
+  state.loadMoreError = ""
+  state.endReached = false
+  state.hongguoCursor = ""
+  state.comments = emptyList()
+  try {
+    val page = videoRepository.getHongguoComments(
+      seriesId = request.hongguoSeriesId,
+      episodeId = request.hongguoEpisodeId,
+      cursor = "",
+    )
+    state.comments = page.comments
+    state.hongguoCursor = page.nextCursor
+    state.endReached = !page.hasMore
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    state.error = error.message.orEmpty()
+  } finally {
+    state.loading = false
+  }
+}
+
+private fun loadHongguoCommentsNextPage(
+  videoRepository: VideoRepository,
+  coroutineScope: CoroutineScope,
+  state: CommentUiState,
+  request: CommentRequest,
+) {
+  if (state.loadingMore || state.endReached || state.loading) return
+  state.loadingMore = true
+  state.loadMoreError = ""
+  coroutineScope.launch {
+    try {
+      val page = videoRepository.getHongguoComments(
+        seriesId = request.hongguoSeriesId,
+        episodeId = request.hongguoEpisodeId,
+        cursor = state.hongguoCursor,
+      )
+      val known = state.comments.mapTo(mutableSetOf()) { it.id }
+      val fresh = page.comments.filter { known.add(it.id) }
+      state.comments = state.comments + fresh
+      state.hongguoCursor = page.nextCursor
       state.endReached = !page.hasMore || fresh.isEmpty()
     } catch (error: CancellationException) {
       throw error

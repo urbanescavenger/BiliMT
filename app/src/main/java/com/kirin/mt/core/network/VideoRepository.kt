@@ -415,6 +415,15 @@ class VideoRepository(
     return hongguoRepository.detail(seriesId)
   }
 
+  /** 红果分集评论（游标分页）。 */
+  suspend fun getHongguoComments(
+    seriesId: String,
+    episodeId: String,
+    cursor: String = "",
+  ): HongguoCommentPage {
+    return hongguoRepository.comments(seriesId, episodeId, cursor)
+  }
+
   suspend fun youtubeSubscriptionsFeed(
     channels: List<YoutubeChannel>,
     onChannelAvatarResolved: suspend (YoutubeChannel) -> Unit = {},

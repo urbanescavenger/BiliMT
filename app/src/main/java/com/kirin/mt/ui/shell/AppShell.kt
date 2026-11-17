@@ -1699,6 +1699,8 @@ fun BiliTvApp(
                   title = commentPlayback.title,
                   source = commentPlayback.source,
                   videoId = commentPlayback.bvid,
+                  hongguoSeriesId = commentPlayback.hongguoSeriesId,
+                  hongguoEpisodeId = commentPlayback.currentHongguoEpisodeId(),
                 )
               },
               spaceReturnKey = spaceFocusRestoreRequestKey,

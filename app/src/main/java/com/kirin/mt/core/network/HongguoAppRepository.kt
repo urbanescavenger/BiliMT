@@ -1,23 +1,38 @@
 package com.kirin.mt.core.network
 
 import android.content.Context
+import android.graphics.Color
 import android.util.Log
+import com.hongguotv.core.AppCommentPages
 import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.MemoryCookies
 import com.hongguotv.core.PlayerDeviceStore
+import com.hongguotv.core.PublicComments
 import com.hongguotv.core.RankBoard
 import com.hongguotv.core.RecommendationFeed
 import com.hongguotv.core.Series
+import com.hongguotv.core.TimedComments
+import com.kirin.mt.core.model.Comment
 import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.model.TvboxEpisode
 import com.kirin.mt.core.model.TvboxLine
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.player.DanmakuEntry
+import com.kirin.mt.core.player.DanmakuMode
 import com.kirin.mt.core.player.HongguoStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+
+/** 红果评论一页（游标分页；[nextCursor] 为空表示到底）。 */
+data class HongguoCommentPage(
+  val comments: List<Comment>,
+  val hasMore: Boolean,
+  val nextCursor: String,
+  val total: Int,
+)
 
 /**
  * 红果 App 端数据源（GPL-3.0-only `:hongguo-core` 的应用侧适配）。
@@ -45,6 +60,10 @@ class HongguoAppRepository(
   private val content = ContentRepository(http)
   /** 官方推荐流游标跨页复用；page<=1 或失败时重建。 */
   private var recommendationFeed: RecommendationFeed? = null
+  /** 定时弹幕按播放时间窗读取；内部有 60s 窗口缓存。 */
+  private val timedCommentReader = TimedComments()
+  private val appComments = AppCommentPages()
+  private val publicComments = PublicComments(http)
 
   init {
     // 匿名设备身份持久化：换进程后不重复注册，减少上游注册频控。
@@ -131,6 +150,118 @@ class HongguoAppRepository(
       val detail = content.detail(seriesId)
       toSummary(detail.series, detail.episodes)
     }.onFailure { Log.w(Tag, "详情失败 series=$seriesId: ${it.message}") }.getOrNull()
+  }
+
+  /**
+   * 红果分集评论（匿名、只读）。主源官方 App 评论分页；失败时首屏回退网页公开评论/剧评。
+   * 游标分页：首屏 cursor 传空串，翻页用上一页的 nextCursor。
+   */
+  suspend fun comments(
+    seriesId: String,
+    episodeId: String,
+    cursor: String = "",
+  ): HongguoCommentPage = withContext(Dispatchers.IO) {
+    if (!seriesId.matches(Regex("[0-9]{6,30}")) || !episodeId.matches(Regex("[0-9]{6,30}"))) {
+      return@withContext HongguoCommentPage(emptyList(), hasMore = false, nextCursor = "", total = 0)
+    }
+    val page = runCatching {
+      parseAppComments(appComments.read(seriesId, episodeId, cursor))
+    }.getOrElse { error ->
+      Log.w(Tag, "评论失败 series=$seriesId vid=$episodeId cursor=${cursor.length}: ${error.message}")
+      if (cursor.isBlank()) {
+        runCatching { parsePublicComments(publicComments.read(seriesId, episodeId)) }
+          .onFailure { Log.w(Tag, "公开评论回退失败 series=$seriesId vid=$episodeId: ${it.message}") }
+          .getOrNull()
+      } else {
+        null
+      }
+    } ?: HongguoCommentPage(emptyList(), hasMore = false, nextCursor = "", total = 0)
+    Log.i(Tag, "评论 series=$seriesId vid=$episodeId count=${page.comments.size} more=${page.hasMore}")
+    page
+  }
+
+  private fun parseAppComments(result: org.json.JSONObject): HongguoCommentPage {
+    val items = result.optJSONArray("items") ?: org.json.JSONArray()
+    return HongguoCommentPage(
+      comments = mapComments(items),
+      hasMore = result.optBoolean("hasMore", false),
+      nextCursor = result.optString("nextCursor"),
+      total = result.optLong("total", items.length().toLong()).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(),
+    )
+  }
+
+  private fun parsePublicComments(result: org.json.JSONObject): HongguoCommentPage {
+    val block = result.optJSONObject("comments") ?: org.json.JSONObject()
+    val items = block.optJSONArray("items") ?: org.json.JSONArray()
+    return HongguoCommentPage(
+      comments = mapComments(items),
+      hasMore = false,
+      nextCursor = "",
+      total = block.optLong("total", items.length().toLong()).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(),
+    )
+  }
+
+  private fun mapComments(items: org.json.JSONArray): List<Comment> =
+    (0 until items.length()).mapNotNull { index ->
+      val row = items.optJSONObject(index) ?: return@mapNotNull null
+      val id = row.optString("id")
+      val content = row.optString("content").trim()
+      if (id.isBlank() || content.isBlank()) return@mapNotNull null
+      Comment(
+        id = id.toLongOrNull() ?: (id.hashCode().toLong() and 0xffffffffL),
+        uname = row.optString("author").ifBlank { "红果用户" },
+        avatar = row.optString("avatar"),
+        mid = 0L,
+        content = content,
+        likeCount = row.optLong("likes", 0L).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(),
+        replyCount = 0,
+        ctime = row.optLong("created", 0L).coerceAtLeast(0L),
+      )
+    }.distinctBy { it.id }
+
+  /**
+   * 红果定时弹幕（匿名、只读）。接口按播放时间窗返回，单次只给一段；
+   * 短剧预取前 5 分钟（最多 20 个窗口），避免一次拉几十段。
+   */
+  suspend fun timedDanmaku(
+    seriesId: String,
+    episodeId: String,
+    durationMs: Long = 0L,
+  ): List<DanmakuEntry> = withContext(Dispatchers.IO) {
+    if (!seriesId.matches(Regex("[0-9]{6,30}")) || !episodeId.matches(Regex("[0-9]{6,30}"))) {
+      return@withContext emptyList()
+    }
+    val duration = durationMs.coerceAtLeast(300_000L).coerceAtMost(600_000L)
+    runCatching {
+      val out = mutableListOf<DanmakuEntry>()
+      var start = 0L
+      var cursor = ""
+      var windows = 0
+      while (start < duration && windows++ < 20) {
+        val page = timedCommentReader.read(seriesId, episodeId, start, duration, cursor)
+        val rows = page.optJSONArray("items") ?: break
+        for (i in 0 until rows.length()) {
+          val row = rows.optJSONObject(i) ?: continue
+          val text = row.optString("text").trim()
+          val time = row.optLong("timeMS", -1L)
+          if (text.isNotBlank() && time >= 0L) {
+            out += DanmakuEntry(
+              showAtMs = time,
+              text = text,
+              mode = DanmakuMode.Scroll,
+              color = Color.WHITE,
+            )
+          }
+        }
+        val next = page.optLong("nextMS", start)
+        cursor = page.optString("nextCursor")
+        if (next <= start || next >= duration) break
+        start = next
+      }
+      out.distinctBy { it.showAtMs to it.text }.sortedBy(DanmakuEntry::showAtMs)
+        .also { Log.i(Tag, "弹幕 series=$seriesId vid=$episodeId count=${it.size} windows=$windows") }
+    }.onFailure { Log.w(Tag, "弹幕失败 series=$seriesId vid=$episodeId: ${it.message}") }
+      .getOrDefault(emptyList())
   }
 
   /**

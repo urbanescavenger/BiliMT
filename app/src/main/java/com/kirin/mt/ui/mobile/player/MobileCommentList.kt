@@ -75,6 +75,8 @@ internal class MobileCommentListState {
   // 1=按热度, 0=按时间(bilibili reply sort)
   var sort by mutableIntStateOf(1)
   var currentPage by mutableIntStateOf(0)
+  /** 红果评论游标（B 站不用）。 */
+  var hongguoCursor by mutableStateOf("")
 }
 
 /** 白底评论列表的浅色 token(全局内容页主题统一属 P3,这里自带浅色,不依赖 MaterialTheme)。 */
@@ -114,6 +116,164 @@ internal fun MobileCommentList(
         modifier = Modifier.align(Alignment.Center),
       )
       else -> CommentListContent(aid = aid, videoRepository = videoRepository, onTotalCountChange = onTotalCountChange)
+    }
+  }
+}
+
+/**
+ * 红果评论列表：游标分页、无热门/最新排序，复用 [CommentItem] / [CommentListFooter]。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun MobileHongguoCommentList(
+  seriesId: String,
+  episodeId: String,
+  videoRepository: VideoRepository,
+  modifier: Modifier = Modifier,
+  onTotalCountChange: ((Int) -> Unit)? = null,
+) {
+  Box(
+    modifier = modifier
+      .fillMaxWidth()
+      .background(Color.White),
+  ) {
+    if (seriesId.isBlank() || episodeId.isBlank()) {
+      Text(
+        text = stringResource(R.string.comment_empty),
+        color = CommentColor.TextSecondary,
+        modifier = Modifier.align(Alignment.Center),
+      )
+    } else {
+      HongguoCommentListContent(
+        seriesId = seriesId,
+        episodeId = episodeId,
+        videoRepository = videoRepository,
+        onTotalCountChange = onTotalCountChange,
+      )
+    }
+  }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HongguoCommentListContent(
+  seriesId: String,
+  episodeId: String,
+  videoRepository: VideoRepository,
+  onTotalCountChange: ((Int) -> Unit)? = null,
+) {
+  val state = remember { MobileCommentListState() }
+  val coroutineScope = rememberCoroutineScope()
+  val listState = rememberLazyListState()
+
+  LaunchedEffect(state.totalCount) {
+    onTotalCountChange?.invoke(state.totalCount)
+  }
+  LaunchedEffect(seriesId, episodeId) {
+    loadHongguoCommentFirstPage(videoRepository, state, seriesId, episodeId)
+  }
+  val nearEnd by remember {
+    derivedStateOf {
+      val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+      last >= 0 && last >= state.comments.size - 3
+    }
+  }
+  LaunchedEffect(nearEnd) {
+    if (nearEnd) {
+      loadHongguoCommentNextPage(videoRepository, coroutineScope, state, seriesId, episodeId)
+    }
+  }
+
+  when {
+    state.loading && state.comments.isEmpty() -> Box(
+      modifier = Modifier.fillMaxSize(),
+      contentAlignment = Alignment.Center,
+    ) {
+      CircularProgressIndicator(color = BiliColors.BiliPink)
+    }
+    state.error.isNotBlank() && state.comments.isEmpty() -> Box(
+      modifier = Modifier.fillMaxSize().padding(24.dp),
+      contentAlignment = Alignment.Center,
+    ) {
+      Text(
+        text = stringResource(R.string.comment_failed_with_message, state.error),
+        color = CommentColor.TextSecondary,
+      )
+    }
+    state.comments.isEmpty() -> Box(
+      modifier = Modifier.fillMaxSize(),
+      contentAlignment = Alignment.Center,
+    ) {
+      Text(
+        text = stringResource(R.string.comment_empty),
+        color = CommentColor.TextSecondary,
+      )
+    }
+    else -> LazyColumn(
+      state = listState,
+      modifier = Modifier.fillMaxSize(),
+      contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+      items(state.comments, key = { it.id }) { comment ->
+        CommentItem(comment)
+      }
+      item { CommentListFooter(state = state) }
+    }
+  }
+}
+
+internal suspend fun loadHongguoCommentFirstPage(
+  videoRepository: VideoRepository,
+  state: MobileCommentListState,
+  seriesId: String,
+  episodeId: String,
+) {
+  state.loading = true
+  state.error = ""
+  state.loadMoreError = ""
+  state.endReached = false
+  state.hongguoCursor = ""
+  state.comments = emptyList()
+  try {
+    val page = videoRepository.getHongguoComments(seriesId, episodeId, "")
+    state.comments = page.comments
+    state.totalCount = page.total
+    state.hongguoCursor = page.nextCursor
+    state.endReached = !page.hasMore
+  } catch (error: CancellationException) {
+    throw error
+  } catch (error: Exception) {
+    state.error = error.message.orEmpty()
+  } finally {
+    state.loading = false
+  }
+}
+
+internal fun loadHongguoCommentNextPage(
+  videoRepository: VideoRepository,
+  coroutineScope: CoroutineScope,
+  state: MobileCommentListState,
+  seriesId: String,
+  episodeId: String,
+) {
+  if (state.loadingMore || state.endReached || state.loading) return
+  state.loadingMore = true
+  state.loadMoreError = ""
+  coroutineScope.launch {
+    try {
+      val page = videoRepository.getHongguoComments(seriesId, episodeId, state.hongguoCursor)
+      val known = state.comments.mapTo(mutableSetOf()) { it.id }
+      val fresh = page.comments.filter { known.add(it.id) }
+      state.comments = state.comments + fresh
+      state.hongguoCursor = page.nextCursor
+      state.endReached = !page.hasMore || fresh.isEmpty()
+    } catch (error: CancellationException) {
+      throw error
+    } catch (error: Exception) {
+      state.loadMoreError = error.message.orEmpty()
+    } finally {
+      state.loadingMore = false
     }
   }
 }

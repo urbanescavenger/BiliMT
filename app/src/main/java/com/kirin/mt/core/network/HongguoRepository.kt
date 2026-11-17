@@ -85,6 +85,15 @@ class HongguoRepository(
   /** 红果推荐 Tab：官方 App 推荐流；失败时 [HongguoAppRepository] 内部回退网页首页。 */
   suspend fun feed(page: Int = 1): List<VideoSummary> = appRepository?.feed(page).orEmpty()
 
+  /** 红果分集评论：官方 App 评论分页；App 层失败时首屏回退网页公开评论。 */
+  suspend fun comments(
+    seriesId: String,
+    episodeId: String,
+    cursor: String = "",
+  ): HongguoCommentPage =
+    appRepository?.comments(seriesId, episodeId, cursor)
+      ?: HongguoCommentPage(emptyList(), hasMore = false, nextCursor = "", total = 0)
+
   /** 搜索结果/推荐卡点开时补全完整分集（App 端详情页 SSR 的 vid_list 是全量）。 */
   suspend fun detail(seriesId: String): VideoSummary? = appRepository?.detail(seriesId)
 

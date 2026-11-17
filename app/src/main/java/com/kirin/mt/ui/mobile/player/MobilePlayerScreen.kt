@@ -131,6 +131,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kirin.mt.R
 import com.kirin.mt.ui.theme.BiliColors
+import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
@@ -876,6 +877,21 @@ fun MobilePlayerScreen(
         playerState = MobilePlayerState.Failed(context.getString(R.string.player_error_missing_cid))
         return
       }
+      // 红果 cid 恒 0，弹幕改走 series + 当前选集 vid；B 站仍走 cid。
+      suspend fun loadDanmakuFor(request: PlaybackRequest, cid: Long) {
+        if (!danmakuSettings.enabled) return
+        if (request.source == SourceHongguo) {
+          val series = request.hongguoSeriesId
+          val episode = request.currentHongguoEpisodeId()
+          if (series.isNotBlank() && episode.isNotBlank()) {
+            danmakuEntries = runCatching {
+              playbackRepository.getHongguoDanmaku(series, episode)
+            }.getOrDefault(emptyList())
+          }
+        } else if (cid > 0L) {
+          danmakuEntries = runCatching { playbackRepository.getDanmaku(cid) }.getOrDefault(emptyList())
+        }
+      }
       val resolvedRequest = request.withResolvedMetadata(metadata = videoMetadata, cid = cid)
       // 用解析后的真实 cid 回写 activeRequest:下载/相关/分享等复用 activeRequest 的地方都要带 cid,
       // 否则 activeRequest 停留在原始 request(cid=0),下载对话框把它带进 playurl 会 -400 请求错误。
@@ -951,10 +967,8 @@ fun MobilePlayerScreen(
             )
           }
         }
-        // 弹幕(与在线路径一致)。
-        if (danmakuSettings.enabled && cid > 0L) {
-          danmakuEntries = runCatching { playbackRepository.getDanmaku(cid) }.getOrDefault(emptyList())
-        }
+        // 弹幕(与在线路径一致；红果走 series/vid)。
+        loadDanmakuFor(request, cid)
         return
       }
       usingCachedPlayback = false
@@ -1173,10 +1187,8 @@ fun MobilePlayerScreen(
         }
       }
 
-      // 弹幕
-      if (danmakuSettings.enabled && cid > 0L) {
-        danmakuEntries = runCatching { playbackRepository.getDanmaku(cid) }.getOrDefault(emptyList())
-      }
+      // 弹幕（红果走 series/vid）
+      loadDanmakuFor(request, cid)
     } catch (error: CancellationException) {
       throw error
     } catch (error: Exception) {
@@ -3077,7 +3089,9 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
   val context = LocalContext.current
   val tabPagerState = rememberPagerState(pageCount = { 2 })
   var commentTotalCount by remember { mutableIntStateOf(0) }
-  LaunchedEffect(metadata?.aid) { commentTotalCount = 0 }
+  LaunchedEffect(metadata?.aid, request.hongguoSeriesId, request.currentHongguoEpisodeId()) {
+    commentTotalCount = 0
+  }
   Column(
     modifier = modifier
       .weight(1f)
@@ -3131,14 +3145,20 @@ private fun ColumnScope.MobilePlayerIntroCommentTabs(
             modifier = Modifier.fillMaxSize(),
           )
         }
-        1 -> if (isYoutube) {
-          MobileYoutubeCommentList(
+        1 -> when {
+          isYoutube -> MobileYoutubeCommentList(
             videoId = request.bvid,
             videoRepository = videoRepository,
             modifier = Modifier.fillMaxSize(),
           )
-        } else {
-          MobileCommentList(
+          request.source == SourceHongguo -> MobileHongguoCommentList(
+            seriesId = request.hongguoSeriesId,
+            episodeId = request.currentHongguoEpisodeId(),
+            videoRepository = videoRepository,
+            modifier = Modifier.fillMaxSize(),
+            onTotalCountChange = { commentTotalCount = it },
+          )
+          else -> MobileCommentList(
             aid = metadata?.aid ?: 0L,
             isPgc = isPgc,
             videoRepository = videoRepository,

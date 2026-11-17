@@ -86,6 +86,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.kirin.mt.R
 import com.kirin.mt.core.model.SourceBili
+import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.model.isWatchCompleted
 import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
@@ -940,7 +941,14 @@ fun PlayerScreen(
     return BiliPlayerActions.filter { control ->
       when (control) {
         PlayerControl.Like, PlayerControl.Coin, PlayerControl.Favorite, PlayerControl.ToView -> !hideInteraction
-        PlayerControl.Comment -> !displayRequest.isPgc && (displayRequest.aid > 0L || displayRequest.isYoutube)
+        PlayerControl.Comment ->
+      !displayRequest.isPgc &&
+        (
+          displayRequest.aid > 0L ||
+            displayRequest.isYoutube ||
+            (displayRequest.source == SourceHongguo &&
+              displayRequest.currentHongguoEpisodeId().isNotBlank())
+        )
         else -> true
       }
     }
@@ -964,6 +972,7 @@ fun PlayerScreen(
   fun currentControls(): List<PlayerControl> = when {
     alignedBiliLayout() -> BiliPlayerControls
     displayRequest.isYoutube -> YoutubePlayerControls
+    displayRequest.source == SourceHongguo -> HongguoPlayerControls
     else -> GenericPlayerControls
   }
 
@@ -2667,6 +2676,8 @@ fun PlayerScreen(
   }
 
   LaunchedEffect(danmakuSettings.enabled, displayRequest.cid) {
+    // 红果走下面单独的 series/vid effect；这里不能清空刚加载好的红果弹幕。
+    if (displayRequest.source == SourceHongguo) return@LaunchedEffect
     danmakuEntries = emptyList()
     danmakuLoadedCid = 0L
     val cid = displayRequest.cid
@@ -2682,6 +2693,31 @@ fun PlayerScreen(
     danmakuEntries = result.getOrDefault(emptyList())
     danmakuLoadedCid = cid
     Log.i(PlayerDanmakuLogTag, "Loaded danmaku cid=$cid count=${danmakuEntries.size}")
+  }
+
+  // 红果定时弹幕：按 series + 当前选集 vid 加载；cid 恒 0，故不能复用上面的 B 站 effect。
+  LaunchedEffect(
+    danmakuSettings.enabled,
+    displayRequest.source,
+    displayRequest.hongguoSeriesId,
+    displayRequest.currentHongguoEpisodeId(),
+  ) {
+    if (displayRequest.source != SourceHongguo) return@LaunchedEffect
+    danmakuEntries = emptyList()
+    danmakuLoadedCid = 0L
+    if (!danmakuSettings.enabled) return@LaunchedEffect
+    val series = displayRequest.hongguoSeriesId
+    val episode = displayRequest.currentHongguoEpisodeId()
+    if (series.isBlank() || episode.isBlank()) return@LaunchedEffect
+    val result = runCatching {
+      playbackRepository.getHongguoDanmaku(series, episode)
+    }
+    result.onFailure { error ->
+      Log.w(PlayerDanmakuLogTag, "Failed to load hongguo danmaku series=$series vid=$episode", error)
+    }
+    danmakuEntries = result.getOrDefault(emptyList())
+    danmakuLoadedCid = 0L
+    Log.i(PlayerDanmakuLogTag, "Loaded hongguo danmaku series=$series vid=$episode count=${danmakuEntries.size}")
   }
 
   LaunchedEffect(seekPreviewSpritesEnabled, displayRequest.bvid, displayRequest.cid) {

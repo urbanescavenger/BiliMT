@@ -134,9 +134,10 @@ internal enum class PlayerControl {
 /**
  * P11-124:B站 版式控制行的项与**顺序**(对齐官方客户端底栏:倍速文案 → 入口图标… → 画质文案 → 设置)。
  *
- * 三份**显式顺序**按源分开维护(底栏渲染统一成 [PlayerControlBarOverlay],差异只在传入的项集):
+ * 四份**显式顺序**按源分开维护(底栏渲染统一成 [PlayerControlBarOverlay],差异只在传入的项集):
  * B站 有「弹幕开关」并把点赞/投币/收藏/稍后再看/评论搬到顶部动作行;YouTube 无弹幕,评论留在底栏
- * (见 [YoutubePlayerControls]);影视库/IPTV/红果 既无弹幕也无评论(见 [GenericPlayerControls])。
+ * (见 [YoutubePlayerControls]);影视库/IPTV 既无弹幕也无评论(见 [GenericPlayerControls]);
+ * 红果有定时弹幕和分集评论,单独用 [HongguoPlayerControls]。
  * `PlayerControl.entries` 的声明顺序不再影响任何源的屏上顺序。
  */
 internal val BiliPlayerControls: List<PlayerControl> = listOf(
@@ -196,6 +197,23 @@ internal val GenericPlayerControls: List<PlayerControl> = listOf(
   PlayerControl.PlaySequence,
   PlayerControl.Episodes,
   PlayerControl.Related,
+  PlayerControl.Quality,
+  PlayerControl.Settings,
+)
+
+/**
+ * 红果短剧控制行：在 Generic 基础上补「弹幕开关」与「评论」。
+ * 红果走 App 端定时弹幕/分集评论，不再复用 B 站 aid 判据。
+ */
+internal val HongguoPlayerControls: List<PlayerControl> = listOf(
+  PlayerControl.Speed,
+  PlayerControl.Rotate,
+  PlayerControl.Refresh,
+  PlayerControl.DanmakuToggle,
+  PlayerControl.PlaySequence,
+  PlayerControl.Episodes,
+  PlayerControl.Related,
+  PlayerControl.Comment,
   PlayerControl.Quality,
   PlayerControl.Settings,
 )
