@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v4.0.0-alpha.1](#v400-alpha1)
 - [v3.1.3](#v313)
 - [v3.1.3-alpha.5](#v313-alpha5)
 - [v3.1.3-alpha.4](#v313-alpha4)
@@ -425,6 +426,43 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v4.0.0-alpha.1
+
+**红果短剧 App 端集成（移动端 + TV）：搜索突破网页 3 集、流式播放、推荐 Tab。**
+
+### 红果 core
+
+- 新增独立 `:hongguo-core` Android library，移植 N3urda/hongguoTV `kotlin-tv/core`
+  （GPL-3.0-only，来源与版权见 `hongguo-core/NOTICE.md`）：匿名设备注册、v3/v5 签名、
+  `player/v1` 取流、CENC 解密。
+- 许可：包含该模块的发行物整体按 GPL-3.0-only 分发；原 MIT 文本保留为 `LICENSE-MIT`。
+
+### 搜索
+
+- 移动端与 TV 搜索源加入「红果短剧」。
+- App 搜索 + 网页 `searchAll` 前两页合并，不按 genre 过滤；实测「新星」等漫剧/主流标题
+  从 0 条恢复到 10 条以上。
+- 搜索卡点开时补全 `vid_list`，免费分集可播放超过网页匿名端 3 集。
+
+### 流式播放
+
+- `HongguoDataSource` 实现 Media3 `BaseDataSource`：`moov`/样本表按需拉取，Range 读取时
+  用 `MediaCrypto` 边读边解 CENC；首帧不再等整集下载，seek 走新的 Range。
+- `PlaybackInfo.hongguoStream` 透传；TV/移动播放器按需切换数据源，B 站/YouTube/SABR 路径不变。
+
+### 推荐 Tab
+
+- 新增 `HomeSection.Hongguo`（「红果推荐」），TV/移动共用。
+- 主源综合热榜（约 20 条/页、5 页）；官方 App 推荐流每页仅 2~3 条，降为兜底；
+  再失败回退网页首页推荐。
+- 老安装通过 `HomeSectionsHongguoMigrationV1` 一次性启用，可在设置里关闭。
+
+### 验证
+
+- P11-333~336 云编译绿；移动端真机已验证搜索、第 4 集以后播放、流式首帧与推荐 Tab。
+- TV 端本版补齐搜索源与点击补详情，随本版构建；电视实机待复测。
+- 判读与边界见 `docs/hongguo-app-port.md`。
 
 ## v3.1.3
 

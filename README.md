@@ -2,7 +2,7 @@
 
 BiliMT 是一个原生 B 站 + YouTube 双平台客户端实验项目，基于 [BiliTVNative](https://github.com/Hyper-Beast/BiliTVNative) 1.0.0 开发，使用 Kotlin、Jetpack Compose 和 Media3 重写观看体验。同一个 APK 同时适配 Android TV 与安卓手机：TV 端用 Compose for TV 和遥控器焦点系统，手机端用触屏交互外壳，共享同一套网络、播放、账号、设置和存储引擎。
 
-内容覆盖 B 站（推荐/热门/分区、搜索、动态、历史、收藏、追番、直播、下载、IPTV）与 YouTube（搜索、热门、关注流、频道、多播放列表、高清 SABR 播放、评论、相关视频），并内置 TVBox 影视库（配置 URL 聚合采集站点播源），多源均可播放。YouTube 部分基于 [LibreTube](https://github.com/libre-tube/libretube) 的取流与 SABR 播放方案（含其 NewPipeExtractor fork）独立重写实现。播放器基于 Media3 ExoPlayer，支持 DASH、弹幕、快进预览、空降助手、多语言配音音轨切换、默认画质、默认播放倍速、字幕与后台播放。界面支持 6 档语言（简中 / 港繁 / 台繁 / English / Español / Português），拉丁语系数字本地化（K/M/B）与相对时间。
+内容覆盖 B 站（推荐/热门/分区、搜索、动态、历史、收藏、追番、直播、下载、IPTV）与 YouTube（搜索、热门、关注流、频道、多播放列表、高清 SABR 播放、评论、相关视频），并内置 TVBox 影视库（配置 URL 聚合采集站点播源）与红果短剧（搜索、推荐、免费分集流式播放），多源均可播放。YouTube 部分基于 [LibreTube](https://github.com/libre-tube/libretube) 的取流与 SABR 播放方案（含其 NewPipeExtractor fork）独立重写实现。播放器基于 Media3 ExoPlayer，支持 DASH、弹幕、快进预览、空降助手、多语言配音音轨切换、默认画质、默认播放倍速、字幕与后台播放。界面支持 6 档语言（简中 / 港繁 / 台繁 / English / Español / Português），拉丁语系数字本地化（K/M/B）与相对时间。
 
 电视端重点不是做一个极简壳，而是在电视设备上尽量平衡几个实际问题：播放稳定性、遥控器焦点可控性、弹幕性能、主页视觉质感，以及不同硬件档位下的流畅度。
 
@@ -27,7 +27,7 @@ BiliMT 是一个原生 B 站 + YouTube 双平台客户端实验项目，基于 [
 ## 主要功能
 
 - 首页推荐、热门、分区内容流；自适应底栏导航外壳和触屏首页分区网格。
-- 搜索键盘、搜索建议、搜索历史、搜索结果排序和分页；三源切换（B站 / YouTube / TVBox 影视库），搜索结果含番剧分类。移动端搜索对齐官方：综合/番剧/UP主三 tab + 排序/时间/时长筛选面板；TV 端单按钮循环切源。
+- 搜索键盘、搜索建议、搜索历史、搜索结果排序和分页；四源切换（B站 / YouTube / TVBox 影视库 / 红果短剧），搜索结果含番剧分类。移动端搜索对齐官方：综合/番剧/UP主三 tab + 排序/时间/时长筛选面板；TV 端单按钮循环切源。
 - TVBox 影视库：设置页填配置 URL 聚合采集站，跨站多线路直链播放；线路=站点（清晰度面板）、选集=线路内分集列表；m3u8 死链存活预检自动顺延下一线路；配置纳入 WebDAV 备份/还原。
 - 动态关注 feed、历史记录（含番剧播放记录并入，支持 PGC 续播）和账号登录（TV 二维码、手机短信 WebView）。
 - 手机端"动态"tab 四子 tab：动态关注 feed / 历史 / 收藏（收藏夹切换）/ 追番（番剧·影视 + 想看·在看·看过筛选）。
@@ -52,6 +52,7 @@ BiliMT 是一个原生 B 站 + YouTube 双平台客户端实验项目，基于 [
 - 多语言：界面 6 档语言（简中 / 港繁 / 台繁 / English / Español / Português），拉丁语系数字本地化（K/M/B）与相对时间本地化；播放器/下载等硬编码中文已收口进翻译。
 - 下载管理：B 站视频下载 + 下载任务管理（批量删除）。
 - YouTube 内容：搜索/热门来源切换、动态关注流合并（真 continuation 分页逐页逼近最早）、频道管理、频道页最新/最热排序、多播放列表（批量移除）、高清 SABR 播放（多档清晰度）、播放优先级设置（SABR 优先 / DASH 优先）、多语言配音音轨切换、YouTube 默认画质、默认播放倍速、字幕、评论、相关视频、播放历史续播、WebDAV 备份/还原。
+- 红果短剧：移动/TV 搜索源与首页「红果推荐」Tab；App 端匿名设备 + v3/v5 签名，免费分集可播超过网页匿名端 3 集；Media3 自定义 `HongguoDataSource` 流式边读边解 CENC。VIP/付费集仍锁定。
 - 在线播放命中缓存播本地源：在线刷到已下载/缓存的视频直接播本地文件（简介/评论/弹幕仍走在线），清晰度只读、进度与在线互通，B 站 + YouTube 均适用。
 
 ## UI 与视觉
@@ -88,6 +89,16 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 - 进入和退出播放使用短黑屏遮罩过渡，避免 Surface 切换时出现闪烁。
 
 弹幕层由原生 DanmakuView 承载，弹幕 XML 解码和解析放在后台线程，应用层不使用固定 delay 驱动弹幕重绘。
+
+## 红果短剧
+
+BiliMT 内置红果短剧源，移动端与 TV 共用：
+
+- **搜索**：搜索源新增「红果短剧」；App 搜索 + 网页搜索前两页合并，不按类型过滤，漫剧/真人剧都能搜到。点卡片时补全完整 `vid_list`。
+- **推荐**：首页独立「红果推荐」Tab（类似 YouTube 热门）。主源综合热榜（约 20 条/页、5 页），官方 App 推荐流与网页首页推荐兜底。
+- **播放**：匿名设备注册 + v3/v5 签名取流；`HongguoDataSource` 实现 Media3 `BaseDataSource`，按 Range 读取并由 `MediaCrypto` 边读边解 CENC，首帧不等整集下载，seek 走新的 Range。
+- **边界**：VIP/付费分集仍锁定；上游接口与签名可能变化，失败时回退网页 3 集链路。
+- **实现与来源**：见下方[引用与来源](#引用与来源)与 [hongguo-core/NOTICE.md](hongguo-core/NOTICE.md)。
 
 ## 设置分组
 
@@ -130,6 +141,12 @@ Android 13 及以上设备可以在高级档中单独开启实验液态玻璃控
 第三方库遵循其各自许可证。
 
 ## 版本更新
+
+### v4.0.0-alpha
+
+| tag | 内容 |
+| --- | --- |
+| v4.0.0-alpha.1 | **红果短剧 App 端集成**（P11-333~336）。新增 GPL-3.0-only `:hongguo-core`（匿名设备 + v3/v5 签名 + CENC）；搜索合并 App + 网页前两页，免费分集可播超过网页 3 集；播放改 Media3 `HongguoDataSource` 流式边读边解；新增「红果推荐」Tab（综合热榜为主、官方推荐流/网页首页兜底）；TV 搜索源加入红果，TV/移动共用。 |
 
 ### v3.1.3
 
@@ -510,6 +527,26 @@ BiliMT 基于 [BiliTVNative 1.0.0](https://github.com/Hyper-Beast/BiliTVNative) 
 `:hongguo-core` 模块移植自 GPL-3.0-only 的 [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV)，
 包含该模块的 BiliMT 发行物整体按 **GPL-3.0-only** 分发，详见 [LICENSE](LICENSE) 与
 [hongguo-core/NOTICE.md](hongguo-core/NOTICE.md)。
+
+红果短剧的数据与播放能力移植自 [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV)（GPL-3.0-only）；
+完整来源与算法引用见[引用与来源](#引用与来源)和 [hongguo-core/NOTICE.md](hongguo-core/NOTICE.md)。
+
+## 引用与来源
+
+- [BiliTVNative](https://github.com/Hyper-Beast/BiliTVNative) — 项目基础架构（MIT）。
+- [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV) — 红果 App 端 core 的直接上游（GPL-3.0-only）：
+  匿名设备注册、v3/v5 签名、`player/v1` 取流、CENC 解密与 TV 实现。
+- [tsukiyo-zero/hongguoTV](https://github.com/tsukiyo-zero/hongguoTV) — TV 功能与测试同步来源（GPL-3.0）。
+- [woshishiq1/drpys](https://github.com/woshishiq1/drpys/tree/22261adfa31435e3b3ef5a730b8a2a75bcaf1715) —
+  红果请求签名、Spade URL/key、MP4 CENC 处理的算法来源（GPL-3.0）。
+- [ch6vip/fqapp](https://github.com/ch6vip/fqapp) — 播放设备注册与 x-argus / x-ladon / Simon 签名、
+  双模型选流的算法来源（GPL-3.0）。
+- [charlie901208/HGTV](https://github.com/charlie901208/HGTV/tree/feat/phone-login) —
+  `DeviceRegister` / `PhoneLogin` 参考（GPL-3.0-only）。
+- [tr4cex/TikTok-Encryption](https://github.com/tr4cex/TikTok-Encryption) — Argus / Simon 通用结构参考（MIT）。
+- [LibreTube](https://github.com/libre-tube/libretube) 及其 NewPipeExtractor fork — YouTube 取流与 SABR 方案参考。
+- 完整第三方许可、版本与来源提交见 [hongguo-core/NOTICE.md](hongguo-core/NOTICE.md) 与
+  [hongguo-core/LICENSE](hongguo-core/LICENSE)。
 
 ## 免责声明
 

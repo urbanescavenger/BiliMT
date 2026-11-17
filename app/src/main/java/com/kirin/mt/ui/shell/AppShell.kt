@@ -1367,6 +1367,19 @@ fun BiliTvApp(
                     if (video.seasonId > 0) {
                       // 番剧搜索卡(seasonId>0):进 PGC 季详情,epId=0 由季详情自行选首集。
                       pgcSeasonRequest = com.kirin.mt.ui.pgc.PgcSeasonRequest(seasonId = video.seasonId)
+                    } else if (video.source == SourceHongguo && video.tvboxLines.isEmpty()) {
+                      // 红果 App 端搜索卡只带元数据；点开时补详情拿全量分集。
+                      coroutineScope.launch {
+                        val resolved = videoRepository.hongguoDetail(
+                          video.bvid.removePrefix(HongguoAppRepository.SeriesPrefix),
+                        )
+                        if (resolved != null) {
+                          playQueue = emptyList()
+                          playbackRequest = resolved.toPlaybackRequest()
+                        } else {
+                          android.util.Log.w("BiliMT:Playback", "hongguo search detail failed bvid=${video.bvid}")
+                        }
+                      }
                     } else {
                       playQueue = emptyList()
                       playbackRequest = video.toPlaybackRequest()

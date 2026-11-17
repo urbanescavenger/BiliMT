@@ -393,16 +393,17 @@ private fun SearchSourceToggle(
   modifier: Modifier = Modifier,
 ) {
   val homeColors = LocalHomeColors.current
-  // 单个按钮占满整行居中,显示当前源;点击循环切换到下一个源(B站→YouTube→影视库→B站)。
-  // 红果短剧源已从搜索源轮换摘除(网页匿名端只放开前 3 集,暂不上前端),后端链路保留。
+  // 单个按钮占满整行居中,显示当前源;点击循环切换到下一个源(B站→YouTube→影视库→红果→B站)。
   val label = when (source) {
     SourceBili -> "BILIBILI"
     SourceYoutube -> "YOUTUBE"
-    else -> stringResource(R.string.search_source_tvbox)
+    SourceTvbox -> stringResource(R.string.search_source_tvbox)
+    else -> stringResource(R.string.search_source_hongguo)
   }
   val targetSource = when (source) {
     SourceBili -> SourceYoutube
     SourceYoutube -> SourceTvbox
+    SourceTvbox -> SourceHongguo
     else -> SourceBili
   }
   BiliFocusableSurface(

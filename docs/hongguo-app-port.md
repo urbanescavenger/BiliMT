@@ -62,5 +62,5 @@
 - 搜索合并 App + 网页 `searchAll` 前两页；App 搜索分页游标仍未接入，网页分页按 `hasMore` 取第 2 页。
 - 设备身份存 `SharedPreferences`（`hongguo_app_device`），换进程复用，减少注册频控。
 - 上游接口/签名版本变化时可能整体失效；`HongguoRepository` 会回退网页 3 集。
-- TV 端暂未把红果加入搜索源轮换；本阶段只做移动端。
+- TV 端已加入搜索源与「红果推荐」Tab，播放器共用 `HongguoDataSource`；电视实机尚未复测。
 - 许可：引用 `:hongguo-core` 的发行物整体按 GPL-3.0-only 分发；原 MIT 文本见 `LICENSE-MIT`。
