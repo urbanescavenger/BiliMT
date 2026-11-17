@@ -47,6 +47,14 @@ internal class SabrBandwidthMeter(
   @Volatile
   private var sustainedBpsProvider: (() -> Long)? = null
 
+  /**
+   * P11-320 M2:会话首笔样本暂存期间为 true(SabrMediaFetcher.isBandwidthStartupProvisional)。
+   * 此窗口内 est 用 [initialSeedBps],不用 [lastRealBps] —— 重建后的 lastRealBps 可能还是
+   * 上一场慢滴时的低值,拿它判档会让 ABR 在 1~2s 内直接 720p→480p。
+   */
+  @Volatile
+  private var startupProvisionalProvider: (() -> Boolean)? = null
+
   /** 2026-08-30:注入升档重锚执行方(SabrMediaFetcher.reseedActiveWindow)。 */
   @Volatile
   private var reseedBandwidthProvider: ((Long) -> Unit)? = null
@@ -54,6 +62,11 @@ internal class SabrBandwidthMeter(
   /** 2026-08-30:注入实测消耗码率来源(SabrMediaFetcher.getMeasuredBitrateBps,降/升档门槛校准底座)。 */
   @Volatile
   private var measuredBitrateProvider: ((Int) -> Long)? = null
+
+  /** P11-320 M2:注入「启动首笔样本暂存中」来源(DefaultSabrChunkSource)。 */
+  fun setStartupProvisionalProvider(provider: () -> Boolean) {
+    startupProvisionalProvider = provider
+  }
 
   /** 由持有 [SabrMediaFetcher] 的一方(DefaultSabrChunkSource)注入真实带宽来源。 */
   fun setRealBandwidthProvider(provider: () -> Long) {
@@ -179,6 +192,49 @@ internal class SabrBandwidthMeter(
   /** 在途视频段剩余时间估算(ms);-1 = 无在途视频段/证据不足,0 = 请求段已到手或刚落地。 */
   fun getInFlightVideoEtaMs(): Long = inFlightVideoEtaProvider?.invoke() ?: -1L
 
+  // ── P11-326(2026-11-14 TV 真机):局部断流证据,供 ABR 在挂死期间及时降档(见 docs §76)─────
+  // ABR 只在 getNextChunk 评估,大段挂死时零评估;shouldCancelChunkLoad(reevaluateBuffer 周期性调用)
+  // 通过本通道读到「还供不供得上」,命中即取消在途段换低档。
+  @Volatile
+  private var inFlightSilenceProvider: (() -> Long)? = null
+
+  fun setInFlightSilenceProvider(provider: () -> Long) {
+    inFlightSilenceProvider = provider
+  }
+
+  /** 在途请求首字节后的静默时长(ms);-1 = 无在途/证据不足。 */
+  fun getInFlightVideoSilenceMs(): Long = inFlightSilenceProvider?.invoke() ?: -1L
+
+  @Volatile
+  private var inFlightDeliveryProvider: (() -> Long)? = null
+
+  fun setInFlightDeliveryProvider(provider: () -> Long) {
+    inFlightDeliveryProvider = provider
+  }
+
+  /** 在途请求实时交付速率(bps);无在途时返回最近一笔实测值,-1 = 无证据。 */
+  fun getInFlightVideoDeliveryBps(): Long = inFlightDeliveryProvider?.invoke() ?: -1L
+
+  @Volatile
+  private var inFlightElapsedProvider: (() -> Long)? = null
+
+  fun setInFlightElapsedProvider(provider: () -> Long) {
+    inFlightElapsedProvider = provider
+  }
+
+  /** P11-329:在途视频请求已持续多久(ms);-1 = 无在途/证据不足。 */
+  fun getInFlightVideoElapsedMs(): Long = inFlightElapsedProvider?.invoke() ?: -1L
+
+  @Volatile
+  private var supplyGapProvider: (() -> Long)? = null
+
+  fun setSupplyGapProvider(provider: () -> Long) {
+    supplyGapProvider = provider
+  }
+
+  /** 最近一次局部断流的墙钟(ms);0 = 从未发生。仅升档稳定闸使用。 */
+  fun getLastSupplyGapWallMs(): Long = supplyGapProvider?.invoke() ?: 0L
+
   /**
    * P11-178:注入「本 itag 最近一次零字节挂死」的墙钟来源(SabrMediaFetcher.getLastSilenceHangWallMs)。
    * 与实测吞吐走同一条既有通道(选择类拿不到 fetcher)——挂死证据要让水位急救在「挂死后重试成功」的
@@ -231,6 +287,7 @@ internal class SabrBandwidthMeter(
     // P11-282:换源后 lastRealBps 也失效;下一次 SABR 会话从 seed 重新起步。
     lastRealBps = -1L
     realBpsProvider = null
+    startupProvisionalProvider = null
     lastDeliveredVideoItagProvider = null
     sustainedBpsProvider = null
     sustainedRawBpsProvider = null
@@ -242,6 +299,11 @@ internal class SabrBandwidthMeter(
     roundTripProvider = null
     sessionHealthProvider = null
     sessionRebuildProvider = null
+    // P11-326:断流证据同样不能跨源存活(旧会话的 gap 会误否决新源升档)。
+    inFlightSilenceProvider = null
+    inFlightDeliveryProvider = null
+    inFlightElapsedProvider = null
+    supplyGapProvider = null
   }
 
   /**
@@ -303,6 +365,8 @@ internal class SabrBandwidthMeter(
     // P11-259 已证实并非如此,但只给非 SABR 源拆了线)。
     // 也不能返回 0:那会把「证据不足」当「带宽为零」,直接砸最低档(P11-167 的 144p 病)。
     // 取最后一次有效真实值;会话内还没测到过就用构造 seed(≈起播画质),都比污染值可靠。
+    // P11-320 M2:会话首笔样本暂存期间用起播 seed,不用上一场的 lastRealBps(可能是慢滴低值)。
+    if (startupProvisionalProvider?.invoke() == true) return initialSeedBps
     if (lastRealBps >= 0L) return lastRealBps
     return initialSeedBps
   }

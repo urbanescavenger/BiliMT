@@ -379,6 +379,7 @@ internal fun BoxScope.PlayerOverlay(
       MiniProgressBar(
         positionState = positionState,
         durationState = durationState,
+        bufferedPercentageState = bufferedPercentageState,
         airJumpSegments = airJumpSegments,
         modifier = Modifier.align(Alignment.BottomCenter),
       )
@@ -1133,6 +1134,7 @@ private fun PlayerTimeText(
 private fun MiniProgressBar(
   positionState: State<Long>,
   durationState: State<Long>,
+  bufferedPercentageState: State<Long>,
   airJumpSegments: List<AirJumpSegment>,
   modifier: Modifier = Modifier,
 ) {
@@ -1143,10 +1145,15 @@ private fun MiniProgressBar(
   ) {
     val positionMs = positionState.value
     val durationMs = durationState.value
+    val buffered = (bufferedPercentageState.value / 100f).coerceIn(0f, 1f)
     val centerY = size.height / 2f
     val barHeight = size.height
     val radius = barHeight / 2f
     drawRoundBar(1f, centerY, barHeight, radius, BiliColors.ProgressTrack)
+    // P11-327:迷你进度条补缓冲段(与主进度条同语义:已缓冲到哪一目了然)。
+    if (buffered > 0f) {
+      drawRoundBar(buffered, centerY, barHeight, radius, BiliColors.ProgressBuffered)
+    }
     drawRoundBar(progressFraction(positionMs, durationMs), centerY, barHeight, radius, BiliColors.BiliPink)
     drawAirJumpSegments(airJumpSegments, durationMs, centerY, barHeight, radius)
   }

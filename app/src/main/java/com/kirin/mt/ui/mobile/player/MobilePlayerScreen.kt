@@ -1484,9 +1484,9 @@ fun MobilePlayerScreen(
   }
 
   // 空降助手:按 bvid 拉 SponsorBlock 段;开关/bvid 变化时重置四组状态(镜像 TV)。
-  // 键不放 cid:段按视频缓存,自动连播 cid 0→真实值两次赋值会让效果中途重启,
-  // 并发 fetch 互相覆盖(后者重置+被 scope-left 杀掉),整轮播放无段。
-  LaunchedEffect(airJumpAssistantEnabled, activeRequest.bvid) {
+  // P11-324:键加 cid（多分P的段按 cid 归属）。cid 0→真实值会重启一次效果，但仓库缓存
+  // 已按 bvid+cid 分键、落状态前又校验 bvid+cid 一致，不会再把另一分P的段套进来。
+  LaunchedEffect(airJumpAssistantEnabled, activeRequest.bvid, activeRequest.cid) {
     airJumpSegments = emptyList()
     warnedAirJumpIds = emptySet()
     skippedAirJumpIds = emptySet()
@@ -1495,11 +1495,12 @@ fun MobilePlayerScreen(
       return@LaunchedEffect
     }
     val targetBvid = activeRequest.bvid
+    val targetCid = activeRequest.cid
     val segments = runCatching {
-      playbackRepository.getAirJumpSegments(targetBvid)
+      playbackRepository.getAirJumpSegments(targetBvid, targetCid)
     }.getOrDefault(emptyList())
     // 期间换了视频(本协程已被取消重启)就不落状态,别把新实例已拉到的段覆盖成空。
-    if (activeRequest.bvid == targetBvid) {
+    if (activeRequest.bvid == targetBvid && activeRequest.cid == targetCid) {
       airJumpSegments = segments
     }
   }
@@ -2075,6 +2076,7 @@ fun MobilePlayerScreen(
                 seekPreviewMs = null
               },
               modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+              bufferedFraction = (player.bufferedPercentage / 100f).coerceIn(0f, 1f),
             )
             Row(
               verticalAlignment = Alignment.CenterVertically,
@@ -2235,6 +2237,7 @@ fun MobilePlayerScreen(
                 seekPreviewMs = null
               },
               modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+              bufferedFraction = (player.bufferedPercentage / 100f).coerceIn(0f, 1f),
             )
             Text(formatMs(durationMs), color = Color.White)
             // 上一个/下一个(◀▶)按钮已移除:播放列表里紧挨缓存清晰度静态文字,点"清晰度"易误触切下一集。
@@ -2520,9 +2523,11 @@ private fun SlimSeekSlider(
   onValueChange: (Float) -> Unit,
   onValueChangeFinished: () -> Unit,
   modifier: Modifier = Modifier,
+  bufferedFraction: Float = 0f,
 ) {
   val span = (valueRange.endInclusive - valueRange.start).coerceAtLeast(0f)
   val fraction = if (span > 0f) ((value - valueRange.start) / span).coerceIn(0f, 1f) else 0f
+  val buffered = bufferedFraction.coerceIn(0f, 1f)
   var widthPx by remember { mutableStateOf(1f) }
   var dragFraction by remember { mutableStateOf<Float?>(null) }
   val current = dragFraction ?: fraction
@@ -2561,6 +2566,15 @@ private fun SlimSeekSlider(
         size = Size(size.width, trackPx),
         cornerRadius = corner,
       )
+      // P11-327:缓冲段(已缓冲到哪)用比轨道更亮的 token,和 TV 进度条同语义。
+      if (buffered > 0f) {
+        drawRoundRect(
+          color = BiliColors.ProgressBuffered,
+          topLeft = Offset(0f, cy - trackPx / 2f),
+          size = Size(size.width * buffered, trackPx),
+          cornerRadius = corner,
+        )
+      }
       drawRoundRect(
         color = BiliColors.BiliPink,
         topLeft = Offset(0f, cy - trackPx / 2f),

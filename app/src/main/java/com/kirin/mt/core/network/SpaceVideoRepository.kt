@@ -8,6 +8,7 @@ import com.kirin.mt.core.storage.SessionStore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 
 enum class SpaceVideoRetryMode {
   Interactive,
@@ -58,6 +59,44 @@ internal class SpaceVideoRepository(
       "referer" to BiliHeaders.SpaceOrigin,
       "User-Agent" to SpaceUserAgent,
     )
+
+    // P11-326 社区兜底(RSSHub commit 26c5fa2 / yt-dlp #9119):space/wbi/arc/search 被 412 风控时,
+    // 改用 x/series/recArchivesByKeywords —— 不需要 WBI 签名、也不需要 dm_img 指纹,
+    // 返回同一 UP 的投稿列表(仅按发布时间排序)。
+    // 先单发一次：命中风控码就立刻切兜底，不让用户等满 2s/4s/8s/12s 的重试梯子；
+    // 兜底也失败（或错误不是风控类）才回到原来的重试 / Recovery 链。
+    val quickAttempt = runCatching {
+      signAndFetchSpaceVideos(
+        params = params,
+        imgKey = keys?.imgKey,
+        subKey = keys?.subKey,
+        headers = headers,
+        context = "space archives quick",
+        retryDelaysMs = longArrayOf(),
+      )
+    }
+    quickAttempt.getOrNull()?.let { return it }
+    val quickError = quickAttempt.exceptionOrNull()
+    // runCatching 会吞掉协程取消；取消不是风控，直接上抛，别再多打兜底/重试请求。
+    if (quickError is kotlinx.coroutines.CancellationException) throw quickError
+    if (quickError != null && SpaceHttpSupport.isRetryableFailure(quickError)) {
+      val fallback = runCatching {
+        fetchSpaceVideosFallback(mid = mid, page = page, sessData = sessData)
+      }
+      fallback.onFailure { error ->
+        if (error is kotlinx.coroutines.CancellationException) throw error
+        logSpaceVideosFailure("archives fallback", error)
+      }
+      val fallbackVideos = fallback.getOrNull().orEmpty()
+      if (fallbackVideos.isNotEmpty()) {
+        Log.i(
+          LogTag,
+          "space videos archives fallback ok mid=$mid order=$order page=$page " +
+            "videos=${fallbackVideos.size} (fallback is pubdate-only)",
+        )
+        return fallbackVideos
+      }
+    }
 
     return runCatching {
       signAndFetchSpaceVideos(
@@ -156,6 +195,60 @@ internal class SpaceVideoRepository(
       )
     }
     throw lastError ?: IllegalStateException("space videos $context failed")
+  }
+
+  /**
+   * 412 风控兜底:走免签名的 `x/series/recArchivesByKeywords`。
+   *
+   * 社区做法(RSSHub `26c5fa2`、yt-dlp `#9119`)：space 页接口被风控时换这个接口拿投稿，
+   * 它不校验 WBI 签名/dm_img 指纹，参数只有 mid + 分页 + orderby。
+   * 限制：只按发布时间返回（click/stow 排序会退化成 senddate），且没有 owner 昵称/头像；
+   * 页面头部资料来自 `acc/info`，卡片用不到这两个字段。
+   */
+  private suspend fun fetchSpaceVideosFallback(
+    mid: Long,
+    page: Int,
+    sessData: String?,
+  ): List<VideoSummary> {
+    val headers = mapOf(
+      "Cookie" to "SESSDATA=${sessData.orEmpty()};",
+      "referer" to BiliHeaders.SpaceOrigin,
+      "User-Agent" to SpaceUserAgent,
+    )
+    val root = apiClient.getJsonWithHeaders(
+      url = BiliApiEndpoints.SpaceArchivesByKeywords,
+      params = mapOf(
+        "mid" to mid.toString(),
+        "keywords" to "",
+        "ps" to SpacePageSize.toString(),
+        "pn" to page.toString(),
+        "orderby" to "senddate",
+      ),
+      headers = headers,
+    ).rootObject()
+    root.requireBiliCodeOk("space archives fallback")
+
+    val archives = root.obj("data")?.get("archives") as? JsonArray ?: return emptyList()
+    return archives.mapNotNull { it.asObjectOrNull() }.mapNotNull(::seriesArchiveToSummary)
+  }
+
+  private fun seriesArchiveToSummary(json: JsonObject): VideoSummary? {
+    val bvid = json.string("bvid")
+    if (bvid.isBlank()) return null
+    return VideoSummary(
+      bvid = bvid,
+      title = json.string("title"),
+      pic = VideoSummaryMappers.fixPicUrl(json.string("pic")),
+      ownerName = "",
+      ownerFace = "",
+      ownerMid = json.long("upMid"),
+      view = BiliNumberParser.toInt(json.obj("stat")?.get("view")),
+      danmaku = 0,
+      duration = BiliNumberParser.parseDuration(json["duration"]),
+      pubdate = json.long("pubdate"),
+      badge = "",
+      aid = json.long("aid"),
+    )
   }
 
   private suspend fun getSpaceVideosWithParams(

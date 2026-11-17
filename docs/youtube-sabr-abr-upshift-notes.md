@@ -6464,3 +6464,329 @@ fetch rn=18 itag=139 seg=14  starving-fast-fail: bufAhead=8438ms → callCap=800
 
 - ①移动端出现 deferred 但 12s 后仍 `stall detected` ⇒ 让路窗口或慢滴 ETA 估计失准;
 - ②移动端 `stall detected` 的 buffered/retry 编号与改动前不一致 ⇒ 状态机迁移有偏差,回退。
+
+---
+
+## §74 P11-321：2026-11-11 两场「降档后仍超供给 / 救火请求被 8s cap 切断」三处改动
+
+**现场**：`logs_live_20261111_212100.log`（21:21）与 `logs_live_20261111_232508.log`（23:25）。
+两场最后的重载都是「媒体供给 < 当前档码率」：21:21 是手选 1080p 单轨（6.98Mbps，实测 3.1~5.1Mbps），
+23:25 是 1440p 13.43Mbps（实测 5.9/5.0Mbps）。看门狗只在缓冲耗尽后执行重载，不是误判；问题在
+**降档目标和救火请求的交付窗口**。
+
+### §74.1 降档判据链复核（§39.3 / §68.1 的降档侧）
+
+| 路径 | 本场行为 | 结论 |
+|---|---|---|
+| A 水位急救 `bufS < 8s` | 21:18:39 / 21:19:17 / 21:20:48 与 23:22:22 均开火 | 触发条件不变（P11-240 缓冲唯一决定） |
+| B 带宽闸 | 未 suppress（meas 未知/低于声明） | 不动 |
+| C est 滞回 | 被 `bufferHoldsCurrentTier` 挡住（bufS≥8s） | 不动 |
+| 目标档选择 | 固定取「最高的低一档」 | **本场病根**：23:22:22 选 1080p@9224875，而 `est=5913K/susRaw=6317K`；切换段 1.6MB、实测 ~0.1MB/s，8s/12s 都落不了地 |
+
+**冲突点**：A 的触发阈值是 8s，而降档段的交付窗口（8s starving `callCap`）与看门狗（8s 位置冻结）
+同值；目标档若仍明显高于实际供给，降档这一枪必然赶不上缓冲跑道。历史校核（299 份日志，去重）：
+
+| 口径 | 结果 |
+|---|---|
+| 可评估 `buffer-critical downgrade` | 128 次 |
+| 相邻档 > 实测供给×1.15（严格口径触发改选） | 14 次 |
+| 其中现选档 > 近两笔实测（真修复） | 1 次（23:22:22） |
+| 其中现选档 <= 近两笔实测（误伤） | 1 次（09:18，最近一笔 41.8Mbps 突发，按 est/sus 判断降档仍合理） |
+| 0.9 余量口径的额外多降 | 27 次（其中 7 次 est 边界多降）⇒ 弃用 |
+
+### §74.2 改动（三处）
+
+**A. 水位急救降档目标档：严格供给过滤（P11-321-A）**
+- `supply = max(est, susRaw)`（两腿都是实测；取大避免瞬时塌陷误杀）；
+- 仅当**相邻低档 > supply × 1.15** 才改选；改选目标 = 最高的 `bitrate ≤ supply` 的低档，
+  没有则取最低低档；
+- 不满足 1.15 倍时保持原相邻档 —— 避免边界多降；
+- 触发条件（P11-240 缓冲唯一决定）与 B/C 路径一律不动。
+
+**B. P11-305 让路门槛 5s → 1.5s，ETA 改用首字节后速率（P11-321-B）**
+- 历史：stall 时在途视频 1.5~5s 的 36 次里 3 次可让路（21:19:17 ETA≈1.1s、
+  23:18:43 ETA≈5.6s、09:50:53 段已落地）；旧 5s 门槛覆盖的 87 次里 16 次可让路。
+- `IN_FLIGHT_ETA_MIN_ELAPSED_MS = 5_000 → 1_500`；新增 `inFlightFirstByteMs`，速率分母改
+  「首字节→现在」，静默 3s / 最小 256KB 两道保护不动。
+
+**C. 切档/降档目标请求的 starving cap 8s → 12s（P11-321-C）**
+- `starving && req.formatItag != lastDeliveredVideoItag`（切档目标）取
+  `SabrStarvingSwitchCallTimeoutMs = 12_000`；其余 ≤1080p 仍是 8s，≥1440p 仍是 12s。
+- 历史：8s cap 切断且请求段未落地的视频请求 7 次，3 次已读 ≥80%，4 次再给 4s 能读完；
+  降档/切档 15s 内 2 次、1 次能读完（21:41:42 已读 92%、差 724ms）。
+- 已知边界：23:22 那次切换段 1.6MB、实测 ~0.1MB/s，12s 仍不够 —— 该场最终靠换会话；
+  C 的价值在其余近完成场景。
+
+### §74.3 验收 / 否证
+
+- **验收**：日志出现 `buffer-critical downgrade` 时，若原相邻档 > 供给×1.15，目标档应落到
+  `bitrate ≤ supply` 的最高档，并带 `P11-321 supply=…K` 标记；1.5~5s 的慢滴 stall 应出现
+  `stall reload deferred`；切档目标的 `starving-fast-fail` 行应见 `switchTarget=true callCap=12000ms`。
+- **否证**：①降档目标档连续多场落到比相邻档低两档以上 ⇒ 1.15 倍门槛/供给口径过激，回退 A；
+  ②让路后 12s 内段仍未落地且体感更差 ⇒ 回退 B；③12s cap 使单笔请求跨越两个看门狗窗口、
+  重载变多 ⇒ 回退 C。
+
+## §75 2026-11-14 判读:最后两次连续重载(2160p / 1440p)是供流塌到 2~3Mbps + 降档无评估机会(诊断,不改码)
+
+来源:`logs_live_20261114_195004.log`(3.1.3-alpha.3,BRAVIA AE2),19:47:06 起播 → 19:48:26 stall #1 →
+19:49:50 stall #2 → 19:49:53 用户退出。全程无 4xx/5xx、无 CDN 切换,纯供给问题。
+
+### §75.1 stall #1(19:48:26,starved=2160p itag315)
+
+| 时间 | 事件 | 数据 |
+|---|---|---|
+| 19:47:23 | 首笔音频+init | 1.39MB/6.6s ≈ 1Mbps(turn-on 慢) |
+| 19:47:32~37 | 2 笔大响应突发 | 11.1MB/1.44s、10.8MB/1.98s → 43~61Mbps,`cap=58447K` |
+| 19:47:40 | 冷启梯子升 2160p(声明 26.9M) | `sus` 已只有 19460K,梯子只认 cap |
+| 19:47:56 | 下一笔 1440p 段 | 7.7MB/18.96s → **3271K**,`pace=0.57x` |
+| 19:47:56 | est=3271K < required=12537K | `est-hysteresis downgrade held`:bufS=15s ≥ 8s ⇒ 不降档 |
+| 19:48:17~26 | 缓冲排空 | fwdBuf 21s→0,buffered=4% ⇒ stall |
+
+### §75.2 stall #2(19:49:50,starved=1440p itag308)
+
+| 时间 | 事件 | 数据 |
+|---|---|---|
+| 19:48:39 | 重载后 720p→480p(冷却生效) | est=3671K;19:48:40 recovered |
+| 19:48:59~19:49:01 | 梯子 480p→720p→1080p→1440p(1.7s) | 突发 `cap=20106K`,`sus=4462K`,est=7020K |
+| 19:49:00 | 1080p init 段 | 3.9MB/9.6s → **3Mbps** |
+| 19:49:10 | est=7020K < required=12543K | `est-hysteresis downgrade held`:bufS=27s ⇒ 不降档 |
+| 19:49:49 | 1440p 段 | 40s 超时,已读 11.3MB → **2.3Mbps** |
+| 19:49:50 | 缓冲 8% | stall #2 |
+
+### §75.3 机制(与 §71.5 / P11-177 同签名,但这次堵在「没评估」而非「评估了不降」)
+
+1. **档位来自突发**:同一会话内 40~60Mbps 的 1~2s 突发与 2~3Mbps 的持续吞吐交替;冷启梯子按
+   `cap` 选档,`upshift reseed` 又把 est 重锚成新档声明值,于是选到需要 8~27Mbps 的档。
+2. **降档一次都没开火**:两次大段请求都挂在途中(18.9s / 40s timeout),而 ABR 只在段完成时评估;
+   从 19:47:56、19:49:10 到 stall 之间**没有任何 ABR 评估行**,水位急救(8s 线)因此也没机会触发。
+   即:慢滴在途 = 降档判据集体失明。
+3. **重载治不了**:重载只清零带宽窗口 + 给到达档 90s 冷却(2160/1440/720),新会话仍会用突发把
+   梯子爬回去;冷却之外没有「持续供给上限」这道闸。
+
+### §75.4 候选修法(未实施)
+
+- A. 冷启梯子 / `upshift reseed` 的选档上限改用 `susRaw` 或本档实测吞吐,不用 `cap` 峰值;
+- B. 水位急救降档不等段完成:在途请求超过 X 秒且 buffered 持续下行时强制评估一次(需确认是否
+  与 P11-305 让路逻辑互斥);
+- C. `est-hysteresis held` 在 est < required 时按「缓冲/赤字」预测排空时间提前降档,而非只等 8s 水位。
+
+## §76 P11-326(2026-11-14):断流时及时降档 + 升档按档高分级收紧
+
+用户口径:①带宽整体够,问题是**抖动期间局部断流**;②**不在于升档,在于要及时降档**;
+③**升档应该用稳定判断,主要是 2160p,随着画质升高越来越严**。
+
+### §76.1 结构性缺口(为什么「及时」以前做不到)
+
+ABR 只在 `DefaultSabrChunkSource.getNextChunk()` 里 `updateSelectedTrack`(类内 P11-178 注释已记)。
+大段请求挂死时 loader 阻塞在 `open()`,**整个饥饿窗口零评估** ⇒ 滞回/水位急救/挂死证据都开不了枪,
+只剩 8s stall 看门狗整场重载。
+
+现成评估点:Media3 `ChunkSampleStream.reevaluateBuffer()` 在挂死期间仍被周期性调用,它经
+`chunkSource.shouldCancelLoad()` → `trackSelection.shouldCancelChunkLoad()`(`ChunkSampleStream.java:732-746`);
+返回 true 会 `loader.cancelLoading()` → `onLoadCanceled` → `onContinueLoadingRequested` → `getNextChunk`
+→ 重新评估(同文件 533-565)。**利用它即可在缓冲见底前降档,且不新增定时器**(符合播放器 Timer 约束)。
+
+### §76.2 改动(P11-326)
+
+**A. 及时降档(`HeightAwareAdaptiveTrackSelection.shouldCancelChunkLoad` override)**
+- runway = `loadingChunk.startTimeUs - positionUs`(手里剩余缓冲)。
+- **只在 `runway ≤ 12s` 时评估**(缓冲还厚时给慢滴机会,不提前丢掉在途字节)。
+- 触发(满足其一):`inFlightEta > runway×0.8`(这段落地前就见底);或 `inFlightSilence ≥ 3s`
+  (硬挂死,ETA 已失效)。
+- 命中 → 置 `pendingForcedStarvation`,返回 true 取消在途段;一次饥饿一枪 + 最小间隔 4s。
+- 取消后的评估把该标志视同 P11-178 `silenceHang`(免「缓冲读数无效」、免 P11-168/177 抑制闸),
+  走既有 buffer-critical 降档路径;目标档的供给追加**本次在途实测交付速率**,避免 est 仍是断流前旧值。
+- `SabrDataSource.open` 把 `InterruptedException` 并入 P11-91 的良性取消分支(**不 evict 会话**)。
+
+**B. 升档分级稳定闸(按目标档高度)**
+
+| 目标档 | 供给判据 | 断流否决 | 余量 |
+|---|---|---|---|
+| ≤1080p | 现状 `required ≤ max(est, cap)` | 无 | 1.0 |
+| 1440p | `required ≤ sustained`(有值);`-1` 退回 `cap` | 近 15s 有 supply gap ⇒ 拒 | 1.0 |
+| 2160p | `sustained ≥ 0` 且 `required×1.1 ≤ min(sustained, cap)` | 近 20s 有 supply gap ⇒ 拒 | 1.1 |
+
+- supply gap 只认**在途中途断流**(首字节后静默 ≥2s / 请求失败超时);满缓冲主动停拉、服务端 backoff 睡眠不算。
+- 满缓冲试探(trial, P11-306/P11-300)与冷启动锁/逐级爬/缓冲地板全部不动:它是 pacing 会话唯一的测量治愈口。
+
+### §76.3 判据链交叉核对(改码前结论)
+
+- **P11-178 `silenceHang`**:新标志与其合并为 `starvationEvidence`;两处豁免(`belowCriticalUs` 的
+  「读数无效不算饿」、P11-168/177 的带宽抑制闸)口径不变,只是证据从「挂死过」扩到「正在挂死」。
+- **P11-240 守档地板(8s)**:不动。新路径不是「est 滞回提前降」,而是「真挂死/来不及落地」的独立证据。
+- **P11-305 慢滴让路**:互补。让路条件是段快落地(ETA 小且仍在收字节);新触发要求 ETA 来不及或静默 ≥3s。
+- **P11-312 降档宽限(2s)**:强制触发不受 `postDowngradeGrace` 限制(与 silenceHang/trialAbort 同列),
+  但仍受「一枪一 episode」约束,避免连降。
+- **P11-321 降档目标档**:沿用;`supply` 在 starvation 场次取「在途实测交付速率」优先。
+- **P11-255(已撤销顶档 ×1.1 闸)**:本轮按用户口径为 2160p 重新引入稳定闸,但不再采用旧实现的
+  「`sustained=-1` 也当证据」语义——2160p 显式要求 `sustained ≥ 0`。
+
+### §76.4 验收 / 否证
+
+- 验收:断流场次出现 `forced downgrade trigger (starvation)` 后,同段内出现
+  `buffer-critical downgrade …` 而**不出现** `SabrDataSource … InterruptedException … → evict`;
+  其后 30s 无 `stall detected`;2160p 升档行带 `stable gate` 证据。
+- 否证:①正常满缓冲排空段出现 forced 触发 ⇒ 断流证据口径过激,回退 A;
+  ②1440p/2160p 连续多场「整场钉在低档」⇒ 稳定闸过严,放宽为「近 60s 容量中位数」;
+  ③取消后出现 SABR 会话 evict 或黑屏变多 ⇒ 回退 A 的取消腿,只保留「提前记失败样本」。
+
+## §77 P11-328(2026-11-14):后继段等待收口 —— ETA 覆盖早停目标 + 请求段到手后最多等 5s
+
+承接 §76.3 的两个遗留缺口(都在最新 `logs_live_20261114_202106.log` 20:16 那场直接命中):
+
+1. **ETA 只看请求段**:`inFlightVideoExpectedBytes` 只记响应里**第一个**视频段的 contentLen
+   (`noteInFlightVideoSegment`),请求段一到手 `expected <= read` ⇒ `getInFlightVideoEtaMs()` 返回 0。
+   而 1440p/2160p 的早停目标是「请求段 + 后继段」(`streamNeedSatisfied` 要求 `want+1`),
+   于是「请求段已到手、仍在等 7.26MB 后继段」的 32.6s 里,看门狗以为段快落地
+   (`stall reload deferred ... eta=0ms`)。真机 20:16:27 rn=119:请求段 5MB 6s 到手,响应占槽 32.6s,
+   缓冲 18.4s→0,20:17:00 重载。
+
+2. **后继段等待没有上限**:单发 fetcher 只有一笔在途;只要后继段慢,请求段早已到手也继续占着唯一
+   串行槽,下一笔请求发不出去。5s 上限能把这个尾巴砍掉,把槽让给下一笔。
+
+### §77.1 历史日志校核(304 份日志 / 28,616 笔请求)
+
+| 指标 | 结果 |
+|---|---|
+| 长请求(≥8s) | 1,927 |
+| 请求段到手后仍等后继段 | 985 |
+| 后继段等待 p50 / p75 / p90 / max | **4.8s / 8.1s / 13.4s / 39.6s** |
+| 等待 ≥3s / ≥5s / ≥8s | 683 / 464 / 257 |
+| 等待 ≥3s 且请求开始时缓冲 <15s | **298** |
+| stall 总数 | 368 |
+| stall 时在途请求的请求段**已到手**(ETA 盲区) | **91(25%)** |
+| `stall reload deferred eta=0ms` | 9 |
+
+### §77.2 改动
+
+- `SabrMediaFetcher.noteInFlightVideoSegment`:由「只记第一个视频段」改为**累加**本响应已宣告的
+  全部非 init 视频段 contentLen ⇒ ETA 表示「把当前已宣告的段读完还要多久」,请求段到手后不再归零。
+- `SabrMediaFetcher` 读循环新增**后继段等待上限**:`streamRequestedSatisfied(req)`(只判请求段)为真
+  后开始计时;`margin > 0` 且请求开始时缓冲 `1..20s` 时,等待达到 `EARLY_STOP_SUCCESSOR_CAP_MS=5s`
+  即早停返回,日志 `early stop (successor cap, P11-328)`。缓冲 ≥20s 或 margin=0(起播/音频)不设上限,
+  保留「一笔多搬」的摊薄收益。
+- 不改变早停的正常路径(`streamNeedSatisfied` 先判),不改变降档判据、不改变 margin 的档位语义。
+
+### §77.3 验收 / 否证
+
+- 验收:长后继段场次出现 `early stop (successor cap, P11-328)`;同段不再出现
+  `stall reload deferred ... eta=0ms`;`stall detected` 前 30s 内该请求已让出槽位。
+- 否证:①快链路(后继段 <1s)出现 cap 早停 ⇒ 门槛过激,增大到 8s;
+  ②cap 后请求数明显上升但平均吞吐下降 ⇒ 缓冲门槛 20s 太低,提高到 30s;
+  ③ETA 累加导致 `stall reload deferred` 在「后继段快落地」时不再让路 ⇒ 回退累加,只保留 cap。
+
+## §78 P11-329(2026-11-14):强制降档加最小观察窗口,修「无卡顿但频繁掉 480p 再爬」
+
+真机 `logs_live_20261114_211741.log`(dev.r2326 = P11-328,21:05–21:17):**全程无 stall**,
+但 21:08:36 / 21:13:26 / 21:15:53 三次从 1440p/2160p 直降到 **480p**,再花 ~2 分钟爬回。
+
+### §78.1 三次误降的共同签名
+
+| 时间 | 当前档 | 请求开始 | 触发时刻 | 已跑 | 缓冲 | 实测 bps | ETA |
+|---|---|---|---|---|---|---|---|
+| 21:08:36 | 1440p | 21:08:34.435 | 21:08:36.083 | **1.6s** | 8.3s | 1503K | 29s |
+| 21:13:26 | 2160p | 21:13:24.284 | 21:13:26.090 | **1.8s** | 8.1s | 1302K | 77s |
+| 21:15:53 | 1440p | 21:15:51.531 | 21:15:53.481 | **2.0s** | 8.0s | 1150K | 50s |
+
+三次都发生在「满缓冲停拉 → 缓冲漏到 ~10s → loader 发新请求」之后 **1.6~2.0 秒**。此时 TCP 还在
+慢启动/首包爬升,`getInFlightVideoDeliveryBps` 只有 1.1~1.5Mbps;P11-328 又把 expected 累加成
+整个响应已宣告的字节数 ⇒ ETA 被算成 29~77s ⇒ `eta > runway×0.8` 成立 ⇒ 取消在途段。
+
+P11-321 的目标档选择用 `supply = 在途实测速率`(1.1~1.5M)⇒ 选出 `bitrate ≤ supply` 的最高档
+= **480p**,于是从 1440/2160 一步跳到 480p。P11-326 的强制降档本身没错,错在**证据窗口太短**。
+
+### §78.2 改动
+
+- `SabrMediaFetcher` 新增 `getInFlightVideoElapsedMs()`(仅视频请求),经 `SabrBandwidthMeter`
+  provider 接线到选择类。
+- `shouldCancelChunkLoad` 的 **ETA 腿**要求 `elapsed ≥ FORCED_STARVE_MIN_ELAPSED_MS(5s)`;
+  硬挂死腿(首字节后静默 ≥3s)不受此限——那是独立证据,慢启动不会产生 3s 静默。
+- 触发日志追加 `elapsed=` 字段,便于核对。
+
+### §78.3 验收 / 否证
+
+- 验收:`forced downgrade trigger` 的 `elapsed` 必 ≥5000ms(静默腿除外);不再出现
+  「请求开始 <2s 就触发」;正常链路不再掉 480p,真慢请求仍在 5s 后正常降档。
+- 否证:①真断流场次因为 5s 窗口错过降档时机、重新出现 stall ⇒ 降到 4s;
+  ②5s 后仍频繁误降 ⇒ 目标档的 supply 改为 `max(在途速率, susRaw)`,不只信单一在途样本。
+
+## §79 P11-330(2026-11-14):在途证据必须绑定“视频请求”,修音频静默误降视频档
+
+真机 `logs_live_20261114_214549.log`(dev.r2328 = P11-329)21:33:21:
+`forced downgrade trigger (starvation): itag302(720p) runway=5127ms **elapsed=3495**
+**silence=3001(silent-hang)** bps=**350K**` → `buffer-critical downgrade 720p@2137230 → **240p@200436**`
+(`P11-321 supply=349K`)。
+
+**根因**:在途请求其实是 **`fetch rn=11 itag=139`(音频)**(21:33:18.013 发出,21:33:21.537
+`Socket closed fail=3515ms read=148656B`)。SABR 音频请求的响应里**顺带推视频段**,而
+`getInFlightVideoSilenceMs/EtaMs/DeliveryBps` 旧口径用「响应里出现过视频 MEDIA_HEADER」
+(`inFlightVideoExpectedBytes > 0`)判视频请求 ⇒ 音频请求被当成视频请求:
+音频静默 3s 触发视频档位的强制降档,再用音频那笔 350K 的速率选出 240p。
+
+**改动**:新增 `inFlightRequestIsVideo`(在 `fetchStreamData` 起点按 `req.formatItag ∈ sessionVideoItags`
+置位),`getInFlightVideoEtaMs/SilenceMs/DeliveryBps/ElapsedMs` 与 `noteInFlightEnd` 的交付速率、
+supply gap 记账全部以它为前提;**音频请求的响应体不再参与任何视频档位判据**。
+
+**验收**:`forced downgrade trigger` 必定对应一笔 `fetch rn=… itag=<视频 itag>`;音频 rn 行之后
+不再出现视频降档;240p 误降消失。**否证**:真视频断流场次因该门槛漏触发 ⇒ 回退到
+「请求类型 OR 视频段头」并加「响应内视频字节占比 > 50%」限定。
+
+## §80 P11-331(2026-11-14):挂死证据不再无条件绕过缓冲标准
+
+真机 `logs_live_20261114_220452.log`(dev.r2329)22:01:31:1440p 的 **init 请求 8s 零字节超时**
+(SocketTimeoutException)→ `silence-hang itag=308 recorded` → 尽管 `bufS=30s`、缓冲还有 30 秒,
+ABR 仍 `buffer-critical downgrade 1440p → 1080p silenceHang=true`,并给 1440p 90s 冷却。
+
+### §80.1 历史校核(304 份日志)
+
+`buffer-critical downgrade … silenceHang=true` 共 **32 次**:
+
+| 降档时缓冲 | 次数 |
+|---|---|
+| < 8s | 15 |
+| 8~14s | 3(10s / 10s / 11s) |
+| **≥ 15s** | **约 14(去重后)** |
+
+≥15s 样本:30s 1440→1080(今天)、32s/38s 720→480、33s 480→360、37s 1080→720、41s 1080→720、
+20s 2160→1440、20s 720→480、18s 2160→1440、15s 1440→1080、16s 1080→720。
+挂死请求多数是**媒体段**(`rn=7 seg=11`、`rn=33 seg=31`、`rn=73 seg=98`),不是 init 特有 ——
+问题是 P11-178 的挂死证据**无条件**绕过缓冲标准,健康缓冲也被一笔挂死降档。
+
+### §80.2 改动
+
+- `silenceHang`(决定用)增加缓冲上限:`bufferedDurationUs < SILENCE_HANG_MAX_BUFFER_US(12s)`,
+  或读数无效(-1,无法证明健康)时保留原行为。
+- 12s 覆盖历史全部 <8s 与 10~11s 场次(含 P11-178 原始 9.9s 案例),剔除 ≥15s 的误降。
+- 被 hold 时打一行 `silence-hang downgrade held (healthy buffer, P11-331)`(一 episode 一次)。
+- `forcedStarvation`(P11-326)不受影响(它自己的触发要求 runway ≤12s,本就是低缓冲场景)。
+
+### §80.3 验收 / 否证
+
+- 验收:`silenceHang=true` 的降档只出现在 `bufS<12s`;出现 `held (healthy buffer)` 后不再降档;
+  健康缓冲场次不再因单笔挂死掉档。
+- 否证:①真饿场次因 12s 门槛漏降、重新出现 stall ⇒ 提高到 15s;
+  ②健康缓冲场次仍被降档 ⇒ 该场走的是别的路径(est/forced),需单独看日志。
+
+## §81 P11-332(2026-11-14):proactive 强制降档只下一档,修「1080p 一步跳 240p」
+
+真机 `logs_live_20261114_222852.log`(dev.r2330 = P11-331)两次 240p:
+
+| 时间 | 触发 | 在途 | est | 缓冲 | 结果 |
+|---|---|---|---|---|---|
+| 22:24:08 | forced, elapsed=5009 | 706K | 12088K | 5.2s | 1080p→**240p**,13s 后仍 stall |
+| 22:27:19 | forced, elapsed=5001 | 597K | 14952K | 10.2s | 1080p→**240p**,随后链路回到 7~9M、缓冲 28~50s |
+
+两次都在 5s 门槛刚满时触发,单笔在途速率 597~706K,而同一时刻 est 12~15M;P11-321 用
+`supply=在途速率` 选中「码率 ≤ 600K」的最高档 = **240p**。22:27 那次链路 20 秒内恢复到 7~9M,
+240p 完全是白降;22:24 那次即使降到 240p 13 秒后仍然 stall —— 深降既没保住播放,又砸了画质。
+
+**改动**:`forcedStarvation`(proactive 强制降档)**只降相邻一档**;`P11-321 fit-to-supply`
+仅保留给缓冲真的 <8s 的常规水位急救(它用 `max(est, susRaw)`,不看在途单笔)。
+日志追加 `[P11-332 forced one-step, inFlight=…K est=…K]`。
+
+**取舍**:真·链路崩到 600K 时,一次只降一档可能仍不够,后续由下一轮水位急救/看门狗兜底;
+但优先保证「不白降、不连跳」。历史两次 240p 都是 5s 处的单笔速率失真,不是真需要 240p。
+
+**验收**:`forced downgrade trigger` 后的降档目标只能是相邻低档(高度差一档);240p/360p 不再
+由 forced 路径产生。**否证**:一档降不够导致 stall 明显变多 ⇒ 改为 `max(在途速率, susRaw)` 选档,
+或允许缓冲 <5s 时降两档。

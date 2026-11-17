@@ -34,8 +34,15 @@ internal object SpaceHttpSupport {
   /** HTTP 层可重试码:412=风控页,其余为网关类瞬态。 */
   val RetryableHttpCodes = setOf(412, 429, 500, 502, 503, 504)
 
-  /** 初始 + 3 次重试 = 4 次尝试,累计 12s:覆盖首进 warm-up / 频控窗口,UI 停在 loading 直到成功。 */
-  val InteractiveRetryDelaysMs = longArrayOf(2_000L, 4_000L, 6_000L)
+  /**
+   * 初始 + 4 次重试 = 5 次尝试，累计 26s。
+   *
+   * 原 2/4/6s（12s）覆盖不了 **412 风控窗口**：2026-11-14 真机日志里，进 UP 主页时
+   * `space/wbi/arc/search` 连续 4 次 412（17:01:00–17:01:12），同一 mid 20s 后再进即成功
+   * （18:01:09 全 412 → 18:01:29 ok raw=30）。窗口约 20s，所以把末档拉长到 8s/12s。
+   * 配合播放器侧把资料/投稿请求串行化，避免进页同秒并发撞风控。
+   */
+  val InteractiveRetryDelaysMs = longArrayOf(2_000L, 4_000L, 8_000L, 12_000L)
 
   /** 换 key 后的恢复档:窗口已被前一档等掉大半,退避可以短一些。 */
   val RecoveryRetryDelaysMs = longArrayOf(1_200L, 2_400L)

@@ -3,6 +3,7 @@ package com.kirin.mt.core.youtube.sabr.media
 import com.kirin.mt.core.youtube.sabr.BufferedRangeInput
 import com.kirin.mt.core.youtube.sabr.FormatId
 import com.kirin.mt.core.youtube.sabr.SabrProto
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * alpha.64(端口 LibreTube `Segment`):一段 SABR 媒体数据——一个 [SabrProto.MediaHeader] 对应的
@@ -37,9 +38,10 @@ internal class InitializedFormat(
   /** 该格式的 FormatId(itag/lastModified/xtags)。 */
   val id: FormatId,
   /** 已下载未消费段(seq → Segment);getNextSegment 从这取段。 */
-  val downloadedSegments: MutableMap<Long, SabrSegment> = mutableMapOf(),
+  // P11-315:后台 drain 在 reader 线程写、loader 线程读/取走,必须并发安全。
+  val downloadedSegments: MutableMap<Long, SabrSegment> = ConcurrentHashMap(),
   /** 已喂播放器段(seq → 空 data Segment,仅作 buildBufferedRanges 锚点)。 */
-  val bufferedSegments: MutableMap<Long, SabrSegment> = mutableMapOf(),
+  val bufferedSegments: MutableMap<Long, SabrSegment> = ConcurrentHashMap(),
   /** 服务端自报的末段序号(FORMAT_INITIALIZATION_METADATA.endSegmentNumber)。 */
   val endSegmentNumber: Long,
   /** 服务端自报的格式总时长(ms,FORMAT_INITIALIZATION_METADATA.endTimeMs)。 */

@@ -755,8 +755,8 @@ class PlaybackRepository(
     return DanmakuPostResult(dmid = dmid, visible = visible)
   }
 
-  suspend fun getAirJumpSegments(bvid: String): List<AirJumpSegment> {
-    return airJumpRepository.getAirJumpSegments(bvid)
+  suspend fun getAirJumpSegments(bvid: String, cid: Long = 0L): List<AirJumpSegment> {
+    return airJumpRepository.getAirJumpSegments(bvid = bvid, cid = cid)
   }
 
   suspend fun getSavedProgress(bvid: String, cid: Long): PlaybackProgress? {

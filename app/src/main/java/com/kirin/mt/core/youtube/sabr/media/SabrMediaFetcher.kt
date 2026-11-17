@@ -23,9 +23,18 @@ import com.kirin.mt.core.youtube.sabr.SabrSession
 import com.kirin.mt.core.youtube.sabr.SabrStreamRegistry
 import com.kirin.mt.core.youtube.sabr.StreamerContextInput
 import com.kirin.mt.core.youtube.sabr.UmpReader
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -58,8 +67,13 @@ import kotlin.math.min
  *  - RELOAD_PLAYER_RESPONSE / InvalidPoToken(status3)/ SABR_ERROR → 抛 [SabrTerminalException]
  *    → [SabrDataSource] evict 会话 → 播放器 error-retry 走新 harvest。
  *
- * 线程安全:[getNextSegment] 用 runBlocking{withContext(Dispatchers.IO.limitedParallelism(1)){...}}
- * 串行化(同 LibreTube),两个 ChunkSampleStream 的 loader 线程不会并发改 [initializedFormats]。
+ * 线程安全(P11-315 后):
+ *  - [getNextSegment] 仍用 runBlocking{withContext(loaderDispatcher){...}} 串行化,A/V 两路不会
+ *    并发进重试/清表/retainActiveFormats。
+ *  - 网络读循环移到会话级 [readerScope](单通道 [dispatcher]);同一时刻只有一笔响应。
+ *  - [InitializedFormat.downloadedSegments]/[bufferedSegments] 已改 ConcurrentHashMap:
+ *    reader 线程写、loader 线程读/取走。
+ *  - 请求段 `MEDIA_END` 一到就交还 loader,margin 后继段由后台 drain 继续收完。
  *
  * 对齐 LibreTube `parser/SabrClient.kt`(MIT)。
  */
@@ -279,6 +293,36 @@ internal class SabrMediaFetcher(
 
   private val dispatcher = Dispatchers.IO.limitedParallelism(1)
 
+  // ── P11-315:响应读取移出 loader 调用栈 ────────────────────────────────────────────────
+  // 现状:getNextSegment 在 loader 线程同步跑完整个读循环,请求段 MEDIA_END 之后还要等
+  // margin 后继段,整笔响应结束才把段交还播放器(2026-11-10 4K 真机:请求段 4.2~6.7s 到手,
+  // 整笔 9~13.7s,每次多等 3.6~7s → 缓冲见底卡顿)。
+  // 这里把读循环放到会话级 [readerScope]:请求段一到 complete handoff,loader 立刻返回;
+  // margin 后继段继续在后台读进缓存。服务端「同一会话同一时刻一条流」的语义由 [fetchMutex]
+  // + drainJob.join() 保持(下一笔请求仍等上一笔 drain 结束)。
+  private val readerScope = CoroutineScope(SupervisorJob() + dispatcher)
+  private val fetchMutex = Mutex()
+  @Volatile private var drainJob: Job? = null
+  /**
+   * loader 侧仍保持「同一时刻只有一个 getNextSegment 在跑」——A/V 两路的重试、清表、
+   * retainActiveFormats 语义不用重审。它与 [dispatcher] 分开,避免等 handoff 时占住
+   * 后台读的通道。
+   */
+  private val loaderDispatcher = Dispatchers.IO.limitedParallelism(1)
+
+  /** 当前响应的 OkHttp call —— seek/释放时从别的线程 cancel,让阻塞读立刻退出。 */
+  @Volatile private var activeCall: okhttp3.Call? = null
+  /** 当前 drain 的请求,用于判断新请求是不是同轨的远距离 seek。 */
+  @Volatile private var drainRequest: SabrSegmentRequest? = null
+  /** 当前 drain 的启动时刻(elapsedRealtime),供「视频饥饿时抢占音频 drain」判断。 */
+  @Volatile private var drainStartMs = 0L
+
+  /** MediaSource 释放时取消后台读,避免播放结束后还在读 socket。 */
+  fun release() {
+    activeCall?.cancel()
+    readerScope.cancel()
+  }
+
   // alpha.9X(真实带宽判断机制):媒体3 DefaultBandwidthMeter 从 SabrDataSource 上报的样本波动离谱
   // (2026-08-24 真机 bw= 在 1M↔437M 之间 1000 倍跳变),effectiveBitrate 不可信 → AdaptiveTrackSelection 选档
   // 判定错误。这里直接从实际段下载采集真实吞吐。原实现是「分段采样→最近样本中位数」,但失败/卡死的段
@@ -294,6 +338,12 @@ internal class SabrMediaFetcher(
   private var realBwTimeMs = 0L
   /** 2026-09-01 重填容量环(每次成功媒体请求一笔,无墙钟衰减),中位数喂升档判据。 */
   private val capacityWindow = ArrayDeque<RealBwSample>()
+  // ── P11-320 M2(2026-11-11):会话重建后的首笔样本先暂存,等第二笔一起入账 ────────────────────
+  // 重建后的首笔常带 0.5~1.5s TTFB 或服务端慢启动;窗口只有这一笔时 ABR 会在一两秒内直接
+  // 720p→480p + 90s 冷却。暂存期间 getRealBitrateEstimate 返回 -1(证据不足),meter 回退
+  // seed/last,不会把「证据不足」当「带宽为零」。两个字段都只在 realBandwidthLock 内读写。
+  private var acceptedBwSampleCount = 0
+  private var pendingStartupBwSample: RealBwSample? = null
 
   // ── P11-306(2026-11-02 TV 真机):服务端按档位供流(pacing)证据 ──────────────────────────────
   // 病根(§71):播放 1080p 时服务端只按 ~1080p 的节奏供流,est/sus/cap 全被钉在 6~10M,而手切
@@ -520,33 +570,92 @@ internal class SabrMediaFetcher(
   @Volatile private var inFlightStartMs = 0L
   @Volatile private var inFlightReadBytes = 0L
   @Volatile private var inFlightLastByteMs = 0L
+  /** P11-321:首个正文字节到达的墙钟 —— ETA 速率按「首字节→现在」算,不再把 TTFB 计进分母。 */
+  @Volatile private var inFlightFirstByteMs = 0L
   /** 本笔响应里**第一个**非 init 视频段的 contentLength(请求段本身的字节数)。 */
   @Volatile private var inFlightVideoExpectedBytes = 0L
   /** 最近一笔请求结束的墙钟(用于「刚落地」2s 宽限,避免落地瞬间被看门狗判死)。 */
   @Volatile private var inFlightEndMs = 0L
+  // ── P11-326(2026-11-14 TV 真机):局部断流证据 —— 供 ABR 在挂死期间主动降档 ──────────────
+  // 背景(docs §76):ABR 只在 getNextChunk 评估,大段挂死时整个饥饿窗口零评估,只能等 8s 看门狗
+  // 整场重载。Media3 的 reevaluateBuffer 在挂死期间仍会调 shouldCancelChunkLoad —— 但那里读不到
+  // 「这笔请求到底还供不供得上」,故由 fetcher 暴露:首字节后静默时长、在途实测交付速率、
+  // 以及最近一次「中途断流」的墙钟(升档稳定闸用)。
+  /** 本笔在途请求**首字节后**观察到的最长静默(ms);ttfb 不计入(那是延迟不是中途断流)。 */
+  @Volatile private var inFlightMaxSilenceMs = 0L
+  /** 最近一笔在途请求的实测交付速率(bytes / 首字节→现在);请求结束后保留,供取消后的评估读。 */
+  @Volatile private var lastInFlightDeliveryBps = -1L
+  /** 最近一次「局部断流」的墙钟(0 = 从未发生):中途静默 ≥ [SUPPLY_GAP_SILENCE_MS] 或请求失败/超时。 */
+  @Volatile private var lastSupplyGapWallMs = 0L
+  /**
+   * P11-330:本笔在途请求**本身**是不是视频请求(req.formatItag ∈ sessionVideoItags)。
+   *
+   * 音频请求的响应里常会**顺带推视频段**(SABR 服务端 pushed),旧口径用「响应里出现过视频
+   * MEDIA_HEADER」判视频请求 ⇒ 音频请求被当成视频请求,音频静默 3s 就把**视频档位**降了。
+   * 真机 dev.r2328 21:33:21:在途是 `itag=139`(音频),silence=3001ms/elapsed=3495ms,
+   * 结果 720p 被 P11-321 用音频的 350K 选出 240p。
+   */
+  @Volatile private var inFlightRequestIsVideo = false
 
   private fun noteInFlightStart() {
     inFlightStartMs = SystemClock.elapsedRealtime()
     inFlightReadBytes = 0L
     inFlightLastByteMs = 0L
+    inFlightFirstByteMs = 0L
+    inFlightMaxSilenceMs = 0L
+    lastInFlightDeliveryBps = -1L
     inFlightVideoExpectedBytes = 0L
     inFlightEndMs = 0L
   }
 
   private fun noteInFlightEnd() {
-    inFlightEndMs = SystemClock.elapsedRealtime()
+    val now = SystemClock.elapsedRealtime()
+    // P11-326:保留「本笔实测交付速率」——取消在途段后的下一次 ABR 评估读它(此时 inFlightStartMs
+    // 已清 0,实时 getter 会返回 -1)。速率按「首字节→请求结束」算,与 ETA 同口径。
+    val firstByte = inFlightFirstByteMs
+    // P11-330:只记视频请求的交付速率 / 断流 —— 音频请求的响应体常夹杂推送的视频段,不能拿来
+    // 当「视频档位的供给」证据(真机 21:33:21 就是这样把 720p 降到 240p)。
+    if (inFlightRequestIsVideo && firstByte > 0L && inFlightReadBytes > 0L) {
+      val span = now - firstByte
+      if (span > 0L) lastInFlightDeliveryBps = inFlightReadBytes * 8000L / span
+    }
+    // 中途静默 ≥ 阈值 = 一次局部断流(供升档稳定闸否决;满缓冲主动停拉不经过本路径,不会误记)。
+    // 末尾这段静默没有后续 read,不会进 noteInFlightProgress ⇒ 在这里用「结束时刻−最后字节」补算。
+    val lastByte = inFlightLastByteMs
+    val trailingSilence = if (lastByte > 0L) (now - lastByte).coerceAtLeast(0L) else 0L
+    if (inFlightRequestIsVideo && firstByte > 0L &&
+      maxOf(inFlightMaxSilenceMs, trailingSilence) >= SUPPLY_GAP_SILENCE_MS
+    ) {
+      lastSupplyGapWallMs = System.currentTimeMillis()
+    }
+    inFlightEndMs = now
     inFlightStartMs = 0L
   }
 
   private fun noteInFlightProgress(readBytes: Long) {
+    val now = SystemClock.elapsedRealtime()
+    val lastByte = inFlightLastByteMs
+    if (lastByte > 0L) {
+      val silence = now - lastByte
+      if (silence > inFlightMaxSilenceMs) inFlightMaxSilenceMs = silence
+    }
+    if (inFlightFirstByteMs <= 0L) inFlightFirstByteMs = now
     inFlightReadBytes = readBytes
-    inFlightLastByteMs = SystemClock.elapsedRealtime()
+    inFlightLastByteMs = now
   }
 
-  /** 记本笔响应里第一个非 init 视频段的期望字节数(后续同类 header 不覆盖)。 */
+  /**
+   * P11-328:累加本笔响应里**每个**非 init 视频段的 contentLen(原实现只记第一个)。
+   *
+   * `getInFlightVideoEtaMs()` 的语义是「还差多久读完本笔请求的目标字节」。早停目标是
+   * 「请求段 + 后继段」(`streamNeedSatisfied` 要求 `want+1`),只记第一个会让请求段一到手就
+   * `expected <= read` ⇒ ETA=0 ⇒ P11-305 让路误判「段快落地」,而后继段可能还要几十秒
+   * (真机 2026-11-14 20:16:请求段 5MB 6s 到手,后继段 7.26MB 把单发槽占到 32.6s)。
+   * 累加后 ETA 覆盖所有已宣告的段,后继段在途时不再归零。
+   */
   private fun noteInFlightVideoSegment(itag: Int, contentLen: Long) {
-    if (itag in sessionVideoItags && contentLen > 0L && inFlightVideoExpectedBytes <= 0L) {
-      inFlightVideoExpectedBytes = contentLen
+    if (itag in sessionVideoItags && contentLen > 0L) {
+      inFlightVideoExpectedBytes += contentLen
     }
   }
 
@@ -556,6 +665,8 @@ internal class SabrMediaFetcher(
    * 0  = 请求段已到手,或请求刚结束 ≤[IN_FLIGHT_ETA_END_GRACE_MS](视为即将落地)。
    */
   fun getInFlightVideoEtaMs(): Long {
+    // P11-330:音频请求(即使响应里顺带推了视频段)不参与视频 ETA。
+    if (!inFlightRequestIsVideo) return -1L
     val now = SystemClock.elapsedRealtime()
     val start = inFlightStartMs
     if (start <= 0L) {
@@ -572,12 +683,61 @@ internal class SabrMediaFetcher(
     // 本笔响应里还没出现视频段的 MEDIA_HEADER ⇒ 没有「视频段快落地」的证据(纯音频请求也算 -1)。
     if (expected <= 0L) return -1L
     if (expected <= read) return 0L
-    val rateBps = read * 8000L / elapsed
+    // P11-321:速率分母改「首字节→现在」。旧口径从请求发出算,TTFB 1~4s 会把速率算低,
+    // 21:19:17 真机在途 3.6s、已读 3.19/4.18MB(bwNow=4122K,ETA≈1s)却因 5s 门槛返回 -1。
+    val rateElapsed = inFlightFirstByteMs.takeIf { it > 0L }?.let { now - it } ?: elapsed
+    if (rateElapsed <= 0L) return -1L
+    val rateBps = read * 8000L / rateElapsed
     if (rateBps <= 0L) return -1L
     return (expected - read) * 8000L / rateBps
   }
 
+  /**
+   * P11-326:在途视频请求**首字节后**的静默时长(ms)。-1 = 无在途/尚未收到首字节。
+   * 与 [getInFlightVideoEtaMs] 互补:静默 > 3s 时 ETA 返回 -1(无速率证据),本值仍能量出「硬挂死」。
+   */
+  fun getInFlightVideoSilenceMs(): Long {
+    val lastByte = inFlightLastByteMs
+    if (inFlightStartMs <= 0L || inFlightFirstByteMs <= 0L || lastByte <= 0L) return -1L
+    // 只认视频请求:音频挂死不该触发视频降档(本 fetcher 串行,同一时刻只有一笔在途)。
+    // P11-330:必须看「请求本身」而非响应里有没有视频段头 —— 音频请求的响应常顺带推视频段。
+    if (!inFlightRequestIsVideo) return -1L
+    return (SystemClock.elapsedRealtime() - lastByte).coerceAtLeast(0L)
+  }
 
+  /**
+   * P11-329:在途**视频**请求已持续多久(ms);-1 = 无在途/尚未出现视频段头。
+   * ABR 用它给「强制降档」加最小观察窗口:请求刚发出 1~2s 时 TCP 还在慢启动,
+   * 拿这段速率算 ETA 会严重高估(真机 dev.r2326:请求开始 1.6s 就判 ETA=29~77s →
+   * 1440p/2160p 被误降到 480p,随后又爬回来)。
+   */
+  fun getInFlightVideoElapsedMs(): Long {
+    val start = inFlightStartMs
+    if (start <= 0L || !inFlightRequestIsVideo) return -1L
+    return (SystemClock.elapsedRealtime() - start).coerceAtLeast(0L)
+  }
+
+  /**
+   * P11-326:在途请求的实时交付速率(bps,首字节→现在);无在途时返回**最近一笔**的实测速率。
+   * 用途:ABR 被强制取消后立即做降档决策——那刻实时窗口已关闭,不能用断流前的旧 est。
+   */
+  fun getInFlightVideoDeliveryBps(): Long {
+    if (!inFlightRequestIsVideo) return -1L
+    val start = inFlightStartMs
+    if (start <= 0L) return lastInFlightDeliveryBps
+    val firstByte = inFlightFirstByteMs
+    if (firstByte <= 0L || inFlightReadBytes <= 0L) return -1L
+    val span = SystemClock.elapsedRealtime() - firstByte
+    if (span <= 0L) return -1L
+    return inFlightReadBytes * 8000L / span
+  }
+
+  /**
+   * P11-326:最近一次「局部断流」的墙钟(ms);0 = 从未发生。
+   * 只记**在途中途**断流(首字节后静默 ≥ [SUPPLY_GAP_SILENCE_MS])与请求失败/超时——
+   * 满缓冲主动停拉、服务端 NEXT_REQUEST_POLICY 睡眠都不经过这些路径,不会误记。
+   */
+  fun getLastSupplyGapWallMs(): Long = lastSupplyGapWallMs
 
   /**
    * 2026-08-31 A(顶档 sustained 分母收紧):当前视频档是否顶档(≥2160)——顶档在位时 [recordFetchGap]
@@ -675,14 +835,50 @@ internal class SabrMediaFetcher(
     addSustainedGapSample(demandIdleMs, fetchStartMs)
   }
 
-  /** 记录一次真实段下载样本(fetchStreamData 成功时调用)。快小样本(init/retry/音频段)过滤;但慢小样本(2026-08-27 真机:服务端挂 8.5s 只回 939B)是真实供给中断,必须入账。 */
-  fun recordRealBandwidthSample(bytes: Long, elapsedMs: Long) {
-    if (elapsedMs <= 0) return
-    if (bytes < REAL_BW_MIN_BYTES && elapsedMs < BW_SLOW_TINY_MS) return
-    addRealBwSample(bytes, elapsedMs)
-    if (bytes >= REAL_BW_MIN_BYTES) {
-      addSustainedSample(bytes, elapsedMs)
-      addCapacitySample(bytes, elapsedMs)
+  /** P11-320 M2:首笔样本仍在暂存 ⇒ 会话处于「启动带宽未定」状态。 */
+  fun isBandwidthStartupProvisional(): Boolean = synchronized(realBandwidthLock) {
+    pendingStartupBwSample != null
+  }
+
+  /**
+   * 记录一次真实段下载样本(fetchStreamData 成功时调用)。
+   *
+   * P11-320 M1(2026-11-11):分母用**正文时间**(首字节→末字节),不是整笔请求耗时。
+   * 真机 r2309 的 244 笔成功请求里,整笔口径把 TTFB 算进带宽:<1MB 响应的 bodyRate
+   * 中位数是总耗时的 **2.73 倍**(65% ≥2 倍),而 ≥1MB 只有 1.29 倍。重建后的首笔
+   * 小响应因此把 est 从 9Mbps 压到 1.5~2.5Mbps,直接触发 720p→480p。
+   * TTFB 是延迟证据,已经由 [noteRoundTrip] 和静默超时通道负责,不该重复算进带宽。
+   *
+   * 同时:**小于 [REAL_BW_MIN_BYTES] 的响应一律不进带宽账**。init / 纯音频段不代表
+   * 链路容量;旧实现把「慢小响应」也入账(4KB init 耗时 2s ⇒ 极低样本),是重建后
+   * est 被砸穿的第二个来源。真实供给中断由失败样本([recordRealBandwidthFailure])
+   * 和静默超时负责。
+   *
+   * P11-320 M2:会话**第一笔**样本先暂存,等第二笔一起入账(见上文字段注释)。
+   */
+  fun recordRealBandwidthSample(bytes: Long, bodyMs: Long) {
+    if (bodyMs <= 0L) return
+    if (bytes < REAL_BW_MIN_BYTES) return
+    synchronized(realBandwidthLock) {
+      if (acceptedBwSampleCount == 0) {
+        pendingStartupBwSample = RealBwSample(bytes, bodyMs)
+        acceptedBwSampleCount = 1
+        Log.i(
+          tag,
+          "bw startup sample held (M2): ${bytes}B/${bodyMs}ms → 等第二笔一起入账",
+        )
+        return
+      }
+      pendingStartupBwSample?.let { held ->
+        addRealBwSample(held.bytes, held.timeMs)
+        addSustainedSample(held.bytes, held.timeMs)
+        addCapacitySample(held.bytes, held.timeMs)
+        pendingStartupBwSample = null
+      }
+      acceptedBwSampleCount++
+      addRealBwSample(bytes, bodyMs)
+      addSustainedSample(bytes, bodyMs)
+      addCapacitySample(bytes, bodyMs)
     }
   }
 
@@ -783,6 +979,8 @@ internal class SabrMediaFetcher(
   fun recordRealBandwidthFailure(elapsedMs: Long) {
     if (elapsedMs <= 0) return
     addRealBwSample(0L, elapsedMs)
+    // P11-326:失败/超时也是一次局部断流 —— 升档稳定闸据此在抖动期否决爬档。
+    lastSupplyGapWallMs = System.currentTimeMillis()
   }
 
   /**
@@ -800,6 +998,9 @@ internal class SabrMediaFetcher(
       realBwWindow.clear()
       realBwBytes = 0L
       realBwTimeMs = 0L
+      // P11-320 M2:重锚属于旧窗口的收尾;暂存样本不再补入,后续样本直接入账。
+      pendingStartupBwSample = null
+      if (acceptedBwSampleCount < 2) acceptedBwSampleCount = 2
       addRealBwSample(seedBytes, REAL_BW_RESEED_MS)
     }
     Log.i(tag, "bw reseeded: active est baseline → ${bitrateBps / 1000}K (seed ${seedBytes}B/${REAL_BW_RESEED_MS}ms)")
@@ -1230,7 +1431,9 @@ internal class SabrMediaFetcher(
     pendingRequestItags.add(itag)
     return runBlocking {
       try {
-        withContext(dispatcher) {
+        // P11-315:读循环已移到 readerScope;这里仍单通道串行(A/V 不并发进清理逻辑),
+        // 但不再占住后台读的 [dispatcher]。
+        withContext(loaderDispatcher) {
           var attempt = 0
           while (attempt < MAX_ATTEMPTS) {
             attempt++
@@ -1247,13 +1450,13 @@ internal class SabrMediaFetcher(
             initializedFormats[itag]?.downloadedSegments?.keys?.removeAll { it < req.segment }
 
             var fmt = initializedFormats[itag]
-            var preExistingSeqs: Set<Long> = emptySet()
+            val preExistingSeqs: Set<Long> = emptySet()
             if (fmt == null || !fmt.hasSegment(req.segment)) {
-              // 已下载但播放器不再要的段(seek 后)清掉,防泄漏
-              fmt?.downloadedSegments?.clear()
-              preExistingSeqs = fmt?.downloadedSegments?.keys?.toSet() ?: emptySet()
-              // 单流 POST——服务端推多段,缓存进 initializedFormats
-              media(req)
+              // P11-315:「等上一笔 drain + 清旧段 + 发新请求」全部收进 fetchAndAwaitHandoff
+              // 的互斥区——否则清表会与上一笔后台续读并发,把它刚推进来的段清掉。
+              // 单流 POST——服务端推多段,缓存进 initializedFormats。
+              // P11-315:只等请求段落地,不等整笔响应;margin 后继段后台继续读。
+              fetchAndAwaitHandoff(req)
               // P11-92(对齐 LibreTube getNextSegment 收尾 retainAll):media() 后清掉非当前选中
               // 格式的已初始化缓存。此前切档后旧格式(如 302)的 bufferedRange 一直随请求上报——
               // 真机 2026-09-13 三轮 308 死循环实锤:请求体没显式段号,服务端按「全部 bufferedRange
@@ -1421,10 +1624,101 @@ internal class SabrMediaFetcher(
   }
 
   /**
+   * P11-315:启动一笔响应,并等「请求段」落地(而不是整笔响应)。
+   *
+   * - 读循环跑在会话级 [readerScope] 上;下一笔请求先 join 上一笔 drain,保持
+   *   「同一会话同一时刻只有一条流」的服务端语义(不会并发两笔 POST)。
+   * - 请求段 `MEDIA_END` 一到就 complete handoff,loader 立刻拿到段;
+   *   margin 后继段继续在后台读进缓存,下一笔可直接命中。
+   * - 响应结束仍没拿到请求段时 handoff 正常完成,调用方沿用原有的跳段/重试逻辑。
+   * - 请求段交付之后的失败只发生在 margin 尾巴上:记日志,不打断当前播放。
+   */
+  private suspend fun fetchAndAwaitHandoff(req: SabrSegmentRequest) {
+    val handoff = CompletableDeferred<Unit>()
+    var launched = false
+    fetchMutex.withLock {
+      val prev = drainJob
+      val prevReq = drainRequest
+      if (prev != null && prev.isActive) {
+        // init 请求(seg=0)之后的第一笔媒体请求天然"跳很远",不算 seek——init 响应通常还在推
+        // 首个媒体段,取消它是纯损失(dev.r2302 日志里 rn=6 init → rn=7 seg166 被误判)。
+        val farSeek = prevReq != null && prevReq.segment > 0 &&
+          req.formatItag == prevReq.formatItag &&
+          (req.segment < prevReq.segment || req.segment > prevReq.segment + DRAIN_JOIN_AHEAD_SEGMENTS)
+        if (farSeek) {
+          Log.i(
+            tag,
+            "drain cancel on far seek: itag=${req.formatItag} seg ${prevReq?.segment}→${req.segment}",
+          )
+          // 同轨远距离 seek:取消旧响应而不是等它把 margin 读完。
+          // cancel call 会立刻打断阻塞读;join 等它把 finally 跑完,避免响应级字段串场。
+          activeCall?.cancel()
+          prev.cancel()
+          prev.join()
+        } else {
+          // P11-316(Stage C 第一步,按需抢占而非并发第二条 POST):
+          // 视频缓冲见底、而挡在前面的是音频请求时,取消音频 drain 让视频先走。
+          // 依据(dev.r2302):15:26:45.2 音频 rn=7 占流 7.6s,视频下一段请求被挡到 53.0
+          // 才发出,播放器在 50.76 因音频欠载卡 2.25s;而视频响应本来就会顺带推音频段。
+          // 不并发第二笔 POST——同一会话两条流会破坏服务端游标(见 Stage C 文档)。
+          val prevIsAudio = prevReq?.formatItag == audioFormat?.itag
+          val videoStarving = req.formatItag == videoFormat?.itag &&
+            bufferedAheadNoteMs in 1L..VIDEO_PREEMPT_AUDIO_RUNWAY_MS
+          val audioAgeMs = SystemClock.elapsedRealtime() - drainStartMs
+          if (prevIsAudio && videoStarving && audioAgeMs >= AUDIO_PREEMPT_MIN_AGE_MS) {
+            Log.i(
+              tag,
+              "drain preempt: video starving (bufAhead=${bufferedAheadNoteMs}ms), " +
+                "cancel audio drain itag=${prevReq?.formatItag} age=${audioAgeMs}ms",
+            )
+            activeCall?.cancel()
+            prev.cancel()
+            prev.join()
+          } else {
+            // 顺序请求/A-V 另一路:等上一笔 drain 结束再发新请求(单流语义)。
+            // ⚠️ 这里**不能**加超时取消:audio 加入 video drain 时超时会 cancel 掉 video 的
+            // 在途响应 → SocketException → 整会话 evict,形成 1.5s 一次的取消风暴
+            // (2026-11-10 dev.r2300 真机实测)。
+            prev.join()
+          }
+        }
+      }
+      val fmt = initializedFormats[req.formatItag]
+      if (fmt != null && fmt.hasSegment(req.segment)) {
+        // 上一笔 drain 已经把它读进来了,不必再发请求。
+        return@withLock
+      }
+      // 已下载但播放器不再要的段(seek 后)清掉,防泄漏
+      fmt?.downloadedSegments?.clear()
+      val job = readerScope.launch {
+        try {
+          media(req) { handoff.complete(Unit) }
+        } catch (e: CancellationException) {
+          handoff.completeExceptionally(e)
+          throw e
+        } catch (e: Throwable) {
+          if (!handoff.isCompleted) {
+            handoff.completeExceptionally(e)
+          } else {
+            Log.w(tag, "background drain failed after handoff: ${e::class.simpleName}: ${e.message}")
+          }
+        } finally {
+          if (!handoff.isCompleted) handoff.complete(Unit)
+        }
+      }
+      drainRequest = req
+      drainStartMs = SystemClock.elapsedRealtime()
+      drainJob = job
+      launched = true
+    }
+    if (launched) handoff.await()
+  }
+
+  /**
    * 发一次单流 POST + 处理 UMP 响应(对齐 LibreTube media + processUmpStream)。
    * backoff 起始 sleep(封顶 2.5s);redirect 写回 session;cookie/contexts 写回 session。
    */
-  private suspend fun media(req: SabrSegmentRequest) {
+  private suspend fun media(req: SabrSegmentRequest, onRequestedDelivered: () -> Unit) {
     // 2026-09-20(无效流量取证):一次响应内的丢弃统计——见 DiscardTracker 为何必须是调用内局部量。
     val discard = DiscardTracker()
     // P11-250(2026-10-12):**响应作用域**的解析状态(partial 段表)。headerId 只在一笔响应内有定义
@@ -1433,7 +1727,17 @@ internal class SabrMediaFetcher(
     val parseState = ResponseParseState()
     // P11-217:解析搬进 [fetchStreamData] 的读流循环(边收边解 + 拿够就停),这里只给 part 回调;
     // 返回值也从「整包字节」变成「实读字节 + 耗时 + 是否早停」。
-    val resp = fetchStreamData(req) { type, payload -> processPart(type, payload, discard, parseState) }
+    // P11-315:请求段一进缓存就唤醒 loader;后继(margin)段继续在后台读,不再拖住出画。
+    var requestedDelivered = false
+    val resp = fetchStreamData(req) { type, payload ->
+      processPart(type, payload, discard, parseState)
+      if (!requestedDelivered &&
+        initializedFormats[req.formatItag]?.hasSegment(req.segment) == true
+      ) {
+        requestedDelivered = true
+        onRequestedDelivered()
+      }
+    }
     // 2026-09-20(无效流量取证,只观测不改口径):本响应里被整段丢弃的媒体字节。
     // 真机三场「预取窗口 = 零可用数据窗口」期间每笔响应丢 7.6–7.9MB,而这些字节照进
     // `recordRealBandwidthSample` → est 一路抬到 32Mbps → 又作为 `bandwidthEstimate` **上报服务端**
@@ -1450,7 +1754,8 @@ internal class SabrMediaFetcher(
     Log.i(
       tag,
       "resp summary: req=${req.formatItag} usable=${resp.bytes - discard.bytes}B/${resp.bytes}B " +
-        "init=${initializedFormats.keys.sorted()} pushed=${serverPushedVideoItags.sorted()}",
+        "init=${initializedFormats.keys.sorted()} pushed=${serverPushedVideoItags.sorted()} " +
+        "early=${resp.earlyStop} media=${respPacingMediaMs}ms",
     )
     // alpha.67(对齐 LibreTube processPart status==2 `poToken = generatePoToken()` 同步):status=2 在
     // 本响应里出现 → 此处(下个请求发出前)同步重铸 PO token,下个请求一定带新 token → status=3 不再出现。
@@ -1548,18 +1853,29 @@ internal class SabrMediaFetcher(
    * [selectedVideoItagNote] <= 0(尚未喂到)⇒ 退回原行为,不改变未知态下的语义。
    */
   private fun marginFor(req: SabrSegmentRequest): Long = when {
-    req.formatItag == selectedVideoItagNote -> streamMargin()
+    req.formatItag == selectedVideoItagNote -> streamMargin(req.formatItag)
     // P11-307:音频/非选中格式**永远** margin=0。原式在 selectedVideoItagNote 尚未喂到时会
     // 让音频也走 streamMargin()=1，于是音频请求去等一个服务端根本没推的"下一个音频段"，
     // 同一响应里的大视频段被一起读下去 ⇒ 撞 8s 饥饿上限 ⇒ evict 整条会话。
     // 未知态的保护只对「视频格式」保留。
-    req.formatItag in sessionVideoItags && selectedVideoItagNote <= 0 -> streamMargin()
+    req.formatItag in sessionVideoItags && selectedVideoItagNote <= 0 -> streamMargin(req.formatItag)
     else -> 0L
   }
 
-  private fun streamMargin(): Long = when {
+  /**
+   * P11-317(Stage B1):早停余量 = min(档位期望, 水位能覆盖的段数)。
+   *
+   * 背景:margin 只看档位/水位,不看「这笔响应要多久」。2026-11-10 的两场 4K 真机
+   * (dev.r2302/r2304)里,请求段 5~7s 到手、整笔 9~14s,而缓冲只有 5~10s —— 等后继段
+   * 把整笔拖过 runway,播放器只能空等。
+   *
+   * P11-318 修正:handoff 之后 margin 不再拖住请求段交付,只延长后台 drain(预取)。
+   * 因此不再用「整笔耗时」逐级降档,而是:缓冲 < 3/4 段墙钟才砍到 0,否则保留档位余量
+   * (摊薄 RTT、提高每笔净攒)。证据不足(段数/带宽未知)时保持原档位行为。
+   */
+  private fun streamMargin(itag: Int): Long {
     // 起播期:只等请求段本身(P11-218 —— 播放器此刻无事可做,早一拍到手早一拍出画)。
-    bufferedAheadNoteMs <= 0L -> 0L
+    if (bufferedAheadNoteMs <= 0L) return 0L
     // P11-225:≥1440p 一笔**多搬一段**。依据(dev.r2168 实测):4K 一笔只搬 2 段(≈11s 内容)而往返
     // 9.2s ⇒ **净攒只有 +1.8s** ⇒ 水位常驻 6~12s、永远到不了升档门槛要的 20s(「够不到」空转)。
     // 搬 3 段(≈16.5s)⇒ 净攒 +7.3s ⇒ 水位能爬到 20s 量级,升档门槛(见 HeightAware 的 P11-225 地板)
@@ -1567,10 +1883,37 @@ internal class SabrMediaFetcher(
     // ⚠️冲突复核(P11-225):**多搬只在"水位有余力"时才做** —— 否则会和饥饿档的单笔上限顶在一起:
     // 4K 3 段 ≈47MB,在 20Mbps 下要 ~19 秒,而饥饿档 `callCap` 只有 12 秒 ⇒ 一笔必被切断
     // (就是 P11-224 刚回退的那个坑换个形式回来)。水位薄时退回 1 段(2 段 ≈31MB/~12s)正好贴住上限。
-    bufferedAheadNoteMs >= HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS &&
-      selectedVideoHeight >= HIGH_TIER_MIN_HEIGHT &&
-      !lowHeapDevice -> 2L
-    else -> 1L
+    val desired = when {
+      // P11-318:低档段太小(720p 单段 0.3~1MB),margin=0/1 时每笔请求被 RTT 主导,
+      // 实测只有 1~5Mbps,既跑不满带宽也把 est 压低。水位充足时多搬几段摊薄 RTT。
+      bufferedAheadNoteMs >= LOW_TIER_FAT_FETCH_MIN_RUNWAY_MS &&
+        selectedVideoHeight in LOW_TIER_FAT_FETCH_MIN_HEIGHT..HIGH_TIER_MIN_HEIGHT &&
+        !lowHeapDevice -> 3L
+      bufferedAheadNoteMs >= HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS &&
+        selectedVideoHeight >= HIGH_TIER_MIN_HEIGHT &&
+        !lowHeapDevice -> 2L
+      else -> 1L
+    }
+    val avgBytes = getAverageSegmentBytes(itag)
+    val estBps = getRealBitrateEstimate()
+    if (avgBytes <= 0L || estBps <= 0L) return desired
+    val segWallMs = avgBytes * 8000L / estBps
+    // P11-318(修正 P11-317 的保守闸):handoff 之后 margin **不再拖住请求段交付**,
+    // 它只延长后台 drain(预取后继段),下一笔请求等 drain 结束才发。因此:
+    // - 缓冲还撑得住一段的下载时间 ⇒ 保留档位余量,摊薄 RTT、提高每笔净攒
+    //   (同视频对照:旧版 margin=1 的 4K 卡顿频率低于 margin=0 的新版);
+    // - 只剩不足 3/4 段墙钟 ⇒ 砍到 0,让下一笔请求尽快发出。
+    return if (bufferedAheadNoteMs < segWallMs * 3L / 4L) 0L else desired
+  }
+
+  /** P11-317:某 itag 已交付媒体段的平均字节数(与实测消耗码率同一本账);证据不足返回 -1。 */
+  private fun getAverageSegmentBytes(itag: Int): Long {
+    if (itag <= 0) return -1L
+    return synchronized(measuredLock) {
+      val st = measuredTracks[itag] ?: return -1L
+      if (st.segs <= 0L || st.bytes <= 0L) return -1L
+      st.bytes / st.segs
+    }
   }
 
   /**
@@ -1617,7 +1960,26 @@ internal class SabrMediaFetcher(
     val segs = f.downloadedSegments.keys
     val want = if (req.segment <= 0L) segs.filter { it > 0L }.minOrNull() ?: return false else req.segment
     val margin = marginFor(req)
-    return segs.contains(want) && (margin <= 0L || segs.contains(want + 1L))
+    // P11-315:早交付后 loader 会把请求段从 downloadedSegments 取走(remove → bufferedSegments)。
+    // 只查 downloaded 会让「请求段已到手」在交付瞬间变成 false,后台 drain 永远等不到早停,
+    // 被迫把整笔响应读完(白占带宽 + 下一笔请求被迫 join 到响应结束)。
+    fun have(seq: Long): Boolean =
+      f.downloadedSegments.containsKey(seq) || f.bufferedSegments.containsKey(seq)
+    return have(want) && (margin <= 0L || have(want + 1L))
+  }
+
+  /**
+   * P11-328:只判「请求段本身」是否到手(不含早停要求的后继段)。
+   * 用于「请求段到手后最多等后继段 5s」的计时起点;与 [streamNeedSatisfied] 共用同一 want 口径。
+   */
+  private fun streamRequestedSatisfied(req: SabrSegmentRequest): Boolean {
+    val f = initializedFormats[req.formatItag] ?: return false
+    val want = if (req.segment <= 0L) {
+      f.downloadedSegments.keys.filter { it > 0L }.minOrNull() ?: return false
+    } else {
+      req.segment
+    }
+    return f.downloadedSegments.containsKey(want) || f.bufferedSegments.containsKey(want)
   }
 
   private suspend fun fetchStreamData(
@@ -1941,9 +2303,17 @@ internal class SabrMediaFetcher(
     val runwayMs = bufferedAheadMsAtLastFetch
     // P11-221:实读字节数提到 try 之外 —— catch 也要用它判「有请求没回复」。
     var readBytes = 0L
+    // P11-328:请求段(不含后继段)到手的墙钟;0=还没到手。供「后继段等待上限」。
+    var requestedReadyAtMs = 0L
+    // P11-319(诊断,取证后删):区分「延迟型(服务端响应慢)」与「带宽型(吞吐真不够)」。
+    // firstByteMs = 请求发出 → 首个正文字节;body = 首字节 → 本次读结束。
+    // bodyRate = 正文吞吐(剔除首包等待);pace = 交付媒体时长 / 墙钟耗时(>1 = 服务端供得比播放快)。
+    var firstByteMs = 0L
     return try {
       // P11-305:本笔在途请求的进度起点(供 stall 看门狗估算 ETA,见 [getInFlightVideoEtaMs])。
       noteInFlightStart()
+      // P11-330:在途证据只对**视频请求**生效;音频请求响应里顺带推的视频段不算。
+      inFlightRequestIsVideo = req.formatItag in sessionVideoItags
       // P11-134:SABR POST **整调用上限**。playback client 是 `callTimeout(0)`(为不切掉长分片),
       // 只有 per-read 15s ⇒ 服务端「慢滴」(每次 read 都在 15s 内挤一点)时**永不超时**。
       // 真机 2026-09-20 13:32 就是这样挂死的:`fetch rn=2` 发出后既无 REAL 也无 exception,缓冲耗尽、
@@ -1964,7 +2334,19 @@ internal class SabrMediaFetcher(
       // 只对「已开播之后」的请求生效:起播期水位恒为 0,而首包偶发 16~20s 是常态(P11-160),
       // 那种情况该由 StartupStallThresholdMs=25s 的起播看门狗兜底,不该在这里被砍到 8s。
       val starving = deliveredRealMedia && bufferedAheadNoteMs in 0..SabrStarvingBufferMs
+      // P11-321:切档/降档目标请求是**救火请求**——目标段必须落地才有效果,而 8s 饥饿 cap 与 8s
+      // 位置冻结看门狗同值,会把这段和重载一起切掉(23:22:30 itag303 seg26 8s 只读 683KB;
+      // 21:41:42 同段已读 92%、差 724ms)。只在「视频轨 + 与最后交付过的视频 itag 不同」时放宽到 12s,
+      // 其余 ≤1080p 仍是 8s、≥1440p 仍是 12s。历史 7 次 8s 切断中 4 次再给 4s 能读完。
+      // 切换进行中(graceSourceItag 仍是旧档)与「请求档 != 最后交付档」都算切档目标;
+      // 前者覆盖首笔切换请求失败后的重试(重试时 lastDeliveredVideoItag 可能已被推来的字节更新)。
+      val switchingVideo = req.formatItag in sessionVideoItags && (
+        (graceSourceItag >= 0 && req.formatItag != graceSourceItag) ||
+          (lastDeliveredVideoItag > 0 && req.formatItag != lastDeliveredVideoItag)
+        )
+      val switchTarget = starving && switchingVideo
       val callCapMs = when {
+        starving && switchTarget -> SabrStarvingSwitchCallTimeoutMs
         starving && reqHeight >= 1440 -> SabrStarvingCallTimeoutMsHigh
         starving -> SabrStarvingCallTimeoutMs
         reqHeight >= 1440 -> SabrCallTimeoutMs
@@ -1981,7 +2363,7 @@ internal class SabrMediaFetcher(
         Log.i(
           tag,
           "fetch rn=$rn starving-fast-fail: bufAhead=${bufferedAheadNoteMs}ms ≤ " +
-            "${SabrStarvingBufferMs}ms → callCap=${callCapMs}ms (base=" +
+            "${SabrStarvingBufferMs}ms → callCap=${callCapMs}ms switchTarget=$switchTarget (base=" +
             "${if (reqHeight >= 1440) SabrCallTimeoutMs else SabrCallTimeoutMsLow}ms, P11-173; " +
             "P11-222 余量一半=${if (bufferedAheadNoteMs > 0L) bufferedAheadNoteMs / 2 else -1}ms)",
         )
@@ -2007,6 +2389,7 @@ internal class SabrMediaFetcher(
         sabrHttpClient
       }
       val call = client.newCall(request)
+      activeCall = call
       call.timeout().timeout(callCapMs, java.util.concurrent.TimeUnit.MILLISECONDS)
       // ── P11-217:流式读 + 边收边解 + 拿够就停 ────────────────────────────────────────────────
       // 以前是 `response.body?.bytes()`:**整批读完才开始解析** ⇒ 服务端一次推 25~65MB 时,播放器
@@ -2016,6 +2399,8 @@ internal class SabrMediaFetcher(
       // 拿够([streamNeedSatisfied])即停:请求段+后继段到手就够下一轮续拉,剩下的字节不再收。
       val ump = UmpReader()
       var earlyStop = false
+      // P11-328:本笔是否因「后继段等待上限」提前结束(请求段已到手,后继段没等满)。
+      var successorCapStop = false
       call.execute().use { response ->
         val code = response.code
         if (code != 200) {
@@ -2038,10 +2423,32 @@ internal class SabrMediaFetcher(
           ump.append(readBuf, n)
           if (n == 0) continue
           readBytes += n
+          if (firstByteMs == 0L) firstByteMs = SystemClock.elapsedRealtime() - t0
           noteInFlightProgress(readBytes)
           ump.readParts(onPart)
+          // ── P11-328:请求段到手后最多再等后继段 5s ────────────────────────────────────────────
+          // 单发 fetcher 只有一笔在途;1440p/2160p 的早停目标是「请求段+后继段」,后继段一慢
+          // 就把唯一串行槽占死(真机 20:16:请求段 5MB 6s 到手,响应又等 7.26MB 后继段 32.6s,
+          // 缓冲 18.4s→0 → stall)。请求段已到手且缓冲不厚时,到点直接早停,把槽让给下一笔。
+          if (requestedReadyAtMs == 0L && streamRequestedSatisfied(req)) {
+            requestedReadyAtMs = SystemClock.elapsedRealtime()
+          }
           if (readBytes >= StreamStopMinBytes && streamNeedSatisfied(req)) {
             earlyStop = true
+            break
+          }
+          if (requestedReadyAtMs > 0L && marginFor(req) > 0L &&
+            bufferedAheadNoteMs in 1L..EARLY_STOP_SUCCESSOR_CAP_MAX_BUFFER_MS &&
+            SystemClock.elapsedRealtime() - requestedReadyAtMs >= EARLY_STOP_SUCCESSOR_CAP_MS
+          ) {
+            earlyStop = true
+            successorCapStop = true
+            Log.i(
+              tag,
+              "early stop (successor cap, P11-328): requested seg in hand for " +
+                "${SystemClock.elapsedRealtime() - requestedReadyAtMs}ms, margin=${marginFor(req)} " +
+                "bufAhead=${bufferedAheadNoteMs}ms read=${readBytes}B — 让出串行槽给下一笔",
+            )
             break
           }
         }
@@ -2050,7 +2457,16 @@ internal class SabrMediaFetcher(
       // alpha.9X(带宽驱动,滑动窗口累计):成功段只计「实际下载耗时」(不再混入缓冲等待 gap,那个是主动
       // 节奏非带宽不足),吞吐 = 窗口累计量/累计耗时。带宽充足时贴近真实下载速率,断流时靠失败段计时下探。
       val mbps = if (elapsed > 0) readBytes * 8 / (elapsed * 1000L) else -1L
-      recordRealBandwidthSample(readBytes, elapsed)
+      // P11-319(诊断):把「等首包」和「正文吞吐」拆开,用于区分延迟型/带宽型。
+      val bodyMs = if (firstByteMs > 0L) (elapsed - firstByteMs).coerceAtLeast(1L) else 0L
+      val bodyRateK = if (bodyMs > 0L) readBytes * 8000L / bodyMs / 1000L else -1L
+      val paceX = if (elapsed > 0L && respPacingMediaMs > 0L) {
+        respPacingMediaMs.toDouble() / elapsed
+      } else {
+        -1.0
+      }
+      // P11-320 M1:带宽样本只计正文时间(首字节→末字节);TTFB 归延迟证据,不重复算进带宽。
+      recordRealBandwidthSample(readBytes, bodyMs)
       // P11-306:服务端 pacing 证据 —— 本笔请求段提前到手且交付内容时长 ≥ 实际耗时(见 docs §71.9)。
       recordPacingSample(
         req,
@@ -2096,9 +2512,20 @@ internal class SabrMediaFetcher(
       Log.i(
         tag,
         "fetch rn=$rn REAL ${readBytes}B ${elapsed}ms → ${mbps}Mbps est=${fmtEstForLog(getRealBitrateEstimate())}" +
+          " ttfb=${if (firstByteMs > 0L) firstByteMs else -1}ms body=${bodyMs}ms bodyRate=${bodyRateK}K" +
+          " pace=${if (paceX >= 0) String.format(java.util.Locale.US, "%.2f", paceX) else "-"}x" +
+          " media=${respPacingMediaMs}ms" +
           // P11-217:早停时字节数=**实读**,不是服务端本来会推的总量 —— 不打标记会与"这一笔很小"混淆。
           // P11-218:带上余量(0=起播期只等请求段 / 1=已开播多等一层),便于真机核对判据。
-          (if (earlyStop) " (早停:请求段${if (marginFor(req) > 0L) "+后继段" else "本身"}已到手,P11-217/218)" else ""),
+          (
+            if (successorCapStop) {
+              " (早停:请求段已到手,后继段等满 ${EARLY_STOP_SUCCESSOR_CAP_MS}ms 上限,P11-328)"
+            } else if (earlyStop) {
+              " (早停:请求段${if (marginFor(req) > 0L) "+后继段" else "本身"}已到手,P11-217/218)"
+            } else {
+              ""
+            }
+            ),
       )
       // P11-221:「有请求没有回复」—— 200 但只回了状态/头部,没有任何媒体段。
       if (readBytes < ZeroReplyMaxBytes) {
@@ -2126,6 +2553,8 @@ internal class SabrMediaFetcher(
             "video=${videoFormat?.itag} audio=${audioFormat?.itag} selectedVideoNote=$selectedVideoItagNote " +
             "→ treat as success (P11-307, 不 evict)",
         )
+        // P11-307 分支保留**整笔耗时**口径:超时前的静默尾部正是「这批数据没供上」的证据,
+        // 与成功路径的 M1(bodyRate 口径)分工不同。
         recordRealBandwidthSample(readBytes, failMs)
         SabrAbrMemory.noteSabrResponseMs(failMs)
         noteRoundTrip(req.formatItag, failMs)
@@ -2174,13 +2603,15 @@ internal class SabrMediaFetcher(
       noteSessionFetch(readBytes, failMs, success = false)
       Log.w(
         tag,
-        "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms bwNow=${fmtEstForLog(getRealBitrateEstimate())}" +
+        "fetch rn=$rn exception: ${e.message} (fail=${failMs}ms ttfb=${firstByteMs}ms read=${readBytes}B " +
+          "bwNow=${fmtEstForLog(getRealBitrateEstimate())}" +
           (if (silentHang) " silence-hang itag=${req.formatItag} recorded, P11-178" else "") + ")",
       )
       throw e
     } finally {
       // P11-305:请求结束(成功/失败/早停)都要清在途标记,否则看门狗会以为还有视频段在途。
       noteInFlightEnd()
+      activeCall = null
     }
   }
 
@@ -2629,6 +3060,10 @@ internal class SabrMediaFetcher(
 
     const val HIGH_TIER_FAT_FETCH_MIN_RUNWAY_MS = 15_000L
 
+    /** P11-318:低档(720~1440)水位充足时一次多搬几段,摊薄 RTT、提高带宽利用率。 */
+    const val LOW_TIER_FAT_FETCH_MIN_RUNWAY_MS = 20_000L
+    const val LOW_TIER_FAT_FETCH_MIN_HEIGHT = 720
+
     /** P11-274:切档 grace 缓存最多保留的旧档段数(覆盖“当前段 + 2 段顺延”)。 */
     const val GRACE_KEEP_SEGMENTS = 3
 
@@ -2646,9 +3081,19 @@ internal class SabrMediaFetcher(
     /** P11-173:饥饿快切的 ≥1440p 上限 —— 大段本身更慢,给到 12s(仍早于 18s/40s 原口径)。 */
     const val SabrStarvingCallTimeoutMsHigh = 12_000L
 
+    /**
+     * P11-321:饥饿档里**切档/降档目标请求**的整调用上限(ms)。这是救火请求,目标段不落地
+     * 降档就白降;而 8s 与看门狗同值会把它和重载一起切掉。历史 7 次 8s 切断里 4 次再给 4s 能读完。
+     */
+    const val SabrStarvingSwitchCallTimeoutMs = 12_000L
+
     // ── P11-305:stall 看门狗让路的「在途视频段 ETA」估算参数(见 docs §70)──────────────────
-    /** 起算门槛:请求发出不到这个时长不估 ETA(起播/首包阶段交给既有看门狗)。 */
-    const val IN_FLIGHT_ETA_MIN_ELAPSED_MS = 5_000L
+    /**
+     * 起算门槛:请求发出不到这个时长不估 ETA(起播/首包阶段交给既有看门狗)。
+     * P11-321:5_000 → 1_500。历史 299 份日志:stall 时在途视频 1.5~5s 的 36 次里 3 次可让路
+     * (21:19:17 ETA≈1.1s、23:18:43 ETA≈5.6s);静默 3s + 最小 256KB 两道保护仍在。
+     */
+    const val IN_FLIGHT_ETA_MIN_ELAPSED_MS = 1_500L
     /** 最近一次收到字节距今超过它 ⇒ 视为静默挂死(交给 8s 静默超时),不参与让路。 */
     const val IN_FLIGHT_ETA_MAX_SILENCE_MS = 3_000L
     /** 已读字节少于此值不估 ETA(只有 part 头/状态包时算不出速率)。 */
@@ -2656,11 +3101,45 @@ internal class SabrMediaFetcher(
     /** 请求刚结束的宽限:段落地瞬间看门狗可能仍看到 BUFFERING,别立刻判死。 */
     const val IN_FLIGHT_ETA_END_GRACE_MS = 2_000L
 
+    /**
+     * P11-326:一次「局部断流」判定线(ms)——在途请求**首字节后**静默超过它即记一次 supply gap。
+     * 只用于升档稳定闸的否决;不参与降档(降档走 ETA/静默的实时触发)。
+     */
+    const val SUPPLY_GAP_SILENCE_MS = 2_000L
+
+    /**
+     * P11-328:请求段到手后,最多再等后继段多久(ms)。单发 fetcher 下后继段慢会把唯一串行槽
+     * 占死;历史校核(304 份日志)里长请求的“等后继段”p50=4.8s / p90=13.4s / 464 次 ≥5s。
+     */
+    const val EARLY_STOP_SUCCESSOR_CAP_MS = 5_000L
+    /**
+     * P11-328:只在请求开始时缓冲 < 此值(ms)才套后继段上限。缓冲厚时保留「一笔多搬」的摊薄收益;
+     * 低缓冲(危险人群)才需要尽快把槽让给下一笔。
+     */
+    const val EARLY_STOP_SUCCESSOR_CAP_MAX_BUFFER_MS = 20_000L
+
     /** transient 重试上限(耗尽→SabrTerminalException→evict)。对齐旧 SabrDashDataSource BACKOFF_MAX_ATTEMPTS。 */
     const val MAX_ATTEMPTS = 6
+
+    /**
+     * P11-315:同一轨的新请求若目标段在「当前 drain 请求段 + 这个窗口」之内,认为播放仍在
+     * 顺序推进,等 drain 收完(响应里很可能已经/即将有这一段);超出即视为远距离 seek,
+     * 直接取消旧响应。取 8 段 ≈ 服务端单笔可能前推的深度(4K 约 40~50s 内容)。
+     */
+    const val DRAIN_JOIN_AHEAD_SEGMENTS = 8L
+
+    /** P11-316:视频缓冲低于此值时,允许取消挡路的音频 drain(Stage C 第一步:按需抢占)。 */
+    const val VIDEO_PREEMPT_AUDIO_RUNWAY_MS = 10_000L
+
+    /** P11-316:音频 drain 至少跑了这么久才值得抢占,避免刚发出就取消。 */
+    const val AUDIO_PREEMPT_MIN_AGE_MS = 800L
     /** 单次 backoff 最大 sleep(ms,<8s stall watchdog)。对齐旧 MAX_BACKOFF_SLEEP_MS。 */
     const val MAX_BACKOFF_SLEEP_MS = 2_500L
-    /** 过滤阈值:小于此字节数的样本视为 init/retry/非媒体段,不进真实带宽统计(真实媒体段 ≥ ~300KB)。 */
+    /**
+     * 过滤阈值:小于此字节数的响应(init/纯音频/无效段)一律不进带宽账(P11-320 M1)。
+     * 这类响应不代表链路容量 —— 4KB init 即使耗时 2s 也不能说明带宽只有 16kbps。
+     * 真实供给中断由失败样本与静默超时通道负责。
+     */
     const val REAL_BW_MIN_BYTES = 100_000L
     /** 2026-09-01 重填容量环容量(笔)——近 8 笔成功请求,中位数抗单笔 TCP 爬升/小段噪声。 */
     const val CAPACITY_WINDOW_SAMPLES = 8
@@ -2709,13 +3188,6 @@ internal class SabrMediaFetcher(
      * 「慢滴 + 重试」造成的十几秒 gap 照旧入账(那是真实供给证据)。
      */
     const val BW_GAP_IGNORE_MS = 30_000L
-    /**
-     * alpha.9Z:快小样本过滤的时间上限(ms)——bytes<100KB 且耗时低于它视为 init/retry/音频噪声丢弃;
-     * 超过它视为「慢小响应」(服务端挂住只回极小体)真实供给中断,按实际 (bytes, elapsed) 入账。
-     * 2026-08-27 真机:rn=18 8.5s 只回 939B 被过滤,est 钉 52M,31s 墙钟仅交付 67.6MB(有效 17M),
-     * 缓冲 19.6s→2% 看门狗重载——供给中断发生在传输内,原过滤器全盲。
-     */
-    const val BW_SLOW_TINY_MS = 2_000L
     /** alpha.9Z:持续带宽窗口(墙钟 ms)——升档判据「60s 内实际交付字节/墙钟」。 */
     const val SUSTAINED_WINDOW_MS = 60_000L
     /** 2026-08-30:升档重锚合成样本时长(ms)——est 从「声明码率」起步,随后真实样本平滑接管。 */

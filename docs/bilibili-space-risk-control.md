@@ -16,6 +16,10 @@
 
 四个请求同一秒落地,足以触发 B站 对 space 接口的**频控**。
 
+**P11-325(2026-11-14)起串行化**:资料 + 统计 + 关注态先跑,`profileLoadedMid/RetryKey`
+写回后才启动投稿列表;移动端同理(键加 `profileLoadedMid`)。目的不是省请求,而是把
+「同秒 4 发」压成「先 2~3 发、落定后再 1 发」,避开 -799/412 的触发窗口。
+
 ## 2. 风控 / 频控码语义(实测)
 
 | 码 | 含义 | 是否瞬态 | 处置 |
@@ -28,8 +32,9 @@
 | `-101` | 账号未登录(`x/relation/followings` 需要登录) | 否 | 不重试 |
 
 判据统一收敛在 `SpaceHttpSupport`:可重试码 `-352/-799/452/-452` + HTTP `412/429/5xx`,
-梯子 `InteractiveRetryDelaysMs = 2s/4s/6s`、`RecoveryRetryDelaysMs = 1.2s/2.4s`、
-`RecoveryFallbackRetryDelaysMs = 1.2s`。**新加 space 调用必须复用这套策略,不要自判**。
+梯子 `InteractiveRetryDelaysMs = 2s/4s/8s/12s`(P11-325 由 2s/4s/6s 拉长,见 §5)、
+`RecoveryRetryDelaysMs = 1.2s/2.4s`、`RecoveryFallbackRetryDelaysMs = 1.2s`。
+**新加 space 调用必须复用这套策略,不要自判**。
 
 ## 3. 2026-09-25 实测结论(避免以后走弯路)
 
@@ -57,3 +62,33 @@
   `BiliSpaceProfile`(资料:每级 fallback + `profile mid=… ok/partial fans=… following=…`)、
   `BiliVideoRepository`(投稿列表:`retry attempt=N delayMs=…` / `ok … videos=N`)、
   `BiliSpaceHttp`(buvid 供给:`buvid ready source=spi/fallback`)。
+
+## 5. 2026-11-14:412 窗口约 20s(用户「进入B站主页不定时会有412 加载失败」)
+
+真机日志 `logs_live_20261114_195004.log`(3.1.3-alpha.3):
+
+- 17:01:00 进 UP 主页(mid=703057028):同一秒 `acc/info` 返回 **-799**,`arc/search` 返回
+  **HTTP 412**(HTML「请求被拒绝」)×4,旧梯子 2s/4s/6s 全部撞 412,12s 后放弃 → 页面显示加载失败。
+- 18:01:09 进 mid=3546619609876957:同样 412×4(12s 内);**18:01:29 同一 mid 再请求即
+  `ok raw=30`** —— 风控窗口约 **20s**,旧 12s 梯子刚好差一口气。
+- 结论:412 是**节奏型瞬时风控**,与签名/buvid 无关(同一请求 20s 后原样成功);处置是
+  ①进页串行化请求(§1);②重试梯子覆盖 ≥20s(§2 的 2s/4s/8s/12s)。两处均已在 P11-325 改。
+
+## 6. 社区方案(2026-11-14 查证并落地)
+
+参考:[yt-dlp #9119](https://github.com/yt-dlp/yt-dlp/issues/9119)(412 主因是缺 buvid cookie)、
+[RSSHub 26c5fa2](https://github.com/DIYgod/RSSHub/commit/26c5fa28)(无需浏览器构造匿名 cookie +
+换接口兜底)、B站 -352 风控逆向(签名/UA/dm_img_*/IP 多维度)。
+
+- **免签名兜底接口(已落地,P11-326)**:`GET https://api.bilibili.com/x/series/recArchivesByKeywords
+  ?mid=<mid>&keywords=&ps=30&pn=1&orderby=senddate` —— 不需要 WBI 签名、不需要 `dm_img_*`,匿名实测
+  `code=0` 并返回同一 UP 的全部投稿(含 bvid/title/pic/pubdate/duration/stat.view/aid/upMid)。
+  限制:只按发布时间排序(click/stow 会退化成 senddate),无 owner 昵称/头像(页面头部来自 acc/info)。
+  本项目实现:主接口**先单发一次**,命中 `SpaceHttpSupport.isRetryableFailure` 就立即切该兜底
+  (不用等满 2/4/8/12s 梯子);兜底也失败才回到原重试 / Recovery 链。
+- **完整访客 cookie(未落地,候选)**:RSSHub 用 `x/frontend/finger/spi` + `GenWebTicket` 组装
+  `buvid3/buvid4/b_nut/_uuid/b_lsid/buvid_fp/bili_ticket`;yt-dlp 结论是 412 的直接诱因是缺 `buvid3`。
+  本项目 space 投稿请求当前**只带 SESSDATA**(对齐 BV 的"多带反而触发风控"),与社区结论存在冲突;
+  若后续兜底接口也被限流,再评估给主接口补 buvid3/buvid4(已有 `SpaceHttpSupport.ensureBuvidCookies`)。
+- **其余已知维度**:WBI 签名必须正确、UA 用常见浏览器值、`dm_img_list/dm_img_str/dm_cover_img_str`
+  不能是异常值、控制翻页频率、避免机房 IP。
