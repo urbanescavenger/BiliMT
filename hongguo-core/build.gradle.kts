@@ -1,6 +1,7 @@
 plugins {
+  // AGP 9 内置 Kotlin 支持，不能再单独 apply org.jetbrains.kotlin.android
+  // （会报 "no longer required for Kotlin support since AGP 9.0"）。
   alias(libs.plugins.android.library)
-  alias(libs.plugins.kotlin.android)
 }
 
 // GPL-3.0-only: 移植自 N3urda/hongguoTV 的 core 模块(见 NOTICE.md / LICENSE)。
