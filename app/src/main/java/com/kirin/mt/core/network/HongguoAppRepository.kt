@@ -55,7 +55,12 @@ class HongguoAppRepository(
   }
 
   suspend fun search(keyword: String): List<VideoSummary> = withContext(Dispatchers.IO) {
-    runCatching { content.search(keyword).items.map { toSummary(it, emptyList()) } }
+    runCatching {
+      content.search(keyword).items
+        // 详情/取流接口只认数字 series_id；book_id/搜索结果 id 混入的条目直接丢掉。
+        .filter { it.id.matches(Regex("[0-9]{1,30}")) }
+        .map { toSummary(it, emptyList()) }
+    }
       .onFailure { Log.w(Tag, "搜索失败: ${it.message}") }
       .getOrDefault(emptyList())
   }
