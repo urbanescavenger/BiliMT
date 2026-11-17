@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v4.0.0-alpha.2](#v400-alpha2)
 - [v4.0.0-alpha.1](#v400-alpha1)
 - [v3.1.3](#v313)
 - [v3.1.3-alpha.5](#v313-alpha5)
@@ -426,6 +427,37 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v4.0.0-alpha.2
+
+**红果播放对齐：只读定时弹幕 + 分集评论；修复 v5 播放「设备注册失败」。**
+
+### 弹幕
+
+- `TimedComments` 按播放时间窗预取前 5 分钟（最多 20 个窗口），映射 `DanmakuEntry`，
+  复用现有 DanmakuRenderEngine。
+- TV 红果控制行新增「弹幕开关」；移动端原有弹幕开关直接生效。
+
+### 评论
+
+- `AppCommentPages` 游标分页；首屏失败回退 `PublicComments`（网页公开评论/剧评）。
+- TV 红果控制行新增「评论」，`CommentScreen` 增加红果分支；移动播放器评论 Tab 自动切
+  `MobileHongguoCommentList`。
+- 只读，不支持发送弹幕/评论。
+
+### 设备身份修复
+
+- v5 播放每次冷启动重新注册设备，测试频繁时被上游频控，表现为
+  `播放设备注册失败，请稍后重试`；评论因走固定签名不受影响。
+- `PlaybackDeviceSession` 增加 `PlaybackIdentityStore`，持久化
+  device_id/install_id/device_token/cookies；播放与定时弹幕共用同一 session；
+  注册失败 1s 后重试一次。
+- 若上游频控窗口未过仍可能失败；一次成功后持久化，后续冷启动不再注册。
+
+### 验证
+
+- P11-337 云编译绿 44119614558；P11-338 云编译 44127480255。
+- TV/移动实机待复测。
 
 ## v4.0.0-alpha.1
 
