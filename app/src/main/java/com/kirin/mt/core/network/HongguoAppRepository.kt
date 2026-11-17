@@ -5,7 +5,10 @@ import android.graphics.Color
 import android.util.Log
 import com.hongguotv.core.AppCommentPages
 import com.hongguotv.core.ContentRepository
+import com.hongguotv.core.DeviceRegister
 import com.hongguotv.core.MemoryCookies
+import com.hongguotv.core.PlaybackDeviceSession
+import com.hongguotv.core.PlaybackIdentityStore
 import com.hongguotv.core.PlayerDeviceStore
 import com.hongguotv.core.PublicComments
 import com.hongguotv.core.RankBoard
@@ -57,16 +60,24 @@ class HongguoAppRepository(
     .cookieJar(MemoryCookies())
     .build()
 
-  private val content = ContentRepository(http)
+  /** 播放/弹幕/评论共用同一个匿名身份；持久化到 SharedPreferences，冷启动不再重新注册。 */
+  private val playbackSession = PlaybackDeviceSession(
+    store = SharedPreferencesPlaybackStore(context),
+  )
+  // 播放侧复用同一个 session，避免弹幕/评论注册后播放再注册一次被上游频控。
+  private val content = ContentRepository(
+    http = http,
+    playbackSession = playbackSession,
+  )
   /** 官方推荐流游标跨页复用；page<=1 或失败时重建。 */
   private var recommendationFeed: RecommendationFeed? = null
   /** 定时弹幕按播放时间窗读取；内部有 60s 窗口缓存。 */
-  private val timedCommentReader = TimedComments()
+  private val timedCommentReader = TimedComments(playbackSession = playbackSession)
   private val appComments = AppCommentPages()
   private val publicComments = PublicComments(http)
 
   init {
-    // 匿名设备身份持久化：换进程后不重复注册，减少上游注册频控。
+    // 旧 v3 兼容链路的设备槽；与 v5 播放身份分开。
     ContentRepository.deviceStore = SharedPreferencesDeviceStore(context)
   }
 
@@ -277,7 +288,7 @@ class HongguoAppRepository(
         val rendition = ladder.select(maxQuality)
           ?: throw IOException("红果没有可用清晰度")
         HongguoStream(rendition.url, rendition.key, rendition.quality, http)
-      }.onFailure { Log.w(Tag, "取流失败 episode=$episodeId: ${it.message}") }.getOrNull()
+      }.onFailure { Log.w(Tag, "取流失败 episode=$episodeId: ${it.message}", it) }.getOrNull()
     }
 
   private fun toSummary(series: Series, episodes: List<String>): VideoSummary {
@@ -302,6 +313,53 @@ class HongguoAppRepository(
       source = SourceHongguo,
       tvboxLines = if (episodes.isEmpty()) emptyList() else listOf(line),
     )
+  }
+
+  /** v5 匿名播放身份持久化（device_id/install_id/device_token/cookies）。 */
+  private class SharedPreferencesPlaybackStore(context: Context) : PlaybackIdentityStore {
+    private val prefs = context.getSharedPreferences("hongguo_playback_identity", Context.MODE_PRIVATE)
+
+    override fun load(): DeviceRegister.Registered? {
+      val raw = prefs.getString(Key, null) ?: return null
+      return runCatching {
+        val o = org.json.JSONObject(raw)
+        val deviceId = o.optString("device_id")
+        val installId = o.optString("install_id")
+        if (deviceId.isBlank() || installId.isBlank()) return null
+        val cookies = mutableMapOf<String, String>()
+        o.optJSONObject("cookies")?.let { values ->
+          values.keys().forEach { name -> cookies[name] = values.optString(name) }
+        }
+        DeviceRegister.Registered(
+          deviceId = deviceId,
+          installId = installId,
+          deviceToken = o.optString("device_token"),
+          newUser = o.optBoolean("new_user", false),
+          cookies = cookies,
+        )
+      }.getOrNull()
+    }
+
+    override fun save(value: DeviceRegister.Registered?) {
+      if (value == null) {
+        prefs.edit().remove(Key).apply()
+        return
+      }
+      val cookies = org.json.JSONObject().apply {
+        value.cookies.forEach { (name, cookie) -> put(name, cookie) }
+      }
+      val o = org.json.JSONObject()
+        .put("device_id", value.deviceId)
+        .put("install_id", value.installId)
+        .put("device_token", value.deviceToken)
+        .put("new_user", value.newUser)
+        .put("cookies", cookies)
+      prefs.edit().putString(Key, o.toString()).apply()
+    }
+
+    private companion object {
+      const val Key = "identity"
+    }
   }
 
   private class SharedPreferencesDeviceStore(context: Context) : PlayerDeviceStore {

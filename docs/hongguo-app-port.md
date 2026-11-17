@@ -70,7 +70,9 @@
 - 流式播放首帧只等 moov/样本表 + 首段 Range，通常远小于整集；seek 会发新的 Range。
 - 旧的整集下载缓存（`cacheDir/hongguo`）已不再使用，可手动清理。
 - 搜索合并 App + 网页 `searchAll` 前两页；App 搜索分页游标仍未接入，网页分页按 `hasMore` 取第 2 页。
-- 设备身份存 `SharedPreferences`（`hongguo_app_device`），换进程复用，减少注册频控。
+- 播放/弹幕共用 `hongguo_playback_identity` 里的匿名设备身份（device_id/install_id/device_token/cookies），
+  冷启动优先复用；注册失败 1s 后重试一次，仍失败需等上游频控窗口。
+- 旧 v3 兼容链路的设备槽仍是 `hongguo_app_device`，与 v5 播放身份分开。
 - 上游接口/签名版本变化时可能整体失效；`HongguoRepository` 会回退网页 3 集。
 - TV 端已加入搜索源与「红果推荐」Tab，播放器共用 `HongguoDataSource`；电视实机尚未复测。
 - 许可：引用 `:hongguo-core` 的发行物整体按 GPL-3.0-only 分发；原 MIT 文本见 `LICENSE-MIT`。

@@ -13,6 +13,12 @@ import okhttp3.RequestBody.Companion.toRequestBody
 class PlaybackDeviceRegistrationException(cause: Throwable? = null) :
     IOException("播放设备注册失败，请稍后重试", cause)
 
+/** 匿名播放身份的持久化槽；避免每次冷启动都重新注册被上游频控。 */
+interface PlaybackIdentityStore {
+    fun load(): DeviceRegister.Registered?
+    fun save(value: DeviceRegister.Registered?)
+}
+
 /** Anonymous playback identity. Register once, then keep the same identity across repositories. */
 class PlaybackDeviceSession(
     private val register: (OkHttpClient) -> DeviceRegister.Registered? = { http ->
@@ -30,7 +36,8 @@ class PlaybackDeviceSession(
             }
             DeviceRegister.parse(text, response.headers("Set-Cookie"))
         }
-    }
+    },
+    private val store: PlaybackIdentityStore? = null,
 ) {
     companion object {
         val shared = PlaybackDeviceSession()
@@ -84,7 +91,12 @@ class PlaybackDeviceSession(
             return it
         }
         if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
-        return toProfile(registerDevice(http)).also { ready = it }
+        store?.load()?.takeIf(::validDevice)?.let { saved ->
+            return toProfile(saved).also { ready = it }
+        }
+        val device = registerDevice(http)
+        store?.save(device)
+        return toProfile(device).also { ready = it }
     }
 
     @Synchronized
@@ -113,23 +125,36 @@ class PlaybackDeviceSession(
                 return false
             }
         if (!validDevice(device)) return false
+        store?.save(device)
         cdid = UUID.randomUUID().toString()
         ready = toProfile(device)
         return true
     }
 
     private fun registerDevice(http: OkHttpClient): DeviceRegister.Registered {
-        val device =
+        var lastError: Throwable? = null
+        repeat(2) { attempt ->
             try {
-                register(http) ?: throw PlaybackDeviceRegistrationException()
+                val device = register(http) ?: throw PlaybackDeviceRegistrationException()
+                if (!validDevice(device)) throw PlaybackDeviceRegistrationException()
+                if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
+                return device
             } catch (error: InterruptedIOException) {
                 throw error
             } catch (error: IOException) {
-                throw PlaybackDeviceRegistrationException(error)
+                lastError = error
             }
-        if (!validDevice(device)) throw PlaybackDeviceRegistrationException()
-        if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
-        return device
+            if (attempt == 0) {
+                try {
+                    Thread.sleep(1_000)
+                } catch (interrupted: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw InterruptedIOException("播放请求已取消")
+                }
+                if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
+            }
+        }
+        throw PlaybackDeviceRegistrationException(lastError)
     }
 
     private fun validDevice(device: DeviceRegister.Registered) =
