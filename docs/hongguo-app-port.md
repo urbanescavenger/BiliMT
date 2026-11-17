@@ -46,8 +46,9 @@
 ## 推荐 Tab
 
 - 新增 `HomeSection.Hongguo`（独立分区，类似 YouTube 热门），TV 与移动端共用。
-- 数据：`HongguoAppRepository.feed(page)` → `ContentRepository.createRecommendationFeed()`
-  官方 App 推荐流（匿名设备，无需登录）；空页/异常回退 `ContentRepository.home(page)` 网页首页推荐。
+- 数据：`HongguoAppRepository.feed(page)` → `ContentRepository.rankPage(RankBoard.ALL, page)`
+  综合热榜（约 20 条/页、共 5 页，适合网格）；官方 App 推荐流每页仅 2~3 条，降为兜底；
+  再失败回退 `ContentRepository.home(page)` 网页首页推荐。
 - 卡片只带剧集元数据；TV `AppShell` / 移动 `MobileApp` 点击时走 `hongguoDetail` 补全
   `vid_list` 再进播放器。
 - `AppSettingsStore` 增加 `HomeSectionsHongguoMigrationV1`：老安装升级后自动启用一次，

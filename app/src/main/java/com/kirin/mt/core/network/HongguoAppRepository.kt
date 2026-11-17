@@ -5,6 +5,7 @@ import android.util.Log
 import com.hongguotv.core.ContentRepository
 import com.hongguotv.core.MemoryCookies
 import com.hongguotv.core.PlayerDeviceStore
+import com.hongguotv.core.RankBoard
 import com.hongguotv.core.RecommendationFeed
 import com.hongguotv.core.Series
 import com.kirin.mt.core.model.SourceHongguo
@@ -83,10 +84,23 @@ class HongguoAppRepository(
   }
 
   /**
-   * 红果推荐 Tab 数据：官方 App 推荐流（匿名设备，无需登录）。
-   * 同一 feed 实例延续翻页游标；page<=1 或失败时重建，失败回退网页首页推荐。
+   * 红果推荐 Tab 数据。
+   *
+   * 主源用「综合热榜」：完整网格约 20 条/页、共 5 页，适合 TV/移动网格。
+   * 官方 App 推荐流每页只回 2~3 条（竖屏轮播式），做网格会只剩几部，降为兜底；
+   * 再失败才回退网页首页推荐。
    */
   suspend fun feed(page: Int = 1): List<VideoSummary> = withContext(Dispatchers.IO) {
+    val ranked = runCatching {
+      content.rankPage(RankBoard.ALL, page).items
+        .filter { it.id.matches(Regex("[0-9]{1,30}")) }
+        .distinctBy { it.id }
+        .map { toSummary(it, emptyList()) }
+    }.onFailure { Log.w(Tag, "榜单推荐失败 page=$page: ${it.message}") }.getOrNull()
+    if (!ranked.isNullOrEmpty()) {
+      Log.i(Tag, "推荐 page=$page count=${ranked.size} source=rank")
+      return@withContext ranked
+    }
     runCatching {
       if (page <= 1 || recommendationFeed == null) {
         recommendationFeed = content.createRecommendationFeed()
@@ -96,7 +110,6 @@ class HongguoAppRepository(
         .filter { it.id.matches(Regex("[0-9]{1,30}")) }
         .distinctBy { it.id }
         .map { toSummary(it, emptyList()) }
-      // 空页按失败处理，交给网页首页推荐兜底，避免 Tab 直接空掉。
       if (items.isEmpty()) throw IOException("推荐为空")
       items
     }.onFailure {
@@ -110,7 +123,7 @@ class HongguoAppRepository(
           .map { toSummary(it, emptyList()) }
       }.onFailure { Log.w(Tag, "推荐回退失败 page=$page: ${it.message}") }
         .getOrDefault(emptyList())
-    }.also { Log.i(Tag, "推荐 page=$page count=${it.size}") }
+    }.also { Log.i(Tag, "推荐 page=$page count=${it.size} source=feed/web") }
   }
 
   suspend fun detail(seriesId: String): VideoSummary? = withContext(Dispatchers.IO) {
