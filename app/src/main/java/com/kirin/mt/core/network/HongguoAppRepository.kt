@@ -3,7 +3,6 @@ package com.kirin.mt.core.network
 import android.content.Context
 import android.util.Log
 import com.hongguotv.core.ContentRepository
-import com.hongguotv.core.ContentType
 import com.hongguotv.core.MemoryCookies
 import com.hongguotv.core.PlayerDeviceStore
 import com.hongguotv.core.Rendition
@@ -61,11 +60,14 @@ class HongguoAppRepository(
     val app = runCatching { content.search(keyword) }
       .onFailure { Log.w(Tag, "App 搜索失败 kw=$keyword: ${it.message}") }
       .getOrNull()
-    val web1 = runCatching { content.searchAll(keyword, page = 1, type = ContentType.SHORT) }
+    // 不传 type：网页搜索跨真人/漫剧/AI 三类，genre=205 的漫剧也能搜到。
+    // 传 ContentType.SHORT 时 searchAll 只留 genre=203/空，实测「新星」10 条全是 205，
+    // 会被整页过滤成 0；这是“搜不到主流视频”的直接原因。
+    val web1 = runCatching { content.searchAll(keyword, page = 1) }
       .onFailure { Log.w(Tag, "网页搜索失败 kw=$keyword: ${it.message}") }
       .getOrNull()
     val web2 = if (web1?.hasMore == true) {
-      runCatching { content.searchAll(keyword, page = 2, type = ContentType.SHORT) }
+      runCatching { content.searchAll(keyword, page = 2) }
         .onFailure { Log.w(Tag, "网页搜索第2页失败 kw=$keyword: ${it.message}") }
         .getOrNull()
     } else {
