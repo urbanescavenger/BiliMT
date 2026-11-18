@@ -1247,16 +1247,13 @@ fun MobilePlayerScreen(
       // (合成 MPD 的 Representation id = itag)。与 TV PlayerScreen onTracksChanged 同判读口径:
       // 连续日志里 height/id 变化 = 发生升/降档。
       override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
-        // P11-342 修:打**当前选中轨**(selectedTrackIndex)而非组内全部候选——首版 isTrackSelected
-        // 把 adaptive 组 14 条全列出来,升降无法判读。height/id 变化 = 发生换档。
-        val active = tracks.groups.joinToString(" ") { g ->
-          val si = g.selectedTrackIndex
-          if (si >= 0) {
-            val f = g.getTrackFormat(si)
-            if (f.height > 0) "${f.height}p(id=${f.id})" else ""
-          } else ""
-        }.trim()
-        if (active.isNotBlank()) Log.i(MobilePlayerLogTag, "onTracksChanged activeVideo=$active")
+        // P11-342 修:打**当前渲染轨**(player.videoFormat)而非组内全部候选——首版 isTrackSelected
+        // 把 adaptive 组 14 条全列(该 API 语义=参与 selection),升降无法判读。
+        // (Tracks.Group.selectedTrackIndex 在 media3 1.10 不存在,编译实证;videoFormat 即当前轨。)
+        val f = player.videoFormat
+        if (f != null && f.height > 0) {
+          Log.i(MobilePlayerLogTag, "onTracksChanged activeVideo=${f.height}p(id=${f.id})")
+        }
       }
 
       override fun onRenderedFirstFrame() {
@@ -1395,7 +1392,7 @@ fun MobilePlayerScreen(
             (playerState as? MobilePlayerState.Ready)?.info?.directAbrLadder == true
           ) {
             val dse = error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
-            val uri = dse?.dataSpec?.uri
+            val uri = dse?.dataSpec?.uri?.toString()
             val paramKeys = uri?.substringAfter('?', "")?.substringBefore('#')?.split('&')
               ?.mapNotNull { p -> p.substringBefore('=').takeIf { it.isNotEmpty() } } ?: emptyList()
             val watched = listOf("ip", "expire", "ei", "c", "pot", "n", "alr", "rn", "req0")

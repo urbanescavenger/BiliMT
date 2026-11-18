@@ -1793,7 +1793,7 @@ fun PlayerScreen(
           (playerState as? PlayerScreenState.Ready)?.info?.directAbrLadder == true
         ) {
           val dse = error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
-          val uri = dse?.dataSpec?.uri
+          val uri = dse?.dataSpec?.uri?.toString()
           val paramKeys = uri?.substringAfter('?', "")?.substringBefore('#')?.split('&')
             ?.mapNotNull { p -> p.substringBefore('=').takeIf { it.isNotEmpty() } } ?: emptyList()
           val watched = listOf("ip", "expire", "ei", "c", "pot", "n", "alr", "rn", "req0")
