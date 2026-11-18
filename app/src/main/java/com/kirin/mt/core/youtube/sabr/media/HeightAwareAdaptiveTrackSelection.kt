@@ -1851,7 +1851,12 @@ class HeightAwareAdaptiveTrackSelection(
    */
   private fun itagOf(f: Format): Int {
     val id = f.id ?: return -1
-    return id.substringAfterLast(':', id).toIntOrNull() ?: -1
+    // P11-342:合成 MPD(直链全阶梯/自合成 DASH)的 Format.id 形态是 "0_135"(mimeType 分组的
+    // AdaptationSet 前缀 + Representation itag)——只按冒号段解析会全得 itag=-1,判据里按 itag
+    // 的实测/记忆/容量/校准逻辑整片失明(18:48 真机冷启动梯子日志全部 itag-1 实锤)。
+    // 先冒号段(SABR "2:303"、Merging "0:302"),再下划线段(合成 MPD "0_135"),纯解析兼容。
+    id.substringAfterLast(':', id).toIntOrNull()?.let { return it }
+    return id.substringAfterLast('_').toIntOrNull() ?: -1
   }
 
   /**

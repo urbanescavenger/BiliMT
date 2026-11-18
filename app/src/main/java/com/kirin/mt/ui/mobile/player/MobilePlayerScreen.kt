@@ -1136,7 +1136,15 @@ fun MobilePlayerScreen(
       startQualityRelaxed = false
       // P11-120:换视频重置字幕为关闭(不跨视频继承)。
       selectedSubtitleTrackId = null
-      val startQualityHeight = if (effectiveInfo.isSabrSingle()) youtubeStartQuality.startHeight else null
+      // P11-342:直链全阶梯档同样要锁——锁到 resolve 已算好的意图档(P11-173 选档 = selectedQuality
+      // 对应 height)。此前恒 null 不锁,直链档初始选轨按 est 落 144(18:48 真机 videoFmt=0_394 实锤,
+      // 起播意图明明是 480p);NewPipe DASH 单分辨率组无此问题,故历史只锁 SABR。
+      val startQualityHeight = when {
+        effectiveInfo.isSabrSingle() -> youtubeStartQuality.startHeight
+        effectiveInfo.directAbrLadder -> effectiveInfo.videoTracks
+          .firstOrNull { it.id == effectiveInfo.selectedQuality.id }?.height?.takeIf { it > 0 }
+        else -> null
+      }
       abrSelectionFactory.startupLockHeight = startQualityHeight
       // C1(2026-09-20):同时把 videoId 给选档 —— 让它从进程级记忆里读到
       // 「该视频上服务端推过的 itag」,首个请求就收窄(材料会话里服务端只服务它那场会话绑定的格式)。
@@ -1239,16 +1247,15 @@ fun MobilePlayerScreen(
       // (合成 MPD 的 Representation id = itag)。与 TV PlayerScreen onTracksChanged 同判读口径:
       // 连续日志里 height/id 变化 = 发生升/降档。
       override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
-        val active = buildString {
-          tracks.groups.forEach { g ->
-            for (i in 0 until g.length) {
-              if (g.isTrackSelected(i)) {
-                val f = g.getTrackFormat(i)
-                if (f.height > 0) append("${f.height}p(id=${f.id}) ")
-              }
-            }
-          }
-        }
+        // P11-342 修:打**当前选中轨**(selectedTrackIndex)而非组内全部候选——首版 isTrackSelected
+        // 把 adaptive 组 14 条全列出来,升降无法判读。height/id 变化 = 发生换档。
+        val active = tracks.groups.joinToString(" ") { g ->
+          val si = g.selectedTrackIndex
+          if (si >= 0) {
+            val f = g.getTrackFormat(si)
+            if (f.height > 0) "${f.height}p(id=${f.id})" else ""
+          } else ""
+        }.trim()
         if (active.isNotBlank()) Log.i(MobilePlayerLogTag, "onTracksChanged activeVideo=$active")
       }
 
@@ -1380,7 +1387,11 @@ fun MobilePlayerScreen(
           // → 重 resolve 跳过自合成 DASH 直落 dashMpdUrl/HLS。SABR 错误恒为 2000,不误标。
           // P11-99c:标记移到预算判定**之前**(预算耗尽的最后一击也标记);重试用独立
           // errorRetryCount(MaxErrorAutoRetry=3,容纳 SABR→DASH→HLS 三级)。
-          if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube) {
+          // P11-342:直链档 403(代理出口漂移等)不标记——该标记会连坐跳过 NewPipe 自合成 DASH
+          // 兜底,而直链档与它无关;仅 NewPipe DASH 兜底自身的 403 才判死(原语义)。
+          if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube &&
+            (playerState as? MobilePlayerState.Ready)?.info?.directAbrLadder != true
+          ) {
             SabrStreamRegistry.markDashFallbackFailed(activeRequest.bvid)
           }
           if (errorRetryCount < MaxErrorAutoRetry) {

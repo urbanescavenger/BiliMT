@@ -940,6 +940,8 @@ class YoutubePlaybackResolver(
       audioTracks = audioTracks,
       headers = YoutubePlaybackHeaders,
       availableAudioTracks = availableAudioTracks,
+      // P11-342:全阶梯入 MPD 会话 → 播放器按意图档锁起播(非 SABR 历史不锁致 144 起播)。
+      directAbrLadder = ladderFormats.isNotEmpty(),
     )
   }
 

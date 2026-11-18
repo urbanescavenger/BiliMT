@@ -1788,7 +1788,10 @@ fun PlayerScreen(
         // P11-99c:标记移到预算判定**之前**(预算耗尽的最后一击也标记,手动重试同样能 HLS 接上);
         // 重试用独立 errorRetryCount(MaxErrorAutoRetry=3,容纳 SABR→DASH→HLS 三级),不再烧
         // stall 看门狗预算;isPlaying 清零;超限置 Failed 交用户手动重试。
-        if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube) {
+        // P11-342:直链档 403 不标记(同 Mobile——防连坐跳过 NewPipe 自合成 DASH 兜底)。
+        if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube &&
+          (playerState as? PlayerScreenState.Ready)?.info?.directAbrLadder != true
+        ) {
           SabrStreamRegistry.markDashFallbackFailed(activeRequest.bvid)
         }
         if (errorRetryCount < MaxErrorAutoRetry) {
@@ -2264,11 +2267,14 @@ fun PlayerScreen(
         // P11-120:换视频重置字幕为关闭(不跨视频继承用户的字幕选择)。
         selectedSubtitleTrackId = null
         // 黑屏画质熔断:零帧重试 ≥2 次后启动,起始档压到 BlackFrameHeightCap(与手动选档取小)。
-        val startQualityHeight = if (effectiveInfo.isSabrSingle()) {
-          youtubeStartQuality.startHeight?.let { minOf(it, blackFrameHeightCap) }
+        // P11-342:直链全阶梯档同样锁意图档(同 Mobile;黑屏熔断 cap 照套)。
+        val startQualityHeight = when {
+          effectiveInfo.isSabrSingle() -> youtubeStartQuality.startHeight?.let { minOf(it, blackFrameHeightCap) }
             ?: blackFrameHeightCap.takeIf { it != Int.MAX_VALUE }
-        } else {
-          null
+          effectiveInfo.directAbrLadder -> effectiveInfo.videoTracks
+            .firstOrNull { it.id == effectiveInfo.selectedQuality.id }?.height
+            ?.takeIf { it > 0 }?.let { minOf(it, blackFrameHeightCap) }
+          else -> null
         }
         abrSelectionFactory.startupLockHeight = startQualityHeight
       // C1(2026-09-20):同时把 videoId 给选档 —— 让它从进程级记忆里读到

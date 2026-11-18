@@ -157,6 +157,13 @@ data class PlaybackInfo(
    * 按 Range 边读边解 CENC，不再走 `file://` 整集下载。
    */
   val hongguoStream: HongguoStream? = null,
+  /**
+   * P11-342:直链全阶梯 ABR 会话(合成 MPD 多分辨率入组,目前仅 IOS 直链档 fullLadder)。
+   * true 时播放器 prepare 前把 `startupLockHeight` 锁到 [selectedQuality] 对应高度——
+   * 此前非 SABR 恒 null 不锁,直链档初始选轨落 144(18:48 真机 videoFmt=0_394 实锤);
+   * 首帧后照常 release 交给 HeightAware ABR 爬。NewPipe DASH 单分辨率组选哪条同高,无需锁。
+   */
+  val directAbrLadder: Boolean = false,
 )
 
 /** YouTube 一条可选音轨(多语言配音)。id 为 audioTrack.id(如 "en.4"),非 itag。 */
