@@ -175,9 +175,10 @@ class YoutubePlaybackResolver(
         buildPlaybackInfoFromDirect(
           videoId, armLabel, armClient, armGapis,
           codecCapability, codecPreference, request, youtubeDefaultQuality, youtubeStartQuality,
-          // P11-342:全阶梯入 MPD(visionOS 暂保持单轨=false;IOS 档已删,此开关留给 visionOS
-          // 全阶梯 ABR 议题复活——Phase 0 已验证判据引擎在合成 MPD 上可跑)。
-          fullLadder = false,
+          // P11-342:visionOS 档开**全阶梯入 MPD**(真机 19:43 反馈「一直在480」——单轨 MPD 只有
+          // 起播意图档一条,无档可升)。Phase 0 已验证 HeightAware 判据引擎可在合成 MPD 跑
+          // (IOS 档实测 1s 爬 6 档);起播锁意图档 → 首帧 release → ABR 自由爬。
+          fullLadder = true,
         )
       }.onFailure {
         Log.w(Tag, "direct 链异常($armLabel): ${it::class.simpleName}: ${it.message}", it)
@@ -854,8 +855,8 @@ class YoutubePlaybackResolver(
     allQualities: List<PlaybackQuality>,
     allAudioTracks: List<ParsedFormat> = emptyList(),
     /**
-     * P11-342 Phase 0:全阶梯入 MPD(带宽自适应升降诊断;IOS 档删除后暂无消费者,
-     * 保留给 visionOS 全阶梯 ABR 议题——Phase 0 已验证判据引擎可在合成 MPD 上跑)。
+     * P11-342:全阶梯入 MPD(带宽自适应升降)——visionOS 直链档启用(真机 19:43「一直在480」
+     * 后开:单轨无档可升);Phase 0 已验证 HeightAware 判据引擎可在合成 MPD 上跑。
      * 非空 → videoTracks = 选中轨 + 其余各档(各自独立签名 url/segmentBase),供 ExoPlayer
      * AdaptiveTrackSelection 档间切换;空 = 现行为仅选中单轨(其余调用点零变化)。
      */
@@ -2130,7 +2131,7 @@ class YoutubePlaybackResolver(
     request: PlaybackRequest,
     youtubeDefaultQuality: YoutubeDefaultQuality,
     youtubeStartQuality: YoutubeStartQuality,
-    /** P11-342 Phase 0:全阶梯入 MPD 带宽 ABR 诊断——仅 IOS 臂 true(visionOS 先保持单轨)。 */
+    /** P11-342:全阶梯入 MPD(带宽自适应升降)——visionOS 直链档 true(19:43「一直在480」后启用)。 */
     fullLadder: Boolean = false,
   ): PlaybackInfo? {
     val payload = buildJsonObject {

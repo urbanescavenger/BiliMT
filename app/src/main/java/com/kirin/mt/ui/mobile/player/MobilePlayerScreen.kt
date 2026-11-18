@@ -1243,7 +1243,7 @@ fun MobilePlayerScreen(
   // ExoPlayer 监听 + 生命周期释放
   DisposableEffect(player) {
     val listener = object : Player.Listener {
-      // P11-342 Phase 0:直链全阶梯 ABR 升降诊断(IOS 档删除后暂未激活)——selection 变化打 active 视频轨
+      // P11-342:直链(visionOS)全阶梯 ABR 升降判读——selection 变化打当前渲染轨,height 变化=换档
       // (合成 MPD 的 Representation id = itag)。与 TV PlayerScreen onTracksChanged 同判读口径:
       // 连续日志里 height/id 变化 = 发生升/降档。
       override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
