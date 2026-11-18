@@ -70,6 +70,7 @@
 - 流式播放首帧只等 moov/样本表 + 首段 Range，通常远小于整集；seek 会发新的 Range。
 - 旧的整集下载缓存（`cacheDir/hongguo`）已不再使用，可手动清理。
 - 搜索合并 App + 网页 `searchAll` 前两页；App 搜索分页游标仍未接入，网页分页按 `hasMore` 取第 2 页。
+- 红果 client 强制 `Proxy.NO_PROXY`，不走系统/应用代理；本地 Wi-Fi 的 `127.0.0.1` 代理不会再劫持注册/取流。需要代理时须单独做设置。
 - 播放/弹幕共用 `hongguo_playback_identity` 里的匿名设备身份（device_id/install_id/device_token/cookies），
   冷启动优先复用；注册失败 1s 后重试一次，仍失败需等上游频控窗口。
 - 旧 v3 兼容链路的设备槽仍是 `hongguo_app_device`，与 v5 播放身份分开。
