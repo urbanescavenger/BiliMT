@@ -7,6 +7,7 @@ import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.network.BiliApiClient
 import com.kirin.mt.core.network.BiliApiEndpoints
 import com.kirin.mt.core.network.HongguoAppRepository
+import com.kirin.mt.core.network.HongguoResolve
 import com.kirin.mt.core.network.BiliNumberParser
 import com.kirin.mt.core.network.PgcMappers
 import com.kirin.mt.core.network.SpaceHttpSupport
@@ -86,8 +87,9 @@ class PlaybackRepository(
     }
     // TVBox(影视库)点播:MacCMS 采集站直链/懒解析线路 → 远程 HLS,走 VOD 播放器(P11-77 用户决策:
     // 参考 PGC/番剧路径,不进直播壳)。线路=清晰度档(preferredQualityId=线路索引),选档即重解析换线。
+    // 红果(SourceHongguo)也走本路径,但 preferredQualityId=档位数值、清晰度面板=ladder 档位(P11-340)。
     if (request.isTvbox) {
-      return getTvboxPlaybackInfo(request)
+      return getTvboxPlaybackInfo(request, qualityPreference)
     }
     val requestedQualityId = request.preferredQualityId ?: qualityPreference.requestedQualityId
     val cacheKey = PlaybackCacheKey(
@@ -187,8 +189,15 @@ class PlaybackRepository(
    * 线路 = 清晰度档:`preferredQualityId` 存线路索引,选档即换线(保留当前集索引,越界按线路
    * 分集数钳制);解析顺序 = 请求线路优先,失败顺延其它线路(死线不硬扛,与 IPTV 镜像容灾同心智)。
    * 起播头不带 B站 Cookie/Referer/Origin(裸数据源,防第三方 CDN 防盗链误拒)。
+   *
+   * 红果例外(P11-340):`hongguo-app:<vid>` 分集不按线路解析,而是 v5 取流按清晰度上限选档;
+   * 此时 `preferredQualityId` 存**档位数值**(如 720),`qualities` 填 ladder 档位而非线路列表。
+   * 红果恒单线路,线路索引侧的 `coerceIn(0, lastIndex)` 会把 720 钳回 0,两种语义不冲突。
    */
-  private suspend fun getTvboxPlaybackInfo(request: PlaybackRequest): PlaybackInfo {
+  private suspend fun getTvboxPlaybackInfo(
+    request: PlaybackRequest,
+    qualityPreference: PlaybackQualityPreference,
+  ): PlaybackInfo {
     val lines = request.tvboxLines
     if (lines.isEmpty()) {
       throw IllegalStateException("tvbox: 该影片无可用线路")
@@ -199,7 +208,7 @@ class PlaybackRepository(
       addAll((0..lines.lastIndex).filter { it != lineIndex })
     }
     var resolvedUrl: String? = null
-    var resolvedStream: HongguoStream? = null
+    var resolvedHongguo: HongguoResolve? = null
     var resolvedLine = lineIndex
     var resolvedEpisode = request.tvboxEpisodeIndex
     for (candidate in order) {
@@ -213,11 +222,16 @@ class PlaybackRepository(
       val stream = if (isHongguoApp) {
         hongguoAppRepository.resolveStream(
           episode.url.removePrefix(HongguoAppRepository.EpisodePrefix),
+          // 清晰度上限：手动选过档 → preferredQualityId 即档位数值；首播 → 全局默认画质
+          // （与 B站 同一个设置项，hongguoMaxQuality() 做 qn→高度映射）。
+          maxQuality = request.preferredQualityId?.takeIf { it > 0 }
+            ?: qualityPreference.hongguoMaxQuality(),
         )
       } else {
         null
       }
-      val resolved = stream?.url ?: if (!isHongguoApp) tvboxRepository.resolveLineUrl(episode.url) else null
+      val resolved = stream?.stream?.url
+        ?: if (!isHongguoApp) tvboxRepository.resolveLineUrl(episode.url) else null
       if (resolved != null) {
         // m3u8 存活预检(P11-81d):解析成功但 CDN 404 的死链(采集站老资源常态)也顺延下一线路。
         // 红果 App 流跳过这层裸 Range 探测：取流接口已成功，CDN 需要红果 UA/Referer，
@@ -226,7 +240,7 @@ class PlaybackRepository(
           resolvedLine = candidate
           resolvedEpisode = episodes.indexOf(episode)
           resolvedUrl = resolved
-          resolvedStream = stream
+          resolvedHongguo = stream
           break
         }
         Log.w(PlaybackLogTag, "tvbox line #$candidate episode#$resolvedEpisode m3u8 probe dead: $resolved")
@@ -238,8 +252,22 @@ class PlaybackRepository(
       ?: throw IllegalStateException("tvbox: 全部线路解析失败或 m3u8 已失效(${lines.size} 条线路)")
     val loggedUrl = if (request.source == SourceHongguo) "<hongguo-stream>" else streamUrl
     Log.i(PlaybackLogTag, "tvbox playback resolved line=#$resolvedLine/${lines.lastIndex} episode=#$resolvedEpisode url=$loggedUrl")
-    val qualities = lines.mapIndexed { index, line ->
-      PlaybackQuality(index, line.name.ifBlank { "线路${index + 1}" })
+    // 红果：清晰度面板 = ladder 档位（B站 accept_quality 的角色）；红果恒单线路，线路列表
+    // 只有一行、当档位展示没有意义。ladder 无 >0 档（纯自动档流）时退回线路列表保证面板不空。
+    val hongguoOptions = resolvedHongguo?.qualityOptions.orEmpty()
+    val qualities = if (hongguoOptions.isNotEmpty()) {
+      hongguoOptions.map { q -> PlaybackQuality(id = q, description = "${q}P") }
+    } else {
+      lines.mapIndexed { index, line ->
+        PlaybackQuality(index, line.name.ifBlank { "线路${index + 1}" })
+      }
+    }
+    // 红果选中档 = ladder.select 实际选中的 rendition(≤上限最优);不在选项里(自动档边缘情况)
+    // 时就近落一档,保证 HD 回显与面板高亮有落点。
+    val chosenQuality = if (resolvedHongguo != null && hongguoOptions.isNotEmpty()) {
+      qualities.firstOrNull { it.id == resolvedHongguo.stream.quality } ?: qualities.first()
+    } else {
+      qualities[resolvedLine]
     }
     // 红果短剧(P11-83)解析产物是明文 MP4 直链(HLS 之外的 progressive 流):
     // dummy 轨 segmentBase=null(isProgressive)→ 播放器走 ProgressiveMediaSource 分支单轨播放,
@@ -265,7 +293,7 @@ class PlaybackRepository(
       title = request.title,
       durationMs = 0L,
       qualities = qualities,
-      selectedQuality = qualities[resolvedLine],
+      selectedQuality = chosenQuality,
       videoTracks = listOf(dummyTrack),
       audioTracks = emptyList(),
       // 红果(P11-83 真机 403 修复):显式带红果域名 Referer/Origin——playback client 拦截器会给
@@ -278,7 +306,7 @@ class PlaybackRepository(
         BiliPlaybackHeaders(sessData = null, biliJct = null, referer = "", origin = "")
       },
       remoteHlsManifestUrl = if (isHongguo) null else streamUrl,
-      hongguoStream = resolvedStream,
+      hongguoStream = resolvedHongguo?.stream,
     )
   }
 

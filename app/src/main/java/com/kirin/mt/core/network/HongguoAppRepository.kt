@@ -38,6 +38,16 @@ data class HongguoCommentPage(
 )
 
 /**
+ * [HongguoAppRepository.resolveStream] 的结果：选中的流 + 该集 ladder 的可选清晰度
+ * （quality>0 去重降序，如 [1080P, 720P, 480P] 的数值档）。后者填播放器画质面板，
+ * 角色等同 B站 playurl 的 `accept_quality`；红果单线路时面板不再只剩一行线路名。
+ */
+data class HongguoResolve(
+  val stream: HongguoStream,
+  val qualityOptions: List<Int>,
+)
+
+/**
  * 红果 App 端数据源（GPL-3.0-only `:hongguo-core` 的应用侧适配）。
  *
  * 只负责三件事：
@@ -276,18 +286,27 @@ class HongguoAppRepository(
   }
 
   /**
-   * 一集 → 流式播放描述（远端 URL + CENC 密钥）。
+   * 一集 → 流式播放描述（远端 URL + CENC 密钥）+ 可选清晰度档。
+   * [maxQuality] 是「≤上限取最优」的上限（对齐上游 hongguoTV `library.maxQuality` 语义）；
+   * 同一次 ladder 请求顺带返回全部档位，供画质面板展示，不额外发请求。
    * 由 [com.kirin.mt.core.player.HongguoDataSource.Factory] 在 Media3 读取时按 Range
    * 拉取并解密，不再整集落盘。
    */
-  suspend fun resolveStream(episodeId: String, maxQuality: Int = 1080): HongguoStream? =
+  suspend fun resolveStream(episodeId: String, maxQuality: Int = 1080): HongguoResolve? =
     withContext(Dispatchers.IO) {
       if (!episodeId.matches(Regex("[0-9]{1,30}"))) return@withContext null
       runCatching {
         val ladder = content.streamLadderWithCompatibility(episodeId)
         val rendition = ladder.select(maxQuality)
           ?: throw IOException("红果没有可用清晰度")
-        HongguoStream(rendition.url, rendition.key, rendition.quality, http)
+        HongguoResolve(
+          stream = HongguoStream(rendition.url, rendition.key, rendition.quality, http),
+          qualityOptions = ladder.renditions
+            .map { it.quality }
+            .filter { it > 0 }
+            .distinct()
+            .sortedDescending(),
+        )
       }.onFailure { Log.w(Tag, "取流失败 episode=$episodeId: ${it.message}", it) }.getOrNull()
     }
 

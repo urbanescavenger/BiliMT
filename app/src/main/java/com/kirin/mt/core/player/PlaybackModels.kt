@@ -40,7 +40,7 @@ data class PlaybackRequest(
   val source: String = SourceBili,
   /** IPTV 频道镜像源/TVBox 跨站线路 URL 列表（仅 [SourceIptv]/[SourceTvbox] 请求填充）。播放器里按 selectedQn 当源索引切换。 */
   val iptvUrls: List<String> = emptyList(),
-  /** TVBox 线路表（仅 [SourceTvbox] 请求填充）：每线路=一个采集站+完整分集。清晰度面板=线路列表([preferredQualityId]=线路索引)。 */
+  /** TVBox 线路表（仅 [SourceTvbox] 请求填充）：每线路=一个采集站+完整分集。清晰度面板=线路列表([preferredQualityId]=线路索引)。红果(P11-340)例外：单线路，[preferredQualityId]=清晰度档位数值、面板=ladder 档位。 */
   val tvboxLines: List<TvboxLine> = emptyList(),
   /** TVBox 当前选集索引（当前线路内；选集面板/自动连播切集用）。 */
   val tvboxEpisodeIndex: Int = 0,
@@ -80,7 +80,7 @@ data class PlaybackRequest(
     return if (url.startsWith("hongguo-app:")) url.removePrefix("hongguo-app:") else ""
   }
 
-  /** TVBox 当前线路(线路索引=preferredQualityId);非 TVBox 或无线路表为 null。 */
+  /** TVBox 当前线路(线路索引=preferredQualityId);非 TVBox 或无线路表为 null。红果恒单线路,preferredQualityId 是档位数值时被下方 coerceIn 钳回第 0 条,不受影响。 */
   val tvboxCurrentLine: TvboxLine?
     get() = if (tvboxLines.isEmpty()) null
     else tvboxLines.getOrNull((preferredQualityId ?: 0).coerceIn(0, tvboxLines.lastIndex))

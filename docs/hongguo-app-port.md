@@ -64,6 +64,26 @@
 - **入口**：TV 红果控制行新增「弹幕开关」「评论」；移动播放器评论区自动切红果列表。
 - **边界**：只读，不发弹幕/评论；弹幕只预取前 5 分钟，长剧后续时间窗未加载。
 
+## 画质与相关（P11-340，对齐 B站 播放器）
+
+- **画质切换**：v5 取流 ladder（`need_all_video_definition=true` 全档返回）的档位填
+  `PlaybackInfo.qualities`（`id=档位数值`，description 如 `720P`），HD 按钮/画质面板复用 B站
+  同一套 UI 与重解析机制（选档 → `preferredQualityId=档位数值` → 重跑 resolve 保持进度）。
+  - 取流上限：手动选过档用 `preferredQualityId`；首播回退设置页全局默认画质
+    （`PlaybackQualityPreference.hongguoMaxQuality()`：Highest/Q1080→1080、Q720→720、Q480→480）。
+  - 红果恒单线路：线路索引侧 `coerceIn(0, lastIndex)` 把档位数值钳回 0，两种语义不冲突；
+    `qualities` 仅在 ladder 无 `>0` 档时才退回线路列表，保证面板不空。
+  - 红果是单档固定流（无变体轨/无 ABR）：TV/移动 `onVideoSizeChanged` 对 `hongguoStream != null`
+    跳过按高度重映射（dummy 轨高度不代表实际档），HD 回显=请求档。
+- **相关视频**：红果 request 没有 bvid（`toPlaybackRequest` 置空），在线相关键改用 `hongguo:<series>`
+  （TV 控制行 loader、移动相关 effect 同源）；`VideoRepository.getRelatedVideos` 红果分支喂
+  「红果推荐」热榜首页并排除当前剧；点行补 `hongguoDetail` 拿全量分集（TV `RelatedVideos` 激活分支、
+  移动 `onPlayVideo` 壳层，镜像卡片点击）。
+- **移除**：影视库 TVBox/IPTV 控制行的「相关视频」——request 无 bvid 在线查询恒空、队列 bvid
+  匹配恒 miss，面板永远「暂无数据」，按钮无实义。
+- 边界：播完自动相关仍只对 B站/YouTube 生效（红果 request 无 bvid，completion 分支未改）；
+  弹幕时间窗跟随（播放超过预取窗口后的后续窗口）仍是遗留项。
+
 ## 已知边界
 
 - VIP/付费分集仍然锁定；匿名身份只覆盖免费分集。

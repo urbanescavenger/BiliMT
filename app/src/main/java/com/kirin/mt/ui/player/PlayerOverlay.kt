@@ -177,12 +177,16 @@ internal val YoutubePlayerControls: List<PlayerControl> = listOf(
 )
 
 /**
- * P11-124(追加):**非 B站 非 YouTube 的点播源**(影视库 TVBox / IPTV 点播 / 红果)的控制行项与顺序
+ * P11-124(追加):**非 B站 非 YouTube 的点播源**(影视库 TVBox / IPTV 点播)的控制行项与顺序
  * = [YoutubePlayerControls] **减掉「评论」「UP主页」「字幕」**(用户 2026-09-19 定:这三个源的卡片数据里
  * 没有 aid 字段,请求恒 aid=0,评论本来就打不开;卡片也没有 UP 信息,点「UP主页」是空面板;多数视频没有
  * 字幕轨,那枚图标恒灰、点开只有「关闭」)。
  *
- * 顺序:1.0x | 画面旋转 | 刷新 | 播放序列 | 播放列表 | 相关视频 | 画质(HD) | 设置。
+ * P11-340 再减「相关视频」:影视库/IPTV 的 request 没有 bvid(toPlaybackRequest 置空),
+ * 在线相关按空 bvid 查询恒空、队列 bvid 匹配恒 miss → 面板永远「暂无数据」,按钮无实义,移除。
+ * 红果有真实相关数据(热榜),单独保留,见 [HongguoPlayerControls]。
+ *
+ * 顺序:1.0x | 画面旋转 | 刷新 | 播放序列 | 播放列表 | 画质(HD) | 设置。
  *
  * 用**显式列表**而非 `PlayerControl.entries` 过滤:倍速/刷新/旋转/序列这些是追加在枚举尾部的新项,走过滤
  * 会把它们排到「设置」之后(真机看就是顺序错位)。自此 entries 的声明顺序**不再影响任何源的屏上顺序**。
@@ -196,7 +200,6 @@ internal val GenericPlayerControls: List<PlayerControl> = listOf(
   PlayerControl.Refresh,
   PlayerControl.PlaySequence,
   PlayerControl.Episodes,
-  PlayerControl.Related,
   PlayerControl.Quality,
   PlayerControl.Settings,
 )

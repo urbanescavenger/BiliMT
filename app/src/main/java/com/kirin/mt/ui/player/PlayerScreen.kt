@@ -93,6 +93,7 @@ import com.kirin.mt.core.model.shouldAdvanceToNextHistoryEpisode
 import com.kirin.mt.core.network.BiliApiCodeException
 import com.kirin.mt.core.network.FavoriteFolder
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.network.HongguoAppRepository
 import com.kirin.mt.core.player.AirJumpSegment
 import com.kirin.mt.core.player.BiliMediaDataSourceFactory
 import com.kirin.mt.core.player.HongguoDataSource
@@ -1523,7 +1524,16 @@ fun PlayerScreen(
         val video = sidePanelVideos.getOrNull(focusedPanelIndex) ?: return
         coroutineScope.launch {
           saveAndReportProgressNow()
-          startPlaybackRequest(video.toPlaybackRequest(), clearMetadata = true)
+          // 红果卡只带元数据:点行进播放器前补拉详情拿全量分集(镜像 AppShell 卡片点击的
+          // hongguoDetail 分支);失败原样起播,落到「无可用线路」错误态与卡片点击失败同语义。
+          val resolved = if (video.source == SourceHongguo && video.tvboxLines.isEmpty()) {
+            runCatching {
+              videoRepository.hongguoDetail(video.bvid.removePrefix(HongguoAppRepository.SeriesPrefix))
+            }.getOrNull() ?: video
+          } else {
+            video
+          }
+          startPlaybackRequest(resolved.toPlaybackRequest(), clearMetadata = true)
         }
         return
       }
@@ -1647,12 +1657,21 @@ fun PlayerScreen(
       PlayerControl.Up -> openUpVideos(UpVideoOrderLatest)
       PlayerControl.Related -> {
         // 播放列表场景:相关 = 队列后续(与自动连播同源同序,不依赖在线接口成败);
-        // 单视频或已在队列末 → 走在线相关(YouTube /next,B站 related)。
+        // 单视频或已在队列末 → 走在线相关(YouTube /next,B站 related,红果热榜)。
         val cur = playQueue.indexOfFirst { it.bvid == displayRequest.bvid }
         val queueRest = if (playQueue.size > 1 && cur in 0 until playQueue.lastIndex) {
           playQueue.drop(cur + 1)
         } else {
           null
+        }
+        // 红果 request 没有 bvid(toPlaybackRequest 置空),在线相关键改用 hongguo:<series>
+        // (卡片 bvid 形态,VideoRepository 据此走红果分支;B站/YouTube 键不变)。
+        val relatedKey = if (
+          displayRequest.source == SourceHongguo && displayRequest.hongguoSeriesId.isNotBlank()
+        ) {
+          HongguoAppRepository.SeriesPrefix + displayRequest.hongguoSeriesId
+        } else {
+          displayRequest.bvid
         }
         openVideoListPanel(
           panel = PlayerPanel.RelatedVideos,
@@ -1661,7 +1680,7 @@ fun PlayerScreen(
           queueRest ?: if (displayRequest.isYoutube) {
             videoRepository.getYoutubeRelatedVideos(displayRequest.bvid)
           } else {
-            videoRepository.getRelatedVideos(displayRequest.bvid)
+            videoRepository.getRelatedVideos(relatedKey)
           }
         }
       }
@@ -1808,8 +1827,11 @@ fun PlayerScreen(
         // 不再停留在"请求档"(修 Auto「显示2160实际360p」)。
         // 用高度匹配(而非 quality.description)——B 站 description 是 "1080P"/"4K" 非 "${h}p"。
         val h = videoSize.height
-        if (h > 0) {
-          val info = (playerState as? PlayerScreenState.Ready)?.info
+        val sizeInfo = (playerState as? PlayerScreenState.Ready)?.info
+        // 红果是单档固定流(无变体轨/无 ABR):dummy 轨 height/id 不代表实际档,按高度匹配
+        // 会把高亮错拉到 qualities 首档(显示≠实际)。请求档即实际档,跳过重映射(P11-340)。
+        if (h > 0 && sizeInfo?.hongguoStream == null) {
+          val info = sizeInfo
           // 按高度就近匹配画质档:qualities 按高度去重、id 是各分辨率代表 itag,而实际解码轨可能是
           // 同分辨率下的另一 codec 变体(不同 itag),精确 id 匹配会 miss → 高亮停在请求档。故取各档
           // 代表轨高度与 h 最近的档位,保证「显示=实际播放」。

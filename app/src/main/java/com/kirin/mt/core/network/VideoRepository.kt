@@ -172,6 +172,13 @@ class VideoRepository(
   }
 
   suspend fun getRelatedVideos(bvid: String): List<VideoSummary> {
+    // 红果没有 B站 related 接口(hongguo:<series> 打 ArchiveRelated 必失败→面板恒空);改喂
+    // 「红果推荐」同一份热榜首页并排除当前剧,让相关按钮/相关 Tab 对红果也有实义(P11-340)。
+    if (bvid.startsWith(HongguoAppRepository.SeriesPrefix)) {
+      return hongguoRepository.feed(1)
+        .withLocalProgress()
+        .filterNot { video -> video.bvid.equals(bvid, ignoreCase = true) }
+    }
     return homeVideoRepository.getRelatedVideos(bvid).withLocalProgress()
   }
 

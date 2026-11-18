@@ -468,8 +468,24 @@ fun BiliMobileApp(
           downloadManager = downloadManager,
           playQueue = playQueue,
           onPlayVideo = { video ->
-            playQueue = emptyList()
-            playbackRequest = video.toPlaybackRequest()
+            if (video.source == SourceHongguo && video.tvboxLines.isEmpty()) {
+              // 红果卡只带元数据(相关面板/队列点行进播放器同样要补详情,镜像 onVideoSelected)。
+              Toast.makeText(context, "正在解析红果剧集…", Toast.LENGTH_SHORT).show()
+              scope.launch {
+                val resolved = videoRepository.hongguoDetail(
+                  video.bvid.removePrefix(HongguoAppRepository.SeriesPrefix),
+                )
+                if (resolved != null) {
+                  playQueue = emptyList()
+                  playbackRequest = resolved.toPlaybackRequest()
+                } else {
+                  Toast.makeText(context, "红果剧集解析失败，请稍后重试", Toast.LENGTH_SHORT).show()
+                }
+              }
+            } else {
+              playQueue = emptyList()
+              playbackRequest = video.toPlaybackRequest()
+            }
           },
           onBack = {
             playQueue = emptyList()

@@ -132,6 +132,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.kirin.mt.R
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.core.model.SourceHongguo
+import com.kirin.mt.core.network.HongguoAppRepository
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
@@ -1220,8 +1221,11 @@ fun MobilePlayerScreen(
         // 不再停留在请求档(修「显示2160实际360p」)。
         // 用高度匹配(而非 quality.description)——B 站 description 是 "1080P"/"4K" 非 "${h}p"。
         val h = videoSize.height
-        if (h > 0) {
-          val info = (playerState as? MobilePlayerState.Ready)?.info
+        val sizeInfo = (playerState as? MobilePlayerState.Ready)?.info
+        // 红果是单档固定流(无变体轨/无 ABR):dummy 轨 height/id 不代表实际档,按高度匹配
+        // 会把高亮错拉到 qualities 首档。请求档即实际档,跳过重映射(P11-340,镜像 TV)。
+        if (h > 0 && sizeInfo?.hongguoStream == null) {
+          val info = sizeInfo
           // 按高度就近匹配画质档:qualities 按高度去重、id 是各分辨率代表 itag,而实际解码轨可能是
           // 同分辨率下的另一 codec 变体(不同 itag),精确 id 匹配会 miss → 高亮停在请求档。故取各档
           // 代表轨高度与 h 最近的档位,保证「显示=实际播放」。
@@ -1525,9 +1529,17 @@ fun MobilePlayerScreen(
 
   // 相关视频:播放列表场景相关 = 播放列表后续(与自动连播 computeNextRequest 同源同序,不依赖在线接口成败);
   // 历史/动态/搜索等单视频(playQueue 无后续)播放 → 走在线相关(B站按 bvid 拉 related;YouTube 走 /next secondaryResults)。
-  LaunchedEffect(activeRequest.bvid) {
+  // 红果 request 没有 bvid(toPlaybackRequest 置空),在线相关键改用 hongguo:<series>(镜像 TV,P11-340)。
+  val relatedKey = if (
+    activeRequest.source == SourceHongguo && activeRequest.hongguoSeriesId.isNotBlank()
+  ) {
+    HongguoAppRepository.SeriesPrefix + activeRequest.hongguoSeriesId
+  } else {
+    activeRequest.bvid
+  }
+  LaunchedEffect(relatedKey) {
     relatedVideos = emptyList()
-    if (activeRequest.bvid.isBlank()) return@LaunchedEffect
+    if (relatedKey.isBlank()) return@LaunchedEffect
     // 播放列表播放:相关视频 = 播放列表后续,与自动连播一致。
     if (playQueue.size > 1) {
       val cur = playQueue.indexOfFirst { it.bvid == activeRequest.bvid }
@@ -1537,7 +1549,7 @@ fun MobilePlayerScreen(
         return@LaunchedEffect
       }
     }
-    Log.i(MobilePlayerLogTag, "related source=online playQueue.size=${playQueue.size} bvid=${activeRequest.bvid}")
+    Log.i(MobilePlayerLogTag, "related source=online playQueue.size=${playQueue.size} key=$relatedKey")
     // 非播放列表(或已在列表末):走在线相关。
     if (activeRequest.isYoutube) {
       relatedVideos = runCatching {
@@ -1547,7 +1559,7 @@ fun MobilePlayerScreen(
         .getOrDefault(emptyList())
     } else {
       relatedVideos = runCatching {
-        videoRepository.getRelatedVideos(activeRequest.bvid)
+        videoRepository.getRelatedVideos(relatedKey)
       }.getOrDefault(emptyList())
     }
   }
