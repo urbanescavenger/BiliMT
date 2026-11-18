@@ -2125,19 +2125,24 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "IOS direct: 直链缺 init/index range(video=${video.initRange}/${video.indexRange} audio=${audio.initRange}/${audio.indexRange})→ null")
       return null
     }
-    // alpha.9X 同款修正(参照 NewPipe 自合成 DASH 的 distinctBy height):清晰度菜单按**分辨率**去重,
-    // 每 height 一档纯 "${height}p"——IOS 阶梯同 height 多 codec 变体(1080p=137/248/399),
+    // 清晰度菜单按**分辨率**去重——对齐 P11-129(SABR 分支既有修法,[buildSabrPlaybackInfo] 同款)
+    // 与 alpha.9X(NewPipe DASH):IOS 阶梯同 height 多 codec 变体(1080p=137/248/399),
     // 按 itag 去重的 [buildQualityList] 会把同档重复列出(真机 14:20 UVqLyLizppk qualities=18)。
-    // 选中档所在 height 的代表 itag 用选中档本身,保证 selectedQuality 在列表内、
-    // 切档 preferredQualityId → pickVideo(preferredItag) 链条闭合。
+    // 代表轨挑法与 P11-129 逐字同源:选中档置顶(保 selectedQuality 在列表内、切档链闭合) →
+    // codec 偏好([codecRank] 小者优) → 码率高者;标签纯 "${height}p"——
+    // 「同分辨率用哪个 codec」交给「YouTube 解码器」设置与 [pickVideo]。
     val iosQualities = decodableVideos
-      .sortedByDescending { it.height }
-      .distinctBy { it.height }
-      .map { v ->
-        PlaybackQuality(
-          id = if (v.height == video.height) video.itag else v.itag,
-          description = "${v.height}p",
-        )
+      .groupBy { it.height }
+      .toList()
+      .sortedByDescending { it.first }
+      .map { (h, sameHeight) ->
+        val rep = sameHeight.minWithOrNull(
+          compareBy<ParsedFormat>(
+            { if (it.itag == video.itag) -1 else codecRank(it.codecKey, codecPreference) },
+            { -it.bitrate },
+          ),
+        ) ?: sameHeight.first()
+        PlaybackQuality(id = rep.itag, description = "${h}p")
       }
     return buildInfo(
       request = request,
