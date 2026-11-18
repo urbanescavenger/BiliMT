@@ -414,7 +414,7 @@ class YoutubePlaybackResolver(
     // youtubeDeliveryPriority=Dash(用户设「DASH 优先」):先走 DASH 自合成兜底,成功直接返回;失败才落 SABR。
     // 逃生通道——慢 SABR 首段(googlevideo 服务器 >10s 才送首段)会被 8s stall 看门狗误判完整重建。
     if (dashFirst) {
-      val dashFirstRes = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality) }.getOrNull()
+      val dashFirstRes = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality, youtubeStartQuality) }.getOrNull()
       if (dashFirstRes != null) {
         YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
         Log.i(Tag, "NewPipe-first(DASH 优先) → DASH/HLS playback ready: videoId=$videoId → ${if (dashFirstRes.remoteHlsManifestUrl != null) "HLS" else "DASH"}")
@@ -497,7 +497,7 @@ class YoutubePlaybackResolver(
         runCatching { probeWebDashChain(videoId, poToken, signatureTimestamp) }
           .onFailure { Log.w(Tag, "P11-101 probe threw: ${it.message}") }
       }
-      val npDash = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality) }.getOrNull()
+      val npDash = runCatching { buildDashFallbackFromNewPipe(videoId, 0L, request, youtubeDefaultQuality, youtubeStartQuality) }.getOrNull()
       if (npDash != null) {
         YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
         Log.i(Tag, "NewPipe-first → DASH/HLS 兜底 playback ready: videoId=$videoId → ${if (npDash.remoteHlsManifestUrl != null) "HLS" else "DASH"}")
@@ -663,7 +663,7 @@ class YoutubePlaybackResolver(
           // alpha.88:RELOAD 闭环兜底(对齐 LibreTube SABR RELOAD 崩后落 streams.dash)——用 NewPipe getInfo
           // 的 dashMpdUrl(android streamingData manifest)直喂 DashMediaSource,≤1080p。
           // alpha.90:Phase 0 取证 dashMpdUrl 恒空 → 实际走 hlsUrl(visionOS Apple 平台原生 HLS)次选兜底。
-          val dashInfo = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request, youtubeDefaultQuality) }.getOrNull()
+          val dashInfo = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request, youtubeDefaultQuality, youtubeStartQuality) }.getOrNull()
           if (dashInfo != null) {
             YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
             val kind = if (dashInfo.remoteHlsManifestUrl != null) "HLS" else "DASH"
@@ -744,7 +744,7 @@ class YoutubePlaybackResolver(
             // alpha.90:NewPipe 无 SABR 数据时,getInfo 仍可能给 hlsUrl(visionOS Apple 平台原生 HLS 交付)→ 走
             // HLS 兜底,而非落已死的 classic n-decrypt(plasma WASM 致 n-decrypt 结构性失效)。复用 [buildDashFallbackFromNewPipe]
             //(内部再 getInfo 取 dashMpdUrl/hlsUrl,优先 DASH、次选 HLS)。两路均空才落 L399 classic。
-            val noSabrFallback = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request, youtubeDefaultQuality) }.getOrNull()
+            val noSabrFallback = runCatching { buildDashFallbackFromNewPipe(videoId, durationMs, request, youtubeDefaultQuality, youtubeStartQuality) }.getOrNull()
             if (noSabrFallback != null) {
               YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
               val kind = if (noSabrFallback.remoteHlsManifestUrl != null) "HLS" else "DASH"
@@ -1904,6 +1904,9 @@ class YoutubePlaybackResolver(
     durationMs: Long,
     request: PlaybackRequest,
     youtubeDefaultQuality: YoutubeDefaultQuality = YoutubeDefaultQuality.Auto,
+    // P11-342 对齐:起播画质(P11-173 口径)——此前本臂缺这层且 Auto 取最高档(真机两直链档
+    // 恒 2160 同款旧口径),DASH 优先档一并补齐。
+    youtubeStartQuality: YoutubeStartQuality = YoutubeStartQuality.Q480,
   ): PlaybackInfo? {
     val info = runCatching { StreamInfo.getInfo("https://www.youtube.com/watch?v=$videoId") }
       .getOrElse {
@@ -1964,12 +1967,17 @@ class YoutubePlaybackResolver(
       // 从 currentTracks.groups 读 height 用 toSortedSet 去重,故 720p 只有一个选项(VP9/H264 不重复列)。
       val distinctVideos = sortedVideos.distinctBy { it.height }
       val qualities = distinctVideos.map { PlaybackQuality(id = it.itag, description = "${it.height}p") }
-      // 选档:preferredQualityId 命中菜单用之(手动切清晰度);否则按默认画质设置(与 SABR defaultItag 同语义)。
+      // 选档:preferredQualityId 命中菜单用之(手动切清晰度);否则 **P11-173 同口径**
+      // (手动 > 起播画质 startHeight 上限取最高[全超取最低保可播] > 默认上限 > 双自动取最低档)——
+      // 对齐 [buildSabrPlaybackInfo] defaultItag;旧版缺 startHeight 层且 Auto→最高(与直链档同款旧口径)。
+      val startHeight = youtubeStartQuality.startHeight
       val maxHeight = youtubeDefaultQuality.maxHeight
       val defaultVideo = when {
+        startHeight != null -> distinctVideos.filter { it.height in 1..startHeight }.maxByOrNull { it.height }
+          ?: distinctVideos.minByOrNull { it.height }
         maxHeight != null -> distinctVideos.filter { it.height in 1..maxHeight }.maxByOrNull { it.height }
           ?: distinctVideos.minByOrNull { it.height }
-        else -> distinctVideos.maxByOrNull { it.height }
+        else -> distinctVideos.minByOrNull { it.height } // 双自动 → 最低档
       }
       val selectedVideo = request.preferredQualityId
         ?.takeIf { pid -> distinctVideos.any { it.itag == pid } }
