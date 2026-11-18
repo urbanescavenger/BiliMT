@@ -109,6 +109,8 @@ class AppContainer(context: Context) {
   val youtubePlaylistStore: YoutubePlaylistStore = YoutubePlaylistStore(appContext)
   val youtubeFeedCacheStore: YoutubeFeedCacheStore = YoutubeFeedCacheStore(appContext)
   val youtubeHistoryStore: YoutubeHistoryStore = YoutubeHistoryStore(appContext)
+  val hongguoHistoryStore: com.kirin.mt.core.storage.HongguoHistoryStore =
+    com.kirin.mt.core.storage.HongguoHistoryStore(appContext)
   // 共享同一个 YouTube OkHttpClient（InnerTube 数据 + /player + base.js/watch 抓取复用连接池）。
   val youtubeHttpClient = httpClientFactory.createYoutubeClient()
   val youtubeJsExecutor: YoutubeJsExecutor = YoutubeJsExecutor(appContext)

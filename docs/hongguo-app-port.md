@@ -84,6 +84,25 @@
 - 边界：播完自动相关仍只对 B站/YouTube 生效（红果 request 无 bvid，completion 分支未改）；
   弹幕时间窗跟随（播放超过预取窗口后的后续窗口）仍是遗留项。
 
+## 本地播放历史（P11-341）
+
+红果是匿名只读端、没有服务端历史；新增本地存储把红果播放记录融入 TV/移动历史列表并续播。
+
+- **存储**：`core/storage/HongguoHistoryStore`，照抄 `YoutubeHistoryStore` 的 DataStore 列表范式。
+  条目按 `seriesId` 前置去重（**一部剧一张卡**，cap 100），记录最近分集 `episodeVid`/`episodeIndex`、
+  进度 `positionMs`、时长与 `lastPlayedAtMs`。`toHongguoSummary()` 映射成卡片：bvid=`hongguo:<seriesId>`、
+  角标「第N集」、progress/viewAt 秒。
+- **写入**：播放器 Ready 起播时 `recordPlay`（每次解析都写 → 切集/切档自动更新最近分集；
+  网页回退分集无 vid 不记录）；`saveProgressNow` 周期 `updatePosition`（回填起播时未知的
+  duration，播完写满进度 → 卡片判已看完从头播）。TV `PlayerScreen` 与移动 `MobilePlayerScreen` 在线路径同源。
+- **列表**：TV `UserFeedScreen` History tab 与移动 `MobileHistoryPage` 把红果 + 本地 YouTube +
+  B站历史按 viewAt（秒）倒序混合；未登录也显示本地两条。
+- **续播**：`VideoSummary` 新增 `historyEpisodeVid`/`historyEpisodeIndex`；点击经详情补拉后
+  `toHongguoPlaybackRequest(resolved)` 按 `hongguo-app:<vid>` 定位续播集（vid 失配回退序号再落首集），
+  起点=卡片 progress（接近播完从头）。TV 动态/历史 tab 与移动动态/历史页的 `onVideoSelected`
+  补上此前缺失的 `hongguoDetail` 补拉分支；全部红果详情补拉点统一改走该 helper（无历史字段的卡退化为原行为）。
+- 边界：不提供历史清空/单条删除的 UI 入口（store 已备 `remove`/`clear`）；B站历史的清空不影响本地两条。
+
 ## 已知边界
 
 - VIP/付费分集仍然锁定；匿名身份只覆盖免费分集。

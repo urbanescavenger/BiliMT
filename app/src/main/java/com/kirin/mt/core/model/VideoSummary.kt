@@ -65,6 +65,13 @@ data class VideoSummary(
   val iptvUrls: List<String> = emptyList(),
   /** TVBox(影视库)线路表（仅 [SourceTvbox] 卡片填充）：每线路=一个采集站的完整分集列表。选集在线路内换 index。 */
   val tvboxLines: List<TvboxLine> = emptyList(),
+  /**
+   * 红果历史卡最近观看分集的 vid(仅红果本地历史卡 [com.kirin.mt.core.storage.HongguoHistoryStore] 填充,
+   * P11-341)。点击经详情补拉后按 `hongguo-app:<vid>` 在分集表里定位续播集;其余卡片为空串。
+   */
+  val historyEpisodeVid: String = "",
+  /** 红果历史卡最近观看分集序号(0 起;无历史卡片为 -1):vid 失配(剧集增删)时的兜底。 */
+  val historyEpisodeIndex: Int = -1,
 )
 
 /**

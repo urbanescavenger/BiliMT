@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import com.kirin.mt.R
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
+import com.kirin.mt.core.storage.toHongguoSummary
 import com.kirin.mt.core.youtube.YoutubeHistoryEntry
 import com.kirin.mt.core.youtube.YoutubeSubscriptionsPage
 import com.kirin.mt.core.youtube.resolveChannelAvatarUrl
@@ -206,6 +207,7 @@ internal fun UserFeedScreen(
   videoRepository: VideoRepository,
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
+  hongguoHistoryStore: com.kirin.mt.core.storage.HongguoHistoryStore,
   isLoggedIn: Boolean,
   feedState: UserFeedUiState,
   autoRefreshOnSwitch: Boolean,
@@ -235,6 +237,9 @@ internal fun UserFeedScreen(
   val youtubeHistoryVideos = youtubeHistory.map {
     it.toVideoSummary(avatarFallback = avatarByChannelId[it.channelId].orEmpty())
   }
+  // 本地红果播放历史(免登录,P11-341):一部剧一张卡,带最近分集与进度,合并进 History tab。
+  val hongguoHistory by hongguoHistoryStore.history.collectAsState(initial = emptyList())
+  val hongguoHistoryVideos = hongguoHistory.map { it.toHongguoSummary() }
 
   // 侧栏切回动态页时 screen 重组但未切子 tab → onSelect 不触发,当前子 tab 的旧
   // focusedVideoIndex 仍在,从 tab 按 Down 走 focusRestoredItemKey 会跳到旧深位置。
@@ -445,6 +450,7 @@ internal fun UserFeedScreen(
           UserFeedTab.History -> HistoryFeedContent(
             state = feedState.history.state,
             youtubeVideos = youtubeHistoryVideos,
+            hongguoVideos = hongguoHistoryVideos,
             isLoggedIn = isLoggedIn,
             loadingMessage = stringResource(R.string.history_loading),
             emptyMessage = stringResource(R.string.history_empty),
@@ -1295,13 +1301,14 @@ private fun List<com.kirin.mt.core.network.FollowingSeason>.resolveSeasonFocusIn
 }
 
 /**
- * 历史 tab 内容:本地 YouTube 历史(免登录)+ B 站观看历史按播放时间倒序混合。
- * 登录时 [state] 承载 B 站历史(含分页),未登录时只渲染 [youtubeVideos] 并附登录提示。
+ * 历史 tab 内容:本地红果历史 + 本地 YouTube 历史(免登录)与 B 站观看历史按播放时间倒序混合。
+ * 登录时 [state] 承载 B 站历史(含分页),未登录时只渲染本地([youtubeVideos] + [hongguoVideos])并附登录提示。
  */
 @Composable
 private fun HistoryFeedContent(
   state: UserFeedState,
   youtubeVideos: List<VideoSummary>,
+  hongguoVideos: List<VideoSummary> = emptyList(),
   isLoggedIn: Boolean,
   loadingMessage: String,
   emptyMessage: String,
@@ -1322,9 +1329,11 @@ private fun HistoryFeedContent(
   onCardLongPress: (VideoSummary) -> Unit = {},
   focusRestoredItemKey: Int = 0,
 ) {
+  // 本地历史(红果 + YouTube)合并,viewAt 均为秒(lastPlayedAtMs/1000),倒序穿插进 B 站历史。
+  val localVideos = (hongguoVideos + youtubeVideos).sortedByDescending { it.viewAt }
   if (!isLoggedIn) {
-    // 未登录:跳过 B 站网络请求,只显示本地 YouTube 历史。
-    if (youtubeVideos.isEmpty()) {
+    // 未登录:跳过 B 站网络请求,只显示本地 YouTube/红果历史。
+    if (localVideos.isEmpty()) {
       FeedStatusScreen(message = stringResource(R.string.history_signed_out))
       return
     }
@@ -1337,7 +1346,7 @@ private fun HistoryFeedContent(
             endReached = true,
             loadMoreError = "",
           ),
-          extraVideos = youtubeVideos,
+          extraVideos = localVideos,
           loadingMessage = loadingMessage,
           emptyMessage = emptyMessage,
           failedMessage = failedMessage,
@@ -1370,7 +1379,7 @@ private fun HistoryFeedContent(
   }
   UserFeedContent(
     state = state,
-    extraVideos = youtubeVideos,
+    extraVideos = localVideos,
     loadingMessage = loadingMessage,
     emptyMessage = emptyMessage,
     failedMessage = failedMessage,

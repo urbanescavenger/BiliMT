@@ -106,6 +106,7 @@ import com.kirin.mt.ui.login.TvAccountSettingsDialog
 import com.kirin.mt.ui.login.TvQrLoginDialog
 import com.kirin.mt.ui.player.PlayerScreen
 import com.kirin.mt.ui.player.toPlaybackRequest
+import com.kirin.mt.ui.player.toHongguoPlaybackRequest
 import com.kirin.mt.ui.search.SearchScreen
 import com.kirin.mt.ui.search.SearchUiState
 import com.kirin.mt.ui.settings.LocalBiliPerformancePolicy
@@ -195,6 +196,7 @@ fun BiliTvApp(
   sessionStore: SessionStore,
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
+  hongguoHistoryStore: com.kirin.mt.core.storage.HongguoHistoryStore,
   youtubeRepository: com.kirin.mt.core.youtube.YoutubeRepository,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
@@ -1318,7 +1320,7 @@ fun BiliTvApp(
                         )
                         if (resolved != null) {
                           playQueue = emptyList()
-                          playbackRequest = resolved.toPlaybackRequest()
+                          playbackRequest = video.toHongguoPlaybackRequest(resolved)
                         } else {
                           android.util.Log.w("BiliMT:Playback", "hongguo detail failed bvid=${video.bvid}")
                         }
@@ -1375,7 +1377,7 @@ fun BiliTvApp(
                         )
                         if (resolved != null) {
                           playQueue = emptyList()
-                          playbackRequest = resolved.toPlaybackRequest()
+                          playbackRequest = video.toHongguoPlaybackRequest(resolved)
                         } else {
                           android.util.Log.w("BiliMT:Playback", "hongguo search detail failed bvid=${video.bvid}")
                         }
@@ -1428,6 +1430,7 @@ fun BiliTvApp(
                   videoRepository = videoRepository,
                   youtubeChannelStore = youtubeChannelStore,
                   youtubeHistoryStore = youtubeHistoryStore,
+                  hongguoHistoryStore = hongguoHistoryStore,
                   isLoggedIn = userSession.isLoggedIn,
                   feedState = userFeedState,
                   autoRefreshOnSwitch = autoRefreshOnSwitch,
@@ -1443,7 +1446,21 @@ fun BiliTvApp(
                   },
                   onVideoSelected = { video, forceStart ->
                     playQueue = emptyList()
-                    playbackRequest = video.toPlaybackRequest(forceStartPosition = forceStart)
+                    if (video.source == SourceHongguo && video.tvboxLines.isEmpty()) {
+                      // 红果卡(动态/历史 tab)只带元数据;补详情后按历史续播字段定位集与起点(P11-341)。
+                      coroutineScope.launch {
+                        val resolved = videoRepository.hongguoDetail(
+                          video.bvid.removePrefix(HongguoAppRepository.SeriesPrefix),
+                        )
+                        if (resolved != null) {
+                          playbackRequest = video.toHongguoPlaybackRequest(resolved)
+                        } else {
+                          android.util.Log.w("BiliMT:Playback", "hongguo feed detail failed bvid=${video.bvid}")
+                        }
+                      }
+                    } else {
+                      playbackRequest = video.toPlaybackRequest(forceStartPosition = forceStart)
+                    }
                   },
                   onOwnerSelected = { video ->
                     if (video.source == SourceYoutube && video.channelId.isNotBlank()) {
@@ -1625,6 +1642,7 @@ fun BiliTvApp(
               playbackRepository = playbackRepository,
               youtubeRepository = youtubeRepository,
               youtubeHistoryStore = youtubeHistoryStore,
+              hongguoHistoryStore = hongguoHistoryStore,
               youtubeChannelStore = youtubeChannelStore,
               danmakuSettingsStore = danmakuSettingsStore,
               playbackHttpClient = playbackHttpClient,

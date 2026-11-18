@@ -93,6 +93,7 @@ import com.kirin.mt.ui.mobile.search.MobileSearchScreen
 import com.kirin.mt.ui.pgc.PgcSeasonRequest
 import com.kirin.mt.ui.player.LivePlayerScreen
 import com.kirin.mt.ui.player.toPlaybackRequest
+import com.kirin.mt.ui.player.toHongguoPlaybackRequest
 import com.kirin.mt.ui.shell.AppDestination
 import com.kirin.mt.ui.theme.BiliMobileTheme
 import kotlinx.coroutines.launch
@@ -124,6 +125,7 @@ fun BiliMobileApp(
   youtubePlaylistStore: YoutubePlaylistStore,
   youtubeFeedCacheStore: com.kirin.mt.core.youtube.YoutubeFeedCacheStore,
   youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
+  hongguoHistoryStore: com.kirin.mt.core.storage.HongguoHistoryStore,
   watchedStore: com.kirin.mt.core.storage.WatchedStore,
   updateManager: UpdateManager,
   apkInstaller: ApkInstaller,
@@ -330,7 +332,7 @@ fun BiliMobileApp(
                 )
                 if (resolved != null) {
                   playQueue = emptyList()
-                  playbackRequest = resolved.toPlaybackRequest()
+                  playbackRequest = video.toHongguoPlaybackRequest(resolved)
                 } else {
                   Toast.makeText(context, "红果剧集解析失败，请稍后重试", Toast.LENGTH_SHORT).show()
                 }
@@ -360,11 +362,26 @@ fun BiliMobileApp(
           youtubePlaylistStore = youtubePlaylistStore,
           youtubeFeedCacheStore = youtubeFeedCacheStore,
           youtubeHistoryStore = youtubeHistoryStore,
+          hongguoHistoryStore = hongguoHistoryStore,
           isLoggedIn = session.isLoggedIn,
           dynamicRefreshKey = dynamicRefreshKey,
           onVideoSelected = { video ->
             playQueue = emptyList()
-            playbackRequest = video.toPlaybackRequest()
+            if (video.source == SourceHongguo && video.tvboxLines.isEmpty()) {
+              // 红果卡(动态/历史等 tab)只带元数据;补详情后按历史续播字段定位集与起点(P11-341)。
+              scope.launch {
+                val resolved = videoRepository.hongguoDetail(
+                  video.bvid.removePrefix(HongguoAppRepository.SeriesPrefix),
+                )
+                if (resolved != null) {
+                  playbackRequest = video.toHongguoPlaybackRequest(resolved)
+                } else {
+                  android.util.Log.w("BiliMT:Playback", "hongguo feed detail failed bvid=${video.bvid}")
+                }
+              }
+            } else {
+              playbackRequest = video.toPlaybackRequest()
+            }
           },
           onOpenOwner = { video -> openOwner(video) },
           onSeasonSelected = { season ->
@@ -395,7 +412,7 @@ fun BiliMobileApp(
                 )
                 if (resolved != null) {
                   playQueue = emptyList()
-                  playbackRequest = resolved.toPlaybackRequest()
+                  playbackRequest = video.toHongguoPlaybackRequest(resolved)
                 } else {
                   Toast.makeText(context, "红果剧集解析失败，请稍后重试", Toast.LENGTH_SHORT).show()
                 }
@@ -450,6 +467,7 @@ fun BiliMobileApp(
           request = request,
           playbackRepository = playbackRepository,
           youtubeHistoryStore = youtubeHistoryStore,
+          hongguoHistoryStore = hongguoHistoryStore,
           watchedStore = watchedStore,
           autoDeleteWatchedCache = settings.autoDeleteWatchedCache,
           danmakuSettingsStore = danmakuSettingsStore,
@@ -477,7 +495,7 @@ fun BiliMobileApp(
                 )
                 if (resolved != null) {
                   playQueue = emptyList()
-                  playbackRequest = resolved.toPlaybackRequest()
+                  playbackRequest = video.toHongguoPlaybackRequest(resolved)
                 } else {
                   Toast.makeText(context, "红果剧集解析失败，请稍后重试", Toast.LENGTH_SHORT).show()
                 }

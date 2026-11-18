@@ -114,6 +114,30 @@ internal fun VideoSummary.toPlaybackRequest(forceStartPosition: Boolean = false)
 }
 
 /**
+ * 红果卡片(可能携带本地历史续播字段)+ 已补拉的详情 → 播放请求(P11-341)。
+ *
+ * 详情的 `tvboxLines` 生效;续播集按卡片 [VideoSummary.historyEpisodeVid] 在详情分集表里
+ * 匹配 `hongguo-app:<vid>`(剧集增删导致 vid 失配时回退 [VideoSummary.historyEpisodeIndex]
+ * 兜底序号,再失配落首集);起点用卡片 progress,接近播完不续播从头开始。普通红果卡
+ * (推荐/搜索/相关,无历史字段)退化为 [toPlaybackRequest] 原行为。
+ */
+internal fun VideoSummary.toHongguoPlaybackRequest(resolved: VideoSummary): PlaybackRequest {
+  val episodes = resolved.tvboxLines.firstOrNull()?.episodes.orEmpty()
+  val episodeIndex = when {
+    historyEpisodeVid.isNotBlank() -> episodes
+      .indexOfFirst { it.url == HongguoAppRepository.EpisodePrefix + historyEpisodeVid }
+      .takeIf { it >= 0 } ?: historyEpisodeIndex.coerceAtLeast(0)
+    else -> historyEpisodeIndex.coerceAtLeast(0)
+  }
+  val startSeconds = progress.takeIf { it > 0 && !isWatchCompleted() }
+  return resolved.toPlaybackRequest().copy(
+    tvboxEpisodeIndex = episodeIndex.coerceIn(0, episodes.lastIndex.coerceAtLeast(0)),
+    startPositionMs = startSeconds?.times(1000L) ?: 0L,
+    forceStartPosition = startSeconds != null,
+  )
+}
+
+/**
  * 直播间摘要 → 视频卡片模型,复用 VideoCard + TvVideoGrid 展示与焦点/分页机制。
  * [VideoSummary.liveRoomId] 置位后,[toPlaybackRequest] 会自动走直播播放路径。
  */

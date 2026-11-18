@@ -34,6 +34,8 @@ import com.kirin.mt.R
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
+import com.kirin.mt.core.storage.HongguoHistoryStore
+import com.kirin.mt.core.storage.toHongguoSummary
 import com.kirin.mt.core.youtube.YoutubeChannel
 import com.kirin.mt.core.youtube.YoutubeHistoryEntry
 import com.kirin.mt.core.youtube.resolveChannelAvatarUrl
@@ -61,17 +63,19 @@ private sealed interface HistoryState {
 }
 
 /**
- * 移动端"历史"子 tab:本地 YouTube 历史(绿框)与 B 站观看历史**混合,按播放时间倒序**。
- * YouTube 历史来自 [YoutubeHistoryStore](DataStore,免登录),未登录时也显示;B 站历史走
- * [VideoRepository.getHistoryPage](双游标 viewAt/max 分页)需登录,未登录时跳过网络请求并显示登录提示。
- * 排序键:YouTube 用 lastPlayedAtMs/1000、B 站用 viewAt(秒),两列表都按该键倒序,新加载的 B 站分页
+ * 移动端"历史"子 tab:本地 YouTube 历史(绿框)、本地红果历史与 B 站观看历史**混合,按播放时间倒序**。
+ * YouTube 历史来自 [YoutubeHistoryStore]、红果历史来自 [HongguoHistoryStore](DataStore,免登录),
+ * 未登录时也显示;B 站历史走 [VideoRepository.getHistoryPage](双游标 viewAt/max 分页)需登录,
+ * 未登录时跳过网络请求并显示登录提示。
+ * 排序键:YouTube/红果用 lastPlayedAtMs/1000、B 站用 viewAt(秒),两列表都按该键倒序,新加载的 B 站分页
  * 条目恒更旧,合并后不重排已显示内容。历史项 VideoSummary 已带 cid/progress/historyPage,
- * toPlaybackRequest() 自动用 progress 续播。
+ * toPlaybackRequest() 自动用 progress 续播;红果卡带 historyEpisodeVid,点击经详情补拉定位续播集。
  */
 @Composable
 fun MobileHistoryPage(
   videoRepository: VideoRepository,
   youtubeHistoryStore: YoutubeHistoryStore,
+  hongguoHistoryStore: HongguoHistoryStore,
   isLoggedIn: Boolean,
   channels: List<YoutubeChannel> = emptyList(),
   onVideoSelected: (VideoSummary) -> Unit,
@@ -84,6 +88,9 @@ fun MobileHistoryPage(
   var nextViewAt by remember { mutableStateOf(0L) }
   var nextMax by remember { mutableStateOf(0L) }
   val youtubeHistory by youtubeHistoryStore.history.collectAsState(initial = emptyList())
+  // 本地红果历史(免登录):一部剧一张卡,带最近分集与进度(P11-341)。
+  val hongguoHistory by hongguoHistoryStore.history.collectAsState(initial = emptyList())
+  val hongguoVideos = hongguoHistory.map { it.toHongguoSummary() }
   // 历史条目 channelAvatarUrl 可能为空(旧条目起播时未填),按 channelId 从关注频道 store 查头像兜底,
   // 对齐 TV UserVideoFeedScreen 的 avatarFallback,否则 ownerFace 空 → 头像一片空白/占位人形。
   val avatarByChannelId = remember(channels) { channels.associate { it.channelId to it.avatar } }
@@ -112,10 +119,10 @@ fun MobileHistoryPage(
     }
   }
 
-  // 混合历史:YouTube(本地,viewAt=lastPlayedAtMs/1000)+ B站(网络,viewAt 秒),按播放时间倒序。
+  // 混合历史:红果/YouTube(本地,viewAt=lastPlayedAtMs/1000)+ B站(网络,viewAt 秒),按播放时间倒序。
   // 注意:B站分页按 viewAt 倒序加载,新页条目永远更旧,插入后不重排已显示内容,不会造成列表跳动。
   val mergedVideos =
-    (youtubeVideos + (state as? HistoryState.Success)?.videos.orEmpty())
+    (hongguoVideos + youtubeVideos + (state as? HistoryState.Success)?.videos.orEmpty())
       .sortedByDescending { it.viewAt }
 
   suspend fun loadFirstBody() {

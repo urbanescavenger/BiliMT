@@ -125,6 +125,7 @@ import com.kirin.mt.core.player.VideoshotData
 import com.kirin.mt.core.player.createTvPlaybackLoadControl
 import com.kirin.mt.core.player.SabrLoadErrorHandlingPolicy
 import com.kirin.mt.core.youtube.YoutubeChannel
+import com.kirin.mt.core.storage.HongguoHistoryEntry
 import com.kirin.mt.core.youtube.YoutubeHistoryStore
 import com.kirin.mt.core.youtube.YoutubeLoadProgress
 import com.kirin.mt.core.youtube.YoutubeLoadStep
@@ -169,6 +170,8 @@ fun PlayerScreen(
   playbackRepository: PlaybackRepository,
   youtubeRepository: com.kirin.mt.core.youtube.YoutubeRepository,
   youtubeHistoryStore: YoutubeHistoryStore,
+  /** 红果本地播放历史(P11-341):红果匿名端无服务端历史,起播/保存进度写这里。 */
+  hongguoHistoryStore: com.kirin.mt.core.storage.HongguoHistoryStore,
   /** UP 面板「关注」的 YouTube 侧数据源(免登录,与频道主页那颗关注按钮同一份列表)。 */
   youtubeChannelStore: com.kirin.mt.core.youtube.YoutubeChannelStore,
   danmakuSettingsStore: DanmakuSettingsStore,
@@ -650,6 +653,16 @@ fun PlayerScreen(
       runCatching {
         youtubeHistoryStore.updatePosition(
           videoId = state.info.bvid,
+          positionMs = currentPositionMs,
+          durationMs = currentDurationMs,
+        )
+      }
+    }
+    // 红果本地历史(P11-341):同步更新进度与真实时长(起播时 duration 未知,这里回填)。
+    if (activeRequest.source == SourceHongguo && activeRequest.hongguoSeriesId.isNotBlank()) {
+      runCatching {
+        hongguoHistoryStore.updatePosition(
+          seriesId = activeRequest.hongguoSeriesId,
           positionMs = currentPositionMs,
           durationMs = currentDurationMs,
         )
@@ -1522,18 +1535,24 @@ fun PlayerScreen(
       }
       PlayerPanel.RelatedVideos -> {
         val video = sidePanelVideos.getOrNull(focusedPanelIndex) ?: return
+        val filled = video.source == SourceHongguo && video.tvboxLines.isEmpty()
+        // 红果卡只带元数据:点行进播放器前补拉详情拿全量分集(镜像 AppShell 卡片点击的
+        // hongguoDetail 分支);失败原样起播,落到「无可用线路」错误态与卡片点击失败同语义。
+        val resolved = if (filled) {
+          runCatching {
+            videoRepository.hongguoDetail(video.bvid.removePrefix(HongguoAppRepository.SeriesPrefix))
+          }.getOrNull() ?: video
+        } else {
+          video
+        }
+        val nextRequest = if (filled) {
+          video.toHongguoPlaybackRequest(resolved)
+        } else {
+          resolved.toPlaybackRequest()
+        }
         coroutineScope.launch {
           saveAndReportProgressNow()
-          // 红果卡只带元数据:点行进播放器前补拉详情拿全量分集(镜像 AppShell 卡片点击的
-          // hongguoDetail 分支);失败原样起播,落到「无可用线路」错误态与卡片点击失败同语义。
-          val resolved = if (video.source == SourceHongguo && video.tvboxLines.isEmpty()) {
-            runCatching {
-              videoRepository.hongguoDetail(video.bvid.removePrefix(HongguoAppRepository.SeriesPrefix))
-            }.getOrNull() ?: video
-          } else {
-            video
-          }
-          startPlaybackRequest(resolved.toPlaybackRequest(), clearMetadata = true)
+          startPlaybackRequest(nextRequest, clearMetadata = true)
         }
         return
       }
@@ -2321,6 +2340,27 @@ fun PlayerScreen(
                 positionMs = startPositionMs,
                 lastPlayedAtMs = System.currentTimeMillis(),
                 pubdate = activeRequest.pubdate,
+              ),
+            )
+          }
+        }
+        // 红果起播即写入本地播放历史(P11-341,匿名端无服务端历史):一部剧一张卡,记录最近
+        // 分集与起点,供历史 tab 展示与续播。duration 起播时未知(PlaybackInfo.durationMs=0),
+        // 由 saveProgressNow 的 updatePosition 回填;网页回退分集(无 vid)不记录。
+        if (activeRequest.source == SourceHongguo &&
+          activeRequest.hongguoSeriesId.isNotBlank() &&
+          activeRequest.currentHongguoEpisodeId().isNotBlank()
+        ) {
+          runCatching {
+            hongguoHistoryStore.recordPlay(
+              HongguoHistoryEntry(
+                seriesId = activeRequest.hongguoSeriesId,
+                title = activeRequest.title,
+                coverUrl = activeRequest.coverUrl,
+                episodeVid = activeRequest.currentHongguoEpisodeId(),
+                episodeIndex = activeRequest.tvboxEpisodeIndex,
+                positionMs = startPositionMs,
+                lastPlayedAtMs = System.currentTimeMillis(),
               ),
             )
           }

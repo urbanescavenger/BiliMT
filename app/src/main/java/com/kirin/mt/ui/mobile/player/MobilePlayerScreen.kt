@@ -368,6 +368,8 @@ fun MobilePlayerScreen(
   request: PlaybackRequest,
   playbackRepository: PlaybackRepository,
   youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
+  /** 红果本地播放历史(P11-341):红果匿名端无服务端历史,起播/保存进度写这里。 */
+  hongguoHistoryStore: com.kirin.mt.core.storage.HongguoHistoryStore,
   watchedStore: com.kirin.mt.core.storage.WatchedStore,
   autoDeleteWatchedCache: Boolean,
   danmakuSettingsStore: DanmakuSettingsStore,
@@ -639,6 +641,16 @@ fun MobilePlayerScreen(
         runCatching {
           youtubeHistoryStore.updatePosition(
             videoId = info.bvid,
+            positionMs = positionMs,
+            durationMs = durationMs,
+          )
+        }
+      }
+      // 红果本地历史(P11-341):同步更新进度与真实时长(起播时 duration 未知,这里回填)。
+      if (activeRequest.source == SourceHongguo && activeRequest.hongguoSeriesId.isNotBlank()) {
+        runCatching {
+          hongguoHistoryStore.updatePosition(
+            seriesId = activeRequest.hongguoSeriesId,
             positionMs = positionMs,
             durationMs = durationMs,
           )
@@ -1183,6 +1195,27 @@ fun MobilePlayerScreen(
               positionMs = startPositionMs,
               lastPlayedAtMs = System.currentTimeMillis(),
               pubdate = request.pubdate,
+            ),
+          )
+        }
+      }
+
+      // 红果起播即写入本地播放历史(P11-341,镜像 TV):一部剧一张卡,记录最近分集与起点。
+      // duration 起播时未知,由 saveProgressNow 的 updatePosition 回填;网页回退分集(无 vid)不记录。
+      if (activeRequest.source == SourceHongguo &&
+        activeRequest.hongguoSeriesId.isNotBlank() &&
+        activeRequest.currentHongguoEpisodeId().isNotBlank()
+      ) {
+        runCatching {
+          hongguoHistoryStore.recordPlay(
+            com.kirin.mt.core.storage.HongguoHistoryEntry(
+              seriesId = activeRequest.hongguoSeriesId,
+              title = activeRequest.title,
+              coverUrl = activeRequest.coverUrl,
+              episodeVid = activeRequest.currentHongguoEpisodeId(),
+              episodeIndex = activeRequest.tvboxEpisodeIndex,
+              positionMs = startPositionMs,
+              lastPlayedAtMs = System.currentTimeMillis(),
             ),
           )
         }

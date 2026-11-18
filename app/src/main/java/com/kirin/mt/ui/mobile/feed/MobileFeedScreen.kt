@@ -59,6 +59,7 @@ fun MobileFeedScreen(
   youtubePlaylistStore: YoutubePlaylistStore,
   youtubeFeedCacheStore: com.kirin.mt.core.youtube.YoutubeFeedCacheStore,
   youtubeHistoryStore: com.kirin.mt.core.youtube.YoutubeHistoryStore,
+  hongguoHistoryStore: com.kirin.mt.core.storage.HongguoHistoryStore,
   isLoggedIn: Boolean,
   dynamicRefreshKey: Int = 0,
   onVideoSelected: (VideoSummary) -> Unit,
@@ -133,6 +134,7 @@ fun MobileFeedScreen(
         1 -> MobileHistoryPage(
           videoRepository = videoRepository,
           youtubeHistoryStore = youtubeHistoryStore,
+          hongguoHistoryStore = hongguoHistoryStore,
           isLoggedIn = isLoggedIn,
           channels = channels,
           onVideoSelected = onVideoSelected,
