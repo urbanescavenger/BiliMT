@@ -83,9 +83,9 @@ watch 页匿名加载（两台）：`playabilityStatus=OK`、`playableInEmbed=tr
 
 ### 真机验证清单
 
-- [ ] OkHttp 原样 POST IOS client → 200 + `adaptiveFormats[].url`（验 TLS 门控）
-- [ ] 拿 itag401/400 等直链喂 `buildDashFallback` → ExoPlayer 出画（验播放）
-- [ ] attestation 视频（`jNl6YkkzKxw`）→ 是否 RELOAD（验天花板）
+- [x] OkHttp 原样 POST IOS client → 200 + `adaptiveFormats[].url`（验 TLS 门控）——**2026-11-18 真机 14:20 首测过**（`IOS direct playback ready`，见接入状态段）
+- [x] 拿 itag401/400 等直链喂 `buildDashFallback` → ExoPlayer 出画（验播放）——同上首测过（视频正常播放）
+- [x] attestation 视频（`jNl6YkkzKxw`）→ 是否 RELOAD（验天花板）——**2026-11-18 RAK 匿名实测初判过**：status=OK、18 条全直链、4K HDR AV1 首段实拉 206 不 403（§7.3 H1）；真机全程播放待验
 - [ ] URL 过期后 re-resolve 续播（验 403 恢复）
 
 ## 6. 关联
@@ -94,3 +94,42 @@ watch 页匿名加载（两台）：`playabilityStatus=OK`、`playableInEmbed=tr
 - [youtube-hd-playback.md](youtube-hd-playback.md)：逐 alpha 调试（alpha.29 WEB TLS 门控 —— 本文复现）
 - [youtube-dash-fallback-plan.md](youtube-dash-fallback-plan.md)：DASH 兜底链 —— IOS 直链接入点
 - 节点 IP 背景：RAC = PEG 机房段（Scamalytics 0 但标 VPN、IP2Location 99 High）；TK = xTom 原生 JP（IP2Location 3 低风险）——**本次两台播放判定完全一致，IP 质量差异未影响 YouTube 门控**
+
+---
+
+## 7. 社区动态对照与候选 client 实测（2026-11-18 下午，RAK）
+
+### 7.1 社区时间线（Web 调研，2026-11-18）
+
+| 时间 | 事件 |
+|---|---|
+| 2026-02 | YouTube 对 ANDROID/iOS 索 poToken → 社区转 **ANDROID_VR** 免 token（YoutubeExplode #936） |
+| 2026-06 | ANDROID_VR 也被 gate（ranged>256KB 403 + 单 GET ~13KB/s 限速）→ visitorData 引导 + 分块 range（ytdown 75e3eea） |
+| 2026-06→08 | **LibreTube SABR 合入**（PR #7689），v32.0/32.1（2026-08-20）：SABR 原生 Kotlin + poToken 生成/发送 + token 实验缓存 + visionOS 播放 |
+| 2026-08 | **NewPipeExtractor #1529 删除 ANDROID 和 IOS client**——理由"这些 client 要 poToken 没人能生成" |
+| 2026-08 | ReVanced 系转**真 poToken 生成**（BotGuard WebView 缓存 ~50min，Morphe c9a1622：TV Simply 登出态靠生成 PoToken 可用） |
+| 2026-09 | ANDROID_VR 全球 "not a bot" → 社区转 **VISIONOS client**（不加密、无 cipher）——我们 NewPipe 主链已在该位 |
+| 2026-11-02 | **FreeTube v0.26.0-beta 大面积播放坏**：#10095 "Legacy formats not available" 全视频、#10090/#10024 SABR reload 循环未修——**WEB-SABR 对齐方向短期无可借力** |
+| 2026-11 中 | yt-dlp nightly 仅 post-live/web_embedded 维护，**签名/n-sig 层无新危机**（大改仍是 2025-11 外部 JS runtime 必需） |
+
+**IOS 窗口稀缺性**：社区 2026-08 已删 IOS client（判定要 poToken），ReVanced 侧记载 iOS 2024 末起 A/B 索 token——而我们 11-18 两台机房 IP 匿名实测**全阶梯直链照给**。当前是少数派窗口（A/B 或形态差异），**P11-342 实验档定位正确，随时可能被收**。
+
+### 7.2 LibreTube poToken 缓存对照（clone 已拉至 b9a486e）
+
+`PoTokenGenerator.kt`（对应 upstream "experimentally cache generated PoToken"，避免 extractor 与 SABR 各铸一次）：
+
+- `private var poToken: PoTokenResult?` 单字段内存缓存：`getWebClientPoToken` 每次生成后 `.also { poToken = it }` 存入，SABR 侧经 `getCachedWebClientPoToken()` 直取**同一份**。
+- 生成器本体（`webPoTokenGenerator` + `webPoTokenVisitorData`）也缓存：按 `isExpired()` 判过期才重建；生成失败 `forceRecreate` 从头重建再试一次（WebView 内容丢失场景）。
+- **我们可跟进**：alpha.91 已统一 minter 到 PoTokenWebView，但 NewPipe 侧已铸 token 与 SABR `status=2` 刷新之间**缺这层复用缓存**——补上可少铸一次 token、减 status=2 摩擦。
+
+### 7.3 候选 client RAK 实测（`yt_candidate_probe.py` + `yt_tv_retry.py`，2026-11-18 下午）
+
+| 路 | client | 结果 |
+|---|---|---|
+| **G** | **VISIONOS 匿名（GAPIS，client_id=101）** | ✅ **重大发现**：status=OK、adaptive=27 **全直链**、144→2160 全阶梯、SABR 基址+hls 同给、**4K VP9 itag313 实拉 206 OK** —— 第二条免 token 全直链臂（与社区 2026-09 推荐方向吻合） |
+| **H1** | **IOS × attestation `jNl6YkkzKxw`** | ✅ **§5 清单第 3 条初判通过**：status=OK、18 条全直链、**4K HDR AV1 itag701 首段实拉 206 不 403**（对照 P11-99 WEB/ANDROID 直链 403 —— IOS 签名链不受 pot 门控） |
+| H2 | IOS × 普通对照 | ✅ 16 直链 + 4K 实拉 OK（与上午矩阵一致） |
+| F | TVHTML5_SIMPLY_EMBEDDED(+embedUrl) | ❌ 正式判死：`YouTube is no longer supported in this application or device.` |
+| E | TVHTML5_SIMPLY_PLAYER / TVHTML5_SIMPLY | ❌ 匿名无门：前者 400 枚举无效、后者 404 不存在——与 Morphe 方案自洽（**TVSimply 必须配 poToken**）；带 token 形态留后续（需 BotGuard WebView，服务器铸不了） |
+
+**下一步**：①IOS 全阶梯臂已进 P11-342 真机待验（清单剩第 4 条）；②VISIONOS 直链臂值得作第二候选接入评估（`buildPlaybackInfoFromIosDirect` 同构，client 换 VISIONOS/GAPIS）；③LibreTube 式 poToken 复用缓存跟进；④TVSimply+poToken 需设备侧 BotGuard，暂缓。
