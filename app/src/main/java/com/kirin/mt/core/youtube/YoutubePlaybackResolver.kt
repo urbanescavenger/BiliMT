@@ -170,24 +170,25 @@ class YoutubePlaybackResolver(
     }
     if (directArm != null) {
       val (armClient, armGapis) = directArm
+      val armLabel = armClient.name.replace("_", "")
       val directInfo = runCatching {
         buildPlaybackInfoFromDirect(
-          videoId, armClient.name, armClient, armGapis,
-          codecCapability, codecPreference, request, youtubeDefaultQuality,
+          videoId, armLabel, armClient, armGapis,
+          codecCapability, codecPreference, request, youtubeDefaultQuality, youtubeStartQuality,
         )
       }.onFailure {
-        Log.w(Tag, "direct 链异常(${armClient.name}): ${it::class.simpleName}: ${it.message}", it)
+        Log.w(Tag, "direct 链异常($armLabel): ${it::class.simpleName}: ${it.message}", it)
       }.getOrNull()
       if (directInfo != null) {
         YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
         Log.i(
           Tag,
-          "direct playback ready: arm=${armClient.name} videoId=$videoId → 合成 MPD DASH " +
+          "direct playback ready: arm=$armLabel videoId=$videoId → 合成 MPD DASH " +
             "(qualities=${directInfo.qualities.size} video=${directInfo.videoTracks.size} audio=${directInfo.audioTracks.size})"
         )
         return@withContext directInfo
       }
-      Log.w(Tag, "direct 臂 ${armClient.name} 未产出 → 落现有链(Piped/WEB-SABR/NewPipe/WEB last resort)")
+      Log.w(Tag, "direct 臂 $armLabel 未产出 → 落现有链(Piped/WEB-SABR/NewPipe/WEB last resort)")
     }
 
     // ── Piped 后端 opt-in（实验:对齐 LibreTube 默认 Piped 路径,修 RELOAD_PLAYER_RESPONSE 死循环）──
@@ -2075,6 +2076,7 @@ class YoutubePlaybackResolver(
    *
    * @param armLabel 日志臂名(IOS/VISIONOS)。
    * @param useGapis true=GAPIS base(visionOS),false=www base(IOS)。
+   * @param youtubeStartQuality 起播画质(P11-173 口径:startHeight 上限内取最高,双自动取最低档)。
    * @return 合成 MPD 的 DASH PlaybackInfo;不可播/网络异常/无直链候选/缺 range → null(调用方换下一臂)。
    */
   private suspend fun buildPlaybackInfoFromDirect(
@@ -2086,6 +2088,7 @@ class YoutubePlaybackResolver(
     codecPreference: YoutubeCodecPreference,
     request: PlaybackRequest,
     youtubeDefaultQuality: YoutubeDefaultQuality,
+    youtubeStartQuality: YoutubeStartQuality,
   ): PlaybackInfo? {
     val payload = buildJsonObject {
       put("videoId", videoId)
@@ -2132,7 +2135,27 @@ class YoutubePlaybackResolver(
           "init=${v.initRange} index=${v.indexRange}",
       )
     }
-    val video = pickVideo(decodableVideos, codecPreference, request.preferredQualityId, youtubeDefaultQuality.maxHeight)
+    // 起播选档 = **P11-173 同口径**(逐字对齐 [buildSabrPlaybackInfo] 的 defaultItag):
+    //   手动选中(preferredQualityId 命中 itag) > 起播画质 startHeight 上限内取最高(全超取最低保可播)
+    //   > 默认画质上限 maxHeight 同语义 > 双自动取**最低档**起播。
+    // 不走 [pickVideo]:classic 该函数在 Auto(maxHeight=null) 时 maxWith 取**最高档**——直链两档
+    // 真机恒 2160 起播(P11-342 17:03 反馈),正是 P11-173 在 SABR 侧修掉的旧口径「Auto→最高」。
+    val startHeight = youtubeStartQuality.startHeight
+    val maxHeight = youtubeDefaultQuality.maxHeight
+    val video = (request.preferredQualityId?.let { pid ->
+      decodableVideos.firstOrNull { it.itag == pid }
+    } ?: startHeight?.let { cap ->
+      decodableVideos.filter { it.height <= cap }.maxByOrNull { it.height }
+        ?: decodableVideos.minByOrNull { it.height }
+    } ?: maxHeight?.let { cap ->
+      decodableVideos.filter { it.height <= cap }.maxByOrNull { it.height }
+        ?: decodableVideos.minByOrNull { it.height }
+    } ?: decodableVideos.minByOrNull { it.height })
+      .also {
+        if (it != null) {
+          Log.i(Tag, "$armLabel direct 起播选档: ${it.height}p itag=${it.itag} (start=${youtubeStartQuality.label}/${startHeight ?: "auto"} max=${youtubeDefaultQuality}/${maxHeight ?: "auto"})")
+        }
+      }
       ?: run { Log.w(Tag, "$armLabel direct: 无候选视频档(video=${videoCandidates.size} decodable=${decodableVideos.size})"); return null }
     val audio = pickAudio(audioCandidates, request.preferredAudioTrackId)
       ?: run { Log.w(Tag, "$armLabel direct: 无候选音轨(audio=${audioCandidates.size})"); return null }
