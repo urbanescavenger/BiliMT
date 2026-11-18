@@ -2241,7 +2241,17 @@ class YoutubePlaybackResolver(
       audioUrl = audio.url,
       allQualities = iosQualities,
       allAudioTracks = audioCandidates,
-      ladderFormats = if (fullLadder) decodableVideos else emptyList(),
+      // P11-342 手动切档修复(用户「现在IOS手动切档无效」):自动档全阶梯让 ABR 自由爬;
+      // **手动轮收窄到选中分辨率组**——对齐 NewPipe DASH 手动语义(同 height 变体)与 SABR
+      // 手动锁死语义。此前手动轮也全阶梯入 MPD,首帧 lock 一 release,ABR 按偏低的带宽估计
+      // 立刻把档拉回去 = 切了等于没切。收窄后高度锁死跌不出,组内仍按解码器偏好选 codec。
+      ladderFormats = if (fullLadder) {
+        if (request.preferredQualityId != null) {
+          decodableVideos.filter { it.height == video.height }
+        } else {
+          decodableVideos
+        }
+      } else emptyList(),
     ).copy(
       // buildInfo 的 selectedQuality.description 用服务端 qualityLabel(可能 "1080p60"),
       // 统一成与列表一致的 "${height}p"(id 不变,仍=选中 itag)。
