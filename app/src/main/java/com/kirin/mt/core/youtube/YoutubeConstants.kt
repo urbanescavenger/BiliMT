@@ -61,16 +61,6 @@ object YoutubeConstants {
   const val TvHtml5UserAgent =
     "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
 
-  /**
-   * IOS 客户端（P11-342，/player 取签名直链）：匿名 POST /player 即给全阶梯 adaptiveFormats
-   * 带已签名 url（144p→2160p 含 itag401）+ hlsManifestUrl，免 PO token / WebView / n 解密。
-   * 实测见 docs/youtube-anonymous-client-probe.md §3（2026-11-18，RAC/TK 两台一致）。
-   */
-  const val IosClientVersion = "20.10.4"
-  const val IosClientNameId = "33"
-  const val IosUserAgent =
-    "com.google.iphone.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_1 like Mac OS X)"
-
   /** 桌面 Chrome UA（FreeTube getRandomUserAgent('desktop') 同源）。 */
   const val UserAgent =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"

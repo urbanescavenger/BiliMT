@@ -81,6 +81,8 @@ watch 页匿名加载（两台）：`playabilityStatus=OK`、`playableInEmbed=tr
 
 **真机首测（2026-11-18 14:20，`logs_live_20261118_142002.log`，videoId=UVqLyLizppk）**：IOS 臂一次通过——`rawAdaptive=28、videoUrl=18/audioUrl=10、costMs=802ms`，选中 itag137 1080p，`nDecrypt=left`（签名直链直通 ✓）、`dash=yes`（init/index range 齐全）→ **能播**（§5 清单 1/2 条间接坐实：OkHttp TLS 过、合成 MPD 出画）。暴露问题一个：`qualities=18`——`buildQualityList` 按 itag 去重，IOS 阶梯同 height 多 codec 变体（1080p=137/248/399）致清晰度列表同档重复 3 次；**已按 alpha.9X NewPipe DASH 修正**（`distinctBy height`，每档纯 `"${height}p"`，选中档为代表 itag 保切档链闭合）。
 
+> ⚠️ **IOS 档已删除（2026-11-18 当日，用户拍板）**：社区实锤 IOS/ANDROID_VR 自 2026-08 起需 **GVS proof-of-origin token**，无 token 仅 **~1MB 冷启动配额**（按数据量计，换算"30–60 秒"= 1MB÷码率；真机两次 stall 精确 pos=61.5s 吻合），[yt-dlp #13511](https://github.com/yt-dlp/yt-dlp/issues/13511) 维护者判 **"ios will never be fixed"** 将从默认移除；**VISIONOS = 社区验证的豁免 client**（[InterTune 403 doc](https://github.com/ItzSkyeYT/InterTune/blob/visionos-fix/docs/403.md)）。故 `YoutubeDeliveryPriority.IosDirect` 档、`Client.IOS` 全链已删，播放优先级回 4 档，**visionOS 直链档保留为唯一直链档**；`fullLadder` 全阶梯能力保留待 visionOS ABR 议题（Phase 0 已验证判据引擎可在合成 MPD 跑）。下述 IOS 实测记录仅作历史存档。
+
 ### 真机验证清单
 
 - [x] OkHttp 原样 POST IOS client → 200 + `adaptiveFormats[].url`（验 TLS 门控）——**2026-11-18 真机 14:20 首测过**（`IOS direct playback ready`，见接入状态段）

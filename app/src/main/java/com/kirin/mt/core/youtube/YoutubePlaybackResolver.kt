@@ -158,13 +158,13 @@ class YoutubePlaybackResolver(
     val dashFirst = deliveryPriority == YoutubeDeliveryPriority.Dash
     val webSabrFirst = deliveryPriority == YoutubeDeliveryPriority.WebSabr
 
-    // ── P11-342:直链档(播放优先级第 4/5 档)——选中时**最优先**直通,IOS/visionOS 各自独立成档 ──
-    // 两档同为匿名全阶梯签名直链,免 PO token/WebView/n 解密(IOS=www base+iOS UA;
-    // VISIONOS=GAPIS base+visionOS UA,RAK 实测普通+attestation 均过,docs probe §7.3)。
-    // 档位语义与 Dash/WebSabr 一致=「先走这条路」,不进兜底链:所选档单臂失败即落下方现有
-    // 全链(NewPipe 主链),选中失败也不比默认档更糟;未选中直链档整块跳过。
+    // ── P11-342:visionOS 直链档(播放优先级第 4 档)——选中时**最优先**直通 ──
+    // GAPIS base + visionOS UA 匿名签名直链,免 PO token/WebView/n 解密(RAK 实测普通+attestation
+    // 均过,docs probe §7.3;VISIONOS=社区验证的 GVS 配额豁免 client 可长播)。曾并列的 IOS 档已删
+    // (2026-08 起 IOS 需 GVS PO token,无 token 仅 ~1MB 配约 1 分钟,结构性死刑)。
+    // 档位语义与 Dash/WebSabr 一致=「先走这条路」,不进兜底链:单臂失败即落下方现有全链
+    // (NewPipe 主链),选中失败也不比默认档更糟;未选中整块跳过。
     val directArm = when (deliveryPriority) {
-      YoutubeDeliveryPriority.IosDirect -> InnerTubeClient.Client.IOS to false
       YoutubeDeliveryPriority.VisionOsDirect -> InnerTubeClient.Client.VISION_OS to true
       else -> null
     }
@@ -175,8 +175,9 @@ class YoutubePlaybackResolver(
         buildPlaybackInfoFromDirect(
           videoId, armLabel, armClient, armGapis,
           codecCapability, codecPreference, request, youtubeDefaultQuality, youtubeStartQuality,
-          // P11-342 Phase 0:全阶梯 ABR 诊断仅开 IOS 臂(visionOS 保持单轨,用户「先从 ios 直连开始」)。
-          fullLadder = armClient == InnerTubeClient.Client.IOS,
+          // P11-342:全阶梯入 MPD(visionOS 暂保持单轨=false;IOS 档已删,此开关留给 visionOS
+          // 全阶梯 ABR 议题复活——Phase 0 已验证判据引擎在合成 MPD 上可跑)。
+          fullLadder = false,
         )
       }.onFailure {
         Log.w(Tag, "direct 链异常($armLabel): ${it::class.simpleName}: ${it.message}", it)
@@ -853,7 +854,8 @@ class YoutubePlaybackResolver(
     allQualities: List<PlaybackQuality>,
     allAudioTracks: List<ParsedFormat> = emptyList(),
     /**
-     * P11-342 Phase 0:全阶梯入 MPD(带宽自适应升降诊断,仅 IOS 直链臂传非空)。
+     * P11-342 Phase 0:全阶梯入 MPD(带宽自适应升降诊断;IOS 档删除后暂无消费者,
+     * 保留给 visionOS 全阶梯 ABR 议题——Phase 0 已验证判据引擎可在合成 MPD 上跑)。
      * 非空 → videoTracks = 选中轨 + 其余各档(各自独立签名 url/segmentBase),供 ExoPlayer
      * AdaptiveTrackSelection 档间切换;空 = 现行为仅选中单轨(其余调用点零变化)。
      */
@@ -2100,9 +2102,9 @@ class YoutubePlaybackResolver(
   }
 
   /**
-   * P11-342:匿名直链臂(播放优先级 [YoutubeDeliveryPriority.IosDirect] 选中时在 [resolve] 最前调用)。
+   * P11-342:匿名直链臂(播放优先级 [YoutubeDeliveryPriority.VisionOsDirect] 选中时在 [resolve] 最前调用)。
    *
-   * 档内**双臂**:①[client]=IOS(www base,iOS UA) ②VISIONOS(GAPIS base,visionOS UA)——均为
+   * 当前唯一臂=VISIONOS(GAPIS base,visionOS UA;IOS 臂已删——社区实锤 GVS ~1MB 配额结构性死刑)——为
    * 匿名 POST /player 给全阶梯**已签名**直链(免 PO token/WebView/n 解密;RAK 实测普通+attestation
    * 视频 16/18/27/40 条全直链、4K 实拉 206,见 docs/youtube-anonymous-client-probe.md §3/§7.3)。
    * 两臂互为冗余:社区 2026-08 已删 IOS client(判要 poToken),窗口可能说关就关,visionOS 顶上。

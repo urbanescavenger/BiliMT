@@ -11,13 +11,11 @@ package com.kirin.mt.core.player
  * - [WebSabr](UI 显示为「FreeTube」):强制先走 WEB attested 路径(桌面 ytcfg 身份 + 自铸
  *   poToken + cpn,请求形状逐字节对齐 FreeTube),适用门控视频/4K 场景;失败落回 SABR 主链。
  *   [key] 保持 `websabr` 以兼容已持久化的设置。
- * - [IosDirect](UI 显示为「IOS 直链优先」,P11-342):最优先直通 IOS client 匿名 /player 的
- *   全阶梯**已签名直链**(免 PO token/WebView/n 解密,合成 MPD),失败落默认 NewPipe 链;
- *   档位语义与 Dash/WebSabr 一致=「先走这条路」,不进兜底链。实测见
- *   docs/youtube-anonymous-client-probe.md。
- * - [VisionOsDirect](UI 显示为「visionOS 直链优先」,P11-342 同日拆分):GAPIS base +
- *   visionOS UA 的匿名直链(RAK 实测普通 27 条/attestation 40 条全直链,4K 实拉 206)。
- *   与 [IosDirect] 各自**独立成档**由用户手动选走哪条;失败同样落默认 NewPipe 链。
+ * - [VisionOsDirect](UI 显示为「visionOS 直链优先」,P11-342):GAPIS base + visionOS UA 的
+ *   匿名直链(RAK 实测普通 27 条/attestation 40 条全直链,4K 实拉 206;**VISIONOS 是社区验证的
+ *   GVS 配额豁免 client**,可长播),失败落默认 NewPipe 链;档位语义=「先走这条路」,不进兜底链。
+ *   曾并列的 IosDirect 档已同日删除——IOS/ANDROID_VR 自 2026-08 起需 GVS PO token,无 token
+ *   仅 ~1MB 冷启动配额(约 1 分钟即 403/断供),yt-dlp 判永不修复,结构性死刑(见 probe 文档 §7.3)。
  *
  * 注意:HLS 已在 P11-101 Step 0 整体移除(media3 createFallbackOptions FATAL + 媒体段门控 403),
  * 不是可选路径。
@@ -28,7 +26,6 @@ enum class YoutubeDeliveryPriority(val key: String, val label: String) {
   Sabr("sabr", "NewPipe 优先"),
   Dash("dash", "DASH 优先"),
   WebSabr("websabr", "FreeTube 优先"),
-  IosDirect("ios", "IOS 直链优先"),
   VisionOsDirect("visionos", "visionOS 直链优先");
 
   companion object {
