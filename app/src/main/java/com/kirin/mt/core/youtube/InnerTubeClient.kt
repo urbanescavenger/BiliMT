@@ -81,6 +81,9 @@ class InnerTubeClient(
     // 于是「桌面身份」只进了 body context,HTTP 层一直是移动(WebView 分支更由 settings.userAgentString
     // 决定)。WEB-SABR 链传桌面 UA 让四件套(body/visitor/cookie/UA)第一次同源。
     uaOverride: String? = null,
+    // P11-342:visionOS 第二臂走 GAPIS base(对齐 NewPipe 与 postVisionOsPlayerReload;
+    // RAK 实测 www.googleapis.com /player 匿名 200 给全阶梯直链)。默认 false 行为不变。
+    useGapis: Boolean = false,
   ): JsonObject = withContext(Dispatchers.IO) {
     // 先拉真实 visitorData（WEB /player 用合成 visitorData 会被拦，见 ensureRealSessionData）。
     // 仅 /player 走 WebView 时强制浏览器会话引导；feed 的 /browse、/search 等走快路径，
@@ -122,7 +125,8 @@ class InnerTubeClient(
       )
     }
 
-    val url = "${YoutubeConstants.InnerTubeBase}/${YoutubeConstants.ApiVersion}$endpoint" +
+    val base = if (useGapis) YoutubeConstants.InnerTubeGapisBase else YoutubeConstants.InnerTubeBase
+    val url = "$base/${YoutubeConstants.ApiVersion}$endpoint" +
       "?key=${YoutubeConstants.ApiKey}&prettyPrint=false&alt=json"
 
     // WEB/WEB_EMBEDDED /player 走 WebView 原生网络栈(Chromium)，对齐 FreeTubeAndroid 主 WebView。

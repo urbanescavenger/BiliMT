@@ -120,6 +120,11 @@ probe("G: VISIONOS 匿名(GAPIS)", NORMAL_VIDEO,
       "VISIONOS", "1.02", UA_VISIONOS,
       base="https://www.googleapis.com", client_name_id="101")
 
+# G2: VISIONOS × attestation —— 与 H1 对齐,验第二臂天花板
+probe("G2: VISIONOS × attestation", ATTEST_VIDEO,
+      "VISIONOS", "1.02", UA_VISIONOS,
+      base="https://www.googleapis.com", client_name_id="101")
+
 # H: IOS × attestation 视频 + 普通视频对照 —— §5 验证清单第 3 条
 probe("H1: IOS × attestation", ATTEST_VIDEO,
       "IOS", "20.10.4", UA_IOS, client_name_id="33")

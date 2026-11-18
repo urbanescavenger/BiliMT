@@ -158,27 +158,45 @@ class YoutubePlaybackResolver(
     val dashFirst = deliveryPriority == YoutubeDeliveryPriority.Dash
     val webSabrFirst = deliveryPriority == YoutubeDeliveryPriority.WebSabr
 
-    // ── P11-342:IOS 直链档(播放优先级第 4 档)——选中时**最优先**直通 ──
-    // IOS client 匿名 /player 给全阶梯已签名直链(docs/youtube-anonymous-client-probe.md §3),
-    // 免 PO token/WebView/n 解密。档位语义与 Dash/WebSabr 一致=「先走这条路」,不进兜底链:
-    // 失败即落下方现有全链(NewPipe 主链),选中失败也不比默认档更糟;未选中整块跳过。
+    // ── P11-342:IOS 直链档(播放优先级第 4 档)——选中时**最优先**直通,档内双臂 ──
+    // ① IOS(www,iOS UA) ② VISIONOS(GAPIS,visionOS UA):均为匿名全阶梯签名直链,免 PO token/
+    // WebView/n 解密,互为冗余(RAK 实测普通+attestation 均过,docs probe §7.3)。档位语义与
+    // Dash/WebSabr 一致=「先走这条路」,不进兜底链:双臂皆败才落下方现有全链(NewPipe 主链),
+    // 选中失败也不比默认档更糟;未选中整块跳过。
     val iosDirectFirst = deliveryPriority == YoutubeDeliveryPriority.IosDirect
     if (iosDirectFirst) {
-      val ios = runCatching {
-        buildPlaybackInfoFromIosDirect(videoId, codecCapability, codecPreference, request, youtubeDefaultQuality)
-      }.onFailure {
-        Log.w(Tag, "IOS direct 链异常: ${it::class.simpleName}: ${it.message}", it)
-      }.getOrNull()
-      if (ios != null) {
+      val directArms = listOf(
+        InnerTubeClient.Client.IOS to false,          // www base
+        InnerTubeClient.Client.VISION_OS to true,     // GAPIS base
+      )
+      var directInfo: PlaybackInfo? = null
+      var directArmName = ""
+      for ((armClient, armGapis) in directArms) {
+        val r = runCatching {
+          buildPlaybackInfoFromDirect(
+            videoId, armClient.name, armClient, armGapis,
+            codecCapability, codecPreference, request, youtubeDefaultQuality,
+          )
+        }.onFailure {
+          Log.w(Tag, "direct 链异常(${armClient.name}): ${it::class.simpleName}: ${it.message}", it)
+        }.getOrNull()
+        if (r != null) {
+          directInfo = r
+          directArmName = armClient.name
+          break
+        }
+        Log.w(Tag, "direct 臂 ${armClient.name} 未产出 → ${if (armClient == directArms.last().first) "落现有链" else "试下一臂"}")
+      }
+      directInfo?.let {
         YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
         Log.i(
           Tag,
-          "IOS direct playback ready: videoId=$videoId → 合成 MPD DASH " +
-            "(qualities=${ios.qualities.size} video=${ios.videoTracks.size} audio=${ios.audioTracks.size})"
+          "direct playback ready: arm=$directArmName videoId=$videoId → 合成 MPD DASH " +
+            "(qualities=${it.qualities.size} video=${it.videoTracks.size} audio=${it.audioTracks.size})"
         )
-        return@withContext ios
+        return@withContext it
       }
-      Log.w(Tag, "IOS direct 未产出 → 落现有链(Piped/WEB-SABR/NewPipe/WEB last resort)")
+      Log.w(Tag, "direct 双臂( IOS/VISIONOS )均未产出 → 落现有链(Piped/WEB-SABR/NewPipe/WEB last resort)")
     }
 
     // ── Piped 后端 opt-in（实验:对齐 LibreTube 默认 Piped 路径,修 RELOAD_PLAYER_RESPONSE 死循环）──
@@ -2051,21 +2069,28 @@ class YoutubePlaybackResolver(
   }
 
   /**
-   * P11-342:IOS 直链档(播放优先级 [YoutubeDeliveryPriority.IosDirect] 选中时在 [resolve] 最前调用)。
+   * P11-342:匿名直链臂(播放优先级 [YoutubeDeliveryPriority.IosDirect] 选中时在 [resolve] 最前调用)。
    *
-   * IOS client(20.10.4) 匿名 POST /player → adaptiveFormats 全部自带**已签名** url
-   * (144p→2160p 含 itag401,免 PO token/WebView/n 解密;实测见 docs/youtube-anonymous-client-probe.md §3)。
+   * 档内**双臂**:①[client]=IOS(www base,iOS UA) ②VISIONOS(GAPIS base,visionOS UA)——均为
+   * 匿名 POST /player 给全阶梯**已签名**直链(免 PO token/WebView/n 解密;RAK 实测普通+attestation
+   * 视频 16/18/27/40 条全直链、4K 实拉 206,见 docs/youtube-anonymous-client-probe.md §3/§7.3)。
+   * 两臂互为冗余:社区 2026-08 已删 IOS client(判要 poToken),窗口可能说关就关,visionOS 顶上。
    * payload 用探测同款最小形态(videoId/contentCheckOk/racyCheckOk,无 playbackContext/无 poToken),
-   * OkHttp 直连(IOS 不走 WebView 分支)。
+   * OkHttp 直连(两臂均不走 WebView 分支)。
    *
    * 解析与选档全复用 classic 管线([parseFormat]/[pickVideo]/[pickAudio]/[buildInfo]),但 url **原样
    * 直通**——不走 [resolveStreamUrl]:其 n-decrypt 已被 plasma WASM 废掉,而 googlevideo url 必含
    * `n=`,进解密只会把实测可用的签名 url 弄坏(Python 直拉成功证明原样可用)。
    *
-   * @return 合成 MPD 的 DASH PlaybackInfo;不可播/网络异常/无直链候选/缺 range → null(调用方落现有链)。
+   * @param armLabel 日志臂名(IOS/VISIONOS)。
+   * @param useGapis true=GAPIS base(visionOS),false=www base(IOS)。
+   * @return 合成 MPD 的 DASH PlaybackInfo;不可播/网络异常/无直链候选/缺 range → null(调用方换下一臂)。
    */
-  private suspend fun buildPlaybackInfoFromIosDirect(
+  private suspend fun buildPlaybackInfoFromDirect(
     videoId: String,
+    armLabel: String,
+    client: InnerTubeClient.Client,
+    useGapis: Boolean,
     codecCapability: CodecCapability,
     codecPreference: YoutubeCodecPreference,
     request: PlaybackRequest,
@@ -2078,11 +2103,11 @@ class YoutubePlaybackResolver(
     }
     val startedAt = System.currentTimeMillis()
     val player = runCatching {
-      innerTubeClient.postJson("/player", payload, client = InnerTubeClient.Client.IOS)
+      innerTubeClient.postJson("/player", payload, client = client, useGapis = useGapis)
     }.getOrElse {
       Log.w(
         Tag,
-        "IOS direct /player failed after ${System.currentTimeMillis() - startedAt}ms: " +
+        "$armLabel direct /player failed after ${System.currentTimeMillis() - startedAt}ms: " +
           "${it::class.simpleName}: ${it.message}",
       )
       return null
@@ -2090,7 +2115,7 @@ class YoutubePlaybackResolver(
     if (!player.isPlayable()) {
       Log.w(
         Tag,
-        "IOS direct unplayable: status=${player.obj("playabilityStatus")?.stringOrNull("status")} " +
+        "$armLabel direct unplayable: status=${player.obj("playabilityStatus")?.stringOrNull("status")} " +
           "reason=${player.playabilityReason()}",
       )
       return null
@@ -2105,24 +2130,24 @@ class YoutubePlaybackResolver(
     val decodableVideos = videoCandidates.filter { codecKeySupported(it.codecKey, codecCapability) }
     Log.i(
       Tag,
-      "IOS direct diag: rawAdaptive=${rawAdaptive.size} parsed=${adaptive.size} " +
+      "$armLabel direct diag: rawAdaptive=${rawAdaptive.size} parsed=${adaptive.size} " +
         "videoUrl=${videoCandidates.size} audioUrl=${audioCandidates.size} decodable=${decodableVideos.size} " +
         "costMs=${System.currentTimeMillis() - startedAt}",
     )
     videoCandidates.take(3).forEach { v ->
       Log.i(
         Tag,
-        "IOS direct diag: v itag=${v.itag} ${v.height}p ${v.codecKey} url=${v.url.length}B " +
+        "$armLabel direct diag: v itag=${v.itag} ${v.height}p ${v.codecKey} url=${v.url.length}B " +
           "init=${v.initRange} index=${v.indexRange}",
       )
     }
     val video = pickVideo(decodableVideos, codecPreference, request.preferredQualityId, youtubeDefaultQuality.maxHeight)
-      ?: run { Log.w(Tag, "IOS direct: 无候选视频档(video=${videoCandidates.size} decodable=${decodableVideos.size})"); return null }
+      ?: run { Log.w(Tag, "$armLabel direct: 无候选视频档(video=${videoCandidates.size} decodable=${decodableVideos.size})"); return null }
     val audio = pickAudio(audioCandidates, request.preferredAudioTrackId)
-      ?: run { Log.w(Tag, "IOS direct: 无候选音轨(audio=${audioCandidates.size})"); return null }
+      ?: run { Log.w(Tag, "$armLabel direct: 无候选音轨(audio=${audioCandidates.size})"); return null }
     // init/index range 缺失 → toSegmentBase()=null → 分离轨走 progressive 分支必解析失败,直接判死落链。
     if (video.toSegmentBase() == null || audio.toSegmentBase() == null) {
-      Log.w(Tag, "IOS direct: 直链缺 init/index range(video=${video.initRange}/${video.indexRange} audio=${audio.initRange}/${audio.indexRange})→ null")
+      Log.w(Tag, "$armLabel direct: 直链缺 init/index range(video=${video.initRange}/${video.indexRange} audio=${audio.initRange}/${audio.indexRange})→ null")
       return null
     }
     // 清晰度菜单按**分辨率**去重——对齐 P11-129(SABR 分支既有修法,[buildSabrPlaybackInfo] 同款)
