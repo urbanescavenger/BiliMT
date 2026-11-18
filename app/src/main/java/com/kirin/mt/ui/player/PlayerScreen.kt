@@ -1535,23 +1535,25 @@ fun PlayerScreen(
       }
       PlayerPanel.RelatedVideos -> {
         val video = sidePanelVideos.getOrNull(focusedPanelIndex) ?: return
-        val filled = video.source == SourceHongguo && video.tvboxLines.isEmpty()
-        // 红果卡只带元数据:点行进播放器前补拉详情拿全量分集(镜像 AppShell 卡片点击的
-        // hongguoDetail 分支);失败原样起播,落到「无可用线路」错误态与卡片点击失败同语义。
-        val resolved = if (filled) {
-          runCatching {
-            videoRepository.hongguoDetail(video.bvid.removePrefix(HongguoAppRepository.SeriesPrefix))
-          }.getOrNull() ?: video
-        } else {
-          video
-        }
-        val nextRequest = if (filled) {
-          video.toHongguoPlaybackRequest(resolved)
-        } else {
-          resolved.toPlaybackRequest()
-        }
         coroutineScope.launch {
+          // 先存当前进度,再做可能耗时的红果详情补拉(网络),最后起播——顺序与旧行为一致
+          // (save 在前),只是把 suspend 的 hongguoDetail 放进协程(P11-341 编译修复)。
           saveAndReportProgressNow()
+          val filled = video.source == SourceHongguo && video.tvboxLines.isEmpty()
+          // 红果卡只带元数据:点行进播放器前补拉详情拿全量分集(镜像 AppShell 卡片点击的
+          // hongguoDetail 分支);失败原样起播,落到「无可用线路」错误态与卡片点击失败同语义。
+          val resolved = if (filled) {
+            runCatching {
+              videoRepository.hongguoDetail(video.bvid.removePrefix(HongguoAppRepository.SeriesPrefix))
+            }.getOrNull() ?: video
+          } else {
+            video
+          }
+          val nextRequest = if (filled) {
+            video.toHongguoPlaybackRequest(resolved)
+          } else {
+            resolved.toPlaybackRequest()
+          }
           startPlaybackRequest(nextRequest, clearMetadata = true)
         }
         return
