@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v4.0.0-alpha.6](#v400-alpha6)
 - [v4.0.0-alpha.5](#v400-alpha5)
 - [v4.0.0-alpha.4](#v400-alpha4)
 - [v4.0.0-alpha.3](#v400-alpha3)
@@ -430,6 +431,34 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v4.0.0-alpha.6
+
+**YouTube 直链档定稿：visionOS 直链档全阶梯 ABR + IOS 档删除 + 直链起播/切档口径统一（P11-342 收口）。**
+
+### visionOS 直链档（播放优先级第 4 档，现为唯一直链档）
+
+- **IOS 直链档删除**：社区实锤 2026-08 起 IOS/ANDROID_VR 需 GVS proof-of-origin token，无 token
+  仅 ~1MB 冷启动配额（真机两次 stall 精确 pos=61.5s = 1MB÷码率 吻合；yt-dlp 判 "ios will never
+  be fixed"）；**VISIONOS = 社区验证的豁免 client** → 播放优先级回 4 档（NewPipe / DASH /
+  FreeTube / visionOS 直链优先），设备旧 ios 选择自动回落 NewPipe。
+- **全阶梯入 MPD + ABR 爬档**：visionOS 档 14~22 轨全分辨率入组，起播锁意图档、首帧后交
+  HeightAware 判据引擎自由爬（真机 720→1080 爬档、14 轨、itag 真值日志坐实）。
+- **深度 seek 豁免实证**：拖到 704s 起播成功（IOS 档同操作 59s 即死于配额墙）。
+
+### 直链档起播与手动选档口径
+
+- 起播选档统一 P11-173：手动 > 起播画质上限取最高 > 默认画质上限 > 双自动取最低档（直链双档
+  与 NewPipe DASH 优先档一并对齐；修直链档恒 2160/144 起播）。
+- 手动切档 ladder 收窄到选中分辨率组（对齐 NewPipe DASH 手动语义），修「切档无效被 ABR 拉回」。
+- 起播锁直链档补锁（此前仅 SABR 锁 → 直链初始选轨落 144）。
+
+### 诊断与健壮性
+
+- `itagOf` 兼容合成 MPD 的 `0_135` 形态（修直链档全判据 itag=-1 半盲）。
+- 直链 403 测试期停自动重载：显式失败 + 满取证日志（参数键/Range/dataSpec 位置）。
+- 直链 403 不再误标 `markDashFallbackFailed`（防连坐跳过 NewPipe 兜底）。
+- activeVideo 升降判读日志（当前渲染轨单值）。
 
 ## v4.0.0-alpha.5
 
