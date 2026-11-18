@@ -154,9 +154,33 @@ class YoutubePlaybackResolver(
 
     // 播放路径优先级(P11-114):Dash = DASH 自合成优先(慢 SABR 首段被 stall 看门狗误杀场景的逃生通道);
     // WebSabr = 强制 WEB attested 路径优先(门控视频/4K);Sabr(默认)= NewPipe SABR 主链。
-    val deliveryPriority = appSettingsStore?.settings?.first()?.youtubeDeliveryPriority ?: YoutubeDeliveryPriority.Sabr
+    val settingsSnapshot = appSettingsStore?.settings?.first()
+    val deliveryPriority = settingsSnapshot?.youtubeDeliveryPriority ?: YoutubeDeliveryPriority.Sabr
     val dashFirst = deliveryPriority == YoutubeDeliveryPriority.Dash
     val webSabrFirst = deliveryPriority == YoutubeDeliveryPriority.WebSabr
+
+    // ── P11-342:IOS 直链手动选项(设置 youtubeUseIosDirect,移动端开关)——打开时**最优先**直通 ──
+    // IOS client 匿名 /player 给全阶梯已签名直链(docs/youtube-anonymous-client-probe.md §3),
+    // 免 PO token/WebView/n 解密。手动选项语义:不进兜底链——失败即落下方现有全链
+    // (Piped/WEB-SABR/NewPipe/WEB last resort),不开不进、开了失败也不比不开更糟;关闭(默认)整块跳过。
+    val useIosDirect = settingsSnapshot?.youtubeUseIosDirect ?: false
+    if (useIosDirect) {
+      val ios = runCatching {
+        buildPlaybackInfoFromIosDirect(videoId, codecCapability, codecPreference, request, youtubeDefaultQuality)
+      }.onFailure {
+        Log.w(Tag, "IOS direct 链异常: ${it::class.simpleName}: ${it.message}", it)
+      }.getOrNull()
+      if (ios != null) {
+        YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
+        Log.i(
+          Tag,
+          "IOS direct playback ready: videoId=$videoId → 合成 MPD DASH " +
+            "(qualities=${ios.qualities.size} video=${ios.videoTracks.size} audio=${ios.audioTracks.size})"
+        )
+        return@withContext ios
+      }
+      Log.w(Tag, "IOS direct 未产出 → 落现有链(Piped/WEB-SABR/NewPipe/WEB last resort)")
+    }
 
     // ── Piped 后端 opt-in（实验:对齐 LibreTube 默认 Piped 路径,修 RELOAD_PLAYER_RESPONSE 死循环）──
     // 用户在设置开 youtubeUsePiped 后,先走 Piped `/streams/{videoId}`。Piped 实例自带 poToken 请求
@@ -2025,6 +2049,94 @@ class YoutubePlaybackResolver(
     // 第三级兜底由 Phase 1/2 的 WEB-DASH 接替。
     Log.w(Tag, "HLS 兜底已停用(P11-101 Step 0,media3 createFallbackOptions 崩溃+媒体段门控 403)→ 返回 null")
     return null
+  }
+
+  /**
+   * P11-342:IOS 直链手动选项(设置 youtubeUseIosDirect 打开时在 [resolve] 最前调用)。
+   *
+   * IOS client(20.10.4) 匿名 POST /player → adaptiveFormats 全部自带**已签名** url
+   * (144p→2160p 含 itag401,免 PO token/WebView/n 解密;实测见 docs/youtube-anonymous-client-probe.md §3)。
+   * payload 用探测同款最小形态(videoId/contentCheckOk/racyCheckOk,无 playbackContext/无 poToken),
+   * OkHttp 直连(IOS 不走 WebView 分支)。
+   *
+   * 解析与选档全复用 classic 管线([parseFormat]/[pickVideo]/[pickAudio]/[buildInfo]),但 url **原样
+   * 直通**——不走 [resolveStreamUrl]:其 n-decrypt 已被 plasma WASM 废掉,而 googlevideo url 必含
+   * `n=`,进解密只会把实测可用的签名 url 弄坏(Python 直拉成功证明原样可用)。
+   *
+   * @return 合成 MPD 的 DASH PlaybackInfo;不可播/网络异常/无直链候选/缺 range → null(调用方落现有链)。
+   */
+  private suspend fun buildPlaybackInfoFromIosDirect(
+    videoId: String,
+    codecCapability: CodecCapability,
+    codecPreference: YoutubeCodecPreference,
+    request: PlaybackRequest,
+    youtubeDefaultQuality: YoutubeDefaultQuality,
+  ): PlaybackInfo? {
+    val payload = buildJsonObject {
+      put("videoId", videoId)
+      put("contentCheckOk", true)
+      put("racyCheckOk", true)
+    }
+    val startedAt = System.currentTimeMillis()
+    val player = runCatching {
+      innerTubeClient.postJson("/player", payload, client = InnerTubeClient.Client.IOS)
+    }.getOrElse {
+      Log.w(
+        Tag,
+        "IOS direct /player failed after ${System.currentTimeMillis() - startedAt}ms: " +
+          "${it::class.simpleName}: ${it.message}",
+      )
+      return null
+    }
+    if (!player.isPlayable()) {
+      Log.w(
+        Tag,
+        "IOS direct unplayable: status=${player.obj("playabilityStatus")?.stringOrNull("status")} " +
+          "reason=${player.playabilityReason()}",
+      )
+      return null
+    }
+    val streamingData = player.obj("streamingData")
+    val rawAdaptive = streamingData?.array("adaptiveFormats") ?: emptyList()
+    val adaptive = rawAdaptive.mapNotNull { it as? JsonObject }.mapNotNull(::parseFormat)
+    val durationMs = (player.obj("videoDetails")?.stringOrNull("lengthSeconds")?.toLongOrNull() ?: 0L) * 1000L
+    // 直链守卫:IOS 正常全带 url;带 cipher(需解密)的不收——本臂的存在意义就是绕开解密链。
+    val videoCandidates = adaptive.filter { it.kind == Kind.Video && !it.combined && it.url.isNotBlank() }
+    val audioCandidates = adaptive.filter { it.kind == Kind.Audio && it.url.isNotBlank() }
+    val decodableVideos = videoCandidates.filter { codecKeySupported(it.codecKey, codecCapability) }
+    Log.i(
+      Tag,
+      "IOS direct diag: rawAdaptive=${rawAdaptive.size} parsed=${adaptive.size} " +
+        "videoUrl=${videoCandidates.size} audioUrl=${audioCandidates.size} decodable=${decodableVideos.size} " +
+        "costMs=${System.currentTimeMillis() - startedAt}",
+    )
+    videoCandidates.take(3).forEach { v ->
+      Log.i(
+        Tag,
+        "IOS direct diag: v itag=${v.itag} ${v.height}p ${v.codecKey} url=${v.url.length}B " +
+          "init=${v.initRange} index=${v.indexRange}",
+      )
+    }
+    val video = pickVideo(decodableVideos, codecPreference, request.preferredQualityId, youtubeDefaultQuality.maxHeight)
+      ?: run { Log.w(Tag, "IOS direct: 无候选视频档(video=${videoCandidates.size} decodable=${decodableVideos.size})"); return null }
+    val audio = pickAudio(audioCandidates, request.preferredAudioTrackId)
+      ?: run { Log.w(Tag, "IOS direct: 无候选音轨(audio=${audioCandidates.size})"); return null }
+    // init/index range 缺失 → toSegmentBase()=null → 分离轨走 progressive 分支必解析失败,直接判死落链。
+    if (video.toSegmentBase() == null || audio.toSegmentBase() == null) {
+      Log.w(Tag, "IOS direct: 直链缺 init/index range(video=${video.initRange}/${video.indexRange} audio=${audio.initRange}/${audio.indexRange})→ null")
+      return null
+    }
+    return buildInfo(
+      request = request,
+      videoId = videoId,
+      durationMs = durationMs,
+      videoFmt = video,
+      audioFmt = audio,
+      videoUrl = video.url, // 已签名直链原样直通,不进 resolveStreamUrl/n-decrypt
+      audioUrl = audio.url,
+      allQualities = buildQualityList(decodableVideos),
+      allAudioTracks = audioCandidates,
+    )
   }
 
   /**

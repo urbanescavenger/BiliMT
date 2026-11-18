@@ -347,6 +347,7 @@ type=20(MEDIA_HEADER) itag=251 isInit=false seq=1 contentLen=101540 dur=6041ms  
 - #8137(video ID 绑定 poToken)、#6931(jnn 端点 youtube.com/api/jnn 是 jnn-pa 代理)、#6977(legacy 360p 兜底)。
 
 ### 9.4 内部文档
+- [youtube-anonymous-client-probe.md](youtube-anonymous-client-probe.md):2026-11-18 RAC/TK 节点匿名客户端探测——**IOS 客户端匿名给全阶梯直链(含 4K itag401)**、各客户端门控矩阵、DASH 直链按码率 pacing/HLS 测速方法(修正 §9.5 "无客户端给直链"表述)
 - [youtube-hd-playback.md](youtube-hd-playback.md):逐 alpha 调试记录(§6.7 row 1-53)+ FreeTube 核对(§6.8)+ SABR 调研(§6.9)。
 - [DEVELOPMENT_PROGRESS.md](../../DEVELOPMENT_PROGRESS.md):P11-14 YouTube 播放进度。
 - memory `youtube-plasma-wasm-n-decrypt`:plasma WASM 根因 + alpha.17-33 跨阶段突破记录(含 alpha.32 URL 类方式推翻「锁死」结论)。
@@ -369,6 +370,8 @@ type=20(MEDIA_HEADER) itag=251 isInit=false seq=1 contentLen=101540 dur=6041ms  
 | VISIONOS(101) | HTTP 404(该请求形态下) |
 
 即 **2026-10 已没有客户端能在无 token 下给出可直接播放的 adaptive 直链**;ReVanced 这条路的实际产出就是 itag18 360p,与它自己的用户报告一致。这也再次对上我们 alpha.14/§6.5 的结论,不是请求头或 client 版本没调对。
+
+> ⚠️ **2026-11-18 勘证(RAC/TK 节点实测,详见 [youtube-anonymous-client-probe.md](youtube-anonymous-client-probe.md))**:上段表述需修正——**IOS 客户端(20.10.4)匿名即给 16 条带签名 url 的 adaptiveFormats(阶梯到 4K,含 itag401 av01 17.4Mbps,实拉成功)+ hlsManifestUrl**,不需 token;TV 嵌入式/MWEB/TVHTML5 已死(ERROR/UNPLAYABLE),ANDROID 给 SABR-only 全阶梯 + 仅 itag18 直链,WEB 非 Chromium 栈被拒("page needs to be reloaded",复现 alpha.29),ANDROID_VR 弹 "Sign in to confirm you're not a bot"。另:上表 ANDROID_REEL `/reel/reel_item_watch` 形态 2026-11-18 实测已 `REEL_ITEM_WATCH_STATUS_BAD_REQUEST` 失效。bot 门控是**客户端维度**——同一 IP 换客户端即触发/消失,两台机房 IP 的 watch 页匿名均干净。
 
 **ReVanced 自己承认的现状**:
 - 设置页 `revanced_spoof_video_streams_about_playback_failure` = "Video may stop at 1:00, or may not be available in some regions",ANDROID_REEL / VR / VISIONOS 三档都挂这条。

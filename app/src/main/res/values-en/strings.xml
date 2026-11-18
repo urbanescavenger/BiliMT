@@ -659,6 +659,8 @@
     <string name="settings_youtube_use_piped_description">YouTube playback goes through Piped first, falling back to NewPipe. Fixes the RELOAD_PLAYER_RESPONSE loop.</string>
     <string name="settings_sabr_force_itag_title">Lock session video track</string>
     <string name="settings_sabr_force_itag_description">SABR diagnostic: force the session-selected itag to disprove an itag as the RELOAD root cause.</string>
+    <string name="settings_youtube_use_ios_direct_title">IOS direct links first</string>
+    <string name="settings_youtube_use_ios_direct_description">Manual option: when on, playback first tries the iOS client for signed direct URLs (no PO token, up to 4K) and falls back to the normal chain on failure; off keeps the current behavior. Experimental (P11-342).</string>
     <string name="settings_youtube_delivery_priority_title">Playback priority</string>
     <string name="settings_youtube_delivery_priority_description">NewPipe first (default); alternatives: DASH self-compose (stutter/slow-source escape, can reach 4K) or FreeTube first (forced WEB-attested path, for gated videos).</string>
     <string name="settings_iptv_connect_success">IPTV source connected</string>

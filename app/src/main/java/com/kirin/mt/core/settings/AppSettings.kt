@@ -135,6 +135,12 @@ data class AppSettings(
    * 路径(桌面身份+cpn+poToken),适用门控视频/4K 强制场景。见 docs/youtube-hd-playback.md。
    */
   val youtubeDeliveryPriority: YoutubeDeliveryPriority = YoutubeDeliveryPriority.Sabr,
+  /**
+   * P11-342:YouTube IOS 直链手动选项(移动端设置行;TV 设置页暂不加行)。打开时 [resolve] **最优先**
+   * 直通 IOS client 匿名 /player 的全阶梯签名直链(免 PO token/WebView/n 解密,失败自动落现有全链,
+   * 不进兜底链);关闭(默认)行为与历史完全一致。见 docs/youtube-anonymous-client-probe.md §5。
+   */
+  val youtubeUseIosDirect: Boolean = false,
 ) {
   val lowSpecMode: Boolean
     get() = visualPerformanceMode == AppVisualPerformanceMode.Smooth

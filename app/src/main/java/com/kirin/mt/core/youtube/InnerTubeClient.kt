@@ -179,6 +179,11 @@ class InnerTubeClient(
       Client.VISION_OS -> requestBuilder
         .header("X-Youtube-Client-Version", "1.02")
         .header("X-Youtube-Client-Name", "95")
+      // P11-342:IOS 直链臂——头对齐探测形态(§2:UA + X-Goog-Visitor-Id + Origin),OkHttp 直连。
+      Client.IOS -> requestBuilder
+        .header("X-Youtube-Client-Version", YoutubeConstants.IosClientVersion)
+        .header("X-Youtube-Client-Name", YoutubeConstants.IosClientNameId)
+        .header("Origin", YoutubeConstants.Referer)
     }
 
     httpClient.newCall(requestBuilder.build()).execute().use { response ->
@@ -427,7 +432,9 @@ class InnerTubeClient(
     ANDROID,
     TVHTML5,
     // Phase 2 取证:visionOS native 客户端(NewPipe SABR getInfo 用的 client,对齐 ofVisionOsClient)。
-    VISION_OS;
+    VISION_OS,
+    // P11-342:IOS native client——匿名 /player 给全阶梯签名直链(免 token),见 docs/youtube-anonymous-client-probe.md。
+    IOS;
 
     val userAgent: String
       get() = when (this) {
@@ -438,6 +445,7 @@ class InnerTubeClient(
         TVHTML5 -> YoutubeConstants.TvHtml5UserAgent
         // visionOS native UA(对齐 NewPipe getVisionOsUserAgent())。
         VISION_OS -> "com.google.visionos.youtube/1.02(RealityDevice14,1; U; CPU visionOS 25_6_0 like Mac OS X; ${YoutubeContentLocale.gl})"
+        IOS -> YoutubeConstants.IosUserAgent
       }
   }
 
@@ -528,6 +536,21 @@ class InnerTubeClient(
               put("osName", "visionOS")
               put("osVersion", "25.6.0.23O471")
             }
+            // P11-342:IOS native client——匿名 /player 给全阶梯签名直链(免 token)。
+            // context 形态对齐探测成功形态(yt-dlp/NewPipe IOS 同款):Apple 设备 + iOS,
+            // 无浏览器指纹/mainAppWebInfo/thirdParty(native 客户端不带)。
+            Client.IOS -> {
+              put("clientName", "IOS")
+              put("clientVersion", YoutubeConstants.IosClientVersion)
+              put("hl", YoutubeContentLocale.hl)
+              put("gl", YoutubeContentLocale.gl)
+              put("platform", "MOBILE")
+              put("clientFormFactor", "UNKNOWN_FORM_FACTOR")
+              put("deviceMake", "Apple")
+              put("deviceModel", "iPhone16,2")
+              put("osName", "iOS")
+              put("osVersion", "18.3.1")
+            }
           }
           put("visitorData", currentVisitorData())
         },
@@ -576,6 +599,8 @@ class InnerTubeClient(
       Client.ANDROID -> "30"
       Client.TVHTML5 -> YoutubeConstants.TvHtml5ClientNameId
       Client.VISION_OS -> "95"
+      // P11-342:IOS 不走 WebView,此处仅满足 when 穷举(不会被调用)。
+      Client.IOS -> YoutubeConstants.IosClientNameId
     }
     val clientVersion = when (client) {
       Client.WEB -> currentClientVersion()
@@ -583,6 +608,7 @@ class InnerTubeClient(
       Client.ANDROID -> YoutubeConstants.AndroidClientVersion
       Client.TVHTML5 -> YoutubeConstants.TvHtml5ClientVersion
       Client.VISION_OS -> "1.02"
+      Client.IOS -> YoutubeConstants.IosClientVersion
     }
     val headers = mutableMapOf(
       "Content-Type" to "application/json",

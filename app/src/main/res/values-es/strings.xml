@@ -644,6 +644,8 @@
     <string name="settings_youtube_use_piped_description">La reproducción de YouTube usa primero Piped; si falla, retrocede a NewPipe. Arregla el bucle RELOAD_PLAYER_RESPONSE</string>
     <string name="settings_sabr_force_itag_title">Bloquear pista de video de la sesión</string>
     <string name="settings_sabr_force_itag_description">Diagnóstico SABR: fuerza el itag seleccionado de la sesión para descartar si un itag es la causa del RELOAD</string>
+    <string name="settings_youtube_use_ios_direct_title">Enlaces directos de IOS primero</string>
+    <string name="settings_youtube_use_ios_direct_description">Opción manual: al activarla, la reproducción intenta primero el cliente iOS para obtener URL directas firmadas (sin PO token, hasta 4K) y vuelve a la ruta normal si falla; desactivada mantiene el comportamiento actual. Experimental (P11-342).</string>
     <string name="settings_youtube_delivery_priority_title">Prioridad de reproducción</string>
     <string name="settings_youtube_delivery_priority_description">NewPipe primero (predeterminado); alternativas: DASH autocompuesto (escape ante lentitud, puede dar 4K) o FreeTube primero (ruta WEB autenticada forzada, para vídeos restringidos)</string>
     <string name="settings_iptv_connect_success">Conexión a la fuente IPTV correcta</string>
