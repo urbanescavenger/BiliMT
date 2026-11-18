@@ -5,14 +5,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** App episode comments, including the server-issued continuation cursor. No write methods. */
-class AppCommentPages(
-    http: okhttp3.OkHttpClient =
-        okhttp3.OkHttpClient.Builder()
-            .callTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
-            .followRedirects(false)
-            .build(),
-) {
-    private val transport = CommentTransport(http = http)
+class AppCommentPages {
+    private val transport = CommentTransport()
 
     fun read(series: String, episode: String, cursor: String): JSONObject {
         require(series.matches(Regex("[0-9]{6,30}")) && episode.matches(Regex("[0-9]{6,30}")))

@@ -27,7 +27,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import java.io.IOException
-import java.net.Proxy
 import java.util.concurrent.TimeUnit
 
 /** 红果评论一页（游标分页；[nextCursor] 为空表示到底）。 */
@@ -59,9 +58,6 @@ class HongguoAppRepository(
     .readTimeout(60, TimeUnit.SECONDS)
     .callTimeout(90, TimeUnit.SECONDS)
     .cookieJar(MemoryCookies())
-    // 红果是直连国内服务，必须忽略系统代理：本地 Wi-Fi 若配了 127.0.0.1 代理，
-    // OkHttp 默认会走它（日志 localhost:443 ECONNREFUSED），而移动数据没有系统代理所以能播。
-    .proxy(Proxy.NO_PROXY)
     .build()
 
   /** 播放/弹幕/评论共用同一个匿名身份；持久化到 SharedPreferences，冷启动不再重新注册。 */
@@ -76,8 +72,8 @@ class HongguoAppRepository(
   /** 官方推荐流游标跨页复用；page<=1 或失败时重建。 */
   private var recommendationFeed: RecommendationFeed? = null
   /** 定时弹幕按播放时间窗读取；内部有 60s 窗口缓存。 */
-  private val timedCommentReader = TimedComments(http = http, playbackSession = playbackSession)
-  private val appComments = AppCommentPages(http)
+  private val timedCommentReader = TimedComments(playbackSession = playbackSession)
+  private val appComments = AppCommentPages()
   private val publicComments = PublicComments(http)
 
   init {
