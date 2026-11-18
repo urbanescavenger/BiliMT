@@ -2126,6 +2126,20 @@ class YoutubePlaybackResolver(
       Log.w(Tag, "IOS direct: 直链缺 init/index range(video=${video.initRange}/${video.indexRange} audio=${audio.initRange}/${audio.indexRange})→ null")
       return null
     }
+    // alpha.9X 同款修正(参照 NewPipe 自合成 DASH 的 distinctBy height):清晰度菜单按**分辨率**去重,
+    // 每 height 一档纯 "${height}p"——IOS 阶梯同 height 多 codec 变体(1080p=137/248/399),
+    // 按 itag 去重的 [buildQualityList] 会把同档重复列出(真机 14:20 UVqLyLizppk qualities=18)。
+    // 选中档所在 height 的代表 itag 用选中档本身,保证 selectedQuality 在列表内、
+    // 切档 preferredQualityId → pickVideo(preferredItag) 链条闭合。
+    val iosQualities = decodableVideos
+      .sortedByDescending { it.height }
+      .distinctBy { it.height }
+      .map { v ->
+        PlaybackQuality(
+          id = if (v.height == video.height) video.itag else v.itag,
+          description = "${v.height}p",
+        )
+      }
     return buildInfo(
       request = request,
       videoId = videoId,
@@ -2134,8 +2148,13 @@ class YoutubePlaybackResolver(
       audioFmt = audio,
       videoUrl = video.url, // 已签名直链原样直通,不进 resolveStreamUrl/n-decrypt
       audioUrl = audio.url,
-      allQualities = buildQualityList(decodableVideos),
+      allQualities = iosQualities,
       allAudioTracks = audioCandidates,
+    ).copy(
+      // buildInfo 的 selectedQuality.description 用服务端 qualityLabel(可能 "1080p60"),
+      // 统一成与列表一致的 "${height}p"(id 不变,仍=选中 itag)。
+      selectedQuality = iosQualities.firstOrNull { it.id == video.itag }
+        ?: PlaybackQuality(id = video.itag, description = "${video.height}p"),
     )
   }
 
