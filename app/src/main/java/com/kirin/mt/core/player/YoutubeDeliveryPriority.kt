@@ -15,6 +15,9 @@ package com.kirin.mt.core.player
  *   全阶梯**已签名直链**(免 PO token/WebView/n 解密,合成 MPD),失败落默认 NewPipe 链;
  *   档位语义与 Dash/WebSabr 一致=「先走这条路」,不进兜底链。实测见
  *   docs/youtube-anonymous-client-probe.md。
+ * - [VisionOsDirect](UI 显示为「visionOS 直链优先」,P11-342 同日拆分):GAPIS base +
+ *   visionOS UA 的匿名直链(RAK 实测普通 27 条/attestation 40 条全直链,4K 实拉 206)。
+ *   与 [IosDirect] 各自**独立成档**由用户手动选走哪条;失败同样落默认 NewPipe 链。
  *
  * 注意:HLS 已在 P11-101 Step 0 整体移除(media3 createFallbackOptions FATAL + 媒体段门控 403),
  * 不是可选路径。
@@ -25,7 +28,8 @@ enum class YoutubeDeliveryPriority(val key: String, val label: String) {
   Sabr("sabr", "NewPipe 优先"),
   Dash("dash", "DASH 优先"),
   WebSabr("websabr", "FreeTube 优先"),
-  IosDirect("ios", "IOS 直链优先");
+  IosDirect("ios", "IOS 直链优先"),
+  VisionOsDirect("visionos", "visionOS 直链优先");
 
   companion object {
     /** 按 DataStore 存的 [key] 解码;null/未知回 [Sabr](对齐 [YoutubeDefaultQuality.fromKey] 模式)。 */

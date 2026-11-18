@@ -158,45 +158,36 @@ class YoutubePlaybackResolver(
     val dashFirst = deliveryPriority == YoutubeDeliveryPriority.Dash
     val webSabrFirst = deliveryPriority == YoutubeDeliveryPriority.WebSabr
 
-    // ── P11-342:IOS 直链档(播放优先级第 4 档)——选中时**最优先**直通,档内双臂 ──
-    // ① IOS(www,iOS UA) ② VISIONOS(GAPIS,visionOS UA):均为匿名全阶梯签名直链,免 PO token/
-    // WebView/n 解密,互为冗余(RAK 实测普通+attestation 均过,docs probe §7.3)。档位语义与
-    // Dash/WebSabr 一致=「先走这条路」,不进兜底链:双臂皆败才落下方现有全链(NewPipe 主链),
-    // 选中失败也不比默认档更糟;未选中整块跳过。
-    val iosDirectFirst = deliveryPriority == YoutubeDeliveryPriority.IosDirect
-    if (iosDirectFirst) {
-      val directArms = listOf(
-        InnerTubeClient.Client.IOS to false,          // www base
-        InnerTubeClient.Client.VISION_OS to true,     // GAPIS base
-      )
-      var directInfo: PlaybackInfo? = null
-      var directArmName = ""
-      for ((armClient, armGapis) in directArms) {
-        val r = runCatching {
-          buildPlaybackInfoFromDirect(
-            videoId, armClient.name, armClient, armGapis,
-            codecCapability, codecPreference, request, youtubeDefaultQuality,
-          )
-        }.onFailure {
-          Log.w(Tag, "direct 链异常(${armClient.name}): ${it::class.simpleName}: ${it.message}", it)
-        }.getOrNull()
-        if (r != null) {
-          directInfo = r
-          directArmName = armClient.name
-          break
-        }
-        Log.w(Tag, "direct 臂 ${armClient.name} 未产出 → ${if (armClient == directArms.last().first) "落现有链" else "试下一臂"}")
-      }
-      directInfo?.let {
+    // ── P11-342:直链档(播放优先级第 4/5 档)——选中时**最优先**直通,IOS/visionOS 各自独立成档 ──
+    // 两档同为匿名全阶梯签名直链,免 PO token/WebView/n 解密(IOS=www base+iOS UA;
+    // VISIONOS=GAPIS base+visionOS UA,RAK 实测普通+attestation 均过,docs probe §7.3)。
+    // 档位语义与 Dash/WebSabr 一致=「先走这条路」,不进兜底链:所选档单臂失败即落下方现有
+    // 全链(NewPipe 主链),选中失败也不比默认档更糟;未选中直链档整块跳过。
+    val directArm = when (deliveryPriority) {
+      YoutubeDeliveryPriority.IosDirect -> InnerTubeClient.Client.IOS to false
+      YoutubeDeliveryPriority.VisionOsDirect -> InnerTubeClient.Client.VISION_OS to true
+      else -> null
+    }
+    if (directArm != null) {
+      val (armClient, armGapis) = directArm
+      val directInfo = runCatching {
+        buildPlaybackInfoFromDirect(
+          videoId, armClient.name, armClient, armGapis,
+          codecCapability, codecPreference, request, youtubeDefaultQuality,
+        )
+      }.onFailure {
+        Log.w(Tag, "direct 链异常(${armClient.name}): ${it::class.simpleName}: ${it.message}", it)
+      }.getOrNull()
+      if (directInfo != null) {
         YoutubeLoadProgress.emit(YoutubeLoadStep.Connect)
         Log.i(
           Tag,
-          "direct playback ready: arm=$directArmName videoId=$videoId → 合成 MPD DASH " +
-            "(qualities=${it.qualities.size} video=${it.videoTracks.size} audio=${it.audioTracks.size})"
+          "direct playback ready: arm=${armClient.name} videoId=$videoId → 合成 MPD DASH " +
+            "(qualities=${directInfo.qualities.size} video=${directInfo.videoTracks.size} audio=${directInfo.audioTracks.size})"
         )
-        return@withContext it
+        return@withContext directInfo
       }
-      Log.w(Tag, "direct 双臂( IOS/VISIONOS )均未产出 → 落现有链(Piped/WEB-SABR/NewPipe/WEB last resort)")
+      Log.w(Tag, "direct 臂 ${armClient.name} 未产出 → 落现有链(Piped/WEB-SABR/NewPipe/WEB last resort)")
     }
 
     // ── Piped 后端 opt-in（实验:对齐 LibreTube 默认 Piped 路径,修 RELOAD_PLAYER_RESPONSE 死循环）──
