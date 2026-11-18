@@ -1788,6 +1788,26 @@ fun PlayerScreen(
         // P11-99c:标记移到预算判定**之前**(预算耗尽的最后一击也标记,手动重试同样能 HLS 接上);
         // 重试用独立 errorRetryCount(MaxErrorAutoRetry=3,容纳 SABR→DASH→HLS 三级),不再烧
         // stall 看门狗预算;isPlaying 清零;超限置 Failed 交用户手动重试。
+        // P11-342 测试期(同 Mobile):直链档 403 不走 error-retry 自动重载,显式 Failed + 取证。
+        if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS &&
+          (playerState as? PlayerScreenState.Ready)?.info?.directAbrLadder == true
+        ) {
+          val dse = error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
+          val uri = dse?.dataSpec?.uri
+          val paramKeys = uri?.substringAfter('?', "")?.substringBefore('#')?.split('&')
+            ?.mapNotNull { p -> p.substringBefore('=').takeIf { it.isNotEmpty() } } ?: emptyList()
+          val watched = listOf("ip", "expire", "ei", "c", "pot", "n", "alr", "rn", "req0")
+            .filter { it in paramKeys }
+          Log.w(
+            PlayerPlaybackLogTag,
+            "direct ladder 403(不兜底重载,取证 P11-342): pos=${player.currentPosition}ms " +
+              "code=${dse?.responseCode ?: "?"} watchedKeys=$watched allKeys=$paramKeys " +
+              "rangeHdr=${dse?.dataSpec?.httpRequestHeaders?.get("Range") ?: "-"} " +
+              "dataSpecPos=${dse?.dataSpec?.position ?: -1}/${dse?.dataSpec?.length ?: -1}",
+          )
+          playerState = PlayerScreenState.Failed("直链 403 待根治(P11-342): ${error.message}")
+          return
+        }
         // P11-342:直链档 403 不标记(同 Mobile——防连坐跳过 NewPipe 自合成 DASH 兜底)。
         if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube &&
           (playerState as? PlayerScreenState.Ready)?.info?.directAbrLadder != true

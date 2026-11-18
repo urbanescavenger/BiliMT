@@ -1387,6 +1387,29 @@ fun MobilePlayerScreen(
           // → 重 resolve 跳过自合成 DASH 直落 dashMpdUrl/HLS。SABR 错误恒为 2000,不误标。
           // P11-99c:标记移到预算判定**之前**(预算耗尽的最后一击也标记);重试用独立
           // errorRetryCount(MaxErrorAutoRetry=3,容纳 SABR→DASH→HLS 三级)。
+          // P11-342 测试期(用户「先不要用兜底,重载就是有问题」):直链档 403 **不走 error-retry
+          // 自动重载**——60s 段 403 是待根治 bug(出口 ip 绑定/连接复用超时换新连接/参数时效,
+          // 取证后定),自动续播会把闪断糊过去。显式置 Failed + 打满取证(参数键/Range/位置),
+          // 根治方向=段级透明恢复(SabrAwareDataSource 拦 403 换新 URL 重开,零重建零闪断)。
+          if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS &&
+            (playerState as? MobilePlayerState.Ready)?.info?.directAbrLadder == true
+          ) {
+            val dse = error.cause as? androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
+            val uri = dse?.dataSpec?.uri
+            val paramKeys = uri?.substringAfter('?', "")?.substringBefore('#')?.split('&')
+              ?.mapNotNull { p -> p.substringBefore('=').takeIf { it.isNotEmpty() } } ?: emptyList()
+            val watched = listOf("ip", "expire", "ei", "c", "pot", "n", "alr", "rn", "req0")
+              .filter { it in paramKeys }
+            Log.w(
+              MobilePlayerLogTag,
+              "direct ladder 403(不兜底重载,取证 P11-342): pos=${player.currentPosition}ms " +
+                "code=${dse?.responseCode ?: "?"} watchedKeys=$watched allKeys=$paramKeys " +
+                "rangeHdr=${dse?.dataSpec?.httpRequestHeaders?.get("Range") ?: "-"} " +
+                "dataSpecPos=${dse?.dataSpec?.position ?: -1}/${dse?.dataSpec?.length ?: -1}",
+            )
+            playerState = MobilePlayerState.Failed("直链 403 待根治(P11-342): ${error.message}")
+            return
+          }
           // P11-342:直链档 403(代理出口漂移等)不标记——该标记会连坐跳过 NewPipe 自合成 DASH
           // 兜底,而直链档与它无关;仅 NewPipe DASH 兜底自身的 403 才判死(原语义)。
           if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && activeRequest.isYoutube &&
