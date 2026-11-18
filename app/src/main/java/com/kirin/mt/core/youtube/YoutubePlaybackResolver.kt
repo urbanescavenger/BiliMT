@@ -175,6 +175,8 @@ class YoutubePlaybackResolver(
         buildPlaybackInfoFromDirect(
           videoId, armLabel, armClient, armGapis,
           codecCapability, codecPreference, request, youtubeDefaultQuality, youtubeStartQuality,
+          // P11-342 Phase 0:全阶梯 ABR 诊断仅开 IOS 臂(visionOS 保持单轨,用户「先从 ios 直连开始」)。
+          fullLadder = armClient == InnerTubeClient.Client.IOS,
         )
       }.onFailure {
         Log.w(Tag, "direct 链异常($armLabel): ${it::class.simpleName}: ${it.message}", it)
@@ -850,6 +852,12 @@ class YoutubePlaybackResolver(
     audioUrl: String,
     allQualities: List<PlaybackQuality>,
     allAudioTracks: List<ParsedFormat> = emptyList(),
+    /**
+     * P11-342 Phase 0:全阶梯入 MPD(带宽自适应升降诊断,仅 IOS 直链臂传非空)。
+     * 非空 → videoTracks = 选中轨 + 其余各档(各自独立签名 url/segmentBase),供 ExoPlayer
+     * AdaptiveTrackSelection 档间切换;空 = 现行为仅选中单轨(其余调用点零变化)。
+     */
+    ladderFormats: List<ParsedFormat> = emptyList(),
   ): PlaybackInfo {
     val selectedQuality = PlaybackQuality(id = videoFmt.itag, description = videoFmt.qualityLabel)
     // 清晰度面板列出全部可播(已硬件过滤)的 adaptive 档位；progressive 兜底只一项。
@@ -900,6 +908,27 @@ class YoutubePlaybackResolver(
       "resolve ok: $kindLabel itag=${videoFmt.itag}; nDecrypt=${if (videoUrl.contains("n=")) "left" else "applied"}; " +
         "dash=${if (videoFmt.toSegmentBase() != null) "yes" else "no"}; qualities=${qualities.size}; audioTracks=${availableAudioTracks.size}",
     )
+    // P11-342 Phase 0:ladderFormats 非空时全阶梯入 MPD(选中轨在首),观察 ExoPlayer 带宽 ABR
+    // 升降行为;selectedQuality 仍为起播意图档,实际 active 档以 onTracksChanged selected(id=itag)
+    // 日志为准(α9X 曾观察 on-demand DASH「从低起步且不爬」——Phase 0 即为复验该疑点)。
+    val infoVideoTracks = if (ladderFormats.isEmpty()) {
+      listOf(videoTrack)
+    } else {
+      (listOf(videoFmt to videoUrl) + ladderFormats.filterNot { it.itag == videoFmt.itag }.map { it to it.url })
+        .map { (fmt, u) ->
+          PlaybackTrack(
+            id = fmt.itag,
+            baseUrl = u,
+            backupUrls = emptyList(),
+            bandwidth = fmt.bitrate,
+            codecs = fmt.codecs,
+            width = fmt.width,
+            height = fmt.height,
+            mimeType = fmt.mimeType,
+            segmentBase = fmt.toSegmentBase(),
+          )
+        }
+    }
     return PlaybackInfo(
       bvid = videoId,
       cid = 0L,
@@ -907,7 +936,7 @@ class YoutubePlaybackResolver(
       durationMs = durationMs,
       qualities = qualities,
       selectedQuality = selectedQuality,
-      videoTracks = listOf(videoTrack),
+      videoTracks = infoVideoTracks,
       audioTracks = audioTracks,
       headers = YoutubePlaybackHeaders,
       availableAudioTracks = availableAudioTracks,
@@ -2097,6 +2126,8 @@ class YoutubePlaybackResolver(
     request: PlaybackRequest,
     youtubeDefaultQuality: YoutubeDefaultQuality,
     youtubeStartQuality: YoutubeStartQuality,
+    /** P11-342 Phase 0:全阶梯入 MPD 带宽 ABR 诊断——仅 IOS 臂 true(visionOS 先保持单轨)。 */
+    fullLadder: Boolean = false,
   ): PlaybackInfo? {
     val payload = buildJsonObject {
       put("videoId", videoId)
@@ -2191,6 +2222,13 @@ class YoutubePlaybackResolver(
         ) ?: sameHeight.first()
         PlaybackQuality(id = rep.itag, description = "${h}p")
       }
+    if (fullLadder) {
+      Log.i(
+        Tag,
+        "$armLabel direct 全阶梯入MPD(Phase 0 ABR诊断): ${decodableVideos.size}轨 " +
+          "heights=${decodableVideos.map { it.height }.distinct().sorted()} 起播意图=${video.height}p itag=${video.itag}",
+      )
+    }
     return buildInfo(
       request = request,
       videoId = videoId,
@@ -2201,6 +2239,7 @@ class YoutubePlaybackResolver(
       audioUrl = audio.url,
       allQualities = iosQualities,
       allAudioTracks = audioCandidates,
+      ladderFormats = if (fullLadder) decodableVideos else emptyList(),
     ).copy(
       // buildInfo 的 selectedQuality.description 用服务端 qualityLabel(可能 "1080p60"),
       // 统一成与列表一致的 "${height}p"(id 不变,仍=选中 itag)。
