@@ -77,7 +77,7 @@ watch 页匿名加载（两台）：`playabilityStatus=OK`、`playableInEmbed=tr
 2. **URL expire ~6h**：重取成本极低（一个 POST，远轻于 SABR re-harvest 的 30s WebView），但 mid-stream 403 要做 re-resolve。
 3. **被砍风险**：Google 收紧无 token 定端点是时间问题（ReVanced 补丁史），定位是**兜底**不是主路径。
 
-**接入状态（P11-342，2026-11-18）**：已实装为**移动端手动开关**「IOS 直链优先」（`youtubeUseIosDirect`，默认关，TV 设置页不加行）——打开时 `resolve()` **最优先**直通 IOS 臂（`buildPlaybackInfoFromIosDirect`：探测同款最小 payload → `parseFormat` → 选档/codec 硬件过滤复用 → **直链 url 原样绕过 `resolveStreamUrl` 的 n-decrypt** → `buildInfo` 合成 MPD），失败自动落现有全链；**不进兜底链**（手动选项语义）。`Client.IOS` context/headers 见 `InnerTubeClient`。下列清单待真机验证。
+**接入状态（P11-342，2026-11-18）**：已实装为**「播放优先级」第 4 档「IOS 直链优先」**（`YoutubeDeliveryPriority.IosDirect`，key=`ios`，TV/移动两套设置页经 `.entries` 自动出现，默认档仍 NewPipe）——选中时 `resolve()` **最优先**直通 IOS 臂（`buildPlaybackInfoFromIosDirect`：探测同款最小 payload → `parseFormat` → 选档/codec 硬件过滤复用 → **直链 url 原样绕过 `resolveStreamUrl` 的 n-decrypt** → `buildInfo` 合成 MPD，清晰度按 height 去重），失败自动落现有全链；**不进兜底链**（档位=「先走这条路」，与 Dash/WebSabr 同语义）。初版独立开关方案（`youtubeUseIosDirect`）已废弃移除。`Client.IOS` context/headers 见 `InnerTubeClient`。下列清单待真机验证。
 
 **真机首测（2026-11-18 14:20，`logs_live_20261118_142002.log`，videoId=UVqLyLizppk）**：IOS 臂一次通过——`rawAdaptive=28、videoUrl=18/audioUrl=10、costMs=802ms`，选中 itag137 1080p，`nDecrypt=left`（签名直链直通 ✓）、`dash=yes`（init/index range 齐全）→ **能播**（§5 清单 1/2 条间接坐实：OkHttp TLS 过、合成 MPD 出画）。暴露问题一个：`qualities=18`——`buildQualityList` 按 itag 去重，IOS 阶梯同 height 多 codec 变体（1080p=137/248/399）致清晰度列表同档重复 3 次；**已按 alpha.9X NewPipe DASH 修正**（`distinctBy height`，每档纯 `"${height}p"`，选中档为代表 itag 保切档链闭合）。
 

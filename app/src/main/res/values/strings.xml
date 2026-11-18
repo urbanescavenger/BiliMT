@@ -674,10 +674,8 @@
     <string name="settings_youtube_use_piped_description">YouTube 播放先走 Piped，失败回退 NewPipe。修 RELOAD_PLAYER_RESPONSE 死循环</string>
     <string name="settings_sabr_force_itag_title">锁定会话视频轨</string>
     <string name="settings_sabr_force_itag_description">SABR 诊断：强制用会话选中 itag，证伪某 itag 是 RELOAD 根因</string>
-    <string name="settings_youtube_use_ios_direct_title">IOS 直链优先</string>
-    <string name="settings_youtube_use_ios_direct_description">手动选项：打开后播放时优先用 iOS 客户端匿名获取全阶梯签名直链（免 PO token，可到 4K），失败自动回退常规路径；关闭时行为不变。真机实验功能（P11-342）。</string>
     <string name="settings_youtube_delivery_priority_title">播放优先级</string>
-    <string name="settings_youtube_delivery_priority_description">NewPipe 优先（默认）；可选 DASH 自合成（卡顿/慢源逃生，能出 4K）或 FreeTube 优先（强制 WEB 认证路径，适用门控视频）</string>
+    <string name="settings_youtube_delivery_priority_description">NewPipe 优先（默认）；可选 DASH 自合成（卡顿/慢源逃生，能出 4K）、FreeTube 优先（强制 WEB 认证路径，适用门控视频）或 IOS 直链优先（iOS 客户端匿名签名直链，免 PO token，实验）</string>
     <string name="settings_iptv_connect_success">IPTV 源连接成功</string>
     <string name="settings_iptv_connect_failed">IPTV 源连接失败</string>
     <!-- TVBox 源(P11-81,原称「影视库」):配置 URL 驱动,type 0/1 采集站 -->

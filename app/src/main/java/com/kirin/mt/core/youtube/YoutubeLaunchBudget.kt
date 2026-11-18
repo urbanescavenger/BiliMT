@@ -34,6 +34,7 @@ object YoutubeLaunchBudget {
   /** 按交付档取值;[YoutubeDeliveryPriority] 是唯一分档依据。 */
   fun forPriority(priority: YoutubeDeliveryPriority): Long = when (priority) {
     YoutubeDeliveryPriority.WebSabr -> WebSabrMs
-    YoutubeDeliveryPriority.Sabr, YoutubeDeliveryPriority.Dash -> SabrOrDashMs
+    // P11-342:IOS 直链档一次 POST ~1s(真机 802ms),失败还要落 NewPipe 链,与 Sabr/Dash 同预算。
+    YoutubeDeliveryPriority.Sabr, YoutubeDeliveryPriority.Dash, YoutubeDeliveryPriority.IosDirect -> SabrOrDashMs
   }
 }

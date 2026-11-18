@@ -1333,13 +1333,6 @@ private fun MobileYoutubeSettingsSection(
         options = enumOptions(YoutubeDeliveryPriority.entries) { it.label },
         onSelected = { scope.launch { appSettingsStore.setYoutubeDeliveryPriority(it) } },
       )
-      // P11-342:IOS 直链手动选项——移动端先行,TV 设置页默认关不加行。
-      MobileSwitchRow(
-        title = stringResource(R.string.settings_youtube_use_ios_direct_title),
-        description = stringResource(R.string.settings_youtube_use_ios_direct_description),
-        checked = settings.youtubeUseIosDirect,
-        onCheckedChange = { scope.launch { appSettingsStore.setYoutubeUseIosDirect(it) } },
-      )
     }
   }
 

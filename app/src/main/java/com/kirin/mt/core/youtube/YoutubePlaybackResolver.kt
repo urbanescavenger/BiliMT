@@ -154,17 +154,16 @@ class YoutubePlaybackResolver(
 
     // 播放路径优先级(P11-114):Dash = DASH 自合成优先(慢 SABR 首段被 stall 看门狗误杀场景的逃生通道);
     // WebSabr = 强制 WEB attested 路径优先(门控视频/4K);Sabr(默认)= NewPipe SABR 主链。
-    val settingsSnapshot = appSettingsStore?.settings?.first()
-    val deliveryPriority = settingsSnapshot?.youtubeDeliveryPriority ?: YoutubeDeliveryPriority.Sabr
+    val deliveryPriority = appSettingsStore?.settings?.first()?.youtubeDeliveryPriority ?: YoutubeDeliveryPriority.Sabr
     val dashFirst = deliveryPriority == YoutubeDeliveryPriority.Dash
     val webSabrFirst = deliveryPriority == YoutubeDeliveryPriority.WebSabr
 
-    // ── P11-342:IOS 直链手动选项(设置 youtubeUseIosDirect,移动端开关)——打开时**最优先**直通 ──
+    // ── P11-342:IOS 直链档(播放优先级第 4 档)——选中时**最优先**直通 ──
     // IOS client 匿名 /player 给全阶梯已签名直链(docs/youtube-anonymous-client-probe.md §3),
-    // 免 PO token/WebView/n 解密。手动选项语义:不进兜底链——失败即落下方现有全链
-    // (Piped/WEB-SABR/NewPipe/WEB last resort),不开不进、开了失败也不比不开更糟;关闭(默认)整块跳过。
-    val useIosDirect = settingsSnapshot?.youtubeUseIosDirect ?: false
-    if (useIosDirect) {
+    // 免 PO token/WebView/n 解密。档位语义与 Dash/WebSabr 一致=「先走这条路」,不进兜底链:
+    // 失败即落下方现有全链(NewPipe 主链),选中失败也不比默认档更糟;未选中整块跳过。
+    val iosDirectFirst = deliveryPriority == YoutubeDeliveryPriority.IosDirect
+    if (iosDirectFirst) {
       val ios = runCatching {
         buildPlaybackInfoFromIosDirect(videoId, codecCapability, codecPreference, request, youtubeDefaultQuality)
       }.onFailure {
@@ -2052,7 +2051,7 @@ class YoutubePlaybackResolver(
   }
 
   /**
-   * P11-342:IOS 直链手动选项(设置 youtubeUseIosDirect 打开时在 [resolve] 最前调用)。
+   * P11-342:IOS 直链档(播放优先级 [YoutubeDeliveryPriority.IosDirect] 选中时在 [resolve] 最前调用)。
    *
    * IOS client(20.10.4) 匿名 POST /player → adaptiveFormats 全部自带**已签名** url
    * (144p→2160p 含 itag401,免 PO token/WebView/n 解密;实测见 docs/youtube-anonymous-client-probe.md §3)。

@@ -91,7 +91,6 @@ class AppSettingsStore(private val context: Context) {
       youtubeStartQuality = YoutubeStartQuality.fromKey(preferences[Keys.YoutubeStartQuality]),
       youtubeContentRegion = YoutubeContentRegion.fromKey(preferences[Keys.YoutubeContentRegion]),
       youtubeDeliveryPriority = YoutubeDeliveryPriority.fromKey(preferences[Keys.YoutubeDeliveryPriority]),
-      youtubeUseIosDirect = preferences[Keys.YoutubeUseIosDirect] ?: false,
       defaultPlaybackSpeed = DefaultPlaybackSpeed.fromKey(preferences[Keys.DefaultPlaybackSpeed]),
       youtubeDefaultSpeed = youtubeDefaultSpeed,
       bufferMax = PlaybackBufferMax.fromKey(preferences[Keys.PlaybackBufferMax]),
@@ -258,13 +257,6 @@ class AppSettingsStore(private val context: Context) {
   suspend fun setYoutubeDeliveryPriority(priority: YoutubeDeliveryPriority) {
     context.biliDataStore.edit { preferences ->
       preferences[Keys.YoutubeDeliveryPriority] = priority.key
-    }
-  }
-
-  /** P11-342:移动端「IOS 直链优先」手动开关。 */
-  suspend fun setYoutubeUseIosDirect(enabled: Boolean) {
-    context.biliDataStore.edit { preferences ->
-      preferences[Keys.YoutubeUseIosDirect] = enabled
     }
   }
 
@@ -488,8 +480,6 @@ class AppSettingsStore(private val context: Context) {
     val YoutubeStartQuality = stringPreferencesKey("youtube_start_quality")
     val YoutubeContentRegion = stringPreferencesKey("youtube_content_region")
     val YoutubeDeliveryPriority = stringPreferencesKey("youtube_delivery_priority")
-    /** P11-342:IOS 直链手动开关(默认关)。 */
-    val YoutubeUseIosDirect = booleanPreferencesKey("youtube_use_ios_direct")
     val DefaultPlaybackSpeed = stringPreferencesKey("default_playback_speed")
     /** P11-131:YouTube 专用起播倍速。缺席时读取端回落 [DefaultPlaybackSpeed]。 */
     val YoutubeDefaultSpeed = stringPreferencesKey("youtube_default_speed")
