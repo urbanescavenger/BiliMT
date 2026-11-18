@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v4.0.0-alpha.5](#v400-alpha5)
 - [v4.0.0-alpha.4](#v400-alpha4)
 - [v4.0.0-alpha.3](#v400-alpha3)
 - [v4.0.0-alpha.2](#v400-alpha2)
@@ -429,6 +430,31 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v4.0.0-alpha.5
+
+**YouTube 播放优先级新增直链双档：「IOS 直链优先」「visionOS 直链优先」（P11-342）+ 起播档口径统一。**
+
+### 播放优先级 5 档：匿名免 token 直链双档
+
+- 新增两档直链路径：**IOS 直链优先**（IOS client，www base + iOS UA）与 **visionOS 直链优先**
+  （GAPIS base + visionOS UA），选中即 `resolve` 最优先直通；单臂失败自动落现有链
+  （NewPipe 主链），不进兜底链。TV/移动两套设置页同步出现，共 5 档。
+- 直链臂复用经典解析管线（选档/codec 硬件过滤 → 合成 MPD），**签名直链 url 原样直通**，
+  绕过已废的 n-decrypt；清晰度菜单按分辨率去重（代表轨 P11-129 挑法：选中置顶 → codec 偏好 → 码率）。
+- 实测（RAC/TK 与 RAK 节点 2026-11-18）：两 client 匿名即给全阶梯签名直链（144p→2160p，
+  普通视频 16~28 条、attestation 视频 18~40 条），4K 实拉 HTTP 206；真机首测能播。
+
+### 起播档口径统一（修两直链档恒 2160 起播）
+
+- 直链双档与 **NewPipe DASH 优先档**的起播选档全部对齐 SABR 侧既有 P11-173 口径：
+  手动选档 > 起播画质上限内取最高（全超取最低保可播）> 默认画质上限 > 双自动取最低档。
+- 真机复验：起播画质 480P → 480p/360p 起播（初版误用 `pickVideo` 的 Auto→最高档恒 2160）。
+
+### 文档
+
+- 新增 `docs/youtube-anonymous-client-probe.md`：客户端探测矩阵、2026 社区时间线对照、
+  LibreTube poToken 缓存对照、RAK 候选 client 实测（TV 系匿名全灭、visionOS/IOS×attestation 通过）。
 
 ## v4.0.0-alpha.4
 
