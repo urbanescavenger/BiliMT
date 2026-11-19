@@ -132,18 +132,18 @@ tools/tvbox/luci-app-tvboxcheck/     # luci.mk 打包（本仓库内）
 
 ### 5.1 分层测活（对 dist/tvbox.json 展开后的每个 site）
 
-**核心判据是 L3 随机试播**（2026-11-19 用户拍板）：光拿到播放地址不算能用，
-必须真把一条媒体分片拉通。**普通源（type 0/1）的播法与本仓库
-`TvboxRepository` 完全一致**（2026-11-19 用户拍板）——探的就是 BiliMT 自己播得动播不动。
+**核心判据是 L3 随机试播**（2026-11-19 拍板）：光拿到播放地址不算能用，必须真把
+一条媒体分片拉通。**口径唯一（2026-11-20 拍板）：校验出的 healthy 源，用本仓库
+`TvboxRepository` 播放方法必须可播**——探的就是 BiliMT 自己播得动播不动。
 
-按源类型分三条路（与本仓库 config 过滤口径对齐）：
-
-| 源类型 | 试播方法 |
+| 源类型 | 处置 |
 |---|---|
-| type 0/1（MacCMS 采集站） | 本仓库 `TvboxRepository` 方法（下表 L1-L3） |
-| type 3 且 B 站类（`csp_Bili*` / api·ext 含 bilibili） | BV 方法（见下方小节） |
-| type 3 其他（jar/drpy 蜘蛛） | `untestable_local`，不判死（本仓库不收 type 3，也不替别的客户端判死） |
-| `searchable=0` | 跳过不测（本仓库 config 解析就把它过滤，测了也不影响本仓库口径） |
+| type 0/1（MacCMS 采集站，本仓库 config 唯一收的类型） | 本仓库 `TvboxRepository` 方法测活（下表 L1-L3） |
+| type 3 蜘蛛（含 52 个 B 站类 `csp_Bili*`） | `untestable` 不测不判死——本仓库 config 直接过滤，测通了也播不了 |
+| `searchable=0` | 跳过不测（本仓库 config 解析就把它过滤） |
+
+（原 B 站类源 BV 单独试播路径已砍，2026-11-20：BV 测通 ≠ 本仓库可播，
+会把不可播源洗进 recommended，与口径矛盾。）
 
 | 层 | 判据（本仓库同款） | 通过含义 |
 |---|---|---|
@@ -169,19 +169,8 @@ tools/tvbox/luci-app-tvboxcheck/     # luci.mk 打包（本仓库内）
 - 分片用 Range/限量读，256KB 拉通即判过；m3u8 内 AES key URI 一并拉通（只验证可达，
   不解密）。
 
-**B 站类源（52/1792：`csp_Bili*` / api·ext 含 bilibili）的试播方法与 BV 一致**
-（2026-11-19 用户拍板；这类源是蜘蛛壳，`ac=*` 判据不适用，真正要测的是
-路由器到 B 站播放链路的可达性）。照 BV `VideoPlayRepository` Web 分支复刻：
-
-1. B 站热门列表随机取一个 `bvid`（源没有自己的列表池，用公共热门池）。
-2. `x/web-interface/view` 拿 `cid`。
-3. `GET /x/player/playurl?avid=&cid=&qn=127&fnval=4048&fnver=0&fourk=1&otype=json&platform=oc`
-   ——与 BV 完全同参；probe 是游客态，不带 SESSDATA（BV 该参数可空）。
-4. 返回的 dash 里随机取一条视频轨（音频轨兜底）→ 分片实读 256KB 拉通即 healthy。
-5. playurl 成功但无轨（门控/审核视频命中概率存在）→ **换一个随机视频再试一次**，
-   两次都空才记 L0，防单个特例误杀（普通 CMS 源仍严格随机一个）。
-
-测的是「游客态可播」——这恰好是路由器网络环境下 B 站源的真实可用性信号。
+原「B 站类源走 BV 方法」小节已删除（2026-11-20 拍板，见上表）：
+这 52 个源与其余 type 3 一同 `untestable`，不进测活、不进 recommended。
 
 两条防误判规则（必留）：
 

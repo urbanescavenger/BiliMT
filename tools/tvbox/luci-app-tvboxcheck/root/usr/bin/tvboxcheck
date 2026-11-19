@@ -2,17 +2,19 @@
 # -*- coding: utf-8 -*-
 """TVBox 源分层测活引擎（Part B / B1，设计见 docs/tvbox-source-aggregator-design.md §5）。
 
-判据分三条路（与本仓库口径对齐）：
-  * type 0/1 采集站 —— 播放方法与本仓库 TvboxRepository 完全一致：
-      `?ac=detail&wd=<热词>` 一步取址 → parseEpisodeList 选集规则（$$$ 分组、
-      含 m3u8 组优先、剔官方播放页）→ 随机一条 → resolveLineUrl 三级提取
-      （const url / 绝对 m3u8 / 相对 resolve + 红果 main_url 分支）→ 试播
-      拉通 m3u8+首分片 256KB（裸头）。超时 8s 近似本仓库 5 连/8 读。
-  * type 3 且 B 站类（name/api/ext 含 bili）—— 与 BV（VideoPlayRepository
-      Web 分支）一致：popular 随机 bvid → view 取 cid → playurl
-      (qn=127/fnval=4048/fnver=0/fourk=1/otype=json/platform=oc，游客无
-      SESSDATA) → 随机一条 dash 轨拉通 256KB。无轨换一个视频重试一次。
-  * type 3 其他 —— untestable_local 不判死；searchable=0 —— 跳过不测。
+口径唯一（2026-11-20 用户拍板）：**校验出的 healthy 源，用本仓库 TvboxRepository
+播放方法必须可播**。只测 type 0/1 采集站（本仓库 config 只收这类）：
+
+  `?ac=detail&wd=<热词>` 一步取址 → parseEpisodeList 选集规则（$$$ 分组、
+  含 m3u8 组优先、剔官方播放页）→ 随机一条 → resolveLineUrl 三级提取
+  （const url / 绝对 m3u8 / 相对 resolve + 红果 main_url 分支）→ 试播
+  拉通 m3u8+首分片 256KB（裸头）。超时 8s 近似本仓库 5 连/8 读。
+
+不测的（本仓库模块播不了，测通了也进不了清单）：
+  * type 3 蜘蛛（含 52 个 B 站类 csp_Bili*，本仓库 config 直接过滤）——
+    untestable 不判死；searchable=0 —— 跳过不测。
+  （原 B 站类 BV 单独路径已砍：BV 测通 ≠ 本仓库可播，会把不可播源洗进
+    recommended，与口径矛盾。）
 
 状态机（对接 aggregate.py 的 state/checks.json）：
   healthy=L3 试播通（streak 清零）/ degraded=L1L2 过但试播或线路解析失败 /
@@ -60,15 +62,6 @@ CONST_URL_REGEX = re.compile(r'const url\s*=\s*"([^"]+)"')
 M3U8_URL_REGEX = re.compile(r'https?://[^"\'\s<>]+\.m3u8[^"\'\s<>]*')
 RELATIVE_M3U8_REGEX = re.compile(r'["\'](/[^"\'\s<>]+\.m3u8[^"\'\s<>]*)["\']')
 HONGGUO_MAIN_URL_REGEX = re.compile(r'"main_url":"(.*?)"')
-
-# B 站请求头与本仓库 BiliHeaders 一致（probe 游客态无 Cookie）
-BILI_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-           "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36")
-BILI_HEADERS = {
-    "User-Agent": BILI_UA,
-    "Referer": "https://www.bilibili.com",
-    "Origin": "https://www.bilibili.com",
-}
 
 _SSL_CONTEXT = None
 _SSL_CHECKED = False
@@ -346,104 +339,12 @@ def probe_cms(site, timeout, resolve_cache):
     return "healthy", 3, "", ttfb, kbps, nbytes
 
 
-def probe_bili(site, timeout):
-    """type 3 B 站类：与 BV 一致。返回结构同 probe_cms。"""
-    def api_json(api_url):
-        try:
-            code, body, ttfb, _ = http_get(api_url, timeout, headers=BILI_HEADERS)
-        except NetworkError as exc:
-            return None, None, "连接层失败: %s" % exc
-        if code != 200:
-            return None, ttfb, "HTTP %d" % code
-        try:
-            payload = json.loads(body.decode("utf-8", "replace"))
-        except ValueError:
-            return None, ttfb, "JSON 解析失败"
-        return payload, ttfb, None
-
-    # 热门池随机取一个 bvid；playurl 无轨换一个视频重试一次（防门控误杀）
-    first_ttfb = None
-    for _ in range(2):
-        page = random.randint(1, 5)
-        payload, ttfb, err = api_json(
-            "https://api.bilibili.com/x/web-interface/popular?ps=20&pn=%d" % page)
-        if first_ttfb is None:
-            first_ttfb = ttfb
-        if payload is None:
-            if "连接层" in (err or ""):
-                return None, 0, err, ttfb, None, None
-            return "strike", 0, "popular %s" % (err or "空应答"), ttfb, None, None
-        if payload.get("code") != 0 or not ((payload.get("data") or {}).get("list")):
-            return "strike", 0, "popular code=%s" % payload.get("code"), ttfb, None, None
-        bvid = random.choice(payload["data"]["list"]).get("bvid")
-        if not bvid:
-            return "strike", 0, "popular 无 bvid", ttfb, None, None
-
-        payload, _, err = api_json(
-            "https://api.bilibili.com/x/web-interface/view?bvid=%s" % bvid)
-        if payload is None:
-            if "连接层" in (err or ""):
-                return None, 1, err, first_ttfb, None, None
-            return "strike", 1, "view %s" % err, first_ttfb, None, None
-        if payload.get("code") != 0:
-            return "strike", 1, "view code=%s" % payload.get("code"), first_ttfb, None, None
-        vdata = payload.get("data") or {}
-        aid = vdata.get("aid")
-        cid = vdata.get("cid")
-        if not aid or not cid:
-            return "strike", 1, "view 无 cid", first_ttfb, None, None
-
-        # BV VideoPlayRepository Web 分支同参；游客无 SESSDATA
-        payload, _, err = api_json(
-            "https://api.bilibili.com/x/player/playurl?avid=%d&cid=%d"
-            "&qn=127&fnval=4048&fnver=0&fourk=1&otype=json&platform=oc"
-            % (aid, cid))
-        if payload is None:
-            if "连接层" in (err or ""):
-                return None, 2, err, first_ttfb, None, None
-            return "strike", 2, "playurl %s" % (err or "空应答"), first_ttfb, None, None
-        if payload.get("code") != 0:
-            return "strike", 2, "playurl code=%s" % payload.get("code"), first_ttfb, None, None
-        data = payload.get("data") or {}
-        dash = data.get("dash") or {}
-        videos = dash.get("video") or []
-        audios = dash.get("audio") or []
-        durl = data.get("durl") or []
-        media_url = None
-        if videos:
-            media_url = random.choice(videos).get("baseUrl") or \
-                random.choice(videos).get("base_url")
-        elif audios:
-            media_url = audios[0].get("baseUrl") or audios[0].get("base_url")
-        elif durl:
-            media_url = durl[0].get("url")
-        if not media_url:
-            continue                            # 无轨：换一个视频再试一次
-        try:
-            code, seg, _, total_ms = http_get(media_url, timeout,
-                                              headers=BILI_HEADERS,
-                                              max_bytes=SEGMENT_BYTES, with_range=True)
-        except NetworkError as exc:
-            return None, 2, "连接层失败: %s" % exc, first_ttfb, None, None
-        if code in (200, 206) and seg:
-            kbps = int(len(seg) / 1024 / max(0.001, total_ms / 1000))
-            return "healthy", 3, "", first_ttfb, kbps, len(seg)
-        return "degraded", 2, "分片 HTTP %d" % code, first_ttfb, None, None
-    return "strike", 2, "playurl 连续无轨", first_ttfb, None, None
-
-
 def classify(site):
-    """→ 'cms' | 'bili' | 'untestable' | 'skip'"""
-    stype = int(site.get("type") or 0)
+    """→ 'cms' | 'untestable' | 'skip'（口径：只有本仓库能播的才测）"""
     if int(site.get("searchable", 1) or 0) == 0:
         return "skip"
-    if stype in (0, 1):
+    if int(site.get("type") or 0) in (0, 1):
         return "cms"
-    if stype == 3:
-        hay = " ".join(str(site.get(f) or "") for f in ("name", "api", "ext")).lower()
-        if "bili" in hay:
-            return "bili"
-        return "untestable"
     return "untestable"
 
 
@@ -561,30 +462,27 @@ def main():
         probeable = random.sample(probeable, args.limit)
 
     # 不测的类型也记档（LuCI 状态表要显示 untestable）
-    for sid, _ in untestable:
+    for sid, site in untestable:
         old = checks.get(sid)
         if old is None or old.get("status") != "untestable":
-            checks[sid] = apply_result(old, "untestable", 0,
-                                       "type 3 蜘蛛源，本地不可测", None, None, None)
+            checks[sid] = apply_result(
+                old, "untestable", 0,
+                "本仓库 TVBox 模块不可播(type=%s)" % site.get("type"),
+                None, None, None)
 
     resolve_cache = {}
     done = {"n": 0, "total": len(probeable)}
 
-    def run_one(sid, site, kind):
-        if kind == "cms":
-            status, level, reason, ttfb, kbps, nbytes = probe_cms(
-                site, args.timeout, resolve_cache)
-        else:
-            status, level, reason, ttfb, kbps, nbytes = probe_bili(
-                site, args.timeout)
-        # kbps：按试播读满 256KB 的墙钟估算下限（无精确分段耗时，仅参考档）
+    def run_one(sid, site):
+        status, level, reason, ttfb, kbps, nbytes = probe_cms(
+            site, args.timeout, resolve_cache)
         return sid, apply_result(checks.get(sid), status, level, reason,
                                  ttfb, kbps, nbytes)
 
     print("探测开始: 可测 %d, untestable %d, 并发 %d"
           % (len(probeable), len(untestable), args.concurrency))
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        futures = [pool.submit(run_one, sid, site, kind)
+        futures = [pool.submit(run_one, sid, site)
                    for sid, site, kind in probeable]
         for future in as_completed(futures):
             try:
