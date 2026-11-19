@@ -12,7 +12,9 @@
 | A. 汇总源 | GitHub Actions 定时任务 | 拉取上游聚合源 → 结构校验 → 去重 → 按校验状态分层 → 发布订阅产物 |
 | B. 校验 | **OpenWrt LuCI 插件**（跑在 op 路由器上） | 对单个源做分层测活 + 测速，写回校验状态文件 |
 
-衔接方式：**B 在 OpenWrt 上跑、结果（state/checks.json）提交回仓库；A 在 CI 里读取状态文件做分层发布**。
+衔接方式：**B 在 OpenWrt 上跑，结果主存在路由器本地（2026-11-19 拍板「结果留在 op」）**，
+LuCI 界面直接查；回传仓库（导出 checks.json 提交到 `state/`）为**可选**动作，只影响 A 的
+`recommended.json` 分层——没有回传时 A 按 `absent=全量` 发布，行为天然兼容。
 CI 不做站点测活（国内/路由器侧网络才有参考价值，也避免 Actions IP 被源站风控），只做结构校验（字节门槛/可解析/条目数）。
 
 参考项目：
@@ -27,7 +29,7 @@ tools/tvbox/
   sources.toml            # 人工维护的权威清单：上游聚合源 + 覆盖规则
   scripts/
     aggregate.py          # Part A：拉取/结构校验/去重/分层/写 dist（CI 跑，已实现）
-    probe.py              # Part B：分层测活 + 测速（OpenWrt LuCI 侧，未实现）
+  luci-app-tvboxcheck/    # Part B：OpenWrt LuCI 包（引擎+界面，未实现，见 §5.0）
   state/
     checks.json           # 每个源的校验状态（probe 写，人工提交回仓库；可缺省）
     blacklist.txt          # 手动黑名单（一行一个 key，优先级最高；可缺省）
@@ -87,7 +89,9 @@ aggregate.py（`tools/tvbox/scripts/aggregate.py`，仅标准库）：
 4. **CSP 源带 jar**：`api` 以 `csp_` 开头的站点自动带上其原线路的 `spider`（单仓只能留一个全局 spider，与 TVboxorg merge.py 同思路）。实测 1044 个 csp_ 站点全部带上、0 漏挂。
 5. **分层发布**：读 `state/checks.json` + `state/blacklist.txt` + overrides（`force_include` 豁免）：
    - `tvbox.json` = 全量（剔除黑名单）
-   - `recommended.json` = 仅 `status == "healthy"`；无校验数据（probe 未接入）时=全量并在 status 标 `absent`；有数据但全空时兜底回全量
+   - `recommended.json` = 仅 `status == "healthy"`；无校验数据（probe 未接入）时=全量并在 status 标 `absent`；有数据但全空时兜底回全量。
+     probe 跳过的站（type 3 非 B 站、searchable=0）永远进不了 healthy，checks 接入后会自动
+     从 recommended 消失——即 **recommended = 本仓库（BiliMT）口径的健康子集**，`tvbox.json` 才是全客户端全量。
 6. **产物**：`dist/tvbox.json`、`recommended.json`、`status.json`、`status.md`。
 
 两个关键机制：
@@ -97,30 +101,97 @@ aggregate.py（`tools/tvbox/scripts/aggregate.py`，仅标准库）：
 
 ## 5. Part B：本地校验（设计定稿，形态改为 LuCI）
 
-### 5.0 形态：OpenWrt LuCI 插件
+### 5.0 形态：OpenWrt LuCI 插件（放本仓库）
 
-校验跑在 op 路由器上（不是 PC 脚本）：做成 LuCI app（参考同机 `luci-app-cloudflarespeedtest` / `luci-app-passwall-speedtest` 的结构，可装进 `MortOP` 固件工程），web 界面触发探测、展示状态表、导出 checks.json。探测内核（分层判据、并发、测速）与界面分离，内核可先以独立脚本验证再包进 LuCI。
+校验跑在 op 路由器上（不是 PC 脚本）。**LuCI 包放本仓库**（2026-11-19 用户拍板），
+布局照 cfpick 模板：
 
-注意：OpenWrt 默认没有 Python——LuCI 侧内核用 Lua 或 sh 实现（uhttpd 原生可用），JSON 输出与 state/checks.json 格式保持与 Part A 约定一致。
+```
+tools/tvbox/luci-app-tvboxcheck/     # luci.mk 打包（本仓库内）
+  Makefile                           # LUCI_DEPENDS 带 python3 子包（cfpick 同款先例）
+  root/
+    usr/bin/tvboxcheck               # 探测引擎 CLI（判据源码与 aggregate.py 同仓维护）
+    etc/config/tvboxcheck            # UCI：订阅URL/超时/并发/判死阈值
+    etc/init.d/tvboxcheck
+    usr/share/rpcd/ucode/tvboxcheck.uc   # rpcd: status/start/stop/export
+    usr/share/rpcd/acl.d/…json + menu.d/…json
+  htdocs/luci-static/resources/view/tvboxcheck/   # status.js / settings.js
+```
+
+- 引擎与界面分离：`tvboxcheck` 纯 CLI 先在 ssh 里跑通，再包 LuCI；postinst 记得
+  `rpcd reload`（cfpick 踩过的坑：rpcd 只在启动时加载 ucode 插件）。
+- Python 直接带上路由器：cfpick 的 `+python3-light +python3-urllib +python3-codecs
+  +python3-openssl` 依赖先例，不退回 sh。
+- MortOP 引入方式：feeds 用 `src-link` 指到本仓库 `tools/tvbox/`（feed 根=含
+  luci-app-tvboxcheck/ 的目录），或推远端后 src-git；不需要独立新仓库。
+- 结果留 op：checks.json 主存在路由器（如 `/etc/tvboxcheck/`），LuCI 界面查历史/状态；
+  路由器不碰 git。**回传可选**：想让仓库 `recommended.json` 分层生效时，手动从 LuCI 导出
+  checks.json 提交到本仓库 `state/`；不回传则 CI 按 `absent=全量` 发布。
+- **全程无令牌**：公开仓库 raw 订阅匿名可读；CI 用内置 GITHUB_TOKEN；回传走电脑本机凭据；
+  路由器不持有任何凭据（仓库转私有才需要给订阅 URL 换 PAT，属配置项不改代码）。
 
 ### 5.1 分层测活（对 dist/tvbox.json 展开后的每个 site）
 
-| 层 | 判据 | 通过含义 |
+**核心判据是 L3 随机试播**（2026-11-19 用户拍板）：光拿到播放地址不算能用，
+必须真把一条媒体分片拉通。**普通源（type 0/1）的播法与本仓库
+`TvboxRepository` 完全一致**（2026-11-19 用户拍板）——探的就是 BiliMT 自己播得动播不动。
+
+按源类型分三条路（与本仓库 config 过滤口径对齐）：
+
+| 源类型 | 试播方法 |
+|---|---|
+| type 0/1（MacCMS 采集站） | 本仓库 `TvboxRepository` 方法（下表 L1-L3） |
+| type 3 且 B 站类（`csp_Bili*` / api·ext 含 bilibili） | BV 方法（见下方小节） |
+| type 3 其他（jar/drpy 蜘蛛） | `untestable_local`，不判死（本仓库不收 type 3，也不替别的客户端判死） |
+| `searchable=0` | 跳过不测（本仓库 config 解析就把它过滤，测了也不影响本仓库口径） |
+
+| 层 | 判据（本仓库同款） | 通过含义 |
 |---|---|---|
-| L0 | HTTP 失败，或 200 但字节数/内容无效 | 不可用 |
-| L1 | `?ac=list` 返回含真实条目的 JSON/XML | 有片库 |
-| L2 | `?wd=` 热词能搜到结果 | 可搜索 |
-| L3 | `?ac=detail` 拿到播放地址，且 m3u8 发 Range 请求读首 64KB 成功 | 真能出片，顺带测速 |
+| L0 | HTTP 失败、非 JSON 应答（本仓库按纯文本弃）、`list` 空 | 不可用 |
+| L1 | `GET {api}?ac=detail&wd=<热词>` 返回非空 `list[]` 且有条目带非空 `vod_play_url` | 有片库可出地址 |
+| L2 | 随机挑一条 vod，按本仓库 `parseEpisodeList` 规则解析选集，再按需 `resolveLineUrl` 三级提取拿到流地址 | 线路可解析 |
+| L3 | **试播**：拉通 m3u8 + 首个分片实读 N KB（默认 256KB，裸头） | 真能出片 |
+
+本仓库方法细则（照 `TvboxRepository.kt` 逐条对齐）：
+
+- **入口只有搜索，不做 `ac=list` 浏览**——本仓库没有浏览路径，取址就是
+  `?ac=detail&wd=` 一步直出。热词从固定池随机取（等价用户输关键词）。
+- **选集解析照 `parseEpisodeList`**：`$$$` 分组 → 含 `.m3u8` 直链的组优先 →
+  `#` 分集、`集名$URL` 逐条 → 剔除官方播放页（v.qq / iqiyi / youku / mgtv /
+  bilibili / sohu / 1905 / pptv / le 特征表同款）。候选里**随机取一条**（不取第一条，
+  避开首集特例）。
+- **线路解析照 `resolveLineUrl`**：直链 m3u8 原样用；红果播放页走 `main_url`
+  明文提取分支；share/play HTML 页三级提取——①`const url = "…"` ②页内首个绝对
+  m3u8 ③页内首个相对 m3u8（按页面 URL resolve）。全部失败→按 L0 计数。
+- **头与超时对齐**：裸头（无 Referer/Origin/自定义 UA，与本仓库播放头一致）；
+  连接 5s / 读 8s（本仓库 `httpClient` 同参）。
+- 解析出的候选全是官方播放页（本仓库口径下该站无货）→ `untestable_local`，不判死。
+- 分片用 Range/限量读，256KB 拉通即判过；m3u8 内 AES key URI 一并拉通（只验证可达，
+  不解密）。
+
+**B 站类源（52/1792：`csp_Bili*` / api·ext 含 bilibili）的试播方法与 BV 一致**
+（2026-11-19 用户拍板；这类源是蜘蛛壳，`ac=*` 判据不适用，真正要测的是
+路由器到 B 站播放链路的可达性）。照 BV `VideoPlayRepository` Web 分支复刻：
+
+1. B 站热门列表随机取一个 `bvid`（源没有自己的列表池，用公共热门池）。
+2. `x/web-interface/view` 拿 `cid`。
+3. `GET /x/player/playurl?avid=&cid=&qn=127&fnval=4048&fnver=0&fourk=1&otype=json&platform=oc`
+   ——与 BV 完全同参；probe 是游客态，不带 SESSDATA（BV 该参数可空）。
+4. 返回的 dash 里随机取一条视频轨（音频轨兜底）→ 分片实读 256KB 拉通即 healthy。
+5. playurl 成功但无轨（门控/审核视频命中概率存在）→ **换一个随机视频再试一次**，
+   两次都空才记 L0，防单个特例误杀（普通 CMS 源仍严格随机一个）。
+
+测的是「游客态可播」——这恰好是路由器网络环境下 B 站源的真实可用性信号。
 
 两条防误判规则（必留）：
 
 1. **连接层失败（超时/拒绝/SSL）单次不判死** —— 可能是路由器网络/DNS 问题，记 `network_error`，只有源站返回 200 却无有效数据才立刻记 L0。
 2. **连续 3 次 L0 才进黑名单**；一旦任一次测到 L3，`fail_streak` 清零并自动移出黑名单。
 
-### 5.2 测速（L3 附带）
+### 5.2 测速（试播附带）
 
 - `ttfb_ms`：L1 请求首字节时间。
-- `m3u8_kbps`：首 64KB 下载速度。
+- `play_kbps`：试播分片 256KB 的实测吞吐（代替原 m3u8 拉表测速）。
 - 三档：`fast`/`ok`/`slow`，仅参考，**不参与判死**（速度波动大，可用性才是硬指标）。
 
 ### 5.3 checks.json 单条结构（与 Part A 约定）
@@ -131,7 +202,7 @@ aggregate.py（`tools/tvbox/scripts/aggregate.py`，仅标准库）：
   "level": 3,
   "status": "healthy",
   "ttfb_ms": 320,
-  "m3u8_kbps": 860,
+  "play_kbps": 860,
   "bytes": 52341,
   "fail_streak": 0,
   "last_check": "2026-11-19T12:00:00+08:00",
@@ -157,6 +228,11 @@ aggregate.py（`tools/tvbox/scripts/aggregate.py`，仅标准库）：
 | M3 | 状态机闭环：LuCI probe → checks.json 提交 → CI 进 recommended.json | 未开始 |
 | M4（可选） | 蜘蛛源沙箱深测、每日快照回滚 | 按需 |
 
+Part B 里程碑：B1 `tvboxcheck` CLI（ssh 跑通 L1-L3 试播出 checks.json，结果存 op 本地）→
+B2 rpcd + LuCI 页面（状态表 + 导出按钮）→ B3 src-link 进 MortOP 固件真机跑一轮（对应 M3；
+回传分层为可选增强，不阻塞 B3 验收）。
+包位置：本仓库 `tools/tvbox/luci-app-tvboxcheck/`（拍板 2026-11-19）。
+
 订阅地址（dist 提交落在哪个分支就用哪个，暂定）：
 `https://raw.githubusercontent.com/urbanescavenger/BiliMT/<branch>/tools/tvbox/dist/tvbox.json`
 
@@ -164,4 +240,5 @@ aggregate.py（`tools/tvbox/scripts/aggregate.py`，仅标准库）：
 
 1. ~~直播~~ **已拍板：不做**（2026-11-19）——m3u 上游不接、上游内嵌 lives 也丢弃。
 2. ~~发布通道~~ **已拍板：起步只用「提交回 dist/ + raw 订阅」**。
-3. **schedule 挂哪**：定时任务只能在默认分支 main 跑。选项：(a) 把 tools/tvbox + workflow 单独提交（[skip ci]，不动 app 代码）到 main，定时立即生效、订阅 URL 指向 main；(b) 暂只在 mort_debug 手动 dispatch，main 以后再说。
+3. ~~schedule 挂哪~~ **已拍板：tools/tvbox + workflow 单独提交（跳过 CI 前缀，不动 app 代码）到 main**，订阅 URL 指向 main；之后改 sources.toml 需同步到 main。
+4. ~~LuCI 包放哪~~ **已拍板：本仓库 `tools/tvbox/luci-app-tvboxcheck/`**。

@@ -1,0 +1,617 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""TVBox 源分层测活引擎（Part B / B1，设计见 docs/tvbox-source-aggregator-design.md §5）。
+
+判据分三条路（与本仓库口径对齐）：
+  * type 0/1 采集站 —— 播放方法与本仓库 TvboxRepository 完全一致：
+      `?ac=detail&wd=<热词>` 一步取址 → parseEpisodeList 选集规则（$$$ 分组、
+      含 m3u8 组优先、剔官方播放页）→ 随机一条 → resolveLineUrl 三级提取
+      （const url / 绝对 m3u8 / 相对 resolve + 红果 main_url 分支）→ 试播
+      拉通 m3u8+首分片 256KB（裸头）。超时 8s 近似本仓库 5 连/8 读。
+  * type 3 且 B 站类（name/api/ext 含 bili）—— 与 BV（VideoPlayRepository
+      Web 分支）一致：popular 随机 bvid → view 取 cid → playurl
+      (qn=127/fnval=4048/fnver=0/fourk=1/otype=json/platform=oc，游客无
+      SESSDATA) → 随机一条 dash 轨拉通 256KB。无轨换一个视频重试一次。
+  * type 3 其他 —— untestable_local 不判死；searchable=0 —— 跳过不测。
+
+状态机（对接 aggregate.py 的 state/checks.json）：
+  healthy=L3 试播通（streak 清零）/ degraded=L1L2 过但试播或线路解析失败 /
+  unknown=L0 类失败未满 3 次 / dead=连续 3 次 L0 / untestable=不测的类型。
+  连接层失败（超时/拒绝/SSL）单次不判死：保持原 status，只记 reason，不计 streak。
+
+结果主存 op（默认 /etc/tvboxcheck/checks.json），回传仓库是可选动作。
+仅标准库（Python >= 3.11 不需要，3.8+ 即可跑）。
+"""
+
+import argparse
+import json
+import random
+import re
+import ssl
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from pathlib import Path
+
+DEFAULT_INPUT = ("https://raw.githubusercontent.com/urbanescavenger/BiliMT/"
+                 "main/tools/tvbox/dist/tvbox.json")
+DEFAULT_OUTPUT = "/etc/tvboxcheck/checks.json"
+SEGMENT_BYTES = 256 * 1024
+PLAYLIST_BYTES = 512 * 1024
+FRESH_MS = 6 * 60 * 1000        # 6 小时内测过的站默认跳过（--full 忽略）
+STRIKE_LIMIT = 3                # 连续 3 次 L0 判死
+
+# 与本仓库 TvboxRepository 同款热词池（等价用户输关键词搜索）
+HOTWORDS = ["斗罗大陆", "庆余年", "狂飙", "三体", "医生", "凡人修仙传", "莲花楼"]
+
+# 与 TvboxRepository.OFFICIAL_PLAYER_HOSTS 同款：JS 播放页，提取不到直链
+OFFICIAL_PLAYER_HOSTS = [
+    "://v.qq.com/", "://m.v.qq.com/", ".iqiyi.com/", ".youku.com/",
+    ".mgtv.com/", ".bilibili.com/", ".sohu.com/", ".1905.com/",
+    ".pptv.com/", ".le.com/", ".letv.com/",
+]
+
+# 与 TvboxRepository 提取正则同款
+CONST_URL_REGEX = re.compile(r'const url\s*=\s*"([^"]+)"')
+M3U8_URL_REGEX = re.compile(r'https?://[^"\'\s<>]+\.m3u8[^"\'\s<>]*')
+RELATIVE_M3U8_REGEX = re.compile(r'["\'](/[^"\'\s<>]+\.m3u8[^"\'\s<>]*)["\']')
+HONGGUO_MAIN_URL_REGEX = re.compile(r'"main_url":"(.*?)"')
+
+# B 站请求头与本仓库 BiliHeaders 一致（probe 游客态无 Cookie）
+BILI_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36")
+BILI_HEADERS = {
+    "User-Agent": BILI_UA,
+    "Referer": "https://www.bilibili.com",
+    "Origin": "https://www.bilibili.com",
+}
+
+_SSL_CONTEXT = None
+_SSL_CHECKED = False
+
+
+class NetworkError(Exception):
+    """连接层失败（超时/拒绝/SSL）：单次不判死。"""
+
+
+def _ssl_context():
+    """系统没有 CA 包时（OpenWrt/Windows/conda 常见）退回 certifi。"""
+    global _SSL_CONTEXT, _SSL_CHECKED
+    if _SSL_CHECKED:
+        return _SSL_CONTEXT
+    _SSL_CHECKED = True
+    try:
+        paths = ssl.get_default_verify_paths()
+        if paths.cafile:
+            import os
+            if os.path.exists(paths.cafile):
+                return None
+    except Exception:
+        pass
+    try:
+        import certifi
+    except ImportError:
+        return None
+    _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+    return _SSL_CONTEXT
+
+
+def http_get(url, timeout, headers=None, max_bytes=None, with_range=False):
+    """GET → (code, body, ttfb_ms, total_ms)。body 最多读 max_bytes。
+
+    HTTP 4xx/5xx 不抛错，作为 (code, ...) 返回——服务端应答属于 L0 判据；
+    连接层失败抛 NetworkError（不判死）。ttfb 含建连（urllib 无法单独量 connect）。
+    """
+    hdrs = dict(headers or {})
+    if with_range and max_bytes:
+        hdrs["Range"] = "bytes=0-%d" % (max_bytes - 1)
+    request = urllib.request.Request(url, headers=hdrs)
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(request, timeout=timeout,
+                                     context=_ssl_context()) as resp:
+            ttfb = int((time.monotonic() - t0) * 1000)
+            data = resp.read(max_bytes) if max_bytes else resp.read()
+            total = int((time.monotonic() - t0) * 1000)
+            return resp.status, data, ttfb, total
+    except urllib.error.HTTPError as exc:
+        total = int((time.monotonic() - t0) * 1000)
+        return exc.code, b"", int((time.monotonic() - t0) * 1000), total
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise NetworkError(str(exc)) from exc
+
+
+def site_id(site):
+    """与 aggregate.py 同一规则：优先 key，缺 key 用 name|api。"""
+    key = str(site.get("key") or "").strip()
+    if key:
+        return key
+    return "%s|%s" % (site.get("name", ""), site.get("api", ""))
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def is_official_page(url):
+    return any(frag in url for frag in OFFICIAL_PLAYER_HOSTS)
+
+
+def parse_episode_groups(vod_play_url):
+    """照 TvboxRepository.parseEpisodeList：$$$ 分组 → # 分集 → 集名$URL，
+    剔除非 http 与官方播放页；优先含 .m3u8 直链的组。返回候选组列表。"""
+    groups = []
+    for raw_group in str(vod_play_url).split("$$$"):
+        episodes = []
+        for segment in raw_group.split("#"):
+            if "$" not in segment:
+                continue
+            title, _, url = segment.partition("$")
+            title, url = title.strip(), url.strip()
+            if url.startswith("http") and not is_official_page(url):
+                episodes.append((title or "正片", url))
+        if episodes:
+            groups.append(episodes)
+    if not groups:
+        return []
+    for group in groups:
+        if any(u.split("?")[0].endswith(".m3u8") for _, u in group):
+            return [group] + [g for g in groups if g is not group]
+    return groups
+
+
+def extract_m3u8(html):
+    """照 TvboxRepository.extractM3u8 三级兜底。"""
+    match = CONST_URL_REGEX.search(html)
+    if match and match.group(1).strip():
+        return match.group(1).strip()
+    match = M3U8_URL_REGEX.search(html)
+    if match:
+        return match.group(0)
+    match = RELATIVE_M3U8_REGEX.search(html)
+    if match:
+        return match.group(1)
+    return None
+
+
+def resolve_line_url(raw_url, timeout, cache):
+    """照 TvboxRepository.resolveLineUrl：直链 m3u8 / 红果 main_url / HTML 三级提取。"""
+    if raw_url.split("?")[0].endswith(".m3u8"):
+        return raw_url
+    if raw_url in cache:
+        return cache[raw_url]
+    if ("://hongguoduanju.com/player/" in raw_url
+            or "://www.hongguoduanju.com/player/" in raw_url):
+        code, html_bytes, _, _ = http_get(raw_url, timeout)
+        if code != 200:
+            return None
+        match = HONGGUO_MAIN_URL_REGEX.search(
+            html_bytes.decode("utf-8", "replace"))
+        if not match:
+            return None
+        url = match.group(1).replace("\\/", "/").replace("\\u002F", "/")
+        if not url.startswith("http"):
+            return None
+        cache[raw_url] = url
+        return url
+    code, html_bytes, _, _ = http_get(raw_url, timeout)
+    if code != 200:
+        return None
+    extracted = extract_m3u8(html_bytes.decode("utf-8", "replace"))
+    if not extracted:
+        return None
+    resolved = (extracted if extracted.startswith("http")
+                else urllib.parse.urljoin(raw_url, extracted))
+    cache[raw_url] = resolved
+    return resolved
+
+
+def _playlist_attr(line, attr):
+    match = re.search(attr + r'="([^"]+)"', line)
+    return match.group(1) if match else None
+
+
+def probe_play(url, timeout):
+    """L3 试播：拉通播放列表 + 首分片实读 256KB（裸头）。
+    返回 (ok, bytes, reason)。m3u8 内 AES key 只验证可达，不解密。"""
+    is_m3u8 = url.split("?")[0].endswith(".m3u8")
+    if not is_m3u8:
+        code, data, _, _ = http_get(url, timeout, max_bytes=SEGMENT_BYTES,
+                                    with_range=True)
+        if code in (200, 206) and data:
+            return True, len(data), ""
+        return False, 0, "直链分片 HTTP %d" % code
+
+    code, text_bytes, _, _ = http_get(url, timeout, max_bytes=PLAYLIST_BYTES)
+    if code not in (200, 206) or not text_bytes:
+        return False, 0, "m3u8 HTTP %d" % code
+    text = text_bytes.decode("utf-8", "replace")
+
+    # master playlist → 随机挑一条变体（等价播放器自选清晰度）
+    if "#EXT-X-STREAM-INF" in text:
+        variants = [ln.strip() for ln in text.splitlines()
+                    if ln.strip() and not ln.startswith("#")]
+        if not variants:
+            return False, 0, "master 无变体"
+        url = urllib.parse.urljoin(url, random.choice(variants))
+        code, text_bytes, _, _ = http_get(url, timeout,
+                                          max_bytes=PLAYLIST_BYTES)
+        if code not in (200, 206) or not text_bytes:
+            return False, 0, "变体播放表 HTTP %d" % code
+        text = text_bytes.decode("utf-8", "replace")
+
+    # EXT-X-KEY：可达性验证（不解密）
+    for line in text.splitlines():
+        if line.startswith("#EXT-X-KEY:") and "METHOD=NONE" not in line:
+            key_uri = _playlist_attr(line, "URI")
+            if key_uri:
+                key_url = urllib.parse.urljoin(url, key_uri)
+                code, _, _, _ = http_get(key_url, timeout, max_bytes=64)
+                if code not in (200, 206):
+                    return False, 0, "key HTTP %d" % code
+            break
+
+    # EXT-X-MAP（fMP4 init）：存在则先拉通
+    for line in text.splitlines():
+        if line.startswith("#EXT-X-MAP:"):
+            map_uri = _playlist_attr(line, "URI")
+            if map_uri:
+                code, data, _, _ = http_get(urllib.parse.urljoin(url, map_uri),
+                                            timeout, max_bytes=64 * 1024)
+                if code not in (200, 206) or not data:
+                    return False, 0, "init 段 HTTP %d" % code
+            break
+
+    segments = [ln.strip() for ln in text.splitlines()
+                if ln.strip() and not ln.startswith("#")]
+    if not segments:
+        return False, 0, "播放列表无分片"
+    seg_url = urllib.parse.urljoin(url, segments[0])
+    code, data, _, total = http_get(seg_url, timeout,
+                                    max_bytes=SEGMENT_BYTES, with_range=True)
+    if code in (200, 206) and data:
+        return True, len(data), ""
+    return False, 0, "首分片 HTTP %d" % code
+
+
+def probe_cms(site, timeout, resolve_cache):
+    """type 0/1：本仓库播放方法。返回 (status, level, reason, ttfb, kbps, bytes)。"""
+    api = str(site.get("api") or "").rstrip("/")
+    word = random.choice(HOTWORDS)
+    url = "%s?ac=detail&wd=%s" % (api, urllib.parse.quote(word))
+    try:
+        code, body, ttfb, _ = http_get(url, timeout)
+    except NetworkError as exc:
+        return None, 0, "连接层失败: %s" % exc, None, None, None
+    if code != 200:
+        return "strike", 0, "搜索 HTTP %d" % code, ttfb, None, None
+    text = body.decode("utf-8", "replace").lstrip("﻿").strip()
+    if not text.startswith("{"):
+        return "strike", 0, "非 JSON 应答", ttfb, None, None
+    try:
+        lst = json.loads(text).get("list") or []
+    except ValueError:
+        return "strike", 0, "JSON 解析失败", ttfb, None, None
+    vods = [v for v in lst if isinstance(v, dict)
+            and str(v.get("vod_play_url") or "").strip()]
+    if not lst or not vods:
+        return "strike", 0, "list 空或无选集", ttfb, None, None
+
+    # L2：随机一条 vod → 选集组（m3u8 组优先）→ 随机一集 → 线路解析
+    random.shuffle(vods)
+    resolved = None
+    all_official = False
+    has_http_candidate = False
+    for vod in vods[:3]:                      # 最多试 3 条 vod，单条不中不放弃
+        groups = parse_episode_groups(vod.get("vod_play_url") or "")
+        if not groups:
+            # 有 http 选集但全是官方页 → 本仓库口径无货
+            segs = str(vod.get("vod_play_url") or "").split("$$$")
+            urls = [s.partition("$")[2] for g in segs for s in g.split("#")
+                    if "$" in s]
+            if any(u.startswith("http") for u in urls):
+                all_official = True
+            continue
+        has_http_candidate = True
+        for _ in range(3):                    # 组内随机抽 3 集尝试解析
+            _, ep_url = random.choice(random.choice(groups))
+            try:
+                candidate = resolve_line_url(ep_url, timeout, resolve_cache)
+            except NetworkError:
+                candidate = None
+            if candidate:
+                resolved = candidate
+                break
+        if resolved:
+            break
+    if resolved is None:
+        if all_official and not has_http_candidate:
+            return "untestable", 0, "选集全为官方播放页", ttfb, None, None
+        return "degraded", 2, "线路解析失败", ttfb, None, None
+
+    # L3 试播（kbps 含播放表取回时间，仅参考档）
+    t1 = time.monotonic()
+    try:
+        ok, nbytes, reason = probe_play(resolved, timeout)
+    except NetworkError as exc:
+        return None, 2, "连接层失败: %s" % exc, ttfb, None, None
+    elapsed = max(0.001, time.monotonic() - t1)
+    if not ok:
+        return "degraded", 2, reason or "试播失败", ttfb, None, None
+    kbps = int(nbytes / 1024 / elapsed)
+    return "healthy", 3, "", ttfb, kbps, nbytes
+
+
+def probe_bili(site, timeout):
+    """type 3 B 站类：与 BV 一致。返回结构同 probe_cms。"""
+    def api_json(api_url):
+        try:
+            code, body, ttfb, _ = http_get(api_url, timeout, headers=BILI_HEADERS)
+        except NetworkError as exc:
+            return None, None, "连接层失败: %s" % exc
+        if code != 200:
+            return None, ttfb, "HTTP %d" % code
+        try:
+            payload = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            return None, ttfb, "JSON 解析失败"
+        return payload, ttfb, None
+
+    # 热门池随机取一个 bvid；playurl 无轨换一个视频重试一次（防门控误杀）
+    first_ttfb = None
+    for _ in range(2):
+        page = random.randint(1, 5)
+        payload, ttfb, err = api_json(
+            "https://api.bilibili.com/x/web-interface/popular?ps=20&pn=%d" % page)
+        if first_ttfb is None:
+            first_ttfb = ttfb
+        if payload is None:
+            if "连接层" in (err or ""):
+                return None, 0, err, ttfb, None, None
+            return "strike", 0, "popular %s" % (err or "空应答"), ttfb, None, None
+        if payload.get("code") != 0 or not ((payload.get("data") or {}).get("list")):
+            return "strike", 0, "popular code=%s" % payload.get("code"), ttfb, None, None
+        bvid = random.choice(payload["data"]["list"]).get("bvid")
+        if not bvid:
+            return "strike", 0, "popular 无 bvid", ttfb, None, None
+
+        payload, _, err = api_json(
+            "https://api.bilibili.com/x/web-interface/view?bvid=%s" % bvid)
+        if payload is None:
+            if "连接层" in (err or ""):
+                return None, 1, err, first_ttfb, None, None
+            return "strike", 1, "view %s" % err, first_ttfb, None, None
+        if payload.get("code") != 0:
+            return "strike", 1, "view code=%s" % payload.get("code"), first_ttfb, None, None
+        vdata = payload.get("data") or {}
+        aid = vdata.get("aid")
+        cid = vdata.get("cid")
+        if not aid or not cid:
+            return "strike", 1, "view 无 cid", first_ttfb, None, None
+
+        # BV VideoPlayRepository Web 分支同参；游客无 SESSDATA
+        payload, _, err = api_json(
+            "https://api.bilibili.com/x/player/playurl?avid=%d&cid=%d"
+            "&qn=127&fnval=4048&fnver=0&fourk=1&otype=json&platform=oc"
+            % (aid, cid))
+        if payload is None:
+            if "连接层" in (err or ""):
+                return None, 2, err, first_ttfb, None, None
+            return "strike", 2, "playurl %s" % (err or "空应答"), first_ttfb, None, None
+        if payload.get("code") != 0:
+            return "strike", 2, "playurl code=%s" % payload.get("code"), first_ttfb, None, None
+        data = payload.get("data") or {}
+        dash = data.get("dash") or {}
+        videos = dash.get("video") or []
+        audios = dash.get("audio") or []
+        durl = data.get("durl") or []
+        media_url = None
+        if videos:
+            media_url = random.choice(videos).get("baseUrl") or \
+                random.choice(videos).get("base_url")
+        elif audios:
+            media_url = audios[0].get("baseUrl") or audios[0].get("base_url")
+        elif durl:
+            media_url = durl[0].get("url")
+        if not media_url:
+            continue                            # 无轨：换一个视频再试一次
+        try:
+            code, seg, _, total_ms = http_get(media_url, timeout,
+                                              headers=BILI_HEADERS,
+                                              max_bytes=SEGMENT_BYTES, with_range=True)
+        except NetworkError as exc:
+            return None, 2, "连接层失败: %s" % exc, first_ttfb, None, None
+        if code in (200, 206) and seg:
+            kbps = int(len(seg) / 1024 / max(0.001, total_ms / 1000))
+            return "healthy", 3, "", first_ttfb, kbps, len(seg)
+        return "degraded", 2, "分片 HTTP %d" % code, first_ttfb, None, None
+    return "strike", 2, "playurl 连续无轨", first_ttfb, None, None
+
+
+def classify(site):
+    """→ 'cms' | 'bili' | 'untestable' | 'skip'"""
+    stype = int(site.get("type") or 0)
+    if int(site.get("searchable", 1) or 0) == 0:
+        return "skip"
+    if stype in (0, 1):
+        return "cms"
+    if stype == 3:
+        hay = " ".join(str(site.get(f) or "") for f in ("name", "api", "ext")).lower()
+        if "bili" in hay:
+            return "bili"
+        return "untestable"
+    return "untestable"
+
+
+def apply_result(old, status, level, reason, ttfb, kbps, nbytes):
+    """按状态机更新一条记录（old 可能为 None）。"""
+    now = now_iso()
+    old = old or {}
+    streak = int(old.get("fail_streak") or 0)
+    rec = {
+        "level": level,
+        "status": status,
+        "reason": reason,
+        "ttfb_ms": ttfb,
+        "play_kbps": kbps,
+        "bytes": nbytes,
+        "fail_streak": streak,
+        "last_check": now,
+        "last_ok": old.get("last_ok"),
+    }
+    if status == "healthy":
+        rec["fail_streak"] = 0
+        rec["last_ok"] = now
+    elif status == "strike":
+        streak += 1
+        rec["status"] = "dead" if streak >= STRIKE_LIMIT else "unknown"
+        rec["fail_streak"] = streak
+    elif status is None:
+        # 连接层失败：不判死不计次，保留原状态
+        rec["status"] = old.get("status") or "unknown"
+        rec["level"] = int(old.get("level") or level)
+    elif status == "untestable":
+        rec["last_check"] = old.get("last_check") or now
+    return rec
+
+
+def load_input(spec, timeout):
+    if spec.startswith("http://") or spec.startswith("https://"):
+        code, body, _, _ = http_get(spec, timeout, max_bytes=8 * 1024 * 1024)
+        if code != 200:
+            raise SystemExit("拉取订阅失败 HTTP %d: %s" % (code, spec))
+        raw = body
+    else:
+        raw = Path(spec).read_bytes()
+    text = raw.decode("utf-8", "replace").lstrip("﻿")
+    data = json.loads(text)
+    sites = data.get("sites")
+    if not isinstance(sites, list):
+        raise SystemExit("订阅没有 sites 数组: %s" % spec)
+    return sites
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--input", default=DEFAULT_INPUT,
+                        help="订阅 JSON：URL 或本地路径（默认仓库 main 的 dist）")
+    parser.add_argument("--output", default=DEFAULT_OUTPUT,
+                        help="checks.json 输出路径（默认 /etc/tvboxcheck/）")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="随机抽测 N 个可测站（0=全量）")
+    parser.add_argument("--only", default="",
+                        help="逗号分隔 key，只测这些站（忽略 limit）")
+    parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument("--timeout", type=int, default=8)
+    parser.add_argument("--full", action="store_true",
+                        help="忽略 6 小时新鲜度，全部重测")
+    args = parser.parse_args()
+
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+    sites = load_input(args.input, args.timeout)
+
+    checks = {}
+    out_path = Path(args.output)
+    if out_path.exists():
+        try:
+            loaded = json.loads(out_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                checks = loaded
+        except ValueError:
+            print("[!] 旧 checks.json 解析失败，将整体重建", file=sys.stderr)
+
+    probeable, untestable = [], []
+    only = {k.strip() for k in args.only.split(",") if k.strip()}
+    now_ms = time.time() * 1000
+    for site in sites:
+        kind = classify(site)
+        sid = site_id(site)
+        if kind == "skip":
+            continue
+        if kind == "untestable":
+            untestable.append((sid, site))
+            continue
+        if only and sid not in only:
+            continue
+        old = checks.get(sid) or {}
+        last = old.get("last_check")
+        if not args.full and last:
+            try:
+                ts = datetime.fromisoformat(last).timestamp() * 1000
+                if now_ms - ts < FRESH_MS and old.get("status") in (
+                        "healthy", "degraded", "unknown", "dead", "untestable"):
+                    continue
+            except ValueError:
+                pass
+        probeable.append((sid, site, kind))
+
+    if args.limit and len(probeable) > args.limit:
+        probeable = random.sample(probeable, args.limit)
+
+    # 不测的类型也记档（LuCI 状态表要显示 untestable）
+    for sid, _ in untestable:
+        old = checks.get(sid)
+        if old is None or old.get("status") != "untestable":
+            checks[sid] = apply_result(old, "untestable", 0,
+                                       "type 3 蜘蛛源，本地不可测", None, None, None)
+
+    resolve_cache = {}
+    done = {"n": 0, "total": len(probeable)}
+
+    def run_one(sid, site, kind):
+        if kind == "cms":
+            status, level, reason, ttfb, kbps, nbytes = probe_cms(
+                site, args.timeout, resolve_cache)
+        else:
+            status, level, reason, ttfb, kbps, nbytes = probe_bili(
+                site, args.timeout)
+        # kbps：按试播读满 256KB 的墙钟估算下限（无精确分段耗时，仅参考档）
+        return sid, apply_result(checks.get(sid), status, level, reason,
+                                 ttfb, kbps, nbytes)
+
+    print("探测开始: 可测 %d, untestable %d, 并发 %d"
+          % (len(probeable), len(untestable), args.concurrency))
+    with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+        futures = [pool.submit(run_one, sid, site, kind)
+                   for sid, site, kind in probeable]
+        for future in as_completed(futures):
+            try:
+                sid, rec = future.result()
+            except Exception as exc:            # 单站异常不拖垮整轮
+                print("[!] 内部错误: %s" % exc, file=sys.stderr)
+                continue
+            checks[sid] = rec
+            done["n"] += 1
+            print("[%d/%d] %-28s %-10s L%s %s"
+                  % (done["n"], done["total"], sid[:28], rec["status"],
+                     rec["level"], rec["reason"]))
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(checks, ensure_ascii=False, indent=2) + "\n",
+                   encoding="utf-8")
+    tmp.replace(out_path)
+
+    tally = {}
+    for rec in checks.values():
+        st = rec.get("status", "?")
+        tally[st] = tally.get(st, 0) + 1
+    print("完成: 本轮 %d 站, 输出 %s" % (done["n"], out_path))
+    print("全量状态: " + ", ".join("%s=%d" % kv for kv in sorted(tally.items())))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
