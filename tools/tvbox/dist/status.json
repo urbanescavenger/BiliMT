@@ -1,6 +1,6 @@
 {
-  "updated": "2026-11-19T15:45:20+00:00",
-  "manifest": "E:\\GITHUB\\BiliTVNative\\tools\\tvbox\\sources.toml",
+  "updated": "2026-11-19T15:58:17+00:00",
+  "manifest": "/home/runner/work/BiliMT/BiliMT/tools/tvbox/sources.toml",
   "probe_state": "absent",
   "upstreams": [
     {
