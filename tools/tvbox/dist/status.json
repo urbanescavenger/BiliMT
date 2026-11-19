@@ -1,0 +1,44 @@
+{
+  "updated": "2026-11-19T15:45:20+00:00",
+  "manifest": "E:\\GITHUB\\BiliTVNative\\tools\\tvbox\\sources.toml",
+  "probe_state": "absent",
+  "upstreams": [
+    {
+      "name": "tvboxorg",
+      "url": "https://raw.githubusercontent.com/TVboxorg/TVbox/main/dist/official.json",
+      "kind": "config",
+      "ok": true,
+      "bytes": 73076,
+      "sha256": "fbc8b76cc656",
+      "items": 160,
+      "added": 160
+    },
+    {
+      "name": "hebijunge",
+      "url": "https://raw.githubusercontent.com/hebijunge/tvbox-config/main/tvbox_recommended.json",
+      "kind": "config",
+      "ok": true,
+      "bytes": 627206,
+      "sha256": "5e79c252fb48",
+      "items": 1630,
+      "added": 1623
+    },
+    {
+      "name": "fswws",
+      "url": "https://cdn.jsdelivr.net/gh/fswws/tvbox-source@main/tvbox.json",
+      "kind": "config",
+      "ok": true,
+      "bytes": 5510,
+      "sha256": "87f3dca3d352",
+      "items": 9,
+      "added": 9
+    }
+  ],
+  "totals": {
+    "sites": 1792,
+    "parses": 203,
+    "blacklisted_removed": 0,
+    "healthy": 0,
+    "recommended_fallback": false
+  }
+}

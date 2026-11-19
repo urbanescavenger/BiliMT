@@ -1,0 +1,39 @@
+# TVBox 汇总源清单（人工维护的权威数据）
+# 字段说明见 docs/tvbox-source-aggregator-design.md §3
+# kind 目前仅支持 config（TVBox 单仓 JSON）；直播/m3u 暂不做（2026-11-19 拍板）
+version = 1
+
+[[upstreams]]
+name = "tvboxorg"
+url = "https://raw.githubusercontent.com/TVboxorg/TVbox/main/dist/official.json"
+kind = "config"
+group = "聚合"
+min_bytes = 10240
+min_items = 5
+enabled = true
+note = "tvbox.org 官方清单：sources.yaml 人工审 + CI 探测拼合"
+
+[[upstreams]]
+name = "hebijunge"
+url = "https://raw.githubusercontent.com/hebijunge/tvbox-config/main/tvbox_recommended.json"
+kind = "config"
+group = "聚合"
+min_bytes = 65536
+min_items = 50
+enabled = true
+note = "每日自动聚合精选（上游实测连通）；要全量可换 tvbox.json"
+
+[[upstreams]]
+name = "fswws"
+url = "https://cdn.jsdelivr.net/gh/fswws/tvbox-source@main/tvbox.json"
+kind = "config"
+group = "点播"
+min_bytes = 1024
+min_items = 3
+enabled = true
+note = "轻量点播配置，jsDelivr 国内友好，每 3 天自动校验"
+
+# 覆盖规则：blacklist 手动判死（优先于 probe 结果），force_include 强制保留
+[overrides]
+blacklist = []
+force_include = []

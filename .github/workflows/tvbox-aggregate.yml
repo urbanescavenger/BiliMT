@@ -1,0 +1,48 @@
+name: TVBox Aggregate
+
+# 汇总 TVBox 上游订阅 → tools/tvbox/dist/（设计见 docs/tvbox-source-aggregator-design.md）。
+# CI 只做结构校验（字节门槛/可解析/条目数），分层测活在本地或 OpenWrt LuCI 侧做，
+# 结果写 state/checks.json 提交回来后，本 workflow 按其分层出 recommended.json。
+# 回推 dist 的提交信息带 [skip ci]：GitHub 会跳过该提交触发的所有 workflow，
+# 否则 android-build.yml（对所有 push 触发）会白白跑一次安卓云编译。
+
+on:
+  schedule:
+    - cron: '30 19 * * *'   # UTC 19:30 = 北京 03:30，每日汇总一次
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tvbox-aggregate
+  cancel-in-progress: false
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Aggregate upstreams
+        run: python tools/tvbox/scripts/aggregate.py
+
+      - name: Commit dist if changed
+        # schedule 只在默认分支跑；dispatch 可选分支。回推取当次触发的 ref。
+        run: |
+          set -euo pipefail
+          git config user.email "tianshideyou@proton.me"
+          git config user.name "tianshipapa"
+          if [ -n "$(git status --porcelain tools/tvbox/dist)" ]; then
+            git add tools/tvbox/dist
+            git commit -m "[skip ci] chore(tvbox): 刷新汇总 dist"
+            git pull --rebase origin "$GITHUB_REF_NAME" || true
+            git push || { git pull --rebase origin "$GITHUB_REF_NAME" && git push; }
+          else
+            echo "no changes"
+          fi
