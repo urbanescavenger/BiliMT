@@ -1,0 +1,178 @@
+name: TVBox Check IPK
+
+# luci-app-tvboxcheck 多版本打包（拍板 2026-11-20：「ipk 编译先还在本仓库,有更新
+# 手动触发」「单做个 action」「参考 cfpick 有多版本」「当前版本号是 1.0.0」）。
+# 配方照抄 luci-app-cfpick 的 build.yml：
+#   * Legacy 21.02 SDK → .ipk（OpenWrt 24.10 及更早/opkg 系统），先构建，主产物；
+#   * 稳定 25.12.x SDK → .apk（25.12 起 apk 安装器，158 用这个），URL 动态解析
+#     + 官方/镜像轮询 + 断点续传，失败只跳 APK 不拖垮 IPK；
+#   * 产物名带 Makefile 版本（当前 1.0.0），改包内容时记得 bump PKG_VERSION 或
+#     PKG_RELEASE（同版本重装会被 apk 拒）。
+# 安装：
+#   老系统: opkg install ./luci-app-tvboxcheck_*.ipk
+#   25.12 : apk add --allow-untrusted ./luci-app-tvboxcheck_*.apk
+# 只挂 workflow_dispatch：包有更新时人工触发。
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  PKG: luci-app-tvboxcheck
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from Makefile
+        id: get_version
+        run: |
+          version=$(grep 'PKG_VERSION:=' Makefile \
+                    | awk -F ':=' '{print $2}' \
+                    | xargs)
+          release=$(grep 'PKG_RELEASE:=' Makefile \
+                    | awk -F ':=' '{print $2}' \
+                    | xargs)
+          echo "version=${version}-r${release}" >> "$GITHUB_OUTPUT"
+          echo "Package version: ${version}-r${release}"
+
+      # ---- IPK（OpenWrt 24.10 及更早 / opkg）：主产物，先构建 ----
+      - name: Download Legacy OpenWrt SDK
+        run: |
+          mkdir -p /tmp/SDK
+          curl --http1.1 -SLk -C - --connect-timeout 30 \
+            --retry 5 --retry-delay 5 --retry-all-errors \
+            --max-time 900 --speed-limit 10240 --speed-time 60 \
+            "https://archive.openwrt.org/releases/21.02.0/targets/x86/64/openwrt-sdk-21.02.0-x86-64_gcc-8.4.0_musl.Linux-x86_64.tar.xz" \
+            -o /tmp/SDK.tar.xz
+          tar xf /tmp/SDK.tar.xz --strip-components=1 -C /tmp/SDK
+
+      - name: Copy source into Legacy SDK
+        run: |
+          mkdir -p /tmp/SDK/package/${PKG}
+          rsync -avh --exclude='.git' tools/tvbox/${PKG}/ /tmp/SDK/package/${PKG}/
+
+      - name: Compile IPK with Legacy SDK
+        run: |
+          cd /tmp/SDK
+          ./scripts/feeds update -a
+          ./scripts/feeds install ${PKG}
+          echo "CONFIG_PACKAGE_${PKG}=y" > .config
+          make defconfig
+          make package/${PKG}/compile V=99
+
+      # ---- APK（稳定 25.12.x / apk 安装器）：可选产物，失败跳过不阻断 ----
+      - name: Resolve stable APK SDK URL
+        id: snapsdk
+        continue-on-error: true
+        run: |
+          base="https://downloads.openwrt.org/releases/"
+          ver="$(curl --http1.1 -fsSLk --connect-timeout 20 --max-time 90 \
+              --retry 2 --retry-all-errors "$base" 2>/dev/null \
+              | grep -oE '25\.12\.[0-9]+' | sort -V | tail -n1)"
+          [ -n "$ver" ] || ver="25.12.6"
+          dir="${base}${ver}/targets/x86/64/"
+          file="$(curl --http1.1 -fsSLk --connect-timeout 20 --max-time 90 \
+              --retry 2 --retry-all-errors "$dir" 2>/dev/null \
+              | grep -oE "openwrt-sdk-${ver}-x86-64_[A-Za-z0-9._-]+\.tar\.zst" | head -n1)"
+          [ -n "$file" ] || file="openwrt-sdk-${ver}-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst"
+          echo "url=${dir}${file}" >> "$GITHUB_OUTPUT"
+          echo "Resolved stable APK SDK: ${dir}${file}"
+
+      - name: Download Stable OpenWrt SDK (APK)
+        id: snapsecdk
+        continue-on-error: true
+        timeout-minutes: 40
+        run: |
+          mkdir -p /tmp/SNAPSDK
+          url="${{ steps.snapsdk.outputs.url }}"
+          file="${url##*/}"
+          [ -n "$file" ] || { echo "没有解析到稳定版 SDK，跳过 APK"; exit 1; }
+          rel="${url#https://downloads.openwrt.org/releases}"
+          ok=false
+          for base in \
+            "https://downloads.openwrt.org/releases" \
+            "https://mirrors.ustc.edu.cn/openwrt/releases"; do
+            murl="${base}${rel}"
+            echo "镜像: $murl"
+            # 显式续传循环：--retry 不会重新计算 -C - 的断点，断流后必须启动
+            # 新的 curl 进程才会按当前文件大小续传（cfpick 同款加固）。
+            attempt=0
+            while [ "$attempt" -lt 8 ]; do
+              attempt=$((attempt + 1))
+              if curl --http1.1 -fSLk -C - --connect-timeout 30 \
+                  --max-time 900 --speed-limit 10240 --speed-time 60 \
+                  "$murl" -o /tmp/SNAPSDK.tar.zst; then
+                break
+              fi
+              if zstd -t /tmp/SNAPSDK.tar.zst >/dev/null 2>&1; then
+                break
+              fi
+              echo "第 ${attempt} 次中断，5s 后续传（已有 $(stat -c%s /tmp/SNAPSDK.tar.zst 2>/dev/null || echo 0) 字节）"
+              sleep 5
+            done
+            if zstd -t /tmp/SNAPSDK.tar.zst >/dev/null 2>&1; then
+              ok=true
+              break
+            fi
+            echo "镜像失败，换下一个: $base"
+          done
+          if [ "$ok" != "true" ]; then
+            echo "稳定版 SDK 下载失败：本次跳过 APK，继续发布 IPK"
+            exit 1
+          fi
+          zstd -d /tmp/SNAPSDK.tar.zst
+          tar xf /tmp/SNAPSDK.tar --strip-components=1 -C /tmp/SNAPSDK
+
+      - name: Copy source into APK SDK
+        if: steps.snapsecdk.outcome == 'success'
+        run: |
+          mkdir -p /tmp/SNAPSDK/package/${PKG}
+          rsync -avh --exclude='.git' tools/tvbox/${PKG}/ /tmp/SNAPSDK/package/${PKG}/
+
+      - name: Compile APK with Stable SDK
+        if: steps.snapsecdk.outcome == 'success'
+        run: |
+          cd /tmp/SNAPSDK
+          ./scripts/feeds update -a
+          ./scripts/feeds install ${PKG}
+          echo "CONFIG_PACKAGE_${PKG}=y" > .config
+          make defconfig
+          make package/${PKG}/compile V=99
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          cp /tmp/SDK/bin/packages/x86_64/base/${PKG}_*_all.ipk "./artifacts/"
+          if [ -d /tmp/SNAPSDK/bin/packages/x86_64/base ]; then
+            cp /tmp/SNAPSDK/bin/packages/x86_64/base/${PKG}_*_all.apk "./artifacts/" || true
+          fi
+          echo "${{ steps.get_version.outputs.version }}" > artifacts/version.txt
+          ls -l artifacts
+
+      # 引擎与 rpcd 插件必须真的进了包——防「编译绿但 root/ 没打进」的空壳包
+      - name: Verify package contents
+        run: |
+          ipk=$(ls artifacts/*.ipk | head -n1)
+          [ -n "$ipk" ] || { echo "no ipk produced"; exit 1; }
+          rm -rf /tmp/ipkcheck && mkdir -p /tmp/ipkcheck
+          tar xzf "$ipk" -C /tmp/ipkcheck ./data.tar.gz
+          tar tzf /tmp/ipkcheck/data.tar.gz | grep -q './usr/bin/tvboxcheck$' \
+            || { echo "engine missing from $ipk"; exit 1; }
+          tar tzf /tmp/ipkcheck/data.tar.gz | grep -q 'rpcd/ucode/tvboxcheck.uc' \
+            || { echo "rpcd plugin missing from $ipk"; exit 1; }
+          tar tzf /tmp/ipkcheck/data.tar.gz | grep -q 'view/tvboxcheck/status.js' \
+            || { echo "LuCI views missing from $ipk"; exit 1; }
+          echo "engine + rpcd + views present in $ipk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tvboxcheck-${{ steps.get_version.outputs.version }}
+          path: artifacts/
+          retention-days: 30
+          if-no-files-found: error
