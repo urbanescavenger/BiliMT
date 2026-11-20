@@ -24,10 +24,22 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # 钉 24.04（cfpick 同款）：ubuntu-latest 滚到 26.04 后 21.02 SDK 的 host 预检
+    # （python/python3/distutils 三项）全挂——首跑 44660830291 实锤。
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install host prerequisites
+        run: |
+          sudo apt-get update
+          # zstd: 25.12 SDK 是 .tar.zst;python3-setuptools: 3.12 起 distutils 已删,
+          # 靠 setuptools 的垫片让 21.02 预检 import distutils 能过。
+          sudo apt-get install -y zstd python3-setuptools
+          # 裸 python 别名:21.02 预检有一项查 `python`(部分 runner 镜像没有)。
+          command -v python >/dev/null || sudo ln -sf "$(command -v python3)" /usr/local/bin/python
+          python3 -c "import distutils; print('distutils ok')"
 
       - name: Get version from Makefile
         id: get_version
@@ -63,8 +75,11 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install ${PKG}
           echo "CONFIG_PACKAGE_${PKG}=y" > .config
-          make defconfig
-          make package/${PKG}/compile V=99
+          # FORCE=1: 跳过 21.02 的 host 预检兜底(上一步已尽力满足;本包是纯数据
+          # 安装包,不编译任何 C/Python,被跳过的检查项与产物无关)。命令行变量
+          # 经 MAKEFLAGS 传播给子 make。
+          make FORCE=1 defconfig
+          make FORCE=1 package/${PKG}/compile V=99
 
       # ---- APK（稳定 25.12.x / apk 安装器）：可选产物，失败跳过不阻断 ----
       - name: Resolve stable APK SDK URL
@@ -142,8 +157,8 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install ${PKG}
           echo "CONFIG_PACKAGE_${PKG}=y" > .config
-          make defconfig
-          make package/${PKG}/compile V=99
+          make FORCE=1 defconfig
+          make FORCE=1 package/${PKG}/compile V=99
 
       - name: Collect artifacts
         run: |
