@@ -87,12 +87,21 @@ aggregate.py（`tools/tvbox/scripts/aggregate.py`，仅标准库）：
 2. **结构校验**（CI 唯一的"校验"）：字节数 ≥ `min_bytes`、JSON 可解析、顶层结构合法、sites 数 ≥ `min_items`、sha256 指纹记录。
 3. **合并去重**：sites 按 `key`（缺 key 用 `name|api`），parses 按 `name`，先到先得；`spider/wallpaper/logo` 取第一个携带上游的值。
 4. **CSP 源带 jar**：`api` 以 `csp_` 开头的站点自动带上其原线路的 `spider`（单仓只能留一个全局 spider，与 TVboxorg merge.py 同思路）。实测 1044 个 csp_ 站点全部带上、0 漏挂。
-5. **分层发布**：读 `state/checks.json` + `state/blacklist.txt` + overrides（`force_include` 豁免）：
+5. **成人过滤**（拍板 2026-11-20「把色情站过滤掉」「社区有没有名单」）：`sources.toml [filters]`
+   词表命中即整站剔除，不进任何产物也不探测。词表事实源 = 社区
+   [hebijunge/tvbox-config](https://github.com/hebijunge/tvbox-config) 的
+   `state/vocab/categories.json` adult 节（192 名称词/46 精选域名/14 host token/边界正则/
+   13 共用 CDN 豁免，生产实证版），另按本次 healthy 名单实测补漏（色逼/杏吧 + 2 域 → 194/48）。
+   判定序与 hebijunge `is_adult`/`is_adult_url` 对齐：name 关键词 → name 正则 → host 精确
+   后缀 → **共用 CDN 豁免**（防误伤）→ host token/边界正则；刻意不收 `^\d{1,3}$` 纯数字
+   台号规则（会误杀 360 站名）。首跑实测：全量 1792→1787（剔 5），recommended 15→13；
+   种子名单参考 [fenwe.adult.txt](https://github.com/guxiangbin/tvbox2/blob/main/fenwe.adult.txt)。
+6. **分层发布**：读 `state/checks.json` + `state/blacklist.txt` + overrides（`force_include` 豁免）：
    - `tvbox.json` = 全量（剔除黑名单）
    - `recommended.json` = 仅 `status == "healthy"`；无校验数据（probe 未接入）时=全量并在 status 标 `absent`；有数据但全空时兜底回全量。
      probe 跳过的站（type 3 非 B 站、searchable=0）永远进不了 healthy，checks 接入后会自动
      从 recommended 消失——即 **recommended = 本仓库（BiliMT）口径的健康子集**，`tvbox.json` 才是全客户端全量。
-6. **产物**：`dist/tvbox.json`、`recommended.json`、`status.json`、`status.md`。
+7. **产物**：`dist/tvbox.json`、`recommended.json`、`status.json`、`status.md`。
 
 两个关键机制：
 

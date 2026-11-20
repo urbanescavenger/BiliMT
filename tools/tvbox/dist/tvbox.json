@@ -2931,16 +2931,6 @@
       "searchable": 1,
       "search": 1,
       "quickSearch": 1,
-      "api": "https://xingba222.com/api.php/provide/vod",
-      "key": "杏吧",
-      "type": 1,
-      "name": "[137ms|zy] 🍊杏吧",
-      "group": "综合-采集站"
-    },
-    {
-      "searchable": 1,
-      "search": 1,
-      "quickSearch": 1,
       "api": "https://jipinvip.com/api.php/provide/vod/",
       "key": "极品",
       "type": 1,
@@ -2975,16 +2965,6 @@
       "key": "精品",
       "type": 1,
       "name": "[137ms|zy] 🍊精品🪜",
-      "group": "综合-采集站"
-    },
-    {
-      "searchable": 1,
-      "search": 1,
-      "quickSearch": 1,
-      "api": "https://apilsbzy1.com/api.php/provide/vod/at/json",
-      "key": "色逼",
-      "type": 1,
-      "name": "[137ms|zy] 🍊色逼",
       "group": "综合-采集站"
     },
     {
@@ -3057,16 +3037,6 @@
         "欧美剧",
         "香港剧"
       ],
-      "group": "综合-采集站"
-    },
-    {
-      "key": "lsb",
-      "name": "lsb",
-      "api": "https://apilsbzy1.com/api.php/provide/vod",
-      "type": 1,
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1,
       "group": "综合-采集站"
     },
     {
@@ -3358,15 +3328,6 @@
       "name": "💕jkun(直连)",
       "type": 1,
       "api": "https://jkunzyapi.com/api.php/provide/vod/?ac=list",
-      "searchable": 1,
-      "filterable": 1,
-      "group": "综合-采集站"
-    },
-    {
-      "key": "laosebizy.com",
-      "name": "💕老色逼(直连)",
-      "type": 1,
-      "api": "https://apilsbzy1.com/api.php/provide/vod/?ac=list",
       "searchable": 1,
       "filterable": 1,
       "group": "综合-采集站"
@@ -19942,16 +19903,6 @@
       "key": "权色视频.py",
       "name": "💥权色视频💥",
       "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/权色视频.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
-      "key": "杏吧视频.py",
-      "name": "💥杏吧视频💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/杏吧视频.py",
       "filterable": 1,
       "quickSearch": 1,
       "searchable": 1,

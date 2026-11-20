@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-20T01:58:59+00:00",
+  "updated": "2026-11-20T05:10:23+00:00",
   "manifest": "E:\\GITHUB\\BiliTVNative\\tools\\tvbox\\sources.toml",
   "probe_state": "present",
   "upstreams": [
@@ -21,7 +21,8 @@
       "bytes": 627206,
       "sha256": "5e79c252fb48",
       "items": 1630,
-      "added": 1623
+      "added": 1618,
+      "adult_removed": 5
     },
     {
       "name": "fswws",
@@ -35,10 +36,18 @@
     }
   ],
   "totals": {
-    "sites": 1792,
+    "sites": 1787,
     "parses": 204,
     "blacklisted_removed": 0,
-    "healthy": 15,
+    "adult_removed": 5,
+    "healthy": 13,
     "recommended_fallback": false
-  }
+  },
+  "adult_filtered_sample": [
+    "[137ms|zy] 🍊杏吧",
+    "[137ms|zy] 🍊色逼",
+    "lsb",
+    "💕老色逼(直连)",
+    "💥杏吧视频💥"
+  ]
 }
