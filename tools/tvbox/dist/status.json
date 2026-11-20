@@ -1,15 +1,15 @@
 {
-  "updated": "2026-11-19T15:45:20+00:00",
+  "updated": "2026-11-20T01:58:59+00:00",
   "manifest": "E:\\GITHUB\\BiliTVNative\\tools\\tvbox\\sources.toml",
-  "probe_state": "absent",
+  "probe_state": "present",
   "upstreams": [
     {
       "name": "tvboxorg",
       "url": "https://raw.githubusercontent.com/TVboxorg/TVbox/main/dist/official.json",
       "kind": "config",
       "ok": true,
-      "bytes": 73076,
-      "sha256": "fbc8b76cc656",
+      "bytes": 75447,
+      "sha256": "454da594f941",
       "items": 160,
       "added": 160
     },
@@ -36,9 +36,9 @@
   ],
   "totals": {
     "sites": 1792,
-    "parses": 203,
+    "parses": 204,
     "blacklisted_removed": 0,
-    "healthy": 0,
+    "healthy": 15,
     "recommended_fallback": false
   }
 }
