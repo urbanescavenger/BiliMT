@@ -76,16 +76,6 @@
       "searchable": 1,
       "search": 1,
       "quickSearch": 1,
-      "api": "https://xingba222.com/api.php/provide/vod",
-      "key": "杏吧",
-      "type": 1,
-      "name": "[137ms|zy] 🍊杏吧",
-      "group": "综合-采集站"
-    },
-    {
-      "searchable": 1,
-      "search": 1,
-      "quickSearch": 1,
       "api": "https://thzy1.me/api.php/provide/vod/",
       "key": "桃花",
       "type": 1,
@@ -100,16 +90,6 @@
       "key": "精品",
       "type": 1,
       "name": "[137ms|zy] 🍊精品🪜",
-      "group": "综合-采集站"
-    },
-    {
-      "searchable": 1,
-      "search": 1,
-      "quickSearch": 1,
-      "api": "https://apilsbzy1.com/api.php/provide/vod/at/json",
-      "key": "色逼",
-      "type": 1,
-      "name": "[137ms|zy] 🍊色逼",
       "group": "综合-采集站"
     },
     {

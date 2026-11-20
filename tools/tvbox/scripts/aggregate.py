@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -103,6 +104,55 @@ def load_manifest(path):
     return data
 
 
+def compile_adult_filters(filters):
+    """编译 [filters] 成人词表(词表事实源=hebijunge categories.json adult 节)。
+
+    空词表(关键词与域名黑名单都空)=整个过滤功能关闭。
+    刻意不含 ^\\d{1,3}$ 纯数字台号规则——那是直播台名口径,会误杀 360 这类站名。
+    """
+    return {
+        "keywords": [str(k).lower() for k in (filters.get("adult_keywords") or [])],
+        "name_res": [re.compile(p) for p in (filters.get("adult_name_regexes") or [])],
+        "exact": [str(h).lower() for h in (filters.get("host_blacklist_exact") or [])],
+        "tokens": [str(t).lower() for t in (filters.get("host_blacklist_tokens") or [])],
+        "pattern": (re.compile(filters["host_blacklist_pattern"])
+                    if filters.get("host_blacklist_pattern") else None),
+        "exempt": [str(d).lower() for d in (filters.get("shared_cdn_no_blacklist") or [])],
+    }
+
+
+def adult_reason(site, filters):
+    """返回成人命中规则标签(空=放行)。判定序与 hebijunge is_adult/is_adult_url 对齐:
+    ① name 关键词子串 ② name 正则 ③ host 精确后缀黑名单 ④ 共用 CDN 豁免放行
+    ⑤ host token / 边界正则。豁免必须在 token 之前——防共用 CDN 误伤正常源。"""
+    if not filters["keywords"] and not filters["exact"]:
+        return ""
+    name = str(site.get("name") or "")
+    low = name.lower()
+    for kw in filters["keywords"]:
+        if kw and kw in low:
+            return "kw:%s" % kw
+    for rx in filters["name_res"]:
+        if rx.search(name):
+            return "name_re"
+    api = str(site.get("api") or "")
+    host = ""
+    if "//" in api:
+        host = api.split("//", 1)[1].split("/", 1)[0].split("?", 1)[0].lower()
+    if not host:
+        return ""
+    if any(host == d or host.endswith("." + d) for d in filters["exact"]):
+        return "host:%s" % host
+    if any(host == d or host.endswith("." + d) for d in filters["exempt"]):
+        return ""
+    for tok in filters["tokens"]:
+        if tok and tok in host:
+            return "token:%s" % tok
+    if filters["pattern"] and filters["pattern"].search(host):
+        return "host_re"
+    return ""
+
+
 def load_state(state_dir):
     """读校验状态。数据缺失/损坏时按「无校验数据」处理，不阻塞汇总。"""
     checks, blacklist = {}, set()
@@ -170,10 +220,10 @@ def render_status_md(stats):
     totals = stats["totals"]
     lines += [
         "",
-        "合计：sites %d（黑名单剔除 %d）、parses %d；"
+        "合计：sites %d（黑名单剔除 %d，成人词表剔除 %d）、parses %d；"
         "recommended healthy=%s fallback=%s"
         % (totals.get("sites", 0), totals.get("blacklisted_removed", 0),
-           totals.get("parses", 0),
+           totals.get("adult_removed", 0), totals.get("parses", 0),
            totals.get("healthy", 0), totals.get("recommended_fallback", False)),
         "",
         "本文件由 tools/tvbox/scripts/aggregate.py 生成，勿手改。",
@@ -206,6 +256,7 @@ def main():
             pass
 
     manifest = load_manifest(args.manifest)
+    adult = compile_adult_filters(manifest.get("filters") or {})
     overrides = manifest.get("overrides") or {}
     checks, state_black = load_state(args.state_dir)
     force = {str(x) for x in (overrides.get("force_include") or [])}
@@ -224,6 +275,8 @@ def main():
     globals_found = {}
     ok_count = 0
     black_removed = 0
+    adult_removed = 0
+    adult_names = []
 
     for up in manifest["upstreams"]:
         name = str(up.get("name") or "").strip() or "(未命名)"
@@ -265,6 +318,7 @@ def main():
             continue
 
         added = 0
+        adult_n = 0
         spider = str(obj.get("spider") or "")
         for key in GLOBAL_KEYS:
             value = obj.get(key)
@@ -273,6 +327,14 @@ def main():
 
         for site in sites:
             if not isinstance(site, dict):
+                continue
+            # 成人过滤(拍板 2026-11-20):词表命中即整站剔除,不进任何产物也不探测
+            reason = adult_reason(site, adult)
+            if reason:
+                adult_removed += 1
+                adult_n += 1
+                if len(adult_names) < 50:
+                    adult_names.append(str(site.get("name") or "?"))
                 continue
             # CSP 源依赖线路原装 spider 的 jar：单仓只能留一个全局 spider，
             # 所以给 csp_ 站点带上自己线路的 jar（与 TVboxorg merge.py 同思路）。
@@ -301,6 +363,8 @@ def main():
         entry.update(ok=True, bytes=len(raw),
                      sha256=hashlib.sha256(raw).hexdigest()[:12],
                      items=items, added=added)
+        if adult_n:
+            entry["adult_removed"] = adult_n
         stats["upstreams"].append(entry)
         ok_count += 1
         print("[+] %-12s %7d 字节  条目 %4d  新增 %4d" % (name, len(raw), items, added))
@@ -328,10 +392,12 @@ def main():
     else:
         rec_sites = merged_sites
 
+    stats["adult_filtered_sample"] = adult_names
     stats["totals"] = {
         "sites": len(merged_sites),
         "parses": len(merged_parses),
         "blacklisted_removed": black_removed,
+        "adult_removed": adult_removed,
         "healthy": sum(1 for s in rec_sites if is_healthy(s)),
         "recommended_fallback": fallback,
     }
@@ -348,9 +414,10 @@ def main():
     (args.output_dir / "status.md").write_text(render_status_md(stats), encoding="utf-8")
 
     totals = stats["totals"]
-    print("汇总完成: %d/%d 上游成功, sites=%d parses=%d, 剔除黑名单 %d"
+    print("汇总完成: %d/%d 上游成功, sites=%d parses=%d, 剔除黑名单 %d, 成人词表剔除 %d"
           % (ok_count, len(manifest["upstreams"]), totals["sites"],
-             totals["parses"], totals["blacklisted_removed"]))
+             totals["parses"], totals["blacklisted_removed"],
+             totals["adult_removed"]))
     if not ok_count:
         print("没有任何上游拉取成功", file=sys.stderr)
         return 1

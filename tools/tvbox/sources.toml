@@ -37,3 +37,19 @@ note = "轻量点播配置，jsDelivr 国内友好，每 3 天自动校验"
 [overrides]
 blacklist = []
 force_include = []
+
+
+# ---- 成人过滤词表(拍板 2026-11-20「把色情站过滤掉」「社区有没有名单」) ----
+# 词表事实源: hebijunge/tvbox-config state/vocab/categories.json adult 节——社区生产
+# 实证版(192 名称词/46 精选域名/边界正则/14 host token/13 共用 CDN 豁免)。
+# 判定序(与 hebijunge is_adult/is_adult_url 对齐): ① name 关键词子串 ② name 正则
+# ③ host 精确后缀黑名单 ④ 共用 CDN 豁免放行 ⑤ host token / 边界正则。
+# 刻意不收 name_pure_num_regex(^\d{1,3}$)——那是直播纯数字台号规则,会误杀 360 这类站名。
+# adult_keywords 与 host_blacklist_exact 同时清空 = 整个过滤功能关闭。
+[filters]
+adult_keywords = ["1024", "10mu", "1pon", "259luxu", "91 porn", "91porn", "abf-", "abp-", "abw-", "adn-", "adultiptv", "av女", "av片", "brazzers", "carib ", "carib-", "caribpr", "cawd-", "cum4k", "cwpbd-", "dass-", "dorcel", "eroxhd", "fake taxi", "fc2ppv", "fsdss-", "fuck", "gachipxxx", "h_4610", "hamesamurai", "hbad-", "heyeo", "heyzo", "hmn-", "hongkongdoll", "hustler", "iptd-", "ipx-", "ipzz-", "japan hdv", "jav", "jufe-", "juq-", "jvid", "kinoxxx", "meyd-", "miaa-", "miamitv", "midv-", "mkbd-", "mmz", "naughty america", "nkkd-", "penthouse", "pinkerotic", "pinkoclub", "playboy", "porn", "pornstar", "pred-", "private", "redlight", "s2mbd-", "sexe", "sexy", "sone-", "ssis-", "sspd-", "stars-", "swag", "t28", "tyd-", "xxx", "一夜情", "一本道", "东京热", "中出", "乱交", "亂交", "亚洲无码", "亚洲有码", "人乳", "人妻", "做愛", "做爱", "偷拍", "免费av", "免费黄", "加勒比", "厕所", "口交", "叫床", "后入", "国产av", "国产精品", "國產av", "大尺度", "天美传媒", "媚药", "媚藥", "小仙女", "小穴", "少妇", "巨乳", "後入", "情色", "情色影院", "成人影院", "手淫", "按摩", "换妻", "探花", "換妻", "援交", "操逼", "无码", "未修正", "東京熱", "松視", "松视", "果冻传媒", "榴社区", "水果派", "淫", "潮吹", "無修正", "熟女", "特殊服务", "痴女", "皇家华人", "看片", "福利姬", "素人", "约炮", "肉棒", "肛交", "自慰", "色情", "色情影院", "草榴", "蜜桃", "蜜桃臀", "蜜桃視頻", "蜜桃视频", "裸聊", "裸舞", "足交", "車震", "輪姦", "车震", "轮奸", "顏射", "颜射", "香蕉啪", "香蕉超清", "騎乘", "骑乘", "骚b", "骚逼", "色逼", "杏吧", "高校生", "高潮", "麻豆传媒", "黃片", "黄片", "黄直播", "gay", "欧美版", "歐美版", "激情午夜", "激情影院", "激情小视频", "激情视频", "激情在线", "激情免费", "激情啪啪", "激情文学", "激情小说", "激情交友", "激情聊天", "玉兔", "小黄书", "乱伦", "madouse", "麻豆", "jable", "luanlun", "zipaitoupai", "siwazhifu", "zhibolubo", "chaoqingsanji", "デカチ○ポ", "mycam"]
+adult_name_regexes = ["^【(水果派|免费|愛欲|新晋|欧美版|歐美版|高清)】", "^[a-z]?\\d{4,6}[-_]\\d{2,4}[-_]?\\d{0,4}$"]
+host_blacklist_exact = ["xingba222.com", "apilsbzy1.com", "3sybf.com", "49cdn.com", "91md.la", "91porn.com", "adultiptv.net", "akadatel.com", "aosikazy12.com", "apidanaizi.com", "apiyutu.com", "askzybfvideo.com", "avhh.vip", "bpzy1.com", "cbilant.com", "cdn.adultiptv.net", "cdnedge.live", "ckzy1com.com", "dadi-bo.com", "ddyunbo.com", "douapi.cc", "fhapi9.com", "fhbf9.com", "iptvxxx.net", "jable.tv", "javbus.com", "javdb.com", "jp-primehome.com", "lajiao-bo.com", "lbapi9.com", "lbbf9.com", "lsbbf1.com", "madouse.la", "mycamtv.com", "mycamtv.net", "ottclub.xyz", "pornhub.com", "redtraffic.xyz", "shayubf.com", "siwazyw.com", "slapibf.com", "slbfsl.com", "surrit.com", "t66y.com", "tvdosug.net", "vod.77vod.com", "vod.mycamtv.net", "xiaojizy.live"]
+host_blacklist_tokens = ["missav", "sleazyred", "hongkongdoll", "pornhub", "xvideos", "xnxx", "apiyutu", "slapibf", "jable", "madouse", "siwazyw", "91porn", "91md", "avhh"]
+host_blacklist_pattern = "(?:^|[.\\-])(adult|xxx|porn|javhd|javbd|hentai|hcomic|18plus|xxbobo|xbobo|missav|sleazyred|hongkongdoll|pornhub|xvideos|xnxx|avhh)(?:[.\\-]|$)"
+shared_cdn_no_blacklist = ["cdn2020.com", "cdnedge.live", "slbfsl.com", "siwazywcdn2.com", "ddyunbo.com", "mycamtv.com", "kwimgs.com", "maa1804.com", "maa1808.com", "maa1809.com", "iptvxxx.net", "cloudfront.net", "streamlock.net"]
