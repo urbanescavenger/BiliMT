@@ -1875,6 +1875,65 @@
       "jar": "https://qist.wyfc.qzz.io/jar/fan.txt"
     },
     {
+      "key": "tv_back-024_暴風",
+      "name": "🦔暴風┃采集·荐片",
+      "type": 1,
+      "api": "https://bfzyapi.com/api.php/provide/vod",
+      "searchable": 1,
+      "changeable": 1
+    },
+    {
+      "key": "tv_back-024_索尼",
+      "name": "🦜索尼┃采集·荐片",
+      "type": 1,
+      "api": "https://suoniapi.com/api.php/provide/vod",
+      "searchable": 1,
+      "changeable": 1
+    },
+    {
+      "key": "tv_back-024_360",
+      "name": "🦚360┃采集·荐片",
+      "type": 1,
+      "api": "https://360zy.com/api.php/provide/vod?",
+      "searchable": 1,
+      "changeable": 1,
+      "categories": [
+        "动作片",
+        "喜剧片",
+        "爱情片",
+        "科幻片",
+        "恐怖片",
+        "剧情片",
+        "战争片",
+        "古装片",
+        "悬疑片",
+        "犯罪片",
+        "灾难片",
+        "国产剧",
+        "香港剧",
+        "韩国剧",
+        "欧美剧",
+        "台湾剧",
+        "日本剧",
+        "海外剧",
+        "泰国剧",
+        "大陆综艺",
+        "港台综艺",
+        "日韩综艺",
+        "欧美综艺",
+        "国产动漫",
+        "欧美动漫",
+        "日韩动漫",
+        "现代都市",
+        "脑洞悬疑",
+        "年代穿越",
+        "古装仙侠",
+        "女频恋爱",
+        "成长逆袭",
+        "反转爽剧"
+      ]
+    },
+    {
       "key": "tv_pref-007_csp_DouDou",
       "name": "🔍聚玩盒子-本接口免费-🈲贩卖·小盒子",
       "type": 3,
@@ -1994,44 +2053,6 @@
       },
       "timeout": 60,
       "jar": "https://qist.wyfc.qzz.io/xiaosa/spider.jar"
-    },
-    {
-      "key": "tv_back-017_卡卡",
-      "name": "卡卡 • 4K·潇洒",
-      "type": 3,
-      "api": "csp_KKPan",
-      "searchable": 1,
-      "quickSearch": 0,
-      "filterable": 0,
-      "style": {
-        "type": "list"
-      },
-      "timeout": 60,
-      "jar": "https://qist.wyfc.qzz.io/xiaosa/spider.jar"
-    },
-    {
-      "key": "tv_back-012_JianSou",
-      "name": "💖┃简搜┃4K💖·二月红接口",
-      "type": 3,
-      "api": "csp_JianSou",
-      "searchable": 1,
-      "filterable": 0,
-      "ext": {
-        "site": "http://118.89.172.248:8000",
-        "type": 0,
-        "name": " 简搜"
-      },
-      "jar": "http://118.89.172.248:8025/jar/tan2.php"
-    },
-    {
-      "key": "tv_back-012_ZhiZhenPanCms",
-      "name": "💖┃至臻┃4K💖·二月红接口",
-      "type": 3,
-      "api": "csp_PanCms",
-      "searchable": 1,
-      "filterable": 1,
-      "ext": "{\"site\":[\"http://118.89.172.248:22776\"],\"name\":\"网盘CMS\"}",
-      "jar": "http://118.89.172.248:8025/jar/tan2.php"
     },
     {
       "key": "黑色影视",
@@ -23433,6 +23454,36 @@
       "ext": {
         "header": {
           "user-agent": "Mozilla/5.0 (Linux; Android 13; V2049A Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/116.0.0.0 Mobile Safari/537.36"
+        }
+      }
+    },
+    {
+      "name": "巧技二",
+      "type": 1,
+      "url": "http://pan.qiaoji8.com/tvbox/gouzi.php?url=",
+      "ext": {
+        "flag": [
+          "qq",
+          "腾讯",
+          "qiyi",
+          "爱奇艺",
+          "奇艺",
+          "youku",
+          "优酷",
+          "sohu",
+          "搜狐",
+          "letv",
+          "乐视",
+          "mgtv",
+          "芒果",
+          "tnmb",
+          "seven",
+          "bilibili",
+          "1905",
+          "NetFilx"
+        ],
+        "header": {
+          "User-Agent": "okhttp/4.9.1"
         }
       }
     },
