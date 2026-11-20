@@ -1,0 +1,31 @@
+{
+	"admin/services/tvboxcheck": {
+		"title": "TVBox 源检测",
+		"order": 98,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-tvboxcheck" ],
+			"uci": { "tvboxcheck": true }
+		}
+	},
+
+	"admin/services/tvboxcheck/status": {
+		"title": "状态",
+		"order": 1,
+		"action": {
+			"type": "view",
+			"path": "tvboxcheck/status"
+		}
+	},
+
+	"admin/services/tvboxcheck/settings": {
+		"title": "设置",
+		"order": 2,
+		"action": {
+			"type": "view",
+			"path": "tvboxcheck/settings"
+		}
+	}
+}
