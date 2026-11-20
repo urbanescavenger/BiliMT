@@ -1,7 +1,7 @@
 {
-  "updated": "2026-11-20T01:22:37+00:00",
-  "manifest": "/home/runner/work/BiliMT/BiliMT/tools/tvbox/sources.toml",
-  "probe_state": "absent",
+  "updated": "2026-11-20T01:58:59+00:00",
+  "manifest": "E:\\GITHUB\\BiliTVNative\\tools\\tvbox\\sources.toml",
+  "probe_state": "present",
   "upstreams": [
     {
       "name": "tvboxorg",
@@ -38,7 +38,7 @@
     "sites": 1792,
     "parses": 204,
     "blacklisted_removed": 0,
-    "healthy": 0,
+    "healthy": 15,
     "recommended_fallback": false
   }
 }
