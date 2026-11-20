@@ -35,7 +35,8 @@ note = "轻量点播配置，jsDelivr 国内友好，每 3 天自动校验"
 
 # 覆盖规则：blacklist 手动判死（优先于 probe 结果），force_include 强制保留
 [overrides]
-blacklist = []
+# 人工判排除(拍板 2026-11-20「都排除吧」): 桃花/精品/蝙蝠/43-HG/黑色影视
+blacklist = ["黑色影视", "fbfa5eed414e1f6137f2496a68005ef5", "桃花", "精品", "蝙蝠"]
 force_include = []
 
 

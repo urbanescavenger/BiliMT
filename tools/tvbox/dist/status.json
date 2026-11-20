@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-20T05:10:23+00:00",
+  "updated": "2026-11-20T05:19:25+00:00",
   "manifest": "E:\\GITHUB\\BiliTVNative\\tools\\tvbox\\sources.toml",
   "probe_state": "present",
   "upstreams": [
@@ -21,7 +21,7 @@
       "bytes": 627206,
       "sha256": "5e79c252fb48",
       "items": 1630,
-      "added": 1618,
+      "added": 1613,
       "adult_removed": 5
     },
     {
@@ -36,11 +36,11 @@
     }
   ],
   "totals": {
-    "sites": 1787,
+    "sites": 1782,
     "parses": 204,
-    "blacklisted_removed": 0,
+    "blacklisted_removed": 5,
     "adult_removed": 5,
-    "healthy": 13,
+    "healthy": 8,
     "recommended_fallback": false
   },
   "adult_filtered_sample": [
