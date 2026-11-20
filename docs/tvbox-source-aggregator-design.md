@@ -96,6 +96,9 @@ aggregate.py（`tools/tvbox/scripts/aggregate.py`，仅标准库）：
    后缀 → **共用 CDN 豁免**（防误伤）→ host token/边界正则；刻意不收 `^\d{1,3}$` 纯数字
    台号规则（会误杀 360 站名）。首跑实测：全量 1792→1787（剔 5），recommended 15→13；
    种子名单参考 [fenwe.adult.txt](https://github.com/guxiangbin/tvbox2/blob/main/fenwe.adult.txt)。
+   词表未命中的 5 站经人工判定全部入 `overrides.blacklist`（拍板 2026-11-20「都排除吧」：
+   桃花/精品/蝙蝠/43-HG/黑色影视，用精确 key 不误伤同族）→ **recommended 终态 8 站**
+   （360 系×3、辣椒、如意系×3、魔都影视）。
 6. **分层发布**：读 `state/checks.json` + `state/blacklist.txt` + overrides（`force_include` 豁免）：
    - `tvbox.json` = 全量（剔除黑名单）
    - `recommended.json` = 仅 `status == "healthy"`；无校验数据（probe 未接入）时=全量并在 status 标 `absent`；有数据但全空时兜底回全量。
