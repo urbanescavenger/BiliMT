@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-20T05:19:25+00:00",
+  "updated": "2026-11-20T07:04:24+00:00",
   "manifest": "E:\\GITHUB\\BiliTVNative\\tools\\tvbox\\sources.toml",
   "probe_state": "present",
   "upstreams": [
@@ -21,8 +21,8 @@
       "bytes": 627206,
       "sha256": "5e79c252fb48",
       "items": 1630,
-      "added": 1613,
-      "adult_removed": 5
+      "added": 1592,
+      "adult_removed": 26
     },
     {
       "name": "fswws",
@@ -36,18 +36,39 @@
     }
   ],
   "totals": {
-    "sites": 1782,
+    "sites": 1761,
     "parses": 204,
     "blacklisted_removed": 5,
-    "adult_removed": 5,
-    "healthy": 8,
+    "adult_removed": 26,
+    "healthy": 7,
     "recommended_fallback": false
   },
   "adult_filtered_sample": [
     "[137ms|zy] 🍊杏吧",
     "[137ms|zy] 🍊色逼",
+    "apilj辣椒资源",
     "lsb",
+    "辣椒 | 采集",
+    "辣椒(FQ)",
     "💕老色逼(直连)",
-    "💥杏吧视频💥"
+    "75-辣椒资源*",
+    "AvTime",
+    "💥AVTO💥",
+    "💥MSAVX💥",
+    "💥avgood💥",
+    "💥avjoy💥",
+    "💥youav💥",
+    "💥口爆大全AV💥",
+    "💥夜色💥",
+    "💥杏吧视频💥",
+    "💥猫咪AV💥",
+    "💥禁片天堂💥",
+    "💥肉视频💥",
+    "💥萝莉岛app💥",
+    "💥黄瓜视频💥",
+    "💥黄色仓库💥",
+    "👭PigAV👭",
+    "👭爱豆AV👭",
+    "👭萝莉AV👭"
   ]
 }

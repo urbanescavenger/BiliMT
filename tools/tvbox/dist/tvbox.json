@@ -2951,16 +2951,6 @@
       "group": "综合-采集站"
     },
     {
-      "name": "apilj辣椒资源",
-      "key": "11辣椒资源",
-      "type": 1,
-      "api": "https://apilj.com/api.php/provide/vod/at/json/",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1,
-      "group": "综合-采集站"
-    },
-    {
       "name": "ckzyCK资源",
       "key": "11CK2",
       "type": 1,
@@ -3190,27 +3180,6 @@
       "group": "综合-采集站"
     },
     {
-      "key": "辣椒",
-      "name": "辣椒 | 采集",
-      "type": 1,
-      "api": "https://apilj.com/api.php/provide/vod/",
-      "playUrl": "",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1,
-      "ext": "proxy",
-      "group": "综合-采集站"
-    },
-    {
-      "key": "lajiaozy.com",
-      "name": "辣椒(FQ)",
-      "type": 1,
-      "api": "https://apilj.com/api.php/provide/vod/at/json/?ac=list",
-      "searchable": 1,
-      "filterable": 1,
-      "group": "综合-采集站"
-    },
-    {
       "key": "moduzy",
       "name": "魔都影视",
       "api": "https://www.moduzy.com/api.php/provide/vod",
@@ -3369,15 +3338,6 @@
       "api": "https://api.1080zyku.com/inc/api_mac10.php",
       "searchable": 0,
       "quickSearch": 0,
-      "group": "综合-采集站"
-    },
-    {
-      "api": "https://apilj.com/api.php/provide/vod/at/xml/",
-      "key": "0a80243b21a08dc935258557df03cf34",
-      "name": "75-辣椒资源*",
-      "quickSearch": 0,
-      "searchable": 0,
-      "type": 0,
       "group": "综合-采集站"
     },
     {
@@ -6991,16 +6951,6 @@
       "searchable": 1,
       "quickSearch": 1,
       "filterable": 1,
-      "group": "综合-蜘蛛源",
-      "jar": "./deps/feishu-sync/%E4%B8%80%E6%9C%A8%E6%BA%90/JAR/XB%E5%8C%85jar/LIBVIO.jar;md5;da018b4f9e93e66d29be9ff5013a2059"
-    },
-    {
-      "key": "AvTime",
-      "name": "AvTime",
-      "type": 3,
-      "api": "csp_AvTime",
-      "searchable": 1,
-      "changeable": 0,
       "group": "综合-蜘蛛源",
       "jar": "./deps/feishu-sync/%E4%B8%80%E6%9C%A8%E6%BA%90/JAR/XB%E5%8C%85jar/LIBVIO.jar;md5;da018b4f9e93e66d29be9ff5013a2059"
     },
@@ -18521,16 +18471,6 @@
       "group": "其他"
     },
     {
-      "key": "AVTO.py",
-      "name": "💥AVTO💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/AVtop10.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
       "key": "Asmr.py",
       "name": "💥Asmr💥",
       "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/Asmr.py",
@@ -18605,16 +18545,6 @@
       "key": "MMTV.py",
       "name": "💥MMTV💥",
       "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/MMTV.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
-      "key": "MSAVX.py",
-      "name": "💥MSAVX💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/MSAVX.py",
       "filterable": 1,
       "quickSearch": 1,
       "searchable": 1,
@@ -18746,26 +18676,6 @@
       "key": "auu.py",
       "name": "💥auu💥",
       "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/auu.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
-      "key": "avgood.py",
-      "name": "💥avgood💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/avgood.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
-      "key": "avjoy.py",
-      "name": "💥avjoy💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py2/avjoy.py",
       "filterable": 1,
       "quickSearch": 1,
       "searchable": 1,
@@ -19037,16 +18947,6 @@
       "key": "yd影视.py",
       "name": "💥yd影视💥",
       "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/yd.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
-      "key": "youav.py",
-      "name": "💥youav💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/youav.py",
       "filterable": 1,
       "quickSearch": 1,
       "searchable": 1,
@@ -19329,16 +19229,6 @@
       "group": "其他"
     },
     {
-      "key": "口爆大全AV.py",
-      "name": "💥口爆大全AV💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/口爆大全AV.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
       "key": "py_咕咕_APP",
       "name": "💥咕咕💥",
       "type": 3,
@@ -19398,16 +19288,6 @@
       "key": "多瑙影院.py",
       "name": "💥多瑙影院💥",
       "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/多瑙影院.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
-      "key": "夜色.py",
-      "name": "💥夜色💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/夜色.py",
       "filterable": 1,
       "quickSearch": 1,
       "searchable": 1,
@@ -20157,16 +20037,6 @@
       "group": "其他"
     },
     {
-      "key": "猫咪AV.py",
-      "name": "💥猫咪AV💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/猫咪AV.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
       "key": "猫咪TV.py",
       "name": "💥猫咪TV💥",
       "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/猫咪TV.py",
@@ -20301,16 +20171,6 @@
       "group": "其他"
     },
     {
-      "key": "禁片天堂.py",
-      "name": "💥禁片天堂💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py2/禁片天堂.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
       "key": "稀饭动漫.py",
       "name": "💥稀饭动漫💥",
       "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py8/稀饭动漫.py",
@@ -20408,16 +20268,6 @@
       "group": "其他"
     },
     {
-      "key": "肉视频.py",
-      "name": "💥肉视频💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/肉视频.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
       "key": "腾",
       "name": "💥腾云驾雾💥",
       "type": 3,
@@ -20463,16 +20313,6 @@
       "key": "莫小影.py",
       "name": "💥莫小影💥",
       "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/莫小影.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
-      "key": "萝莉岛app.py",
-      "name": "💥萝莉岛app💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/萝莉岛app.py",
       "filterable": 1,
       "quickSearch": 1,
       "searchable": 1,
@@ -20800,26 +20640,6 @@
       "key": "麦田影院.py",
       "name": "💥麦田影院💥",
       "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py/麦田影院.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
-      "key": "黄瓜视频.py",
-      "name": "💥黄瓜视频💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py/黄瓜视频.py",
-      "filterable": 1,
-      "quickSearch": 1,
-      "searchable": 1,
-      "type": 3,
-      "group": "其他"
-    },
-    {
-      "key": "黄色仓库.py",
-      "name": "💥黄色仓库💥",
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py9/黄色仓库.py",
       "filterable": 1,
       "quickSearch": 1,
       "searchable": 1,
@@ -21191,13 +21011,6 @@
       "group": "其他"
     },
     {
-      "key": "PigAV.py",
-      "name": "👭PigAV👭",
-      "type": 3,
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py3/PigAV.py",
-      "group": "其他"
-    },
-    {
       "key": "jsPHP",
       "name": "👭js聚合👭",
       "type": 4,
@@ -21336,13 +21149,6 @@
       "group": "其他"
     },
     {
-      "key": "爱豆AV.py",
-      "name": "👭爱豆AV👭",
-      "type": 3,
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py3/愛豆AV.py",
-      "group": "其他"
-    },
-    {
       "key": "网络直播.py",
       "name": "👭网络直播11👭",
       "type": 3,
@@ -21363,13 +21169,6 @@
       "type": 4,
       "api": "http://zhangqun1818.serv00.net/jianpian.php",
       "changeable": 1,
-      "group": "其他"
-    },
-    {
-      "key": "萝莉AV.py",
-      "name": "👭萝莉AV👭",
-      "type": 3,
-      "api": "https://gh-proxy.org/https://raw.githubusercontent.com/wliqi495-create/jaychouqq/refs/heads/main/yingshi/py3/蘿莉AV.py",
       "group": "其他"
     },
     {

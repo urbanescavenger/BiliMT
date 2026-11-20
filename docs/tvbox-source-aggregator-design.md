@@ -96,9 +96,16 @@ aggregate.py（`tools/tvbox/scripts/aggregate.py`，仅标准库）：
    后缀 → **共用 CDN 豁免**（防误伤）→ host token/边界正则；刻意不收 `^\d{1,3}$` 纯数字
    台号规则（会误杀 360 站名）。首跑实测：全量 1792→1787（剔 5），recommended 15→13；
    种子名单参考 [fenwe.adult.txt](https://github.com/guxiangbin/tvbox2/blob/main/fenwe.adult.txt)。
-   词表未命中的 5 站经人工判定全部入 `overrides.blacklist`（拍板 2026-11-20「都排除吧」：
-   桃花/精品/蝙蝠/43-HG/黑色影视，用精确 key 不误伤同族）→ **recommended 终态 8 站**
-   （360 系×3、辣椒、如意系×3、魔都影视）。
+   词表未命中的 5 站经人工判定全部入 `overrides.blacklist`（拍板「都排除吧」：桃花/精品/
+   蝙蝠/43-HG/黑色影视，精确 key 不误伤同族），辣椒家族三 key 后补（拍板「辣椒资源」）。
+   **站点级名单导入（同日 v2 演进，两个坑各改一版）**：抽取 hebijunge `adult.json`
+   （115 成人站）与 fenwe 的站名/域名入库——① 站名免门引入了 fenwe 混藏的影视仓多仓
+   线路名（线路1/玩偶/量子/非凡/360…），误杀 154 站 → **站名必须过「独立成人性信号门」**
+   （命中基础 192 词，或命中 av/18/色/萝/禁/传媒… 信号词）才准入；② 成人池混有**多租户
+   CMS 平台域**（lziapi=量子的 api、kxgav 上住着白嫖），杀平台域名会连坐同平台正常租户
+   → **撤回整批域名导入**，只留人工逐个确认的（apilj.com）。终态：词表 406 词/49 域，
+   对 1782 全量复审 **21 杀 0 误伤**；**recommended 终态 7 站**（360系×3、如意系×3、
+   魔都影视），全量 1792→1761（黑名单 5 + 词表 26）。
 6. **分层发布**：读 `state/checks.json` + `state/blacklist.txt` + overrides（`force_include` 豁免）：
    - `tvbox.json` = 全量（剔除黑名单）
    - `recommended.json` = 仅 `status == "healthy"`；无校验数据（probe 未接入）时=全量并在 status 标 `absent`；有数据但全空时兜底回全量。
