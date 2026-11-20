@@ -1,0 +1,17 @@
+{
+	"luci-app-tvboxcheck": {
+		"description": "Grant UCI access for luci-app-tvboxcheck",
+		"read": {
+			"ubus": {
+				"tvboxcheck": [ "status", "get_log", "get_results" ]
+			},
+			"uci": [ "tvboxcheck" ]
+		},
+		"write": {
+			"ubus": {
+				"tvboxcheck": [ "start", "stop" ]
+			},
+			"uci": [ "tvboxcheck" ]
+		}
+	}
+}

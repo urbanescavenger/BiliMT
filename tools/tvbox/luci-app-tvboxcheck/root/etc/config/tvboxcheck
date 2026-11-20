@@ -1,0 +1,10 @@
+# TVBox 源试播探测配置（UCI，LuCI 设置页读写）
+config global 'global'
+	# 订阅 JSON：URL 或本地路径（默认仓库 main 的聚合产物）
+	option input 'https://raw.githubusercontent.com/urbanescavenger/BiliMT/main/tools/tvbox/dist/tvbox.json'
+	# checks.json 主存路径（结果留在 op）
+	option output '/etc/tvboxcheck/checks.json'
+	# 探测并发数
+	option concurrency '8'
+	# 单请求超时（秒）
+	option timeout '8'

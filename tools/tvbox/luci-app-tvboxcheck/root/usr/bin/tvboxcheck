@@ -32,6 +32,7 @@ import re
 import ssl
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -93,12 +94,44 @@ def _ssl_context():
     return _SSL_CONTEXT
 
 
+def normalize_url(url):
+    """IRI → URI：非 ASCII 的 host 做 idna、路径/参数做百分号编码。
+
+    http.client 对 host 和请求行都只认 latin-1——中文/西里尔域名或中文路径
+    直接进请求会抛 UnicodeEncodeError（真机日志 'latin-1 codec can't encode
+    characters in position 2-3'，position 2-3 正是 c.西里尔.icu 的域名段）。
+    已有的 %xx 不动（safe 含 %），不双重编码。
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+        netloc = parts.netloc
+        host = parts.hostname
+        if host and not host.isascii():
+            idna = host.encode("idna").decode("ascii")
+            userinfo = ""
+            if parts.username:
+                userinfo = parts.username
+                if parts.password:
+                    userinfo += ":" + parts.password
+                userinfo += "@"
+            port = (":" + str(parts.port)) if parts.port else ""
+            netloc = userinfo + idna + port
+        path = urllib.parse.quote(parts.path, safe="/%:@!$&'()*+,;=-._~")
+        query = urllib.parse.quote(parts.query, safe="=&%+/?:@!$'()*,;~-._")
+        fragment = urllib.parse.quote(parts.fragment, safe="/%?:@!$&'()*+,;=-._~")
+        return urllib.parse.urlunsplit(
+            (parts.scheme, netloc, path, query, fragment))
+    except Exception:
+        return url
+
+
 def http_get(url, timeout, headers=None, max_bytes=None, with_range=False):
     """GET → (code, body, ttfb_ms, total_ms)。body 最多读 max_bytes。
 
     HTTP 4xx/5xx 不抛错，作为 (code, ...) 返回——服务端应答属于 L0 判据；
     连接层失败抛 NetworkError（不判死）。ttfb 含建连（urllib 无法单独量 connect）。
     """
+    url = normalize_url(url)
     hdrs = dict(headers or {})
     if with_range and max_bytes:
         hdrs["Range"] = "bytes=0-%d" % (max_bytes - 1)
@@ -448,7 +481,8 @@ def main():
             continue
         old = checks.get(sid) or {}
         last = old.get("last_check")
-        if not args.full and last:
+        # --only 是调试用强制重测：不套 6 小时新鲜度
+        if not args.full and not only and last:
             try:
                 ts = datetime.fromisoformat(last).timestamp() * 1000
                 if now_ms - ts < FRESH_MS and old.get("status") in (
@@ -474,27 +508,37 @@ def main():
     done = {"n": 0, "total": len(probeable)}
 
     def run_one(sid, site):
-        status, level, reason, ttfb, kbps, nbytes = probe_cms(
-            site, args.timeout, resolve_cache)
+        # 单站异常不拖垮整轮：记 sid+堆栈到日志后返回 None（无记录但计入进度）
+        try:
+            status, level, reason, ttfb, kbps, nbytes = probe_cms(
+                site, args.timeout, resolve_cache)
+        except Exception:
+            print("[!] 内部错误 sid=%s: %s"
+                  % (sid, traceback.format_exc(limit=4)),
+                  file=sys.stderr, flush=True)
+            return sid, None
         return sid, apply_result(checks.get(sid), status, level, reason,
                                  ttfb, kbps, nbytes)
 
     print("探测开始: 可测 %d, untestable %d, 并发 %d"
-          % (len(probeable), len(untestable), args.concurrency))
+          % (len(probeable), len(untestable), args.concurrency), flush=True)
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         futures = [pool.submit(run_one, sid, site)
                    for sid, site, kind in probeable]
         for future in as_completed(futures):
             try:
                 sid, rec = future.result()
-            except Exception as exc:            # 单站异常不拖垮整轮
-                print("[!] 内部错误: %s" % exc, file=sys.stderr)
+            except Exception as exc:            # 兜底：apply_result 级异常
+                print("[!] 内部错误: %s" % exc, file=sys.stderr, flush=True)
+                done["n"] += 1
+                continue
+            done["n"] += 1
+            if rec is None:
                 continue
             checks[sid] = rec
-            done["n"] += 1
             print("[%d/%d] %-28s %-10s L%s %s"
                   % (done["n"], done["total"], sid[:28], rec["status"],
-                     rec["level"], rec["reason"]))
+                     rec["level"], rec["reason"]), flush=True)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_suffix(out_path.suffix + ".tmp")
@@ -506,7 +550,7 @@ def main():
     for rec in checks.values():
         st = rec.get("status", "?")
         tally[st] = tally.get(st, 0) + 1
-    print("完成: 本轮 %d 站, 输出 %s" % (done["n"], out_path))
+    print("完成: 本轮 %d 站, 输出 %s" % (done["n"], out_path), flush=True)
     print("全量状态: " + ", ".join("%s=%d" % kv for kv in sorted(tally.items())))
     return 0
 

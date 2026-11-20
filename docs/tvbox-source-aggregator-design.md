@@ -168,6 +168,9 @@ tools/tvbox/luci-app-tvboxcheck/     # luci.mk 打包（本仓库内）
 - 解析出的候选全是官方播放页（本仓库口径下该站无货）→ `untestable_local`，不判死。
 - 分片用 Range/限量读，256KB 拉通即判过；m3u8 内 AES key URI 一并拉通（只验证可达，
   不解密）。
+- **URL 规范化**：所有出站 URL 先过 `normalize_url`（host idna + 路径/参数百分号
+  编码，保留既有 %xx）——http.client 只认 latin-1，非 ASCII 域名/路径会直接抛
+  UnicodeEncodeError（2026-11-20 真机踩坑：`c.小胡.icu` position 2-3）。
 
 原「B 站类源走 BV 方法」小节已删除（2026-11-20 拍板，见上表）：
 这 52 个源与其余 type 3 一同 `untestable`，不进测活、不进 recommended。
@@ -217,10 +220,17 @@ tools/tvbox/luci-app-tvboxcheck/     # luci.mk 打包（本仓库内）
 | M3 | 状态机闭环：LuCI probe → checks.json 提交 → CI 进 recommended.json | 未开始 |
 | M4（可选） | 蜘蛛源沙箱深测、每日快照回滚 | 按需 |
 
-Part B 里程碑：B1 `tvboxcheck` CLI（ssh 跑通 L1-L3 试播出 checks.json，结果存 op 本地）→
-B2 rpcd + LuCI 页面（状态表 + 导出按钮）→ B3 src-link 进 MortOP 固件真机跑一轮（对应 M3；
-回传分层为可选增强，不阻塞 B3 验收）。
+Part B 里程碑：
+- B1 `tvboxcheck` CLI —— ✅ 2026-11-20 本地+真机跑通，checks.json 落 `/etc/tvboxcheck/`。
+- B2 rpcd + LuCI 页面 —— ✅ 2026-11-20 真机验证：ucode 编译过、ubus 对象注册、
+  start/stop 控制链实测（pid 2294 起停）、状态页/设置页落 158（192.168.31.158，
+  MortOP x86_64 / 25.12 / python3 3.13）。首场全量 96 可测站：15 healthy /
+  10 degraded / 69 unknown。踩坑修复：西里尔/中文域名 IRI 进 http.client 抛
+  latin-1 错（position 2-3 = 域名段），已加 `normalize_url`（host idna +
+  路径参数百分号编码）；内部错误日志带 sid+堆栈；`--only` 绕过新鲜度。
+- B3 待做：src-link 进 MortOP 固件打包（Makefile 就绪）+ 回传分层（可选增强）。
 包位置：本仓库 `tools/tvbox/luci-app-tvboxcheck/`（拍板 2026-11-19）。
+部署方式（B2 期）：裸文件 scp + rpcd reload（开发期等效验证），正式发布走 ipk。
 
 订阅地址（dist 提交落在哪个分支就用哪个，暂定）：
 `https://raw.githubusercontent.com/urbanescavenger/BiliMT/<branch>/tools/tvbox/dist/tvbox.json`
