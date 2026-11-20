@@ -56,16 +56,6 @@
       "group": "综合-采集站"
     },
     {
-      "name": "apilj辣椒资源",
-      "key": "11辣椒资源",
-      "type": 1,
-      "api": "https://apilj.com/api.php/provide/vod/at/json/",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1,
-      "group": "综合-采集站"
-    },
-    {
       "key": "如意采集资源",
       "name": "如意｜采集",
       "type": 1,
