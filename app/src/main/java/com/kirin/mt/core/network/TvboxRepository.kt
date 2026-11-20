@@ -278,14 +278,29 @@ class TvboxRepository(
     return groups.values.take(MaxMergedResults).map { members ->
       val first = members.first()
       // 每站一条线路 = 完整分集列表(选集在线路内换 index;线路=清晰度面板档位)。
-      val lines = members.map { TvboxLine(name = it.site.name, episodes = parseEpisodeList(it.vod)) }
-        .filter { it.episodes.isNotEmpty() }
+      // 镜像站常返回逐字相同的 vod_play_url(同一资源池):按播放地址折叠——否则面板里
+      // 「切换线路」解析出同一条 URL,画面毫无变化,体感就是切不动(2026-11-20 真机反馈)。
+      // (不用 Map.putIfAbsent:那是 API 24+ 的默认方法,本项目 minSdk 23。)
+      val lines = LinkedHashMap<String, TvboxLine>()
+      for (member in members) {
+        val episodes = parseEpisodeList(member.vod)
+        if (episodes.isEmpty()) continue
+        val key = member.vod.vod_play_url.trim()
+        if (!lines.containsKey(key)) {
+          lines[key] = TvboxLine(name = member.site.name, episodes = episodes)
+        }
+      }
+      val lineList = lines.values.toList()
       VideoSummary(
         bvid = "tvbox:${mergeKey(first.vod)}",
         title = first.vod.vod_name,
         pic = members.firstNotNullOfOrNull { it.vod.vod_pic.takeIf(String::isNotBlank) } ?: "",
-        // 「UP主」位显示线路信息:单站显示站名,多站显示条数(站点明细进播放器「线路」面板)。
-        ownerName = if (members.size == 1) first.site.name else "${lines.size} 条线路",
+        // 「UP主」位显示线路信息:折叠后单线路显示站点名,多线路显示真实条数。
+        ownerName = if (lineList.size <= 1) {
+          lineList.firstOrNull()?.name ?: first.site.name
+        } else {
+          "${lineList.size} 条线路"
+        },
         ownerFace = "",
         ownerMid = 0L,
         view = 0,
@@ -294,7 +309,7 @@ class TvboxRepository(
         pubdate = 0L,
         badge = members.firstNotNullOfOrNull { it.vod.vod_remarks.takeIf(String::isNotBlank) } ?: "",
         source = SourceTvbox,
-        tvboxLines = lines,
+        tvboxLines = lineList,
       )
     }
   }

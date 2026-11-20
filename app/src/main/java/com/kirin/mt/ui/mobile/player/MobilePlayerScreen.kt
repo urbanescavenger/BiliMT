@@ -133,6 +133,7 @@ import com.kirin.mt.R
 import com.kirin.mt.ui.theme.BiliColors
 import com.kirin.mt.core.model.SourceHongguo
 import com.kirin.mt.core.network.HongguoAppRepository
+import com.kirin.mt.core.model.SourceTvbox
 import com.kirin.mt.core.model.SourceYoutube
 import com.kirin.mt.core.model.VideoSummary
 import com.kirin.mt.core.network.VideoRepository
@@ -481,6 +482,9 @@ fun MobilePlayerScreen(
   // 缓存命中:当前播放源是本地已下载文件(在线播放器命中缓存)。命中时跳过网络取流、
   // 清晰度只读、隐藏下载入口;简介/评论/弹幕仍走在线。
   var usingCachedPlayback by remember { mutableStateOf(false) }
+  // TVBox 同源线路短路(P11-343):记录当前实际应用的远程 HLS 流与选集,仅 SourceTvbox 维护。
+  var lastAppliedTvboxUrl by remember { mutableStateOf("") }
+  var lastAppliedTvboxEpisode by remember { mutableStateOf(-1) }
   // 发送弹幕:底栏内联输入栏开关 / 文本 / 发送中。发在当前播放位置(progress 毫秒)。
   var danmakuInputActive by remember { mutableStateOf(false) }
   var danmakuInputText by remember { mutableStateOf("") }
@@ -996,6 +1000,22 @@ fun MobilePlayerScreen(
       )
       selectedQualityId = info.selectedQuality.id
       actualQualityId = info.selectedQuality.id
+      // 同源线路短路(P11-343):镜像站的多条线路常解析出同一条 m3u8,切线路重载只会白白
+      // 断流重缓冲、画面毫无变化(2026-11-20 真机「切不动」)。目标 URL == 在播 URL、选集
+      // 未变且播放器健在 → 保留当前播放直接返回(上方档位与 activeRequest 已更新,面板跟随)。
+      if (request.source == SourceTvbox &&
+        info.remoteHlsManifestUrl != null &&
+        info.remoteHlsManifestUrl == lastAppliedTvboxUrl &&
+        request.tvboxEpisodeIndex == lastAppliedTvboxEpisode &&
+        (player.playbackState == Player.STATE_READY ||
+          player.playbackState == Player.STATE_BUFFERING)
+      ) {
+        Log.i(
+          MobilePlayerLogTag,
+          "tvbox 同源线路,跳过重载: url=${info.remoteHlsManifestUrl} episode=${request.tvboxEpisodeIndex}",
+        )
+        return
+      }
       // 允许 audioTracks 为空：仅当视频轨是合并 progressive 流(如 YouTube itag 18/22,音视频一体),
       // 或远程 manifest 兜底(DASH/HLS manifest 自带 A/V 轨,dummy 视频轨非 progressive 但 audioTracks 合法为空)。
       if (info.videoTracks.isEmpty() || (info.audioTracks.isEmpty() && !info.videoTracks.first().isProgressive && !info.hasRemoteManifest())) {
@@ -1182,6 +1202,14 @@ fun MobilePlayerScreen(
       }
       player.playWhenReady = true
       playerState = MobilePlayerState.Ready(sabrEffectiveInfo)
+      // P11-343:记录实际应用的 TVBox 流,供同源线路短路比对;非 TVBox 载入清空标记。
+      if (request.source == SourceTvbox) {
+        lastAppliedTvboxUrl = sabrEffectiveInfo.remoteHlsManifestUrl.orEmpty()
+        lastAppliedTvboxEpisode = request.tvboxEpisodeIndex
+      } else {
+        lastAppliedTvboxUrl = ""
+        lastAppliedTvboxEpisode = -1
+      }
       // alpha.49:播放就绪,隐藏加载步骤提示。
       YoutubeLoadProgress.clear()
       // YouTube 起播即写入播放历史（含频道/封面元数据），供历史 tab 展示与续播。
