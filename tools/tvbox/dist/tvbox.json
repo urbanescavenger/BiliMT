@@ -2055,15 +2055,6 @@
       "jar": "https://qist.wyfc.qzz.io/xiaosa/spider.jar"
     },
     {
-      "key": "黑色影视",
-      "name": "💞黑色影视💞",
-      "type": 1,
-      "api": "https://heiliaozyapi.com/api.php/provide/vod/",
-      "changeable": 1,
-      "group": "综合-采集站",
-      "searchable": 1
-    },
-    {
       "key": "电影天堂-4",
       "name": "🧞无广┃[采集]",
       "type": 1,
@@ -2818,14 +2809,6 @@
       "group": "综合-采集站"
     },
     {
-      "api": "https://hong.hgyx.vip/api.php/provide/vod/",
-      "key": "fbfa5eed414e1f6137f2496a68005ef5",
-      "name": "43-HG",
-      "type": 1,
-      "group": "综合-采集站",
-      "searchable": 1
-    },
-    {
       "key": "官采",
       "name": "🎫官采┃[采集]",
       "type": 1,
@@ -2941,40 +2924,10 @@
       "searchable": 1,
       "search": 1,
       "quickSearch": 1,
-      "api": "https://thzy1.me/api.php/provide/vod/",
-      "key": "桃花",
-      "type": 1,
-      "name": "[137ms|zy] 🍊桃花",
-      "group": "综合-采集站"
-    },
-    {
-      "searchable": 1,
-      "search": 1,
-      "quickSearch": 1,
       "api": "https://fqzy.me//api.php/provide/vod/",
       "key": "番茄-2",
       "type": 1,
       "name": "[137ms|zy] 🍊番茄🪜",
-      "group": "综合-采集站"
-    },
-    {
-      "searchable": 1,
-      "search": 1,
-      "quickSearch": 1,
-      "api": "https://www.jingpinx.com//api.php/provide/vod/",
-      "key": "精品",
-      "type": 1,
-      "name": "[137ms|zy] 🍊精品🪜",
-      "group": "综合-采集站"
-    },
-    {
-      "searchable": 1,
-      "search": 1,
-      "quickSearch": 1,
-      "api": "http://api.11bat.com/api.php/provide/vod/",
-      "key": "蝙蝠",
-      "type": 1,
-      "name": "[137ms|zy] 🍊蝙蝠",
       "group": "综合-采集站"
     },
     {
