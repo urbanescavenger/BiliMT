@@ -1,6 +1,6 @@
 {
-  "updated": "2026-11-20T07:04:24+00:00",
-  "manifest": "E:\\GITHUB\\BiliTVNative\\tools\\tvbox\\sources.toml",
+  "updated": "2026-11-21T00:53:37+00:00",
+  "manifest": "/home/runner/work/BiliMT/BiliMT/tools/tvbox/sources.toml",
   "probe_state": "present",
   "upstreams": [
     {
@@ -9,7 +9,7 @@
       "kind": "config",
       "ok": true,
       "bytes": 75447,
-      "sha256": "454da594f941",
+      "sha256": "7990ca37ecb2",
       "items": 160,
       "added": 160
     },
@@ -29,8 +29,8 @@
       "url": "https://cdn.jsdelivr.net/gh/fswws/tvbox-source@main/tvbox.json",
       "kind": "config",
       "ok": true,
-      "bytes": 5510,
-      "sha256": "87f3dca3d352",
+      "bytes": 5417,
+      "sha256": "fdd803525732",
       "items": 9,
       "added": 9
     }
