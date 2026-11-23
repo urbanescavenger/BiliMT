@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-21T23:51:44+00:00",
+  "updated": "2026-11-23T00:23:33+00:00",
   "manifest": "/home/runner/work/BiliMT/BiliMT/tools/tvbox/sources.toml",
   "probe_state": "present",
   "upstreams": [
@@ -8,8 +8,8 @@
       "url": "https://raw.githubusercontent.com/TVboxorg/TVbox/main/dist/official.json",
       "kind": "config",
       "ok": true,
-      "bytes": 75413,
-      "sha256": "ec9a97c573dd",
+      "bytes": 75593,
+      "sha256": "272e60f01391",
       "items": 160,
       "added": 160
     },
