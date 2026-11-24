@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-23T00:23:33+00:00",
+  "updated": "2026-11-24T04:21:36+00:00",
   "manifest": "/home/runner/work/BiliMT/BiliMT/tools/tvbox/sources.toml",
   "probe_state": "present",
   "upstreams": [
@@ -9,7 +9,7 @@
       "kind": "config",
       "ok": true,
       "bytes": 75593,
-      "sha256": "272e60f01391",
+      "sha256": "31c0fc241eda",
       "items": 160,
       "added": 160
     },
