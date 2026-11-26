@@ -18,6 +18,9 @@ data class RelatedWork(val series: Series, val season: String, val upcoming: Boo
  */
 object RelatedWorks {
     private val seasonSuffix = Regex("第?([0-9零〇一二两三四五六七八九十百]+)季$")
+    // A final season may end in 「完结篇」: 「…第三季完结篇」 is season 3 of 「…」. Only that edition:
+    // 「第X季」 elsewhere in a title can be part of the name itself (「爱在第三季的我们」).
+    private val seasonWithEdition = Regex("第([0-9零〇一二两三四五六七八九十百]+)季\\s*(?:完结篇|完結篇)$")
 
     private fun seasonNumber(value: String): Int? {
         value.toIntOrNull()?.let { return it.takeIf { n -> n > 0 } }
@@ -33,28 +36,32 @@ object RelatedWorks {
         return (total + digit).takeIf { it > 0 }
     }
 
-    private fun stem(title: String) = title.trim().replace(seasonSuffix, "")
+    /** The season marker in [title]: the title before it and its number (null if unreadable). */
+    private fun marker(title: String): Pair<String, Int?>? {
+        val trimmed = title.trim()
+        val match = seasonSuffix.find(trimmed) ?: seasonWithEdition.find(trimmed) ?: return null
+        return trimmed.substring(0, match.range.first) to seasonNumber(match.groupValues[1])
+    }
+
+    private fun stem(title: String) = (marker(title)?.first ?: title.trim())
         .replace(Regex("[\\p{P}\\p{Z}\\s]"), "")
 
     fun ordered(current: Series, rows: List<RelatedWork>): List<RelatedWork> = rows.sortedWith(
         compareBy<RelatedWork> { if (stem(it.series.title) == stem(current.title)) 0 else 1 }
             .thenBy { stem(it.series.title) }
-            .thenBy { it.seasonIndex.takeIf { n -> n > 0 }
-                ?: seasonSuffix.find(it.series.title.trim())?.groupValues?.get(1)?.let(::seasonNumber)
-                ?: 1 }
+            .thenBy { it.seasonIndex.takeIf { n -> n > 0 } ?: marker(it.series.title)?.second ?: 1 }
     )
 
     /** Conservative: identical title stem, consecutive season, unique playable candidate. */
     fun nextSeason(current: Series, rows: List<RelatedWork>): RelatedWork? {
         val title = current.title.trim()
-        val suffix = seasonSuffix.find(title)
-        val number = suffix?.groupValues?.get(1)?.let(::seasonNumber) ?: if (suffix == null) 1 else return null
+        val own = marker(title)
+        val number = if (own == null) 1 else own.second ?: return null
         val currentStem = stem(title)
         if (currentStem.isBlank()) return null
         return rows.filter { row ->
             val candidateTitle = row.series.title.trim()
-            val candidateSuffix = seasonSuffix.find(candidateTitle)
-            val fromTitle = candidateSuffix?.groupValues?.get(1)?.let(::seasonNumber)
+            val fromTitle = marker(candidateTitle)?.second
             val index = row.seasonIndex.takeIf { it > 0 } ?: fromTitle
             !row.upcoming && row.series.id != current.id && index == number + 1 &&
                 (fromTitle == null || fromTitle == index) &&

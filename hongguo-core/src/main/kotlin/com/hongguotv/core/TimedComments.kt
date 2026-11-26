@@ -69,6 +69,9 @@ class TimedComments(
             val next = data.getJSONObject("extra").getLong("next_query_danmaku_list_time")
             require(next > start && next <= 86400000) { "弹幕时间段无效" }
             val end = minOf(next, duration)
+            // 服务端给出的下一窗口可能已经越过本集结尾；此时不能继续翻页，否则客户端会
+            // 以 start == duration 请求下一段并被参数校验拒绝。
+            val atEnd = next >= duration
             val items = mutableListOf<JSONObject>()
             val seen = mutableSetOf<String>()
             val rows = data.getJSONArray("data_list")
@@ -96,8 +99,8 @@ class TimedComments(
             val continuation = data.optJSONObject("common_list_info")
             return JSONObject()
                 .put("rawCount", rows.length())
-                .put("nextCursor", continuation?.optString("cursor").orEmpty())
-                .put("hasMore", continuation?.optBoolean("has_more", false) ?: false)
+                .put("nextCursor", if (atEnd) "" else continuation?.optString("cursor").orEmpty())
+                .put("hasMore", !atEnd && (continuation?.optBoolean("has_more", false) ?: false))
                 .put("seriesID", series)
                 .put("episodeID", episode)
                 .put("startMS", start)

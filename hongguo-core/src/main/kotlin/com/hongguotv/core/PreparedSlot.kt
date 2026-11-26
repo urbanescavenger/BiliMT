@@ -32,7 +32,8 @@ class PreparedSlot<T : Closeable>(private val clock: () -> Long, private val ttl
     }
 
     @Synchronized
-    fun take(next: String): T? {
+    fun take(next: String, ticket: Long? = null): T? {
+        if (ticket != null && ticket != revision) return null
         val result = value?.takeIf { key == next && clock() - readyAt in 0..ttl }
         if (result != null) value = null
         clear()
@@ -41,6 +42,9 @@ class PreparedSlot<T : Closeable>(private val clock: () -> Long, private val ttl
 
     @Synchronized
     fun isFresh(next: String): Boolean = value != null && key == next && clock() - readyAt in 0..ttl
+
+    @Synchronized
+    fun ticketFor(next: String): Long? = revision.takeIf { key == next }
 
     @Synchronized
     fun clear() {

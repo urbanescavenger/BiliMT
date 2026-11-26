@@ -47,7 +47,7 @@ internal object PlaybackModels {
     }?.toString()
 
     fun candidates(model: JSONObject): List<StreamInfo> = renditions(model).map {
-        StreamInfo(it.url, it.key, it.quality.toString())
+        StreamInfo(it.url, it.key, it.quality.toString(), it.backupUrl)
     }
 
     fun renditions(model: JSONObject): List<Rendition> {
@@ -67,18 +67,20 @@ internal object PlaybackModels {
                 val key = encryption?.str("spade_a").orEmpty().ifEmpty { entry.str("spade_a") }
                     .takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
                 if (encryption != null && key == null && encryption.opt("encrypt") !in listOf(false, 0, "0", "false")) return@runCatching null
-                val resolved = listOf("main_url", "play_url", "backup_url_1").firstNotNullOfOrNull { field ->
+                fun decodedUrl(field: String): String? =
                     runCatching {
                         val raw = cleanUrl(entry.str(field))
                         if(raw.isEmpty()) null else url(raw) ?: url(if(seed != null) MediaCrypto.decryptUrl(raw, seed) else String(decode64(raw), Charsets.UTF_8))
                     }.getOrNull()
-                } ?: return@runCatching null
+                val backup = decodedUrl("backup_url_1")
+                val resolved = decodedUrl("main_url") ?: decodedUrl("play_url") ?: backup ?: return@runCatching null
                 val meta=entry.optJSONObject("video_meta")
                 val width=entry.optInt("vwidth",meta?.optInt("vwidth",0) ?: 0); val height=entry.optInt("vheight",meta?.optInt("vheight",0) ?: 0)
                 val dimensions=if(width>0 && height>0) minOf(width,height).toString() else ""
                 val quality=ContentRepository.qualityNumber(entry.str("quality_desc").ifEmpty { meta?.str("definition").orEmpty() }.ifEmpty { dimensions.ifEmpty { entry.str("height").ifEmpty { entry.str("vheight").ifEmpty { entry.str("quality").ifEmpty { name } } } } })
                 val label = entry.str("codec_type").ifEmpty { meta?.str("codec_type").orEmpty() }.lowercase()
-                Rendition(quality, label, width.takeIf { it > 0 }, height.takeIf { it > 0 }, resolved, key)
+                Rendition(quality, label, width.takeIf { it > 0 }, height.takeIf { it > 0 }, resolved, key,
+                    backup?.takeUnless { it == resolved })
             }.getOrNull()
         }
     }

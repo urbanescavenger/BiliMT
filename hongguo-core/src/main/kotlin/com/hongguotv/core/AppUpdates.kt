@@ -74,22 +74,54 @@ interface AppUpdateSource : java.io.Closeable {
     fun cancel()
 }
 
-/** Public release files only; never send credentials to the accelerator. */
-internal object UpdateDownloadSources {
-    const val MIRROR = "https://ghfast.top/"
-    fun urls(origin: String) = listOf(MIRROR + origin, origin)
-    val hosts = setOf("ghfast.top", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com")
+enum class AppUpdateRoute(val label: String, internal val mirrorHost: String? = null) {
+    AUTOMATIC("自动线路"),
+    GITHUB("GitHub 直连"),
+    GHFAST("ghfast.top", "ghfast.top"),
+    GH_PROXY("gh-proxy.org", "gh-proxy.org");
+
+    companion object {
+        fun fromPreference(value: String?): AppUpdateRoute =
+            entries.firstOrNull { it.name == value } ?: AUTOMATIC
+    }
 }
 
-class AppUpdateRepository internal constructor(private val http: OkHttpClient, private val sdk: Int = 21) : AppUpdateSource {
-    constructor(sdk: Int = 21) : this(OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
-        .callTimeout(5, TimeUnit.MINUTES).addNetworkInterceptor { chain ->
-            val url = chain.request().url
-            // Restrict redirects as well as initial requests to known HTTPS download hosts.
-            if (url.scheme != "https" || url.host !in UpdateDownloadSources.hosts)
-                throw IOException("更新下载地址不受支持")
-            chain.proceed(chain.request())
-        }.build(), sdk)
+/** Public release files only. The updater uses its own client with no account credentials. */
+internal object UpdateDownloadSources {
+    private val automaticRoutes = AppUpdateRoute.entries.filter { it != AppUpdateRoute.AUTOMATIC }
+
+    fun urls(origin: String, selection: AppUpdateRoute): List<String> =
+        (if (selection == AppUpdateRoute.AUTOMATIC) automaticRoutes else listOf(selection)).map { route ->
+            route.mirrorHost?.let { "https://$it/$origin" } ?: origin
+        }
+
+    val hosts = setOf("github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com") +
+        automaticRoutes.mapNotNull { it.mirrorHost }
+}
+
+class AppUpdateRepository internal constructor(
+    private val http: OkHttpClient,
+    private val sdk: Int = 21,
+    private val route: () -> AppUpdateRoute = { AppUpdateRoute.AUTOMATIC },
+) : AppUpdateSource {
+    constructor(sdk: Int = 21, route: () -> AppUpdateRoute = { AppUpdateRoute.AUTOMATIC }) : this(
+        OkHttpClient.Builder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.MINUTES)
+            .followSslRedirects(false)
+            .addNetworkInterceptor { chain ->
+                val request = chain.request()
+                val url = request.url
+                // Restrict redirects as well as initial requests to known HTTPS download hosts.
+                if (url.scheme != "https" || url.host !in UpdateDownloadSources.hosts)
+                    throw IOException("更新下载地址不受支持")
+                chain.proceed(request)
+            }
+            .build(),
+        sdk,
+        route,
+    )
 
     private val cancellation = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val activeCalls = java.util.concurrent.ConcurrentHashMap.newKeySet<okhttp3.Call>()
@@ -100,7 +132,7 @@ class AppUpdateRepository internal constructor(private val http: OkHttpClient, p
     private fun <T> fromSources(origin: String, seconds: Long, action: (okhttp3.Response) -> T): T {
         val ticket = generation.get()
         var failure: IOException? = null
-        for (url in UpdateDownloadSources.urls(origin)) {
+        for (url in UpdateDownloadSources.urls(origin, route())) {
             if (Thread.currentThread().isInterrupted || generation.get() != ticket) throw IOException("下载已取消")
             val call = http.newCall(request(url))
             call.timeout().timeout(seconds, TimeUnit.SECONDS)

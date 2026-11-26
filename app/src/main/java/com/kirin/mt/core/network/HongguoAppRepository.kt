@@ -307,7 +307,20 @@ class HongguoAppRepository(
             .distinct()
             .sortedDescending(),
         )
-      }.onFailure { Log.w(Tag, "取流失败 episode=$episodeId: ${it.message}", it) }.getOrNull()
+      }.onFailure { error ->
+        // 把诊断细节写进日志：EmptyPlaybackResponseException.detail（stage=…）与
+        // suppressed 里的 PlaybackDiagnosticException（video-tab-empty 等），否则只剩"空响应"三个字无法定位。
+        val detail = (error as? com.hongguotv.core.EmptyPlaybackResponseException)?.detail?.let { " [$it]" }.orEmpty()
+        val suppressed = error.suppressed.joinToString(" | ") { suppressed ->
+          val d = (suppressed as? com.hongguotv.core.PlaybackDiagnosticException)?.detail
+          listOfNotNull(suppressed.message, d).joinToString(":").ifBlank { suppressed.javaClass.simpleName }
+        }
+        Log.w(
+          Tag,
+          "取流失败 episode=$episodeId: ${error.message}$detail${if (suppressed.isNotEmpty()) " suppressed=[$suppressed]" else ""}",
+          error,
+        )
+      }.getOrNull()
     }
 
   private fun toSummary(series: Series, episodes: List<String>): VideoSummary {

@@ -12,25 +12,28 @@ object PlaybackQuality {
 /**
  * One automatic recovery budget per episode; only an explicit user retry resets it.
  *
- * 两段式（issue #38）：快段三次紧跟失败现场（约 8.5 秒），慢段退避拉长到累计五分钟，覆盖
+ * 两段式（issue #38）：默认快段三次（约 8.5 秒），慢段退避拉长到累计约五分钟，覆盖
  * 服务端秒级到分钟级的空响应窗口；快段救「一瞬间坏了」，慢段救「这一阵子坏了」。
  */
-class RecoveryBudget {
+class RecoveryBudget(fastDelaysMillis: List<Long> = FAST_DELAYS_MILLIS) {
+    val fastAttempts = fastDelaysMillis.size
+    private val delaysMillis = fastDelaysMillis + SLOW_DELAYS_MILLIS
+
     var attempts = 0
         private set
 
     val remaining
-        get() = attempts < DELAYS_MILLIS.size
+        get() = attempts < delaysMillis.size
 
     val delayMillis
-        get() = DELAYS_MILLIS.getOrNull(attempts)
+        get() = delaysMillis.getOrNull(attempts)
 
     val total
-        get() = DELAYS_MILLIS.size
+        get() = delaysMillis.size
 
-    /** 快段（前三）之后进入慢段：文案从倒计时切换为「正在自动恢复」。 */
+    /** 快速尝试用完后进入慢段，界面可以继续展示等待恢复的状态。 */
     val slow
-        get() = attempts >= FAST_ATTEMPTS
+        get() = attempts >= fastAttempts
 
     fun consume(): Boolean {
         if (!remaining) return false
@@ -44,8 +47,8 @@ class RecoveryBudget {
 
     companion object {
         const val FAST_ATTEMPTS = 3
-        private val DELAYS_MILLIS =
-            listOf(1000L, 2500L, 5000L, 15000L, 30000L, 60000L, 90000L, 105000L)
+        private val FAST_DELAYS_MILLIS = listOf(1000L, 2500L, 5000L)
+        private val SLOW_DELAYS_MILLIS = listOf(15000L, 30000L, 60000L, 90000L, 105000L)
     }
 }
 

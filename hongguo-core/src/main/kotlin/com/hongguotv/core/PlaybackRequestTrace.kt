@@ -20,7 +20,8 @@ internal class PlaybackRequestTrace {
         val kind = when (error) {
             is SocketTimeoutException -> "timeout"
             is UnknownHostException -> "dns"
-            is java.io.InterruptedIOException -> "cancel"
+            is java.io.InterruptedIOException ->
+                if (error.message in setOf("timeout", "deadline reached")) "timeout" else "cancel"
             else -> "io"
         }
         add(stage, host, kind)

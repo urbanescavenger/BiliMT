@@ -41,6 +41,7 @@ class PlaybackDeviceSession(
 ) {
     companion object {
         val shared = PlaybackDeviceSession()
+        private const val EMPTY_MODEL_PREFETCH_PAUSE_MILLIS = 5_000L
     }
 
     internal data class Profile(
@@ -52,6 +53,15 @@ class PlaybackDeviceSession(
         private var recommendationSigner: Signer? = null
         private data class Model(val entry: org.json.JSONObject, val owner: Any, val savedAt: Long)
         private val models = linkedMapOf<String, Model>()
+        // Background prefetch reads only the primary model endpoint.
+        @Volatile private var emptyPrimaryModelAt: Long? = null
+
+        fun recordEmptyPrimaryModel(now: Long) { emptyPrimaryModelAt = now }
+
+        fun recordPlayablePrimaryModel() { emptyPrimaryModelAt = null }
+
+        fun shouldDeferPlaybackPrefetch(now: Long): Boolean =
+            emptyPrimaryModelAt?.let { now - it in 0 until EMPTY_MODEL_PREFETCH_PAUSE_MILLIS } == true
 
         // 首页进入全集可一次性交接刚取得的模型；同仓库主动重试始终重新读取，不复用旧地址。
         @Synchronized
@@ -83,7 +93,7 @@ class PlaybackDeviceSession(
     }
 
     private var cdid = UUID.randomUUID().toString()
-    private var ready: Profile? = null
+    @Volatile private var ready: Profile? = null
 
     @Synchronized
     internal fun profile(http: OkHttpClient): Profile {
@@ -98,6 +108,9 @@ class PlaybackDeviceSession(
         store?.save(device)
         return toProfile(device).also { ready = it }
     }
+
+    internal fun shouldDeferPlaybackPrefetch(now: Long): Boolean =
+        ready?.shouldDeferPlaybackPrefetch(now) == true
 
     @Synchronized
     internal fun existing(): Profile? = ready

@@ -48,10 +48,12 @@ class RequestScope {
         private val current = ThreadLocal<RequestScope>()
         private val deadline = ThreadLocal<Long>()
 
+        fun deadlineAtMost(endNanos: Long): Long = minOf(deadline.get() ?: endNanos, endNanos)
+
         /** 同一轮内的注册、签名请求和正文读取共享绝对截止时间，嵌套调用不能延长预算。 */
         fun <T> withDeadline(endNanos: Long, action: () -> T): T {
             val previous = deadline.get()
-            deadline.set(if (previous == null) endNanos else minOf(previous, endNanos))
+            deadline.set(deadlineAtMost(endNanos))
             try {
                 return action()
             } finally {
