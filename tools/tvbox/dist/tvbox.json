@@ -1361,24 +1361,6 @@
       ]
     },
     {
-      "key": "tv_back-026_feifan",
-      "name": "🍀┃非凡┃资源·1号VIP源",
-      "type": 1,
-      "api": "http://ffzy5.tv/api.php/provide/vod",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 1,
-      "categories": [
-        "韩国剧",
-        "欧美剧",
-        "台湾剧",
-        "战争片",
-        "国产剧",
-        "大陆综艺"
-      ],
-      "hide": 1
-    },
-    {
       "key": "tv_back-023_csp_小胡",
       "name": "👒┃小胡┃资源┃·ok线路1",
       "type": 1,
@@ -1608,15 +1590,22 @@
       "filterable": 1
     },
     {
-      "key": "tv_back-026_hjzhencai",
-      "name": "💖┃花卷┃4K💖·1号VIP源",
-      "type": 3,
-      "api": "csp_HjZhenCai",
+      "key": "tv_back-012_feifan",
+      "name": "🍀┃非凡┃资源·二月红接口",
+      "type": 1,
+      "api": "http://ffzy5.tv/api.php/provide/vod",
       "searchable": 1,
       "quickSearch": 1,
-      "filterable": 0,
-      "ext": "{\"site\":\"https://www.hjzhencai.top,https://www.huanjuanwp.shop,https://www.aihuajuan.top\"}",
-      "jar": "http://118.89.172.248:8025/jar/tan.php"
+      "filterable": 1,
+      "categories": [
+        "韩国剧",
+        "欧美剧",
+        "台湾剧",
+        "战争片",
+        "国产剧",
+        "大陆综艺"
+      ],
+      "hide": 1
     },
     {
       "key": "tv_back-023_taopian",
@@ -1935,6 +1924,17 @@
       ]
     },
     {
+      "key": "tv_back-012_hjzhencai",
+      "name": "💖┃花卷┃4K💖·二月红接口",
+      "type": 3,
+      "api": "csp_HjZhenCai",
+      "searchable": 1,
+      "quickSearch": 1,
+      "filterable": 0,
+      "ext": "{\"site\":\"https://www.hjzhencai.top,https://www.huanjuanwp.shop,https://www.aihuajuan.top\"}",
+      "jar": "http://118.89.172.248:8025/jar/tan.php"
+    },
+    {
       "key": "tv_pref-007_csp_DouDou",
       "name": "🔍聚玩盒子-本接口免费-🈲贩卖·小盒子",
       "type": 3,
@@ -2010,38 +2010,49 @@
       "jar": "http://home.jundie.top:81/jar/top98_1.jar"
     },
     {
-      "key": "tv_back-026_JianSou",
-      "name": "💖┃简搜┃4K💖·1号VIP源",
+      "key": "tv_back-017_种子",
+      "name": "种子 • 4K·潇洒",
       "type": 3,
-      "api": "csp_JianSou",
+      "api": "csp_SeedHub",
       "searchable": 1,
-      "filterable": 0,
+      "quickSearch": 0,
       "ext": {
-        "site": "http://118.89.172.248:8000",
-        "type": 0,
-        "name": " 简搜"
+        "site": [
+          "https://seedog.cc",
+          "https://seeduck.cc",
+          "https://hubdog.cc"
+        ]
       },
-      "jar": "http://118.89.172.248:8025/jar/tan.php"
+      "timeout": 60,
+      "jar": "https://qist.wyfc.qzz.io/xiaosa/spider.jar"
     },
     {
-      "key": "tv_back-026_ZhiZhenPanCms",
-      "name": "💖┃至臻┃4K💖·1号VIP源",
+      "key": "tv_back-017_即刻",
+      "name": "即刻 • 4K·潇洒",
       "type": 3,
-      "api": "csp_PanCms",
+      "api": "csp_Jike",
       "searchable": 1,
-      "filterable": 1,
-      "ext": "{\"site\":[\"http://118.89.172.248:22776\"],\"name\":\"网盘CMS\"}",
-      "jar": "http://118.89.172.248:8025/jar/tan.php"
-    },
-    {
-      "key": "tv_back-026_Star2",
-      "name": "💖┃剧透┃4K💖·1号VIP源",
-      "type": 3,
-      "api": "csp_Star2",
-      "searchable": 1,
+      "quickSearch": 0,
       "filterable": 0,
-      "ext": "{\"site\":[\"https://1.star2.cn\"],\"name\":\"剧透社\"}",
-      "jar": "http://118.89.172.248:8025/jar/tan.php"
+      "style": {
+        "type": "list"
+      },
+      "timeout": 60,
+      "jar": "https://qist.wyfc.qzz.io/xiaosa/spider.jar"
+    },
+    {
+      "key": "tv_back-017_双星",
+      "name": "双星 • 4K·潇洒",
+      "type": 3,
+      "api": "csp_ShuangXing",
+      "searchable": 1,
+      "quickSearch": 0,
+      "filterable": 0,
+      "style": {
+        "type": "list"
+      },
+      "timeout": 60,
+      "jar": "https://qist.wyfc.qzz.io/xiaosa/spider.jar"
     },
     {
       "key": "电影天堂-4",
