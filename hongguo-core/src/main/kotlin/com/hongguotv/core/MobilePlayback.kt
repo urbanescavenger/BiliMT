@@ -145,10 +145,17 @@ internal object MobilePlayback {
                 ?: throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)
             val entries = data.optJSONObject("1004") ?: data
             val model = PlaybackModels.objectValue(entries.optJSONObject(id)?.opt("video_model"))
-                ?: throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
+                ?: throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE).apply {
+                    addSuppressed(PlaybackDiagnosticException(
+                        "model-miss id=${id.take(12)} code=${root.optInt("code", -1)} " +
+                            "dataKeys=${data.keys().asSequence().take(8).toList()} " +
+                            "entryKeys=${entries.keys().asSequence().take(8).toList()}"))
+                }
             val rows = PlaybackModels.renditions(model)
             if (rows.isEmpty() && currentApp) return@execute compatibleLadder(model, transport)
-            if (rows.isEmpty()) throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
+            if (rows.isEmpty()) throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE).apply {
+                addSuppressed(PlaybackDiagnosticException("empty-rows codecs=${codecSummary(model)}"))
+            }
             StreamLadder(rows)
         }
     }
@@ -156,7 +163,10 @@ internal object MobilePlayback {
     /** App-provided VOD codec negotiation; no website or account headers. */
     private fun compatibleLadder(model: JSONObject, transport: OkHttpClient): StreamLadder {
         val endpoint = PlaybackModels.fallback(model)
-            ?: throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
+            ?: throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE).apply {
+                addSuppressed(PlaybackDiagnosticException(
+                    "no-fallback-api modelKeys=${model.keys().asSequence().take(10).toList()} codecs=${codecSummary(model)}"))
+            }
         for (codec in listOf("1", "3")) {
             RequestScope.ensureActive()
             val url = endpoint.toHttpUrl().newBuilder().setQueryParameter("codec_type", codec).build()
@@ -176,6 +186,17 @@ internal object MobilePlayback {
             }
             if (rows.isNotEmpty()) return StreamLadder(rows)
         }
-        throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE)
+        throw PlaybackSourceException(PlaybackSourceException.Reason.NO_PLAYABLE_SOURCE).apply {
+            addSuppressed(PlaybackDiagnosticException("compat-empty codecs=1,3"))
+        }
     }
+
+    private fun codecSummary(model: JSONObject): String =
+        model.optJSONArray("video_list")?.let { list ->
+            (0 until list.length()).mapNotNull { i ->
+                val item = list.optJSONObject(i) ?: return@mapNotNull null
+                item.optString("codec_type").ifBlank { item.optJSONObject("video_meta")?.optString("codec_type").orEmpty() }
+                    .ifBlank { item.optString("gear_des_key") }.ifBlank { "?" }
+            }.take(8).joinToString(",")
+        }?.ifBlank { "list=${model.optJSONArray("video_list")?.length()}" } ?: "no-video_list"
 }
