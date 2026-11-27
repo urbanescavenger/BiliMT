@@ -22,7 +22,7 @@ class PublicComments(http: OkHttpClient) {
     private val details = linkedMapOf<String, Pair<Long, String>>()
 
     fun read(series: String, episode: String): JSONObject {
-        require(series.matches(Regex("[0-9]{6,30}")) && episode.matches(Regex("[0-9]{6,30}")))
+        require(series.matches(Regex("[0-9]{6,30}")) && episode.matches(EpisodeIdPattern))
         val player = page("https://hongguoduanju.com/player/$series/$episode")
         val cached =
             synchronized(details) {

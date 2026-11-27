@@ -856,7 +856,7 @@ constructor(
         val episodes = (0 until raw.length()).map { raw.getString(it) }
         if (
             episodes.isEmpty() ||
-                episodes.any { !it.matches(Regex("[0-9]{1,30}")) } ||
+                episodes.any { !it.matches(EpisodeIdPattern) } ||
                 episodes.distinct().size != episodes.size
         )
             throw IOException("分集数据异常")
@@ -930,7 +930,7 @@ constructor(
 
     /** 诊断旁路：返回原始 video_list 各档（含 bytevc2），不参与正式播放路径；relay 探针专用。 */
     fun rawVideoModel(id: String): List<Rendition> {
-        require(id.matches(Regex("[0-9]{1,30}")))
+        require(id.matches(EpisodeIdPattern))
         val entry = tabVideoModel(id, playbackSession.profile(http)) ?: return emptyList()
         val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
         return model.optJSONArray("video_list")?.objects().orEmpty().mapNotNull { row ->
@@ -1108,8 +1108,8 @@ constructor(
     /** 读取一集的可播档位；前台按会话路径健康度选择，后台只轻量准备一次。 */
     @JvmOverloads
     fun streamLadder(id: String, metadataAhead: List<String> = emptyList(), speculative: Boolean = false): StreamLadder {
-        require(id.matches(Regex("[0-9]{1,30}")))
-        require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
+        require(id.matches(EpisodeIdPattern))
+        require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(EpisodeIdPattern) })
         val firstRead = synchronized(requestedPlaybackModels) {
             val first = requestedPlaybackModels.add(id)
             while (requestedPlaybackModels.size > 64) requestedPlaybackModels.remove(requestedPlaybackModels.first())
@@ -1430,7 +1430,7 @@ constructor(
 
     private val devices = PlayerDeviceSource(http)
     internal fun registeredStream(id: String, maxQuality: Int = 1080): StreamInfo {
-        require(id.matches(Regex("[0-9]{1,30}")))
+        require(id.matches(EpisodeIdPattern))
         for(attempt in 0..1) {
             try { return playerStream(id,maxQuality) }
             catch(e: DeviceRejectedException) { devices.invalidate() }
@@ -1439,7 +1439,7 @@ constructor(
         return currentStream(id,maxQuality)
     }
     internal fun currentStream(id: String, maxQuality: Int = 1080): StreamInfo {
-        require(id.matches(Regex("[0-9]{1,30}")))
+        require(id.matches(EpisodeIdPattern))
         val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/",VendorConstants.device + mapOf("video_id" to id,"video_id_type" to "0","device_level" to "1","need_all_video_definition" to "1","need_mp4_align" to "0","use_os_player" to "0","video_platform" to "1024","source" to "0","from_video_id" to ""))
         val data=try { JSONObject(playbackText(signed.url,signed)) } catch(e: org.json.JSONException) {
             throw PlaybackSourceException(PlaybackSourceException.Reason.INVALID_RESPONSE)

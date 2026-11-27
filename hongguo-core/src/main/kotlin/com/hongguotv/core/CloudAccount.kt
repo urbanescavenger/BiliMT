@@ -331,7 +331,7 @@ class CloudAccountClient(private val http: OkHttpClient) {
     fun upload(credentials: AccountCredentials, progress: CloudProgress, episodeCount: Int) {
         require(
             progress.series.id.matches(Regex("[0-9]{1,30}")) &&
-                progress.episodeId.matches(Regex("[0-9]{1,30}"))
+                progress.episodeId.matches(EpisodeIdPattern)
         )
         val entry =
             JSONObject()
@@ -511,7 +511,7 @@ class CloudAccountClient(private val http: OkHttpClient) {
                 .mapNotNull { row ->
                     val id = row.str("series_id").ifEmpty { row.str("book_id") }
                     val episode = row.str("vid")
-                    if (!id.matches(Regex("[0-9]{1,30}")) || !episode.matches(Regex("[0-9]{1,30}")))
+                    if (!id.matches(Regex("[0-9]{1,30}")) || !episode.matches(EpisodeIdPattern))
                         return@mapNotNull null
                     val stamp =
                         row.optLong("last_watch_time").let {

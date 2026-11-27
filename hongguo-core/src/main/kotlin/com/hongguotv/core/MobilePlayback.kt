@@ -56,7 +56,7 @@ internal object MobilePlayback {
      */
     fun videoTabRequest(id: String, device: Map<String, String>, host: String, now: Long,
                         signing: MobilePlaybackSigner = signer): Request.Builder {
-        require(id.matches(Regex("[0-9]{1,30}")))
+        require(id.matches(EpisodeIdPattern))
         RequestScope.ensureActive()
         val values = query(device, signing.currentAppProtocol) + linkedMapOf(
             "video_id" to id, "video_id_type" to "0", "device_level" to "1",
@@ -88,7 +88,7 @@ internal object MobilePlayback {
         now: Long,
         host: String? = null,
     ): StreamLadder {
-        require(id.matches(Regex("[0-9]{1,30}")))
+        require(id.matches(EpisodeIdPattern))
         RequestScope.ensureActive()
         val currentApp = signer.currentAppProtocol
         val query = query(device, currentApp) + ("_rticket" to now.toString())
