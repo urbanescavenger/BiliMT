@@ -182,7 +182,7 @@ class HongguoAppRepository(
     episodeId: String,
     cursor: String = "",
   ): HongguoCommentPage = withContext(Dispatchers.IO) {
-    if (!seriesId.matches(Regex("[0-9]{6,30}")) || !episodeId.matches(com.hongguotv.core.EpisodeIdPattern)) {
+    if (!seriesId.matches(Regex("[0-9]{6,30}")) || !episodeId.matches(Regex("[0-9]{6,30}"))) {
       return@withContext HongguoCommentPage(emptyList(), hasMore = false, nextCursor = "", total = 0)
     }
     val page = runCatching {
@@ -249,7 +249,7 @@ class HongguoAppRepository(
     episodeId: String,
     durationMs: Long = 0L,
   ): List<DanmakuEntry> = withContext(Dispatchers.IO) {
-    if (!seriesId.matches(Regex("[0-9]{6,30}")) || !episodeId.matches(com.hongguotv.core.EpisodeIdPattern)) {
+    if (!seriesId.matches(Regex("[0-9]{6,30}")) || !episodeId.matches(Regex("[0-9]{6,30}"))) {
       return@withContext emptyList()
     }
     val duration = durationMs.coerceAtLeast(300_000L).coerceAtMost(600_000L)
@@ -294,7 +294,7 @@ class HongguoAppRepository(
    */
   suspend fun resolveStream(episodeId: String, maxQuality: Int = 1080): HongguoResolve? =
     withContext(Dispatchers.IO) {
-      if (!episodeId.matches(com.hongguotv.core.EpisodeIdPattern)) return@withContext null
+      if (!episodeId.matches(Regex("[0-9]{1,30}"))) return@withContext null
       runCatching {
         val ladder = content.streamLadderWithCompatibility(episodeId)
         val rendition = ladder.select(maxQuality)

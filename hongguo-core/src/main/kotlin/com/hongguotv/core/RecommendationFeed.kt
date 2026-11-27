@@ -548,7 +548,7 @@ class RecommendationFeed(
                         val count = row.optInt("episode_cnt")
                         if (
                             id in items.map { it.id } &&
-                                first.matches(EpisodeIdPattern) &&
+                                first.matches(Regex("[0-9]{1,30}")) &&
                                 count > 0
                         )
                             id to TrialHint(first, count)

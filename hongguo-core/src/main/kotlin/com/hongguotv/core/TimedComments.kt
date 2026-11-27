@@ -16,7 +16,7 @@ class TimedComments(
     fun clearCache() = synchronized(cache) { cache.clear() }
 
     fun read(series: String, episode: String, start: Long, duration: Long, cursor: String = ""): JSONObject {
-        require(series.matches(Regex("[0-9]{6,30}")) && episode.matches(EpisodeIdPattern))
+        require(series.matches(Regex("[0-9]{6,30}")) && episode.matches(Regex("[0-9]{6,30}")))
         require(start >= 0 && duration > start && duration <= 86400000)
         require(cursor.length <= 16384)
         val key = "$series/$episode/$start/$duration/$cursor"
