@@ -151,6 +151,9 @@ BiliMT 内置红果短剧源，移动端与 TV 共用：
 | v4.0.0-alpha.2 | **红果播放对齐：定时弹幕 + 分集评论 + 设备身份持久化**（P11-337/338）。`TimedComments` 预取前 5 分钟；`AppCommentPages` 游标分页、首屏失败回退网页公开评论；TV 红果控制行补弹幕开关/评论，移动评论 Tab 自动切红果。修复 v5 播放「设备注册失败」：匿名身份持久化并与弹幕共用，注册失败 1s 重试。 |
 | v4.0.0-alpha.3 | **红果播放器对齐 B站：画质切换 + 相关视频实义**（P11-340）。画质面板填 ladder 真实档位（480P/720P/1080P），选档重取流保进度，首播回退全局默认画质；相关视频喂红果热榜并排除当前剧、点行补剧集详情；移除影视库/IPTV 恒空的「相关视频」按钮。 |
 | v4.0.0-alpha.4 | **红果本地播放记录融入历史列表**（P11-341）。新增 `HongguoHistoryStore`（一部剧一张卡，存最近分集与进度），起播/进度保存双端写入；TV/移动历史 tab 把红果与本地 YouTube、B站在线历史按播放时间（viewAt 秒）倒序混合，未登录也显示本地条目；点历史卡经详情补拉定位续播集与进度（vid 失配回退序号再落首集，播完从头）。 |
+| v4.0.0-alpha.5 | **YouTube 播放优先级新增直链双档 + 起播档口径统一**（P11-342）。直链优先级 5 档：「IOS 直链优先 / visionOS 直链优先」匿名免 token 全阶梯直链（IOS 16~28 条、visionOS 豁免档），选中即最优先、失败落 NewPipe 主链；起播选档统一 P11-173 口径（手动 > 起播上限取最高 > 默认上限 > 双自动最低档），修两直链档与 NewPipe 优先档恒 2160/144 起播。 |
+| v4.0.0-alpha.6 | **YouTube 直链档定稿：visionOS 全阶梯 ABR + IOS 档删除**（P11-342 收口）。visionOS 档全阶梯入 MPD、起播锁意图档后 HeightAware 自由爬档；IOS/ANDROID_VR 改需 GVS token（社区实锤），IOS 档删除、优先级回 4 档；`itagOf` 兼容合成 MPD 的 `0_135` 形态；直链 403 停用自动重载保取证。 |
+| v4.0.0-alpha.7 | **红果播放全线修复（播放/分集双故障）**（P11-344/345）。①「播放设备注册失败」：根因为本机 DNS 黑洞字节系 applog 域名（非 App 缺陷），修复后设备注册恢复，upload 恢复持久化；②空响应（HTTP 200 空 body）根治——移植上游 0.16.12–0.16.17：主取流切官方现行协议 `reading.snssdk.com/novel/player/multi_video_model/preload/v1`、Medusa v5 device envelope 补齐（14/38→全量）、空响应自动回退 v5 签名 GET video_tab、RemoteVideo CDN 故障切备源、失败日志带 stage/档位诊断；③**分集目录改走 App 接口** `reading/bookapi/directory/all_items/v/`（网页 vid_list 自 2026-11-27 起只剩 3 个预览密文 id，数字分集目录须由 App 接口返回）——修复「分集数据异常」全系列不可播。另：TVBox 切线路/切源无效修复（同址线路折叠+同源短路，P11-343）；TVBox 社区源 recommended 终态收敛至 7 站（成人源过滤+人工判定）。 |
 
 ### v3.1.3
 

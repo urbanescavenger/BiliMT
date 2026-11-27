@@ -2,6 +2,7 @@
 
 ## 目录
 
+- [v4.0.0-alpha.7](#v400-alpha7)
 - [v4.0.0-alpha.6](#v400-alpha6)
 - [v4.0.0-alpha.5](#v400-alpha5)
 - [v4.0.0-alpha.4](#v400-alpha4)
@@ -431,6 +432,50 @@
 - **设置页清理**(alpha.2):隐藏废弃诊断开关与移动端 TV 专属惰性开关(字段保留)。
 
 ---
+
+## v4.0.0-alpha.7
+
+**红果播放全线修复：分集目录取回 + 空响应根治 + 失败日志可定位（P11-344 / P11-345）**
+
+### 背景与现象
+
+2026-11-26 起红果所有取流失败。先后观测到三个阶段（本机日志复盘）：
+
+1. 「播放设备注册失败」——播放前的匿名设备注册请求 `log5-applog-lf.fqnovel.com` 被本机网络 DNS 黑洞
+   （解析为 `0.0.0.0`/`::`，UDP 公共 DNS 同样被劫持；DoH 可查真实 IP）。DNS 修复后注册失败归零。
+2. 「播放接口暂时返回空响应」——DNS 修好后所有取流 `HTTP 200 + 0 字节`。根因经上游
+   hongguoTV 实锤：①旧 `player/v1` 自 2026-11-02 起全域名回空；②Medusa v5 签名 device
+   envelope 只填 14/38 个字段（缺 f5/f16 设备令牌与计数器），服务端不报错直接回空；③App 请求
+   画像与注册画像不一致（注册 25053RT47C/Android 16/update_64，播放却谎报 vivo PGT-AN10）。
+3. 「详情失败：分集数据异常」——2026-11-27 起网页 SSR `vid_list` 仅剩 3 个预览密文 id
+   （`v1_…`），不再是数字分集 id，App 校验全灭。
+
+### 修复内容
+
+- **主取流协议迁移**（上游 0.16.14/0.16.17）：`reading.snssdk.com/novel/player/multi_video_model/preload/v1`，
+  设备画像统一 7.4.5.32 / 25053RT47C / Android 16 / update_64，`device_level=4`、`dr_scene=preload`。
+- **Medusa v5 device envelope 补齐**（上游 0.16.15）：f5/f16 设备令牌、字段 7–38 全量、counter 块、
+  flags `4480000000000000`、env 子消息。
+- **空响应自动回退**：主模型空 → v5 签名 `GET reading/bookapi/video_tab/multi_video_model/v1/`
+  （MD5 空体摘要、去 POST 头，0.16.12）；仅剩 bytevc2 时换备用域名再试（0.16.13）。
+- **分集目录 API**（上游 0.16.20，本版核心）：网页 vid_list 仅当全部数字且数量达标才采用；否则走
+  `GET reading/bookapi/directory/all_items/v/?book_id=<series_id>&need_version=true`（浏览签名、免登录免播放注册；
+  双域名 api5-normal-sinfonlinea/b）拿 `data.item_data_list[].item_id` 数字 vid，按服务端顺序回填分集。
+- **RemoteVideo**：主 CDN 故障自动切备用片源（上游 0.16.10 #72）；取流失败日志补
+  `model-miss/empty-rows/no-fallback-api/compat-empty` 结构化诊断；HongguoApp 失败日志输出
+  `EmptyPlaybackResponseException.detail` 与 suppressed。
+- **P11-343**：TVBox 切线路/切源无效——同址线路折叠 + 同源短路重载。
+
+### TVBox 社区源名单（聚合源/IPK）
+
+- recommended 终态 7 站：成人源过滤（社区词表 + 实测补漏，15→13）、人工判定 5 站入黑名单、
+  辣椒家族排除；IPK 多版本打包修复（21.02 SDK 预检/FORCE）。
+
+### 已知边界
+
+- 红果播放依赖字节系域名可达（`log5-applog*.fqnovel.com`、`reading.snssdk.com` 等）；本机若再黑洞
+  这些域名会退回「播放设备注册失败/空响应」。Pi-hole/AdGuard 用户需放行。
+- 分集目录接口与播放接口同属服务端风控范围，如再出现空响应，日志已带诊断字段，按 stage 定位。
 
 ## v4.0.0-alpha.6
 
